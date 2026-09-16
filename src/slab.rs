@@ -153,9 +153,12 @@ impl SlabDesc {
         self.arena.load(Ordering::Relaxed)
     }
 
+    /// Acquire: a releaser clears bits and then subtracts, so a reader that
+    /// sees the smaller count also sees the cleared bits. `class.rs` relies
+    /// on that to treat `nslots - live` as a lower bound on claimable slots.
     #[inline]
     pub fn live(&self) -> usize {
-        self.live.load(Ordering::Relaxed) as usize
+        self.live.load(Ordering::Acquire) as usize
     }
 
     /// Add `n` to `live`, returning the previous value.

@@ -22,10 +22,12 @@
 //!
 //! A release clears bits with `fetch_and` and then subtracts from `live`.
 //! If a word was full before the clear the releaser sets the partial bit
-//! under the lock; if `live` reaches zero the releaser makes the slab
-//! `Empty` under the lock. A refill that finds a partial slab full re-checks
-//! `is_full` under the lock before clearing its partial bit, so a concurrent
-//! release either is visible to that check or sets the bit afterwards.
+//! under the lock (once per batch, not per word); if `live` reaches zero
+//! the releaser makes the slab `Empty` under the lock. A refill plans all
+//! its slabs in one lock hold, reserving at most `nslots - live` from each,
+//! and clears the partial bit of a slab it finds full (`is_full` under the
+//! lock), so a concurrent release either is visible to that check or sets
+//! the bit afterwards.
 
 use crate::bitmap::TwoLevelBitmap;
 use crate::layout::{CLASSES, Class, Regions};
@@ -59,6 +61,49 @@ pub struct Claim {
     /// Every returned slot came from a slab that was `Fresh` or `Purged`
     /// when this thread selected it, so its memory reads as zero.
     pub zeroed: bool,
+}
+
+/// Slabs one lock hold of a refill may reserve from (see
+/// [`ClassState::plan`]).
+const MAX_PICKS: usize = 8;
+
+/// Full bitmap scans of one slab that find nothing before a claim gives up
+/// on its reservation and aborts. A scan comes up empty only while other
+/// threads keep moving free bits between words, so this many in a row
+/// means the `live` count no longer bounds the set bits.
+const MAX_EMPTY_PASSES: u32 = 1 << 22;
+
+/// One slab's share of a refill: `n` slots reserved in its `live` count.
+#[derive(Copy, Clone)]
+struct Pick {
+    slab: u32,
+    n: u32,
+    /// The slab was `Fresh` or `Purged` when this refill made it `Active`.
+    zero: bool,
+}
+
+/// Slabs a release batch must put back in the partial set. Consecutive
+/// duplicates are dropped; a full list is flushed under the lock.
+#[derive(Default)]
+struct Reopen {
+    slabs: [u32; MAX_PICKS],
+    len: usize,
+}
+
+impl Reopen {
+    /// Record `slab`; `false` if the list is full (and `slab` is not the
+    /// last entry), in which case the caller must flush first.
+    fn push(&mut self, slab: usize) -> bool {
+        if self.len > 0 && self.slabs[self.len - 1] == slab as u32 {
+            return true;
+        }
+        if self.len == MAX_PICKS {
+            return false;
+        }
+        self.slabs[self.len] = slab as u32;
+        self.len += 1;
+        true
+    }
 }
 
 /// A never-freed table in the metadata region, committed page by page as
@@ -367,74 +412,139 @@ impl ClassState {
     }
 
     /// Claim up to `out.len()` slots, lowest address first, writing slot
-    /// pointers to `out[..n]`. Loops over slabs until satisfied or until
-    /// nothing more can be committed.
+    /// pointers to `out[..n]`. Each lock hold reserves from up to
+    /// [`MAX_PICKS`] slabs (see [`plan`]); the loop repeats only when a
+    /// plan ran out of picks before the request was met.
+    ///
+    /// [`plan`]: ClassState::plan
     pub fn claim(&self, meta: &Meta, out: &mut [*mut u8]) -> Claim {
         let cls = self.class();
         let mut got = 0;
         let mut zeroed = true;
+        let mut picks = [Pick { slab: 0, n: 0, zero: false }; MAX_PICKS];
         while got < out.len() {
-            let want = (out.len() - got).min(cls.nslots());
-            let Some((slab, zero)) = self.select(meta, want) else { break };
-            let desc = self.desc(slab);
-            let bm = desc.bitmap(cls);
-            let words = bm.words();
-            let mut k = 0;
-            let mut word = 0;
-            while k < want {
-                let Some((w, bits)) = bm.claim_from(word, want - k) else { break };
-                let mut m = bits;
-                while m != 0 {
-                    let b = m.trailing_zeros() as usize;
-                    m &= m - 1;
-                    out[got + k] = self.slot_ptr(slab, w * 64 + b);
-                    k += 1;
+            let np = self.plan(meta, out.len() - got, &mut picks);
+            if np == 0 {
+                break;
+            }
+            for pick in &picks[..np] {
+                let slab = pick.slab as usize;
+                let want = pick.n as usize;
+                let bm = self.desc(slab).bitmap(cls);
+                let words = bm.words();
+                let mut k = 0;
+                let mut word = 0;
+                let mut empty_passes = 0u32;
+                while k < want {
+                    let Some((w, bits)) = bm.claim_from(word, want - k) else {
+                        // Every word was full when inspected. `plan` reserved
+                        // no more than `nslots - live` and set bits never
+                        // exceed `live`, so the slots exist: a concurrent
+                        // claimer took the bits we looked at and left ours
+                        // in a word we had already passed. Scan again.
+                        empty_passes += 1;
+                        if empty_passes == MAX_EMPTY_PASSES {
+                            let d = self.desc(slab);
+                            let set: usize = (0..words).map(|w| bm.load(w).count_ones() as usize).sum();
+                            reservation_unmet(self.class as usize, slab, want, k, d.live(), set - (words * 64 - cls.nslots()), cls.nslots());
+                        }
+                        word = 0;
+                        continue;
+                    };
+                    let mut m = bits;
+                    while m != 0 {
+                        let b = m.trailing_zeros() as usize;
+                        m &= m - 1;
+                        out[got + k] = self.slot_ptr(slab, w * 64 + b);
+                        k += 1;
+                    }
+                    word = if w + 1 == words { 0 } else { w + 1 };
                 }
-                word = if w + 1 == words { 0 } else { w + 1 };
+                if !pick.zero {
+                    zeroed = false;
+                }
+                got += want;
             }
-            if k < want {
-                // Return the unused reservation, then the slab is full (or
-                // was emptied under us): fix up its set membership.
-                self.unreserve(slab, want - k);
-                self.on_full(slab);
-            }
-            if k > 0 && !zero {
-                zeroed = false;
-            }
-            got += k;
         }
         Claim { n: got, zeroed: got > 0 && zeroed }
     }
 
-    /// Pick a slab for a refill and reserve `want` in its `live` counter.
-    /// Returns the slab and whether its memory is known zero.
-    fn select(&self, meta: &Meta, want: usize) -> Option<(usize, bool)> {
+    /// One lock hold of a refill: reserve up to `want` slots across up to
+    /// [`MAX_PICKS`] slabs, lowest address first, and return the number of
+    /// picks written. Zero picks means nothing more can be committed.
+    ///
+    /// `nslots - live` is a lower bound on a slab's claimable slots: every
+    /// claimer reserves in `live` under this lock before it sets bits, and
+    /// every releaser clears bits before it subtracts. So a reservation of
+    /// at most that many is always met (the claimer may have to rescan when
+    /// a concurrent claimer wins the bits it looked at), and a partial slab
+    /// whose bound is zero is either full (its bit is cleared here, the
+    /// only place a partial bit is cleared while the slab stays `Active`)
+    /// or has an in-flight claimer and is skipped. A slab with `live == 0` whose
+    /// every slot is reserved here leaves the partial set at once: nothing
+    /// in it can be released before this claim hands slots out, so no
+    /// release can race the clear.
+    fn plan(&self, meta: &Meta, want: usize, picks: &mut [Pick; MAX_PICKS]) -> usize {
+        let cls = self.class();
         let mut g = self.inner.lock();
-        let slab = if let Some(s) = g.partial.map.lowest_set() {
-            s
-        } else if let Some(s) = g.empty.map.lowest_set() {
-            g.empty.map.clear(s);
-            g.stats.empty -= 1;
-            g.set_partial(s);
-            s
-        } else if let Some(s) = g.purged.map.lowest_set() {
-            g.purged.map.clear(s);
-            g.stats.purged -= 1;
-            g.set_partial(s);
-            s
-        } else {
-            let s = self.commit_next(&mut g, meta)?;
-            g.set_partial(s);
-            s
-        };
+        let mut np = 0;
+        let mut remaining = want;
+        let mut next = g.partial.map.lowest_set();
+        while let Some(s) = next {
+            if remaining == 0 || np == MAX_PICKS {
+                return np;
+            }
+            let desc = self.desc(s);
+            if desc.live() >= cls.nslots() {
+                if desc.state() == State::Active && desc.bitmap(cls).is_full() {
+                    g.clear_partial(s);
+                }
+            } else {
+                self.take(&mut g, s, &mut remaining, picks, &mut np);
+            }
+            next = g.partial.map.lowest_set_from(s + 1);
+        }
+        while remaining > 0 && np < MAX_PICKS {
+            let s = if let Some(s) = g.empty.map.lowest_set() {
+                g.empty.map.clear(s);
+                g.stats.empty -= 1;
+                s
+            } else if let Some(s) = g.purged.map.lowest_set() {
+                g.purged.map.clear(s);
+                g.stats.purged -= 1;
+                s
+            } else {
+                match self.commit_next(&mut g, meta) {
+                    Some(s) => s,
+                    None => break,
+                }
+            };
+            self.take(&mut g, s, &mut remaining, picks, &mut np);
+        }
+        np
+    }
+
+    /// Reserve `min(nslots - live, *remaining)` slots of `slab` under the
+    /// lock, fix up its state and partial bit, and record the pick.
+    fn take(&self, g: &mut Inner, slab: usize, remaining: &mut usize, picks: &mut [Pick; MAX_PICKS], np: &mut usize) {
         let desc = self.desc(slab);
+        let live = desc.live();
+        let avail = self.class().nslots() - live;
+        let n = avail.min(*remaining);
         let state = desc.state();
         if state != State::Active {
             desc.set_state(State::Active);
             desc.set_dirty_at(0);
         }
-        desc.add_live(want);
-        Some((slab, state.is_zero()))
+        desc.add_live(n);
+        if live == 0 && n == avail {
+            g.clear_partial(slab);
+        } else {
+            g.set_partial(slab);
+        }
+        picks[*np] = Pick { slab: slab as u32, n: n as u32, zero: state.is_zero() };
+        *np += 1;
+        *remaining -= n;
     }
 
     /// Commit the next non-guard slab (and any guard slabs before it) and
@@ -478,23 +588,6 @@ impl ClassState {
         }
     }
 
-    /// Give back an unused claim reservation.
-    fn unreserve(&self, slab: usize, n: usize) {
-        if n > 0 && self.desc(slab).sub_live(n) == n {
-            self.on_live_zero(slab);
-        }
-    }
-
-    /// A refill observed `slab` full: drop it from the partial set if it
-    /// still is full under the lock.
-    fn on_full(&self, slab: usize) {
-        let mut g = self.inner.lock();
-        let desc = self.desc(slab);
-        if desc.state() == State::Active && desc.bitmap(self.class()).is_full() {
-            g.clear_partial(slab);
-        }
-    }
-
     /// `live` reached zero: make the slab `Empty` unless a refill has
     /// already reserved it again.
     fn on_live_zero(&self, slab: usize) {
@@ -511,19 +604,23 @@ impl ClassState {
 
     /// Release a batch of slot pointers. Consecutive pointers in the same
     /// bitmap word share one `fetch_and`, so a batch sorted by address costs
-    /// about one atomic per 64 slots. Aborts on a pointer that is not an
-    /// allocated slot of this class.
+    /// about one atomic per 64 slots. Slabs whose words went from full to
+    /// not full are collected and put back in the partial set under one
+    /// lock hold at the end (or when the list overflows), rather than one
+    /// per word. Aborts on a pointer that is not an allocated slot of this
+    /// class.
     pub fn release(&self, ptrs: &[*mut u8]) {
         let mut cur_slab = usize::MAX;
         let mut cur_word = 0usize;
         let mut mask = 0u64;
         let mut count = 0usize;
+        let mut reopen = Reopen::default();
         for &p in ptrs {
             let (slab, slot) = self.locate(p);
             let word = slot / 64;
             if slab != cur_slab || word != cur_word {
                 if mask != 0 {
-                    self.release_word(cur_slab, cur_word, mask);
+                    self.release_word(cur_slab, cur_word, mask, &mut reopen);
                 }
                 if slab != cur_slab && count != 0 {
                     self.dec_live(cur_slab, count);
@@ -541,16 +638,17 @@ impl ClassState {
             count += 1;
         }
         if mask != 0 {
-            self.release_word(cur_slab, cur_word, mask);
+            self.release_word(cur_slab, cur_word, mask, &mut reopen);
         }
         if count != 0 {
             self.dec_live(cur_slab, count);
         }
+        self.reopen(&mut reopen);
     }
 
     /// Release the slots of `mask` in `word` of `slab`. The `live` update
     /// is separate so a batch can do one per slab.
-    fn release_word(&self, slab: usize, word: usize, mask: u64) {
+    fn release_word(&self, slab: usize, word: usize, mask: u64, reopen: &mut Reopen) {
         let desc = self.desc(slab);
         let prev = desc.bitmap(self.class()).release(word, mask);
         if prev & mask != mask {
@@ -558,10 +656,28 @@ impl ClassState {
             let slot = word * 64 + bad;
             double_free(self.slot_ptr(slab, slot) as usize, self.class as usize, slab, slot);
         }
-        if prev == !0 {
-            let mut g = self.inner.lock();
-            g.set_partial(slab);
+        if prev == !0 && !reopen.push(slab) {
+            self.reopen(reopen);
+            reopen.push(slab);
         }
+    }
+
+    /// Put the slabs in `reopen` back in the partial set, then clear the
+    /// list. A slab that went `Empty` (or was purged) since its word was
+    /// released stays out: it is in the empty or purged set, and a refill
+    /// taking it from there sets its partial bit itself.
+    fn reopen(&self, reopen: &mut Reopen) {
+        if reopen.len == 0 {
+            return;
+        }
+        let mut g = self.inner.lock();
+        for &s in &reopen.slabs[..reopen.len] {
+            let slab = s as usize;
+            if self.desc(slab).state() == State::Active {
+                g.set_partial(slab);
+            }
+        }
+        reopen.len = 0;
     }
 
     fn dec_live(&self, slab: usize, n: usize) {
@@ -621,6 +737,12 @@ impl ClassState {
 #[inline(never)]
 fn never_committed(class: usize, slab: usize) -> ! {
     panic!("invalid free: class {class} slab {slab} was never allocated")
+}
+
+#[cold]
+#[inline(never)]
+fn reservation_unmet(class: usize, slab: usize, want: usize, got: usize, live: usize, set: usize, nslots: usize) -> ! {
+    panic!("class {class}: slab {slab} yielded {got} of a reservation of {want} slots after {MAX_EMPTY_PASSES} full scans (live {live}, allocated {set}, nslots {nslots}): live count is corrupt")
 }
 
 #[cold]
@@ -817,8 +939,10 @@ mod tests {
         let set: HashSet<usize> = all.iter().map(|&p| p as usize).collect();
         assert_eq!(set.len(), n);
         assert!(cs.desc(0).bitmap(cs.class()).is_full());
-        // Still in partial until a refill notices.
-        assert!(cs.is_partial(0));
+        // A whole fresh slab reserved by one plan leaves the partial set at
+        // once; nothing in it could be released before the claim finished.
+        assert!(!cs.is_partial(0));
+        assert_eq!(cs.stats().nonfull, 0);
         let (next, claim) = env.claim(&cs, 1);
         assert_eq!(claim, Claim { n: 1, zeroed: true });
         assert_eq!(next[0] as usize, env.regions.slab_addr(c, 1));
@@ -838,6 +962,91 @@ mod tests {
         assert_eq!(claim, Claim { n: 2, zeroed: false });
         assert_eq!(again[0], victim);
         assert_eq!(again[1] as usize, env.regions.slot_addr(c, 1, 1));
+    }
+
+    #[test]
+    fn filling_a_live_slab_leaves_a_stale_bit_until_the_next_plan() {
+        let env = Env::new();
+        let c = small_class();
+        let cs = env.class(c, 0);
+        let n = cs.class().nslots();
+        // Two claims fill slab 0; the second reserved every remaining slot
+        // of a slab that already had live slots, so the bit is left stale.
+        let (a, _) = env.claim(&cs, n - 3);
+        let (b, _) = env.claim(&cs, 3);
+        assert_eq!(a.len() + b.len(), n);
+        assert!(cs.desc(0).bitmap(cs.class()).is_full());
+        assert!(cs.is_partial(0));
+        assert_eq!(cs.stats().nonfull, 1);
+        // The next plan notices, clears it and commits slab 1 in the same
+        // lock hold.
+        let (q, claim) = env.claim(&cs, 2);
+        assert_eq!(claim, Claim { n: 2, zeroed: true });
+        assert_eq!(q[0] as usize, env.regions.slab_addr(c, 1));
+        assert!(!cs.is_partial(0));
+        assert!(cs.is_partial(1));
+        assert_eq!(cs.stats(), ClassStats { committed: 2, nonfull: 1, ..Default::default() });
+        // A release into the full slab reopens it and first fit prefers it.
+        cs.release(&[a[5]]);
+        assert!(cs.is_partial(0));
+        let (r, claim) = env.claim(&cs, 1);
+        assert_eq!(claim, Claim { n: 1, zeroed: false });
+        assert_eq!(r[0], a[5]);
+    }
+
+    #[test]
+    fn one_plan_spans_many_slabs_and_release_reopens_them_all() {
+        let env = Env::new();
+        let c = small_class();
+        let cs = env.class(c, 0);
+        let n = cs.class().nslots();
+        // Fill 2 * MAX_PICKS + 1 slabs: the first plan reserves MAX_PICKS
+        // whole fresh slabs, the second the rest.
+        let slabs = 2 * MAX_PICKS + 1;
+        let (all, claim) = env.claim(&cs, slabs * n);
+        assert_eq!(claim, Claim { n: slabs * n, zeroed: true });
+        for s in 0..slabs {
+            assert_eq!(all[s * n] as usize, env.regions.slab_addr(c, s));
+            assert!(cs.desc(s).bitmap(cs.class()).is_full());
+            assert!(!cs.is_partial(s));
+        }
+        assert_eq!(cs.stats(), ClassStats { committed: slabs, nonfull: 0, ..Default::default() });
+        // One slot per slab, sorted, in one batch: the reopen list overflows
+        // at MAX_PICKS and flushes; every slab must be partial afterwards.
+        let victims: Vec<*mut u8> = (0..slabs).map(|s| all[s * n + s % n]).collect();
+        cs.release(&victims);
+        for s in 0..slabs {
+            assert!(cs.is_partial(s), "slab {s} not reopened");
+            assert_eq!(cs.desc(s).live(), n - 1);
+        }
+        assert_eq!(cs.stats().nonfull, slabs);
+        // Refilling takes exactly those slots, lowest slab first, in one
+        // plan per MAX_PICKS slabs.
+        let (again, claim) = env.claim(&cs, slabs);
+        assert_eq!(claim, Claim { n: slabs, zeroed: false });
+        assert_eq!(again, victims);
+        // Those slabs had live slots, so their bits went stale rather than
+        // being cleared; each later plan cleared the previous plan's full
+        // slabs on its way past, leaving only the last one stale.
+        assert_eq!(cs.stats().nonfull, 1);
+        assert!(cs.is_partial(slabs - 1));
+        // Releasing a whole slab in one batch empties it; the reopen list
+        // must not put an Empty slab back into the partial set.
+        let mut whole: Vec<*mut u8> = all[3 * n..4 * n].to_vec();
+        whole.sort();
+        cs.release(&whole);
+        assert_eq!(cs.desc(3).state(), State::Empty);
+        assert!(!cs.is_partial(3));
+        assert_eq!(cs.stats().empty, 1);
+        assert_eq!(cs.stats().nonfull, 1);
+        // And the same for the slab with the stale bit.
+        let mut whole: Vec<*mut u8> = all[(slabs - 1) * n..].to_vec();
+        whole.sort();
+        cs.release(&whole);
+        assert_eq!(cs.desc(slabs - 1).state(), State::Empty);
+        assert!(!cs.is_partial(slabs - 1));
+        assert_eq!(cs.stats().empty, 2);
+        assert_eq!(cs.stats().nonfull, 0);
     }
 
     #[test]
