@@ -40,12 +40,13 @@
 
 use core::alloc::Layout;
 use core::ptr;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::class::Set;
 use crate::layout::Regions;
 use crate::lock::{Lock, RawLock};
 use crate::meta::{self, Meta};
+use crate::purge::{self, Batch};
 use crate::sys::Errno;
 
 /// Guard pages after every run.
@@ -376,14 +377,17 @@ pub struct Huge {
     npages: usize,
     guard_install: bool,
     retain_max: AtomicUsize,
+    /// `dirty_at` of the head of the `Empty` list (its oldest member), 0
+    /// when the list is empty. Kept in step with the list under the lock
+    /// by `sync_oldest` and read without it by the decay driver.
+    oldest_empty: AtomicU64,
     inner: Lock<Inner>,
 }
 
 #[cfg(target_os = "linux")]
 mod os {
     use crate::sys::{
-        self, Errno, MADV_DONTNEED, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE, PROT_NONE, PROT_READ,
-        PROT_WRITE,
+        self, Errno, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE, PROT_NONE, PROT_READ, PROT_WRITE,
     };
 
     pub fn commit(addr: usize, len: usize) -> Result<(), Errno> {
@@ -405,11 +409,6 @@ mod os {
     pub fn guard_remove(addr: usize, len: usize) -> Result<(), Errno> {
         // SAFETY: the run is being freed; the guard protects nothing now.
         unsafe { sys::madvise(addr, len, MADV_GUARD_REMOVE) }
-    }
-
-    pub fn purge(addr: usize, len: usize) -> Result<(), Errno> {
-        // SAFETY: the range is a free extent; nobody needs its contents.
-        unsafe { sys::madvise(addr, len, MADV_DONTNEED) }
     }
 
     pub fn now_ns() -> u64 {
@@ -437,10 +436,6 @@ mod os {
     }
 
     pub fn guard_remove(_addr: usize, _len: usize) -> Result<(), Errno> {
-        Ok(())
-    }
-
-    pub fn purge(_addr: usize, _len: usize) -> Result<(), Errno> {
         Ok(())
     }
 
@@ -572,6 +567,7 @@ impl Huge {
             npages,
             guard_install,
             retain_max: AtomicUsize::new(DEFAULT_RETAIN_MAX),
+            oldest_empty: AtomicU64::new(0),
             inner: Lock::new(Inner {
                 free,
                 table,
@@ -680,7 +676,18 @@ impl Huge {
         }
 
         let zeroed = self.take(&mut g, meta, s, need, ext, run, spare, arena);
+        self.sync_oldest(&g);
         (self.addr(s) as *mut u8, zeroed)
+    }
+
+    /// Refresh `oldest_empty` from the list head. Returns `true` when the
+    /// list went from empty to non-empty, which is when a background
+    /// thread sleeping without a deadline needs waking.
+    fn sync_oldest(&self, g: &Inner) -> bool {
+        // SAFETY: the head, if any, is a live `Empty` extent.
+        let new = if g.empty_head.is_null() { 0 } else { unsafe { (*g.empty_head).dirty_at } };
+        let old = self.oldest_empty.swap(new, Ordering::Relaxed);
+        old == 0 && new != 0
     }
 
     /// Lowest-address first fit for `need` pages at `align`. Returns the
@@ -758,7 +765,9 @@ impl Huge {
         } else {
             // SAFETY: `ext` is a live free extent found under this lock.
             let (a, e_end, st, dirty_at) = unsafe { ((*ext).start(), (*ext).end(), (*ext).state(), (*ext).dirty_at) };
-            zeroed = st == RunState::Purged || s >= e_end;
+            // `Purged` pages are zero unless `lazy_free` discarded them
+            // with `MADV_FREE`; pages at or past the mark are untouched.
+            zeroed = (st == RunState::Purged && purge::purged_is_zero()) || s >= e_end;
             g.remove_keys(ext);
             g.stats.sub_free(st, e_end - a);
             let taken_lo = s.max(a);
@@ -850,9 +859,9 @@ impl Huge {
         }
         let now = os::now_ns().max(1);
         let st = if usable > self.retain_max() {
-            if let Err(e) = os::purge(addr, n * page_size) {
-                panic!("huge: madvise(MADV_DONTNEED) of {addr:#x} failed: {e}");
-            }
+            let mut batch = Batch::new();
+            batch.push(addr, n * page_size);
+            batch.flush();
             RunState::Purged
         } else {
             RunState::Empty
@@ -925,6 +934,11 @@ impl Huge {
         g.free.map.set_range(page, n);
         g.stats.add_free(merged, hi - lo);
         g.stats.table_cap = g.table.cap();
+        let first = self.sync_oldest(&g);
+        drop(g);
+        if first {
+            purge::note_empty();
+        }
         usable
     }
 
@@ -972,6 +986,7 @@ impl Huge {
         let page = self.page_size();
         let mut g = self.inner.lock();
         let mut n = 0;
+        let mut batch = Batch::new();
         loop {
             let d = g.empty_head;
             if d.is_null() {
@@ -982,9 +997,10 @@ impl Huge {
             if dirty_at > cutoff {
                 break;
             }
-            if let Err(e) = os::purge(self.addr(start), pages * page) {
-                panic!("huge: madvise(MADV_DONTNEED) of {:#x} failed: {e}", self.addr(start));
-            }
+            // Discarded in batches before the lock is released, so no
+            // allocation can take the extent between the state change and
+            // the discard.
+            batch.push(self.addr(start), pages * page);
             g.unlink(d);
             // SAFETY: as above.
             unsafe {
@@ -995,7 +1011,32 @@ impl Huge {
             g.stats.add_free(RunState::Purged, pages);
             n += 1;
         }
+        batch.flush();
+        self.sync_oldest(&g);
         n
+    }
+
+    /// `dirty_at` of the oldest `Empty` extent as the decay driver sees it
+    /// (0 when none).
+    pub fn oldest_empty(&self) -> u64 {
+        self.oldest_empty.load(Ordering::Relaxed)
+    }
+
+    /// Decay step (design section 8), as `ClassState::decay`: purge every
+    /// extent `Empty` for `decay_ns` or longer at `now` and return the next
+    /// deadline, `None` when nothing is `Empty`. Lock-free unless due.
+    pub fn decay(&self, now: u64, decay_ns: u64) -> Option<u64> {
+        let oldest = self.oldest_empty();
+        if oldest == 0 {
+            return None;
+        }
+        let deadline = oldest.saturating_add(decay_ns);
+        if now < deadline {
+            return Some(deadline);
+        }
+        self.purge_empty(now.saturating_sub(decay_ns));
+        let oldest = self.oldest_empty();
+        if oldest == 0 { None } else { Some(oldest.saturating_add(decay_ns)) }
     }
 
     pub fn stats(&self) -> HugeStats {
@@ -1491,6 +1532,54 @@ mod tests {
         assert!(zero);
         assert_eq!(env.page_of(p), 0);
         assert_eq!(h.stats().next_page, 9);
+    }
+
+    /// The decay driver's view of the huge allocator: `oldest_empty`
+    /// follows the list head through frees, purges and reuse.
+    #[test]
+    fn decay_deadlines_follow_the_empty_list_head() {
+        let env = Env::new();
+        let h = env.huge();
+        assert_eq!(h.oldest_empty(), 0);
+        assert_eq!(h.decay(u64::MAX, 1000), None);
+        let mut ps = Vec::new();
+        for _ in 0..4 {
+            ps.push(env.alloc(&h, PAGE, 1).0);
+        }
+        // Free runs 0 and 2 (no coalescing) with a gap in time.
+        env.free(&h, ps[0]);
+        let t0 = h.oldest_dirty_at().unwrap();
+        assert_eq!(h.oldest_empty(), t0);
+        std::thread::sleep(core::time::Duration::from_millis(30));
+        env.free(&h, ps[2]);
+        let t2 = h.lookup(env.page_of(ps[2])).unwrap().dirty_at;
+        assert!(t2 > t0);
+        assert_eq!(h.oldest_empty(), t0);
+        assert_eq!(h.decay(t0 + 999, 1000), Some(t0 + 1000));
+        assert_eq!(h.stats().empty, 2);
+        assert_eq!(h.decay(t0 + 1000, 1000), Some(t2 + 1000));
+        assert_eq!(h.stats().empty, 1);
+        assert_eq!(h.stats().purged, 1);
+        assert_eq!(h.oldest_empty(), t2);
+        // Reusing the last Empty extent (lowest fit is run 0's pages, now
+        // Purged; ask for both so run 2's pages go too) clears the head.
+        let (a, _) = env.alloc(&h, PAGE, 1);
+        assert_eq!(a, ps[0]);
+        assert_eq!(h.oldest_empty(), t2);
+        let (b, zeroed) = env.alloc(&h, PAGE, 1);
+        assert_eq!(b, ps[2]);
+        assert!(!zeroed);
+        assert_eq!(h.oldest_empty(), 0);
+        assert_eq!(h.decay(u64::MAX / 2, 1000), None);
+        // Everything freed and purged at once.
+        for &p in &[a, b, ps[1], ps[3]] {
+            env.free(&h, p);
+        }
+        assert!(h.oldest_empty() > 0);
+        assert!(h.purge_empty(u64::MAX) >= 1);
+        assert_eq!(h.oldest_empty(), 0);
+        assert_eq!(h.stats().empty, 0);
+        h.audit();
     }
 
     #[test]

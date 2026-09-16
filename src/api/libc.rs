@@ -1,7 +1,7 @@
 //! Standard and glibc allocation entry points (design.md section 13.1):
 //! `malloc`, `free`, `calloc`, `realloc`, `aligned_alloc`, `posix_memalign`,
 //! `memalign`, `valloc`, `pvalloc`, `free_sized`, `free_aligned_sized`,
-//! `reallocarray`, `malloc_usable_size`.
+//! `reallocarray`, `malloc_usable_size`, `malloc_trim`.
 //!
 //! Every export is a thin `pub extern "C"` wrapper over a Rust function in
 //! this module so that the logic is unit-testable in the `cargo test`
@@ -307,6 +307,18 @@ pub fn pvalloc(size: usize) -> *mut u8 {
     alloc_aligned(page, rounded & !(page - 1))
 }
 
+/// `malloc_trim`: return the calling thread's cached slots to their slabs,
+/// then purge every `Empty` slab and huge extent whatever its age (design
+/// section 8). Returns 1 if anything was purged, 0 otherwise or before
+/// init. `pad` is glibc's top-of-heap allowance and has no meaning here.
+pub fn malloc_trim(_pad: usize) -> c_int {
+    let Some(shared) = super::shared_if_ready() else { return 0 };
+    if let Some(h) = heap::existing_heap() {
+        h.flush_all(shared);
+    }
+    (crate::purge::purge_all(shared) > 0) as c_int
+}
+
 // ---------------------------------------------------------------------------
 // C ABI. Compiled out of the test binary (see the module docs).
 // ---------------------------------------------------------------------------
@@ -376,6 +388,11 @@ mod exports {
     #[unsafe(no_mangle)]
     pub extern "C" fn free_aligned_sized(p: *mut c_void, _align: usize, _size: usize) {
         super::free(p as *mut u8)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn malloc_trim(pad: usize) -> c_int {
+        super::malloc_trim(pad)
     }
 
     #[unsafe(no_mangle)]

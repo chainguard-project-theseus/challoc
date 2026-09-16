@@ -33,8 +33,10 @@ use crate::bitmap::TwoLevelBitmap;
 use crate::layout::{CLASSES, Class, Regions};
 use crate::lock::{Lock, PAD_ALIGN, Padded, RawLock};
 use crate::meta::Meta;
+use crate::purge::{self, Batch};
 use crate::slab::{DESC_ALIGN, SlabDesc, State, desc_stride};
 use crate::sys::Errno;
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 /// Counters kept under the class lock. Slab counts only; `curregs` and
 /// byte totals are Phase 1 (`stats.rs`).
@@ -207,19 +209,26 @@ pub struct ClassState {
     desc_base: usize,
     /// Slabs with a committed descriptor, readable without the lock so the
     /// `free` check can reject pointers into never-committed slabs cleanly.
-    committed_slabs: core::sync::atomic::AtomicUsize,
+    committed_slabs: AtomicUsize,
+    /// `dirty_at` of the oldest `Empty` slab, 0 when none is known. Written
+    /// under the lock (set when the empty set goes from none to one,
+    /// recomputed by every purge) and read without it by the decay driver.
+    /// It may lag behind a claim that reused the oldest slab, in which case
+    /// it is too early rather than too late; the next `decay` recomputes.
+    oldest_empty: AtomicU64,
     inner: Padded<Lock<Inner>>,
     _tail: [u8; PAD_ALIGN],
 }
 
 const _: () = assert!(core::mem::offset_of!(ClassState, inner) == PAD_ALIGN);
 const _: () = assert!(core::mem::offset_of!(ClassState, committed_slabs) + 8 <= PAD_ALIGN);
+const _: () = assert!(core::mem::offset_of!(ClassState, oldest_empty) + 8 <= PAD_ALIGN);
 const _: () = assert!(core::mem::size_of::<ClassState>() % PAD_ALIGN == 0);
 const _: () = assert!(core::mem::size_of::<ClassState>() % 512 != 0);
 
 #[cfg(target_os = "linux")]
 mod os {
-    use crate::sys::{self, Errno, MADV_DONTNEED, MADV_GUARD_INSTALL, PROT_NONE, PROT_READ, PROT_WRITE};
+    use crate::sys::{self, Errno, MADV_GUARD_INSTALL, PROT_NONE, PROT_READ, PROT_WRITE};
 
     pub fn commit(addr: usize, len: usize) -> Result<(), Errno> {
         unsafe { sys::mprotect(addr, len, PROT_READ | PROT_WRITE) }
@@ -231,10 +240,6 @@ mod os {
 
     pub fn guard(addr: usize, len: usize) -> Result<(), Errno> {
         unsafe { sys::madvise(addr, len, MADV_GUARD_INSTALL) }
-    }
-
-    pub fn purge(addr: usize, len: usize) -> Result<(), Errno> {
-        unsafe { sys::madvise(addr, len, MADV_DONTNEED) }
     }
 
     pub fn now_ns() -> u64 {
@@ -258,10 +263,6 @@ mod os {
     }
 
     pub fn guard(_addr: usize, _len: usize) -> Result<(), Errno> {
-        Ok(())
-    }
-
-    pub fn purge(_addr: usize, _len: usize) -> Result<(), Errno> {
         Ok(())
     }
 
@@ -319,7 +320,8 @@ impl ClassState {
             base: regions.class_base[class],
             nslabs,
             desc_base: descs.base,
-            committed_slabs: core::sync::atomic::AtomicUsize::new(0),
+            committed_slabs: AtomicUsize::new(0),
+            oldest_empty: AtomicU64::new(0),
             inner: Padded(Lock::new(Inner {
                 partial,
                 empty,
@@ -367,7 +369,7 @@ impl ClassState {
     /// Number of slabs (including guard slabs) whose descriptors exist.
     #[inline]
     pub fn committed_slabs(&self) -> usize {
-        self.committed_slabs.load(core::sync::atomic::Ordering::Acquire)
+        self.committed_slabs.load(Ordering::Acquire)
     }
 
     /// Descriptor of a committed slab. Aborts for a slab that was never
@@ -401,7 +403,7 @@ impl ClassState {
     /// [`desc`]: ClassState::desc
     #[inline(always)]
     pub fn desc_if_committed(&self, slab: usize) -> Option<&SlabDesc> {
-        if slab >= self.committed_slabs.load(core::sync::atomic::Ordering::Relaxed) {
+        if slab >= self.committed_slabs.load(Ordering::Relaxed) {
             return None;
         }
         // SAFETY: `slab` is below a value the commit count actually held.
@@ -585,7 +587,10 @@ impl ClassState {
         } else {
             g.set_partial(slab);
         }
-        picks[*np] = Pick { slab: slab as u32, n: n as u32, zero: state.is_zero() };
+        // `Purged` memory is zero only when it was discarded with
+        // `MADV_DONTNEED` (no `lazy_free`).
+        let zero = state.is_zero() && (state != State::Purged || purge::purged_is_zero());
+        picks[*np] = Pick { slab: slab as u32, n: n as u32, zero };
         *np += 1;
         *remaining -= n;
     }
@@ -619,14 +624,14 @@ impl ClassState {
                 }
                 g.next_slab = s + 1;
                 g.stats.guards += 1;
-                self.committed_slabs.store(s + 1, core::sync::atomic::Ordering::Release);
+                self.committed_slabs.store(s + 1, Ordering::Release);
                 continue;
             }
             // SAFETY: the descriptor page for `s` was committed above.
             unsafe { SlabDesc::at(self.desc_base, self.class as usize, s) }.init(cls, self.arena);
             g.next_slab = s + 1;
             g.stats.committed += 1;
-            self.committed_slabs.store(s + 1, core::sync::atomic::Ordering::Release);
+            self.committed_slabs.store(s + 1, Ordering::Release);
             return Some(s);
         }
     }
@@ -634,14 +639,25 @@ impl ClassState {
     /// `live` reached zero: make the slab `Empty` unless a refill has
     /// already reserved it again.
     fn on_live_zero(&self, slab: usize) {
-        let mut g = self.inner.lock();
-        let desc = self.desc(slab);
-        if desc.live() == 0 && desc.state() == State::Active {
-            desc.set_state(State::Empty);
-            desc.set_dirty_at(os::now_ns().max(1));
-            g.clear_partial(slab);
-            g.empty.map.set(slab);
-            g.stats.empty += 1;
+        let mut first = false;
+        {
+            let mut g = self.inner.lock();
+            let desc = self.desc(slab);
+            if desc.live() == 0 && desc.state() == State::Active {
+                let now = os::now_ns().max(1);
+                desc.set_state(State::Empty);
+                desc.set_dirty_at(now);
+                g.clear_partial(slab);
+                g.empty.map.set(slab);
+                g.stats.empty += 1;
+                if self.oldest_empty.load(Ordering::Relaxed) == 0 {
+                    self.oldest_empty.store(now, Ordering::Relaxed);
+                    first = true;
+                }
+            }
+        }
+        if first {
+            purge::note_empty();
         }
     }
 
@@ -730,12 +746,17 @@ impl ClassState {
     }
 
     /// Purge every `Empty` slab whose `dirty_at` is at or before `cutoff`
-    /// (`u64::MAX` for all of them): `MADV_DONTNEED`, then `Purged`. Returns
-    /// the number purged. Phase 1 adds batching and the decay driver.
+    /// (`u64::MAX` for all of them) and make it `Purged`. The discards go
+    /// out in batches of [`purge::MAX_BATCH`] under the class lock, so no
+    /// claim can hand out a slab between its state change and the discard.
+    /// Recomputes `oldest_empty` from the survivors. Returns the number
+    /// purged.
     pub fn purge_empty(&self, cutoff: u64) -> usize {
         let cls = self.class();
         let mut g = self.inner.lock();
         let mut n = 0;
+        let mut batch = Batch::new();
+        let mut oldest = 0u64;
         let mut next = g.empty.map.lowest_set();
         while let Some(slab) = next {
             let desc = self.desc(slab);
@@ -744,10 +765,9 @@ impl ClassState {
                 "class {}: slab {slab} in the empty set is not empty",
                 self.class
             );
-            if desc.dirty_at() <= cutoff {
-                if let Err(e) = os::purge(self.slab_addr(slab), cls.slab_size()) {
-                    panic!("class {}: madvise(MADV_DONTNEED) of slab {slab} failed: {e}", self.class);
-                }
+            let dirty_at = desc.dirty_at();
+            if dirty_at <= cutoff {
+                batch.push(self.slab_addr(slab), cls.slab_size());
                 desc.set_state(State::Purged);
                 desc.set_dirty_at(0);
                 g.empty.map.clear(slab);
@@ -755,10 +775,39 @@ impl ClassState {
                 g.stats.empty -= 1;
                 g.stats.purged += 1;
                 n += 1;
+            } else if oldest == 0 || dirty_at < oldest {
+                oldest = dirty_at;
             }
             next = g.empty.map.lowest_set_from(slab + 1);
         }
+        batch.flush();
+        self.oldest_empty.store(oldest, Ordering::Relaxed);
         n
+    }
+
+    /// `dirty_at` of the oldest `Empty` slab as the decay driver sees it
+    /// (0 when none; see the field).
+    pub fn oldest_empty(&self) -> u64 {
+        self.oldest_empty.load(Ordering::Relaxed)
+    }
+
+    /// Decay step (design section 8): when the oldest `Empty` slab has been
+    /// dirty for `decay_ns` at `now`, purge every slab that old or older.
+    /// Returns the class's next deadline (oldest `dirty_at + decay_ns`),
+    /// `None` when nothing is `Empty`. Takes the lock only when a purge is
+    /// due.
+    pub fn decay(&self, now: u64, decay_ns: u64) -> Option<u64> {
+        let oldest = self.oldest_empty();
+        if oldest == 0 {
+            return None;
+        }
+        let deadline = oldest.saturating_add(decay_ns);
+        if now < deadline {
+            return Some(deadline);
+        }
+        self.purge_empty(now.saturating_sub(decay_ns));
+        let oldest = self.oldest_empty();
+        if oldest == 0 { None } else { Some(oldest.saturating_add(decay_ns)) }
     }
 
     pub fn stats(&self) -> ClassStats {
@@ -1130,6 +1179,83 @@ mod tests {
         assert_eq!(r[0], p[0]);
         assert_eq!(d.state(), State::Active);
         assert_eq!(cs.stats(), ClassStats { committed: 1, nonfull: 1, ..Default::default() });
+    }
+
+    /// The decay driver's view: `oldest_empty` tracks the first slab to go
+    /// `Empty`, `decay` purges nothing before the deadline and everything
+    /// that old at it, and a stale (too early) value corrects itself.
+    #[test]
+    fn decay_deadlines_follow_the_oldest_empty_slab() {
+        let env = Env::new();
+        let c = small_class();
+        let cs = env.class(c, 0);
+        let nslots = CLASSES[c].nslots();
+        assert_eq!(cs.oldest_empty(), 0);
+        assert_eq!(cs.decay(u64::MAX, 1000), None);
+        // Two slabs; free the second first so the oldest is not the lowest.
+        let (p, _) = env.claim(&cs, nslots * 2);
+        assert_eq!(cs.stats().committed, 2);
+        cs.release(&p[nslots..]);
+        let t1 = cs.desc(1).dirty_at();
+        assert!(t1 > 0);
+        assert_eq!(cs.oldest_empty(), t1);
+        // The coarse clock ticks every few milliseconds on Linux; off Linux
+        // it is a counter and the sleep is just short.
+        std::thread::sleep(core::time::Duration::from_millis(30));
+        cs.release(&p[..nslots]);
+        let t0 = cs.desc(0).dirty_at();
+        assert!(t0 > t1);
+        assert_eq!(cs.oldest_empty(), t1, "a later Empty slab must not move the oldest");
+        // Before the deadline nothing happens and the deadline is reported.
+        assert_eq!(cs.decay(t1 + 999, 1000), Some(t1 + 1000));
+        assert_eq!(cs.stats().empty, 2);
+        // At it, slab 1 (dirty at t1) is purged, slab 0 (t0 > t1) survives.
+        assert_eq!(cs.decay(t1 + 1000, 1000), Some(t0 + 1000));
+        assert_eq!(cs.desc(1).state(), State::Purged);
+        assert_eq!(cs.desc(0).state(), State::Empty);
+        assert_eq!(cs.oldest_empty(), t0);
+        // A claim reuses slab 0 (the lowest Empty): the atomic is now stale
+        // (too early). The next decay finds nothing and clears it.
+        let (q, _) = env.claim(&cs, 1);
+        assert_eq!(q[0], p[0]);
+        assert_eq!(cs.oldest_empty(), t0);
+        assert_eq!(cs.decay(u64::MAX / 2, 1000), None);
+        assert_eq!(cs.oldest_empty(), 0);
+        assert_eq!(cs.stats(), ClassStats { committed: 2, purged: 1, nonfull: 1, ..Default::default() });
+        // `decay_ns` 0 purges as soon as a slab is Empty.
+        cs.release(&q);
+        let t = cs.oldest_empty();
+        assert!(t > 0);
+        assert_eq!(cs.decay(t, 0), None);
+        assert_eq!(cs.desc(0).state(), State::Purged);
+        // Purging everything at once clears it too.
+        let (r, _) = env.claim(&cs, nslots * 2);
+        cs.release(&r);
+        assert!(cs.oldest_empty() > 0);
+        assert_eq!(cs.purge_empty(u64::MAX), 2);
+        assert_eq!(cs.oldest_empty(), 0);
+    }
+
+    /// Every slab of the region (a full batch's worth in the test layout)
+    /// is purged in one call.
+    #[test]
+    fn purge_batches_a_whole_region() {
+        let env = Env::new();
+        let c = small_class();
+        let cs = env.class(c, 0);
+        let nslots = CLASSES[c].nslots();
+        let n = cs.nslabs();
+        assert!(n >= crate::purge::MAX_BATCH, "test layout holds {n} slabs");
+        let (p, claim) = env.claim(&cs, nslots * n);
+        assert_eq!(claim.n, nslots * n);
+        cs.release(&p);
+        assert_eq!(cs.stats().empty, n);
+        assert_eq!(cs.purge_empty(u64::MAX), n);
+        assert_eq!(cs.stats().purged, n);
+        assert_eq!(cs.oldest_empty(), 0);
+        for s in 0..n {
+            assert_eq!(cs.desc(s).state(), State::Purged, "slab {s}");
+        }
     }
 
     #[test]

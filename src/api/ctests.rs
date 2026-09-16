@@ -92,6 +92,11 @@ fn run_c_flags(dir: &str, name: &str, args: &[&str], flags: &[&str]) {
 /// Run a compiled test program bare (must fail) and under the preload
 /// (must pass and print `ok <name>`), then delete it.
 fn run_bin(name: &str, bin: &str, args: &[&str]) {
+    run_bin_env(name, bin, args, &[]);
+}
+
+/// [`run_bin`] with extra environment variables for the preloaded run.
+fn run_bin_env(name: &str, bin: &str, args: &[&str], env: &[(&str, &str)]) {
     let so = release_so();
 
     let bare = Command::new(bin).args(args).output().unwrap();
@@ -101,7 +106,12 @@ fn run_bin(name: &str, bin: &str, args: &[&str]) {
         String::from_utf8_lossy(&bare.stdout)
     );
 
-    let run = Command::new(bin).args(args).env("LD_PRELOAD", &so).output().unwrap();
+    let mut cmd = Command::new(bin);
+    cmd.args(args).env("LD_PRELOAD", &so);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let run = cmd.output().unwrap();
     let _ = std::fs::remove_file(bin);
     let stdout = String::from_utf8_lossy(&run.stdout);
     let stderr = String::from_utf8_lossy(&run.stderr);
@@ -289,6 +299,37 @@ fn c_conf_env_overrides_the_symbol() {
     assert!(stderr.contains("challoc: je_malloc_conf: unknown conf key \"no_such_key\""), "stderr: {stderr}");
     assert!(stderr.contains("challoc: MALLOC_CONF: out-of-range conf value \"0\" for narenas"), "stderr: {stderr}");
     std::eprintln!("conf override: {}", stderr.trim_end());
+}
+
+/// One mode of `tests/c/decay.c` (plan Phase 1 task 2) with `MALLOC_CONF`.
+fn run_decay(mode: &str, conf: &str) {
+    let bin = compile("tests/c", "decay", &[]);
+    run_bin_env("decay", &bin, &[mode], &[("MALLOC_CONF", conf)]);
+}
+
+#[test]
+fn c_decay_trim() {
+    run_decay("trim", "abort_conf:true");
+}
+
+#[test]
+fn c_decay_window() {
+    run_decay("decay", "abort_conf:true,dirty_decay_ms:200");
+}
+
+#[test]
+fn c_decay_never() {
+    run_decay("never", "abort_conf:true,dirty_decay_ms:-1");
+}
+
+#[test]
+fn c_decay_background_thread() {
+    run_decay("background", "abort_conf:true,background_thread:true,dirty_decay_ms:200");
+}
+
+#[test]
+fn c_decay_lazy_free() {
+    run_decay("lazy", "abort_conf:true,lazy_free:true");
 }
 
 #[test]

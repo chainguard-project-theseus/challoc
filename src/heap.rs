@@ -43,6 +43,7 @@ use core::alloc::Layout;
 #[cfg(target_os = "linux")]
 use core::ffi::c_void;
 use core::ptr;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::class::ClassState;
 use crate::huge::Huge;
@@ -212,6 +213,10 @@ pub struct Shared {
     pub huge: Huge,
     /// Cache GC period (`tcache_gc_interval_ms`).
     pub gc_interval_ns: u64,
+    /// Decay period (`dirty_decay_ms`) in nanoseconds; `purge::NEVER` for
+    /// `-1`. Atomic because `arena.<i>.dirty_decay_ms` changes it at run
+    /// time.
+    decay_ns: AtomicU64,
     /// The parsed `malloc_conf` (design section 12). Keys that already have
     /// a knob are applied by `init`; the rest are read by later phases.
     pub config: Config,
@@ -353,10 +358,23 @@ impl Shared {
                 None => return false,
             }
             ptr::write(&raw mut (*this).gc_interval_ns, config.gc_interval_ns());
+            ptr::write(&raw mut (*this).decay_ns, AtomicU64::new(crate::purge::decay_ns_from_ms(config.dirty_decay_ms)));
             ptr::write(&raw mut (*this).config, config);
             ptr::write(&raw mut (*this).key, ThreadKey::create());
         }
         true
+    }
+
+    /// The decay period in nanoseconds (`purge::NEVER` when purging is off).
+    #[inline]
+    pub fn decay_ns(&self) -> u64 {
+        self.decay_ns.load(Ordering::Relaxed)
+    }
+
+    /// Change the decay period (`arena.<i>.dirty_decay_ms`); `-1` turns
+    /// purging off. Takes effect at the next periodic tick.
+    pub fn set_decay_ms(&self, ms: i64) {
+        self.decay_ns.store(crate::purge::decay_ns_from_ms(ms), Ordering::Relaxed);
     }
 
     /// Whether the thread-exit key exists (heaps of exiting threads are
@@ -835,9 +853,10 @@ impl Heap {
     }
 
     /// Count a slow-path entry and run periodic work every
-    /// [`PERIODIC_EVERY`] of them. Phase 0 periodic work is cache GC when
-    /// the interval has elapsed; stats merging, decay and cgroup sampling
-    /// join it in Phases 1 and 2.
+    /// [`PERIODIC_EVERY`] of them: cache GC when the interval has elapsed,
+    /// then decay (or starting the background thread that will do it,
+    /// `purge::on_tick`). Stats merging and cgroup sampling join in later
+    /// tasks.
     fn tick(&mut self, shared: &Shared) {
         self.slow_ticks = self.slow_ticks.wrapping_add(1);
         if self.slow_ticks % PERIODIC_EVERY == 0 {
@@ -846,6 +865,7 @@ impl Heap {
                 self.last_gc = now;
                 self.gc(shared);
             }
+            crate::purge::on_tick(shared, now);
         }
     }
 }

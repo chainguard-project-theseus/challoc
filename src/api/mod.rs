@@ -17,12 +17,15 @@
 //! keys and handlers, which is all we need.
 //!
 //! The fork prepare handler takes every class lock, then the huge lock, then
-//! the metadata lock. That order matches the allocator's own nesting (class
-//! and huge code take the metadata lock while holding their own; nothing
-//! takes a class or huge lock while holding metadata), so a thread that is
-//! mid-operation when another thread forks can always finish and release.
-//! Parent and child release in reverse. Other threads' heaps are left alone
-//! in the child, as in every other allocator.
+//! the metadata lock, then the background thread's state lock. That order
+//! matches the allocator's own nesting (class and huge code take the
+//! metadata lock while holding their own; nothing takes a class or huge
+//! lock while holding metadata; the background state lock is only ever
+//! held alone), so a thread that is mid-operation when another thread forks
+//! can always finish and release. Parent and child release in reverse. The
+//! child also marks the background thread absent and drops a `process_madvise`
+//! pidfd that now names the parent. Other threads' heaps are left alone in
+//! the child, as in every other allocator.
 //!
 //! The prepare handler also blocks every signal on the forking thread and the
 //! parent and child handlers restore the mask after their unlocks. glibc's
@@ -46,6 +49,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use crate::config;
 use crate::heap::Shared;
 use crate::layout::{NCLASSES, Regions};
+use crate::purge;
 use crate::sys;
 use crate::sys::features::Features;
 
@@ -172,6 +176,8 @@ fn init_slow() -> &'static Shared {
 fn init() {
     let features = Features::probe();
     let config = config::load();
+    purge::configure(features.process_madvise, config.lazy_free);
+    purge::background::request(config.background_thread);
     let regions = Regions::reserve(features.page_size, features.anon_name);
     // SAFETY: the statics are written once here, before `READY` is
     // published, and `regions` are live reservations this process owns.
@@ -201,6 +207,7 @@ extern "C" fn fork_prepare() {
     }
     s.huge.raw_lock().lock();
     s.meta.raw_lock().lock();
+    purge::background::fork_lock();
     // SAFETY: every allocator lock is held, so no other forking thread can
     // touch the slot until `fork_release` has read it (see `FORK_SIGMASK`).
     unsafe { (*FORK_SIGMASK.0.get()).write(mask) };
@@ -213,6 +220,7 @@ fn fork_release() {
     // SAFETY: written by the `fork_prepare` that paired with this release,
     // and still ours because every lock is held until the unlocks below.
     let mask = unsafe { (*FORK_SIGMASK.0.get()).assume_init() };
+    purge::background::fork_unlock();
     s.meta.raw_lock().unlock();
     s.huge.raw_lock().unlock();
     for c in (0..NCLASSES).rev() {
@@ -226,9 +234,16 @@ extern "C" fn fork_parent() {
 }
 
 /// The child has one thread; the locks were held by the forking thread, so
-/// releasing them is exactly right. Phase 1 also marks the background
-/// thread absent here.
+/// releasing them is exactly right. Before that, with everything still
+/// locked, the background thread is marked absent (design 8.1) and the
+/// discard backend drops a pidfd that names the parent, which the feature
+/// record reflects.
 extern "C" fn fork_child() {
+    purge::background::fork_child();
+    let backend = purge::fork_child();
+    // SAFETY: the child is single threaded and every lock is held, so
+    // nothing reads the features while they change.
+    unsafe { (*FEATURES.0.get()).assume_init_mut().process_madvise = backend };
     fork_release();
 }
 
@@ -268,15 +283,93 @@ mod tests {
         }
         assert!(s.huge.raw_lock().is_locked());
         assert!(s.meta.raw_lock().is_locked());
+        assert!(purge::background::is_locked());
         fork_parent();
         for c in 0..NCLASSES {
             assert!(!s.classes[c].raw_lock().is_locked(), "class {c} still locked");
         }
         assert!(!s.huge.raw_lock().is_locked());
         assert!(!s.meta.raw_lock().is_locked());
+        assert!(!purge::background::is_locked());
         fork_prepare();
         fork_child();
         assert!(!s.meta.raw_lock().is_locked());
+        assert!(!purge::background::is_locked());
+        assert!(!purge::background::present());
+        assert!(!purge::background::requested());
+    }
+
+    /// The background thread starts on request, is visible under
+    /// `/proc/self/task` with its name, purges without any slow-path
+    /// tick, and is gone from the bookkeeping after a fork child handler.
+    #[test]
+    fn background_thread_starts_purges_and_is_absent_after_fork() {
+        use std::string::ToString;
+        fn tasks() -> std::vec::Vec<std::string::String> {
+            let mut names = std::vec::Vec::new();
+            for e in std::fs::read_dir("/proc/self/task").unwrap() {
+                let p = e.unwrap().path().join("comm");
+                names.push(std::fs::read_to_string(p).unwrap_or_default().trim().to_string());
+            }
+            names
+        }
+        let _serial = FORK_TEST.lock().unwrap();
+        let s = shared();
+        assert!(!tasks().iter().any(|n| n == "challoc-bg"));
+        purge::background::request(true);
+        assert!(purge::background::start(s), "background thread did not start");
+        assert!(purge::background::present());
+        assert!(purge::background::start(s), "second start is idempotent");
+        // The name is set by the thread itself; give it a moment.
+        let mut seen = false;
+        for _ in 0..200 {
+            if tasks().iter().any(|n| n == "challoc-bg") {
+                seen = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(seen, "no task named challoc-bg: {:?}", tasks());
+
+        // A 1 ms decay: free a huge run, wait, and the thread purges it
+        // with nobody else touching the allocator.
+        let old_ns = s.decay_ns();
+        s.set_decay_ms(1);
+        let (p, _) = s.alloc_huge(8 << 20, 4096);
+        assert!(!p.is_null());
+        unsafe { core::ptr::write_bytes(p, 1, 8 << 20) };
+        let page = (p as usize - s.regions.huge_base) >> s.regions.lg_page;
+        s.free_huge(page);
+        assert!(s.huge.oldest_empty() != 0);
+        let mut purged = false;
+        for _ in 0..400 {
+            if s.huge.oldest_empty() == 0 && s.huge.stats().empty == 0 {
+                purged = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(purged, "background thread did not purge the freed run: {:?}", s.huge.stats());
+        s.set_decay_ms((old_ns / 1_000_000) as i64);
+
+        // The child handler forgets the thread and the request. The thread
+        // itself keeps running in this (parent) process, so withdraw the
+        // request again to kick it: it exits at that wake-up.
+        fork_prepare();
+        fork_child();
+        assert!(!purge::background::present());
+        assert!(!purge::background::requested());
+        assert!(!purge::background::is_locked());
+        purge::background::request(false);
+        let mut gone = false;
+        for _ in 0..400 {
+            if !tasks().iter().any(|n| n == "challoc-bg") {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(gone, "background thread still running: {:?}", tasks());
     }
 
     /// The handlers block every signal while the locks are held and restore
