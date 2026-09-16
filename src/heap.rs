@@ -84,10 +84,17 @@ pub const fn default_cap(class: usize) -> u32 {
     if cap < MIN_CAP { MIN_CAP } else { cap }
 }
 
-/// One thread's cache for one size class: a 16-byte header followed by
-/// `cap` slot pointers. Allocated from the metadata region with
+/// One thread's cache for one size class: a [`CACHE_HEADER`]-byte header
+/// followed by `cap` slot pointers. Allocated from the metadata region with
 /// [`ClassCache::layout`]; the header is `repr(C)` so the trailing array
 /// sits at a fixed offset.
+///
+/// The byte counters `thread.allocated` and `thread.deallocated` are not
+/// kept per operation. Every pop bumps `allocs` on the header line the pop
+/// writes anyway, and the number of pushes follows from the stack
+/// arithmetic `len = (frees + refilled) - (allocs + flushed)`, with
+/// `moved = refilled - flushed` maintained on the slow paths; see
+/// [`Heap::stats`].
 #[repr(C)]
 pub struct ClassCache {
     len: u32,
@@ -96,8 +103,18 @@ pub struct ClassCache {
     low_water: u32,
     /// `slots[..zeroed]` are known to read as zero.
     zeroed: u32,
+    /// Pops served from this cache since it was created.
+    allocs: u64,
+    /// Slots moved in by refills minus slots moved out by flushes
+    /// (wrapping; the true value is `len - frees + allocs`).
+    moved: u64,
     slots: [*mut u8; 0],
 }
+
+/// Size of the [`ClassCache`] header, i.e. the offset of the slot array.
+pub const CACHE_HEADER: usize = core::mem::size_of::<ClassCache>();
+const _: () = assert!(CACHE_HEADER == 32);
+const _: () = assert!(core::mem::offset_of!(ClassCache, slots) == CACHE_HEADER);
 
 // SAFETY: the only shared instance is `EMPTY_CACHE`, which is never written
 // (every write is guarded by `len < cap` or `len > 0`, both false for it);
@@ -106,12 +123,13 @@ unsafe impl Sync for ClassCache {}
 
 /// The sentinel every heap starts with: empty and full at the same time, so
 /// both fast paths take their slow path and allocate a real cache.
-static EMPTY_CACHE: ClassCache = ClassCache { len: 0, cap: 0, low_water: 0, zeroed: 0, slots: [] };
+static EMPTY_CACHE: ClassCache =
+    ClassCache { len: 0, cap: 0, low_water: 0, zeroed: 0, allocs: 0, moved: 0, slots: [] };
 
 impl ClassCache {
     /// Metadata layout of a cache with `cap` slots.
     pub const fn layout(cap: u32) -> Layout {
-        match Layout::from_size_align(16 + 8 * cap as usize, 16) {
+        match Layout::from_size_align(CACHE_HEADER + 8 * cap as usize, 16) {
             Ok(l) => l,
             Err(_) => unreachable!(),
         }
@@ -158,6 +176,15 @@ pub struct ThreadStats {
     pub deallocated: u64,
 }
 
+impl ThreadStats {
+    /// Add `n` operations of `size` bytes each.
+    #[inline]
+    fn add(&mut self, size: u64, allocs: u64, frees: u64) {
+        self.allocated = self.allocated.wrapping_add(size.wrapping_mul(allocs));
+        self.deallocated = self.deallocated.wrapping_add(size.wrapping_mul(frees));
+    }
+}
+
 /// One thread's allocator state (design 6.2). Lives in the metadata region;
 /// reached through the TLS slot.
 pub struct Heap {
@@ -167,7 +194,10 @@ pub struct Heap {
     slow_ticks: u32,
     last_gc: u64,
     rng: u64,
-    stats: ThreadStats,
+    /// Bytes that never went through a cache: huge runs and slots served
+    /// directly from a slab because no cache could be allocated. The
+    /// cached classes are derived from their headers in [`Heap::stats`].
+    uncached: ThreadStats,
     caches: [*mut ClassCache; NCLASSES],
 }
 
@@ -433,7 +463,7 @@ impl Heap {
                     slow_ticks: 0,
                     last_gc: os::now_ns(),
                     rng: os::seed(),
-                    stats: ThreadStats::default(),
+                    uncached: ThreadStats::default(),
                     caches: [empty; NCLASSES],
                 },
             );
@@ -480,9 +510,21 @@ impl Heap {
         self.arena
     }
 
-    #[inline]
+    /// Byte counters for this thread: the uncached part plus, for every
+    /// cache, `allocs` pops and `len + allocs - moved` pushes, each worth
+    /// the class size.
     pub fn stats(&self) -> ThreadStats {
-        self.stats
+        let mut s = self.uncached;
+        for class in 0..NCLASSES {
+            // SAFETY: sentinel (`cap == 0`, skipped) or this heap's cache.
+            let c = unsafe { &*self.caches[class] };
+            if c.cap == 0 {
+                continue;
+            }
+            let frees = (c.len as u64).wrapping_add(c.allocs).wrapping_sub(c.moved);
+            s.add(CLASSES[class].size() as u64, c.allocs, frees);
+        }
+        s
     }
 
     #[inline]
@@ -555,21 +597,26 @@ impl Heap {
         }
     }
 
-    /// Pop the top entry of a non-empty cache.
+    /// Pop the top entry of a non-empty cache. Touches only the header
+    /// line and the slot: `allocs` is the only counter, `low_water` is
+    /// written only when it actually drops (it can only do so after a GC
+    /// reset it to `len`), and the class size is never looked up.
     ///
     /// # Safety
     /// `cache` is this heap's real cache for `class` and `len` is its
     /// current non-zero length.
     #[inline(always)]
-    unsafe fn pop(&mut self, cache: *mut ClassCache, class: usize, len: u32) -> (*mut u8, bool) {
+    unsafe fn pop(&mut self, cache: *mut ClassCache, _class: usize, len: u32) -> (*mut u8, bool) {
         // SAFETY: guaranteed by the caller.
         unsafe {
             let len = len - 1;
             (*cache).len = len;
-            (*cache).low_water = (*cache).low_water.min(len);
+            if len < (*cache).low_water {
+                (*cache).low_water = len;
+            }
+            (*cache).allocs = (*cache).allocs.wrapping_add(1);
             let p = *(*cache).slots().add(len as usize);
             let zero = len < (*cache).zeroed;
-            self.stats.allocated += CLASSES.get_unchecked(class).size() as u64;
             (p, zero)
         }
     }
@@ -591,7 +638,7 @@ impl Heap {
     pub fn alloc_huge(&mut self, shared: &Shared, size: usize, align: usize) -> (*mut u8, bool) {
         let (p, zero) = shared.alloc_huge(size, align);
         if !p.is_null() {
-            self.stats.allocated += shared.huge.usable_for(size).unwrap_or(0) as u64;
+            self.uncached.allocated += shared.huge.usable_for(size).unwrap_or(0) as u64;
         }
         (p, zero)
     }
@@ -600,7 +647,7 @@ impl Heap {
     #[cold]
     #[inline(never)]
     fn free_huge(&mut self, shared: &Shared, page: usize) {
-        self.stats.deallocated += shared.free_huge(page) as u64;
+        self.uncached.deallocated += shared.free_huge(page) as u64;
     }
 
     /// Push a checked slot of `class` onto its cache.
@@ -612,7 +659,10 @@ impl Heap {
     }
 
     /// The cache push alone: `false` when the cache is full (or still the
-    /// sentinel) and the caller must take a slow path.
+    /// sentinel) and the caller must take a slow path. No counter moves:
+    /// the push count is implied by `len`, `allocs` and `moved`. `zeroed`
+    /// is written only when the pushed slot lands inside the zero prefix,
+    /// which is rare (the prefix is usually already zero).
     #[inline(always)]
     pub fn push_fast(&mut self, class: usize, p: *mut u8) -> bool {
         let cache = self.cache_ptr(class);
@@ -625,8 +675,9 @@ impl Heap {
             }
             *(*cache).slots().add(len as usize) = p;
             (*cache).len = len + 1;
-            (*cache).zeroed = (*cache).zeroed.min(len);
-            self.stats.deallocated += CLASSES.get_unchecked(class).size() as u64;
+            if len < (*cache).zeroed {
+                (*cache).zeroed = len;
+            }
         }
         true
     }
@@ -642,7 +693,7 @@ impl Heap {
         if cache.is_null() {
             let (p, zero) = shared.alloc_direct(class);
             if !p.is_null() {
-                self.stats.allocated += CLASSES[class].size() as u64;
+                self.uncached.allocated += CLASSES[class].size() as u64;
             }
             return (p, zero);
         }
@@ -666,7 +717,7 @@ impl Heap {
         let cache = self.ensure_cache(shared, class);
         if cache.is_null() {
             shared.free_direct(class, p);
-            self.stats.deallocated += CLASSES[class].size() as u64;
+            self.uncached.deallocated += CLASSES[class].size() as u64;
             return;
         }
         // SAFETY: `cache` is this thread's real cache for `class`.
@@ -694,7 +745,7 @@ impl Heap {
         }
         // SAFETY: a fresh block of `layout(cap)` bytes, exclusively ours.
         unsafe {
-            ptr::write(cache, ClassCache { len: 0, cap, low_water: 0, zeroed: 0, slots: [] });
+            ptr::write(cache, ClassCache { len: 0, cap, low_water: 0, zeroed: 0, allocs: 0, moved: 0, slots: [] });
         }
         self.caches[class] = cache;
         cache
@@ -714,6 +765,7 @@ impl Heap {
             let claim = shared.class(class).claim(&shared.meta, out);
             out[..claim.n].reverse();
             (*cache).len = claim.n as u32;
+            (*cache).moved = (*cache).moved.wrapping_add(claim.n as u64);
             (*cache).low_water = 0;
             (*cache).zeroed = if claim.zeroed { claim.n as u32 } else { 0 };
             claim.n as u32
@@ -738,6 +790,7 @@ impl Heap {
             let rest_len = rest.len();
             ptr::copy((*cache).slots().add(n), (*cache).slots(), rest_len);
             (*cache).len = rest_len as u32;
+            (*cache).moved = (*cache).moved.wrapping_sub(n as u64);
             (*cache).zeroed = (*cache).zeroed.saturating_sub(n as u32);
             (*cache).low_water = (*cache).low_water.min(rest_len as u32);
         }
@@ -1098,10 +1151,10 @@ mod tests {
             // A cache may hold more than one slab's worth (a 64 KiB slab of
             // 128-byte slots has 512); refills and flushes span slabs.
             let l = ClassCache::layout(cap);
-            assert_eq!(l.size(), 16 + 8 * cap as usize);
+            assert_eq!(l.size(), CACHE_HEADER + 8 * cap as usize);
             assert_eq!(l.align(), 16);
         }
-        assert_eq!(core::mem::size_of::<ClassCache>(), 16);
+        assert_eq!(core::mem::size_of::<ClassCache>(), CACHE_HEADER);
         assert!(core::mem::size_of::<Heap>() <= 512, "heap is {} bytes", core::mem::size_of::<Heap>());
     }
 
@@ -1127,7 +1180,7 @@ mod tests {
         assert_eq!(t.heap().slow_ticks(), 1);
         // Only the heap and one cache came from the metadata region.
         let meta_used = s.meta.stats().allocated - before;
-        assert!(meta_used >= core::mem::size_of::<Heap>() + 16 + 8 * CAP);
+        assert!(meta_used >= core::mem::size_of::<Heap>() + CACHE_HEADER + 8 * CAP);
         assert!(meta_used <= 512 + 12288);
         t.free(p);
         t.destroy();

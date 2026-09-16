@@ -374,26 +374,51 @@ impl ClassState {
     /// committed rather than faulting on its `PROT_NONE` descriptor page.
     #[inline]
     pub fn desc(&self, slab: usize) -> &SlabDesc {
-        match self.desc_if_committed(slab) {
-            Some(d) => d,
-            None => never_committed(self.class as usize, slab),
+        if slab >= self.committed_slabs() {
+            never_committed(self.class as usize, slab);
         }
+        // SAFETY: `slab` is below the acquire-loaded commit count.
+        unsafe { self.desc_unchecked(slab) }
     }
 
     /// Descriptor of `slab` if it is committed, `None` otherwise. This is
     /// the `free` fast path's form of [`desc`]: no abort, and the stride
     /// comes from the state itself rather than the class table.
     ///
+    /// The commit count is loaded `Relaxed`. For a pointer that really is
+    /// an allocated slot the program itself ordered the free after the
+    /// allocation (the same thread, or a hand-off through its own
+    /// synchronisation), and the allocation was claimed under the class lock
+    /// after the descriptor was committed and initialised, so that chain of
+    /// happens-before already makes both the counter and the descriptor
+    /// visible here; the acquire added nothing. For any other pointer the
+    /// only stale values this load can observe are a smaller count (`None`,
+    /// and the slow path repeats the check with acquire) or the descriptor's
+    /// initial zero words (`is_allocated_unchecked` says no); it can never
+    /// see a count above what has been committed, so the descriptor page is
+    /// always mapped.
+    ///
     /// [`desc`]: ClassState::desc
     #[inline(always)]
     pub fn desc_if_committed(&self, slab: usize) -> Option<&SlabDesc> {
-        if slab >= self.committed_slabs() {
+        if slab >= self.committed_slabs.load(core::sync::atomic::Ordering::Relaxed) {
             return None;
         }
-        // SAFETY: descriptors up to `committed_slabs` are committed and
-        // initialised (or zero, for guard slabs) before the counter moves,
-        // and `desc_stride` is this class's stride.
-        Some(unsafe { &*((self.desc_base + slab * self.desc_stride as usize) as *const SlabDesc) })
+        // SAFETY: `slab` is below a value the commit count actually held.
+        Some(unsafe { self.desc_unchecked(slab) })
+    }
+
+    /// Descriptor of `slab` without a commit check.
+    ///
+    /// # Safety
+    /// `slab` must be below a value `committed_slabs` has held: descriptors
+    /// up to that count are committed and initialised (or zero, for guard
+    /// slabs) before the counter moves, and `desc_stride` is this class's
+    /// stride.
+    #[inline(always)]
+    unsafe fn desc_unchecked(&self, slab: usize) -> &SlabDesc {
+        // SAFETY: guaranteed by the caller.
+        unsafe { &*((self.desc_base + slab * self.desc_stride as usize) as *const SlabDesc) }
     }
 
     #[inline]
