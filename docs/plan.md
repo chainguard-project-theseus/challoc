@@ -1,0 +1,233 @@
+# challoc implementation plan
+
+This plan is written to be executed incrementally by an autonomous loop. Each
+phase lists tasks and acceptance criteria. A task is done when its criteria
+pass inside the Linux dev container on both aarch64 and x86_64 unless the task
+says otherwise. Do not start a phase before the previous phase's acceptance
+criteria all pass. Within a phase, tasks are ordered but may be parallelised
+when independent.
+
+Ground rules for every phase:
+
+- `cargo build --release` produces `libchalloc.so` and `libchalloc.a` with no
+  warnings under `#![deny(warnings)]` and no `std` dependency in the library.
+- Every entry point is `pub extern "C"` with `#[unsafe(no_mangle)]`, declared
+  at module top level.
+- `cargo test --features std` runs the pure-logic unit tests on the host.
+- Linux integration tests run under `LD_PRELOAD=target/release/libchalloc.so`
+  against small C programs in `tests/c/` compiled with the container's gcc.
+- Benchmarks compare against glibc 2.44's malloc, jemalloc 5.3.1 from the
+  Wolfi `jemalloc` package, and mimalloc 3.x built from source, all via
+  `LD_PRELOAD` in the same container. Numbers are recorded in
+  `bench/results/<date>-<arch>.md` with the commit hash.
+
+## Phase 0: skeleton and core allocator
+
+Goal: a correct, fast `malloc`/`free`/`calloc`/`realloc` with thread caches,
+bitmap slabs, and huge allocations. No jemalloc API, no decay, no cgroup.
+
+Tasks:
+
+1. Convert the crate to a `no_std` library with `crate-type = ["cdylib", "staticlib"]`,
+   `panic = "abort"` in all profiles, `opt-level = 3`, `lto = "fat"`,
+   `codegen-units = 1`. Add the `libc` crate with default features off for
+   type definitions only, or hand-declare the handful of types needed. Add a
+   `std` dev feature for host unit tests. Add `Dockerfile.dev` building a
+   Wolfi image with `rust`, `build-base`, `gcc`, `jemalloc`, `git`, `cmake`,
+   and a `make dev` target that runs a shell in it with the repo mounted.
+2. `src/sys`: raw syscall wrappers via `asm!` for x86_64 and aarch64, or via
+   `libc::syscall`, for the list in design.md section 17. Include `abort`
+   that writes a message with `write(2)` and calls `SYS_exit_group` after
+   raising `SIGABRT`. Unit test error mapping on the host.
+3. `src/sys/features.rs`: probe `MADV_GUARD_INSTALL`, `mseal`,
+   `process_madvise` with `PIDFD_SELF`, `PR_SET_VMA_ANON_NAME`, page size.
+   Integration test prints the probe result and it matches `uname -r`
+   expectations for the container kernel.
+4. `src/tls.rs`: initial-exec TLS slot via `global_asm!` for both
+   architectures. Test: a C program creating 64 threads under `LD_PRELOAD`
+   sees distinct heap pointers per thread; `readelf -r` on the `.so` shows
+   `R_X86_64_GOTTPOFF` / `R_AARCH64_TLS_TPREL` style relocations and no
+   `__tls_get_addr` import.
+5. `src/layout.rs`: size class tables for `quantum16` and `quantum8`, region
+   probing and reservation, pointer classification, slot arithmetic with the
+   fixed-point reciprocal. Exhaustive host unit tests: every size in
+   `0..=max_medium` maps to a class whose size is `>= n`, class sizes are
+   monotonic, slot arithmetic round-trips for every slot of every class, and
+   misaligned pointers are rejected.
+6. `src/bitmap.rs`: `AtomicBitmap` claim/release and `TwoLevelBitmap` with
+   `lowest_set`, `set`, `clear`. Host unit tests including a randomised
+   model check against a `Vec<bool>` under the `std` feature.
+7. `src/meta.rs`: metadata region bump allocator with size-classed free lists
+   for `Heap`, `ClassCache`, and descriptor arrays; commit on demand.
+8. `src/slab.rs`, `src/class.rs`: descriptors, claim/release/check, partial
+   and empty sets, lowest-address slab selection, slab commit with guard
+   slabs.
+9. `src/heap.rs`: `Heap`, `ClassCache`, fast paths, refill and flush,
+   thread-exit key with recursion guard.
+10. `src/huge.rs`: page bitmap, descriptor hash table, guards, alignment.
+11. `src/api/libc.rs`: `malloc`, `free`, `calloc`, `realloc`,
+    `aligned_alloc`, `posix_memalign`, `memalign`, `valloc`, `pvalloc`,
+    `free_sized`, `free_aligned_sized`, `reallocarray`,
+    `malloc_usable_size`. `errno` preserved by `free`. Lazy init state
+    machine. Fork handlers.
+12. `tests/c/`: programs covering alignment for every power of two up to
+    64 KiB, `realloc` growth and shrink across tiers, `calloc` zeroing
+    including reused slots, 1 million random alloc/free operations with
+    pattern verification across 8 threads, producer/consumer cross-thread
+    frees, fork with allocation in both parent and child, and a thread that
+    exits with a full cache. Each is also run under `valgrind --tool=none` is
+    not required; instead each program checks its own invariants and exits
+    non-zero on failure.
+13. `fuzz/`: a seeded random driver in C that keeps a table of live
+    allocations with fill patterns and performs weighted random operations,
+    running for a configurable count; a `make fuzz` target runs it for
+    10 million operations with 4 threads.
+14. Negative tests: a program that frees a pointer twice must abort with the
+    challoc message; freeing a pointer into the middle of a slot must abort;
+    freeing a stack pointer must abort; writing past a huge allocation must
+    fault.
+15. Run the glibc `malloc/tst-malloc.c`, `tst-calloc.c`, `tst-mallocfork.c`,
+    `tst-posix_memalign.c`, and `tst-realloc.c` sources under `LD_PRELOAD`;
+    they are in `tests/glibc/` with their licence.
+16. Run mimalloc's `test-stress.c` with `USE_STD_MALLOC` under `LD_PRELOAD`
+    at `THREADS=8 SCALE=50 ITER=10`.
+
+Acceptance:
+
+- All tests and negative tests above pass on both architectures.
+- mimalloc-bench `cfrac`, `espresso`, `larson`, `mstress`, `xmalloc-test`,
+  `alloc-test`, `glibc-simple`, `redis` run to completion under challoc and
+  are within 10% of jemalloc 5.3.1 on time and RSS. Record results. Regressions
+  worse than 10% block the phase; improvements are noted but not required yet.
+- `perf stat` on `larson` shows no lock or atomic RMW in the top 10 symbols of
+  challoc's profile.
+
+## Phase 1: jemalloc compatibility and Valkey
+
+Goal: Valkey links against `libchalloc.so` in place of bundled jemalloc with
+active defrag, purge, stats, background thread, and Lua arena all working.
+
+Tasks:
+
+1. `src/config.rs`: `malloc_conf` parser covering design.md section 12;
+   weak `malloc_conf` symbol, `/etc/challoc.conf`, environment. Host unit
+   tests for every key and for malformed input.
+2. `src/purge.rs`: decay with `dirty_decay_ms`, `Empty` to `Purged`
+   transitions, batched `process_madvise`, slow-path driver with per-class
+   deadlines, `malloc_trim`. Background thread with futex sleep, created only
+   on request, absent after fork in the child.
+3. `src/arena.rs`: arenas, `arenas.create`, per-arena caches keyed by
+   descriptor arena, explicit caches, `MALLOCX_TCACHE_NONE` direct path.
+4. `src/stats.rs`: per-thread counters, epoch merge, `allocated`, `active`,
+   `resident`, `retained`, `mapped`, `metadata`, per-class `curregs`,
+   `curslabs`, `nonfull_slabs`. Host unit tests for the accounting identities
+   `resident >= active >= allocated` and `mapped = resident + retained`.
+5. `src/api/jemalloc.rs`: `*allocx`, `nallocx`, `sallocx`, `je_` aliases,
+   `malloc_message`. `src/api/mallctl.rs`: the full key list in design.md
+   section 13.4 including `experimental.utilization.batch_query`.
+   `src/api/print.rs`: `malloc_stats_print`, `malloc_info`, `malloc_stats`.
+   `src/api/glibc.rs`: `mallopt`, `mallinfo`, `mallinfo2`.
+6. `jemalloc-soname` Cargo feature and a `make jemalloc-compat` target that
+   produces `libjemalloc.so.2` plus a `jemalloc.pc` pointing at it.
+7. Valkey integration: a patch in `contrib/valkey/` modelled on Debian's
+   `USE_SYSTEM_JEMALLOC` patch that links `-lchalloc`, keeps
+   `USE_JEMALLOC` and `HAVE_DEFRAG` defined, and maps `je_*` to our exports.
+   A script `contrib/valkey/build.sh` clones the tag Wolfi ships, applies the
+   patch, builds with `quantum8`, and runs `./runtest --single unit/memefficiency`
+   and the full `./runtest` suite.
+8. A soak script `bench/valkey-soak.sh` that runs `valkey-benchmark` and
+   `memtier_benchmark` write-heavy then delete-heavy phases for 20 minutes,
+   sampling `INFO memory` every 10 s into a CSV: `used_memory`,
+   `used_memory_rss`, `mem_fragmentation_ratio`, `allocator_frag_ratio`,
+   `allocator_rss_ratio`, `active_defrag_hits`, and p99 latency.
+
+Acceptance:
+
+- Valkey test suite passes with challoc, including defrag tests, on both
+  architectures.
+- `MEMORY PURGE`, `MEMORY MALLOC-STATS`, `CONFIG SET activedefrag yes`, and
+  `jemalloc-bg-thread yes` all work; `INFO memory` reports a real
+  `allocator_frag_ratio`.
+- Soak: throughput and p99 at least equal to bundled jemalloc 5.3.0, peak RSS
+  no more than 5% above it, and post-delete RSS returns to within 10% of
+  jemalloc's after the decay window.
+- Ruby 3.4 built `--with-jemalloc` against `libjemalloc.so.2` from challoc
+  passes `make test-all` in the container, or the failures are shown to be
+  unrelated to allocation.
+
+## Phase 2: hardening extras and cgroup awareness
+
+Tasks:
+
+1. Guard slabs with `MADV_GUARD_INSTALL` and `guard_slab_interval`;
+   `PROT_NONE` fallback for huge runs only; verify with a test that touching
+   the guard faults and that `smaps` shows no VMA explosion for 10,000 slabs.
+2. `mseal` of the region table and reservations; test that `munmap` of a
+   reserved range fails with `EPERM` on kernels 6.10 and newer.
+3. `zero_on_free`, `slot_randomize`, `double_free_scan` tunables with tests,
+   plus a benchmark row for each showing its cost on `larson` and `redis`.
+4. `src/sys/cgroup.rs`: discovery, effective limit walk, `memory.current`
+   sampling, `memory.events` diffing, PSI trigger in the background thread.
+   Host unit tests parse captured `/proc/self/cgroup`, `mountinfo`, and
+   `memory.*` file contents including `max`, nested limits, and cgroup v1
+   absent files.
+5. Policy table from design.md section 11 wired into decay and cache GC; THP
+   suppression under small limits; `stats.cgroup.*` keys.
+6. Container tests with `docker run --memory=512m` and `--memory=256m`:
+   a churn program that allocates 400 MiB, frees it, and idles must see RSS
+   fall below 100 MiB within 2 s with cgroup awareness on and must not with
+   it forced off; a program that oscillates between 200 MiB and 480 MiB live
+   must not be OOM-killed in the 512 MiB container over 5 minutes.
+7. A comparison run of the same container tests with jemalloc 5.3.1 and
+   mimalloc 3.x recorded alongside.
+
+Acceptance:
+
+- All Phase 0 and Phase 1 acceptance criteria still pass with defaults.
+- Default hardening costs no more than 3% on the Phase 0 benchmark set
+  relative to Phase 0 results.
+- The two container tests pass; jemalloc's behaviour in the same tests is
+  documented as the baseline.
+
+## Phase 3: packaging and rollout
+
+Tasks:
+
+1. Wolfi package definition `challoc.yaml` producing `challoc`, `challoc-dev`,
+   and `challoc-jemalloc-compat` with `libjemalloc.so.2` and `jemalloc.pc`.
+2. Valkey package change in Wolfi using the Phase 1 patch and depending on
+   `challoc`, with the package test asserting `valkey-server --version`
+   reports challoc and that `CONFIG SET activedefrag yes` succeeds.
+3. Ruby, KeyDB, RethinkDB switched to `challoc-jemalloc-compat`, one at a
+   time, each with its package tests passing.
+4. `docs/tuning.md` explaining every tunable and the cgroup policy for
+   operators.
+
+Acceptance: packages build and pass tests in Wolfi CI. This phase is executed
+in the Wolfi repository, not here; this repository only tracks the patches and
+package definition drafts under `contrib/`.
+
+## Phase 4: experiments
+
+Each is optional, behind a feature or tunable, and must not change default
+behaviour or default performance.
+
+1. Per-CPU mode via rseq `mm_cid` (design.md section 15). Benchmark on a
+   64-thread `larson` and `mstress` against the default mode.
+2. Type-isolated heaps: an `__alloc_token_malloc(size, token)` family of entry
+   points for Clang's `-fsanitize=alloc-token`, mapping tokens to arenas.
+   Build one Wolfi package with it and measure.
+3. MTE on AmpereOne: `PROT_MTE` slab regions with random tags per allocation,
+   detected at runtime, off elsewhere.
+4. Sampling-based guarded allocations in the style of GWP-ASan for crash
+   reports in production.
+
+## Benchmark protocol
+
+- Container: Wolfi base, pinned toolchain versions recorded in the results
+  file, kernel version recorded, CPU model recorded.
+- Warm-up run discarded; report median of 5 runs for time and max RSS from
+  `/usr/bin/time -v`.
+- Same binary of each benchmark program for every allocator; only
+  `LD_PRELOAD` changes.
+- Emulated x86_64 on Apple silicon is never used for numbers.
