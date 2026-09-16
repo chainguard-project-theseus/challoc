@@ -39,7 +39,7 @@ One line per task, newest at the bottom of each section. Keep it terse.
 
 ## In progress
 
-(none; next is Phase 1 task 3)
+- Phase 1 task 3: `src/arena.rs`: arenas, `arenas.create`, per-arena caches keyed by descriptor arena, explicit caches, `MALLOCX_TCACHE_NONE` direct path.
 
 ## Design decisions
 
