@@ -2,5 +2,32 @@
 name = "challoc"
 version = "0.1.0"
 edition = "2024"
+description = "A memory-safe, jemalloc-compatible malloc replacement for Wolfi and Chainguard OS"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[features]
+default = ["quantum16"]
+# Size-class quantum. Exactly one must be enabled (design.md section 3).
+quantum16 = []
+quantum8 = []
+# Host-only: links std so pure-logic unit tests can run with `cargo test`.
+# Never enabled for the shipped library.
+std = []
 
 [dependencies]
+# Type definitions only (c_int, size_t, ...). No std, no allocation.
+libc = { version = "0.2", default-features = false }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = "line-tables-only"

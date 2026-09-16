@@ -153,9 +153,15 @@ challoc is Linux-only and is developed inside a Wolfi container on macOS and
 Linux hosts alike:
 
 ```sh
-docker run --rm -it -v "$PWD":/src -w /src cgr.dev/chainguard/wolfi-base \
-  sh -c 'apk add rust build-base && cargo build --release'
+make dev                       # shell in the Wolfi dev container, repo at /src
+make build                     # cargo build --release inside the container
+make run CMD='cargo test'      # any one command inside the container
+make test-host                 # pure-logic unit tests on the host
 ```
+
+`Dockerfile.dev` defines the container. Note that a plain `apk add rust` on
+`wolfi-base` currently yields a broken `rustc` because Wolfi's Rust is built
+against the versioned `glibc-2.44` stream; the Dockerfile handles the swap.
 
 Native aarch64 and x86_64 builds are both supported. Use
 `--platform linux/amd64` for an emulated x86_64 build on Apple silicon when

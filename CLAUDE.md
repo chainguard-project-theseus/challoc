@@ -23,10 +23,14 @@ Hard rules:
 Environment:
 
 - The host is macOS. Nothing here builds or runs on macOS. Use the dev
-  container: `make dev` once `Dockerfile.dev` exists, or
-  `docker run --rm -it -v "$PWD":/src -w /src cgr.dev/chainguard/wolfi-base sh`
-  and `apk add rust build-base gcc jemalloc` inside it.
+  container from `Dockerfile.dev`: `make dev` for a shell, or
+  `make run CMD='...'` for one command (escape `$` as `$$` in CMD). Do not
+  `apk add rust` by hand on `wolfi-base`: Wolfi's Rust needs the
+  `glibc-2.44` stream and the Dockerfile performs that swap.
+- `target/` in the container is a named Docker volume per architecture
+  (`challoc-target-arm64`, `challoc-target-amd64`), so Linux artifacts are
+  only visible inside the container, never mixed with host artifacts.
 - Native aarch64 is the fast path on Apple silicon. Add
-  `--platform linux/amd64` to also check x86_64; it is emulated and only for
-  correctness, never for numbers.
+  `PLATFORM=linux/amd64` to any make target to also check x86_64; it is
+  emulated and only for correctness, never for numbers.
 - Host-side `cargo test --features std` covers pure logic only.

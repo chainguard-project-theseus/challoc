@@ -9,7 +9,7 @@ One line per task, newest at the bottom of each section. Keep it terse.
 
 ## In progress
 
-(none)
+- Phase 0 task 1: no_std crate skeleton, Cargo profiles, libc dep, std feature, Dockerfile.dev, `make dev`.
 
 ## Design decisions
 
