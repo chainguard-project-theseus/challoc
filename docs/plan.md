@@ -155,6 +155,83 @@ Acceptance:
   passes `make test-all` in the container, or the failures are shown to be
   unrelated to allocation.
 
+## Phase 1.5: GCE performance lab
+
+Goal: reference benchmark numbers and hardware performance counters come
+from dedicated Linux VMs on Google Compute Engine, one per architecture,
+instead of the shared Docker VM on the Mac. The Mac container stays the
+development and correctness environment; its numbers are only ever compared
+with other numbers from the same Mac session.
+
+Background: Compute Engine exposes the CPU's performance monitoring unit to
+C4A (Google Axion, aarch64) and C4 (Intel Xeon, x86_64) instances created
+with `--performance-monitoring-unit=standard`; that level includes L1/L2
+cache and dTLB/iTLB miss events on both architectures. No bare-metal
+instance is needed. Sources: https://docs.cloud.google.com/compute/docs/pmu-overview
+and https://docs.cloud.google.com/compute/docs/enable-pmu-in-vms.
+
+Tasks:
+
+1. `bench/gce/challoc-bench`: a bash driver modelled on the `mvmdev`
+   pattern (subcommands `create`, `provision`, `sync`, `run`, `ssh`,
+   `status`, `stop`, `delete`) with two targets, `arm64` and `amd64`.
+   Defaults: project from the active `gcloud` configuration
+   (`CHALLOC_GCE_PROJECT` overrides; the active default is `dlorenc-dev`), zone `us-central1-b`, which offers both series
+   (`CHALLOC_GCE_ZONE` overrides; verified 2026-09-16 with `gcloud compute machine-types list`),
+   `c4a-standard-16` and `c4-standard-16`, `--performance-monitoring-unit=standard`,
+   Ubuntu 24.04 LTS images, 100 GB `pd-balanced`, OS Login, labels
+   `owner=$USER,purpose=challoc-bench`. `provision` installs Docker,
+   `linux-tools-$(uname -r)` for `perf`, `rsync`, and sets
+   `kernel.perf_event_paranoid=-1` and `kernel.kptr_restrict=0`
+   persistently. `sync` rsyncs the working tree (excluding `target/`,
+   `.ralph/`, `.tmp-*`). `run` executes a command inside the repo's
+   `Dockerfile.dev` image on the VM with `--cap-add=PERFMON
+   --cap-add=SYS_ADMIN` (or `--privileged` if `perf` still refuses) so the
+   same pinned toolchain is used everywhere; the results file records the
+   VM's CPU model, kernel, and machine type. `stop` suspends the VM; every
+   iteration that starts a VM must stop it before exiting, and `status`
+   must be checked at the start of each iteration so an orphaned running VM
+   is stopped.
+2. PMU verification: on each VM, `perf stat -e cycles,instructions,
+   branch-misses,L1-dcache-load-misses,dTLB-load-misses,iTLB-load-misses`
+   on a trivial loop returns non-zero counts for every event, and
+   `perf record` + `perf report` resolves symbols in `libchalloc.so`
+   (unstripped build). Record the exact event names that work per
+   architecture in `bench/gce/README.md`; Arm event names may differ from
+   the x86 aliases.
+3. Reference run: the full Phase 0 benchmark set (`cfrac`, `espresso`,
+   `larson`, `mstress`, `xmalloc-test`, `alloc-test`, `glibc-simple`,
+   `redis`) under challoc, jemalloc 5.3.1, glibc 2.44, and mimalloc 3.x on
+   both VMs following the benchmark protocol, plus `perf stat` counters for
+   `larson` 1-thread and 10-thread under challoc and jemalloc. Results in
+   `bench/results/<date>-gce-c4a.md` and `<date>-gce-c4.md`. These
+   supersede the Mac numbers as the reference for the Phase 0 and Phase 1
+   criteria.
+4. Close the larson gap with the counters: attribute the remaining
+   difference against jemalloc (and against the pre-arena tree 8449c3a) to
+   specific events (L1D misses, dTLB misses, front-end stalls, dependent
+   loads), then implement the fix the data supports. The standing candidate
+   is moving per-class cache tops into the TLS block so `malloc` and `free`
+   reach the slot in as few dependent loads as jemalloc does; the design
+   may change here if the counters justify it, recorded in PROGRESS.md and
+   `docs/design.md`. Every variant gets a before/after row from the VM.
+5. `bench/gce/README.md` and a CLAUDE.md environment bullet: how to create,
+   sync, run, and stop the VMs; the cost of leaving one running; and the
+   rule that Mac numbers and GCE numbers are never compared with each other.
+
+Acceptance:
+
+- Both VMs create, provision, sync, run the container test suite (`make test`
+  equivalent) green, and stop, from a single driver invocation each.
+- PMU counters return non-zero for the six events above on both VMs.
+- The Phase 0 benchmark set is within 10% of jemalloc 5.3.1 on time and
+  RSS on both VMs, measured per the protocol; regressions worse than 10%
+  block the phase.
+- `perf stat`/`perf report` on `larson` shows no lock or atomic RMW in the
+  top 10 symbols of challoc's profile, and the counter attribution of any
+  remaining larson gap is written down with the event data.
+- No VM is left running at the end of the phase.
+
 ## Phase 2: hardening extras and cgroup awareness
 
 Tasks:
@@ -231,3 +308,6 @@ behaviour or default performance.
 - Same binary of each benchmark program for every allocator; only
   `LD_PRELOAD` changes.
 - Emulated x86_64 on Apple silicon is never used for numbers.
+- Reference numbers come from the GCE VMs in Phase 1.5 (C4A for aarch64,
+  C4 for x86_64, PMU enabled). The Docker VM on the Mac is for development
+  A/B rounds only; a Mac number and a GCE number are never compared.
