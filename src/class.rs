@@ -196,6 +196,11 @@ pub struct SlabTable {
     desc_stride: u32,
     /// Start of this class's region.
     base: usize,
+    /// Every field the `free` fast path reads (`desc_stride`, `base`,
+    /// `region_len`, `desc_base`, `committed_slabs`, `geom`) sits in the
+    /// first 64 bytes: one L1 line even on a core with 64-byte L1 lines
+    /// (`bench/results/2026-09-16-aarch64-arenas-threads.md`).
+    region_len: usize,
     /// Number of slabs in the region.
     nslabs: usize,
     /// Start of the descriptor array.
@@ -209,7 +214,6 @@ pub struct SlabTable {
     /// lines, and larson's working set makes each one an L2 access;
     /// `bench/results/2026-09-16-aarch64-arenas-lines.md`).
     geom: Class,
-    region_len: usize,
     inner: Padded<Lock<TableInner>>,
     _tail: [u8; PAD_ALIGN],
 }
