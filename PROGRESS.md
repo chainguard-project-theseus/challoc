@@ -12,7 +12,7 @@ One line per task, newest at the bottom of each section. Keep it terse.
 
 ## In progress
 
-(none)
+- Phase 0 task 5: `src/layout.rs` size classes, region probing/reservation, pointer classification, slot arithmetic.
 
 ## Design decisions
 
@@ -35,6 +35,12 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
 - Phase 0 task 4: the TLS slot symbol is `.globl` + `.hidden`. Reason: hidden keeps it out of the dynamic symbol table so the only dynamic relocation is the `TPOFF64`/`TLS_TPREL64` GOT fixup and nothing can interpose it; it still has to be global because debug/test builds place the `global_asm!` in a different codegen unit from the accessors.
 - Phase 0 task 4: `challoc_tls_get`/`challoc_tls_set` are permanent diagnostic exports, and `tests/c/tls_threads.c` finds them with `dlsym(RTLD_DEFAULT)`. Reason: no heap exists yet so a C program under `LD_PRELOAD` needs some way to drive the slot, and a separate test-only `.so` build would double the fat-LTO build; dlsym keeps the test binary free of a link-time dependency and lets it prove it fails without the preload.
 - Phase 0 task 4: `make test` runs `cargo build --release` before `cargo test`, and tests that need the `.so` fail with a message if it is missing rather than building it themselves. Reason: a test spawning `cargo build` would contend with the running `cargo test` for the target-dir lock.
+- Phase 0 task 5: class stride is 4x the region (gap 3x) so `c = (p - superblock) >> lg_stride` is a shift; the region halves from 2^38 to 2^32 on `mmap` failure, and as a last resort the stride drops to 2x the region (gap 1x) before aborting. Reason: design 2 wants a power-of-two stride, and 3x is not one; the 1x gap is below the 1.25x minimum but keeps a 39-bit-VA kernel working rather than failing outright.
+- Phase 0 task 5: the superblock and every class base are aligned to `MAX_SLAB` (4 MiB, the 256 KiB class's slab), and per-class random offsets are multiples of it. Reason: `offset = p & (slab_size - 1)` in design 3 is only correct when the class base is aligned to its slab size; one alignment for all classes is simplest and is THP-friendly.
+- Phase 0 task 5: region bases come from the kernel's mmap placement plus a random reservation order for the three mappings, a random `MAX_SLAB`-granular offset inside each class gap, and a random 1 GiB slide of the huge and metadata bases inside an over-reserved window. Reason: design 2 asks for getrandom-randomised bases; a `MAP_FIXED_NOREPLACE` search for arbitrary bases can fail unpredictably, whereas sliding inside a reservation cannot.
+- Phase 0 task 5: the `>> 32` reciprocal is kept as designed even though it is only exact for offsets that are multiples of the slot size. Reason: `free` only needs exactness on slot starts, and a misaligned offset can never satisfy `slot * size == offset` for any `slot`; the exhaustive host test over every in-slab offset of every class confirms it.
+- Phase 0 task 5: `class_of(0)` is class 0 (one quantum). Reason: `malloc(0)` must return a unique pointer and the smallest slot is the cheapest way.
+- Phase 0 task 5: `Regions::release` (munmap of all reservations) exists as a public unsafe method. Reason: the Linux tests reserve twice in one process to check randomisation; the allocator itself never calls it.
 
 ## Blocked
 
