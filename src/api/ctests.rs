@@ -15,6 +15,10 @@ use std::env;
 use std::process::Command;
 use std::string::String;
 
+/// Linux signal numbers (same on x86_64 and aarch64) for the negative tests.
+const SIGABRT: i32 = 6;
+const SIGSEGV: i32 = 11;
+
 fn release_so() -> String {
     let target =
         env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| std::format!("{}/target", env!("CARGO_MANIFEST_DIR")));
@@ -71,6 +75,75 @@ fn run_c_in(dir: &str, name: &str, args: &[&str]) {
     let ok = std::format!("ok {name}");
     assert!(stdout.lines().any(|l| l == ok), "{name} did not print `{ok}`\nstdout: {stdout}\nstderr: {stderr}");
     std::eprintln!("{name}: {}", stdout.trim_end());
+}
+
+/// Run one mode of `tests/c/negative.c` (plan Phase 0 task 14). Bare, the
+/// program must exit non-zero without a signal (`require_challoc` refuses
+/// to run). Under the preload it must die with `signal`, its stdout must
+/// show it reached the bad operation and never survived it, and for aborts
+/// stderr must carry the `challoc: ` line with every string in `expect`.
+fn run_c_negative(mode: &str, signal: i32, expect: &[&str]) {
+    use std::os::unix::process::ExitStatusExt;
+    let so = release_so();
+    let bin = compile("tests/c", "negative");
+
+    let bare = Command::new(&bin).arg(mode).output().unwrap();
+    assert!(
+        !bare.status.success() && bare.status.signal().is_none(),
+        "negative {mode} without libchalloc preloaded: {:?}\n{}",
+        bare.status,
+        String::from_utf8_lossy(&bare.stderr)
+    );
+
+    let run = Command::new(&bin).arg(mode).env("LD_PRELOAD", &so).output().unwrap();
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    let detail = std::format!("({:?})\nstdout: {stdout}\nstderr: {stderr}", run.status);
+    assert!(stdout.lines().any(|l| l == std::format!("negative: {mode}")), "{mode} never started {detail}");
+    assert!(!stdout.contains("survived"), "{mode} survived {detail}");
+    assert_eq!(run.status.signal(), Some(signal), "{mode} wrong signal {detail}");
+    if signal == SIGABRT {
+        let line = stderr.lines().find(|l| l.starts_with("challoc: "));
+        let line = line.unwrap_or_else(|| panic!("{mode} printed no `challoc: ` line {detail}"));
+        for e in expect {
+            assert!(line.contains(e), "{mode}: `{line}` lacks `{e}` {detail}");
+        }
+        std::eprintln!("negative {mode}: {line}");
+    } else {
+        std::eprintln!("negative {mode}: signal {signal}");
+    }
+}
+
+#[test]
+fn c_negative_double_free_stale() {
+    // The first free flushed to the slab before the second: the slot bit is
+    // clear, so the one-load check on `free` catches it.
+    run_c_negative("double_free_stale", SIGABRT, &["invalid or double free of 0x", "slot is not allocated"]);
+}
+
+#[test]
+fn c_negative_double_free_cached() {
+    // Both frees land in the thread cache; the batched release to the slab
+    // sees the duplicate (or the second release finds the bit clear).
+    run_c_negative("double_free_cached", SIGABRT, &["double free of 0x"]);
+}
+
+#[test]
+fn c_negative_interior_free() {
+    run_c_negative("interior_free", SIGABRT, &["invalid free of 0x", "not an allocation"]);
+}
+
+#[test]
+fn c_negative_stack_free() {
+    run_c_negative("stack_free", SIGABRT, &["invalid free of 0x", "not an allocation"]);
+}
+
+#[test]
+fn c_negative_huge_overflow() {
+    // The byte after a huge run is its guard page (`PROT_NONE`, or
+    // `MADV_GUARD_INSTALL` where the kernel has it); either way SIGSEGV.
+    run_c_negative("huge_overflow", SIGSEGV, &[]);
 }
 
 #[test]

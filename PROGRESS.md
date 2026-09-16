@@ -22,7 +22,7 @@ One line per task, newest at the bottom of each section. Keep it terse.
 
 ## In progress
 
-(none)
+- Phase 0 task 14: negative tests (`tests/c/negative.c`, driver in `src/api/ctests.rs`).
 
 ## Design decisions
 
@@ -107,6 +107,9 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
 - Phase 0 task 13: blocks are filled and verified over their whole `malloc_usable_size`, not just the requested size, and `realloc` is checked to preserve `min(old usable, new size)`. Reason: overlap between neighbouring slots or a wrong class size shows up only in the tail bytes; the copy length is what `api/libc.rs` documents.
 - Phase 0 task 13: sizes include 0 and an 8..16 MiB tier, alignments go up to 64 KiB through `aligned_alloc`/`posix_memalign`/`memalign`, and `realloc(p, 0)` is checked to free and return null. Reason: the task 12 programs cover each of these in isolation; the fuzzer interleaves them with everything else.
 - Phase 0 task 13: the seed defaults to a fixed value and `random` draws one from `getrandom`; the seed in use is printed first and a failure prints the exact replay command. Reason: an unattended loop needs reproducible runs, and a failing fuzz run is worthless without its seed.
+- Phase 0 task 14: the `no_std` panic handler prints `challoc: <message> [<file>:<line>]` instead of `challoc: panic: panicked at <file>:<line>:\n<message>`. Reason: every heap-inconsistency abort is a `panic!`, and the plan asks for "the challoc message"; the reason should come first and on one line.
+- Phase 0 task 14: the double-free negative test has two modes because Phase 0 detects a double free at two different points: `double_free_stale` flushes the thread cache between the two frees (the slot bit is clear, caught by the one-load check on `free`), `double_free_cached` frees back to back (both copies sit in the cache and the batched release catches the duplicate). Reason: a back-to-back double free with the slot still cached is only caught at flush until Phase 2's `double_free_scan`; the test documents that boundary instead of pretending otherwise.
+- Phase 0 task 14: `negative.c` routes every bad pointer through a `volatile` and allocates its churn blocks before the victim. Reason: gcc 15 rejects `free` of a stack address, a freed pointer, or an out-of-bounds store as errors under `-Werror`; and a `malloc` after the first `free` would pop the victim straight back out of the thread cache.
 
 ## Blocked
 

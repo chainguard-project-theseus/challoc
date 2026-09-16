@@ -46,11 +46,16 @@ pub mod tls;
 /// Panic handler for the `no_std` library. The crate is built with
 /// `panic = "abort"`, so this is only reached by an explicit `panic!` or a
 /// failed debug assertion. It reports through `sys::abort_fmt`, which writes
-/// to stderr with `write(2)` and raises `SIGABRT`, never unwinding.
+/// to stderr with `write(2)` and raises `SIGABRT`, never unwinding. The
+/// line reads `challoc: <message> [<file>:<line>]`: the message first, since
+/// it is what a user sees when their program frees a pointer twice.
 #[cfg(all(not(feature = "std"), target_os = "linux"))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
-    sys::abort_fmt(format_args!("panic: {info}"))
+    match info.location() {
+        Some(loc) => sys::abort_fmt(format_args!("{} [{}:{}]", info.message(), loc.file(), loc.line())),
+        None => sys::abort_fmt(format_args!("{}", info.message())),
+    }
 }
 
 /// Non-Linux `no_std` builds have no syscall layer; trap so the crate still
