@@ -1,9 +1,11 @@
 //! Drivers for the per-feature C programs in `tests/c/` (plan Phase 0
-//! task 12). Each program is compiled with the container's C compiler, run
-//! once without the preload to prove it notices when challoc is not
-//! serving `malloc`, then run under `LD_PRELOAD=libchalloc.so` and must
-//! exit 0 and print `ok <name>`. The programs check their own invariants;
-//! this file only reports their verdict.
+//! task 12), the fuzz driver in `fuzz/` (task 13), the negative tests
+//! (task 14) and the glibc malloc tests in `tests/glibc/` (task 15). Each
+//! program is compiled with the container's C compiler, run once without
+//! the preload to prove it notices when challoc is not serving `malloc`,
+//! then run under `LD_PRELOAD=libchalloc.so` and must exit 0 and print
+//! `ok <name>`. The programs check their own invariants; this file only
+//! reports their verdict.
 //!
 //! These tests need `target/release/libchalloc.so`; `make test` builds it
 //! first. They never touch the in-process allocator, but they live under
@@ -31,8 +33,8 @@ fn release_so() -> String {
 }
 
 /// Compile `<dir>/<name>.c` (with `tests/c` on the include path for
-/// `common.h`) and return the path of the binary.
-fn compile(dir: &str, name: &str) -> String {
+/// `common.h`, plus `flags`) and return the path of the binary.
+fn compile(dir: &str, name: &str, flags: &[&str]) -> String {
     let root = env!("CARGO_MANIFEST_DIR");
     let src = std::format!("{root}/{dir}/{name}.c");
     let include = std::format!("-I{root}/tests/c");
@@ -44,7 +46,9 @@ fn compile(dir: &str, name: &str) -> String {
     let cc = env::var("CC").unwrap_or_else(|_| "cc".into());
     let quantum = std::format!("-DQUANTUM={QUANTUM}");
     let status = Command::new(&cc)
-        .args(["-O2", "-g", "-Wall", "-Wextra", "-Werror", "-pthread", &quantum, &include, &src, "-o", &out, "-ldl"])
+        .args(["-O2", "-g", "-Wall", "-Wextra", "-Werror", "-pthread", &quantum, &include])
+        .args(flags)
+        .args([&src, "-o", &out, "-ldl"])
         .status()
         .unwrap();
     assert!(status.success(), "compiling {src} failed");
@@ -57,8 +61,12 @@ fn run_c(name: &str, args: &[&str]) {
 }
 
 fn run_c_in(dir: &str, name: &str, args: &[&str]) {
+    run_c_flags(dir, name, args, &[]);
+}
+
+fn run_c_flags(dir: &str, name: &str, args: &[&str], flags: &[&str]) {
     let so = release_so();
-    let bin = compile(dir, name);
+    let bin = compile(dir, name, flags);
 
     let bare = Command::new(&bin).args(args).output().unwrap();
     assert!(
@@ -85,7 +93,7 @@ fn run_c_in(dir: &str, name: &str, args: &[&str]) {
 fn run_c_negative(mode: &str, signal: i32, expect: &[&str]) {
     use std::os::unix::process::ExitStatusExt;
     let so = release_so();
-    let bin = compile("tests/c", "negative");
+    let bin = compile("tests/c", "negative", &[]);
 
     let bare = Command::new(&bin).arg(mode).output().unwrap();
     assert!(
@@ -186,6 +194,44 @@ fn c_fork_alloc() {
 #[test]
 fn c_thread_exit() {
     run_c("thread_exit", &[]);
+}
+
+/// Run one unmodified glibc malloc test from `tests/glibc/malloc/` (plan
+/// Phase 0 task 15). `tests/glibc/test-skeleton.c` supplies `main` and the
+/// `ok <name>` line; `tests/glibc/include/` shims glibc's internal headers.
+fn run_glibc(name: &str) {
+    let root = env!("CARGO_MANIFEST_DIR");
+    let include = std::format!("-I{root}/tests/glibc/include");
+    let test_name = std::format!("-DTEST_NAME=\"{name}\"");
+    // glibc builds its tests with `-Wall -Werror` but not `-Wextra`; the
+    // sources are unmodified, so drop the one `-Wextra` warning they trip.
+    let flags = ["-D_GNU_SOURCE", "-Wno-unused-parameter", &include, &test_name];
+    run_c_flags("tests/glibc/malloc", name, &[], &flags);
+}
+
+#[test]
+fn glibc_tst_malloc() {
+    run_glibc("tst-malloc");
+}
+
+#[test]
+fn glibc_tst_calloc() {
+    run_glibc("tst-calloc");
+}
+
+#[test]
+fn glibc_tst_mallocfork() {
+    run_glibc("tst-mallocfork");
+}
+
+#[test]
+fn glibc_tst_posix_memalign() {
+    run_glibc("tst-posix_memalign");
+}
+
+#[test]
+fn glibc_tst_realloc() {
+    run_glibc("tst-realloc");
 }
 
 #[test]
