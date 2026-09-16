@@ -203,6 +203,13 @@ pub struct SlabTable {
     /// Slabs with a committed descriptor, readable without the lock so the
     /// `free` check can reject pointers into never-committed slabs cleanly.
     committed_slabs: AtomicUsize,
+    /// Copy of `CLASSES[class]` and of the region length, so the `free`
+    /// fast path classifies a pointer from this line alone instead of
+    /// reading `Regions::class_base`, `CLASSES` and this table (three
+    /// lines, and larson's working set makes each one an L2 access;
+    /// `bench/results/2026-09-16-aarch64-arenas-lines.md`).
+    geom: Class,
+    region_len: usize,
     inner: Padded<Lock<TableInner>>,
     _tail: [u8; PAD_ALIGN],
 }
@@ -358,6 +365,8 @@ impl SlabTable {
             nslabs,
             desc_base: descs.base,
             committed_slabs: AtomicUsize::new(0),
+            geom: CLASSES[class],
+            region_len: regions.region_len(),
             inner: Padded(Lock::new(TableInner { descs, next_slab: 0, guards: 0 })),
             _tail: [0; PAD_ALIGN],
         })
@@ -437,6 +446,27 @@ impl SlabTable {
         }
         // SAFETY: `slab` is below a value the commit count actually held.
         Some(unsafe { self.desc_unchecked(slab) })
+    }
+
+    /// The `free` fast path's view of `p` inside this class: its slab and
+    /// slot, `None` unless `p` is a slot start inside the region. Reads
+    /// only this table's first line; [`Regions::slab_slot`] is the same
+    /// arithmetic from the regions and the class table.
+    ///
+    /// [`Regions::slab_slot`]: crate::layout::Regions::slab_slot
+    #[inline(always)]
+    pub fn slab_slot_fast(&self, p: usize) -> Option<(usize, usize)> {
+        let rel = p.wrapping_sub(self.base);
+        if rel >= self.region_len {
+            return None;
+        }
+        let slab = rel >> self.geom.lg_slab;
+        let offset = rel & (self.geom.slab_size() - 1);
+        let (slot, valid) = self.geom.slot_of_offset(offset);
+        if !valid {
+            return None;
+        }
+        Some((slab, slot))
     }
 
     /// Descriptor of `slab` without a commit check.

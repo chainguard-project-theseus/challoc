@@ -232,8 +232,11 @@ pub enum Kind {
     Invalid,
 }
 
-/// The reserved regions of one process.
+/// The reserved regions of one process. `repr(C)` keeps `superblock`,
+/// `lg_region` and `lg_stride` at the front, on the cache line the `free`
+/// fast path reads (see `Shared` in `heap.rs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
 pub struct Regions {
     /// `MAX_SLAB`-aligned start of the class superblock.
     pub superblock: usize,

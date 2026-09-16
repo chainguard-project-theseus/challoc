@@ -225,21 +225,27 @@ pub struct Heap {
 /// key. Built in place by [`Shared::init`] because the class states borrow
 /// `meta`, `regions` and `tables`.
 ///
-/// `repr(C)` fixes the order: `regions` and `multi_arena`, read by every
+/// `repr(C)` fixes the order: `multi_arena` and `regions`, read by every
 /// `malloc` and `free`, come first, then the line-aligned tables (read by
 /// every `free`) and arena 0's class states, so the locks inside `meta` and
 /// `huge` (taken on heap creation and huge allocations) never share a cache
 /// line with them.
 #[repr(C)]
 pub struct Shared {
-    pub regions: Regions,
     /// Set once a second arena exists. Until then every slab and every
     /// heap is arena 0 and the `free` fast path skips the descriptor's
     /// arena load. Relaxed: a slot of arena `a > 0` can only be freed after
     /// it was allocated, which happened after `a` was built and this flag
     /// stored, and the program itself orders that allocation before the
     /// free; so any thread freeing such a slot already sees the flag.
+    ///
+    /// First, so it shares a cache line with the `Regions` fields that
+    /// `slab_slot` reads on every `free` (`superblock`, `lg_stride`, the
+    /// low `class_base` entries): after `Regions` it sat on its own line,
+    /// and larson's working set turns every extra line into an L2 hit
+    /// (`bench/results/2026-09-16-aarch64-arenas-lines.md`).
     multi_arena: AtomicBool,
+    pub regions: Regions,
     tables: [SlabTable; NCLASSES],
     pub arena0: Arena,
     pub meta: Meta,
@@ -253,6 +259,17 @@ pub struct Shared {
     pub arenas: Arenas,
     pub tcaches: Tcaches,
 }
+
+// The flag and the `Regions` fields every `free` reads share one 128-byte
+// line (`Regions` is `repr(C)`, so `superblock` and `lg_stride` lead it).
+const _: () = assert!(
+    core::mem::offset_of!(Shared, multi_arena) / 128
+        == (core::mem::offset_of!(Shared, regions) + core::mem::offset_of!(Regions, superblock)) / 128
+);
+const _: () = assert!(
+    core::mem::offset_of!(Shared, multi_arena) / 128
+        == (core::mem::offset_of!(Shared, regions) + core::mem::offset_of!(Regions, lg_stride)) / 128
+);
 
 #[cfg(target_os = "linux")]
 mod os {
@@ -533,15 +550,30 @@ impl Shared {
     /// [`classify_free`]: Shared::classify_free
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     #[inline(always)]
-    fn checked_slot(&self, p: *mut u8, home: u16) -> Option<usize> {
-        let (class, slab, slot) = self.regions.slab_slot(p as usize)?;
-        let desc = self.table(class).desc_if_committed(slab)?;
+    fn checked_slot(&self, p: *mut u8, h: &Heap) -> Option<usize> {
+        let class = (p as usize).wrapping_sub(self.regions.superblock) >> self.regions.lg_stride;
+        if class >= NCLASSES {
+            return None;
+        }
+        // SAFETY: `class < NCLASSES` was just checked.
+        let table = unsafe { self.tables.get_unchecked(class) };
+        let (slab, slot) = table.slab_slot_fast(p as usize)?;
+        let desc = table.desc_if_committed(slab)?;
         // SAFETY: `slab_slot` validated `slot < nslots`.
         if !unsafe { desc.is_allocated_unchecked(slot) } {
             return None;
         }
-        if self.multi_arena() && desc.arena() != home {
-            return None;
+        if self.multi_arena() {
+            // The home arena is read on this branch only. A plain load is
+            // hoisted above the flag test (the heap is known valid) and
+            // then every single-arena `free` touches the heap's header
+            // line, which nothing else on the fast paths reads; a volatile
+            // read stays here.
+            // SAFETY: `h` is a live heap and `arena` a plain field.
+            let home = unsafe { ptr::read_volatile(&raw const h.arena) };
+            if desc.arena() != home {
+                return None;
+            }
         }
         Some(class)
     }
@@ -1312,7 +1344,7 @@ pub fn existing_heap() -> Option<&'static mut Heap> {
 /// frame.
 #[inline(always)]
 pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8) -> bool {
-    match shared.checked_slot(p, h.arena) {
+    match shared.checked_slot(p, h) {
         Some(class) => h.push_fast(class, p),
         None => false,
     }
