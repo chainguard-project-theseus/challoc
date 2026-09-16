@@ -29,6 +29,7 @@ pub const QUANTUM: usize = 16;
 #[cfg(feature = "quantum8")]
 pub const QUANTUM: usize = 8;
 
+pub mod bitmap;
 pub mod layout;
 pub mod sys;
 #[cfg(target_os = "linux")]
