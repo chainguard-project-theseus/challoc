@@ -168,10 +168,16 @@ pub struct Heap {
 /// allocator, the regions, one [`ClassState`] per class (arena 0 in Phase 0),
 /// the huge allocator, and the thread-exit key. Built in place by
 /// [`Shared::init`] because the class states borrow `meta` and `regions`.
+///
+/// `repr(C)` fixes the order: `regions`, read by every `malloc` and `free`,
+/// comes first and is followed by the line-aligned class states, so the
+/// locks inside `meta` and `huge` (taken on heap creation and huge
+/// allocations) never share a cache line with it.
+#[repr(C)]
 pub struct Shared {
-    pub meta: Meta,
     pub regions: Regions,
     pub classes: [ClassState; NCLASSES],
+    pub meta: Meta,
     pub huge: Huge,
     /// Cache GC period; `tcache_gc_interval_ms` sets it in Phase 1.
     pub gc_interval_ns: u64,

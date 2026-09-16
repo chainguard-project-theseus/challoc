@@ -125,6 +125,34 @@ pub struct Lock<T> {
     value: UnsafeCell<T>,
 }
 
+/// Alignment that keeps a lock (or any hot atomic) off the cache line of
+/// read-mostly data next to it. 128 bytes covers Apple silicon's 128-byte
+/// lines and Intel's adjacent-line prefetcher pairs; x86_64 and most aarch64
+/// servers have 64-byte lines, which 128 also satisfies.
+pub const PAD_ALIGN: usize = 128;
+
+/// `T` on its own [`PAD_ALIGN`]-byte line: nothing placed before or after a
+/// `Padded<T>` in a struct or array shares a cache line with it.
+#[repr(align(128))]
+pub struct Padded<T>(pub T);
+
+const _: () = assert!(core::mem::align_of::<Padded<u8>>() == PAD_ALIGN);
+
+impl<T> Deref for Padded<T> {
+    type Target = T;
+    #[inline(always)]
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> DerefMut for Padded<T> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+
 // SAFETY: access to `value` is serialised by `raw`, so sharing the lock
 // across threads is sound whenever the value could be moved between them.
 unsafe impl<T: Send> Sync for Lock<T> {}

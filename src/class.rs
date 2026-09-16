@@ -29,7 +29,7 @@
 
 use crate::bitmap::TwoLevelBitmap;
 use crate::layout::{CLASSES, Class, Regions};
-use crate::lock::{Lock, RawLock};
+use crate::lock::{Lock, PAD_ALIGN, Padded, RawLock};
 use crate::meta::Meta;
 use crate::slab::{DESC_ALIGN, SlabDesc, State, desc_stride};
 use crate::sys::Errno;
@@ -128,6 +128,23 @@ struct Inner {
 unsafe impl Send for Inner {}
 
 /// State of one `(arena, class)` pair.
+///
+/// Layout matters: the fields before `inner` are written once by `new` (or,
+/// for `committed_slabs`, only when a slab is committed) and read by every
+/// `free`, while `inner` holds the class lock and the state every refill and
+/// flush writes. `repr(C)` keeps the read-mostly fields first and
+/// [`Padded`] starts `inner` on its own line, so a lock acquisition on one
+/// core does not evict the descriptor base and commit watermark from the
+/// others. The alignment makes `[ClassState; NCLASSES]` line-granular too.
+///
+/// The stride of that array must not be a multiple of 512 bytes. The
+/// natural size (128 bytes of read-mostly fields plus 384 for the padded
+/// lock) is exactly 512, and with 4 KiB pages that puts the hot line of
+/// every class on the same handful of L1 sets: on Apple silicon (128-byte
+/// lines, sets indexed by page-offset bits) single-threaded `alloc-test`
+/// slowed from 2.13 s to 2.52 s. `_tail` makes the stride 640 = 5 lines,
+/// which visits every set. See `bench/results/2026-09-16-aarch64-*.md`.
+#[repr(C, align(128))]
 pub struct ClassState {
     class: u16,
     arena: u16,
@@ -143,8 +160,14 @@ pub struct ClassState {
     /// Slabs with a committed descriptor, readable without the lock so the
     /// `free` check can reject pointers into never-committed slabs cleanly.
     committed_slabs: core::sync::atomic::AtomicUsize,
-    inner: Lock<Inner>,
+    inner: Padded<Lock<Inner>>,
+    _tail: [u8; PAD_ALIGN],
 }
+
+const _: () = assert!(core::mem::offset_of!(ClassState, inner) == PAD_ALIGN);
+const _: () = assert!(core::mem::offset_of!(ClassState, committed_slabs) + 8 <= PAD_ALIGN);
+const _: () = assert!(core::mem::size_of::<ClassState>() % PAD_ALIGN == 0);
+const _: () = assert!(core::mem::size_of::<ClassState>() % 512 != 0);
 
 #[cfg(target_os = "linux")]
 mod os {
@@ -248,14 +271,15 @@ impl ClassState {
             nslabs,
             desc_base: descs.base,
             committed_slabs: core::sync::atomic::AtomicUsize::new(0),
-            inner: Lock::new(Inner {
+            inner: Padded(Lock::new(Inner {
                 partial,
                 empty,
                 purged,
                 descs,
                 next_slab: 0,
                 stats: ClassStats::default(),
-            }),
+            })),
+            _tail: [0; PAD_ALIGN],
         })
     }
 
