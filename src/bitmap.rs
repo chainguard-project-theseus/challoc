@@ -261,6 +261,48 @@ impl TwoLevelBitmap {
         }
     }
 
+    /// Insert every bit in `start..start + len`, one word at a time.
+    pub fn set_range(&mut self, start: usize, len: usize) {
+        let end = start.checked_add(len).expect("bitmap: range wraps");
+        assert!(end <= self.nbits, "bitmap: range out of range");
+        let mut bit = start;
+        while bit < end {
+            let w = bit / 64;
+            let lo = bit % 64;
+            let hi = (end - w * 64).min(64);
+            let mask = if hi - lo == 64 { !0 } else { ((1u64 << (hi - lo)) - 1) << lo };
+            *self.l0_mut(w) |= mask;
+            *self.l1_mut(w / 64) |= 1u64 << (w % 64);
+            if w / 64 >= self.l1_used {
+                self.l1_used = w / 64 + 1;
+            }
+            bit = w * 64 + hi;
+        }
+    }
+
+    /// Remove every bit in `start..start + len`, one word at a time. Bits
+    /// that were not present are ignored.
+    pub fn clear_range(&mut self, start: usize, len: usize) {
+        let end = start.checked_add(len).expect("bitmap: range wraps");
+        assert!(end <= self.nbits, "bitmap: range out of range");
+        let mut bit = start;
+        while bit < end {
+            let w = bit / 64;
+            let lo = bit % 64;
+            let hi = (end - w * 64).min(64);
+            let mask = if hi - lo == 64 { !0 } else { ((1u64 << (hi - lo)) - 1) << lo };
+            let word = self.l0_mut(w);
+            *word &= !mask;
+            if *word == 0 {
+                *self.l1_mut(w / 64) &= !(1u64 << (w % 64));
+            }
+            bit = w * 64 + hi;
+        }
+        while self.l1_used > 0 && self.l1(self.l1_used - 1) == 0 {
+            self.l1_used -= 1;
+        }
+    }
+
     /// Lowest bit in the set.
     #[inline]
     pub fn lowest_set(&self) -> Option<usize> {
@@ -680,6 +722,43 @@ mod tests {
             }
             for b in 0..nbits {
                 assert_eq!(o.bm.is_set(b), model[b]);
+            }
+        }
+    }
+
+    #[test]
+    fn two_level_ranges_match_model() {
+        let mut s = 0xDEAD_BEEF_CAFE_F00Du64;
+        for &nbits in &[1usize, 63, 64, 65, 130, 4096, 4097, 20_000] {
+            let mut o = owned(nbits);
+            let mut model = vec![false; nbits];
+            for _ in 0..3000 {
+                let r = xorshift(&mut s);
+                let start = (xorshift(&mut s) as usize) % (nbits + 1);
+                let len = (xorshift(&mut s) as usize) % (nbits - start + 1);
+                if r % 2 == 0 {
+                    o.bm.set_range(start, len);
+                    for b in &mut model[start..start + len] {
+                        *b = true;
+                    }
+                } else {
+                    o.bm.clear_range(start, len);
+                    for b in &mut model[start..start + len] {
+                        *b = false;
+                    }
+                }
+                assert_eq!(o.bm.lowest_set(), model.iter().position(|b| *b), "nbits={nbits}");
+                let from = (xorshift(&mut s) as usize) % (nbits + 1);
+                let expect = model.iter().skip(from).position(|b| *b).map(|p| p + from);
+                assert_eq!(o.bm.lowest_set_from(from), expect);
+                if let Some(hi) = model.iter().rposition(|b| *b) {
+                    assert_eq!(o.bm.l1_used, hi / 4096 + 1);
+                } else {
+                    assert_eq!(o.bm.l1_used, 0);
+                }
+                for b in 0..nbits {
+                    assert_eq!(o.bm.is_set(b), model[b]);
+                }
             }
         }
     }

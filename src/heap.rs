@@ -22,6 +22,10 @@
 //! run its exit destructor) is served without a cache, straight from the
 //! slab bitmaps.
 //!
+//! Huge requests (above the largest medium class) bypass the caches: they
+//! go straight to the [`Huge`] allocator under its lock, and `free` of a
+//! pointer in the huge region is routed there by `Regions::classify`.
+//!
 //! Zeroed memory is tracked per cache as a prefix: `slots[..zeroed]` came
 //! from a `Fresh` or `Purged` slab in the last refill and nothing has been
 //! pushed below that index since, so `calloc` can skip its `memset` when it
@@ -41,6 +45,7 @@ use core::ffi::c_void;
 use core::ptr;
 
 use crate::class::ClassState;
+use crate::huge::Huge;
 use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
 use crate::meta::Meta;
 
@@ -161,12 +166,13 @@ pub struct Heap {
 
 /// Process-wide allocator state that every heap works against: the metadata
 /// allocator, the regions, one [`ClassState`] per class (arena 0 in Phase 0),
-/// and the thread-exit key. Built in place by [`Shared::init`] because the
-/// class states borrow `meta` and `regions`.
+/// the huge allocator, and the thread-exit key. Built in place by
+/// [`Shared::init`] because the class states borrow `meta` and `regions`.
 pub struct Shared {
     pub meta: Meta,
     pub regions: Regions,
     pub classes: [ClassState; NCLASSES],
+    pub huge: Huge,
     /// Cache GC period; `tcache_gc_interval_ms` sets it in Phase 1.
     pub gc_interval_ns: u64,
     key: ThreadKey,
@@ -271,15 +277,21 @@ impl Shared {
     /// Initialise `this` in place for already reserved `regions`: the
     /// metadata allocator over the metadata reservation, one class state
     /// per class in arena 0 with `guard_interval` (0 when the kernel has no
-    /// guard regions), and the thread-exit key. Returns `false` if the
-    /// metadata region cannot hold the class tables, leaving `this`
-    /// unusable.
+    /// guard regions), the huge allocator (`guard_install` is the probed
+    /// `MADV_GUARD_INSTALL` support), and the thread-exit key. Returns
+    /// `false` if the metadata region cannot hold the tables, leaving
+    /// `this` unusable.
     ///
     /// # Safety
     /// `this` must point to writable storage for a `Shared` that nothing
     /// else reads until this returns `true`, and the regions must be
     /// reserved (on Linux, `PROT_NONE` mappings that this process owns).
-    pub unsafe fn init(this: *mut Shared, regions: Regions, guard_interval: u32) -> bool {
+    pub unsafe fn init(
+        this: *mut Shared,
+        regions: Regions,
+        guard_interval: u32,
+        guard_install: bool,
+    ) -> bool {
         // SAFETY: the caller guarantees `this` is writable and unaliased.
         unsafe {
             let meta = &raw mut (*this).meta;
@@ -292,6 +304,10 @@ impl Shared {
                     Some(cs) => ptr::write(&raw mut (*this).classes[c], cs),
                     None => return false,
                 }
+            }
+            match Huge::new(meta, regions, guard_install) {
+                Some(h) => ptr::write(&raw mut (*this).huge, h),
+                None => return false,
             }
             ptr::write(&raw mut (*this).gc_interval_ns, DEFAULT_GC_INTERVAL_NS);
             ptr::write(&raw mut (*this).key, ThreadKey::create());
@@ -335,20 +351,34 @@ impl Shared {
         self.class(class).release(&[p]);
     }
 
-    /// Classify `p` and abort unless it is an allocated slab slot, returning
-    /// its class. Huge pointers are Phase 0 task 10.
+    /// Classify `p` for `free`: `Ok(class)` for an allocated slab slot (the
+    /// bitmap check happens here), `Err(page)` for a page-aligned pointer
+    /// into the huge region (the huge allocator checks it). Aborts on
+    /// anything else.
     #[inline(always)]
-    fn check_slab(&self, p: *mut u8) -> usize {
+    fn classify_free(&self, p: *mut u8) -> Result<usize, usize> {
         match self.regions.classify(p as usize) {
             Kind::Slab { class, slab, slot } => {
                 let class = class as usize;
                 let cs = self.class(class);
                 cs.desc(slab as usize).check(cs.class(), slot as usize, p as usize, class, slab as usize);
-                class
+                Ok(class)
             }
-            Kind::Huge { .. } => huge_free(p as usize),
+            Kind::Huge { page } => Err(page),
             Kind::Invalid => invalid_free(p as usize),
         }
+    }
+
+    /// Allocate a huge run of `size` bytes aligned to `align` in arena 0.
+    /// Null on exhaustion; the flag says the memory is known zero.
+    pub fn alloc_huge(&self, size: usize, align: usize) -> (*mut u8, bool) {
+        self.huge.alloc(&self.meta, size, align, 0)
+    }
+
+    /// Free the huge run starting at `page`. Aborts unless it is a live
+    /// run start. Returns the usable bytes released.
+    pub fn free_huge(&self, page: usize) -> usize {
+        self.huge.free(&self.meta, page)
     }
 }
 
@@ -504,11 +534,33 @@ impl Heap {
         }
     }
 
-    /// Fast path of `free`. Aborts unless `p` is an allocated slab slot.
+    /// Fast path of `free`. Aborts unless `p` is an allocated slab slot or
+    /// a live huge run.
     #[inline(always)]
     pub fn free(&mut self, shared: &Shared, p: *mut u8) {
-        let class = shared.check_slab(p);
-        self.push(shared, class, p);
+        match shared.classify_free(p) {
+            Ok(class) => self.push(shared, class, p),
+            Err(page) => self.free_huge(shared, page),
+        }
+    }
+
+    /// Huge allocation on this thread: no cache, one lock, counted in the
+    /// thread's statistics.
+    #[cold]
+    #[inline(never)]
+    pub fn alloc_huge(&mut self, shared: &Shared, size: usize, align: usize) -> (*mut u8, bool) {
+        let (p, zero) = shared.alloc_huge(size, align);
+        if !p.is_null() {
+            self.stats.allocated += shared.huge.usable_for(size).unwrap_or(0) as u64;
+        }
+        (p, zero)
+    }
+
+    /// Free of a huge run on this thread.
+    #[cold]
+    #[inline(never)]
+    fn free_huge(&mut self, shared: &Shared, page: usize) {
+        self.stats.deallocated += shared.free_huge(page) as u64;
     }
 
     /// Push a checked slot of `class` onto its cache.
@@ -770,10 +822,12 @@ pub fn alloc_zeroed(shared: &Shared, class: usize) -> (*mut u8, bool) {
 pub fn free(shared: &Shared, p: *mut u8) {
     match heap_for_thread(shared) {
         Some(h) => h.free(shared, p),
-        None => {
-            let class = shared.check_slab(p);
-            shared.free_direct(class, p);
-        }
+        None => match shared.classify_free(p) {
+            Ok(class) => shared.free_direct(class, p),
+            Err(page) => {
+                shared.free_huge(page);
+            }
+        },
     }
 }
 
@@ -781,12 +835,6 @@ pub fn free(shared: &Shared, p: *mut u8) {
 #[inline(never)]
 fn invalid_free(p: usize) -> ! {
     panic!("invalid free of {p:#x}: not an allocation")
-}
-
-#[cold]
-#[inline(never)]
-fn huge_free(p: usize) -> ! {
-    panic!("free of {p:#x}: huge allocations are not implemented yet")
 }
 
 #[cfg(test)]
@@ -809,9 +857,12 @@ mod tests {
         (x + a - 1) & !(a - 1)
     }
 
-    fn regions_at(superblock: usize, meta: (usize, usize)) -> Regions {
+    /// 64 MiB huge region; on Linux `shared()` reserves it for real.
+    const HUGE_LEN: usize = 64 << 20;
+
+    fn regions_at(superblock: usize, meta: (usize, usize), huge_base: usize) -> Regions {
         let sb_len = (NCLASSES << LG_STRIDE) + MAX_SLAB;
-        let huge = (superblock + sb_len + (1 << 30), 1usize << 34);
+        let huge = (huge_base, HUGE_LEN);
         Regions::from_parts(
             superblock,
             LG_REGION,
@@ -836,7 +887,7 @@ mod tests {
     /// never dereferenced.
     fn shared() -> &'static Shared {
         #[cfg(target_os = "linux")]
-        let (sb, mb) = {
+        let (sb, mb, hb) = {
             use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
             let reserve = |len: usize| -> usize {
                 unsafe {
@@ -844,18 +895,18 @@ mod tests {
                 }
                 .expect("reserve")
             };
-            (reserve((NCLASSES << LG_STRIDE) + MAX_SLAB), reserve(META_LEN))
+            (reserve((NCLASSES << LG_STRIDE) + MAX_SLAB), reserve(META_LEN), reserve(HUGE_LEN))
         };
         #[cfg(not(target_os = "linux"))]
-        let (sb, mb) = {
+        let (sb, mb, hb) = {
             let mut v: Vec<u8> = Vec::new();
             v.resize(META_LEN + PAGE, 0);
             let buf: &'static mut [u8] = Box::leak(v.into_boxed_slice());
-            (0x1000_0000_0000usize, buf.as_ptr() as usize)
+            (0x1000_0000_0000usize, buf.as_ptr() as usize, 0x2000_0000_1000usize)
         };
-        let regions = regions_at(align_up(sb, MAX_SLAB), (align_up(mb, PAGE), META_LEN));
+        let regions = regions_at(align_up(sb, MAX_SLAB), (align_up(mb, PAGE), META_LEN), hb);
         let b: &'static mut MaybeUninit<Shared> = Box::leak(Box::new(MaybeUninit::uninit()));
-        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, 0) });
+        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, 0, false) });
         unsafe { b.assume_init_ref() }
     }
 
@@ -893,6 +944,14 @@ mod tests {
 
         fn free(&self, p: *mut u8) {
             self.heap().free(self.s, p)
+        }
+
+        fn alloc_huge(&self, size: usize, align: usize) -> (*mut u8, bool) {
+            self.heap().alloc_huge(self.s, size, align)
+        }
+
+        fn stats(&self) -> ThreadStats {
+            self.heap().stats()
         }
 
         fn gc(&self) {
@@ -1387,11 +1446,37 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "huge allocations are not implemented")]
-    fn free_of_a_huge_pointer_is_a_placeholder_abort() {
+    #[should_panic(expected = "not the start of a huge allocation")]
+    fn free_of_an_unallocated_huge_pointer_aborts() {
         let s = shared();
         let t = TestHeap::new(s);
         t.free(s.regions.huge_base as *mut u8);
+    }
+
+    #[test]
+    fn huge_runs_go_through_the_heap_without_caches() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let size = 300 * 1024;
+        let (p, zero) = t.alloc_huge(size, 16);
+        assert!(!p.is_null() && zero);
+        assert_eq!(s.regions.classify(p as usize), Kind::Huge { page: 0 });
+        assert_eq!(s.huge.usable_size(0), s.huge.usable_for(size).unwrap());
+        assert_eq!(t.stats().allocated, s.huge.usable_for(size).unwrap() as u64);
+        let (q, _) = t.alloc_huge(size, 1 << 20);
+        assert_eq!(q as usize % (1 << 20), 0);
+        // Frees route by region: a huge free never touches a cache.
+        t.free(p);
+        assert_eq!(t.stats().deallocated, s.huge.usable_for(size).unwrap() as u64);
+        assert!((0..NCLASSES).all(|c| t.heap().cache(c).is_none()));
+        assert_eq!(s.huge.stats().runs, 1);
+        // The heap-less path frees huge runs too.
+        s.free_huge(match s.regions.classify(q as usize) {
+            Kind::Huge { page } => page,
+            other => panic!("{other:?}"),
+        });
+        assert_eq!(s.huge.stats().runs, 0);
+        assert!(s.alloc_huge(usize::MAX, 1).0.is_null());
     }
 }
 
@@ -1422,7 +1507,7 @@ mod linux_tests {
         let sb = reserve(sb_len);
         let mb = reserve(META_LEN);
         let superblock = (sb + MAX_SLAB - 1) & !(MAX_SLAB - 1);
-        let huge = (superblock + sb_len + (1 << 30), 1usize << 34);
+        let huge = (reserve(64 << 20), 64usize << 20);
         let regions = Regions::from_parts(
             superblock,
             LG_REGION,
@@ -1438,7 +1523,7 @@ mod linux_tests {
             ],
         );
         let b: &'static mut MaybeUninit<Shared> = Box::leak(Box::new(MaybeUninit::uninit()));
-        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, 0) });
+        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, 0, false) });
         unsafe { b.assume_init_ref() }
     }
 

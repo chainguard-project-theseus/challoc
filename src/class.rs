@@ -62,21 +62,21 @@ pub struct Claim {
 }
 
 /// A never-freed table in the metadata region, committed page by page as
-/// the high-water mark grows.
-struct Lazy {
-    base: usize,
+/// the high-water mark grows. Shared with `huge.rs`.
+pub(crate) struct Lazy {
+    pub(crate) base: usize,
     len: usize,
     committed: usize,
 }
 
 impl Lazy {
-    fn reserve(meta: &Meta, len: usize, align: usize) -> Option<Lazy> {
+    pub(crate) fn reserve(meta: &Meta, len: usize, align: usize) -> Option<Lazy> {
         let base = meta.reserve(len, align)?;
         Some(Lazy { base, len, committed: 0 })
     }
 
     /// Make the first `upto` bytes committed.
-    fn ensure(&mut self, meta: &Meta, page: usize, upto: usize) -> Result<(), Errno> {
+    pub(crate) fn ensure(&mut self, meta: &Meta, page: usize, upto: usize) -> Result<(), Errno> {
         let want = ((upto + page - 1) & !(page - 1)).min((self.len + page - 1) & !(page - 1));
         if want > self.committed {
             meta.commit(self.base + self.committed, want - self.committed)?;
@@ -86,15 +86,16 @@ impl Lazy {
     }
 }
 
-/// A slab-number set: a [`TwoLevelBitmap`] over a lazily committed table.
-struct Set {
-    map: TwoLevelBitmap,
+/// A slab-number (or huge-page) set: a [`TwoLevelBitmap`] over a lazily
+/// committed table. Shared with `huge.rs`.
+pub(crate) struct Set {
+    pub(crate) map: TwoLevelBitmap,
     table: Lazy,
     l1_words: usize,
 }
 
 impl Set {
-    fn new(meta: &Meta, page: usize, nslabs: usize) -> Option<Set> {
+    pub(crate) fn new(meta: &Meta, page: usize, nslabs: usize) -> Option<Set> {
         let l0_words = nslabs.div_ceil(64);
         let l1_words = l0_words.div_ceil(64);
         let mut table = Lazy::reserve(meta, 8 * TwoLevelBitmap::words_needed(nslabs), page)?;
@@ -105,8 +106,9 @@ impl Set {
         Some(Set { map, table, l1_words })
     }
 
-    /// Commit the level-0 word that holds `slab`.
-    fn ensure(&mut self, meta: &Meta, page: usize, slab: usize) -> Result<(), Errno> {
+    /// Commit the level-0 words that hold every bit up to and including
+    /// `slab`.
+    pub(crate) fn ensure(&mut self, meta: &Meta, page: usize, slab: usize) -> Result<(), Errno> {
         self.table.ensure(meta, page, 8 * (self.l1_words + slab / 64 + 1))
     }
 }
