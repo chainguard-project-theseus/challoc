@@ -26,6 +26,9 @@
 
 pub mod libc;
 
+#[cfg(test)]
+mod ctests;
+
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicU32, Ordering};
