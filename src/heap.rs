@@ -466,8 +466,9 @@ impl Shared {
     }
 
     /// Change the decay period of every existing arena; `-1` turns purging
-    /// off. Takes effect at the next periodic tick. `arena.<i>.dirty_decay_ms`
-    /// goes through `Arena::set_decay_ms` instead.
+    /// off. Takes effect at the next periodic tick, or at once for a
+    /// background thread (each arena setter wakes it).
+    /// `arena.<i>.dirty_decay_ms` goes through `Arena::set_decay_ms` instead.
     pub fn set_decay_ms(&self, ms: i64) {
         for a in self.arenas.iter() {
             a.set_decay_ms(ms);

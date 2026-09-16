@@ -179,9 +179,11 @@ impl Arena {
     }
 
     /// Change the decay period; `-1` turns purging off. Takes effect at the
-    /// next periodic tick.
+    /// next periodic tick, or at once for a background thread, which is
+    /// woken to recompute its deadline.
     pub fn set_decay_ms(&self, ms: i64) {
         self.decay_ns.store(crate::purge::decay_ns_from_ms(ms), Ordering::Relaxed);
+        crate::purge::note_decay_changed();
     }
 
     /// Decay step over every class (see `ClassState::decay`): the earliest

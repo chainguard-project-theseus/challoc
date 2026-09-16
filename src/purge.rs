@@ -211,6 +211,14 @@ pub fn note_empty() {
     background::wake();
 }
 
+/// A decay period changed (`arena.<i>.dirty_decay_ms`, `malloc_conf` at
+/// run time): wake a background thread whose deadline was computed with
+/// the old period, so a shorter period takes effect now rather than at
+/// the next wake-up.
+pub fn note_decay_changed() {
+    background::wake();
+}
+
 #[cfg(target_os = "linux")]
 mod os {
     use super::{BACKEND, LAZY, LOOP, MAX_BATCH};
