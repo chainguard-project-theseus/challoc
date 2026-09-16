@@ -702,6 +702,31 @@ mod tests {
         }
     }
 
+    /// Regression: with 2^21 members the level-1 table is exactly one page,
+    /// so level 0 starts on a page that `Set::new` leaves uncommitted (the
+    /// real huge region has the same shape at 2^28 pages). Scans of an
+    /// empty or sparsely populated set must never touch those pages.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn set_scans_never_read_uncommitted_words() {
+        let env = Env::new();
+        let nbits = 1 << 21;
+        let mut set = Set::new(&env.meta, PAGE, nbits).expect("set");
+        assert_eq!(set.map.lowest_set(), None);
+        assert_eq!(set.map.lowest_set_from(0), None);
+        assert_eq!(set.map.lowest_set_from(12345), None);
+        assert_eq!(set.map.lowest_set_from(nbits - 1), None);
+        set.ensure(&env.meta, PAGE, 100).unwrap();
+        set.map.set(100);
+        assert_eq!(set.map.lowest_set_from(0), Some(100));
+        assert_eq!(set.map.lowest_set_from(100), Some(100));
+        assert_eq!(set.map.lowest_set_from(101), None);
+        // Far beyond the committed prefix, in a level-1 group of its own.
+        assert_eq!(set.map.lowest_set_from(64 * 64 * 100), None);
+        set.map.clear(100);
+        assert_eq!(set.map.lowest_set_from(0), None);
+    }
+
     #[cfg(target_os = "linux")]
     impl Drop for Env {
         fn drop(&mut self) {

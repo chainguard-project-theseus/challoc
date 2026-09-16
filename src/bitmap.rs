@@ -310,22 +310,29 @@ impl TwoLevelBitmap {
     }
 
     /// Lowest bit in the set that is `>= from`.
+    ///
+    /// Level-0 words are read only when their level-1 bit is set. A set
+    /// level-1 bit means the word is non-zero, so it has been written; the
+    /// lazily committed tables in `class.rs` and `huge.rs` rely on this to
+    /// keep scans away from words whose page is still `PROT_NONE`.
     pub fn lowest_set_from(&self, from: usize) -> Option<usize> {
         if from >= self.nbits {
             return None;
         }
         let w = from / 64;
-        let m = self.l0(w) & (!0u64 << (from % 64));
-        if m != 0 {
-            return Some(w * 64 + m.trailing_zeros() as usize);
-        }
-        // Rest of the level-1 word that covers `w`, excluding `w` itself.
         let j = w / 64;
         if j >= self.l1_used {
             return None;
         }
-        let shift = w % 64 + 1;
-        let m1 = if shift == 64 { 0 } else { self.l1(j) & (!0u64 << shift) };
+        // Non-zero level-0 words at or above `w` in the group covering `w`.
+        let mut m1 = self.l1(j) & (!0u64 << (w % 64));
+        if m1 != 0 && j * 64 + m1.trailing_zeros() as usize == w {
+            let m = self.l0(w) & (!0u64 << (from % 64));
+            if m != 0 {
+                return Some(w * 64 + m.trailing_zeros() as usize);
+            }
+            m1 &= m1 - 1;
+        }
         if m1 != 0 {
             let w2 = j * 64 + m1.trailing_zeros() as usize;
             return Some(w2 * 64 + self.l0(w2).trailing_zeros() as usize);

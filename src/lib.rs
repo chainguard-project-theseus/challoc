@@ -29,6 +29,8 @@ pub const QUANTUM: usize = 16;
 #[cfg(feature = "quantum8")]
 pub const QUANTUM: usize = 8;
 
+#[cfg(target_os = "linux")]
+pub mod api;
 pub mod bitmap;
 pub mod class;
 pub mod heap;

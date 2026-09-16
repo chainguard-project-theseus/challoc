@@ -471,8 +471,8 @@ mod linux {
             for role in order {
                 match role {
                     0 => sb = Some(reserve_superblock()),
-                    1 => huge = Some(reserve_shrinking("huge", LG_HUGE_PREFERRED, LG_HUGE_MIN, slide)),
-                    _ => meta = Some(reserve_shrinking("metadata", LG_META_PREFERRED, LG_META_MIN, slide)),
+                    1 => huge = Some(reserve_shrinking("huge", LG_HUGE_PREFERRED, LG_HUGE_MIN, slide + MAX_SLAB)),
+                    _ => meta = Some(reserve_shrinking("metadata", LG_META_PREFERRED, LG_META_MIN, slide + MAX_SLAB)),
                 }
             }
             let (sb_map, lg_region, lg_stride) = sb.unwrap();
@@ -485,8 +485,11 @@ mod linux {
             for (c, off) in offsets.iter_mut().enumerate() {
                 *off = (word(c) as usize % (gap >> LG_MAX_SLAB)) << LG_MAX_SLAB;
             }
-            let huge_base = huge_map.addr + ((word(NCLASSES) as usize % SLIDE_STEPS) << LG_MAX_SLAB);
-            let meta_base = meta_map.addr + ((word(NCLASSES + 1) as usize % SLIDE_STEPS) << LG_MAX_SLAB);
+            // `mmap` only promises page alignment, so each mapping carries
+            // `MAX_SLAB` of slack and its base is aligned up before the slide.
+            let align_base = |m: Mapping| (m.addr + MAX_SLAB - 1) & !(MAX_SLAB - 1);
+            let huge_base = align_base(huge_map) + ((word(NCLASSES) as usize % SLIDE_STEPS) << LG_MAX_SLAB);
+            let meta_base = align_base(meta_map) + ((word(NCLASSES + 1) as usize % SLIDE_STEPS) << LG_MAX_SLAB);
 
             if anon_name {
                 name_mapping(sb_map, b"challoc:classes\0");

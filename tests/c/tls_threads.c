@@ -3,11 +3,12 @@
  * Run as LD_PRELOAD=target/release/libchalloc.so ./tls_threads. Looks up the
  * diagnostic exports challoc_tls_get/challoc_tls_set with dlsym so the
  * binary has no link-time dependency on the library, then starts 64 threads.
- * Each thread checks its slot starts null, stores a pointer unique to itself
- * (the address of one of its own stack variables), waits until every thread
- * has stored, and checks the slot still holds its pointer. The main thread
- * verifies all 64 values were distinct and that its own slot survived.
- * Exits non-zero on any failure. */
+ * The slot holds the thread's heap pointer once it has allocated, so each
+ * thread checks its slot starts null, allocates, and then reads a non-null
+ * value that the main thread verifies is distinct across all 64 threads.
+ * Each thread also round-trips a value through challoc_tls_set/get while it
+ * makes no allocation, restoring the heap pointer before continuing. Exits
+ * non-zero on any failure. */
 #include <dlfcn.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -33,23 +34,33 @@ static void *worker(void *arg)
         fprintf(stderr, "thread %lu: slot not null at start\n", (unsigned long)i);
         __atomic_fetch_add(&failures, 1, __ATOMIC_RELAXED);
     }
-    tls_set(mine);
-    pthread_barrier_wait(&barrier); /* everyone has written */
-    if (tls_get() != mine) {
-        fprintf(stderr, "thread %lu: slot %p, expected %p\n", (unsigned long)i, tls_get(),
-                mine);
+    void *volatile block = malloc(64); /* volatile: gcc must not elide the pair */
+    void *heap = tls_get();
+    if (heap == NULL || (uintptr_t)heap <= 2) {
+        fprintf(stderr, "thread %lu: slot %p after malloc, expected a heap\n", (unsigned long)i, heap);
         __atomic_fetch_add(&failures, 1, __ATOMIC_RELAXED);
     }
-    observed[i] = tls_get();
-    pthread_barrier_wait(&barrier); /* keep `local` alive until all have read */
+    /* Round-trip through the accessor with no allocation in between. */
+    tls_set(mine);
+    if (tls_get() != mine) {
+        fprintf(stderr, "thread %lu: slot %p, expected %p\n", (unsigned long)i, tls_get(), mine);
+        __atomic_fetch_add(&failures, 1, __ATOMIC_RELAXED);
+    }
+    tls_set(heap);
+    free(block);
+    observed[i] = heap;
+    pthread_barrier_wait(&barrier); /* every thread has a heap before any exits */
+    if (tls_get() != heap) {
+        fprintf(stderr, "thread %lu: slot %p after barrier, expected %p\n", (unsigned long)i,
+                tls_get(), heap);
+        __atomic_fetch_add(&failures, 1, __ATOMIC_RELAXED);
+    }
     return NULL;
 }
 
 int main(void)
 {
     pthread_t threads[NTHREADS];
-    int main_slot_value = 0;
-    void *main_slot = &main_slot_value;
 
     tls_get = (void *(*)(void))dlsym(RTLD_DEFAULT, "challoc_tls_get");
     tls_set = (void (*)(void *))dlsym(RTLD_DEFAULT, "challoc_tls_set");
@@ -58,11 +69,13 @@ int main(void)
         return 2;
     }
 
-    if (tls_get() != NULL) {
-        fprintf(stderr, "main: slot not null at start\n");
+    void *volatile block = malloc(16);
+    void *main_heap = tls_get();
+    if (main_heap == NULL || (uintptr_t)main_heap <= 2) {
+        fprintf(stderr, "main: slot %p after malloc, expected a heap\n", main_heap);
         return 1;
     }
-    tls_set(main_slot);
+    free(block);
 
     if (pthread_barrier_init(&barrier, NULL, NTHREADS) != 0) {
         perror("pthread_barrier_init");
@@ -78,7 +91,7 @@ int main(void)
         pthread_join(threads[i], NULL);
 
     for (int i = 0; i < NTHREADS; i++) {
-        if (observed[i] == NULL || observed[i] == main_slot) {
+        if (observed[i] == NULL || observed[i] == main_heap) {
             fprintf(stderr, "thread %d: bad slot %p\n", i, observed[i]);
             failures++;
         }
@@ -89,8 +102,8 @@ int main(void)
             }
         }
     }
-    if (tls_get() != main_slot) {
-        fprintf(stderr, "main: slot %p after threads, expected %p\n", tls_get(), main_slot);
+    if (tls_get() != main_heap) {
+        fprintf(stderr, "main: slot %p after threads, expected %p\n", tls_get(), main_heap);
         failures++;
     }
 

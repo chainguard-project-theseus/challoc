@@ -1191,10 +1191,17 @@ mod tests {
                 }
                 .expect("reserve")
             };
-            let hb = reserve(HUGE_LEN);
+            // `mmap` only promises page alignment; the alignment tests
+            // assume a `MAX_SLAB`-aligned huge base like the real layout.
+            let hraw = reserve(HUGE_LEN + crate::layout::MAX_SLAB);
+            let hb = (hraw + crate::layout::MAX_SLAB - 1) & !(crate::layout::MAX_SLAB - 1);
             let mb = reserve(meta_len);
             let regions = regions_at((hb, HUGE_LEN), (mb, meta_len));
-            Env { meta: Meta::new(mb, meta_len, PAGE), regions, maps: [(hb, HUGE_LEN), (mb, meta_len)] }
+            Env {
+                meta: Meta::new(mb, meta_len, PAGE),
+                regions,
+                maps: [(hraw, HUGE_LEN + crate::layout::MAX_SLAB), (mb, meta_len)],
+            }
         }
 
         #[cfg(not(target_os = "linux"))]
