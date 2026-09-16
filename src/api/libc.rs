@@ -247,6 +247,31 @@ pub fn reallocarray(p: *mut u8, n: usize, m: usize) -> *mut u8 {
     }
 }
 
+/// The class that serves `size` bytes at `align` (a power of two; 1 or
+/// the quantum means the natural alignment): the smallest class at or
+/// above `size` whose slot size is a multiple of `align`. `None` when the
+/// request is a huge run, either because `size` is above `MEDIUM_MAX` or
+/// because `align` is. Shared by `aligned_alloc`, `mallocx`, `rallocx`
+/// and `nallocx`.
+#[inline]
+pub(super) fn class_for(size: usize, align: usize) -> Option<usize> {
+    let c = class_of(size)?;
+    if align <= QUANTUM {
+        return Some(c);
+    }
+    if align > MEDIUM_MAX {
+        return None;
+    }
+    // The power-of-two class at or above `max(size, align)` qualifies and
+    // is at most `MEDIUM_MAX`, so this stops inside the table.
+    let mut c = c;
+    while CLASSES[c].size() % align != 0 {
+        c += 1;
+        debug_assert!(c < NCLASSES);
+    }
+    Some(c)
+}
+
 /// Allocate `size` bytes aligned to `align`, a power of two. Null with
 /// `errno = ENOMEM` on exhaustion.
 pub fn alloc_aligned(align: usize, size: usize) -> *mut u8 {
@@ -255,16 +280,9 @@ pub fn alloc_aligned(align: usize, size: usize) -> *mut u8 {
         return malloc(size);
     }
     let shared = super::shared();
-    let p = match class_of(size) {
-        Some(c) if align <= MEDIUM_MAX => {
-            let mut c = c;
-            while CLASSES[c].size() % align != 0 {
-                c += 1;
-                debug_assert!(c < NCLASSES);
-            }
-            heap::alloc(shared, c)
-        }
-        _ => alloc_huge(shared, size, align).0,
+    let p = match class_for(size, align) {
+        Some(c) => heap::alloc(shared, c),
+        None => alloc_huge(shared, size, align).0,
     };
     if p.is_null() { enomem() } else { p }
 }
@@ -397,6 +415,54 @@ mod exports {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn malloc_usable_size(p: *mut c_void) -> usize {
+        super::malloc_usable_size(p as *mut u8)
+    }
+
+    // `je_` aliases (design 13.2): what a program built against a
+    // `--with-jemalloc-prefix=je_` jemalloc, such as Valkey, calls.
+
+    #[unsafe(export_name = "je_malloc")]
+    pub extern "C" fn je_malloc(size: usize) -> *mut c_void {
+        super::malloc(size) as *mut c_void
+    }
+
+    #[unsafe(export_name = "je_free")]
+    pub extern "C" fn je_free(p: *mut c_void) {
+        super::free(p as *mut u8)
+    }
+
+    #[unsafe(export_name = "je_calloc")]
+    pub extern "C" fn je_calloc(n: usize, m: usize) -> *mut c_void {
+        super::calloc(n, m) as *mut c_void
+    }
+
+    #[unsafe(export_name = "je_realloc")]
+    pub extern "C" fn je_realloc(p: *mut c_void, size: usize) -> *mut c_void {
+        super::realloc(p as *mut u8, size) as *mut c_void
+    }
+
+    #[unsafe(export_name = "je_aligned_alloc")]
+    pub extern "C" fn je_aligned_alloc(align: usize, size: usize) -> *mut c_void {
+        super::aligned_alloc(align, size) as *mut c_void
+    }
+
+    #[unsafe(export_name = "je_memalign")]
+    pub extern "C" fn je_memalign(align: usize, size: usize) -> *mut c_void {
+        super::aligned_alloc(align, size) as *mut c_void
+    }
+
+    #[unsafe(export_name = "je_posix_memalign")]
+    pub extern "C" fn je_posix_memalign(out: *mut *mut c_void, align: usize, size: usize) -> c_int {
+        super::posix_memalign(out as *mut *mut u8, align, size)
+    }
+
+    #[unsafe(export_name = "je_valloc")]
+    pub extern "C" fn je_valloc(size: usize) -> *mut c_void {
+        super::valloc(size) as *mut c_void
+    }
+
+    #[unsafe(export_name = "je_malloc_usable_size")]
+    pub extern "C" fn je_malloc_usable_size(p: *mut c_void) -> usize {
         super::malloc_usable_size(p as *mut u8)
     }
 }

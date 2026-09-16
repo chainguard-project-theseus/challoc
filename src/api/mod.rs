@@ -39,7 +39,11 @@
 //! `SIGALRM` overtakes the parent's post-fork release (seen under Rosetta).
 
 pub mod cxx;
+pub mod glibc;
+pub mod jemalloc;
 pub mod libc;
+pub mod mallctl;
+pub mod print;
 
 #[cfg(test)]
 mod ctests;

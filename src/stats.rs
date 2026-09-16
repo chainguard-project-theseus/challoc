@@ -225,6 +225,42 @@ impl Snapshot {
     };
 }
 
+impl ArenaStats {
+    /// Add every figure of `o` to `self` (the `MALLCTL_ARENAS_ALL` merge
+    /// of `stats.arenas.4096.*`). The bin geometry (`size`, `nregs`,
+    /// `slab_size`) is the same for every arena and is taken from `o`
+    /// where `self` has none yet.
+    pub fn add(&mut self, o: &ArenaStats) {
+        self.small_allocated += o.small_allocated;
+        self.small_active += o.small_active;
+        self.small_dirty += o.small_dirty;
+        self.small_retained += o.small_retained;
+        self.large_allocated += o.large_allocated;
+        self.large_runs += o.large_runs;
+        self.huge_dirty += o.huge_dirty;
+        self.huge_retained += o.huge_retained;
+        self.metadata += o.metadata;
+        self.pactive += o.pactive;
+        self.pdirty += o.pdirty;
+        self.pmuzzy += o.pmuzzy;
+        self.resident += o.resident;
+        self.retained += o.retained;
+        self.mapped += o.mapped;
+        for (b, ob) in self.bins.iter_mut().zip(o.bins.iter()) {
+            if b.size == 0 {
+                b.size = ob.size;
+                b.nregs = ob.nregs;
+                b.slab_size = ob.slab_size;
+            }
+            b.curregs += ob.curregs;
+            b.curslabs += ob.curslabs;
+            b.nonfull_slabs += ob.nonfull_slabs;
+            b.empty_slabs += ob.empty_slabs;
+            b.purged_slabs += ob.purged_slabs;
+        }
+    }
+}
+
 /// The current figures of one class state (one lock hold).
 pub fn collect_bin(cs: &ClassState) -> BinStats {
     let (s, curregs) = cs.bin_stats();
@@ -326,6 +362,28 @@ pub fn snapshot(shared: &Shared) -> Snapshot {
 /// epoch reports zeros.
 pub fn arena_stats(shared: &Shared, index: u16) -> Option<ArenaStats> {
     Some(shared.arenas.get_existing(index)?.stats())
+}
+
+/// `stats.arenas.4096.*` (`MALLCTL_ARENAS_ALL`): every existing arena's
+/// stored figures summed. Its `index` is 4096.
+pub fn arena_stats_all(shared: &Shared) -> ArenaStats {
+    let mut all = ArenaStats::empty(crate::arena::ARENAS_ALL as u16);
+    for arena in shared.arenas.iter() {
+        all.add(&arena.stats());
+    }
+    all
+}
+
+/// Every existing arena's *current* figures summed, not stored (for
+/// `mallinfo` and `malloc_stats`, which glibc defines as live).
+pub fn collect_all(shared: &Shared) -> ArenaStats {
+    let huge = shared.huge.stats();
+    let meta = shared.meta.stats();
+    let mut all = ArenaStats::empty(crate::arena::ARENAS_ALL as u16);
+    for arena in shared.arenas.iter() {
+        all.add(&collect_arena_with(shared, arena, &huge, &meta));
+    }
+    all
 }
 
 #[cfg(test)]

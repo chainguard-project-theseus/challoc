@@ -385,6 +385,51 @@ fn c_thread_exit() {
 /// The C++ operators (`src/api/cxx.rs`): resolution into libchalloc,
 /// round trips, `std::bad_alloc` thrown through challoc's frames and the
 /// `new_handler` loop.
+/// `tests/c/jemalloc_api.c` (plan Phase 1 task 5): the jemalloc and glibc
+/// extras under the real `.so`, every non-standard symbol reached through
+/// a weak reference.
+#[test]
+fn c_jemalloc_api() {
+    run_c("jemalloc_api", &[]);
+}
+
+/// The release `.so` exports the whole design 13.1/13.2 symbol list: the
+/// `*allocx` family, `mallctl*`, the reports, the glibc extras and every
+/// `je_` alias as global functions; `malloc_message`/`je_malloc_message`
+/// as one global object and `malloc_conf`/`je_malloc_conf` as weak
+/// objects a program can preempt.
+#[test]
+fn jemalloc_symbols_in_release_so() {
+    let so = release_so();
+    let dynsym = Command::new("readelf").args(["--dyn-syms", "-W", &so]).output().unwrap();
+    assert!(dynsym.status.success(), "readelf --dyn-syms failed");
+    let dynsym = String::from_utf8_lossy(&dynsym.stdout);
+    let line = |sym: &str| dynsym.lines().find(|l| l.ends_with(&std::format!(" {sym}")) && !l.contains(" UND "));
+    for sym in [
+        "mallocx", "rallocx", "xallocx", "sallocx", "dallocx", "sdallocx", "nallocx",
+        "mallctl", "mallctlnametomib", "mallctlbymib", "malloc_stats_print",
+        "malloc_info", "malloc_stats", "malloc_trim", "mallopt", "mallinfo", "mallinfo2",
+        "je_malloc", "je_free", "je_calloc", "je_realloc", "je_aligned_alloc", "je_memalign",
+        "je_posix_memalign", "je_valloc", "je_malloc_usable_size",
+        "je_mallocx", "je_rallocx", "je_xallocx", "je_sallocx", "je_dallocx", "je_sdallocx", "je_nallocx",
+        "je_mallctl", "je_mallctlnametomib", "je_mallctlbymib", "je_malloc_stats_print",
+    ] {
+        let l = line(sym).unwrap_or_else(|| panic!("{sym} is not defined in {so}:\n{dynsym}"));
+        assert!(l.contains(" FUNC ") && l.contains(" GLOBAL "), "{sym} must be a global function: {l}");
+    }
+    for sym in ["malloc_message", "je_malloc_message"] {
+        let l = line(sym).unwrap_or_else(|| panic!("{sym} is not defined in {so}:\n{dynsym}"));
+        assert!(l.contains(" OBJECT ") && l.contains(" GLOBAL "), "{sym} must be a global object: {l}");
+    }
+    // The conf symbols are read from the program, never defined here: weak
+    // undefined references resolved through the GOT.
+    for sym in ["malloc_conf", "je_malloc_conf"] {
+        let l = dynsym.lines().find(|l| l.ends_with(&std::format!(" {sym}")));
+        let l = l.unwrap_or_else(|| panic!("{sym} not referenced by {so}:\n{dynsym}"));
+        assert!(l.contains(" WEAK ") && l.contains(" UND "), "{sym} must be a weak undefined reference: {l}");
+    }
+}
+
 #[test]
 fn cxx_new() {
     let bin = compile_cxx("cxx_new");

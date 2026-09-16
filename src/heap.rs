@@ -218,6 +218,13 @@ pub struct Heap {
     caches: [*mut ClassCache; NCLASSES],
     /// Caches of every other arena this heap has touched.
     others: *mut ArenaCaches,
+    /// `thread.allocated` / `thread.deallocated` as of the last `mallctl`
+    /// read of any `thread.*allocated*` key; `thread.allocatedp` and
+    /// `thread.deallocatedp` point into it (see [`Heap::materialise_stats`]).
+    snapshot: ThreadStats,
+    /// `thread.tcache.enabled`: while false, `ensure_cache` creates no
+    /// cache and the thread is served straight from the slab bitmaps.
+    tcache_enabled: bool,
 }
 
 /// Process-wide allocator state that every heap works against: the regions,
@@ -644,6 +651,8 @@ impl Heap {
                     uncached: ThreadStats::default(),
                     caches: [empty_cache(); NCLASSES],
                     others: ptr::null_mut(),
+                    snapshot: ThreadStats::default(),
+                    tcache_enabled: true,
                 },
             );
         }
@@ -761,6 +770,46 @@ impl Heap {
             }
         }
         s
+    }
+
+    /// [`Heap::stats`] materialised into the heap for `thread.allocatedp`
+    /// and `thread.deallocatedp` (design 13.4). The counters are derived
+    /// on every read, so the pointers those keys hand out refer to this
+    /// copy, which is refreshed by every read of any of the four
+    /// `thread.*allocated*` keys and stale in between.
+    pub fn materialise_stats(&mut self) -> &ThreadStats {
+        self.snapshot = self.stats();
+        &self.snapshot
+    }
+
+    /// `thread.tcache.enabled`.
+    #[inline]
+    pub fn tcache_enabled(&self) -> bool {
+        self.tcache_enabled
+    }
+
+    /// `thread.tcache.enabled` write. Turning caches off folds the derived
+    /// counters into `uncached` (so `thread.allocated` keeps counting),
+    /// flushes and frees every cache of every arena, and makes
+    /// `ensure_cache` refuse to create new ones; turning them on lets the
+    /// next slow path create caches again.
+    pub fn set_tcache_enabled(&mut self, shared: &Shared, on: bool) {
+        self.tcache_enabled = on;
+        if on {
+            return;
+        }
+        self.uncached = self.stats();
+        self.flush_all(shared);
+        Self::free_caches(shared, &mut self.caches);
+        let mut o = self.others;
+        while !o.is_null() {
+            // SAFETY: `others` is a list of live metadata blocks owned by
+            // this heap.
+            unsafe {
+                Self::free_caches(shared, &mut (*o).caches);
+                o = (*o).next;
+            }
+        }
     }
 
     #[inline]
@@ -1143,7 +1192,7 @@ impl Heap {
             return cache;
         }
         let cap = shared.config.cache_cap(class);
-        if cap == 0 {
+        if cap == 0 || !self.tcache_enabled {
             return ptr::null_mut();
         }
         let cache = shared.meta.alloc(ClassCache::layout(cap)) as *mut ClassCache;
