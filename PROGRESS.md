@@ -6,6 +6,7 @@ One line per task, newest at the bottom of each section. Keep it terse.
 ## Done
 
 - Phase 0 task 1: no_std crate skeleton, profiles, libc dep, std feature, Dockerfile.dev, `make dev`. Verified aarch64 + emulated x86_64. Commit 1def4a3.
+- Phase 0 task 2: `src/sys` asm syscall stubs (x86_64, aarch64), header-checked syscall numbers, errno decoding (host tests), typed wrappers, `abort` via write(2)+SIGABRT+exit_group; panic handler routed through it. 28 tests pass on aarch64 + emulated x86_64. Commit 36f992f.
 
 ## In progress
 
