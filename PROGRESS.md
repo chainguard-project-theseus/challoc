@@ -22,10 +22,11 @@ One line per task, newest at the bottom of each section. Keep it terse.
 
 - Phase 0 task 14: `tests/c/negative.c` with five modes run one per process by `run_c_negative` in `src/api/ctests.rs`: `double_free_stale` (cache flushed between the frees; aborts `invalid or double free of 0x... slot is not allocated`), `double_free_cached` (back to back; aborts `double free of 0x...` at the flush), `interior_free` (`p + 32` of a 64-byte slot) and `stack_free` (both abort `invalid free of 0x...: not an allocation`), `huge_overflow` (one byte past a 1 MiB run hits the guard page, SIGSEGV). The driver checks the bare run exits 1 without a signal, and under the preload the exact signal, that the program reached and never survived the bad operation, and the `challoc: ` stderr line. Panic handler output is now `challoc: <message> [<file>:<line>]`. All 195 tests pass on aarch64 (`make test`), the five negative tests pass on emulated x86_64, host `cargo test --features std` passes. Commit 0c8f065.
 - Phase 0 task 15: `tests/glibc/`: glibc 2.44 `tst-malloc.c`, `tst-calloc.c`, `tst-mallocfork.c`, `tst-posix_memalign.c`, `tst-realloc.c` (+ `tst-malloc-aux.h`) unmodified under `malloc/` with `COPYING.LIB` and a provenance README; challoc's `test-skeleton.c` and `include/` shims replace glibc's driver and internal headers; `run_glibc` in `src/api/ctests.rs` runs each bare (fails) and under `LD_PRELOAD` (passes). All five pass on aarch64 and emulated x86_64; full `make test` 166 + 34 green. Commit ec4bf98.
+- Phase 0 task 16: `tests/mimalloc/`: mimalloc v3.5.2 `test-stress.c` unmodified (MIT `LICENSE`, provenance README), `stress.c` wrapper (`USE_STD_MALLOC`, renamed `main`, `require_challoc`, `ok stress`), `include/` shims for `mimalloc.h`/`mimalloc-stats.h`; `mimalloc_test_stress` in `src/api/ctests.rs` runs it bare (fails) and under `LD_PRELOAD` with `8 50 10`. Passes on aarch64 (about 70 ms, three runs) and emulated x86_64; full `make test` 166 + 35 green. Commit 5fa8a26.
 
 ## In progress
 
-- Phase 0 task 16: mimalloc `test-stress.c` with `USE_STD_MALLOC` under `LD_PRELOAD` at `THREADS=8 SCALE=50 ITER=10`.
+- Phase 0 acceptance criteria: all 16 tasks are done but the acceptance run has not happened yet. Next iteration: run the mimalloc-bench programs listed in `docs/plan.md` (Phase 0 acceptance) under challoc and jemalloc 5.3.1 on native aarch64 per the benchmark protocol, record time and RSS in `bench/results/`, run `perf stat` on `larson`, and only then move Phase 0 to done.
 
 ## Design decisions
 
