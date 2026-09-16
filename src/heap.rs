@@ -46,6 +46,7 @@ use core::ptr;
 
 use crate::class::ClassState;
 use crate::huge::Huge;
+use crate::config::Config;
 use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
 use crate::meta::Meta;
 
@@ -74,14 +75,7 @@ pub const TLS_EXITED: usize = 2;
 /// Default cache capacity for a class: 256 slots for classes up to 128
 /// bytes, halved for every doubling of the class size, never below 8.
 pub const fn default_cap(class: usize) -> u32 {
-    let size = CLASSES[class].size();
-    if size <= 128 {
-        return MAX_CAP;
-    }
-    // Sizes in (128, 256] halve once, (256, 512] twice, and so on.
-    let doublings = (size - 1).ilog2() + 1 - 7;
-    let cap = if doublings >= 32 { 0 } else { MAX_CAP >> doublings };
-    if cap < MIN_CAP { MIN_CAP } else { cap }
+    crate::config::cap_for(class, MAX_CAP, 1)
 }
 
 /// One thread's cache for one size class: a [`CACHE_HEADER`]-byte header
@@ -216,8 +210,11 @@ pub struct Shared {
     pub classes: [ClassState; NCLASSES],
     pub meta: Meta,
     pub huge: Huge,
-    /// Cache GC period; `tcache_gc_interval_ms` sets it in Phase 1.
+    /// Cache GC period (`tcache_gc_interval_ms`).
     pub gc_interval_ns: u64,
+    /// The parsed `malloc_conf` (design section 12). Keys that already have
+    /// a knob are applied by `init`; the rest are read by later phases.
+    pub config: Config,
     key: ThreadKey,
 }
 
@@ -329,12 +326,15 @@ impl Shared {
     /// `this` must point to writable storage for a `Shared` that nothing
     /// else reads until this returns `true`, and the regions must be
     /// reserved (on Linux, `PROT_NONE` mappings that this process owns).
-    pub unsafe fn init(
-        this: *mut Shared,
-        regions: Regions,
-        guard_interval: u32,
-        guard_install: bool,
-    ) -> bool {
+    ///
+    /// `config` supplies the guard slab interval, the huge-run guards, the
+    /// cache GC period and the cache capacities; `guard_install` says
+    /// whether the kernel has `MADV_GUARD_INSTALL`, without which no guard
+    /// is placed at all (the `PROT_NONE` fallback would split every class
+    /// region into one VMA per guard, see `class.rs`).
+    pub unsafe fn init(this: *mut Shared, regions: Regions, config: Config, guard_install: bool) -> bool {
+        let guard_interval = if guard_install { config.effective_guard_slab_interval() } else { 0 };
+        let guard_install = guard_install && config.guards;
         // SAFETY: the caller guarantees `this` is writable and unaliased.
         unsafe {
             let meta = &raw mut (*this).meta;
@@ -352,7 +352,8 @@ impl Shared {
                 Some(h) => ptr::write(&raw mut (*this).huge, h),
                 None => return false,
             }
-            ptr::write(&raw mut (*this).gc_interval_ns, DEFAULT_GC_INTERVAL_NS);
+            ptr::write(&raw mut (*this).gc_interval_ns, config.gc_interval_ns());
+            ptr::write(&raw mut (*this).config, config);
             ptr::write(&raw mut (*this).key, ThreadKey::create());
         }
         true
@@ -731,14 +732,17 @@ impl Heap {
     }
 
     /// The real cache for `class`, allocating it on first use. Null if the
-    /// metadata region is exhausted.
+    /// metadata region is exhausted or caches are off (`tcache:false`).
     fn ensure_cache(&mut self, shared: &Shared, class: usize) -> *mut ClassCache {
         let cache = self.caches[class];
         // SAFETY: sentinel or real cache; both are readable.
         if unsafe { (*cache).cap } != 0 {
             return cache;
         }
-        let cap = default_cap(class);
+        let cap = shared.config.cache_cap(class);
+        if cap == 0 {
+            return ptr::null_mut();
+        }
         let cache = shared.meta.alloc(ClassCache::layout(cap)) as *mut ClassCache;
         if cache.is_null() {
             return cache;
@@ -1044,7 +1048,7 @@ mod tests {
         };
         let regions = regions_at(align_up(sb, MAX_SLAB), (align_up(mb, PAGE), META_LEN), hb);
         let b: &'static mut MaybeUninit<Shared> = Box::leak(Box::new(MaybeUninit::uninit()));
-        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, 0, false) });
+        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, Config::DEFAULT, false) });
         unsafe { b.assume_init_ref() }
     }
 
@@ -1672,7 +1676,7 @@ mod linux_tests {
             ],
         );
         let b: &'static mut MaybeUninit<Shared> = Box::leak(Box::new(MaybeUninit::uninit()));
-        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, 0, false) });
+        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, Config::DEFAULT, false) });
         unsafe { b.assume_init_ref() }
     }
 

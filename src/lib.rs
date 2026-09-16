@@ -33,6 +33,7 @@ pub const QUANTUM: usize = 8;
 pub mod api;
 pub mod bitmap;
 pub mod class;
+pub mod config;
 pub mod heap;
 pub mod huge;
 pub mod layout;

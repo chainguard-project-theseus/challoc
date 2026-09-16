@@ -180,6 +180,117 @@ fn c_negative_huge_overflow() {
     run_c_negative("huge_overflow", SIGSEGV, &[]);
 }
 
+/// `tests/c/conf.c` (plan Phase 1 task 1): the configuration sources under
+/// the real `.so`. `conf` becomes the program's `je_malloc_conf` (statically
+/// initialised and exported with `-rdynamic`, as a program linked against
+/// the allocator would have it), `env` is added to the environment. With
+/// `expect_abort` the first allocation must abort and stderr must carry
+/// both the issue text and the `abort_conf` line.
+fn run_conf(name: &str, conf: Option<&str>, env: &[(&str, &str)], expect_abort: Option<&str>) {
+    use std::os::unix::process::ExitStatusExt;
+    let so = release_so();
+    let define = conf.map(|c| std::format!("-DCONF=\"{c}\""));
+    let mut flags = std::vec!["-rdynamic"];
+    if let Some(d) = &define {
+        flags.push(d);
+    }
+    let bin = compile("tests/c", "conf", &flags);
+    let mut cmd = Command::new(&bin);
+    cmd.env("LD_PRELOAD", &so);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let run = cmd.output().unwrap();
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    let detail = std::format!("({:?})\nstdout: {stdout}\nstderr: {stderr}", run.status);
+    match expect_abort {
+        None => {
+            assert!(run.status.success(), "conf {name} failed {detail}");
+            assert!(stdout.lines().any(|l| l == "ok conf"), "conf {name} did not print `ok conf` {detail}");
+            assert!(!stderr.contains("challoc:"), "conf {name} complained {detail}");
+        }
+        Some(text) => {
+            assert_eq!(run.status.signal(), Some(SIGABRT), "conf {name} did not abort {detail}");
+            assert!(!stdout.contains("ok conf"), "conf {name} survived {detail}");
+            assert!(stderr.contains(text), "conf {name}: stderr lacks `{text}` {detail}");
+            assert!(stderr.contains("challoc: abort_conf:"), "conf {name}: no abort_conf line {detail}");
+        }
+    }
+    std::eprintln!("conf {name}: {}", stderr.trim_end());
+}
+
+#[test]
+fn c_conf_symbol() {
+    // Redis's own string plus abort_conf: parsed from the weak symbol
+    // without complaint.
+    run_conf(
+        "symbol",
+        Some("abort_conf:true,lg_tcache_nslots_mul:3,tcache_nslots_small_max:1000,junk:false"),
+        &[],
+        None,
+    );
+}
+
+#[test]
+fn c_conf_env() {
+    run_conf(
+        "env",
+        None,
+        &[("MALLOC_CONF", "abort_conf:true,tcache_nslots_small_max:64,lg_tcache_nslots_mul:3")],
+        None,
+    );
+}
+
+#[test]
+fn c_conf_no_tcache() {
+    run_conf("notcache", None, &[("MALLOC_CONF", "abort_conf:true,tcache:false")], None);
+}
+
+#[test]
+fn c_conf_bad_symbol_aborts() {
+    run_conf(
+        "badsym",
+        Some("abort_conf:true,no_such_key:1"),
+        &[],
+        Some("challoc: je_malloc_conf: unknown conf key \"no_such_key\""),
+    );
+}
+
+#[test]
+fn c_conf_bad_env_aborts_even_when_abort_conf_comes_later() {
+    // The bad key is in CHALLOC_CONF, the highest-priority source, and
+    // abort_conf arrives from the lower-priority symbol: it still applies.
+    run_conf(
+        "badenv",
+        Some("abort_conf:true"),
+        &[("CHALLOC_CONF", "tcache_nslots_small_max:1x")],
+        Some("challoc: CHALLOC_CONF: invalid conf value \"1x\" for tcache_nslots_small_max"),
+    );
+}
+
+#[test]
+fn c_conf_env_overrides_the_symbol() {
+    // The symbol asks for abort_conf, the environment turns it back off,
+    // so the unknown key in the symbol only warns.
+    let so = release_so();
+    let bin = compile("tests/c", "conf", &["-rdynamic", "-DCONF=\"abort_conf:true,no_such_key:1\""]);
+    let run = Command::new(&bin)
+        .env("LD_PRELOAD", &so)
+        .env("MALLOC_CONF", "abort_conf:false,narenas:0")
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(run.status.success(), "({:?})\nstdout: {stdout}\nstderr: {stderr}", run.status);
+    assert!(stdout.lines().any(|l| l == "ok conf"), "stdout: {stdout}");
+    assert!(stderr.contains("challoc: je_malloc_conf: unknown conf key \"no_such_key\""), "stderr: {stderr}");
+    assert!(stderr.contains("challoc: MALLOC_CONF: out-of-range conf value \"0\" for narenas"), "stderr: {stderr}");
+    std::eprintln!("conf override: {}", stderr.trim_end());
+}
+
 #[test]
 fn c_align() {
     run_c("align", &[]);

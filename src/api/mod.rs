@@ -43,13 +43,11 @@ use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use crate::config;
 use crate::heap::Shared;
 use crate::layout::{NCLASSES, Regions};
 use crate::sys;
 use crate::sys::features::Features;
-
-/// Default `guard_slab_interval` (design section 12): one guard slab per 8.
-pub const DEFAULT_GUARD_SLAB_INTERVAL: u32 = 8;
 
 const UNINIT: u32 = 0;
 const INITIALISING: u32 = 1;
@@ -167,23 +165,18 @@ fn init_slow() -> &'static Shared {
     unsafe { SHARED.get() }
 }
 
-/// Design section 10 steps 1 to 6 (configuration, sealing and cgroups join
-/// in Phases 1 and 2).
+/// Design section 10 steps 1 to 6 (sealing and cgroups join in Phases 1
+/// and 2). Configuration (step 4) is read before the regions are reserved
+/// so that nothing it may abort on has been mapped yet; it reads only the
+/// weak symbols, one file and `environ`.
 fn init() {
     let features = Features::probe();
+    let config = config::load();
     let regions = Regions::reserve(features.page_size, features.anon_name);
-    // Guard slabs need `MADV_GUARD_INSTALL`; the `PROT_NONE` fallback would
-    // split every class region into one VMA per guard (class.rs).
-    let guard_interval = if features.guard_install { DEFAULT_GUARD_SLAB_INTERVAL } else { 0 };
     // SAFETY: the statics are written once here, before `READY` is
     // published, and `regions` are live reservations this process owns.
     unsafe {
-        let ok = Shared::init(
-            (*SHARED.0.get()).as_mut_ptr(),
-            regions,
-            guard_interval,
-            features.guard_install,
-        );
+        let ok = Shared::init((*SHARED.0.get()).as_mut_ptr(), regions, config, features.guard_install);
         if !ok {
             sys::abort("challoc: metadata region too small for the allocator tables");
         }
