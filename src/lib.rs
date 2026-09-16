@@ -30,6 +30,8 @@ pub const QUANTUM: usize = 16;
 pub const QUANTUM: usize = 8;
 
 pub mod sys;
+#[cfg(target_os = "linux")]
+pub mod tls;
 
 /// Panic handler for the `no_std` library. The crate is built with
 /// `panic = "abort"`, so this is only reached by an explicit `panic!` or a

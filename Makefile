@@ -6,7 +6,8 @@
 #                            same, emulated x86_64 (correctness only)
 #   make run CMD='...'       run one shell command in the container
 #   make build               cargo build --release in the container
-#   make test                cargo test --features std in the container
+#   make test                cargo build --release, then cargo test --features std
+#                            in the container (some tests load the release .so)
 #   make test-host           pure-logic unit tests on the host
 #
 # `target/` inside the container is a named Docker volume, one per
@@ -41,7 +42,7 @@ build: image
 	$(DOCKER_RUN) cargo build --release
 
 test: image
-	$(DOCKER_RUN) cargo test --features std -- --nocapture
+	$(DOCKER_RUN) sh -c 'cargo build --release && cargo test --features std -- --nocapture'
 
 test-host:
 	cargo test --features std

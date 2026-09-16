@@ -11,7 +11,7 @@ One line per task, newest at the bottom of each section. Keep it terse.
 
 ## In progress
 
-(none)
+- Phase 0 task 4: `src/tls.rs` initial-exec TLS slot via `global_asm!`, C test with 64 threads under `LD_PRELOAD`, `readelf` relocation check.
 
 ## Design decisions
 
