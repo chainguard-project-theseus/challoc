@@ -7,6 +7,8 @@ never used for numbers.
     make bench            build the programs (once), cargo build --release,
                           run the protocol, write bench/results/<date>-<arch>.md
     make bench-build      just fetch and build the programs
+    make valkey-soak      Valkey soak under challoc and its bundled jemalloc
+                          (Phase 1 task 8); needs `make valkey STAGE=build`
 
 Files:
 
@@ -25,6 +27,22 @@ Files:
 - `profile.sh`: larson under challoc with the sampler, attributed to symbols
   (`nm`) and instructions (`objdump`), flagging lock and atomic RMW
   instructions. Appended to the results file by `run.sh`.
+- `valkey-soak.sh`: starts `valkey-server` from the challoc tree built by
+  `contrib/valkey/build.sh` and from an unpatched clone of the same tag built
+  with bundled jemalloc 5.3.0 (`target/valkey/src-<tag>-jemalloc`, built on
+  first use), runs a write-heavy phase (valkey-benchmark `-t set`, then
+  memtier_benchmark SET-only with 16-1024 byte values) and a delete-heavy phase
+  (valkey-benchmark `del`, then memtier DEL:SET 4:1) of `DURATION/2` seconds
+  each over a 500k-key keyspace, then `SETTLE` idle seconds. `INFO memory` and
+  `INFO stats` are sampled every `INTERVAL` seconds into
+  `results/<date>-<arch>-valkey-soak-<alloc>.csv` (used_memory, used_memory_rss,
+  mem_fragmentation_ratio, allocator_frag_ratio, allocator_rss_ratio,
+  active_defrag_hits, plus the throughput and client-side p99 of the most
+  recent generator run); `results/<date>-<arch>-valkey-soak.md` compares
+  throughput, p99, peak RSS (VmHWM) and post-settle RSS against jemalloc.
+  Defaults are the Phase 1 acceptance protocol (20 minutes of load per
+  allocator); `DURATION=120 SETTLE=30 CHUNK=10 VB_REQS=1000000
+  RESULT_DIR=target/valkey/soak-results` is a five-minute smoke run.
 - `results/`: one file per run, named `<date>-<arch>.md`, with the commit
   hash, toolchain versions, kernel and CPU in the header.
 

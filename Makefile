@@ -32,6 +32,14 @@
 #                            (contrib/valkey/build.sh; STAGE=build|memefficiency|
 #                            full|all, TEST_FLAGS='--clients 8', logs under
 #                            target/valkey/logs)
+#   make valkey-soak         soak Valkey under challoc and under its bundled
+#                            jemalloc 5.3.0: write-heavy then delete-heavy
+#                            phases with valkey-benchmark and memtier_benchmark,
+#                            INFO memory sampled to CSV every 10 s, summary in
+#                            bench/results/<date>-<arch>-valkey-soak.md
+#                            (bench/valkey-soak.sh; ALLOCS, DURATION=1200,
+#                            SETTLE, INTERVAL, CHUNK, VB_REQS, KEYS, DEFRAG,
+#                            RESULT_DIR). Needs `make valkey STAGE=build` first.
 #
 # `target/` inside the container is a named Docker volume, one per
 # architecture, so Linux artifacts never mix with host artifacts and builds do
@@ -49,7 +57,7 @@ DOCKER_RUN = docker run --rm --platform $(PLATFORM) \
 	-v challoc-cargo-registry:/root/.cargo/registry \
 	$(DOCKER_FLAGS) $(IMAGE)
 
-.PHONY: image dev run build test test-host jemalloc-compat fuzz bench-build bench valkey clean-volumes
+.PHONY: image dev run build test test-host jemalloc-compat fuzz bench-build bench valkey valkey-soak clean-volumes
 
 image:
 	docker build --platform $(PLATFORM) -f Dockerfile.dev -t $(IMAGE) .
@@ -99,6 +107,11 @@ bench: image
 valkey: DOCKER_FLAGS = $(if $(STAGE),-e STAGE=$(STAGE)) $(if $(TEST_FLAGS),-e TEST_FLAGS="$(TEST_FLAGS)")
 valkey: image
 	$(DOCKER_RUN) sh contrib/valkey/build.sh
+
+SOAK_VARS = ALLOCS DURATION SETTLE INTERVAL CHUNK VB_REQS KEYS SIZE MT_SIZES DEL_RATIO DEFRAG RESULT_DIR
+valkey-soak: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(SOAK_VARS),$(if $($(v)),-e $(v)="$($(v))"))
+valkey-soak: image
+	$(DOCKER_RUN) sh bench/valkey-soak.sh
 
 clean-volumes:
 	docker volume rm -f challoc-target-$(ARCH) challoc-cargo-registry

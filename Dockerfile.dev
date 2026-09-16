@@ -25,6 +25,7 @@ RUN sed -i \
       tcl \
       openssl-dev \
       procps \
+      memtier-benchmark \
       posix-libc-utils-2.44 \
  && rustc --version && cargo --version
 
