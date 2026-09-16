@@ -16,6 +16,11 @@
 #   make fuzz                build, then run fuzz/fuzz.c under LD_PRELOAD for
 #                            FUZZ_OPS (10M) operations on FUZZ_THREADS (4)
 #                            threads with FUZZ_SEED (fixed; `random` draws one)
+#   make bench-build         fetch and build the mimalloc-bench programs, redis,
+#                            mimalloc and the bench/ helpers into the target volume
+#   make bench               bench-build, cargo build --release, then run the
+#                            benchmark protocol (bench/run.sh) and write
+#                            bench/results/<date>-<arch>.md. Native arch only.
 #
 # `target/` inside the container is a named Docker volume, one per
 # architecture, so Linux artifacts never mix with host artifacts and builds do
@@ -33,7 +38,7 @@ DOCKER_RUN = docker run --rm --platform $(PLATFORM) \
 	-v challoc-cargo-registry:/root/.cargo/registry \
 	$(DOCKER_FLAGS) $(IMAGE)
 
-.PHONY: image dev run build test test-host fuzz clean-volumes
+.PHONY: image dev run build test test-host fuzz bench-build bench clean-volumes
 
 image:
 	docker build --platform $(PLATFORM) -f Dockerfile.dev -t $(IMAGE) .
@@ -66,6 +71,14 @@ fuzz: image
 	       fuzz/fuzz.c -o target/fuzz -ldl \
 	  && LD_PRELOAD=/src/target/release/libchalloc.so \
 	     ./target/fuzz $(FUZZ_OPS) $(FUZZ_THREADS) $(FUZZ_SEED) $(FUZZ_TABLE)'
+
+HOST_CPU := $(shell sysctl -n machdep.cpu.brand_string 2>/dev/null || grep -m1 'model name' /proc/cpuinfo | sed 's/.*: //')
+bench-build: image
+	$(DOCKER_RUN) sh bench/build.sh
+
+bench: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)"
+bench: image
+	$(DOCKER_RUN) sh -c 'sh bench/build.sh >/dev/null && cargo build --release && sh bench/run.sh'
 
 clean-volumes:
 	docker volume rm -f challoc-target-$(ARCH) challoc-cargo-registry
