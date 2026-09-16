@@ -377,7 +377,9 @@ mod tests {
         unsafe { core::ptr::write_bytes(p, 1, 8 << 20) };
         let page = (p as usize - s.regions.huge_base) >> s.regions.lg_page;
         s.free_huge(page);
-        assert!(s.huge.oldest_empty() != 0);
+        // No check that the run is still `Empty` here: with a 1 ms decay
+        // the thread can purge it before this thread runs again (seen on
+        // a loaded Docker VM); the loop below is the assertion.
         let mut purged = false;
         for _ in 0..400 {
             if s.huge.oldest_empty() == 0 && s.huge.stats().empty == 0 {

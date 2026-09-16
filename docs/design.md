@@ -102,6 +102,18 @@ Tiers:
 | Medium | 1280 .. 256 KiB         | max(64 KiB, 16*sz) | >= 16          |
 | Huge   | > 256 KiB               | page-granular runs | 1              |
 
+A 16 KiB minimum slab (for every class, and for the classes from 256 bytes
+up) was tried during Phase 1 acceptance against the Valkey soak's
+post-delete residue and rejected: the surviving slabs sat at 46..48%
+occupancy in every class with either geometry, so the residue is not slabs
+failing to empty but a layout the per-thread caches freeze (results in
+`bench/results/2026-09-16-aarch64-gce-min-slab.md`), and the smaller slab
+cost 2..4% on larson and, for every class, half of `xmalloc-test`. The code
+keeps a two-regime rule expressible (`layout::SMALL_SLAB_BELOW`,
+`LG_SMALL_SLAB`) and handles slabs smaller than the kernel page (committed,
+guarded and purged in page groups, a group only when every slab in it is
+idle and owned by the purging arena), both dormant at 64 KiB.
+
 Slab size per class is a compile-time table. Each class region is divided into
 slabs of that class's slab size, so slab number and slot index are:
 
@@ -563,10 +575,11 @@ config.malloc_conf, config.debug, config.stats
 prof.* -> ENOENT
 ```
 
-Everything else returns `ENOENT`. `arenas.nbins` counts the classes whose
-slab is the minimum 64 KiB, i.e. up to 4 KiB (32 with `quantum8`, 28 with
-`quantum16`); the larger classes are slab-allocated all the same but appear
-the way jemalloc reports large extents (in `large.*`, absent from `bins`,
+Everything else returns `ENOENT`. `arenas.nbins` counts the classes up to
+4 KiB (32 with `quantum8`, 28 with `quantum16`), a fixed boundary that does
+not move with the minimum slab; the larger classes are slab-allocated all
+the same but appear the way jemalloc reports large extents (in `large.*`,
+absent from `bins`,
 and `(nfree 0, nregs 1, size)` from the utilization queries). Consumers such
 as Valkey's defragmenter and its `frag_smallbins` metric are calibrated to
 jemalloc's bins, whose slabs are a few pages; with `16 * size` slabs a

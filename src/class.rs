@@ -212,6 +212,13 @@ pub struct SlabTable {
     /// `desc_stride(class)`, kept here so the `free` fast path reads it
     /// with one load instead of `class` and then the table.
     desc_stride: u32,
+    /// `max(1, page / slab_size)`, a power of two. Slabs are committed,
+    /// guarded and purged in page-sized groups, so on a kernel whose page is
+    /// larger than this class's slab (16 KiB slabs on 64 KiB pages) a group
+    /// of `slabs_per_page` consecutive slabs is committed when its first slab
+    /// is, is one guard region when it is a guard group, and is purged only
+    /// when every slab in it is idle and owned by the purging arena.
+    slabs_per_page: u32,
     /// Start of this class's region.
     base: usize,
     /// Number of slabs in the region.
@@ -387,11 +394,14 @@ impl SlabTable {
         let nslabs = regions.nslabs(class);
         let stagger = desc_stagger(class);
         let descs = Lazy::reserve(meta, stagger + nslabs * desc_stride(class), DESC_ALIGN.max(page))?;
+        let slabs_per_page = (page / CLASSES[class].slab_size()).max(1);
+        assert!(slabs_per_page.is_power_of_two() && nslabs % slabs_per_page == 0);
         Some(SlabTable {
             class: class as u16,
             guard_interval,
             lg_page: regions.lg_page,
             desc_stride: desc_stride(class) as u32,
+            slabs_per_page: slabs_per_page as u32,
             base: regions.class_base[class],
             nslabs,
             desc_base: descs.base + stagger,
@@ -422,10 +432,21 @@ impl SlabTable {
         self.inner.raw()
     }
 
-    /// Whether `slab` is reserved as a guard slab.
+    /// Whether `slab` is reserved as a guard slab. Guards are counted in
+    /// page groups (see [`slabs_per_page`]): every `guard_interval`-th group
+    /// is a guard group, and with one slab per page (the usual case) that is
+    /// every `guard_interval`-th slab.
+    ///
+    /// [`slabs_per_page`]: SlabTable::slabs_per_page
     #[inline]
     pub fn is_guard_slab(&self, slab: usize) -> bool {
-        self.guard_interval != 0 && (slab + 1) % self.guard_interval as usize == 0
+        self.guard_interval != 0 && (slab / self.slabs_per_page as usize + 1) % self.guard_interval as usize == 0
+    }
+
+    /// Slabs per page group; 1 unless the page is larger than the slab.
+    #[inline]
+    pub fn slabs_per_page(&self) -> usize {
+        self.slabs_per_page as usize
     }
 
     /// Number of slabs (including guard slabs) whose descriptors exist.
@@ -550,15 +571,21 @@ impl SlabTable {
             g.descs.ensure(meta, page, desc_stagger(class) + (s + 1) * desc_stride(class)).ok()?;
             ensure_sets(s).ok()?;
             let addr = self.slab_addr(s);
-            let len = cls.slab_size();
-            os::commit(addr, len).ok()?;
+            // A slab smaller than a page is committed with its whole page
+            // group when the group's first slab comes up; `next_slab` is
+            // monotonic, so the later slabs of the group find it committed.
+            let spp = self.slabs_per_page as usize;
+            let len = cls.slab_size().max(page);
+            if s % spp == 0 {
+                os::commit(addr, len).ok()?;
+            }
             if self.is_guard_slab(s) {
                 // Read-write so the VMA merges with its neighbours, with a
                 // guard region on the first page so a stray write past the
                 // previous slab faults. If the install fails, fall back to
-                // leaving the whole slab `PROT_NONE`: a hard guard at the
-                // cost of a VMA split.
-                if os::guard(addr, page).is_err() && os::decommit(addr, len).is_err() {
+                // leaving the whole slab (or page group) `PROT_NONE`: a hard
+                // guard at the cost of a VMA split.
+                if s % spp == 0 && os::guard(addr, page).is_err() && os::decommit(addr, len).is_err() {
                     panic!("class {}: cannot re-protect guard slab {s}", self.class);
                 }
                 g.next_slab = s + 1;
@@ -956,6 +983,7 @@ impl ClassState {
     /// purged.
     pub fn purge_empty(&self, cutoff: u64) -> usize {
         let cls = self.class();
+        let spp = self.table().slabs_per_page();
         let mut g = self.inner.lock();
         let mut n = 0;
         let mut batch = Batch::new();
@@ -969,15 +997,26 @@ impl ClassState {
                 self.class
             );
             let dirty_at = desc.dirty_at();
-            if dirty_at <= cutoff {
-                batch.push(self.slab_addr(slab), cls.slab_size());
-                desc.set_state(State::Purged);
-                desc.set_dirty_at(0);
-                g.empty.map.clear(slab);
-                g.purged.map.set(slab);
-                g.stats.empty -= 1;
-                g.stats.purged += 1;
-                n += 1;
+            if dirty_at <= cutoff && (spp == 1 || self.page_group_is_idle(slab, spp)) {
+                // Discard the whole page group (one slab when the slab is at
+                // least a page); every `Empty` slab in it becomes `Purged`
+                // now, a younger one included, since nothing in the group is
+                // in use.
+                let first = slab & !(spp - 1);
+                batch.push(self.slab_addr(first), cls.slab_size() * spp);
+                for s in first..first + spp {
+                    let d = self.desc(s);
+                    if d.state() != State::Empty {
+                        continue;
+                    }
+                    d.set_state(State::Purged);
+                    d.set_dirty_at(0);
+                    g.empty.map.clear(s);
+                    g.purged.map.set(s);
+                    g.stats.empty -= 1;
+                    g.stats.purged += 1;
+                    n += 1;
+                }
             } else if oldest == 0 || dirty_at < oldest {
                 oldest = dirty_at;
             }
@@ -986,6 +1025,25 @@ impl ClassState {
         batch.flush();
         self.oldest_empty.store(oldest, Ordering::Relaxed);
         n
+    }
+
+    /// Whether the page group of `slab` (`spp` slabs, `spp > 1`) can be
+    /// discarded: every slab in it is committed, owned by this arena, and
+    /// `Fresh`, `Empty` or `Purged`. Called under this arena's class lock,
+    /// which is what pins those states for this arena's slabs; a slab of
+    /// another arena, or one not yet handed out by `commit_next`, could be
+    /// claimed under a lock this thread does not hold, so it vetoes the
+    /// purge.
+    fn page_group_is_idle(&self, slab: usize, spp: usize) -> bool {
+        let first = slab & !(spp - 1);
+        let committed = self.table().committed_slabs();
+        (first..first + spp).all(|s| {
+            if s >= committed {
+                return false;
+            }
+            let d = self.desc(s);
+            d.arena() == self.arena && matches!(d.state(), State::Fresh | State::Empty | State::Purged)
+        })
     }
 
     /// `dirty_at` of the oldest `Empty` slab as the decay driver sees it
@@ -1088,7 +1146,7 @@ fn double_free(p: usize, class: usize, slab: usize, slot: usize) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::{Kind, LG_MAX_SLAB, MAX_SLAB, Mapping, NCLASSES};
+    use crate::layout::{Kind, LG_MAX_SLAB, LG_MIN_SLAB, MAX_SLAB, MIN_SLAB, Mapping, NCLASSES};
     use core::ptr;
     use std::collections::HashSet;
     use std::sync::Arc;
@@ -1119,7 +1177,7 @@ mod tests {
         (x + a - 1) & !(a - 1)
     }
 
-    fn regions_at(superblock: usize, meta: (usize, usize)) -> Regions {
+    fn regions_at(superblock: usize, meta: (usize, usize), lg_page: u32) -> Regions {
         let sb_len = (NCLASSES << LG_STRIDE) + MAX_SLAB;
         let huge = (superblock + sb_len + (1 << 30), 1usize << 34);
         Regions::from_parts(
@@ -1129,7 +1187,7 @@ mod tests {
             &[0usize; NCLASSES],
             huge,
             meta,
-            PAGE.trailing_zeros(),
+            lg_page,
             [
                 Mapping { addr: superblock, len: sb_len },
                 Mapping { addr: huge.0, len: huge.1 },
@@ -1139,9 +1197,20 @@ mod tests {
     }
 
     impl Env {
-        #[cfg(target_os = "linux")]
         fn new() -> Env {
+            Env::with_lg_page(PAGE.trailing_zeros())
+        }
+
+        /// An environment whose layout believes the page is `1 << lg_page`
+        /// bytes. On Linux that must be a multiple of the real page (the
+        /// commits and purges are real syscalls over a real reservation);
+        /// larger than the real page it stands in for a 16 KiB or 64 KiB
+        /// page kernel.
+        #[cfg(target_os = "linux")]
+        fn with_lg_page(lg_page: u32) -> Env {
             use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
+            let page = 1usize << lg_page;
+            assert!(page % crate::sys::features::page_size() == 0, "fake page must be a real page multiple");
             let reserve = |len: usize| -> usize {
                 unsafe {
                     crate::sys::mmap(0, len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0)
@@ -1150,18 +1219,21 @@ mod tests {
             };
             let sb_len = (NCLASSES << LG_STRIDE) + MAX_SLAB;
             let sb = reserve(sb_len);
-            let mb = reserve(META_LEN);
+            let mb_len = META_LEN + page;
+            let mb_raw = reserve(mb_len);
+            let mb = align_up(mb_raw, page);
             let superblock = align_up(sb, MAX_SLAB);
-            let regions = regions_at(superblock, (mb, META_LEN));
-            Env { meta: Meta::new(mb, META_LEN, PAGE), regions, maps: [(sb, sb_len), (mb, META_LEN)] }
+            let regions = regions_at(superblock, (mb, META_LEN), lg_page);
+            Env { meta: Meta::new(mb, META_LEN, page), regions, maps: [(sb, sb_len), (mb_raw, mb_len)] }
         }
 
         #[cfg(not(target_os = "linux"))]
-        fn new() -> Env {
-            let buf = vec![0u8; META_LEN + PAGE];
-            let mb = align_up(buf.as_ptr() as usize, PAGE);
-            let regions = regions_at(0x1000_0000_0000, (mb, META_LEN));
-            Env { meta: Meta::new(mb, META_LEN, PAGE), regions, _buf: buf }
+        fn with_lg_page(lg_page: u32) -> Env {
+            let page = 1usize << lg_page;
+            let buf = vec![0u8; META_LEN + page];
+            let mb = align_up(buf.as_ptr() as usize, page);
+            let regions = regions_at(0x1000_0000_0000, (mb, META_LEN), lg_page);
+            Env { meta: Meta::new(mb, META_LEN, page), regions, _buf: buf }
         }
 
         /// A fresh table for `c` (leaked: the state points at it) and the
@@ -1235,8 +1307,117 @@ mod tests {
 
     /// A class with 64 KiB slabs and a handful of bitmap words.
     fn small_class() -> usize {
-        // 64 bytes: 1024 slots, 16 words (quantum16) or 1024 slots (quantum8).
+        // 64 bytes: 1024 slots, 16 words.
         CLASSES.iter().position(|c| c.size() == 64).unwrap()
+    }
+
+    /// The largest class with the minimum slab (1024 bytes: 64 slots).
+    fn min_slab_class() -> usize {
+        CLASSES.iter().rposition(|c| c.slab_size() == MIN_SLAB).unwrap()
+    }
+
+    /// A kernel page larger than the slab (here a page four times the
+    /// minimum slab, faked through the layout): slabs are committed,
+    /// guarded and purged in page groups of `slabs_per_page`, and a group
+    /// is purged only when every slab in it is idle, committed and owned by
+    /// the purging arena. Dormant while the minimum slab is 64 KiB (no
+    /// supported page is larger); this test keeps the path working.
+    #[test]
+    fn page_groups_when_the_page_is_larger_than_the_slab() {
+        let env = Env::with_lg_page(LG_MIN_SLAB + 2);
+        let c = min_slab_class();
+        let n = CLASSES[c].nslots();
+        assert_eq!(CLASSES[c].slab_size(), MIN_SLAB);
+        // Every third page group is a guard group: slabs 8..12.
+        let cs = env.class(c, 3);
+        assert_eq!(cs.table().slabs_per_page(), 4);
+        for s in 0..16 {
+            assert_eq!(cs.is_guard_slab(s), (8..12).contains(&s), "slab {s}");
+        }
+        // Fill the first group and the first slab of the second; the
+        // second group's page is committed with slab 4, so every slot of
+        // slabs 4..8 is writable already (Linux touches them in `claim`).
+        let (p, _) = env.claim(&cs, 5 * n);
+        assert_eq!(p.len(), 5 * n);
+        assert_eq!(cs.stats(), ClassStats { committed: 5, ..Default::default() });
+        for (s, chunk) in p.chunks(n).enumerate() {
+            assert_eq!(chunk[0] as usize, env.regions.slab_addr(c, s));
+        }
+        let base = env.regions.slab_addr(c, 0);
+        let in_slab = |v: &[*mut u8], s: usize| -> Vec<*mut u8> {
+            v.iter().copied().filter(|&x| (x as usize - base) / MIN_SLAB == s).collect()
+        };
+        // Slab 0 goes Empty; its group mates 1..4 are Active, so nothing is purged.
+        cs.release(&p[..n]);
+        assert_eq!(cs.desc(0).state(), State::Empty);
+        assert_eq!(cs.purge_empty(u64::MAX), 0);
+        assert_eq!(cs.desc(0).state(), State::Empty);
+        assert_eq!(cs.oldest_empty(), cs.desc(0).dirty_at());
+        // Slab 5 goes to another arena; arena 0 then reuses its Empty slab 0
+        // and commits 6 and 7 (a refill takes Empty slabs before Purged
+        // ones and Purged ones before committing).
+        let other = env.class_in_arena(&cs, 1);
+        let (q, _) = env.claim(&other, n);
+        assert_eq!(q[0] as usize, env.regions.slab_addr(c, 5));
+        let (r, _) = env.claim(&cs, 3 * n);
+        assert_eq!(r.len(), 3 * n);
+        for s in [0, 6, 7] {
+            assert_eq!(in_slab(&r, s).len(), n, "slab {s}");
+            assert_eq!(cs.desc(s).state(), State::Active, "slab {s}");
+            assert_eq!(cs.desc(s).arena(), 0);
+        }
+        assert_eq!(cs.desc(5).arena(), 1);
+        assert_eq!(cs.table().committed_slabs(), 8);
+        // (`committed` is per arena: 7 of the 8 slabs are arena 0's.)
+        // Group 4..8 with 4, 6, 7 Empty: slab 5 belongs to arena 1, so
+        // neither arena purges the group, even once slab 5 is Empty too.
+        cs.release(&p[4 * n..]);
+        cs.release(&in_slab(&r, 6));
+        cs.release(&in_slab(&r, 7));
+        assert_eq!(cs.stats(), ClassStats { committed: 7, empty: 3, ..Default::default() });
+        assert_eq!(cs.purge_empty(u64::MAX), 0);
+        other.release(&q);
+        assert_eq!(other.desc(5).state(), State::Empty);
+        assert_eq!(cs.purge_empty(u64::MAX), 0);
+        assert_eq!(other.purge_empty(u64::MAX), 0);
+        assert_eq!(cs.stats(), ClassStats { committed: 7, empty: 3, ..Default::default() });
+        // With 0..4 Empty, purging with a cutoff at the oldest slab's
+        // `dirty_at` takes the whole group, a slab released later (younger,
+        // whenever the coarse clock has moved on) included.
+        cs.release(&p[n..4 * n]);
+        cs.release(&in_slab(&r, 0));
+        let oldest = cs.desc(1).dirty_at();
+        assert!(cs.desc(0).dirty_at() >= oldest);
+        assert_eq!(cs.purge_empty(oldest), 4);
+        for s in 0..4 {
+            assert_eq!(cs.desc(s).state(), State::Purged, "slab {s}");
+            assert_eq!(cs.desc(s).dirty_at(), 0);
+        }
+        assert_eq!(cs.stats(), ClassStats { committed: 7, purged: 4, empty: 3, ..Default::default() });
+        // Purged neighbours do not block a purge: once the Empty slabs are
+        // taken, a claim reuses Purged slab 0 (zero), and releasing it
+        // purges it alone inside its Purged group.
+        let (e, _) = env.claim(&cs, 3 * n);
+        assert_eq!(e.len(), 3 * n);
+        let (z, claim) = env.claim(&cs, 3);
+        assert_eq!(claim, Claim { n: 3, zeroed: true });
+        assert_eq!(z[0] as usize, base);
+        cs.release(&z);
+        assert_eq!(cs.desc(0).state(), State::Empty);
+        assert_eq!(cs.purge_empty(u64::MAX), 1);
+        assert_eq!(cs.desc(0).state(), State::Purged);
+        assert_eq!(cs.stats(), ClassStats { committed: 7, purged: 4, ..Default::default() });
+        // Past the guard group: the Purged slabs go first, then the next
+        // commit skips the guard group 8..12 and lands on slab 12.
+        let (g, _) = env.claim(&cs, 4 * n + 1);
+        assert_eq!(g.len(), 4 * n + 1);
+        assert_eq!(in_slab(&g, 12).len(), 1);
+        assert_eq!(cs.table().guards(), 4);
+        assert_eq!(cs.table().committed_slabs(), 13);
+        for s in 8..12 {
+            assert!(cs.is_guard_slab(s));
+        }
+        drop(e);
     }
 
     #[test]
@@ -1607,7 +1788,7 @@ mod tests {
             .unwrap();
             Meta::new(mb, 2 * PAGE, PAGE)
         };
-        let regions = regions_at(0x1000_0000_0000, (0x2000_0000_0000, 2 * PAGE));
+        let regions = regions_at(0x1000_0000_0000, (0x2000_0000_0000, 2 * PAGE), PAGE.trailing_zeros());
         assert!(SlabTable::new(&meta, &regions, 0, 0).is_none());
     }
 

@@ -1282,7 +1282,10 @@ mod tests {
         assert_eq!(arena.classes[c].stats().empty, 0);
         assert_eq!(call(&std::format!("arena.{a}.purge")), 0);
         assert_eq!(arena.classes[c].stats().empty, 0);
-        assert_eq!(arena.classes[c].stats().purged, 1, "the flushed slab was purged");
+        // The first refill spanned `cap / 2` slots' worth of slabs (one
+        // 128-slot slab at 512 bytes); all of them were flushed and purged.
+        let refill_slabs = (crate::heap::default_cap(c) as usize / 2).div_ceil(crate::layout::CLASSES[c].nslots());
+        assert_eq!(arena.classes[c].stats().purged, refill_slabs, "the flushed slabs were purged");
         assert_eq!(call("arena.4096.purge"), 0);
         // jemalloc's legacy "all arenas" index, which Valkey's MEMORY PURGE uses.
         let narenas: c_uint = get("arenas.narenas");

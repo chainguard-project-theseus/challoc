@@ -20,9 +20,31 @@ use crate::QUANTUM;
 pub const SMALL_MAX: usize = 1024;
 /// Largest request served from a slab; anything above is huge.
 pub const MEDIUM_MAX: usize = 256 * 1024;
-/// Smallest slab: every small class and the smallest medium classes.
+/// Smallest slab (64 KiB): every small class and the smallest medium
+/// classes.
+///
+/// Phase 1 acceptance step 2 tried 16 KiB for the classes from
+/// [`SMALL_SLAB_BELOW`] up (and 16 KiB or 8 KiB for every class) against
+/// the Valkey soak's post-delete residue and rejected it
+/// (`bench/results/2026-09-16-aarch64-gce-min-slab.md`): the surviving
+/// slabs sit at 46..48% occupancy in every class with either geometry, so
+/// the residue is not slabs failing to empty but a layout the per-thread
+/// caches freeze (see the results file), and the smaller slab cost 2..4%
+/// on larson. A class with 64 or more regions per slab never empties by
+/// chance after a random 89% deletion either way (0.89^64 = 0.06%), and
+/// 16 KiB slabs for every class halved `xmalloc-test` (64-byte objects,
+/// cross-thread frees) through per-slab refill and flush work. The
+/// constants below keep the two-regime rule expressible; with
+/// `LG_SMALL_SLAB == LG_MIN_SLAB` it is the plain `max(64 KiB, 16 * size)`.
+/// Should the minimum slab ever drop below a kernel page (16 KiB slabs on a
+/// 64 KiB-page kernel), `class.rs` commits, guards and purges whole pages
+/// of slabs (see `SlabTable::slabs_per_page`).
 pub const LG_MIN_SLAB: u32 = 16;
 pub const MIN_SLAB: usize = 1 << LG_MIN_SLAB;
+/// Classes below this size use `1 << LG_SMALL_SLAB` slabs regardless of
+/// `MIN_SLAB` (see above).
+pub const SMALL_SLAB_BELOW: usize = 256;
+pub const LG_SMALL_SLAB: u32 = 16;
 /// Largest slab: 16 slots of `MEDIUM_MAX`. Class regions and their random
 /// offsets are aligned to this so that in-slab offsets are a plain mask.
 pub const LG_MAX_SLAB: u32 = 22;
@@ -41,17 +63,19 @@ pub const NCLASSES: usize = LINEAR_CLASSES + 4 * (LG_MEDIUM_MAX - LG_LINEAR_MAX)
 
 /// Largest class reported as a jemalloc *bin* (`arenas.nbins`,
 /// `arenas.bin.<j>.*`, `stats.arenas.<i>.bins.<j>.*`, `small.*`): the
-/// classes whose slab is the minimum `MIN_SLAB` (64 KiB), i.e. up to 4 KiB.
+/// classes up to 4 KiB, i.e. those whose slab is the minimum 64 KiB. The
+/// boundary is a fixed size so the reported bin set does not move with
+/// `MIN_SLAB`.
 /// Classes above it are slab-allocated exactly like the others, but the
 /// `mallctl` namespace reports them the way jemalloc reports large extents
 /// (in `large.*`, and `(nfree 0, nregs 1, size)` from the utilization
 /// queries). Consumers such as Valkey's defragmenter and its
 /// `frag_smallbins` metric are calibrated to jemalloc's bins, whose slabs
-/// are a few pages: with challoc's `max(64 KiB, 16 * size)` slabs, four
+/// are a few pages: with challoc's `max(MIN_SLAB, 16 * size)` slabs, four
 /// live 10 KiB blocks pin a 256 KiB slab and would count as 215 KiB of
 /// "fragmentation" that no defragmenter can recover, and one such class
 /// per size step adds up to megabytes on an idle server.
-pub const BIN_MAX: usize = MIN_SLAB / 16;
+pub const BIN_MAX: usize = 4096;
 /// Number of classes up to [`BIN_MAX`]: 28 for `quantum16`, 32 for `quantum8`.
 pub const NBINS: usize = count_bins();
 
@@ -64,7 +88,7 @@ const fn count_bins() -> usize {
 }
 
 const _: () = assert!(NBINS > 0 && NBINS < NCLASSES && class_size_at(NBINS - 1) == BIN_MAX);
-const _: () = assert!(lg_slab_for(BIN_MAX) == LG_MIN_SLAB && lg_slab_for(class_size_at(NBINS)) > LG_MIN_SLAB);
+const _: () = assert!(BIN_MAX >= SMALL_MAX && lg_slab_for(BIN_MAX) >= LG_MIN_SLAB);
 
 const _: () = assert!(NCLASSES <= 64, "pointer classification assumes at most 64 classes");
 const _: () = assert!(MEDIUM_MAX * 16 == MAX_SLAB);
@@ -140,12 +164,20 @@ const fn class_size_at(i: usize) -> usize {
     }
 }
 
-/// `max(64 KiB, 16 * size)` rounded up to a power of two.
-const fn lg_slab_for(size: usize) -> u32 {
+/// `max(MIN_SLAB, 16 * size)` rounded up to a power of two, except that
+/// classes below [`SMALL_SLAB_BELOW`] use `1 << LG_SMALL_SLAB` (the same
+/// 64 KiB today).
+pub const fn lg_slab_for(size: usize) -> u32 {
+    if size < SMALL_SLAB_BELOW {
+        return LG_SMALL_SLAB;
+    }
     let want = (16 * size).next_power_of_two();
     let lg = want.trailing_zeros();
     if lg < LG_MIN_SLAB { LG_MIN_SLAB } else { lg }
 }
+
+const _: () = assert!(LG_SMALL_SLAB >= LG_MIN_SLAB && LG_SMALL_SLAB <= LG_MAX_SLAB);
+const _: () = assert!(SMALL_SLAB_BELOW <= SMALL_MAX && (16 * SMALL_SLAB_BELOW).next_power_of_two() <= MIN_SLAB);
 
 const fn reciprocal(size: usize) -> u32 {
     (((1u64 << RECIP_SHIFT) + size as u64 - 1) / size as u64) as u32
@@ -663,17 +695,19 @@ mod tests {
             assert_eq!(c.nslots(), slab / c.size());
             assert!(c.nslots() * c.size() <= slab);
             assert_eq!(c.bitmap_words(), c.nslots().div_ceil(64));
+            if c.size() < SMALL_SLAB_BELOW {
+                assert_eq!(slab, 1 << LG_SMALL_SLAB, "class {i}: slab below {SMALL_SLAB_BELOW}");
+            } else {
+                assert_eq!(slab, (16 * c.size()).next_power_of_two().max(MIN_SLAB));
+            }
+            assert!(c.nslots() >= 16, "class {i} has {} slots", c.nslots());
             match c.tier() {
                 Tier::Small => {
                     assert!(c.size() <= SMALL_MAX);
                     assert_eq!(slab, MIN_SLAB, "small classes use 64 KiB slabs");
                     assert!(c.nslots() >= 64 && c.nslots() <= 8192);
                 }
-                Tier::Medium => {
-                    assert!(c.size() > SMALL_MAX);
-                    assert_eq!(slab, (16 * c.size()).next_power_of_two().max(MIN_SLAB));
-                    assert!(c.nslots() >= 16, "class {i} has {} slots", c.nslots());
-                }
+                Tier::Medium => assert!(c.size() > SMALL_MAX),
             }
             // The reciprocal is exact for every multiple of the size.
             assert_eq!(c.recip as u64, (1u64 << 32).div_ceil(c.size() as u64));

@@ -2069,11 +2069,11 @@ pub(crate) mod tests {
     fn free_of_a_never_allocated_slot_aborts() {
         let s = shared();
         let t = TestHeap::new(s);
-        let c = class_with(64);
+        let c = class_with(16);
         let p = t.alloc(c);
         // A slot of slab 0 above the first refill's HALF is committed but
-        // was never claimed (the 64-byte slab has 1024 slots).
-        t.free(unsafe { p.add((HALF + 200) * 64) });
+        // was never claimed (the 16-byte slab has 1024 slots).
+        t.free(unsafe { p.add((HALF + 200) * 16) });
     }
 
     #[test]
@@ -2231,8 +2231,10 @@ pub(crate) mod tests {
         assert_ne!(s.arena0.classes[c].locate(p0).0, s.arena0.classes[c].locate(p1).0);
         assert_eq!(h.cache(c).unwrap().len(), HALF - 1);
         assert_eq!(h.cache_in(a1, c).unwrap().len(), HALF - 1);
-        assert_eq!(s.arena(a1).unwrap().classes[c].stats().committed, 1);
-        assert_eq!(s.arena0.classes[c].stats().committed, 1);
+        // One refill spans `HALF / nslots` slabs (one 1024-slot slab at 64 bytes).
+        let per_refill = HALF.div_ceil(CLASSES[c].nslots());
+        assert_eq!(s.arena(a1).unwrap().classes[c].stats().committed, per_refill);
+        assert_eq!(s.arena0.classes[c].stats().committed, per_refill);
         // Non-existent arena: null, nothing touched.
         assert!(h.alloc_in(s, 77, c).0.is_null());
         // The fast path takes only the home arena's slots.
@@ -2252,15 +2254,15 @@ pub(crate) mod tests {
         h.flush_all(s);
         assert_eq!(h.cache(c).unwrap().len(), 0);
         assert_eq!(h.cache_in(a1, c).unwrap().len(), 0);
-        assert_eq!(s.arena0.classes[c].stats().empty, 1);
-        assert_eq!(s.arena(a1).unwrap().classes[c].stats().empty, 1);
+        assert_eq!(s.arena0.classes[c].stats().empty, per_refill);
+        assert_eq!(s.arena(a1).unwrap().classes[c].stats().empty, per_refill);
         // Direct paths against an explicit arena.
         let a = s.arena(a1).unwrap();
         let (d, _) = s.alloc_direct(a, c);
         assert_eq!(s.classify_free(d), Ok((c, a1)));
         assert_eq!(a.classes[c].desc(s.arena0.classes[c].locate(d).0).live(), 1);
         s.free_direct(a1, c, d);
-        assert_eq!(a.classes[c].stats().empty, 1);
+        assert_eq!(a.classes[c].stats().empty, per_refill);
         // Destroying the heap frees the other-arena caches too.
         let before = s.meta.stats().allocated;
         unsafe { Heap::destroy(t.h, s) };
@@ -2296,8 +2298,9 @@ pub(crate) mod tests {
         assert_eq!(h.cache(c).unwrap().len(), HALF);
         assert_eq!(h.cache_in(a1, c).unwrap().len(), HALF);
         h.flush_all(s);
-        assert_eq!(s.arena0.classes[c].stats().empty, 1);
-        assert_eq!(s.arena(a1).unwrap().classes[c].stats().empty, 1);
+        let per_refill = HALF.div_ceil(CLASSES[c].nslots());
+        assert_eq!(s.arena0.classes[c].stats().empty, per_refill);
+        assert_eq!(s.arena(a1).unwrap().classes[c].stats().empty, per_refill);
     }
 
     /// Explicit caches are heaps owned by no thread with their own ids.

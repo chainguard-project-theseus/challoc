@@ -483,9 +483,12 @@ mod tests {
         assert_eq!((b16.curslabs, b16.nonfull_slabs, b16.empty_slabs, b16.purged_slabs), (1, 1, 0, 0));
         let b256 = a.bins[c256];
         assert_eq!(b256.curregs, live(s, c256));
-        assert_eq!(b256.curslabs, 1);
+        // The 256-byte refill (256 slots) fits in one 256-slot slab; keep
+        // the count derived so the test survives a geometry change.
+        let slabs256 = b256.curslabs;
+        assert!(slabs256 >= 1 && (slabs256 - 1) * CLASSES[c256].nslots() < b256.curregs, "{slabs256} slabs");
         assert_eq!(a.small_allocated, live(s, c16) * 16 + live(s, c256) * 256);
-        assert_eq!(a.small_active, CLASSES[c16].slab_size() + CLASSES[c256].slab_size());
+        assert_eq!(a.small_active, CLASSES[c16].slab_size() + slabs256 * CLASSES[c256].slab_size());
         assert_eq!((a.small_dirty, a.small_retained), (0, 0));
         let bmed = a.bins[cmed];
         assert_eq!((bmed.curregs, bmed.curslabs), (live(s, cmed), 1));
@@ -520,7 +523,8 @@ mod tests {
         assert_eq!((tot.allocated, tot.active), (0, 0));
         let b16 = a.bins[c16];
         assert_eq!((b16.curregs, b16.curslabs, b16.nonfull_slabs, b16.empty_slabs, b16.purged_slabs), (0, 0, 0, 1, 0));
-        assert_eq!(a.small_dirty, CLASSES[c16].slab_size() + CLASSES[c256].slab_size());
+        assert_eq!(a.bins[c256].empty_slabs, slabs256);
+        assert_eq!(a.small_dirty, CLASSES[c16].slab_size() + slabs256 * CLASSES[c256].slab_size());
         assert_eq!((a.large_runs, a.large_allocated, a.large_active), (0, 0, 0));
         assert_eq!(a.large_dirty, med_slab, "the medium slab went Empty");
         assert_eq!(a.huge_dirty, run_pages * PAGE);
