@@ -547,17 +547,26 @@ impl Shared {
     /// table, the bitmap word from a slot already known to be below
     /// `nslots`.
     ///
+    /// The geometry comes from [`Regions::slab_slot`] (`class_base[c]`,
+    /// `lg_region`, `CLASSES[c]`), not from a copy in `tables[c]`: those
+    /// arrays are dense (about a dozen lines for all 52 classes, so L1
+    /// resident under any workload) and `class_base[c]` is one indexed
+    /// load, whereas the per-class table line is one of 52 and reached
+    /// through a multiply. With the geometry on the table line the chain
+    /// class -> `madd` -> table load -> slab -> descriptor -> bitmap word
+    /// was the whole of `free`'s critical path; here the table's
+    /// `desc_stride`/`desc_base`/`committed_slabs` loads run alongside the
+    /// slot arithmetic and are needed only for the descriptor address
+    /// (`bench/results/2026-09-16-aarch64-arenas-geometry.md`).
+    ///
     /// [`classify_free`]: Shared::classify_free
+    /// [`Regions::slab_slot`]: crate::layout::Regions::slab_slot
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     #[inline(always)]
     fn checked_slot(&self, p: *mut u8, h: &Heap) -> Option<usize> {
-        let class = (p as usize).wrapping_sub(self.regions.superblock) >> self.regions.lg_stride;
-        if class >= NCLASSES {
-            return None;
-        }
-        // SAFETY: `class < NCLASSES` was just checked.
+        let (class, slab, slot) = self.regions.slab_slot(p as usize)?;
+        // SAFETY: `slab_slot` only returns `class < NCLASSES`.
         let table = unsafe { self.tables.get_unchecked(class) };
-        let (slab, slot) = table.slab_slot_fast(p as usize)?;
         let desc = table.desc_if_committed(slab)?;
         // SAFETY: `slab_slot` validated `slot < nslots`.
         if !unsafe { desc.is_allocated_unchecked(slot) } {

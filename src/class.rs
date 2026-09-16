@@ -183,6 +183,24 @@ struct TableInner {
 /// `committed_slabs`, only when a slab is committed) and read by every
 /// `free`, while `inner` holds the commit lock. `repr(C)` keeps the
 /// read-mostly fields first and [`Padded`] starts `inner` on its own line.
+/// Offset of class `class`'s descriptor array inside its reservation.
+///
+/// The 52 descriptor tables are reserved back to back from the top of the
+/// metadata region, and each is a power of two of at least 1 MiB, so
+/// without this every table would start on a 1 MiB boundary and slab `k`'s
+/// descriptor of every class would map to the same L1 set (16 KiB per way)
+/// and the same L2 set (1 MiB per way). The `free` fast path loads one
+/// descriptor line per call, so that is a 52-way conflict on the hottest
+/// line it has. Three lines per class, and `gcd(3, 128) == 1`, so all 52
+/// classes land in distinct sets of both caches; a multiple of
+/// [`DESC_ALIGN`] keeps the descriptors aligned. The pre-arena tree got a
+/// similar spread by accident, from the set bitmaps reserved between one
+/// class's table and the next (`bench/results/2026-09-16-aarch64-arenas-geometry.md`).
+#[inline]
+pub const fn desc_stagger(class: usize) -> usize {
+    class * 3 * PAD_ALIGN
+}
+
 /// The stride of `[SlabTable; NCLASSES]` (384 bytes) is not a multiple of
 /// 512 for the reason given on [`ClassState`].
 #[repr(C, align(128))]
@@ -196,24 +214,20 @@ pub struct SlabTable {
     desc_stride: u32,
     /// Start of this class's region.
     base: usize,
-    /// Every field the `free` fast path reads (`desc_stride`, `base`,
-    /// `region_len`, `desc_base`, `committed_slabs`, `geom`) sits in the
-    /// first 64 bytes: one L1 line even on a core with 64-byte L1 lines
-    /// (`bench/results/2026-09-16-aarch64-arenas-threads.md`).
-    region_len: usize,
     /// Number of slabs in the region.
     nslabs: usize,
     /// Start of the descriptor array.
     desc_base: usize,
     /// Slabs with a committed descriptor, readable without the lock so the
     /// `free` check can reject pointers into never-committed slabs cleanly.
+    ///
+    /// The three fields the `free` fast path reads (`desc_stride`,
+    /// `desc_base`, `committed_slabs`) sit in the first 64 bytes: one L1
+    /// line even on a core with 64-byte lines. The slot geometry is not
+    /// copied here on purpose; `free` reads it from the dense
+    /// `Regions::class_base` and `CLASSES` arrays (see
+    /// `Shared::checked_slot`).
     committed_slabs: AtomicUsize,
-    /// Copy of `CLASSES[class]` and of the region length, so the `free`
-    /// fast path classifies a pointer from this line alone instead of
-    /// reading `Regions::class_base`, `CLASSES` and this table (three
-    /// lines, and larson's working set makes each one an L2 access;
-    /// `bench/results/2026-09-16-aarch64-arenas-lines.md`).
-    geom: Class,
     inner: Padded<Lock<TableInner>>,
     _tail: [u8; PAD_ALIGN],
 }
@@ -359,7 +373,8 @@ impl SlabTable {
         assert!(guard_interval != 1, "class: a guard interval of 1 leaves no slabs to allocate");
         let page = regions.page_size();
         let nslabs = regions.nslabs(class);
-        let descs = Lazy::reserve(meta, nslabs * desc_stride(class), DESC_ALIGN.max(page))?;
+        let stagger = desc_stagger(class);
+        let descs = Lazy::reserve(meta, stagger + nslabs * desc_stride(class), DESC_ALIGN.max(page))?;
         Some(SlabTable {
             class: class as u16,
             guard_interval,
@@ -367,10 +382,8 @@ impl SlabTable {
             desc_stride: desc_stride(class) as u32,
             base: regions.class_base[class],
             nslabs,
-            desc_base: descs.base,
+            desc_base: descs.base + stagger,
             committed_slabs: AtomicUsize::new(0),
-            geom: CLASSES[class],
-            region_len: regions.region_len(),
             inner: Padded(Lock::new(TableInner { descs, next_slab: 0, guards: 0 })),
             _tail: [0; PAD_ALIGN],
         })
@@ -452,27 +465,6 @@ impl SlabTable {
         Some(unsafe { self.desc_unchecked(slab) })
     }
 
-    /// The `free` fast path's view of `p` inside this class: its slab and
-    /// slot, `None` unless `p` is a slot start inside the region. Reads
-    /// only this table's first line; [`Regions::slab_slot`] is the same
-    /// arithmetic from the regions and the class table.
-    ///
-    /// [`Regions::slab_slot`]: crate::layout::Regions::slab_slot
-    #[inline(always)]
-    pub fn slab_slot_fast(&self, p: usize) -> Option<(usize, usize)> {
-        let rel = p.wrapping_sub(self.base);
-        if rel >= self.region_len {
-            return None;
-        }
-        let slab = rel >> self.geom.lg_slab;
-        let offset = rel & (self.geom.slab_size() - 1);
-        let (slot, valid) = self.geom.slot_of_offset(offset);
-        if !valid {
-            return None;
-        }
-        Some((slab, slot))
-    }
-
     /// Descriptor of `slab` without a commit check.
     ///
     /// # Safety
@@ -542,7 +534,8 @@ impl SlabTable {
             if s >= self.nslabs {
                 return None;
             }
-            g.descs.ensure(meta, page, (s + 1) * desc_stride(self.class as usize)).ok()?;
+            let class = self.class as usize;
+            g.descs.ensure(meta, page, desc_stagger(class) + (s + 1) * desc_stride(class)).ok()?;
             ensure_sets(s).ok()?;
             let addr = self.slab_addr(s);
             let len = cls.slab_size();
