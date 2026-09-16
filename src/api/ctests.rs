@@ -56,6 +56,25 @@ fn compile(dir: &str, name: &str, flags: &[&str]) -> String {
     out
 }
 
+/// Compile `tests/c/<name>.cpp` with the container's C++ compiler (C++17
+/// for `std::align_val_t`) and return the path of the binary.
+fn compile_cxx(name: &str) -> String {
+    let root = env!("CARGO_MANIFEST_DIR");
+    let src = std::format!("{root}/tests/c/{name}.cpp");
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let out = std::format!("{}/challoc-{name}-{}-{seq}", env::temp_dir().display(), std::process::id());
+    let cxx = env::var("CXX").unwrap_or_else(|_| "c++".into());
+    let quantum = std::format!("-DQUANTUM={QUANTUM}");
+    let status = Command::new(&cxx)
+        .args(["-std=c++17", "-O2", "-g", "-Wall", "-Wextra", "-Werror", "-pthread", &quantum])
+        .args([&src, "-o", &out, "-ldl"])
+        .status()
+        .unwrap();
+    assert!(status.success(), "compiling {src} failed");
+    out
+}
+
 /// Build, run bare (must fail), run under the preload (must pass).
 fn run_c(name: &str, args: &[&str]) {
     run_c_in("tests/c", name, args);
@@ -66,18 +85,24 @@ fn run_c_in(dir: &str, name: &str, args: &[&str]) {
 }
 
 fn run_c_flags(dir: &str, name: &str, args: &[&str], flags: &[&str]) {
-    let so = release_so();
     let bin = compile(dir, name, flags);
+    run_bin(name, &bin, args);
+}
 
-    let bare = Command::new(&bin).args(args).output().unwrap();
+/// Run a compiled test program bare (must fail) and under the preload
+/// (must pass and print `ok <name>`), then delete it.
+fn run_bin(name: &str, bin: &str, args: &[&str]) {
+    let so = release_so();
+
+    let bare = Command::new(bin).args(args).output().unwrap();
     assert!(
         !bare.status.success(),
         "{name} passed without libchalloc preloaded:\n{}",
         String::from_utf8_lossy(&bare.stdout)
     );
 
-    let run = Command::new(&bin).args(args).env("LD_PRELOAD", &so).output().unwrap();
-    let _ = std::fs::remove_file(&bin);
+    let run = Command::new(bin).args(args).env("LD_PRELOAD", &so).output().unwrap();
+    let _ = std::fs::remove_file(bin);
     let stdout = String::from_utf8_lossy(&run.stdout);
     let stderr = String::from_utf8_lossy(&run.stderr);
     assert!(run.status.success(), "{name} failed ({:?})\nstdout: {stdout}\nstderr: {stderr}", run.status);
@@ -203,6 +228,66 @@ fn c_fork_signal() {
 #[test]
 fn c_thread_exit() {
     run_c("thread_exit", &[]);
+}
+
+/// The C++ operators (`src/api/cxx.rs`): resolution into libchalloc,
+/// round trips, `std::bad_alloc` thrown through challoc's frames and the
+/// `new_handler` loop.
+#[test]
+fn cxx_new() {
+    let bin = compile_cxx("cxx_new");
+    run_bin("cxx_new", &bin, &[]);
+}
+
+/// The release `.so` defines all 20 operator symbols, references
+/// libstdc++'s two helpers only weakly (so a C process without libstdc++
+/// still loads it under `BIND_NOW`), and has `.eh_frame` coverage for the
+/// operator that `std::bad_alloc` unwinds through.
+#[test]
+fn cxx_symbols_in_release_so() {
+    let so = release_so();
+    let dynsym = Command::new("readelf").args(["--dyn-syms", "-W", &so]).output().unwrap();
+    assert!(dynsym.status.success(), "readelf --dyn-syms failed");
+    let dynsym = String::from_utf8_lossy(&dynsym.stdout);
+    let defined = |sym: &str| {
+        dynsym.lines().any(|l| l.contains(" FUNC ") && l.contains(" GLOBAL ") && !l.contains(" UND ") && l.ends_with(&std::format!(" {sym}")))
+    };
+    for sym in [
+        "_Znwm", "_Znam", "_ZnwmRKSt9nothrow_t", "_ZnamRKSt9nothrow_t",
+        "_ZnwmSt11align_val_t", "_ZnamSt11align_val_t",
+        "_ZnwmSt11align_val_tRKSt9nothrow_t", "_ZnamSt11align_val_tRKSt9nothrow_t",
+        "_ZdlPv", "_ZdaPv", "_ZdlPvRKSt9nothrow_t", "_ZdaPvRKSt9nothrow_t",
+        "_ZdlPvm", "_ZdaPvm", "_ZdlPvSt11align_val_t", "_ZdaPvSt11align_val_t",
+        "_ZdlPvSt11align_val_tRKSt9nothrow_t", "_ZdaPvSt11align_val_tRKSt9nothrow_t",
+        "_ZdlPvmSt11align_val_t", "_ZdaPvmSt11align_val_t",
+    ] {
+        assert!(defined(sym), "{sym} is not a defined global function in {so}:\n{dynsym}");
+    }
+    for sym in ["_ZSt15get_new_handlerv", "_ZSt17__throw_bad_allocv"] {
+        let line = dynsym.lines().find(|l| l.ends_with(&std::format!(" {sym}")));
+        let line = line.unwrap_or_else(|| panic!("{sym} not referenced by {so}"));
+        assert!(line.contains(" WEAK ") && line.contains(" UND "), "{sym} must be a weak undefined reference: {line}");
+    }
+    assert!(!dynsym.contains("libstdc++"), "no DT_NEEDED on libstdc++ expected");
+    let needed = Command::new("readelf").args(["-d", &so]).output().unwrap();
+    let needed = String::from_utf8_lossy(&needed.stdout);
+    assert!(!needed.contains("libstdc++"), "libchalloc.so must not need libstdc++:\n{needed}");
+
+    // `.eh_frame` must cover `_Znwm` so the unwinder can pass through it.
+    let nm = Command::new("nm").args(["-D", "--defined-only", &so]).output().unwrap();
+    let nm = String::from_utf8_lossy(&nm.stdout);
+    let addr = nm.lines().find(|l| l.ends_with(" _Znwm")).and_then(|l| l.split(' ').next()).expect("_Znwm in nm");
+    let addr = usize::from_str_radix(addr, 16).unwrap();
+    let frames = Command::new("readelf").args(["--debug-dump=frames", &so]).output().unwrap();
+    let frames = String::from_utf8_lossy(&frames.stdout);
+    let covered = frames.lines().filter(|l| l.contains("FDE")).any(|l| {
+        let Some(pc) = l.split("pc=").nth(1) else { return false };
+        let mut r = pc.split("..");
+        let lo = usize::from_str_radix(r.next().unwrap_or("").trim(), 16).unwrap_or(usize::MAX);
+        let hi = usize::from_str_radix(r.next().unwrap_or("").trim(), 16).unwrap_or(0);
+        lo <= addr && addr < hi
+    });
+    assert!(covered, "no FDE covers _Znwm at {addr:#x}");
 }
 
 /// Run one unmodified glibc malloc test from `tests/glibc/malloc/` (plan

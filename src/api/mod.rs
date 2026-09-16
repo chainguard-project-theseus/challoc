@@ -33,6 +33,7 @@
 //! and glibc's `tst-mallocfork` provokes exactly that when the child's
 //! `SIGALRM` overtakes the parent's post-fork release (seen under Rosetta).
 
+pub mod cxx;
 pub mod libc;
 
 #[cfg(test)]

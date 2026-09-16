@@ -487,6 +487,22 @@ ignores every parameter, returns 1), `mallinfo`, `mallinfo2`, `malloc_stats`,
 All exported symbols are free functions marked `#[unsafe(no_mangle)]` with
 `extern "C"` and `pub`, since rustc's version script only exports those.
 
+The C++ operators are exported too, as jemalloc does: the eight
+`operator new` forms (`new`, `new[]`, each plain, `nothrow_t`, `align_val_t`
+and both) and the twelve `operator delete` forms (plain, `nothrow_t`, sized,
+`align_val_t`, aligned `nothrow_t`, sized aligned), under their Itanium ABI
+names via `#[unsafe(export_name)]`. Without them a C++ program under
+`LD_PRELOAD` pays a second PLT hop through libstdc++'s `operator new` on
+every allocation (13% of larson). `operator new` follows the standard
+failure protocol: call `std::get_new_handler()` in a loop while one is
+installed, then throw `std::bad_alloc` via libstdc++'s
+`std::__throw_bad_alloc()`; the `nothrow_t` forms return null instead. Both
+libstdc++ entry points are weak undefined references loaded from the GOT, so
+a C process that never maps libstdc++ still loads the library under
+`BIND_NOW`, and a C++ program with a static libstdc++ that hides them gets
+an abort with a message instead of the throw. Sized and aligned `delete`
+ignore their extra arguments in Phase 0.
+
 ### 13.2 jemalloc
 
 Symbols: `mallocx`, `rallocx`, `xallocx`, `sallocx`, `dallocx`, `sdallocx`,

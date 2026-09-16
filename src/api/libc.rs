@@ -78,19 +78,26 @@ pub fn malloc(size: usize) -> *mut u8 {
     // The fast path is a cache pop with no calls in it; everything else
     // (init, heap creation, refill, huge, ENOMEM) is one tail call away so
     // the exported `malloc` needs no stack frame.
-    if let Some(c) = class_of(size) {
-        if let Some(h) = heap::existing_heap() {
-            if let Some(p) = h.alloc_fast(c) {
-                return p;
-            }
-        }
+    match malloc_fast(size) {
+        Some(p) => p,
+        None => malloc_slow(size),
     }
-    malloc_slow(size)
 }
 
+/// The cache pop alone: `None` whenever anything is off the fast path (no
+/// heap yet, empty cache, huge size). Shared with the C++ `operator new`
+/// family in `cxx.rs`, whose failure handling differs from `malloc`'s.
+#[inline(always)]
+pub(super) fn malloc_fast(size: usize) -> Option<*mut u8> {
+    let c = class_of(size)?;
+    heap::existing_heap()?.alloc_fast(c)
+}
+
+/// Everything `malloc` does off its fast path. Null with `errno = ENOMEM`
+/// on failure.
 #[cold]
 #[inline(never)]
-fn malloc_slow(size: usize) -> *mut u8 {
+pub(super) fn malloc_slow(size: usize) -> *mut u8 {
     let shared = super::shared();
     let p = match class_of(size) {
         Some(c) => heap::alloc(shared, c),
