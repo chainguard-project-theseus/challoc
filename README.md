@@ -156,6 +156,8 @@ Linux hosts alike:
 make dev                       # shell in the Wolfi dev container, repo at /src
 make build                     # cargo build --release inside the container
 make run CMD='cargo test'      # any one command inside the container
+make test                      # release build, then the full test suite in the container
+make fuzz                      # fuzz/fuzz.c: 10M random ops on 4 threads under LD_PRELOAD
 make test-host                 # pure-logic unit tests on the host
 ```
 

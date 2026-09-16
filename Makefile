@@ -13,6 +13,9 @@
 #                            plus a second full layout (the layout tests) exceed
 #                            what Rosetta can track under emulation.
 #   make test-host           pure-logic unit tests on the host
+#   make fuzz                build, then run fuzz/fuzz.c under LD_PRELOAD for
+#                            FUZZ_OPS (10M) operations on FUZZ_THREADS (4)
+#                            threads with FUZZ_SEED (fixed; `random` draws one)
 #
 # `target/` inside the container is a named Docker volume, one per
 # architecture, so Linux artifacts never mix with host artifacts and builds do
@@ -30,7 +33,7 @@ DOCKER_RUN = docker run --rm --platform $(PLATFORM) \
 	-v challoc-cargo-registry:/root/.cargo/registry \
 	$(DOCKER_FLAGS) $(IMAGE)
 
-.PHONY: image dev run build test test-host clean-volumes
+.PHONY: image dev run build test test-host fuzz clean-volumes
 
 image:
 	docker build --platform $(PLATFORM) -f Dockerfile.dev -t $(IMAGE) .
@@ -52,6 +55,17 @@ test: image
 
 test-host:
 	cargo test --features std
+
+FUZZ_OPS     ?= 10000000
+FUZZ_THREADS ?= 4
+FUZZ_SEED    ?= 0xC4A110C
+FUZZ_TABLE   ?= 2048
+fuzz: image
+	$(DOCKER_RUN) sh -c 'cargo build --release \
+	  && cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c \
+	       fuzz/fuzz.c -o target/fuzz -ldl \
+	  && LD_PRELOAD=/src/target/release/libchalloc.so \
+	     ./target/fuzz $(FUZZ_OPS) $(FUZZ_THREADS) $(FUZZ_SEED) $(FUZZ_TABLE)'
 
 clean-volumes:
 	docker volume rm -f challoc-target-$(ARCH) challoc-cargo-registry

@@ -10,6 +10,7 @@
 //! `api::` so `make test` groups them with the other `LD_PRELOAD` tests.
 
 use crate::QUANTUM;
+use core::sync::atomic::{AtomicUsize, Ordering};
 use std::env;
 use std::process::Command;
 use std::string::String;
@@ -25,15 +26,21 @@ fn release_so() -> String {
     so
 }
 
-/// Compile `tests/c/<name>.c` and return the path of the binary.
-fn compile(name: &str) -> String {
+/// Compile `<dir>/<name>.c` (with `tests/c` on the include path for
+/// `common.h`) and return the path of the binary.
+fn compile(dir: &str, name: &str) -> String {
     let root = env!("CARGO_MANIFEST_DIR");
-    let src = std::format!("{root}/tests/c/{name}.c");
-    let out = std::format!("{}/challoc-{name}-{}", env::temp_dir().display(), std::process::id());
+    let src = std::format!("{root}/{dir}/{name}.c");
+    let include = std::format!("-I{root}/tests/c");
+    // Tests run concurrently in one process and two may compile the same
+    // program with different arguments, so the path needs more than the pid.
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let out = std::format!("{}/challoc-{name}-{}-{seq}", env::temp_dir().display(), std::process::id());
     let cc = env::var("CC").unwrap_or_else(|_| "cc".into());
     let quantum = std::format!("-DQUANTUM={QUANTUM}");
     let status = Command::new(&cc)
-        .args(["-O2", "-g", "-Wall", "-Wextra", "-Werror", "-pthread", &quantum, &src, "-o", &out, "-ldl"])
+        .args(["-O2", "-g", "-Wall", "-Wextra", "-Werror", "-pthread", &quantum, &include, &src, "-o", &out, "-ldl"])
         .status()
         .unwrap();
     assert!(status.success(), "compiling {src} failed");
@@ -42,8 +49,12 @@ fn compile(name: &str) -> String {
 
 /// Build, run bare (must fail), run under the preload (must pass).
 fn run_c(name: &str, args: &[&str]) {
+    run_c_in("tests/c", name, args);
+}
+
+fn run_c_in(dir: &str, name: &str, args: &[&str]) {
     let so = release_so();
-    let bin = compile(name);
+    let bin = compile(dir, name);
 
     let bare = Command::new(&bin).args(args).output().unwrap();
     assert!(
@@ -102,4 +113,18 @@ fn c_fork_alloc() {
 #[test]
 fn c_thread_exit() {
     run_c("thread_exit", &[]);
+}
+
+#[test]
+fn c_fuzz_short() {
+    // The Phase 0 task 13 fuzz driver at a fraction of `make fuzz` (10M ops,
+    // 4 threads) so every `make test` runs it. Same seed as `make fuzz`.
+    run_c_in("fuzz", "fuzz", &["400000", "4"]);
+}
+
+#[test]
+fn c_fuzz_single_thread_small_table() {
+    // One thread and a 64-entry table: high churn per slot, no cross-thread
+    // traffic, so slots are reused quickly through the thread cache.
+    run_c_in("fuzz", "fuzz", &["200000", "1", "0x7", "64"]);
 }
