@@ -40,6 +40,13 @@ REDIS_N=${REDIS_N:-1000000}
 
 [ -x "$BIN/rt" ] || { echo "run bench/build.sh first" >&2; exit 1; }
 [ -f "$CHALLOC" ] || { echo "cargo build --release first" >&2; exit 1; }
+# One protocol run at a time. A `make bench` container outlives the host
+# `make` that started it when that process is killed, and a second run in the
+# same target volume would then share the CPUs and append to the same raw
+# files. The lock lives in the shared volume so it is visible across containers
+# and is released by the kernel when the holder exits.
+exec 9>"$ROOT/target/bench.lock"
+flock -n 9 || { echo "another bench run holds target/bench.lock; wait for it or check docker ps" >&2; exit 1; }
 rm -rf "$OUT"
 mkdir -p "$OUT" "$(dirname "$RESULT")"
 
@@ -97,6 +104,15 @@ for bench in $BENCHES; do
     r=0
     while [ $r -le "$RUNS" ]; do run_one "$bench" "$alloc" $r; printf .; r=$((r+1)); done
     echo
+  done
+done
+
+# Every raw file must hold exactly the warm-up plus RUNS lines; anything else
+# means a concurrent writer and the medians would be meaningless.
+for bench in $BENCHES; do
+  for a in $ALLOCS; do
+    n=$(wc -l <"$OUT/$bench.$a.rt")
+    [ "$n" -eq $((RUNS+1)) ] || { echo "$OUT/$bench.$a.rt has $n lines, expected $((RUNS+1)): concurrent run?" >&2; exit 1; }
   done
 done
 
