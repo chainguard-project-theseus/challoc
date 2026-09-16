@@ -36,19 +36,23 @@ use crate::sys::Errno;
 
 /// Alignment of every object; the smallest bin is one quantum of 16.
 pub const MIN_ALIGN: usize = 16;
-/// Objects of 64 bytes or more are cache-line aligned so heaps and caches
-/// of different threads never share a line.
-pub const CACHE_LINE: usize = 64;
+/// Objects of 128 bytes or more are line aligned and line sized so heaps and
+/// caches of different threads never share a line. 128, not 64: Apple
+/// silicon has 128-byte lines and Intel's adjacent-line prefetcher pairs
+/// 64-byte lines (the same unit as `lock::PAD_ALIGN`).
+pub const CACHE_LINE: usize = 128;
+const _: () = assert!(CACHE_LINE == crate::lock::PAD_ALIGN);
 /// Largest alignment [`Meta::alloc`] accepts. Anything needing more (a
 /// thread stack) is a reservation.
 pub const MAX_ALIGN: usize = CACHE_LINE;
 /// Largest object [`Meta::alloc`] serves. Bigger things are reservations.
 pub const LG_MAX_BINNED: u32 = 20;
 pub const MAX_BINNED: usize = 1 << LG_MAX_BINNED;
-/// Bins: 16, 32, 48, 64, 128, then `1.5 * 2^(k-1)` and `2^k` for `k` in
-/// `8..=LG_MAX_BINNED`. Every bin from 64 up is a multiple of the cache line
-/// (which is why there is no 96), and consecutive bins differ by at most 2x.
-pub const NBINS: usize = 5 + 2 * (LG_MAX_BINNED as usize - 7);
+/// Bins: 16, 32, 48, 64, 128, 256, then `1.5 * 2^(k-1)` and `2^k` for `k`
+/// in `9..=LG_MAX_BINNED`. Every bin from 128 up is a multiple of the cache
+/// line (which is why there is no 96 or 192), and consecutive bins differ by
+/// at most 2x.
+pub const NBINS: usize = 6 + 2 * (LG_MAX_BINNED as usize - 8);
 /// Granularity of bump-area commits. Only address space and overcommit
 /// charge, not RSS, so a coarse step keeps `mprotect` calls rare.
 pub const COMMIT_CHUNK: usize = 64 * 1024;
@@ -63,8 +67,9 @@ const fn build_bins() -> [u32; NBINS] {
     b[2] = 48;
     b[3] = 64;
     b[4] = 128;
-    let mut i = 5;
-    let mut lg = 8;
+    b[5] = 256;
+    let mut i = 6;
+    let mut lg = 9;
     while lg <= LG_MAX_BINNED {
         b[i] = 3 << (lg - 2);
         b[i + 1] = 1 << lg;
@@ -90,17 +95,21 @@ pub const fn bin_of(size: usize) -> Option<usize> {
     if size <= 128 {
         return Some(4);
     }
-    // `size` is in `(2^lg, 2^(lg+1)]` with `lg >= 7`; bin `5 + 2 * (lg - 7)`
+    if size <= 256 {
+        return Some(5);
+    }
+    // `size` is in `(2^lg, 2^(lg+1)]` with `lg >= 8`; bin `6 + 2 * (lg - 8)`
     // holds `1.5 * 2^lg` and the next holds `2^(lg+1)`.
     let lg = (usize::BITS - 1 - (size - 1).leading_zeros()) as usize;
-    let base = 5 + 2 * (lg - 7);
+    let base = 6 + 2 * (lg - 8);
     if size <= (3 << (lg - 1)) { Some(base) } else { Some(base + 1) }
 }
 
-/// Alignment every object of bin `bin` has.
+/// Alignment every object of bin `bin` has: 16 up to the 64-byte bin, a
+/// full line from 128 up.
 #[inline]
 pub const fn bin_align(bin: usize) -> usize {
-    if bin < 3 { MIN_ALIGN } else { CACHE_LINE }
+    if bin < 4 { MIN_ALIGN } else { CACHE_LINE }
 }
 
 /// Bin serving a `Layout`: the size's bin, promoted to a cache-line bin when
@@ -108,7 +117,7 @@ pub const fn bin_align(bin: usize) -> usize {
 #[inline]
 pub const fn bin_for(layout: Layout) -> Option<usize> {
     match bin_of(layout.size()) {
-        Some(b) if layout.align() > MIN_ALIGN && b < 3 => Some(3),
+        Some(b) if layout.align() > MIN_ALIGN && b < 4 => Some(4),
         other => other,
     }
 }
@@ -489,7 +498,7 @@ mod tests {
 
     #[test]
     fn bins_are_well_formed() {
-        assert_eq!(NBINS, 31);
+        assert_eq!(NBINS, 30);
         assert_eq!(BINS[0], 16);
         assert_eq!(BINS[NBINS - 1] as usize, MAX_BINNED);
         for w in BINS.windows(2) {
@@ -498,10 +507,12 @@ mod tests {
         for (i, &b) in BINS.iter().enumerate() {
             let b = b as usize;
             assert_eq!(b % bin_align(i), 0, "bin {i} ({b}) not a multiple of its alignment");
-            if i >= 3 {
-                // Power of two or 1.5x a power of two, all multiples of 64.
-                assert!(b.is_power_of_two() || (b % 3 == 0 && (b / 3).is_power_of_two()));
+            // Power of two or 1.5x a power of two; from 128 up, line sized.
+            assert!(b.is_power_of_two() || (b % 3 == 0 && (b / 3).is_power_of_two()));
+            if i >= 4 {
                 assert_eq!(b % CACHE_LINE, 0);
+            } else {
+                assert_eq!(bin_align(i), MIN_ALIGN);
             }
         }
         // Internal waste is bounded: consecutive bins grow by at most 2x.
@@ -518,7 +529,7 @@ mod tests {
         }
         assert_eq!(bin_of(usize::MAX), None);
         assert_eq!(bin_of(MAX_BINNED), Some(NBINS - 1));
-        for size in [1usize, 16, 17, 32, 33, 48, 49, 64, 65, 128, 129, 192, 193, 256] {
+        for size in [1usize, 16, 17, 32, 33, 48, 49, 64, 65, 128, 129, 256, 257, 384, 385, 512] {
             let b = bin_of(size).unwrap();
             assert!(BINS[b] as usize >= size);
             assert!(b == 0 || (BINS[b - 1] as usize) < size);
@@ -529,11 +540,14 @@ mod tests {
     fn bin_for_promotes_on_alignment() {
         assert_eq!(bin_for(layout(8, 8)), Some(0));
         assert_eq!(bin_for(layout(8, 16)), Some(0));
-        assert_eq!(bin_for(layout(8, 32)), Some(3));
-        assert_eq!(bin_for(layout(40, 64)), Some(3));
+        assert_eq!(bin_for(layout(8, 32)), Some(4));
+        assert_eq!(bin_for(layout(40, 64)), Some(4));
+        assert_eq!(bin_for(layout(64, 128)), Some(4));
         assert_eq!(bin_for(layout(100, 64)), Some(4));
         assert_eq!(bin_for(layout(129, 8)), Some(5));
-        assert_eq!(BINS[5], 192);
+        assert_eq!(BINS[5], 256);
+        assert_eq!(bin_for(layout(257, 8)), Some(6));
+        assert_eq!(BINS[6], 384);
         assert_eq!(bin_for(layout(MAX_BINNED + 1, 8)), None);
     }
 
@@ -632,14 +646,14 @@ mod tests {
     fn alignment_is_honoured() {
         let b = Backing::new(1 << 20);
         let m = b.meta();
-        for align in [1usize, 2, 4, 8, 16, 32, 64] {
+        for align in [1usize, 2, 4, 8, 16, 32, 64, 128] {
             for size in [1usize, 15, 16, 17, 48, 49, 64, 65, 96, 300, 4097] {
                 let l = layout(size, align);
                 let p = m.alloc(l);
                 assert!(!p.is_null());
                 assert_eq!(p as usize % align, 0, "size {size} align {align}");
                 assert_eq!(p as usize % bin_align(bin_for(l).unwrap()), 0);
-                if size >= 64 || align > 16 {
+                if size > 64 || align > 16 {
                     assert_eq!(p as usize % CACHE_LINE, 0);
                 }
             }
@@ -768,7 +782,7 @@ mod tests {
     fn overaligned_object_aborts() {
         let b = Backing::new(1 << 16);
         let m = b.meta();
-        let _ = m.alloc(layout(64, 128));
+        let _ = m.alloc(layout(64, 256));
     }
 
     #[test]
