@@ -837,6 +837,12 @@ impl Huge {
     /// unless it is the start of a live run. Returns the usable bytes
     /// released, for the caller's counters.
     pub fn free(&self, meta: &Meta, page: usize) -> usize {
+        self.free_run(meta, page).usable
+    }
+
+    /// [`Huge::free`] returning the run as it was (`start`, `pages` with
+    /// the guard, `usable`, `arena`), for the per-arena counters.
+    pub fn free_run(&self, meta: &Meta, page: usize) -> RunInfo {
         let page_size = self.page_size();
         let mut g = self.inner.lock();
         let d = g.table.get(page);
@@ -844,7 +850,8 @@ impl Huge {
             not_a_run(self.addr(page));
         }
         // SAFETY: table entries are live descriptors.
-        let (start, n, state, usable) = unsafe { ((*d).start(), (*d).pages(), (*d).state(), (*d).usable) };
+        let (start, n, state, usable, arena) =
+            unsafe { ((*d).start(), (*d).pages(), (*d).state(), (*d).usable, (*d).arena()) };
         if state != RunState::Active {
             already_free(self.addr(page));
         }
@@ -939,7 +946,7 @@ impl Huge {
         if first {
             purge::note_empty();
         }
-        usable
+        RunInfo { start, pages: n, usable, arena, state: RunState::Active, dirty_at: 0 }
     }
 
     /// Usable bytes of the live run starting at `page`. Aborts otherwise.

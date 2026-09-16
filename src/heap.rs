@@ -48,8 +48,9 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use crate::arena::{Arena, Arenas, Tcaches};
 use crate::class::SlabTable;
 use crate::config::Config;
-use crate::huge::Huge;
+use crate::huge::{GUARD_PAGES, Huge};
 use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
+use crate::lock::Lock;
 use crate::meta::Meta;
 
 /// Largest default cache capacity (classes up to 128 bytes). 1024 rather
@@ -258,6 +259,8 @@ pub struct Shared {
     key: ThreadKey,
     pub arenas: Arenas,
     pub tcaches: Tcaches,
+    /// Process-wide statistics as of the last `epoch` (`stats.rs`).
+    pub stats: Lock<crate::stats::Snapshot>,
 }
 
 // The flag and the `Regions` fields every `free` reads share one 128-byte
@@ -420,6 +423,7 @@ impl Shared {
             Tcaches::init(&raw mut (*this).tcaches);
             ptr::write(&raw mut (*this).config, config);
             ptr::write(&raw mut (*this).key, ThreadKey::create());
+            ptr::write(&raw mut (*this).stats, Lock::new(crate::stats::Snapshot::EMPTY));
         }
         true
     }
@@ -591,13 +595,22 @@ impl Shared {
     /// (which must exist). Null on exhaustion; the flag says the memory is
     /// known zero.
     pub fn alloc_huge(&self, size: usize, align: usize, arena: u16) -> (*mut u8, bool) {
-        self.huge.alloc(&self.meta, size, align, arena)
+        let r = self.huge.alloc(&self.meta, size, align, arena);
+        if !r.0.is_null() {
+            // The run's pages are what `Huge::alloc` committed for `size`
+            // (see `usable_pages`) plus the guard.
+            let pages = self.huge.usable_pages(size).unwrap_or(0) + GUARD_PAGES;
+            self.owner(arena).note_huge_alloc(pages);
+        }
+        r
     }
 
     /// Free the huge run starting at `page`. Aborts unless it is a live
     /// run start. Returns the usable bytes released.
     pub fn free_huge(&self, page: usize) -> usize {
-        self.huge.free(&self.meta, page)
+        let run = self.huge.free_run(&self.meta, page);
+        self.owner(run.arena).note_huge_free(run.pages);
+        run.usable
     }
 }
 
@@ -1424,7 +1437,7 @@ fn no_such_arena(index: u16) -> ! {
     panic!("arena {index} does not exist")
 }
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::class::ClassStats;
     use crate::layout::{LG_MAX_SLAB, MAX_SLAB, Mapping, class_of};
@@ -1475,11 +1488,11 @@ mod tests {
     /// regions are real `PROT_NONE` reservations so slot memory can be
     /// touched; elsewhere the metadata is a `Vec` and slot addresses are
     /// never dereferenced.
-    fn shared() -> &'static Shared {
+    pub(crate) fn shared() -> &'static Shared {
         shared_with(Config::DEFAULT)
     }
 
-    fn shared_with(config: Config) -> &'static Shared {
+    pub(crate) fn shared_with(config: Config) -> &'static Shared {
         #[cfg(target_os = "linux")]
         let (sb, mb, hb) = {
             use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
@@ -1504,27 +1517,27 @@ mod tests {
         unsafe { b.assume_init_ref() }
     }
 
-    fn class_with(size: usize) -> usize {
+    pub(crate) fn class_with(size: usize) -> usize {
         CLASSES.iter().position(|c| c.size() == size).unwrap()
     }
 
-    struct TestHeap {
+    pub(crate) struct TestHeap {
         h: *mut Heap,
         s: &'static Shared,
     }
 
     impl TestHeap {
-        fn new(s: &'static Shared) -> TestHeap {
+        pub(crate) fn new(s: &'static Shared) -> TestHeap {
             let h = Heap::create(s);
             assert!(!h.is_null());
             TestHeap { h, s }
         }
 
-        fn heap(&self) -> &mut Heap {
+        pub(crate) fn heap(&self) -> &mut Heap {
             unsafe { &mut *self.h }
         }
 
-        fn alloc(&self, c: usize) -> *mut u8 {
+        pub(crate) fn alloc(&self, c: usize) -> *mut u8 {
             let p = self.heap().alloc(self.s, c);
             assert!(!p.is_null());
             p
@@ -1536,11 +1549,11 @@ mod tests {
             (p, z)
         }
 
-        fn free(&self, p: *mut u8) {
+        pub(crate) fn free(&self, p: *mut u8) {
             self.heap().free(self.s, p)
         }
 
-        fn alloc_huge(&self, size: usize, align: usize) -> (*mut u8, bool) {
+        pub(crate) fn alloc_huge(&self, size: usize, align: usize) -> (*mut u8, bool) {
             self.heap().alloc_huge(self.s, size, align)
         }
 
@@ -1552,7 +1565,7 @@ mod tests {
             self.heap().gc(self.s)
         }
 
-        fn flush_all(&self) {
+        pub(crate) fn flush_all(&self) {
             self.heap().flush_all(self.s)
         }
 
@@ -1568,13 +1581,13 @@ mod tests {
             self.cache(c).len()
         }
 
-        fn destroy(self) {
+        pub(crate) fn destroy(self) {
             unsafe { Heap::destroy(self.h, self.s) }
         }
     }
 
     /// Sum of `live` over every committed slab of a class.
-    fn live(s: &Shared, c: usize) -> usize {
+    pub(crate) fn live(s: &Shared, c: usize) -> usize {
         let cs = &s.arena0.classes[c];
         (0..cs.committed_slabs()).filter(|&i| !cs.is_guard_slab(i)).map(|i| cs.desc(i).live()).sum()
     }

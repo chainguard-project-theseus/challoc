@@ -42,6 +42,7 @@ pub mod lock;
 pub mod meta;
 pub mod purge;
 pub mod slab;
+pub mod stats;
 pub mod sys;
 #[cfg(target_os = "linux")]
 pub mod tls;

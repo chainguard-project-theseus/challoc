@@ -283,11 +283,23 @@ pub struct ClassState {
     /// it is too early rather than too late; the next `decay` recomputes.
     oldest_empty: AtomicU64,
     inner: Padded<Lock<Inner>>,
-    _tail: [u8; PAD_ALIGN],
+    /// Slots ever reserved by `take` for this arena (written only under
+    /// the class lock). With `released` below it gives `curregs`, the
+    /// number of slots out of the bitmaps (in caches or in use), as
+    /// `claimed - released`: that is the sum of `live` over this arena's
+    /// slabs without a walk over the descriptors or a lock per flush. The
+    /// two counters share the last line of the state, which nothing else
+    /// touches: a refill writes `claimed` while it holds the lock and a
+    /// flush adds to `released` once per batch (`stats.rs`).
+    claimed: AtomicU64,
+    /// Slots ever released to this arena's bitmaps, one add per batch.
+    released: AtomicU64,
+    _tail: [u8; PAD_ALIGN - 16],
 }
 
 const _: () = assert!(core::mem::offset_of!(ClassState, inner) == PAD_ALIGN);
 const _: () = assert!(core::mem::offset_of!(ClassState, oldest_empty) + 8 <= PAD_ALIGN);
+const _: () = assert!(core::mem::offset_of!(ClassState, claimed) % PAD_ALIGN == 0);
 const _: () = assert!(core::mem::size_of::<ClassState>() % PAD_ALIGN == 0);
 const _: () = assert!(core::mem::size_of::<ClassState>() % 512 != 0);
 
@@ -579,7 +591,9 @@ impl ClassState {
             table,
             oldest_empty: AtomicU64::new(0),
             inner: Padded(Lock::new(Inner { partial, empty, purged, stats: ClassStats::default() })),
-            _tail: [0; PAD_ALIGN],
+            claimed: AtomicU64::new(0),
+            released: AtomicU64::new(0),
+            _tail: [0; PAD_ALIGN - 16],
         })
     }
 
@@ -786,6 +800,8 @@ impl ClassState {
             desc.set_dirty_at(0);
         }
         desc.add_live(n);
+        // Under the lock (`g`), so a plain load-add-store is exclusive.
+        self.claimed.store(self.claimed.load(Ordering::Relaxed).wrapping_add(n as u64), Ordering::Relaxed);
         if live == 0 && n == avail {
             g.clear_partial(slab);
         } else {
@@ -887,6 +903,9 @@ impl ClassState {
             self.dec_live(cur_slab, count);
         }
         self.reopen(&mut reopen);
+        if !ptrs.is_empty() {
+            self.released.fetch_add(ptrs.len() as u64, Ordering::Relaxed);
+        }
     }
 
     /// Release the slots of `mask` in `word` of `slab`. The `live` update
@@ -997,9 +1016,33 @@ impl ClassState {
     /// This arena's slab counts; `guards` is the class-wide count from the
     /// table, since guard slabs belong to no arena.
     pub fn stats(&self) -> ClassStats {
-        let mut s = self.inner.lock().stats;
+        self.bin_stats().0
+    }
+
+    /// The slab counts and `curregs` (slots out of this arena's bitmaps:
+    /// in caches or in use, jemalloc's `curregs`) from one lock hold.
+    ///
+    /// `released` is read before the lock and `claimed` under it, so the
+    /// difference is never negative: a slot is claimed before it is
+    /// released. It can exceed the true sum of `live` by the slots
+    /// released in between, so it is clamped to the capacity of the slabs
+    /// that can hold live slots (those neither `Empty` nor `Purged`),
+    /// which keeps `active >= allocated` exact for `stats.rs`.
+    pub fn bin_stats(&self) -> (ClassStats, usize) {
+        let released = self.released.load(Ordering::Relaxed);
+        let g = self.inner.lock();
+        let mut s = g.stats;
+        let claimed = self.claimed.load(Ordering::Relaxed);
+        drop(g);
         s.guards = self.table().guards();
-        s
+        let cap = (s.committed - s.empty - s.purged) * self.class().nslots();
+        let curregs = (claimed.wrapping_sub(released) as usize).min(cap);
+        (s, curregs)
+    }
+
+    /// Slots out of this arena's bitmaps (see [`ClassState::bin_stats`]).
+    pub fn curregs(&self) -> usize {
+        self.bin_stats().1
     }
 
     /// Lowest slab in the partial set, if any (for tests and stats).

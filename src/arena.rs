@@ -28,13 +28,14 @@
 //! this to land allocations in the fullest slabs).
 
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use crate::class::{ClassState, SlabTable};
 use crate::heap::{Heap, Shared};
 use crate::layout::{NCLASSES, Regions};
 use crate::lock::Lock;
 use crate::meta::Meta;
+use crate::stats::ArenaStats;
 
 /// Arena indices are the 12-bit `MALLOCX_ARENA` field; 4096 itself is
 /// `MALLCTL_ARENAS_ALL`.
@@ -126,6 +127,13 @@ pub struct Arena {
     /// `purge::NEVER` for `-1`.
     decay_ns: AtomicU64,
     pub classes: [ClassState; NCLASSES],
+    /// Live huge runs allocated through this arena and their pages (guard
+    /// included), kept by `Shared::alloc_huge` / `free_huge` since the huge
+    /// allocator itself is shared by every arena (`stats.arenas.<i>.large`).
+    large_runs: AtomicUsize,
+    large_pages: AtomicUsize,
+    /// This arena's statistics as of the last `epoch` (`stats.rs`).
+    stats: Lock<ArenaStats>,
 }
 
 impl Arena {
@@ -154,8 +162,43 @@ impl Arena {
                     None => return false,
                 }
             }
+            ptr::write(&raw mut (*this).large_runs, AtomicUsize::new(0));
+            ptr::write(&raw mut (*this).large_pages, AtomicUsize::new(0));
+            ptr::write(&raw mut (*this).stats, Lock::new(ArenaStats::empty(index)));
         }
         true
+    }
+
+    /// A huge run of `pages` (guard included) was allocated through this
+    /// arena.
+    pub fn note_huge_alloc(&self, pages: usize) {
+        self.large_runs.fetch_add(1, Ordering::Relaxed);
+        self.large_pages.fetch_add(pages, Ordering::Relaxed);
+    }
+
+    /// A huge run of `pages` (guard included) of this arena was freed.
+    pub fn note_huge_free(&self, pages: usize) {
+        self.large_runs.fetch_sub(1, Ordering::Relaxed);
+        self.large_pages.fetch_sub(pages, Ordering::Relaxed);
+    }
+
+    /// Live huge runs of this arena and their pages, guards included. Read
+    /// pages first: a run's pages are added after and removed before its
+    /// count, so `pages >= runs * GUARD_PAGES` whenever both are non-zero.
+    pub fn large(&self) -> (usize, usize) {
+        let pages = self.large_pages.load(Ordering::Relaxed);
+        let runs = self.large_runs.load(Ordering::Relaxed);
+        (runs, pages)
+    }
+
+    /// The statistics stored by the last `epoch`.
+    pub fn stats(&self) -> ArenaStats {
+        *self.stats.lock()
+    }
+
+    /// Store the statistics of an `epoch`.
+    pub fn store_stats(&self, s: &ArenaStats) {
+        *self.stats.lock() = *s;
     }
 
     #[inline]
