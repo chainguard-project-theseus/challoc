@@ -232,10 +232,15 @@ metadata. Heaps are created on a thread's first allocation. Cache arrays are
 committed lazily, so a thread that only ever touches five size classes pays
 for five arrays.
 
-Default cache capacity: 256 slots for classes up to 128 bytes, then halving
+Default cache capacity: 1024 slots for classes up to 128 bytes, then halving
 every doubling of class size, minimum 8. `tcache_nslots_small_max` and
 `lg_tcache_nslots_mul` from `malloc_conf` override this, because Redis sets
-them.
+them. The capacity is larger than jemalloc's 200 because a flush or refill
+writes the descriptor lines of every slab it touches, and with shared slabs
+(one arena) that invalidates the lines every other thread's `free` check
+reads; halving the flush rate halves those misses (Phase 0 acceptance,
+`bench/results/2026-09-16-aarch64-fast-path.md`). Redis itself asks for
+`tcache_nslots_small_max:1000` (section 12).
 
 ### 6.3 Fast paths
 
@@ -448,7 +453,7 @@ jemalloc names where they exist:
 | `muzzy_decay_ms`          | ignored | accepted for compatibility              |
 | `narenas`                 | 1       | number of automatic arenas; see 13.3    |
 | `tcache`                  | true    | false disables caches                   |
-| `tcache_nslots_small_max` | 256     |                                         |
+| `tcache_nslots_small_max` | 1024    |                                         |
 | `lg_tcache_nslots_mul`    | 1       |                                         |
 | `tcache_gc_interval_ms`   | 10000   | challoc only                            |
 | `thp`                     | never   | `never`, `always`                       |

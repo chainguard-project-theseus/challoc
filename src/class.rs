@@ -196,6 +196,9 @@ pub struct ClassState {
     /// Every `guard_interval`-th slab is a guard slab; 0 disables guards.
     guard_interval: u32,
     lg_page: u32,
+    /// `desc_stride(class)`, kept here so the `free` fast path reads it
+    /// with one load instead of `class` and then the table.
+    desc_stride: u32,
     /// Start of this class's region.
     base: usize,
     /// Number of slabs in the region.
@@ -312,6 +315,7 @@ impl ClassState {
             arena,
             guard_interval,
             lg_page: regions.lg_page,
+            desc_stride: desc_stride(class) as u32,
             base: regions.class_base[class],
             nslabs,
             desc_base: descs.base,
@@ -370,12 +374,26 @@ impl ClassState {
     /// committed rather than faulting on its `PROT_NONE` descriptor page.
     #[inline]
     pub fn desc(&self, slab: usize) -> &SlabDesc {
+        match self.desc_if_committed(slab) {
+            Some(d) => d,
+            None => never_committed(self.class as usize, slab),
+        }
+    }
+
+    /// Descriptor of `slab` if it is committed, `None` otherwise. This is
+    /// the `free` fast path's form of [`desc`]: no abort, and the stride
+    /// comes from the state itself rather than the class table.
+    ///
+    /// [`desc`]: ClassState::desc
+    #[inline(always)]
+    pub fn desc_if_committed(&self, slab: usize) -> Option<&SlabDesc> {
         if slab >= self.committed_slabs() {
-            never_committed(self.class as usize, slab);
+            return None;
         }
         // SAFETY: descriptors up to `committed_slabs` are committed and
-        // initialised (or zero, for guard slabs) before the counter moves.
-        unsafe { SlabDesc::at(self.desc_base, self.class as usize, slab) }
+        // initialised (or zero, for guard slabs) before the counter moves,
+        // and `desc_stride` is this class's stride.
+        Some(unsafe { &*((self.desc_base + slab * self.desc_stride as usize) as *const SlabDesc) })
     }
 
     #[inline]

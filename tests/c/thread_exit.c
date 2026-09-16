@@ -10,11 +10,11 @@
  */
 #include "common.h"
 
-/* Classes whose caches the thread fills: the default capacity is 256 slots
+/* Classes whose caches the thread fills: the default capacity is 1024 slots
  * up to 128 bytes, halving per doubling of the class size, minimum 8. */
 static const size_t classes[] = {QUANTUM, 48, 128, 256, 1024, 4096, 65536};
 #define NCLASSES (sizeof classes / sizeof classes[0])
-#define FILL 300 /* more than the biggest cache capacity */
+#define FILL 1100 /* more than the biggest cache capacity */
 
 /* ---- distinct-address bookkeeping (sorted array, binary insertion) ------- */
 

@@ -49,8 +49,15 @@ use crate::huge::Huge;
 use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
 use crate::meta::Meta;
 
-/// Largest default cache capacity (classes up to 128 bytes).
-pub const MAX_CAP: u32 = 256;
+/// Largest default cache capacity (classes up to 128 bytes). 1024 rather
+/// than jemalloc's 200: every flush or refill writes the descriptor lines of
+/// the slabs it touches and invalidates them in every other core's cache,
+/// and with one arena those slabs are shared, so the `free` check's bitmap
+/// load misses in proportion to the flush rate. Doubling the capacity from
+/// 256 to 512 and again to 1024 took larson from 225 to 243 to 252 M ops/s
+/// and xmalloc-test from 201 to 390 to 590 M frees/s at 10 threads for
+/// 8 MiB of larson RSS (`bench/results/2026-09-16-aarch64-fast-path.md`).
+pub const MAX_CAP: u32 = 1024;
 /// Smallest cache capacity.
 pub const MIN_CAP: u32 = 8;
 /// Cache GC period when nothing overrides it (`tcache_gc_interval_ms`).
@@ -375,6 +382,23 @@ impl Shared {
         }
     }
 
+    /// The `free` fast path's check: `Some(class)` when `p` is a slot start
+    /// in a committed slab whose bit is set, `None` for anything else. It
+    /// never aborts; [`classify_free`] on the slow path repeats the checks
+    /// and does. Every table read is bounds-free: the class index comes from
+    /// `slab_slot`, the descriptor stride from the class state, the bitmap
+    /// word from a slot already known to be below `nslots`.
+    ///
+    /// [`classify_free`]: Shared::classify_free
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[inline(always)]
+    fn checked_slot(&self, p: *mut u8) -> Option<usize> {
+        let (class, slab, slot) = self.regions.slab_slot(p as usize)?;
+        let desc = self.class(class).desc_if_committed(slab)?;
+        // SAFETY: `slab_slot` validated `slot < nslots`.
+        if unsafe { desc.is_allocated_unchecked(slot) } { Some(class) } else { None }
+    }
+
     /// Allocate a huge run of `size` bytes aligned to `align` in arena 0.
     /// Null on exhaustion; the flag says the memory is known zero.
     pub fn alloc_huge(&self, size: usize, align: usize) -> (*mut u8, bool) {
@@ -494,15 +518,25 @@ impl Heap {
     /// Fast path of `malloc` for a non-huge class.
     #[inline(always)]
     pub fn alloc(&mut self, shared: &Shared, class: usize) -> *mut u8 {
+        match self.alloc_fast(class) {
+            Some(p) => p,
+            None => self.alloc_slow(shared, class).0,
+        }
+    }
+
+    /// The cache pop alone: `None` when the cache is empty (or still the
+    /// sentinel) and the caller must take a slow path.
+    #[inline(always)]
+    pub fn alloc_fast(&mut self, class: usize) -> Option<*mut u8> {
         let cache = self.cache_ptr(class);
         // SAFETY: the pointer is the sentinel (read-only, `len == 0`) or
         // this thread's own cache.
         unsafe {
             let len = (*cache).len;
             if len == 0 {
-                return self.alloc_slow(shared, class).0;
+                return None;
             }
-            self.pop(cache, class, len).0
+            Some(self.pop(cache, class, len).0)
         }
     }
 
@@ -572,19 +606,29 @@ impl Heap {
     /// Push a checked slot of `class` onto its cache.
     #[inline(always)]
     fn push(&mut self, shared: &Shared, class: usize, p: *mut u8) {
+        if !self.push_fast(class, p) {
+            self.free_slow(shared, class, p);
+        }
+    }
+
+    /// The cache push alone: `false` when the cache is full (or still the
+    /// sentinel) and the caller must take a slow path.
+    #[inline(always)]
+    pub fn push_fast(&mut self, class: usize, p: *mut u8) -> bool {
         let cache = self.cache_ptr(class);
         // SAFETY: the pointer is the sentinel (`len == cap == 0`, so it is
         // never written) or this thread's own cache with `len < cap` slots.
         unsafe {
             let len = (*cache).len;
             if len == (*cache).cap {
-                return self.free_slow(shared, class, p);
+                return false;
             }
             *(*cache).slots().add(len as usize) = p;
             (*cache).len = len + 1;
             (*cache).zeroed = (*cache).zeroed.min(len);
             self.stats.deallocated += CLASSES.get_unchecked(class).size() as u64;
         }
+        true
     }
 
     /// Refill the cache and pop, allocating the cache first if this is the
@@ -800,6 +844,37 @@ fn create_heap_for_thread(shared: &Shared, slot: usize) -> Option<&mut Heap> {
     Some(unsafe { &mut *h })
 }
 
+/// The calling thread's heap if it already exists, with no attempt to
+/// create one. The fast paths use this so that everything unusual is one
+/// tail call away. `Some` also proves the allocator is initialised on this
+/// thread: heaps are only created by [`heap_for_thread`] under `shared()`,
+/// so the entry points skip the init-state load (an acquire that would
+/// otherwise head every dependent-load chain).
+#[cfg(target_os = "linux")]
+#[inline(always)]
+pub fn existing_heap() -> Option<&'static mut Heap> {
+    let t = crate::tls::get() as usize;
+    if t > TLS_EXITED {
+        // SAFETY: anything above the sentinels is this thread's heap pointer.
+        Some(unsafe { &mut *(t as *mut Heap) })
+    } else {
+        None
+    }
+}
+
+/// The `free` fast path on an existing heap: check the slot and push it
+/// onto the cache. `false` whenever anything is off the fast path (not a
+/// verified slab slot, full cache); the caller then goes through a cold
+/// [`free`], which repeats the checks and aborts when they fail. Contains
+/// no call, so the entry point that inlines it needs no frame.
+#[inline(always)]
+pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8) -> bool {
+    match shared.checked_slot(p) {
+        Some(class) => h.push_fast(class, p),
+        None => false,
+    }
+}
+
 /// `malloc` of a non-huge class on the calling thread.
 #[cfg(target_os = "linux")]
 #[inline(always)]
@@ -855,6 +930,10 @@ mod tests {
     use std::vec::Vec;
 
     const PAGE: usize = 4096;
+    /// Default capacity of a cache for a class up to 128 bytes, and the
+    /// refill/flush batch that goes with it.
+    const CAP: usize = MAX_CAP as usize;
+    const HALF: usize = CAP / 2;
     const LG_REGION: u32 = LG_MAX_SLAB;
     const LG_STRIDE: u32 = LG_REGION + 2;
     const META_LEN: usize = 16 << 20;
@@ -1005,16 +1084,19 @@ mod tests {
         for (c, cls) in CLASSES.iter().enumerate() {
             let cap = default_cap(c);
             let expect = match cls.size() {
-                0..=128 => 256,
-                129..=256 => 128,
-                257..=512 => 64,
-                513..=1024 => 32,
-                1025..=2048 => 16,
+                0..=128 => 1024,
+                129..=256 => 512,
+                257..=512 => 256,
+                513..=1024 => 128,
+                1025..=2048 => 64,
+                2049..=4096 => 32,
+                4097..=8192 => 16,
                 _ => 8,
             };
             assert_eq!(cap, expect, "class {c} size {}", cls.size());
             assert!(cap >= MIN_CAP && cap <= MAX_CAP);
-            assert!(cap as usize <= cls.nslots() || cls.nslots() < MIN_CAP as usize);
+            // A cache may hold more than one slab's worth (a 64 KiB slab of
+            // 128-byte slots has 512); refills and flushes span slabs.
             let l = ClassCache::layout(cap);
             assert_eq!(l.size(), 16 + 8 * cap as usize);
             assert_eq!(l.align(), 16);
@@ -1036,17 +1118,17 @@ mod tests {
         let c = class_with(64);
         let p = t.alloc(c);
         let cache = t.cache(c);
-        assert_eq!(cache.cap(), 256);
+        assert_eq!(cache.cap(), CAP);
         // A refill claims half the capacity and the pop takes the lowest.
-        assert_eq!(cache.len(), 127);
+        assert_eq!(cache.len(), HALF - 1);
         assert_eq!(p as usize, s.regions.slab_addr(c, 0));
         assert!(t.heap().cache(c + 1).is_none());
         assert_eq!(t.heap().stats().allocated, 64);
         assert_eq!(t.heap().slow_ticks(), 1);
         // Only the heap and one cache came from the metadata region.
         let meta_used = s.meta.stats().allocated - before;
-        assert!(meta_used >= core::mem::size_of::<Heap>() + 16 + 8 * 256);
-        assert!(meta_used <= 512 + 3072);
+        assert!(meta_used >= core::mem::size_of::<Heap>() + 16 + 8 * CAP);
+        assert!(meta_used <= 512 + 12288);
         t.free(p);
         t.destroy();
         assert_eq!(s.meta.stats().allocated, before);
@@ -1060,24 +1142,25 @@ mod tests {
         let c = class_with(16);
         let size = 16;
         let base = s.regions.slab_addr(c, 0);
+        let n = 2 * HALF + 44;
         let mut ps = Vec::new();
-        for i in 0..300 {
+        for i in 0..n {
             let p = t.alloc(c);
             assert_eq!(p as usize, base + i * size, "allocation {i}");
             ps.push(p);
         }
-        // Three refills of 128 (the third partially consumed).
+        // Three refills of HALF (the third partially consumed).
         assert_eq!(t.heap().slow_ticks(), 3);
-        assert_eq!(t.cache(c).len(), 384 - 300);
-        assert_eq!(live(s, c), 384);
+        assert_eq!(t.cache(c).len(), 3 * HALF - n);
+        assert_eq!(live(s, c), 3 * HALF);
         // Frees push, the most recent free is reused first.
         t.free(ps[10]);
         t.free(ps[20]);
         assert_eq!(t.alloc(c), ps[20]);
         assert_eq!(t.alloc(c), ps[10]);
-        assert_eq!(t.heap().stats(), ThreadStats { allocated: 302 * 16, deallocated: 2 * 16 });
+        assert_eq!(t.heap().stats(), ThreadStats { allocated: (n as u64 + 2) * 16, deallocated: 2 * 16 });
         t.destroy();
-        assert_eq!(live(s, c), 300);
+        assert_eq!(live(s, c), n);
     }
 
     #[test]
@@ -1086,9 +1169,9 @@ mod tests {
         let t = TestHeap::new(s);
         let c = class_with(64);
         let cs = &s.classes[c];
-        let n = 1000;
+        let n = 3000;
         let ps: Vec<*mut u8> = (0..n).map(|_| t.alloc(c)).collect();
-        assert_eq!(live(s, c), align_up(n, 128));
+        assert_eq!(live(s, c), align_up(n, HALF));
         // Free in a scrambled order so flushes see unsorted batches.
         let mut order: Vec<usize> = (0..n).collect();
         let mut st = 0x1234_5678u64;
@@ -1102,12 +1185,12 @@ mod tests {
             t.free(ps[i]);
             let after = t.cache(c).len();
             if after != before + 1 {
-                // A flush released the oldest 128 and pushed one.
-                assert_eq!(before, 256);
-                assert_eq!(after, 129);
+                // A flush released the oldest HALF and pushed one.
+                assert_eq!(before, CAP);
+                assert_eq!(after, HALF + 1);
                 flushes += 1;
             }
-            assert!(t.cache(c).len() <= 256, "free {k}");
+            assert!(t.cache(c).len() <= CAP, "free {k}");
         }
         assert!(flushes >= 2, "{flushes} flushes");
         // Nothing is live in the program, so `live` is exactly what is cached
@@ -1136,19 +1219,21 @@ mod tests {
     fn zeroed_prefix_tracks_fresh_memory() {
         let s = shared();
         let t = TestHeap::new(s);
-        let c = class_with(128);
+        // 4096 slots per slab, so refills after the first come from the
+        // same, by then Active, slab.
+        let c = class_with(16);
         // First refill comes from a Fresh slab: the whole batch is zero.
         // Pops do not shrink the prefix (the popped index is above `len`).
         let (p1, z1) = t.alloc_zeroed(c);
         assert!(z1);
-        assert_eq!(t.len(c), 127);
-        assert_eq!(t.cache(c).zeroed(), 128);
+        assert_eq!(t.len(c), HALF - 1);
+        assert_eq!(t.cache(c).zeroed(), HALF);
         let (p2, z2) = t.alloc_zeroed(c);
         assert!(z2);
         // A free pushes dirty memory on top: the prefix ends below it.
         // Popping it is not zero, the entry below it still is.
         t.free(p2);
-        assert_eq!(t.cache(c).zeroed(), 126);
+        assert_eq!(t.cache(c).zeroed(), HALF - 2);
         let (p3, z3) = t.alloc_zeroed(c);
         assert_eq!(p3, p2);
         assert!(!z3);
@@ -1177,28 +1262,28 @@ mod tests {
         let t = TestHeap::new(s);
         let u = TestHeap::new(s);
         let c = class_with(32);
-        // Zero prefix of 100 with 28 dirty pushes above it.
+        // Zero prefix of HALF - 28 with 28 dirty pushes above it.
         let ps: Vec<*mut u8> = (0..28).map(|_| t.alloc(c)).collect();
-        assert_eq!(t.len(c), 100);
+        assert_eq!(t.len(c), HALF - 28);
         for &p in &ps {
             t.free(p);
         }
-        assert_eq!(t.len(c), 128);
-        assert_eq!(t.cache(c).zeroed(), 100);
+        assert_eq!(t.len(c), HALF);
+        assert_eq!(t.cache(c).zeroed(), HALF - 28);
         // Fill the rest of the cache with pointers another heap allocated
         // (dirty by definition), then overflow it by one.
-        let qs: Vec<*mut u8> = (0..129).map(|_| u.alloc(c)).collect();
-        for &q in &qs[..128] {
+        let qs: Vec<*mut u8> = (0..=HALF).map(|_| u.alloc(c)).collect();
+        for &q in &qs[..HALF] {
             t.free(q);
         }
-        assert_eq!(t.len(c), 256);
-        assert_eq!(t.cache(c).zeroed(), 100);
+        assert_eq!(t.len(c), CAP);
+        assert_eq!(t.cache(c).zeroed(), HALF - 28);
         let live_before = live(s, c);
-        t.free(qs[128]);
-        // The oldest 128 went back to the slab, taking the whole prefix.
-        assert_eq!(t.len(c), 129);
+        t.free(qs[HALF]);
+        // The oldest HALF went back to the slab, taking the whole prefix.
+        assert_eq!(t.len(c), HALF + 1);
         assert_eq!(t.cache(c).zeroed(), 0);
-        assert_eq!(live(s, c), live_before - 128);
+        assert_eq!(live(s, c), live_before - HALF);
         t.destroy();
         u.destroy();
         assert_eq!(live(s, c), 0);
@@ -1212,30 +1297,32 @@ mod tests {
         // A refill resets low water to zero, so the first GC after a refill
         // flushes nothing and just restarts tracking at the current length.
         t.alloc(c);
-        assert_eq!(t.len(c), 127);
+        assert_eq!(t.len(c), HALF - 1);
         assert_eq!(t.cache(c).low_water(), 0);
         t.gc();
-        assert_eq!(t.len(c), 127);
-        assert_eq!(t.cache(c).low_water(), 127);
+        assert_eq!(t.len(c), HALF - 1);
+        assert_eq!(t.cache(c).low_water(), HALF - 1);
         // Pops lower it; pushes do not raise it.
         for _ in 0..27 {
             t.alloc(c);
         }
-        assert_eq!(t.cache(c).low_water(), 100);
+        let len = HALF - 28;
+        assert_eq!(t.cache(c).low_water(), len);
         let extra: Vec<*mut u8> = (0..10).map(|_| t.alloc(c)).collect();
-        assert_eq!(t.cache(c).low_water(), 90);
+        let lw = len - 10;
+        assert_eq!(t.cache(c).low_water(), lw);
         for &p in &extra {
             t.free(p);
         }
-        assert_eq!(t.len(c), 100);
-        assert_eq!(t.cache(c).low_water(), 90);
+        assert_eq!(t.len(c), len);
+        assert_eq!(t.cache(c).low_water(), lw);
         // GC releases three quarters of the low water.
         let live_before = live(s, c);
         t.gc();
-        let flushed = 90 - 90 / 4;
-        assert_eq!(t.len(c), 100 - flushed);
+        let flushed = lw - lw / 4;
+        assert_eq!(t.len(c), len - flushed);
         assert_eq!(live(s, c), live_before - flushed);
-        assert_eq!(t.cache(c).low_water(), 100 - flushed);
+        assert_eq!(t.cache(c).low_water(), len - flushed);
         // Untouched since, so the next GC shrinks it again.
         let len = t.len(c);
         t.gc();
@@ -1265,7 +1352,7 @@ mod tests {
             // SAFETY: nothing else references `s` yet; the field is plain data.
             unsafe { (*(s as *const Shared as *mut Shared)).gc_interval_ns = interval };
             let t = TestHeap::new(s);
-            // Prime class d: one refill, 127 cached, low water 0.
+            // Prime class d: one refill, HALF - 1 cached, low water 0.
             t.alloc(d);
             assert_eq!(t.ticks(), 1);
             // Drive the tick counter with class c refills.
@@ -1274,27 +1361,29 @@ mod tests {
                 ps.push(t.alloc(c));
             }
             assert_eq!(t.ticks(), 64);
-            assert_eq!(t.len(d), 127);
+            assert_eq!(t.len(d), HALF - 1);
             // GC 1 flushed nothing (low water 0) but restarted tracking.
-            let expect_lw = if interval == 0 { 127 } else { 0 };
+            let expect_lw = if interval == 0 { HALF - 1 } else { 0 };
             assert_eq!(t.cache(d).low_water(), expect_lw);
             for _ in 0..27 {
                 t.alloc(d);
             }
-            assert_eq!(t.len(d), 100);
+            let lw = HALF - 28;
+            assert_eq!(t.len(d), lw);
             while t.ticks() < 128 {
                 ps.push(t.alloc(c));
             }
-            // GC 2 released three quarters of d's low water (100) if it ran.
+            // GC 2 released three quarters of d's low water if it ran.
             let live_d = live(s, d);
+            let flushed = lw - lw / 4;
             if interval == 0 {
-                assert_eq!(t.len(d), 25);
-                assert_eq!(t.cache(d).low_water(), 25);
-                assert_eq!(live_d, 128 - 75);
+                assert_eq!(t.len(d), lw - flushed);
+                assert_eq!(t.cache(d).low_water(), lw - flushed);
+                assert_eq!(live_d, HALF - flushed);
             } else {
-                assert_eq!(t.len(d), 100);
+                assert_eq!(t.len(d), lw);
                 assert_eq!(t.cache(d).low_water(), 0);
-                assert_eq!(live_d, 128);
+                assert_eq!(live_d, HALF);
             }
             t.destroy();
             assert_eq!(live(s, d), 28);
@@ -1330,9 +1419,9 @@ mod tests {
         for &p in &ps {
             b.free(p);
         }
-        // 200 pushes fit in B's cache of 256; A did two refills of 128.
+        // 200 pushes fit in B's cache of CAP; A did one refill of HALF.
         assert_eq!(b.cache(c).len(), 200);
-        assert_eq!(a.cache(c).len(), 256 - 200);
+        assert_eq!(a.cache(c).len(), HALF - 200);
         assert_eq!(b.heap().stats(), ThreadStats { allocated: 0, deallocated: 200 * 64 });
         // B reuses what it freed, lowest address first after its flushes.
         let q = b.alloc(c);
@@ -1411,8 +1500,9 @@ mod tests {
         let t = TestHeap::new(s);
         let c = class_with(64);
         let p = t.alloc(c);
-        // Slot 200 of slab 0 is committed but was never claimed.
-        t.free(unsafe { p.add(200 * 64) });
+        // A slot of slab 0 above the first refill's HALF is committed but
+        // was never claimed (the 64-byte slab has 1024 slots).
+        t.free(unsafe { p.add((HALF + 200) * 64) });
     }
 
     #[test]

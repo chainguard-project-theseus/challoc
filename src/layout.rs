@@ -339,24 +339,51 @@ impl Regions {
         self.huge_base + (page << self.lg_page)
     }
 
-    /// Classify a pointer (design section 2). Two subtractions and a shift
-    /// find the class; a multiply and compare validate the slot.
+    /// Slab-slot lookup of design section 2, the whole of the `free` fast
+    /// path's classification: `Some((class, slab, slot))` when `p` is
+    /// exactly a slot start inside a class region, `None` for anything else
+    /// (a gap, a mid-slot address, the huge or metadata region, or outside
+    /// every reservation). Two subtractions and a shift find the class; a
+    /// multiply and compare validate the slot. Never aborts: the caller's
+    /// slow path decides what `None` means.
+    #[inline(always)]
+    pub fn slab_slot(&self, p: usize) -> Option<(usize, usize, usize)> {
+        let c = p.wrapping_sub(self.superblock) >> self.lg_stride;
+        if c >= NCLASSES {
+            return None;
+        }
+        // SAFETY: `c < NCLASSES` was just checked.
+        let cls = unsafe { CLASSES.get_unchecked(c) };
+        let rel = p.wrapping_sub(unsafe { *self.class_base.get_unchecked(c) });
+        if rel >= self.region_len() {
+            return None;
+        }
+        let slab = rel >> cls.lg_slab;
+        let offset = rel & (cls.slab_size() - 1);
+        let (slot, valid) = cls.slot_of_offset(offset);
+        if !valid {
+            return None;
+        }
+        Some((c, slab, slot))
+    }
+
+    /// Whether `p` falls in the class superblock (a class region or a gap).
+    #[inline]
+    fn in_superblock(&self, p: usize) -> bool {
+        p.wrapping_sub(self.superblock) >> self.lg_stride < NCLASSES
+    }
+
+    /// Classify a pointer (design section 2): [`slab_slot`] for the class
+    /// regions, then the huge region.
+    ///
+    /// [`slab_slot`]: Regions::slab_slot
     #[inline]
     pub fn classify(&self, p: usize) -> Kind {
-        let c = p.wrapping_sub(self.superblock) >> self.lg_stride;
-        if c < NCLASSES {
-            let cls = &CLASSES[c];
-            let rel = p.wrapping_sub(self.class_base[c]);
-            if rel >= self.region_len() {
-                return Kind::Invalid;
-            }
-            let slab = rel >> cls.lg_slab;
-            let offset = rel & (cls.slab_size() - 1);
-            let (slot, valid) = cls.slot_of_offset(offset);
-            if !valid {
-                return Kind::Invalid;
-            }
-            return Kind::Slab { class: c as u32, slab: slab as u32, slot: slot as u32 };
+        if let Some((class, slab, slot)) = self.slab_slot(p) {
+            return Kind::Slab { class: class as u32, slab: slab as u32, slot: slot as u32 };
+        }
+        if self.in_superblock(p) {
+            return Kind::Invalid;
         }
         let rel = p.wrapping_sub(self.huge_base);
         if rel < self.huge_len && rel & (self.page_size() - 1) == 0 {

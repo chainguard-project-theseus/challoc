@@ -200,6 +200,23 @@ impl SlabDesc {
         self.bitmap(class).is_set(slot)
     }
 
+    /// [`is_allocated`] for the `free` fast path: one relaxed load of the
+    /// slot's word, without rebuilding the bitmap view or bounds-checking
+    /// the word index.
+    ///
+    /// # Safety
+    /// `slot` must be below the class's `nslots`, so its word lies inside
+    /// the descriptor's bitmap (`slot / 64 < bitmap_words()`).
+    ///
+    /// [`is_allocated`]: SlabDesc::is_allocated
+    #[inline(always)]
+    pub unsafe fn is_allocated_unchecked(&self, slot: usize) -> bool {
+        let word = (self as *const SlabDesc as usize + HEADER + (slot / 64) * 8) as *const AtomicU64;
+        // SAFETY: the caller guarantees the word is inside this descriptor's
+        // bitmap, which the stride reserves right after the header.
+        (unsafe { (*word).load(Ordering::Relaxed) } >> (slot % 64)) & 1 == 1
+    }
+
     /// The `free` check of design section 4: one load, no write. Aborts
     /// with the pointer and its location if the slot is not allocated, which
     /// is an invalid free or a stale double free.

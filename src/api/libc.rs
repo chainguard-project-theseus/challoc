@@ -75,6 +75,22 @@ fn alloc_huge(shared: &Shared, size: usize, align: usize) -> (*mut u8, bool) {
 /// `malloc`.
 #[inline(always)]
 pub fn malloc(size: usize) -> *mut u8 {
+    // The fast path is a cache pop with no calls in it; everything else
+    // (init, heap creation, refill, huge, ENOMEM) is one tail call away so
+    // the exported `malloc` needs no stack frame.
+    if let Some(c) = class_of(size) {
+        if let Some(h) = heap::existing_heap() {
+            if let Some(p) = h.alloc_fast(c) {
+                return p;
+            }
+        }
+    }
+    malloc_slow(size)
+}
+
+#[cold]
+#[inline(never)]
+fn malloc_slow(size: usize) -> *mut u8 {
     let shared = super::shared();
     let p = match class_of(size) {
         Some(c) => heap::alloc(shared, c),
@@ -109,6 +125,26 @@ pub fn free(p: *mut u8) {
     if p.is_null() {
         return;
     }
+    // As in `malloc`: the check-and-push has no calls, and every other
+    // outcome, including the aborts, is reached through one tail call.
+    if let Some(h) = heap::existing_heap() {
+        // SAFETY: this thread's heap exists, so this thread observed
+        // `READY` when it created the heap.
+        let shared = unsafe { super::shared_unchecked() };
+        if heap::free_fast(shared, h, p) {
+            return;
+        }
+    }
+    free_slow(p)
+}
+
+/// Everything `free` does off its fast path: heap creation, a full cache,
+/// huge runs, and the aborts for invalid pointers (the checks are repeated
+/// from scratch here, so a fast-path `false` for a bad pointer ends in the
+/// same message it always did).
+#[cold]
+#[inline(never)]
+fn free_slow(p: *mut u8) {
     match super::shared_if_ready() {
         Some(shared) => heap::free(shared, p),
         None => free_before_init(p),

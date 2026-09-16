@@ -99,6 +99,18 @@ pub fn shared_if_ready() -> Option<&'static Shared> {
     }
 }
 
+/// The allocator state without the readiness check.
+///
+/// # Safety
+/// The calling thread must itself have observed `READY` earlier (through
+/// [`shared`] or [`shared_if_ready`]). The fast paths use the thread's heap
+/// pointer as that witness: a heap is only created under `shared()`.
+#[inline(always)]
+pub unsafe fn shared_unchecked() -> &'static Shared {
+    // SAFETY: guaranteed by the caller.
+    unsafe { SHARED.get() }
+}
+
 /// The probed kernel features. Initialises the allocator if needed.
 pub fn features() -> &'static Features {
     let _ = shared();
