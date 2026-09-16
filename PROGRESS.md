@@ -14,7 +14,7 @@ One line per task, newest at the bottom of each section. Keep it terse.
 
 ## In progress
 
-(none)
+- Phase 0 task 7: `src/meta.rs` metadata region allocator (bump + size-classed free lists, uncommitted reservations with on-demand commit) and `src/lock.rs` futex mutex.
 
 ## Design decisions
 
@@ -48,6 +48,12 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
 - Phase 0 task 6: claims use `Acquire` and releases `Release`. Reason: POSIX requires `malloc`/`free` to synchronise memory, so a slot's new owner must happen-after its previous owner's writes; jemalloc orders its bitmaps the same way.
 - Phase 0 task 6: `TwoLevelBitmap` is exactly two levels as designed, but tracks `l1_used`, the number of leading level-1 words that can be non-zero, and `lowest_set` scans only that prefix. Reason: real universes (2^22 slabs, 2^28 huge pages) need 1024 to 65536 level-1 words, and an unbounded scan would touch and commit every summary page; with the bound a heap of a few thousand slabs does one word plus two `tzcnt`s, matching the design's intent.
 - Phase 0 task 6: `TwoLevelBitmap` storage is caller-provided zeroed `u64`s sized by `words_needed`, level 1 first then level 0, accessed through a raw pointer with no lifetime. Reason: task 7 carves it out of the metadata region, which lives for the process; tests back it with a `Vec`.
+- Phase 0 task 7: `src/lock.rs` is a new module holding one futex mutex type (`RawLock`, `Lock<T>` with a guard), Drepper's "mutex, take 3": CAS to lock, short spin, then `FUTEX_WAIT`; `FUTEX_WAKE` only when the word says a waiter may sleep; off Linux the wait is a yield so host tests run. Reason: design 9 names class, huge, metadata and background-thread locks but section 17 gives them no home, and `meta.rs` is the first user.
+- Phase 0 task 7: the metadata region is carved from both ends. Objects (`Heap`, `ClassCache`, ...) come from a bump pointer at the base, committed ahead in 64 KiB chunks, with freed objects on per-bin free lists; reservations (descriptor arrays, bitmaps, stacks) come downward from the top, page aligned and uncommitted, and the owner calls `Meta::commit` on the pages it starts using. Reason: design 4 wants descriptor arrays committed on demand as the region grows, and committing whole tables up front would charge tens of GiB of overcommit under `vm.overcommit_memory=2`; two watermarks growing towards each other need no free-space tracking.
+- Phase 0 task 7: object bins are 16, 32, 48, 64, 128, then 1.5x and 2x steps up to 1 MiB (31 bins); bins below 64 are 16-aligned, all others cache-line aligned, and there is deliberately no 96 bin. Reason: a heap or cache of one thread must never share a cache line with another thread's, so every bin from 64 up is a multiple of 64; consecutive bins differ by at most 2x so internal waste is bounded.
+- Phase 0 task 7: `Meta::alloc` returns null on region exhaustion or a failed `mprotect` but aborts on a layout it cannot serve (size above 1 MiB, alignment above 64) and on `free` of a pointer outside `[base, bump)` or misaligned for its bin. Reason: exhaustion is a resource failure that `malloc` must turn into `ENOMEM`; the others are allocator bugs, and design 14 says abort on inconsistency.
+- Phase 0 task 7: `Meta::commit` trusts the caller to commit each page once and only sums lengths into `stats.committed`; `mprotect` itself is idempotent. Reason: per-page commit tracking would cost a bitmap over 2^36 bytes of metadata for a counter that is only reported, and every owner already keeps a high-water mark.
+- Phase 0 task 7: memory fresh from the bump pointer is guaranteed zero (never touched, kernel zero pages), reused objects are not; `alloc_zeroed` scrubs only when the block came from a free list (address below the old bump). Reason: avoids touching pages for large fresh arrays while keeping a cheap zeroed path for `Heap` creation.
 
 ## Blocked
 

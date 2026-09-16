@@ -31,6 +31,8 @@ pub const QUANTUM: usize = 8;
 
 pub mod bitmap;
 pub mod layout;
+pub mod lock;
+pub mod meta;
 pub mod sys;
 #[cfg(target_os = "linux")]
 pub mod tls;
