@@ -192,6 +192,14 @@ fn c_fork_alloc() {
     run_c("fork_alloc", &[]);
 }
 
+/// A signal handler that forks, delivered while this thread is inside the
+/// fork handlers with every allocator lock held (the race in glibc's
+/// `tst-mallocfork`, made deterministic).
+#[test]
+fn c_fork_signal() {
+    run_c("fork_signal", &[]);
+}
+
 #[test]
 fn c_thread_exit() {
     run_c("thread_exit", &[]);

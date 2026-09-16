@@ -354,9 +354,13 @@ metadata region.
 
 ## 9. Fork
 
-`pthread_atfork` handlers registered at init: the prepare handler takes every
-class lock, the huge lock, the metadata lock, and the background thread's
-state lock in a fixed order; parent and child handlers release them. The
+`pthread_atfork` handlers registered at init: the prepare handler blocks every
+signal on the forking thread, then takes every class lock, the huge lock, the
+metadata lock, and the background thread's state lock in a fixed order; parent
+and child handlers release them and restore the signal mask. The blocking is
+needed because glibc restores the caller's mask before the parent handlers
+run, so a handler delivered there that forks (glibc's `tst-mallocfork`) would
+otherwise re-enter prepare with the locks held by its own thread. The
 child additionally marks the background thread as absent. Thread heaps other
 than the caller's are left alone in the child; their cached slots stay marked
 in bitmaps and are reclaimed when the child process exits, matching what every

@@ -23,6 +23,15 @@
 //! mid-operation when another thread forks can always finish and release.
 //! Parent and child release in reverse. Other threads' heaps are left alone
 //! in the child, as in every other allocator.
+//!
+//! The prepare handler also blocks every signal on the forking thread and the
+//! parent and child handlers restore the mask after their unlocks. glibc's
+//! `_Fork` blocks signals only around the `clone` itself, so a handler that
+//! runs between our prepare and our parent handler (glibc restores the mask
+//! before the parent handlers run) would otherwise see every allocator lock
+//! held by its own thread: a `fork` from that handler deadlocks in prepare,
+//! and glibc's `tst-mallocfork` provokes exactly that when the child's
+//! `SIGALRM` overtakes the parent's post-fork release (seen under Rosetta).
 
 pub mod libc;
 
@@ -75,6 +84,15 @@ impl<T> Global<T> {
 
 static SHARED: Global<Shared> = Global::new();
 static FEATURES: Global<Features> = Global::new();
+/// Signal mask of the forking thread, saved by `fork_prepare` and restored by
+/// `fork_release`. One slot suffices because it is only written and read
+/// while the writer holds every allocator lock: a second thread in
+/// `fork_prepare` (glibc serialises fork handlers with its atfork lock, but
+/// the unit tests call them directly) waits on the first class lock before
+/// it can store, and the releaser reads before its first unlock. A handler
+/// cannot nest a fork inside the window because signals are blocked for its
+/// duration.
+static FORK_SIGMASK: Global<u64> = Global::new();
 
 /// The process's allocator state, initialising it on first use.
 #[inline(always)]
@@ -178,24 +196,35 @@ fn init() {
     }
 }
 
-/// Take every allocator lock so the child inherits a consistent heap.
+/// Block signals, then take every allocator lock so the child inherits a
+/// consistent heap and no signal handler on this thread can re-enter the
+/// allocator (or fork again) while the locks are held.
 extern "C" fn fork_prepare() {
+    let mask = sys::block_all_signals();
     let s = shared();
     for c in 0..NCLASSES {
         s.classes[c].raw_lock().lock();
     }
     s.huge.raw_lock().lock();
     s.meta.raw_lock().lock();
+    // SAFETY: every allocator lock is held, so no other forking thread can
+    // touch the slot until `fork_release` has read it (see `FORK_SIGMASK`).
+    unsafe { (*FORK_SIGMASK.0.get()).write(mask) };
 }
 
-/// Release the locks taken by `fork_prepare`, in reverse order.
+/// Release the locks taken by `fork_prepare`, in reverse order, then let
+/// signals through again.
 fn fork_release() {
     let s = shared();
+    // SAFETY: written by the `fork_prepare` that paired with this release,
+    // and still ours because every lock is held until the unlocks below.
+    let mask = unsafe { (*FORK_SIGMASK.0.get()).assume_init() };
     s.meta.raw_lock().unlock();
     s.huge.raw_lock().unlock();
     for c in (0..NCLASSES).rev() {
         s.classes[c].raw_lock().unlock();
     }
+    sys::set_signal_mask(mask);
 }
 
 extern "C" fn fork_parent() {
@@ -231,8 +260,13 @@ mod tests {
         assert_eq!(f.page_size, shared().regions.page_size());
     }
 
+    /// The two handler tests drive the process-wide locks directly and the
+    /// harness runs tests in parallel, so they take turns.
+    static FORK_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn fork_handlers_take_and_release_every_lock() {
+        let _serial = FORK_TEST.lock().unwrap();
         let s = shared();
         fork_prepare();
         for c in 0..NCLASSES {
@@ -249,5 +283,47 @@ mod tests {
         fork_prepare();
         fork_child();
         assert!(!s.meta.raw_lock().is_locked());
+    }
+
+    /// The handlers block every signal while the locks are held and restore
+    /// the caller's mask (whatever it was) afterwards, on both fork sides.
+    #[test]
+    fn fork_handlers_block_signals_while_locked() {
+        fn current_mask() -> u64 {
+            let mut set: ::libc::sigset_t = unsafe { core::mem::zeroed() };
+            let rc = unsafe { ::libc::pthread_sigmask(::libc::SIG_BLOCK, core::ptr::null(), &mut set) };
+            assert_eq!(rc, 0);
+            // The kernel mask is the first 8 bytes of glibc's 128-byte set.
+            unsafe { core::ptr::read_unaligned(&set as *const _ as *const u64) }
+        }
+        fn blockable(mask: u64) -> u64 {
+            const KILL_STOP: u64 = (1 << (::libc::SIGKILL - 1)) | (1 << (::libc::SIGSTOP - 1));
+            mask & !KILL_STOP
+        }
+        let _serial = FORK_TEST.lock().unwrap();
+        let all = blockable(!0);
+        // Start from a distinctive mask so "restored" is not "left blocked".
+        let mut want: ::libc::sigset_t = unsafe { core::mem::zeroed() };
+        let mut before: ::libc::sigset_t = unsafe { core::mem::zeroed() };
+        unsafe {
+            ::libc::sigemptyset(&mut want);
+            ::libc::sigaddset(&mut want, ::libc::SIGUSR2);
+            ::libc::sigaddset(&mut want, ::libc::SIGWINCH);
+            assert_eq!(::libc::pthread_sigmask(::libc::SIG_SETMASK, &want, &mut before), 0);
+        }
+        let start = current_mask();
+        assert_eq!(start, (1 << (::libc::SIGUSR2 - 1)) | (1 << (::libc::SIGWINCH - 1)));
+
+        fork_prepare();
+        assert_eq!(blockable(current_mask()), all, "prepare did not block every signal");
+        fork_parent();
+        assert_eq!(current_mask(), start, "parent handler did not restore the mask");
+
+        fork_prepare();
+        assert_eq!(blockable(current_mask()), all);
+        fork_child();
+        assert_eq!(current_mask(), start, "child handler did not restore the mask");
+
+        unsafe { ::libc::pthread_sigmask(::libc::SIG_SETMASK, &before, core::ptr::null_mut()) };
     }
 }

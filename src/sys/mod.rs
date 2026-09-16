@@ -81,7 +81,9 @@ mod linux {
     pub const PIDFD_SELF: i32 = -10000;
 
     pub const SIGABRT: i32 = 6;
+    const SIG_BLOCK: i32 = 0;
     const SIG_UNBLOCK: i32 = 1;
+    const SIG_SETMASK: i32 = 2;
     const SIGSET_WORDS_BYTES: usize = 8;
 
     pub const STDERR_FILENO: i32 = 2;
@@ -471,6 +473,46 @@ mod linux {
     pub fn gettid() -> i32 {
         // SAFETY: no arguments; cannot fail.
         unsafe { raw::syscall0(nr::GETTID) as i32 }
+    }
+
+    /// `rt_sigprocmask(SIG_BLOCK, all)`: block every blockable signal on the
+    /// calling thread and return the mask that was in force before. The
+    /// kernel silently leaves `SIGKILL` and `SIGSTOP` unblocked.
+    pub fn block_all_signals() -> u64 {
+        let all: u64 = !0;
+        let mut old: u64 = 0;
+        // SAFETY: both pointers are live 8-byte sigsets for the whole call.
+        let r = unsafe {
+            raw::syscall4(
+                nr::RT_SIGPROCMASK,
+                SIG_BLOCK as usize,
+                &all as *const u64 as usize,
+                &mut old as *mut u64 as usize,
+                SIGSET_WORDS_BYTES,
+            )
+        };
+        if let Err(e) = decode(r) {
+            abort_fmt(format_args!("challoc: rt_sigprocmask(SIG_BLOCK) failed: {}", e));
+        }
+        old
+    }
+
+    /// `rt_sigprocmask(SIG_SETMASK, mask)`: restore a mask saved by
+    /// [`block_all_signals`] on the calling thread.
+    pub fn set_signal_mask(mask: u64) {
+        // SAFETY: `mask` is a live 8-byte sigset; the old-set pointer is null.
+        let r = unsafe {
+            raw::syscall4(
+                nr::RT_SIGPROCMASK,
+                SIG_SETMASK as usize,
+                &mask as *const u64 as usize,
+                0,
+                SIGSET_WORDS_BYTES,
+            )
+        };
+        if let Err(e) = decode(r) {
+            abort_fmt(format_args!("challoc: rt_sigprocmask(SIG_SETMASK) failed: {}", e));
+        }
     }
 
     /// `exit_group(2)`: terminate every thread in the process.
