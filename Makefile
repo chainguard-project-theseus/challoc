@@ -13,6 +13,11 @@
 #                            plus a second full layout (the layout tests) exceed
 #                            what Rosetta can track under emulation.
 #   make test-host           pure-logic unit tests on the host
+#   make jemalloc-compat     build with the `jemalloc-soname` feature into
+#                            target/jemalloc-compat and stage libjemalloc.so.2,
+#                            the libjemalloc.so link name and jemalloc.pc under
+#                            target/jemalloc-compat/stage (scripts/jemalloc-compat.sh;
+#                            QUANTUM=8|16, PREFIX=<dir> for a package layout)
 #   make fuzz                build, then run fuzz/fuzz.c under LD_PRELOAD for
 #                            FUZZ_OPS (10M) operations on FUZZ_THREADS (4)
 #                            threads with FUZZ_SEED (fixed; `random` draws one)
@@ -38,7 +43,7 @@ DOCKER_RUN = docker run --rm --platform $(PLATFORM) \
 	-v challoc-cargo-registry:/root/.cargo/registry \
 	$(DOCKER_FLAGS) $(IMAGE)
 
-.PHONY: image dev run build test test-host fuzz bench-build bench clean-volumes
+.PHONY: image dev run build test test-host jemalloc-compat fuzz bench-build bench clean-volumes
 
 image:
 	docker build --platform $(PLATFORM) -f Dockerfile.dev -t $(IMAGE) .
@@ -55,11 +60,16 @@ build: image
 
 test: image
 	$(DOCKER_RUN) sh -c 'cargo build --release \
+	  && sh scripts/jemalloc-compat.sh \
 	  && cargo test --features std -- --nocapture --skip api:: \
 	  && cargo test --features std api:: -- --nocapture'
 
 test-host:
 	cargo test --features std
+
+jemalloc-compat: DOCKER_FLAGS = $(if $(QUANTUM),-e QUANTUM=$(QUANTUM)) $(if $(PREFIX),-e PREFIX=$(PREFIX))
+jemalloc-compat: image
+	$(DOCKER_RUN) sh scripts/jemalloc-compat.sh
 
 FUZZ_OPS     ?= 10000000
 FUZZ_THREADS ?= 4

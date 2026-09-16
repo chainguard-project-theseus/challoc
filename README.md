@@ -159,6 +159,7 @@ make run CMD='cargo test'      # any one command inside the container
 make test                      # release build, then the full test suite in the container
 make fuzz                      # fuzz/fuzz.c: 10M random ops on 4 threads under LD_PRELOAD
 make test-host                 # pure-logic unit tests on the host
+make jemalloc-compat           # libjemalloc.so.2 + jemalloc.pc in target/jemalloc-compat/stage
 ```
 
 `Dockerfile.dev` defines the container. Note that a plain `apk add rust` on

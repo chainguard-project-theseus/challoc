@@ -17,6 +17,11 @@ quantum8 = []
 # Host-only: links std so pure-logic unit tests can run with `cargo test`.
 # Never enabled for the shipped library.
 std = []
+# Gives the cdylib jemalloc's soname, `libjemalloc.so.2`, for link-only
+# jemalloc consumers (design.md section 13.2). Exports are unchanged;
+# `make jemalloc-compat` stages the result under that name with a
+# `jemalloc.pc`. See build.rs.
+jemalloc-soname = []
 
 [dependencies]
 # Type definitions only (c_int, size_t, ...). No std, no allocation.

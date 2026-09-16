@@ -36,6 +36,12 @@ fn release_so() -> String {
 /// Compile `<dir>/<name>.c` (with `tests/c` on the include path for
 /// `common.h`, plus `flags`) and return the path of the binary.
 fn compile(dir: &str, name: &str, flags: &[&str]) -> String {
+    compile_link(dir, name, flags, &[])
+}
+
+/// [`compile`] with `ldflags` placed after the source file, where `-l`
+/// options must go for the linker to resolve the program's references.
+fn compile_link(dir: &str, name: &str, flags: &[&str], ldflags: &[&str]) -> String {
     let root = env!("CARGO_MANIFEST_DIR");
     let src = std::format!("{root}/{dir}/{name}.c");
     let include = std::format!("-I{root}/tests/c");
@@ -50,6 +56,7 @@ fn compile(dir: &str, name: &str, flags: &[&str]) -> String {
         .args(["-O2", "-g", "-Wall", "-Wextra", "-Werror", "-pthread", &quantum, &include])
         .args(flags)
         .args([&src, "-o", &out, "-ldl"])
+        .args(ldflags)
         .status()
         .unwrap();
     assert!(status.success(), "compiling {src} failed");
@@ -549,4 +556,101 @@ fn c_fuzz_single_thread_small_table() {
     // One thread and a 64-entry table: high churn per slot, no cross-thread
     // traffic, so slots are reused quickly through the thread cache.
     run_c_in("fuzz", "fuzz", &["200000", "1", "0x7", "64"]);
+}
+
+/// Phase 1 task 6: the `jemalloc-soname` build staged by
+/// `scripts/jemalloc-compat.sh` (`make jemalloc-compat`; `make test` runs it
+/// after the release build). The staged `libjemalloc.so.2` carries that
+/// soname and exactly the export list of `libchalloc.so`, which itself has
+/// no soname; the `libjemalloc.so` link name and `jemalloc.pc` resolve
+/// through `pkg-config`; and `tests/c/jemalloc_link.c`, linked with nothing
+/// but `$(pkg-config --cflags --libs jemalloc)`, records `libjemalloc.so.2`
+/// in `DT_NEEDED`, fails without the staging directory on the library path,
+/// and with it has every malloc entry point served from that file.
+#[test]
+fn jemalloc_compat_stage() {
+    let target =
+        env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| std::format!("{}/target", env!("CARGO_MANIFEST_DIR")));
+    let lib = std::format!("{target}/jemalloc-compat/stage/lib");
+    let so2 = std::format!("{lib}/libjemalloc.so.2");
+    assert!(
+        std::path::Path::new(&so2).exists(),
+        "{so2} missing: run `sh scripts/jemalloc-compat.sh` first (`make test` does)"
+    );
+    let default_so = release_so();
+
+    let dynamic = |path: &str| {
+        let out = Command::new("readelf").args(["-d", path]).output().unwrap();
+        assert!(out.status.success(), "readelf -d {path} failed");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let compat_dyn = dynamic(&so2);
+    assert!(compat_dyn.contains("Library soname: [libjemalloc.so.2]"), "{so2} lacks the soname:\n{compat_dyn}");
+    let default_dyn = dynamic(&default_so);
+    assert!(!default_dyn.contains("(SONAME)"), "the default build must not carry a soname:\n{default_dyn}");
+
+    // The feature changes the soname and nothing else that is visible.
+    let exports = |path: &str| -> std::collections::BTreeSet<String> {
+        let out = Command::new("readelf").args(["--dyn-syms", "-W", path]).output().unwrap();
+        assert!(out.status.success(), "readelf --dyn-syms {path} failed");
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| l.contains(" GLOBAL ") && !l.contains(" UND "))
+            .filter_map(|l| l.split_whitespace().last().map(String::from))
+            .collect()
+    };
+    let (compat, default) = (exports(&so2), exports(&default_so));
+    assert!(
+        compat == default,
+        "export lists differ\nonly in libjemalloc.so.2: {:?}\nonly in libchalloc.so: {:?}",
+        compat.difference(&default).collect::<std::vec::Vec<_>>(),
+        default.difference(&compat).collect::<std::vec::Vec<_>>()
+    );
+    for sym in ["malloc", "free", "mallctl", "mallocx", "je_malloc", "je_mallctl"] {
+        assert!(compat.contains(sym), "{sym} not exported by {so2}");
+    }
+
+    // Link name and pkg-config file.
+    let link = std::fs::read_link(std::format!("{lib}/libjemalloc.so")).expect("libjemalloc.so symlink");
+    assert_eq!(link, std::path::Path::new("libjemalloc.so.2"));
+    let pc_dir = std::format!("{lib}/pkgconfig");
+    let pkg_config = |args: &[&str]| {
+        let out = Command::new("pkg-config").env("PKG_CONFIG_PATH", &pc_dir).args(args).arg("jemalloc").output().unwrap();
+        assert!(
+            out.status.success(),
+            "pkg-config {args:?} jemalloc failed: {}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from(String::from_utf8_lossy(&out.stdout).trim())
+    };
+    let version = super::mallctl::VERSION_STR.split('-').next().unwrap();
+    assert_eq!(pkg_config(&["--modversion"]), version);
+    pkg_config(&["--exists", "--atleast-version=5.3"]);
+    let libs = pkg_config(&["--libs"]);
+    let cflags = pkg_config(&["--cflags"]);
+    let libs: std::vec::Vec<&str> = libs.split_whitespace().collect();
+    let cflags: std::vec::Vec<&str> = cflags.split_whitespace().collect();
+    assert!(libs.contains(&std::format!("-L{lib}").as_str()) && libs.contains(&"-ljemalloc"), "pkg-config --libs: {libs:?}");
+
+    // A link-only consumer: DT_NEEDED names the soname, not the file it was
+    // linked against; the loader needs the staging directory to find it.
+    let bin = compile_link("tests/c", "jemalloc_link", &cflags, &libs);
+    let needed = dynamic(&bin);
+    assert!(needed.contains("Shared library: [libjemalloc.so.2]"), "jemalloc_link DT_NEEDED:\n{needed}");
+    assert!(!needed.contains("libchalloc"), "jemalloc_link must not need libchalloc:\n{needed}");
+
+    let bare = Command::new(&bin).arg(&lib).output().unwrap();
+    assert!(
+        !bare.status.success(),
+        "jemalloc_link passed without the staged library on the path:\n{}",
+        String::from_utf8_lossy(&bare.stdout)
+    );
+    let run = Command::new(&bin).arg(&lib).env("LD_LIBRARY_PATH", &lib).output().unwrap();
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(run.status.success(), "jemalloc_link failed ({:?})\nstdout: {stdout}\nstderr: {stderr}", run.status);
+    assert!(stdout.lines().any(|l| l == "ok jemalloc_link"), "stdout: {stdout}\nstderr: {stderr}");
+    std::eprintln!("jemalloc_link: {}", stdout.trim_end());
 }
