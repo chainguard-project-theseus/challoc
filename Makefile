@@ -6,6 +6,7 @@
 #                            same, emulated x86_64 (correctness only)
 #   make run CMD='...'       run one shell command in the container
 #   make build               cargo build --release in the container
+#   make test                cargo test --features std in the container
 #   make test-host           pure-logic unit tests on the host
 #
 # `target/` inside the container is a named Docker volume, one per
@@ -24,7 +25,7 @@ DOCKER_RUN = docker run --rm --platform $(PLATFORM) \
 	-v challoc-cargo-registry:/root/.cargo/registry \
 	$(DOCKER_FLAGS) $(IMAGE)
 
-.PHONY: image dev run build test-host clean-volumes
+.PHONY: image dev run build test test-host clean-volumes
 
 image:
 	docker build --platform $(PLATFORM) -f Dockerfile.dev -t $(IMAGE) .
@@ -38,6 +39,9 @@ run: image
 
 build: image
 	$(DOCKER_RUN) cargo build --release
+
+test: image
+	$(DOCKER_RUN) cargo test --features std -- --nocapture
 
 test-host:
 	cargo test --features std

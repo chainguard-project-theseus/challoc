@@ -10,7 +10,7 @@ One line per task, newest at the bottom of each section. Keep it terse.
 
 ## In progress
 
-(none)
+- Phase 0 task 3: `src/sys/features.rs` kernel feature probe (page size, MADV_GUARD_INSTALL, mseal, process_madvise/PIDFD_SELF, PR_SET_VMA_ANON_NAME).
 
 ## Design decisions
 

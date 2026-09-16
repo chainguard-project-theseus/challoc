@@ -11,6 +11,7 @@
 //! std` inside the dev container.
 
 pub mod errno;
+pub mod features;
 pub use errno::{Errno, decode};
 
 #[cfg(target_os = "linux")]
