@@ -29,24 +29,24 @@ pub const QUANTUM: usize = 16;
 #[cfg(feature = "quantum8")]
 pub const QUANTUM: usize = 8;
 
+pub mod sys;
+
 /// Panic handler for the `no_std` library. The crate is built with
 /// `panic = "abort"`, so this is only reached by an explicit `panic!` or a
-/// failed debug assertion. It traps immediately; a proper `abort` that writes
-/// a diagnostic through `write(2)` arrives with `src/sys` (Phase 0 task 2)
-/// and will replace this.
-#[cfg(not(feature = "std"))]
+/// failed debug assertion. It reports through `sys::abort_fmt`, which writes
+/// to stderr with `write(2)` and raises `SIGABRT`, never unwinding.
+#[cfg(all(not(feature = "std"), target_os = "linux"))]
 #[panic_handler]
-fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
-    trap()
+fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
+    sys::abort_fmt(format_args!("panic: {info}"))
 }
 
-/// Stop the process with an architecture trap instruction. Never returns.
-#[cfg(not(feature = "std"))]
-#[inline(always)]
-fn trap() -> ! {
-    // SAFETY: both instructions raise a fatal signal (SIGILL / SIGTRAP) and
-    // have no other effect; `noreturn` tells the compiler control never
-    // continues past them.
+/// Non-Linux `no_std` builds have no syscall layer; trap so the crate still
+/// type-checks there. Nothing ships from such a build.
+#[cfg(all(not(feature = "std"), not(target_os = "linux")))]
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
+    // SAFETY: both instructions raise a fatal signal and have no other effect.
     unsafe {
         #[cfg(target_arch = "x86_64")]
         core::arch::asm!("ud2", options(noreturn, nostack));
