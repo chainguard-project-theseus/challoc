@@ -9,7 +9,8 @@
 //!   `MADV_DONTNEED`, or `MADV_FREE` under `lazy_free`. A range that fails
 //!   to discard aborts: the heap's idea of what is resident would otherwise
 //!   be wrong.
-//! - The decay driver: [`decay`] visits every class and the huge allocator,
+//! - The decay driver: [`decay`] visits every class of every arena and the
+//!   huge allocator,
 //!   purges what has been `Empty` for `dirty_decay_ms`, and reports the
 //!   earliest next deadline. Each class keeps the `dirty_at` of its oldest
 //!   `Empty` slab in an atomic so the visit takes no lock unless a purge is
@@ -151,31 +152,43 @@ impl Batch {
 /// return the earliest future deadline, `None` when nothing is `Empty` or
 /// decay is off. Lock-free for a class with nothing due.
 pub fn decay(shared: &Shared, now: u64) -> Option<u64> {
-    let decay_ns = shared.decay_ns();
-    if decay_ns == NEVER {
-        return None;
-    }
     let mut next: Option<u64> = None;
     let mut fold = |d: Option<u64>| {
         if let Some(d) = d {
             next = Some(next.map_or(d, |n| n.min(d)));
         }
     };
-    for cs in shared.classes.iter() {
-        fold(cs.decay(now, decay_ns));
+    for arena in shared.arenas.iter() {
+        fold(arena.decay(now));
     }
-    fold(shared.huge.decay(now, decay_ns));
+    // The huge allocator is shared by every arena and follows arena 0.
+    let decay_ns = shared.decay_ns();
+    if decay_ns != NEVER {
+        fold(shared.huge.decay(now, decay_ns));
+    }
     next
 }
 
-/// Purge every `Empty` slab and huge extent regardless of age. Returns how
-/// many were purged.
+/// Purge every `Empty` slab of every arena and every huge extent
+/// regardless of age. Returns how many were purged.
 pub fn purge_all(shared: &Shared) -> usize {
     let mut n = 0;
-    for cs in shared.classes.iter() {
-        n += cs.purge_empty(u64::MAX);
+    for arena in shared.arenas.iter() {
+        n += arena.purge_all();
     }
     n + shared.huge.purge_empty(u64::MAX)
+}
+
+/// `arena.<i>.purge`: purge every `Empty` slab of one arena regardless of
+/// age (plus, for arena 0, the huge extents, which belong to no single
+/// arena's sets). `None` if the arena does not exist.
+pub fn purge_arena(shared: &Shared, index: u16) -> Option<usize> {
+    let arena = shared.arenas.get_existing(index)?;
+    let mut n = arena.purge_all();
+    if index == 0 {
+        n += shared.huge.purge_empty(u64::MAX);
+    }
+    Some(n)
 }
 
 /// Periodic-work hook (design 6.4): start the background thread if one was

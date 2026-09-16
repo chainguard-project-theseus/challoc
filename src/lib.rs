@@ -31,6 +31,7 @@ pub const QUANTUM: usize = 8;
 
 #[cfg(target_os = "linux")]
 pub mod api;
+pub mod arena;
 pub mod bitmap;
 pub mod class;
 pub mod config;

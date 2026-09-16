@@ -68,7 +68,7 @@ fn einval() -> *mut u8 {
 fn alloc_huge(shared: &Shared, size: usize, align: usize) -> (*mut u8, bool) {
     match heap::heap_for_thread(shared) {
         Some(h) => h.alloc_huge(shared, size, align),
-        None => shared.alloc_huge(size, align),
+        None => shared.alloc_huge(size, align, 0),
     }
 }
 
@@ -173,7 +173,7 @@ pub fn usable_size(shared: &Shared, p: *mut u8) -> usize {
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, .. } => {
             let class = class as usize;
-            shared.classes[class].check(p);
+            shared.table(class).check(p);
             CLASSES[class].size()
         }
         Kind::Huge { page } => shared.huge.usable_size(page),
@@ -210,7 +210,7 @@ pub fn realloc(p: *mut u8, size: usize) -> *mut u8 {
     let old = match shared.regions.classify(p as usize) {
         Kind::Slab { class, .. } => {
             let class = class as usize;
-            shared.classes[class].check(p);
+            shared.table(class).check(p);
             if class_of(size) == Some(class) {
                 return p;
             }

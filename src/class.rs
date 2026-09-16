@@ -1,14 +1,18 @@
 //! Per-class state, slab selection, commit, and the claim/release protocol
 //! (design.md sections 4 and 5).
 //!
-//! One [`ClassState`] exists per `(arena, class)`. It owns the class's
-//! descriptor array and three [`TwoLevelBitmap`]s over slab numbers:
-//! `partial` (slabs believed to have a claimable slot), `empty` (`live == 0`,
-//! dirty, not yet purged) and `purged` (`live == 0`, pages discarded). All
-//! three plus the commit watermark are behind one futex lock that is taken
-//! only on slab transitions: selecting a slab for a refill, a slab filling
-//! up or emptying, a word going from full to non-full, purge, commit.
+//! One [`SlabTable`] exists per class: the class region's descriptor array
+//! and the commit watermark, shared by every arena, behind a commit lock.
+//! One [`ClassState`] exists per `(arena, class)`. It owns three
+//! [`TwoLevelBitmap`]s over slab numbers: `partial` (slabs believed to have
+//! a claimable slot), `empty` (`live == 0`, dirty, not yet purged) and
+//! `purged` (`live == 0`, pages discarded). All three are behind one futex
+//! lock that is taken only on slab transitions: selecting a slab for a
+//! refill, a slab filling up or emptying, a word going from full to
+//! non-full, purge, commit (which nests the table's commit lock inside).
 //! Claims and releases against a slab's bitmap happen outside the lock.
+//! Every slab belongs to the arena that committed it (`SlabDesc::arena`),
+//! and only that arena's state may claim from or release to it.
 //!
 //! Protocol. A refill takes the lock, picks the lowest partial slab (else
 //! the lowest empty, else the lowest purged, else commits the next slab),
@@ -160,41 +164,30 @@ impl Set {
     }
 }
 
-struct Inner {
-    partial: Set,
-    empty: Set,
-    purged: Set,
+struct TableInner {
     descs: Lazy,
     /// Next slab number to commit (`high_water + 1` in the design).
     next_slab: usize,
-    stats: ClassStats,
+    /// Guard slabs committed (never handed out).
+    guards: usize,
 }
 
-// SAFETY: `TwoLevelBitmap` holds a raw pointer into the metadata region,
-// which is process-global and only ever accessed through this lock.
-unsafe impl Send for Inner {}
-
-/// State of one `(arena, class)` pair.
+/// What every arena's [`ClassState`] for one class shares (design 13.3:
+/// arenas are sets of class states over the *same* class regions): the
+/// region's geometry, the descriptor array and the commit watermark. Slab
+/// numbers go in address order to whichever arena commits next, so arenas
+/// interleave in the region and each descriptor records its owner; `free`
+/// reads that owner to route a slot back to a cache of its arena.
 ///
-/// Layout matters: the fields before `inner` are written once by `new` (or,
-/// for `committed_slabs`, only when a slab is committed) and read by every
-/// `free`, while `inner` holds the class lock and the state every refill and
-/// flush writes. `repr(C)` keeps the read-mostly fields first and
-/// [`Padded`] starts `inner` on its own line, so a lock acquisition on one
-/// core does not evict the descriptor base and commit watermark from the
-/// others. The alignment makes `[ClassState; NCLASSES]` line-granular too.
-///
-/// The stride of that array must not be a multiple of 512 bytes. The
-/// natural size (128 bytes of read-mostly fields plus 384 for the padded
-/// lock) is exactly 512, and with 4 KiB pages that puts the hot line of
-/// every class on the same handful of L1 sets: on Apple silicon (128-byte
-/// lines, sets indexed by page-offset bits) single-threaded `alloc-test`
-/// slowed from 2.13 s to 2.52 s. `_tail` makes the stride 640 = 5 lines,
-/// which visits every set. See `bench/results/2026-09-16-aarch64-*.md`.
+/// Layout: the fields before `inner` are written once by `new` (or, for
+/// `committed_slabs`, only when a slab is committed) and read by every
+/// `free`, while `inner` holds the commit lock. `repr(C)` keeps the
+/// read-mostly fields first and [`Padded`] starts `inner` on its own line.
+/// The stride of `[SlabTable; NCLASSES]` (384 bytes) is not a multiple of
+/// 512 for the reason given on [`ClassState`].
 #[repr(C, align(128))]
-pub struct ClassState {
+pub struct SlabTable {
     class: u16,
-    arena: u16,
     /// Every `guard_interval`-th slab is a guard slab; 0 disables guards.
     guard_interval: u32,
     lg_page: u32,
@@ -210,6 +203,54 @@ pub struct ClassState {
     /// Slabs with a committed descriptor, readable without the lock so the
     /// `free` check can reject pointers into never-committed slabs cleanly.
     committed_slabs: AtomicUsize,
+    inner: Padded<Lock<TableInner>>,
+    _tail: [u8; PAD_ALIGN],
+}
+
+const _: () = assert!(core::mem::offset_of!(SlabTable, inner) == PAD_ALIGN);
+const _: () = assert!(core::mem::offset_of!(SlabTable, committed_slabs) + 8 <= PAD_ALIGN);
+const _: () = assert!(core::mem::size_of::<SlabTable>() % PAD_ALIGN == 0);
+const _: () = assert!(core::mem::size_of::<SlabTable>() % 512 != 0);
+
+// SAFETY: `Lazy` holds an address into the metadata region that is only
+// ever used under the lock.
+unsafe impl Send for TableInner {}
+
+struct Inner {
+    partial: Set,
+    empty: Set,
+    purged: Set,
+    stats: ClassStats,
+}
+
+// SAFETY: `TwoLevelBitmap` holds a raw pointer into the metadata region,
+// which is process-global and only ever accessed through this lock.
+unsafe impl Send for Inner {}
+
+/// State of one `(arena, class)` pair: the three slab sets and their
+/// statistics behind the class lock, plus a pointer to the class's shared
+/// [`SlabTable`].
+///
+/// Layout matters: the fields before `inner` are written once by `new` and
+/// read by every refill and flush, while `inner` holds the class lock and
+/// the state every refill and flush writes. `repr(C)` keeps the read-mostly
+/// fields first and [`Padded`] starts `inner` on its own line, so a lock
+/// acquisition on one core does not evict the table pointer from the
+/// others. The alignment makes `[ClassState; NCLASSES]` line-granular too.
+///
+/// The stride of that array must not be a multiple of 512 bytes. With 4 KiB
+/// pages a 512-byte stride puts the hot line of every class on the same
+/// handful of L1 sets: on Apple silicon (128-byte lines, sets indexed by
+/// page-offset bits) single-threaded `alloc-test` slowed from 2.13 s to
+/// 2.52 s. `_tail` makes the stride 640 = 5 lines, which visits every set.
+/// See `bench/results/2026-09-16-aarch64-*.md`.
+#[repr(C, align(128))]
+pub struct ClassState {
+    class: u16,
+    arena: u16,
+    /// The class's shared table, which lives as long as the allocator
+    /// (inside `Shared`, or leaked by the tests).
+    table: *const SlabTable,
     /// `dirty_at` of the oldest `Empty` slab, 0 when none is known. Written
     /// under the lock (set when the empty set goes from none to one,
     /// recomputed by every purge) and read without it by the decay driver.
@@ -221,10 +262,16 @@ pub struct ClassState {
 }
 
 const _: () = assert!(core::mem::offset_of!(ClassState, inner) == PAD_ALIGN);
-const _: () = assert!(core::mem::offset_of!(ClassState, committed_slabs) + 8 <= PAD_ALIGN);
 const _: () = assert!(core::mem::offset_of!(ClassState, oldest_empty) + 8 <= PAD_ALIGN);
 const _: () = assert!(core::mem::size_of::<ClassState>() % PAD_ALIGN == 0);
 const _: () = assert!(core::mem::size_of::<ClassState>() % 512 != 0);
+
+// SAFETY: the only non-`Sync` field is the table pointer, which targets a
+// `SlabTable` (itself `Sync`) that outlives every `ClassState` pointing at
+// it: both live in `Shared` for the life of the process, or are leaked by
+// the tests.
+unsafe impl Sync for ClassState {}
+unsafe impl Send for ClassState {}
 
 #[cfg(target_os = "linux")]
 mod os {
@@ -289,31 +336,21 @@ impl Inner {
     }
 }
 
-impl ClassState {
-    /// Create the state for `class` in `arena`. Reserves the descriptor
-    /// array and the three slab sets in `meta`; returns `None` if the
-    /// metadata region cannot hold them. `guard_interval` of `N > 0` makes
-    /// every `N`-th slab a guard slab; callers must pass 0 when
-    /// `MADV_GUARD_INSTALL` is unavailable, since a `PROT_NONE` slab would
-    /// split the region into one VMA per guard (design: Phase 2 task 1).
-    pub fn new(
-        meta: &Meta,
-        regions: &Regions,
-        class: usize,
-        arena: u16,
-        guard_interval: u32,
-    ) -> Option<ClassState> {
+impl SlabTable {
+    /// Create the table for `class`. Reserves the descriptor array in
+    /// `meta`; returns `None` if the metadata region cannot hold it.
+    /// `guard_interval` of `N > 0` makes every `N`-th slab a guard slab;
+    /// callers must pass 0 when `MADV_GUARD_INSTALL` is unavailable, since
+    /// a `PROT_NONE` slab would split the region into one VMA per guard
+    /// (design: Phase 2 task 1).
+    pub fn new(meta: &Meta, regions: &Regions, class: usize, guard_interval: u32) -> Option<SlabTable> {
         assert!(class < CLASSES.len(), "class: index out of range");
         assert!(guard_interval != 1, "class: a guard interval of 1 leaves no slabs to allocate");
         let page = regions.page_size();
         let nslabs = regions.nslabs(class);
         let descs = Lazy::reserve(meta, nslabs * desc_stride(class), DESC_ALIGN.max(page))?;
-        let partial = Set::new(meta, page, nslabs)?;
-        let empty = Set::new(meta, page, nslabs)?;
-        let purged = Set::new(meta, page, nslabs)?;
-        Some(ClassState {
+        Some(SlabTable {
             class: class as u16,
-            arena,
             guard_interval,
             lg_page: regions.lg_page,
             desc_stride: desc_stride(class) as u32,
@@ -321,15 +358,7 @@ impl ClassState {
             nslabs,
             desc_base: descs.base,
             committed_slabs: AtomicUsize::new(0),
-            oldest_empty: AtomicU64::new(0),
-            inner: Padded(Lock::new(Inner {
-                partial,
-                empty,
-                purged,
-                descs,
-                next_slab: 0,
-                stats: ClassStats::default(),
-            })),
+            inner: Padded(Lock::new(TableInner { descs, next_slab: 0, guards: 0 })),
             _tail: [0; PAD_ALIGN],
         })
     }
@@ -345,16 +374,11 @@ impl ClassState {
     }
 
     #[inline]
-    pub fn arena(&self) -> u16 {
-        self.arena
-    }
-
-    #[inline]
     pub fn nslabs(&self) -> usize {
         self.nslabs
     }
 
-    /// The class lock, for fork handlers.
+    /// The commit lock, for fork handlers.
     #[inline]
     pub fn raw_lock(&self) -> &RawLock {
         self.inner.raw()
@@ -372,6 +396,11 @@ impl ClassState {
         self.committed_slabs.load(Ordering::Acquire)
     }
 
+    /// Guard slabs committed so far.
+    pub fn guards(&self) -> usize {
+        self.inner.lock().guards
+    }
+
     /// Descriptor of a committed slab. Aborts for a slab that was never
     /// committed rather than faulting on its `PROT_NONE` descriptor page.
     #[inline]
@@ -385,7 +414,7 @@ impl ClassState {
 
     /// Descriptor of `slab` if it is committed, `None` otherwise. This is
     /// the `free` fast path's form of [`desc`]: no abort, and the stride
-    /// comes from the state itself rather than the class table.
+    /// comes from the table itself rather than the class table.
     ///
     /// The commit count is loaded `Relaxed`. For a pointer that really is
     /// an allocated slot the program itself ordered the free after the
@@ -400,7 +429,7 @@ impl ClassState {
     /// see a count above what has been committed, so the descriptor page is
     /// always mapped.
     ///
-    /// [`desc`]: ClassState::desc
+    /// [`desc`]: SlabTable::desc
     #[inline(always)]
     pub fn desc_if_committed(&self, slab: usize) -> Option<&SlabDesc> {
         if slab >= self.committed_slabs.load(Ordering::Relaxed) {
@@ -449,11 +478,159 @@ impl ClassState {
         (rel >> cls.lg_slab, slot)
     }
 
-    /// The `free` check: `p` must be a slot start whose bit is set.
+    /// The `free` check: `p` must be a slot start whose bit is set. Returns
+    /// the arena that owns the slab.
+    #[inline]
+    pub fn check(&self, p: *mut u8) -> u16 {
+        let (slab, slot) = self.locate(p);
+        let desc = self.desc(slab);
+        desc.check(self.class(), slot, p as usize, self.class as usize, slab);
+        desc.arena()
+    }
+
+    /// Commit the next non-guard slab (and any guard slabs before it) for
+    /// `arena` and initialise its descriptor. `ensure_sets` is called under
+    /// the commit lock with the slab number before anything changes, so the
+    /// arena can commit the set words the slab needs; if it fails nothing
+    /// has happened. `None` when the region or the metadata region is
+    /// exhausted or `mprotect` fails.
+    fn commit_next(
+        &self,
+        meta: &Meta,
+        arena: u16,
+        mut ensure_sets: impl FnMut(usize) -> Result<(), Errno>,
+    ) -> Option<usize> {
+        let cls = self.class();
+        let page = 1usize << self.lg_page;
+        let mut g = self.inner.lock();
+        loop {
+            let s = g.next_slab;
+            if s >= self.nslabs {
+                return None;
+            }
+            g.descs.ensure(meta, page, (s + 1) * desc_stride(self.class as usize)).ok()?;
+            ensure_sets(s).ok()?;
+            let addr = self.slab_addr(s);
+            let len = cls.slab_size();
+            os::commit(addr, len).ok()?;
+            if self.is_guard_slab(s) {
+                // Read-write so the VMA merges with its neighbours, with a
+                // guard region on the first page so a stray write past the
+                // previous slab faults. If the install fails, fall back to
+                // leaving the whole slab `PROT_NONE`: a hard guard at the
+                // cost of a VMA split.
+                if os::guard(addr, page).is_err() && os::decommit(addr, len).is_err() {
+                    panic!("class {}: cannot re-protect guard slab {s}", self.class);
+                }
+                g.next_slab = s + 1;
+                g.guards += 1;
+                self.committed_slabs.store(s + 1, Ordering::Release);
+                continue;
+            }
+            // SAFETY: the descriptor page for `s` was committed above.
+            unsafe { SlabDesc::at(self.desc_base, self.class as usize, s) }.init(cls, arena);
+            g.next_slab = s + 1;
+            self.committed_slabs.store(s + 1, Ordering::Release);
+            return Some(s);
+        }
+    }
+}
+
+impl ClassState {
+    /// Create the state for `arena` over `table`'s class. Reserves the
+    /// three slab sets in `meta`; returns `None` if the metadata region
+    /// cannot hold them. `table` must outlive the state (see the field).
+    pub fn new(meta: &Meta, regions: &Regions, table: &SlabTable, arena: u16) -> Option<ClassState> {
+        let page = regions.page_size();
+        let nslabs = table.nslabs;
+        let partial = Set::new(meta, page, nslabs)?;
+        let empty = Set::new(meta, page, nslabs)?;
+        let purged = Set::new(meta, page, nslabs)?;
+        Some(ClassState {
+            class: table.class,
+            arena,
+            table,
+            oldest_empty: AtomicU64::new(0),
+            inner: Padded(Lock::new(Inner { partial, empty, purged, stats: ClassStats::default() })),
+            _tail: [0; PAD_ALIGN],
+        })
+    }
+
+    /// The class's shared table.
+    #[inline(always)]
+    pub fn table(&self) -> &SlabTable {
+        // SAFETY: the table outlives the state (see the field).
+        unsafe { &*self.table }
+    }
+
+    #[inline]
+    pub fn class_index(&self) -> usize {
+        self.class as usize
+    }
+
+    #[inline]
+    pub fn class(&self) -> &'static Class {
+        &CLASSES[self.class as usize]
+    }
+
+    #[inline]
+    pub fn arena(&self) -> u16 {
+        self.arena
+    }
+
+    #[inline]
+    pub fn nslabs(&self) -> usize {
+        self.table().nslabs
+    }
+
+    /// The class lock, for fork handlers.
+    #[inline]
+    pub fn raw_lock(&self) -> &RawLock {
+        self.inner.raw()
+    }
+
+    /// [`SlabTable::is_guard_slab`].
+    #[inline]
+    pub fn is_guard_slab(&self, slab: usize) -> bool {
+        self.table().is_guard_slab(slab)
+    }
+
+    /// [`SlabTable::committed_slabs`]: slabs of every arena.
+    #[inline]
+    pub fn committed_slabs(&self) -> usize {
+        self.table().committed_slabs()
+    }
+
+    /// [`SlabTable::desc`].
+    #[inline]
+    pub fn desc(&self, slab: usize) -> &SlabDesc {
+        self.table().desc(slab)
+    }
+
+    #[inline]
+    fn slab_addr(&self, slab: usize) -> usize {
+        self.table().slab_addr(slab)
+    }
+
+    #[inline]
+    fn slot_ptr(&self, slab: usize, slot: usize) -> *mut u8 {
+        self.table().slot_ptr(slab, slot)
+    }
+
+    /// [`SlabTable::locate`].
+    #[inline]
+    pub fn locate(&self, p: *mut u8) -> (usize, usize) {
+        self.table().locate(p)
+    }
+
+    /// The `free` check: `p` must be a slot start whose bit is set, in a
+    /// slab of this arena.
     #[inline]
     pub fn check(&self, p: *mut u8) {
-        let (slab, slot) = self.locate(p);
-        self.desc(slab).check(self.class(), slot, p as usize, self.class as usize, slab);
+        let arena = self.table().check(p);
+        if arena != self.arena {
+            wrong_arena(p as usize, self.class as usize, arena, self.arena);
+        }
     }
 
     /// Claim up to `out.len()` slots, lowest address first, writing slot
@@ -595,45 +772,18 @@ impl ClassState {
         *remaining -= n;
     }
 
-    /// Commit the next non-guard slab (and any guard slabs before it) and
-    /// initialise its descriptor. `None` when the region or the metadata
-    /// region is exhausted or `mprotect` fails.
+    /// Commit the next slab of the class region for this arena (see
+    /// [`SlabTable::commit_next`]), committing this arena's set words for
+    /// it first. The commit lock nests inside the class lock.
     fn commit_next(&self, g: &mut Inner, meta: &Meta) -> Option<usize> {
-        let cls = self.class();
-        let page = 1usize << self.lg_page;
-        loop {
-            let s = g.next_slab;
-            if s >= self.nslabs {
-                return None;
-            }
-            g.descs.ensure(meta, page, (s + 1) * desc_stride(self.class as usize)).ok()?;
-            g.partial.ensure(meta, page, s).ok()?;
-            g.empty.ensure(meta, page, s).ok()?;
-            g.purged.ensure(meta, page, s).ok()?;
-            let addr = self.slab_addr(s);
-            let len = cls.slab_size();
-            os::commit(addr, len).ok()?;
-            if self.is_guard_slab(s) {
-                // Read-write so the VMA merges with its neighbours, with a
-                // guard region on the first page so a stray write past the
-                // previous slab faults. If the install fails, fall back to
-                // leaving the whole slab `PROT_NONE`: a hard guard at the
-                // cost of a VMA split.
-                if os::guard(addr, page).is_err() && os::decommit(addr, len).is_err() {
-                    panic!("class {}: cannot re-protect guard slab {s}", self.class);
-                }
-                g.next_slab = s + 1;
-                g.stats.guards += 1;
-                self.committed_slabs.store(s + 1, Ordering::Release);
-                continue;
-            }
-            // SAFETY: the descriptor page for `s` was committed above.
-            unsafe { SlabDesc::at(self.desc_base, self.class as usize, s) }.init(cls, self.arena);
-            g.next_slab = s + 1;
-            g.stats.committed += 1;
-            self.committed_slabs.store(s + 1, Ordering::Release);
-            return Some(s);
-        }
+        let page = 1usize << self.table().lg_page;
+        let s = self.table().commit_next(meta, self.arena, |s| {
+            g.partial.ensure(meta, page, s)?;
+            g.empty.ensure(meta, page, s)?;
+            g.purged.ensure(meta, page, s)
+        })?;
+        g.stats.committed += 1;
+        Some(s)
     }
 
     /// `live` reached zero: make the slab `Empty` unless a refill has
@@ -667,7 +817,8 @@ impl ClassState {
     /// not full are collected and put back in the partial set under one
     /// lock hold at the end (or when the list overflows), rather than one
     /// per word. Aborts on a pointer that is not an allocated slot of this
-    /// class.
+    /// class, or one whose slab belongs to another arena (the caller routes
+    /// by the descriptor's arena; a miss here means a cache was mis-keyed).
     pub fn release(&self, ptrs: &[*mut u8]) {
         let mut cur_slab = usize::MAX;
         let mut cur_word = 0usize;
@@ -681,9 +832,15 @@ impl ClassState {
                 if mask != 0 {
                     self.release_word(cur_slab, cur_word, mask, &mut reopen);
                 }
-                if slab != cur_slab && count != 0 {
-                    self.dec_live(cur_slab, count);
-                    count = 0;
+                if slab != cur_slab {
+                    if count != 0 {
+                        self.dec_live(cur_slab, count);
+                        count = 0;
+                    }
+                    let owner = self.desc(slab).arena();
+                    if owner != self.arena {
+                        wrong_arena(p as usize, self.class as usize, owner, self.arena);
+                    }
                 }
                 cur_slab = slab;
                 cur_word = word;
@@ -810,8 +967,12 @@ impl ClassState {
         if oldest == 0 { None } else { Some(oldest.saturating_add(decay_ns)) }
     }
 
+    /// This arena's slab counts; `guards` is the class-wide count from the
+    /// table, since guard slabs belong to no arena.
     pub fn stats(&self) -> ClassStats {
-        self.inner.lock().stats
+        let mut s = self.inner.lock().stats;
+        s.guards = self.table().guards();
+        s
     }
 
     /// Lowest slab in the partial set, if any (for tests and stats).
@@ -833,6 +994,12 @@ fn never_committed(class: usize, slab: usize) -> ! {
 
 #[cold]
 #[inline(never)]
+fn wrong_arena(p: usize, class: usize, owner: u16, arena: u16) -> ! {
+    panic!("slot {p:#x} (class {class}) belongs to arena {owner} but was released through arena {arena}")
+}
+
+#[cold]
+#[inline(never)]
 fn reservation_unmet(class: usize, slab: usize, want: usize, got: usize, live: usize, set: usize, nslots: usize) -> ! {
     panic!("class {class}: slab {slab} yielded {got} of a reservation of {want} slots after {MAX_EMPTY_PASSES} full scans (live {live}, allocated {set}, nslots {nslots}): live count is corrupt")
 }
@@ -848,7 +1015,6 @@ fn invalid_pointer(p: usize, class: usize, why: &str) -> ! {
 fn double_free(p: usize, class: usize, slab: usize, slot: usize) -> ! {
     panic!("double free of {p:#x} (class {class} slab {slab} slot {slot})")
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -928,8 +1094,22 @@ mod tests {
             Env { meta: Meta::new(mb, META_LEN, PAGE), regions, _buf: buf }
         }
 
+        /// A fresh table for `c` (leaked: the state points at it) and the
+        /// arena-0 state over it.
         fn class(&self, c: usize, guard_interval: u32) -> ClassState {
-            ClassState::new(&self.meta, &self.regions, c, 0, guard_interval).expect("class state")
+            let table = self.table(c, guard_interval);
+            ClassState::new(&self.meta, &self.regions, table, 0).expect("class state")
+        }
+
+        fn table(&self, c: usize, guard_interval: u32) -> &'static SlabTable {
+            std::boxed::Box::leak(std::boxed::Box::new(
+                SlabTable::new(&self.meta, &self.regions, c, guard_interval).expect("slab table"),
+            ))
+        }
+
+        /// The state of `arena` over the same table as `cs`.
+        fn class_in_arena(&self, cs: &ClassState, arena: u16) -> ClassState {
+            ClassState::new(&self.meta, &self.regions, cs.table(), arena).expect("class state")
         }
 
         fn claim(&self, cs: &ClassState, n: usize) -> (Vec<*mut u8>, Claim) {
@@ -1358,7 +1538,83 @@ mod tests {
             Meta::new(mb, 2 * PAGE, PAGE)
         };
         let regions = regions_at(0x1000_0000_0000, (0x2000_0000_0000, 2 * PAGE));
-        assert!(ClassState::new(&meta, &regions, 0, 0, 0).is_none());
+        assert!(SlabTable::new(&meta, &regions, 0, 0).is_none());
+    }
+
+    /// Two arenas over one class region: slabs are handed out in address
+    /// order to whichever arena commits next, each records its owner, and
+    /// each arena's sets and counts see only its own slabs.
+    #[test]
+    fn two_arenas_share_one_region() {
+        let env = Env::new();
+        let c = small_class();
+        let cs0 = env.class(c, 0);
+        let cs1 = env.class_in_arena(&cs0, 1);
+        assert_eq!(cs1.arena(), 1);
+        assert!(core::ptr::eq(cs0.table(), cs1.table()));
+        let (p0, _) = env.claim(&cs0, 3);
+        let (p1, _) = env.claim(&cs1, 3);
+        assert_eq!(cs0.committed_slabs(), 2);
+        assert_eq!(cs1.committed_slabs(), 2);
+        assert_eq!(cs0.desc(0).arena(), 0);
+        assert_eq!(cs0.desc(1).arena(), 1);
+        assert_eq!(cs0.locate(p0[0]).0, 0);
+        assert_eq!(cs1.locate(p1[0]).0, 1);
+        assert!(cs0.is_partial(0) && !cs0.is_partial(1));
+        assert!(cs1.is_partial(1) && !cs1.is_partial(0));
+        assert_eq!(cs0.stats().committed, 1);
+        assert_eq!(cs1.stats().committed, 1);
+        // Each arena keeps growing past the other's slabs.
+        let (q1, _) = env.claim(&cs1, cs1.class().nslots());
+        assert_eq!(cs1.locate(q1[q1.len() - 1]).0, 2);
+        assert_eq!(cs0.desc(2).arena(), 1);
+        let (q0, _) = env.claim(&cs0, cs0.class().nslots());
+        assert_eq!(cs0.locate(q0[q0.len() - 1]).0, 3);
+        assert_eq!(cs0.desc(3).arena(), 0);
+        // Releases land in the owner's sets only.
+        cs1.release(&p1);
+        cs1.release(&q1);
+        assert_eq!(cs1.desc(1).state(), State::Empty);
+        assert_eq!(cs1.desc(2).state(), State::Empty);
+        assert_eq!(cs1.stats().empty, 2);
+        assert_eq!(cs0.stats().empty, 0);
+        assert_eq!(cs1.purge_empty(u64::MAX), 2);
+        assert_eq!(cs0.stats().purged, 0);
+        assert_eq!(cs1.stats().purged, 2);
+        cs0.release(&p0);
+        cs0.release(&q0);
+        assert_eq!(cs0.stats().empty, 2);
+        // A purged slab is reused by its own arena before anything new is
+        // committed.
+        let (r1, claim) = env.claim(&cs1, 1);
+        assert!(claim.zeroed);
+        assert_eq!(cs1.locate(r1[0]).0, 1);
+        assert_eq!(cs0.committed_slabs(), 4);
+    }
+
+    #[test]
+    #[should_panic(expected = "belongs to arena 1 but was released through arena 0")]
+    fn release_through_the_wrong_arena_aborts() {
+        let env = Env::new();
+        let c = small_class();
+        let cs0 = env.class(c, 0);
+        let cs1 = env.class_in_arena(&cs0, 1);
+        let (_p0, _) = env.claim(&cs0, 1);
+        let (p1, _) = env.claim(&cs1, 1);
+        cs0.release(&p1);
+    }
+
+    #[test]
+    #[should_panic(expected = "belongs to arena 1 but was released through arena 0")]
+    fn check_through_the_wrong_arena_aborts() {
+        let env = Env::new();
+        let c = small_class();
+        let cs0 = env.class(c, 0);
+        let cs1 = env.class_in_arena(&cs0, 1);
+        let (_p0, _) = env.claim(&cs0, 1);
+        let (p1, _) = env.claim(&cs1, 1);
+        assert_eq!(cs0.table().check(p1[0]), 1);
+        cs0.check(p1[0]);
     }
 
     #[test]
