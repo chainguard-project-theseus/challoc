@@ -563,7 +563,18 @@ config.malloc_conf, config.debug, config.stats
 prof.* -> ENOENT
 ```
 
-Everything else returns `ENOENT`. `epoch` merges every heap's pending
+Everything else returns `ENOENT`. `arenas.nbins` counts the classes whose
+slab is the minimum 64 KiB, i.e. up to 4 KiB (32 with `quantum8`, 28 with
+`quantum16`); the larger classes are slab-allocated all the same but appear
+the way jemalloc reports large extents (in `large.*`, absent from `bins`,
+and `(nfree 0, nregs 1, size)` from the utilization queries). Consumers such
+as Valkey's defragmenter and its `frag_smallbins` metric are calibrated to
+jemalloc's bins, whose slabs are a few pages; with `16 * size` slabs a
+handful of live 10 KiB blocks pin a 256 KiB slab that would count as
+fragmentation no defragmenter can recover, and one such class per size step
+adds up to megabytes on an idle server. The utilization queries report
+`size` as `nregs * size`, the region bytes of the slab, so that
+`size / nregs` is exactly the class size as Valkey asserts. `epoch` merges every heap's pending
 statistics into arena totals. `stats.allocated` is the sum over classes of
 `live * size` plus huge usable bytes; `active` counts committed slabs and
 huge runs that are not `Empty` or `Purged`; `resident` is `active` plus

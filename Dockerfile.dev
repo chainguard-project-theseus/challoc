@@ -22,6 +22,10 @@ RUN sed -i \
       jemalloc \
       git \
       cmake \
+      tcl \
+      openssl-dev \
+      procps \
+      posix-libc-utils-2.44 \
  && rustc --version && cargo --version
 
 WORKDIR /src

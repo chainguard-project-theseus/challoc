@@ -160,7 +160,8 @@ static void test_mallctl_basics(void)
     REQUIRE(mallctl("version", &version, &len, NULL, 0) == 0, "version");
     CHECK(version && strncmp(version, "5.3.0-0-g", 9) == 0, "version %s", version ? version : "(null)");
     CHECK(strstr(version, "challoc") != NULL, "version names challoc: %s", version);
-    CHECK(get_unsigned("arenas.nbins") > 40, "nbins");
+    /* Classes up to 4096 bytes (64 KiB slabs): 28 for quantum16, 32 for quantum8. */
+    CHECK(get_unsigned("arenas.nbins") >= 28 && get_unsigned("arenas.nbins") <= 32, "nbins");
     CHECK(get_size("arenas.quantum") == QUANTUM, "quantum");
     CHECK(get_size("arenas.page") == (size_t)sysconf(_SC_PAGESIZE), "page");
     bool b = true;
@@ -258,7 +259,7 @@ static void test_valkey_defrag_pattern(void)
 
     size_t prev = 0;
     unsigned my_bin = nbins;
-    size_t my_nregs = 0, my_slab = 0;
+    size_t my_nregs = 0, my_slab = 0, my_size = 0;
     for (unsigned j = 0; j < nbins; j++) {
         size_t size = 0, slab = 0, len = sizeof size;
         uint32_t nregs = 0;
@@ -276,6 +277,7 @@ static void test_valkey_defrag_pattern(void)
             my_bin = j;
             my_nregs = nregs;
             my_slab = slab;
+            my_size = size;
         }
         size_t curregs = 0, curslabs = 0, nonfull = 0;
         curregs_mib[2] = 0;
@@ -301,7 +303,9 @@ static void test_valkey_defrag_pattern(void)
     for (int i = 0; i < N; i++) {
         size_t nfree = out[3 * i], nregs = out[3 * i + 1], size = out[3 * i + 2];
         CHECK(nregs == my_nregs, "ptr %d nregs %zu != %zu", i, nregs, my_nregs);
-        CHECK(size == my_slab, "ptr %d size %zu != %zu", i, size, my_slab);
+        /* The region bytes of the slab (nregs * size), not the slab size:
+         * Valkey divides size by nregs and expects the bin size. */
+        CHECK(size == my_nregs * my_size && size <= my_slab, "ptr %d size %zu != %zu", i, size, my_nregs * my_size);
         CHECK(nfree < nregs, "ptr %d nfree %zu", i, nfree);
         if (nfree == 0)
             full++;
@@ -315,7 +319,7 @@ static void test_valkey_defrag_pattern(void)
     size_t ulen = sizeof u;
     void *ptr0 = ptrs[0];
     REQUIRE(mallctl("experimental.utilization.query", &u, &ulen, &ptr0, sizeof ptr0) == 0, "utilization.query");
-    CHECK(u.nregs == my_nregs && u.size == my_slab, "verbose geometry");
+    CHECK(u.nregs == my_nregs && u.size == my_nregs * my_size, "verbose geometry");
     CHECK(u.bin_nregs >= u.nregs && u.bin_nfree <= u.bin_nregs, "verbose bin figures");
     CHECK(u.bin_nregs - u.bin_nfree >= N, "bin has our slots out");
     for (int i = 0; i < N; i++)
@@ -428,10 +432,10 @@ static void test_reports(void)
     report[0] = 0;
     malloc_stats_print(append, &marker, NULL);
     CHECK(report_opaque == &marker, "cbopaque passed through");
-    CHECK(strstr(report, "___ Begin challoc statistics ___") == report, "report start:\n%s", report);
+    CHECK(strstr(report, "___ Begin jemalloc statistics ___") == report, "report start:\n%s", report);
     CHECK(strstr(report, "Allocated: ") != NULL, "Allocated line");
     CHECK(strstr(report, "arenas[0]:") != NULL, "arena section");
-    CHECK(strstr(report, "--- End challoc statistics ---\n") != NULL, "report end");
+    CHECK(strstr(report, "--- End jemalloc statistics ---\n") != NULL, "report end");
     report_len = 0;
     report[0] = 0;
     je_malloc_stats_print(append, &marker, "J");
@@ -448,13 +452,13 @@ static void test_reports(void)
     malloc_stats_print(NULL, NULL, "ga");
     malloc_message = NULL;
     CHECK(report_opaque == NULL, "malloc_message gets a NULL cbopaque");
-    CHECK(strcmp(report, "--- End challoc statistics ---\n") == 0, "hooked report with `ga`:\n%s", report);
+    CHECK(strcmp(report, "--- End jemalloc statistics ---\n") == 0, "hooked report with `ga`:\n%s", report);
     je_malloc_message = append;
     report_len = 0;
     report[0] = 0;
     je_malloc_stats_print(NULL, NULL, "gab");
     je_malloc_message = NULL;
-    CHECK(strcmp(report, "--- End challoc statistics ---\n") == 0, "je_malloc_message hooked report:\n%s", report);
+    CHECK(strcmp(report, "--- End jemalloc statistics ---\n") == 0, "je_malloc_message hooked report:\n%s", report);
     /* The library reads a program's malloc_conf / je_malloc_conf (conf.c
      * covers that) but defines neither, so the weak references stay null. */
     CHECK(&malloc_conf == NULL, "malloc_conf is not defined by the library");

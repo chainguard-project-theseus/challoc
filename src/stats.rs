@@ -42,7 +42,7 @@ use crate::arena::Arena;
 use crate::class::ClassState;
 use crate::heap::Shared;
 use crate::huge::{GUARD_PAGES, HugeStats};
-use crate::layout::NCLASSES;
+use crate::layout::{NBINS, NCLASSES};
 use crate::meta::MetaStats;
 
 /// One `(arena, class)` pair (`stats.arenas.<i>.bins.<j>.*` and the
@@ -100,17 +100,26 @@ impl BinStats {
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct ArenaStats {
     pub index: u16,
-    /// `stats.arenas.<i>.small.allocated`: sum of `curregs * size`.
+    /// `stats.arenas.<i>.small.allocated`: sum of `curregs * size` over the
+    /// bins (classes up to `layout::BIN_MAX`).
     pub small_allocated: usize,
-    /// Bytes of slabs neither `Empty` nor `Purged`.
+    /// Bytes of bin slabs neither `Empty` nor `Purged`.
     pub small_active: usize,
-    /// Bytes of `Empty` slabs.
+    /// Bytes of `Empty` bin slabs.
     pub small_dirty: usize,
-    /// Bytes of `Purged` slabs.
+    /// Bytes of `Purged` bin slabs.
     pub small_retained: usize,
-    /// `stats.arenas.<i>.large.allocated`: usable bytes of live huge runs
-    /// allocated through this arena (also their active bytes).
+    /// `stats.arenas.<i>.large.allocated`: `curregs * size` of the classes
+    /// above `BIN_MAX` plus the usable bytes of live huge runs allocated
+    /// through this arena.
     pub large_allocated: usize,
+    /// Active bytes of the classes above `BIN_MAX` (slabs neither `Empty`
+    /// nor `Purged`) plus the usable bytes of live huge runs.
+    pub large_active: usize,
+    /// Bytes of `Empty` slabs of the classes above `BIN_MAX`.
+    pub large_dirty: usize,
+    /// Bytes of `Purged` slabs of the classes above `BIN_MAX`.
+    pub large_retained: usize,
     /// Live huge runs allocated through this arena.
     pub large_runs: usize,
     /// Bytes of `Empty` huge extents; arena 0 only.
@@ -145,6 +154,9 @@ impl ArenaStats {
             small_dirty: 0,
             small_retained: 0,
             large_allocated: 0,
+            large_active: 0,
+            large_dirty: 0,
+            large_retained: 0,
             large_runs: 0,
             huge_dirty: 0,
             huge_retained: 0,
@@ -168,7 +180,7 @@ impl ArenaStats {
     /// `active` for this arena: small plus large.
     #[inline]
     pub fn active(&self) -> usize {
-        self.small_active + self.large_allocated
+        self.small_active + self.large_active
     }
 }
 
@@ -236,6 +248,9 @@ impl ArenaStats {
         self.small_dirty += o.small_dirty;
         self.small_retained += o.small_retained;
         self.large_allocated += o.large_allocated;
+        self.large_active += o.large_active;
+        self.large_dirty += o.large_dirty;
+        self.large_retained += o.large_retained;
         self.large_runs += o.large_runs;
         self.huge_dirty += o.huge_dirty;
         self.huge_retained += o.huge_retained;
@@ -284,25 +299,35 @@ fn collect_arena_with(shared: &Shared, arena: &Arena, huge: &HugeStats, meta: &M
     let mut a = ArenaStats::empty(arena.index());
     for (c, bin) in a.bins.iter_mut().enumerate() {
         *bin = collect_bin(arena.class(c));
-        a.small_allocated += bin.allocated();
-        a.small_active += bin.active();
-        a.small_dirty += bin.dirty();
-        a.small_retained += bin.retained();
+        if c < NBINS {
+            a.small_allocated += bin.allocated();
+            a.small_active += bin.active();
+            a.small_dirty += bin.dirty();
+            a.small_retained += bin.retained();
+        } else {
+            // Slab-allocated, but reported as large (see `layout::BIN_MAX`).
+            a.large_allocated += bin.allocated();
+            a.large_active += bin.active();
+            a.large_dirty += bin.dirty();
+            a.large_retained += bin.retained();
+        }
     }
     let (runs, pages) = arena.large();
+    let huge_usable = pages.saturating_sub(runs * GUARD_PAGES) * page;
     a.large_runs = runs;
-    a.large_allocated = pages.saturating_sub(runs * GUARD_PAGES) * page;
+    a.large_allocated += huge_usable;
+    a.large_active += huge_usable;
     if arena.index() == 0 {
         a.huge_dirty = huge.empty_pages * page;
         a.huge_retained = huge.purged_pages * page;
         a.metadata = meta.committed;
     }
-    let dirty = a.small_dirty + a.huge_dirty;
+    let dirty = a.small_dirty + a.large_dirty + a.huge_dirty;
     a.pactive = a.active() / page;
     a.pdirty = dirty / page;
     a.pmuzzy = 0;
     a.resident = a.active() + dirty + a.metadata;
-    a.retained = a.small_retained + a.huge_retained;
+    a.retained = a.small_retained + a.large_retained + a.huge_retained;
     a.mapped = a.resident + a.retained;
     a
 }
@@ -430,6 +455,11 @@ mod tests {
         let c256 = class_with(256);
         let mut ps: Vec<*mut u8> = (0..100).map(|_| t.alloc(c16)).collect();
         ps.extend((0..10).map(|_| t.alloc(c256)));
+        // A class above BIN_MAX: slab-allocated, reported as large.
+        let cmed = class_with(32 * 1024);
+        assert!(cmed >= NBINS && cmed < NCLASSES);
+        let pm = t.alloc(cmed);
+        let med_slab = CLASSES[cmed].slab_size();
         let huge_size = 300 * 1024;
         let (h, _) = t.alloc_huge(huge_size, 16);
         assert!(!h.is_null());
@@ -457,15 +487,20 @@ mod tests {
         assert_eq!(a.small_allocated, live(s, c16) * 16 + live(s, c256) * 256);
         assert_eq!(a.small_active, CLASSES[c16].slab_size() + CLASSES[c256].slab_size());
         assert_eq!((a.small_dirty, a.small_retained), (0, 0));
-        assert_eq!((a.large_runs, a.large_allocated), (1, usable));
-        assert_eq!(a.large_allocated, (run_pages - GUARD_PAGES) * PAGE);
-        assert_eq!((a.huge_dirty, a.huge_retained), (0, 0));
-        assert_eq!(a.pactive, (a.small_active + usable) / PAGE);
+        let bmed = a.bins[cmed];
+        assert_eq!((bmed.curregs, bmed.curslabs), (live(s, cmed), 1));
+        assert!(bmed.curregs >= 1);
+        assert_eq!(a.large_runs, 1);
+        assert_eq!(usable, (run_pages - GUARD_PAGES) * PAGE);
+        assert_eq!(a.large_allocated, usable + live(s, cmed) * CLASSES[cmed].size(), "classes above BIN_MAX are large");
+        assert_eq!(a.large_active, usable + med_slab);
+        assert_eq!((a.large_dirty, a.large_retained, a.huge_dirty, a.huge_retained), (0, 0, 0, 0));
+        assert_eq!(a.pactive, (a.small_active + a.large_active) / PAGE);
         assert_eq!((a.pdirty, a.pmuzzy), (0, 0));
-        assert_eq!(a.resident, a.small_active + usable + a.metadata);
+        assert_eq!(a.resident, a.small_active + a.large_active + a.metadata);
         assert_eq!(a.mapped, a.resident);
-        assert_eq!(tot.allocated, a.small_allocated + usable);
-        assert_eq!(tot.active, a.small_active + usable);
+        assert_eq!(tot.allocated, a.small_allocated + a.large_allocated);
+        assert_eq!(tot.active, a.small_active + a.large_active);
         assert_eq!(tot.metadata, s.meta.stats().committed);
         assert_eq!(tot.resident, tot.active + tot.metadata);
         assert_eq!(tot.retained, 0);
@@ -477,6 +512,7 @@ mod tests {
             t.free(p);
         }
         t.free(h);
+        t.free(pm);
         t.flush_all();
         assert_eq!(epoch(s), 3);
         let a = arena_stats(s, 0).unwrap();
@@ -485,22 +521,23 @@ mod tests {
         let b16 = a.bins[c16];
         assert_eq!((b16.curregs, b16.curslabs, b16.nonfull_slabs, b16.empty_slabs, b16.purged_slabs), (0, 0, 0, 1, 0));
         assert_eq!(a.small_dirty, CLASSES[c16].slab_size() + CLASSES[c256].slab_size());
-        assert_eq!((a.large_runs, a.large_allocated), (0, 0));
+        assert_eq!((a.large_runs, a.large_allocated, a.large_active), (0, 0, 0));
+        assert_eq!(a.large_dirty, med_slab, "the medium slab went Empty");
         assert_eq!(a.huge_dirty, run_pages * PAGE);
-        assert_eq!(a.pdirty, (a.small_dirty + a.huge_dirty) / PAGE);
-        assert_eq!(tot.resident, tot.metadata + a.small_dirty + a.huge_dirty);
+        assert_eq!(a.pdirty, (a.small_dirty + a.large_dirty + a.huge_dirty) / PAGE);
+        assert_eq!(tot.resident, tot.metadata + a.small_dirty + a.large_dirty + a.huge_dirty);
         assert_eq!(tot.retained, 0);
         assert_eq!(tot.mapped, tot.resident);
         assert!(tot.identities_hold(), "{tot:?}");
-        let dirty = a.small_dirty + a.huge_dirty;
+        let dirty = a.small_dirty + a.large_dirty + a.huge_dirty;
 
         // Purge: dirty becomes retained; resident falls back to metadata.
         assert!(crate::purge::purge_all(s) > 0);
         assert_eq!(epoch(s), 4);
         let a = arena_stats(s, 0).unwrap();
         let tot = snapshot(s).totals;
-        assert_eq!((a.small_dirty, a.huge_dirty), (0, 0));
-        assert_eq!(a.small_retained + a.huge_retained, dirty);
+        assert_eq!((a.small_dirty, a.large_dirty, a.huge_dirty), (0, 0, 0));
+        assert_eq!(a.small_retained + a.large_retained + a.huge_retained, dirty);
         assert_eq!(a.bins[c16].purged_slabs, 1);
         assert_eq!(tot.retained, dirty);
         assert_eq!(tot.resident, tot.metadata);

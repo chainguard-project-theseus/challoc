@@ -26,6 +26,12 @@
 #   make bench               bench-build, cargo build --release, then run the
 #                            benchmark protocol (bench/run.sh) and write
 #                            bench/results/<date>-<arch>.md. Native arch only.
+#   make valkey              build challoc (quantum8) and Valkey at the tag
+#                            Wolfi ships with contrib/valkey/0001-*.patch, then
+#                            run unit/memefficiency and the full test suite
+#                            (contrib/valkey/build.sh; STAGE=build|memefficiency|
+#                            full|all, TEST_FLAGS='--clients 8', logs under
+#                            target/valkey/logs)
 #
 # `target/` inside the container is a named Docker volume, one per
 # architecture, so Linux artifacts never mix with host artifacts and builds do
@@ -43,7 +49,7 @@ DOCKER_RUN = docker run --rm --platform $(PLATFORM) \
 	-v challoc-cargo-registry:/root/.cargo/registry \
 	$(DOCKER_FLAGS) $(IMAGE)
 
-.PHONY: image dev run build test test-host jemalloc-compat fuzz bench-build bench clean-volumes
+.PHONY: image dev run build test test-host jemalloc-compat fuzz bench-build bench valkey clean-volumes
 
 image:
 	docker build --platform $(PLATFORM) -f Dockerfile.dev -t $(IMAGE) .
@@ -89,6 +95,10 @@ bench-build: image
 bench: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)"
 bench: image
 	$(DOCKER_RUN) sh -c 'sh bench/build.sh >/dev/null && cargo build --release && sh bench/run.sh'
+
+valkey: DOCKER_FLAGS = $(if $(STAGE),-e STAGE=$(STAGE)) $(if $(TEST_FLAGS),-e TEST_FLAGS="$(TEST_FLAGS)")
+valkey: image
+	$(DOCKER_RUN) sh contrib/valkey/build.sh
 
 clean-volumes:
 	docker volume rm -f challoc-target-$(ARCH) challoc-cargo-registry

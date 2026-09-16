@@ -39,6 +39,33 @@ const LG_MEDIUM_MAX: u32 = MEDIUM_MAX.trailing_zeros();
 /// Total number of size classes: 52 for `quantum16`, 56 for `quantum8`.
 pub const NCLASSES: usize = LINEAR_CLASSES + 4 * (LG_MEDIUM_MAX - LG_LINEAR_MAX) as usize;
 
+/// Largest class reported as a jemalloc *bin* (`arenas.nbins`,
+/// `arenas.bin.<j>.*`, `stats.arenas.<i>.bins.<j>.*`, `small.*`): the
+/// classes whose slab is the minimum `MIN_SLAB` (64 KiB), i.e. up to 4 KiB.
+/// Classes above it are slab-allocated exactly like the others, but the
+/// `mallctl` namespace reports them the way jemalloc reports large extents
+/// (in `large.*`, and `(nfree 0, nregs 1, size)` from the utilization
+/// queries). Consumers such as Valkey's defragmenter and its
+/// `frag_smallbins` metric are calibrated to jemalloc's bins, whose slabs
+/// are a few pages: with challoc's `max(64 KiB, 16 * size)` slabs, four
+/// live 10 KiB blocks pin a 256 KiB slab and would count as 215 KiB of
+/// "fragmentation" that no defragmenter can recover, and one such class
+/// per size step adds up to megabytes on an idle server.
+pub const BIN_MAX: usize = MIN_SLAB / 16;
+/// Number of classes up to [`BIN_MAX`]: 28 for `quantum16`, 32 for `quantum8`.
+pub const NBINS: usize = count_bins();
+
+const fn count_bins() -> usize {
+    let mut n = 0;
+    while n < NCLASSES && class_size_at(n) <= BIN_MAX {
+        n += 1;
+    }
+    n
+}
+
+const _: () = assert!(NBINS > 0 && NBINS < NCLASSES && class_size_at(NBINS - 1) == BIN_MAX);
+const _: () = assert!(lg_slab_for(BIN_MAX) == LG_MIN_SLAB && lg_slab_for(class_size_at(NBINS)) > LG_MIN_SLAB);
+
 const _: () = assert!(NCLASSES <= 64, "pointer classification assumes at most 64 classes");
 const _: () = assert!(MEDIUM_MAX * 16 == MAX_SLAB);
 

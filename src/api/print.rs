@@ -25,7 +25,7 @@ use crate::QUANTUM;
 use crate::arena::Arena;
 use crate::config::{KEYS, Value};
 use crate::heap::Shared;
-use crate::layout::NCLASSES;
+use crate::layout::NBINS;
 use crate::purge;
 use crate::stats::{self, ArenaStats, Snapshot};
 
@@ -144,7 +144,11 @@ fn decay_ms(ns: u64) -> i64 {
 // ---------------------------------------------------------------------------
 
 fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt::Result {
-    writeln!(out, "___ Begin challoc statistics ___")?;
+    // jemalloc's banner, not "challoc statistics": consumers key on it (Valkey's
+    // `MEMORY MALLOC-STATS` coverage test asserts `*jemalloc*`), just as the
+    // JSON form keeps its top-level "jemalloc" object. The `Version:` line
+    // that follows says which library produced the report.
+    writeln!(out, "___ Begin jemalloc statistics ___")?;
     writeln!(out, "Version: \"{VERSION_STR}\"")?;
     writeln!(out, "Build-time option settings")?;
     writeln!(out, "  config.debug: false")?;
@@ -204,17 +208,28 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
     )?;
     writeln!(
         out,
-        "  large:               {:>14} {:>12} {:>12} {:>12}  ({} runs)",
-        s.large_allocated, s.large_allocated, s.huge_dirty, s.huge_retained, s.large_runs
+        "  large:               {:>14} {:>12} {:>12} {:>12}  ({} huge runs)",
+        s.large_allocated,
+        s.large_active,
+        s.large_dirty + s.huge_dirty,
+        s.large_retained + s.huge_retained,
+        s.large_runs
     )?;
     writeln!(out, "  metadata: {}, resident: {}, mapped: {}, retained: {}", s.metadata, s.resident, s.mapped, s.retained)?;
     if !bins {
         return Ok(());
     }
+    // The bins, then the slab-allocated classes above BIN_MAX that the
+    // mallctl namespace reports as large (layout::BIN_MAX).
     writeln!(out, "  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged")?;
+    let mut large_header = false;
     for (j, b) in s.bins.iter().enumerate() {
         if b.curslabs + b.empty_slabs + b.purged_slabs == 0 {
             continue;
+        }
+        if j >= NBINS && !large_header {
+            large_header = true;
+            writeln!(out, "  large classes (slab-allocated, not bins):")?;
         }
         writeln!(
             out,
@@ -239,7 +254,7 @@ fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
         });
         r?;
     }
-    writeln!(out, "--- End challoc statistics ---")
+    writeln!(out, "--- End jemalloc statistics ---")
 }
 
 // ---------------------------------------------------------------------------
@@ -273,7 +288,7 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
         writeln!(out, "\t\t}},")?;
         writeln!(
             out,
-            "\t\t\"arenas\": {{\"narenas\": {}, \"nbins\": {NCLASSES}, \"quantum\": {QUANTUM}, \"page\": {}}},",
+            "\t\t\"arenas\": {{\"narenas\": {}, \"nbins\": {NBINS}, \"quantum\": {QUANTUM}, \"page\": {}}},",
             snap.narenas,
             shared.regions.page_size()
         )?;
@@ -312,7 +327,15 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
                     "\t\t\t\t\"small\": {{\"allocated\": {}, \"active\": {}, \"dirty\": {}, \"retained\": {}}},",
                     s.small_allocated, s.small_active, s.small_dirty, s.small_retained
                 )?;
-                writeln!(out, "\t\t\t\t\"large\": {{\"allocated\": {}, \"runs\": {}}},", s.large_allocated, s.large_runs)?;
+                writeln!(
+                    out,
+                    "\t\t\t\t\"large\": {{\"allocated\": {}, \"active\": {}, \"dirty\": {}, \"retained\": {}, \"runs\": {}}},",
+                    s.large_allocated,
+                    s.large_active,
+                    s.large_dirty + s.huge_dirty,
+                    s.large_retained + s.huge_retained,
+                    s.large_runs
+                )?;
                 writeln!(
                     out,
                     "\t\t\t\t\"metadata\": {}, \"resident\": {}, \"mapped\": {}, \"retained\": {}{}",
@@ -324,7 +347,7 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
                 )?;
                 if !o.no_bins {
                     writeln!(out, "\t\t\t\t\"bins\": [")?;
-                    for (j, b) in s.bins.iter().enumerate() {
+                    for (j, b) in s.bins[..NBINS].iter().enumerate() {
                         writeln!(
                             out,
                             "\t\t\t\t\t{{\"size\": {}, \"nregs\": {}, \"slab_size\": {}, \"curregs\": {}, \"curslabs\": {}, \"nonfull_slabs\": {}, \"empty_slabs\": {}, \"purged_slabs\": {}}}{}",
@@ -336,7 +359,7 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
                             b.nonfull_slabs,
                             b.empty_slabs,
                             b.purged_slabs,
-                            if j + 1 == NCLASSES { "" } else { "," }
+                            if j + 1 == NBINS { "" } else { "," }
                         )?;
                     }
                     writeln!(out, "\t\t\t\t]")?;
@@ -369,7 +392,7 @@ fn xml_heap<W: Write>(out: &mut W, nr: usize, s: &ArenaStats) -> fmt::Result {
     writeln!(out, "<heap nr=\"{nr}\">")?;
     writeln!(out, "<sizes>")?;
     let mut count = 0usize;
-    for b in s.bins.iter() {
+    for b in s.bins[..NBINS].iter() {
         if b.curregs == 0 {
             continue;
         }
@@ -396,10 +419,11 @@ fn xml_report<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
     });
     r?;
     let all = stats::collect_all(shared);
-    let count: usize = all.bins.iter().map(|b| b.curregs).sum();
+    let count: usize = all.bins[..NBINS].iter().map(|b| b.curregs).sum();
+    let large_count: usize = all.large_runs + all.bins[NBINS..].iter().map(|b| b.curregs).sum::<usize>();
     writeln!(out, "<total type=\"fast\" count=\"0\" size=\"0\"/>")?;
     writeln!(out, "<total type=\"rest\" count=\"{count}\" size=\"{}\"/>", all.small_allocated)?;
-    writeln!(out, "<total type=\"mmap\" count=\"{}\" size=\"{}\"/>", all.large_runs, all.large_allocated)?;
+    writeln!(out, "<total type=\"mmap\" count=\"{large_count}\" size=\"{}\"/>", all.large_allocated)?;
     writeln!(out, "<system type=\"current\" size=\"{}\"/>", all.resident)?;
     writeln!(out, "<system type=\"max\" size=\"{}\"/>", all.mapped)?;
     writeln!(out, "<aspace type=\"total\" size=\"{}\"/>", all.mapped)?;
@@ -506,8 +530,8 @@ mod tests {
     fn text_report_has_every_section_and_live_figures() {
         let live: Vec<*mut u8> = (0..100).map(|_| malloc(700)).collect();
         let text = report("");
-        assert!(text.starts_with("___ Begin challoc statistics ___\n"), "{text}");
-        assert!(text.ends_with("--- End challoc statistics ---\n"), "{text}");
+        assert!(text.starts_with("___ Begin jemalloc statistics ___\n"), "{text}");
+        assert!(text.ends_with("--- End jemalloc statistics ---\n"), "{text}");
         for needle in [
             "Version: \"5.3.0-0-gchalloc\"",
             "config.quantum:",
@@ -547,7 +571,7 @@ mod tests {
         let b = report("b");
         assert!(b.contains("arenas[0]:") && !b.contains("  bins:"), "{b}");
         let ga = report("gab");
-        assert_eq!(ga, "--- End challoc statistics ---\n");
+        assert_eq!(ga, "--- End jemalloc statistics ---\n");
     }
 
     #[test]
@@ -574,9 +598,9 @@ mod tests {
         assert_eq!(depth, 0, "unbalanced: {text}");
         let compact: String = text.split_whitespace().collect();
         assert!(!compact.contains(",}") && !compact.contains(",]"), "trailing comma in:\n{text}");
-        // One bins array of NCLASSES entries per arena section in this very
+        // One bins array of NBINS entries per arena section in this very
         // text (other tests create arenas concurrently).
-        assert_eq!(text.matches("\"size\": ").count(), NCLASSES * text.matches("\"pactive\": ").count());
+        assert_eq!(text.matches("\"size\": ").count(), NBINS * text.matches("\"pactive\": ").count());
         let ga = report("Jga");
         assert!(ga.contains("\"version\"") && !ga.contains("\"opt\"") && !ga.contains("\"stats.arenas\""), "{ga}");
     }
@@ -593,8 +617,8 @@ mod tests {
         malloc_stats_print(None, core::ptr::null_mut(), core::ptr::null());
         set_message_hook_for_tests(None);
         let got = String::from_utf8(HOOKED.lock().unwrap().clone()).unwrap();
-        assert!(got.starts_with("___ Begin challoc statistics ___\n"), "{got}");
-        assert!(got.ends_with("--- End challoc statistics ---\n"));
+        assert!(got.starts_with("___ Begin jemalloc statistics ___\n"), "{got}");
+        assert!(got.ends_with("--- End jemalloc statistics ---\n"));
     }
 
     #[test]

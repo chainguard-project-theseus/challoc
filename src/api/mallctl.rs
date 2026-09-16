@@ -50,7 +50,7 @@ use crate::arena::{ARENAS_ALL, MAX_ARENAS};
 use crate::config::{KEYS, Value};
 use crate::heap::{self, Shared};
 use crate::huge::RunState;
-use crate::layout::{CLASSES, Kind, NCLASSES};
+use crate::layout::{CLASSES, Kind, NBINS};
 use crate::purge;
 use crate::stats::{self, ArenaStats};
 use crate::sys;
@@ -455,9 +455,21 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilizat
             if !d.is_allocated(cls, slot as usize) {
                 return u;
             }
+            if class >= NBINS {
+                // Reported like a large extent (`layout::BIN_MAX`): one
+                // region of its own size, no bin figures.
+                u.nregs = 1;
+                u.size = cls.size();
+                return u;
+            }
             u.nfree = d.nfree(cls);
             u.nregs = cls.nslots();
-            u.size = cls.slab_size();
+            // The region bytes of the slab, not its power-of-two size: the
+            // tail past the last slot belongs to no region, and Valkey's
+            // allocatorShouldDefrag divides `size` by `nregs` and asserts
+            // that the quotient is a bin size (jemalloc's slabs are exact
+            // multiples of their region size).
+            u.size = cls.nslots() * cls.size();
             if verbose {
                 if let Some(a) = shared.arenas.get_existing(d.arena()) {
                     let cs = a.class(class);
@@ -542,6 +554,14 @@ fn arena_index(i: usize) -> Result<u16, c_int> {
     if i < MAX_ARENAS { Ok(i as u16) } else { Err(ENOENT) }
 }
 
+/// `arena.<i>.purge` and `arena.<i>.decay` address every arena when `i` is
+/// `MALLCTL_ARENAS_ALL` or, jemalloc's pre-5.0 convention that it still
+/// honours, `arenas.narenas`. Redis and Valkey (`jemalloc_purge`, behind
+/// `MEMORY PURGE` and `FLUSHALL`) use the latter.
+fn all_arenas(shared: &Shared, i: usize) -> bool {
+    i == ARENAS_ALL as usize || i == shared.arenas.count() as usize
+}
+
 /// `arena.<i>.dirty_decay_ms` value of a period in nanoseconds.
 fn ms_of(ns: u64) -> isize {
     if ns == purge::NEVER { -1 } else { (ns / 1_000_000) as isize }
@@ -619,7 +639,7 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
         }
         ArenasNbins => {
             io.read_only()?;
-            io.read(NCLASSES as c_uint)
+            io.read(NBINS as c_uint)
         }
         ArenasNlextents => {
             io.read_only()?;
@@ -635,7 +655,7 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
         }
         ArenasBinSize | ArenasBinNregs | ArenasBinSlabSize => {
             io.read_only()?;
-            let cls = CLASSES.get(at(2)).ok_or(ENOENT)?;
+            let cls = CLASSES[..NBINS].get(at(2)).ok_or(ENOENT)?;
             match leaf {
                 ArenasBinSize => io.read(cls.size()),
                 ArenasBinNregs => io.read(cls.nslots() as u32),
@@ -656,7 +676,7 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
             io.void()?;
             flush_caller(shared);
             let i = at(1);
-            if i == ARENAS_ALL as usize {
+            if all_arenas(shared, i) {
                 purge::purge_all(shared);
             } else {
                 purge::purge_arena(shared, arena_index(i)?).ok_or(ENOENT)?;
@@ -667,7 +687,7 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
             io.void()?;
             let now = sys::now_coarse_ns();
             let i = at(1);
-            if i == ARENAS_ALL as usize {
+            if all_arenas(shared, i) {
                 purge::decay(shared, now);
             } else {
                 let arena = shared.arenas.get_existing(arena_index(i)?).ok_or(ENOENT)?;
@@ -749,7 +769,7 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
         StatsArenaBinCurregs | StatsArenaBinCurslabs | StatsArenaBinNonfullSlabs => {
             io.read_only()?;
             let s = arena_stats(shared, at(2))?;
-            let b = s.bins.get(at(4)).ok_or(ENOENT)?;
+            let b = s.bins[..NBINS].get(at(4)).ok_or(ENOENT)?;
             io.read(match leaf {
                 StatsArenaBinCurregs => b.curregs,
                 StatsArenaBinCurslabs => b.curslabs,
@@ -1119,7 +1139,8 @@ mod tests {
         assert_eq!(cstring_at(s), "");
         assert!(!get::<bool>("config.debug"));
         assert!(get::<bool>("config.stats"));
-        assert_eq!(get::<c_uint>("arenas.nbins") as usize, NCLASSES);
+        assert_eq!(get::<c_uint>("arenas.nbins") as usize, NBINS);
+        assert_eq!(get::<usize>(&std::format!("arenas.bin.{}.size", NBINS - 1)), crate::layout::BIN_MAX);
         assert_eq!(get::<c_uint>("arenas.nlextents"), 0);
         assert_eq!(get::<usize>("arenas.quantum"), QUANTUM);
         assert_eq!(get::<usize>("arenas.page"), shared().regions.page_size());
@@ -1127,12 +1148,12 @@ mod tests {
         assert_eq!(get::<usize>("max_background_threads"), 1);
         assert_eq!(set("max_background_threads", 0usize), EINVAL);
         assert_eq!(set("max_background_threads", 4usize), 0);
-        for j in 0..NCLASSES {
+        for j in 0..NBINS {
             assert_eq!(get::<usize>(&std::format!("arenas.bin.{j}.size")), CLASSES[j].size());
             assert_eq!(get::<u32>(&std::format!("arenas.bin.{j}.nregs")) as usize, CLASSES[j].nslots());
             assert_eq!(get::<usize>(&std::format!("arenas.bin.{j}.slab_size")), CLASSES[j].slab_size());
         }
-        assert_eq!(call(&std::format!("arenas.bin.{NCLASSES}.size")), ENOENT);
+        assert_eq!(call(&std::format!("arenas.bin.{NBINS}.size")), ENOENT);
         // Every opt key with its jemalloc type, against the live Config.
         let cfg: &Config = &shared().config;
         for key in KEYS {
@@ -1205,7 +1226,7 @@ mod tests {
         let curslabs: usize = get(&std::format!("stats.arenas.4096.bins.{c}.curslabs"));
         assert!(curslabs >= 1);
         assert!(get::<usize>(&std::format!("stats.arenas.4096.bins.{c}.nonfull_slabs")) <= curslabs);
-        assert_eq!(call(&std::format!("stats.arenas.0.bins.{NCLASSES}.curregs")), ENOENT);
+        assert_eq!(call(&std::format!("stats.arenas.0.bins.{NBINS}.curregs")), ENOENT);
         for p in live {
             free(p);
         }
@@ -1263,6 +1284,11 @@ mod tests {
         assert_eq!(arena.classes[c].stats().empty, 0);
         assert_eq!(arena.classes[c].stats().purged, 1, "the flushed slab was purged");
         assert_eq!(call("arena.4096.purge"), 0);
+        // jemalloc's legacy "all arenas" index, which Valkey's MEMORY PURGE uses.
+        let narenas: c_uint = get("arenas.narenas");
+        assert_eq!(call(&std::format!("arena.{narenas}.purge")), 0);
+        assert_eq!(call(&std::format!("arena.{narenas}.decay")), 0);
+        assert_eq!(call(&std::format!("arena.{}.purge", narenas + 1)), ENOENT);
         assert_eq!(call("arena.4000.purge"), ENOENT);
         assert_eq!(call("arena.5000.purge"), ENOENT);
         assert_eq!(call("arena.0.decay"), 0);
@@ -1373,7 +1399,7 @@ mod tests {
         let rc = mallctl(cname.as_ptr(), &mut u as *mut Utilization as *mut c_void, &mut len, &p0 as *const *const c_void as *const c_void, size_of::<*const c_void>());
         assert_eq!(rc, 0);
         assert_eq!(u.nregs, cls.nslots());
-        assert_eq!(u.size, cls.slab_size());
+        assert_eq!(u.size, cls.nslots() * cls.size(), "region bytes, so size / nregs is the class size");
         assert!(u.nfree < u.nregs);
         assert!(u.bin_nregs >= u.nregs && u.bin_nregs % u.nregs == 0);
         assert!(u.bin_nfree <= u.bin_nregs);
@@ -1392,7 +1418,7 @@ mod tests {
         for (i, p) in ptrs.iter().enumerate() {
             let (nfree, nregs, size) = (out[3 * i], out[3 * i + 1], out[3 * i + 2]);
             assert_eq!(nregs, cls.nslots(), "ptr {i}");
-            assert_eq!(size, cls.slab_size(), "ptr {i}");
+            assert_eq!(size, cls.nslots() * cls.size(), "ptr {i}");
             let (slab, _) = s.table(c).locate(*p);
             assert_eq!(nfree, s.table(c).desc(slab).nfree(cls), "ptr {i}");
         }
@@ -1400,16 +1426,27 @@ mod tests {
         let mut short = outlen - size_of::<usize>();
         assert_eq!(mallctlbymib(mib.as_ptr(), mib.len(), out.as_mut_ptr() as *mut c_void, &mut short, ptrs.as_ptr() as *const c_void, ptrs.len() * size_of::<*mut u8>()), EINVAL);
         assert_eq!(mallctlbymib(mib.as_ptr(), mib.len(), out.as_mut_ptr() as *mut c_void, &mut outlen, ptr::null(), 0), EINVAL);
-        // A huge run is one region of its own; a non-allocation is zeros.
+        // A huge run is one region of its own, and so is a slot of a class
+        // above BIN_MAX (reported like jemalloc's large extents); a
+        // non-allocation is zeros.
         let h = mallocx(3 << 20, 0);
+        let m = mallocx(100 << 10, 0);
+        let cm = crate::layout::class_of(100 << 10).unwrap();
+        assert!(cm >= NBINS && cm < crate::layout::NCLASSES);
         let stack = 0u64;
-        let three = [h as *const c_void, &stack as *const u64 as *const c_void, ptrs[1] as *const c_void];
-        let mut out3 = [0usize; 9];
-        let mut len3 = out3.len() * size_of::<usize>();
-        assert_eq!(mallctlbymib(mib.as_ptr(), mib.len(), out3.as_mut_ptr() as *mut c_void, &mut len3, three.as_ptr() as *const c_void, three.len() * size_of::<*const c_void>()), 0);
-        assert_eq!(&out3[..3], &[0, 1, s.huge.usable_for(3 << 20).unwrap()]);
-        assert_eq!(&out3[3..6], &[0, 0, 0]);
-        assert_eq!(out3[7], cls.nslots());
+        let four = [h as *const c_void, &stack as *const u64 as *const c_void, ptrs[1] as *const c_void, m as *const c_void];
+        let mut out4 = [0usize; 12];
+        let mut len4 = out4.len() * size_of::<usize>();
+        assert_eq!(mallctlbymib(mib.as_ptr(), mib.len(), out4.as_mut_ptr() as *mut c_void, &mut len4, four.as_ptr() as *const c_void, four.len() * size_of::<*const c_void>()), 0);
+        assert_eq!(&out4[..3], &[0, 1, s.huge.usable_for(3 << 20).unwrap()]);
+        assert_eq!(&out4[3..6], &[0, 0, 0]);
+        assert_eq!(out4[7], cls.nslots());
+        assert_eq!(&out4[9..12], &[0, 1, CLASSES[cm].size()]);
+        let um = utilization(s, m as *const c_void, true);
+        assert_eq!((um.nfree, um.nregs, um.size, um.bin_nfree, um.bin_nregs), (0, 1, CLASSES[cm].size(), 0, 0));
+        assert!(um.slabcur_addr.is_null());
+        assert_eq!(owner_of(s, m as *const c_void), Some(0));
+        dallocx(m, 0);
         dallocx(h, 0);
         // A freed slot (direct release, so the bit is clear) is zeros too.
         let gone = ptrs[2] as *const c_void;
