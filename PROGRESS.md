@@ -8,10 +8,11 @@ One line per task, newest at the bottom of each section. Keep it terse.
 - Phase 0 task 1: no_std crate skeleton, profiles, libc dep, std feature, Dockerfile.dev, `make dev`. Verified aarch64 + emulated x86_64. Commit 1def4a3.
 - Phase 0 task 2: `src/sys` asm syscall stubs (x86_64, aarch64), header-checked syscall numbers, errno decoding (host tests), typed wrappers, `abort` via write(2)+SIGABRT+exit_group; panic handler routed through it. 28 tests pass on aarch64 + emulated x86_64. Commit 36f992f.
 - Phase 0 task 3: `src/sys/features.rs`: `Features::probe()` for page size, `MADV_GUARD_INSTALL`, `mseal`, `process_madvise` (PIDFD_SELF then self pidfd), `PR_SET_VMA_ANON_NAME`; `Display` gives one `key=value` line. Host tests for auxv parsing; container test prints the probe and checks it against the kernel version. `make test` target. 34 tests pass on aarch64 (default + unconfined seccomp) and emulated x86_64. Commit eff5967.
+- Phase 0 task 4: `src/tls.rs`: one `.tbss` slot via `global_asm!`, `get`/`set` with GOTTPOFF / `:gottprel:` `asm!` (2 instructions on x86_64, 4 on aarch64, matching design 6.1); diagnostic exports `challoc_tls_get`/`challoc_tls_set`; `tests/c/tls_threads.c` runs 64 pthreads under `LD_PRELOAD` and sees distinct slots; `readelf` test confirms only `R_X86_64_TPOFF64` / `R_AARCH64_TLS_TPREL64`, PT_TLS present, no `__tls_get_addr`/TLSDESC import, slot not in dynsym. `make test` builds `--release` first. 38 tests pass on aarch64 and emulated x86_64. Commit adde260.
 
 ## In progress
 
-- Phase 0 task 4: `src/tls.rs` initial-exec TLS slot via `global_asm!`, C test with 64 threads under `LD_PRELOAD`, `readelf` relocation check.
+(none)
 
 ## Design decisions
 
@@ -31,6 +32,9 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
 - Phase 0 task 3: `process_madvise` falls back from `PIDFD_SELF` to `pidfd_open(getpid())` and keeps that fd (`ProcessMadvise::Pidfd`); `Features::release()` closes it for the fork child, which must re-probe. Reason: the pidfd names the parent after fork.
 - Phase 0 task 3: the `mseal` probe seals a `PROT_NONE` scratch page and leaves it mapped. Reason: a sealed page cannot be unmapped; PROT_NONE costs one VMA and no RSS, and it proves sealing rather than just the syscall's existence.
 - Phase 0 task 3: `MADV_COLLAPSE` is not probed eagerly. Reason: a reliable probe needs a populated 2 MiB-aligned region and THP `always`/`madvise`; design section 10 already defers THP to the `thp` tunable, so its probe belongs with that work (Phase 2 task 5).
+- Phase 0 task 4: the TLS slot symbol is `.globl` + `.hidden`. Reason: hidden keeps it out of the dynamic symbol table so the only dynamic relocation is the `TPOFF64`/`TLS_TPREL64` GOT fixup and nothing can interpose it; it still has to be global because debug/test builds place the `global_asm!` in a different codegen unit from the accessors.
+- Phase 0 task 4: `challoc_tls_get`/`challoc_tls_set` are permanent diagnostic exports, and `tests/c/tls_threads.c` finds them with `dlsym(RTLD_DEFAULT)`. Reason: no heap exists yet so a C program under `LD_PRELOAD` needs some way to drive the slot, and a separate test-only `.so` build would double the fat-LTO build; dlsym keeps the test binary free of a link-time dependency and lets it prove it fails without the preload.
+- Phase 0 task 4: `make test` runs `cargo build --release` before `cargo test`, and tests that need the `.so` fail with a message if it is missing rather than building it themselves. Reason: a test spawning `cargo build` would contend with the running `cargo test` for the target-dir lock.
 
 ## Blocked
 
@@ -44,6 +48,7 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
 - Kernel-feature reality in the dev container (measured in Phase 0 task 2): under Docker's default seccomp profile `mseal` returns ENOSYS and `process_madvise` returns EPERM even for a bad pidfd (seccomp, not the kernel). With `make run DOCKER_FLAGS='--security-opt seccomp=unconfined'`: `mseal` works (sealed page refuses `munmap`/`mprotect` with EPERM); `process_madvise` on our own pidfd still fails with EPERM because kernels before the 6.13-era self-exemption require CAP_SYS_NICE unconditionally; `PR_SET_VMA_ANON_NAME` returns EINVAL (CONFIG_ANON_VMA_NAME off in linuxkit). Emulated amd64 additionally reports ENOSYS for `pidfd_open` and delivers stray EINTR to futex waits. Consequence for task 3: the probe must treat any error, not only EINVAL/ENOSYS, as "unavailable".
 - Container toolchain: rustc 1.98.1, gcc 15.3.0 (Wolfi). Host has rustc 1.94.1; `cargo test --features std` passes on both.
 - The Makefile's `run` target passes CMD through make, so `$` must be written `$$`.
+- The TLS tests in `src/tls.rs` shell out to `readelf` (binutils, pulled in by `build-base`) and to `cc -pthread ... -ldl`; they read `target/release/libchalloc.so` from `CARGO_TARGET_DIR` or `<repo>/target`. Under `LD_PRELOAD`, glibc 2.44 gives the `.so` static TLS with no complaint on both arches; `dlopen` after start is untested and unsupported per design 6.1.
 - Probe results measured in task 3 (kernel 6.10.14-linuxkit): default seccomp on both arches gives `page_size=4096 guard_install=no mseal=no process_madvise=no anon_name=no`; with `--security-opt seccomp=unconfined` on aarch64 only `mseal=yes` changes. Every fallback path is what gets exercised locally; the `yes` paths for guards, `process_madvise` and anon names need a 6.16+ host.
 - `libchalloc.so` has no `DT_NEEDED` entry at all (nothing links libc). `features::page_size` calls `getauxval`, which is dead-code eliminated until init uses it; once it does, it will be an undefined symbol resolved from the host process's libc.so.6 under `LD_PRELOAD` (fine) and from `-lc` for `libchalloc.a` consumers. If a future consumer needs it explicit, add `-lc` via a build script rather than reading `/proc/self/auxv` first.
 - The staticlib carries an undefined weak `rust_eh_personality` reference from the prebuilt `core`; a trivial C program links against `libchalloc.a` fine, but if a future consumer's link fails on it, add a no-op `rust_eh_personality` export.
