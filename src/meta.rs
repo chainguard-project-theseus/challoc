@@ -908,7 +908,9 @@ mod tests {
                 continue;
             }
             if perms.starts_with("rw") {
-                rw.push((lo, hi));
+                // Clip to the region: a committed range at either end merges
+                // with an adjacent `rw-p` anonymous mapping of another test.
+                rw.push((lo.max(b.base), hi.min(b.base + b.len)));
             } else {
                 assert!(perms.starts_with("---"), "unexpected perms {perms} at {range}");
             }

@@ -1,0 +1,1688 @@
+//! Thread heaps and class caches: the fast and slow allocation paths
+//! (design.md section 6).
+//!
+//! Every thread that allocates gets a [`Heap`] in the metadata region,
+//! reached through the one TLS slot in `tls.rs`. A heap holds one
+//! [`ClassCache`] pointer per size class: a LIFO stack of slot pointers that
+//! are marked in their slab bitmaps but not live in the program. The fast
+//! paths only touch the heap, the cache and (for `free`) one word of the
+//! slab descriptor: no atomic read-modify-write, no lock.
+//!
+//! - `alloc`: pop the top of the class's cache; if it is empty, *refill* by
+//!   claiming up to `cap / 2` slots from the class's lowest partial slab.
+//! - `free`: classify the pointer, check its bitmap bit is set (invalid and
+//!   stale double frees abort here), push it; if the cache is full, *flush*
+//!   the oldest `cap / 2` entries back to their slabs in one sorted batch.
+//!
+//! Until a thread has a heap its cache pointers all point at one shared
+//! empty sentinel whose `len` and `cap` are zero, so the fast paths need no
+//! null check: an empty cache is the slow path, and the slow path allocates
+//! the real cache on first use. A heap that cannot be created (metadata
+//! region exhausted, or the thread is inside heap creation or has already
+//! run its exit destructor) is served without a cache, straight from the
+//! slab bitmaps.
+//!
+//! Zeroed memory is tracked per cache as a prefix: `slots[..zeroed]` came
+//! from a `Fresh` or `Purged` slab in the last refill and nothing has been
+//! pushed below that index since, so `calloc` can skip its `memset` when it
+//! pops from inside the prefix.
+//!
+//! Thread exit (design 6.5): [`Shared::init`] creates a `pthread_key` whose
+//! destructor flushes every cache and returns the heap to the metadata
+//! allocator. `pthread_setspecific` is called once per heap, while the TLS
+//! slot holds the [`TLS_CREATING`] sentinel; an allocation made in that
+//! window is served from the slab bitmaps directly. After the destructor the
+//! slot holds [`TLS_EXITED`] and the thread is served the same way, so late
+//! destructors of other keys never create a second heap.
+
+use core::alloc::Layout;
+#[cfg(target_os = "linux")]
+use core::ffi::c_void;
+use core::ptr;
+
+use crate::class::ClassState;
+use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
+use crate::meta::Meta;
+
+/// Largest default cache capacity (classes up to 128 bytes).
+pub const MAX_CAP: u32 = 256;
+/// Smallest cache capacity.
+pub const MIN_CAP: u32 = 8;
+/// Cache GC period when nothing overrides it (`tcache_gc_interval_ms`).
+pub const DEFAULT_GC_INTERVAL_NS: u64 = 10_000_000_000;
+/// Slow-path entries between two periodic-work checks (design 6.4).
+pub const PERIODIC_EVERY: u32 = 64;
+
+/// TLS slot value while this thread's heap is being created and
+/// `pthread_setspecific` may re-enter the allocator.
+pub const TLS_CREATING: usize = 1;
+/// TLS slot value after this thread's heap destructor has run.
+pub const TLS_EXITED: usize = 2;
+
+/// Default cache capacity for a class: 256 slots for classes up to 128
+/// bytes, halved for every doubling of the class size, never below 8.
+pub const fn default_cap(class: usize) -> u32 {
+    let size = CLASSES[class].size();
+    if size <= 128 {
+        return MAX_CAP;
+    }
+    // Sizes in (128, 256] halve once, (256, 512] twice, and so on.
+    let doublings = (size - 1).ilog2() + 1 - 7;
+    let cap = if doublings >= 32 { 0 } else { MAX_CAP >> doublings };
+    if cap < MIN_CAP { MIN_CAP } else { cap }
+}
+
+/// One thread's cache for one size class: a 16-byte header followed by
+/// `cap` slot pointers. Allocated from the metadata region with
+/// [`ClassCache::layout`]; the header is `repr(C)` so the trailing array
+/// sits at a fixed offset.
+#[repr(C)]
+pub struct ClassCache {
+    len: u32,
+    cap: u32,
+    /// Smallest `len` since the last GC (design 6.4).
+    low_water: u32,
+    /// `slots[..zeroed]` are known to read as zero.
+    zeroed: u32,
+    slots: [*mut u8; 0],
+}
+
+// SAFETY: the only shared instance is `EMPTY_CACHE`, which is never written
+// (every write is guarded by `len < cap` or `len > 0`, both false for it);
+// real caches are owned by one thread through its heap.
+unsafe impl Sync for ClassCache {}
+
+/// The sentinel every heap starts with: empty and full at the same time, so
+/// both fast paths take their slow path and allocate a real cache.
+static EMPTY_CACHE: ClassCache = ClassCache { len: 0, cap: 0, low_water: 0, zeroed: 0, slots: [] };
+
+impl ClassCache {
+    /// Metadata layout of a cache with `cap` slots.
+    pub const fn layout(cap: u32) -> Layout {
+        match Layout::from_size_align(16 + 8 * cap as usize, 16) {
+            Ok(l) => l,
+            Err(_) => unreachable!(),
+        }
+    }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    #[inline]
+    pub fn cap(&self) -> usize {
+        self.cap as usize
+    }
+
+    #[inline]
+    pub fn low_water(&self) -> usize {
+        self.low_water as usize
+    }
+
+    /// Number of entries at the bottom of the stack known to be zero.
+    #[inline]
+    pub fn zeroed(&self) -> usize {
+        self.zeroed as usize
+    }
+
+    #[inline]
+    fn slots(&mut self) -> *mut *mut u8 {
+        self.slots.as_mut_ptr()
+    }
+
+    /// Cached pointers, oldest first.
+    #[inline]
+    fn entries(&mut self) -> &mut [*mut u8] {
+        // SAFETY: `len <= cap` pointers follow the header.
+        unsafe { core::slice::from_raw_parts_mut(self.slots(), self.len as usize) }
+    }
+}
+
+/// Per-thread byte counters (`thread.allocated`, `thread.deallocated`).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct ThreadStats {
+    pub allocated: u64,
+    pub deallocated: u64,
+}
+
+/// One thread's allocator state (design 6.2). Lives in the metadata region;
+/// reached through the TLS slot.
+pub struct Heap {
+    shared: *const Shared,
+    tid: u32,
+    arena: u16,
+    slow_ticks: u32,
+    last_gc: u64,
+    rng: u64,
+    stats: ThreadStats,
+    caches: [*mut ClassCache; NCLASSES],
+}
+
+/// Process-wide allocator state that every heap works against: the metadata
+/// allocator, the regions, one [`ClassState`] per class (arena 0 in Phase 0),
+/// and the thread-exit key. Built in place by [`Shared::init`] because the
+/// class states borrow `meta` and `regions`.
+pub struct Shared {
+    pub meta: Meta,
+    pub regions: Regions,
+    pub classes: [ClassState; NCLASSES],
+    /// Cache GC period; `tcache_gc_interval_ms` sets it in Phase 1.
+    pub gc_interval_ns: u64,
+    key: ThreadKey,
+}
+
+#[cfg(target_os = "linux")]
+mod os {
+    use super::Heap;
+    use core::ffi::c_void;
+
+    /// The `pthread_key` whose destructor tears down a thread's heap.
+    pub struct ThreadKey {
+        key: libc::pthread_key_t,
+        valid: bool,
+    }
+
+    impl ThreadKey {
+        pub fn create() -> ThreadKey {
+            let mut key: libc::pthread_key_t = 0;
+            // SAFETY: `key` is a valid out-pointer; the destructor is a plain
+            // `extern "C"` function that only touches allocator state.
+            let rc = unsafe { libc::pthread_key_create(&mut key, Some(super::heap_destructor)) };
+            ThreadKey { key, valid: rc == 0 }
+        }
+
+        pub fn valid(&self) -> bool {
+            self.valid
+        }
+
+        pub fn key(&self) -> Option<libc::pthread_key_t> {
+            if self.valid { Some(self.key) } else { None }
+        }
+
+        /// Register `heap` for destruction when the calling thread exits.
+        pub fn set(&self, heap: *mut Heap) {
+            if !self.valid {
+                return;
+            }
+            // SAFETY: the key was created by `create`; glibc stores the
+            // pointer without dereferencing it.
+            if unsafe { libc::pthread_setspecific(self.key, heap as *const c_void) } != 0 {
+                panic!("heap: pthread_setspecific failed");
+            }
+        }
+    }
+
+    pub fn tid() -> u32 {
+        crate::sys::gettid() as u32
+    }
+
+    pub fn now_ns() -> u64 {
+        crate::sys::now_coarse_ns()
+    }
+
+    pub fn seed() -> u64 {
+        let mut b = [0u8; 8];
+        let _ = crate::sys::getrandom_exact(&mut b);
+        u64::from_ne_bytes(b) | 1
+    }
+}
+
+/// Off Linux there is no TLS accessor and no thread-exit key; host tests
+/// drive heaps by hand.
+#[cfg(not(target_os = "linux"))]
+mod os {
+    use super::Heap;
+    use core::sync::atomic::{AtomicU64, Ordering};
+
+    pub struct ThreadKey;
+
+    impl ThreadKey {
+        pub fn create() -> ThreadKey {
+            ThreadKey
+        }
+
+        pub fn valid(&self) -> bool {
+            false
+        }
+
+        #[allow(dead_code)]
+        pub fn set(&self, _heap: *mut Heap) {}
+    }
+
+    pub fn tid() -> u32 {
+        0
+    }
+
+    static TICK: AtomicU64 = AtomicU64::new(0);
+
+    pub fn now_ns() -> u64 {
+        TICK.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    pub fn seed() -> u64 {
+        0x9e37_79b9_7f4a_7c15
+    }
+}
+
+use os::ThreadKey;
+
+impl Shared {
+    /// Initialise `this` in place for already reserved `regions`: the
+    /// metadata allocator over the metadata reservation, one class state
+    /// per class in arena 0 with `guard_interval` (0 when the kernel has no
+    /// guard regions), and the thread-exit key. Returns `false` if the
+    /// metadata region cannot hold the class tables, leaving `this`
+    /// unusable.
+    ///
+    /// # Safety
+    /// `this` must point to writable storage for a `Shared` that nothing
+    /// else reads until this returns `true`, and the regions must be
+    /// reserved (on Linux, `PROT_NONE` mappings that this process owns).
+    pub unsafe fn init(this: *mut Shared, regions: Regions, guard_interval: u32) -> bool {
+        // SAFETY: the caller guarantees `this` is writable and unaliased.
+        unsafe {
+            let meta = &raw mut (*this).meta;
+            ptr::write(meta, Meta::new(regions.meta_base, regions.meta_len, regions.page_size()));
+            ptr::write(&raw mut (*this).regions, regions);
+            let meta = &*meta;
+            let regions = &*(&raw const (*this).regions);
+            for c in 0..NCLASSES {
+                match ClassState::new(meta, regions, c, 0, guard_interval) {
+                    Some(cs) => ptr::write(&raw mut (*this).classes[c], cs),
+                    None => return false,
+                }
+            }
+            ptr::write(&raw mut (*this).gc_interval_ns, DEFAULT_GC_INTERVAL_NS);
+            ptr::write(&raw mut (*this).key, ThreadKey::create());
+        }
+        true
+    }
+
+    /// Whether the thread-exit key exists (heaps of exiting threads are
+    /// reclaimed). False only if `pthread_key_create` failed at init.
+    pub fn has_thread_key(&self) -> bool {
+        self.key.valid()
+    }
+
+    /// The thread-exit key, for diagnostics and tests.
+    #[cfg(target_os = "linux")]
+    pub fn thread_key(&self) -> Option<libc::pthread_key_t> {
+        self.key.key()
+    }
+
+    /// Class state for `class`, without the bounds check the fast paths do
+    /// not need (`class` comes from `class_of`).
+    #[inline(always)]
+    fn class(&self, class: usize) -> &ClassState {
+        debug_assert!(class < NCLASSES);
+        // SAFETY: `class_of` only yields indices below `NCLASSES`.
+        unsafe { self.classes.get_unchecked(class) }
+    }
+
+    /// Claim one slot of `class` straight from the slab bitmaps, bypassing
+    /// every cache. Null when the region is exhausted. The flag says the
+    /// memory is known zero.
+    pub fn alloc_direct(&self, class: usize) -> (*mut u8, bool) {
+        let mut out = [ptr::null_mut()];
+        let c = self.class(class).claim(&self.meta, &mut out);
+        if c.n == 0 { (ptr::null_mut(), false) } else { (out[0], c.zeroed) }
+    }
+
+    /// Release one slot straight to its slab bitmap. Aborts unless `p` is an
+    /// allocated slot of `class`.
+    pub fn free_direct(&self, class: usize, p: *mut u8) {
+        self.class(class).release(&[p]);
+    }
+
+    /// Classify `p` and abort unless it is an allocated slab slot, returning
+    /// its class. Huge pointers are Phase 0 task 10.
+    #[inline(always)]
+    fn check_slab(&self, p: *mut u8) -> usize {
+        match self.regions.classify(p as usize) {
+            Kind::Slab { class, slab, slot } => {
+                let class = class as usize;
+                let cs = self.class(class);
+                cs.desc(slab as usize).check(cs.class(), slot as usize, p as usize, class, slab as usize);
+                class
+            }
+            Kind::Huge { .. } => huge_free(p as usize),
+            Kind::Invalid => invalid_free(p as usize),
+        }
+    }
+}
+
+impl Heap {
+    /// Create a heap in the metadata region for the calling thread. Null if
+    /// the region is exhausted. Does not touch TLS or the thread key.
+    pub fn create(shared: &Shared) -> *mut Heap {
+        let h = shared.meta.alloc(Layout::new::<Heap>()) as *mut Heap;
+        if h.is_null() {
+            return h;
+        }
+        let empty = &EMPTY_CACHE as *const ClassCache as *mut ClassCache;
+        // SAFETY: `h` is a fresh, exclusively owned metadata block of the
+        // right size and alignment.
+        unsafe {
+            ptr::write(
+                h,
+                Heap {
+                    shared,
+                    tid: os::tid(),
+                    arena: 0,
+                    slow_ticks: 0,
+                    last_gc: os::now_ns(),
+                    rng: os::seed(),
+                    stats: ThreadStats::default(),
+                    caches: [empty; NCLASSES],
+                },
+            );
+        }
+        h
+    }
+
+    /// Flush every cache, free them and the heap itself back to the
+    /// metadata allocator. `h` is dangling afterwards.
+    ///
+    /// # Safety
+    /// `h` must come from [`Heap::create`] on `shared` and no longer be in
+    /// use by any thread.
+    pub unsafe fn destroy(h: *mut Heap, shared: &Shared) {
+        // SAFETY: the caller gives us exclusive ownership of the heap.
+        let heap = unsafe { &mut *h };
+        heap.flush_all(shared);
+        for c in 0..NCLASSES {
+            let cache = heap.caches[c];
+            // SAFETY: real caches were allocated with `ClassCache::layout(cap)`.
+            unsafe {
+                if (*cache).cap != 0 {
+                    shared.meta.free(cache as *mut u8, ClassCache::layout((*cache).cap));
+                }
+            }
+            heap.caches[c] = &EMPTY_CACHE as *const ClassCache as *mut ClassCache;
+        }
+        shared.meta.free(h as *mut u8, Layout::new::<Heap>());
+    }
+
+    #[inline]
+    pub fn shared(&self) -> &Shared {
+        // SAFETY: a heap never outlives the `Shared` it was created on.
+        unsafe { &*self.shared }
+    }
+
+    #[inline]
+    pub fn tid(&self) -> u32 {
+        self.tid
+    }
+
+    #[inline]
+    pub fn arena(&self) -> u16 {
+        self.arena
+    }
+
+    #[inline]
+    pub fn stats(&self) -> ThreadStats {
+        self.stats
+    }
+
+    #[inline]
+    pub fn slow_ticks(&self) -> u32 {
+        self.slow_ticks
+    }
+
+    /// Next value of the heap's xorshift generator (for `slot_randomize`).
+    #[inline]
+    pub fn next_random(&mut self) -> u64 {
+        let mut x = self.rng;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.rng = x;
+        x
+    }
+
+    /// The cache for `class`, or `None` while it is still the sentinel.
+    pub fn cache(&self, class: usize) -> Option<&ClassCache> {
+        // SAFETY: cache pointers are the sentinel or a live metadata block.
+        let c = unsafe { &*self.caches[class] };
+        if c.cap == 0 { None } else { Some(c) }
+    }
+
+    #[inline(always)]
+    fn cache_ptr(&self, class: usize) -> *mut ClassCache {
+        debug_assert!(class < NCLASSES);
+        // SAFETY: `class_of` only yields indices below `NCLASSES`.
+        unsafe { *self.caches.get_unchecked(class) }
+    }
+
+    /// Fast path of `malloc` for a non-huge class.
+    #[inline(always)]
+    pub fn alloc(&mut self, shared: &Shared, class: usize) -> *mut u8 {
+        let cache = self.cache_ptr(class);
+        // SAFETY: the pointer is the sentinel (read-only, `len == 0`) or
+        // this thread's own cache.
+        unsafe {
+            let len = (*cache).len;
+            if len == 0 {
+                return self.alloc_slow(shared, class).0;
+            }
+            self.pop(cache, class, len).0
+        }
+    }
+
+    /// Fast path of `calloc`: the flag is true when the memory is known to
+    /// read as zero, so the caller can skip its `memset`.
+    #[inline(always)]
+    pub fn alloc_zeroed(&mut self, shared: &Shared, class: usize) -> (*mut u8, bool) {
+        let cache = self.cache_ptr(class);
+        // SAFETY: as in `alloc`.
+        unsafe {
+            let len = (*cache).len;
+            if len == 0 {
+                return self.alloc_slow(shared, class);
+            }
+            self.pop(cache, class, len)
+        }
+    }
+
+    /// Pop the top entry of a non-empty cache.
+    ///
+    /// # Safety
+    /// `cache` is this heap's real cache for `class` and `len` is its
+    /// current non-zero length.
+    #[inline(always)]
+    unsafe fn pop(&mut self, cache: *mut ClassCache, class: usize, len: u32) -> (*mut u8, bool) {
+        // SAFETY: guaranteed by the caller.
+        unsafe {
+            let len = len - 1;
+            (*cache).len = len;
+            (*cache).low_water = (*cache).low_water.min(len);
+            let p = *(*cache).slots().add(len as usize);
+            let zero = len < (*cache).zeroed;
+            self.stats.allocated += CLASSES.get_unchecked(class).size() as u64;
+            (p, zero)
+        }
+    }
+
+    /// Fast path of `free`. Aborts unless `p` is an allocated slab slot.
+    #[inline(always)]
+    pub fn free(&mut self, shared: &Shared, p: *mut u8) {
+        let class = shared.check_slab(p);
+        self.push(shared, class, p);
+    }
+
+    /// Push a checked slot of `class` onto its cache.
+    #[inline(always)]
+    fn push(&mut self, shared: &Shared, class: usize, p: *mut u8) {
+        let cache = self.cache_ptr(class);
+        // SAFETY: the pointer is the sentinel (`len == cap == 0`, so it is
+        // never written) or this thread's own cache with `len < cap` slots.
+        unsafe {
+            let len = (*cache).len;
+            if len == (*cache).cap {
+                return self.free_slow(shared, class, p);
+            }
+            *(*cache).slots().add(len as usize) = p;
+            (*cache).len = len + 1;
+            (*cache).zeroed = (*cache).zeroed.min(len);
+            self.stats.deallocated += CLASSES.get_unchecked(class).size() as u64;
+        }
+    }
+
+    /// Refill the cache and pop, allocating the cache first if this is the
+    /// class's first use. Serves directly from the slab when there is no
+    /// cache to be had.
+    #[cold]
+    #[inline(never)]
+    fn alloc_slow(&mut self, shared: &Shared, class: usize) -> (*mut u8, bool) {
+        self.tick(shared);
+        let cache = self.ensure_cache(shared, class);
+        if cache.is_null() {
+            let (p, zero) = shared.alloc_direct(class);
+            if !p.is_null() {
+                self.stats.allocated += CLASSES[class].size() as u64;
+            }
+            return (p, zero);
+        }
+        // SAFETY: `cache` is this thread's real cache for `class`.
+        unsafe {
+            let len = self.refill(shared, cache, class);
+            if len == 0 {
+                return (ptr::null_mut(), false);
+            }
+            self.pop(cache, class, len)
+        }
+    }
+
+    /// Flush the oldest half and push, allocating the cache first if this
+    /// is the class's first use. Releases directly to the slab when there
+    /// is no cache to be had.
+    #[cold]
+    #[inline(never)]
+    fn free_slow(&mut self, shared: &Shared, class: usize, p: *mut u8) {
+        self.tick(shared);
+        let cache = self.ensure_cache(shared, class);
+        if cache.is_null() {
+            shared.free_direct(class, p);
+            self.stats.deallocated += CLASSES[class].size() as u64;
+            return;
+        }
+        // SAFETY: `cache` is this thread's real cache for `class`.
+        unsafe {
+            if (*cache).len == (*cache).cap {
+                let half = ((*cache).cap / 2).max(1);
+                self.flush(shared, cache, class, half as usize);
+            }
+        }
+        self.push(shared, class, p);
+    }
+
+    /// The real cache for `class`, allocating it on first use. Null if the
+    /// metadata region is exhausted.
+    fn ensure_cache(&mut self, shared: &Shared, class: usize) -> *mut ClassCache {
+        let cache = self.caches[class];
+        // SAFETY: sentinel or real cache; both are readable.
+        if unsafe { (*cache).cap } != 0 {
+            return cache;
+        }
+        let cap = default_cap(class);
+        let cache = shared.meta.alloc(ClassCache::layout(cap)) as *mut ClassCache;
+        if cache.is_null() {
+            return cache;
+        }
+        // SAFETY: a fresh block of `layout(cap)` bytes, exclusively ours.
+        unsafe {
+            ptr::write(cache, ClassCache { len: 0, cap, low_water: 0, zeroed: 0, slots: [] });
+        }
+        self.caches[class] = cache;
+        cache
+    }
+
+    /// Claim up to `cap / 2` slots into an empty cache, lowest address on
+    /// top so allocations stay address-ordered. Returns the new length.
+    ///
+    /// # Safety
+    /// `cache` is this heap's real, empty cache for `class`.
+    unsafe fn refill(&mut self, shared: &Shared, cache: *mut ClassCache, class: usize) -> u32 {
+        // SAFETY: the cache is empty and has `cap` slots of storage.
+        unsafe {
+            debug_assert_eq!((*cache).len, 0);
+            let want = ((*cache).cap / 2).max(1) as usize;
+            let out = core::slice::from_raw_parts_mut((*cache).slots(), want);
+            let claim = shared.class(class).claim(&shared.meta, out);
+            out[..claim.n].reverse();
+            (*cache).len = claim.n as u32;
+            (*cache).low_water = 0;
+            (*cache).zeroed = if claim.zeroed { claim.n as u32 } else { 0 };
+            claim.n as u32
+        }
+    }
+
+    /// Release the oldest `n` entries of a cache to their slabs in one
+    /// address-sorted batch and close the gap.
+    ///
+    /// # Safety
+    /// `cache` is this heap's real cache for `class` and `n <= len`.
+    unsafe fn flush(&mut self, shared: &Shared, cache: *mut ClassCache, class: usize, n: usize) {
+        if n == 0 {
+            return;
+        }
+        // SAFETY: `n <= len <= cap` entries exist.
+        unsafe {
+            let all = (*cache).entries();
+            let (old, rest) = all.split_at_mut(n);
+            old.sort_unstable();
+            shared.class(class).release(old);
+            let rest_len = rest.len();
+            ptr::copy((*cache).slots().add(n), (*cache).slots(), rest_len);
+            (*cache).len = rest_len as u32;
+            (*cache).zeroed = (*cache).zeroed.saturating_sub(n as u32);
+            (*cache).low_water = (*cache).low_water.min(rest_len as u32);
+        }
+    }
+
+    /// Return every cached slot to its slab. Caches stay allocated.
+    pub fn flush_all(&mut self, shared: &Shared) {
+        for class in 0..NCLASSES {
+            let cache = self.caches[class];
+            // SAFETY: sentinel (`len == 0`, nothing to do) or real cache.
+            unsafe {
+                let len = (*cache).len as usize;
+                if len != 0 {
+                    self.flush(shared, cache, class, len);
+                }
+            }
+        }
+    }
+
+    /// Cache GC (design 6.4): for every cache, release three quarters of
+    /// the entries that went unused since the last GC, then restart the
+    /// low-water tracking from the current length.
+    pub fn gc(&mut self, shared: &Shared) {
+        for class in 0..NCLASSES {
+            let cache = self.caches[class];
+            // SAFETY: sentinel (`cap == 0`, read-only, skipped) or real cache.
+            unsafe {
+                if (*cache).cap == 0 {
+                    continue;
+                }
+                let lw = (*cache).low_water as usize;
+                if lw > 0 {
+                    self.flush(shared, cache, class, lw - lw / 4);
+                }
+                (*cache).low_water = (*cache).len;
+            }
+        }
+    }
+
+    /// Count a slow-path entry and run periodic work every
+    /// [`PERIODIC_EVERY`] of them. Phase 0 periodic work is cache GC when
+    /// the interval has elapsed; stats merging, decay and cgroup sampling
+    /// join it in Phases 1 and 2.
+    fn tick(&mut self, shared: &Shared) {
+        self.slow_ticks = self.slow_ticks.wrapping_add(1);
+        if self.slow_ticks % PERIODIC_EVERY == 0 {
+            let now = os::now_ns();
+            if now.wrapping_sub(self.last_gc) >= shared.gc_interval_ns {
+                self.last_gc = now;
+                self.gc(shared);
+            }
+        }
+    }
+}
+
+/// Destructor of the thread-exit key: flush and free the exiting thread's
+/// heap, then mark the thread as exited so a later allocation from another
+/// key's destructor is served without a heap.
+///
+/// # Safety
+/// `p` is the heap pointer registered with `pthread_setspecific` by
+/// `heap_for_thread`, called on the thread that owns it.
+#[cfg(target_os = "linux")]
+pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
+    let h = p as *mut Heap;
+    // SAFETY: the pointer was registered by `heap_for_thread` for this thread.
+    unsafe {
+        let shared = &*(*h).shared;
+        Heap::destroy(h, shared);
+    }
+    crate::tls::set(TLS_EXITED as *mut c_void);
+}
+
+/// The calling thread's heap, created on first use. `None` when the thread
+/// must be served without a cache: heap creation is in progress on it
+/// (`pthread_setspecific` re-entered the allocator), its destructor has run,
+/// or the metadata region is exhausted.
+#[cfg(target_os = "linux")]
+#[inline(always)]
+pub fn heap_for_thread(shared: &Shared) -> Option<&mut Heap> {
+    let t = crate::tls::get() as usize;
+    if t > TLS_EXITED {
+        // SAFETY: anything above the sentinels is this thread's heap pointer.
+        return Some(unsafe { &mut *(t as *mut Heap) });
+    }
+    create_heap_for_thread(shared, t)
+}
+
+#[cfg(target_os = "linux")]
+#[cold]
+#[inline(never)]
+fn create_heap_for_thread(shared: &Shared, slot: usize) -> Option<&mut Heap> {
+    if slot != 0 {
+        return None;
+    }
+    let h = Heap::create(shared);
+    if h.is_null() {
+        return None;
+    }
+    crate::tls::set(TLS_CREATING as *mut c_void);
+    shared.key.set(h);
+    crate::tls::set(h as *mut c_void);
+    // SAFETY: freshly created and owned by this thread.
+    Some(unsafe { &mut *h })
+}
+
+/// `malloc` of a non-huge class on the calling thread.
+#[cfg(target_os = "linux")]
+#[inline(always)]
+pub fn alloc(shared: &Shared, class: usize) -> *mut u8 {
+    match heap_for_thread(shared) {
+        Some(h) => h.alloc(shared, class),
+        None => shared.alloc_direct(class).0,
+    }
+}
+
+/// `calloc` of a non-huge class on the calling thread; the flag says the
+/// memory is known zero.
+#[cfg(target_os = "linux")]
+#[inline(always)]
+pub fn alloc_zeroed(shared: &Shared, class: usize) -> (*mut u8, bool) {
+    match heap_for_thread(shared) {
+        Some(h) => h.alloc_zeroed(shared, class),
+        None => shared.alloc_direct(class),
+    }
+}
+
+/// `free` of a non-null pointer on the calling thread. Aborts unless `p`
+/// is an allocated slab slot.
+#[cfg(target_os = "linux")]
+#[inline(always)]
+pub fn free(shared: &Shared, p: *mut u8) {
+    match heap_for_thread(shared) {
+        Some(h) => h.free(shared, p),
+        None => {
+            let class = shared.check_slab(p);
+            shared.free_direct(class, p);
+        }
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_free(p: usize) -> ! {
+    panic!("invalid free of {p:#x}: not an allocation")
+}
+
+#[cold]
+#[inline(never)]
+fn huge_free(p: usize) -> ! {
+    panic!("free of {p:#x}: huge allocations are not implemented yet")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::class::ClassStats;
+    use crate::layout::{LG_MAX_SLAB, MAX_SLAB, Mapping, class_of};
+    use crate::slab::State;
+    use std::boxed::Box;
+    use std::collections::HashSet;
+    use std::mem::MaybeUninit;
+    use std::vec::Vec;
+
+    const PAGE: usize = 4096;
+    const LG_REGION: u32 = LG_MAX_SLAB;
+    const LG_STRIDE: u32 = LG_REGION + 2;
+    const META_LEN: usize = 16 << 20;
+
+    fn align_up(x: usize, a: usize) -> usize {
+        (x + a - 1) & !(a - 1)
+    }
+
+    fn regions_at(superblock: usize, meta: (usize, usize)) -> Regions {
+        let sb_len = (NCLASSES << LG_STRIDE) + MAX_SLAB;
+        let huge = (superblock + sb_len + (1 << 30), 1usize << 34);
+        Regions::from_parts(
+            superblock,
+            LG_REGION,
+            LG_STRIDE,
+            &[0usize; NCLASSES],
+            huge,
+            meta,
+            PAGE.trailing_zeros(),
+            [
+                Mapping { addr: superblock, len: sb_len },
+                Mapping { addr: huge.0, len: huge.1 },
+                Mapping { addr: meta.0, len: meta.1 },
+            ],
+        )
+    }
+
+    /// A `Shared` over a synthetic 4 MiB-per-class layout. Leaked on
+    /// purpose: on Linux the test thread's own heap is torn down by the
+    /// key destructor after the test body has returned. On Linux the
+    /// regions are real `PROT_NONE` reservations so slot memory can be
+    /// touched; elsewhere the metadata is a `Vec` and slot addresses are
+    /// never dereferenced.
+    fn shared() -> &'static Shared {
+        #[cfg(target_os = "linux")]
+        let (sb, mb) = {
+            use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
+            let reserve = |len: usize| -> usize {
+                unsafe {
+                    crate::sys::mmap(0, len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0)
+                }
+                .expect("reserve")
+            };
+            (reserve((NCLASSES << LG_STRIDE) + MAX_SLAB), reserve(META_LEN))
+        };
+        #[cfg(not(target_os = "linux"))]
+        let (sb, mb) = {
+            let mut v: Vec<u8> = Vec::new();
+            v.resize(META_LEN + PAGE, 0);
+            let buf: &'static mut [u8] = Box::leak(v.into_boxed_slice());
+            (0x1000_0000_0000usize, buf.as_ptr() as usize)
+        };
+        let regions = regions_at(align_up(sb, MAX_SLAB), (align_up(mb, PAGE), META_LEN));
+        let b: &'static mut MaybeUninit<Shared> = Box::leak(Box::new(MaybeUninit::uninit()));
+        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, 0) });
+        unsafe { b.assume_init_ref() }
+    }
+
+    fn class_with(size: usize) -> usize {
+        CLASSES.iter().position(|c| c.size() == size).unwrap()
+    }
+
+    struct TestHeap {
+        h: *mut Heap,
+        s: &'static Shared,
+    }
+
+    impl TestHeap {
+        fn new(s: &'static Shared) -> TestHeap {
+            let h = Heap::create(s);
+            assert!(!h.is_null());
+            TestHeap { h, s }
+        }
+
+        fn heap(&self) -> &mut Heap {
+            unsafe { &mut *self.h }
+        }
+
+        fn alloc(&self, c: usize) -> *mut u8 {
+            let p = self.heap().alloc(self.s, c);
+            assert!(!p.is_null());
+            p
+        }
+
+        fn alloc_zeroed(&self, c: usize) -> (*mut u8, bool) {
+            let (p, z) = self.heap().alloc_zeroed(self.s, c);
+            assert!(!p.is_null());
+            (p, z)
+        }
+
+        fn free(&self, p: *mut u8) {
+            self.heap().free(self.s, p)
+        }
+
+        fn gc(&self) {
+            self.heap().gc(self.s)
+        }
+
+        fn flush_all(&self) {
+            self.heap().flush_all(self.s)
+        }
+
+        fn ticks(&self) -> u32 {
+            self.heap().slow_ticks()
+        }
+
+        fn cache(&self, c: usize) -> &ClassCache {
+            self.heap().cache(c).expect("cache exists")
+        }
+
+        fn len(&self, c: usize) -> usize {
+            self.cache(c).len()
+        }
+
+        fn destroy(self) {
+            unsafe { Heap::destroy(self.h, self.s) }
+        }
+    }
+
+    /// Sum of `live` over every committed slab of a class.
+    fn live(s: &Shared, c: usize) -> usize {
+        let cs = &s.classes[c];
+        (0..cs.committed_slabs()).filter(|&i| !cs.is_guard_slab(i)).map(|i| cs.desc(i).live()).sum()
+    }
+
+    fn xorshift(state: &mut u64) -> u64 {
+        let mut x = *state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        *state = x;
+        x
+    }
+
+    #[test]
+    fn default_caps_follow_the_design_table() {
+        for (c, cls) in CLASSES.iter().enumerate() {
+            let cap = default_cap(c);
+            let expect = match cls.size() {
+                0..=128 => 256,
+                129..=256 => 128,
+                257..=512 => 64,
+                513..=1024 => 32,
+                1025..=2048 => 16,
+                _ => 8,
+            };
+            assert_eq!(cap, expect, "class {c} size {}", cls.size());
+            assert!(cap >= MIN_CAP && cap <= MAX_CAP);
+            assert!(cap as usize <= cls.nslots() || cls.nslots() < MIN_CAP as usize);
+            let l = ClassCache::layout(cap);
+            assert_eq!(l.size(), 16 + 8 * cap as usize);
+            assert_eq!(l.align(), 16);
+        }
+        assert_eq!(core::mem::size_of::<ClassCache>(), 16);
+        assert!(core::mem::size_of::<Heap>() <= 512, "heap is {} bytes", core::mem::size_of::<Heap>());
+    }
+
+    #[test]
+    fn heap_starts_with_the_sentinel_and_allocates_caches_lazily() {
+        let s = shared();
+        let before = s.meta.stats().allocated;
+        let t = TestHeap::new(s);
+        for c in 0..NCLASSES {
+            assert!(t.heap().cache(c).is_none());
+        }
+        assert_eq!(t.heap().stats(), ThreadStats::default());
+        assert_eq!(t.heap().arena(), 0);
+        let c = class_with(64);
+        let p = t.alloc(c);
+        let cache = t.cache(c);
+        assert_eq!(cache.cap(), 256);
+        // A refill claims half the capacity and the pop takes the lowest.
+        assert_eq!(cache.len(), 127);
+        assert_eq!(p as usize, s.regions.slab_addr(c, 0));
+        assert!(t.heap().cache(c + 1).is_none());
+        assert_eq!(t.heap().stats().allocated, 64);
+        assert_eq!(t.heap().slow_ticks(), 1);
+        // Only the heap and one cache came from the metadata region.
+        let meta_used = s.meta.stats().allocated - before;
+        assert!(meta_used >= core::mem::size_of::<Heap>() + 16 + 8 * 256);
+        assert!(meta_used <= 512 + 3072);
+        t.free(p);
+        t.destroy();
+        assert_eq!(s.meta.stats().allocated, before);
+        assert_eq!(live(s, c), 0);
+    }
+
+    #[test]
+    fn allocations_are_address_ordered_and_lifo_after_free() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(16);
+        let size = 16;
+        let base = s.regions.slab_addr(c, 0);
+        let mut ps = Vec::new();
+        for i in 0..300 {
+            let p = t.alloc(c);
+            assert_eq!(p as usize, base + i * size, "allocation {i}");
+            ps.push(p);
+        }
+        // Three refills of 128 (the third partially consumed).
+        assert_eq!(t.heap().slow_ticks(), 3);
+        assert_eq!(t.cache(c).len(), 384 - 300);
+        assert_eq!(live(s, c), 384);
+        // Frees push, the most recent free is reused first.
+        t.free(ps[10]);
+        t.free(ps[20]);
+        assert_eq!(t.alloc(c), ps[20]);
+        assert_eq!(t.alloc(c), ps[10]);
+        assert_eq!(t.heap().stats(), ThreadStats { allocated: 302 * 16, deallocated: 2 * 16 });
+        t.destroy();
+        assert_eq!(live(s, c), 300);
+    }
+
+    #[test]
+    fn full_cache_flushes_the_oldest_half_sorted_and_slabs_empty() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        let cs = &s.classes[c];
+        let n = 1000;
+        let ps: Vec<*mut u8> = (0..n).map(|_| t.alloc(c)).collect();
+        assert_eq!(live(s, c), align_up(n, 128));
+        // Free in a scrambled order so flushes see unsorted batches.
+        let mut order: Vec<usize> = (0..n).collect();
+        let mut st = 0x1234_5678u64;
+        for i in (1..n).rev() {
+            let j = (xorshift(&mut st) % (i as u64 + 1)) as usize;
+            order.swap(i, j);
+        }
+        let mut flushes = 0;
+        for (k, &i) in order.iter().enumerate() {
+            let before = t.cache(c).len();
+            t.free(ps[i]);
+            let after = t.cache(c).len();
+            if after != before + 1 {
+                // A flush released the oldest 128 and pushed one.
+                assert_eq!(before, 256);
+                assert_eq!(after, 129);
+                flushes += 1;
+            }
+            assert!(t.cache(c).len() <= 256, "free {k}");
+        }
+        assert!(flushes >= 2, "{flushes} flushes");
+        // Nothing is live in the program, so `live` is exactly what is cached
+        // (the never-handed-out tail of the last refill was flushed too).
+        assert_eq!(live(s, c), t.cache(c).len());
+        // Everything back: the cache empties, slabs go Empty.
+        t.flush_all();
+        assert_eq!(t.cache(c).len(), 0);
+        assert_eq!(live(s, c), 0);
+        for i in 0..cs.committed_slabs() {
+            assert_eq!(cs.desc(i).state(), State::Empty, "slab {i}");
+        }
+        let st = cs.stats();
+        assert_eq!(st.empty, cs.committed_slabs());
+        assert_eq!(st.nonfull, 0);
+        // Allocating again reuses the lowest slab, now Empty -> Active.
+        let p = t.alloc(c);
+        assert_eq!(p as usize, s.regions.slab_addr(c, 0));
+        assert_eq!(cs.desc(0).state(), State::Active);
+        t.free(p);
+        t.destroy();
+        assert_eq!(cs.stats(), ClassStats { committed: cs.committed_slabs(), empty: cs.committed_slabs(), ..Default::default() });
+    }
+
+    #[test]
+    fn zeroed_prefix_tracks_fresh_memory() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(128);
+        // First refill comes from a Fresh slab: the whole batch is zero.
+        // Pops do not shrink the prefix (the popped index is above `len`).
+        let (p1, z1) = t.alloc_zeroed(c);
+        assert!(z1);
+        assert_eq!(t.len(c), 127);
+        assert_eq!(t.cache(c).zeroed(), 128);
+        let (p2, z2) = t.alloc_zeroed(c);
+        assert!(z2);
+        // A free pushes dirty memory on top: the prefix ends below it.
+        // Popping it is not zero, the entry below it still is.
+        t.free(p2);
+        assert_eq!(t.cache(c).zeroed(), 126);
+        let (p3, z3) = t.alloc_zeroed(c);
+        assert_eq!(p3, p2);
+        assert!(!z3);
+        let (_, z4) = t.alloc_zeroed(c);
+        assert!(z4);
+        // Pushing below the prefix cuts it there.
+        for _ in 0..50 {
+            t.alloc(c);
+        }
+        t.free(p1);
+        assert_eq!(t.cache(c).zeroed(), t.len(c) - 1);
+        // Drain the cache: the next refill is from an Active slab, so the
+        // conservative answer is "not zero" for the whole batch.
+        while t.len(c) > 0 {
+            t.alloc(c);
+        }
+        let (_, z5) = t.alloc_zeroed(c);
+        assert!(!z5);
+        assert_eq!(t.cache(c).zeroed(), 0);
+        t.destroy();
+    }
+
+    #[test]
+    fn flush_drops_the_zeroed_prefix_with_the_oldest_entries() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let u = TestHeap::new(s);
+        let c = class_with(32);
+        // Zero prefix of 100 with 28 dirty pushes above it.
+        let ps: Vec<*mut u8> = (0..28).map(|_| t.alloc(c)).collect();
+        assert_eq!(t.len(c), 100);
+        for &p in &ps {
+            t.free(p);
+        }
+        assert_eq!(t.len(c), 128);
+        assert_eq!(t.cache(c).zeroed(), 100);
+        // Fill the rest of the cache with pointers another heap allocated
+        // (dirty by definition), then overflow it by one.
+        let qs: Vec<*mut u8> = (0..129).map(|_| u.alloc(c)).collect();
+        for &q in &qs[..128] {
+            t.free(q);
+        }
+        assert_eq!(t.len(c), 256);
+        assert_eq!(t.cache(c).zeroed(), 100);
+        let live_before = live(s, c);
+        t.free(qs[128]);
+        // The oldest 128 went back to the slab, taking the whole prefix.
+        assert_eq!(t.len(c), 129);
+        assert_eq!(t.cache(c).zeroed(), 0);
+        assert_eq!(live(s, c), live_before - 128);
+        t.destroy();
+        u.destroy();
+        assert_eq!(live(s, c), 0);
+    }
+
+    #[test]
+    fn gc_releases_unused_entries_by_low_water() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(48);
+        // A refill resets low water to zero, so the first GC after a refill
+        // flushes nothing and just restarts tracking at the current length.
+        t.alloc(c);
+        assert_eq!(t.len(c), 127);
+        assert_eq!(t.cache(c).low_water(), 0);
+        t.gc();
+        assert_eq!(t.len(c), 127);
+        assert_eq!(t.cache(c).low_water(), 127);
+        // Pops lower it; pushes do not raise it.
+        for _ in 0..27 {
+            t.alloc(c);
+        }
+        assert_eq!(t.cache(c).low_water(), 100);
+        let extra: Vec<*mut u8> = (0..10).map(|_| t.alloc(c)).collect();
+        assert_eq!(t.cache(c).low_water(), 90);
+        for &p in &extra {
+            t.free(p);
+        }
+        assert_eq!(t.len(c), 100);
+        assert_eq!(t.cache(c).low_water(), 90);
+        // GC releases three quarters of the low water.
+        let live_before = live(s, c);
+        t.gc();
+        let flushed = 90 - 90 / 4;
+        assert_eq!(t.len(c), 100 - flushed);
+        assert_eq!(live(s, c), live_before - flushed);
+        assert_eq!(t.cache(c).low_water(), 100 - flushed);
+        // Untouched since, so the next GC shrinks it again.
+        let len = t.len(c);
+        t.gc();
+        assert_eq!(t.len(c), len - (len - len / 4));
+        // A cache that was drained and refilled is left alone.
+        while t.len(c) > 0 {
+            t.alloc(c);
+        }
+        t.alloc(c);
+        assert_eq!(t.cache(c).low_water(), 0);
+        let len = t.len(c);
+        t.gc();
+        assert_eq!(t.len(c), len);
+        assert_eq!(t.cache(c).low_water(), len);
+        t.destroy();
+    }
+
+    #[test]
+    fn periodic_work_runs_gc_on_the_interval() {
+        // Every slow path is a tick and every 64th tick checks the clock.
+        // With a zero interval that means GC on ticks 64, 128, ...; with the
+        // default 10 s it means no GC in a test.
+        let c = class_with(16);
+        let d = class_with(48);
+        for interval in [0u64, DEFAULT_GC_INTERVAL_NS] {
+            let s = shared();
+            // SAFETY: nothing else references `s` yet; the field is plain data.
+            unsafe { (*(s as *const Shared as *mut Shared)).gc_interval_ns = interval };
+            let t = TestHeap::new(s);
+            // Prime class d: one refill, 127 cached, low water 0.
+            t.alloc(d);
+            assert_eq!(t.ticks(), 1);
+            // Drive the tick counter with class c refills.
+            let mut ps = Vec::new();
+            while t.ticks() < 64 {
+                ps.push(t.alloc(c));
+            }
+            assert_eq!(t.ticks(), 64);
+            assert_eq!(t.len(d), 127);
+            // GC 1 flushed nothing (low water 0) but restarted tracking.
+            let expect_lw = if interval == 0 { 127 } else { 0 };
+            assert_eq!(t.cache(d).low_water(), expect_lw);
+            for _ in 0..27 {
+                t.alloc(d);
+            }
+            assert_eq!(t.len(d), 100);
+            while t.ticks() < 128 {
+                ps.push(t.alloc(c));
+            }
+            // GC 2 released three quarters of d's low water (100) if it ran.
+            let live_d = live(s, d);
+            if interval == 0 {
+                assert_eq!(t.len(d), 25);
+                assert_eq!(t.cache(d).low_water(), 25);
+                assert_eq!(live_d, 128 - 75);
+            } else {
+                assert_eq!(t.len(d), 100);
+                assert_eq!(t.cache(d).low_water(), 0);
+                assert_eq!(live_d, 128);
+            }
+            t.destroy();
+            assert_eq!(live(s, d), 28);
+            assert_eq!(live(s, c), ps.len());
+        }
+    }
+
+    #[test]
+    fn direct_paths_bypass_the_cache() {
+        let s = shared();
+        let c = class_with(256);
+        let (p, zero) = s.alloc_direct(c);
+        assert!(!p.is_null() && zero);
+        assert_eq!(p as usize, s.regions.slab_addr(c, 0));
+        assert_eq!(live(s, c), 1);
+        let (q, zero) = s.alloc_direct(c);
+        assert_eq!(q as usize, p as usize + 256);
+        assert!(!zero);
+        s.free_direct(c, p);
+        assert_eq!(live(s, c), 1);
+        s.free_direct(c, q);
+        assert_eq!(live(s, c), 0);
+        assert_eq!(s.classes[c].desc(0).state(), State::Empty);
+    }
+
+    #[test]
+    fn cross_thread_frees_land_in_the_freeing_heap() {
+        let s = shared();
+        let a = TestHeap::new(s);
+        let b = TestHeap::new(s);
+        let c = class_with(64);
+        let ps: Vec<*mut u8> = (0..200).map(|_| a.alloc(c)).collect();
+        for &p in &ps {
+            b.free(p);
+        }
+        // 200 pushes fit in B's cache of 256; A did two refills of 128.
+        assert_eq!(b.cache(c).len(), 200);
+        assert_eq!(a.cache(c).len(), 256 - 200);
+        assert_eq!(b.heap().stats(), ThreadStats { allocated: 0, deallocated: 200 * 64 });
+        // B reuses what it freed, lowest address first after its flushes.
+        let q = b.alloc(c);
+        assert_eq!(q, ps[199]);
+        b.free(q);
+        a.destroy();
+        b.destroy();
+        assert_eq!(live(s, c), 0);
+    }
+
+    #[test]
+    fn randomised_model_check() {
+        let s = shared();
+        let heaps: Vec<TestHeap> = (0..3).map(|_| TestHeap::new(s)).collect();
+        let classes = [class_with(16), class_with(48), class_with(64), class_with(256), class_with(4096)];
+        let mut model: HashSet<usize> = HashSet::new();
+        let mut order: Vec<(usize, usize)> = Vec::new();
+        let mut st = 0xdead_beef_cafe_f00du64;
+        for step in 0..60_000 {
+            let r = xorshift(&mut st);
+            let t = &heaps[(r >> 8) as usize % heaps.len()];
+            if model.len() < 2000 && (r & 3 != 0 || model.is_empty()) {
+                let ci = (r >> 16) as usize % classes.len();
+                let c = classes[ci];
+                let p = t.alloc(c) as usize;
+                assert!(model.insert(p), "step {step}: duplicate live pointer {p:#x}");
+                assert_eq!(class_of(CLASSES[c].size()), Some(c));
+                assert!(matches!(s.regions.classify(p), Kind::Slab { class, .. } if class as usize == c));
+                order.push((p, c));
+            } else {
+                let i = (r >> 20) as usize % order.len();
+                let (p, _) = order.swap_remove(i);
+                assert!(model.remove(&p));
+                t.free(p as *mut u8);
+            }
+            if step % 5000 == 0 {
+                // Invariant: live == program-live + cached, per class.
+                for &c in &classes {
+                    let prog = order.iter().filter(|&&(_, cc)| cc == c).count();
+                    let cached: usize = heaps.iter().map(|h| h.heap().cache(c).map_or(0, |k| k.len())).sum();
+                    assert_eq!(live(s, c), prog + cached, "step {step} class {c}");
+                }
+            }
+        }
+        for t in heaps {
+            t.destroy();
+        }
+        for &c in &classes {
+            let prog = order.iter().filter(|&&(_, cc)| cc == c).count();
+            assert_eq!(live(s, c), prog);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "not an allocation")]
+    fn free_of_a_pointer_outside_every_region_aborts() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let x = 0u64;
+        t.free(&x as *const u64 as *mut u8);
+    }
+
+    #[test]
+    #[should_panic(expected = "not an allocation")]
+    fn free_of_a_misaligned_pointer_aborts() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let p = t.alloc(class_with(64));
+        t.free(unsafe { p.add(8) });
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid or double free")]
+    fn free_of_a_never_allocated_slot_aborts() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        let p = t.alloc(c);
+        // Slot 200 of slab 0 is committed but was never claimed.
+        t.free(unsafe { p.add(200 * 64) });
+    }
+
+    #[test]
+    #[should_panic(expected = "was never allocated")]
+    fn free_into_an_uncommitted_slab_aborts() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        let _ = t.alloc(c);
+        t.free(s.regions.slab_addr(c, 5) as *mut u8);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid or double free")]
+    fn stale_double_free_aborts_at_the_check() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        let p = t.alloc(c);
+        t.free(p);
+        t.flush_all();
+        t.free(p);
+    }
+
+    #[test]
+    #[should_panic(expected = "double free of")]
+    fn cached_double_free_aborts_at_the_flush() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        let p = t.alloc(c);
+        t.free(p);
+        // The bit is still set while `p` is cached, so the check passes
+        // and the duplicate is caught when the batch is released.
+        t.free(p);
+        t.flush_all();
+    }
+
+    #[test]
+    #[should_panic(expected = "huge allocations are not implemented")]
+    fn free_of_a_huge_pointer_is_a_placeholder_abort() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        t.free(s.regions.huge_base as *mut u8);
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod linux_tests {
+    use super::*;
+    use crate::layout::class_of;
+    use crate::tls;
+    use std::boxed::Box;
+    use std::mem::MaybeUninit;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::vec::Vec;
+
+    const PAGE: usize = 4096;
+    const LG_REGION: u32 = crate::layout::LG_MAX_SLAB;
+    const LG_STRIDE: u32 = LG_REGION + 2;
+    const META_LEN: usize = 16 << 20;
+
+    fn shared() -> &'static Shared {
+        use crate::layout::{MAX_SLAB, Mapping};
+        use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
+        let reserve = |len: usize| -> usize {
+            unsafe { crate::sys::mmap(0, len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0) }
+                .expect("reserve")
+        };
+        let sb_len = (NCLASSES << LG_STRIDE) + MAX_SLAB;
+        let sb = reserve(sb_len);
+        let mb = reserve(META_LEN);
+        let superblock = (sb + MAX_SLAB - 1) & !(MAX_SLAB - 1);
+        let huge = (superblock + sb_len + (1 << 30), 1usize << 34);
+        let regions = Regions::from_parts(
+            superblock,
+            LG_REGION,
+            LG_STRIDE,
+            &[0usize; NCLASSES],
+            huge,
+            (mb, META_LEN),
+            PAGE.trailing_zeros(),
+            [
+                Mapping { addr: superblock, len: sb_len },
+                Mapping { addr: huge.0, len: huge.1 },
+                Mapping { addr: mb, len: META_LEN },
+            ],
+        );
+        let b: &'static mut MaybeUninit<Shared> = Box::leak(Box::new(MaybeUninit::uninit()));
+        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, 0) });
+        unsafe { b.assume_init_ref() }
+    }
+
+    fn live(s: &Shared, c: usize) -> usize {
+        let cs = &s.classes[c];
+        (0..cs.committed_slabs()).filter(|&i| !cs.is_guard_slab(i)).map(|i| cs.desc(i).live()).sum()
+    }
+
+    fn fill(p: *mut u8, n: usize, v: u8) {
+        unsafe { core::ptr::write_bytes(p, v, n) }
+    }
+
+    fn check(p: *mut u8, n: usize, v: u8) {
+        let s = unsafe { core::slice::from_raw_parts(p, n) };
+        assert!(s.iter().all(|&b| b == v), "memory at {:#x} is not all {v:#x}", p as usize);
+    }
+
+    fn is_zero(p: *mut u8, n: usize) -> bool {
+        unsafe { core::slice::from_raw_parts(p, n) }.iter().all(|&b| b == 0)
+    }
+
+    #[test]
+    fn heap_is_created_on_first_use_through_tls() {
+        let s = shared();
+        assert!(s.has_thread_key());
+        std::thread::spawn(move || {
+            assert!(tls::get().is_null());
+            let c = class_of(100).unwrap();
+            let p = alloc(s, c);
+            assert!(!p.is_null());
+            let h = tls::get() as usize;
+            assert!(h > TLS_EXITED);
+            let heap = unsafe { &*(h as *mut Heap) };
+            assert_eq!(heap.tid(), crate::sys::gettid() as u32);
+            assert!(core::ptr::eq(heap.shared(), s));
+            assert_eq!(heap.stats().allocated, CLASSES[c].size() as u64);
+            // Same heap on the next call.
+            let q = alloc(s, c);
+            assert_eq!(tls::get() as usize, h);
+            assert_ne!(p, q);
+            fill(p, CLASSES[c].size(), 0xa5);
+            fill(q, CLASSES[c].size(), 0x5a);
+            check(p, CLASSES[c].size(), 0xa5);
+            free(s, p);
+            free(s, q);
+            assert_eq!(unsafe { &*(h as *mut Heap) }.stats().deallocated, 2 * CLASSES[c].size() as u64);
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn calloc_flag_is_honest_about_memory() {
+        let s = shared();
+        std::thread::spawn(move || {
+            let c = class_of(200).unwrap();
+            let size = CLASSES[c].size();
+            let (p, zero) = alloc_zeroed(s, c);
+            assert!(zero && is_zero(p, size));
+            fill(p, size, 0xff);
+            free(s, p);
+            let (q, zero) = alloc_zeroed(s, c);
+            assert_eq!(p, q);
+            assert!(!zero && !is_zero(q, size));
+            // Everything the flag calls zero really is. The flag is
+            // conservative: only a refill batch that came entirely from a
+            // `Fresh` or `Purged` slab is flagged, so here that is the rest
+            // of the very first batch (the first slab's later batches come
+            // from an `Active` slab, and the batch that crosses into the
+            // next fresh slab is mixed).
+            let mut zeros = 0;
+            for _ in 0..3000 {
+                let (r, zero) = alloc_zeroed(s, c);
+                assert!(!r.is_null());
+                if zero {
+                    assert!(is_zero(r, size), "{:#x} flagged zero but is not", r as usize);
+                    zeros += 1;
+                }
+                fill(r, size, 0x11);
+            }
+            let refill = default_cap(c) as usize / 2;
+            assert!(zeros >= refill - 1 && zeros < 3000, "{zeros} zero-flagged of 3000");
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn thread_exit_flushes_and_frees_the_heap() {
+        let s = shared();
+        let c = class_of(64).unwrap();
+        let meta_before = s.meta.stats().allocated;
+        let leaked = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for t in 0..16u8 {
+            let leaked = leaked.clone();
+            handles.push(std::thread::spawn(move || {
+                let mut ps = Vec::new();
+                for i in 0..500 {
+                    let p = alloc(s, c);
+                    assert!(!p.is_null());
+                    fill(p, 64, t);
+                    ps.push(p);
+                    if i % 3 == 0 {
+                        free(s, ps.swap_remove(i / 3 % ps.len()));
+                    }
+                }
+                for &p in &ps {
+                    check(p, 64, t);
+                }
+                // Exit with `ps` live and a non-empty cache; the live ones
+                // stay allocated, the cached ones must be released.
+                leaked.fetch_add(ps.len(), Ordering::Relaxed);
+                assert!(tls::get() as usize > TLS_EXITED);
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(live(s, c), leaked.load(Ordering::Relaxed));
+        // Heaps and caches went back to the metadata allocator.
+        assert_eq!(s.meta.stats().allocated, meta_before);
+        assert_eq!(s.classes[c].desc(0).state(), crate::slab::State::Active);
+    }
+
+    #[test]
+    fn creating_and_exited_sentinels_are_served_directly() {
+        let s = shared();
+        std::thread::spawn(move || {
+            let c = class_of(32).unwrap();
+            let meta_before = s.meta.stats().allocated;
+            // Inside heap creation: no heap, served from the slab bitmap.
+            tls::set(TLS_CREATING as *mut c_void);
+            let p = alloc(s, c);
+            assert!(!p.is_null());
+            assert_eq!(tls::get() as usize, TLS_CREATING);
+            assert_eq!(s.meta.stats().allocated, meta_before);
+            assert_eq!(live(s, c), 1);
+            free(s, p);
+            assert_eq!(live(s, c), 0);
+            // Real heap.
+            tls::set(core::ptr::null_mut());
+            let p = alloc(s, c);
+            let h = tls::get();
+            assert!(h as usize > TLS_EXITED);
+            assert!(s.meta.stats().allocated > meta_before);
+            free(s, p);
+            // Run the destructor by hand (glibc clears the key's value
+            // before calling it, so do the same to avoid a second run at
+            // thread exit): heap gone, slot says exited, and later calls go
+            // direct without creating another heap.
+            let key = s.thread_key().expect("key");
+            assert_eq!(unsafe { libc::pthread_getspecific(key) }, h);
+            assert_eq!(unsafe { libc::pthread_setspecific(key, core::ptr::null()) }, 0);
+            unsafe { heap_destructor(h) };
+            assert_eq!(tls::get() as usize, TLS_EXITED);
+            assert_eq!(s.meta.stats().allocated, meta_before);
+            assert_eq!(live(s, c), 0);
+            // The slab went `Empty` when everything was released, so its
+            // memory is dirty and the flag must say so.
+            let (q, zero) = alloc_zeroed(s, c);
+            assert!(!q.is_null());
+            assert!(!zero || is_zero(q, 32));
+            assert_eq!(tls::get() as usize, TLS_EXITED);
+            assert_eq!(s.meta.stats().allocated, meta_before);
+            free(s, q);
+            assert_eq!(live(s, c), 0);
+            // The key holds no value now, so thread exit runs no destructor.
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn producer_consumer_across_threads_with_patterns() {
+        let s = shared();
+        let c = class_of(96).unwrap();
+        let size = CLASSES[c].size();
+        let (tx, rx) = std::sync::mpsc::sync_channel::<usize>(64);
+        let producer = std::thread::spawn(move || {
+            for i in 0..20_000usize {
+                let p = alloc(s, c);
+                assert!(!p.is_null());
+                fill(p, size, (i & 0xff) as u8);
+                tx.send(p as usize).unwrap();
+            }
+        });
+        let consumer = std::thread::spawn(move || {
+            let mut n = 0usize;
+            while let Ok(p) = rx.recv() {
+                check(p as *mut u8, size, (n & 0xff) as u8);
+                free(s, p as *mut u8);
+                n += 1;
+            }
+            n
+        });
+        producer.join().unwrap();
+        assert_eq!(consumer.join().unwrap(), 20_000);
+        assert_eq!(live(s, c), 0);
+    }
+
+    #[test]
+    fn eight_threads_hammer_disjoint_pointers() {
+        let s = shared();
+        let classes: Vec<usize> = [16usize, 64, 320, 2048].iter().map(|&n| class_of(n).unwrap()).collect();
+        let mut handles = Vec::new();
+        for t in 0..8u64 {
+            let classes = classes.clone();
+            handles.push(std::thread::spawn(move || {
+                let mut st = 0x1234_5678_9abc_def0u64 ^ (t + 1);
+                let mut held: Vec<(*mut u8, usize)> = Vec::new();
+                for _ in 0..50_000 {
+                    st ^= st << 13;
+                    st ^= st >> 7;
+                    st ^= st << 17;
+                    if held.len() < 400 && (st & 3 != 0 || held.is_empty()) {
+                        let c = classes[(st >> 8) as usize % classes.len()];
+                        let p = alloc(s, c);
+                        assert!(!p.is_null());
+                        let size = CLASSES[c].size();
+                        // Fresh from the kernel or zeroed by whoever freed it.
+                        check(p, size, 0);
+                        fill(p, size, t as u8 + 1);
+                        held.push((p, size));
+                    } else {
+                        let i = (st >> 12) as usize % held.len();
+                        let (p, size) = held.swap_remove(i);
+                        check(p, size, t as u8 + 1);
+                        fill(p, size, 0);
+                        free(s, p);
+                    }
+                }
+                for (p, size) in held {
+                    check(p, size, t as u8 + 1);
+                    fill(p, size, 0);
+                    free(s, p);
+                }
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        for &c in &classes {
+            assert_eq!(live(s, c), 0, "class {c}");
+        }
+    }
+}
