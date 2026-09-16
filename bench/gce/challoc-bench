@@ -1,0 +1,230 @@
+#!/usr/bin/env bash
+# challoc-bench: drive the two Compute Engine VMs that produce challoc's
+# reference benchmark numbers and hardware performance counters
+# (docs/plan.md, Phase 1.5). One VM per architecture:
+#
+#   arm64  c4a-standard-16  Google Axion (Neoverse V2)   aarch64
+#   amd64  c4-standard-16   Intel Xeon 6 (Granite Rapids) x86_64
+#
+# Both are created with --performance-monitoring-unit=standard, which
+# exposes the core PMU (cycles, instructions, branch, L1/L2 cache, dTLB and
+# iTLB events) to the guest; no bare-metal instance is needed.
+#
+# The VMs run the same Dockerfile.dev image as the Mac, through the same
+# Makefile, so the toolchain is pinned identically everywhere. perf lives on
+# the VM host (Wolfi has no perf package) and attaches to the container's
+# process by PID; see `perf-stat` below.
+#
+#   bench/gce/challoc-bench create    arm64|amd64|all
+#   bench/gce/challoc-bench provision arm64|amd64|all
+#   bench/gce/challoc-bench sync      arm64|amd64|all      # rsync the working tree
+#   bench/gce/challoc-bench run       arm64|amd64 CMD...   # run CMD in ~/challoc on the VM
+#   bench/gce/challoc-bench make      arm64|amd64 ARGS...  # sync, then `make ARGS` on the VM
+#   bench/gce/challoc-bench pmu-check arm64|amd64|all      # perf stat the six reference events
+#   bench/gce/challoc-bench perf-stat arm64|amd64 'DOCKER_CMD'  # perf stat -p the container's process
+#   bench/gce/challoc-bench fetch     arm64|amd64          # pull bench/results/* back from the VM
+#   bench/gce/challoc-bench ssh       arm64|amd64 [ARGS]
+#   bench/gce/challoc-bench status    [arm64|amd64|all]
+#   bench/gce/challoc-bench start|stop|delete arm64|amd64|all
+#
+# Environment: CHALLOC_GCE_PROJECT (default: active gcloud project),
+# CHALLOC_GCE_ZONE (default us-central1-b), CHALLOC_GCE_PREFIX (default
+# challoc-bench). Stop every VM you start before an iteration ends: a
+# 16-vCPU C4A or C4 costs roughly $0.70-0.90 per hour while running.
+set -euo pipefail
+
+PROJECT="${CHALLOC_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
+ZONE="${CHALLOC_GCE_ZONE:-us-central1-b}"
+PREFIX="${CHALLOC_GCE_PREFIX:-challoc-bench}"
+REPO="$(cd "$(dirname "$0")/../.." && pwd)"
+REMOTE_DIR="challoc"
+
+# Six events every Phase 1.5 result must be able to count. perf's generic
+# names resolve to the right raw events on both Arm (armv8_pmuv3) and x86.
+PMU_EVENTS="cycles,instructions,branch-misses,L1-dcache-load-misses,dTLB-load-misses,iTLB-load-misses"
+
+die() { echo "challoc-bench: $*" >&2; exit 1; }
+g() { gcloud --project="$PROJECT" "$@"; }
+
+# Direct ssh/rsync use the key gcloud minted for `gcloud compute ssh`; run
+# `challoc-bench ssh arm64 -- true` once if it does not exist yet.
+SSH_KEY="${CHALLOC_GCE_SSH_KEY:-$HOME/.ssh/google_compute_engine}"
+ssh_cmd() {
+  [ -f "$SSH_KEY" ] || die "no ssh key at $SSH_KEY; run 'challoc-bench ssh arm64 -- true' once to have gcloud mint it"
+  echo "ssh -i $SSH_KEY -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$HOME/.ssh/google_compute_known_hosts"
+}
+
+vm_name()    { echo "$PREFIX-$1"; }
+vm_machine() { case "$1" in arm64) echo c4a-standard-16 ;; amd64) echo c4-standard-16 ;; *) die "unknown target $1" ;; esac; }
+vm_image()   { case "$1" in arm64) echo ubuntu-2404-lts-arm64 ;; amd64) echo ubuntu-2404-lts-amd64 ;; esac; }
+targets()    { case "${1:-all}" in all) echo "arm64 amd64" ;; arm64|amd64) echo "$1" ;; *) die "target must be arm64, amd64 or all" ;; esac; }
+
+gssh() { # gssh TARGET [ssh args] -- runs gcloud compute ssh on the target VM
+  local t="$1"; shift
+  g compute ssh "$(vm_name "$t")" --zone="$ZONE" --quiet "$@"
+}
+
+# ssh_target prints "user@ip" for direct ssh/rsync, using the OS Login
+# username so rsync does not need gcloud's wrapper.
+ssh_target() {
+  local t="$1" ip user
+  ip="$(g compute instances describe "$(vm_name "$t")" --zone="$ZONE" \
+        --format='value(networkInterfaces[0].accessConfigs[0].natIP)')"
+  [ -n "$ip" ] || die "$(vm_name "$t") has no external IP (is it running?)"
+  user="$(g compute os-login describe-profile --format='value(posixAccounts[0].username)')"
+  echo "$user@$ip"
+}
+
+cmd_create() {
+  for t in $(targets "${1:-all}"); do
+    local name; name="$(vm_name "$t")"
+    if g compute instances describe "$name" --zone="$ZONE" >/dev/null 2>&1; then
+      echo "challoc-bench: $name already exists"; continue
+    fi
+    echo "challoc-bench: creating $name ($(vm_machine "$t")) in $ZONE"
+    g compute instances create "$name" \
+      --zone="$ZONE" \
+      --machine-type="$(vm_machine "$t")" \
+      --performance-monitoring-unit=standard \
+      --image-family="$(vm_image "$t")" \
+      --image-project=ubuntu-os-cloud \
+      --boot-disk-size=100GB \
+      --boot-disk-type=hyperdisk-balanced \
+      --metadata=enable-oslogin=TRUE \
+      --scopes=cloud-platform \
+      --labels="owner=${USER},purpose=challoc-bench,arch=$t" &
+  done
+  wait
+}
+
+# provision installs Docker, perf for the running kernel, rsync, and opens
+# perf_event access for unprivileged users. Idempotent.
+cmd_provision() {
+  for t in $(targets "${1:-all}"); do
+    echo "challoc-bench: provisioning $(vm_name "$t")"
+    gssh "$t" --command="bash -s" -- -T <<'REMOTE' &
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+sudo apt-get update -qq
+sudo apt-get install -y -qq docker.io make rsync git jq \
+  linux-tools-common "linux-tools-$(uname -r)" >/dev/null
+sudo usermod -aG docker "$USER"
+sudo tee /etc/sysctl.d/90-challoc-perf.conf >/dev/null <<SYSCTL
+kernel.perf_event_paranoid = -1
+kernel.kptr_restrict = 0
+SYSCTL
+sudo sysctl -q --system
+# GCE NICs carry a 1460-byte MTU; Docker's bridge defaults to 1500, so TLS
+# fetches from inside a container (apk, cargo) stall on fragmented packets.
+if ! grep -q '"mtu": 1460' /etc/docker/daemon.json 2>/dev/null; then
+  echo '{ "mtu": 1460 }' | sudo tee /etc/docker/daemon.json >/dev/null
+  sudo systemctl restart docker
+fi
+sudo systemctl enable --now docker >/dev/null
+echo "== $(hostname): $(uname -m) $(uname -r)"
+echo "== cpu: $(grep -m1 'model name' /proc/cpuinfo | sed 's/.*: //' || lscpu | grep -m1 'Model name' | sed 's/.*: *//')"
+echo "== docker: $(sudo docker --version)"
+echo "== perf: $(perf --version)"
+echo "== pmu: $(ls /sys/bus/event_source/devices/ | tr '\n' ' ')"
+REMOTE
+  done
+  wait
+}
+
+cmd_sync() {
+  for t in $(targets "${1:-all}"); do
+    local dest; dest="$(ssh_target "$t")"
+    echo "challoc-bench: syncing $REPO -> $dest:$REMOTE_DIR"
+    rsync -az --delete \
+      --exclude=/target --exclude=/.ralph --exclude='/.tmp-*' --exclude='/.ralph-*.log' \
+      -e "$(ssh_cmd)" \
+      "$REPO/" "$dest:$REMOTE_DIR/" &
+  done
+  wait
+}
+
+cmd_run() {
+  local t="$1"; shift
+  [ $# -gt 0 ] || die "run needs a command"
+  gssh "$t" --command="cd $REMOTE_DIR && $*" -- -T
+}
+
+cmd_make() {
+  local t="$1"; shift
+  cmd_sync "$t"
+  cmd_run "$t" "make $*"
+}
+
+# pmu-check proves the PMU is real: every reference event must count
+# non-zero on a short busy loop. Fails loudly if any reads <not supported>
+# or 0.
+cmd_pmu_check() {
+  for t in $(targets "${1:-all}"); do
+    echo "== $(vm_name "$t")"
+    gssh "$t" --command="bash -s" -- -T <<REMOTE
+set -euo pipefail
+perf stat -x, -e $PMU_EVENTS -- sh -c 'i=0; while [ \$i -lt 300000 ]; do i=\$((i+1)); done' 2>&1 \
+  | awk -F, '{ printf "%-28s %s\n", \$3, \$1; if (\$1 == "<not supported>" || \$1 == "<not counted>" || \$1 == 0) bad = 1 } END { exit bad }' \
+  && echo "pmu ok: all events counted" || { echo "pmu FAIL: an event did not count"; exit 1; }
+REMOTE
+  done
+}
+
+# perf-stat runs a `docker run` command line (the Makefile's DOCKER_RUN
+# shape, or any docker run) detached on the VM, finds the benchmark process
+# inside it from the host, and attaches perf stat to it until it exits.
+# Usage: perf-stat arm64 'make run CMD="LD_PRELOAD=... larson ..."' is NOT
+# supported (make runs docker in the foreground); pass a docker run line:
+#   perf-stat arm64 'docker run --rm -v \$PWD:/src -w /src -v challoc-target-arm64:/src/target challoc-dev:arm64 sh -c "LD_PRELOAD=/src/target/release/libchalloc.so target/bench-bin/larson 5 8 1000 5000 100 4141 10"'
+cmd_perf_stat() {
+  local t="$1"; shift
+  [ $# -gt 0 ] || die "perf-stat needs a docker run command line"
+  gssh "$t" --command="bash -s" -- -T <<REMOTE
+set -euo pipefail
+cd $REMOTE_DIR
+cid=\$($* -d 2>/dev/null || { echo "the command must be a 'docker run' line that accepts -d" >&2; exit 1; })
+# wait for the first process inside the container, then attach to the whole cgroup via its pids
+for i in \$(seq 1 50); do pid=\$(docker inspect -f '{{.State.Pid}}' "\$cid" 2>/dev/null || true); [ -n "\$pid" ] && [ "\$pid" != 0 ] && break; sleep 0.1; done
+[ -n "\$pid" ] || { echo "container did not start" >&2; exit 1; }
+echo "== perf stat on container \$cid (init pid \$pid), events: $PMU_EVENTS"
+perf stat -e $PMU_EVENTS --inherit -p "\$pid" -- sleep 1000000 &
+pp=\$!
+docker wait "\$cid" >/dev/null
+kill -INT \$pp 2>/dev/null; wait \$pp || true
+docker logs "\$cid" 2>&1 | tail -20
+docker rm -f "\$cid" >/dev/null 2>&1 || true
+REMOTE
+}
+
+cmd_fetch() {
+  local t="$1" src; src="$(ssh_target "$t")"
+  rsync -az -e "$(ssh_cmd)" \
+    "$src:$REMOTE_DIR/bench/results/" "$REPO/bench/results/"
+}
+
+cmd_ssh()    { local t="$1"; shift; gssh "$t" "$@"; }
+cmd_status() {
+  g compute instances list --filter="labels.purpose=challoc-bench" \
+    --format='table(name,zone.basename(),machineType.basename(),status,networkInterfaces[0].accessConfigs[0].natIP)'
+}
+cmd_start()  { for t in $(targets "${1:-all}"); do g compute instances start  "$(vm_name "$t")" --zone="$ZONE" & done; wait; }
+cmd_stop()   { for t in $(targets "${1:-all}"); do g compute instances stop   "$(vm_name "$t")" --zone="$ZONE" & done; wait; }
+cmd_delete() { for t in $(targets "${1:-all}"); do g compute instances delete "$(vm_name "$t")" --zone="$ZONE" --quiet & done; wait; }
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  create)    cmd_create "$@" ;;
+  provision) cmd_provision "$@" ;;
+  sync)      cmd_sync "$@" ;;
+  run)       cmd_run "$@" ;;
+  make)      cmd_make "$@" ;;
+  pmu-check) cmd_pmu_check "$@" ;;
+  perf-stat) cmd_perf_stat "$@" ;;
+  fetch)     cmd_fetch "$@" ;;
+  ssh)       cmd_ssh "$@" ;;
+  status)    cmd_status ;;
+  start)     cmd_start "$@" ;;
+  stop)      cmd_stop "$@" ;;
+  delete)    cmd_delete "$@" ;;
+  *) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac
