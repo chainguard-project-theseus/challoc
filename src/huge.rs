@@ -417,14 +417,37 @@ mod os {
 }
 
 /// Off Linux nothing maps memory; host tests exercise the extent logic
-/// over addresses that are never dereferenced.
+/// over addresses that are never dereferenced. The stub does keep a log of
+/// every committed range so the tests can check that each run handed out
+/// lies in committed pages, which is how the alignment-hole bug fixed in
+/// `prepare` shows up on the host (the host runs in guard-install mode).
 #[cfg(not(target_os = "linux"))]
 mod os {
     use crate::sys::Errno;
     use core::sync::atomic::{AtomicU64, Ordering};
 
-    pub fn commit(_addr: usize, _len: usize) -> Result<(), Errno> {
+    #[cfg(test)]
+    static COMMITTED: std::sync::Mutex<std::vec::Vec<(usize, usize)>> = std::sync::Mutex::new(std::vec::Vec::new());
+
+    pub fn commit(addr: usize, len: usize) -> Result<(), Errno> {
+        #[cfg(test)]
+        COMMITTED.lock().unwrap().push((addr, len));
+        let _ = (addr, len);
         Ok(())
+    }
+
+    /// Whether every page of `[addr, addr + len)` was passed to `commit`.
+    #[cfg(test)]
+    pub fn is_committed(addr: usize, len: usize, page: usize) -> bool {
+        let log = COMMITTED.lock().unwrap();
+        let mut p = addr;
+        while p < addr + len {
+            if !log.iter().any(|&(a, l)| a <= p && p < a + l) {
+                return false;
+            }
+            p += page;
+        }
+        true
     }
 
     pub fn protect_none(_addr: usize, _len: usize) -> Result<(), Errno> {
@@ -716,14 +739,23 @@ impl Huge {
     /// Kernel side of an allocation of `usable` pages at `s`: commit and
     /// place the guard. Pages below `watermark` are committed already
     /// (apart from `PROT_NONE` guards in fallback mode).
+    ///
+    /// In guard-install mode every page below the mark stays committed, so
+    /// one `mprotect` over `[watermark, end)` is all a run past the mark
+    /// needs. That range deliberately starts at the mark, not at `s`: when
+    /// alignment puts `s` above the mark, `take` records `[watermark, s)`
+    /// as a `Purged` free extent (or folds it into the extent that touched
+    /// the mark), and the run later placed in that hole must find its pages
+    /// committed. Committing only `[s, end)` here left the hole `PROT_NONE`
+    /// and the first write into it faulted; the fallback mode never had
+    /// the problem because it commits `[s, s + usable)` on every call.
     fn prepare(&self, s: usize, usable: usize, watermark: usize) -> Result<(), Errno> {
         let page = self.page_size();
         let guard = s + usable;
         let end = guard + GUARD_PAGES;
         if self.guard_install {
-            let from = s.max(watermark);
-            if from < end {
-                os::commit(self.addr(from), (end - from) * page)?;
+            if watermark < end {
+                os::commit(self.addr(watermark), (end - watermark) * page)?;
             }
             os::guard_install(self.addr(guard), GUARD_PAGES * page)
         } else {
@@ -1261,8 +1293,14 @@ mod tests {
         pub fn with_meta_len(meta_len: usize) -> Env {
             let buf = vec![0u8; meta_len + PAGE];
             let mb = align_up(buf.as_ptr() as usize, PAGE);
-            // A deliberately non-4 MiB-aligned base, like a real slid one.
-            let regions = regions_at((0x2000_0000_1000, HUGE_LEN), (mb, meta_len));
+            // A deliberately non-4 MiB-aligned base, like a real slid one,
+            // and distinct per `Env` so the `os` commit log shared by the
+            // parallel tests never credits one environment's commits to
+            // another's runs.
+            static NEXT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+            let n = NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+            let hb = 0x2000_0000_1000 + n * (HUGE_LEN + 4 * crate::layout::MAX_SLAB);
+            let regions = regions_at((hb, HUGE_LEN), (mb, meta_len));
             Env { meta: Meta::new(mb, meta_len, PAGE), regions, _buf: buf }
         }
 
@@ -1270,9 +1308,29 @@ mod tests {
             Huge::new(&self.meta, &self.regions, guard_mode()).expect("huge allocator")
         }
 
+        /// [`Huge::alloc`] plus an audit and a check that the run's pages
+        /// are committed: against the `os` commit log on the host, by
+        /// reading the first and last usable byte on Linux (a `PROT_NONE`
+        /// page would fault). The guard page is never touched.
         pub fn alloc(&self, h: &Huge, size: usize, align: usize) -> (*mut u8, bool) {
             let r = h.alloc(&self.meta, size, align, 0);
             h.audit();
+            if !r.0.is_null() {
+                let info = h.lookup(self.page_of(r.0)).expect("run descriptor");
+                assert!(info.usable >= size.max(1));
+                #[cfg(not(target_os = "linux"))]
+                assert!(
+                    os::is_committed(r.0 as usize, info.usable, PAGE),
+                    "run {:#x} ({} usable bytes) lies in uncommitted pages",
+                    r.0 as usize,
+                    info.usable
+                );
+                #[cfg(target_os = "linux")]
+                unsafe {
+                    core::ptr::read_volatile(r.0);
+                    core::ptr::read_volatile(r.0.add(info.usable - 1));
+                }
+            }
             r
         }
 
@@ -2050,6 +2108,76 @@ mod linux_tests {
             assert!(all(p, 4 * PAGE, v));
         }
         for (p, _) in held {
+            env.free(&h, p);
+        }
+        assert_eq!(h.stats().runs, 0);
+    }
+
+    /// The Phase 0 regression found on the GCE VMs: in guard-install mode
+    /// `prepare` committed only `[max(s, mark), end)`, so the alignment
+    /// hole `[mark, s)` that `take` records as a free extent stayed
+    /// `PROT_NONE` and the first run refilled into it faulted. Both hole
+    /// shapes: a hole between the mark and an aligned run on fresh pages
+    /// (`ext` null in `take`), and a hole folded into an `Empty` extent that
+    /// touched the mark (`s > e_end`). Every filler is written end to end.
+    #[test]
+    fn alignment_holes_are_committed_and_writable() {
+        let env = Env::new();
+        let h = env.huge();
+        let mut held = Vec::new();
+        // Shape 1: fresh pages above the mark.
+        let (a, _) = env.alloc(&h, PAGE, 1);
+        fill(a, PAGE, 1);
+        let (b, _) = env.alloc(&h, PAGE, 1 << 20);
+        fill(b, PAGE, 2);
+        let b_page = env.page_of(b);
+        let hole = h.lookup(env.page_of(a) + 1 + GUARD_PAGES).expect("hole extent");
+        assert_eq!((hole.state, hole.start + hole.pages), (RunState::Purged, b_page));
+        let mut fillers = 0;
+        loop {
+            let (p, zero) = env.alloc(&h, PAGE, 1);
+            if env.page_of(p) > b_page {
+                env.free(&h, p);
+                break;
+            }
+            assert!(zero && all(p, PAGE, 0));
+            fill(p, PAGE, 0x33);
+            held.push(p);
+            fillers += 1;
+        }
+        assert!(fillers >= 2, "hole below the aligned run took {fillers} fillers");
+        // Shape 2: an Empty extent touching the mark absorbs the hole.
+        let (c, _) = env.alloc(&h, 3 * PAGE, 1);
+        let c_page = env.page_of(c);
+        fill(c, 3 * PAGE, 0xC0);
+        env.free(&h, c);
+        assert_eq!(h.lookup(c_page).unwrap().state, RunState::Empty);
+        let c_ext = h.lookup(c_page).unwrap();
+        assert_eq!(c_ext.start + c_ext.pages, h.stats().next_page);
+        let (d, zero) = env.alloc(&h, PAGE, 2 << 20);
+        assert!(zero && all(d, PAGE, 0));
+        fill(d, PAGE, 4);
+        let d_page = env.page_of(d);
+        let head = h.lookup(c_page).expect("head extent");
+        assert_eq!((head.state, head.start + head.pages), (RunState::Empty, d_page), "head did not absorb the hole");
+        let mut fillers = 0;
+        loop {
+            let (p, _) = env.alloc(&h, PAGE, 1);
+            if env.page_of(p) > d_page {
+                env.free(&h, p);
+                break;
+            }
+            fill(p, PAGE, 0x44);
+            held.push(p);
+            fillers += 1;
+        }
+        assert!(fillers >= 2, "hole below the second aligned run took {fillers} fillers");
+        for &p in &held {
+            let v = unsafe { *p };
+            assert!(all(p, PAGE, v));
+        }
+        assert!(all(a, PAGE, 1) && all(b, PAGE, 2) && all(d, PAGE, 4));
+        for p in held.into_iter().chain([a, b, d]) {
             env.free(&h, p);
         }
         assert_eq!(h.stats().runs, 0);

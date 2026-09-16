@@ -544,6 +544,21 @@ fn mimalloc_test_stress() {
     run_c_flags("tests/mimalloc", "stress", &["8", "50", "10"], &["-Wno-unused-parameter", &include]);
 }
 
+/// `tests/c/huge_hole.c`: the alignment holes the huge allocator leaves
+/// below an aligned run are committed memory. Once in the probed guard mode
+/// (guard-install on kernels with `MADV_GUARD_INSTALL`, where the Phase 0
+/// regression lived) and once forced onto the `PROT_NONE` fallback.
+#[test]
+fn c_huge_hole() {
+    run_c("huge_hole", &[]);
+}
+
+#[test]
+fn c_huge_hole_no_guards() {
+    let bin = compile("tests/c", "huge_hole", &[]);
+    run_bin_env("huge_hole", &bin, &[], &[("MALLOC_CONF", "abort_conf:true,guards:false")]);
+}
+
 #[test]
 fn c_fuzz_short() {
     // The Phase 0 task 13 fuzz driver at a fraction of `make fuzz` (10M ops,
