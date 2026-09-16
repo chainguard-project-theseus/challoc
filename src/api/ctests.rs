@@ -1,6 +1,7 @@
 //! Drivers for the per-feature C programs in `tests/c/` (plan Phase 0
 //! task 12), the fuzz driver in `fuzz/` (task 13), the negative tests
-//! (task 14) and the glibc malloc tests in `tests/glibc/` (task 15). Each
+//! (task 14), the glibc malloc tests in `tests/glibc/` (task 15) and
+//! mimalloc's stress test in `tests/mimalloc/` (task 16). Each
 //! program is compiled with the container's C compiler, run once without
 //! the preload to prove it notices when challoc is not serving `malloc`,
 //! then run under `LD_PRELOAD=libchalloc.so` and must exit 0 and print
@@ -232,6 +233,18 @@ fn glibc_tst_posix_memalign() {
 #[test]
 fn glibc_tst_realloc() {
     run_glibc("tst-realloc");
+}
+
+#[test]
+fn mimalloc_test_stress() {
+    // mimalloc's test/test-stress.c with USE_STD_MALLOC at THREADS=8
+    // SCALE=50 ITER=10 (plan Phase 0 task 16). `tests/mimalloc/stress.c`
+    // wraps the unmodified source; the include shims stand in for
+    // mimalloc's headers. `-Wno-unused-parameter`: run_os_threads()
+    // ignores its subproc argument on POSIX.
+    let root = env!("CARGO_MANIFEST_DIR");
+    let include = std::format!("-I{root}/tests/mimalloc/include");
+    run_c_flags("tests/mimalloc", "stress", &["8", "50", "10"], &["-Wno-unused-parameter", &include]);
 }
 
 #[test]

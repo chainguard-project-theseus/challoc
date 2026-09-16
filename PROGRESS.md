@@ -25,7 +25,7 @@ One line per task, newest at the bottom of each section. Keep it terse.
 
 ## In progress
 
-(none)
+- Phase 0 task 16: mimalloc `test-stress.c` with `USE_STD_MALLOC` under `LD_PRELOAD` at `THREADS=8 SCALE=50 ITER=10`.
 
 ## Design decisions
 
@@ -115,6 +115,9 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
 - Phase 0 task 14: `negative.c` routes every bad pointer through a `volatile` and allocates its churn blocks before the victim. Reason: gcc 15 rejects `free` of a stack address, a freed pointer, or an out-of-bounds store as errors under `-Werror`; and a `malloc` after the first `free` would pop the victim straight back out of the thread cache.
 - Phase 0 task 15: the five glibc sources (tag `glibc-2.44`) plus `tst-malloc-aux.h` are copied unmodified into `tests/glibc/malloc/`, mirroring glibc's tree so their trailing `#include "../test-skeleton.c"` resolves to challoc's `tests/glibc/test-skeleton.c`, and `tests/glibc/include/` shims the three internal headers they use (`libc-diag.h`, `support/check.h`, `support/test-pointer.h`). Reason: unmodified sources keep the provenance simple (README lists tag, commit, licence) and the skeleton is where challoc adds `require_challoc` and the `ok <name>` line the driver expects.
 - Phase 0 task 15: glibc tests compile with the common `-Wall -Wextra -Werror` plus `-D_GNU_SOURCE -Wno-unused-parameter`, and the skeleton has no alarm-based timeout. Reason: glibc builds its tests without `-Wextra` (`tst-mallocfork.c` has an unused signal parameter) and installs its own SIGALRM handler in that test; the other C drivers here have no timeout either.
+
+- Phase 0 task 16: mimalloc `test/test-stress.c` (tag `v3.5.2`) is copied unmodified into `tests/mimalloc/` with its MIT `LICENSE`; `tests/mimalloc/stress.c` is the program actually built: it defines `USE_STD_MALLOC`, `#include`s the source with `#define main test_stress_main`, and wraps it with `require_challoc()` and the `ok stress` line; `include/mimalloc.h` and `include/mimalloc-stats.h` stand in for the headers the source includes unconditionally and declare only `mi_subproc_id_t`. Reason: same provenance rule as task 15 (README lists tag, commit, licence), and the wrapper is where challoc's bare-run refusal and driver protocol live without touching upstream code.
+- Phase 0 task 16: the stress program is compiled without `NDEBUG` and with `-Wno-unused-parameter`. Reason: `alloc_items()` asserts every `calloc` word is zero, which is exactly the calloc zero-tracking check we want; the debug-only progress line is harmless, and POSIX `run_os_threads()` ignores its `subproc` argument.
 
 ## Blocked
 
