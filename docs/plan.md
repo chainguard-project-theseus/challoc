@@ -263,7 +263,19 @@ Tasks:
       counters file: `sudo perf` attached to the container); Valkey
       `unit/memefficiency` green.
    c. If (a) misses (b), set the default `narenas` to `min(4 * ncpus, 64)` and
-      rerun the full Valkey suite and the soak.
+      rerun the full Valkey suite and the soak. Measured 2026-09-17
+      (`bench/results/2026-09-17-{aarch64,x86_64}-gce-thread-affinity.md`):
+      (a) misses on both VMs (the 10-thread L1D misses per operation do not
+      move; a hint cannot keep a thread's refills and flushes inside its own
+      slabs, only a partitioned set can), so (c) is the path, with two
+      requirements from the same run: `Arenas::assign` must pick the arena
+      with the fewest bound heaps (decremented at heap exit, jemalloc's
+      `arena_choose`) instead of round robin, because thread churn otherwise
+      materialises every arena and leaves a partial slab per class in each
+      (larson1 67 MiB against 13.6 today and jemalloc's 18); and the A/B must
+      include xmalloc-test and RSS on x86_64, where `narenas:16` costs
+      xmalloc-test 32% (still ahead of jemalloc) and the larson10/16 RSS
+      rows read +48% / +37% against jemalloc before the assignment fix.
 4b. Ruby benchmark rows (after task 4, before task 5): a
    `bench/ruby-bench.sh` and `make ruby-bench` over the `contrib/ruby/build.sh`
    stage: a fixed subset of ruby/benchmark run with `benchmark-driver`

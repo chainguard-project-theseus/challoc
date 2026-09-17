@@ -32,23 +32,6 @@
 //! and clears the partial bit of a slab it finds full (`is_full` under the
 //! lock), so a concurrent release either is visible to that check or sets
 //! the bit afterwards.
-//!
-//! Thread affinity (review 2026-09-17, P2 form a). Slabs stay class-owned
-//! and remote frees are unchanged, but a cache refill carries an
-//! [`Affinity`]: the heap's id and the slab its previous refill ended on
-//! (the *hint*). Under the lock that slab's descriptor is stamped with the
-//! heap's id while it is `Active` ([`SlabDesc::hint_owner`]; at most one
-//! stamped slab per heap and class), and [`ClassState::plan`] takes the hint
-//! slab first while it is still partial and still this heap's, then the
-//! lowest partial slab that is not another heap's hint, then empty, purged
-//! and fresh slabs, and another heap's hint slab only when nothing else can
-//! be committed. Ten threads refilling one class therefore fill ten slabs
-//! instead of interleaving runs of slots in the lowest one, which is what
-//! made every slab line and descriptor word shared between cores on the
-//! reference VMs. The cost is at most one extra partial slab per
-//! `(heap, class)`; a heap's exit gives its stamps back
-//! ([`ClassState::forget_hint`]). Direct claims ([`ClassState::claim`]) and
-//! Valkey's defragmenter keep the pure address-ordered first fit.
 
 use crate::bitmap::TwoLevelBitmap;
 use crate::layout::{CLASSES, Class, Regions};
@@ -84,25 +67,6 @@ pub struct Claim {
     /// Every returned slot came from a slab that was `Fresh` or `Purged`
     /// when this thread selected it, so its memory reads as zero.
     pub zeroed: bool,
-}
-
-/// A refilling heap's slab affinity (module doc): the heap's id (0 for a
-/// heap without one, which stamps nothing) and the slab its last claim
-/// ended on, [`NO_HINT`] when none. Kept by the caller between claims and
-/// updated by every claim.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct Affinity {
-    pub heap: u32,
-    pub hint: u32,
-}
-
-/// [`Affinity::hint`] when the heap has not claimed from the class yet.
-pub const NO_HINT: u32 = u32::MAX;
-
-impl Affinity {
-    pub const fn new(heap: u32) -> Affinity {
-        Affinity { heap, hint: NO_HINT }
-    }
 }
 
 /// Slabs one lock hold of a refill may reserve from (see
@@ -761,33 +725,18 @@ impl ClassState {
     }
 
     /// Claim up to `out.len()` slots, lowest address first, writing slot
-    /// pointers to `out[..n]`: the pure address-ordered first fit with no
-    /// affinity (direct claims, the defragmenter, tests). See
-    /// [`claim_with`].
-    ///
-    /// [`claim_with`]: ClassState::claim_with
-    pub fn claim(&self, meta: &Meta, out: &mut [*mut u8]) -> Claim {
-        self.claim_with(meta, out, None, false)
-    }
-
-    /// Claim up to `out.len()` slots, writing slot pointers to `out[..n]`.
-    /// Each lock hold reserves from up to [`MAX_PICKS`] slabs (see
-    /// [`plan`]); the loop repeats only when a plan ran out of picks before
-    /// the request was met. With an [`Affinity`] the slabs are chosen as
-    /// the module doc describes and the affinity's hint is updated;
-    /// `hint_first` makes the hint slab the first choice while it is still
-    /// partial (a cache refill), otherwise the lowest eligible slab is (a
-    /// compaction rebuild, which wants address order among the slabs this
-    /// heap may use). Slots come lowest address first within each plan.
+    /// pointers to `out[..n]`. Each lock hold reserves from up to
+    /// [`MAX_PICKS`] slabs (see [`plan`]); the loop repeats only when a
+    /// plan ran out of picks before the request was met.
     ///
     /// [`plan`]: ClassState::plan
-    pub fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut aff: Option<&mut Affinity>, hint_first: bool) -> Claim {
+    pub fn claim(&self, meta: &Meta, out: &mut [*mut u8]) -> Claim {
         let cls = self.class();
         let mut got = 0;
         let mut zeroed = true;
         let mut picks = [Pick { slab: 0, n: 0, zero: false }; MAX_PICKS];
         while got < out.len() {
-            let np = self.plan(meta, out.len() - got, &mut picks, aff.as_deref_mut(), hint_first);
+            let np = self.plan(meta, out.len() - got, &mut picks);
             if np == 0 {
                 break;
             }
@@ -834,15 +783,8 @@ impl ClassState {
     }
 
     /// One lock hold of a refill: reserve up to `want` slots across up to
-    /// [`MAX_PICKS`] slabs and return the number of picks written. Zero
-    /// picks means nothing more can be committed. Without an affinity the
-    /// order is the lowest partial slab, then empty, purged and fresh
-    /// slabs; with one it is the affinity's hint slab (if `hint_first` and
-    /// still this heap's partial slab), the lowest partial slab that is not
-    /// another heap's hint, empty, purged, fresh, and finally another
-    /// heap's hint slab. The plan ends by moving the hint to the last slab
-    /// picked: the old hint's stamp is cleared if it is still this heap's
-    /// and the new hint is stamped.
+    /// [`MAX_PICKS`] slabs, lowest address first, and return the number of
+    /// picks written. Zero picks means nothing more can be committed.
     ///
     /// `nslots - live` is a lower bound on a slab's claimable slots: every
     /// claimer reserves in `live` under this lock before it sets bits, and
@@ -855,48 +797,26 @@ impl ClassState {
     /// every slot is reserved here leaves the partial set at once: nothing
     /// in it can be released before this claim hands slots out, so no
     /// release can race the clear.
-    fn plan(&self, meta: &Meta, want: usize, picks: &mut [Pick; MAX_PICKS], aff: Option<&mut Affinity>, hint_first: bool) -> usize {
+    fn plan(&self, meta: &Meta, want: usize, picks: &mut [Pick; MAX_PICKS]) -> usize {
         let cls = self.class();
-        let nslots = cls.nslots();
         let mut g = self.inner.lock();
         let mut np = 0;
         let mut remaining = want;
-        let heap = aff.as_ref().map_or(0, |a| a.heap);
-        let hint = aff.as_ref().map_or(NO_HINT, |a| a.hint);
-        // 1. This heap's hint slab, while it is partial and still stamped
-        // as this heap's (a slab that went `Empty` and was taken by another
-        // heap since carries that heap's stamp, or none).
-        if hint_first && hint != NO_HINT && g.partial.map.is_set(hint as usize) {
-            let desc = self.desc(hint as usize);
-            if desc.hint_owner() == heap && desc.live() < nslots {
-                self.take(&mut g, hint as usize, &mut remaining, picks, &mut np);
-            }
-        }
-        // 2. The lowest partial slab that is not another heap's hint.
-        let mut steal: Option<usize> = None;
         let mut next = g.partial.map.lowest_set();
         while let Some(s) = next {
             if remaining == 0 || np == MAX_PICKS {
-                break;
+                return np;
             }
             let desc = self.desc(s);
-            if desc.live() >= nslots {
+            if desc.live() >= cls.nslots() {
                 if desc.state() == State::Active && desc.bitmap(cls).is_full() {
                     g.clear_partial(s);
                 }
             } else {
-                let owner = desc.hint_owner();
-                if aff.is_some() && owner != 0 && owner != heap {
-                    if steal.is_none() {
-                        steal = Some(s);
-                    }
-                } else {
-                    self.take(&mut g, s, &mut remaining, picks, &mut np);
-                }
+                self.take(&mut g, s, &mut remaining, picks, &mut np);
             }
             next = g.partial.map.lowest_set_from(s + 1);
         }
-        // 3. Empty, purged and fresh slabs.
         while remaining > 0 && np < MAX_PICKS {
             let s = if let Some(s) = g.empty.map.lowest_set() {
                 g.empty.map.clear(s);
@@ -914,52 +834,7 @@ impl ClassState {
             };
             self.take(&mut g, s, &mut remaining, picks, &mut np);
         }
-        // 4. Nothing else: another heap's hint slab (from the lowest).
-        let mut next = steal;
-        while let Some(s) = next {
-            if remaining == 0 || np == MAX_PICKS {
-                break;
-            }
-            let desc = self.desc(s);
-            if desc.live() < nslots {
-                self.take(&mut g, s, &mut remaining, picks, &mut np);
-            }
-            next = g.partial.map.lowest_set_from(s + 1);
-        }
-        // 5. Move the hint to the last slab picked.
-        if let Some(a) = aff {
-            if np > 0 {
-                let last = picks[np - 1].slab;
-                if last != a.hint {
-                    if a.hint != NO_HINT {
-                        let old = self.desc(a.hint as usize);
-                        if old.state() == State::Active && old.hint_owner() == heap {
-                            old.set_hint_owner(0);
-                        }
-                    }
-                    a.hint = last;
-                }
-                if heap != 0 {
-                    self.desc(last as usize).set_hint_owner(heap);
-                }
-            }
-        }
         np
-    }
-
-    /// Give back `heap`'s stamp on `hint` (its cache's hint slab for this
-    /// class), so other heaps may refill from it: called when a heap is
-    /// destroyed. A slab that has since gone `Empty` or been taken over by
-    /// another heap is left alone.
-    pub fn forget_hint(&self, heap: u32, hint: u32) {
-        if heap == 0 || hint == NO_HINT {
-            return;
-        }
-        let _g = self.inner.lock();
-        let desc = self.desc(hint as usize);
-        if desc.state() == State::Active && desc.hint_owner() == heap {
-            desc.set_hint_owner(0);
-        }
     }
 
     /// Reserve `min(nslots - live, *remaining)` slots of `slab` under the
@@ -972,8 +847,6 @@ impl ClassState {
         let state = desc.state();
         if state != State::Active {
             desc.set_state(State::Active);
-            // No `dirty_at` and no hint owner yet (`plan` stamps the last
-            // pick when it is done).
             desc.set_dirty_at(0);
         }
         desc.add_live(n);
@@ -1468,174 +1341,6 @@ mod tests {
             out.truncate(c.n);
             (out, c)
         }
-
-        /// A cache refill's claim: with an affinity, hint slab first.
-        fn refill(&self, cs: &ClassState, n: usize, aff: &mut Affinity) -> Vec<*mut u8> {
-            let mut out = vec![ptr::null_mut(); n];
-            let c = cs.claim_with(&self.meta, &mut out, Some(aff), true);
-            out.truncate(c.n);
-            out
-        }
-
-        /// A compaction rebuild's claim: with an affinity, lowest eligible
-        /// slab first.
-        fn rebuild(&self, cs: &ClassState, n: usize, aff: &mut Affinity) -> Vec<*mut u8> {
-            let mut out = vec![ptr::null_mut(); n];
-            let c = cs.claim_with(&self.meta, &mut out, Some(aff), false);
-            out.truncate(c.n);
-            out
-        }
-    }
-
-    /// Thread affinity (module doc): heaps refilling one class each fill a
-    /// slab of their own and keep refilling from it while it is partial; a
-    /// claim without affinity keeps the pure first fit and ignores stamps.
-    #[test]
-    fn affine_refills_keep_heaps_on_their_own_slabs() {
-        let env = Env::new();
-        let c = small_class();
-        let cs = env.class(c, 0);
-        let mut a = Affinity::new(1);
-        let mut b = Affinity::new(2);
-        let pa = env.refill(&cs, 10, &mut a);
-        assert!(pa.iter().all(|&p| cs.locate(p).0 == 0));
-        assert_eq!((a.hint, cs.desc(0).hint_owner()), (0, 1));
-        // B skips A's hint slab and commits the next one.
-        let pb = env.refill(&cs, 10, &mut b);
-        assert!(pb.iter().all(|&p| cs.locate(p).0 == 1));
-        assert_eq!((b.hint, cs.desc(1).hint_owner()), (1, 2));
-        // Both slabs are partial; each heap stays on its own.
-        let pa2 = env.refill(&cs, 10, &mut a);
-        assert!(pa2.iter().all(|&p| cs.locate(p).0 == 0));
-        assert_eq!(cs.locate(pa2[0]), (0, 10));
-        let pb2 = env.refill(&cs, 10, &mut b);
-        assert!(pb2.iter().all(|&p| cs.locate(p).0 == 1));
-        assert_eq!(cs.locate(pb2[0]), (1, 10));
-        // A third heap: a third slab.
-        let mut d = Affinity::new(3);
-        let pd = env.refill(&cs, 1, &mut d);
-        assert_eq!(cs.locate(pd[0]).0, 2);
-        // No affinity: the lowest partial slab, whoever's hint it is.
-        let (q, _) = env.claim(&cs, 1);
-        assert_eq!(cs.locate(q[0]), (0, 20));
-        assert_eq!(cs.stats().nonfull, 3);
-        assert_eq!((cs.desc(0).hint_owner(), cs.desc(1).hint_owner(), cs.desc(2).hint_owner()), (1, 2, 3));
-    }
-
-    /// The hint follows the last slab a claim picked and the old hint's
-    /// stamp is given up; a hint slab that went `Empty` and was taken by
-    /// another heap is recognised as lost.
-    #[test]
-    fn the_hint_follows_the_last_pick_and_a_lost_hint_is_abandoned() {
-        let env = Env::new();
-        let c = small_class();
-        let n = CLASSES[c].nslots();
-        let cs = env.class(c, 0);
-        let mut a = Affinity::new(1);
-        let mut b = Affinity::new(2);
-        // A fills slab 0 and starts slab 1: the hint moves to 1, slab 0 is
-        // nobody's.
-        let p = env.refill(&cs, n + 5, &mut a);
-        assert_eq!(p.len(), n + 5);
-        assert_eq!((a.hint, cs.desc(0).hint_owner(), cs.desc(1).hint_owner()), (1, 0, 1));
-        // Holes in slab 0 are open to anyone: B's first refill takes them
-        // rather than a fresh slab, and slab 0 becomes B's hint.
-        cs.release(&p[..3]);
-        let q = env.refill(&cs, 3, &mut b);
-        assert!(q.iter().all(|&x| cs.locate(x).0 == 0));
-        assert_eq!((b.hint, cs.desc(0).hint_owner()), (0, 2));
-        // A's hint slab 1 is still partial and A's: A stays there.
-        let r = env.refill(&cs, 1, &mut a);
-        assert_eq!(cs.locate(r[0]), (1, 5));
-        // Slab 1 goes Empty; B (whose hint slab 0 is full again) takes it
-        // from the empty set, so it is B's now and slab 0 is nobody's.
-        cs.release(&p[n..]);
-        cs.release(&r);
-        assert_eq!(cs.desc(1).state(), State::Empty);
-        let q2 = env.refill(&cs, 2, &mut b);
-        assert!(q2.iter().all(|&x| cs.locate(x).0 == 1));
-        assert_eq!((b.hint, cs.desc(1).hint_owner(), cs.desc(0).hint_owner()), (1, 2, 0));
-        // A's hint still says 1, but the stamp is B's: A moves to slab 2.
-        assert_eq!(a.hint, 1);
-        let r2 = env.refill(&cs, 1, &mut a);
-        assert_eq!(cs.locate(r2[0]).0, 2);
-        assert_eq!((a.hint, cs.desc(2).hint_owner()), (2, 1));
-    }
-
-    /// Another heap's hint slab is taken only once nothing else can be
-    /// committed; the taker's stamp replaces the owner's.
-    #[test]
-    fn another_heaps_hint_slab_is_the_last_resort() {
-        let env = Env::new();
-        let c = small_class();
-        let n = CLASSES[c].nslots();
-        let cs = env.class(c, 0);
-        let slabs = cs.nslabs();
-        let mut a = Affinity::new(1);
-        let mut b = Affinity::new(2);
-        // A fills every slab but half of the last: the only partial slab is
-        // A's hint.
-        let p = env.refill(&cs, (slabs - 1) * n + n / 2, &mut a);
-        assert_eq!(p.len(), (slabs - 1) * n + n / 2);
-        assert_eq!((a.hint as usize, cs.desc(slabs - 1).hint_owner()), (slabs - 1, 1));
-        assert_eq!(cs.stats().nonfull, 1);
-        // B has nowhere else to go.
-        let q = env.refill(&cs, 1, &mut b);
-        assert_eq!(cs.locate(q[0]), (slabs - 1, n / 2));
-        assert_eq!((b.hint as usize, cs.desc(slabs - 1).hint_owner()), (slabs - 1, 2));
-        // A's hint is lost to B; with nothing else available A steals it
-        // back for the next claim.
-        let r = env.refill(&cs, 1, &mut a);
-        assert_eq!(cs.locate(r[0]), (slabs - 1, n / 2 + 1));
-        assert_eq!(cs.desc(slabs - 1).hint_owner(), 1);
-    }
-
-    /// `forget_hint` (a heap's exit) reopens the slab to other heaps and
-    /// leaves a slab that is another heap's now alone.
-    #[test]
-    fn forget_hint_reopens_the_slab_to_other_heaps() {
-        let env = Env::new();
-        let c = small_class();
-        let cs = env.class(c, 0);
-        let mut a = Affinity::new(1);
-        let mut b = Affinity::new(2);
-        env.refill(&cs, 1, &mut a);
-        assert_eq!(cs.desc(0).hint_owner(), 1);
-        cs.forget_hint(1, a.hint);
-        assert_eq!(cs.desc(0).hint_owner(), 0);
-        let q = env.refill(&cs, 1, &mut b);
-        assert_eq!(cs.locate(q[0]), (0, 1));
-        assert_eq!(cs.desc(0).hint_owner(), 2);
-        cs.forget_hint(1, 0);
-        assert_eq!(cs.desc(0).hint_owner(), 2);
-        cs.forget_hint(2, NO_HINT);
-        assert_eq!(cs.desc(0).hint_owner(), 2);
-    }
-
-    /// A compaction rebuild's claim keeps address order among the slabs
-    /// this heap may use: the lowest eligible slab, not the hint, and it
-    /// still skips other heaps' hint slabs.
-    #[test]
-    fn a_rebuild_claim_takes_the_lowest_eligible_slab_not_the_hint() {
-        let env = Env::new();
-        let c = small_class();
-        let n = CLASSES[c].nslots();
-        let cs = env.class(c, 0);
-        let mut a = Affinity::new(1);
-        let mut b = Affinity::new(2);
-        let p = env.refill(&cs, n + 5, &mut a);
-        cs.release(&p[..3]);
-        // A refill stays on the hint (slab 1) although slab 0 has holes.
-        let r = env.refill(&cs, 1, &mut a);
-        assert_eq!(cs.locate(r[0]), (1, 5));
-        // A rebuild takes slab 0's holes and moves the hint there.
-        let r2 = env.rebuild(&cs, 2, &mut a);
-        assert_eq!((cs.locate(r2[0]), cs.locate(r2[1])), ((0, 0), (0, 1)));
-        assert_eq!((a.hint, cs.desc(0).hint_owner(), cs.desc(1).hint_owner()), (0, 1, 0));
-        // B's rebuild skips A's slab 0 (one hole left) for slab 1.
-        let q = env.rebuild(&cs, 1, &mut b);
-        assert_eq!(cs.locate(q[0]), (1, 6));
-        assert_eq!((b.hint, cs.desc(1).hint_owner()), (1, 2));
     }
 
     /// Regression: with 2^21 members the level-1 table is exactly one page,
