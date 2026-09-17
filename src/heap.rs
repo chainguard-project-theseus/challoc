@@ -1107,11 +1107,16 @@ impl Heap {
                     let refilled = cs.refilled() as u32;
                     let delta = refilled.wrapping_sub((*cache).probe_refilled) as usize;
                     (*cache).probe_refilled = refilled;
-                    if delta >= COMPACT_MAX_REFILL_SLABS * CLASSES[class].nslots()
-                        || !Self::fragmented(shared, (*cache).arena, class)
-                    {
+                    if delta >= COMPACT_MAX_REFILL_SLABS * CLASSES[class].nslots() {
+                        if Self::fragmented(shared, (*cache).arena, class) {
+                            cs.note_gate_refill();
+                        }
                         return Self::pop_top(cache, len);
                     }
+                    if !Self::fragmented(shared, (*cache).arena, class) {
+                        return Self::pop_top(cache, len);
+                    }
+                    cs.note_compact_mode(true);
                     (*cache).mode = MODE_COMPACT;
                     (*cache).compact_mask = shared.config.compact_mask();
                     return self.pop_compact_run(cache, class, len);
@@ -1190,6 +1195,7 @@ impl Heap {
         unsafe {
             let arena = (*cache).arena;
             if !Self::fragmented(shared, arena, class) {
+                shared.owner(arena).class(class).note_compact_mode(false);
                 (*cache).mode = MODE_PROBE;
                 (*cache).compact_mask = PROBE_MASK;
                 return;
@@ -1213,6 +1219,7 @@ impl Heap {
             if n == 0 {
                 return;
             }
+            shared.owner(arena).class(class).note_compact(n);
             out[..n].reverse();
             let all = core::slice::from_raw_parts_mut(slots, len + n);
             if len >= n {
@@ -2634,6 +2641,42 @@ pub(crate) mod tests {
         }
         t.destroy();
         assert_eq!(live(s, c), 0);
+    }
+
+    #[test]
+    fn random_walk_churn_model_compacts_too() {
+        // Valkey's delete-phase pattern: frees and allocations of one class
+        // arrive in random order (memtier DEL:SET over random keys), so the
+        // live count and the cache length random-walk instead of the strict
+        // alternation of `churn_model_...`. The bound is the same.
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(1024);
+        let nslots = CLASSES[c].nslots();
+        let mut keep = residue(&t, c, 40, 560, 0x5151_a1a1_7777_0f0f);
+        let target = keep.len();
+        let before = occupied(s, c);
+        let mut st = 0x1357_9bdfu64;
+        let mut was_compacting = false;
+        for _ in 0..400_000 {
+            let r = xorshift(&mut st);
+            let go_free = if keep.len() > target + 100 { true } else if keep.len() + 100 < target { false } else { r & 1 == 0 };
+            if go_free {
+                let i = ((r >> 8) % keep.len() as u64) as usize;
+                t.free(keep.swap_remove(i));
+            } else {
+                keep.push(t.alloc(c));
+            }
+            was_compacting |= t.cache(c).compacting();
+        }
+        assert!(was_compacting);
+        let after = occupied(s, c);
+        let bound = keep.len().div_ceil(nslots) + COMPACT_MIN_SLABS + default_cap(c) as usize / nslots + 1;
+        assert!(after <= bound, "{after} occupied slabs after the random walk, bound {bound}, before {before}");
+        for p in keep {
+            t.free(p);
+        }
+        t.destroy();
     }
 
     #[test]

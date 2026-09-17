@@ -307,7 +307,15 @@ pub struct ClassState {
     /// (`MALLOCX_TCACHE_NONE`) claims such as Valkey's defragmenter's. The
     /// compaction gate in `heap.rs` watches its rate.
     refilled: AtomicU64,
-    _tail: [u8; PAD_ALIGN - 24],
+    /// Compaction diagnostics, printed in the bins table of
+    /// `malloc_stats_print` (Phase 1 acceptance step 3): slots claimed by
+    /// compaction rebuilds, caches that entered and left compact mode, and
+    /// probes the refill-rate gate declined. All written on cold paths.
+    compacted: AtomicU64,
+    compact_on: AtomicU64,
+    compact_off: AtomicU64,
+    gate_refill: AtomicU64,
+    _tail: [u8; PAD_ALIGN - 56],
 }
 
 const _: () = assert!(core::mem::offset_of!(ClassState, inner) == PAD_ALIGN);
@@ -627,7 +635,11 @@ impl ClassState {
             claimed: AtomicU64::new(0),
             refilled: AtomicU64::new(0),
             released: AtomicU64::new(0),
-            _tail: [0; PAD_ALIGN - 24],
+            compacted: AtomicU64::new(0),
+            compact_on: AtomicU64::new(0),
+            compact_off: AtomicU64::new(0),
+            gate_refill: AtomicU64::new(0),
+            _tail: [0; PAD_ALIGN - 56],
         })
     }
 
@@ -1127,6 +1139,35 @@ impl ClassState {
     #[inline]
     pub fn note_refill(&self, n: usize) {
         self.refilled.fetch_add(n as u64, Ordering::Relaxed);
+    }
+
+    /// Count a compaction rebuild's claim of `n` slots.
+    #[inline]
+    pub fn note_compact(&self, n: usize) {
+        self.compacted.fetch_add(n as u64, Ordering::Relaxed);
+    }
+
+    /// Count a cache entering (`on`) or leaving compact mode.
+    #[inline]
+    pub fn note_compact_mode(&self, on: bool) {
+        if on { &self.compact_on } else { &self.compact_off }.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Count a probe the refill-rate gate declined.
+    #[inline]
+    pub fn note_gate_refill(&self) {
+        self.gate_refill.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The compaction diagnostics: `(compacted, compact_on, compact_off,
+    /// gate_refill)`, see the fields.
+    pub fn compaction_stats(&self) -> (u64, u64, u64, u64) {
+        (
+            self.compacted.load(Ordering::Relaxed),
+            self.compact_on.load(Ordering::Relaxed),
+            self.compact_off.load(Ordering::Relaxed),
+            self.gate_refill.load(Ordering::Relaxed),
+        )
     }
 
     /// `(holes, capacity)`: the free slots of the slabs that can hold live

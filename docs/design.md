@@ -689,7 +689,12 @@ kernel-owned fields is what broke tcmalloc on Linux 6.19.
 
 - `malloc_stats_print` emits a human-readable report in jemalloc's general
   shape: totals, per-arena, per-class table with `size nregs curslabs curregs`,
-  cgroup section.
+  cgroup section. The per-class table also carries the compaction
+  diagnostics of section 6.4 (`refilled`, `compacted`, caches that entered
+  and left compact mode, probes the refill-rate gate declined) and is
+  followed by a per-class occupancy histogram of the non-empty slabs
+  (slabs per eighth of `nslots`), so a soak's `MEMORY MALLOC-STATS` shows
+  where the live data sits and whether the schedule is running.
 - Mappings named `challoc:meta`, `challoc:class-<n>`, `challoc:huge`.
 - `CHALLOC_CONF=stats_print:true` prints at exit via an `atexit` handler
   registered lazily.

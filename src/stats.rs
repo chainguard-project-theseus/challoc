@@ -65,11 +65,34 @@ pub struct BinStats {
     pub empty_slabs: usize,
     /// `Purged` slabs (retained).
     pub purged_slabs: usize,
+    /// Slots claimed by cache refills (`ClassState::refilled`).
+    pub refilled: u64,
+    /// Slots claimed by compaction rebuilds (`ClassState::compacted`).
+    pub compacted: u64,
+    /// Caches that entered compact mode for this bin.
+    pub compact_on: u64,
+    /// Caches that left compact mode for this bin.
+    pub compact_off: u64,
+    /// Probes the refill-rate gate declined.
+    pub gate_refill: u64,
 }
 
 impl BinStats {
-    pub const EMPTY: BinStats =
-        BinStats { size: 0, nregs: 0, slab_size: 0, curregs: 0, curslabs: 0, nonfull_slabs: 0, empty_slabs: 0, purged_slabs: 0 };
+    pub const EMPTY: BinStats = BinStats {
+        size: 0,
+        nregs: 0,
+        slab_size: 0,
+        curregs: 0,
+        curslabs: 0,
+        nonfull_slabs: 0,
+        empty_slabs: 0,
+        purged_slabs: 0,
+        refilled: 0,
+        compacted: 0,
+        compact_on: 0,
+        compact_off: 0,
+        gate_refill: 0,
+    };
 
     /// Bytes allocated: `curregs * size`.
     #[inline]
@@ -272,6 +295,11 @@ impl ArenaStats {
             b.nonfull_slabs += ob.nonfull_slabs;
             b.empty_slabs += ob.empty_slabs;
             b.purged_slabs += ob.purged_slabs;
+            b.refilled += ob.refilled;
+            b.compacted += ob.compacted;
+            b.compact_on += ob.compact_on;
+            b.compact_off += ob.compact_off;
+            b.gate_refill += ob.gate_refill;
         }
     }
 }
@@ -280,6 +308,7 @@ impl ArenaStats {
 pub fn collect_bin(cs: &ClassState) -> BinStats {
     let (s, curregs) = cs.bin_stats();
     let cls = cs.class();
+    let (compacted, compact_on, compact_off, gate_refill) = cs.compaction_stats();
     BinStats {
         size: cls.size(),
         nregs: cls.nslots(),
@@ -289,6 +318,11 @@ pub fn collect_bin(cs: &ClassState) -> BinStats {
         nonfull_slabs: s.nonfull,
         empty_slabs: s.empty,
         purged_slabs: s.purged,
+        refilled: cs.refilled(),
+        compacted,
+        compact_on,
+        compact_off,
+        gate_refill,
     }
 }
 
@@ -664,7 +698,17 @@ mod tests {
     /// `BinStats` and `Totals` helpers.
     #[test]
     fn helpers_and_identity_check() {
-        let b = BinStats { size: 48, nregs: 1365, slab_size: 65536, curregs: 10, curslabs: 2, nonfull_slabs: 1, empty_slabs: 3, purged_slabs: 4 };
+        let b = BinStats {
+            size: 48,
+            nregs: 1365,
+            slab_size: 65536,
+            curregs: 10,
+            curslabs: 2,
+            nonfull_slabs: 1,
+            empty_slabs: 3,
+            purged_slabs: 4,
+            ..BinStats::EMPTY
+        };
         assert_eq!(b.allocated(), 480);
         assert_eq!(b.active(), 2 * 65536);
         assert_eq!(b.dirty(), 3 * 65536);

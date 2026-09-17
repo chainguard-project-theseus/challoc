@@ -221,7 +221,14 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
     }
     // The bins, then the slab-allocated classes above BIN_MAX that the
     // mallctl namespace reports as large (layout::BIN_MAX).
-    writeln!(out, "  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged")?;
+    // The last five columns are challoc's compaction diagnostics (design
+    // 6.4): slots claimed by cache refills and by compaction rebuilds,
+    // caches that entered and left compact mode, probes declined by the
+    // refill-rate gate.
+    writeln!(
+        out,
+        "  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated"
+    )?;
     let mut large_header = false;
     for (j, b) in s.bins.iter().enumerate() {
         if b.curslabs + b.empty_slabs + b.purged_slabs == 0 {
@@ -233,8 +240,75 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
         }
         writeln!(
             out,
-            "  {:>13} {:>3} {:>8} {:>10} {:>9} {:>9} {:>9} {:>9} {:>9}",
-            b.size, j, b.nregs, b.slab_size, b.curregs, b.curslabs, b.nonfull_slabs, b.empty_slabs, b.purged_slabs
+            "  {:>13} {:>3} {:>8} {:>10} {:>9} {:>9} {:>9} {:>9} {:>9} {:>10} {:>10} {:>6} {:>6} {:>6}",
+            b.size,
+            j,
+            b.nregs,
+            b.slab_size,
+            b.curregs,
+            b.curslabs,
+            b.nonfull_slabs,
+            b.empty_slabs,
+            b.purged_slabs,
+            b.refilled,
+            b.compacted,
+            b.compact_on,
+            b.compact_off,
+            b.gate_refill
+        )?;
+    }
+    slab_histogram(out, arena, s)
+}
+
+/// Per-class occupancy histogram of this arena's non-empty slabs (a
+/// diagnostic for the compaction work of Phase 1 acceptance step 3): the
+/// slab count per eighth of occupancy (`live * 8 / nslots`, the last
+/// bucket is full slabs), the slabs whose `live` disagrees with their
+/// bitmap's set bits, and the non-full slabs missing from the partial set.
+/// One class lock hold per non-full slab; only classes with non-full slabs
+/// are listed.
+fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::Result {
+    let mut header = false;
+    for (j, b) in s.bins.iter().enumerate() {
+        if b.nonfull_slabs == 0 {
+            continue;
+        }
+        let cs = arena.class(j);
+        let cls = cs.class();
+        let nslots = cls.nslots();
+        let mut hist = [0usize; 9];
+        let (mut mismatched, mut unlisted, mut slabs) = (0usize, 0usize, 0usize);
+        for i in 0..cs.committed_slabs() {
+            if cs.is_guard_slab(i) {
+                continue;
+            }
+            let d = cs.desc(i);
+            if d.arena() != arena.index() {
+                continue;
+            }
+            let live = d.live();
+            if live == 0 {
+                continue;
+            }
+            slabs += 1;
+            hist[(live * 8 / nslots).min(8)] += 1;
+            let bm = d.bitmap(cls);
+            let set: usize = (0..bm.words()).map(|w| bm.load(w).count_ones() as usize).sum();
+            if set.saturating_sub(bm.words() * 64 - nslots) != live {
+                mismatched += 1;
+            }
+            if live < nslots && !cs.is_partial(i) {
+                unlisted += 1;
+            }
+        }
+        if !header {
+            header = true;
+            writeln!(out, "  slab occupancy (non-empty slabs per eighth of nslots, last = full):")?;
+        }
+        writeln!(
+            out,
+            "  {:>13} {:>3} slabs {:>6}  hist {:?}  live!=bits {}  nonfull not in partial set {}",
+            b.size, j, slabs, hist, mismatched, unlisted
         )?;
     }
     Ok(())
