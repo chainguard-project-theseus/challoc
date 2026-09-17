@@ -1103,6 +1103,13 @@ impl ClassState {
         self.bin_stats().1
     }
 
+    /// Slots ever claimed from this arena's slabs of the class (wrapping);
+    /// the compaction gate in `heap.rs` watches its rate.
+    #[inline]
+    pub fn claimed(&self) -> u64 {
+        self.claimed.load(Ordering::Relaxed)
+    }
+
     /// `(holes, capacity)`: the free slots of the slabs that can hold live
     /// slots (neither `Empty` nor `Purged`), i.e. slots that are in no
     /// cache and no program, and those slabs' total slot count. The

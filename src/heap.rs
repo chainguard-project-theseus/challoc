@@ -36,8 +36,9 @@
 //! slabs empty and are purged. The schedule is gated: a cache *probes* the
 //! class every 4096 pops and only *compacts* while the class has holes
 //! worth `COMPACT_MIN_SLABS` slabs and a `COMPACT_MIN_RATIO`th of its
-//! capacity (`ClassState::holes`), so a dense working set pays one counter
-//! test per `malloc` and nothing else. The run stays intact because `run_end <=
+//! capacity (`ClassState::holes`) that ordinary refills are not consuming
+//! (`COMPACT_MAX_REFILL_SLABS`), so a dense or a steadily refilled working
+//! set pays one counter test per `malloc` and nothing else. The run stays intact because `run_end <=
 //! low_water <= len`: a pop that dips below it clips both, a push never
 //! writes below `len`.
 //!
@@ -143,6 +144,9 @@ pub struct ClassCache {
     arena: u16,
     /// [`MODE_OFF`], [`MODE_PROBE`] or [`MODE_COMPACT`].
     mode: u16,
+    /// The class's claim counter (low bits) at the previous probe: a class
+    /// that ordinary refills are draining is not compacted.
+    probe_claimed: u32,
     slots: [*mut u8; 0],
 }
 
@@ -162,6 +166,13 @@ pub const PROBE_MASK: u32 = (1 << 12) - 1;
 pub const COMPACT_MIN_SLABS: usize = 4;
 /// See [`COMPACT_MIN_SLABS`]: holes must be at least capacity / 32.
 pub const COMPACT_MIN_RATIO: usize = 32;
+/// A class whose claim counter advanced by this many slabs' worth of slots
+/// between two probes of one cache (4096 pops apart) is being drained by
+/// ordinary refills, which take the lowest partial slab anyway: its holes
+/// are transient (xmalloc-test's producers run 0..8 slabs of holes through
+/// a 150..450-slab class this way) and it is not compacted. The frozen
+/// residue compaction is for sees no refills at all.
+pub const COMPACT_MAX_REFILL_SLABS: usize = 1;
 
 /// Size of the [`ClassCache`] header, i.e. the offset of the slot array.
 pub const CACHE_HEADER: usize = core::mem::size_of::<ClassCache>();
@@ -186,6 +197,7 @@ static EMPTY_CACHE: ClassCache = ClassCache {
     compact_mask: u32::MAX,
     arena: 0,
     mode: MODE_OFF,
+    probe_claimed: 0,
     slots: [],
 };
 
@@ -1051,8 +1063,9 @@ impl Heap {
         }
     }
 
-    /// The scheduled pop (design 6.4). Probing: ask the class whether it
-    /// is fragmented and, if not, pop the top as usual. Compacting: serve
+    /// The scheduled pop (design 6.4). Probing: run the periodic work, ask
+    /// the class whether it is fragmented and being left alone by ordinary
+    /// refills and, if not, pop the top as usual. Compacting: serve
     /// the lowest entry of the run, `slots[run_end - 1]`, moving the top
     /// entry into its place, so this allocation lands in the lowest slab
     /// with room instead of reusing the slot that was just freed; an
@@ -1070,12 +1083,48 @@ impl Heap {
                 MODE_COMPACT => {}
                 MODE_PROBE => {
                     let shared: &Shared = &*self.shared;
-                    if !Self::fragmented(shared, (*cache).arena, class) {
+                    // The probe is also a heartbeat for the periodic work: a
+                    // balanced churn on a dense class takes no other slow
+                    // path, and without it no GC or decay would ever run on
+                    // a thread without a background thread.
+                    self.tick(shared);
+                    let mut len = (*cache).len;
+                    if len == 0 {
+                        // The GC emptied the cache.
+                        let Some(a) = shared.arena((*cache).arena) else { return (ptr::null_mut(), false) };
+                        len = self.refill(shared, a, cache, class);
+                        if len == 0 {
+                            return (ptr::null_mut(), false);
+                        }
+                    }
+                    let cs = shared.owner((*cache).arena).class(class);
+                    let claimed = cs.claimed() as u32;
+                    let refilled = claimed.wrapping_sub((*cache).probe_claimed) as usize;
+                    (*cache).probe_claimed = claimed;
+                    if refilled >= COMPACT_MAX_REFILL_SLABS * CLASSES[class].nslots()
+                        || !Self::fragmented(shared, (*cache).arena, class)
+                    {
                         return Self::pop_top(cache, len);
                     }
                     (*cache).mode = MODE_COMPACT;
                     (*cache).compact_mask = shared.config.compact_mask();
+                    return self.pop_compact_run(cache, class, len);
                 }
+                _ => return Self::pop_top(cache, len),
+            }
+            self.pop_compact_run(cache, class, len)
+        }
+    }
+
+    /// The compacting half of [`Heap::pop_compact`].
+    ///
+    /// # Safety
+    /// As for [`Heap::pop`]; the cache is in compact mode.
+    unsafe fn pop_compact_run(&mut self, cache: *mut ClassCache, class: usize, len: u32) -> (*mut u8, bool) {
+        // SAFETY: guaranteed by the caller.
+        unsafe {
+            match (*cache).mode {
+                MODE_COMPACT => {}
                 _ => return Self::pop_top(cache, len),
             }
             let mut len = len;
@@ -1459,6 +1508,7 @@ impl Heap {
                     compact_mask,
                     arena,
                     mode,
+                    probe_claimed: shared.owner(arena).class(class).claimed() as u32,
                     slots: [],
                 },
             );
@@ -2395,10 +2445,12 @@ pub(crate) mod tests {
             t.free(ps[i]);
             ps[i] = pop_checked(&t, c);
         }
-        assert!(t.cache(c).allocs() > 4 * (PROBE_MASK as u64 + 1), "{} pops", t.cache(c).allocs());
+        let pops = t.cache(c).allocs();
+        assert!(pops > 4 * (PROBE_MASK as u64 + 1), "{pops} pops");
         assert!(!t.cache(c).compacting());
-        // No slow path at all: no refill, no flush, no rebuild.
-        assert_eq!(t.ticks(), ticks);
+        // No refill, no flush, no rebuild: the only slow paths were the
+        // probes' heartbeats, one per 4096 pops.
+        assert_eq!(t.ticks() as u64, ticks as u64 + pops / (PROBE_MASK as u64 + 1) - 2000 / (PROBE_MASK as u64 + 1));
         assert!(!Heap::fragmented(s, 0, c));
         for p in ps {
             t.free(p);

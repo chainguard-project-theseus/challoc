@@ -512,6 +512,11 @@ mod tests {
     use std::vec::Vec;
 
     static CAPTURE: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+    /// Held across a whole `report`: the callback appends one chunk at a
+    /// time under `CAPTURE`'s lock, so two tests reporting at once would
+    /// interleave their chunks (seen as a text report that began with
+    /// another test's JSON report).
+    static REPORT: Mutex<()> = Mutex::new(());
 
     unsafe extern "C" fn capture(opaque: *mut c_void, s: *const c_char) {
         assert_eq!(opaque as usize, 0xC0FFEE);
@@ -520,6 +525,7 @@ mod tests {
     }
 
     fn report(opts: &str) -> String {
+        let _serial = REPORT.lock().unwrap_or_else(|e| e.into_inner());
         CAPTURE.lock().unwrap().clear();
         let c = std::ffi::CString::new(opts).unwrap();
         malloc_stats_print(Some(capture), 0xC0FFEE as *mut c_void, if opts.is_empty() { core::ptr::null() } else { c.as_ptr() });

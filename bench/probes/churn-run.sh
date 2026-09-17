@@ -3,7 +3,8 @@ set -uo pipefail
 ARCH=$(uname -m); case $ARCH in aarch64) T=arm64;; x86_64) T=amd64;; esac
 cd ~/challoc
 echo "== $(hostname) $(uname -m) load $(cut -d' ' -f1-3 /proc/loadavg) commit $(git rev-parse --short HEAD 2>/dev/null)"
-docker run --rm -v $PWD:/src -w /src -v challoc-target-$T:/src/target challoc-dev:$T sh -c '
+docker run --rm -v $PWD:/src -w /src -v challoc-target-$T:/src/target -v challoc-cargo-registry:/root/.cargo/registry challoc-dev:$T sh -c '
+cargo build --release 2>&1 | grep -E "^error|Finished"; ls -la target/release/libchalloc.so &&
 cc -O2 -Wall -o target/churn bench/probes/churn.c &&
 for a in challoc jemalloc; do
   case $a in challoc) L=/src/target/release/libchalloc.so;; jemalloc) L=/usr/lib/libjemalloc.so.2;; esac
