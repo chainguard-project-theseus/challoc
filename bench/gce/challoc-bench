@@ -224,10 +224,14 @@ REMOTE
 cmd_perf_stat() {
   local t="$1"; shift
   [ $# -gt 0 ] || die "perf-stat needs a docker run command line"
+  # Detach by inserting -d right after `docker run`: appended at the end it
+  # would land inside the container's `sh -c` arguments.
+  local cmd="$*"
+  case "$cmd" in "docker run "*) cmd="docker run -d ${cmd#docker run }";; *) die "perf-stat needs a command line starting with 'docker run'";; esac
   gssh "$t" --command="bash -s" -- -T <<REMOTE
 set -euo pipefail
 cd $REMOTE_DIR
-cid=\$($* -d 2>/dev/null || { echo "the command must be a 'docker run' line that accepts -d" >&2; exit 1; })
+cid=\$($cmd 2>/dev/null || { echo "docker run failed" >&2; exit 1; })
 # wait for the first process inside the container, then attach to the whole cgroup via its pids
 for i in \$(seq 1 50); do pid=\$(docker inspect -f '{{.State.Pid}}' "\$cid" 2>/dev/null || true); [ -n "\$pid" ] && [ "\$pid" != 0 ] && break; sleep 0.1; done
 [ -n "\$pid" ] || { echo "container did not start" >&2; exit 1; }
