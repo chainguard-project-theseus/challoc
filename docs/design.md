@@ -292,8 +292,19 @@ class or, for huge runs, into free following pages.
   64 slow paths: merge thread stats into arena stats, run cache GC if the
   interval has elapsed, run decay if the class's deadline has passed, sample
   the cgroup (section 11).
-- **Flush**: release the oldest `cap / 2` entries grouped by slab. Update
-  `live`; slabs reaching zero become `Empty`.
+- **Flush**: release the `cap / 2` highest-address entries grouped by slab
+  and keep the lowest in ascending order (not reversed to match a refill:
+  a descending run under ascending pushes is a pathological input for the
+  next flush's sort). Update `live`; slabs reaching zero become `Empty`.
+  The selection is by address, not by age, so that under a balanced
+  alloc/free churn every flush sends holes to the high slabs while refills
+  keep taking the lowest partial slab (an oldest-first flush returns the
+  refill's own low-address residue and keeps the randomly placed freed
+  slots for reuse in place). Phase 1 acceptance step 3 measured it
+  throughput-neutral on the reference VMs; the first 20-minute Valkey soak
+  with it showed no drain of the post-delete residue, so the mechanism is
+  not yet shown to work and is under investigation
+  (`bench/results/2026-09-16-aarch64-gce-compacting-flush.md`).
 - **Cache GC**: every `tcache_gc_interval_ms` (default 10 s, shortened under
   cgroup pressure) shrink `cap` toward `low_water` and flush the excess, then
   reset `low_water = len`. This is jemalloc's incremental tcache GC in spirit.

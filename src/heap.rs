@@ -12,7 +12,17 @@
 //!   claiming up to `cap / 2` slots from the class's lowest partial slab.
 //! - `free`: classify the pointer, check its bitmap bit is set (invalid and
 //!   stale double frees abort here), push it; if the cache is full, *flush*
-//!   the oldest `cap / 2` entries back to their slabs in one sorted batch.
+//!   the `cap / 2` highest-address entries back to their slabs in one
+//!   sorted batch and keep the lowest, in ascending order.
+//!
+//! Flushing by address rather than by age is what lets a class compact
+//! under a balanced alloc/free churn (Valkey's DEL:SET steady state).
+//! After a refill the bottom of the stack is the refill's own low-address
+//! residue, so an oldest-first flush hands those slots back and keeps the
+//! random, mostly high, freed slots for reuse in place: nothing ever
+//! drains. Releasing the highest addresses instead sends the holes to the
+//! high slabs, refills keep taking from the lowest partial slab, and the
+//! high slabs empty and are purged (Phase 1 acceptance step 3).
 //!
 //! Until a thread has a heap its cache pointers all point at one shared
 //! empty sentinel whose `len` and `cap` are zero, so the fast paths need no
@@ -163,7 +173,7 @@ impl ClassCache {
         self.slots.as_mut_ptr()
     }
 
-    /// Cached pointers, oldest first.
+    /// Cached pointers, bottom of the stack first (the top is popped next).
     #[inline]
     fn entries(&mut self) -> &mut [*mut u8] {
         // SAFETY: `len <= cap` pointers follow the header.
@@ -1085,8 +1095,8 @@ impl Heap {
         }
     }
 
-    /// Flush the oldest half of the home cache and push, allocating the
-    /// cache first if this is the class's first use. Releases directly to
+    /// Flush the highest-address half of the home cache and push,
+    /// allocating the cache first if this is the class's first use. Releases directly to
     /// the slab when there is no cache to be had.
     #[cold]
     #[inline(never)]
@@ -1230,9 +1240,16 @@ impl Heap {
         }
     }
 
-    /// Release the oldest `n` entries of a cache to their slabs (in
-    /// `arena`, which owns them) in one address-sorted batch and close the
-    /// gap.
+    /// Release the `n` highest-address entries of a cache to their slabs
+    /// (in `arena`, which owns them) in one address-sorted batch and keep
+    /// the rest in ascending order, highest on top (see the module doc for
+    /// why the flush selects by address and not by age). The kept run is
+    /// deliberately left ascending rather than reversed to match a refill:
+    /// a descending run under the ascending pushes of a producer/consumer
+    /// pattern is a pathological pivot sequence for the next flush's sort
+    /// (measured: xmalloc-test -41% on x86_64 with the reverse, -1.5%
+    /// without). The zero prefix is given up: the kept entries are
+    /// reordered, so nothing is known about what lies at the bottom.
     ///
     /// # Safety
     /// `cache` is this heap's real cache for `(arena, class)` and `n <= len`.
@@ -1243,14 +1260,13 @@ impl Heap {
         // SAFETY: `n <= len <= cap` entries exist.
         unsafe {
             let all = (*cache).entries();
-            let (old, rest) = all.split_at_mut(n);
-            old.sort_unstable();
-            shared.owner(arena).class(class).release(old);
-            let rest_len = rest.len();
-            ptr::copy((*cache).slots().add(n), (*cache).slots(), rest_len);
+            all.sort_unstable();
+            let rest_len = all.len() - n;
+            let (_keep, high) = all.split_at_mut(rest_len);
+            shared.owner(arena).class(class).release(high);
             (*cache).len = rest_len as u32;
             (*cache).moved = (*cache).moved.wrapping_sub(n as u64);
-            (*cache).zeroed = (*cache).zeroed.saturating_sub(n as u32);
+            (*cache).zeroed = 0;
             (*cache).low_water = (*cache).low_water.min(rest_len as u32);
         }
     }
@@ -1735,7 +1751,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn full_cache_flushes_the_oldest_half_sorted_and_slabs_empty() {
+    fn full_cache_flushes_the_highest_half_sorted_and_slabs_empty() {
         let s = shared();
         let t = TestHeap::new(s);
         let c = class_with(64);
@@ -1756,7 +1772,7 @@ pub(crate) mod tests {
             t.free(ps[i]);
             let after = t.cache(c).len();
             if after != before + 1 {
-                // A flush released the oldest HALF and pushed one.
+                // A flush released the highest HALF and pushed one.
                 assert_eq!(before, CAP);
                 assert_eq!(after, HALF + 1);
                 flushes += 1;
@@ -1784,6 +1800,51 @@ pub(crate) mod tests {
         t.free(p);
         t.destroy();
         assert_eq!(cs.stats(), ClassStats { committed: cs.committed_slabs(), empty: cs.committed_slabs(), ..Default::default() });
+    }
+
+    #[test]
+    fn flush_releases_the_highest_addresses_and_keeps_the_lowest_ascending() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        // Slots spread over several slabs, freed in a scrambled order so
+        // the cache holds an unsorted mix of low and high addresses.
+        let n = 4 * CAP;
+        let ps: Vec<*mut u8> = (0..n).map(|_| t.alloc(c)).collect();
+        let mut order: Vec<usize> = (0..n).collect();
+        let mut st = 0x9e37_79b9u64;
+        for i in (1..n).rev() {
+            let j = (xorshift(&mut st) % (i as u64 + 1)) as usize;
+            order.swap(i, j);
+        }
+        let mut cached: Vec<*mut u8> = order[..CAP].iter().map(|&i| ps[i]).collect();
+        for &q in &cached {
+            t.free(q);
+        }
+        assert_eq!(t.len(c), CAP);
+        let live_before = live(s, c);
+        // Overflow by one: the HALF highest addresses go back to their
+        // slabs, the HALF lowest stay in ascending order (highest of them
+        // on top) under the new push.
+        let extra = ps[order[CAP]];
+        t.free(extra);
+        assert_eq!(t.len(c), HALF + 1);
+        assert_eq!(live(s, c), live_before - HALF);
+        cached.sort_unstable();
+        assert_eq!(t.alloc(c), extra);
+        for (k, &want) in cached[..HALF].iter().rev().enumerate() {
+            assert_eq!(t.alloc(c), want, "pop {k}");
+        }
+        assert_eq!(t.len(c), 0);
+        // The released half is free in the slabs: allocating it again
+        // is the only way to get those addresses back, and a refill takes
+        // the lowest partial slab first, which is where they now are
+        // (everything below them is live in the program).
+        let got: Vec<*mut u8> = (0..HALF).map(|_| t.alloc(c)).collect();
+        let mut got_sorted = got.clone();
+        got_sorted.sort_unstable();
+        assert_eq!(got_sorted, cached[HALF..].to_vec());
+        t.destroy();
     }
 
     #[test]
@@ -1828,7 +1889,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn flush_drops_the_zeroed_prefix_with_the_oldest_entries() {
+    fn flush_drops_the_zeroed_prefix() {
         let s = shared();
         let t = TestHeap::new(s);
         let u = TestHeap::new(s);
@@ -1851,7 +1912,8 @@ pub(crate) mod tests {
         assert_eq!(t.cache(c).zeroed(), HALF - 28);
         let live_before = live(s, c);
         t.free(qs[HALF]);
-        // The oldest HALF went back to the slab, taking the whole prefix.
+        // HALF entries went back to the slab and the rest were reordered:
+        // the prefix is gone.
         assert_eq!(t.len(c), HALF + 1);
         assert_eq!(t.cache(c).zeroed(), 0);
         assert_eq!(live(s, c), live_before - HALF);

@@ -49,6 +49,8 @@ One line per task, newest at the bottom of each section. Keep it terse.
 
 ## In progress
 
+- Phase 1 acceptance step 3: post-delete RSS remediation, allocator-side: address-ordered (compacting) cache flush; A/B on the GCE VMs (larson/xmalloc-test/alloc-test) and the 20-minute soak on the arm64 VM decide it.
+
 ## Design decisions
 
 Format: `Phase N task M: <decision>. Reason: <one line>.`
