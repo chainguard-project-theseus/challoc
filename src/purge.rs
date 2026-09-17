@@ -130,6 +130,15 @@ impl Batch {
 
     /// Add `[addr, addr + len)`, flushing first if the batch is full.
     pub fn push(&mut self, addr: usize, len: usize) {
+        // Adjacent ranges pushed in address order (a run of empty 4 KiB
+        // slabs) go out as one.
+        if self.n != 0 {
+            let (last, last_len) = self.ranges[self.n - 1];
+            if last + last_len == addr {
+                self.ranges[self.n - 1].1 = last_len + len;
+                return;
+            }
+        }
         if self.is_full() {
             self.flush();
         }
@@ -512,19 +521,39 @@ mod tests {
     }
 
     #[test]
+    fn batch_merges_adjacent_ranges() {
+        let page = 4096;
+        let base = scratch(8, page);
+        let mut b = Batch::new();
+        b.push(base, page);
+        b.push(base + page, page);
+        b.push(base + 2 * page, 2 * page);
+        assert_eq!(b.len(), 1);
+        assert_eq!(b.ranges[0], (base, 4 * page));
+        // A gap starts a new range; so does a range that is not the next one.
+        b.push(base + 5 * page, page);
+        assert_eq!(b.len(), 2);
+        b.push(base + 4 * page, page);
+        assert_eq!(b.len(), 3);
+        b.flush();
+        assert!(b.is_empty());
+    }
+
+    #[test]
     fn batch_fills_and_flushes() {
         let page = 4096;
-        let base = scratch(MAX_BATCH + 2, page);
+        let base = scratch(2 * MAX_BATCH + 4, page);
         let mut b = Batch::new();
         assert!(b.is_empty());
+        // Every other page, so nothing merges.
         for i in 0..MAX_BATCH {
             assert!(!b.is_full());
-            b.push(base + page * i, page);
+            b.push(base + 2 * page * i, page);
         }
         assert!(b.is_full());
         assert_eq!(b.len(), MAX_BATCH);
         // The 65th push flushes the first 64 first.
-        b.push(base + page * MAX_BATCH, 2 * page);
+        b.push(base + 2 * page * MAX_BATCH, 2 * page);
         assert_eq!(b.len(), 1);
         b.flush();
         assert!(b.is_empty());

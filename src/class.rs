@@ -70,8 +70,12 @@ pub struct Claim {
 }
 
 /// Slabs one lock hold of a refill may reserve from (see
-/// [`ClassState::plan`]).
-const MAX_PICKS: usize = 8;
+/// [`ClassState::plan`]), and slabs one lock hold of a release batch may
+/// reopen ([`Reopen`]). Sized so that the common refill and flush of every
+/// class fit in one hold: with the 4 KiB slabs of the 512..1024-byte
+/// classes (`layout::LG_MIN_SLAB`) a 128-slot refill of the 512 class and a
+/// 64-slot one of the 1024 class each span 16 slabs.
+const MAX_PICKS: usize = 16;
 
 /// Full bitmap scans of one slab that find nothing before a claim gives up
 /// on its reservation and aborts. A scan comes up empty only while other
@@ -1388,7 +1392,8 @@ mod tests {
         CLASSES.iter().position(|c| c.size() == 64).unwrap()
     }
 
-    /// The largest class with the minimum slab (1024 bytes: 64 slots).
+    /// The largest class with the minimum slab (1024 bytes: 4 slots of a
+    /// 4 KiB slab).
     fn min_slab_class() -> usize {
         CLASSES.iter().rposition(|c| c.slab_size() == MIN_SLAB).unwrap()
     }

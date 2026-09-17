@@ -78,7 +78,9 @@ pub struct Config {
     pub thp: Thp,
     pub lazy_free: bool,
     pub guards: bool,
-    /// One guard per N slabs; 0 means none, 1 means every slab.
+    /// One guard per N slabs of 64 KiB (per N * 64 KiB of slabs for the
+    /// classes with smaller slabs, see `heap::guard_interval_for`); 0 means
+    /// none, 1 means every slab.
     pub guard_slab_interval: u32,
     pub zero_on_free: bool,
     pub slot_randomize: bool,

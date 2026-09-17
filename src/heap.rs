@@ -179,6 +179,8 @@ pub const COMPACT_MIN_RATIO: usize = 32;
 /// sees a refill only when a class's random-size churn walks a cache to
 /// empty, a few per second.
 pub const COMPACT_MAX_REFILL_SLABS: usize = 2;
+// Both slab counts are in 64 KiB slabs (`Class::compact_slots`), so the
+// thresholds mean the same bytes for the 4 KiB-slab classes as for the rest.
 
 /// Size of the [`ClassCache`] header, i.e. the offset of the slot array.
 pub const CACHE_HEADER: usize = core::mem::size_of::<ClassCache>();
@@ -487,6 +489,18 @@ mod os {
 
 use os::ThreadKey;
 
+/// Guard slabs are placed once per `interval` slabs of 64 KiB, so a class
+/// with smaller slabs (`layout::LG_MIN_SLAB`) gets one guard per
+/// `interval * (64 KiB / slab)` slabs (in page groups when the page is
+/// larger than the slab, see `SlabTable::is_guard_slab`): the same one
+/// guard page per `interval * 64 KiB` of address space and the same
+/// `madvise` count per byte committed for every class. 0 stays 0.
+pub(crate) fn guard_interval_for(class: usize, page: usize, interval: u32) -> u32 {
+    let unit = (1usize << crate::layout::LG_GUARD_UNIT).max(page);
+    let group = CLASSES[class].slab_size().max(page);
+    if group >= unit { interval } else { interval.saturating_mul((unit / group) as u32) }
+}
+
 impl Shared {
     /// Initialise `this` in place for already reserved `regions`: the
     /// metadata allocator over the metadata reservation, one slab table
@@ -523,7 +537,7 @@ impl Shared {
             let regions = &*(&raw const (*this).regions);
             let tables = &raw mut (*this).tables;
             for c in 0..NCLASSES {
-                match SlabTable::new(meta, regions, c, guard_interval) {
+                match SlabTable::new(meta, regions, c, guard_interval_for(c, regions.page_size(), guard_interval)) {
                     Some(t) => ptr::write(&raw mut (*tables)[c], t),
                     None => return false,
                 }
@@ -1107,7 +1121,7 @@ impl Heap {
                     let refilled = cs.refilled() as u32;
                     let delta = refilled.wrapping_sub((*cache).probe_refilled) as usize;
                     (*cache).probe_refilled = refilled;
-                    if delta >= COMPACT_MAX_REFILL_SLABS * CLASSES[class].nslots() {
+                    if delta >= COMPACT_MAX_REFILL_SLABS * CLASSES[class].compact_slots() {
                         if Self::fragmented(shared, (*cache).arena, class) {
                             cs.note_gate_refill();
                         }
@@ -1168,7 +1182,7 @@ impl Heap {
     fn fragmented(shared: &Shared, arena: u16, class: usize) -> bool {
         let cs = shared.owner(arena).class(class);
         let (holes, capacity) = cs.holes();
-        holes >= COMPACT_MIN_SLABS * CLASSES[class].nslots() && holes * COMPACT_MIN_RATIO >= capacity
+        holes >= COMPACT_MIN_SLABS * CLASSES[class].compact_slots() && holes * COMPACT_MIN_RATIO >= capacity
     }
 
     /// Rebuild the run for a scheduled pop that found it exhausted: run the
@@ -2386,6 +2400,11 @@ pub(crate) mod tests {
     /// Fill `slabs` slabs of `c` on `t`, free a random `frac` of the blocks
     /// and return the survivors: the post-delete residue of the churn
     /// probe, with the holes in the slabs (the cache is flushed).
+    /// Slots the churn models fill: 40 slabs of the 64-slot 1 KiB class the
+    /// models were written for (`bench/probes/churn.c`), 640 of today's
+    /// 4-slot slabs.
+    const MODEL_SLOTS: usize = 2560;
+
     fn residue(t: &TestHeap, c: usize, slabs: usize, frac_per_mille: u64, seed: u64) -> Vec<*mut u8> {
         let nslots = CLASSES[c].nslots();
         let mut st = seed;
@@ -2532,8 +2551,8 @@ pub(crate) mod tests {
 
     #[test]
     fn churn_model_empties_the_high_slabs_and_then_stops_compacting() {
-        // The model of `bench/probes/churn.c`: fill 40 slabs of the 1 KiB
-        // class (64 slots each, cap 128), free a random 56%, then run a
+        // The model of `bench/probes/churn.c`: fill `MODEL_SLOTS` slots of
+        // the 1 KiB class (cap 128), free a random 56%, then run a
         // balanced free-one/allocate-one churn. Without scheduled pops
         // nothing moves (every allocation gets back the slot just freed);
         // with them the live set migrates into the lowest slabs, the high
@@ -2543,15 +2562,18 @@ pub(crate) mod tests {
         let t = TestHeap::new(s);
         let c = class_with(1024);
         let nslots = CLASSES[c].nslots();
-        assert_eq!(nslots, 64);
-        let mut keep = residue(&t, c, 40, 560, 0x9e37_79b9_7f4a_7c15);
+        let mut keep = residue(&t, c, MODEL_SLOTS / nslots, 560, 0x9e37_79b9_7f4a_7c15);
         let before = occupied(s, c);
-        assert!(before >= 38, "{before} occupied slabs after the delete");
+        // A random 56% deletion empties a 64-slot slab never and a 4-slot
+        // slab about one time in ten.
+        assert!(before * 20 >= 17 * (MODEL_SLOTS / nslots), "{before} occupied slabs after the delete");
         assert!(Heap::fragmented(s, 0, c));
         let ideal = keep.len().div_ceil(nslots);
         let mut st = 0x2468_ace0u64;
         let mut was_compacting = false;
-        for _ in 0..200_000 {
+        // With shift 8 one pop in 256 migrates a slot; the live set of about
+        // 1100 slots in the high half needs a few hundred thousand steps.
+        for _ in 0..400_000 {
             let i = (xorshift(&mut st) % keep.len() as u64) as usize;
             t.free(keep[i]);
             keep[i] = t.alloc(c);
@@ -2560,9 +2582,9 @@ pub(crate) mod tests {
         assert!(was_compacting);
         let after = occupied(s, c);
         // Live data plus the holes the gate leaves (under COMPACT_MIN_SLABS
-        // slabs' worth) plus what the cache holds (cap = 128 slots, two
-        // slabs) plus one partial slab.
-        let bound = ideal + COMPACT_MIN_SLABS + default_cap(c) as usize / nslots + 1;
+        // 64 KiB slabs' worth, i.e. 64 of the 4 KiB slabs) plus what the
+        // cache holds (cap = 128 slots, 32 slabs) plus one partial slab.
+        let bound = ideal + COMPACT_MIN_SLABS * CLASSES[c].compact_slots() / nslots + default_cap(c) as usize / nslots + 1;
         assert!(after <= bound, "{after} occupied slabs after the churn, ideal {ideal}, bound {bound}, before {before}");
         assert!(!Heap::fragmented(s, 0, c));
         assert!(!t.cache(c).compacting(), "still compacting a dense class");
@@ -2581,7 +2603,7 @@ pub(crate) mod tests {
         let c = class_with(1024);
         let cs = &s.arena0.classes[c];
         let nslots = CLASSES[c].nslots();
-        let mut keep = residue(&t, c, 40, 560, 0x0bad_cafe);
+        let mut keep = residue(&t, c, MODEL_SLOTS / CLASSES[c].nslots(), 560, 0x0bad_cafe);
         assert!(Heap::fragmented(s, 0, c));
         // A balanced churn with a defragmenter-like stream of direct
         // (MALLOCX_TCACHE_NONE) claims at 3 slabs' worth per probe window
@@ -2593,7 +2615,7 @@ pub(crate) mod tests {
         let before_claimed = cs.claimed();
         let before = occupied(s, c);
         let mut was_compacting = false;
-        let windows = 24;
+        let windows = 72;
         for step in 0..windows * (PROBE_MASK as usize + 1) {
             let i = (xorshift(&mut st) % keep.len() as u64) as usize;
             t.free(keep[i]);
@@ -2609,11 +2631,11 @@ pub(crate) mod tests {
                 direct = p;
             }
         }
-        assert!(cs.claimed() - before_claimed >= windows as u64 * COMPACT_MAX_REFILL_SLABS as u64 * nslots as u64);
+        assert!(cs.claimed() - before_claimed >= windows as u64 * COMPACT_MAX_REFILL_SLABS as u64 * CLASSES[c].compact_slots() as u64);
         assert!(was_compacting, "direct claims blocked compaction");
         // The churn model's bound: live data plus the holes the gate
         // leaves plus what the cache holds plus one partial slab.
-        let bound = keep.len().div_ceil(nslots) + COMPACT_MIN_SLABS + default_cap(c) as usize / nslots + 1;
+        let bound = keep.len().div_ceil(nslots) + COMPACT_MIN_SLABS * CLASSES[c].compact_slots() / nslots + default_cap(c) as usize / nslots + 1;
         assert!(occupied(s, c) <= bound, "little compacted: {} of {before} slabs still occupied, bound {bound}", occupied(s, c));
         s.free_direct(0, c, direct);
         for p in keep {
@@ -2653,7 +2675,7 @@ pub(crate) mod tests {
         let t = TestHeap::new(s);
         let c = class_with(1024);
         let nslots = CLASSES[c].nslots();
-        let mut keep = residue(&t, c, 40, 560, 0x5151_a1a1_7777_0f0f);
+        let mut keep = residue(&t, c, MODEL_SLOTS / CLASSES[c].nslots(), 560, 0x5151_a1a1_7777_0f0f);
         let target = keep.len();
         let before = occupied(s, c);
         let mut st = 0x1357_9bdfu64;
@@ -2671,7 +2693,7 @@ pub(crate) mod tests {
         }
         assert!(was_compacting);
         let after = occupied(s, c);
-        let bound = keep.len().div_ceil(nslots) + COMPACT_MIN_SLABS + default_cap(c) as usize / nslots + 1;
+        let bound = keep.len().div_ceil(nslots) + COMPACT_MIN_SLABS * CLASSES[c].compact_slots() / nslots + default_cap(c) as usize / nslots + 1;
         assert!(after <= bound, "{after} occupied slabs after the random walk, bound {bound}, before {before}");
         for p in keep {
             t.free(p);
@@ -2684,7 +2706,7 @@ pub(crate) mod tests {
         let s = shared_with(Config { tcache_compact_shift: 0, ..Config::DEFAULT });
         let t = TestHeap::new(s);
         let c = class_with(1024);
-        let keep = residue(&t, c, 40, 560, 0x1234_5678);
+        let keep = residue(&t, c, MODEL_SLOTS / CLASSES[c].nslots(), 560, 0x1234_5678);
         let before = occupied(s, c);
         let mut st = 0x8765_4321u64;
         for _ in 0..50_000 {

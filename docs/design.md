@@ -98,21 +98,30 @@ Tiers:
 
 | Tier   | Size range              | Slab size          | Slots per slab |
 |--------|-------------------------|--------------------|----------------|
-| Small  | quantum .. 1024         | 64 KiB             | 64 .. 8192     |
+| Small  | quantum .. 448          | 64 KiB             | 146 .. 8192    |
+| Small  | 512 .. 1024             | 4 KiB (8 KiB: 896) | 4 .. 9         |
 | Medium | 1280 .. 256 KiB         | max(64 KiB, 16*sz) | >= 16          |
 | Huge   | > 256 KiB               | page-granular runs | 1              |
 
-A 16 KiB minimum slab (for every class, and for the classes from 256 bytes
-up) was tried during Phase 1 acceptance against the Valkey soak's
-post-delete residue and rejected: the surviving slabs sat at 46..48%
-occupancy in every class with either geometry, so the residue is not slabs
-failing to empty but a layout the per-thread caches freeze (results in
-`bench/results/2026-09-16-aarch64-gce-min-slab.md`), and the smaller slab
-cost 2..4% on larson and, for every class, half of `xmalloc-test`. The code
-keeps a two-regime rule expressible (`layout::SMALL_SLAB_BELOW`,
-`LG_SMALL_SLAB`) and handles slabs smaller than the kernel page (committed,
-guarded and purged in page groups, a group only when every slab in it is
-idle and owned by the purging arena), both dormant at 64 KiB.
+The 512..1024-byte classes use the smallest power-of-two slab from 4 KiB up
+whose internal waste is at most a sixteenth of the slab
+(`layout::LG_MIN_SLAB`, `SLAB_WASTE_DIV`): 4 KiB for 512, 640, 768 and 1024
+bytes, 8 KiB for 896. Phase 1 acceptance found the Valkey soak's post-delete
+residue to be live values the load never touches again, one to fifteen per
+slab in exactly these classes, each pinning a whole 64 KiB slab where
+jemalloc's 4..32-region slabs pin 4..28 KiB
+(`bench/results/2026-09-17-aarch64-gce-compacting-cache-soak3.md`); the
+compacting cache (6.4) moves everything else. Every other class keeps 64 KiB:
+a 16 KiB slab for every class halved `xmalloc-test` through per-slab refill
+and flush work, and a class with 64 or more regions per slab never empties by
+chance anyway (`bench/results/2026-09-16-aarch64-gce-min-slab.md`). The
+change is priced in `bench/results/2026-09-17-*-gce-slab-geometry.md`. Slabs
+smaller than the kernel page are committed, guarded and purged in page
+groups (a group only when every slab in it is idle and owned by the purging
+arena); guard slabs keep their density per byte (one per
+`guard_slab_interval` x 64 KiB); the compaction thresholds of 6.4 count
+64 KiB slabs' worth of slots whatever the class's slab size; a refill or a
+flush batch reopens up to 16 slabs per lock hold.
 
 Slab size per class is a compile-time table. Each class region is divided into
 slabs of that class's slab size, so slab number and slot index are:
@@ -318,8 +327,8 @@ class or, for huge runs, into free following pages.
   both, a push never writes below `len`. The schedule is gated per cache:
   in *probe* mode one pop in 4096 asks the class for its holes
   (`ClassState::holes`, one lock hold) and switches to *compact* mode only
-  if they are worth at least 4 slabs and 1/32 of the class's capacity and
-  cache refills claimed less than 2 slabs' worth since the previous probe
+  if they are worth at least 4 slabs of 64 KiB and 1/32 of the class's
+  capacity and cache refills claimed less than 2 such slabs' worth since the previous probe
   (`ClassState::refilled`: refills already take the lowest partial slab,
   so a class they are draining has only transient holes; direct
   `MALLOCX_TCACHE_NONE` claims such as Valkey's defragmenter's do not
@@ -520,7 +529,7 @@ jemalloc names where they exist:
 | `thp`                     | never   | `never`, `always`                       |
 | `lazy_free`               | false   | use `MADV_FREE` for purge               |
 | `guards`                  | true    | guard slabs and huge runs               |
-| `guard_slab_interval`     | 8       | one guard per N slabs; 1 = every slab   |
+| `guard_slab_interval`     | 8       | one guard per N x 64 KiB of slabs       |
 | `zero_on_free`            | false   |                                         |
 | `slot_randomize`          | false   |                                         |
 | `double_free_scan`        | false   | scan whole cache on free                |
@@ -660,7 +669,8 @@ Always on:
 - Size-class isolation in separate randomised regions with unmapped gaps.
 - Invalid-free and stale double-free detection on every `free`.
 - Region table and reservations sealed with `mseal` when available.
-- Guard between huge runs; guard slab every `guard_slab_interval` slabs.
+- Guard between huge runs; guard slab every `guard_slab_interval` x 64 KiB
+  of slabs.
 - Abort, never continue, on any inconsistency. Abort messages go to stderr
   via `write(2)` and then `abort()`.
 
