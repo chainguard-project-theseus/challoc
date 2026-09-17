@@ -35,8 +35,7 @@ set -euo pipefail
 
 PROJECT="${CHALLOC_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
 # us-east4-a since 2026-09-17: us-central1-b returned ZONE_RESOURCE_POOL_EXHAUSTED
-# on starts for weeks. The VMs there are stopped and can be deleted with
-# CHALLOC_GCE_ZONE=us-central1-b challoc-bench delete all.
+# on starts for weeks; that pair was deleted the same day.
 ZONE="${CHALLOC_GCE_ZONE:-us-east4-a}"
 PREFIX="${CHALLOC_GCE_PREFIX:-challoc-bench}"
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
