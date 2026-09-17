@@ -282,6 +282,27 @@ Tasks:
    headers share a few lines instead of 52 pages. Acceptance: 1-thread larson
    on both VMs not slower, aarch64 dTLB refills per operation down toward
    jemalloc's (3.4 -> ~2 per operation), all tests green.
+5b. Harness: two tiers (delivered 2026-09-17, outside the loop). A fast tier
+   `bench/quick.sh` / `make quick` / `challoc-bench quick <vm> [OLD=rev]`
+   that builds the working tree and its base (`OLD`, default HEAD) from
+   `git archive` into `target/quick/{new,old}`, checks the builds differ
+   exactly when the sources do, and runs one round of larson 1/10,
+   xmalloc-test, alloc-test 1 and the churn probe under old, new and
+   jemalloc with a go/no-go exit status (`QUICK_TOLERANCE` 5%, churn end
+   occupancy at least 90%); a protocol tier `bench/ab.sh` / `make ab` /
+   `challoc-bench ab <vm> VARIANTS='name=rev[:MALLOC_CONF] ...'` (5
+   interleaved rounds plus warm-up, sorted scores, median RSS, load average,
+   the results-file table shape, `ADAPTIVE=1` stop after 3 separated
+   rounds) replacing the per-iteration `.tmp-itNN-inner.sh` scripts; cached
+   stock-allocator baselines (`bench/baseline.sh`, `BASELINES=cached`, one
+   jemalloc sanity round within 3% or the cache is stale); `make soak-quick`
+   (challoc 600 s with the occupancy sampler folded into `valkey-soak.sh`
+   as `OCCUPANCY=1`, compared with a cached jemalloc soak from `make
+   soak-baseline`, the summary saying so); and driver support (`quick`,
+   `ab`, `session start|stop` with `CHALLOC_GCE_WARM=1`, `fetch` that never
+   overwrites newer local files, `sync` warning about uncommitted `src/`).
+   Acceptance rows and results files keep using the protocol tier,
+   same-run, unchanged criteria.
 6. `bench/gce/README.md` and a CLAUDE.md environment bullet: how to create,
    sync, run, and stop the VMs; the cost of leaving one running; and the
    rule that Mac numbers and GCE numbers are never compared with each other.
@@ -385,3 +406,16 @@ behaviour or default performance.
 - Reference numbers come from the GCE VMs in Phase 1.5 (C4A for aarch64,
   C4 for x86_64, PMU enabled). The Docker VM on the Mac is for development
   A/B rounds only; a Mac number and a GCE number are never compared.
+- Two tiers (`bench/README.md`, Phase 1.5 task 5b). The fast tier
+  (`bench/quick.sh`, `make quick`, `challoc-bench quick`: one round of
+  larson 1/10, xmalloc-test, alloc-test 1 and the churn probe under old,
+  new and jemalloc, about two minutes) is for iteration decisions only: it
+  says whether a variant is worth the protocol run, and its numbers are
+  never recorded in `bench/results/` or used against a criterion. The
+  protocol tier (`bench/ab.sh`, `make ab`, `challoc-bench ab`: 5 rounds plus
+  warm-up, interleaved variants, sorted scores, median RSS) is what
+  acceptance and the results files use, with every variant measured in the
+  same run; the criteria above are unchanged. Cached stock-allocator
+  baselines (`bench/baseline.sh`, `BASELINES=cached`) save time in
+  iteration runs and are revalidated by a jemalloc sanity round each time;
+  acceptance runs do not use them.

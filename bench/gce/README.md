@@ -28,16 +28,89 @@ bench/gce/challoc-bench pmu-check all      # six reference events must count non
 bench/gce/challoc-bench sync all           # rsync the working tree to ~/challoc on each VM
 bench/gce/challoc-bench run arm64 'make test'
 bench/gce/challoc-bench make amd64 bench   # sync, then `make bench` on the VM
-bench/gce/challoc-bench fetch arm64        # pull bench/results/* back
+bench/gce/challoc-bench quick arm64 OLD=HEAD~1   # sync, then `make quick` (fast tier)
+bench/gce/challoc-bench ab arm64 VARIANTS='old=HEAD~1 new=HEAD jemalloc' ROUNDS=5
+                                           # sync, then `make ab` (protocol tier)
+bench/gce/challoc-bench fetch arm64        # pull bench/results/* back (never overwrites newer local files)
 bench/gce/challoc-bench ssh arm64
 bench/gce/challoc-bench status
-bench/gce/challoc-bench stop all           # do this before an iteration ends
+bench/gce/challoc-bench stop all           # do this before an iteration ends (unless CHALLOC_GCE_WARM, below)
 ```
 
 The VMs run the repository's own `Dockerfile.dev` image through the same
 `Makefile` as the Mac, so the toolchain is pinned identically. A full
 `make test` (image build, release build, both test groups) takes about 100 s
 on either VM.
+
+## Two tiers on a VM
+
+`bench/README.md` describes the tiers; on a VM they are driven as
+
+```
+bench/gce/challoc-bench quick arm64                 # working tree vs HEAD, ~2 min, exit 1 = no-go
+bench/gce/challoc-bench quick arm64 OLD=HEAD~1      # a committed change vs its parent
+bench/gce/challoc-bench ab arm64 VARIANTS='old=HEAD~1 new=HEAD narenas16=HEAD~1:narenas:16 jemalloc' \
+    RESULT=bench/results/2026-09-17-aarch64-gce-<topic>.md
+bench/gce/challoc-bench fetch arm64                 # bring the results file back
+bench/gce/challoc-bench run arm64 'make baseline'   # once per VM: cached stock-allocator rows
+bench/gce/challoc-bench quick arm64 BASELINES=cached
+```
+
+Every extra argument is a `VAR=value` for `make` and is quoted for the
+remote shell, so spaces inside `VARIANTS` survive. Both subcommands `sync`
+first; `sync` mirrors the working tree including uncommitted changes and
+prints a warning listing any uncommitted change under `src/` (or the crate
+manifest), because the library the VM then measures as `tree` is not HEAD.
+Run the iteration's `quick` before any `ab`; a variant that fails `quick` is
+not taken to the protocol tier (`scripts/ralph-prompt.md` step 4).
+
+Long runs (`ab` with 5 rounds is 6 to 8 minutes, `make bench` 13, the soak
+45) survive a dropped ssh session when launched detached on the VM:
+`challoc-bench ssh arm64 --command='cd challoc && setsid nohup make ab ... >
+~/logs/ab.log 2>&1 < /dev/null &' -- -T`, then poll `~/logs/ab.log`. Keep
+VM-side logs in `~/logs`, not under `~/challoc`: `sync` is `rsync --delete`.
+
+## Sessions and warm VMs
+
+Starting a VM takes a minute or two, and a stopped VM comes back with a new
+external IP. When a driving session runs many iterations back to back the
+session, not each iteration, owns the VMs:
+
+```
+bench/gce/challoc-bench session start all   # once, at the start of the session
+export CHALLOC_GCE_WARM=1                    # for every iteration the session launches
+...                                          # iterations: quick, ab, fetch; never start/stop
+bench/gce/challoc-bench session stop all    # once, at the end; nothing may stay running
+```
+
+With `CHALLOC_GCE_WARM` set, `challoc-bench start` and `stop` print a note
+and do nothing, so an iteration that follows the "stop what you started"
+rule from CLAUDE.md cannot tear down the session's VMs; `session stop`
+ignores the variable. Without the variable the old rule holds: every
+iteration that starts a VM stops it before it ends, and `status` is checked
+at the start of an iteration for orphans.
+
+## Recipes for the traps
+
+- Host key changed after a restart (`Host key verification failed` from
+  `sync`, `fetch` or `ssh`): the VM has a new external IP whose key collides
+  with a stale entry. `ssh-keygen -R <ip> -f ~/.ssh/google_compute_known_hosts`,
+  where `<ip>` is from `challoc-bench status`, then retry.
+- `fetch` uses `rsync --update -i`: a local results file that is newer than
+  the VM's copy is left alone (and the transfer list shows what moved), so a
+  file edited locally after the run is never clobbered. A VM-side file that
+  is newer still wins; commit local edits before fetching if in doubt.
+- Stale mtimes: files restored with `mv`/`cp -p` or arriving by `rsync -a`
+  can be older than cargo's last build and are skipped; `bench/lib.sh`
+  touches `src/lib.rs` before building the `tree` variant, and `git archive`
+  variants are always fresh. When building by hand, `touch src/lib.rs`.
+- `perf` must run as root to attach to the container's process
+  (`perf-stat` already does `sudo perf`); `perf_event_paranoid=-1` alone is
+  not enough for another user's process.
+- The first `make -j16` of the jemalloc baseline Valkey inside
+  `valkey-soak.sh` has failed on a fresh clone and succeeded on retry; the
+  script now exits when that build fails instead of continuing without the
+  jemalloc half.
 
 ## perf
 

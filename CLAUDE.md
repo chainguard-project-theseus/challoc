@@ -40,3 +40,9 @@ Environment:
   driven by `bench/gce/challoc-bench` once it exists). `gcloud` on the host
   is authenticated; stop every VM you start before the iteration ends, and
   never compare a Mac number with a GCE number.
+- Two benchmark tiers (`bench/README.md`): `make quick` (or `challoc-bench
+  quick <vm>`) is the ~2-minute go/no-go for a change and comes first;
+  `make ab` / `challoc-bench ab` is the protocol tier and the only source of
+  numbers for `bench/results/` and acceptance. During a driving session the
+  VMs stay warm (`challoc-bench session start|stop`, `CHALLOC_GCE_WARM=1`);
+  an iteration then does not start or stop them.
