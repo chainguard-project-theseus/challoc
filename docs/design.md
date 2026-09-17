@@ -99,14 +99,16 @@ Tiers:
 | Tier   | Size range              | Slab size          | Slots per slab |
 |--------|-------------------------|--------------------|----------------|
 | Small  | quantum .. 448          | 64 KiB             | 146 .. 8192    |
-| Small  | 512 .. 1024             | 4 KiB (8 KiB: 896) | 4 .. 9         |
+| Small  | 512 .. 1024             | 4 .. 16 KiB        | 4 .. 25        |
 | Medium | 1280 .. 256 KiB         | max(64 KiB, 16*sz) | >= 16          |
 | Huge   | > 256 KiB               | page-granular runs | 1              |
 
 The 512..1024-byte classes use the smallest power-of-two slab from 4 KiB up
-whose internal waste is at most a sixteenth of the slab
-(`layout::LG_MIN_SLAB`, `SLAB_WASTE_DIV`): 4 KiB for 512, 640, 768 and 1024
-bytes, 8 KiB for 896. Phase 1 acceptance found the Valkey soak's post-delete
+whose internal waste is at most a thirty-second of the slab
+(`layout::LG_MIN_SLAB`, `SLAB_WASTE_DIV`): 4 KiB for 512 and 1024 bytes,
+8 KiB for 896, 16 KiB for 640 and 768 (whose 4 KiB and 8 KiB slabs would
+waste a sixteenth: 21 MiB at the soak's peak for the 640 class alone,
+against a 5% peak RSS criterion). Phase 1 acceptance found the Valkey soak's post-delete
 residue to be live values the load never touches again, one to fifteen per
 slab in exactly these classes, each pinning a whole 64 KiB slab where
 jemalloc's 4..32-region slabs pin 4..28 KiB

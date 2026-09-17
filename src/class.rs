@@ -72,7 +72,7 @@ pub struct Claim {
 /// Slabs one lock hold of a refill may reserve from (see
 /// [`ClassState::plan`]), and slabs one lock hold of a release batch may
 /// reopen ([`Reopen`]). Sized so that the common refill and flush of every
-/// class fit in one hold: with the 4 KiB slabs of the 512..1024-byte
+/// class fit in one hold: with the 4 KiB slabs of the 512 and 1024-byte
 /// classes (`layout::LG_MIN_SLAB`) a 128-slot refill of the 512 class and a
 /// 64-slot one of the 1024 class each span 16 slabs.
 const MAX_PICKS: usize = 16;

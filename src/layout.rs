@@ -23,9 +23,12 @@ pub const MEDIUM_MAX: usize = 256 * 1024;
 /// Smallest slab (4 KiB). The classes from [`SMALL_SLAB_BELOW`] to
 /// [`SMALL_MAX`] use the smallest power of two from here up whose internal
 /// waste (`slab - nslots * size`) is at most a [`SLAB_WASTE_DIV`]th of the
-/// slab: 4 KiB for 512, 640, 768 and 1024 bytes (8, 6, 5 and 4 slots) and
-/// 8 KiB for 896 bytes (9 slots). Every other class keeps a 64 KiB slab or
-/// larger ([`LG_SMALL_SLAB`], [`LG_MEDIUM_MIN_SLAB`]).
+/// slab: 4 KiB for 512 and 1024 bytes (8 and 4 slots), 8 KiB for 896
+/// (9 slots), 16 KiB for 640 and 768 (25 and 21 slots; 4 KiB and 8 KiB
+/// would waste a sixteenth of the slab, 21 MiB at the Valkey soak's peak
+/// for the 640 class alone, and the peak RSS criterion is 5%). Every other
+/// class keeps a 64 KiB slab or larger ([`LG_SMALL_SLAB`],
+/// [`LG_MEDIUM_MIN_SLAB`]).
 ///
 /// Why these classes and this size (Phase 1 acceptance step 3,
 /// `docs/review-2026-09-17.md` P6, measured in
@@ -52,7 +55,7 @@ pub const LG_SMALL_SLAB: u32 = 16;
 pub const LG_MEDIUM_MIN_SLAB: u32 = 16;
 /// Largest internal waste of a class between [`SMALL_SLAB_BELOW`] and
 /// [`SMALL_MAX`], as a fraction of its slab (see [`LG_MIN_SLAB`]).
-pub const SLAB_WASTE_DIV: usize = 16;
+pub const SLAB_WASTE_DIV: usize = 32;
 /// The compaction thresholds of `heap.rs` are counted in slabs of this
 /// size (64 KiB), so they mean the same bytes whatever a class's slab size
 /// (see [`Class::compact_slots`]).
@@ -739,7 +742,7 @@ mod tests {
             if c.size() < SMALL_SLAB_BELOW {
                 assert_eq!(slab, 1 << LG_SMALL_SLAB, "class {i}: slab below {SMALL_SLAB_BELOW}");
             } else if c.size() <= SMALL_MAX {
-                // The smallest slab from MIN_SLAB up with waste under 1/16.
+                // The smallest slab from MIN_SLAB up with waste under 1/32.
                 assert!(slab <= 1 << LG_SMALL_SLAB, "class {i}");
                 assert!(slab - c.nslots() * c.size() <= slab / SLAB_WASTE_DIV, "class {i} wastes too much");
                 if slab > MIN_SLAB {
@@ -770,13 +773,13 @@ mod tests {
     #[test]
     fn small_slab_classes_are_the_pinned_range() {
         // (size, slab, slots, compaction unit in slots): the 512..1024 classes
-        // get 4 KiB slabs (8 KiB where 4 KiB would waste an eighth), their
+        // get 4..16 KiB slabs (the smallest wasting under 1/32), their
         // neighbours keep 64 KiB.
         for (size, slab, nslots, unit) in [
             (448, 65536, 146, 146),
             (512, 4096, 8, 128),
-            (640, 4096, 6, 102),
-            (768, 4096, 5, 85),
+            (640, 16384, 25, 102),
+            (768, 16384, 21, 85),
             (896, 8192, 9, 73),
             (1024, 4096, 4, 64),
             (1280, 65536, 51, 51),
