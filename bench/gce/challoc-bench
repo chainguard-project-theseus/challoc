@@ -20,17 +20,32 @@
 #   bench/gce/challoc-bench sync      arm64|amd64|all      # rsync the working tree
 #   bench/gce/challoc-bench run       arm64|amd64 CMD...   # run CMD in ~/challoc on the VM
 #   bench/gce/challoc-bench make      arm64|amd64 ARGS...  # sync, then `make ARGS` on the VM
+#   bench/gce/challoc-bench quick     arm64|amd64 [OLD=rev] [VAR=val...]
+#                                                          # sync, then `make quick` (fast tier, ~2 min)
+#   bench/gce/challoc-bench ab        arm64|amd64 VARIANTS='old=HEAD~1 new=HEAD jemalloc' [VAR=val...]
+#                                                          # sync, then `make ab` (protocol tier)
 #   bench/gce/challoc-bench pmu-check arm64|amd64|all      # perf stat the six reference events
 #   bench/gce/challoc-bench perf-stat arm64|amd64 'DOCKER_CMD'  # perf stat -p the container's process
 #   bench/gce/challoc-bench fetch     arm64|amd64          # pull bench/results/* back from the VM
+#                                                          # (never overwrites a newer local file)
 #   bench/gce/challoc-bench ssh       arm64|amd64 [ARGS]
 #   bench/gce/challoc-bench status    [arm64|amd64|all]
 #   bench/gce/challoc-bench start|stop|delete arm64|amd64|all
+#   bench/gce/challoc-bench session   start|stop [arm64|amd64|all]
+#                                                          # the driving session's own start/stop, see below
 #
 # Environment: CHALLOC_GCE_PROJECT (default: active gcloud project),
 # CHALLOC_GCE_ZONE (default us-east4-a), CHALLOC_GCE_PREFIX (default
 # challoc-bench). Stop every VM you start before an iteration ends: a
 # 16-vCPU C4A or C4 costs roughly $0.70-0.90 per hour while running.
+#
+# Warm VMs during a driving session: when a driver runs many iterations back
+# to back it starts the VMs once with `session start`, exports
+# CHALLOC_GCE_WARM=1 for the iterations, and stops them once at the end with
+# `session stop`. With CHALLOC_GCE_WARM set, `start` and `stop` are no-ops
+# that say so, so an iteration following the "stop what you started" rule
+# does not tear down the session's VMs; only `session stop` (or an unset
+# variable) stops them.
 set -euo pipefail
 
 PROJECT="${CHALLOC_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
@@ -133,7 +148,18 @@ REMOTE
   wait
 }
 
+# sync mirrors the working tree, uncommitted changes included, with --delete:
+# anything the VM keeps under ~/challoc that is not in the tree (logs) is
+# removed, so VM-side logs belong in ~/logs. It warns when src/ (or the
+# crate manifest) has uncommitted changes, because the library `make
+# quick`/`make ab` measure as "tree" on the VM is then not HEAD.
 cmd_sync() {
+  local dirty
+  dirty="$(git -C "$REPO" status --porcelain -- src Cargo.toml Cargo.lock build.rs 2>/dev/null || true)"
+  if [ -n "$dirty" ]; then
+    echo "challoc-bench: WARNING: uncommitted changes in the library sources are being synced (the VM's working tree != HEAD $(git -C "$REPO" rev-parse --short HEAD)):" >&2
+    echo "$dirty" | sed 's/^/    /' >&2
+  fi
   for t in $(targets "${1:-all}"); do
     local dest; dest="$(ssh_target "$t")"
     echo "challoc-bench: syncing $REPO -> $dest:$REMOTE_DIR"
@@ -155,6 +181,23 @@ cmd_make() {
   local t="$1"; shift
   cmd_sync "$t"
   cmd_run "$t" "make $*"
+}
+
+# quoted ARGS...: each argument escaped for the remote (bash) shell, so
+# VARIANTS='old=HEAD~1 new=HEAD' survives the ssh hop intact.
+quoted() { local a out=; for a in "$@"; do out="$out $(printf '%q' "$a")"; done; echo "${out# }"; }
+
+# quick / ab: sync, then the Makefile tier on the VM. Remaining arguments are
+# VAR=value pairs for make (OLD=..., VARIANTS=..., ROUNDS=..., RESULT=...).
+cmd_quick() {
+  local t="$1"; shift
+  cmd_sync "$t"
+  cmd_run "$t" "make quick $(quoted "$@")"
+}
+cmd_ab() {
+  local t="$1"; shift
+  cmd_sync "$t"
+  cmd_run "$t" "make ab $(quoted "$@")"
 }
 
 # pmu-check proves the PMU is real: every reference event must count
@@ -205,8 +248,10 @@ REMOTE
 
 cmd_fetch() {
   local t="$1" src; src="$(ssh_target "$t")"
-  rsync -az -e "$(ssh_cmd)" \
-    "$src:$REMOTE_DIR/bench/results/" "$REPO/bench/results/"
+  # --update: a file the VM has that is older than the local copy is skipped,
+  # so a results file edited locally after the run is never clobbered.
+  rsync -az --update -i -e "$(ssh_cmd)" \
+    "$src:$REMOTE_DIR/bench/results/" "$REPO/bench/results/" | sed 's/^/challoc-bench: fetch /'
 }
 
 cmd_ssh()    { local t="$1"; shift; gssh "$t" "$@"; }
@@ -225,9 +270,21 @@ start_one() {
   done
   g compute instances start "$name" --zone="$ZONE"
 }
-cmd_start()  { for t in $(targets "${1:-all}"); do start_one "$(vm_name "$t")" & done; wait; }
-cmd_stop()   { for t in $(targets "${1:-all}"); do g compute instances stop   "$(vm_name "$t")" --zone="$ZONE" & done; wait; }
+do_start()   { for t in $(targets "${1:-all}"); do start_one "$(vm_name "$t")" & done; wait; }
+do_stop()    { for t in $(targets "${1:-all}"); do g compute instances stop   "$(vm_name "$t")" --zone="$ZONE" & done; wait; }
 cmd_delete() { for t in $(targets "${1:-all}"); do g compute instances delete "$(vm_name "$t")" --zone="$ZONE" --quiet & done; wait; }
+# start/stop defer to the session driver while CHALLOC_GCE_WARM is set.
+warm() { [ -n "${CHALLOC_GCE_WARM:-}" ]; }
+cmd_start() { if warm; then echo "challoc-bench: CHALLOC_GCE_WARM is set; the session driver owns the VMs, not starting (they should already be up: 'status')"; else do_start "$@"; fi; }
+cmd_stop()  { if warm; then echo "challoc-bench: CHALLOC_GCE_WARM is set; the session driver owns the VMs, not stopping (use 'session stop' at the end of the session)"; else do_stop "$@"; fi; }
+cmd_session() {
+  local what="${1:-}"; shift || true
+  case "$what" in
+    start) do_start "$@"; echo "challoc-bench: session VMs are up; export CHALLOC_GCE_WARM=1 for the iterations, and run 'challoc-bench session stop' once at the end" ;;
+    stop)  do_stop "$@"; echo "challoc-bench: session VMs stopped" ;;
+    *) die "session needs start or stop" ;;
+  esac
+}
 
 cmd="${1:-}"; shift || true
 case "$cmd" in
@@ -236,6 +293,8 @@ case "$cmd" in
   sync)      cmd_sync "$@" ;;
   run)       cmd_run "$@" ;;
   make)      cmd_make "$@" ;;
+  quick)     cmd_quick "$@" ;;
+  ab)        cmd_ab "$@" ;;
   pmu-check) cmd_pmu_check "$@" ;;
   perf-stat) cmd_perf_stat "$@" ;;
   fetch)     cmd_fetch "$@" ;;
@@ -243,6 +302,7 @@ case "$cmd" in
   status)    cmd_status ;;
   start)     cmd_start "$@" ;;
   stop)      cmd_stop "$@" ;;
+  session)   cmd_session "$@" ;;
   delete)    cmd_delete "$@" ;;
-  *) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac
