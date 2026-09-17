@@ -323,6 +323,13 @@ Acceptance:
 
 ## Phase 3: packaging and rollout
 
+Prerequisite: one aarch64 test run on a 64 KiB-page kernel. Wolfi's
+`build-aarch64.env` builds jemalloc with `JEMALLOC_SYS_WITH_LG_PAGE=16`, so
+Wolfi expects 64 KiB-page aarch64 hosts; the GCE VMs and the Mac container
+are 4 KiB. challoc reads the page size at runtime and its smallest slabs
+(4 KiB since 2026-09-17) use the page-group commit/guard/purge path there,
+which only the faked-page unit test has exercised.
+
 Tasks:
 
 1. Wolfi package definition `challoc.yaml` producing `challoc`, `challoc-dev`,
