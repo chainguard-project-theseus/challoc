@@ -338,6 +338,9 @@ pub struct Heap {
     /// `thread.tcache.enabled`: while false, `ensure_cache` creates no
     /// cache and the thread is served straight from the slab bitmaps.
     tcache_enabled: bool,
+    /// Counted in `Arenas::bound` for its home arena: thread heaps are,
+    /// explicit caches (`create_detached`) are not.
+    bound: bool,
 }
 
 /// Process-wide allocator state that every heap works against: the regions,
@@ -439,6 +442,10 @@ mod os {
         crate::sys::gettid() as u32
     }
 
+    pub fn ncpus() -> u32 {
+        crate::sys::ncpus()
+    }
+
     pub fn now_ns() -> u64 {
         crate::sys::now_coarse_ns()
     }
@@ -474,6 +481,11 @@ mod os {
 
     pub fn tid() -> u32 {
         0
+    }
+
+    /// Host tests: one CPU, so the default `narenas` resolves to 4.
+    pub fn ncpus() -> u32 {
+        1
     }
 
     static TICK: AtomicU64 = AtomicU64::new(0);
@@ -519,11 +531,15 @@ impl Shared {
     ///
     /// `config` supplies the guard slab interval, the huge-run guards, the
     /// cache GC period, the cache capacities, the decay period and the
-    /// number of automatic arenas; `guard_install` says whether the kernel
+    /// number of automatic arenas (`narenas:0`, the default, is resolved
+    /// here from the CPU count and stored, so `opt.narenas` reports the
+    /// number in use); `guard_install` says whether the kernel
     /// has `MADV_GUARD_INSTALL`, without which no guard is placed at all
     /// (the `PROT_NONE` fallback would split every class region into one
     /// VMA per guard, see `class.rs`).
     pub unsafe fn init(this: *mut Shared, regions: Regions, config: Config, guard_install: bool) -> bool {
+        let mut config = config;
+        config.narenas = config.effective_narenas(os::ncpus());
         let guard_interval = if guard_install { config.effective_guard_slab_interval() } else { 0 };
         let guard_install = guard_install && config.guards;
         let decay_ns = crate::purge::decay_ns_from_ms(config.dirty_decay_ms);
@@ -748,10 +764,19 @@ impl Shared {
 
 impl Heap {
     /// Create a heap in the metadata region for the calling thread, homed
-    /// on the next automatic arena. Null if the region is exhausted. Does
-    /// not touch TLS or the thread key.
+    /// on the least-loaded automatic arena and counted there
+    /// (`Arenas::assign`; `destroy` releases the binding). Null if the
+    /// region is exhausted. Does not touch TLS or the thread key.
     pub fn create(shared: &Shared) -> *mut Heap {
-        Self::create_detached(shared, shared.arenas.assign())
+        let arena = shared.arenas.assign();
+        let h = Self::create_detached(shared, arena);
+        if h.is_null() {
+            shared.arenas.unbind(arena);
+        } else {
+            // SAFETY: fresh, exclusively owned.
+            unsafe { (*h).bound = true };
+        }
+        h
     }
 
     /// Create a heap homed on `arena` (an explicit cache, or a thread heap
@@ -778,6 +803,7 @@ impl Heap {
                     others: ptr::null_mut(),
                     snapshot: ThreadStats::default(),
                     tcache_enabled: true,
+                    bound: false,
                 },
             );
         }
@@ -807,6 +833,9 @@ impl Heap {
             }
         }
         heap.others = ptr::null_mut();
+        if heap.bound {
+            shared.arenas.unbind(heap.arena);
+        }
         shared.meta.free(h as *mut u8, Layout::new::<Heap>());
     }
 
@@ -866,6 +895,10 @@ impl Heap {
             }
         }
         self.arena = arena;
+        if self.bound {
+            shared.arenas.unbind(old);
+            shared.arenas.bind(arena);
+        }
     }
 
     /// Byte counters for this thread: the uncached part plus, for every
@@ -1890,8 +1923,10 @@ pub(crate) mod tests {
     /// regions are real `PROT_NONE` reservations so slot memory can be
     /// touched; elsewhere the metadata is a `Vec` and slot addresses are
     /// never dereferenced.
+    /// One automatic arena, so every heap of a test shares arena 0 (the
+    /// default would spread concurrently live heaps over `4 * ncpus`).
     pub(crate) fn shared() -> &'static Shared {
-        shared_with(Config::DEFAULT)
+        shared_with(Config { narenas: 1, ..Config::DEFAULT })
     }
 
     pub(crate) fn shared_with(config: Config) -> &'static Shared {
@@ -2906,21 +2941,38 @@ pub(crate) mod tests {
         assert_eq!(s.decay_ns(), 5_000_000);
     }
 
-    /// `narenas:3` gives three automatic arenas assigned round robin to new
-    /// heaps and built on first touch.
+    /// `narenas:3`: a new heap is bound to the automatic arena with the
+    /// fewest bound heaps (ties: a built one first, then the lowest index),
+    /// `destroy` releases the binding, and arenas are built on first touch.
     #[test]
-    fn automatic_arenas_are_assigned_round_robin_and_built_lazily() {
+    fn automatic_arenas_are_assigned_least_loaded_and_built_lazily() {
         let s = shared_with(Config { narenas: 3, ..Config::DEFAULT });
         assert_eq!(s.arenas.count(), 3);
         assert_eq!(s.arenas.auto(), 3);
         assert!(s.arenas.get_existing(1).is_none());
-        let homes: Vec<u16> = (0..6).map(|_| TestHeap::new(s).heap().arena()).collect();
-        assert_eq!(homes, [1, 2, 0, 1, 2, 0]);
+        // Six live heaps: two per arena, lowest index first.
+        let mut heaps: Vec<TestHeap> = (0..6).map(|_| TestHeap::new(s)).collect();
+        let homes: Vec<u16> = heaps.iter().map(|t| t.heap().arena()).collect();
+        assert_eq!(homes, [0, 1, 2, 0, 1, 2]);
+        assert_eq!((0..3).map(|i| s.arenas.bound(i)).collect::<Vec<_>>(), [2, 2, 2]);
         assert!(s.arenas.get_existing(1).is_none(), "assignment alone must not build");
-        assert!(s.arenas.create(s).is_some_and(|i| i == 3));
+        assert!(!s.multi_arena());
+        // Destroying a heap frees its binding; the next heap takes the
+        // vacated arena.
+        heaps.remove(1).destroy();
+        assert_eq!(s.arenas.bound(1), 1);
         let t = TestHeap::new(s);
-        let home = t.heap().arena();
-        assert_eq!(home, 1);
+        assert_eq!(t.heap().arena(), 1);
+        assert_eq!(s.arenas.bound(1), 2);
+        // Explicit arenas and explicit caches take no part in it.
+        assert!(s.arenas.create(s).is_some_and(|i| i == 3));
+        assert_eq!(s.arenas.bound(3), 0);
+        let before = s.arenas.bound(0);
+        let tc = s.tcaches.create(s, 0).unwrap();
+        assert_eq!(s.arenas.bound(0), before);
+        assert!(s.tcaches.destroy(s, tc));
+        assert_eq!(s.arenas.bound(0), before);
+        // First touch builds arena 1.
         let c = class_with(64);
         let p = t.alloc(c);
         assert!(s.arenas.get_existing(1).is_some());
@@ -2929,6 +2981,72 @@ pub(crate) mod tests {
         assert_eq!(s.classify_free(p), Ok((c, 1)));
         t.heap().free(s, p);
         assert_eq!(t.heap().cache(c).unwrap().len(), HALF);
+        // `thread.arena` moves the binding with the heap.
+        t.heap().set_arena(s, 3);
+        assert_eq!((s.arenas.bound(1), s.arenas.bound(3)), (1, 1));
+        t.destroy();
+        assert_eq!((s.arenas.bound(1), s.arenas.bound(3)), (1, 0));
+        for h in heaps {
+            h.destroy();
+        }
+        assert_eq!((0..4).map(|i| s.arenas.bound(i)).collect::<Vec<_>>(), [0, 0, 0, 0]);
+    }
+
+    /// Thread churn under a multi-arena default: a lone heap stays on
+    /// arena 0 and never sets `multi_arena` (a single-threaded program
+    /// never pays the `free` routing); a second heap that comes and goes
+    /// lands on arena 1 every time, so only the arenas that were ever
+    /// alive at once get built; a built idle arena beats an unbuilt one.
+    #[test]
+    fn heap_churn_reuses_the_vacated_arena() {
+        let s = shared_with(Config { narenas: 8, ..Config::DEFAULT });
+        let main = TestHeap::new(s);
+        assert_eq!(main.heap().arena(), 0);
+        let c = class_with(64);
+        let p = main.alloc(c);
+        assert!(!s.multi_arena(), "one heap: arena 0 alone");
+        for _ in 0..20 {
+            let w = TestHeap::new(s);
+            assert_eq!(w.heap().arena(), 1);
+            let q = w.alloc(c);
+            w.free(q);
+            w.destroy();
+        }
+        assert!(s.multi_arena());
+        assert!(s.arenas.get_existing(1).is_some());
+        assert!((2..8).all(|i| s.arenas.get_existing(i).is_none()), "only arenas 0 and 1 were ever alive at once");
+        assert_eq!((s.arenas.bound(0), s.arenas.bound(1)), (1, 0));
+        // Two workers alive at once: the second takes a third arena.
+        let w1 = TestHeap::new(s);
+        let w2 = TestHeap::new(s);
+        assert_eq!((w1.heap().arena(), w2.heap().arena()), (1, 2));
+        w1.destroy();
+        // Arena 1 (built, idle) is taken before arena 2 would be shared.
+        let w3 = TestHeap::new(s);
+        assert_eq!(w3.heap().arena(), 1);
+        w2.destroy();
+        // Arenas 2..8 are all idle and unbuilt: lowest index.
+        let w4 = TestHeap::new(s);
+        assert_eq!(w4.heap().arena(), 2);
+        w3.destroy();
+        w4.destroy();
+        main.free(p);
+        main.destroy();
+        assert!((0..8).all(|i| s.arenas.bound(i) == 0));
+    }
+
+    /// `narenas:0` (the default) is resolved at init from the CPU count
+    /// and stored, so `opt.narenas` and `arenas.auto` agree on it.
+    #[test]
+    fn default_narenas_is_resolved_at_init() {
+        let s = shared_with(Config::DEFAULT);
+        let expect = Config::DEFAULT.effective_narenas(os::ncpus());
+        assert!((4..=crate::config::MAX_AUTO_ARENAS).contains(&expect));
+        assert_eq!(s.config.narenas, expect);
+        assert_eq!(s.arenas.auto(), expect);
+        assert_eq!(s.arenas.count(), expect);
+        let s1 = shared_with(Config { narenas: 1, ..Config::DEFAULT });
+        assert_eq!((s1.config.narenas, s1.arenas.auto()), (1, 1));
     }
 
     /// A heap keeps one cache per (arena, class): allocations from another
@@ -3096,7 +3214,9 @@ mod linux_tests {
             ],
         );
         let b: &'static mut MaybeUninit<Shared> = Box::leak(Box::new(MaybeUninit::uninit()));
-        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, Config::DEFAULT, false) });
+        // One automatic arena: the tests below reason about `arena0`.
+        let config = Config { narenas: 1, ..Config::DEFAULT };
+        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, config, false) });
         unsafe { b.assume_init_ref() }
     }
 

@@ -30,6 +30,7 @@ pub const TABLE: &[(&str, usize)] = &[
     ("pidfd_open", PIDFD_OPEN),
     ("process_madvise", PROCESS_MADVISE),
     ("mseal", MSEAL),
+    ("sched_getaffinity", SCHED_GETAFFINITY),
 ];
 
 #[cfg(target_arch = "x86_64")]
@@ -47,6 +48,7 @@ mod arch {
     pub const PRCTL: usize = 157;
     pub const GETTID: usize = 186;
     pub const FUTEX: usize = 202;
+    pub const SCHED_GETAFFINITY: usize = 204;
     pub const CLOCK_GETTIME: usize = 228;
     pub const EXIT_GROUP: usize = 231;
     pub const TGKILL: usize = 234;
@@ -63,6 +65,7 @@ mod arch {
     pub const EXIT_GROUP: usize = 94;
     pub const FUTEX: usize = 98;
     pub const CLOCK_GETTIME: usize = 113;
+    pub const SCHED_GETAFFINITY: usize = 123;
     pub const TGKILL: usize = 131;
     pub const RT_SIGACTION: usize = 134;
     pub const RT_SIGPROCMASK: usize = 135;

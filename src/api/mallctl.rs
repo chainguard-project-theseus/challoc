@@ -1394,6 +1394,11 @@ mod tests {
         let c = crate::layout::class_of(100).unwrap();
         let cls = &CLASSES[c];
         let ptrs: Vec<*mut u8> = (0..500).map(|_| mallocx(100, MALLOCX_TCACHE_NONE as c_int)).collect();
+        // Direct allocations on a thread that has no heap yet come from
+        // arena 0 (`arena::alloc`, `Tcache::None`); once the thread has a
+        // heap they come from its home arena. Either way one arena owns
+        // all 500.
+        let first = owner_of(s, ptrs[0] as *const c_void).expect("owned");
         // Verbose query on one pointer.
         let cname = CString::new("experimental.utilization.query").unwrap();
         let mut u = Utilization::ZERO;
@@ -1448,7 +1453,8 @@ mod tests {
         let um = utilization(s, m as *const c_void, true);
         assert_eq!((um.nfree, um.nregs, um.size, um.bin_nfree, um.bin_nregs), (0, 1, CLASSES[cm].size(), 0, 0));
         assert!(um.slabcur_addr.is_null());
-        assert_eq!(owner_of(s, m as *const c_void), Some(0));
+        let home = crate::heap::existing_heap().unwrap().arena();
+        assert_eq!(owner_of(s, m as *const c_void), Some(home));
         dallocx(m, 0);
         dallocx(h, 0);
         // A freed slot (direct release, so the bit is clear) is zeros too.
@@ -1456,7 +1462,7 @@ mod tests {
         dallocx(ptrs[2], MALLOCX_TCACHE_NONE as c_int);
         assert_eq!(utilization(s, gone, true), Utilization::ZERO);
         assert_eq!(owner_of(s, gone), None);
-        assert_eq!(owner_of(s, ptrs[3] as *const c_void), Some(0));
+        assert_eq!(owner_of(s, ptrs[3] as *const c_void), Some(first));
         for (i, p) in ptrs.into_iter().enumerate() {
             if i != 2 {
                 dallocx(p, MALLOCX_TCACHE_NONE as c_int);

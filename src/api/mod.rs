@@ -479,7 +479,10 @@ mod tests {
         unsafe { core::ptr::write_bytes(p, 0xa5, size) };
         assert_eq!(s.classify_free(p), Ok((c, lua)));
         let h = heap::existing_heap().unwrap();
-        assert_eq!(h.arena(), 0);
+        // This thread's automatic arena: whichever `Arenas::assign` gave
+        // the test thread (the default is `min(4 * ncpus, 64)` arenas).
+        let home = h.arena();
+        assert_ne!(home, lua);
         let before = h.cache_in(lua, c).unwrap().len();
         api_libc::free(p);
         assert_eq!(h.cache_in(lua, c).unwrap().len(), before + 1);
@@ -490,7 +493,7 @@ mod tests {
         assert_ne!(q, p);
         assert_eq!(unsafe { *q }, 0xa5);
         // Across classes, plain realloc lands in the caller's home arena.
-        assert_eq!(s.classify_free(q).map(|x| x.1), Ok(0));
+        assert_eq!(s.classify_free(q).map(|x| x.1), Ok(home));
         api_libc::free(q);
 
         // Direct path: live count moves at once, no cache involved.
@@ -534,7 +537,7 @@ mod tests {
         // Cross-thread: another thread allocates from the Lua arena and its
         // own home arena; this thread frees both with plain `free`, and each
         // lands in the cache of its own arena.
-        let ptrs = thread::spawn(move || {
+        let (other, ptrs) = thread::spawn(move || {
             let s = shared();
             let mut v = Vec::new();
             for i in 0..64 {
@@ -544,20 +547,24 @@ mod tests {
                 unsafe { *p = i as u8 };
                 v.push(p as usize);
             }
-            v
+            (heap::existing_heap().unwrap().arena(), v)
         })
         .join()
         .unwrap();
+        // The other thread was bound to an idle automatic arena, not ours.
+        assert_ne!(other, home);
+        assert_ne!(other, lua);
         let h = heap::existing_heap().unwrap();
         h.flush_all(s);
         for (i, &p) in ptrs.iter().enumerate() {
             let p = p as *mut u8;
             assert_eq!(unsafe { *p }, i as u8);
-            assert_eq!(s.classify_free(p), Ok((c, if i % 2 == 0 { lua } else { 0 })));
+            assert_eq!(s.classify_free(p), Ok((c, if i % 2 == 0 { lua } else { other })));
             api_libc::free(p);
         }
         assert_eq!(h.cache_in(lua, c).unwrap().len(), 32);
-        assert_eq!(h.cache(c).unwrap().len(), 32);
+        assert_eq!(h.cache_in(other, c).unwrap().len(), 32);
+        assert!(h.cache(c).is_none_or(|cache| cache.len() == 0), "nothing landed in the home cache");
         h.flush_all(s);
         // Per-arena purge covers the Lua arena's slabs only.
         let lua_arena = s.arena(lua).unwrap();

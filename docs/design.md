@@ -522,7 +522,7 @@ jemalloc names where they exist:
 | `background_thread`       | false   |                                         |
 | `dirty_decay_ms`          | 10000   |                                         |
 | `muzzy_decay_ms`          | ignored | accepted for compatibility              |
-| `narenas`                 | 1       | number of automatic arenas; see 13.3    |
+| `narenas`                 | 0       | automatic arenas; 0 = `min(4 * ncpus, 64)`; see 13.3 |
 | `tcache`                  | true    | false disables caches                   |
 | `tcache_nslots_small_max` | 1024    |                                         |
 | `lg_tcache_nslots_mul`    | 1       |                                         |
@@ -598,9 +598,24 @@ new one. Slab descriptors record their arena. A pointer freed with plain
 migrates between arenas and per-arena statistics stay exact. This is what
 lets Redis exclude its Lua heap from fragmentation accounting.
 
-`narenas > 1` shards automatic allocations across arenas by thread, jemalloc
-style, and is supported but not recommended; challoc does not need arenas for
-scalability because slabs are not thread-owned.
+`narenas` shards automatic allocations across arenas by thread, jemalloc
+style. The default resolves to `min(4 * ncpus, 64)` (`ncpus` from the
+affinity mask, so cpusets count); a new thread heap is bound to the automatic
+arena with the fewest bound heaps (ties: an already built arena, then the
+lowest index; jemalloc's `arena_choose_hard`), the binding is released when
+the heap is destroyed and moves with `thread.arena`. So `t` concurrently live
+threads use `min(t, narenas)` arenas, a single-threaded program stays on
+arena 0 and never pays the `free` routing (the `multi_arena` flag is only set
+when a second arena is built), and thread churn reuses the arena an exited
+thread left. Slabs are not thread-owned, so arenas are not needed for
+correctness or lock scalability; they are needed for cache locality: under one
+shared arena every refill interleaves the threads' slots in the same slabs and
+the 10-thread `larson` row paid about 1 L1D miss per operation for it
+(`bench/results/2026-09-17-gce-review-counters.md`,
+`2026-09-17-{aarch64,x86_64}-gce-thread-affinity.md`; a per-heap hint slab
+did not move the counter, only partitioning the slab sets did). The cost is
+one partial slab per class per live thread (as in jemalloc), plus the
+descriptor's arena load on `free` once a second arena exists.
 
 `tcache.create` allocates a `ClassCache` set owned by no thread; `MALLOCX_TCACHE(t)`
 uses it. Explicit caches are not thread safe, matching jemalloc. `MALLOCX_TCACHE_NONE`

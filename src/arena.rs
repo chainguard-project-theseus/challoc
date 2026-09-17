@@ -6,9 +6,18 @@
 //! `SlabTable`, so slabs of different arenas interleave in the region and
 //! each descriptor records its owner) plus its own decay period. Arena 0 is
 //! built inside `Shared` at init; the [`Arenas`] registry hands out the
-//! others. Indices below `narenas` (the `malloc_conf` key, default 1) are
-//! *automatic*: new heaps are spread over them round robin, and each is
-//! materialised the first time something touches it. Indices from
+//! others. Indices below `narenas` (the `malloc_conf` key; the default
+//! resolves to `min(4 * ncpus, 64)`, `Config::effective_narenas`) are
+//! *automatic*: a new thread heap is bound to the one with the fewest
+//! bound heaps ([`Arenas::assign`], jemalloc's `arena_choose_hard`), the
+//! binding is dropped when the heap is destroyed, and each arena is
+//! materialised the first time something touches it. So a program with
+//! `t` threads alive at once uses `min(t, narenas)` arenas, a
+//! single-threaded program never leaves arena 0, and thread churn reuses
+//! the arena an exited thread left instead of walking on to a fresh one
+//! (round robin materialised every arena under churn and left a partial
+//! slab per class in each: larson1 67 MiB against 13.6,
+//! `bench/results/2026-09-17-aarch64-gce-thread-affinity.md`). Indices from
 //! `narenas` up are created explicitly by `arenas.create`. Arenas are
 //! never destroyed (`arena.<i>.destroy` purges and retires one); they live
 //! in the metadata region.
@@ -263,8 +272,9 @@ pub struct Arenas {
     count: AtomicU32,
     /// Indices below this are automatic (`narenas`).
     auto: u32,
-    /// Round robin over the automatic arenas for new heaps.
-    next_auto: AtomicU32,
+    /// Thread heaps currently homed on each arena (`assign`/`bind` add,
+    /// `unbind` subtracts); explicit caches are not counted.
+    bound: [AtomicU32; MAX_ARENAS],
     table: [AtomicPtr<Arena>; MAX_ARENAS],
 }
 
@@ -282,10 +292,11 @@ impl Arenas {
             ptr::write(&raw mut (*this).lock, Lock::new(auto));
             ptr::write(&raw mut (*this).count, AtomicU32::new(auto));
             ptr::write(&raw mut (*this).auto, auto);
-            ptr::write(&raw mut (*this).next_auto, AtomicU32::new(1));
             let table = &raw mut (*this).table;
+            let bound = &raw mut (*this).bound;
             for i in 0..MAX_ARENAS {
                 ptr::write(&raw mut (*table)[i], AtomicPtr::new(ptr::null_mut()));
+                ptr::write(&raw mut (*bound)[i], AtomicU32::new(0));
             }
             (*table)[0].store(arena0, Ordering::Release);
         }
@@ -303,14 +314,53 @@ impl Arenas {
         self.auto
     }
 
-    /// Pick the home arena for a new heap: 0 with one automatic arena,
-    /// otherwise the next automatic index round robin. Does not materialise
-    /// it; the heap's first refill does.
+    /// Pick the home arena for a new thread heap and bind the heap to it:
+    /// the automatic arena with the fewest bound heaps, ties going to one
+    /// that is already built, then to the lowest index. Under the creation
+    /// lock so two threads created at once do not both take the same idle
+    /// arena. Does not materialise the arena; the heap's first refill does,
+    /// which is why a single-threaded program (main thread on arena 0,
+    /// nothing else ever bound) never builds a second arena and never
+    /// pays the `multi_arena` routing on `free`. The caller undoes the
+    /// binding with [`Arenas::unbind`] when the heap is destroyed.
     pub fn assign(&self) -> u16 {
         if self.auto == 1 {
+            self.bound[0].fetch_add(1, Ordering::Relaxed);
             return 0;
         }
-        (self.next_auto.fetch_add(1, Ordering::Relaxed) % self.auto) as u16
+        let _g = self.lock.lock();
+        let mut best = 0usize;
+        // (bound heaps, not yet built): the smallest wins.
+        let mut best_key = (u32::MAX, true);
+        for i in 0..self.auto as usize {
+            let key = (self.bound[i].load(Ordering::Relaxed), self.table[i].load(Ordering::Relaxed).is_null());
+            if key < best_key {
+                best = i;
+                best_key = key;
+                if key == (0, false) {
+                    break;
+                }
+            }
+        }
+        self.bound[best].fetch_add(1, Ordering::Relaxed);
+        best as u16
+    }
+
+    /// Count a thread heap as homed on `index` (`thread.arena` moving a
+    /// heap to an arena `assign` did not pick).
+    pub fn bind(&self, index: u16) {
+        self.bound[index as usize].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// A thread heap homed on `index` is destroyed or moves away.
+    pub fn unbind(&self, index: u16) {
+        let prev = self.bound[index as usize].fetch_sub(1, Ordering::Relaxed);
+        assert!(prev != 0, "arena {index}: unbinding a heap that was never bound");
+    }
+
+    /// Thread heaps currently homed on `index`.
+    pub fn bound(&self, index: u16) -> u32 {
+        self.bound[index as usize].load(Ordering::Relaxed)
     }
 
     /// Arena `index` if it exists. An automatic index whose arena has not

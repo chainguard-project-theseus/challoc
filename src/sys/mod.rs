@@ -475,6 +475,27 @@ mod linux {
         unsafe { raw::syscall0(nr::GETTID) as i32 }
     }
 
+    /// CPUs the calling thread may run on: the bits set in the affinity
+    /// mask `sched_getaffinity(0)` returns, so `taskset` and cgroup
+    /// cpusets count, not the machine (jemalloc's `malloc_ncpus`). The
+    /// kernel writes its own mask width and refuses a buffer narrower than
+    /// it with `EINVAL`; 8192 CPUs covers every supported kernel. 1 when
+    /// the call fails (a seccomp filter, or a wider mask), never 0.
+    pub fn ncpus() -> u32 {
+        let mut mask = [0u64; 128];
+        let len = core::mem::size_of_val(&mask);
+        // SAFETY: `mask` is writable for `len` bytes and outlives the call.
+        let r = unsafe { raw::syscall3(nr::SCHED_GETAFFINITY, 0, len, mask.as_mut_ptr() as usize) };
+        match decode(r) {
+            Ok(written) => {
+                let words = written.min(len).div_ceil(8);
+                let bits: u32 = mask[..words].iter().map(|w| w.count_ones()).sum();
+                bits.max(1)
+            }
+            Err(_) => 1,
+        }
+    }
+
     /// `rt_sigprocmask(SIG_BLOCK, all)`: block every blockable signal on the
     /// calling thread and return the mask that was in force before. The
     /// kernel silently leaves `SIGKILL` and `SIGSTOP` unblocked.
@@ -930,6 +951,18 @@ mod tests {
     }
 
     /// Cross-check `nr.rs` against the kernel headers via a tiny C program.
+    #[test]
+    fn ncpus_counts_the_affinity_mask() {
+        let n = ncpus();
+        assert!(n >= 1);
+        // The mask can only be narrower than the configured CPU count.
+        let conf = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_CONF) };
+        assert!(conf >= 1 && n as i64 <= conf, "ncpus {n}, _SC_NPROCESSORS_CONF {conf}");
+        let mut set: libc::cpu_set_t = unsafe { core::mem::zeroed() };
+        assert_eq!(unsafe { libc::sched_getaffinity(0, core::mem::size_of::<libc::cpu_set_t>(), &mut set) }, 0);
+        assert_eq!(n as i32, unsafe { libc::CPU_COUNT(&set) });
+    }
+
     #[test]
     fn syscall_numbers_match_kernel_headers() {
         let root = env!("CARGO_MANIFEST_DIR");

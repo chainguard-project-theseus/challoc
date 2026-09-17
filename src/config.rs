@@ -66,6 +66,10 @@ pub struct Config {
     pub dirty_decay_ms: i64,
     /// Accepted for compatibility; nothing reads it.
     pub muzzy_decay_ms: i64,
+    /// Automatic arenas. 0, the default, means `min(4 * ncpus, 64)`,
+    /// resolved by [`Config::effective_narenas`] at init; heaps are bound
+    /// to the least-loaded automatic arena (`arena.rs`), so a program with
+    /// `t` live threads ever touches `min(t, narenas)` of them.
     pub narenas: u32,
     pub tcache: bool,
     pub tcache_nslots_small_max: u32,
@@ -101,7 +105,7 @@ impl Config {
         background_thread: false,
         dirty_decay_ms: 10_000,
         muzzy_decay_ms: 0,
-        narenas: 1,
+        narenas: 0,
         tcache: true,
         tcache_nslots_small_max: MAX_CAP,
         lg_tcache_nslots_mul: 1,
@@ -165,7 +169,7 @@ impl Config {
             b"background_thread" => self.background_thread = parse_bool(value).ok_or_else(bad)?,
             b"dirty_decay_ms" => return num(self, -1, MAX_INTERVAL_MS, |c, v| c.dirty_decay_ms = v),
             b"muzzy_decay_ms" => return num(self, -1, MAX_INTERVAL_MS, |c, v| c.muzzy_decay_ms = v),
-            b"narenas" => return num(self, 1, u32::MAX as i64, |c, v| c.narenas = v as u32),
+            b"narenas" => return num(self, 0, u32::MAX as i64, |c, v| c.narenas = v as u32),
             b"tcache" => self.tcache = parse_bool(value).ok_or_else(bad)?,
             b"tcache_nslots_small_max" => {
                 return num(self, MIN_CAP as i64, MAX_NSLOTS as i64, |c, v| c.tcache_nslots_small_max = v as u32);
@@ -265,7 +269,25 @@ impl Config {
     pub fn effective_guard_slab_interval(&self) -> u32 {
         if self.guards { self.guard_slab_interval } else { 0 }
     }
+
+    /// The number of automatic arenas actually used: `narenas` when set,
+    /// otherwise jemalloc's `4 * ncpus` capped at [`MAX_AUTO_ARENAS`]
+    /// (`ncpus` is the affinity mask's width, `sys::ncpus`; a failed probe
+    /// reports 1, so the fallback is 4 arenas). The cap bounds the arena
+    /// table walk `Arenas::assign` does per heap creation and the number
+    /// of partial slab sets a thread-heavy program can hold; with the
+    /// least-loaded assignment only `min(live threads, narenas)` arenas
+    /// are ever built (`bench/results/2026-09-17-*-gce-thread-affinity.md`).
+    pub fn effective_narenas(&self, ncpus: u32) -> u32 {
+        if self.narenas != 0 {
+            return self.narenas;
+        }
+        ncpus.max(1).saturating_mul(4).min(MAX_AUTO_ARENAS)
+    }
 }
+
+/// Cap of the automatic `narenas` default (design section 13.3).
+pub const MAX_AUTO_ARENAS: u32 = 64;
 
 /// Every key readable through [`Config::get`], in table order, for the
 /// `opt.` namespace and the tests.
@@ -697,7 +719,7 @@ mod tests {
         let d = Config::DEFAULT;
         assert!(!d.background_thread);
         assert_eq!(d.dirty_decay_ms, 10_000);
-        assert_eq!(d.narenas, 1);
+        assert_eq!(d.narenas, 0);
         assert!(d.tcache);
         assert_eq!(d.tcache_nslots_small_max, 1024);
         assert_eq!(d.lg_tcache_nslots_mul, 1);
@@ -752,13 +774,29 @@ mod tests {
         }
     }
 
+    /// `narenas:0` (the default) resolves to `min(4 * ncpus, 64)`; an
+    /// explicit value is taken as is.
+    #[test]
+    fn narenas_default_resolves_from_the_cpu_count() {
+        let d = Config::DEFAULT;
+        assert_eq!(d.effective_narenas(1), 4);
+        assert_eq!(d.effective_narenas(0), 4, "a failed probe counts as one CPU");
+        assert_eq!(d.effective_narenas(4), 16);
+        assert_eq!(d.effective_narenas(16), 64);
+        assert_eq!(d.effective_narenas(192), 64);
+        assert_eq!(d.effective_narenas(u32::MAX), 64);
+        assert_eq!(clean("narenas:1").effective_narenas(16), 1);
+        assert_eq!(clean("narenas:16").effective_narenas(1), 16);
+        assert_eq!(clean("narenas:0").effective_narenas(2), 8);
+    }
+
     #[test]
     fn every_numeric_key_parses_and_clamps() {
         // (key, in-range value, below-min input, clamped min, above-max input, clamped max)
         let cases: [(&str, i64, &str, i64, &str, i64); 8] = [
             ("dirty_decay_ms", 5000, "-2", -1, "9999999999999999", MAX_INTERVAL_MS),
             ("muzzy_decay_ms", 0, "-5", -1, "9999999999999999", MAX_INTERVAL_MS),
-            ("narenas", 4, "0", 1, "99999999999", u32::MAX as i64),
+            ("narenas", 4, "-1", 0, "99999999999", u32::MAX as i64),
             ("tcache_nslots_small_max", 1000, "1", MIN_CAP as i64, "1000000", MAX_NSLOTS as i64),
             ("lg_tcache_nslots_mul", 3, "-17", -16, "17", 16),
             ("tcache_gc_interval_ms", 250, "-1", 0, "9999999999999999", MAX_INTERVAL_MS),
@@ -867,7 +905,7 @@ mod tests {
         let (_, issues) = parse(":");
         assert_eq!(issues.len(), 1);
         let (cfg, issues) = parse("narenas:1:2");
-        assert_eq!(cfg.narenas, 1);
+        assert_eq!(cfg.narenas, Config::DEFAULT.narenas, "an invalid value leaves the default");
         assert_eq!(issues.len(), 1);
         assert!(issues[0].contains("invalid conf value \"1:2\""), "{}", issues[0]);
     }

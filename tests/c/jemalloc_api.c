@@ -18,6 +18,10 @@
  *     referenced (a weak reference stays null);
  *   - mallopt, mallinfo, mallinfo2, malloc_info, malloc_stats.
  */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
+#include <sched.h>
 #include "common.h"
 
 #define WEAK __attribute__((weak))
@@ -174,7 +178,14 @@ static void test_mallctl_basics(void)
     CHECK(mallctl("opt.dirty_decay_ms", &decay, &len, NULL, 0) == 0 && decay == 10000, "opt.dirty_decay_ms %zd", decay);
     unsigned narenas = 0;
     len = sizeof narenas;
-    CHECK(mallctl("opt.narenas", &narenas, &len, NULL, 0) == 0 && narenas == 1, "opt.narenas");
+    /* The default resolves to min(4 * ncpus, 64) from the affinity mask. */
+    unsigned want_narenas = 4;
+    cpu_set_t set;
+    if (sched_getaffinity(0, sizeof set, &set) == 0) {
+        unsigned n = 4u * (unsigned)CPU_COUNT(&set);
+        want_narenas = n < 64 ? n : 64;
+    }
+    CHECK(mallctl("opt.narenas", &narenas, &len, NULL, 0) == 0 && narenas == want_narenas, "opt.narenas %u (want %u)", narenas, want_narenas);
     const char *thp = NULL;
     len = sizeof thp;
     CHECK(mallctl("opt.thp", &thp, &len, NULL, 0) == 0 && thp && strcmp(thp, "never") == 0, "opt.thp");

@@ -317,7 +317,7 @@ fn c_conf_env_overrides_the_symbol() {
     let bin = compile("tests/c", "conf", &["-rdynamic", "-DCONF=\"abort_conf:true,no_such_key:1\""]);
     let run = Command::new(&bin)
         .env("LD_PRELOAD", &so)
-        .env("MALLOC_CONF", "abort_conf:false,narenas:0")
+        .env("MALLOC_CONF", "abort_conf:false,narenas:-1")
         .output()
         .unwrap();
     let _ = std::fs::remove_file(&bin);
@@ -326,7 +326,7 @@ fn c_conf_env_overrides_the_symbol() {
     assert!(run.status.success(), "({:?})\nstdout: {stdout}\nstderr: {stderr}", run.status);
     assert!(stdout.lines().any(|l| l == "ok conf"), "stdout: {stdout}");
     assert!(stderr.contains("challoc: je_malloc_conf: unknown conf key \"no_such_key\""), "stderr: {stderr}");
-    assert!(stderr.contains("challoc: MALLOC_CONF: out-of-range conf value \"0\" for narenas"), "stderr: {stderr}");
+    assert!(stderr.contains("challoc: MALLOC_CONF: out-of-range conf value \"-1\" for narenas"), "stderr: {stderr}");
     std::eprintln!("conf override: {}", stderr.trim_end());
 }
 

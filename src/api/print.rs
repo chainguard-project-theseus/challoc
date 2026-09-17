@@ -632,10 +632,20 @@ mod tests {
         ] {
             assert!(text.contains(needle), "missing `{needle}` in:\n{text}");
         }
+        // One bins table per built arena; this thread's heap is on
+        // whichever automatic arena `Arenas::assign` gave it, so the live
+        // blocks show in the class's row of that table.
         let size = crate::layout::class_size_of(700).unwrap();
-        let row = text.lines().find(|l| l.trim_start().starts_with(&std::format!("{size} "))).expect("bin row for the live class");
-        let cols: Vec<usize> = row.split_whitespace().map(|w| w.parse().unwrap()).collect();
-        assert!(cols[4] >= 100, "curregs in `{row}`");
+        // The slab histogram rows start with the size too but are not all
+        // numeric; the bins rows are.
+        let rows: Vec<Vec<usize>> = text
+            .lines()
+            .filter(|l| l.trim_start().starts_with(&std::format!("{size} ")))
+            .filter_map(|l| l.split_whitespace().map(|w| w.parse::<usize>().ok()).collect::<Option<Vec<usize>>>())
+            .collect();
+        assert!(!rows.is_empty(), "bin row for the live class in:\n{text}");
+        let curregs: usize = rows.iter().map(|cols| cols[4]).sum();
+        assert!(curregs >= 100, "curregs in {rows:?}");
         // The Allocated figure is live, not the epoch snapshot.
         let line = text.lines().find(|l| l.starts_with("Allocated: ")).unwrap();
         let allocated: usize = line.split(", ").next().unwrap().trim_start_matches("Allocated: ").parse().unwrap();
