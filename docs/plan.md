@@ -155,6 +155,36 @@ Acceptance:
   passes `make test-all` in the container, or the failures are shown to be
   unrelated to allocation.
 
+Acceptance remediation (the review `docs/review-2026-09-17.md` says why; its
+evidence is in `bench/results/2026-09-17-gce-review-*.md`):
+
+- Step 3, post-delete RSS: a compacting thread cache (review P1).
+  a. Close the compacting-flush experiment with the review's reading (soak
+     and `bench/probes/churn.c`: the flush never runs under a balanced churn,
+     so its selection policy cannot compact); keep the highest-address flush
+     form.
+  b. Scheduled address-ordered pops: every `2^k` pops of a class (`k = 3` to
+     start, tunable `tcache_compact_shift`, per class if useful) serve the
+     lowest-address cached slot instead of the top of the stack. Keep a sorted
+     run at the bottom of the stack with a cursor: refills write their claimed
+     slots ascending and reset the cursor, flushes keep the lowest half
+     ascending; the scheduled pop returns `slots[cursor]`, moves the top entry
+     into that position and advances the cursor; when the run is exhausted the
+     scheduled pop claims a small batch from the lowest partial slab into a new
+     run. Every `2^k` pushes of a class (or when a scheduled pop finds the
+     cache more than half full) flush the highest-address `cap / 2` entries
+     even when the cache is not full. The fast-path cost is one counter test
+     and a well-predicted branch. Host tests: the sorted-run invariant, the
+     scheduled pop returns the cache minimum, a churn model empties the high
+     slabs.
+  c. Acceptance: `bench/probes/churn.c` under challoc compacts 469 -> under
+     230 slabs within 5 s at `k = 3` on either VM (`bench/probes/churn-run.sh`);
+     larson (1 and 10 threads), xmalloc-test and alloc-test rows on both VMs
+     within 3% of the pre-change rows measured in the same run; the 20-minute
+     soak on the arm64 VM meets this phase's post-delete criterion (within 10%
+     of jemalloc) with the per-class occupancy sampler
+     (`bench/probes/soak-occupancy.sh`) recorded in `bench/results/`.
+
 ## Phase 1.5: GCE performance lab
 
 Goal: reference benchmark numbers and hardware performance counters come
@@ -207,15 +237,28 @@ Tasks:
    `bench/results/<date>-gce-c4a.md` and `<date>-gce-c4.md`. These
    supersede the Mac numbers as the reference for the Phase 0 and Phase 1
    criteria.
-4. Close the larson gap with the counters: attribute the remaining
-   difference against jemalloc (and against the pre-arena tree 8449c3a) to
-   specific events (L1D misses, dTLB misses, front-end stalls, dependent
-   loads), then implement the fix the data supports. The standing candidate
-   is moving per-class cache tops into the TLS block so `malloc` and `free`
-   reach the slot in as few dependent loads as jemalloc does; the design
-   may change here if the counters justify it, recorded in PROGRESS.md and
-   `docs/design.md`. Every variant gets a before/after row from the VM.
-5. `bench/gce/README.md` and a CLAUDE.md environment bullet: how to create,
+4. Close the larson gap: thread-affine slab refills (review P2). The
+   counters attribute the whole 10-thread gap to cross-thread sharing of
+   slabs under the single default arena (`bench/results/2026-09-17-gce-review-counters.md`:
+   `narenas:16` closes it on both VMs).
+   a. `ClassState::plan` prefers the slab this heap last claimed from (a
+      per-cache hint slab number) while it is still partial, then the class's
+      lowest partial slab; remote frees unchanged.
+   b. Acceptance: larson 1/10/16 threads, xmalloc-test and alloc-test on both
+      VMs; the 10-thread larson row within 3% of challoc `narenas:16` measured
+      in the same run and within 10% of jemalloc; L1D misses per operation
+      within 10% of the `narenas:16` figure (perf stat as in the review's
+      counters file: `sudo perf` attached to the container); Valkey
+      `unit/memefficiency` green.
+   c. If (a) misses (b), set the default `narenas` to `min(4 * ncpus, 64)` and
+      rerun the full Valkey suite and the soak.
+5. Fast-path residue on aarch64: dense cache headers in `Heap` (review P3).
+   Inline `[CacheHeader; NCLASSES]` and one contiguous slot block per heap so
+   `malloc` reaches the header without a pointer load and a thread's 52 cache
+   headers share a few lines instead of 52 pages. Acceptance: 1-thread larson
+   on both VMs not slower, aarch64 dTLB refills per operation down toward
+   jemalloc's (3.4 -> ~2 per operation), all tests green.
+6. `bench/gce/README.md` and a CLAUDE.md environment bullet: how to create,
    sync, run, and stop the VMs; the cost of leaving one running; and the
    rule that Mac numbers and GCE numbers are never compared with each other.
 

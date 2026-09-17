@@ -49,7 +49,7 @@ One line per task, newest at the bottom of each section. Keep it terse.
 
 ## In progress
 
-- Phase 1 acceptance step 3: post-delete RSS remediation, allocator-side: address-ordered (compacting) cache flush; A/B on the GCE VMs (larson/xmalloc-test/alloc-test) and the 20-minute soak on the arm64 VM decide it.
+- Phase 1 acceptance step 3 (post-delete RSS), per `docs/plan.md` "Acceptance remediation" and `docs/review-2026-09-17.md` P1: sub-step (a) is done by the review (the compacting flush is measured against the old flush in `bench/results/2026-09-17-gce-review-soak.md`: 161.7 vs 161.5 MiB after settle, no drain, form kept); next is (b) the scheduled address-ordered pops and flushes, then (c) its acceptance (churn probe, VM rows, 20-minute soak).
 
 ## Design decisions
 
