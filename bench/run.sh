@@ -19,6 +19,9 @@
 #   ALLOCS="challoc jemalloc glibc mimalloc"
 #   BENCHES="cfrac espresso larson mstress xmalloc-test alloc-test1 alloc-testN glibc-simple redis"
 #   HOST_CPU="..."          recorded in the header (the container only sees an implementer id)
+#   HOST_KIND="..."         what runs the kernel (default: "Docker Desktop VM" on a linuxkit
+#                           kernel, "host kernel" otherwise; e.g. "GCE c4a-standard-16, Ubuntu 24.04")
+#   RESULT=path             results file (default bench/results/<date>-<arch>.md)
 set -eu
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
@@ -141,7 +144,7 @@ any_failed() { awk 'NR>1 && $5!=0 {f=1} END {print f+0}' "$1"; }
   echo
   echo "- commit: $COMMIT"
   echo "- host: ${HOST_CPU:-unknown CPU}, $PROCS CPUs visible to the container"
-  echo "- kernel: $(uname -r) (Docker Desktop VM), container: Wolfi"
+  echo "- kernel: $(uname -r) (${HOST_KIND:-$(case $(uname -r) in *linuxkit*) echo "Docker Desktop VM";; *) echo "host kernel";; esac)}), container: Wolfi"
   sed 's/^/- /' "$BIN/versions.txt"
   echo "- protocol: $RUNS runs after one discarded warm-up; median wall time (s) and max RSS (MiB) from wait4 rusage via bench/rt; identical binaries, only LD_PRELOAD changes"
   echo "- larson, mstress, xmalloc-test and alloc-testN use $PROCS threads"

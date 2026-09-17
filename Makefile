@@ -25,7 +25,9 @@
 #                            mimalloc and the bench/ helpers into the target volume
 #   make bench               bench-build, cargo build --release, then run the
 #                            benchmark protocol (bench/run.sh) and write
-#                            bench/results/<date>-<arch>.md. Native arch only.
+#                            bench/results/<date>-<arch>.md (RESULT=path overrides;
+#                            HOST_KIND="..." names the machine in the header).
+#                            Native arch only.
 #   make valkey              build challoc (quantum8) and Valkey at the tag
 #                            Wolfi ships with contrib/valkey/0001-*.patch, then
 #                            run unit/memefficiency and the full test suite
@@ -104,11 +106,11 @@ fuzz: image
 	  && LD_PRELOAD=/src/target/release/libchalloc.so \
 	     ./target/fuzz $(FUZZ_OPS) $(FUZZ_THREADS) $(FUZZ_SEED) $(FUZZ_TABLE)'
 
-HOST_CPU := $(shell sysctl -n machdep.cpu.brand_string 2>/dev/null || grep -m1 'model name' /proc/cpuinfo | sed 's/.*: //')
+HOST_CPU := $(shell sysctl -n machdep.cpu.brand_string 2>/dev/null || grep -m1 'model name' /proc/cpuinfo 2>/dev/null | sed 's/.*: //' | grep . || lscpu 2>/dev/null | grep -m1 'Model name' | sed 's/.*: *//')
 bench-build: image
 	$(DOCKER_RUN) sh bench/build.sh
 
-bench: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)"
+bench: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(if $(HOST_KIND),-e HOST_KIND="$(HOST_KIND)") $(if $(RESULT),-e RESULT="$(RESULT)")
 bench: image
 	$(DOCKER_RUN) sh -c 'sh bench/build.sh >/dev/null && cargo build --release && sh bench/run.sh'
 
