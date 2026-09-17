@@ -249,18 +249,6 @@ Tasks:
    `bench/results/<date>-gce-c4a.md` and `<date>-gce-c4.md`. These
    supersede the Mac numbers as the reference for the Phase 0 and Phase 1
    criteria.
-3b. Ruby benchmark rows (after task 4 lands, before Phase 2): a
-   `bench/ruby-bench.sh` and `make ruby-bench` over the `contrib/ruby/build.sh`
-   stage: a fixed subset of ruby/benchmark run with `benchmark-driver`
-   (`so_binary_trees`, `hash_aref_str`, `array_*`, `nbody`, `fib` as controls)
-   plus one real script (`gem list`, or ERB rendering), the same `ruby` binary
-   under challoc's `libjemalloc.so.2`, Wolfi's jemalloc via `LD_PRELOAD`, the
-   `--without-jemalloc` glibc build and mimalloc; wall time and max RSS from
-   `bench/rt`, plus `GC.stat` counts and RSS after a fixed number of GC cycles
-   (Ruby's GC calls `malloc_trim`). Five rounds, sorted scores, both VMs,
-   `bench/results/<date>-<arch>-ruby.md`. Acceptance: within 10% of jemalloc on
-   time and RSS, as for the Phase 0 set; regressions are recorded, not fixed,
-   in this task.
 4. Close the larson gap: thread-affine slab refills (review P2). The
    counters attribute the whole 10-thread gap to cross-thread sharing of
    slabs under the single default arena (`bench/results/2026-09-17-gce-review-counters.md`:
@@ -276,6 +264,18 @@ Tasks:
       `unit/memefficiency` green.
    c. If (a) misses (b), set the default `narenas` to `min(4 * ncpus, 64)` and
       rerun the full Valkey suite and the soak.
+4b. Ruby benchmark rows (after task 4, before task 5): a
+   `bench/ruby-bench.sh` and `make ruby-bench` over the `contrib/ruby/build.sh`
+   stage: a fixed subset of ruby/benchmark run with `benchmark-driver`
+   (`so_binary_trees`, `hash_aref_str`, `array_*`, `nbody`, `fib` as controls)
+   plus one real script (`gem list`, or ERB rendering), the same `ruby` binary
+   under challoc's `libjemalloc.so.2`, Wolfi's jemalloc via `LD_PRELOAD`, the
+   `--without-jemalloc` glibc build and mimalloc; wall time and max RSS from
+   `bench/rt`, plus `GC.stat` counts and RSS after a fixed number of GC cycles
+   (Ruby's GC calls `malloc_trim`). Five rounds, sorted scores, both VMs,
+   `bench/results/<date>-<arch>-ruby.md`. Acceptance: within 10% of jemalloc on
+   time and RSS, as for the Phase 0 set; regressions are recorded, not fixed,
+   in this task.
 5. Fast-path residue on aarch64: dense cache headers in `Heap` (review P3).
    Inline `[CacheHeader; NCLASSES]` and one contiguous slot block per heap so
    `malloc` reaches the header without a pointer load and a thread's 52 cache
