@@ -128,7 +128,7 @@ DRIVER="$(ruby_cmd "$host") --disable-gems -I $BD/lib $BD/exe/benchmark-driver"
 # ---- binding check ------------------------------------------------------------
 echo "== ruby: $($(ruby_cmd "$host") -v)"
 for a in $ALLOCS; do
-  mapped=$($(ruby_cmd "$a") --disable-gems -e 'puts File.readlines("/proc/self/maps").grep(/jemalloc|mimalloc|challoc/).map { |l| l.split[5] }.uniq.sort.join(" ")')
+  mapped=$($(ruby_cmd "$a") --disable-gems -e 'puts File.readlines("/proc/self/maps").grep(%r{/lib(jemalloc|mimalloc)[^/ ]*\.so}).map { |l| l.split[5] }.uniq.sort.join(" ")')
   case $a in
     challoc)  want=$STAGE_LIB/libjemalloc.so.2;;
     jemalloc) want=$JEMALLOC_LIB;;
