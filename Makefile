@@ -28,6 +28,19 @@
 #                            bench/results/<date>-<arch>.md (RESULT=path overrides;
 #                            HOST_KIND="..." names the machine in the header).
 #                            Native arch only.
+#   make quick               fast tier (bench/quick.sh, ~2 min on a VM): build the
+#                            working tree and OLD (default HEAD) into target/quick/,
+#                            one round of larson 1/10, xmalloc-test, alloc-test 1
+#                            and the churn probe under old, new and jemalloc; one
+#                            table; exit 1 when new trails old by more than
+#                            QUICK_TOLERANCE (5) percent or does not compact
+#   make ab                  protocol tier A/B (bench/ab.sh): VARIANTS='old=HEAD~1
+#                            new=HEAD narenas16=HEAD~1:narenas:16 jemalloc', ROUNDS=5
+#                            plus warm-up, interleaved, sorted scores and median RSS
+#                            in the results-file table shape (RESULT=path, ADAPTIVE=1,
+#                            BASELINES=cached)
+#   make baseline            cache jemalloc/glibc/mimalloc protocol rows for this
+#                            machine under target/baselines/ (bench/baseline.sh)
 #   make valkey              build challoc (quantum8) and Valkey at the tag
 #                            Wolfi ships with contrib/valkey/0001-*.patch, then
 #                            run unit/memefficiency and the full test suite
@@ -41,7 +54,13 @@
 #                            bench/results/<date>-<arch>-valkey-soak.md
 #                            (bench/valkey-soak.sh; ALLOCS, DURATION=1200,
 #                            SETTLE, INTERVAL, CHUNK, VB_REQS, KEYS, DEFRAG,
-#                            RESULT_DIR). Needs `make valkey STAGE=build` first.
+#                            RESULT_DIR, OCCUPANCY=1 for MEMORY MALLOC-STATS dumps
+#                            every MS_INTERVAL s). Needs `make valkey STAGE=build` first.
+#   make soak-quick          challoc-only 600 s soak with OCCUPANCY=1, compared
+#                            against the cached jemalloc soak from `make
+#                            soak-baseline` (1200 s protocol under jemalloc, stored
+#                            under target/baselines/); results under
+#                            target/valkey/soak-quick. Not an acceptance run.
 #   make ruby                stage libjemalloc.so.2 (quantum16), build Ruby 3.4 at
 #                            the tag Wolfi ships with Wolfi's configure flags
 #                            (`--with-jemalloc`) against the stage, check that the
@@ -61,13 +80,24 @@ PLATFORM  ?= linux/$(HOST_ARCH)
 ARCH      := $(notdir $(PLATFORM))
 IMAGE     ?= challoc-dev:$(ARCH)
 
+# In a git worktree `.git` is a file pointing at the main repository's
+# `.git/worktrees/<name>`; mount that common dir at the same path so `git
+# archive`/`rev-parse` work inside the container (bench/quick.sh, bench/ab.sh
+# build variants from git revs). A plain checkout needs no extra mount.
+GIT_COMMON := $(shell git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+ifneq ($(GIT_COMMON),)
+ifneq ($(GIT_COMMON),$(CURDIR)/.git)
+GIT_MOUNT = -v "$(GIT_COMMON)":"$(GIT_COMMON)":ro
+endif
+endif
+
 DOCKER_RUN = docker run --rm --platform $(PLATFORM) \
 	-v "$(CURDIR)":/src -w /src \
 	-v challoc-target-$(ARCH):/src/target \
 	-v challoc-cargo-registry:/root/.cargo/registry \
-	$(DOCKER_FLAGS) $(IMAGE)
+	$(GIT_MOUNT) $(DOCKER_FLAGS) $(IMAGE)
 
-.PHONY: image dev run build test test-host jemalloc-compat fuzz bench-build bench valkey valkey-soak ruby clean-volumes
+.PHONY: image dev run build test test-host jemalloc-compat fuzz bench-build bench quick ab baseline valkey valkey-soak soak-quick soak-baseline ruby clean-volumes
 
 image:
 	docker build --platform $(PLATFORM) -f Dockerfile.dev -t $(IMAGE) .
@@ -114,14 +144,50 @@ bench: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(if $(HOST_KIND),-e HOST_KIND="
 bench: image
 	$(DOCKER_RUN) sh -c 'sh bench/build.sh >/dev/null && cargo build --release && sh bench/run.sh'
 
+# Two-tier harness (bench/README.md). quick: ~2 min go/no-go for an
+# iteration; ab: the protocol-tier A/B that results files are written from;
+# baseline: cache the stock allocators' protocol rows for BASELINES=cached.
+QUICK_VARS = OLD NEW QUICK_TOLERANCE QUICK_BENCHES CHURN_SECS CHURN_CLASS CHURN_MAX_FRACTION BASELINES BASELINE_TOLERANCE QUICK_SANITY
+quick: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(QUICK_VARS),$(if $($(v)),-e $(v)="$($(v))"))
+quick: image
+	$(DOCKER_RUN) sh bench/quick.sh
+
+AB_VARS = VARIANTS ROUNDS BENCHES ADAPTIVE BASELINES BASELINE_TOLERANCE RESULT HOST_KIND TITLE
+ab: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(AB_VARS),$(if $($(v)),-e $(v)="$($(v))"))
+ab: image
+	$(DOCKER_RUN) sh bench/ab.sh
+
+baseline: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(if $(ROUNDS),-e ROUNDS="$(ROUNDS)") $(if $(BENCHES),-e BENCHES="$(BENCHES)") $(if $(ALLOCS),-e ALLOCS="$(ALLOCS)") $(if $(HOST_KIND),-e HOST_KIND="$(HOST_KIND)")
+baseline: image
+	$(DOCKER_RUN) sh bench/baseline.sh
+
 valkey: DOCKER_FLAGS = $(if $(STAGE),-e STAGE=$(STAGE)) $(if $(TEST_FLAGS),-e TEST_FLAGS="$(TEST_FLAGS)")
 valkey: image
 	$(DOCKER_RUN) sh contrib/valkey/build.sh
 
-SOAK_VARS = ALLOCS DURATION SETTLE INTERVAL CHUNK VB_REQS KEYS SIZE MT_SIZES DEL_RATIO DEFRAG RESULT_DIR
+SOAK_VARS = ALLOCS DURATION SETTLE INTERVAL CHUNK VB_REQS KEYS SIZE MT_SIZES DEL_RATIO DEFRAG RESULT_DIR OCCUPANCY MS_INTERVAL BASELINES SAVE_BASELINE PORT
 valkey-soak: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(SOAK_VARS),$(if $($(v)),-e $(v)="$($(v))"))
 valkey-soak: image
 	$(DOCKER_RUN) sh bench/valkey-soak.sh
+
+# Quick soak: challoc only, 10 minutes of load, occupancy sampler on, compared
+# against the cached jemalloc soak from `make soak-baseline` (the full 1200 s
+# protocol under jemalloc, stored under target/baselines/). Results under
+# target/valkey/soak-quick, never bench/results/. Acceptance stays `make valkey-soak`.
+soak-quick: ALLOCS = challoc
+soak-quick: DURATION ?= 600
+soak-quick: SETTLE ?= 60
+soak-quick: OCCUPANCY ?= 1
+soak-quick: BASELINES = cached
+soak-quick: RESULT_DIR ?= target/valkey/soak-quick
+soak-quick: valkey-soak
+
+soak-baseline: ALLOCS = jemalloc
+soak-baseline: DURATION ?= 1200
+soak-baseline: SETTLE ?= 60
+soak-baseline: SAVE_BASELINE = 1
+soak-baseline: RESULT_DIR ?= target/valkey/soak-baseline
+soak-baseline: valkey-soak
 
 RUBY_VARS = STAGE ALLOC TESTS TESTOPTS JOBS RUBY_TAG RUBY_COMMIT RUBY_CHERRY
 ruby: DOCKER_FLAGS = $(foreach v,$(RUBY_VARS),$(if $($(v)),-e $(v)="$($(v))"))

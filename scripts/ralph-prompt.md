@@ -16,7 +16,17 @@ Procedure:
 4. Build and run the task's tests inside the Linux dev container (see
    CLAUDE.md). Nothing runs on the macOS host except `cargo test --features std`
    for pure logic. If Dockerfile.dev does not exist yet, creating it is part
-   of Phase 0 task 1.
+   of Phase 0 task 1. For any change that touches performance (src/heap.rs,
+   src/class.rs, src/slab.rs, layout constants, cache policy) run the fast
+   tier first: `make quick` on the Mac for plumbing, then
+   `bench/gce/challoc-bench quick <arm64|amd64>` on the reference VM
+   (bench/README.md). A variant that fails it (more than 5% behind its base
+   on any row, or the churn probe not compacting) is abandoned or reworked;
+   never take it to the protocol tier. Only a variant that passes `quick`
+   gets the protocol run (`challoc-bench ab ...`, 5 rounds, same-run
+   comparison) whose table goes into bench/results/. If CHALLOC_GCE_WARM is
+   set the VMs are already running and belong to the driving session: do not
+   start or stop them.
 5. When the task's criteria pass, mark it done in PROGRESS.md with the commit
    hash, and commit everything with a message "Phase N task M: <summary>".
    Never leave uncommitted work. Do not commit .ralph/ or target/.
