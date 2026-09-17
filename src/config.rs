@@ -39,6 +39,9 @@ pub const MAX_GUARD_SLAB_INTERVAL: u32 = 1 << 22;
 /// caps decay at `NSTIME_SEC_MAX * 1000`, which is far larger, but a `u64`
 /// of nanoseconds must not overflow when the interval is converted.
 pub const MAX_INTERVAL_MS: i64 = 1_000_000_000_000;
+/// Largest `tcache_compact_shift`: one scheduled pop per 2^20 pops is
+/// already no compaction to speak of; 0 turns the schedule off.
+pub const MAX_COMPACT_SHIFT: u32 = 20;
 /// `thp` values (`default` is accepted as `never`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Thp {
@@ -68,6 +71,10 @@ pub struct Config {
     pub tcache_nslots_small_max: u32,
     pub lg_tcache_nslots_mul: i32,
     pub tcache_gc_interval_ms: i64,
+    /// Every `2^shift` pops of a class are served from the lowest-address
+    /// cached slot instead of the top of the stack (design 6.4); 0 means
+    /// never.
+    pub tcache_compact_shift: u32,
     pub thp: Thp,
     pub lazy_free: bool,
     pub guards: bool,
@@ -97,6 +104,7 @@ impl Config {
         tcache_nslots_small_max: MAX_CAP,
         lg_tcache_nslots_mul: 1,
         tcache_gc_interval_ms: 10_000,
+        tcache_compact_shift: 3,
         thp: Thp::Never,
         lazy_free: false,
         guards: true,
@@ -168,6 +176,9 @@ impl Config {
             b"tcache_gc_interval_ms" => {
                 return num(self, 0, MAX_INTERVAL_MS, |c, v| c.tcache_gc_interval_ms = v);
             }
+            b"tcache_compact_shift" => {
+                return num(self, 0, MAX_COMPACT_SHIFT as i64, |c, v| c.tcache_compact_shift = v as u32);
+            }
             b"thp" => {
                 self.thp = match value {
                     b"never" | b"default" => Thp::Never,
@@ -206,6 +217,7 @@ impl Config {
             b"tcache_nslots_small_max" => Value::Uint(self.tcache_nslots_small_max as u64),
             b"lg_tcache_nslots_mul" => Value::Int(self.lg_tcache_nslots_mul as i64),
             b"tcache_gc_interval_ms" => Value::Int(self.tcache_gc_interval_ms),
+            b"tcache_compact_shift" => Value::Uint(self.tcache_compact_shift as u64),
             b"thp" => Value::Str(self.thp.name()),
             b"lazy_free" => Value::Bool(self.lazy_free),
             b"guards" => Value::Bool(self.guards),
@@ -237,6 +249,16 @@ impl Config {
         (self.tcache_gc_interval_ms as u64).saturating_mul(1_000_000)
     }
 
+    /// Mask for the scheduled pop: a pop whose count has no bit of the mask
+    /// set is served from the bottom of the sorted run. `u32::MAX` for
+    /// `tcache_compact_shift:0` (one in 2^32 pops, i.e. off).
+    pub fn compact_mask(&self) -> u32 {
+        match self.tcache_compact_shift {
+            0 => u32::MAX,
+            s => (1u32 << s.min(MAX_COMPACT_SHIFT)) - 1,
+        }
+    }
+
     /// The guard slab interval actually used: 0 when guards are off.
     pub fn effective_guard_slab_interval(&self) -> u32 {
         if self.guards { self.guard_slab_interval } else { 0 }
@@ -254,6 +276,7 @@ pub const KEYS: &[&str] = &[
     "tcache_nslots_small_max",
     "lg_tcache_nslots_mul",
     "tcache_gc_interval_ms",
+    "tcache_compact_shift",
     "thp",
     "lazy_free",
     "guards",
@@ -675,6 +698,10 @@ mod tests {
         assert_eq!(d.tcache_nslots_small_max, 1024);
         assert_eq!(d.lg_tcache_nslots_mul, 1);
         assert_eq!(d.tcache_gc_interval_ms, 10_000);
+        assert_eq!(d.tcache_compact_shift, 3);
+        assert_eq!(d.compact_mask(), 7);
+        assert_eq!(clean("tcache_compact_shift:0").compact_mask(), u32::MAX);
+        assert_eq!(clean("tcache_compact_shift:20").compact_mask(), (1 << 20) - 1);
         assert_eq!(d.thp, Thp::Never);
         assert!(!d.lazy_free);
         assert!(d.guards);
@@ -724,18 +751,21 @@ mod tests {
     #[test]
     fn every_numeric_key_parses_and_clamps() {
         // (key, in-range value, below-min input, clamped min, above-max input, clamped max)
-        let cases: [(&str, i64, &str, i64, &str, i64); 7] = [
+        let cases: [(&str, i64, &str, i64, &str, i64); 8] = [
             ("dirty_decay_ms", 5000, "-2", -1, "9999999999999999", MAX_INTERVAL_MS),
             ("muzzy_decay_ms", 0, "-5", -1, "9999999999999999", MAX_INTERVAL_MS),
             ("narenas", 4, "0", 1, "99999999999", u32::MAX as i64),
             ("tcache_nslots_small_max", 1000, "1", MIN_CAP as i64, "1000000", MAX_NSLOTS as i64),
             ("lg_tcache_nslots_mul", 3, "-17", -16, "17", 16),
             ("tcache_gc_interval_ms", 250, "-1", 0, "9999999999999999", MAX_INTERVAL_MS),
+            ("tcache_compact_shift", 4, "-1", 0, "64", MAX_COMPACT_SHIFT as i64),
             ("guard_slab_interval", 1, "-1", 0, "5000000", MAX_GUARD_SLAB_INTERVAL as i64),
         ];
         for (key, ok, low, min, high, max) in cases {
             let as_value = |v: i64| match key {
-                "narenas" | "tcache_nslots_small_max" | "guard_slab_interval" => Value::Uint(v as u64),
+                "narenas" | "tcache_nslots_small_max" | "guard_slab_interval" | "tcache_compact_shift" => {
+                    Value::Uint(v as u64)
+                }
                 _ => Value::Int(v),
             };
             let cfg = clean(&std::format!("{key}:{ok}"));
@@ -880,7 +910,7 @@ mod tests {
             };
             assert_eq!(clean(&std::format!("{key}:{value}")), cfg, "{key}:{value} round trip");
         }
-        assert_eq!(KEYS.len(), 17);
+        assert_eq!(KEYS.len(), 18);
         assert_eq!(cfg.get(b"nonsense"), None);
         assert_eq!(cfg.get(b""), None);
         for key in IGNORED_KEYS {

@@ -234,6 +234,10 @@ struct ClassCache {                          // one per (arena, class)
     len:      u32,
     cap:      u32,                           // adaptive, <= max_slots(class)
     low_water: u32,                          // for GC
+    cursor:   u32,                           // slots[cursor..run_end] is the sorted run (6.4)
+    run_end:  u32,
+    compact_mask: u32,                       // (1 << tcache_compact_shift) - 1
+    arena:    u16,
     slots:    [*mut u8; cap],
 }
 ```
@@ -288,23 +292,38 @@ class or, for huge runs, into free following pages.
 ### 6.4 Slow paths
 
 - **Refill**: claim up to `cap / 2` slots from the current or next partial
-  slab (section 5). Count refills in `slow_ticks` and run periodic work every
+  slab (section 5), written ascending: the batch is the cache's *sorted
+  run*. Count refills in `slow_ticks` and run periodic work every
   64 slow paths: merge thread stats into arena stats, run cache GC if the
   interval has elapsed, run decay if the class's deadline has passed, sample
   the cgroup (section 11).
 - **Flush**: release the `cap / 2` highest-address entries grouped by slab
-  and keep the lowest in ascending order (not reversed to match a refill:
-  a descending run under ascending pushes is a pathological input for the
-  next flush's sort). Update `live`; slabs reaching zero become `Empty`.
-  The selection is by address, not by age, so that under a balanced
-  alloc/free churn every flush sends holes to the high slabs while refills
-  keep taking the lowest partial slab (an oldest-first flush returns the
-  refill's own low-address residue and keeps the randomly placed freed
-  slots for reuse in place). Phase 1 acceptance step 3 measured it
-  throughput-neutral on the reference VMs; the first 20-minute Valkey soak
-  with it showed no drain of the post-delete residue, so the mechanism is
-  not yet shown to work and is under investigation
-  (`bench/results/2026-09-16-aarch64-gce-compacting-flush.md`).
+  and keep the lowest in ascending order as the new sorted run (not
+  reversed to match a refill: a descending run under ascending pushes is a
+  pathological input for the next flush's sort). Update `live`; slabs
+  reaching zero become `Empty`. The selection is by address, not by age,
+  so that every flush sends holes to the high slabs while refills keep
+  taking the lowest partial slab.
+- **Scheduled pop** (the compacting cache): every `2^tcache_compact_shift`
+  pops of a class (default 8) are served from `slots[cursor]`, the minimum
+  of the sorted run `slots[cursor..run_end]` at the bottom of the stack,
+  the top entry is moved into its place and the cursor advances; ordinary
+  pops clip `run_end`, pushes never write inside the run because
+  `run_end <= len`. When the cursor reaches `run_end` the run is rebuilt:
+  the cache is flushed down to `cap / 2` if fuller than that, sorted, and
+  up to `cap / 2` slots (to at most a `3 cap / 4` fill) are claimed from
+  the lowest partial slab on top of it; the rebuild also runs the periodic
+  work. Why: a LIFO cache hands every allocation the slot just freed, so
+  under a balanced alloc/free churn (Valkey's DEL:SET steady state) the
+  cache never reaches either boundary, no refill or flush runs, and the
+  slab layout is frozen at whatever occupancy the delete phase left; the
+  flush selection alone cannot change that (measured on the 2026-09-17
+  review's churn probe and soak, `docs/review-2026-09-17.md` 3.2 and 5).
+  The scheduled pop makes one allocation in `2^k` land in the lowest slab
+  with room, so the live set migrates downward at `1/2^k` of the
+  allocation rate and the high slabs drain, empty and are purged. Fast-path
+  cost: one counter test and a well-predicted branch on `malloc`, plus the
+  `run_end` clip. `tcache_compact_shift:0` turns the schedule off.
 - **Cache GC**: every `tcache_gc_interval_ms` (default 10 s, shortened under
   cgroup pressure) shrink `cap` toward `low_water` and flush the excess, then
   reset `low_water = len`. This is jemalloc's incremental tcache GC in spirit.
@@ -483,6 +502,7 @@ jemalloc names where they exist:
 | `tcache_nslots_small_max` | 1024    |                                         |
 | `lg_tcache_nslots_mul`    | 1       |                                         |
 | `tcache_gc_interval_ms`   | 10000   | challoc only                            |
+| `tcache_compact_shift`    | 3       | challoc only; one pop in 2^k compacts, 0 = off (6.4) |
 | `thp`                     | never   | `never`, `always`                       |
 | `lazy_free`               | false   | use `MADV_FREE` for purge               |
 | `guards`                  | true    | guard slabs and huge runs               |

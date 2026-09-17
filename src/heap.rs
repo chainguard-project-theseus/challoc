@@ -10,19 +10,35 @@
 //!
 //! - `alloc`: pop the top of the class's cache; if it is empty, *refill* by
 //!   claiming up to `cap / 2` slots from the class's lowest partial slab.
+//!   Every `2^tcache_compact_shift` pops (one in eight by default) are
+//!   *scheduled pops* that serve the lowest-address entry of the cache's
+//!   sorted run instead of the top (see below).
 //! - `free`: classify the pointer, check its bitmap bit is set (invalid and
 //!   stale double frees abort here), push it; if the cache is full, *flush*
 //!   the `cap / 2` highest-address entries back to their slabs in one
 //!   sorted batch and keep the lowest, in ascending order.
 //!
-//! Flushing by address rather than by age is what lets a class compact
-//! under a balanced alloc/free churn (Valkey's DEL:SET steady state).
-//! After a refill the bottom of the stack is the refill's own low-address
-//! residue, so an oldest-first flush hands those slots back and keeps the
-//! random, mostly high, freed slots for reuse in place: nothing ever
-//! drains. Releasing the highest addresses instead sends the holes to the
-//! high slabs, refills keep taking from the lowest partial slab, and the
-//! high slabs empty and are purged (Phase 1 acceptance step 3).
+//! The scheduled pop is what lets a class compact under a balanced
+//! alloc/free churn (Valkey's DEL:SET steady state, design 6.4). A LIFO
+//! cache hands every allocation the slot that was just freed, so under a
+//! churn that never empties or fills the cache no refill and no flush ever
+//! runs and the slab layout is frozen at whatever occupancy the delete
+//! phase left (measured: `bench/probes/churn.c`, review 2026-09-17
+//! section 3.2). To break that, the bottom of the stack holds a *sorted
+//! run*: `slots[cursor..run_end]` ascending, written by a refill (the
+//! whole batch), by a flush (the kept low half) or by a rebuild; entries
+//! above `run_end` are ordinary LIFO pushes. A scheduled pop returns
+//! `slots[cursor]`, the run's minimum, moves the top entry into its place
+//! and advances the cursor, so one allocation in `2^k` lands in the lowest
+//! slab that has room while the displaced free sits in the cache until the
+//! next flush sends it back. When the cursor reaches `run_end` the run is
+//! rebuilt: the cache is flushed down to `cap / 2` if it is fuller than
+//! that (the highest addresses go back to their slabs), what is left is
+//! sorted, and a batch is claimed from the lowest partial slab on top of
+//! it (up to `cap / 2` slots, up to a three-quarter fill). Normal pops shrink `run_end` when they eat
+//! into the run; pushes never write inside it because `run_end <= len`.
+//! The fast-path cost is one counter test and a well-predicted branch on
+//! `malloc` (plus the `run_end` clip, the same shape as `low_water`).
 //!
 //! Until a thread has a heap its cache pointers all point at one shared
 //! empty sentinel whose `len` and `cap` are zero, so the fast paths need no
@@ -115,12 +131,23 @@ pub struct ClassCache {
     /// Slots moved in by refills minus slots moved out by flushes
     /// (wrapping; the true value is `len - frees + allocs`).
     moved: u64,
+    /// `slots[cursor..run_end]` is the sorted run (ascending); a
+    /// scheduled pop serves `slots[cursor]`. `run_end <= len` always;
+    /// `cursor >= run_end` means the run is exhausted.
+    cursor: u32,
+    run_end: u32,
+    /// A pop whose `allocs` count has no bit of this mask set is a
+    /// scheduled pop (`Config::compact_mask`).
+    compact_mask: u32,
+    /// The arena this cache belongs to (the claim of a rebuild needs it).
+    arena: u16,
+    _pad: u16,
     slots: [*mut u8; 0],
 }
 
 /// Size of the [`ClassCache`] header, i.e. the offset of the slot array.
 pub const CACHE_HEADER: usize = core::mem::size_of::<ClassCache>();
-const _: () = assert!(CACHE_HEADER == 32);
+const _: () = assert!(CACHE_HEADER == 48);
 const _: () = assert!(core::mem::offset_of!(ClassCache, slots) == CACHE_HEADER);
 
 // SAFETY: the only shared instance is `EMPTY_CACHE`, which is never written
@@ -130,8 +157,20 @@ unsafe impl Sync for ClassCache {}
 
 /// The sentinel every heap starts with: empty and full at the same time, so
 /// both fast paths take their slow path and allocate a real cache.
-static EMPTY_CACHE: ClassCache =
-    ClassCache { len: 0, cap: 0, low_water: 0, zeroed: 0, allocs: 0, moved: 0, slots: [] };
+static EMPTY_CACHE: ClassCache = ClassCache {
+    len: 0,
+    cap: 0,
+    low_water: 0,
+    zeroed: 0,
+    allocs: 0,
+    moved: 0,
+    cursor: 0,
+    run_end: 0,
+    compact_mask: u32::MAX,
+    arena: 0,
+    _pad: 0,
+    slots: [],
+};
 
 #[inline(always)]
 fn empty_cache() -> *mut ClassCache {
@@ -166,6 +205,29 @@ impl ClassCache {
     #[inline]
     pub fn zeroed(&self) -> usize {
         self.zeroed as usize
+    }
+
+    /// The sorted run, `slots[cursor..run_end]`, ascending (for tests and
+    /// diagnostics). Ordinary pops only clip `run_end`, so the cursor may
+    /// sit above it: that is an exhausted run.
+    pub fn run(&self) -> &[*mut u8] {
+        debug_assert!(self.run_end <= self.len);
+        let cursor = self.cursor.min(self.run_end);
+        // SAFETY: `run_end <= len <= cap` pointers follow the header.
+        unsafe { core::slice::from_raw_parts(self.slots.as_ptr().add(cursor as usize), (self.run_end - cursor) as usize) }
+    }
+
+    /// Pops served from this cache since it was created.
+    #[inline]
+    pub fn allocs(&self) -> u64 {
+        self.allocs
+    }
+
+    /// Cached pointers, bottom of the stack first (for tests and
+    /// diagnostics).
+    pub fn cached(&self) -> &[*mut u8] {
+        // SAFETY: `len <= cap` pointers follow the header.
+        unsafe { core::slice::from_raw_parts(self.slots.as_ptr(), self.len as usize) }
     }
 
     #[inline]
@@ -925,26 +987,138 @@ impl Heap {
     }
 
     /// Pop the top entry of a non-empty cache. Touches only the header
-    /// line and the slot: `allocs` is the only counter, `low_water` is
-    /// written only when it actually drops (it can only do so after a GC
-    /// reset it to `len`), and the class size is never looked up.
+    /// line and the slot: `allocs` is the only counter, `low_water` and
+    /// `run_end` are written only when they actually drop, and the class
+    /// size is never looked up. Every `2^tcache_compact_shift` pops go to
+    /// [`Heap::pop_compact`] instead.
     ///
     /// # Safety
     /// `cache` is this heap's real cache for `class` and `len` is its
     /// current non-zero length.
     #[inline(always)]
-    unsafe fn pop(&mut self, cache: *mut ClassCache, _class: usize, len: u32) -> (*mut u8, bool) {
+    unsafe fn pop(&mut self, cache: *mut ClassCache, class: usize, len: u32) -> (*mut u8, bool) {
         // SAFETY: guaranteed by the caller.
         unsafe {
+            let allocs = (*cache).allocs.wrapping_add(1);
+            (*cache).allocs = allocs;
+            if ((allocs as u32) & (*cache).compact_mask) == 0 {
+                return self.pop_compact(cache, class, len);
+            }
             let len = len - 1;
             (*cache).len = len;
+            if len < (*cache).run_end {
+                (*cache).run_end = len;
+            }
             if len < (*cache).low_water {
                 (*cache).low_water = len;
             }
-            (*cache).allocs = (*cache).allocs.wrapping_add(1);
             let p = *(*cache).slots().add(len as usize);
             let zero = len < (*cache).zeroed;
             (p, zero)
+        }
+    }
+
+    /// The scheduled pop (design 6.4): serve the lowest-address entry of
+    /// the sorted run, `slots[cursor]`, move the top entry into its place
+    /// and advance the cursor, so this allocation lands in the lowest slab
+    /// that has room instead of reusing the slot that was just freed. An
+    /// exhausted run is rebuilt first ([`Heap::rebuild_run`]); if even
+    /// that yields nothing (class region exhausted) the pop is an ordinary
+    /// one, or null when the cache ended up empty.
+    ///
+    /// # Safety
+    /// As for [`Heap::pop`]; `allocs` has already been counted.
+    #[cold]
+    #[inline(never)]
+    unsafe fn pop_compact(&mut self, cache: *mut ClassCache, class: usize, len: u32) -> (*mut u8, bool) {
+        // SAFETY: guaranteed by the caller.
+        unsafe {
+            let mut len = len;
+            if (*cache).cursor >= (*cache).run_end {
+                self.rebuild_run(cache, class);
+                len = (*cache).len;
+                if len == 0 {
+                    return (ptr::null_mut(), false);
+                }
+            }
+            let top = len - 1;
+            (*cache).len = top;
+            if top < (*cache).low_water {
+                (*cache).low_water = top;
+            }
+            let slots = (*cache).slots();
+            let cursor = (*cache).cursor;
+            let run_end = (*cache).run_end.min(top);
+            if cursor < (*cache).run_end {
+                let p = *slots.add(cursor as usize);
+                *slots.add(cursor as usize) = *slots.add(top as usize);
+                let zero = cursor < (*cache).zeroed;
+                if zero && top >= (*cache).zeroed {
+                    (*cache).zeroed = cursor;
+                }
+                // The run loses its bottom entry and, when the top was its
+                // last entry, that one too.
+                (*cache).run_end = run_end;
+                (*cache).cursor = (cursor + 1).min(run_end);
+                return (p, zero);
+            }
+            (*cache).run_end = run_end;
+            (*cache).cursor = cursor.min(run_end);
+            (*slots.add(top as usize), top < (*cache).zeroed)
+        }
+    }
+
+    /// Rebuild the sorted run for a scheduled pop that found it exhausted:
+    /// run the periodic work (under a balanced churn this is the only slow
+    /// path a class ever takes), flush the cache down to `cap / 2` if it
+    /// is fuller than that (the highest addresses go back to their slabs),
+    /// sort what is left and claim from the class's lowest partial slab on
+    /// top of it, up to `cap / 2` slots (a refill's batch, so an
+    /// allocation-heavy thread takes the class lock no more often than
+    /// before) and up to a `3 cap / 4` fill (so a balanced churn sits
+    /// between the boundaries instead of overflowing at once); the whole
+    /// cache is then one ascending run with the cursor at its bottom.
+    ///
+    /// # Safety
+    /// `cache` is this heap's real cache for `class`.
+    #[cold]
+    #[inline(never)]
+    unsafe fn rebuild_run(&mut self, cache: *mut ClassCache, class: usize) {
+        // SAFETY: a heap never outlives the `Shared` it was created on; the
+        // unbounded lifetime lets `self` be borrowed mutably below.
+        let shared: &Shared = unsafe { &*self.shared };
+        self.tick(shared);
+        // SAFETY: guaranteed by the caller; `len <= cap` entries exist and
+        // `cap - len` slots of storage follow them.
+        unsafe {
+            let arena = (*cache).arena;
+            let cap = (*cache).cap as usize;
+            let half = (cap / 2).max(1);
+            let len = (*cache).len as usize;
+            if len > half {
+                self.flush(shared, arena, cache, class, len - half);
+            } else {
+                (*cache).entries().sort_unstable();
+            }
+            let len = (*cache).len as usize;
+            let want = half.min((cap - cap / 4).saturating_sub(len)).min(cap - len);
+            let mut n = 0;
+            let mut zeroed = false;
+            if want > 0 {
+                let out = core::slice::from_raw_parts_mut((*cache).slots().add(len), want);
+                let claim = shared.owner(arena).class(class).claim(&shared.meta, out);
+                n = claim.n;
+                zeroed = claim.zeroed;
+            }
+            let new_len = len + n;
+            if n > 0 && len > 0 {
+                core::slice::from_raw_parts_mut((*cache).slots(), new_len).sort_unstable();
+            }
+            (*cache).len = new_len as u32;
+            (*cache).moved = (*cache).moved.wrapping_add(n as u64);
+            (*cache).cursor = 0;
+            (*cache).run_end = new_len as u32;
+            (*cache).zeroed = if len == 0 && zeroed { n as u32 } else { 0 };
         }
     }
 
@@ -1212,15 +1386,32 @@ impl Heap {
         // SAFETY: a fresh block of `layout(cap)` bytes, exclusively ours;
         // `slot` is still valid (nothing touched the arrays since).
         unsafe {
-            ptr::write(cache, ClassCache { len: 0, cap, low_water: 0, zeroed: 0, allocs: 0, moved: 0, slots: [] });
+            ptr::write(
+                cache,
+                ClassCache {
+                    len: 0,
+                    cap,
+                    low_water: 0,
+                    zeroed: 0,
+                    allocs: 0,
+                    moved: 0,
+                    cursor: 0,
+                    run_end: 0,
+                    compact_mask: shared.config.compact_mask(),
+                    arena,
+                    _pad: 0,
+                    slots: [],
+                },
+            );
             *slot = cache;
         }
         cache
     }
 
     /// Claim up to `cap / 2` slots of `class` in `arena` into an empty
-    /// cache, lowest address on top so allocations stay address-ordered.
-    /// Returns the new length.
+    /// cache. The batch is left ascending (the claim's own order) and is
+    /// the new sorted run: ordinary pops take it highest first, scheduled
+    /// pops lowest first. Returns the new length.
     ///
     /// # Safety
     /// `cache` is this heap's real, empty cache for `(arena, class)`.
@@ -1231,25 +1422,27 @@ impl Heap {
             let want = ((*cache).cap / 2).max(1) as usize;
             let out = core::slice::from_raw_parts_mut((*cache).slots(), want);
             let claim = arena.class(class).claim(&shared.meta, out);
-            out[..claim.n].reverse();
             (*cache).len = claim.n as u32;
             (*cache).moved = (*cache).moved.wrapping_add(claim.n as u64);
             (*cache).low_water = 0;
             (*cache).zeroed = if claim.zeroed { claim.n as u32 } else { 0 };
+            (*cache).cursor = 0;
+            (*cache).run_end = claim.n as u32;
             claim.n as u32
         }
     }
 
     /// Release the `n` highest-address entries of a cache to their slabs
     /// (in `arena`, which owns them) in one address-sorted batch and keep
-    /// the rest in ascending order, highest on top (see the module doc for
-    /// why the flush selects by address and not by age). The kept run is
-    /// deliberately left ascending rather than reversed to match a refill:
-    /// a descending run under the ascending pushes of a producer/consumer
-    /// pattern is a pathological pivot sequence for the next flush's sort
-    /// (measured: xmalloc-test -41% on x86_64 with the reverse, -1.5%
-    /// without). The zero prefix is given up: the kept entries are
-    /// reordered, so nothing is known about what lies at the bottom.
+    /// the rest in ascending order, highest on top: the kept entries are
+    /// the new sorted run. Selecting by address sends the holes to the
+    /// high slabs, which is what lets them drain (module doc). The kept
+    /// run is left ascending rather than reversed: a descending run under
+    /// the ascending pushes of a producer/consumer pattern is a
+    /// pathological pivot sequence for the next flush's sort (measured:
+    /// xmalloc-test -41% on x86_64 with the reverse, -1.5% without). The
+    /// zero prefix is given up: the kept entries are reordered, so nothing
+    /// is known about what lies at the bottom.
     ///
     /// # Safety
     /// `cache` is this heap's real cache for `(arena, class)` and `n <= len`.
@@ -1268,6 +1461,8 @@ impl Heap {
             (*cache).moved = (*cache).moved.wrapping_sub(n as u64);
             (*cache).zeroed = 0;
             (*cache).low_water = (*cache).low_water.min(rest_len as u32);
+            (*cache).cursor = 0;
+            (*cache).run_end = rest_len as u32;
         }
     }
 
@@ -1706,9 +1901,11 @@ pub(crate) mod tests {
         let p = t.alloc(c);
         let cache = t.cache(c);
         assert_eq!(cache.cap(), CAP);
-        // A refill claims half the capacity and the pop takes the lowest.
+        // A refill claims half the capacity, ascending, and the (ordinary)
+        // pop takes the top: the highest address of the batch.
         assert_eq!(cache.len(), HALF - 1);
-        assert_eq!(p as usize, s.regions.slab_addr(c, 0));
+        assert_eq!(p as usize, s.regions.slab_addr(c, 0) + (HALF - 1) * 64);
+        assert_eq!(cache.run().len(), HALF - 1);
         assert!(t.heap().cache(c + 1).is_none());
         assert_eq!(t.heap().stats().allocated, 64);
         assert_eq!(t.heap().slow_ticks(), 1);
@@ -1722,6 +1919,48 @@ pub(crate) mod tests {
         assert_eq!(live(s, c), 0);
     }
 
+    /// Every `2^k` pops are scheduled (design 6.4).
+    const EVERY: u64 = 8;
+
+    /// Pop one slot of `c` and check the rule against the cache state
+    /// before the pop: a scheduled pop returns the minimum of the sorted
+    /// run (which is the minimum of the whole cache when the run is the
+    /// whole cache), any other pop returns the top of the stack. Nothing
+    /// is checked when the cache was empty (a refill happened) or when a
+    /// scheduled pop found the run exhausted (a rebuild happened). The
+    /// run is ascending and inside the cache afterwards.
+    fn pop_checked(t: &TestHeap, c: usize) -> *mut u8 {
+        let (before, run, allocs) = match t.heap().cache(c) {
+            Some(k) => (k.cached().to_vec(), k.run().to_vec(), k.allocs()),
+            None => (Vec::new(), Vec::new(), 0),
+        };
+        let p = t.alloc(c);
+        if !before.is_empty() {
+            if (allocs + 1) % EVERY == 0 {
+                if !run.is_empty() {
+                    assert_eq!(p, run[0], "scheduled pop {} is not the run minimum", allocs + 1);
+                    if run.len() == before.len() {
+                        assert_eq!(Some(&p), before.iter().min(), "scheduled pop {} is not the cache minimum", allocs + 1);
+                    }
+                }
+            } else {
+                assert_eq!(p, *before.last().unwrap(), "pop {} is not the top", allocs + 1);
+            }
+        }
+        check_run(t, c);
+        p
+    }
+
+    /// The sorted-run invariant: ascending, distinct, a slice of the cache.
+    fn check_run(t: &TestHeap, c: usize) {
+        let k = t.cache(c);
+        let run = k.run();
+        assert!(run.windows(2).all(|w| w[0] < w[1]), "run not ascending: {run:?}");
+        let cached = k.cached();
+        assert!(run.len() <= cached.len());
+        assert!(run.iter().all(|p| cached.contains(p)));
+    }
+
     #[test]
     fn allocations_are_address_ordered_and_lifo_after_free() {
         let s = shared();
@@ -1731,16 +1970,39 @@ pub(crate) mod tests {
         let base = s.regions.slab_addr(c, 0);
         let n = 2 * HALF + 44;
         let mut ps = Vec::new();
-        for i in 0..n {
-            let p = t.alloc(c);
-            assert_eq!(p as usize, base + i * size, "allocation {i}");
-            ps.push(p);
+        for _ in 0..n {
+            ps.push(pop_checked(&t, c));
         }
-        // Three refills of HALF (the third partially consumed).
-        assert_eq!(t.heap().slow_ticks(), 3);
-        assert_eq!(t.cache(c).len(), 3 * HALF - n);
-        assert_eq!(live(s, c), 3 * HALF);
-        // Frees push, the most recent free is reused first.
+        // Every batch (the refill and the rebuilds' claims) comes from the
+        // lowest partial slab, which is slab 0 throughout (4096 slots), and
+        // is served from both ends: ordinary pops from the top, scheduled
+        // pops from the bottom. The first batch is exactly the first HALF
+        // slots of slab 0 in descending order except for every eighth
+        // allocation, which takes the lowest slot of the run and moves the
+        // top into its place (behind the cursor: the model's swap_remove),
+        // until the cursor meets the top after 8/9 of the batch and a
+        // rebuild claims more; check the 448 pops before that.
+        let first: Vec<usize> = ps[..448].iter().map(|&p| (p as usize - base) / size).collect();
+        let mut model: Vec<usize> = (0..HALF).collect();
+        let mut cursor = 0;
+        for (i, &slot) in first.iter().enumerate() {
+            let want = if (i + 1) % EVERY as usize == 0 {
+                cursor += 1;
+                model.swap_remove(cursor - 1)
+            } else {
+                model.pop().unwrap()
+            };
+            assert_eq!(slot, want, "allocation {i}");
+        }
+        let distinct: HashSet<usize> = ps.iter().map(|&p| p as usize).collect();
+        assert_eq!(distinct.len(), n);
+        assert!(ps.iter().all(|&p| (p as usize) >= base && (p as usize) < base + 4096 * size));
+        // One refill, then a rebuild each time the run was exhausted (a
+        // ninth of a batch before it runs out), each claiming HALF more.
+        assert!(t.heap().slow_ticks() >= 3, "{} slow paths", t.heap().slow_ticks());
+        assert_eq!(live(s, c), n + t.cache(c).len());
+        // Frees push, the most recent free is reused first (the next two
+        // pops are ordinary ones: n + 1 and n + 2 are not multiples of 8).
         t.free(ps[10]);
         t.free(ps[20]);
         assert_eq!(t.alloc(c), ps[20]);
@@ -1748,6 +2010,138 @@ pub(crate) mod tests {
         assert_eq!(t.heap().stats(), ThreadStats { allocated: (n as u64 + 2) * 16, deallocated: 2 * 16 });
         t.destroy();
         assert_eq!(live(s, c), n);
+    }
+
+    #[test]
+    fn scheduled_pops_take_the_minimum_and_rebuild_from_the_lowest_slab() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        // 292 slots per slab, cap 512: several slabs and rebuilds.
+        let c = class_with(224);
+        let cs = &s.arena0.classes[c];
+        let cap = default_cap(c) as usize;
+        assert_eq!(cap, 512);
+        let mut live_ps: Vec<*mut u8> = (0..3000).map(|_| pop_checked(&t, c)).collect();
+        assert_eq!(live(s, c), live_ps.len() + t.len(c));
+        // Under pure allocation the run is exhausted with about a ninth of
+        // the batch left and the rebuild claims another half capacity, so
+        // the cache never runs empty and every slow path was a rebuild.
+        assert!(t.ticks() as usize > 3000 / (cap / 2), "{} ticks", t.ticks());
+        // Random frees and allocations: the rule holds throughout, and the
+        // cached set is always what `live` says beyond the program's set.
+        let mut st = 0x5eed_1234u64;
+        for step in 0..20_000 {
+            if xorshift(&mut st) & 1 == 0 && live_ps.len() > 1000 {
+                let i = (xorshift(&mut st) % live_ps.len() as u64) as usize;
+                t.free(live_ps.swap_remove(i));
+                check_run(&t, c);
+            } else {
+                live_ps.push(pop_checked(&t, c));
+            }
+            if step % 997 == 0 {
+                assert_eq!(live(s, c), live_ps.len() + t.len(c), "step {step}");
+            }
+        }
+        // A rebuild's claim comes from the lowest partial slab and the
+        // whole cache becomes the run, so the scheduled pop that rebuilt
+        // returns the cache minimum and the cache now holds slots of that
+        // slab.
+        let mut lowest = cs.lowest_partial();
+        let mut rebuilt = false;
+        while lowest.is_some() && !rebuilt {
+            let allocs = t.cache(c).allocs();
+            let run_exhausted = t.cache(c).run().is_empty();
+            if (allocs + 1) % EVERY == 0 && run_exhausted {
+                let p = t.alloc(c);
+                let k = t.cache(c);
+                assert!(k.cached().iter().all(|&q| q > p), "the rebuilt run's minimum is not the cache minimum");
+                // The moved top sits behind the cursor.
+                assert_eq!(k.run().len() + 1, k.len());
+                assert!(k.cached().iter().any(|&q| Some(cs.locate(q).0) == lowest), "rebuild did not claim from the lowest partial slab");
+                check_run(&t, c);
+                live_ps.push(p);
+                rebuilt = true;
+            } else {
+                live_ps.push(pop_checked(&t, c));
+                lowest = cs.lowest_partial();
+            }
+        }
+        assert!(rebuilt);
+        for p in live_ps {
+            t.free(p);
+        }
+        t.destroy();
+        assert_eq!(live(s, c), 0);
+    }
+
+    #[test]
+    fn churn_model_empties_the_high_slabs() {
+        // The model of `bench/probes/churn.c`: fill 40 slabs of the 1 KiB
+        // class (64 slots each, cap 128), free a random 56%, then run a
+        // balanced free-one/allocate-one churn. Without scheduled pops
+        // nothing moves (every allocation gets back the slot just freed);
+        // with them the live set migrates into the lowest slabs and the
+        // high slabs empty.
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(1024);
+        let cs = &s.arena0.classes[c];
+        let nslots = CLASSES[c].nslots();
+        assert_eq!(nslots, 64);
+        let total = 40 * nslots;
+        let mut ps: Vec<*mut u8> = (0..total).map(|_| t.alloc(c)).collect();
+        let mut st = 0x9e37_79b9_7f4a_7c15u64;
+        let mut keep = Vec::new();
+        for p in ps.drain(..) {
+            if xorshift(&mut st) % 1000 < 560 { t.free(p) } else { keep.push(p) }
+        }
+        let occupied = |cs: &crate::class::ClassState| (0..cs.committed_slabs()).filter(|&i| cs.desc(i).live() > 0).count();
+        let before = occupied(cs);
+        assert!(before >= 38, "{before} occupied slabs after the delete");
+        let ideal = keep.len().div_ceil(nslots);
+        for _ in 0..200_000 {
+            let i = (xorshift(&mut st) % keep.len() as u64) as usize;
+            t.free(keep[i]);
+            keep[i] = t.alloc(c);
+        }
+        let after = occupied(cs);
+        // Live data plus what the cache holds (at most cap = 128 slots, two
+        // slabs) plus one partial slab.
+        assert!(after <= ideal + 3, "{after} occupied slabs after the churn, ideal {ideal}, before {before}");
+        assert_eq!(live(s, c), keep.len() + t.len(c));
+        for p in keep {
+            t.free(p);
+        }
+        t.destroy();
+        assert_eq!(live(s, c), 0);
+    }
+
+    #[test]
+    fn compaction_off_keeps_the_lifo_reuse_in_place() {
+        let s = shared_with(Config { tcache_compact_shift: 0, ..Config::DEFAULT });
+        let t = TestHeap::new(s);
+        let c = class_with(1024);
+        let nslots = CLASSES[c].nslots();
+        let mut keep: Vec<*mut u8> = (0..40 * nslots).map(|_| t.alloc(c)).collect();
+        let mut st = 0x1234_5678u64;
+        let mut i = 0;
+        while i < keep.len() {
+            if xorshift(&mut st) % 1000 < 560 { t.free(keep.swap_remove(i)) } else { i += 1 }
+        }
+        let cs = &s.arena0.classes[c];
+        let occupied = |cs: &crate::class::ClassState| (0..cs.committed_slabs()).filter(|&i| cs.desc(i).live() > 0).count();
+        let before = occupied(cs);
+        for _ in 0..50_000 {
+            let i = (xorshift(&mut st) % keep.len() as u64) as usize;
+            t.free(keep[i]);
+            let p = t.alloc(c);
+            assert_eq!(p, keep[i], "LIFO reuse in place");
+        }
+        assert_eq!(occupied(cs), before);
+        for p in keep {
+            t.free(p);
+        }
+        t.destroy();
     }
 
     #[test]
@@ -1793,9 +2187,10 @@ pub(crate) mod tests {
         let st = cs.stats();
         assert_eq!(st.empty, cs.committed_slabs());
         assert_eq!(st.nonfull, 0);
-        // Allocating again reuses the lowest slab, now Empty -> Active.
+        // Allocating again reuses the lowest slab, now Empty -> Active
+        // (an ordinary pop: the top of the ascending refill batch).
         let p = t.alloc(c);
-        assert_eq!(p as usize, s.regions.slab_addr(c, 0));
+        assert_eq!(p as usize, s.regions.slab_addr(c, 0) + (HALF - 1) * 64);
         assert_eq!(cs.desc(0).state(), State::Active);
         t.free(p);
         t.destroy();
@@ -1811,6 +2206,9 @@ pub(crate) mod tests {
         // the cache holds an unsorted mix of low and high addresses.
         let n = 4 * CAP;
         let ps: Vec<*mut u8> = (0..n).map(|_| t.alloc(c)).collect();
+        // Rebuilds leave claimed slots in the cache: empty it first.
+        t.flush_all();
+        assert_eq!(t.len(c), 0);
         let mut order: Vec<usize> = (0..n).collect();
         let mut st = 0x9e37_79b9u64;
         for i in (1..n).rev() {
@@ -1825,25 +2223,31 @@ pub(crate) mod tests {
         let live_before = live(s, c);
         // Overflow by one: the HALF highest addresses go back to their
         // slabs, the HALF lowest stay in ascending order (highest of them
-        // on top) under the new push.
+        // on top) as the sorted run under the new push.
         let extra = ps[order[CAP]];
         t.free(extra);
         assert_eq!(t.len(c), HALF + 1);
         assert_eq!(live(s, c), live_before - HALF);
         cached.sort_unstable();
-        assert_eq!(t.alloc(c), extra);
-        for (k, &want) in cached[..HALF].iter().rev().enumerate() {
-            assert_eq!(t.alloc(c), want, "pop {k}");
-        }
-        assert_eq!(t.len(c), 0);
-        // The released half is free in the slabs: allocating it again
-        // is the only way to get those addresses back, and a refill takes
-        // the lowest partial slab first, which is where they now are
-        // (everything below them is live in the program).
-        let got: Vec<*mut u8> = (0..HALF).map(|_| t.alloc(c)).collect();
-        let mut got_sorted = got.clone();
-        got_sorted.sort_unstable();
-        assert_eq!(got_sorted, cached[HALF..].to_vec());
+        assert_eq!(t.cache(c).run(), &cached[..HALF]);
+        // The released half is free in the slabs (bits clear), the kept
+        // half and the new push are still marked.
+        let cs = &s.arena0.classes[c];
+        let marked = |p: *mut u8| {
+            let (slab, slot) = cs.locate(p);
+            cs.desc(slab).bitmap(cs.class()).is_set(slot)
+        };
+        assert!(cached[HALF..].iter().all(|&q| !marked(q)));
+        assert!(cached[..HALF].iter().all(|&q| marked(q)));
+        assert!(marked(extra));
+        // Popping half of it back: ordinary pops take the top (extra
+        // first), scheduled pops the run minimum; everything returned is
+        // from the kept set. (Popping it all would exhaust the run and
+        // claim more, so stop before that.)
+        let got: Vec<*mut u8> = (0..HALF / 2).map(|_| pop_checked(&t, c)).collect();
+        assert_eq!(got[0], extra);
+        assert!(got[1..].iter().all(|q| cached[..HALF].contains(q)));
+        assert_eq!(t.len(c), HALF / 2 + 1);
         t.destroy();
     }
 
@@ -1877,14 +2281,16 @@ pub(crate) mod tests {
         }
         t.free(p1);
         assert_eq!(t.cache(c).zeroed(), t.len(c) - 1);
-        // Drain the cache: the next refill is from an Active slab, so the
-        // conservative answer is "not zero" for the whole batch.
-        while t.len(c) > 0 {
+        // Keep allocating until the run is exhausted and a rebuild claims
+        // from the (by now Active) slab on top of the entries left: the
+        // conservative answer is "not zero" for the whole cache.
+        let ticks = t.ticks();
+        while t.ticks() == ticks {
             t.alloc(c);
         }
+        assert_eq!(t.cache(c).zeroed(), 0);
         let (_, z5) = t.alloc_zeroed(c);
         assert!(!z5);
-        assert_eq!(t.cache(c).zeroed(), 0);
         t.destroy();
     }
 
@@ -2508,7 +2914,9 @@ mod linux_tests {
             // `Fresh` or `Purged` slab is flagged, so here that is the rest
             // of the very first batch (the first slab's later batches come
             // from an `Active` slab, and the batch that crosses into the
-            // next fresh slab is mixed).
+            // next fresh slab is mixed) less the ninth of it that is still
+            // cached when the scheduled pops exhaust the run and the
+            // rebuild's sort drops the prefix.
             let mut zeros = 0;
             for _ in 0..3000 {
                 let (r, zero) = alloc_zeroed(s, c);
@@ -2520,7 +2928,7 @@ mod linux_tests {
                 fill(r, size, 0x11);
             }
             let refill = default_cap(c) as usize / 2;
-            assert!(zeros >= refill - 1 && zeros < 3000, "{zeros} zero-flagged of 3000");
+            assert!(zeros >= refill - refill / 8 - 8 && zeros < 3000, "{zeros} zero-flagged of 3000");
         })
         .join()
         .unwrap();
