@@ -1103,6 +1103,16 @@ impl ClassState {
         self.bin_stats().1
     }
 
+    /// `(holes, capacity)`: the free slots of the slabs that can hold live
+    /// slots (neither `Empty` nor `Purged`), i.e. slots that are in no
+    /// cache and no program, and those slabs' total slot count. The
+    /// compaction gate in `heap.rs` reads this; one lock hold.
+    pub fn holes(&self) -> (usize, usize) {
+        let (s, curregs) = self.bin_stats();
+        let capacity = (s.committed - s.empty - s.purged) * self.class().nslots();
+        (capacity.saturating_sub(curregs), capacity)
+    }
+
     /// Lowest slab in the partial set, if any (for tests and stats).
     pub fn lowest_partial(&self) -> Option<usize> {
         self.inner.lock().partial.map.lowest_set()

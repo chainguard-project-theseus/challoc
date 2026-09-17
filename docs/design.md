@@ -234,10 +234,10 @@ struct ClassCache {                          // one per (arena, class)
     len:      u32,
     cap:      u32,                           // adaptive, <= max_slots(class)
     low_water: u32,                          // for GC
-    cursor:   u32,                           // slots[cursor..run_end] is the sorted run (6.4)
-    run_end:  u32,
-    compact_mask: u32,                       // (1 << tcache_compact_shift) - 1
+    run_end:  u32,                           // slots[..run_end] is the run of low addresses (6.4)
+    compact_mask: u32,                       // probe mask, (1 << tcache_compact_shift) - 1, or off
     arena:    u16,
+    mode:     u16,                           // off, probing, compacting
     slots:    [*mut u8; cap],
 }
 ```
@@ -292,38 +292,47 @@ class or, for huge runs, into free following pages.
 ### 6.4 Slow paths
 
 - **Refill**: claim up to `cap / 2` slots from the current or next partial
-  slab (section 5), written ascending: the batch is the cache's *sorted
-  run*. Count refills in `slow_ticks` and run periodic work every
-  64 slow paths: merge thread stats into arena stats, run cache GC if the
-  interval has elapsed, run decay if the class's deadline has passed, sample
-  the cgroup (section 11).
+  slab (section 5), lowest address on top; the batch is the cache's *run*
+  (below) and `low_water` restarts at its length. Count refills in
+  `slow_ticks` and run periodic work every 64 slow paths: merge thread
+  stats into arena stats, run cache GC if the interval has elapsed, run
+  decay if the class's deadline has passed, sample the cgroup (section 11).
 - **Flush**: release the `cap / 2` highest-address entries grouped by slab
-  and keep the lowest in ascending order as the new sorted run (not
-  reversed to match a refill: a descending run under ascending pushes is a
-  pathological input for the next flush's sort). Update `live`; slabs
-  reaching zero become `Empty`. The selection is by address, not by age,
-  so that every flush sends holes to the high slabs while refills keep
-  taking the lowest partial slab.
+  and keep the lowest in ascending order (not reversed into a run: a
+  descending run under ascending pushes, or an ascending batch under
+  descending pushes, is a pathological input for the next flush's sort;
+  the run is dropped and rebuilt on demand). Update `live`; slabs reaching
+  zero become `Empty`. The selection is by address, not by age, so that
+  every flush sends holes to the high slabs while refills and rebuilds
+  keep taking the lowest partial slab.
 - **Scheduled pop** (the compacting cache): every `2^tcache_compact_shift`
-  pops of a class (default 8) are served from `slots[cursor]`, the minimum
-  of the sorted run `slots[cursor..run_end]` at the bottom of the stack,
-  the top entry is moved into its place and the cursor advances; ordinary
-  pops clip `run_end`, pushes never write inside the run because
-  `run_end <= len`. When the cursor reaches `run_end` the run is rebuilt:
-  the cache is flushed down to `cap / 2` if fuller than that, sorted, and
-  up to `cap / 2` slots (to at most a `3 cap / 4` fill) are claimed from
-  the lowest partial slab on top of it; the rebuild also runs the periodic
-  work. Why: a LIFO cache hands every allocation the slot just freed, so
-  under a balanced alloc/free churn (Valkey's DEL:SET steady state) the
-  cache never reaches either boundary, no refill or flush runs, and the
-  slab layout is frozen at whatever occupancy the delete phase left; the
-  flush selection alone cannot change that (measured on the 2026-09-17
-  review's churn probe and soak, `docs/review-2026-09-17.md` 3.2 and 5).
-  The scheduled pop makes one allocation in `2^k` land in the lowest slab
-  with room, so the live set migrates downward at `1/2^k` of the
-  allocation rate and the high slabs drain, empty and are purged. Fast-path
-  cost: one counter test and a well-predicted branch on `malloc`, plus the
-  `run_end` clip. `tcache_compact_shift:0` turns the schedule off.
+  pops of a class (default 8) are served from the *run* of low addresses
+  `slots[..run_end]` (descending, lowest at `run_end - 1`) instead of the
+  top: the run's lowest entry is returned and the top entry moved into its
+  place. The run is a refill's batch or a *rebuild*'s block: `cap / 4`
+  slots claimed from the lowest partial slab and swapped into the bottom
+  of the stack (no sort), after flushing the cache down to `cap / 2` if it
+  has no room; the rebuild also runs the periodic work, which under a
+  balanced churn is the only slow path a class takes. `run_end <=
+  low_water <= len` keeps the run intact: a pop that dips below it clips
+  both, a push never writes below `len`. The schedule is gated per cache:
+  in *probe* mode one pop in 4096 asks the class for its holes
+  (`ClassState::holes`, one lock hold) and switches to *compact* mode only
+  if they are worth at least 4 slabs and 1/32 of the class's capacity; a
+  rebuild re-checks and drops back to probing once the class is dense. Why:
+  a LIFO cache hands every allocation the slot just freed, so under a
+  balanced alloc/free churn (Valkey's DEL:SET steady state) the cache never
+  reaches either boundary, no refill or flush runs, and the slab layout is
+  frozen at whatever occupancy the delete phase left; the flush selection
+  alone cannot change that (measured on the 2026-09-17 review's churn probe
+  and soak, `docs/review-2026-09-17.md` 3.2 and 5). The scheduled pop makes
+  one allocation in `2^k` land in the lowest slab with room, so the live
+  set migrates downward at `1/2^k` of the allocation rate and the high
+  slabs drain, empty and are purged. The gate exists because compacting a
+  class costs slab traffic (claims low, releases high) and cold slots that
+  larson measured at -15..-22% when paid unconditionally at `k = 3`; a
+  dense class pays one counter test per `malloc`. `tcache_compact_shift:0`
+  turns the schedule off.
 - **Cache GC**: every `tcache_gc_interval_ms` (default 10 s, shortened under
   cgroup pressure) shrink `cap` toward `low_water` and flush the excess, then
   reset `low_water = len`. This is jemalloc's incremental tcache GC in spirit.
