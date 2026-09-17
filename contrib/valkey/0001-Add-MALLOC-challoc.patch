@@ -23,6 +23,14 @@ renames are needed because challoc exports the je_ names itself.
 - src/allocator_defrag.h: HAVE_DEFRAG is defined for USE_CHALLOC; the
   vendored-jemalloc version check does not apply.
 - deps/Makefile is untouched: its jemalloc distclean is already guarded.
+- tests/unit/memefficiency.tcl: perform_defrag_test takes an ignore_bytes
+  option (default the stock 2500kb) and the "Active Defrag eval scripts"
+  test passes 5000kb when mem_allocator is challoc. With the bundled
+  jemalloc (je_-prefixed, so Lua's l_alloc goes to glibc) the Lua heap is
+  invisible to allocator_frag_bytes; challoc replaces libc malloc, so the
+  same 12.1 MB Lua heap sits in its bins and SCRIPT LOAD's not-yet-swept
+  Lua garbage leaves about 2.4 MB in partially filled slabs the
+  defragmenter cannot move (measured; see PROGRESS.md in challoc).
 
 Build: make MALLOC=challoc BUILD_TLS=yes CFLAGS="-I<challoc>/contrib/valkey/include"
        LDFLAGS="-L<libdir> -Wl,-rpath,<libdir>"
@@ -30,10 +38,11 @@ challoc must be built with the quantum8 feature: allocator_defrag.c asserts
 arenas.quantum == 8.
 
 ---
- src/Makefile           | 14 ++++++++++++++
- src/allocator_defrag.h |  9 +++++++--
- src/zmalloc.h          | 11 +++++++++++
- 3 files changed, 32 insertions(+), 2 deletions(-)
+ src/Makefile                 | 14 ++++++++++++++
+ src/allocator_defrag.h       |  9 +++++++--
+ src/zmalloc.h                | 11 +++++++++++
+ tests/unit/memefficiency.tcl | 18 ++++++++++++++++--
+ 4 files changed, 48 insertions(+), 4 deletions(-)
 
 diff --git a/src/Makefile b/src/Makefile
 index 2812c4d..ff82dfe 100644
@@ -115,3 +124,46 @@ index a35b7cb..74837cb 100644
  #elif defined(USE_JEMALLOC)
  #define ZMALLOC_LIB \
      ("jemalloc-" __xstr(JEMALLOC_VERSION_MAJOR) "." __xstr(JEMALLOC_VERSION_MINOR) "." __xstr(JEMALLOC_VERSION_BUGFIX))
+diff --git a/tests/unit/memefficiency.tcl b/tests/unit/memefficiency.tcl
+index 825b9c0..05eb195 100644
+--- a/tests/unit/memefficiency.tcl
++++ b/tests/unit/memefficiency.tcl
+@@ -185,6 +185,7 @@ run_solo {defrag} {
+     proc perform_defrag_test {name args} {
+         set opts(latency) 5
+         set opts(while_defragging) {}
++        set opts(ignore_bytes) 2500kb
+         array set opts $args
+         assert {[info exists opts(populate)]}
+         assert {[info exists opts(fragment)]}
+@@ -192,7 +193,7 @@ run_solo {defrag} {
+         r config set active-defrag-threshold-lower 5
+         r config set active-defrag-cycle-min 40
+         r config set active-defrag-cycle-max 60
+-        r config set active-defrag-ignore-bytes 2500kb
++        r config set active-defrag-ignore-bytes $opts(ignore_bytes)
+         r config set maxmemory 0
+ 
+         log_frag "test start ($name)"
+@@ -327,7 +328,20 @@ run_solo {defrag} {
+             set n 50000
+ 
+             # scripts aren't defragged incrementally, expect big latency
+-            perform_defrag_test $title latency 200 populate {
++            # Under challoc the Lua heap is in the same allocator as the
++            # server: challoc replaces libc malloc, whereas the bundled
++            # jemalloc is je_-prefixed and Lua's l_alloc (plain realloc/free)
++            # goes to glibc, so with jemalloc the Lua heap never shows in
++            # allocator_frag_bytes. SCRIPT LOAD leaves about 2.4 MB of Lua
++            # garbage that its collector has not swept yet in partially
++            # filled slabs the defragmenter cannot move (same Lua heap size
++            # under both allocators, 12.1 MB for these 50k scripts), so the
++            # stop threshold has to allow for it.
++            set ignore_bytes 2500kb
++            if {[string match {*challoc*} [s mem_allocator]]} {
++                set ignore_bytes 5000kb
++            }
++            perform_defrag_test $title latency 200 ignore_bytes $ignore_bytes populate {
+                 # Populate memory with interleaving script-key pattern of same size
+                 set dummy_script "--[string repeat x 450]\nreturn "
+                 set rd [valkey_deferring_client]

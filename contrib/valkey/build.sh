@@ -72,6 +72,12 @@ fi
 if git apply --reverse --check "$PATCH" 2>/dev/null; then
     echo "patch already applied"
 else
+    # A clone that carries an older version of the patch fails both checks:
+    # drop its working-tree changes and apply the current patch.
+    if ! git apply --check "$PATCH" 2>/dev/null; then
+        echo "stale patch in the tree, resetting it"
+        git checkout -q -- .
+    fi
     git apply --check "$PATCH"
     git apply "$PATCH"
     echo "patch applied"
