@@ -539,7 +539,8 @@ mod linux {
         cfg
     }
 
-    /// The string a weak `malloc_conf` (`which == 0`) or `je_malloc_conf`
+    /// The string the `malloc_conf` (`which == 0`, defined by the library,
+    /// interposed by a program's definition) or weak `je_malloc_conf`
     /// (`which == 1`) global points at, `None` when the process defines
     /// neither the symbol nor a string.
     pub fn malloc_conf_symbol(which: u32) -> Option<&'static [u8]> {
@@ -556,23 +557,24 @@ mod linux {
         cstr(unsafe { slot.read() })
     }
 
-    /// Address of the weak `malloc_conf` global, or null when the process
-    /// does not define it.
+    /// Address of the `malloc_conf` global the loader resolved: the
+    /// program's own definition when it has one, else the library's null
+    /// slot (`api::jemalloc::malloc_conf`). The load goes through the GOT
+    /// so the program's definition interposes; a direct reference could be
+    /// bound to the library's own copy at link time.
     #[inline(never)]
     fn malloc_conf_addr() -> *const c_void {
         let out: *const c_void;
-        // SAFETY: a GOT load of a weak undefined symbol; no memory is written.
+        // SAFETY: a GOT load of a defined data symbol; no memory is written.
         unsafe {
             #[cfg(target_arch = "x86_64")]
             core::arch::asm!(
-                ".weak malloc_conf",
                 "mov {out}, qword ptr [rip + malloc_conf@GOTPCREL]",
                 out = out(reg) out,
                 options(nostack, readonly, preserves_flags),
             );
             #[cfg(target_arch = "aarch64")]
             core::arch::asm!(
-                ".weak malloc_conf",
                 "adrp {out}, :got:malloc_conf",
                 "ldr {out}, [{out}, :got_lo12:malloc_conf]",
                 out = out(reg) out,

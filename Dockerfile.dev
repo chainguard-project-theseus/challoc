@@ -27,7 +27,22 @@ RUN sed -i \
       procps \
       memtier-benchmark \
       posix-libc-utils-2.44 \
+      autoconf \
+      ruby-3.4 \
+      jemalloc-dev \
+      yaml-dev \
+      zlib-dev \
+      libffi-dev \
+      tzdata \
  && rustc --version && cargo --version
+
+# The last seven are for Ruby (contrib/ruby/build.sh, Phase 1 acceptance): a
+# git checkout of Ruby needs autoconf and a base Ruby; the jemalloc header,
+# yaml, zlib and libffi are what Wolfi's ruby-3.4.yaml environment gives its
+# `--with-jemalloc` build (psych, zlib and fiddle extensions, and
+# <jemalloc/jemalloc.h> as RUBY_ALTERNATIVE_MALLOC_HEADER); tzdata is for
+# `make test-all` (test/ruby/test_time_tz.rb needs zone files). openssl-dev
+# is already there for Valkey.
 
 WORKDIR /src
 CMD ["sh"]

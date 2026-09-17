@@ -27,11 +27,24 @@
 //! plain name is consulted first). They are two objects rather than one
 //! aliased symbol because rustc's cdylib export list only carries Rust
 //! items: symbols defined in `global_asm!` stay local, and stable Rust has
-//! no symbol aliases. For the same reason the library does not *define*
-//! `malloc_conf` or `je_malloc_conf` (stable Rust has no weak statics):
-//! `config.rs` reads a program's definition of either through a weak GOT
-//! reference, which is the behaviour Valkey and Redis depend on; a program
-//! that only references the symbol sees it as absent.
+//! no symbol aliases.
+//!
+//! `malloc_conf` is an exported data symbol too, a `const char *` that is
+//! null unless a program defines its own: Ruby's `--with-jemalloc` configure
+//! probe links a program that *reads* `malloc_conf` against `-ljemalloc`, so
+//! the staged `libjemalloc.so.2` must define it, as jemalloc does. jemalloc's
+//! definition is weak and stable Rust has no weak statics, so this one is a
+//! plain global; that changes nothing for a dynamically linked program that
+//! defines the symbol itself (Redis and Valkey define `je_malloc_conf`,
+//! `tests/c/conf.c` both): the executable's definition comes first in the
+//! loader's lookup and `config.rs` reads the symbol through the GOT, never
+//! directly, so it sees the program's string. A weak `global_asm!`
+//! definition was tried first and rejected by test: rustc's version script
+//! makes it local even with `--export-dynamic-symbol`, and a local
+//! definition binds the library's own read to itself, hiding the program's.
+//! `je_malloc_conf` stays a weak undefined reference: Valkey defines it, and
+//! a strong definition here would clash with such a program under a static
+//! link, where no consumer needs the library to define either symbol.
 
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr;
@@ -55,6 +68,14 @@ pub static mut malloc_message: MallocMessage = None;
 #[allow(non_upper_case_globals)]
 #[unsafe(no_mangle)]
 pub static mut je_malloc_message: MallocMessage = None;
+
+/// `const char *malloc_conf`: jemalloc's configuration string, defined so a
+/// program that only references it links (Ruby's configure probe). Null
+/// here; a program that defines its own interposes it, and `config::load`
+/// reads whichever definition the loader picked (see the module docs).
+#[allow(non_upper_case_globals)]
+#[unsafe(no_mangle)]
+pub static mut malloc_conf: *const c_char = ptr::null();
 
 /// The installed hook, if any: `malloc_message`, else `je_malloc_message`.
 /// Read volatile: C code stores them behind the compiler's back.

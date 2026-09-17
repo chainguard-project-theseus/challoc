@@ -204,10 +204,17 @@ fn c_negative_huge_overflow() {
 /// `expect_abort` the first allocation must abort and stderr must carry
 /// both the issue text and the `abort_conf` line.
 fn run_conf(name: &str, conf: Option<&str>, env: &[(&str, &str)], expect_abort: Option<&str>) {
+    run_conf_flags(name, conf, &[], env, expect_abort);
+}
+
+/// [`run_conf`] with extra compiler flags (`-DPLAIN` puts `conf` in the
+/// program's `malloc_conf` instead of `je_malloc_conf`).
+fn run_conf_flags(name: &str, conf: Option<&str>, extra: &[&str], env: &[(&str, &str)], expect_abort: Option<&str>) {
     use std::os::unix::process::ExitStatusExt;
     let so = release_so();
     let define = conf.map(|c| std::format!("-DCONF=\"{c}\""));
     let mut flags = std::vec!["-rdynamic"];
+    flags.extend_from_slice(extra);
     if let Some(d) = &define {
         flags.push(d);
     }
@@ -236,6 +243,21 @@ fn run_conf(name: &str, conf: Option<&str>, env: &[(&str, &str)], expect_abort: 
         }
     }
     std::eprintln!("conf {name}: {}", stderr.trim_end());
+}
+
+#[test]
+fn c_conf_plain_symbol_interposes_the_library_definition() {
+    // The program defines `malloc_conf` (Ruby-style, unprefixed); the
+    // library defines one too, and the program's must be the one read: a
+    // bad key in it aborts under abort_conf.
+    run_conf_flags(
+        "plain",
+        Some("abort_conf:true,no_such_key:1"),
+        &["-DPLAIN"],
+        &[],
+        Some("challoc: malloc_conf: unknown conf key \"no_such_key\""),
+    );
+    run_conf_flags("plain_ok", Some("tcache:false,abort_conf:true"), &["-DPLAIN"], &[], None);
 }
 
 #[test]
@@ -403,8 +425,8 @@ fn c_jemalloc_api() {
 /// The release `.so` exports the whole design 13.1/13.2 symbol list: the
 /// `*allocx` family, `mallctl*`, the reports, the glibc extras and every
 /// `je_` alias as global functions; `malloc_message`/`je_malloc_message`
-/// as one global object and `malloc_conf`/`je_malloc_conf` as weak
-/// objects a program can preempt.
+/// and `malloc_conf` as global objects a program can preempt, and
+/// `je_malloc_conf` as a weak undefined reference.
 #[test]
 fn jemalloc_symbols_in_release_so() {
     let so = release_so();
@@ -424,13 +446,13 @@ fn jemalloc_symbols_in_release_so() {
         let l = line(sym).unwrap_or_else(|| panic!("{sym} is not defined in {so}:\n{dynsym}"));
         assert!(l.contains(" FUNC ") && l.contains(" GLOBAL "), "{sym} must be a global function: {l}");
     }
-    for sym in ["malloc_message", "je_malloc_message"] {
+    for sym in ["malloc_message", "je_malloc_message", "malloc_conf"] {
         let l = line(sym).unwrap_or_else(|| panic!("{sym} is not defined in {so}:\n{dynsym}"));
         assert!(l.contains(" OBJECT ") && l.contains(" GLOBAL "), "{sym} must be a global object: {l}");
     }
-    // The conf symbols are read from the program, never defined here: weak
-    // undefined references resolved through the GOT.
-    for sym in ["malloc_conf", "je_malloc_conf"] {
+    // `je_malloc_conf` is read from the program, never defined here: a weak
+    // undefined reference resolved through the GOT.
+    for sym in ["je_malloc_conf"] {
         let l = dynsym.lines().find(|l| l.ends_with(&std::format!(" {sym}")));
         let l = l.unwrap_or_else(|| panic!("{sym} not referenced by {so}:\n{dynsym}"));
         assert!(l.contains(" WEAK ") && l.contains(" UND "), "{sym} must be a weak undefined reference: {l}");

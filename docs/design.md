@@ -575,7 +575,10 @@ ignore their extra arguments in Phase 0.
 
 Symbols: `mallocx`, `rallocx`, `xallocx`, `sallocx`, `dallocx`, `sdallocx`,
 `nallocx`, `mallctl`, `mallctlnametomib`, `mallctlbymib`,
-`malloc_stats_print`, `malloc_conf` (weak data symbol, read only),
+`malloc_stats_print`, `malloc_conf` (data symbol: defined null and exported so
+a program that only references it links, as Ruby's configure probe does;
+read through the GOT so a program's own definition interposes; `je_malloc_conf`
+is only read, as a weak reference),
 `malloc_message` (function pointer data symbol, default writes to stderr).
 Each also exported with the `je_` prefix via `#[unsafe(export_name)]`
 wrappers. The `jemalloc-soname` Cargo feature names the output

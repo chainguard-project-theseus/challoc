@@ -3,7 +3,10 @@
  * driver in src/api/ctests.rs builds this program once per case:
  *
  *   -DCONF='"..."'  defines `je_malloc_conf` with that string, statically
- *                   initialised as Redis does it. The allocator reads the
+ *                   initialised as Redis does it; with -DPLAIN it defines
+ *                   `malloc_conf` instead, which the library also defines
+ *                   (null) so Ruby's configure probe links, and the
+ *                   program's definition must win. The allocator reads the
  *                   symbol on the first malloc, which may run before main
  *                   (stdio, libc start-up), so a runtime assignment would
  *                   come too late. The binary is linked with -rdynamic so
@@ -20,7 +23,11 @@
 #include "common.h"
 
 #ifdef CONF
+# ifdef PLAIN
+const char *malloc_conf = CONF;
+# else
 const char *je_malloc_conf = CONF;
+# endif
 #endif
 
 static void churn(void)

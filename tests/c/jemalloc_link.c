@@ -9,7 +9,10 @@
  *     libjemalloc.so.2 under the directory given as argv[1], so linking the
  *     library replaces malloc for the whole process;
  *   - that library is challoc (`require_challoc`, `version`);
- *   - the jemalloc API and the je_ prefix work through the link.
+ *   - the jemalloc API and the je_ prefix work through the link;
+ *   - `malloc_conf` is defined by that library and null (Ruby's configure
+ *     probe for `--with-jemalloc` links exactly such a read and would fail
+ *     against a library that only references the symbol).
  *
  * Run bare it either fails to load (no libjemalloc.so.2 on the library
  * path) or, when Wolfi's real jemalloc is installed, fails `require_challoc`
@@ -27,6 +30,7 @@ extern void *je_malloc(size_t);
 extern void je_free(void *);
 extern size_t je_malloc_usable_size(void *);
 extern int je_mallctl(const char *, void *, size_t *, void *, size_t);
+extern const char *malloc_conf;
 
 #define MALLOCX_ZERO ((int)0x40)
 
@@ -60,6 +64,15 @@ int main(int argc, char **argv)
     };
     for (size_t i = 0; i < sizeof syms / sizeof syms[0]; i++)
         check_from(syms[i]);
+
+    /* Ruby's probe: `if (malloc_conf) printf(...)`. Linking proves the
+     * library defines the symbol; nothing here sets a string, so it is
+     * null. Its address is not checked with check_from: on x86_64 a PIE
+     * that reads extern data gets a COPY relocation, so `&malloc_conf` is
+     * the executable's copy (aarch64 reads it through the GOT). */
+    if (malloc_conf)
+        printf("malloc_conf=%s\n", malloc_conf);
+    CHECK(malloc_conf == NULL, "malloc_conf is %p", (const void *)malloc_conf);
 
     const char *version = NULL;
     size_t len = sizeof version;

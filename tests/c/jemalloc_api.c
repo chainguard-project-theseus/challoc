@@ -14,7 +14,8 @@
  *     the jemalloc error codes;
  *   - malloc_stats_print with a callback, with "J", and through the
  *     malloc_message hook that the program installs;
- *   - malloc_conf / je_malloc_conf as weak null data symbols;
+ *   - malloc_conf defined by the library and null, je_malloc_conf only
+ *     referenced (a weak reference stays null);
  *   - mallopt, mallinfo, mallinfo2, malloc_info, malloc_stats.
  */
 #include "common.h"
@@ -460,8 +461,10 @@ static void test_reports(void)
     je_malloc_message = NULL;
     CHECK(strcmp(report, "--- End jemalloc statistics ---\n") == 0, "je_malloc_message hooked report:\n%s", report);
     /* The library reads a program's malloc_conf / je_malloc_conf (conf.c
-     * covers that) but defines neither, so the weak references stay null. */
-    CHECK(&malloc_conf == NULL, "malloc_conf is not defined by the library");
+     * covers that). It defines malloc_conf itself, null, so a program that
+     * only reads it links (Ruby's configure probe); je_malloc_conf is only
+     * referenced, so this weak reference stays null. */
+    CHECK(&malloc_conf != NULL && malloc_conf == NULL, "malloc_conf is defined by the library and null");
     CHECK(&je_malloc_conf == NULL, "je_malloc_conf is not defined by the library");
 
     /* glibc extras. */

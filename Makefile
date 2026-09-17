@@ -40,6 +40,14 @@
 #                            (bench/valkey-soak.sh; ALLOCS, DURATION=1200,
 #                            SETTLE, INTERVAL, CHUNK, VB_REQS, KEYS, DEFRAG,
 #                            RESULT_DIR). Needs `make valkey STAGE=build` first.
+#   make ruby                stage libjemalloc.so.2 (quantum16), build Ruby 3.4 at
+#                            the tag Wolfi ships with Wolfi's configure flags
+#                            (`--with-jemalloc`) against the stage, check that the
+#                            binaries load it, then run `make test-all`
+#                            (contrib/ruby/build.sh; STAGE=build|test|all,
+#                            ALLOC=challoc|glibc for a baseline build without
+#                            jemalloc, TESTS='ruby/test_gc.rb ...', TESTOPTS,
+#                            JOBS; logs under target/ruby/logs)
 #
 # `target/` inside the container is a named Docker volume, one per
 # architecture, so Linux artifacts never mix with host artifacts and builds do
@@ -57,7 +65,7 @@ DOCKER_RUN = docker run --rm --platform $(PLATFORM) \
 	-v challoc-cargo-registry:/root/.cargo/registry \
 	$(DOCKER_FLAGS) $(IMAGE)
 
-.PHONY: image dev run build test test-host jemalloc-compat fuzz bench-build bench valkey valkey-soak clean-volumes
+.PHONY: image dev run build test test-host jemalloc-compat fuzz bench-build bench valkey valkey-soak ruby clean-volumes
 
 image:
 	docker build --platform $(PLATFORM) -f Dockerfile.dev -t $(IMAGE) .
@@ -112,6 +120,11 @@ SOAK_VARS = ALLOCS DURATION SETTLE INTERVAL CHUNK VB_REQS KEYS SIZE MT_SIZES DEL
 valkey-soak: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(SOAK_VARS),$(if $($(v)),-e $(v)="$($(v))"))
 valkey-soak: image
 	$(DOCKER_RUN) sh bench/valkey-soak.sh
+
+RUBY_VARS = STAGE ALLOC TESTS TESTOPTS JOBS RUBY_TAG RUBY_COMMIT RUBY_CHERRY
+ruby: DOCKER_FLAGS = $(foreach v,$(RUBY_VARS),$(if $($(v)),-e $(v)="$($(v))"))
+ruby: image
+	$(DOCKER_RUN) sh contrib/ruby/build.sh
 
 clean-volumes:
 	docker volume rm -f challoc-target-$(ARCH) challoc-cargo-registry
