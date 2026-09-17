@@ -57,7 +57,7 @@ One line per task, newest at the bottom of each section. Keep it terse.
 
 ## In progress
 
-(none; next by plan order: Phase 1.5 task 4b, Ruby benchmark rows)
+- Phase 1.5 task 4b: Ruby benchmark rows (`bench/ruby-bench.sh`, `make ruby-bench`, `bench/results/<date>-<arch>-ruby.md` on both VMs). Started 2026-09-17 (iteration 21).
 
 ## Design decisions
 

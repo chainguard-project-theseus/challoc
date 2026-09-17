@@ -14,6 +14,8 @@ never used for numbers.
                           (Phase 1 task 8); needs `make valkey STAGE=build`
     make soak-quick       challoc-only 600 s soak vs the cached jemalloc soak
     make soak-baseline    the 1200 s jemalloc soak that soak-quick compares against
+    make ruby-bench       Ruby 3.4 rows under challoc, jemalloc, glibc and mimalloc
+                          (Phase 1.5 task 4b); needs both `make ruby STAGE=build` builds
 
 ## Two tiers
 
@@ -143,6 +145,26 @@ Files:
   RESULT_DIR=target/valkey/soak-results` is a five-minute smoke run.
   `OCCUPANCY=1` adds the per-class occupancy sidecar, `BASELINES=cached`
   and `SAVE_BASELINE=1` are the quick-soak cache (above).
+- `ruby-bench.sh`, `ruby/gc_churn.rb`: the Ruby rows (docs/plan.md Phase 1.5
+  task 4b). The `--with-jemalloc` Ruby from `contrib/ruby/build.sh` runs
+  under challoc's `libjemalloc.so.2` stage (re-staged from the working tree)
+  and, with `LD_PRELOAD=/usr/lib/libjemalloc.so.2`, under Wolfi's jemalloc
+  (same soname, so the loader binds `DT_NEEDED` to the preloaded copy; the
+  script checks `/proc/self/maps` for every allocator); the
+  `--without-jemalloc` build gives the glibc row and, with `LD_PRELOAD`, the
+  mimalloc row. Rows are one process each: `ruby -e 1` startup,
+  `so_binary_trees`, `hash_aref_str`, `array_sample_100k__1k`,
+  `array_sort_block`, `so_nbody`, `app_fib` and `erb_render.yml` from
+  `ruby/benchmark` through `benchmark-driver --runner time` (cloned once into
+  `target/ruby/benchmark-driver`; its `-e` executable is a wrapper that execs
+  `rt` around the measured ruby), `gem list`, and `gc_churn.rb` (long-lived
+  medium buffers, bursts of short-lived ones, ten forced full GCs; `GC.stat`
+  counts and RSS before/after the forced GCs in their own table). `ROUNDS`
+  (5) plus warm-up, allocators interleaved, sorted wall times and median
+  RSS from `rt`, written to `bench/results/<date>-<arch>-ruby.md`
+  (`RESULT`, `ALLOCS`, `ROWS`, `HOST_KIND`). Both builds are installed into
+  their `target/ruby/install-<alloc>` prefixes on first use (the build
+  directory's ruby has no stdlib path).
 - `probes/`: `churn.c` (the post-delete steady-state model `quick` runs;
   `churn-run.sh` runs it by hand with the cache knobs, `CHURN_SECS`),
   `binsample.c` (per-second bin row sidecar), `soak-occupancy.sh` (now a

@@ -69,6 +69,16 @@
 #                            ALLOC=challoc|glibc for a baseline build without
 #                            jemalloc, TESTS='ruby/test_gc.rb ...', TESTOPTS,
 #                            JOBS; logs under target/ruby/logs)
+#   make ruby-bench          Ruby benchmark rows (bench/ruby-bench.sh): a fixed
+#                            subset of ruby/benchmark through benchmark-driver,
+#                            `gem list` and bench/ruby/gc_churn.rb under challoc's
+#                            stage, Wolfi's jemalloc (LD_PRELOAD), the glibc build
+#                            and mimalloc; wall time and max RSS from bench/rt,
+#                            GC.stat and RSS around forced GCs; ROUNDS=5 plus
+#                            warm-up, interleaved; writes
+#                            bench/results/<date>-<arch>-ruby.md (RESULT=path,
+#                            ALLOCS, ROWS, HOST_KIND). Needs both `make ruby
+#                            STAGE=build` builds.
 #
 # `target/` inside the container is a named Docker volume, one per
 # architecture, so Linux artifacts never mix with host artifacts and builds do
@@ -97,7 +107,7 @@ DOCKER_RUN = docker run --rm --platform $(PLATFORM) \
 	-v challoc-cargo-registry:/root/.cargo/registry \
 	$(GIT_MOUNT) $(DOCKER_FLAGS) $(IMAGE)
 
-.PHONY: image dev run build test test-host jemalloc-compat fuzz bench-build bench quick ab baseline valkey valkey-soak soak-quick soak-baseline ruby clean-volumes
+.PHONY: image dev run build test test-host jemalloc-compat fuzz bench-build bench quick ab baseline valkey valkey-soak soak-quick soak-baseline ruby ruby-bench clean-volumes
 
 image:
 	docker build --platform $(PLATFORM) -f Dockerfile.dev -t $(IMAGE) .
@@ -193,6 +203,11 @@ RUBY_VARS = STAGE ALLOC TESTS TESTOPTS JOBS RUBY_TAG RUBY_COMMIT RUBY_CHERRY
 ruby: DOCKER_FLAGS = $(foreach v,$(RUBY_VARS),$(if $($(v)),-e $(v)="$($(v))"))
 ruby: image
 	$(DOCKER_RUN) sh contrib/ruby/build.sh
+
+RUBY_BENCH_VARS = ALLOCS ROUNDS ROWS RESULT OUT HOST_KIND GC_ROUNDS GC_FORCED
+ruby-bench: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(RUBY_BENCH_VARS),$(if $($(v)),-e $(v)="$($(v))"))
+ruby-bench: image
+	$(DOCKER_RUN) sh bench/ruby-bench.sh
 
 clean-volumes:
 	docker volume rm -f challoc-target-$(ARCH) challoc-cargo-registry
