@@ -184,6 +184,18 @@ evidence is in `bench/results/2026-09-17-gce-review-*.md`):
      soak on the arm64 VM meets this phase's post-delete criterion (within 10%
      of jemalloc) with the per-class occupancy sampler
      (`bench/probes/soak-occupancy.sh`) recorded in `bench/results/`.
+- Step 4, Valkey defrag tests: rerun `make valkey STAGE=memefficiency` and the
+  full suite on both architectures at the step-3 library. For any remaining
+  `Active Defrag` failure, first try allocator-side answers
+  (`experimental.utilization.batch_query` at 4 KiB page-group granularity;
+  `MALLOCX_TCACHE_NONE` allocations placed in the fullest partial slab;
+  smaller slabs for the classes Lua's internals use), then, only where a
+  Valkey constant encodes jemalloc's slab geometry (the test suite's 2 MB /
+  5% / frag < 1.05 defrag thresholds; `active-defrag-ignore-bytes` only if the
+  residue is provably pinned objects), a `USE_CHALLOC` value in the contrib
+  patch with a PROGRESS.md design decision naming the jemalloc constant it
+  replaces and the measurement behind it. The soak RSS criterion is never met
+  this way.
 
 ## Phase 1.5: GCE performance lab
 
@@ -206,7 +218,7 @@ Tasks:
    pattern (subcommands `create`, `provision`, `sync`, `run`, `ssh`,
    `status`, `stop`, `delete`) with two targets, `arm64` and `amd64`.
    Defaults: project from the active `gcloud` configuration
-   (`CHALLOC_GCE_PROJECT` overrides; the active default is `dlorenc-dev`), zone `us-central1-b`, which offers both series
+   (`CHALLOC_GCE_PROJECT` overrides; the active default is `dlorenc-dev`), zone `us-east4-a` (since 2026-09-17; `us-central1-b` before, abandoned for capacity failures), which offers both series
    (`CHALLOC_GCE_ZONE` overrides; verified 2026-09-16 with `gcloud compute machine-types list`),
    `c4a-standard-16` and `c4-standard-16`, `--performance-monitoring-unit=standard`,
    Ubuntu 24.04 LTS images, 100 GB `pd-balanced`, OS Login, labels

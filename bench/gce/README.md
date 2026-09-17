@@ -13,7 +13,10 @@ with a GCE number.
 
 Both: 16 vCPUs, about 60 GB RAM, Ubuntu 24.04 (kernel `7.0.0-1011-gcp`),
 4 KiB pages, THP `madvise`, `vm.max_map_count` 1048576, created with
-`--performance-monitoring-unit=standard`. Zone `us-central1-b`, project from
+`--performance-monitoring-unit=standard`. Zone `us-east4-a` (Ashburn; moved
+from `us-central1-b` on 2026-09-17 after weeks of `ZONE_RESOURCE_POOL_EXHAUSTED`
+on starts; both machine types, the same CPU models and kernel, `pmu-check`
+green), project from
 the active `gcloud` configuration (`CHALLOC_GCE_PROJECT` overrides).
 
 ## Driver

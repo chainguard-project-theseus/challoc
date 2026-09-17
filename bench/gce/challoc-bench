@@ -28,13 +28,16 @@
 #   bench/gce/challoc-bench start|stop|delete arm64|amd64|all
 #
 # Environment: CHALLOC_GCE_PROJECT (default: active gcloud project),
-# CHALLOC_GCE_ZONE (default us-central1-b), CHALLOC_GCE_PREFIX (default
+# CHALLOC_GCE_ZONE (default us-east4-a), CHALLOC_GCE_PREFIX (default
 # challoc-bench). Stop every VM you start before an iteration ends: a
 # 16-vCPU C4A or C4 costs roughly $0.70-0.90 per hour while running.
 set -euo pipefail
 
 PROJECT="${CHALLOC_GCE_PROJECT:-$(gcloud config get-value project 2>/dev/null)}"
-ZONE="${CHALLOC_GCE_ZONE:-us-central1-b}"
+# us-east4-a since 2026-09-17: us-central1-b returned ZONE_RESOURCE_POOL_EXHAUSTED
+# on starts for weeks. The VMs there are stopped and can be deleted with
+# CHALLOC_GCE_ZONE=us-central1-b challoc-bench delete all.
+ZONE="${CHALLOC_GCE_ZONE:-us-east4-a}"
 PREFIX="${CHALLOC_GCE_PREFIX:-challoc-bench}"
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 REMOTE_DIR="challoc"
@@ -187,10 +190,15 @@ cid=\$($* -d 2>/dev/null || { echo "the command must be a 'docker run' line that
 for i in \$(seq 1 50); do pid=\$(docker inspect -f '{{.State.Pid}}' "\$cid" 2>/dev/null || true); [ -n "\$pid" ] && [ "\$pid" != 0 ] && break; sleep 0.1; done
 [ -n "\$pid" ] || { echo "container did not start" >&2; exit 1; }
 echo "== perf stat on container \$cid (init pid \$pid), events: $PMU_EVENTS"
-perf stat -e $PMU_EVENTS --inherit -p "\$pid" -- sleep 1000000 &
+# perf must run as root to attach to the container's root-owned process
+# (EACCES otherwise, whatever perf_event_paranoid says); it is stopped by
+# killing its sleep child, since SIGINT to perf is swallowed by the
+# restarted wait4 when perf has no terminal.
+sudo perf stat -e $PMU_EVENTS --inherit -p "\$pid" -o /tmp/challoc-perf-stat.txt -- sleep 1000000 &
 pp=\$!
 docker wait "\$cid" >/dev/null
-kill -INT \$pp 2>/dev/null; wait \$pp || true
+sudo pkill -f '^sleep 1000000$' 2>/dev/null; wait \$pp || true
+cat /tmp/challoc-perf-stat.txt
 docker logs "\$cid" 2>&1 | tail -20
 docker rm -f "\$cid" >/dev/null 2>&1 || true
 REMOTE
@@ -207,7 +215,18 @@ cmd_status() {
   g compute instances list --filter="labels.purpose=challoc-bench" \
     --format='table(name,zone.basename(),machineType.basename(),status,networkInterfaces[0].accessConfigs[0].natIP)'
 }
-cmd_start()  { for t in $(targets "${1:-all}"); do g compute instances start  "$(vm_name "$t")" --zone="$ZONE" & done; wait; }
+# start retries a few times: a zone can report ZONE_RESOURCE_POOL_EXHAUSTED for
+# a minute or two and then admit the same instance.
+start_one() {
+  local name="$1" i
+  for i in 1 2 3 4; do
+    g compute instances start "$name" --zone="$ZONE" && return 0
+    echo "challoc-bench: start of $name failed (attempt $i), retrying in 60 s" >&2
+    sleep 60
+  done
+  g compute instances start "$name" --zone="$ZONE"
+}
+cmd_start()  { for t in $(targets "${1:-all}"); do start_one "$(vm_name "$t")" & done; wait; }
 cmd_stop()   { for t in $(targets "${1:-all}"); do g compute instances stop   "$(vm_name "$t")" --zone="$ZONE" & done; wait; }
 cmd_delete() { for t in $(targets "${1:-all}"); do g compute instances delete "$(vm_name "$t")" --zone="$ZONE" --quiet & done; wait; }
 

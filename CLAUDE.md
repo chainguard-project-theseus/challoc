@@ -35,7 +35,8 @@ Environment:
   emulated and only for correctness, never for numbers.
 - Host-side `cargo test --features std` covers pure logic only.
 - Reference benchmark numbers and hardware counters come from the GCE VMs
-  described in `docs/plan.md` Phase 1.5 (C4A for aarch64, C4 for x86_64,
+  described in `docs/plan.md` Phase 1.5 (C4A for aarch64, C4 for x86_64, zone
+  `us-east4-a` since 2026-09-17,
   driven by `bench/gce/challoc-bench` once it exists). `gcloud` on the host
   is authenticated; stop every VM you start before the iteration ends, and
   never compare a Mac number with a GCE number.
