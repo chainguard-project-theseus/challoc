@@ -144,9 +144,9 @@ pub struct ClassCache {
     arena: u16,
     /// [`MODE_OFF`], [`MODE_PROBE`] or [`MODE_COMPACT`].
     mode: u16,
-    /// The class's claim counter (low bits) at the previous probe: a class
+    /// The class's refill counter (low bits) at the previous probe: a class
     /// that ordinary refills are draining is not compacted.
-    probe_claimed: u32,
+    probe_refilled: u32,
     slots: [*mut u8; 0],
 }
 
@@ -166,13 +166,19 @@ pub const PROBE_MASK: u32 = (1 << 12) - 1;
 pub const COMPACT_MIN_SLABS: usize = 4;
 /// See [`COMPACT_MIN_SLABS`]: holes must be at least capacity / 32.
 pub const COMPACT_MIN_RATIO: usize = 32;
-/// A class whose claim counter advanced by this many slabs' worth of slots
+/// A class whose cache refills claimed this many slabs' worth of slots
 /// between two probes of one cache (4096 pops apart) is being drained by
 /// ordinary refills, which take the lowest partial slab anyway: its holes
 /// are transient (xmalloc-test's producers run 0..8 slabs of holes through
-/// a 150..450-slab class this way) and it is not compacted. The frozen
-/// residue compaction is for sees no refills at all.
-pub const COMPACT_MAX_REFILL_SLABS: usize = 1;
+/// a 150..450-slab class at thousands of refilled slots per window) and it
+/// is not compacted. Only refills count (`ClassState::refilled`), not
+/// compaction's own rebuild claims and not direct `MALLOCX_TCACHE_NONE`
+/// claims: Valkey's active defragmenter allocates that way at hundreds of
+/// slots per second, which at one slab per window kept the frozen residue
+/// of the 2026-09-17 soak from ever being compacted. The residue itself
+/// sees a refill only when a class's random-size churn walks a cache to
+/// empty, a few per second.
+pub const COMPACT_MAX_REFILL_SLABS: usize = 2;
 
 /// Size of the [`ClassCache`] header, i.e. the offset of the slot array.
 pub const CACHE_HEADER: usize = core::mem::size_of::<ClassCache>();
@@ -197,7 +203,7 @@ static EMPTY_CACHE: ClassCache = ClassCache {
     compact_mask: u32::MAX,
     arena: 0,
     mode: MODE_OFF,
-    probe_claimed: 0,
+    probe_refilled: 0,
     slots: [],
 };
 
@@ -1098,10 +1104,10 @@ impl Heap {
                         }
                     }
                     let cs = shared.owner((*cache).arena).class(class);
-                    let claimed = cs.claimed() as u32;
-                    let refilled = claimed.wrapping_sub((*cache).probe_claimed) as usize;
-                    (*cache).probe_claimed = claimed;
-                    if refilled >= COMPACT_MAX_REFILL_SLABS * CLASSES[class].nslots()
+                    let refilled = cs.refilled() as u32;
+                    let delta = refilled.wrapping_sub((*cache).probe_refilled) as usize;
+                    (*cache).probe_refilled = refilled;
+                    if delta >= COMPACT_MAX_REFILL_SLABS * CLASSES[class].nslots()
                         || !Self::fragmented(shared, (*cache).arena, class)
                     {
                         return Self::pop_top(cache, len);
@@ -1508,7 +1514,7 @@ impl Heap {
                     compact_mask,
                     arena,
                     mode,
-                    probe_claimed: shared.owner(arena).class(class).claimed() as u32,
+                    probe_refilled: shared.owner(arena).class(class).refilled() as u32,
                     slots: [],
                 },
             );
@@ -1535,6 +1541,7 @@ impl Heap {
             let want = ((*cache).cap / 2).max(1) as usize;
             let out = core::slice::from_raw_parts_mut((*cache).slots(), want);
             let claim = arena.class(class).claim(&shared.meta, out);
+            arena.class(class).note_refill(claim.n);
             out[..claim.n].reverse();
             (*cache).len = claim.n as u32;
             (*cache).moved = (*cache).moved.wrapping_add(claim.n as u64);
@@ -2553,6 +2560,75 @@ pub(crate) mod tests {
         assert!(!Heap::fragmented(s, 0, c));
         assert!(!t.cache(c).compacting(), "still compacting a dense class");
         assert_eq!(live(s, c), keep.len() + t.len(c));
+        for p in keep {
+            t.free(p);
+        }
+        t.destroy();
+        assert_eq!(live(s, c), 0);
+    }
+
+    #[test]
+    fn direct_claims_do_not_block_compaction_but_cache_refills_do() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(1024);
+        let cs = &s.arena0.classes[c];
+        let nslots = CLASSES[c].nslots();
+        let mut keep = residue(&t, c, 40, 560, 0x0bad_cafe);
+        assert!(Heap::fragmented(s, 0, c));
+        // A balanced churn with a defragmenter-like stream of direct
+        // (MALLOCX_TCACHE_NONE) claims at 3 slabs' worth per probe window
+        // (over the gate, were it counting `claimed`; light enough not to
+        // fill the residue's holes by itself): `claimed` races ahead,
+        // `refilled` does not, compaction engages and slabs empty.
+        let mut st = 0x1111_2222u64;
+        let mut direct: *mut u8 = ptr::null_mut();
+        let before_claimed = cs.claimed();
+        let before = occupied(s, c);
+        let mut was_compacting = false;
+        let windows = 24;
+        for step in 0..windows * (PROBE_MASK as usize + 1) {
+            let i = (xorshift(&mut st) % keep.len() as u64) as usize;
+            t.free(keep[i]);
+            keep[i] = t.alloc(c);
+            was_compacting |= t.cache(c).compacting();
+            if step % 32 == 0 {
+                // Like the defragmenter: a direct copy, the old one freed.
+                if !direct.is_null() {
+                    s.free_direct(0, c, direct);
+                }
+                let (p, _) = s.alloc_direct(&s.arena0, c);
+                assert!(!p.is_null());
+                direct = p;
+            }
+        }
+        assert!(cs.claimed() - before_claimed >= windows as u64 * COMPACT_MAX_REFILL_SLABS as u64 * nslots as u64);
+        assert!(was_compacting, "direct claims blocked compaction");
+        // The churn model's bound: live data plus the holes the gate
+        // leaves plus what the cache holds plus one partial slab.
+        let bound = keep.len().div_ceil(nslots) + COMPACT_MIN_SLABS + default_cap(c) as usize / nslots + 1;
+        assert!(occupied(s, c) <= bound, "little compacted: {} of {before} slabs still occupied, bound {bound}", occupied(s, c));
+        s.free_direct(0, c, direct);
+        for p in keep {
+            t.free(p);
+        }
+        t.destroy();
+        // A residue under a growing allocation stream (the 224-byte class,
+        // 292 slots per slab, so two probe windows fit the synthetic
+        // region): every 256 pops refill 256 slots, 4096 per window, far
+        // over the gate; the class is being drained the ordinary way and
+        // is left alone.
+        let c = class_with(224);
+        let cs = &s.arena0.classes[c];
+        let t = TestHeap::new(s);
+        let mut keep = residue(&t, c, 30, 560, 0x3333_4444);
+        assert!(Heap::fragmented(s, 0, c));
+        let before_refilled = cs.refilled();
+        for _ in 0..2 * (PROBE_MASK as usize + 1) + 64 {
+            keep.push(t.alloc(c));
+        }
+        assert!(cs.refilled() - before_refilled >= 2 * 4096 - 256);
+        assert!(!t.cache(c).compacting(), "a refilling class was compacted");
         for p in keep {
             t.free(p);
         }

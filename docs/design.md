@@ -318,8 +318,13 @@ class or, for huge runs, into free following pages.
   both, a push never writes below `len`. The schedule is gated per cache:
   in *probe* mode one pop in 4096 asks the class for its holes
   (`ClassState::holes`, one lock hold) and switches to *compact* mode only
-  if they are worth at least 4 slabs and 1/32 of the class's capacity; a
-  rebuild re-checks and drops back to probing once the class is dense. Why:
+  if they are worth at least 4 slabs and 1/32 of the class's capacity and
+  cache refills claimed less than 2 slabs' worth since the previous probe
+  (`ClassState::refilled`: refills already take the lowest partial slab,
+  so a class they are draining has only transient holes; direct
+  `MALLOCX_TCACHE_NONE` claims such as Valkey's defragmenter's do not
+  count); a rebuild re-checks the holes and drops back to probing once
+  the class is dense. Why:
   a LIFO cache hands every allocation the slot just freed, so under a
   balanced alloc/free churn (Valkey's DEL:SET steady state) the cache never
   reaches either boundary, no refill or flush runs, and the slab layout is

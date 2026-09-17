@@ -301,7 +301,13 @@ pub struct ClassState {
     claimed: AtomicU64,
     /// Slots ever released to this arena's bitmaps, one add per batch.
     released: AtomicU64,
-    _tail: [u8; PAD_ALIGN - 16],
+    /// Slots claimed by cache *refills* (`Heap::refill`, one add per
+    /// batch): the part of `claimed` that ordinary allocation traffic
+    /// accounts for, as opposed to compaction rebuilds and direct
+    /// (`MALLOCX_TCACHE_NONE`) claims such as Valkey's defragmenter's. The
+    /// compaction gate in `heap.rs` watches its rate.
+    refilled: AtomicU64,
+    _tail: [u8; PAD_ALIGN - 24],
 }
 
 const _: () = assert!(core::mem::offset_of!(ClassState, inner) == PAD_ALIGN);
@@ -619,8 +625,9 @@ impl ClassState {
             oldest_empty: AtomicU64::new(0),
             inner: Padded(Lock::new(Inner { partial, empty, purged, stats: ClassStats::default() })),
             claimed: AtomicU64::new(0),
+            refilled: AtomicU64::new(0),
             released: AtomicU64::new(0),
-            _tail: [0; PAD_ALIGN - 16],
+            _tail: [0; PAD_ALIGN - 24],
         })
     }
 
@@ -1103,11 +1110,23 @@ impl ClassState {
         self.bin_stats().1
     }
 
-    /// Slots ever claimed from this arena's slabs of the class (wrapping);
-    /// the compaction gate in `heap.rs` watches its rate.
+    /// Slots ever claimed from this arena's slabs of the class (wrapping).
     #[inline]
     pub fn claimed(&self) -> u64 {
         self.claimed.load(Ordering::Relaxed)
+    }
+
+    /// Slots claimed by cache refills (see the field); the compaction gate
+    /// in `heap.rs` watches its rate.
+    #[inline]
+    pub fn refilled(&self) -> u64 {
+        self.refilled.load(Ordering::Relaxed)
+    }
+
+    /// Count a cache refill of `n` slots.
+    #[inline]
+    pub fn note_refill(&self, n: usize) {
+        self.refilled.fetch_add(n as u64, Ordering::Relaxed);
     }
 
     /// `(holes, capacity)`: the free slots of the slabs that can hold live
