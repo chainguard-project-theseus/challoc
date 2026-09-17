@@ -74,7 +74,7 @@ use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::arena::{Arena, Arenas, Tcaches};
-use crate::class::SlabTable;
+use crate::class::{Affinity, NO_HINT, SlabTable};
 use crate::config::Config;
 use crate::huge::{GUARD_PAGES, Huge};
 use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
@@ -147,6 +147,10 @@ pub struct ClassCache {
     /// The class's refill counter (low bits) at the previous probe: a class
     /// that ordinary refills are draining is not compacted.
     probe_refilled: u32,
+    /// The slab this cache's last claim ended on (`class.rs` [`Affinity`]),
+    /// [`NO_HINT`] before the first; read and written on the slow paths
+    /// only.
+    hint: u32,
     slots: [*mut u8; 0],
 }
 
@@ -184,7 +188,7 @@ pub const COMPACT_MAX_REFILL_SLABS: usize = 2;
 
 /// Size of the [`ClassCache`] header, i.e. the offset of the slot array.
 pub const CACHE_HEADER: usize = core::mem::size_of::<ClassCache>();
-const _: () = assert!(CACHE_HEADER == 48);
+const _: () = assert!(CACHE_HEADER == 56);
 const _: () = assert!(core::mem::offset_of!(ClassCache, slots) == CACHE_HEADER);
 
 // SAFETY: the only shared instance is `EMPTY_CACHE`, which is never written
@@ -206,6 +210,7 @@ static EMPTY_CACHE: ClassCache = ClassCache {
     arena: 0,
     mode: MODE_OFF,
     probe_refilled: 0,
+    hint: NO_HINT,
     slots: [],
 };
 
@@ -794,6 +799,8 @@ impl Heap {
         // SAFETY: the caller gives us exclusive ownership of the heap.
         let heap = unsafe { &mut *h };
         heap.flush_all(shared);
+        let tid = heap.tid;
+        Self::forget_hints(shared, tid, heap.arena, &heap.caches);
         Self::free_caches(shared, &mut heap.caches);
         let mut o = heap.others;
         while !o.is_null() {
@@ -801,6 +808,7 @@ impl Heap {
             // this heap.
             unsafe {
                 let next = (*o).next;
+                Self::forget_hints(shared, tid, (*o).arena, &(*o).caches);
                 Self::free_caches(shared, &mut (*o).caches);
                 shared.meta.free(o as *mut u8, Layout::new::<ArenaCaches>());
                 o = next;
@@ -808,6 +816,19 @@ impl Heap {
         }
         heap.others = ptr::null_mut();
         shared.meta.free(h as *mut u8, Layout::new::<Heap>());
+    }
+
+    /// Give back the refill hint stamps of one cache array's classes
+    /// (`ClassState::forget_hint`), so the slabs this heap was filling are
+    /// open to other heaps again.
+    fn forget_hints(shared: &Shared, tid: u32, arena: u16, caches: &[*mut ClassCache; NCLASSES]) {
+        for (class, &cache) in caches.iter().enumerate() {
+            // SAFETY: sentinel (`hint == NO_HINT`, nothing to do) or real cache.
+            let hint = unsafe { (*cache).hint };
+            if hint != NO_HINT {
+                shared.owner(arena).class(class).forget_hint(tid, hint);
+            }
+        }
     }
 
     /// Free every real (flushed) cache of one array and reset it to the
@@ -835,6 +856,13 @@ impl Heap {
     #[inline]
     pub fn tid(&self) -> u32 {
         self.tid
+    }
+
+    /// Give the heap another id (tests: several heaps of one thread standing
+    /// in for several threads).
+    #[cfg(test)]
+    pub(crate) fn set_tid(&mut self, tid: u32) {
+        self.tid = tid;
     }
 
     /// Home arena (design 6.2 `heap.arena`; `thread.arena`).
@@ -1228,7 +1256,12 @@ impl Heap {
             }
             let slots = (*cache).slots();
             let out = core::slice::from_raw_parts_mut(slots.add(len), want);
-            let claim = shared.owner(arena).class(class).claim(&shared.meta, out);
+            // Lowest eligible slab first, not the hint: a rebuild is the
+            // compaction's address-ordered claim among the slabs this heap
+            // may use (`class.rs` module doc).
+            let mut aff = Affinity { heap: self.tid, hint: (*cache).hint };
+            let claim = shared.owner(arena).class(class).claim_with(&shared.meta, out, Some(&mut aff), false);
+            (*cache).hint = aff.hint;
             let n = claim.n;
             if n == 0 {
                 return;
@@ -1536,6 +1569,7 @@ impl Heap {
                     arena,
                     mode,
                     probe_refilled: shared.owner(arena).class(class).refilled() as u32,
+                    hint: NO_HINT,
                     slots: [],
                 },
             );
@@ -1561,7 +1595,9 @@ impl Heap {
             debug_assert_eq!((*cache).len, 0);
             let want = ((*cache).cap / 2).max(1) as usize;
             let out = core::slice::from_raw_parts_mut((*cache).slots(), want);
-            let claim = arena.class(class).claim(&shared.meta, out);
+            let mut aff = Affinity { heap: self.tid, hint: (*cache).hint };
+            let claim = arena.class(class).claim_with(&shared.meta, out, Some(&mut aff), true);
+            (*cache).hint = aff.hint;
             arena.class(class).note_refill(claim.n);
             out[..claim.n].reverse();
             (*cache).len = claim.n as u32;
@@ -2057,6 +2093,44 @@ pub(crate) mod tests {
         t.destroy();
         assert_eq!(s.meta.stats().allocated, before);
         assert_eq!(live(s, c), 0);
+    }
+
+    /// Thread affinity (`class.rs` module doc): two heaps allocating one
+    /// class fill two slabs, and a destroyed heap gives its slab back so
+    /// the next heap's refill takes its holes instead of a third slab.
+    #[test]
+    fn heaps_refill_from_their_own_slabs_and_give_them_back_on_exit() {
+        let s = shared();
+        let c = class_with(64);
+        let cs = &s.arena0.classes[c];
+        let t1 = TestHeap::new(s);
+        t1.heap().set_tid(1001);
+        let t2 = TestHeap::new(s);
+        t2.heap().set_tid(1002);
+        let p1 = t1.alloc(c);
+        let p2 = t2.alloc(c);
+        assert_eq!((cs.locate(p1).0, cs.locate(p2).0), (0, 1));
+        assert_eq!((cs.desc(0).hint_owner(), cs.desc(1).hint_owner()), (1001, 1002));
+        // A refill after a free-and-flush cycle stays on the heap's slab.
+        for _ in 0..CAP {
+            let p = t1.alloc(c);
+            assert_eq!(cs.locate(p).0, 0, "t1 left its slab");
+            t1.free(p);
+        }
+        // t1 exits with `p1` live: slab 0 stays partial and becomes nobody's.
+        t1.destroy();
+        assert_eq!(cs.desc(0).hint_owner(), 0);
+        assert!(cs.is_partial(0));
+        let t3 = TestHeap::new(s);
+        t3.heap().set_tid(1003);
+        let p3 = t3.alloc(c);
+        assert_eq!(cs.locate(p3).0, 0);
+        assert_eq!(cs.desc(0).hint_owner(), 1003);
+        t2.free(p2);
+        t3.free(p3);
+        t2.destroy();
+        t3.destroy();
+        assert_eq!(live(s, c), 1);
     }
 
     #[test]

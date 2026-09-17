@@ -15,7 +15,9 @@
 //! the program or sitting in some thread's cache. `live` counts set bits
 //! plus in-flight claim reservations (see `class.rs`); it is what drives the
 //! `Active -> Empty` transition. `dirty_at` is the coarse monotonic time the
-//! slab became `Empty`, or 0 in any other state.
+//! slab became `Empty`; while the slab is `Active` the same word holds the
+//! refill hint owner instead (see [`SlabDesc::hint_owner`]), and it is 0 in
+//! every other state.
 
 use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
@@ -67,6 +69,10 @@ pub struct SlabDesc {
     _pad: u8,
     arena: AtomicU16,
     live: AtomicU32,
+    /// `Empty`: the time `live` reached zero. `Active`: the id of the heap
+    /// whose refill hint slab this is, 0 for none (`class.rs` `plan`).
+    /// Both are written under the class lock, which is also what makes the
+    /// state and the word's meaning agree.
     dirty_at: AtomicU64,
 }
 
@@ -184,6 +190,21 @@ impl SlabDesc {
     #[inline]
     pub fn set_dirty_at(&self, ns: u64) {
         self.dirty_at.store(ns, Ordering::Relaxed);
+    }
+
+    /// The heap whose refill hint slab this `Active` slab is, 0 for none.
+    /// Only meaningful under the class lock for an `Active` slab (in any
+    /// other state the word is a `dirty_at` time or 0).
+    #[inline]
+    pub fn hint_owner(&self) -> u32 {
+        self.dirty_at.load(Ordering::Relaxed) as u32
+    }
+
+    /// Stamp this `Active` slab as `heap`'s refill hint (0 clears). Only
+    /// ever called with the class lock held.
+    #[inline]
+    pub fn set_hint_owner(&self, heap: u32) {
+        self.dirty_at.store(heap as u64, Ordering::Relaxed);
     }
 
     /// Free slots according to `live` (design 13.4 `nfree`). Transiently
