@@ -44,6 +44,18 @@
 #   OUT=target/valkey/soak     scratch and raw logs
 #   RESULT_DIR=bench/results   <date>-<arch>-valkey-soak.md and
 #                              <date>-<arch>-valkey-soak-<alloc>.csv land here
+#   OCCUPANCY=0                1: a sidecar dumps INFO memory's allocator lines and
+#                              MEMORY MALLOC-STATS (per-class slab occupancy) every
+#                              MS_INTERVAL (20) seconds into
+#                              RESULT_DIR/<date>-<arch>-valkey-soak-<alloc>-mstats/<t>.txt
+#   BASELINES=cached           do not soak jemalloc; take its column from the cached
+#                              soak under target/baselines/valkey-soak-jemalloc-<arch>.*
+#                              (written by SAVE_BASELINE=1, `make soak-baseline`). The
+#                              summary says so, with the cache's date and DURATION.
+#                              `make soak-quick` uses this; acceptance never does.
+#   SAVE_BASELINE=0            1: after soaking jemalloc, store its samples CSV, runs
+#                              CSV, VmHWM, dbsize, version and a .meta line under
+#                              target/baselines/ for BASELINES=cached
 set -eu
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
@@ -65,6 +77,11 @@ DEFRAG=${DEFRAG:-yes}
 PORT=${PORT:-6399}
 OUT=${OUT:-$ROOT/target/valkey/soak}
 RESULT_DIR=${RESULT_DIR:-$ROOT/bench/results}
+OCCUPANCY=${OCCUPANCY:-0}
+MS_INTERVAL=${MS_INTERVAL:-20}
+BASELINES=${BASELINES:-}
+SAVE_BASELINE=${SAVE_BASELINE:-0}
+BASELINE_DIR=$ROOT/target/baselines
 VALKEY_TAG=${VALKEY_TAG:-9.1.2}
 WORK=$ROOT/target/valkey
 SRC=$WORK/src-$VALKEY_TAG
@@ -75,9 +92,20 @@ ARCH=$(uname -m)
 DATE=$(date -u +%F)
 COMMIT=$(git -c safe.directory='*' rev-parse --short HEAD 2>/dev/null || echo unknown)
 RESULT=$RESULT_DIR/$DATE-$ARCH-valkey-soak.md
+BASE=$BASELINE_DIR/valkey-soak-jemalloc-$ARCH
 
 step() { printf '\n== %s\n' "$*"; }
 now() { date +%s; }
+
+# The allocators in the summary: the soaked ones plus, with BASELINES=cached,
+# jemalloc from the cache.
+SUMMARY_ALLOCS=$ALLOCS
+if [ "$BASELINES" = cached ]; then
+  [ -f "$BASE.csv" ] && [ -f "$BASE.runs.csv" ] && [ -f "$BASE.meta" ] \
+    || { echo "valkey-soak: BASELINES=cached but no $BASE.{csv,runs.csv,meta}; run 'make soak-baseline' on this machine first" >&2; exit 1; }
+  case " $ALLOCS " in *" jemalloc "*) echo "valkey-soak: BASELINES=cached and jemalloc in ALLOCS: drop one" >&2; exit 1;; esac
+  SUMMARY_ALLOCS="$ALLOCS jemalloc"
+fi
 
 [ -x "$CLI" ] && [ -x "$VB" ] && [ -x "$SRC/src/valkey-server" ] \
   || { echo "valkey-soak: $SRC is not built; run 'make valkey STAGE=build' first" >&2; exit 1; }
@@ -116,6 +144,7 @@ SERVER_PID=
 cleanup() {
   [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null
   [ -n "${SAMPLER_PID:-}" ] && kill "$SAMPLER_PID" 2>/dev/null
+  [ -n "${OCC_PID:-}" ] && kill "$OCC_PID" 2>/dev/null
   :
 }
 trap cleanup EXIT INT TERM
@@ -146,6 +175,22 @@ sampler() { # DIR START_TS CSV
   while [ ! -e "$1/stop" ]; do
     sample_once "$1" "$2" "$3" || break
     sleep "$INTERVAL"
+  done
+}
+# The occupancy sidecar (OCCUPANCY=1, formerly bench/probes/soak-occupancy.sh):
+# every MS_INTERVAL seconds one file with the phase, the allocator lines of
+# INFO memory and the full MEMORY MALLOC-STATS print, so per-class curslabs /
+# curregs can be read along the soak.
+occupancy_sampler() { # DIR START_TS OUTDIR
+  mkdir -p "$3"
+  while [ ! -e "$1/stop" ]; do
+    sleep "$MS_INTERVAL"
+    [ -e "$1/stop" ] && break
+    t=$(( $(now) - $2 ))
+    { echo "# t=$t phase=$(cat "$1/phase")"
+      "$CLI" -p "$PORT" info memory | tr -d '\r' | grep -E '^(used_memory|used_memory_rss|allocator_allocated|allocator_active|allocator_resident|allocator_frag_ratio|active_defrag_hits):'
+      "$CLI" -p "$PORT" memory malloc-stats
+    } > "$3/$(printf %05d "$t").txt" 2>&1 || break
   done
 }
 
@@ -196,7 +241,9 @@ soak() { # alloc
   D=$OUT/$alloc; mkdir -p "$D"
   RUNS=$D/runs.csv
   echo "phase,tool,test,start_s,end_s,seconds,rps,p99_ms" > "$RUNS"
-  server=$(server_for "$alloc")
+  # `|| exit 1`: a failure inside the $(...) subshell (the jemalloc baseline
+  # build) does not stop the script by itself under set -e.
+  server=$(server_for "$alloc") || exit 1
   step "$alloc: $server"
   "$server" --version | tee "$D/version.txt"
   "$server" --port "$PORT" --save "" --appendonly no --daemonize no \
@@ -218,6 +265,12 @@ soak() { # alloc
   echo write > "$D/phase"; rm -f "$D/last" "$D/stop"
   sampler "$D" "$T0" "$D/samples.csv" &
   SAMPLER_PID=$!
+  OCC_PID=
+  if [ "$OCCUPANCY" = 1 ]; then
+    occupancy_sampler "$D" "$T0" "$RESULT_DIR/$DATE-$ARCH-valkey-soak-$alloc-mstats" &
+    OCC_PID=$!
+    echo "occupancy sampler: MEMORY MALLOC-STATS every ${MS_INTERVAL}s into $RESULT_DIR/$DATE-$ARCH-valkey-soak-$alloc-mstats/"
+  fi
 
   half=$((DURATION / 2))
   echo "-- write phase, ${half}s"
@@ -233,6 +286,7 @@ soak() { # alloc
   # Stop the periodic sampler, then take the post-settle sample explicitly so
   # the summary's "after settle" row exists even when SETTLE < INTERVAL.
   touch "$D/stop"; wait "$SAMPLER_PID" 2>/dev/null || true; SAMPLER_PID=
+  [ -z "$OCC_PID" ] || { wait "$OCC_PID" 2>/dev/null || true; OCC_PID=; }
   sample_once "$D" "$T0" "$D/samples.csv"
 
   # Final state: kernel RSS figures for the server, the full INFO memory and
@@ -282,9 +336,37 @@ pct() { awk -v a="$1" -v b="$2" 'BEGIN {if(a=="-"||b=="-"||a==""||b==""||b==0)pr
 
 for alloc in $ALLOCS; do soak "$alloc"; done
 
+# SAVE_BASELINE=1: keep the jemalloc half for later BASELINES=cached runs.
+if [ "$SAVE_BASELINE" = 1 ]; then
+  case " $ALLOCS " in *" jemalloc "*) ;; *) echo "valkey-soak: SAVE_BASELINE=1 but jemalloc not in ALLOCS" >&2; exit 1;; esac
+  mkdir -p "$BASELINE_DIR"
+  cp "$OUT/jemalloc/samples.csv" "$BASE.csv"
+  cp "$OUT/jemalloc/runs.csv" "$BASE.runs.csv"
+  cp "$OUT/jemalloc/vm.txt" "$BASE.vm.txt"
+  cp "$OUT/jemalloc/dbsize.txt" "$BASE.dbsize.txt"
+  cp "$OUT/jemalloc/version.txt" "$BASE.version.txt"
+  echo "date=$(date -u +%FT%TZ) commit=$COMMIT duration=$DURATION settle=$SETTLE interval=$INTERVAL kernel=$(uname -r) nproc=$(nproc) host=${HOST_CPU:-unknown}" > "$BASE.meta"
+  echo "== jemalloc soak cached as $BASE.{csv,runs.csv,vm.txt,dbsize.txt,version.txt,meta}"
+fi
+# BASELINES=cached: materialise the cached jemalloc half where the summary
+# helpers expect a soaked allocator's files.
+CACHE_NOTE=
+if [ "$BASELINES" = cached ]; then
+  mkdir -p "$OUT/jemalloc"
+  cp "$BASE.csv" "$OUT/jemalloc/samples.csv"
+  cp "$BASE.runs.csv" "$OUT/jemalloc/runs.csv"
+  cp "$BASE.vm.txt" "$OUT/jemalloc/vm.txt"
+  cp "$BASE.dbsize.txt" "$OUT/jemalloc/dbsize.txt"
+  cp "$BASE.version.txt" "$OUT/jemalloc/version.txt"
+  meta=$(cat "$BASE.meta")
+  CACHE_NOTE="the jemalloc column is CACHED, not from this run: $BASE.csv, recorded $(echo "$meta" | tr ' ' '\n' | sed -n 's/^date=//p') at commit $(echo "$meta" | tr ' ' '\n' | sed -n 's/^commit=//p') with DURATION=$(echo "$meta" | tr ' ' '\n' | sed -n 's/^duration=//p') SETTLE=$(echo "$meta" | tr ' ' '\n' | sed -n 's/^settle=//p') (this run: DURATION=$DURATION SETTLE=$SETTLE)"
+  case $meta in *"duration=$DURATION "*) ;; *) CACHE_NOTE="$CACHE_NOTE; the phase lengths differ, so the end-of-phase RSS rows compare different points of the drain and only the throughput, p99 and peak rows are like for like";; esac
+fi
+
 step "summary -> $RESULT"
 cmp=0
-case " $ALLOCS " in *" challoc "*) case " $ALLOCS " in *" jemalloc "*) cmp=1;; esac;; esac
+case " $SUMMARY_ALLOCS " in *" challoc "*) case " $SUMMARY_ALLOCS " in *" jemalloc "*) cmp=1;; esac;; esac
+ALLOCS=$SUMMARY_ALLOCS
 {
   echo "# challoc Valkey soak, $DATE, $ARCH"
   echo
@@ -295,6 +377,8 @@ case " $ALLOCS " in *" challoc "*) case " $ALLOCS " in *" jemalloc "*) cmp=1;; e
   echo "- clients: valkey-benchmark from the challoc tree, $(memtier_benchmark --version 2>&1 | head -1)"
   echo "- workload: write phase $((DURATION / 2)) s (valkey-benchmark -t set -d $SIZE -r $KEYS -n $VB_REQS -c $VB_CLIENTS -P $PIPELINE, then memtier SET-only $MT_SIZES B over $KEYS keys, $MT_THREADS x $MT_CLIENTS clients, -P $PIPELINE, $CHUNK s), delete phase $((DURATION / 2)) s (valkey-benchmark del key:__rand_int__, then memtier DEL:SET $DEL_RATIO:1), settle $SETTLE s idle; activedefrag $DEFRAG; INFO sampled every $INTERVAL s"
   echo "- throughput is the mean requests/s over a tool's runs in a phase; p99 is the median of the per-run p99 (ms, client-side); peak RSS is the server's VmHWM; the RSS columns are used_memory_rss (MiB) at the last sample of each phase"
+  [ -z "$CACHE_NOTE" ] || echo "- CACHED BASELINE: $CACHE_NOTE. Acceptance uses the same-run \`make valkey-soak\`."
+  [ "$OCCUPANCY" = 1 ] && echo "- occupancy: MEMORY MALLOC-STATS every $MS_INTERVAL s under $RESULT_DIR/$DATE-$ARCH-valkey-soak-<alloc>-mstats/"
   echo
   echo "## Summary"
   echo
@@ -336,11 +420,14 @@ case " $ALLOCS " in *" challoc "*) case " $ALLOCS " in *" jemalloc "*) cmp=1;; e
   set --; for a in $ALLOCS; do set -- "$@" "$(sample_stat "$a" defrag_hits)"; done; row "active_defrag_hits" 1 "$@"
   set --; for a in $ALLOCS; do set -- "$@" "$(cat "$OUT/$a/dbsize.txt")"; done;   row "keys after settle" 2 "$@"
   echo
-  echo "Positive percentages mean challoc did worse than jemalloc (lower throughput, higher p99, more RSS). Acceptance (docs/plan.md Phase 1): throughput and p99 at least equal, peak RSS at most +5%, RSS after settle within 10%."
+  echo "Positive percentages mean challoc did worse than jemalloc (lower throughput, higher p99, more RSS). Acceptance (docs/plan.md Phase 1): throughput and p99 at least equal, peak RSS at most +5%, RSS after settle within 10%.$([ -n "$CACHE_NOTE" ] && echo " The jemalloc figures here are cached ($(echo "$meta" | tr ' ' '\n' | sed -n 's/^date=//p')), so this table is a signal, not an acceptance result.")"
   echo
   echo "## Samples"
   echo
-  for a in $ALLOCS; do echo "- $a: \`$RESULT_DIR/$DATE-$ARCH-valkey-soak-$a.csv\` ($(($(wc -l < "$OUT/$a/samples.csv") - 1)) rows)"; done
+  for a in $ALLOCS; do
+    if [ -n "$CACHE_NOTE" ] && [ "$a" = jemalloc ]; then echo "- jemalloc: \`$BASE.csv\` (cached, $(($(wc -l < "$BASE.csv") - 1)) rows)"
+    else echo "- $a: \`$RESULT_DIR/$DATE-$ARCH-valkey-soak-$a.csv\` ($(($(wc -l < "$OUT/$a/samples.csv") - 1)) rows)"; fi
+  done
   echo
   echo "## Generator runs"
   echo
