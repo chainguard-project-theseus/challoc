@@ -443,11 +443,6 @@ pub struct Shared {
     /// The parsed `malloc_conf` (design section 12). Keys that already have
     /// a knob are applied by `init`; the rest are read by later phases.
     pub config: Config,
-    /// [`Config::cap_for`] tabulated by `init`: `caps[0][class]` for a
-    /// heap's own arena, `caps[1][class]` for any other. The cross-arena
-    /// free path tests it against zero on every free (xmalloc-test's
-    /// consumers), so it is one load, not the ladder ([`Shared::cap`]).
-    caps: [[u32; NCLASSES]; 2],
     key: ThreadKey,
     pub arenas: Arenas,
     pub tcaches: Tcaches,
@@ -574,13 +569,6 @@ pub(crate) fn guard_interval_for(class: usize, page: usize, interval: u32) -> u3
 }
 
 impl Shared {
-    /// [`Config::cap_for`] for a heap homed on `home` caching `class` in
-    /// `arena`, from the table `init` filled: one load.
-    #[inline(always)]
-    pub fn cap(&self, home: u16, arena: u16, class: usize) -> u32 {
-        self.caps[(arena != home) as usize][class]
-    }
-
     /// Initialise `this` in place for already reserved `regions`: the
     /// metadata allocator over the metadata reservation, one slab table
     /// per class with `guard_interval` (0 when the kernel has no guard
@@ -640,11 +628,6 @@ impl Shared {
             ptr::write(&raw mut (*this).gc_interval_ns, config.gc_interval_ns());
             Arenas::init(&raw mut (*this).arenas, arena0, config.narenas);
             Tcaches::init(&raw mut (*this).tcaches);
-            let caps = &raw mut (*this).caps;
-            for c in 0..NCLASSES {
-                ptr::write(&raw mut (*caps)[0][c], config.cap_for(0, 0, c));
-                ptr::write(&raw mut (*caps)[1][c], config.cap_for(0, 1, c));
-            }
             ptr::write(&raw mut (*this).config, config);
             ptr::write(&raw mut (*this).key, ThreadKey::create());
             ptr::write(&raw mut (*this).stats, Lock::new(crate::stats::Snapshot::EMPTY));
@@ -1659,18 +1642,14 @@ impl Heap {
     }
 
     /// Allocation of `class` from another arena than the home one: through
-    /// this heap's cache for that arena, which is looked up (or created)
-    /// on the `others` list.
+    /// this heap's cache for that arena if the `others` list has one with
+    /// entries, else the slow path, whose `ensure_cache` creates the node
+    /// and the cache only for a class this heap caches there
+    /// (`Config::cap_for`) and serves the rest from the bitmaps.
     #[cold]
     #[inline(never)]
     fn alloc_other(&mut self, shared: &Shared, arena: u16, class: usize) -> (*mut u8, bool) {
-        // A class this heap never caches for `arena` (`Config::cap_for`):
-        // straight to the slow path, which serves it from the bitmaps
-        // without creating an `others` node.
-        if shared.cap(self.arena, arena, class) == 0 {
-            return self.alloc_slow_in(shared, arena, class);
-        }
-        let node = self.other_caches(shared, arena, true);
+        let node = self.other_caches(shared, arena, false);
         if !node.is_null() {
             // SAFETY: `node` is a live block owned by this heap.
             let cache = unsafe { Self::node_cache_ptr(node, class) };
@@ -1717,16 +1696,16 @@ impl Heap {
     }
 
     /// Free of a slot whose slab belongs to another arena than the home
-    /// one: onto this heap's cache for that arena.
+    /// one: onto this heap's cache for that arena if the `others` list has
+    /// one with room (xmalloc-test's consumers take this path on every
+    /// free: a list walk and a push, no policy test), else the slow path,
+    /// whose `ensure_cache` creates the node and the cache only for a
+    /// class this heap caches there (`Config::cap_for`) and releases the
+    /// rest straight to the owner's bitmap.
     #[cold]
     #[inline(never)]
     fn free_other(&mut self, shared: &Shared, arena: u16, class: usize, p: *mut u8) {
-        // A class this heap never caches for `arena` (`Config::cap_for`):
-        // straight to the owner's bitmap without creating a node for it.
-        if shared.cap(self.arena, arena, class) == 0 {
-            return self.free_slow_in(shared, arena, class, p);
-        }
-        let node = self.other_caches(shared, arena, true);
+        let node = self.other_caches(shared, arena, false);
         if !node.is_null() {
             // SAFETY: `node` is a live block owned by this heap; the cache
             // is unused (`len == cap == 0`) or ours.
@@ -1824,8 +1803,9 @@ impl Heap {
     /// exhausted or caches are off (`tcache:false`).
     fn ensure_cache(&mut self, shared: &Shared, arena: u16, class: usize) -> *mut CacheHeader {
         // The capacity first: a class that is never cached for this arena
-        // must not create an `others` node.
-        let cap = shared.cap(self.arena, arena, class);
+        // must not create an `others` node. This is the one place the
+        // placement rule is consulted on the allocation and free paths.
+        let cap = shared.config.cap_for(self.arena, arena, class);
         if cap == 0 || !self.tcache_enabled {
             return ptr::null_mut();
         }
@@ -3725,12 +3705,6 @@ pub(crate) mod tests {
         assert!(s.config.shared_class(c));
         assert_eq!(s.config.cap_for(0, 0, c), 0);
         assert_eq!(s.config.cap_for(0, a1, c), 0);
-        // The table `init` filled is `cap_for`, class by class.
-        for k in 0..NCLASSES {
-            assert_eq!(s.cap(0, 0, k), s.config.cap_for(0, 0, k), "home cap of class {k}");
-            assert_eq!(s.cap(0, a1, k), s.config.cap_for(0, a1, k), "foreign cap of class {k}");
-            assert_eq!(s.cap(a1, a1, k), s.cap(0, 0, k));
-        }
         h.set_arena(s, a1);
         // Default path: arena 0.
         let (d, _) = h.alloc_zeroed(s, c);
