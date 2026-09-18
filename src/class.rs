@@ -44,7 +44,7 @@
 //! the bit afterwards.
 
 use crate::bitmap::{AtomicBitmap, TwoLevelBitmap};
-use crate::layout::{CLASSES, Class, Regions};
+use crate::layout::{CLASSES, Class, LG_MAX_SLAB, LG_MIN_SLAB, NCLASSES, Regions};
 use crate::lock::{Lock, PAD_ALIGN, Padded, RawLock};
 use crate::meta::Meta;
 use crate::purge::{self, Batch};
@@ -135,6 +135,9 @@ pub(crate) struct Lazy {
 }
 
 impl Lazy {
+    /// A table of no bytes: `ensure` is a no-op on it.
+    pub(crate) const EMPTY: Lazy = Lazy { base: 0, len: 0, committed: 0 };
+
     pub(crate) fn reserve(meta: &Meta, len: usize, align: usize) -> Option<Lazy> {
         let base = meta.reserve(len, align)?;
         Some(Lazy { base, len, committed: 0 })
@@ -152,11 +155,19 @@ impl Lazy {
 }
 
 /// A slab-number (or huge-page) set: a [`TwoLevelBitmap`] over a lazily
-/// committed table. Shared with `huge.rs`.
+/// committed table, either its own ([`Set::new`], `huge.rs`) or one view
+/// of an arena's [`SetTable`] ([`Set::in_table`]). Shared with `huge.rs`.
 pub(crate) struct Set {
     pub(crate) map: TwoLevelBitmap,
-    table: Lazy,
+    store: Store,
     l1_words: usize,
+}
+
+enum Store {
+    Own(Lazy),
+    /// The arena's table, which outlives the set (it is a field of the
+    /// same `Arena`, or leaked by the tests), and the set's group in it.
+    Shared(*const SetTable, u8),
 }
 
 impl Set {
@@ -168,13 +179,131 @@ impl Set {
         table.ensure(meta, page, 8 * l1_words).ok()?;
         // SAFETY: the words come from a fresh, zero, never-freed reservation.
         let map = unsafe { TwoLevelBitmap::from_raw(nslabs, table.base as *mut u64) };
-        Some(Set { map, table, l1_words })
+        Some(Set { map, store: Store::Own(table), l1_words })
+    }
+
+    /// Set `kind` (0..`SETS_PER_CLASS`) of `class` in `table`, over the
+    /// class's slab numbers. `table` must outlive the set.
+    pub(crate) fn in_table(table: &SetTable, class: usize, kind: usize) -> Set {
+        debug_assert!(kind < SETS_PER_CLASS);
+        let g = SetTable::group_of(class);
+        let group = &table.groups[g];
+        let slot = kind * group.count + table.pos[class] as usize;
+        let nslabs = table.nslabs[g];
+        // SAFETY: the slot's words are `base + 8 * (slot + r * stride)`,
+        // disjoint from every other slot's, zero, never freed; the rows a
+        // slab's bit needs are committed by `ensure` before the class
+        // touches it (`take_group`).
+        let map = unsafe { TwoLevelBitmap::from_raw_chunked(nslabs, (group.base + 8 * slot) as *mut u64, group.stride) };
+        Set { map, store: Store::Shared(table, g as u8), l1_words: TwoLevelBitmap::l1_words(nslabs) }
     }
 
     /// Commit the level-0 words that hold every bit up to and including
     /// `slab`.
     pub(crate) fn ensure(&mut self, meta: &Meta, page: usize, slab: usize) -> Result<(), Errno> {
-        self.table.ensure(meta, page, 8 * (self.l1_words + slab / 64 + 1))
+        match &mut self.store {
+            Store::Own(table) => table.ensure(meta, page, 8 * (self.l1_words + slab / 64 + 1)),
+            // SAFETY: the table outlives the set (`Store::Shared`).
+            Store::Shared(table, g) => unsafe { &**table }.ensure(meta, *g as usize, slab),
+        }
+    }
+}
+
+/// Slab sets per class ([`ClassState`]: partial, empty, purged).
+pub const SETS_PER_CLASS: usize = 3;
+/// Set table groups: one per slab size (`Class::lg_slab`), since classes
+/// with the same slab size have the same slab count.
+pub const SET_GROUPS: usize = (LG_MAX_SLAB - LG_MIN_SLAB + 1) as usize;
+
+/// One arena's slab sets for every class: one interleaved, lazily
+/// committed table per slab size, holding the `SETS_PER_CLASS` sets of
+/// every class of that slab size as chunked [`TwoLevelBitmap`] views (row
+/// `r` of the set at `slot = kind * count + pos` is at `base + 8 * (r *
+/// stride + slot)`, `stride = SETS_PER_CLASS * count`). Rows are committed
+/// as a prefix while slab numbers grow, and a small heap touches only row 0
+/// (level-1 word 0) and row 1 (level-0 word 0) of the groups it uses, one
+/// page per (arena, slab size), where one page-aligned table per set cost
+/// one or two pages per (arena, class) and, at 16 arenas, put alloc-testN's
+/// RSS 28% above jemalloc's (`bench/results/2026-09-18-*-gce-arena-rss.md`).
+pub struct SetTable {
+    groups: [Group; SET_GROUPS],
+    /// Slab count of each group's classes.
+    nslabs: [usize; SET_GROUPS],
+    /// Position of each class within its group.
+    pos: [u8; NCLASSES],
+    /// Commit watermarks; taken by the fork handlers after the arena's
+    /// class locks, which is the order `take_group` uses.
+    tables: Lock<[Lazy; SET_GROUPS]>,
+    page: usize,
+}
+
+// SAFETY: a `SetTable` is shared by the arena's class states; its groups
+// and positions are immutable after `new` and the commit watermarks are
+// behind `tables`' lock.
+unsafe impl Sync for SetTable {}
+unsafe impl Send for SetTable {}
+
+#[derive(Clone, Copy)]
+struct Group {
+    base: usize,
+    stride: usize,
+    count: usize,
+}
+
+impl SetTable {
+    /// Group of a class: its slab size.
+    #[inline]
+    pub fn group_of(class: usize) -> usize {
+        (CLASSES[class].lg_slab as u32 - LG_MIN_SLAB) as usize
+    }
+
+    /// Reserve the tables (address space only; rows are committed by
+    /// `ensure`). `None` if the metadata region cannot hold them.
+    pub fn new(meta: &Meta, regions: &Regions) -> Option<SetTable> {
+        let page = regions.page_size();
+        let mut groups = [Group { base: 0, stride: 0, count: 0 }; SET_GROUPS];
+        let mut nslabs = [0usize; SET_GROUPS];
+        let mut pos = [0u8; NCLASSES];
+        for c in 0..NCLASSES {
+            let g = Self::group_of(c);
+            pos[c] = groups[g].count as u8;
+            groups[g].count += 1;
+            nslabs[g] = regions.nslabs(c);
+        }
+        let mut tables = [Lazy::EMPTY; SET_GROUPS];
+        for g in 0..SET_GROUPS {
+            if groups[g].count == 0 {
+                continue;
+            }
+            groups[g].stride = SETS_PER_CLASS * groups[g].count;
+            let rows = TwoLevelBitmap::chunked_rows(nslabs[g]);
+            tables[g] = Lazy::reserve(meta, 8 * rows * groups[g].stride, page)?;
+            groups[g].base = tables[g].base;
+        }
+        Some(SetTable { groups, nslabs, pos, tables: Lock::new(tables), page })
+    }
+
+    /// Commit the rows of group `g` up to the level-0 word of `slab` (and
+    /// so its chunk's level-1 word and every row before).
+    fn ensure(&self, meta: &Meta, g: usize, slab: usize) -> Result<(), Errno> {
+        let row = TwoLevelBitmap::chunked_l0_row(slab / 64);
+        self.tables.lock()[g].ensure(meta, self.page, 8 * (row + 1) * self.groups[g].stride)
+    }
+
+    /// Committed byte ranges of the groups (tests, stats).
+    pub fn committed_ranges(&self) -> [(usize, usize); SET_GROUPS] {
+        let t = self.tables.lock();
+        let mut out = [(0usize, 0usize); SET_GROUPS];
+        for g in 0..SET_GROUPS {
+            out[g] = (t[g].base, t[g].committed);
+        }
+        out
+    }
+
+    /// The commit lock, for fork handlers.
+    #[inline]
+    pub fn raw_lock(&self) -> &RawLock {
+        self.tables.raw()
     }
 }
 
@@ -840,15 +969,16 @@ impl SlabTable {
 }
 
 impl ClassState {
-    /// Create the state for `arena` over `table`'s class. Reserves the
-    /// three slab sets in `meta`; returns `None` if the metadata region
-    /// cannot hold them. `table` must outlive the state (see the field).
-    pub fn new(meta: &Meta, regions: &Regions, table: &SlabTable, arena: u16) -> Option<ClassState> {
-        let page = regions.page_size();
-        let nslabs = table.nslabs;
-        let partial = Set::new(meta, page, nslabs)?;
-        let empty = Set::new(meta, page, nslabs)?;
-        let purged = Set::new(meta, page, nslabs)?;
+    /// Create the state for `arena` over `table`'s class, with its three
+    /// slab sets as views of the arena's `sets` table (slots `kind *
+    /// NCLASSES + class`). `table` and `sets` must outlive the state.
+    pub fn new(meta: &Meta, regions: &Regions, table: &SlabTable, arena: u16, sets: &SetTable) -> Option<ClassState> {
+        let _ = (meta, regions);
+        let class = table.class as usize;
+        debug_assert_eq!(table.nslabs, sets.nslabs[SetTable::group_of(class)]);
+        let partial = Set::in_table(sets, class, 0);
+        let empty = Set::in_table(sets, class, 1);
+        let purged = Set::in_table(sets, class, 2);
         Some(ClassState {
             class: table.class,
             arena,
@@ -1591,7 +1721,12 @@ mod tests {
         /// arena-0 state over it.
         fn class(&self, c: usize, guard_interval: u32) -> ClassState {
             let table = self.table(c, guard_interval);
-            ClassState::new(&self.meta, &self.regions, table, 0).expect("class state")
+            ClassState::new(&self.meta, &self.regions, table, 0, self.sets()).expect("class state")
+        }
+
+        /// A fresh set table for one arena (leaked: the states point at it).
+        fn sets(&self) -> &'static SetTable {
+            std::boxed::Box::leak(std::boxed::Box::new(SetTable::new(&self.meta, &self.regions).expect("set table")))
         }
 
         fn table(&self, c: usize, guard_interval: u32) -> &'static SlabTable {
@@ -1602,7 +1737,7 @@ mod tests {
 
         /// The state of `arena` over the same table as `cs`.
         fn class_in_arena(&self, cs: &ClassState, arena: u16) -> ClassState {
-            ClassState::new(&self.meta, &self.regions, cs.table(), arena).expect("class state")
+            ClassState::new(&self.meta, &self.regions, cs.table(), arena, self.sets()).expect("class state")
         }
 
         fn claim(&self, cs: &ClassState, n: usize) -> (Vec<*mut u8>, Claim) {
@@ -2292,6 +2427,56 @@ mod tests {
     /// Two arenas over one class region: slabs are handed out in address
     /// order to whichever arena commits next, each records its owner, and
     /// each arena's sets and counts see only its own slabs.
+    /// The point of the interleaved set table: however many classes an
+    /// arena uses, the words their sets touch for low slab numbers share
+    /// the first page of their slab-size group (rows 0 and 1), where one
+    /// table per set touched a page or two per (arena, class). Creating
+    /// the table commits nothing.
+    #[test]
+    fn set_table_of_many_classes_touches_one_page_per_slab_size() {
+        let env = Env::new();
+        let before = env.meta.stats().committed;
+        let sets = env.sets();
+        assert_eq!(env.meta.stats().committed, before, "reservation only");
+        let page = env.regions.page_size();
+        let classes: Vec<usize> = (0..NCLASSES).step_by(5).collect();
+        let states: Vec<ClassState> = classes
+            .iter()
+            .map(|&c| ClassState::new(&env.meta, &env.regions, env.table(c, 0), 0, sets).expect("class state"))
+            .collect();
+        for cs in &states {
+            let (p, _) = env.claim(cs, 3);
+            cs.release(&p[..1]);
+            let (q, _) = env.claim(cs, 1);
+            cs.release(&q);
+            cs.release(&p[1..]);
+        }
+        // Every state has slabs in its partial or empty set now.
+        assert!(states.iter().all(|cs| { let s = cs.stats(); s.nonfull + s.empty > 0 }));
+        let mut groups_used: Vec<usize> = classes.iter().map(|&c| SetTable::group_of(c)).collect();
+        groups_used.sort_unstable();
+        groups_used.dedup();
+        let mut pages: Vec<usize> = Vec::new();
+        for (base, committed) in sets.committed_ranges() {
+            if committed == 0 {
+                continue;
+            }
+            // SAFETY: the committed prefix of a table this test owns.
+            let words = unsafe { core::slice::from_raw_parts(base as *const u64, committed / 8) };
+            pages.extend(words.iter().enumerate().filter(|(_, w)| **w != 0).map(|(i, _)| (base + 8 * i) / page));
+        }
+        pages.sort_unstable();
+        pages.dedup();
+        assert!(!pages.is_empty());
+        assert!(
+            pages.len() <= groups_used.len(),
+            "{} classes in {} slab-size groups touched {} pages of the set tables",
+            classes.len(),
+            groups_used.len(),
+            pages.len()
+        );
+    }
+
     #[test]
     fn two_arenas_share_one_region() {
         let env = Env::new();

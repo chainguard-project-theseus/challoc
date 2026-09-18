@@ -39,7 +39,7 @@
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
-use crate::class::{ClassState, SlabTable};
+use crate::class::{ClassState, SetTable, SlabTable};
 use crate::heap::{Heap, Shared};
 use crate::layout::{NCLASSES, Regions};
 use crate::lock::Lock;
@@ -135,6 +135,10 @@ pub struct Arena {
     /// Decay period (`arena.<i>.dirty_decay_ms`) in nanoseconds;
     /// `purge::NEVER` for `-1`.
     decay_ns: AtomicU64,
+    /// The slab sets of every class, one interleaved table per slab size
+    /// (`class.rs`), a separate metadata object so that `Arena` keeps its
+    /// size and the offsets of everything allocated after it.
+    sets: *const SetTable,
     pub classes: [ClassState; NCLASSES],
     /// Live huge runs allocated through this arena and their pages (guard
     /// included), kept by `Shared::alloc_huge` / `free_huge` since the huge
@@ -144,6 +148,12 @@ pub struct Arena {
     /// This arena's statistics as of the last `epoch` (`stats.rs`).
     stats: Lock<ArenaStats>,
 }
+
+// SAFETY: `sets` points at a never-freed metadata object whose only
+// mutable state is behind its own lock (`SetTable::tables`); everything
+// else in `Arena` is atomics, locks and `ClassState`s, which are `Sync`.
+unsafe impl Sync for Arena {}
+unsafe impl Send for Arena {}
 
 impl Arena {
     /// Initialise `this` in place as arena `index` over `tables`. Returns
@@ -165,8 +175,18 @@ impl Arena {
         unsafe {
             ptr::write(&raw mut (*this).index, index);
             ptr::write(&raw mut (*this).decay_ns, AtomicU64::new(decay_ns));
+            let sets_ptr = meta.alloc(core::alloc::Layout::new::<SetTable>()) as *mut SetTable;
+            if sets_ptr.is_null() {
+                return false;
+            }
+            match SetTable::new(meta, regions) {
+                Some(sets) => ptr::write(sets_ptr, sets),
+                None => return false,
+            }
+            ptr::write(&raw mut (*this).sets, sets_ptr as *const SetTable);
+            let sets: &SetTable = &*sets_ptr;
             for c in 0..NCLASSES {
-                match ClassState::new(meta, regions, &tables[c], index) {
+                match ClassState::new(meta, regions, &tables[c], index, sets) {
                     Some(cs) => ptr::write(&raw mut (*this).classes[c], cs),
                     None => return false,
                 }
@@ -211,6 +231,12 @@ impl Arena {
     }
 
     #[inline]
+    /// The arena's slab set table (fork handlers, tests).
+    pub fn sets(&self) -> &SetTable {
+        // SAFETY: written by `init` to a live, never-freed metadata object.
+        unsafe { &*self.sets }
+    }
+
     pub fn index(&self) -> u16 {
         self.index
     }

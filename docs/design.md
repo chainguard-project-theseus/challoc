@@ -217,7 +217,14 @@ struct ClassState {
 ```
 
 The two-level bitmap over slab numbers gives "lowest slab with a free slot" in
-two `tzcnt` instructions. Refill takes the lock, reads the lowest partial slab,
+two `tzcnt` instructions. An arena's sets (three per class) are views of one
+interleaved table per arena, logical word `i` of set `s` at word
+`i * 156 + s`, so the words a small heap touches (word 0 of each level of the
+few sets it uses) share two pages per arena instead of one or two pages per
+`(arena, class)`; measured as 2.7 MiB of alloc-testN's 16-thread RSS at
+16 arenas (`bench/results/2026-09-18-*-gce-arena-rss.md`). Level 1 rows
+are committed with the table, level 0 rows as a prefix while slab numbers
+grow. Refill takes the lock, reads the lowest partial slab,
 releases the lock, then claims from that slab's bitmap without the lock.
 Contention on the same slab between two threads is resolved by the atomic
 claim. When a slab's bitmap becomes completely set, the thread that observed
@@ -294,9 +301,17 @@ xmalloc-test's freeing threads three to four times the L1D fills
 (`bench/results/2026-09-18-*-gce-dense-headers.md`).
 
 Default cache capacity: 1024 slots for classes up to 128 bytes, then halving
-every doubling of class size, minimum 8. `tcache_nslots_small_max` and
-`lg_tcache_nslots_mul` from `malloc_conf` override this, because Redis sets
-them. The capacity is larger than jemalloc's 200 because a flush or refill
+every doubling of class size, minimum 8; classes above `tcache_max` (32 KiB,
+jemalloc's default) are not cached and go straight to the slab bitmaps.
+`tcache_nslots_small_max` and `lg_tcache_nslots_mul` from `malloc_conf`
+override the ladder, because Redis sets them. A cache for another arena
+(`others`) keeps the ladder for bin classes (up to 4 KiB) and holds nothing
+above: a thread caches slots of every arena it frees into, so a foreign
+cache's residue is multiplied by the arena count, and with 16 threads and 16
+arenas the 8 cached 4..32 KiB slots per (thread, arena, class) were 190 MiB
+of mstress's RSS and 8 cached 40 KiB slots 70 MiB of xmalloc-test's
+(`bench/results/2026-09-18-*-gce-arena-rss.md`); jemalloc's single
+per-thread cache holds one such set. The capacity is larger than jemalloc's 200 because a flush or refill
 writes the descriptor lines of every slab it touches, and with shared slabs
 (one arena) that invalidates the lines every other thread's `free` check
 reads; halving the flush rate halves those misses (Phase 0 acceptance,
@@ -588,6 +603,7 @@ jemalloc names where they exist:
 | `muzzy_decay_ms`          | ignored | accepted for compatibility              |
 | `narenas`                 | 0       | automatic arenas; 0 = `min(4 * ncpus, 64)`; see 13.3 |
 | `tcache`                  | true    | false disables caches                   |
+| `tcache_max`              | 32768   | largest cached class size (bytes)       |
 | `tcache_nslots_small_max` | 1024    |                                         |
 | `lg_tcache_nslots_mul`    | 1       |                                         |
 | `tcache_gc_interval_ms`   | 10000   | challoc only                            |
@@ -683,8 +699,14 @@ the heap is destroyed and moves with `thread.arena`. So `t` concurrently live
 threads use `min(t, narenas)` arenas, a single-threaded program stays on
 arena 0 and never pays the `free` routing (the `multi_arena` flag is only set
 when a second arena is built), and thread churn reuses the arena an exited
-thread left. Slabs are not thread-owned, so arenas are not needed for
-correctness or lock scalability; they are needed for cache locality: under one
+thread left. Slab classes above `tcache_max` (32 KiB) are the exception: they
+are uncached and served under the class lock anyway, their slabs are 1..4
+MiB, and one partial slab per class per arena multiplied by 16 arenas was 60
+MiB of mstress's RSS (`bench/results/2026-09-18-aarch64-gce-arena-rss.md`),
+so the default path allocates them from arena 0 whatever the thread's arena;
+`MALLOCX_ARENA` allocations keep their arena. Slabs are not thread-owned, so
+arenas are not needed for correctness or lock scalability; they are needed
+for cache locality: under one
 shared arena every refill interleaves the threads' slots in the same slabs and
 the 10-thread `larson` row paid about 1 L1D miss per operation for it
 (`bench/results/2026-09-17-gce-review-counters.md`,

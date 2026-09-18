@@ -29,6 +29,11 @@ use crate::heap::{MAX_CAP, MIN_CAP};
 /// from the metadata region as one object, and `Meta::alloc` serves layouts
 /// up to 1 MiB; 65536 slots is 512 KiB plus the header, well inside that.
 pub const MAX_NSLOTS: u32 = 65_536;
+/// Default `tcache_max`: jemalloc's. Slots of classes above it are never
+/// cached; the acceptance probe (`bench/results/2026-09-18-*-gce-arena-rss.md`)
+/// found 8 cached 40 KiB slots per (thread, arena) pair holding 70 MiB of
+/// xmalloc-test's RSS and most of mstress's excess at 16 arenas.
+pub const DEFAULT_TCACHE_MAX: usize = 32 * 1024;
 /// Range of `lg_tcache_nslots_mul`, as in jemalloc.
 pub const LG_NSLOTS_MUL_MIN: i32 = -16;
 pub const LG_NSLOTS_MUL_MAX: i32 = 16;
@@ -72,6 +77,10 @@ pub struct Config {
     /// `t` live threads ever touches `min(t, narenas)` of them.
     pub narenas: u32,
     pub tcache: bool,
+    /// Largest class size whose slots go through thread caches; larger
+    /// slab classes are served straight from the bitmaps (jemalloc's
+    /// `tcache_max`).
+    pub tcache_max: usize,
     pub tcache_nslots_small_max: u32,
     pub lg_tcache_nslots_mul: i32,
     pub tcache_gc_interval_ms: i64,
@@ -107,6 +116,7 @@ impl Config {
         muzzy_decay_ms: 0,
         narenas: 0,
         tcache: true,
+        tcache_max: DEFAULT_TCACHE_MAX,
         tcache_nslots_small_max: MAX_CAP,
         lg_tcache_nslots_mul: 1,
         tcache_gc_interval_ms: 10_000,
@@ -171,6 +181,9 @@ impl Config {
             b"muzzy_decay_ms" => return num(self, -1, MAX_INTERVAL_MS, |c, v| c.muzzy_decay_ms = v),
             b"narenas" => return num(self, 0, u32::MAX as i64, |c, v| c.narenas = v as u32),
             b"tcache" => self.tcache = parse_bool(value).ok_or_else(bad)?,
+            b"tcache_max" => {
+                return num(self, 0, crate::layout::MEDIUM_MAX as i64, |c, v| c.tcache_max = v as usize);
+            }
             b"tcache_nslots_small_max" => {
                 return num(self, MIN_CAP as i64, MAX_NSLOTS as i64, |c, v| c.tcache_nslots_small_max = v as u32);
             }
@@ -220,6 +233,7 @@ impl Config {
             b"muzzy_decay_ms" => Value::Int(self.muzzy_decay_ms),
             b"narenas" => Value::Uint(self.narenas as u64),
             b"tcache" => Value::Bool(self.tcache),
+            b"tcache_max" => Value::Uint(self.tcache_max as u64),
             b"tcache_nslots_small_max" => Value::Uint(self.tcache_nslots_small_max as u64),
             b"lg_tcache_nslots_mul" => Value::Int(self.lg_tcache_nslots_mul as i64),
             b"tcache_gc_interval_ms" => Value::Int(self.tcache_gc_interval_ms),
@@ -241,13 +255,28 @@ impl Config {
     /// ladder (`tcache_nslots_small_max` slots up to 128 bytes, halving per
     /// doubling of the class size) shifted by `lg_tcache_nslots_mul - 1`
     /// doublings, clamped to `[MIN_CAP, tcache_nslots_small_max]`. Zero when
-    /// `tcache` is off, which makes every thread serve straight from the
-    /// slab bitmaps.
+    /// `tcache` is off or the class is larger than `tcache_max`, which makes
+    /// every thread serve that class straight from the slab bitmaps.
     pub fn cache_cap(&self, class: usize) -> u32 {
-        if !self.tcache {
+        if !self.tcache || crate::layout::CLASSES[class].size() > self.tcache_max {
             return 0;
         }
         cap_for(class, self.tcache_nslots_small_max, self.lg_tcache_nslots_mul)
+    }
+
+    /// Cache capacity for a class in a cache for another arena than the
+    /// heap's own (`Heap::others`): the home ladder for bin classes, none
+    /// above `layout::BIN_MAX`. A thread caches slots of every arena it
+    /// frees into, so a foreign cache's residue is multiplied by the arena
+    /// count: 16 threads freeing 4..32 KiB slots of 16 arenas held 8 slots
+    /// per (thread, arena, class), 190 MiB of mstress's RSS, where
+    /// jemalloc's single per-thread cache holds one set of 20
+    /// (`bench/results/2026-09-18-*-gce-arena-rss.md`).
+    pub fn other_cache_cap(&self, class: usize) -> u32 {
+        if class >= crate::layout::NBINS {
+            return 0;
+        }
+        self.cache_cap(class)
     }
 
     /// `tcache_gc_interval_ms` in nanoseconds.
@@ -297,6 +326,7 @@ pub const KEYS: &[&str] = &[
     "muzzy_decay_ms",
     "narenas",
     "tcache",
+    "tcache_max",
     "tcache_nslots_small_max",
     "lg_tcache_nslots_mul",
     "tcache_gc_interval_ms",
@@ -721,6 +751,7 @@ mod tests {
         assert_eq!(d.dirty_decay_ms, 10_000);
         assert_eq!(d.narenas, 0);
         assert!(d.tcache);
+        assert_eq!(d.tcache_max, 32 * 1024);
         assert_eq!(d.tcache_nslots_small_max, 1024);
         assert_eq!(d.lg_tcache_nslots_mul, 1);
         assert_eq!(d.tcache_gc_interval_ms, 10_000);
@@ -793,10 +824,11 @@ mod tests {
     #[test]
     fn every_numeric_key_parses_and_clamps() {
         // (key, in-range value, below-min input, clamped min, above-max input, clamped max)
-        let cases: [(&str, i64, &str, i64, &str, i64); 8] = [
+        let cases: [(&str, i64, &str, i64, &str, i64); 9] = [
             ("dirty_decay_ms", 5000, "-2", -1, "9999999999999999", MAX_INTERVAL_MS),
             ("muzzy_decay_ms", 0, "-5", -1, "9999999999999999", MAX_INTERVAL_MS),
             ("narenas", 4, "-1", 0, "99999999999", u32::MAX as i64),
+            ("tcache_max", 4096, "-1", 0, "9999999", crate::layout::MEDIUM_MAX as i64),
             ("tcache_nslots_small_max", 1000, "1", MIN_CAP as i64, "1000000", MAX_NSLOTS as i64),
             ("lg_tcache_nslots_mul", 3, "-17", -16, "17", 16),
             ("tcache_gc_interval_ms", 250, "-1", 0, "9999999999999999", MAX_INTERVAL_MS),
@@ -805,7 +837,7 @@ mod tests {
         ];
         for (key, ok, low, min, high, max) in cases {
             let as_value = |v: i64| match key {
-                "narenas" | "tcache_nslots_small_max" | "guard_slab_interval" | "tcache_compact_shift" => {
+                "narenas" | "tcache_max" | "tcache_nslots_small_max" | "guard_slab_interval" | "tcache_compact_shift" => {
                     Value::Uint(v as u64)
                 }
                 _ => Value::Int(v),
@@ -952,7 +984,7 @@ mod tests {
             };
             assert_eq!(clean(&std::format!("{key}:{value}")), cfg, "{key}:{value} round trip");
         }
-        assert_eq!(KEYS.len(), 18);
+        assert_eq!(KEYS.len(), 19);
         assert_eq!(cfg.get(b"nonsense"), None);
         assert_eq!(cfg.get(b""), None);
         for key in IGNORED_KEYS {
@@ -963,13 +995,27 @@ mod tests {
     #[test]
     fn cache_caps_follow_the_ladder_and_the_overrides() {
         let d = Config::DEFAULT;
-        for c in 0..NCLASSES {
+        // Classes above tcache_max (32 KiB, jemalloc's default) are not cached.
+        fn cached(cfg: &Config) -> impl Iterator<Item = usize> {
+            let max = cfg.tcache_max;
+            (0..NCLASSES).filter(move |&c| CLASSES[c].size() <= max)
+        }
+        fn uncached(cfg: &Config) -> impl Iterator<Item = usize> {
+            let max = cfg.tcache_max;
+            (0..NCLASSES).filter(move |&c| CLASSES[c].size() > max)
+        }
+        assert!(cached(&d).count() >= 36 && uncached(&d).count() >= 8, "{} cached, {} above", cached(&d).count(), uncached(&d).count());
+        for c in cached(&d) {
             assert_eq!(d.cache_cap(c), cap_for(c, MAX_CAP, 1));
             assert_eq!(d.cache_cap(c), crate::heap::default_cap(c), "class {c}");
         }
+        for c in uncached(&d) {
+            assert_eq!(d.cache_cap(c), 0, "class {c} ({} bytes) is above tcache_max", CLASSES[c].size());
+            assert!(crate::heap::default_cap(c) >= MIN_CAP, "the ladder itself never reaches zero");
+        }
         // Redis: x4 ladder clamped at 1000, never below MIN_CAP.
         let redis = clean("lg_tcache_nslots_mul:3,tcache_nslots_small_max:1000");
-        for c in 0..NCLASSES {
+        for c in cached(&redis) {
             let size = CLASSES[c].size();
             let cap = redis.cache_cap(c);
             assert!(cap >= MIN_CAP && cap <= 1000, "class {c} ({size} bytes): {cap}");
@@ -980,12 +1026,23 @@ mod tests {
         }
         // A small max caps every class; lg_mul below 1 shrinks the ladder.
         let small = clean("tcache_nslots_small_max:16");
-        assert!((0..NCLASSES).all(|c| small.cache_cap(c) <= 16 && small.cache_cap(c) >= MIN_CAP));
+        assert!(cached(&small).all(|c| small.cache_cap(c) <= 16 && small.cache_cap(c) >= MIN_CAP));
         let shrunk = clean("lg_tcache_nslots_mul:0");
         assert_eq!(shrunk.cache_cap(0), 512);
-        assert_eq!(shrunk.cache_cap(NCLASSES - 1), MIN_CAP);
+        assert_eq!(shrunk.cache_cap(NCLASSES - 1), 0);
+        assert_eq!(shrunk.cache_cap(cached(&shrunk).last().unwrap()), MIN_CAP);
         let grown = clean("lg_tcache_nslots_mul:16,tcache_nslots_small_max:65536");
-        assert!((0..NCLASSES).all(|c| grown.cache_cap(c) == 65536));
+        assert!(cached(&grown).all(|c| grown.cache_cap(c) == 65536));
+        // tcache_max moves the boundary: every slab class, or none.
+        let all = clean("tcache_max:262144");
+        assert!((0..NCLASSES).all(|c| all.cache_cap(c) >= MIN_CAP));
+        assert_eq!(all.cache_cap(NCLASSES - 1), MIN_CAP);
+        let none = clean("tcache_max:0");
+        assert!((0..NCLASSES).all(|c| none.cache_cap(c) == 0));
+        let k4 = clean("tcache_max:4096");
+        assert!((0..NCLASSES).all(|c| (k4.cache_cap(c) == 0) == (CLASSES[c].size() > 4096)));
+        // Out of range clamps and reports, like every numeric key.
+        assert_eq!(clean("tcache_max:32768").tcache_max, 32768);
         // tcache:false turns caching off entirely.
         let off = clean("tcache:false");
         assert!((0..NCLASSES).all(|c| off.cache_cap(c) == 0));

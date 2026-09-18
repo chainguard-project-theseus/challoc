@@ -209,8 +209,16 @@ impl<'a> AtomicBitmap<'a> {
 ///
 /// Storage is caller-provided: [`words_needed`] words of zeroed `u64`, level
 /// 1 first then level 0, so that it can be carved out of the metadata region.
+/// A [`from_raw_chunked`] view lays its words out in rows of `stride` words
+/// shared with other views (word `k` of the view is at `ptr.add(k * stride)`)
+/// and in chunks of 65 rows, one level-1 word followed by the 64 level-0
+/// words it summarises, so that a table of many sets can be committed as a
+/// prefix that grows with the slab numbers in use and the words a small heap
+/// touches (level-1 word 0 and level-0 word 0 of every set) share one or two
+/// pages instead of one page per set.
 ///
 /// [`words_needed`]: TwoLevelBitmap::words_needed
+/// [`from_raw_chunked`]: TwoLevelBitmap::from_raw_chunked
 pub struct TwoLevelBitmap {
     nbits: usize,
     l0_words: usize,
@@ -218,8 +226,13 @@ pub struct TwoLevelBitmap {
     /// Number of leading level-1 words that may be non-zero. Everything at
     /// or above this index is zero. Grows on `set`, shrinks on `clear`.
     l1_used: usize,
-    /// `l1_words` summary words followed by `l0_words` bit words.
+    /// Dense (`from_raw`): `l1_words` summary words followed by `l0_words`
+    /// bit words at `ptr`. Chunked (`from_raw_chunked`): row `r` of the
+    /// view is `ptr.add(r * stride)`, level-1 word `j` is row `65 * j` and
+    /// level-0 word `w` is row `65 * (w / 64) + 1 + w % 64`.
     ptr: *mut u64,
+    stride: usize,
+    chunked: bool,
 }
 
 impl TwoLevelBitmap {
@@ -239,7 +252,51 @@ impl TwoLevelBitmap {
     /// accessed by anything else while the set exists.
     pub const unsafe fn from_raw(nbits: usize, ptr: *mut u64) -> TwoLevelBitmap {
         let l0_words = nbits.div_ceil(64);
-        TwoLevelBitmap { nbits, l0_words, l1_words: l0_words.div_ceil(64), l1_used: 0, ptr }
+        TwoLevelBitmap { nbits, l0_words, l1_words: l0_words.div_ceil(64), l1_used: 0, ptr, stride: 1, chunked: false }
+    }
+
+    /// Build a chunked view over `0..nbits` (struct doc): row `r` of the
+    /// view is `ptr.add(r * stride)`, rows `0..chunked_rows(nbits)`.
+    ///
+    /// # Safety
+    ///
+    /// `stride >= 1`; the row-0 words and every row a used bit needs (its
+    /// chunk's level-1 row and its own level-0 row, committed before the
+    /// bit is set, cleared or tested) must be valid for reads and writes
+    /// for as long as the set is used, zeroed, and not accessed by anything
+    /// else while the set exists. Words between the view's own are
+    /// somebody else's.
+    pub const unsafe fn from_raw_chunked(nbits: usize, ptr: *mut u64, stride: usize) -> TwoLevelBitmap {
+        let l0_words = nbits.div_ceil(64);
+        debug_assert!(stride >= 1);
+        TwoLevelBitmap { nbits, l0_words, l1_words: l0_words.div_ceil(64), l1_used: 0, ptr, stride, chunked: true }
+    }
+
+    /// Level-1 words a set over `0..nbits` has.
+    pub const fn l1_words(nbits: usize) -> usize {
+        nbits.div_ceil(64).div_ceil(64)
+    }
+
+    /// Rows a chunked view over `0..nbits` spans (65 per level-1 word).
+    pub const fn chunked_rows(nbits: usize) -> usize {
+        65 * Self::l1_words(nbits)
+    }
+
+    /// Row of level-0 word `w` in a chunked view.
+    pub const fn chunked_l0_row(w: usize) -> usize {
+        65 * (w / 64) + 1 + w % 64
+    }
+
+    /// Offset in words of level-1 word `j`.
+    #[inline]
+    fn l1_off(&self, j: usize) -> usize {
+        if self.chunked { 65 * j * self.stride } else { j }
+    }
+
+    /// Offset in words of level-0 word `w`.
+    #[inline]
+    fn l0_off(&self, w: usize) -> usize {
+        if self.chunked { Self::chunked_l0_row(w) * self.stride } else { self.l1_words + w }
     }
 
     /// Number of bits in the set's universe.
@@ -257,29 +314,29 @@ impl TwoLevelBitmap {
     #[inline]
     fn l1(&self, i: usize) -> u64 {
         debug_assert!(i < self.l1_words);
-        // SAFETY: `i < l1_words`, inside the storage promised to `from_raw`.
-        unsafe { *self.ptr.add(i) }
+        // SAFETY: `i < l1_words`, a word of this view (`from_raw*`).
+        unsafe { *self.ptr.add(self.l1_off(i)) }
     }
 
     #[inline]
     fn l0(&self, i: usize) -> u64 {
         debug_assert!(i < self.l0_words);
-        // SAFETY: `l1_words + i < l1_words + l0_words`, inside the storage.
-        unsafe { *self.ptr.add(self.l1_words + i) }
+        // SAFETY: level-0 word `i` of this view (`from_raw*`).
+        unsafe { *self.ptr.add(self.l0_off(i)) }
     }
 
     #[inline]
     fn l1_mut(&mut self, i: usize) -> &mut u64 {
         debug_assert!(i < self.l1_words);
         // SAFETY: as in `l1`; `&mut self` gives exclusive access.
-        unsafe { &mut *self.ptr.add(i) }
+        unsafe { &mut *self.ptr.add(self.l1_off(i)) }
     }
 
     #[inline]
     fn l0_mut(&mut self, i: usize) -> &mut u64 {
         debug_assert!(i < self.l0_words);
         // SAFETY: as in `l0`; `&mut self` gives exclusive access.
-        unsafe { &mut *self.ptr.add(self.l1_words + i) }
+        unsafe { &mut *self.ptr.add(self.l0_off(i)) }
     }
 
     /// Whether `bit` is in the set.
@@ -855,6 +912,81 @@ mod tests {
     }
 
     /// Randomised model check of `TwoLevelBitmap` against a `Vec<bool>`.
+    /// Several chunked views interleaved in one table (the per-arena slab
+    /// set table of `class.rs`: row `r` of view `v` at `r * stride + v`),
+    /// with universes of different sizes, each checked against its own
+    /// model and against the dense form.
+    #[test]
+    fn chunked_views_interleave_and_match_model() {
+        let sizes = [1usize, 64, 65, 4096, 4097, 10_000, 300_000, 70, 5000];
+        let stride = sizes.len();
+        let max_bits = *sizes.iter().max().unwrap();
+        let rows = TwoLevelBitmap::chunked_rows(max_bits);
+        assert_eq!(rows, 65 * 74);
+        assert_eq!(TwoLevelBitmap::chunked_l0_row(0), 1);
+        assert_eq!(TwoLevelBitmap::chunked_l0_row(63), 64);
+        assert_eq!(TwoLevelBitmap::chunked_l0_row(64), 66);
+        let mut storage = vec![0u64; rows * stride];
+        let base = storage.as_mut_ptr();
+        // SAFETY: every view's words are `r * stride + v`, disjoint across
+        // views, inside the zeroed vector, which outlives the views.
+        let mut views: Vec<TwoLevelBitmap> = sizes
+            .iter()
+            .enumerate()
+            .map(|(v, &n)| unsafe { TwoLevelBitmap::from_raw_chunked(n, base.add(v), stride) })
+            .collect();
+        let mut models: Vec<Vec<bool>> = sizes.iter().map(|&n| vec![false; n]).collect();
+        let mut dense: Vec<Owned> = sizes.iter().map(|&n| owned(n)).collect();
+        let mut s = 0x9E37_79B9_7F4A_7C15u64;
+        for _ in 0..60_000 {
+            let r = xorshift(&mut s);
+            let v = (r % stride as u64) as usize;
+            let nbits = sizes[v];
+            let bit = if r % 8 == 0 {
+                (xorshift(&mut s) as usize) % nbits
+            } else {
+                (xorshift(&mut s) as usize) % nbits.min(700)
+            };
+            match (r >> 8) % 5 {
+                0 | 1 => {
+                    views[v].set(bit);
+                    dense[v].bm.set(bit);
+                    models[v][bit] = true;
+                }
+                2 | 3 => {
+                    views[v].clear(bit);
+                    dense[v].bm.clear(bit);
+                    models[v][bit] = false;
+                }
+                _ => {
+                    let from = (xorshift(&mut s) as usize) % (nbits + 2);
+                    let expect = models[v].iter().skip(from).position(|b| *b).map(|p| p + from);
+                    assert_eq!(views[v].lowest_set_from(from), expect, "view {v} from={from}");
+                    assert_eq!(dense[v].bm.lowest_set_from(from), expect);
+                }
+            }
+            assert_eq!(views[v].is_set(bit), models[v][bit]);
+            assert_eq!(views[v].lowest_set(), models[v].iter().position(|b| *b), "view {v}");
+            assert_eq!(views[v].l1_used, dense[v].bm.l1_used, "view {v}");
+        }
+        for (v, m) in models.iter().enumerate() {
+            for b in 0..sizes[v] {
+                assert_eq!(views[v].is_set(b), m[b], "view {v} bit {b}");
+            }
+        }
+        // Word 0 of both levels of every view sits in the first two rows:
+        // what a small heap touches of the whole table. Set bit 0 of every
+        // view and check that exactly rows 0 and 1 hold those words.
+        for v in views.iter_mut() {
+            v.set(0);
+        }
+        drop(views);
+        for v in 0..stride {
+            assert_ne!(storage[v] & 1, 0, "view {v} level-1 word 0 in row 0");
+            assert_ne!(storage[stride + v] & 1, 0, "view {v} level-0 word 0 in row 1");
+        }
+    }
+
     #[test]
     fn two_level_matches_model() {
         let mut s = 0x0123_4567_89AB_CDEFu64;

@@ -93,7 +93,7 @@ use crate::arena::{Arena, Arenas, Tcaches};
 use crate::class::SlabTable;
 use crate::config::Config;
 use crate::huge::{GUARD_PAGES, Huge};
-use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
+use crate::layout::{CLASSES, Kind, NBINS, NCLASSES, Regions};
 use crate::lock::Lock;
 use crate::meta::Meta;
 
@@ -328,8 +328,27 @@ impl ThreadStats {
 #[repr(C)]
 pub struct ArenaCaches {
     arena: u16,
+    /// Cache lines between the metadata block this node lives in and the
+    /// node itself (`NODE_STAGGER_LINES`); `Heap::destroy` frees the block.
+    pad: u8,
     next: *mut ArenaCaches,
     caches: [CacheHeader; NCLASSES],
+}
+
+/// A heap's `n`-th `others` node is placed `n % NODE_STAGGER_LINES` cache
+/// lines into its metadata block, so that the node heads a cross-arena
+/// `free` walks (and the stack tops it pushes to) do not share L1 sets:
+/// blocks of one metadata bin are a fixed stride apart (12 KiB here), which
+/// is a multiple of the L1D way size on both reference CPUs (4 KiB on the
+/// Xeon, 16 KiB / 4 ways on Neoverse V2), and 15 aliasing node heads cost
+/// xmalloc-test -w 16 12..25% of its throughput when the 40 KiB class's
+/// foreign stack stopped being allocated between them
+/// (`bench/results/2026-09-18-aarch64-gce-xmalloc-isolation.md`).
+const NODE_STAGGER_LINES: usize = 16;
+
+/// Layout of the block an `others` node is carved from.
+fn node_block_layout() -> Layout {
+    Layout::from_size_align(core::mem::size_of::<ArenaCaches>() + 64 * (NODE_STAGGER_LINES - 1), 64).expect("node block layout")
 }
 
 /// One thread's allocator state (design 6.2). Lives in the metadata region;
@@ -953,7 +972,8 @@ impl Heap {
             unsafe {
                 let next = (*o).next;
                 Self::free_caches(shared, &mut (*o).caches);
-                shared.meta.free(o as *mut u8, Layout::new::<ArenaCaches>());
+                let block = (o as *mut u8).sub(64 * (*o).pad as usize);
+                shared.meta.free(block, node_block_layout());
                 o = next;
             }
         }
@@ -1516,7 +1536,13 @@ impl Heap {
     #[cold]
     #[inline(never)]
     fn alloc_slow(&mut self, shared: &Shared, class: usize) -> (*mut u8, bool) {
-        let arena = self.arena;
+        // Classes above `tcache_max` are uncached and served straight from
+        // the bitmaps, and their slabs are 1..4 MiB: one shared arena's
+        // partial slabs instead of one set per thread arena (mstress at 16
+        // arenas held 200 MiB more of them than at one,
+        // `bench/results/2026-09-18-aarch64-gce-arena-rss.md`). Explicit
+        // `MALLOCX_ARENA` allocations (`alloc_in`) keep their arena.
+        let arena = if CLASSES[class].size() > shared.config.tcache_max { 0 } else { self.arena };
         self.alloc_slow_in(shared, arena, class)
     }
 
@@ -1577,6 +1603,12 @@ impl Heap {
     #[cold]
     #[inline(never)]
     fn free_other(&mut self, shared: &Shared, arena: u16, class: usize, p: *mut u8) {
+        // No cache for another arena's classes above BIN_MAX
+        // (`Config::other_cache_cap`): straight to the owner's bitmap
+        // without creating a node for it.
+        if class >= NBINS {
+            return self.free_slow_in(shared, arena, class, p);
+        }
         let node = self.other_caches(shared, arena, true);
         if !node.is_null() {
             // SAFETY: `node` is a live block owned by this heap; the cache
@@ -1615,6 +1647,7 @@ impl Heap {
     fn other_caches(&mut self, shared: &Shared, arena: u16, create: bool) -> *mut ArenaCaches {
         debug_assert_ne!(arena, self.arena);
         let mut o = self.others;
+        let mut n = 0usize;
         while !o.is_null() {
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap.
@@ -1624,20 +1657,25 @@ impl Heap {
                 }
                 o = (*o).next;
             }
+            n += 1;
         }
         if !create {
             return ptr::null_mut();
         }
-        let node = shared.meta.alloc(Layout::new::<ArenaCaches>()) as *mut ArenaCaches;
-        if node.is_null() {
-            return node;
+        let block = shared.meta.alloc(node_block_layout());
+        if block.is_null() {
+            return ptr::null_mut();
         }
-        // SAFETY: a fresh block of the right layout, exclusively ours.
-        // Field by field: a whole `ArenaCaches` temporary would put 3 KiB
-        // on the stack of every call (this function sits on the
-        // cross-arena free path).
+        let pad = n % NODE_STAGGER_LINES;
+        // SAFETY: the block has room for the node at any of the
+        // `NODE_STAGGER_LINES` line offsets and is exclusively ours. Field
+        // by field: a whole `ArenaCaches` temporary would put 3 KiB on the
+        // stack of every call (this function sits on the cross-arena free
+        // path).
+        let node = unsafe { block.add(64 * pad) } as *mut ArenaCaches;
         unsafe {
             ptr::write(&raw mut (*node).arena, arena);
+            ptr::write(&raw mut (*node).pad, pad as u8);
             ptr::write(&raw mut (*node).next, self.others);
             for c in 0..NCLASSES {
                 ptr::write(Self::node_cache_ptr(node, c), CacheHeader::EMPTY);
@@ -1665,6 +1703,12 @@ impl Heap {
     /// capacity and stack on first use. Null if the metadata region is
     /// exhausted or caches are off (`tcache:false`).
     fn ensure_cache(&mut self, shared: &Shared, arena: u16, class: usize) -> *mut CacheHeader {
+        // The capacity first: a class that is never cached for this arena
+        // must not create an `others` node.
+        let cap = if arena == self.arena { shared.config.cache_cap(class) } else { shared.config.other_cache_cap(class) };
+        if cap == 0 || !self.tcache_enabled {
+            return ptr::null_mut();
+        }
         let cache = self.cache_slot(shared, arena, class);
         if cache.is_null() {
             return ptr::null_mut();
@@ -1672,10 +1716,6 @@ impl Heap {
         // SAFETY: `cache` points into this heap's own header array.
         if unsafe { (*cache).cap } != 0 {
             return cache;
-        }
-        let cap = shared.config.cache_cap(class);
-        if cap == 0 || !self.tcache_enabled {
-            return ptr::null_mut();
         }
         let slots = shared.meta.alloc(CacheHeader::slots_layout(cap));
         if slots.is_null() {

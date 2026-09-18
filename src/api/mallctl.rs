@@ -1175,15 +1175,29 @@ mod tests {
     #[test]
     fn stats_are_frozen_between_epochs_and_arenas_all_sums() {
         let s = shared();
-        let e0 = epoch();
-        let a0: usize = get("stats.allocated");
-        let live: Vec<*mut u8> = (0..300).map(|_| malloc(200)).collect();
-        assert_eq!(get::<usize>("stats.allocated"), a0, "no epoch, no change");
-        let e1 = epoch();
-        assert_eq!(e1, e0 + 1);
-        assert_eq!(get::<u64>("epoch"), e1);
-        let a1: usize = get("stats.allocated");
-        assert!(a1 >= a0 + 300 * 200, "allocated {a0} -> {a1}");
+        // Other tests of this binary allocate and free concurrently, and
+        // since `tcache_max` a freed 40 KiB block leaves `allocated` at
+        // once instead of lingering in a cache, so the growth check retries
+        // until a snapshot pair is not swamped by a neighbour's frees.
+        let mut live: Vec<*mut u8> = Vec::new();
+        let mut a1 = 0usize;
+        for attempt in 0..20 {
+            let e0 = epoch();
+            let a0: usize = get("stats.allocated");
+            live = (0..300).map(|_| malloc(200)).collect();
+            assert_eq!(get::<usize>("stats.allocated"), a0, "no epoch, no change");
+            let e1 = epoch();
+            assert_eq!(e1, e0 + 1);
+            assert_eq!(get::<u64>("epoch"), e1);
+            a1 = get("stats.allocated");
+            if a1 >= a0 + 300 * 200 {
+                break;
+            }
+            assert!(attempt < 19, "allocated {a0} -> {a1} on every attempt");
+            for p in live.drain(..) {
+                free(p);
+            }
+        }
         let active: usize = get("stats.active");
         let resident: usize = get("stats.resident");
         let mapped: usize = get("stats.mapped");
@@ -1452,8 +1466,15 @@ mod tests {
         let um = utilization(s, m as *const c_void, true);
         assert_eq!((um.nfree, um.nregs, um.size, um.bin_nfree, um.bin_nregs), (0, 1, CLASSES[cm].size(), 0, 0));
         assert!(um.slabcur_addr.is_null());
+        // A class above tcache_max comes from arena 0 on the default path
+        // whatever the thread's arena (design 13.3); a cached class from
+        // the thread's own arena.
+        assert_eq!(owner_of(s, m as *const c_void), Some(0));
         let home = crate::heap::existing_heap().unwrap().arena();
-        assert_eq!(owner_of(s, m as *const c_void), Some(home));
+        let mid = mallocx(8 << 10, 0);
+        assert!(crate::layout::class_of(8 << 10).unwrap() >= NBINS);
+        assert_eq!(owner_of(s, mid as *const c_void), Some(home));
+        dallocx(mid, 0);
         dallocx(m, 0);
         dallocx(h, 0);
         // A freed slot (direct release, so the bit is clear) is zeros too.

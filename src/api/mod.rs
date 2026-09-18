@@ -213,6 +213,7 @@ extern "C" fn fork_prepare() {
         for c in 0..NCLASSES {
             a.classes[c].raw_lock().lock();
         }
+        a.sets().raw_lock().lock();
     }
     for c in 0..NCLASSES {
         s.tables()[c].raw_lock().lock();
@@ -243,6 +244,7 @@ fn fork_release() {
     let n = s.arenas.count() as usize;
     for i in (0..n).rev() {
         if let Some(a) = s.arenas.get_existing(i as u16) {
+            a.sets().raw_lock().unlock();
             for c in (0..NCLASSES).rev() {
                 a.classes[c].raw_lock().unlock();
             }
