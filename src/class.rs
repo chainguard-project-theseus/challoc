@@ -54,7 +54,7 @@ use crate::bitmap::{AtomicBitmap, TwoLevelBitmap};
 use crate::layout::{CLASSES, Class, LG_MAX_SLAB, LG_MIN_SLAB, NCLASSES, Regions};
 use crate::lock::{Lock, PAD_ALIGN, Padded, RawLock};
 use crate::meta::Meta;
-use crate::purge::{self, Batch, Curve, STEPS};
+use crate::purge::{self, Batch, Curve, Decayer, STEPS};
 use crate::slab::{DESC_ALIGN, SlabDesc, State, desc_stride};
 use crate::sys::Errno;
 use core::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
@@ -484,15 +484,11 @@ pub struct ClassState {
     /// The class's shared table, which lives as long as the allocator
     /// (inside `Shared`, or leaked by the tests).
     table: *const SlabTable,
-    /// `dirty_at` of the oldest `Empty` slab, 0 when none is known. Written
-    /// under the lock (set when the empty set goes from none to one,
-    /// recomputed by every purge) and read without it by the decay driver.
-    /// It may lag behind a claim that reused the oldest slab, in which case
-    /// it is too early rather than too late; the next `decay` recomputes.
-    oldest_empty: AtomicU64,
-    /// When the next decay walk of this class is due: one walk per step
-    /// of the curve at most (`decay`). 0 before the first.
-    next_decay: AtomicU64,
+    /// The decay step gate (`purge::Decayer`): the oldest `Empty` slab's
+    /// `dirty_at`, written under the lock (set when the empty set goes
+    /// from none to one, recomputed by every purge walk) and read without
+    /// it by the decay driver, and the next walk's deadline.
+    gate: Decayer,
     inner: Padded<Lock<Inner>>,
     /// Slots ever reserved by `take` for this arena (written only under
     /// the class lock). With `released` below it gives `curregs`, the
@@ -530,8 +526,7 @@ pub struct ClassState {
 }
 
 const _: () = assert!(core::mem::offset_of!(ClassState, inner) == PAD_ALIGN);
-const _: () = assert!(core::mem::offset_of!(ClassState, oldest_empty) + 8 <= PAD_ALIGN);
-const _: () = assert!(core::mem::offset_of!(ClassState, next_decay) + 8 <= PAD_ALIGN);
+const _: () = assert!(core::mem::offset_of!(ClassState, gate) + core::mem::size_of::<Decayer>() <= PAD_ALIGN);
 const _: () = assert!(core::mem::offset_of!(ClassState, claimed) % PAD_ALIGN == 0);
 const _: () = assert!(core::mem::size_of::<ClassState>() % PAD_ALIGN == 0);
 const _: () = assert!(core::mem::size_of::<ClassState>() % 512 != 0);
@@ -1046,8 +1041,7 @@ impl ClassState {
             class: table.class,
             arena,
             table,
-            oldest_empty: AtomicU64::new(0),
-            next_decay: AtomicU64::new(0),
+            gate: Decayer::new(),
             inner: Padded(Lock::new(Inner {
                 partial,
                 empty,
@@ -1470,8 +1464,7 @@ impl ClassState {
                 g.clear_partial(slab);
                 g.empty.map.set(slab);
                 g.stats.empty += 1;
-                if self.oldest_empty.load(Ordering::Relaxed) == 0 {
-                    self.oldest_empty.store(now, Ordering::Relaxed);
+                if self.gate.note_first_empty(now) {
                     first = true;
                 }
             }
@@ -1645,7 +1638,7 @@ impl ClassState {
             next = g.empty.map.lowest_set_from(slab + 1);
         }
         batch.flush();
-        self.oldest_empty.store(oldest, Ordering::Relaxed);
+        self.gate.set_oldest_empty(oldest);
         n
     }
 
@@ -1710,7 +1703,7 @@ impl ClassState {
         }
         let allow = Curve::allowance(weighted);
         if total <= allow {
-            self.oldest_empty.store(oldest, Ordering::Relaxed);
+            self.gate.set_oldest_empty(oldest);
             return 0;
         }
         // The cut-off step: every slab in an older step goes and all but
@@ -1748,7 +1741,7 @@ impl ClassState {
             next = g.empty.map.lowest_set_from(slab + 1);
         }
         batch.flush();
-        self.oldest_empty.store(oldest, Ordering::Relaxed);
+        self.gate.set_oldest_empty(oldest);
         n
     }
 
@@ -1772,37 +1765,19 @@ impl ClassState {
     }
 
     /// `dirty_at` of the oldest `Empty` slab as the decay driver sees it
-    /// (0 when none; see the field).
+    /// (0 when none; see the gate).
     pub fn oldest_empty(&self) -> u64 {
-        self.oldest_empty.load(Ordering::Relaxed)
+        self.gate.oldest_empty()
     }
 
-    /// Decay step (design section 8): once the oldest `Empty` slab is a
-    /// step of the curve old, walk the empty set (`purge_curve`) at most
-    /// once per step. Returns the class's next deadline (the end of the
-    /// oldest slab's first step, or of the current step), `None` when
-    /// nothing is `Empty`. Takes the lock only when a walk is due.
+    /// Decay step (design section 8): the gate runs `purge_curve` over
+    /// the empty set at most once per step of the curve and returns the
+    /// class's next deadline, `None` when nothing is `Empty`. Takes the
+    /// lock only when a walk is due.
     pub fn decay(&self, now: u64, decay_ns: u64) -> Option<u64> {
-        let oldest = self.oldest_empty();
-        if oldest == 0 {
-            return None;
-        }
-        let curve = Curve::new(decay_ns);
-        let step = curve.step_ns();
-        let first = oldest.saturating_add(step);
-        if now < first {
-            return Some(first);
-        }
-        // A deadline further away than one step was set under a longer
-        // period since shortened: walk now.
-        let next = self.next_decay.load(Ordering::Relaxed);
-        if now < next && next - now <= step {
-            return Some(next);
-        }
-        self.purge_curve(now, &curve);
-        let next = now.saturating_add(step);
-        self.next_decay.store(next, Ordering::Relaxed);
-        if self.oldest_empty() == 0 { None } else { Some(next) }
+        self.gate.decay(now, decay_ns, |now, curve| {
+            self.purge_curve(now, curve);
+        })
     }
 
     /// This arena's slab counts; `guards` is the class-wide count from the

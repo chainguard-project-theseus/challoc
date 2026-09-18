@@ -40,13 +40,13 @@
 
 use core::alloc::Layout;
 use core::ptr;
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::class::Set;
 use crate::layout::Regions;
 use crate::lock::{Lock, RawLock};
 use crate::meta::{self, Meta};
-use crate::purge::{self, Batch, Curve};
+use crate::purge::{self, Batch, Curve, Decayer};
 use crate::sys::Errno;
 
 /// Guard pages after every run.
@@ -406,13 +406,11 @@ pub struct Huge {
     npages: usize,
     guard_install: bool,
     retain_max: AtomicUsize,
-    /// `dirty_at` of the head of the `Empty` list (its oldest member), 0
-    /// when the list is empty. Kept in step with the list under the lock
-    /// by `sync_oldest` and read without it by the decay driver.
-    oldest_empty: AtomicU64,
-    /// When the next decay walk is due: one per step of the curve at most
-    /// (`decay`). 0 before the first.
-    next_decay: AtomicU64,
+    /// The decay step gate (`purge::Decayer`): `dirty_at` of the head of
+    /// the `Empty` list (its oldest member), kept in step with the list
+    /// under the lock by `sync_oldest` and read without it by the decay
+    /// driver, and the next walk's deadline.
+    gate: Decayer,
     inner: Lock<Inner>,
 }
 
@@ -622,8 +620,7 @@ impl Huge {
             npages,
             guard_install,
             retain_max: AtomicUsize::new(DEFAULT_RETAIN_MAX),
-            oldest_empty: AtomicU64::new(0),
-            next_decay: AtomicU64::new(0),
+            gate: Decayer::new(),
             inner: Lock::new(Inner {
                 free,
                 table,
@@ -790,8 +787,7 @@ impl Huge {
     fn sync_oldest(&self, g: &Inner) -> bool {
         // SAFETY: the head, if any, is a live `Empty` extent.
         let new = if g.empty_head.is_null() { 0 } else { unsafe { (*g.empty_head).dirty_at } };
-        let old = self.oldest_empty.swap(new, Ordering::Relaxed);
-        old == 0 && new != 0
+        self.gate.set_oldest_empty(new)
     }
 
     /// Lowest-address first fit for `need` pages at `align`. Returns the
@@ -1185,32 +1181,17 @@ impl Huge {
     /// `dirty_at` of the oldest `Empty` extent as the decay driver sees it
     /// (0 when none).
     pub fn oldest_empty(&self) -> u64 {
-        self.oldest_empty.load(Ordering::Relaxed)
+        self.gate.oldest_empty()
     }
 
-    /// Decay step (design section 8), as `ClassState::decay`: once the
-    /// oldest `Empty` extent is a step of the curve old, walk the list
-    /// (`purge_curve`) at most once per step, and return the next deadline,
-    /// `None` when nothing is `Empty`. Lock-free unless a walk is due.
+    /// Decay step (design section 8), as `ClassState::decay`: the gate
+    /// runs `purge_curve` over the list at most once per step of the
+    /// curve and returns the next deadline, `None` when nothing is
+    /// `Empty`. Lock-free unless a walk is due.
     pub fn decay(&self, now: u64, decay_ns: u64) -> Option<u64> {
-        let oldest = self.oldest_empty();
-        if oldest == 0 {
-            return None;
-        }
-        let curve = Curve::new(decay_ns);
-        let step = curve.step_ns();
-        let first = oldest.saturating_add(step);
-        if now < first {
-            return Some(first);
-        }
-        let next = self.next_decay.load(Ordering::Relaxed);
-        if now < next && next - now <= step {
-            return Some(next);
-        }
-        self.purge_curve(now, &curve);
-        let next = now.saturating_add(step);
-        self.next_decay.store(next, Ordering::Relaxed);
-        if self.oldest_empty() == 0 { None } else { Some(next) }
+        self.gate.decay(now, decay_ns, |now, curve| {
+            self.purge_curve(now, curve);
+        })
     }
 
     pub fn stats(&self) -> HugeStats {

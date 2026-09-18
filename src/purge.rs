@@ -44,7 +44,7 @@
 //! keeps its contents until the kernel reclaims it, so `Purged` slabs and
 //! extents are no longer known to be zero and `calloc` clears them.
 
-use core::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 
 use crate::heap::Shared;
 use crate::sys::features::ProcessMadvise;
@@ -274,6 +274,92 @@ impl Batch {
             os::discard(&self.ranges[..self.n]);
             self.n = 0;
         }
+    }
+}
+
+/// The step gate of design section 8, one per `ClassState` and one in
+/// the huge allocator: `dirty_at` of the oldest `Empty` member (0 when
+/// none is known), written under the owner's lock and read without it by
+/// the decay driver, and the deadline of the owner's next walk.
+/// [`Decayer::decay`] runs the owner's walk at most once per step of the
+/// curve; the walks themselves (`ClassState::purge_curve`,
+/// `Huge::purge_curve`) differ and stay with their owners.
+pub struct Decayer {
+    /// `dirty_at` of the oldest `Empty` member, 0 when none. It may lag
+    /// behind a claim that reused the oldest member, in which case it is
+    /// too early rather than too late; the next walk recomputes it.
+    oldest_empty: AtomicU64,
+    /// When the next walk is due; 0 before the first.
+    next_walk: AtomicU64,
+}
+
+impl Decayer {
+    pub const fn new() -> Decayer {
+        Decayer { oldest_empty: AtomicU64::new(0), next_walk: AtomicU64::new(0) }
+    }
+
+    /// `dirty_at` of the oldest `Empty` member as the driver sees it (0
+    /// when none).
+    #[inline]
+    pub fn oldest_empty(&self) -> u64 {
+        self.oldest_empty.load(Ordering::Relaxed)
+    }
+
+    /// Publish the oldest `dirty_at` (0 for none) after a walk or a list
+    /// change. Returns `true` when the owner went from no `Empty` member
+    /// to one, which is when a background thread sleeping without a
+    /// deadline needs waking ([`note_empty`]).
+    pub fn set_oldest_empty(&self, dirty_at: u64) -> bool {
+        let old = self.oldest_empty.swap(dirty_at, Ordering::Relaxed);
+        old == 0 && dirty_at != 0
+    }
+
+    /// A member went `Empty` at `now`: record it as the oldest if none is
+    /// known. Returns `true` when it is the first (see
+    /// [`set_oldest_empty`]).
+    ///
+    /// [`set_oldest_empty`]: Decayer::set_oldest_empty
+    pub fn note_first_empty(&self, now: u64) -> bool {
+        if self.oldest_empty.load(Ordering::Relaxed) != 0 {
+            return false;
+        }
+        self.oldest_empty.store(now, Ordering::Relaxed);
+        true
+    }
+
+    /// Decay step: once the oldest `Empty` member is a step of the curve
+    /// old, run `walk(now, curve)` (which purges along the curve and
+    /// republishes the oldest `dirty_at`) at most once per step. Returns
+    /// the owner's next deadline (the end of the oldest member's first
+    /// step, or of the current step), `None` when nothing is `Empty`.
+    /// Lock-free unless a walk is due.
+    pub fn decay(&self, now: u64, decay_ns: u64, walk: impl FnOnce(u64, &Curve)) -> Option<u64> {
+        let oldest = self.oldest_empty();
+        if oldest == 0 {
+            return None;
+        }
+        let curve = Curve::new(decay_ns);
+        let step = curve.step_ns();
+        let first = oldest.saturating_add(step);
+        if now < first {
+            return Some(first);
+        }
+        // A deadline further away than one step was set under a longer
+        // period since shortened: walk now.
+        let next = self.next_walk.load(Ordering::Relaxed);
+        if now < next && next - now <= step {
+            return Some(next);
+        }
+        walk(now, &curve);
+        let next = now.saturating_add(step);
+        self.next_walk.store(next, Ordering::Relaxed);
+        if self.oldest_empty() == 0 { None } else { Some(next) }
+    }
+}
+
+impl Default for Decayer {
+    fn default() -> Decayer {
+        Decayer::new()
     }
 }
 
