@@ -817,10 +817,25 @@ mod tests {
         assert!(!bare.status.success(), "libc_api passed without libchalloc preloaded");
 
         let run = Command::new(&out).env("LD_PRELOAD", &so).output().unwrap();
-        let _ = std::fs::remove_file(&out);
         let stdout = String::from_utf8_lossy(&run.stdout);
         let stderr = String::from_utf8_lossy(&run.stderr);
         assert!(run.status.success(), "libc_api failed\nstdout: {stdout}\nstderr: {stderr}");
+        assert!(stdout.contains("ok libc_api"), "stdout: {stdout}");
+
+        // `errno` across the `free` that creates the background thread
+        // (plan Phase 1.5 task 10c): the thread is requested by the
+        // configuration and created by a periodic tick, which the mode
+        // arranges to land in a free.
+        let run = Command::new(&out)
+            .arg("background")
+            .env("LD_PRELOAD", &so)
+            .env("MALLOC_CONF", "abort_conf:true,background_thread:true")
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_file(&out);
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        let stderr = String::from_utf8_lossy(&run.stderr);
+        assert!(run.status.success(), "libc_api background failed\nstdout: {stdout}\nstderr: {stderr}");
         assert!(stdout.contains("ok libc_api"), "stdout: {stdout}");
 
         for cmd in [

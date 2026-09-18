@@ -484,6 +484,14 @@ fn c_fork_alloc() {
     run_c("fork_alloc", &[]);
 }
 
+/// `tests/c/fork_alloc.c mallctl` (plan Phase 1.5 task 10a): forks while
+/// other threads hold the statistics and explicit-cache locks; every child
+/// must call `epoch` and `tcache.create` itself and exit 0 within its alarm.
+#[test]
+fn c_fork_alloc_under_mallctl() {
+    run_c("fork_alloc", &["mallctl"]);
+}
+
 /// A signal handler that forks, delivered while this thread is inside the
 /// fork handlers with every allocator lock held (the race in glibc's
 /// `tst-mallocfork`, made deterministic).

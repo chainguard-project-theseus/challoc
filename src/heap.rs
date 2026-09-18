@@ -1983,9 +1983,12 @@ impl Heap {
     }
 }
 
-/// Destructor of the thread-exit key: flush and free the exiting thread's
-/// heap, then mark the thread as exited so a later allocation from another
-/// key's destructor is served without a heap.
+/// Destructor of the thread-exit key: mark the thread as exited, then flush
+/// and free its heap. The sentinel goes first so that anything allocating
+/// on this thread from here on (a signal handler landing in the middle of
+/// `Heap::destroy`, another key's destructor afterwards) is served without
+/// a heap instead of reaching the one being freed through `existing_heap`
+/// (review 2026-09-18 item 12).
 ///
 /// # Safety
 /// `p` is the heap pointer registered with `pthread_setspecific` by
@@ -1993,12 +1996,12 @@ impl Heap {
 #[cfg(target_os = "linux")]
 pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
     let h = p as *mut Heap;
+    crate::tls::set(TLS_EXITED as *mut c_void);
     // SAFETY: the pointer was registered by `heap_for_thread` for this thread.
     unsafe {
         let shared = &*(*h).shared;
         Heap::destroy(h, shared);
     }
-    crate::tls::set(TLS_EXITED as *mut c_void);
 }
 
 /// The calling thread's heap, created on first use. `None` when the thread

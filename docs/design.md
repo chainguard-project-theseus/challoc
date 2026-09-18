@@ -537,15 +537,28 @@ written through `mallctl`. It is a plain `clone`-based thread created through
 `pthread_create` from the slow path that requested it, never from init. It
 sleeps on a futex with a timeout equal to the next decay deadline, wakes on
 PSI events when armed (section 11), and after `fork` is not recreated in the
-child until the child asks for it again. Its stack is allocated from the
-metadata region.
+child until the child asks for it again. Its stack is one reservation in the
+metadata region, made by the first start and never freed: a thread that was
+stopped (`background_thread:false`) exits at its next wake-up, and the next
+start joins it before creating the new thread on the same stack, so nothing
+ever runs on the stack while it changes hands. A fork child forgets the
+parent's thread (it does not exist there) and reuses the stack directly.
+Creating the thread from a `free` slow path saves and restores `errno`
+around the pthread calls, since `free` must leave it alone (section 1).
 
 ## 9. Fork
 
 `pthread_atfork` handlers registered at init: the prepare handler blocks every
-signal on the forking thread, then takes every class lock, the huge lock, the
-metadata lock, and the background thread's state lock in a fixed order; parent
-and child handlers release them and restore the signal mask. The blocking is
+signal on the forking thread, then takes every lock in the allocator in
+nesting order: the explicit-cache table lock (held across heap creation and
+destruction, so outermost), the arena creation lock, every arena's class
+locks and slab-set lock, the slab table locks, the huge lock, the metadata
+lock, the process and per-arena statistics locks (leaves, taken by `epoch`
+and `malloc_stats_print` with nothing else held), and the background thread's
+state lock last; parent and child handlers release them in reverse and
+restore the signal mask. A unit test derives the list of `Lock` fields from
+the source tree and checks each against the handlers, so a lock added later
+fails the test until the handler takes it. The blocking is
 needed because glibc restores the caller's mask before the parent handlers
 run, so a handler delivered there that forks (glibc's `tst-mallocfork`) would
 otherwise re-enter prepare with the locks held by its own thread. The

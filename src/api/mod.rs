@@ -206,9 +206,18 @@ fn init() {
 /// Block signals, then take every allocator lock so the child inherits a
 /// consistent heap and no signal handler on this thread can re-enter the
 /// allocator (or fork again) while the locks are held.
+///
+/// The order is the nesting order (design section 9): the explicit-cache
+/// table lock is held across heap creation and destruction, which take the
+/// arena creation lock, class locks and the metadata lock; the statistics
+/// locks are leaves (`stats.rs` takes each with nothing else held) and
+/// the background thread's state lock comes last. The test
+/// `fork_handlers_take_and_release_every_lock` derives the list of locks
+/// from the source tree, so a new `Lock` fails it until it is added here.
 extern "C" fn fork_prepare() {
     let mask = sys::block_all_signals();
     let s = shared();
+    s.tcaches.raw_lock().lock();
     s.arenas.raw_lock().lock();
     for a in s.arenas.iter() {
         for c in 0..NCLASSES {
@@ -221,6 +230,10 @@ extern "C" fn fork_prepare() {
     }
     s.huge.raw_lock().lock();
     s.meta.raw_lock().lock();
+    s.stats.raw().lock();
+    for a in s.arenas.iter() {
+        a.stats_raw_lock().lock();
+    }
     purge::background::fork_lock();
     // SAFETY: every allocator lock is held, so no other forking thread can
     // touch the slot until `fork_release` has read it (see `FORK_SIGMASK`).
@@ -235,14 +248,20 @@ fn fork_release() {
     // and still ours because every lock is held until the unlocks below.
     let mask = unsafe { (*FORK_SIGMASK.0.get()).assume_init() };
     purge::background::fork_unlock();
+    // Arenas cannot appear while the creation lock is held, so this is the
+    // same set `fork_prepare` locked, in reverse.
+    let n = s.arenas.count() as usize;
+    for i in (0..n).rev() {
+        if let Some(a) = s.arenas.get_existing(i as u16) {
+            a.stats_raw_lock().unlock();
+        }
+    }
+    s.stats.raw().unlock();
     s.meta.raw_lock().unlock();
     s.huge.raw_lock().unlock();
     for c in (0..NCLASSES).rev() {
         s.tables()[c].raw_lock().unlock();
     }
-    // Arenas cannot appear while the creation lock is held, so this is the
-    // same set `fork_prepare` locked, in reverse.
-    let n = s.arenas.count() as usize;
     for i in (0..n).rev() {
         if let Some(a) = s.arenas.get_existing(i as u16) {
             a.sets().raw_lock().unlock();
@@ -252,6 +271,7 @@ fn fork_release() {
         }
     }
     s.arenas.raw_lock().unlock();
+    s.tcaches.raw_lock().unlock();
     sys::set_signal_mask(mask);
 }
 
@@ -276,6 +296,7 @@ extern "C" fn fork_child() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::string::String;
     use std::thread;
     use std::vec::Vec;
 
@@ -299,42 +320,155 @@ mod tests {
     /// harness runs tests in parallel, so they take turns.
     static FORK_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// Every `Lock<..>` (or bare `RawLock`) field and static in `src/`, as
+    /// `file:Owner.field` (`file:static.NAME` for statics), read from the
+    /// source tree so the fork handlers cannot miss a lock added later.
+    /// `lock.rs` defines the types and is skipped; so is each file's
+    /// `mod tests`.
+    fn lock_inventory() -> Vec<String> {
+        use std::string::ToString;
+        fn walk(dir: &std::path::Path, rel: &str, out: &mut Vec<String>) {
+            let mut entries: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
+            entries.sort();
+            for path in entries {
+                let name = path.file_name().unwrap().to_str().unwrap().to_string();
+                let rel = if rel.is_empty() { name.clone() } else { std::format!("{rel}/{name}") };
+                if path.is_dir() {
+                    walk(&path, &rel, out);
+                    continue;
+                }
+                if !name.ends_with(".rs") || rel == "lock.rs" {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap();
+                let mut owner = String::new();
+                for line in text.lines() {
+                    let t = line.trim();
+                    if t == "mod tests {" {
+                        break;
+                    }
+                    if t.starts_with("//") || t.starts_with("use ") || t.contains(" fn ") || t.starts_with("fn ") {
+                        continue;
+                    }
+                    let decl = t.strip_prefix("pub(crate) ").or_else(|| t.strip_prefix("pub ")).unwrap_or(t);
+                    if let Some(rest) = decl.strip_prefix("struct ") {
+                        owner = rest.split(['<', '{', '(', ' ', ';']).next().unwrap().to_string();
+                        continue;
+                    }
+                    let is_lock = |ty: &str| ty.contains("Lock<") || ty.contains("RawLock");
+                    if let Some(rest) = decl.strip_prefix("static ") {
+                        if let Some((name, ty)) = rest.split_once(':') {
+                            if is_lock(ty) {
+                                out.push(std::format!("{rel}:static.{}", name.trim()));
+                            }
+                        }
+                        continue;
+                    }
+                    if let Some((name, ty)) = decl.split_once(':') {
+                        let name = name.trim();
+                        if !name.is_empty()
+                            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                            && is_lock(ty)
+                            && !ty.contains("->")
+                        {
+                            out.push(std::format!("{rel}:{owner}.{name}"));
+                        }
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), "", &mut out);
+        out.sort();
+        out
+    }
+
+    /// The locks `fork_prepare` takes, keyed as in [`lock_inventory`].
+    /// Adding a lock to the crate means adding it here *and* to the
+    /// handlers; `assert_locks` refuses a key it has no assertion for.
+    const FORK_LOCKS: &[&str] = &[
+        "arena.rs:Arena.stats",
+        "arena.rs:Arenas.lock",
+        "arena.rs:Tcaches.lock",
+        "class.rs:ClassState.inner",
+        "class.rs:SetTable.tables",
+        "class.rs:SlabTable.inner",
+        "heap.rs:Shared.stats",
+        "huge.rs:Huge.inner",
+        "meta.rs:Meta.inner",
+        "purge.rs:static.STATE",
+    ];
+
+    /// Assert that every lock in [`FORK_LOCKS`] is held (`locked`) or free
+    /// (`!locked`), for the arenas in `arenas`.
+    fn assert_locks(s: &Shared, arenas: &[u16], locked: bool) {
+        let state = |held: bool, what: &str| {
+            assert_eq!(held, locked, "{what} {}", if locked { "not locked" } else { "still locked" });
+        };
+        for key in FORK_LOCKS {
+            match *key {
+                "arena.rs:Arena.stats" => {
+                    for &a in arenas {
+                        state(s.arena(a).unwrap().stats_raw_lock().is_locked(), &std::format!("arena {a} stats"));
+                    }
+                }
+                "arena.rs:Arenas.lock" => state(s.arenas.raw_lock().is_locked(), "arena registry"),
+                "arena.rs:Tcaches.lock" => state(s.tcaches.raw_lock().is_locked(), "tcache table"),
+                "class.rs:ClassState.inner" => {
+                    for &a in arenas {
+                        for c in 0..NCLASSES {
+                            state(s.arena(a).unwrap().classes[c].raw_lock().is_locked(), &std::format!("arena {a} class {c}"));
+                        }
+                    }
+                }
+                "class.rs:SetTable.tables" => {
+                    for &a in arenas {
+                        state(s.arena(a).unwrap().sets().raw_lock().is_locked(), &std::format!("arena {a} sets"));
+                    }
+                }
+                "class.rs:SlabTable.inner" => {
+                    for c in 0..NCLASSES {
+                        state(s.tables()[c].raw_lock().is_locked(), &std::format!("table {c}"));
+                    }
+                }
+                "heap.rs:Shared.stats" => state(s.stats.raw().is_locked(), "process stats"),
+                "huge.rs:Huge.inner" => state(s.huge.raw_lock().is_locked(), "huge"),
+                "meta.rs:Meta.inner" => state(s.meta.raw_lock().is_locked(), "meta"),
+                "purge.rs:static.STATE" => state(purge::background::is_locked(), "background state"),
+                other => panic!("no fork-handler assertion for lock {other}"),
+            }
+        }
+    }
+
+    /// The set of locks the handlers cover is exactly the set of locks in
+    /// the crate (plan Phase 1.5 task 10a).
+    #[test]
+    fn fork_lock_list_matches_the_source_tree() {
+        let found = lock_inventory();
+        let mut want: Vec<String> = FORK_LOCKS.iter().map(|k| std::string::ToString::to_string(k)).collect();
+        want.sort();
+        assert_eq!(
+            found, want,
+            "locks in src/ differ from the fork handlers' list: add every new lock to \
+             fork_prepare/fork_release in nesting order, to FORK_LOCKS and to assert_locks"
+        );
+    }
+
     #[test]
     fn fork_handlers_take_and_release_every_lock() {
         let _serial = FORK_TEST.lock().unwrap();
         let s = shared();
         // A second arena so the handlers have more than arena 0 to cover.
         let extra = s.arenas.create(s).unwrap();
+        let arenas = [0, extra];
         fork_prepare();
-        assert!(s.arenas.raw_lock().is_locked());
-        for a in [0, extra] {
-            for c in 0..NCLASSES {
-                assert!(s.arena(a).unwrap().classes[c].raw_lock().is_locked(), "arena {a} class {c} not locked");
-            }
-        }
-        for c in 0..NCLASSES {
-            assert!(s.tables()[c].raw_lock().is_locked(), "table {c} not locked");
-        }
-        assert!(s.huge.raw_lock().is_locked());
-        assert!(s.meta.raw_lock().is_locked());
-        assert!(purge::background::is_locked());
+        assert_locks(s, &arenas, true);
         fork_parent();
-        assert!(!s.arenas.raw_lock().is_locked());
-        for a in [0, extra] {
-            for c in 0..NCLASSES {
-                assert!(!s.arena(a).unwrap().classes[c].raw_lock().is_locked(), "arena {a} class {c} still locked");
-            }
-        }
-        for c in 0..NCLASSES {
-            assert!(!s.tables()[c].raw_lock().is_locked(), "table {c} still locked");
-        }
-        assert!(!s.huge.raw_lock().is_locked());
-        assert!(!s.meta.raw_lock().is_locked());
-        assert!(!purge::background::is_locked());
+        assert_locks(s, &arenas, false);
         fork_prepare();
+        assert_locks(s, &arenas, true);
         fork_child();
-        assert!(!s.meta.raw_lock().is_locked());
-        assert!(!purge::background::is_locked());
+        assert_locks(s, &arenas, false);
         assert!(!purge::background::present());
         assert!(!purge::background::requested());
     }
@@ -396,12 +530,17 @@ mod tests {
 
         // The child handler forgets the thread and the request. The thread
         // itself keeps running in this (parent) process, so withdraw the
-        // request again to kick it: it exits at that wake-up.
+        // request again to kick it: it exits at that wake-up. The handler
+        // dropped its record (a real child has no such thread), so this
+        // process joins it by hand to keep glibc's view of the stack
+        // consistent with the next `start`.
+        let thread = purge::background::thread().expect("a thread record");
         fork_prepare();
         fork_child();
         assert!(!purge::background::present());
         assert!(!purge::background::requested());
         assert!(!purge::background::is_locked());
+        assert!(purge::background::thread().is_none());
         purge::background::request(false);
         let mut gone = false;
         for _ in 0..400 {
@@ -412,6 +551,43 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         assert!(gone, "background thread still running: {:?}", tasks());
+        assert_eq!(unsafe { ::libc::pthread_join(thread, core::ptr::null_mut()) }, 0);
+    }
+
+    /// One stack for the life of the process (plan Phase 1.5 task 10d): a
+    /// stop/start cycle joins the exited thread and hands the same
+    /// reservation to the next one, so toggling `background_thread` does
+    /// not grow the metadata region.
+    #[test]
+    fn background_stack_is_reused_across_restarts() {
+        fn wait_absent() {
+            for _ in 0..400 {
+                if !purge::background::present() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            panic!("background thread did not stop");
+        }
+        let _serial = FORK_TEST.lock().unwrap();
+        let s = shared();
+        assert!(!purge::background::present());
+        purge::background::request(true);
+        assert!(purge::background::start(s), "background thread did not start");
+        let stack = purge::background::stack();
+        assert_ne!(stack, 0);
+        for cycle in 0..8 {
+            purge::background::request(false);
+            wait_absent();
+            purge::background::request(true);
+            assert!(purge::background::start(s), "restart {cycle} failed");
+            assert!(purge::background::present());
+            assert_eq!(purge::background::stack(), stack, "restart {cycle} took a new stack");
+        }
+        purge::background::request(false);
+        wait_absent();
+        assert!(purge::background::join_exited());
+        assert!(purge::background::thread().is_none());
     }
 
     /// The handlers block every signal while the locks are held and restore

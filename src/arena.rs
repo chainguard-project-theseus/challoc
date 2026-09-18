@@ -230,6 +230,12 @@ impl Arena {
         *self.stats.lock() = *s;
     }
 
+    /// The statistics lock, for the fork handlers (a leaf: never held
+    /// while another lock is taken).
+    pub fn stats_raw_lock(&self) -> &crate::lock::RawLock {
+        self.stats.raw()
+    }
+
     #[inline]
     /// The arena's slab set table (fork handlers, tests).
     pub fn sets(&self) -> &SetTable {
@@ -509,6 +515,14 @@ impl Tcaches {
                 ptr::write(&raw mut (*table)[i], AtomicPtr::new(ptr::null_mut()));
             }
         }
+    }
+
+    /// The table lock, for the fork handlers. It is the outermost
+    /// allocator lock: `create` and `destroy` hold it across
+    /// `Heap::create_detached` / `Heap::destroy`, which take the arena
+    /// creation, class and metadata locks.
+    pub fn raw_lock(&self) -> &crate::lock::RawLock {
+        self.lock.raw()
     }
 
     /// `tcache.create`: a new explicit cache, home arena `arena`. `None`

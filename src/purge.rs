@@ -412,9 +412,15 @@ pub mod background {
     struct State {
         present: bool,
         creating: bool,
+        /// The one stack, reserved by the first `start` and reused by every
+        /// later one (review 2026-09-18 item 14); 0 until then.
+        stack: usize,
+        /// The last thread created on that stack, until it has been joined.
+        /// `None` in a fork child, whose copy of the stack has no thread.
+        thread: Option<::libc::pthread_t>,
     }
 
-    static STATE: Lock<State> = Lock::new(State { present: false, creating: false });
+    static STATE: Lock<State> = Lock::new(State { present: false, creating: false, stack: 0, thread: None });
     /// Mirror of `STATE.present` for the lock-free check on every tick.
     static PRESENT: AtomicBool = AtomicBool::new(false);
     /// `background_thread:true` (or, later, `mallctl("background_thread")`).
@@ -461,8 +467,13 @@ pub mod background {
     /// Create the thread if it does not exist. `true` if one exists on
     /// return; `false` if creation failed or is in progress on another
     /// thread (the caller then purges in the foreground for this tick).
+    ///
+    /// `errno` is preserved: this runs from `free`'s slow path (design
+    /// section 1 promises `free` leaves `errno` alone) and glibc's
+    /// `pthread_create` / `pthread_join` may set it on their way (review
+    /// 2026-09-18 item 13).
     pub fn start(shared: &Shared) -> bool {
-        {
+        let (stack, previous) = {
             let mut g = STATE.lock();
             if g.present {
                 return true;
@@ -471,55 +482,125 @@ pub mod background {
                 return false;
             }
             g.creating = true;
-        }
-        let ok = create(shared);
+            (g.stack, g.thread.take())
+        };
+        // SAFETY: `__errno_location` returns this thread's `errno`.
+        let errno = unsafe { ::libc::__errno_location() };
+        let saved_errno = unsafe { *errno };
+        let (stack, thread) = create(shared, stack, previous);
+        unsafe { *errno = saved_errno };
         let mut g = STATE.lock();
         g.creating = false;
-        g.present = ok;
-        PRESENT.store(ok, Ordering::Relaxed);
-        ok
+        g.stack = stack;
+        g.thread = thread;
+        g.present = thread.is_some();
+        PRESENT.store(g.present, Ordering::Relaxed);
+        g.present
     }
 
-    fn create(shared: &Shared) -> bool {
+    /// Create the thread on `stack` (reserving the stack first if there is
+    /// none yet), after joining `previous`. Returns the stack (kept even
+    /// when creation fails, for the next attempt) and the new thread.
+    fn create(shared: &Shared, stack: usize, previous: Option<::libc::pthread_t>) -> (usize, Option<::libc::pthread_t>) {
         let page = shared.regions.page_size();
-        // Reserved, then committed above the lowest page, which stays
-        // `PROT_NONE` as the guard. Never freed: the thread never exits
-        // while its stack could be in use (it only stops at a wake-up).
-        let Some(stack) = shared.meta.reserve(STACK_SIZE, page) else { return false };
-        if shared.meta.commit(stack + page, STACK_SIZE - page).is_err() {
-            return false;
+        // The TLS slot is parked on `TLS_CREATING` for the pthread calls:
+        // `pthread_create` allocates the new thread's DTV with `calloc`
+        // and `pthread_join` frees an exited thread's key data, neither of
+        // which may re-enter this thread's heap mid-operation.
+        let saved = crate::tls::get();
+        let park = saved as usize > TLS_EXITED;
+        if park {
+            crate::tls::set(TLS_CREATING as *mut c_void);
         }
+        // The previous thread exited at a wake-up (`request(false)`) but
+        // glibc's exit path still runs on the stack until the kernel has
+        // reaped it; the join returns only then, so nothing runs on the
+        // stack when it is handed to the next thread. A fork child never
+        // has a `previous`: its copy of the stack carries no thread.
+        if let Some(t) = previous {
+            // SAFETY: a joinable thread this module created and never joined.
+            let rc = unsafe { ::libc::pthread_join(t, core::ptr::null_mut()) };
+            if rc != 0 {
+                sys::abort_fmt(format_args!("challoc: pthread_join of the background thread failed: {}", sys::Errno(rc)));
+            }
+        }
+        // Reserved once, then committed above the lowest page, which stays
+        // `PROT_NONE` as the guard. Never freed: the thread never exits
+        // while its stack could be in use, and a restart reuses the same
+        // reservation after the join above.
+        let stack = if stack != 0 {
+            Some(stack)
+        } else {
+            shared.meta.reserve(STACK_SIZE, page).filter(|&s| shared.meta.commit(s + page, STACK_SIZE - page).is_ok())
+        };
+        let thread = match stack {
+            Some(stack) => spawn(shared, stack + page, STACK_SIZE - page),
+            None => None,
+        };
+        if park {
+            crate::tls::set(saved);
+        }
+        (stack.unwrap_or(0), thread)
+    }
+
+    /// `pthread_create` on the committed `[base, base + len)`, joinable so
+    /// a restart can wait for its exit. Signals are blocked so the new
+    /// thread inherits an empty mask and never runs an application handler.
+    fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t> {
         // SAFETY: plain pthread attribute calls on a local; the stack is
-        // ours and committed. Signals are blocked so the new thread
-        // inherits an empty mask and never runs an application handler.
-        // The TLS slot is parked on `TLS_CREATING` because
-        // `pthread_create` allocates the new thread's DTV with `calloc`,
-        // which must not re-enter this thread's heap mid-operation.
+        // ours and committed.
         unsafe {
             let mut attr: ::libc::pthread_attr_t = core::mem::zeroed();
             if ::libc::pthread_attr_init(&mut attr) != 0 {
-                return false;
+                return None;
             }
-            let mut ok = ::libc::pthread_attr_setstack(&mut attr, (stack + page) as *mut c_void, STACK_SIZE - page) == 0
-                && ::libc::pthread_attr_setdetachstate(&mut attr, ::libc::PTHREAD_CREATE_DETACHED) == 0;
-            if ok {
-                let saved = crate::tls::get();
-                let park = saved as usize > TLS_EXITED;
-                if park {
-                    crate::tls::set(TLS_CREATING as *mut c_void);
-                }
+            let mut thread = None;
+            if ::libc::pthread_attr_setstack(&mut attr, base as *mut c_void, len) == 0 {
                 let mask = sys::block_all_signals();
                 let mut tid: ::libc::pthread_t = 0;
                 let rc = ::libc::pthread_create(&mut tid, &attr, main, shared as *const Shared as *mut c_void);
                 sys::set_signal_mask(mask);
-                if park {
-                    crate::tls::set(saved);
+                if rc == 0 {
+                    thread = Some(tid);
                 }
-                ok = rc == 0;
             }
             ::libc::pthread_attr_destroy(&mut attr);
-            ok
+            thread
         }
+    }
+
+    /// Join the recorded thread if it has exited (`request(false)` and
+    /// its wake-up have happened) and forget it, so the stack is known to
+    /// be idle without waiting for the next `start`. `false` if there is
+    /// no thread to join or it is still present. Used by the tests that
+    /// drive `fork_child` in-process: dropping the record of a thread that
+    /// exists in *this* process would leave it unjoined for good.
+    pub fn join_exited() -> bool {
+        let t = {
+            let mut g = STATE.lock();
+            if g.present || g.creating {
+                return false;
+            }
+            g.thread.take()
+        };
+        match t {
+            Some(t) => {
+                // SAFETY: a joinable thread this module created and never joined.
+                assert_eq!(unsafe { ::libc::pthread_join(t, core::ptr::null_mut()) }, 0);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The stack reservation (0 before the first start), for tests.
+    pub fn stack() -> usize {
+        STATE.lock().stack
+    }
+
+    /// The last thread created and not yet joined, for tests.
+    pub fn thread() -> Option<::libc::pthread_t> {
+        STATE.lock().thread
     }
 
     extern "C" fn main(arg: *mut c_void) -> *mut c_void {
@@ -573,6 +654,11 @@ pub mod background {
         let st = unsafe { STATE.get_unlocked() };
         st.present = false;
         st.creating = false;
+        // The parent's thread does not exist here and its `pthread_t`
+        // must never be joined (the wait would be on a thread id the
+        // kernel never clears in this process); the stack is kept and is
+        // free to reuse, nothing runs on the child's copy of it.
+        st.thread = None;
         PRESENT.store(false, Ordering::Relaxed);
         REQUESTED.store(false, Ordering::Relaxed);
     }

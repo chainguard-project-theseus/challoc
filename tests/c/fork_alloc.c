@@ -5,9 +5,24 @@
  * handlers), fork a grandchild, and exit cleanly; the parent keeps
  * allocating throughout, including from other threads that are mid-malloc
  * at the moment of the fork.
+ *
+ * `fork_alloc mallctl` (plan Phase 1.5 task 10a) forks while other threads
+ * loop on `mallctl("epoch")` and `tcache.create`/`tcache.destroy`, the
+ * calls that take the statistics and explicit-cache locks the fork handler
+ * used to skip. Each child allocates, calls `epoch` and creates and
+ * destroys a cache itself; a child that inherits one of those locks held
+ * by a thread that no longer exists hangs, so it runs under an alarm and
+ * the parent kills anything the alarm missed, and both count as failures
+ * instead of a hang.
  */
 #include "common.h"
+#include <signal.h>
 #include <sys/wait.h>
+#include <time.h>
+
+/* Weak so the program links against libc alone; under the preload they
+ * resolve to libchalloc.so (the pattern of jemalloc_api.c). */
+extern int mallctl(const char *, void *, size_t *, void *, size_t) __attribute__((weak));
 
 #define INHERITED 64
 
@@ -162,9 +177,122 @@ static void *forker(void *arg)
     return NULL;
 }
 
-int main(void)
+/* ---- mallctl mode ------------------------------------------------------ */
+
+static int mallctl_epoch(void)
+{
+    uint64_t epoch = 1;
+    size_t sz = sizeof epoch;
+    return mallctl("epoch", &epoch, &sz, &epoch, sizeof epoch);
+}
+
+/* A thread that keeps the statistics and explicit-cache locks busy. */
+static void *mallctl_churn(void *arg)
+{
+    uint64_t rng = 0x3A11 ^ (uintptr_t)arg;
+    long rounds = 0;
+    while (!stop) {
+        REQUIRE(mallctl_epoch() == 0, "epoch");
+        unsigned id;
+        size_t sz = sizeof id;
+        REQUIRE(mallctl("tcache.create", &id, &sz, NULL, 0) == 0, "tcache.create");
+        if (rng_next(&rng) % 4 == 0) {
+            void *p = malloc((size_t)(rng_next(&rng) % 3000) + 1);
+            REQUIRE(p, "mallctl churn malloc");
+            free(p);
+        }
+        REQUIRE(mallctl("tcache.destroy", NULL, NULL, &id, sizeof id) == 0, "tcache.destroy");
+        rounds++;
+    }
+    return (void *)rounds;
+}
+
+/* Runs in the child: the calls whose locks the fork must have released. */
+static int mallctl_child(void)
+{
+    alarm(20);
+    void *p = malloc(100);
+    if (!p)
+        return 30;
+    free(p);
+    if (mallctl_epoch() != 0)
+        return 31;
+    unsigned id;
+    size_t sz = sizeof id;
+    if (mallctl("tcache.create", &id, &sz, NULL, 0) != 0)
+        return 32;
+    if (mallctl("tcache.destroy", NULL, NULL, &id, sizeof id) != 0)
+        return 33;
+    if (!churn(0xF0, 1))
+        return 34;
+    return 0;
+}
+
+/* waitpid with a deadline: a child still alive after `secs` is killed and
+ * reported as such. */
+static int wait_child(pid_t pid, int *status, int secs)
+{
+    struct timespec deadline;
+    clock_gettime(CLOCK_MONOTONIC, &deadline);
+    deadline.tv_sec += secs;
+    for (;;) {
+        pid_t r = waitpid(pid, status, WNOHANG);
+        if (r == pid)
+            return 1;
+        if (r < 0)
+            return 0;
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        if (now.tv_sec > deadline.tv_sec || (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) {
+            fprintf(stderr, "child %d still alive after %d s: killing it\n", (int)pid, secs);
+            kill(pid, SIGKILL);
+            waitpid(pid, status, 0);
+            return 0;
+        }
+        struct timespec ts = {0, 200000};
+        nanosleep(&ts, NULL);
+    }
+}
+
+static int mallctl_mode(void)
+{
+    REQUIRE(mallctl != NULL, "mallctl not exported");
+    enum { T = 3, ROUNDS = 200 };
+    pthread_t th[T];
+    for (int i = 0; i < T; i++)
+        REQUIRE(pthread_create(&th[i], NULL, mallctl_churn, (void *)(uintptr_t)i) == 0, "mallctl thread");
+    /* Let the threads reach their loops before the first fork. */
+    struct timespec ts = {0, 20000000};
+    nanosleep(&ts, NULL);
+    for (int round = 0; round < ROUNDS; round++) {
+        pid_t pid = fork();
+        REQUIRE(pid >= 0, "fork round %d", round);
+        if (pid == 0)
+            _exit(mallctl_child());
+        int status = 0;
+        CHECK(wait_child(pid, &status, 30), "mallctl child round %d did not finish", round);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "mallctl child round %d status %#x (code %d)", round,
+              status, WIFEXITED(status) ? WEXITSTATUS(status) : -1);
+        if (failures)
+            break;
+    }
+    stop = 1;
+    long total = 0;
+    for (int i = 0; i < T; i++) {
+        void *r = NULL;
+        pthread_join(th[i], &r);
+        total += (long)(uintptr_t)r;
+    }
+    printf("fork_alloc: mallctl mode, %d forks, %ld epoch/tcache rounds in %d threads\n", ROUNDS, total, T);
+    return finish("fork_alloc");
+}
+
+int main(int argc, char **argv)
 {
     require_challoc();
+    if (argc > 1 && strcmp(argv[1], "mallctl") == 0)
+        return mallctl_mode();
+    REQUIRE(argc == 1, "unknown mode %s", argv[1]);
     make_inherited();
 
     enum { BG = 3 };

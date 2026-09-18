@@ -13,6 +13,7 @@
 #include <errno.h>
 #include <malloc.h>
 #include <pthread.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -192,6 +193,59 @@ static void test_errno(void)
     CHECK(posix_memalign(&q, 16, huge_n / 2) == ENOMEM, "posix_memalign ENOMEM");
 }
 
+/* ---- errno across a free that starts the background thread ------------ */
+
+/* Weak: the program links against libc alone and the reference binds to
+ * libchalloc.so under the preload. */
+extern int mallctl(const char *, void *, size_t *, void *, size_t) __attribute__((weak));
+
+static int background_present(void)
+{
+    bool present = false;
+    size_t sz = sizeof present;
+    CHECK(mallctl("background_thread", &present, &sz, NULL, 0) == 0, "mallctl(background_thread) read");
+    return present;
+}
+
+/* Under MALLOC_CONF=background_thread:true the thread is created by the
+ * first periodic tick after init, never by init itself (design 8.1), and
+ * the periodic work runs every 64 slow paths of a heap (PERIODIC_EVERY).
+ * A fresh thread starts at zero: 64-byte blocks are cached 1024 deep
+ * (MAX_CAP) and refilled 512 at a time, so allocating 20480 of them costs
+ * 40 slow paths (plus a scheduled probe per 4096 allocations), and freeing
+ * them costs one slow path per 512 once the cache is full, 38 more. The
+ * 64th slow path of this thread is therefore a `free` (measured: the
+ * thread appears between the 7680th and the 10240th free), and that free
+ * creates the background thread (`pthread_create`, which may touch errno).
+ * The two `background_present` checks make the test fail loudly, rather
+ * than stop covering the path, if those constants move. */
+static void *errno_background_thread(void *arg)
+{
+    (void)arg;
+    enum { N = 20480 };
+    static void *blocks[N];
+    for (int i = 0; i < N; i++) {
+        blocks[i] = malloc(64);
+        CHECK(blocks[i] != NULL, "malloc(64) #%d", i);
+    }
+    CHECK(!background_present(), "background thread present before the frees: the allocations reached the tick");
+    errno = 42;
+    for (int i = 0; i < N; i++)
+        free(blocks[i]);
+    CHECK(errno == 42, "a free that started the background thread changed errno to %d", errno);
+    CHECK(background_present(), "the frees did not start the background thread: the path is not covered");
+    return NULL;
+}
+
+static void test_errno_background(void)
+{
+    CHECK(mallctl != NULL, "mallctl not exported");
+    CHECK(!background_present(), "background thread present at start");
+    pthread_t th;
+    CHECK(pthread_create(&th, NULL, errno_background_thread, NULL) == 0, "errno thread");
+    pthread_join(th, NULL);
+}
+
 /* ---- threads: cross-thread frees, exit with full caches ---------------- */
 
 #define PER_THREAD 2000
@@ -314,7 +368,7 @@ static void test_fork(void)
     free(inherited);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
     void *probe = malloc(1);
     if (malloc_usable_size(probe) != QUANTUM || dlsym(RTLD_DEFAULT, "challoc_tls_get") == NULL) {
@@ -322,6 +376,17 @@ int main(void)
         return 1;
     }
     free(probe);
+
+    /* `libc_api background`, run with MALLOC_CONF=background_thread:true. */
+    if (argc > 1 && strcmp(argv[1], "background") == 0) {
+        test_errno_background();
+        if (failures) {
+            fprintf(stderr, "%d failures\n", failures);
+            return 1;
+        }
+        puts("ok libc_api");
+        return 0;
+    }
 
     test_basic();
     test_calloc();
