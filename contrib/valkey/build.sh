@@ -57,6 +57,8 @@ step "challoc (quantum8) -> $CHALLOC_TARGET"
 cargo build --release --target-dir "$CHALLOC_TARGET" --no-default-features --features quantum8
 LIB=$CHALLOC_TARGET/release
 [ -f "$LIB/libchalloc.so" ] || { echo "valkey/build.sh: $LIB/libchalloc.so missing" >&2; exit 1; }
+readelf -d "$LIB/libchalloc.so" | grep -q 'Library soname: \[libchalloc.so.0\]' \
+    || { echo "valkey/build.sh: $LIB/libchalloc.so has no libchalloc.so.0 soname" >&2; exit 1; }
 # `-lchalloc` resolves the file; the loader then wants the soname next to it.
 ln -sf libchalloc.so "$LIB/libchalloc.so.0"
 
@@ -90,6 +92,10 @@ git diff --stat | tail -1
 # 3. Build. CFLAGS/LDFLAGS are what Valkey's Makefile already honours; the
 # patch itself only adds -DUSE_JEMALLOC -DUSE_CHALLOC and -lchalloc.
 step "make MALLOC=challoc BUILD_TLS=yes -j$JOBS"
+# Valkey's Makefile does not list libchalloc.so among valkey-server's
+# prerequisites, so a cached tree keeps a binary linked against an older
+# library (and its DT_NEEDED). Drop the linked binaries; the objects stay.
+rm -f src/valkey-server src/valkey-cli src/valkey-benchmark
 make -j"$JOBS" MALLOC=challoc BUILD_TLS=yes \
     CFLAGS="-I$INCLUDE" LDFLAGS="-L$LIB -Wl,-rpath,$LIB" \
     all > "$LOGS/build-$ARCH.log" 2>&1 || { tail -40 "$LOGS/build-$ARCH.log"; exit 1; }
