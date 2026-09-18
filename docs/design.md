@@ -349,7 +349,9 @@ reads; halving the flush rate halves those misses (Phase 0 acceptance,
 (the sized path; Phase 1.5 task 4e):
 1. If `p` is null return. `c_hint = class_for(n, align)` (`None` for a huge
    size). Compute class, slab and slot as in `free` step 2; if `p` is not a
-   slot start in a committed slab, or its class is not `c_hint`, slow path.
+   slot start in a handed-out slab, or the slab is a guard slab (arithmetic
+   on the table line: a shift and a modulo), or its class is not `c_hint`,
+   slow path.
 2. `heap = tls()`; `cache = heap.caches[heap.arena][c]`; if `len == cap`,
    slow path. `slots[len++] = p`. Neither the bitmap word nor the owner
    word is loaded.
@@ -366,10 +368,16 @@ load touches the slab descriptor.
 The sized path skips that load, and with it the check: an invalid or double
 free through it is caught when the cache flushes the slot (the release
 clears every bit it was handed and aborts on one that is already clear,
-section 4), up to a cache's worth of frees later, and until then the slot
-can be handed out twice, as under jemalloc. The size check stands in for
-the bit test: a stale or foreign pointer that happens to be a slot start of
-the right class is the case that slips to the flush. Because the arena is
+section 4; a release into a guard slab or a `Fresh` slab, one the arena
+has not committed or never claimed from, aborts by name), up to a cache's
+worth of frees later, and until then the slot can be handed out twice, as
+under jemalloc. The size check stands in for the bit test: a stale or
+foreign pointer that happens to be a slot start of the right class, in a
+slab that is not a guard, is the case that slips to the flush. Whether a
+handed-out slab is below its arena's commit cursor is not knowable on this
+path (the cursor is under the class lock and the arena is not read), so a
+slot start in an uncommitted slab of a handed-out group is also caught at
+the flush. Because the arena is
 not read either, the home cache holds slots of any arena on this path; the
 flush (6.4) sorts the batch and releases each run of slabs through the
 arena the owner array names (`release_owned`), which costs nothing extra
@@ -704,7 +712,8 @@ as jemalloc documents: the class that `size` and `MALLOCX_LG_ALIGN` name is
 checked against the pointer's class at the call and a mismatch aborts
 (`challoc: sized free of ...: size hint N does not match the allocation`);
 the slot bit is not read, so an invalid or double free through `sdallocx`
-is detected at the cache flush, not at the call (6.3). A huge run passes
+is detected at the cache flush, not at the call (6.3); a slot start in a
+guard slab is rejected at the call. A huge run passes
 the size check and is judged by the huge allocator. `dallocx` has no size
 and is `free` with flags. C23 `free_sized` and `free_aligned_sized` follow
 the same rule with the size (and alignment) the allocation was requested

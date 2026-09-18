@@ -143,9 +143,10 @@ at the call; it does nothing yet).
 Through the sized path, `sdallocx(p, size, flags)`, C23 `free_sized` and
 `free_aligned_sized` (what Valkey frees with): the size is checked against
 the pointer's class at the call (a size that names another class aborts,
-`nallocx(size, flags) == sallocx(p)` is the contract), the slot bit is not
-read, and an invalid or double free is caught when the thread cache flushes
-the slot to its slab: at most a cache's worth of frees later (at once when the cache is
+`nallocx(size, flags) == sallocx(p)` is the contract), a slot start inside
+a guard slab aborts at the call, the slot bit is not read, and any other
+invalid or double free is caught when the thread cache flushes the slot to
+its slab: at most a cache's worth of frees later (at once when the cache is
 full or with `MALLOCX_TCACHE_NONE`). Between the call and that flush the
 slot can be handed out twice, which is jemalloc's behaviour for every free;
 if a `malloc` takes one copy before the flush the duplicate is not

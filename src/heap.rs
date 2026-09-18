@@ -735,15 +735,21 @@ impl Shared {
     }
 
     /// The sized free's check (`sdallocx`, `free_sized`; design 6.3): `p`
-    /// must be a slot start in a committed slab of the class the size hint
-    /// names, `hint` (`class_for(size, align)`, `None` for a huge size).
-    /// Arithmetic on the pointer and two dense lines (`class_base`,
-    /// `CLASSES`, the class table): the slab descriptor is not loaded, so
-    /// the bit test that makes plain `free` exact is left to the flush.
-    /// `None` for anything else; the slow path repeats the checks with
-    /// aborts ([`check_size_hint`], then [`classify_free`]). The arena is
-    /// not read either (it is on the descriptor line): the home cache takes
-    /// the slot and the flush routes it ([`release_routed`]).
+    /// must be a slot start in a handed-out, non-guard slab of the class
+    /// the size hint names, `hint` (`class_for(size, align)`, `None` for a
+    /// huge size). Arithmetic on the pointer and two dense lines
+    /// (`class_base`, `CLASSES`, the class table): the slab descriptor is
+    /// not loaded, so the bit test that makes plain `free` exact is left to
+    /// the flush. The guard test is arithmetic on the table line the
+    /// watermark load already brings in (plan Phase 1.5 task 9b); whether
+    /// the slab is below its arena's commit cursor is not knowable without
+    /// the arena (the cursor sits under the class lock), so a slot start in
+    /// a handed-out but uncommitted slab is caught at the flush, where the
+    /// descriptor says `Fresh` (`release_owned`). `None` for anything
+    /// else; the slow path repeats the checks with aborts
+    /// ([`check_size_hint`], then [`classify_free`]). The arena is not read
+    /// either (it is on the descriptor line): the home cache takes the
+    /// slot and the flush routes it ([`release_routed`]).
     ///
     /// [`check_size_hint`]: Shared::check_size_hint
     /// [`classify_free`]: Shared::classify_free
@@ -757,7 +763,7 @@ impl Shared {
         }
         // SAFETY: `slab_slot` only returns `class < NCLASSES`.
         let table = unsafe { self.tables.get_unchecked(class) };
-        if !table.is_handed_out(slab) {
+        if !table.is_handed_out(slab) || table.is_guard_slab(slab) {
             return None;
         }
         Some(class)
@@ -2178,6 +2184,18 @@ pub(crate) mod tests {
     }
 
     pub(crate) fn shared_with(config: Config) -> &'static Shared {
+        shared_with_guards(config, false)
+    }
+
+    /// `shared()` with guard slabs at the default interval (`guard_install`
+    /// as on a kernel with guard regions; a real reservation is needed, so
+    /// Linux only).
+    #[cfg(target_os = "linux")]
+    pub(crate) fn shared_guarded() -> &'static Shared {
+        shared_with_guards(Config { narenas: 1, ..Config::DEFAULT }, true)
+    }
+
+    fn shared_with_guards(config: Config, guard_install: bool) -> &'static Shared {
         #[cfg(target_os = "linux")]
         let (sb, mb, hb) = {
             use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
@@ -2198,7 +2216,7 @@ pub(crate) mod tests {
         };
         let regions = regions_at(align_up(sb, MAX_SLAB), (align_up(mb, PAGE), META_LEN), hb);
         let b: &'static mut MaybeUninit<Shared> = Box::leak(Box::new(MaybeUninit::uninit()));
-        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, config, false) });
+        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, config, guard_install) });
         unsafe { b.assume_init_ref() }
     }
 
@@ -2485,6 +2503,32 @@ pub(crate) mod tests {
     fn a_cached_pair_kept_by_the_split_is_caught_when_released() {
         let msg = cached_pair_flush_message(|rest| rest / 2);
         assert!(msg.contains("double free of") && !msg.contains("boundary"), "{msg}");
+    }
+
+    /// Plan Phase 1.5 task 9b: the sized fast path's check rejects a slot
+    /// start inside a guard slab (arithmetic on the table line), so the
+    /// exact slow path aborts instead of the guard memory being cached.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sized_slot_rejects_guard_slabs() {
+        let s = shared_guarded();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        let cs = s.arena0.class(c);
+        let n = CLASSES[c].nslots();
+        let interval = guard_interval_for(c, s.regions.page_size(), Config::DEFAULT.guard_slab_interval) as usize;
+        let all: Vec<*mut u8> = (0..(interval + 2) * n).map(|_| t.alloc(c)).collect();
+        let committed = cs.committed_slabs();
+        let guard = (0..committed).find(|&i| cs.is_guard_slab(i)).expect("a guard slab was passed");
+        let body = s.regions.slab_addr(c, guard) + s.regions.page_size().min(CLASSES[c].slab_size() / 2);
+        assert_eq!(s.sized_slot(all[0], Some(c)), Some(c));
+        assert_eq!(s.sized_slot(body as *mut u8, Some(c)), None, "guard slab {guard}");
+        assert_eq!(s.sized_slot(s.regions.slab_addr(c, committed) as *mut u8, Some(c)), None, "not handed out");
+        assert_eq!(s.sized_slot(all[0], Some(c + 1)), None, "wrong hint");
+        for p in all {
+            t.free(p);
+        }
+        t.destroy();
     }
 
     #[test]

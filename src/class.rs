@@ -395,7 +395,10 @@ pub struct SlabTable {
     class: u16,
     /// `log2(group)`.
     lg_group: u8,
-    _pad: [u8; 3],
+    /// `log2(slabs_per_page)`: the guard test on the sized fast path is a
+    /// shift and one modulo (`is_guard_slab`).
+    lg_slabs_per_page: u8,
+    _pad: [u8; 2],
     /// Every `guard_interval`-th page group is a guard group; 0 disables
     /// guards.
     guard_interval: u32,
@@ -622,7 +625,8 @@ impl SlabTable {
             slab_bits: cls.slab_bits() as u16,
             class: class as u16,
             lg_group: group.trailing_zeros() as u8,
-            _pad: [0; 3],
+            lg_slabs_per_page: slabs_per_page.trailing_zeros() as u8,
+            _pad: [0; 2],
             guard_interval,
             lg_page: regions.lg_page,
             desc_stride: desc_stride(class) as u32,
@@ -660,12 +664,17 @@ impl SlabTable {
     /// Whether `slab` is reserved as a guard slab. Guards are counted in
     /// page groups (see [`slabs_per_page`]): every `guard_interval`-th group
     /// is a guard group, and with one slab per page (the usual case) that is
-    /// every `guard_interval`-th slab.
+    /// every `guard_interval`-th slab. Arithmetic on the table line (a
+    /// shift and one 32-bit modulo), so the sized fast path can reject a
+    /// slot start in a guard slab without a memory access (plan Phase 1.5
+    /// task 9b): a guard slab's body past its first page is read-write
+    /// memory that was never handed out.
     ///
     /// [`slabs_per_page`]: SlabTable::slabs_per_page
-    #[inline]
+    #[inline(always)]
     pub fn is_guard_slab(&self, slab: usize) -> bool {
-        self.guard_interval != 0 && (slab / self.slabs_per_page as usize + 1) % self.guard_interval as usize == 0
+        let page_group = (slab >> self.lg_slabs_per_page) as u32;
+        self.guard_interval != 0 && page_group.wrapping_add(1) % self.guard_interval == 0
     }
 
     /// Slabs per page group; 1 unless the page is larger than the slab.
@@ -898,6 +907,9 @@ impl SlabTable {
     fn check_bit(&self, slab: usize, slot: usize, p: usize) {
         if slab >= self.committed_slabs() {
             never_committed(self.class as usize, slab);
+        }
+        if self.is_guard_slab(slab) {
+            guard_free(p, self.class as usize, slab);
         }
         debug_assert!(slot < self.class().nslots());
         // SAFETY: below the acquire-loaded watermark, slot below `nslots`.
@@ -1511,6 +1523,20 @@ impl ClassState {
                         end = i;
                         break;
                     }
+                    // The sized path defers its checks to here (design
+                    // 6.3). A guard slab or a slab nothing was ever
+                    // allocated from (`Fresh`: handed to an arena but not
+                    // committed, or committed and never claimed) has no
+                    // slot to release; its bits are clear, so the bit
+                    // test below would abort too, but this names the
+                    // cause. The descriptor line is read by `dec_live`
+                    // anyway.
+                    if self.table().is_guard_slab(slab) {
+                        guard_free(p as usize, self.class as usize, slab);
+                    }
+                    if self.desc(slab).state() == State::Fresh {
+                        release_into_fresh_slab(p as usize, self.class as usize, slab);
+                    }
                 }
                 cur_slab = slab;
                 cur_word = word;
@@ -1903,6 +1929,23 @@ fn zero_slab_had_bits_set(class: usize, slab: usize, arena: u16, state: State, l
 
 /// The `free` check's abort (design section 4): the slot's bit is clear,
 /// which is an invalid free or a stale double free.
+/// A slot start inside a guard slab (`is_guard_slab`): never allocated
+/// from, so any free of it is invalid.
+#[cold]
+#[inline(never)]
+fn guard_free(p: usize, class: usize, slab: usize) -> ! {
+    panic!("invalid free of {p:#x} (class {class} slab {slab}): guard slab")
+}
+
+/// A release into a `Fresh` slab: handed to an arena but not committed
+/// (at or above the arena's commit cursor), or committed and never
+/// claimed. No slot of it was ever handed out.
+#[cold]
+#[inline(never)]
+fn release_into_fresh_slab(p: usize, class: usize, slab: usize) -> ! {
+    panic!("invalid free of {p:#x} (class {class} slab {slab}): the slab has never been allocated from")
+}
+
 #[cold]
 #[inline(never)]
 fn invalid_free(p: usize, class: usize, slab: usize, slot: usize) -> ! {
@@ -3028,6 +3071,60 @@ mod tests {
         let cs = env.class(c, 0);
         env.claim(&cs, 1);
         cs.check(env.regions.slab_addr(c, 5) as *mut u8);
+    }
+
+    /// Plan Phase 1.5 task 9b: a slot start in a guard slab is named as
+    /// such by the exact check (the sized fast path rejects it
+    /// arithmetically and lands here).
+    #[test]
+    #[should_panic(expected = "guard slab")]
+    fn check_of_a_guard_slab_slot_aborts() {
+        let env = Env::new();
+        let c = small_class();
+        let n = CLASSES[c].nslots();
+        // Every second page group is a guard group.
+        let cs = env.class(c, 2);
+        env.claim(&cs, 2 * n + 1);
+        let guard = (0..cs.table().committed_slabs()).find(|&s| cs.is_guard_slab(s)).expect("a guard slab");
+        assert!(guard < cs.table().committed_slabs());
+        cs.check(env.regions.slab_addr(c, guard) as *mut u8);
+    }
+
+    /// Plan Phase 1.5 task 9b: a release into a slab of the arena's group
+    /// that the arena has not committed (`Fresh`, below the hand-out
+    /// watermark) is where a sized free of such a slot lands at the flush.
+    #[test]
+    #[should_panic(expected = "the slab has never been allocated from")]
+    fn release_into_an_uncommitted_slab_of_the_group_aborts() {
+        let env = Env::new();
+        // The smallest slabs have several descriptors per line, so a group
+        // is several slabs.
+        let c = min_slab_class();
+        let cs = env.class(c, 0);
+        env.claim(&cs, 1);
+        // The whole group was handed out; only slab 0 is committed.
+        assert!(cs.table().committed_slabs() > 1, "group of {}", cs.table().committed_slabs());
+        assert_eq!(cs.desc(1).state(), State::Fresh);
+        assert_eq!(cs.stats().committed, 1);
+        cs.release(&[env.regions.slab_addr(c, 1) as *mut u8]);
+    }
+
+    /// The shift form of `is_guard_slab` agrees with the definition for
+    /// every page-group ratio and interval the tables use.
+    #[test]
+    fn guard_slab_test_is_the_page_group_modulo() {
+        for lg in [0u32, 2] {
+            let env = if lg == 0 { Env::new() } else { Env::with_lg_page(LG_MIN_SLAB + lg) };
+            let c = min_slab_class();
+            for interval in [0u32, 2, 3, 8, 32] {
+                let t = env.table(c, interval);
+                let spp = t.slabs_per_page();
+                for s in 0..256 {
+                    let want = interval != 0 && (s / spp + 1) % interval as usize == 0;
+                    assert_eq!(t.is_guard_slab(s), want, "lg {lg} interval {interval} slab {s}");
+                }
+            }
+        }
     }
 
     #[test]

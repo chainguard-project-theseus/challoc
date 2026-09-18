@@ -225,6 +225,22 @@ fn c_negative_double_free_straddle() {
     assert!(out.contains("pair at sorted indices"), "the mode never primed the cache: {out}");
 }
 
+/// Plan Phase 1.5 task 9b: a sized free of a slot start inside a guard slab
+/// is rejected on the sized fast path (guard slabs are arithmetic on the
+/// table line) and aborts in the exact slow path with the guard named.
+#[test]
+fn c_negative_sized_guard() {
+    // Guard slabs exist only where the kernel installs guard regions
+    // (`Shared::init` zeroes the interval otherwise); the Rust test
+    // `heap::tests::sized_slot_rejects_guard_slabs` forces them on.
+    if !crate::sys::features::Features::probe().guard_install {
+        std::eprintln!("guard_install=no on this kernel; skipping sized_guard");
+        return;
+    }
+    let out = run_c_negative("sized_guard", SIGABRT, &["invalid free of 0x", "guard slab"]);
+    assert!(out.contains("sized free of slot"), "the mode never found a guard: {out}");
+}
+
 /// `tests/c/conf.c` (plan Phase 1 task 1): the configuration sources under
 /// the real `.so`. `conf` becomes the program's `je_malloc_conf` (statically
 /// initialised and exported with `-rdynamic`, as a program linked against
