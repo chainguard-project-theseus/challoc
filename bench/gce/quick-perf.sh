@@ -32,8 +32,9 @@ drun() { docker run --rm -v "$REPO":/src -w /src -v "challoc-target-$T":/src/tar
 # Row command lines and the probes come from bench/lib.sh inside the container.
 in_lib() { drun sh -c "ROOT=/src; . /src/bench/lib.sh; $1"; }
 lib_of() {
-  case ${1%%:*} in
-    old|new) echo "/src/target/quick/$1/release/libchalloc.so";;
+  local n=${1%%:*}
+  case $n in
+    old|new) echo "/src/target/quick/$n/release/libchalloc.so";;
     jemalloc) echo /usr/lib/libjemalloc.so.2;;
     glibc) echo "";;
     mimalloc) echo /src/target/bench-bin/libmimalloc.so;;
