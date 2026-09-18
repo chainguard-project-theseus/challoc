@@ -412,6 +412,136 @@ Tasks:
    sync, run, and stop the VMs; the cost of leaving one running; and the
    rule that Mac numbers and GCE numbers are never compared with each other.
 
+7. Release readiness, part 1: the calloc race (`docs/review-2026-09-18.md`
+   sections 1.1 and 1.4; the review calls tasks 7-13 "Phase 1.75"). In this
+   session's `make test` on the Mac container at 6a9016e, mimalloc's stress
+   test aborted once because `calloc` returned memory containing a non-zero
+   word (`alloc_items: Assertion p[i] == 0 failed`); 150 standalone and
+   parallel reruns did not reproduce it. (a) Fix the confirmed compaction
+   wrap first: `Heap::pop_compact_run` calls `pop_top(cache, 0)` when
+   `rebuild_run`'s `tick` ran the cache GC, which empties a cache with
+   `low_water == len <= 3`, and the rebuild returned early (no longer
+   fragmented, or the claim got nothing); `len - 1` wraps in release. Guard
+   it the way the probe branch does (refill, or return null) and add a
+   unit test that puts a compact-mode cache at one entry with the GC due
+   and pops. (b) Make the failure reproducible: a `check_zero` debug mode
+   (a `MALLOC_CONF` key, off by default, or `cfg(debug_assertions)`) that,
+   in `ClassState::claim` for a pick flagged zero and in `Huge::take` when
+   returning `zeroed = true`, reads the first and last word of each claimed
+   slot or page and aborts with class, slab, prior state, arena, discard
+   backend and the offending word. Run `stress 8 50 10` under the full
+   concurrent `cargo test api::` load on both VMs (20 runs each) and on the
+   Mac container, plus `stress 16 100 20` standalone, with `check_zero` on;
+   then the configuration bisect under the same load (`dirty_decay_ms:-1`,
+   `tcache_compact_shift:0`, `narenas:1`, several hundred iterations each,
+   `uname -r`, the probe line and the THP setting recorded). (c) Name the
+   mechanism in PROGRESS.md with the interleaving, add a test that fails on
+   the pre-fix code, land the fix. Acceptance: (a) landed with its test;
+   the mechanism named and fixed, or, after the full protocol of (b) with
+   no reproduction, the evidence recorded under Notes for the human and the
+   `check_zero` mode kept; `make test` passes 10 consecutive times on both
+   VMs and on the Mac container.
+8. Release readiness, part 2: release assertions (review 1.2 items 2-8).
+   Promote to `assert!`: the cache run invariant (checked in
+   `pop_compact_run` as `at < len`), `refill`'s empty-cache precondition
+   (heap.rs:1767), `free_caches`'s flushed precondition (992),
+   `other_caches`'s not-home precondition (1648), `AtomicBitmap::release`'s
+   mask-inside-view check (bitmap.rs:174), the huge table's duplicate-key
+   check (huge.rs:297); `State::from_u8` aborts on 4..255; `Meta::free`
+   rejects a block equal to its free-list head; `bin_stats` counts clamp
+   events and reports them in `malloc_stats_print`. Set `overflow-checks =
+   true` in `[profile.release]`. Acceptance: `make quick` go on both VMs
+   (the arithmetic on the fast paths is a handful of adds; if a row moves
+   more than 5%, attribute it and decide); all tests green; each new abort
+   has a unit test.
+9. Release readiness, part 3: detection gaps (review items 9, 10; 5.1).
+   (a) `Heap::flush`: after the sort, abort if `all[rest_len - 1] ==
+   all[rest_len]` (a cached double free whose copies straddle the flush
+   boundary); `tests/c/negative.c` mode `double_free_straddle` that primes
+   the cache so the pair straddles `cap / 2`. (b) The sized fast path
+   rejects slot starts in guard slabs and in slabs at or above the arena's
+   committed watermark (arithmetic plus one load), or the flush does;
+   negative mode `sized_guard`: `sdallocx` of a guard slab body then
+   `malloc` must abort, not return the guard memory. (c) `double_free_scan`
+   implemented as a compare against the top 4 cache entries on plain
+   `free` and the sized path; benchmark rows (`valkey1`, `larson1`, `redis`
+   via `ab`), and if the cost is under 1% on every row it becomes the
+   default and README's table and footnote say so. Acceptance: negative
+   modes pass on both VMs; `quick` go; rows recorded.
+10. Release readiness, part 4: lifecycle (review items 11-14). (a)
+    `fork_prepare`/`fork_release` take `Shared.stats`, `Arena.stats` and
+    `Tcaches.lock` in nesting order, and the lock test enumerates every
+    `Lock` in the crate so a new one cannot be missed; `tests/c/fork_alloc.c`
+    gains a mode that forks while a second thread loops on
+    `mallctl("epoch")` and `tcache.create`/`destroy`. (b) `heap_destructor`
+    writes `TLS_EXITED` before `Heap::destroy`. (c) `errno` is saved and
+    restored around the background thread's `pthread_create`, or the
+    thread is started only from allocation-side ticks; `tests/c/libc_api.c`
+    `test_errno` covers a `free` that starts the thread. (d) One background
+    stack is reserved once and reused across stop/start. Acceptance: tests
+    for each; `make test` green on both VMs.
+11. Release readiness, part 5: truthful docs and inert keys (review items
+    17-22, section 3). README's security table and kernel table, design 14
+    and design 10: `mseal` "planned (Phase 2 task 1)", `zero_on_free` and
+    `slot_randomize` "planned (Phase 2 task 4)", guard slabs "kernel 6.13+
+    only"; README's Status line replaced by the current state; the design
+    edit list of review section 3 applied (14 stale statements, 6 never
+    built, design 11 headed "Planned"); `abort_conf` rejects the inert
+    keys (`thp`, `zero_on_free`, `slot_randomize`, `double_free_scan`,
+    `cgroup`, `stats_print`) and without it `malloc_stats_print` lists them
+    as "accepted, no effect"; `huge_retain_max` becomes a `malloc_conf`
+    key (design 7 says it is one) or design 7 says it is a constant.
+    Acceptance: every claim in README and design.md is true of the code
+    or marked planned; config tests updated; all tests green.
+12. Release readiness, part 6: seams (review items 23-34). One
+    `Config::cap_for(home, arena, class)` replacing the four encodings of
+    "which classes are cached where"; `alloc_in` misses go to
+    `alloc_slow_in(arena)` so `MALLOCX_ARENA(home)` keeps its arena for
+    classes above `tcache_max`; `compact_mask` derived from `mode`; the
+    decay step gate lifted from `ClassState` and `Huge` into `purge.rs`;
+    `set_arena` folds the thread counters before freeing caches; the
+    unused `Heap::rng` and its per-heap `getrandom` removed; `curslabs`
+    and `uncached` accessors; owner word checked against `desc.arena` in
+    `take_group`; stale prose and phase history removed from `src/` module
+    docs (review 1.3 and items 32-33). Acceptance: tests green; `quick` go
+    on both VMs (heap.rs changes); no benchmark row moves outside noise.
+13. Release readiness, part 7: packaging decisions recorded (review items
+    35-42), each as a design decision with the reason: SONAME
+    `libchalloc.so.0` on the plain build; one library or two for
+    quantum8/quantum16; `challoc_tls_get`/`challoc_tls_set` replaced by a
+    `challoc_version()` probe (tests updated); `je_pvalloc` added; sized
+    `operator delete` routed through the sized path or documented as
+    ignoring its size. Acceptance: decisions in PROGRESS.md, design 13 and
+    16 updated, tests green.
+14. The usable-size chain (review 4.2; `bench/results/2026-09-18-aarch64-
+    gce-sized-free.md` 4.3 and `-dense-bitmap.md`): `malloc_usable_size` on
+    a slab pointer reads its geometry from the dense arrays as the `free`
+    fast path does (`Regions::slab_slot`, then the class bitmap word),
+    keeps the bit test, returns the class size. Attribution first
+    (`quick-perf` on arm64, the sidecar in the soak's delete phase), as the
+    rule requires. Acceptance: the query at or under jemalloc's cycles per
+    command in the delete phase; the 20-minute soak on arm64 with the
+    sidecar meets the Phase 1 criterion (throughput and p99 at least equal
+    in both phases) or the residual is attributed; `valkey1` on aarch64
+    within 5% of jemalloc; all tests green.
+15. mstress RSS, the row Phase 1.5 acceptance is blocked on (review 4.4;
+    `bench/results/2026-09-18-phase-1.5-acceptance-3.md` 3.1). The human
+    accepted the review's recommendation on 2026-09-18 ("Go for it"): (d)
+    in whole-group form. `SlabTable::take_group` first offers an idle group
+    (every slab `Fresh`, `Empty` or `Purged`) of the same class owned by
+    another arena, taken under both arenas' class locks in index order,
+    owner word and descriptors' arena rewritten, set bits moved; per-arena
+    statistics follow the group; design 13.3 amended ("an arena owns its
+    groups until it lends an idle one"). The line-ownership invariant of
+    task 4f is the point: whole groups only. Acceptance: mstress RSS on
+    both VMs within the 10% band, or the residual attributed with
+    `bench/probes/arenasample.c` and recorded, in which case the row is
+    accepted as the price of per-class regions at 16 arenas (the review's
+    (c)) and design 13.3 says so; larson10 L1D misses per operation
+    unchanged; `quick` go on both VMs; `unit/memefficiency` green; the soak
+    unchanged; scorecard lines.
+16. Acceptance rerun as written below; then the phase is done.
+
 Acceptance:
 
 - Both VMs create, provision, sync, run the container test suite (`make test`
@@ -426,6 +556,15 @@ Acceptance:
 - No VM is left running at the end of the phase.
 
 ## Phase 2: hardening extras and cgroup awareness
+
+Order (2026-09-18 review, section 5.1): task 2 (`mseal`, already claimed
+by README and design 14) first, then task 1's end-to-end guard-slab fault
+test and the kernel dependency in README's table, then tasks 4 to 7
+(cgroup awareness: goal 4 and the only one with no code), then task 3
+(the opt-in tunables with their cost rows; `zero_on_free` and
+`slot_randomize` stay opt-in because a `memset` per free is more than the
+3% budget on Valkey's 1 KiB values and randomisation fights the compaction
+that passed Phase 1). Acceptance gains: no key in design 12 is inert.
 
 Tasks:
 
@@ -461,7 +600,16 @@ Acceptance:
 
 ## Phase 3: packaging and rollout
 
-Prerequisite: one aarch64 test run on a 64 KiB-page kernel. Wolfi's
+Prerequisites (2026-09-18 review, section 4.3), before any package: (a) one
+aarch64 test run on a 64 KiB-page kernel (below), on a throwaway C4A VM
+with Ubuntu's `linux-generic-64k` kernel, not on the reference VM, running
+`make test`, `make fuzz` and `make valkey STAGE=memefficiency`, with the
+`huge.rs` tests using the runtime page size first; (b) one bare-metal 6.14+
+run of the `process_madvise` batch path (Docker's seccomp hides it); (c) a
+Ruby soak row (minutes, RSS sampled) and a decision on `background_thread`
+for Ruby-shaped consumers; (d) one Valkey soak with `io-threads 4`; (e) a
+melange pipeline check that `DT_NEEDED` names the library (Wolfi's
+`--as-needed`). The 64 KiB run: one aarch64 test run on a 64 KiB-page kernel. Wolfi's
 `build-aarch64.env` builds jemalloc with `JEMALLOC_SYS_WITH_LG_PAGE=16`, so
 Wolfi expects 64 KiB-page aarch64 hosts; the GCE VMs and the Mac container
 are 4 KiB. challoc reads the page size at runtime and its smallest slabs
