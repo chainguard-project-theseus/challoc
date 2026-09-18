@@ -306,6 +306,39 @@ Tasks:
    equal to bundled jemalloc; if the attribution shows the gap is outside the
    allocator (client saturation, kernel), record that with the evidence and
    say so under Notes for the human.
+4e. Sized frees at jemalloc parity (human's decision, 2026-09-18, on task
+   4d's attribution: 200 of Valkey's 273 extra cycles per SET are the exact
+   `free` check's descriptor bitmap-word load on `je_sdallocx`, a cache miss
+   per free on a 550 MiB heap). `sdallocx`/`dallocx` with a size hint check
+   the hint arithmetically against the pointer's class (no memory access;
+   a mismatch aborts) and push without the bitmap-word test; the batch
+   release at cache flush already validates every bit it clears, so an
+   invalid or double free through the sized path is caught there, up to a
+   cache's worth of frees later. Plain `free` is unchanged. Record the
+   guarantee precisely in README's security table and design 6.3/13.2.
+   Acceptance: `quick` on both VMs, A/B rows (larson does not use `sdallocx`,
+   so expect no change; add an `sdallocx` variant of the churn probe or a
+   Valkey-shaped microbench so the row exists), the 20-minute soak on arm64
+   with `bench/probes/valkey-perf-sidecar.sh`: cycles per SET in `free` from
+   338 toward jemalloc's 71 and the plan's soak criterion (throughput and
+   p99 at least equal to bundled jemalloc) met or the remaining gap
+   attributed; negative tests updated for the deferred detection.
+4f. Dense per-class slot bitmap (keeps the exact check cheap for plain
+   `free`): move the allocation bits out of the per-slab descriptors into one
+   contiguous per-class bitmap indexed by `slab * nslots + slot`, committed
+   on demand like the descriptor tables, so the `free` check touches a
+   structure of one bit per slot (70 KB for a 550 MiB heap of 1 KiB values,
+   L2-resident) instead of one 64-byte descriptor line per slab (9 MB);
+   descriptors keep state/arena/live/dirty_at and shrink, which also
+   addresses the descriptor-page residue noted in iteration 15. Claim and
+   release operate on bit ranges of shared words (`fetch_or`/`fetch_and`
+   with masks; a slab's bits may straddle words for classes whose `nslots`
+   is not a power of two). Acceptance: all tests and negative tests; `quick`
+   then A/B rows on both VMs (larson/xmalloc/alloc-test within 3% of old or
+   better); the Valkey soak with the perf sidecar (plain-`free` cycles and
+   L1D misses per command) and the Ruby rows (Ruby frees through plain
+   `free`), both recorded. If the sized path's check becomes cheap enough,
+   revisit 4e's deferral and prefer the immediate check.
 5. Fast-path residue on aarch64: dense cache headers in `Heap` (review P3).
    Inline `[CacheHeader; NCLASSES]` and one contiguous slot block per heap so
    `malloc` reaches the header without a pointer load and a thread's 52 cache
