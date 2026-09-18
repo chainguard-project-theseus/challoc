@@ -161,9 +161,11 @@ slab_bits`. `slab_bits` is `nslots` padded to a power of two below 512 or a
 multiple of 512 from there (`Class::slab_bits`), so a slab's bits are either
 whole words or one range inside a word, never straddling a word, and a
 64-byte line holds a whole number of slabs. The bitmap is one bit per slot:
-a 550 MiB heap of 1 KiB values is 70 KB of bitmap, L2-resident, where one
-64-byte descriptor line per slab was 9 MB and a cache miss per `free`
-(Phase 1.5 task 4f). The padding bits between `nslots` and `slab_bits` are
+a 550 MiB heap of 1 KiB values is 70 KB of bitmap (a few hundred KB over
+all the classes of a real Valkey heap), which stays in the cache hierarchy
+where one 64-byte descriptor line per slab was 9 MB and a DRAM miss per
+`free` (Phase 1.5 task 4f; on Valkey's write path the word still comes from
+beyond L2, but the query dropped from 492 to jemalloc's 327 cycles per SET). The padding bits between `nslots` and `slab_bits` are
 kept permanently set.
 
 Slabs are handed to arenas in *groups* of `slabs_per_line` consecutive slabs
