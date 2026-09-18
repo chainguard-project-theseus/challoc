@@ -296,6 +296,19 @@ impl CacheHeader {
         self.slots
     }
 
+    /// Enter `mode` and derive the scheduled-pop mask from it, so the two
+    /// fields never disagree: [`PROBE_MASK`] while probing, the configured
+    /// `tcache_compact_shift` mask while compacting, `u32::MAX` when off
+    /// (one pop in 2^32 then reaches `pop_compact`, which pops the top).
+    fn set_mode(&mut self, mode: u16, config: &Config) {
+        self.mode = mode;
+        self.compact_mask = match mode {
+            MODE_PROBE => PROBE_MASK,
+            MODE_COMPACT => config.compact_mask(),
+            _ => u32::MAX,
+        };
+    }
+
     /// Cached pointers, bottom of the stack first (the top is popped next).
     /// Only for a cache with a stack (`cap != 0`).
     #[inline]
@@ -367,7 +380,6 @@ pub struct Heap {
     arena: u16,
     slow_ticks: u32,
     last_gc: u64,
-    rng: u64,
     /// Bytes that never went through a cache: huge runs and slots served
     /// directly from a slab because no cache could be allocated. The
     /// cached classes are derived from their headers in [`Heap::stats`].
@@ -502,11 +514,6 @@ mod os {
         crate::sys::now_coarse_ns()
     }
 
-    pub fn seed() -> u64 {
-        let mut b = [0u8; 8];
-        let _ = crate::sys::getrandom_exact(&mut b);
-        u64::from_ne_bytes(b) | 1
-    }
 }
 
 /// Off Linux there is no TLS accessor and no thread-exit key; host tests
@@ -544,10 +551,6 @@ mod os {
 
     pub fn now_ns() -> u64 {
         TICK.fetch_add(1, Ordering::Relaxed) + 1
-    }
-
-    pub fn seed() -> u64 {
-        0x9e37_79b9_7f4a_7c15
     }
 }
 
@@ -963,7 +966,6 @@ impl Heap {
             ptr::write(&raw mut (*h).arena, arena);
             ptr::write(&raw mut (*h).slow_ticks, 0);
             ptr::write(&raw mut (*h).last_gc, os::now_ns());
-            ptr::write(&raw mut (*h).rng, os::seed());
             ptr::write(&raw mut (*h).uncached, ThreadStats::default());
             ptr::write(&raw mut (*h).others, ptr::null_mut());
             ptr::write(&raw mut (*h).snapshot, ThreadStats::default());
@@ -1048,8 +1050,7 @@ impl Heap {
         if node.is_null() {
             // No metadata for a new node: the caches of the new home start
             // empty and the old home's must go back first.
-            self.flush_arena(shared, old, ptr::null_mut());
-            Self::free_caches(shared, &mut self.caches);
+            self.drop_home_caches(shared);
         } else {
             // SAFETY: `node` is a live block owned by this heap.
             unsafe {
@@ -1064,27 +1065,43 @@ impl Heap {
         }
     }
 
-    /// Byte counters for this thread: the uncached part plus, for every
-    /// cache, `allocs` pops and `len + allocs - moved` pushes, each worth
-    /// the class size.
+    /// Flush the home caches, fold their byte counters into `uncached` and
+    /// free them: the home array is `EMPTY` afterwards and `stats()` is
+    /// unchanged. For a `thread.arena` change that could get no `others`
+    /// node for the old home.
+    fn drop_home_caches(&mut self, shared: &Shared) {
+        let home = self.arena;
+        self.flush_arena(shared, home, ptr::null_mut());
+        Self::fold_counters(&mut self.uncached, &self.caches);
+        Self::free_caches(shared, &mut self.caches);
+    }
+
+    /// Add the byte counters a cache array stands for (`allocs` pops and
+    /// `len + allocs - moved` pushes per cache, each worth the class size)
+    /// to `into`. [`Heap::stats`] derives the thread counters this way on
+    /// every read; a cache that is about to be freed is folded into
+    /// `uncached` first so that `thread.allocated` never goes backwards.
+    fn fold_counters(into: &mut ThreadStats, caches: &[CacheHeader; NCLASSES]) {
+        for (class, c) in caches.iter().enumerate() {
+            if c.cap == 0 {
+                continue;
+            }
+            let frees = (c.len as u64).wrapping_add(c.allocs).wrapping_sub(c.moved);
+            into.add(CLASSES[class].size() as u64, c.allocs, frees);
+        }
+    }
+
+    /// Byte counters for this thread: the uncached part plus what every
+    /// cache of every arena stands for ([`Heap::fold_counters`]).
     pub fn stats(&self) -> ThreadStats {
         let mut s = self.uncached;
-        let mut add = |caches: &[CacheHeader; NCLASSES]| {
-            for (class, c) in caches.iter().enumerate() {
-                if c.cap == 0 {
-                    continue;
-                }
-                let frees = (c.len as u64).wrapping_add(c.allocs).wrapping_sub(c.moved);
-                s.add(CLASSES[class].size() as u64, c.allocs, frees);
-            }
-        };
-        add(&self.caches);
+        Self::fold_counters(&mut s, &self.caches);
         let mut o = self.others;
         while !o.is_null() {
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap.
             unsafe {
-                add(&(*o).caches);
+                Self::fold_counters(&mut s, &(*o).caches);
                 o = (*o).next;
             }
         }
@@ -1117,14 +1134,15 @@ impl Heap {
         if on {
             return;
         }
-        self.uncached = self.stats();
         self.flush_all(shared);
+        Self::fold_counters(&mut self.uncached, &self.caches);
         Self::free_caches(shared, &mut self.caches);
         let mut o = self.others;
         while !o.is_null() {
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap.
             unsafe {
+                Self::fold_counters(&mut self.uncached, &(*o).caches);
                 Self::free_caches(shared, &mut (*o).caches);
                 o = (*o).next;
             }
@@ -1134,17 +1152,6 @@ impl Heap {
     #[inline]
     pub fn slow_ticks(&self) -> u32 {
         self.slow_ticks
-    }
-
-    /// Next value of the heap's xorshift generator (for `slot_randomize`).
-    #[inline]
-    pub fn next_random(&mut self) -> u64 {
-        let mut x = self.rng;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        self.rng = x;
-        x
     }
 
     /// The home arena's cache for `class`, or `None` while it has never
@@ -1346,8 +1353,7 @@ impl Heap {
                         return Self::pop_top(cache, len);
                     }
                     cs.note_compact_mode(true);
-                    (*cache).mode = MODE_COMPACT;
-                    (*cache).compact_mask = shared.config.compact_mask();
+                    (*cache).set_mode(MODE_COMPACT, &shared.config);
                     return self.pop_compact_run(cache, class, len);
                 }
                 _ => return Self::pop_top(cache, len),
@@ -1446,8 +1452,7 @@ impl Heap {
             let arena = (*cache).arena;
             if !Self::fragmented(shared, arena, class) {
                 shared.owner(arena).class(class).note_compact_mode(false);
-                (*cache).mode = MODE_PROBE;
-                (*cache).compact_mask = PROBE_MASK;
+                (*cache).set_mode(MODE_PROBE, &shared.config);
                 return;
             }
             let cap = (*cache).cap as usize;
@@ -1519,7 +1524,7 @@ impl Heap {
     pub fn alloc_huge_in(&mut self, shared: &Shared, size: usize, align: usize, arena: u16) -> (*mut u8, bool) {
         let (p, zero) = shared.alloc_huge(size, align, arena);
         if !p.is_null() {
-            self.uncached.allocated += shared.huge.usable_for(size).unwrap_or(0) as u64;
+            self.count_uncached_alloc(shared.huge.usable_for(size).unwrap_or(0));
         }
         (p, zero)
     }
@@ -1528,18 +1533,34 @@ impl Heap {
     #[cold]
     #[inline(never)]
     fn free_huge(&mut self, shared: &Shared, page: usize) {
-        self.uncached.deallocated += shared.free_huge(page) as u64;
+        let n = shared.free_huge(page);
+        self.count_uncached_free(n);
+    }
+
+    /// `bytes` were allocated on this thread without passing through a
+    /// cache (a huge run, or a slot served straight from a slab): count
+    /// them in `thread.allocated`. The one way `uncached` grows.
+    #[inline]
+    pub fn count_uncached_alloc(&mut self, bytes: usize) {
+        self.uncached.allocated += bytes as u64;
+    }
+
+    /// `bytes` were freed on this thread without passing through a cache:
+    /// count them in `thread.deallocated`.
+    #[inline]
+    pub fn count_uncached_free(&mut self, bytes: usize) {
+        self.uncached.deallocated += bytes as u64;
     }
 
     /// A slot of `class` was claimed directly (`MALLOCX_TCACHE_NONE`) on
     /// this thread: count it.
     pub fn count_direct_alloc(&mut self, class: usize) {
-        self.uncached.allocated += CLASSES[class].size() as u64;
+        self.count_uncached_alloc(CLASSES[class].size());
     }
 
     /// A slot of `class` was released directly on this thread: count it.
     pub fn count_direct_free(&mut self, class: usize) {
-        self.uncached.deallocated += CLASSES[class].size() as u64;
+        self.count_uncached_free(CLASSES[class].size());
     }
 
     /// Push a checked slot of `class` (home arena) onto its cache.
@@ -1649,7 +1670,7 @@ impl Heap {
         if cache.is_null() {
             let (p, zero) = shared.alloc_direct(a, class);
             if !p.is_null() {
-                self.uncached.allocated += CLASSES[class].size() as u64;
+                self.count_direct_alloc(class);
             }
             return (p, zero);
         }
@@ -1700,7 +1721,7 @@ impl Heap {
         let cache = self.ensure_cache(shared, arena, class);
         if cache.is_null() {
             shared.free_direct(arena, class, p);
-            self.uncached.deallocated += CLASSES[class].size() as u64;
+            self.count_direct_free(class);
             return;
         }
         // SAFETY: `cache` is this heap's real cache for `(arena, class)`.
@@ -1801,11 +1822,6 @@ impl Heap {
         // SAFETY: `cache` is this heap's own header (still `EMPTY`) and
         // `slots` has room for `cap` pointers, exclusively ours.
         unsafe {
-            let (mode, compact_mask) = if shared.config.tcache_compact_shift == 0 {
-                (MODE_OFF, u32::MAX)
-            } else {
-                (MODE_PROBE, PROBE_MASK)
-            };
             ptr::write(
                 cache,
                 CacheHeader {
@@ -1815,14 +1831,16 @@ impl Heap {
                     zeroed: 0,
                     slots: slots as *mut *mut u8,
                     allocs: 0,
-                    compact_mask,
+                    compact_mask: u32::MAX,
                     run_end: 0,
                     moved: 0,
                     probe_refilled: shared.owner(arena).class(class).refilled() as u32,
                     arena,
-                    mode,
+                    mode: MODE_OFF,
                 },
             );
+            let mode = if shared.config.tcache_compact_shift == 0 { MODE_OFF } else { MODE_PROBE };
+            (*cache).set_mode(mode, &shared.config);
         }
         cache
     }
@@ -2149,7 +2167,7 @@ pub fn free_direct(shared: &Shared, p: *mut u8) {
         Err(page) => {
             let n = shared.free_huge(page);
             if let Some(h) = existing_heap() {
-                h.uncached.deallocated += n as u64;
+                h.count_uncached_free(n);
             }
         }
     }
@@ -3694,6 +3712,33 @@ pub(crate) mod tests {
         assert_eq!(h.stats().deallocated, 3 * 64 * 1024);
         assert_eq!(s.arena(a1).unwrap().classes[c].stats().empty, 1);
         assert_eq!(s.arena0.classes[c].stats().empty, 1);
+    }
+
+    /// `thread.arena` with no metadata for an `others` node drops the old
+    /// home's caches (`drop_home_caches`); their counters are folded into
+    /// `uncached` first, so `thread.allocated` and `thread.deallocated`
+    /// do not move and keep counting afterwards.
+    #[test]
+    fn dropping_the_home_caches_keeps_the_thread_counters() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let h = t.heap();
+        let c = class_with(64);
+        let p = t.alloc(c);
+        let q = t.alloc(c);
+        h.free(s, p);
+        let before = h.stats();
+        assert_eq!((before.allocated, before.deallocated), (128, 64));
+        let meta_before = s.meta.stats().allocated;
+        h.drop_home_caches(s);
+        assert!(h.cache(c).is_none());
+        assert!(s.meta.stats().allocated < meta_before, "the stack was freed");
+        let after = h.stats();
+        assert_eq!((after.allocated, after.deallocated), (before.allocated, before.deallocated));
+        h.free(s, q);
+        let again = h.stats();
+        assert_eq!((again.allocated, again.deallocated), (128, 128));
+        assert!(h.cache(c).is_some(), "the slow path created a new cache");
     }
 
     /// `thread.arena`: the home arena changes without flushing; the old

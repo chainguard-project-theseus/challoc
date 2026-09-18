@@ -474,7 +474,7 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilizat
                 if let Some(a) = shared.arenas.get_existing(d.arena()) {
                     let cs = a.class(class);
                     let (st, curregs) = cs.bin_stats();
-                    u.bin_nregs = (st.committed - st.empty - st.purged) * cls.nslots();
+                    u.bin_nregs = st.curslabs() * cls.nslots();
                     u.bin_nfree = u.bin_nregs.saturating_sub(curregs);
                     if let Some(s) = cs.lowest_partial() {
                         u.slabcur_addr = shared.regions.slab_addr(class, s) as *mut c_void;

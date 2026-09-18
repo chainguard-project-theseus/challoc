@@ -75,6 +75,16 @@ pub struct ClassStats {
     pub nonfull: usize,
 }
 
+impl ClassStats {
+    /// Slabs that can hold live slots (neither `Empty` nor `Purged`):
+    /// jemalloc's `curslabs`, and the slab count behind `active` and the
+    /// compaction gate's capacity.
+    #[inline]
+    pub fn curslabs(&self) -> usize {
+        self.committed - self.empty - self.purged
+    }
+}
+
 /// Result of one [`ClassState::claim`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Claim {
@@ -1819,7 +1829,7 @@ impl ClassState {
         let claimed = self.claimed.load(Ordering::Relaxed);
         drop(g);
         s.guards = self.table().guards();
-        let cap = (s.committed - s.empty - s.purged) * self.class().nslots();
+        let cap = s.curslabs() * self.class().nslots();
         let out = claimed.wrapping_sub(released) as usize;
         let curregs = if out > cap {
             self.clamped.fetch_add(1, Ordering::Relaxed);
@@ -1895,7 +1905,7 @@ impl ClassState {
     /// compaction gate in `heap.rs` reads this; one lock hold.
     pub fn holes(&self) -> (usize, usize) {
         let (s, curregs) = self.bin_stats();
-        let capacity = (s.committed - s.empty - s.purged) * self.class().nslots();
+        let capacity = s.curslabs() * self.class().nslots();
         (capacity.saturating_sub(curregs), capacity)
     }
 

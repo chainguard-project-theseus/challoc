@@ -321,7 +321,7 @@ pub fn collect_bin(cs: &ClassState) -> BinStats {
         nregs: cls.nslots(),
         slab_size: cls.slab_size(),
         curregs,
-        curslabs: s.committed - s.empty - s.purged,
+        curslabs: s.curslabs(),
         nonfull_slabs: s.nonfull,
         empty_slabs: s.empty,
         purged_slabs: s.purged,
