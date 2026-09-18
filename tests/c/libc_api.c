@@ -148,7 +148,10 @@ static void test_aligned(void)
 
             p = memalign(align, n);
             CHECK(p && ((uintptr_t)p % align) == 0, "memalign(%zu, %zu)", align, n);
-            free_sized(p, n);
+            /* free_sized is defined only for malloc/calloc/realloc memory
+             * (C23 7.24.3.4); aligned memory may sit in a larger class than
+             * the size names and the size check would abort. */
+            free_aligned_sized(p, align, n);
 
             void *q = NULL;
             CHECK(posix_memalign(&q, align, n) == 0 && q && ((uintptr_t)q % align) == 0,

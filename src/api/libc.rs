@@ -145,6 +145,57 @@ pub fn free(p: *mut u8) {
     free_slow(p)
 }
 
+/// Sized free on the calling thread's heap: `hint` is the class the size
+/// (and alignment) name, `class_for(size, align)`, or `None` for a huge
+/// size. On the fast path the hint replaces the slab descriptor's bit test
+/// (design 6.3): a slot whose class matches is pushed at once, so an
+/// invalid or double free through this path is caught when the cache
+/// flushes it, not at the call; a hint that does not match aborts.
+#[inline(always)]
+pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>) {
+    if p.is_null() {
+        return;
+    }
+    if let Some(h) = heap::existing_heap() {
+        // SAFETY: as in `free`.
+        let shared = unsafe { super::shared_unchecked() };
+        if heap::free_sized_fast(shared, h, p, hint) {
+            return;
+        }
+    }
+    free_sized_slow(p, size, hint)
+}
+
+/// Off the sized fast path: the hint mismatch abort, then everything the
+/// exact `free` does (so a full cache or a huge run still gets the exact
+/// check, and a bad pointer the usual message).
+#[cold]
+#[inline(never)]
+fn free_sized_slow(p: *mut u8, size: usize, hint: Option<usize>) {
+    match super::shared_if_ready() {
+        Some(shared) => {
+            shared.check_size_hint(p, size, hint);
+            heap::free(shared, p)
+        }
+        None => free_before_init(p),
+    }
+}
+
+/// C23 `free_sized(p, size)`: `size` must be the size requested from
+/// `malloc`/`calloc`/`realloc` (or any size in the same class).
+#[inline(always)]
+pub fn free_sized(p: *mut u8, size: usize) {
+    free_sized_hint(p, size, class_of(size))
+}
+
+/// C23 `free_aligned_sized(p, align, size)`: the arguments given to
+/// `aligned_alloc`. An alignment that is not a power of two matches no
+/// class and aborts on a slab pointer.
+pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize) {
+    let hint = if align.is_power_of_two() { class_for(size, align) } else { None };
+    free_sized_hint(p, size, hint)
+}
+
 /// Everything `free` does off its fast path: heap creation, a full cache,
 /// huge runs, and the aborts for invalid pointers (the checks are repeated
 /// from scratch here, so a fast-path `false` for a bad pointer ends in the
@@ -396,16 +447,17 @@ mod exports {
         super::pvalloc(size) as *mut c_void
     }
 
-    /// C23 `free_sized`: the size is advisory and unchecked in Phase 0.
+    /// C23 `free_sized`: the size is checked against the class and stands
+    /// in for the slot bit test (design 6.3).
     #[unsafe(no_mangle)]
-    pub extern "C" fn free_sized(p: *mut c_void, _size: usize) {
-        super::free(p as *mut u8)
+    pub extern "C" fn free_sized(p: *mut c_void, size: usize) {
+        super::free_sized(p as *mut u8, size)
     }
 
-    /// C23 `free_aligned_sized`: alignment and size are advisory.
+    /// C23 `free_aligned_sized`: as `free_sized`, with the alignment.
     #[unsafe(no_mangle)]
-    pub extern "C" fn free_aligned_sized(p: *mut c_void, _align: usize, _size: usize) {
-        super::free(p as *mut u8)
+    pub extern "C" fn free_aligned_sized(p: *mut c_void, align: usize, size: usize) {
+        super::free_aligned_sized(p as *mut u8, align, size)
     }
 
     #[unsafe(no_mangle)]

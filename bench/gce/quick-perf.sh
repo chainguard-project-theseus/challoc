@@ -61,7 +61,8 @@ for b in $ROWS; do
     [ -n "$pid" ] && [ "$pid" != 0 ] || { echo "quick-perf: container for $tag did not start" >&2; docker rm -f "$cid" >/dev/null 2>&1 || true; continue; }
     # perf must be root to attach to the container's process; stopped by
     # killing its sleep child (SIGINT is swallowed without a terminal).
-    sudo perf stat -x, -e "$EVENTS" --inherit -p "$pid" -o "$OUTDIR/$tag.csv" -- sleep 1000000 &
+    # perf reports the killed sleep on stderr ("sleep: Terminated"); drop that line only.
+    sudo perf stat -x, -e "$EVENTS" --inherit -p "$pid" -o "$OUTDIR/$tag.csv" -- sleep 1000000 2> >(grep -v '^sleep: Terminated' >&2) &
     pp=$!
     docker wait "$cid" >/dev/null
     sudo pkill -f '^sleep 1000000$' 2>/dev/null || true; wait $pp || true

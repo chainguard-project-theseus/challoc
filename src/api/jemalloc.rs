@@ -50,7 +50,7 @@ use core::ffi::{c_char, c_int, c_void};
 use core::ptr;
 
 use super::libc::{class_for, usable_size};
-use crate::arena::{self, Flags};
+use crate::arena::{self, Flags, Tcache};
 use crate::heap::Shared;
 use crate::layout::{CLASSES, Kind};
 
@@ -228,10 +228,39 @@ pub fn dallocx(p: *mut u8, flags: c_int) {
     arena::free(shared, p, f.tcache);
 }
 
-/// `sdallocx(p, size, flags)`: the size is advisory and unchecked, as in
-/// `free_sized`.
-pub fn sdallocx(p: *mut u8, _size: usize, flags: c_int) {
-    dallocx(p, flags)
+/// `sdallocx(p, size, flags)`: `size` must satisfy `nallocx(size, flags)
+/// == sallocx(p)` (jemalloc's contract); the class it names is checked
+/// against the pointer and stands in for the slot bit test, so the fast
+/// path touches no per-slab metadata (design 6.3; the check lands at the
+/// cache flush). A mismatch aborts. With `MALLOCX_TCACHE_NONE` the release
+/// itself checks the bit at once.
+#[inline(always)]
+pub fn sdallocx(p: *mut u8, size: usize, flags: c_int) {
+    let f = Flags::decode(flags as u32);
+    match f.tcache {
+        Tcache::Default => super::libc::free_sized_hint(p, size, class_for(size, f.align())),
+        _ => sdallocx_routed(p, size, f),
+    }
+}
+
+/// `sdallocx` through an explicit cache or none.
+#[cold]
+#[inline(never)]
+fn sdallocx_routed(p: *mut u8, size: usize, f: Flags) {
+    if p.is_null() {
+        return;
+    }
+    let Some(shared) = super::shared_if_ready() else { not_an_allocation("sdallocx", p) };
+    let hint = class_for(size, f.align());
+    if let Tcache::Explicit(t) = f.tcache {
+        if let Some(h) = shared.tcaches.get(t) {
+            if crate::heap::free_sized_fast(shared, h, p, hint) {
+                return;
+            }
+        }
+    }
+    shared.check_size_hint(p, size, hint);
+    arena::free(shared, p, f.tcache);
 }
 
 /// `nallocx(size, flags)`: the usable size `mallocx` would give, or 0 when

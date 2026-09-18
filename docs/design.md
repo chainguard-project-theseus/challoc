@@ -296,9 +296,37 @@ reads; halving the flush rate halves those misses (Phase 0 acceptance,
 4. `heap = tls()`; `cache = heap.caches[desc.arena][c]`; if `len == cap`,
    slow path (flush half). `slots[len++] = p`.
 
+`sdallocx(p, n, flags)`, `free_sized(p, n)`, `free_aligned_sized(p, a, n)`
+(the sized path; Phase 1.5 task 4e):
+1. If `p` is null return. `c_hint = class_for(n, align)` (`None` for a huge
+   size). Compute class, slab and slot as in `free` step 2; if `p` is not a
+   slot start in a committed slab, or its class is not `c_hint`, slow path.
+2. `heap = tls()`; `cache = heap.caches[heap.arena][c]`; if `len == cap`,
+   slow path. `slots[len++] = p`. No load from the slab descriptor: neither
+   the bitmap word nor the arena.
+3. Slow path: a slab pointer whose class is not `c_hint` aborts (jemalloc's
+   contract, `nallocx(n, flags) == sallocx(p)`); otherwise the exact `free`
+   above, so a full cache, a huge run or an invalid pointer gets the exact
+   check and its message.
+
 Neither path performs an atomic read-modify-write or takes a lock. `free`
 does one load from the descriptor, which is the price of exact invalid-free
 detection and is also what makes cross-thread frees free of coordination.
+The sized path skips that load, and with it the check: an invalid or double
+free through it is caught when the cache flushes the slot (the release
+clears every bit it was handed and aborts on one that is already clear,
+section 4), up to a cache's worth of frees later, and until then the slot
+can be handed out twice, as under jemalloc. The size check stands in for
+the bit test: a stale or foreign pointer that happens to be a slot start of
+the right class is the case that slips to the flush. Because the arena is
+not read either, the home cache holds slots of any arena on this path; the
+flush (6.4) sorts the batch and releases each run of slabs through the
+arena its descriptors name (`release_owned`), which costs nothing extra
+when every slab is the cache's own. Plain `free` keeps step 2's load, so a
+double `free` of a slot that has left the cache aborts at the call.
+`MALLOCX_ARENA(a)` with the default cache pops whatever the cache holds,
+as jemalloc's does; `MALLOCX_TCACHE_NONE` releases straight to the slab
+with the exact check.
 
 `calloc` clears with `memset` unless the slots came fresh from the kernel,
 which is tracked per claim batch with a flag in the cache when the whole batch
@@ -597,6 +625,18 @@ wrappers. The `jemalloc-soname` Cargo feature names the output
 bits 8-19 `tcache` where 0 means default, 1 means none, `t+2` means explicit
 cache `t`; bits 20-31 `arena` where 0 means default and `a+1` means arena `a`.
 `MALLCTL_ARENAS_ALL` is 4096.
+
+`sdallocx(p, size, flags)` requires `nallocx(size, flags) == sallocx(p)`,
+as jemalloc documents: the class that `size` and `MALLOCX_LG_ALIGN` name is
+checked against the pointer's class at the call and a mismatch aborts
+(`challoc: sized free of ...: size hint N does not match the allocation`);
+the slot bit is not read, so an invalid or double free through `sdallocx`
+is detected at the cache flush, not at the call (6.3). A huge run passes
+the size check and is judged by the huge allocator. `dallocx` has no size
+and is `free` with flags. C23 `free_sized` and `free_aligned_sized` follow
+the same rule with the size (and alignment) the allocation was requested
+with; `free_sized` on memory from `aligned_alloc`/`memalign` is undefined
+in C23 and aborts here when the alignment put the block in a larger class.
 
 ### 13.3 Arenas and explicit caches
 

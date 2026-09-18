@@ -10,11 +10,22 @@
  *                                 in between: caught by the slot bit on free
  *   negative double_free_cached   free(p) twice back to back: caught when the
  *                                 cache flushes the duplicates to the slab
+ *   negative sized_double_free    sdallocx(p, size, 0) twice back to back: the
+ *                                 sized path skips the slot bit, so the call
+ *                                 returns and the flush catches the duplicate
+ *   negative sized_mismatch       sdallocx(p, wrong size, 0): the hint's class
+ *                                 is not the pointer's, caught at the call
+ *   negative free_sized_mismatch  C23 free_sized(p, wrong size), the same
  *   negative interior_free        free(p + size/2)
  *   negative stack_free           free of a stack address
  *   negative huge_overflow        write one byte past a huge allocation
  */
 #include "common.h"
+
+/* From the preloaded allocator; weak so the binary links without it (the
+ * driver only runs these modes with libchalloc loaded). */
+extern void sdallocx(void *, size_t, int) __attribute__((weak));
+extern void free_sized(void *, size_t) __attribute__((weak));
 
 /* Enough blocks of one class that freeing them all flushes the thread cache
  * several times (the largest cache holds 256 slots and flushes 128). They
@@ -67,6 +78,25 @@ int main(int argc, char **argv)
         free(bad);
         free(bad); /* both copies now sit in the thread cache */
         drain();   /* the flush releases them to the slab */
+    } else if (strcmp(mode, "sized_double_free") == 0) {
+        REQUIRE(sdallocx != NULL, "sdallocx not exported");
+        void *p = victim(64);
+        bad = p;
+        sdallocx(bad, 64, 0);
+        sdallocx(bad, 64, 0); /* not caught here: no descriptor load on the sized path */
+        printf("sized double free of %p returned\n", bad);
+        fflush(stdout);
+        drain(); /* the flush releases the duplicates to the slab */
+    } else if (strcmp(mode, "sized_mismatch") == 0) {
+        REQUIRE(sdallocx != NULL, "sdallocx not exported");
+        void *p = victim(64);
+        bad = p;
+        sdallocx(bad, 1000, 0); /* class of 1000 bytes is not the class of 64 */
+    } else if (strcmp(mode, "free_sized_mismatch") == 0) {
+        REQUIRE(free_sized != NULL, "free_sized not exported");
+        void *p = victim(64);
+        bad = p;
+        free_sized(bad, 65); /* one byte over the class */
     } else if (strcmp(mode, "interior_free") == 0) {
         void *p = malloc(64);
         REQUIRE(p != NULL, "malloc failed");

@@ -116,7 +116,7 @@ is probed at init and degrades without changing observable behaviour.
 |------------------------------------------|--------------|-----------------|
 | Metadata separate from user memory       | No           | Yes             |
 | Free-list pointers in freed blocks       | Yes          | None            |
-| Invalid free detected                    | No           | Yes, aborts     |
+| Invalid free detected                    | No           | Yes, aborts (1) |
 | Double free detected                     | Debug only   | Yes, aborts (1) |
 | Size classes in isolated address ranges  | No           | Yes, randomised |
 | Guard regions                            | No           | Yes             |
@@ -124,10 +124,25 @@ is probed at init and degrades without changing observable behaviour.
 | Slot order randomisation                 | No           | Opt-in          |
 | Implementation language                  | C            | Rust            |
 
-(1) A second free of a slot that has already left the thread cache is always
-caught. A second free while the slot is still cached is caught against the
-most recent entries by default and exhaustively with the `double_free_scan`
-tunable.
+(1) Through `free`: an invalid pointer aborts at the call, and so does a
+second free of a slot that has already left the thread cache (its slot bit
+is clear). A second free while the slot is still cached is caught when the
+cache flushes the duplicates to the slab (the `double_free_scan` tunable is
+accepted and reserved for an exhaustive scan of the cache at the call; it
+does nothing yet).
+Through the sized path, `sdallocx(p, size, flags)`, C23 `free_sized` and
+`free_aligned_sized` (what Valkey frees with): the size is checked against
+the pointer's class at the call (a size that names another class aborts,
+`nallocx(size, flags) == sallocx(p)` is the contract), the slot bit is not
+read, and an invalid or double free is caught when the thread cache flushes
+the slot to its slab: at most a cache's worth of frees later (at once when
+the cache is full or with `MALLOCX_TCACHE_NONE`). Between the call and that
+flush the slot can be handed out twice, which is jemalloc's behaviour for
+every free; if a `malloc` takes one copy before the flush the duplicate is
+not detected. This trade is the jemalloc-parity decision of
+`docs/plan.md` Phase 1.5 task 4e: the exact check costs one slab-descriptor
+cache miss per free, 200 of the 273 cycles per SET that separated challoc
+from jemalloc on Valkey's write path.
 
 ## Compatibility
 

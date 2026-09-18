@@ -717,6 +717,88 @@ impl Shared {
         }
     }
 
+    /// The sized free's check (`sdallocx`, `free_sized`; design 6.3): `p`
+    /// must be a slot start in a committed slab of the class the size hint
+    /// names, `hint` (`class_for(size, align)`, `None` for a huge size).
+    /// Arithmetic on the pointer and two dense lines (`class_base`,
+    /// `CLASSES`, the class table): the slab descriptor is not loaded, so
+    /// the bit test that makes plain `free` exact is left to the flush.
+    /// `None` for anything else; the slow path repeats the checks with
+    /// aborts ([`check_size_hint`], then [`classify_free`]). The arena is
+    /// not read either (it is on the descriptor line): the home cache takes
+    /// the slot and the flush routes it ([`release_routed`]).
+    ///
+    /// [`check_size_hint`]: Shared::check_size_hint
+    /// [`classify_free`]: Shared::classify_free
+    /// [`release_routed`]: Shared::release_routed
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[inline(always)]
+    fn sized_slot(&self, p: *mut u8, hint: Option<usize>) -> Option<usize> {
+        let (class, slab, _slot) = self.regions.slab_slot(p as usize)?;
+        if hint != Some(class) {
+            return None;
+        }
+        // SAFETY: `slab_slot` only returns `class < NCLASSES`.
+        let table = unsafe { self.tables.get_unchecked(class) };
+        table.desc_if_committed(slab)?;
+        Some(class)
+    }
+
+    /// The sized free's abort: a slab pointer whose class is not the one
+    /// the size hint names (`sdallocx`'s contract is `nallocx(size, flags)
+    /// == sallocx(p)`). Huge runs and pointers that are not allocations pass
+    /// here and are judged by the exact free that follows.
+    #[cold]
+    #[inline(never)]
+    pub fn check_size_hint(&self, p: *mut u8, size: usize, hint: Option<usize>) {
+        if let Kind::Slab { class, .. } = self.regions.classify(p as usize) {
+            if hint != Some(class as usize) {
+                panic!(
+                    "sized free of {:#x}: size hint {} does not match the allocation (class {}, {} bytes)",
+                    p as usize,
+                    size,
+                    class,
+                    CLASSES[class as usize].size()
+                );
+            }
+        }
+    }
+
+    /// Owning arena of the committed slab holding the slot `p` of `class`.
+    /// Aborts for anything that is not a slot start in a committed slab.
+    fn arena_of_slot(&self, class: usize, p: *mut u8) -> u16 {
+        let t = self.table(class);
+        let (slab, _) = t.locate(p);
+        t.desc(slab).arena()
+    }
+
+    /// Release a cache's sorted batch of `class` slots, keyed by `arena`.
+    /// Plain frees push a slot onto the cache of its slab's arena, so the
+    /// whole batch is normally one [`release_owned`] call with no extra
+    /// work per pointer; sized frees push slots of any arena onto the home
+    /// cache (their check skips the descriptor line the arena sits on), and
+    /// each run of slabs of another arena is released through that arena
+    /// (one descriptor load per switch, a line `release_owned` reads anyway).
+    ///
+    /// [`release_owned`]: crate::class::ClassState::release_owned
+    pub fn release_routed(&self, arena: u16, class: usize, ptrs: &[*mut u8]) {
+        let mut done = 0;
+        let mut a = arena;
+        loop {
+            done += self.owner(a).class(class).release_owned(&ptrs[done..]);
+            if done == ptrs.len() {
+                return;
+            }
+            let next = self.arena_of_slot(class, ptrs[done]);
+            if next == a {
+                // `release_owned` stopped at a slab it says is not ours while
+                // the descriptor says it is: the descriptor changed under us.
+                panic!("heap: slab of class {class} changed arena {a} during a flush");
+            }
+            a = next;
+        }
+    }
+
     /// The `free` fast path's check: `Some(class)` when `p` is a slot start
     /// in a committed slab whose bit is set and whose arena is `home` (the
     /// arena load is skipped while only arena 0 exists), `None` for
@@ -1670,7 +1752,7 @@ impl Heap {
             all.sort_unstable();
             let rest_len = all.len() - n;
             let (_keep, high) = all.split_at_mut(rest_len);
-            shared.owner(arena).class(class).release(high);
+            shared.release_routed(arena, class, high);
             (*cache).len = rest_len as u32;
             (*cache).moved = (*cache).moved.wrapping_sub(n as u64);
             (*cache).zeroed = 0;
@@ -1852,6 +1934,21 @@ pub fn existing_heap() -> Option<&'static mut Heap> {
 #[inline(always)]
 pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8) -> bool {
     match shared.checked_slot(p, h) {
+        Some(class) => h.push_fast(class, p),
+        None => false,
+    }
+}
+
+/// The sized free's fast path on an existing heap (`sdallocx`,
+/// `free_sized`): verify the size hint's class against the pointer
+/// arithmetically and push onto the home cache without loading the slab
+/// descriptor (design 6.3). `false` for anything off the fast path (not a
+/// slot of a committed slab, a hint naming another class or a huge size, a
+/// full cache); the caller then goes through [`Shared::check_size_hint`]
+/// and the exact [`free`]. Contains no call.
+#[inline(always)]
+pub fn free_sized_fast(shared: &Shared, h: &mut Heap, p: *mut u8, hint: Option<usize>) -> bool {
+    match shared.sized_slot(p, hint) {
         Some(class) => h.push_fast(class, p),
         None => false,
     }

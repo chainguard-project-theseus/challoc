@@ -913,31 +913,51 @@ impl ClassState {
     /// class, or one whose slab belongs to another arena (the caller routes
     /// by the descriptor's arena; a miss here means a cache was mis-keyed).
     pub fn release(&self, ptrs: &[*mut u8]) {
+        let n = self.release_owned(ptrs);
+        if n != ptrs.len() {
+            let p = ptrs[n];
+            let (slab, _) = self.locate(p);
+            wrong_arena(p as usize, self.class as usize, self.desc(slab).arena(), self.arena);
+        }
+    }
+
+    /// [`release`] of the longest prefix of `ptrs` whose slabs this arena
+    /// owns, returning its length (`ptrs.len()` when every slab is ours).
+    /// The batch is sorted by address, so a slab's pointers are contiguous
+    /// and the prefix ends exactly at the first pointer of a slab of another
+    /// arena; the caller routes the rest there (`Heap::flush`: a home cache
+    /// takes sized frees of any arena, design 6.3). Every bit cleared is
+    /// checked (an already-clear bit is a double or invalid free and aborts),
+    /// which is where the sized path's deferred check lands.
+    ///
+    /// [`release`]: ClassState::release
+    pub fn release_owned(&self, ptrs: &[*mut u8]) -> usize {
         let mut cur_slab = usize::MAX;
         let mut cur_word = 0usize;
         let mut mask = 0u64;
         let mut count = 0usize;
         let mut reopen = Reopen::default();
-        for &p in ptrs {
+        let mut end = ptrs.len();
+        for (i, &p) in ptrs.iter().enumerate() {
             let (slab, slot) = self.locate(p);
             let word = slot / 64;
             if slab != cur_slab || word != cur_word {
                 if mask != 0 {
                     self.release_word(cur_slab, cur_word, mask, &mut reopen);
+                    mask = 0;
                 }
                 if slab != cur_slab {
                     if count != 0 {
                         self.dec_live(cur_slab, count);
                         count = 0;
                     }
-                    let owner = self.desc(slab).arena();
-                    if owner != self.arena {
-                        wrong_arena(p as usize, self.class as usize, owner, self.arena);
+                    if self.desc(slab).arena() != self.arena {
+                        end = i;
+                        break;
                     }
                 }
                 cur_slab = slab;
                 cur_word = word;
-                mask = 0;
             }
             let bit = 1u64 << (slot % 64);
             if mask & bit != 0 {
@@ -953,9 +973,10 @@ impl ClassState {
             self.dec_live(cur_slab, count);
         }
         self.reopen(&mut reopen);
-        if !ptrs.is_empty() {
-            self.released.fetch_add(ptrs.len() as u64, Ordering::Relaxed);
+        if end != 0 {
+            self.released.fetch_add(end as u64, Ordering::Relaxed);
         }
+        end
     }
 
     /// Release the slots of `mask` in `word` of `slab`. The `live` update

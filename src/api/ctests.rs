@@ -133,7 +133,7 @@ fn run_bin_env(name: &str, bin: &str, args: &[&str], env: &[(&str, &str)]) {
 /// to run). Under the preload it must die with `signal`, its stdout must
 /// show it reached the bad operation and never survived it, and for aborts
 /// stderr must carry the `challoc: ` line with every string in `expect`.
-fn run_c_negative(mode: &str, signal: i32, expect: &[&str]) {
+fn run_c_negative(mode: &str, signal: i32, expect: &[&str]) -> std::string::String {
     use std::os::unix::process::ExitStatusExt;
     let so = release_so();
     let bin = compile("tests/c", "negative", &[]);
@@ -164,6 +164,7 @@ fn run_c_negative(mode: &str, signal: i32, expect: &[&str]) {
     } else {
         std::eprintln!("negative {mode}: signal {signal}");
     }
+    stdout.into_owned()
 }
 
 #[test]
@@ -178,6 +179,24 @@ fn c_negative_double_free_cached() {
     // Both frees land in the thread cache; the batched release to the slab
     // sees the duplicate (or the second release finds the bit clear).
     run_c_negative("double_free_cached", SIGABRT, &["double free of 0x"]);
+}
+
+/// A sized double free returns from the second call (the sized path loads
+/// no descriptor) and is caught when the cache flushes both copies.
+#[test]
+fn c_negative_sized_double_free() {
+    let out = run_c_negative("sized_double_free", SIGABRT, &["double free of 0x"]);
+    assert!(out.contains("sized double free of 0x"), "the second sdallocx did not return: {out}");
+}
+
+#[test]
+fn c_negative_sized_mismatch() {
+    run_c_negative("sized_mismatch", SIGABRT, &["sized free of 0x", "size hint 1000 does not match"]);
+}
+
+#[test]
+fn c_negative_free_sized_mismatch() {
+    run_c_negative("free_sized_mismatch", SIGABRT, &["sized free of 0x", "size hint 65 does not match"]);
 }
 
 #[test]
