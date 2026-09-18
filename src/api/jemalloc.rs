@@ -171,9 +171,9 @@ pub fn rallocx(p: *mut u8, size: usize, flags: c_int) -> *mut u8 {
     let Some(shared) = super::shared_if_ready() else { not_an_allocation("rallocx", p) };
     let align = f.align();
     let old = match shared.regions.classify(p as usize) {
-        Kind::Slab { class, .. } => {
+        Kind::Slab { class, slab, slot } => {
             let class = class as usize;
-            shared.table(class).check_live(p);
+            shared.table(class).check_live(slab as usize, slot as usize, p as usize);
             if class_for(size, align) == Some(class) {
                 return p;
             }

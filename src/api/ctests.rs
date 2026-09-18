@@ -220,6 +220,15 @@ fn c_negative_stack_free() {
     run_c_negative("stack_free", SIGABRT, &["invalid free of 0x", "not an allocation"]);
 }
 
+/// Plan Phase 1.5 task 14: `malloc_usable_size` reads the located slot's
+/// bit the way `free` does and still aborts on a slot that is not
+/// allocated (the query of a freed, flushed block).
+#[test]
+fn c_negative_usable_size_freed() {
+    let out = run_c_negative("usable_size_freed", SIGABRT, &["invalid or double free of 0x", "slot is not allocated"]);
+    assert!(!out.contains("returned"), "the query of a freed slot returned: {out}");
+}
+
 #[test]
 fn c_negative_huge_overflow() {
     // The byte after a huge run is its guard page (`PROT_NONE`, or

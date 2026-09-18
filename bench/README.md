@@ -94,7 +94,11 @@ MiB heap whose slab descriptors miss cache on every free of a random key,
   through `sdallocx(ptr, size, 0)` when the loaded allocator exports it
   (weak reference: challoc and jemalloc do, glibc and mimalloc fall back to
   `free` and the log says so), `valkey1-free` forces plain `free`
-  (`-f free`; `-f sdallocx` refuses to run without the symbol). Scored by
+  (`-f free`; `-f sdallocx` refuses to run without the symbol), and
+  `valkey1-usable` (`-u`) precedes every free with a `malloc_usable_size`
+  query of the pointer, which is what Valkey's unsized `zfree(ptr)` does
+  (`zmalloc_size` for the accounting, then `je_sdallocx`); it is the row
+  for the usable-size query (plan Phase 1.5 task 14), not a gate row. Scored by
   the write phase's M ops/s (the phase whose gap the soak shows widest and
   the one that reproduces the large-heap free miss); the delete phase's
   rate, the RSS after it and, with a `mallctl`-exporting allocator,

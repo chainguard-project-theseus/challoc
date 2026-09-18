@@ -19,7 +19,7 @@
 #       `narenas16=HEAD~1:narenas:16` costs no extra compile next to `old=HEAD~1`.
 #   ROUNDS=5                 timed rounds (plus one warm-up)
 #   BENCHES="larson1 larson10 larson16 xmalloc alloc-test1 alloc-testN"
-#       rows from bench/lib.sh bench_args (also larsonN xmallocN valkey1 valkey1-free
+#       rows from bench/lib.sh bench_args (also larsonN xmallocN valkey1 valkey1-free valkey1-usable
 #       cfrac espresso mstress glibc-simple redis ruby-churn)
 #   ADAPTIVE=1               stop after 3 timed rounds when, on every bench, no two
 #                            variants' sorted lists overlap (the answer is already clear)

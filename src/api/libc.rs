@@ -219,23 +219,33 @@ fn free_before_init(p: *mut u8) -> ! {
 }
 
 /// Usable bytes of the live allocation `p`. Aborts unless `p` is a live
-/// slab slot or huge run start.
+/// slab slot or huge run start. A slab pointer takes the `free` fast
+/// path's route (design 6.3): `Regions::classify` finds class, slab and
+/// slot from the dense arrays, `check_live` tests the bit, and the size is
+/// the class's.
+#[inline(always)]
 pub fn usable_size(shared: &Shared, p: *mut u8) -> usize {
     match shared.regions.classify(p as usize) {
-        Kind::Slab { class, .. } => {
+        Kind::Slab { class, slab, slot } => {
             let class = class as usize;
-            shared.table(class).check_live(p);
+            shared.table(class).check_live(slab as usize, slot as usize, p as usize);
             CLASSES[class].size()
         }
         Kind::Huge { page } => shared.huge.usable_size(page),
-        Kind::Invalid => crate::sys::abort_fmt(format_args!(
-            "{:#x} is not an allocation",
-            p as usize
-        )),
+        Kind::Invalid => not_an_allocation(p),
     }
 }
 
+/// The abort of [`usable_size`] for a pointer outside every allocation,
+/// out of line so the query needs no frame for the message.
+#[cold]
+#[inline(never)]
+fn not_an_allocation(p: *mut u8) -> ! {
+    crate::sys::abort_fmt(format_args!("{:#x} is not an allocation", p as usize))
+}
+
 /// `malloc_usable_size`. Zero for null.
+#[inline(always)]
 pub fn malloc_usable_size(p: *mut u8) -> usize {
     if p.is_null() {
         return 0;
@@ -259,9 +269,9 @@ pub fn realloc(p: *mut u8, size: usize) -> *mut u8 {
     }
     let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
     let old = match shared.regions.classify(p as usize) {
-        Kind::Slab { class, .. } => {
+        Kind::Slab { class, slab, slot } => {
             let class = class as usize;
-            shared.table(class).check_live(p);
+            shared.table(class).check_live(slab as usize, slot as usize, p as usize);
             if class_of(size) == Some(class) {
                 return p;
             }

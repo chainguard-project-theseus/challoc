@@ -16,6 +16,9 @@
  *   negative sized_mismatch       sdallocx(p, wrong size, 0): the hint's class
  *                                 is not the pointer's, caught at the call
  *   negative free_sized_mismatch  C23 free_sized(p, wrong size), the same
+ *   negative usable_size_freed    malloc_usable_size(p) after free(p) and a
+ *                                 flush: the query keeps the exact bit test
+ *                                 (plan Phase 1.5 task 14)
  *   negative interior_free        free(p + size/2)
  *   negative stack_free           free of a stack address
  *   negative huge_overflow        write one byte past a huge allocation
@@ -173,6 +176,14 @@ int main(int argc, char **argv)
         void *p = victim(64);
         bad = p;
         free_sized(bad, 65); /* one byte over the class */
+    } else if (strcmp(mode, "usable_size_freed") == 0) {
+        void *p = victim(64);
+        bad = p;
+        REQUIRE(malloc_usable_size(bad) == 64, "usable %zu", malloc_usable_size(bad));
+        free(bad);
+        drain(); /* p leaves the cache and its slot bit clears */
+        size_t u = malloc_usable_size(bad); /* must abort: the slot is not allocated */
+        printf("usable size of the freed %p returned %zu\n", bad, u);
     } else if (strcmp(mode, "interior_free") == 0) {
         void *p = malloc(64);
         REQUIRE(p != NULL, "malloc failed");

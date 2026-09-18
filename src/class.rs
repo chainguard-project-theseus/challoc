@@ -901,17 +901,6 @@ impl SlabTable {
         self.check_located(slab, slot, p as usize)
     }
 
-    /// [`check`] without the owner: for queries that only need to know the
-    /// slot is live (`malloc_usable_size`, `realloc`), so they read the
-    /// bitmap word and nothing else.
-    ///
-    /// [`check`]: SlabTable::check
-    #[inline]
-    pub fn check_live(&self, p: *mut u8) {
-        let (slab, slot) = self.locate(p);
-        self.check_bit(slab, slot, p as usize);
-    }
-
     /// [`check`] for a pointer already located (`Regions::classify`):
     /// aborts unless `slab` has been handed out and `slot`'s bit is set,
     /// with the pointer and its location; returns the owning arena.
@@ -919,27 +908,55 @@ impl SlabTable {
     /// [`check`]: SlabTable::check
     #[inline]
     pub fn check_located(&self, slab: usize, slot: usize, p: usize) -> u16 {
-        self.check_bit(slab, slot, p);
-        // SAFETY: `check_bit` returned, so `slab` is below the watermark.
+        self.check_live(slab, slot, p);
+        // SAFETY: `check_live` returned, so `slab` is below the watermark.
         unsafe { self.owner_unchecked(slab) }
     }
 
-    /// The bit test of [`check_located`], without the owner.
+    /// The bit test of [`check_located`], without the owner: the exact
+    /// check of `malloc_usable_size`, `realloc` and `rallocx` on a slot
+    /// `Regions::classify` located (plan Phase 1.5 task 14). The loads that
+    /// depend on the pointer are the `free` fast path's
+    /// (`Shared::checked_slot`): the watermark, `bits_base` and
+    /// `slab_bits` from this table line, then the class bitmap word; the
+    /// slab and slot come from the caller's dense-array arithmetic and are
+    /// not derived again from `base` and `CLASSES[class]` here (that was
+    /// `locate`, a second dependent chain in front of the word load,
+    /// `bench/results/2026-09-18-aarch64-gce-usable-size-chain.md`). The
+    /// watermark is loaded `Relaxed` for the reason [`desc_if_committed`]
+    /// gives: for a live slot the program's own ordering makes the group's
+    /// words visible, and for anything else every observable value aborts.
+    /// Aborts by name for a slab never handed out, a guard slab, or a
+    /// clear bit; the guard test (a 32-bit division) runs only once the bit
+    /// is clear, which it always is in a guard slab (`take_group` never
+    /// sets one), so the messages are unchanged and the hot path is the
+    /// watermark compare and the bit test.
     ///
     /// [`check_located`]: SlabTable::check_located
-    #[inline]
-    fn check_bit(&self, slab: usize, slot: usize, p: usize) {
-        if slab >= self.committed_slabs() {
+    /// [`desc_if_committed`]: SlabTable::desc_if_committed
+    #[inline(always)]
+    pub fn check_live(&self, slab: usize, slot: usize, p: usize) {
+        if !self.is_handed_out(slab) {
             never_committed(self.class as usize, slab);
         }
+        debug_assert!(slot < self.class().nslots());
+        // SAFETY: below a value the watermark held, slot below `nslots`.
+        if !unsafe { self.is_set_unchecked(slab, slot) } {
+            self.not_live(slab, slot, p);
+        }
+    }
+
+    /// The abort of [`check_live`] for a clear bit: a guard slab by name,
+    /// otherwise a slot that is not allocated.
+    ///
+    /// [`check_live`]: SlabTable::check_live
+    #[cold]
+    #[inline(never)]
+    fn not_live(&self, slab: usize, slot: usize, p: usize) -> ! {
         if self.is_guard_slab(slab) {
             guard_free(p, self.class as usize, slab);
         }
-        debug_assert!(slot < self.class().nslots());
-        // SAFETY: below the acquire-loaded watermark, slot below `nslots`.
-        if !unsafe { self.is_set_unchecked(slab, slot) } {
-            invalid_free(p, self.class as usize, slab, slot);
-        }
+        invalid_free(p, self.class as usize, slab, slot)
     }
 
     /// Hand the next group of slabs to `arena` (design section 4):

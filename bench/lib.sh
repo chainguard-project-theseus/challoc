@@ -112,6 +112,7 @@ bench_args() {
     glibc-simple) echo "$BIN/glibc-simple";;
     valkey1)      echo "$BIN/valkey_model -n $VALKEY_MODEL_N -t $VALKEY_MODEL_SECS -s";;
     valkey1-free) echo "$BIN/valkey_model -n $VALKEY_MODEL_N -t $VALKEY_MODEL_SECS -s -f free";;
+    valkey1-usable) echo "$BIN/valkey_model -n $VALKEY_MODEL_N -t $VALKEY_MODEL_SECS -s -u";;
     redis)        echo "$BIN/redis-server";;
     ruby-churn)   ruby_available || return 1
                   echo "env LD_LIBRARY_PATH=$RUBY_INST/lib $RUBY_INST/bin/ruby --disable-gems $ROOT/bench/ruby/gc_churn.rb 10 10";;

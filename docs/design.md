@@ -472,6 +472,15 @@ which is tracked as a per-cache zero prefix: `slots[..zeroed]` are known
 zero, set by a refill whose batch came from a `Fresh` or `Purged` slab,
 clipped by a push that lands below it and dropped by a flush.
 
+`malloc_usable_size(p)` (and `sallocx`, and the size read of `realloc` and
+`rallocx`): classify `p` as `free` step 1 does; for a slab slot test the bit
+as step 2 does, from the class, slab and slot the dense arrays gave (the
+watermark, `bits_base` and `slab_bits` on the class table line, then the
+bitmap word; the slot geometry is not derived a second time from the table
+line) and return the class size; a clear bit aborts as a free of that slot
+would. A huge run start reads its page count from the huge table. Same
+loads as `free` minus the owner word and the cache push.
+
 `realloc` returns the same pointer if the new size maps to the same class,
 otherwise allocates, copies `min(old, new)`, frees. `rallocx` follows
 jemalloc semantics; `xallocx` never resizes in place (challoc never changes
