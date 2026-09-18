@@ -269,6 +269,10 @@ impl Inner {
             "meta: free of a pointer that was never allocated here"
         );
         let node = p as *mut FreeNode;
+        // The one double free that costs nothing to see: the block is the
+        // list's head. A block deeper in the list is not looked for (that
+        // would walk the list on every free).
+        assert!(self.free[bin] != node, "meta: double free of the free list head");
         // SAFETY: the block is `size >= 16` bytes of committed memory that
         // the caller has given up, aligned to at least 16.
         unsafe { (*node).next = self.free[bin] };
@@ -935,5 +939,30 @@ mod tests {
             vec![(b.base, b.base + COMMIT_CHUNK), (r, r + 3 * PAGE)],
             "writable ranges in the region"
         );
+    }
+
+
+    #[test]
+    #[should_panic(expected = "double free of the free list head")]
+    fn a_double_free_of_the_list_head_aborts() {
+        let b = Backing::new(1 << 16);
+        let m = b.meta();
+        let p = m.alloc(layout(64, 8));
+        assert!(!p.is_null());
+        m.free(p, layout(64, 8));
+        m.free(p, layout(64, 8));
+    }
+
+    #[test]
+    fn a_free_below_the_list_head_is_accepted() {
+        // Documents the limit of the check: only the head is compared.
+        let b = Backing::new(1 << 16);
+        let m = b.meta();
+        let p = m.alloc(layout(64, 8));
+        let q = m.alloc(layout(64, 8));
+        m.free(p, layout(64, 8));
+        m.free(q, layout(64, 8));
+        assert_eq!(m.alloc(layout(64, 8)), q);
+        assert_eq!(m.alloc(layout(64, 8)), p);
     }
 }

@@ -171,7 +171,7 @@ impl<'a> AtomicBitmap<'a> {
     #[inline]
     pub fn release(&self, i: usize, mask: u64) -> (u64, bool) {
         let m = mask << self.shift;
-        debug_assert!(m & !self.mask == 0, "bitmap: release outside the slab");
+        assert!(m & !self.mask == 0, "bitmap: release outside the slab");
         let prev = self.words[i].fetch_and(!m, Ordering::Release);
         ((prev & self.mask) >> self.shift, prev & self.mask == self.mask)
     }
@@ -194,7 +194,11 @@ impl<'a> AtomicBitmap<'a> {
     /// slots for a class with `nslots` real slots.
     pub fn allocated(&self, nslots: usize) -> usize {
         let set: usize = (0..self.words.len()).map(|w| self.load(w).count_ones() as usize).sum();
-        set - (self.nbits() - nslots)
+        let padding = self.nbits() - nslots;
+        // Fewer set bits than padding bits means a padding bit was cleared:
+        // a release outside the slab's real slots.
+        assert!(set >= padding, "bitmap: a padding bit of the slab was cleared");
+        set - padding
     }
 
     /// Whether every bit, padding included, is set. A full slab leaves the
@@ -1069,5 +1073,30 @@ mod tests {
                 }
             }
         }
+    }
+
+
+    #[test]
+    #[should_panic(expected = "release outside the slab")]
+    fn a_release_outside_the_sub_word_view_aborts() {
+        let word = AtomicU64::new(0);
+        let v = AtomicBitmap::sub_word(&word, 8, 8);
+        v.init(6);
+        // Slab coordinates: bit 8 of an 8-bit view is the next slab's.
+        v.release(0, 1 << 8);
+    }
+
+
+    #[test]
+    #[should_panic(expected = "padding bit of the slab was cleared")]
+    fn a_cleared_padding_bit_aborts_the_allocated_count() {
+        let word = AtomicU64::new(0);
+        let v = AtomicBitmap::sub_word(&word, 0, 8);
+        v.init(6);
+        assert_eq!(v.allocated(6), 0);
+        // Bits 6 and 7 are padding and set by `init`; clearing one is a
+        // release outside the real slots.
+        v.release(0, 1 << 6);
+        v.allocated(6);
     }
 }

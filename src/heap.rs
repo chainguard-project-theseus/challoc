@@ -989,7 +989,7 @@ impl Heap {
     fn free_caches(shared: &Shared, caches: &mut [CacheHeader; NCLASSES]) {
         for cache in caches.iter_mut() {
             if cache.cap != 0 {
-                debug_assert_eq!(cache.len, 0);
+                assert_eq!(cache.len, 0, "heap: freeing a cache that was not flushed");
                 shared.meta.free(cache.slots as *mut u8, CacheHeader::slots_layout(cache.cap));
             }
             *cache = CacheHeader::EMPTY;
@@ -1356,6 +1356,13 @@ impl Heap {
                     return Self::pop_top(cache, len);
                 }
             }
+            // The run invariant `run_end <= low_water <= len` is what keeps
+            // this pop from serving a stale pointer out of `slots[run_end -
+            // 1]`; a violation is a heap inconsistency and aborts in release.
+            assert!(
+                (*cache).run_end <= (*cache).low_water && (*cache).low_water <= len,
+                "heap: cache run invariant violated (run_end > low_water or low_water > len)"
+            );
             let top = len - 1;
             let at = (*cache).run_end - 1;
             let slots = (*cache).slots();
@@ -1657,9 +1664,11 @@ impl Heap {
 
     /// The `others` node for `arena`, created (if `create`) on first use.
     /// Null when there is none (and none could be allocated). Never called
-    /// with the home arena.
+    /// with the home arena: creating a node for it would split the home
+    /// caches in two, which the creation branch aborts on (the lookup walk
+    /// is xmalloc's per-free path and cannot find a node that was never
+    /// created).
     fn other_caches(&mut self, shared: &Shared, arena: u16, create: bool) -> *mut ArenaCaches {
-        debug_assert_ne!(arena, self.arena);
         let mut o = self.others;
         let mut n = 0usize;
         while !o.is_null() {
@@ -1676,6 +1685,7 @@ impl Heap {
         if !create {
             return ptr::null_mut();
         }
+        assert_ne!(arena, self.arena, "heap: others node requested for the home arena");
         let block = shared.meta.alloc(node_block_layout());
         if block.is_null() {
             return ptr::null_mut();
@@ -1778,7 +1788,7 @@ impl Heap {
     unsafe fn refill(&mut self, shared: &Shared, arena: &Arena, cache: *mut CacheHeader, class: usize) -> u32 {
         // SAFETY: the cache is empty and has `cap` slots of storage.
         unsafe {
-            debug_assert_eq!((*cache).len, 0);
+            assert_eq!((*cache).len, 0, "heap: refill of a cache that is not empty");
             let want = ((*cache).cap / 2).max(1) as usize;
             let out = core::slice::from_raw_parts_mut((*cache).slots(), want);
             let claim = arena.class(class).claim(&shared.meta, out);
@@ -3461,6 +3471,64 @@ pub(crate) mod tests {
         assert_eq!(s.tcaches.len(), 1);
         // The slot is reused.
         assert_eq!(s.tcaches.create(s, 0), Some(t0));
+    }
+
+    // Phase 1.5 task 8: the four cache invariants that were `debug_assert!`
+    // abort in release. Each test builds the violating state by hand.
+
+    #[test]
+    #[should_panic(expected = "cache run invariant violated")]
+    fn a_scheduled_pop_aborts_when_the_run_reaches_past_the_length() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        let _p = t.alloc(c);
+        let h = t.heap();
+        let len = h.cache(c).unwrap().len() as u32;
+        assert!(len > 1);
+        let k = h.cache_ptr(c);
+        unsafe {
+            (*k).mode = MODE_COMPACT;
+            (*k).run_end = len + 1;
+            h.pop_compact_run(k, c, len);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "refill of a cache that is not empty")]
+    fn a_refill_of_a_cache_that_is_not_empty_aborts() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        let _p = t.alloc(c);
+        let h = t.heap();
+        assert!(h.cache(c).unwrap().len() > 0);
+        let a = s.arena(0).unwrap();
+        let k = h.cache_ptr(c);
+        unsafe { h.refill(s, a, k, c) };
+    }
+
+    #[test]
+    #[should_panic(expected = "freeing a cache that was not flushed")]
+    fn freeing_caches_that_were_not_flushed_aborts() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        let _p = t.alloc(c);
+        let h = t.heap();
+        assert!(h.cache(c).unwrap().len() > 0);
+        Heap::free_caches(s, &mut h.caches);
+    }
+
+    #[test]
+    #[should_panic(expected = "others node requested for the home arena")]
+    fn an_others_node_for_the_home_arena_aborts() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let h = t.heap();
+        let home = h.arena;
+        assert!(h.other_caches(s, home, false).is_null());
+        h.other_caches(s, home, true);
     }
 }
 

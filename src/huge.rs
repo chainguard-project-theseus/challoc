@@ -70,12 +70,25 @@ pub enum RunState {
 }
 
 impl RunState {
+    /// Decode a state byte. Aborts on a value no state has: a corrupted
+    /// byte must not read as `Purged`, whose pages `take` hands out as
+    /// zero memory.
     #[inline]
-    const fn from_u8(v: u8) -> RunState {
+    fn from_u8(v: u8) -> RunState {
+        match RunState::try_from_u8(v) {
+            Some(s) => s,
+            None => bad_run_state_byte(v),
+        }
+    }
+
+    /// [`from_u8`](RunState::from_u8) without the abort.
+    #[inline]
+    const fn try_from_u8(v: u8) -> Option<RunState> {
         match v {
-            0 => RunState::Active,
-            1 => RunState::Empty,
-            _ => RunState::Purged,
+            0 => Some(RunState::Active),
+            1 => Some(RunState::Empty),
+            2 => Some(RunState::Purged),
+            _ => None,
         }
     }
 
@@ -190,18 +203,34 @@ impl HugeStats {
     }
 
     fn sub_free(&mut self, state: RunState, pages: usize) {
+        // A count going below zero means the extents and the counters
+        // disagree; the release profile does not check overflow, so the
+        // subtractions are explicit.
+        let sub = |x: usize, y: usize| x.checked_sub(y).unwrap_or_else(|| huge_count_underflow(state));
         match state {
             RunState::Empty => {
-                self.empty -= 1;
-                self.empty_pages -= pages;
+                self.empty = sub(self.empty, 1);
+                self.empty_pages = sub(self.empty_pages, pages);
             }
             RunState::Purged => {
-                self.purged -= 1;
-                self.purged_pages -= pages;
+                self.purged = sub(self.purged, 1);
+                self.purged_pages = sub(self.purged_pages, pages);
             }
             RunState::Active => unreachable!(),
         }
     }
+}
+
+#[cold]
+#[inline(never)]
+fn bad_run_state_byte(v: u8) -> ! {
+    panic!("huge: run state byte {v:#x} is not a run state")
+}
+
+#[cold]
+#[inline(never)]
+fn huge_count_underflow(state: RunState) -> ! {
+    panic!("huge: {state:?} extent count underflow")
 }
 
 /// One hash table slot: the key it was inserted under and the descriptor.
@@ -294,7 +323,7 @@ impl Table {
                 self.count += 1;
                 return;
             }
-            debug_assert!(e.key != key, "huge: key inserted twice");
+            assert!(e.key != key, "huge: key inserted twice");
             i = (i + 1) & mask;
         }
     }
@@ -322,7 +351,7 @@ impl Table {
             }
         }
         *self.slot(i) = Entry { key: 0, desc: ptr::null_mut() };
-        self.count -= 1;
+        self.count = self.count.checked_sub(1).unwrap_or_else(|| panic!("huge: descriptor table count underflow"));
     }
 
     /// Make room for `extra` more keys at a load of one half or less. On
@@ -2114,6 +2143,52 @@ mod tests {
         let h = env.huge();
         let (p, _) = env.alloc(&h, 4 * PAGE, 1);
         h.usable_size(env.page_of(p) + 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "key inserted twice")]
+    fn the_table_rejects_a_duplicate_key() {
+        let env = Env::new();
+        let mut t = Table::new(&env.meta, PAGE).unwrap();
+        let d = 0x10 as *mut HugeDesc;
+        t.insert(7, d);
+        assert_eq!(t.count, 1);
+        t.insert(7, d);
+    }
+
+    #[test]
+    fn run_state_round_trips_and_rejects_other_bytes() {
+        for s in [RunState::Active, RunState::Empty, RunState::Purged] {
+            assert_eq!(RunState::from_u8(s as u8), s);
+            assert_eq!(RunState::try_from_u8(s as u8), Some(s));
+        }
+        for v in 3..=255u8 {
+            assert_eq!(RunState::try_from_u8(v), None, "{v}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a run state")]
+    fn a_run_state_byte_no_state_has_aborts() {
+        let _ = RunState::from_u8(3);
+    }
+
+
+    #[test]
+    #[should_panic(expected = "Empty extent count underflow")]
+    fn huge_stats_abort_on_a_free_count_going_below_zero() {
+        let mut s = HugeStats::default();
+        s.sub_free(RunState::Empty, 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "descriptor table count underflow")]
+    fn the_table_aborts_when_its_count_disagrees_with_its_entries() {
+        let env = Env::new();
+        let mut t = Table::new(&env.meta, PAGE).unwrap();
+        t.insert(7, 0x10 as *mut HugeDesc);
+        t.count = 0;
+        t.remove(7);
     }
 }
 

@@ -34,8 +34,9 @@
 //! The identities `resident >= active >= allocated` and
 //! `mapped == resident + retained` hold for every snapshot by construction:
 //! each bin's `curregs` is clamped to the capacity of the slabs that can
-//! hold live slots (`ClassState::bin_stats`), a huge run's allocated and
-//! active bytes are the same number, and the totals are sums of the same
+//! hold live slots (`ClassState::bin_stats`, which counts every clamp in
+//! the bins table's `clamped` column), a huge run's allocated and active
+//! bytes are the same number, and the totals are sums of the same
 //! per-arena values.
 
 use crate::arena::Arena;
@@ -75,6 +76,10 @@ pub struct BinStats {
     pub compact_off: u64,
     /// Probes the refill-rate gate declined.
     pub gate_refill: u64,
+    /// Times `curregs` was clamped to the bin's capacity
+    /// (`ClassState::bin_stats`): transient is normal, growing while
+    /// nothing is freed is a bookkeeping bug.
+    pub clamped: u64,
 }
 
 impl BinStats {
@@ -92,6 +97,7 @@ impl BinStats {
         compact_on: 0,
         compact_off: 0,
         gate_refill: 0,
+        clamped: 0,
     };
 
     /// Bytes allocated: `curregs * size`.
@@ -300,6 +306,7 @@ impl ArenaStats {
             b.compact_on += ob.compact_on;
             b.compact_off += ob.compact_off;
             b.gate_refill += ob.gate_refill;
+            b.clamped += ob.clamped;
         }
     }
 }
@@ -323,6 +330,7 @@ pub fn collect_bin(cs: &ClassState) -> BinStats {
         compact_on,
         compact_off,
         gate_refill,
+        clamped: cs.clamped(),
     }
 }
 

@@ -224,10 +224,11 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
     // The last five columns are challoc's compaction diagnostics (design
     // 6.4): slots claimed by cache refills and by compaction rebuilds,
     // caches that entered and left compact mode, probes declined by the
-    // refill-rate gate.
+    // refill-rate gate. `clamped` counts the times `curregs` was clamped
+    // to the bin's capacity (`ClassState::bin_stats`).
     writeln!(
         out,
-        "  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated"
+        "  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped"
     )?;
     let mut large_header = false;
     for (j, b) in s.bins.iter().enumerate() {
@@ -240,7 +241,7 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
         }
         writeln!(
             out,
-            "  {:>13} {:>3} {:>8} {:>10} {:>9} {:>9} {:>9} {:>9} {:>9} {:>10} {:>10} {:>6} {:>6} {:>6}",
+            "  {:>13} {:>3} {:>8} {:>10} {:>9} {:>9} {:>9} {:>9} {:>9} {:>10} {:>10} {:>6} {:>6} {:>6} {:>7}",
             b.size,
             j,
             b.nregs,
@@ -254,7 +255,8 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
             b.compacted,
             b.compact_on,
             b.compact_off,
-            b.gate_refill
+            b.gate_refill,
+            b.clamped
         )?;
     }
     slab_histogram(out, arena, s)
@@ -621,6 +623,7 @@ mod tests {
             "Allocated: ",
             "Huge: ",
             "Metadata: reserved ",
+            "  gated clamped\n",
             "cgroup: not tracked",
             "arenas[0]:",
             "  dirty_decay_ms: ",

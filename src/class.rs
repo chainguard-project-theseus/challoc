@@ -506,7 +506,14 @@ pub struct ClassState {
     compact_on: AtomicU64,
     compact_off: AtomicU64,
     gate_refill: AtomicU64,
-    _tail: [u8; PAD_ALIGN - 56],
+    /// Times `bin_stats` clamped `claimed - released` to the capacity of
+    /// the slabs that can hold live slots. A transient clamp is legitimate
+    /// (`released` is added to after the slab's `live` reached zero, so a
+    /// reader between the two sees an `Empty` slab and a count that still
+    /// includes its slots); a count that keeps growing while nothing is
+    /// freed is a bookkeeping bug. Printed in the bins table.
+    clamped: AtomicU64,
+    _tail: [u8; PAD_ALIGN - 64],
 }
 
 const _: () = assert!(core::mem::offset_of!(ClassState, inner) == PAD_ALIGN);
@@ -1034,7 +1041,8 @@ impl ClassState {
             compact_on: AtomicU64::new(0),
             compact_off: AtomicU64::new(0),
             gate_refill: AtomicU64::new(0),
-            _tail: [0; PAD_ALIGN - 56],
+            clamped: AtomicU64::new(0),
+            _tail: [0; PAD_ALIGN - 64],
         })
     }
 
@@ -1260,11 +1268,11 @@ impl ClassState {
         while remaining > 0 && np < MAX_PICKS {
             let s = if let Some(s) = g.empty.map.lowest_set() {
                 g.empty.map.clear(s);
-                g.stats.empty -= 1;
+                g.stats.empty = g.stats.empty.checked_sub(1).unwrap_or_else(|| slab_count_underflow("empty"));
                 s
             } else if let Some(s) = g.purged.map.lowest_set() {
                 g.purged.map.clear(s);
-                g.stats.purged -= 1;
+                g.stats.purged = g.stats.purged.checked_sub(1).unwrap_or_else(|| slab_count_underflow("purged"));
                 s
             } else {
                 match self.commit_next(&mut g, meta) {
@@ -1282,6 +1290,9 @@ impl ClassState {
     fn take(&self, g: &mut Inner, slab: usize, remaining: &mut usize, picks: &mut [Pick; MAX_PICKS], np: &mut usize) {
         let desc = self.desc(slab);
         let live = desc.live();
+        // `live > nslots` would reserve a wrapped count (the release
+        // profile does not check overflow; the dev profile does).
+        assert!(live <= self.class().nslots(), "class: slab live count above its slot count");
         let avail = self.class().nslots() - live;
         let n = avail.min(*remaining);
         let state = desc.state();
@@ -1412,7 +1423,7 @@ impl ClassState {
                 self.class,
                 self.arena,
                 d as *const SlabDesc as usize,
-                State::from_u8(shadow.wrapping_sub(1)),
+                State::try_from_u8(shadow.wrapping_sub(1)),
                 d.live(),
                 d.arena(),
                 d.dirty_at()
@@ -1620,7 +1631,7 @@ impl ClassState {
             d.set_dirty_at(0);
             g.empty.map.clear(s);
             g.purged.map.set(s);
-            g.stats.empty -= 1;
+            g.stats.empty = g.stats.empty.checked_sub(1).unwrap_or_else(|| slab_count_underflow("empty"));
             g.stats.purged += 1;
             n += 1;
         }
@@ -1772,7 +1783,9 @@ impl ClassState {
     /// released. It can exceed the true sum of `live` by the slots
     /// released in between, so it is clamped to the capacity of the slabs
     /// that can hold live slots (those neither `Empty` nor `Purged`),
-    /// which keeps `active >= allocated` exact for `stats.rs`.
+    /// which keeps `active >= allocated` exact for `stats.rs`. Every clamp
+    /// is counted (`clamped`); the count cannot tell the legitimate
+    /// transient from a bookkeeping bug, the reader of the bins table can.
     pub fn bin_stats(&self) -> (ClassStats, usize) {
         let released = self.released.load(Ordering::Relaxed);
         let g = self.inner.lock();
@@ -1781,8 +1794,20 @@ impl ClassState {
         drop(g);
         s.guards = self.table().guards();
         let cap = (s.committed - s.empty - s.purged) * self.class().nslots();
-        let curregs = (claimed.wrapping_sub(released) as usize).min(cap);
+        let out = claimed.wrapping_sub(released) as usize;
+        let curregs = if out > cap {
+            self.clamped.fetch_add(1, Ordering::Relaxed);
+            cap
+        } else {
+            out
+        };
         (s, curregs)
+    }
+
+    /// Times `bin_stats` clamped `curregs` (see the field).
+    #[inline]
+    pub fn clamped(&self) -> u64 {
+        self.clamped.load(Ordering::Relaxed)
     }
 
     /// Slots out of this arena's bitmaps (see [`ClassState::bin_stats`]).
@@ -1908,6 +1933,14 @@ fn invalid_pointer(p: usize, class: usize, why: &str) -> ! {
 #[inline(never)]
 fn double_free(p: usize, class: usize, slab: usize, slot: usize) -> ! {
     panic!("double free of {p:#x} (class {class} slab {slab} slot {slot})")
+}
+
+/// A slab count of `ClassStats` went below zero: the sets and the counts
+/// disagree, which is a heap inconsistency.
+#[cold]
+#[inline(never)]
+fn slab_count_underflow(which: &str) -> ! {
+    panic!("class: {which} slab count underflow")
 }
 
 /// `check_zero` invariant: a slab with live slots was `Fresh` at selection.
@@ -3403,5 +3436,74 @@ mod tests {
         assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
         assert!(libc::WIFSIGNALED(status), "child did not fault: status {status:#x}");
         assert_eq!(libc::WTERMSIG(status), libc::SIGSEGV);
+    }
+
+
+    #[test]
+    fn bin_stats_counts_every_curregs_clamp() {
+        let env = Env::new();
+        let cs = env.class(small_class(), 0);
+        let (_, curregs) = cs.bin_stats();
+        assert_eq!((curregs, cs.clamped()), (0, 0));
+        // No slab committed, so the capacity is zero: a `claimed` ahead of
+        // `released` (the window `bin_stats` documents) is clamped to it and
+        // the clamp is counted.
+        cs.claimed.store(3, Ordering::Relaxed);
+        let (_, curregs) = cs.bin_stats();
+        assert_eq!((curregs, cs.clamped()), (0, 1));
+        let (_, curregs) = cs.bin_stats();
+        assert_eq!((curregs, cs.clamped()), (0, 2));
+        // Caught up: no clamp, the count stays.
+        cs.released.store(3, Ordering::Relaxed);
+        let (_, curregs) = cs.bin_stats();
+        assert_eq!((curregs, cs.clamped()), (0, 2));
+    }
+
+
+    #[test]
+    #[should_panic(expected = "slab live count above its slot count")]
+    fn a_plan_over_a_slab_with_live_above_nslots_aborts() {
+        let env = Env::new();
+        let cs = env.class(small_class(), 0);
+        let (b, claim) = env.claim(&cs, 1);
+        assert_eq!(claim.n, 1);
+        let slab = cs.lowest_partial().expect("the slab is partial");
+        cs.release(&b[..1]);
+        assert_eq!(cs.stats().empty, 1);
+        // Corrupt the descriptor of the now `Empty` slab: `live` past the
+        // slot count (the partial walk skips such a slab; the empty set
+        // hands it straight to `take`).
+        let nslots = cs.class().nslots();
+        cs.desc(slab).add_live(nslots + 1);
+        let mut picks = [Pick { slab: 0, n: 0, zero: false, state: State::Active }; MAX_PICKS];
+        cs.plan(&env.meta, 1, &mut picks);
+    }
+
+    #[test]
+    #[should_panic(expected = "empty slab count underflow")]
+    fn a_plan_that_takes_an_empty_slab_the_counts_do_not_know_aborts() {
+        let env = Env::new();
+        let cs = env.class(small_class(), 0);
+        let (b, claim) = env.claim(&cs, 1);
+        assert_eq!(claim.n, 1);
+        cs.release(&b[..1]);
+        assert_eq!(cs.stats().empty, 1);
+        // Corrupt the count: the set still holds the slab.
+        cs.inner.lock().stats.empty = 0;
+        let mut picks = [Pick { slab: 0, n: 0, zero: false, state: State::Active }; MAX_PICKS];
+        cs.plan(&env.meta, 1, &mut picks);
+    }
+
+    #[test]
+    #[should_panic(expected = "empty slab count underflow")]
+    fn a_purge_of_an_empty_slab_the_counts_do_not_know_aborts() {
+        let env = Env::new();
+        let cs = env.class(small_class(), 0);
+        let (b, claim) = env.claim(&cs, 1);
+        assert_eq!(claim.n, 1);
+        cs.release(&b[..1]);
+        assert_eq!(cs.stats().empty, 1);
+        cs.inner.lock().stats.empty = 0;
+        cs.purge_empty(u64::MAX);
     }
 }

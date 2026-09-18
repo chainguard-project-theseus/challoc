@@ -27,6 +27,12 @@ pub const HEADER: usize = 16;
 /// never spans two arenas' slab groups (see [`desc_stride`]).
 pub const DESC_ALIGN: usize = 64;
 
+#[cold]
+#[inline(never)]
+fn bad_state_byte(v: u8) -> ! {
+    panic!("slab: state byte {v:#x} is not a slab state")
+}
+
 /// Lifecycle of a committed slab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -44,13 +50,26 @@ pub enum State {
 }
 
 impl State {
+    /// Decode a state byte. Aborts on a value no state has (4..=255): a
+    /// corrupted byte must not read as `Purged`, which `take` treats as
+    /// zero memory for `calloc`.
     #[inline]
-    pub const fn from_u8(v: u8) -> State {
+    pub fn from_u8(v: u8) -> State {
+        match State::try_from_u8(v) {
+            Some(s) => s,
+            None => bad_state_byte(v),
+        }
+    }
+
+    /// [`from_u8`](State::from_u8) without the abort.
+    #[inline]
+    pub const fn try_from_u8(v: u8) -> Option<State> {
         match v {
-            0 => State::Fresh,
-            1 => State::Active,
-            2 => State::Empty,
-            _ => State::Purged,
+            0 => Some(State::Fresh),
+            1 => Some(State::Active),
+            2 => Some(State::Empty),
+            3 => Some(State::Purged),
+            _ => None,
         }
     }
 
@@ -325,5 +344,22 @@ mod tests {
         desc.init(0);
         desc.add_live(1);
         desc.sub_live(2);
+    }
+
+
+    #[test]
+    fn state_bytes_no_state_has_decode_to_none() {
+        for v in 4..=255u8 {
+            assert_eq!(State::try_from_u8(v), None, "{v}");
+        }
+        for v in 0..4u8 {
+            assert_eq!(State::try_from_u8(v), Some(State::from_u8(v)));
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "is not a slab state")]
+    fn a_state_byte_no_state_has_aborts() {
+        let _ = State::from_u8(4);
     }
 }
