@@ -288,6 +288,24 @@ Tasks:
    `bench/results/<date>-<arch>-ruby.md`. Acceptance: within 10% of jemalloc on
    time and RSS, as for the Phase 0 set; regressions are recorded, not fixed,
    in this task.
+4d. Valkey throughput and p99: the soak's remaining half of the Phase 1
+   criterion (2..8% behind bundled jemalloc in every soak so far, unchanged by
+   the `narenas` default of task 4, so it is not the slab sharing the review
+   attributed it to). Diagnose on the arm64 VM with the soak's write and
+   delete phases running: `sudo perf stat` and `sudo perf record` attached to
+   `valkey-server` under challoc and under bundled jemalloc (per-op cycles,
+   instructions, L1D and dTLB misses; cycles by DSO and symbol), the
+   allocator's share of the server's cycles, and the fast-path annotations;
+   compare the quantum8 build's class table and slab geometry with jemalloc's
+   for Valkey's actual size mix (`MEMORY MALLOC-STATS` bins during the write
+   phase), and check the generators' client-side p99 against the server's
+   `INFO commandstats` so client noise is separated from server time. Record
+   the attribution in `bench/results/<date>-aarch64-gce-valkey-throughput.md`,
+   then implement the fix the data supports (A/B rows and the soak decide).
+   Acceptance is the plan's Phase 1 soak criterion: throughput and p99 at least
+   equal to bundled jemalloc; if the attribution shows the gap is outside the
+   allocator (client saturation, kernel), record that with the evidence and
+   say so under Notes for the human.
 5. Fast-path residue on aarch64: dense cache headers in `Heap` (review P3).
    Inline `[CacheHeader; NCLASSES]` and one contiguous slot block per heap so
    `malloc` reaches the header without a pointer load and a thread's 52 cache

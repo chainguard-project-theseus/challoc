@@ -45,7 +45,10 @@ Positive percentages mean new did worse. The exit status is 1 when new is
 more than `QUICK_TOLERANCE` (5) percent behind old on any row or the churn
 probe under new ends below `CHURN_MIN_OCC` (90) percent occupancy (the plan's
 "469 -> under 230 slabs" in the 64 KiB geometry; occupancy does not move with
-slab size, the slab count does). One round is a signal, not a measurement:
+slab size, the slab count does). A row that fails the gate on its single round is rerun for
+`QUICK_CONFIRM_ROUNDS` (2) more rounds of old and new and judged on the
+median, because one larson round spreads 5..9% on the reference VMs; rows
+that pass are not rerun. One round is a signal, not a measurement:
 a fail means abandon or rework, a pass means run the protocol tier. Numbers
 from `quick` are never written to `bench/results/` and never compared with
 a criterion. Knobs: `QUICK_BENCHES`, `CHURN_SECS`, `CHURN_CLASS`, `NEW=rev`.

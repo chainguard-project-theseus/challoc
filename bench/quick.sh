@@ -28,6 +28,7 @@
 #   OLD=HEAD                 rev of the base library (any git rev; "tree" = working tree)
 #   NEW=tree                 rev of the candidate (default: the working tree)
 #   QUICK_TOLERANCE=5        percent new may trail old before the exit status says no
+#   QUICK_CONFIRM_ROUNDS=2   extra rounds of old and new for a row that failed the gate once
 #   QUICK_BENCHES="larson1 larson10 xmalloc alloc-test1"
 #   CHURN_SECS=8 CHURN_CLASS=1024 CHURN_MIN_OCC=90
 #   BASELINES=cached         take the jemalloc column from target/baselines/<arch>-<hash>.md
@@ -115,9 +116,33 @@ printf '  %-12s' "churn $CHURN_CLASS"
 for v in $VARIANTS; do run_churn "$(lib_of "$v")" "" "$v" "$CHURN_SECS" "$CHURN_CLASS"; printf ' %s' "$v"; done
 echo
 
+# ---- confirmation ---------------------------------------------------------------
+# A single round on the reference VMs spreads 5..9% on larson (iteration 20 saw
+# +5.1% on larson1 that three rounds put at -3%), so a row that fails the gate
+# on one round gets QUICK_CONFIRM_ROUNDS more rounds of old and new, and the
+# verdict uses the median. A row that passes on one round is not rerun.
+QUICK_CONFIRM_ROUNDS=${QUICK_CONFIRM_ROUNDS:-2}
+first_score() { awk 'NR==1 {print $1}' "$OUT/$1.$2.scores"; }
+confirm=""
+for b in $QUICK_BENCHES; do
+  d=$(worse_pct "$b" "$(first_score "$b" new)" "$(first_score "$b" old)")
+  awk -v d="$d" -v t="$QUICK_TOLERANCE" 'BEGIN {gsub(/[%+]/, "", d); if (d=="-" || d > t) exit 1}' || confirm="$confirm $b"
+done
+if [ -n "$confirm" ] && [ "$QUICK_CONFIRM_ROUNDS" -gt 0 ]; then
+  printf '  confirming%s: %s more rounds of old and new' "$confirm" "$QUICK_CONFIRM_ROUNDS"
+  r=1
+  while [ "$r" -le "$QUICK_CONFIRM_ROUNDS" ]; do
+    for b in $confirm; do for v in old new; do run_row "$b" "$(lib_of "$v")" "" "$b.$v"; done; done
+    printf ' .'; r=$((r+1))
+  done
+  echo
+fi
+
 # ---- table --------------------------------------------------------------------
-score_of() { awk 'NR==1 {print $1}' "$OUT/$1.$2.scores"; }
-rss_of()   { awk 'NR==1 {print $2}' "$OUT/$1.$2.scores"; }
+# Medians over every round a row has (one, or 1 + QUICK_CONFIRM_ROUNDS).
+score_of() { median_list "$(awk '$1!="-" {print $1}' "$OUT/$1.$2.scores" | sort -n | tr '\n' ' ')"; }
+rss_of()   { median_list "$(awk '$1!="-" {print $2}' "$OUT/$1.$2.scores" | sort -n | tr '\n' ' ')"; }
+rounds_of() { wc -l < "$OUT/$1.$2.scores" | tr -d ' '; }
 fail=0; stale=0
 echo
 echo "| row | unit | old | new | jemalloc | new vs old | new vs jemalloc |"
@@ -140,7 +165,8 @@ for b in $QUICK_BENCHES; do
   fi
   d_old=$(worse_pct "$b" "$n" "$o"); d_je=$(worse_pct "$b" "$n" "$j")
   awk -v d="$d_old" -v t="$QUICK_TOLERANCE" 'BEGIN {gsub(/[%+]/, "", d); if (d=="-" || d > t) exit 1}' || fail=1
-  echo "| $b | $(unit_of "$b") | $o ($or MiB) | $n ($nr MiB) | $j ($jr MiB)$jnote | $d_old | $d_je |"
+  rn=$(rounds_of "$b" new); rnote=; [ "$rn" -gt 1 ] && rnote=" (median of $rn)"
+  echo "| $b | $(unit_of "$b") | $o ($or MiB) | $n ($nr MiB)$rnote | $j ($jr MiB)$jnote | $d_old | $d_je |"
 done
 # churn row: slabs after the random 56% delete -> slabs at the end of the churn
 churn_cell() { awk '{printf "%s -> %s (%s%%)", $1, $2, $5}' "$OUT/$1.churn"; }
