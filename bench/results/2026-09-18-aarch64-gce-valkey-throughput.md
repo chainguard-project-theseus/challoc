@@ -19,7 +19,7 @@ supports (the working tree of this iteration, the full 1200 s protocol).
   memtier SET 16..1024 B, 4 x 10 clients, `-P 16`, 30 s, alternating), delete
   phase (valkey-benchmark `del`, then memtier DEL:SET 4:1), 60 s settle;
   `OCCUPANCY=1` for `MEMORY MALLOC-STATS` every 20 s
-- sidecar (root, on the VM host, `.tmp-it22-sidecar.sh` in the iteration log):
+- sidecar (root, on the VM host: `bench/probes/valkey-perf-sidecar.sh`):
   for each server `perf stat -I 1000 -e task-clock,cycles,instructions,
   L1-dcache-load-misses,dTLB-load-misses,branch-misses -p <pid>` for the
   server's whole life (five PMU events, no multiplexing); `perf record -e
@@ -62,8 +62,9 @@ Main-thread CPU between the snapshots around each record window: challoc
 The bio threads and the allocators' background threads used 0..0.3 s over the
 whole soak. Throughput is therefore `1 / (cycles per command)` on the main
 thread, and every gap below is a cycles-per-command gap. (The generators'
-CPU was not captured: the sidecar's `pgrep -x` cannot match 16-character
-process names; with the server saturated it is not needed.)
+CPU was not captured in these two runs: `pgrep -x` cannot match 16-character
+process names, fixed in the committed sidecar; with the server saturated it is
+not needed.)
 
 ### 2. Cycles per command
 
