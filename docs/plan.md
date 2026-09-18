@@ -366,6 +366,37 @@ Tasks:
    overwrites newer local files, `sync` warning about uncommitted `src/`).
    Acceptance rows and results files keep using the protocol tier,
    same-run, unchanged criteria.
+5c. Harness: target-shaped rows and scorecard (delivered 2026-09-18, outside
+   the loop; validated on the Mac container for correctness, the VM parts
+   pending their first VM session). The loop's feedback measured proxies
+   (larson, xmalloc-test, alloc-test: working sets of a few MiB) while the
+   criteria are Valkey and Ruby, and progress was only visible file by
+   file. Delivered: `bench/probes/valkey_model.c` and the `bench/lib.sh`
+   rows `valkey1` (frees through `sdallocx`, as Valkey does) and
+   `valkey1-free` (plain `free`): a single-thread model of the soak's
+   server, 850k keys of entry + key + object + 16..1024-byte value (about
+   500 MiB live), a SET-only write phase over random keys and a DEL:SET 4:1
+   delete phase, scored by write-phase M ops/s, RSS and `mallctl` stats per
+   phase in the log; runs under challoc, jemalloc, glibc and mimalloc.
+   `redis` and `ruby-churn` (gc_churn.rb on the glibc Ruby build) as
+   `lib.sh` rows. `quick` runs `valkey1` by default (5 s) and, with
+   `PERF=1` where perf exists, prints per-operation cycles, instructions,
+   L1D and dTLB misses for `larson1` and `valkey1`; on the VMs
+   `challoc-bench quick-perf <vm>` (`bench/gce/quick-perf.sh`) prints the
+   same table with perf attached from the host. `bench/scorecard.sh` /
+   `make scorecard` / `challoc-bench scorecard <vm>`: the fixed row set
+   under challoc and jemalloc, 3 rounds through `ab.sh`, one line per
+   (date, commit, arch) in `bench/results/scorecard-<arch>.md` with the
+   commit's latest soak, `--render` for the trend; both files seeded from
+   the GCE results files. Noise: `PIN=1` (`bench/pin.c`) as an experiment
+   for the next VM session, `KEY_PATTERN=uniform` for the soak's pinned-key
+   artifact (default unchanged). Process: the attribution rule and the
+   scorecard step in `scripts/ralph-prompt.md`. Acceptance for the VM
+   session that first uses it: `quick` under 2.5 minutes with `valkey1`,
+   `quick-perf` prints the four counters per op for both rows under all
+   three variants, `scorecard` appends one line per VM in about 8 minutes,
+   and the `valkey1` row under challoc shows the free-path gap the soak
+   attributed (the row moving when task 4e lands is the test of the row).
 6. `bench/gce/README.md` and a CLAUDE.md environment bullet: how to create,
    sync, run, and stop the VMs; the cost of leaving one running; and the
    rule that Mac numbers and GCE numbers are never compared with each other.
@@ -471,14 +502,33 @@ behaviour or default performance.
   A/B rounds only; a Mac number and a GCE number are never compared.
 - Two tiers (`bench/README.md`, Phase 1.5 task 5b). The fast tier
   (`bench/quick.sh`, `make quick`, `challoc-bench quick`: one round of
-  larson 1/10, xmalloc-test, alloc-test 1 and the churn probe under old,
-  new and jemalloc, about two minutes) is for iteration decisions only: it
-  says whether a variant is worth the protocol run, and its numbers are
-  never recorded in `bench/results/` or used against a criterion. The
-  protocol tier (`bench/ab.sh`, `make ab`, `challoc-bench ab`: 5 rounds plus
-  warm-up, interleaved variants, sorted scores, median RSS) is what
-  acceptance and the results files use, with every variant measured in the
-  same run; the criteria above are unchanged. Cached stock-allocator
-  baselines (`bench/baseline.sh`, `BASELINES=cached`) save time in
-  iteration runs and are revalidated by a jemalloc sanity round each time;
-  acceptance runs do not use them.
+  larson 1/10, xmalloc-test, alloc-test 1, the Valkey model `valkey1`
+  (`bench/probes/valkey_model.c`, task 5c) and the churn probe under old,
+  new and jemalloc, about two and a half minutes) is for iteration
+  decisions only: it says whether a variant is worth the protocol run, and
+  its numbers are never recorded in `bench/results/` or used against a
+  criterion. The protocol tier (`bench/ab.sh`, `make ab`, `challoc-bench
+  ab`: 5 rounds plus warm-up, interleaved variants, sorted scores, median
+  RSS) is what acceptance and the results files use, with every variant
+  measured in the same run; the criteria above are unchanged. Cached
+  stock-allocator baselines (`bench/baseline.sh`, `BASELINES=cached`) save
+  time in iteration runs and are revalidated by a jemalloc sanity round
+  each time; acceptance runs do not use them.
+- The scorecard is the trend record (`bench/scorecard.sh`, `make
+  scorecard`, `challoc-bench scorecard <vm>`, task 5c): the fixed row set
+  (larson 1/10/16, xmalloc-test, alloc-test 1/N, valkey1, valkey1-free,
+  cfrac, espresso, mstress, glibc-simple, redis) under challoc and jemalloc,
+  3 interleaved rounds, one line per (date, commit) in
+  `bench/results/scorecard-<arch>.md` as percentages against jemalloc plus
+  the RSS ratios and the commit's most recent soak. After a change lands it
+  runs on both VMs and the two lines are committed with the PROGRESS
+  commit. It is a trend, not an acceptance measurement: criteria are still
+  judged from same-run protocol files.
+- Attribution before fast-path changes: a change to `src/heap.rs`,
+  `src/class.rs`, `src/slab.rs` or `src/api/*.rs` that is meant to help a
+  target workload is preceded by a per-operation cycle attribution on that
+  workload (`perf stat`/`perf annotate` on the VM, `challoc-bench
+  quick-perf`, the perf sidecar for the soak, or the sampler), recorded in
+  the results file, and the change names the mechanism it attacks. larson
+  counters do not stand in for Valkey or Ruby (their working sets are a
+  few MiB; Valkey's is 550 MiB).

@@ -46,3 +46,13 @@ Environment:
   numbers for `bench/results/` and acceptance. During a driving session the
   VMs stay warm (`challoc-bench session start|stop`, `CHALLOC_GCE_WARM=1`);
   an iteration then does not start or stop them.
+- The scorecard is the trend record: after a change lands, `challoc-bench
+  scorecard <vm>` on both VMs (`make scorecard` in a container) appends one
+  line per (date, commit, arch) to `bench/results/scorecard-<arch>.md`;
+  commit those lines with the PROGRESS commit and read the trend with
+  `bench/scorecard.sh --render`.
+- No fast-path change (`src/heap.rs`, `src/class.rs`, `src/slab.rs`,
+  `src/api/*.rs`) without a per-operation cycle attribution on the workload
+  it is meant to help (`challoc-bench quick-perf`, the soak's perf sidecar,
+  or the sampler), recorded in the results file, and the change names the
+  mechanism it attacks; larson counters do not stand in for Valkey or Ruby.

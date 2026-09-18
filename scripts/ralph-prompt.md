@@ -13,6 +13,16 @@ Procedure:
    or ambiguous on a point you hit, make the smallest reasonable decision,
    apply it, and record it under "Design decisions" in PROGRESS.md with a
    one-line reason. Amend docs/design.md only to fix an actual error.
+   Before changing any fast path in src/heap.rs, src/class.rs, src/slab.rs
+   or src/api/*.rs, the iteration must have a per-operation cycle
+   attribution on the workload the change is meant to help (perf
+   stat/annotate on the VM: `bench/gce/challoc-bench quick-perf <vm>` for
+   larson1 and the Valkey model, `bench/probes/valkey-perf-sidecar.sh` for
+   the soak, `make ruby-bench` rows for Ruby; or the sampler), recorded in
+   the results file, and the change must name the mechanism it attacks
+   (which load misses, which line, how many cycles per operation). larson
+   counters do not stand in for Valkey or Ruby: larson's working set is a
+   few MiB, Valkey's 550 MiB.
 4. Build and run the task's tests inside the Linux dev container (see
    CLAUDE.md). Nothing runs on the macOS host except `cargo test --features std`
    for pure logic. If Dockerfile.dev does not exist yet, creating it is part
@@ -26,10 +36,18 @@ Procedure:
    gets the protocol run (`challoc-bench ab ...`, 5 rounds, same-run
    comparison) whose table goes into bench/results/. If CHALLOC_GCE_WARM is
    set the VMs are already running and belong to the driving session: do not
-   start or stop them.
+   start or stop them. The fast tier includes the Valkey model row
+   (`valkey1`); a change aimed at Valkey or Ruby is judged on that row and
+   on the target's own rows (`make valkey-soak`/`soak-quick`, `make
+   ruby-bench`), not on larson alone.
 5. When the task's criteria pass, mark it done in PROGRESS.md with the commit
    hash, and commit everything with a message "Phase N task M: <summary>".
-   Never leave uncommitted work. Do not commit .ralph/ or target/.
+   Never leave uncommitted work. Do not commit .ralph/ or target/. After
+   landing a change that touches the library, run the scorecard on both VMs
+   (`bench/gce/challoc-bench scorecard arm64` and `... amd64`, or `make
+   scorecard` in a container) and commit the appended lines of
+   `bench/results/scorecard-<arch>.md` with the PROGRESS commit; `bench/scorecard.sh
+   --render` shows the trend.
 6. If you finish a phase, run that phase's acceptance criteria. Record the
    results, including benchmark numbers in bench/results/, and only then move
    the phase to done.
