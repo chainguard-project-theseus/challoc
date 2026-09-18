@@ -14,7 +14,8 @@
 //! `"jemalloc"` object, which is what existing consumers of the JSON form
 //! look for), `g` omits the general section, `a` omits the arenas, `b` omits
 //! the per-arena bin tables; the other jemalloc letters are accepted and
-//! ignored. The cgroup section is a placeholder until Phase 2.
+//! ignored. The cgroup line and object are the sampled figures of
+//! `sys::cgroup` (design 11).
 
 use core::ffi::{c_char, c_int, c_void};
 use core::fmt::{self, Write};
@@ -203,7 +204,10 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
         "Metadata: reserved {}, committed {}, allocated {}, bumped {}, tables {}",
         m.len, m.committed, m.allocated, m.bumped, m.reserved
     )?;
-    writeln!(out, "cgroup: not tracked")
+    // Design 11: the figures as last sampled (a sample is taken here if the
+    // 10 ms window allows), or why nothing is tracked.
+    shared.cgroup.sample(crate::sys::now_coarse_ns());
+    writeln!(out, "{}", shared.cgroup)
 }
 
 fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) -> fmt::Result {
@@ -377,6 +381,17 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
             shared.regions.page_size()
         )?;
         writeln!(out, "\t\t\"background_thread\": {{\"present\": {}}},", purge::background::present())?;
+        let cg = &shared.cgroup;
+        cg.sample(crate::sys::now_coarse_ns());
+        writeln!(
+            out,
+            "\t\t\"cgroup\": {{\"tracked\": {}, \"limit\": {}, \"high\": {}, \"current\": {}, \"pressure_events\": {}}},",
+            cg.tracked(),
+            cg.limit(),
+            cg.high(),
+            cg.current(),
+            cg.pressure_events()
+        )?;
         let t = &snap.totals;
         writeln!(
             out,
@@ -629,7 +644,7 @@ mod tests {
             "opt.thp: \"never\" (accepted, no effect)",
             "opt.zero_on_free: false (accepted, no effect)",
             "opt.slot_randomize: false (accepted, no effect)",
-            "opt.cgroup: true (accepted, no effect)",
+            "opt.cgroup: true\n",
             "opt.stats_print: accepted, no effect",
             "opt.double_free_scan: false\n",
             "opt.huge_retain_max: 67108864\n",
@@ -641,7 +656,7 @@ mod tests {
             "Huge: ",
             "Metadata: reserved ",
             "  gated clamped\n",
-            "cgroup: not tracked",
+            "\ncgroup: ",
             "arenas[0]:",
             "  dirty_decay_ms: ",
             "  small:",
@@ -690,6 +705,7 @@ mod tests {
         assert!(text.contains("\"version\": \"5.3.0-0-gchalloc\""));
         assert!(text.contains("\"opt\": {"));
         assert!(text.contains("\"stats\": {\"allocated\": "));
+        assert!(text.contains("\"cgroup\": {\"tracked\": "));
         assert!(text.contains("\"stats.arenas\": {"));
         assert!(text.contains("\"0\": {"));
         assert!(text.contains("\"bins\": ["));

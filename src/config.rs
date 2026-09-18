@@ -22,7 +22,7 @@
 //! source; jemalloc gets the same effect with a separate first pass.
 //!
 //! The *inert* keys ([`INERT_KEYS`]: `thp`, `zero_on_free`, `slot_randomize`,
-//! `cgroup`, `stats_print`) are parsed and, where they have a field, stored
+//! `stats_print`) are parsed and, where they have a field, stored
 //! and readable through `opt.<key>`, but nothing in the allocator reads
 //! them (the features are planned, `docs/plan.md` Phase 2). Each one is
 //! reported as [`Issue::Inert`] so that `abort_conf` rejects it and a
@@ -118,7 +118,10 @@ pub struct Config {
     pub slot_randomize: bool,
     pub double_free_scan: bool,
     pub abort_conf: bool,
-    /// Inert (planned, Phase 2 task 5): parsed, stored, read by nothing.
+    /// Read the memory cgroup (design 11, `sys::cgroup`): the effective
+    /// limits, `memory.current`, `memory.events` and the PSI trigger, for
+    /// `stats.cgroup.*` and the reports. `false` reads nothing. The policy
+    /// that acts on the figures is Phase 2 task 5.
     pub cgroup: bool,
     /// Debug mode: every slot or page handed out as "known zero" (`Fresh`
     /// or `Purged` memory behind `calloc`) is read at its first and last
@@ -273,10 +276,7 @@ impl Config {
                 self.slot_randomize = parse_bool(value).ok_or_else(bad)?;
                 return Err(Issue::Inert(key));
             }
-            b"cgroup" => {
-                self.cgroup = parse_bool(value).ok_or_else(bad)?;
-                return Err(Issue::Inert(key));
-            }
+            b"cgroup" => self.cgroup = parse_bool(value).ok_or_else(bad)?,
             // jemalloc's `stats_print` (report at exit): no field, since
             // there is nothing to print at exit; validated as a bool and
             // reported as inert so `abort_conf` does not let a program expect
@@ -451,7 +451,7 @@ pub const IGNORED_KEYS: &[&str] = &[
 /// that no code acts on: the features are planned (`docs/plan.md` Phase
 /// 2). Setting one is [`Issue::Inert`], which `abort_conf` turns into an
 /// abort; `malloc_stats_print` lists them as "accepted, no effect".
-pub const INERT_KEYS: &[&str] = &["thp", "zero_on_free", "slot_randomize", "cgroup", "stats_print"];
+pub const INERT_KEYS: &[&str] = &["thp", "zero_on_free", "slot_randomize", "stats_print"];
 
 /// Whether `key` is one of [`INERT_KEYS`].
 pub fn is_inert(key: &[u8]) -> bool {
@@ -1030,7 +1030,7 @@ mod tests {
     /// value is still a bad value, not an inert report.
     #[test]
     fn inert_keys_are_stored_reported_and_rejected_under_abort_conf() {
-        assert_eq!(INERT_KEYS.len(), 5);
+        assert_eq!(INERT_KEYS.len(), 4, "thp, zero_on_free, slot_randomize, stats_print");
         for key in INERT_KEYS {
             assert!(is_inert(key.as_bytes()), "{key}");
             assert!(!IGNORED_KEYS.contains(key), "{key} cannot be both ignored and inert");
@@ -1065,7 +1065,8 @@ mod tests {
         let (cfg, issues) = parse("narenas:3,thp:always,cgroup:false,abort_conf:true,stats_print:true");
         assert_eq!(cfg.narenas, 3);
         assert!(cfg.abort_conf && !cfg.cgroup);
-        assert_eq!(issues.len(), 3);
+        assert_eq!(issues.len(), 2, "cgroup is a real key since Phase 2 task 4: {issues:?}");
+        assert!(!is_inert(b"cgroup"));
     }
 
     #[test]

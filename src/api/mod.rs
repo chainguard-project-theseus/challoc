@@ -313,6 +313,9 @@ extern "C" fn fork_parent() {
 /// record reflects.
 extern "C" fn fork_child() {
     purge::background::fork_child();
+    // The parent's PSI trigger descriptor was closed by `fork_child` above;
+    // the child's cgroup record says so until a thread of its own arms one.
+    shared().cgroup.set_psi_unavailable(0);
     let backend = purge::fork_child();
     // SAFETY: the child is single threaded and every lock is held, so
     // nothing reads the features while they change.

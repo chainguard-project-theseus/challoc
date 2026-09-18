@@ -448,6 +448,11 @@ pub struct Shared {
     pub tcaches: Tcaches,
     /// Process-wide statistics as of the last `epoch` (`stats.rs`).
     pub stats: Lock<crate::stats::Snapshot>,
+    /// The memory cgroup as last sampled (design 11; `sys::cgroup`). Cold:
+    /// written by init and by the rate-limited sampler on slow paths, read
+    /// by `stats.cgroup.*` and the reports. Last, well away from the lines
+    /// the fast paths read.
+    pub cgroup: crate::sys::cgroup::Cgroup,
 }
 
 // The flag and the `Regions` fields every `free` reads share one 128-byte
@@ -628,6 +633,7 @@ impl Shared {
             ptr::write(&raw mut (*this).gc_interval_ns, config.gc_interval_ns());
             Arenas::init(&raw mut (*this).arenas, arena0, config.narenas);
             Tcaches::init(&raw mut (*this).tcaches);
+            ptr::write(&raw mut (*this).cgroup, crate::sys::cgroup::Cgroup::discover(config.cgroup));
             ptr::write(&raw mut (*this).config, config);
             ptr::write(&raw mut (*this).key, ThreadKey::create());
             ptr::write(&raw mut (*this).stats, Lock::new(crate::stats::Snapshot::EMPTY));

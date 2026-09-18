@@ -10,6 +10,7 @@
 //! Everything else is Linux-only and is exercised by `cargo test --features
 //! std` inside the dev container.
 
+pub mod cgroup;
 pub mod errno;
 pub mod features;
 pub use errno::{Errno, decode};
@@ -72,7 +73,20 @@ mod linux {
     pub const CLOCK_MONOTONIC_COARSE: i32 = 6;
 
     pub const O_RDONLY: i32 = 0;
+    pub const O_WRONLY: i32 = 1;
+    pub const O_RDWR: i32 = 2;
+    pub const O_NONBLOCK: i32 = 0o4000;
     pub const O_CLOEXEC: i32 = 0o2_000_000;
+
+    /// `eventfd2` flags (the same bits as the `O_*` flags they mirror).
+    pub const EFD_NONBLOCK: i32 = O_NONBLOCK;
+    pub const EFD_CLOEXEC: i32 = O_CLOEXEC;
+
+    pub const POLLIN: i16 = 0x001;
+    pub const POLLPRI: i16 = 0x002;
+    pub const POLLERR: i16 = 0x008;
+    pub const POLLHUP: i16 = 0x010;
+    pub const POLLNVAL: i16 = 0x020;
     pub const AT_FDCWD: i32 = -100;
 
     /// Sentinel pidfd meaning "the calling thread", accepted by
@@ -97,6 +111,15 @@ mod linux {
     pub struct IoVec {
         pub base: *const u8,
         pub len: usize,
+    }
+
+    /// `struct pollfd`.
+    #[repr(C)]
+    #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+    pub struct PollFd {
+        pub fd: i32,
+        pub events: i16,
+        pub revents: i16,
     }
 
     /// `struct timespec` (64-bit `time_t` on both architectures).
@@ -453,6 +476,27 @@ mod linux {
                 Err(_) => return,
             }
         }
+    }
+
+    /// `ppoll(2)` with no signal mask change. `timeout` of `None` waits
+    /// indefinitely. Returns the number of descriptors with events (0 on
+    /// timeout). The kernel may write the remaining time back, so it gets
+    /// a copy.
+    pub fn ppoll(fds: &mut [PollFd], timeout: Option<&Timespec>) -> Result<usize, Errno> {
+        let mut ts = timeout.copied();
+        let tsp = ts.as_mut().map_or(0, |t| t as *mut Timespec as usize);
+        // SAFETY: `fds` is a live, writable slice of the kernel's `pollfd`
+        // layout; `ts` outlives the call; a null sigmask changes nothing.
+        decode(unsafe {
+            raw::syscall5(nr::PPOLL, fds.as_mut_ptr() as usize, fds.len(), tsp, 0, SIGSET_WORDS_BYTES)
+        })
+    }
+
+    /// `eventfd2(initval, flags)`: a counter descriptor a sleeping thread
+    /// can `ppoll` and another can bump with an 8-byte `write`.
+    pub fn eventfd(initval: u32, flags: i32) -> Result<i32, Errno> {
+        // SAFETY: no pointers.
+        decode(unsafe { raw::syscall2(nr::EVENTFD2, initval as usize, flags as isize as usize) }).map(|fd| fd as i32)
     }
 
     /// `close(2)`.

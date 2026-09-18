@@ -24,6 +24,7 @@ impl Errno {
     pub const EBUSY: Errno = Errno(16);
     pub const EEXIST: Errno = Errno(17);
     pub const EINVAL: Errno = Errno(22);
+    pub const EROFS: Errno = Errno(30);
     pub const ENOSYS: Errno = Errno(38);
     pub const ETIMEDOUT: Errno = Errno(110);
 
@@ -42,6 +43,7 @@ impl Errno {
             Errno::EBUSY => "EBUSY",
             Errno::EEXIST => "EEXIST",
             Errno::EINVAL => "EINVAL",
+            Errno::EROFS => "EROFS",
             Errno::ENOSYS => "ENOSYS",
             Errno::ETIMEDOUT => "ETIMEDOUT",
             _ => "",

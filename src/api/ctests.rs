@@ -710,6 +710,41 @@ fn c_mseal() {
     run_c("mseal", &[]);
 }
 
+/// `tests/c/cgroup.c plain` (plan Phase 2 task 4): `stats.cgroup.*` read
+/// from C, `ENOENT` without a cgroup2, else `max` or a number that equals
+/// `CHALLOC_EXPECT_CGROUP_LIMIT` when `make test`'s `--memory=512m` run
+/// set it, and `current` following a 64 MiB allocation after the 10 ms
+/// sampling window.
+#[test]
+fn c_cgroup_stats() {
+    let bin = compile("tests/c", "cgroup", &[]);
+    let mut env = std::vec::Vec::new();
+    let want = env::var("CHALLOC_EXPECT_CGROUP_LIMIT").ok();
+    if let Some(w) = want.as_deref() {
+        env.push(("CHALLOC_EXPECT_CGROUP_LIMIT", w));
+    }
+    run_bin_env("cgroup", &bin, &["plain"], &env);
+}
+
+/// `tests/c/cgroup.c off`: `cgroup:false` reads nothing (the keys are
+/// `ENOENT`, the report says `not tracked (cgroup:false)`) and the key is
+/// accepted by `abort_conf`, since it is no longer inert.
+#[test]
+fn c_cgroup_off() {
+    let bin = compile("tests/c", "cgroup", &[]);
+    run_bin_env("cgroup", &bin, &["off"], &[("MALLOC_CONF", "cgroup:false,abort_conf:true")]);
+}
+
+/// `tests/c/cgroup.c bg`: with a background thread the report says whether
+/// the PSI trigger on `memory.pressure` was armed (Docker's default profile
+/// mounts the cgroup read-only, so "unavailable (EROFS)" is a pass with a
+/// note), and `pressure_events` is 0 under no pressure.
+#[test]
+fn c_cgroup_background_thread() {
+    let bin = compile("tests/c", "cgroup", &[]);
+    run_bin_env("cgroup", &bin, &["bg"], &[("MALLOC_CONF", "background_thread:true,abort_conf:true")]);
+}
+
 /// `tests/c/guard_slab.c fault` (plan Phase 2 task 1): under the preload,
 /// a write into the guard slab that follows a run of slabs of the 64-byte
 /// class faults (SIGSEGV caught in the program), while the last byte of

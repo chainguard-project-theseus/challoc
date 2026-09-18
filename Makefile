@@ -117,7 +117,7 @@ DOCKER_RUN = docker run --rm --platform $(PLATFORM) \
 	-v challoc-cargo-registry:/root/.cargo/registry \
 	$(GIT_MOUNT) $(DOCKER_FLAGS) $(IMAGE)
 
-.PHONY: image dev run build test test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench clean-volumes
+.PHONY: image dev run build test test-cgroup-limit test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench clean-volumes
 
 image:
 	docker build --platform $(PLATFORM) -f Dockerfile.dev -t $(IMAGE) .
@@ -137,6 +137,13 @@ test: image
 	  && sh scripts/jemalloc-compat.sh \
 	  && cargo test --features std -- --nocapture --skip api:: \
 	  && cargo test --features std api:: -- --nocapture'
+	$(MAKE) --no-print-directory test-cgroup-limit
+
+# Phase 2 task 4: the same tests that read the cgroup, in a container with
+# a 512 MiB limit; the effective `memory.max` must read as that number.
+test-cgroup-limit: DOCKER_FLAGS = --memory=512m -e CHALLOC_EXPECT_CGROUP_LIMIT=536870912
+test-cgroup-limit: image
+	$(DOCKER_RUN) sh -c 'cargo test --features std cgroup -- --nocapture'
 
 test-host:
 	cargo test --features std

@@ -105,6 +105,11 @@ pub enum Leaf {
     StatsResident,
     StatsMapped,
     StatsRetained,
+    /// `stats.cgroup.*` (design 11): `ENOENT` when no cgroup is tracked.
+    StatsCgroupLimit,
+    StatsCgroupHigh,
+    StatsCgroupCurrent,
+    StatsCgroupPressureEvents,
     /// `stats.arenas.<i>.*`; `mib[2]` is the arena.
     StatsArenaPactive,
     StatsArenaPdirty,
@@ -215,7 +220,13 @@ static STATS_ARENA_I: [Node; 9] = [
     dir("bins", &STATS_BINS),
 ];
 static STATS_ARENAS: [Node; 1] = [num(&STATS_ARENA_I)];
-static STATS: [Node; 7] = [
+static STATS_CGROUP: [Node; 4] = [
+    leaf("limit", Leaf::StatsCgroupLimit),
+    leaf("high", Leaf::StatsCgroupHigh),
+    leaf("current", Leaf::StatsCgroupCurrent),
+    leaf("pressure_events", Leaf::StatsCgroupPressureEvents),
+];
+static STATS: [Node; 8] = [
     leaf("allocated", Leaf::StatsAllocated),
     leaf("active", Leaf::StatsActive),
     leaf("metadata", Leaf::StatsMetadata),
@@ -223,6 +234,7 @@ static STATS: [Node; 7] = [
     leaf("mapped", Leaf::StatsMapped),
     leaf("retained", Leaf::StatsRetained),
     dir("arenas", &STATS_ARENAS),
+    dir("cgroup", &STATS_CGROUP),
 ];
 static THREAD_TCACHE: [Node; 2] = [leaf("flush", Leaf::ThreadTcacheFlush), leaf("enabled", Leaf::ThreadTcacheEnabled)];
 static THREAD: [Node; 6] = [
@@ -742,6 +754,26 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
                 _ => t.retained,
             })
         }
+        StatsCgroupLimit | StatsCgroupHigh | StatsCgroupCurrent | StatsCgroupPressureEvents => {
+            io.read_only()?;
+            let cg = &shared.cgroup;
+            if !cg.tracked() {
+                // Like jemalloc's keys behind a disabled build option: the
+                // name resolves, the read says the facility is off.
+                return Err(ENOENT);
+            }
+            if leaf == StatsCgroupCurrent {
+                // Rate limited to once per 10 ms, so a polling reader costs
+                // at most that many file reads.
+                cg.sample(crate::sys::now_coarse_ns());
+            }
+            io.read(match leaf {
+                StatsCgroupLimit => cg.limit() as usize,
+                StatsCgroupHigh => cg.high() as usize,
+                StatsCgroupCurrent => cg.current() as usize,
+                _ => cg.pressure_events() as usize,
+            })
+        }
         StatsArenaPactive
         | StatsArenaPdirty
         | StatsArenaPmuzzy
@@ -1083,7 +1115,32 @@ mod tests {
         assert_eq!(mib_to_leaf(&[5, 5, 7, 9]), Err(ENOENT));
         assert_eq!(mib_to_leaf(&[]), Err(ENOENT));
         // Unknown, malformed, and prof.* names.
-        for bad in ["nope", "arenas.bin.x.size", "arenas.bin..size", "prof.active", "prof.dump", "stats.cgroup.limit", "version.more", ""] {
+        // `stats.cgroup.*` (Phase 2 task 4): the names resolve; a read is
+        // `ENOENT` only where no cgroup2 is tracked.
+        assert_eq!(mib_of("stats.cgroup.limit"), [7, 7, 0]);
+        assert_eq!(mib_of("stats.cgroup.pressure_events"), [7, 7, 3]);
+        assert_eq!(mib_to_leaf(&[7, 7, 2]), Ok(Leaf::StatsCgroupCurrent));
+        assert_eq!(mib_to_leaf(&[7, 7, 4]), Err(ENOENT));
+        let tracked = shared().cgroup.tracked();
+        for key in ["stats.cgroup.limit", "stats.cgroup.high", "stats.cgroup.current", "stats.cgroup.pressure_events"] {
+            assert_eq!(call(key), if tracked { 0 } else { ENOENT }, "{key} tracked={tracked}");
+            assert_eq!(set(key, 1usize), if tracked { EPERM } else { ENOENT }, "{key}");
+        }
+        if tracked {
+            let limit: usize = get("stats.cgroup.limit");
+            let high: usize = get("stats.cgroup.high");
+            let current: usize = get("stats.cgroup.current");
+            let events: usize = get("stats.cgroup.pressure_events");
+            std::eprintln!("stats.cgroup: limit {limit} high {high} current {current} pressure_events {events}");
+            assert_eq!(limit, shared().cgroup.limit() as usize);
+            assert_eq!(high, shared().cgroup.high() as usize);
+            assert!(limit == usize::MAX || limit > 0);
+            assert_eq!(events, 0, "no background thread has armed a trigger in this process");
+        }
+        // `stats.cgroup` itself is interior: it resolves, and is not a key.
+        assert_eq!(mib_of("stats.cgroup"), [7, 7]);
+        assert_eq!(call("stats.cgroup"), ENOENT);
+        for bad in ["nope", "arenas.bin.x.size", "arenas.bin..size", "prof.active", "prof.dump", "stats.cgroup.nope", "version.more", ""] {
             let c = CString::new(bad).unwrap();
             let mut mib = [0usize; MAX_MIB];
             let mut len = MAX_MIB;

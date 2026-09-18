@@ -535,7 +535,9 @@ to `rallocx` exactly as jemalloc's contract requires.
   `slow_ticks` and run periodic work every 64 of them: cache GC if the
   interval has elapsed, then decay if a class's deadline has passed (or the
   start of the background thread that will do it). Thread statistics are
-  merged by `epoch`, not here; cgroup sampling is planned (section 11).
+  merged by `epoch`, not here; the periodic work also takes the rate-limited
+  cgroup sample (section 11), which is two small file reads at most once
+  per 10 ms process-wide.
 - **Flush**: release the `cap / 2` highest-address entries grouped by slab
   and keep the lowest in ascending order (not reversed into a run: a
   descending run under ascending pushes, or an ascending batch under
@@ -743,43 +745,92 @@ Init must not call anything that allocates. Steps, in the order
    `Sealed ranges: N of M`.
 6. Build the per-class slab tables, arena 0, the huge allocator, the arena
    and explicit-cache registries and the thread-exit key (`Shared::init`).
-7. Register the fork handlers (section 9).
+7. Discover the cgroup and read its limits (section 11; inside
+   `Shared::init`, skipped with `cgroup:false`).
+8. Register the fork handlers (section 9).
 
 Planned, not yet performed:
 
 - Probing `MADV_COLLAPSE` and reading `/sys/kernel/mm/transparent_hugepage/
   enabled` (with the THP work; the `thp` key is inert).
-- Reading cgroup limits (section 11, Phase 2).
 
 Any pointer passed to `free` before init completes, or that does not classify,
 is treated as invalid. ld.so's minimal startup allocator only frees its own
 last block, so in practice nothing foreign reaches us; if it ever does, abort
 with a clear message rather than corrupt.
 
-## 11. cgroup awareness (planned, Phase 2)
+## 11. cgroup awareness
 
-Nothing in this section is implemented. There is no `src/sys/cgroup.rs`, the
-`cgroup` key is accepted and inert (rejected by `abort_conf`), the
-`stats.cgroup.*` controls return `ENOENT` and `malloc_stats_print` reports
-`cgroup: not tracked`. What follows is the plan (`plan.md` Phase 2).
+The measurement layer is implemented (`src/sys/cgroup.rs`, plan Phase 2
+task 4); the policy that acts on it is planned (task 5) and marked so below.
+Everything is gated by the `cgroup` key (default `true`; `cgroup:false`
+reads nothing and reports `cgroup: not tracked (cgroup:false)`).
 
-The limits will be read once at init and re-read on demand:
+Discovery, once at init (section 10 step 7):
 
-- Cgroup path from `/proc/self/cgroup` (the `0::` line) and the cgroup2 mount
-  from `/proc/self/mountinfo`. Inside a cgroup namespace the path is `/` and
-  the mount is `/sys/fs/cgroup`.
-- Effective limits: walk from the leaf up to the mount, reading `memory.max`
-  and `memory.high` at each level and keeping the minimum of the numeric
-  values. `max` means unlimited. `memory.max.effective` does not exist in
-  mainline kernels.
-- `cpu.max` and `cpuset.cpus.effective` for the effective CPU count, to
-  size per-CPU state in the optional per-CPU mode and to cap the number of
-  background purge batches in flight.
+- The cgroup path is the `0::` line of `/proc/self/cgroup`; inside a cgroup
+  namespace it is `/`. Without such a line (a cgroup v1 only host) nothing
+  is tracked.
+- The cgroup2 mount point is the first `cgroup2` line of
+  `/proc/self/mountinfo` (field 5 before the ` - ` separator), normally
+  `/sys/fs/cgroup`; a hybrid host's `/sys/fs/cgroup/unified` works the same
+  way. Without one nothing is tracked. The file is scanned line by line
+  through a 2 KiB buffer, so a container with hundreds of mounts costs no
+  more stack.
+- The directory is `mount + path` (`/sys/fs/cgroup` itself for `/`), capped
+  at 2 KiB; the leaf's `memory.max`, `memory.current`, `memory.events` and
+  `memory.pressure` are probed for existence (a root cgroup has no
+  `memory.current`; a v1 memory controller has none of them).
+- Effective limits: walk from the leaf up to the mount, inclusive, reading
+  `memory.max` and `memory.high` at each level and keeping the minimum of
+  the numeric values per file. `max` and an absent file mean unlimited
+  (`u64::MAX`). `memory.max.effective` does not exist in mainline kernels.
+  The walk is repeated at most once per second, from the sampler, so a
+  `docker update --memory` is seen.
+- `cpu.max` and `cpuset.cpus.effective` are parsed at init and kept for the
+  per-CPU mode (section 15), which is the only consumer.
 
-All reads will use raw `open`/`read`/`close` on fixed-size stack buffers.
-Absence of any file will mean unlimited.
+All reads use raw `open`/`read`/`close` on fixed-size stack buffers through
+`src/sys`, never libc stdio, and nothing allocates.
 
-Policy, to be applied by the slow path and the background thread:
+Sampling: `memory.current` and `memory.events` (`high` and `max`, kept with
+a count of the samples that saw each one rise) are read at most every 10 ms,
+measured with `clock_gettime(CLOCK_MONOTONIC_COARSE)`; one compare-exchange
+on the timestamp lets one thread per window do the reads. The sampler runs
+from the periodic tick of the slow path (`purge::on_tick`, every 64 slow-path
+entries of a heap), from the background thread's loop, from a
+`stats.cgroup.current` read and from `malloc_stats_print`; the fast paths
+never see it.
+
+PSI: when the background thread exists it, and only it, opens
+`memory.pressure` read-write and writes the trigger `some 150000 1000000`
+(a `some` stall of 150 ms in a 1 s window). If the kernel answers `EINVAL`
+the unprivileged form `some 300000 2000000` is tried (windows under 2 s
+need `CAP_SYS_RESOURCE`; unprivileged triggers exist since 6.4). Success is
+the only evidence: any other error (`ENOENT` without PSI, `EPERM`, `EROFS`
+under Docker's read-only cgroup mount) records `psi unavailable (<errno>)`
+and the thread sleeps on its futex as before. Two container facts, both
+measured (`PROGRESS.md`, Phase 2 task 4): Docker's default profile mounts
+the container's cgroup read-only, so under it the trigger reads
+`unavailable (EROFS)` on every kernel; and on a host whose cgroup2 is
+mounted with `nsdelegate` (systemd hosts, the GCE image) the kernel refuses
+writes to non-delegatable files at the root of a cgroup namespace
+(`cgroup_file_write`, `EPERM`), so even a `--privileged` container cannot
+arm a trigger on its own root `memory.pressure`; a process in a child
+cgroup of the container (systemd or a runtime that makes one) can. Docker
+Desktop's linuxkit kernel mounts without `nsdelegate` and a `--privileged`
+container there arms the 1 s trigger. The fallback is the same in every
+case: the tick's `memory.current` sample. Armed, the thread sleeps in
+`ppoll` on the trigger (`POLLPRI`) and an eventfd that `wake` writes; a
+fired trigger counts one `pressure_events`, takes an out-of-window sample
+and runs the thread's decay pass at once; `POLLERR`/`POLLHUP` (the cgroup
+removed) disarms. The trigger descriptor is closed when the thread exits
+and in a fork child (whose copy would otherwise wake the parent's thread
+through the shared eventfd).
+
+Policy (planned, task 5), to be applied by the slow path and the background
+thread; nothing reads the figures today except `stats.cgroup.*` and the
+reports:
 
 | Usage vs effective limit          | Behaviour                                         |
 |-----------------------------------|---------------------------------------------------|
@@ -789,19 +840,15 @@ Policy, to be applied by the slow path and the background thread:
 | > 90%                             | Purge immediately on empty; caches GC every flush |
 | `memory.events` `high` increased  | Full purge once                                   |
 
-`memory.current` will be sampled at most every 10 ms, measured with the vDSO
-`clock_gettime(CLOCK_MONOTONIC_COARSE)`, and only from slow paths, so the hot
-path never sees it. When the background thread exists and the kernel is 6.4 or
-newer it will arm a PSI trigger `some 150000 1000000` on `memory.pressure`
-and poll it with `POLLPRI`; a trigger will cause an immediate decay pass.
-Older kernels will poll `memory.current` on the decay timer.
-
 THP will be disabled regardless of the `thp` tunable when the effective limit
-is under 1 GiB.
+is under 1 GiB (with the THP work).
 
-Statistics to be exposed through `mallctl`: `stats.cgroup.limit`,
-`stats.cgroup.high`, `stats.cgroup.current`, `stats.cgroup.pressure_events`
-(all `ENOENT` today).
+Statistics through `mallctl` (13.4): `stats.cgroup.limit`,
+`stats.cgroup.high` (both `SIZE_MAX` for unlimited), `stats.cgroup.current`
+(the last sample, refreshed by the read if the window allows) and
+`stats.cgroup.pressure_events`, all `size_t` and read-only; `ENOENT` when
+nothing is tracked, like jemalloc's keys behind a disabled build option.
+`malloc_stats_print` prints one `cgroup:` line (section 16).
 
 ## 12. Configuration
 
@@ -839,7 +886,7 @@ jemalloc names where they exist:
 | `slot_randomize`          | false   | inert (planned, Phase 2 task 3)         |
 | `double_free_scan`        | false   | compare against the top 4 cache entries |
 | `abort_conf`              | false   | abort on unknown keys, bad values and inert keys |
-| `cgroup`                  | true    | inert (planned, Phase 2)                |
+| `cgroup`                  | true    | read the memory cgroup (11): limits, `memory.current`, events, PSI; `false` reads nothing. The policy is planned (Phase 2 task 5) |
 | `check_zero`              | false   | challoc only; debug: read every slot/page handed out as zero, abort on a dirty word |
 | `stats_print`             | accepted | inert: nothing prints at exit; no `opt.` value |
 | `junk`, `zero`, `retain`, `oversize_threshold`, `percpu_arena`, `metadata_thp`, `confirm_conf` | accepted | jemalloc keys, ignored with any value |
@@ -1021,7 +1068,8 @@ tcache.create, tcache.flush, tcache.destroy
 experimental.utilization.query, experimental.utilization.batch_query
 config.malloc_conf, config.debug, config.stats
 prof.* -> ENOENT
-stats.cgroup.* -> ENOENT today; planned (section 11): limit, high, current, pressure_events
+stats.cgroup.limit, stats.cgroup.high, stats.cgroup.current, stats.cgroup.pressure_events
+  (section 11; ENOENT when no cgroup2 is tracked or cgroup:false)
 ```
 
 Everything else returns `ENOENT`. `arenas.nbins` counts the classes up to
@@ -1146,7 +1194,13 @@ kernel-owned fields is what broke tcmalloc on Linux 6.19.
 
 - `malloc_stats_print` emits a human-readable report in jemalloc's general
   shape: totals, per-arena, per-class table with `size nregs curslabs curregs`,
-  and a `cgroup: not tracked` line where the cgroup section (11) will go.
+  and one `cgroup:` line (section 11): the directory, mount and path, the
+  effective `limit` and `high` (`max` for unlimited), the last `current`
+  sample, the `memory.events` `high`/`max` counters with the number of
+  rises seen, the PSI state (`not armed (no background thread)`, `armed
+  (some ...)`, `unavailable (EROFS)`, `disarmed (background thread gone)`)
+  with `pressure_events`, and the CPU figures; or `cgroup: not tracked
+  (<reason>)`. The JSON form has a matching `"cgroup"` object.
   The run-time options list marks the inert keys "accepted, no effect". The per-class table also carries the compaction
   diagnostics of section 6.4 (`refilled`, `compacted`, caches that entered
   and left compact mode, probes the refill-rate gate declined) and is
@@ -1170,11 +1224,12 @@ kernel-owned fields is what broke tcmalloc on Linux 6.19.
 
 ```
 src/lib.rs            crate root, quantum feature selection, panic handler
-src/sys/mod.rs        typed syscall wrappers (mmap, mprotect, madvise, process_madvise, mseal, prctl, getrandom, futex, clock_gettime, open/read/close, write, signals), abort, stderr sink
+src/sys/mod.rs        typed syscall wrappers (mmap, mprotect, madvise, process_madvise, mseal, prctl, getrandom, futex, clock_gettime, open/read/close, write, ppoll, eventfd, signals), abort, stderr sink
 src/sys/raw.rs        the asm syscall instructions (x86_64, aarch64)
 src/sys/nr.rs         syscall numbers, header-checked
 src/sys/errno.rs      kernel error decoding
 src/sys/features.rs   kernel feature probing
+src/sys/cgroup.rs     cgroup2 discovery, limit walk, sampling, PSI trigger arming
 src/tls.rs            initial-exec TLS accessor
 src/lock.rs           futex lock, padded lock
 src/layout.rs         size classes, regions, pointer classification
@@ -1204,9 +1259,7 @@ contrib/              Valkey build patch
 docs/
 ```
 
-Planned: `src/sys/cgroup.rs` (section 11).
-
 Pure logic (`layout`, `bitmap`, size-class math, config parsing, and the
-planned cgroup parsing) must be testable with `cargo test` on the host under
+cgroup file parsing and limit walk) must be testable with `cargo test` on the host under
 a `std` dev feature. Everything touching syscalls, TLS, or asm is tested inside a Linux
 container.
