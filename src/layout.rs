@@ -360,12 +360,18 @@ pub const LG_META_MIN: u32 = 30;
 pub const LG_SLIDE: u32 = 30;
 
 /// One `mmap` reservation as handed back by the kernel, before alignment and
-/// sliding. Kept so later phases can seal and account for the whole range.
+/// sliding. Kept so the never-committed slack around each region can be
+/// sealed ([`Regions::never_committed`]) and the whole range accounted for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Mapping {
     pub addr: usize,
     pub len: usize,
 }
+
+/// Upper bound on the ranges [`Regions::never_committed`] returns, and so
+/// on the `mseal` calls init makes: one before class 0, one after each
+/// class, two per side mapping.
+pub const MAX_SEALED: usize = NCLASSES + 1 + 4;
 
 /// What a pointer is, according to the regions alone. Slab-tier results
 /// still need the slab bitmap consulted to tell live from free.
@@ -488,6 +494,45 @@ impl Regions {
     #[inline]
     pub const fn huge_addr(&self, page: usize) -> usize {
         self.huge_base + (page << self.lg_page)
+    }
+
+    /// The parts of the three mappings that no code ever commits, purges
+    /// or reprotects, in address order per mapping: the slack before class
+    /// 0, the gap between each class region and the next (one contiguous
+    /// range: the tail of stride `c` plus the head of stride `c + 1`), the
+    /// slack after the last class, and the alignment-plus-slide slack on
+    /// both sides of the huge and metadata regions. Empty ranges are
+    /// omitted. These are what `mseal` seals at init (design 10 step 5,
+    /// section 14): the class regions, the huge region and the metadata
+    /// region themselves are committed by `mprotect` and purged by
+    /// `madvise` for the life of the process, so they cannot be sealed.
+    ///
+    /// Returns the ranges and how many are filled in. At most
+    /// [`MAX_SEALED`]: `NCLASSES + 1` around the classes and two per side
+    /// mapping.
+    pub fn never_committed(&self) -> ([Mapping; MAX_SEALED], usize) {
+        let mut out = [Mapping { addr: 0, len: 0 }; MAX_SEALED];
+        let mut n = 0;
+        let mut push = |lo: usize, hi: usize| {
+            if hi > lo {
+                out[n] = Mapping { addr: lo, len: hi - lo };
+                n += 1;
+            }
+        };
+        let mut start = self.superblock_map.addr;
+        for c in 0..NCLASSES {
+            push(start, self.class_base[c]);
+            start = self.class_base[c] + self.region_len();
+        }
+        push(start, self.superblock_map.addr + self.superblock_map.len);
+        for (m, base, len) in [
+            (self.huge_map, self.huge_base, self.huge_len),
+            (self.meta_map, self.meta_base, self.meta_len),
+        ] {
+            push(m.addr, base);
+            push(base + len, m.addr + m.len);
+        }
+        (out, n)
     }
 
     /// Slab-slot lookup of design section 2, the whole of the `free` fast
@@ -688,8 +733,38 @@ mod linux {
             )
         }
 
+        /// Seal every range [`Regions::never_committed`] lists (design 10
+        /// step 5): `mseal` forbids `munmap`, `mremap`, `mprotect` and
+        /// `MAP_FIXED` over them for the rest of the process, so nothing can
+        /// land a mapping in the gap between two class regions or unmap
+        /// part of a reservation. Only for kernels whose probe said
+        /// `mseal=yes`; each call splits the enclosing VMA, so the VMA count
+        /// grows by at most `2 * MAX_SEALED`. Returns the number of ranges
+        /// sealed. A refusal after a successful probe (`ENOMEM` at the VMA
+        /// limit, for instance) stops the sweep and leaves the rest
+        /// unsealed rather than aborting: sealing is a hardening extra, not
+        /// a heap invariant, and the count is reported by
+        /// `malloc_stats_print`.
+        pub fn seal(&self) -> u32 {
+            let (ranges, n) = self.never_committed();
+            let mut sealed = 0;
+            for m in &ranges[..n] {
+                // SAFETY: the range is inside a reservation this process
+                // owns and, by construction, is never committed, purged,
+                // reprotected or unmapped (`release` is test-only and is
+                // never called on sealed regions).
+                if unsafe { sys::mseal(m.addr, m.len, 0) }.is_err() {
+                    break;
+                }
+                sealed += 1;
+            }
+            sealed
+        }
+
         /// Give the reservations back. The allocator never does this; it
-        /// exists so tests can reserve repeatedly in one process.
+        /// exists so tests can reserve repeatedly in one process. Must not
+        /// be called after [`seal`](Regions::seal): the kernel refuses and
+        /// this aborts.
         ///
         /// # Safety
         /// Nothing may reference the regions afterwards.
@@ -744,6 +819,44 @@ mod tests {
                 Mapping { addr: meta.0, len: meta.1 },
             ],
         )
+    }
+
+    /// The never-committed ranges are page aligned, disjoint from every
+    /// region, and together with the regions cover the three mappings
+    /// exactly; there are at most `MAX_SEALED` of them.
+    #[test]
+    fn never_committed_is_the_complement_of_the_regions() {
+        for (lg_region, lg_stride) in [(38, 40), (32, 34), (32, 33)] {
+            let r = synthetic(lg_region, lg_stride);
+            let (ranges, n) = r.never_committed();
+            assert!(n <= MAX_SEALED && n >= NCLASSES, "{n} ranges");
+            // Regions, in address order, with the mapping each belongs to.
+            let mut regions: Vec<(usize, usize)> =
+                (0..NCLASSES).map(|c| (r.class_base[c], r.class_base[c] + r.region_len())).collect();
+            regions.push((r.huge_base, r.huge_base + r.huge_len));
+            regions.push((r.meta_base, r.meta_base + r.meta_len));
+            let page = r.page_size();
+            let mut covered = 0usize;
+            for m in &ranges[..n] {
+                assert!(m.len > 0 && m.addr % page == 0 && m.len % page == 0, "{m:x?}");
+                let (lo, hi) = (m.addr, m.addr + m.len);
+                for &(a, b) in &regions {
+                    assert!(hi <= a || lo >= b, "range {m:x?} overlaps region {a:#x}-{b:#x}");
+                }
+                assert!(
+                    [r.superblock_map, r.huge_map, r.meta_map]
+                        .iter()
+                        .any(|map| map.addr <= lo && hi <= map.addr + map.len),
+                    "range {m:x?} outside every mapping"
+                );
+                covered += m.len;
+            }
+            for &(a, b) in &regions {
+                covered += b - a;
+            }
+            let total = r.superblock_map.len + r.huge_map.len + r.meta_map.len;
+            assert_eq!(covered, total, "ranges and regions do not tile the mappings");
+        }
     }
 
     #[test]
@@ -1024,7 +1137,9 @@ mod tests {
 #[cfg(all(test, target_os = "linux"))]
 mod linux_tests {
     use super::*;
-    use crate::sys::{self, PROT_READ, PROT_WRITE};
+    use crate::sys::{
+        self, Errno, MADV_DONTNEED, MAP_ANONYMOUS, MAP_FIXED, MAP_PRIVATE, PROT_NONE, PROT_READ, PROT_WRITE,
+    };
     use std::sync::Mutex;
     use std::{eprintln, string::String};
 
@@ -1150,5 +1265,120 @@ mod linux_tests {
         for off in a_offsets.iter().chain(b_offsets.iter()) {
             assert_eq!(off & (MAX_SLAB - 1), 0);
         }
+    }
+
+    /// Exit code of [`seal_child`] when the kernel (or seccomp) has no `mseal`.
+    const SKIPPED: i32 = 3;
+
+    /// Runs in a forked child because a sealed layout can never be released
+    /// and a second full layout must not stay alive in the test process.
+    /// Returns the number of failed checks, or `SKIPPED`.
+    fn seal_child(page: usize) -> i32 {
+        if !sys::features::probe_mseal(page) {
+            return SKIPPED;
+        }
+        let r = Regions::reserve(page, true);
+        let before = maps().lines().count();
+        let (ranges, n) = r.never_committed();
+        let sealed = r.seal() as usize;
+        let after = maps().lines().count();
+        let mut fails = 0;
+        let mut check = |ok: bool, what: &str| {
+            if !ok {
+                eprintln!("seal: FAIL {what}");
+                fails += 1;
+            }
+        };
+        eprintln!(
+            "seal: {sealed} of {n} ranges sealed (max {MAX_SEALED}), /proc/self/maps lines {before} -> {after} (+{})",
+            after - before
+        );
+        check(sealed == n, "not every never-committed range was sealed");
+        // Each sealed range splits its VMA into at most two more pieces.
+        check(after - before <= 2 * n + 2, "VMA count grew by more than 2 per sealed range");
+
+        // The plan's criterion: munmap of a reserved range fails with EPERM.
+        // Likewise mprotect (a commit landing in a gap) and MAP_FIXED over
+        // it (a foreign mapping placed in the gap).
+        for m in &ranges[..n] {
+            // SAFETY: the kernel refuses every one of these; nothing changes.
+            unsafe {
+                check(sys::munmap(m.addr, m.len) == Err(Errno::EPERM), "munmap of a sealed range did not fail with EPERM");
+                check(
+                    sys::mprotect(m.addr, page, PROT_READ | PROT_WRITE) == Err(Errno::EPERM),
+                    "mprotect of a sealed range did not fail with EPERM"
+                );
+                check(
+                    sys::mmap(m.addr, page, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == Err(Errno::EPERM),
+                    "MAP_FIXED over a sealed range did not fail with EPERM"
+                );
+            }
+        }
+        // smaps marks sealed VMAs with `sl`; the largest range is a gap.
+        let biggest = ranges[..n].iter().max_by_key(|m| m.len).unwrap();
+        let smaps = std::fs::read_to_string("/proc/self/smaps").unwrap();
+        let mut in_vma = false;
+        let mut flagged = false;
+        for l in smaps.lines() {
+            if let Some((range, _)) = l.split_once(' ') {
+                if let Some((lo, _)) = range.split_once('-') {
+                    if let Ok(lo) = usize::from_str_radix(lo, 16) {
+                        in_vma = lo == biggest.addr;
+                    }
+                }
+            }
+            if in_vma && l.starts_with("VmFlags:") {
+                flagged = l.split_whitespace().any(|f| f == "sl");
+            }
+        }
+        check(flagged, "the largest sealed gap has no `sl` in smaps VmFlags");
+
+        // The regions themselves are untouched: a slab of the first and
+        // last class, the first huge page and the first metadata page still
+        // commit, hold data, purge and reprotect.
+        let first_slab = CLASSES[0].slab_size();
+        let last_slab = CLASSES[NCLASSES - 1].slab_size();
+        for (addr, len) in [
+            (r.slab_addr(0, 0), first_slab),
+            (r.slab_addr(NCLASSES - 1, r.nslabs(NCLASSES - 1) - 1), last_slab),
+            (r.huge_addr(0), page),
+            (r.meta_base, page),
+        ] {
+            // SAFETY: inside our own unsealed reservation.
+            unsafe {
+                check(sys::mprotect(addr, len, PROT_READ | PROT_WRITE).is_ok(), "commit inside a region failed");
+                let p = addr as *mut u64;
+                p.write_volatile(0x5EA1);
+                check(sys::madvise(addr, len, MADV_DONTNEED).is_ok(), "purge inside a region failed");
+                check(p.read_volatile() == 0, "purged page did not read zero");
+                check(sys::mprotect(addr, len, PROT_NONE).is_ok(), "reprotect inside a region failed");
+            }
+        }
+        fails
+    }
+
+    #[test]
+    fn seal_locks_the_gaps_and_leaves_the_regions_usable() {
+        let _guard = RESERVE_LOCK.lock().unwrap();
+        let page = sys::features::page_size();
+        // SAFETY: the child only makes syscalls and uses this crate's own
+        // allocator, which the fork handlers keep consistent; it exits
+        // through `_exit` without returning into the harness.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            let code = seal_child(page);
+            // SAFETY: terminating the child.
+            unsafe { libc::_exit(code) };
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(libc::WIFEXITED(status), "seal child died: status {status:#x}");
+        let code = libc::WEXITSTATUS(status);
+        if code == SKIPPED {
+            eprintln!("seal: mseal unavailable here (kernel < 6.10 or seccomp), skipped");
+            return;
+        }
+        assert_eq!(code, 0, "{code} seal checks failed (see stderr)");
     }
 }

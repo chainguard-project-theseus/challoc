@@ -174,6 +174,7 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
         }
     }
     writeln!(out, "Kernel features: {}", super::features())?;
+    writeln!(out, "Sealed ranges: {} of {}", super::sealed_ranges(), shared.regions.never_committed().1)?;
     writeln!(out, "Background thread: {}", if purge::background::present() { "present" } else { "absent" })?;
     writeln!(
         out,
@@ -633,6 +634,7 @@ mod tests {
             "opt.double_free_scan: false\n",
             "opt.huge_retain_max: 67108864\n",
             "Kernel features: page_size=",
+            "Sealed ranges: ",
             "Background thread: ",
             "Arenas: ",
             "Allocated: ",

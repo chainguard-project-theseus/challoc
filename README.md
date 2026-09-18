@@ -108,7 +108,7 @@ or reserved for but not yet used by any code path.
 | `MADV_GUARD_INSTALL`         | 6.13   | Guard slabs and guards after huge runs     | `PROT_NONE` page after huge runs; no guard slabs |
 | `process_madvise` on self    | 5.10   | Batched purge                              | Loop over `madvise`               |
 | `PR_SET_VMA_ANON_NAME`       | 5.17   | Named heap mappings in `/proc/pid/maps`    | Skip                              |
-| `mseal` (planned, Phase 2)   | 6.10   | Seal region table and reserved ranges      | Skip                              |
+| `mseal`                      | 6.10   | Seals the never-committed parts of the reservations (the gaps between class regions, the slack around the huge and metadata regions) at init; not the regions or the region table | Skip (also when seccomp filters it, as Docker's default profile does) |
 | PSI triggers (planned, Phase 2) | 6.4 | Pressure-driven purge in background thread | Poll `memory.current`             |
 | Transparent huge pages (planned) | any | Opt-in only; the `thp` key is accepted and inert | Off                       |
 | rseq `mm_cid`                | 6.3    | Optional per-CPU mode, later phase         | Thread caches only                |
@@ -198,7 +198,8 @@ performance lab) is in its acceptance run: the release-readiness tasks of
 `docs/review-2026-09-18.md` are landing and the mstress RSS row is open.
 `PROGRESS.md` is the task log; `bench/results/scorecard-{aarch64,x86_64}.md`
 record the benchmark trend per commit. Features marked *planned* above
-(`mseal`, cgroup awareness, zero-on-free, slot randomisation, THP) are Phase 2.
+(cgroup awareness, zero-on-free, slot randomisation, THP) are Phase 2; `mseal`
+of the reservations' never-committed ranges landed as its first task.
 Packaging for Wolfi is Phase 3.
 
 ## Building

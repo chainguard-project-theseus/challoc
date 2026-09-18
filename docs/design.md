@@ -33,16 +33,15 @@ kernel provides zero pages on first touch.
 
 ```
 +------------------+  metadata region     (reserved, committed on demand)
-| region table     |  (sealing with mseal: planned, Phase 2 task 2)
 | heap table       |
 | slab descriptors |  per class, dense arrays indexed by slab number
 | huge descriptors |
 +------------------+
-| gap              |
+| gap              |  (sealed with mseal where the kernel has it)
 +------------------+  class region 0      (randomised offset inside its gap)
 | slab | slab | .. |
 +------------------+
-| gap              |
+| gap              |  (sealed)
 +------------------+  class region 1
 | ...              |
 +------------------+
@@ -51,6 +50,24 @@ kernel provides zero pages on first touch.
 | run | guard | .. |
 +------------------+
 ```
+
+The parts of the reservations that no code ever commits, purges or
+reprotects (the gap on either side of every class region and the alignment
+and slide slack around the huge and metadata regions,
+`Regions::never_committed`) are sealed with `mseal` at init when the probe
+of section 10 says the kernel has it: `munmap`, `mremap`, `mprotect` and
+`mmap(MAP_FIXED)` over them fail with `EPERM` for the rest of the process,
+so nothing can land a foreign mapping between two class regions or unmap
+part of a reservation. The regions themselves cannot be sealed: sealing
+forbids exactly the `mprotect` that commits a slab and the `madvise` that
+purges it. Each sealed range splits its VMA, so the count grows by at most
+two per range (57 ranges at quantum 16: 108 more lines in `/proc/self/maps`,
+measured); on kernels without `mseal`, or under a seccomp profile that
+filters it (Docker's default), nothing is sealed and nothing else changes.
+The region table (`Regions`, inside the `Shared` static in the library's
+own data segment) is not sealed either: it shares its pages with locks and
+counters that are written at run time, the mapping belongs to `ld.so`, and
+`mseal` does not stop writes, only remapping.
 
 Sizes are runtime parameters chosen by probing how much virtual address space
 the process can reserve, so the same binary works on 47-bit x86_64, 48-bit
@@ -711,17 +728,21 @@ Init must not call anything that allocates. Steps, in the order
 4. Read secrets from `getrandom`, probe reservation sizes (section 2) and
    reserve the three regions in random order. Name them with
    `PR_SET_VMA_ANON_NAME` when the kernel accepts it.
-5. Build the per-class slab tables, arena 0, the huge allocator, the arena
+5. When the probe said `mseal=yes`, seal the never-committed ranges of the
+   reservations (section 2, `Regions::seal`): one `mseal` call per
+   contiguous range, at most `NCLASSES + 5` of them. Sealing forbids
+   `munmap`, `mremap`, `mprotect` and `MAP_FIXED` on those ranges for the
+   rest of the process; the regions themselves are not sealed because they
+   are `mprotect`ed on commit and `madvise`d on purge. A refusal after a
+   successful probe stops the sweep without aborting (sealing is a
+   hardening extra, not a heap invariant); `malloc_stats_print` reports
+   `Sealed ranges: N of M`.
+6. Build the per-class slab tables, arena 0, the huge allocator, the arena
    and explicit-cache registries and the thread-exit key (`Shared::init`).
-6. Register the fork handlers (section 9).
+7. Register the fork handlers (section 9).
 
 Planned, not yet performed:
 
-- `mseal` of the region table and the reservation ranges (Phase 2 task 2).
-  Sealing forbids `munmap`, `mremap`, and `mprotect` changes on ranges we
-  never intend to change; committed slab memory cannot be sealed because it
-  must be `mprotect`ed on commit and `madvise`d on purge. `mseal` is probed
-  today and never called.
 - Probing `MADV_COLLAPSE` and reading `/sys/kernel/mm/transparent_hugepage/
   enabled` (with the THP work; the `thp` key is inert).
 - Reading cgroup limits (section 11, Phase 2).
@@ -1081,6 +1102,15 @@ On when the kernel has `MADV_GUARD_INSTALL` (6.13+), otherwise absent:
 
 - A guard slab every `guard_slab_interval` x 64 KiB of slabs (section 5).
 
+On when the kernel has `mseal` (6.10+) and seccomp does not filter it,
+otherwise absent:
+
+- The never-committed parts of the reservations (the gaps around every
+  class region, the slack around the huge and metadata regions) are sealed
+  at init: no `munmap`, `mremap`, `mprotect` or `MAP_FIXED` over them for
+  the life of the process (section 2, section 10 step 5). The regions and
+  the region table are not sealed, for the reasons given in section 2.
+
 Off by default, tunable:
 
 - `double_free_scan` (compare each pushed slot against the top four cache
@@ -1089,7 +1119,6 @@ Off by default, tunable:
 
 Planned (Phase 2), keys accepted and inert today:
 
-- Region table and reservations sealed with `mseal` when available (task 2).
 - `zero_on_free`, `slot_randomize` (task 3).
 
 Explicitly not attempted: quarantine (defeats defragmentation and costs

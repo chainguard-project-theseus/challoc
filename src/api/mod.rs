@@ -187,10 +187,21 @@ fn init_slow() -> &'static Shared {
     unsafe { SHARED.get() }
 }
 
-/// Design section 10 steps 1 to 6 (sealing and cgroups join in Phases 1
-/// and 2). Configuration (step 4) is read before the regions are reserved
-/// so that nothing it may abort on has been mapped yet; it reads only the
-/// weak symbols, one file and `environ`.
+/// Never-committed ranges of the reservations sealed at init (design 10
+/// step 5); 0 when the kernel has no `mseal` or seccomp filters it.
+static SEALED: AtomicU32 = AtomicU32::new(0);
+
+/// How many ranges init sealed with `mseal` (for `malloc_stats_print` and
+/// tests). Initialises the allocator if needed.
+pub fn sealed_ranges() -> u32 {
+    let _ = shared();
+    SEALED.load(Ordering::Relaxed)
+}
+
+/// Design section 10 steps 1 to 6 (cgroups join in Phase 2). Configuration
+/// (step 2) is read before the regions are reserved so that nothing it may
+/// abort on has been mapped yet; it reads only the weak symbols, one file
+/// and `environ`.
 fn init() {
     let features = Features::probe();
     let config = config::load();
@@ -199,6 +210,9 @@ fn init() {
     crate::class::set_group_handoff(config.group_handoff);
     purge::background::request(config.background_thread);
     let regions = Regions::reserve(features.page_size, features.anon_name);
+    if features.mseal {
+        SEALED.store(regions.seal(), Ordering::Relaxed);
+    }
     // SAFETY: the statics are written once here, before `READY` is
     // published, and `regions` are live reservations this process owns.
     unsafe {

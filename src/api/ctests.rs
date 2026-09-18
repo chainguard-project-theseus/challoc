@@ -701,6 +701,15 @@ fn mimalloc_test_stress_check_zero() {
 /// below an aligned run are committed memory. Once in the probed guard mode
 /// (guard-install on kernels with `MADV_GUARD_INSTALL`, where the Phase 0
 /// regression lived) and once forced onto the `PROT_NONE` fallback.
+/// `tests/c/mseal.c` (plan Phase 2 task 2): the never-committed ranges of
+/// the reservations are sealed after init where the kernel allows it, and
+/// the allocator keeps working. Passes with a note where `mseal` is
+/// unavailable (Docker's default seccomp profile filters it).
+#[test]
+fn c_mseal() {
+    run_c("mseal", &[]);
+}
+
 #[test]
 fn c_huge_hole() {
     run_c("huge_hole", &[]);
