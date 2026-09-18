@@ -124,6 +124,83 @@ caught at the flush by name (`the slab has never been allocated from`), as
 the plan allows ("or the flush does"), and its bits are clear so the
 release's bit test was already a backstop.
 
-## 4. (c) `double_free_scan`
+## 4. (c) `double_free_scan`: the rows and the default decision
 
-(filled below)
+Code commit d039923 (default off): every cache push compares the slot
+against the top four entries when the tunable is set; off, the flag is one
+plain load from `Shared`'s first line (the line `superblock`/`lg_stride`
+come from) and a predicted branch. `quick` against 9c3b154 with it off: go
+on both VMs (aarch64 every row within 1.6%; x86_64 larson1 +3.2%, larson10
++3.0%, valkey1 +1.5%, single rounds).
+
+`bench/gce/challoc-bench ab amd64 VARIANTS="base=9c3b154 off=d039923
+on=d039923:double_free_scan:true jemalloc" BENCHES="valkey1 larson1 redis"
+ROUNDS=5` (== A/B: 2026-09-18T15:24:26Z x86_64 nproc 16 load 0.84 1.12 0.80, HEAD d039923):
+
+| program | variant | sorted scores | maxrss KiB |
+|---|---|---|---:|
+| valkey1 | base | 13.147 14.708 14.828 14.850 14.858 | 599408 |
+| valkey1 | off | 13.990 14.169 14.174 14.448 14.511 | 599520 |
+| valkey1 | on | 12.647 12.876 13.004 13.141 13.231 | 599424 |
+| valkey1 | jemalloc | 14.632 14.676 14.831 14.963 15.034 | 606492 |
+| larson1 | base | 43.9 44.7 45.1 45.6 45.6 | 15424 |
+| larson1 | off | 43.8 44.8 44.9 45.0 45.1 | 15504 |
+| larson1 | on | 42.7 43.3 43.5 43.6 43.6 | 15268 |
+| larson1 | jemalloc | 42.4 44.6 44.7 45.0 45.1 | 18344 |
+| redis | base | 590.3 590.7 592.4 594.2 595.2 | 30520 |
+| redis | off | 602.4 602.8 603.5 603.9 605.3 | 30544 |
+| redis | on | 599.2 599.9 600.6 602.0 602.4 | 30636 |
+| redis | jemalloc | 504.3 507.4 508.1 510.2 510.7 | 32892 |
+
+Medians:
+
+| program | unit | base | base RSS MiB | off | off RSS MiB | on | on RSS MiB | jemalloc | jemalloc RSS MiB | off vs base | on vs base | jemalloc vs base |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| valkey1 | M ops/s | 14.828 | 585.4 | 14.174 | 585.5 | 13.004 | 585.4 | 14.831 | 592.3 | +4.6% | +14.0% | -0.0% |
+| larson1 | M ops/s | 45.1 | 15.1 | 44.9 | 15.1 | 43.5 | 14.9 | 44.7 | 17.9 | +0.4% | +3.7% | +0.9% |
+| redis | k req/s | 592.4 | 29.8 | 603.5 | 29.8 | 600.6 | 29.9 | 508.1 | 32.1 | -1.8% | -1.4% | +16.6% |
+
+Positive percentages mean the variant did worse than base (slower or lower throughput).
+
+Decision (plan Phase 1.5 task 9c: on by default only if under 1% on every
+row on both VMs): **off by default**. On, larson1 is +3.1% on aarch64 and
++3.7% on x86_64 and valkey1 +14.0% on x86_64 (aarch64 valkey1 -2.2% and
+redis +0.3% / -1.4% are inside the rows' spread); four compares and their
+loads per free are about 4% of larson's 246 instructions per op. The
+tunable is implemented and documented as opt-in (README, design 6.3 and
+12). The off state is at parity on aarch64 (+0.0% / +0.7% / -0.2%) and on
+x86_64 larson1 (+0.4%) and redis (-1.8%); x86_64 valkey1 shows +4.6% for
+the off state (medians 14.828 vs 14.174, the sorted lists overlap only
+through base's low outlier), which section 5 takes to the counters. The
+aarch64 file has the other VM's rows.
+
+## 5. (c) attribution (`quick-perf`, base / off / on)
+
+`bench/gce/challoc-bench quick-perf amd64 OLD=9c3b154 NEW=d039923
+VARIANTS="old new new:double_free_scan:true jemalloc"` (`old` = base with
+(a) and (b), `new` = the scan code with the default off, the third the same
+library with `MALLOC_CONF=double_free_scan:true`), one run per cell:
+
+| row | variant | M ops/s | cycles/op | instr/op | L1D miss/op | dTLB miss/op |
+|---|---|---:|---:|---:|---:|---:|
+| larson1 | old | 45.41 | 71.9 | 231.1 | 1.589 | 0.001 |
+| larson1 | new | 44.54 | 73.6 | 235.1 | 1.571 | 0.001 |
+| larson1 | new:double_free_scan:true | 41.94 | 78.4 | 250.1 | 1.685 | 0.002 |
+| larson1 | jemalloc | 43.76 | 74.3 | 200.9 | 2.108 | 0.001 |
+| valkey1 | old | 20.10 | 167.5 | 262.6 | 3.457 | 0.908 |
+| valkey1 | new | 22.26 | 151.2 | 254.8 | 3.351 | 0.901 |
+| valkey1 | new:double_free_scan:true | 21.10 | 159.6 | 272.7 | 3.391 | 0.906 |
+| valkey1 | jemalloc | 26.84 | 125.5 | 146.7 | 3.348 | 0.952 |
+
+Read with the other VM's file: the off state is +4.0 instructions per
+larson1 op on both architectures (246.0 -> 250.0 aarch64, 231.1 -> 235.1
+x86_64: the flag load and its branch on both the `free` and the push
+paths), +0.6% / +2.4% cycles per op in these single runs; the scan is
++15.1 / +19.0 instructions and +2.8% / +9.0% cycles per larson1 op and
++17.5 / +17.9 instructions per valkey1 op (four loads, four compares and
+their ORs per free). valkey1's cycles per op do not resolve the off state
+at one run per cell: +4.2% on aarch64 and -10% on x86_64 (where the `ab`
+medians said +4.6%; the row's throughput also moved 20.1 -> 22.3 M ops/s
+between the two libraries in the same run), so the x86_64 off-state gap of
+section 4 is inside what that row does between runs and is not an
+instruction cost. L1D and dTLB misses per op are unchanged in every cell.

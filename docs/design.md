@@ -343,8 +343,10 @@ reads; halving the flush rate halves those misses (Phase 0 acceptance,
 3. With `double_free_scan`: compare `p` against the top 4 cache entries; a
    match is a double free whose first copy is still cached (the bit test
    cannot see it) and aborts before the push. The same compare guards the
-   sized path's push. Off by default unless the rows in
-   `bench/results/2026-09-18-*-gce-detection-gaps.md` price it under 1%.
+   sized path's push. Off by default: priced at +3.1% / +3.7% on larson1
+   and up to +14% on the Valkey model on x86_64
+   (`bench/results/2026-09-18-*-gce-detection-gaps.md`), above the 1% the
+   plan set for making it the default.
 4. `heap = tls()`; `cache = heap.caches[owner[slab / group]][c]`; if
    `len == cap`, slow path (flush half). `slots[len++] = p`.
 

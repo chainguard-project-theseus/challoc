@@ -137,9 +137,12 @@ copies are neighbours, the release aborts on the duplicate, and the one
 case where the split would release one copy and keep the other aborts at
 the split. A pair the split keeps together stays in the cache until a
 later flush releases it; if a `malloc` pops one copy before then, the
-duplicate is not detected and the slot is live twice (the
-`double_free_scan` tunable is accepted and reserved for a scan of the cache
-at the call; it does nothing yet).
+duplicate is not detected and the slot is live twice, unless the
+`double_free_scan` tunable is set: then every free (plain and sized)
+compares the slot against the four most recently cached entries and aborts
+on a match at the call. It is off by default because it costs about 3..4%
+on larson and up to 14% on the Valkey model on x86_64
+(`bench/results/2026-09-18-*-gce-detection-gaps.md`).
 Through the sized path, `sdallocx(p, size, flags)`, C23 `free_sized` and
 `free_aligned_sized` (what Valkey frees with): the size is checked against
 the pointer's class at the call (a size that names another class aborts,
