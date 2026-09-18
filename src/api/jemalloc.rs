@@ -5,7 +5,7 @@
 //! `mallctl` family is in `mallctl.rs`, the reports in `print.rs`.
 //!
 //! `MALLOCX_*` flags are decoded by `arena::Flags` and routed by
-//! `arena::alloc` / `alloc_huge` / `free` (Phase 1 task 3): the arena and
+//! `arena::alloc` / `alloc_huge` / `free`: the arena and
 //! cache selection lives there, this module adds the size and alignment
 //! arithmetic (`libc::class_for`) and the zeroing.
 //!

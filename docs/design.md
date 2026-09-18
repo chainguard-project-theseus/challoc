@@ -187,7 +187,10 @@ them. So a bitmap line, and a descriptor line, is written only by the
 refills and flushes of one arena, and the `free` check never reads a line
 another arena's threads write. A dense *owner array* of one `u16` per group
 records each group's arena; `free` reads it (not the descriptor) to route
-a slot back to a cache of its arena. A group spans at most 2 MiB of the
+a slot back to a cache of its arena. The word and the descriptors' arena
+field are written together only when a group is handed out
+(`take_group`), which first checks that the two agree (both zero for a
+never-touched group) and aborts on a disagreement. A group spans at most 2 MiB of the
 region (`LG_GROUP_SPAN`): classes with larger slabs pad each slab's bits to
 a whole line instead.
 
@@ -234,8 +237,7 @@ struct ClassState {                   // one per (arena, class)
     class:        u16,
     arena:        u16,
     table:        *const SlabTable,
-    oldest_empty: AtomicU64,          // dirty_at of the oldest Empty slab, read lock-free by decay
-    next_decay:   AtomicU64,          // when the next decay walk of this class is due
+    gate:         purge::Decayer,     // dirty_at of the oldest Empty slab (read lock-free by decay) and the next walk's deadline
     inner: Lock<{                     // the class lock, taken on slab transitions only
         partial:    Set,              // slab numbers with at least one clear bit
         empty:      Set,              // slabs with live == 0, not yet purged
@@ -331,7 +333,6 @@ struct Heap {                                // repr(C); the header array at off
     arena:       u16,                        // home arena: plain malloc allocates here
     slow_ticks:  u32,                        // counts slow-path entries for periodic work
     last_gc:     u64,                        // monotonic ns of the last cache GC
-    rng:         u64,                        // xorshift state seeded from getrandom
     uncached:    ThreadStats,                // bytes that never went through a cache (huge, direct)
     others:      *mut ArenaCaches,           // one node of [CacheHeader; NCLASSES] per other arena touched
     snapshot:    ThreadStats,                // thread.allocated/deallocated as of the last read
@@ -380,7 +381,11 @@ jemalloc's default) are not cached and go straight to the slab bitmaps.
 `tcache_nslots_small_max` and `lg_tcache_nslots_mul` from `malloc_conf`
 override the ladder, because Redis sets them. A cache for another arena
 (`others`) keeps the ladder for bin classes (up to 4 KiB) and holds nothing
-above: a thread caches slots of every arena it frees into, so a foreign
+above. One function, `Config::cap_for(home, arena, class)`, is the whole
+rule (zero means "never cached here", and a heap creates no `others` node
+for such a class); `Config::shared_class` (above `tcache_max`) is the
+default path's one routing decision (13.3). The reason for the foreign
+limit: a thread caches slots of every arena it frees into, so a foreign
 cache's residue is multiplied by the arena count, and with 16 threads and 16
 arenas the 8 cached 4..32 KiB slots per (thread, arena, class) were 190 MiB
 of mstress's RSS and 8 cached 40 KiB slots 70 MiB of xmalloc-test's
@@ -595,8 +600,10 @@ address, with `dirty_at` per entry. Decay policy is jemalloc's in shape:
   in pages over its `Empty` extents, oldest first, whole extents only and
   never below the allowance, so a lone extent lasts the whole window. A
   lone slab is likewise never purged before its weight reaches zero (the
-  allowance rounds up). A walk runs at most once per step (window / 200).
-  `-1` is never.
+  allowance rounds up). A walk runs at most once per step (window / 200):
+  the gate is one `purge::Decayer` (oldest `dirty_at`, next deadline) per
+  class state and one in the huge allocator; the walks differ, the gate
+  does not. `-1` is never.
 - `muzzy_decay_ms` is accepted and ignored. challoc does not use `MADV_FREE`
   by default: lazily freed pages remain charged to the cgroup and visible in
   RSS until reclaim, which misleads both autoscalers and Redis's fragmentation
@@ -876,8 +883,10 @@ count, not the default. Slab classes above `tcache_max` (32 KiB) are the excepti
 are uncached and served under the class lock anyway, their slabs are 1..4
 MiB, and one partial slab per class per arena multiplied by 16 arenas was 60
 MiB of mstress's RSS (`bench/results/2026-09-18-aarch64-gce-arena-rss.md`),
-so the default path allocates them from arena 0 whatever the thread's arena;
-`MALLOCX_ARENA` allocations keep their arena. Slabs are not thread-owned, so
+so the default path allocates them from arena 0 whatever the thread's arena
+(`Config::shared_class`; `MALLOCX_TCACHE(t)` without an arena flag follows
+the default path); `MALLOCX_ARENA(a)` allocations keep `a`, home arena or
+not. Slabs are not thread-owned, so
 arenas are not needed for correctness or lock scalability; they are needed
 for cache locality: under one
 shared arena every refill interleaves the threads' slots in the same slabs and

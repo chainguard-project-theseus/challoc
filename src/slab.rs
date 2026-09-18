@@ -86,7 +86,7 @@ pub struct SlabDesc {
     state: AtomicU8,
     /// `state + 1`, written with every state change. A descriptor whose
     /// `shadow != state + 1` has been written outside this API; the
-    /// `check_zero` debug mode tests it (plan Phase 1.5 task 7b).
+    /// `check_zero` debug mode tests it.
     shadow: AtomicU8,
     arena: AtomicU16,
     live: AtomicU32,
@@ -132,7 +132,11 @@ impl SlabDesc {
     pub unsafe fn at<'a>(base: usize, class: usize, slab: usize) -> &'a SlabDesc {
         debug_assert!(base % DESC_ALIGN == 0);
         // SAFETY: the caller guarantees the entry is inside a committed array;
-        // descriptors are plain atomics valid for any bit pattern.
+        // descriptors are plain atomics valid for any bit pattern. Valid to
+        // read is not the same as meaningful: zero or garbage bytes decode
+        // as `Purged` (`from_u8`) with arena 0, which is why `take_group`
+        // cross-checks the arena against the owner word and `check_zero`
+        // exists.
         unsafe { &*((base + slab * desc_stride(class)) as *const SlabDesc) }
     }
 

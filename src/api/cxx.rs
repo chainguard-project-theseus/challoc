@@ -4,7 +4,7 @@
 //! `malloc`/`free` still routes `new` through libstdc++'s `operator new`,
 //! which is a second PLT hop plus a null-check loop on every allocation.
 //! On larson, which allocates with `new char[]`, that cost 13% of the run
-//! (Phase 0 acceptance, `bench/results/2026-09-16-aarch64-cxx-operators.md`).
+//! (`bench/results/2026-09-16-aarch64-cxx-operators.md`).
 //!
 //! `operator new` never returns null: on failure it runs the standard
 //! `new_handler` loop and, with no handler installed, throws

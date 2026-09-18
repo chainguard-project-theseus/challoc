@@ -38,8 +38,7 @@
 //! That is what makes the refill's zero report sound: a bit decided after
 //! the lock is dropped could be one that another thread claimed from the
 //! now-partial slab, handed to the program and got back dirty in between,
-//! and `calloc` would skip its memset over it (Phase 1.5 task 7, the
-//! calloc race).
+//! and `calloc` would skip its memset over it (the calloc race).
 //!
 //! A release clears bits with `fetch_and` and then subtracts from `live`.
 //! If a word was full before the clear the releaser sets the partial bit
@@ -60,7 +59,7 @@ use crate::sys::Errno;
 use core::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
 /// Counters kept under the class lock. Slab counts only; `curregs` and
-/// byte totals are Phase 1 (`stats.rs`).
+/// the byte totals are derived from them in `stats.rs`.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct ClassStats {
     /// Slabs committed for allocation (excludes guard slabs).
@@ -508,7 +507,7 @@ pub struct ClassState {
     /// compaction gate in `heap.rs` watches its rate.
     refilled: AtomicU64,
     /// Compaction diagnostics, printed in the bins table of
-    /// `malloc_stats_print` (Phase 1 acceptance step 3): slots claimed by
+    /// `malloc_stats_print`: slots claimed by
     /// compaction rebuilds, caches that entered and left compact mode, and
     /// probes the refill-rate gate declined. All written on cold paths.
     compacted: AtomicU64,
@@ -531,10 +530,12 @@ const _: () = assert!(core::mem::offset_of!(ClassState, claimed) % PAD_ALIGN == 
 const _: () = assert!(core::mem::size_of::<ClassState>() % PAD_ALIGN == 0);
 const _: () = assert!(core::mem::size_of::<ClassState>() % 512 != 0);
 
-// SAFETY: the only non-`Sync` field is the table pointer, which targets a
-// `SlabTable` (itself `Sync`) that outlives every `ClassState` pointing at
-// it: both live in `Shared` for the life of the process, or are leaked by
-// the tests.
+// SAFETY: the only non-`Sync`, non-`Send` field is the table pointer,
+// which targets a `SlabTable` (itself `Sync`) that outlives every
+// `ClassState` pointing at it: both live in `Shared` for the life of the
+// process, or are leaked by the tests. Sharing the state across threads
+// (`Sync`) or handing it to another thread (`Send`) therefore hands out
+// nothing but a pointer to a process-lifetime, thread-safe table.
 unsafe impl Sync for ClassState {}
 unsafe impl Send for ClassState {}
 
@@ -542,6 +543,10 @@ unsafe impl Send for ClassState {}
 mod os {
     use crate::sys::{self, Errno, MADV_GUARD_INSTALL, PROT_NONE, PROT_READ, PROT_WRITE};
 
+    // SAFETY (all three): `addr..addr + len` is inside a class region this
+    // allocator reserved (the callers pass slab or page-group ranges below
+    // the region's end), so changing its protection or installing a guard
+    // affects only pages nothing else in the process maps.
     pub fn commit(addr: usize, len: usize) -> Result<(), Errno> {
         unsafe { sys::mprotect(addr, len, PROT_READ | PROT_WRITE) }
     }
@@ -607,7 +612,7 @@ impl SlabTable {
     /// metadata region cannot hold them. `guard_interval` of `N > 0` makes
     /// every `N`-th page group a guard group; callers must pass 0 when
     /// `MADV_GUARD_INSTALL` is unavailable, since a `PROT_NONE` slab would
-    /// split the region into one VMA per guard (design: Phase 2 task 1).
+    /// split the region into one VMA per guard (design section 5).
     pub fn new(meta: &Meta, regions: &Regions, class: usize, guard_interval: u32) -> Option<SlabTable> {
         assert!(class < CLASSES.len(), "class: index out of range");
         assert!(guard_interval != 1, "class: a guard interval of 1 leaves no slabs to allocate");
@@ -671,8 +676,8 @@ impl SlabTable {
     /// is a guard group, and with one slab per page (the usual case) that is
     /// every `guard_interval`-th slab. Arithmetic on the table line (a
     /// shift and one 32-bit modulo), so the sized fast path can reject a
-    /// slot start in a guard slab without a memory access (plan Phase 1.5
-    /// task 9b): a guard slab's body past its first page is read-write
+    /// slot start in a guard slab without a memory access: a guard
+    /// slab's body past its first page is read-write
     /// memory that was never handed out.
     ///
     /// [`slabs_per_page`]: SlabTable::slabs_per_page
@@ -1251,7 +1256,7 @@ impl ClassState {
         got
     }
 
-    /// The `check_zero` debug mode (plan Phase 1.5 task 7b): the first and
+    /// The `check_zero` debug mode: the first and
     /// last word of every slot of a pick reported zero must read zero.
     /// Aborts with everything the C-level assertion cannot say: the class,
     /// slab, the slab's state when the refill selected it (`Fresh` blames

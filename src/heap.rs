@@ -10,14 +10,14 @@
 //! arena exists, one word of the group owner array; never the slab
 //! descriptor, and no atomic read-modify-write, no lock.
 //!
-//! Layout (review 2026-09-17 P3, Phase 1.5 task 5). The headers are a
+//! Layout. The headers are a
 //! dense `[CacheHeader; NCLASSES]` inside the heap, one 64-byte line each,
 //! so `malloc` reaches `len` at `heap + 128 + c * 64` without first loading
 //! a cache pointer, and a thread's 52 headers share one page instead of 52.
 //! Each header keeps a pointer to its stack of `cap` slot pointers, on the
 //! same line as `len`; the stack is its own metadata object, allocated on
 //! the class's first slow path, so a thread that only uses five classes
-//! pays for five stacks. The review's second half, one contiguous slot
+//! pays for five stacks. The alternative, one contiguous slot
 //! block per heap, was built and measured
 //! (`bench/results/2026-09-18-*-gce-dense-headers.md`): a stack inside a
 //! 128 KiB metadata object costs xmalloc-test's freeing threads three to
@@ -34,13 +34,13 @@
 //!   the `cap / 2` highest-address entries back to their slabs in one
 //!   sorted batch and keep the lowest, in ascending order.
 //!
-//! Compaction (design 6.4, Phase 1 acceptance step 3). A LIFO cache hands
+//! Compaction (design 6.4). A LIFO cache hands
 //! every allocation the slot that was just freed, so under a balanced
 //! alloc/free churn (Valkey's DEL:SET steady state) the cache never
 //! reaches either boundary, no refill and no flush ever run, and the slab
 //! layout stays frozen at whatever occupancy the delete phase left; the
-//! flush's selection policy cannot change that (`bench/probes/churn.c`,
-//! review 2026-09-17 section 3.2). To break it, one pop in
+//! flush's selection policy cannot change that (`bench/probes/churn.c`).
+//! To break it, one pop in
 //! `2^tcache_compact_shift` is a scheduled pop that is served from a
 //! *run* of low addresses kept at the bottom of the stack,
 //! `slots[..run_end]`, descending (lowest at `run_end - 1`), instead of
@@ -761,7 +761,7 @@ impl Shared {
     /// (`class_base`, `CLASSES`, the class table): the slab descriptor is
     /// not loaded, so the bit test that makes plain `free` exact is left to
     /// the flush. The guard test is arithmetic on the table line the
-    /// watermark load already brings in (plan Phase 1.5 task 9b); whether
+    /// watermark load already brings in; whether
     /// the slab is below its arena's commit cursor is not knowable without
     /// the arena (the cursor sits under the class lock), so a slot start in
     /// a handed-out but uncommitted slab is caught at the flush, where the
@@ -1269,7 +1269,8 @@ impl Heap {
     ///
     /// # Safety
     /// `cache` is this heap's real cache for `class` and `len` is its
-    /// current non-zero length.
+    /// current non-zero length. `len` is only a copy: the scheduled pop
+    /// runs `tick`, whose GC may flush this cache, and reloads it.
     #[inline(always)]
     unsafe fn pop(&mut self, cache: *mut CacheHeader, class: usize, len: u32) -> (*mut u8, bool) {
         // SAFETY: guaranteed by the caller.
@@ -1315,7 +1316,10 @@ impl Heap {
     /// re-checks the class and drops back to probing when it is compact.
     ///
     /// # Safety
-    /// As for [`Heap::pop`]; `allocs` has already been counted.
+    /// As for [`Heap::pop`]; `allocs` has already been counted. The
+    /// probing branch calls `tick`, after which `len` is stale (the GC may
+    /// have flushed the cache), so it reloads `len` and refills an emptied
+    /// cache before popping.
     #[cold]
     #[inline(never)]
     unsafe fn pop_compact(&mut self, cache: *mut CacheHeader, class: usize, len: u32) -> (*mut u8, bool) {
@@ -1362,10 +1366,11 @@ impl Heap {
         }
     }
 
-    /// The compacting half of [`Heap::pop_compact`].
+    /// The compacting half of [`Heap::pop_compact`]. A cache that is not
+    /// (or, after its rebuild, no longer) in compact mode pops the top.
     ///
     /// # Safety
-    /// As for [`Heap::pop`]; the cache is in compact mode.
+    /// As for [`Heap::pop`].
     unsafe fn pop_compact_run(&mut self, cache: *mut CacheHeader, class: usize, len: u32) -> (*mut u8, bool) {
         // SAFETY: guaranteed by the caller.
         unsafe {
@@ -1855,7 +1860,11 @@ impl Heap {
     /// for (design 6.4).
     ///
     /// # Safety
-    /// `cache` is this heap's real, empty cache for `(arena, class)`.
+    /// `cache` is this heap's real cache for `(arena, class)` and is empty:
+    /// callers arrive from a fast path that fell through on `len == 0`,
+    /// from `ensure_cache` on a fresh header, or after re-reading `len`
+    /// following a `tick`. The `assert_eq!` below is the abort on a heap
+    /// inconsistency, not the contract.
     unsafe fn refill(&mut self, shared: &Shared, arena: &Arena, cache: *mut CacheHeader, class: usize) -> u32 {
         // SAFETY: the cache is empty and has `cap` slots of storage.
         unsafe {
@@ -1894,8 +1903,8 @@ impl Heap {
     /// copies in the cache, the bit set) until a flush releases it; the
     /// pair that straddles the split would have one copy released, its
     /// bit cleared, and the other still cached to be handed out over a
-    /// slot a refill can claim again (review 2026-09-18 item 9), so the
-    /// split point gets one compare (plan Phase 1.5 task 9a). Not a pass
+    /// slot a refill can claim again, so the
+    /// split point gets one compare. Not a pass
     /// over the kept half: `rest_len` compares per flush cost xmalloc-test
     /// 4.9% on aarch64 and 7.3% on x86_64
     /// (`bench/results/2026-09-18-*-gce-detection-gaps.md`).
@@ -2024,11 +2033,13 @@ impl Heap {
 /// on this thread from here on (a signal handler landing in the middle of
 /// `Heap::destroy`, another key's destructor afterwards) is served without
 /// a heap instead of reaching the one being freed through `existing_heap`
-/// (review 2026-09-18 item 12).
 ///
 /// # Safety
 /// `p` is the heap pointer registered with `pthread_setspecific` by
-/// `heap_for_thread`, called on the thread that owns it.
+/// `create_heap_for_thread`, called on the thread that owns it; after this
+/// returns the heap is freed and the TLS slot holds `TLS_EXITED`, so it
+/// must not be reached through TLS again (the sentinel is what stops
+/// `existing_heap` from handing it out).
 #[cfg(target_os = "linux")]
 pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
     let h = p as *mut Heap;
@@ -2044,6 +2055,14 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
 /// must be served without a cache: heap creation is in progress on it
 /// (`pthread_setspecific` re-entered the allocator), its destructor has run,
 /// or the metadata region is exhausted.
+///
+/// The `&mut Heap` is exclusive by construction, not by the type system:
+/// only the owning thread reaches its heap through TLS, and every entry
+/// point takes the reference once and passes it down, never holding two
+/// (a `Shared` method called with one live must not call back into
+/// `heap_for_thread` or [`existing_heap`]). The reference is not really
+/// `'static` either: the thread-exit destructor frees the heap, so it must
+/// not be stored beyond the call.
 #[cfg(target_os = "linux")]
 #[inline(always)]
 pub fn heap_for_thread(shared: &Shared) -> Option<&mut Heap> {
@@ -2078,7 +2097,9 @@ fn create_heap_for_thread(shared: &Shared, slot: usize) -> Option<&mut Heap> {
 /// tail call away. `Some` also proves the allocator is initialised on this
 /// thread: heaps are only created by [`heap_for_thread`] under `shared()`,
 /// so the entry points skip the init-state load (an acquire that would
-/// otherwise head every dependent-load chain).
+/// otherwise head every dependent-load chain). Same aliasing and lifetime
+/// rule as [`heap_for_thread`]: one live reference per thread, never
+/// stored.
 #[cfg(target_os = "linux")]
 #[inline(always)]
 pub fn existing_heap() -> Option<&'static mut Heap> {

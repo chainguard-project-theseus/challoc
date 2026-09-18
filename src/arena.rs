@@ -151,7 +151,9 @@ pub struct Arena {
 
 // SAFETY: `sets` points at a never-freed metadata object whose only
 // mutable state is behind its own lock (`SetTable::tables`); everything
-// else in `Arena` is atomics, locks and `ClassState`s, which are `Sync`.
+// else in `Arena` is atomics, locks and `ClassState`s, which are `Sync`
+// and `Send`. Sharing or moving an `Arena` between threads therefore
+// hands out nothing but that pointer to a process-lifetime, locked table.
 unsafe impl Sync for Arena {}
 unsafe impl Send for Arena {}
 
@@ -540,7 +542,10 @@ impl Tcaches {
 
     /// The explicit cache `id`, if it exists. Not thread safe: two threads
     /// using one explicit cache at once is the caller's bug, as in
-    /// jemalloc.
+    /// jemalloc, and so is using an id after `tcache.destroy`: `destroy`
+    /// frees the heap while another thread may still hold the `&mut Heap`
+    /// this returns. Every `MALLOCX_TCACHE(t)` path (`mallocx`, `rallocx`,
+    /// `dallocx`, `sdallocx`) inherits that rule.
     #[inline]
     #[allow(clippy::mut_from_ref)]
     pub fn get(&self, id: u16) -> Option<&mut Heap> {

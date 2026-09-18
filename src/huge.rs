@@ -31,8 +31,8 @@
 //! pages and taking the aligned run inside; the pages before and after stay
 //! free extents. Runs whose usable size exceeds `retain_max` (default
 //! 64 MiB) are `MADV_DONTNEED`ed the moment they are freed; smaller ones
-//! become `Empty` and wait for [`Huge::purge_empty`], which the decay driver
-//! (Phase 1) calls with a `dirty_at` cutoff. `Empty` extents sit in a FIFO
+//! become `Empty` and wait for the decay walk ([`Huge::decay`]) or a full
+//! purge ([`Huge::purge_empty`]). `Empty` extents sit in a FIFO
 //! list ordered by `dirty_at`, so purging is a pop from the head.
 //!
 //! Everything is under one futex lock: huge operations are rare compared to
@@ -399,7 +399,9 @@ struct Inner {
 // global; the `Lock` serialises every access.
 unsafe impl Send for Inner {}
 
-/// The huge allocator: one per process (per arena in Phase 1).
+/// The huge allocator: one per process, shared by every arena (design
+/// section 7); the arena an allocation was made through is recorded per
+/// run for the per-arena statistics.
 pub struct Huge {
     base: usize,
     lg_page: u32,
@@ -759,7 +761,7 @@ impl Huge {
         }
     }
 
-    /// The `check_zero` debug mode (plan Phase 1.5 task 7b): the first and
+    /// The `check_zero` debug mode: the first and
     /// last word of every usable page of a run reported zero must read
     /// zero. Aborts with the run, the pages' prior state, the arena and the
     /// discard backend. Faults every page in, so debug only.

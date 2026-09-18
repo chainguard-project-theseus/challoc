@@ -156,7 +156,7 @@ static BACKEND: AtomicI32 = AtomicI32::new(LOOP);
 /// `lazy_free`: discard with `MADV_FREE` instead of `MADV_DONTNEED`.
 static LAZY: AtomicBool = AtomicBool::new(false);
 /// `check_zero`: the debug mode that reads every slot or page handed out
-/// as "known zero" and aborts on a dirty word (plan Phase 1.5 task 7b).
+/// as "known zero" and aborts on a dirty word.
 static CHECK_ZERO: AtomicBool = AtomicBool::new(false);
 
 /// Choose the discard backend and advice. Called once at init, before
@@ -574,6 +574,8 @@ pub mod background {
         let errno = unsafe { ::libc::__errno_location() };
         let saved_errno = unsafe { *errno };
         let (stack, thread) = create(shared, stack, previous);
+        // SAFETY: `errno` is this thread's `errno` slot (above), valid for
+        // the life of the thread.
         unsafe { *errno = saved_errno };
         let mut g = STATE.lock();
         g.creating = false;

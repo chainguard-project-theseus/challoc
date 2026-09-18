@@ -272,7 +272,7 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
 }
 
 /// Per-class occupancy histogram of this arena's non-empty slabs (a
-/// diagnostic for the compaction work of Phase 1 acceptance step 3): the
+/// diagnostic for the compaction of design 6.4): the
 /// slab count per eighth of occupancy (`live * 8 / nslots`, the last
 /// bucket is full slabs), the slabs whose `live` disagrees with their
 /// bitmap's set bits, and the non-full slabs missing from the partial set.

@@ -30,8 +30,7 @@ pub const MEDIUM_MAX: usize = 256 * 1024;
 /// class keeps a 64 KiB slab or larger ([`LG_SMALL_SLAB`],
 /// [`LG_MEDIUM_MIN_SLAB`]).
 ///
-/// Why these classes and this size (Phase 1 acceptance step 3,
-/// `docs/review-2026-09-17.md` P6, measured in
+/// Why these classes and this size (measured in
 /// `bench/results/2026-09-17-aarch64-gce-compacting-cache-soak3.md` and
 /// `2026-09-17-*-gce-slab-geometry.md`): the post-delete residue of the
 /// Valkey soak is live values the load never touches again, one to fifteen
@@ -504,7 +503,8 @@ impl Regions {
         if c >= NCLASSES {
             return None;
         }
-        // SAFETY: `c < NCLASSES` was just checked.
+        // SAFETY: `c < NCLASSES` was just checked; both arrays have
+        // `NCLASSES` entries.
         let cls = unsafe { CLASSES.get_unchecked(c) };
         let rel = p.wrapping_sub(unsafe { *self.class_base.get_unchecked(c) });
         if rel >= self.region_len() {
