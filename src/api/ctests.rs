@@ -216,6 +216,15 @@ fn c_negative_huge_overflow() {
     run_c_negative("huge_overflow", SIGSEGV, &[]);
 }
 
+/// Plan Phase 1.5 task 9a: the two copies of a cached double free sort to
+/// the flush's split point, one released and one kept; the flush's
+/// neighbour pass over the kept half catches it.
+#[test]
+fn c_negative_double_free_straddle() {
+    let out = run_c_negative("double_free_straddle", SIGABRT, &["double free of 0x", "both copies cached, one at the flush boundary"]);
+    assert!(out.contains("pair at sorted indices"), "the mode never primed the cache: {out}");
+}
+
 /// `tests/c/conf.c` (plan Phase 1 task 1): the configuration sources under
 /// the real `.so`. `conf` becomes the program's `je_malloc_conf` (statically
 /// initialised and exported with `-rdynamic`, as a program linked against

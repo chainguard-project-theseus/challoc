@@ -1817,6 +1817,18 @@ impl Heap {
     /// is given up: the kept entries are reordered, so nothing is known
     /// about what lies at the bottom.
     ///
+    /// The sort puts the two copies of a cached double free next to each
+    /// other. `release_owned` aborts on a duplicate inside the released
+    /// batch; a pair kept together stays cached and consistent (both
+    /// copies in the cache, the bit set) until a flush releases it; the
+    /// pair that straddles the split would have one copy released, its
+    /// bit cleared, and the other still cached to be handed out over a
+    /// slot a refill can claim again (review 2026-09-18 item 9), so the
+    /// split point gets one compare (plan Phase 1.5 task 9a). Not a pass
+    /// over the kept half: `rest_len` compares per flush cost xmalloc-test
+    /// 4.9% on aarch64 and 7.3% on x86_64
+    /// (`bench/results/2026-09-18-*-gce-detection-gaps.md`).
+    ///
     /// # Safety
     /// `cache` is this heap's real cache for `(arena, class)` and `n <= len`.
     unsafe fn flush(&mut self, shared: &Shared, arena: u16, cache: *mut CacheHeader, class: usize, n: usize) {
@@ -1828,6 +1840,9 @@ impl Heap {
             let all = (*cache).entries();
             all.sort_unstable();
             let rest_len = all.len() - n;
+            if rest_len > 0 && *all.get_unchecked(rest_len - 1) == *all.get_unchecked(rest_len) {
+                straddling_double_free(*all.get_unchecked(rest_len), class);
+            }
             let (_keep, high) = all.split_at_mut(rest_len);
             shared.release_routed(arena, class, high);
             (*cache).len = rest_len as u32;
@@ -2088,6 +2103,15 @@ pub fn free_direct(shared: &Shared, p: *mut u8) {
 #[inline(never)]
 fn invalid_free(p: usize) -> ! {
     panic!("invalid free of {p:#x}: not an allocation")
+}
+
+/// Two copies of one slot in a cache at flush time, one on each side of
+/// the split (`Heap::flush`): the flush would have released one and kept
+/// the other.
+#[cold]
+#[inline(never)]
+fn straddling_double_free(p: *mut u8, class: usize) -> ! {
+    panic!("double free of {:#x} (class {class}): both copies cached, one at the flush boundary", p as usize)
 }
 
 #[cold]
@@ -2402,6 +2426,65 @@ pub(crate) mod tests {
         t.free(p);
         t.destroy();
         assert_eq!(cs.stats(), ClassStats { committed: cs.committed_slabs(), empty: cs.committed_slabs(), ..Default::default() });
+    }
+
+    /// Plan Phase 1.5 task 9a. Fill the class-64 cache with a double free
+    /// and exactly the right number of other slots, so that after the
+    /// flush's sort the pair sits at `lower` and `lower + 1`; the push that
+    /// overflows the cache triggers the flush. Returns the flush's panic
+    /// message, or the message of a later flush of the whole cache when
+    /// the first one let the pair through.
+    fn cached_pair_flush_message(lower_of: impl Fn(usize) -> usize) -> std::string::String {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        let cap = default_cap(c) as usize;
+        let mut all: Vec<*mut u8> = (0..4 * cap).map(|_| t.alloc(c)).collect();
+        t.flush_all();
+        all.sort_unstable();
+        let mid = 2 * cap;
+        let rest = cap - cap / 2;
+        let lower = lower_of(rest);
+        let higher = cap - 2 - lower;
+        let p = all[mid];
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            t.free(p);
+            t.free(p);
+            for i in 1..=lower {
+                t.free(all[mid - i]);
+            }
+            for i in 1..=higher {
+                t.free(all[mid + i]);
+            }
+            assert_eq!(t.cache(c).len(), cap);
+            t.free(all[0]);
+            // A pair kept together is released, and caught, by the next
+            // flush of the whole cache.
+            t.flush_all();
+        }));
+        let e = r.expect_err("the flushes let a cached double free through");
+        let msg = e
+            .downcast_ref::<std::string::String>()
+            .cloned()
+            .or_else(|| e.downcast_ref::<&str>().map(|m| std::string::String::from(*m)))
+            .expect("a message");
+        assert!(msg.contains(&std::format!("double free of {:#x} (class {c}", p as usize)), "{msg}");
+        msg
+    }
+
+    #[test]
+    fn flush_aborts_on_a_cached_pair_straddling_the_split() {
+        let msg = cached_pair_flush_message(|rest| rest - 1);
+        assert!(msg.contains("both copies cached, one at the flush boundary"), "{msg}");
+    }
+
+    /// A pair that the split keeps together stays cached (both copies, the
+    /// bit set) and is caught by the release that flushes it, not by the
+    /// boundary compare.
+    #[test]
+    fn a_cached_pair_kept_by_the_split_is_caught_when_released() {
+        let msg = cached_pair_flush_message(|rest| rest / 2);
+        assert!(msg.contains("double free of") && !msg.contains("boundary"), "{msg}");
     }
 
     #[test]

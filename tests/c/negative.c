@@ -19,6 +19,12 @@
  *   negative interior_free        free(p + size/2)
  *   negative stack_free           free of a stack address
  *   negative huge_overflow        write one byte past a huge allocation
+ *   negative double_free_straddle free(p) twice, then exactly enough other
+ *                                 frees that the flush's sorted batch has one
+ *                                 copy at the split point and the other just
+ *                                 below it: without the boundary compare one
+ *                                 copy is released and the other stays cached
+ *                                 (plan Phase 1.5 task 9a)
  */
 #include "common.h"
 
@@ -26,11 +32,12 @@
  * driver only runs these modes with libchalloc loaded). */
 extern void sdallocx(void *, size_t, int) __attribute__((weak));
 extern void free_sized(void *, size_t) __attribute__((weak));
+extern int mallctl(const char *, void *, size_t *, void *, size_t) __attribute__((weak));
 
 /* Enough blocks of one class that freeing them all flushes the thread cache
- * several times (the largest cache holds 256 slots and flushes 128). They
+ * several times (the largest cache holds 1024 slots and flushes 512). They
  * are allocated before the victim so a later malloc never pops it. */
-#define HOLD 2048
+#define HOLD 4096
 static void *volatile hold[HOLD];
 
 static void *victim(size_t size)
@@ -51,6 +58,40 @@ static void drain(void)
         free(hold[i]);
         hold[i] = NULL;
     }
+}
+
+static unsigned ctl_uint(const char *name)
+{
+    unsigned v = 0;
+    size_t len = sizeof v;
+    REQUIRE(mallctl != NULL, "mallctl not exported");
+    REQUIRE(mallctl(name, &v, &len, NULL, 0) == 0, "mallctl(%s) failed", name);
+    return v;
+}
+
+static ssize_t ctl_ssize(const char *name)
+{
+    ssize_t v = 0;
+    size_t len = sizeof v;
+    REQUIRE(mallctl(name, &v, &len, NULL, 0) == 0, "mallctl(%s) failed", name);
+    return v;
+}
+
+/* The thread cache's capacity for a class of at most 128 bytes
+ * (`config::cap_for`: `tcache_nslots_small_max` shifted by `lg_tcache_nslots_mul
+ * - 1` doublings and clamped to the max). */
+static unsigned small_cache_cap(void)
+{
+    unsigned max = ctl_uint("opt.tcache_nslots_small_max");
+    ssize_t lg_mul = ctl_ssize("opt.lg_tcache_nslots_mul");
+    unsigned cap = lg_mul >= 1 ? max : max >> (1 - lg_mul);
+    return cap < 8 ? 8 : cap;
+}
+
+static int cmp_ptr(const void *a, const void *b)
+{
+    uintptr_t x = (uintptr_t)*(void *const *)a, y = (uintptr_t)*(void *const *)b;
+    return x < y ? -1 : x > y;
 }
 
 int main(int argc, char **argv)
@@ -120,6 +161,36 @@ int main(int argc, char **argv)
         p[usable - 1] = 1; /* last byte inside the block is fine */
         p[usable] = 1;     /* first byte of the guard page must fault */
         printf("wrote past the end of %p (usable %zu)\n", bad, usable);
+    } else if (strcmp(mode, "double_free_straddle") == 0) {
+        /* The flush sorts the full cache (cap entries) and releases the
+         * highest cap/2. With the pair, rest - 1 lower and cap - 2 - (rest
+         * - 1) higher blocks cached (rest = cap - cap/2), the sorted copies
+         * sit at indices rest - 1 and rest: one on each side of the split. */
+        unsigned cap = small_cache_cap();
+        REQUIRE(cap >= 8 && cap % 2 == 0, "cache cap %u", cap);
+        size_t n = 4 * (size_t)cap;
+        void **a = malloc(n * sizeof *a);
+        REQUIRE(a != NULL, "malloc failed");
+        for (size_t i = 0; i < n; i++) {
+            a[i] = malloc(64);
+            REQUIRE(a[i] != NULL, "malloc(64) failed");
+        }
+        REQUIRE(mallctl("thread.tcache.flush", NULL, NULL, NULL, 0) == 0, "tcache.flush failed");
+        qsort(a, n, sizeof *a, cmp_ptr);
+        size_t mid = n / 2;
+        unsigned rest = cap - cap / 2, lower = rest - 1, higher = cap - 2 - lower;
+        printf("cap %u: pair at sorted indices %u and %u of %u\n", cap, lower, lower + 1, cap);
+        fflush(stdout);
+        bad = a[mid];
+        free(bad);
+        free(bad); /* both copies now sit in the (empty) thread cache */
+        for (unsigned i = 1; i <= lower; i++)
+            free(a[mid - i]);
+        for (unsigned i = 1; i <= higher; i++)
+            free(a[mid + i]);
+        free(a[0]); /* the cache holds cap entries: this push flushes first */
+        void *q = malloc(64);
+        printf("flush kept a copy: malloc(64) returned %p, the pair was %p\n", q, bad);
     } else {
         REQUIRE(0, "unknown mode %s", mode);
     }

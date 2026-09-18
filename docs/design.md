@@ -403,7 +403,13 @@ class or, for huge runs, into free following pages.
   the run is dropped and rebuilt on demand). Update `live`; slabs reaching
   zero become `Empty`. The selection is by address, not by age, so that
   every flush sends holes to the high slabs while refills and rebuilds
-  keep taking the lowest partial slab.
+  keep taking the lowest partial slab. The sort puts the two copies of a
+  cached double free next to each other: the release aborts on a duplicate
+  inside its batch, and one compare at the split point aborts on a pair
+  that straddles it, which would otherwise release one copy (bit cleared)
+  and hand the other out over a slot a refill can claim again. A pair the
+  split keeps together stays cached and consistent until a flush releases
+  it (a pass over the kept half was measured at 5..7% of xmalloc-test).
 - **Scheduled pop** (the compacting cache): every `2^tcache_compact_shift`
   pops of a class (default 8) are served from the *run* of low addresses
   `slots[..run_end]` (descending, lowest at `run_end - 1`) instead of the
