@@ -61,7 +61,7 @@ One line per task, newest at the bottom of each section. Keep it terse.
 
 ## In progress
 
-(none; next by plan order: Phase 1.5 task 4f, the dense per-class slot bitmap, which is also the other half of the aarch64 dTLB gap task 5 left: 52 descriptor pages per thread, and what makes the exact check cheap for plain `free` and `usable_size`)
+- Phase 1.5 task 4f (iteration 25): dense per-class slot bitmap. Allocation bits leave the slab descriptors for one contiguous per-class bitmap (slab bits padded to a power of two below a line, or a line multiple above it, so a slab's bits are whole words or one sub-word range and never straddle), slabs handed to arenas in line-sized groups with a dense per-group owner array so the `free` check and the arena lookup read two dense, L2-resident structures instead of a descriptor line; descriptors shrink to a 16-byte header (stride 64/32/16 by group size).
 
 ## Design decisions
 
