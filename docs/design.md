@@ -294,9 +294,10 @@ That is the only lock on the allocation path.
 
 When there is no partial slab, take the lowest `Empty` slab if one exists,
 else the lowest `Purged` slab, else commit the next slab of the arena's
-current group, else take over an idle group of another arena (13.3: its
-`Empty` and `Purged` slabs join this arena's sets and its uncommitted slabs
-become the current group), else take the next group from the class table.
+current group, else, with `group_handoff:true` (an opt-in, off by default,
+13.3), take over an idle group of another arena (its `Empty` and `Purged`
+slabs join this arena's sets and its uncommitted slabs become the current
+group), else take the next group from the class table.
 The handoff visits the other arenas' states in turn and `try_lock`s each
 donor's class lock while holding the taker's, never waiting (a busy donor is
 skipped, the fresh group is the fallback, so no thread blocks while holding
@@ -803,7 +804,7 @@ jemalloc names where they exist:
 | `lg_tcache_nslots_mul`    | 1       |                                         |
 | `tcache_gc_interval_ms`   | 10000   | challoc only                            |
 | `tcache_compact_shift`    | 3       | challoc only; one pop in 2^k compacts, 0 = off (6.4) |
-| `group_handoff`           | true    | challoc only; an arena takes another arena's idle slab group before a fresh one (5, 13.3) |
+| `group_handoff`           | false   | challoc only; opt-in: an arena takes another arena's idle slab group before a fresh one (5, 13.3); off because it did not move the mstress row it was built for |
 | `thp`                     | never   | `never`, `always`; inert (planned)      |
 | `lazy_free`               | false   | use `MADV_FREE` for purge               |
 | `guards`                  | true    | guard slabs and huge runs               |
@@ -905,22 +906,37 @@ new one. Slab groups record their arena (section 4). A pointer freed with
 plain `free` is returned to a cache keyed by its slab's arena, so a live
 slot never migrates between arenas and per-arena statistics stay exact.
 This is what lets Redis exclude its Lua heap from fragmentation accounting.
-An arena owns its groups until it lends an idle one: when an arena's
-current group of a class is used up and it has no `Empty` or `Purged` slab
-of that class, it takes over a whole group of that class from another arena
-provided no slab of the group is `Active` (every slab `Fresh`, `Empty` or
-`Purged`, `live == 0`, so no slot of it is in the program or in a cache),
-before it takes a fresh group from the region (section 5,
-`ClassState::adopt_idle_group`). Owner word, descriptors, set bits, slab
-counts and, for the donor's current group, the commit cursor move together
-under both arenas' class locks; the slabs' `dirty_at` stay and the
-taker's decay walk owns them from then on. Whole groups only,
-so the line ownership of section 4 holds throughout. Without it, 16 thread
-arenas on the 0.63 s `mstress` row each kept the `Empty` slabs and touched
-pages of their own classes while the others committed fresh ones, 40 of the
-60 MiB by which challoc's RSS exceeded jemalloc's there
-(`bench/results/2026-09-18-phase-1.5-acceptance-3.md`; jemalloc's one dirty
-pool per arena serves every bin).
+An arena owns its groups. With `group_handoff:true` (an opt-in; the
+default is `false`) it lends idle ones: when an arena's current group of a
+class is used up and it has no `Empty` or `Purged` slab of that class, it
+takes over a whole group of that class from another arena provided no slab
+of the group is `Active` (every slab `Fresh`, `Empty` or `Purged`, `live ==
+0`, so no slot of it is in the program or in a cache), before it takes a
+fresh group from the region (section 5, `ClassState::adopt_idle_group`).
+Owner word, descriptors, set bits, slab counts and, for the donor's current
+group, the commit cursor move together under both arenas' class locks; the
+slabs' `dirty_at` stay and the taker's decay walk owns them from then on.
+Whole groups only, so the line ownership of section 4 holds throughout. It
+was built for the 16-arena `mstress` row, where challoc's peak RSS exceeds
+jemalloc's by 8..9% on aarch64 and 18..19% on x86_64 while `narenas:1`
+equals jemalloc (`bench/results/2026-09-18-phase-1.5-acceptance-3.md` 3.1),
+and it does not move that row: it halves the `Empty` small slabs idle at
+the peak (20 -> 10 MiB of the 55 MiB excess on x86_64) and takes some of the
+64 KiB-slab classes' idle groups, but the peak RSS over five protocol rounds
+is unchanged on x86_64 and 2.4% higher on aarch64 (against the same
+library with the key off), because the rest of the excess is `Active` at
+the peak (one partial slab per class per arena, the touched pages of the
+64 KiB-slab classes' current groups, which are never whole-group idle under
+churn, and the per-arena metadata) and every arena reaches its peak at once
+(`2026-09-18-{aarch64,x86_64}-gce-group-handoff.md`). The row is therefore
+accepted as the price of per-class regions at 16 arenas (the review's (c)):
+an `Empty` slab is reusable only by its own class (section 3) and, by
+default, its own arena, where jemalloc's one dirty pool per arena serves
+every bin and large size. What the handoff does take is the idle groups a
+producer-consumer pattern leaves in the producers' arenas: `xmalloc-test`
+RSS 56 -> 45 MiB (aarch64) and 53 -> 45 (x86_64) with every fast-tier row
+within 2.5% of the parent on both VMs; that is what `group_handoff:true`
+is for.
 
 `narenas` shards automatic allocations across arenas by thread, jemalloc
 style. The default resolves to `min(4 * ncpus, 64)` (`ncpus` from the

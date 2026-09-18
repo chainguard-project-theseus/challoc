@@ -143,10 +143,10 @@ const MAX_EMPTY_PASSES: u32 = 1 << 22;
 /// end.
 const MAX_ADOPT_TRIES: usize = 8;
 
-/// The `group_handoff` key (default on): whether an arena takes another
-/// arena's idle group before a fresh one. Set once at init, read on the
-/// fresh-commit path only.
-static GROUP_HANDOFF: AtomicBool = AtomicBool::new(true);
+/// The `group_handoff` key (default off, an opt-in; design 13.3): whether
+/// an arena takes another arena's idle group before a fresh one. Set once
+/// at init, read on the fresh-commit path only.
+static GROUP_HANDOFF: AtomicBool = AtomicBool::new(false);
 
 /// Apply the `group_handoff` key (init; the tests directly).
 pub fn set_group_handoff(on: bool) {
@@ -2491,6 +2491,9 @@ mod tests {
         /// page kernel.
         #[cfg(target_os = "linux")]
         fn with_lg_page(lg_page: u32) -> Env {
+            // The handoff is an opt-in (design 13.3); the class tests
+            // exercise it, so every test environment turns it on.
+            set_group_handoff(true);
             use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
             let page = 1usize << lg_page;
             assert!(page % crate::sys::features::page_size() == 0, "fake page must be a real page multiple");
@@ -2512,6 +2515,9 @@ mod tests {
 
         #[cfg(not(target_os = "linux"))]
         fn with_lg_page(lg_page: u32) -> Env {
+            // The handoff is an opt-in (design 13.3); the class tests
+            // exercise it, so every test environment turns it on.
+            set_group_handoff(true);
             let page = 1usize << lg_page;
             let buf = vec![0u8; META_LEN + page];
             let mb = align_up(buf.as_ptr() as usize, page);
