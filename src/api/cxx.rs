@@ -19,10 +19,15 @@
 //! `.eh_frame` entries and no landing pads, exactly like C code compiled
 //! with unwind tables; `tests/c/cxx_new.cpp` catches it under the preload.
 //!
-//! Sized and aligned `delete` ignore their extra arguments and take the
-//! plain `free` path (unlike `free_sized`, which checks its size against
-//! the pointer's class). Aligned `new` goes through `aligned_alloc`, so a
-//! non-power-of-two `align_val_t` fails like exhaustion does.
+//! The sized `delete` forms are `free_sized` and `free_aligned_sized`
+//! (design 13.1): the size (and `align_val_t`) name a class through the
+//! same `class_for(size, align)` the matching `new` used, so a correct
+//! program's hint always matches; the slot is pushed without the slab
+//! descriptor's bit test (design 6.3) and a mismatched size aborts as
+//! `free_sized` does. The unsized aligned forms have no size to check and
+//! take the plain `free` path with the alignment ignored. Aligned `new`
+//! goes through `aligned_alloc`, so a non-power-of-two `align_val_t` fails
+//! like exhaustion does.
 
 use core::arch::asm;
 use core::ffi::c_void;
@@ -168,10 +173,26 @@ pub fn new_aligned(size: usize, align: usize, nothrow: bool) -> *mut u8 {
     if p.is_null() { oom(size, align, nothrow) } else { p }
 }
 
-/// Every `operator delete`: `free`, with size and alignment ignored.
+/// The unsized `operator delete` forms: `free`, with any alignment ignored.
 #[inline(always)]
 pub fn delete(p: *mut u8) {
     libc::free(p)
+}
+
+/// `operator delete(void*, size_t)` and its array form: `free_sized`. The
+/// size is the one the matching `operator new(size)` was called with, so
+/// `class_of(size)` is the slot's class.
+#[inline(always)]
+pub fn delete_sized(p: *mut u8, size: usize) {
+    libc::free_sized(p, size)
+}
+
+/// `operator delete(void*, size_t, std::align_val_t)` and its array form:
+/// `free_aligned_sized` with the arguments the matching aligned `new`
+/// passed to `aligned_alloc`.
+#[inline(always)]
+pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize) {
+    libc::free_aligned_sized(p, align, size)
 }
 
 // ---------------------------------------------------------------------------
@@ -257,14 +278,14 @@ mod exports {
 
     /// `operator delete(void*, size_t)`
     #[unsafe(export_name = "_ZdlPvm")]
-    pub extern "C" fn delete_sized(p: *mut c_void, _size: usize) {
-        super::delete(p as *mut u8)
+    pub extern "C" fn delete_sized(p: *mut c_void, size: usize) {
+        super::delete_sized(p as *mut u8, size)
     }
 
     /// `operator delete[](void*, size_t)`
     #[unsafe(export_name = "_ZdaPvm")]
-    pub extern "C" fn delete_array_sized(p: *mut c_void, _size: usize) {
-        super::delete(p as *mut u8)
+    pub extern "C" fn delete_array_sized(p: *mut c_void, size: usize) {
+        super::delete_sized(p as *mut u8, size)
     }
 
     /// `operator delete(void*, std::align_val_t)`
@@ -293,14 +314,14 @@ mod exports {
 
     /// `operator delete(void*, size_t, std::align_val_t)`
     #[unsafe(export_name = "_ZdlPvmSt11align_val_t")]
-    pub extern "C" fn delete_sized_aligned(p: *mut c_void, _size: usize, _align: usize) {
-        super::delete(p as *mut u8)
+    pub extern "C" fn delete_sized_aligned(p: *mut c_void, size: usize, align: usize) {
+        super::delete_sized_aligned(p as *mut u8, size, align)
     }
 
     /// `operator delete[](void*, size_t, std::align_val_t)`
     #[unsafe(export_name = "_ZdaPvmSt11align_val_t")]
-    pub extern "C" fn delete_array_sized_aligned(p: *mut c_void, _size: usize, _align: usize) {
-        super::delete(p as *mut u8)
+    pub extern "C" fn delete_array_sized_aligned(p: *mut c_void, size: usize, align: usize) {
+        super::delete_sized_aligned(p as *mut u8, size, align)
     }
 }
 

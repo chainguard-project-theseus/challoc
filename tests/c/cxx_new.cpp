@@ -120,6 +120,7 @@ struct Block {
     void *p;
     size_t n;
     uint32_t seed;
+    size_t align; /* 0: natural alignment; else the align_val_t new was given */
 };
 
 #define PER_THREAD 512
@@ -139,11 +140,23 @@ static void *thread_body(void *arg)
         Block &b = live[rng_next(&rng) % PER_THREAD];
         if (b.p) {
             CHECK(check_fill(b.p, b.n, b.seed), "thread %d: block %p corrupt", id, b.p);
-            switch (rng_next(&rng) % 4) {
-            case 0: operator delete(b.p); break;
-            case 1: operator delete[](b.p); break;
-            case 2: operator delete(b.p, b.n); break;
-            default: operator delete[](b.p, b.n); break;
+            /* A block from an aligned new goes back through an aligned
+             * delete (the C++ pairing rule; the sized forms check the size
+             * and alignment against the block's class). */
+            if (b.align) {
+                const std::align_val_t av = static_cast<std::align_val_t>(b.align);
+                switch (rng_next(&rng) % 3) {
+                case 0: operator delete(b.p, av); break;
+                case 1: operator delete(b.p, b.n, av); break;
+                default: operator delete[](b.p, b.n, av); break;
+                }
+            } else {
+                switch (rng_next(&rng) % 4) {
+                case 0: operator delete(b.p); break;
+                case 1: operator delete[](b.p); break;
+                case 2: operator delete(b.p, b.n); break;
+                default: operator delete[](b.p, b.n); break;
+                }
             }
             b.p = nullptr;
         }
@@ -151,6 +164,7 @@ static void *thread_body(void *arg)
         size_t n = (rng_next(&rng) % 16 == 0) ? 1 + rng_next(&rng) % (300 << 10) : 1 + rng_next(&rng) % 4096;
         uint32_t seed = static_cast<uint32_t>(rng_next(&rng));
         void *p;
+        size_t align = 0;
         switch (rng_next(&rng) % 4) {
         case 0: p = operator new(n); break;
         case 1: p = new char[n]; break;
@@ -159,7 +173,7 @@ static void *thread_body(void *arg)
             CHECK(p != nullptr, "thread %d: nothrow new(%zu) failed", id, n);
             break;
         default: {
-            size_t align = size_t(16) << (rng_next(&rng) % 9); /* 16 .. 4096 */
+            align = size_t(16) << (rng_next(&rng) % 9); /* 16 .. 4096 */
             p = operator new(n, std::align_val_t(align));
             CHECK((reinterpret_cast<uintptr_t>(p) & (align - 1)) == 0, "thread %d: new(%zu, align %zu) = %p misaligned", id, n, align, p);
             break;
@@ -168,7 +182,7 @@ static void *thread_body(void *arg)
         CHECK(p != nullptr, "thread %d: new(%zu) returned null", id, n);
         CHECK(malloc_usable_size(p) >= n, "thread %d: usable %zu < %zu", id, malloc_usable_size(p), n);
         fill(p, n, seed);
-        b = Block{p, n, seed};
+        b = Block{p, n, seed, align};
     }
 
     /* Hand HANDOFF live blocks to main; delete the rest here. */
@@ -180,7 +194,10 @@ static void *thread_body(void *arg)
             handoff[id][given++] = live[i];
         } else {
             CHECK(check_fill(live[i].p, live[i].n, live[i].seed), "thread %d: block %p corrupt at exit", id, live[i].p);
-            operator delete[](live[i].p, live[i].n);
+            if (live[i].align)
+                operator delete[](live[i].p, live[i].n, std::align_val_t(live[i].align));
+            else
+                operator delete[](live[i].p, live[i].n);
         }
     }
     return nullptr;
