@@ -171,7 +171,10 @@ Files:
 - `probes/`: `churn.c` (the post-delete steady-state model `quick` runs;
   `churn-run.sh` runs it by hand with the cache knobs, `CHURN_SECS`),
   `binsample.c` (per-second bin row sidecar), `soak-occupancy.sh` (now a
-  wrapper over `valkey-soak.sh OCCUPANCY=1`).
+  wrapper over `valkey-soak.sh OCCUPANCY=1`), `valkey-perf-sidecar.sh` (root, on
+  the GCE VM host beside a detached soak: `perf stat -I 1000` for each
+  `valkey-server`'s life, 60 s `perf record` windows in the write and delete
+  phases, `INFO commandstats` and per-thread CPU snapshots; task 4d).
 - `results/`: one file per run, named `<date>-<arch>.md`, with the commit
   hash, toolchain versions, kernel and CPU in the header.
 
