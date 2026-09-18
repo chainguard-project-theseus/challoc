@@ -322,7 +322,11 @@ Tasks:
    with `bench/probes/valkey-perf-sidecar.sh`: cycles per SET in `free` from
    338 toward jemalloc's 71 and the plan's soak criterion (throughput and
    p99 at least equal to bundled jemalloc) met or the remaining gap
-   attributed; negative tests updated for the deferred detection.
+   attributed; negative tests updated for the deferred detection. The soak's
+   throughput columns carry 3..5% of generator noise between runs; the
+   tie-breaker for "at least equal" is cycles per command from
+   `bench/probes/valkey-perf-sidecar.sh` (challoc 3611 vs jemalloc 3431 per
+   SET at 078cc0d) and the `valkey1` row, both recorded next to the soak.
 4f. Dense per-class slot bitmap (keeps the exact check cheap for plain
    `free`): move the allocation bits out of the per-slab descriptors into one
    contiguous per-class bitmap indexed by `slab * nslots + slot`, committed
@@ -333,7 +337,14 @@ Tasks:
    addresses the descriptor-page residue noted in iteration 15. Claim and
    release operate on bit ranges of shared words (`fetch_or`/`fetch_and`
    with masks; a slab's bits may straddle words for classes whose `nslots`
-   is not a power of two). Acceptance: all tests and negative tests; `quick`
+   is not a power of two). Trap to design around first: slabs go to arenas in
+   address order as they commit, so in a dense bitmap adjacent slabs of
+   different threads' arenas would share a cache line and the `free` check
+   would see the coherence traffic the `narenas` default removed; hand slabs
+   to an arena in line-sized groups (16 or 64 consecutive slabs, so a bitmap
+   line belongs to one arena) or lay the bitmap out per arena. Measure the
+   10-thread L1D misses per op before and after; a rise means the grouping is
+   wrong. Acceptance: all tests and negative tests; `quick`
    then A/B rows on both VMs (larson/xmalloc/alloc-test within 3% of old or
    better); the Valkey soak with the perf sidecar (plain-`free` cycles and
    L1D misses per command) and the Ruby rows (Ruby frees through plain
