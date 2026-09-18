@@ -513,6 +513,11 @@ mod exports {
         super::valloc(size) as *mut c_void
     }
 
+    #[unsafe(export_name = "je_pvalloc")]
+    pub extern "C" fn je_pvalloc(size: usize) -> *mut c_void {
+        super::pvalloc(size) as *mut c_void
+    }
+
     #[unsafe(export_name = "je_malloc_usable_size")]
     pub extern "C" fn je_malloc_usable_size(p: *mut c_void) -> usize {
         super::malloc_usable_size(p as *mut u8)

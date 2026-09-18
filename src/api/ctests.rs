@@ -547,7 +547,7 @@ fn jemalloc_symbols_in_release_so() {
         "mallctl", "mallctlnametomib", "mallctlbymib", "malloc_stats_print",
         "malloc_info", "malloc_stats", "malloc_trim", "mallopt", "mallinfo", "mallinfo2",
         "je_malloc", "je_free", "je_calloc", "je_realloc", "je_aligned_alloc", "je_memalign",
-        "je_posix_memalign", "je_valloc", "je_malloc_usable_size",
+        "je_posix_memalign", "je_valloc", "je_pvalloc", "je_malloc_usable_size",
         "je_mallocx", "je_rallocx", "je_xallocx", "je_sallocx", "je_dallocx", "je_sdallocx", "je_nallocx",
         "je_mallctl", "je_mallctlnametomib", "je_mallctlbymib", "je_malloc_stats_print",
     ] {

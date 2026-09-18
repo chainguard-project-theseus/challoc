@@ -47,6 +47,9 @@ extern void *je_calloc(size_t, size_t) WEAK;
 extern void *je_realloc(void *, size_t) WEAK;
 extern int je_posix_memalign(void **, size_t, size_t) WEAK;
 extern void *je_aligned_alloc(size_t, size_t) WEAK;
+extern void *je_memalign(size_t, size_t) WEAK;
+extern void *je_valloc(size_t) WEAK;
+extern void *je_pvalloc(size_t) WEAK;
 extern size_t je_malloc_usable_size(void *) WEAK;
 extern void *je_mallocx(size_t, int) WEAK;
 extern void *je_rallocx(void *, size_t, int) WEAK;
@@ -155,6 +158,17 @@ static void test_allocx(void)
     je_free(m);
     m = je_aligned_alloc(256, 100);
     CHECK(m != NULL && ((uintptr_t)m & 255) == 0, "je_aligned_alloc");
+    je_free(m);
+    m = je_memalign(512, 100);
+    CHECK(m != NULL && ((uintptr_t)m & 511) == 0, "je_memalign");
+    je_free(m);
+    size_t page = (size_t)sysconf(_SC_PAGESIZE);
+    m = je_valloc(100);
+    CHECK(m != NULL && ((uintptr_t)m & (page - 1)) == 0, "je_valloc");
+    je_free(m);
+    m = je_pvalloc(page + 1);
+    CHECK(m != NULL && ((uintptr_t)m & (page - 1)) == 0 && je_malloc_usable_size(m) >= 2 * page,
+          "je_pvalloc: %p usable %zu", m, m ? je_malloc_usable_size(m) : 0);
     je_free(m);
 }
 
@@ -520,6 +534,7 @@ int main(void)
     REQUIRE(mallocx && rallocx && xallocx && sallocx && dallocx && sdallocx && nallocx, "*allocx exported");
     REQUIRE(mallctl && mallctlnametomib && mallctlbymib && malloc_stats_print, "mallctl family exported");
     REQUIRE(je_malloc && je_free && je_calloc && je_realloc && je_posix_memalign && je_aligned_alloc && je_malloc_usable_size, "je_ libc aliases exported");
+    REQUIRE(je_memalign && je_valloc && je_pvalloc, "je_memalign/je_valloc/je_pvalloc exported");
     REQUIRE(je_mallocx && je_rallocx && je_xallocx && je_sallocx && je_dallocx && je_sdallocx && je_nallocx, "je_*allocx exported");
     REQUIRE(je_mallctl && je_mallctlnametomib && je_mallctlbymib && je_malloc_stats_print, "je_mallctl family exported");
     test_allocx();
