@@ -38,6 +38,13 @@
 #   SIZE=512                   valkey-benchmark -d
 #   MT_SIZES=16-1024           memtier --data-size-range
 #   DEL_RATIO=4                memtier DEL:SET ratio in the delete phase
+#   KEY_PATTERN=stock          stock: memtier's default fixed-seed random key stream
+#                              (the acceptance protocol; it replays the same keys every
+#                              run and pins ~2200 values per class through the delete
+#                              phase, see bench/results/2026-09-17-aarch64-gce-compacting-cache-soak3.md);
+#                              uniform: `--randomize` (time-seeded) with random key
+#                              patterns (`--key-pattern=R:R`, `--command-key-pattern=R`)
+#                              in both phases, so no key is structurally pinned
 #   VB_CLIENTS=50 MT_THREADS=4 MT_CLIENTS=10 PIPELINE=16
 #   DEFRAG=yes                 --activedefrag on the server
 #   PORT=6399
@@ -69,6 +76,12 @@ KEYS=${KEYS:-500000}
 SIZE=${SIZE:-512}
 MT_SIZES=${MT_SIZES:-16-1024}
 DEL_RATIO=${DEL_RATIO:-4}
+KEY_PATTERN=${KEY_PATTERN:-stock}
+case $KEY_PATTERN in
+  stock)   MT_RANDOM=;;
+  uniform) MT_RANDOM=--randomize;;
+  *) echo "valkey-soak: KEY_PATTERN must be stock or uniform" >&2; exit 1;;
+esac
 VB_CLIENTS=${VB_CLIENTS:-50}
 MT_THREADS=${MT_THREADS:-4}
 MT_CLIENTS=${MT_CLIENTS:-10}
@@ -214,9 +227,10 @@ vb_run() { # phase test args...
 mt_run() { # phase test args...
   phase=$1; test=$2; shift 2
   s=$(($(now) - T0))
+  # $MT_RANDOM is empty (stock) or --randomize (KEY_PATTERN=uniform); unquoted on purpose.
   out=$(memtier_benchmark -p "$PORT" --threads="$MT_THREADS" --clients="$MT_CLIENTS" --pipeline="$PIPELINE" \
         --test-time="$CHUNK" --key-prefix=key: --key-maximum="$KEYS" --data-size-range="$MT_SIZES" \
-        --hide-histogram --print-percentiles=50,99,99.9 "$@" 2>&1)
+        --hide-histogram --print-percentiles=50,99,99.9 $MT_RANDOM "$@" 2>&1)
   e=$(($(now) - T0))
   echo "$phase memtier $test:" >> "$D/generators.log"
   echo "$out" | sed -n '/^ALL STATS/,$p' >> "$D/generators.log"
@@ -375,7 +389,7 @@ ALLOCS=$SUMMARY_ALLOCS
   echo "- kernel: $(uname -r), container: Wolfi"
   for alloc in $ALLOCS; do echo "- $alloc server: $(cat "$OUT/$alloc/version.txt")"; done
   echo "- clients: valkey-benchmark from the challoc tree, $(memtier_benchmark --version 2>&1 | head -1)"
-  echo "- workload: write phase $((DURATION / 2)) s (valkey-benchmark -t set -d $SIZE -r $KEYS -n $VB_REQS -c $VB_CLIENTS -P $PIPELINE, then memtier SET-only $MT_SIZES B over $KEYS keys, $MT_THREADS x $MT_CLIENTS clients, -P $PIPELINE, $CHUNK s), delete phase $((DURATION / 2)) s (valkey-benchmark del key:__rand_int__, then memtier DEL:SET $DEL_RATIO:1), settle $SETTLE s idle; activedefrag $DEFRAG; INFO sampled every $INTERVAL s"
+  echo "- workload: write phase $((DURATION / 2)) s (valkey-benchmark -t set -d $SIZE -r $KEYS -n $VB_REQS -c $VB_CLIENTS -P $PIPELINE, then memtier SET-only $MT_SIZES B over $KEYS keys, $MT_THREADS x $MT_CLIENTS clients, -P $PIPELINE, $CHUNK s), delete phase $((DURATION / 2)) s (valkey-benchmark del key:__rand_int__, then memtier DEL:SET $DEL_RATIO:1), settle $SETTLE s idle; activedefrag $DEFRAG; INFO sampled every $INTERVAL s; memtier key pattern: $KEY_PATTERN$([ "$KEY_PATTERN" = uniform ] && echo " (--randomize, time-seeded random keys in both phases; NOT the acceptance protocol)" || echo " (memtier's fixed-seed key stream, the acceptance protocol)")"
   echo "- throughput is the mean requests/s over a tool's runs in a phase; p99 is the median of the per-run p99 (ms, client-side); peak RSS is the server's VmHWM; the RSS columns are used_memory_rss (MiB) at the last sample of each phase"
   [ -z "$CACHE_NOTE" ] || echo "- CACHED BASELINE: $CACHE_NOTE. Acceptance uses the same-run \`make valkey-soak\`."
   [ "$OCCUPANCY" = 1 ] && echo "- occupancy: MEMORY MALLOC-STATS every $MS_INTERVAL s under $RESULT_DIR/$DATE-$ARCH-valkey-soak-<alloc>-mstats/"
