@@ -19,8 +19,9 @@
 //! `.eh_frame` entries and no landing pads, exactly like C code compiled
 //! with unwind tables; `tests/c/cxx_new.cpp` catches it under the preload.
 //!
-//! Sized and aligned `delete` ignore their extra arguments, as `free_sized`
-//! does in Phase 0. Aligned `new` goes through `aligned_alloc`, so a
+//! Sized and aligned `delete` ignore their extra arguments and take the
+//! plain `free` path (unlike `free_sized`, which checks its size against
+//! the pointer's class). Aligned `new` goes through `aligned_alloc`, so a
 //! non-power-of-two `align_val_t` fails like exhaustion does.
 
 use core::arch::asm;
@@ -102,7 +103,7 @@ fn throw_bad_alloc() -> ! {
     let t = throw_bad_alloc_addr();
     if t.is_null() {
         crate::sys::abort_fmt(format_args!(
-            "challoc: operator new failed and std::__throw_bad_alloc is not available"
+            "operator new failed and std::__throw_bad_alloc is not available"
         ));
     }
     // SAFETY: `std::__throw_bad_alloc` takes no arguments and never returns.

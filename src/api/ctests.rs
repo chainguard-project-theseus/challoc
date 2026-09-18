@@ -369,6 +369,20 @@ fn c_conf_no_tcache() {
 }
 
 #[test]
+fn c_conf_inert_key_aborts_under_abort_conf() {
+    // `thp` is parsed and stored but nothing reads it: with abort_conf a
+    // program cannot start believing it turned THP on. The new
+    // `huge_retain_max` key is a real key and passes.
+    run_conf(
+        "inert",
+        None,
+        &[("MALLOC_CONF", "abort_conf:true,thp:always")],
+        Some("challoc: MALLOC_CONF: conf key thp is accepted but has no effect (not implemented)"),
+    );
+    run_conf("huge_retain_max", None, &[("MALLOC_CONF", "abort_conf:true,huge_retain_max:1048576")], None);
+}
+
+#[test]
 fn c_conf_bad_symbol_aborts() {
     run_conf(
         "badsym",

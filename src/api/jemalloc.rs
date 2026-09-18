@@ -114,7 +114,7 @@ pub fn malloc_write(s: &[u8]) {
 #[cold]
 #[inline(never)]
 fn not_an_allocation(what: &str, p: *mut u8) -> ! {
-    crate::sys::abort_fmt(format_args!("challoc: {what} of {:#x}: not an allocation", p as usize))
+    crate::sys::abort_fmt(format_args!("{what} of {:#x}: not an allocation", p as usize))
 }
 
 /// The usable size `mallocx(size, flags)` gives: the class size at the

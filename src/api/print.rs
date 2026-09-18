@@ -23,7 +23,7 @@ use super::jemalloc::malloc_write;
 use super::mallctl::VERSION_STR;
 use crate::QUANTUM;
 use crate::arena::Arena;
-use crate::config::{KEYS, Value};
+use crate::config::{INERT_KEYS, KEYS, Value, is_inert};
 use crate::heap::Shared;
 use crate::layout::NBINS;
 use crate::purge;
@@ -155,13 +155,22 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     writeln!(out, "  config.stats: true")?;
     writeln!(out, "  config.quantum: {QUANTUM}")?;
     writeln!(out, "Run-time option settings")?;
+    // An inert key (`config::INERT_KEYS`) is parsed and stored but read by
+    // nothing; say so next to its value so a report never suggests the
+    // feature is on.
     for key in KEYS {
+        let note = if is_inert(key.as_bytes()) { " (accepted, no effect)" } else { "" };
         match shared.config.get(key.as_bytes()) {
-            Some(Value::Bool(b)) => writeln!(out, "  opt.{key}: {b}")?,
-            Some(Value::Int(i)) => writeln!(out, "  opt.{key}: {i}")?,
-            Some(Value::Uint(u)) => writeln!(out, "  opt.{key}: {u}")?,
-            Some(Value::Str(s)) => writeln!(out, "  opt.{key}: \"{s}\"")?,
+            Some(Value::Bool(b)) => writeln!(out, "  opt.{key}: {b}{note}")?,
+            Some(Value::Int(i)) => writeln!(out, "  opt.{key}: {i}{note}")?,
+            Some(Value::Uint(u)) => writeln!(out, "  opt.{key}: {u}{note}")?,
+            Some(Value::Str(s)) => writeln!(out, "  opt.{key}: \"{s}\"{note}")?,
             None => {}
+        }
+    }
+    for key in INERT_KEYS {
+        if shared.config.get(key.as_bytes()).is_none() {
+            writeln!(out, "  opt.{key}: accepted, no effect")?;
         }
     }
     writeln!(out, "Kernel features: {}", super::features())?;
@@ -616,7 +625,13 @@ mod tests {
             "Version: \"5.3.0-0-gchalloc\"",
             "config.quantum:",
             "opt.dirty_decay_ms: ",
-            "opt.thp: \"never\"",
+            "opt.thp: \"never\" (accepted, no effect)",
+            "opt.zero_on_free: false (accepted, no effect)",
+            "opt.slot_randomize: false (accepted, no effect)",
+            "opt.cgroup: true (accepted, no effect)",
+            "opt.stats_print: accepted, no effect",
+            "opt.double_free_scan: false\n",
+            "opt.huge_retain_max: 67108864\n",
             "Kernel features: page_size=",
             "Background thread: ",
             "Arenas: ",

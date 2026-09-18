@@ -6,8 +6,9 @@
 //! [`CacheHeader`] per size class inline: a LIFO stack of slot pointers that
 //! are marked in their slab bitmaps but not live in the program. The fast
 //! paths only touch the heap's header line for the class, the stack top and
-//! (for `free`) one word of the slab descriptor: no atomic
-//! read-modify-write, no lock.
+//! (for `free`) one word of the class's slot bitmap plus, once a second
+//! arena exists, one word of the group owner array; never the slab
+//! descriptor, and no atomic read-modify-write, no lock.
 //!
 //! Layout (review 2026-09-17 P3, Phase 1.5 task 5). The headers are a
 //! dense `[CacheHeader; NCLASSES]` inside the heap, one 64-byte line each,
@@ -119,8 +120,9 @@ pub const TLS_CREATING: usize = 1;
 /// TLS slot value after this thread's heap destructor has run.
 pub const TLS_EXITED: usize = 2;
 
-/// Default cache capacity for a class: 256 slots for classes up to 128
-/// bytes, halved for every doubling of the class size, never below 8.
+/// Default cache capacity for a class: [`MAX_CAP`] (1024) slots for classes
+/// up to 128 bytes, halved for every doubling of the class size, never
+/// below [`MIN_CAP`].
 pub const fn default_cap(class: usize) -> u32 {
     crate::config::cap_for(class, MAX_CAP, 1)
 }
@@ -614,7 +616,10 @@ impl Shared {
                 return false;
             }
             match Huge::new(meta, regions, guard_install) {
-                Some(h) => ptr::write(&raw mut (*this).huge, h),
+                Some(h) => {
+                    h.set_retain_max(config.huge_retain_max);
+                    ptr::write(&raw mut (*this).huge, h)
+                }
                 None => return false,
             }
             ptr::write(&raw mut (*this).gc_interval_ns, config.gc_interval_ns());
@@ -1968,8 +1973,8 @@ impl Heap {
     /// Count a slow-path entry and run periodic work every
     /// [`PERIODIC_EVERY`] of them: cache GC when the interval has elapsed,
     /// then decay (or starting the background thread that will do it,
-    /// `purge::on_tick`). Stats merging and cgroup sampling join in later
-    /// tasks.
+    /// `purge::on_tick`). Nothing else: thread statistics are merged by
+    /// `epoch` (`stats.rs`), not here.
     fn tick(&mut self, shared: &Shared) {
         self.slow_ticks = self.slow_ticks.wrapping_add(1);
         if self.slow_ticks % PERIODIC_EVERY == 0 {
@@ -2225,6 +2230,16 @@ pub(crate) mod tests {
 
     pub(crate) fn shared_with(config: Config) -> &'static Shared {
         shared_with_guards(config, false)
+    }
+
+    /// `huge_retain_max` from `malloc_conf` reaches the huge allocator.
+    #[test]
+    fn huge_retain_max_key_reaches_the_huge_allocator() {
+        assert_eq!(shared().huge.retain_max(), crate::huge::DEFAULT_RETAIN_MAX);
+        let s = shared_with(Config { huge_retain_max: 3 << 20, ..Config::DEFAULT });
+        assert_eq!(s.huge.retain_max(), 3 << 20);
+        let s = shared_with(Config { huge_retain_max: 0, ..Config::DEFAULT });
+        assert_eq!(s.huge.retain_max(), 0);
     }
 
     /// `shared()` with guard slabs at the default interval (`guard_install`

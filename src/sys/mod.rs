@@ -76,8 +76,9 @@ mod linux {
     pub const AT_FDCWD: i32 = -100;
 
     /// Sentinel pidfd meaning "the calling thread", accepted by
-    /// `process_madvise` on kernels that have it (6.16+ upstream). Probed at
-    /// runtime by `sys::features`; older kernels return `EBADF`.
+    /// `process_madvise` on kernels that have it (6.14, `docs/research.md`;
+    /// `purge.rs` mirrors the value). Probed at runtime by `sys::features`;
+    /// older kernels return `EBADF`.
     pub const PIDFD_SELF: i32 = -10000;
 
     pub const SIGABRT: i32 = 6;
@@ -513,7 +514,7 @@ mod linux {
             )
         };
         if let Err(e) = decode(r) {
-            abort_fmt(format_args!("challoc: rt_sigprocmask(SIG_BLOCK) failed: {}", e));
+            abort_fmt(format_args!("rt_sigprocmask(SIG_BLOCK) failed: {}", e));
         }
         old
     }
@@ -532,7 +533,7 @@ mod linux {
             )
         };
         if let Err(e) = decode(r) {
-            abort_fmt(format_args!("challoc: rt_sigprocmask(SIG_SETMASK) failed: {}", e));
+            abort_fmt(format_args!("rt_sigprocmask(SIG_SETMASK) failed: {}", e));
         }
     }
 

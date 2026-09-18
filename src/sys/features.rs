@@ -208,7 +208,7 @@ mod linux {
         r == Ok(page) && unsafe { p.read_volatile() } == 0
     }
 
-    /// `PIDFD_SELF` first (kernel 6.16, no fd); then a real pidfd for the
+    /// `PIDFD_SELF` first (kernel 6.14, no fd); then a real pidfd for the
     /// calling process (kernel 5.10, needs the self-target exemption or
     /// `CAP_SYS_NICE`); otherwise unavailable.
     pub fn probe_process_madvise(page: usize) -> ProcessMadvise {

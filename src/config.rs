@@ -20,6 +20,14 @@
 //! macros. `abort_conf` is evaluated after every source has been read, so
 //! it applies to keys that appeared before it in the same or an earlier
 //! source; jemalloc gets the same effect with a separate first pass.
+//!
+//! The *inert* keys ([`INERT_KEYS`]: `thp`, `zero_on_free`, `slot_randomize`,
+//! `cgroup`, `stats_print`) are parsed and, where they have a field, stored
+//! and readable through `opt.<key>`, but nothing in the allocator reads
+//! them (the features are planned, `docs/plan.md` Phase 2). Each one is
+//! reported as [`Issue::Inert`] so that `abort_conf` rejects it and a
+//! program cannot believe it turned something on; `malloc_stats_print`
+//! marks them "accepted, no effect".
 
 use core::fmt::{self, Write as _};
 
@@ -47,6 +55,10 @@ pub const MAX_INTERVAL_MS: i64 = 1_000_000_000_000;
 /// Largest `tcache_compact_shift`: one scheduled pop per 2^20 pops is
 /// already no compaction to speak of; 0 turns the schedule off.
 pub const MAX_COMPACT_SHIFT: u32 = 20;
+/// Largest `huge_retain_max`: the preferred huge region (2^40 bytes,
+/// `layout::LG_HUGE_PREFERRED`); no run can be larger, so anything above
+/// means "retain every freed run for decay".
+pub const MAX_HUGE_RETAIN_MAX: usize = 1 << crate::layout::LG_HUGE_PREFERRED;
 /// `thp` values (`default` is accepted as `never`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Thp {
@@ -88,6 +100,7 @@ pub struct Config {
     /// cached slot instead of the top of the stack (design 6.4); 0 means
     /// never.
     pub tcache_compact_shift: u32,
+    /// Inert (planned with the THP work): parsed, stored, read by nothing.
     pub thp: Thp,
     pub lazy_free: bool,
     pub guards: bool,
@@ -95,10 +108,17 @@ pub struct Config {
     /// classes with smaller slabs, see `heap::guard_interval_for`); 0 means
     /// none, 1 means every slab.
     pub guard_slab_interval: u32,
+    /// Freed huge runs with more usable bytes than this are purged the
+    /// moment they are freed instead of waiting for decay
+    /// (`Huge::set_retain_max`, design 7).
+    pub huge_retain_max: usize,
+    /// Inert (planned, Phase 2 task 3): parsed, stored, read by nothing.
     pub zero_on_free: bool,
+    /// Inert (planned, Phase 2 task 3): parsed, stored, read by nothing.
     pub slot_randomize: bool,
     pub double_free_scan: bool,
     pub abort_conf: bool,
+    /// Inert (planned, Phase 2 task 5): parsed, stored, read by nothing.
     pub cgroup: bool,
     /// Debug mode: every slot or page handed out as "known zero" (`Fresh`
     /// or `Purged` memory behind `calloc`) is read at its first and last
@@ -130,6 +150,7 @@ impl Config {
         lazy_free: false,
         guards: true,
         guard_slab_interval: 8,
+        huge_retain_max: crate::huge::DEFAULT_RETAIN_MAX,
         zero_on_free: false,
         slot_randomize: false,
         double_free_scan: false,
@@ -209,23 +230,48 @@ impl Config {
                     b"never" | b"default" => Thp::Never,
                     b"always" => Thp::Always,
                     _ => return Err(bad()),
-                }
+                };
+                return Err(Issue::Inert(key));
             }
             b"lazy_free" => self.lazy_free = parse_bool(value).ok_or_else(bad)?,
             b"guards" => self.guards = parse_bool(value).ok_or_else(bad)?,
             b"guard_slab_interval" => {
                 return num(self, 0, MAX_GUARD_SLAB_INTERVAL as i64, |c, v| c.guard_slab_interval = v as u32);
             }
-            b"zero_on_free" => self.zero_on_free = parse_bool(value).ok_or_else(bad)?,
-            b"slot_randomize" => self.slot_randomize = parse_bool(value).ok_or_else(bad)?,
+            b"huge_retain_max" => {
+                return num(self, 0, MAX_HUGE_RETAIN_MAX as i64, |c, v| c.huge_retain_max = v as usize);
+            }
+            // Inert keys: the value is validated and stored (so `opt.<key>`
+            // reads back what was set), then reported, so `abort_conf`
+            // refuses a configuration that relies on a feature that does
+            // not exist yet.
+            b"zero_on_free" => {
+                self.zero_on_free = parse_bool(value).ok_or_else(bad)?;
+                return Err(Issue::Inert(key));
+            }
+            b"slot_randomize" => {
+                self.slot_randomize = parse_bool(value).ok_or_else(bad)?;
+                return Err(Issue::Inert(key));
+            }
+            b"cgroup" => {
+                self.cgroup = parse_bool(value).ok_or_else(bad)?;
+                return Err(Issue::Inert(key));
+            }
+            // jemalloc's `stats_print` (report at exit): no field, since
+            // there is nothing to print at exit; validated as a bool and
+            // reported as inert so `abort_conf` does not let a program expect
+            // the report.
+            b"stats_print" => {
+                parse_bool(value).ok_or_else(bad)?;
+                return Err(Issue::Inert(key));
+            }
             b"double_free_scan" => self.double_free_scan = parse_bool(value).ok_or_else(bad)?,
             b"abort_conf" => self.abort_conf = parse_bool(value).ok_or_else(bad)?,
-            b"cgroup" => self.cgroup = parse_bool(value).ok_or_else(bad)?,
             b"check_zero" => self.check_zero = parse_bool(value).ok_or_else(bad)?,
             // jemalloc keys accepted for compatibility and ignored: their
             // values are not validated because we do nothing with them.
             b"junk" | b"zero" | b"retain" | b"oversize_threshold" | b"percpu_arena"
-            | b"metadata_thp" | b"stats_print" | b"confirm_conf" => {}
+            | b"metadata_thp" | b"confirm_conf" => {}
             _ => return Err(Issue::UnknownKey(key)),
         }
         Ok(())
@@ -249,6 +295,7 @@ impl Config {
             b"lazy_free" => Value::Bool(self.lazy_free),
             b"guards" => Value::Bool(self.guards),
             b"guard_slab_interval" => Value::Uint(self.guard_slab_interval as u64),
+            b"huge_retain_max" => Value::Uint(self.huge_retain_max as u64),
             b"zero_on_free" => Value::Bool(self.zero_on_free),
             b"slot_randomize" => Value::Bool(self.slot_randomize),
             b"double_free_scan" => Value::Bool(self.double_free_scan),
@@ -343,6 +390,7 @@ pub const KEYS: &[&str] = &[
     "lazy_free",
     "guards",
     "guard_slab_interval",
+    "huge_retain_max",
     "zero_on_free",
     "slot_randomize",
     "double_free_scan",
@@ -359,9 +407,19 @@ pub const IGNORED_KEYS: &[&str] = &[
     "oversize_threshold",
     "percpu_arena",
     "metadata_thp",
-    "stats_print",
     "confirm_conf",
 ];
+
+/// Keys that parse (and, bar `stats_print`, are stored and readable) but
+/// that no code acts on: the features are planned (`docs/plan.md` Phase
+/// 2). Setting one is [`Issue::Inert`], which `abort_conf` turns into an
+/// abort; `malloc_stats_print` lists them as "accepted, no effect".
+pub const INERT_KEYS: &[&str] = &["thp", "zero_on_free", "slot_randomize", "cgroup", "stats_print"];
+
+/// Whether `key` is one of [`INERT_KEYS`].
+pub fn is_inert(key: &[u8]) -> bool {
+    INERT_KEYS.iter().any(|k| k.as_bytes() == key)
+}
 
 /// Cache capacity ladder: `max` slots for classes up to 128 bytes, halved
 /// per doubling of the class size, shifted by `lg_mul - 1` doublings and
@@ -407,6 +465,9 @@ pub enum Issue<'a> {
     BadValue { key: &'a [u8], value: &'a [u8] },
     /// A number outside the key's range; the value was clamped.
     OutOfRange { key: &'a [u8], value: &'a [u8] },
+    /// One of [`INERT_KEYS`]: parsed and (where it has a field) stored, but
+    /// nothing reads it.
+    Inert(&'a [u8]),
 }
 
 impl fmt::Display for Issue<'_> {
@@ -419,6 +480,9 @@ impl fmt::Display for Issue<'_> {
             }
             Issue::OutOfRange { key, value } => {
                 write!(f, "out-of-range conf value \"{}\" for {} (clamped)", Bytes(value), Bytes(key))
+            }
+            Issue::Inert(key) => {
+                write!(f, "conf key {} is accepted but has no effect (not implemented)", Bytes(key))
             }
         }
     }
@@ -567,8 +631,8 @@ mod linux {
     /// Read every source in priority order into a `Config`, printing each
     /// problem as `challoc: <source>: <issue>` on stderr. Aborts when
     /// `abort_conf` is set by the time all sources are read and anything was
-    /// reported. Never allocates: the file goes through a stack buffer and
-    /// the environment is walked in place.
+    /// reported, an inert key included. Never allocates: the file goes
+    /// through a stack buffer and the environment is walked in place.
     pub fn load() -> Config {
         let mut cfg = Config::DEFAULT;
         let mut issues = 0;
@@ -753,6 +817,17 @@ mod tests {
         cfg
     }
 
+    /// Parse a string whose only problems are inert keys (one report per
+    /// inert pair, `n` of them) and return the config.
+    fn inert(text: &str, n: usize) -> Config {
+        let (cfg, issues) = parse(text);
+        assert_eq!(issues.len(), n, "{text}: {issues:?}");
+        for issue in &issues {
+            assert!(issue.contains("accepted but has no effect"), "{text}: {issue}");
+        }
+        cfg
+    }
+
     #[test]
     fn defaults_match_the_design_table() {
         let d = Config::DEFAULT;
@@ -772,6 +847,8 @@ mod tests {
         assert!(!d.lazy_free);
         assert!(d.guards);
         assert_eq!(d.guard_slab_interval, 8);
+        assert_eq!(d.huge_retain_max, 64 << 20);
+        assert_eq!(d.huge_retain_max, crate::huge::DEFAULT_RETAIN_MAX);
         assert!(!d.zero_on_free && !d.slot_randomize && !d.double_free_scan && !d.abort_conf && !d.check_zero);
         assert!(d.cgroup);
         assert_eq!(Config::default(), d);
@@ -802,7 +879,8 @@ mod tests {
         ];
         for key in keys {
             for v in [true, false] {
-                let cfg = clean(&std::format!("{key}:{v}"));
+                let text = std::format!("{key}:{v}");
+                let cfg = if is_inert(key.as_bytes()) { inert(&text, 1) } else { clean(&text) };
                 assert_eq!(cfg.get(key.as_bytes()), Some(Value::Bool(v)), "{key}:{v}");
             }
             for bad in ["yes", "1", "TRUE", "", "truex"] {
@@ -834,7 +912,7 @@ mod tests {
     #[test]
     fn every_numeric_key_parses_and_clamps() {
         // (key, in-range value, below-min input, clamped min, above-max input, clamped max)
-        let cases: [(&str, i64, &str, i64, &str, i64); 9] = [
+        let cases: [(&str, i64, &str, i64, &str, i64); 10] = [
             ("dirty_decay_ms", 5000, "-2", -1, "9999999999999999", MAX_INTERVAL_MS),
             ("muzzy_decay_ms", 0, "-5", -1, "9999999999999999", MAX_INTERVAL_MS),
             ("narenas", 4, "-1", 0, "99999999999", u32::MAX as i64),
@@ -844,12 +922,12 @@ mod tests {
             ("tcache_gc_interval_ms", 250, "-1", 0, "9999999999999999", MAX_INTERVAL_MS),
             ("tcache_compact_shift", 4, "-1", 0, "64", MAX_COMPACT_SHIFT as i64),
             ("guard_slab_interval", 1, "-1", 0, "5000000", MAX_GUARD_SLAB_INTERVAL as i64),
+            ("huge_retain_max", 1 << 20, "-1", 0, "9999999999999999", MAX_HUGE_RETAIN_MAX as i64),
         ];
         for (key, ok, low, min, high, max) in cases {
             let as_value = |v: i64| match key {
-                "narenas" | "tcache_max" | "tcache_nslots_small_max" | "guard_slab_interval" | "tcache_compact_shift" => {
-                    Value::Uint(v as u64)
-                }
+                "narenas" | "tcache_max" | "tcache_nslots_small_max" | "guard_slab_interval" | "tcache_compact_shift"
+                | "huge_retain_max" => Value::Uint(v as u64),
                 _ => Value::Int(v),
             };
             let cfg = clean(&std::format!("{key}:{ok}"));
@@ -898,14 +976,69 @@ mod tests {
 
     #[test]
     fn thp_values() {
-        assert_eq!(clean("thp:always").thp, Thp::Always);
-        assert_eq!(clean("thp:never").thp, Thp::Never);
-        assert_eq!(clean("thp:default").thp, Thp::Never);
-        assert_eq!(clean("thp:always").get(b"thp"), Some(Value::Str("always")));
+        assert_eq!(inert("thp:always", 1).thp, Thp::Always);
+        assert_eq!(inert("thp:never", 1).thp, Thp::Never);
+        assert_eq!(inert("thp:default", 1).thp, Thp::Never);
+        assert_eq!(inert("thp:always", 1).get(b"thp"), Some(Value::Str("always")));
         let (cfg, issues) = parse("thp:madvise");
         assert_eq!(cfg.thp, Thp::Never);
         assert_eq!(issues.len(), 1);
         assert!(issues[0].contains("invalid conf value \"madvise\" for thp"));
+    }
+
+    /// The inert keys: stored and readable, but every one is reported so
+    /// that `abort_conf` rejects a configuration that relies on it; a bad
+    /// value is still a bad value, not an inert report.
+    #[test]
+    fn inert_keys_are_stored_reported_and_rejected_under_abort_conf() {
+        assert_eq!(INERT_KEYS.len(), 5);
+        for key in INERT_KEYS {
+            assert!(is_inert(key.as_bytes()), "{key}");
+            assert!(!IGNORED_KEYS.contains(key), "{key} cannot be both ignored and inert");
+            let value = if *key == "thp" { "always" } else { "true" };
+            let text = std::format!("{key}:{value}");
+            let (cfg, issues) = parse(&text);
+            assert_eq!(issues.len(), 1, "{text}: {issues:?}");
+            assert_eq!(
+                issues[0],
+                std::format!("conf key {key} is accepted but has no effect (not implemented)"),
+                "{text}"
+            );
+            match *key {
+                "thp" => assert_eq!(cfg.get(b"thp"), Some(Value::Str("always"))),
+                "stats_print" => {
+                    assert_eq!(cfg, Config::DEFAULT, "stats_print has no field");
+                    assert_eq!(cfg.get(b"stats_print"), None);
+                }
+                _ => assert_eq!(cfg.get(key.as_bytes()), Some(Value::Bool(true)), "{key}"),
+            }
+            let (cfg, issues) = parse(&std::format!("{key}:nonsense"));
+            assert_eq!(cfg, Config::DEFAULT, "{key}:nonsense changed the config");
+            assert_eq!(issues.len(), 1, "{key}:nonsense: {issues:?}");
+            assert!(issues[0].contains("invalid conf value"), "{key}:nonsense: {}", issues[0]);
+        }
+        for key in KEYS {
+            assert_eq!(is_inert(key.as_bytes()), INERT_KEYS.contains(key), "{key}");
+        }
+        assert!(!is_inert(b"double_free_scan"), "implemented since Phase 1.5 task 9");
+        // Mixed with real keys the real ones still apply and the inert ones
+        // are counted: what `load` aborts on under `abort_conf`.
+        let (cfg, issues) = parse("narenas:3,thp:always,cgroup:false,abort_conf:true,stats_print:true");
+        assert_eq!(cfg.narenas, 3);
+        assert!(cfg.abort_conf && !cfg.cgroup);
+        assert_eq!(issues.len(), 3);
+    }
+
+    #[test]
+    fn huge_retain_max_is_a_byte_count() {
+        assert_eq!(clean("huge_retain_max:0").huge_retain_max, 0);
+        assert_eq!(clean("huge_retain_max:0x100000").huge_retain_max, 1 << 20);
+        assert_eq!(clean("huge_retain_max:1099511627776").huge_retain_max, MAX_HUGE_RETAIN_MAX);
+        assert_eq!(clean("huge_retain_max:1").get(b"huge_retain_max"), Some(Value::Uint(1)));
+        let (cfg, issues) = parse("huge_retain_max:1099511627777");
+        assert_eq!(cfg.huge_retain_max, MAX_HUGE_RETAIN_MAX, "clamped to the huge region");
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].contains("out-of-range conf value \"1099511627777\" for huge_retain_max"), "{}", issues[0]);
     }
 
     #[test]
@@ -955,7 +1088,7 @@ mod tests {
     #[test]
     fn quoted_values_and_the_last_pair_win() {
         assert_eq!(clean("narenas:\"7\"").narenas, 7);
-        assert_eq!(clean("thp:\"always\"").thp, Thp::Always);
+        assert_eq!(inert("thp:\"always\"", 1).thp, Thp::Always);
         // A quoted value may contain a comma; an unbalanced quote is a value.
         let (cfg, issues) = parse("thp:\"al,ways\",narenas:2");
         assert_eq!(cfg.narenas, 2);
@@ -992,9 +1125,11 @@ mod tests {
                 Value::Uint(u) => std::format!("{u}"),
                 Value::Str(s) => s.into(),
             };
-            assert_eq!(clean(&std::format!("{key}:{value}")), cfg, "{key}:{value} round trip");
+            let text = std::format!("{key}:{value}");
+            let round = if is_inert(key.as_bytes()) { inert(&text, 1) } else { clean(&text) };
+            assert_eq!(round, cfg, "{key}:{value} round trip");
         }
-        assert_eq!(KEYS.len(), 20);
+        assert_eq!(KEYS.len(), 21);
         assert_eq!(cfg.get(b"nonsense"), None);
         assert_eq!(cfg.get(b""), None);
         for key in IGNORED_KEYS {
@@ -1098,17 +1233,17 @@ mod linux_tests {
     fn env_var_is_read_from_environ() {
         // This is the only test that mutates the environment.
         unsafe {
-            std::env::set_var("CHALLOC_CONF_TEST", "narenas:3,thp:always");
+            std::env::set_var("CHALLOC_CONF_TEST", "narenas:3,tcache:false");
             std::env::set_var("CHALLOC_CONF_TEST_EMPTY", "");
         }
-        assert_eq!(env_var(b"CHALLOC_CONF_TEST"), Some(&b"narenas:3,thp:always"[..]));
+        assert_eq!(env_var(b"CHALLOC_CONF_TEST"), Some(&b"narenas:3,tcache:false"[..]));
         assert_eq!(env_var(b"CHALLOC_CONF_TEST_EMPTY"), None);
         assert_eq!(env_var(b"CHALLOC_CONF_TES"), None, "prefix must not match");
         assert_eq!(env_var(b"CHALLOC_CONF_TEST_MISSING"), None);
         let mut cfg = Config::DEFAULT;
         assert_eq!(cfg.parse(env_var(b"CHALLOC_CONF_TEST").unwrap(), |_| {}), 0);
         assert_eq!(cfg.narenas, 3);
-        assert_eq!(cfg.thp, Thp::Always);
+        assert!(!cfg.tcache);
     }
 
     #[test]

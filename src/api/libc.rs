@@ -213,7 +213,7 @@ fn free_slow(p: *mut u8) {
 #[inline(never)]
 fn free_before_init(p: *mut u8) -> ! {
     crate::sys::abort_fmt(format_args!(
-        "challoc: {:#x} passed before any allocation: not an allocation",
+        "{:#x} passed before any allocation: not an allocation",
         p as usize
     ))
 }
@@ -229,7 +229,7 @@ pub fn usable_size(shared: &Shared, p: *mut u8) -> usize {
         }
         Kind::Huge { page } => shared.huge.usable_size(page),
         Kind::Invalid => crate::sys::abort_fmt(format_args!(
-            "challoc: {:#x} is not an allocation",
+            "{:#x} is not an allocation",
             p as usize
         )),
     }
@@ -275,7 +275,7 @@ pub fn realloc(p: *mut u8, size: usize) -> *mut u8 {
             old
         }
         Kind::Invalid => crate::sys::abort_fmt(format_args!(
-            "challoc: realloc of {:#x}: not an allocation",
+            "realloc of {:#x}: not an allocation",
             p as usize
         )),
     };

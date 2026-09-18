@@ -26,9 +26,9 @@
 //! released to the state of the arena that committed its slab, and a
 //! thread's heap keeps one cache per `(arena, class)` it has touched
 //! (`heap.rs`). Once a second arena exists `Shared::multi_arena` is set and
-//! the `free` fast path reads the descriptor's arena to pick the cache; with
-//! one arena that load is skipped, since every slab and every heap is arena
-//! 0.
+//! the `free` fast path reads the slab group's word in the class's owner
+//! array (`SlabTable`, never the descriptor) to pick the cache; with one
+//! arena that load is skipped, since every slab and every heap is arena 0.
 //!
 //! An explicit cache (`tcache.create`) is a [`Heap`] owned by no thread:
 //! same caches, same refill and flush, no TLS. It is not thread safe, as in

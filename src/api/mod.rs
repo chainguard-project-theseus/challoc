@@ -164,7 +164,7 @@ fn init_slow() -> &'static Shared {
             // The `INIT_TID` store happens before any allocation the init
             // thread could make, so a matching tid here is re-entry.
             if INIT_TID.load(Ordering::Relaxed) == sys::gettid() as u32 {
-                sys::abort("challoc: allocation during initialisation (re-entrant init)");
+                sys::abort("allocation during initialisation (re-entrant init)");
             }
             while STATE.load(Ordering::Acquire) != READY {
                 core::hint::spin_loop();
@@ -191,7 +191,7 @@ fn init() {
     unsafe {
         let ok = Shared::init((*SHARED.0.get()).as_mut_ptr(), regions, config, features.guard_install);
         if !ok {
-            sys::abort("challoc: metadata region too small for the allocator tables");
+            sys::abort("metadata region too small for the allocator tables");
         }
         (*FEATURES.0.get()).write(features);
     }
@@ -199,7 +199,7 @@ fn init() {
     // touch allocator locks.
     let rc = unsafe { ::libc::pthread_atfork(Some(fork_prepare), Some(fork_parent), Some(fork_child)) };
     if rc != 0 {
-        sys::abort_fmt(format_args!("challoc: pthread_atfork failed: {}", sys::Errno(rc)));
+        sys::abort_fmt(format_args!("pthread_atfork failed: {}", sys::Errno(rc)));
     }
 }
 

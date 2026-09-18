@@ -521,7 +521,7 @@ pub mod background {
             // SAFETY: a joinable thread this module created and never joined.
             let rc = unsafe { ::libc::pthread_join(t, core::ptr::null_mut()) };
             if rc != 0 {
-                sys::abort_fmt(format_args!("challoc: pthread_join of the background thread failed: {}", sys::Errno(rc)));
+                sys::abort_fmt(format_args!("pthread_join of the background thread failed: {}", sys::Errno(rc)));
             }
         }
         // Reserved once, then committed above the lowest page, which stays

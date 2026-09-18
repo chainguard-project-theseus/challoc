@@ -1166,6 +1166,10 @@ mod tests {
             assert_eq!(set(&name, 0u8), EPERM, "{name} must be read-only");
         }
         assert_eq!(call("opt.junk"), ENOENT, "accepted-and-ignored conf keys are not readable");
+        assert_eq!(call("opt.stats_print"), ENOENT, "the inert key without a field is not readable");
+        // `opt.huge_retain_max` reports the value the huge allocator uses.
+        assert_eq!(get::<c_uint>("opt.huge_retain_max") as usize, shared().huge.retain_max());
+        assert_eq!(get::<c_uint>("opt.huge_retain_max") as usize, crate::huge::DEFAULT_RETAIN_MAX);
         assert_eq!(get::<isize>("arena.0.dirty_decay_ms"), cfg.dirty_decay_ms as isize);
         // A background thread is neither requested by default nor running.
         let _ = get::<bool>("background_thread");

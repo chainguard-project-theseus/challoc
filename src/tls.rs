@@ -111,8 +111,10 @@ pub fn set(value: *mut c_void) {
 }
 
 /// Diagnostic export: read the calling thread's TLS slot. Exists so C test
-/// programs under `LD_PRELOAD` can drive the accessor directly; it is not
-/// part of any allocator API and may be removed once heaps exist.
+/// programs under `LD_PRELOAD` can drive the accessor directly and so
+/// `tests/c/common.h`'s `require_challoc` can tell that challoc, not
+/// glibc's malloc, is the loaded allocator; it is not part of any
+/// allocator API.
 #[unsafe(no_mangle)]
 pub extern "C" fn challoc_tls_get() -> *mut c_void {
     get()
