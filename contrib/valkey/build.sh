@@ -14,7 +14,8 @@
 #      include path and the challoc build directory as -L and rpath, so the
 #      binaries run from the tree without LD_LIBRARY_PATH;
 #   4. checks that valkey-server reports malloc=jemalloc-<v>-challoc and is
-#      dynamically linked against libchalloc.so;
+#      dynamically linked against libchalloc.so.0 (the soname, design 13.6;
+#      cargo writes the file as libchalloc.so, so the link is made here);
 #   5. runs the test suite through ./runtest: `unit/memefficiency` alone (the
 #      defrag tests), then the full suite. runtest wants a tclsh8.5, tclsh8.6
 #      or tclsh9.0 binary; Wolfi's tcl provides tclsh9.0.
@@ -56,6 +57,8 @@ step "challoc (quantum8) -> $CHALLOC_TARGET"
 cargo build --release --target-dir "$CHALLOC_TARGET" --no-default-features --features quantum8
 LIB=$CHALLOC_TARGET/release
 [ -f "$LIB/libchalloc.so" ] || { echo "valkey/build.sh: $LIB/libchalloc.so missing" >&2; exit 1; }
+# `-lchalloc` resolves the file; the loader then wants the soname next to it.
+ln -sf libchalloc.so "$LIB/libchalloc.so.0"
 
 # 2. Valkey source at the pinned tag, patched.
 step "valkey $VALKEY_TAG -> $SRC"
@@ -103,8 +106,8 @@ esac
 # No ldd in the image; read the dynamic section instead.
 dyn=$(readelf -d ./src/valkey-server)
 echo "$dyn" | grep -E 'NEEDED.*libchalloc|RUNPATH|RPATH' || true
-echo "$dyn" | grep -q 'NEEDED.*\[libchalloc.so\]' \
-    || { echo "valkey/build.sh: valkey-server has no DT_NEEDED libchalloc.so" >&2; exit 1; }
+echo "$dyn" | grep -q 'NEEDED.*\[libchalloc.so.0\]' \
+    || { echo "valkey/build.sh: valkey-server has no DT_NEEDED libchalloc.so.0" >&2; exit 1; }
 echo "$dyn" | grep -E 'RUNPATH|RPATH' | grep -q "$LIB" \
     || { echo "valkey/build.sh: valkey-server has no rpath to $LIB" >&2; exit 1; }
 [ -d deps/jemalloc/lib ] && { echo "valkey/build.sh: deps/jemalloc was built" >&2; exit 1; }

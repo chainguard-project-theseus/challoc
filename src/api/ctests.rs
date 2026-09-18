@@ -720,8 +720,8 @@ fn c_fuzz_single_thread_small_table() {
 /// Phase 1 task 6: the `jemalloc-soname` build staged by
 /// `scripts/jemalloc-compat.sh` (`make jemalloc-compat`; `make test` runs it
 /// after the release build). The staged `libjemalloc.so.2` carries that
-/// soname and exactly the export list of `libchalloc.so`, which itself has
-/// no soname; the `libjemalloc.so` link name and `jemalloc.pc` resolve
+/// soname and exactly the export list of `libchalloc.so`, whose own soname
+/// is `libchalloc.so.0` (design 13.6); the `libjemalloc.so` link name and `jemalloc.pc` resolve
 /// through `pkg-config`; and `tests/c/jemalloc_link.c`, linked with nothing
 /// but `$(pkg-config --cflags --libs jemalloc)`, records `libjemalloc.so.2`
 /// in `DT_NEEDED`, fails without the staging directory on the library path,
@@ -746,7 +746,10 @@ fn jemalloc_compat_stage() {
     let compat_dyn = dynamic(&so2);
     assert!(compat_dyn.contains("Library soname: [libjemalloc.so.2]"), "{so2} lacks the soname:\n{compat_dyn}");
     let default_dyn = dynamic(&default_so);
-    assert!(!default_dyn.contains("(SONAME)"), "the default build must not carry a soname:\n{default_dyn}");
+    assert!(
+        default_dyn.contains("Library soname: [libchalloc.so.0]"),
+        "the default build must carry the soname libchalloc.so.0:\n{default_dyn}"
+    );
 
     // The feature changes the soname and nothing else that is visible.
     let exports = |path: &str| -> std::collections::BTreeSet<String> {
