@@ -1,0 +1,13 @@
+# challoc scorecard, aarch64
+
+One line per (date, commit): the fixed row set under challoc and jemalloc, 3 interleaved rounds (bench/scorecard.sh, `make scorecard`, `challoc-bench scorecard <vm>`), as signed percentages against jemalloc (positive = challoc worse), RSS ratios challoc/jemalloc for larson10 and valkey1, and the most recent Valkey soak for the commit (challoc vs jemalloc: the worse of the two generators' throughput rows per phase, peak RSS, RSS after settle). Reference numbers are the GCE VMs' (bench/gce/README.md); a line from another machine says so in its note. `bench/scorecard.sh --render` prints this table sorted by date.
+
+Seeded 2026-09-18 from the GCE results files that contain the rows (the challoc variant named in the note, medians against the same file's jemalloc column; 5 rounds there, not 3); the 2026-09-16 Mac numbers are not included. larson16 from the Phase 0 set is its 16-thread larson row; that set's xmalloc-test is `-w 16`, not this table's `-w 10` row, so it reads "-".
+
+| date | commit | larson1 | larson10 | larson16 | xmalloc | alloc-test1 | alloc-testN | valkey1 | valkey1-free | cfrac | espresso | mstress | glibc-simple | redis | RSS larson10 | RSS valkey1 | soak write | soak delete | soak peak RSS | soak post-delete RSS | note |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 2026-09-17 | 166a464 | - | - | +11.9% | - | +4.0% | +1.9% | - | - | +1.0% | -1.8% | -43.6% | +0.0% | -13.4% | - | - | - | - | - | - | (from 2026-09-17-gce-c4a.md, the Phase 1.5 reference run, C4A) |
+| 2026-09-17 | e6b89c3 | +3.7% | +11.4% | - | +31.9% | +3.3% | +1.8% | - | - | - | - | - | - | - | 0.65 | - | +7.0% | +6.0% | +0.2% | -1.5% | (from 2026-09-17-aarch64-gce-slab-geometry.md run 3 `new`; soak from 2026-09-17-aarch64-gce-slab-geometry-soak2-valkey-soak.md) |
+| 2026-09-17 | cd9eda2 | +3.9% | +10.0% | +12.7% | +25.0% | +4.3% | +1.8% | - | - | - | - | - | - | - | 0.65 | - | - | - | - | - | (from 2026-09-17-aarch64-gce-narenas-default.md `old`; no soak for this commit) |
+| 2026-09-17 | 8408d72 | +4.6% | +4.2% | +3.1% | -15.4% | +4.1% | +2.1% | - | - | - | - | - | - | - | 0.89 | - | +7.7% | +4.5% | +0.6% | -0.6% | (from 2026-09-17-aarch64-gce-narenas-default.md `new`, task 4c; soak from 2026-09-17-aarch64-gce-narenas-default-valkey-soak.md) |
+| 2026-09-18 | c18979d | +4.9% | +3.8% | +2.1% | -15.3% | +4.1% | +2.1% | - | - | - | - | - | - | - | 0.90 | - | +11.1% | +7.3% | -0.1% | -6.9% | (from 2026-09-18-aarch64-gce-usable-size.md `old`; soak from 2026-09-18-aarch64-gce-valkey-throughput-soak1-valkey-soak.md: DURATION=600 with the perf sidecar attached, task 4d run 1) |

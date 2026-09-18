@@ -28,12 +28,22 @@
 #                            bench/results/<date>-<arch>.md (RESULT=path overrides;
 #                            HOST_KIND="..." names the machine in the header).
 #                            Native arch only.
-#   make quick               fast tier (bench/quick.sh, ~2 min on a VM): build the
+#   make quick               fast tier (bench/quick.sh, ~2.5 min on a VM): build the
 #                            working tree and OLD (default HEAD) into target/quick/,
-#                            one round of larson 1/10, xmalloc-test, alloc-test 1
-#                            and the churn probe under old, new and jemalloc; one
+#                            one round of larson 1/10, xmalloc-test, alloc-test 1,
+#                            the Valkey model (bench/probes/valkey_model.c, 5 s) and
+#                            the churn probe under old, new and jemalloc; one
 #                            table; exit 1 when new trails old by more than
-#                            QUICK_TOLERANCE (5) percent or does not compact
+#                            QUICK_TOLERANCE (5) percent or does not compact.
+#                            PERF=1 adds per-operation counters where perf exists
+#                            in the container (on the VMs: challoc-bench quick-perf)
+#   make scorecard           the fixed row set (larson 1/10/16, xmalloc, alloc-test 1/N,
+#                            valkey1, valkey1-free, cfrac, espresso, mstress,
+#                            glibc-simple, redis) under challoc (REV=tree) and
+#                            jemalloc, 3 interleaved rounds, one line appended to
+#                            bench/results/scorecard-<arch>.md as percentages vs
+#                            jemalloc plus the latest soak for the commit
+#                            (bench/scorecard.sh; RENDER=1 prints the trend table)
 #   make ab                  protocol tier A/B (bench/ab.sh): VARIANTS='old=HEAD~1
 #                            new=HEAD narenas16=HEAD~1:narenas:16 jemalloc', ROUNDS=5
 #                            plus warm-up, interleaved, sorted scores and median RSS
@@ -107,7 +117,7 @@ DOCKER_RUN = docker run --rm --platform $(PLATFORM) \
 	-v challoc-cargo-registry:/root/.cargo/registry \
 	$(GIT_MOUNT) $(DOCKER_FLAGS) $(IMAGE)
 
-.PHONY: image dev run build test test-host jemalloc-compat fuzz bench-build bench quick ab baseline valkey valkey-soak soak-quick soak-baseline ruby ruby-bench clean-volumes
+.PHONY: image dev run build test test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench clean-volumes
 
 image:
 	docker build --platform $(PLATFORM) -f Dockerfile.dev -t $(IMAGE) .
@@ -157,25 +167,34 @@ bench: image
 # Two-tier harness (bench/README.md). quick: ~2 min go/no-go for an
 # iteration; ab: the protocol-tier A/B that results files are written from;
 # baseline: cache the stock allocators' protocol rows for BASELINES=cached.
-QUICK_VARS = OLD NEW QUICK_TOLERANCE QUICK_BENCHES CHURN_SECS CHURN_CLASS CHURN_MAX_FRACTION BASELINES BASELINE_TOLERANCE QUICK_SANITY
+QUICK_VARS = OLD NEW QUICK_TOLERANCE QUICK_BENCHES CHURN_SECS CHURN_CLASS CHURN_MAX_FRACTION BASELINES BASELINE_TOLERANCE QUICK_SANITY PERF PERF_BENCHES QUICK_BUILD_ONLY VALKEY_MODEL_SECS VALKEY_MODEL_N PIN
 quick: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(QUICK_VARS),$(if $($(v)),-e $(v)="$($(v))"))
 quick: image
 	$(DOCKER_RUN) sh bench/quick.sh
 
-AB_VARS = VARIANTS ROUNDS BENCHES ADAPTIVE BASELINES BASELINE_TOLERANCE RESULT HOST_KIND TITLE
+AB_VARS = VARIANTS ROUNDS BENCHES ADAPTIVE BASELINES BASELINE_TOLERANCE RESULT HOST_KIND TITLE VALKEY_MODEL_SECS VALKEY_MODEL_N PIN
 ab: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(AB_VARS),$(if $($(v)),-e $(v)="$($(v))"))
 ab: image
 	$(DOCKER_RUN) sh bench/ab.sh
 
-baseline: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(if $(ROUNDS),-e ROUNDS="$(ROUNDS)") $(if $(BENCHES),-e BENCHES="$(BENCHES)") $(if $(ALLOCS),-e ALLOCS="$(ALLOCS)") $(if $(HOST_KIND),-e HOST_KIND="$(HOST_KIND)")
+baseline: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(if $(ROUNDS),-e ROUNDS="$(ROUNDS)") $(if $(BENCHES),-e BENCHES="$(BENCHES)") $(if $(ALLOCS),-e ALLOCS="$(ALLOCS)") $(if $(HOST_KIND),-e HOST_KIND="$(HOST_KIND)") $(if $(VALKEY_MODEL_SECS),-e VALKEY_MODEL_SECS="$(VALKEY_MODEL_SECS)")
 baseline: image
 	$(DOCKER_RUN) sh bench/baseline.sh
+
+# Scorecard (bench/scorecard.sh): the fixed row set under challoc (REV, default
+# the working tree) and jemalloc, 3 interleaved rounds through bench/ab.sh,
+# one line appended to bench/results/scorecard-<arch>.md; `make scorecard
+# RENDER=1` prints the table sorted by date.
+SCORECARD_VARS = REV ROUNDS ROWS BASELINES BASELINE_TOLERANCE HOST_KIND VALKEY_MODEL_SECS VALKEY_MODEL_N PIN SCORECARD_FILE
+scorecard: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(SCORECARD_VARS),$(if $($(v)),-e $(v)="$($(v))"))
+scorecard: image
+	$(if $(RENDER),sh bench/scorecard.sh --render,$(DOCKER_RUN) sh bench/scorecard.sh)
 
 valkey: DOCKER_FLAGS = $(if $(STAGE),-e STAGE=$(STAGE)) $(if $(TEST_FLAGS),-e TEST_FLAGS="$(TEST_FLAGS)")
 valkey: image
 	$(DOCKER_RUN) sh contrib/valkey/build.sh
 
-SOAK_VARS = ALLOCS DURATION SETTLE INTERVAL CHUNK VB_REQS KEYS SIZE MT_SIZES DEL_RATIO DEFRAG RESULT_DIR OCCUPANCY MS_INTERVAL BASELINES SAVE_BASELINE PORT
+SOAK_VARS = ALLOCS DURATION SETTLE INTERVAL CHUNK VB_REQS KEYS SIZE MT_SIZES DEL_RATIO KEY_PATTERN DEFRAG RESULT_DIR OCCUPANCY MS_INTERVAL BASELINES SAVE_BASELINE PORT
 valkey-soak: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(SOAK_VARS),$(if $($(v)),-e $(v)="$($(v))"))
 valkey-soak: image
 	$(DOCKER_RUN) sh bench/valkey-soak.sh

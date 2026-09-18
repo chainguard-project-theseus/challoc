@@ -54,7 +54,26 @@ bench/gce/challoc-bench ab arm64 VARIANTS='old=HEAD~1 new=HEAD narenas16=HEAD~1:
 bench/gce/challoc-bench fetch arm64                 # bring the results file back
 bench/gce/challoc-bench run arm64 'make baseline'   # once per VM: cached stock-allocator rows
 bench/gce/challoc-bench quick arm64 BASELINES=cached
+bench/gce/challoc-bench quick-perf arm64 [OLD=HEAD~1]   # per-operation counters for larson1 and
+                                                    # valkey1 under old, new, jemalloc (perf on the host)
+bench/gce/challoc-bench scorecard arm64             # the trend line for this commit, fetched back
 ```
+
+`quick-perf` is the `PERF=1` half of `quick.sh` for a machine where perf
+lives on the host: it syncs, runs `make quick QUICK_BUILD_ONLY=1` (the old
+and new libraries into `target/quick/`), then `bench/gce/quick-perf.sh` on
+the VM host starts each (row, variant) detached in the container with
+`sleep 1; exec env LD_PRELOAD=... <row>`, attaches `sudo perf stat -x,
+--inherit -p <container init pid>` before the exec, waits for the
+container, stops perf by killing its sleep child and prints cycles,
+instructions, L1D and dTLB misses per operation (raw files in
+`~/logs/quick-perf`). Extra `ROWS=`, `VARIANTS=`, `EVENTS=` arguments go to
+that script; `OLD=`/`NEW=` to the build. `scorecard` runs `make scorecard`
+(`bench/scorecard.sh`: the fixed row set under challoc and jemalloc, 3
+rounds, one line appended to `bench/results/scorecard-<arch>.md`) and then
+`fetch`, so the appended line lands in the local file without clobbering a
+newer local edit. Run it on both VMs after landing a change and commit the
+two lines with the PROGRESS commit.
 
 Every extra argument is a `VAR=value` for `make` and is quoted for the
 remote shell, so spaces inside `VARIANTS` survive. Both subcommands `sync`

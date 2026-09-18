@@ -19,6 +19,20 @@ STAMP=$(date -u +%FT%TZ)
 # Makefile does that).
 GIT="git -c safe.directory=*"
 JEMALLOC_LIB=/usr/lib/libjemalloc.so.2
+# The Valkey model rows (bench/probes/valkey_model.c): keys and seconds
+# (T/2 write, T/2 delete). quick.sh sets VALKEY_MODEL_SECS=5 before sourcing.
+VALKEY_MODEL_N=${VALKEY_MODEL_N:-850000}
+VALKEY_MODEL_SECS=${VALKEY_MODEL_SECS:-10}
+# The redis row (run.sh's recipe): port and request count.
+REDIS_PORT=${REDIS_PORT:-6379}
+REDIS_N=${REDIS_N:-1000000}
+# The ruby-churn row runs on the --without-jemalloc Ruby build (the same
+# binary under every allocator, LD_PRELOAD only), installed by ruby-bench.sh.
+RUBY_INST=$ROOT/target/ruby/install-glibc
+# PIN: empty/0 = off; 1 = pin the row to CPUs 0..threads-1; any other value is
+# a CPU list for bench/pin.c. An experiment for the xmalloc-test spread, see
+# bench/README.md; not part of any protocol.
+PIN=${PIN:-}
 
 die() { echo "${0##*/}: $*" >&2; exit 1; }
 loadavg() { cut -d' ' -f1-3 /proc/loadavg; }
@@ -40,9 +54,28 @@ ensure_bench_programs() {
     [ -e "$BIN/$p" ] || { echo "== bench programs missing ($p): running bench/build.sh"; sh "$ROOT/bench/build.sh" >"$ROOT/target/bench-build.log" 2>&1 || { tail -20 "$ROOT/target/bench-build.log" >&2; die "bench/build.sh failed"; }; break; }
   done
 }
-# ensure_churn: the churn probe (bench/probes/churn.c) is built on demand.
-ensure_churn() {
-  [ "$BIN/churn" -nt "$ROOT/bench/probes/churn.c" ] || cc -O2 -Wall -o "$BIN/churn" "$ROOT/bench/probes/churn.c" || die "churn.c did not compile"
+# ensure_probe NAME: bench/probes/NAME.c (churn, valkey_model) or bench/NAME.c
+# (pin) compiled on demand into $BIN/NAME; bench/build.sh builds them too.
+ensure_probe() {
+  src=$ROOT/bench/probes/$1.c; [ -f "$src" ] || src=$ROOT/bench/$1.c
+  [ -f "$src" ] || die "no source for probe $1"
+  mkdir -p "$BIN"
+  [ "$BIN/$1" -nt "$src" ] || cc -O2 -Wall -Wextra -Werror -o "$BIN/$1" "$src" || die "$1.c did not compile"
+}
+ensure_churn() { ensure_probe churn; }
+# ruby_available: 0 when the ruby-churn row can run. The --without-jemalloc
+# build (make ruby STAGE=build ALLOC=glibc) is installed into its prefix on
+# first use, as ruby-bench.sh does (the build directory's ruby has no stdlib
+# path). Prints why not on stderr otherwise.
+ruby_available() {
+  [ -x "$RUBY_INST/bin/ruby" ] && return 0
+  if [ -x "$ROOT/target/ruby/build-glibc/ruby" ]; then
+    echo "== installing the glibc Ruby build into ${RUBY_INST#"$ROOT"/} for the ruby-churn row" >&2
+    make -C "$ROOT/target/ruby/build-glibc" install > "$ROOT/target/ruby/install-glibc.log" 2>&1 && [ -x "$RUBY_INST/bin/ruby" ] && return 0
+    echo "ruby-churn: make install of target/ruby/build-glibc failed, see target/ruby/install-glibc.log" >&2; return 1
+  fi
+  echo "ruby-churn: skipped, no Ruby build under target/ruby (run 'make ruby STAGE=build ALLOC=glibc' first; the VMs have it, the Mac usually not)" >&2
+  return 1
 }
 
 # ---- protocol rows ----------------------------------------------------------
@@ -58,7 +91,11 @@ stock_lib() { # stock_lib ALLOC: LD_PRELOAD path for jemalloc|glibc|mimalloc, 1 
 is_stock() { case $1 in jemalloc|glibc|mimalloc) return 0;; *) return 1;; esac; }
 
 # bench_args BENCH: the command line of one row. larson/xmalloc rows are fixed
-# duration (5 s) and scored by the throughput they print; the rest by wall time.
+# duration (5 s) and scored by the throughput they print; the Valkey model
+# rows run VALKEY_MODEL_SECS and are scored by their write-phase M ops/s;
+# redis by redis-benchmark's k requests/s (run_row handles the server); the
+# rest by wall time. ruby-churn is bench/ruby/gc_churn.rb on the glibc Ruby
+# build and needs that build (ruby_available says why when it cannot run).
 bench_args() {
   case $1 in
     larson1)      echo "$BIN/larson 5 8 1000 5000 100 4141 1";;
@@ -73,11 +110,50 @@ bench_args() {
     espresso)     echo "$BIN/espresso $ROOT/target/bench-src/mimalloc-bench/bench/espresso/largest.espresso";;
     mstress)      echo "$BIN/mstress $PROCS 50 25";;
     glibc-simple) echo "$BIN/glibc-simple";;
+    valkey1)      echo "$BIN/valkey_model -n $VALKEY_MODEL_N -t $VALKEY_MODEL_SECS -s";;
+    valkey1-free) echo "$BIN/valkey_model -n $VALKEY_MODEL_N -t $VALKEY_MODEL_SECS -s -f free";;
+    redis)        echo "$BIN/redis-server";;
+    ruby-churn)   ruby_available || return 1
+                  echo "env LD_LIBRARY_PATH=$RUBY_INST/lib $RUBY_INST/bin/ruby --disable-gems $ROOT/bench/ruby/gc_churn.rb 10 10";;
     *) return 1;;
   esac
 }
-higher_is_better() { case $1 in larson*|xmalloc*) return 0;; *) return 1;; esac; }
-unit_of() { case $1 in larson*) echo "M ops/s";; xmalloc*) echo "M frees/s";; *) echo "s";; esac; }
+higher_is_better() { case $1 in larson*|xmalloc*|valkey*|redis) return 0;; *) return 1;; esac; }
+unit_of() { case $1 in larson*|valkey*) echo "M ops/s";; xmalloc*) echo "M frees/s";; redis) echo "k req/s";; *) echo "s";; esac; }
+# threads_of BENCH: how many CPUs the row keeps busy (for PIN=1).
+threads_of() {
+  case $1 in
+    larson1|alloc-test1|cfrac|espresso|glibc-simple|valkey*|ruby-churn) echo 1;;
+    larson10|xmalloc) echo 10;;
+    larson16) echo 16;;
+    alloc-testN) n=$PROCS; [ "$n" -gt 16 ] && n=16; echo "$n";;
+    redis) echo 2;;
+    *) echo "$PROCS";;
+  esac
+}
+# pin_cpus BENCH: the CPU list PIN selects for a row: PIN=1 gives CPUs
+# 0..threads-1 (a single-threaded row gets CPU 1, away from CPU 0's
+# interrupts, when the machine has one), anything else is taken verbatim.
+pin_cpus() {
+  case $PIN in
+    1) k=$(threads_of "$1"); [ "$k" -gt "$PROCS" ] && k=$PROCS
+       if [ "$k" -le 1 ]; then [ "$PROCS" -gt 1 ] && echo 1 || echo 0; else echo "0-$((k-1))"; fi;;
+    *) echo "$PIN";;
+  esac
+}
+# secs_of BENCH: the fixed duration of a throughput row ("-" for wall-time rows).
+secs_of() { case $1 in larson*|xmalloc*) echo 5;; valkey*) echo "$VALKEY_MODEL_SECS";; *) echo -;; esac; }
+# ops_of BENCH LOG: the operation count of a finished run, for per-operation
+# counters ("-" when the program reports none).
+ops_of() {
+  case $1 in
+    larson*)  awk '/Throughput/ {for (i=1;i<=NF;i++) if ($i=="time:") {t=$(i+1); sub(/s$/, "", t)}; printf "%.0f", $3*t}' "$2";;
+    xmalloc*) awk '/free\/sec/ {sub(",", "", $4); printf "%.0f", $4*1e6*5}' "$2";;
+    valkey*)  awk '/^ops / {for (i=2;i<=NF;i++) {split($i, p, "="); if (p[1]=="total") print p[2]}}' "$2";;
+    redis)    echo $((2 * REDIS_N));;   # lpush and lrange, REDIS_N requests each
+    *) echo "-";;
+  esac
+}
 
 # run_row BENCH LIB CONF TAG: one run of BENCH with LD_PRELOAD=LIB and
 # MALLOC_CONF=CONF (empty: unset). Appends "score maxrss_kb exit" to
@@ -88,9 +164,16 @@ run_row() {
   [ -f "$OUT/$tag.scores" ] || : > "$OUT/$tag.scores"
   n=$(wc -l < "$OUT/$tag.scores")
   log=$OUT/$tag.$n.out; rt=$OUT/$tag.$n.rt
-  bench_args "$bench" >/dev/null || die "unknown bench $bench"
+  bench_args "$bench" >/dev/null || die "unknown or unavailable bench $bench"
+  case $bench in valkey*) ensure_probe valkey_model;; esac
   set -- $(bench_args "$bench")
-  if [ -n "$conf" ]; then
+  if [ -n "$PIN" ] && [ "$PIN" != 0 ]; then
+    ensure_probe pin
+    set -- "$BIN/pin" "$(pin_cpus "$bench")" "$@"
+  fi
+  if [ "$bench" = redis ]; then
+    run_redis "$lib" "$conf" "$log" "$rt" "$@"
+  elif [ -n "$conf" ]; then
     RT_OUT=$rt "$BIN/rt" env MALLOC_CONF="$conf" LD_PRELOAD="$lib" "$@" > "$log" 2>&1 || true
   else
     RT_OUT=$rt "$BIN/rt" env LD_PRELOAD="$lib" "$@" > "$log" 2>&1 || true
@@ -99,10 +182,42 @@ run_row() {
   case $bench in
     larson*)  s=$(awk '/Throughput/ {printf "%.1f", $3/1e6}' "$log");;
     xmalloc*) s=$(awk '/free\/sec/ {sub(",", "", $4); print $4}' "$log");;
+    valkey*)  s=$(awk '/^ops / {for (i=2;i<=NF;i++) {split($i, p, "="); if (p[1]=="write_mops") print p[2]}}' "$log");;
+    redis)    s=$(awk '/requests per second/ {for(i=1;i<=NF;i++) if($(i+1)=="requests") v=$i} END {if (v) printf "%.1f", v/1e3}' "$log");;
     *)        s=$(awk -v e="$el" 'BEGIN {printf "%.3f", e}');;
   esac
   [ "$ex" = 0 ] || { s=-; echo "  $tag run $n failed (exit $ex), see $log" >&2; }
   echo "${s:--} $rss $ex" >> "$OUT/$tag.scores"
+}
+
+# run_redis LIB CONF LOG RT SERVER...: bench/run.sh's redis recipe. The
+# server runs under the allocator (RSS is the server's, from its own rt
+# line), the client is redis-benchmark -r 1000000 -n REDIS_N -P 16 lpush/lrange
+# and its wall time and exit status make the row's rt line.
+run_redis() {
+  lib=$1; conf=$2; log=$3; rt=$4; shift 4
+  srv_rt=$rt.server
+  : > "$srv_rt"
+  if [ -n "$conf" ]; then
+    RT_OUT=$srv_rt "$BIN/rt" env MALLOC_CONF="$conf" LD_PRELOAD="$lib" "$@" --port "$REDIS_PORT" --save "" --appendonly no --daemonize no --logfile /dev/null >/dev/null 2>&1 &
+  else
+    RT_OUT=$srv_rt "$BIN/rt" env LD_PRELOAD="$lib" "$@" --port "$REDIS_PORT" --save "" --appendonly no --daemonize no --logfile /dev/null >/dev/null 2>&1 &
+  fi
+  i=0
+  until [ "$("$BIN/redis-cli" -p "$REDIS_PORT" ping 2>/dev/null)" = PONG ]; do
+    i=$((i+1)); [ $i -gt 100 ] && { echo "redis-server did not start (port $REDIS_PORT busy?)" >&2; echo "0 0 0 0 1" > "$rt"; return; }
+    sleep 0.1
+  done
+  "$BIN/redis-cli" -p "$REDIS_PORT" flushall >/dev/null
+  RT_OUT=$rt.client "$BIN/rt" "$BIN/redis-benchmark" -p "$REDIS_PORT" -r 1000000 -n "$REDIS_N" -q -P 16 lpush a 1 2 3 4 5 lrange a 1 5 2>&1 | tr '\r' '\n' > "$log" || true
+  "$BIN/redis-cli" -p "$REDIS_PORT" shutdown nosave >/dev/null 2>&1 || true
+  wait
+  # elapsed/user/sys from the client, maxrss from the server, exit = client's
+  # or 1 when the server's rt line is missing.
+  awk 'FNR==NR {c=$0} FILENAME!=ARGV[1] {s=$0} END {
+    split(c, a, " "); split(s, b, " ")
+    if (!length(s)) b[4]="-"
+    printf "%s %s %s %s %s\n", a[1], a[2], a[3], b[4], (length(s) ? a[5] : 1) }' "$rt.client" "$srv_rt" > "$rt"
 }
 
 # run_churn LIB CONF TAG SECS CLASS: the churn probe (bench/probes/churn.c,

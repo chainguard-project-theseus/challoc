@@ -62,7 +62,11 @@ fi
 
 echo "== helpers"
 cc -O2 -Wall -Wextra -Werror "$ROOT/bench/rt.c" -o "$BIN/rt"
+cc -O2 -Wall -Wextra -Werror "$ROOT/bench/pin.c" -o "$BIN/pin"
 cc -O2 -Wall -Wextra -Werror -fPIC -shared "$ROOT/bench/sampler.c" -o "$BIN/sampler.so" -ldl
+# The probes bench/lib.sh runs as rows (also compiled on demand there).
+cc -O2 -Wall -Wextra -Werror "$ROOT/bench/probes/churn.c" -o "$BIN/churn"
+cc -O2 -Wall -Wextra -Werror "$ROOT/bench/probes/valkey_model.c" -o "$BIN/valkey_model"
 
 echo "== versions"
 {

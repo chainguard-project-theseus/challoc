@@ -7,9 +7,12 @@ never used for numbers.
     make bench            build the programs (once), cargo build --release,
                           run the protocol, write bench/results/<date>-<arch>.md
     make bench-build      just fetch and build the programs
-    make quick [OLD=rev]  fast tier: ~2 min go/no-go for the working tree vs OLD
+    make quick [OLD=rev]  fast tier: ~2.5 min go/no-go for the working tree vs OLD
+                          (PERF=1 adds per-op counters where perf exists)
     make ab VARIANTS=...  protocol tier A/B: the table results files are made of
     make baseline         cache jemalloc/glibc/mimalloc protocol rows for this machine
+    make scorecard        the fixed row set vs jemalloc, one line appended to
+                          bench/results/scorecard-<arch>.md; RENDER=1 prints the trend
     make valkey-soak      Valkey soak under challoc and its bundled jemalloc
                           (Phase 1 task 8); needs `make valkey STAGE=build`
     make soak-quick       challoc-only 600 s soak vs the cached jemalloc soak
@@ -32,9 +35,10 @@ committed one) via `git archive` into `target/quick/old`, checks that both
 compiled and that the two `.so` files differ exactly when the sources do
 (paths are remapped, so identical sources give an identical library and a
 comment-only change is reported as "byte-identical"), then runs one round
-of `larson` 1 and 10 threads, `xmalloc-test -w 10 -t 5 -s 64`, `alloc-test 1`
-and the churn probe (`bench/probes/churn.c`, 1 KiB class, 8 s) under old, new
-and jemalloc, and prints one table:
+of `larson` 1 and 10 threads, `xmalloc-test -w 10 -t 5 -s 64`, `alloc-test 1`,
+the Valkey model (`valkey1`, below, 5 s: `VALKEY_MODEL_SECS`) and the churn
+probe (`bench/probes/churn.c`, 1 KiB class, 8 s) under old, new and
+jemalloc, and prints one table:
 
     | row | unit | old | new | jemalloc | new vs old | new vs jemalloc |
     | larson1 | M ops/s | 44.5 (13.3 MiB) | 44.6 (13.4 MiB) | 45.1 (18.2 MiB) | -0.2% | +1.1% |
@@ -51,7 +55,102 @@ median, because one larson round spreads 5..9% on the reference VMs; rows
 that pass are not rerun. One round is a signal, not a measurement:
 a fail means abandon or rework, a pass means run the protocol tier. Numbers
 from `quick` are never written to `bench/results/` and never compared with
-a criterion. Knobs: `QUICK_BENCHES`, `CHURN_SECS`, `CHURN_CLASS`, `NEW=rev`.
+a criterion. Knobs: `QUICK_BENCHES`, `CHURN_SECS`, `CHURN_CLASS`, `NEW=rev`,
+`VALKEY_MODEL_SECS`.
+
+`PERF=1` appends a per-operation counter table for `PERF_BENCHES` (`larson1
+valkey1`) under old, new and jemalloc: cycles, instructions, L1D misses and
+dTLB misses per operation from one `perf stat -x,` run each, divided by the
+operation count the program prints (`bench/lib.sh ops_of`). It needs `perf`
+in the container, which Wolfi does not have, so on the Mac it prints a note
+and on the VMs the same table comes from `challoc-bench quick-perf <vm>`:
+that syncs, runs `make quick QUICK_BUILD_ONLY=1` (builds only), then
+`bench/gce/quick-perf.sh` on the VM host starts each row detached in the
+container (`sleep 1; exec ...`), attaches `sudo perf stat --inherit -p` to
+the container's init pid before the exec, waits, kills perf's sleep child,
+and prints the table (raw files under `~/logs/quick-perf`). For `valkey1`
+the per-operation figures are over the whole process (the fill and both
+phases, divided by the two phases' operation count), so they average the
+full-heap SETs with the delete phase's cheap misses; the row's score stays
+the write phase. The counters are for
+attribution (which mechanism a change moved), never for the gate.
+
+**Target-shaped rows.** The larson/xmalloc/alloc-test rows have working
+sets of a few MiB and cannot see what Valkey does to the allocator (a 550
+MiB heap whose slab descriptors miss cache on every free of a random key,
+`bench/results/2026-09-18-aarch64-gce-valkey-throughput.md`), so
+`bench/lib.sh` has rows shaped like the targets:
+
+- `valkey1` and `valkey1-free`: `bench/probes/valkey_model.c`, a
+  single-thread model of the soak's server. 850k keys (`VALKEY_MODEL_N`),
+  each a 40-byte entry, a 24-byte key, a 16-byte object and a value drawn
+  uniformly from 16..1024 bytes plus a 5-byte sds header (about 500 MiB
+  live, quantum8-like sizes across the classes Valkey uses); an initial
+  fill, then `VALKEY_MODEL_SECS/2` seconds of SET over random keys
+  (overwrite: allocate the new value and object, free the old pair; the
+  heap stays full) and `VALKEY_MODEL_SECS/2` seconds of DEL:SET 4:1 over
+  random keys (a DEL of a missing key is a miss, as memtier's are; the key
+  count drains toward 20% as in the soak's delete phase). `valkey1` frees
+  through `sdallocx(ptr, size, 0)` when the loaded allocator exports it
+  (weak reference: challoc and jemalloc do, glibc and mimalloc fall back to
+  `free` and the log says so), `valkey1-free` forces plain `free`
+  (`-f free`; `-f sdallocx` refuses to run without the symbol). Scored by
+  the write phase's M ops/s (the phase whose gap the soak shows widest and
+  the one that reproduces the large-heap free miss); the delete phase's
+  rate, the RSS after it and, with a `mallctl`-exporting allocator,
+  allocated/active/resident at each phase end are in the log (`-s`). RSS in
+  the tables is the run's peak. Run it by hand:
+  `LD_PRELOAD=target/release/libchalloc.so target/bench-bin/valkey_model -n 100000 -t 3 -s`.
+- `redis`: `run.sh`'s recipe as a `lib.sh` row (server under `LD_PRELOAD`,
+  `redis-benchmark -r 1000000 -n 1000000 -P 16 lpush/lrange`, k req/s, RSS
+  is the server's), so `ab` and the scorecard can run it.
+- `ruby-churn`: `bench/ruby/gc_churn.rb 10 10` on the `--without-jemalloc`
+  Ruby build (`target/ruby/install-glibc`, installed on first use from
+  `make ruby STAGE=build ALLOC=glibc`'s build directory), the same binary
+  under every allocator with `LD_PRELOAD` only; wall seconds. Skipped with
+  a note when that build does not exist (the VMs have it, the Mac usually
+  not). `ruby-bench.sh` remains the full Ruby protocol.
+
+**Scorecard: `bench/scorecard.sh`, `make scorecard`, `challoc-bench
+scorecard <vm>`.** The trend record. One run measures the fixed row set
+`larson1 larson10 larson16 xmalloc alloc-test1 alloc-testN valkey1
+valkey1-free cfrac espresso mstress glibc-simple redis` under challoc
+(`REV`, default the working tree) and jemalloc through `ab.sh` (`ROUNDS` 3
+timed rounds plus warm-up, interleaved; `BASELINES=cached` allowed, with
+its sanity round, when the cache covers every row: `make baseline
+BENCHES="<the rows>"`), and appends one line for (date, commit) to
+`bench/results/scorecard-<arch>.md`: every row as a signed percentage
+against jemalloc (positive = challoc worse), the RSS ratio challoc/jemalloc
+for `larson10` and `valkey1`, and a soak column group (write and delete
+throughput, peak RSS, RSS after settle, each challoc vs jemalloc; the worse
+of the two generators' rows per phase) read from the most recent Valkey
+soak summary for the same commit on that architecture under
+`bench/results/` or `target/valkey/soak-quick/`, "-" when there is none. A
+line for the same (date, commit) is replaced. About 8 minutes on a VM (6
+with the cache). `bench/scorecard.sh --render [aarch64|x86_64]` prints the
+table(s) sorted by date and works on the host. The two files were seeded
+from the GCE results files (the `(from ...)` note names the source; the
+2026-09-16 Mac numbers are not in them). After landing a change, run the
+scorecard on both VMs and commit the appended lines with the PROGRESS
+commit (`scripts/ralph-prompt.md`).
+
+**Noise.** `xmalloc-test -w 10` spreads about 20% between rounds of the
+same binary on aarch64 (`2026-09-17-aarch64-gce-slab-geometry.md` run 2).
+`PIN=1` in `run_row` (any tier; `PIN=<cpulist>` for an explicit list) runs
+the row under `bench/pin.c` (a `taskset` stand-in: Wolfi has none), pinning
+the process to CPUs 0..threads-1 of the row (`threads_of`; a
+single-threaded row goes to CPU 1). Default off. This is an experiment for
+the next VM session to evaluate against unpinned rounds of the same
+binary; nothing here claims it reduces the spread, and no results file
+uses it yet. The soak has its own artifact: memtier's default fixed-seed
+key stream replays the same keys every run and covers the keyspace
+partially, which pins about 2200 values per class through the delete phase
+(`2026-09-17-aarch64-gce-compacting-cache-soak3.md`), so the post-delete
+RSS row partly measures slab geometry under pinned objects.
+`KEY_PATTERN=uniform` in `valkey-soak.sh` gives memtier `--randomize`
+(time-seeded) with random key patterns in both phases; the default (`stock`)
+is unchanged and remains the acceptance protocol, and the summary header
+says which ran.
 
 **Protocol tier: `bench/ab.sh`, `make ab`, `challoc-bench ab <vm>`.** The
 A/B that results files are written from, replacing the `.tmp-itNN-inner.sh`
@@ -108,12 +207,17 @@ unchanged and remains the acceptance run.
 Files:
 
 - `lib.sh`: what the tiers share: the protocol rows as command lines
-  (`bench_args`), running and scoring one row (`run_row`), the churn probe
-  (`run_churn`), building a variant from a rev or the working tree with its
-  own `CARGO_TARGET_DIR` and remapped paths (`build_lib`), sorted lists,
+  (`bench_args`, including `valkey1`, `valkey1-free`, `redis`,
+  `ruby-churn`), running and scoring one row (`run_row`, `run_redis`, the
+  `PIN` experiment), operation counts for per-op counters (`ops_of`), the
+  churn probe (`run_churn`), probes compiled on demand (`ensure_probe`),
+  building a variant from a rev or the working tree with its own
+  `CARGO_TARGET_DIR` and remapped paths (`build_lib`), sorted lists,
   medians, overlap and percentage helpers, the baseline file name and row
   parser, and the bench lock shared with `run.sh`.
-- `quick.sh`, `ab.sh`, `baseline.sh`: the two tiers and the cache, above.
+- `quick.sh`, `ab.sh`, `baseline.sh`, `scorecard.sh`: the two tiers, the
+  cache and the trend record, above.
+- `pin.c`: `sched_setaffinity` to a CPU list, then exec (`PIN=1`).
 
 - `build.sh`: clones pinned mimalloc-bench, redis 6.2.7 and mimalloc, builds
   `cfrac espresso larson mstress xmalloc-test alloc-test glibc-simple`,
@@ -147,7 +251,9 @@ Files:
   allocator); `DURATION=120 SETTLE=30 CHUNK=10 VB_REQS=1000000
   RESULT_DIR=target/valkey/soak-results` is a five-minute smoke run.
   `OCCUPANCY=1` adds the per-class occupancy sidecar, `BASELINES=cached`
-  and `SAVE_BASELINE=1` are the quick-soak cache (above).
+  and `SAVE_BASELINE=1` are the quick-soak cache (above), `KEY_PATTERN=uniform`
+  the time-seeded memtier key stream ("Noise", above; not the acceptance
+  protocol).
 - `ruby-bench.sh`, `ruby/gc_churn.rb`: the Ruby rows (docs/plan.md Phase 1.5
   task 4b). The `--with-jemalloc` Ruby from `contrib/ruby/build.sh` runs
   under challoc's `libjemalloc.so.2` stage (re-staged from the working tree)
@@ -170,13 +276,16 @@ Files:
   directory's ruby has no stdlib path).
 - `probes/`: `churn.c` (the post-delete steady-state model `quick` runs;
   `churn-run.sh` runs it by hand with the cache knobs, `CHURN_SECS`),
+  `valkey_model.c` (the Valkey model behind the `valkey1` rows, above),
   `binsample.c` (per-second bin row sidecar), `soak-occupancy.sh` (now a
   wrapper over `valkey-soak.sh OCCUPANCY=1`), `valkey-perf-sidecar.sh` (root, on
   the GCE VM host beside a detached soak: `perf stat -I 1000` for each
   `valkey-server`'s life, 60 s `perf record` windows in the write and delete
   phases, `INFO commandstats` and per-thread CPU snapshots; task 4d).
 - `results/`: one file per run, named `<date>-<arch>.md`, with the commit
-  hash, toolchain versions, kernel and CPU in the header.
+  hash, toolchain versions, kernel and CPU in the header; plus the two
+  scorecards `scorecard-aarch64.md` and `scorecard-x86_64.md`, one line per
+  (date, commit), appended by `scorecard.sh`.
 
 Benchmark programs and their parameters follow mimalloc-bench's `bench.sh`
 (`larson 5 8 1000 5000 100 4141 N`, `mstress N 50 25`, `xmalloc-test -w N -t 5

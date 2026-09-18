@@ -19,7 +19,8 @@
 #       `narenas16=HEAD~1:narenas:16` costs no extra compile next to `old=HEAD~1`.
 #   ROUNDS=5                 timed rounds (plus one warm-up)
 #   BENCHES="larson1 larson10 larson16 xmalloc alloc-test1 alloc-testN"
-#       rows from bench/lib.sh bench_args (also larsonN xmallocN cfrac espresso mstress glibc-simple)
+#       rows from bench/lib.sh bench_args (also larsonN xmallocN valkey1 valkey1-free
+#       cfrac espresso mstress glibc-simple redis ruby-churn)
 #   ADAPTIVE=1               stop after 3 timed rounds when, on every bench, no two
 #                            variants' sorted lists overlap (the answer is already clear)
 #   BASELINES=cached         stock variants come from target/baselines/<arch>-<hash>.md
@@ -33,6 +34,8 @@
 #   HOST_CPU, HOST_KIND      recorded in the header (the Makefile passes HOST_CPU)
 #   TITLE="A/B"              first heading word
 #   OUT=target/ab/out        raw logs and score files
+#   VALKEY_MODEL_SECS=10     seconds of the valkey1 / valkey1-free rows (bench/lib.sh)
+#   PIN=                     1 or a CPU list: run every row under bench/pin.c (experiment)
 set -eu
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
@@ -76,7 +79,7 @@ done
 NAMES=${NAMES# }
 v_rev() { cat "$OUT/v/$1.rev"; }; v_conf() { cat "$OUT/v/$1.conf"; }; v_lib() { cat "$OUT/v/$1.lib"; }
 v_cached() { [ "$(cat "$OUT/v/$1.cached")" = 1 ]; }
-for b in $BENCHES; do bench_args "$b" >/dev/null || die "unknown bench $b"; done
+for b in $BENCHES; do bench_args "$b" >/dev/null || die "unknown or unavailable bench $b"; done
 
 BASELINE=
 if [ "$BASELINES" = cached ]; then
@@ -187,7 +190,7 @@ first=${NAMES%% *}
   sed 's/^/- /' "$BIN/versions.txt" | grep -E 'mimalloc-bench|jemalloc-[0-9]|rust-' || true
   echo "- load average at start: $LOAD0; at end: $(loadavg); $(( $(date +%s) - T_START )) s total"
   echo "- method: $DONE_ROUNDS timed rounds after one discarded warm-up$([ "$DONE_ROUNDS" != "$ROUNDS" ] && echo " (ADAPTIVE stop, $ROUNDS asked)"), variants interleaved per round, every run's score listed sorted; RSS is bench/rt's median maxrss (KiB) over the timed runs; identical binaries, only LD_PRELOAD and MALLOC_CONF change. Positive percentages mean the variant did worse than $first."
-  echo "- programs: larson 5 8 1000 5000 100 4141 N (larsonN), M ops/s, higher is better; xmalloc-test -w 10 -t 5 -s 64 (xmalloc), M frees/s, higher is better; alloc-test 1 and alloc-test min(nproc,16) (alloc-testN), seconds, lower is better; others: wall seconds"
+  echo "- programs: larson 5 8 1000 5000 100 4141 N (larsonN), M ops/s, higher is better; xmalloc-test -w 10 -t 5 -s 64 (xmalloc), M frees/s, higher is better; alloc-test 1 and alloc-test min(nproc,16) (alloc-testN), seconds, lower is better; valkey_model -n $VALKEY_MODEL_N -t $VALKEY_MODEL_SECS (valkey1: frees through sdallocx where exported; valkey1-free: plain free), write-phase M ops/s, higher is better, RSS is the peak (bench/probes/valkey_model.c); redis: redis-benchmark -r 1000000 -n $REDIS_N -P 16 lpush/lrange, k req/s, RSS is redis-server's; ruby-churn: bench/ruby/gc_churn.rb 10 10 on the glibc Ruby build; others: wall seconds$([ -n "$PIN" ] && [ "$PIN" != 0 ] && echo "; PIN=$PIN (rows pinned with bench/pin.c, an experiment)")"
   echo "- variants:"
   for v in $NAMES; do echo "  - $v: $(describe "$v")"; done
   if [ -n "$BASELINE" ]; then

@@ -24,6 +24,11 @@
 #                                                          # sync, then `make quick` (fast tier, ~2 min)
 #   bench/gce/challoc-bench ab        arm64|amd64 VARIANTS='old=HEAD~1 new=HEAD jemalloc' [VAR=val...]
 #                                                          # sync, then `make ab` (protocol tier)
+#   bench/gce/challoc-bench quick-perf arm64|amd64 [OLD=rev] [ROWS='larson1 valkey1'] [VARIANTS='old new jemalloc']
+#                                                          # sync, build old/new, then per-operation counters
+#                                                          # (bench/gce/quick-perf.sh, perf attached from the host)
+#   bench/gce/challoc-bench scorecard arm64|amd64 [REV=rev] [VAR=val...]
+#                                                          # sync, `make scorecard` on the VM, fetch the file back
 #   bench/gce/challoc-bench pmu-check arm64|amd64|all      # perf stat the six reference events
 #   bench/gce/challoc-bench perf-stat arm64|amd64 'DOCKER_CMD'  # perf stat -p the container's process
 #   bench/gce/challoc-bench fetch     arm64|amd64          # pull bench/results/* back from the VM
@@ -200,6 +205,30 @@ cmd_ab() {
   cmd_run "$t" "make ab $(quoted "$@")"
 }
 
+# quick-perf: the PERF=1 half of quick.sh with perf on the VM host. Sync,
+# build old and new in the container (`make quick QUICK_BUILD_ONLY=1`, with
+# OLD=/NEW= if given), then bench/gce/quick-perf.sh runs the rows detached
+# and attaches `sudo perf stat --inherit -p` from the host; remaining
+# arguments (ROWS=, VARIANTS=, EVENTS=, OUTDIR=) go to that script.
+cmd_quick_perf() {
+  local t="$1"; shift
+  local a mk=() qp=()
+  for a in "$@"; do case "$a" in OLD=*|NEW=*) mk+=("$a");; *) qp+=("$a");; esac; done
+  cmd_sync "$t"
+  cmd_run "$t" "make quick QUICK_BUILD_ONLY=1 $(quoted ${mk[@]+"${mk[@]}"})"
+  cmd_run "$t" "bash bench/gce/quick-perf.sh $t $(quoted ${qp[@]+"${qp[@]}"})"
+}
+
+# scorecard: sync, `make scorecard` on the VM (bench/scorecard.sh appends
+# one line to bench/results/scorecard-<arch>.md), then fetch the results
+# directory back (fetch never overwrites a newer local file).
+cmd_scorecard() {
+  local t="$1"; shift
+  cmd_sync "$t"
+  cmd_run "$t" "make scorecard $(quoted "$@")"
+  cmd_fetch "$t"
+}
+
 # pmu-check proves the PMU is real: every reference event must count
 # non-zero on a short busy loop. Fails loudly if any reads <not supported>
 # or 0.
@@ -299,6 +328,8 @@ case "$cmd" in
   make)      cmd_make "$@" ;;
   quick)     cmd_quick "$@" ;;
   ab)        cmd_ab "$@" ;;
+  quick-perf) cmd_quick_perf "$@" ;;
+  scorecard) cmd_scorecard "$@" ;;
   pmu-check) cmd_pmu_check "$@" ;;
   perf-stat) cmd_perf_stat "$@" ;;
   fetch)     cmd_fetch "$@" ;;
@@ -308,5 +339,5 @@ case "$cmd" in
   stop)      cmd_stop "$@" ;;
   session)   cmd_session "$@" ;;
   delete)    cmd_delete "$@" ;;
-  *) sed -n '2,48p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,53p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac
