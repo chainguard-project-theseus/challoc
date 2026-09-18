@@ -769,7 +769,7 @@ jemalloc names where they exist:
 | `thp`                     | never   | `never`, `always`; inert (planned)      |
 | `lazy_free`               | false   | use `MADV_FREE` for purge               |
 | `guards`                  | true    | guard slabs and huge runs               |
-| `guard_slab_interval`     | 8       | one guard per N x 64 KiB of slabs       |
+| `guard_slab_interval`     | 8       | one guard per N x 64 KiB of slabs; 0 off, 1 out of range (clamps to 2) |
 | `huge_retain_max`         | 67108864 | challoc only; bytes; freed huge runs above it are purged at once (7) |
 | `zero_on_free`            | false   | inert (planned, Phase 2 task 3)         |
 | `slot_randomize`          | false   | inert (planned, Phase 2 task 3)         |

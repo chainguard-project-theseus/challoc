@@ -236,7 +236,16 @@ impl Config {
             b"lazy_free" => self.lazy_free = parse_bool(value).ok_or_else(bad)?,
             b"guards" => self.guards = parse_bool(value).ok_or_else(bad)?,
             b"guard_slab_interval" => {
-                return num(self, 0, MAX_GUARD_SLAB_INTERVAL as i64, |c, v| c.guard_slab_interval = v as u32);
+                // 0 is off and N >= 2 is one guard per N x 64 KiB; 1 would
+                // make every slab a guard and leave nothing to allocate
+                // (`SlabTable::new` refuses it), so it is out of range and
+                // clamps to the smallest interval with any slabs, 2.
+                let r = num(self, 0, MAX_GUARD_SLAB_INTERVAL as i64, |c, v| c.guard_slab_interval = v as u32);
+                if self.guard_slab_interval == 1 {
+                    self.guard_slab_interval = 2;
+                    return Err(Issue::OutOfRange { key, value });
+                }
+                return r;
             }
             b"huge_retain_max" => {
                 return num(self, 0, MAX_HUGE_RETAIN_MAX as i64, |c, v| c.huge_retain_max = v as usize);
@@ -936,7 +945,7 @@ mod tests {
             ("lg_tcache_nslots_mul", 3, "-17", -16, "17", 16),
             ("tcache_gc_interval_ms", 250, "-1", 0, "9999999999999999", MAX_INTERVAL_MS),
             ("tcache_compact_shift", 4, "-1", 0, "64", MAX_COMPACT_SHIFT as i64),
-            ("guard_slab_interval", 1, "-1", 0, "5000000", MAX_GUARD_SLAB_INTERVAL as i64),
+            ("guard_slab_interval", 2, "-1", 0, "5000000", MAX_GUARD_SLAB_INTERVAL as i64),
             ("huge_retain_max", 1 << 20, "-1", 0, "9999999999999999", MAX_HUGE_RETAIN_MAX as i64),
         ];
         for (key, ok, low, min, high, max) in cases {
@@ -1236,7 +1245,12 @@ mod tests {
     fn guards_off_zeroes_the_interval() {
         assert_eq!(clean("guards:false").effective_guard_slab_interval(), 0);
         assert_eq!(clean("guard_slab_interval:0").effective_guard_slab_interval(), 0);
-        assert_eq!(clean("guard_slab_interval:1").effective_guard_slab_interval(), 1);
+        assert_eq!(clean("guard_slab_interval:2").effective_guard_slab_interval(), 2);
+        // 1 would leave no slabs to allocate: out of range, clamped to 2.
+        let (cfg, issues) = parse("guard_slab_interval:1");
+        assert_eq!(cfg.effective_guard_slab_interval(), 2);
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].contains("out-of-range conf value \"1\" for guard_slab_interval"), "{}", issues[0]);
         assert_eq!(clean("tcache_gc_interval_ms:0").gc_interval_ns(), 0);
         assert_eq!(clean("tcache_gc_interval_ms:1").gc_interval_ns(), 1_000_000);
     }

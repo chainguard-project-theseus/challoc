@@ -694,6 +694,20 @@ impl SlabTable {
         self.group as usize
     }
 
+    /// Tests: write `arena` into the owner word of `group` (committing its
+    /// page first), a wild write into the owner array for `take_group`'s
+    /// cross-check to find.
+    #[cfg(test)]
+    pub(crate) fn corrupt_owner_word(&self, meta: &Meta, group: usize, arena: u16) {
+        let page = 1usize << self.lg_page;
+        let stagger = desc_stagger(self.class as usize);
+        let mut g = self.inner.lock();
+        g.owners.ensure(meta, page, stagger + group * 2 + 2).expect("owner page");
+        drop(g);
+        // SAFETY: the word's page was just committed.
+        unsafe { (*((self.owners_base + group * 2) as *const AtomicU16)).store(arena, Ordering::Relaxed) };
+    }
+
     /// Number of slabs (including guard slabs) handed to an arena: their
     /// descriptors, bits and owner words exist (see the field).
     #[inline]
@@ -958,6 +972,24 @@ impl SlabTable {
         g.bits.ensure(meta, page, stagger + (end * cls.slab_bits()).div_ceil(8)).ok()?;
         g.owners.ensure(meta, page, stagger + ((end - 1) >> self.lg_group) * 2 + 2).ok()?;
         ensure_sets(end - 1).ok()?;
+        // The owner word and the descriptors' arena field record the same
+        // fact (design section 4) and are written together only here, so
+        // a group about to be handed out must show them agreeing: both
+        // zero for never-touched memory. A disagreement is a wild write
+        // into one of the two arrays and aborts before the group is used.
+        // SAFETY: the owner page for the group was committed above.
+        let owner_word = unsafe { &*((self.owners_base + (s >> self.lg_group) * 2) as *const AtomicU16) };
+        let previous = owner_word.load(Ordering::Relaxed);
+        for slab in s..end {
+            if self.is_guard_slab(slab) {
+                continue;
+            }
+            // SAFETY: the descriptor page for `slab` was committed above.
+            let recorded = unsafe { SlabDesc::at(self.desc_base, class, slab).arena() };
+            if recorded != previous {
+                owner_mismatch(class, s >> self.lg_group, slab, previous, recorded);
+            }
+        }
         for slab in s..end {
             if self.is_guard_slab(slab) {
                 continue;
@@ -982,9 +1014,7 @@ impl SlabTable {
                 self.bits_unchecked(slab).init(cls.nslots());
             }
         }
-        // SAFETY: the owner page for the group was committed above.
-        unsafe { &*((self.owners_base + (s >> self.lg_group) * 2) as *const AtomicU16) }
-            .store(arena, Ordering::Relaxed);
+        owner_word.store(arena, Ordering::Relaxed);
         g.next_slab = end;
         self.committed_slabs.store(end, Ordering::Release);
         Some((s, end))
@@ -1899,6 +1929,14 @@ impl ClassState {
 #[inline(never)]
 fn never_committed(class: usize, slab: usize) -> ! {
     panic!("invalid free: class {class} slab {slab} was never allocated")
+}
+
+#[cold]
+#[inline(never)]
+fn owner_mismatch(class: usize, group: usize, slab: usize, word: u16, desc: u16) -> ! {
+    panic!(
+        "heap inconsistency: class {class} group {group}: owner word says arena {word}, slab {slab}'s descriptor says arena {desc}"
+    )
 }
 
 /// A `Fresh` or `Purged` slab selected by a refill had a bit set before
@@ -2984,6 +3022,24 @@ mod tests {
         assert!(claim.zeroed);
         assert_eq!(cs1.locate(r1[0]).0, 1);
         assert_eq!(cs0.committed_slabs(), 4);
+    }
+
+    /// `take_group` cross-checks the group's owner word against the
+    /// descriptors' arena field before handing the group out: a wild write
+    /// into the owner array aborts the next hand-out instead of routing
+    /// that group's frees through a wrong arena.
+    #[test]
+    #[should_panic(expected = "owner word says arena 7, slab")]
+    fn a_corrupt_owner_word_aborts_the_next_take_group() {
+        let env = Env::new();
+        let c = small_class();
+        let cs = env.class(c, 0);
+        let (_p, _) = env.claim(&cs, 1);
+        assert_eq!(cs.table().committed_slabs(), cs.table().group());
+        cs.table().corrupt_owner_word(&env.meta, 1, 7);
+        // The second arena's first claim needs a fresh group: the second.
+        let cs1 = env.class_in_arena(&cs, 1);
+        let _ = env.claim(&cs1, 1);
     }
 
     #[test]
