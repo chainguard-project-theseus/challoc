@@ -702,9 +702,57 @@ impl Huge {
             return (ptr::null_mut(), false);
         }
 
+        // `check_zero` needs the extent's state before `take` may free it.
+        let prior = if purge::check_zero() { Some(self.prior_state(s, ext)) } else { None };
         let zeroed = self.take(&mut g, meta, s, need, ext, run, spare, arena);
         self.sync_oldest(&g);
+        if let (true, Some(prior)) = (zeroed, prior) {
+            self.check_zero(s, usable_pages, prior, arena);
+        }
         (self.addr(s) as *mut u8, zeroed)
+    }
+
+    /// Where the pages of a run at `s` come from, for `check_zero`: the
+    /// free extent's state, or "fresh" for never-touched pages at or past
+    /// the mark (which is also what an aligned start beyond `ext` gets).
+    #[cold]
+    fn prior_state(&self, s: usize, ext: *mut HugeDesc) -> &'static str {
+        if ext.is_null() {
+            return "fresh";
+        }
+        // SAFETY: `ext` is a live free extent found under the lock the
+        // caller holds.
+        let (st, e_end) = unsafe { ((*ext).state(), (*ext).end()) };
+        if s >= e_end {
+            return "fresh";
+        }
+        match st {
+            RunState::Purged => "Purged",
+            RunState::Empty => "Empty",
+            RunState::Active => "Active",
+        }
+    }
+
+    /// The `check_zero` debug mode (plan Phase 1.5 task 7b): the first and
+    /// last word of every usable page of a run reported zero must read
+    /// zero. Aborts with the run, the pages' prior state, the arena and the
+    /// discard backend. Faults every page in, so debug only.
+    #[cold]
+    #[inline(never)]
+    fn check_zero(&self, s: usize, usable_pages: usize, prior: &'static str, arena: u16) {
+        let page = self.page_size();
+        let base = self.addr(s);
+        for i in 0..usable_pages {
+            for off in [0, page - 8] {
+                let a = base + i * page + off;
+                // SAFETY: a usable page of the run this call just took;
+                // `prepare` committed it.
+                let word = unsafe { ptr::read_volatile(a as *const u64) };
+                if word != 0 {
+                    dirty_zero_run(base, usable_pages, s, prior, arena, a, word);
+                }
+            }
+        }
     }
 
     /// Refresh `oldest_empty` from the list head. Returns `true` when the
@@ -1259,6 +1307,16 @@ fn not_a_run(p: usize) -> ! {
 #[inline(never)]
 fn already_free(p: usize) -> ! {
     panic!("double free of {p:#x}: huge allocation already freed")
+}
+
+/// The `check_zero` abort: a huge run handed out as zero has a dirty word.
+#[cold]
+#[inline(never)]
+fn dirty_zero_run(run: usize, pages: usize, page: usize, prior: &str, arena: u16, at: usize, word: u64) -> ! {
+    let (backend, advice) = purge::backend_name();
+    panic!(
+        "check_zero: huge run {run:#x} ({pages} pages from page {page}, arena {arena}) was handed out as zero from {prior} pages but the word at {at:#x} reads {word:#x} (discard backend {backend}, {advice})"
+    )
 }
 
 #[cfg(test)]
@@ -2074,6 +2132,47 @@ mod linux_tests {
     fn all(p: *mut u8, len: usize, v: u8) -> bool {
         let s = unsafe { core::slice::from_raw_parts(p, len) };
         s.iter().all(|&b| b == v)
+    }
+
+    /// `check_zero` (plan Phase 1.5 task 7b) on a healthy huge heap: fresh
+    /// and purged runs read zero, dirty `Empty` reuse is not checked (it is
+    /// not reported zero), and the flag stays on for the rest of the process.
+    #[test]
+    fn check_zero_passes_fresh_and_purged_runs() {
+        purge::set_check_zero(true);
+        assert!(purge::check_zero());
+        let env = Env::new();
+        let h = env.huge();
+        let size = 6 * PAGE;
+        let (p, zero) = env.alloc(&h, size, 1);
+        assert!(zero);
+        fill(p, size, 0xAB);
+        env.free(&h, p);
+        let (q, zero) = env.alloc(&h, size, 1);
+        assert_eq!(q, p);
+        assert!(!zero);
+        env.free(&h, q);
+        assert_eq!(h.purge_empty(u64::MAX), 1);
+        let (r, zero) = env.alloc(&h, size, 1);
+        assert_eq!(r, p);
+        assert!(zero && all(r, size, 0));
+        env.free(&h, r);
+    }
+
+    /// `check_zero` fires on a purged run whose last usable page was
+    /// dirtied behind the allocator's back, naming the `Purged` pages.
+    #[test]
+    #[should_panic(expected = "was handed out as zero from Purged pages but the word at")]
+    fn check_zero_aborts_on_a_dirty_purged_run() {
+        purge::set_check_zero(true);
+        let env = Env::new();
+        let h = env.huge();
+        let size = 3 * PAGE;
+        let (p, _) = env.alloc(&h, size, 1);
+        env.free(&h, p);
+        assert_eq!(h.purge_empty(u64::MAX), 1);
+        unsafe { ptr::write_volatile(p.add(size - 8) as *mut u64, 0xDEAD_BEEF) };
+        let _ = env.alloc(&h, size, 1);
     }
 
     #[test]

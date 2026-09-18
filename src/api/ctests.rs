@@ -304,6 +304,7 @@ fn c_conf_env() {
 #[test]
 fn c_conf_no_tcache() {
     run_conf("notcache", None, &[("MALLOC_CONF", "abort_conf:true,tcache:false")], None);
+    run_conf("check_zero", None, &[("MALLOC_CONF", "abort_conf:true,check_zero:true")], None);
 }
 
 #[test]
@@ -588,6 +589,20 @@ fn mimalloc_test_stress() {
     let root = env!("CARGO_MANIFEST_DIR");
     let include = std::format!("-I{root}/tests/mimalloc/include");
     run_c_flags("tests/mimalloc", "stress", &["8", "50", "10"], &["-Wno-unused-parameter", &include]);
+}
+
+/// The same stress test with `check_zero` on (plan Phase 1.5 task 7b):
+/// every `Fresh` or `Purged` slot and page behind its `calloc`s is read by
+/// the allocator before it is handed out, so a dirty "zero" allocation
+/// aborts inside the allocator with the slab's prior state and the
+/// discard backend instead of in the C assertion. Stays in `make test` so a
+/// recurrence of the 2026-09-18 failure is diagnosable.
+#[test]
+fn mimalloc_test_stress_check_zero() {
+    let root = env!("CARGO_MANIFEST_DIR");
+    let include = std::format!("-I{root}/tests/mimalloc/include");
+    let bin = compile("tests/mimalloc", "stress", &["-Wno-unused-parameter", &include]);
+    run_bin_env("stress", &bin, &["8", "50", "10"], &[("MALLOC_CONF", "abort_conf:true,check_zero:true")]);
 }
 
 /// `tests/c/huge_hole.c`: the alignment holes the huge allocator leaves

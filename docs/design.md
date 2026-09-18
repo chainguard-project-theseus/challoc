@@ -631,6 +631,7 @@ jemalloc names where they exist:
 | `double_free_scan`        | false   | scan whole cache on free                |
 | `abort_conf`              | false   | abort on unknown keys                   |
 | `cgroup`                  | true    |                                         |
+| `check_zero`              | false   | challoc only; debug: read every slot/page handed out as zero, abort on a dirty word |
 | `junk`, `zero`, `retain`, `oversize_threshold`, `percpu_arena`, `metadata_thp`, `stats_print`, `confirm_conf` | accepted | ignored or mapped where sensible |
 
 Unknown keys are ignored unless `abort_conf` is set. `opt.<key>` is readable

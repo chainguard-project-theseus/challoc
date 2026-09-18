@@ -45,7 +45,7 @@ pub enum State {
 
 impl State {
     #[inline]
-    const fn from_u8(v: u8) -> State {
+    pub const fn from_u8(v: u8) -> State {
         match v {
             0 => State::Fresh,
             1 => State::Active,
@@ -65,7 +65,10 @@ impl State {
 #[repr(C, align(16))]
 pub struct SlabDesc {
     state: AtomicU8,
-    _pad: u8,
+    /// `state + 1`, written with every state change. A descriptor whose
+    /// `shadow != state + 1` has been written outside this API; the
+    /// `check_zero` debug mode tests it (plan Phase 1.5 task 7b).
+    shadow: AtomicU8,
     arena: AtomicU16,
     live: AtomicU32,
     dirty_at: AtomicU64,
@@ -118,6 +121,7 @@ impl SlabDesc {
     /// live slots.
     pub fn init(&self, arena: u16) {
         self.state.store(State::Fresh as u8, Ordering::Relaxed);
+        self.shadow.store(State::Fresh as u8 + 1, Ordering::Relaxed);
         self.arena.store(arena, Ordering::Relaxed);
         self.live.store(0, Ordering::Relaxed);
         self.dirty_at.store(0, Ordering::Relaxed);
@@ -132,6 +136,13 @@ impl SlabDesc {
     #[inline]
     pub fn set_state(&self, s: State) {
         self.state.store(s as u8, Ordering::Relaxed);
+        self.shadow.store(s as u8 + 1, Ordering::Relaxed);
+    }
+
+    /// The raw state byte and its shadow (`state + 1` when consistent).
+    #[inline]
+    pub fn state_bytes(&self) -> (u8, u8) {
+        (self.state.load(Ordering::Relaxed), self.shadow.load(Ordering::Relaxed))
     }
 
     #[inline]

@@ -100,6 +100,8 @@ struct Pick {
     n: u32,
     /// The slab was `Fresh` or `Purged` when this refill made it `Active`.
     zero: bool,
+    /// The slab's state when this refill selected it (for `check_zero`).
+    state: State,
 }
 
 /// Slabs a release batch must put back in the partial set. Consecutive
@@ -913,6 +915,9 @@ impl SlabTable {
             return None;
         }
         let end = (s + self.group as usize).min(self.nslabs);
+        if purge::check_zero() && s != self.committed_slabs.load(Ordering::Relaxed) {
+            panic!("check_zero: class {class}: take_group at next_slab {s} but the watermark is {}", self.committed_slabs.load(Ordering::Relaxed));
+        }
         g.descs.ensure(meta, page, stagger + end * desc_stride(class)).ok()?;
         g.bits.ensure(meta, page, stagger + (end * cls.slab_bits()).div_ceil(8)).ok()?;
         g.owners.ensure(meta, page, stagger + ((end - 1) >> self.lg_group) * 2 + 2).ok()?;
@@ -924,6 +929,19 @@ impl SlabTable {
             // SAFETY: the descriptor and bitmap pages for `slab` were
             // committed above.
             unsafe {
+                if purge::check_zero() {
+                    let d = SlabDesc::at(self.desc_base, class, slab);
+                    let (st, sh) = d.state_bytes();
+                    if sh != 0 || d.live() != 0 || st != 0 {
+                        panic!(
+                            "check_zero: class {class}: take_group re-hands slab {slab} (group {s}..{end}, arena {arena}): descriptor at {:#x} has state {st} shadow {sh} live {} arena {} dirty_at {}",
+                            d as *const SlabDesc as usize,
+                            d.live(),
+                            d.arena(),
+                            d.dirty_at()
+                        );
+                    }
+                }
                 SlabDesc::at(self.desc_base, class, slab).init(arena);
                 self.bits_unchecked(slab).init(cls.nslots());
             }
@@ -1095,7 +1113,8 @@ impl ClassState {
         let cls = self.class();
         let mut got = 0;
         let mut zeroed = true;
-        let mut picks = [Pick { slab: 0, n: 0, zero: false }; MAX_PICKS];
+        let mut picks = [Pick { slab: 0, n: 0, zero: false, state: State::Active }; MAX_PICKS];
+        let check_zero = purge::check_zero();
         while got < out.len() {
             let np = self.plan(meta, out.len() - got, &mut picks);
             if np == 0 {
@@ -1135,11 +1154,38 @@ impl ClassState {
                 }
                 if !pick.zero {
                     zeroed = false;
+                } else if check_zero {
+                    self.check_zero(&out[got..got + want], pick);
                 }
                 got += want;
             }
         }
         Claim { n: got, zeroed: got > 0 && zeroed }
+    }
+
+    /// The `check_zero` debug mode (plan Phase 1.5 task 7b): the first and
+    /// last word of every slot of a pick reported zero must read zero.
+    /// Aborts with everything the C-level assertion cannot say: the class,
+    /// slab, the slab's state when the refill selected it (`Fresh` blames
+    /// the commit path, `Purged` the discard path), the arena, the discard
+    /// backend and the offending word.
+    #[cold]
+    #[inline(never)]
+    fn check_zero(&self, slots: &[*mut u8], pick: &Pick) {
+        let size = self.class().size();
+        for &p in slots {
+            for off in [0, size - 8] {
+                // SAFETY: `p` is a slot this claim just reserved in a
+                // committed slab; slots are at least 16 bytes and 8-aligned.
+                let word = unsafe { core::ptr::read_volatile(p.add(off) as *const u64) };
+                if word != 0 {
+                    let d = self.desc(pick.slab as usize);
+                    let bm = self.table().bits(pick.slab as usize);
+                    let now = (d.state(), d.live(), d.arena(), bm.allocated(self.class().nslots()), self.class().nslots(), d as *const SlabDesc as usize);
+                    dirty_zero_slot(self.class as usize, size, pick, self.arena, p as usize, off, word, now);
+                }
+            }
+        }
     }
 
     /// One lock hold of a refill: reserve up to `want` slots across up to
@@ -1205,6 +1251,15 @@ impl ClassState {
         let avail = self.class().nslots() - live;
         let n = avail.min(*remaining);
         let state = desc.state();
+        if purge::check_zero() {
+            self.check_shadow(slab, "take");
+            if state == State::Fresh {
+                if live != 0 {
+                    fresh_with_live(self.class as usize, slab, self.arena, desc, self.table().bits(slab).allocated(self.class().nslots()));
+                }
+                self.check_fresh_slab_is_zero(slab);
+            }
+        }
         if state != State::Active {
             desc.set_state(State::Active);
             desc.set_dirty_at(0);
@@ -1220,7 +1275,7 @@ impl ClassState {
         // `Purged` memory is zero only when it was discarded with
         // `MADV_DONTNEED` (no `lazy_free`).
         let zero = state.is_zero() && (state != State::Purged || purge::purged_is_zero());
-        picks[*np] = Pick { slab: slab as u32, n: n as u32, zero };
+        picks[*np] = Pick { slab: slab as u32, n: n as u32, zero, state };
         *np += 1;
         *remaining -= n;
     }
@@ -1253,12 +1308,63 @@ impl ClassState {
         }
     }
 
+    /// `check_zero`: the first word of every slot of a `Fresh` slab must
+    /// read zero before its first claim; a dirty one means the memory was
+    /// written before this table ever handed the slab out.
+    #[cold]
+    #[inline(never)]
+    fn check_fresh_slab_is_zero(&self, slab: usize) {
+        let cls = self.class();
+        let bm = self.table().bits(slab);
+        for slot in 0..cls.nslots() {
+            let p = self.slot_ptr(slab, slot);
+            // SAFETY: a slot of a committed slab; the class lock is held.
+            let word = unsafe { core::ptr::read_volatile(p as *const u64) };
+            if word != 0 {
+                panic!(
+                    "check_zero: class {} slab {slab} (arena {}) is Fresh before its first claim but slot {slot} at {:#x} reads {word:#x} ({} of {} bits set, watermark {}, descriptor at {:#x})",
+                    self.class,
+                    self.arena,
+                    p as usize,
+                    bm.allocated(cls.nslots()),
+                    cls.nslots(),
+                    self.table().committed_slabs(),
+                    self.desc(slab) as *const SlabDesc as usize
+                );
+            }
+        }
+    }
+
+    /// `check_zero`: abort when `slab`'s state byte disagrees with its
+    /// shadow, i.e. something outside `SlabDesc` wrote the descriptor.
+    #[cold]
+    #[inline(never)]
+    fn check_shadow(&self, slab: usize, at: &str) {
+        let d = self.desc(slab);
+        let (state, shadow) = d.state_bytes();
+        if shadow != state.wrapping_add(1) {
+            panic!(
+                "check_zero: class {} slab {slab} (arena {}) descriptor at {:#x} was written outside the API, seen at {at}: state byte {state:#x}, shadow {shadow:#x} (says {:?}), live {}, arena field {}, dirty_at {}",
+                self.class,
+                self.arena,
+                d as *const SlabDesc as usize,
+                State::from_u8(shadow.wrapping_sub(1)),
+                d.live(),
+                d.arena(),
+                d.dirty_at()
+            )
+        }
+    }
+
     /// `live` reached zero: make the slab `Empty` unless a refill has
     /// already reserved it again.
     fn on_live_zero(&self, slab: usize) {
         let mut first = false;
         {
             let mut g = self.inner.lock();
+            if purge::check_zero() {
+                self.check_shadow(slab, "on_live_zero");
+            }
             let desc = self.desc(slab);
             if desc.live() == 0 && desc.state() == State::Active {
                 let now = os::now_ns().max(1);
@@ -1388,6 +1494,12 @@ impl ClassState {
     }
 
     fn dec_live(&self, slab: usize, n: usize) {
+        if purge::check_zero() {
+            self.check_shadow(slab, "release");
+            if self.desc(slab).state() == State::Fresh {
+                release_into_fresh(self.class as usize, slab, self.arena, self.desc(slab), n);
+            }
+        }
         if self.desc(slab).sub_live(n) == n {
             self.on_live_zero(slab);
         }
@@ -1721,6 +1833,54 @@ fn invalid_pointer(p: usize, class: usize, why: &str) -> ! {
 #[inline(never)]
 fn double_free(p: usize, class: usize, slab: usize, slot: usize) -> ! {
     panic!("double free of {p:#x} (class {class} slab {slab} slot {slot})")
+}
+
+/// `check_zero` invariant: a slab with live slots was `Fresh` at selection.
+#[cold]
+#[inline(never)]
+fn fresh_with_live(class: usize, slab: usize, arena: u16, desc: &SlabDesc, set: usize) -> ! {
+    panic!(
+        "check_zero: class {class} slab {slab} (arena {arena}) is Fresh with live {} ({set} bits set, owner {}, dirty_at {}), descriptor at {:#x}",
+        desc.live(),
+        desc.arena(),
+        desc.dirty_at(),
+        desc as *const SlabDesc as usize
+    )
+}
+
+/// `check_zero` invariant: a release reached a slab that reads `Fresh`.
+#[cold]
+#[inline(never)]
+fn release_into_fresh(class: usize, slab: usize, arena: u16, desc: &SlabDesc, n: usize) -> ! {
+    panic!(
+        "check_zero: release of {n} slot(s) into class {class} slab {slab} (arena {arena}) whose descriptor reads Fresh (live {}, owner {}, dirty_at {}), descriptor at {:#x}",
+        desc.live(),
+        desc.arena(),
+        desc.dirty_at(),
+        desc as *const SlabDesc as usize
+    )
+}
+
+/// The `check_zero` abort: a slot handed out as zero has a dirty word.
+#[cold]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn dirty_zero_slot(
+    class: usize,
+    size: usize,
+    pick: &Pick,
+    arena: u16,
+    p: usize,
+    off: usize,
+    word: u64,
+    now: (State, usize, u16, usize, usize, usize),
+) -> ! {
+    let (backend, advice) = purge::backend_name();
+    let (state, live, owner, set, nslots, _) = now;
+    panic!(
+        "check_zero: slot {p:#x} (class {class}, size {size}, slab {}, arena {arena}) was handed out as zero from a {:?} slab but its word at offset {off} reads {word:#x} (discard backend {backend}, {advice}; descriptor at {:#x} now {state:?} live {live} owner {owner}, {set} of {nslots} bits set, pick of {} slots)",
+        pick.slab, pick.state, now.5, pick.n
+    )
 }
 #[cfg(test)]
 mod tests {
@@ -3022,6 +3182,47 @@ mod tests {
         let d = cs.desc(0) as *const SlabDesc as usize;
         assert!(env.regions.in_meta(d));
         assert!(env.meta.stats().committed >= PAGE);
+    }
+
+    /// `check_zero` (plan Phase 1.5 task 7b) on a healthy heap: every
+    /// `Fresh` and `Purged` claim reads zero, so the mode changes nothing,
+    /// and the flag stays on for every later claim of this test process.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn check_zero_passes_fresh_and_purged_slabs() {
+        purge::set_check_zero(true);
+        assert!(purge::check_zero());
+        let env = Env::new();
+        let cs = env.class(small_class(), 0);
+        let (p, claim) = env.claim(&cs, 5);
+        assert!(claim.zeroed);
+        for &q in &p {
+            unsafe { *q = 0xAB };
+        }
+        cs.release(&p);
+        assert_eq!(cs.purge_empty(u64::MAX), 1);
+        let (q, claim) = env.claim(&cs, 5);
+        assert_eq!(q, p);
+        assert!(claim.zeroed);
+    }
+
+    /// `check_zero` fires: a slab purged (so reported zero) whose memory
+    /// is dirtied behind the allocator's back aborts at the next claim,
+    /// naming the `Purged` state and the discard backend.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[should_panic(expected = "was handed out as zero from a Purged slab but its word at offset")]
+    fn check_zero_aborts_on_a_dirty_purged_slab() {
+        purge::set_check_zero(true);
+        let env = Env::new();
+        let cs = env.class(small_class(), 0);
+        let (p, _) = env.claim(&cs, 2);
+        cs.release(&p);
+        assert_eq!(cs.purge_empty(u64::MAX), 1);
+        // The last word of the second slot: the check reads both ends.
+        let size = cs.class().size();
+        unsafe { ptr::write_volatile(p[1].add(size - 8) as *mut u64, 0xDEAD_BEEF) };
+        let _ = env.claim(&cs, 2);
     }
 
     /// Guard slabs only when the kernel has `MADV_GUARD_INSTALL`: touching

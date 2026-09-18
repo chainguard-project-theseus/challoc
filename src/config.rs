@@ -100,6 +100,11 @@ pub struct Config {
     pub double_free_scan: bool,
     pub abort_conf: bool,
     pub cgroup: bool,
+    /// Debug mode: every slot or page handed out as "known zero" (`Fresh`
+    /// or `Purged` memory behind `calloc`) is read at its first and last
+    /// word under the class or huge lock and a non-zero word aborts with
+    /// the slab's prior state and the discard backend. Slow paths only.
+    pub check_zero: bool,
 }
 
 impl Default for Config {
@@ -130,6 +135,7 @@ impl Config {
         double_free_scan: false,
         abort_conf: false,
         cgroup: true,
+        check_zero: false,
     };
 
     /// Apply one `key:value,key:value` string on top of `self`. Each problem
@@ -215,6 +221,7 @@ impl Config {
             b"double_free_scan" => self.double_free_scan = parse_bool(value).ok_or_else(bad)?,
             b"abort_conf" => self.abort_conf = parse_bool(value).ok_or_else(bad)?,
             b"cgroup" => self.cgroup = parse_bool(value).ok_or_else(bad)?,
+            b"check_zero" => self.check_zero = parse_bool(value).ok_or_else(bad)?,
             // jemalloc keys accepted for compatibility and ignored: their
             // values are not validated because we do nothing with them.
             b"junk" | b"zero" | b"retain" | b"oversize_threshold" | b"percpu_arena"
@@ -247,6 +254,7 @@ impl Config {
             b"double_free_scan" => Value::Bool(self.double_free_scan),
             b"abort_conf" => Value::Bool(self.abort_conf),
             b"cgroup" => Value::Bool(self.cgroup),
+            b"check_zero" => Value::Bool(self.check_zero),
             _ => return None,
         })
     }
@@ -340,6 +348,7 @@ pub const KEYS: &[&str] = &[
     "double_free_scan",
     "abort_conf",
     "cgroup",
+    "check_zero",
 ];
 
 /// jemalloc keys that are accepted and ignored.
@@ -763,7 +772,7 @@ mod tests {
         assert!(!d.lazy_free);
         assert!(d.guards);
         assert_eq!(d.guard_slab_interval, 8);
-        assert!(!d.zero_on_free && !d.slot_randomize && !d.double_free_scan && !d.abort_conf);
+        assert!(!d.zero_on_free && !d.slot_randomize && !d.double_free_scan && !d.abort_conf && !d.check_zero);
         assert!(d.cgroup);
         assert_eq!(Config::default(), d);
         assert_eq!(d.gc_interval_ns(), 10_000_000_000);
@@ -789,6 +798,7 @@ mod tests {
             "double_free_scan",
             "abort_conf",
             "cgroup",
+            "check_zero",
         ];
         for key in keys {
             for v in [true, false] {
@@ -984,7 +994,7 @@ mod tests {
             };
             assert_eq!(clean(&std::format!("{key}:{value}")), cfg, "{key}:{value} round trip");
         }
-        assert_eq!(KEYS.len(), 19);
+        assert_eq!(KEYS.len(), 20);
         assert_eq!(cfg.get(b"nonsense"), None);
         assert_eq!(cfg.get(b""), None);
         for key in IGNORED_KEYS {

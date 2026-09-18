@@ -155,6 +155,9 @@ const _: () = assert!(PIDFD_SELF == crate::sys::PIDFD_SELF);
 static BACKEND: AtomicI32 = AtomicI32::new(LOOP);
 /// `lazy_free`: discard with `MADV_FREE` instead of `MADV_DONTNEED`.
 static LAZY: AtomicBool = AtomicBool::new(false);
+/// `check_zero`: the debug mode that reads every slot or page handed out
+/// as "known zero" and aborts on a dirty word (plan Phase 1.5 task 7b).
+static CHECK_ZERO: AtomicBool = AtomicBool::new(false);
 
 /// Choose the discard backend and advice. Called once at init, before
 /// anything can be purged, and again in the fork child.
@@ -166,6 +169,36 @@ pub fn configure(pm: ProcessMadvise, lazy_free: bool) {
     };
     BACKEND.store(backend, Ordering::Relaxed);
     LAZY.store(lazy_free, Ordering::Relaxed);
+}
+
+/// Turn the `check_zero` debug mode on or off (init, from the config key;
+/// the tests, directly). Separate from [`configure`] so a re-probe of the
+/// backend never resets it.
+pub fn set_check_zero(on: bool) {
+    CHECK_ZERO.store(on, Ordering::Relaxed);
+}
+
+/// Whether the `check_zero` debug mode is on: `ClassState::claim` and
+/// `Huge::alloc` then read the first and last word of every slot or page
+/// they report as zero and abort on a non-zero one. Off by default; the
+/// callers test it only on the paths that already hold a class or huge
+/// lock, so the release fast paths never see it.
+#[inline]
+pub fn check_zero() -> bool {
+    CHECK_ZERO.load(Ordering::Relaxed)
+}
+
+/// The discard backend and advice for diagnostics, e.g.
+/// `process_madvise(PIDFD_SELF) MADV_DONTNEED`.
+#[cold]
+pub fn backend_name() -> (&'static str, &'static str) {
+    let backend = match BACKEND.load(Ordering::Relaxed) {
+        LOOP => "madvise loop",
+        PIDFD_SELF => "process_madvise(PIDFD_SELF)",
+        _ => "process_madvise(pidfd)",
+    };
+    let advice = if purged_is_zero() { "MADV_DONTNEED" } else { "MADV_FREE" };
+    (backend, advice)
 }
 
 /// Whether memory in the `Purged` state is known to read as zero. False
