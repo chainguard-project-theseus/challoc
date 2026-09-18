@@ -714,6 +714,17 @@ impl SlabTable {
         self.check_located(slab, slot, p as usize)
     }
 
+    /// [`check`] without the owner: for queries that only need to know the
+    /// slot is live (`malloc_usable_size`, `realloc`), so they read the
+    /// bitmap word and nothing else.
+    ///
+    /// [`check`]: SlabTable::check
+    #[inline]
+    pub fn check_live(&self, p: *mut u8) {
+        let (slab, slot) = self.locate(p);
+        self.check_bit(slab, slot, p as usize);
+    }
+
     /// [`check`] for a pointer already located (`Regions::classify`):
     /// aborts unless `slab` has been handed out and `slot`'s bit is set,
     /// with the pointer and its location; returns the owning arena.
@@ -721,6 +732,16 @@ impl SlabTable {
     /// [`check`]: SlabTable::check
     #[inline]
     pub fn check_located(&self, slab: usize, slot: usize, p: usize) -> u16 {
+        self.check_bit(slab, slot, p);
+        // SAFETY: `check_bit` returned, so `slab` is below the watermark.
+        unsafe { self.owner_unchecked(slab) }
+    }
+
+    /// The bit test of [`check_located`], without the owner.
+    ///
+    /// [`check_located`]: SlabTable::check_located
+    #[inline]
+    fn check_bit(&self, slab: usize, slot: usize, p: usize) {
         if slab >= self.committed_slabs() {
             never_committed(self.class as usize, slab);
         }
@@ -729,8 +750,6 @@ impl SlabTable {
         if !unsafe { self.is_set_unchecked(slab, slot) } {
             invalid_free(p, self.class as usize, slab, slot);
         }
-        // SAFETY: as above.
-        unsafe { self.owner_unchecked(slab) }
     }
 
     /// Hand the next group of slabs to `arena` (design section 4):

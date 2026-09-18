@@ -224,7 +224,7 @@ pub fn usable_size(shared: &Shared, p: *mut u8) -> usize {
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, .. } => {
             let class = class as usize;
-            shared.table(class).check(p);
+            shared.table(class).check_live(p);
             CLASSES[class].size()
         }
         Kind::Huge { page } => shared.huge.usable_size(page),
@@ -261,7 +261,7 @@ pub fn realloc(p: *mut u8, size: usize) -> *mut u8 {
     let old = match shared.regions.classify(p as usize) {
         Kind::Slab { class, .. } => {
             let class = class as usize;
-            shared.table(class).check(p);
+            shared.table(class).check_live(p);
             if class_of(size) == Some(class) {
                 return p;
             }
