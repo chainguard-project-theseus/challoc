@@ -111,6 +111,16 @@ at the start of an iteration for orphans.
 
 ## Recipes for the traps
 
+- A `challoc-bench ssh <vm> --command='... setsid nohup make ... &'` that
+  launches a detached run does not return until the run ends (gcloud's ssh
+  keeps the session open for the job's process group even with every fd
+  redirected), and a loop over VMs then starts the next VM's leg late, or
+  twice (the bench lock refuses the duplicate). Launch detached jobs over
+  direct ssh with the job in a subshell: `ssh -T -i
+  ~/.ssh/google_compute_engine <user>@<ip> 'cd challoc && (setsid nohup make
+  ab ... > ~/logs/ab.log 2>&1 < /dev/null &); sleep 2; tail -1 ~/logs/ab.log'`
+  returns at once. When polling with `pgrep -f`, exclude the polling shell
+  itself (`pgrep -f "[m]ake ab"`), whose command line contains the pattern.
 - Host key changed after a restart (`Host key verification failed` from
   `sync`, `fetch` or `ssh`): the VM has a new external IP whose key collides
   with a stale entry. `ssh-keygen -R <ip> -f ~/.ssh/google_compute_known_hosts`,
