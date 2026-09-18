@@ -232,32 +232,41 @@ A Cargo feature `nightly-tls` may replace the asm with `#[thread_local]`.
 ### 6.2 Heap structure
 
 ```
-struct Heap {
+struct Heap {                                // repr(C); the header array at a fixed offset
     tid:         u32,
     arena:       u16,                        // default arena for MALLOCX without ARENA flag
     rng:         u64,                        // xorshift state seeded from getrandom
-    caches:      [*mut ClassCache; MAX_ARENAS_LOCAL],   // lazily allocated per arena actually used
     stats:       ThreadStats,                // allocated/deallocated counters for thread.allocatedp
     slow_ticks:  u32,                        // counts slow-path entries for periodic work
+    others:      *mut ArenaCaches,           // same shape as below, one node per other arena touched
+    caches:      [CacheHeader; NCLASSES],    // home arena, inline, one 64-byte line per class
 }
 
-struct ClassCache {                          // one per (arena, class)
+struct CacheHeader {                         // one per (arena, class), 64 bytes, line aligned
     len:      u32,
-    cap:      u32,                           // adaptive, <= max_slots(class)
+    cap:      u32,                           // 0 until first use; then the configured capacity
     low_water: u32,                          // for GC
-    run_end:  u32,                           // slots[..run_end] is the run of low addresses (6.4)
+    zeroed:   u32,                           // slots[..zeroed] read as zero
+    slots:    *mut *mut u8,                  // this class's stack, its own metadata object
+    allocs:   u64,
     compact_mask: u32,                       // probe mask, (1 << tcache_compact_shift) - 1, or off
-    arena:    u16,
-    mode:     u16,                           // off, probing, compacting
-    slots:    [*mut u8; cap],
+    run_end:  u32,                           // slots[..run_end] is the run of low addresses (6.4)
+    ...                                      // moved, probe_refilled, arena, mode
 }
 ```
 
-Heaps and caches live in the metadata region and are allocated by a small
-internal bump-and-freelist allocator that is only ever used for allocator
-metadata. Heaps are created on a thread's first allocation. Cache arrays are
-committed lazily, so a thread that only ever touches five size classes pays
-for five arrays.
+Heaps and slot stacks live in the metadata region and are allocated by a
+small internal bump-and-freelist allocator that is only ever used for
+allocator metadata. Heaps are created on a thread's first allocation. The
+headers are dense inside the heap (review 2026-09-17 P3, Phase 1.5 task 5):
+`malloc` reaches `len` at `heap + 128 + 64 * c` with no cache pointer load,
+and a thread's 52 headers share one page instead of one page each. Each
+class's stack is its own metadata object, allocated on the class's first
+slow path, so a thread that only ever touches five size classes pays for
+five stacks. The review's single contiguous slot block per heap was
+measured and rejected: a stack inside a 128 KiB metadata object costs
+xmalloc-test's freeing threads three to four times the L1D fills
+(`bench/results/2026-09-18-*-gce-dense-headers.md`).
 
 Default cache capacity: 1024 slots for classes up to 128 bytes, then halving
 every doubling of class size, minimum 8. `tcache_nslots_small_max` and

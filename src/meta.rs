@@ -15,7 +15,7 @@
 //!   with three live slabs commits one page of descriptors, not the whole
 //!   table.
 //! - **Objects** ([`Meta::alloc`] / [`Meta::free`]) are small: `Heap`,
-//!   `ClassCache`, bitmap words. They come from a bump pointer growing
+//!   cache slot stacks, bitmap words. They come from a bump pointer growing
 //!   upward from the base, with the region committed ahead of the bump in
 //!   [`COMMIT_CHUNK`] steps, and freed objects go on one of [`NBINS`]
 //!   size-classed free lists for reuse.

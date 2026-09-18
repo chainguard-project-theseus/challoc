@@ -3,10 +3,26 @@
 //!
 //! Every thread that allocates gets a [`Heap`] in the metadata region,
 //! reached through the one TLS slot in `tls.rs`. A heap holds one
-//! [`ClassCache`] pointer per size class: a LIFO stack of slot pointers that
+//! [`CacheHeader`] per size class inline: a LIFO stack of slot pointers that
 //! are marked in their slab bitmaps but not live in the program. The fast
-//! paths only touch the heap, the cache and (for `free`) one word of the
-//! slab descriptor: no atomic read-modify-write, no lock.
+//! paths only touch the heap's header line for the class, the stack top and
+//! (for `free`) one word of the slab descriptor: no atomic
+//! read-modify-write, no lock.
+//!
+//! Layout (review 2026-09-17 P3, Phase 1.5 task 5). The headers are a
+//! dense `[CacheHeader; NCLASSES]` inside the heap, one 64-byte line each,
+//! so `malloc` reaches `len` at `heap + 128 + c * 64` without first loading
+//! a cache pointer, and a thread's 52 headers share one page instead of 52.
+//! Each header keeps a pointer to its stack of `cap` slot pointers, on the
+//! same line as `len`; the stack is its own metadata object, allocated on
+//! the class's first slow path, so a thread that only uses five classes
+//! pays for five stacks. The review's second half, one contiguous slot
+//! block per heap, was built and measured
+//! (`bench/results/2026-09-18-*-gce-dense-headers.md`): a stack inside a
+//! 128 KiB metadata object costs xmalloc-test's freeing threads three to
+//! four times the L1D fills of a stack in an 8 KiB object (the same lines,
+//! the same page geometry), whatever the offset inside the object, so the
+//! stacks stay separate objects.
 //!
 //! - `alloc`: pop the top of the class's cache; if it is empty, *refill* by
 //!   claiming up to `cap / 2` slots from the class's lowest partial slab
@@ -42,10 +58,10 @@
 //! low_water <= len`: a pop that dips below it clips both, a push never
 //! writes below `len`.
 //!
-//! Until a thread has a heap its cache pointers all point at one shared
-//! empty sentinel whose `len` and `cap` are zero, so the fast paths need no
-//! null check: an empty cache is the slow path, and the slow path allocates
-//! the real cache on first use. A heap that cannot be created (metadata
+//! Every header starts with `len == cap == 0`, so the fast paths need no
+//! null check: an empty cache is the slow path, a full one too, and the slow
+//! path gives the header its capacity and stack on first use
+//! (`ensure_cache`). A heap that cannot be created (metadata
 //! region exhausted, or the thread is inside heap creation or has already
 //! run its exit destructor) is served without a cache, straight from the
 //! slab bitmaps.
@@ -109,10 +125,13 @@ pub const fn default_cap(class: usize) -> u32 {
     crate::config::cap_for(class, MAX_CAP, 1)
 }
 
-/// One thread's cache for one size class: a [`CACHE_HEADER`]-byte header
-/// followed by `cap` slot pointers. Allocated from the metadata region with
-/// [`ClassCache::layout`]; the header is `repr(C)` so the trailing array
-/// sits at a fixed offset.
+/// One thread's cache header for one size class: exactly one cache line,
+/// inline in the heap ([`Heap::caches`]) or in an [`ArenaCaches`] node,
+/// pointing at its stack of `cap` slot pointers inside the owner's slot
+/// block. The fields the fast paths read (`len`, `cap`, `zeroed`, `slots`,
+/// `allocs`, `compact_mask`, `low_water`) come first; a header whose `cap`
+/// is zero has never been used (`slots` is null and never dereferenced,
+/// because `len == cap == 0` sends both fast paths to the slow path).
 ///
 /// The byte counters `thread.allocated` and `thread.deallocated` are not
 /// kept per operation. Every pop bumps `allocs` on the header line the pop
@@ -120,34 +139,36 @@ pub const fn default_cap(class: usize) -> u32 {
 /// arithmetic `len = (frees + refilled) - (allocs + flushed)`, with
 /// `moved = refilled - flushed` maintained on the slow paths; see
 /// [`Heap::stats`].
-#[repr(C)]
-pub struct ClassCache {
+#[repr(C, align(64))]
+pub struct CacheHeader {
     len: u32,
     cap: u32,
     /// Smallest `len` since the last GC (design 6.4).
     low_water: u32,
     /// `slots[..zeroed]` are known to read as zero.
     zeroed: u32,
+    /// The stack: a metadata object of `cap` slot pointers
+    /// ([`CacheHeader::slots_layout`]; null while `cap == 0`).
+    slots: *mut *mut u8,
     /// Pops served from this cache since it was created.
     allocs: u64,
-    /// Slots moved in by refills minus slots moved out by flushes
-    /// (wrapping; the true value is `len - frees + allocs`).
-    moved: u64,
-    /// `slots[..run_end]` is the run of low addresses, descending (the
-    /// lowest at `run_end - 1`); `run_end <= low_water`.
-    run_end: u32,
     /// A pop whose `allocs` count has no bit of this mask set is a
     /// scheduled pop: [`PROBE_MASK`], the configured compaction mask, or
     /// `u32::MAX` when compaction is off.
     compact_mask: u32,
+    /// `slots[..run_end]` is the run of low addresses, descending (the
+    /// lowest at `run_end - 1`); `run_end <= low_water`.
+    run_end: u32,
+    /// Slots moved in by refills minus slots moved out by flushes
+    /// (wrapping; the true value is `len - frees + allocs`).
+    moved: u64,
+    /// The class's refill counter (low bits) at the previous probe: a class
+    /// that ordinary refills are draining is not compacted.
+    probe_refilled: u32,
     /// The arena this cache belongs to (a rebuild's claim needs it).
     arena: u16,
     /// [`MODE_OFF`], [`MODE_PROBE`] or [`MODE_COMPACT`].
     mode: u16,
-    /// The class's refill counter (low bits) at the previous probe: a class
-    /// that ordinary refills are draining is not compacted.
-    probe_refilled: u32,
-    slots: [*mut u8; 0],
 }
 
 /// Cache modes: off (`tcache_compact_shift:0`), probing the class for
@@ -182,42 +203,33 @@ pub const COMPACT_MAX_REFILL_SLABS: usize = 2;
 // Both slab counts are in 64 KiB slabs (`Class::compact_slots`), so the
 // thresholds mean the same bytes for the 4 KiB-slab classes as for the rest.
 
-/// Size of the [`ClassCache`] header, i.e. the offset of the slot array.
-pub const CACHE_HEADER: usize = core::mem::size_of::<ClassCache>();
-const _: () = assert!(CACHE_HEADER == 48);
-const _: () = assert!(core::mem::offset_of!(ClassCache, slots) == CACHE_HEADER);
+/// Size of a [`CacheHeader`]: one line, so a class's header never shares
+/// a line with another class's.
+pub const CACHE_HEADER: usize = core::mem::size_of::<CacheHeader>();
+const _: () = assert!(CACHE_HEADER == 64);
+const _: () = assert!(core::mem::offset_of!(CacheHeader, slots) < 64 - 8);
 
-// SAFETY: the only shared instance is `EMPTY_CACHE`, which is never written
-// (every write is guarded by `len < cap` or `len > 0`, both false for it);
-// real caches are owned by one thread through its heap.
-unsafe impl Sync for ClassCache {}
+impl CacheHeader {
+    /// A header that has never been used: both fast paths fall through to
+    /// the slow path, which gives it a capacity and a stack.
+    pub const EMPTY: CacheHeader = CacheHeader {
+        len: 0,
+        cap: 0,
+        low_water: 0,
+        zeroed: 0,
+        slots: ptr::null_mut(),
+        allocs: 0,
+        compact_mask: u32::MAX,
+        run_end: 0,
+        moved: 0,
+        probe_refilled: 0,
+        arena: 0,
+        mode: MODE_OFF,
+    };
 
-/// The sentinel every heap starts with: empty and full at the same time, so
-/// both fast paths take their slow path and allocate a real cache.
-static EMPTY_CACHE: ClassCache = ClassCache {
-    len: 0,
-    cap: 0,
-    low_water: 0,
-    zeroed: 0,
-    allocs: 0,
-    moved: 0,
-    run_end: 0,
-    compact_mask: u32::MAX,
-    arena: 0,
-    mode: MODE_OFF,
-    probe_refilled: 0,
-    slots: [],
-};
-
-#[inline(always)]
-fn empty_cache() -> *mut ClassCache {
-    &EMPTY_CACHE as *const ClassCache as *mut ClassCache
-}
-
-impl ClassCache {
-    /// Metadata layout of a cache with `cap` slots.
-    pub const fn layout(cap: u32) -> Layout {
-        match Layout::from_size_align(CACHE_HEADER + 8 * cap as usize, 16) {
+    /// Metadata layout of a stack of `cap` slots.
+    pub const fn slots_layout(cap: u32) -> Layout {
+        match Layout::from_size_align(8 * cap as usize, 16) {
             Ok(l) => l,
             Err(_) => unreachable!(),
         }
@@ -248,15 +260,21 @@ impl ClassCache {
     /// and diagnostics).
     pub fn run(&self) -> &[*mut u8] {
         debug_assert!(self.run_end <= self.low_water && self.low_water <= self.len);
-        // SAFETY: `run_end <= len <= cap` pointers follow the header.
-        unsafe { core::slice::from_raw_parts(self.slots.as_ptr(), self.run_end as usize) }
+        if self.run_end == 0 {
+            return &[];
+        }
+        // SAFETY: `run_end <= len <= cap` pointers exist at `slots`.
+        unsafe { core::slice::from_raw_parts(self.slots, self.run_end as usize) }
     }
 
     /// Cached pointers, bottom of the stack first (for tests and
     /// diagnostics).
     pub fn cached(&self) -> &[*mut u8] {
-        // SAFETY: `len <= cap` pointers follow the header.
-        unsafe { core::slice::from_raw_parts(self.slots.as_ptr(), self.len as usize) }
+        if self.len == 0 {
+            return &[];
+        }
+        // SAFETY: `len <= cap` pointers exist at `slots`.
+        unsafe { core::slice::from_raw_parts(self.slots, self.len as usize) }
     }
 
     /// Pops served from this cache since it was created.
@@ -271,16 +289,18 @@ impl ClassCache {
         self.mode == MODE_COMPACT
     }
 
-    #[inline]
+    #[inline(always)]
     fn slots(&mut self) -> *mut *mut u8 {
-        self.slots.as_mut_ptr()
+        self.slots
     }
 
     /// Cached pointers, bottom of the stack first (the top is popped next).
+    /// Only for a cache with a stack (`cap != 0`).
     #[inline]
     fn entries(&mut self) -> &mut [*mut u8] {
-        // SAFETY: `len <= cap` pointers follow the header.
-        unsafe { core::slice::from_raw_parts_mut(self.slots(), self.len as usize) }
+        debug_assert!(self.cap != 0);
+        // SAFETY: `len <= cap` pointers exist at `slots`.
+        unsafe { core::slice::from_raw_parts_mut(self.slots, self.len as usize) }
     }
 }
 
@@ -302,18 +322,22 @@ impl ThreadStats {
 
 /// A heap's caches for one arena other than its home arena (design 6.2,
 /// `caches[arena]`), allocated from the metadata region the first time the
-/// heap touches that arena and kept on a singly linked list. Almost every
-/// heap has none; Valkey's main thread has one (the Lua arena).
+/// heap touches that arena and kept on a singly linked list, with the same
+/// shape as the home caches (headers inline). Almost every heap has none;
+/// Valkey's main thread has one (the Lua arena).
 #[repr(C)]
 pub struct ArenaCaches {
     arena: u16,
     next: *mut ArenaCaches,
-    caches: [*mut ClassCache; NCLASSES],
+    caches: [CacheHeader; NCLASSES],
 }
 
 /// One thread's allocator state (design 6.2). Lives in the metadata region;
 /// reached through the TLS slot. Also the shape of an explicit cache
-/// (`tcache.create`), which is a heap owned by no thread.
+/// (`tcache.create`), which is a heap owned by no thread. `repr(C)` so the
+/// header array sits at a fixed offset the fast paths can add to the TLS
+/// pointer.
+#[repr(C)]
 pub struct Heap {
     shared: *const Shared,
     tid: u32,
@@ -327,8 +351,6 @@ pub struct Heap {
     /// directly from a slab because no cache could be allocated. The
     /// cached classes are derived from their headers in [`Heap::stats`].
     uncached: ThreadStats,
-    /// Caches of the home arena.
-    caches: [*mut ClassCache; NCLASSES],
     /// Caches of every other arena this heap has touched.
     others: *mut ArenaCaches,
     /// `thread.allocated` / `thread.deallocated` as of the last `mallctl`
@@ -341,7 +363,12 @@ pub struct Heap {
     /// Counted in `Arenas::bound` for its home arena: thread heaps are,
     /// explicit caches (`create_detached`) are not.
     bound: bool,
+    /// Caches of the home arena, one line per class; last, so the small
+    /// fields above share two lines and `caches[c]` is `heap + 128 + 64 * c`.
+    caches: [CacheHeader; NCLASSES],
 }
+
+const _: () = assert!(core::mem::offset_of!(Heap, caches) == 128);
 
 /// Process-wide allocator state that every heap works against: the regions,
 /// one [`SlabTable`] per class, arena 0, the metadata allocator, the huge
@@ -799,11 +826,11 @@ impl Heap {
                     last_gc: os::now_ns(),
                     rng: os::seed(),
                     uncached: ThreadStats::default(),
-                    caches: [empty_cache(); NCLASSES],
                     others: ptr::null_mut(),
                     snapshot: ThreadStats::default(),
                     tcache_enabled: true,
                     bound: false,
+                    caches: [CacheHeader::EMPTY; NCLASSES],
                 },
             );
         }
@@ -839,19 +866,15 @@ impl Heap {
         shared.meta.free(h as *mut u8, Layout::new::<Heap>());
     }
 
-    /// Free every real (flushed) cache of one array and reset it to the
-    /// sentinel.
-    fn free_caches(shared: &Shared, caches: &mut [*mut ClassCache; NCLASSES]) {
-        for slot in caches.iter_mut() {
-            let cache = *slot;
-            // SAFETY: real caches were allocated with `ClassCache::layout(cap)`.
-            unsafe {
-                if (*cache).cap != 0 {
-                    debug_assert_eq!((*cache).len, 0);
-                    shared.meta.free(cache as *mut u8, ClassCache::layout((*cache).cap));
-                }
+    /// Reset every (flushed) header of one array to [`CacheHeader::EMPTY`]
+    /// and free its stack.
+    fn free_caches(shared: &Shared, caches: &mut [CacheHeader; NCLASSES]) {
+        for cache in caches.iter_mut() {
+            if cache.cap != 0 {
+                debug_assert_eq!(cache.len, 0);
+                shared.meta.free(cache.slots as *mut u8, CacheHeader::slots_layout(cache.cap));
             }
-            *slot = empty_cache();
+            *cache = CacheHeader::EMPTY;
         }
     }
 
@@ -883,10 +906,9 @@ impl Heap {
         let node = self.other_caches(shared, arena, true);
         if node.is_null() {
             // No metadata for a new node: the caches of the new home start
-            // from the sentinel and the old home's must go back first.
-            self.flush_arena(shared, old, &mut self.caches.clone());
-            let mut caches = core::mem::replace(&mut self.caches, [empty_cache(); NCLASSES]);
-            Self::free_caches(shared, &mut caches);
+            // empty and the old home's must go back first.
+            self.flush_arena(shared, old, ptr::null_mut());
+            Self::free_caches(shared, &mut self.caches);
         } else {
             // SAFETY: `node` is a live block owned by this heap.
             unsafe {
@@ -906,10 +928,8 @@ impl Heap {
     /// the class size.
     pub fn stats(&self) -> ThreadStats {
         let mut s = self.uncached;
-        let mut add = |caches: &[*mut ClassCache; NCLASSES]| {
-            for (class, &cache) in caches.iter().enumerate() {
-                // SAFETY: sentinel (`cap == 0`, skipped) or this heap's cache.
-                let c = unsafe { &*cache };
+        let mut add = |caches: &[CacheHeader; NCLASSES]| {
+            for (class, c) in caches.iter().enumerate() {
                 if c.cap == 0 {
                     continue;
                 }
@@ -986,17 +1006,16 @@ impl Heap {
         x
     }
 
-    /// The home arena's cache for `class`, or `None` while it is still the
-    /// sentinel.
-    pub fn cache(&self, class: usize) -> Option<&ClassCache> {
-        // SAFETY: cache pointers are the sentinel or a live metadata block.
-        let c = unsafe { &*self.caches[class] };
+    /// The home arena's cache for `class`, or `None` while it has never
+    /// been used.
+    pub fn cache(&self, class: usize) -> Option<&CacheHeader> {
+        let c = &self.caches[class];
         if c.cap == 0 { None } else { Some(c) }
     }
 
-    /// The cache for `class` in `arena`, home or not, or `None` while it is
-    /// the sentinel (or the arena was never touched).
-    pub fn cache_in(&self, arena: u16, class: usize) -> Option<&ClassCache> {
+    /// The cache for `class` in `arena`, home or not, or `None` while it
+    /// has never been used (or the arena was never touched).
+    pub fn cache_in(&self, arena: u16, class: usize) -> Option<&CacheHeader> {
         if arena == self.arena {
             return self.cache(class);
         }
@@ -1006,7 +1025,7 @@ impl Heap {
             // this heap.
             unsafe {
                 if (*o).arena == arena {
-                    let c = &*(*o).caches[class];
+                    let c = &(*o).caches[class];
                     return if c.cap == 0 { None } else { Some(c) };
                 }
                 o = (*o).next;
@@ -1015,11 +1034,23 @@ impl Heap {
         None
     }
 
+    /// The home header for `class`: `heap + 128 + 64 * class`, no load.
     #[inline(always)]
-    fn cache_ptr(&self, class: usize) -> *mut ClassCache {
+    fn cache_ptr(&mut self, class: usize) -> *mut CacheHeader {
         debug_assert!(class < NCLASSES);
         // SAFETY: `class_of` only yields indices below `NCLASSES`.
-        unsafe { *self.caches.get_unchecked(class) }
+        unsafe { (&raw mut self.caches).cast::<CacheHeader>().add(class) }
+    }
+
+    /// The header for `class` in an `others` node.
+    ///
+    /// # Safety
+    /// `node` is a live node owned by this heap.
+    #[inline]
+    unsafe fn node_cache_ptr(node: *mut ArenaCaches, class: usize) -> *mut CacheHeader {
+        debug_assert!(class < NCLASSES);
+        // SAFETY: guaranteed by the caller; `class < NCLASSES`.
+        unsafe { (&raw mut (*node).caches).cast::<CacheHeader>().add(class) }
     }
 
     /// Fast path of `malloc` for a non-huge class in the home arena.
@@ -1036,8 +1067,8 @@ impl Heap {
     #[inline(always)]
     pub fn alloc_fast(&mut self, class: usize) -> Option<*mut u8> {
         let cache = self.cache_ptr(class);
-        // SAFETY: the pointer is the sentinel (read-only, `len == 0`) or
-        // this thread's own cache.
+        // SAFETY: this thread's own header, unused (`len == 0`) or with a
+        // stack of `len` entries.
         unsafe {
             let len = (*cache).len;
             if len == 0 {
@@ -1082,7 +1113,7 @@ impl Heap {
     /// `cache` is this heap's real cache for `class` and `len` is its
     /// current non-zero length.
     #[inline(always)]
-    unsafe fn pop(&mut self, cache: *mut ClassCache, class: usize, len: u32) -> (*mut u8, bool) {
+    unsafe fn pop(&mut self, cache: *mut CacheHeader, class: usize, len: u32) -> (*mut u8, bool) {
         // SAFETY: guaranteed by the caller.
         unsafe {
             let allocs = (*cache).allocs.wrapping_add(1);
@@ -1099,7 +1130,7 @@ impl Heap {
     /// # Safety
     /// As for [`Heap::pop`].
     #[inline(always)]
-    unsafe fn pop_top(cache: *mut ClassCache, len: u32) -> (*mut u8, bool) {
+    unsafe fn pop_top(cache: *mut CacheHeader, len: u32) -> (*mut u8, bool) {
         // SAFETY: guaranteed by the caller.
         unsafe {
             let len = len - 1;
@@ -1129,7 +1160,7 @@ impl Heap {
     /// As for [`Heap::pop`]; `allocs` has already been counted.
     #[cold]
     #[inline(never)]
-    unsafe fn pop_compact(&mut self, cache: *mut ClassCache, class: usize, len: u32) -> (*mut u8, bool) {
+    unsafe fn pop_compact(&mut self, cache: *mut CacheHeader, class: usize, len: u32) -> (*mut u8, bool) {
         // SAFETY: guaranteed by the caller.
         unsafe {
             match (*cache).mode {
@@ -1178,7 +1209,7 @@ impl Heap {
     ///
     /// # Safety
     /// As for [`Heap::pop`]; the cache is in compact mode.
-    unsafe fn pop_compact_run(&mut self, cache: *mut ClassCache, class: usize, len: u32) -> (*mut u8, bool) {
+    unsafe fn pop_compact_run(&mut self, cache: *mut CacheHeader, class: usize, len: u32) -> (*mut u8, bool) {
         // SAFETY: guaranteed by the caller.
         unsafe {
             match (*cache).mode {
@@ -1232,7 +1263,7 @@ impl Heap {
     /// `cache` is this heap's real cache for `class`, in compact mode.
     #[cold]
     #[inline(never)]
-    unsafe fn rebuild_run(&mut self, cache: *mut ClassCache, class: usize) {
+    unsafe fn rebuild_run(&mut self, cache: *mut CacheHeader, class: usize) {
         // SAFETY: a heap never outlives the `Shared` it was created on; the
         // unbounded lifetime lets `self` be borrowed mutably below.
         let shared: &Shared = unsafe { &*self.shared };
@@ -1355,17 +1386,17 @@ impl Heap {
     #[inline(always)]
     pub fn push_fast(&mut self, class: usize, p: *mut u8) -> bool {
         let cache = self.cache_ptr(class);
-        // SAFETY: the pointer is the sentinel (`len == cap == 0`, so it is
-        // never written) or this thread's own cache with `len < cap` slots.
+        // SAFETY: this thread's own header, unused (`len == cap == 0`, so
+        // nothing is written) or with a stack of `cap` slots.
         unsafe { Self::push_cache(cache, p) }
     }
 
     /// Push onto `cache` unless it is full.
     ///
     /// # Safety
-    /// `cache` is the sentinel or a real cache owned by this heap.
+    /// `cache` is a header owned by this heap, unused or with a stack.
     #[inline(always)]
-    unsafe fn push_cache(cache: *mut ClassCache, p: *mut u8) -> bool {
+    unsafe fn push_cache(cache: *mut CacheHeader, p: *mut u8) -> bool {
         // SAFETY: guaranteed by the caller.
         unsafe {
             let len = (*cache).len;
@@ -1400,8 +1431,8 @@ impl Heap {
         let node = self.other_caches(shared, arena, true);
         if !node.is_null() {
             // SAFETY: `node` is a live block owned by this heap.
-            let cache = unsafe { (*node).caches[class] };
-            // SAFETY: sentinel (`len == 0`) or this heap's cache.
+            let cache = unsafe { Self::node_cache_ptr(node, class) };
+            // SAFETY: unused (`len == 0`) or this heap's cache.
             let len = unsafe { (*cache).len };
             if len != 0 {
                 // SAFETY: a real cache with `len` entries.
@@ -1451,8 +1482,8 @@ impl Heap {
         let node = self.other_caches(shared, arena, true);
         if !node.is_null() {
             // SAFETY: `node` is a live block owned by this heap; the cache
-            // is the sentinel or ours.
-            if unsafe { Self::push_cache((*node).caches[class], p) } {
+            // is unused (`len == cap == 0`) or ours.
+            if unsafe { Self::push_cache(Self::node_cache_ptr(node, class), p) } {
                 return;
             }
         }
@@ -1504,38 +1535,43 @@ impl Heap {
             return node;
         }
         // SAFETY: a fresh block of the right layout, exclusively ours.
+        // Field by field: a whole `ArenaCaches` temporary would put 3 KiB
+        // on the stack of every call (this function sits on the
+        // cross-arena free path).
         unsafe {
-            ptr::write(node, ArenaCaches { arena, next: self.others, caches: [empty_cache(); NCLASSES] });
+            ptr::write(&raw mut (*node).arena, arena);
+            ptr::write(&raw mut (*node).next, self.others);
+            for c in 0..NCLASSES {
+                ptr::write(Self::node_cache_ptr(node, c), CacheHeader::EMPTY);
+            }
         }
         self.others = node;
         node
     }
 
-    /// The slot holding the cache pointer for `(arena, class)`, creating
-    /// the `others` node if needed. Null if no node could be allocated.
-    fn cache_slot(&mut self, shared: &Shared, arena: u16, class: usize) -> *mut *mut ClassCache {
+    /// The header for `(arena, class)`, creating the `others` node if
+    /// needed. Null if no node could be allocated.
+    fn cache_slot(&mut self, shared: &Shared, arena: u16, class: usize) -> *mut CacheHeader {
         if arena == self.arena {
-            return &mut self.caches[class];
+            return self.cache_ptr(class);
         }
         let node = self.other_caches(shared, arena, true);
         if node.is_null() {
             return ptr::null_mut();
         }
         // SAFETY: `node` is a live block owned by this heap.
-        unsafe { &mut (*node).caches[class] }
+        unsafe { Self::node_cache_ptr(node, class) }
     }
 
-    /// The real cache for `(arena, class)`, allocating it on first use.
-    /// Null if the metadata region is exhausted or caches are off
-    /// (`tcache:false`).
-    fn ensure_cache(&mut self, shared: &Shared, arena: u16, class: usize) -> *mut ClassCache {
-        let slot = self.cache_slot(shared, arena, class);
-        if slot.is_null() {
+    /// The usable cache for `(arena, class)`, giving the header its
+    /// capacity and stack on first use. Null if the metadata region is
+    /// exhausted or caches are off (`tcache:false`).
+    fn ensure_cache(&mut self, shared: &Shared, arena: u16, class: usize) -> *mut CacheHeader {
+        let cache = self.cache_slot(shared, arena, class);
+        if cache.is_null() {
             return ptr::null_mut();
         }
-        // SAFETY: `slot` points into this heap's own cache array; sentinel
-        // or real cache, both readable.
-        let cache = unsafe { *slot };
+        // SAFETY: `cache` points into this heap's own header array.
         if unsafe { (*cache).cap } != 0 {
             return cache;
         }
@@ -1543,12 +1579,12 @@ impl Heap {
         if cap == 0 || !self.tcache_enabled {
             return ptr::null_mut();
         }
-        let cache = shared.meta.alloc(ClassCache::layout(cap)) as *mut ClassCache;
-        if cache.is_null() {
-            return cache;
+        let slots = shared.meta.alloc(CacheHeader::slots_layout(cap));
+        if slots.is_null() {
+            return ptr::null_mut();
         }
-        // SAFETY: a fresh block of `layout(cap)` bytes, exclusively ours;
-        // `slot` is still valid (nothing touched the arrays since).
+        // SAFETY: `cache` is this heap's own header (still `EMPTY`) and
+        // `slots` has room for `cap` pointers, exclusively ours.
         unsafe {
             let (mode, compact_mask) = if shared.config.tcache_compact_shift == 0 {
                 (MODE_OFF, u32::MAX)
@@ -1557,22 +1593,21 @@ impl Heap {
             };
             ptr::write(
                 cache,
-                ClassCache {
+                CacheHeader {
                     len: 0,
                     cap,
                     low_water: 0,
                     zeroed: 0,
+                    slots: slots as *mut *mut u8,
                     allocs: 0,
-                    moved: 0,
-                    run_end: 0,
                     compact_mask,
+                    run_end: 0,
+                    moved: 0,
+                    probe_refilled: shared.owner(arena).class(class).refilled() as u32,
                     arena,
                     mode,
-                    probe_refilled: shared.owner(arena).class(class).refilled() as u32,
-                    slots: [],
                 },
             );
-            *slot = cache;
         }
         cache
     }
@@ -1588,7 +1623,7 @@ impl Heap {
     ///
     /// # Safety
     /// `cache` is this heap's real, empty cache for `(arena, class)`.
-    unsafe fn refill(&mut self, shared: &Shared, arena: &Arena, cache: *mut ClassCache, class: usize) -> u32 {
+    unsafe fn refill(&mut self, shared: &Shared, arena: &Arena, cache: *mut CacheHeader, class: usize) -> u32 {
         // SAFETY: the cache is empty and has `cap` slots of storage.
         unsafe {
             debug_assert_eq!((*cache).len, 0);
@@ -1622,7 +1657,7 @@ impl Heap {
     ///
     /// # Safety
     /// `cache` is this heap's real cache for `(arena, class)` and `n <= len`.
-    unsafe fn flush(&mut self, shared: &Shared, arena: u16, cache: *mut ClassCache, class: usize, n: usize) {
+    unsafe fn flush(&mut self, shared: &Shared, arena: u16, cache: *mut CacheHeader, class: usize, n: usize) {
         if n == 0 {
             return;
         }
@@ -1641,11 +1676,24 @@ impl Heap {
         }
     }
 
-    /// Flush every cache of one arena's array completely.
-    fn flush_arena(&mut self, shared: &Shared, arena: u16, caches: &[*mut ClassCache; NCLASSES]) {
-        for (class, &cache) in caches.iter().enumerate() {
-            // SAFETY: sentinel (`len == 0`, nothing to do) or real cache.
+    /// The header for `class` in the home array (`node` null) or in `node`.
+    ///
+    /// # Safety
+    /// `node` is null or a live node owned by this heap.
+    #[inline]
+    unsafe fn header_in(&mut self, node: *mut ArenaCaches, class: usize) -> *mut CacheHeader {
+        // SAFETY: guaranteed by the caller.
+        if node.is_null() { self.cache_ptr(class) } else { unsafe { Self::node_cache_ptr(node, class) } }
+    }
+
+    /// Flush every cache of one array (the home array when `node` is null,
+    /// else the node's, whose arena is `arena`) completely.
+    fn flush_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches) {
+        for class in 0..NCLASSES {
+            // SAFETY: `node` is null or a live node owned by this heap; an
+            // unused header has `len == 0` and is skipped.
             unsafe {
+                let cache = self.header_in(node, class);
                 let len = (*cache).len as usize;
                 if len != 0 {
                     self.flush(shared, arena, cache, class, len);
@@ -1657,16 +1705,14 @@ impl Heap {
     /// Return every cached slot to its slab. Caches stay allocated.
     pub fn flush_all(&mut self, shared: &Shared) {
         let home = self.arena;
-        let caches = self.caches;
-        self.flush_arena(shared, home, &caches);
+        self.flush_arena(shared, home, ptr::null_mut());
         let mut o = self.others;
         while !o.is_null() {
             // SAFETY: `others` is a list of live metadata blocks owned by
-            // this heap; the array is copied out so `flush` can borrow
-            // `self`.
+            // this heap.
             unsafe {
-                let (arena, caches) = ((*o).arena, (*o).caches);
-                self.flush_arena(shared, arena, &caches);
+                let arena = (*o).arena;
+                self.flush_arena(shared, arena, o);
                 o = (*o).next;
             }
         }
@@ -1677,23 +1723,24 @@ impl Heap {
     /// low-water tracking from the current length.
     pub fn gc(&mut self, shared: &Shared) {
         let home = self.arena;
-        let caches = self.caches;
-        self.gc_arena(shared, home, &caches);
+        self.gc_arena(shared, home, ptr::null_mut());
         let mut o = self.others;
         while !o.is_null() {
             // SAFETY: as in `flush_all`.
             unsafe {
-                let (arena, caches) = ((*o).arena, (*o).caches);
-                self.gc_arena(shared, arena, &caches);
+                let arena = (*o).arena;
+                self.gc_arena(shared, arena, o);
                 o = (*o).next;
             }
         }
     }
 
-    fn gc_arena(&mut self, shared: &Shared, arena: u16, caches: &[*mut ClassCache; NCLASSES]) {
-        for (class, &cache) in caches.iter().enumerate() {
-            // SAFETY: sentinel (`cap == 0`, read-only, skipped) or real cache.
+    fn gc_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches) {
+        for class in 0..NCLASSES {
+            // SAFETY: `node` is null or a live node owned by this heap; an
+            // unused header (`cap == 0`) is skipped.
             unsafe {
+                let cache = self.header_in(node, class);
                 if (*cache).cap == 0 {
                     continue;
                 }
@@ -2010,7 +2057,7 @@ pub(crate) mod tests {
             self.heap().slow_ticks()
         }
 
-        fn cache(&self, c: usize) -> &ClassCache {
+        fn cache(&self, c: usize) -> &CacheHeader {
             self.heap().cache(c).expect("cache exists")
         }
 
@@ -2056,12 +2103,17 @@ pub(crate) mod tests {
             assert!(cap >= MIN_CAP && cap <= MAX_CAP);
             // A cache may hold more than one slab's worth (a 64 KiB slab of
             // 128-byte slots has 512); refills and flushes span slabs.
-            let l = ClassCache::layout(cap);
-            assert_eq!(l.size(), CACHE_HEADER + 8 * cap as usize);
+            let l = CacheHeader::slots_layout(cap);
+            assert_eq!(l.size(), 8 * cap as usize);
             assert_eq!(l.align(), 16);
         }
-        assert_eq!(core::mem::size_of::<ClassCache>(), CACHE_HEADER);
-        assert!(core::mem::size_of::<Heap>() <= 512, "heap is {} bytes", core::mem::size_of::<Heap>());
+        // One line per header, headers dense in the heap, the small fields
+        // on the two lines before them (review P3).
+        assert_eq!(core::mem::size_of::<CacheHeader>(), 64);
+        assert_eq!(core::mem::align_of::<CacheHeader>(), 64);
+        assert_eq!(core::mem::offset_of!(Heap, caches), 128);
+        assert_eq!(core::mem::size_of::<Heap>(), 128 + 64 * NCLASSES, "heap is {} bytes", core::mem::size_of::<Heap>());
+        assert_eq!(core::mem::size_of::<ArenaCaches>(), 64 + 64 * NCLASSES);
     }
 
     #[test]
@@ -2084,10 +2136,11 @@ pub(crate) mod tests {
         assert!(t.heap().cache(c + 1).is_none());
         assert_eq!(t.heap().stats().allocated, 64);
         assert_eq!(t.heap().slow_ticks(), 1);
-        // Only the heap and one cache came from the metadata region.
+        // Only the heap and one stack came from the metadata region (both
+        // rounded up to a metadata bin).
         let meta_used = s.meta.stats().allocated - before;
-        assert!(meta_used >= core::mem::size_of::<Heap>() + CACHE_HEADER + 8 * CAP);
-        assert!(meta_used <= 512 + 12288);
+        assert!(meta_used >= core::mem::size_of::<Heap>() + 8 * CAP);
+        assert!(meta_used <= 4096 + 8 * CAP, "{meta_used}");
         t.free(p);
         t.destroy();
         assert_eq!(s.meta.stats().allocated, before);
