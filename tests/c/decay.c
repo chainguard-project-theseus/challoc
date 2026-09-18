@@ -6,8 +6,13 @@
  *   trim        (defaults)                 free a lot, malloc_trim(0) drops
  *                                          RSS; calloc afterwards is zero
  *   decay       dirty_decay_ms:200         free a lot, keep the slow path
- *                                          ticking: RSS drops after 200 ms
- *                                          and not before
+ *                                          ticking: RSS drops within 200 ms
+ *                                          and not at once
+ *   curve       dirty_decay_ms:2000        the same over a 2 s window: part
+ *                                          of the freed set is back by
+ *                                          mid-window (Phase 1.5: the
+ *                                          smoothstep curve), all of it by
+ *                                          the end
  *   never       dirty_decay_ms:-1          RSS never drops on its own;
  *                                          malloc_trim still purges
  *   background  background_thread:true,    the thread appears, RSS drops
@@ -191,6 +196,35 @@ static void mode_decay(void)
     check_calloc_zero();
 }
 
+/* Progressive decay (design section 8): with a 2 s window, at 1 s the
+ * slow path has purged part of the freed set (the curve is at 0.5, and
+ * 0.32..0.68 across a 0.8..1.2 s timing slop; the 32 MiB of 1 KiB slabs
+ * follow it slab by slab, the huge runs extent by extent), and by 2.1 s
+ * all of it. */
+static void mode_curve(void)
+{
+    void **b = grab();
+    size_t full = rss_bytes();
+    release(b);
+    tick();
+    size_t early = rss_bytes();
+    report("curve early", full, early);
+    CHECK(drop(full, early) < STAY_MAX, "purged %zu MiB in the first step", drop(full, early) / MIB);
+    sleep_ms(1000);
+    tick();
+    size_t mid = rss_bytes();
+    report("curve mid", full, mid);
+    CHECK(drop(full, mid) >= 6 * MIB, "mid-window purge released only %zu MiB", drop(full, mid) / MIB);
+    CHECK(drop(full, mid) < DROP_MIN, "mid-window purge released everything (%zu MiB)", drop(full, mid) / MIB);
+    sleep_ms(1100);
+    tick();
+    size_t late = rss_bytes();
+    report("curve late", full, late);
+    CHECK(drop(full, late) >= DROP_MIN, "decay released only %zu MiB by the end of the window", drop(full, late) / MIB);
+    CHECK(late <= mid, "RSS rose from mid-window (%zu) to the end (%zu)", mid / MIB, late / MIB);
+    check_calloc_zero();
+}
+
 static void mode_never(void)
 {
     void **b = grab();
@@ -282,7 +316,7 @@ static void mode_background(void)
 
 int main(int argc, char **argv)
 {
-    REQUIRE(argc == 2, "usage: decay <trim|decay|never|background|lazy>");
+    REQUIRE(argc == 2, "usage: decay <trim|decay|curve|never|background|lazy>");
     page_size = sysconf(_SC_PAGESIZE);
     printf("decay: start %s\n", argv[1]);
     fflush(stdout);
@@ -293,6 +327,8 @@ int main(int argc, char **argv)
         mode_trim(1);
     else if (strcmp(argv[1], "decay") == 0)
         mode_decay();
+    else if (strcmp(argv[1], "curve") == 0)
+        mode_curve();
     else if (strcmp(argv[1], "never") == 0)
         mode_never();
     else if (strcmp(argv[1], "background") == 0)

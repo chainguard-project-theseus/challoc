@@ -472,9 +472,22 @@ page granularity.
 Each `(arena, class)` and the huge allocator keep an `empty` set ordered by
 address, with `dirty_at` per entry. Decay policy is jemalloc's in shape:
 
-- `dirty_decay_ms` (default 10000): an `Empty` slab older than this is purged
-  with `MADV_DONTNEED` and becomes `Purged`. Its bytes stop counting toward
-  `resident` and start counting toward `retained`.
+- `dirty_decay_ms` (default 10000) is the window of jemalloc's decay curve:
+  the time for memory to go from dirty to purged, with the amount still
+  dirty following a smootherstep (`6x^5 - 15x^4 + 10x^3`, jemalloc's
+  `SMOOTHSTEP_NSTEPS = 200` steps) in elapsed time over the window, so
+  about half of what went `Empty` at once is purged by mid-window and all
+  of it by the end. At each step a class's allowance is the sum over its
+  `Empty` slabs of the curve's weight at their age, rounded up; its oldest
+  `Empty` slabs are purged with `MADV_DONTNEED` until the rest fit and
+  become `Purged`, their bytes moving from `resident` to `retained`. Within
+  the cut-off step the highest addresses go first, so the lowest, which a
+  refill takes first, stay. The huge allocator applies the same allowance
+  in pages over its `Empty` extents, oldest first, whole extents only and
+  never below the allowance, so a lone extent lasts the whole window. A
+  lone slab is likewise never purged before its weight reaches zero (the
+  allowance rounds up). A walk runs at most once per step (window / 200).
+  `-1` is never.
 - `muzzy_decay_ms` is accepted and ignored. challoc does not use `MADV_FREE`
   by default: lazily freed pages remain charged to the cgroup and visible in
   RSS until reclaim, which misleads both autoscalers and Redis's fragmentation
@@ -482,8 +495,9 @@ address, with `dirty_at` per entry. Decay policy is jemalloc's in shape:
 - Purges are batched: collect up to 64 ranges and issue one `process_madvise`
   with `PIDFD_SELF` (kernel 6.14) or a pidfd of self (5.10), falling back to
   a loop of `madvise`.
-- Decay is driven from the slow path (section 6.4) with a per-class deadline,
-  and from the background thread when enabled. Without the background thread
+- Decay is driven from the slow path (section 6.4) with a per-class deadline
+  at the end of the current step, and from the background thread when
+  enabled. Without the background thread
   an idle process does not purge, exactly like jemalloc; Valkey enables the
   background thread by default through `mallctl("background_thread")`.
 - `arena.<i>.purge` and `malloc_trim(0)` purge everything immediately.

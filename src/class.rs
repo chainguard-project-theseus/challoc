@@ -47,7 +47,7 @@ use crate::bitmap::{AtomicBitmap, TwoLevelBitmap};
 use crate::layout::{CLASSES, Class, LG_MAX_SLAB, LG_MIN_SLAB, NCLASSES, Regions};
 use crate::lock::{Lock, PAD_ALIGN, Padded, RawLock};
 use crate::meta::Meta;
-use crate::purge::{self, Batch};
+use crate::purge::{self, Batch, Curve, STEPS};
 use crate::slab::{DESC_ALIGN, SlabDesc, State, desc_stride};
 use crate::sys::Errno;
 use core::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
@@ -463,6 +463,9 @@ pub struct ClassState {
     /// It may lag behind a claim that reused the oldest slab, in which case
     /// it is too early rather than too late; the next `decay` recomputes.
     oldest_empty: AtomicU64,
+    /// When the next decay walk of this class is due: one walk per step
+    /// of the curve at most (`decay`). 0 before the first.
+    next_decay: AtomicU64,
     inner: Padded<Lock<Inner>>,
     /// Slots ever reserved by `take` for this arena (written only under
     /// the class lock). With `released` below it gives `curregs`, the
@@ -494,6 +497,7 @@ pub struct ClassState {
 
 const _: () = assert!(core::mem::offset_of!(ClassState, inner) == PAD_ALIGN);
 const _: () = assert!(core::mem::offset_of!(ClassState, oldest_empty) + 8 <= PAD_ALIGN);
+const _: () = assert!(core::mem::offset_of!(ClassState, next_decay) + 8 <= PAD_ALIGN);
 const _: () = assert!(core::mem::offset_of!(ClassState, claimed) % PAD_ALIGN == 0);
 const _: () = assert!(core::mem::size_of::<ClassState>() % PAD_ALIGN == 0);
 const _: () = assert!(core::mem::size_of::<ClassState>() % 512 != 0);
@@ -984,6 +988,7 @@ impl ClassState {
             arena,
             table,
             oldest_empty: AtomicU64::new(0),
+            next_decay: AtomicU64::new(0),
             inner: Padded(Lock::new(Inner {
                 partial,
                 empty,
@@ -1395,7 +1400,6 @@ impl ClassState {
     /// Recomputes `oldest_empty` from the survivors. Returns the number
     /// purged.
     pub fn purge_empty(&self, cutoff: u64) -> usize {
-        let cls = self.class();
         let spp = self.table().slabs_per_page();
         let mut g = self.inner.lock();
         let mut n = 0;
@@ -1411,25 +1415,110 @@ impl ClassState {
             );
             let dirty_at = desc.dirty_at();
             if dirty_at <= cutoff && (spp == 1 || self.page_group_is_idle(slab, spp)) {
-                // Discard the whole page group (one slab when the slab is at
-                // least a page); every `Empty` slab in it becomes `Purged`
-                // now, a younger one included, since nothing in the group is
-                // in use.
-                let first = slab & !(spp - 1);
-                batch.push(self.slab_addr(first), cls.slab_size() * spp);
-                for s in first..first + spp {
-                    let d = self.desc(s);
-                    if d.state() != State::Empty {
-                        continue;
+                n += self.purge_group(&mut g, slab, spp, &mut batch);
+            } else if oldest == 0 || dirty_at < oldest {
+                oldest = dirty_at;
+            }
+            next = g.empty.map.lowest_set_from(slab + 1);
+        }
+        batch.flush();
+        self.oldest_empty.store(oldest, Ordering::Relaxed);
+        n
+    }
+
+    /// Discard the whole page group of `slab` (one slab when the slab is
+    /// at least a page) and make every `Empty` slab in it `Purged`, a
+    /// younger one included, since nothing in the group is in use. Under
+    /// the class lock; the caller checked the group is idle. Returns the
+    /// number of slabs purged.
+    fn purge_group(&self, g: &mut Inner, slab: usize, spp: usize, batch: &mut Batch) -> usize {
+        let first = slab & !(spp - 1);
+        batch.push(self.slab_addr(first), self.class().slab_size() * spp);
+        let mut n = 0;
+        for s in first..first + spp {
+            let d = self.desc(s);
+            if d.state() != State::Empty {
+                continue;
+            }
+            d.set_state(State::Purged);
+            d.set_dirty_at(0);
+            g.empty.map.clear(s);
+            g.purged.map.set(s);
+            g.stats.empty -= 1;
+            g.stats.purged += 1;
+            n += 1;
+        }
+        n
+    }
+
+    /// Decay walk (design section 8): purge the oldest `Empty` slabs until
+    /// the number left is within the curve's allowance at `now`, the sum
+    /// over the `Empty` slabs of the weight of their age, rounded up. Slabs
+    /// are purged oldest step first; within the cut-off step the highest
+    /// addresses go, so the lowest, which a claim takes first, stay. The
+    /// discards go out in batches under the class lock, as `purge_empty`.
+    /// Recomputes `oldest_empty` from the survivors. Returns the number
+    /// purged.
+    fn purge_curve(&self, now: u64, curve: &Curve) -> usize {
+        let spp = self.table().slabs_per_page();
+        let mut g = self.inner.lock();
+        // First pass: the age histogram of the empty set and its allowance.
+        let mut counts = [0u32; STEPS];
+        let mut total = 0usize;
+        let mut weighted = 0u64;
+        let mut oldest = 0u64;
+        let mut next = g.empty.map.lowest_set();
+        while let Some(slab) = next {
+            let desc = self.desc(slab);
+            assert!(
+                desc.state() == State::Empty && desc.live() == 0,
+                "class {}: slab {slab} in the empty set is not empty",
+                self.class
+            );
+            let dirty_at = desc.dirty_at();
+            let step = curve.step(now, dirty_at);
+            counts[step] += 1;
+            total += 1;
+            weighted += Curve::weight(step);
+            if oldest == 0 || dirty_at < oldest {
+                oldest = dirty_at;
+            }
+            next = g.empty.map.lowest_set_from(slab + 1);
+        }
+        let allow = Curve::allowance(weighted);
+        if total <= allow {
+            self.oldest_empty.store(oldest, Ordering::Relaxed);
+            return 0;
+        }
+        // The cut-off step: every slab in an older step goes and all but
+        // the first `keep` of this one.
+        let need = total - allow;
+        let mut cut = STEPS;
+        let mut acc = 0usize;
+        while acc < need {
+            cut -= 1;
+            acc += counts[cut] as usize;
+        }
+        let mut keep = acc - need;
+        // Second pass: purge.
+        let mut n = 0;
+        let mut batch = Batch::new();
+        oldest = 0;
+        let mut next = g.empty.map.lowest_set();
+        while let Some(slab) = next {
+            let dirty_at = self.desc(slab).dirty_at();
+            let step = curve.step(now, dirty_at);
+            let purge = step > cut
+                || (step == cut && {
+                    if keep > 0 {
+                        keep -= 1;
+                        false
+                    } else {
+                        true
                     }
-                    d.set_state(State::Purged);
-                    d.set_dirty_at(0);
-                    g.empty.map.clear(s);
-                    g.purged.map.set(s);
-                    g.stats.empty -= 1;
-                    g.stats.purged += 1;
-                    n += 1;
-                }
+                });
+            if purge && (spp == 1 || self.page_group_is_idle(slab, spp)) {
+                n += self.purge_group(&mut g, slab, spp, &mut batch);
             } else if oldest == 0 || dirty_at < oldest {
                 oldest = dirty_at;
             }
@@ -1465,23 +1554,32 @@ impl ClassState {
         self.oldest_empty.load(Ordering::Relaxed)
     }
 
-    /// Decay step (design section 8): when the oldest `Empty` slab has been
-    /// dirty for `decay_ns` at `now`, purge every slab that old or older.
-    /// Returns the class's next deadline (oldest `dirty_at + decay_ns`),
-    /// `None` when nothing is `Empty`. Takes the lock only when a purge is
-    /// due.
+    /// Decay step (design section 8): once the oldest `Empty` slab is a
+    /// step of the curve old, walk the empty set (`purge_curve`) at most
+    /// once per step. Returns the class's next deadline (the end of the
+    /// oldest slab's first step, or of the current step), `None` when
+    /// nothing is `Empty`. Takes the lock only when a walk is due.
     pub fn decay(&self, now: u64, decay_ns: u64) -> Option<u64> {
         let oldest = self.oldest_empty();
         if oldest == 0 {
             return None;
         }
-        let deadline = oldest.saturating_add(decay_ns);
-        if now < deadline {
-            return Some(deadline);
+        let curve = Curve::new(decay_ns);
+        let step = curve.step_ns();
+        let first = oldest.saturating_add(step);
+        if now < first {
+            return Some(first);
         }
-        self.purge_empty(now.saturating_sub(decay_ns));
-        let oldest = self.oldest_empty();
-        if oldest == 0 { None } else { Some(oldest.saturating_add(decay_ns)) }
+        // A deadline further away than one step was set under a longer
+        // period since shortened: walk now.
+        let next = self.next_decay.load(Ordering::Relaxed);
+        if now < next && next - now <= step {
+            return Some(next);
+        }
+        self.purge_curve(now, &curve);
+        let next = now.saturating_add(step);
+        self.next_decay.store(next, Ordering::Relaxed);
+        if self.oldest_empty() == 0 { None } else { Some(next) }
     }
 
     /// This arena's slab counts; `guards` is the class-wide count from the
@@ -2244,49 +2342,93 @@ mod tests {
         assert_eq!(cs.stats(), ClassStats { committed: 1, nonfull: 1, ..Default::default() });
     }
 
-    /// The decay driver's view: `oldest_empty` tracks the first slab to go
-    /// `Empty`, `decay` purges nothing before the deadline and everything
-    /// that old at it, and a stale (too early) value corrects itself.
+    /// The decay driver's view (design section 8): nothing is purged in
+    /// the first step of the window, about half of a cohort by mid-window
+    /// (the highest addresses, so a claim still finds the lowest), all of
+    /// it at the end; the walk runs once per step; older cohorts go first;
+    /// a lone slab lasts until its weight is zero; a stale (too early)
+    /// `oldest_empty` corrects itself; a zero period purges at once.
     #[test]
-    fn decay_deadlines_follow_the_oldest_empty_slab() {
+    fn decay_purges_the_oldest_empty_slabs_along_the_curve() {
         let env = Env::new();
         let c = small_class();
         let cs = env.class(c, 0);
         let nslots = CLASSES[c].nslots();
+        let n = cs.nslabs();
+        assert!(n >= 64, "test layout holds {n} slabs");
         assert_eq!(cs.oldest_empty(), 0);
         assert_eq!(cs.decay(u64::MAX, 1000), None);
-        // Two slabs; free the second first so the oldest is not the lowest.
-        let (p, _) = env.claim(&cs, nslots * 2);
-        assert_eq!(cs.stats().committed, 2);
-        cs.release(&p[nslots..]);
-        let t1 = cs.desc(1).dirty_at();
-        assert!(t1 > 0);
-        assert_eq!(cs.oldest_empty(), t1);
-        // The coarse clock ticks every few milliseconds on Linux; off Linux
-        // it is a counter and the sleep is just short.
-        std::thread::sleep(core::time::Duration::from_millis(30));
-        cs.release(&p[..nslots]);
-        let t0 = cs.desc(0).dirty_at();
-        assert!(t0 > t1);
-        assert_eq!(cs.oldest_empty(), t1, "a later Empty slab must not move the oldest");
-        // Before the deadline nothing happens and the deadline is reported.
-        assert_eq!(cs.decay(t1 + 999, 1000), Some(t1 + 1000));
-        assert_eq!(cs.stats().empty, 2);
-        // At it, slab 1 (dirty at t1) is purged, slab 0 (t0 > t1) survives.
-        assert_eq!(cs.decay(t1 + 1000, 1000), Some(t0 + 1000));
-        assert_eq!(cs.desc(1).state(), State::Purged);
-        assert_eq!(cs.desc(0).state(), State::Empty);
+        // A window of 200_000 ns: steps of 1000.
+        const W: u64 = 200_000;
+        // One cohort of every slab; the clock reads are made uniform.
+        let (p, _) = env.claim(&cs, nslots * n);
+        cs.release(&p);
+        assert_eq!(cs.stats().empty, n);
+        let t0 = cs.oldest_empty();
+        assert!(t0 > 0);
+        for s in 0..n {
+            cs.desc(s).set_dirty_at(t0);
+        }
+        // Before the first step ends: no walk, the deadline is its end.
+        assert_eq!(cs.decay(t0 + 999, W), Some(t0 + 1000));
+        assert_eq!(cs.stats().empty, n);
+        // At it: a walk that purges nothing (weight one), next one a step on.
+        assert_eq!(cs.decay(t0 + 1000, W), Some(t0 + 2000));
+        assert_eq!(cs.stats().empty, n);
+        // Within the step the deadline holds and nothing is walked.
+        assert_eq!(cs.decay(t0 + 1500, W), Some(t0 + 2000));
+        // Mid-window: about half, the highest slabs first.
+        assert_eq!(cs.decay(t0 + W / 2, W), Some(t0 + W / 2 + 1000));
+        let st = cs.stats();
+        assert_eq!(st.empty + st.purged, n);
+        assert!(st.purged.abs_diff(n / 2) <= n / 10 + 1, "{st:?}");
+        for s in 0..n {
+            let want = if s < st.empty { State::Empty } else { State::Purged };
+            assert_eq!(cs.desc(s).state(), want, "slab {s}");
+        }
         assert_eq!(cs.oldest_empty(), t0);
+        // A quarter of the way in nothing more would have gone; three
+        // quarters in most of it; at the end all of it.
+        assert_eq!(cs.decay(t0 + 3 * W / 4, W), Some(t0 + 3 * W / 4 + 1000));
+        let st2 = cs.stats();
+        assert!(st2.purged > st.purged && st2.empty > 0, "{st2:?}");
+        assert!(st2.empty * 100 / n <= 15, "{st2:?}");
+        assert_eq!(cs.decay(t0 + W, W), None);
+        assert_eq!(cs.stats(), ClassStats { committed: n, purged: n, ..Default::default() });
+        assert_eq!(cs.oldest_empty(), 0);
+        // Two cohorts: slab 0 at t, slab 1 a half window younger. At the
+        // last step of slab 0 only it goes; slab 1, alone, lasts until its
+        // own last step.
+        let (q, _) = env.claim(&cs, nslots * 2);
+        cs.release(&q);
+        let t = cs.oldest_empty();
+        cs.desc(0).set_dirty_at(t);
+        cs.desc(1).set_dirty_at(t + W / 2);
+        assert_eq!(cs.decay(t + W - 1000, W), Some(t + W));
+        assert_eq!(cs.desc(0).state(), State::Purged);
+        assert_eq!(cs.desc(1).state(), State::Empty);
+        assert_eq!(cs.oldest_empty(), t + W / 2);
+        assert_eq!(cs.decay(t + W / 2 + W - 2000, W), Some(t + W / 2 + W - 1000));
+        assert_eq!(cs.desc(1).state(), State::Empty);
+        assert_eq!(cs.decay(t + W / 2 + W - 1000, W), None);
+        assert_eq!(cs.desc(1).state(), State::Purged);
         // A claim reuses slab 0 (the lowest Empty): the atomic is now stale
         // (too early). The next decay finds nothing and clears it.
-        let (q, _) = env.claim(&cs, 1);
-        assert_eq!(q[0], p[0]);
-        assert_eq!(cs.oldest_empty(), t0);
-        assert_eq!(cs.decay(u64::MAX / 2, 1000), None);
+        let (r, _) = env.claim(&cs, nslots);
+        cs.release(&r[..1]);
+        assert_eq!(cs.desc(0).state(), State::Active);
+        cs.release(&r[1..]);
+        assert_eq!(cs.desc(0).state(), State::Empty);
+        let t = cs.oldest_empty();
+        assert!(t > 0);
+        let (r, _) = env.claim(&cs, 1);
+        assert_eq!(r[0], q[0]);
+        assert_eq!(cs.oldest_empty(), t);
+        assert_eq!(cs.decay(u64::MAX / 2, W), None);
         assert_eq!(cs.oldest_empty(), 0);
-        assert_eq!(cs.stats(), ClassStats { committed: 2, purged: 1, nonfull: 1, ..Default::default() });
-        // `decay_ns` 0 purges as soon as a slab is Empty.
-        cs.release(&q);
+        // A zero period purges as soon as a slab is Empty, whatever the
+        // deadline of the last walk.
+        cs.release(&r);
         let t = cs.oldest_empty();
         assert!(t > 0);
         assert_eq!(cs.decay(t, 0), None);
@@ -2297,6 +2439,29 @@ mod tests {
         assert!(cs.oldest_empty() > 0);
         assert_eq!(cs.purge_empty(u64::MAX), 2);
         assert_eq!(cs.oldest_empty(), 0);
+    }
+
+    /// A deadline left by a walk under a long period does not delay a
+    /// period shortened since (`arena.<i>.dirty_decay_ms`).
+    #[test]
+    fn decay_walks_at_once_after_the_period_shrinks() {
+        let env = Env::new();
+        let c = small_class();
+        let cs = env.class(c, 0);
+        let nslots = CLASSES[c].nslots();
+        let (p, _) = env.claim(&cs, nslots * 4);
+        cs.release(&p);
+        let t0 = cs.oldest_empty();
+        for s in 0..4 {
+            cs.desc(s).set_dirty_at(t0);
+        }
+        // A walk under a 20 s period leaves a deadline 100 ms out.
+        let long = 20_000_000_000;
+        assert_eq!(cs.decay(t0 + long / 200, long), Some(t0 + 2 * (long / 200)));
+        assert_eq!(cs.stats().empty, 4);
+        // Under a 200 us period the same instant is past the window.
+        assert_eq!(cs.decay(t0 + long / 200, 200_000), None);
+        assert_eq!(cs.stats().purged, 4);
     }
 
     /// Every slab of the region (a full batch's worth in the test layout)

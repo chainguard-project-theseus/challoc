@@ -366,6 +366,11 @@ fn c_decay_window() {
 }
 
 #[test]
+fn c_decay_curve() {
+    run_decay("curve", "abort_conf:true,dirty_decay_ms:2000");
+}
+
+#[test]
 fn c_decay_never() {
     run_decay("never", "abort_conf:true,dirty_decay_ms:-1");
 }

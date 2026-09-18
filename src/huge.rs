@@ -46,7 +46,7 @@ use crate::class::Set;
 use crate::layout::Regions;
 use crate::lock::{Lock, RawLock};
 use crate::meta::{self, Meta};
-use crate::purge::{self, Batch};
+use crate::purge::{self, Batch, Curve};
 use crate::sys::Errno;
 
 /// Guard pages after every run.
@@ -381,6 +381,9 @@ pub struct Huge {
     /// when the list is empty. Kept in step with the list under the lock
     /// by `sync_oldest` and read without it by the decay driver.
     oldest_empty: AtomicU64,
+    /// When the next decay walk is due: one per step of the curve at most
+    /// (`decay`). 0 before the first.
+    next_decay: AtomicU64,
     inner: Lock<Inner>,
 }
 
@@ -591,6 +594,7 @@ impl Huge {
             guard_install,
             retain_max: AtomicUsize::new(DEFAULT_RETAIN_MAX),
             oldest_empty: AtomicU64::new(0),
+            next_decay: AtomicU64::new(0),
             inner: Lock::new(Inner {
                 free,
                 table,
@@ -1022,7 +1026,6 @@ impl Huge {
     /// (`u64::MAX` for all): `MADV_DONTNEED`, then `Purged`. Returns the
     /// number purged.
     pub fn purge_empty(&self, cutoff: u64) -> usize {
-        let page = self.page_size();
         let mut g = self.inner.lock();
         let mut n = 0;
         let mut batch = Batch::new();
@@ -1032,25 +1035,72 @@ impl Huge {
                 break;
             }
             // SAFETY: list members are live `Empty` extents.
-            let (start, pages, dirty_at) = unsafe { ((*d).start(), (*d).pages(), (*d).dirty_at) };
-            if dirty_at > cutoff {
+            if unsafe { (*d).dirty_at } > cutoff {
                 break;
             }
-            // Discarded in batches before the lock is released, so no
-            // allocation can take the extent between the state change and
-            // the discard.
-            batch.push(self.addr(start), pages * page);
-            g.unlink(d);
-            // SAFETY: as above.
-            unsafe {
-                (*d).state = RunState::Purged as u8;
-                (*d).dirty_at = 0;
-            }
-            g.stats.sub_free(RunState::Empty, pages);
-            g.stats.add_free(RunState::Purged, pages);
+            self.purge_extent(&mut g, d, &mut batch);
             n += 1;
         }
         batch.flush();
+        self.sync_oldest(&g);
+        n
+    }
+
+    /// Purge `d`, a member of the `Empty` list: `MADV_DONTNEED` through
+    /// `batch`, then `Purged`. Discarded in batches before the lock is
+    /// released, so no allocation can take the extent between the state
+    /// change and the discard. Returns its pages.
+    fn purge_extent(&self, g: &mut Inner, d: *mut HugeDesc, batch: &mut Batch) -> usize {
+        // SAFETY: list members are live `Empty` extents.
+        let (start, pages) = unsafe { ((*d).start(), (*d).pages()) };
+        batch.push(self.addr(start), pages * self.page_size());
+        g.unlink(d);
+        // SAFETY: as above.
+        unsafe {
+            (*d).state = RunState::Purged as u8;
+            (*d).dirty_at = 0;
+        }
+        g.stats.sub_free(RunState::Empty, pages);
+        g.stats.add_free(RunState::Purged, pages);
+        pages
+    }
+
+    /// Decay walk (design section 8), as `ClassState::purge_curve` in
+    /// pages: the curve's allowance at `now` is the sum over the `Empty`
+    /// extents of their pages times the weight of their age, rounded up,
+    /// and the excess over it is purged oldest extent first, whole extents
+    /// only and never below the allowance (an extent larger than the
+    /// remaining excess is skipped for younger ones that fit), so a lone
+    /// extent lasts until its weight is zero, the end of the window, as
+    /// before. Returns the number of extents purged.
+    fn purge_curve(&self, now: u64, curve: &Curve) -> usize {
+        let mut g = self.inner.lock();
+        let mut total = 0usize;
+        let mut weighted = 0u64;
+        let mut d = g.empty_head;
+        while !d.is_null() {
+            // SAFETY: list members are live `Empty` extents.
+            let (pages, dirty_at, next) = unsafe { ((*d).pages(), (*d).dirty_at, (*d).next) };
+            total += pages;
+            weighted += pages as u64 * Curve::weight(curve.step(now, dirty_at));
+            d = next;
+        }
+        let mut excess = total.saturating_sub(Curve::allowance(weighted));
+        let mut n = 0;
+        if excess > 0 {
+            let mut batch = Batch::new();
+            let mut d = g.empty_head;
+            while !d.is_null() && excess > 0 {
+                // SAFETY: as above; `next` is read before `d` leaves the list.
+                let (pages, next) = unsafe { ((*d).pages(), (*d).next) };
+                if pages <= excess {
+                    excess -= self.purge_extent(&mut g, d, &mut batch);
+                    n += 1;
+                }
+                d = next;
+            }
+            batch.flush();
+        }
         self.sync_oldest(&g);
         n
     }
@@ -1061,21 +1111,29 @@ impl Huge {
         self.oldest_empty.load(Ordering::Relaxed)
     }
 
-    /// Decay step (design section 8), as `ClassState::decay`: purge every
-    /// extent `Empty` for `decay_ns` or longer at `now` and return the next
-    /// deadline, `None` when nothing is `Empty`. Lock-free unless due.
+    /// Decay step (design section 8), as `ClassState::decay`: once the
+    /// oldest `Empty` extent is a step of the curve old, walk the list
+    /// (`purge_curve`) at most once per step, and return the next deadline,
+    /// `None` when nothing is `Empty`. Lock-free unless a walk is due.
     pub fn decay(&self, now: u64, decay_ns: u64) -> Option<u64> {
         let oldest = self.oldest_empty();
         if oldest == 0 {
             return None;
         }
-        let deadline = oldest.saturating_add(decay_ns);
-        if now < deadline {
-            return Some(deadline);
+        let curve = Curve::new(decay_ns);
+        let step = curve.step_ns();
+        let first = oldest.saturating_add(step);
+        if now < first {
+            return Some(first);
         }
-        self.purge_empty(now.saturating_sub(decay_ns));
-        let oldest = self.oldest_empty();
-        if oldest == 0 { None } else { Some(oldest.saturating_add(decay_ns)) }
+        let next = self.next_decay.load(Ordering::Relaxed);
+        if now < next && next - now <= step {
+            return Some(next);
+        }
+        self.purge_curve(now, &curve);
+        let next = now.saturating_add(step);
+        self.next_decay.store(next, Ordering::Relaxed);
+        if self.oldest_empty() == 0 { None } else { Some(next) }
     }
 
     pub fn stats(&self) -> HugeStats {
@@ -1599,45 +1657,83 @@ mod tests {
         assert_eq!(h.stats().next_page, 9);
     }
 
-    /// The decay driver's view of the huge allocator: `oldest_empty`
-    /// follows the list head through frees, purges and reuse.
+    /// The decay driver's view of the huge allocator (design section 8):
+    /// the curve in pages over the `Empty` list, oldest extent first; a
+    /// lone extent lasts until its weight is zero; `oldest_empty` follows
+    /// the head through frees, purges and reuse.
     #[test]
-    fn decay_deadlines_follow_the_empty_list_head() {
+    fn decay_purges_the_oldest_extents_along_the_curve() {
         let env = Env::new();
         let h = env.huge();
         assert_eq!(h.oldest_empty(), 0);
         assert_eq!(h.decay(u64::MAX, 1000), None);
+        const W: u64 = 200_000;
         let mut ps = Vec::new();
         for _ in 0..4 {
             ps.push(env.alloc(&h, PAGE, 1).0);
         }
-        // Free runs 0 and 2 (no coalescing) with a gap in time.
+        // Free runs 0 and 2 (no coalescing): one cohort of two extents,
+        // the clock reads made uniform.
         env.free(&h, ps[0]);
+        env.free(&h, ps[2]);
         let t0 = h.oldest_dirty_at().unwrap();
         assert_eq!(h.oldest_empty(), t0);
-        std::thread::sleep(core::time::Duration::from_millis(30));
-        env.free(&h, ps[2]);
-        let t2 = h.lookup(env.page_of(ps[2])).unwrap().dirty_at;
-        assert!(t2 > t0);
-        assert_eq!(h.oldest_empty(), t0);
-        assert_eq!(h.decay(t0 + 999, 1000), Some(t0 + 1000));
+        {
+            let g = h.inner.lock();
+            let mut d = g.empty_head;
+            while !d.is_null() {
+                unsafe {
+                    (*d).dirty_at = t0;
+                    d = (*d).next;
+                }
+            }
+        }
+        let pages = h.stats().empty_pages;
         assert_eq!(h.stats().empty, 2);
-        assert_eq!(h.decay(t0 + 1000, 1000), Some(t2 + 1000));
+        // Before the first step ends: no walk. At it: a walk purging
+        // nothing. Mid-window: half the pages, the head (run 0) first.
+        assert_eq!(h.decay(t0 + 999, W), Some(t0 + 1000));
+        assert_eq!(h.decay(t0 + 1000, W), Some(t0 + 2000));
+        assert_eq!(h.stats().empty, 2);
+        assert_eq!(h.decay(t0 + 1500, W), Some(t0 + 2000));
+        assert_eq!(h.decay(t0 + W / 2, W), Some(t0 + W / 2 + 1000));
+        assert_eq!((h.stats().empty, h.stats().purged), (1, 1));
+        assert_eq!(h.stats().purged_pages, pages / 2);
+        assert_eq!(h.lookup(env.page_of(ps[0])).unwrap().state, RunState::Purged);
+        assert_eq!(h.lookup(env.page_of(ps[2])).unwrap().state, RunState::Empty);
+        assert_eq!(h.oldest_empty(), t0);
+        // The survivor, alone, lasts until the last step of the window.
+        assert_eq!(h.decay(t0 + W - 2000, W), Some(t0 + W - 1000));
         assert_eq!(h.stats().empty, 1);
-        assert_eq!(h.stats().purged, 1);
-        assert_eq!(h.oldest_empty(), t2);
-        // Reusing the last Empty extent (lowest fit is run 0's pages, now
-        // Purged; ask for both so run 2's pages go too) clears the head.
+        assert_eq!(h.decay(t0 + W - 1000, W), None);
+        assert_eq!((h.stats().empty, h.stats().purged), (0, 2));
+        assert_eq!(h.oldest_empty(), 0);
+        // Reuse keeps the atomic in step (`alloc` syncs it). Freeing run 1
+        // merges it with its Purged neighbours into one Empty extent of
+        // three runs.
+        env.free(&h, ps[1]);
+        let t1 = h.oldest_dirty_at().unwrap();
+        assert_eq!(h.oldest_empty(), t1);
+        assert_eq!(h.stats().empty, 1);
         let (a, _) = env.alloc(&h, PAGE, 1);
         assert_eq!(a, ps[0]);
-        assert_eq!(h.oldest_empty(), t2);
         let (b, zeroed) = env.alloc(&h, PAGE, 1);
-        assert_eq!(b, ps[2]);
+        assert_eq!(b, ps[1]);
         assert!(!zeroed);
+        assert_eq!(h.oldest_empty(), t1);
+        let (c, _) = env.alloc(&h, PAGE, 1);
+        assert_eq!(c, ps[2]);
+        assert_eq!(h.stats().empty, 0);
         assert_eq!(h.oldest_empty(), 0);
-        assert_eq!(h.decay(u64::MAX / 2, 1000), None);
-        // Everything freed and purged at once.
-        for &p in &[a, b, ps[1], ps[3]] {
+        assert_eq!(h.decay(u64::MAX / 2, W), None);
+        // A zero period purges at once; everything freed and purged at
+        // once clears the head too.
+        env.free(&h, a);
+        let t = h.oldest_empty();
+        assert!(t > 0);
+        assert_eq!(h.decay(t, 0), None);
+        assert_eq!(h.lookup(env.page_of(a)).unwrap().state, RunState::Purged);
+        for &p in &[b, c, ps[3]] {
             env.free(&h, p);
         }
         assert!(h.oldest_empty() > 0);
