@@ -620,9 +620,11 @@ Tasks:
 
 1. Wolfi package definition `challoc.yaml` producing `challoc`, `challoc-dev`,
    and `challoc-jemalloc-compat` with `libjemalloc.so.2` and `jemalloc.pc`.
-2. Valkey package change in Wolfi using the Phase 1 patch and depending on
-   `challoc`, with the package test asserting `valkey-server --version`
-   reports challoc and that `CONFIG SET activedefrag yes` succeeds.
+2. Valkey package change in Wolfi using the Phase 1 patch and a private
+   `quantum8` build of challoc under `/usr/lib/valkey/` (design 13.6: the
+   system `libchalloc.so.0` is `quantum16`, like Wolfi's jemalloc), with
+   the package test asserting `valkey-server --version` reports challoc
+   and that `CONFIG SET activedefrag yes` succeeds.
 3. Ruby, KeyDB, RethinkDB switched to `challoc-jemalloc-compat`, one at a
    time, each with its package tests passing.
 4. `docs/tuning.md` explaining every tunable and the cgroup policy for

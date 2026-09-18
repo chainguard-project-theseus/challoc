@@ -169,8 +169,19 @@ challoc exports the standard C allocation functions including C23's
 jemalloc surface: `mallocx`, `rallocx`, `xallocx`, `sallocx`, `dallocx`,
 `sdallocx`, `nallocx`, `mallctl`, `mallctlnametomib`, `mallctlbymib`,
 `malloc_stats_print`, and the `malloc_conf` configuration string. Every
-jemalloc symbol is also exported with the `je_` prefix. The build can produce
-a `libjemalloc.so.2` soname for packages that only link against jemalloc.
+jemalloc symbol is also exported with the `je_` prefix, and the C++
+`operator new`/`operator delete` forms are exported under their Itanium
+names. The shared library's soname is `libchalloc.so.0`; the build can
+instead produce a `libjemalloc.so.2` soname for packages that only link
+against jemalloc. `challoc_version()` returns the crate version and is the
+`dlsym` probe for whether challoc is the loaded allocator.
+
+Two things are stricter than jemalloc: the size passed to `sdallocx`,
+`free_sized`, `free_aligned_sized` or a sized `operator delete` must name
+the class the pointer was allocated from, and `malloc_usable_size`,
+`realloc` and `sallocx` on a freed or foreign pointer abort where jemalloc's
+behaviour is undefined. A program that leaned on that leniency dies with
+`SIGABRT` and a `challoc:` message instead of corrupting the heap.
 
 See [docs/design.md](docs/design.md) for the full design and
 [docs/plan.md](docs/plan.md) for the implementation plan.

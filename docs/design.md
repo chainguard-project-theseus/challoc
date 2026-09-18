@@ -822,9 +822,15 @@ installed, then throw `std::bad_alloc` via libstdc++'s
 libstdc++ entry points are weak undefined references loaded from the GOT, so
 a C process that never maps libstdc++ still loads the library under
 `BIND_NOW`, and a C++ program with a static libstdc++ that hides them gets
-an abort with a message instead of the throw. Sized and aligned `delete`
-ignore their extra arguments and take the plain `free` path (unlike
-`free_sized`, which checks the size against the pointer's class).
+an abort with a message instead of the throw. The sized `delete` forms
+(`operator delete(void*, size_t)`, its array form, and the sized
+`align_val_t` forms) are `free_sized` and `free_aligned_sized`: the size
+and alignment name a class through the same `class_for(size, align)` the
+matching `new` used, so a correct program's hint always matches, the slot
+is pushed without the slab descriptor's bit test (6.3), and a mismatched
+size aborts as `free_sized` does (jemalloc's sized `delete` is `sdallocx`
+with the same contract). The unsized aligned forms have no size to check
+and take the plain `free` path with the alignment ignored.
 
 ### 13.2 jemalloc
 
@@ -962,6 +968,40 @@ rule is Valkey's, challoc only has to answer honestly and cheaply.
 Redis's patched bundled jemalloc. They are out of scope unless a Wolfi Redis
 package appears; Valkey uses the standard `experimental.utilization` keys.
 
+### 13.6 Library name, soname and packaging
+
+`cargo build --release` writes `libchalloc.so` and `libchalloc.a`. The
+shared library's soname is `libchalloc.so.0` (the ABI major; the crate
+version is 0.x), so a program linked with `-lchalloc` records
+`libchalloc.so.0` in `DT_NEEDED` and a package installs the file under that
+name with a `libchalloc.so` link for the linker. Cargo cannot name the
+output file after the soname, so a build directory used as a link and run
+path (`contrib/valkey/build.sh`) puts the `libchalloc.so.0` link beside
+the file. With the `jemalloc-soname` feature the soname is
+`libjemalloc.so.2` instead (13.2), staged by `scripts/jemalloc-compat.sh`.
+
+One quantum per build (section 3): the class table is compile time, as
+jemalloc's `lg_quantum` is, and a run-time quantum would put a table
+select on every class lookup. Wolfi's `jemalloc` (5.3.1) is configured
+without `--with-lg-quantum`, so its quantum is jemalloc's default 16 on
+both architectures; the system library `libchalloc.so.0` and the
+`challoc-jemalloc-compat` `libjemalloc.so.2` are therefore `quantum16`
+builds, the class table a jemalloc consumer of the system library already
+runs on (Ruby's stage). Valkey is the one `quantum8` consumer (its
+defragmenter asserts `arenas.quantum == 8`, from the `--with-lg-quantum=3`
+of its bundled jemalloc) and gets it the way it gets jemalloc today: a
+private `quantum8` build of the same source in its own package, installed
+under a private library directory (`/usr/lib/valkey/`) named in the
+binary's `RUNPATH`, or linked statically from `libchalloc.a`. Two
+libraries with one soname cannot share `/usr/lib`, so the system library
+is never `quantum8`. This is a packaging rule for Phase 3; it does not
+change the builds this repository tests (`quantum16` by default,
+`quantum8` for the Valkey tree).
+
+`challoc_version()` returns the crate version as a NUL-terminated static
+string and is the one challoc-specific export (section 16); there is no
+exported accessor for the thread heap slot.
+
 ## 14. Hardening summary
 
 Always on:
@@ -1024,6 +1064,11 @@ kernel-owned fields is what broke tcmalloc on Linux 6.19.
   call `malloc_stats_print` or `malloc_info`).
 - Abort messages include the faulting pointer, its classification, and the
   reason, prefixed `challoc: `.
+- `challoc_version()` (`const char *`, the crate version, e.g. `0.1.0`) is
+  the probe for "is challoc the loaded allocator": `dlsym` it. It reads
+  and writes no allocator state and does not initialise the allocator;
+  `mallctl("version")` stays the jemalloc-shaped `5.3.0-0-gchalloc` for
+  parsers of that string.
 
 ## 17. Source layout
 
