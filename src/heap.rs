@@ -1339,6 +1339,20 @@ impl Heap {
                 self.rebuild_run(cache, class);
                 len = (*cache).len;
                 if (*cache).run_end == 0 {
+                    if len == 0 {
+                        // The rebuild's tick ran the cache GC, which
+                        // flushes every entry of a cache with `low_water
+                        // == len < 4`, and the rebuild then claimed
+                        // nothing (the class is no longer fragmented, or
+                        // the claim came back empty). Refill as the probe
+                        // branch does; popping here would wrap `len - 1`.
+                        let shared: &Shared = &*self.shared;
+                        let Some(a) = shared.arena((*cache).arena) else { return (ptr::null_mut(), false) };
+                        len = self.refill(shared, a, cache, class);
+                        if len == 0 {
+                            return (ptr::null_mut(), false);
+                        }
+                    }
                     return Self::pop_top(cache, len);
                 }
             }
@@ -2702,6 +2716,79 @@ pub(crate) mod tests {
         assert!(run.windows(2).all(|w| w[0] > w[1]), "run not descending: {run:?}");
         assert!(run.len() <= k.low_water() && k.low_water() <= k.len());
         assert_eq!(run, &k.cached()[..run.len()]);
+    }
+
+    /// The compaction wrap (review 2026-09-18, section 1.4): a scheduled
+    /// pop finds a compact-mode cache holding one entry with `low_water ==
+    /// len == 1`, an exhausted run and the GC due. `rebuild_run`'s tick
+    /// runs the GC, which flushes the whole cache (`lw - lw / 4 == lw`
+    /// below 4); the class is dense by then, so the rebuild drops the cache
+    /// back to probing and claims nothing. `pop_compact_run` must then
+    /// refill (or give up) rather than pop the empty cache, where `len - 1`
+    /// wrapped and read `slots[0xFFFF_FFFF]`. Every step but the schedule
+    /// (`allocs`, `slow_ticks`, `last_gc`) goes through the public
+    /// operations.
+    #[test]
+    fn a_scheduled_pop_whose_gc_empties_the_cache_refills_instead_of_wrapping() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(224);
+        let mut live_ps = residue(&t, c, 30, 560, 0x0c0f_fee5);
+        assert!(Heap::fragmented(s, 0, c));
+        // Refill once, then probe until the cache switches to compacting
+        // (the first probe only records the class's refill count).
+        live_ps.push(t.alloc(c));
+        for _ in 0..4 {
+            if t.cache(c).compacting() {
+                break;
+            }
+            let k = t.heap().cache_ptr(c);
+            unsafe { (*k).allocs = (*k).compact_mask as u64 };
+            live_ps.push(t.alloc(c));
+        }
+        assert!(t.cache(c).compacting());
+        // One entry, `low_water == len == 1`, no run, still compacting.
+        t.flush_all();
+        assert!(t.cache(c).compacting());
+        let p0 = live_ps.pop().unwrap();
+        t.free(p0);
+        t.gc();
+        assert_eq!(t.len(c), 1);
+        assert_eq!(t.cache(c).low_water(), 1);
+        assert!(t.cache(c).run().is_empty());
+        // Make the class dense: every other live slot goes back to its slab
+        // through another heap, so `p0`'s slab is the only one that counts
+        // and a single slab is never fragmented.
+        let b = TestHeap::new(s);
+        for &p in &live_ps {
+            b.free(p);
+        }
+        b.destroy();
+        assert!(!Heap::fragmented(s, 0, c));
+        assert_eq!(live(s, c), 1);
+        // The next pop is scheduled, its tick is the periodic one and the
+        // GC interval has elapsed (on the host `now_ns` is a counter, so the
+        // interval is subtracted rather than assumed).
+        let h = t.heap();
+        h.slow_ticks = PERIODIC_EVERY - 1;
+        h.last_gc = os::now_ns().wrapping_sub(s.gc_interval_ns);
+        let k = h.cache_ptr(c);
+        unsafe { (*k).allocs = (*k).compact_mask as u64 };
+        let ticks = t.ticks();
+        let p = t.alloc(c);
+        assert_eq!(t.ticks(), ticks + 1);
+        assert!(!p.is_null());
+        let (cls, arena) = s.classify_free(p).ok().expect("a slot of the class");
+        assert_eq!((cls, arena), (c, 0));
+        // The GC flushed `p0`, the rebuild dropped back to probing, and the
+        // refill served the pop: half a cache minus the one popped.
+        assert!(!t.cache(c).compacting());
+        assert_eq!(t.len(c), t.cache(c).cap() / 2 - 1);
+        assert_eq!(t.cache(c).low_water(), t.len(c));
+        check_run(&t, c);
+        t.free(p);
+        t.destroy();
+        assert_eq!(live(s, c), 0);
     }
 
     #[test]
