@@ -31,8 +31,15 @@
 //! what it got and gives back the unused reservation. Reserving before
 //! claiming means `live` is never zero while a claim is in flight, so a
 //! purge (which requires `live == 0` under the lock) can never discard
-//! memory a thread is about to hand out, and a slab observed `Fresh` or
-//! `Purged` at selection is guaranteed zero for the thread that selected it.
+//! memory a thread is about to hand out. A slab observed `Fresh` or
+//! `Purged` at selection is the exception to the unlocked bit claim: its
+//! slots (the lowest `n` bits; `live` is zero, so nothing contends) are
+//! claimed in the same lock hold, before the slab enters the partial set.
+//! That is what makes the refill's zero report sound: a bit decided after
+//! the lock is dropped could be one that another thread claimed from the
+//! now-partial slab, handed to the program and got back dirty in between,
+//! and `calloc` would skip its memset over it (Phase 1.5 task 7, the
+//! calloc race).
 //!
 //! A release clears bits with `fetch_and` and then subtracts from `live`.
 //! If a word was full before the clear the releaser sets the partial bit
@@ -75,7 +82,9 @@ pub struct Claim {
     /// the metadata region is exhausted or a commit failed.
     pub n: usize,
     /// Every returned slot came from a slab that was `Fresh` or `Purged`
-    /// when this thread selected it, so its memory reads as zero.
+    /// when this thread selected it and had its bit claimed in that same
+    /// lock hold, before anything else could allocate from the slab, so
+    /// its memory reads as zero.
     pub zeroed: bool,
 }
 
@@ -98,7 +107,10 @@ const MAX_EMPTY_PASSES: u32 = 1 << 22;
 struct Pick {
     slab: u32,
     n: u32,
-    /// The slab was `Fresh` or `Purged` when this refill made it `Active`.
+    /// The slab was `Fresh` or `Purged` (and zero) when this refill made
+    /// it `Active`, and bits `0..n` were claimed under the lock in `take`
+    /// ([`ClassState::claim_prefix`]): `finish` hands out slots `0..n`
+    /// without the bit loop.
     zero: bool,
     /// The slab's state when this refill selected it (for `check_zero`).
     state: State,
@@ -1110,57 +1122,79 @@ impl ClassState {
     ///
     /// [`plan`]: ClassState::plan
     pub fn claim(&self, meta: &Meta, out: &mut [*mut u8]) -> Claim {
-        let cls = self.class();
         let mut got = 0;
         let mut zeroed = true;
         let mut picks = [Pick { slab: 0, n: 0, zero: false, state: State::Active }; MAX_PICKS];
-        let check_zero = purge::check_zero();
         while got < out.len() {
             let np = self.plan(meta, out.len() - got, &mut picks);
             if np == 0 {
                 break;
             }
-            for pick in &picks[..np] {
-                let slab = pick.slab as usize;
-                let want = pick.n as usize;
-                let bm = self.table().bits(slab);
-                let words = bm.words();
-                let mut k = 0;
-                let mut word = 0;
-                let mut empty_passes = 0u32;
-                while k < want {
-                    let Some((w, bits)) = bm.claim_from(word, want - k) else {
-                        // Every word was full when inspected. `plan` reserved
-                        // no more than `nslots - live` and set bits never
-                        // exceed `live`, so the slots exist: a concurrent
-                        // claimer took the bits we looked at and left ours
-                        // in a word we had already passed. Scan again.
-                        empty_passes += 1;
-                        if empty_passes == MAX_EMPTY_PASSES {
-                            let d = self.desc(slab);
-                            reservation_unmet(self.class as usize, slab, want, k, d.live(), bm.allocated(cls.nslots()), cls.nslots());
-                        }
-                        word = 0;
-                        continue;
-                    };
-                    let mut m = bits;
-                    while m != 0 {
-                        let b = m.trailing_zeros() as usize;
-                        m &= m - 1;
-                        out[got + k] = self.slot_ptr(slab, w * 64 + b);
-                        k += 1;
-                    }
-                    word = if w + 1 == words { 0 } else { w + 1 };
+            got += self.finish(&picks[..np], &mut out[got..], &mut zeroed);
+        }
+        Claim { n: got, zeroed: got > 0 && zeroed }
+    }
+
+    /// The unlocked half of a refill: write the slots of `picks` (one
+    /// lock hold of [`plan`]) to `out`, lowest address first, and return
+    /// how many. A pick flagged zero had its slots decided under the lock
+    /// in [`take`] (the lowest `n` of a slab nothing else could touch), so
+    /// only the other picks run the bit loop here; `zeroed` is cleared
+    /// when any of them is not zero.
+    ///
+    /// [`plan`]: ClassState::plan
+    /// [`take`]: ClassState::take
+    fn finish(&self, picks: &[Pick], out: &mut [*mut u8], zeroed: &mut bool) -> usize {
+        let cls = self.class();
+        let check_zero = purge::check_zero();
+        let mut got = 0;
+        for pick in picks {
+            let slab = pick.slab as usize;
+            let want = pick.n as usize;
+            if pick.zero {
+                // Bits `0..want` were claimed under the lock (`claim_prefix`).
+                for k in 0..want {
+                    out[got + k] = self.slot_ptr(slab, k);
                 }
-                if !pick.zero {
-                    zeroed = false;
-                } else if check_zero {
+                if check_zero {
                     self.check_zero(&out[got..got + want], pick);
                 }
                 got += want;
+                continue;
             }
+            *zeroed = false;
+            let bm = self.table().bits(slab);
+            let words = bm.words();
+            let mut k = 0;
+            let mut word = 0;
+            let mut empty_passes = 0u32;
+            while k < want {
+                let Some((w, bits)) = bm.claim_from(word, want - k) else {
+                    // Every word was full when inspected. `plan` reserved
+                    // no more than `nslots - live` and set bits never
+                    // exceed `live`, so the slots exist: a concurrent
+                    // claimer took the bits we looked at and left ours
+                    // in a word we had already passed. Scan again.
+                    empty_passes += 1;
+                    if empty_passes == MAX_EMPTY_PASSES {
+                        let d = self.desc(slab);
+                        reservation_unmet(self.class as usize, slab, want, k, d.live(), bm.allocated(cls.nslots()), cls.nslots());
+                    }
+                    word = 0;
+                    continue;
+                };
+                let mut m = bits;
+                while m != 0 {
+                    let b = m.trailing_zeros() as usize;
+                    m &= m - 1;
+                    out[got + k] = self.slot_ptr(slab, w * 64 + b);
+                    k += 1;
+                }
+                word = if w + 1 == words { 0 } else { w + 1 };
+            }
+            got += want;
         }
-        Claim { n: got, zeroed: got > 0 && zeroed }
+        got
     }
 
     /// The `check_zero` debug mode (plan Phase 1.5 task 7b): the first and
@@ -1275,9 +1309,39 @@ impl ClassState {
         // `Purged` memory is zero only when it was discarded with
         // `MADV_DONTNEED` (no `lazy_free`).
         let zero = state.is_zero() && (state != State::Purged || purge::purged_is_zero());
+        if zero {
+            self.claim_prefix(slab, n, state, live);
+        }
         picks[*np] = Pick { slab: slab as u32, n: n as u32, zero, state };
         *np += 1;
         *remaining -= n;
+    }
+
+    /// The slots of a zero pick, decided under the class lock (plan Phase
+    /// 1.5 task 7c). A `Fresh` or `Purged` slab has `live == 0` and no bit
+    /// set, so its lowest `n` bits are free and nothing contends for them.
+    /// Setting them here, in the lock hold that makes the slab `Active` and
+    /// partial, is what makes the pick's zero flag sound: decided after
+    /// the lock is dropped (the bit loop of [`finish`]), a bit could be one
+    /// that another refill claimed from the now-partial slab, handed out,
+    /// and got back dirty in the meantime. Anything but a clean claim of
+    /// bits `0..n` means `live` no longer bounds the set bits: abort.
+    ///
+    /// [`finish`]: ClassState::finish
+    fn claim_prefix(&self, slab: usize, n: usize, state: State, live: usize) {
+        let bm = self.table().bits(slab);
+        let mut k = 0;
+        let mut w = 0;
+        while k < n {
+            let want = (n - k).min(64);
+            let expect = if want == 64 { !0 } else { (1u64 << want) - 1 };
+            let got = bm.claim_word(w, want);
+            if got != expect {
+                zero_slab_had_bits_set(self.class as usize, slab, self.arena, state, live, w, got, expect);
+            }
+            k += want;
+            w += 1;
+        }
     }
 
     /// Commit the next slab of this arena's current group, taking the
@@ -1799,6 +1863,17 @@ impl ClassState {
 #[inline(never)]
 fn never_committed(class: usize, slab: usize) -> ! {
     panic!("invalid free: class {class} slab {slab} was never allocated")
+}
+
+/// A `Fresh` or `Purged` slab selected by a refill had a bit set before
+/// its slots were claimed under the lock: `live` no longer bounds the set
+/// bits, so the bitmap or the descriptor is corrupt.
+#[cold]
+#[inline(never)]
+fn zero_slab_had_bits_set(class: usize, slab: usize, arena: u16, state: State, live: usize, word: usize, got: u64, expect: u64) -> ! {
+    panic!(
+        "class {class} slab {slab} (arena {arena}) is {state:?} with live {live} but word {word} of its bitmap had bits set before the refill's claim: claimed {got:#x}, expected {expect:#x}"
+    )
 }
 
 /// The `free` check's abort (design section 4): the slot's bit is clear,
@@ -3223,6 +3298,69 @@ mod tests {
         let size = cs.class().size();
         unsafe { ptr::write_volatile(p[1].add(size - 8) as *mut u64, 0xDEAD_BEEF) };
         let _ = env.claim(&cs, 2);
+    }
+
+    /// The calloc race (plan Phase 1.5 task 7c, the interleaving named in
+    /// `bench/results/2026-09-18-calloc-zero-campaign.md`): thread A's
+    /// `plan` selects a `Fresh` slab, flags its pick zero and drops the
+    /// class lock; thread B refills from the same, now partial, slab, hands
+    /// the slot to the program, which writes to it and frees it; then A's
+    /// `finish` runs. Before the fix A's bit loop won the slot B had just
+    /// released and reported it zero. Now A's slots are claimed in `take`,
+    /// under the lock, so B gets the next slot and A's reads zero. The
+    /// same for a `Purged` slab when the discard backend zeroes.
+    #[test]
+    fn a_zero_pick_never_receives_a_slot_another_claim_used_in_between() {
+        let env = Env::new();
+        let cs = env.class(small_class(), 0);
+        let mut round = 0;
+        loop {
+            // Slab 0 is not handed out before the first `plan` (so no
+            // `desc(0)` yet): `Fresh` then, `Purged` in round 2.
+            let prior = if round == 0 { State::Fresh } else { State::Purged };
+            // Thread A: one lock hold, one pick of one slot of slab 0.
+            let mut picks = [Pick { slab: 0, n: 0, zero: false, state: State::Active }; MAX_PICKS];
+            let np = cs.plan(&env.meta, 1, &mut picks);
+            assert_eq!(np, 1);
+            assert_eq!((picks[0].slab, picks[0].n, picks[0].state), (0, 1, prior));
+            assert!(picks[0].zero, "round {round}: the {prior:?} slab must be a zero pick");
+            assert_eq!(cs.desc(0).live(), 1);
+            assert_eq!(cs.stats().nonfull, 1, "slab 0 is partial, so B's plan finds it");
+            // Thread B: a whole refill of one slot from the same class,
+            // the program writes to the slot and frees it.
+            let (b, claim) = env.claim(&cs, 1);
+            assert_eq!(claim, Claim { n: 1, zeroed: false });
+            assert_eq!(cs.locate(b[0]).0, 0, "B refills from the slab A reserved in");
+            #[cfg(target_os = "linux")]
+            unsafe {
+                ptr::write_volatile(b[0], 0xAB);
+            }
+            cs.release(&b);
+            assert_eq!(cs.desc(0).live(), 1);
+            // Thread A finishes its refill.
+            let mut out = [ptr::null_mut(); 1];
+            let mut zeroed = true;
+            assert_eq!(cs.finish(&picks[..np], &mut out, &mut zeroed), 1);
+            assert!(zeroed);
+            assert_ne!(out[0], b[0], "round {round}: a slot reported zero was allocated, written and freed by another claim in between");
+            assert_eq!(cs.locate(out[0]), (0, 0), "A's slot was decided under the lock: the lowest");
+            assert_eq!(cs.locate(b[0]), (0, 1), "B saw A's bit and took the next slot");
+            #[cfg(target_os = "linux")]
+            assert_eq!(unsafe { ptr::read_volatile(out[0]) }, 0, "round {round}: A's slot reads zero");
+            cs.release(&out);
+            assert_eq!(cs.desc(0).live(), 0);
+            assert_eq!(cs.stats().empty, 1);
+            round += 1;
+            if round == 2 {
+                break;
+            }
+            // Round 2: the same window on the slab once purged.
+            assert_eq!(cs.purge_empty(u64::MAX), 1);
+            assert_eq!(cs.desc(0).state(), State::Purged);
+            if !purge::purged_is_zero() {
+                break;
+            }
+        }
     }
 
     /// Guard slabs only when the kernel has `MADV_GUARD_INSTALL`: touching

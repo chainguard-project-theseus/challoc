@@ -227,7 +227,16 @@ are committed with the table, level 0 rows as a prefix while slab numbers
 grow. Refill takes the lock, reads the lowest partial slab,
 releases the lock, then claims from that slab's bitmap without the lock.
 Contention on the same slab between two threads is resolved by the atomic
-claim. When a slab's bitmap becomes completely set, the thread that observed
+claim. The one exception is a slab that was `Fresh` or `Purged` at
+selection: its slots (the lowest `n` bits; `live` is zero, so nothing
+contends) are claimed in the same lock hold, before the slab enters the
+partial set, and the refill reports them zero. Decided after the lock is
+dropped, a bit could be one that another thread claimed from the
+now-partial slab, handed to the program and got back dirty in between, and
+`calloc` would skip its memset over it (the calloc race, Phase 1.5 task 7:
+the zero guarantee is for slots nothing else has touched, not for the
+slab's memory at selection time). Slots of an `Active` slab are never
+reported zero, so their bits stay outside the lock. When a slab's bitmap becomes completely set, the thread that observed
 it clears the slab's partial bit under the lock. When a release clears bits in
 a slab that was full, the releasing thread sets the partial bit under the lock.
 
