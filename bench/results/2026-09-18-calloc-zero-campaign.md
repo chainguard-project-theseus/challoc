@@ -285,3 +285,135 @@ and changes no default behaviour.
 Final tree, Mac container: lib `236 passed`, api `81 passed` (round-3 step
 2 plus the round-4 load loop, 12 runs); host `cargo test --features std`
 178 passed.
+
+## Part (c): the fix, commit 857d223, and its verification
+
+The fix (`src/class.rs`): `take` claims bits `0..n` of a zero-flagged pick
+in the same lock hold that reserves them and makes the slab `Active`
+(`ClassState::claim_prefix`: the slab has `live == 0` and no bit set, so
+the lowest `n` bits are free and nothing contends; anything but a clean
+claim aborts as a heap inconsistency), and the unlocked half of the refill
+(`finish`, split out of `claim`) hands out slots `0..n` for such picks
+and runs the bit loop only for `Active` picks. One lock hold per refill
+as before; the batch claim of `Active` picks stays outside the lock. The
+mechanism above is closed because a zero pick's slot can no longer be one
+another refill claimed, used and freed between the lock drop and the bit
+loop: its bit was set before the slab entered the partial set. `check_zero`
+stays as the second line of defence. Design section 5 and the module
+header now say what is decided under the lock.
+
+The test `class::tests::a_zero_pick_never_receives_a_slot_another_claim_used_in_between`
+drives the interleaving from the host tests with two explicit claims on
+one `ClassState`: A's `plan` (one zero pick of one slot of a `Fresh`
+64-byte slab), then B's whole `claim` of one slot, a write of `0xAB`
+(Linux) and its `release`, then A's `finish`; then the same on the slab
+once `Purged`. On the pre-fix protocol (the refactor alone, at c5d4775 +
+`finish`) it fails:
+
+```
+assertion `left != right` failed: round 0: a slot reported zero was allocated, written and freed by another claim in between
+  left: 0x100003000000
+ right: 0x100003000000
+```
+
+(A's zero slot is B's freed slot, `zeroed == true`.) With the fix A holds
+slot 0, B gets slot 1, A's slot reads zero, and the `Purged` round passes
+too. Host `cargo test --features std`: 179 passed.
+
+### `quick` on both VMs, 857d223's tree against c5d4775 (go, go)
+
+`claim` is a refill slow path under every refill, so the fast tier ran on
+both VMs before the commit. One round each, nproc 16, load at start
+2.83 / 2.79. Positive percentages mean new did worse.
+
+aarch64 (122 s; old 15d34fc7b02bd13b, new 51e46cec8fba5f10):
+
+| row | unit | old | new | jemalloc | new vs old | new vs jemalloc |
+|---|---|---:|---:|---:|---:|---:|
+| larson1 | M ops/s | 42.7 (15.8 MiB) | 42.8 (15.8 MiB) | 45.1 (17.9 MiB) | -0.2% | +5.4% |
+| larson10 | M ops/s | 372.2 (112.9 MiB) | 369.6 (112.2 MiB) | 385.5 (130.6 MiB) | +0.7% | +4.3% |
+| xmalloc | M frees/s | 563.408 (52.6 MiB) | 563.788 (52.8 MiB) | 473.889 (73.4 MiB) | -0.1% | -15.9% |
+| alloc-test1 | s | 2.732 (12.9 MiB) | 2.730 (12.9 MiB) | 2.596 (12.3 MiB) | -0.1% | +5.2% |
+| valkey1 | M ops/s | 6.578 (584.1 MiB) | 6.602 (584.2 MiB) | 7.202 (585.4 MiB) | -0.4% | +9.1% |
+| churn 1024, 8s | slabs deleted -> end (occ) | 6801 -> 3462 (97.0%) | 6801 -> 3462 (97.0%) | 469 -> 469 (44.3%) | new compacts | |
+
+x86_64 (125 s; old 5c628e560992cfa9, new b0bb3ed275c7de8e):
+
+| row | unit | old | new | jemalloc | new vs old | new vs jemalloc |
+|---|---|---:|---:|---:|---:|---:|
+| larson1 | M ops/s | 43.5 (15.0 MiB) | 45.9 (15.1 MiB) | 45.0 (17.8 MiB) | -5.2% | -2.0% |
+| larson10 | M ops/s | 287.5 (94.7 MiB) | 285.0 (95.0 MiB) | 288.3 (91.8 MiB) | +0.9% | +1.2% |
+| xmalloc | M frees/s | 330.724 (53.2 MiB) | 335.257 (52.0 MiB) | 331.968 (92.3 MiB) | -1.4% | -1.0% |
+| alloc-test1 | s | 3.371 (13.6 MiB) | 3.393 (13.6 MiB) | 3.200 (12.8 MiB) | +0.7% | +6.0% |
+| valkey1 | M ops/s | 12.332 (585.0 MiB) | 12.380 (584.9 MiB) | 12.126 (591.6 MiB) | -0.4% | -2.1% |
+| churn 1024, 8s | slabs deleted -> end (occ) | 6801 -> 3462 (97.0%) | 6801 -> 3462 (97.0%) | 6798 -> 6662 (49.9%) | new compacts | |
+
+`quick: go` on both. The one row over 2%, x86_64 larson1 at -5.2% (new
+faster), was attributed before the commit: two more one-round runs of the
+row on the same VM (`QUICK_BENCHES=larson1`, load 0.96 / 0.94) read old
+45.4 vs new 46.0 (-1.3%) and old 46.6 vs new 46.3 (+0.6%), so the first
+round's old 43.5 was the row's known low mode (task 4f: larson1 is
+bimodal at one round), not the change; three-round medians old 45.4,
+new 46.0. Every other row on both VMs is within 1.4%.
+
+### The campaign's strongest configuration at 857d223 (0 aborts)
+
+`bench/probes/calloc-zero-campaign.sh` with `ROUNDS=400 STANDALONE=0
+SKIP_SUITE=1 CONFIGS=nt:check_zero:true,narenas:1,tcache:false`, the
+configuration that failed 39 / 31 / 22 of 400 in round 3, under the
+continuous `cargo test api::` load loop, on all three hosts in parallel
+(each in its dev container, `make run`; the VMs detached with the log
+under `~/logs/campaign-7c.log`):
+
+| host | kernel / THP | runs of `stress 8 50 10` | `check_zero` aborts | wall | load loop |
+|---|---|---:|---:|---:|---|
+| Mac dev container (aarch64, nproc 10) | 6.10.14-linuxkit, `[always]` | 400 | 0 | 516 s | 27 runs, 0 failed |
+| challoc-bench-arm64 (C4A, nproc 16) | 7.0.0-1011-gcp, `[madvise]` | 400 | 0 | 351 s | 38 runs, 1 failed |
+| challoc-bench-amd64 (C4, nproc 16) | 7.0.0-1011-gcp, `[madvise]` | 400 | 0 | 378 s | 27 runs, 0 failed |
+
+Probe lines as in the Hosts table; load at the end 27.2 / 22.9 / 25.0.
+The arm64 load loop's one failure is the stats flake already in Notes for
+the human since part (b), `api::mallctl::tests::stats_are_frozen_between_epochs_and_arenas_all_sums`
+(`src/api/mallctl.rs:1196`, the `stats.allocated` growth check), not an
+allocator abort or a zero failure; the other 37 runs and every stress
+run passed. Pre-fix the same 1200 runs would have aborted about 92
+times (round 3's rates).
+
+### Task 7 acceptance: `make test` 10 consecutive times on both VMs and the Mac container (30 of 30 green)
+
+At 857d223's tree, right after the campaign on each host (VMs detached,
+`~/logs/test10-7c.log`; Mac `.tmp-test10-mac.log`), every run built the
+release library, ran `scripts/jemalloc-compat.sh`, then the lib and api
+suites:
+
+| host | runs | lib | api | wall per run (lib + api) |
+|---|---:|---|---|---|
+| Mac dev container | 10 / 10 exit 0 | `237 passed; 0 failed` x10 | `81 passed; 0 failed` x10 | 3.3..4.5 s + 13.3..19.6 s |
+| challoc-bench-arm64 | 10 / 10 exit 0 | `237 passed; 0 failed` x10 | `81 passed; 0 failed` x10 | 5.1..5.2 s + 8.7..9.0 s |
+| challoc-bench-amd64 | 10 / 10 exit 0 | `237 passed; 0 failed` x10 | `81 passed; 0 failed` x10 | 3.0..3.1 s + 12.3..12.9 s |
+
+### Scorecard at 857d223 (both VMs, 3 rounds)
+
+`challoc-bench scorecard arm64` / `amd64` after the campaign and the 10x
+tests (524 s on aarch64), lines appended to
+`bench/results/scorecard-{aarch64,x86_64}.md`; percentages are challoc
+against jemalloc, positive means behind. Against 2c8731f's lines (the
+previous scorecard; (a) and (b) ran none on purpose):
+
+| arch | larson1 | larson10 | larson16 | xmalloc | alloc-test1 | alloc-testN | valkey1 | valkey1-free | cfrac | espresso | mstress | glibc-simple | redis | RSS larson10 | RSS valkey1 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| aarch64 2c8731f | +6.1% | +6.1% | +2.4% | -14.7% | +5.5% | +1.3% | +9.4% | -0.7% | +0.3% | -2.1% | -40.4% | -8.7% | -14.9% | 0.85 | 1.00 |
+| aarch64 857d223 | +5.4% | +2.7% | +2.9% | -16.7% | +4.8% | +2.5% | +9.2% | -2.2% | +0.2% | -2.3% | -40.2% | -5.8% | -15.1% | 0.86 | 1.00 |
+| x86_64 2c8731f | +0.0% | +1.0% | +9.2% | -0.6% | +4.7% | +8.1% | -0.6% | -14.5% | +3.5% | -0.6% | -40.3% | +6.1% | -17.0% | 1.04 | 0.99 |
+| x86_64 857d223 | +1.5% | +6.3% | +9.5% | -2.4% | +5.3% | +10.0% | -1.2% | -13.4% | +3.6% | -0.5% | -37.2% | +6.6% | -17.5% | 1.00 | 0.99 |
+
+aarch64: larson10 +6.1% -> +2.7% and glibc-simple -8.7% -> -5.8%, the rest
+within 2 points. x86_64: larson10 +1.0% -> +6.3% and alloc-testN +8.1% ->
++10.0% (mstress -40.3% -> -37.2%), the rest within 1.5 points. Those two
+columns are the 3-round tier's spread, not the change: task 4f's scorecard
+saw x86_64 larson10 swing +6.1% -> +1.3% on a change that did not touch
+it either, and the quick tier's direct old-vs-new on the same VM in this
+session has larson10 at +0.9% (285.0 vs 287.5 M ops/s, jemalloc 288.3)
+and alloc-test1 at +0.7%. No soak columns: the soak did not run for
+857d223 (the change is on the refill slow path; the campaign and the
+tests are its evidence).
