@@ -18,8 +18,9 @@ number, the value is a starting point to be validated by benchmarks in
   `pthread_setspecific` from an allocation path, and `free` must preserve
   `errno`. These are glibc's documented rules for a replacement malloc.
 - Stable Rust. Thread-local storage uses a hand-written initial-exec accessor
-  (section 6). Nightly `#[thread_local]` with `-Z tls-model=initial-exec` is
-  an acceptable alternative behind a Cargo feature but must not be required.
+  (section 6). Nightly `#[thread_local]` with `-Z tls-model=initial-exec`
+  would be an acceptable alternative behind a Cargo feature; no such feature
+  exists and none may be required.
 - Consumers are C programs. There is no Rust `GlobalAlloc` facade in scope.
 
 ## 2. Address space layout
@@ -32,7 +33,7 @@ kernel provides zero pages on first touch.
 
 ```
 +------------------+  metadata region     (reserved, committed on demand)
-| region table     |  sealed after init
+| region table     |  (sealing with mseal: planned, Phase 2 task 2)
 | heap table       |
 | slab descriptors |  per class, dense arrays indexed by slab number
 | huge descriptors |
@@ -58,12 +59,16 @@ aarch64, and 39-bit aarch64 kernels:
 | Parameter          | Preferred     | Minimum      |
 |--------------------|---------------|--------------|
 | Class region size  | 2^38 (256 GiB)| 2^32 (4 GiB) |
-| Gap per class      | 2 x region    | 1.25 x region|
+| Gap per class      | 3 x region (stride 4 x) | 1 x region (stride 2 x) |
 | Huge region        | 2^40 (1 TiB)  | 2^34         |
 | Metadata region    | 2^36          | 2^30         |
 
-Region bases are randomised with `getrandom`. Reservation order is randomised
-too, so the relative order of classes is not fixed across processes.
+Region bases are randomised with `getrandom`. The three mappings (the class
+superblock, the huge region, the metadata region) are reserved in a random
+order, so their relative placement is not fixed across processes. Inside the
+superblock the class regions sit at a fixed stride in class order; what is
+random per class is the offset of its region inside its gap (about 17.6 bits
+at the preferred layout).
 
 Because every region is a contiguous power-of-two-aligned range, classifying a
 pointer is:
@@ -76,10 +81,13 @@ else                                  -> invalid; abort
 
 The class lookup is a comparison against a sorted table of at most 64 entries,
 or a direct index when regions are laid out at a fixed stride inside one
-superblock. The implementation should start with the stride approach: one
-superblock of `nclasses * (region + gap)` bytes, class `c` at
+superblock. The implementation uses the stride approach: one superblock of
+`nclasses * (region + gap)` bytes, class `c` at
 `superblock + c * stride + random_offset_c`, so `c = (p - superblock) / stride`
-is a shift when stride is a power of two.
+is a shift because the stride is a power of two. The reservation prefers a
+stride of 4 x the region, shrinks the region from 2^38 towards 2^32 before it
+gives up on that, and only then drops to a stride of 2 x the region
+(`layout::reserve_superblock`).
 
 ## 3. Size classes
 
@@ -142,13 +150,16 @@ above that. `nallocx` returns the class size.
 ## 4. Slab descriptors and bitmaps
 
 Every slab has a descriptor in the metadata region. Descriptors for class `c`
-form a dense array indexed by slab number, committed on demand as the region
-grows. Descriptor layout, a fixed 16-byte header:
+form a dense array indexed by slab number at a per-class stride of 16 to 64
+bytes (`max(16, 64 / slabs_per_line)`, so that the descriptors of the slabs
+sharing one bitmap line fill whole descriptor lines), committed on demand as
+the region grows. Descriptor layout, a fixed 16-byte header:
 
 ```
 struct SlabDesc {
     state:     AtomicU8,     // Fresh, Active, Empty, Purged
-    arena:     u16,
+    shadow:    AtomicU8,     // state + 1, written with every change; check_zero tests it
+    arena:     AtomicU16,
     live:      AtomicU32,    // slots currently marked allocated
     dirty_at:  AtomicU64,    // monotonic ns when it became Empty, 0 otherwise
 }
@@ -195,32 +206,59 @@ Operations on the bitmap are always atomic. Slabs have no owning thread.
   word, subtract from `live`. If `live` reaches zero, transition the slab to
   `Empty`, stamp `dirty_at`, and put it on the class's empty list.
 - **Check** (free): load the bitmap word, verify the bit is set, else abort
-  with "invalid or double free". No write.
+  (`invalid or double free of <p> (class, slab, slot): slot is not
+  allocated`; a slot start in a guard slab or in a slab never allocated from
+  gets its own message). No write.
 
-Slot randomisation, when enabled by the `slot_randomize` tunable, claims from
-a random word rather than the lowest one and shuffles the claimed batch before
-it goes into the cache. It is off by default because it fights the
-fragmentation policy in section 8.
+Slot randomisation (planned, Phase 2 task 3; the `slot_randomize` key is
+accepted, stored and inert) would claim from a random word rather than the
+lowest one and shuffle the claimed batch before it goes into the cache. It
+will stay off by default because it fights the fragmentation policy in
+section 8.
 
 ## 5. Per-class state and slab selection
 
-Each `(arena, class)` pair has:
+Each class has one process-wide `SlabTable` (`class.rs`): the class's
+descriptor array, slot bitmap and owner array, and, behind its own lock, the
+commit watermark and the cursor that hands slab groups to arenas (section 4).
+Each `(arena, class)` pair then has a `ClassState` over that table:
 
 ```
-struct ClassState {
-    lock:        Mutex,          // futex-based, only taken on slab transitions
-    partial:     TwoLevelBitmap, // slab numbers with at least one clear bit
-    empty:       TwoLevelBitmap, // slabs with live == 0, not yet purged
-    high_water:  u32,            // highest slab number ever committed
-    stats:       ClassStats,     // curslabs, curregs, nonfull_slabs, allocated
+struct SlabTable {                    // one per class, shared by every arena
+    class, lg_group, base, nslabs, desc_base,
+    inner: Lock<{ descs, bits, owners, // metadata reservations, committed on demand
+                  committed_slabs, next_group, guards }>,
+}
+
+struct ClassState {                   // one per (arena, class)
+    class:        u16,
+    arena:        u16,
+    table:        *const SlabTable,
+    oldest_empty: AtomicU64,          // dirty_at of the oldest Empty slab, read lock-free by decay
+    next_decay:   AtomicU64,          // when the next decay walk of this class is due
+    inner: Lock<{                     // the class lock, taken on slab transitions only
+        partial:    Set,              // slab numbers with at least one clear bit
+        empty:      Set,              // slabs with live == 0, not yet purged
+        purged:     Set,              // slabs purged and still owned by this arena
+        stats:      ClassStats,       // committed, guards, empty, purged, nonfull
+        group_next, group_end,        // this arena's current slab group (section 4)
+    }>,
+    claimed, released, refilled,      // slot counters: curregs = claimed - released
+    compacted, compact_on, compact_off, gate_refill,   // compaction diagnostics (6.4, 16)
 }
 ```
 
-The two-level bitmap over slab numbers gives "lowest slab with a free slot" in
-two `tzcnt` instructions. An arena's sets (three per class) are views of one
-interleaved table per arena, logical word `i` of set `s` at word
-`i * 156 + s`, so the words a small heap touches (word 0 of each level of the
-few sets it uses) share two pages per arena instead of one or two pages per
+There is no per-arena high-water mark: the class's commit watermark lives in
+the `SlabTable` and each arena commits the slabs of its current group as it
+uses them.
+
+The two-level bitmap over slab numbers (`Set`) gives "lowest slab with a free
+slot" in two `tzcnt` instructions. An arena's sets (three per class) are
+views of one interleaved table per (arena, slab size) (`SetTable`; classes
+with the same slab size have the same slab count): logical word `i` of set
+`s` sits at word `i * 3n + s`, `n` the number of classes with that slab size,
+so the words a small heap touches (word 0 of each level of the few sets it
+uses) share one page per (arena, slab size) instead of one or two pages per
 `(arena, class)`; measured as 2.7 MiB of alloc-testN's 16-thread RSS at
 16 arenas (`bench/results/2026-09-18-*-gce-arena-rss.md`). Level 1 rows
 are committed with the table, level 0 rows as a prefix while slab numbers
@@ -240,14 +278,27 @@ reported zero, so their bits stay outside the lock. When a slab's bitmap becomes
 it clears the slab's partial bit under the lock. When a release clears bits in
 a slab that was full, the releasing thread sets the partial bit under the lock.
 
-The lock is taken roughly once per 64 allocations per thread in steady state.
+The lock is taken once per refill, i.e. once per `cap / 2` allocations per
+thread in steady state (512 for the small classes at the default capacity).
 That is the only lock on the allocation path.
 
 When there is no partial slab, take the lowest `Empty` slab if one exists,
-else the lowest `Purged` slab, else commit `high_water + 1`. Committing means
-`mprotect` of the slab's bytes to read-write plus, when guards are enabled,
-`MADV_GUARD_INSTALL` on the first page of the next slab-sized stride if the
-class is configured with guard slabs. Fresh slabs are zero from the kernel.
+else the lowest `Purged` slab, else commit the next slab of the arena's
+current group (or take the next group from the class table). Committing means
+`mprotect` of the slab's bytes (or of its page group, for slabs smaller than
+a page) to read-write. Fresh slabs are zero from the kernel.
+
+Guard slabs: with `guards` on, every `guard_slab_interval`-th 64 KiB of slabs
+is a *guard slab* that is never handed out (`SlabTable::is_guard_slab`,
+arithmetic on the slab number). When its page group is committed it is made
+read-write like its neighbours, so the VMA merges, and `MADV_GUARD_INSTALL`
+is applied to its first page so a write running off the previous slab
+faults; if the install fails the whole slab is left `PROT_NONE` instead. This
+only exists when the kernel has `MADV_GUARD_INSTALL` (6.13+): on an older
+kernel `Shared::init` forces the interval to 0 and there are no guard slabs
+at all, because a `PROT_NONE` slab every eighth slab would split each class
+region into thousands of VMAs. Guard slabs are separate slabs, not the first
+page of the next stride.
 
 Address-ordered first fit is deliberate. It is what jemalloc does and it is
 what keeps long-lived heaps dense and makes defragmentation converge.
@@ -268,18 +319,24 @@ at program start, which covers both linking against `libchalloc.so` and
 supported configuration and init aborts with a message if static TLS cannot be
 obtained, which glibc reports as a `dlopen` failure rather than a crash.
 
-A Cargo feature `nightly-tls` may replace the asm with `#[thread_local]`.
+A Cargo feature could replace the asm with nightly `#[thread_local]`; none is
+defined today.
 
 ### 6.2 Heap structure
 
 ```
-struct Heap {                                // repr(C); the header array at a fixed offset
+struct Heap {                                // repr(C); the header array at offset 128
+    shared:      *const Shared,
     tid:         u32,
-    arena:       u16,                        // default arena for MALLOCX without ARENA flag
-    rng:         u64,                        // xorshift state seeded from getrandom
-    stats:       ThreadStats,                // allocated/deallocated counters for thread.allocatedp
+    arena:       u16,                        // home arena: plain malloc allocates here
     slow_ticks:  u32,                        // counts slow-path entries for periodic work
-    others:      *mut ArenaCaches,           // same shape as below, one node per other arena touched
+    last_gc:     u64,                        // monotonic ns of the last cache GC
+    rng:         u64,                        // xorshift state seeded from getrandom
+    uncached:    ThreadStats,                // bytes that never went through a cache (huge, direct)
+    others:      *mut ArenaCaches,           // one node of [CacheHeader; NCLASSES] per other arena touched
+    snapshot:    ThreadStats,                // thread.allocated/deallocated as of the last read
+    tcache_enabled: bool,                    // thread.tcache.enabled
+    bound:       bool,                       // counted in the home arena's load (thread heaps only)
     caches:      [CacheHeader; NCLASSES],    // home arena, inline, one 64-byte line per class
 }
 
@@ -289,12 +346,20 @@ struct CacheHeader {                         // one per (arena, class), 64 bytes
     low_water: u32,                          // for GC
     zeroed:   u32,                           // slots[..zeroed] read as zero
     slots:    *mut *mut u8,                  // this class's stack, its own metadata object
-    allocs:   u64,
+    allocs:   u64,                           // pops served since creation
     compact_mask: u32,                       // probe mask, (1 << tcache_compact_shift) - 1, or off
     run_end:  u32,                           // slots[..run_end] is the run of low addresses (6.4)
-    ...                                      // moved, probe_refilled, arena, mode
+    moved:    u64,                           // refilled - flushed (for thread.deallocated)
+    probe_refilled: u32,                     // the class's refill counter at the previous probe
+    arena:    u16,
+    mode:     u16,                           // off, probe, compact (6.4)
 }
 ```
+
+The per-thread byte counters are not kept per operation: `allocs` is bumped
+on the header line a pop writes anyway and the free count follows from the
+stack arithmetic (`heap.rs`, `Heap::stats`). An explicit cache
+(`tcache.create`) is a `Heap` owned by no thread.
 
 Heaps and slot stacks live in the metadata region and are allocated by a
 small internal bump-and-freelist allocator that is only ever used for
@@ -330,9 +395,11 @@ reads; halving the flush rate halves those misses (Phase 0 acceptance,
 ### 6.3 Fast paths
 
 `malloc(n)`:
-1. `heap = tls()`; if null, slow path (create heap, may init the allocator).
-2. `c = class_of(n)`; if huge, slow path.
-3. `cache = heap.caches[heap.arena][c]`; if `len == 0`, slow path (refill).
+1. `c = class_of(n)`; if huge, slow path.
+2. `heap = tls()`; if null or a sentinel, slow path (create heap, may init
+   the allocator).
+3. `cache = heap.caches[c]` (the home arena's header line); if `len == 0`,
+   slow path (refill).
 4. `p = slots[--len]`; return `p`.
 
 `free(p)`:
@@ -347,8 +414,11 @@ reads; halving the flush rate halves those misses (Phase 0 acceptance,
    and up to +14% on the Valkey model on x86_64
    (`bench/results/2026-09-18-*-gce-detection-gaps.md`), above the 1% the
    plan set for making it the default.
-4. `heap = tls()`; `cache = heap.caches[owner[slab / group]][c]`; if
-   `len == cap`, slow path (flush half). `slots[len++] = p`.
+4. `heap = tls()`; with several arenas load `owner[slab / group]` and, if it
+   is not the heap's home arena, take the cold path (`free_other`, which
+   pushes into the heap's cache for that arena, creating the node on first
+   use); otherwise `cache = heap.caches[c]`; if `len == cap`, slow path
+   (flush half). `slots[len++] = p`.
 
 `sdallocx(p, n, flags)`, `free_sized(p, n)`, `free_aligned_sized(p, a, n)`
 (the sized path; Phase 1.5 task 4e):
@@ -393,22 +463,26 @@ as jemalloc's does; `MALLOCX_TCACHE_NONE` releases straight to the slab
 with the exact check.
 
 `calloc` clears with `memset` unless the slots came fresh from the kernel,
-which is tracked per claim batch with a flag in the cache when the whole batch
-came from a `Fresh` or `Purged` slab.
+which is tracked as a per-cache zero prefix: `slots[..zeroed]` are known
+zero, set by a refill whose batch came from a `Fresh` or `Purged` slab,
+clipped by a push that lands below it and dropped by a flush.
 
 `realloc` returns the same pointer if the new size maps to the same class,
-otherwise allocates, copies `min(old, new)`, frees. `rallocx` and `xallocx`
-follow jemalloc semantics; `xallocx` can only grow in place within the same
-class or, for huge runs, into free following pages.
+otherwise allocates, copies `min(old, new)`, frees. `rallocx` follows
+jemalloc semantics; `xallocx` never resizes in place (challoc never changes
+a block's class or a run's page count in place) and simply reports the
+current usable size, `sallocx(p)`, so a caller that needs more falls back
+to `rallocx` exactly as jemalloc's contract requires.
 
 ### 6.4 Slow paths
 
 - **Refill**: claim up to `cap / 2` slots from the current or next partial
   slab (section 5), lowest address on top; the batch is the cache's *run*
-  (below) and `low_water` restarts at its length. Count refills in
-  `slow_ticks` and run periodic work every 64 slow paths: merge thread
-  stats into arena stats, run cache GC if the interval has elapsed, run
-  decay if the class's deadline has passed, sample the cgroup (section 11).
+  (below) and `low_water` restarts at its length. Count slow paths in
+  `slow_ticks` and run periodic work every 64 of them: cache GC if the
+  interval has elapsed, then decay if a class's deadline has passed (or the
+  start of the background thread that will do it). Thread statistics are
+  merged by `epoch`, not here; cgroup sampling is planned (section 11).
 - **Flush**: release the `cap / 2` highest-address entries grouped by slab
   and keep the lowest in ascending order (not reversed into a run: a
   descending run under ascending pushes, or an ascending batch under
@@ -424,7 +498,7 @@ class or, for huge runs, into free following pages.
   split keeps together stays cached and consistent until a flush releases
   it (a pass over the kept half was measured at 5..7% of xmalloc-test).
 - **Scheduled pop** (the compacting cache): every `2^tcache_compact_shift`
-  pops of a class (default 8) are served from the *run* of low addresses
+  pops of a class (default `k = 3`, one pop in 8) are served from the *run* of low addresses
   `slots[..run_end]` (descending, lowest at `run_end - 1`) instead of the
   top: the run's lowest entry is returned and the top entry moved into its
   place. The run is a refill's batch or a *rebuild*'s block: `cap / 4`
@@ -456,9 +530,11 @@ class or, for huge runs, into free following pages.
   larson measured at -15..-22% when paid unconditionally at `k = 3`; a
   dense class pays one counter test per `malloc`. `tcache_compact_shift:0`
   turns the schedule off.
-- **Cache GC**: every `tcache_gc_interval_ms` (default 10 s, shortened under
-  cgroup pressure) shrink `cap` toward `low_water` and flush the excess, then
-  reset `low_water = len`. This is jemalloc's incremental tcache GC in spirit.
+- **Cache GC**: every `tcache_gc_interval_ms` (default 10 s) flush three
+  quarters of `low_water`, the entries that went unused since the last GC,
+  then reset `low_water = len`. `cap` is fixed; it never shrinks. This is
+  jemalloc's incremental tcache GC in spirit. Shortening the interval under
+  cgroup pressure is planned (section 11).
 
 ### 6.5 Thread exit
 
@@ -466,8 +542,8 @@ A `pthread_key` created at init with a destructor that flushes all caches and
 frees the heap back to the metadata allocator. `pthread_setspecific` is called
 once at heap creation, guarded against recursion by a per-thread "creating"
 flag stored in the TLS slot as a sentinel value; if `pthread_setspecific`
-allocates during that window the request is served from a bootstrap slab with
-no cache. glibc does not allocate for the first 32 keys, and challoc creates
+allocates during that window the request is served straight from the slab
+bitmaps with no cache (`alloc_direct`). glibc does not allocate for the first 32 keys, and challoc creates
 its key during init, so the recursion path is expected never to run but must
 be correct.
 
@@ -479,9 +555,11 @@ page granularity.
 - A `TwoLevelBitmap` over pages tracks free pages; allocation is lowest-address
   first fit of `ceil(n / page) + guard_pages` contiguous pages, under the huge
   lock.
-- A hash table keyed by start page holds `HugeDesc { pages, usable, arena,
-  state, dirty_at }`; `free` of a pointer inside the huge region that is not a
-  run start aborts.
+- An open-addressing hash table keyed by page number holds `HugeDesc {
+  start, pages, usable, arena, state, dirty_at, prev, next }`: a run is keyed
+  by its start page, a free extent by both its first and its last page so
+  that a free finds both neighbours and free extents are always coalesced;
+  `free` of a pointer inside the huge region that is not a run start aborts.
 - Runs are followed by a guard: `MADV_GUARD_INSTALL` on one page when
   available, `PROT_NONE` (the reserved default) otherwise. Since the region is
   reserved `PROT_NONE`, the fallback costs nothing beyond leaving the page
@@ -489,11 +567,14 @@ page granularity.
   neighbouring run does not silently remove the guard.
 - Alignment requests above page size are satisfied by over-allocating and
   releasing the head and tail pages back to the bitmap.
-- Freed runs become `Empty` and decay like slabs. Runs above
-  `huge_retain_max` (default 64 MiB) are purged immediately.
-- Optional `MADV_HUGEPAGE` on runs of 2 MiB or more when the `thp` tunable is
-  `always`; default `never`, because fork-based persistence in Redis and
-  Valkey suffers from copy-on-write amplification with huge pages.
+- Freed runs become `Empty` and decay like slabs. Runs whose usable size is
+  above `huge_retain_max` (a `malloc_conf` key, default 64 MiB, readable as
+  `opt.huge_retain_max`) are purged immediately.
+- Planned (with the THP work): optional `MADV_HUGEPAGE` on runs of 2 MiB or
+  more when the `thp` tunable is `always`. Today the `thp` key is accepted
+  and inert and nothing issues `MADV_HUGEPAGE`. The default will stay
+  `never`, because fork-based persistence in Redis and Valkey suffers from
+  copy-on-write amplification with huge pages.
 
 ## 8. Decay and purge
 
@@ -534,10 +615,12 @@ address, with `dirty_at` per entry. Decay policy is jemalloc's in shape:
 
 Created only when `background_thread:true` is set via `malloc_conf` or
 written through `mallctl`. It is a plain `clone`-based thread created through
-`pthread_create` from the slow path that requested it, never from init. It
-sleeps on a futex with a timeout equal to the next decay deadline, wakes on
-PSI events when armed (section 11), and after `fork` is not recreated in the
-child until the child asks for it again. Its stack is one reservation in the
+`pthread_create` on the first periodic tick (6.4) after the request, never
+from init (`mallctl("background_thread", true)` creates it synchronously).
+It sleeps on a futex with a timeout equal to the next decay deadline, is woken
+when a class's first slab goes `Empty`, and after `fork` is not recreated in
+the child until the child asks for it again. Waking on PSI events is planned
+(section 11). Its stack is one reservation in the
 metadata region, made by the first start and never freed: a thread that was
 stopped (`background_thread:false`) exits at its next wake-up, and the next
 start joins it before creating the new thread on the same stack, so nothing
@@ -574,31 +657,50 @@ with an atomic state machine: `Uninit -> Initialising -> Ready`. A second
 thread arriving during `Initialising` spins. ld.so may call `malloc` before
 constructors run, so there is no reliance on `.init_array`.
 
-Init must not call anything that allocates. Steps:
+Init must not call anything that allocates. Steps, in the order
+`api::init` performs them:
 
-1. Read `AT_PAGESZ` from `getauxval`. Read secrets from `getrandom`.
-2. Probe reservation sizes (section 2) and reserve regions. Name them with
+1. Read `AT_PAGESZ` from `getauxval` and probe features by attempting them
+   on a scratch page and recording the error: `MADV_GUARD_INSTALL`, `mseal`,
+   `process_madvise` (with `PIDFD_SELF`, then with a pidfd of self, which is
+   kept), `PR_SET_VMA_ANON_NAME` (`sys::features`).
+2. Parse configuration (section 12). This happens before anything is
+   reserved so that `abort_conf` aborts with nothing mapped; it reads only
+   the weak symbols, one file and `environ`.
+3. Configure the purge backend from the probe and `lazy_free`, `check_zero`,
+   and record a `background_thread` request (the thread itself is created
+   later, 8.1).
+4. Read secrets from `getrandom`, probe reservation sizes (section 2) and
+   reserve the three regions in random order. Name them with
    `PR_SET_VMA_ANON_NAME` when the kernel accepts it.
-3. Probe features by attempting them on a scratch page and recording
-   `EINVAL`/`ENOSYS`: `MADV_GUARD_INSTALL`, `mseal`, `process_madvise` with
-   `PIDFD_SELF`, `MADV_COLLAPSE`. Read `/sys/kernel/mm/transparent_hugepage/
-   enabled` lazily only if the `thp` tunable is set.
-4. Parse configuration (section 12).
-5. Build the region table and `mseal` it and the reservation ranges when
-   available. Sealing forbids `munmap`, `mremap`, and `mprotect` changes on
-   ranges we never intend to change; committed slab memory is not sealed
-   because it must be `mprotect`ed on commit and `madvise`d on purge.
-6. Create the thread-exit key and register fork handlers.
-7. Read cgroup limits (section 11).
+5. Build the per-class slab tables, arena 0, the huge allocator, the arena
+   and explicit-cache registries and the thread-exit key (`Shared::init`).
+6. Register the fork handlers (section 9).
+
+Planned, not yet performed:
+
+- `mseal` of the region table and the reservation ranges (Phase 2 task 2).
+  Sealing forbids `munmap`, `mremap`, and `mprotect` changes on ranges we
+  never intend to change; committed slab memory cannot be sealed because it
+  must be `mprotect`ed on commit and `madvise`d on purge. `mseal` is probed
+  today and never called.
+- Probing `MADV_COLLAPSE` and reading `/sys/kernel/mm/transparent_hugepage/
+  enabled` (with the THP work; the `thp` key is inert).
+- Reading cgroup limits (section 11, Phase 2).
 
 Any pointer passed to `free` before init completes, or that does not classify,
 is treated as invalid. ld.so's minimal startup allocator only frees its own
 last block, so in practice nothing foreign reaches us; if it ever does, abort
 with a clear message rather than corrupt.
 
-## 11. cgroup awareness
+## 11. cgroup awareness (planned, Phase 2)
 
-Read once at init and re-read on demand:
+Nothing in this section is implemented. There is no `src/sys/cgroup.rs`, the
+`cgroup` key is accepted and inert (rejected by `abort_conf`), the
+`stats.cgroup.*` controls return `ENOENT` and `malloc_stats_print` reports
+`cgroup: not tracked`. What follows is the plan (`plan.md` Phase 2).
+
+The limits will be read once at init and re-read on demand:
 
 - Cgroup path from `/proc/self/cgroup` (the `0::` line) and the cgroup2 mount
   from `/proc/self/mountinfo`. Inside a cgroup namespace the path is `/` and
@@ -607,14 +709,14 @@ Read once at init and re-read on demand:
   and `memory.high` at each level and keeping the minimum of the numeric
   values. `max` means unlimited. `memory.max.effective` does not exist in
   mainline kernels.
-- `cpu.max` and `cpuset.cpus.effective` for the effective CPU count, used to
+- `cpu.max` and `cpuset.cpus.effective` for the effective CPU count, to
   size per-CPU state in the optional per-CPU mode and to cap the number of
   background purge batches in flight.
 
-All reads use raw `open`/`read`/`close` on fixed-size stack buffers. Absence
-of any file means unlimited.
+All reads will use raw `open`/`read`/`close` on fixed-size stack buffers.
+Absence of any file will mean unlimited.
 
-Policy, applied by the slow path and the background thread:
+Policy, to be applied by the slow path and the background thread:
 
 | Usage vs effective limit          | Behaviour                                         |
 |-----------------------------------|---------------------------------------------------|
@@ -624,18 +726,19 @@ Policy, applied by the slow path and the background thread:
 | > 90%                             | Purge immediately on empty; caches GC every flush |
 | `memory.events` `high` increased  | Full purge once                                   |
 
-`memory.current` is sampled at most every 10 ms, measured with the vDSO
+`memory.current` will be sampled at most every 10 ms, measured with the vDSO
 `clock_gettime(CLOCK_MONOTONIC_COARSE)`, and only from slow paths, so the hot
 path never sees it. When the background thread exists and the kernel is 6.4 or
-newer it arms a PSI trigger `some 150000 1000000` on `memory.pressure` and
-polls it with `POLLPRI`; a trigger causes an immediate decay pass. Older
-kernels poll `memory.current` on the decay timer.
+newer it will arm a PSI trigger `some 150000 1000000` on `memory.pressure`
+and poll it with `POLLPRI`; a trigger will cause an immediate decay pass.
+Older kernels will poll `memory.current` on the decay timer.
 
-THP is disabled regardless of the `thp` tunable when the effective limit is
-under 1 GiB.
+THP will be disabled regardless of the `thp` tunable when the effective limit
+is under 1 GiB.
 
-Statistics exposed through `mallctl`: `stats.cgroup.limit`,
-`stats.cgroup.high`, `stats.cgroup.current`, `stats.cgroup.pressure_events`.
+Statistics to be exposed through `mallctl`: `stats.cgroup.limit`,
+`stats.cgroup.high`, `stats.cgroup.current`, `stats.cgroup.pressure_events`
+(all `ENOENT` today).
 
 ## 12. Configuration
 
@@ -663,20 +766,28 @@ jemalloc names where they exist:
 | `lg_tcache_nslots_mul`    | 1       |                                         |
 | `tcache_gc_interval_ms`   | 10000   | challoc only                            |
 | `tcache_compact_shift`    | 3       | challoc only; one pop in 2^k compacts, 0 = off (6.4) |
-| `thp`                     | never   | `never`, `always`                       |
+| `thp`                     | never   | `never`, `always`; inert (planned)      |
 | `lazy_free`               | false   | use `MADV_FREE` for purge               |
 | `guards`                  | true    | guard slabs and huge runs               |
 | `guard_slab_interval`     | 8       | one guard per N x 64 KiB of slabs       |
-| `zero_on_free`            | false   |                                         |
-| `slot_randomize`          | false   |                                         |
+| `huge_retain_max`         | 67108864 | challoc only; bytes; freed huge runs above it are purged at once (7) |
+| `zero_on_free`            | false   | inert (planned, Phase 2 task 3)         |
+| `slot_randomize`          | false   | inert (planned, Phase 2 task 3)         |
 | `double_free_scan`        | false   | compare against the top 4 cache entries |
-| `abort_conf`              | false   | abort on unknown keys                   |
-| `cgroup`                  | true    |                                         |
+| `abort_conf`              | false   | abort on unknown keys, bad values and inert keys |
+| `cgroup`                  | true    | inert (planned, Phase 2)                |
 | `check_zero`              | false   | challoc only; debug: read every slot/page handed out as zero, abort on a dirty word |
-| `junk`, `zero`, `retain`, `oversize_threshold`, `percpu_arena`, `metadata_thp`, `stats_print`, `confirm_conf` | accepted | ignored or mapped where sensible |
+| `stats_print`             | accepted | inert: nothing prints at exit; no `opt.` value |
+| `junk`, `zero`, `retain`, `oversize_threshold`, `percpu_arena`, `metadata_thp`, `confirm_conf` | accepted | jemalloc keys, ignored with any value |
 
-Unknown keys are ignored unless `abort_conf` is set. `opt.<key>` is readable
-through `mallctl` for every key above.
+*Inert* keys are parsed and stored (so `opt.<key>` reads back what was set)
+but read by no code; each one is reported like a bad key, so `abort_conf`
+refuses a configuration that relies on one, and `malloc_stats_print` marks
+them "accepted, no effect" (`config::INERT_KEYS`). Unknown keys, bad values
+and inert keys are reported on stderr and otherwise ignored unless
+`abort_conf` is set. `opt.<key>` is readable through `mallctl` for every key
+that has a value above; `stats_print` and the ignored jemalloc keys return
+`ENOENT`.
 
 ## 13. API surface
 
@@ -705,7 +816,8 @@ libstdc++ entry points are weak undefined references loaded from the GOT, so
 a C process that never maps libstdc++ still loads the library under
 `BIND_NOW`, and a C++ program with a static libstdc++ that hides them gets
 an abort with a message instead of the throw. Sized and aligned `delete`
-ignore their extra arguments in Phase 0.
+ignore their extra arguments and take the plain `free` path (unlike
+`free_sized`, which checks the size against the pointer's class).
 
 ### 13.2 jemalloc
 
@@ -715,9 +827,10 @@ Symbols: `mallocx`, `rallocx`, `xallocx`, `sallocx`, `dallocx`, `sdallocx`,
 a program that only references it links, as Ruby's configure probe does;
 read through the GOT so a program's own definition interposes; `je_malloc_conf`
 is only read, as a weak reference),
-`malloc_message` (function pointer data symbol, default writes to stderr).
-Each also exported with the `je_` prefix via `#[unsafe(export_name)]`
-wrappers. The `jemalloc-soname` Cargo feature names the output
+`malloc_message` (function pointer data symbol, default writes to stderr;
+`je_malloc_message` is a second object, consulted when `malloc_message` is
+null). Each function is also exported with the `je_` prefix via
+`#[unsafe(export_name)]` wrappers. The `jemalloc-soname` Cargo feature names the output
 `libjemalloc.so.2` for link-only consumers.
 
 `MALLOCX_*` flags decode as jemalloc's: bits 0-5 `lg_align`, bit 6 `ZERO`,
@@ -740,8 +853,10 @@ in C23 and aborts here when the alignment put the block in a larger class.
 
 ### 13.3 Arenas and explicit caches
 
-An arena is a set of `ClassState`s plus a huge sub-allocator sharing the huge
-region, plus statistics. Arena 0 exists at init. `arenas.create` allocates a
+An arena is a set of `ClassState`s (one per class, over the shared per-class
+`SlabTable`s) with its `SetTable`, its decay period, per-arena counters of
+the huge runs allocated through it (the huge allocator itself is one and
+shared by every arena), plus statistics. Arena 0 exists at init. `arenas.create` allocates a
 new one. Slab groups record their arena (section 4). A pointer freed with
 plain `free` is returned to a cache keyed by its slab's arena, so memory never
 migrates between arenas and per-arena statistics stay exact. This is what
@@ -756,7 +871,8 @@ the heap is destroyed and moves with `thread.arena`. So `t` concurrently live
 threads use `min(t, narenas)` arenas, a single-threaded program stays on
 arena 0 and never pays the `free` routing (the `multi_arena` flag is only set
 when a second arena is built), and thread churn reuses the arena an exited
-thread left. Slab classes above `tcache_max` (32 KiB) are the exception: they
+thread left; so the "N arenas" of a benchmark row is this materialised
+count, not the default. Slab classes above `tcache_max` (32 KiB) are the exception: they
 are uncached and served under the class lock anyway, their slabs are 1..4
 MiB, and one partial slab per class per arena multiplied by 16 arenas was 60
 MiB of mstress's RSS (`bench/results/2026-09-18-aarch64-gce-arena-rss.md`),
@@ -772,8 +888,8 @@ did not move the counter, only partitioning the slab sets did). The cost is
 one partial slab per class per live thread (as in jemalloc), plus the
 owner-array load on `free` once a second arena exists.
 
-`tcache.create` allocates a `ClassCache` set owned by no thread; `MALLOCX_TCACHE(t)`
-uses it. Explicit caches are not thread safe, matching jemalloc. `MALLOCX_TCACHE_NONE`
+`tcache.create` allocates a `Heap` owned by no thread (the same caches,
+refill and flush, no TLS); `MALLOCX_TCACHE(t)` uses it. Explicit caches are not thread safe, matching jemalloc. `MALLOCX_TCACHE_NONE`
 bypasses caches and claims or releases directly against slab bitmaps; the
 defragmenter relies on this to land allocations in the fullest slabs.
 
@@ -793,15 +909,16 @@ stats.allocated, stats.active, stats.metadata, stats.resident, stats.mapped, sta
 stats.arenas.<i>.pactive, stats.arenas.<i>.pdirty, stats.arenas.<i>.pmuzzy,
 stats.arenas.<i>.small.allocated, stats.arenas.<i>.small.resident,
 stats.arenas.<i>.large.allocated, stats.arenas.<i>.resident,
+stats.arenas.<i>.mapped, stats.arenas.<i>.retained,
 stats.arenas.<i>.bins.<j>.curregs, stats.arenas.<i>.bins.<j>.curslabs,
 stats.arenas.<i>.bins.<j>.nonfull_slabs
-stats.cgroup.limit, stats.cgroup.high, stats.cgroup.current, stats.cgroup.pressure_events
 thread.tcache.flush, thread.tcache.enabled, thread.allocated, thread.allocatedp,
 thread.deallocated, thread.deallocatedp, thread.arena
 tcache.create, tcache.flush, tcache.destroy
 experimental.utilization.query, experimental.utilization.batch_query
 config.malloc_conf, config.debug, config.stats
 prof.* -> ENOENT
+stats.cgroup.* -> ENOENT today; planned (section 11): limit, high, current, pressure_events
 ```
 
 Everything else returns `ENOENT`. `arenas.nbins` counts the classes up to
@@ -842,16 +959,26 @@ Always on:
 
 - Out-of-band metadata; no allocator pointers or sizes inside user memory.
 - Size-class isolation in separate randomised regions with unmapped gaps.
-- Invalid-free and stale double-free detection on every `free`.
-- Region table and reservations sealed with `mseal` when available.
-- Guard between huge runs; guard slab every `guard_slab_interval` x 64 KiB
-  of slabs.
+- Invalid-free and stale double-free detection on every plain `free` (the
+  sized path defers the bit test to the flush, 6.3).
+- Guard after every huge run (`MADV_GUARD_INSTALL`, else `PROT_NONE`).
 - Abort, never continue, on any inconsistency. Abort messages go to stderr
   via `write(2)` and then `abort()`.
 
+On when the kernel has `MADV_GUARD_INSTALL` (6.13+), otherwise absent:
+
+- A guard slab every `guard_slab_interval` x 64 KiB of slabs (section 5).
+
 Off by default, tunable:
 
-- `zero_on_free`, `slot_randomize`, `double_free_scan`, `guard_slab_interval:1`.
+- `double_free_scan` (compare each pushed slot against the top four cache
+  entries; priced in 6.3); `guard_slab_interval` below the default of 8 for
+  denser guard slabs.
+
+Planned (Phase 2), keys accepted and inert today:
+
+- Region table and reservations sealed with `mseal` when available (task 2).
+- `zero_on_free`, `slot_randomize` (task 3).
 
 Explicitly not attempted: quarantine (defeats defragmentation and costs
 throughput), canaries (needs bytes inside the block), MTE (only AmpereOne
@@ -874,49 +1001,62 @@ kernel-owned fields is what broke tcmalloc on Linux 6.19.
 
 - `malloc_stats_print` emits a human-readable report in jemalloc's general
   shape: totals, per-arena, per-class table with `size nregs curslabs curregs`,
-  cgroup section. The per-class table also carries the compaction
+  and a `cgroup: not tracked` line where the cgroup section (11) will go.
+  The run-time options list marks the inert keys "accepted, no effect". The per-class table also carries the compaction
   diagnostics of section 6.4 (`refilled`, `compacted`, caches that entered
   and left compact mode, probes the refill-rate gate declined) and is
   followed by a per-class occupancy histogram of the non-empty slabs
   (slabs per eighth of `nslots`), so a soak's `MEMORY MALLOC-STATS` shows
   where the live data sits and whether the schedule is running.
-- Mappings named `challoc:meta`, `challoc:class-<n>`, `challoc:huge`.
-- `CHALLOC_CONF=stats_print:true` prints at exit via an `atexit` handler
-  registered lazily.
+- Mappings named `challoc:classes` (the one class superblock), `challoc:huge`
+  and `challoc:meta` (`PR_SET_VMA_ANON_NAME`, when the kernel has it).
+- `stats_print:true` is accepted and inert: nothing prints at exit and there
+  is no `atexit` handler (jemalloc's `stats_print` has no equivalent here;
+  call `malloc_stats_print` or `malloc_info`).
 - Abort messages include the faulting pointer, its classification, and the
-  reason.
+  reason, prefixed `challoc: `.
 
 ## 17. Source layout
 
 ```
-src/lib.rs            crate root, entry-point re-exports
-src/sys/mod.rs        raw syscalls (mmap, mprotect, madvise, process_madvise, mseal, prctl, getrandom, futex, clock_gettime, open/read/close, write, abort)
+src/lib.rs            crate root, quantum feature selection, panic handler
+src/sys/mod.rs        typed syscall wrappers (mmap, mprotect, madvise, process_madvise, mseal, prctl, getrandom, futex, clock_gettime, open/read/close, write, signals), abort, stderr sink
+src/sys/raw.rs        the asm syscall instructions (x86_64, aarch64)
+src/sys/nr.rs         syscall numbers, header-checked
+src/sys/errno.rs      kernel error decoding
 src/sys/features.rs   kernel feature probing
-src/sys/cgroup.rs     cgroup discovery and sampling
 src/tls.rs            initial-exec TLS accessor
+src/lock.rs           futex lock, padded lock
 src/layout.rs         size classes, regions, pointer classification
 src/bitmap.rs         atomic bitmap and TwoLevelBitmap
-src/slab.rs           SlabDesc, claim/release/check
-src/class.rs          ClassState, slab selection, decay
-src/heap.rs           Heap, ClassCache, fast and slow paths
+src/slab.rs           SlabDesc (the descriptor only)
+src/class.rs          SlabTable (descriptors, slot bitmap, owner array, guard slabs), SetTable, ClassState: claim/release, slab selection, decay
+src/heap.rs           Heap, CacheHeader, Shared, fast and slow paths, cache GC, compaction
 src/huge.rs           huge allocator
 src/meta.rs           metadata region allocator
 src/purge.rs          decay driver, batching, background thread
-src/arena.rs          arenas, explicit caches
+src/arena.rs          arenas, explicit caches, MALLOCX_* routing
 src/config.rs         malloc_conf parsing
 src/stats.rs          counters and epoch merge
-src/api/libc.rs       standard entry points
-src/api/glibc.rs      glibc extras
-src/api/jemalloc.rs   *allocx, je_ aliases
+src/api/mod.rs        lazy init, Shared/Features statics, fork handlers
+src/api/libc.rs       standard entry points, malloc_trim
+src/api/glibc.rs      mallopt, mallinfo, mallinfo2
+src/api/jemalloc.rs   *allocx, mallctl entry points, malloc_conf/malloc_message symbols, je_ aliases
+src/api/cxx.rs        operator new / delete
 src/api/mallctl.rs    control namespace
-src/api/print.rs      malloc_stats_print, malloc_info
-tests/                integration tests (Linux only, run against the cdylib)
-bench/                benchmark drivers and scripts
+src/api/print.rs      malloc_stats_print, malloc_stats, malloc_info
+src/api/ctests.rs     drivers for tests/c, fuzz/, tests/glibc, tests/mimalloc (test builds only)
+tests/c/              C programs run under LD_PRELOAD against the cdylib
+tests/glibc/, tests/mimalloc/  vendored suites
+bench/                benchmark drivers, GCE scripts, results
 fuzz/                 randomized alloc/free driver with seeds
+contrib/              Valkey build patch
 docs/
 ```
 
-Pure logic (`layout`, `bitmap`, size-class math, config parsing, cgroup
-parsing) must be testable with `cargo test` on the host under a `std` dev
-feature. Everything touching syscalls, TLS, or asm is tested inside a Linux
+Planned: `src/sys/cgroup.rs` (section 11).
+
+Pure logic (`layout`, `bitmap`, size-class math, config parsing, and the
+planned cgroup parsing) must be testable with `cargo test` on the host under
+a `std` dev feature. Everything touching syscalls, TLS, or asm is tested inside a Linux
 container.

@@ -22,9 +22,10 @@ Goals, in priority order:
    software uses, same `MALLOCX_*` flag encoding, optional `libjemalloc.so.2`
    soname. Valkey with active defrag, `MEMORY PURGE`, `MEMORY MALLOC-STATS`,
    and Lua arena isolation all keep working.
-4. **cgroup aware.** No allocator today reads its memory cgroup. challoc sizes
-   its caches to the effective `memory.max`, returns memory eagerly as usage
-   approaches `memory.high`, and can react to pressure-stall signals.
+4. **cgroup aware.** No allocator today reads its memory cgroup. challoc will
+   size its caches to the effective `memory.max`, return memory eagerly as
+   usage approaches `memory.high`, and react to pressure-stall signals
+   (planned, Phase 2; nothing reads the cgroup yet).
 5. **Modern and memory safe.** `no_std` Rust, abort on panic, unsafe confined
    to a syscall layer, a thread-local accessor, and the pointer arithmetic of
    the slab allocator itself.
@@ -95,25 +96,27 @@ each run. Freed runs are retained and decay like slabs.
 curve: about half of what went empty at once within half of `dirty_decay_ms`,
 all of it by the end of the window. Decay
 runs from the allocating thread's slow path and, when enabled through the
-jemalloc `background_thread` control, from a background thread. Under a cgroup
-limit the decay window shortens and retention shrinks as usage approaches
-`memory.high`; near the limit, purge is immediate.
+jemalloc `background_thread` control, from a background thread. Planned
+(Phase 2): under a cgroup limit the decay window shortens and retention
+shrinks as usage approaches `memory.high`; near the limit, purge is immediate.
 
-**Kernel features, all runtime detected.**
+**Kernel features, all runtime detected.** Rows marked *planned* are probed
+or reserved for but not yet used by any code path.
 
 | Feature                      | Kernel | Used for                                   | Fallback                          |
 |------------------------------|--------|--------------------------------------------|-----------------------------------|
-| `MADV_GUARD_INSTALL`         | 6.13   | Guards between slabs and after huge runs   | `PROT_NONE` page after huge runs  |
-| `mseal`                      | 6.10   | Seal region table and reserved ranges      | Skip                              |
+| `MADV_GUARD_INSTALL`         | 6.13   | Guard slabs and guards after huge runs     | `PROT_NONE` page after huge runs; no guard slabs |
 | `process_madvise` on self    | 5.10   | Batched purge                              | Loop over `madvise`               |
 | `PR_SET_VMA_ANON_NAME`       | 5.17   | Named heap mappings in `/proc/pid/maps`    | Skip                              |
-| PSI triggers, unprivileged   | 6.4    | Pressure-driven purge in background thread | Poll `memory.current`             |
+| `mseal` (planned, Phase 2)   | 6.10   | Seal region table and reserved ranges      | Skip                              |
+| PSI triggers (planned, Phase 2) | 6.4 | Pressure-driven purge in background thread | Poll `memory.current`             |
+| Transparent huge pages (planned) | any | Opt-in only; the `thp` key is accepted and inert | Off                       |
 | rseq `mm_cid`                | 6.3    | Optional per-CPU mode, later phase         | Thread caches only                |
-| Transparent huge pages       | any    | Opt-in only                                | Off                               |
 
 Chainguard OS ships Linux 6.18, so everything above except the per-CPU mode is
 available there. Containers run on whatever kernel the host has, so every path
-is probed at init and degrades without changing observable behaviour.
+is probed at init and degrades without changing observable behaviour; note that
+a kernel before 6.13 (Docker Desktop's 6.10, for one) has no guard slabs.
 
 **Security properties versus jemalloc.**
 
@@ -124,9 +127,9 @@ is probed at init and degrades without changing observable behaviour.
 | Invalid free detected                    | No           | Yes, aborts (1) |
 | Double free detected                     | Debug only   | Yes, aborts (1) |
 | Size classes in isolated address ranges  | No           | Yes, randomised |
-| Guard regions                            | No           | Yes             |
-| Zero on free                             | Opt-in       | Opt-in          |
-| Slot order randomisation                 | No           | Opt-in          |
+| Guard regions                            | No           | Yes (kernel 6.13+ for guard slabs) |
+| Zero on free                             | Opt-in       | Planned (Phase 2); `zero_on_free` is accepted and inert |
+| Slot order randomisation                 | No           | Planned (Phase 2); `slot_randomize` is accepted and inert |
 | Implementation language                  | C            | Rust            |
 
 (1) Through `free`: an invalid pointer aborts at the call, and so does a
@@ -174,7 +177,18 @@ See [docs/design.md](docs/design.md) for the full design and
 
 ## Status
 
-Design stage. Nothing here is usable yet.
+Implemented and under test, not yet packaged. Phases 0 and 1 of
+[docs/plan.md](docs/plan.md) are done: the allocator builds as a `cdylib`, its
+unit tests and C programs run under `LD_PRELOAD` in the dev container (267 +
+89 tests as of Phase 1.5 task 11, plus the glibc and mimalloc suites and the
+fuzz driver), and the Valkey soak, Valkey test suite and Ruby suites run
+against it (`make valkey-soak`, `make ruby-bench`). Phase 1.5 (the GCE
+performance lab) is in its acceptance run: the release-readiness tasks of
+`docs/review-2026-09-18.md` are landing and the mstress RSS row is open.
+`PROGRESS.md` is the task log; `bench/results/scorecard-{aarch64,x86_64}.md`
+record the benchmark trend per commit. Features marked *planned* above
+(`mseal`, cgroup awareness, zero-on-free, slot randomisation, THP) are Phase 2.
+Packaging for Wolfi is Phase 3.
 
 ## Building
 
