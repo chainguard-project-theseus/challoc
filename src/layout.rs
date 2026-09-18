@@ -133,7 +133,22 @@ pub struct Class {
     /// is all the `free` path needs (a misaligned offset can never satisfy
     /// `slot * size == offset` for any `slot`).
     pub recip: u32,
+    /// Bits one slab occupies in the class's slot bitmap (design section
+    /// 4): `nslots` padded so that a slab's bits are either whole words or
+    /// one range inside a word, and so that a bitmap cache line is shared
+    /// by at most [`LG_GROUP_SPAN`] bytes of slabs. See [`Class::slab_bits`].
+    pub slab_bits: u16,
 }
+
+/// Cache line the slot bitmaps are laid out for, in bits (64 bytes).
+pub const LINE_BITS: usize = 512;
+
+/// Slabs are handed to an arena in groups that own whole bitmap lines
+/// (`class.rs`, design section 4); a group spans at most this much of the
+/// class region (2 MiB), so a class whose slabs are large pads each slab's
+/// bits to a line rather than letting one line's group cover tens of MiB
+/// of address space per arena.
+pub const LG_GROUP_SPAN: u32 = 21;
 
 impl Class {
     #[inline]
@@ -166,10 +181,31 @@ impl Class {
         (if slab > unit { slab } else { unit }) / self.size()
     }
 
-    /// `u64` words needed for a per-slab slot bitmap.
+    /// Bits one slab occupies in the class bitmap (the `slab_bits` field):
+    /// `nslots` rounded up to a power of two below [`LINE_BITS`], or to a
+    /// multiple of it from there, so a slab's bits are whole words (64 or
+    /// more bits) or one sub-word range (fewer) and a line holds a whole
+    /// number of slabs; then raised so that the slabs sharing one line span
+    /// at most `1 << LG_GROUP_SPAN` bytes of the region.
+    #[inline]
+    pub const fn slab_bits(&self) -> usize {
+        self.slab_bits as usize
+    }
+
+    /// Consecutive slabs whose bits fill one bitmap line: the unit in which
+    /// `class.rs` hands slabs to an arena, so that every line has one owner.
+    /// A power of two; 1 when a slab's bits are a line or more.
+    #[inline]
+    pub const fn slabs_per_line(&self) -> usize {
+        let b = self.slab_bits();
+        if b >= LINE_BITS { 1 } else { LINE_BITS / b }
+    }
+
+    /// `u64` words a slab's bits touch in the class bitmap: `slab_bits / 64`
+    /// for whole-word slabs, 1 for a sub-word slab.
     #[inline]
     pub const fn bitmap_words(&self) -> usize {
-        (self.nslots as usize).div_ceil(64)
+        self.slab_bits().div_ceil(64)
     }
 
     /// Slot index for an in-slab offset, plus whether the offset is exactly a
@@ -227,17 +263,27 @@ const fn reciprocal(size: usize) -> u32 {
     (((1u64 << RECIP_SHIFT) + size as u64 - 1) / size as u64) as u32
 }
 
+/// See [`Class::slab_bits`].
+const fn slab_bits_for(nslots: usize, lg_slab: u32) -> usize {
+    let raw = if nslots <= LINE_BITS { nslots.next_power_of_two() } else { (nslots + LINE_BITS - 1) & !(LINE_BITS - 1) };
+    let per_line = if raw >= LINE_BITS { 1 } else { LINE_BITS / raw };
+    let cap = if LG_GROUP_SPAN > lg_slab { 1usize << (LG_GROUP_SPAN - lg_slab) } else { 1 };
+    if per_line > cap { LINE_BITS / cap } else { raw }
+}
+
 const fn build_classes() -> [Class; NCLASSES] {
-    let mut out = [Class { size: 0, lg_slab: 0, nslots: 0, recip: 0 }; NCLASSES];
+    let mut out = [Class { size: 0, lg_slab: 0, nslots: 0, recip: 0, slab_bits: 0 }; NCLASSES];
     let mut i = 0;
     while i < NCLASSES {
         let size = class_size_at(i);
         let lg_slab = lg_slab_for(size);
+        let nslots = (1usize << lg_slab) / size;
         out[i] = Class {
             size: size as u32,
             lg_slab: lg_slab as u8,
-            nslots: ((1usize << lg_slab) / size) as u32,
+            nslots: nslots as u32,
             recip: reciprocal(size),
+            slab_bits: slab_bits_for(nslots, lg_slab) as u16,
         };
         i += 1;
     }
@@ -738,7 +784,27 @@ mod tests {
             assert!((MIN_SLAB..=MAX_SLAB).contains(&slab), "class {i} slab {slab}");
             assert_eq!(c.nslots(), slab / c.size());
             assert!(c.nslots() * c.size() <= slab);
-            assert_eq!(c.bitmap_words(), c.nslots().div_ceil(64));
+            // Slab bits: at least nslots, whole words or one sub-word
+            // range, a line-sized group of slabs spanning at most
+            // 1 << LG_GROUP_SPAN bytes, and no more padding than needed.
+            let b = c.slab_bits();
+            assert!(b >= c.nslots(), "class {i}");
+            assert!(b.is_power_of_two() || b % LINE_BITS == 0, "class {i}: slab_bits {b}");
+            assert!(b >= 64 || 64 % b == 0, "class {i}: sub-word slab_bits {b} must divide a word");
+            assert_eq!(c.bitmap_words(), b.div_ceil(64));
+            let g = c.slabs_per_line();
+            assert!(g.is_power_of_two() && (g == 1 || g * b == LINE_BITS), "class {i}");
+            assert!(g << c.lg_slab <= 1 << LG_GROUP_SPAN || g == 1, "class {i}: group spans {} bytes", g << c.lg_slab);
+            assert_eq!(b, slab_bits_for(c.nslots(), c.lg_slab as u32));
+            let cap = (1usize << LG_GROUP_SPAN >> c.lg_slab).max(1);
+            if g == cap.min(LINE_BITS / c.nslots().next_power_of_two().min(LINE_BITS)) && g < cap {
+                // Not raised for the span cap: no more padding than needed.
+                if b <= LINE_BITS {
+                    assert!(b / 2 < c.nslots(), "class {i}: slab_bits {b} over-padded for {} slots", c.nslots());
+                } else {
+                    assert!(b - LINE_BITS < c.nslots(), "class {i}");
+                }
+            }
             if c.size() < SMALL_SLAB_BELOW {
                 assert_eq!(slab, 1 << LG_SMALL_SLAB, "class {i}: slab below {SMALL_SLAB_BELOW}");
             } else if c.size() <= SMALL_MAX {

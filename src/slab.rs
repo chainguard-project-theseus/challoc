@@ -1,37 +1,38 @@
 //! Slab descriptors (design.md section 4).
 //!
-//! Every slab of every class has one [`SlabDesc`] in the metadata region.
-//! Descriptors for class `c` form a dense array indexed by slab number with
-//! a per-class stride ([`desc_stride`]): a fixed 16-byte header followed by
-//! the slab's allocation bitmap, rounded up to a cache-line multiple so
-//! neighbouring descriptors never share a line.
+//! Every slab of every class has one [`SlabDesc`] in the metadata region:
+//! a fixed 16-byte header holding the slab's state, its arena, its live
+//! count and its decay stamp. Descriptors for class `c` form a dense array
+//! indexed by slab number with a per-class stride ([`desc_stride`]). The
+//! allocation bits are not here: they live in the class's slot bitmap
+//! (`class.rs`, `SlabTable::bits`), one contiguous array per class that the
+//! `free` check reads instead of a descriptor line.
 //!
-//! The header is `repr(C)` so that the offsets are fixed and the bitmap can
-//! be addressed by pointer arithmetic. Descriptors live in memory that is
-//! never moved or freed, so accessors hand out references with the caller's
-//! lifetime and no `Drop` is involved.
+//! The header is `repr(C)` so that the offsets are fixed. Descriptors live
+//! in memory that is never moved or freed, so accessors hand out references
+//! with the caller's lifetime and no `Drop` is involved.
 //!
-//! A set bitmap bit means "not available to a refill": the slot is live in
-//! the program or sitting in some thread's cache. `live` counts set bits
-//! plus in-flight claim reservations (see `class.rs`); it is what drives the
-//! `Active -> Empty` transition. `dirty_at` is the coarse monotonic time the
-//! slab became `Empty`, or 0 in any other state.
+//! `live` counts set bitmap bits plus in-flight claim reservations (see
+//! `class.rs`); it is what drives the `Active -> Empty` transition.
+//! `dirty_at` is the coarse monotonic time the slab became `Empty`, or 0 in
+//! any other state.
 
 use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
-use crate::bitmap::AtomicBitmap;
-use crate::layout::{CLASSES, Class, NCLASSES};
+use crate::layout::{CLASSES, NCLASSES};
 
-/// Size of the fixed descriptor header in bytes; the bitmap starts here.
+/// Size of the descriptor in bytes.
 pub const HEADER: usize = 16;
-/// Descriptor arrays and strides are cache-line aligned.
+/// Descriptor arrays are cache-line aligned, and a line of descriptors
+/// never spans two arenas' slab groups (see [`desc_stride`]).
 pub const DESC_ALIGN: usize = 64;
 
 /// Lifecycle of a committed slab.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum State {
-    /// Committed, zero from the kernel, no slot ever claimed.
+    /// Committed (or assigned to an arena's group and not yet committed),
+    /// zero from the kernel, no slot ever claimed.
     Fresh = 0,
     /// At least one slot claimed since the slab was last `Fresh`, `Empty`
     /// or `Purged`.
@@ -60,7 +61,7 @@ impl State {
     }
 }
 
-/// Descriptor header. The bitmap words follow immediately at [`HEADER`].
+/// Descriptor header.
 #[repr(C, align(16))]
 pub struct SlabDesc {
     state: AtomicU8,
@@ -72,23 +73,24 @@ pub struct SlabDesc {
 
 const _: () = assert!(core::mem::size_of::<SlabDesc>() == HEADER);
 
-#[inline]
-const fn align_up(x: usize, a: usize) -> usize {
-    (x + a - 1) & !(a - 1)
-}
-
 const fn build_strides() -> [u32; NCLASSES] {
     let mut out = [0u32; NCLASSES];
     let mut c = 0;
     while c < NCLASSES {
-        out[c] = align_up(HEADER + 8 * CLASSES[c].bitmap_words(), DESC_ALIGN) as u32;
+        // Slabs go to arenas in groups of `slabs_per_line` (class.rs), so
+        // a stride of at least `DESC_ALIGN / slabs_per_line` keeps every
+        // descriptor line inside one group: refills and flushes of two
+        // arenas never write the same line.
+        let per_line = CLASSES[c].slabs_per_line();
+        let s = DESC_ALIGN / per_line;
+        out[c] = (if s > HEADER { s } else { HEADER }) as u32;
         c += 1;
     }
     out
 }
 
-/// Per-class descriptor stride in bytes: header plus bitmap, rounded up to
-/// a cache-line multiple.
+/// Per-class descriptor stride in bytes: 64 for classes whose slabs are
+/// handed out singly, 32 for pairs, 16 (the header) from groups of four.
 pub static DESC_STRIDE: [u32; NCLASSES] = build_strides();
 
 /// Descriptor stride for `class` in bytes.
@@ -112,29 +114,13 @@ impl SlabDesc {
         unsafe { &*((base + slab * desc_stride(class)) as *const SlabDesc) }
     }
 
-    /// The slab's allocation bitmap, `class.bitmap_words()` words long.
-    #[inline]
-    pub fn bitmap(&self, class: &Class) -> &AtomicBitmap {
-        let words = class.bitmap_words();
-        // SAFETY: the descriptor stride reserves `words` `AtomicU64`s right
-        // after the header, 8-aligned because the header is 16 bytes.
-        let slice = unsafe {
-            core::slice::from_raw_parts(
-                (self as *const SlabDesc as usize + HEADER) as *const AtomicU64,
-                words,
-            )
-        };
-        AtomicBitmap::from_words(slice)
-    }
-
-    /// Initialise the descriptor of a freshly committed slab: `Fresh`, no
-    /// live slots, bitmap clear apart from the padding bits above `nslots`.
-    pub fn init(&self, class: &Class, arena: u16) {
+    /// Initialise the descriptor of a slab handed to `arena`: `Fresh`, no
+    /// live slots.
+    pub fn init(&self, arena: u16) {
         self.state.store(State::Fresh as u8, Ordering::Relaxed);
         self.arena.store(arena, Ordering::Relaxed);
         self.live.store(0, Ordering::Relaxed);
         self.dirty_at.store(0, Ordering::Relaxed);
-        self.bitmap(class).init(class.nslots());
     }
 
     #[inline]
@@ -189,51 +175,9 @@ impl SlabDesc {
     /// Free slots according to `live` (design 13.4 `nfree`). Transiently
     /// under-reports while a claim reservation is in flight.
     #[inline]
-    pub fn nfree(&self, class: &Class) -> usize {
+    pub fn nfree(&self, class: &crate::layout::Class) -> usize {
         class.nslots().saturating_sub(self.live())
     }
-
-    /// Whether `slot` is currently marked allocated (or cached).
-    #[inline]
-    pub fn is_allocated(&self, class: &Class, slot: usize) -> bool {
-        debug_assert!(slot < class.nslots());
-        self.bitmap(class).is_set(slot)
-    }
-
-    /// [`is_allocated`] for the `free` fast path: one relaxed load of the
-    /// slot's word, without rebuilding the bitmap view or bounds-checking
-    /// the word index.
-    ///
-    /// # Safety
-    /// `slot` must be below the class's `nslots`, so its word lies inside
-    /// the descriptor's bitmap (`slot / 64 < bitmap_words()`).
-    ///
-    /// [`is_allocated`]: SlabDesc::is_allocated
-    #[inline(always)]
-    pub unsafe fn is_allocated_unchecked(&self, slot: usize) -> bool {
-        let word = (self as *const SlabDesc as usize + HEADER + (slot / 64) * 8) as *const AtomicU64;
-        // SAFETY: the caller guarantees the word is inside this descriptor's
-        // bitmap, which the stride reserves right after the header.
-        (unsafe { (*word).load(Ordering::Relaxed) } >> (slot % 64)) & 1 == 1
-    }
-
-    /// The `free` check of design section 4: one load, no write. Aborts
-    /// with the pointer and its location if the slot is not allocated, which
-    /// is an invalid free or a stale double free.
-    #[inline]
-    pub fn check(&self, class: &Class, slot: usize, p: usize, class_idx: usize, slab: usize) {
-        if !self.is_allocated(class, slot) {
-            invalid_free(p, class_idx, slab, slot);
-        }
-    }
-}
-
-#[cold]
-#[inline(never)]
-fn invalid_free(p: usize, class: usize, slab: usize, slot: usize) -> ! {
-    panic!(
-        "invalid or double free of {p:#x} (class {class} slab {slab} slot {slot}): slot is not allocated"
-    )
 }
 
 #[cfg(test)]
@@ -241,6 +185,10 @@ mod tests {
     use super::*;
     use std::vec;
     use std::vec::Vec;
+
+    fn align_up(x: usize, a: usize) -> usize {
+        (x + a - 1) & !(a - 1)
+    }
 
     /// A descriptor array for one class backed by a `Vec`, aligned to a
     /// cache line.
@@ -274,21 +222,20 @@ mod tests {
     }
 
     #[test]
-    fn strides_cover_the_bitmap_and_are_cache_line_multiples() {
+    fn strides_keep_a_line_inside_one_group() {
         for (c, cls) in CLASSES.iter().enumerate() {
             let s = desc_stride(c);
-            assert_eq!(s % DESC_ALIGN, 0, "class {c}");
-            assert!(s >= HEADER + 8 * cls.bitmap_words(), "class {c}");
-            assert!(s < HEADER + 8 * cls.bitmap_words() + DESC_ALIGN, "class {c}");
+            assert!(s >= HEADER && s <= DESC_ALIGN && DESC_ALIGN % s == 0, "class {c}: stride {s}");
+            // The descriptors sharing a line are consecutive slabs of one
+            // line-sized group.
+            assert!(DESC_ALIGN / s <= cls.slabs_per_line(), "class {c}");
+            assert_eq!(s, (DESC_ALIGN / cls.slabs_per_line()).max(HEADER), "class {c}");
         }
-        // The smallest class has the most slots and the widest descriptor.
-        assert_eq!(desc_stride(0), align_up(HEADER + 8 * CLASSES[0].bitmap_words(), 64));
-        // Classes with at most 256 slots fit in one line.
-        for (c, cls) in CLASSES.iter().enumerate() {
-            if cls.nslots() <= (DESC_ALIGN - HEADER) * 8 {
-                assert_eq!(desc_stride(c), DESC_ALIGN, "class {c}");
-            }
-        }
+        // Singly handed-out slabs (the small classes) keep a line each.
+        assert_eq!(desc_stride(0), DESC_ALIGN);
+        // The 1024-byte class (4 slots, groups of 128) is down to the header.
+        let c = CLASSES.iter().position(|c| c.size() == 1024).unwrap();
+        assert_eq!(desc_stride(c), HEADER);
     }
 
     #[test]
@@ -303,53 +250,40 @@ mod tests {
     }
 
     #[test]
-    fn init_sets_header_and_padding_bits() {
+    fn init_sets_the_header() {
         for (c, cls) in CLASSES.iter().enumerate() {
             let d = Descs::new(c, 3);
             for slab in 0..3 {
                 let desc = d.at(slab);
-                desc.init(cls, 7);
+                desc.set_state(State::Active);
+                desc.add_live(3);
+                desc.set_dirty_at(9);
+                desc.init(7);
                 assert_eq!(desc.state(), State::Fresh);
                 assert_eq!(desc.arena(), 7);
                 assert_eq!(desc.live(), 0);
                 assert_eq!(desc.dirty_at(), 0);
                 assert_eq!(desc.nfree(cls), cls.nslots());
-                let bm = desc.bitmap(cls);
-                assert_eq!(bm.words(), cls.bitmap_words());
-                for slot in 0..cls.nslots() {
-                    assert!(!desc.is_allocated(cls, slot));
-                }
-                let pad = cls.bitmap_words() * 64 - cls.nslots();
-                let set: u32 = (0..bm.words()).map(|w| bm.load(w).count_ones()).sum();
-                assert_eq!(set as usize, pad, "class {c}: padding bits");
-                assert!(!bm.is_full());
             }
         }
     }
 
     #[test]
     fn neighbouring_descriptors_do_not_overlap() {
-        let c = 0;
-        let cls = &CLASSES[c];
-        let d = Descs::new(c, 4);
-        for slab in 0..4 {
-            d.at(slab).init(cls, slab as u16);
-        }
-        // Claim everything in slab 1 and check slabs 0 and 2 are untouched.
-        let bm = d.at(1).bitmap(cls);
-        let mut got = 0;
-        while let Some((_, bits)) = bm.claim(64) {
-            got += bits.count_ones() as usize;
-        }
-        assert_eq!(got, cls.nslots());
-        assert!(bm.is_full());
-        for other in [0usize, 2, 3] {
-            let desc = d.at(other);
-            assert_eq!(desc.arena(), other as u16);
-            assert_eq!(desc.state(), State::Fresh);
-            assert!(!desc.bitmap(cls).is_full());
-            for slot in 0..cls.nslots() {
-                assert!(!desc.is_allocated(cls, slot));
+        for c in [0usize, 12, 15, 19] {
+            let d = Descs::new(c, 4);
+            for slab in 0..4 {
+                d.at(slab).init(slab as u16);
+            }
+            d.at(1).add_live(5);
+            d.at(1).set_state(State::Active);
+            d.at(1).set_dirty_at(0x1111_2222_3333_4444);
+            for other in [0usize, 2, 3] {
+                let desc = d.at(other);
+                assert_eq!(desc.arena(), other as u16, "class {c}");
+                assert_eq!(desc.state(), State::Fresh, "class {c}");
+                assert_eq!(desc.live(), 0, "class {c}");
+                assert_eq!(desc.dirty_at(), 0, "class {c}");
             }
         }
     }
@@ -359,7 +293,7 @@ mod tests {
         let cls = &CLASSES[3];
         let d = Descs::new(3, 1);
         let desc = d.at(0);
-        desc.init(cls, 0);
+        desc.init(0);
         assert_eq!(desc.add_live(5), 0);
         assert_eq!(desc.add_live(2), 5);
         assert_eq!(desc.live(), 7);
@@ -375,35 +309,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "live count underflow")]
     fn live_underflow_aborts() {
-        let cls = &CLASSES[3];
         let d = Descs::new(3, 1);
         let desc = d.at(0);
-        desc.init(cls, 0);
+        desc.init(0);
         desc.add_live(1);
         desc.sub_live(2);
-    }
-
-    #[test]
-    fn check_passes_for_allocated_slots() {
-        let cls = &CLASSES[5];
-        let d = Descs::new(5, 1);
-        let desc = d.at(0);
-        desc.init(cls, 0);
-        let (w, bits) = desc.bitmap(cls).claim(3).unwrap();
-        assert_eq!((w, bits), (0, 0b111));
-        for slot in 0..3 {
-            desc.check(cls, slot, 0x1000 + slot * cls.size(), 5, 0);
-        }
-    }
-
-    #[test]
-    #[should_panic(expected = "invalid or double free of 0xdead0 (class 5 slab 0 slot 3)")]
-    fn check_aborts_for_free_slots() {
-        let cls = &CLASSES[5];
-        let d = Descs::new(5, 1);
-        let desc = d.at(0);
-        desc.init(cls, 0);
-        desc.bitmap(cls).claim(3).unwrap();
-        desc.check(cls, 3, 0xdead0, 5, 0);
     }
 }

@@ -292,9 +292,7 @@ fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::
             }
             slabs += 1;
             hist[(live * 8 / nslots).min(8)] += 1;
-            let bm = d.bitmap(cls);
-            let set: usize = (0..bm.words()).map(|w| bm.load(w).count_ones() as usize).sum();
-            if set.saturating_sub(bm.words() * 64 - nslots) != live {
+            if cs.table().bits(i).allocated(nslots) != live {
                 mismatched += 1;
             }
             if live < nslots && !cs.is_partial(i) {

@@ -707,10 +707,8 @@ impl Shared {
         match self.regions.classify(p as usize) {
             Kind::Slab { class, slab, slot } => {
                 let class = class as usize;
-                let t = self.table(class);
-                let desc = t.desc(slab as usize);
-                desc.check(t.class(), slot as usize, p as usize, class, slab as usize);
-                Ok((class, desc.arena()))
+                let arena = self.table(class).check_located(slab as usize, slot as usize, p as usize);
+                Ok((class, arena))
             }
             Kind::Huge { page } => Err(page),
             Kind::Invalid => invalid_free(p as usize),
@@ -740,7 +738,9 @@ impl Shared {
         }
         // SAFETY: `slab_slot` only returns `class < NCLASSES`.
         let table = unsafe { self.tables.get_unchecked(class) };
-        table.desc_if_committed(slab)?;
+        if !table.is_handed_out(slab) {
+            return None;
+        }
         Some(class)
     }
 
@@ -764,21 +764,21 @@ impl Shared {
         }
     }
 
-    /// Owning arena of the committed slab holding the slot `p` of `class`.
-    /// Aborts for anything that is not a slot start in a committed slab.
+    /// Owning arena of the handed-out slab holding the slot `p` of `class`.
+    /// Aborts for anything that is not a slot start in such a slab.
     fn arena_of_slot(&self, class: usize, p: *mut u8) -> u16 {
         let t = self.table(class);
         let (slab, _) = t.locate(p);
-        t.desc(slab).arena()
+        t.owner(slab)
     }
 
     /// Release a cache's sorted batch of `class` slots, keyed by `arena`.
     /// Plain frees push a slot onto the cache of its slab's arena, so the
     /// whole batch is normally one [`release_owned`] call with no extra
     /// work per pointer; sized frees push slots of any arena onto the home
-    /// cache (their check skips the descriptor line the arena sits on), and
-    /// each run of slabs of another arena is released through that arena
-    /// (one descriptor load per switch, a line `release_owned` reads anyway).
+    /// cache (their check reads neither the bit nor the owner), and each
+    /// run of slabs of another arena is released through that arena (one
+    /// owner-word load per switch, a word `release_owned` reads anyway).
     ///
     /// [`release_owned`]: crate::class::ClassState::release_owned
     pub fn release_routed(&self, arena: u16, class: usize, ptrs: &[*mut u8]) {
@@ -800,13 +800,22 @@ impl Shared {
     }
 
     /// The `free` fast path's check: `Some(class)` when `p` is a slot start
-    /// in a committed slab whose bit is set and whose arena is `home` (the
+    /// in a handed-out slab whose bit is set and whose arena is `home` (the
     /// arena load is skipped while only arena 0 exists), `None` for
     /// anything else. It never aborts; [`classify_free`] on the slow path
     /// repeats the checks and does. Every table read is bounds-free: the
-    /// class index comes from `slab_slot`, the descriptor stride from the
-    /// table, the bitmap word from a slot already known to be below
-    /// `nslots`.
+    /// class index comes from `slab_slot`, the bitmap word from a slot
+    /// already known to be below `nslots` in a slab below the watermark.
+    ///
+    /// The two loads that depend on the pointer are from dense structures
+    /// (design section 4, plan task 4f): the class bitmap word (one bit per
+    /// slot, so a 550 MiB heap of 1 KiB values is 70 KB of bitmap and stays
+    /// in L2) and, with several arenas, the group owner word (one `u16` per
+    /// line-sized group of slabs). Neither touches the slab descriptor,
+    /// which used to be one 64-byte line per slab and a cache miss per free
+    /// on a large heap, and both are lines only the owning arena's refills
+    /// and flushes write, because slabs are handed to arenas in groups
+    /// that own whole lines.
     ///
     /// The geometry comes from [`Regions::slab_slot`] (`class_base[c]`,
     /// `lg_region`, `CLASSES[c]`), not from a copy in `tables[c]`: those
@@ -814,10 +823,10 @@ impl Shared {
     /// resident under any workload) and `class_base[c]` is one indexed
     /// load, whereas the per-class table line is one of 52 and reached
     /// through a multiply. With the geometry on the table line the chain
-    /// class -> `madd` -> table load -> slab -> descriptor -> bitmap word
-    /// was the whole of `free`'s critical path; here the table's
-    /// `desc_stride`/`desc_base`/`committed_slabs` loads run alongside the
-    /// slot arithmetic and are needed only for the descriptor address
+    /// class -> `madd` -> table load -> slab -> bitmap word would be the
+    /// whole of `free`'s critical path; here the table's `bits_base`,
+    /// `slab_bits` and `committed_slabs` loads run alongside the slot
+    /// arithmetic and are needed only for the word address
     /// (`bench/results/2026-09-16-aarch64-arenas-geometry.md`).
     ///
     /// [`classify_free`]: Shared::classify_free
@@ -828,9 +837,12 @@ impl Shared {
         let (class, slab, slot) = self.regions.slab_slot(p as usize)?;
         // SAFETY: `slab_slot` only returns `class < NCLASSES`.
         let table = unsafe { self.tables.get_unchecked(class) };
-        let desc = table.desc_if_committed(slab)?;
-        // SAFETY: `slab_slot` validated `slot < nslots`.
-        if !unsafe { desc.is_allocated_unchecked(slot) } {
+        if !table.is_handed_out(slab) {
+            return None;
+        }
+        // SAFETY: `slab` is below the watermark, `slab_slot` validated
+        // `slot < nslots`.
+        if !unsafe { table.is_set_unchecked(slab, slot) } {
             return None;
         }
         if self.multi_arena() {
@@ -841,7 +853,8 @@ impl Shared {
             // read stays here.
             // SAFETY: `h` is a live heap and `arena` a plain field.
             let home = unsafe { ptr::read_volatile(&raw const h.arena) };
-            if desc.arena() != home {
+            // SAFETY: `slab` is below the watermark.
+            if unsafe { table.owner_unchecked(slab) } != home {
                 return None;
             }
         }

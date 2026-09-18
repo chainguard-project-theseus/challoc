@@ -10,9 +10,19 @@
 //! lock that is taken only on slab transitions: selecting a slab for a
 //! refill, a slab filling up or emptying, a word going from full to
 //! non-full, purge, commit (which nests the table's commit lock inside).
-//! Claims and releases against a slab's bitmap happen outside the lock.
-//! Every slab belongs to the arena that committed it (`SlabDesc::arena`),
-//! and only that arena's state may claim from or release to it.
+//! Claims and releases against a slab's bits happen outside the lock.
+//!
+//! Slabs are handed to arenas in *groups* of consecutive slabs
+//! (`SlabTable::group`: the slabs whose bits fill one 64-byte line of the
+//! class bitmap, `Class::slabs_per_line`, or one page group if that is
+//! larger), lowest group first to whichever arena runs out of slabs next.
+//! A group's slabs are committed one at a time by their arena as it needs
+//! them (`ClassState::commit_next`), so an arena owns whole bitmap lines
+//! and whole descriptor lines: the `free` check of one arena's slot never
+//! reads a line another arena's refills and flushes write. Every slab
+//! belongs to the arena of its group (`SlabTable::owner`, a dense array of
+//! one `u16` per group, and `SlabDesc::arena`), and only that arena's state
+//! may claim from or release to it.
 //!
 //! Protocol. A refill takes the lock, picks the lowest partial slab (else
 //! the lowest empty, else the lowest purged, else commits the next slab),
@@ -33,14 +43,14 @@
 //! lock), so a concurrent release either is visible to that check or sets
 //! the bit afterwards.
 
-use crate::bitmap::TwoLevelBitmap;
+use crate::bitmap::{AtomicBitmap, TwoLevelBitmap};
 use crate::layout::{CLASSES, Class, Regions};
 use crate::lock::{Lock, PAD_ALIGN, Padded, RawLock};
 use crate::meta::Meta;
 use crate::purge::{self, Batch};
 use crate::slab::{DESC_ALIGN, SlabDesc, State, desc_stride};
 use crate::sys::Errno;
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
 /// Counters kept under the class lock. Slab counts only; `curregs` and
 /// byte totals are Phase 1 (`stats.rs`).
@@ -170,33 +180,28 @@ impl Set {
 
 struct TableInner {
     descs: Lazy,
-    /// Next slab number to commit (`high_water + 1` in the design).
+    /// The class bitmap (see [`SlabTable::bits`]).
+    bits: Lazy,
+    /// The group owner array (see [`SlabTable::owner`]).
+    owners: Lazy,
+    /// Next slab number not yet handed to any arena (`high_water + 1` in
+    /// the design, at group granularity).
     next_slab: usize,
     /// Guard slabs committed (never handed out).
     guards: usize,
 }
 
-/// What every arena's [`ClassState`] for one class shares (design 13.3:
-/// arenas are sets of class states over the *same* class regions): the
-/// region's geometry, the descriptor array and the commit watermark. Slab
-/// numbers go in address order to whichever arena commits next, so arenas
-/// interleave in the region and each descriptor records its owner; `free`
-/// reads that owner to route a slot back to a cache of its arena.
+/// Offset of class `class`'s descriptor array, bitmap and owner array
+/// inside their reservations.
 ///
-/// Layout: the fields before `inner` are written once by `new` (or, for
-/// `committed_slabs`, only when a slab is committed) and read by every
-/// `free`, while `inner` holds the commit lock. `repr(C)` keeps the
-/// read-mostly fields first and [`Padded`] starts `inner` on its own line.
-/// Offset of class `class`'s descriptor array inside its reservation.
-///
-/// The 52 descriptor tables are reserved back to back from the top of the
+/// The per-class tables are reserved back to back from the top of the
 /// metadata region, and each is a power of two of at least 1 MiB, so
 /// without this every table would start on a 1 MiB boundary and slab `k`'s
-/// descriptor of every class would map to the same L1 set (16 KiB per way)
-/// and the same L2 set (1 MiB per way). The `free` fast path loads one
-/// descriptor line per call, so that is a 52-way conflict on the hottest
-/// line it has. Three lines per class, and `gcd(3, 128) == 1`, so all 52
-/// classes land in distinct sets of both caches; a multiple of
+/// entry of every class would map to the same L1 set (16 KiB per way) and
+/// the same L2 set (1 MiB per way). The `free` fast path loads one bitmap
+/// word (and one owner word) per call, so that is a 52-way conflict on the
+/// hottest lines it has. Three lines per class, and `gcd(3, 128) == 1`, so
+/// all 52 classes land in distinct sets of both caches; a multiple of
 /// [`DESC_ALIGN`] keeps the descriptors aligned. The pre-arena tree got a
 /// similar spread by accident, from the set bitmaps reserved between one
 /// class's table and the next (`bench/results/2026-09-16-aarch64-arenas-geometry.md`).
@@ -205,16 +210,54 @@ pub const fn desc_stagger(class: usize) -> usize {
     class * 3 * PAD_ALIGN
 }
 
+/// What every arena's [`ClassState`] for one class shares (design 13.3:
+/// arenas are sets of class states over the *same* class regions): the
+/// region's geometry, the descriptor array, the class bitmap, the group
+/// owner array and the hand-out watermark. Slab groups go in address order
+/// to whichever arena needs one next, so arenas interleave in the region at
+/// group granularity; `free` reads the owner array to route a slot back to
+/// a cache of its arena.
+///
+/// Layout: the fields before `inner` are written once by `new` (or, for
+/// `committed_slabs`, only when a group is handed out) and read by every
+/// `free`, while `inner` holds the commit lock. `repr(C)` keeps the
+/// read-mostly fields first and [`Padded`] starts `inner` on its own line.
+/// The fields the `free` fast path reads (`bits_base`, `owners_base`,
+/// `committed_slabs`, `slab_bits`, `lg_group`) sit in the first 32 bytes:
+/// one L1 line even on a core with 64-byte lines. The slot geometry is not
+/// copied here on purpose; `free` reads it from the dense
+/// `Regions::class_base` and `CLASSES` arrays (see `Shared::checked_slot`).
+///
 /// The stride of `[SlabTable; NCLASSES]` (384 bytes) is not a multiple of
 /// 512 for the reason given on [`ClassState`].
 #[repr(C, align(128))]
 pub struct SlabTable {
+    /// Start of the class bitmap: bit `slab * slab_bits + slot` is the
+    /// allocation bit of `slot` in `slab` (design section 4).
+    bits_base: usize,
+    /// Start of the owner array: one `AtomicU16` per group of
+    /// `1 << lg_group` slabs, the arena the group was handed to.
+    owners_base: usize,
+    /// Slabs handed to an arena so far (the hand-out watermark; a multiple
+    /// of the group size except at the end of the region). Their
+    /// descriptors, bitmap words and owner words exist, readable without
+    /// the lock so the `free` check can reject pointers into never-handed
+    /// slabs cleanly; a slab below it may still be uncommitted (its arena
+    /// has not reached it yet), in which case its bits are clear and its
+    /// descriptor is `Fresh`.
+    committed_slabs: AtomicUsize,
+    /// `Class::slab_bits`, kept here so the fast path reads it with the
+    /// table line.
+    slab_bits: u16,
     class: u16,
-    /// Every `guard_interval`-th slab is a guard slab; 0 disables guards.
+    /// `log2(group)`.
+    lg_group: u8,
+    _pad: [u8; 3],
+    /// Every `guard_interval`-th page group is a guard group; 0 disables
+    /// guards.
     guard_interval: u32,
     lg_page: u32,
-    /// `desc_stride(class)`, kept here so the `free` fast path reads it
-    /// with one load instead of `class` and then the table.
+    /// `desc_stride(class)`.
     desc_stride: u32,
     /// `max(1, page / slab_size)`, a power of two. Slabs are committed,
     /// guarded and purged in page-sized groups, so on a kernel whose page is
@@ -223,28 +266,22 @@ pub struct SlabTable {
     /// is, is one guard region when it is a guard group, and is purged only
     /// when every slab in it is idle and owned by the purging arena.
     slabs_per_page: u32,
+    /// Slabs handed to an arena at a time: `max(slabs_per_line,
+    /// slabs_per_page)`, a power of two, so a group is whole bitmap lines
+    /// and whole page groups.
+    group: u32,
     /// Start of this class's region.
     base: usize,
     /// Number of slabs in the region.
     nslabs: usize,
     /// Start of the descriptor array.
     desc_base: usize,
-    /// Slabs with a committed descriptor, readable without the lock so the
-    /// `free` check can reject pointers into never-committed slabs cleanly.
-    ///
-    /// The three fields the `free` fast path reads (`desc_stride`,
-    /// `desc_base`, `committed_slabs`) sit in the first 64 bytes: one L1
-    /// line even on a core with 64-byte lines. The slot geometry is not
-    /// copied here on purpose; `free` reads it from the dense
-    /// `Regions::class_base` and `CLASSES` arrays (see
-    /// `Shared::checked_slot`).
-    committed_slabs: AtomicUsize,
     inner: Padded<Lock<TableInner>>,
     _tail: [u8; PAD_ALIGN],
 }
 
 const _: () = assert!(core::mem::offset_of!(SlabTable, inner) == PAD_ALIGN);
-const _: () = assert!(core::mem::offset_of!(SlabTable, committed_slabs) + 8 <= PAD_ALIGN);
+const _: () = assert!(core::mem::offset_of!(SlabTable, lg_group) < 32);
 const _: () = assert!(core::mem::size_of::<SlabTable>() % PAD_ALIGN == 0);
 const _: () = assert!(core::mem::size_of::<SlabTable>() % 512 != 0);
 
@@ -257,6 +294,10 @@ struct Inner {
     empty: Set,
     purged: Set,
     stats: ClassStats,
+    /// This arena's current slab group: `group_next..group_end` are handed
+    /// to it and not yet committed (see [`ClassState::commit_next`]).
+    group_next: usize,
+    group_end: usize,
 }
 
 // SAFETY: `TwoLevelBitmap` holds a raw pointer into the metadata region,
@@ -399,32 +440,44 @@ impl Inner {
 }
 
 impl SlabTable {
-    /// Create the table for `class`. Reserves the descriptor array in
-    /// `meta`; returns `None` if the metadata region cannot hold it.
-    /// `guard_interval` of `N > 0` makes every `N`-th slab a guard slab;
-    /// callers must pass 0 when `MADV_GUARD_INSTALL` is unavailable, since
-    /// a `PROT_NONE` slab would split the region into one VMA per guard
-    /// (design: Phase 2 task 1).
+    /// Create the table for `class`. Reserves the descriptor array, the
+    /// class bitmap and the owner array in `meta`; returns `None` if the
+    /// metadata region cannot hold them. `guard_interval` of `N > 0` makes
+    /// every `N`-th page group a guard group; callers must pass 0 when
+    /// `MADV_GUARD_INSTALL` is unavailable, since a `PROT_NONE` slab would
+    /// split the region into one VMA per guard (design: Phase 2 task 1).
     pub fn new(meta: &Meta, regions: &Regions, class: usize, guard_interval: u32) -> Option<SlabTable> {
         assert!(class < CLASSES.len(), "class: index out of range");
         assert!(guard_interval != 1, "class: a guard interval of 1 leaves no slabs to allocate");
+        let cls = &CLASSES[class];
         let page = regions.page_size();
         let nslabs = regions.nslabs(class);
         let stagger = desc_stagger(class);
-        let descs = Lazy::reserve(meta, stagger + nslabs * desc_stride(class), DESC_ALIGN.max(page))?;
-        let slabs_per_page = (page / CLASSES[class].slab_size()).max(1);
+        let align = DESC_ALIGN.max(page);
+        let slabs_per_page = (page / cls.slab_size()).max(1);
         assert!(slabs_per_page.is_power_of_two() && nslabs % slabs_per_page == 0);
+        let group = cls.slabs_per_line().max(slabs_per_page);
+        assert!(group.is_power_of_two() && group % slabs_per_page == 0);
+        let descs = Lazy::reserve(meta, stagger + nslabs * desc_stride(class), align)?;
+        let bits = Lazy::reserve(meta, stagger + (nslabs * cls.slab_bits()).div_ceil(8), align)?;
+        let owners = Lazy::reserve(meta, stagger + nslabs.div_ceil(group) * 2, align)?;
         Some(SlabTable {
+            bits_base: bits.base + stagger,
+            owners_base: owners.base + stagger,
+            committed_slabs: AtomicUsize::new(0),
+            slab_bits: cls.slab_bits() as u16,
             class: class as u16,
+            lg_group: group.trailing_zeros() as u8,
+            _pad: [0; 3],
             guard_interval,
             lg_page: regions.lg_page,
             desc_stride: desc_stride(class) as u32,
             slabs_per_page: slabs_per_page as u32,
+            group: group as u32,
             base: regions.class_base[class],
             nslabs,
             desc_base: descs.base + stagger,
-            committed_slabs: AtomicUsize::new(0),
-            inner: Padded(Lock::new(TableInner { descs, next_slab: 0, guards: 0 })),
+            inner: Padded(Lock::new(TableInner { descs, bits, owners, next_slab: 0, guards: 0 })),
             _tail: [0; PAD_ALIGN],
         })
     }
@@ -467,7 +520,14 @@ impl SlabTable {
         self.slabs_per_page as usize
     }
 
-    /// Number of slabs (including guard slabs) whose descriptors exist.
+    /// Slabs handed to an arena at a time (see the field).
+    #[inline]
+    pub fn group(&self) -> usize {
+        self.group as usize
+    }
+
+    /// Number of slabs (including guard slabs) handed to an arena: their
+    /// descriptors, bits and owner words exist (see the field).
     #[inline]
     pub fn committed_slabs(&self) -> usize {
         self.committed_slabs.load(Ordering::Acquire)
@@ -478,55 +538,146 @@ impl SlabTable {
         self.inner.lock().guards
     }
 
-    /// Descriptor of a committed slab. Aborts for a slab that was never
-    /// committed rather than faulting on its `PROT_NONE` descriptor page.
+    /// Descriptor of a handed-out slab. Aborts for a slab that was never
+    /// handed out rather than faulting on its `PROT_NONE` descriptor page.
     #[inline]
     pub fn desc(&self, slab: usize) -> &SlabDesc {
         if slab >= self.committed_slabs() {
             never_committed(self.class as usize, slab);
         }
-        // SAFETY: `slab` is below the acquire-loaded commit count.
+        // SAFETY: `slab` is below the acquire-loaded watermark.
         unsafe { self.desc_unchecked(slab) }
     }
 
-    /// Descriptor of `slab` if it is committed, `None` otherwise. This is
-    /// the `free` fast path's form of [`desc`]: no abort, and the stride
-    /// comes from the table itself rather than the class table.
+    /// Descriptor of `slab` if it has been handed out, `None` otherwise:
+    /// no abort, for queries.
     ///
-    /// The commit count is loaded `Relaxed`. For a pointer that really is
+    /// The watermark is loaded `Relaxed`. For a pointer that really is
     /// an allocated slot the program itself ordered the free after the
     /// allocation (the same thread, or a hand-off through its own
     /// synchronisation), and the allocation was claimed under the class lock
-    /// after the descriptor was committed and initialised, so that chain of
-    /// happens-before already makes both the counter and the descriptor
-    /// visible here; the acquire added nothing. For any other pointer the
-    /// only stale values this load can observe are a smaller count (`None`,
-    /// and the slow path repeats the check with acquire) or the descriptor's
-    /// initial zero words (`is_allocated_unchecked` says no); it can never
-    /// see a count above what has been committed, so the descriptor page is
-    /// always mapped.
+    /// after the group was handed out and initialised, so that chain of
+    /// happens-before already makes the watermark, the descriptor, the bits
+    /// and the owner word visible here; the acquire added nothing. For any
+    /// other pointer the only stale values this load can observe are a
+    /// smaller watermark (`None`, and the slow path repeats the check with
+    /// acquire) or the tables' initial zero words (a clear bit); it can
+    /// never see a watermark above what has been handed out, so the pages
+    /// are always mapped. [`is_set_unchecked`] and [`owner_unchecked`]
+    /// rely on the same argument.
     ///
-    /// [`desc`]: SlabTable::desc
+    /// [`is_set_unchecked`]: SlabTable::is_set_unchecked
+    /// [`owner_unchecked`]: SlabTable::owner_unchecked
     #[inline(always)]
     pub fn desc_if_committed(&self, slab: usize) -> Option<&SlabDesc> {
         if slab >= self.committed_slabs.load(Ordering::Relaxed) {
             return None;
         }
-        // SAFETY: `slab` is below a value the commit count actually held.
+        // SAFETY: `slab` is below a value the watermark actually held.
         Some(unsafe { self.desc_unchecked(slab) })
     }
 
-    /// Descriptor of `slab` without a commit check.
+    /// Whether `slab` has been handed out, by a relaxed load of the
+    /// watermark (see [`desc_if_committed`] for why that is enough on the
+    /// `free` fast path).
+    ///
+    /// [`desc_if_committed`]: SlabTable::desc_if_committed
+    #[inline(always)]
+    pub fn is_handed_out(&self, slab: usize) -> bool {
+        slab < self.committed_slabs.load(Ordering::Relaxed)
+    }
+
+    /// Descriptor of `slab` without a watermark check.
     ///
     /// # Safety
     /// `slab` must be below a value `committed_slabs` has held: descriptors
     /// up to that count are committed and initialised (or zero, for guard
-    /// slabs) before the counter moves, and `desc_stride` is this class's
-    /// stride.
+    /// slabs) before the watermark moves.
     #[inline(always)]
     unsafe fn desc_unchecked(&self, slab: usize) -> &SlabDesc {
         // SAFETY: guaranteed by the caller.
         unsafe { &*((self.desc_base + slab * self.desc_stride as usize) as *const SlabDesc) }
+    }
+
+    /// The slot bits of a handed-out slab (design section 4). Aborts for a
+    /// slab that was never handed out.
+    #[inline]
+    pub fn bits(&self, slab: usize) -> AtomicBitmap<'_> {
+        if slab >= self.committed_slabs() {
+            never_committed(self.class as usize, slab);
+        }
+        // SAFETY: `slab` is below the acquire-loaded watermark.
+        unsafe { self.bits_unchecked(slab) }
+    }
+
+    /// # Safety
+    /// As [`desc_unchecked`](SlabTable::desc_unchecked).
+    #[inline]
+    unsafe fn bits_unchecked(&self, slab: usize) -> AtomicBitmap<'_> {
+        let nbits = self.slab_bits as usize;
+        let first = slab * nbits;
+        let word = (self.bits_base + (first / 64) * 8) as *const AtomicU64;
+        if nbits >= 64 {
+            debug_assert!(first % 64 == 0);
+            // SAFETY: the reservation holds `nslabs * slab_bits` bits and
+            // the group's words were committed before the watermark moved.
+            AtomicBitmap::from_words(unsafe { core::slice::from_raw_parts(word, nbits / 64) })
+        } else {
+            // SAFETY: as above, one word.
+            AtomicBitmap::sub_word(unsafe { &*word }, (first % 64) as u32, nbits)
+        }
+    }
+
+    /// The `free` check's bit (design section 4): whether `slot` of `slab`
+    /// is marked allocated (or cached). One relaxed load of the bitmap
+    /// word, no bounds checks.
+    ///
+    /// # Safety
+    /// `slab` must have been handed out ([`is_handed_out`]) and `slot` must
+    /// be below the class's `nslots`.
+    ///
+    /// [`is_handed_out`]: SlabTable::is_handed_out
+    #[inline(always)]
+    pub unsafe fn is_set_unchecked(&self, slab: usize, slot: usize) -> bool {
+        let bit = slab * self.slab_bits as usize + slot;
+        let word = (self.bits_base + (bit / 64) * 8) as *const AtomicU64;
+        // SAFETY: the caller guarantees the word is inside the handed-out
+        // part of the bitmap.
+        (unsafe { (*word).load(Ordering::Relaxed) } >> (bit % 64)) & 1 == 1
+    }
+
+    /// Whether `slot` of `slab` is marked allocated (or cached); `false`
+    /// for a slab that was never handed out. Never aborts.
+    #[inline]
+    pub fn is_allocated(&self, slab: usize, slot: usize) -> bool {
+        debug_assert!(slot < self.class().nslots());
+        // SAFETY: the watermark check, then a slot below `nslots`.
+        self.is_handed_out(slab) && unsafe { self.is_set_unchecked(slab, slot) }
+    }
+
+    /// The arena that owns `slab`'s group, without a watermark check.
+    ///
+    /// # Safety
+    /// `slab` must have been handed out ([`is_handed_out`]).
+    ///
+    /// [`is_handed_out`]: SlabTable::is_handed_out
+    #[inline(always)]
+    pub unsafe fn owner_unchecked(&self, slab: usize) -> u16 {
+        let word = (self.owners_base + (slab >> self.lg_group) * 2) as *const AtomicU16;
+        // SAFETY: the owner word of a handed-out group was committed and
+        // written before the watermark moved.
+        unsafe { (*word).load(Ordering::Relaxed) }
+    }
+
+    /// The arena that owns `slab`. Aborts for a slab that was never handed
+    /// out.
+    #[inline]
+    pub fn owner(&self, slab: usize) -> u16 {
+        if slab >= self.committed_slabs() {
+            never_committed(self.class as usize, slab);
+        }
+        // SAFETY: `slab` is below the acquire-loaded watermark.
+        unsafe { self.owner_unchecked(slab) }
     }
 
     #[inline]
@@ -560,63 +711,112 @@ impl SlabTable {
     #[inline]
     pub fn check(&self, p: *mut u8) -> u16 {
         let (slab, slot) = self.locate(p);
-        let desc = self.desc(slab);
-        desc.check(self.class(), slot, p as usize, self.class as usize, slab);
-        desc.arena()
+        self.check_located(slab, slot, p as usize)
     }
 
-    /// Commit the next non-guard slab (and any guard slabs before it) for
-    /// `arena` and initialise its descriptor. `ensure_sets` is called under
-    /// the commit lock with the slab number before anything changes, so the
-    /// arena can commit the set words the slab needs; if it fails nothing
-    /// has happened. `None` when the region or the metadata region is
-    /// exhausted or `mprotect` fails.
-    fn commit_next(
+    /// [`check`] for a pointer already located (`Regions::classify`):
+    /// aborts unless `slab` has been handed out and `slot`'s bit is set,
+    /// with the pointer and its location; returns the owning arena.
+    ///
+    /// [`check`]: SlabTable::check
+    #[inline]
+    pub fn check_located(&self, slab: usize, slot: usize, p: usize) -> u16 {
+        if slab >= self.committed_slabs() {
+            never_committed(self.class as usize, slab);
+        }
+        debug_assert!(slot < self.class().nslots());
+        // SAFETY: below the acquire-loaded watermark, slot below `nslots`.
+        if !unsafe { self.is_set_unchecked(slab, slot) } {
+            invalid_free(p, self.class as usize, slab, slot);
+        }
+        // SAFETY: as above.
+        unsafe { self.owner_unchecked(slab) }
+    }
+
+    /// Hand the next group of slabs to `arena` (design section 4):
+    /// commit their descriptors, bitmap words and owner word, initialise
+    /// the descriptors (`Fresh`, owned by `arena`; guard slabs stay zero)
+    /// and clear their bits, then publish the watermark. `ensure_sets` is
+    /// called under the commit lock with the group's last slab number
+    /// before anything changes, so the arena can commit the set words the
+    /// group needs; if it fails nothing has happened. Returns the group's
+    /// slab range, `None` when the region or the metadata region is
+    /// exhausted. The slabs themselves are committed one by one by
+    /// [`commit_slab`].
+    ///
+    /// [`commit_slab`]: SlabTable::commit_slab
+    fn take_group(
         &self,
         meta: &Meta,
         arena: u16,
         mut ensure_sets: impl FnMut(usize) -> Result<(), Errno>,
-    ) -> Option<usize> {
+    ) -> Option<(usize, usize)> {
+        let cls = self.class();
+        let page = 1usize << self.lg_page;
+        let class = self.class as usize;
+        let stagger = desc_stagger(class);
+        let mut g = self.inner.lock();
+        let s = g.next_slab;
+        if s >= self.nslabs {
+            return None;
+        }
+        let end = (s + self.group as usize).min(self.nslabs);
+        g.descs.ensure(meta, page, stagger + end * desc_stride(class)).ok()?;
+        g.bits.ensure(meta, page, stagger + (end * cls.slab_bits()).div_ceil(8)).ok()?;
+        g.owners.ensure(meta, page, stagger + ((end - 1) >> self.lg_group) * 2 + 2).ok()?;
+        ensure_sets(end - 1).ok()?;
+        for slab in s..end {
+            if self.is_guard_slab(slab) {
+                continue;
+            }
+            // SAFETY: the descriptor and bitmap pages for `slab` were
+            // committed above.
+            unsafe {
+                SlabDesc::at(self.desc_base, class, slab).init(arena);
+                self.bits_unchecked(slab).init(cls.nslots());
+            }
+        }
+        // SAFETY: the owner page for the group was committed above.
+        unsafe { &*((self.owners_base + (s >> self.lg_group) * 2) as *const AtomicU16) }
+            .store(arena, Ordering::Relaxed);
+        g.next_slab = end;
+        self.committed_slabs.store(end, Ordering::Release);
+        Some((s, end))
+    }
+
+    /// Commit slab `s` of a group handed to the caller's arena: make its
+    /// memory (or its whole page group, when the page is larger than the
+    /// slab and `s` starts one) read-write, or install the guard when `s`
+    /// is a guard slab. `Some(true)` for a slab ready to allocate from,
+    /// `Some(false)` for a guard slab, `None` when `mprotect` fails (the
+    /// slab stays uncommitted and may be retried).
+    fn commit_slab(&self, s: usize) -> Option<bool> {
         let cls = self.class();
         let page = 1usize << self.lg_page;
         let mut g = self.inner.lock();
-        loop {
-            let s = g.next_slab;
-            if s >= self.nslabs {
-                return None;
-            }
-            let class = self.class as usize;
-            g.descs.ensure(meta, page, desc_stagger(class) + (s + 1) * desc_stride(class)).ok()?;
-            ensure_sets(s).ok()?;
-            let addr = self.slab_addr(s);
-            // A slab smaller than a page is committed with its whole page
-            // group when the group's first slab comes up; `next_slab` is
-            // monotonic, so the later slabs of the group find it committed.
-            let spp = self.slabs_per_page as usize;
-            let len = cls.slab_size().max(page);
-            if s % spp == 0 {
-                os::commit(addr, len).ok()?;
-            }
-            if self.is_guard_slab(s) {
-                // Read-write so the VMA merges with its neighbours, with a
-                // guard region on the first page so a stray write past the
-                // previous slab faults. If the install fails, fall back to
-                // leaving the whole slab (or page group) `PROT_NONE`: a hard
-                // guard at the cost of a VMA split.
-                if s % spp == 0 && os::guard(addr, page).is_err() && os::decommit(addr, len).is_err() {
-                    panic!("class {}: cannot re-protect guard slab {s}", self.class);
-                }
-                g.next_slab = s + 1;
-                g.guards += 1;
-                self.committed_slabs.store(s + 1, Ordering::Release);
-                continue;
-            }
-            // SAFETY: the descriptor page for `s` was committed above.
-            unsafe { SlabDesc::at(self.desc_base, self.class as usize, s) }.init(cls, arena);
-            g.next_slab = s + 1;
-            self.committed_slabs.store(s + 1, Ordering::Release);
-            return Some(s);
+        let addr = self.slab_addr(s);
+        // A slab smaller than a page is committed with its whole page
+        // group when the group's first slab comes up; a group is whole
+        // page groups and the arena walks it in order, so the later slabs
+        // of the page group find it committed.
+        let spp = self.slabs_per_page as usize;
+        let len = cls.slab_size().max(page);
+        if s % spp == 0 {
+            os::commit(addr, len).ok()?;
         }
+        if self.is_guard_slab(s) {
+            // Read-write so the VMA merges with its neighbours, with a
+            // guard region on the first page so a stray write past the
+            // previous slab faults. If the install fails, fall back to
+            // leaving the whole slab (or page group) `PROT_NONE`: a hard
+            // guard at the cost of a VMA split.
+            if s % spp == 0 && os::guard(addr, page).is_err() && os::decommit(addr, len).is_err() {
+                panic!("class {}: cannot re-protect guard slab {s}", self.class);
+            }
+            g.guards += 1;
+            return Some(false);
+        }
+        Some(true)
     }
 }
 
@@ -635,7 +835,14 @@ impl ClassState {
             arena,
             table,
             oldest_empty: AtomicU64::new(0),
-            inner: Padded(Lock::new(Inner { partial, empty, purged, stats: ClassStats::default() })),
+            inner: Padded(Lock::new(Inner {
+                partial,
+                empty,
+                purged,
+                stats: ClassStats::default(),
+                group_next: 0,
+                group_end: 0,
+            })),
             claimed: AtomicU64::new(0),
             refilled: AtomicU64::new(0),
             released: AtomicU64::new(0),
@@ -743,7 +950,7 @@ impl ClassState {
             for pick in &picks[..np] {
                 let slab = pick.slab as usize;
                 let want = pick.n as usize;
-                let bm = self.desc(slab).bitmap(cls);
+                let bm = self.table().bits(slab);
                 let words = bm.words();
                 let mut k = 0;
                 let mut word = 0;
@@ -758,8 +965,7 @@ impl ClassState {
                         empty_passes += 1;
                         if empty_passes == MAX_EMPTY_PASSES {
                             let d = self.desc(slab);
-                            let set: usize = (0..words).map(|w| bm.load(w).count_ones() as usize).sum();
-                            reservation_unmet(self.class as usize, slab, want, k, d.live(), set - (words * 64 - cls.nslots()), cls.nslots());
+                            reservation_unmet(self.class as usize, slab, want, k, d.live(), bm.allocated(cls.nslots()), cls.nslots());
                         }
                         word = 0;
                         continue;
@@ -809,7 +1015,7 @@ impl ClassState {
             }
             let desc = self.desc(s);
             if desc.live() >= cls.nslots() {
-                if desc.state() == State::Active && desc.bitmap(cls).is_full() {
+                if desc.state() == State::Active && self.table().bits(s).is_full() {
                     g.clear_partial(s);
                 }
             } else {
@@ -865,18 +1071,32 @@ impl ClassState {
         *remaining -= n;
     }
 
-    /// Commit the next slab of the class region for this arena (see
-    /// [`SlabTable::commit_next`]), committing this arena's set words for
-    /// it first. The commit lock nests inside the class lock.
+    /// Commit the next slab of this arena's current group, taking the
+    /// next group of the class region when the current one is used up
+    /// ([`SlabTable::take_group`], which commits this arena's set words for
+    /// the whole group first). Guard slabs inside the group are committed
+    /// as guards and skipped. The commit lock nests inside the class lock.
     fn commit_next(&self, g: &mut Inner, meta: &Meta) -> Option<usize> {
-        let page = 1usize << self.table().lg_page;
-        let s = self.table().commit_next(meta, self.arena, |s| {
-            g.partial.ensure(meta, page, s)?;
-            g.empty.ensure(meta, page, s)?;
-            g.purged.ensure(meta, page, s)
-        })?;
-        g.stats.committed += 1;
-        Some(s)
+        let table = self.table();
+        let page = 1usize << table.lg_page;
+        loop {
+            if g.group_next >= g.group_end {
+                let (start, end) = table.take_group(meta, self.arena, |s| {
+                    g.partial.ensure(meta, page, s)?;
+                    g.empty.ensure(meta, page, s)?;
+                    g.purged.ensure(meta, page, s)
+                })?;
+                g.group_next = start;
+                g.group_end = end;
+            }
+            let s = g.group_next;
+            let usable = table.commit_slab(s)?;
+            g.group_next = s + 1;
+            if usable {
+                g.stats.committed += 1;
+                return Some(s);
+            }
+        }
     }
 
     /// `live` reached zero: make the slab `Empty` unless a refill has
@@ -917,7 +1137,7 @@ impl ClassState {
         if n != ptrs.len() {
             let p = ptrs[n];
             let (slab, _) = self.locate(p);
-            wrong_arena(p as usize, self.class as usize, self.desc(slab).arena(), self.arena);
+            wrong_arena(p as usize, self.class as usize, self.table().owner(slab), self.arena);
         }
     }
 
@@ -928,7 +1148,8 @@ impl ClassState {
     /// arena; the caller routes the rest there (`Heap::flush`: a home cache
     /// takes sized frees of any arena, design 6.3). Every bit cleared is
     /// checked (an already-clear bit is a double or invalid free and aborts),
-    /// which is where the sized path's deferred check lands.
+    /// which is where the sized path's deferred check lands. The owner is
+    /// read from the table's dense owner array, once per slab switch.
     ///
     /// [`release`]: ClassState::release
     pub fn release_owned(&self, ptrs: &[*mut u8]) -> usize {
@@ -951,7 +1172,7 @@ impl ClassState {
                         self.dec_live(cur_slab, count);
                         count = 0;
                     }
-                    if self.desc(slab).arena() != self.arena {
+                    if self.table().owner(slab) != self.arena {
                         end = i;
                         break;
                     }
@@ -982,14 +1203,13 @@ impl ClassState {
     /// Release the slots of `mask` in `word` of `slab`. The `live` update
     /// is separate so a batch can do one per slab.
     fn release_word(&self, slab: usize, word: usize, mask: u64, reopen: &mut Reopen) {
-        let desc = self.desc(slab);
-        let prev = desc.bitmap(self.class()).release(word, mask);
+        let (prev, was_full) = self.table().bits(slab).release(word, mask);
         if prev & mask != mask {
             let bad = (mask & !prev).trailing_zeros() as usize;
             let slot = word * 64 + bad;
             double_free(self.slot_ptr(slab, slot) as usize, self.class as usize, slab, slot);
         }
-        if prev == !0 && !reopen.push(slab) {
+        if was_full && !reopen.push(slab) {
             self.reopen(reopen);
             reopen.push(slab);
         }
@@ -1220,6 +1440,16 @@ impl ClassState {
 #[inline(never)]
 fn never_committed(class: usize, slab: usize) -> ! {
     panic!("invalid free: class {class} slab {slab} was never allocated")
+}
+
+/// The `free` check's abort (design section 4): the slot's bit is clear,
+/// which is an invalid free or a stale double free.
+#[cold]
+#[inline(never)]
+fn invalid_free(p: usize, class: usize, slab: usize, slot: usize) -> ! {
+    panic!(
+        "invalid or double free of {p:#x} (class {class} slab {slab} slot {slot}): slot is not allocated"
+    )
 }
 
 #[cold]
@@ -1456,34 +1686,46 @@ mod tests {
         assert_eq!(cs.purge_empty(u64::MAX), 0);
         assert_eq!(cs.desc(0).state(), State::Empty);
         assert_eq!(cs.oldest_empty(), cs.desc(0).dirty_at());
-        // Slab 5 goes to another arena; arena 0 then reuses its Empty slab 0
-        // and commits 6 and 7 (a refill takes Empty slabs before Purged
-        // ones and Purged ones before committing).
+        // Another arena gets the next group (slabs 128..256: groups are
+        // whole page groups, so a page group never straddles arenas);
+        // 128..132 is a guard group (the 33rd page group), so its first
+        // usable slab is 132. Arena 0 then reuses its Empty slab 0 and
+        // commits 5 and 6 (a refill takes Empty slabs before Purged ones
+        // and Purged ones before committing).
         let other = env.class_in_arena(&cs, 1);
         let (q, _) = env.claim(&other, n);
-        assert_eq!(q[0] as usize, env.regions.slab_addr(c, 5));
+        assert_eq!(cs.table().group(), 128);
+        assert!(cs.is_guard_slab(128) && !cs.is_guard_slab(132));
+        assert_eq!(q[0] as usize, env.regions.slab_addr(c, 132));
+        assert_eq!(cs.table().owner(128), 1);
+        assert_eq!(cs.table().owner(5), 0);
+        assert_eq!(cs.table().committed_slabs(), 256);
+        assert_eq!(cs.table().guards(), 4);
         let (r, _) = env.claim(&cs, 3 * n);
         assert_eq!(r.len(), 3 * n);
-        for s in [0, 6, 7] {
+        for s in [0, 5, 6] {
             assert_eq!(in_slab(&r, s).len(), n, "slab {s}");
             assert_eq!(cs.desc(s).state(), State::Active, "slab {s}");
             assert_eq!(cs.desc(s).arena(), 0);
         }
-        assert_eq!(cs.desc(5).arena(), 1);
-        assert_eq!(cs.table().committed_slabs(), 8);
-        // (`committed` is per arena: 7 of the 8 slabs are arena 0's.)
-        // Group 4..8 with 4, 6, 7 Empty: slab 5 belongs to arena 1, so
-        // neither arena purges the group, even once slab 5 is Empty too.
+        assert_eq!(cs.desc(132).arena(), 1);
+        // Slab 7 was committed with its page group (by slab 4) and handed
+        // to arena 0 with the group, but no refill has used it: Fresh.
+        assert_eq!(cs.desc(7).state(), State::Fresh);
+        assert_eq!(cs.stats(), ClassStats { committed: 7, guards: 4, ..Default::default() });
+        // Page group 4..8 with 4, 5, 6 Empty and 7 Fresh is idle, so it is
+        // discarded as a whole; 7 stays Fresh (nothing was written to it).
         cs.release(&p[4 * n..]);
+        cs.release(&in_slab(&r, 5));
         cs.release(&in_slab(&r, 6));
-        cs.release(&in_slab(&r, 7));
-        assert_eq!(cs.stats(), ClassStats { committed: 7, empty: 3, ..Default::default() });
-        assert_eq!(cs.purge_empty(u64::MAX), 0);
-        other.release(&q);
-        assert_eq!(other.desc(5).state(), State::Empty);
-        assert_eq!(cs.purge_empty(u64::MAX), 0);
+        assert_eq!(cs.stats(), ClassStats { committed: 7, guards: 4, empty: 3, ..Default::default() });
         assert_eq!(other.purge_empty(u64::MAX), 0);
-        assert_eq!(cs.stats(), ClassStats { committed: 7, empty: 3, ..Default::default() });
+        assert_eq!(cs.purge_empty(u64::MAX), 3);
+        for s in 4..7 {
+            assert_eq!(cs.desc(s).state(), State::Purged, "slab {s}");
+        }
+        assert_eq!(cs.desc(7).state(), State::Fresh);
+        assert_eq!(cs.stats(), ClassStats { committed: 7, guards: 4, purged: 3, ..Default::default() });
         // With 0..4 Empty, purging with a cutoff at the oldest slab's
         // `dirty_at` takes the whole group, a slab released later (younger,
         // whenever the coarse clock has moved on) included.
@@ -1496,12 +1738,10 @@ mod tests {
             assert_eq!(cs.desc(s).state(), State::Purged, "slab {s}");
             assert_eq!(cs.desc(s).dirty_at(), 0);
         }
-        assert_eq!(cs.stats(), ClassStats { committed: 7, purged: 4, empty: 3, ..Default::default() });
-        // Purged neighbours do not block a purge: once the Empty slabs are
-        // taken, a claim reuses Purged slab 0 (zero), and releasing it
-        // purges it alone inside its Purged group.
-        let (e, _) = env.claim(&cs, 3 * n);
-        assert_eq!(e.len(), 3 * n);
+        assert_eq!(cs.stats(), ClassStats { committed: 7, guards: 4, purged: 7, ..Default::default() });
+        // Purged neighbours do not block a purge: a claim reuses Purged
+        // slab 0 (zero), and releasing it purges it alone inside its
+        // Purged group.
         let (z, claim) = env.claim(&cs, 3);
         assert_eq!(claim, Claim { n: 3, zeroed: true });
         assert_eq!(z[0] as usize, base);
@@ -1509,18 +1749,153 @@ mod tests {
         assert_eq!(cs.desc(0).state(), State::Empty);
         assert_eq!(cs.purge_empty(u64::MAX), 1);
         assert_eq!(cs.desc(0).state(), State::Purged);
-        assert_eq!(cs.stats(), ClassStats { committed: 7, purged: 4, ..Default::default() });
-        // Past the guard group: the Purged slabs go first, then the next
-        // commit skips the guard group 8..12 and lands on slab 12.
-        let (g, _) = env.claim(&cs, 4 * n + 1);
-        assert_eq!(g.len(), 4 * n + 1);
+        assert_eq!(cs.stats(), ClassStats { committed: 7, guards: 4, purged: 7, ..Default::default() });
+        // Past the guard group: the Purged slabs go first, then slab 7 is
+        // committed, then the next commit skips the guard group 8..12 and
+        // lands on slab 12.
+        let (g, _) = env.claim(&cs, 8 * n + 1);
+        assert_eq!(g.len(), 8 * n + 1);
+        assert_eq!(in_slab(&g, 7).len(), n);
         assert_eq!(in_slab(&g, 12).len(), 1);
-        assert_eq!(cs.table().guards(), 4);
-        assert_eq!(cs.table().committed_slabs(), 13);
+        assert_eq!(cs.table().guards(), 8);
+        assert_eq!(cs.stats().committed, 9);
+        assert_eq!(cs.table().committed_slabs(), 256);
         for s in 8..12 {
             assert!(cs.is_guard_slab(s));
+            assert_eq!(cs.desc(s).state(), State::Fresh);
+            assert_eq!(cs.desc(s).live(), 0);
         }
-        drop(e);
+        // The other arena's group is untouched by all of this.
+        assert_eq!(other.desc(132).state(), State::Active);
+        assert_eq!(other.desc(132).live(), n);
+        assert_eq!(other.stats(), ClassStats { committed: 1, guards: 8, ..Default::default() });
+    }
+
+    /// Slabs go to arenas in line-sized groups (design section 4): with 4
+    /// slots per slab the bitmap line holds 128 slabs, so the second arena
+    /// starts at slab 128 and the bits of neighbouring slabs share a word
+    /// without disturbing each other. A slab handed out with the group but
+    /// not yet committed has a `Fresh` descriptor, clear bits and the
+    /// group's owner. The region has 8 groups: a ninth arena gets nothing.
+    #[test]
+    fn slabs_are_handed_out_in_line_sized_groups() {
+        let env = Env::new();
+        let c = min_slab_class();
+        let cls = &CLASSES[c];
+        assert_eq!(cls.nslots(), 4);
+        assert_eq!(cls.slab_bits(), 4);
+        assert_eq!(cls.slabs_per_line(), 128);
+        let cs = env.class(c, 0);
+        let t = cs.table();
+        assert_eq!(t.group(), 128);
+        assert_eq!(t.nslabs(), 1024);
+        assert_eq!(t.committed_slabs(), 0);
+        let (p, claim) = env.claim(&cs, 4);
+        assert_eq!(claim, Claim { n: 4, zeroed: true });
+        assert_eq!(p[0] as usize, env.regions.slab_addr(c, 0));
+        assert_eq!(t.committed_slabs(), 128);
+        assert_eq!(cs.stats().committed, 1);
+        assert!(t.bits(0).is_full());
+        for s in 1..128 {
+            assert_eq!(t.owner(s), 0, "slab {s}");
+            assert_eq!(t.desc(s).state(), State::Fresh, "slab {s}");
+            assert_eq!(t.desc(s).arena(), 0, "slab {s}");
+            assert_eq!(t.desc(s).live(), 0, "slab {s}");
+            assert!(!t.bits(s).is_full(), "slab {s}");
+            for slot in 0..4 {
+                assert!(!t.is_allocated(s, slot), "slab {s} slot {slot}");
+            }
+        }
+        assert!(!t.is_allocated(128, 0));
+        // The second arena's first slab is the second group's.
+        let cs1 = env.class_in_arena(&cs, 1);
+        let (q, claim) = env.claim(&cs1, 1);
+        assert_eq!(claim, Claim { n: 1, zeroed: true });
+        assert_eq!(q[0] as usize, env.regions.slab_addr(c, 128));
+        assert_eq!(t.committed_slabs(), 256);
+        assert_eq!(t.owner(128), 1);
+        assert_eq!(t.owner(255), 1);
+        assert_eq!(t.owner(127), 0);
+        assert_eq!(t.check(q[0]), 1);
+        assert_eq!(t.check(p[0]), 0);
+        // Arena 0 keeps filling its own group: slab 1 next, in the same
+        // bitmap word as slab 0 (16 slabs of 4 bits per word).
+        let (r, _) = env.claim(&cs, 1);
+        assert_eq!(r[0] as usize, env.regions.slab_addr(c, 1));
+        assert_eq!(t.bits(1).allocated(4), 1);
+        assert!(t.bits(0).is_full());
+        assert_eq!(t.bits(0).allocated(4), 4);
+        cs.release(&p[1..3]);
+        assert_eq!(t.bits(0).allocated(4), 2);
+        assert_eq!(t.bits(1).allocated(4), 1);
+        assert!(t.is_allocated(0, 0) && !t.is_allocated(0, 1) && !t.is_allocated(0, 2) && t.is_allocated(0, 3));
+        assert!(t.is_allocated(1, 0));
+        // Eight groups in the region: arenas 2..8 take the rest, a ninth
+        // arena finds nothing to commit and reports the shortfall.
+        for a in 2..8u16 {
+            let csa = env.class_in_arena(&cs, a);
+            let (pa, claim) = env.claim(&csa, 1);
+            assert_eq!(claim.n, 1, "arena {a}");
+            assert_eq!(pa[0] as usize, env.regions.slab_addr(c, 128 * a as usize), "arena {a}");
+        }
+        assert_eq!(t.committed_slabs(), 1024);
+        let cs8 = env.class_in_arena(&cs, 8);
+        let (_, claim) = env.claim(&cs8, 1);
+        assert_eq!(claim, Claim { n: 0, zeroed: false });
+        // Arena 0 still has 126 uncommitted slabs of its own group, plus
+        // the 2 + 3 free slots of slabs 0 and 1.
+        let (more, claim) = env.claim(&cs, 126 * 4 + 5);
+        assert_eq!(claim.n, 126 * 4 + 5);
+        assert_eq!(more[0] as usize, env.regions.slot_addr(c, 0, 1));
+        assert_eq!(cs.locate(more[more.len() - 1]).0, 127);
+        assert_eq!(cs.stats().committed, 128);
+        let (_, claim) = env.claim(&cs, 1);
+        assert_eq!(claim, Claim { n: 0, zeroed: false });
+    }
+
+    /// A free into a slab handed to an arena but not yet committed is
+    /// rejected by its clear bit, at the same point as any invalid free.
+    #[test]
+    #[should_panic(expected = "invalid or double free of")]
+    fn check_of_handed_out_uncommitted_slab_aborts() {
+        let env = Env::new();
+        let c = min_slab_class();
+        let cs = env.class(c, 0);
+        env.claim(&cs, 1);
+        assert_eq!(cs.committed_slabs(), 128);
+        cs.check(env.regions.slab_addr(c, 5) as *mut u8);
+    }
+
+    /// Every class: a slab's bits are either whole words or one sub-word
+    /// range, neighbouring slabs never share bits, and a group's bits fill
+    /// whole lines.
+    #[test]
+    fn bitmap_geometry_for_every_class() {
+        let env = Env::new();
+        for c in 0..NCLASSES {
+            let cs = env.class(c, 0);
+            let cls = cs.class();
+            let t = cs.table();
+            let n = cls.nslots();
+            if t.nslabs() < 2 {
+                continue;
+            }
+            let (p, _) = env.claim(&cs, n + 1);
+            assert_eq!(p.len(), n + 1, "class {c}");
+            assert!(t.bits(0).is_full(), "class {c}");
+            assert_eq!(t.bits(0).allocated(n), n, "class {c}");
+            assert_eq!(t.bits(0).nbits(), cls.slab_bits(), "class {c}");
+            assert_eq!(t.bits(1).allocated(n), 1, "class {c}");
+            assert!(!t.bits(1).is_full(), "class {c}");
+            assert!(t.is_allocated(1, 0) && (n == 1 || !t.is_allocated(1, 1)), "class {c}");
+            let g = t.group();
+            assert!(g >= cls.slabs_per_line() && g % cls.slabs_per_line() == 0, "class {c}");
+            // Two slabs used: one group unless groups are single slabs.
+            assert_eq!(t.committed_slabs(), if g == 1 { 2 } else { g.min(t.nslabs()) }, "class {c}");
+            cs.release(&p);
+            assert_eq!(t.bits(0).allocated(n), 0, "class {c}");
+            assert_eq!(t.bits(1).allocated(n), 0, "class {c}");
+        }
     }
 
     #[test]
@@ -1564,7 +1939,7 @@ mod tests {
         assert_eq!(claim.n, n);
         let set: HashSet<usize> = all.iter().map(|&p| p as usize).collect();
         assert_eq!(set.len(), n);
-        assert!(cs.desc(0).bitmap(cs.class()).is_full());
+        assert!(cs.table().bits(0).is_full());
         // A whole fresh slab reserved by one plan leaves the partial set at
         // once; nothing in it could be released before the claim finished.
         assert!(!cs.is_partial(0));
@@ -1583,7 +1958,7 @@ mod tests {
         assert!(cs.is_partial(0));
         assert_eq!(cs.lowest_partial(), Some(0));
         assert_eq!(cs.desc(0).live(), n - 1);
-        assert!(!cs.desc(0).is_allocated(cs.class(), n / 2));
+        assert!(!cs.table().is_allocated(0, n / 2));
         let (again, claim) = env.claim(&cs, 2);
         assert_eq!(claim, Claim { n: 2, zeroed: false });
         assert_eq!(again[0], victim);
@@ -1601,7 +1976,7 @@ mod tests {
         let (a, _) = env.claim(&cs, n - 3);
         let (b, _) = env.claim(&cs, 3);
         assert_eq!(a.len() + b.len(), n);
-        assert!(cs.desc(0).bitmap(cs.class()).is_full());
+        assert!(cs.table().bits(0).is_full());
         assert!(cs.is_partial(0));
         assert_eq!(cs.stats().nonfull, 1);
         // The next plan notices, clears it and commits slab 1 in the same
@@ -1633,7 +2008,7 @@ mod tests {
         assert_eq!(claim, Claim { n: slabs * n, zeroed: true });
         for s in 0..slabs {
             assert_eq!(all[s * n] as usize, env.regions.slab_addr(c, s));
-            assert!(cs.desc(s).bitmap(cs.class()).is_full());
+            assert!(cs.table().bits(s).is_full());
             assert!(!cs.is_partial(s));
         }
         assert_eq!(cs.stats(), ClassStats { committed: slabs, nonfull: 0, ..Default::default() });
@@ -2087,9 +2462,8 @@ mod tests {
             for s in 0..cs.committed_slabs() {
                 let d = cs.desc(s);
                 total_live += d.live();
-                let bm = d.bitmap(cls);
-                let set_bits: usize = (0..bm.words()).map(|w| bm.load(w).count_ones() as usize).sum();
-                assert_eq!(set_bits - (bm.words() * 64 - cls.nslots()), d.live(), "slab {s}");
+                let bm = cs.table().bits(s);
+                assert_eq!(bm.allocated(cls.nslots()), d.live(), "slab {s}");
                 match d.state() {
                     State::Empty => {
                         assert_eq!(d.live(), 0);
@@ -2180,9 +2554,9 @@ mod tests {
             let d = cs.desc(s);
             assert_eq!(d.state(), State::Empty, "slab {s}");
             assert_eq!(d.live(), 0, "slab {s}");
-            assert!(!d.bitmap(cs.class()).is_full());
+            assert!(!cs.table().bits(s).is_full());
             for slot in 0..cs.class().nslots() {
-                assert!(!d.is_allocated(cs.class(), slot));
+                assert!(!cs.table().is_allocated(s, slot));
             }
         }
     }

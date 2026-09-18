@@ -2,13 +2,13 @@
 //!
 //! Two structures live here and both are pure logic, unit tested on the host.
 //!
-//! [`AtomicBitmap`] is the per-slab slot bitmap. It is a view over the
-//! `[AtomicU64]` words stored inline in a slab descriptor, has no owner, and
-//! is only ever touched with atomic read-modify-write operations. A set bit
-//! means "not available to a refill": the slot is live in the program or
-//! sitting in a thread cache. Padding bits past the last real slot are kept
-//! permanently set so that they can never be claimed and so that a full
-//! bitmap is simply one whose words are all ones.
+//! [`AtomicBitmap`] is one slab's view of its class's slot bitmap, a
+//! contiguous `[AtomicU64]` array in the metadata region (`class.rs`). It
+//! has no owner and is only ever touched with atomic read-modify-write
+//! operations. A set bit means "not available to a refill": the slot is
+//! live in the program or sitting in a thread cache. Padding bits past the
+//! last real slot are kept permanently set so that they can never be
+//! claimed and so that a full slab is simply one whose words are all ones.
 //!
 //! [`TwoLevelBitmap`] is the ordered set used for slab numbers (partial and
 //! empty sets per class) and for free pages in the huge region. It is not
@@ -35,62 +35,102 @@ pub const fn lowest_n_bits(mut m: u64, n: usize) -> u64 {
     m
 }
 
-/// Atomic slot bitmap over a slice of words (design section 4).
+/// One slab's slots in the class bitmap (design section 4).
 ///
-/// The view is `repr(transparent)` over `[AtomicU64]` so a descriptor's
-/// inline array can be reinterpreted without copying.
-#[repr(transparent)]
-pub struct AtomicBitmap {
-    words: [AtomicU64],
+/// The class bitmap is one contiguous array of `AtomicU64` per class, slab
+/// `s` owning bits `s * slab_bits .. (s + 1) * slab_bits`
+/// (`Class::slab_bits`, `nslots` padded so that this range is either a
+/// whole number of words or one range inside a single word). The view holds
+/// the slab's words, the position of slot 0 in the first word (`shift`,
+/// non-zero only for a sub-word slab) and the bits of each word that
+/// belong to the slab (`mask`, all ones for whole-word slabs). Slot numbers
+/// and the masks returned to callers are always in slab coordinates: bit
+/// `b` of word `w` is slot `w * 64 + b`.
+///
+/// A set bit means "not available to a refill": live in the program or in
+/// some thread's cache. The padding bits between `nslots` and `slab_bits`
+/// are kept permanently set so they can never be claimed and a full slab is
+/// one whose masked words are all ones. Bits outside `mask` belong to the
+/// neighbouring slabs of the same arena's group and are never touched.
+pub struct AtomicBitmap<'a> {
+    words: &'a [AtomicU64],
+    shift: u32,
+    mask: u64,
 }
 
-impl AtomicBitmap {
-    /// View `words` as a bitmap. Nothing is initialised; call [`init`] before
-    /// the first claim on a fresh descriptor.
+impl<'a> AtomicBitmap<'a> {
+    /// View `words` as the bitmap of a slab that owns them whole. Nothing is
+    /// initialised; call [`init`] before the first claim on a fresh slab.
     ///
     /// [`init`]: AtomicBitmap::init
     #[inline]
-    pub fn from_words(words: &[AtomicU64]) -> &AtomicBitmap {
-        // SAFETY: `AtomicBitmap` is `repr(transparent)` over `[AtomicU64]`,
-        // so the pointer metadata and layout are identical.
-        unsafe { &*(words as *const [AtomicU64] as *const AtomicBitmap) }
+    pub fn from_words(words: &'a [AtomicU64]) -> AtomicBitmap<'a> {
+        AtomicBitmap { words, shift: 0, mask: !0 }
     }
 
-    /// Number of 64-bit words in the view.
+    /// View bits `shift .. shift + nbits` of `word` as the bitmap of a slab
+    /// whose bits share that word with other slabs. `nbits` is the slab's
+    /// padded bit count (`Class::slab_bits`), below 64.
+    #[inline]
+    pub fn sub_word(word: &'a AtomicU64, shift: u32, nbits: usize) -> AtomicBitmap<'a> {
+        debug_assert!(nbits > 0 && nbits < 64 && shift as usize + nbits <= 64);
+        AtomicBitmap { words: core::slice::from_ref(word), shift, mask: ((1u64 << nbits) - 1) << shift }
+    }
+
+    /// Number of words in the view (1 for a sub-word slab).
     #[inline]
     pub fn words(&self) -> usize {
         self.words.len()
     }
 
-    /// Clear every bit for slots `0..nbits` and set the padding bits above
-    /// `nbits` in the last word so they can never be claimed. `nbits` must
-    /// fit the view and use its last word.
-    pub fn init(&self, nbits: usize) {
-        let n = self.words.len();
-        assert!(nbits <= n * 64 && nbits > (n - 1) * 64, "bitmap: nbits does not match word count");
-        for w in &self.words[..n - 1] {
-            w.store(0, Ordering::Relaxed);
-        }
-        let tail = nbits % 64;
-        let pad = if tail == 0 { 0 } else { !0u64 << tail };
-        self.words[n - 1].store(pad, Ordering::Relaxed);
+    /// Bits the slab owns, padding included.
+    #[inline]
+    pub fn nbits(&self) -> usize {
+        if self.mask == !0 { self.words.len() * 64 } else { self.mask.count_ones() as usize }
     }
 
-    /// Claim up to `n` clear bits from word `i`. Returns the mask of bits this
-    /// call actually claimed, which may be zero if the word was full or a
-    /// concurrent claimer won every bit we wanted.
+    /// Clear every bit for slots `0..nbits` and set the padding bits above
+    /// `nbits` (up to the view's `slab_bits`) so they can never be claimed.
+    /// `nbits` must be non-zero and fit the view. Atomic on a shared word,
+    /// so a neighbouring slab that is already active is not disturbed.
+    pub fn init(&self, nbits: usize) {
+        assert!(nbits > 0 && nbits <= self.nbits(), "bitmap: nbits does not match the view");
+        if self.mask == !0 {
+            for (i, w) in self.words.iter().enumerate() {
+                let lo = i * 64;
+                let pad = if nbits >= lo + 64 {
+                    0
+                } else if nbits <= lo {
+                    !0
+                } else {
+                    !0u64 << (nbits - lo)
+                };
+                w.store(pad, Ordering::Relaxed);
+            }
+        } else {
+            let pad = self.mask & !(((1u64 << nbits) - 1) << self.shift);
+            self.words[0].fetch_and(!self.mask, Ordering::Relaxed);
+            if pad != 0 {
+                self.words[0].fetch_or(pad, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Claim up to `n` clear bits from word `i`. Returns the mask of slots
+    /// this call actually claimed (slab coordinates), which may be zero if
+    /// the word was full or a concurrent claimer won every bit we wanted.
     #[inline]
     pub fn claim_word(&self, i: usize, n: usize) -> u64 {
         let w = &self.words[i];
         let cur = w.load(Ordering::Relaxed);
-        let want = lowest_n_bits(!cur, n);
+        let want = lowest_n_bits(!cur & self.mask, n);
         if want == 0 {
             return 0;
         }
         // Acquire pairs with the Release in `release`: the new owner's
         // accesses to the slot happen after the previous owner's.
         let prev = w.fetch_or(want, Ordering::Acquire);
-        want & !prev
+        (want & !prev) >> self.shift
     }
 
     /// Claim up to `n` bits from the lowest word that has a clear bit. Returns
@@ -123,31 +163,44 @@ impl AtomicBitmap {
         None
     }
 
-    /// Release the bits in `mask` of word `i`. Returns the word's previous
-    /// value; the caller must abort if `prev & mask != mask`, because a bit
-    /// that was already clear means a slot was released twice.
+    /// Release the slots in `mask` (slab coordinates) of word `i`. Returns
+    /// the slab's previous bits in that word and whether they were all set
+    /// (the slab's part of the word was full). The caller must abort if
+    /// `prev & mask != mask`: a bit that was already clear means a slot was
+    /// released twice.
     #[inline]
-    pub fn release(&self, i: usize, mask: u64) -> u64 {
-        self.words[i].fetch_and(!mask, Ordering::Release)
+    pub fn release(&self, i: usize, mask: u64) -> (u64, bool) {
+        let m = mask << self.shift;
+        debug_assert!(m & !self.mask == 0, "bitmap: release outside the slab");
+        let prev = self.words[i].fetch_and(!m, Ordering::Release);
+        ((prev & self.mask) >> self.shift, prev & self.mask == self.mask)
     }
 
-    /// Whether `bit` is set. This is the `free` check: a clear bit means an
-    /// invalid or double free. Never writes.
+    /// Whether slot `bit` is set. This is the `free` check: a clear bit
+    /// means an invalid or double free. Never writes.
     #[inline]
     pub fn is_set(&self, bit: usize) -> bool {
-        (self.words[bit / 64].load(Ordering::Relaxed) >> (bit % 64)) & 1 == 1
+        let b = bit + self.shift as usize;
+        (self.words[b / 64].load(Ordering::Relaxed) >> (b % 64)) & 1 == 1
     }
 
-    /// Current value of word `i`.
+    /// The slab's bits in word `i` (slab coordinates, padding included).
     #[inline]
     pub fn load(&self, i: usize) -> u64 {
-        self.words[i].load(Ordering::Relaxed)
+        (self.words[i].load(Ordering::Relaxed) & self.mask) >> self.shift
+    }
+
+    /// Set slot bits, padding excluded: the slab's allocated (or cached)
+    /// slots for a class with `nslots` real slots.
+    pub fn allocated(&self, nslots: usize) -> usize {
+        let set: usize = (0..self.words.len()).map(|w| self.load(w).count_ones() as usize).sum();
+        set - (self.nbits() - nslots)
     }
 
     /// Whether every bit, padding included, is set. A full slab leaves the
     /// partial set (design section 5).
     pub fn is_full(&self) -> bool {
-        self.words.iter().all(|w| w.load(Ordering::Relaxed) == !0)
+        self.words.iter().all(|w| w.load(Ordering::Relaxed) & self.mask == self.mask)
     }
 }
 
@@ -430,9 +483,12 @@ mod tests {
         assert_eq!((w, m), (2, 0b11));
         assert!(bm.claim(1).is_none());
         assert!(bm.is_full());
-        let prev = bm.release(2, 0b10);
+        let (prev, was_full) = bm.release(2, 0b10);
         assert_eq!(prev & 0b10, 0b10);
+        assert!(was_full);
         assert!(!bm.is_full());
+        assert!(!bm.release(2, 0b01).1);
+        assert_eq!(bm.claim(1), Some((2, 0b01)));
         assert_eq!(bm.claim(5), Some((2, 0b10)));
     }
 
@@ -455,9 +511,9 @@ mod tests {
         let bm = AtomicBitmap::from_words(&words);
         bm.init(64);
         bm.claim(3);
-        let prev = bm.release(0, 0b101);
+        let (prev, _) = bm.release(0, 0b101);
         assert_eq!(prev & 0b101, 0b101);
-        let prev = bm.release(0, 0b100);
+        let (prev, _) = bm.release(0, 0b100);
         assert_ne!(prev & 0b100, 0b100, "second release must be detectable");
         assert!(!bm.is_set(2));
         assert!(bm.is_set(1));
@@ -520,7 +576,7 @@ mod tests {
                             }
                         }
                         for (w, m) in masks {
-                            let prev = bm.release(w, m);
+                            let (prev, _) = bm.release(w, m);
                             assert_eq!(prev & m, m);
                         }
                     }
@@ -529,6 +585,119 @@ mod tests {
                     assert_eq!(bm.is_set(b), set, "nbits={nbits} bit {b}");
                 }
                 assert_eq!(bm.is_full(), model.iter().all(|b| *b));
+            }
+        }
+    }
+
+    /// Sub-word slabs: several slabs share one word, each view sees only
+    /// its own range, in slab coordinates, and never touches a neighbour.
+    #[test]
+    fn sub_word_views_are_independent() {
+        for nbits in [4usize, 8, 16, 32] {
+            let word = AtomicU64::new(0);
+            let nslots = nbits - nbits / 4; // some padding in every slab
+            let views: Vec<AtomicBitmap> =
+                (0..64 / nbits).map(|k| AtomicBitmap::sub_word(&word, (k * nbits) as u32, nbits)).collect();
+            for v in &views {
+                v.init(nslots);
+                assert_eq!(v.words(), 1);
+                assert_eq!(v.nbits(), nbits);
+                assert_eq!(v.allocated(nslots), 0);
+                assert!(!v.is_full());
+            }
+            // Padding bits set, slot bits clear, for every slab.
+            for (k, v) in views.iter().enumerate() {
+                for b in 0..nslots {
+                    assert!(!v.is_set(b), "nbits {nbits} slab {k} slot {b}");
+                }
+                assert_eq!(v.load(0), (!0u64 << nslots) & ((1u64 << nbits) - 1));
+            }
+            // Fill slab 1 only; its neighbours are untouched.
+            let v = &views[1];
+            let (w, m) = v.claim(64).unwrap();
+            assert_eq!((w, m), (0, (1u64 << nslots) - 1));
+            assert!(v.is_full());
+            assert!(v.claim(1).is_none());
+            assert_eq!(v.allocated(nslots), nslots);
+            for (k, o) in views.iter().enumerate() {
+                if k != 1 {
+                    assert!(!o.is_full(), "slab {k}");
+                    assert_eq!(o.allocated(nslots), 0, "slab {k}");
+                }
+            }
+            // Release one slot: the slab's part of the word was full.
+            let (prev, was_full) = v.release(0, 0b1);
+            assert_eq!(prev, (1u64 << nbits) - 1);
+            assert!(was_full);
+            assert!(!v.is_set(0) && v.is_set(1));
+            let (prev, was_full) = v.release(0, 0b10);
+            assert!(!was_full);
+            assert_eq!(prev & 0b10, 0b10);
+            assert_eq!(v.release(0, 0b10).0 & 0b10, 0, "double release must be detectable");
+            // Re-init of slab 1 leaves the others alone and clears it.
+            views[0].claim(3);
+            v.init(nslots);
+            assert_eq!(v.allocated(nslots), 0);
+            assert_eq!(views[0].allocated(nslots), 3);
+            let whole = word.load(Ordering::Relaxed);
+            for (k, o) in views.iter().enumerate() {
+                assert_eq!((whole >> (k * nbits)) & ((1u64 << nbits) - 1), o.load(0), "slab {k}");
+            }
+        }
+    }
+
+    /// Model check of a sub-word view against a `Vec<bool>`, like the
+    /// whole-word one, with live neighbours in the same word.
+    #[test]
+    fn sub_word_matches_model() {
+        let mut s = 0x1234_5678_9ABC_DEF0u64;
+        for nbits in [4usize, 8, 16, 32] {
+            let word = AtomicU64::new(0);
+            let shift = (xorshift(&mut s) as u32 % (64 / nbits as u32)) * nbits as u32;
+            let bm = AtomicBitmap::sub_word(&word, shift, nbits);
+            let nslots = nbits - 1;
+            bm.init(nslots);
+            // A neighbour claims some bits of the same word.
+            let other_shift = (shift + nbits as u32) % 64;
+            let other = AtomicBitmap::sub_word(&word, other_shift, nbits);
+            other.init(nslots);
+            other.claim(2);
+            let before = word.load(Ordering::Relaxed) & !bm.mask;
+            let mut model = vec![false; nslots];
+            for _ in 0..5000 {
+                if xorshift(&mut s) % 2 == 0 {
+                    let n = (xorshift(&mut s) % 6) as usize;
+                    match bm.claim(n) {
+                        Some((0, m)) => {
+                            assert!(n > 0 && m != 0 && m < 1 << nslots);
+                            let mut rest = m;
+                            while rest != 0 {
+                                let b = rest.trailing_zeros() as usize;
+                                rest &= rest - 1;
+                                assert!(!model[b]);
+                                model[b] = true;
+                            }
+                        }
+                        Some(_) => unreachable!(),
+                        None => assert!(n == 0 || model.iter().all(|b| *b)),
+                    }
+                } else {
+                    let set: Vec<usize> = (0..nslots).filter(|&b| model[b]).collect();
+                    if set.is_empty() {
+                        continue;
+                    }
+                    let b = set[xorshift(&mut s) as usize % set.len()];
+                    let (prev, was_full) = bm.release(0, 1 << b);
+                    assert_eq!(prev & (1 << b), 1 << b);
+                    assert_eq!(was_full, set.len() == nslots);
+                    model[b] = false;
+                }
+                for (b, &v) in model.iter().enumerate() {
+                    assert_eq!(bm.is_set(b), v);
+                }
+                assert_eq!(bm.is_full(), model.iter().all(|b| *b));
+                assert_eq!(bm.allocated(nslots), model.iter().filter(|b| **b).count());
+                assert_eq!(word.load(Ordering::Relaxed) & !bm.mask, before, "neighbour bits changed");
             }
         }
     }
@@ -584,7 +753,7 @@ mod tests {
                                 assert!(bm.is_set(bit));
                                 let prev = stamps[bit].swap(0, Ordering::AcqRel);
                                 assert_eq!(prev, id, "slot {bit} stamp changed under us");
-                                let prev = bm.release(bit / 64, 1 << (bit % 64));
+                                let (prev, _) = bm.release(bit / 64, 1 << (bit % 64));
                                 assert_ne!(prev & (1 << (bit % 64)), 0);
                             }
                         }

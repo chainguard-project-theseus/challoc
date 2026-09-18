@@ -143,18 +143,40 @@ above that. `nallocx` returns the class size.
 
 Every slab has a descriptor in the metadata region. Descriptors for class `c`
 form a dense array indexed by slab number, committed on demand as the region
-grows. Descriptor layout, per class stride rounded to a cache line multiple:
+grows. Descriptor layout, a fixed 16-byte header:
 
 ```
 struct SlabDesc {
     state:     AtomicU8,     // Fresh, Active, Empty, Purged
     arena:     u16,
-    _pad:      ...,
     live:      AtomicU32,    // slots currently marked allocated
     dirty_at:  AtomicU64,    // monotonic ns when it became Empty, 0 otherwise
-    bitmap:    [AtomicU64; nslots_c / 64],   // 1 = allocated or cached
 }
 ```
+
+The allocation bits are not in the descriptor. Each class has one contiguous
+*slot bitmap* in the metadata region, committed on demand like the
+descriptor array, in which slab `s` owns bits `s * slab_bits .. (s + 1) *
+slab_bits`. `slab_bits` is `nslots` padded to a power of two below 512 or a
+multiple of 512 from there (`Class::slab_bits`), so a slab's bits are either
+whole words or one range inside a word, never straddling a word, and a
+64-byte line holds a whole number of slabs. The bitmap is one bit per slot:
+a 550 MiB heap of 1 KiB values is 70 KB of bitmap, L2-resident, where one
+64-byte descriptor line per slab was 9 MB and a cache miss per `free`
+(Phase 1.5 task 4f). The padding bits between `nslots` and `slab_bits` are
+kept permanently set.
+
+Slabs are handed to arenas in *groups* of `slabs_per_line` consecutive slabs
+(the slabs whose bits fill one bitmap line; or one page group when the page
+is larger than that), lowest group first to whichever arena needs a slab
+next, and each arena commits its group's slabs one at a time as it uses
+them. So a bitmap line, and a descriptor line, is written only by the
+refills and flushes of one arena, and the `free` check never reads a line
+another arena's threads write. A dense *owner array* of one `u16` per group
+records each group's arena; `free` reads it (not the descriptor) to route
+a slot back to a cache of its arena. A group spans at most 2 MiB of the
+region (`LG_GROUP_SPAN`): classes with larger slabs pad each slab's bits to
+a whole line instead.
 
 Bitmap semantics: a set bit means the slot is not available to a slab refill.
 It is either live in the program or sitting in some thread's cache. A clear
@@ -162,15 +184,16 @@ bit means the slot belongs to the slab and may be claimed.
 
 Operations on the bitmap are always atomic. Slabs have no owning thread.
 
-- **Claim** (cache refill): find the lowest word with any clear bit, compute
-  `want = !word` masked to at most `n` bits, `fetch_or(want)`; the bits that
-  were actually clear in the returned value are the claimed slots. Retry on
-  the next word if fewer than requested. Add the count to `live`.
+- **Claim** (cache refill): find the lowest word with any clear bit of the
+  slab, compute `want = !word & slab_mask` masked to at most `n` bits,
+  `fetch_or(want)`; the bits that were actually clear in the returned value
+  are the claimed slots. Retry on the next word if fewer than requested. Add
+  the count to `live`.
 - **Release** (cache flush): group pointers by slab, `fetch_and(!mask)` per
   word, subtract from `live`. If `live` reaches zero, transition the slab to
   `Empty`, stamp `dirty_at`, and put it on the class's empty list.
-- **Check** (free): load the word, verify the bit is set, else abort with
-  "invalid or double free". No write.
+- **Check** (free): load the bitmap word, verify the bit is set, else abort
+  with "invalid or double free". No write.
 
 Slot randomisation, when enabled by the `slot_randomize` tunable, claims from
 a random word rather than the lowest one and shuffles the claimed batch before
@@ -289,12 +312,12 @@ reads; halving the flush rate halves those misses (Phase 0 acceptance,
 `free(p)`:
 1. If `p` is null return. Classify `p` (section 2). Huge: slow path. Invalid:
    abort.
-2. Compute slab and slot; verify `slot * size == offset`; load bitmap word;
-   verify bit set. Otherwise abort.
+2. Compute slab and slot; verify `slot * size == offset`; load the class
+   bitmap word; verify bit set. Otherwise abort.
 3. Optional hardened check: compare `p` against the top 4 cache entries; a
    match is a double free. Full-array scan when `double_free_scan` is set.
-4. `heap = tls()`; `cache = heap.caches[desc.arena][c]`; if `len == cap`,
-   slow path (flush half). `slots[len++] = p`.
+4. `heap = tls()`; `cache = heap.caches[owner[slab / group]][c]`; if
+   `len == cap`, slow path (flush half). `slots[len++] = p`.
 
 `sdallocx(p, n, flags)`, `free_sized(p, n)`, `free_aligned_sized(p, a, n)`
 (the sized path; Phase 1.5 task 4e):
@@ -302,16 +325,18 @@ reads; halving the flush rate halves those misses (Phase 0 acceptance,
    size). Compute class, slab and slot as in `free` step 2; if `p` is not a
    slot start in a committed slab, or its class is not `c_hint`, slow path.
 2. `heap = tls()`; `cache = heap.caches[heap.arena][c]`; if `len == cap`,
-   slow path. `slots[len++] = p`. No load from the slab descriptor: neither
-   the bitmap word nor the arena.
+   slow path. `slots[len++] = p`. Neither the bitmap word nor the owner
+   word is loaded.
 3. Slow path: a slab pointer whose class is not `c_hint` aborts (jemalloc's
    contract, `nallocx(n, flags) == sallocx(p)`); otherwise the exact `free`
    above, so a full cache, a huge run or an invalid pointer gets the exact
    check and its message.
 
 Neither path performs an atomic read-modify-write or takes a lock. `free`
-does one load from the descriptor, which is the price of exact invalid-free
-detection and is also what makes cross-thread frees free of coordination.
+does one load from the class bitmap (and one from the owner array once a
+second arena exists), which is the price of exact invalid-free detection
+and is also what makes cross-thread frees free of coordination; neither
+load touches the slab descriptor.
 The sized path skips that load, and with it the check: an invalid or double
 free through it is caught when the cache flushes the slot (the release
 clears every bit it was handed and aborts on one that is already clear,
@@ -321,7 +346,7 @@ the bit test: a stale or foreign pointer that happens to be a slot start of
 the right class is the case that slips to the flush. Because the arena is
 not read either, the home cache holds slots of any arena on this path; the
 flush (6.4) sorts the batch and releases each run of slabs through the
-arena its descriptors name (`release_owned`), which costs nothing extra
+arena the owner array names (`release_owned`), which costs nothing extra
 when every slab is the cache's own. Plain `free` keeps step 2's load, so a
 double `free` of a slot that has left the cache aborts at the call.
 `MALLOCX_ARENA(a)` with the default cache pops whatever the cache holds,
@@ -642,8 +667,8 @@ in C23 and aborts here when the alignment put the block in a larger class.
 
 An arena is a set of `ClassState`s plus a huge sub-allocator sharing the huge
 region, plus statistics. Arena 0 exists at init. `arenas.create` allocates a
-new one. Slab descriptors record their arena. A pointer freed with plain
-`free` is returned to a cache keyed by its descriptor's arena, so memory never
+new one. Slab groups record their arena (section 4). A pointer freed with
+plain `free` is returned to a cache keyed by its slab's arena, so memory never
 migrates between arenas and per-arena statistics stay exact. This is what
 lets Redis exclude its Lua heap from fragmentation accounting.
 
@@ -664,7 +689,7 @@ the 10-thread `larson` row paid about 1 L1D miss per operation for it
 `2026-09-17-{aarch64,x86_64}-gce-thread-affinity.md`; a per-heap hint slab
 did not move the counter, only partitioning the slab sets did). The cost is
 one partial slab per class per live thread (as in jemalloc), plus the
-descriptor's arena load on `free` once a second arena exists.
+owner-array load on `free` once a second arena exists.
 
 `tcache.create` allocates a `ClassCache` set owned by no thread; `MALLOCX_TCACHE(t)`
 uses it. Explicit caches are not thread safe, matching jemalloc. `MALLOCX_TCACHE_NONE`

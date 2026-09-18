@@ -451,10 +451,10 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilizat
             let class = class as usize;
             let t = shared.table(class);
             let cls = t.class();
-            let Some(d) = t.desc_if_committed(slab as usize) else { return u };
-            if !d.is_allocated(cls, slot as usize) {
+            if !t.is_allocated(slab as usize, slot as usize) {
                 return u;
             }
+            let Some(d) = t.desc_if_committed(slab as usize) else { return u };
             if class >= NBINS {
                 // Reported like a large extent (`layout::BIN_MAX`): one
                 // region of its own size, no bin figures.
@@ -501,8 +501,7 @@ pub fn owner_of(shared: &Shared, p: *const c_void) -> Option<u16> {
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let t = shared.table(class as usize);
-            let d = t.desc_if_committed(slab as usize)?;
-            if d.is_allocated(t.class(), slot as usize) { Some(d.arena()) } else { None }
+            if t.is_allocated(slab as usize, slot as usize) { Some(t.owner(slab as usize)) } else { None }
         }
         Kind::Huge { page } => {
             let r = shared.huge.lookup(page)?;
