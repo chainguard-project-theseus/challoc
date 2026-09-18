@@ -69,8 +69,8 @@ for b in $ROWS; do
     docker logs "$cid" > "$OUTDIR/$tag.out" 2>&1
     docker rm -f "$cid" >/dev/null 2>&1 || true
     # The same extraction as bench/lib.sh ops_of, on the host side.
-    ops=$(awk -v b="$b" '
-      b ~ /^larson/ && /Throughput/ {for (i=1;i<=NF;i++) if ($i=="time:") {t=$(i+1); sub(/s$/, "", t)}; printf "%.0f", $3*t}
+    ops=$(awk -v b="$b" -v secs="$secs" '
+      b ~ /^larson/ && /Throughput/ {printf "%.0f", $3*secs}
       b ~ /^xmalloc/ && /free\/sec/ {sub(",", "", $4); printf "%.0f", $4*1e6*5}
       b ~ /^valkey/ && /^ops / {for (i=2;i<=NF;i++) {split($i, p, "="); if (p[1]=="total") print p[2]}}' "$OUTDIR/$tag.out")
     awk -F, -v ops="${ops:--}" -v secs="$secs" -v row="$b" -v var="$v" '

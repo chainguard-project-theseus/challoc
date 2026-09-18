@@ -121,6 +121,17 @@ at the start of an iteration for orphans.
   ab ... > ~/logs/ab.log 2>&1 < /dev/null &); sleep 2; tail -1 ~/logs/ab.log'`
   returns at once. When polling with `pgrep -f`, exclude the polling shell
   itself (`pgrep -f "[m]ake ab"`), whose command line contains the pattern.
+- gcloud cannot refresh its auth token (`Reauthentication failed` after the
+  token expires, or `NameResolutionError` for `oauth2.googleapis.com` from
+  gcloud's Python while the shell resolves it fine): `status`, `pmu-check`,
+  `run`, `quick`, `ab` and `scorecard` go through `gcloud compute ssh` and
+  fail, while `sync` and `fetch` (direct `rsync`/`ssh` with the minted key)
+  keep working. Fall back to direct ssh for the rest, `ssh -T -i
+  ~/.ssh/google_compute_engine <user>@<ip>` with the IP from the last
+  `status`, run the same `make` targets from `~/challoc` there (the
+  `pmu-check` body is the `perf stat -x,` loop in `cmd_pmu_check`), and note
+  the fallback in the results file. Never stop the session's VMs from a
+  fallback shell.
 - Host key changed after a restart (`Host key verification failed` from
   `sync`, `fetch` or `ssh`): the VM has a new external IP whose key collides
   with a stale entry. `ssh-keygen -R <ip> -f ~/.ssh/google_compute_known_hosts`,

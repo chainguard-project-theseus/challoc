@@ -147,7 +147,7 @@ secs_of() { case $1 in larson*|xmalloc*) echo 5;; valkey*) echo "$VALKEY_MODEL_S
 # counters ("-" when the program reports none).
 ops_of() {
   case $1 in
-    larson*)  awk '/Throughput/ {for (i=1;i<=NF;i++) if ($i=="time:") {t=$(i+1); sub(/s$/, "", t)}; printf "%.0f", $3*t}' "$2";;
+    larson*)  awk -v secs="$(secs_of "$1")" '/Throughput/ {printf "%.0f", $3*secs}' "$2";;   # larson's "relative time" is 1e9/throughput, not the run time
     xmalloc*) awk '/free\/sec/ {sub(",", "", $4); printf "%.0f", $4*1e6*5}' "$2";;
     valkey*)  awk '/^ops / {for (i=2;i<=NF;i++) {split($i, p, "="); if (p[1]=="total") print p[2]}}' "$2";;
     redis)    echo $((2 * REDIS_N));;   # lpush and lrange, REDIS_N requests each
