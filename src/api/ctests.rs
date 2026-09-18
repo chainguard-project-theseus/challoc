@@ -710,6 +710,33 @@ fn c_mseal() {
     run_c("mseal", &[]);
 }
 
+/// `tests/c/guard_slab.c fault` (plan Phase 2 task 1): under the preload,
+/// a write into the guard slab that follows a run of slabs of the 64-byte
+/// class faults (SIGSEGV caught in the program), while the last byte of
+/// the last slot before it and the first slot after it are writable. Guard
+/// slabs exist only where the kernel installs guard regions (6.13+), so
+/// the test skips elsewhere; the program finds the guard as the one slab
+/// no allocation came from, with the geometry from public `mallctl` keys.
+#[test]
+fn c_guard_slab_fault() {
+    if !crate::sys::features::Features::probe().guard_install {
+        std::eprintln!("guard_install=no on this kernel; skipping guard_slab fault");
+        return;
+    }
+    run_c("guard_slab", &["fault"]);
+}
+
+/// `tests/c/guard_slab.c vmas` (plan Phase 2 task 1): 10,000 committed
+/// slabs of the 16-byte class (640 MiB of address space, one guard slab
+/// in eight where the kernel has `MADV_GUARD_INSTALL`) intersect at most
+/// `VMA_BOUND` (8) lines of `/proc/self/maps`: guard regions inside the
+/// read-write range do not split it. Runs on every kernel; without guard
+/// regions it checks that no slab was skipped and the bound still holds.
+#[test]
+fn c_guard_slab_vmas() {
+    run_c("guard_slab", &["vmas"]);
+}
+
 #[test]
 fn c_huge_hole() {
     run_c("huge_hole", &[]);

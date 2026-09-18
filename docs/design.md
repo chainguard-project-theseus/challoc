@@ -615,9 +615,13 @@ page granularity.
   `free` of a pointer inside the huge region that is not a run start aborts.
 - Runs are followed by a guard: `MADV_GUARD_INSTALL` on one page when
   available, `PROT_NONE` (the reserved default) otherwise. Since the region is
-  reserved `PROT_NONE`, the fallback costs nothing beyond leaving the page
-  unmapped; the guard install variant exists so that a later commit of the
-  neighbouring run does not silently remove the guard.
+  reserved `PROT_NONE`, the fallback costs no memory, only VMAs: the
+  `PROT_NONE` page between two committed runs keeps them separate VMAs, so
+  the fallback costs one VMA per live huge run (bounded by the number of
+  live huge allocations, unlike a `PROT_NONE` guard slab per eight slabs,
+  which is why slabs have no such fallback; Phase 2 task 1). The guard
+  install variant exists so that a later commit of the neighbouring run
+  does not silently remove the guard.
 - Alignment requests above page size are satisfied by over-allocating and
   releasing the head and tail pages back to the bitmap.
 - Freed runs become `Empty` and decay like slabs. Runs whose usable size is
