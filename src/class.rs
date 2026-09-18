@@ -24,6 +24,32 @@
 //! one `u16` per group, and `SlabDesc::arena`), and only that arena's state
 //! may claim from or release to it.
 //!
+//! An arena owns its groups until it lends an idle one (design 13.3, plan
+//! Phase 1.5 task 15). A group is *idle* when none of its slabs is
+//! `Active`: every committed slab of it is in its owner's `empty` or
+//! `purged` set (so `live == 0`: no slot of it is in the program or in any
+//! cache) and the rest are `Fresh`. An arena whose current group is used
+//! up and whose sets are empty looks for such a group in the other arenas'
+//! sets before it takes a fresh group from the region
+//! ([`ClassState::adopt_idle_group`]): under the donor's class lock it
+//! scans the donor's `empty` and `purged` sets group by group, and under
+//! both class locks it rewrites the owner word and every descriptor's
+//! arena, moves the slabs between the two arenas' sets and slab counts,
+//! and inherits the donor's commit cursor when the group was the donor's
+//! current one. Nothing is added to the transition paths (`take`,
+//! `on_live_zero`): the sets are the tracking. Whole groups only, so the
+//! line ownership above is untouched: at 16 arenas the `Empty` slabs one
+//! arena kept while another committed fresh ones were 40 MiB of mstress's
+//! RSS (`bench/results/2026-09-18-phase-1.5-acceptance-3.md`).
+//!
+//! Ownership can now change between a lock-free step and the lock hold
+//! that follows it, so a slab number carried across that gap is checked
+//! against the owner word under the lock before the arena touches its
+//! sets: `reopen` (a word went full to non-full before `dec_live` let the
+//! slab go `Empty`, and another arena may have taken it since) and
+//! `on_live_zero`. Live slots pin a slab (they are counted in `live`), so
+//! nothing else carries a slab across a gap.
+//!
 //! Protocol. A refill takes the lock, picks the lowest partial slab (else
 //! the lowest empty, else the lowest purged, else commits the next slab),
 //! moves it to `Active`, *reserves* the wanted count in the descriptor's
@@ -56,7 +82,7 @@ use crate::meta::Meta;
 use crate::purge::{self, Batch, Curve, Decayer, STEPS};
 use crate::slab::{DESC_ALIGN, SlabDesc, State, desc_stride};
 use crate::sys::Errno;
-use core::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
 /// Counters kept under the class lock. Slab counts only; `curregs` and
 /// the byte totals are derived from them in `stats.rs`.
@@ -110,6 +136,26 @@ const MAX_PICKS: usize = 16;
 /// threads keep moving free bits between words, so this many in a row
 /// means the `live` count no longer bounds the set bits.
 const MAX_EMPTY_PASSES: u32 = 1 << 22;
+
+/// Groups of one donor's `empty` and `purged` sets a refill inspects for
+/// an idle one before moving on to the next donor: a donor with many
+/// partly idle groups (a medium class under churn) is not scanned to the
+/// end.
+const MAX_ADOPT_TRIES: usize = 8;
+
+/// The `group_handoff` key (default on): whether an arena takes another
+/// arena's idle group before a fresh one. Set once at init, read on the
+/// fresh-commit path only.
+static GROUP_HANDOFF: AtomicBool = AtomicBool::new(true);
+
+/// Apply the `group_handoff` key (init; the tests directly).
+pub fn set_group_handoff(on: bool) {
+    GROUP_HANDOFF.store(on, Ordering::Relaxed);
+}
+
+/// Tests: groups that changed hands.
+#[cfg(test)]
+pub(crate) static HANDOFFS: AtomicUsize = AtomicUsize::new(0);
 
 /// One slab's share of a refill: `n` slots reserved in its `live` count.
 #[derive(Copy, Clone)]
@@ -371,8 +417,9 @@ pub const fn desc_stagger(class: usize) -> usize {
 /// a cache of its arena.
 ///
 /// Layout: the fields before `inner` are written once by `new` (or, for
-/// `committed_slabs`, only when a group is handed out) and read by every
-/// `free`, while `inner` holds the commit lock. `repr(C)` keeps the
+/// `committed_slabs`, only when a group is handed out, and for `states`,
+/// when an arena is built) and read by every `free`, while `inner` holds
+/// the commit lock. `repr(C)` keeps the
 /// read-mostly fields first and [`Padded`] starts `inner` on its own line.
 /// The fields the `free` fast path reads (`bits_base`, `owners_base`,
 /// `committed_slabs`, `slab_bits`, `lg_group`) sit in the first 32 bytes:
@@ -431,11 +478,24 @@ pub struct SlabTable {
     nslabs: usize,
     /// Start of the descriptor array.
     desc_base: usize,
+    /// Every arena's state over this table, an intrusive list through
+    /// [`ClassState::next`] pushed by [`register_state`]: the donors a
+    /// handoff visits. States are never freed (design 13.3), so the
+    /// pointers stay valid, and the list only grows.
+    ///
+    /// [`register_state`]: SlabTable::register_state
+    states: AtomicPtr<ClassState>,
     inner: Padded<Lock<TableInner>>,
-    _tail: [u8; PAD_ALIGN],
+    _tail: [u8; TABLE_TAIL],
 }
 
+/// Padding that keeps the stride of `[SlabTable; NCLASSES]` at 384 bytes,
+/// three lines, off a multiple of 512 (see [`ClassState`]), whatever the
+/// commit lock's state takes of the second and third.
+const TABLE_TAIL: usize = 2 * PAD_ALIGN - core::mem::size_of::<Padded<Lock<TableInner>>>();
+
 const _: () = assert!(core::mem::offset_of!(SlabTable, inner) == PAD_ALIGN);
+const _: () = assert!(core::mem::size_of::<SlabTable>() == 3 * PAD_ALIGN);
 const _: () = assert!(core::mem::offset_of!(SlabTable, lg_group) < 32);
 const _: () = assert!(core::mem::size_of::<SlabTable>() % PAD_ALIGN == 0);
 const _: () = assert!(core::mem::size_of::<SlabTable>() % 512 != 0);
@@ -488,6 +548,10 @@ pub struct ClassState {
     /// from none to one, recomputed by every purge walk) and read without
     /// it by the decay driver, and the next walk's deadline.
     gate: Decayer,
+    /// The next state over the same table (`SlabTable::register_state`),
+    /// for the handoff's donor lookup; written once, under the commit
+    /// lock.
+    next: AtomicPtr<ClassState>,
     inner: Padded<Lock<Inner>>,
     /// Slots ever reserved by `take` for this arena (written only under
     /// the class lock). With `released` below it gives `curregs`, the
@@ -645,8 +709,9 @@ impl SlabTable {
             base: regions.class_base[class],
             nslabs,
             desc_base: descs.base + stagger,
+            states: AtomicPtr::new(core::ptr::null_mut()),
             inner: Padded(Lock::new(TableInner { descs, bits, owners, next_slab: 0, guards: 0 })),
-            _tail: [0; PAD_ALIGN],
+            _tail: [0; TABLE_TAIL],
         })
     }
 
@@ -1076,6 +1141,33 @@ impl SlabTable {
         }
         Some(true)
     }
+
+    /// The owner word of `group`.
+    ///
+    /// # Safety
+    /// The group must have been handed out (its owner page is committed).
+    #[inline]
+    unsafe fn owner_word(&self, group: usize) -> &AtomicU16 {
+        // SAFETY: the caller guarantees the page is committed.
+        unsafe { &*((self.owners_base + group * 2) as *const AtomicU16) }
+    }
+
+    /// Register an arena's state over this table for the handoff's donor
+    /// walk. Called once per `(arena, class)` from `Arena::init`, after
+    /// the state has its final address; states are never freed.
+    pub fn register_state(&self, state: *const ClassState) {
+        let state = state as *mut ClassState;
+        let mut head = self.states.load(Ordering::Acquire);
+        loop {
+            // SAFETY: `state` is a live, never-freed `ClassState` that
+            // nothing else reaches until it is published below.
+            unsafe { (*state).next.store(head, Ordering::Relaxed) };
+            match self.states.compare_exchange(head, state, Ordering::Release, Ordering::Acquire) {
+                Ok(_) => return,
+                Err(h) => head = h,
+            }
+        }
+    }
 }
 
 impl ClassState {
@@ -1094,6 +1186,7 @@ impl ClassState {
             arena,
             table,
             gate: Decayer::new(),
+            next: AtomicPtr::new(core::ptr::null_mut()),
             inner: Padded(Lock::new(Inner {
                 partial,
                 empty,
@@ -1315,6 +1408,20 @@ impl ClassState {
     /// release can race the clear.
     fn plan(&self, meta: &Meta, want: usize, picks: &mut [Pick; MAX_PICKS]) -> usize {
         let cls = self.class();
+        let mut wake = false;
+        let np = self.plan_locked(meta, want, picks, cls, &mut wake);
+        if wake {
+            purge::note_empty();
+        }
+        np
+    }
+
+    /// [`plan`] under the lock; `wake` is set when a handoff gave this
+    /// arena its first `Empty` slab, which the caller reports to the
+    /// background thread once the lock is dropped (as `on_live_zero`).
+    ///
+    /// [`plan`]: ClassState::plan
+    fn plan_locked(&self, meta: &Meta, want: usize, picks: &mut [Pick; MAX_PICKS], cls: &Class, wake: &mut bool) -> usize {
         let mut g = self.inner.lock();
         let mut np = 0;
         let mut remaining = want;
@@ -1334,23 +1441,250 @@ impl ClassState {
             next = g.partial.map.lowest_set_from(s + 1);
         }
         while remaining > 0 && np < MAX_PICKS {
-            let s = if let Some(s) = g.empty.map.lowest_set() {
-                g.empty.map.clear(s);
-                g.stats.empty = g.stats.empty.checked_sub(1).unwrap_or_else(|| slab_count_underflow("empty"));
-                s
-            } else if let Some(s) = g.purged.map.lowest_set() {
-                g.purged.map.clear(s);
-                g.stats.purged = g.stats.purged.checked_sub(1).unwrap_or_else(|| slab_count_underflow("purged"));
-                s
-            } else {
-                match self.commit_next(&mut g, meta) {
-                    Some(s) => s,
-                    None => break,
-                }
+            let s = match self.next_slab(&mut g, meta, wake) {
+                Some(s) => s,
+                None => break,
             };
             self.take(&mut g, s, &mut remaining, picks, &mut np);
         }
         np
+    }
+
+    /// The slab a refill uses when no partial slab has room (design
+    /// section 5): the lowest `Empty` slab, else the lowest `Purged` one,
+    /// else the next slab of this arena's current group, else a slab of
+    /// an idle group taken over from another arena
+    /// ([`adopt_idle_group`]), else the next fresh group of the class
+    /// region ([`SlabTable::take_group`], which commits this arena's set
+    /// words for the whole group first). Guard slabs inside a group are
+    /// committed as guards and skipped. The commit lock nests inside the
+    /// class lock. `None` when the region, the metadata region or a
+    /// commit is exhausted.
+    ///
+    /// [`adopt_idle_group`]: ClassState::adopt_idle_group
+    fn next_slab(&self, g: &mut Inner, meta: &Meta, wake: &mut bool) -> Option<usize> {
+        let table = self.table();
+        let page = 1usize << table.lg_page;
+        loop {
+            if let Some(s) = g.empty.map.lowest_set() {
+                g.empty.map.clear(s);
+                g.stats.empty = g.stats.empty.checked_sub(1).unwrap_or_else(|| slab_count_underflow("empty"));
+                return Some(s);
+            }
+            if let Some(s) = g.purged.map.lowest_set() {
+                g.purged.map.clear(s);
+                g.stats.purged = g.stats.purged.checked_sub(1).unwrap_or_else(|| slab_count_underflow("purged"));
+                return Some(s);
+            }
+            if g.group_next >= g.group_end {
+                if self.adopt_idle_group(g, meta, wake) {
+                    continue;
+                }
+                let (start, end) = table.take_group(meta, self.arena, |s| {
+                    g.partial.ensure(meta, page, s)?;
+                    g.empty.ensure(meta, page, s)?;
+                    g.purged.ensure(meta, page, s)
+                })?;
+                g.group_next = start;
+                g.group_end = end;
+            }
+            let s = g.group_next;
+            let usable = table.commit_slab(s)?;
+            g.group_next = s + 1;
+            if usable {
+                g.stats.committed += 1;
+                return Some(s);
+            }
+        }
+    }
+
+    /// Take over an idle group of this class from another arena (design
+    /// 13.3: an arena owns its groups until it lends an idle one). Called
+    /// with this arena's class lock held, its sets empty and its current
+    /// group used up. Visits every other registered arena state: locks it,
+    /// looks for an idle group in its `empty` and `purged` sets
+    /// ([`next_idle_group`]) and, finding one, moves it
+    /// ([`transfer_group`]). Returns `true` when a group changed hands:
+    /// its `Empty` and `Purged` slabs are now in this arena's sets and its
+    /// uncommitted slabs, if it was the donor's current group, are this
+    /// arena's current group. Only the fresh-commit path pays for this;
+    /// the slab transitions themselves keep no extra state.
+    ///
+    /// Lock order. This arena's class lock is held and every donor is
+    /// only `try_lock`ed, never waited for: a busy donor is skipped and
+    /// the fresh group is the fallback, so no thread ever blocks while
+    /// holding a class lock and there is no order to keep (the fork
+    /// handlers' order, class locks by arena index then the commit locks
+    /// then the set tables, is untouched: `take_group`'s nesting is the
+    /// only blocking chain). Blocking on higher-index donors was tried
+    /// first: on `xmalloc`, where every donor is a producer whose lock
+    /// also serves its consumers' flushes, the takers joined the convoy.
+    /// The donor's lock pins the states of its slabs and the group's
+    /// ownership, so what the scan finds is what the transfer moves.
+    ///
+    /// [`next_idle_group`]: ClassState::next_idle_group
+    /// [`transfer_group`]: ClassState::transfer_group
+    fn adopt_idle_group(&self, g: &mut Inner, meta: &Meta, wake: &mut bool) -> bool {
+        if !GROUP_HANDOFF.load(Ordering::Relaxed) {
+            return false;
+        }
+        let table = self.table();
+        let mut p = table.states.load(Ordering::Acquire);
+        while !p.is_null() {
+            // SAFETY: registered states are never freed (`register_state`).
+            let donor: &ClassState = unsafe { &*p };
+            p = donor.next.load(Ordering::Relaxed);
+            if donor.arena == self.arena {
+                continue;
+            }
+            debug_assert!(core::ptr::eq(donor.table, self.table));
+            let Some(mut dg) = donor.inner.try_lock() else {
+                continue;
+            };
+            let mut budget = MAX_ADOPT_TRIES;
+            if let Some(group) = self.next_idle_group(&dg, 0, &mut budget) {
+                return self.transfer_group(g, &mut dg, donor, meta, group, wake);
+            }
+        }
+        false
+    }
+
+    /// The lowest idle group of the arena whose class lock `dg` is held,
+    /// at or above slab `from`: a group whose every committed non-guard
+    /// slab is in `dg`'s `empty` or `purged` set (its committed slabs are
+    /// those below the arena's cursor when it is the arena's current
+    /// group, all of them otherwise). Walks both sets in address order,
+    /// one group per step, and gives up after `budget` groups.
+    fn next_idle_group(&self, dg: &Inner, mut from: usize, budget: &mut usize) -> Option<usize> {
+        let table = self.table();
+        while from < table.nslabs && *budget > 0 {
+            let s = match (dg.empty.map.lowest_set_from(from), dg.purged.map.lowest_set_from(from)) {
+                (Some(a), Some(b)) => a.min(b),
+                (Some(a), None) => a,
+                (None, Some(b)) => b,
+                (None, None) => return None,
+            };
+            let group = s >> table.lg_group;
+            let start = group << table.lg_group;
+            let end = (start + table.group as usize).min(table.nslabs);
+            let cursor = if dg.group_end == end { dg.group_next } else { end };
+            if (start..cursor).all(|x| table.is_guard_slab(x) || dg.empty.map.is_set(x) || dg.purged.map.is_set(x)) {
+                return Some(group);
+            }
+            *budget -= 1;
+            from = end;
+        }
+        None
+    }
+
+    /// The handoff itself, with this arena's class lock (`g`) and the
+    /// donor's (`dg`) held. `false` only when this arena's set words for
+    /// the group cannot be committed (done first: the verification reads
+    /// them, and on Linux an uncommitted metadata page faults), with
+    /// nothing changed. Aborts when
+    /// the descriptors disagree with the donor's sets (an `Active` slab, a
+    /// live slot, a slab of another arena, a partial bit): a heap
+    /// inconsistency. The owner word and the descriptors' arena field are
+    /// rewritten together, as `take_group` writes them, so its cross-check
+    /// still holds for every group.
+    fn transfer_group(&self, g: &mut Inner, dg: &mut Inner, donor: &ClassState, meta: &Meta, group: usize, wake: &mut bool) -> bool {
+        let table = self.table();
+        let class = self.class as usize;
+        let page = 1usize << table.lg_page;
+        let start = group << table.lg_group;
+        let end = (start + table.group as usize).min(table.nslabs);
+        // SAFETY: the group holds a slab of the donor's sets, so it was
+        // handed out and its owner page is committed.
+        let owner_word = unsafe { table.owner_word(group) };
+        let word = owner_word.load(Ordering::Relaxed);
+        if word != donor.arena {
+            owner_mismatch(class, group, start, word, donor.arena);
+        }
+        debug_assert!(g.group_next >= g.group_end);
+        // This arena's set words for the group, before anything is read
+        // from them (they may be beyond this arena's committed rows) or
+        // changed: a failure here changes nothing.
+        if g.partial.ensure(meta, page, end - 1).is_err()
+            || g.empty.ensure(meta, page, end - 1).is_err()
+            || g.purged.ensure(meta, page, end - 1).is_err()
+        {
+            return false;
+        }
+        // Slabs below the donor's cursor are committed; the rest of its
+        // current group is not and becomes this arena's current group.
+        let cursor = if dg.group_end == end { dg.group_next } else { end };
+        for s in start..end {
+            if table.is_guard_slab(s) {
+                continue;
+            }
+            if purge::check_zero() {
+                self.check_shadow(s, "adopt");
+            }
+            let d = self.desc(s);
+            if d.arena() != donor.arena {
+                owner_mismatch(class, group, s, donor.arena, d.arena());
+            }
+            let state = d.state();
+            let in_sets = match state {
+                State::Empty => dg.empty.map.is_set(s),
+                State::Purged => dg.purged.map.is_set(s),
+                State::Fresh => s >= cursor && !dg.empty.map.is_set(s) && !dg.purged.map.is_set(s),
+                State::Active => false,
+            };
+            if !in_sets || d.live() != 0 || dg.partial.map.is_set(s) || g.partial.map.is_set(s) || g.empty.map.is_set(s) || g.purged.map.is_set(s) {
+                idle_group_in_use(class, group, s, donor.arena, self.arena, state, d.live(), in_sets, dg.partial.map.is_set(s));
+            }
+        }
+        let mut oldest = 0u64;
+        for s in start..end {
+            if table.is_guard_slab(s) {
+                continue;
+            }
+            let d = self.desc(s);
+            match d.state() {
+                State::Empty => {
+                    dg.empty.map.clear(s);
+                    dg.stats.empty = dg.stats.empty.checked_sub(1).unwrap_or_else(|| slab_count_underflow("empty"));
+                    g.empty.map.set(s);
+                    g.stats.empty += 1;
+                    let t = d.dirty_at();
+                    if oldest == 0 || t < oldest {
+                        oldest = t;
+                    }
+                }
+                State::Purged => {
+                    dg.purged.map.clear(s);
+                    dg.stats.purged = dg.stats.purged.checked_sub(1).unwrap_or_else(|| slab_count_underflow("purged"));
+                    g.purged.map.set(s);
+                    g.stats.purged += 1;
+                }
+                State::Fresh | State::Active => {}
+            }
+            if s < cursor {
+                dg.stats.committed = dg.stats.committed.checked_sub(1).unwrap_or_else(|| slab_count_underflow("committed"));
+                g.stats.committed += 1;
+            }
+            d.set_arena(self.arena);
+        }
+        owner_word.store(self.arena, Ordering::Relaxed);
+        #[cfg(test)]
+        HANDOFFS.fetch_add(1, Ordering::Relaxed);
+        if dg.group_end == end {
+            g.group_next = dg.group_next;
+            g.group_end = end;
+            dg.group_next = end;
+            dg.group_end = end;
+        }
+        // This arena's oldest `Empty` slab may now be one of the moved
+        // ones. The donor's gate is left as it is: at worst it is too
+        // early, and its next walk recomputes it (see `purge::Decayer`).
+        if oldest != 0 {
+            let cur = self.gate.oldest_empty();
+            if (cur == 0 || oldest < cur) && self.gate.set_oldest_empty(oldest) {
+                *wake = true;
+            }
+        }
+        true
     }
 
     /// Reserve `min(nslots - live, *remaining)` slots of `slab` under the
@@ -1358,6 +1692,8 @@ impl ClassState {
     fn take(&self, g: &mut Inner, slab: usize, remaining: &mut usize, picks: &mut [Pick; MAX_PICKS], np: &mut usize) {
         let desc = self.desc(slab);
         let live = desc.live();
+        debug_assert_eq!(self.table().owner(slab), self.arena, "take: slab {slab} state {:?} live {live}", desc.state());
+        debug_assert_eq!(desc.arena(), self.arena, "take: slab {slab} descriptor arena");
         // `live > nslots` would reserve a wrapped count (the release
         // profile does not check overflow; the dev profile does).
         assert!(live <= self.class().nslots(), "class: slab live count above its slot count");
@@ -1423,34 +1759,6 @@ impl ClassState {
         }
     }
 
-    /// Commit the next slab of this arena's current group, taking the
-    /// next group of the class region when the current one is used up
-    /// ([`SlabTable::take_group`], which commits this arena's set words for
-    /// the whole group first). Guard slabs inside the group are committed
-    /// as guards and skipped. The commit lock nests inside the class lock.
-    fn commit_next(&self, g: &mut Inner, meta: &Meta) -> Option<usize> {
-        let table = self.table();
-        let page = 1usize << table.lg_page;
-        loop {
-            if g.group_next >= g.group_end {
-                let (start, end) = table.take_group(meta, self.arena, |s| {
-                    g.partial.ensure(meta, page, s)?;
-                    g.empty.ensure(meta, page, s)?;
-                    g.purged.ensure(meta, page, s)
-                })?;
-                g.group_next = start;
-                g.group_end = end;
-            }
-            let s = g.group_next;
-            let usable = table.commit_slab(s)?;
-            g.group_next = s + 1;
-            if usable {
-                g.stats.committed += 1;
-                return Some(s);
-            }
-        }
-    }
-
     /// `check_zero`: the first word of every slot of a `Fresh` slab must
     /// read zero before its first claim; a dirty one means the memory was
     /// written before this table ever handed the slab out.
@@ -1507,6 +1815,12 @@ impl ClassState {
             let mut g = self.inner.lock();
             if purge::check_zero() {
                 self.check_shadow(slab, "on_live_zero");
+            }
+            // The slab may have changed arena since `sub_live` (another
+            // thread of this arena emptied it, another arena adopted it and
+            // is using it): then it is no business of this arena's sets.
+            if self.table().owner(slab) != self.arena {
+                return;
             }
             let desc = self.desc(slab);
             if desc.live() == 0 && desc.state() == State::Active {
@@ -1642,7 +1956,11 @@ impl ClassState {
         let mut g = self.inner.lock();
         for &s in &reopen.slabs[..reopen.len] {
             let slab = s as usize;
-            if self.desc(slab).state() == State::Active {
+            // Between the word's clear and this lock hold the slab may have
+            // gone `Empty` (in `dec_live`), been adopted by another arena
+            // and been made `Active` there: `Active` alone no longer means
+            // "ours", the owner word under the lock does.
+            if self.desc(slab).state() == State::Active && self.table().owner(slab) == self.arena {
                 g.set_partial(slab);
             }
         }
@@ -1942,6 +2260,28 @@ impl ClassState {
     }
 
     /// Whether `slab` is in the partial set.
+    /// Tests: this arena's idle groups, the ones a handoff would offer.
+    #[cfg(test)]
+    pub(crate) fn idle_groups(&self) -> std::vec::Vec<usize> {
+        let g = self.inner.lock();
+        let mut out = std::vec::Vec::new();
+        let mut from = 0;
+        let mut budget = usize::MAX;
+        while let Some(group) = self.next_idle_group(&g, from, &mut budget) {
+            out.push(group);
+            from = (group + 1) << self.table().lg_group;
+        }
+        out
+    }
+
+    /// Tests: whether `slab` is in this arena's partial, empty and purged
+    /// sets.
+    #[cfg(test)]
+    pub(crate) fn set_membership(&self, slab: usize) -> (bool, bool, bool) {
+        let g = self.inner.lock();
+        (g.partial.map.is_set(slab), g.empty.map.is_set(slab), g.purged.map.is_set(slab))
+    }
+
     pub fn is_partial(&self, slab: usize) -> bool {
         self.inner.lock().partial.map.is_set(slab)
     }
@@ -1964,6 +2304,14 @@ fn owner_mismatch(class: usize, group: usize, slab: usize, word: u16, desc: u16)
 /// A `Fresh` or `Purged` slab selected by a refill had a bit set before
 /// its slots were claimed under the lock: `live` no longer bounds the set
 /// bits, so the bitmap or the descriptor is corrupt.
+#[cold]
+#[inline(never)]
+fn idle_group_in_use(class: usize, group: usize, slab: usize, donor: u16, taker: u16, state: State, live: usize, in_sets: bool, partial: bool) -> ! {
+    panic!(
+        "heap inconsistency: class {class} group {group}: idle by arena {donor}'s sets but slab {slab} is {state:?} with live {live}, in its owner's set {in_sets}, partial {partial} (taker arena {taker})"
+    )
+}
+
 #[cold]
 #[inline(never)]
 fn zero_slab_had_bits_set(class: usize, slab: usize, arena: u16, state: State, live: usize, word: usize, got: u64, expect: u64) -> ! {
@@ -2172,10 +2520,15 @@ mod tests {
         }
 
         /// A fresh table for `c` (leaked: the state points at it) and the
-        /// arena-0 state over it.
-        fn class(&self, c: usize, guard_interval: u32) -> ClassState {
+        /// arena-0 state over it, leaked and registered with the table as
+        /// `Arena::init` does, so a handoff can find it as a donor.
+        fn class(&self, c: usize, guard_interval: u32) -> &'static ClassState {
             let table = self.table(c, guard_interval);
-            ClassState::new(&self.meta, &self.regions, table, 0, self.sets()).expect("class state")
+            let cs = std::boxed::Box::leak(std::boxed::Box::new(
+                ClassState::new(&self.meta, &self.regions, table, 0, self.sets()).expect("class state"),
+            ));
+            table.register_state(cs);
+            cs
         }
 
         /// A fresh set table for one arena (leaked: the states point at it).
@@ -2189,9 +2542,15 @@ mod tests {
             ))
         }
 
-        /// The state of `arena` over the same table as `cs`.
-        fn class_in_arena(&self, cs: &ClassState, arena: u16) -> ClassState {
-            ClassState::new(&self.meta, &self.regions, cs.table(), arena, self.sets()).expect("class state")
+        /// The state of `arena` over the same table as `cs`, leaked and
+        /// registered like [`Env::class`].
+        fn class_in_arena(&self, cs: &ClassState, arena: u16) -> &'static ClassState {
+            let table = cs.table();
+            let new = std::boxed::Box::leak(std::boxed::Box::new(
+                ClassState::new(&self.meta, &self.regions, table, arena, self.sets()).expect("class state"),
+            ));
+            table.register_state(new);
+            new
         }
 
         fn claim(&self, cs: &ClassState, n: usize) -> (Vec<*mut u8>, Claim) {
@@ -3044,6 +3403,294 @@ mod tests {
         assert!(claim.zeroed);
         assert_eq!(cs1.locate(r1[0]).0, 1);
         assert_eq!(cs0.committed_slabs(), 4);
+    }
+
+    /// What a handoff offers (plan Phase 1.5 task 15): a group is idle
+    /// once its last `Active` slab goes `Empty`, not while a slot is out,
+    /// and stays idle through a purge.
+    #[test]
+    fn a_group_is_idle_between_its_last_empty_and_its_next_take() {
+        let env = Env::new();
+        let c = small_class();
+        let cs = env.class(c, 0);
+        assert_eq!(cs.table().group(), 1, "the 64-byte class hands out one slab per group");
+        assert!(cs.idle_groups().is_empty());
+        let (p, _) = env.claim(cs, 3);
+        assert!(cs.idle_groups().is_empty());
+        cs.release(&p[..2]);
+        assert!(cs.idle_groups().is_empty(), "a slab with a live slot is not idle");
+        cs.release(&p[2..]);
+        assert_eq!(cs.desc(0).state(), State::Empty);
+        assert_eq!(cs.idle_groups(), vec![0]);
+        assert_eq!(cs.purge_empty(u64::MAX), 1);
+        assert_eq!(cs.idle_groups(), vec![0], "Empty to Purged keeps the group idle");
+        let (q, claim) = env.claim(cs, 1);
+        assert!(claim.zeroed);
+        assert!(cs.idle_groups().is_empty(), "a take withdraws the group");
+        cs.release(&q);
+        assert_eq!(cs.idle_groups(), vec![0]);
+    }
+
+    /// The handoff: an arena whose group is used up takes an idle group of
+    /// another arena instead of a fresh one. Owner word, descriptors, sets,
+    /// slab counts and the pointers' routing all move; nothing new is
+    /// committed. `donor` and `taker` in both index orders.
+    fn handoff_between(donor_ix: u16, taker_ix: u16) {
+        let env = Env::new();
+        let c = small_class();
+        let cs0 = env.class(c, 0);
+        let (donor, taker) = if donor_ix == 0 {
+            (cs0, env.class_in_arena(cs0, taker_ix))
+        } else {
+            (env.class_in_arena(cs0, donor_ix), cs0)
+        };
+        let t = cs0.table();
+        let nslots = donor.class().nslots();
+        // The donor fills slab 0 (its group) and lets it all go: Empty, idle.
+        let (p, _) = env.claim(donor, nslots);
+        assert_eq!(t.committed_slabs(), 1);
+        assert_eq!(t.owner(0), donor_ix);
+        donor.release(&p);
+        assert_eq!(donor.desc(0).state(), State::Empty);
+        assert_eq!(donor.stats(), ClassStats { committed: 1, guards: 0, empty: 1, purged: 0, nonfull: 0 });
+        assert_eq!(donor.idle_groups(), vec![0]);
+        let dirty_at = donor.desc(0).dirty_at();
+        assert!(dirty_at != 0);
+        // The taker's first claim needs a slab: it takes slab 0 over.
+        let (q, claim) = env.claim(taker, 5);
+        assert_eq!(claim.n, 5);
+        assert!(!claim.zeroed, "an Empty slab is dirty");
+        assert_eq!(t.committed_slabs(), 1, "no fresh group was taken");
+        assert_eq!(taker.locate(q[0]).0, 0);
+        assert_eq!(t.owner(0), taker_ix);
+        assert_eq!(taker.desc(0).arena(), taker_ix);
+        assert_eq!(taker.desc(0).state(), State::Active);
+        assert_eq!(taker.desc(0).dirty_at(), 0);
+        assert!(taker.is_partial(0) && !donor.is_partial(0));
+        assert_eq!(donor.stats(), ClassStats::default());
+        assert_eq!(taker.stats(), ClassStats { committed: 1, guards: 0, empty: 0, purged: 0, nonfull: 1 });
+        assert!(taker.idle_groups().is_empty() && donor.idle_groups().is_empty());
+        // Routing follows the group: the taker releases, the donor may not.
+        taker.check(q[0]);
+        taker.release(&q[..1]);
+        // The donor's next claim takes a fresh group; the taker's slab is
+        // not idle (4 live slots).
+        let (r, _) = env.claim(donor, 1);
+        assert_eq!(donor.locate(r[0]).0, 1);
+        assert_eq!(t.committed_slabs(), 2);
+        assert_eq!(t.owner(1), donor_ix);
+        // The taker empties slab 0 and its decay walk purges it: it owns the
+        // slab's decay now.
+        taker.release(&q[1..]);
+        assert_eq!(taker.desc(0).state(), State::Empty);
+        assert_eq!(taker.stats().empty, 1);
+        assert_eq!(taker.purge_empty(u64::MAX), 1);
+        assert_eq!(taker.stats().purged, 1);
+        assert_eq!(donor.stats().purged, 0);
+        // And the donor can take it back once its own group is used up.
+        donor.release(&r);
+        assert_eq!(taker.idle_groups(), vec![0]);
+        assert_eq!(donor.idle_groups(), vec![1]);
+        let (x, _) = env.claim(donor, nslots + 1);
+        assert_eq!(t.committed_slabs(), 2, "slab 0 came back before anything fresh");
+        assert_eq!(t.owner(0), donor_ix);
+        assert_eq!(donor.desc(0).arena(), donor_ix);
+        assert_eq!(taker.stats(), ClassStats::default());
+        assert_eq!(donor.stats(), ClassStats { committed: 2, guards: 0, empty: 0, purged: 0, nonfull: 1 });
+        assert!(x.iter().any(|&p| donor.locate(p).0 == 0) && x.iter().any(|&p| donor.locate(p).0 == 1));
+    }
+
+    #[test]
+    fn an_idle_group_is_handed_up_to_a_higher_arena() {
+        handoff_between(0, 1);
+    }
+
+    #[test]
+    fn an_idle_group_is_handed_down_to_a_lower_arena() {
+        handoff_between(3, 0);
+    }
+
+    /// A donor's `Purged` slab moves too and is still reported zero.
+    #[test]
+    fn a_purged_group_is_handed_over_and_stays_zero() {
+        let env = Env::new();
+        let c = small_class();
+        let donor = env.class(c, 0);
+        let taker = env.class_in_arena(donor, 1);
+        let (p, _) = env.claim(donor, 2);
+        donor.release(&p);
+        assert_eq!(donor.purge_empty(u64::MAX), 1);
+        assert_eq!(donor.stats().purged, 1);
+        let (q, claim) = env.claim(taker, 1);
+        assert!(claim.zeroed);
+        assert_eq!(taker.locate(q[0]).0, 0);
+        assert_eq!(donor.stats(), ClassStats::default());
+        assert_eq!(taker.stats().committed, 1);
+        assert_eq!(taker.stats().purged, 0);
+        assert_eq!(donor.table().committed_slabs(), 1);
+    }
+
+    /// A group with an `Active` slab, or a slab with a slot still out (in
+    /// a cache, say), is never taken: the taker commits a fresh group.
+    #[test]
+    fn a_group_in_use_is_never_handed_over() {
+        let env = Env::new();
+        let c = small_class();
+        let donor = env.class(c, 0);
+        let taker = env.class_in_arena(donor, 1);
+        let t = donor.table();
+        // One slot out of three: live > 0.
+        let (p, _) = env.claim(donor, 3);
+        donor.release(&p[..2]);
+        assert_eq!(donor.desc(0).state(), State::Active);
+        assert_eq!(donor.desc(0).live(), 1);
+        assert!(donor.idle_groups().is_empty());
+        let (q, _) = env.claim(taker, 1);
+        assert_eq!(taker.locate(q[0]).0, 1);
+        assert_eq!(t.committed_slabs(), 2);
+        assert_eq!(t.owner(0), 0);
+        assert_eq!(donor.desc(0).arena(), 0);
+        assert_eq!(donor.stats().committed, 1);
+        // The last slot comes back: now it moves, on the taker's next need.
+        donor.release(&p[2..]);
+        assert_eq!(donor.idle_groups(), vec![0]);
+        let (r, _) = env.claim(taker, taker.class().nslots());
+        assert_eq!(t.committed_slabs(), 2);
+        assert!(r.iter().any(|&x| taker.locate(x).0 == 0));
+        assert_eq!(t.owner(0), 1);
+    }
+
+    /// A multi-slab group (the 4 KiB-slab class: 128 slabs per bitmap
+    /// line) moves whole, uncommitted slabs included: the taker inherits
+    /// the donor's commit cursor and commits the rest itself, and the
+    /// donor's next slab comes from a new group. A group with one
+    /// `Active` slab among many `Empty` ones stays where it is.
+    #[test]
+    fn a_multi_slab_group_moves_whole_with_its_cursor() {
+        let env = Env::new();
+        let c = min_slab_class();
+        let donor = env.class(c, 0);
+        let taker = env.class_in_arena(donor, 1);
+        let t = donor.table();
+        let group = t.group();
+        assert!(group >= 4, "group of {group}");
+        let nslots = donor.class().nslots();
+        // Two slabs committed, both emptied.
+        let (p, _) = env.claim(donor, 2 * nslots);
+        assert_eq!(t.committed_slabs(), group);
+        assert_eq!(donor.stats().committed, 2);
+        // One slab Active among Empty ones vetoes the group.
+        donor.release(&p[nslots..]);
+        assert_eq!(donor.stats().empty, 1);
+        assert!(donor.idle_groups().is_empty());
+        donor.release(&p[..nslots]);
+        assert_eq!(donor.stats().empty, 2);
+        assert_eq!(donor.idle_groups(), vec![0]);
+        // The taker takes the group: 2 Empty slabs and the cursor at 2.
+        let (q, _) = env.claim(taker, 1);
+        assert_eq!(taker.locate(q[0]).0, 0);
+        assert_eq!(t.committed_slabs(), group);
+        assert_eq!(t.owner(0), 1);
+        for s in 0..group {
+            if !t.is_guard_slab(s) {
+                assert_eq!(taker.desc(s).arena(), 1, "slab {s}");
+            }
+        }
+        assert_eq!(donor.stats(), ClassStats::default());
+        assert_eq!(taker.stats(), ClassStats { committed: 2, guards: 0, empty: 1, purged: 0, nonfull: 1 });
+        // The taker's further claims use slab 1 (Empty), then commit slab
+        // 2 of the same group: still no fresh group.
+        let (r, _) = env.claim(taker, 2 * nslots);
+        assert_eq!(taker.locate(r[r.len() - 1]).0, 2);
+        assert_eq!(t.committed_slabs(), group);
+        assert_eq!(taker.stats().committed, 3);
+        // The donor's cursor was surrendered: its next slab is a new group.
+        let (x, _) = env.claim(donor, 1);
+        assert_eq!(donor.locate(x[0]).0, group);
+        assert_eq!(t.committed_slabs(), 2 * group);
+        assert_eq!(t.owner(group), 0);
+        assert_eq!(donor.stats().committed, 1);
+    }
+
+    /// Four arenas, two threads each, claiming, releasing and purging at
+    /// random over one table, so groups change hands under contention in
+    /// both lock directions. Every purge walk asserts that the empty set
+    /// and the descriptors agree; at the end every slab's descriptor must
+    /// match the owner word and sit in exactly the right set of exactly
+    /// its owner.
+    #[test]
+    fn concurrent_handoffs_keep_sets_and_descriptors_consistent() {
+        let env = Arc::new(Env::new());
+        let c = small_class();
+        let cs0 = env.class(c, 0);
+        let states: Vec<&'static ClassState> = (0..4u16).map(|a| if a == 0 { cs0 } else { env.class_in_arena(cs0, a) }).collect();
+        let threads = 8;
+        let rounds = 400;
+        let mut handles = Vec::new();
+        for t in 0..threads {
+            let env = Arc::clone(&env);
+            let cs = states[t % 4];
+            handles.push(std::thread::spawn(move || {
+                let mut rng = 0x2545_F491_4F6C_DD1Du64 ^ (t as u64 + 1);
+                let mut held: Vec<*mut u8> = Vec::new();
+                for r in 0..rounds {
+                    let k = xorshift(&mut rng) as usize % 300 + 1;
+                    let (p, claim) = env.claim(cs, k);
+                    assert_eq!(claim.n, k);
+                    for &q in &p {
+                        cs.check(q);
+                    }
+                    held.extend(p);
+                    match xorshift(&mut rng) % 8 {
+                        0..=4 => {
+                            let keep = xorshift(&mut rng) as usize % (held.len() + 1);
+                            let mut batch = held.split_off(keep);
+                            batch.sort();
+                            cs.release(&batch);
+                        }
+                        5 => {
+                            let mut batch = core::mem::take(&mut held);
+                            batch.sort();
+                            cs.release(&batch);
+                        }
+                        6 => {
+                            cs.purge_empty(u64::MAX);
+                        }
+                        _ => {}
+                    }
+                    if r % 50 == 0 {
+                        cs.decay(os::now_ns(), 1);
+                    }
+                }
+                held.sort();
+                cs.release(&held);
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        let t = cs0.table();
+        assert!(HANDOFFS.load(Ordering::Relaxed) > 0, "no group changed hands");
+        let mut committed = 0;
+        for a in &states {
+            a.purge_empty(u64::MAX);
+            committed += a.stats().committed;
+        }
+        assert_eq!(committed + t.guards(), t.committed_slabs());
+        for slab in 0..t.committed_slabs() {
+            if t.is_guard_slab(slab) {
+                continue;
+            }
+            let d = cs0.desc(slab);
+            let owner = t.owner(slab);
+            assert_eq!(d.arena(), owner, "slab {slab}");
+            assert_eq!(d.live(), 0, "slab {slab}");
+            for a in &states {
+                let (partial, empty, purged) = a.set_membership(slab);
+                assert!(!partial && !empty, "slab {slab} arena {}", a.arena());
+                assert_eq!(purged, a.arena() == owner && d.state() == State::Purged, "slab {slab} arena {}", a.arena());
+            }
+        }
     }
 
     /// `take_group` cross-checks the group's owner word against the

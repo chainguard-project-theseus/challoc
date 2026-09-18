@@ -190,7 +190,14 @@ records each group's arena; `free` reads it (not the descriptor) to route
 a slot back to a cache of its arena. The word and the descriptors' arena
 field are written together only when a group is handed out
 (`take_group`), which first checks that the two agree (both zero for a
-never-touched group) and aborts on a disagreement. A group spans at most 2 MiB of the
+never-touched group) and aborts on a disagreement, and when an idle group
+changes arena (13.3, `adopt_idle_group`, under both arenas' class locks).
+Nothing else tracks idleness: a group is idle when every committed slab of
+it is in its owner's `empty` or `purged` set, which the taker reads under
+the owner's lock. Because ownership can change, a slab number carried from
+a lock-free step into a lock hold (`reopen`, `on_live_zero`) is checked
+against the owner word under the lock before the arena touches its sets;
+live slots pin a slab, so nothing else crosses that gap. A group spans at most 2 MiB of the
 region (`LG_GROUP_SPAN`): classes with larger slabs pad each slab's bits to
 a whole line instead.
 
@@ -229,6 +236,7 @@ Each `(arena, class)` pair then has a `ClassState` over that table:
 ```
 struct SlabTable {                    // one per class, shared by every arena
     class, lg_group, base, nslabs, desc_base,
+    states,                           // every arena's ClassState over this table, a list (13.3)
     inner: Lock<{ descs, bits, owners, // metadata reservations, committed on demand
                   committed_slabs, next_group, guards }>,
 }
@@ -286,7 +294,20 @@ That is the only lock on the allocation path.
 
 When there is no partial slab, take the lowest `Empty` slab if one exists,
 else the lowest `Purged` slab, else commit the next slab of the arena's
-current group (or take the next group from the class table). Committing means
+current group, else take over an idle group of another arena (13.3: its
+`Empty` and `Purged` slabs join this arena's sets and its uncommitted slabs
+become the current group), else take the next group from the class table.
+The handoff visits the other arenas' states in turn and `try_lock`s each
+donor's class lock while holding the taker's, never waiting (a busy donor is
+skipped, the fresh group is the fallback, so no thread blocks while holding
+a class lock and the fork handlers' order is untouched); under that lock it
+scans the donor's `empty` and `purged` sets group by group (at most
+`MAX_ADOPT_TRIES` groups per donor) for one whose every committed slab is in
+them. The slab transitions keep no extra state for
+this: a first form that counted a group's `Active` slabs and kept a
+class-wide idle set under the commit lock cost `xmalloc` 9% on the fast
+tier, one commit-lock hold and one shared-line write per slab transition
+(PROGRESS, task 15). Committing means
 `mprotect` of the slab's bytes (or of its page group, for slabs smaller than
 a page) to read-write. Fresh slabs are zero from the kernel.
 
@@ -684,7 +705,7 @@ Init must not call anything that allocates. Steps, in the order
    reserved so that `abort_conf` aborts with nothing mapped; it reads only
    the weak symbols, one file and `environ`.
 3. Configure the purge backend from the probe and `lazy_free`, `check_zero`,
-   and record a `background_thread` request (the thread itself is created
+   apply `group_handoff`, and record a `background_thread` request (the thread itself is created
    later, 8.1).
 4. Read secrets from `getrandom`, probe reservation sizes (section 2) and
    reserve the three regions in random order. Name them with
@@ -782,6 +803,7 @@ jemalloc names where they exist:
 | `lg_tcache_nslots_mul`    | 1       |                                         |
 | `tcache_gc_interval_ms`   | 10000   | challoc only                            |
 | `tcache_compact_shift`    | 3       | challoc only; one pop in 2^k compacts, 0 = off (6.4) |
+| `group_handoff`           | true    | challoc only; an arena takes another arena's idle slab group before a fresh one (5, 13.3) |
 | `thp`                     | never   | `never`, `always`; inert (planned)      |
 | `lazy_free`               | false   | use `MADV_FREE` for purge               |
 | `guards`                  | true    | guard slabs and huge runs               |
@@ -880,9 +902,25 @@ An arena is a set of `ClassState`s (one per class, over the shared per-class
 the huge runs allocated through it (the huge allocator itself is one and
 shared by every arena), plus statistics. Arena 0 exists at init. `arenas.create` allocates a
 new one. Slab groups record their arena (section 4). A pointer freed with
-plain `free` is returned to a cache keyed by its slab's arena, so memory never
-migrates between arenas and per-arena statistics stay exact. This is what
-lets Redis exclude its Lua heap from fragmentation accounting.
+plain `free` is returned to a cache keyed by its slab's arena, so a live
+slot never migrates between arenas and per-arena statistics stay exact.
+This is what lets Redis exclude its Lua heap from fragmentation accounting.
+An arena owns its groups until it lends an idle one: when an arena's
+current group of a class is used up and it has no `Empty` or `Purged` slab
+of that class, it takes over a whole group of that class from another arena
+provided no slab of the group is `Active` (every slab `Fresh`, `Empty` or
+`Purged`, `live == 0`, so no slot of it is in the program or in a cache),
+before it takes a fresh group from the region (section 5,
+`ClassState::adopt_idle_group`). Owner word, descriptors, set bits, slab
+counts and, for the donor's current group, the commit cursor move together
+under both arenas' class locks; the slabs' `dirty_at` stay and the
+taker's decay walk owns them from then on. Whole groups only,
+so the line ownership of section 4 holds throughout. Without it, 16 thread
+arenas on the 0.63 s `mstress` row each kept the `Empty` slabs and touched
+pages of their own classes while the others committed fresh ones, 40 of the
+60 MiB by which challoc's RSS exceeded jemalloc's there
+(`bench/results/2026-09-18-phase-1.5-acceptance-3.md`; jemalloc's one dirty
+pool per arena serves every bin).
 
 `narenas` shards automatic allocations across arenas by thread, jemalloc
 style. The default resolves to `min(4 * ncpus, 64)` (`ncpus` from the

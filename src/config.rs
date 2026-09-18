@@ -125,6 +125,11 @@ pub struct Config {
     /// word under the class or huge lock and a non-zero word aborts with
     /// the slab's prior state and the discard backend. Slow paths only.
     pub check_zero: bool,
+    /// An arena whose slab group of a class is used up takes an idle group
+    /// of that class from another arena before it commits a fresh one
+    /// (design 13.3, `ClassState::adopt_idle_group`). `false` keeps every
+    /// group with the arena that first committed it. Slow paths only.
+    pub group_handoff: bool,
 }
 
 impl Default for Config {
@@ -157,6 +162,7 @@ impl Config {
         abort_conf: false,
         cgroup: true,
         check_zero: false,
+        group_handoff: true,
     };
 
     /// Apply one `key:value,key:value` string on top of `self`. Each problem
@@ -277,6 +283,7 @@ impl Config {
             b"double_free_scan" => self.double_free_scan = parse_bool(value).ok_or_else(bad)?,
             b"abort_conf" => self.abort_conf = parse_bool(value).ok_or_else(bad)?,
             b"check_zero" => self.check_zero = parse_bool(value).ok_or_else(bad)?,
+            b"group_handoff" => self.group_handoff = parse_bool(value).ok_or_else(bad)?,
             // jemalloc keys accepted for compatibility and ignored: their
             // values are not validated because we do nothing with them.
             b"junk" | b"zero" | b"retain" | b"oversize_threshold" | b"percpu_arena"
@@ -311,6 +318,7 @@ impl Config {
             b"abort_conf" => Value::Bool(self.abort_conf),
             b"cgroup" => Value::Bool(self.cgroup),
             b"check_zero" => Value::Bool(self.check_zero),
+            b"group_handoff" => Value::Bool(self.group_handoff),
             _ => return None,
         })
     }
@@ -420,6 +428,7 @@ pub const KEYS: &[&str] = &[
     "abort_conf",
     "cgroup",
     "check_zero",
+    "group_handoff",
 ];
 
 /// jemalloc keys that are accepted and ignored.
@@ -874,7 +883,7 @@ mod tests {
         assert_eq!(d.huge_retain_max, 64 << 20);
         assert_eq!(d.huge_retain_max, crate::huge::DEFAULT_RETAIN_MAX);
         assert!(!d.zero_on_free && !d.slot_randomize && !d.double_free_scan && !d.abort_conf && !d.check_zero);
-        assert!(d.cgroup);
+        assert!(d.cgroup && d.group_handoff);
         assert_eq!(Config::default(), d);
         assert_eq!(d.gc_interval_ns(), 10_000_000_000);
         assert_eq!(d.effective_guard_slab_interval(), 8);
@@ -900,6 +909,7 @@ mod tests {
             "abort_conf",
             "cgroup",
             "check_zero",
+            "group_handoff",
         ];
         for key in keys {
             for v in [true, false] {
@@ -1153,7 +1163,7 @@ mod tests {
             let round = if is_inert(key.as_bytes()) { inert(&text, 1) } else { clean(&text) };
             assert_eq!(round, cfg, "{key}:{value} round trip");
         }
-        assert_eq!(KEYS.len(), 21);
+        assert_eq!(KEYS.len(), 22);
         assert_eq!(cfg.get(b"nonsense"), None);
         assert_eq!(cfg.get(b""), None);
         for key in IGNORED_KEYS {

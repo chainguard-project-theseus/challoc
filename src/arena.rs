@@ -192,6 +192,9 @@ impl Arena {
                     Some(cs) => ptr::write(&raw mut (*this).classes[c], cs),
                     None => return false,
                 }
+                // At its final address: the table's donor lookup for the
+                // group handoff walks these (never freed, design 13.3).
+                tables[c].register_state(&raw const (*this).classes[c]);
             }
             ptr::write(&raw mut (*this).large_runs, AtomicUsize::new(0));
             ptr::write(&raw mut (*this).large_pages, AtomicUsize::new(0));

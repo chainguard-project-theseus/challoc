@@ -196,6 +196,7 @@ fn init() {
     let config = config::load();
     purge::configure(features.process_madvise, config.lazy_free);
     purge::set_check_zero(config.check_zero);
+    crate::class::set_group_handoff(config.group_handoff);
     purge::background::request(config.background_thread);
     let regions = Regions::reserve(features.page_size, features.anon_name);
     // SAFETY: the statics are written once here, before `READY` is

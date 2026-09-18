@@ -173,6 +173,14 @@ impl SlabDesc {
         self.arena.load(Ordering::Relaxed)
     }
 
+    /// Move the slab to `arena`. Only ever called by a group handoff
+    /// (`class.rs`), with both arenas' class locks and the commit lock
+    /// held and `live == 0`.
+    #[inline]
+    pub fn set_arena(&self, arena: u16) {
+        self.arena.store(arena, Ordering::Relaxed);
+    }
+
     /// Acquire: a releaser clears bits and then subtracts, so a reader that
     /// sees the smaller count also sees the cleared bits. `class.rs` relies
     /// on that to treat `nslots - live` as a lower bound on claimable slots.
