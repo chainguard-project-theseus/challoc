@@ -6,6 +6,7 @@
 # target/quick/{old,new}/release/):
 #
 #   bash bench/gce/quick-perf.sh arm64|amd64 [ROWS="larson1 valkey1"] [VARIANTS="old new jemalloc"]
+#                                            (a variant may carry a MALLOC_CONF: "new:double_free_scan:true")
 #                                            [EVENTS=cycles,instructions,L1-dcache-load-misses,dTLB-load-misses]
 #                                            [OUTDIR=~/logs/quick-perf]
 #
@@ -31,7 +32,7 @@ drun() { docker run --rm -v "$REPO":/src -w /src -v "challoc-target-$T":/src/tar
 # Row command lines and the probes come from bench/lib.sh inside the container.
 in_lib() { drun sh -c "ROOT=/src; . /src/bench/lib.sh; $1"; }
 lib_of() {
-  case $1 in
+  case ${1%%:*} in
     old|new) echo "/src/target/quick/$1/release/libchalloc.so";;
     jemalloc) echo /usr/lib/libjemalloc.so.2;;
     glibc) echo "";;
@@ -41,8 +42,9 @@ lib_of() {
 }
 
 in_lib "ensure_probe valkey_model; ensure_probe churn" >/dev/null
+conf_of() { case $1 in *:*) echo "${1#*:}";; esac; }
 for v in $VARIANTS; do
-  case $v in old|new) in_lib "test -f $(lib_of "$v")" || { echo "quick-perf: no $(lib_of "$v") in the target volume; run 'make quick QUICK_BUILD_ONLY=1' first" >&2; exit 1; };; esac
+  case ${v%%:*} in old|new) in_lib "test -f $(lib_of "$v")" || { echo "quick-perf: no $(lib_of "$v") in the target volume; run 'make quick QUICK_BUILD_ONLY=1' first" >&2; exit 1; };; esac
 done
 
 echo "== quick-perf on $(hostname) ($(uname -m)), load $(cut -d' ' -f1-3 /proc/loadavg), events $EVENTS, rows: $ROWS, variants: $VARIANTS"
@@ -55,7 +57,7 @@ for b in $ROWS; do
   for v in $VARIANTS; do
     tag=$b.$v
     cid=$(docker run -d -v "$REPO":/src -w /src -v "challoc-target-$T":/src/target "$IMAGE" \
-          sh -c "sleep 1; exec env LD_PRELOAD=$(lib_of "$v") $cmd")
+          sh -c "sleep 1; exec env MALLOC_CONF=$(conf_of "$v") LD_PRELOAD=$(lib_of "$v") $cmd")
     pid=
     for _ in $(seq 1 50); do pid=$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null || true); [ -n "$pid" ] && [ "$pid" != 0 ] && break; sleep 0.1; done
     [ -n "$pid" ] && [ "$pid" != 0 ] || { echo "quick-perf: container for $tag did not start" >&2; docker rm -f "$cid" >/dev/null 2>&1 || true; continue; }

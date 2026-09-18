@@ -134,6 +134,12 @@ fn run_bin_env(name: &str, bin: &str, args: &[&str], env: &[(&str, &str)]) {
 /// show it reached the bad operation and never survived it, and for aborts
 /// stderr must carry the `challoc: ` line with every string in `expect`.
 fn run_c_negative(mode: &str, signal: i32, expect: &[&str]) -> std::string::String {
+    run_c_negative_env(mode, signal, expect, &[])
+}
+
+/// [`run_c_negative`] with extra environment for the preloaded run
+/// (`MALLOC_CONF` for the tunable modes).
+fn run_c_negative_env(mode: &str, signal: i32, expect: &[&str], env: &[(&str, &str)]) -> std::string::String {
     use std::os::unix::process::ExitStatusExt;
     let so = release_so();
     let bin = compile("tests/c", "negative", &[]);
@@ -146,7 +152,12 @@ fn run_c_negative(mode: &str, signal: i32, expect: &[&str]) -> std::string::Stri
         String::from_utf8_lossy(&bare.stderr)
     );
 
-    let run = Command::new(&bin).arg(mode).env("LD_PRELOAD", &so).output().unwrap();
+    let mut cmd = Command::new(&bin);
+    cmd.arg(mode).env("LD_PRELOAD", &so);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let run = cmd.output().unwrap();
     let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&run.stdout);
     let stderr = String::from_utf8_lossy(&run.stderr);
@@ -214,6 +225,31 @@ fn c_negative_huge_overflow() {
     // The byte after a huge run is its guard page (`PROT_NONE`, or
     // `MADV_GUARD_INSTALL` where the kernel has it); either way SIGSEGV.
     run_c_negative("huge_overflow", SIGSEGV, &[]);
+}
+
+/// Plan Phase 1.5 task 9c: with `double_free_scan` the second free is
+/// caught at the call, while the first copy is one of the top four cache
+/// entries, on plain `free` and on the sized path (which otherwise defers
+/// every check to the flush).
+#[test]
+fn c_negative_double_free_cached_with_scan() {
+    run_c_negative_env(
+        "double_free_cached",
+        SIGABRT,
+        &["double free of 0x", "already in the thread cache"],
+        &[("MALLOC_CONF", "double_free_scan:true")],
+    );
+}
+
+#[test]
+fn c_negative_sized_double_free_with_scan() {
+    let out = run_c_negative_env(
+        "sized_double_free",
+        SIGABRT,
+        &["double free of 0x", "already in the thread cache"],
+        &[("MALLOC_CONF", "double_free_scan:true")],
+    );
+    assert!(!out.contains("returned"), "the second sdallocx returned under double_free_scan: {out}");
 }
 
 /// Plan Phase 1.5 task 9a: the two copies of a cached double free sort to

@@ -340,8 +340,11 @@ reads; halving the flush rate halves those misses (Phase 0 acceptance,
    abort.
 2. Compute slab and slot; verify `slot * size == offset`; load the class
    bitmap word; verify bit set. Otherwise abort.
-3. Optional hardened check: compare `p` against the top 4 cache entries; a
-   match is a double free. Full-array scan when `double_free_scan` is set.
+3. With `double_free_scan`: compare `p` against the top 4 cache entries; a
+   match is a double free whose first copy is still cached (the bit test
+   cannot see it) and aborts before the push. The same compare guards the
+   sized path's push. Off by default unless the rows in
+   `bench/results/2026-09-18-*-gce-detection-gaps.md` price it under 1%.
 4. `heap = tls()`; `cache = heap.caches[owner[slab / group]][c]`; if
    `len == cap`, slow path (flush half). `slots[len++] = p`.
 
@@ -651,7 +654,7 @@ jemalloc names where they exist:
 | `guard_slab_interval`     | 8       | one guard per N x 64 KiB of slabs       |
 | `zero_on_free`            | false   |                                         |
 | `slot_randomize`          | false   |                                         |
-| `double_free_scan`        | false   | scan whole cache on free                |
+| `double_free_scan`        | false   | compare against the top 4 cache entries |
 | `abort_conf`              | false   | abort on unknown keys                   |
 | `cgroup`                  | true    |                                         |
 | `check_zero`              | false   | challoc only; debug: read every slot/page handed out as zero, abort on a dirty word |

@@ -415,6 +415,10 @@ pub struct Shared {
     /// and larson's working set turns every extra line into an L2 hit
     /// (`bench/results/2026-09-16-aarch64-arenas-lines.md`).
     multi_arena: AtomicBool,
+    /// `double_free_scan` (design 6.3 step 3): every push compares the slot
+    /// against the top four cache entries and aborts on a match. Written
+    /// once by `init`; kept on the line every `free` reads.
+    double_free_scan: bool,
     pub regions: Regions,
     tables: [SlabTable; NCLASSES],
     pub arena0: Arena,
@@ -595,6 +599,7 @@ impl Shared {
             ptr::write(meta, Meta::new(regions.meta_base, regions.meta_len, regions.page_size()));
             ptr::write(&raw mut (*this).regions, regions);
             ptr::write(&raw mut (*this).multi_arena, AtomicBool::new(false));
+            ptr::write(&raw mut (*this).double_free_scan, config.double_free_scan);
             let meta = &*meta;
             let regions = &*(&raw const (*this).regions);
             let tables = &raw mut (*this).tables;
@@ -661,6 +666,13 @@ impl Shared {
     #[inline(always)]
     pub fn multi_arena(&self) -> bool {
         self.multi_arena.load(Ordering::Relaxed)
+    }
+
+    /// Whether pushes compare against the top four cache entries
+    /// (`double_free_scan`).
+    #[inline(always)]
+    pub fn double_free_scan(&self) -> bool {
+        self.double_free_scan
     }
 
     /// A second arena is being built (`Arenas::build`).
@@ -1518,7 +1530,7 @@ impl Heap {
     /// Push a checked slot of `class` (home arena) onto its cache.
     #[inline(always)]
     fn push(&mut self, shared: &Shared, class: usize, p: *mut u8) {
-        if !self.push_fast(class, p) {
+        if !self.push_fast(class, p, shared.double_free_scan()) {
             self.free_slow(shared, class, p);
         }
     }
@@ -1527,26 +1539,43 @@ impl Heap {
     /// sentinel) and the caller must take a slow path. No counter moves:
     /// the push count is implied by `len`, `allocs` and `moved`. `zeroed`
     /// is written only when the pushed slot lands inside the zero prefix,
-    /// which is rare (the prefix is usually already zero).
+    /// which is rare (the prefix is usually already zero). `scan` is
+    /// `Shared::double_free_scan`.
     #[inline(always)]
-    pub fn push_fast(&mut self, class: usize, p: *mut u8) -> bool {
+    pub fn push_fast(&mut self, class: usize, p: *mut u8, scan: bool) -> bool {
         let cache = self.cache_ptr(class);
         // SAFETY: this thread's own header, unused (`len == cap == 0`, so
         // nothing is written) or with a stack of `cap` slots.
-        unsafe { Self::push_cache(cache, p) }
+        unsafe { Self::push_cache(cache, p, scan) }
     }
 
-    /// Push onto `cache` unless it is full.
+    /// Push onto `cache` unless it is full. With `scan`, compare `p`
+    /// against the top four entries first (design 6.3 step 3, plan Phase
+    /// 1.5 task 9c): a match is a double free whose first copy is still
+    /// cached, which the bit test cannot see, and it aborts before the
+    /// second copy is stored. Four unconditional compares from the line
+    /// the push writes to; a cache holding fewer than four takes the loop.
     ///
     /// # Safety
     /// `cache` is a header owned by this heap, unused or with a stack.
     #[inline(always)]
-    unsafe fn push_cache(cache: *mut CacheHeader, p: *mut u8) -> bool {
+    unsafe fn push_cache(cache: *mut CacheHeader, p: *mut u8, scan: bool) -> bool {
         // SAFETY: guaranteed by the caller.
         unsafe {
             let len = (*cache).len;
             if len == (*cache).cap {
                 return false;
+            }
+            if scan && len != 0 {
+                let top = (*cache).slots().add(len as usize);
+                let hit = if len >= 4 {
+                    (*top.sub(1) == p) | (*top.sub(2) == p) | (*top.sub(3) == p) | (*top.sub(4) == p)
+                } else {
+                    (1..=len as usize).any(|i| *top.sub(i) == p)
+                };
+                if hit {
+                    cached_twice(p);
+                }
             }
             *(*cache).slots().add(len as usize) = p;
             (*cache).len = len + 1;
@@ -1640,7 +1669,7 @@ impl Heap {
         if !node.is_null() {
             // SAFETY: `node` is a live block owned by this heap; the cache
             // is unused (`len == cap == 0`) or ours.
-            if unsafe { Self::push_cache(Self::node_cache_ptr(node, class), p) } {
+            if unsafe { Self::push_cache(Self::node_cache_ptr(node, class), p, shared.double_free_scan()) } {
                 return;
             }
         }
@@ -1662,7 +1691,7 @@ impl Heap {
                 let half = ((*cache).cap / 2).max(1);
                 self.flush(shared, arena, cache, class, half as usize);
             }
-            if !Self::push_cache(cache, p) {
+            if !Self::push_cache(cache, p, shared.double_free_scan()) {
                 unreachable!("heap: cache still full after a flush");
             }
         }
@@ -2032,7 +2061,7 @@ pub fn existing_heap() -> Option<&'static mut Heap> {
 #[inline(always)]
 pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8) -> bool {
     match shared.checked_slot(p, h) {
-        Some(class) => h.push_fast(class, p),
+        Some(class) => h.push_fast(class, p, shared.double_free_scan()),
         None => false,
     }
 }
@@ -2047,7 +2076,7 @@ pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8) -> bool {
 #[inline(always)]
 pub fn free_sized_fast(shared: &Shared, h: &mut Heap, p: *mut u8, hint: Option<usize>) -> bool {
     match shared.sized_slot(p, hint) {
-        Some(class) => h.push_fast(class, p),
+        Some(class) => h.push_fast(class, p, shared.double_free_scan()),
         None => false,
     }
 }
@@ -2109,6 +2138,14 @@ pub fn free_direct(shared: &Shared, p: *mut u8) {
 #[inline(never)]
 fn invalid_free(p: usize) -> ! {
     panic!("invalid free of {p:#x}: not an allocation")
+}
+
+/// `double_free_scan`: the slot being pushed is one of the top four cache
+/// entries, so it was freed a moment ago and never handed out since.
+#[cold]
+#[inline(never)]
+fn cached_twice(p: *mut u8) -> ! {
+    panic!("double free of {:#x}: the slot is already in the thread cache", p as usize)
 }
 
 /// Two copies of one slot in a cache at flush time, one on each side of
@@ -2488,6 +2525,55 @@ pub(crate) mod tests {
             .expect("a message");
         assert!(msg.contains(&std::format!("double free of {:#x} (class {c}", p as usize)), "{msg}");
         msg
+    }
+
+    /// Plan Phase 1.5 task 9c: with `double_free_scan` a second free of a
+    /// slot that is one of the top four cache entries aborts at the push;
+    /// deeper than that it is left to the flush as before.
+    #[test]
+    fn double_free_scan_compares_the_top_four_entries() {
+        let s = shared_with(Config { narenas: 1, double_free_scan: true, ..Config::DEFAULT });
+        assert!(s.double_free_scan());
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        for between in 0..=4usize {
+            let p: Vec<*mut u8> = (0..6).map(|_| t.alloc(c)).collect();
+            let before = t.cache(c).len();
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                t.free(p[0]);
+                for &q in &p[1..=between] {
+                    t.free(q);
+                }
+                t.free(p[0]);
+            }));
+            let msg = |e: Box<dyn std::any::Any + Send>| {
+                e.downcast_ref::<std::string::String>()
+                    .cloned()
+                    .or_else(|| e.downcast_ref::<&str>().map(|m| std::string::String::from(*m)))
+                    .expect("a message")
+            };
+            if between < 4 {
+                let m = msg(r.expect_err("the push let a double free through"));
+                assert!(m.contains(&std::format!("double free of {:#x}: the slot is already in the thread cache", p[0] as usize)), "{between}: {m}");
+                // The abort came before the second copy was stored.
+                assert_eq!(t.cache(c).len(), before + between + 1);
+                for &q in &p[between + 1..] {
+                    t.free(q);
+                }
+                t.flush_all();
+            } else {
+                r.expect("the fifth entry down is not compared");
+                // Both copies are cached; the flush catches them.
+                let m = msg(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| t.flush_all())).expect_err("flush"));
+                assert!(m.contains("double free of"), "{m}");
+            }
+        }
+    }
+
+    #[test]
+    fn double_free_scan_off_by_default_leaves_the_push_alone() {
+        let s = shared();
+        assert_eq!(s.double_free_scan(), Config::DEFAULT.double_free_scan);
     }
 
     #[test]
