@@ -814,25 +814,28 @@ impl Heap {
             return h;
         }
         // SAFETY: `h` is a fresh, exclusively owned metadata block of the
-        // right size and alignment.
+        // right size and alignment. Field by field: a whole `Heap`
+        // temporary (3.4 KiB since the headers moved inline) deepened the
+        // stack of every thread's first allocation by one page, which
+        // larson's thread churn turned into +1.7 MiB of RSS per 437
+        // threads (thread stacks stay mapped; measured on the arm64 VM,
+        // `bench/results/2026-09-18-aarch64-gce-dense-headers.md`).
         unsafe {
-            ptr::write(
-                h,
-                Heap {
-                    shared,
-                    tid: os::tid(),
-                    arena,
-                    slow_ticks: 0,
-                    last_gc: os::now_ns(),
-                    rng: os::seed(),
-                    uncached: ThreadStats::default(),
-                    others: ptr::null_mut(),
-                    snapshot: ThreadStats::default(),
-                    tcache_enabled: true,
-                    bound: false,
-                    caches: [CacheHeader::EMPTY; NCLASSES],
-                },
-            );
+            ptr::write(&raw mut (*h).shared, shared);
+            ptr::write(&raw mut (*h).tid, os::tid());
+            ptr::write(&raw mut (*h).arena, arena);
+            ptr::write(&raw mut (*h).slow_ticks, 0);
+            ptr::write(&raw mut (*h).last_gc, os::now_ns());
+            ptr::write(&raw mut (*h).rng, os::seed());
+            ptr::write(&raw mut (*h).uncached, ThreadStats::default());
+            ptr::write(&raw mut (*h).others, ptr::null_mut());
+            ptr::write(&raw mut (*h).snapshot, ThreadStats::default());
+            ptr::write(&raw mut (*h).tcache_enabled, true);
+            ptr::write(&raw mut (*h).bound, false);
+            let caches = (&raw mut (*h).caches).cast::<CacheHeader>();
+            for c in 0..NCLASSES {
+                ptr::write(caches.add(c), CacheHeader::EMPTY);
+            }
         }
         h
     }
