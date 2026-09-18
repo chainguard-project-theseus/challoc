@@ -94,7 +94,7 @@ use crate::arena::{Arena, Arenas, Tcaches};
 use crate::class::SlabTable;
 use crate::config::Config;
 use crate::huge::{GUARD_PAGES, Huge};
-use crate::layout::{CLASSES, Kind, NBINS, NCLASSES, Regions};
+use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
 use crate::lock::Lock;
 use crate::meta::Meta;
 
@@ -124,7 +124,7 @@ pub const TLS_EXITED: usize = 2;
 /// up to 128 bytes, halved for every doubling of the class size, never
 /// below [`MIN_CAP`].
 pub const fn default_cap(class: usize) -> u32 {
-    crate::config::cap_for(class, MAX_CAP, 1)
+    crate::config::ladder(class, MAX_CAP, 1)
 }
 
 /// One thread's cache header for one size class: exactly one cache line,
@@ -1238,10 +1238,20 @@ impl Heap {
     /// that arena (`MALLOCX_ARENA`, or the home arena of an explicit
     /// cache). Null when `arena` does not exist or is exhausted.
     pub fn alloc_in(&mut self, shared: &Shared, arena: u16, class: usize) -> (*mut u8, bool) {
-        if arena == self.arena {
-            return self.alloc_zeroed(shared, class);
+        if arena != self.arena {
+            return self.alloc_other(shared, arena, class);
         }
-        self.alloc_other(shared, arena, class)
+        let cache = self.cache_ptr(class);
+        // SAFETY: as in `alloc`.
+        unsafe {
+            let len = (*cache).len;
+            if len != 0 {
+                return self.pop(cache, class, len);
+            }
+        }
+        // Not `alloc_slow`: an explicit arena is kept even for a shared
+        // class (design 13.3).
+        self.alloc_slow_in(shared, arena, class)
     }
 
     /// Pop the top entry of a non-empty cache. Touches only the header
@@ -1597,13 +1607,11 @@ impl Heap {
     #[cold]
     #[inline(never)]
     fn alloc_slow(&mut self, shared: &Shared, class: usize) -> (*mut u8, bool) {
-        // Classes above `tcache_max` are uncached and served straight from
-        // the bitmaps, and their slabs are 1..4 MiB: one shared arena's
-        // partial slabs instead of one set per thread arena (mstress at 16
-        // arenas held 200 MiB more of them than at one,
-        // `bench/results/2026-09-18-aarch64-gce-arena-rss.md`). Explicit
-        // `MALLOCX_ARENA` allocations (`alloc_in`) keep their arena.
-        let arena = if CLASSES[class].size() > shared.config.tcache_max { 0 } else { self.arena };
+        // The default path's one routing decision: a shared class (above
+        // `tcache_max`, uncached everywhere) comes from arena 0 whatever
+        // the home arena (`Config::shared_class`); explicit `MALLOCX_ARENA`
+        // allocations (`alloc_in`) keep theirs.
+        let arena = if shared.config.shared_class(class) { 0 } else { self.arena };
         self.alloc_slow_in(shared, arena, class)
     }
 
@@ -1613,6 +1621,12 @@ impl Heap {
     #[cold]
     #[inline(never)]
     fn alloc_other(&mut self, shared: &Shared, arena: u16, class: usize) -> (*mut u8, bool) {
+        // A class this heap never caches for `arena` (`Config::cap_for`):
+        // straight to the slow path, which serves it from the bitmaps
+        // without creating an `others` node.
+        if shared.config.cap_for(self.arena, arena, class) == 0 {
+            return self.alloc_slow_in(shared, arena, class);
+        }
         let node = self.other_caches(shared, arena, true);
         if !node.is_null() {
             // SAFETY: `node` is a live block owned by this heap.
@@ -1664,10 +1678,9 @@ impl Heap {
     #[cold]
     #[inline(never)]
     fn free_other(&mut self, shared: &Shared, arena: u16, class: usize, p: *mut u8) {
-        // No cache for another arena's classes above BIN_MAX
-        // (`Config::other_cache_cap`): straight to the owner's bitmap
-        // without creating a node for it.
-        if class >= NBINS {
+        // A class this heap never caches for `arena` (`Config::cap_for`):
+        // straight to the owner's bitmap without creating a node for it.
+        if shared.config.cap_for(self.arena, arena, class) == 0 {
             return self.free_slow_in(shared, arena, class, p);
         }
         let node = self.other_caches(shared, arena, true);
@@ -1769,7 +1782,7 @@ impl Heap {
     fn ensure_cache(&mut self, shared: &Shared, arena: u16, class: usize) -> *mut CacheHeader {
         // The capacity first: a class that is never cached for this arena
         // must not create an `others` node.
-        let cap = if arena == self.arena { shared.config.cache_cap(class) } else { shared.config.other_cache_cap(class) };
+        let cap = shared.config.cap_for(self.arena, arena, class);
         if cap == 0 || !self.tcache_enabled {
             return ptr::null_mut();
         }
@@ -3640,6 +3653,47 @@ pub(crate) mod tests {
         unsafe { Heap::destroy(t.h, s) };
         assert!(s.meta.stats().allocated < before);
         core::mem::forget(t);
+    }
+
+    /// A shared class (above `tcache_max`) comes from arena 0 on the
+    /// default path whatever the home arena, but `MALLOCX_ARENA(a)`
+    /// keeps `a`, home or not (design 13.3), and a heap creates no
+    /// `others` node for a class it never caches there (`Config::cap_for`).
+    #[test]
+    fn explicit_arena_keeps_a_shared_class_in_its_arena() {
+        let s = shared();
+        let a1 = s.arenas.create(s).unwrap();
+        let t = TestHeap::new(s);
+        let h = t.heap();
+        let c = class_with(64 * 1024);
+        assert!(s.config.shared_class(c));
+        assert_eq!(s.config.cap_for(0, 0, c), 0);
+        assert_eq!(s.config.cap_for(0, a1, c), 0);
+        h.set_arena(s, a1);
+        // Default path: arena 0.
+        let (d, _) = h.alloc_zeroed(s, c);
+        assert_eq!(s.classify_free(d), Ok((c, 0)));
+        // The home arena named explicitly: stays home.
+        let (p, _) = h.alloc_in(s, a1, c);
+        assert_eq!(s.classify_free(p), Ok((c, a1)));
+        assert_eq!(s.arena(a1).unwrap().classes[c].stats().committed, 1);
+        // A foreign arena named explicitly, through a heap that caches
+        // nothing of that class there: no node, no cache, right arena.
+        let before = s.meta.stats().allocated;
+        let (q, _) = h.alloc_in(s, 0, c);
+        assert_eq!(s.classify_free(q), Ok((c, 0)));
+        assert_eq!(s.meta.stats().allocated, before, "no others node for an uncached class");
+        assert!(h.cache_in(0, c).is_none());
+        assert!(h.cache(c).is_none());
+        let st = h.stats();
+        assert_eq!(st.allocated, 3 * 64 * 1024);
+        h.free(s, d);
+        h.free(s, p);
+        h.free(s, q);
+        assert_eq!(s.meta.stats().allocated, before);
+        assert_eq!(h.stats().deallocated, 3 * 64 * 1024);
+        assert_eq!(s.arena(a1).unwrap().classes[c].stats().empty, 1);
+        assert_eq!(s.arena0.classes[c].stats().empty, 1);
     }
 
     /// `thread.arena`: the home arena changes without flushing; the old

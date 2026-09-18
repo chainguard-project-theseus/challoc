@@ -616,8 +616,12 @@ pub fn alloc(shared: &Shared, class: usize, arena: Option<u16>, tcache: Tcache) 
         },
         Tcache::Explicit(t) => {
             let Some(h) = shared.tcaches.get(t) else { invalid_tcache(t) };
-            let a = arena.unwrap_or(h.arena());
-            h.alloc_in(shared, a, class)
+            // As for the default cache: only an explicit arena pins a
+            // shared class to it (`Heap::alloc_in`).
+            match arena {
+                Some(a) => h.alloc_in(shared, a, class),
+                None => h.alloc_zeroed(shared, class),
+            }
         }
         Tcache::None => {
             let a = arena.or_else(|| crate::heap::existing_heap().map(|h| h.arena())).unwrap_or(0);

@@ -346,13 +346,22 @@ static void test_arenas_threads_tcaches(void)
     CHECK(get_unsigned("arenas.narenas") > arena, "narenas covers the new arena");
     void *p = mallocx(200, MALLOCX_ARENA(arena));
     void *h = mallocx(4 << 20, MALLOCX_ARENA(arena) | MALLOCX_TCACHE_NONE);
-    REQUIRE(p && h, "arena allocations");
+    /* 64 KiB is above tcache_max (32 KiB): a shared class, which the
+     * default path takes from arena 0; MALLOCX_ARENA must keep it here. */
+    void *m = mallocx(64 << 10, MALLOCX_ARENA(arena));
+    REQUIRE(p && h && m, "arena allocations");
     unsigned owner = 99;
     len = sizeof owner;
     void *q = p;
     CHECK(mallctl("arenas.lookup", &owner, &len, &q, sizeof q) == 0 && owner == arena, "arenas.lookup small -> %u", owner);
     q = h;
     CHECK(mallctl("arenas.lookup", &owner, &len, &q, sizeof q) == 0 && owner == arena, "arenas.lookup huge -> %u", owner);
+    q = m;
+    CHECK(mallctl("arenas.lookup", &owner, &len, &q, sizeof q) == 0 && owner == arena, "arenas.lookup 64 KiB (above tcache_max) -> %u", owner);
+    void *d0 = mallocx(64 << 10, 0);
+    q = d0;
+    CHECK(mallctl("arenas.lookup", &owner, &len, &q, sizeof q) == 0 && owner == 0, "default path 64 KiB -> arena 0 (got %u)", owner);
+    dallocx(d0, 0);
     int on_stack = 0;
     q = &on_stack;
     CHECK(mallctl("arenas.lookup", &owner, &len, &q, sizeof q) == EFAULT, "arenas.lookup garbage");
@@ -361,7 +370,7 @@ static void test_arenas_threads_tcaches(void)
     snprintf(key, sizeof key, "stats.arenas.%u.small.allocated", arena);
     CHECK(get_size(key) >= 200, "%s", key);
     snprintf(key, sizeof key, "stats.arenas.%u.large.allocated", arena);
-    CHECK(get_size(key) >= (4u << 20), "%s", key);
+    CHECK(get_size(key) >= (4u << 20) + (64u << 10), "%s covers the 64 KiB MALLOCX_ARENA allocation", key);
     ssize_t ms = 123;
     snprintf(key, sizeof key, "arena.%u.dirty_decay_ms", arena);
     CHECK(mallctl(key, NULL, NULL, &ms, sizeof ms) == 0, "set %s", key);
@@ -370,6 +379,7 @@ static void test_arenas_threads_tcaches(void)
     CHECK(mallctl(key, &back, &len, NULL, 0) == 0 && back == 123, "%s = %zd", key, back);
     dallocx(p, 0);
     dallocx(h, 0);
+    dallocx(m, 0);
     snprintf(key, sizeof key, "arena.%u.purge", arena);
     CHECK(mallctl(key, NULL, NULL, NULL, 0) == 0, "%s", key);
     CHECK(mallctl("arena.4096.purge", NULL, NULL, NULL, 0) == 0, "arena.4096.purge (MEMORY PURGE)");

@@ -306,32 +306,46 @@ impl Config {
         })
     }
 
-    /// Cache capacity for a class under this configuration: the design's
-    /// ladder (`tcache_nslots_small_max` slots up to 128 bytes, halving per
-    /// doubling of the class size) shifted by `lg_tcache_nslots_mul - 1`
-    /// doublings, clamped to `[MIN_CAP, tcache_nslots_small_max]`. Zero when
-    /// `tcache` is off or the class is larger than `tcache_max`, which makes
-    /// every thread serve that class straight from the slab bitmaps.
-    pub fn cache_cap(&self, class: usize) -> u32 {
-        if !self.tcache || crate::layout::CLASSES[class].size() > self.tcache_max {
-            return 0;
-        }
-        cap_for(class, self.tcache_nslots_small_max, self.lg_tcache_nslots_mul)
+    /// Whether `class` is a *shared* class: larger than `tcache_max`, so no
+    /// heap caches it and the default path (`Heap::alloc_slow`) allocates
+    /// it from arena 0 whatever the thread's arena (design 13.3): its slabs
+    /// are 1..4 MiB and one partial slab per class per arena, times 16
+    /// arenas, was 60 MiB of mstress's RSS
+    /// (`bench/results/2026-09-18-aarch64-gce-arena-rss.md`). Explicit
+    /// `MALLOCX_ARENA` allocations keep their arena.
+    #[inline]
+    pub fn shared_class(&self, class: usize) -> bool {
+        crate::layout::CLASSES[class].size() > self.tcache_max
     }
 
-    /// Cache capacity for a class in a cache for another arena than the
-    /// heap's own (`Heap::others`): the home ladder for bin classes, none
-    /// above `layout::BIN_MAX`. A thread caches slots of every arena it
-    /// frees into, so a foreign cache's residue is multiplied by the arena
-    /// count: 16 threads freeing 4..32 KiB slots of 16 arenas held 8 slots
-    /// per (thread, arena, class), 190 MiB of mstress's RSS, where
-    /// jemalloc's single per-thread cache holds one set of 20
-    /// (`bench/results/2026-09-18-*-gce-arena-rss.md`).
-    pub fn other_cache_cap(&self, class: usize) -> u32 {
-        if class >= crate::layout::NBINS {
+    /// The one rule for which classes are cached where: the capacity of
+    /// the cache a heap homed on `home` keeps for `class` in `arena`. Zero
+    /// means no cache: the slot goes straight to the bitmaps and the heap
+    /// creates no `others` node for it. Zero when `tcache` is off, when
+    /// the class is a [`shared_class`], and, for another arena than the
+    /// home one, above `layout::BIN_MAX`: a thread caches slots of every
+    /// arena it frees into, so a foreign cache's residue is multiplied by
+    /// the arena count (16 threads freeing 4..32 KiB slots of 16 arenas
+    /// held 8 slots per (thread, arena, class), 190 MiB of mstress's RSS,
+    /// where jemalloc's single per-thread cache holds one set of 20). Else
+    /// the design's ladder: `tcache_nslots_small_max` slots up to 128
+    /// bytes, halving per doubling of the class size, shifted by
+    /// `lg_tcache_nslots_mul - 1` doublings and clamped to `[MIN_CAP,
+    /// tcache_nslots_small_max]`.
+    ///
+    /// [`shared_class`]: Config::shared_class
+    pub fn cap_for(&self, home: u16, arena: u16, class: usize) -> u32 {
+        if !self.tcache || self.shared_class(class) || (arena != home && class >= crate::layout::NBINS) {
             return 0;
         }
-        self.cache_cap(class)
+        ladder(class, self.tcache_nslots_small_max, self.lg_tcache_nslots_mul)
+    }
+
+    /// [`cap_for`] for a heap's own arena.
+    ///
+    /// [`cap_for`]: Config::cap_for
+    pub fn cache_cap(&self, class: usize) -> u32 {
+        self.cap_for(0, 0, class)
     }
 
     /// `tcache_gc_interval_ms` in nanoseconds.
@@ -424,8 +438,9 @@ pub fn is_inert(key: &[u8]) -> bool {
 /// Cache capacity ladder: `max` slots for classes up to 128 bytes, halved
 /// per doubling of the class size, shifted by `lg_mul - 1` doublings and
 /// clamped to `[MIN_CAP, max]`. With `max = MAX_CAP` and `lg_mul = 1` this
-/// is the design 6.2 table (`heap::default_cap`).
-pub const fn cap_for(class: usize, max: u32, lg_mul: i32) -> u32 {
+/// is the design 6.2 table (`heap::default_cap`); [`Config::cap_for`] adds
+/// the rules for which classes are cached at all.
+pub const fn ladder(class: usize, max: u32, lg_mul: i32) -> u32 {
     let size = crate::layout::CLASSES[class].size();
     // Doublings above 128 bytes: sizes in (128, 256] halve once, (256, 512]
     // twice, and so on.
@@ -800,7 +815,7 @@ mod linux {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::{CLASSES, NCLASSES};
+    use crate::layout::{CLASSES, NBINS, NCLASSES};
     use std::vec::Vec;
 
     fn parse(text: &str) -> (Config, Vec<std::string::String>) {
@@ -1151,7 +1166,7 @@ mod tests {
         }
         assert!(cached(&d).count() >= 36 && uncached(&d).count() >= 8, "{} cached, {} above", cached(&d).count(), uncached(&d).count());
         for c in cached(&d) {
-            assert_eq!(d.cache_cap(c), cap_for(c, MAX_CAP, 1));
+            assert_eq!(d.cache_cap(c), ladder(c, MAX_CAP, 1));
             assert_eq!(d.cache_cap(c), crate::heap::default_cap(c), "class {c}");
         }
         for c in uncached(&d) {
@@ -1192,8 +1207,29 @@ mod tests {
         let off = clean("tcache:false");
         assert!((0..NCLASSES).all(|c| off.cache_cap(c) == 0));
         // Extreme shifts do not overflow.
-        assert_eq!(cap_for(0, MAX_NSLOTS, -16), MIN_CAP);
-        assert_eq!(cap_for(NCLASSES - 1, MAX_NSLOTS, 16), MAX_NSLOTS);
+        assert_eq!(ladder(0, MAX_NSLOTS, -16), MIN_CAP);
+        assert_eq!(ladder(NCLASSES - 1, MAX_NSLOTS, 16), MAX_NSLOTS);
+    }
+
+    /// `cap_for` is the one rule for which classes are cached where: the
+    /// home ladder, nothing for a shared class (above `tcache_max`) or
+    /// with `tcache:false`, and nothing above `BIN_MAX` for another arena.
+    #[test]
+    fn cap_for_is_the_one_rule() {
+        let d = Config::DEFAULT;
+        for c in 0..NCLASSES {
+            let size = CLASSES[c].size();
+            assert_eq!(d.shared_class(c), size > d.tcache_max, "class {c}");
+            assert_eq!(d.cap_for(3, 3, c), d.cache_cap(c), "class {c}");
+            assert_eq!(d.cap_for(3, 3, c) == 0, d.shared_class(c), "class {c}");
+            let foreign = d.cap_for(3, 0, c);
+            assert_eq!(foreign, if c >= NBINS { 0 } else { d.cache_cap(c) }, "class {c}");
+            assert_eq!(d.cap_for(0, 3, c), foreign);
+        }
+        let none = clean("tcache:false");
+        assert!((0..NCLASSES).all(|c| none.cap_for(0, 0, c) == 0 && none.cap_for(0, 1, c) == 0));
+        let k4 = clean("tcache_max:4096");
+        assert!((0..NCLASSES).all(|c| k4.shared_class(c) == (CLASSES[c].size() > 4096)));
     }
 
     #[test]
