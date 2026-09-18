@@ -92,12 +92,12 @@ static inline uint64_t rng_next(uint64_t *s)
 
 /* Exits 1 unless challoc is really serving malloc. malloc(1) on glibc has
  * usable size 24 (x86_64) or so, never exactly QUANTUM, and glibc does not
- * export challoc_tls_get. */
+ * export challoc_version. */
 static inline void require_challoc(void)
 {
     void *probe = malloc(1);
     size_t u = malloc_usable_size(probe);
-    if (u != QUANTUM || dlsym(RTLD_DEFAULT, "challoc_tls_get") == NULL) {
+    if (u != QUANTUM || dlsym(RTLD_DEFAULT, "challoc_version") == NULL) {
         fprintf(stderr, "not running under challoc (usable(1) = %zu)\n", u);
         exit(1);
     }

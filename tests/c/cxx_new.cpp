@@ -46,7 +46,7 @@ static void require_challoc()
 {
     void *probe = malloc(1);
     size_t u = malloc_usable_size(probe);
-    if (u != QUANTUM || dlsym(RTLD_DEFAULT, "challoc_tls_get") == nullptr) {
+    if (u != QUANTUM || dlsym(RTLD_DEFAULT, "challoc_version") == nullptr) {
         fprintf(stderr, "not running under challoc (usable(1) = %zu)\n", u);
         exit(1);
     }

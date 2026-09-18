@@ -110,22 +110,11 @@ pub fn set(value: *mut c_void) {
     }
 }
 
-/// Diagnostic export: read the calling thread's TLS slot. Exists so C test
-/// programs under `LD_PRELOAD` can drive the accessor directly and so
-/// `tests/c/common.h`'s `require_challoc` can tell that challoc, not
-/// glibc's malloc, is the loaded allocator; it is not part of any
-/// allocator API.
-#[unsafe(no_mangle)]
-pub extern "C" fn challoc_tls_get() -> *mut c_void {
-    get()
-}
-
-/// Diagnostic export: write the calling thread's TLS slot. See
-/// [`challoc_tls_get`].
-#[unsafe(no_mangle)]
-pub extern "C" fn challoc_tls_set(value: *mut c_void) {
-    set(value)
-}
+// The slot has no exported accessor: a `challoc_tls_set` export would be
+// a write primitive to the heap pointer in a hardened allocator, and the C
+// tests that once drove it (`tests/c/tls_threads.c`) observe per-thread
+// heaps through `mallctl("thread.allocatedp")` instead. The one
+// challoc-specific export is `challoc_version` (`src/api/mod.rs`).
 
 #[cfg(test)]
 mod tests {
@@ -165,7 +154,6 @@ mod tests {
                     set(mine);
                     barrier.wait(); // everyone has written
                     assert_eq!(get(), mine, "thread {i}: slot clobbered");
-                    assert_eq!(challoc_tls_get(), mine);
                     tx.send(mine as usize).unwrap();
                     barrier.wait(); // keep `local` alive until all have read
                 })
@@ -221,17 +209,22 @@ mod tests {
         let dynsyms = readelf(&["--dyn-syms", "-W", &so]);
         assert!(!dynsyms.contains("__tls_get_addr"), "imports __tls_get_addr:\n{dynsyms}");
         assert!(!dynsyms.contains("_dl_tlsdesc"), "imports TLS descriptor resolver:\n{dynsyms}");
+        // Neither the slot nor an accessor is a dynamic symbol (no exported
+        // write primitive to the heap pointer); the probe C tests use is
+        // `challoc_version`.
         for sym in ["challoc_tls_get", "challoc_tls_set"] {
-            assert!(dynsyms.contains(sym), "{sym} not exported:\n{dynsyms}");
+            assert!(!dynsyms.contains(sym), "{sym} exported:\n{dynsyms}");
         }
-        // The slot itself is hidden: never a dynamic symbol.
+        assert!(dynsyms.contains("challoc_version"), "challoc_version not exported:\n{dynsyms}");
         assert!(
             !dynsyms.lines().any(|l| l.ends_with(" challoc_tls")),
             "challoc_tls slot leaked as a dynamic symbol:\n{dynsyms}"
         );
     }
 
-    /// 64 pthreads under `LD_PRELOAD` each see their own slot.
+    /// 64 pthreads under `LD_PRELOAD` each see their own heap
+    /// (`thread.allocatedp` distinct per thread and per-thread counters
+    /// that only that thread's allocations move).
     #[test]
     fn c_program_with_64_threads_sees_distinct_slots() {
         let so = release_so();
@@ -245,7 +238,7 @@ mod tests {
             .unwrap();
         assert!(status.success(), "compiling {src} failed");
 
-        // Without the preload the program must report the missing symbols.
+        // Without the preload the program must report the missing probe.
         let bare = Command::new(&out).output().unwrap();
         assert!(!bare.status.success(), "tls_threads passed without libchalloc preloaded");
 
@@ -255,5 +248,6 @@ mod tests {
         let stderr = String::from_utf8_lossy(&run.stderr);
         assert!(run.status.success(), "tls_threads failed\nstdout: {stdout}\nstderr: {stderr}");
         assert!(stdout.contains("ok 64 threads"), "stdout: {stdout}");
+        std::eprintln!("tls_threads: {}", stdout.trim_end());
     }
 }

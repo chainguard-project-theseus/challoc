@@ -59,6 +59,18 @@ use crate::purge;
 use crate::sys;
 use crate::sys::features::Features;
 
+/// The one challoc-specific export (design 16): the crate version as a
+/// NUL-terminated static string (`"0.1.0"`; the soname's major, design
+/// 13.6, follows its major). A program or test that wants to know whether
+/// challoc is the loaded allocator looks this symbol up with `dlsym`; it
+/// reads and writes no allocator state and does not initialise anything.
+/// `mallctl("version")` stays jemalloc-shaped (`5.3.0-0-gchalloc`) for
+/// parsers of that string.
+#[unsafe(no_mangle)]
+pub extern "C" fn challoc_version() -> *const core::ffi::c_char {
+    concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const core::ffi::c_char
+}
+
 const UNINIT: u32 = 0;
 const INITIALISING: u32 = 1;
 const READY: u32 = 2;

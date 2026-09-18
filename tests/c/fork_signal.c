@@ -15,8 +15,13 @@
  * handlers run before challoc's release. Each of them raises SIGALRM. With
  * signals blocked the raise stays pending until challoc's release restores
  * the mask; the handler then forks once (disarming itself first) and the
- * grandchild exits cleanly. A watchdog timer on SIGUSR1 turns the deadlock
- * into a fast, loud failure instead of a hung test suite.
+ * grandchild exits cleanly. The handler records whether it ran inside one
+ * of this program's atfork handlers: that would mean the raise was not
+ * blocked, either because challoc's prepare had not run yet (challoc
+ * initialised before main, so its handlers were registered first and the
+ * ordering above does not hold) or because it did not block signals; both
+ * fail the test. A watchdog timer on SIGUSR1 turns the deadlock into a
+ * fast, loud failure instead of a hung test suite.
  */
 #include "common.h"
 #include <signal.h>
@@ -24,16 +29,20 @@
 #include <time.h>
 
 /* Weak so the bare run (no preload) links and fails fast at the check. */
-extern void *challoc_tls_get(void) __attribute__((weak));
+extern const char *challoc_version(void) __attribute__((weak));
 
 static volatile sig_atomic_t armed;      /* raise in the atfork handlers */
 static volatile sig_atomic_t handled;    /* SIGALRM handler runs */
 static volatile sig_atomic_t nested_ok;  /* the handler's fork+wait worked */
 static volatile sig_atomic_t seen_prepare, seen_parent, seen_child;
+static volatile sig_atomic_t in_atfork;   /* inside one of our atfork handlers */
+static volatile sig_atomic_t ran_inside;  /* SIGALRM handler ran while in_atfork */
 
 static void on_alarm(int signum)
 {
     (void)signum;
+    if (in_atfork)
+        ran_inside++; /* the raise was not blocked: wrong handler order or no mask */
     armed = 0; /* the nested fork runs the atfork handlers again */
     pid_t child = fork();
     if (child == 0)
@@ -47,22 +56,28 @@ static void on_alarm(int signum)
 static void on_prepare(void)
 {
     seen_prepare++;
+    in_atfork = 1;
     if (armed)
         raise(SIGALRM);
+    in_atfork = 0;
 }
 
 static void on_parent(void)
 {
     seen_parent++;
+    in_atfork = 1;
     if (armed)
         raise(SIGALRM);
+    in_atfork = 0;
 }
 
 static void on_child(void)
 {
     seen_child++;
+    in_atfork = 1;
     if (armed)
         raise(SIGALRM);
+    in_atfork = 0;
 }
 
 static void on_watchdog(int signum)
@@ -75,14 +90,15 @@ static void on_watchdog(int signum)
 
 int main(void)
 {
-    if (!challoc_tls_get) {
+    if (!challoc_version) {
         fprintf(stderr, "not running under challoc\n");
         return 1;
     }
-    /* No heap yet means challoc has not initialised, so our handlers are
-     * registered ahead of its. glibc keeps the first 48 handlers in a static
-     * buffer, so pthread_atfork itself does not allocate. */
-    REQUIRE(challoc_tls_get() == NULL, "challoc initialised before main; cannot order atfork handlers");
+    /* Nothing has allocated yet, so challoc has not initialised and our
+     * handlers are registered ahead of its (the SIGALRM handler's
+     * `ran_inside` check below verifies that). glibc keeps the first 48
+     * handlers in a static buffer, so pthread_atfork itself does not
+     * allocate. */
     REQUIRE(pthread_atfork(on_prepare, on_parent, on_child) == 0, "pthread_atfork");
     require_challoc();
 
@@ -121,6 +137,8 @@ int main(void)
         CHECK(handled == 1, "round %d: handler ran %d times, expected 1", round, (int)handled);
         CHECK(nested_ok == 1, "round %d: nested fork failed", round);
         CHECK(armed == 0, "round %d: handler did not disarm", round);
+        CHECK(ran_inside == 0, "round %d: SIGALRM delivered inside an atfork handler %d time(s): the raise was not blocked",
+              round, (int)ran_inside);
     }
     CHECK(seen_prepare >= 3 && seen_parent >= 3, "atfork handlers ran %d/%d times", (int)seen_prepare,
           (int)seen_parent);

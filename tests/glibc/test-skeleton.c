@@ -29,7 +29,7 @@ int main(void)
     /* Same check as require_challoc() in tests/c/common.h. */
     void *probe = malloc(1);
     size_t u = malloc_usable_size(probe);
-    if (u != QUANTUM || dlsym(RTLD_DEFAULT, "challoc_tls_get") == NULL) {
+    if (u != QUANTUM || dlsym(RTLD_DEFAULT, "challoc_version") == NULL) {
         fprintf(stderr, "%s: not running under challoc (usable(1) = %zu)\n", TEST_NAME, u);
         return 1;
     }

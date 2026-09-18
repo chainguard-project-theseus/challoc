@@ -371,7 +371,7 @@ static void test_fork(void)
 int main(int argc, char **argv)
 {
     void *probe = malloc(1);
-    if (malloc_usable_size(probe) != QUANTUM || dlsym(RTLD_DEFAULT, "challoc_tls_get") == NULL) {
+    if (malloc_usable_size(probe) != QUANTUM || dlsym(RTLD_DEFAULT, "challoc_version") == NULL) {
         fprintf(stderr, "not running under challoc (usable(1) = %zu)\n", malloc_usable_size(probe));
         return 1;
     }
