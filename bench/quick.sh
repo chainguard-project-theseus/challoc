@@ -13,6 +13,8 @@
 #   larson10 larson 5 8 1000 5000 100 4141 10    M ops/s
 #   xmalloc  xmalloc-test -w 10 -t 5 -s 64       M frees/s, higher is better
 #   alloc-test1                                  seconds, lower is better
+#   valkey1  bench/probes/valkey_model.c, 850k keys, 2.5 s write + 2.5 s delete,
+#            frees through sdallocx           write-phase M ops/s, higher is better
 #   churn    bench/probes/churn.c CLASS CHURN_SECS s    slabs deleted -> end
 #
 # under old, new and jemalloc, and prints one table. Exit status 1 when new
@@ -29,21 +31,34 @@
 #   NEW=tree                 rev of the candidate (default: the working tree)
 #   QUICK_TOLERANCE=5        percent new may trail old before the exit status says no
 #   QUICK_CONFIRM_ROUNDS=2   extra rounds of old and new for a row that failed the gate once
-#   QUICK_BENCHES="larson1 larson10 xmalloc alloc-test1"
+#   QUICK_BENCHES="larson1 larson10 xmalloc alloc-test1 valkey1"
+#   VALKEY_MODEL_SECS=5      seconds of the Valkey model row (half write, half delete)
 #   CHURN_SECS=8 CHURN_CLASS=1024 CHURN_MIN_OCC=90
 #   BASELINES=cached         take the jemalloc column from target/baselines/<arch>-<hash>.md
 #                            (bench/baseline.sh) and run only QUICK_SANITY (larson1) under
 #                            jemalloc; that run must land within BASELINE_TOLERANCE (3) percent
 #                            of the cached median or the cache is stale (exit 2)
+#   PERF=1                   after the table, one run of PERF_BENCHES (larson1 valkey1) under
+#                            old, new and jemalloc with `perf stat` and a per-operation table
+#                            (cycles, instructions, L1D and dTLB misses per op). Needs perf in
+#                            the container; the VMs have it on the host only, so there use
+#                            `bench/gce/challoc-bench quick-perf <vm>` (bench/gce/quick-perf.sh),
+#                            which prints the same table with perf attached from the host.
+#   QUICK_BUILD_ONLY=1       stop after building old and new (quick-perf uses the builds)
 #   OUT=target/quick/out     raw logs
 set -eu
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
+VALKEY_MODEL_SECS=${VALKEY_MODEL_SECS:-5}
 . "$ROOT/bench/lib.sh"
 OLD=${OLD:-HEAD}
 NEW=${NEW:-tree}
 QUICK_TOLERANCE=${QUICK_TOLERANCE:-5}
-QUICK_BENCHES=${QUICK_BENCHES:-"larson1 larson10 xmalloc alloc-test1"}
+QUICK_BENCHES=${QUICK_BENCHES:-"larson1 larson10 xmalloc alloc-test1 valkey1"}
+PERF=${PERF:-0}
+PERF_BENCHES=${PERF_BENCHES:-"larson1 valkey1"}
+PERF_EVENTS=${PERF_EVENTS:-"cycles,instructions,L1-dcache-load-misses,dTLB-load-misses"}
+QUICK_BUILD_ONLY=${QUICK_BUILD_ONLY:-0}
 CHURN_SECS=${CHURN_SECS:-8}
 CHURN_CLASS=${CHURN_CLASS:-1024}
 CHURN_MIN_OCC=${CHURN_MIN_OCC:-90}
@@ -88,6 +103,11 @@ else
   else BUILD_NOTE="old $old_h, new $new_h"; fi
 fi
 echo "== $BUILD_NOTE"
+if [ "$QUICK_BUILD_ONLY" = 1 ]; then
+  ensure_probe valkey_model
+  echo "== QUICK_BUILD_ONLY: libraries built into target/quick/{old,new}/release/libchalloc.so, probes into target/bench-bin; not running the rows"
+  exit 0
+fi
 
 # ---- cached jemalloc column -------------------------------------------------
 BASELINE=
@@ -176,6 +196,39 @@ nverdict=$(churn_ok new && echo "compacts" || echo "DOES NOT COMPACT")
 echo "| churn $CHURN_CLASS, ${CHURN_SECS}s | slabs deleted -> end (occ) | $(churn_cell old) | $(churn_cell new) | $(churn_cell jemalloc) | new $nverdict (end occupancy >= $CHURN_MIN_OCC%) | $(awk '{print $3}' "$OUT/new.churn") ops/s |"
 echo
 echo "Positive percentages mean new did worse (slower, lower throughput). One round each, $ARCH, nproc $PROCS, load at start $(loadavg | cut -d' ' -f1), $(( $(date +%s) - T_START )) s total. $BUILD_NOTE."
+
+# ---- per-operation counters (PERF=1) ---------------------------------------------
+# One run per (row, variant) under `perf stat -x,` with the four events the
+# attribution files use, divided by the operation count the program reports
+# (bench/lib.sh ops_of). This is the container-side form; on the VMs perf
+# lives on the host and `challoc-bench quick-perf <vm>` prints the same table.
+if [ "$PERF" = 1 ]; then
+  echo
+  if ! command -v perf >/dev/null 2>&1; then
+    echo "PERF=1: no perf in this container (Wolfi has none). On a VM run 'bench/gce/challoc-bench quick-perf <arm64|amd64>' for the per-operation table (perf attaches from the host)."
+  else
+    echo "| row | variant | M ops/s | cycles/op | instr/op | L1D miss/op | dTLB miss/op |"
+    echo "|---|---|---:|---:|---:|---:|---:|"
+    for b in $PERF_BENCHES; do
+      for v in $VARIANTS; do
+        set -- $(bench_args "$b")
+        perf stat -x, -e "$PERF_EVENTS" -o "$OUT/perf.$b.$v.csv" -- env LD_PRELOAD="$(lib_of "$v")" "$@" > "$OUT/perf.$b.$v.out" 2>&1 || true
+        ops=$(ops_of "$b" "$OUT/perf.$b.$v.out")
+        secs=$(secs_of "$b")
+        awk -F, -v ops="$ops" -v secs="$secs" -v row="$b" -v var="$v" '
+          /^#/ || NF < 3 {next}
+          {c[$3]=$1}
+          END {
+            mops = (ops!="-" && secs!="-" && secs>0) ? sprintf("%.2f", ops/secs/1e6) : "-"
+            if (ops=="-" || ops==0) { printf "| %s | %s | %s | - | - | - | - |\n", row, var, mops; exit }
+            printf "| %s | %s | %s | %.1f | %.1f | %.3f | %.3f |\n", row, var, mops, c["cycles"]/ops, c["instructions"]/ops, c["L1-dcache-load-misses"]/ops, c["dTLB-load-misses"]/ops
+          }' "$OUT/perf.$b.$v.csv"
+      done
+    done
+    echo
+    echo "Per-operation counters from one run each (perf stat -x, -e $PERF_EVENTS on the program's process; ops from the program's own count). Compare variants within a row; these are for attribution, not for the gate."
+  fi
+fi
 [ $stale = 0 ] || { echo "quick: the jemalloc sanity run is more than $BASELINE_TOLERANCE% off the cached median: the baseline is STALE, rerun 'make baseline'" >&2; exit 2; }
 if [ $fail = 1 ]; then
   echo "quick: NO-GO (new trails old by more than $QUICK_TOLERANCE% on a row, or does not compact)"; exit 1
