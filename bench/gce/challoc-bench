@@ -349,7 +349,11 @@ cmd_session() {
 # `lab` runs a cell up to the sync and keeps the VM (its log goes to
 # .tmp-matrix-lab/, not bench/results/matrix/); `ssh` and `sync` drive it;
 # `clean` deletes it like any other matrix VM. Nothing measured on a lab
-# VM is a benchmark number either.
+# VM is a benchmark number either. MATRIX_PMU=1 creates the VM with
+# --performance-monitoring-unit=standard (C3, C3D, C4, C4A, N4 take it;
+# T2A, C2 and N2D refuse it: "Invalid performance monitoring unit"), so a
+# lab cell can attribute a row with perf stat (bench/gce/quick-perf.sh
+# after linux-tools-$(uname -r) is installed on it).
 #
 # The CPU matrix (task 4): the cpu-* cells run the same Ubuntu 24.04 image
 # and its GCE kernel on one machine type each, so only the CPU varies, and
@@ -605,9 +609,10 @@ matrix_cell() {
   # capacity or quota for the family is recorded and the next one tried.
   cell_zone=
   for z in $zones; do
+    # shellcheck disable=SC2086
     if g compute instances create "$vm" --zone="$z" --machine-type="$machine" \
           --image="$image" --image-project="$proj" \
-          --boot-disk-size=50GB --boot-disk-type="$disk" \
+          --boot-disk-size=50GB --boot-disk-type="$disk" ${MATRIX_PMU:+--performance-monitoring-unit=standard} \
           --metadata=enable-oslogin=TRUE --scopes=cloud-platform \
           --labels="owner=${USER},purpose=challoc-matrix,arch=$arch,cell=$cell" >>"$log" 2>&1; then
       cell_zone="$z"; break

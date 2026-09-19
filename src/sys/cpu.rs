@@ -596,16 +596,32 @@ mod tests {
         Regs { eax: 0, ebx: 0, ecx: 0, edx: 0 },
     ];
 
-    // Composed from the published `/proc/cpuinfo` flag lists, not captured:
-    // Ampere Altra (Neoverse N1: `fp asimd evtstrm aes pmull sha1 sha2 crc32
-    // atomics fphp asimdhp cpuid asimdrdm lrcpc dcpop asimddp ssbs`) and an
-    // AMD Zen 4 (`erms`, `avx512f`, `la57`, `fsrm`; no `cldemote`,
-    // `waitpkg` or `lam`; `uai` in leaf 0x80000021 `EAX[7]`, AMD's upper
-    // address ignore). Task 4's matrix replaces them with captures.
-    const ALTRA_HWCAP: (u64, u64) = ((1 << 13) - 1 | 1 << 15 | 1 << 16 | 1 << 20 | 1 << 28, 0);
-    const ZEN4_LEAF7: Regs = Regs { eax: 1, ebx: 1 << 9 | 1 << 16, ecx: 1 << 16, edx: 1 << 4 };
-    const ZEN4_LEAF7_1: Regs = Regs { eax: 0, ebx: 0, ecx: 0, edx: 0 };
-    const ZEN4_EXT21: Regs = Regs { eax: 1 << 7, ebx: 0, ecx: 0, edx: 0 };
+    // Captured by the CPU matrix (Phase 2.5 task 4, 2026-09-19,
+    // `bench/gce/cpuid-dump.c` on the cells, `bench/results/matrix/
+    // 2026-09-19-cpu-*.log`): a GCE T2A (Ampere Altra, Neoverse N1, MIDR
+    // 0x413fd0c1: `atomics` and nothing else the report looks at), a GCE
+    // C3D (AMD EPYC 9B14, Genoa, Zen 4: the hypervisor hides the LA57 bit
+    // and UAI, leaf 0x80000021 `EAX = 0x10000067` has bit 7 clear) and a
+    // GCE N2D (AMD EPYC 7B13, Milan, Zen 3: no leaf 7 subleaf 1, no
+    // AVX-512).
+    const ALTRA_HWCAP: (u64, u64) = (0x119fff, 0);
+    const GENOA_9B14_MAX_LEAF: u32 = 0x10;
+    const GENOA_9B14_LEAF7: Regs = Regs { eax: 0x0000_0001, ebx: 0xf1bf_07ab, ecx: 0x0040_5f46, edx: 0x0000_0010 };
+    const GENOA_9B14_LEAF7_1: Regs = Regs { eax: 0x0000_0020, ebx: 0, ecx: 0, edx: 0 };
+    const GENOA_9B14_EXT21: Regs = Regs { eax: 0x1000_0067, ebx: 0, ecx: 0, edx: 0 };
+    const GENOA_9B14_LEAF_8000001D: [Regs; 5] = [
+        Regs { eax: 0x0000_4121, ebx: 0x01c0_003f, ecx: 0x0000_003f, edx: 0 },
+        Regs { eax: 0x0000_4122, ebx: 0x01c0_003f, ecx: 0x0000_003f, edx: 0 },
+        Regs { eax: 0x0000_4143, ebx: 0x01c0_003f, ecx: 0x0000_07ff, edx: 2 },
+        Regs { eax: 0x0001_c163, ebx: 0x03c0_003f, ecx: 0x0000_7fff, edx: 1 },
+        Regs { eax: 0, ebx: 0, ecx: 0, edx: 0 },
+    ];
+    const MILAN_7B13_MAX_LEAF: u32 = 0xd;
+    const MILAN_7B13_LEAF7: Regs = Regs { eax: 0, ebx: 0x219c_07ab, ecx: 0x0040_0604, edx: 0x0000_0010 };
+    const MILAN_7B13_EXT21: Regs = Regs { eax: 0x1000_0020, ebx: 0, ecx: 0, edx: 0 };
+    // What a Zen 4 with UAI exposed would say in leaf 0x80000021: no GCE
+    // guest showed it, so this one stays composed (the bit alone).
+    const ZEN4_EXT21_WITH_UAI: Regs = Regs { eax: 0x1000_0067 | 1 << 7, ebx: 0, ecx: 0, edx: 0 };
 
     fn cpu(isa: Isa, caches: Caches) -> Cpu {
         Cpu { isa, caches, cache_source: CacheSource::None }
@@ -658,9 +674,26 @@ mod tests {
     }
 
     #[test]
-    fn zen4_cpuid_decodes() {
-        let x = X86::from_cpuid(0x10, ZEN4_LEAF7, ZEN4_LEAF7_1, ZEN4_EXT21);
-        assert_eq!(x, X86 { uai: true, la57: true, erms: true, fsrm: true, avx512f: true, ..X86::default() });
+    fn genoa_9b14_cpuid_decodes_without_la57_or_uai() {
+        // The GCE guest: LA57 and UAI hidden, AVX-512 and FSRM shown.
+        let x = X86::from_cpuid(GENOA_9B14_MAX_LEAF, GENOA_9B14_LEAF7, GENOA_9B14_LEAF7_1, GENOA_9B14_EXT21);
+        assert_eq!(x, X86 { erms: true, fsrm: true, avx512f: true, ..X86::default() });
+        // The same CPU with the UAI bit exposed.
+        let x = X86::from_cpuid(GENOA_9B14_MAX_LEAF, GENOA_9B14_LEAF7, GENOA_9B14_LEAF7_1, ZEN4_EXT21_WITH_UAI);
+        assert_eq!(x, X86 { uai: true, erms: true, fsrm: true, avx512f: true, ..X86::default() });
+    }
+
+    #[test]
+    fn milan_7b13_cpuid_decodes() {
+        // Leaf 7 reports no subleaf 1, so whatever is passed for it is ignored.
+        let x = X86::from_cpuid(MILAN_7B13_MAX_LEAF, MILAN_7B13_LEAF7, Regs { eax: 1 << 26, ..Regs::default() }, MILAN_7B13_EXT21);
+        assert_eq!(x, X86 { erms: true, fsrm: true, ..X86::default() });
+    }
+
+    #[test]
+    fn genoa_9b14_leaf_8000001d_gives_32k_l1d_and_1m_l2() {
+        let c = caches_from_cpuid(&GENOA_9B14_LEAF_8000001D);
+        assert_eq!(c, Caches { line: 64, l1d: 32 * 1024, l2: 1024 * 1024 });
     }
 
     #[test]
@@ -673,7 +706,7 @@ mod tests {
         // (Intel): no `uai`.
         assert!(!X86::from_cpuid(XEON_8581C_MAX_LEAF, XEON_8581C_LEAF7, XEON_8581C_LEAF7_1, Regs::default()).uai);
         // No leaf 7 at all: nothing, whatever the extended leaf says.
-        assert_eq!(X86::from_cpuid(6, l7, Regs::default(), ZEN4_EXT21), X86::default());
+        assert_eq!(X86::from_cpuid(6, l7, Regs::default(), ZEN4_EXT21_WITH_UAI), X86::default());
     }
 
     #[test]
@@ -879,12 +912,25 @@ mod linux_tests {
                 break;
             }
         }
-        // `address sizes: ... 57 bits virtual` is the kernel's own statement
-        // of five-level paging on x86.
+        // `address sizes: ... 57 bits virtual` is the kernel's report of
+        // the CPU's virtual address width (cpuid 0x80000008 `EAX[15:8]`),
+        // not of the paging mode: a GCE C3D guest (AMD EPYC 9B14, Genoa)
+        // prints 57 bits virtual while the hypervisor hides the LA57
+        // feature bit (leaf 7 `ECX[16]`), so its kernel cannot run
+        // five-level paging and the hinted `mmap` lands below 2^47
+        // (`la57_enabled=no`; the CPU matrix of 2026-09-19). With the
+        // feature bit, the kernel's width and the hinted `mmap` agree.
         if let Isa::X86(x) = c.isa {
             let text = std::fs::read_to_string("/proc/cpuinfo").unwrap();
             if let Some(l) = text.lines().find(|l| l.starts_with("address sizes")) {
-                assert_eq!(x.la57_enabled, l.contains("57 bits virtual"), "{l}: {line}");
+                if x.la57 {
+                    assert_eq!(x.la57_enabled, l.contains("57 bits virtual"), "{l}: {line}");
+                } else {
+                    assert!(!x.la57_enabled, "{l}: {line}");
+                    if l.contains("57 bits virtual") {
+                        std::eprintln!("{l} without the la57 bit (a guest that hides LA57): la57_enabled=no is right");
+                    }
+                }
             }
         }
     }
