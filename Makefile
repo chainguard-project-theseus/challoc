@@ -73,6 +73,7 @@
 #                            bench/results/<date>-<arch>-valkey-soak.md
 #                            (bench/valkey-soak.sh; ALLOCS, DURATION=1200,
 #                            SETTLE, INTERVAL, CHUNK, VB_REQS, KEYS, DEFRAG,
+#                            IO_THREADS=n for `--io-threads n` on the server,
 #                            RESULT_DIR, OCCUPANCY=1 for MEMORY MALLOC-STATS dumps
 #                            every MS_INTERVAL s). Needs `make valkey STAGE=build` first.
 #   make soak-quick          challoc-only 600 s soak with OCCUPANCY=1, compared
@@ -295,7 +296,7 @@ valkey: DOCKER_FLAGS = $(if $(STAGE),-e STAGE=$(STAGE)) $(if $(TEST_FLAGS),-e TE
 valkey: image
 	$(DOCKER_RUN) sh contrib/valkey/build.sh
 
-SOAK_VARS = ALLOCS DURATION SETTLE INTERVAL CHUNK VB_REQS KEYS SIZE MT_SIZES DEL_RATIO KEY_PATTERN DEFRAG RESULT_DIR OCCUPANCY MS_INTERVAL BASELINES SAVE_BASELINE PORT
+SOAK_VARS = ALLOCS DURATION SETTLE INTERVAL CHUNK VB_REQS KEYS SIZE MT_SIZES DEL_RATIO KEY_PATTERN DEFRAG IO_THREADS RESULT_DIR OCCUPANCY MS_INTERVAL BASELINES SAVE_BASELINE PORT COMMIT
 valkey-soak: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(SOAK_VARS),$(if $($(v)),-e $(v)="$($(v))"))
 valkey-soak: image
 	$(DOCKER_RUN) sh bench/valkey-soak.sh

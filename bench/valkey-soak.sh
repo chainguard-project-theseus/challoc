@@ -47,6 +47,11 @@
 #                              in both phases, so no key is structurally pinned
 #   VB_CLIENTS=50 MT_THREADS=4 MT_CLIENTS=10 PIPELINE=16
 #   DEFRAG=yes                 --activedefrag on the server
+#   IO_THREADS=                --io-threads N on the server (Phase 3 prerequisite (d):
+#                              with 4, the frees of one thread's allocations land in
+#                              other threads' caches); empty = Valkey's default (1),
+#                              the acceptance protocol. Recorded in the summary header
+#                              and the results file name gets no suffix: pass RESULT_DIR.
 #   PORT=6399
 #   OUT=target/valkey/soak     scratch and raw logs
 #   RESULT_DIR=bench/results   <date>-<arch>-valkey-soak.md and
@@ -87,6 +92,7 @@ MT_THREADS=${MT_THREADS:-4}
 MT_CLIENTS=${MT_CLIENTS:-10}
 PIPELINE=${PIPELINE:-16}
 DEFRAG=${DEFRAG:-yes}
+IO_THREADS=${IO_THREADS:-}
 PORT=${PORT:-6399}
 OUT=${OUT:-$ROOT/target/valkey/soak}
 RESULT_DIR=${RESULT_DIR:-$ROOT/bench/results}
@@ -103,7 +109,8 @@ CLI=$SRC/src/valkey-cli
 VB=$SRC/src/valkey-benchmark
 ARCH=$(uname -m)
 DATE=$(date -u +%F)
-COMMIT=$(git -c safe.directory='*' rev-parse --short HEAD 2>/dev/null || echo unknown)
+# COMMIT overrides git's answer (a tree synced to a VM from a git worktree has no usable .git).
+COMMIT=${COMMIT:-$(git -c safe.directory='*' rev-parse --short HEAD 2>/dev/null || echo unknown)}
 RESULT=$RESULT_DIR/$DATE-$ARCH-valkey-soak.md
 BASE=$BASELINE_DIR/valkey-soak-jemalloc-$ARCH
 
@@ -263,8 +270,9 @@ soak() { # alloc
   server=$(server_for "$alloc") || exit 1
   step "$alloc: $server"
   "$server" --version | tee "$D/version.txt"
+  # $IO_THREADS unquoted on purpose: empty means no flag.
   "$server" --port "$PORT" --save "" --appendonly no --daemonize no \
-    --logfile "$D/server.log" --activedefrag "$DEFRAG" >/dev/null 2>&1 &
+    --logfile "$D/server.log" --activedefrag "$DEFRAG" ${IO_THREADS:+--io-threads $IO_THREADS} >/dev/null 2>&1 &
   SERVER_PID=$!
   i=0
   until [ "$("$CLI" -p "$PORT" ping 2>/dev/null)" = PONG ]; do
@@ -276,7 +284,8 @@ soak() { # alloc
     || { echo "valkey-soak: $alloc server reports mem_allocator=$got" >&2; exit 1; }
   "$CLI" -p "$PORT" config get activedefrag | tail -1 > "$D/activedefrag.txt"
   "$CLI" -p "$PORT" config get jemalloc-bg-thread | tail -1 > "$D/bg-thread.txt"
-  echo "mem_allocator=$got activedefrag=$(cat "$D/activedefrag.txt") jemalloc-bg-thread=$(cat "$D/bg-thread.txt") pid=$SERVER_PID"
+  "$CLI" -p "$PORT" config get io-threads | tail -1 > "$D/io-threads.txt"
+  echo "mem_allocator=$got activedefrag=$(cat "$D/activedefrag.txt") jemalloc-bg-thread=$(cat "$D/bg-thread.txt") io-threads=$(cat "$D/io-threads.txt") pid=$SERVER_PID"
 
   T0=$(now)
   echo write > "$D/phase"; rm -f "$D/last" "$D/stop"
@@ -392,7 +401,7 @@ ALLOCS=$SUMMARY_ALLOCS
   echo "- kernel: $(uname -r), container: Wolfi"
   for alloc in $ALLOCS; do echo "- $alloc server: $(cat "$OUT/$alloc/version.txt")"; done
   echo "- clients: valkey-benchmark from the challoc tree, $(memtier_benchmark --version 2>&1 | head -1)"
-  echo "- workload: write phase $((DURATION / 2)) s (valkey-benchmark -t set -d $SIZE -r $KEYS -n $VB_REQS -c $VB_CLIENTS -P $PIPELINE, then memtier SET-only $MT_SIZES B over $KEYS keys, $MT_THREADS x $MT_CLIENTS clients, -P $PIPELINE, $CHUNK s), delete phase $((DURATION / 2)) s (valkey-benchmark del key:__rand_int__, then memtier DEL:SET $DEL_RATIO:1), settle $SETTLE s idle; activedefrag $DEFRAG; INFO sampled every $INTERVAL s; memtier key pattern: $KEY_PATTERN$([ "$KEY_PATTERN" = uniform ] && echo " (--randomize, time-seeded random keys in both phases; NOT the acceptance protocol)" || echo " (memtier's fixed-seed key stream, the acceptance protocol)")"
+  echo "- workload: write phase $((DURATION / 2)) s (valkey-benchmark -t set -d $SIZE -r $KEYS -n $VB_REQS -c $VB_CLIENTS -P $PIPELINE, then memtier SET-only $MT_SIZES B over $KEYS keys, $MT_THREADS x $MT_CLIENTS clients, -P $PIPELINE, $CHUNK s), delete phase $((DURATION / 2)) s (valkey-benchmark del key:__rand_int__, then memtier DEL:SET $DEL_RATIO:1), settle $SETTLE s idle; activedefrag $DEFRAG; io-threads $(cat "$OUT/$(echo $ALLOCS | cut -d' ' -f1)/io-threads.txt" 2>/dev/null || echo "${IO_THREADS:-default}"); INFO sampled every $INTERVAL s; memtier key pattern: $KEY_PATTERN$([ "$KEY_PATTERN" = uniform ] && echo " (--randomize, time-seeded random keys in both phases; NOT the acceptance protocol)" || echo " (memtier's fixed-seed key stream, the acceptance protocol)")"
   echo "- throughput is the mean requests/s over a tool's runs in a phase; p99 is the median of the per-run p99 (ms, client-side); peak RSS is the server's VmHWM; the RSS columns are used_memory_rss (MiB) at the last sample of each phase"
   [ -z "$CACHE_NOTE" ] || echo "- CACHED BASELINE: $CACHE_NOTE. Acceptance uses the same-run \`make valkey-soak\`."
   [ "$OCCUPANCY" = 1 ] && echo "- occupancy: MEMORY MALLOC-STATS every $MS_INTERVAL s under $RESULT_DIR/$DATE-$ARCH-valkey-soak-<alloc>-mstats/"
