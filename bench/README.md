@@ -333,3 +333,42 @@ Benchmark programs and their parameters follow mimalloc-bench's `bench.sh`
 -s 64`, `alloc-test 1` and `alloc-test min(N,16)`, redis `-r 1000000 -P 16
 lpush/lrange`) with N = `nproc`, except redis uses `-n 1000000` instead of
 `100000` so a run lasts more than a second.
+
+## Measurement hygiene from the kernel table (Phase 2.5 task 17)
+
+Three opt-in readings the 2026-09-19 kernel table made possible, all in the
+harness, none in `src/`:
+
+- **`memory.peak` per phase.** From 6.12 a write to the cgroup's
+  `memory.peak` resets the high-water mark, but only for the file
+  description that wrote it, so `bench/probes/cgpeak.c` holds one descriptor
+  for a run and is driven by the soak's phase file (`bench/lib.sh
+  cgroup_peak_*`). `make valkey-soak CGROUP_PEAK=1` adds three rows to the
+  summary, "cgroup memory.peak MiB, write / delete / settle phase", beside
+  the server's VmHWM; `make ruby-soak CGROUP_PEAK=1` adds "start..compact"
+  and "compact..end" (the reset lives in `bench/ruby/soak.rb`, which holds
+  its own descriptor); `make percpu-campaign` records the largest
+  `memory.peak` of each step's container cgroups from the host side (fresh
+  cgroups per `docker run`, no reset needed) and passes `CGROUP_PEAK=1` to
+  its soak steps. `CGROUP_PEAK=1` gives the container `--cgroupns=host` and
+  a read-write `/sys/fs/cgroup`: Docker mounts the tree read-only and the
+  nsdelegate boundary refuses the write from inside the namespace
+  otherwise. Without it, or on a kernel before 6.12 (EINVAL), the rows read
+  `-` and the header says why; VmHWM stays the criterion's figure. The
+  cgroup's peak counts every process of the container (server, load
+  generators, harness), which is the point of the column.
+- **THP counters around a row.** `CHALLOC_THP_COUNTERS=1` makes `quick`,
+  `ab` and `challoc-bench quick-perf` snapshot every `thp_*` line of
+  `/proc/vmstat` and every `hugepages-<size>kB/stats/*` counter before and
+  after each run and print the deltas (`anon_fault_alloc`,
+  `anon_fault_fallback`, `split`, `swpout`, ... per size) as a section after
+  the table, so task 9's dTLB column has the folio counts next to it. The
+  counters are host-global: a quiet host is assumed.
+- **Guard slabs through `PAGEMAP_SCAN`.** `make test-pagemap-guard` (in
+  `make test`) runs `tests/c/pagemap_guard.c` both ways: under the default
+  it finds the guard slabs of four classes as the gaps no allocation came
+  from and asks `ioctl(PAGEMAP_SCAN)` about them without touching them
+  (6.16+: `PAGE_IS_GUARD` on the guard page and nowhere else; older
+  kernels: the fallback the program names), under `guards:false` it finds no
+  gap and no guard page.
+

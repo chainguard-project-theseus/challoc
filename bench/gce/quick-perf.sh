@@ -10,6 +10,9 @@
 #                                            [EVENTS=cycles,instructions,L1-dcache-load-misses,dTLB-load-misses]
 #                                            (any further event gets its own per-operation column)
 #                                            [OUTDIR=~/logs/quick-perf]
+#                                            [CHALLOC_THP_COUNTERS=1] (plan Phase 2.5 task 17: the deltas of
+#                                            /proc/vmstat thp_* and hugepages-<size>kB/stats/* around each
+#                                            container, read on the host, as a second table)
 #
 # For every (row, variant) the container starts detached with `sleep 1; exec
 # env LD_PRELOAD=<lib> <row command>`, `sudo perf stat -x, --inherit -p` is
@@ -25,7 +28,26 @@ ROWS=${ROWS:-"larson1 valkey1"}
 VARIANTS=${VARIANTS:-"old new jemalloc"}
 EVENTS=${EVENTS:-cycles,instructions,L1-dcache-load-misses,dTLB-load-misses}
 OUTDIR=${OUTDIR:-$HOME/logs/quick-perf}
+CHALLOC_THP_COUNTERS=${CHALLOC_THP_COUNTERS:-0}
 IMAGE=challoc-dev:$T
+# The THP counter snapshot of bench/lib.sh, on the host side (the same files;
+# sysfs and /proc/vmstat are the host's from either side).
+thp_snapshot() {
+  { grep '^thp_' /proc/vmstat 2>/dev/null
+    for d in /sys/kernel/mm/transparent_hugepage/hugepages-*kB; do
+      [ -d "$d/stats" ] || continue
+      sz=${d##*/hugepages-}
+      for f in "$d"/stats/*; do [ -r "$f" ] && echo "$sz/${f##*/} $(cat "$f")"; done
+    done
+  } > "$1" 2>/dev/null
+}
+thp_delta() { awk 'NR==FNR {b[$1]=$2; next} ($1 in b) && $2 != b[$1] {printf "%s=%d ", $1, $2 - b[$1]; n++} END {if (!n) printf "none"; print ""}' "$1" "$2"; }
+thp_state() {
+  local t=/sys/kernel/mm/transparent_hugepage en df sizes= d v
+  en=$(sed -n 's/.*\[\(.*\)\].*/\1/p' $t/enabled 2>/dev/null); df=$(sed -n 's/.*\[\(.*\)\].*/\1/p' $t/defrag 2>/dev/null)
+  for d in $t/hugepages-*kB; do [ -f "$d/enabled" ] || continue; v=$(sed -n 's/.*\[\(.*\)\].*/\1/p' "$d/enabled"); [ "$v" = never ] || sizes="$sizes ${d##*/hugepages-}=$v"; done
+  echo "enabled=${en:--} defrag=${df:--}${sizes:+ per-size:$sizes}"
+}
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 mkdir -p "$OUTDIR"
 
@@ -71,6 +93,7 @@ for b in $ROWS; do
     tag=$b.$v
     cid=$(docker run -d -v "$REPO":/src -w /src -v "${TARGET_VOLUME:-challoc-target-$T}":/src/target "$IMAGE" \
           sh -c "sleep 1; exec env MALLOC_CONF=$(conf_of "$v") LD_PRELOAD=$(lib_of "$v") $cmd")
+    [ "$CHALLOC_THP_COUNTERS" = 1 ] && thp_snapshot "$OUTDIR/$tag.thp0"
     pid=
     for _ in $(seq 1 50); do pid=$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null || true); [ -n "$pid" ] && [ "$pid" != 0 ] && break; sleep 0.1; done
     [ -n "$pid" ] && [ "$pid" != 0 ] || { echo "quick-perf: container for $tag did not start" >&2; docker rm -f "$cid" >/dev/null 2>&1 || true; continue; }
@@ -80,6 +103,7 @@ for b in $ROWS; do
     sudo perf stat -x, -e "$EVENTS" --inherit -p "$pid" -o "$OUTDIR/$tag.csv" -- sleep 1000000 2> >(grep -v '^sleep: Terminated' >&2) &
     pp=$!
     docker wait "$cid" >/dev/null
+    if [ "$CHALLOC_THP_COUNTERS" = 1 ]; then thp_snapshot "$OUTDIR/$tag.thp1"; thp_delta "$OUTDIR/$tag.thp0" "$OUTDIR/$tag.thp1" > "$OUTDIR/$tag.thp"; fi
     sudo pkill -f '^sleep 1000000$' 2>/dev/null || true; wait $pp || true
     docker logs "$cid" > "$OUTDIR/$tag.out" 2>&1
     docker rm -f "$cid" >/dev/null 2>&1 || true
@@ -111,3 +135,11 @@ for b in $ROWS; do
 done
 echo
 echo "Per-operation counters (whole-process totals for a row without an operation count), one run each: sudo perf stat -x, -e $EVENTS --inherit -p <container init pid> (attached before the exec), divided by the program's own operation count. Raw files under $OUTDIR. Compare variants within a row; attribution, not a gate."
+if [ "$CHALLOC_THP_COUNTERS" = 1 ]; then
+  echo
+  echo "THP counters around each run (deltas of /proc/vmstat thp_* and hugepages-<size>kB/stats/* read on the host; host-global, so a quiet host is assumed; sysfs: $(thp_state)):"
+  echo
+  echo "| row | variant | deltas |"
+  echo "|---|---|---|"
+  for b in $ROWS; do for v in $VARIANTS; do [ -f "$OUTDIR/$b.$v.thp" ] && echo "| $b | $v | $(cat "$OUTDIR/$b.$v.thp") |"; done; done
+fi

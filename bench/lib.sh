@@ -149,6 +149,47 @@ cgroup_peak_note() {
   else echo "cgroup memory.peak not reset per phase, VmHWM only: $CG_PEAK_REASON"; fi
 }
 
+# ---- THP counters around a row (plan Phase 2.5 task 17) ---------------------
+# CHALLOC_THP_COUNTERS=1 snapshots every thp_* line of /proc/vmstat and every
+# per-size counter under /sys/kernel/mm/transparent_hugepage/hugepages-<size>kB/
+# stats/ (6.12+: anon_fault_alloc, anon_fault_fallback, anon_fault_fallback_charge,
+# swpout, swpout_fallback, split, split_failed, split_deferred, nr_anon, ...)
+# before and after each run of run_row and writes the deltas beside the run's
+# log ($OUT/TAG.<n>.thp, "name=delta" for every counter that moved; the
+# per-size names are "<size>kB/<counter>"). ab.sh and quick.sh print them as
+# a section after their tables; bench/gce/quick-perf.sh takes the same
+# snapshots on the VM host around each container. The counters are
+# host-global (there is no per-cgroup THP counter), so the deltas include
+# anything else the host faulted in the meantime; on a quiet VM that is
+# noise of a few pages. Readable from inside a container (sysfs and
+# /proc/vmstat are the host's).
+THP_SYSFS=/sys/kernel/mm/transparent_hugepage
+CHALLOC_THP_COUNTERS=${CHALLOC_THP_COUNTERS:-0}
+thp_snapshot() { # thp_snapshot FILE: "name value" lines
+  { grep '^thp_' /proc/vmstat 2>/dev/null
+    for d in "$THP_SYSFS"/hugepages-*kB; do
+      [ -d "$d/stats" ] || continue
+      sz=${d##*/hugepages-}
+      for f in "$d"/stats/*; do [ -r "$f" ] && echo "$sz/${f##*/} $(cat "$f")"; done
+    done
+  } > "$1" 2>/dev/null
+}
+# thp_delta BEFORE AFTER: one line, "name=delta ..." for the counters that moved ("none" if none)
+thp_delta() {
+  awk 'NR==FNR {b[$1]=$2; next} ($1 in b) && $2 != b[$1] {printf "%s=%d ", $1, $2 - b[$1]; n++} END {if (!n) printf "none"; print ""}' "$1" "$2"
+}
+# thp_state: the sysfs table in one line (enabled, defrag, the per-size enabled values that are not never)
+thp_state() {
+  en=$(cat "$THP_SYSFS/enabled" 2>/dev/null | sed -n 's/.*\[\(.*\)\].*/\1/p'); df=$(cat "$THP_SYSFS/defrag" 2>/dev/null | sed -n 's/.*\[\(.*\)\].*/\1/p')
+  sizes=; for d in "$THP_SYSFS"/hugepages-*kB; do [ -f "$d/enabled" ] || continue; v=$(sed -n 's/.*\[\(.*\)\].*/\1/p' "$d/enabled"); [ "$v" = never ] || sizes="$sizes ${d##*/hugepages-}=$v"; done
+  echo "enabled=${en:--} defrag=${df:--}${sizes:+ per-size:$sizes}$([ -d "$THP_SYSFS/hugepages-64kB/stats" ] && echo " (per-size stats/ present)" || echo " (no per-size stats/ directory: /proc/vmstat thp_* only)")"
+}
+# thp_mean_deltas GLOB: the per-counter mean over the .thp files matching
+# GLOB (the timed runs of one row and variant), "name=mean" sorted by name.
+thp_mean_deltas() {
+  cat $1 2>/dev/null | tr ' ' '\n' | awk -F= 'NF==2 {s[$1]+=$2; c[$1]++} END {for (k in s) printf "%s=%.1f\n", k, s[k]/c[k]}' | sort | tr '\n' ' ' | sed 's/ $//'
+}
+
 # ---- protocol rows ----------------------------------------------------------
 
 stock_lib() { # stock_lib ALLOC: LD_PRELOAD path for jemalloc|glibc|mimalloc|tcmalloc, 1 otherwise
@@ -268,12 +309,16 @@ run_row() {
     ensure_probe pin
     set -- "$BIN/pin" "$(pin_cpus "$bench")" "$@"
   fi
+  [ "$CHALLOC_THP_COUNTERS" = 1 ] && thp_snapshot "$OUT/$tag.$n.thp0"
   if [ "$bench" = redis ]; then
     run_redis "$lib" "$conf" "$log" "$rt" "$@"
   elif [ -n "$conf" ]; then
     RT_OUT=$rt "$BIN/rt" env MALLOC_CONF="$conf" LD_PRELOAD="$lib" "$@" > "$log" 2>&1 || true
   else
     RT_OUT=$rt "$BIN/rt" env LD_PRELOAD="$lib" "$@" > "$log" 2>&1 || true
+  fi
+  if [ "$CHALLOC_THP_COUNTERS" = 1 ]; then
+    thp_snapshot "$OUT/$tag.$n.thp1"; thp_delta "$OUT/$tag.$n.thp0" "$OUT/$tag.$n.thp1" > "$OUT/$tag.$n.thp"; rm -f "$OUT/$tag.$n.thp0" "$OUT/$tag.$n.thp1"
   fi
   read -r el _us _sy rss ex < "$rt"
   case $bench in

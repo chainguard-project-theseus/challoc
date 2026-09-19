@@ -48,6 +48,8 @@
 #                            `bench/gce/challoc-bench quick-perf <vm>` (bench/gce/quick-perf.sh),
 #                            which prints the same table with perf attached from the host.
 #   QUICK_BUILD_ONLY=1       stop after building old and new (quick-perf uses the builds)
+#   CHALLOC_THP_COUNTERS=1   after the table, the THP counter deltas around each run (plan
+#                            Phase 2.5 task 17; bench/lib.sh thp_snapshot)
 #   OUT=target/quick/out     raw logs
 set -eu
 cd "$(dirname "$0")/.."
@@ -203,6 +205,14 @@ nverdict=$(churn_ok new && echo "compacts" || echo "DOES NOT COMPACT")
 echo "| churn $CHURN_CLASS, ${CHURN_SECS}s | slabs deleted -> end (occ) | $(churn_cell old) | $(churn_cell new) | $(churn_cell jemalloc) | new $nverdict (end occupancy >= $CHURN_MIN_OCC%) | $(awk '{print $3}' "$OUT/new.churn") ops/s |"
 echo
 echo "Positive percentages mean new did worse (slower, lower throughput). One round each, $ARCH, nproc $PROCS, load at start $(loadavg | cut -d' ' -f1), $(( $(date +%s) - T_START )) s total. $BUILD_NOTE."
+if [ "$CHALLOC_THP_COUNTERS" = 1 ]; then
+  echo
+  echo "THP counters around each run (deltas of /proc/vmstat thp_* and hugepages-<size>kB/stats/*, host-global; sysfs: $(thp_state)):"
+  echo
+  echo "| row | variant | deltas (first round) |"
+  echo "|---|---|---|"
+  for b in $QUICK_BENCHES; do for v in $VARIANTS; do [ -f "$OUT/$b.$v.0.thp" ] && echo "| $b | $v | $(cat "$OUT/$b.$v.0.thp") |"; done; done
+fi
 
 # ---- per-operation counters (PERF=1) ---------------------------------------------
 # One run per (row, variant) under `perf stat -x,` with the four events the

@@ -36,6 +36,9 @@
 #   OUT=target/ab/out        raw logs and score files
 #   VALKEY_MODEL_SECS=10     seconds of the valkey1 / valkey1-free rows (bench/lib.sh)
 #   PIN=                     1 or a CPU list: run every row under bench/pin.c (experiment)
+#   CHALLOC_THP_COUNTERS=1   snapshot /proc/vmstat thp_* and the per-size hugepages-<size>kB/stats/
+#                            counters around every run and append a "THP counters" section with
+#                            the mean deltas per (program, variant) (plan Phase 2.5 task 17)
 set -eu
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
@@ -227,6 +230,21 @@ first=${NAMES%% *}
   done
   echo
   echo "Positive percentages mean the variant did worse than $first (slower or lower throughput)."
+  if [ "$CHALLOC_THP_COUNTERS" = 1 ]; then
+    echo
+    echo "## THP counters (CHALLOC_THP_COUNTERS=1)"
+    echo
+    echo "Per-run deltas of /proc/vmstat thp_* and hugepages-<size>kB/stats/* around each run (bench/lib.sh thp_snapshot), mean over the $DONE_ROUNDS timed runs; only the counters that moved. Host-global counters: on a shared host the deltas include other processes' faults. sysfs at the end: $(thp_state)."
+    echo
+    echo "| program | variant | mean deltas per run |"
+    echo "|---|---|---|"
+    for b in $BENCHES; do
+      for v in $NAMES; do
+        v_cached "$v" && continue
+        echo "| $b | $v | $(thp_mean_deltas "$OUT/$b.$v.[1-9]*.thp") |"
+      done
+    done
+  fi
 } > "$RESULT"
 echo "== wrote $RESULT"
 sed -n '/^## Sorted scores/,$p' "$RESULT"
