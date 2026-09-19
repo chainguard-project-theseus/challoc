@@ -598,6 +598,178 @@ Acceptance:
 - The two container tests pass; jemalloc's behaviour in the same tests is
   documented as the baseline.
 
+## Phase 2.5: floor and ceiling
+
+Goal (the human's direction, 2026-09-18): the floor is a compatibility
+promise (glibc 2.44, kernel 5.10, Wolfi's compiler baseline), proven on
+real kernels rather than claimed; the ceiling is the product: the same
+binary lights every kernel and CPU feature the host offers, at runtime,
+without a rebuild, and challoc is the best allocator on the hosts
+Chainguard ships (a recent kernel, a growing CPU matrix on GCP). Every
+probed feature ships with a test on a host that has it and a test on a
+host that lacks it, a cost row, and a line in the feature report.
+
+Rules for the phase: the compiler baseline stays where Wolfi sets it (the
+ceiling is reached by runtime probes and `asm!`, never by `-C target-cpu`);
+a feature that is on by default when present must be within noise on the
+reference VMs' scorecard when absent and must not change observable
+behaviour (allocation results, abort conditions) between hosts, only cost,
+memory and detection; tagged pointers are opt-in per consumer until the
+Valkey and Ruby suites pass with them on.
+
+Tasks, in order:
+
+1. Comparison matrix (the human's request, 2026-09-18): tcmalloc
+   (Wolfi's `tcmalloc-minimal` from gperftools 2.18.1) added to the dev
+   image and to `bench/lib.sh` as a fourth stock allocator (`is_stock`,
+   the library path, `bench/baseline.sh`, `CGROUP_ALLOCS`); Python rows:
+   Wolfi's `python-3.13`, a `bench/python-bench.sh` and `make python-bench`
+   over pyperformance's standard set if it installs on the VM, else a fixed
+   set of stdlib scripts (JSON encode/decode, dict and list churn, regex, an
+   object-graph builder), each workload run two ways, `PYTHONMALLOC` unset
+   (pymalloc for objects under 512 bytes; the allocator sees the rest) and
+   `PYTHONMALLOC=malloc` (every object through the allocator), plus the
+   free-threaded build as a third variant if Wolfi packages it; five rounds,
+   wall time and peak RSS, both VMs, under glibc, jemalloc, mimalloc,
+   tcmalloc and challoc via `LD_PRELOAD`. Then one same-run four-way table on
+   both VMs: the Phase 0 set, the Ruby rows, the Valkey model rows, the
+   Python rows, the container tests at 512 and 256 MiB (the Valkey soak is
+   jemalloc-only, no other allocator has the API; say so). Results in
+   `bench/results/<date>-<arch>-gce-four-way.md`; the scorecard gains a
+   `python1` row (default) and `python1-malloc` row. Acceptance: the table
+   exists with every cell from one run per VM; any row where challoc is
+   more than 10% behind any allocator has an attribution before anything
+   is changed for it.
+2. The feature report. `challoc_features()` (C-callable, a static string)
+   and the `Kernel features` line of `malloc_stats_print` report the
+   kernel probes (existing) and the CPU: arm64 from `AT_HWCAP`/`AT_HWCAP2`
+   (MTE, PAC, LSE, LSE2, BTI, SVE), x86_64 from `cpuid` (LAM, LA57 enabled,
+   CLDEMOTE, WAITPKG, ERMS/FSRM, AVX-512), both with L1D/L2 sizes and the
+   cache-line size from the CPU (`CTR_EL0`, leaf 4). Design gains a
+   section "Floor and ceiling" listing every probed feature, the kernel
+   or CPU that provides it, what it turns on, and its fallback; README's
+   kernel table becomes a kernel-and-CPU table. Acceptance: the line on
+   both VMs and in the Mac container matches `/proc/cpuinfo`; a host test
+   parses captured `cpuid`/HWCAP values.
+3. The floor, proven: `challoc-bench matrix` creates throwaway VMs from a
+   list of images and runs `make test`, the probe line, `make fuzz` and
+   `make test-cgroup` on each, then deletes them: kernel cells 5.10
+   (Debian 11), 6.1 (Debian 12), 6.8 (Ubuntu 24.04 GA), 6.13+ and the GCE
+   7.0 (the reference), and the 64 KiB-page aarch64 cell (Ubuntu arm64
+   `linux-generic-64k`; the `huge.rs` tests use the runtime page size first);
+   one bare-metal or nested-KVM cell for the `process_madvise` batch path
+   if a host can be found, else the GCE Docker `--privileged` run. Results
+   in `bench/results/<date>-matrix.md`, one line per cell with the probe
+   line and the outcome. This absorbs Phase 3 prerequisites (a) and (b).
+   Acceptance: green on every cell, including 5.10 and 64 KiB pages; every
+   fallback path has now run on a kernel that needs it.
+4. The CPU matrix on GCP: the same `matrix` subcommand over machine types:
+   C4A (Axion, Neoverse V2), T2A (Ampere Altra, Neoverse N1), C4 (Xeon
+   8581C), C3 (Sapphire Rapids), C3D or N2D (AMD Genoa, Zen 4), C2
+   (Cascade Lake). Per CPU: the probe line, `make test`, and one scorecard
+   run (3 rounds, challoc vs jemalloc) recorded as `scorecard-<cpu>.md`
+   next to the two reference files (the reference for acceptance stays
+   C4A and C4). Acceptance: the feature report per CPU is recorded; any
+   CPU where a default-on feature costs more than 3% on a scorecard row
+   has the feature gated on that CPU or the cost recorded as accepted.
+5. Tagged pointers, part 1, the probes and the design: whether Axion
+   exposes MTE (`HWCAP2_MTE`), whether the C4/C3/C3D CPUs expose LAM or
+   UAI and the kernel `arch_prctl(ARCH_ENABLE_TAGGED_ADDR)` accepts it;
+   design section "Tagged pointers": on MTE hosts, class regions mapped
+   `PROT_MTE`, a random 4-bit tag per allocation set with `stg`/`st2g`
+   over the slot on allocation, retagged on free, tag-check faults
+   reported through the existing abort path, asynchronous mode by default;
+   on LAM/UAI hosts, the top bits carry a class-and-generation tag that
+   `free`, `realloc`, `usable_size` and the sized path verify (a mismatch
+   aborts; loads are not checked); the `tag_pointers` key (`off`, `mte`,
+   `lam`, `auto`) default `off` in this phase. Acceptance: the probe results
+   on every CPU of task 4 in the matrix file; the design section; a note
+   for the human on whether the reference VMs can test MTE at all (if not,
+   an AmpereOne or Graviton4 box is the prerequisite for part 2).
+6. Tagged pointers, part 2, implementation behind the key, on whichever
+   of MTE and LAM a reachable host has: negative tests (read through a
+   freed pointer faults under MTE; `free` of a pointer with a stale tag
+   aborts under both), the fuzzer and the Valkey and Ruby suites under the
+   key, cost rows (`valkey1`, `larson1`, `redis`, the Ruby rows; MTE's
+   retag on free is the `zero_on_free` store pattern in hardware, so record
+   both next to each other), fork behaviour with tagged pages measured.
+   Acceptance: suites green with the key on; the cost recorded; the default
+   stays `off` unless the cost is under 3% on every target row, in which
+   case the human decides.
+7. PAC-signed cache pointers on arm64 (`pacda`/`autda` on the slot pointers
+   in the thread cache and the heap pointer in TLS, keyed per process),
+   probed by `HWCAP_PACA`, on by default when present if `quick` on the
+   C4A is within noise. Acceptance: a corrupted cache entry faults (test
+   through the `check_zero`-style debug hook), `quick` go, scorecard line.
+8. Per-CPU caches through rseq `mm_cid` (design 15, promoted from Phase 4):
+   caches keyed by the running CPU's `mm_cid` read from glibc's registered
+   rseq area, pop and push inside rseq critical sections (`asm!` on both
+   architectures, kernel-owned fields never written), arenas per CPU rather
+   than per thread when the mode is on, thread caches as the fallback on
+   kernels or glibc without `mm_cid`; `percpu_arena:percpu` selects it,
+   `auto` when the probe passes. Acceptance: `mstress`, `alloc-testN`, a
+   64-thread larson and a Sidekiq-shaped Ruby soak with many idle threads
+   (RSS bounded by cores, not threads); `quick` and the scorecard within
+   noise or better on the reference VMs; the Valkey and Ruby suites green;
+   the calloc-zero campaign clean under the mode; the mstress x86_64 RSS row
+   re-measured (this is the mechanism that could bring it inside the band).
+9. Multi-size THP for slab regions (kernel 6.8+): probe
+   `/sys/kernel/mm/transparent_hugepage/hugepages-64kB/enabled` and friends,
+   `MADV_HUGEPAGE` on class regions whose slab size matches an enabled folio
+   size, `MADV_COLLAPSE` for hot metadata pages; measure the aarch64 dTLB
+   column (3.2 refills per operation against jemalloc's 1.7) and fork time
+   under a Valkey BGSAVE shape (the copy-on-write cost that forbids 2 MiB
+   pages must stay absent at 64 KiB). Acceptance: dTLB column moves toward
+   jemalloc's on the C4A, fork time within 5% of today, scorecard within
+   noise; default on only if both hold, else `thp:always` documented.
+10. The two-advice purge: under the cgroup policy's 70% band, `Empty`
+    slabs are returned with `MADV_FREE` (lazy, no refault cost while memory
+    is plentiful) and above it with `MADV_DONTNEED`; `stats.cgroup.*` and
+    the report show which advice is in force; `lazy_free` becomes the
+    override. Acceptance: the container churn test still passes at both
+    limits; mstress and alloc-test wall time with the lazy band on versus
+    off recorded (the refault saving); RSS-as-seen-by-the-cgroup documented
+    (`MADV_FREE` pages stay charged until reclaim).
+11. Prefaulted fresh slabs: the background thread commits and
+    `MADV_POPULATE_WRITE`s (5.14+, probed; fallback: touch) the next fresh
+    slab of each class that refilled since the last pass, bounded by one
+    slab per class and by the cgroup headroom. Acceptance: the Valkey
+    soak's write-phase p99 and page-fault count on the main thread (perf
+    sidecar), scorecard within noise.
+12. Small ceiling items, each behind its probe: spin-wait instructions in
+    `lock.rs` (`wfe`, `tpause`) with the larson16 x86_64 row as the test;
+    cache-geometry-sized defaults (capacity ladder and `tcache_max` derived
+    from measured L2, with the current constants as the fallback), measured
+    on every CPU of task 4; CLDEMOTE on cross-thread frees, measured on
+    xmalloc-test and the io-threads soak (Phase 3 prerequisite (d)) and
+    dropped if it does not pay.
+13. Model-checked slab protocol: the claim, release, `on_live_zero` and
+    purge protocol over the bitmap, live count and state byte, in a
+    host-side exhaustive interleaving model (Loom-style over the existing
+    test scaffolding, or Kani over `bitmap.rs`/the `class.rs` state
+    machine), including the task 7 (c) fix and the task 15 group handoff.
+    Acceptance: the model reproduces the pre-fix calloc race and passes on
+    the current code; it runs in `cargo test --features std`.
+
+Acceptance for the phase:
+
+- The floor: `make test`, `make fuzz` and the container tests are green on
+  every kernel cell of task 3, including 5.10 and 64 KiB pages.
+- The ceiling: every probed kernel and CPU feature in the feature report
+  has a both-ways test, a cost row and a design entry; on the reference
+  VMs no default-on feature moves a scorecard row outside noise, and on
+  every CPU of task 4 the feature report and the scorecard are recorded.
+- The four-way table of task 1 exists and challoc is at or ahead of every
+  allocator on the Valkey soak, the Ruby rows and the container tests, and
+  within 10% on every other row or attributed.
+- Per-CPU caches and tagged pointers are implemented behind their keys with
+  suites green and costs recorded; their defaults are the human's decision
+  with the numbers in front of them.
+- All Phase 0, 1, 1.5 and 2 acceptance criteria still pass with defaults.
+
+Phase 3's prerequisites (c), (d) and (e) stay as written; (a) and (b) are
+task 3's cells.
+
 ## Phase 3: packaging and rollout
 
 Prerequisites (2026-09-18 review, section 4.3), before any package: (a) one
