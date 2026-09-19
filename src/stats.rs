@@ -225,12 +225,21 @@ pub struct Totals {
 }
 
 impl Totals {
-    pub const EMPTY: Totals = Totals { allocated: 0, active: 0, metadata: 0, resident: 0, retained: 0, mapped: 0 };
+    pub const EMPTY: Totals = Totals {
+        allocated: 0,
+        active: 0,
+        metadata: 0,
+        resident: 0,
+        retained: 0,
+        mapped: 0,
+    };
 
     /// The accounting identities every snapshot satisfies:
     /// `resident >= active >= allocated` and `mapped == resident + retained`.
     pub fn identities_hold(&self) -> bool {
-        self.resident >= self.active && self.active >= self.allocated && self.mapped == self.resident + self.retained
+        self.resident >= self.active
+            && self.active >= self.allocated
+            && self.mapped == self.resident + self.retained
     }
 
     fn add_arena(&mut self, a: &ArenaStats) {
@@ -261,8 +270,23 @@ impl Snapshot {
         epoch: 0,
         narenas: 0,
         totals: Totals::EMPTY,
-        huge: HugeStats { runs: 0, run_pages: 0, empty: 0, empty_pages: 0, purged: 0, purged_pages: 0, next_page: 0, table_cap: 0 },
-        meta: MetaStats { len: 0, committed: 0, allocated: 0, bumped: 0, reserved: 0 },
+        huge: HugeStats {
+            runs: 0,
+            run_pages: 0,
+            empty: 0,
+            empty_pages: 0,
+            purged: 0,
+            purged_pages: 0,
+            next_page: 0,
+            table_cap: 0,
+        },
+        meta: MetaStats {
+            len: 0,
+            committed: 0,
+            allocated: 0,
+            bumped: 0,
+            reserved: 0,
+        },
     };
 }
 
@@ -336,7 +360,12 @@ pub fn collect_bin(cs: &ClassState) -> BinStats {
 
 /// The current figures of `arena`. `huge` and `meta` are the process-wide
 /// counters the caller read (they are folded into arena 0 only).
-fn collect_arena_with(shared: &Shared, arena: &Arena, huge: &HugeStats, meta: &MetaStats) -> ArenaStats {
+fn collect_arena_with(
+    shared: &Shared,
+    arena: &Arena,
+    huge: &HugeStats,
+    meta: &MetaStats,
+) -> ArenaStats {
     let page = shared.regions.page_size();
     let mut a = ArenaStats::empty(arena.index());
     for (c, bin) in a.bins.iter_mut().enumerate() {
@@ -404,7 +433,13 @@ fn collect_into(shared: &Shared, store: bool) -> Snapshot {
         g.meta = meta;
         *g
     } else {
-        Snapshot { epoch: g.epoch, narenas, totals, huge, meta }
+        Snapshot {
+            epoch: g.epoch,
+            narenas,
+            totals,
+            huge,
+            meta,
+        }
     }
 }
 
@@ -456,11 +491,9 @@ pub fn collect_all(shared: &Shared) -> ArenaStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::heap::tests::{TestHeap, class_with, live, shared};
+    use crate::heap::tests::{TestHeap, class_with, live, page_size, shared};
     use crate::layout::CLASSES;
     use std::vec::Vec;
-
-    const PAGE: usize = 4096;
 
     fn xorshift(state: &mut u64) -> u64 {
         let mut x = *state;
@@ -485,7 +518,10 @@ mod tests {
         assert_eq!(first.narenas, 1);
         assert_eq!(first.totals.allocated, 0);
         assert_eq!(first.totals.active, 0);
-        assert!(first.totals.metadata > 0, "the slab tables and sets are committed metadata");
+        assert!(
+            first.totals.metadata > 0,
+            "the slab tables and sets are committed metadata"
+        );
         assert_eq!(first.totals.resident, first.totals.metadata);
         assert_eq!(first.totals.retained, 0);
         assert_eq!(first.totals.mapped, first.totals.resident);
@@ -519,28 +555,61 @@ mod tests {
         let tot = snapshot(s).totals;
         assert_eq!(a.index, 0);
         let b16 = a.bins[c16];
-        assert_eq!((b16.size, b16.nregs, b16.slab_size), (16, CLASSES[c16].nslots(), CLASSES[c16].slab_size()));
+        assert_eq!(
+            (b16.size, b16.nregs, b16.slab_size),
+            (16, CLASSES[c16].nslots(), CLASSES[c16].slab_size())
+        );
         assert_eq!(b16.curregs, live(s, c16), "curregs is the sum of live");
-        assert!(b16.curregs >= 100, "the refill batch counts: {}", b16.curregs);
-        assert_eq!((b16.curslabs, b16.nonfull_slabs, b16.empty_slabs, b16.purged_slabs), (1, 1, 0, 0));
+        assert!(
+            b16.curregs >= 100,
+            "the refill batch counts: {}",
+            b16.curregs
+        );
+        assert_eq!(
+            (
+                b16.curslabs,
+                b16.nonfull_slabs,
+                b16.empty_slabs,
+                b16.purged_slabs
+            ),
+            (1, 1, 0, 0)
+        );
         let b256 = a.bins[c256];
         assert_eq!(b256.curregs, live(s, c256));
         // The 256-byte refill (256 slots) fits in one 256-slot slab; keep
         // the count derived so the test survives a geometry change.
         let slabs256 = b256.curslabs;
-        assert!(slabs256 >= 1 && (slabs256 - 1) * CLASSES[c256].nslots() < b256.curregs, "{slabs256} slabs");
+        assert!(
+            slabs256 >= 1 && (slabs256 - 1) * CLASSES[c256].nslots() < b256.curregs,
+            "{slabs256} slabs"
+        );
         assert_eq!(a.small_allocated, live(s, c16) * 16 + live(s, c256) * 256);
-        assert_eq!(a.small_active, CLASSES[c16].slab_size() + slabs256 * CLASSES[c256].slab_size());
+        assert_eq!(
+            a.small_active,
+            CLASSES[c16].slab_size() + slabs256 * CLASSES[c256].slab_size()
+        );
         assert_eq!((a.small_dirty, a.small_retained), (0, 0));
         let bmed = a.bins[cmed];
         assert_eq!((bmed.curregs, bmed.curslabs), (live(s, cmed), 1));
         assert!(bmed.curregs >= 1);
         assert_eq!(a.large_runs, 1);
-        assert_eq!(usable, (run_pages - GUARD_PAGES) * PAGE);
-        assert_eq!(a.large_allocated, usable + live(s, cmed) * CLASSES[cmed].size(), "classes above BIN_MAX are large");
+        assert_eq!(usable, (run_pages - GUARD_PAGES) * page_size());
+        assert_eq!(
+            a.large_allocated,
+            usable + live(s, cmed) * CLASSES[cmed].size(),
+            "classes above BIN_MAX are large"
+        );
         assert_eq!(a.large_active, usable + med_slab);
-        assert_eq!((a.large_dirty, a.large_retained, a.huge_dirty, a.huge_retained), (0, 0, 0, 0));
-        assert_eq!(a.pactive, (a.small_active + a.large_active) / PAGE);
+        assert_eq!(
+            (
+                a.large_dirty,
+                a.large_retained,
+                a.huge_dirty,
+                a.huge_retained
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(a.pactive, (a.small_active + a.large_active) / page_size());
         assert_eq!((a.pdirty, a.pmuzzy), (0, 0));
         assert_eq!(a.resident, a.small_active + a.large_active + a.metadata);
         assert_eq!(a.mapped, a.resident);
@@ -550,7 +619,11 @@ mod tests {
         assert_eq!(tot.resident, tot.active + tot.metadata);
         assert_eq!(tot.retained, 0);
         assert!(tot.identities_hold(), "{tot:?}");
-        assert_eq!(collect(s).totals, tot, "nothing moved: live and stored agree");
+        assert_eq!(
+            collect(s).totals,
+            tot,
+            "nothing moved: live and stored agree"
+        );
 
         // Free everything and flush: the slabs and the run go Empty.
         for &p in &ps {
@@ -564,14 +637,32 @@ mod tests {
         let tot = snapshot(s).totals;
         assert_eq!((tot.allocated, tot.active), (0, 0));
         let b16 = a.bins[c16];
-        assert_eq!((b16.curregs, b16.curslabs, b16.nonfull_slabs, b16.empty_slabs, b16.purged_slabs), (0, 0, 0, 1, 0));
+        assert_eq!(
+            (
+                b16.curregs,
+                b16.curslabs,
+                b16.nonfull_slabs,
+                b16.empty_slabs,
+                b16.purged_slabs
+            ),
+            (0, 0, 0, 1, 0)
+        );
         assert_eq!(a.bins[c256].empty_slabs, slabs256);
-        assert_eq!(a.small_dirty, CLASSES[c16].slab_size() + slabs256 * CLASSES[c256].slab_size());
+        assert_eq!(
+            a.small_dirty,
+            CLASSES[c16].slab_size() + slabs256 * CLASSES[c256].slab_size()
+        );
         assert_eq!((a.large_runs, a.large_allocated, a.large_active), (0, 0, 0));
         assert_eq!(a.large_dirty, med_slab, "the medium slab went Empty");
-        assert_eq!(a.huge_dirty, run_pages * PAGE);
-        assert_eq!(a.pdirty, (a.small_dirty + a.large_dirty + a.huge_dirty) / PAGE);
-        assert_eq!(tot.resident, tot.metadata + a.small_dirty + a.large_dirty + a.huge_dirty);
+        assert_eq!(a.huge_dirty, run_pages * page_size());
+        assert_eq!(
+            a.pdirty,
+            (a.small_dirty + a.large_dirty + a.huge_dirty) / page_size()
+        );
+        assert_eq!(
+            tot.resident,
+            tot.metadata + a.small_dirty + a.large_dirty + a.huge_dirty
+        );
         assert_eq!(tot.retained, 0);
         assert_eq!(tot.mapped, tot.resident);
         assert!(tot.identities_hold(), "{tot:?}");
@@ -671,7 +762,10 @@ mod tests {
         assert_eq!((s0.index, s1.index), (0, 1));
         assert_eq!(s0.bins[c32].curslabs, 1);
         assert_eq!(s1.bins[c32].curslabs, 1);
-        assert_eq!(s1.bins[c32].curregs, s.arena(1).unwrap().class(c32).curregs());
+        assert_eq!(
+            s1.bins[c32].curregs,
+            s.arena(1).unwrap().class(c32).curregs()
+        );
         assert_eq!((s0.large_runs, s0.large_allocated), (0, 0));
         assert_eq!((s1.large_runs, s1.large_allocated), (1, usable));
         assert_eq!((s1.huge_dirty, s1.huge_retained, s1.metadata), (0, 0, 0));
@@ -693,7 +787,10 @@ mod tests {
         let s0 = arena_stats(s, 0).unwrap();
         let s1 = arena_stats(s, 1).unwrap();
         assert_eq!((s1.large_runs, s1.large_allocated), (0, 0));
-        assert_eq!(s0.huge_dirty, (s.huge.usable_pages(size).unwrap() + GUARD_PAGES) * PAGE);
+        assert_eq!(
+            s0.huge_dirty,
+            (s.huge.usable_pages(size).unwrap() + GUARD_PAGES) * page_size()
+        );
         assert_eq!(s1.huge_dirty, 0);
         assert_eq!(s1.bins[c32].empty_slabs, 1);
         assert_eq!(s0.bins[c32].empty_slabs, 1);
@@ -721,11 +818,25 @@ mod tests {
         assert_eq!(b.active(), 2 * 65536);
         assert_eq!(b.dirty(), 3 * 65536);
         assert_eq!(b.retained(), 4 * 65536);
-        let ok = Totals { allocated: 1, active: 2, metadata: 1, resident: 3, retained: 4, mapped: 7 };
+        let ok = Totals {
+            allocated: 1,
+            active: 2,
+            metadata: 1,
+            resident: 3,
+            retained: 4,
+            mapped: 7,
+        };
         assert!(ok.identities_hold());
         assert!(!Totals { mapped: 8, ..ok }.identities_hold());
         assert!(!Totals { allocated: 3, ..ok }.identities_hold());
-        assert!(!Totals { resident: 1, mapped: 5, ..ok }.identities_hold());
+        assert!(
+            !Totals {
+                resident: 1,
+                mapped: 5,
+                ..ok
+            }
+            .identities_hold()
+        );
         assert_eq!(ArenaStats::empty(7).index, 7);
         assert_eq!(ArenaStats::empty(7).bins[0], BinStats::EMPTY);
     }

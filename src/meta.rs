@@ -102,7 +102,11 @@ pub const fn bin_of(size: usize) -> Option<usize> {
     // holds `1.5 * 2^lg` and the next holds `2^(lg+1)`.
     let lg = (usize::BITS - 1 - (size - 1).leading_zeros()) as usize;
     let base = 6 + 2 * (lg - 8);
-    if size <= (3 << (lg - 1)) { Some(base) } else { Some(base + 1) }
+    if size <= (3 << (lg - 1)) {
+        Some(base)
+    } else {
+        Some(base + 1)
+    }
 }
 
 /// Alignment every object of bin `bin` has: 16 up to the 64-byte bin, a
@@ -197,13 +201,25 @@ impl Inner {
             committed: 0,
             top: 0,
             free: [ptr::null_mut(); NBINS],
-            stats: MetaStats { len: 0, committed: 0, allocated: 0, bumped: 0, reserved: 0 },
+            stats: MetaStats {
+                len: 0,
+                committed: 0,
+                allocated: 0,
+                bumped: 0,
+                reserved: 0,
+            },
         }
     }
 
     const fn new(base: usize, len: usize, page: usize) -> Inner {
-        assert!(page.is_power_of_two() && page >= MIN_ALIGN, "meta: bad page size");
-        assert!(base % page == 0 && len % page == 0 && len > 0, "meta: region not page aligned");
+        assert!(
+            page.is_power_of_two() && page >= MIN_ALIGN,
+            "meta: bad page size"
+        );
+        assert!(
+            base % page == 0 && len % page == 0 && len > 0,
+            "meta: region not page aligned"
+        );
         assert!(base.checked_add(len).is_some(), "meta: region wraps");
         Inner {
             base,
@@ -213,7 +229,13 @@ impl Inner {
             committed: base,
             top: base + len,
             free: [ptr::null_mut(); NBINS],
-            stats: MetaStats { len, committed: 0, allocated: 0, bumped: 0, reserved: 0 },
+            stats: MetaStats {
+                len,
+                committed: 0,
+                allocated: 0,
+                bumped: 0,
+                reserved: 0,
+            },
         }
     }
 
@@ -248,7 +270,9 @@ impl Inner {
             return head as *mut u8;
         }
         let start = align_up(self.bump, bin_align(bin));
-        let Some(end) = start.checked_add(size) else { return ptr::null_mut() };
+        let Some(end) = start.checked_add(size) else {
+            return ptr::null_mut();
+        };
         if end > self.top {
             return ptr::null_mut();
         }
@@ -272,7 +296,10 @@ impl Inner {
         // The one double free that costs nothing to see: the block is the
         // list's head. A block deeper in the list is not looked for (that
         // would walk the list on every free).
-        assert!(self.free[bin] != node, "meta: double free of the free list head");
+        assert!(
+            self.free[bin] != node,
+            "meta: double free of the free list head"
+        );
         // SAFETY: the block is `size >= 16` bytes of committed memory that
         // the caller has given up, aligned to at least 16.
         unsafe { (*node).next = self.free[bin] };
@@ -281,7 +308,10 @@ impl Inner {
     }
 
     fn reserve(&mut self, len: usize, align: usize) -> Option<usize> {
-        assert!(align.is_power_of_two(), "meta: reserve alignment not a power of two");
+        assert!(
+            align.is_power_of_two(),
+            "meta: reserve alignment not a power of two"
+        );
         if self.len == 0 || len > self.top - self.committed {
             return None;
         }
@@ -320,12 +350,16 @@ impl Default for Meta {
 impl Meta {
     /// An allocator with no region. Every request fails until [`Meta::init`].
     pub const fn empty() -> Meta {
-        Meta { inner: Lock::new(Inner::empty()) }
+        Meta {
+            inner: Lock::new(Inner::empty()),
+        }
     }
 
     /// An allocator over `[base, base + len)`, both page multiples.
     pub const fn new(base: usize, len: usize, page: usize) -> Meta {
-        Meta { inner: Lock::new(Inner::new(base, len, page)) }
+        Meta {
+            inner: Lock::new(Inner::new(base, len, page)),
+        }
     }
 
     /// Point an [`empty`](Meta::empty) allocator at its region. Called once
@@ -354,15 +388,25 @@ impl Meta {
     /// MAX_BINNED` or `align > MAX_ALIGN`): that is a bug, not a resource
     /// failure.
     pub fn alloc(&self, layout: Layout) -> *mut u8 {
-        assert!(layout.align() <= MAX_ALIGN, "meta: alignment too large for an object");
-        let Some(bin) = bin_for(layout) else { panic!("meta: object too large") };
+        assert!(
+            layout.align() <= MAX_ALIGN,
+            "meta: alignment too large for an object"
+        );
+        let Some(bin) = bin_for(layout) else {
+            panic!("meta: object too large")
+        };
         self.inner.lock().alloc(bin)
     }
 
     /// [`alloc`](Meta::alloc), then zero the object if it was reused.
     pub fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        assert!(layout.align() <= MAX_ALIGN, "meta: alignment too large for an object");
-        let Some(bin) = bin_for(layout) else { panic!("meta: object too large") };
+        assert!(
+            layout.align() <= MAX_ALIGN,
+            "meta: alignment too large for an object"
+        );
+        let Some(bin) = bin_for(layout) else {
+            panic!("meta: object too large")
+        };
         let mut g = self.inner.lock();
         let before = g.bump;
         let p = g.alloc(bin);
@@ -378,7 +422,9 @@ impl Meta {
     /// Return an object allocated with the same `layout`.
     pub fn free(&self, p: *mut u8, layout: Layout) {
         assert!(!p.is_null(), "meta: free of null");
-        let Some(bin) = bin_for(layout) else { panic!("meta: free with an impossible layout") };
+        let Some(bin) = bin_for(layout) else {
+            panic!("meta: free with an impossible layout")
+        };
         self.inner.lock().free(p, bin);
     }
 
@@ -445,7 +491,18 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    const PAGE: usize = 4096;
+    /// The page size the environment is built with: the kernel's on Linux
+    /// (the reservations are real; the 64 KiB-page matrix cell found the
+    /// 4 KiB constant), 4 KiB in the synthetic host environment.
+    #[cfg(target_os = "linux")]
+    fn page_size() -> usize {
+        crate::sys::features::page_size()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn page_size() -> usize {
+        4096
+    }
 
     /// A region for tests: a real `PROT_NONE` reservation on Linux so that
     /// commit goes through `mprotect`; plain zeroed memory elsewhere.
@@ -461,22 +518,33 @@ mod tests {
         fn new(len: usize) -> Backing {
             use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
             let base = unsafe {
-                crate::sys::mmap(0, len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0)
+                crate::sys::mmap(
+                    0,
+                    len,
+                    PROT_NONE,
+                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+                    -1,
+                    0,
+                )
             }
             .expect("reserve");
-            assert_eq!(base % PAGE, 0);
+            assert_eq!(base % page_size(), 0);
             Backing { base, len }
         }
 
         #[cfg(not(target_os = "linux"))]
         fn new(len: usize) -> Backing {
-            let buf = vec![0u8; len + PAGE];
-            let base = align_up(buf.as_ptr() as usize, PAGE);
-            Backing { base, len, _buf: buf }
+            let buf = vec![0u8; len + page_size()];
+            let base = align_up(buf.as_ptr() as usize, page_size());
+            Backing {
+                base,
+                len,
+                _buf: buf,
+            }
         }
 
         fn meta(&self) -> Meta {
-            Meta::new(self.base, self.len, PAGE)
+            Meta::new(self.base, self.len, page_size())
         }
     }
 
@@ -510,7 +578,11 @@ mod tests {
         }
         for (i, &b) in BINS.iter().enumerate() {
             let b = b as usize;
-            assert_eq!(b % bin_align(i), 0, "bin {i} ({b}) not a multiple of its alignment");
+            assert_eq!(
+                b % bin_align(i),
+                0,
+                "bin {i} ({b}) not a multiple of its alignment"
+            );
             // Power of two or 1.5x a power of two; from 128 up, line sized.
             assert!(b.is_power_of_two() || (b % 3 == 0 && (b / 3).is_power_of_two()));
             if i >= 4 {
@@ -533,7 +605,9 @@ mod tests {
         }
         assert_eq!(bin_of(usize::MAX), None);
         assert_eq!(bin_of(MAX_BINNED), Some(NBINS - 1));
-        for size in [1usize, 16, 17, 32, 33, 48, 49, 64, 65, 128, 129, 256, 257, 384, 385, 512] {
+        for size in [
+            1usize, 16, 17, 32, 33, 48, 49, 64, 65, 128, 129, 256, 257, 384, 385, 512,
+        ] {
             let b = bin_of(size).unwrap();
             assert!(BINS[b] as usize >= size);
             assert!(b == 0 || (BINS[b - 1] as usize) < size);
@@ -562,7 +636,13 @@ mod tests {
         assert!(m.is_initialised());
         assert_eq!(m.base(), b.base);
         assert_eq!(m.top(), b.base + b.len);
-        assert_eq!(m.stats(), MetaStats { len: 1 << 20, ..MetaStats::default() });
+        assert_eq!(
+            m.stats(),
+            MetaStats {
+                len: 1 << 20,
+                ..MetaStats::default()
+            }
+        );
         assert!(m.contains(b.base));
         assert!(m.contains(b.base + b.len - 1));
         assert!(!m.contains(b.base + b.len));
@@ -575,8 +655,8 @@ mod tests {
         let m = Meta::empty();
         assert!(!m.is_initialised());
         assert!(m.alloc(layout(64, 8)).is_null());
-        assert_eq!(m.reserve(PAGE, PAGE), None);
-        unsafe { m.init(b.base, b.len, PAGE) };
+        assert_eq!(m.reserve(page_size(), page_size()), None);
+        unsafe { m.init(b.base, b.len, page_size()) };
         assert!(m.is_initialised());
         let p = m.alloc(layout(64, 8));
         assert!(!p.is_null());
@@ -609,7 +689,10 @@ mod tests {
         // Crossing the chunk boundary commits the next one.
         let big = m.alloc(layout(MAX_BINNED, 64));
         assert!(!big.is_null());
-        assert_eq!(m.stats().committed, align_up(MAX_BINNED + 512, COMMIT_CHUNK));
+        assert_eq!(
+            m.stats().committed,
+            align_up(MAX_BINNED + 512, COMMIT_CHUNK)
+        );
         unsafe { core::slice::from_raw_parts_mut(big, MAX_BINNED) }.fill(1);
     }
 
@@ -641,9 +724,17 @@ mod tests {
         m.free(d, layout(1000, 8));
         let z = m.alloc_zeroed(layout(1000, 8));
         assert_eq!(z, d);
-        assert!(unsafe { core::slice::from_raw_parts(z, 1024) }.iter().all(|&x| x == 0));
+        assert!(
+            unsafe { core::slice::from_raw_parts(z, 1024) }
+                .iter()
+                .all(|&x| x == 0)
+        );
         let fresh = m.alloc_zeroed(layout(5000, 8));
-        assert!(unsafe { core::slice::from_raw_parts(fresh, 5000) }.iter().all(|&x| x == 0));
+        assert!(
+            unsafe { core::slice::from_raw_parts(fresh, 5000) }
+                .iter()
+                .all(|&x| x == 0)
+        );
     }
 
     #[test]
@@ -666,7 +757,7 @@ mod tests {
 
     #[test]
     fn exhaustion_returns_null_and_recovers() {
-        let b = Backing::new(16 * PAGE);
+        let b = Backing::new(16 * page_size());
         let m = b.meta();
         let l = layout(1024, 8);
         let mut got = Vec::new();
@@ -677,11 +768,19 @@ mod tests {
             }
             got.push(p);
         }
-        assert_eq!(got.len(), 64, "64 KiB holds exactly 64 KiB objects");
-        assert_eq!(m.stats().committed, 16 * PAGE);
-        assert_eq!(m.stats().bumped, 16 * PAGE);
+        assert_eq!(
+            got.len(),
+            16 * page_size() / 1024,
+            "16 pages hold exactly that many 1 KiB objects"
+        );
+        assert_eq!(m.stats().committed, 16 * page_size());
+        assert_eq!(m.stats().bumped, 16 * page_size());
         assert!(m.alloc(layout(1, 1)).is_null());
-        assert_eq!(m.reserve(PAGE, PAGE), None, "no room left for a reservation");
+        assert_eq!(
+            m.reserve(page_size(), page_size()),
+            None,
+            "no room left for a reservation"
+        );
         // Freeing one makes exactly one more available.
         m.free(got.pop().unwrap(), l);
         assert!(!m.alloc(l).is_null());
@@ -689,59 +788,60 @@ mod tests {
         // Distinct pointers throughout.
         got.sort_unstable();
         got.dedup();
-        assert_eq!(got.len(), 63);
+        assert_eq!(got.len(), 16 * page_size() / 1024 - 1);
     }
 
     #[test]
     fn reservations_come_from_the_top() {
-        let b = Backing::new(64 * PAGE);
+        let b = Backing::new(64 * page_size());
         let m = b.meta();
         let end = b.base + b.len;
-        let r1 = m.reserve(3 * PAGE, PAGE).unwrap();
-        assert_eq!(r1, end - 3 * PAGE);
+        let r1 = m.reserve(3 * page_size(), page_size()).unwrap();
+        assert_eq!(r1, end - 3 * page_size());
         assert_eq!(m.top(), r1);
         // Sub-page lengths round up; large alignment rounds the start down.
-        let r2 = m.reserve(10, 8 * PAGE).unwrap();
-        assert_eq!(r2 % (8 * PAGE), 0);
-        assert!(r2 + PAGE <= r1);
+        let r2 = m.reserve(10, 8 * page_size()).unwrap();
+        assert_eq!(r2 % (8 * page_size()), 0);
+        assert!(r2 + page_size() <= r1);
         assert_eq!(m.top(), r2);
         let s = m.stats();
         assert_eq!(s.reserved, end - r2);
         assert_eq!(s.committed, 0, "reservations are uncommitted");
         // Commit part of r1, write into it.
-        m.commit(r1 + PAGE, PAGE).unwrap();
-        assert_eq!(m.stats().committed, PAGE);
-        unsafe { core::slice::from_raw_parts_mut((r1 + PAGE) as *mut u8, PAGE) }.fill(7);
+        m.commit(r1 + page_size(), page_size()).unwrap();
+        assert_eq!(m.stats().committed, page_size());
+        unsafe { core::slice::from_raw_parts_mut((r1 + page_size()) as *mut u8, page_size()) }
+            .fill(7);
         // reserve_committed is zero and writable.
-        let r3 = m.reserve_committed(2 * PAGE, PAGE).unwrap();
-        assert!(r3 + 2 * PAGE <= r2);
-        let sl = unsafe { core::slice::from_raw_parts_mut(r3 as *mut u8, 2 * PAGE) };
+        let r3 = m.reserve_committed(2 * page_size(), page_size()).unwrap();
+        assert!(r3 + 2 * page_size() <= r2);
+        let sl = unsafe { core::slice::from_raw_parts_mut(r3 as *mut u8, 2 * page_size()) };
         assert!(sl.iter().all(|&x| x == 0));
         sl.fill(9);
-        assert_eq!(m.stats().committed, 3 * PAGE);
+        assert_eq!(m.stats().committed, 3 * page_size());
         // Objects and reservations never overlap: fill the rest with
         // objects and check the boundary.
         let mut n = 0;
-        while !m.alloc(layout(PAGE, 8)).is_null() {
+        while !m.alloc(layout(page_size(), 8)).is_null() {
             n += 1;
         }
         assert_eq!(m.stats().bumped, m.top() - b.base);
-        assert_eq!(n, (m.top() - b.base) / PAGE);
-        assert_eq!(m.reserve(PAGE, PAGE), None);
+        assert_eq!(n, (m.top() - b.base) / page_size());
+        assert_eq!(m.reserve(page_size(), page_size()), None);
         // Object area is committed exactly up to the reservation boundary.
-        assert_eq!(m.stats().committed, 3 * PAGE + (m.top() - b.base));
+        assert_eq!(m.stats().committed, 3 * page_size() + (m.top() - b.base));
     }
 
     #[test]
     fn reserve_too_large_fails_cleanly() {
-        let b = Backing::new(8 * PAGE);
+        let b = Backing::new(8 * page_size());
         let m = b.meta();
-        assert_eq!(m.reserve(9 * PAGE, PAGE), None);
-        assert_eq!(m.reserve(usize::MAX, PAGE), None);
-        assert_eq!(m.reserve(PAGE, 1 << 40), None);
+        assert_eq!(m.reserve(9 * page_size(), page_size()), None);
+        assert_eq!(m.reserve(usize::MAX, page_size()), None);
+        assert_eq!(m.reserve(page_size(), 1 << 40), None);
         assert_eq!(m.stats().reserved, 0);
         assert_eq!(m.top(), b.base + b.len);
-        assert_eq!(m.reserve(8 * PAGE, PAGE), Some(b.base));
+        assert_eq!(m.reserve(8 * page_size(), page_size()), Some(b.base));
         assert_eq!(m.alloc(layout(1, 1)), ptr::null_mut());
     }
 
@@ -752,7 +852,10 @@ mod tests {
         let m = b.meta();
         let _ = m.alloc(layout(64, 8));
         let mut foreign = [0u8; 128];
-        m.free(align_up(foreign.as_mut_ptr() as usize, 64) as *mut u8, layout(64, 8));
+        m.free(
+            align_up(foreign.as_mut_ptr() as usize, 64) as *mut u8,
+            layout(64, 8),
+        );
     }
 
     #[test]
@@ -792,10 +895,11 @@ mod tests {
     #[test]
     #[should_panic(expected = "commit outside")]
     fn commit_outside_reservations_aborts() {
-        let b = Backing::new(1 << 16);
+        // Several pages, so the one-page reservation leaves room below it.
+        let b = Backing::new(4 * page_size());
         let m = b.meta();
-        let _ = m.reserve(PAGE, PAGE);
-        let _ = m.commit(b.base, PAGE);
+        let _ = m.reserve(page_size(), page_size());
+        let _ = m.commit(b.base, page_size());
     }
 
     /// Random alloc/free against a model: no overlap, alignment, contents
@@ -843,7 +947,7 @@ mod tests {
             let st = m.stats();
             assert_eq!(st.allocated, expect_allocated);
             assert!(st.allocated <= st.bumped && st.bumped <= st.committed);
-            assert!(st.committed <= st.len && st.committed % PAGE == 0);
+            assert!(st.committed <= st.len && st.committed % page_size() == 0);
         }
         // Free everything, then the same sequence of layouts reuses memory.
         let layouts: Vec<Layout> = live.iter().map(|(_, l, _)| *l).collect();
@@ -855,7 +959,11 @@ mod tests {
         for l in &layouts {
             assert!(!m.alloc(*l).is_null());
         }
-        assert_eq!(m.stats().bumped, bumped, "everything came from the free lists");
+        assert_eq!(
+            m.stats().bumped,
+            bumped,
+            "everything came from the free lists"
+        );
     }
 
     /// Eight threads share one allocator; each checks its own objects' fill
@@ -909,9 +1017,9 @@ mod tests {
         for _ in 0..10 {
             assert!(!m.alloc(layout(1000, 8)).is_null());
         }
-        let r = m.reserve_committed(3 * PAGE, PAGE).unwrap();
+        let r = m.reserve_committed(3 * page_size(), page_size()).unwrap();
         let st = m.stats();
-        assert_eq!(st.committed, COMMIT_CHUNK + 3 * PAGE);
+        assert_eq!(st.committed, COMMIT_CHUNK + 3 * page_size());
 
         let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
         let mut rw: Vec<(usize, usize)> = Vec::new();
@@ -930,17 +1038,19 @@ mod tests {
                 // with an adjacent `rw-p` anonymous mapping of another test.
                 rw.push((lo.max(b.base), hi.min(b.base + b.len)));
             } else {
-                assert!(perms.starts_with("---"), "unexpected perms {perms} at {range}");
+                assert!(
+                    perms.starts_with("---"),
+                    "unexpected perms {perms} at {range}"
+                );
             }
         }
         rw.sort_unstable();
         assert_eq!(
             rw,
-            vec![(b.base, b.base + COMMIT_CHUNK), (r, r + 3 * PAGE)],
+            vec![(b.base, b.base + COMMIT_CHUNK), (r, r + 3 * page_size())],
             "writable ranges in the region"
         );
     }
-
 
     #[test]
     #[should_panic(expected = "double free of the free list head")]

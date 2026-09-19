@@ -206,7 +206,10 @@ impl HugeStats {
         // A count going below zero means the extents and the counters
         // disagree; the release profile does not check overflow, so the
         // subtractions are explicit.
-        let sub = |x: usize, y: usize| x.checked_sub(y).unwrap_or_else(|| huge_count_underflow(state));
+        let sub = |x: usize, y: usize| {
+            x.checked_sub(y)
+                .unwrap_or_else(|| huge_count_underflow(state))
+        };
         match state {
             RunState::Empty => {
                 self.empty = sub(self.empty, 1);
@@ -258,7 +261,11 @@ impl Table {
         if bytes <= meta::MAX_BINNED {
             let layout = Layout::from_size_align(bytes, 16).ok()?;
             let p = meta.alloc_zeroed(layout);
-            if p.is_null() { None } else { Some((p as *mut Entry, true)) }
+            if p.is_null() {
+                None
+            } else {
+                Some((p as *mut Entry, true))
+            }
         } else {
             let p = meta.reserve_committed(bytes, page)?;
             Some((p as *mut Entry, false))
@@ -267,7 +274,12 @@ impl Table {
 
     fn new(meta: &Meta, page: usize) -> Option<Table> {
         let (entries, binned) = Table::storage(meta, page, LG_INITIAL_TABLE)?;
-        Some(Table { entries, lg_cap: LG_INITIAL_TABLE, count: 0, binned })
+        Some(Table {
+            entries,
+            lg_cap: LG_INITIAL_TABLE,
+            count: 0,
+            binned,
+        })
     }
 
     #[inline]
@@ -344,14 +356,24 @@ impl Table {
                 break;
             }
             let ideal = self.hash(e.key);
-            let stays = if i <= j { i < ideal && ideal <= j } else { i < ideal || ideal <= j };
+            let stays = if i <= j {
+                i < ideal && ideal <= j
+            } else {
+                i < ideal || ideal <= j
+            };
             if !stays {
                 *self.slot(i) = e;
                 i = j;
             }
         }
-        *self.slot(i) = Entry { key: 0, desc: ptr::null_mut() };
-        self.count = self.count.checked_sub(1).unwrap_or_else(|| panic!("huge: descriptor table count underflow"));
+        *self.slot(i) = Entry {
+            key: 0,
+            desc: ptr::null_mut(),
+        };
+        self.count = self
+            .count
+            .checked_sub(1)
+            .unwrap_or_else(|| panic!("huge: descriptor table count underflow"));
     }
 
     /// Make room for `extra` more keys at a load of one half or less. On
@@ -365,8 +387,18 @@ impl Table {
             lg += 1;
         }
         let (entries, binned) = Table::storage(meta, page, lg).ok_or(())?;
-        let old = Table { entries: self.entries, lg_cap: self.lg_cap, count: self.count, binned: self.binned };
-        *self = Table { entries, lg_cap: lg, count: 0, binned };
+        let old = Table {
+            entries: self.entries,
+            lg_cap: self.lg_cap,
+            count: self.count,
+            binned: self.binned,
+        };
+        *self = Table {
+            entries,
+            lg_cap: lg,
+            count: 0,
+            binned,
+        };
         for i in 0..old.cap() {
             let e = *old.slot(i);
             if !e.desc.is_null() {
@@ -375,7 +407,10 @@ impl Table {
         }
         if old.binned {
             let bytes = core::mem::size_of::<Entry>() << old.lg_cap;
-            meta.free(old.entries as *mut u8, Layout::from_size_align(bytes, 16).unwrap());
+            meta.free(
+                old.entries as *mut u8,
+                Layout::from_size_align(bytes, 16).unwrap(),
+            );
         }
         // A reserved table cannot be given back; it is leaked (at most the
         // size of the final table in total).
@@ -459,7 +494,8 @@ mod os {
     use core::sync::atomic::{AtomicU64, Ordering};
 
     #[cfg(test)]
-    static COMMITTED: std::sync::Mutex<std::vec::Vec<(usize, usize)>> = std::sync::Mutex::new(std::vec::Vec::new());
+    static COMMITTED: std::sync::Mutex<std::vec::Vec<(usize, usize)>> =
+        std::sync::Mutex::new(std::vec::Vec::new());
 
     pub fn commit(addr: usize, len: usize) -> Result<(), Errno> {
         #[cfg(test)]
@@ -612,7 +648,10 @@ impl Huge {
     pub fn new(meta: &Meta, regions: &Regions, guard_install: bool) -> Option<Huge> {
         let page = regions.page_size();
         let npages = regions.huge_pages();
-        assert!(npages > 0 && npages <= u32::MAX as usize, "huge: region page count out of range");
+        assert!(
+            npages > 0 && npages <= u32::MAX as usize,
+            "huge: region page count out of range"
+        );
         let free = Set::new(meta, page, npages)?;
         let table = Table::new(meta, page)?;
         let table_cap = table.cap();
@@ -629,7 +668,10 @@ impl Huge {
                 next_page: 0,
                 empty_head: ptr::null_mut(),
                 empty_tail: ptr::null_mut(),
-                stats: HugeStats { table_cap, ..HugeStats::default() },
+                stats: HugeStats {
+                    table_cap,
+                    ..HugeStats::default()
+                },
             }),
         })
     }
@@ -700,15 +742,24 @@ impl Huge {
     /// known to read as zero, or null when the region, the metadata region
     /// or the kernel refuses.
     pub fn alloc(&self, meta: &Meta, size: usize, align: usize, arena: u16) -> (*mut u8, bool) {
-        assert!(align.is_power_of_two(), "huge: alignment not a power of two");
-        let Some(usable_pages) = self.usable_pages(size) else { return (ptr::null_mut(), false) };
-        let Some(need) = usable_pages.checked_add(GUARD_PAGES) else { return (ptr::null_mut(), false) };
+        assert!(
+            align.is_power_of_two(),
+            "huge: alignment not a power of two"
+        );
+        let Some(usable_pages) = self.usable_pages(size) else {
+            return (ptr::null_mut(), false);
+        };
+        let Some(need) = usable_pages.checked_add(GUARD_PAGES) else {
+            return (ptr::null_mut(), false);
+        };
         if need > self.npages || align > (self.npages << self.lg_page) {
             return (ptr::null_mut(), false);
         }
         let page = self.page_size();
         let mut g = self.inner.lock();
-        let Some((s, ext)) = self.find(&g, need, align) else { return (ptr::null_mut(), false) };
+        let Some((s, ext)) = self.find(&g, need, align) else {
+            return (ptr::null_mut(), false);
+        };
         let end = s + need;
 
         // Everything fallible happens before any state changes.
@@ -731,7 +782,11 @@ impl Huge {
         }
 
         // `check_zero` needs the extent's state before `take` may free it.
-        let prior = if purge::check_zero() { Some(self.prior_state(s, ext)) } else { None };
+        let prior = if purge::check_zero() {
+            Some(self.prior_state(s, ext))
+        } else {
+            None
+        };
         let zeroed = self.take(&mut g, meta, s, need, ext, run, spare, arena);
         self.sync_oldest(&g);
         if let (true, Some(prior)) = (zeroed, prior) {
@@ -788,7 +843,11 @@ impl Huge {
     /// thread sleeping without a deadline needs waking.
     fn sync_oldest(&self, g: &Inner) -> bool {
         // SAFETY: the head, if any, is a live `Empty` extent.
-        let new = if g.empty_head.is_null() { 0 } else { unsafe { (*g.empty_head).dirty_at } };
+        let new = if g.empty_head.is_null() {
+            0
+        } else {
+            unsafe { (*g.empty_head).dirty_at }
+        };
         self.gate.set_oldest_empty(new)
     }
 
@@ -807,12 +866,20 @@ impl Huge {
                 return Some((s, e));
             }
             if e_end == g.next_page {
-                return if s + need <= self.npages { Some((s, e)) } else { None };
+                return if s + need <= self.npages {
+                    Some((s, e))
+                } else {
+                    None
+                };
             }
             from = e_end;
         }
         let s = self.align_page(g.next_page, align);
-        if s + need <= self.npages { Some((s, ptr::null_mut())) } else { None }
+        if s + need <= self.npages {
+            Some((s, ptr::null_mut()))
+        } else {
+            None
+        }
     }
 
     /// Kernel side of an allocation of `usable` pages at `s`: commit and
@@ -875,7 +942,14 @@ impl Huge {
             }
         } else {
             // SAFETY: `ext` is a live free extent found under this lock.
-            let (a, e_end, st, dirty_at) = unsafe { ((*ext).start(), (*ext).end(), (*ext).state(), (*ext).dirty_at) };
+            let (a, e_end, st, dirty_at) = unsafe {
+                (
+                    (*ext).start(),
+                    (*ext).end(),
+                    (*ext).state(),
+                    (*ext).dirty_at,
+                )
+            };
             // `Purged` pages are zero unless `lazy_free` discarded them
             // with `MADV_FREE`; pages at or past the mark are untouched.
             zeroed = (st == RunState::Purged && purge::purged_is_zero()) || s >= e_end;
@@ -961,8 +1035,15 @@ impl Huge {
             not_a_run(self.addr(page));
         }
         // SAFETY: table entries are live descriptors.
-        let (start, n, state, usable, arena) =
-            unsafe { ((*d).start(), (*d).pages(), (*d).state(), (*d).usable, (*d).arena()) };
+        let (start, n, state, usable, arena) = unsafe {
+            (
+                (*d).start(),
+                (*d).pages(),
+                (*d).state(),
+                (*d).usable,
+                (*d).arena(),
+            )
+        };
         if state != RunState::Active {
             already_free(self.addr(page));
         }
@@ -971,7 +1052,10 @@ impl Huge {
         }
         let addr = self.addr(page);
         if self.guard_install {
-            if let Err(e) = os::guard_remove(addr + (n - GUARD_PAGES) * page_size, GUARD_PAGES * page_size) {
+            if let Err(e) = os::guard_remove(
+                addr + (n - GUARD_PAGES) * page_size,
+                GUARD_PAGES * page_size,
+            ) {
                 panic!("huge: madvise(MADV_GUARD_REMOVE) of {addr:#x} failed: {e}");
             }
         }
@@ -1011,7 +1095,8 @@ impl Huge {
                 continue;
             }
             // SAFETY: neighbours are live free extents.
-            let (ns, ne, nst, ndirty) = unsafe { ((*nb).start(), (*nb).end(), (*nb).state(), (*nb).dirty_at) };
+            let (ns, ne, nst, ndirty) =
+                unsafe { ((*nb).start(), (*nb).end(), (*nb).state(), (*nb).dirty_at) };
             g.remove_keys(nb);
             g.stats.sub_free(nst, ne - ns);
             lo = lo.min(ns);
@@ -1019,7 +1104,13 @@ impl Huge {
             if nst == RunState::Empty {
                 merged = RunState::Empty;
                 // SAFETY: `survivor` is live.
-                let sdirty = unsafe { if (*survivor).state() == RunState::Empty { (*survivor).dirty_at } else { u64::MAX } };
+                let sdirty = unsafe {
+                    if (*survivor).state() == RunState::Empty {
+                        (*survivor).dirty_at
+                    } else {
+                        u64::MAX
+                    }
+                };
                 if survivor == d || ndirty < sdirty {
                     survivor = nb;
                 }
@@ -1057,7 +1148,14 @@ impl Huge {
         if first {
             purge::note_empty();
         }
-        RunInfo { start, pages: n, usable, arena, state: RunState::Active, dirty_at: 0 }
+        RunInfo {
+            start,
+            pages: n,
+            usable,
+            arena,
+            state: RunState::Active,
+            dirty_at: 0,
+        }
     }
 
     /// Usable bytes of the live run starting at `page`. Aborts otherwise.
@@ -1240,7 +1338,11 @@ impl Huge {
     fn audit(&self) {
         let g = self.inner.lock();
         let st = g.stats;
-        assert_eq!(st.run_pages + st.empty_pages + st.purged_pages, st.next_page, "{st:?}");
+        assert_eq!(
+            st.run_pages + st.empty_pages + st.purged_pages,
+            st.next_page,
+            "{st:?}"
+        );
         assert_eq!(st.next_page, g.next_page);
         let mut p = 0;
         let mut runs = 0;
@@ -1258,7 +1360,10 @@ impl Huge {
                 RunState::Active => {
                     runs += 1;
                     counts.run_pages += pages;
-                    assert_eq!(unsafe { (*d).usable }, (pages - GUARD_PAGES) << self.lg_page);
+                    assert_eq!(
+                        unsafe { (*d).usable },
+                        (pages - GUARD_PAGES) << self.lg_page
+                    );
                     for q in p..p + pages {
                         assert!(!g.free.map.is_set(q), "page {q} of run {p} marked free");
                     }
@@ -1268,10 +1373,17 @@ impl Huge {
                     assert!(!prev_free, "adjacent free extents at {p}");
                     counts.add_free(free, pages);
                     for q in p..p + pages {
-                        assert!(g.free.map.is_set(q), "page {q} of free extent {p} not marked free");
+                        assert!(
+                            g.free.map.is_set(q),
+                            "page {q} of free extent {p} not marked free"
+                        );
                     }
                     if pages > 1 {
-                        assert_eq!(g.table.get(p + pages - 1), d, "last-page key of {p} missing");
+                        assert_eq!(
+                            g.table.get(p + pages - 1),
+                            d,
+                            "last-page key of {p} missing"
+                        );
                         keys += 1;
                     }
                     prev_free = true;
@@ -1282,8 +1394,14 @@ impl Huge {
         assert_eq!(p, g.next_page);
         assert_eq!(runs, st.runs);
         assert_eq!(counts.run_pages, st.run_pages);
-        assert_eq!((counts.empty, counts.empty_pages), (st.empty, st.empty_pages));
-        assert_eq!((counts.purged, counts.purged_pages), (st.purged, st.purged_pages));
+        assert_eq!(
+            (counts.empty, counts.empty_pages),
+            (st.empty, st.empty_pages)
+        );
+        assert_eq!(
+            (counts.purged, counts.purged_pages),
+            (st.purged, st.purged_pages)
+        );
         assert_eq!(keys, g.table.count, "table holds stale keys");
         assert_eq!(g.free.map.lowest_set_from(g.next_page), None);
         // The Empty list holds exactly the Empty extents, oldest first.
@@ -1348,7 +1466,15 @@ fn already_free(p: usize) -> ! {
 /// The `check_zero` abort: a huge run handed out as zero has a dirty word.
 #[cold]
 #[inline(never)]
-fn dirty_zero_run(run: usize, pages: usize, page: usize, prior: &str, arena: u16, at: usize, word: u64) -> ! {
+fn dirty_zero_run(
+    run: usize,
+    pages: usize,
+    page: usize,
+    prior: &str,
+    arena: u16,
+    at: usize,
+    word: u64,
+) -> ! {
     let (backend, advice) = purge::backend_name();
     panic!(
         "check_zero: huge run {run:#x} ({pages} pages from page {page}, arena {arena}) was handed out as zero from {prior} pages but the word at {at:#x} reads {word:#x} (discard backend {backend}, {advice})"
@@ -1363,13 +1489,32 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    const PAGE: usize = 4096;
+    /// The page size the environment is built with: the kernel's on Linux
+    /// (the reservations are real, so a 64 KiB-page kernel needs 64 KiB
+    /// runs and guards), 4 KiB in the synthetic host environment.
+    #[cfg(target_os = "linux")]
+    pub(super) fn page_size() -> usize {
+        crate::sys::features::page_size()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    pub(super) fn page_size() -> usize {
+        4096
+    }
+
     const LG_REGION: u32 = LG_MAX_SLAB;
     const LG_STRIDE: u32 = LG_REGION + 2;
     const META_LEN: usize = 16 << 20;
-    /// 64 MiB huge region: 16384 pages, small enough to exhaust.
-    const HUGE_LEN: usize = 64 << 20;
-    const HUGE_PAGES: usize = HUGE_LEN / PAGE;
+    /// A huge region of 16384 pages (64 MiB on a 4 KiB kernel, 1 GiB on a
+    /// 64 KiB one; a `PROT_NONE` reservation either way), small enough to
+    /// exhaust and the same page arithmetic on every kernel.
+    const HUGE_PAGES_N: usize = 16384;
+    fn huge_len() -> usize {
+        HUGE_PAGES_N * page_size()
+    }
+    fn huge_pages() -> usize {
+        HUGE_PAGES_N
+    }
 
     /// Test environment: a metadata region and a huge region. On Linux both
     /// are real `PROT_NONE` reservations so commits, guards and purges go
@@ -1399,11 +1544,20 @@ mod tests {
             &[0usize; NCLASSES],
             huge,
             meta,
-            PAGE.trailing_zeros(),
+            page_size().trailing_zeros(),
             [
-                Mapping { addr: superblock, len: sb_len },
-                Mapping { addr: huge.0, len: huge.1 },
-                Mapping { addr: meta.0, len: meta.1 },
+                Mapping {
+                    addr: superblock,
+                    len: sb_len,
+                },
+                Mapping {
+                    addr: huge.0,
+                    len: huge.1,
+                },
+                Mapping {
+                    addr: meta.0,
+                    len: meta.1,
+                },
             ],
         )
     }
@@ -1419,20 +1573,27 @@ mod tests {
             use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
             let reserve = |len: usize| -> usize {
                 unsafe {
-                    crate::sys::mmap(0, len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0)
+                    crate::sys::mmap(
+                        0,
+                        len,
+                        PROT_NONE,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+                        -1,
+                        0,
+                    )
                 }
                 .expect("reserve")
             };
             // `mmap` only promises page alignment; the alignment tests
             // assume a `MAX_SLAB`-aligned huge base like the real layout.
-            let hraw = reserve(HUGE_LEN + crate::layout::MAX_SLAB);
+            let hraw = reserve(huge_len() + crate::layout::MAX_SLAB);
             let hb = (hraw + crate::layout::MAX_SLAB - 1) & !(crate::layout::MAX_SLAB - 1);
             let mb = reserve(meta_len);
-            let regions = regions_at((hb, HUGE_LEN), (mb, meta_len));
+            let regions = regions_at((hb, huge_len()), (mb, meta_len));
             Env {
-                meta: Meta::new(mb, meta_len, PAGE),
+                meta: Meta::new(mb, meta_len, page_size()),
                 regions,
-                maps: [(hraw, HUGE_LEN + crate::layout::MAX_SLAB), (mb, meta_len)],
+                maps: [(hraw, huge_len() + crate::layout::MAX_SLAB), (mb, meta_len)],
             }
         }
 
@@ -1443,17 +1604,21 @@ mod tests {
 
         #[cfg(not(target_os = "linux"))]
         pub fn with_meta_len(meta_len: usize) -> Env {
-            let buf = vec![0u8; meta_len + PAGE];
-            let mb = align_up(buf.as_ptr() as usize, PAGE);
+            let buf = vec![0u8; meta_len + page_size()];
+            let mb = align_up(buf.as_ptr() as usize, page_size());
             // A deliberately non-4 MiB-aligned base, like a real slid one,
             // and distinct per `Env` so the `os` commit log shared by the
             // parallel tests never credits one environment's commits to
             // another's runs.
             static NEXT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
             let n = NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-            let hb = 0x2000_0000_1000 + n * (HUGE_LEN + 4 * crate::layout::MAX_SLAB);
-            let regions = regions_at((hb, HUGE_LEN), (mb, meta_len));
-            Env { meta: Meta::new(mb, meta_len, PAGE), regions, _buf: buf }
+            let hb = 0x2000_0000_1000 + n * (huge_len() + 4 * crate::layout::MAX_SLAB);
+            let regions = regions_at((hb, huge_len()), (mb, meta_len));
+            Env {
+                meta: Meta::new(mb, meta_len, page_size()),
+                regions,
+                _buf: buf,
+            }
         }
 
         pub fn huge(&self) -> Huge {
@@ -1472,7 +1637,7 @@ mod tests {
                 assert!(info.usable >= size.max(1));
                 #[cfg(not(target_os = "linux"))]
                 assert!(
-                    os::is_committed(r.0 as usize, info.usable, PAGE),
+                    os::is_committed(r.0 as usize, info.usable, page_size()),
                     "run {:#x} ({} usable bytes) lies in uncommitted pages",
                     r.0 as usize,
                     info.usable
@@ -1517,7 +1682,7 @@ mod tests {
     /// install path off Linux (nothing maps memory there anyway).
     #[cfg(target_os = "linux")]
     pub(super) fn guard_mode() -> bool {
-        crate::sys::features::probe_guard_install(PAGE)
+        crate::sys::features::probe_guard_install(page_size())
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -1544,21 +1709,28 @@ mod tests {
     fn first_run_is_at_the_base_and_zero() {
         let env = Env::new();
         let h = env.huge();
-        assert_eq!(h.npages(), HUGE_PAGES);
-        assert_eq!(h.usable_for(1), Some(PAGE));
-        assert_eq!(h.usable_for(PAGE + 1), Some(2 * PAGE));
+        assert_eq!(h.npages(), huge_pages());
+        assert_eq!(h.usable_for(1), Some(page_size()));
+        assert_eq!(h.usable_for(page_size() + 1), Some(2 * page_size()));
         assert_eq!(h.usable_for(usize::MAX), None);
         let (p, zero) = env.alloc(&h, 300 * 1024, 16);
         assert_eq!(p as usize, env.regions.huge_base);
         assert!(zero);
         assert_eq!(env.regions.classify(p as usize), Kind::Huge { page: 0 });
-        let pages = (300usize * 1024).div_ceil(PAGE);
+        let pages = (300usize * 1024).div_ceil(page_size());
         let info = h.lookup(0).unwrap();
         assert_eq!(
             info,
-            RunInfo { start: 0, pages: pages + GUARD_PAGES, usable: pages * PAGE, arena: 0, state: RunState::Active, dirty_at: 0 }
+            RunInfo {
+                start: 0,
+                pages: pages + GUARD_PAGES,
+                usable: pages * page_size(),
+                arena: 0,
+                state: RunState::Active,
+                dirty_at: 0
+            }
         );
-        assert_eq!(h.usable_size(0), pages * PAGE);
+        assert_eq!(h.usable_size(0), pages * page_size());
         assert_eq!(h.lookup(pages), None, "guard page is not keyed");
         let st = h.stats();
         assert_eq!(st.runs, 1);
@@ -1568,18 +1740,18 @@ mod tests {
         let (q, zero) = env.alloc(&h, 1, 1);
         assert!(zero);
         assert_eq!(env.page_of(q), pages + GUARD_PAGES);
-        assert_eq!(h.usable_size(env.page_of(q)), PAGE);
-        assert_eq!(env.free(&h, p), pages * PAGE);
-        assert_eq!(env.free(&h, q), PAGE);
+        assert_eq!(h.usable_size(env.page_of(q)), page_size());
+        assert_eq!(env.free(&h, p), pages * page_size());
+        assert_eq!(env.free(&h, q), page_size());
     }
 
     #[test]
     fn free_and_reuse_prefers_the_lowest_address() {
         let env = Env::new();
         let h = env.huge();
-        let (a, _) = env.alloc(&h, 4 * PAGE, 1);
-        let (b, _) = env.alloc(&h, 4 * PAGE, 1);
-        let (c, _) = env.alloc(&h, 4 * PAGE, 1);
+        let (a, _) = env.alloc(&h, 4 * page_size(), 1);
+        let (b, _) = env.alloc(&h, 4 * page_size(), 1);
+        let (c, _) = env.alloc(&h, 4 * page_size(), 1);
         assert_eq!(env.page_of(b), 5);
         assert_eq!(env.page_of(c), 10);
         env.free(&h, b);
@@ -1590,19 +1762,22 @@ mod tests {
         assert_eq!(h.lookup(9).unwrap().start, 5, "last page keyed");
         assert_eq!(h.stats().empty, 1);
         // A smaller run reuses the hole from its start and is not zero.
-        let (d, zero) = env.alloc(&h, 2 * PAGE, 1);
+        let (d, zero) = env.alloc(&h, 2 * page_size(), 1);
         assert_eq!(env.page_of(d), 5);
         assert!(!zero);
         let rest = h.lookup(8).unwrap();
-        assert_eq!((rest.start, rest.pages, rest.state), (8, 2, RunState::Empty));
+        assert_eq!(
+            (rest.start, rest.pages, rest.state),
+            (8, 2, RunState::Empty)
+        );
         // Too big for the remaining hole: goes to the mark.
-        let (e, zero) = env.alloc(&h, 3 * PAGE, 1);
+        let (e, zero) = env.alloc(&h, 3 * page_size(), 1);
         assert_eq!(env.page_of(e), 15);
         assert!(zero);
         // Purge makes the hole zero again.
         assert_eq!(h.purge_empty(u64::MAX), 1);
         assert_eq!(h.lookup(8).unwrap().state, RunState::Purged);
-        let (f, zero) = env.alloc(&h, PAGE, 1);
+        let (f, zero) = env.alloc(&h, page_size(), 1);
         assert_eq!(env.page_of(f), 8);
         assert!(zero);
         assert_eq!(h.stats().purged, 0);
@@ -1617,12 +1792,12 @@ mod tests {
     fn a_run_can_grow_past_the_mark_from_a_trailing_extent() {
         let env = Env::new();
         let h = env.huge();
-        let (a, _) = env.alloc(&h, PAGE, 1);
-        let (b, _) = env.alloc(&h, PAGE, 1);
+        let (a, _) = env.alloc(&h, page_size(), 1);
+        let (b, _) = env.alloc(&h, page_size(), 1);
         env.free(&h, b);
         // The Empty extent [2, 4) touches the mark; a 6-page run starts in
         // it and extends the mark. Dirty memory means not zero.
-        let (c, zero) = env.alloc(&h, 5 * PAGE, 1);
+        let (c, zero) = env.alloc(&h, 5 * page_size(), 1);
         assert_eq!(env.page_of(c), 2);
         assert!(!zero);
         assert_eq!(h.stats().next_page, 8);
@@ -1637,17 +1812,20 @@ mod tests {
     fn alignment_over_allocates_and_frees_head_and_tail() {
         let env = Env::new();
         let h = env.huge();
-        let (a, _) = env.alloc(&h, PAGE, 1);
+        let (a, _) = env.alloc(&h, page_size(), 1);
         let mut held = vec![a];
         for lg in 13..=22 {
             let align = 1usize << lg;
-            let (p, zero) = env.alloc(&h, 3 * PAGE, align);
+            let (p, zero) = env.alloc(&h, 3 * page_size(), align);
             assert!(!p.is_null());
             assert_eq!(p as usize % align, 0, "align {align}");
             assert!(zero);
             let page = env.page_of(p);
             let info = h.lookup(page).unwrap();
-            assert_eq!((info.pages, info.usable, info.state), (3 + GUARD_PAGES, 3 * PAGE, RunState::Active));
+            assert_eq!(
+                (info.pages, info.usable, info.state),
+                (3 + GUARD_PAGES, 3 * page_size(), RunState::Active)
+            );
             // The page before is either an unkeyed guard page or the last
             // page of a clean alignment hole.
             if let Some(before) = h.lookup(page - 1) {
@@ -1664,8 +1842,8 @@ mod tests {
         for p in held.drain(1..) {
             env.free(&h, p);
         }
-        let (q, _) = env.alloc(&h, PAGE, 2 * PAGE);
-        assert_eq!(q as usize % (2 * PAGE), 0);
+        let (q, _) = env.alloc(&h, page_size(), 2 * page_size());
+        assert_eq!(q as usize % (2 * page_size()), 0);
         assert!(env.page_of(q) < env.page_of(last));
         env.free(&h, q);
         env.free(&h, last);
@@ -1677,15 +1855,15 @@ mod tests {
     fn alignment_at_the_mark_leaves_a_clean_hole() {
         let env = Env::new();
         let h = env.huge();
-        let (a, _) = env.alloc(&h, PAGE, 1);
-        let (b, zero) = env.alloc(&h, PAGE, 1 << 20);
+        let (a, _) = env.alloc(&h, page_size(), 1);
+        let (b, zero) = env.alloc(&h, page_size(), 1 << 20);
         assert!(zero);
         assert_eq!(b as usize % (1 << 20), 0);
         let hole = h.lookup(2).unwrap();
         assert_eq!(hole.state, RunState::Purged);
         assert_eq!(hole.end(), env.page_of(b));
         // The hole is reused first, and is zero.
-        let (c, zero) = env.alloc(&h, PAGE, 1);
+        let (c, zero) = env.alloc(&h, page_size(), 1);
         assert_eq!(env.page_of(c), 2);
         assert!(zero);
         env.free(&h, a);
@@ -1703,10 +1881,10 @@ mod tests {
     fn neighbours_coalesce_and_keep_the_oldest_dirty_time() {
         let env = Env::new();
         let h = env.huge();
-        let (a, _) = env.alloc(&h, PAGE, 1);
-        let (b, _) = env.alloc(&h, PAGE, 1);
-        let (c, _) = env.alloc(&h, PAGE, 1);
-        let (d, _) = env.alloc(&h, PAGE, 1);
+        let (a, _) = env.alloc(&h, page_size(), 1);
+        let (b, _) = env.alloc(&h, page_size(), 1);
+        let (c, _) = env.alloc(&h, page_size(), 1);
+        let (d, _) = env.alloc(&h, page_size(), 1);
         env.free(&h, a);
         let ta = h.lookup(0).unwrap().dirty_at;
         env.free(&h, c);
@@ -1729,12 +1907,16 @@ mod tests {
     fn purged_and_empty_merge_to_empty() {
         let env = Env::new();
         let h = env.huge();
-        h.set_retain_max(2 * PAGE);
-        let (a, _) = env.alloc(&h, PAGE, 1);
-        let (b, _) = env.alloc(&h, 3 * PAGE, 1);
-        let (c, _) = env.alloc(&h, PAGE, 1);
+        h.set_retain_max(2 * page_size());
+        let (a, _) = env.alloc(&h, page_size(), 1);
+        let (b, _) = env.alloc(&h, 3 * page_size(), 1);
+        let (c, _) = env.alloc(&h, page_size(), 1);
         env.free(&h, b);
-        assert_eq!(h.lookup(2).unwrap().state, RunState::Purged, "above retain_max: purged at once");
+        assert_eq!(
+            h.lookup(2).unwrap().state,
+            RunState::Purged,
+            "above retain_max: purged at once"
+        );
         assert_eq!(h.oldest_dirty_at(), None);
         env.free(&h, a);
         let m = h.lookup(0).unwrap();
@@ -1745,7 +1927,7 @@ mod tests {
         assert_eq!(h.purge_empty(u64::MAX), 1);
         assert_eq!(h.lookup(0).unwrap().state, RunState::Purged);
         assert_eq!(h.stats().empty, 0);
-        let (p, zero) = env.alloc(&h, 8 * PAGE, 1);
+        let (p, zero) = env.alloc(&h, 8 * page_size(), 1);
         assert!(zero);
         assert_eq!(env.page_of(p), 0);
         assert_eq!(h.stats().next_page, 9);
@@ -1762,8 +1944,8 @@ mod tests {
         let env = Env::new();
         let h = env.huge();
         const W: u64 = 200_000;
-        let a = env.alloc(&h, 4 * PAGE, 1).0;
-        let b = env.alloc(&h, 4 * PAGE, 1).0;
+        let a = env.alloc(&h, 4 * page_size(), 1).0;
+        let b = env.alloc(&h, 4 * page_size(), 1).0;
         env.free(&h, a);
         env.free(&h, b);
         // One coalesced extent.
@@ -1795,7 +1977,7 @@ mod tests {
         const W: u64 = 200_000;
         let mut ps = Vec::new();
         for _ in 0..4 {
-            ps.push(env.alloc(&h, PAGE, 1).0);
+            ps.push(env.alloc(&h, page_size(), 1).0);
         }
         // Free runs 0 and 2 (no coalescing): one cohort of two extents,
         // the clock reads made uniform.
@@ -1824,7 +2006,10 @@ mod tests {
         assert_eq!(h.decay(t0 + W / 2, W), Some(t0 + W / 2 + 1000));
         assert_eq!((h.stats().empty, h.stats().purged), (1, 1));
         assert_eq!(h.stats().purged_pages, pages / 2);
-        assert_eq!(h.lookup(env.page_of(ps[0])).unwrap().state, RunState::Purged);
+        assert_eq!(
+            h.lookup(env.page_of(ps[0])).unwrap().state,
+            RunState::Purged
+        );
         assert_eq!(h.lookup(env.page_of(ps[2])).unwrap().state, RunState::Empty);
         assert_eq!(h.oldest_empty(), t0);
         // The survivor, alone, lasts until the last step of the window.
@@ -1840,13 +2025,13 @@ mod tests {
         let t1 = h.oldest_dirty_at().unwrap();
         assert_eq!(h.oldest_empty(), t1);
         assert_eq!(h.stats().empty, 1);
-        let (a, _) = env.alloc(&h, PAGE, 1);
+        let (a, _) = env.alloc(&h, page_size(), 1);
         assert_eq!(a, ps[0]);
-        let (b, zeroed) = env.alloc(&h, PAGE, 1);
+        let (b, zeroed) = env.alloc(&h, page_size(), 1);
         assert_eq!(b, ps[1]);
         assert!(!zeroed);
         assert_eq!(h.oldest_empty(), t1);
-        let (c, _) = env.alloc(&h, PAGE, 1);
+        let (c, _) = env.alloc(&h, page_size(), 1);
         assert_eq!(c, ps[2]);
         assert_eq!(h.stats().empty, 0);
         assert_eq!(h.oldest_empty(), 0);
@@ -1874,7 +2059,7 @@ mod tests {
         let h = env.huge();
         let mut ps = Vec::new();
         for _ in 0..6 {
-            ps.push(env.alloc(&h, PAGE, 1).0);
+            ps.push(env.alloc(&h, page_size(), 1).0);
         }
         // Free every other run so nothing coalesces: three Empty extents
         // with increasing dirty_at.
@@ -1894,7 +2079,18 @@ mod tests {
         assert_eq!(h.oldest_dirty_at(), Some(times[2]));
         assert_eq!(h.stats().purged, 2);
         assert_eq!(h.purge_empty(u64::MAX), 1);
-        assert_eq!(h.stats(), HugeStats { runs: 3, run_pages: 6, purged: 3, purged_pages: 6, next_page: 12, table_cap: 1024, ..HugeStats::default() });
+        assert_eq!(
+            h.stats(),
+            HugeStats {
+                runs: 3,
+                run_pages: 6,
+                purged: 3,
+                purged_pages: 6,
+                next_page: 12,
+                table_cap: 1024,
+                ..HugeStats::default()
+            }
+        );
         for &p in ps.iter().skip(1).step_by(2) {
             env.free(&h, p);
         }
@@ -1913,12 +2109,16 @@ mod tests {
             }
             held.push(p);
         }
-        // 64 MiB of 1 MiB + guard runs: 63 fit, the 64th would need 257 pages.
-        assert_eq!(held.len(), HUGE_PAGES / 257);
+        // 1 MiB + guard runs (257 pages of 4 KiB, 17 of 64 KiB): the region
+        // holds the whole quotient and the remainder cannot take another.
+        assert_eq!(
+            held.len(),
+            huge_pages() / ((1 << 20) / page_size() + GUARD_PAGES)
+        );
         let st = h.stats();
-        assert!(st.next_page <= HUGE_PAGES);
+        assert!(st.next_page <= huge_pages());
         // Something small still fits in the leftover.
-        let (s, _) = env.alloc(&h, PAGE, 1);
+        let (s, _) = env.alloc(&h, page_size(), 1);
         assert!(!s.is_null());
         held.push(s);
         for p in held.drain(..) {
@@ -1927,13 +2127,19 @@ mod tests {
         let st = h.stats();
         assert_eq!((st.runs, st.empty), (0, 1));
         // The whole region minus a guard is one run now.
-        let (big, zero) = env.alloc(&h, HUGE_LEN - PAGE, 1);
+        let (big, zero) = env.alloc(&h, huge_len() - page_size(), 1);
         assert_eq!(env.page_of(big), 0);
         assert!(!zero);
         assert!(env.alloc(&h, 1, 1).0.is_null());
         env.free(&h, big);
-        assert!(env.alloc(&h, HUGE_LEN, 1).0.is_null(), "no room for the guard");
-        assert!(env.alloc(&h, PAGE, 2 * HUGE_LEN).0.is_null(), "alignment beyond the region");
+        assert!(
+            env.alloc(&h, huge_len(), 1).0.is_null(),
+            "no room for the guard"
+        );
+        assert!(
+            env.alloc(&h, page_size(), 2 * huge_len()).0.is_null(),
+            "alignment beyond the region"
+        );
     }
 
     #[test]
@@ -1954,7 +2160,10 @@ mod tests {
         for (i, &page) in runs.iter().enumerate() {
             assert_eq!(page, 2 * i);
             let info = h.lookup(page).unwrap();
-            assert_eq!((info.pages, info.arena, info.state), (2, 7, RunState::Active));
+            assert_eq!(
+                (info.pages, info.arena, info.state),
+                (2, 7, RunState::Active)
+            );
         }
         // Free every third run: many removals with shifts, and every
         // remaining key must still resolve.
@@ -1970,7 +2179,7 @@ mod tests {
                 assert_eq!(info.state, RunState::Empty);
             } else {
                 assert_eq!(info.state, RunState::Active);
-                assert_eq!(h.usable_size(page), PAGE);
+                assert_eq!(h.usable_size(page), page_size());
             }
         }
         for (i, &page) in runs.iter().enumerate() {
@@ -1981,7 +2190,10 @@ mod tests {
         h.audit();
         assert_eq!(h.stats().empty, 1);
         let ms = env.meta.stats();
-        assert!(ms.allocated < h.stats().table_cap * 16 + 4096, "descriptors leaked: {ms:?}");
+        assert!(
+            ms.allocated < h.stats().table_cap * 16 + 4096,
+            "descriptors leaked: {ms:?}"
+        );
     }
 
     #[test]
@@ -1993,7 +2205,7 @@ mod tests {
         };
         let mut held = Vec::new();
         loop {
-            let (p, _) = env.alloc(&h, PAGE, 1);
+            let (p, _) = env.alloc(&h, page_size(), 1);
             if p.is_null() {
                 break;
             }
@@ -2004,10 +2216,11 @@ mod tests {
         for p in held {
             env.free(&h, p);
         }
-        let (p, _) = env.alloc(&h, PAGE, 1);
+        let (p, _) = env.alloc(&h, page_size(), 1);
         assert!(!p.is_null());
-        // The tables of a region that does not fit at all fail cleanly.
-        let tiny = Env::with_meta_len(3 * PAGE);
+        // The tables of a region that does not fit at all fail cleanly: two
+        // page-rounded reservations never fit in one page, whatever its size.
+        let tiny = Env::with_meta_len(page_size());
         assert!(Huge::new(&tiny.meta, &tiny.regions, guard_mode()).is_none());
     }
 
@@ -2016,7 +2229,7 @@ mod tests {
     fn randomised_model_check() {
         let env = Env::new();
         let h = env.huge();
-        h.set_retain_max(40 * PAGE);
+        h.set_retain_max(40 * page_size());
         let mut rng = 0x1234_5678_9ABC_DEF0u64;
         // (page, usable pages, pattern)
         let mut live: Vec<(usize, usize, u64)> = Vec::new();
@@ -2026,24 +2239,35 @@ mod tests {
             match r % 10 {
                 0..=4 => {
                     let size = match xorshift(&mut rng) % 4 {
-                        0 => (xorshift(&mut rng) as usize % (4 * PAGE)) + 1,
-                        1 => (xorshift(&mut rng) as usize % (16 * PAGE)) + 1,
-                        2 => (xorshift(&mut rng) as usize % (100 * PAGE)) + 1,
-                        _ => PAGE * ((xorshift(&mut rng) as usize % 8) + 1),
+                        0 => (xorshift(&mut rng) as usize % (4 * page_size())) + 1,
+                        1 => (xorshift(&mut rng) as usize % (16 * page_size())) + 1,
+                        2 => (xorshift(&mut rng) as usize % (100 * page_size())) + 1,
+                        _ => page_size() * ((xorshift(&mut rng) as usize % 8) + 1),
                     };
-                    let align = if xorshift(&mut rng) % 3 == 0 { 1usize << (13 + xorshift(&mut rng) % 9) } else { 1 };
+                    let align = if xorshift(&mut rng) % 3 == 0 {
+                        1usize << (13 + xorshift(&mut rng) % 9)
+                    } else {
+                        1
+                    };
                     let (p, zero) = env.alloc(&h, size, align);
                     if p.is_null() {
                         // Only acceptable when the region is really tight.
-                        assert!(h.stats().next_page + size / PAGE + 2 > HUGE_PAGES || align > PAGE, "step {step}");
+                        assert!(
+                            h.stats().next_page + size / page_size() + 2 > huge_pages()
+                                || align > page_size(),
+                            "step {step}"
+                        );
                         continue;
                     }
                     assert_eq!(p as usize % align, 0);
                     let page = env.page_of(p);
-                    let n = size.div_ceil(PAGE);
-                    assert_eq!(h.usable_size(page), n * PAGE);
+                    let n = size.div_ceil(page_size());
+                    assert_eq!(h.usable_size(page), n * page_size());
                     for &(q, m, _) in &live {
-                        assert!(page + n + GUARD_PAGES <= q || q + m + GUARD_PAGES <= page, "overlap at step {step}");
+                        assert!(
+                            page + n + GUARD_PAGES <= q || q + m + GUARD_PAGES <= page,
+                            "overlap at step {step}"
+                        );
                     }
                     if zero {
                         zero_flags += 1;
@@ -2053,11 +2277,15 @@ mod tests {
                 5..=8 if !live.is_empty() => {
                     let i = xorshift(&mut rng) as usize % live.len();
                     let (page, n, _) = live.swap_remove(i);
-                    assert_eq!(h.free(&env.meta, page), n * PAGE);
+                    assert_eq!(h.free(&env.meta, page), n * page_size());
                     h.audit();
                 }
                 9 => {
-                    let cutoff = if xorshift(&mut rng) % 2 == 0 { u64::MAX } else { os::now_ns().saturating_sub(5) };
+                    let cutoff = if xorshift(&mut rng) % 2 == 0 {
+                        u64::MAX
+                    } else {
+                        os::now_ns().saturating_sub(5)
+                    };
                     h.purge_empty(cutoff);
                     h.audit();
                 }
@@ -2065,7 +2293,10 @@ mod tests {
             }
             let st = h.stats();
             assert_eq!(st.runs, live.len());
-            assert_eq!(st.run_pages, live.iter().map(|&(_, n, _)| n + GUARD_PAGES).sum::<usize>());
+            assert_eq!(
+                st.run_pages,
+                live.iter().map(|&(_, n, _)| n + GUARD_PAGES).sum::<usize>()
+            );
         }
         assert!(zero_flags > 0);
         for (page, _, _) in live.drain(..) {
@@ -2095,18 +2326,18 @@ mod tests {
                 let mut held: Vec<(usize, usize)> = Vec::new();
                 let mut got = 0;
                 for _ in 0..400 {
-                    let size = (xorshift(&mut rng) as usize % (8 * PAGE)) + 1;
+                    let size = (xorshift(&mut rng) as usize % (8 * page_size())) + 1;
                     let (p, _) = h.alloc(&env.meta, size, 1, t as u16);
                     if !p.is_null() {
                         let page = env.page_of(p);
                         assert_eq!(h.lookup(page).unwrap().arena, t as u16);
-                        held.push((page, size.div_ceil(PAGE)));
+                        held.push((page, size.div_ceil(page_size())));
                         got += 1;
                     }
                     if xorshift(&mut rng) % 3 == 0 && !held.is_empty() {
                         let i = xorshift(&mut rng) as usize % held.len();
                         let (page, n) = held.swap_remove(i);
-                        assert_eq!(h.free(&env.meta, page), n * PAGE);
+                        assert_eq!(h.free(&env.meta, page), n * page_size());
                     }
                 }
                 for (page, _) in held {
@@ -2131,7 +2362,7 @@ mod tests {
     fn free_of_an_interior_page_aborts() {
         let env = Env::new();
         let h = env.huge();
-        let (p, _) = env.alloc(&h, 4 * PAGE, 1);
+        let (p, _) = env.alloc(&h, 4 * page_size(), 1);
         h.free(&env.meta, env.page_of(p) + 1);
     }
 
@@ -2140,7 +2371,7 @@ mod tests {
     fn free_of_a_guard_page_aborts() {
         let env = Env::new();
         let h = env.huge();
-        let (p, _) = env.alloc(&h, 4 * PAGE, 1);
+        let (p, _) = env.alloc(&h, 4 * page_size(), 1);
         h.free(&env.meta, env.page_of(p) + 4);
     }
 
@@ -2149,7 +2380,7 @@ mod tests {
     fn free_beyond_the_mark_aborts() {
         let env = Env::new();
         let h = env.huge();
-        let _ = env.alloc(&h, 4 * PAGE, 1);
+        let _ = env.alloc(&h, 4 * page_size(), 1);
         h.free(&env.meta, 100);
     }
 
@@ -2158,7 +2389,7 @@ mod tests {
     fn double_free_aborts() {
         let env = Env::new();
         let h = env.huge();
-        let (p, _) = env.alloc(&h, 4 * PAGE, 1);
+        let (p, _) = env.alloc(&h, 4 * page_size(), 1);
         env.free(&h, p);
         h.free(&env.meta, env.page_of(p));
     }
@@ -2168,8 +2399,8 @@ mod tests {
     fn free_of_a_free_extents_last_page_aborts() {
         let env = Env::new();
         let h = env.huge();
-        let (p, _) = env.alloc(&h, 4 * PAGE, 1);
-        let (_q, _) = env.alloc(&h, PAGE, 1);
+        let (p, _) = env.alloc(&h, 4 * page_size(), 1);
+        let (_q, _) = env.alloc(&h, page_size(), 1);
         env.free(&h, p);
         h.free(&env.meta, env.page_of(p) + 4);
     }
@@ -2179,7 +2410,7 @@ mod tests {
     fn usable_size_of_a_bad_pointer_aborts() {
         let env = Env::new();
         let h = env.huge();
-        let (p, _) = env.alloc(&h, 4 * PAGE, 1);
+        let (p, _) = env.alloc(&h, 4 * page_size(), 1);
         h.usable_size(env.page_of(p) + 2);
     }
 
@@ -2187,7 +2418,7 @@ mod tests {
     #[should_panic(expected = "key inserted twice")]
     fn the_table_rejects_a_duplicate_key() {
         let env = Env::new();
-        let mut t = Table::new(&env.meta, PAGE).unwrap();
+        let mut t = Table::new(&env.meta, page_size()).unwrap();
         let d = 0x10 as *mut HugeDesc;
         t.insert(7, d);
         assert_eq!(t.count, 1);
@@ -2211,7 +2442,6 @@ mod tests {
         let _ = RunState::from_u8(3);
     }
 
-
     #[test]
     #[should_panic(expected = "Empty extent count underflow")]
     fn huge_stats_abort_on_a_free_count_going_below_zero() {
@@ -2223,7 +2453,7 @@ mod tests {
     #[should_panic(expected = "descriptor table count underflow")]
     fn the_table_aborts_when_its_count_disagrees_with_its_entries() {
         let env = Env::new();
-        let mut t = Table::new(&env.meta, PAGE).unwrap();
+        let mut t = Table::new(&env.meta, page_size()).unwrap();
         t.insert(7, 0x10 as *mut HugeDesc);
         t.count = 0;
         t.remove(7);
@@ -2232,11 +2462,9 @@ mod tests {
 
 #[cfg(all(test, target_os = "linux"))]
 mod linux_tests {
-    use super::tests::{Env, guard_mode};
+    use super::tests::{Env, guard_mode, page_size};
     use super::*;
     use std::vec::Vec;
-
-    const PAGE: usize = 4096;
 
     fn fill(p: *mut u8, len: usize, v: u8) {
         unsafe { ptr::write_bytes(p, v, len) };
@@ -2256,7 +2484,7 @@ mod linux_tests {
         assert!(purge::check_zero());
         let env = Env::new();
         let h = env.huge();
-        let size = 6 * PAGE;
+        let size = 6 * page_size();
         let (p, zero) = env.alloc(&h, size, 1);
         assert!(zero);
         fill(p, size, 0xAB);
@@ -2280,7 +2508,7 @@ mod linux_tests {
         purge::set_check_zero(true);
         let env = Env::new();
         let h = env.huge();
-        let size = 3 * PAGE;
+        let size = 3 * page_size();
         let (p, _) = env.alloc(&h, size, 1);
         env.free(&h, p);
         assert_eq!(h.purge_empty(u64::MAX), 1);
@@ -2292,7 +2520,7 @@ mod linux_tests {
     fn memory_is_writable_and_the_zero_flag_is_honest() {
         let env = Env::new();
         let h = env.huge();
-        let size = 10 * PAGE;
+        let size = 10 * page_size();
         let (p, zero) = env.alloc(&h, size, 1);
         assert!(zero && all(p, size, 0));
         fill(p, size, 0xAB);
@@ -2325,8 +2553,8 @@ mod linux_tests {
         let h = env.huge();
         let mut ps = Vec::new();
         for _ in 0..4 {
-            let (p, _) = env.alloc(&h, 3 * PAGE, 1);
-            fill(p, 3 * PAGE, 0x11);
+            let (p, _) = env.alloc(&h, 3 * page_size(), 1);
+            fill(p, 3 * page_size(), 0x11);
             ps.push(p);
         }
         for p in &ps {
@@ -2336,19 +2564,19 @@ mod linux_tests {
         // One extent of 16 pages with three old guard positions inside:
         // purging it must succeed whatever their protection is.
         assert_eq!(h.purge_empty(u64::MAX), 1);
-        let (big, zero) = env.alloc(&h, 15 * PAGE, 1);
+        let (big, zero) = env.alloc(&h, 15 * page_size(), 1);
         assert_eq!(big, ps[0]);
-        assert!(zero && all(big, 15 * PAGE, 0));
-        fill(big, 15 * PAGE, 0x22);
-        assert!(all(big, 15 * PAGE, 0x22));
+        assert!(zero && all(big, 15 * page_size(), 0));
+        fill(big, 15 * page_size(), 0x22);
+        assert!(all(big, 15 * page_size(), 0x22));
         env.free(&h, big);
         // And an Empty extent with stale guards can be re-split.
-        let (a, zero) = env.alloc(&h, 5 * PAGE, 1);
+        let (a, zero) = env.alloc(&h, 5 * page_size(), 1);
         assert!(!zero);
-        fill(a, 5 * PAGE, 0x33);
-        let (b, _) = env.alloc(&h, 2 * PAGE, 1);
-        fill(b, 2 * PAGE, 0x44);
-        assert!(all(a, 5 * PAGE, 0x33));
+        fill(a, 5 * page_size(), 0x33);
+        let (b, _) = env.alloc(&h, 2 * page_size(), 1);
+        fill(b, 2 * page_size(), 0x44);
+        assert!(all(a, 5 * page_size(), 0x33));
         env.free(&h, a);
         env.free(&h, b);
     }
@@ -2358,11 +2586,11 @@ mod linux_tests {
     fn guard_page_faults() {
         let env = Env::new();
         let h = env.huge();
-        let (p, _) = env.alloc(&h, 2 * PAGE, 1);
-        let (q, _) = env.alloc(&h, PAGE, 1);
+        let (p, _) = env.alloc(&h, 2 * page_size(), 1);
+        let (q, _) = env.alloc(&h, page_size(), 1);
         // The guard is the page right before `q`.
-        assert_eq!(q as usize, p as usize + 3 * PAGE);
-        let guard = p as usize + 2 * PAGE;
+        assert_eq!(q as usize, p as usize + 3 * page_size());
+        let guard = p as usize + 2 * page_size();
         if guard_mode() {
             let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
             let merged = maps.lines().any(|l| {
@@ -2370,11 +2598,14 @@ mod linux_tests {
                 let (a, b) = range.split_once('-').unwrap();
                 let a = usize::from_str_radix(a, 16).unwrap();
                 let b = usize::from_str_radix(b, 16).unwrap();
-                a <= p as usize && q as usize + PAGE <= b
+                a <= p as usize && q as usize + page_size() <= b
             });
             assert!(merged, "guard page split the VMA in guard_install mode");
         }
-        for (what, addr) in [("guard", guard), ("first page past the mark", q as usize + 2 * PAGE)] {
+        for (what, addr) in [
+            ("guard", guard),
+            ("first page past the mark", q as usize + 2 * page_size()),
+        ] {
             let pid = unsafe { libc::fork() };
             assert!(pid >= 0);
             if pid == 0 {
@@ -2385,16 +2616,19 @@ mod linux_tests {
             }
             let mut status = 0;
             assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
-            assert!(libc::WIFSIGNALED(status), "{what}: child did not fault: status {status:#x}");
+            assert!(
+                libc::WIFSIGNALED(status),
+                "{what}: child did not fault: status {status:#x}"
+            );
             assert_eq!(libc::WTERMSIG(status), libc::SIGSEGV, "{what}");
         }
         // Freeing removes the guard: the page is reusable as run memory.
         env.free(&h, p);
         env.free(&h, q);
-        let (r, _) = env.alloc(&h, 4 * PAGE, 1);
+        let (r, _) = env.alloc(&h, 4 * page_size(), 1);
         assert_eq!(r, p);
-        fill(r, 4 * PAGE, 0x55);
-        assert!(all(r, 4 * PAGE, 0x55));
+        fill(r, 4 * page_size(), 0x55);
+        assert!(all(r, 4 * page_size(), 0x55));
         env.free(&h, r);
     }
 
@@ -2405,15 +2639,15 @@ mod linux_tests {
         let mut held = Vec::new();
         for lg in 13..=21 {
             let align = 1usize << lg;
-            let size = 3 * PAGE + 100;
+            let size = 3 * page_size() + 100;
             let (p, zero) = env.alloc(&h, size, align);
             assert!(!p.is_null() && p as usize % align == 0);
-            assert!(zero && all(p, 4 * PAGE, 0));
-            fill(p, 4 * PAGE, lg as u8);
+            assert!(zero && all(p, 4 * page_size(), 0));
+            fill(p, 4 * page_size(), lg as u8);
             held.push((p, lg as u8));
         }
         for &(p, v) in &held {
-            assert!(all(p, 4 * PAGE, v));
+            assert!(all(p, 4 * page_size(), v));
         }
         for (p, _) in held {
             env.free(&h, p);
@@ -2434,57 +2668,72 @@ mod linux_tests {
         let h = env.huge();
         let mut held = Vec::new();
         // Shape 1: fresh pages above the mark.
-        let (a, _) = env.alloc(&h, PAGE, 1);
-        fill(a, PAGE, 1);
-        let (b, _) = env.alloc(&h, PAGE, 1 << 20);
-        fill(b, PAGE, 2);
+        let (a, _) = env.alloc(&h, page_size(), 1);
+        fill(a, page_size(), 1);
+        let (b, _) = env.alloc(&h, page_size(), 1 << 20);
+        fill(b, page_size(), 2);
         let b_page = env.page_of(b);
-        let hole = h.lookup(env.page_of(a) + 1 + GUARD_PAGES).expect("hole extent");
-        assert_eq!((hole.state, hole.start + hole.pages), (RunState::Purged, b_page));
+        let hole = h
+            .lookup(env.page_of(a) + 1 + GUARD_PAGES)
+            .expect("hole extent");
+        assert_eq!(
+            (hole.state, hole.start + hole.pages),
+            (RunState::Purged, b_page)
+        );
         let mut fillers = 0;
         loop {
-            let (p, zero) = env.alloc(&h, PAGE, 1);
+            let (p, zero) = env.alloc(&h, page_size(), 1);
             if env.page_of(p) > b_page {
                 env.free(&h, p);
                 break;
             }
-            assert!(zero && all(p, PAGE, 0));
-            fill(p, PAGE, 0x33);
+            assert!(zero && all(p, page_size(), 0));
+            fill(p, page_size(), 0x33);
             held.push(p);
             fillers += 1;
         }
-        assert!(fillers >= 2, "hole below the aligned run took {fillers} fillers");
+        assert!(
+            fillers >= 2,
+            "hole below the aligned run took {fillers} fillers"
+        );
         // Shape 2: an Empty extent touching the mark absorbs the hole.
-        let (c, _) = env.alloc(&h, 3 * PAGE, 1);
+        let (c, _) = env.alloc(&h, 3 * page_size(), 1);
         let c_page = env.page_of(c);
-        fill(c, 3 * PAGE, 0xC0);
+        fill(c, 3 * page_size(), 0xC0);
         env.free(&h, c);
         assert_eq!(h.lookup(c_page).unwrap().state, RunState::Empty);
         let c_ext = h.lookup(c_page).unwrap();
         assert_eq!(c_ext.start + c_ext.pages, h.stats().next_page);
-        let (d, zero) = env.alloc(&h, PAGE, 2 << 20);
-        assert!(zero && all(d, PAGE, 0));
-        fill(d, PAGE, 4);
+        let (d, zero) = env.alloc(&h, page_size(), 2 << 20);
+        assert!(zero && all(d, page_size(), 0));
+        fill(d, page_size(), 4);
         let d_page = env.page_of(d);
         let head = h.lookup(c_page).expect("head extent");
-        assert_eq!((head.state, head.start + head.pages), (RunState::Empty, d_page), "head did not absorb the hole");
+        assert_eq!(
+            (head.state, head.start + head.pages),
+            (RunState::Empty, d_page),
+            "head did not absorb the hole"
+        );
         let mut fillers = 0;
         loop {
-            let (p, _) = env.alloc(&h, PAGE, 1);
+            let (p, _) = env.alloc(&h, page_size(), 1);
             if env.page_of(p) > d_page {
                 env.free(&h, p);
                 break;
             }
-            fill(p, PAGE, 0x44);
+            fill(p, page_size(), 0x44);
             held.push(p);
             fillers += 1;
         }
-        assert!(fillers >= 2, "hole below the second aligned run took {fillers} fillers");
+        assert!(
+            fillers >= 2,
+            "hole below the second aligned run took {fillers} fillers"
+        );
         for &p in &held {
             let v = unsafe { *p };
-            assert!(all(p, PAGE, v));
+            assert!(all(p, page_size(), v));
         }
-        assert!(all(a, PAGE, 1) && all(b, PAGE, 2) && all(d, PAGE, 4));
+        assert!(all(a, page_size(), 1) && all(b, page_size(), 2) && all(d, page_size(), 4));
         for p in held.into_iter().chain([a, b, d]) {
             env.free(&h, p);
         }
@@ -2507,7 +2756,7 @@ mod linux_tests {
                     rng ^= rng << 13;
                     rng ^= rng >> 7;
                     rng ^= rng << 17;
-                    let size = (rng as usize % (6 * PAGE)) + 1;
+                    let size = (rng as usize % (6 * page_size())) + 1;
                     let (p, zero) = h.alloc(&env.meta, size, 1, 0);
                     if p.is_null() {
                         continue;

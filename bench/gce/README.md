@@ -109,6 +109,65 @@ ignores the variable. Without the variable the old rule holds: every
 iteration that starts a VM stops it before it ends, and `status` is checked
 at the start of an iteration for orphans.
 
+## The kernel matrix (Phase 2.5 task 3)
+
+`challoc-bench matrix` proves the floor on real kernels: for each cell it
+creates a throwaway VM `challoc-matrix-<cell>` (labels
+`purpose=challoc-matrix,arch=...,cell=...`), provisions Docker (the
+`provision` steps minus perf), syncs the tree, runs `bench/gce/matrix-cell.sh`
+detached on the VM (`make image`, `make test`, the probe line of
+`tests/c/features.c` under `LD_PRELOAD` in the container, `make fuzz`,
+`make test-cgroup`, and on the cell marked `privileged` a second `make test`
+with `DOCKER_FLAGS=--privileged`, so Docker's seccomp profile does not hide
+`process_madvise` and `mseal`), fetches `~/logs` into
+`bench/results/matrix/<date>-<cell>.log` and deletes the VM, passed, failed,
+timed out or interrupted (the cell's own exit trap, plus a sweep of every
+`challoc-matrix-*` VM in the zone when the driver exits; `matrix clean` runs
+the sweep by hand). The machines are small and measure nothing.
+
+```
+bench/gce/challoc-bench matrix list        # the cells
+bench/gce/challoc-bench matrix             # every cell, MATRIX_JOBS (3) at a time,
+                                           # MATRIX_TIMEOUT (2700 s) each
+bench/gce/challoc-bench matrix k510-amd64 64k-arm64
+bench/gce/challoc-bench matrix clean       # delete every challoc-matrix-* VM
+```
+
+| cell       | image family            | kernel                         | machine        | notes |
+|------------|-------------------------|--------------------------------|----------------|-------|
+| k510-amd64 | `debian-11` (deprecated; the newest READY image is used) | 5.10 `cloud-amd64` | e2-standard-4 | bullseye's LTS ended 2026-08-31: provision drops the security suite and installs from main |
+| k61-amd64  | `debian-12`             | 6.1 `cloud-amd64`              | e2-standard-4  | |
+| k61-arm64  | `debian-12-arm64`       | 6.1 `cloud-arm64`              | c4a-standard-4 | |
+| k68-amd64  | `ubuntu-2404-lts-amd64` | `linux-generic` (6.8 GA)       | c3-standard-4  | prep: install, point GRUB at it by title, reboot; plus the `--privileged` `make test` |
+| k68-arm64  | `ubuntu-2404-lts-arm64` | `linux-generic` (6.8 GA)       | c4a-standard-4 | prep as above |
+| hwe-amd64  | `ubuntu-2404-lts-amd64` | `linux-generic-hwe-24.04` (6.13+, not a GCE kernel; 7.0.0-31 in 2026-09) | c3-standard-4 | prep as above; plus the `--privileged` `make test` (the batch purge path and mseal for real) |
+| 64k-arm64  | `ubuntu-2404-lts-arm64` | `linux-generic-64k` (6.8 GA, 64 KiB pages) | c4a-standard-4 | prep as above; `getconf PAGESIZE` must print 65536 |
+| gcp-amd64  | `ubuntu-2404-lts-amd64` | the image's `linux-gcp` (7.0.0-1011-gcp, the reference VMs' kernel) | c3-standard-4 | |
+| gcp-arm64  | `ubuntu-2404-lts-arm64` | the same                       | c4a-standard-4 | |
+
+The Ubuntu 24.04 GCE images boot the 7.0 `linux-gcp` kernel since 2026, so
+the 6.8 cells install the GA `linux-generic` kernel on top. `prep` cells set
+`GRUB_DEFAULT` in `/etc/default/grub.d/99-challoc-matrix.cfg` by menu title
+because the GCE kernel's version string (`7.0.0-10xx-gcp`) sorts above the
+generic one and would stay the default, and clear `GRUB_FORCE_PARTUUID`
+there: the GCE image boots without an initrd, which only the gcp kernel
+(storage drivers built in) survives; a generic kernel panics with "Unable
+to mount root fs" until the initrd is back. Debian's `core_pattern` is
+`core` in the cwd, so provisioning sets `kernel.core_pattern=|/bin/false`
+(an aborting negative test would otherwise leave a root-owned `core` in
+the bind-mounted tree and break the next `docker build`); it sets the one
+key rather than `sysctl --system`, which would re-apply GCE's
+`net.ipv4.ip_forward = 0` over Docker's and cut the containers off. Matrix VMs keep no host keys
+(`UserKnownHostsFile=/dev/null`): GCE recycles a deleted VM's external IP
+within minutes, and `accept-new` against a file then rejects the new key. Two
+drivers must not run at once with the same prefix: the exit sweep deletes
+every VM of the prefix; `CHALLOC_MATRIX_PREFIX` names another.
+
+The last two lines of each VM log are machine-readable:
+`PROBE features: ...` and `MATRIX cell=... kernel=... page=... tests=<passed>/<failed>
+fuzz=... cgroup=... privileged=... wall=... outcome=PASS|FAIL`; the driver
+prints them as the summary. Results: `bench/results/<date>-matrix.md`.
+
 ## Recipes for the traps
 
 - A `challoc-bench ssh <vm> --command='... setsid nohup make ... &'` that

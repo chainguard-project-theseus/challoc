@@ -38,6 +38,8 @@
 #   bench/gce/challoc-bench start|stop|delete arm64|amd64|all
 #   bench/gce/challoc-bench session   start|stop [arm64|amd64|all]
 #                                                          # the driving session's own start/stop, see below
+#   bench/gce/challoc-bench matrix    [list|clean|CELL...]  # Phase 2.5 task 3: throwaway VMs per kernel
+#                                                          # (5.10, 6.1, 6.8, hwe, 64 KiB pages), tests, delete
 #
 # Environment: CHALLOC_GCE_PROJECT (default: active gcloud project),
 # CHALLOC_GCE_ZONE (default us-east4-a), CHALLOC_GCE_PREFIX (default
@@ -319,6 +321,341 @@ cmd_session() {
   esac
 }
 
+# ---------------------------------------------------------------------------
+# matrix: the floor, proven (docs/plan.md Phase 2.5 task 3). For each cell
+# (a kernel: image family or a kernel package installed on top of one,
+# architecture, machine type) create a throwaway VM `challoc-matrix-<cell>`,
+# provision Docker (the `provision` steps minus perf), sync the tree, run
+# bench/gce/matrix-cell.sh detached on it (make image, make test, the probe
+# line, make fuzz, make test-cgroup, plus the --privileged make test where
+# the cell asks for it), fetch ~/logs into bench/results/matrix/<date>-<cell>.log
+# and DELETE the VM, passed or failed, timed out or interrupted. Cells run
+# MATRIX_JOBS (3) at a time with MATRIX_TIMEOUT (2700 s) each; the driver's
+# exit trap deletes every challoc-matrix-* VM in the zone, and `matrix clean`
+# does the same by hand. Nothing here measures anything: the machines are
+# small and the numbers in the logs are not benchmark numbers.
+#
+#   challoc-bench matrix                 # every cell of the table below
+#   challoc-bench matrix k510-amd64 64k-arm64
+#   challoc-bench matrix list            # the table
+#   challoc-bench matrix clean           # delete every challoc-matrix-* VM
+#
+# The table. `prep` installs another kernel on the image and reboots into
+# it (ga: linux-generic, Ubuntu 24.04's 6.8 GA kernel, because the GCE
+# image itself boots the 7.0 linux-gcp kernel since 2026; hwe:
+# linux-generic-hwe-24.04, the 6.13+ non-GCE kernel, 7.0.0-31-generic in
+# 2026-09; 64k: linux-generic-64k, the 6.8 GA kernel with 64 KiB pages);
+# `extra` adds the privileged run: on k68-amd64 for a 6.8 host (where
+# process_madvise with MADV_DONTNEED does not exist yet, whatever seccomp
+# says) and on hwe-amd64, where the batch purge path and mseal light for
+# real on a non-GCE kernel. The gcp-* cells run the image's own
+# kernel, 7.0.0-1011-gcp, the reference VMs' kernel, on the small machines.
+MATRIX_PREFIX="${CHALLOC_MATRIX_PREFIX:-challoc-matrix}"
+MATRIX_JOBS="${MATRIX_JOBS:-3}"
+MATRIX_TIMEOUT="${MATRIX_TIMEOUT:-2700}"
+MATRIX_DATE="${MATRIX_DATE:-$(date +%F)}"
+MATRIX_OUT="${MATRIX_OUT:-$REPO/bench/results/matrix}"
+MATRIX_CELLS="k510-amd64 k61-amd64 k61-arm64 k68-amd64 k68-arm64 hwe-amd64 64k-arm64 gcp-amd64 gcp-arm64"
+
+# cell_spec CELL -> "family project arch machine prep extra"
+cell_spec() {
+  case "$1" in
+    k510-amd64) echo "debian-11 debian-cloud amd64 e2-standard-4 none none" ;;
+    k61-amd64)  echo "debian-12 debian-cloud amd64 e2-standard-4 none none" ;;
+    k61-arm64)  echo "debian-12-arm64 debian-cloud arm64 c4a-standard-4 none none" ;;
+    k68-amd64)  echo "ubuntu-2404-lts-amd64 ubuntu-os-cloud amd64 c3-standard-4 ga privileged" ;;
+    k68-arm64)  echo "ubuntu-2404-lts-arm64 ubuntu-os-cloud arm64 c4a-standard-4 ga none" ;;
+    gcp-amd64)  echo "ubuntu-2404-lts-amd64 ubuntu-os-cloud amd64 c3-standard-4 none none" ;;
+    gcp-arm64)  echo "ubuntu-2404-lts-arm64 ubuntu-os-cloud arm64 c4a-standard-4 none none" ;;
+    hwe-amd64)  echo "ubuntu-2404-lts-amd64 ubuntu-os-cloud amd64 c3-standard-4 hwe privileged" ;;
+    64k-arm64)  echo "ubuntu-2404-lts-arm64 ubuntu-os-cloud arm64 c4a-standard-4 64k none" ;;
+    *) return 1 ;;
+  esac
+}
+
+# latest_image FAMILY PROJECT: the family's current image, or, for a
+# deprecated family (debian-11 since 2026), the newest deprecated image
+# that is still READY. Prints the image name.
+latest_image() {
+  local fam="$1" proj="$2" name
+  name="$(g compute images describe-from-family "$fam" --project="$proj" --format='value(name)' 2>/dev/null || true)"
+  if [ -z "$name" ]; then
+    name="$(g compute images list --project="$proj" --show-deprecated --filter="family=$fam AND status=READY" --format='value(name)' 2>/dev/null | sort | tail -1)"
+  fi
+  [ -n "$name" ] || return 1
+  echo "$name"
+}
+
+matrix_vm() { echo "$MATRIX_PREFIX-$1"; }
+
+# matrix_ssh CELL_IP_USER CMD...: direct ssh with the minted key. Matrix VMs
+# are throwaway and GCE hands a deleted VM's external IP to the next one
+# within minutes, so no host key is kept at all: `accept-new` with a
+# known_hosts file rejected the recycled IPs' new keys and the cells sat
+# in `matrix_wait_ssh` until their deadline.
+matrix_ssh_opts() {
+  echo "-i $SSH_KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=6 -o LogLevel=ERROR"
+}
+matrix_ssh() { # matrix_ssh user@ip CMD...
+  local dest="$1"; shift
+  # shellcheck disable=SC2046
+  ssh -T $(matrix_ssh_opts) "$dest" "$@"
+}
+
+# matrix_wait_ssh user@ip DEADLINE: until `true` runs on the VM or the
+# deadline (epoch seconds) passes.
+matrix_wait_ssh() {
+  local dest="$1" deadline="$2"
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if matrix_ssh "$dest" true 2>/dev/null; then return 0; fi
+    sleep 10
+  done
+  return 1
+}
+
+matrix_delete_vm() {
+  local vm="$1"
+  if g compute instances describe "$vm" --zone="$ZONE" >/dev/null 2>&1; then
+    g compute instances delete "$vm" --zone="$ZONE" --quiet >/dev/null 2>&1 \
+      || g compute instances delete "$vm" --zone="$ZONE" --quiet >/dev/null 2>&1 \
+      || echo "challoc-bench: matrix: WARNING: could not delete $vm; delete it by hand" >&2
+  fi
+}
+
+# matrix_prep PREP: the remote script that installs the cell's kernel,
+# points GRUB at it by title (the GCE kernel's version string sorts above
+# the generic one, so the default entry alone would not do) and reboots.
+matrix_prep_script() {
+  case "$1" in
+    ga)  echo 'pkg=linux-generic; pat=generic' ;;
+    hwe) echo 'pkg=linux-generic-hwe-24.04; pat=generic' ;;
+    64k) echo 'pkg=linux-generic-64k; pat=generic-64k' ;;
+    *) return 1 ;;
+  esac
+  cat <<'PREP'
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+sudo apt-get update -qq
+sudo apt-get install -y -qq "$pkg" >/dev/null
+kver="$(ls /boot/vmlinuz-*-"$pat" | sed 's#.*/vmlinuz-##' | sort -V | tail -1)"
+[ -n "$kver" ] || { echo "no $pat kernel installed"; exit 1; }
+echo "== installed $kver"
+# GCE's Ubuntu images boot without an initrd (40-force-partuuid.cfg): only
+# the gcp kernel has the NVMe/virtio drivers built in, a generic kernel
+# panics with "Unable to mount root fs". Clearing GRUB_FORCE_PARTUUID
+# brings the initrd back.
+printf 'GRUB_DEFAULT="Advanced options for Ubuntu>Ubuntu, with Linux %s"\nGRUB_FORCE_PARTUUID=\n' "$kver" \
+  | sudo tee /etc/default/grub.d/99-challoc-matrix.cfg >/dev/null
+sudo update-grub >/dev/null 2>&1
+sudo grep -q "with Linux $kver" /boot/grub/grub.cfg || { echo "grub.cfg has no entry for $kver"; exit 1; }
+sudo grep -q "initrd.*initrd.img-$kver" /boot/grub/grub.cfg || { echo "grub.cfg has no initrd line for $kver"; exit 1; }
+echo "== rebooting into $kver"
+(sleep 1; sudo systemctl reboot) >/dev/null 2>&1 </dev/null &
+PREP
+}
+
+# The provision steps of cmd_provision minus perf (Debian has no
+# linux-tools for its cloud kernel, and the cells measure nothing).
+matrix_provision_script() {
+  cat <<'REMOTE'
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+if grep -q bullseye /etc/os-release; then
+  # bullseye's LTS ended on 2026-08-31: its security suite's pool is gone
+  # (404 on every package the image's lists name), so the cell installs
+  # from main alone; if main leaves deb.debian.org too, the archive.
+  echo "== bullseye: dropping the security and updates suites"
+  sudo sed -i -e '/-security/d' -e '/bullseye-updates/d' -e '/backports/d' /etc/apt/sources.list
+  sudo rm -f /etc/apt/sources.list.d/*security*.list
+fi
+if ! sudo apt-get update -qq; then
+  echo "== apt-get update failed; switching to archive.debian.org"
+  sudo sed -i 's#deb.debian.org/debian#archive.debian.org/debian#g' /etc/apt/sources.list
+  sudo apt-get -o Acquire::Check-Valid-Until=false update -qq
+fi
+sudo apt-get install -y -qq docker.io make rsync jq curl >/dev/null
+# git is optional on the host (the container has its own): on bullseye
+# main's perl no longer matches the image's perl-base from the closed
+# security suite, so git is not installable there.
+sudo apt-get install -y -qq git >/dev/null 2>&1 || echo "== git not installable on this image (fine)"
+sudo usermod -aG docker "$USER"
+if ! grep -q '"mtu": 1460' /etc/docker/daemon.json 2>/dev/null; then
+  echo '{ "mtu": 1460 }' | sudo tee /etc/docker/daemon.json >/dev/null
+  sudo systemctl restart docker
+fi
+sudo systemctl enable --now docker >/dev/null
+# The negative tests abort on purpose. Debian's core_pattern is `core` in
+# the process's cwd, which for the container is the bind-mounted tree: a
+# root-owned `core` there breaks every later `docker build` ("no permission
+# to read from .../core"). Ubuntu pipes cores to apport. Discard them.
+# Set the one key, not `sysctl --system`: that re-applies GCE's
+# 60-gce-network-security.conf (net.ipv4.ip_forward = 0) over the value
+# Docker set at start, and containers lose their networking.
+echo 'kernel.core_pattern = |/bin/false' | sudo tee /etc/sysctl.d/90-challoc-matrix.conf >/dev/null
+sudo sysctl -q -w 'kernel.core_pattern=|/bin/false' net.ipv4.ip_forward=1
+mkdir -p ~/logs
+echo "== $(hostname): $(uname -m) $(uname -r), page $(getconf PAGESIZE), $(. /etc/os-release; echo "$PRETTY_NAME")"
+echo "== docker: $(sudo docker --version)"
+REMOTE
+}
+
+# matrix_cell CELL: one cell start to finish, in a subshell of its own, its
+# VM deleted on every exit path. Writes $MATRIX_OUT/$MATRIX_DATE-$CELL.log.
+matrix_cell() {
+  # cell, vm and log are deliberately not local: the EXIT trap below runs
+  # when the cell's subshell exits, after this function has returned and
+  # its locals are gone.
+  cell="$1"
+  local spec fam proj arch machine prep extra image disk dest user ip t0 deadline rc summary
+  log="$MATRIX_OUT/$MATRIX_DATE-$cell.log"
+  spec="$(cell_spec "$cell")" || die "matrix: unknown cell $cell (matrix list)"
+  read -r fam proj arch machine prep extra <<<"$spec"
+  vm="$(matrix_vm "$cell")"
+  t0=$(date +%s); deadline=$((t0 + MATRIX_TIMEOUT))
+  mkdir -p "$MATRIX_OUT"
+  : > "$log"
+  say() { echo "[driver $(date -u +%H:%M:%S)] $*" | tee -a "$log"; }
+  # Whatever happens below, the VM goes.
+  trap 'say "deleting $vm"; matrix_delete_vm "$vm"; say "deleted $vm"' EXIT
+  trap 'say "signal: cell $cell interrupted"; exit 130' INT TERM HUP
+
+  image="$(latest_image "$fam" "$proj")" || { say "no READY image in family $fam ($proj)"; echo "MATRIX cell=$cell image=none/$fam kernel=- page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=0 outcome=FAIL reason=no-image" >> "$log"; return 1; }
+  case "$machine" in e2-*|n1-*|n2-*) disk=pd-balanced ;; *) disk=hyperdisk-balanced ;; esac
+  say "cell $cell: image $image ($fam, $proj), $arch, $machine, prep $prep, extra $extra, timeout ${MATRIX_TIMEOUT}s"
+  matrix_delete_vm "$vm"
+  if ! g compute instances create "$vm" --zone="$ZONE" --machine-type="$machine" \
+        --image="$image" --image-project="$proj" \
+        --boot-disk-size=50GB --boot-disk-type="$disk" \
+        --metadata=enable-oslogin=TRUE --scopes=cloud-platform \
+        --labels="owner=${USER},purpose=challoc-matrix,arch=$arch,cell=$cell" >>"$log" 2>&1; then
+    say "create failed for $vm"; echo "MATRIX cell=$cell image=$image kernel=- page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=create" >> "$log"; return 1
+  fi
+  ip="$(g compute instances describe "$vm" --zone="$ZONE" --format='value(networkInterfaces[0].accessConfigs[0].natIP)')"
+  user="$(g compute os-login describe-profile --format='value(posixAccounts[0].username)')"
+  dest="$user@$ip"
+  say "created $vm at $ip; waiting for ssh"
+  if ! matrix_wait_ssh "$dest" "$deadline"; then say "ssh never came up"; echo "MATRIX cell=$cell image=$image kernel=- page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=no-ssh" >> "$log"; return 1; fi
+  say "up: $(matrix_ssh "$dest" 'echo "$(uname -m) $(uname -r) page $(getconf PAGESIZE)"' 2>&1)"
+
+  if [ "$prep" != none ]; then
+    local boot0 boot1=
+    boot0="$(matrix_ssh "$dest" cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+    say "prep $prep: installing the kernel and rebooting (boot id $boot0)"
+    matrix_prep_script "$prep" | matrix_ssh "$dest" bash -s >>"$log" 2>&1 || { say "prep failed"; echo "MATRIX cell=$cell image=$image kernel=$(matrix_ssh "$dest" uname -r 2>/dev/null) page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=prep" >> "$log"; return 1; }
+    # ssh keeps answering for a while after the reboot is issued: wait for
+    # a new boot id, not merely for a connection.
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+      sleep 10
+      boot1="$(matrix_ssh "$dest" cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
+      [ -n "$boot1" ] && [ "$boot1" != "$boot0" ] && break
+      boot1=
+    done
+    if [ -z "$boot1" ]; then say "the VM did not come back with a new boot id after the reboot"; echo "MATRIX cell=$cell image=$image kernel=- page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=reboot" >> "$log"; return 1; fi
+    local kp; kp="$(matrix_ssh "$dest" 'echo "$(uname -r) $(getconf PAGESIZE)"' 2>/dev/null || true)"
+    say "after reboot: $kp"
+    case "$prep:$kp" in
+      64k:6.8.*-generic-64k\ 65536) ;;
+      ga:6.8.*-generic\ 4096) ;;
+      hwe:6.8.*) say "the hwe kernel is still 6.8 (got: $kp)"; echo "MATRIX cell=$cell image=$image kernel=${kp% *} page=${kp##* } machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=wrong-kernel" >> "$log"; return 1 ;;
+      hwe:*-generic\ 4096) ;;
+      *) say "the VM did not boot the $prep kernel (got: $kp)"; echo "MATRIX cell=$cell image=$image kernel=${kp% *} page=${kp##* } machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=wrong-kernel" >> "$log"; return 1 ;;
+    esac
+  fi
+
+  say "provisioning"
+  matrix_provision_script | matrix_ssh "$dest" bash -s >>"$log" 2>&1 || { say "provision failed"; echo "MATRIX cell=$cell image=$image kernel=$(matrix_ssh "$dest" uname -r 2>/dev/null) page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=provision" >> "$log"; return 1; }
+  say "syncing the tree"
+  # shellcheck disable=SC2046
+  rsync -az --delete --exclude=/target --exclude=/.ralph --exclude='/.tmp-*' --exclude='/.ralph-*.log' \
+    -e "ssh $(matrix_ssh_opts)" "$REPO/" "$dest:$REMOTE_DIR/" >>"$log" 2>&1 || { say "sync failed"; echo "MATRIX cell=$cell image=$image kernel=- page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=sync" >> "$log"; return 1; }
+  say "running matrix-cell.sh detached (a new login, so the docker group applies)"
+  matrix_ssh "$dest" "rm -f ~/logs/done; (setsid nohup bash -c 'bash ~/challoc/bench/gce/matrix-cell.sh $cell $image $extra; echo \$? > ~/logs/done' > ~/logs/matrix.log 2>&1 < /dev/null &); sleep 1; echo launched" >>"$log" 2>&1 || say "launch ssh returned nonzero (the run may still be going)"
+  # Poll for the done marker until the deadline; a lost connection while
+  # polling is not fatal.
+  rc=timeout
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    sleep 30
+    local d; d="$(matrix_ssh "$dest" 'if [ -f ~/logs/done ]; then echo "DONE=$(cat ~/logs/done)"; fi' 2>/dev/null || true)"
+    case "$d" in
+      DONE=*) rc="${d#DONE=}"; break ;;
+    esac
+  done
+  say "run finished: rc=$rc after $(( $(date +%s) - t0 )) s; fetching ~/logs"
+  local tmp; tmp="$(mktemp -d "${TMPDIR:-/tmp}/challoc-matrix-$cell.XXXXXX")"
+  # shellcheck disable=SC2046
+  rsync -az -e "ssh $(matrix_ssh_opts)" "$dest:logs/" "$tmp/" >>"$log" 2>&1 || say "fetch failed (partial logs)"
+  {
+    echo
+    echo "==================== ~/logs/matrix.log on $vm ===================="
+    cat "$tmp/matrix.log" 2>/dev/null || echo "(no matrix.log)"
+    for f in image test probe probe-privileged fuzz test-cgroup test-privileged; do
+      [ -f "$tmp/$f.log" ] || continue
+      echo
+      echo "==================== ~/logs/$f.log (last 60 lines) ===================="
+      tail -n 60 "$tmp/$f.log"
+    done
+    # Every failed test's own output, for the results file's FAIL lines.
+    if grep -q '^failures:' "$tmp/test.log" 2>/dev/null; then
+      echo
+      echo "==================== failures in make test ===================="
+      awk '/^failures:$/ { on = 1 } on { print } /^test result:/ { on = 0 }' "$tmp/test.log" | head -n 400
+      # With --nocapture the panic message is not in that block: it went to
+      # stderr as it happened, on the line after `panicked at`. Every panic
+      # (the should_panic tests' expected ones included) with its message.
+      echo "-- every panic with its message:"
+      grep -A1 "panicked at" "$tmp/test.log" | grep -v '^--$' | head -n 300
+    fi
+  } >> "$log"
+  rm -rf "$tmp"
+  if [ "$rc" = timeout ]; then
+    echo "MATRIX cell=$cell image=$image kernel=? page=? machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=timeout" >> "$log"
+  fi
+  summary="$(grep '^MATRIX ' "$log" | tail -1)"
+  say "$summary"
+  case "$summary" in *outcome=PASS*) return 0 ;; *) return 1 ;; esac
+}
+
+matrix_clean() {
+  local vms
+  vms="$(g compute instances list --filter="name~^$MATRIX_PREFIX-" --format='value(name)' 2>/dev/null || true)"
+  [ -n "$vms" ] || { echo "challoc-bench: matrix: no $MATRIX_PREFIX-* VM exists"; return 0; }
+  echo "challoc-bench: matrix: deleting $(echo "$vms" | tr '\n' ' ')"
+  for v in $vms; do matrix_delete_vm "$v" & done
+  wait
+}
+
+cmd_matrix() {
+  local what="${1:-}"
+  case "$what" in
+    list)
+      printf '%-11s %-22s %-16s %-6s %-15s %-5s %s\n' cell family project arch machine prep extra
+      for c in $MATRIX_CELLS; do printf '%-11s %s\n' "$c" "$(cell_spec "$c" | awk '{ printf "%-22s %-16s %-6s %-15s %-5s %s", $1, $2, $3, $4, $5, $6 }')"; done
+      return 0 ;;
+    clean) matrix_clean; return 0 ;;
+  esac
+  local cells="${*:-$MATRIX_CELLS}" c pids= failed=0
+  for c in $cells; do cell_spec "$c" >/dev/null || die "matrix: unknown cell $c (matrix list)"; done
+  mkdir -p "$MATRIX_OUT"
+  echo "challoc-bench: matrix: cells: $cells; $MATRIX_JOBS at a time, ${MATRIX_TIMEOUT}s each; logs in $MATRIX_OUT/$MATRIX_DATE-<cell>.log"
+  # On any exit: stop the cells (their own traps delete their VMs), then
+  # sweep the zone for anything left.
+  # `set -e` applies inside the trap too: every step here must not fail
+  # (a pkill that finds no children returns 1), or the sweep never runs.
+  trap 'echo "challoc-bench: matrix: cleaning up"; for p in $pids; do pkill -TERM -P "$p" 2>/dev/null || true; kill -TERM "$p" 2>/dev/null || true; done; wait 2>/dev/null || true; matrix_clean || true; g compute instances list --filter="name~^$MATRIX_PREFIX-" 2>/dev/null || true' EXIT
+  trap 'exit 130' INT TERM HUP
+  for c in $cells; do
+    while [ "$(jobs -rp | wc -l | tr -d ' ')" -ge "$MATRIX_JOBS" ]; do sleep 15; done
+    ( matrix_cell "$c" ) &
+    pids="$pids $!"
+    sleep 5
+  done
+  for p in $pids; do wait "$p" || failed=$((failed + 1)); done
+  echo
+  echo "challoc-bench: matrix: summary ($MATRIX_DATE)"
+  for c in $cells; do grep -h '^MATRIX ' "$MATRIX_OUT/$MATRIX_DATE-$c.log" 2>/dev/null | tail -1 || echo "MATRIX cell=$c outcome=MISSING"; done
+  [ "$failed" = 0 ]
+}
+
 cmd="${1:-}"; shift || true
 case "$cmd" in
   create)    cmd_create "$@" ;;
@@ -339,5 +676,6 @@ case "$cmd" in
   stop)      cmd_stop "$@" ;;
   session)   cmd_session "$@" ;;
   delete)    cmd_delete "$@" ;;
-  *) sed -n '2,53p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  matrix)    cmd_matrix "$@" ;;
+  *) sed -n '2,55p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

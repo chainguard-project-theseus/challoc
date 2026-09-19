@@ -1406,7 +1406,7 @@ runs on every row.
 |---|---|---|---|
 | Page size (`AT_PAGESZ`) | kernel, the auxiliary vector | the granularity of every mapping, slab and purge (4, 16 or 64 KiB) | none: init aborts without it (`/proc/self/auxv` is tried first) |
 | `MADV_GUARD_INSTALL` | kernel 6.13 | guard slabs between slabs and after huge runs (section 14) | a `PROT_NONE` page after huge runs only; no guard slabs |
-| `process_madvise` on self | kernel 5.10 with a pidfd of self; 6.14 with `PIDFD_SELF` | batched purge, one call per decay pass (section 8) | a loop of `madvise(MADV_DONTNEED)` |
+| `process_madvise` on self | kernel 6.13 with a pidfd of self (the syscall exists since 5.10 but accepts `MADV_DONTNEED` only from 6.13; the matrix of Phase 2.5 task 3 found it unavailable on 5.10, 6.1 and 6.8 even without seccomp, lit on 7.0); 6.14 with `PIDFD_SELF` | batched purge, one call per decay pass (section 8) | a loop of `madvise(MADV_DONTNEED)` |
 | `mseal` | kernel 6.10, not filtered by seccomp | seals the never-committed ranges of the reservations at init (section 10 step 5) | skip; `Sealed ranges: 0 of N` |
 | `PR_SET_VMA_ANON_NAME` | kernel 5.17 with `CONFIG_ANON_VMA_NAME` | named `challoc:*` mappings in `/proc/pid/maps` | skip |
 | PSI triggers on `memory.pressure` | kernel 6.4 (unprivileged), cgroup2 mounted writable | the background thread arms a trigger and reacts to pressure at once (section 11) | sample `memory.current` on the tick |
