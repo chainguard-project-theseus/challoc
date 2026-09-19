@@ -184,6 +184,7 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     writeln!(out, "Sealed ranges: {} of {}", super::sealed_ranges(), shared.regions.never_committed().1)?;
     writeln!(out, "Background thread: {}", if purge::background::present() { "present" } else { "absent" })?;
     percpu_line(out, shared)?;
+    slice_line(out)?;
     writeln!(
         out,
         "Arenas: {} ({} automatic), explicit caches: {}",
@@ -764,6 +765,32 @@ fn percpu_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
             probe.verdict(),
             probe.size,
             if pc.forced() { "; percpu_arena:percpu requested, thread caches in use" } else { "" }
+        )
+    }
+}
+
+/// `Slice extension:` (design 17, `slice.rs`): whether lock holders request
+/// the rseq time slice extension, the probe's verdict when not, how many
+/// threads the `prctl` enabled and how many grants were yielded, and a
+/// note when `slice_ext:on` was asked for and the probe said no. The
+/// `slice_ext=` key of the feature line (`sys::features`) is lane B's to
+/// add; until then this line is the report.
+fn slice_line<W: Write>(out: &mut W) -> fmt::Result {
+    use crate::slice;
+    if slice::on() {
+        writeln!(
+            out,
+            "Slice extension: on ({} threads enabled, {} grants yielded via {})",
+            slice::enabled_threads(),
+            slice::yields(),
+            slice::yield_name()
+        )
+    } else {
+        writeln!(
+            out,
+            "Slice extension: off ({}){}",
+            slice::verdict().name(),
+            if slice::forced_off() { "; slice_ext:on requested, unavailable" } else { "" }
         )
     }
 }

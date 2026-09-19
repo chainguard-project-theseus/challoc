@@ -1387,6 +1387,7 @@ jemalloc names where they exist:
 | `group_handoff`           | false   | challoc only; opt-in: an arena takes another arena's idle slab group before a fresh one (5, 13.3); off because it did not move the mstress row it was built for |
 | `thp`                     | never   | `never`, `auto`, `always` (7, 17, `thp.rs`): `auto` advises slab groups of classes whose slab holds an enabled sub-PMD folio and rounds metadata commits to it, never a 2 MiB page (inert where the PMD size is `madvise`-gated or no such size is enabled); the opt-in for aarch64 hosts with `hugepages-64kB` enabled and Valkey-shaped heaps (measured neutral there, a real 1.6% loss on larson and more RSS on small heaps, so not the default); `always` commits and advises PMD chunks (at a 2 MiB PMD only: 4 KiB pages; at 16 and 64 KiB pages it is the folio path over the enabled sizes below the PMD, inert when none is), huge runs of a PMD or more and the metadata (jemalloc's `thp:always`, priced in `bench/results/2026-09-19-lane-b-mthp.md`); `always` under a cgroup limit below 1 GiB is forced to `never` (11); `never` (and a forced `never`) issues `MADV_NOHUGEPAGE` on every reservation, so it means never on a host whose global mode is `always` (17, plan Phase 2.5 task 16) |
 | `spin_hint`               | auto    | challoc only; what a contended lock spins with (5): `auto` (the CPU probe's choice: `umwait` with WAITPKG, else the baseline), `baseline` (`pause`/`isb`), `umwait` (reported and left at `auto` without WAITPKG), `wfe` (aarch64; measured slower under contention, never chosen by `auto`) |
+| `slice_ext`               | auto    | challoc only; `auto`, `on`, `off` (17, "Time slice extension"; plan Phase 2.5 task 15): whether a lock holder asks the kernel, through its rseq `slice_ctrl` bytes, to defer a preemption until the release. `auto` and `on` turn it on where the runtime probe passes (glibc's `__rseq_size >= 32`, the kernel's `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE` bit in the thread's area, the `prctl` enable confirmed by the `ENABLED` bit: kernel 7.0 with `CONFIG_RSEQ_SLICE_EXTENSION`, x86_64 only so far); `on` additionally makes the report note a refused request; `off` never requests. No kernel field but `request` is written |
 | `lazy_free`               | false   | `MADV_FREE` for every purge, the override of the two-advice purge (8) |
 | `lazy_band`               | true    | challoc only; `MADV_FREE` for purges under 70% of a known cgroup limit (8, 11); `false` makes every purge `MADV_DONTNEED` unless `lazy_free` |
 | `guards`                  | true    | guard slabs and huge runs               |
@@ -2083,6 +2084,7 @@ runs on every row.
 | CLDEMOTE (`cpuid` 7.0 `ECX[25]`) | x86_64 CPU (Sapphire Rapids and later; the C4's 8581C exposes it to the guest) | reported only, by measurement (plan Phase 2.5 task 12, lane B): the hint on the bitmap word and descriptor line a batch release writes last cost xmalloc-test +5% and the Valkey model +13..17% cycles per operation and left the `io-threads 4` soak's per-command counters flat (`bench/results/2026-09-19-x86_64-lane-b-task12-cldemote.md`), because the freeing core is usually the next claimer; the call sites were dropped. `sys::cldemote` keeps the probe's verdict (`configure` at init), `demote` and a both-ways container test, so a release path that knows the claimer is another core can be measured by adding one call | none needed |
 | WAITPKG (`cpuid` 7.0 `ECX[5]`) | x86_64 CPU (Sapphire Rapids and later); GCE's hypervisor hides it on every cell of the matrix | the lock's `umwait` spin hint (section 5; `spin_hint:auto`), so far only ever measured as its fallback | `pause` in the spin; the C4 and the Cascade Lake rows in `bench/results/2026-09-19-lane-c-spin-and-geometry.md` are within noise of the previous lock |
 | Timer event stream (`HWCAP_EVTSTRM`) | arm64 kernel (`CONFIG_ARM_ARCH_TIMER_EVTSTREAM`, on by default, 10 kHz) | nothing by default: the `wfe` spin hint it bounds is opt-in (`spin_hint:wfe`, refused without the stream) because it lost 3% and a quarter of the RSS on xmalloc-test on the Altra and the Axion (section 5, the same results file) | `isb` in the spin |
+| rseq time slice extension (`slice_ctrl`, `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE`) | kernel 7.0 with `CONFIG_RSEQ_SLICE_EXTENSION` (default N; needs `GENERIC_ENTRY` and `HAVE_GENERIC_TIF_BITS`, which x86_64 has and arm64 does not, through master) and glibc registering the v2 size (`__rseq_size >= 32`: 2.44 registers 33); Ubuntu's `7.0.0-1011-gcp` leaves the option off, so the GCE reference VMs read `kernel-disabled` and the numbers come from a 7.0.14 built with it (`bench/results/2026-09-19-x86_64-lane-c-task15-slice-ext.md`) | every lock holder's request to defer a preemption until the release (`slice.rs`, the subsection below; `slice_ext:auto`), the `prctl` enable per thread on its first hold, `rseq_slice_yield` (or `sched_yield` where seccomp hides the new syscall) after a granted release | the lock without the request: one relaxed load per hold; `Slice extension: off (<why>)` in the report |
 | ERMS, FSRM, AVX-512F (`cpuid` 7.0 `EBX[9]`, `EDX[4]`, `EBX[16]`) | x86_64 CPU | reported only: `memcpy`/`memset` selection is glibc's; the crate's fills use the compiler baseline | none needed |
 | Cache line, L1D and L2 sizes | `CTR_EL0` (arm64), `cpuid` leaf 4 or `0x8000001D` (x86_64), else `/sys/devices/system/cpu/cpu0/cache/index*/` | reported only: the layout constants (`lock.rs` padding, the 512-byte stride rule) and the cache-capacity defaults stay fixed; an L2-derived ladder was priced on the 1 MiB parts and dropped (section 6.2, "Cache geometry") | `unknown` in the line; nothing changes |
 | Model-checked protocol (`cargo test --features std model::`, `src/model.rs`) | the host test suite, no hardware: an exhaustive interleaving model of the claim, release, `on_live_zero`, purge and group-handoff steps of `class.rs`, memoised on the whole state, with the invariants of section 4 and 5 checked at every state (no slot handed to two claimers, a slot reported zero reads zero, `live` equals set bits plus in-flight reservations, a slab in an arena's set is `Empty`/`Purged` with `live == 0` and owned by that arena, a `Purged` slab reads zero) | nothing at run time: it is the proof obligation for a change to the protocol. Replaying the pre-fix step orders finds the calloc race (Phase 1.5 task 7) and the ownership gap the handoff's owner check closes (task 15); the current order passes every scenario. Since 2026-09-19 (lane C, plan Phase 2.5 task 8) the `percpu_*` scenarios model the per-CPU claim protocol of section 15 (caches owned by an `mm_cid` read inside an rseq critical section with one commit store, the kernel's abort of a section whose thread was descheduled, threads that pop on one cid and push on another, the refill and the flush through the cid's arena, the zero prefix) with the further invariants that no slot is in two caches or in a cache and owned by a thread, that every set bit has exactly one holder (a lost push is a bit with none) and that a cache is mutated only by a section whose thread kept its cid to the commit; the variants without a section, or with `mm_cid` read outside it, hand a slot to two threads within 40 states, and lane A's implementation is compared against the properties listed in section 15 at merge | none needed |
@@ -2099,6 +2101,76 @@ container test checks each CPU bit against `/proc/cpuinfo` (`Features` or
 and `cpuid` registers from the reference machines. The reference hosts'
 lines are recorded in `bench/results/2026-09-19-feature-report.md`; the
 matrix of plan tasks 3 and 4 adds one line per kernel and CPU.
+
+### Time slice extension
+
+Kernel 7.0's rseq time slice extension (`CONFIG_RSEQ_SLICE_EXTENSION`,
+`Documentation/userspace-api/rseq.rst`) lets a thread ask the scheduler
+to defer a preemption that would land inside a short critical section:
+`struct rseq` gained `slice_ctrl` at byte 28 (`request` u8 at 28,
+`granted` u8 at 29), the kernel advertises the feature per registered area
+with `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE` (bit 4 of the area's `flags`,
+byte 16) once the area is registered with the v2 size (`__rseq_size >=
+32`; glibc 2.44 registers 33), and `prctl(PR_RSEQ_SLICE_EXTENSION = 79,
+SET = 2, ENABLE = 1)` turns it on for the calling thread, confirmed by
+`RSEQ_CS_FLAG_SLICE_EXT_ENABLED` (bit 5). A thread that stores `request =
+1` and is hit by a tick that wants to reschedule it is granted up to 5 us
+more (50 at most, `debugfs rseq/slice_ext_nsec`): the kernel clears
+`request`, sets `granted`, arms a timer and returns to user space; the
+thread finishes its section, clears `request`, and if `granted` reads 1
+calls `rseq_slice_yield` (471 on both architectures, the unified table),
+which hands the CPU back at once. Any other syscall inside a grant also
+ends it (the kernel revokes and zeroes both bytes at syscall entry); a
+grant nobody yields expires with the timer. User space may write nothing
+but `request`; the kernel's debug mode kills a process whose `slice_ctrl`
+disagrees with its own state at a syscall entry.
+
+challoc's use (`slice.rs`, plan Phase 2.5 task 15): every `lock::RawLock`
+hold, that is the class, table, huge, metadata, statistics and background
+locks, none of which is on the `malloc`/`free` fast path. `RawLock::lock`
+and `try_lock` call `slice::acquired` after the CAS (the request is made
+once held, never while waiting: a waiter that spins while the holder is
+extended is what the extension exists for), `RawLock::unlock` calls
+`slice::releasing` before the release swap and `slice::released` after
+it. Per hold, when on: one load of the thread's `flags` (the same cache
+line as `slice_ctrl`), one byte store of `request = 1`, one byte store of
+`0`, one byte load of `granted`; when off (the key, or a failed probe):
+one relaxed load of a process-wide byte. The enable is per task, not per
+process: `rseq_fork` resets a `CLONE_VM` child's rseq state and glibc
+registers the new thread's area without the enable, while a plain `fork`
+child inherits the forking thread's state (confirmed by
+`tests/c/slice_ext.c` through `prctl(GET)` on 32 new threads and a fork
+child). So init enables the init thread from `config::load`
+(`Config::apply_slice_ext`) and every other thread is enabled on its first
+lock hold, when `flags` shows bit 4 without bit 5: one `prctl` per thread
+lifetime, and a `prctl` that fails switches the process off rather than
+retry a syscall per hold. Nested holds (the fork handlers, heap creation
+under the cache-table lock) request per lock; the inner release withdraws
+the request and the outer hold goes on unextended, which costs nothing
+but the extension. A `FUTEX_WAKE` issued by the release ends a grant
+itself, so the yield after it reads `granted == 0` and does nothing. Where
+a seccomp filter returns `ENOSYS` for the new syscall (Docker's default
+profile does, for every syscall past its table, while letting the `prctl`
+through) the grant is ended with `sched_yield` instead and the report
+says so; the probe calls the dedicated syscall once at init to find out.
+
+The probe (`slice::probe`): `rseq::probe` for the symbols and the size,
+then bit 4 of this thread's `flags`, then the `prctl` and bit 5, then the
+syscall; each failure is a word in `Slice extension: off (<word>)`:
+`no-rseq`, `no-slice_ctrl` (6.18 and earlier), `kernel-disabled` (the
+option compiled out or `rseq_slice_ext=0`; Ubuntu's `7.0.0-1011-gcp` on
+the GCE reference VMs, whose config has no `CONFIG_RSEQ_SLICE_EXTENSION`
+line), `prctl-failed`. On aarch64 the probe fails on every kernel to
+date: the option depends on `GENERIC_ENTRY` and `HAVE_GENERIC_TIF_BITS`,
+which arm64 selects neither of through 7.2 and master, so the aarch64 rows
+measure the fallback's one load. The `on` way was measured on the lane's
+C4 under a 7.0.14 kernel built with the option
+(`bench/results/2026-09-19-x86_64-lane-c-task15-slice-ext.md`): what a
+grant costs, how many holds are granted on the contended rows (the count
+of holder preemptions the kernel deferred, `Slice extension: on (N
+threads enabled, M grants yielded via ...)`), and the `quick` and `ab`
+verdicts that decide the default; the aarch64 fallback rows are in the
+`-aarch64-` file next to it.
 
 ## 18. Tagged pointers
 

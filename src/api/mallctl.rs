@@ -621,6 +621,8 @@ fn cstr_of(s: &'static str) -> *const c_char {
         // `opt.percpu_arena` (config::PercpuArena::name); `auto` shares the arm above.
         "percpu" => b"percpu\0",
         "off" => b"off\0",
+        // `opt.slice_ext` (config::SliceExt::name); `auto` and `off` share the arms above.
+        "on" => b"on\0",
         _ => b"?\0",
     };
     c.as_ptr() as *const c_char

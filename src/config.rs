@@ -180,6 +180,50 @@ impl PercpuArena {
     }
 }
 
+/// `slice_ext` values (design 17, "Time slice extension"; plan Phase 2.5
+/// task 15): whether a lock holder asks the kernel, through the rseq
+/// `slice_ctrl` bytes, to defer a preemption until the release
+/// (`slice.rs`). The runtime probe must pass: glibc's registered
+/// `__rseq_size >= 32`, the kernel's `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE`
+/// bit in the area (kernel 7.0 with `CONFIG_RSEQ_SLICE_EXTENSION`), the
+/// `prctl` enable and the `rseq_slice_yield` syscall; nothing is assumed
+/// from a header constant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SliceExt {
+    /// The default: on when the probe passes, nothing otherwise, nothing
+    /// reported either way.
+    Auto,
+    /// The request is forced: on when the probe passes; when it fails
+    /// nothing is requested (a field the kernel does not read cannot be
+    /// forced) and the report notes that `slice_ext:on` was refused.
+    On,
+    /// Never requested, whatever the kernel: byte for byte the lock
+    /// without the key but for one relaxed load per hold.
+    Off,
+}
+
+impl SliceExt {
+    pub const fn name(self) -> &'static str {
+        match self {
+            SliceExt::Auto => "auto",
+            SliceExt::On => "on",
+            SliceExt::Off => "off",
+        }
+    }
+
+    /// Whether the probe is consulted at all.
+    #[inline]
+    pub const fn wanted(self) -> bool {
+        !matches!(self, SliceExt::Off)
+    }
+
+    /// Whether a failed probe is worth a note in the report.
+    #[inline]
+    pub const fn forced(self) -> bool {
+        matches!(self, SliceExt::On)
+    }
+}
+
 /// Every tunable of design section 12 with its compiled default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Config {
@@ -218,6 +262,12 @@ pub struct Config {
     /// the CPU has WAITPKG, `wfe` only on aarch64 under the timer event
     /// stream; else reported and left at `auto`).
     pub spin_hint: SpinChoice,
+    /// The rseq time slice extension for lock holders (design 17,
+    /// `slice.rs`, [`SliceExt`]): `auto` follows the runtime probe, `on`
+    /// forces the request (nothing, plus a report note, when the probe
+    /// fails), `off` never requests. Applied at the end of `load`
+    /// (`Config::apply_slice_ext`) on the init thread.
+    pub slice_ext: SliceExt,
     /// `MADV_FREE` for every purge (the override of the two-advice purge,
     /// design 8).
     pub lazy_free: bool,
@@ -308,6 +358,7 @@ impl Config {
         tcache_compact_shift: 3,
         thp: Thp::Never,
         spin_hint: SpinChoice::Auto,
+        slice_ext: SliceExt::Auto,
         lazy_free: false,
         lazy_band: true,
         guards: true,
@@ -414,6 +465,14 @@ impl Config {
                     _ => return Err(bad()),
                 }
             }
+            b"slice_ext" => {
+                self.slice_ext = match value {
+                    b"auto" => SliceExt::Auto,
+                    b"on" => SliceExt::On,
+                    b"off" => SliceExt::Off,
+                    _ => return Err(bad()),
+                }
+            }
             b"lazy_free" => self.lazy_free = parse_bool(value).ok_or_else(bad)?,
             b"lazy_band" => self.lazy_band = parse_bool(value).ok_or_else(bad)?,
             b"guards" => self.guards = parse_bool(value).ok_or_else(bad)?,
@@ -483,6 +542,7 @@ impl Config {
             b"tcache_compact_shift" => Value::Uint(self.tcache_compact_shift as u64),
             b"thp" => Value::Str(self.thp.name()),
             b"spin_hint" => Value::Str(self.spin_hint.name()),
+            b"slice_ext" => Value::Str(self.slice_ext.name()),
             b"lazy_free" => Value::Bool(self.lazy_free),
             b"lazy_band" => Value::Bool(self.lazy_band),
             b"guards" => Value::Bool(self.guards),
@@ -565,6 +625,17 @@ impl Config {
         Ok(())
     }
 
+    /// Install the configuration's time slice extension choice (design
+    /// 17, `slice::configure`): probe, enable the calling thread, publish.
+    /// `off` turns it off; `auto` and `on` follow the probe, and only `on`
+    /// makes a failed probe visible (in the report, not as an issue: a
+    /// kernel without the option is the documented fallback, not a
+    /// configuration error, so `abort_conf` does not refuse it). Returns
+    /// the verdict.
+    pub fn apply_slice_ext(&self) -> Result<(), crate::slice::Verdict> {
+        crate::slice::configure(self.slice_ext.wanted(), self.slice_ext.forced())
+    }
+
     /// `tcache_gc_interval_ms` in nanoseconds.
     pub fn gc_interval_ns(&self) -> u64 {
         (self.tcache_gc_interval_ms as u64).saturating_mul(1_000_000)
@@ -620,6 +691,7 @@ pub const KEYS: &[&str] = &[
     "tcache_compact_shift",
     "thp",
     "spin_hint",
+    "slice_ext",
     "lazy_free",
     "lazy_band",
     "guards",
@@ -917,6 +989,10 @@ mod linux {
                 report("spin_hint", issue);
             }
         }
+        // The time slice extension (design 17): probed and enabled here,
+        // on the init thread, whatever the key (`off` publishes "off").
+        // Not an issue when refused: the report says why.
+        let _ = cfg.apply_slice_ext();
         out.flush();
         if cfg.abort_conf && issues > 0 {
             sys::abort_fmt(format_args!("abort_conf: {issues} configuration problem(s), see above"));
@@ -1095,6 +1171,7 @@ mod tests {
         assert_eq!(d.dirty_decay_ms, 10_000);
         assert_eq!(d.narenas, 0);
         assert_eq!(d.percpu_arena, PercpuArena::Auto, "on where the mm_cid probe passes (plan Phase 2.5 task 8)");
+        assert_eq!(d.slice_ext, SliceExt::Auto, "on where the slice extension probe passes (plan Phase 2.5 task 15)");
         assert!(d.tcache);
         assert_eq!(d.tcache_max, 32 * 1024);
         assert_eq!(d.tcache_nslots_small_max, 1024);
@@ -1309,6 +1386,35 @@ mod tests {
         }
     }
 
+    /// `slice_ext` (plan Phase 2.5 task 15): the three values, anything
+    /// else reported and left at the default, `opt.slice_ext` reads back,
+    /// and the helpers `slice::configure` is called with.
+    #[test]
+    fn slice_ext_values() {
+        assert!(KEYS.contains(&"slice_ext"));
+        assert!(!IGNORED_KEYS.contains(&"slice_ext") && !is_inert(b"slice_ext"));
+        for (value, want) in [("auto", SliceExt::Auto), ("on", SliceExt::On), ("off", SliceExt::Off)] {
+            let cfg = clean(&std::format!("slice_ext:{value},abort_conf:true"));
+            assert_eq!(cfg.slice_ext, want, "{value}");
+            assert_eq!(cfg.get(b"slice_ext"), Some(Value::Str(want.name())), "{value}");
+            assert_eq!(want.name(), value);
+            assert!(cfg.abort_conf);
+        }
+        for bad in ["true", "false", "1", "yes", "Auto", "ON", "", "onn", "percpu"] {
+            let (cfg, issues) = parse(&std::format!("slice_ext:{bad}"));
+            assert_eq!(cfg, Config::DEFAULT, "slice_ext:{bad} changed the config");
+            assert_eq!(issues.len(), 1, "slice_ext:{bad}: {issues:?}");
+            let expect = if bad.is_empty() { "malformed" } else { "invalid conf value \"" };
+            assert!(issues[0].contains(expect), "slice_ext:{bad}: {}", issues[0]);
+        }
+        assert_eq!(clean("slice_ext:on,slice_ext:off").slice_ext, SliceExt::Off);
+        assert_eq!(clean("slice_ext:\"on\"").slice_ext, SliceExt::On);
+        // `auto` and `on` consult the probe, `off` never; only `on`
+        // reports a failed probe.
+        assert!(SliceExt::Auto.wanted() && SliceExt::On.wanted() && !SliceExt::Off.wanted());
+        assert!(SliceExt::On.forced() && !SliceExt::Auto.forced() && !SliceExt::Off.forced());
+    }
+
     #[test]
     fn inert_keys_are_stored_reported_and_rejected_under_abort_conf() {
         assert_eq!(INERT_KEYS.len(), 1, "stats_print");
@@ -1466,7 +1572,7 @@ mod tests {
             let round = if is_inert(key.as_bytes()) { inert(&text, 1) } else { clean(&text) };
             assert_eq!(round, cfg, "{key}:{value} round trip");
         }
-        assert_eq!(KEYS.len(), 26);
+        assert_eq!(KEYS.len(), 27);
         assert_eq!(cfg.get(b"nonsense"), None);
         assert_eq!(cfg.get(b""), None);
         for key in IGNORED_KEYS {

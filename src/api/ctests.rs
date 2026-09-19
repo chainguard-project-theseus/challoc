@@ -778,6 +778,22 @@ fn c_percpu_both_ways() {
     }
 }
 
+/// Plan Phase 2.5 task 15, both ways: `tests/c/slice_ext.c` under
+/// `slice_ext:on` (the rseq time slice extension on where the kernel has
+/// `CONFIG_RSEQ_SLICE_EXTENSION`, refused with a report note elsewhere:
+/// the program reads the kernel's view through `prctl` and asserts the
+/// right branch) and under `slice_ext:off` (never enabled). 32 threads
+/// of tagged random allocation, the per-task enable on a thread's first
+/// hold, the fork child's inherited enable, `opt.slice_ext`.
+#[test]
+fn c_slice_ext_both_ways() {
+    for mode in ["on", "off"] {
+        let bin = compile_link("tests/c", "slice_ext", &[], &["-pthread"]);
+        let conf = std::format!("abort_conf:true,slice_ext:{mode}");
+        run_bin_env("slice_ext", &bin, &[mode], &[("MALLOC_CONF", &conf)]);
+    }
+}
+
 /// The fuzz driver (`c_fuzz_short`) once under each key, and both.
 #[test]
 fn c_fuzz_short_under_zero_on_free() {
