@@ -227,7 +227,9 @@ if has_step ruby-idle; then
   say "## ruby-idle: \`make ruby-soak\` 16 workers + $IDLE_THREADS mostly idle threads on $NPROC CPUs, 300 s${CONF:+, challoc under CHALLOC_CONF=$CONF} (RSS bounded by cores, not threads)"
   run_make ruby-idle conf ruby-soak ALLOCS="challoc jemalloc" THREADS=16 IDLE_THREADS="$IDLE_THREADS" DURATION=300 COMPACT_AT=150 RESULT="$RSTEM-ruby-idle.md" COMMIT="$COMMIT"
   arenas=$(grep -h -m1 -E '^Arenas:' "$STEM-ruby-idle-challoc-mstats.txt" 2>/dev/null || echo -)
-  idle=$(grep -h 'idle_threads=' "$ROOT"/target/ruby/soak-out/*.out 2>/dev/null | sed 's/.*\(threads=[^ ]* idle_threads=[^ ]* idle_bursts=[^ ]* nproc=[^ ]*\).*/\1/' | sort -u | tr '\n' ';')
+  # ruby-soak.sh prints each run's summary line (tail -1 of the .out) to
+  # its stdout, which run_make logged; the .out files live in the volume.
+  idle=$(grep -h 'idle_threads=' "$OUT/ruby-idle.log" 2>/dev/null | sed 's/.*\(threads=[^ ]* idle_threads=[^ ]* idle_bursts=[^ ]* nproc=[^ ]*\).*/\1/' | sort -u | tr '\n' ';')
   say "- table: \`$(basename "$STEM")-ruby-idle.md\`; arenas from the report: $arenas; summary lines: $idle"
   { echo; awk '/^## RSS/,/^Positive/' "$STEM-ruby-idle.md" 2>/dev/null; echo; } >> "$SUMMARY"
 fi
