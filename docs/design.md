@@ -399,7 +399,16 @@ for the real consumer: at the end of the delete phase 79.5 MiB of `Empty`
 slabs of the five classes sit in mixed page groups (`active` 130.1 MiB,
 equal to jemalloc's 131.4; RSS 224.9 MiB against jemalloc's 146.1, the
 post-delete criterion failed by that amount alone), so page-sized slabs
-when the page is larger than the slab are plan Phase 2.5 task 4e.
+when the page is larger than the slab became plan Phase 2.5 task 4e, done
+(section 3): with the five classes at 64 KiB slabs the same soak
+(`bench/results/2026-09-19-aarch64-64k-valkey-soak-2.md`) ends its delete
+phase with `empty` 0 in every bin, every emptied slab purged and `resident
+- active` at the metadata (9.9 MiB), RSS 174.6 MiB against jemalloc's
+145.5 (from 224.9). The gap left is `active` (157.2 against 128.7 MiB):
+survivors in 64 KiB slabs at 36..45% utilisation where jemalloc's, at the
+same slab size for 512 and 1024 bytes, are at 55%, so it is compaction,
+not geometry (plan task 4f). Page groups remain for a faked page in the
+tests and for a page above 64 KiB, which no supported kernel has.
 
 Guard slabs: with `guards` on, every `guard_slab_interval`-th 64 KiB of slabs
 is a *guard slab* that is never handed out (`SlabTable::is_guard_slab`,
@@ -1069,7 +1078,12 @@ the stuck `Empty` slabs +2, the program's own data segments +2) and 2 MiB
 of page tables higher, with `active` identical, which is what OOM-killed
 the 480-of-512 MiB oscillation there; the test therefore lowers its
 default target by that envelope (8 MiB) when the page is larger than
-4 KiB and says so, and keeps 480 MiB at 4 KiB. Reacting sooner on a fast
+4 KiB and says so, and keeps 480 MiB at 4 KiB. Re-measured after page-sized
+slabs (Phase 2.5 task 4e, `bench/results/2026-09-19-aarch64-64k-valkey-soak-2.md`):
+at HIGH=480 on the same kernel the run is still OOM-killed (`memory.peak`
+512 MiB; the tops at 492..509 MiB `current`, `anon` 479..503, page tables 3,
+with the allocator's `empty` 0), so the stuck sub-page slabs were the
+smallest of the three terms and the 8 MiB envelope stays. Reacting sooner on a fast
 climb (a 64 KiB climb of 280 MiB takes 15 ms, 3.5 times faster than at
 4 KiB, so the 10 ms sample window sees it at most once) would purge
 nothing more: `dirty_decay_ms:0` leaves the same 2 MiB at the top.

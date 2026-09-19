@@ -800,6 +800,42 @@ Tasks, in order:
    test's 8 MiB large-page envelope (task 3) re-measured with
    `make test-cgroup-oscillate` on the lab cell and removed if the fix
    closes it; design 5 and 11 updated with the numbers.
+   Done 2026-09-19 (2a1919b; `bench/results/2026-09-19-page-sized-slabs.md`,
+   `2026-09-19-aarch64-64k-valkey-soak-2.md`). The form: the class table
+   itself, rewritten in place at init (`layout::adopt_page_geometry`;
+   `CLASSES` is `BASE_CLASSES` in a `Sync` `UnsafeCell` at a fixed address,
+   rule `lg_slab = max(table, min(lg_page, 16))`), so the fast paths load
+   the class line exactly as before: the exported fast paths disassemble
+   instruction for instruction the same, `quick-perf` on both reference
+   VMs is at zero within noise (larson1 identical to the tenth of an
+   instruction; valkey1 / valkey1-free within the old runs' own spread),
+   `quick` go on both, `make test` 474/0 at 4 KiB and at 64 KiB, the
+   report prints `Page-sized slabs:` when the rule is active. The soak at
+   64 KiB: the `Empty` sub-page term is gone (`empty` 0 in every bin,
+   `resident - active` 9.9 MiB = the metadata), post-delete RSS 174.6
+   against 145.5 MiB (+20.0%, from +53.9%): still outside the 10% band, on
+   a different term, `active` 157.2 against 128.7 MiB (survivors in 64 KiB
+   slabs at 36..45% utilisation, jemalloc's at 55% for the same 64 KiB
+   slabs of 512 and 1024 B), which is task 4f; write phase +1.0 / +2.1%
+   req/s (inside the generator noise), delete +3.4% (the standing residue,
+   a point wider), peak RSS +0.7%. The oscillation at HIGH=480 on the 64k
+   cell is still OOM-killed with `empty` 0 at the tops: the 8 MiB envelope
+   stays (design 11).
+4f. The 64 KiB post-delete `active` (what 4e's soak leaves): at the same
+   64 KiB slab geometry (512 B at 128 regions, 1024 B at 64) challoc ends
+   the delete phase with 27..31% more slabs than bundled jemalloc at 45%
+   utilisation against 55%, and Valkey's defragmenter makes 278k hits
+   against 361k, stopping (`active_defrag_running` 0) with the five
+   classes at 63 MiB of small-bin fragmentation against jemalloc's 42.
+   Attribute before changing anything: the inputs Valkey's decision reads
+   from challoc (`experimental.utilization.batch_query`'s `nfree`, `nregs`,
+   `bin_nfree`, `bin_nregs` and the bin stats behind `frag_smallbins`,
+   design 13.4, against what jemalloc reports for the same heap shape), the
+   order direct claims (`MALLOCX_TCACHE_NONE`) fill slabs in, and where the
+   defrag pass stops; a shortened protocol on the 64k lab cell is fine for
+   the attribution, the 4d protocol for the acceptance. Acceptance: the 4d
+   soak at 64 KiB with post-delete RSS within 10% of bundled jemalloc; the
+   4 KiB soak's rows unchanged (`make valkey-soak` on the C4A); `quick` go.
 5. Tagged pointers, part 1, the probes and the design: whether Axion
    exposes MTE (`HWCAP2_MTE`), whether the C4/C3/C3D CPUs expose LAM or
    UAI and the kernel `arch_prctl(ARCH_ENABLE_TAGGED_ADDR)` accepts it;
