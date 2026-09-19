@@ -1966,6 +1966,25 @@ kernel that reports no `AT_RSEQ_FEATURE_SIZE`, the Mac's 6.10 linuxkit VM)
 or `rseq=no` (no registration, or a libc without the symbols). It is the
 report's verdict; the mode reads `mm_cid` itself through `rseq.rs`.
 
+The protocol is model-checked before it is implemented (section 17, the
+model row; `src/model.rs`, the `percpu_*` scenarios, 2026-09-19, lane C),
+and an implementation is to be read against these properties at merge:
+`mm_cid` is read inside the critical section and the cache index is
+derived from that read only; the section ends with a single commit store
+(the `len` write; a push's entry store before it is dead until that
+write); the abort handler restarts at the section's start and re-reads
+`mm_cid`; no kernel-owned field of the rseq area is ever written; the
+refill and the flush run outside the section, the batch is pushed back
+through a second section on whatever cid the thread is on then (a thread
+that popped on one cid may push on another, and a cache then holds slots
+of another cid's arena), and a flushed batch is released slab by slab
+through the owner word's arena (`release_routed`); the cache's zero prefix
+follows design 6.3 (a zero batch extends it, a push below it clips it, a
+flush drops it). The model shows that a pop or push done as plain loads
+and stores under the cid last read, or with `mm_cid` read before the
+section, hands one slot to two threads within 40 states, and that the
+protocol as stated passes every scenario.
+
 ## 16. Observability
 
 - `malloc_stats_print` emits a human-readable report in jemalloc's general
@@ -2066,7 +2085,7 @@ runs on every row.
 | Timer event stream (`HWCAP_EVTSTRM`) | arm64 kernel (`CONFIG_ARM_ARCH_TIMER_EVTSTREAM`, on by default, 10 kHz) | nothing by default: the `wfe` spin hint it bounds is opt-in (`spin_hint:wfe`, refused without the stream) because it lost 3% and a quarter of the RSS on xmalloc-test on the Altra and the Axion (section 5, the same results file) | `isb` in the spin |
 | ERMS, FSRM, AVX-512F (`cpuid` 7.0 `EBX[9]`, `EDX[4]`, `EBX[16]`) | x86_64 CPU | reported only: `memcpy`/`memset` selection is glibc's; the crate's fills use the compiler baseline | none needed |
 | Cache line, L1D and L2 sizes | `CTR_EL0` (arm64), `cpuid` leaf 4 or `0x8000001D` (x86_64), else `/sys/devices/system/cpu/cpu0/cache/index*/` | reported only: the layout constants (`lock.rs` padding, the 512-byte stride rule) and the cache-capacity defaults stay fixed; an L2-derived ladder was priced on the 1 MiB parts and dropped (section 6.2, "Cache geometry") | `unknown` in the line; nothing changes |
-| Model-checked protocol (`cargo test --features std model::`, `src/model.rs`) | the host test suite, no hardware: an exhaustive interleaving model of the claim, release, `on_live_zero`, purge and group-handoff steps of `class.rs`, memoised on the whole state, with the invariants of section 4 and 5 checked at every state (no slot handed to two claimers, a slot reported zero reads zero, `live` equals set bits plus in-flight reservations, a slab in an arena's set is `Empty`/`Purged` with `live == 0` and owned by that arena, a `Purged` slab reads zero) | nothing at run time: it is the proof obligation for a change to the protocol. Replaying the pre-fix step orders finds the calloc race (Phase 1.5 task 7) and the ownership gap the handoff's owner check closes (task 15); the current order passes every scenario | none needed |
+| Model-checked protocol (`cargo test --features std model::`, `src/model.rs`) | the host test suite, no hardware: an exhaustive interleaving model of the claim, release, `on_live_zero`, purge and group-handoff steps of `class.rs`, memoised on the whole state, with the invariants of section 4 and 5 checked at every state (no slot handed to two claimers, a slot reported zero reads zero, `live` equals set bits plus in-flight reservations, a slab in an arena's set is `Empty`/`Purged` with `live == 0` and owned by that arena, a `Purged` slab reads zero) | nothing at run time: it is the proof obligation for a change to the protocol. Replaying the pre-fix step orders finds the calloc race (Phase 1.5 task 7) and the ownership gap the handoff's owner check closes (task 15); the current order passes every scenario. Since 2026-09-19 (lane C, plan Phase 2.5 task 8) the `percpu_*` scenarios model the per-CPU claim protocol of section 15 (caches owned by an `mm_cid` read inside an rseq critical section with one commit store, the kernel's abort of a section whose thread was descheduled, threads that pop on one cid and push on another, the refill and the flush through the cid's arena, the zero prefix) with the further invariants that no slot is in two caches or in a cache and owned by a thread, that every set bit has exactly one holder (a lost push is a bit with none) and that a cache is mutated only by a section whose thread kept its cid to the commit; the variants without a section, or with `mm_cid` read outside it, hand a slot to two threads within 40 states, and lane A's implementation is compared against the properties listed in section 15 at merge | none needed |
 
 The kernel keys of the feature report are `page_size guard_install mseal
 process_madvise process_madvise_free anon_name thp mthp collapse rseq

@@ -1011,7 +1011,18 @@ Tasks, in order:
     passes every scenario: calloc race 2153 states, churn 11214, handoff
     5759, three threads 59925, 0.99 s for the eight tests on the host.
     Design 17's table has the row; a `MAX_STATES` budget fails a scenario
-    that outgrows the 30 s rule.
+    that outgrows the 30 s rule. Extended 2026-09-19 (lane C, for task
+    8): the `percpu_*` scenarios model the per-CPU claim protocol of
+    design 15 (caches per `mm_cid`, sections with one commit store, the
+    kernel's abort, a thread migrating between its pop and its push, the
+    refill and the flush through the cid's arena, the zero prefix;
+    `Section::None` and `Section::CidOutside` are the buggy variants,
+    caught in 34..39 states with the interleaving printed); with the
+    dead-local canonicalisation that extension introduced, the four
+    original scenarios are 943, 8427, 4271 and 42047 states and the
+    per-CPU ones 163125 (three threads on two cids), 66746 (pop on one
+    cid, push on another) and 241740 (purge and the zero prefix), 8.6 s
+    for the thirteen tests on the host.
 
 14. Chainguard OS cells (the human's request, 2026-09-19; lane E, no
     `src/` change): `cgos-amd64` and `cgos-arm64` matrix cells from the
