@@ -4,6 +4,7 @@
 #
 #   larson1 larson10 larson16 xmalloc alloc-test1 alloc-testN
 #   valkey1 valkey1-free cfrac espresso mstress glibc-simple redis
+#   python1 python1-malloc
 #
 # under challoc (REV, default the working tree) and jemalloc through
 # bench/ab.sh (ROUNDS timed rounds plus a warm-up, variants interleaved,
@@ -34,9 +35,21 @@
 set -eu
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
-COLS="larson1 larson10 larson16 xmalloc alloc-test1 alloc-testN valkey1 valkey1-free cfrac espresso mstress glibc-simple redis"
-HEADER="| date | commit | larson1 | larson10 | larson16 | xmalloc | alloc-test1 | alloc-testN | valkey1 | valkey1-free | cfrac | espresso | mstress | glibc-simple | redis | RSS larson10 | RSS valkey1 | soak write | soak delete | soak peak RSS | soak post-delete RSS | note |"
-SEP="|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|"
+COLS="larson1 larson10 larson16 xmalloc alloc-test1 alloc-testN valkey1 valkey1-free cfrac espresso mstress glibc-simple redis python1 python1-malloc"
+HEADER="| date | commit | larson1 | larson10 | larson16 | xmalloc | alloc-test1 | alloc-testN | valkey1 | valkey1-free | cfrac | espresso | mstress | glibc-simple | redis | python1 | python1-malloc | RSS larson10 | RSS valkey1 | soak write | soak delete | soak peak RSS | soak post-delete RSS | note |"
+SEP="|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|"
+# The column set grew once: python1 and python1-malloc (Phase 2.5 task 1,
+# 2026-09-18) were inserted after redis. pad_old_lines rewrites a line of the
+# previous shape (two cells fewer) with "-" in the two new cells, so older
+# scorecard lines stay aligned under the current header.
+pad_old_lines() {
+  awk -F'|' -v want="$(echo "$HEADER" | awk -F'|' '{print NF}')" '
+    /^\| 20[0-9][0-9]-/ && NF == want-2 {
+      out = $1
+      for (i = 2; i <= NF; i++) { out = out "|" $i; if (i == 16) out = out "| - | - " }
+      print out; next }
+    {print}'
+}
 
 # ---- --render: the tables sorted by date, header first ---------------------
 render() {
@@ -50,7 +63,7 @@ render() {
     echo "## ${f##*/}"
     echo
     echo "$HEADER"; echo "$SEP"
-    grep '^| 20[0-9][0-9]-' "$f" | sort -t '|' -k2,2 -s
+    grep '^| 20[0-9][0-9]-' "$f" | pad_old_lines | sort -t '|' -k2,2 -s
     echo
   done
   echo "Percentages: challoc against jemalloc, positive = challoc worse (slower, lower throughput). RSS columns: challoc/jemalloc ratio. Soak columns: the soak summary's challoc vs jemalloc for the worse of the two generators' throughput rows, peak RSS (VmHWM) and RSS after settle. Lines marked '(from ...)' in the note were reconstructed from that results file."
@@ -131,6 +144,12 @@ line="| $DATE | $commit |"
 for b in $COLS; do line="$line $(cell "$b") |"; done
 line="$line $(ratio larson10) | $(ratio valkey1) | $s_write | $s_delete | $s_peak | $s_post | $note |"
 
+# An existing file written under the previous column set is migrated in
+# place: header and separator replaced, old lines padded (pad_old_lines).
+if [ -f "$FILE" ] && ! grep -qxF -- "$HEADER" "$FILE"; then
+  awk -v H="$HEADER" -v S="$SEP" '/^\| date \| commit \|/ {print H; next} /^\|---\|---\|/ {print S; next} {print}' "$FILE" | pad_old_lines > "$FILE.tmp" && mv "$FILE.tmp" "$FILE"
+  echo "== migrated ${FILE#"$ROOT"/} to the current column set (python1, python1-malloc after redis; older lines read - there)"
+fi
 if [ ! -f "$FILE" ]; then
   {
     echo "# challoc scorecard, $ARCH"

@@ -32,6 +32,11 @@ REDIS_N=${REDIS_N:-1000000}
 # The ruby-churn row runs on the --without-jemalloc Ruby build (the same
 # binary under every allocator, LD_PRELOAD only), installed by ruby-bench.sh.
 RUBY_INST=$ROOT/target/ruby/install-glibc
+# The python1 rows (Phase 2.5 task 1) run bench/probes/python/json_bench.py
+# on the image's python3 (Wolfi python-3.13); python1 leaves PYTHONMALLOC
+# unset (pymalloc for objects under 512 bytes), python1-malloc sets
+# PYTHONMALLOC=malloc (every object through the allocator).
+PYTHON=${PYTHON:-python3}
 # PIN: empty/0 = off; 1 = pin the row to CPUs 0..threads-1; any other value is
 # a CPU list for bench/pin.c. An experiment for the xmalloc-test spread, see
 # bench/README.md; not part of any protocol.
@@ -81,6 +86,12 @@ ruby_available() {
   return 1
 }
 
+# python_available: 0 when the python rows can run (python3 in the image).
+python_available() {
+  command -v "$PYTHON" >/dev/null 2>&1 && return 0
+  echo "python1: skipped, no $PYTHON in this container (rebuild the image from Dockerfile.dev)" >&2; return 1
+}
+
 # ---- protocol rows ----------------------------------------------------------
 
 stock_lib() { # stock_lib ALLOC: LD_PRELOAD path for jemalloc|glibc|mimalloc|tcmalloc, 1 otherwise
@@ -111,7 +122,9 @@ stock_version() {
 # rows run VALKEY_MODEL_SECS and are scored by their write-phase M ops/s;
 # redis by redis-benchmark's k requests/s (run_row handles the server); the
 # rest by wall time. ruby-churn is bench/ruby/gc_churn.rb on the glibc Ruby
-# build and needs that build (ruby_available says why when it cannot run).
+# build and needs that build (ruby_available says why when it cannot run);
+# python1 and python1-malloc are bench/probes/python/json_bench.py with
+# PYTHONMALLOC unset and =malloc (wall time).
 bench_args() {
   case $1 in
     larson1)      echo "$BIN/larson 5 8 1000 5000 100 4141 1";;
@@ -132,6 +145,10 @@ bench_args() {
     redis)        echo "$BIN/redis-server";;
     ruby-churn)   ruby_available || return 1
                   echo "env LD_LIBRARY_PATH=$RUBY_INST/lib $RUBY_INST/bin/ruby --disable-gems $ROOT/bench/ruby/gc_churn.rb 10 10";;
+    python1)      python_available || return 1
+                  echo "$PYTHON $ROOT/bench/probes/python/json_bench.py";;
+    python1-malloc) python_available || return 1
+                  echo "env PYTHONMALLOC=malloc $PYTHON $ROOT/bench/probes/python/json_bench.py";;
     *) return 1;;
   esac
 }
@@ -140,7 +157,7 @@ unit_of() { case $1 in larson*|valkey*) echo "M ops/s";; xmalloc*) echo "M frees
 # threads_of BENCH: how many CPUs the row keeps busy (for PIN=1).
 threads_of() {
   case $1 in
-    larson1|alloc-test1|cfrac|espresso|glibc-simple|valkey*|ruby-churn) echo 1;;
+    larson1|alloc-test1|cfrac|espresso|glibc-simple|valkey*|ruby-churn|python*) echo 1;;
     larson10|xmalloc) echo 10;;
     larson16) echo 16;;
     alloc-testN) n=$PROCS; [ "$n" -gt 16 ] && n=16; echo "$n";;

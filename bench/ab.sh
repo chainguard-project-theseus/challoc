@@ -20,7 +20,7 @@
 #   ROUNDS=5                 timed rounds (plus one warm-up)
 #   BENCHES="larson1 larson10 larson16 xmalloc alloc-test1 alloc-testN"
 #       rows from bench/lib.sh bench_args (also larsonN xmallocN valkey1 valkey1-free valkey1-usable
-#       cfrac espresso mstress glibc-simple redis ruby-churn)
+#       cfrac espresso mstress glibc-simple redis ruby-churn python1 python1-malloc)
 #   ADAPTIVE=1               stop after 3 timed rounds when, on every bench, no two
 #                            variants' sorted lists overlap (the answer is already clear)
 #   BASELINES=cached         stock variants come from target/baselines/<arch>-<hash>.md
@@ -191,7 +191,7 @@ first=${NAMES%% *}
   sed 's/^/- /' "$BIN/versions.txt" | grep -E 'mimalloc-bench|jemalloc-[0-9]|tcmalloc-minimal-[0-9]|python-3|rust-' || true
   echo "- load average at start: $LOAD0; at end: $(loadavg); $(( $(date +%s) - T_START )) s total"
   echo "- method: $DONE_ROUNDS timed rounds after one discarded warm-up$([ "$DONE_ROUNDS" != "$ROUNDS" ] && echo " (ADAPTIVE stop, $ROUNDS asked)"), variants interleaved per round, every run's score listed sorted; RSS is bench/rt's median maxrss (KiB) over the timed runs; identical binaries, only LD_PRELOAD and MALLOC_CONF change. Positive percentages mean the variant did worse than $first."
-  echo "- programs: larson 5 8 1000 5000 100 4141 N (larsonN), M ops/s, higher is better; xmalloc-test -w 10 -t 5 -s 64 (xmalloc), M frees/s, higher is better; alloc-test 1 and alloc-test min(nproc,16) (alloc-testN), seconds, lower is better; valkey_model -n $VALKEY_MODEL_N -t $VALKEY_MODEL_SECS (valkey1: frees through sdallocx where exported; valkey1-free: plain free), write-phase M ops/s, higher is better, RSS is the peak (bench/probes/valkey_model.c); redis: redis-benchmark -r 1000000 -n $REDIS_N -P 16 lpush/lrange, k req/s, RSS is redis-server's; ruby-churn: bench/ruby/gc_churn.rb 10 10 on the glibc Ruby build; others: wall seconds$([ -n "$PIN" ] && [ "$PIN" != 0 ] && echo "; PIN=$PIN (rows pinned with bench/pin.c, an experiment)")"
+  echo "- programs: larson 5 8 1000 5000 100 4141 N (larsonN), M ops/s, higher is better; xmalloc-test -w 10 -t 5 -s 64 (xmalloc), M frees/s, higher is better; alloc-test 1 and alloc-test min(nproc,16) (alloc-testN), seconds, lower is better; valkey_model -n $VALKEY_MODEL_N -t $VALKEY_MODEL_SECS (valkey1: frees through sdallocx where exported; valkey1-free: plain free), write-phase M ops/s, higher is better, RSS is the peak (bench/probes/valkey_model.c); redis: redis-benchmark -r 1000000 -n $REDIS_N -P 16 lpush/lrange, k req/s, RSS is redis-server's; ruby-churn: bench/ruby/gc_churn.rb 10 10 on the glibc Ruby build; python1 / python1-malloc: bench/probes/python/json_bench.py on python3 with PYTHONMALLOC unset / =malloc, wall seconds; others: wall seconds$([ -n "$PIN" ] && [ "$PIN" != 0 ] && echo "; PIN=$PIN (rows pinned with bench/pin.c, an experiment)")"
   echo "- variants:"
   for v in $NAMES; do echo "  - $v: $(describe "$v")"; done
   if [ -n "$BASELINE" ]; then

@@ -19,6 +19,8 @@ never used for numbers.
     make soak-baseline    the 1200 s jemalloc soak that soak-quick compares against
     make ruby-bench       Ruby 3.4 rows under challoc, jemalloc, glibc, mimalloc and
                           tcmalloc (Phase 1.5 task 4b); needs both `make ruby STAGE=build` builds
+    make python-bench     Python 3.13 rows (Phase 2.5 task 1): four stdlib workloads, each
+                          with PYTHONMALLOC unset and =malloc, under the same five allocators
 
 ## Two tiers
 
@@ -278,6 +280,24 @@ Files:
   (`RESULT`, `ALLOCS`, `ROWS`, `HOST_KIND`). Both builds are installed into
   their `target/ruby/install-<alloc>` prefixes on first use (the build
   directory's ruby has no stdlib path).
+- `python-bench.sh`, `probes/python/*_bench.py`: the Python rows (docs/plan.md
+  Phase 2.5 task 1). Wolfi's `python-3.13` from the image runs four fixed
+  stdlib workloads, `json` (json.dumps/loads of a 20000-record structure),
+  `dict_list` (a ring of live dicts and lists replaced 30000 times), `regex`
+  (four patterns over 3.5 MB of text) and `object_graph` (a 150000-instance
+  tree, BFS, detach and rebuild), each in two modes: `default` (PYTHONMALLOC
+  unset, pymalloc serves objects under 512 bytes and the allocator sees the
+  rest) and `malloc` (`PYTHONMALLOC=malloc`, every object through the
+  allocator). One process per row and round under `rt`, `ROUNDS` (5) plus
+  warm-up, allocators interleaved (challoc built from `REV`, default the
+  working tree, into `target/python/lib`; jemalloc, glibc, mimalloc and
+  tcmalloc via `LD_PRELOAD`; `/proc/self/maps` checked once per allocator),
+  written to `bench/results/<date>-<arch>-python.md` (`RESULT`, `ALLOCS`,
+  `WORKLOADS`, `MODES`, `HOST_KIND`). pyperformance installs in the container
+  but its pyperf worker protocol and hour-long standard set do not fit this
+  shape, so it is not used (the script's header says why). The `json`
+  workload is also the scorecard's `python1` (default) and `python1-malloc`
+  rows (`bench/lib.sh`).
 - `probes/`: `churn.c` (the post-delete steady-state model `quick` runs;
   `churn-run.sh` runs it by hand with the cache knobs, `CHURN_SECS`),
   `valkey_model.c` (the Valkey model behind the `valkey1` rows, above),
@@ -289,7 +309,9 @@ Files:
 - `results/`: one file per run, named `<date>-<arch>.md`, with the commit
   hash, toolchain versions, kernel and CPU in the header; plus the two
   scorecards `scorecard-aarch64.md` and `scorecard-x86_64.md`, one line per
-  (date, commit), appended by `scorecard.sh`.
+  (date, commit), appended by `scorecard.sh` (its column set grew once, on
+  2026-09-18, by `python1` and `python1-malloc`; the script pads older lines
+  with `-` there when it renders or appends).
 
 Benchmark programs and their parameters follow mimalloc-bench's `bench.sh`
 (`larson 5 8 1000 5000 100 4141 N`, `mstress N 50 25`, `xmalloc-test -w N -t 5

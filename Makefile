@@ -48,7 +48,7 @@
 #                            in the container (on the VMs: challoc-bench quick-perf)
 #   make scorecard           the fixed row set (larson 1/10/16, xmalloc, alloc-test 1/N,
 #                            valkey1, valkey1-free, cfrac, espresso, mstress,
-#                            glibc-simple, redis) under challoc (REV=tree) and
+#                            glibc-simple, redis, python1, python1-malloc) under challoc (REV=tree) and
 #                            jemalloc, 3 interleaved rounds, one line appended to
 #                            bench/results/scorecard-<arch>.md as percentages vs
 #                            jemalloc plus the latest soak for the commit
@@ -98,6 +98,15 @@
 #                            bench/results/<date>-<arch>-ruby.md (RESULT=path,
 #                            ALLOCS, ROWS, HOST_KIND). Needs both `make ruby
 #                            STAGE=build` builds.
+#   make python-bench        Python 3.13 rows (bench/python-bench.sh): the stdlib
+#                            workloads under bench/probes/python/ (JSON, dict and
+#                            list churn, regex, object graph), each with
+#                            PYTHONMALLOC unset and =malloc, under challoc,
+#                            jemalloc, glibc, mimalloc and tcmalloc via LD_PRELOAD;
+#                            wall time and max RSS from bench/rt, ROUNDS=5 plus
+#                            warm-up, interleaved; writes
+#                            bench/results/<date>-<arch>-python.md (RESULT=path,
+#                            ALLOCS, WORKLOADS, MODES, HOST_KIND)
 #
 # `target/` inside the container is a named Docker volume, one per
 # architecture, so Linux artifacts never mix with host artifacts and builds do
@@ -134,7 +143,7 @@ DOCKER_RUN = $(DOCKER_BASE) $(DOCKER_FLAGS) $(IMAGE)
 cgroup_docker = $(DOCKER_BASE) --memory=$(1) --memory-swap=$(1) $(if $(CGROUP_WATCHDOG),-e WATCHDOG=$(CGROUP_WATCHDOG)) $(IMAGE) sh scripts/cgroup-tests.sh
 cgroup_run = $(call cgroup_docker,$(1)) $(2)
 
-.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-oscillate test-cgroup test-cgroup-compare test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench clean-volumes
+.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-oscillate test-cgroup test-cgroup-compare test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench python-bench clean-volumes
 
 image:
 	docker build --platform $(PLATFORM) -f Dockerfile.dev -t $(IMAGE) .
@@ -296,6 +305,14 @@ RUBY_BENCH_VARS = ALLOCS ROUNDS ROWS RESULT OUT HOST_KIND GC_ROUNDS GC_FORCED
 ruby-bench: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(RUBY_BENCH_VARS),$(if $($(v)),-e $(v)="$($(v))"))
 ruby-bench: image
 	$(DOCKER_RUN) sh bench/ruby-bench.sh
+
+# Python rows (bench/python-bench.sh, Phase 2.5 task 1): the stdlib workloads
+# under bench/probes/python/ on the image's python3, each with PYTHONMALLOC
+# unset and =malloc, under challoc (the working tree) and the stock allocators.
+PYTHON_BENCH_VARS = ALLOCS ROUNDS WORKLOADS MODES RESULT OUT HOST_KIND REV
+python-bench: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(PYTHON_BENCH_VARS),$(if $($(v)),-e $(v)="$($(v))"))
+python-bench: image
+	$(DOCKER_RUN) sh bench/python-bench.sh
 
 clean-volumes:
 	docker volume rm -f challoc-target-$(ARCH) challoc-cargo-registry
