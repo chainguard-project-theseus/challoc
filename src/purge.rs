@@ -1168,7 +1168,7 @@ mod tests {
 
     #[test]
     fn batch_merges_adjacent_ranges() {
-        let _serial = ADVICE_TEST.lock().unwrap();
+        let _serial = serial();
         let page = page_size();
         let base = scratch(8, page);
         let mut b = Batch::new();
@@ -1188,7 +1188,7 @@ mod tests {
 
     #[test]
     fn batch_fills_and_flushes() {
-        let _serial = ADVICE_TEST.lock().unwrap();
+        let _serial = serial();
         let (_, eager0) = batches();
         let page = page_size();
         let base = scratch(2 * MAX_BATCH + 4, page);
@@ -1208,8 +1208,10 @@ mod tests {
         assert!(b.is_empty());
         b.flush();
         assert!(b.is_empty());
-        // Two eager batches were counted (the default advice), none lazy.
-        assert_eq!(batches().1, eager0 + 2);
+        // At least the two eager batches of this test were counted (the
+        // default advice; other tests flush their own batches concurrently
+        // in this process), none lazy.
+        assert!(batches().1 >= eager0 + 2);
         assert!(purged_is_zero());
     }
 
@@ -1231,7 +1233,7 @@ mod tests {
     /// [`ADVICE_TEST`] against the batch tests, which flush.
     #[test]
     fn advice_follows_headroom_band_key_and_explicit_purges() {
-        let _serial = ADVICE_TEST.lock().unwrap();
+        let _serial = serial();
         assert_eq!(advice(), Advice::Eager);
         set_headroom(true);
         assert_eq!(advice(), Advice::Lazy);
@@ -1264,6 +1266,11 @@ mod tests {
     /// The batch tests flush (on Linux, for real); the advice test flips
     /// the headroom mirror; one at a time.
     pub(super) static ADVICE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Take [`ADVICE_TEST`]; a panic in one holder must not fail the rest.
+    pub(super) fn serial() -> std::sync::MutexGuard<'static, ()> {
+        ADVICE_TEST.lock().unwrap_or_else(|e| e.into_inner())
+    }
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -1290,7 +1297,7 @@ mod linux_tests {
     #[test]
     fn batch_discards_through_the_probed_backend_and_the_loop() {
         let _serial = BACKEND_TEST.lock().unwrap();
-        let _advice = super::tests::ADVICE_TEST.lock().unwrap();
+        let _advice = super::tests::serial();
         let page = crate::sys::features::page_size();
         let mut f = Features::probe();
         let backends = [f.process_madvise, ProcessMadvise::Unavailable];
