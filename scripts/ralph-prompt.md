@@ -63,3 +63,52 @@ Rules: one task per iteration, no scope creep, no rewriting completed work
 unless a test now fails because of it, no skipping tests, no fabricated
 benchmark numbers. Prefer finishing a small piece correctly over starting a
 large one.
+
+Lane mode. The procedure above is the default (main) mode: one iteration
+at a time on `main`, the reference VMs, PROGRESS.md. When the iteration is
+told it is a lane (the launcher names the lane, its worktree, branch, task
+list and environment; `scripts/ralph-lane.sh <lane>` prints them), the
+following replaces the parts of steps 2, 4, 5 and 7 that name PROGRESS.md,
+the reference VMs or the scorecard; everything else (design first,
+attribution before a fast-path change, quick before ab, no fabricated
+numbers, one task per iteration) holds unchanged.
+
+- Work only in the lane's worktree `../challoc-wt/<lane>` on branch
+  `loop/<lane>`. Never touch the main checkout or another lane's worktree.
+  Commit on the branch as usual ("Phase N task M: <summary>"); the
+  coordinator merges it into `main`, you do not.
+- Take tasks from the lane's own list in docs/plan.md ("Execution in
+  lanes"), in that order. A change that needs a file another lane owns
+  waits for the coordinator's merge rather than editing that file.
+- Progress goes to `PROGRESS.d/<lane>-<task>.md` (see
+  `PROGRESS.d/README.md`: the same three shapes as PROGRESS.md, `## Done`,
+  `## Design decisions`, `## Notes for the human`, one bullet per entry,
+  each starting with `Phase N task M`), never to PROGRESS.md. Mark a task
+  in progress and done in that file. `STATUS:` lines live in PROGRESS.md
+  only; a lane that is blocked writes a `## Notes for the human` bullet
+  starting with `BLOCKED:` in its file and says so in its final message.
+- Never run the scorecard and never touch `bench/results/scorecard-*.md`;
+  the coordinator runs it once per merge batch on the reference VMs from
+  `main`. A lane's numbers come from `quick`, `quick-perf` and `ab` on the
+  lane's own VMs and go into `bench/results/<date>-<arch>-<lane>-<task>*.md`.
+- Export the lane's environment before anything runs: `CHALLOC_GCE_PREFIX`
+  (`challoc-<lane>`, so `challoc-bench` names only the lane's VMs) and
+  `TARGET_VOLUME` (`challoc-target-<lane>-$ARCH`, so the Mac container's
+  `target/` is the lane's own). `CHALLOC_GCE_WARM` is not set for a lane.
+- Build and test on the lane's VMs: `bench/gce/challoc-bench create
+  arm64|amd64|all` and `provision` once (a throwaway `matrix lab` cell
+  when the task calls for one), then `challoc-bench run <vm> 'make test'`,
+  `challoc-bench quick|quick-perf|ab <vm> ...`, `challoc-bench fetch`. The
+  Mac container is for host-side plumbing only (`make -n`, a compile
+  check, `cargo test --features std` on the host), never for numbers.
+- Before the turn ends, stop or delete every VM the lane started
+  (`challoc-bench stop all` or `delete all`, `matrix clean`; `challoc-bench
+  status` must show none of the lane's VMs RUNNING). Leave the worktree
+  clean and committed.
+- The final message is the merge request, for the coordinator: the lane
+  and branch, every commit (hash and one line), the tests run and where
+  (which VM, `make test` counts), the numbers with the results file paths
+  (`quick` go/no-go, `ab` rows, attributions), the `PROGRESS.d` file
+  written, the VMs' final state, and what the coordinator must check by
+  hand (files touched outside the lane's partition, a design decision with
+  more than one reasonable outcome, a criterion left open).
