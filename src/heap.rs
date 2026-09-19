@@ -661,6 +661,10 @@ pub enum PercpuState {
     On = 0,
     /// `percpu_arena:off`.
     OffKey = 1,
+    /// `percpu_arena:auto`, the key's default: thread caches until the
+    /// default is decided with the numbers in front of the human (plan
+    /// Phase 2.5 task 8, PROGRESS.md); `percpu` is the opt-in.
+    OffAuto = 6,
     /// The rseq probe failed (`rseq::Probe::verdict` says how).
     OffProbe = 2,
     /// `/sys/devices/system/cpu/possible` could not be read.
@@ -678,6 +682,7 @@ impl PercpuState {
         match self {
             PercpuState::On => "on",
             PercpuState::OffKey => "off",
+            PercpuState::OffAuto => "off (auto: opt in with percpu_arena:percpu)",
             PercpuState::OffProbe => "off (rseq)",
             PercpuState::OffCpus => "off (no cpu count)",
             PercpuState::OffScan => "off (double_free_scan)",
@@ -700,17 +705,27 @@ impl Percpu {
     /// Decide the mode and reserve the table. `allowed` is the caller's
     /// say (init passes true; the unit tests' `Shared` builders false, so
     /// their thread-cache assertions hold on a host with `mm_cid`): the
-    /// mode is on when it is allowed, the key permits it for the probe's
-    /// verdict (`PercpuArena::enabled`), `double_free_scan` is off, the
+    /// mode is on when it is allowed, the key is `percpu` and the probe
+    /// passes (`PercpuArena::enabled`), `double_free_scan` is off, the
     /// possible-CPU count is readable and the metadata region has room for
     /// `n * CPU_CACHE_SIZE` bytes (reserved zeroed, touched as ids are
-    /// used). Off Linux there is no rseq and the mode is off.
+    /// used). `auto`, the key's default, keeps thread caches
+    /// ([`PercpuState::OffAuto`]): the mode measured 8..24% behind thread
+    /// caches on `quick`'s rows and worse on the Valkey model on both
+    /// reference VMs (PROGRESS.md, `bench/results/2026-09-19-*-task8-*`),
+    /// so it is not on by default; the plan leaves the default to the
+    /// human, and the key's default lives in `config.rs`, another lane's
+    /// file, so this is where `auto` is read as "not yet". Off Linux there
+    /// is no rseq and the mode is off.
     fn build(meta: &Meta, config: &Config, allowed: bool) -> Percpu {
+        use crate::config::PercpuArena;
         let probe = rseq::probe();
         let forced = config.percpu_arena.forced();
         let off = |state: PercpuState| Percpu { state, probe, forced, ..Percpu::OFF };
-        if config.percpu_arena == crate::config::PercpuArena::Off {
-            return off(PercpuState::OffKey);
+        match config.percpu_arena {
+            PercpuArena::Off => return off(PercpuState::OffKey),
+            PercpuArena::Auto => return off(PercpuState::OffAuto),
+            PercpuArena::Percpu => {}
         }
         if !allowed || !config.percpu_arena.enabled(probe.mm_cid_usable()) {
             return off(PercpuState::OffProbe);
@@ -1718,7 +1733,13 @@ impl Heap {
     /// Fast path of `malloc` for a non-huge class in the home arena.
     #[inline(always)]
     pub fn alloc(&mut self, shared: &Shared, class: usize) -> *mut u8 {
-        match self.alloc_fast(class, shared.push_flags()) {
+        let flags = shared.push_flags();
+        let fast = if flags & PUSH_PERCPU != 0 {
+            self.pop_percpu_mode(class, flags).map(|r| r.0)
+        } else {
+            self.alloc_fast(class, flags)
+        };
+        match fast {
             Some(p) => p,
             None => self.alloc_slow(shared, class).0,
         }
@@ -1729,9 +1750,6 @@ impl Heap {
     /// `Shared::push_flags` (only [`PUSH_PAC`] matters to a pop).
     #[inline(always)]
     pub fn alloc_fast(&mut self, class: usize, flags: u8) -> Option<*mut u8> {
-        if flags & PUSH_PERCPU != 0 {
-            return self.pop_percpu_mode(class, flags).map(|r| r.0);
-        }
         let cache = self.cache_ptr(class);
         // SAFETY: this thread's own header, unused (`len == 0`) or with a
         // stack of `len` entries.
@@ -2820,7 +2838,7 @@ impl Heap {
     /// the thread pop keeps its shape. A heap off the mode pops its own
     /// cache here. `None` sends the caller to the slow path.
     #[inline(never)]
-    fn pop_percpu_mode(&mut self, class: usize, flags: u8) -> Option<(*mut u8, bool)> {
+    pub(crate) fn pop_percpu_mode(&mut self, class: usize, flags: u8) -> Option<(*mut u8, bool)> {
         let pac = flags & PUSH_PAC != 0;
         if !self.percpu {
             let cache = self.cache_ptr(class);
@@ -2848,6 +2866,7 @@ impl Heap {
     }
 
     /// A pop with the schedule already consumed: `Some` or empty.
+    #[inline(never)]
     fn percpu_pop_plain(&mut self, shared: &Shared, class: usize) -> Option<(*mut u8, bool)> {
         // SAFETY: as in `pop_percpu_mode`.
         match unsafe { rseq::pop(self.rseq_area, shared.percpu.table(class), shared.pac()) } {
@@ -3020,6 +3039,7 @@ impl Heap {
     /// to publish a header this thread did not prepare (it migrated:
     /// re-read the id and try again). `false` when no stack could be
     /// allocated (the caller serves the request directly).
+    #[inline(never)]
     fn percpu_ensure(&mut self, shared: &Shared, class: usize, cap: u32, cid: u32) -> bool {
         let mut cid = cid;
         loop {
@@ -3103,12 +3123,16 @@ impl Heap {
     }
 
     /// Flush the running CPU's cache for `class`: take every entry out in
-    /// one section, release the `n(len)` highest addresses to their slabs
+    /// one section (into an 8 KiB stack buffer that lives in this frame
+    /// alone, `inline(never)`: inlined into `gc` and on into `tick` it
+    /// deepened every slow path's frame and larson's thread stacks by
+    /// pages), release the `n(len)` highest addresses to their slabs
     /// (grouped by slab, the straddling double-free compare of
     /// [`Heap::flush`] included) and push the rest back in one section,
     /// lowest on top when the stack was in address order. Entries the
     /// push-back cannot place (the thread migrated to a CPU whose cache is
     /// full) are released too.
+    #[inline(never)]
     fn percpu_flush(&mut self, shared: &Shared, class: usize, cap: u32, n: impl Fn(usize) -> usize) {
         let pac = shared.pac();
         let area = self.rseq_area;
@@ -3161,6 +3185,7 @@ impl Heap {
 
     /// Return every entry of the running CPU's caches to the slabs
     /// (`thread.tcache.flush`, `malloc_trim`, the purges' caller flush).
+    #[inline(never)]
     fn percpu_drain(&mut self, shared: &Shared) {
         for class in 0..NCLASSES {
             let cap = Self::percpu_cap(shared, class);
@@ -3174,6 +3199,7 @@ impl Heap {
     /// The running CPU's caches' GC (design 6.4): release three quarters of
     /// each class's `low_water`, the entries unused since the last GC; the
     /// push-back restarts `low_water` at the kept length.
+    #[inline(never)]
     fn percpu_gc(&mut self, shared: &Shared) {
         // SAFETY: this thread's area.
         let cid = unsafe { rseq::mm_cid(self.rseq_area) };
@@ -3204,7 +3230,7 @@ impl Heap {
 /// Off Linux the mode never turns on; the entry points still compile.
 #[cfg(not(target_os = "linux"))]
 impl Heap {
-    fn pop_percpu_mode(&mut self, _class: usize, _flags: u8) -> Option<(*mut u8, bool)> {
+    pub(crate) fn pop_percpu_mode(&mut self, _class: usize, _flags: u8) -> Option<(*mut u8, bool)> {
         None
     }
 
@@ -3391,9 +3417,6 @@ pub unsafe fn heap_from_slot(t: usize, tp: usize, pac: bool) -> &'static mut Hea
 /// frame.
 #[inline(always)]
 pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> bool {
-    if flags & PUSH_PERCPU != 0 {
-        return percpu_free_fast(shared, h, p, flags, None, false);
-    }
     match shared.checked_slot(p, h) {
         Some(class) => h.push_fast(class, p, flags),
         None => false,
@@ -3401,7 +3424,11 @@ pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> bool {
 }
 
 /// The `free` and sized-free fast paths of a process in the per-CPU mode
-/// (design 15), out of line so the thread paths keep their shape: a heap
+/// (design 15). The entry points (`api::libc`) test [`PUSH_PERCPU`] on the
+/// flag byte they load anyway and tail-call their per-CPU wrapper, which
+/// calls this, so the thread paths keep their shape (no frame, as the
+/// disassembly of `malloc`/`free` in `bench/results/2026-09-19-*-task8-*`
+/// records; a call inside the inlined fast path gave both a frame). A heap
 /// off the mode ([`Heap::percpu`] false) takes the thread path here;
 /// otherwise the slot is verified (the bit test without the arena test,
 /// [`Shared::checked_slot_any`], or the sized path's arithmetic with the
@@ -3411,7 +3438,7 @@ pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> bool {
 /// `zero_on_free`, which clears on the slow path before the push).
 #[cfg(target_os = "linux")]
 #[inline(never)]
-fn percpu_free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8, hint: Option<usize>, sized: bool) -> bool {
+pub fn percpu_free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8, hint: Option<usize>, sized: bool) -> bool {
     if !h.percpu {
         let class = if sized { shared.sized_slot(p, hint) } else { shared.checked_slot(p, h) };
         return match class {
@@ -3437,7 +3464,7 @@ fn percpu_free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8, hint: 
 }
 
 #[cfg(not(target_os = "linux"))]
-fn percpu_free_fast(_: &Shared, _: &mut Heap, _: *mut u8, _: u8, _: Option<usize>, _: bool) -> bool {
+pub fn percpu_free_fast(_: &Shared, _: &mut Heap, _: *mut u8, _: u8, _: Option<usize>, _: bool) -> bool {
     false
 }
 
@@ -3450,9 +3477,6 @@ fn percpu_free_fast(_: &Shared, _: &mut Heap, _: *mut u8, _: u8, _: Option<usize
 /// and the exact [`free`]. Contains no call.
 #[inline(always)]
 pub fn free_sized_fast(shared: &Shared, h: &mut Heap, p: *mut u8, hint: Option<usize>, flags: u8) -> bool {
-    if flags & PUSH_PERCPU != 0 {
-        return percpu_free_fast(shared, h, p, flags, hint, true);
-    }
     match shared.sized_slot(p, hint) {
         Some(class) => h.push_fast(class, p, flags),
         None => false,
@@ -3754,7 +3778,11 @@ pub(crate) mod tests {
     /// has `mm_cid`; the tests check `percpu.on()` and skip otherwise).
     #[cfg(target_os = "linux")]
     pub(crate) fn shared_percpu() -> &'static Shared {
-        shared_with_guards_mode(Config { narenas: 4, ..Config::DEFAULT }, true, true)
+        shared_with_guards_mode(
+            Config { narenas: 4, percpu_arena: crate::config::PercpuArena::Percpu, ..Config::DEFAULT },
+            true,
+            true,
+        )
     }
 
     pub(crate) fn shared_with_guards_mode(config: Config, guard_install: bool, percpu: bool) -> &'static Shared {
@@ -6236,21 +6264,30 @@ mod linux_tests {
         assert_eq!(s.percpu_on(), probe.mm_cid_usable() && rseq::possible_cpus().is_some());
         assert_eq!(s.percpu_on(), s.percpu.state() == PercpuState::On);
         assert_eq!(s.percpu_on(), s.push_flags() & PUSH_PERCPU != 0);
+        assert!(s.percpu.forced(), "the builder asks for percpu");
         if s.percpu_on() {
             assert_eq!(s.percpu.ids(), rseq::possible_cpus().unwrap());
-            assert!(!s.percpu.forced(), "auto");
         } else {
             assert_eq!(s.percpu.state(), PercpuState::OffProbe);
         }
         assert!(!shared().percpu_on(), "the default builders keep thread caches");
-        assert_eq!(shared().percpu.state(), PercpuState::OffProbe, "not allowed by the builder");
+        assert_eq!(shared().percpu.state(), PercpuState::OffAuto, "auto is the opt-in's default");
+        let auto = shared_with_guards_mode(Config { narenas: 1, ..Config::DEFAULT }, false, true);
+        assert!(!auto.percpu_on(), "auto keeps thread caches pending the default decision");
+        assert_eq!(auto.percpu.state(), PercpuState::OffAuto);
+        assert!(!auto.percpu.forced());
         let off = shared_with_guards_mode(Config { percpu_arena: PercpuArena::Off, ..Config::DEFAULT }, false, true);
         assert!(!off.percpu_on());
         assert_eq!(off.percpu.state(), PercpuState::OffKey);
-        let forced = shared_with_guards_mode(Config { percpu_arena: PercpuArena::Percpu, ..Config::DEFAULT }, false, true);
-        assert!(forced.percpu.forced());
-        assert_eq!(forced.percpu_on(), s.percpu_on(), "percpu follows the probe like auto");
-        let scan = shared_with_guards_mode(Config { double_free_scan: true, ..Config::DEFAULT }, false, true);
+        let denied =
+            shared_with_guards_mode(Config { percpu_arena: PercpuArena::Percpu, ..Config::DEFAULT }, false, false);
+        assert!(!denied.percpu_on(), "not allowed by the builder");
+        assert_eq!(denied.percpu.state(), PercpuState::OffProbe);
+        let scan = shared_with_guards_mode(
+            Config { percpu_arena: PercpuArena::Percpu, double_free_scan: true, ..Config::DEFAULT },
+            false,
+            true,
+        );
         assert!(!scan.percpu_on());
         if probe.mm_cid_usable() {
             assert_eq!(scan.percpu.state(), PercpuState::OffScan);

@@ -29,6 +29,10 @@
 # memtier_benchmark is Wolfi's package.
 #
 #   ALLOCS="challoc jemalloc"  servers to soak, in order
+#   CHALLOC_CONF=              MALLOC_CONF for the challoc server alone (plan
+#                              Phase 2.5 task 8: percpu_arena:percpu soaks the
+#                              per-CPU mode against the same jemalloc, which a
+#                              MALLOC_CONF in the environment would reach too)
 #   DURATION=1200              load seconds per allocator (write + delete)
 #   SETTLE=60                  idle seconds after the delete phase
 #   INTERVAL=10                sampling period in seconds
@@ -270,8 +274,11 @@ soak() { # alloc
   server=$(server_for "$alloc") || exit 1
   step "$alloc: $server"
   "$server" --version | tee "$D/version.txt"
-  # $IO_THREADS unquoted on purpose: empty means no flag.
-  "$server" --port "$PORT" --save "" --appendonly no --daemonize no \
+  # $IO_THREADS unquoted on purpose: empty means no flag. CHALLOC_CONF
+  # reaches the challoc server only.
+  conf_env=
+  case $alloc in challoc) [ -n "${CHALLOC_CONF:-}" ] && conf_env="MALLOC_CONF=$CHALLOC_CONF";; esac
+  env $conf_env "$server" --port "$PORT" --save "" --appendonly no --daemonize no \
     --logfile "$D/server.log" --activedefrag "$DEFRAG" ${IO_THREADS:+--io-threads $IO_THREADS} >/dev/null 2>&1 &
   SERVER_PID=$!
   i=0
@@ -401,6 +408,7 @@ ALLOCS=$SUMMARY_ALLOCS
   echo "- kernel: $(uname -r), container: Wolfi"
   for alloc in $ALLOCS; do echo "- $alloc server: $(cat "$OUT/$alloc/version.txt")"; done
   echo "- clients: valkey-benchmark from the challoc tree, $(memtier_benchmark --version 2>&1 | head -1)"
+  [ -n "${CHALLOC_CONF:-}" ] && echo "- challoc server MALLOC_CONF: $CHALLOC_CONF (CHALLOC_CONF; the jemalloc server runs stock)"
   echo "- workload: write phase $((DURATION / 2)) s (valkey-benchmark -t set -d $SIZE -r $KEYS -n $VB_REQS -c $VB_CLIENTS -P $PIPELINE, then memtier SET-only $MT_SIZES B over $KEYS keys, $MT_THREADS x $MT_CLIENTS clients, -P $PIPELINE, $CHUNK s), delete phase $((DURATION / 2)) s (valkey-benchmark del key:__rand_int__, then memtier DEL:SET $DEL_RATIO:1), settle $SETTLE s idle; activedefrag $DEFRAG; io-threads $(cat "$OUT/$(echo $ALLOCS | cut -d' ' -f1)/io-threads.txt" 2>/dev/null || echo "${IO_THREADS:-default}"); INFO sampled every $INTERVAL s; memtier key pattern: $KEY_PATTERN$([ "$KEY_PATTERN" = uniform ] && echo " (--randomize, time-seeded random keys in both phases; NOT the acceptance protocol)" || echo " (memtier's fixed-seed key stream, the acceptance protocol)")"
   echo "- throughput is the mean requests/s over a tool's runs in a phase; p99 is the median of the per-run p99 (ms, client-side); peak RSS is the server's VmHWM; the RSS columns are used_memory_rss (MiB) at the last sample of each phase"
   [ -z "$CACHE_NOTE" ] || echo "- CACHED BASELINE: $CACHE_NOTE. Acceptance uses the same-run \`make valkey-soak\`."

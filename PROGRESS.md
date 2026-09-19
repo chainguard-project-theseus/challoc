@@ -272,6 +272,20 @@ One line per task, newest at the bottom of each section. Keep it terse.
   thread paths' first line (`multi_arena`, `push_flags`, the `Regions`
   head) is byte for byte what it was; the per-CPU paths read `base` and
   `n` from the line after the class bases.
+- Phase 2.5 task 8 (lane A, 2026-09-19), the default: `auto` keeps thread
+  caches (`heap::PercpuState::OffAuto`, the report says "off (auto: opt in
+  with percpu_arena:percpu)") and `percpu` is the opt-in; the code of the
+  mode is byte for byte what `auto` ran in the measurements. Numbers
+  (`quick`, `new` = the mode on, `old` = 9351eeb, positive is worse; C4A /
+  C4): larson1 +15.1% / +11.1%, larson10 +18.7% / +18.9%, xmalloc +23.9%
+  / +23.8%, alloc-test1 +10.2% / +8.2%, valkey1 +9.7% / +67.5%; RSS up on
+  larson (16 -> 19 MiB) and xmalloc (53 -> 75 MiB on the C4A); the churn
+  probe compacts (97.5%). NO-GO on every row, so the plan's own fallback
+  rule ("default-on when present is allowed only if quick and ab are
+  within noise") decides, and the human decides the final default with
+  the `ab` tables (`bench/results/2026-09-19-*-task8-percpu.md`). Why in
+  `heap.rs` and not in the key's default: `src/config.rs` is lane C's file
+  (the one-line change is under Notes for the human).
 - Phase 2.5 task 8, `tests/c/tunables.c` runs with `percpu_arena:off` in
   every mode. Reason: its `dirty` and `random`/`ordered` modes assert one
   thread's LIFO reuse and one refill batch from at most two slabs, which
@@ -703,6 +717,29 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
 
 ## Notes for the human
 
+- Phase 2.5 task 8, for the human (lane A, 2026-09-19): the per-CPU mode
+  is implemented, tested both ways and measured, and it loses to thread
+  caches on every `quick` row on both reference VMs (the Design decision
+  above has the numbers; the `ab` tables are in
+  `bench/results/2026-09-19-{aarch64,x86_64}-task8-percpu.md`), so it ships
+  as an opt-in (`percpu_arena:percpu`). Two things are yours: (1) the key's
+  default in `src/config.rs` (lane C's file, untouched here) still reads
+  `Auto` and its doc says `auto` follows the probe; `heap::Percpu::build`
+  reads `Auto` as "thread caches for now". If the opt-in stands, the
+  one-line change is `percpu_arena: PercpuArena::Off` in `Config::DEFAULT`
+  (plus `percpu_arena_values`'s default assertion and the section 12 row),
+  and `OffAuto` can then mean what `enabled()` says; if you want it on,
+  delete the `Auto` arm of `Percpu::build`'s match. (2) Where the cost is:
+  the mode's pop is the thread-pointer load, the `mm_cid` load, the table
+  index and a critical section in a called function, against the thread
+  pop's two loads and a store inline in `malloc`; the fast-tier rows are
+  the price of that per operation (10..24%), and the x86_64 Valkey model's
+  +67% is the compact-mode scheduled pop claiming one slot under the class
+  lock per 8 pops on a fragmented 500 MiB heap (the thread run amortises
+  one lock over `cap / 4`); a per-CPU run would need a two-word commit the
+  design has no single store for. The RSS the mode buys is only visible
+  with more threads than cores (the Ruby idle-thread rows in the results
+  files).
 - Phase 2.5 task 8 (lane A, 2026-09-19), rseq offsets and sizes observed
   under this task, all read from the symbols at run time (never
   constants): on both reference VMs (kernel 7.0.0-1011-gcp, glibc 2.44)

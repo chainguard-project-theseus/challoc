@@ -76,26 +76,48 @@ fn alloc_huge(shared: &Shared, size: usize, align: usize) -> (*mut u8, bool) {
 #[inline(always)]
 pub fn malloc(size: usize) -> *mut u8 {
     // The fast path is a cache pop with no calls in it; everything else
-    // (init, heap creation, refill, huge, ENOMEM) is one tail call away so
-    // the exported `malloc` needs no stack frame.
-    match malloc_fast(size) {
+    // (init, heap creation, refill, huge, ENOMEM, and the per-CPU mode of
+    // design 15) is one tail call away so the exported `malloc` needs no
+    // stack frame.
+    let Some(c) = class_of(size) else { return malloc_slow(size) };
+    let shared = super::shared_ptr();
+    let Some(h) = heap::existing_heap(shared) else { return malloc_slow(size) };
+    // SAFETY: this thread's heap exists, so this thread observed `READY`
+    // (the byte was read once inside `existing_heap`; this is the same
+    // load, merged by the compiler).
+    let flags = unsafe { heap::fast_flags(shared) };
+    if flags & heap::PUSH_PERCPU != 0 {
+        return percpu_malloc(h, c, flags, size);
+    }
+    match h.alloc_fast(c, flags) {
         Some(p) => p,
         None => malloc_slow(size),
     }
 }
 
+/// `malloc` in the per-CPU mode: the running CPU's cache, then the slow
+/// path. A tail call from `malloc`, so the thread path keeps its shape.
+#[inline(never)]
+fn percpu_malloc(h: &mut heap::Heap, class: usize, flags: u8, size: usize) -> *mut u8 {
+    match h.pop_percpu_mode(class, flags) {
+        Some((p, _)) => p,
+        None => malloc_slow(size),
+    }
+}
+
 /// The cache pop alone: `None` whenever anything is off the fast path (no
-/// heap yet, empty cache, huge size). Shared with the C++ `operator new`
-/// family in `cxx.rs`, whose failure handling differs from `malloc`'s.
+/// heap yet, empty cache, huge size). For the C++ `operator new` family in
+/// `cxx.rs`, whose failure handling differs from `malloc`'s.
 #[inline(always)]
 pub(super) fn malloc_fast(size: usize) -> Option<*mut u8> {
     let c = class_of(size)?;
     let shared = super::shared_ptr();
     let h = heap::existing_heap(shared)?;
-    // SAFETY: this thread's heap exists, so this thread observed `READY`
-    // (the byte was read once inside `existing_heap`; this is the same
-    // load, merged by the compiler).
+    // SAFETY: as in `malloc`.
     let flags = unsafe { heap::fast_flags(shared) };
+    if flags & heap::PUSH_PERCPU != 0 {
+        return h.pop_percpu_mode(c, flags).map(|r| r.0);
+    }
     h.alloc_fast(c, flags)
 }
 
@@ -144,11 +166,23 @@ pub fn free(p: *mut u8) {
         // SAFETY: this thread's heap exists, so this thread observed
         // `READY` when it created the heap.
         let shared = unsafe { super::shared_unchecked() };
-        if heap::free_fast(shared, h, p, shared.push_flags()) {
+        let flags = shared.push_flags();
+        if flags & heap::PUSH_PERCPU != 0 {
+            return percpu_free(shared, h, p, flags);
+        }
+        if heap::free_fast(shared, h, p, flags) {
             return;
         }
     }
     free_slow(p)
+}
+
+/// `free` in the per-CPU mode (a tail call from `free`, see `malloc`).
+#[inline(never)]
+fn percpu_free(shared: &Shared, h: &mut heap::Heap, p: *mut u8, flags: u8) {
+    if !heap::percpu_free_fast(shared, h, p, flags, None, false) {
+        free_slow(p)
+    }
 }
 
 /// Sized free on the calling thread's heap: `hint` is the class the size
@@ -165,11 +199,23 @@ pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>) {
     if let Some(h) = heap::existing_heap(super::shared_ptr()) {
         // SAFETY: as in `free`.
         let shared = unsafe { super::shared_unchecked() };
-        if heap::free_sized_fast(shared, h, p, hint, shared.push_flags()) {
+        let flags = shared.push_flags();
+        if flags & heap::PUSH_PERCPU != 0 {
+            return percpu_free_sized(shared, h, p, size, hint, flags);
+        }
+        if heap::free_sized_fast(shared, h, p, hint, flags) {
             return;
         }
     }
     free_sized_slow(p, size, hint)
+}
+
+/// The sized free in the per-CPU mode (a tail call, see `malloc`).
+#[inline(never)]
+fn percpu_free_sized(shared: &Shared, h: &mut heap::Heap, p: *mut u8, size: usize, hint: Option<usize>, flags: u8) {
+    if !heap::percpu_free_fast(shared, h, p, flags, hint, true) {
+        free_sized_slow(p, size, hint)
+    }
 }
 
 /// Off the sized fast path: the hint mismatch abort, then everything the

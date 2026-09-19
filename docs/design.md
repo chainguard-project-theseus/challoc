@@ -1349,7 +1349,7 @@ jemalloc names where they exist:
 | `dirty_decay_ms`          | 10000   |                                         |
 | `muzzy_decay_ms`          | ignored | accepted for compatibility              |
 | `narenas`                 | 0       | automatic arenas; 0 = `min(4 * ncpus, 64)`; see 13.3 |
-| `percpu_arena`            | auto    | `auto`, `percpu`, `off` (15, plan Phase 2.5 task 8): caches and arenas keyed by the running CPU's rseq `mm_cid` instead of by thread; `auto` is on where the runtime probe passes (glibc's registered `__rseq_size >= 28`, so the kernel writes `mm_cid`: 6.3+, glibc 2.41+) and thread caches otherwise, silently; `percpu` forces the request and still falls back to thread caches when the probe fails, with a note in the feature report; `off` is thread caches whatever the probe says. jemalloc's `disabled` and `phycpu` are accepted as `off` and `percpu` (the key used to be accepted with any value) |
+| `percpu_arena`            | auto    | `auto`, `percpu`, `off` (15, plan Phase 2.5 task 8): caches and arenas keyed by the running CPU's rseq `mm_cid` instead of by thread. `percpu` turns the mode on where the runtime probe passes (glibc's registered `__rseq_size >= 28`, so the kernel writes `mm_cid`: 6.3+, glibc 2.35+) and falls back to thread caches with a note in the report when it fails; `off` is thread caches whatever the probe says; `auto`, the default, keeps thread caches for now (`heap::PercpuState::OffAuto`): the mode measured 8..24% behind thread caches on the `quick` rows and far behind on the Valkey model on both reference VMs (section 15, PROGRESS.md), so the plan's fallback rule applies and the default is the human's call with those numbers. jemalloc's `disabled` and `phycpu` are accepted as `off` and `percpu` (the key used to be accepted with any value) |
 | `tcache`                  | true    | false disables caches                   |
 | `tcache_max`              | 32768   | largest cached class size (bytes)       |
 | `tcache_nslots_small_max` | 1024    |                                         |
@@ -1739,16 +1739,21 @@ because Wolfi controls compiler flags, tracked in [plan.md](plan.md).
 ## 15. Optional per-CPU mode
 
 Behind the `percpu_arena` key (section 12: `auto`, the default, `percpu`,
-`off`; `config::PercpuArena`, plan Phase 2.5 task 8). When the key is not
-`off` and glibc's registered rseq area covers the `mm_cid` field (kernel
-6.3+ with `CONFIG_SCHED_MM_CID`, glibc 2.35+ exporting `__rseq_offset`,
-`__rseq_size` and `__rseq_flags`; `rseq::probe`, `PercpuArena::enabled`),
-the plain `malloc`/`free` caches are keyed by the running thread's
-*concurrency id* instead of by thread. When the probe fails both `auto` and
-`percpu` keep thread caches and only `percpu` says so (`PercpuArena::forced`,
-the `Per-CPU caches:` line of `malloc_stats_print`, `stats.percpu.enabled`).
-`double_free_scan:true` also keeps thread caches (the scan of the top
-entries is not written into the critical sections; the hardening wins).
+`off`; `config::PercpuArena`, plan Phase 2.5 task 8). With `percpu`, where
+glibc's registered rseq area covers the `mm_cid` field (kernel 6.3+ with
+`CONFIG_SCHED_MM_CID`, glibc 2.35+ exporting `__rseq_offset`, `__rseq_size`
+and `__rseq_flags`; `rseq::probe`, `PercpuArena::enabled`), the plain
+`malloc`/`free` caches are keyed by the running thread's *concurrency id*
+instead of by thread. When the probe fails `percpu` keeps thread caches and
+says so (`PercpuArena::forced`, the `Per-CPU caches:` line of
+`malloc_stats_print`, `stats.percpu.enabled`). `auto`, the key's default,
+keeps thread caches as well (`heap::PercpuState::OffAuto`, "opt in with
+percpu_arena:percpu"): the mode is implemented and measured, and the plan's
+own rule (default-on only if `quick` and `ab` are within noise on the
+reference VMs) failed by a margin (below), so the default is the human's
+decision with the numbers in front of them. `double_free_scan:true` also
+keeps thread caches (the scan of the top entries is not written into the
+critical sections; the hardening wins).
 
 What the kernel provides (`src/rseq.rs`). `mm_cid` is a small integer,
 unique among the threads of the process that are running at any instant,
