@@ -105,10 +105,23 @@ could not be independently confirmed.
 | Batched TLB flush for DONTNEED  | 6.16    | No API change                                                         |
 | `PR_THP_DISABLE_EXCEPT_ADVISED` | 6.18    |                                                                       |
 | rseq event optimisation, `VM_MAYBE_GUARD` | 6.19 | Broke tcmalloc; see above                                        |
+| MM CID rewrite (tglx)           | 6.19    | Per-task CIDs while threads <= possible CPUs (a thread keeps its `mm_cid` across migrations, so mm_cid-keyed caches behave like thread caches); per-CPU mode only above that, switched at fork/exit; `mm_cid` stays below the possible-CPU count in both modes; transition fixes landed in 7.0 ("sched/mmcid: Cure mode transition woes"). Kernels before 6.19 (Chainguard OS 6.18) have the old allocator: `mm_cid < min(threads, cpus)` with `recent_cid` reuse. Task 8 must be right on both. |
+| rseq time slice extension       | 7.0     | `struct rseq` gains `slice_ctrl` at offset 28 (`request` u8 at 28, `granted` u8 at 29), `__reserved` at 32, `end` at 33 (hence `__rseq_size=33` on the 7.0 GCE kernel; 28 on 6.18). Kernel advertises `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE` (bit 4) in the area's `flags`; enable per process with `prctl(PR_RSEQ_SLICE_EXTENSION=79, PR_RSEQ_SLICE_EXTENSION_SET=2, PR_RSEQ_SLICE_EXT_ENABLE=1)`, then `flags` bit 5 (`ENABLED`). Use: store `request=1` before a critical section, clear after; if `granted` reads 1, call the new `rseq_slice_yield(2)` syscall (any syscall ends the grant). Extension 5 us default, up to 50 us (`debugfs rseq/slice_ext_nsec`). Made for lock holders that must not be preempted: `lock.rs` holds and the class-lock refill/flush. Best effort under PREEMPT_NONE. |
+| khugepaged anon mTHP collapse   | 7.2     | khugepaged collapses anonymous ranges to the enabled `hugepages-<size>kB` orders (not only PMD); `MADV_COLLAPSE` still PMD-only; `khugepaged/max_ptes_none` must be 0 or 511 for mTHP; per-size `stats/collapse_exceed_*` counters. A 7.2 host with 64 KiB enabled collapses challoc's `MADV_HUGEPAGE` class regions in the background (task 9's dTLB gain without fault-time cost). Probe the per-size `stats/` directory, not the version. |
+| `PR_MTE_STORE_ONLY`             | 6.17    | `1 << 19` in `PR_SET_TAGGED_ADDR_CTRL`: MTE checks stores only; a fourth `tag_check` mode for design 18 when a host exposes MTE. |
+| `PR_FUTEX_HASH`                 | 6.16    | `78`: size the process-private futex hash (`SET_SLOTS=1`, `GET_SLOTS=2`); relevant only if `lock.rs` sleeps on futexes. |
+| Cache-aware scheduling          | 7.2     | Tasks sharing data co-located within one LLC domain; no ABI; interacts favourably with per-CPU caches. |
 
 Sources: https://docs.kernel.org/userspace-api/mseal.html,
 https://lwn.net/Articles/1011366/, https://docs.kernel.org/accounting/psi.html,
-https://docs.kernel.org/admin-guide/cgroup-v2.html.
+https://docs.kernel.org/admin-guide/cgroup-v2.html; for the 6.19 to 7.2 rows
+(checked 2026-09-19): https://docs.kernel.org/userspace-api/rseq.html,
+`include/uapi/linux/rseq.h` and `prctl.h` at torvalds/master,
+https://lwn.net/Articles/1044027/ (MM CID rewrite),
+https://lwn.net/Articles/1037202/ (slice extension),
+https://docs.kernel.org/admin-guide/mm/transhuge.html,
+https://kernelnewbies.org/Linux_6.19, `_7.0`, `_7.1`, `_7.2`. Upstream on
+2026-09-19: stable 7.2.6, mainline 7.3-rc3, longterm 6.18.52.
 
 ## cgroups
 
