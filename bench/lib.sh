@@ -130,6 +130,7 @@ bench_args() {
     larson1)      echo "$BIN/larson 5 8 1000 5000 100 4141 1";;
     larson10)     echo "$BIN/larson 5 8 1000 5000 100 4141 10";;
     larson16)     echo "$BIN/larson 5 8 1000 5000 100 4141 16";;
+    larson64)     echo "$BIN/larson 5 8 1000 5000 100 4141 64";;   # threads > CPUs (plan Phase 2.5 task 8)
     larsonN)      echo "$BIN/larson 5 8 1000 5000 100 4141 $PROCS";;
     xmalloc)      echo "$BIN/xmalloc-test -w 10 -t 5 -s 64";;
     xmallocN)     echo "$BIN/xmalloc-test -w $PROCS -t 5 -s 64";;
@@ -163,6 +164,7 @@ threads_of() {
     larson1|alloc-test1|cfrac|espresso|glibc-simple|valkey*|ruby-churn|python*) echo 1;;
     larson10|xmalloc) echo 10;;
     larson16) echo 16;;
+    larson64) echo 64;;
     alloc-testN) n=$PROCS; [ "$n" -gt 16 ] && n=16; echo "$n";;
     redis) echo 2;;
     *) echo "$PROCS";;

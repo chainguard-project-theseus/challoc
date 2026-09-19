@@ -19,7 +19,17 @@
 # (malloc_stats_print, when exported) to stderr. The workload is seeded
 # (SEED + thread index), so every allocator sees the same job stream.
 #
-#   ruby soak.rb DURATION CSV [SEED] [THREADS] [INTERVAL] [GC_EVERY] [COMPACT_AT]
+#   ruby soak.rb DURATION CSV [SEED] [THREADS] [INTERVAL] [GC_EVERY] [COMPACT_AT] [IDLE_THREADS]
+#
+# IDLE_THREADS (default 0; plan Phase 2.5 task 8's "many idle threads")
+# adds that many threads that touch the allocator once at start (one small
+# burst, so each owns a thread cache and, under per-thread arenas, an arena)
+# and then sleep, waking every 5..10 s for one tiny burst (20 strings, 10
+# arrays): the shape of a Sidekiq process whose concurrency is far above
+# its offered load. Under per-thread arenas the process's resident set
+# grows with the thread count; under per-CPU arenas (`percpu_arena:percpu`)
+# it should be bounded by the CPU count. The workers and the sampler are
+# unchanged; the summary line gains `idle_threads=`.
 #
 # CSV columns: t_s, event, vmrss_kb, vmhwm_kb, heap_pages, heap_live_slots,
 # gc_count, major, minor, malloc_increase, oldmalloc_increase, jobs,
@@ -27,6 +37,7 @@
 # alloc_retained, alloc_mapped (the alloc_* columns are "-" without mallctl).
 # The last line on stdout is a key=value summary ruby-soak.sh parses.
 
+require "etc"
 duration   = (ARGV[0] || 600).to_i
 csv_path   = ARGV[1] || "soak.csv"
 seed       = (ARGV[2] || 4141).to_i
@@ -34,6 +45,7 @@ nthreads   = (ARGV[3] || 16).to_i
 interval   = (ARGV[4] || 5).to_i
 gc_every   = (ARGV[5] || 30).to_i
 compact_at = (ARGV[6] || 300).to_i
+idle_threads = (ARGV[7] || 0).to_i
 
 def rss_kb
   st = File.read("/proc/self/status")
@@ -122,6 +134,27 @@ workers = nthreads.times.map do |i|
   end
 end
 
+# The idle threads: one burst at start, then a tiny burst every 5..10 s.
+$idle_bursts = 0
+idlers = idle_threads.times.map do |i|
+  Thread.new(i) do |ti|
+    rng = Random.new(seed + 100_000 + ti)
+    first = true
+    until $stop
+      strs = Array.new(first ? 300 : 20) { "i" * (1024 + rng.rand(3072)) }
+      arrs = Array.new(first ? 150 : 10) { Array.new(100 + rng.rand(300)) { rng.rand(1 << 20) } }
+      strs = arrs = nil
+      $idle_bursts += 1
+      first = false
+      slept = 0.0
+      while slept < 5.0 + rng.rand * 5.0 && !$stop
+        sleep 0.25
+        slept += 0.25
+      end
+    end
+  end
+end
+
 # ---- sampler -----------------------------------------------------------------
 csv = File.open(csv_path, "w")
 csv.puts "t_s,event,vmrss_kb,vmhwm_kb,heap_pages,heap_live_slots,gc_count,major,minor,malloc_increase,oldmalloc_increase,jobs,live_objects,alloc_allocated,alloc_active,alloc_resident,alloc_retained,alloc_mapped"
@@ -161,6 +194,7 @@ while (t = elapsed.call) < duration
 end
 $stop = true
 workers.each(&:join)
+idlers.each(&:join)
 GC.start(full_mark: true, immediate_sweep: true)
 sample.call("final-fullgc")
 rss, hwm = rss_kb
@@ -177,4 +211,5 @@ end
 puts "jobs=#{$jobs.sum} live_objects=#{live_sets.sum(&:size)} gc_count=#{st[:count]} major=#{st[:major_gc_count]} " \
      "minor=#{st[:minor_gc_count]} heap_pages=#{st[:heap_allocated_pages]} rss_final_kb=#{rss} hwm_kb=#{hwm} " \
      "mallctl=#{mallctl ? 'yes' : 'no'} alloc_allocated=#{al[0]} alloc_active=#{al[1]} alloc_resident=#{al[2]} " \
-     "alloc_retained=#{al[3]} alloc_mapped=#{al[4]} compacted=#{compacted}"
+     "alloc_retained=#{al[3]} alloc_mapped=#{al[4]} compacted=#{compacted} " \
+     "threads=#{nthreads} idle_threads=#{idle_threads} idle_bursts=#{$idle_bursts} nproc=#{Etc.nprocessors}"

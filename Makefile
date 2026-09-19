@@ -156,11 +156,15 @@ GIT_MOUNT = -v "$(GIT_COMMON)":"$(GIT_COMMON)":ro
 endif
 endif
 
+# CHALLOC_CONF, when set on the make command line or in the environment, is
+# forwarded into every container: challoc reads it after MALLOC_CONF and the
+# stock allocators ignore it, so `make <target> CHALLOC_CONF=percpu_arena:percpu`
+# puts challoc alone under a key in any suite (bench/percpu-campaign.sh).
 DOCKER_BASE = docker run --rm --platform $(PLATFORM) \
 	-v "$(CURDIR)":/src -w /src \
 	-v $(TARGET_VOLUME):/src/target \
 	-v $(CARGO_VOLUME):/root/.cargo/registry \
-	$(GIT_MOUNT)
+	$(GIT_MOUNT) $(if $(CHALLOC_CONF),-e CHALLOC_CONF="$(CHALLOC_CONF)")
 DOCKER_RUN = $(DOCKER_BASE) $(DOCKER_FLAGS) $(IMAGE)
 # cgroup_run LIMIT,ARGS: one memory-limited container running
 # scripts/cgroup-tests.sh ARGS (Phase 2 tasks 6 and 7). Swap is disabled
@@ -347,7 +351,7 @@ ruby-bench: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(RUBY_BENCH_VA
 ruby-bench: image
 	$(DOCKER_RUN) sh bench/ruby-bench.sh
 
-RUBY_SOAK_VARS = ALLOCS DURATION INTERVAL GC_EVERY COMPACT_AT THREADS SEED RESULT OUT HOST_KIND COMMIT
+RUBY_SOAK_VARS = ALLOCS DURATION INTERVAL GC_EVERY COMPACT_AT THREADS IDLE_THREADS SEED RESULT OUT HOST_KIND COMMIT
 ruby-soak: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(RUBY_SOAK_VARS),$(if $($(v)),-e $(v)="$($(v))"))
 ruby-soak: image
 	$(DOCKER_RUN) sh bench/ruby-soak.sh
@@ -359,6 +363,14 @@ PYTHON_BENCH_VARS = ALLOCS ROUNDS WORKLOADS MODES RESULT OUT HOST_KIND REV
 python-bench: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(PYTHON_BENCH_VARS),$(if $($(v)),-e $(v)="$($(v))"))
 python-bench: image
 	$(DOCKER_RUN) sh bench/python-bench.sh
+
+# Phase 2.5 task 8's acceptance rows (bench/percpu-campaign.sh, lane D): the
+# same suites under the default and under CHALLOC_CONF=percpu_arena:percpu,
+# on the VM host (each step is one of the make targets above). MODE=baseline
+# (default only, the half that exists before task 8 merges) or MODE=percpu.
+PERCPU_VARS = MODE STEPS DATE LANE ROUNDS SOAK_DURATION RUBY_SOAK_DURATION IDLE_THREADS VALKEY_FULL CALLOC_ROUNDS CALLOC_MAX_SECS OSC_SECS
+percpu-campaign:
+	env $(foreach v,$(PERCPU_VARS),$(if $($(v)),$(v)="$($(v))")) HOST_CPU="$(HOST_CPU)" sh bench/percpu-campaign.sh
 
 # Phase 3 prerequisite (e): DT_NEEDED must name the allocator library
 # (design 13.6); Wolfi's --as-needed drops it from a consumer that

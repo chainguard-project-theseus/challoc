@@ -30,6 +30,12 @@
 # Every variant's /proc/self/maps is checked before its run.
 #
 #   DURATION=600  INTERVAL=5  GC_EVERY=30  COMPACT_AT=300  THREADS=16  SEED=4141
+#   IDLE_THREADS=0  extra mostly idle threads (bench/ruby/soak.rb: one burst at
+#                 start, then a tiny one every 5..10 s), plan Phase 2.5 task 8's
+#                 "RSS bounded by cores, not threads" shape; recorded in the header
+#   CHALLOC_CONF  read by challoc alone (not by jemalloc), so the same run can
+#                 put challoc under a key (`percpu_arena:percpu`) with jemalloc
+#                 untouched; the Makefile forwards it into the container
 #   RESULT=path   markdown output (default bench/results/<date>-<arch>-ruby-soak.md);
 #                 the per-allocator CSVs land beside it as <result stem>-<alloc>.csv
 #                 and the allocator's malloc_stats_print as <result stem>-<alloc>-mstats.txt
@@ -47,6 +53,7 @@ INTERVAL=${INTERVAL:-5}
 GC_EVERY=${GC_EVERY:-30}
 COMPACT_AT=${COMPACT_AT:-300}
 THREADS=${THREADS:-16}
+IDLE_THREADS=${IDLE_THREADS:-0}
 SEED=${SEED:-4141}
 WORK=$ROOT/target/ruby
 OUT=${OUT:-$WORK/soak-out}
@@ -103,11 +110,11 @@ fiddle=$(run_ruby challoc -e 'begin; require "fiddle"; puts "yes"; rescue LoadEr
 echo "   fiddle: $fiddle (allocator stats through mallctl$([ "$fiddle" = yes ] || echo ' skipped'))"
 
 # ---- the runs --------------------------------------------------------------------------
-echo "== $DURATION s per allocator ($ALLOCS), $THREADS threads, sample every $INTERVAL s, full GC every $GC_EVERY s, GC.compact at $COMPACT_AT s, seed $SEED; load $LOAD0"
+echo "== $DURATION s per allocator ($ALLOCS), $THREADS threads + $IDLE_THREADS idle, sample every $INTERVAL s, full GC every $GC_EVERY s, GC.compact at $COMPACT_AT s, seed $SEED; CHALLOC_CONF=${CHALLOC_CONF:-}; load $LOAD0"
 for a in $ALLOCS; do
   csv=$STEM-$a.csv
   printf '   %s: started %s ... ' "$a" "$(date -u +%T)"
-  if run_ruby "$a" "$ROOT/bench/ruby/soak.rb" "$DURATION" "$csv" "$SEED" "$THREADS" "$INTERVAL" "$GC_EVERY" "$COMPACT_AT" > "$OUT/$a.out" 2> "$OUT/$a.err"; then
+  if run_ruby "$a" "$ROOT/bench/ruby/soak.rb" "$DURATION" "$csv" "$SEED" "$THREADS" "$INTERVAL" "$GC_EVERY" "$COMPACT_AT" "$IDLE_THREADS" > "$OUT/$a.out" 2> "$OUT/$a.err"; then
     echo "done $(date -u +%T), load $(loadavg)"
   else
     echo "FAILED (exit $?), see $OUT/$a.err"; tail -5 "$OUT/$a.err" >&2
@@ -172,7 +179,8 @@ M5=$COMPACT_AT; M10=$DURATION
   echo "- host: ${HOST_CPU:-unknown CPU}, $PROCS CPUs visible to the container${HOST_KIND:+; $HOST_KIND}"
   echo "- kernel: $(uname -r), container: Wolfi"
   echo "- ruby: $(run_ruby challoc -v) (tag $RUBY_TAG built by contrib/ruby/build.sh, --with-jemalloc), installed under target/ruby/install-challoc; allocator stats through fiddle -> mallctl: $fiddle"
-  echo "- workload: bench/ruby/soak.rb $DURATION s, $THREADS threads, seed $SEED, sample every $INTERVAL s, full GC every $GC_EVERY s, GC.compact at $COMPACT_AT s, one full GC after the workers stop (the final row)"
+  echo "- workload: bench/ruby/soak.rb $DURATION s, $THREADS threads${IDLE_THREADS:+ + $IDLE_THREADS mostly idle threads}, seed $SEED, sample every $INTERVAL s, full GC every $GC_EVERY s, GC.compact at $COMPACT_AT s, one full GC after the workers stop (the final row)"
+  [ -n "${CHALLOC_CONF:-}" ] && echo "- CHALLOC_CONF=$CHALLOC_CONF (read by challoc alone; jemalloc runs unchanged)"
   echo "- load average at start: $LOAD0; at end: $(loadavg); $(( $(date +%s) - T_START )) s total"
   echo "- allocators (run in this order):"
   for a in $ALLOCS; do echo "  - $a: $(describe "$a")"; done
