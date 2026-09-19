@@ -1,0 +1,626 @@
+[driver 10:33:47] cell cpu-c3d: image ubuntu-2404-noble-amd64-v20260918 (ubuntu-2404-lts-amd64, ubuntu-os-cloud), amd64, c3d-standard-8, prep none, extra scorecard, zones us-east4-a us-east4-b, timeout 3600s
+Created [https://www.googleapis.com/compute/v1/projects/dlorenc-dev/zones/us-east4-a/instances/challoc-matrix-cpu-c3d].
+WARNING: Some requests generated warnings:
+ - Disk size: '50 GB' is larger than image size: '10 GB'. You might need to resize the root repartition manually if the operating system does not support automatic resizing. See https://cloud.google.com/compute/docs/disks/add-persistent-disk#resize_pd for details.
+
+NAME                    ZONE        MACHINE_TYPE    PREEMPTIBLE  INTERNAL_IP  EXTERNAL_IP   STATUS
+challoc-matrix-cpu-c3d  us-east4-a  c3d-standard-8               10.150.0.50  34.48.118.55  RUNNING
+[driver 10:33:57] created challoc-matrix-cpu-c3d in us-east4-a
+[driver 10:33:58] created challoc-matrix-cpu-c3d at 34.48.118.55; waiting for ssh
+[driver 10:34:32] up: x86_64 7.0.0-1011-gcp page 4096
+[driver 10:34:32] provisioning
+debconf: unable to initialize frontend: Dialog
+debconf: (Dialog frontend will not work on a dumb terminal, an emacs shell buffer, or without a controlling terminal.)
+debconf: falling back to frontend: Readline
+debconf: unable to initialize frontend: Readline
+debconf: (This frontend requires a controlling tty.)
+debconf: falling back to frontend: Teletype
+dpkg-preconfigure: unable to re-open stdin: 
+debconf: unable to initialize frontend: Dialog
+debconf: (Dialog frontend will not work on a dumb terminal, an emacs shell buffer, or without a controlling terminal.)
+debconf: falling back to frontend: Readline
+debconf: unable to initialize frontend: Readline
+debconf: (This frontend requires a controlling tty.)
+debconf: falling back to frontend: Teletype
+
+Running kernel seems to be up-to-date.
+
+No services need to be restarted.
+
+No containers need to be restarted.
+
+No user sessions are running outdated binaries.
+
+No VM guests are running outdated hypervisor (qemu) binaries on this host.
+== challoc-matrix-cpu-c3d.us-east4-a.c.dlorenc-dev.internal: x86_64 7.0.0-1011-gcp, page 4096, Ubuntu 24.04.5 LTS
+== docker: Docker version 29.1.3, build 29.1.3-0ubuntu3~24.04.2
+[driver 10:34:54] syncing the tree
+[driver 10:34:57] running matrix-cell.sh detached (a new login, so the docker group applies)
+launched
+[driver 10:48:51] run finished: rc=0 after 905 s; fetching ~/logs
+[driver 10:48:53] fetched bench/results/scorecard-c3d.md
+
+==================== ~/logs/matrix.log on challoc-matrix-cpu-c3d ====================
+== cell cpu-c3d on challoc-matrix-cpu-c3d.us-east4-a.c.dlorenc-dev.internal: Ubuntu 24.04.5 LTS
+== image ubuntu-2404-noble-amd64-v20260918, machine c3d-standard-8 (c3d) in us-east4-a, 8 vCPU, x86_64 7.0.0-1011-gcp, page size 4096
+== cpu: AMD EPYC 9B14
+== cgroup fs: cgroup2fs, docker: Docker version 29.1.3, build 29.1.3-0ubuntu3~24.04.2
+== tree: 7b2c50b 7 dirty
+== mode: scorecard
+== start 2026-09-19T10:34:58Z
+
+== step image: make image  (10:34:58)
+== step image: rc=0 in 140 s
+   |  ---> Removed intermediate container bc24e953dda2
+   |  ---> 2424d131c140
+   | Step 3/4 : WORKDIR /src
+   |  ---> Running in 55e1ab195363
+   |  ---> Removed intermediate container 55e1ab195363
+   |  ---> db7949e5c887
+   | Step 4/4 : CMD ["sh"]
+   |  ---> Running in 74be9217dd1a
+   |  ---> Removed intermediate container 74be9217dd1a
+   |  ---> c9abb6c18c86
+   | Successfully built c9abb6c18c86
+   | Successfully tagged challoc-dev:amd64
+
+== step test: make test  (10:37:18)
+== step test: rc=2 in 29 s
+   | test layout::tests::every_in_slab_offset_classifies_exactly ... ok
+   | test bitmap::tests::atomic_bitmap_matches_model ... ok
+   | 
+   | failures:
+   | 
+   | failures:
+   |     sys::cpu::linux_tests::probe_matches_proc_cpuinfo
+   | 
+   | test result: FAILED. 334 passed; 1 failed; 0 ignored; 0 measured; 107 filtered out; finished in 4.87s
+   | 
+   | error: test failed, to rerun pass `--lib`
+   | make: *** [Makefile:162: test] Error 101
+
+== step probe: probe_cmd  (10:37:47)
+== step probe: rc=0 in 1 s
+   | Step 3/4 : WORKDIR /src
+   |  ---> Using cache
+   |  ---> db7949e5c887
+   | Step 4/4 : CMD ["sh"]
+   |  ---> Using cache
+   |  ---> c9abb6c18c86
+   | Successfully built c9abb6c18c86
+   | Successfully tagged challoc-dev:amd64
+   | docker run --rm --platform linux/amd64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-amd64:/src/target -v challoc-cargo-registry:/root/.cargo/registry   challoc-dev:amd64 sh -c 'getconf PAGESIZE; cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c tests/c/features.c -o target/matrix-features -ldl && LD_PRELOAD=/src/target/release/libchalloc.so ./target/matrix-features'
+   | 4096
+   | features: page_size=4096 guard_install=yes mseal=no process_madvise=no anon_name=yes lam=no uai=no la57=no la57_enabled=no cldemote=no waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=32K l2=1M
+   | ok features
+
+== step probe-privileged: probe_priv_cmd  (10:37:48)
+== step probe-privileged: rc=0 in 1 s
+   |  ---> 2424d131c140
+   | Step 3/4 : WORKDIR /src
+   |  ---> Using cache
+   |  ---> db7949e5c887
+   | Step 4/4 : CMD ["sh"]
+   |  ---> Using cache
+   |  ---> c9abb6c18c86
+   | Successfully built c9abb6c18c86
+   | Successfully tagged challoc-dev:amd64
+   | docker run --rm --platform linux/amd64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-amd64:/src/target -v challoc-cargo-registry:/root/.cargo/registry  --privileged challoc-dev:amd64 sh -c 'cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c tests/c/features.c -o target/matrix-features -ldl && LD_PRELOAD=/src/target/release/libchalloc.so ./target/matrix-features'
+   | features: page_size=4096 guard_install=yes mseal=yes process_madvise=pidfd_self anon_name=yes lam=no uai=no la57=no la57_enabled=no cldemote=no waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=32K l2=1M
+   | ok features
+
+== step cpuinfo: cpuinfo_cmd  (10:37:49)
+== step cpuinfo: rc=0 in 0 s
+   | cpuid leaf=0x00000001 sub=0 eax=0x00a10f11 ebx=0x00080800 ecx=0xfefa3203 edx=0x178bfbff
+   | cpuid leaf=0x00000007 sub=0 eax=0x00000001 ebx=0xf1bf07ab ecx=0x00405f46 edx=0x00000010
+   | cpuid leaf=0x00000007 sub=1 eax=0x00000020 ebx=0x00000000 ecx=0x00000000 edx=0x00000000
+   | cpuid leaf=0x00000004 sub=0 eax=0x00000000 ebx=0x00000000 ecx=0x00000000 edx=0x00000000
+   | cpuid leaf=0x80000000 sub=0 eax=0x80000021 ebx=0x68747541 ecx=0x444d4163 edx=0x69746e65
+   | cpuid leaf=0x80000008 sub=0 eax=0x00003934 ebx=0x711ed205 ecx=0x00003007 edx=0x00010007
+   | cpuid leaf=0x8000001d sub=0 eax=0x00004121 ebx=0x01c0003f ecx=0x0000003f edx=0x00000000
+   | cpuid leaf=0x8000001d sub=1 eax=0x00004122 ebx=0x01c0003f ecx=0x0000003f edx=0x00000000
+   | cpuid leaf=0x8000001d sub=2 eax=0x00004143 ebx=0x01c0003f ecx=0x000007ff edx=0x00000002
+   | cpuid leaf=0x8000001d sub=3 eax=0x0001c163 ebx=0x03c0003f ecx=0x00007fff edx=0x00000001
+   | cpuid leaf=0x8000001d sub=4 eax=0x00000000 ebx=0x00000000 ecx=0x00000000 edx=0x00000000
+   | cpuid leaf=0x80000021 sub=0 eax=0x10000067 ebx=0x00000000 ecx=0x00000000 edx=0x00000000
+
+== step scorecard: scorecard_cmd  (10:37:49)
+== step scorecard: rc=0 in 642 s
+   | | mstress | s | 0.529 | 155.8 | 1.063 | 133.4 | +100.9% |
+   | | glibc-simple | s | 2.159 | 2.5 | 2.251 | 5.4 | +4.3% |
+   | | redis | k req/s | 536.8 | 30.0 | 407.5 | 32.2 | +31.7% |
+   | | python1 | s | 4.844 | 75.5 | 4.935 | 91.7 | +1.9% |
+   | | python1-malloc | s | 4.628 | 76.3 | 4.762 | 120.9 | +2.9% |
+   | 
+   | Positive percentages mean the variant did worse than challoc (slower or lower throughput).
+   | == appended to bench/results/scorecard-c3d.md
+   | | date | commit | larson1 | larson10 | larson16 | xmalloc | alloc-test1 | alloc-testN | valkey1 | valkey1-free | cfrac | espresso | mstress | glibc-simple | redis | python1 | python1-malloc | RSS larson10 | RSS valkey1 | soak write | soak delete | soak peak RSS | soak post-delete RSS | note |
+   | |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+   | | 2026-09-19 | 7b2c50b | +4.8% | +9.3% | +11.5% | +15.8% | +5.6% | +4.7% | +43.3% | +6.8% | +5.9% | -0.5% | -50.2% | -4.1% | -24.1% | -1.8% | -2.8% | 1.02 | 0.99 | - | - | - | - | 3 rounds, GCE c3d-standard-8 (AMD EPYC 9B14), zone us-east4-a, 8 vCPU; no soak for 7b2c50b |
+   | == 641 s total; render the trend with: bench/scorecard.sh --render x86_64
+
+== end 2026-09-19T10:48:31Z, wall 813 s
+FAILED_TESTS sys::cpu::linux_tests::probe_matches_proc_cpuinfo
+CPU AMD EPYC 9B14
+PROBE features: page_size=4096 guard_install=yes mseal=no process_madvise=no anon_name=yes lam=no uai=no la57=no la57_enabled=no cldemote=no waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=32K l2=1M
+PROBE_PRIVILEGED features: page_size=4096 guard_install=yes mseal=yes process_madvise=pidfd_self anon_name=yes lam=no uai=no la57=no la57_enabled=no cldemote=no waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=32K l2=1M
+SCORECARD | 2026-09-19 | 7b2c50b | +4.8% | +9.3% | +11.5% | +15.8% | +5.6% | +4.7% | +43.3% | +6.8% | +5.9% | -0.5% | -50.2% | -4.1% | -24.1% | -1.8% | -2.8% | 1.02 | 0.99 | - | - | - | - | 3 rounds, GCE c3d-standard-8 (AMD EPYC 9B14), zone us-east4-a, 8 vCPU; no soak for 7b2c50b |
+MATRIX cell=cpu-c3d image=ubuntu-2404-noble-amd64-v20260918 kernel=7.0.0-1011-gcp page=4096 machine=c3d-standard-8 zone=us-east4-a vcpus=8 tests=334/1 fuzz=- cgroup=- privileged=- scorecard=PASS wall=813 outcome=FAIL
+
+==================== ~/logs/cpuinfo.log ====================
+model: AMD EPYC 9B14
+vcpus: 8
+machine: c3d-standard-8 zone: us-east4-a
+-- /proc/cpuinfo (first processor)
+processor	: 0
+vendor_id	: AuthenticAMD
+cpu family	: 25
+model		: 17
+model name	: AMD EPYC 9B14
+stepping	: 1
+microcode	: 0xffffffff
+cpu MHz		: 2599.998
+cache size	: 1024 KB
+physical id	: 0
+siblings	: 8
+core id		: 0
+cpu cores	: 4
+apicid		: 0
+initial apicid	: 0
+fpu		: yes
+fpu_exception	: yes
+cpuid level	: 16
+wp		: yes
+flags		: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology nonstop_tsc cpuid extd_apicid tsc_known_freq pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor lahf_lm cmp_legacy cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw topoext ssbd ibrs ibpb stibp vmmcall fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves avx512_bf16 clzero xsaveerptr wbnoinvd arat avx512vbmi umip avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid fsrm
+bugs		: sysret_ss_attrs spectre_v1 spectre_v2 spec_store_bypass srso spectre_v2_user tsa
+bogomips	: 5199.99
+TLB size	: 3584 4K pages
+clflush size	: 64
+cache_alignment	: 64
+address sizes	: 52 bits physical, 57 bits virtual
+power management:
+
+-- lscpu
+Architecture:                            x86_64
+CPU op-mode(s):                          32-bit, 64-bit
+Address sizes:                           52 bits physical, 57 bits virtual
+Byte Order:                              Little Endian
+CPU(s):                                  8
+On-line CPU(s) list:                     0-7
+Vendor ID:                               AuthenticAMD
+Model name:                              AMD EPYC 9B14
+CPU family:                              25
+Model:                                   17
+Thread(s) per core:                      2
+Core(s) per socket:                      4
+Socket(s):                               1
+Stepping:                                1
+BogoMIPS:                                5199.99
+Flags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology nonstop_tsc cpuid extd_apicid tsc_known_freq pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor lahf_lm cmp_legacy cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw topoext ssbd ibrs ibpb stibp vmmcall fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves avx512_bf16 clzero xsaveerptr wbnoinvd arat avx512vbmi umip avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq rdpid fsrm
+Hypervisor vendor:                       KVM
+Virtualization type:                     full
+L1d cache:                               128 KiB (4 instances)
+L1i cache:                               128 KiB (4 instances)
+L2 cache:                                4 MiB (4 instances)
+L3 cache:                                32 MiB (1 instance)
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-7
+Vulnerability Gather data sampling:      Not affected
+Vulnerability Ghostwrite:                Not affected
+Vulnerability Indirect target selection: Not affected
+Vulnerability Itlb multihit:             Not affected
+Vulnerability L1tf:                      Not affected
+Vulnerability Mds:                       Not affected
+Vulnerability Meltdown:                  Not affected
+Vulnerability Mmio stale data:           Not affected
+Vulnerability Old microcode:             Not affected
+Vulnerability Reg file data sampling:    Not affected
+Vulnerability Retbleed:                  Not affected
+Vulnerability Spec rstack overflow:      Mitigation; Safe RET
+Vulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization
+Vulnerability Spectre v2:                Mitigation; Retpolines; IBPB conditional; IBRS_FW; STIBP always-on; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected
+Vulnerability Srbds:                     Not affected
+Vulnerability Tsa:                       Mitigation; Clear CPU buffers
+Vulnerability Tsx async abort:           Not affected
+Vulnerability Vmscape:                   Not affected
+-- cpuid-dump (in the container)
+docker build --platform linux/amd64 -f Dockerfile.dev -t challoc-dev:amd64 .
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  26.05MB
+Step 1/4 : FROM cgr.dev/chainguard/wolfi-base
+ ---> 1d95114038f7
+Step 2/4 : RUN sed -i       -e 's/^glibc=.*/glibc-2.44/'       -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/'       -e 's/^ld-linux=.*/ld-linux-2.44/'       -e 's/^libcrypt1=.*/libcrypt1-2.44/'       /etc/apk/world  && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44  && apk add --no-cache       rust       build-base       gcc       jemalloc       git       cmake       tcl       openssl-dev       procps       memtier-benchmark       posix-libc-utils-2.44       autoconf       ruby-3.4       jemalloc-dev       yaml-dev       zlib-dev       libffi-dev       tzdata       tcmalloc-minimal       python-3.13       py3.13-pip  && rustc --version && cargo --version && python3 --version  && test -f /usr/lib/libtcmalloc_minimal.so.4
+ ---> Using cache
+ ---> 2424d131c140
+Step 3/4 : WORKDIR /src
+ ---> Using cache
+ ---> db7949e5c887
+Step 4/4 : CMD ["sh"]
+ ---> Using cache
+ ---> c9abb6c18c86
+Successfully built c9abb6c18c86
+Successfully tagged challoc-dev:amd64
+docker run --rm --platform linux/amd64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-amd64:/src/target -v challoc-cargo-registry:/root/.cargo/registry   challoc-dev:amd64 sh -c 'cc -O2 -Wall -Wextra -Werror bench/gce/cpuid-dump.c -o target/cpuid-dump && ./target/cpuid-dump'
+vendor=AuthenticAMD max_leaf=0x00000010 max_ext_leaf=0x80000021
+cpuid leaf=0x00000000 sub=0 eax=0x00000010 ebx=0x68747541 ecx=0x444d4163 edx=0x69746e65
+cpuid leaf=0x00000001 sub=0 eax=0x00a10f11 ebx=0x00080800 ecx=0xfefa3203 edx=0x178bfbff
+cpuid leaf=0x00000007 sub=0 eax=0x00000001 ebx=0xf1bf07ab ecx=0x00405f46 edx=0x00000010
+cpuid leaf=0x00000007 sub=1 eax=0x00000020 ebx=0x00000000 ecx=0x00000000 edx=0x00000000
+cpuid leaf=0x00000004 sub=0 eax=0x00000000 ebx=0x00000000 ecx=0x00000000 edx=0x00000000
+cpuid leaf=0x80000000 sub=0 eax=0x80000021 ebx=0x68747541 ecx=0x444d4163 edx=0x69746e65
+cpuid leaf=0x80000008 sub=0 eax=0x00003934 ebx=0x711ed205 ecx=0x00003007 edx=0x00010007
+cpuid leaf=0x8000001d sub=0 eax=0x00004121 ebx=0x01c0003f ecx=0x0000003f edx=0x00000000
+cpuid leaf=0x8000001d sub=1 eax=0x00004122 ebx=0x01c0003f ecx=0x0000003f edx=0x00000000
+cpuid leaf=0x8000001d sub=2 eax=0x00004143 ebx=0x01c0003f ecx=0x000007ff edx=0x00000002
+cpuid leaf=0x8000001d sub=3 eax=0x0001c163 ebx=0x03c0003f ecx=0x00007fff edx=0x00000001
+cpuid leaf=0x8000001d sub=4 eax=0x00000000 ebx=0x00000000 ecx=0x00000000 edx=0x00000000
+cpuid leaf=0x80000021 sub=0 eax=0x10000067 ebx=0x00000000 ecx=0x00000000 edx=0x00000000
+
+==================== ~/logs/image.log (last 60 lines) ====================
+(46/88) Installing libldap (2.6.10-r5)
+(47/88) Installing libnghttp2-14 (1.70.0-r3)
+(48/88) Installing nghttp3 (1.18.0-r1)
+(49/88) Installing ngtcp2 (1.25.0-r2)
+(50/88) Installing libpsl (0.23.3-r1)
+(51/88) Installing libcurl-openssl4 (8.22.0-r2)
+(52/88) Installing jsoncpp (1.9.8-r3)
+(53/88) Installing librhash0 (1.4.6-r6)
+(54/88) Installing libuv (1.52.1-r2)
+(55/88) Installing cmake (4.4.3-r1)
+(56/88) Installing libpcre2-8-0 (10.48-r0)
+(57/88) Installing git (2.55.0-r7)
+(58/88) Installing libjemalloc2 (5.3.1-r3)
+(59/88) Installing jemalloc (5.3.1-r3)
+(60/88) Installing jemalloc-dev (5.3.1-r3)
+(61/88) Installing libffi (3.8.0-r1)
+(62/88) Installing libffi-dev (3.8.0-r1)
+(63/88) Installing libevent (2.1.13-r1)
+(64/88) Installing memtier-benchmark (2.5.1-r1)
+(65/88) Installing openssl-dev (3.6.4-r7)
+(66/88) Installing bash (5.3-r13)
+(67/88) Installing posix-libc-utils-bin-2.44 (2.44-r6)
+(68/88) Installing posix-libc-utils-2.44 (2.44-r6)
+(69/88) Installing libproc-2-0 (4.0.7-r1)
+(70/88) Installing procps (4.0.7-r1)
+(71/88) Installing py3-pip-wheel (26.2.1-r1)
+(72/88) Installing mpdecimal (4.0.1-r4)
+(73/88) Installing libuuid (2.42.3-r4)
+(74/88) Installing python-3.13-base (3.13.15_git20260918-r1)
+(75/88) Installing py3.13-setuptools (84.0.0-r0)
+(76/88) Installing py3.13-pip-base (26.2.1-r1)
+(77/88) Installing py3.13-pip (26.2.1-r1)
+(78/88) Installing python-3.13 (3.13.15_git20260918-r1)
+(79/88) Installing yaml (0.2.5-r10)
+(80/88) Installing ruby-3.4 (3.4.10-r7)
+(81/88) Installing libxml2-16 (2.15.4-r0)
+(82/88) Installing libLLVM-22 (22.1.8-r4)
+(83/88) Installing rust-1.98 (1.98.1-r0)
+(84/88) Installing tcl (9.0.4-r1)
+(85/88) Installing tcmalloc-minimal (2.18.1-r5)
+(86/88) Installing tzdata (2026d-r0)
+(87/88) Installing yaml-dev (0.2.5-r10)
+(88/88) Installing zlib-dev (1.3.2.1_rc20260601-r0)
+Executing busybox-1.38.0-r2.trigger
+OK: 1435 MiB in 104 packages
+rustc 1.98.1 (48a229cea 2026-09-01)
+cargo 1.98.1 (797e8a9bc 2026-08-05)
+Python 3.13.15
+ ---> Removed intermediate container bc24e953dda2
+ ---> 2424d131c140
+Step 3/4 : WORKDIR /src
+ ---> Running in 55e1ab195363
+ ---> Removed intermediate container 55e1ab195363
+ ---> db7949e5c887
+Step 4/4 : CMD ["sh"]
+ ---> Running in 74be9217dd1a
+ ---> Removed intermediate container 74be9217dd1a
+ ---> c9abb6c18c86
+Successfully built c9abb6c18c86
+Successfully tagged challoc-dev:amd64
+
+==================== ~/logs/test.log (last 60 lines) ====================
+test sys::errno::tests::every_code_round_trips ... ok
+test sys::errno::tests::negative_errnos_map ... ok
+test sys::errno::tests::zero_and_small_positives_are_ok ... ok
+test sys::features::linux_tests::page_size_matches_libc_and_auxv ... ok
+kernel 7.0: page_size=4096 guard_install=yes mseal=no process_madvise=no anon_name=yes lam=no uai=no la57=no la57_enabled=no cldemote=no waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=32K l2=1M
+test sys::features::linux_tests::release_closes_pidfd ... ok
+test sys::features::tests::auxv_parse_finds_pagesz ... ok
+test sys::features::tests::auxv_parse_rejects_bad_input ... ok
+test sys::features::linux_tests::probe_prints_and_matches_kernel_version ... ok
+test sys::features::tests::display_is_one_line_of_key_values ... ok
+test sys::features::tests::feature_line_fits ... ok
+test sys::features::tests::feature_line_is_the_display_with_a_nul ... ok
+test sys::tests::abort_child_hook ... ok
+test sys::tests::abort_defeats_a_returning_handler ... ok
+test sys::tests::abort_defeats_a_blocked_signal ... ok
+test sys::tests::abort_flushes_long_messages ... ok
+test sys::tests::abort_macro_formats ... ok
+test sys::tests::abort_writes_message_and_raises_sigabrt ... ok
+test sys::tests::errno_display_from_syscall ... ok
+test sys::tests::files_open_read_close ... ok
+test sys::tests::futex_wake_and_mismatch ... ok
+test sys::tests::clocks_advance ... ok
+test sys::tests::getrandom_fills ... ok
+test sys::tests::mmap_errors_decode ... ok
+test sys::tests::mmap_fixed_noreplace_refuses_overlap ... ok
+test sys::tests::mmap_mprotect_madvise_munmap ... ok
+mseal: ENOSYS on this kernel, skipping
+test sys::tests::mseal_blocks_munmap_when_supported ... ok
+test sys::tests::ncpus_counts_the_affinity_mask ... ok
+test sys::tests::pid_and_tid ... ok
+test sys::tests::process_madvise_via_pidfd ... ok
+process_madvise: EPERM (no CAP_SYS_NICE), skipping
+cgroup: 10 reads in 97068 sample calls over 100 ms
+test sys::cgroup::linux_tests::sampling_is_rate_limited_to_ten_milliseconds ... ok
+test sys::tests::vma_naming_shows_in_maps_when_supported ... ok
+test sys::tests::write_to_devnull_and_bad_fd ... ok
+test tests::quantum_is_a_power_of_two ... ok
+test sys::tests::futex_wakes_a_sleeping_thread ... ok
+test tls::tests::shared_object_uses_initial_exec_tls ... ok
+test tls::tests::slot_starts_null_and_round_trips ... ok
+test tls::tests::threads_have_distinct_slots ... ok
+test sys::tests::syscall_numbers_match_kernel_headers ... ok
+tls_threads: ok 64 threads, distinct heaps (challoc 0.1.0)
+test tls::tests::c_program_with_64_threads_sees_distinct_slots ... ok
+cgroup: memory.current 199987200 -> 266182656 after 64 MiB (kernel says 266182656)
+test sys::cgroup::linux_tests::current_tracks_a_large_allocation ... ok
+test huge::tests::randomised_model_check ... ok
+test bitmap::tests::two_level_ranges_match_model ... ok
+test layout::tests::every_in_slab_offset_classifies_exactly ... ok
+test bitmap::tests::atomic_bitmap_matches_model ... ok
+
+failures:
+
+failures:
+    sys::cpu::linux_tests::probe_matches_proc_cpuinfo
+
+test result: FAILED. 334 passed; 1 failed; 0 ignored; 0 measured; 107 filtered out; finished in 4.87s
+
+error: test failed, to rerun pass `--lib`
+make: *** [Makefile:162: test] Error 101
+
+==================== ~/logs/probe.log (last 60 lines) ====================
+docker build --platform linux/amd64 -f Dockerfile.dev -t challoc-dev:amd64 .
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  26.05MB
+Step 1/4 : FROM cgr.dev/chainguard/wolfi-base
+ ---> 1d95114038f7
+Step 2/4 : RUN sed -i       -e 's/^glibc=.*/glibc-2.44/'       -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/'       -e 's/^ld-linux=.*/ld-linux-2.44/'       -e 's/^libcrypt1=.*/libcrypt1-2.44/'       /etc/apk/world  && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44  && apk add --no-cache       rust       build-base       gcc       jemalloc       git       cmake       tcl       openssl-dev       procps       memtier-benchmark       posix-libc-utils-2.44       autoconf       ruby-3.4       jemalloc-dev       yaml-dev       zlib-dev       libffi-dev       tzdata       tcmalloc-minimal       python-3.13       py3.13-pip  && rustc --version && cargo --version && python3 --version  && test -f /usr/lib/libtcmalloc_minimal.so.4
+ ---> Using cache
+ ---> 2424d131c140
+Step 3/4 : WORKDIR /src
+ ---> Using cache
+ ---> db7949e5c887
+Step 4/4 : CMD ["sh"]
+ ---> Using cache
+ ---> c9abb6c18c86
+Successfully built c9abb6c18c86
+Successfully tagged challoc-dev:amd64
+docker run --rm --platform linux/amd64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-amd64:/src/target -v challoc-cargo-registry:/root/.cargo/registry   challoc-dev:amd64 sh -c 'getconf PAGESIZE; cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c tests/c/features.c -o target/matrix-features -ldl && LD_PRELOAD=/src/target/release/libchalloc.so ./target/matrix-features'
+4096
+features: page_size=4096 guard_install=yes mseal=no process_madvise=no anon_name=yes lam=no uai=no la57=no la57_enabled=no cldemote=no waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=32K l2=1M
+ok features
+
+==================== ~/logs/probe-privileged.log (last 60 lines) ====================
+docker build --platform linux/amd64 -f Dockerfile.dev -t challoc-dev:amd64 .
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  26.05MB
+Step 1/4 : FROM cgr.dev/chainguard/wolfi-base
+ ---> 1d95114038f7
+Step 2/4 : RUN sed -i       -e 's/^glibc=.*/glibc-2.44/'       -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/'       -e 's/^ld-linux=.*/ld-linux-2.44/'       -e 's/^libcrypt1=.*/libcrypt1-2.44/'       /etc/apk/world  && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44  && apk add --no-cache       rust       build-base       gcc       jemalloc       git       cmake       tcl       openssl-dev       procps       memtier-benchmark       posix-libc-utils-2.44       autoconf       ruby-3.4       jemalloc-dev       yaml-dev       zlib-dev       libffi-dev       tzdata       tcmalloc-minimal       python-3.13       py3.13-pip  && rustc --version && cargo --version && python3 --version  && test -f /usr/lib/libtcmalloc_minimal.so.4
+ ---> Using cache
+ ---> 2424d131c140
+Step 3/4 : WORKDIR /src
+ ---> Using cache
+ ---> db7949e5c887
+Step 4/4 : CMD ["sh"]
+ ---> Using cache
+ ---> c9abb6c18c86
+Successfully built c9abb6c18c86
+Successfully tagged challoc-dev:amd64
+docker run --rm --platform linux/amd64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-amd64:/src/target -v challoc-cargo-registry:/root/.cargo/registry  --privileged challoc-dev:amd64 sh -c 'cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c tests/c/features.c -o target/matrix-features -ldl && LD_PRELOAD=/src/target/release/libchalloc.so ./target/matrix-features'
+features: page_size=4096 guard_install=yes mseal=yes process_madvise=pidfd_self anon_name=yes lam=no uai=no la57=no la57_enabled=no cldemote=no waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=32K l2=1M
+ok features
+
+==================== ~/logs/scorecard.log (last 60 lines) ====================
+
+| program | variant | sorted scores | maxrss KiB |
+|---|---|---|---:|
+| larson1 | challoc | 39.3 39.9 40.2 | 17068 |
+| larson1 | jemalloc | 39.8 41.8 42.0 | 15788 |
+| larson10 | challoc | 164.1 165.4 165.9 | 83972 |
+| larson10 | jemalloc | 180.7 180.7 181.0 | 82392 |
+| larson16 | challoc | 161.4 164.6 167.4 | 132072 |
+| larson16 | jemalloc | 181.6 183.6 184.0 | 119068 |
+| xmalloc | challoc | 178.130 179.020 180.000 | 96852 |
+| xmalloc | jemalloc | 205.878 207.294 208.675 | 129268 |
+| alloc-test1 | challoc | 3.013 3.026 3.027 | 14192 |
+| alloc-test1 | jemalloc | 2.860 2.866 2.887 | 13644 |
+| alloc-testN | challoc | 3.597 3.608 3.683 | 16248 |
+| alloc-testN | jemalloc | 3.428 3.445 3.455 | 15312 |
+| valkey1 | challoc | 6.782 6.810 6.924 | 599168 |
+| valkey1 | jemalloc | 9.715 9.760 9.998 | 606396 |
+| valkey1-free | challoc | 6.995 7.128 7.132 | 599076 |
+| valkey1-free | jemalloc | 7.613 7.616 7.742 | 606040 |
+| cfrac | challoc | 4.020 4.077 4.286 | 3640 |
+| cfrac | jemalloc | 3.834 3.849 3.882 | 5976 |
+| espresso | challoc | 4.076 4.078 4.083 | 4108 |
+| espresso | jemalloc | 4.073 4.097 4.101 | 6432 |
+| mstress | challoc | 0.528 0.529 0.534 | 159564 |
+| mstress | jemalloc | 1.045 1.063 1.074 | 136588 |
+| glibc-simple | challoc | 2.141 2.159 2.165 | 2600 |
+| glibc-simple | jemalloc | 2.234 2.251 2.256 | 5480 |
+| redis | challoc | 530.8 536.8 537.9 | 30696 |
+| redis | jemalloc | 389.9 407.5 425.5 | 32984 |
+| python1 | challoc | 4.784 4.844 4.868 | 77324 |
+| python1 | jemalloc | 4.777 4.935 5.004 | 93932 |
+| python1-malloc | challoc | 4.534 4.628 4.701 | 78160 |
+| python1-malloc | jemalloc | 4.736 4.762 4.815 | 123848 |
+
+## Medians
+
+| program | unit | challoc | challoc RSS MiB | jemalloc | jemalloc RSS MiB | jemalloc vs challoc |
+|---|---|---:|---:|---:|---:|---:|
+| larson1 | M ops/s | 39.9 | 16.7 | 41.8 | 15.4 | -4.5% |
+| larson10 | M ops/s | 165.4 | 82.0 | 180.7 | 80.5 | -8.5% |
+| larson16 | M ops/s | 164.6 | 129.0 | 183.6 | 116.3 | -10.3% |
+| xmalloc | M frees/s | 179.020 | 94.6 | 207.294 | 126.2 | -13.6% |
+| alloc-test1 | s | 3.026 | 13.9 | 2.866 | 13.3 | -5.3% |
+| alloc-testN | s | 3.608 | 15.9 | 3.445 | 15.0 | -4.5% |
+| valkey1 | M ops/s | 6.810 | 585.1 | 9.760 | 592.2 | -30.2% |
+| valkey1-free | M ops/s | 7.128 | 585.0 | 7.616 | 591.8 | -6.4% |
+| cfrac | s | 4.077 | 3.6 | 3.849 | 5.8 | -5.6% |
+| espresso | s | 4.078 | 4.0 | 4.097 | 6.3 | +0.5% |
+| mstress | s | 0.529 | 155.8 | 1.063 | 133.4 | +100.9% |
+| glibc-simple | s | 2.159 | 2.5 | 2.251 | 5.4 | +4.3% |
+| redis | k req/s | 536.8 | 30.0 | 407.5 | 32.2 | +31.7% |
+| python1 | s | 4.844 | 75.5 | 4.935 | 91.7 | +1.9% |
+| python1-malloc | s | 4.628 | 76.3 | 4.762 | 120.9 | +2.9% |
+
+Positive percentages mean the variant did worse than challoc (slower or lower throughput).
+== appended to bench/results/scorecard-c3d.md
+| date | commit | larson1 | larson10 | larson16 | xmalloc | alloc-test1 | alloc-testN | valkey1 | valkey1-free | cfrac | espresso | mstress | glibc-simple | redis | python1 | python1-malloc | RSS larson10 | RSS valkey1 | soak write | soak delete | soak peak RSS | soak post-delete RSS | note |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 2026-09-19 | 7b2c50b | +4.8% | +9.3% | +11.5% | +15.8% | +5.6% | +4.7% | +43.3% | +6.8% | +5.9% | -0.5% | -50.2% | -4.1% | -24.1% | -1.8% | -2.8% | 1.02 | 0.99 | - | - | - | - | 3 rounds, GCE c3d-standard-8 (AMD EPYC 9B14), zone us-east4-a, 8 vCPU; no soak for 7b2c50b |
+== 641 s total; render the trend with: bench/scorecard.sh --render x86_64
+
+==================== failures in make test ====================
+failures:
+
+failures:
+    sys::cpu::linux_tests::probe_matches_proc_cpuinfo
+
+test result: FAILED. 334 passed; 1 failed; 0 ignored; 0 measured; 107 filtered out; finished in 4.87s
+-- every panic with its message:
+thread 'bitmap::tests::a_cleared_padding_bit_aborts_the_allocated_count' (466) panicked at src/bitmap.rs:200:9:
+bitmap: a padding bit of the slab was cleared
+thread 'bitmap::tests::a_release_outside_the_sub_word_view_aborts' (467) panicked at src/bitmap.rs:174:9:
+bitmap: release outside the slab
+thread 'class::tests::a_corrupt_owner_word_aborts_the_next_take_group' (491) panicked at src/class.rs:2384:5:
+heap inconsistency: class 3 group 1: owner word says arena 7, slab 1's descriptor says arena 0
+thread 'class::tests::a_plan_over_a_slab_with_live_above_nslots_aborts' (495) panicked at src/class.rs:1750:9:
+class: slab live count above its slot count
+thread 'class::tests::a_purge_of_an_empty_slab_the_counts_do_not_know_aborts' (497) panicked at src/class.rs:2464:5:
+class: empty slab count underflow
+thread 'class::tests::a_plan_that_takes_an_empty_slab_the_counts_do_not_know_aborts' (496) panicked at src/class.rs:2464:5:
+class: empty slab count underflow
+thread 'class::tests::check_of_a_guard_slab_slot_aborts' (505) panicked at src/class.rs:2415:5:
+invalid free of 0x79d8b6810000 (class 3 slab 1): guard slab
+thread 'class::tests::check_after_release_aborts' (504) panicked at src/class.rs:2430:5:
+invalid or double free of 0x79d8eac00000 (class 3 slab 0 slot 0): slot is not allocated
+thread 'class::tests::check_of_handed_out_uncommitted_slab_aborts' (506) panicked at src/class.rs:2430:5:
+invalid or double free of 0x79d8c6805000 (class 19 slab 5 slot 0): slot is not allocated
+thread 'class::tests::check_of_uncommitted_slab_aborts' (508) panicked at src/class.rs:2378:5:
+invalid free: class 3 slab 5 was never allocated
+thread 'class::tests::check_of_unclaimed_slot_aborts' (507) panicked at src/class.rs:2430:5:
+invalid or double free of 0x79d8b6800080 (class 3 slab 0 slot 2): slot is not allocated
+thread 'class::tests::check_through_the_wrong_arena_aborts' (509) panicked at src/class.rs:2438:5:
+slot 0x79d882410000 (class 3) belongs to arena 1 but was released through arena 0
+thread 'class::tests::check_zero_aborts_on_a_dirty_purged_slab' (510) panicked at src/class.rs:2509:5:
+check_zero: slot 0x79d8eac00040 (class 3, size 64, slab 0, arena 0) was handed out as zero from a Purged slab but its word at offset 56 reads 0xdeadbeef (discard backend madvise loop, MADV_DONTNEED; descriptor at 0x79d941f5b480 now Active live 2 owner 0, 2 of 1024 bits set, pick of 2 slots)
+thread 'class::tests::double_release_aborts' (533) panicked at src/class.rs:2456:5:
+double free of 0x79d84e000000 (class 3 slab 0 slot 0)
+thread 'class::tests::duplicate_apart_in_one_slab_group_aborts' (534) panicked at src/class.rs:2456:5:
+double free of 0x79d84e001180 (class 3 slab 0 slot 70)
+thread 'class::tests::duplicate_in_one_batch_aborts' (535) panicked at src/class.rs:2456:5:
+double free of 0x79d84e000040 (class 3 slab 0 slot 1)
+thread 'class::tests::release_into_an_uncommitted_slab_of_the_group_aborts' (552) panicked at src/class.rs:2424:5:
+invalid free of 0x79d7f5801000 (class 19 slab 1): the slab has never been allocated from
+thread 'class::tests::release_of_interior_pointer_aborts' (553) panicked at src/class.rs:2450:5:
+invalid free of 0x79d7e5800001 (class 3): not a slot start
+thread 'class::tests::release_outside_region_aborts' (554) panicked at src/class.rs:2450:5:
+invalid free of 0x79d856c00000 (class 3): outside the class region
+thread 'class::tests::release_through_the_wrong_arena_aborts' (556) panicked at src/class.rs:2438:5:
+slot 0x79d7e5810000 (class 3) belongs to arena 1 but was released through arena 0
+thread 'heap::tests::a_cached_pair_kept_by_the_split_is_caught_when_released' (620) panicked at src/class.rs:2456:5:
+double free of 0x79d6e0420000 (class 3 slab 2 slot 0)
+thread 'heap::tests::a_refill_of_a_cache_that_is_not_empty_aborts' (622) panicked at src/heap.rs:2043:13:
+assertion `left == right` failed: heap: refill of a cache that is not empty
+thread 'heap::tests::a_scheduled_pop_aborts_when_the_run_reaches_past_the_length' (623) panicked at src/heap.rs:1508:13:
+heap: cache run invariant violated (run_end > low_water or low_water > len)
+thread 'heap::tests::an_others_node_for_the_home_arena_aborts' (626) panicked at src/heap.rs:1937:9:
+assertion `left != right` failed: heap: others node requested for the home arena
+thread 'heap::tests::cached_double_free_aborts_at_the_flush' (629) panicked at src/class.rs:2456:5:
+double free of 0x79d5a6c00000 (class 3 slab 0 slot 0)
+thread 'heap::tests::double_free_scan_compares_the_top_four_entries' (639) panicked at src/heap.rs:2459:5:
+double free of 0x79d358000000: the slot is already in the thread cache
+thread 'heap::tests::double_free_scan_compares_the_top_four_entries' (639) panicked at src/heap.rs:2459:5:
+double free of 0x79d358000000: the slot is already in the thread cache
+thread 'heap::tests::double_free_scan_compares_the_top_four_entries' (639) panicked at src/heap.rs:2459:5:
+double free of 0x79d358000000: the slot is already in the thread cache
+thread 'heap::tests::double_free_scan_compares_the_top_four_entries' (639) panicked at src/heap.rs:2459:5:
+double free of 0x79d358000000: the slot is already in the thread cache
+thread 'heap::tests::double_free_scan_compares_the_top_four_entries' (639) panicked at src/class.rs:2456:5:
+double free of 0x79d358000000 (class 3 slab 0 slot 0)
+thread 'heap::tests::flush_aborts_on_a_cached_pair_straddling_the_split' (645) panicked at src/heap.rs:2545:5:
+double free of 0x79d239c20000 (class 3): both copies cached, one at the flush boundary
+thread 'heap::tests::free_into_an_uncommitted_slab_aborts' (648) panicked at src/class.rs:2378:5:
+invalid free: class 3 slab 5 was never allocated
+thread 'heap::tests::free_of_a_misaligned_pointer_aborts' (649) panicked at src/heap.rs:2434:5:
+invalid free of 0x79d154c00008: not an allocation
+thread 'heap::tests::free_of_a_never_allocated_slot_aborts' (650) panicked at src/class.rs:2430:5:
+invalid or double free of 0x79d118802c80 (class 0 slab 0 slot 712): slot is not allocated
+thread 'heap::tests::free_of_a_pointer_outside_every_region_aborts' (651) panicked at src/heap.rs:2434:5:
+invalid free of 0x79d94321f488: not an allocation
+thread 'heap::tests::free_of_an_unallocated_huge_pointer_aborts' (652) panicked at src/huge.rs:1339:5:
+invalid free of 0x79d0a1000000: not the start of a huge allocation
+thread 'heap::tests::freeing_caches_that_were_not_flushed_aborts' (653) panicked at src/heap.rs:1119:17:
+assertion `left == right` failed: heap: freeing a cache that was not flushed
+thread 'heap::tests::stale_double_free_aborts_at_the_check' (672) panicked at src/class.rs:2430:5:
+invalid or double free of 0x79ca66000000 (class 3 slab 0 slot 0): slot is not allocated
+thread 'huge::linux_tests::check_zero_aborts_on_a_dirty_purged_run' (678) panicked at src/huge.rs:1353:5:
+check_zero: huge run 0x79c974c00000 (3 pages from page 0, arena 0) was handed out as zero from Purged pages but the word at 0x79c974c02ff8 reads 0xdeadbeef (discard backend madvise loop, MADV_DONTNEED)
+thread 'huge::tests::a_run_state_byte_no_state_has_aborts' (695) panicked at src/huge.rs:227:5:
+huge: run state byte 0x3 is not a run state
+thread 'huge::tests::double_free_aborts' (710) panicked at src/huge.rs:1345:5:
+double free of 0x79c96a400000: huge allocation already freed
+thread 'huge::tests::free_beyond_the_mark_aborts' (714) panicked at src/huge.rs:1339:5:
+invalid free of 0x79c96f864000: not the start of a huge allocation
+thread 'huge::tests::free_of_a_free_extents_last_page_aborts' (715) panicked at src/huge.rs:1345:5:
+double free of 0x79c96f804000: huge allocation already freed
+thread 'huge::tests::free_of_a_guard_page_aborts' (716) panicked at src/huge.rs:1339:5:
+invalid free of 0x79c96f804000: not the start of a huge allocation
+thread 'huge::tests::free_of_an_interior_page_aborts' (717) panicked at src/huge.rs:1339:5:
+invalid free of 0x79c96f801000: not the start of a huge allocation
+thread 'huge::tests::huge_stats_abort_on_a_free_count_going_below_zero' (718) panicked at src/huge.rs:233:5:
+huge: Empty extent count underflow
+thread 'huge::tests::the_table_aborts_when_its_count_disagrees_with_its_entries' (726) panicked at src/huge.rs:354:66:
+huge: descriptor table count underflow
+thread 'huge::tests::the_table_rejects_a_duplicate_key' (727) panicked at src/huge.rs:326:13:
+huge: key inserted twice
+thread 'huge::tests::usable_size_of_a_bad_pointer_aborts' (728) panicked at src/huge.rs:1339:5:
+invalid free of 0x79c96b402000: not the start of a huge allocation
+thread 'meta::tests::a_double_free_of_the_list_head_aborts' (762) panicked at src/meta.rs:275:9:
+meta: double free of the free list head
+thread 'meta::tests::commit_outside_reservations_aborts' (768) panicked at src/meta.rs:304:9:
+meta: commit outside the reserved area
+thread 'meta::tests::free_beyond_bump_aborts' (772) panicked at src/meta.rs:267:9:
+meta: free of a pointer that was never allocated here
+thread 'meta::tests::free_of_foreign_pointer_aborts' (774) panicked at src/meta.rs:267:9:
+meta: free of a pointer that was never allocated here
+thread 'meta::tests::free_of_misaligned_pointer_aborts' (775) panicked at src/meta.rs:267:9:
+meta: free of a pointer that was never allocated here
+thread 'meta::tests::overaligned_object_aborts' (779) panicked at src/meta.rs:357:9:
+meta: alignment too large for an object
+thread 'meta::tests::oversized_object_aborts' (780) panicked at src/meta.rs:358:48:
+meta: object too large
+thread 'slab::tests::a_state_byte_no_state_has_aborts' (807) panicked at src/slab.rs:33:5:
+slab: state byte 0x4 is not a slab state
+thread 'slab::tests::live_underflow_aborts' (811) panicked at src/slab.rs:203:9:
+slab: live count underflow (1 - 2)
+thread 'sys::cpu::linux_tests::probe_matches_proc_cpuinfo' (837) panicked at src/sys/cpu.rs:887:17:
+assertion `left == right` failed: address sizes	: 52 bits physical, 57 bits virtual: lam=no uai=no la57=no la57_enabled=no cldemote=no waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=32K l2=1M
+[driver 10:48:53] MATRIX cell=cpu-c3d image=ubuntu-2404-noble-amd64-v20260918 kernel=7.0.0-1011-gcp page=4096 machine=c3d-standard-8 zone=us-east4-a vcpus=8 tests=334/1 fuzz=- cgroup=- privileged=- scorecard=PASS wall=813 outcome=FAIL
+[driver 10:48:53] deleting challoc-matrix-cpu-c3d
+[driver 10:49:45] deleted challoc-matrix-cpu-c3d

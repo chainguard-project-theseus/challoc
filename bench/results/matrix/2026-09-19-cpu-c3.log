@@ -1,0 +1,497 @@
+[driver 10:32:27] cell cpu-c3: image ubuntu-2404-noble-amd64-v20260918 (ubuntu-2404-lts-amd64, ubuntu-os-cloud), amd64, c3-standard-8, prep none, extra scorecard, zones us-east4-a us-east4-b, timeout 3600s
+Created [https://www.googleapis.com/compute/v1/projects/dlorenc-dev/zones/us-east4-a/instances/challoc-matrix-cpu-c3].
+WARNING: Some requests generated warnings:
+ - Disk size: '50 GB' is larger than image size: '10 GB'. You might need to resize the root repartition manually if the operating system does not support automatic resizing. See https://cloud.google.com/compute/docs/disks/add-persistent-disk#resize_pd for details.
+
+NAME                   ZONE        MACHINE_TYPE   PREEMPTIBLE  INTERNAL_IP  EXTERNAL_IP     STATUS
+challoc-matrix-cpu-c3  us-east4-a  c3-standard-8               10.150.0.49  34.181.177.183  RUNNING
+[driver 10:32:39] created challoc-matrix-cpu-c3 in us-east4-a
+[driver 10:32:41] created challoc-matrix-cpu-c3 at 34.181.177.183; waiting for ssh
+[driver 10:33:08] up: x86_64 7.0.0-1011-gcp page 4096
+[driver 10:33:08] provisioning
+debconf: unable to initialize frontend: Dialog
+debconf: (Dialog frontend will not work on a dumb terminal, an emacs shell buffer, or without a controlling terminal.)
+debconf: falling back to frontend: Readline
+debconf: unable to initialize frontend: Readline
+debconf: (This frontend requires a controlling tty.)
+debconf: falling back to frontend: Teletype
+dpkg-preconfigure: unable to re-open stdin: 
+debconf: unable to initialize frontend: Dialog
+debconf: (Dialog frontend will not work on a dumb terminal, an emacs shell buffer, or without a controlling terminal.)
+debconf: falling back to frontend: Readline
+debconf: unable to initialize frontend: Readline
+debconf: (This frontend requires a controlling tty.)
+debconf: falling back to frontend: Teletype
+
+Running kernel seems to be up-to-date.
+
+No services need to be restarted.
+
+No containers need to be restarted.
+
+No user sessions are running outdated binaries.
+
+No VM guests are running outdated hypervisor (qemu) binaries on this host.
+== challoc-matrix-cpu-c3.us-east4-a.c.dlorenc-dev.internal: x86_64 7.0.0-1011-gcp, page 4096, Ubuntu 24.04.5 LTS
+== docker: Docker version 29.1.3, build 29.1.3-0ubuntu3~24.04.2
+[driver 10:33:31] syncing the tree
+[driver 10:33:32] running matrix-cell.sh detached (a new login, so the docker group applies)
+launched
+[driver 10:48:25] run finished: rc=0 after 959 s; fetching ~/logs
+[driver 10:48:27] fetched bench/results/scorecard-c3.md
+
+==================== ~/logs/matrix.log on challoc-matrix-cpu-c3 ====================
+== cell cpu-c3 on challoc-matrix-cpu-c3.us-east4-a.c.dlorenc-dev.internal: Ubuntu 24.04.5 LTS
+== image ubuntu-2404-noble-amd64-v20260918, machine c3-standard-8 (c3) in us-east4-a, 8 vCPU, x86_64 7.0.0-1011-gcp, page size 4096
+== cpu: Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz
+== cgroup fs: cgroup2fs, docker: Docker version 29.1.3, build 29.1.3-0ubuntu3~24.04.2
+== tree: 7b2c50b 6 dirty
+== mode: scorecard
+== start 2026-09-19T10:33:33Z
+
+== step image: make image  (10:33:33)
+== step image: rc=0 in 99 s
+   |  ---> Removed intermediate container 1a5df2309483
+   |  ---> f03fe3fbdbd7
+   | Step 3/4 : WORKDIR /src
+   |  ---> Running in 087f02d8cdb8
+   |  ---> Removed intermediate container 087f02d8cdb8
+   |  ---> 901f4da283c7
+   | Step 4/4 : CMD ["sh"]
+   |  ---> Running in 254b6541f961
+   |  ---> Removed intermediate container 254b6541f961
+   |  ---> 95a8214520bd
+   | Successfully built 95a8214520bd
+   | Successfully tagged challoc-dev:amd64
+
+== step test: make test  (10:35:12)
+== step test: rc=0 in 89 s
+   |   t+1609 ms: rss  185 MiB, memory.current 186 MiB
+   |   t+1701 ms: rss  180 MiB, memory.current 181 MiB
+   |   t+1803 ms: rss  174 MiB, memory.current 175 MiB
+   |   t+1905 ms: rss  171 MiB, memory.current 172 MiB
+   |   t+2007 ms: rss  165 MiB, memory.current 165 MiB
+   | at 2000 ms: rss 165 MiB (min 165 MiB, never under the threshold; 2000 ms), memory.current 165 MiB
+   | challoc: stats.cgroup.* ENOENT (cgroup not tracked)
+   | RESULT churn mode=keep mib=200 threshold=50 rss_peak=203 rss_2s=165 rss_min=165 below_ms=-1 current_peak=203 current_2s=165
+   | ok cgroup_churn
+   | memory.events after: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0 
+   | memory.peak 203 MiB, memory.current 3 MiB
+   | OUTCOME churn alloc=challoc-off args='keep 200 50' status=0 verdict=ok oom_kill=0
+
+== step probe: probe_cmd  (10:36:41)
+== step probe: rc=0 in 0 s
+   | Step 3/4 : WORKDIR /src
+   |  ---> Using cache
+   |  ---> 901f4da283c7
+   | Step 4/4 : CMD ["sh"]
+   |  ---> Using cache
+   |  ---> 95a8214520bd
+   | Successfully built 95a8214520bd
+   | Successfully tagged challoc-dev:amd64
+   | docker run --rm --platform linux/amd64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-amd64:/src/target -v challoc-cargo-registry:/root/.cargo/registry   challoc-dev:amd64 sh -c 'getconf PAGESIZE; cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c tests/c/features.c -o target/matrix-features -ldl && LD_PRELOAD=/src/target/release/libchalloc.so ./target/matrix-features'
+   | 4096
+   | features: page_size=4096 guard_install=yes mseal=no process_madvise=no anon_name=yes lam=no uai=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=48K l2=2M
+   | ok features
+
+== step probe-privileged: probe_priv_cmd  (10:36:41)
+== step probe-privileged: rc=0 in 1 s
+   |  ---> f03fe3fbdbd7
+   | Step 3/4 : WORKDIR /src
+   |  ---> Using cache
+   |  ---> 901f4da283c7
+   | Step 4/4 : CMD ["sh"]
+   |  ---> Using cache
+   |  ---> 95a8214520bd
+   | Successfully built 95a8214520bd
+   | Successfully tagged challoc-dev:amd64
+   | docker run --rm --platform linux/amd64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-amd64:/src/target -v challoc-cargo-registry:/root/.cargo/registry  --privileged challoc-dev:amd64 sh -c 'cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c tests/c/features.c -o target/matrix-features -ldl && LD_PRELOAD=/src/target/release/libchalloc.so ./target/matrix-features'
+   | features: page_size=4096 guard_install=yes mseal=yes process_madvise=pidfd_self anon_name=yes lam=no uai=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=48K l2=2M
+   | ok features
+
+== step cpuinfo: cpuinfo_cmd  (10:36:42)
+== step cpuinfo: rc=0 in 0 s
+   | cpuid leaf=0x00000001 sub=0 eax=0x000806f8 ebx=0x07080800 ecx=0xfefa3203 edx=0x1f8bfbff
+   | cpuid leaf=0x00000007 sub=0 eax=0x00000002 ebx=0xf1bf2feb ecx=0x1a415f46 edx=0xafc14410
+   | cpuid leaf=0x00000007 sub=1 eax=0x00001c30 ebx=0x00000000 ecx=0x00000000 edx=0x00000000
+   | cpuid leaf=0x00000004 sub=0 eax=0x0c004121 ebx=0x02c0003f ecx=0x0000003f edx=0x00000000
+   | cpuid leaf=0x00000004 sub=1 eax=0x0c004122 ebx=0x01c0003f ecx=0x0000003f edx=0x00000000
+   | cpuid leaf=0x00000004 sub=2 eax=0x0c004143 ebx=0x03c0003f ecx=0x000007ff edx=0x00000000
+   | cpuid leaf=0x00000004 sub=3 eax=0x0c01c163 ebx=0x0380003f ecx=0x0001bfff edx=0x00000004
+   | cpuid leaf=0x00000004 sub=4 eax=0x00000000 ebx=0x00000000 ecx=0x00000000 edx=0x00000000
+   | cpuid leaf=0x80000000 sub=0 eax=0x80000008 ebx=0x00000000 ecx=0x00000000 edx=0x00000000
+   | cpuid leaf=0x80000008 sub=0 eax=0x00003934 ebx=0x0100d000 ecx=0x00000000 edx=0x00000000
+   | cpuid leaf=0x8000001d sub=0 absent (max 0x80000008)
+   | cpuid leaf=0x80000021 sub=0 absent (max 0x80000008)
+
+== step scorecard: scorecard_cmd  (10:36:42)
+== step scorecard: rc=0 in 688 s
+   | | mstress | s | 0.618 | 155.5 | 1.057 | 137.1 | +71.0% |
+   | | glibc-simple | s | 2.472 | 2.4 | 2.454 | 5.3 | -0.7% |
+   | | redis | k req/s | 557.7 | 30.1 | 449.0 | 32.5 | +24.2% |
+   | | python1 | s | 5.489 | 75.7 | 5.567 | 86.7 | +1.4% |
+   | | python1-malloc | s | 5.572 | 76.4 | 5.525 | 114.1 | -0.8% |
+   | 
+   | Positive percentages mean the variant did worse than challoc (slower or lower throughput).
+   | == appended to bench/results/scorecard-c3.md
+   | | date | commit | larson1 | larson10 | larson16 | xmalloc | alloc-test1 | alloc-testN | valkey1 | valkey1-free | cfrac | espresso | mstress | glibc-simple | redis | python1 | python1-malloc | RSS larson10 | RSS valkey1 | soak write | soak delete | soak peak RSS | soak post-delete RSS | note |
+   | |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+   | | 2026-09-19 | 7b2c50b | +0.3% | +6.8% | +7.7% | +0.7% | +5.8% | +7.2% | +41.7% | -9.4% | +4.9% | -0.6% | -41.5% | +0.7% | -19.5% | -1.4% | +0.9% | 1.06 | 0.99 | - | - | - | - | 3 rounds, GCE c3-standard-8 (Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz), zone us-east4-a, 8 vCPU; no soak for 7b2c50b |
+   | == 687 s total; render the trend with: bench/scorecard.sh --render x86_64
+
+== end 2026-09-19T10:48:10Z, wall 877 s
+CPU Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz
+PROBE features: page_size=4096 guard_install=yes mseal=no process_madvise=no anon_name=yes lam=no uai=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=48K l2=2M
+PROBE_PRIVILEGED features: page_size=4096 guard_install=yes mseal=yes process_madvise=pidfd_self anon_name=yes lam=no uai=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=48K l2=2M
+SCORECARD | 2026-09-19 | 7b2c50b | +0.3% | +6.8% | +7.7% | +0.7% | +5.8% | +7.2% | +41.7% | -9.4% | +4.9% | -0.6% | -41.5% | +0.7% | -19.5% | -1.4% | +0.9% | 1.06 | 0.99 | - | - | - | - | 3 rounds, GCE c3-standard-8 (Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz), zone us-east4-a, 8 vCPU; no soak for 7b2c50b |
+MATRIX cell=cpu-c3 image=ubuntu-2404-noble-amd64-v20260918 kernel=7.0.0-1011-gcp page=4096 machine=c3-standard-8 zone=us-east4-a vcpus=8 tests=465/0 fuzz=- cgroup=- privileged=- scorecard=PASS wall=877 outcome=PASS
+
+==================== ~/logs/cpuinfo.log ====================
+model: Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz
+vcpus: 8
+machine: c3-standard-8 zone: us-east4-a
+-- /proc/cpuinfo (first processor)
+processor	: 0
+vendor_id	: GenuineIntel
+cpu family	: 6
+model		: 143
+model name	: Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz
+stepping	: 8
+microcode	: 0xffffffff
+cpu MHz		: 2699.998
+cache size	: 107520 KB
+physical id	: 0
+siblings	: 8
+core id		: 0
+cpu cores	: 4
+apicid		: 0
+initial apicid	: 0
+fpu		: yes
+fpu_exception	: yes
+cpuid level	: 31
+wp		: yes
+flags		: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology nonstop_tsc cpuid tsc_known_freq pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor lahf_lm abm 3dnowprefetch ssbd ibrs ibpb stibp ibrs_enhanced fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rtm avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves avx_vnni avx512_bf16 arat avx512vbmi umip avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq la57 rdpid cldemote movdiri movdir64b fsrm md_clear serialize tsxldtrk amx_bf16 avx512_fp16 amx_tile amx_int8 arch_capabilities
+bugs		: spectre_v1 spectre_v2 spec_store_bypass swapgs eibrs_pbrsb bhi ibpb_no_ret spectre_v2_user
+bogomips	: 5399.99
+clflush size	: 64
+cache_alignment	: 64
+address sizes	: 52 bits physical, 57 bits virtual
+power management:
+
+-- lscpu
+Architecture:                            x86_64
+CPU op-mode(s):                          32-bit, 64-bit
+Address sizes:                           52 bits physical, 57 bits virtual
+Byte Order:                              Little Endian
+CPU(s):                                  8
+On-line CPU(s) list:                     0-7
+Vendor ID:                               GenuineIntel
+Model name:                              Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz
+CPU family:                              6
+Model:                                   143
+Thread(s) per core:                      2
+Core(s) per socket:                      4
+Socket(s):                               1
+Stepping:                                8
+BogoMIPS:                                5399.99
+Flags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology nonstop_tsc cpuid tsc_known_freq pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor lahf_lm abm 3dnowprefetch ssbd ibrs ibpb stibp ibrs_enhanced fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rtm avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves avx_vnni avx512_bf16 arat avx512vbmi umip avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq la57 rdpid cldemote movdiri movdir64b fsrm md_clear serialize tsxldtrk amx_bf16 avx512_fp16 amx_tile amx_int8 arch_capabilities
+Hypervisor vendor:                       KVM
+Virtualization type:                     full
+L1d cache:                               192 KiB (4 instances)
+L1i cache:                               128 KiB (4 instances)
+L2 cache:                                8 MiB (4 instances)
+L3 cache:                                105 MiB (1 instance)
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-7
+Vulnerability Gather data sampling:      Not affected
+Vulnerability Ghostwrite:                Not affected
+Vulnerability Indirect target selection: Not affected
+Vulnerability Itlb multihit:             Not affected
+Vulnerability L1tf:                      Not affected
+Vulnerability Mds:                       Not affected
+Vulnerability Meltdown:                  Not affected
+Vulnerability Mmio stale data:           Not affected
+Vulnerability Old microcode:             Not affected
+Vulnerability Reg file data sampling:    Not affected
+Vulnerability Retbleed:                  Not affected
+Vulnerability Spec rstack overflow:      Not affected
+Vulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization
+Vulnerability Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; PBRSB-eIBRS SW sequence; BHI BHI_DIS_S
+Vulnerability Srbds:                     Not affected
+Vulnerability Tsa:                       Not affected
+Vulnerability Tsx async abort:           Not affected
+Vulnerability Vmscape:                   Not affected
+-- cpuid-dump (in the container)
+docker build --platform linux/amd64 -f Dockerfile.dev -t challoc-dev:amd64 .
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  26.04MB
+Step 1/4 : FROM cgr.dev/chainguard/wolfi-base
+ ---> 1d95114038f7
+Step 2/4 : RUN sed -i       -e 's/^glibc=.*/glibc-2.44/'       -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/'       -e 's/^ld-linux=.*/ld-linux-2.44/'       -e 's/^libcrypt1=.*/libcrypt1-2.44/'       /etc/apk/world  && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44  && apk add --no-cache       rust       build-base       gcc       jemalloc       git       cmake       tcl       openssl-dev       procps       memtier-benchmark       posix-libc-utils-2.44       autoconf       ruby-3.4       jemalloc-dev       yaml-dev       zlib-dev       libffi-dev       tzdata       tcmalloc-minimal       python-3.13       py3.13-pip  && rustc --version && cargo --version && python3 --version  && test -f /usr/lib/libtcmalloc_minimal.so.4
+ ---> Using cache
+ ---> f03fe3fbdbd7
+Step 3/4 : WORKDIR /src
+ ---> Using cache
+ ---> 901f4da283c7
+Step 4/4 : CMD ["sh"]
+ ---> Using cache
+ ---> 95a8214520bd
+Successfully built 95a8214520bd
+Successfully tagged challoc-dev:amd64
+docker run --rm --platform linux/amd64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-amd64:/src/target -v challoc-cargo-registry:/root/.cargo/registry   challoc-dev:amd64 sh -c 'cc -O2 -Wall -Wextra -Werror bench/gce/cpuid-dump.c -o target/cpuid-dump && ./target/cpuid-dump'
+vendor=GenuineIntel max_leaf=0x0000001f max_ext_leaf=0x80000008
+cpuid leaf=0x00000000 sub=0 eax=0x0000001f ebx=0x756e6547 ecx=0x6c65746e edx=0x49656e69
+cpuid leaf=0x00000001 sub=0 eax=0x000806f8 ebx=0x07080800 ecx=0xfefa3203 edx=0x1f8bfbff
+cpuid leaf=0x00000007 sub=0 eax=0x00000002 ebx=0xf1bf2feb ecx=0x1a415f46 edx=0xafc14410
+cpuid leaf=0x00000007 sub=1 eax=0x00001c30 ebx=0x00000000 ecx=0x00000000 edx=0x00000000
+cpuid leaf=0x00000004 sub=0 eax=0x0c004121 ebx=0x02c0003f ecx=0x0000003f edx=0x00000000
+cpuid leaf=0x00000004 sub=1 eax=0x0c004122 ebx=0x01c0003f ecx=0x0000003f edx=0x00000000
+cpuid leaf=0x00000004 sub=2 eax=0x0c004143 ebx=0x03c0003f ecx=0x000007ff edx=0x00000000
+cpuid leaf=0x00000004 sub=3 eax=0x0c01c163 ebx=0x0380003f ecx=0x0001bfff edx=0x00000004
+cpuid leaf=0x00000004 sub=4 eax=0x00000000 ebx=0x00000000 ecx=0x00000000 edx=0x00000000
+cpuid leaf=0x80000000 sub=0 eax=0x80000008 ebx=0x00000000 ecx=0x00000000 edx=0x00000000
+cpuid leaf=0x80000008 sub=0 eax=0x00003934 ebx=0x0100d000 ecx=0x00000000 edx=0x00000000
+cpuid leaf=0x8000001d sub=0 absent (max 0x80000008)
+cpuid leaf=0x80000021 sub=0 absent (max 0x80000008)
+
+==================== ~/logs/image.log (last 60 lines) ====================
+(46/88) Installing libldap (2.6.10-r5)
+(47/88) Installing libnghttp2-14 (1.70.0-r3)
+(48/88) Installing nghttp3 (1.18.0-r1)
+(49/88) Installing ngtcp2 (1.25.0-r2)
+(50/88) Installing libpsl (0.23.3-r1)
+(51/88) Installing libcurl-openssl4 (8.22.0-r2)
+(52/88) Installing jsoncpp (1.9.8-r3)
+(53/88) Installing librhash0 (1.4.6-r6)
+(54/88) Installing libuv (1.52.1-r2)
+(55/88) Installing cmake (4.4.3-r1)
+(56/88) Installing libpcre2-8-0 (10.48-r0)
+(57/88) Installing git (2.55.0-r7)
+(58/88) Installing libjemalloc2 (5.3.1-r3)
+(59/88) Installing jemalloc (5.3.1-r3)
+(60/88) Installing jemalloc-dev (5.3.1-r3)
+(61/88) Installing libffi (3.8.0-r1)
+(62/88) Installing libffi-dev (3.8.0-r1)
+(63/88) Installing libevent (2.1.13-r1)
+(64/88) Installing memtier-benchmark (2.5.1-r1)
+(65/88) Installing openssl-dev (3.6.4-r7)
+(66/88) Installing bash (5.3-r13)
+(67/88) Installing posix-libc-utils-bin-2.44 (2.44-r6)
+(68/88) Installing posix-libc-utils-2.44 (2.44-r6)
+(69/88) Installing libproc-2-0 (4.0.7-r1)
+(70/88) Installing procps (4.0.7-r1)
+(71/88) Installing py3-pip-wheel (26.2.1-r1)
+(72/88) Installing mpdecimal (4.0.1-r4)
+(73/88) Installing libuuid (2.42.3-r4)
+(74/88) Installing python-3.13-base (3.13.15_git20260918-r1)
+(75/88) Installing py3.13-setuptools (84.0.0-r0)
+(76/88) Installing py3.13-pip-base (26.2.1-r1)
+(77/88) Installing py3.13-pip (26.2.1-r1)
+(78/88) Installing python-3.13 (3.13.15_git20260918-r1)
+(79/88) Installing yaml (0.2.5-r10)
+(80/88) Installing ruby-3.4 (3.4.10-r7)
+(81/88) Installing libxml2-16 (2.15.4-r0)
+(82/88) Installing libLLVM-22 (22.1.8-r4)
+(83/88) Installing rust-1.98 (1.98.1-r0)
+(84/88) Installing tcl (9.0.4-r1)
+(85/88) Installing tcmalloc-minimal (2.18.1-r5)
+(86/88) Installing tzdata (2026d-r0)
+(87/88) Installing yaml-dev (0.2.5-r10)
+(88/88) Installing zlib-dev (1.3.2.1_rc20260601-r0)
+Executing busybox-1.38.0-r2.trigger
+OK: 1435 MiB in 104 packages
+rustc 1.98.1 (48a229cea 2026-09-01)
+cargo 1.98.1 (797e8a9bc 2026-08-05)
+Python 3.13.15
+ ---> Removed intermediate container 1a5df2309483
+ ---> f03fe3fbdbd7
+Step 3/4 : WORKDIR /src
+ ---> Running in 087f02d8cdb8
+ ---> Removed intermediate container 087f02d8cdb8
+ ---> 901f4da283c7
+Step 4/4 : CMD ["sh"]
+ ---> Running in 254b6541f961
+ ---> Removed intermediate container 254b6541f961
+ ---> 95a8214520bd
+Successfully built 95a8214520bd
+Successfully tagged challoc-dev:amd64
+
+==================== ~/logs/test.log (last 60 lines) ====================
+  t+ 405 ms: rss    9 MiB, memory.current 9 MiB
+  t+ 507 ms: rss    9 MiB, memory.current 9 MiB
+  t+ 608 ms: rss    9 MiB, memory.current 9 MiB
+  t+ 700 ms: rss    9 MiB, memory.current 9 MiB
+  t+ 801 ms: rss    9 MiB, memory.current 9 MiB
+  t+ 903 ms: rss    9 MiB, memory.current 9 MiB
+  t+1004 ms: rss    9 MiB, memory.current 9 MiB
+  t+1106 ms: rss    9 MiB, memory.current 9 MiB
+  t+1207 ms: rss    9 MiB, memory.current 9 MiB
+  t+1309 ms: rss    9 MiB, memory.current 9 MiB
+  t+1400 ms: rss    9 MiB, memory.current 9 MiB
+  t+1502 ms: rss    9 MiB, memory.current 9 MiB
+  t+1603 ms: rss    9 MiB, memory.current 9 MiB
+  t+1705 ms: rss    9 MiB, memory.current 9 MiB
+  t+1806 ms: rss    9 MiB, memory.current 8 MiB
+  t+1908 ms: rss    9 MiB, memory.current 8 MiB
+  t+2000 ms: rss    8 MiB, memory.current 8 MiB
+at 2000 ms: rss 8 MiB (min 8 MiB, under the threshold after 80 ms), memory.current 8 MiB
+challoc: stats.cgroup.limit 256 MiB decay_ms 10000 retention_cap 12 MiB empty_bytes 5 MiB full_purges 0
+RESULT churn mode=purge mib=200 threshold=50 rss_peak=202 rss_2s=8 rss_min=8 below_ms=80 current_peak=203 current_2s=8
+ok cgroup_churn
+memory.events after: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0 
+memory.peak 203 MiB, memory.current 3 MiB
+OUTCOME churn alloc=challoc args='purge 200 50' status=0 verdict=ok oom_kill=0
+docker run --rm --platform linux/amd64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-amd64:/src/target -v challoc-cargo-registry:/root/.cargo/registry  --memory=256m --memory-swap=256m  challoc-dev:amd64 sh scripts/cgroup-tests.sh churn challoc-off keep 200 50
+== churn under challoc-off (challoc 7b2c50b): cgroup_churn keep 200 50 
+kernel 7.0.0-1011-gcp x86_64; cgroup /sys/fs/cgroup: memory.max 256 MiB, memory.swap.max 0 MiB, memory.current 3 MiB
+MALLOC_CONF=cgroup:false,abort_conf:true
+memory.events before: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0 
+cgroup_churn keep: 200 MiB churn, threshold 50 MiB; cgroup /sys/fs/cgroup memory.max 256 MiB memory.current 3 MiB, rss 2 MiB
+allocated 200 MiB in 104 ms (100 x 1 MiB, 1600 x 32 KiB, 51200 x 1 KiB): rss 203 MiB, memory.current 203 MiB
+challoc: stats.cgroup.* ENOENT (cgroup not tracked)
+freed in 4 ms: rss 203 MiB, memory.current 203 MiB
+  t+ 101 ms: rss  203 MiB, memory.current 203 MiB
+  t+ 203 ms: rss  203 MiB, memory.current 203 MiB
+  t+ 305 ms: rss  203 MiB, memory.current 203 MiB
+  t+ 407 ms: rss  203 MiB, memory.current 203 MiB
+  t+ 509 ms: rss  203 MiB, memory.current 203 MiB
+  t+ 601 ms: rss  202 MiB, memory.current 203 MiB
+  t+ 702 ms: rss  202 MiB, memory.current 203 MiB
+  t+ 804 ms: rss  202 MiB, memory.current 203 MiB
+  t+ 906 ms: rss  201 MiB, memory.current 202 MiB
+  t+1008 ms: rss  201 MiB, memory.current 201 MiB
+  t+1100 ms: rss  200 MiB, memory.current 201 MiB
+  t+1202 ms: rss  198 MiB, memory.current 198 MiB
+  t+1304 ms: rss  195 MiB, memory.current 196 MiB
+  t+1406 ms: rss  192 MiB, memory.current 192 MiB
+  t+1507 ms: rss  190 MiB, memory.current 190 MiB
+  t+1609 ms: rss  185 MiB, memory.current 186 MiB
+  t+1701 ms: rss  180 MiB, memory.current 181 MiB
+  t+1803 ms: rss  174 MiB, memory.current 175 MiB
+  t+1905 ms: rss  171 MiB, memory.current 172 MiB
+  t+2007 ms: rss  165 MiB, memory.current 165 MiB
+at 2000 ms: rss 165 MiB (min 165 MiB, never under the threshold; 2000 ms), memory.current 165 MiB
+challoc: stats.cgroup.* ENOENT (cgroup not tracked)
+RESULT churn mode=keep mib=200 threshold=50 rss_peak=203 rss_2s=165 rss_min=165 below_ms=-1 current_peak=203 current_2s=165
+ok cgroup_churn
+memory.events after: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0 
+memory.peak 203 MiB, memory.current 3 MiB
+OUTCOME churn alloc=challoc-off args='keep 200 50' status=0 verdict=ok oom_kill=0
+
+==================== ~/logs/probe.log (last 60 lines) ====================
+docker build --platform linux/amd64 -f Dockerfile.dev -t challoc-dev:amd64 .
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  26.04MB
+Step 1/4 : FROM cgr.dev/chainguard/wolfi-base
+ ---> 1d95114038f7
+Step 2/4 : RUN sed -i       -e 's/^glibc=.*/glibc-2.44/'       -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/'       -e 's/^ld-linux=.*/ld-linux-2.44/'       -e 's/^libcrypt1=.*/libcrypt1-2.44/'       /etc/apk/world  && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44  && apk add --no-cache       rust       build-base       gcc       jemalloc       git       cmake       tcl       openssl-dev       procps       memtier-benchmark       posix-libc-utils-2.44       autoconf       ruby-3.4       jemalloc-dev       yaml-dev       zlib-dev       libffi-dev       tzdata       tcmalloc-minimal       python-3.13       py3.13-pip  && rustc --version && cargo --version && python3 --version  && test -f /usr/lib/libtcmalloc_minimal.so.4
+ ---> Using cache
+ ---> f03fe3fbdbd7
+Step 3/4 : WORKDIR /src
+ ---> Using cache
+ ---> 901f4da283c7
+Step 4/4 : CMD ["sh"]
+ ---> Using cache
+ ---> 95a8214520bd
+Successfully built 95a8214520bd
+Successfully tagged challoc-dev:amd64
+docker run --rm --platform linux/amd64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-amd64:/src/target -v challoc-cargo-registry:/root/.cargo/registry   challoc-dev:amd64 sh -c 'getconf PAGESIZE; cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c tests/c/features.c -o target/matrix-features -ldl && LD_PRELOAD=/src/target/release/libchalloc.so ./target/matrix-features'
+4096
+features: page_size=4096 guard_install=yes mseal=no process_madvise=no anon_name=yes lam=no uai=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=48K l2=2M
+ok features
+
+==================== ~/logs/probe-privileged.log (last 60 lines) ====================
+docker build --platform linux/amd64 -f Dockerfile.dev -t challoc-dev:amd64 .
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  26.04MB
+Step 1/4 : FROM cgr.dev/chainguard/wolfi-base
+ ---> 1d95114038f7
+Step 2/4 : RUN sed -i       -e 's/^glibc=.*/glibc-2.44/'       -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/'       -e 's/^ld-linux=.*/ld-linux-2.44/'       -e 's/^libcrypt1=.*/libcrypt1-2.44/'       /etc/apk/world  && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44  && apk add --no-cache       rust       build-base       gcc       jemalloc       git       cmake       tcl       openssl-dev       procps       memtier-benchmark       posix-libc-utils-2.44       autoconf       ruby-3.4       jemalloc-dev       yaml-dev       zlib-dev       libffi-dev       tzdata       tcmalloc-minimal       python-3.13       py3.13-pip  && rustc --version && cargo --version && python3 --version  && test -f /usr/lib/libtcmalloc_minimal.so.4
+ ---> Using cache
+ ---> f03fe3fbdbd7
+Step 3/4 : WORKDIR /src
+ ---> Using cache
+ ---> 901f4da283c7
+Step 4/4 : CMD ["sh"]
+ ---> Using cache
+ ---> 95a8214520bd
+Successfully built 95a8214520bd
+Successfully tagged challoc-dev:amd64
+docker run --rm --platform linux/amd64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-amd64:/src/target -v challoc-cargo-registry:/root/.cargo/registry  --privileged challoc-dev:amd64 sh -c 'cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c tests/c/features.c -o target/matrix-features -ldl && LD_PRELOAD=/src/target/release/libchalloc.so ./target/matrix-features'
+features: page_size=4096 guard_install=yes mseal=yes process_madvise=pidfd_self anon_name=yes lam=no uai=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=48K l2=2M
+ok features
+
+==================== ~/logs/scorecard.log (last 60 lines) ====================
+
+| program | variant | sorted scores | maxrss KiB |
+|---|---|---|---:|
+| larson1 | challoc | 39.8 39.8 40.0 | 17128 |
+| larson1 | jemalloc | 39.0 39.9 40.6 | 15732 |
+| larson10 | challoc | 149.3 150.7 151.7 | 84756 |
+| larson10 | jemalloc | 157.4 160.9 162.3 | 79920 |
+| larson16 | challoc | 155.3 156.2 157.4 | 130612 |
+| larson16 | jemalloc | 163.8 168.3 169.4 | 117584 |
+| xmalloc | challoc | 158.192 158.578 158.723 | 90412 |
+| xmalloc | jemalloc | 158.507 159.641 160.413 | 118768 |
+| alloc-test1 | challoc | 3.825 3.848 3.850 | 14152 |
+| alloc-test1 | jemalloc | 3.620 3.638 3.641 | 13520 |
+| alloc-testN | challoc | 4.932 4.946 4.957 | 16216 |
+| alloc-testN | jemalloc | 4.603 4.613 4.625 | 15224 |
+| valkey1 | challoc | 7.154 7.315 7.478 | 599216 |
+| valkey1 | jemalloc | 10.209 10.363 10.380 | 606324 |
+| valkey1-free | challoc | 9.597 9.688 9.824 | 599284 |
+| valkey1-free | jemalloc | 8.403 8.777 8.964 | 606348 |
+| cfrac | challoc | 4.864 4.868 4.868 | 3700 |
+| cfrac | jemalloc | 4.635 4.641 4.641 | 5944 |
+| espresso | challoc | 5.333 5.337 5.340 | 4232 |
+| espresso | jemalloc | 5.350 5.371 5.374 | 6496 |
+| mstress | challoc | 0.591 0.618 0.659 | 159220 |
+| mstress | jemalloc | 1.052 1.057 1.064 | 140436 |
+| glibc-simple | challoc | 2.466 2.472 2.483 | 2496 |
+| glibc-simple | jemalloc | 2.450 2.454 2.461 | 5380 |
+| redis | challoc | 556.5 557.7 559.3 | 30796 |
+| redis | jemalloc | 416.1 449.0 449.8 | 33316 |
+| python1 | challoc | 5.461 5.489 5.513 | 77552 |
+| python1 | jemalloc | 5.500 5.567 5.574 | 88796 |
+| python1-malloc | challoc | 5.532 5.572 5.585 | 78192 |
+| python1-malloc | jemalloc | 5.486 5.525 5.545 | 116812 |
+
+## Medians
+
+| program | unit | challoc | challoc RSS MiB | jemalloc | jemalloc RSS MiB | jemalloc vs challoc |
+|---|---|---:|---:|---:|---:|---:|
+| larson1 | M ops/s | 39.8 | 16.7 | 39.9 | 15.4 | -0.3% |
+| larson10 | M ops/s | 150.7 | 82.8 | 160.9 | 78.0 | -6.3% |
+| larson16 | M ops/s | 156.2 | 127.6 | 168.3 | 114.8 | -7.2% |
+| xmalloc | M frees/s | 158.578 | 88.3 | 159.641 | 116.0 | -0.7% |
+| alloc-test1 | s | 3.848 | 13.8 | 3.638 | 13.2 | -5.5% |
+| alloc-testN | s | 4.946 | 15.8 | 4.613 | 14.9 | -6.7% |
+| valkey1 | M ops/s | 7.315 | 585.2 | 10.363 | 592.1 | -29.4% |
+| valkey1-free | M ops/s | 9.688 | 585.2 | 8.777 | 592.1 | +10.4% |
+| cfrac | s | 4.868 | 3.6 | 4.641 | 5.8 | -4.7% |
+| espresso | s | 5.337 | 4.1 | 5.371 | 6.3 | +0.6% |
+| mstress | s | 0.618 | 155.5 | 1.057 | 137.1 | +71.0% |
+| glibc-simple | s | 2.472 | 2.4 | 2.454 | 5.3 | -0.7% |
+| redis | k req/s | 557.7 | 30.1 | 449.0 | 32.5 | +24.2% |
+| python1 | s | 5.489 | 75.7 | 5.567 | 86.7 | +1.4% |
+| python1-malloc | s | 5.572 | 76.4 | 5.525 | 114.1 | -0.8% |
+
+Positive percentages mean the variant did worse than challoc (slower or lower throughput).
+== appended to bench/results/scorecard-c3.md
+| date | commit | larson1 | larson10 | larson16 | xmalloc | alloc-test1 | alloc-testN | valkey1 | valkey1-free | cfrac | espresso | mstress | glibc-simple | redis | python1 | python1-malloc | RSS larson10 | RSS valkey1 | soak write | soak delete | soak peak RSS | soak post-delete RSS | note |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 2026-09-19 | 7b2c50b | +0.3% | +6.8% | +7.7% | +0.7% | +5.8% | +7.2% | +41.7% | -9.4% | +4.9% | -0.6% | -41.5% | +0.7% | -19.5% | -1.4% | +0.9% | 1.06 | 0.99 | - | - | - | - | 3 rounds, GCE c3-standard-8 (Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz), zone us-east4-a, 8 vCPU; no soak for 7b2c50b |
+== 687 s total; render the trend with: bench/scorecard.sh --render x86_64
+[driver 10:48:27] MATRIX cell=cpu-c3 image=ubuntu-2404-noble-amd64-v20260918 kernel=7.0.0-1011-gcp page=4096 machine=c3-standard-8 zone=us-east4-a vcpus=8 tests=465/0 fuzz=- cgroup=- privileged=- scorecard=PASS wall=877 outcome=PASS
+[driver 10:48:27] deleting challoc-matrix-cpu-c3
+[driver 10:49:19] deleted challoc-matrix-cpu-c3
