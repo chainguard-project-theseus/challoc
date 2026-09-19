@@ -330,6 +330,11 @@ ruby-bench: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(RUBY_BENCH_VA
 ruby-bench: image
 	$(DOCKER_RUN) sh bench/ruby-bench.sh
 
+RUBY_SOAK_VARS = ALLOCS DURATION INTERVAL GC_EVERY COMPACT_AT THREADS SEED RESULT OUT HOST_KIND COMMIT
+ruby-soak: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(RUBY_SOAK_VARS),$(if $($(v)),-e $(v)="$($(v))"))
+ruby-soak: image
+	$(DOCKER_RUN) sh bench/ruby-soak.sh
+
 # Python rows (bench/python-bench.sh, Phase 2.5 task 1): the stdlib workloads
 # under bench/probes/python/ on the image's python3, each with PYTHONMALLOC
 # unset and =malloc, under challoc (the working tree) and the stock allocators.
