@@ -108,6 +108,47 @@ One line per task, newest at the bottom of each section. Keep it terse.
 - Phase 2.5 task 5 DONE as design, commit d8225a8 (lane C, 2026-09-19). The probes ran in task 4 (`bench/results/2026-09-19-cpu-matrix.md` section 1: `mte=no` on Axion and Altra, `lam=no` on every x86 cell, `uai=no` on the Genoa guest, which hides it and LA57). `docs/design.md` section 18 "Tagged pointers" (source layout is 19 now): 18.1 the hardware table with confidence per vendor (AmpereOne bare metal confirmed by Ampere's documentation and measured numbers; Graviton4 and Cobalt 100 unconfirmed, expect no, since the same Neoverse V2 hides it on Axion; LAM on Granite Rapids/Sierra Forest with kernel 6.4+, no cloud guest known; UAI in Zen 4 silicon with no Linux enable path, the 2022 series unmerged; TBI on every arm64 host); 18.2 MTE: `PROT_MTE` on every commit `mprotect`, huge runs untagged, tag 0 excluded, the cache holds pointers whose tag equals the slot's so the pop is untouched, `free` does `ldg` + compare (abort on mismatch) + `irg` + `st2g`/`dc gva` retag + push, refills `ldg` per `Active` slot and tag zero picks at pop (`stzg`/`dc gzva` for `calloc`), `realloc`/`usable_size`/`sallocx` check, `mallctl` lookups classify only; `tag_check` `async` default (no faulting address, `SEGV_MTEAERR`), `asymm` (MTE3) recommended, `sync` for the tests; a `SIGSEGV` handler for the two MTE `si_code`s chaining everything else, best-effort under Ruby's own handler; fork copies tags with the page on COW; cost expected in `zero_on_free`'s envelope (+87%/+102% larson1, +55%/+183% valkey1, aarch64/x86_64) plus one `ldg` per free, so opt-in; the cheaper no-retag variant named for part 2 to price and what it loses; the consumer contract (no data in top bits, mm syscalls untagged, glibc strings MTE-safe). 18.3 the software tag: six bits at 57 on both architectures, `tag = gen(slot) ^ key[class]` from a per-slot byte tag map (8x the bitmap), verified by `free` (both paths, one byte load and store), `realloc`, `usable_size`, refills tag from the map, pop untouched; `arch_prctl(ARCH_ENABLE_TAGGED_ADDR, 6)` in init step 3 (`EBUSY` when multi-threaded, off with a reason); what is caught (stale free even after reuse, forged 63/64, cross-class 63/64) and not (loads and stores). 18.4 the strip: `a = p & addr_mask` from the hot `Shared` line, one `and`, same instructions with the key off; every pointer-taking entry point and `Heap::flush` strip, `class.rs` never sees a tag. 18.5 keys `tag_pointers` (`off`|`mte`|`lam`|`auto`) and `tag_check`, their `opt.` strings and the `Tagged pointers:` report line with reason; `challoc_features()` unchanged. 18.6 part 2's tests (four negative cases, fuzzer, both suites, calloc campaign, Valkey and Ruby, encode/strip host test), cost rows next to `zero_on_free`'s, the fork row, and the cheapest path. Design 14's "not attempted: MTE" replaced by the planned, hardware-gated paragraph; design 17 rows for MTE/LAM/UAI/LA57 point at 18; README security table row plus footnote (3) and the feature table's MTE/LAM cells; plan task 5 "Done as design".
 - Phase 2.5 task 10: two-advice purge (089c465; test fix 9a19632; results c6e3823). Under the cgroup policy's `Low` band (usage under 70% of a known limit) `Empty` slabs and huge extents are returned with `MADV_FREE`, everywhere else (no limit, scaled and immediate bands, every explicit purge: `malloc_trim(0)`, `arena.<i>.purge`, the `high`-rise full purge) with `MADV_DONTNEED`; `lazy_free:true` is the override, new key `lazy_band` (default true) turns the saving off; the advice is read at each `Batch::flush` from `policy::evaluate`'s mirror of the band (`purge::set_headroom`). Init probes `MADV_FREE` through the `process_madvise` target the `MADV_DONTNEED` probe found (`Features::process_madvise_free`, feature-line key `process_madvise_free`, yes on both 7.0 reference kernels; lazy batches alone fall back to the `madvise` loop where it fails). `purged_is_zero()` is sticky (true until the first lazy batch of the process, published before the discard under the walk's lock); `class.rs`/`huge.rs` untouched. `stats.cgroup.purge_advice|lazy_purges|eager_purges` (readable without a tracked cgroup), `purge advice:` report line, JSON fields. `tests/c/cgroup_lazy.c` + `make test-cgroup-lazy` (in `make test` and `make test-cgroup`): 200 MiB freed at 39% of 512 MiB is purged lazily 80 ms after the frees, RSS/`memory.current` stay 202/205 MiB while `memory.stat` `pglazyfree` rises by 189 MiB, realloc of the same 200 MiB 5 ms vs 44 ms eager (C4A; 42 vs 72 ms C4), a fresh 380 MiB set makes the kernel reclaim 60..64 MiB of lazy pages (`pglazyfreed`, `current` 511/512, alive); the `lazy_band:false` control purges eagerly (RSS 13 MiB at 80 ms). `make test` green on both VMs at 9a19632; churn rows unchanged (their frees are at 80..90%: eager); oscillation 98/97 cycles, no OOM, as before. `ab` 5 rounds mstress/alloc-testN/larson10 in `--memory=8g` (base a3ddd6d, eager, lazy): every cell within noise (-1.3..+0.6% on arm64, -2.7..+0.0% on amd64); the same with `dirty_decay_ms:0`: mstress 1.002 -> 0.516 s (-48.5%, disjoint lists) on the C4A and 1.087 -> 0.915 s (-15.8%) on the C4, larson10 +3.4%/+1.0% throughput, alloc-testN 0.0%/-1.6%, with maxrss 15..59 MiB higher under the lazy advice (the pages stay charged until reclaim). `quick` vs a3ddd6d go on both VMs (worst row alloc-test1 +1.2% arm64, +0.6% amd64). Design 8, 10, 11, 12, 16, 17 and README updated. Files: `bench/results/2026-09-19-lane-b-two-advice-purge.md` (+ `-ab-{aarch64,x86_64}.md`, `-ab-decay0-{aarch64,x86_64}.md`).
 - Phase 2.5 task 9: multi-size THP for slab regions behind `thp` (cc4aa34; results and the design's measured notes in the following commit). `Features` reads the kernel's THP table at init with raw syscalls (`enabled`, `hpage_pmd_size`, every `hugepages-<n>kB/enabled` from two pages to the PMD by path, `inherit` resolved; a listed size without an `enabled` file, `hugepages-8kB` on 7.0, is absent; pre-6.8 kernels list the PMD alone) and the feature line gains `thp=never|madvise|always|none mthp=64K,2M|none collapse=unprobed|no|<size>`; `MADV_COLLAPSE` is probed at the PMD size on a populated aligned range only when `thp` is not `never` (the syscall is a silent no-op below the PMD through 7.0, so the smallest enabled size cannot be probed; it costs a PMD of memory for a moment): `collapse=2M` on both 7.0 VMs, reported, not used. New `src/thp.rs` decides the mode from the key and the table: `thp:auto` (new value) advises each slab group (`take_group`, the group still `PROT_NONE`) of a class whose slab holds an enabled folio below the PMD, folio-aligns the metadata tables (`Lazy::reserve`) and rounds and advises their commits (`Lazy::ensure`, `meta::Inner::commit`, `commit_bump_to`), never a 2 MiB page, and refuses (reported) where no such size is enabled or the PMD size is `madvise`-gated; `thp:always` with the PMD size enabled commits and advises PMD-sized chunks in `commit_slab` (guard slabs inside a chunk left unused and unguarded: the first form's markers split every 2 MiB page, `AnonHugePages` 0 after 8 MiB touched, 10240 kB after the fix), advises huge runs of a PMD or more (`Huge::prepare`, design 7) and the metadata with the sub-PMD folio; `never` (default) issues nothing; design 11's forced-never under a limit below 1 GiB is mirrored after init. Report `thp:` line, JSON `"thp"`, `stats.thp.{mode,class_ranges,class_bytes,huge_ranges,meta_ranges,failures}`, `opt.thp` reads `auto`; `thp` leaves `INERT_KEYS`. Tests: host fixtures for the sysfs parsing (never/madvise/always, the 7.0 layout, 64K madvise with the PMD never, pre-6.8, missing directory, garbled), `thp::decide`, the chunk arithmetic (host 283 pass); `tests/c/thp.c never|always|auto` (VmFlags `hg`, THPeligible, AnonHugePages, the per-size `anon_fault_alloc` counter, `stats.thp.*`) and `tests/c/fork_cost.c` (a Valkey-shaped heap forks, the parent's burst is copied while the child is alive; other modes behind `CHALLOC_THP_TESTS=1`); `make test` 355/113/23 green on both lane VMs at cc4aa34, the gated tests green in the auto sysfs state. Measured (`bench/results/2026-09-19-lane-b-mthp.md` and the three `-ab-*.md`): on the C4A `auto` takes larson1's dTLB refills from 4.01 to 3.05 per operation (jemalloc 1.75), valkey1's from 2.81 to 2.44 (below jemalloc's 2.69), valkey1-free's from 3.91 to 2.90 (below 3.35), with cycles within noise; `fork()` of a 500 MiB heap 18.9 -> 15.5 ms on the C4A and 7.9 -> 10.2 ms on the C4, the copy-on-write burst identical in faults and within noise in time in every mode, fork-to-exit -6% / +2.5%; `ab` five rounds on the C4A: valkey1 -0.1%, redis -0.3%, mstress 3.5% faster, larson1 +1.7% and larson10 +1.6% worse with disjoint lists, RSS +14% / +7% / +19% on the 16..100 MiB heaps and +0.3% on valkey1; `always`: valkey1 +10% (C4A) / +15% (C4) throughput, dTLB 0.65 per operation, RSS +9.6% on valkey1 and 2..4x on small heaps, `fork()` 25x cheaper. `quick` go on both VMs under the default and under `auto`. Decision: `never` stays the default, `auto` is the documented opt-in (design 12, 17, README). Both `challoc-lane-b-*` VMs deleted.
+- Phase 2.5 task 8 (lane A, the mode; 2026-09-19) DONE: per-CPU caches through
+  rseq `mm_cid`, commits 14c7fad (the mode), 4864d4b (tail-call dispatch,
+  `auto` keeps thread caches, the first measurements) and 94fa9aa (the
+  aborted-section counter, the 6.19 id semantics). `src/rseq.rs`: the
+  probe (weak `__rseq_offset`/`__rseq_size`/`__rseq_flags`, the gate
+  `__rseq_size >= 28`, `nr_cpu_ids` from sysfs) and five critical sections
+  in `asm!` on x86_64 and aarch64 (`pop`, `push`, `push_batch`,
+  `take_all`, `install`; descriptors in `__rseq_cs`, the kernel signature
+  before each abort handler, `mm_cid` read inside the section, one commit
+  store, only `rseq_cs` ever written, PAC sign/auth inside, an abort
+  counter). `heap.rs`: the `CpuCache` table (`nr_cpu_ids` header arrays,
+  reserved zeroed, installed on first use), `PUSH_PERCPU` dispatch as tail
+  calls from the entry points (`malloc`/`free` stay frameless), arenas per
+  id, refill/flush through the sections on stack buffers, compaction's
+  gate without its run, GC/drain on the running CPU, exact per-thread
+  counters, heaps off the mode on the thread paths. `stats.percpu.*`
+  (`enabled ids headers cached aborts`), the `Per-CPU caches:` report
+  line, `tests/c/percpu.c` both ways, `heap::linux_tests::percpu_*`,
+  `rseq::tests`, mode-aware api tests; design 15 (real), 12, 17, 19,
+  README; bench: `ruby-soak` `challoc-percpu`, `valkey-soak`
+  `CHALLOC_CONF`, the soak's clean-tree exit bug. Tests: `make test`
+  green on both reference VMs at 4864d4b (384 + 116 + 23 + cgroup churn
+  and lazy) and at 94fa9aa; the Mac container takes the fallback branches
+  (`__rseq_size` 20). Measured (`bench/results/2026-09-19-{aarch64,x86_64}-task8-percpu.md`
+  and the `-ab`, `-ab2` files): the mode on costs larson1 +14.8% /
+  +9.0%, larson10 +18.2% / +20.6%, xmalloc +25.0% / +21.8%, alloc-test1
+  +10.6% / +7.2%, valkey1 +10.1% / +56.9% (`ab2`, C4A / C4; per
+  operation +83 / +65 instructions on larson1 with misses flat, the
+  Valkey model's extra being the compact-mode locked one-slot claim);
+  the shipped default (`auto` = thread caches) is `quick` GO on both VMs
+  and within noise in `ab2` (+0.6..2.2% / -3.5..+1.4%, +9 instructions
+  per operation); mstress x86_64 RSS 334 -> 318 MiB under the mode
+  (jemalloc 285: +18.8% -> +10.6% against it, 0.6 points outside the
+  band); the calloc-zero campaign clean under four per-CPU configurations
+  on both VMs (60 runs each under load, 0 failed); the 10-minute Valkey
+  soak with the challoc server under `percpu` green on RSS (peak +0.5% /
+  +0.9%, after settle -5.0% / -3.2% against jemalloc) and the write phase,
+  1.3..3.1% behind on the delete phase; RSS vs idle threads (the Sidekiq-shaped Ruby soak, 180 s, thread caches -> the mode, peak MiB, C4A / C4): 16 threads 305 -> 90 / 326 -> 107, 64 threads 1649 -> 106 / 2073 -> 150, 256 threads 2426 -> 115 / 3570 -> 231, RSS bounded by the 16 ids where thread caches grow with the threads (and jemalloc's reference 16-thread soak sits at 160 MiB against challoc's 394);
+  64-thread larson (4x the vCPUs, ids shared, sections aborted and retried): the mode -31% / -34% throughput at -30% / -22% RSS against thread caches (398 vs 580 M ops/s at 401 vs 575 MiB on the C4A; 223 vs 337 at 374 vs 475 MiB on the C4; jemalloc 610 / 370 at 540 / 419 MiB). Default: `percpu_arena:percpu` opts in,
+  `auto` keeps thread caches (the Design decision below; the human decides
+  the final default with the numbers, config.rs's line is under Notes).
 - Phase 2.5 task 8 (lane C, the key; 2026-09-19): `percpu_arena` is a real
   config key (baa8bc2): `config::PercpuArena::{Auto, Percpu, Off}`, default
   `auto`, field `Config::percpu_arena` (after `narenas`, read at init like
@@ -175,12 +216,6 @@ One line per task, newest at the bottom of each section. Keep it terse.
   and tested on the lane's VM).
 
 ## In progress
-
-- Phase 2.5 task 8 (lane A, 2026-09-19): per-CPU caches through rseq `mm_cid`.
-  Code and tests written (`src/rseq.rs`, `heap.rs` per-CPU paths,
-  `tests/c/percpu.c`, `stats.percpu.*`, the `Per-CPU caches:` report line,
-  design 15/17/19); measurement and the default decision pending (see the
-  Done list once landed).
 
 ## Design decisions
 
@@ -286,6 +321,41 @@ One line per task, newest at the bottom of each section. Keep it terse.
   the `ab` tables (`bench/results/2026-09-19-*-task8-percpu.md`). Why in
   `heap.rs` and not in the key's default: `src/config.rs` is lane C's file
   (the one-line change is under Notes for the human).
+- Phase 2.5 task 8 (lane A, 2026-09-19), the eight properties lane C's
+  model states (design 15 at merge), checked against the code: (1)
+  `mm_cid` is read inside the armed section and the header address is
+  derived from it alone (`src/rseq.rs`: the `off_cid` load right after
+  label `2:` and the `imul`/`madd` with `STRIDE` in every section, e.g.
+  `pop` x86_64 lines 365-368, aarch64 438-442); (2) one commit store, the
+  `len` write, ends every section (`pop` 386 / 463, `push` 552 / 619,
+  `push_batch` 727 / 807, `take_all` the `len = 0` store; `install`
+  commits `cap` instead, its one published word); (3) the abort handler
+  is `jmp 8b` / `b 8b` back to the `rseq_cs` store before the section
+  start, so a retry re-arms and re-reads `mm_cid` (393 / 469 and the same
+  in each section); (4) the only store into the rseq area is `rseq_cs`
+  (`off_cs`, 363 / 436; no other `[{rs} + ...]` store exists, `grep
+  '\[{rs}' src/rseq.rs`); (5) the refill claims outside any section and
+  pushes the batch through `push_batch` on the current id, releasing
+  what did not fit (`src/heap.rs` `percpu_alloc_slow`, lines 3012-3028);
+  the flush takes the stack out with `take_all`, selects on the thread's
+  buffer, releases the high half and pushes the kept half back through
+  `push_batch`, releasing the overflow (`percpu_flush`, 3143-3182);
+  nothing is dropped; (6) every release goes through
+  `Shared::release_routed` (3028, 3165, 3182), which routes each slab
+  run by the owner word; (7) the zero prefix: `push_batch` sets `zeroed`
+  to the batch when the stack was empty and the claim was zero
+  (`claim.zeroed` at 3021), `pop` reads `zeroed` inside the section and
+  reports `len < zeroed`, `push` clips it inside the section; the flush's
+  push-back passes `zeroed = false` (3175), which is design 6.3's "dropped
+  by a flush", so the prefix survives refill, pop and push and is given up
+  at a flush, as with thread caches; (8) the fallback is the thread-cache
+  protocol untouched: `percpu_free_fast` and `pop_percpu_mode` take the
+  thread path for a heap off the mode (3442, 2843) and the entry points
+  take the old inline path when `PUSH_PERCPU` is clear (`src/api/libc.rs`
+  `malloc`, `free`, `free_sized_hint`), whose disassembly is unchanged.
+  One property the model may want stated: the sections' pre-commit stores
+  (`allocs`, `low_water`, `zeroed`, the slot above `len`) are harmless
+  under an abort, which is what makes (2) sufficient.
 - Phase 2.5 task 8, `tests/c/tunables.c` runs with `percpu_arena:off` in
   every mode. Reason: its `dirty` and `random`/`ordered` modes assert one
   thread's LIFO reuse and one refill batch from at most two slabs, which
