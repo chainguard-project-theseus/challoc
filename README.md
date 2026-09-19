@@ -172,6 +172,7 @@ CLDEMOTE, ERMS, FSRM and AVX-512F but no LAM or WAITPKG
 | Guard regions                            | No           | Yes (kernel 6.13+ for guard slabs) |
 | Zero on free                             | Opt-in       | Opt-in: `zero_on_free` clears a block on free (2) |
 | Slot order randomisation                 | No           | Opt-in: `slot_randomize` (2)                |
+| Signed allocator pointers (arm64 PAC)    | No           | Opt-in where the CPU has it: `pac_pointers`, cache entries and the TLS heap pointer `pacda`-signed, authenticated on every `malloc` (3) |
 | Implementation language                  | C            | Rust            |
 
 (1) Through `free`: an invalid pointer aborts at the call, and so does a
@@ -202,6 +203,23 @@ detected. This trade is the jemalloc-parity decision of
 `docs/plan.md` Phase 1.5 task 4e: the exact check costs one slab-descriptor
 cache miss per free, 200 of the 273 cycles per SET that separated challoc
 from jemalloc on Valkey's write path.
+
+(3) On an arm64 host whose kernel exposes pointer authentication
+(`HWCAP_PACA`/`PACG`: Google Axion, Apple silicon; not Ampere Altra, not
+x86_64), every pointer a thread cache holds is stored signed with the data
+key A (`pacda`, the cache's stack address as the modifier) and
+authenticated (`autda`) when `malloc` pops it, and the heap pointer in TLS
+is signed with the thread pointer; so a write into the allocator's
+metadata region cannot make `malloc` hand out a chosen address: the pop
+faults (CPUs with FEAT_FPAC, Neoverse V2, Apple M2+) or returns a
+non-canonical pointer that faults on first use (Neoverse N1, Apple M1).
+Probed at run time, one predicted branch on a byte the fast paths load
+anyway, the same binary everywhere; `MALLOC_CONF=pac_pointers:true` turns
+it on. It is off by default because the two PAC instructions an entry
+costs (one signing it, one authenticating it) are 11% of xmalloc-test's
+cross-thread frees and 1..2% of larson on Axion, over the 1% budget for a
+default-on hardening (`bench/results/2026-09-19-lane-a-pac-pointers.md`;
+design 6.1, 6.2, 17).
 
 (2) Both keys are off by default and are the operator's choice
 (`MALLOC_CONF=zero_on_free:true`, `slot_randomize:true`). `zero_on_free`

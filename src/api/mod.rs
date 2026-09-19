@@ -140,6 +140,15 @@ pub fn shared_if_ready() -> Option<&'static Shared> {
     }
 }
 
+/// The allocator state's address, with no readiness check and no
+/// reference formed: what the fast paths hand `heap::existing_heap`, which
+/// reads one byte through it only after the thread's TLS slot has proved
+/// init complete.
+#[inline(always)]
+pub fn shared_ptr() -> *const Shared {
+    (&raw const SHARED.0).cast::<Shared>()
+}
+
 /// The allocator state without the readiness check.
 ///
 /// # Safety
@@ -247,7 +256,8 @@ fn init() {
     // SAFETY: the statics are written once here, before `READY` is
     // published, and `regions` are live reservations this process owns.
     unsafe {
-        let ok = Shared::init((*SHARED.0.get()).as_mut_ptr(), regions, config, features.guard_install);
+        let pac = matches!(features.cpu.isa, crate::sys::cpu::Isa::Arm(a) if a.pac) && crate::sys::pac::available();
+        let ok = Shared::init((*SHARED.0.get()).as_mut_ptr(), regions, config, features.guard_install, pac);
         if !ok {
             sys::abort("metadata region too small for the allocator tables");
         }
@@ -742,7 +752,7 @@ mod tests {
         assert!(!p.is_null());
         unsafe { core::ptr::write_bytes(p, 0xa5, size) };
         assert_eq!(s.classify_free(p), Ok((c, lua)));
-        let h = heap::existing_heap().unwrap();
+        let h = heap::existing_heap(s).unwrap();
         // This thread's automatic arena: whichever `Arenas::assign` gave
         // the test thread (the default is `min(4 * ncpus, 64)` arenas).
         let home = h.arena();
@@ -811,14 +821,14 @@ mod tests {
                 unsafe { *p = i as u8 };
                 v.push(p as usize);
             }
-            (heap::existing_heap().unwrap().arena(), v)
+            (heap::existing_heap(s).unwrap().arena(), v)
         })
         .join()
         .unwrap();
         // The other thread was bound to an idle automatic arena, not ours.
         assert_ne!(other, home);
         assert_ne!(other, lua);
-        let h = heap::existing_heap().unwrap();
+        let h = heap::existing_heap(s).unwrap();
         h.flush_all(s);
         for (i, &p) in ptrs.iter().enumerate() {
             let p = p as *mut u8;

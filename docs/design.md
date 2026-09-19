@@ -452,6 +452,23 @@ obtained, which glibc reports as a `dlopen` failure rather than a crash.
 A Cargo feature could replace the asm with nightly `#[thread_local]`; none is
 defined today.
 
+Signed heap pointer (plan Phase 2.5 task 7, `sys::pac`). With
+`pac_pointers:true` on an arm64 host whose kernel exposes pointer
+authentication (`HWCAP_PACA` and `HWCAP_PACG`, Armv8.3 FEAT_PAuth with
+per-process keys; `Shared::pac()`, the `PUSH_PAC` bit of `push_flags`,
+section 6.3 step 3; off by default, section 14), the slot holds the heap pointer
+signed with the data key A, `pacda heap, tpidr_el0`: the thread pointer is
+the modifier, so a heap pointer copied into another thread's slot fails,
+and the accessor loads `tpidr_el0` anyway to reach the slot, so the
+`autda` on the way out costs no extra load (`tls::get_tp` returns both).
+The sentinels (`TLS_CREATING = 1`, `TLS_EXITED = 2`, and null) are never
+signed: the compare against them comes first, and a signed pointer keeps
+its low 48 bits, so it stays above them. A corrupted slot value faults at
+the `autda` (FEAT_FPAC: `SIGILL`) or comes out non-canonical and faults on
+the first header load (original PAuth: `SIGSEGV`). x86_64 has no PAC and
+the code compiles to the plain accessor there; a CPU without the extension
+(Altra) takes the same path through the predicted branch on the flag.
+
 ### 6.2 Heap structure
 
 ```
@@ -489,6 +506,40 @@ The per-thread byte counters are not kept per operation: `allocs` is bumped
 on the header line a pop writes anyway and the free count follows from the
 stack arithmetic (`heap.rs`, `Heap::stats`). An explicit cache
 (`tcache.create`) is a `Heap` owned by no thread.
+
+Signed entries (plan Phase 2.5 task 7). With `Shared::pac()` set, every
+pointer in `slots[..len]` is stored signed with the data key A and the
+stack's base address `slots` as the modifier (`pacda p, slots`): the push
+signs, the refill and the run rebuild sign the batch they claimed, and the
+pop, the scheduled pop and the flush authenticate (`autda`). The modifier
+is the stack, not the entry's position, so entries move within a stack
+(the scheduled pop's swap, the rebuild's rotation, the flush's selection)
+as they are; it is loaded by every pop and push anyway (it is where the
+entry is read from or written to), so the sign and the authenticate are
+one instruction each and a predicted branch on a byte already loaded; it
+distinguishes caches (each stack is its own metadata object) and survives
+`thread.arena`'s swap of whole header arrays (the stacks stay put). The
+flush orders entries by their address bits alone (`!pac::mask()`, the PAC
+field found once by `xpacd`, one `and` per compare: the sortedness test,
+the selection and the kept sort all take the masked key), authenticates
+only the half it releases (`release_owned` needs plain pointers) and
+leaves the kept half as it is, so an entry costs one `pacda` on the way in
+and one `autda` on the way out, whichever way it leaves; authenticating
+the whole stack and re-signing the kept half was measured first and cost
+xmalloc-test 15.8% on the C4A (the consumer's flushes take the sorted
+path, 1.25k cycles each, and the two passes doubled them). The
+double-free scan compares signed against signed, the same test (one key,
+one modifier), and so does the straddle compare at the split. `CacheHeader::cached()` and `run()` return the entries as
+stored; `CacheHeader::plain` decodes one for diagnostics. A corrupted
+entry, whether an attacker's write into the metadata region or a bug,
+never comes back from `malloc` usable: with FEAT_FPAC (Neoverse V2, Apple
+M2 and later) the `autda` in the pop faults (`SIGILL`); on the original
+PAuth (Neoverse N1, Apple M1) the pointer comes out non-canonical (an
+error code in the PAC field) and the program's first access to it faults
+(`SIGSEGV`); the PAC is 7 bits wide on Linux's default 48-bit VA with
+top-byte-ignore (bits 54:48), so a forged entry passes one time in 128 and
+every failure is a crash. `heap.rs` `corrupted_cache_entry_or_heap_pointer_faults`
+is the test, in a forked child.
 
 Heaps and slot stacks live in the metadata region and are allocated by a
 small internal bump-and-freelist allocator that is only ever used for
@@ -533,7 +584,7 @@ reads; halving the flush rate halves those misses (Phase 0 acceptance,
    the allocator).
 3. `cache = heap.caches[c]` (the home arena's header line); if `len == 0`,
    slow path (refill).
-4. `p = slots[--len]`; return `p`.
+4. `p = slots[--len]` (`autda p, slots` when `PUSH_PAC`, 6.2); return `p`.
 
 `free(p)`:
 1. If `p` is null return. Classify `p` (section 2). Huge: slow path. Invalid:
@@ -541,8 +592,11 @@ reads; halving the flush rate halves those misses (Phase 0 acceptance,
 2. Compute slab and slot; verify `slot * size == offset`; load the class
    bitmap word; verify bit set. Otherwise abort.
 3. The opt-in hardening, one byte (`Shared::push_flags`) on the line step
-   2's `superblock`/`lg_stride` come from, zero by default, so the default
-   push tests it once and branches past both. With `double_free_scan`:
+   2's `superblock`/`lg_stride` come from, zero by default on a CPU
+   without pointer authentication, so the default push tests it once and
+   branches past both; with `pac_pointers:true` on an arm64 host with PAC
+   the byte is `PUSH_PAC` alone, the second compare, and the push stores
+   `pacda p, slots` (6.2). With `double_free_scan`:
    compare `p` against the top 4 cache entries; a
    match is a double free whose first copy is still cached (the bit test
    cannot see it) and aborts before the push. The same compare guards the
@@ -1139,6 +1193,7 @@ jemalloc names where they exist:
 | `guard_slab_interval`     | 8       | one guard per N x 64 KiB of slabs, N a power of two (else rounded up, reported); 0 off, 1 out of range (clamps to 2) |
 | `huge_retain_max`         | 67108864 | challoc only; bytes; freed huge runs above it are purged at once (7) |
 | `zero_on_free`            | false   | opt-in: clear a block on free (6.3 step 3); priced in `bench/results/2026-09-18-*-gce-tunables.md` |
+| `pac_pointers`            | false   | challoc only; opt-in: sign cache entries and the TLS heap pointer with `pacda` where the kernel exposes `HWCAP_PACA`/`PACG` (6.1, 6.2, 17); inert elsewhere; priced in `bench/results/2026-09-19-lane-a-pac-pointers.md` |
 | `slot_randomize`          | false   | opt-in: refills claim from a random word and shuffle the batch (4); fights 6.4's compaction |
 | `double_free_scan`        | false   | compare against the top 4 cache entries |
 | `abort_conf`              | false   | abort on unknown keys, bad values and inert keys |
@@ -1453,6 +1508,16 @@ Off by default, tunable:
   `memset` per free is more than the 3% budget on Valkey's 1 KiB values
   and randomisation fights the compaction of 6.4 (review 2026-09-18
   section 5.1).
+- `pac_pointers` (arm64 with `HWCAP_PACA`/`PACG`: Axion, Apple silicon;
+  not Altra, inert on x86_64): every slot pointer in a thread cache and
+  the heap pointer in TLS are signed with `pacda` (data key A, the stack
+  base or the thread pointer as the modifier) and authenticated with
+  `autda` on the way out (6.1, 6.2), so a write into the metadata region
+  cannot make `malloc` return a chosen address: the pop faults (FEAT_FPAC)
+  or hands back a non-canonical pointer that faults on first use. Off
+  because an entry's two PAC instructions are 11% of xmalloc-test's
+  cross-thread frees and 1..2% of larson on the C4A, over the 1% budget
+  for a default-on hardening (`bench/results/2026-09-19-lane-a-pac-pointers.md`).
 
 Explicitly not attempted: quarantine (defeats defragmentation and costs
 throughput), canaries (needs bytes inside the block), MTE (only AmpereOne
@@ -1539,7 +1604,7 @@ runs on every row.
 | rseq `mm_cid` | kernel 6.3, glibc's registered rseq area | nothing yet: the per-CPU mode (section 15, plan Phase 2.5 task 8) | thread caches |
 | Transparent huge pages | any kernel with THP | nothing: the `thp` key is accepted and inert (plan Phase 2.5 task 9) | off |
 | MTE (`HWCAP2_MTE`, `HWCAP2_MTE3`) | arm64 CPU (Armv8.5) and a kernel with `CONFIG_ARM64_MTE` that exposes it | reported only: tagged pointers (plan Phase 2.5 tasks 5 and 6) | untagged pointers |
-| PAC (`HWCAP_PACA` and `HWCAP_PACG`) | arm64 CPU (Armv8.3) and kernel | reported only: signed cache and heap pointers (task 7) | plain pointers |
+| PAC (`HWCAP_PACA` and `HWCAP_PACG`) | arm64 CPU (Armv8.3) and kernel | signed cache entries and TLS heap pointer (`pacda`/`autda`, sections 6.1 and 6.2) behind `pac_pointers:true`, off by default on the cost (section 14); `pac=yes` on Axion and the Mac VM, `no` on Altra; FEAT_FPAC decides whether a failure faults at the `autda` or on first use | plain pointers, the same binary, one predicted branch on a byte the fast paths load anyway |
 | LSE (`HWCAP_ATOMICS`) | arm64 CPU (Armv8.1) | reported only; the atomics the crate emits follow the compiler baseline (Rust's outlined `__aarch64_*` helpers already pick LSE at run time) | LL/SC loops in the same helpers |
 | LSE2 (`HWCAP_USCAT`) | arm64 CPU (Armv8.4) | reported only: single-copy 16-byte descriptor atomics (later task) | 64-bit atomics |
 | BTI (`HWCAP2_BTI`), SVE (`HWCAP_SVE`) | arm64 CPU and kernel | reported only (BTI landing pads are the compiler baseline's decision) | none needed |

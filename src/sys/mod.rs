@@ -14,6 +14,7 @@ pub mod cgroup;
 pub mod cpu;
 pub mod errno;
 pub mod features;
+pub mod pac;
 pub use errno::{Errno, decode};
 
 #[cfg(target_os = "linux")]

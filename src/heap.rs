@@ -77,6 +77,24 @@
 //! pushed below that index since, so `calloc` can skip its `memset` when it
 //! pops from inside the prefix.
 //!
+//! Signed pointers (plan Phase 2.5 task 7, `sys::pac`). On an arm64 host
+//! whose kernel exposes pointer authentication (`HWCAP_PACA`/`PACG`;
+//! `Shared::pac()`, the [`PUSH_PAC`] bit of the byte every `free` already
+//! reads), every pointer stored in a cache's stack is signed with `pacda`,
+//! the stack's base address as the modifier, and authenticated with
+//! `autda` when it leaves (pop, scheduled pop, flush); the heap pointer in
+//! the TLS slot is signed with the thread pointer. Entries move within a
+//! stack signed (the modifier is the stack, not the position), a flush
+//! orders them by their address bits (the PAC field masked off, no
+//! authentication) and authenticates only the half it releases, and the
+//! sentinels in the TLS slot are never signed (the compare against them
+//! comes first). A corrupted entry faults
+//! at the `autda` (FEAT_FPAC) or comes out non-canonical and faults on
+//! first use, so a write into the metadata region cannot make `malloc`
+//! return a chosen address. The stack base as the modifier survives
+//! `set_arena`'s swap of whole header arrays (the stacks stay put) and
+//! costs nothing: the pop and the push load it anyway.
+//!
 //! Thread exit (design 6.5): [`Shared::init`] creates a `pthread_key` whose
 //! destructor flushes every cache and returns the heap to the metadata
 //! allocator. `pthread_setspecific` is called once per heap, while the TLS
@@ -98,6 +116,7 @@ use crate::huge::{GUARD_PAGES, Huge};
 use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
 use crate::lock::Lock;
 use crate::meta::Meta;
+use crate::sys::pac;
 
 /// Largest default cache capacity (classes up to 128 bytes). 1024 rather
 /// than jemalloc's 200: every flush or refill writes the descriptor lines of
@@ -190,6 +209,14 @@ pub const PUSH_SCAN: u8 = 1;
 /// `Shared::push_flags` bit: `zero_on_free` (clear the block before the
 /// push or the huge release).
 pub const PUSH_ZERO: u8 = 2;
+/// `Shared::push_flags` bit: pointer authentication is on (`sys::pac`,
+/// plan Phase 2.5 task 7). Read by the pop as well as the push: every slot
+/// pointer in a cache's stack is stored signed (`pacda`, modifier the
+/// stack's base address) and authenticated on the way out (`autda`), and
+/// the heap pointer in TLS is signed with the thread pointer. Set by `init`
+/// when the kernel exposes `HWCAP_PACA`/`PACG` and `pac_pointers` is not
+/// `false`; never set on x86_64.
+pub const PUSH_PAC: u8 = 4;
 /// Pops between two fragmentation probes of a class (minus one).
 pub const PROBE_MASK: u32 = (1 << 12) - 1;
 /// A class is worth compacting when its slabs hold at least this many
@@ -272,7 +299,8 @@ impl CacheHeader {
     }
 
     /// The run of low addresses, `slots[..run_end]`, descending (for tests
-    /// and diagnostics).
+    /// and diagnostics), as stored: signed when `Shared::pac()`
+    /// ([`CacheHeader::plain`]).
     pub fn run(&self) -> &[*mut u8] {
         debug_assert!(self.run_end <= self.low_water && self.low_water <= self.len);
         if self.run_end == 0 {
@@ -283,7 +311,8 @@ impl CacheHeader {
     }
 
     /// Cached pointers, bottom of the stack first (for tests and
-    /// diagnostics).
+    /// diagnostics), as stored: signed when `Shared::pac()`
+    /// ([`CacheHeader::plain`]).
     pub fn cached(&self) -> &[*mut u8] {
         if self.len == 0 {
             return &[];
@@ -307,6 +336,33 @@ impl CacheHeader {
     #[inline(always)]
     fn slots(&mut self) -> *mut *mut u8 {
         self.slots
+    }
+
+    /// Sign every entry of `entries` (plain pointers) in place with the
+    /// stack base `slots` as the modifier ([`PUSH_PAC`]).
+    #[inline]
+    fn sign_all(slots: *mut *mut u8, entries: &mut [*mut u8]) {
+        let m = slots as usize;
+        for e in entries {
+            *e = pac::sign(*e as usize, m) as *mut u8;
+        }
+    }
+
+    /// Authenticate every entry of `entries` (signed) in place.
+    #[inline]
+    fn auth_all(slots: *mut *mut u8, entries: &mut [*mut u8]) {
+        let m = slots as usize;
+        for e in entries {
+            *e = pac::auth(*e as usize, m) as *mut u8;
+        }
+    }
+
+    /// The plain pointer a stored entry names: authenticated when `pac`
+    /// (`Shared::pac()`), the entry itself otherwise. For diagnostics and
+    /// tests reading [`CacheHeader::cached`] or [`CacheHeader::run`], which
+    /// return the entries as stored.
+    pub fn plain(&self, e: *mut u8, pac: bool) -> *mut u8 {
+        if pac { pac::auth(e as usize, self.slots as usize) as *mut u8 } else { e }
     }
 
     /// Enter `mode` and derive the scheduled-pop mask from it, so the two
@@ -451,9 +507,12 @@ pub struct Shared {
     /// slot against the top four cache entries and aborts on a match) and
     /// [`PUSH_ZERO`] (`zero_on_free`: the slot's class-size bytes are
     /// cleared before the push, and a huge run's usable bytes before its
-    /// release). Written once by `init`; kept on the line every `free`
-    /// reads, and zero in the default configuration, so the fast path
-    /// tests one byte and takes one predicted branch (plan Phase 2 task 3).
+    /// release), and [`PUSH_PAC`] (signed cache and heap pointers where
+    /// the CPU has pointer authentication, plan Phase 2.5 task 7; read by
+    /// the pop too). Written once by `init`; kept on the line every `free`
+    /// reads, and zero in the default configuration on a CPU without PAC,
+    /// so the fast path tests one byte and takes one predicted branch
+    /// (plan Phase 2 task 3).
     push_flags: u8,
     pub regions: Regions,
     /// The sized fast path's guard test per class (plan Phase 2.5 task
@@ -677,7 +736,7 @@ impl Shared {
     /// has `MADV_GUARD_INSTALL`, without which no guard is placed at all
     /// (the `PROT_NONE` fallback would split every class region into one
     /// VMA per guard, see `class.rs`).
-    pub unsafe fn init(this: *mut Shared, regions: Regions, config: Config, guard_install: bool) -> bool {
+    pub unsafe fn init(this: *mut Shared, regions: Regions, config: Config, guard_install: bool, pac: bool) -> bool {
         let mut config = config;
         config.narenas = config.effective_narenas(os::ncpus());
         let guard_interval = if guard_install { config.effective_guard_slab_interval() } else { 0 };
@@ -691,7 +750,9 @@ impl Shared {
             ptr::write(&raw mut (*this).multi_arena, AtomicBool::new(false));
             ptr::write(
                 &raw mut (*this).push_flags,
-                (if config.double_free_scan { PUSH_SCAN } else { 0 }) | (if config.zero_on_free { PUSH_ZERO } else { 0 }),
+                (if config.double_free_scan { PUSH_SCAN } else { 0 })
+                    | (if config.zero_on_free { PUSH_ZERO } else { 0 })
+                    | (if pac && config.pac_pointers { PUSH_PAC } else { 0 }),
             );
             let meta = &*meta;
             let regions = &*(&raw const (*this).regions);
@@ -789,6 +850,12 @@ impl Shared {
     #[inline(always)]
     pub fn push_flags(&self) -> u8 {
         self.push_flags
+    }
+
+    /// Whether cache and heap pointers are signed ([`PUSH_PAC`]).
+    #[inline(always)]
+    pub fn pac(&self) -> bool {
+        self.push_flags & PUSH_PAC != 0
     }
 
     /// Whether pushes compare against the top four cache entries
@@ -1351,16 +1418,17 @@ impl Heap {
     /// Fast path of `malloc` for a non-huge class in the home arena.
     #[inline(always)]
     pub fn alloc(&mut self, shared: &Shared, class: usize) -> *mut u8 {
-        match self.alloc_fast(class) {
+        match self.alloc_fast(class, shared.push_flags()) {
             Some(p) => p,
             None => self.alloc_slow(shared, class).0,
         }
     }
 
     /// The cache pop alone: `None` when the cache is empty (or still the
-    /// sentinel) and the caller must take a slow path.
+    /// sentinel) and the caller must take a slow path. `flags` is
+    /// `Shared::push_flags` (only [`PUSH_PAC`] matters to a pop).
     #[inline(always)]
-    pub fn alloc_fast(&mut self, class: usize) -> Option<*mut u8> {
+    pub fn alloc_fast(&mut self, class: usize, flags: u8) -> Option<*mut u8> {
         let cache = self.cache_ptr(class);
         // SAFETY: this thread's own header, unused (`len == 0`) or with a
         // stack of `len` entries.
@@ -1369,7 +1437,7 @@ impl Heap {
             if len == 0 {
                 return None;
             }
-            Some(self.pop(cache, class, len).0)
+            Some(self.pop(cache, class, len, flags & PUSH_PAC != 0).0)
         }
     }
 
@@ -1384,7 +1452,7 @@ impl Heap {
             if len == 0 {
                 return self.alloc_slow(shared, class);
             }
-            self.pop(cache, class, len)
+            self.pop(cache, class, len, shared.pac())
         }
     }
 
@@ -1400,7 +1468,7 @@ impl Heap {
         unsafe {
             let len = (*cache).len;
             if len != 0 {
-                return self.pop(cache, class, len);
+                return self.pop(cache, class, len, shared.pac());
             }
         }
         // Not `alloc_slow`: an explicit arena is kept even for a shared
@@ -1417,9 +1485,10 @@ impl Heap {
     /// # Safety
     /// `cache` is this heap's real cache for `class` and `len` is its
     /// current non-zero length. `len` is only a copy: the scheduled pop
-    /// runs `tick`, whose GC may flush this cache, and reloads it.
+    /// runs `tick`, whose GC may flush this cache, and reloads it. `pac`
+    /// is `Shared::pac()`: whether the entry is stored signed.
     #[inline(always)]
-    unsafe fn pop(&mut self, cache: *mut CacheHeader, class: usize, len: u32) -> (*mut u8, bool) {
+    unsafe fn pop(&mut self, cache: *mut CacheHeader, class: usize, len: u32, pac: bool) -> (*mut u8, bool) {
         // SAFETY: guaranteed by the caller.
         unsafe {
             let allocs = (*cache).allocs.wrapping_add(1);
@@ -1427,16 +1496,19 @@ impl Heap {
             if ((allocs as u32) & (*cache).compact_mask) == 0 {
                 return self.pop_compact(cache, class, len);
             }
-            Self::pop_top(cache, len)
+            Self::pop_top(cache, len, pac)
         }
     }
 
-    /// The ordinary pop of the top entry, `allocs` already counted.
+    /// The ordinary pop of the top entry, `allocs` already counted. With
+    /// `pac` the entry is authenticated against the stack's base address
+    /// (`autda`; [`CacheHeader::plain`]): a corrupted entry faults here on
+    /// FEAT_FPAC, or comes out non-canonical and faults on its first use.
     ///
     /// # Safety
     /// As for [`Heap::pop`].
     #[inline(always)]
-    unsafe fn pop_top(cache: *mut CacheHeader, len: u32) -> (*mut u8, bool) {
+    unsafe fn pop_top(cache: *mut CacheHeader, len: u32, pac: bool) -> (*mut u8, bool) {
         // SAFETY: guaranteed by the caller.
         unsafe {
             let len = len - 1;
@@ -1447,7 +1519,9 @@ impl Heap {
                     (*cache).run_end = len;
                 }
             }
-            let p = *(*cache).slots().add(len as usize);
+            let slots = (*cache).slots();
+            let p = *slots.add(len as usize);
+            let p = if pac { pac::auth(p as usize, slots as usize) as *mut u8 } else { p };
             let zero = len < (*cache).zeroed;
             (p, zero)
         }
@@ -1472,6 +1546,7 @@ impl Heap {
     unsafe fn pop_compact(&mut self, cache: *mut CacheHeader, class: usize, len: u32) -> (*mut u8, bool) {
         // SAFETY: guaranteed by the caller.
         unsafe {
+            let pac = (*self.shared).pac();
             match (*cache).mode {
                 MODE_COMPACT => {}
                 MODE_PROBE => {
@@ -1498,16 +1573,16 @@ impl Heap {
                         if Self::fragmented(shared, (*cache).arena, class) {
                             cs.note_gate_refill();
                         }
-                        return Self::pop_top(cache, len);
+                        return Self::pop_top(cache, len, pac);
                     }
                     if !Self::fragmented(shared, (*cache).arena, class) {
-                        return Self::pop_top(cache, len);
+                        return Self::pop_top(cache, len, pac);
                     }
                     cs.note_compact_mode(true);
                     (*cache).set_mode(MODE_COMPACT, &shared.config);
                     return self.pop_compact_run(cache, class, len);
                 }
-                _ => return Self::pop_top(cache, len),
+                _ => return Self::pop_top(cache, len, pac),
             }
             self.pop_compact_run(cache, class, len)
         }
@@ -1521,9 +1596,10 @@ impl Heap {
     unsafe fn pop_compact_run(&mut self, cache: *mut CacheHeader, class: usize, len: u32) -> (*mut u8, bool) {
         // SAFETY: guaranteed by the caller.
         unsafe {
+            let pac = (*self.shared).pac();
             match (*cache).mode {
                 MODE_COMPACT => {}
-                _ => return Self::pop_top(cache, len),
+                _ => return Self::pop_top(cache, len, pac),
             }
             let mut len = len;
             if (*cache).run_end == 0 {
@@ -1544,7 +1620,7 @@ impl Heap {
                             return (ptr::null_mut(), false);
                         }
                     }
-                    return Self::pop_top(cache, len);
+                    return Self::pop_top(cache, len, pac);
                 }
             }
             // The run invariant `run_end <= low_water <= len` is what keeps
@@ -1558,6 +1634,10 @@ impl Heap {
             let at = (*cache).run_end - 1;
             let slots = (*cache).slots();
             let p = *slots.add(at as usize);
+            // Entries move within the stack signed (the modifier is the
+            // stack's base, not the entry's position); only the one leaving
+            // is authenticated.
+            let p = if pac { pac::auth(p as usize, slots as usize) as *mut u8 } else { p };
             *slots.add(at as usize) = *slots.add(top as usize);
             (*cache).len = top;
             (*cache).run_end = at;
@@ -1628,6 +1708,9 @@ impl Heap {
             }
             shared.owner(arena).class(class).note_compact(n);
             out[..n].reverse();
+            if shared.pac() {
+                CacheHeader::sign_all(slots, &mut out[..n]);
+            }
             let all = core::slice::from_raw_parts_mut(slots, len + n);
             if len >= n {
                 // [old..][block] -> [block][old[n..]][old[..n]]
@@ -1755,15 +1838,22 @@ impl Heap {
     /// As for [`Heap::push_cache`].
     #[inline(always)]
     unsafe fn push_cache_flags(cache: *mut CacheHeader, p: *mut u8, flags: u8) -> bool {
+        // The two default configurations first, one byte compare each: no
+        // hardening (x86_64, a CPU without PAC) and signed pointers alone
+        // (an arm64 host with PAC).
         if flags == 0 {
             // SAFETY: guaranteed by the caller.
-            return unsafe { Self::push_cache(cache, p, false) };
+            return unsafe { Self::push_cache(cache, p, false, false) };
+        }
+        if flags == PUSH_PAC {
+            // SAFETY: guaranteed by the caller.
+            return unsafe { Self::push_cache(cache, p, false, true) };
         }
         if flags & PUSH_ZERO != 0 {
             return false;
         }
         // SAFETY: guaranteed by the caller.
-        unsafe { Self::push_cache(cache, p, true) }
+        unsafe { Self::push_cache(cache, p, flags & PUSH_SCAN != 0, flags & PUSH_PAC != 0) }
     }
 
     /// Push onto `cache` unless it is full. With `scan`, compare `p`
@@ -1773,28 +1863,35 @@ impl Heap {
     /// second copy is stored. Four unconditional compares from the line
     /// the push writes to; a cache holding fewer than four takes the loop.
     ///
+    /// With `pac` the entry is stored signed with the stack's base address
+    /// as the modifier (`pacda`, [`PUSH_PAC`]); the scan compares signed
+    /// against signed, which is the same test (one key, one modifier, so
+    /// equal addresses give equal words).
+    ///
     /// # Safety
     /// `cache` is a header owned by this heap, unused or with a stack.
     #[inline(always)]
-    unsafe fn push_cache(cache: *mut CacheHeader, p: *mut u8, scan: bool) -> bool {
+    unsafe fn push_cache(cache: *mut CacheHeader, p: *mut u8, scan: bool, pac: bool) -> bool {
         // SAFETY: guaranteed by the caller.
         unsafe {
             let len = (*cache).len;
             if len == (*cache).cap {
                 return false;
             }
+            let slots = (*cache).slots();
+            let e = if pac { pac::sign(p as usize, slots as usize) as *mut u8 } else { p };
             if scan && len != 0 {
-                let top = (*cache).slots().add(len as usize);
+                let top = slots.add(len as usize);
                 let hit = if len >= 4 {
-                    (*top.sub(1) == p) | (*top.sub(2) == p) | (*top.sub(3) == p) | (*top.sub(4) == p)
+                    (*top.sub(1) == e) | (*top.sub(2) == e) | (*top.sub(3) == e) | (*top.sub(4) == e)
                 } else {
-                    (1..=len as usize).any(|i| *top.sub(i) == p)
+                    (1..=len as usize).any(|i| *top.sub(i) == e)
                 };
                 if hit {
                     cached_twice(p);
                 }
             }
-            *(*cache).slots().add(len as usize) = p;
+            *slots.add(len as usize) = e;
             (*cache).len = len + 1;
             if len < (*cache).zeroed {
                 (*cache).zeroed = len;
@@ -1866,7 +1963,7 @@ impl Heap {
             let len = unsafe { (*cache).len };
             if len != 0 {
                 // SAFETY: a real cache with `len` entries.
-                return unsafe { self.pop(cache, class, len) };
+                return unsafe { self.pop(cache, class, len, shared.pac()) };
             }
         }
         self.alloc_slow_in(shared, arena, class)
@@ -1890,7 +1987,7 @@ impl Heap {
             if len == 0 {
                 return (ptr::null_mut(), false);
             }
-            self.pop(cache, class, len)
+            self.pop(cache, class, len, shared.pac())
         }
     }
 
@@ -1950,7 +2047,7 @@ impl Heap {
                 let half = ((*cache).cap / 2).max(1);
                 self.flush(shared, arena, cache, class, half as usize);
             }
-            if !Self::push_cache(cache, p, shared.double_free_scan()) {
+            if !Self::push_cache(cache, p, shared.double_free_scan(), shared.pac()) {
                 unreachable!("heap: cache still full after a flush");
             }
         }
@@ -2091,6 +2188,9 @@ impl Heap {
             let claim = self.claim(shared, arena.class(class), out);
             arena.class(class).note_refill(claim.n);
             out[..claim.n].reverse();
+            if shared.pac() {
+                CacheHeader::sign_all((*cache).slots(), &mut out[..claim.n]);
+            }
             (*cache).len = claim.n as u32;
             (*cache).moved = (*cache).moved.wrapping_add(claim.n as u64);
             (*cache).low_water = claim.n as u32;
@@ -2166,35 +2266,66 @@ impl Heap {
         }
         // SAFETY: `n <= len <= cap` entries exist.
         unsafe {
+            let pac = shared.pac();
+            let slots = (*cache).slots();
+            // With signed entries the selection, the sortedness test and
+            // the kept sort order by the address bits alone (`!pac::mask()`
+            // masks the PAC field, one `and` per compare); only the
+            // released half is authenticated, once, before the release,
+            // and the kept half stays as it is. Authenticating the whole
+            // stack and re-signing the kept half was measured first:
+            // xmalloc-test -15.8% on the C4A (the consumer's flushes are
+            // the sorted path, 1.25k cycles each, and the two passes
+            // doubled them; `bench/results/2026-09-19-lane-a-pac-pointers.md`).
+            // The keyed forms only when signed: `sort_unstable_by_key` and
+            // friends take a comparator closure and lose the primitive
+            // pointer sort's specialisations, which costs every flush even
+            // when the key is the identity.
+            let addr_mask = !pac::mask();
+            let key = |e: &*mut u8| (*e as usize) & addr_mask;
             let all = (*cache).entries();
             let rest_len = all.len() - n;
-            let (kept_max, low);
-            if rest_len > 0 && all.is_sorted() {
+            let kept_max;
+            let sorted = rest_len > 0 && if pac { all.is_sorted_by_key(key) } else { all.is_sorted() };
+            if sorted {
                 // Already in address order: the split is direct, the
                 // released half is sorted and so grouped, and the kept half
                 // stays sorted for the next flush.
                 kept_max = *all.get_unchecked(rest_len - 1);
-                low = *all.get_unchecked(rest_len);
                 (*cache).unsorted_flushes = 0;
             } else {
                 kept_max = if rest_len > 0 {
                     // `all[..rest_len - 1] <= all[rest_len - 1] <= all[rest_len..]`.
-                    all.select_nth_unstable(rest_len - 1);
+                    if pac {
+                        all.select_nth_unstable_by_key(rest_len - 1, key);
+                    } else {
+                        all.select_nth_unstable(rest_len - 1);
+                    }
                     *all.get_unchecked(rest_len - 1)
                 } else {
                     ptr::null_mut()
                 };
-                low = group_by_slab(shared, class, all.get_unchecked_mut(rest_len..));
                 let k = (*cache).unsorted_flushes;
                 (*cache).unsorted_flushes = k.wrapping_add(1);
                 if rest_len > 1 && (k < 2 || k % 32 == 0) {
-                    all.get_unchecked_mut(..rest_len).sort_unstable();
+                    if pac {
+                        all.get_unchecked_mut(..rest_len).sort_unstable_by_key(key);
+                    } else {
+                        all.get_unchecked_mut(..rest_len).sort_unstable();
+                    }
                 }
             }
-            if low == kept_max {
+            let high = all.get_unchecked_mut(rest_len..);
+            if pac {
+                // The release needs plain pointers. A corrupted entry
+                // faults here (FEAT_FPAC) or in `release_owned`.
+                CacheHeader::auth_all(slots, high);
+            }
+            let low = if sorted { *high.get_unchecked(0) } else { group_by_slab(shared, class, high) };
+            let kept_max_plain = if pac && rest_len > 0 { pac::auth(kept_max as usize, slots as usize) as *mut u8 } else { kept_max };
+            if low == kept_max_plain {
                 straddling_double_free(low, class);
             }
-            let high = all.get_unchecked_mut(rest_len..);
             shared.release_routed(arena, class, high);
             (*cache).len = rest_len as u32;
             (*cache).moved = (*cache).moved.wrapping_sub(n as u64);
@@ -2337,12 +2468,29 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
 #[cfg(target_os = "linux")]
 #[inline(always)]
 pub fn heap_for_thread(shared: &Shared) -> Option<&mut Heap> {
-    let t = crate::tls::get() as usize;
+    let (t, tp) = crate::tls::get_tp();
+    let t = t as usize;
     if t > TLS_EXITED {
-        // SAFETY: anything above the sentinels is this thread's heap pointer.
-        return Some(unsafe { &mut *(t as *mut Heap) });
+        // Anything above the sentinels is this thread's heap pointer,
+        // signed with the thread pointer when `PUSH_PAC` is set (the
+        // sentinels are never signed, so the compare comes first; a signed
+        // pointer keeps its low 48 bits and stays above them).
+        // SAFETY: `t` is this thread's slot value above the sentinels.
+        return Some(unsafe { heap_from_slot(t, tp, shared.pac()) });
     }
     create_heap_for_thread(shared, t)
+}
+
+/// The slot value for heap `h` on the calling thread: `h` signed with the
+/// thread pointer when `shared.pac()`, else `h` itself.
+#[cfg(target_os = "linux")]
+fn tls_value_for(shared: &Shared, h: *mut Heap) -> *mut c_void {
+    if shared.pac() {
+        let (_, tp) = crate::tls::get_tp();
+        pac::sign(h as usize, tp) as *mut c_void
+    } else {
+        h as *mut c_void
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -2358,7 +2506,7 @@ fn create_heap_for_thread(shared: &Shared, slot: usize) -> Option<&mut Heap> {
     }
     crate::tls::set(TLS_CREATING as *mut c_void);
     shared.key.set(h);
-    crate::tls::set(h as *mut c_void);
+    crate::tls::set(tls_value_for(shared, h));
     // SAFETY: freshly created and owned by this thread.
     Some(unsafe { &mut *h })
 }
@@ -2371,15 +2519,64 @@ fn create_heap_for_thread(shared: &Shared, slot: usize) -> Option<&mut Heap> {
 /// otherwise head every dependent-load chain). Same aliasing and lifetime
 /// rule as [`heap_for_thread`]: one live reference per thread, never
 /// stored.
+///
+/// `shared` is the process's `Shared` as a raw pointer (`api::shared_ptr`,
+/// or a `&Shared`), read only after the slot proved a heap exists: its
+/// `push_flags` byte says whether the slot value is signed
+/// ([`PUSH_PAC`]), and a thread that created a heap did so under
+/// `shared()`, after init wrote that byte.
 #[cfg(target_os = "linux")]
 #[inline(always)]
-pub fn existing_heap() -> Option<&'static mut Heap> {
-    let t = crate::tls::get() as usize;
-    if t > TLS_EXITED {
-        // SAFETY: anything above the sentinels is this thread's heap pointer.
-        Some(unsafe { &mut *(t as *mut Heap) })
-    } else {
-        None
+pub fn existing_heap(shared: *const Shared) -> Option<&'static mut Heap> {
+    let (t, tp) = tls_heap_slot()?;
+    // SAFETY: a real slot value proves this thread observed `READY`, so
+    // `push_flags` was written before.
+    let flags = unsafe { fast_flags(shared) };
+    // SAFETY: `t` is this thread's slot value above the sentinels.
+    Some(unsafe { heap_from_slot(t, tp, flags & PUSH_PAC != 0) })
+}
+
+/// The calling thread's TLS slot value and thread pointer when the slot
+/// holds a heap pointer (plain or signed), `None` on null or a sentinel.
+/// (Branching once here into two copies of the whole fast path was tried:
+/// LLVM merged the copies' tails back together and gave `malloc` a stack
+/// frame it did not have, so the entry points take [`existing_heap`] and
+/// the `autda`s sit behind their own predicted `tbz`s.)
+#[cfg(target_os = "linux")]
+#[inline(always)]
+pub fn tls_heap_slot() -> Option<(usize, usize)> {
+    let (t, tp) = crate::tls::get_tp();
+    let t = t as usize;
+    if t > TLS_EXITED { Some((t, tp)) } else { None }
+}
+
+/// `Shared::push_flags` through a raw pointer (`api::shared_ptr`).
+///
+/// # Safety
+/// The caller must have observed `READY` (a heap pointer in its TLS slot
+/// is the witness: heaps are created under `shared()`, after init wrote
+/// the byte).
+#[inline(always)]
+pub unsafe fn fast_flags(shared: *const Shared) -> u8 {
+    // SAFETY: guaranteed by the caller.
+    unsafe { ptr::read(&raw const (*shared).push_flags) }
+}
+
+/// The heap a TLS slot value names: authenticated against the thread
+/// pointer when `pac` ([`PUSH_PAC`]), the value itself otherwise.
+///
+/// # Safety
+/// `(t, tp)` from [`tls_heap_slot`] on this thread, and `pac` is the
+/// process's `PUSH_PAC`.
+#[inline(always)]
+pub unsafe fn heap_from_slot(t: usize, tp: usize, pac: bool) -> &'static mut Heap {
+    let h = if pac { pac::auth(t, tp) } else { t };
+    // SAFETY: guaranteed by the caller; the hint spares the null test the
+    // compiler would otherwise add for the `Option` niche, `t` being above
+    // the sentinels and `autda` never producing zero from it.
+    unsafe {
+        core::hint::assert_unchecked(h != 0);
+        &mut *(h as *mut Heap)
     }
 }
 
@@ -2390,9 +2587,9 @@ pub fn existing_heap() -> Option<&'static mut Heap> {
 /// they fail. Contains no call, so the entry point that inlines it needs no
 /// frame.
 #[inline(always)]
-pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8) -> bool {
+pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> bool {
     match shared.checked_slot(p, h) {
-        Some(class) => h.push_fast(class, p, shared.push_flags()),
+        Some(class) => h.push_fast(class, p, flags),
         None => false,
     }
 }
@@ -2405,9 +2602,9 @@ pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8) -> bool {
 /// full cache); the caller then goes through [`Shared::check_size_hint`]
 /// and the exact [`free`]. Contains no call.
 #[inline(always)]
-pub fn free_sized_fast(shared: &Shared, h: &mut Heap, p: *mut u8, hint: Option<usize>) -> bool {
+pub fn free_sized_fast(shared: &Shared, h: &mut Heap, p: *mut u8, hint: Option<usize>, flags: u8) -> bool {
     match shared.sized_slot(p, hint) {
-        Some(class) => h.push_fast(class, p, shared.push_flags()),
+        Some(class) => h.push_fast(class, p, flags),
         None => false,
     }
 }
@@ -2457,7 +2654,7 @@ pub fn free_direct(shared: &Shared, p: *mut u8) {
                 unsafe { zero_slot(class, p) };
             }
             shared.free_direct(arena, class, p);
-            if let Some(h) = existing_heap() {
+            if let Some(h) = existing_heap(shared) {
                 h.count_direct_free(class);
             }
         }
@@ -2466,7 +2663,7 @@ pub fn free_direct(shared: &Shared, p: *mut u8) {
                 shared.zero_huge(page);
             }
             let n = shared.free_huge(page);
-            if let Some(h) = existing_heap() {
+            if let Some(h) = existing_heap(shared) {
                 h.count_uncached_free(n);
             }
         }
@@ -2660,8 +2857,11 @@ pub(crate) mod tests {
     /// never dereferenced.
     /// One automatic arena, so every heap of a test shares arena 0 (the
     /// default would spread concurrently live heaps over `4 * ncpus`).
+    /// `pac_pointers` on: the signed path runs in every heap test on a
+    /// host with pointer authentication (plan Phase 2.5 task 7), and is
+    /// the plain path elsewhere.
     pub(crate) fn shared() -> &'static Shared {
-        shared_with(Config { narenas: 1, ..Config::DEFAULT })
+        shared_with(Config { narenas: 1, pac_pointers: true, ..Config::DEFAULT })
     }
 
     pub(crate) fn shared_with(config: Config) -> &'static Shared {
@@ -2683,7 +2883,7 @@ pub(crate) mod tests {
     /// Linux only).
     #[cfg(target_os = "linux")]
     pub(crate) fn shared_guarded() -> &'static Shared {
-        shared_with_guards(Config { narenas: 1, ..Config::DEFAULT }, true)
+        shared_with_guards(Config { narenas: 1, pac_pointers: true, ..Config::DEFAULT }, true)
     }
 
     fn shared_with_guards(config: Config, guard_install: bool) -> &'static Shared {
@@ -2711,7 +2911,7 @@ pub(crate) mod tests {
             hb,
         );
         let b: &'static mut MaybeUninit<Shared> = Box::leak(Box::new(MaybeUninit::uninit()));
-        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, config, guard_install) });
+        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, config, guard_install, pac::available()) });
         unsafe { b.assume_init_ref() }
     }
 
@@ -2773,6 +2973,19 @@ pub(crate) mod tests {
 
         fn cache(&self, c: usize) -> &CacheHeader {
             self.heap().cache(c).expect("cache exists")
+        }
+
+        /// The entries of `c`'s cache as plain pointers (authenticated
+        /// where the stack is signed), bottom first.
+        fn cached_plain(&self, c: usize) -> Vec<*mut u8> {
+            let k = self.cache(c);
+            k.cached().iter().map(|&e| k.plain(e, self.s.pac())).collect()
+        }
+
+        /// The run of `c`'s cache as plain pointers.
+        fn run_plain(&self, c: usize) -> Vec<*mut u8> {
+            let k = self.cache(c);
+            k.run().iter().map(|&e| k.plain(e, self.s.pac())).collect()
         }
 
         fn len(&self, c: usize) -> usize {
@@ -3115,7 +3328,7 @@ pub(crate) mod tests {
         let p = t.alloc(c);
         let committed = s.arena0.class(c).committed_slabs();
         let beyond = s.regions.slab_addr(c, committed + 1) as *mut u8;
-        assert!(free_sized_fast(s, t.heap(), beyond, Some(c)), "the fast path took it");
+        assert!(free_sized_fast(s, t.heap(), beyond, Some(c), s.push_flags()), "the fast path took it");
         t.free(p);
         t.flush_all();
     }
@@ -3488,7 +3701,7 @@ pub(crate) mod tests {
     /// refill happened). The run is descending afterwards.
     fn pop_checked(t: &TestHeap, c: usize) -> *mut u8 {
         let (before, run, allocs, compacting) = match t.heap().cache(c) {
-            Some(k) => (k.cached().to_vec(), k.run().to_vec(), k.allocs(), k.compacting()),
+            Some(k) => (t.cached_plain(c), t.run_plain(c), k.allocs(), k.compacting()),
             None => (Vec::new(), Vec::new(), 0, false),
         };
         let scheduled = compacting && (allocs + 1) % (1 << Config::DEFAULT.tcache_compact_shift) == 0;
@@ -3501,7 +3714,7 @@ pub(crate) mod tests {
                 } else {
                     // A rebuild: the block came from the lowest partial slab
                     // and its lowest slot was served.
-                    assert!(t.cache(c).run().iter().all(|&q| q > p), "rebuild pop {} is not the block minimum", allocs + 1);
+                    assert!(t.run_plain(c).iter().all(|&q| q > p), "rebuild pop {} is not the block minimum", allocs + 1);
                 }
             } else if t.cache(c).compacting() || !compacting {
                 assert_eq!(p, *before.last().unwrap(), "pop {} is not the top", allocs + 1);
@@ -3515,10 +3728,10 @@ pub(crate) mod tests {
     /// longer than the low-water mark.
     fn check_run(t: &TestHeap, c: usize) {
         let k = t.cache(c);
-        let run = k.run();
+        let run = t.run_plain(c);
         assert!(run.windows(2).all(|w| w[0] > w[1]), "run not descending: {run:?}");
         assert!(run.len() <= k.low_water() && k.low_water() <= k.len());
-        assert_eq!(run, &k.cached()[..run.len()]);
+        assert_eq!(run, &t.cached_plain(c)[..run.len()]);
     }
 
     /// The compaction wrap (review 2026-09-18, section 1.4): a scheduled
@@ -3651,7 +3864,7 @@ pub(crate) mod tests {
                     // The block is the run, claimed lowest partial slab
                     // first: no slab below the highest it touched still has
                     // room (the lowest partial slab left is at or above it).
-                    let run = t.cache(c).run();
+                    let run = t.run_plain(c);
                     let top_slab = run.iter().map(|&q| cs.locate(q).0).max().unwrap();
                     // (`plan` clears a filled slab's partial bit lazily, so
                     // the lowest partial slab may be a full one.)
@@ -4209,8 +4422,8 @@ pub(crate) mod tests {
         // Non-existent arena: null, nothing touched.
         assert!(h.alloc_in(s, 77, c).0.is_null());
         // The fast path takes only the home arena's slots.
-        assert!(free_fast(s, h, p0));
-        assert!(!free_fast(s, h, p1));
+        assert!(free_fast(s, h, p0, s.push_flags()));
+        assert!(!free_fast(s, h, p1, s.push_flags()));
         assert_eq!(h.cache(c).unwrap().len(), HALF);
         h.free(s, p1);
         assert_eq!(h.cache_in(a1, c).unwrap().len(), HALF);
@@ -4327,8 +4540,8 @@ pub(crate) mod tests {
         // Plain allocation now comes from arena 1's cache.
         let q = t.alloc(c);
         assert_eq!(s.classify_free(q), Ok((c, a1)));
-        assert!(free_fast(s, h, p1));
-        assert!(!free_fast(s, h, p0));
+        assert!(free_fast(s, h, p1, s.push_flags()));
+        assert!(!free_fast(s, h, p0, s.push_flags()));
         h.free(s, p0);
         h.free(s, q);
         assert_eq!(h.cache(c).unwrap().len(), HALF);
@@ -4381,13 +4594,16 @@ pub(crate) mod tests {
     /// default configuration leaves it zero.
     #[test]
     fn push_flags_encode_zero_on_free_and_double_free_scan() {
-        assert_eq!(shared().push_flags(), 0);
+        // `PUSH_PAC` follows the host (plan Phase 2.5 task 7); the two
+        // opt-in bits are what this test is about.
+        let pac = if pac::available() { PUSH_PAC } else { 0 };
+        assert_eq!(shared().push_flags(), pac, "the test builder asks for pac_pointers");
         assert!(!shared().zero_on_free());
         let s = shared_with(Config { narenas: 1, zero_on_free: true, ..Config::DEFAULT });
-        assert_eq!(s.push_flags(), PUSH_ZERO);
+        assert_eq!(s.push_flags(), PUSH_ZERO, "pac_pointers is off by default");
         assert!(s.zero_on_free() && !s.double_free_scan());
-        let s = shared_with(Config { narenas: 1, zero_on_free: true, double_free_scan: true, ..Config::DEFAULT });
-        assert_eq!(s.push_flags(), PUSH_ZERO | PUSH_SCAN);
+        let s = shared_with(Config { narenas: 1, zero_on_free: true, double_free_scan: true, pac_pointers: true, ..Config::DEFAULT });
+        assert_eq!(s.push_flags(), PUSH_ZERO | PUSH_SCAN | pac);
         assert!(s.zero_on_free() && s.double_free_scan());
         assert_eq!(core::mem::offset_of!(Shared, push_flags) / 128, core::mem::offset_of!(Shared, multi_arena) / 128);
     }
@@ -4436,7 +4652,7 @@ pub(crate) mod tests {
         // the key the fast push declines and `free_sized_slow` takes the
         // exact route, which clears the slot in `free_slow_in`.
         unsafe { ptr::write_bytes(p, 0xA5, size) };
-        assert!(!free_sized_fast(s, t.heap(), p, Some(c)), "the fast push accepted a slot under zero_on_free");
+        assert!(!free_sized_fast(s, t.heap(), p, Some(c), s.push_flags()), "the fast push accepted a slot under zero_on_free");
         assert!(bytes_of(p, size).iter().all(|&b| b == 0xA5), "the declined push touched the slot");
         s.check_size_hint(p, size, Some(c));
         t.free(p);
@@ -4718,8 +4934,8 @@ mod linux_tests {
         );
         let b: &'static mut MaybeUninit<Shared> = Box::leak(Box::new(MaybeUninit::uninit()));
         // One automatic arena: the tests below reason about `arena0`.
-        let config = Config { narenas: 1, ..Config::DEFAULT };
-        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, config, false) });
+        let config = Config { narenas: 1, pac_pointers: true, ..Config::DEFAULT };
+        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, config, false, pac::available()) });
         unsafe { b.assume_init_ref() }
     }
 
@@ -4750,22 +4966,32 @@ mod linux_tests {
             let c = class_of(100).unwrap();
             let p = alloc(s, c);
             assert!(!p.is_null());
-            let h = tls::get() as usize;
-            assert!(h > TLS_EXITED);
-            let heap = unsafe { &*(h as *mut Heap) };
+            let raw = tls::get() as usize;
+            assert!(raw > TLS_EXITED);
+            // The slot holds the heap pointer, signed with the thread
+            // pointer when PAC is on (`existing_heap` authenticates it).
+            let hp = existing_heap(s).expect("heap") as *mut Heap;
+            let h = hp as usize;
+            if s.pac() {
+                assert_eq!(pac::strip(raw), h);
+                assert_eq!(pac::auth(raw, tls::get_tp().1), h);
+            } else {
+                assert_eq!(raw, h);
+            }
+            let heap = unsafe { &*hp };
             assert_eq!(heap.tid(), crate::sys::gettid() as u32);
             assert!(core::ptr::eq(heap.shared(), s));
             assert_eq!(heap.stats().allocated, CLASSES[c].size() as u64);
             // Same heap on the next call.
             let q = alloc(s, c);
-            assert_eq!(tls::get() as usize, h);
+            assert_eq!(tls::get() as usize, raw);
             assert_ne!(p, q);
             fill(p, CLASSES[c].size(), 0xa5);
             fill(q, CLASSES[c].size(), 0x5a);
             check(p, CLASSES[c].size(), 0xa5);
             free(s, p);
             free(s, q);
-            assert_eq!(unsafe { &*(h as *mut Heap) }.stats().deallocated, 2 * CLASSES[c].size() as u64);
+            assert_eq!(unsafe { &*hp }.stats().deallocated, 2 * CLASSES[c].size() as u64);
         })
         .join()
         .unwrap();
@@ -4863,8 +5089,15 @@ mod linux_tests {
             // Real heap.
             tls::set(core::ptr::null_mut());
             let p = alloc(s, c);
-            let h = tls::get();
-            assert!(h as usize > TLS_EXITED);
+            let raw = tls::get();
+            assert!(raw as usize > TLS_EXITED);
+            // The key holds the plain pointer, the slot the signed one.
+            let h = existing_heap(s).unwrap() as *mut Heap as *mut c_void;
+            if s.pac() {
+                assert_eq!(pac::strip(raw as usize), h as usize);
+            } else {
+                assert_eq!(raw, h);
+            }
             assert!(s.meta.stats().allocated > meta_before);
             free(s, p);
             // Run the destructor by hand (glibc clears the key's value
@@ -4888,6 +5121,139 @@ mod linux_tests {
             free(s, q);
             assert_eq!(live(s, c), 0);
             // The key holds no value now, so thread exit runs no destructor.
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// Plan Phase 2.5 task 7: `PUSH_PAC` follows the probe and the key,
+    /// and the key is off by default (the test builders turn it on).
+    #[test]
+    fn pac_flag_follows_the_probe_and_the_key() {
+        let s = shared();
+        assert_eq!(s.pac(), pac::available(), "pac_pointers:true is the probe's answer");
+        assert_eq!(s.push_flags() & PUSH_PAC != 0, s.pac());
+        assert!(!Config::DEFAULT.pac_pointers, "opt-in");
+        let off = crate::heap::tests::shared_with(Config { narenas: 1, ..Config::DEFAULT });
+        assert!(!off.pac(), "the default configuration signs nothing");
+        assert_eq!(off.push_flags(), 0);
+        #[cfg(target_arch = "x86_64")]
+        assert!(!s.pac());
+        std::eprintln!("pac: available={} on={} fpac={}", pac::available(), s.pac(), pac::fpac());
+    }
+
+    /// Plan Phase 2.5 task 7. With pointer authentication on, every entry
+    /// of a cache's stack is stored signed (strips to the slot it names,
+    /// authenticates against the stack's base) and pops return the plain
+    /// pointers; the TLS slot holds the heap pointer signed with the thread
+    /// pointer. Skipped where the CPU has no PAC.
+    #[test]
+    fn cache_entries_and_the_tls_heap_pointer_are_signed() {
+        let s = shared();
+        if !s.pac() {
+            std::eprintln!("pac: off on this host, skipping");
+            return;
+        }
+        std::thread::spawn(move || {
+            let c = class_of(64).unwrap();
+            let ps: Vec<*mut u8> = (0..8).map(|_| alloc(s, c)).collect();
+            for &p in &ps {
+                free(s, p);
+            }
+            let hp = existing_heap(s).unwrap() as *mut Heap;
+            let k = unsafe { &*hp }.cache(c).unwrap();
+            let stored = k.cached();
+            assert!(stored.len() >= 8);
+            let plain: Vec<*mut u8> = stored.iter().map(|&e| k.plain(e, true)).collect();
+            assert_eq!(&plain[plain.len() - 8..], &ps[..], "the last eight pushes, bottom first");
+            for (&e, &p) in stored.iter().zip(&plain) {
+                assert_eq!(pac::strip(e as usize), p as usize, "entry strips to its slot");
+                assert!(p as usize >> 48 == 0, "plain pointers are canonical");
+            }
+            // Every entry carries a PAC; with a 7-bit PAC the chance that
+            // all eight are zero is 2^-56.
+            assert!(stored[stored.len() - 8..].iter().zip(&plain[plain.len() - 8..]).any(|(&e, &p)| e != p));
+            // The TLS slot: signed heap pointer, thread pointer as modifier.
+            let (raw, tp) = tls::get_tp();
+            assert_eq!(pac::strip(raw as usize), hp as usize);
+            assert_eq!(pac::auth(raw as usize, tp), hp as usize);
+            // Pops authenticate and hand the plain slots back, LIFO.
+            for &p in ps.iter().rev() {
+                assert_eq!(alloc(s, c), p);
+            }
+            for &p in &ps {
+                free(s, p);
+            }
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// Plan Phase 2.5 task 7, the acceptance test: a corrupted cache entry
+    /// (an address bit flipped by a write into the metadata region) never
+    /// comes back from `malloc` as a usable pointer, and a corrupted heap
+    /// pointer in the TLS slot never reaches a heap. In a forked child:
+    /// on FEAT_FPAC the `autda` faults (`SIGILL`); on the original PAuth
+    /// the pointer comes out non-canonical and its first dereference
+    /// faults (`SIGSEGV`). The flipped bit is chosen so the forged
+    /// address's PAC differs (a 7-bit PAC matches by chance one time in
+    /// 128). Skipped where the CPU has no PAC.
+    #[test]
+    fn corrupted_cache_entry_or_heap_pointer_faults() {
+        let s = shared();
+        if !s.pac() {
+            std::eprintln!("pac: off on this host, skipping");
+            return;
+        }
+        std::thread::spawn(move || {
+            let c = class_of(48).unwrap();
+            let p = alloc(s, c);
+            free(s, p);
+            let hp = existing_heap(s).unwrap() as *mut Heap;
+            let cache = unsafe { &mut *hp }.cache_ptr(c);
+            let (slots, len) = unsafe { ((*cache).slots, (*cache).len as usize) };
+            assert!(len >= 1);
+            let top = unsafe { *slots.add(len - 1) } as usize;
+            assert_eq!(pac::auth(top, slots as usize), p as usize);
+            let (raw, tp) = tls::get_tp();
+            let raw = raw as usize;
+            // A bit whose flip changes the PAC of both pointers.
+            let bit = (12..40)
+                .map(|b| 1usize << b)
+                .find(|&b| {
+                    pac::sign((p as usize) ^ b, slots as usize) != top ^ b && pac::sign((hp as usize) ^ b, tp) != raw ^ b
+                })
+                .expect("a bit that changes both PACs");
+            for target in ["entry", "tls"] {
+                let pid = unsafe { libc::fork() };
+                assert!(pid >= 0);
+                if pid == 0 {
+                    unsafe {
+                        if target == "entry" {
+                            let e = slots.add(len - 1);
+                            *e = ((*e as usize) ^ bit) as *mut u8;
+                        } else {
+                            tls::set((raw ^ bit) as *mut c_void);
+                        }
+                        let q = alloc(s, c);
+                        core::ptr::write_volatile(q, 1);
+                        libc::_exit(3);
+                    }
+                }
+                let mut status = 0;
+                assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+                assert!(libc::WIFSIGNALED(status), "{target}: the child survived a corrupted pointer: status {status:#x}");
+                let sig = libc::WTERMSIG(status);
+                if pac::fpac() {
+                    assert_eq!(sig, libc::SIGILL, "{target}: FEAT_FPAC faults at the autda");
+                } else {
+                    assert_eq!(sig, libc::SIGSEGV, "{target}: the non-canonical pointer faults on use");
+                }
+                std::eprintln!("pac: corrupted {target} -> signal {sig} (fpac={})", pac::fpac());
+            }
+            // The parent's cache is intact.
+            assert_eq!(alloc(s, c), p);
+            free(s, p);
         })
         .join()
         .unwrap();

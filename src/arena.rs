@@ -644,10 +644,10 @@ pub fn alloc(shared: &Shared, class: usize, arena: Option<u16>, tcache: Tcache) 
             }
         }
         Tcache::None => {
-            let a = arena.or_else(|| crate::heap::existing_heap().map(|h| h.arena())).unwrap_or(0);
+            let a = arena.or_else(|| crate::heap::existing_heap(shared).map(|h| h.arena())).unwrap_or(0);
             let (p, zero) = alloc_direct(shared, class, a);
             if !p.is_null() {
-                if let Some(h) = crate::heap::existing_heap() {
+                if let Some(h) = crate::heap::existing_heap(shared) {
                     h.count_direct_alloc(class);
                 }
             }
@@ -675,7 +675,7 @@ pub fn alloc_huge(shared: &Shared, size: usize, align: usize, arena: Option<u16>
             Some(h) => h.arena(),
             None => invalid_tcache(t),
         },
-        (None, _) => crate::heap::existing_heap().map_or(0, |h| h.arena()),
+        (None, _) => crate::heap::existing_heap(shared).map_or(0, |h| h.arena()),
     };
     if shared.arena(a).is_none() {
         return (ptr::null_mut(), false);

@@ -240,6 +240,43 @@ fn c_negative_huge_overflow() {
 /// caught at the call, while the first copy is one of the top four cache
 /// entries, on plain `free` and on the sized path (which otherwise defers
 /// every check to the flush).
+/// Plan Phase 2.5 task 7: the same cached double free with
+/// `pac_pointers:true`, so the C-level detection at the flush split runs
+/// over signed entries (the straddle compare is signed against signed;
+/// the release authenticates the batch first). On a host without PAC the
+/// key is accepted and inert.
+#[test]
+fn c_negative_double_free_cached_with_pac_pointers() {
+    run_c_negative_env(
+        "double_free_cached",
+        SIGABRT,
+        &["double free of 0x"],
+        &[("MALLOC_CONF", "pac_pointers:true,abort_conf:true")],
+    );
+}
+
+/// Plan Phase 2.5 task 7: `tests/c/tls_threads.c` (64 pthreads, distinct
+/// heaps through `thread.allocatedp`, allocations and frees on every
+/// thread) under `pac_pointers:true`: the shipped library's signed cache
+/// entries and signed TLS heap pointers, from C, on a PAC host; the plain
+/// path with the key accepted elsewhere.
+#[test]
+fn c_tls_threads_with_pac_pointers() {
+    let so = release_so();
+    let bin = compile_link("tests/c", "tls_threads", &[], &["-ldl"]);
+    let run = Command::new(&bin)
+        .env("LD_PRELOAD", &so)
+        .env("MALLOC_CONF", "pac_pointers:true,abort_conf:true")
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_file(&bin);
+    let stdout = String::from_utf8_lossy(&run.stdout);
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(run.status.success(), "tls_threads with pac_pointers failed ({:?})\nstdout: {stdout}\nstderr: {stderr}", run.status);
+    assert!(stdout.contains("ok 64 threads"), "stdout: {stdout}");
+    std::eprintln!("tls_threads (pac_pointers:true): {}", stdout.trim_end());
+}
+
 #[test]
 fn c_negative_double_free_cached_with_scan() {
     run_c_negative_env(

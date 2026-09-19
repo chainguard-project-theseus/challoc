@@ -8,7 +8,10 @@
 //! initial-exec model: one GOT load of the thread-pointer offset, then one
 //! load or store relative to the thread pointer. There is no
 //! `__tls_get_addr`, no TLS descriptor, and no call, so the fast paths pay
-//! two dependent loads.
+//! two dependent loads. With pointer authentication on (`sys::pac`) the
+//! slot holds the heap pointer signed with the thread pointer as the
+//! modifier; `get_tp` returns both so the caller can authenticate it, and
+//! the sentinels (small integers) are never signed.
 //!
 //! Initial-exec relies on glibc having reserved static TLS for the object
 //! when the program started, which is the case for both `-lchalloc` and
@@ -83,6 +86,39 @@ pub fn get() -> *mut c_void {
     out
 }
 
+/// Read the calling thread's slot together with the thread pointer
+/// (`tpidr_el0` on aarch64; `0` on x86_64, where it is unused). The thread
+/// pointer is the modifier the heap pointer is signed with when pointer
+/// authentication is on (`sys::pac`, design 6.1): the accessor already
+/// loads it to reach the slot, so the caller's `autda` costs no extra
+/// register move.
+#[inline(always)]
+pub fn get_tp() -> (*mut c_void, usize) {
+    #[cfg(target_arch = "x86_64")]
+    {
+        (get(), 0)
+    }
+    #[cfg(target_arch = "aarch64")]
+    {
+        let out: *mut c_void;
+        let tp: usize;
+        // SAFETY: as in `get`.
+        unsafe {
+            asm!(
+                "adrp {off}, :gottprel:challoc_tls",
+                "ldr {off}, [{off}, :gottprel_lo12:challoc_tls]",
+                "mrs {tp}, tpidr_el0",
+                "ldr {out}, [{tp}, {off}]",
+                off = out(reg) _,
+                tp = out(reg) tp,
+                out = out(reg) out,
+                options(nostack, readonly, preserves_flags),
+            );
+        }
+        (out, tp)
+    }
+}
+
 /// Write the calling thread's slot.
 #[inline(always)]
 pub fn set(value: *mut c_void) {
@@ -134,6 +170,33 @@ mod tests {
             assert_eq!(get(), p);
             set(core::ptr::null_mut());
             assert!(get().is_null());
+        })
+        .join()
+        .unwrap();
+    }
+
+    #[test]
+    fn get_tp_agrees_with_get_and_names_the_thread_pointer() {
+        std::thread::spawn(|| {
+            let (v, tp) = get_tp();
+            assert!(v.is_null());
+            let mut x = 0u8;
+            let p = &mut x as *mut u8 as *mut c_void;
+            set(p);
+            let (v2, tp2) = get_tp();
+            assert_eq!(v2, p);
+            assert_eq!(v2, get());
+            assert_eq!(tp, tp2, "the thread pointer is stable within a thread");
+            #[cfg(target_arch = "aarch64")]
+            {
+                let mrs: usize;
+                unsafe { asm!("mrs {}, tpidr_el0", out(reg) mrs, options(nomem, nostack, preserves_flags)) };
+                assert_eq!(tp, mrs);
+                assert_ne!(tp, 0);
+            }
+            #[cfg(target_arch = "x86_64")]
+            assert_eq!(tp, 0);
+            set(core::ptr::null_mut());
         })
         .join()
         .unwrap();

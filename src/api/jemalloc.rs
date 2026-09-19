@@ -258,7 +258,7 @@ fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int) {
     let hint = class_for(size, f.align());
     if let Tcache::Explicit(t) = f.tcache {
         if let Some(h) = shared.tcaches.get(t) {
-            if crate::heap::free_sized_fast(shared, h, p, hint) {
+            if crate::heap::free_sized_fast(shared, h, p, hint, shared.push_flags()) {
                 return;
             }
         }

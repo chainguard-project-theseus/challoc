@@ -601,7 +601,7 @@ fn arena_stats(shared: &Shared, i: usize) -> Result<ArenaStats, c_int> {
 /// Return the calling thread's cached slots before a purge so the purge
 /// can reach the slabs they pin (`malloc_trim` does the same).
 fn flush_caller(shared: &Shared) {
-    if let Some(h) = heap::existing_heap() {
+    if let Some(h) = heap::existing_heap(shared) {
         h.flush_all(shared);
     }
 }
@@ -878,7 +878,7 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
         }
         TcacheCreate => {
             io.read_only()?;
-            let home = heap::existing_heap().map_or(0, |h| h.arena());
+            let home = heap::existing_heap(shared).map_or(0, |h| h.arena());
             let t = shared.tcaches.create(shared, home).ok_or(EFAULT)?;
             io.read(t as c_uint)
         }
@@ -1591,7 +1591,7 @@ mod tests {
         // whatever the thread's arena (design 13.3); a cached class from
         // the thread's own arena.
         assert_eq!(owner_of(s, m as *const c_void), Some(0));
-        let home = crate::heap::existing_heap().unwrap().arena();
+        let home = crate::heap::existing_heap(s).unwrap().arena();
         let mid = mallocx(8 << 10, 0);
         assert!(crate::layout::class_of(8 << 10).unwrap() >= NBINS);
         assert_eq!(owner_of(s, mid as *const c_void), Some(home));

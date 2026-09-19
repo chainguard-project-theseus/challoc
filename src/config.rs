@@ -124,6 +124,16 @@ pub struct Config {
     /// than the 3% budget on Valkey's 1 KiB values (review 2026-09-18
     /// section 5.1; priced in `bench/results/2026-09-18-*-gce-tunables.md`).
     pub zero_on_free: bool,
+    /// Sign the thread caches' slot pointers and the heap pointer in TLS
+    /// with `pacda` where the CPU and kernel expose pointer authentication
+    /// (`HWCAP_PACA`/`PACG`; `sys::pac`, design 6.1, 6.2 and 17; plan
+    /// Phase 2.5 task 7). `Shared::push_flags` bit `PUSH_PAC`. Opt-in:
+    /// an entry's two PAC instructions (sign in, authenticate out) are 11%
+    /// of xmalloc-test's cross-thread frees and 1..2% of larson on Axion,
+    /// over the 1% budget for a default-on hardening
+    /// (`bench/results/2026-09-19-lane-a-pac-pointers.md`); inert where
+    /// the extension is absent (x86_64, Altra).
+    pub pac_pointers: bool,
     /// Cache refills and run rebuilds claim from a random bitmap word and
     /// shuffle the batch with a per-heap xorshift seeded from `getrandom`
     /// on first use (`ClassState::claim_random`, `Heap::claim`), so slots
@@ -181,6 +191,7 @@ impl Config {
         guard_slab_interval: 8,
         huge_retain_max: crate::huge::DEFAULT_RETAIN_MAX,
         zero_on_free: false,
+        pac_pointers: false,
         slot_randomize: false,
         double_free_scan: false,
         abort_conf: false,
@@ -290,6 +301,7 @@ impl Config {
                 return num(self, 0, MAX_HUGE_RETAIN_MAX as i64, |c, v| c.huge_retain_max = v as usize);
             }
             b"zero_on_free" => self.zero_on_free = parse_bool(value).ok_or_else(bad)?,
+            b"pac_pointers" => self.pac_pointers = parse_bool(value).ok_or_else(bad)?,
             b"slot_randomize" => self.slot_randomize = parse_bool(value).ok_or_else(bad)?,
             b"cgroup" => self.cgroup = parse_bool(value).ok_or_else(bad)?,
             // jemalloc's `stats_print` (report at exit): no field, since
@@ -333,6 +345,7 @@ impl Config {
             b"guard_slab_interval" => Value::Uint(self.guard_slab_interval as u64),
             b"huge_retain_max" => Value::Uint(self.huge_retain_max as u64),
             b"zero_on_free" => Value::Bool(self.zero_on_free),
+            b"pac_pointers" => Value::Bool(self.pac_pointers),
             b"slot_randomize" => Value::Bool(self.slot_randomize),
             b"double_free_scan" => Value::Bool(self.double_free_scan),
             b"abort_conf" => Value::Bool(self.abort_conf),
@@ -443,6 +456,7 @@ pub const KEYS: &[&str] = &[
     "guard_slab_interval",
     "huge_retain_max",
     "zero_on_free",
+    "pac_pointers",
     "slot_randomize",
     "double_free_scan",
     "abort_conf",
@@ -911,6 +925,7 @@ mod tests {
         assert_eq!(d.huge_retain_max, 64 << 20);
         assert_eq!(d.huge_retain_max, crate::huge::DEFAULT_RETAIN_MAX);
         assert!(!d.zero_on_free && !d.slot_randomize && !d.double_free_scan && !d.abort_conf && !d.check_zero);
+        assert!(!d.pac_pointers, "signed pointers are opt-in (plan Phase 2.5 task 7, priced in bench/results/2026-09-19-lane-a-pac-pointers.md)");
         assert!(d.cgroup && !d.group_handoff);
         assert_eq!(Config::default(), d);
         assert_eq!(d.gc_interval_ns(), 10_000_000_000);
@@ -932,6 +947,7 @@ mod tests {
             "lazy_free",
             "guards",
             "zero_on_free",
+            "pac_pointers",
             "slot_randomize",
             "double_free_scan",
             "abort_conf",
@@ -1203,7 +1219,7 @@ mod tests {
             let round = if is_inert(key.as_bytes()) { inert(&text, 1) } else { clean(&text) };
             assert_eq!(round, cfg, "{key}:{value} round trip");
         }
-        assert_eq!(KEYS.len(), 22);
+        assert_eq!(KEYS.len(), 23);
         assert_eq!(cfg.get(b"nonsense"), None);
         assert_eq!(cfg.get(b""), None);
         for key in IGNORED_KEYS {

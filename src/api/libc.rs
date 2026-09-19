@@ -90,7 +90,13 @@ pub fn malloc(size: usize) -> *mut u8 {
 #[inline(always)]
 pub(super) fn malloc_fast(size: usize) -> Option<*mut u8> {
     let c = class_of(size)?;
-    heap::existing_heap()?.alloc_fast(c)
+    let shared = super::shared_ptr();
+    let h = heap::existing_heap(shared)?;
+    // SAFETY: this thread's heap exists, so this thread observed `READY`
+    // (the byte was read once inside `existing_heap`; this is the same
+    // load, merged by the compiler).
+    let flags = unsafe { heap::fast_flags(shared) };
+    h.alloc_fast(c, flags)
 }
 
 /// Everything `malloc` does off its fast path. Null with `errno = ENOMEM`
@@ -134,11 +140,11 @@ pub fn free(p: *mut u8) {
     }
     // As in `malloc`: the check-and-push has no calls, and every other
     // outcome, including the aborts, is reached through one tail call.
-    if let Some(h) = heap::existing_heap() {
+    if let Some(h) = heap::existing_heap(super::shared_ptr()) {
         // SAFETY: this thread's heap exists, so this thread observed
         // `READY` when it created the heap.
         let shared = unsafe { super::shared_unchecked() };
-        if heap::free_fast(shared, h, p) {
+        if heap::free_fast(shared, h, p, shared.push_flags()) {
             return;
         }
     }
@@ -156,10 +162,10 @@ pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>) {
     if p.is_null() {
         return;
     }
-    if let Some(h) = heap::existing_heap() {
+    if let Some(h) = heap::existing_heap(super::shared_ptr()) {
         // SAFETY: as in `free`.
         let shared = unsafe { super::shared_unchecked() };
-        if heap::free_sized_fast(shared, h, p, hint) {
+        if heap::free_sized_fast(shared, h, p, hint, shared.push_flags()) {
             return;
         }
     }
@@ -398,7 +404,7 @@ pub fn pvalloc(size: usize) -> *mut u8 {
 /// init. `pad` is glibc's top-of-heap allowance and has no meaning here.
 pub fn malloc_trim(_pad: usize) -> c_int {
     let Some(shared) = super::shared_if_ready() else { return 0 };
-    if let Some(h) = heap::existing_heap() {
+    if let Some(h) = heap::existing_heap(shared) {
         h.flush_all(shared);
     }
     (crate::purge::purge_all(shared) > 0) as c_int
