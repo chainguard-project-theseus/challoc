@@ -754,6 +754,19 @@ Tasks, in order:
    is the plain free's six-load chain,
    `2026-09-19-altra-larson-attribution.md`, a separate task if pursued);
    scorecard on both VMs.
+4d. The Valkey soak at 64 KiB pages (the driving session's decision on
+   task 3's envelope, 2026-09-19): the 20-minute `make valkey-soak` with
+   the sidecar on a throwaway arm64 VM with Ubuntu's `linux-generic-64k`
+   kernel (`challoc-bench matrix lab 64k-arm64` with a machine type of 16
+   vCPUs for this cell), judged by the Phase 1 soak criteria (throughput
+   and p99 at least equal to bundled jemalloc, peak RSS within 5%,
+   post-delete RSS within 10%). If it passes, the sub-page slab geometry
+   is documented as fine on large pages and the container test's envelope
+   stands; if the post-delete RSS fails, the allocator-side fix (page-sized
+   slabs for the 512 B..2 KiB classes when the page is larger than the
+   slab, or refill steering by page-group density) becomes the next task
+   with this soak as its acceptance. Results in
+   `bench/results/<date>-aarch64-64k-valkey-soak.md`; the VM deleted.
 5. Tagged pointers, part 1, the probes and the design: whether Axion
    exposes MTE (`HWCAP2_MTE`), whether the C4/C3/C3D CPUs expose LAM or
    UAI and the kernel `arch_prctl(ARCH_ENABLE_TAGGED_ADDR)` accepts it;
@@ -768,7 +781,10 @@ Tasks, in order:
    on every CPU of task 4 in the matrix file; the design section; a note
    for the human on whether the reference VMs can test MTE at all (if not,
    an AmpereOne or Graviton4 box is the prerequisite for part 2).
-6. Tagged pointers, part 2, implementation behind the key, on whichever
+6. Tagged pointers, part 2 (gated: no GCP CPU exposes MTE, LAM or UAI to
+   a guest, `bench/results/2026-09-19-cpu-matrix.md`; this task waits for a
+   host that does, a bare-metal AmpereOne first, and the phase does not
+   wait for it), implementation behind the key, on whichever
    of MTE and LAM a reachable host has: negative tests (read through a
    freed pointer faults under MTE; `free` of a pointer with a stale tag
    aborts under both), the fuzzer and the Valkey and Ruby suites under the
