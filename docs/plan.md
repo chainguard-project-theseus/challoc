@@ -836,6 +836,34 @@ Tasks, in order:
    the attribution, the 4d protocol for the acceptance. Acceptance: the 4d
    soak at 64 KiB with post-delete RSS within 10% of bundled jemalloc; the
    4 KiB soak's rows unchanged (`make valkey-soak` on the C4A); `quick` go.
+   Done 2026-09-19 as an attribution, no `src/` change
+   (`bench/results/2026-09-19-aarch64-64k-defrag-attribution.md`, a
+   shortened soak on the 64k lab cell with `bench/probes/valkey-defrag-sidecar.sh`,
+   the server's own defrag lines and 1 s samples). (a) Valkey 9.1.2 reads
+   `nfree`/`nregs`/`size` from `batch_query` and `curregs`/`curslabs`/
+   `nonfull_slabs` from the bin stats (not `bin_nfree`, `bin_nregs` or
+   `slabcur_addr`); challoc's are exact, the one semantic difference
+   (`nonfull_slabs` includes the current slab, jemalloc's excludes
+   `slabcur`) errs toward moving more. (b) `MALLOCX_TCACHE_NONE` copies
+   land in the lowest partial slab, as jemalloc's do in `slabcur` (the
+   lowest non-full slab by (sn, address)); the two classes with identical
+   64 KiB slabs carry the same waste after the second cycle. (c) Both
+   passes stop on `active-defrag-ignore-bytes` (100 MB) between sub-second
+   cycles; jemalloc gets a third cycle (74k moves) because its 192..448 KiB
+   slabs of the 320..896 B classes leave 22 MiB more waste after the second
+   (62.4 vs 40.6 MiB), which re-crosses 100 MB as the last 40 MiB are
+   deleted, while challoc's 64 KiB slabs purge and its waste plateaus at
+   97.7 MiB of `frag_bytes` (89.6 of `frag_smallbins`). That cycle is the
+   whole gap: post-delete RSS 172.2 vs 142.9 MiB (+20.5%) stock, and 145.6
+   (+1.9%) in a diagnostic run with the constant set to 80 MB under
+   challoc (three cycles, 380k moves against jemalloc's 374k). The
+   acceptance (within 10%) is not met and no honest challoc-side change
+   meets it; the constant is Valkey's and the 2026-09-17 rule forbids a
+   `USE_CHALLOC` value for the criterion (Notes for the human). A
+   second-order term (after the last cycle the balanced DEL:SET churn
+   drains jemalloc's `active` by 12 MiB and challoc's by 4 over 210 s: the
+   compacting cache's claims and releases circulate within the dense
+   slabs) is recorded for a task of its own if wanted.
 5. Tagged pointers, part 1, the probes and the design: whether Axion
    exposes MTE (`HWCAP2_MTE`), whether the C4/C3/C3D CPUs expose LAM or
    UAI and the kernel `arch_prctl(ARCH_ENABLE_TAGGED_ADDR)` accepts it;

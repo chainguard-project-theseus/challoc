@@ -1,0 +1,12 @@
+15941:M 19 Sep 2026 16:46:21.577 - Starting active defrag, frag=35%, frag_bytes=156397248, cpu=7%
+15941:M 19 Sep 2026 16:46:21.677 - Changing active defrag CPU, frag=49%, frag_bytes=197596496, cpu=11%
+15941:M 19 Sep 2026 16:46:21.777 - Changing active defrag CPU, frag=62%, frag_bytes=229701808, cpu=14%
+15941:M 19 Sep 2026 16:46:21.877 - Changing active defrag CPU, frag=74%, frag_bytes=254736960, cpu=17%
+15941:M 19 Sep 2026 16:46:21.978 - Changing active defrag CPU, frag=84%, frag_bytes=274253440, cpu=20%
+15941:M 19 Sep 2026 16:46:22.078 - Changing active defrag CPU, frag=93%, frag_bytes=289304240, cpu=23%
+15941:M 19 Sep 2026 16:46:22.178 - Changing active defrag CPU, frag=101%, frag_bytes=301110240, cpu=25%
+15941:M 19 Sep 2026 16:46:22.529 - Active defrag done in 952ms, reallocated=163211, frag=4%, frag_bytes=10567232
+15941:M 19 Sep 2026 16:46:41.528 - Starting active defrag, frag=63%, frag_bytes=105765712, cpu=15%
+15941:M 19 Sep 2026 16:46:42.335 - Active defrag done in 806ms, reallocated=136551, frag=36%, frag_bytes=58980472
+15941:M 19 Sep 2026 16:46:50.553 - Starting active defrag, frag=94%, frag_bytes=104924056, cpu=23%
+15941:M 19 Sep 2026 16:46:50.847 - Active defrag done in 294ms, reallocated=74145, frag=50%, frag_bytes=55576280

@@ -1353,7 +1353,22 @@ per pointer, `(nfree, nregs, size, bin_nfree, bin_nregs, slabcur_addr)` in
 jemalloc's layout. For challoc `nfree` is `nslots - live` from the
 descriptor, and the bin-wide figures come from `ClassStats`. Valkey's
 defragmenter uses these to decide which allocations to move; the decision
-rule is Valkey's, challoc only has to answer honestly and cheaply.
+rule is Valkey's, challoc only has to answer honestly and cheaply. Valkey
+9.1.2's rule (`allocator_defrag.c`) reads `nfree`, `nregs` and `size` from
+the batch query and `curregs`, `curslabs` and `nonfull_slabs` from
+`stats.arenas.4096.bins.<j>`, nothing from the verbose query; it moves an
+object whose slab is more than 12.5% below the average utilisation of the
+bin's non-full slabs, and starts a cycle only while `frag_smallbins` is at
+least `active-defrag-ignore-bytes`. challoc's `nonfull_slabs` is the
+partial set, which includes the slab a claim takes from next; jemalloc's
+excludes `slabcur`, so for the same heap challoc reports one more non-full
+slab and a slightly higher average, i.e. moves slightly more. `MALLOCX_TCACHE_NONE`
+claims take the lowest partial slab, where jemalloc's take `slabcur`, the
+lowest non-full slab by (serial, address): the same placement. The
+attribution of the 64 KiB post-delete gap
+(`bench/results/2026-09-19-aarch64-64k-defrag-attribution.md`) found every
+answer exact and the gap in where Valkey's absolute stop falls relative
+to each allocator's waste.
 
 ### 13.5 Redis-specific extensions
 
