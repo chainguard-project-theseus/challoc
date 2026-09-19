@@ -34,7 +34,7 @@ use core::ptr;
 
 use crate::QUANTUM;
 use crate::heap::{self, Shared};
-use crate::layout::{CLASSES, Kind, MEDIUM_MAX, NCLASSES, class_of};
+use crate::layout::{CLASSES, Kind, MEDIUM_MAX, class_of};
 
 const ENOMEM: c_int = 12;
 const EINVAL: c_int = 22;
@@ -324,13 +324,19 @@ pub(super) fn class_for(size: usize, align: usize) -> Option<usize> {
         return None;
     }
     // The power-of-two class at or above `max(size, align)` qualifies and
-    // is at most `MEDIUM_MAX`, so this stops inside the table.
+    // is at most `MEDIUM_MAX`, so this stops inside the table; `get` (not
+    // an index) so that no bounds-check panic call sits in the functions
+    // this is inlined into (`sdallocx`: a call in the body costs the fast
+    // path a frame, plan Phase 2.5 task 4c), and `align` is a power of two
+    // so the divisibility test is a mask.
     let mut c = c;
-    while CLASSES[c].size() % align != 0 {
+    loop {
+        let cls = CLASSES.get(c)?;
+        if cls.size() & (align - 1) == 0 {
+            return Some(c);
+        }
         c += 1;
-        debug_assert!(c < NCLASSES);
     }
-    Some(c)
 }
 
 /// Allocate `size` bytes aligned to `align`, a power of two. Null with

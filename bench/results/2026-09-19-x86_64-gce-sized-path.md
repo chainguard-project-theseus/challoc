@@ -106,5 +106,127 @@ reading (19.2) is a single-round outlier of the busy 8-vCPU VM (the
 
 ## 2. Part (b): the sized path's instruction budget
 
-(see the section appended by the part (b) commit, or PROGRESS.md In
-progress if (b) did not land)
+Change (`Shared::sized_slot`, design 6.3 step 1): the size hint names the
+class, so the pointer is checked against that class's region alone
+(`Regions::slot_in_class`: one subtraction and a compare against the region
+length, then the reciprocal slot test) instead of being classified from
+the superblock and compared with the hint; the guard test is one 8-byte
+load from a dense per-class pair (`Shared::guard_test[c]`, `(slab + spp) &
+mask == 0`, `is_guard_slab` folded); the class table line is not touched,
+and the watermark is not read: a slot start in a slab past it is caught at
+the flush, which aborts by name (`SlabTable::owner`), the same way a slot
+in a `Fresh` slab already was (new test
+`sized_free_past_the_watermark_aborts_at_the_flush`;
+`guard_test_agrees_with_the_tables` checks the folded form against every
+class). Also `sdallocx_routed` takes the raw flags (the `Flags` struct
+went by pointer to a stack copy) and `class_for`'s alignment loop indexes
+with `get` (no bounds-check panic call in the inlined body). Every abort
+the negative tests expect is kept (`sized_double_free`, `sized_mismatch`,
+`free_sized_mismatch`, `sized_guard`, `double_free_straddle`,
+`usable_size_freed` pass on the Mac and both VMs).
+
+Static count of the default `sdallocx` fast path (flags 0, small size,
+existing heap, no hardening), from `objdump` of the release build: x86_64
+parent about 102 instructions (the metal annotate of
+`2026-09-19-4b-c3metal-annotate-sdallocx.txt`), after (a) 101, after (b)
+**78**; aarch64 after (a) 88, after (b) **69**. The frame (`push
+r14/rbx/rax` and the pops; `stp/ldp x29,x30` on aarch64) remains: the
+`double_free_scan` path's `cached_twice` is a real call inside the inlined
+push, so the function keeps a frame it does not need on the default path
+(a further 7 instructions on x86_64 if that abort became a tail call; not
+done here).
+
+### 2.1 `quick-perf`, after (b) (same run: `old` = (a), `new` = (b), jemalloc)
+
+| row | variant | M ops/s | cycles/op | instr/op | L1D miss/op | dTLB miss/op | arith.div_active/op |
+|---|---|---:|---:|---:|---:|---:|---:|
+| valkey1 | old (a) | 24.94 | 153.2 | 247.4 | 3.324 | 0.906 | 33.56 |
+| valkey1 | new (b) | 25.59 | 149.1 | 225.4 | 3.280 | 0.899 | 33.15 |
+| valkey1 | jemalloc | 28.12 | 135.2 | 152.3 | 3.339 | 0.950 | 34.57 |
+| valkey1-free | old (a) | 25.24 | 150.3 | 225.4 | 4.588 | 0.927 | 33.05 |
+| valkey1-free | new (b) | 25.00 | 152.2 | 224.2 | 4.532 | 0.924 | 33.07 |
+| valkey1-free | jemalloc | 24.74 | 153.9 | 157.8 | 4.683 | 1.203 | 34.52 |
+| larson1 | old (a) | 46.75 | 72.5 | 234.3 | 1.588 | 0.002 | 20.51 |
+| larson1 | new (b) | 46.51 | 72.4 | 234.5 | 1.619 | 0.002 | 20.53 |
+| larson1 | jemalloc | 43.29 | 77.9 | 200.9 | 2.085 | 0.001 | 20.88 |
+
+valkey1: 22 fewer instructions per operation (247.4 -> 225.4; the row
+mixes the write phase, two `sdallocx` per SET, with the delete phase), 4
+fewer cycles, misses equal; the plain-free row and larson1 are untouched
+(the plain path did not change).
+
+### 2.2 `quick-perf`, the write phase alone (`valkey1-write`, per SET)
+
+`valkey1-write` is the new row (`-w SECS -d 0`, `bench/lib.sh`), so the
+per-operation counters are per SET: two `malloc`, two `sdallocx`, the
+program's hash-table work.
+
+| row | variant | M SET/s | cycles/SET | instr/SET | L1D miss/SET | dTLB miss/SET | arith.div_active/SET |
+|---|---|---:|---:|---:|---:|---:|---:|
+| valkey1-write | old (a) | 14.95 | 254.9 | 384.6 | 4.673 | 0.949 | 20.27 |
+| valkey1-write | new (b) | 14.83 | 255.7 | 344.6 | 4.604 | 0.950 | 20.32 |
+| valkey1-write | jemalloc | 14.82 | 256.9 | 268.2 | 4.848 | 1.028 | 20.97 |
+
+**Instructions per SET: 384.6 after (a), 344.6 after (b)**, jemalloc 268.2
+(the metal's parent reading was 391 to 401 against 266). The task's target
+of under 330 is not reached: 344.6 is 15 above it, and the terms left on
+the path are the frame the `cached_twice` call keeps (7 instructions per
+`sdallocx`, 14 per SET, which alone would land at about 331), the eager
+`1 << lg_align` of `Flags::align()` (3 per call) and the two-register
+`Option<usize>` hint. The divider column is the program's own 20 per SET
+under all three (challoc's two `divl` are gone since (a)); cycles per SET
+and the rate are equal for the three on this host, which is what the
+attribution said of the reference C4 (its L3 holds the table, so the
+window does not bind and the extra instructions cost nothing measurable
+here); the C3 lab is where they cost, section 2.4.
+
+### 2.3 `quick` after (b) (go: within 5% on every row, churn compacts)
+
+| row | unit | old (a) | new (b) | jemalloc | new vs old | new vs jemalloc |
+|---|---|---:|---:|---:|---:|---:|
+| larson1 | M ops/s | 46.3 | 46.7 | 45.6 | -0.9% | -2.4% |
+| larson10 | M ops/s | 284.7 | 295.5 | 292.5 | -3.7% | -1.0% |
+| xmalloc | M frees/s | 343.810 | 335.979 | 334.012 | +2.3% | -0.6% |
+| alloc-test1 | s | 2.998 | 3.030 | 2.874 | +1.1% | +5.4% |
+| valkey1 | M ops/s | 15.030 | 14.581 | 15.690 | +3.1% | +7.6% |
+| churn 1024, 8s | slabs deleted -> end (occ) | 6801 -> 3462 (97.0%) | 6801 -> 3462 (97.0%) | 6798 -> 6658 (49.9%) | compacts | |
+
+(valkey1's single round reads 3% behind (a) here while the same-run
+`quick-perf` row above reads 2.6% ahead at 22 fewer instructions and 4
+fewer cycles per op; the C4 row's band is about 5% between rounds, and
+the C3 lab below is the measure the task is judged on.)
+
+### 2.4 The C3 lab (8481C, 8 vCPU): the write-phase rate after (b)
+
+Three interleaved runs of `valkey_model -n 850000 -w 8 -d 0 -s`, M SET/s;
+the `a` library is the (a) build kept from section 1.4.
+
+| run | parent | (a) | new (b) | jemalloc |
+|---|---:|---:|---:|---:|
+| 1 | 8.148 | 10.129 | 11.136 | 10.773 |
+| 2 | 7.648 | 9.785 | 10.825 | 10.485 |
+| 3 | 7.367 | 9.750 | 10.676 | 10.426 |
+| median | 7.65 | 9.79 | 10.83 | 10.49 |
+
+Parent -27%, (a) -6.7%, (b) **+3.2%** against jemalloc in the same run
+(the VM read about 3% slower for every variant than in section 1.4; the
+lab is a shared 8-vCPU host and the comparison is within a run). `quick`
+on the lab (go): larson1 39.6 vs jemalloc 39.9, larson10 153.4 vs 164.2,
+xmalloc 158.6 vs 160.2, alloc-test1 3.858 vs 3.646 s, valkey1 10.180 (old
+(a) 9.068) vs 9.887, churn compacts.
+
+## 3. Method
+
+- `quick-perf.sh` prints one column per event beyond the four standard
+  ones (`EVENTS=...,arith.div_active`; a raw `rXXXX` form for an unnamed
+  event). On the C4A there is no divider event (`dp_spec` recorded as the
+  nearest, see the aarch64 file).
+- The lab VM: `challoc-bench matrix lab cpu-c3` (created in `us-east4-a`,
+  provisioned, tree synced, kept), `make image` and `make quick
+  QUICK_BUILD_ONLY=1` once, then the parent, (a) and (b) libraries copied
+  out of `target/quick/new/release/` inside the target volume after each
+  sync and rebuild, and a rate script shipped by base64 that interleaves
+  the variants run by run. `matrix clean` deleted it at the end.
+- Static instruction counts: `objdump -d` of `je_sdallocx` in the native
+  aarch64 container and the emulated x86_64 one (`PLATFORM=linux/amd64`),
+  counting the taken path for flags 0.

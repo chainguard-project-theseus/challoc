@@ -584,6 +584,34 @@ impl Regions {
         Some((c, slab, slot))
     }
 
+    /// The sized free's classification (design 6.3, plan Phase 2.5 task
+    /// 4c): the size hint names `class`, so the region is known and the
+    /// pointer is only checked against it, `Some((slab, slot))` when `p` is
+    /// exactly a slot start inside class `class`'s region, `None` otherwise
+    /// (outside the region, which covers every other class's region, the
+    /// gaps, the huge and metadata regions; or a mid-slot address). One
+    /// subtraction and a compare replace [`slab_slot`]'s superblock
+    /// subtraction, stride shift, bound check and class compare. `class`
+    /// must be below `NCLASSES` (what `class_of`/`class_for` return).
+    ///
+    /// [`slab_slot`]: Regions::slab_slot
+    #[inline(always)]
+    pub fn slot_in_class(&self, class: usize, p: usize) -> Option<(usize, usize)> {
+        debug_assert!(class < NCLASSES);
+        // SAFETY: the caller's `class` is an index `class_of` produced.
+        let cls = unsafe { CLASSES.get_unchecked(class) };
+        let rel = p.wrapping_sub(unsafe { *self.class_base.get_unchecked(class) });
+        if rel >= self.region_len() {
+            return None;
+        }
+        let slab = rel >> cls.lg_slab;
+        let (slot, valid) = cls.slot_of_offset(rel & (cls.slab_size() - 1));
+        if !valid {
+            return None;
+        }
+        Some((slab, slot))
+    }
+
     /// Whether `p` falls in the class superblock (a class region or a gap).
     #[inline]
     fn in_superblock(&self, p: usize) -> bool {

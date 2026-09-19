@@ -795,6 +795,16 @@ impl SlabTable {
         self.guard_mask.wrapping_add(1)
     }
 
+    /// `guard_interval - 1` (all ones when guards are off): the mask of
+    /// [`is_guard_slab`], for the dense copy the sized fast path reads
+    /// (`heap::GuardTest`).
+    ///
+    /// [`is_guard_slab`]: SlabTable::is_guard_slab
+    #[inline]
+    pub fn guard_mask(&self) -> u32 {
+        self.guard_mask
+    }
+
     /// Slabs per page group; 1 unless the page is larger than the slab.
     #[inline]
     pub fn slabs_per_page(&self) -> usize {

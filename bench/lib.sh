@@ -142,6 +142,9 @@ bench_args() {
     valkey1)      echo "$BIN/valkey_model -n $VALKEY_MODEL_N -t $VALKEY_MODEL_SECS -s";;
     valkey1-free) echo "$BIN/valkey_model -n $VALKEY_MODEL_N -t $VALKEY_MODEL_SECS -s -f free";;
     valkey1-usable) echo "$BIN/valkey_model -n $VALKEY_MODEL_N -t $VALKEY_MODEL_SECS -s -u";;
+    # Write phase only (SET over a full heap), so a per-operation counter is
+    # per SET: the instruction budget of plan Phase 2.5 task 4c.
+    valkey1-write) echo "$BIN/valkey_model -n $VALKEY_MODEL_N -w $VALKEY_MODEL_SECS -d 0 -s";;
     redis)        echo "$BIN/redis-server";;
     ruby-churn)   ruby_available || return 1
                   echo "env LD_LIBRARY_PATH=$RUBY_INST/lib $RUBY_INST/bin/ruby --disable-gems $ROOT/bench/ruby/gc_churn.rb 10 10";;

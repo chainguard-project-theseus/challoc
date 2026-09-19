@@ -456,6 +456,11 @@ pub struct Shared {
     /// tests one byte and takes one predicted branch (plan Phase 2 task 3).
     push_flags: u8,
     pub regions: Regions,
+    /// The sized fast path's guard test per class (plan Phase 2.5 task
+    /// 4c): a dense array (8 bytes per class, seven lines for all 52) so
+    /// `sized_slot` never touches the 384-byte class table line, whose
+    /// only other use on that path was the watermark it no longer reads.
+    guard_test: [GuardTest; NCLASSES],
     tables: [SlabTable; NCLASSES],
     pub arena0: Arena,
     pub meta: Meta,
@@ -480,6 +485,36 @@ pub struct Shared {
     /// by `stats.cgroup.*` and the reports. Last, well away from the lines
     /// the fast paths read.
     pub cgroup: crate::sys::cgroup::Cgroup,
+}
+
+/// [`SlabTable::is_guard_slab`] folded into one add and one mask on the
+/// slab number, for the sized fast path: `(slab + add) & mask == 0` with
+/// `add = slabs_per_page` and `mask = (interval - 1) << lg_slabs_per_page`
+/// says `((slab >> lg_spp) + 1) & (interval - 1) == 0`, the page-group
+/// test, since `slab + spp` is `((slab >> lg_spp) + 1) << lg_spp` plus the
+/// low bits the shifted mask ignores. With guards off the mask is
+/// `u32::MAX << lg_spp` and `slab + spp` is never below `spp`, so nothing
+/// matches. `Shared::init` fills one per class from its table;
+/// `guard_test_agrees_with_the_tables` checks the two forms against each
+/// other over every class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct GuardTest {
+    add: u32,
+    mask: u32,
+}
+
+impl GuardTest {
+    fn of(table: &SlabTable) -> GuardTest {
+        let lg_spp = table.slabs_per_page().trailing_zeros();
+        GuardTest { add: table.slabs_per_page() as u32, mask: table.guard_mask().wrapping_shl(lg_spp) }
+    }
+
+    /// Whether `slab` is a guard slab of the class this pair describes.
+    #[inline(always)]
+    fn is_guard(self, slab: usize) -> bool {
+        (slab as u32).wrapping_add(self.add) & self.mask == 0
+    }
 }
 
 // The flag and the `Regions` fields every `free` reads share one 128-byte
@@ -667,6 +702,10 @@ impl Shared {
                     None => return false,
                 }
             }
+            let guard_test = &raw mut (*this).guard_test;
+            for c in 0..NCLASSES {
+                ptr::write(&raw mut (*guard_test)[c], GuardTest::of(&(*tables)[c]));
+            }
             let arena0 = &raw mut (*this).arena0;
             if !Arena::init(arena0, meta, regions, &*tables, 0, decay_ns) {
                 return false;
@@ -846,22 +885,26 @@ impl Shared {
     }
 
     /// The sized free's check (`sdallocx`, `free_sized`; design 6.3): `p`
-    /// must be a slot start in a handed-out, non-guard slab of the class
-    /// the size hint names, `hint` (`class_for(size, align)`, `None` for a
-    /// huge size). Arithmetic on the pointer and two dense lines
-    /// (`class_base`, `CLASSES`, the class table): the slab descriptor is
-    /// not loaded, so the bit test that makes plain `free` exact is left to
-    /// the flush. The guard test is arithmetic on the table line the
-    /// watermark load already brings in (a shift, an add and a mask, no
-    /// division: plan Phase 2.5 task 4c); whether
-    /// the slab is below its arena's commit cursor is not knowable without
-    /// the arena (the cursor sits under the class lock), so a slot start in
-    /// a handed-out but uncommitted slab is caught at the flush, where the
-    /// descriptor says `Fresh` (`release_owned`). `None` for anything
-    /// else; the slow path repeats the checks with aborts
-    /// ([`check_size_hint`], then [`classify_free`]). The arena is not read
-    /// either (it is on the descriptor line): the home cache takes the
-    /// slot and the flush routes it ([`release_routed`]).
+    /// must be a slot start in a non-guard slab of the class the size hint
+    /// names, `hint` (`class_for(size, align)`, `None` for a huge size).
+    /// Arithmetic on the pointer and two dense lines: the hint names the
+    /// region, so [`Regions::slot_in_class`] checks the pointer against
+    /// that region alone (no superblock classification and no class
+    /// compare, plan Phase 2.5 task 4c), and the guard test is one
+    /// 8-byte load from [`GuardTest`]'s dense array. Neither the slab
+    /// descriptor nor the class table line is touched: the bit test that
+    /// makes plain `free` exact is left to the flush, and so is the
+    /// watermark. A slot start in a slab no arena has been handed, or in
+    /// a handed-out slab its arena has not committed (the cursor sits
+    /// under the class lock), is caught at the flush, which aborts by name
+    /// (`SlabTable::owner` on a slab past the watermark, `release_owned`
+    /// on a `Fresh` one); until then the slot can be popped by `malloc`,
+    /// and a program that writes to it faults on the reserved `PROT_NONE`
+    /// page instead of aborting by name (the trade design 6.3 records).
+    /// `None` for anything else; the slow path repeats the checks with
+    /// aborts ([`check_size_hint`], then [`classify_free`]). The arena is
+    /// not read either (it is on the descriptor line): the home cache
+    /// takes the slot and the flush routes it ([`release_routed`]).
     ///
     /// [`check_size_hint`]: Shared::check_size_hint
     /// [`classify_free`]: Shared::classify_free
@@ -869,13 +912,11 @@ impl Shared {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     #[inline(always)]
     fn sized_slot(&self, p: *mut u8, hint: Option<usize>) -> Option<usize> {
-        let (class, slab, _slot) = self.regions.slab_slot(p as usize)?;
-        if hint != Some(class) {
-            return None;
-        }
-        // SAFETY: `slab_slot` only returns `class < NCLASSES`.
-        let table = unsafe { self.tables.get_unchecked(class) };
-        if !table.is_handed_out(slab) || table.is_guard_slab(slab) {
+        let class = hint?;
+        let (slab, _slot) = self.regions.slot_in_class(class, p as usize)?;
+        // SAFETY: `class_of`/`class_for` only produce `class < NCLASSES`
+        // (`slot_in_class` relies on the same).
+        if unsafe { self.guard_test.get_unchecked(class) }.is_guard(slab) {
             return None;
         }
         Some(class)
@@ -3008,9 +3049,31 @@ pub(crate) mod tests {
         assert!(msg.contains("double free of") && !msg.contains("boundary"), "{msg}");
     }
 
+    /// The dense [`GuardTest`] the sized fast path reads agrees with
+    /// [`SlabTable::is_guard_slab`] for every class over the first slabs of
+    /// the region and around its end, with guards on and off.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn guard_test_agrees_with_the_tables() {
+        for s in [shared_guarded(), shared()] {
+            for c in 0..NCLASSES {
+                let t = s.table(c);
+                let g = s.guard_test[c];
+                assert_eq!(g, GuardTest::of(t));
+                let n = t.nslabs();
+                for slab in (0..1024.min(n)).chain(n.saturating_sub(64)..n) {
+                    assert_eq!(g.is_guard(slab), t.is_guard_slab(slab), "class {c} slab {slab}");
+                }
+            }
+        }
+    }
+
     /// Plan Phase 1.5 task 9b: the sized fast path's check rejects a slot
-    /// start inside a guard slab (arithmetic on the table line), so the
-    /// exact slow path aborts instead of the guard memory being cached.
+    /// start inside a guard slab (arithmetic on a dense per-class pair), so
+    /// the exact slow path aborts instead of the guard memory being cached.
+    /// Since Phase 2.5 task 4c it does not read the watermark: a slot start
+    /// in a slab past it passes here and aborts at the flush (the next
+    /// test).
     #[cfg(target_os = "linux")]
     #[test]
     fn sized_slot_rejects_guard_slabs() {
@@ -3026,12 +3089,35 @@ pub(crate) mod tests {
         let body = s.regions.slab_addr(c, guard) + s.regions.page_size().min(CLASSES[c].slab_size() / 2);
         assert_eq!(s.sized_slot(all[0], Some(c)), Some(c));
         assert_eq!(s.sized_slot(body as *mut u8, Some(c)), None, "guard slab {guard}");
-        assert_eq!(s.sized_slot(s.regions.slab_addr(c, committed) as *mut u8, Some(c)), None, "not handed out");
+        assert_eq!(s.sized_slot(s.regions.slab_addr(c, committed) as *mut u8, Some(c)), Some(c), "deferred to the flush");
         assert_eq!(s.sized_slot(all[0], Some(c + 1)), None, "wrong hint");
+        assert_eq!(s.sized_slot(all[0], None), None, "huge hint");
+        assert_eq!(s.sized_slot((all[0] as usize + 8) as *mut u8, Some(c)), None, "mid-slot");
+        assert_eq!(s.sized_slot((s.regions.class_base[c] - 64) as *mut u8, Some(c)), None, "below the region");
+        assert_eq!(s.sized_slot((s.regions.class_base[c] + s.regions.region_len()) as *mut u8, Some(c)), None, "past the region");
         for p in all {
             t.free(p);
         }
         t.destroy();
+    }
+
+    /// The watermark check the sized fast path gave up (plan Phase 2.5
+    /// task 4c) is the flush's: a sized free of a slot start in a slab no
+    /// arena has been handed is cached and aborts by name when the cache
+    /// flushes it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    #[should_panic(expected = "was never allocated")]
+    fn sized_free_past_the_watermark_aborts_at_the_flush() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        let p = t.alloc(c);
+        let committed = s.arena0.class(c).committed_slabs();
+        let beyond = s.regions.slab_addr(c, committed + 1) as *mut u8;
+        assert!(free_sized_fast(s, t.heap(), beyond, Some(c)), "the fast path took it");
+        t.free(p);
+        t.flush_all();
     }
 
     #[test]

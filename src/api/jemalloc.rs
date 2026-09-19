@@ -239,17 +239,21 @@ pub fn sdallocx(p: *mut u8, size: usize, flags: c_int) {
     let f = Flags::decode(flags as u32);
     match f.tcache {
         Tcache::Default => super::libc::free_sized_hint(p, size, class_for(size, f.align())),
-        _ => sdallocx_routed(p, size, f),
+        // The raw flags, not `f`: a `Flags` argument goes by pointer to a
+        // stack copy, and that copy is a frame every default `sdallocx`
+        // sets up and tears down (plan Phase 2.5 task 4c).
+        _ => sdallocx_routed(p, size, flags),
     }
 }
 
 /// `sdallocx` through an explicit cache or none.
 #[cold]
 #[inline(never)]
-fn sdallocx_routed(p: *mut u8, size: usize, f: Flags) {
+fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int) {
     if p.is_null() {
         return;
     }
+    let f = Flags::decode(flags as u32);
     let Some(shared) = super::shared_if_ready() else { not_an_allocation("sdallocx", p) };
     let hint = class_for(size, f.align());
     if let Tcache::Explicit(t) = f.tcache {

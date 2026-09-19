@@ -520,10 +520,17 @@ reads; halving the flush rate halves those misses (Phase 0 acceptance,
 `sdallocx(p, n, flags)`, `free_sized(p, n)`, `free_aligned_sized(p, a, n)`
 (the sized path; Phase 1.5 task 4e):
 1. If `p` is null return. `c_hint = class_for(n, align)` (`None` for a huge
-   size). Compute class, slab and slot as in `free` step 2; if `p` is not a
-   slot start in a handed-out slab, or the slab is a guard slab (arithmetic
-   on the table line: a shift, an add and a mask, the interval being a
-   power of two), or its class is not `c_hint`, slow path.
+   size: slow path). The hint names the region, so the class is not
+   derived from the pointer a second time: `rel = p - class_base[c_hint]`;
+   if `rel` is not below the region length (which covers every other
+   class's region, the gaps and the other reservations), or `rel`'s offset
+   in its slab is not a slot start (the reciprocal multiply of `free` step
+   2), slow path. If the slab is a guard slab, slow path: one 8-byte load
+   from a dense per-class pair (`Shared::guard_test[c]`: `(slab +
+   slabs_per_page) & mask == 0`, `is_guard_slab`'s shift, add and mask
+   folded into an add and a mask, the interval being a power of two). The
+   class table line is not touched; whether the slab has been handed out
+   is not read (see below).
 2. `heap = tls()`; `cache = heap.caches[heap.arena][c]`; if `len == cap`,
    slow path. `slots[len++] = p`. Neither the bitmap word nor the owner
    word is loaded.
@@ -549,7 +556,13 @@ slab that is not a guard, is the case that slips to the flush. Whether a
 handed-out slab is below its arena's commit cursor is not knowable on this
 path (the cursor is under the class lock and the arena is not read), so a
 slot start in an uncommitted slab of a handed-out group is also caught at
-the flush. Because the arena is
+the flush; and since Phase 2.5 task 4c the class table's watermark is not
+read either (it was the path's only use of that line), so a slot start in
+a slab no arena has been handed is caught the same way (`SlabTable::owner`
+aborts on a slab past the watermark, by name). Until the flush such a slot
+can be popped by `malloc`, and a program that writes to it faults on the
+reserved `PROT_NONE` page instead of aborting by name; the exact `free`
+and `malloc_usable_size` keep their at-the-call checks. Because the arena is
 not read either, the home cache holds slots of any arena on this path; the
 flush (6.4) groups the batch by slab and releases each run of slabs through
 the arena the owner array names (`release_owned`), which costs nothing
