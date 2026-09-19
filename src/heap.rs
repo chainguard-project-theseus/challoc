@@ -2618,8 +2618,12 @@ impl Heap {
             // The keyed forms only when signed: `sort_unstable_by_key` and
             // friends take a comparator closure and lose the primitive
             // pointer sort's specialisations, which costs every flush even
-            // when the key is the identity.
-            let addr_mask = !pac::mask();
+            // when the key is the identity. The mask itself only when
+            // signed: `pac::mask` is an `xpacd`, UNDEFINED on a CPU without
+            // the extension (`SIGILL` on Neoverse N1, the Altra `make test`
+            // of 2026-09-19), and no PAC instruction may run unless the
+            // probe said yes.
+            let addr_mask = if pac { !pac::mask() } else { usize::MAX };
             let key = |e: &*mut u8| (*e as usize) & addr_mask;
             let all = (*cache).entries();
             let rest_len = all.len() - n;
@@ -5807,6 +5811,13 @@ mod linux_tests {
     const META_LEN: usize = 16 << 20;
 
     fn shared() -> &'static Shared {
+        shared_pac(pac::available())
+    }
+
+    /// `shared()` with the PAC probe's answer given by the caller: `false`
+    /// on a host that has the extension builds the fallback (plain
+    /// pointers) the Altra and every other Neoverse N1 take.
+    fn shared_pac(pac: bool) -> &'static Shared {
         use crate::layout::{MAX_SLAB, Mapping};
         use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
         let reserve = |len: usize| -> usize {
@@ -5835,7 +5846,7 @@ mod linux_tests {
         let b: &'static mut MaybeUninit<Shared> = Box::leak(Box::new(MaybeUninit::uninit()));
         // One automatic arena: the tests below reason about `arena0`.
         let config = Config { narenas: 1, pac_pointers: true, ..Config::DEFAULT };
-        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, config, false, pac::available(), false) });
+        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, config, false, pac, false) });
         unsafe { b.assume_init_ref() }
     }
 
@@ -6040,6 +6051,62 @@ mod linux_tests {
         #[cfg(target_arch = "x86_64")]
         assert!(!s.pac());
         std::eprintln!("pac: available={} on={} fpac={}", pac::available(), s.pac(), pac::fpac());
+    }
+
+    /// Plan Phase 2.5 task 7, the fallback direction (the Altra `make test`
+    /// of 2026-09-19 died with `SIGILL`: `Heap::flush` ran `pac::mask`'s
+    /// `xpacd` whatever the probe said). With `pac_pointers:true` and the
+    /// probe answering no, a heap's pop, push, refill, flush and the TLS
+    /// heap pointer execute no PAC instruction at all, counted by
+    /// `sys::pac::test_ops` in a forked child (the only thread there, so
+    /// the count is this heap's alone); with the probe's real answer the
+    /// same work executes some where the extension exists and none where
+    /// it does not, and the child lives either way. Both directions run
+    /// on every host: the forced-off one is the Neoverse N1 proof on a
+    /// CPU that has PAC, the probe one is the real fallback on a CPU that
+    /// lacks it.
+    #[test]
+    fn heap_off_pac_executes_no_pac_instruction() {
+        for (forced_off, s) in [(true, shared_pac(false)), (false, shared())] {
+            assert_eq!(s.pac(), !forced_off && pac::available());
+            let pid = unsafe { libc::fork() };
+            assert!(pid >= 0);
+            if pid == 0 {
+                let before = pac::test_ops();
+                let c = class_of(48).unwrap();
+                let cap = default_cap(c) as usize;
+                let mut v: Vec<*mut u8> = Vec::with_capacity(cap + 8);
+                // Two full stacks' worth: refills, a full cache and its
+                // flush (the sorted and the unsorted branch), then a GC-free
+                // drain through the heap's own flush of every class.
+                for _ in 0..cap + 8 {
+                    v.push(alloc(s, c));
+                }
+                for &p in v.iter().rev() {
+                    free(s, p);
+                }
+                for _ in 0..cap {
+                    let q = alloc(s, c);
+                    free(s, q);
+                }
+                let h = existing_heap(s).expect("a heap") as *mut Heap;
+                unsafe { (*h).flush_arena(s, 0, ptr::null_mut()) };
+                let ops = pac::test_ops() - before;
+                let expect_some = !forced_off && pac::available();
+                if (ops == 0) != !expect_some {
+                    std::eprintln!("pac: forced_off={forced_off} executed {ops} PAC instructions, expected {}", if expect_some { "some" } else { "none" });
+                    unsafe { libc::_exit(1) };
+                }
+                unsafe { libc::_exit(0) };
+            }
+            let mut status = 0;
+            assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+            assert!(
+                libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
+                "forced_off={forced_off}: child status {status:#x} (a signal here is the Altra SIGILL)"
+            );
+            std::eprintln!("pac: forced_off={forced_off} available={} on={}: no unexpected PAC instruction", pac::available(), s.pac());
+        }
     }
 
     /// Plan Phase 2.5 task 7. With pointer authentication on, every entry

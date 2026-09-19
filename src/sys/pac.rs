@@ -28,6 +28,36 @@
 //! The instructions are emitted through `asm!` with `.arch_extension
 //! pauth`, which the integrated assembler applies to that block only.
 
+/// Test-only count of PAC instructions this module has executed
+/// (`pacda`, `autda`, `xpacd`), summed over the process. A test forks a
+/// child, drives a heap built with the probe forced off and asserts the
+/// count did not move: the proof, on a host that has the extension, that
+/// the fallback path executes no PAC instruction (a host without it,
+/// Neoverse N1, would take `SIGILL`; plan Phase 2.5 task 7, the Altra
+/// `make test` of 2026-09-19). Compiled out of the library.
+#[cfg(all(test, target_arch = "aarch64"))]
+static TEST_OPS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// PAC instructions executed so far by this module (test builds; always 0
+/// off aarch64).
+#[cfg(test)]
+pub fn test_ops() -> usize {
+    #[cfg(target_arch = "aarch64")]
+    {
+        TEST_OPS.load(core::sync::atomic::Ordering::Relaxed)
+    }
+    #[cfg(not(target_arch = "aarch64"))]
+    {
+        0
+    }
+}
+
+#[cfg(all(test, target_arch = "aarch64"))]
+#[inline(always)]
+fn count_op() {
+    TEST_OPS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+}
+
 /// Whether the kernel exposes pointer authentication with the address key
 /// (`HWCAP_PACA`) and the generic key (`HWCAP_PACG`) to this process.
 /// False on x86_64 and off Linux.
@@ -92,6 +122,8 @@ pub fn fpac() -> bool {
 pub fn sign(p: usize, modifier: usize) -> usize {
     #[cfg(target_arch = "aarch64")]
     {
+        #[cfg(test)]
+        count_op();
         let mut v = p;
         // SAFETY: a register-only instruction with no memory or flag
         // effects; the caller has checked the CPU has the extension.
@@ -120,6 +152,8 @@ pub fn sign(p: usize, modifier: usize) -> usize {
 pub fn auth(p: usize, modifier: usize) -> usize {
     #[cfg(target_arch = "aarch64")]
     {
+        #[cfg(test)]
+        count_op();
         let mut v = p;
         // SAFETY: as in `sign`. Not `pure`: on FEAT_FPAC the instruction
         // faults on a bad pointer, an effect the optimiser must keep.
@@ -148,6 +182,8 @@ pub fn auth(p: usize, modifier: usize) -> usize {
 pub fn strip(p: usize) -> usize {
     #[cfg(target_arch = "aarch64")]
     {
+        #[cfg(test)]
+        count_op();
         let mut v = p;
         // SAFETY: as in `sign`.
         unsafe {
