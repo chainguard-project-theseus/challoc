@@ -361,7 +361,13 @@ class (4 KiB slabs, 4 slots) holds 571 such slabs at the top of the swing,
 against 2 + `empty` 2); `dirty_decay_ms:0` does not remove them. It is a
 granularity trade-off, not retention, and no policy timing changes it;
 only page-sized slabs for those classes or allocation steering by
-page-group density would, both fast-path work not undertaken.
+page-group density would. The Valkey soak on the same kernel (Phase 2.5
+task 4d, `bench/results/2026-09-19-aarch64-64k-valkey-soak.md`) sizes it
+for the real consumer: at the end of the delete phase 79.5 MiB of `Empty`
+slabs of the five classes sit in mixed page groups (`active` 130.1 MiB,
+equal to jemalloc's 131.4; RSS 224.9 MiB against jemalloc's 146.1, the
+post-delete criterion failed by that amount alone), so page-sized slabs
+when the page is larger than the slab are plan Phase 2.5 task 4e.
 
 Guard slabs: with `guards` on, every `guard_slab_interval`-th 64 KiB of slabs
 is a *guard slab* that is never handed out (`SlabTable::is_guard_slab`,

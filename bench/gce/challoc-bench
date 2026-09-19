@@ -353,7 +353,10 @@ cmd_session() {
 # --performance-monitoring-unit=standard (C3, C3D, C4, C4A, N4 take it;
 # T2A, C2 and N2D refuse it: "Invalid performance monitoring unit"), so a
 # lab cell can attribute a row with perf stat (bench/gce/quick-perf.sh
-# after linux-tools-$(uname -r) is installed on it).
+# after linux-tools-$(uname -r) is installed on it). MATRIX_MACHINE=<type>
+# replaces the cell's machine type (lab or not): the Valkey soak at 64 KiB
+# pages (plan Phase 2.5 task 4d) ran on `MATRIX_MACHINE=c4a-standard-16
+# MATRIX_PMU=1 matrix lab 64k-arm64`, the reference VMs' shape.
 #
 # The CPU matrix (task 4): the cpu-* cells run the same Ubuntu 24.04 image
 # and its GCE kernel on one machine type each, so only the CPU varies, and
@@ -586,6 +589,9 @@ matrix_cell() {
   log="$MATRIX_OUT/$MATRIX_DATE-$cell.log"
   spec="$(cell_spec "$cell")" || die "matrix: unknown cell $cell (matrix list)"
   read -r fam proj arch machine prep extra zones <<<"$spec"
+  # MATRIX_MACHINE overrides the cell's machine type (a lab cell that must
+  # carry a soak: `MATRIX_MACHINE=c4a-standard-16 matrix lab 64k-arm64`).
+  [ -z "${MATRIX_MACHINE:-}" ] || machine="$MATRIX_MACHINE"
   # shellcheck disable=SC2034
   zones="$(cell_zones "$cell")"
   vm="$(matrix_vm "$cell")"

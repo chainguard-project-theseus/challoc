@@ -767,6 +767,39 @@ Tasks, in order:
    slab, or refill steering by page-group density) becomes the next task
    with this soak as its acceptance. Results in
    `bench/results/<date>-aarch64-64k-valkey-soak.md`; the VM deleted.
+   Done 2026-09-19 as a measurement (`bench/results/2026-09-19-aarch64-64k-valkey-soak.md`):
+   write phase at parity, delete phase +1.7..2.4% behind (the standing
+   residue, as at 4 KiB), peak RSS +2.2%, post-delete RSS 224.9 MiB
+   against bundled jemalloc's 146.1 (+53.9%, FAIL): `active` equal
+   (130.1 vs 131.4 MiB), the gap 79.5 MiB of `Empty` 4..16 KiB slabs of
+   the 512, 640, 768, 896 and 1024 B classes in 64 KiB page groups that
+   keep a live slab. The fix is 4e.
+4e. Page-sized slabs on large-page kernels (the allocator-side fix 4d's
+   soak calls for). When the kernel page is larger than a class's table
+   slab size, the class takes the page as its slab size at init: 64 KiB
+   slabs of 128, 102, 85, 73 and 64 slots for the five classes at 64 KiB
+   (jemalloc's geometry there, `pgs` 1..7 in its bins), so every `Empty`
+   slab is one purge unit, page groups and the group-wise commit, guard
+   and purge have nothing to do at that page size, and Valkey's defrag
+   compacts the survivors as it does under jemalloc (367k hits against
+   challoc's 247k in 4d's soak: `allocator_frag_ratio` does not see slabs
+   outside `active`). The compile-time `Class::slab_size` becomes a
+   per-page-size table selected at init or a runtime shift on the class
+   line, whichever `quick-perf` prices at zero on the reference VMs
+   (instructions and cycles per valkey1 / valkey1-free op unchanged; the
+   4 KiB geometry does not change at all). Refill steering by page-group
+   density (prefer partial slabs in the fullest groups so groups drain
+   whole) is the fallback if the runtime slab size costs the fast path.
+   Attribution rule: `quick-perf` valkey1 / valkey1-free on both
+   reference VMs before and after, `make test` and the probe line on the
+   64k lab cell. Acceptance: the 4d soak rerun on `MATRIX_MACHINE=c4a-standard-16
+   MATRIX_PMU=1 challoc-bench matrix lab 64k-arm64` with the sidecar,
+   post-delete RSS within 10% of bundled jemalloc and the other three
+   criteria as in 4d, recorded in `bench/results/<date>-aarch64-64k-valkey-soak-2.md`;
+   `quick` go on both reference VMs; `make test` at 64 KiB; the container
+   test's 8 MiB large-page envelope (task 3) re-measured with
+   `make test-cgroup-oscillate` on the lab cell and removed if the fix
+   closes it; design 5 and 11 updated with the numbers.
 5. Tagged pointers, part 1, the probes and the design: whether Axion
    exposes MTE (`HWCAP2_MTE`), whether the C4/C3/C3D CPUs expose LAM or
    UAI and the kernel `arch_prctl(ARCH_ENABLE_TAGGED_ADDR)` accepts it;

@@ -135,7 +135,10 @@ mkdir -p "$OUT" "$RESULT_DIR"
 # there, so the clone is pristine) and built once.
 ensure_jemalloc_server() {
   [ -x "$SRC_JE/src/valkey-server" ] && return
-  step "building the jemalloc baseline in $SRC_JE"
+  # To stderr: server_for runs this inside $(...), and a line on stdout
+  # would become part of the server path (the 64 KiB-page soak of Phase
+  # 2.5 task 4d hit this on its first jemalloc build).
+  step "building the jemalloc baseline in $SRC_JE" >&2
   [ -d "$SRC_JE/.git" ] || git -c safe.directory='*' clone -q "$SRC" "$SRC_JE"
   ( cd "$SRC_JE" && make -j"$(nproc)" MALLOC=jemalloc BUILD_TLS=yes all ) \
     > "$WORK/logs/build-jemalloc-$ARCH.log" 2>&1 \
