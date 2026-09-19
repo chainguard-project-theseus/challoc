@@ -165,7 +165,7 @@ static void challoc_policy_line(void)
     }
     if (r != 0)
         return;
-    size_t limit = v, decay_ms = 0, cap = 0, empty = 0, full = 0;
+    size_t limit = v, decay_ms = 0, cap = 0, empty = 0, full = 0, advice = 0, lazy = 0, eager = 0;
     len = sizeof v;
     if (mallctl("stats.cgroup.decay_ms", &v, &len, NULL, 0) == 0)
         decay_ms = v;
@@ -178,8 +178,23 @@ static void challoc_policy_line(void)
     len = sizeof v;
     if (mallctl("stats.cgroup.full_purges", &v, &len, NULL, 0) == 0)
         full = v;
-    printf("challoc: stats.cgroup.limit %zu MiB decay_ms %zu retention_cap %zu MiB empty_bytes %zu MiB full_purges %zu\n",
-           limit == SIZE_MAX ? 0 : limit / MIB, decay_ms, cap == SIZE_MAX ? 0 : cap / MIB, empty / MIB, full);
+    /* The two-advice purge (Phase 2.5 task 10): which advice the next
+     * batch takes and how many batches each has issued. A failing run
+     * shows here whether the freed memory was returned lazily (resident
+     * until the kernel reclaims it) rather than not purged at all. */
+    len = sizeof v;
+    if (mallctl("stats.cgroup.purge_advice", &v, &len, NULL, 0) == 0)
+        advice = v;
+    len = sizeof v;
+    if (mallctl("stats.cgroup.lazy_purges", &v, &len, NULL, 0) == 0)
+        lazy = v;
+    len = sizeof v;
+    if (mallctl("stats.cgroup.eager_purges", &v, &len, NULL, 0) == 0)
+        eager = v;
+    printf("challoc: stats.cgroup.limit %zu MiB decay_ms %zu retention_cap %zu MiB empty_bytes %zu MiB full_purges %zu "
+           "purge_advice %s lazy_purges %zu eager_purges %zu\n",
+           limit == SIZE_MAX ? 0 : limit / MIB, decay_ms, cap == SIZE_MAX ? 0 : cap / MIB, empty / MIB, full,
+           advice ? "lazy" : "eager", lazy, eager);
 }
 
 int main(int argc, char **argv)

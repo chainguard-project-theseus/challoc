@@ -962,7 +962,19 @@ address, with `dirty_at` per entry. Decay policy is jemalloc's in shape:
   and immediate bands are eager (the kernel is about to want the memory),
   and so is every explicit purge (`malloc_trim(0)`, `arena.<i>.purge`, the
   full purge a `memory.events` `high` rise owes: the caller asked for RSS
-  to drop). `lazy_free:true` is the override, lazy in every band;
+  to drop), and so is the whole of an excess over the retention cap that
+  was first seen at 70% or above, until the retention is back within the
+  cap (`Policy::headroom`, the floor fix of 2026-09-19): the first eager
+  walks of such an excess bring usage under 70% before the rest is
+  purged, and without the rule the rest went out lazily and stayed
+  resident and charged, the cap met in the allocator's accounting and not
+  in the cgroup's, with the split decided by which walks shared a
+  periodic tick (the container churn test, 400 MiB freed at 79% of 512
+  MiB, failed 7 of 16 runs on a 4-vCPU 6.1 host and 5 of 16 on a 2-vCPU
+  5.10 host, RSS 309 MiB at 2 s with `lazy_purges 18 eager_purges 1`;
+  `bench/results/2026-09-19-lane-b-floor-fixes.md`). An excess first
+  seen under 70% is lazy throughout (the lazy container test). `lazy_free:true`
+  is the override, lazy in every band;
   `lazy_band:false` (default true) turns the saving off. The advice is read
   at each batch flush from the band as last evaluated, so it is at most
   one sample (10 ms) behind; `stats.cgroup.purge_advice`,
@@ -1199,11 +1211,18 @@ Usage is the last `memory.current` sample against the effective limit
 | >= 90%                            | Period 0: purge at the next pass; cache GC every tick      | `MADV_DONTNEED`           |
 | `memory.events` `high` increased  | Full purge once, at the next decay pass                    | `MADV_DONTNEED`           |
 | PSI trigger fired                 | Sample and decay pass at once (the background thread)      | as the band               |
+| < 70% while an excess over the cap first seen at 70%+ is still being returned | as the `< 70%` row | `MADV_DONTNEED` until the retention is within the cap |
 
 The advice column is the two-advice purge of section 8: lazy only where
 the headroom is known and wide, eager everywhere else and for every
 explicit purge; `lazy_free:true` makes every row lazy, `lazy_band:false`
-every row eager. One consequence to know: lazily returned pages stay
+every row eager. The last row is the rule of section 8 for an excess
+over the cap: the band it was first seen in decides its advice for the
+whole return (`Policy::eager_excess`, set when the retention is over the
+cap at 70% or above, cleared when it is within the cap again), because
+the eager walks of the excess move usage into the `Low` band before they
+are done, and the cap is a promise about resident, charged memory that a
+lazy purge does not keep. One consequence to know: lazily returned pages stay
 charged until the kernel reclaims them, so the `memory.current` sample
 counts them and the band moves toward 70% sooner than live memory alone
 would; that flips the advice to eager and shortens the window while the

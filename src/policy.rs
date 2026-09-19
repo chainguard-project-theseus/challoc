@@ -50,10 +50,20 @@
 //! scaled and immediate bands (the kernel is about to want the memory), and
 //! for an explicit purge (`malloc_trim(0)`, `arena.<i>.purge`, the full
 //! purge a `memory.events` `high` rise owes: the caller asked for RSS to
-//! drop). `lazy_free:true` is the override, lazy everywhere;
-//! `lazy_band:false` turns the saving off, eager everywhere. The advice is
-//! read at each batch flush from `purge`'s mirror of the band, so it is at
-//! most one sample (10 ms) behind.
+//! drop), and while an eager return of the excess over the retention cap
+//! is in progress ([`Policy::headroom`], the floor fix of 2026-09-19): a
+//! retention over the cap first seen at 70% or above is returned eagerly
+//! until it is back within the cap, even though the first eager walks
+//! bring usage under 70% before the rest is purged. Without that rule the
+//! tail of the excess went out with `MADV_FREE` and stayed resident and
+//! charged (the cap met in the allocator's accounting, not in the
+//! cgroup's), with the split between the eager and the lazy part decided
+//! by which walks shared a periodic tick: the container churn test failed
+//! 3 of 16 runs on a 4-vCPU 6.1 host and 4 of 4 on a 2-vCPU 5.10 host.
+//! `lazy_free:true` is the override, lazy everywhere; `lazy_band:false`
+//! turns the saving off, eager everywhere. The advice is read at each
+//! batch flush from `purge`'s mirror of the band, so it is at most one
+//! sample (10 ms) behind.
 //!
 //! THP: the `thp` key has no mechanism behind it yet (design 10), so
 //! "disabled under small limits" reduces to forcing the stored setting to
@@ -238,6 +248,11 @@ pub struct Policy {
     /// A limit was seen at the last evaluation (so a limit that goes away
     /// resets the outcome once).
     limited: AtomicBool,
+    /// An eager return of the excess over the cap is in progress: the
+    /// retention went over the cap while usage was at 70% or above, and
+    /// has not come back within it since. Keeps the advice eager through
+    /// the `Low` band until then (the module doc).
+    eager_excess: AtomicBool,
     /// `thp` was forced to `never` at init by a limit under
     /// [`THP_MIN_LIMIT`].
     thp_forced: bool,
@@ -258,6 +273,7 @@ impl Policy {
             full_purge_pending: AtomicBool::new(false),
             full_purges: AtomicU64::new(0),
             limited: AtomicBool::new(false),
+            eager_excess: AtomicBool::new(false),
             thp_forced,
         }
     }
@@ -274,6 +290,19 @@ impl Policy {
                 f => Band::Scaled(f),
             }
         }
+    }
+
+    /// The purge side's "under 70% of a known limit" (the lazy advice,
+    /// design 8): the `Low` band, and no eager return of the excess over
+    /// the cap in progress.
+    pub fn headroom(&self) -> bool {
+        self.band() == Band::Low && !self.eager_excess.load(Ordering::Relaxed)
+    }
+
+    /// An eager return of the excess over the cap is in progress (for the
+    /// report's reason line).
+    pub fn eager_excess(&self) -> bool {
+        self.eager_excess.load(Ordering::Relaxed)
     }
 
     /// Above 90%: the periodic tick runs the cache GC every time.
@@ -344,6 +373,15 @@ impl Policy {
         self.cap.store(cap, Ordering::Relaxed);
         self.empty_bytes.store(if limited { retention } else { 0 }, Ordering::Relaxed);
         self.keep16.store(if limited { keep_ratio(cap, retention) } else { KEEP_ALL }, Ordering::Relaxed);
+        // The excess over the cap is returned with the advice of the band
+        // it was first seen in: eager from 70% up, and then eager until the
+        // retention is back within the cap, whatever the first eager walks
+        // did to usage (the module doc). Within the cap the band decides.
+        if !limited || retention <= cap {
+            self.eager_excess.store(false, Ordering::Relaxed);
+        } else if band != Band::Low {
+            self.eager_excess.store(true, Ordering::Relaxed);
+        }
         let seen = self.high_rises_seen.swap(high_rises, Ordering::Relaxed);
         if high_rises > seen {
             self.full_purge_pending.store(true, Ordering::Relaxed);
@@ -373,19 +411,22 @@ pub fn evaluate(shared: &Shared) {
     let p = &shared.policy;
     let limit = cg.limit().min(cg.high());
     let b = band(limit, cg.current());
-    // The purge side's mirror of "under 70% of a known limit", read at
-    // each batch flush for the advice (the module doc).
-    crate::purge::set_headroom(b == Band::Low);
     if b == Band::Unlimited {
         // A limit that went away (`docker update`) resets the outcome once;
         // otherwise nothing to do and nothing to read.
+        crate::purge::set_headroom(false, false);
         if p.limited.load(Ordering::Relaxed) && p.apply(b, UNLIMITED, 0, cg.rises().0) {
             crate::purge::note_decay_changed();
         }
         return;
     }
     let retention = empty_bytes(shared);
-    if p.apply(b, limit, retention, cg.rises().0) {
+    let changed = p.apply(b, limit, retention, cg.rises().0);
+    // The purge side's mirror of "under 70% of a known limit", read at
+    // each batch flush for the advice (the module doc): the band as just
+    // applied, less an eager return of the excess in progress.
+    crate::purge::set_headroom(p.headroom(), p.eager_excess());
+    if changed {
         crate::purge::note_decay_changed();
     }
 }
@@ -589,6 +630,58 @@ mod tests {
             // An explicit purge is eager in every band.
             assert_eq!(advice(b, false, true, true), Eager, "{b:?}");
         }
+    }
+
+    /// The floor fix of 2026-09-19 (the module doc): an excess over the
+    /// cap first seen at 70% or above is returned eagerly until the
+    /// retention is back within the cap, through the `Low` band the first
+    /// eager walks bring usage into; an excess first seen under 70% is
+    /// lazy; within the cap the band alone decides.
+    #[test]
+    fn eager_return_of_the_excess_holds_until_within_the_cap() {
+        let p = Policy::new(0, false);
+        let cap = retention_cap(L);
+        assert!(!p.headroom(), "no limit: no headroom");
+        // The churn: 400 MiB freed at 79% (the scaled band), the first
+        // walk returns 100 MiB and usage drops to 59%.
+        p.apply(band(L, L * 79 / 100), L, 400 << 20, 0);
+        assert!(!p.headroom() && p.eager_excess());
+        p.apply(band(L, L * 59 / 100), L, 300 << 20, 0);
+        assert_eq!(p.band(), Band::Low);
+        assert!(!p.headroom(), "the rest of the excess is still eager");
+        assert!(p.eager_excess());
+        p.apply(band(L, L * 2 / 100), L, cap - 1, 0);
+        assert!(p.headroom(), "within the cap the Low band is lazy");
+        assert!(!p.eager_excess());
+        // The lazy test: 200 MiB freed at 39%, over the cap, never above
+        // 70%: lazy.
+        p.apply(band(L, L * 39 / 100), L, 200 << 20, 0);
+        assert!(p.headroom() && !p.eager_excess());
+        // Usage rising into the scaled band mid-episode turns it eager at
+        // once, and it stays eager back under 70% until within the cap.
+        p.apply(band(L, L * 75 / 100), L, 150 << 20, 0);
+        assert!(!p.headroom() && p.eager_excess());
+        p.apply(band(L, L * 50 / 100), L, 100 << 20, 0);
+        assert!(!p.headroom());
+        p.apply(band(L, L * 50 / 100), L, cap, 0);
+        assert!(p.headroom());
+        // Immediate: eager, and the flag set for the way down.
+        p.apply(band(L, L * 95 / 100), L, 100 << 20, 0);
+        assert!(!p.headroom() && p.eager_excess());
+        // The limit goes away: nothing lazy, the flag cleared.
+        p.apply(band(UNLIMITED, 0), UNLIMITED, 0, 0);
+        assert!(!p.headroom() && !p.eager_excess());
+        // A retention over the cap first seen in the Low band, cleared
+        // when it is within the cap again, then the scaled band with a
+        // small retention: within the cap, eager (the band), no episode.
+        p.apply(band(L, L * 30 / 100), L, 100 << 20, 0);
+        assert!(p.headroom());
+        p.apply(band(L, L * 30 / 100), L, 0, 0);
+        assert!(p.headroom() && !p.eager_excess());
+        p.apply(band(L, L * 80 / 100), L, cap / 2, 0);
+        assert!(!p.headroom() && !p.eager_excess());
+        p.apply(band(L, L * 60 / 100), L, cap / 2, 0);
+        assert!(p.headroom());
     }
 
     #[test]

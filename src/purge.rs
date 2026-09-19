@@ -8,9 +8,11 @@
 //!   found) or, when neither works, a loop of `madvise`. The advice is
 //!   decided at each flush ([`advice`], the two-advice purge of design 8
 //!   and 11): `MADV_FREE` under the cgroup policy's headroom band (under
-//!   70% of a known limit, mirrored here by [`set_headroom`]) or under the
-//!   `lazy_free` override, `MADV_DONTNEED` everywhere else, and always for
-//!   an explicit purge ([`purge_all`], [`purge_arena`]). A lazy batch goes
+//!   70% of a known limit and no eager return of the excess over the cap
+//!   in progress, `policy::Policy::headroom`, mirrored here by
+//!   [`set_headroom`]) or under the `lazy_free` override, `MADV_DONTNEED`
+//!   everywhere else, and always for an explicit purge ([`purge_all`],
+//!   [`purge_arena`]). A lazy batch goes
 //!   through `process_madvise` only where the init probe found the kernel
 //!   takes `MADV_FREE` there, else through the loop. A range that fails to
 //!   discard aborts: the heap's idea of what is resident would otherwise be
@@ -174,9 +176,13 @@ static BACKEND_LAZY: AtomicBool = AtomicBool::new(false);
 static LAZY: AtomicBool = AtomicBool::new(false);
 /// `lazy_band` (default true): `MADV_FREE` under the headroom band.
 static LAZY_BAND: AtomicBool = AtomicBool::new(true);
-/// The policy's last evaluation put usage under 70% of a known limit
-/// (`policy::evaluate` mirrors it here).
+/// The policy's last evaluation put usage under 70% of a known limit with
+/// no eager return of the excess over the cap in progress
+/// (`policy::evaluate` mirrors `Policy::headroom` here).
 static HEADROOM: AtomicBool = AtomicBool::new(false);
+/// The policy's last evaluation found an eager return of the excess over
+/// the cap in progress (`Policy::eager_excess`; the reason line only).
+static EAGER_EXCESS: AtomicBool = AtomicBool::new(false);
 /// Explicit purges in flight ([`purge_all`], [`purge_arena`]): eager.
 static EXPLICIT: AtomicU32 = AtomicU32::new(0);
 /// A lazy batch has been issued in this process: `Purged` memory is no
@@ -215,10 +221,14 @@ pub fn configure_advice(backend_lazy: bool, lazy_band: bool) {
     LAZY_BAND.store(lazy_band, Ordering::Relaxed);
 }
 
-/// The policy's mirror: usage is under 70% of a known limit (design 11's
-/// `Low` band). Written where the policy is evaluated, read at each flush.
-pub fn set_headroom(low: bool) {
+/// The policy's mirror: `low`, usage is under 70% of a known limit
+/// (design 11's `Low` band) and no eager return of the excess over the cap
+/// is in progress (`Policy::headroom`); `eager_excess`, such a return is
+/// in progress (the reason line). Written where the policy is evaluated,
+/// read at each flush.
+pub fn set_headroom(low: bool, eager_excess: bool) {
     HEADROOM.store(low, Ordering::Relaxed);
+    EAGER_EXCESS.store(eager_excess, Ordering::Relaxed);
 }
 
 /// The advice the next batch flush would issue (the module doc).
@@ -234,8 +244,10 @@ pub fn advice() -> Advice {
 }
 
 /// Why [`advice`] is what it is, for the report: `lazy_free`,
-/// `under 70% of the limit`, `explicit purge`, `lazy_band:false`, or
-/// `no headroom known` (no limit, or 70% and above).
+/// `under 70% of the limit`, `explicit purge`, `lazy_band:false`,
+/// `returning the excess over the cap` (an eager return in progress,
+/// `Policy::eager_excess`), or `no headroom known` (no limit, or 70% and
+/// above).
 #[cold]
 pub fn advice_reason() -> &'static str {
     if LAZY.load(Ordering::Relaxed) {
@@ -246,6 +258,8 @@ pub fn advice_reason() -> &'static str {
         "lazy_band:false"
     } else if HEADROOM.load(Ordering::Relaxed) {
         "under 70% of the limit"
+    } else if EAGER_EXCESS.load(Ordering::Relaxed) {
+        "returning the excess over the cap"
     } else {
         "no headroom known"
     }
@@ -1235,7 +1249,7 @@ mod tests {
     fn advice_follows_headroom_band_key_and_explicit_purges() {
         let _serial = serial();
         assert_eq!(advice(), Advice::Eager);
-        set_headroom(true);
+        set_headroom(true, false);
         assert_eq!(advice(), Advice::Lazy);
         assert_eq!(advice_reason(), "under 70% of the limit");
         {
@@ -1255,7 +1269,10 @@ mod tests {
         assert!(!lazy_uses_process_madvise());
         configure_advice(false, true);
         assert_eq!(advice(), Advice::Lazy);
-        set_headroom(false);
+        set_headroom(false, true);
+        assert_eq!(advice(), Advice::Eager);
+        assert_eq!(advice_reason(), "returning the excess over the cap");
+        set_headroom(false, false);
         assert_eq!(advice(), Advice::Eager);
         assert_eq!(advice_reason(), "no headroom known");
         // Nothing was flushed: the sticky flag is untouched.
