@@ -178,6 +178,13 @@ pub struct CacheHeader {
 pub const MODE_OFF: u16 = 0;
 pub const MODE_PROBE: u16 = 1;
 pub const MODE_COMPACT: u16 = 2;
+
+/// `Shared::push_flags` bit: `double_free_scan` (compare the pushed slot
+/// against the top four cache entries).
+pub const PUSH_SCAN: u8 = 1;
+/// `Shared::push_flags` bit: `zero_on_free` (clear the block before the
+/// push or the huge release).
+pub const PUSH_ZERO: u8 = 2;
 /// Pops between two fragmentation probes of a class (minus one).
 pub const PROBE_MASK: u32 = (1 << 12) - 1;
 /// A class is worth compacting when its slabs hold at least this many
@@ -396,6 +403,10 @@ pub struct Heap {
     /// Counted in `Arenas::bound` for its home arena: thread heaps are,
     /// explicit caches (`create_detached`) are not.
     bound: bool,
+    /// `slot_randomize`'s xorshift state (plan Phase 2 task 3): 0 until the
+    /// heap's first randomised claim seeds it from `getrandom`, so the
+    /// default configuration makes no syscall per heap creation.
+    rng: u64,
     /// Caches of the home arena, one line per class; last, so the small
     /// fields above share two lines and `caches[c]` is `heap + 128 + 64 * c`.
     caches: [CacheHeader; NCLASSES],
@@ -429,10 +440,15 @@ pub struct Shared {
     /// and larson's working set turns every extra line into an L2 hit
     /// (`bench/results/2026-09-16-aarch64-arenas-lines.md`).
     multi_arena: AtomicBool,
-    /// `double_free_scan` (design 6.3 step 3): every push compares the slot
-    /// against the top four cache entries and aborts on a match. Written
-    /// once by `init`; kept on the line every `free` reads.
-    double_free_scan: bool,
+    /// The opt-in hardening a push applies, as [`PUSH_SCAN`]
+    /// (`double_free_scan`, design 6.3 step 3: every push compares the
+    /// slot against the top four cache entries and aborts on a match) and
+    /// [`PUSH_ZERO`] (`zero_on_free`: the slot's class-size bytes are
+    /// cleared before the push, and a huge run's usable bytes before its
+    /// release). Written once by `init`; kept on the line every `free`
+    /// reads, and zero in the default configuration, so the fast path
+    /// tests one byte and takes one predicted branch (plan Phase 2 task 3).
+    push_flags: u8,
     pub regions: Regions,
     tables: [SlabTable; NCLASSES],
     pub arena0: Arena,
@@ -524,6 +540,16 @@ mod os {
         crate::sys::now_coarse_ns()
     }
 
+    /// Eight random bytes from `getrandom(2)` for `slot_randomize`; on a
+    /// kernel that refuses (not seen on any supported one) the clock, so
+    /// the heap is still seeded with something that varies.
+    pub fn seed() -> u64 {
+        let mut b = [0u8; 8];
+        match crate::sys::getrandom_exact(&mut b) {
+            Ok(()) => u64::from_ne_bytes(b),
+            Err(_) => crate::sys::now_coarse_ns(),
+        }
+    }
 }
 
 /// Off Linux there is no TLS accessor and no thread-exit key; host tests
@@ -561,6 +587,11 @@ mod os {
 
     pub fn now_ns() -> u64 {
         TICK.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Host tests: a fixed seed, so a randomised test is repeatable.
+    pub fn seed() -> u64 {
+        0xC4A1_10C5_EED0_0001
     }
 }
 
@@ -614,7 +645,10 @@ impl Shared {
             ptr::write(meta, Meta::new(regions.meta_base, regions.meta_len, regions.page_size()));
             ptr::write(&raw mut (*this).regions, regions);
             ptr::write(&raw mut (*this).multi_arena, AtomicBool::new(false));
-            ptr::write(&raw mut (*this).double_free_scan, config.double_free_scan);
+            ptr::write(
+                &raw mut (*this).push_flags,
+                (if config.double_free_scan { PUSH_SCAN } else { 0 }) | (if config.zero_on_free { PUSH_ZERO } else { 0 }),
+            );
             let meta = &*meta;
             let regions = &*(&raw const (*this).regions);
             let tables = &raw mut (*this).tables;
@@ -702,11 +736,25 @@ impl Shared {
         self.multi_arena.load(Ordering::Relaxed)
     }
 
+    /// The opt-in hardening every push applies ([`PUSH_SCAN`],
+    /// [`PUSH_ZERO`]); 0 by default.
+    #[inline(always)]
+    pub fn push_flags(&self) -> u8 {
+        self.push_flags
+    }
+
     /// Whether pushes compare against the top four cache entries
     /// (`double_free_scan`).
     #[inline(always)]
     pub fn double_free_scan(&self) -> bool {
-        self.double_free_scan
+        self.push_flags & PUSH_SCAN != 0
+    }
+
+    /// Whether a freed block is cleared before it is cached or released
+    /// (`zero_on_free`).
+    #[inline(always)]
+    pub fn zero_on_free(&self) -> bool {
+        self.push_flags & PUSH_ZERO != 0
     }
 
     /// A second arena is being built (`Arenas::build`).
@@ -954,6 +1002,19 @@ impl Shared {
         r
     }
 
+    /// `zero_on_free` for a huge run: clear the usable bytes of the live
+    /// run starting at `page` (aborts unless it is one) before its release.
+    /// Out of line: it takes the huge lock for the size and then writes
+    /// the whole run.
+    #[cold]
+    #[inline(never)]
+    pub fn zero_huge(&self, page: usize) {
+        let n = self.huge.usable_size(page);
+        // SAFETY: a live run's usable bytes are committed, writable memory
+        // this allocator handed out and the caller is freeing.
+        unsafe { ptr::write_bytes(self.regions.huge_addr(page) as *mut u8, 0, n) };
+    }
+
     /// Free the huge run starting at `page`. Aborts unless it is a live
     /// run start. Returns the usable bytes released.
     pub fn free_huge(&self, page: usize) -> usize {
@@ -1005,6 +1066,7 @@ impl Heap {
             ptr::write(&raw mut (*h).snapshot, ThreadStats::default());
             ptr::write(&raw mut (*h).tcache_enabled, true);
             ptr::write(&raw mut (*h).bound, false);
+            ptr::write(&raw mut (*h).rng, 0);
             let caches = (&raw mut (*h).caches).cast::<CacheHeader>();
             for c in 0..NCLASSES {
                 ptr::write(caches.add(c), CacheHeader::EMPTY);
@@ -1508,7 +1570,7 @@ impl Heap {
             }
             let slots = (*cache).slots();
             let out = core::slice::from_raw_parts_mut(slots.add(len), want);
-            let claim = shared.owner(arena).class(class).claim(&shared.meta, out);
+            let claim = self.claim(shared, shared.owner(arena).class(class), out);
             let n = claim.n;
             if n == 0 {
                 return;
@@ -1572,6 +1634,9 @@ impl Heap {
     #[cold]
     #[inline(never)]
     fn free_huge(&mut self, shared: &Shared, page: usize) {
+        if shared.zero_on_free() {
+            shared.zero_huge(page);
+        }
         let n = shared.free_huge(page);
         self.count_uncached_free(n);
     }
@@ -1605,7 +1670,7 @@ impl Heap {
     /// Push a checked slot of `class` (home arena) onto its cache.
     #[inline(always)]
     fn push(&mut self, shared: &Shared, class: usize, p: *mut u8) {
-        if !self.push_fast(class, p, shared.double_free_scan()) {
+        if !self.push_fast(class, p, shared.push_flags()) {
             self.free_slow(shared, class, p);
         }
     }
@@ -1614,14 +1679,40 @@ impl Heap {
     /// sentinel) and the caller must take a slow path. No counter moves:
     /// the push count is implied by `len`, `allocs` and `moved`. `zeroed`
     /// is written only when the pushed slot lands inside the zero prefix,
-    /// which is rare (the prefix is usually already zero). `scan` is
-    /// `Shared::double_free_scan`.
+    /// which is rare (the prefix is usually already zero). `flags` is
+    /// `Shared::push_flags`.
     #[inline(always)]
-    pub fn push_fast(&mut self, class: usize, p: *mut u8, scan: bool) -> bool {
+    pub fn push_fast(&mut self, class: usize, p: *mut u8, flags: u8) -> bool {
         let cache = self.cache_ptr(class);
         // SAFETY: this thread's own header, unused (`len == cap == 0`, so
         // nothing is written) or with a stack of `cap` slots.
-        unsafe { Self::push_cache(cache, p, scan) }
+        unsafe { Self::push_cache_flags(cache, class, p, flags) }
+    }
+
+    /// [`Heap::push_cache`] behind the opt-in hardening: with `flags` zero
+    /// (the default) it is the plain push after one byte test; otherwise
+    /// `zero_on_free` clears the slot's class-size bytes first (whether or
+    /// not the push then succeeds: a slot that goes on to the slow path
+    /// is not cleared twice) and `double_free_scan` compares the top four
+    /// entries. The clear trusts the same check the push does: on the
+    /// sized path that is the size hint, so a stale pointer of the right
+    /// shape is cleared as it is cached, exactly as it would be handed out
+    /// (design 6.3).
+    ///
+    /// # Safety
+    /// As for [`Heap::push_cache`]; `p` is a slot of `class`.
+    #[inline(always)]
+    unsafe fn push_cache_flags(cache: *mut CacheHeader, class: usize, p: *mut u8, flags: u8) -> bool {
+        if flags != 0 {
+            if flags & PUSH_ZERO != 0 {
+                // SAFETY: `p` is a slot start of `class` (the caller's check).
+                unsafe { zero_slot(class, p) };
+            }
+            // SAFETY: guaranteed by the caller.
+            return unsafe { Self::push_cache(cache, p, flags & PUSH_SCAN != 0) };
+        }
+        // SAFETY: guaranteed by the caller.
+        unsafe { Self::push_cache(cache, p, false) }
     }
 
     /// Push onto `cache` unless it is full. With `scan`, compare `p`
@@ -1659,6 +1750,39 @@ impl Heap {
             }
         }
         true
+    }
+
+    /// The batch claim behind a refill or a run rebuild: `cs.claim`, or
+    /// with `slot_randomize` `cs.claim_random` with this heap's xorshift
+    /// (the scan starts at a random bitmap word and the batch is shuffled;
+    /// design section 4). The key is read from the configuration here, on
+    /// the slow path, so the fast paths carry nothing for it.
+    #[inline]
+    fn claim(&mut self, shared: &Shared, cs: &crate::class::ClassState, out: &mut [*mut u8]) -> crate::class::Claim {
+        if shared.config.slot_randomize {
+            let rng = self.rng();
+            cs.claim_random(&shared.meta, out, rng)
+        } else {
+            cs.claim(&shared.meta, out)
+        }
+    }
+
+    /// This heap's xorshift state for `slot_randomize`, seeded on first use
+    /// from `getrandom` (mixed with the heap's address and thread id so two
+    /// heaps seeded in the same instant differ even if the kernel returned
+    /// the same bytes, and never zero, which xorshift cannot leave).
+    #[cold]
+    #[inline(never)]
+    fn rng(&mut self) -> &mut u64 {
+        if self.rng == 0 {
+            let mut seed = os::seed();
+            seed ^= (self as *const Heap as u64).rotate_left(17) ^ ((self.tid as u64) << 32);
+            if seed == 0 {
+                seed = 0x9E37_79B9_7F4A_7C15;
+            }
+            self.rng = seed;
+        }
+        &mut self.rng
     }
 
     /// Refill the home cache and pop, allocating the cache first if this
@@ -1743,7 +1867,7 @@ impl Heap {
         if !node.is_null() {
             // SAFETY: `node` is a live block owned by this heap; the cache
             // is unused (`len == cap == 0`) or ours.
-            if unsafe { Self::push_cache(Self::node_cache_ptr(node, class), p, shared.double_free_scan()) } {
+            if unsafe { Self::push_cache_flags(Self::node_cache_ptr(node, class), class, p, shared.push_flags()) } {
                 return;
             }
         }
@@ -1765,6 +1889,8 @@ impl Heap {
                 let half = ((*cache).cap / 2).max(1);
                 self.flush(shared, arena, cache, class, half as usize);
             }
+            // The slot was cleared (`zero_on_free`) by the fast attempt
+            // that brought it here; only the scan is repeated.
             if !Self::push_cache(cache, p, shared.double_free_scan()) {
                 unreachable!("heap: cache still full after a flush");
             }
@@ -1902,7 +2028,7 @@ impl Heap {
             assert_eq!((*cache).len, 0, "heap: refill of a cache that is not empty");
             let want = ((*cache).cap / 2).max(1) as usize;
             let out = core::slice::from_raw_parts_mut((*cache).slots(), want);
-            let claim = arena.class(class).claim(&shared.meta, out);
+            let claim = self.claim(shared, arena.class(class), out);
             arena.class(class).note_refill(claim.n);
             out[..claim.n].reverse();
             (*cache).len = claim.n as u32;
@@ -2152,7 +2278,7 @@ pub fn existing_heap() -> Option<&'static mut Heap> {
 #[inline(always)]
 pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8) -> bool {
     match shared.checked_slot(p, h) {
-        Some(class) => h.push_fast(class, p, shared.double_free_scan()),
+        Some(class) => h.push_fast(class, p, shared.push_flags()),
         None => false,
     }
 }
@@ -2167,7 +2293,7 @@ pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8) -> bool {
 #[inline(always)]
 pub fn free_sized_fast(shared: &Shared, h: &mut Heap, p: *mut u8, hint: Option<usize>) -> bool {
     match shared.sized_slot(p, hint) {
-        Some(class) => h.push_fast(class, p, shared.double_free_scan()),
+        Some(class) => h.push_fast(class, p, shared.push_flags()),
         None => false,
     }
 }
@@ -2211,12 +2337,20 @@ pub fn free(shared: &Shared, p: *mut u8) {
 pub fn free_direct(shared: &Shared, p: *mut u8) {
     match shared.classify_free(p) {
         Ok((class, arena)) => {
+            if shared.zero_on_free() {
+                // SAFETY: `classify_free` verified `p` as an allocated slot
+                // of `class`.
+                unsafe { zero_slot(class, p) };
+            }
             shared.free_direct(arena, class, p);
             if let Some(h) = existing_heap() {
                 h.count_direct_free(class);
             }
         }
         Err(page) => {
+            if shared.zero_on_free() {
+                shared.zero_huge(page);
+            }
             let n = shared.free_huge(page);
             if let Some(h) = existing_heap() {
                 h.count_uncached_free(n);
@@ -2229,6 +2363,22 @@ pub fn free_direct(shared: &Shared, p: *mut u8) {
 #[inline(never)]
 fn invalid_free(p: usize) -> ! {
     panic!("invalid free of {p:#x}: not an allocation")
+}
+
+/// `zero_on_free`: clear the class-size bytes of slot `p` (plan Phase 2
+/// task 3). Out of line so the default `free` carries nothing of it but
+/// the flag test; a `memset` of the class size, so a 1 KiB value costs a
+/// 1 KiB store per free, which is why the key is off by default (review
+/// 2026-09-18 section 5.1; priced in
+/// `bench/results/2026-09-18-*-gce-tunables.md`).
+///
+/// # Safety
+/// `p` is a slot start of `class` in a committed slab.
+#[cold]
+#[inline(never)]
+unsafe fn zero_slot(class: usize, p: *mut u8) {
+    // SAFETY: guaranteed by the caller; the slot is `size` writable bytes.
+    unsafe { ptr::write_bytes(p, 0, CLASSES[class].size()) };
 }
 
 /// `double_free_scan`: the slot being pushed is one of the top four cache
@@ -3894,6 +4044,245 @@ pub(crate) mod tests {
 
     // Phase 1.5 task 8: the four cache invariants that were `debug_assert!`
     // abort in release. Each test builds the violating state by hand.
+
+
+    // Phase 2 task 3: the opt-in `zero_on_free` and `slot_randomize` keys.
+
+    /// The two push flags are one byte on `Shared`'s first line; the
+    /// default configuration leaves it zero.
+    #[test]
+    fn push_flags_encode_zero_on_free_and_double_free_scan() {
+        assert_eq!(shared().push_flags(), 0);
+        assert!(!shared().zero_on_free());
+        let s = shared_with(Config { narenas: 1, zero_on_free: true, ..Config::DEFAULT });
+        assert_eq!(s.push_flags(), PUSH_ZERO);
+        assert!(s.zero_on_free() && !s.double_free_scan());
+        let s = shared_with(Config { narenas: 1, zero_on_free: true, double_free_scan: true, ..Config::DEFAULT });
+        assert_eq!(s.push_flags(), PUSH_ZERO | PUSH_SCAN);
+        assert!(s.zero_on_free() && s.double_free_scan());
+        assert_eq!(core::mem::offset_of!(Shared, push_flags) / 128, core::mem::offset_of!(Shared, multi_arena) / 128);
+    }
+
+    /// Slot memory is real on Linux only (`shared_with_guards`).
+    #[cfg(target_os = "linux")]
+    fn bytes_of(p: *mut u8, n: usize) -> Vec<u8> {
+        (0..n).map(|i| unsafe { core::ptr::read_volatile(p.add(i)) }).collect()
+    }
+
+    /// With the key a freed slot reads as zero the moment `free` returns,
+    /// through the plain path (cached), the sized path and the direct
+    /// release; without it the slot keeps its bytes (the default path does
+    /// not clear).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn zero_on_free_clears_the_slot_on_the_plain_sized_and_direct_paths() {
+        let c = class_with(64);
+        let size = CLASSES[c].size();
+        let dirty = |t: &TestHeap| {
+            let p = t.alloc(c);
+            unsafe { ptr::write_bytes(p, 0xA5, size) };
+            p
+        };
+        // Default: the bytes survive the free (LIFO reuse hands them back).
+        let s = shared();
+        let t = TestHeap::new(s);
+        let p = dirty(&t);
+        t.free(p);
+        assert!(bytes_of(p, size).iter().all(|&b| b == 0xA5), "the default path cleared a slot");
+        assert_eq!(t.alloc(c), p);
+        t.free(p);
+        t.flush_all();
+        t.destroy();
+
+        let s = shared_with(Config { narenas: 1, zero_on_free: true, ..Config::DEFAULT });
+        let t = TestHeap::new(s);
+        // Plain free: cleared, then the same slot comes back zero without
+        // `calloc`'s memset.
+        let p = dirty(&t);
+        t.free(p);
+        assert!(bytes_of(p, size).iter().all(|&b| b == 0), "plain free left bytes");
+        assert_eq!(t.alloc(c), p);
+        assert!(bytes_of(p, size).iter().all(|&b| b == 0));
+        // Sized path (`sdallocx`): the size hint's class, no bit test.
+        unsafe { ptr::write_bytes(p, 0xA5, size) };
+        assert!(free_sized_fast(s, t.heap(), p, Some(c)));
+        assert!(bytes_of(p, size).iter().all(|&b| b == 0), "sized free left bytes");
+        assert_eq!(t.alloc(c), p);
+        // A full cache: the slot goes through `free_slow` after the clear.
+        let cap = t.cache(c).cap() as usize;
+        let ps: Vec<*mut u8> = (0..cap).map(|_| dirty(&t)).collect();
+        for &q in &ps {
+            t.free(q);
+        }
+        for &q in &ps {
+            assert!(bytes_of(q, size).iter().all(|&b| b == 0), "a flushed or cached slot kept bytes");
+        }
+        // Direct release (`MALLOCX_TCACHE_NONE`), with no cache involved.
+        unsafe { ptr::write_bytes(p, 0xA5, size) };
+        super::free_direct(s, p);
+        assert!(bytes_of(p, size).iter().all(|&b| b == 0), "direct free left bytes");
+        t.flush_all();
+        t.destroy();
+    }
+
+    /// A huge run's usable bytes are cleared before the release, on the
+    /// thread path and the direct path; the run is retained (`Empty`) so
+    /// the memory is still there to read.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn zero_on_free_clears_a_huge_run() {
+        let s = shared_with(Config { narenas: 1, zero_on_free: true, ..Config::DEFAULT });
+        let t = TestHeap::new(s);
+        let n = 1 << 20;
+        for direct in [false, true] {
+            let (p, _) = t.alloc_huge(n, PAGE);
+            assert!(!p.is_null());
+            let usable = s.huge.usable_for(n).unwrap();
+            assert!(usable >= n);
+            unsafe { ptr::write_bytes(p, 0xA5, usable) };
+            if direct { super::free_direct(s, p) } else { t.free(p) }
+            let b = bytes_of(p, usable);
+            assert!(b.iter().all(|&x| x == 0), "huge free (direct {direct}) left bytes: first non-zero at {:?}", b.iter().position(|&x| x != 0));
+        }
+        // Default: untouched.
+        let s = shared();
+        let t2 = TestHeap::new(s);
+        let (p, _) = t2.alloc_huge(n, PAGE);
+        unsafe { ptr::write_bytes(p, 0xA5, n) };
+        t2.free(p);
+        assert!(bytes_of(p, n).iter().all(|&x| x == 0xA5), "the default huge free cleared the run");
+        t2.destroy();
+        t.destroy();
+    }
+
+    /// Heap creation makes no `getrandom` call: the state stays 0 until
+    /// the first randomised claim, and never under the default.
+    #[test]
+    fn slot_randomize_seeds_the_heap_lazily() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        assert_eq!(t.heap().rng, 0);
+        let p = t.alloc(c);
+        assert_eq!(t.heap().rng, 0, "the default refill touched the rng");
+        t.free(p);
+        t.flush_all();
+        t.destroy();
+        let s = shared_with(Config { narenas: 1, slot_randomize: true, ..Config::DEFAULT });
+        let t = TestHeap::new(s);
+        assert_eq!(t.heap().rng, 0, "heap creation seeded the rng");
+        let p = t.alloc(c);
+        let seed = t.heap().rng;
+        assert_ne!(seed, 0, "the first randomised refill did not seed");
+        let q = t.alloc(c);
+        assert_eq!(t.heap().rng, seed, "a pop advanced the rng");
+        t.free(p);
+        t.free(q);
+        t.flush_all();
+        t.destroy();
+    }
+
+    /// Under the key a refill's batch is the same slot set an ordered
+    /// claim would take from the slab (`plan` and the prefix claim are
+    /// untouched, so `Claim::zeroed` is too) in a non-address order; the
+    /// second batch from the now `Active` slab (the bit loop from a random
+    /// word) is the rest of the slab, shuffled as well. The default hands
+    /// the slots out by ascending address.
+    #[test]
+    fn slot_randomize_shuffles_the_batch_and_keeps_the_slot_set() {
+        let c = class_with(64);
+        let size = CLASSES[c].size();
+        let nslots = CLASSES[c].nslots();
+        assert_eq!(nslots, 1024);
+        let batch = HALF;
+        let contiguous = |ps: &[*mut u8]| {
+            let mut v: Vec<usize> = ps.iter().map(|&p| p as usize).collect();
+            v.sort_unstable();
+            v.windows(2).all(|w| w[1] - w[0] == size)
+        };
+        let ascending = |ps: &[*mut u8]| ps.windows(2).all(|w| w[0] < w[1]);
+
+        let s = shared();
+        let t = TestHeap::new(s);
+        let first: Vec<*mut u8> = (0..batch).map(|_| t.alloc(c)).collect();
+        assert!(ascending(&first), "the default order is not ascending");
+        assert!(contiguous(&first));
+        for &p in &first {
+            t.free(p);
+        }
+        t.flush_all();
+        t.destroy();
+
+        let s = shared_with(Config { narenas: 1, slot_randomize: true, ..Config::DEFAULT });
+        let t = TestHeap::new(s);
+        let cs = &s.arena0.classes[c];
+        let (first_z, zeroed): (Vec<*mut u8>, Vec<bool>) = (0..batch).map(|_| t.heap().alloc_zeroed(s, c)).unzip();
+        assert!(zeroed.iter().all(|&z| z), "the first batch from a Fresh slab is zero whatever its order");
+        assert!(!ascending(&first_z), "randomised batch is address-ordered");
+        assert!(!first_z.windows(2).all(|w| w[0] > w[1]), "randomised batch is reverse-ordered");
+        assert!(contiguous(&first_z), "the first batch is not the slab's first {batch} slots");
+        let slab = cs.locate(first_z[0]).0;
+        assert!(first_z.iter().all(|&p| cs.locate(p).0 == slab));
+        let second: Vec<*mut u8> = (0..batch).map(|_| t.alloc(c)).collect();
+        assert!(!ascending(&second) && contiguous(&second), "the second batch (bit loop) is ordered or not one run of slots");
+        assert!(second.iter().all(|&p| cs.locate(p).0 == slab));
+        let mut all: Vec<usize> = first_z.iter().chain(&second).map(|&p| p as usize).collect();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), nslots, "the two batches are not the whole slab");
+        assert_eq!(live(s, c), nslots);
+        for p in first_z.into_iter().chain(second) {
+            t.free(p);
+        }
+        t.flush_all();
+        t.destroy();
+        assert_eq!(live(s, c), 0);
+    }
+
+    /// The churn model with randomisation on: the cache still switches to
+    /// compacting and rebuilds its run (the run is a shuffled block, so the
+    /// scheduled pop serves a random slot of the lowest slab rather than
+    /// its lowest, the documented trade), every slot handed out is a valid,
+    /// distinct slot of the class and the live accounting holds.
+    #[test]
+    fn slot_randomize_keeps_the_compacting_run_valid() {
+        let s = shared_with(Config { narenas: 1, slot_randomize: true, ..Config::DEFAULT });
+        let t = TestHeap::new(s);
+        let c = class_with(1024);
+        let cs = &s.arena0.classes[c];
+        let nslots = CLASSES[c].nslots();
+        let mut keep = residue(&t, c, MODEL_SLOTS / nslots, 560, 0x9e37_79b9_7f4a_7c15);
+        assert!(Heap::fragmented(s, 0, c));
+        let mut held: HashSet<usize> = keep.iter().map(|&p| p as usize).collect();
+        let mut st = 0x2468_ace0u64;
+        let mut was_compacting = false;
+        let mut rebuilt = false;
+        for _ in 0..150_000 {
+            let i = (xorshift(&mut st) % keep.len() as u64) as usize;
+            assert!(held.remove(&(keep[i] as usize)));
+            t.free(keep[i]);
+            let run_before = t.heap().cache(c).map_or(0, |k| k.run().len());
+            let p = t.alloc(c);
+            let k = t.cache(c);
+            was_compacting |= k.compacting();
+            rebuilt |= k.compacting() && run_before == 0 && !k.run().is_empty();
+            // A valid slot: the class's arithmetic locates it (aborts
+            // otherwise) and nobody else holds it.
+            let (slab, slot) = cs.locate(p);
+            assert!(slab < cs.committed_slabs() && slot < nslots);
+            assert!(held.insert(p as usize), "slot handed out twice");
+            assert!(k.run().len() <= k.low_water() && k.low_water() <= k.len());
+            keep[i] = p;
+        }
+        assert!(was_compacting, "never compacting");
+        assert!(rebuilt, "no rebuild observed");
+        assert_eq!(live(s, c), keep.len() + t.len(c));
+        for p in keep {
+            t.free(p);
+        }
+        t.destroy();
+        assert_eq!(live(s, c), 0);
+    }
 
     #[test]
     #[should_panic(expected = "cache run invariant violated")]

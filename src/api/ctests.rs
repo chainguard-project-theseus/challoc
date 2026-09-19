@@ -697,6 +697,55 @@ fn mimalloc_test_stress_check_zero() {
     run_bin_env("stress", &bin, &["8", "50", "10"], &[("MALLOC_CONF", "abort_conf:true,check_zero:true")]);
 }
 
+/// Plan Phase 2 task 3: the opt-in hardening tunables (`tests/c/tunables.c`).
+/// `zero_on_free`: a written block reads as zero after `free`, `sdallocx`
+/// and `free_sized`, and comes back zero from `malloc`; the control mode
+/// proves the default leaves the bytes. `slot_randomize`: one class's
+/// first allocations in a fresh process are a contiguous slot set in a
+/// non-monotone order; the control is ascending. `abort_conf` accepts
+/// both keys (they are no longer inert).
+#[test]
+fn c_tunables_zero_on_free() {
+    let bin = compile("tests/c", "tunables", &[]);
+    run_bin_env("tunables", &bin, &["zero"], &[("MALLOC_CONF", "abort_conf:true,zero_on_free:true")]);
+    let bin = compile("tests/c", "tunables", &[]);
+    run_bin_env("tunables", &bin, &["dirty"], &[("MALLOC_CONF", "abort_conf:true")]);
+}
+
+#[test]
+fn c_tunables_slot_randomize() {
+    let bin = compile("tests/c", "tunables", &[]);
+    run_bin_env("tunables", &bin, &["random"], &[("MALLOC_CONF", "abort_conf:true,slot_randomize:true")]);
+    let bin = compile("tests/c", "tunables", &[]);
+    run_bin_env("tunables", &bin, &["ordered"], &[("MALLOC_CONF", "abort_conf:true")]);
+}
+
+/// The fuzz driver (`c_fuzz_short`) once under each key, and both.
+#[test]
+fn c_fuzz_short_under_zero_on_free() {
+    let bin = compile("fuzz", "fuzz", &[]);
+    run_bin_env("fuzz", &bin, &["400000", "4"], &[("MALLOC_CONF", "abort_conf:true,zero_on_free:true")]);
+}
+
+#[test]
+fn c_fuzz_short_under_slot_randomize() {
+    let bin = compile("fuzz", "fuzz", &[]);
+    run_bin_env("fuzz", &bin, &["400000", "4"], &[("MALLOC_CONF", "abort_conf:true,slot_randomize:true")]);
+    let bin = compile("fuzz", "fuzz", &[]);
+    run_bin_env("fuzz", &bin, &["200000", "4"], &[("MALLOC_CONF", "abort_conf:true,slot_randomize:true,zero_on_free:true,double_free_scan:true")]);
+}
+
+/// `check_zero` under `slot_randomize`: a shuffled batch from a `Fresh` or
+/// `Purged` slab is still all zero (the shuffle changes the order, not the
+/// set), so the campaign's default configuration stays clean.
+#[test]
+fn mimalloc_test_stress_check_zero_slot_randomize() {
+    let root = env!("CARGO_MANIFEST_DIR");
+    let include = std::format!("-I{root}/tests/mimalloc/include");
+    let bin = compile("tests/mimalloc", "stress", &["-Wno-unused-parameter", &include]);
+    run_bin_env("stress", &bin, &["8", "50", "10"], &[("MALLOC_CONF", "abort_conf:true,check_zero:true,slot_randomize:true")]);
+}
+
 /// `tests/c/huge_hole.c`: the alignment holes the huge allocator leaves
 /// below an aligned run are committed memory. Once in the probed guard mode
 /// (guard-install on kernels with `MADV_GUARD_INSTALL`, where the Phase 0

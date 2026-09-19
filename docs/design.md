@@ -237,11 +237,22 @@ Operations on the bitmap are always atomic. Slabs have no owning thread.
   allocated`; a slot start in a guard slab or in a slab never allocated from
   gets its own message). No write.
 
-Slot randomisation (planned, Phase 2 task 3; the `slot_randomize` key is
-accepted, stored and inert) would claim from a random word rather than the
-lowest one and shuffle the claimed batch before it goes into the cache. It
-will stay off by default because it fights the fragmentation policy in
-section 8.
+Slot randomisation (`slot_randomize`, opt-in, Phase 2 task 3): a cache
+refill or run rebuild (`ClassState::claim_random`) plans the same slabs and
+reservations as the ordered claim, but the bit scan of a slab starts at a
+word drawn from the heap's xorshift instead of the lowest one, and the
+claimed batch is shuffled with the same generator before it becomes the
+cache's stack (or its run, 6.4). The shuffle changes the order of the
+batch, not the set of slots, so a `Fresh` or `Purged` slab's prefix claim
+still yields a batch known to be zero. The generator is per heap, seeded
+from `getrandom` on the heap's first randomised claim (no syscall per heap
+creation in the default configuration); direct claims (`MALLOCX_TCACHE_NONE`,
+threads without a heap) stay address-ordered. Off by default because it
+fights the fragmentation policy in section 8 and the compaction in 6.4:
+with it on, the scheduled pop serves a random slot of the lowest slab with
+room rather than its lowest slot, which still moves the live set into that
+slab but no longer fills it from the bottom. Priced in
+`bench/results/2026-09-18-*-gce-tunables.md`.
 
 ## 5. Per-class state and slab selection
 
@@ -451,13 +462,24 @@ reads; halving the flush rate halves those misses (Phase 0 acceptance,
    abort.
 2. Compute slab and slot; verify `slot * size == offset`; load the class
    bitmap word; verify bit set. Otherwise abort.
-3. With `double_free_scan`: compare `p` against the top 4 cache entries; a
+3. The opt-in hardening, one byte (`Shared::push_flags`) on the line step
+   2's `superblock`/`lg_stride` come from, zero by default, so the default
+   push tests it once and branches past both. With `double_free_scan`:
+   compare `p` against the top 4 cache entries; a
    match is a double free whose first copy is still cached (the bit test
    cannot see it) and aborts before the push. The same compare guards the
    sized path's push. Off by default: priced at +3.1% / +3.7% on larson1
    and up to +14% on the Valkey model on x86_64
    (`bench/results/2026-09-18-*-gce-detection-gaps.md`), above the 1% the
-   plan set for making it the default.
+   plan set for making it the default. With `zero_on_free`: `memset` the
+   slot's class-size bytes (known from step 2, or from the size hint on
+   the sized path) to zero before the push, whether or not the push then
+   succeeds (a slot that goes on to the flush path is not cleared twice);
+   a direct release (`MALLOCX_TCACHE_NONE`) clears the same way and a
+   huge free clears the run's usable bytes before the release. Off by
+   default: a `memset` per free is more than the 3% budget on Valkey's
+   1 KiB values (review 2026-09-18 section 5.1); priced in
+   `bench/results/2026-09-18-*-gce-tunables.md`.
 4. `heap = tls()`; with several arenas load `owner[slab / group]` and, if it
    is not the heap's home arena, take the cold path (`free_other`, which
    pushes into the heap's cache for that arena, creating the node on first
@@ -973,8 +995,8 @@ jemalloc names where they exist:
 | `guards`                  | true    | guard slabs and huge runs               |
 | `guard_slab_interval`     | 8       | one guard per N x 64 KiB of slabs; 0 off, 1 out of range (clamps to 2) |
 | `huge_retain_max`         | 67108864 | challoc only; bytes; freed huge runs above it are purged at once (7) |
-| `zero_on_free`            | false   | inert (planned, Phase 2 task 3)         |
-| `slot_randomize`          | false   | inert (planned, Phase 2 task 3)         |
+| `zero_on_free`            | false   | opt-in: clear a block on free (6.3 step 3); priced in `bench/results/2026-09-18-*-gce-tunables.md` |
+| `slot_randomize`          | false   | opt-in: refills claim from a random word and shuffle the batch (4); fights 6.4's compaction |
 | `double_free_scan`        | false   | compare against the top 4 cache entries |
 | `abort_conf`              | false   | abort on unknown keys, bad values and inert keys |
 | `cgroup`                  | true    | read the memory cgroup (11) and apply its policy: limits, `memory.current`, events, PSI; `false` reads and applies nothing |
@@ -1260,10 +1282,13 @@ Off by default, tunable:
 - `double_free_scan` (compare each pushed slot against the top four cache
   entries; priced in 6.3); `guard_slab_interval` below the default of 8 for
   denser guard slabs.
-
-Planned (Phase 2), keys accepted and inert today:
-
-- `zero_on_free`, `slot_randomize` (task 3).
+- `zero_on_free` (clear a slot's class-size bytes, or a huge run's usable
+  bytes, on free; 6.3 step 3) and `slot_randomize` (claim from a random
+  bitmap word and shuffle each refill batch; section 4). Both priced in
+  `bench/results/2026-09-18-*-gce-tunables.md`; they stay off because a
+  `memset` per free is more than the 3% budget on Valkey's 1 KiB values
+  and randomisation fights the compaction of 6.4 (review 2026-09-18
+  section 5.1).
 
 Explicitly not attempted: quarantine (defeats defragmentation and costs
 throughput), canaries (needs bytes inside the block), MTE (only AmpereOne

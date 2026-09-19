@@ -21,13 +21,14 @@
 //! it applies to keys that appeared before it in the same or an earlier
 //! source; jemalloc gets the same effect with a separate first pass.
 //!
-//! The *inert* keys ([`INERT_KEYS`]: `thp`, `zero_on_free`, `slot_randomize`,
-//! `stats_print`) are parsed and, where they have a field, stored
-//! and readable through `opt.<key>`, but nothing in the allocator reads
-//! them (the features are planned, `docs/plan.md` Phase 2). Each one is
-//! reported as [`Issue::Inert`] so that `abort_conf` rejects it and a
-//! program cannot believe it turned something on; `malloc_stats_print`
-//! marks them "accepted, no effect".
+//! The *inert* keys ([`INERT_KEYS`]: `thp`, `stats_print`) are parsed
+//! and, where they have a field, stored and readable through `opt.<key>`,
+//! but nothing in the allocator reads them (`thp` is planned with the THP
+//! work; `stats_print` has nothing to print at exit). Each one is reported
+//! as [`Issue::Inert`] so that `abort_conf` rejects it and a program cannot
+//! believe it turned something on; `malloc_stats_print` marks them
+//! "accepted, no effect". `zero_on_free` and `slot_randomize` left the list
+//! with Phase 2 task 3: both are implemented, opt-in and off by default.
 
 use core::fmt::{self, Write as _};
 
@@ -112,9 +113,20 @@ pub struct Config {
     /// moment they are freed instead of waiting for decay
     /// (`Huge::set_retain_max`, design 7).
     pub huge_retain_max: usize,
-    /// Inert (planned, Phase 2 task 3): parsed, stored, read by nothing.
+    /// Clear a freed block before it is cached or released (a slot's
+    /// class-size bytes on the plain and sized free paths, a huge run's
+    /// usable bytes): `Shared::push_flags`, `heap::zero_slot`,
+    /// `Shared::zero_huge`. Off by default: a `memset` per free is more
+    /// than the 3% budget on Valkey's 1 KiB values (review 2026-09-18
+    /// section 5.1; priced in `bench/results/2026-09-18-*-gce-tunables.md`).
     pub zero_on_free: bool,
-    /// Inert (planned, Phase 2 task 3): parsed, stored, read by nothing.
+    /// Cache refills and run rebuilds claim from a random bitmap word and
+    /// shuffle the batch with a per-heap xorshift seeded from `getrandom`
+    /// on first use (`ClassState::claim_random`, `Heap::claim`), so slots
+    /// are handed out in a random order instead of by ascending address.
+    /// Off by default: it fights the compaction of design 6.4 (the
+    /// scheduled pop then serves a random slot of the low slab, not its
+    /// lowest). Slow paths only.
     pub slot_randomize: bool,
     pub double_free_scan: bool,
     pub abort_conf: bool,
@@ -264,18 +276,8 @@ impl Config {
             b"huge_retain_max" => {
                 return num(self, 0, MAX_HUGE_RETAIN_MAX as i64, |c, v| c.huge_retain_max = v as usize);
             }
-            // Inert keys: the value is validated and stored (so `opt.<key>`
-            // reads back what was set), then reported, so `abort_conf`
-            // refuses a configuration that relies on a feature that does
-            // not exist yet.
-            b"zero_on_free" => {
-                self.zero_on_free = parse_bool(value).ok_or_else(bad)?;
-                return Err(Issue::Inert(key));
-            }
-            b"slot_randomize" => {
-                self.slot_randomize = parse_bool(value).ok_or_else(bad)?;
-                return Err(Issue::Inert(key));
-            }
+            b"zero_on_free" => self.zero_on_free = parse_bool(value).ok_or_else(bad)?,
+            b"slot_randomize" => self.slot_randomize = parse_bool(value).ok_or_else(bad)?,
             b"cgroup" => self.cgroup = parse_bool(value).ok_or_else(bad)?,
             // jemalloc's `stats_print` (report at exit): no field, since
             // there is nothing to print at exit; validated as a bool and
@@ -448,10 +450,11 @@ pub const IGNORED_KEYS: &[&str] = &[
 ];
 
 /// Keys that parse (and, bar `stats_print`, are stored and readable) but
-/// that no code acts on: the features are planned (`docs/plan.md` Phase
-/// 2). Setting one is [`Issue::Inert`], which `abort_conf` turns into an
-/// abort; `malloc_stats_print` lists them as "accepted, no effect".
-pub const INERT_KEYS: &[&str] = &["thp", "zero_on_free", "slot_randomize", "stats_print"];
+/// that no code acts on: `thp` is planned with the THP work and
+/// `stats_print` has nothing to print at exit. Setting one is
+/// [`Issue::Inert`], which `abort_conf` turns into an abort;
+/// `malloc_stats_print` lists them as "accepted, no effect".
+pub const INERT_KEYS: &[&str] = &["thp", "stats_print"];
 
 /// Whether `key` is one of [`INERT_KEYS`].
 pub fn is_inert(key: &[u8]) -> bool {
@@ -1030,7 +1033,7 @@ mod tests {
     /// value is still a bad value, not an inert report.
     #[test]
     fn inert_keys_are_stored_reported_and_rejected_under_abort_conf() {
-        assert_eq!(INERT_KEYS.len(), 4, "thp, zero_on_free, slot_randomize, stats_print");
+        assert_eq!(INERT_KEYS.len(), 2, "thp, stats_print");
         for key in INERT_KEYS {
             assert!(is_inert(key.as_bytes()), "{key}");
             assert!(!IGNORED_KEYS.contains(key), "{key} cannot be both ignored and inert");
@@ -1060,6 +1063,17 @@ mod tests {
             assert_eq!(is_inert(key.as_bytes()), INERT_KEYS.contains(key), "{key}");
         }
         assert!(!is_inert(b"double_free_scan"), "implemented since Phase 1.5 task 9");
+        // Phase 2 task 3: the two hardening keys are real, opt-in keys: no
+        // report, stored, readable, and `abort_conf` accepts them.
+        for key in ["zero_on_free", "slot_randomize"] {
+            assert!(!is_inert(key.as_bytes()), "{key}");
+            let (cfg, issues) = parse(&std::format!("{key}:true,abort_conf:true"));
+            assert!(issues.is_empty(), "{key}: {issues:?}");
+            assert_eq!(cfg.get(key.as_bytes()), Some(Value::Bool(true)), "{key}");
+            assert!(cfg.abort_conf);
+        }
+        let (cfg, _) = parse("zero_on_free:true,slot_randomize:true");
+        assert!(cfg.zero_on_free && cfg.slot_randomize);
         // Mixed with real keys the real ones still apply and the inert ones
         // are counted: what `load` aborts on under `abort_conf`.
         let (cfg, issues) = parse("narenas:3,thp:always,cgroup:false,abort_conf:true,stats_print:true");

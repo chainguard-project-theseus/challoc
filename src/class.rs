@@ -110,6 +110,28 @@ impl ClassStats {
     }
 }
 
+/// xorshift64 step for `slot_randomize` (the state must not be zero; the
+/// heap seeds it so). Not a cryptographic generator: the key randomises
+/// the order slots are handed out in, which is a heap-layout obstacle, not
+/// a secret.
+#[inline]
+pub(crate) fn xorshift(state: &mut u64) -> u64 {
+    let mut x = *state;
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    *state = x;
+    x
+}
+
+/// Fisher-Yates shuffle of `out` with [`xorshift`].
+pub(crate) fn shuffle(out: &mut [*mut u8], rng: &mut u64) {
+    for i in (1..out.len()).rev() {
+        let j = (xorshift(rng) % (i as u64 + 1)) as usize;
+        out.swap(i, j);
+    }
+}
+
 /// Result of one [`ClassState::claim`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Claim {
@@ -1291,6 +1313,28 @@ impl ClassState {
     ///
     /// [`plan`]: ClassState::plan
     pub fn claim(&self, meta: &Meta, out: &mut [*mut u8]) -> Claim {
+        self.claim_with(meta, out, None)
+    }
+
+    /// [`claim`] for `slot_randomize` (design section 4, plan Phase 2 task
+    /// 3): the same slabs and the same reservations (`plan` is untouched,
+    /// so the slabs are still the lowest partial ones and a `Fresh` or
+    /// `Purged` slab's prefix is still claimed under the lock), but the
+    /// bit scan of every other pick starts at a word drawn from `rng`
+    /// instead of word 0, and the batch is shuffled with `rng` before it
+    /// is returned, so the cache hands out its slots in a random order
+    /// instead of by ascending address. Shuffling changes the order of
+    /// `out[..n]`, not the set of slots, so [`Claim::zeroed`] means what it
+    /// always means: every slot came from a slab nothing else could touch.
+    ///
+    /// [`claim`]: ClassState::claim
+    pub fn claim_random(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64) -> Claim {
+        let c = self.claim_with(meta, out, Some(rng));
+        shuffle(&mut out[..c.n], rng);
+        c
+    }
+
+    fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>) -> Claim {
         let mut got = 0;
         let mut zeroed = true;
         let mut picks = [Pick { slab: 0, n: 0, zero: false, state: State::Active }; MAX_PICKS];
@@ -1299,7 +1343,7 @@ impl ClassState {
             if np == 0 {
                 break;
             }
-            got += self.finish(&picks[..np], &mut out[got..], &mut zeroed);
+            got += self.finish(&picks[..np], &mut out[got..], &mut zeroed, rng.as_deref_mut());
         }
         Claim { n: got, zeroed: got > 0 && zeroed }
     }
@@ -1311,9 +1355,13 @@ impl ClassState {
     /// only the other picks run the bit loop here; `zeroed` is cleared
     /// when any of them is not zero.
     ///
+    /// With `rng` (`slot_randomize`) the bit loop of a pick starts at a
+    /// random word rather than word 0; a rescan after a full pass still
+    /// starts at 0. Without it the code is the address-ordered claim.
+    ///
     /// [`plan`]: ClassState::plan
     /// [`take`]: ClassState::take
-    fn finish(&self, picks: &[Pick], out: &mut [*mut u8], zeroed: &mut bool) -> usize {
+    fn finish(&self, picks: &[Pick], out: &mut [*mut u8], zeroed: &mut bool, mut rng: Option<&mut u64>) -> usize {
         let cls = self.class();
         let check_zero = purge::check_zero();
         let mut got = 0;
@@ -1335,7 +1383,10 @@ impl ClassState {
             let bm = self.table().bits(slab);
             let words = bm.words();
             let mut k = 0;
-            let mut word = 0;
+            let mut word = match rng.as_deref_mut() {
+                Some(r) => (xorshift(r) as usize) % words,
+                None => 0,
+            };
             let mut empty_passes = 0u32;
             while k < want {
                 let Some((w, bits)) = bm.claim_from(word, want - k) else {
@@ -4203,7 +4254,7 @@ mod tests {
             // Thread A finishes its refill.
             let mut out = [ptr::null_mut(); 1];
             let mut zeroed = true;
-            assert_eq!(cs.finish(&picks[..np], &mut out, &mut zeroed), 1);
+            assert_eq!(cs.finish(&picks[..np], &mut out, &mut zeroed, None), 1);
             assert!(zeroed);
             assert_ne!(out[0], b[0], "round {round}: a slot reported zero was allocated, written and freed by another claim in between");
             assert_eq!(cs.locate(out[0]), (0, 0), "A's slot was decided under the lock: the lowest");

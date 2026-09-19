@@ -147,8 +147,8 @@ a kernel before 6.13 (Docker Desktop's 6.10, for one) has no guard slabs.
 | Double free detected                     | Debug only   | Yes, aborts (1) |
 | Size classes in isolated address ranges  | No           | Yes, randomised |
 | Guard regions                            | No           | Yes (kernel 6.13+ for guard slabs) |
-| Zero on free                             | Opt-in       | Planned (Phase 2); `zero_on_free` is accepted and inert |
-| Slot order randomisation                 | No           | Planned (Phase 2); `slot_randomize` is accepted and inert |
+| Zero on free                             | Opt-in       | Opt-in: `zero_on_free` clears a block on free (2) |
+| Slot order randomisation                 | No           | Opt-in: `slot_randomize` (2)                |
 | Implementation language                  | C            | Rust            |
 
 (1) Through `free`: an invalid pointer aborts at the call, and so does a
@@ -180,6 +180,18 @@ detected. This trade is the jemalloc-parity decision of
 cache miss per free, 200 of the 273 cycles per SET that separated challoc
 from jemalloc on Valkey's write path.
 
+(2) Both keys are off by default and are the operator's choice
+(`MALLOC_CONF=zero_on_free:true`, `slot_randomize:true`). `zero_on_free`
+clears a slot's class-size bytes on every free (plain, sized and direct)
+and a huge run's usable bytes on its release, so freed data never waits in
+the cache or the slab for the next owner; it costs a `memset` per free,
+which is more than the 3% hardening budget on Valkey's 1 KiB values.
+`slot_randomize` makes every cache refill claim from a random bitmap word
+and shuffle its batch, so the order in which one class hands out
+neighbouring slots is not predictable from the previous allocations; it
+works against the compaction that keeps the heap dense (design 6.4), which
+is why it is not the default. The price of each on `larson`, `redis` and
+the Valkey model is in `bench/results/2026-09-18-*-gce-tunables.md`.
 ## Compatibility
 
 challoc exports the standard C allocation functions including C23's
