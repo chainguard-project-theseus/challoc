@@ -602,6 +602,9 @@ fn cstr_of(s: &'static str) -> *const c_char {
         "baseline" => b"baseline\0",
         "umwait" => b"umwait\0",
         "wfe" => b"wfe\0",
+        // `opt.percpu_arena` (config::PercpuArena::name); `auto` shares the arm above.
+        "percpu" => b"percpu\0",
+        "off" => b"off\0",
         _ => b"?\0",
     };
     c.as_ptr() as *const c_char

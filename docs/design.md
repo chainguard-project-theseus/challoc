@@ -1349,6 +1349,7 @@ jemalloc names where they exist:
 | `dirty_decay_ms`          | 10000   |                                         |
 | `muzzy_decay_ms`          | ignored | accepted for compatibility              |
 | `narenas`                 | 0       | automatic arenas; 0 = `min(4 * ncpus, 64)`; see 13.3 |
+| `percpu_arena`            | auto    | `auto`, `percpu`, `off` (15, plan Phase 2.5 task 8): caches and arenas keyed by the running CPU's rseq `mm_cid` instead of by thread; `auto` is on where the runtime probe passes (glibc's registered `__rseq_size >= 28`, so the kernel writes `mm_cid`: 6.3+, glibc 2.41+) and thread caches otherwise, silently; `percpu` forces the request and still falls back to thread caches when the probe fails, with a note in the feature report; `off` is thread caches whatever the probe says. jemalloc's `disabled` and `phycpu` are accepted as `off` and `percpu` (the key used to be accepted with any value) |
 | `tcache`                  | true    | false disables caches                   |
 | `tcache_max`              | 32768   | largest cached class size (bytes)       |
 | `tcache_nslots_small_max` | 1024    |                                         |
@@ -1371,7 +1372,7 @@ jemalloc names where they exist:
 | `cgroup`                  | true    | read the memory cgroup (11) and apply its policy: limits, `memory.current`, events, PSI; `false` reads and applies nothing |
 | `check_zero`              | false   | challoc only; debug: read every slot/page handed out as zero, abort on a dirty word |
 | `stats_print`             | accepted | inert: nothing prints at exit; no `opt.` value |
-| `junk`, `zero`, `retain`, `oversize_threshold`, `percpu_arena`, `metadata_thp`, `confirm_conf` | accepted | jemalloc keys, ignored with any value (`metadata_thp` because the metadata follows `thp`, section 17) |
+| `junk`, `zero`, `retain`, `oversize_threshold`, `metadata_thp`, `confirm_conf` | accepted | jemalloc keys, ignored with any value (`metadata_thp` because the metadata follows `thp`, section 17) |
 
 *Inert* keys are parsed and stored (so `opt.<key>` reads back what was set)
 but read by no code; each one is reported like a bad key, so `abort_conf`
@@ -1737,12 +1738,16 @@ because Wolfi controls compiler flags, tracked in [plan.md](plan.md).
 
 ## 15. Optional per-CPU mode
 
-Deferred. When `percpu_arena:percpu` is set and `__rseq_size` covers the
-`mm_cid` field (glibc 2.41+, kernel 6.3+), thread caches are replaced by
+Behind the `percpu_arena` key (section 12: `auto`, the default, `percpu`,
+`off`; `config::PercpuArena`, plan Phase 2.5 task 8). When the key is not
+`off` and `__rseq_size` covers the `mm_cid` field (glibc 2.41+, kernel
+6.3+; `PercpuArena::enabled(probe)`), thread caches are replaced by
 per-concurrency-id caches indexed by `mm_cid` read from glibc's registered
-rseq area. This bounds cache memory by the number of runnable threads rather
-than the number of threads, which matters for services with hundreds of mostly
-idle threads. The implementation must only read the rseq area and must use
+rseq area; when the probe fails both `auto` and `percpu` keep thread caches,
+and only `percpu` says so in the feature report (`PercpuArena::forced`).
+This bounds cache memory by the number of runnable threads rather than the
+number of threads, which matters for services with hundreds of mostly idle
+threads. The implementation must only read the rseq area and must use
 proper `rseq_cs` critical sections for the pop and push; writing to
 kernel-owned fields is what broke tcmalloc on Linux 6.19.
 

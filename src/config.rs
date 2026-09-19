@@ -28,6 +28,9 @@
 //! `malloc_stats_print` marks them "accepted, no effect". `zero_on_free`
 //! and `slot_randomize` left the list with Phase 2 task 3, `thp` with Phase
 //! 2.5 task 9 (`thp.rs`): all implemented, opt-in and off by default.
+//! `percpu_arena` left the *ignored* jemalloc keys ([`IGNORED_KEYS`]) with
+//! Phase 2.5 task 8: it is a real key ([`PercpuArena`]) whose jemalloc
+//! spellings are accepted as aliases.
 
 use core::fmt::{self, Write as _};
 
@@ -124,6 +127,59 @@ impl Thp {
     }
 }
 
+/// `percpu_arena` values (design 15, plan Phase 2.5 task 8): whether the
+/// caches and arenas are keyed by the running CPU's rseq `mm_cid` instead
+/// of by thread. The mode needs the runtime probe to pass: glibc has
+/// registered an rseq area whose `__rseq_size >= 28` covers the `mm_cid`
+/// field (kernel 6.3+, glibc 2.41+, `CONFIG_SCHED_MM_CID`); nothing here
+/// assumes it from a header constant. jemalloc's spellings are accepted as
+/// aliases (`disabled` is `off`, `phycpu` is `percpu`: the nearest mode, a
+/// concurrency id is not a physical CPU) so a conf string written against
+/// jemalloc, which this key used to accept with any value, still parses
+/// clean under `abort_conf`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PercpuArena {
+    /// The default: on when the probe passes, thread caches otherwise;
+    /// nothing is reported either way.
+    Auto,
+    /// The request is forced: on when the probe passes; when it fails the
+    /// allocator still falls back to thread caches and the feature report
+    /// notes that `percpu_arena:percpu` was asked for and not available.
+    Percpu,
+    /// Thread caches whatever the probe says: byte for byte the allocator
+    /// without the key.
+    Off,
+}
+
+impl PercpuArena {
+    pub const fn name(self) -> &'static str {
+        match self {
+            PercpuArena::Auto => "auto",
+            PercpuArena::Percpu => "percpu",
+            PercpuArena::Off => "off",
+        }
+    }
+
+    /// Whether the per-CPU mode runs, given the probe's verdict
+    /// (`mm_cid_usable`: the registered `__rseq_size` covers `mm_cid`).
+    /// `auto` and `percpu` both follow the probe (a forced request cannot
+    /// read a field the kernel does not write); `off` never runs.
+    #[inline]
+    pub const fn enabled(self, mm_cid_usable: bool) -> bool {
+        match self {
+            PercpuArena::Auto | PercpuArena::Percpu => mm_cid_usable,
+            PercpuArena::Off => false,
+        }
+    }
+
+    /// Whether a failed probe is worth a note in the report: only for the
+    /// explicit request, `auto` falls back silently.
+    #[inline]
+    pub const fn forced(self) -> bool {
+        matches!(self, PercpuArena::Percpu)
+    }
+}
+
 /// Every tunable of design section 12 with its compiled default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Config {
@@ -137,6 +193,12 @@ pub struct Config {
     /// to the least-loaded automatic arena (`arena.rs`), so a program with
     /// `t` live threads ever touches `min(t, narenas)` of them.
     pub narenas: u32,
+    /// Per-CPU caches and arenas keyed by rseq `mm_cid` (design 15,
+    /// [`PercpuArena`]): `auto` follows the runtime probe, `percpu` forces
+    /// the request (thread caches with a report note when the probe
+    /// fails), `off` disables. Read at init through this field, as `thp`
+    /// and `pac_pointers` are; the probe itself lives with the heap.
+    pub percpu_arena: PercpuArena,
     pub tcache: bool,
     /// Largest class size whose slots go through thread caches; larger
     /// slab classes are served straight from the bitmaps (jemalloc's
@@ -237,6 +299,7 @@ impl Config {
         dirty_decay_ms: 10_000,
         muzzy_decay_ms: 0,
         narenas: 0,
+        percpu_arena: PercpuArena::Auto,
         tcache: true,
         tcache_max: DEFAULT_TCACHE_MAX,
         tcache_nslots_small_max: MAX_CAP,
@@ -308,6 +371,14 @@ impl Config {
             b"dirty_decay_ms" => return num(self, -1, MAX_INTERVAL_MS, |c, v| c.dirty_decay_ms = v),
             b"muzzy_decay_ms" => return num(self, -1, MAX_INTERVAL_MS, |c, v| c.muzzy_decay_ms = v),
             b"narenas" => return num(self, 0, u32::MAX as i64, |c, v| c.narenas = v as u32),
+            b"percpu_arena" => {
+                self.percpu_arena = match value {
+                    b"auto" => PercpuArena::Auto,
+                    b"percpu" | b"phycpu" => PercpuArena::Percpu,
+                    b"off" | b"disabled" => PercpuArena::Off,
+                    _ => return Err(bad()),
+                }
+            }
             b"tcache" => self.tcache = parse_bool(value).ok_or_else(bad)?,
             b"tcache_max" => {
                 return num(self, 0, crate::layout::MEDIUM_MAX as i64, |c, v| c.tcache_max = v as usize);
@@ -388,8 +459,8 @@ impl Config {
             b"group_handoff" => self.group_handoff = parse_bool(value).ok_or_else(bad)?,
             // jemalloc keys accepted for compatibility and ignored: their
             // values are not validated because we do nothing with them.
-            b"junk" | b"zero" | b"retain" | b"oversize_threshold" | b"percpu_arena"
-            | b"metadata_thp" | b"confirm_conf" => {}
+            b"junk" | b"zero" | b"retain" | b"oversize_threshold" | b"metadata_thp"
+            | b"confirm_conf" => {}
             _ => return Err(Issue::UnknownKey(key)),
         }
         Ok(())
@@ -403,6 +474,7 @@ impl Config {
             b"dirty_decay_ms" => Value::Int(self.dirty_decay_ms),
             b"muzzy_decay_ms" => Value::Int(self.muzzy_decay_ms),
             b"narenas" => Value::Uint(self.narenas as u64),
+            b"percpu_arena" => Value::Str(self.percpu_arena.name()),
             b"tcache" => Value::Bool(self.tcache),
             b"tcache_max" => Value::Uint(self.tcache_max as u64),
             b"tcache_nslots_small_max" => Value::Uint(self.tcache_nslots_small_max as u64),
@@ -539,6 +611,7 @@ pub const KEYS: &[&str] = &[
     "dirty_decay_ms",
     "muzzy_decay_ms",
     "narenas",
+    "percpu_arena",
     "tcache",
     "tcache_max",
     "tcache_nslots_small_max",
@@ -568,7 +641,6 @@ pub const IGNORED_KEYS: &[&str] = &[
     "zero",
     "retain",
     "oversize_threshold",
-    "percpu_arena",
     "metadata_thp",
     "confirm_conf",
 ];
@@ -1022,6 +1094,7 @@ mod tests {
         assert!(!d.background_thread);
         assert_eq!(d.dirty_decay_ms, 10_000);
         assert_eq!(d.narenas, 0);
+        assert_eq!(d.percpu_arena, PercpuArena::Auto, "on where the mm_cid probe passes (plan Phase 2.5 task 8)");
         assert!(d.tcache);
         assert_eq!(d.tcache_max, 32 * 1024);
         assert_eq!(d.tcache_nslots_small_max, 1024);
@@ -1189,6 +1262,53 @@ mod tests {
     /// The inert keys: stored and readable, but every one is reported so
     /// that `abort_conf` rejects a configuration that relies on it; a bad
     /// value is still a bad value, not an inert report.
+    /// `percpu_arena` (plan Phase 2.5 task 8): the three values, jemalloc's
+    /// spellings as aliases, anything else reported and left at the
+    /// default, and the helpers lane A's init reads.
+    #[test]
+    fn percpu_arena_values() {
+        assert!(!IGNORED_KEYS.contains(&"percpu_arena"), "a real key since Phase 2.5 task 8");
+        assert!(!is_inert(b"percpu_arena"));
+        for (value, want) in [
+            ("auto", PercpuArena::Auto),
+            ("percpu", PercpuArena::Percpu),
+            ("off", PercpuArena::Off),
+            ("phycpu", PercpuArena::Percpu),
+            ("disabled", PercpuArena::Off),
+        ] {
+            let cfg = clean(&std::format!("percpu_arena:{value},abort_conf:true"));
+            assert_eq!(cfg.percpu_arena, want, "{value}");
+            assert_eq!(cfg.get(b"percpu_arena"), Some(Value::Str(want.name())), "{value}");
+            assert!(cfg.abort_conf);
+        }
+        for bad in ["true", "false", "1", "on", "Auto", "PERCPU", "", "percpux"] {
+            let (cfg, issues) = parse(&std::format!("percpu_arena:{bad}"));
+            assert_eq!(cfg, Config::DEFAULT, "percpu_arena:{bad} changed the config");
+            assert_eq!(issues.len(), 1, "percpu_arena:{bad}: {issues:?}");
+            let expect = if bad.is_empty() { "malformed" } else { "invalid conf value \"" };
+            assert!(issues[0].contains(expect), "percpu_arena:{bad}: {}", issues[0]);
+        }
+        // The last pair wins, as for every key.
+        assert_eq!(clean("percpu_arena:percpu,percpu_arena:off").percpu_arena, PercpuArena::Off);
+        assert_eq!(clean("percpu_arena:\"percpu\"").percpu_arena, PercpuArena::Percpu);
+        // The helpers: `auto` and `percpu` follow the probe, `off` never
+        // runs; only `percpu` reports a failed probe.
+        for (mode, probe_ok, on) in [
+            (PercpuArena::Auto, true, true),
+            (PercpuArena::Auto, false, false),
+            (PercpuArena::Percpu, true, true),
+            (PercpuArena::Percpu, false, false),
+            (PercpuArena::Off, true, false),
+            (PercpuArena::Off, false, false),
+        ] {
+            assert_eq!(mode.enabled(probe_ok), on, "{}.enabled({probe_ok})", mode.name());
+        }
+        assert!(PercpuArena::Percpu.forced() && !PercpuArena::Auto.forced() && !PercpuArena::Off.forced());
+        for mode in [PercpuArena::Auto, PercpuArena::Percpu, PercpuArena::Off] {
+            assert_eq!(clean(&std::format!("percpu_arena:{}", mode.name())).percpu_arena, mode);
+        }
+    }
+
     #[test]
     fn inert_keys_are_stored_reported_and_rejected_under_abort_conf() {
         assert_eq!(INERT_KEYS.len(), 1, "stats_print");
@@ -1323,6 +1443,11 @@ mod tests {
         assert!(cfg.background_thread && cfg.abort_conf);
         assert_eq!(cfg.dirty_decay_ms, 0);
         assert_eq!(cfg.narenas, 2);
+        // jemalloc's own `percpu_arena` spellings (the key used to be
+        // accepted with any value) still parse clean under `abort_conf`.
+        let cfg = clean("percpu_arena:disabled,abort_conf:true");
+        assert_eq!(cfg.percpu_arena, PercpuArena::Off);
+        assert_eq!(clean("percpu_arena:phycpu,narenas:4").percpu_arena, PercpuArena::Percpu);
     }
 
     #[test]
@@ -1341,7 +1466,7 @@ mod tests {
             let round = if is_inert(key.as_bytes()) { inert(&text, 1) } else { clean(&text) };
             assert_eq!(round, cfg, "{key}:{value} round trip");
         }
-        assert_eq!(KEYS.len(), 25);
+        assert_eq!(KEYS.len(), 26);
         assert_eq!(cfg.get(b"nonsense"), None);
         assert_eq!(cfg.get(b""), None);
         for key in IGNORED_KEYS {
