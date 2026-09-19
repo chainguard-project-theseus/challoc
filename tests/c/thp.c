@@ -10,22 +10,25 @@
  *   thp always   MALLOC_CONF=thp:always: opt.thp reads "always" (or
  *                "never" when a cgroup limit under 1 GiB forced it, a pass
  *                with a note); with the PMD size enabled in sysfs (the
- *                feature line's mthp lists 2M) the mode is 2, the VMA has
- *                `hg`, THPeligible 1 and, once 8 MiB are touched, at least
- *                4 MiB of AnonHugePages; with only smaller sizes enabled
- *                the mode is 1 and the VMA has `hg`; with nothing enabled
- *                the mode is 0;
+ *                feature line's mthp lists it: 2M at 4 KiB pages) and the
+ *                PMD no larger than 2 MiB the mode is 2, the VMA has `hg`,
+ *                THPeligible 1 and, once 8 MiB are touched, at least 4 MiB
+ *                of AnonHugePages; with only sizes below the PMD enabled
+ *                (or a PMD over 2 MiB, 512 MiB at 64 KiB pages, which
+ *                challoc never commits in chunks) the mode is 1 and the
+ *                VMA has `hg`; with nothing usable enabled the mode is 0;
  *   thp auto     MALLOC_CONF=thp:auto: the mode is 1 only when the line
- *                lists a size below 2M, in which case the VMA has `hg` and
- *                the kernel's per-size anon_fault_alloc counter for the
+ *                lists a size below the PMD, in which case the VMA has `hg`
+ *                and the kernel's per-size anon_fault_alloc counter for the
  *                smallest such size rose by at least half the folios the
  *                8 MiB could take; otherwise the mode is 0 and nothing is
  *                advised (the host requirement is documented: on Ubuntu's
  *                default sysfs `auto` is inert).
  *
  * The mode challoc decided is read through stats.thp.mode; what the kernel
- * enables comes from the feature line, so the program checks the two
- * against each other and against /proc/self/smaps.
+ * enables comes from the feature line and the PMD size from sysfs
+ * (hpage_pmd_size: 2 MiB at 4 KiB pages, 512 MiB at 64 KiB), so the
+ * program checks the two against each other and against /proc/self/smaps.
  */
 #include "common.h"
 #include <fcntl.h>
@@ -96,21 +99,40 @@ static void feature_value(const char *line, const char *key, char *out, size_t n
     out[k] = 0;
 }
 
-/* The smallest size below 2M in an mthp list (`64K,2M`), in kB; 0 if none. */
-static unsigned long smallest_sub_pmd_kb(const char *mthp)
+/* One token of an mthp list (`64K`, `2M`, `512M`, `1G`) in kB; 0 if malformed. */
+static unsigned long token_kb(const char *tok)
+{
+    char *end;
+    unsigned long v = strtoul(tok, &end, 10);
+    return *end == 'M' ? v << 10 : *end == 'K' ? v : *end == 'G' ? v << 20 : 0;
+}
+
+/* The smallest size below `pmd_kb` in an mthp list (`64K,2M`), in kB; 0 if none. */
+static unsigned long smallest_sub_pmd_kb(const char *mthp, unsigned long pmd_kb)
 {
     unsigned long best = 0;
     char copy[128];
     strncpy(copy, mthp, sizeof copy - 1);
     copy[sizeof copy - 1] = 0;
     for (char *tok = strtok(copy, ","); tok; tok = strtok(NULL, ",")) {
-        char *end;
-        unsigned long v = strtoul(tok, &end, 10);
-        unsigned long kb = *end == 'M' ? v << 10 : *end == 'K' ? v : *end == 'G' ? v << 20 : 0;
-        if (kb && kb < 2048 && (!best || kb < best))
+        unsigned long kb = token_kb(tok);
+        if (kb && kb < pmd_kb && (!best || kb < best))
             best = kb;
     }
     return best;
+}
+
+/* Whether an mthp list has a token of exactly `kb` (a token compare: `512M`
+ * contains `2M` as a substring and is not it). */
+static int lists_kb(const char *mthp, unsigned long kb)
+{
+    char copy[128];
+    strncpy(copy, mthp, sizeof copy - 1);
+    copy[sizeof copy - 1] = 0;
+    for (char *tok = strtok(copy, ","); tok; tok = strtok(NULL, ","))
+        if (token_kb(tok) == kb)
+            return 1;
+    return 0;
 }
 
 static unsigned long read_counter(const char *path)
@@ -139,9 +161,16 @@ int main(int argc, char **argv)
     char thp[16], mthp[128];
     feature_value(line, "thp", thp, sizeof thp);
     feature_value(line, "mthp", mthp, sizeof mthp);
-    int pmd_enabled = strstr(mthp, "2M") != NULL;
-    unsigned long sub_kb = smallest_sub_pmd_kb(mthp);
-    printf("thp %s: opt.thp=%s sysfs thp=%s mthp=%s\n", mode, opt, thp, mthp);
+    /* The PMD size: sysfs, else the page size's rule (page * page / 8). */
+    long page = sysconf(_SC_PAGESIZE);
+    unsigned long pmd_kb = read_counter("/sys/kernel/mm/transparent_hugepage/hpage_pmd_size") >> 10;
+    if (!pmd_kb)
+        pmd_kb = ((unsigned long)page * (unsigned long)page / 8) >> 10;
+    int pmd_enabled = lists_kb(mthp, pmd_kb);
+    int pmd_chunks = pmd_kb <= 2048; /* challoc commits chunks of a 2 MiB PMD only (thp.rs) */
+    unsigned long sub_kb = smallest_sub_pmd_kb(mthp, pmd_kb);
+    printf("thp %s: opt.thp=%s sysfs thp=%s mthp=%s pmd %lu kB (page %ld) pmd_enabled=%d sub_pmd %lu kB\n", mode, opt, thp, mthp,
+           pmd_kb, page, pmd_enabled, sub_kb);
 
     if (strcmp(mode, "never") != 0 && strcmp(opt, "never") == 0) {
         printf("thp %s: forced to never by a cgroup limit under 1 GiB; only the never checks apply\n", mode);
@@ -181,22 +210,29 @@ int main(int argc, char **argv)
         CHECK(!hg, "VmFlags has hg under never");
         CHECK(stat_of("stats.thp.huge_ranges") == 0 && stat_of("stats.thp.meta_ranges") == 0, "advice under never");
     } else if (strcmp(mode, "always") == 0) {
-        if (pmd_enabled) {
-            CHECK(smode == 2, "mode %zu with 2M enabled", smode);
+        if (pmd_enabled && pmd_chunks) {
+            CHECK(smode == 2, "mode %zu with the %lu kB PMD enabled", smode, pmd_kb);
             CHECK(hg, "no hg with mode 2");
             CHECK(class_ranges >= 4 && class_bytes >= 8u << 20, "%zu chunk ranges (%zu bytes) for 8 MiB", class_ranges, class_bytes);
-            CHECK(eligible != 0, "THPeligible %d with hg and 2M enabled", eligible);
+            CHECK(eligible != 0, "THPeligible %d with hg and the PMD enabled", eligible);
             /* Every chunk was committed whole and the kernel could give a
              * 2 MiB page at the first touch (defrag=madvise compacts for
              * an advised VMA); be lenient by half for a busy host. */
             CHECK(anon_kb >= 4096, "AnonHugePages %ld kB after 8 MiB touched", anon_kb);
-        } else if (strcmp(mthp, "none") != 0) {
-            CHECK(smode == 1, "mode %zu with sub-PMD sizes only", smode);
+        } else if (sub_kb) {
+            /* Sizes below the PMD only, or a PMD challoc does not chunk
+             * (over 2 MiB: 512 MiB at 64 KiB pages): the folio path. */
+            CHECK(smode == 1, "mode %zu with sub-PMD sizes (%lu kB) and %s", smode, sub_kb,
+                  pmd_enabled ? "a PMD too large to chunk" : "the PMD not enabled");
             CHECK(hg, "no hg with mode 1");
             CHECK(class_ranges >= 1, "no group advised");
+            CHECK(class_bytes < (size_t)pmd_kb << 10 || pmd_chunks, "%zu bytes advised: PMD-sized chunks on a %lu kB PMD", class_bytes, pmd_kb);
         } else {
-            CHECK(smode == 0, "mode %zu with nothing enabled", smode);
-            CHECK(!hg, "hg with nothing enabled");
+            CHECK(smode == 0, "mode %zu with nothing usable enabled (pmd %lu kB enabled=%d)", smode, pmd_kb, pmd_enabled);
+            CHECK(!hg, "hg with nothing usable enabled");
+            CHECK(class_ranges == 0, "%zu ranges advised with mode 0", class_ranges);
+            printf("thp always: inert on this host (%s)\n",
+                   pmd_enabled ? "the PMD is over 2 MiB and no smaller size is enabled" : "no size enabled");
         }
     } else if (strcmp(mode, "auto") == 0) {
         if (smode == 1) {
@@ -215,7 +251,7 @@ int main(int argc, char **argv)
             CHECK(smode == 0, "mode %zu under auto", smode);
             CHECK(!hg, "hg but mode 0");
             CHECK(class_ranges == 0, "ranges advised but mode 0");
-            printf("thp auto: inert on this host (%s)\n", sub_kb ? "the PMD size is madvise-gated" : "no size below 2M enabled");
+            printf("thp auto: inert on this host (%s)\n", sub_kb ? "the PMD size is madvise-gated" : "no size below the PMD enabled");
         }
     } else {
         REQUIRE(0, "unknown mode %s", mode);

@@ -24,14 +24,22 @@
 //!   and the host requirement is `hugepages-64kB/enabled=madvise` (or
 //!   `always`) with `hugepages-2048kB/enabled=never` (or `always`, the
 //!   host's own decision for every process).
-//! - `always`: every enabled size. With the PMD size enabled,
-//!   [`Mode::Chunks`]: `SlabTable::commit_slab` commits and advises the
-//!   PMD-sized chunk around the slab (clipped to the region) so the first
-//!   touch maps a 2 MiB page, as jemalloc's `thp:always` does for its
-//!   2 MiB extents; huge runs of a PMD or more are advised (design 7);
-//!   metadata takes the sub-PMD folio if one is enabled (never a 2 MiB
-//!   page: a descriptor table's first page would cost 2 MiB of RSS).
-//!   Without the PMD size it is `auto` plus the huge runs.
+//! - `always`: every enabled size. With the PMD size enabled and no
+//!   larger than 2 MiB ([`LG_PMD_CHUNK_MAX`]), [`Mode::Chunks`]:
+//!   `SlabTable::commit_slab` commits and advises the PMD-sized chunk
+//!   around the slab (clipped to the region) so the first touch maps a
+//!   2 MiB page, as jemalloc's `thp:always` does for its 2 MiB extents;
+//!   huge runs of a PMD or more are advised (design 7); metadata takes the
+//!   sub-PMD folio if one is enabled (never a 2 MiB page: a descriptor
+//!   table's first page would cost 2 MiB of RSS). Without the PMD size it
+//!   is `auto` plus the huge runs. The PMD is 2 MiB only at 4 KiB pages: at
+//!   16 KiB it is 32 MiB and at 64 KiB 512 MiB (`page * page / 8`), and a
+//!   chunk of that size committed and advised per class would be the RSS
+//!   floor of the process (the 64 KiB matrix cell showed 1.3 GiB of
+//!   advised chunks for an 8 MiB test heap, and the kernel gave none of
+//!   them a folio), so there `always` takes the folio path over the
+//!   enabled sub-PMD sizes and is inert, with the reason
+//!   [`Reason::PmdTooLarge`], when none is enabled.
 //!
 //! Design 11's rule (an effective cgroup limit under 1 GiB forces `thp`
 //! to `never`) is applied by `Shared::init` to the stored key for `always`;
@@ -96,6 +104,9 @@ pub enum Reason {
     Forced = 5,
     /// The mode is in force.
     Active = 6,
+    /// `always`: the PMD is larger than [`LG_PMD_CHUNK_MAX`] (a 16 or 64
+    /// KiB page kernel) and no size below it is enabled.
+    PmdTooLarge = 7,
 }
 
 impl Reason {
@@ -107,6 +118,7 @@ impl Reason {
             4 => Reason::NoneEnabled,
             5 => Reason::Forced,
             6 => Reason::Active,
+            7 => Reason::PmdTooLarge,
             _ => Reason::Never,
         }
     }
@@ -122,6 +134,9 @@ impl Reason {
             Reason::NoneEnabled => "every THP size is never in sysfs",
             Reason::Forced => "forced never by a cgroup limit under 1 GiB",
             Reason::Active => "active",
+            Reason::PmdTooLarge => {
+                "the PMD is larger than 2 MiB on this page size and no smaller size is enabled"
+            }
         }
     }
 }
@@ -149,6 +164,9 @@ pub const NO_SIZE: u8 = u8::MAX;
 /// commit chunk (`meta::COMMIT_CHUNK`, 64 KiB), which a larger folio could
 /// not fill.
 const LG_META_MAX: u8 = 16;
+/// The largest PMD `always` commits and advises in chunks: 2 MiB, the PMD
+/// of a 4 KiB page kernel and jemalloc's unit (the module doc).
+pub const LG_PMD_CHUNK_MAX: u8 = 21;
 
 impl Decision {
     pub const OFF: Decision = Decision {
@@ -206,29 +224,33 @@ pub fn decide(key: Key, t: &Table) -> Decision {
             if t.enabled.is_none() {
                 return Decision::off(Reason::NoThp, lg_pmd);
             }
-            let Some(lg_min) = Table::smallest(t.enabled_sizes()) else {
+            if Table::smallest(t.enabled_sizes()).is_none() {
                 return Decision::off(Reason::NoneEnabled, lg_pmd);
-            };
-            if t.pmd_setting() != ThpSetting::Never {
+            }
+            if t.pmd_setting() != ThpSetting::Never && lg_pmd <= LG_PMD_CHUNK_MAX {
                 // Every class: the chunk makes a 64 KiB slab part of a
                 // 2 MiB page whatever its own size.
-                Decision {
+                return Decision {
                     mode: Mode::Chunks,
                     reason: Reason::Active,
                     lg_slab_min: 0,
                     lg_pmd,
                     lg_meta: meta_folio(t),
                     huge: true,
-                }
-            } else {
-                Decision {
+                };
+            }
+            // The PMD size is `never`, or too large to commit in chunks
+            // (the module doc): the folio path over the sizes below it.
+            match Table::smallest(t.sub_pmd_sizes()) {
+                Some(lg_min) => Decision {
                     mode: Mode::Folios,
                     reason: Reason::Active,
                     lg_slab_min: lg_min,
                     lg_pmd,
                     lg_meta: meta_folio(t),
                     huge: true,
-                }
+                },
+                None => Decision::off(Reason::PmdTooLarge, lg_pmd),
             }
         }
     }
@@ -438,10 +460,15 @@ mod tests {
     use crate::sys::features::Collapse;
 
     fn table(enabled: Option<ThpSetting>, always: u64, madvise: u64) -> Table {
+        table_at(21, enabled, always, madvise)
+    }
+
+    /// A kernel whose PMD is `1 << lg_pmd` (29 at 64 KiB pages).
+    fn table_at(lg_pmd: u8, enabled: Option<ThpSetting>, always: u64, madvise: u64) -> Table {
         Table {
             enabled,
-            lg_pmd: 21,
-            listed: always | madvise | (1 << 21),
+            lg_pmd,
+            listed: always | madvise | (1 << lg_pmd),
             always,
             madvise,
             collapse: Collapse::Unprobed,
@@ -513,6 +540,39 @@ mod tests {
         assert_eq!((d.mode, d.reason), (Mode::Off, Reason::NoneEnabled));
         let d = decide(Key::Always, &table(None, 0, 0));
         assert_eq!((d.mode, d.reason), (Mode::Off, Reason::NoThp));
+    }
+
+    /// The 64 KiB matrix cell (Ubuntu's `linux-generic-64k`, 6.8): the PMD
+    /// is 512 MiB, `hugepages-524288kB` inherits `madvise`, every smaller
+    /// size is `never`. `always` must not commit 512 MiB chunks.
+    #[test]
+    fn always_refuses_chunks_on_a_pmd_over_2m() {
+        const M512: u64 = 1 << 29;
+        let d = decide(Key::Always, &table_at(29, Some(ThpSetting::Madvise), 0, M512));
+        assert_eq!((d.mode, d.reason), (Mode::Off, Reason::PmdTooLarge));
+        assert_eq!(d.lg_pmd, 29);
+        assert_eq!(d.lg_slab_min, NO_SIZE);
+        assert!(!d.huge);
+        // With a size below the PMD enabled (2 MiB, 32 pages of 64 KiB):
+        // the folio path from 2 MiB slabs up, huge runs of a PMD advised,
+        // the metadata left alone (the folio does not fit the bump chunk).
+        let d = decide(Key::Always, &table_at(29, Some(ThpSetting::Madvise), 0, M512 | M2));
+        assert_eq!((d.mode, d.reason), (Mode::Folios, Reason::Active));
+        assert_eq!(d.lg_slab_min, 21);
+        assert_eq!(d.lg_meta, NO_SIZE);
+        assert!(d.huge);
+        // A 16 KiB page kernel: the PMD is 32 MiB, likewise no chunks.
+        let d = decide(Key::Always, &table_at(25, Some(ThpSetting::Always), 1 << 25, 0));
+        assert_eq!((d.mode, d.reason), (Mode::Off, Reason::PmdTooLarge));
+        // `auto` at 64 KiB: the PMD is madvise-gated, refused as at 4 KiB.
+        let d = decide(Key::Auto, &table_at(29, Some(ThpSetting::Madvise), 0, M512 | M2));
+        assert_eq!((d.mode, d.reason), (Mode::Off, Reason::PmdMadvise));
+        let d = decide(Key::Auto, &table_at(29, Some(ThpSetting::Madvise), 0, M512));
+        assert_eq!((d.mode, d.reason), (Mode::Off, Reason::NoSubPmd));
+        // `never` is off there too, whatever the sizes.
+        assert_eq!(decide(Key::Never, &table_at(29, Some(ThpSetting::Always), M512 | M2, 0)).mode, Mode::Off);
+        // The 2 MiB PMD keeps its chunks.
+        assert_eq!(decide(Key::Always, &table(Some(ThpSetting::Madvise), 0, M2)).mode, Mode::Chunks);
     }
 
     #[test]
