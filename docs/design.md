@@ -1902,6 +1902,14 @@ conservation under 2x-CPU threads, migrations and aborts; heaps off the
 mode), `tests/c/percpu.c` under `percpu` and `off`. Cost and the default
 decision: PROGRESS.md and `bench/results/2026-09-19-*-task8-percpu.md`.
 
+The feature report's own probe (`sys::features::Rseq`, lane B, plan task 8)
+reads the same three symbols plus the area's kernel-written `cpu_id` (the
+fact of registration) and prints `rseq=yes rseq_size=33 mm_cid=yes` (the
+7.0 GCE kernels under glibc 2.44), `rseq=yes rseq_size=20 mm_cid=no` (a
+kernel that reports no `AT_RSEQ_FEATURE_SIZE`, the Mac's 6.10 linuxkit VM)
+or `rseq=no` (no registration, or a libc without the symbols). It is the
+report's verdict; the mode reads `mm_cid` itself through `rseq.rs`.
+
 ## 16. Observability
 
 - `malloc_stats_print` emits a human-readable report in jemalloc's general
@@ -1952,9 +1960,11 @@ decision: PROGRESS.md and `bench/results/2026-09-19-*-task8-percpu.md`.
   NUL-terminated line of `key=value` pairs separated by single spaces, the
   kernel probes first (`page_size=4096 guard_install=yes mseal=yes
   process_madvise=pidfd_self process_madvise_free=yes anon_name=yes
-  thp=madvise mthp=2M collapse=unprobed`: the THP setting or `none`, the
-  folio sizes a `MADV_HUGEPAGE`d range can get or `none`, and the
-  `MADV_COLLAPSE` probe, `unprobed` under `thp:never`) then the CPU (section 17;
+  thp=madvise mthp=2M collapse=unprobed rseq=yes rseq_size=33 mm_cid=yes`:
+  the THP setting or `none`, the
+  folio sizes a `MADV_HUGEPAGE`d range can get or `none`, the
+  `MADV_COLLAPSE` probe, `unprobed` under `thp:never`, and glibc's rseq
+  registration with whether it covers `mm_cid`, section 15) then the CPU (section 17;
   `mte=no mte3=no pac=yes lse=yes lse2=yes bti=yes sve=yes` on arm64,
   `lam=no uai=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes
   fsrm=yes avx512f=yes` on x86_64, then `cacheline=64 l1d=64K l2=2M` on
@@ -1985,7 +1995,7 @@ runs on every row.
 | `mseal` | kernel 6.10, not filtered by seccomp | seals the never-committed ranges of the reservations at init (section 10 step 5) | skip; `Sealed ranges: 0 of N` |
 | `PR_SET_VMA_ANON_NAME` | kernel 5.17 with `CONFIG_ANON_VMA_NAME` | named `challoc:*` mappings in `/proc/pid/maps` | skip |
 | PSI triggers on `memory.pressure` | kernel 6.4 (unprivileged), cgroup2 mounted writable | the background thread arms a trigger and reacts to pressure at once (section 11) | sample `memory.current` on the tick |
-| rseq `mm_cid` | kernel 6.3 (`CONFIG_SCHED_MM_CID`) writing the field, glibc 2.35+ registering the area and exporting `__rseq_offset`/`__rseq_size`/`__rseq_flags`; `__rseq_size >= 28` is the gate (`rseq::probe`) | the per-CPU mode (section 15): caches and arenas keyed by the running thread's concurrency id, pop and push in rseq critical sections, `percpu_arena:auto` (the default) and `percpu`; the cost and the default decision are in PROGRESS.md (plan Phase 2.5 task 8) | thread caches (`percpu_arena:off`, a kernel or glibc without `mm_cid`, `double_free_scan:true`); `percpu` says so in the report |
+| rseq `mm_cid` (`rseq`, `rseq_size`, `mm_cid`) | kernel 6.3 (`CONFIG_RSEQ`, `CONFIG_SCHED_MM_CID`) reporting `AT_RSEQ_FEATURE_SIZE >= 28`, glibc 2.35+'s registered area (`__rseq_size`, `__rseq_offset`, `__rseq_flags`, read from the weak symbols at init, and the area's own `cpu_id` for the fact of registration; `sys::features::Rseq` for the report, `rseq::probe` for the mode; `__rseq_size >= 28` is the gate) | the per-CPU mode (section 15, plan Phase 2.5 task 8): caches and arenas keyed by the running thread's concurrency id, pop and push in rseq critical sections, `percpu_arena:auto` (the default) and `percpu`; the cost and the default decision are in PROGRESS.md; `rseq=yes rseq_size=33 mm_cid=yes` on the 7.0 GCE VMs | thread caches (`percpu_arena:off`, `double_free_scan:true`, or `rseq=yes rseq_size=20 mm_cid=no` as on the Mac's 6.10 linuxkit VM, `rseq=no rseq_size=0` without a registration: `GLIBC_TUNABLES=glibc.pthread.rseq=0`, no `CONFIG_RSEQ`, a libc without the symbols); `percpu` says so in the report |
 | Transparent huge pages (`thp`, `mthp`, `collapse`) | any kernel with `CONFIG_TRANSPARENT_HUGEPAGE`; the per-size `hugepages-<n>kB` knobs since 6.8; `MADV_COLLAPSE` since 6.1 | off by default (`thp:never`, byte for byte the allocator without the key). `thp:auto` (plan Phase 2.5 task 9, `thp.rs`): `MADV_HUGEPAGE` on the slab groups of every class whose slab holds an enabled folio size below the PMD (64 KiB slabs and up with `hugepages-64kB` enabled), and metadata commits rounded to and advised with that folio, never a 2 MiB page (the fork copy-on-write cost that makes Redis and Valkey forbid huge pages stays absent); inert, and the report says why, where the kernel enables no such size or where the PMD size is `madvise`-gated (`hugepages-2048kB/enabled` `madvise`, or `inherit` under a `madvise` top level, Ubuntu's default), because the same advice would then make the regions eligible for 2 MiB pages at the fault and through khugepaged; the host requirement is `hugepages-64kB/enabled=madvise` (or `always`) with `hugepages-2048kB/enabled=never` (or `always`, the host's own decision), root-only knobs. `thp:always`: with the PMD size enabled, class regions are committed and advised in PMD-sized chunks so the first touch maps a 2 MiB page (guard slabs inside a chunk stay unused but unguarded: a marker there splits the page), huge runs of a PMD or more are advised (section 7), and the metadata takes the sub-PMD folio if one is enabled; a purge of a slab inside a 2 MiB page splits it, the kernel's cost of the mode. `MADV_COLLAPSE` is probed at the PMD size only (a smaller request is a silent no-op through 7.0), only when `thp` is not `never`, and reported, not used. Measured in `bench/results/2026-09-19-lane-b-mthp.md`: `auto` takes a quarter of larson1's dTLB refills on the C4A (4.0 -> 3.05 per operation, jemalloc 1.75) and puts valkey1's below jemalloc's (2.81 -> 2.44), leaves the Valkey-shaped rows flat, makes `fork()` 18% cheaper on a 500 MiB heap and the copy-on-write burst unchanged, and costs larson 1.6% with 7..19% more RSS on 16..100 MiB heaps (a folio per touched slab and table), which is why it is the documented opt-in and not the default; `always` is +10..15% on valkey1 at +10% RSS on 585 MiB and 2..4x on small heaps | small pages; `thp=none mthp=none` on a kernel without THP |
 | MTE (`HWCAP2_MTE`, `HWCAP2_MTE3`) | arm64 CPU (Armv8.5) and a kernel with `CONFIG_ARM64_MTE` that exposes it | reported only: tagged pointers (section 18, designed; plan Phase 2.5 task 6 implements) | untagged pointers |
 | PAC (`HWCAP_PACA` and `HWCAP_PACG`) | arm64 CPU (Armv8.3) and kernel | signed cache entries and TLS heap pointer (`pacda`/`autda`, sections 6.1 and 6.2) behind `pac_pointers:true`, off by default on the cost (section 14); `pac=yes` on Axion and the Mac VM, `no` on Altra; FEAT_FPAC decides whether a failure faults at the `autda` or on first use | plain pointers, the same binary, one predicted branch on a byte the fast paths load anyway |
@@ -2003,7 +2013,10 @@ runs on every row.
 | Model-checked protocol (`cargo test --features std model::`, `src/model.rs`) | the host test suite, no hardware: an exhaustive interleaving model of the claim, release, `on_live_zero`, purge and group-handoff steps of `class.rs`, memoised on the whole state, with the invariants of section 4 and 5 checked at every state (no slot handed to two claimers, a slot reported zero reads zero, `live` equals set bits plus in-flight reservations, a slab in an arena's set is `Empty`/`Purged` with `live == 0` and owned by that arena, a `Purged` slab reads zero) | nothing at run time: it is the proof obligation for a change to the protocol. Replaying the pre-fix step orders finds the calloc race (Phase 1.5 task 7) and the ownership gap the handoff's owner check closes (task 15); the current order passes every scenario | none needed |
 
 The kernel keys of the feature report are `page_size guard_install mseal
-process_madvise process_madvise_free anon_name thp mthp collapse`; the arm64 keys are `mte mte3 pac lse lse2 bti sve`, the
+process_madvise process_madvise_free anon_name thp mthp collapse rseq
+rseq_size mm_cid` (the last three since plan Phase 2.5 task 8, lane B: the
+glibc registration is probed like a kernel feature and printed with them);
+the arm64 keys are `mte mte3 pac lse lse2 bti sve`, the
 x86_64 keys `lam uai la57 la57_enabled cldemote waitpkg erms fsrm avx512f`, and
 `cacheline l1d l2` on both, after the kernel keys of section 10. The
 container test checks each CPU bit against `/proc/cpuinfo` (`Features` or

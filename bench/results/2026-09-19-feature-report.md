@@ -8,6 +8,14 @@
   the C4A reference VM (Axion, Neoverse V2, GCE kernel 7.0.0-1011-gcp) and the C4 reference VM
   (Xeon Platinum 8581C, same kernel), all inside the dev container (Wolfi, glibc 2.44)
 
+> Note (2026-09-19, Phase 2.5 task 8, lane B): the line gained three kernel-side keys after
+> `collapse`: `rseq=yes|no rseq_size=<n> mm_cid=yes|no` (glibc's rseq registration and whether it
+> covers the `mm_cid` field, `src/sys/features.rs` `Rseq`). The lines quoted below are the task 2
+> capture and do not carry them; the values on these hosts are `rseq=yes rseq_size=33 mm_cid=yes`
+> on both GCE VMs (7.0, glibc 2.44) and `rseq=yes rseq_size=20 mm_cid=no` on the Mac's Docker VM
+> (linuxkit 6.10 reports no `AT_RSEQ_FEATURE_SIZE`), as measured in
+> `bench/results/2026-09-19-lane-b-task8-rseq-report.md`.
+
 ## 1. The two answers the phase wanted
 
 - **Axion (C4A) does not expose MTE.** `AT_HWCAP2 = 0x3f3ff`: bit 18 (`HWCAP2_MTE`) and bit 22
