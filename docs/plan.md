@@ -864,6 +864,26 @@ Tasks, in order:
    drains jemalloc's `active` by 12 MiB and challoc's by 4 over 210 s: the
    compacting cache's claims and releases circulate within the dense
    slabs) is recorded for a task of its own if wanted.
+4g. The compacting cache at 64..128-region slabs (the second-order term of
+   4f's attribution, `bench/results/2026-09-19-aarch64-64k-defrag-attribution.md`):
+   after Valkey's last defrag cycle, 210 s of balanced DEL:SET churn drain
+   jemalloc's `active` by 12 MiB and challoc's by 4, while the 512 B class
+   reports `compacted` +356k scheduled pops and `curslabs` 128 -> 127: the
+   scheduled pop is running and the slabs are not emptying. At 64 KiB pages
+   the 512..1024-byte classes have 64..128 regions per slab, the geometry
+   design 6.4's gate and rebuild were tuned against on 4 KiB slabs of 4..25
+   regions. Attribute on the 64k lab with `bench/probes/churn.c` at the
+   64 KiB geometry and the soak's delete-phase `MALLOC-STATS` (does the
+   rebuild claim from the lowest partial slab while the flush releases to
+   the highest, or do refills of 64..128-slot batches re-fill the slabs the
+   schedule is draining; is the gate's `COMPACT_MIN_SLABS` in 64 KiB units
+   too coarse when one slab holds 128 regions), then the smallest change
+   that makes the churn drain slabs at this geometry, priced with `quick`
+   on both reference VMs (unchanged at 4 KiB) and the 64k lab's churn
+   probe. Acceptance: the 64 KiB soak's post-delete RSS within 10% of
+   jemalloc without any Valkey-side change, or the residue attributed to
+   Valkey's `active-defrag-ignore-bytes` constant alone and recorded; the
+   4 KiB soak unchanged.
 5. Tagged pointers, part 1, the probes and the design: whether Axion
    exposes MTE (`HWCAP2_MTE`), whether the C4/C3/C3D CPUs expose LAM or
    UAI and the kernel `arch_prctl(ARCH_ENABLE_TAGGED_ADDR)` accepts it;
