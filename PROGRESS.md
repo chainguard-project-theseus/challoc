@@ -90,7 +90,7 @@ One line per task, newest at the bottom of each section. Keep it terse.
 
 ## In progress
 
-- (none) Phase 2.5 task 1 is done. Next: Phase 2.5 task 2 (the feature report: `challoc_features()`, the CPU probes from `AT_HWCAP`/`cpuid`, the design's "Floor and ceiling" section, README's kernel-and-CPU table).
+- Phase 2.5 task 1b (the flush sort, mechanism M2 of the four-way table) in progress since 2026-09-19: before/after attribution in `bench/results/2026-09-19-{aarch64,x86_64}-gce-flush-sort.md`.
 
 ## Design decisions
 

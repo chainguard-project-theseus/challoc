@@ -154,10 +154,10 @@ a kernel before 6.13 (Docker Desktop's 6.10, for one) has no guard slabs.
 (1) Through `free`: an invalid pointer aborts at the call, and so does a
 second free of a slot that has already left the thread cache (its slot bit
 is clear). A second free while the slot is still cached is caught when a
-flush releases the copies to the slab: the flush sorts the cache, so the
-copies are neighbours, the release aborts on the duplicate, and the one
-case where the split would release one copy and keep the other aborts at
-the split. A pair the split keeps together stays in the cache until a
+flush releases the copies to the slab: the flush groups the released half
+by slab, so the copies land in one slab's batch, the release aborts on the
+duplicate, and the one case where the split would release one copy and
+keep the other aborts at the split. A pair the split keeps together stays in the cache until a
 later flush releases it; if a `malloc` pops one copy before then, the
 duplicate is not detected and the slot is live twice, unless the
 `double_free_scan` tunable is set: then every free (plain and sized)

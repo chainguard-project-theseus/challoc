@@ -73,19 +73,23 @@ for b in $ROWS; do
     docker logs "$cid" > "$OUTDIR/$tag.out" 2>&1
     docker rm -f "$cid" >/dev/null 2>&1 || true
     # The same extraction as bench/lib.sh ops_of, on the host side.
+    # glibc-simple is 16 passes of 2M malloc+free pairs (no output to read).
+    case $b in glibc-simple) ops=64000000;; *)
     ops=$(awk -v b="$b" -v secs="$secs" '
       b ~ /^larson/ && /Throughput/ {printf "%.0f", $3*secs}
       b ~ /^xmalloc/ && /free\/sec/ {sub(",", "", $4); printf "%.0f", $4*1e6*5}
-      b ~ /^valkey/ && /^ops / {for (i=2;i<=NF;i++) {split($i, p, "="); if (p[1]=="total") print p[2]}}' "$OUTDIR/$tag.out")
+      b ~ /^valkey/ && /^ops / {for (i=2;i<=NF;i++) {split($i, p, "="); if (p[1]=="total") print p[2]}}' "$OUTDIR/$tag.out");; esac
     awk -F, -v ops="${ops:--}" -v secs="$secs" -v row="$b" -v var="$v" '
       /^#/ || NF < 3 {next}
       {c[$3]=$1}
       END {
         mops = (ops!="-" && secs!="-" && secs>0) ? sprintf("%.2f", ops/secs/1e6) : "-"
-        if (ops=="-" || ops==0) { printf "| %s | %s | %s | - | - | - | - |\n", row, var, mops; exit }
+        # A wall-time row without an operation count (python1, cfrac, ...) gets
+        # whole-process totals instead: G cycles, G instructions, M misses.
+        if (ops=="-" || ops==0) { printf "| %s | %s | - | %.2f G | %.2f G | %.1f M | %.1f M |\n", row, var, c["cycles"]/1e9, c["instructions"]/1e9, c["L1-dcache-load-misses"]/1e6, c["dTLB-load-misses"]/1e6; exit }
         printf "| %s | %s | %s | %.1f | %.1f | %.3f | %.3f |\n", row, var, mops, c["cycles"]/ops, c["instructions"]/ops, c["L1-dcache-load-misses"]/ops, c["dTLB-load-misses"]/ops
       }' "$OUTDIR/$tag.csv"
   done
 done
 echo
-echo "Per-operation counters, one run each: sudo perf stat -x, -e $EVENTS --inherit -p <container init pid> (attached before the exec), divided by the program's own operation count. Raw files under $OUTDIR. Compare variants within a row; attribution, not a gate."
+echo "Per-operation counters (whole-process totals for a row without an operation count), one run each: sudo perf stat -x, -e $EVENTS --inherit -p <container init pid> (attached before the exec), divided by the program's own operation count. Raw files under $OUTDIR. Compare variants within a row; attribution, not a gate."

@@ -185,6 +185,7 @@ ops_of() {
     xmalloc*) awk '/free\/sec/ {sub(",", "", $4); printf "%.0f", $4*1e6*5}' "$2";;
     valkey*)  awk '/^ops / {for (i=2;i<=NF;i++) {split($i, p, "="); if (p[1]=="total") print p[2]}}' "$2";;
     redis)    echo $((2 * REDIS_N));;   # lpush and lrange, REDIS_N requests each
+    glibc-simple) echo 64000000;;   # 16 do_benchmark passes (4 warm-up + 3 scenarios x 4 counts) of NUM_ITERS=2M malloc+free pairs
     *) echo "-";;
   esac
 }

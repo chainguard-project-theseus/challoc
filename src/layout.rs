@@ -292,6 +292,26 @@ const fn build_classes() -> [Class; NCLASSES] {
 /// The size-class table, indexed by class number.
 pub static CLASSES: [Class; NCLASSES] = build_classes();
 
+/// Bitmap words one slab occupies at most over all classes (`slab_bits /
+/// 64`, at least 1): the size of the scratch bitmap a release batch
+/// accumulates a slab's clears in (`ClassState::release_owned`), 128 words
+/// (1 KiB) with 8-byte slots in a 64 KiB slab.
+pub const MAX_SLAB_WORDS: usize = max_slab_words();
+
+const fn max_slab_words() -> usize {
+    let classes = build_classes();
+    let mut m = 1;
+    let mut i = 0;
+    while i < NCLASSES {
+        let w = classes[i].slab_bits() / 64;
+        if w > m {
+            m = w;
+        }
+        i += 1;
+    }
+    m
+}
+
 /// Brute-force class lookup, used to build the small table at compile time
 /// and by tests as the reference.
 const fn class_of_slow(n: usize) -> Option<usize> {

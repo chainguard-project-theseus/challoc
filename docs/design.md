@@ -520,9 +520,9 @@ path (the cursor is under the class lock and the arena is not read), so a
 slot start in an uncommitted slab of a handed-out group is also caught at
 the flush. Because the arena is
 not read either, the home cache holds slots of any arena on this path; the
-flush (6.4) sorts the batch and releases each run of slabs through the
-arena the owner array names (`release_owned`), which costs nothing extra
-when every slab is the cache's own. Plain `free` keeps step 2's load, so a
+flush (6.4) groups the batch by slab and releases each run of slabs through
+the arena the owner array names (`release_owned`), which costs nothing
+extra when every slab is the cache's own. Plain `free` keeps step 2's load, so a
 double `free` of a slot that has left the cache aborts at the call.
 `MALLOCX_ARENA(a)` with the default cache pops whatever the cache holds,
 as jemalloc's does; `MALLOCX_TCACHE_NONE` releases straight to the slab
@@ -561,19 +561,42 @@ to `rallocx` exactly as jemalloc's contract requires.
   cgroup sample (section 11), which is two small file reads at most once
   per 10 ms process-wide.
 - **Flush**: release the `cap / 2` highest-address entries grouped by slab
-  and keep the lowest in ascending order (not reversed into a run: a
-  descending run under ascending pushes, or an ascending batch under
-  descending pushes, is a pathological input for the next flush's sort;
-  the run is dropped and rebuilt on demand). Update `live`; slabs reaching
-  zero become `Empty`. The selection is by address, not by age, so that
-  every flush sends holes to the high slabs while refills and rebuilds
-  keep taking the lowest partial slab. The sort puts the two copies of a
-  cached double free next to each other: the release aborts on a duplicate
-  inside its batch, and one compare at the split point aborts on a pair
-  that straddles it, which would otherwise release one copy (bit cleared)
-  and hand the other out over a slot a refill can claim again. A pair the
-  split keeps together stays cached and consistent until a flush releases
-  it (a pass over the kept half was measured at 5..7% of xmalloc-test).
+  and keep the lowest (the run is dropped and rebuilt on demand). Update
+  `live`; slabs reaching zero become `Empty`. The selection is by address,
+  not by age, so that every flush sends holes to the high slabs while
+  refills and rebuilds keep taking the lowest partial slab. The split: a
+  slot array already in address order (a cache pushed in the order a
+  producer's refill batch was handed out; `is_sorted` stops at the first
+  inversion) is split directly and its kept half stays sorted; otherwise
+  `select_nth_unstable` on the address (O(cap), in place) puts the released
+  half on top and an in-place counting pass on the slab number
+  (`(p - class_base) >> lg_slab`) groups it by slab when it spans fewer
+  than 256 slabs (one slab: no pass; more: a sort of that half). The
+  release needs a slab's slots contiguous and nothing more: it
+  accumulates each slab's bits in a scratch bitmap and clears them at the
+  slab switch, one atomic per touched word, so the order inside a slab is
+  free. The kept half is left as the selection leaves it except on the
+  first two consecutive unsorted flushes of a cache and every 32nd after
+  that, when it is sorted: a cache pushed in order that met one unsorted
+  flush gets back onto the sorted path (a scrambled kept half would keep
+  it on the selection forever, xmalloc-test +16%), while a cache pushed in
+  arbitrary order pays two sorts of half the array and then one in 32. Until
+  Phase 2.5 task 1b the flush sorted the whole slot array; under tiny-object
+  churn that sort was 8..9% of glibc-simple and 5% of the Python json row
+  on both VMs, and the sort's O(n) path on sorted input was what made the
+  kept half's order matter (`bench/results/2026-09-19-*-gce-flush-sort.md`,
+  which also has the rejected forms: selection plus a sort of the released
+  half, a bucket pass over the whole array, the selection alone). Double
+  frees: the release aborts on a duplicate inside its batch (two copies of
+  one slot land in one slab group, so the second hits a set scratch bit);
+  every kept entry is at most the kept maximum and every released entry
+  at least that, so a pair that straddles the split, which would otherwise
+  release one copy (bit cleared) and hand the other out over a slot a
+  refill can claim again, is exactly a released entry equal to the kept
+  maximum, and one compare of the lowest released address with it aborts.
+  A pair the split keeps together stays cached and consistent until a
+  flush releases it (a pass over the kept half was measured at 5..7% of
+  xmalloc-test).
 - **Scheduled pop** (the compacting cache): every `2^tcache_compact_shift`
   pops of a class (default `k = 3`, one pop in 8) are served from the *run* of low addresses
   `slots[..run_end]` (descending, lowest at `run_end - 1`) instead of the

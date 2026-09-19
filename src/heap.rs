@@ -32,7 +32,8 @@
 //! - `free`: classify the pointer, check its bitmap bit is set (invalid and
 //!   stale double frees abort here), push it; if the cache is full, *flush*
 //!   the `cap / 2` highest-address entries back to their slabs in one
-//!   sorted batch and keep the lowest, in ascending order.
+//!   batch grouped by slab (a selection and a counting pass, no sort) and
+//!   keep the lowest.
 //!
 //! Compaction (design 6.4). A LIFO cache hands
 //! every allocation the slot that was just freed, so under a balanced
@@ -171,6 +172,10 @@ pub struct CacheHeader {
     arena: u16,
     /// [`MODE_OFF`], [`MODE_PROBE`] or [`MODE_COMPACT`].
     mode: u16,
+    /// Consecutive flushes whose slot array was not already in address
+    /// order (wrapping); zeroed by a flush that found it sorted. Drives the
+    /// kept half's sort in [`Heap::flush`].
+    unsorted_flushes: u8,
 }
 
 /// Cache modes: off (`tcache_compact_shift:0`), probing the class for
@@ -234,6 +239,7 @@ impl CacheHeader {
         probe_refilled: 0,
         arena: 0,
         mode: MODE_OFF,
+        unsorted_flushes: 0,
     };
 
     /// Metadata layout of a stack of `cap` slots.
@@ -2007,6 +2013,7 @@ impl Heap {
                     probe_refilled: shared.owner(arena).class(class).refilled() as u32,
                     arena,
                     mode: MODE_OFF,
+                    unsorted_flushes: 0,
                 },
             );
             let mode = if shared.config.tcache_compact_shift == 0 { MODE_OFF } else { MODE_PROBE };
@@ -2049,29 +2056,61 @@ impl Heap {
     }
 
     /// Release the `n` highest-address entries of a cache to their slabs
-    /// (in `arena`, which owns them) in one address-sorted batch and keep
-    /// the rest in ascending order, highest on top. Selecting by address
-    /// sends the holes to the high slabs, which is what lets them drain
-    /// (module doc). The kept entries are deliberately left ascending
-    /// rather than reversed into a run: a descending run under the
-    /// ascending pushes of a producer/consumer pattern is a pathological
-    /// pivot sequence for the next flush's sort (measured: xmalloc-test
-    /// -41% on x86_64 with the reverse, -1.5% without; and -76% on arm64
-    /// with an ascending refill batch under descending pushes), so the run
-    /// is dropped and the next scheduled pop rebuilds it. The zero prefix
-    /// is given up: the kept entries are reordered, so nothing is known
-    /// about what lies at the bottom.
+    /// (in `arena`, which owns them) in one batch grouped by slab and keep
+    /// the rest. Selecting by address sends the holes to the high slabs,
+    /// which is what lets them drain (module doc). Until Phase 2.5 task 1b
+    /// this was one `sort_unstable` of the whole slot array, which under
+    /// tiny-object churn was 8..9% of glibc-simple and 5% of the Python
+    /// json row on both VMs, the largest single term wherever challoc
+    /// trailed mimalloc or tcmalloc by more than 10%
+    /// (`bench/results/2026-09-19-*-gce-flush-sort.md`). Now:
     ///
-    /// The sort puts the two copies of a cached double free next to each
-    /// other. `release_owned` aborts on a duplicate inside the released
-    /// batch; a pair kept together stays cached and consistent (both
-    /// copies in the cache, the bit set) until a flush releases it; the
-    /// pair that straddles the split would have one copy released, its
-    /// bit cleared, and the other still cached to be handed out over a
-    /// slot a refill can claim again, so the
-    /// split point gets one compare. Not a pass
-    /// over the kept half: `rest_len` compares per flush cost xmalloc-test
-    /// 4.9% on aarch64 and 7.3% on x86_64
+    /// - A slot array already in address order (a cache pushed in the order
+    ///   a producer's refill batch was handed out, xmalloc-test's consumer
+    ///   side, where the old sort took ipnsort's O(n) path at about 1.25k
+    ///   cycles per flush) is split directly: `is_sorted` is one pass that
+    ///   stops at the first inversion, the released half is sorted and so
+    ///   grouped, and the kept half stays sorted for the next flush.
+    /// - Otherwise `select_nth_unstable` on the address (O(len), in place)
+    ///   puts the `n` highest at the top, and [`group_by_slab`] groups them
+    ///   by slab (a counting pass over the slab numbers, O(n); nothing when
+    ///   they are one slab); `release_owned` needs nothing more.
+    /// - The kept half is left as the selection leaves it, except on the
+    ///   first two consecutive unsorted flushes of a cache and every 32nd
+    ///   after that (`unsorted_flushes`), when it is sorted: a cache pushed
+    ///   in order that met one unsorted flush (its first fill, a producer
+    ///   moving to a lower slab) gets back onto the sorted path, where a
+    ///   scrambled kept half would have kept it on the selection forever
+    ///   (xmalloc-test +16% that way; the old sort re-established the order
+    ///   at every flush), while a cache pushed in arbitrary order pays two
+    ///   sorts of half the array and then one in 32 (the unconditional
+    ///   kept sort cost glibc-simple and Python their whole gain). The run
+    ///   is dropped in every case and rebuilt by the scheduled pop (design
+    ///   6.4); the zero prefix is given up.
+    ///
+    /// Candidates rejected on the way, all in the results file: a selection
+    /// followed by a sort of the released half (the selection scrambles it,
+    /// so that is a full sort: xmalloc +51%); an in-place bucket pass over
+    /// the whole array by address (about 10 cycles per entry, the old sort's
+    /// cost on random input and ten times its cost on sorted input: xmalloc
+    /// +49%); the selection alone (xmalloc +21%, no self-healing).
+    ///
+    /// Double frees. `release_owned` aborts on a duplicate inside the
+    /// released batch (a slab's slots are contiguous after the bucket pass
+    /// and land on one scratch bitmap, so the second copy hits a set bit; a
+    /// duplicate in two groups of one slab hits a clear bit in the class
+    /// bitmap). A pair kept together stays cached and consistent (both
+    /// copies in the cache, the bit set) until a flush releases it. The
+    /// pair that straddles the split would have one copy released, its bit
+    /// cleared, and the other still cached to be handed out over a slot a
+    /// refill can claim again: after the split every kept entry is at most
+    /// `kept_max = slots[rest_len - 1]` and every released entry at least
+    /// that, so a straddling pair is exactly a released entry equal to
+    /// `kept_max`, and the lowest released address (found by the bucket
+    /// pass's first sweep, or `slots[rest_len]` on the sorted path) is
+    /// compared with it. One compare, the same strength as the sorted
+    /// form's neighbour compare at the split; a pass over the kept half was
+    /// measured at 4.9% / 7.3% of xmalloc-test and is not done
     /// (`bench/results/2026-09-18-*-gce-detection-gaps.md`).
     ///
     /// # Safety
@@ -2083,12 +2122,34 @@ impl Heap {
         // SAFETY: `n <= len <= cap` entries exist.
         unsafe {
             let all = (*cache).entries();
-            all.sort_unstable();
             let rest_len = all.len() - n;
-            if rest_len > 0 && *all.get_unchecked(rest_len - 1) == *all.get_unchecked(rest_len) {
-                straddling_double_free(*all.get_unchecked(rest_len), class);
+            let (kept_max, low);
+            if rest_len > 0 && all.is_sorted() {
+                // Already in address order: the split is direct, the
+                // released half is sorted and so grouped, and the kept half
+                // stays sorted for the next flush.
+                kept_max = *all.get_unchecked(rest_len - 1);
+                low = *all.get_unchecked(rest_len);
+                (*cache).unsorted_flushes = 0;
+            } else {
+                kept_max = if rest_len > 0 {
+                    // `all[..rest_len - 1] <= all[rest_len - 1] <= all[rest_len..]`.
+                    all.select_nth_unstable(rest_len - 1);
+                    *all.get_unchecked(rest_len - 1)
+                } else {
+                    ptr::null_mut()
+                };
+                low = group_by_slab(shared, class, all.get_unchecked_mut(rest_len..));
+                let k = (*cache).unsorted_flushes;
+                (*cache).unsorted_flushes = k.wrapping_add(1);
+                if rest_len > 1 && (k < 2 || k % 32 == 0) {
+                    all.get_unchecked_mut(..rest_len).sort_unstable();
+                }
             }
-            let (_keep, high) = all.split_at_mut(rest_len);
+            if low == kept_max {
+                straddling_double_free(low, class);
+            }
+            let high = all.get_unchecked_mut(rest_len..);
             shared.release_routed(arena, class, high);
             (*cache).len = rest_len as u32;
             (*cache).moved = (*cache).moved.wrapping_sub(n as u64);
@@ -2401,6 +2462,83 @@ fn cached_twice(p: *mut u8) -> ! {
 /// Two copies of one slot in a cache at flush time, one on each side of
 /// the split (`Heap::flush`): the flush would have released one and kept
 /// the other.
+/// Buckets of [`group_by_slab`]'s counting pass: a batch whose slab
+/// numbers span fewer than this many slabs is grouped in one in-place
+/// pass; a batch spread wider is sorted instead.
+const GROUP_BUCKETS: usize = 256;
+
+/// Group a flush's released batch by slab, in place, and return its lowest
+/// address. `release_owned` needs a slab's slots contiguous (one owner
+/// check, one descriptor update and one bitmap pass per slab) and nothing
+/// else, so the pass is a counting sort on the slab number, `(p - base) >>
+/// lg_slab` (design 3's geometry): one sweep finds the lowest and highest
+/// slab number (and the batch's minimum address); a batch from one slab is
+/// done; one spanning fewer than [`GROUP_BUCKETS`] slabs is permuted by
+/// [`flag_sort`] on `slab - lowest`; anything wider, a cache holding slots
+/// of more than 256 slabs' span, falls back to `sort_unstable` on the
+/// address. Every path is O(n) but the last, which is the old sort on
+/// half the entries.
+fn group_by_slab(shared: &Shared, class: usize, high: &mut [*mut u8]) -> *mut u8 {
+    let base = shared.regions.class_base[class];
+    let lg = CLASSES[class].lg_slab as u32;
+    let key = |p: *mut u8| (p as usize).wrapping_sub(base) >> lg;
+    let mut low = high[0];
+    let (mut kmin, mut kmax) = (usize::MAX, 0usize);
+    for &p in high.iter() {
+        let k = key(p);
+        kmin = kmin.min(k);
+        kmax = kmax.max(k);
+        if p < low {
+            low = p;
+        }
+    }
+    if kmin == kmax {
+        return low;
+    }
+    let span = kmax - kmin + 1;
+    if span <= GROUP_BUCKETS {
+        flag_sort(high, span, |p| key(p) - kmin);
+    } else {
+        high.sort_unstable();
+    }
+    low
+}
+
+/// American flag sort: permute `v` in place so that entries with equal
+/// `key` (below `nb`, at most [`GROUP_BUCKETS`]) are contiguous, buckets
+/// in ascending key order. One counting sweep, a prefix sum, and one
+/// cycle-following sweep that moves every entry once: O(len + nb), no
+/// scratch beyond the bucket cursors.
+fn flag_sort(v: &mut [*mut u8], nb: usize, key: impl Fn(*mut u8) -> usize) {
+    debug_assert!(nb <= GROUP_BUCKETS && v.len() <= u16::MAX as usize);
+    let mut next = [0u16; GROUP_BUCKETS];
+    let mut end = [0u16; GROUP_BUCKETS];
+    for &p in v.iter() {
+        end[key(p)] += 1;
+    }
+    let mut acc = 0u16;
+    for b in 0..nb {
+        next[b] = acc;
+        acc += end[b];
+        end[b] = acc;
+    }
+    for b in 0..nb {
+        while next[b] < end[b] {
+            let i = next[b] as usize;
+            let mut p = v[i];
+            let mut kb = key(p);
+            while kb != b {
+                let j = next[kb] as usize;
+                next[kb] += 1;
+                core::mem::swap(&mut p, &mut v[j]);
+                kb = key(p);
+            }
+            v[i] = p;
+            next[b] += 1;
+        }
+    }
+}
+
 #[cold]
 #[inline(never)]
 fn straddling_double_free(p: *mut u8, class: usize) -> ! {
@@ -2878,7 +3016,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn flush_releases_the_highest_addresses_and_keeps_the_lowest_ascending() {
+    fn flush_releases_the_highest_addresses_and_keeps_the_lowest() {
         let s = shared();
         let t = TestHeap::new(s);
         let c = class_with(64);
@@ -2899,17 +3037,17 @@ pub(crate) mod tests {
         assert_eq!(t.len(c), CAP);
         let live_before = live(s, c);
         // Overflow by one: the HALF highest addresses go back to their
-        // slabs, the HALF lowest stay in ascending order (highest of them
-        // on top) under the new push.
+        // slabs, the HALF lowest stay (in whatever order the selection
+        // left them; the run is dropped, design 6.4) under the new push.
         let extra = ps[order[CAP]];
         t.free(extra);
         assert_eq!(t.len(c), HALF + 1);
         assert_eq!(live(s, c), live_before - HALF);
         cached.sort_unstable();
         assert_eq!(t.alloc(c), extra);
-        for (k, &want) in cached[..HALF].iter().rev().enumerate() {
-            assert_eq!(t.alloc(c), want, "pop {k}");
-        }
+        let mut kept: Vec<*mut u8> = (0..HALF).map(|_| t.alloc(c)).collect();
+        kept.sort_unstable();
+        assert_eq!(kept, cached[..HALF].to_vec(), "the kept half is the lowest addresses, content intact");
         assert_eq!(t.len(c), 0);
         // The released half is free in the slabs: allocating it again
         // is the only way to get those addresses back, and a refill takes
@@ -2920,6 +3058,83 @@ pub(crate) mod tests {
         got_sorted.sort_unstable();
         assert_eq!(got_sorted, cached[HALF..].to_vec());
         t.destroy();
+    }
+
+    /// Plan Phase 2.5 task 1b: the flush groups its released half by slab
+    /// with a counting pass instead of sorting. Fake slot addresses (never
+    /// dereferenced) from five slabs inside a 256-slab window, scrambled,
+    /// come out slab-contiguous in ascending slab order as a permutation
+    /// of the input, and the return value is the lowest address.
+    #[test]
+    fn group_by_slab_groups_a_scrambled_batch() {
+        let s = shared();
+        let c = class_with(64);
+        let cls = &CLASSES[c];
+        let slabs = [3usize, 5, 7, 9, 200];
+        let mut v: Vec<*mut u8> = Vec::new();
+        for (i, &sl) in slabs.iter().enumerate() {
+            for k in 0..(5 + 7 * i) {
+                v.push((s.regions.slab_addr(c, sl) + ((k * 37) % cls.nslots()) * cls.size()) as *mut u8);
+            }
+        }
+        let mut st = 0x1234_5678_9abc_def1u64;
+        for i in (1..v.len()).rev() {
+            let j = (xorshift(&mut st) % (i as u64 + 1)) as usize;
+            v.swap(i, j);
+        }
+        let mut expect = v.clone();
+        expect.sort_unstable();
+        let low = group_by_slab(s, c, &mut v);
+        assert_eq!(low, expect[0]);
+        let slab_of = |p: *mut u8| (p as usize - s.regions.class_base[c]) >> cls.lg_slab;
+        let mut seen: Vec<usize> = Vec::new();
+        for &p in &v {
+            let sl = slab_of(p);
+            if seen.last() != Some(&sl) {
+                assert!(!seen.contains(&sl), "slab {sl} appears in two groups");
+                seen.push(sl);
+            }
+        }
+        assert_eq!(seen, slabs.to_vec(), "one contiguous group per slab, ascending");
+        let mut got = v.clone();
+        got.sort_unstable();
+        assert_eq!(got, expect, "a permutation of the input");
+    }
+
+    /// A batch from one slab needs no grouping and is left as it is; a
+    /// batch spanning more than 256 slabs takes the sort fallback and comes
+    /// out fully sorted. Both return the lowest address.
+    #[test]
+    fn group_by_slab_single_slab_and_wide_span() {
+        let s = shared();
+        let c = class_with(64);
+        let cls = &CLASSES[c];
+        let at = |sl: usize, k: usize| (s.regions.slab_addr(c, sl) + k * cls.size()) as *mut u8;
+        let mut one = std::vec![at(4, 9), at(4, 2), at(4, 700), at(4, 0), at(4, 33)];
+        let before = one.clone();
+        assert_eq!(group_by_slab(s, c, &mut one), at(4, 0));
+        assert_eq!(one, before, "one slab: untouched");
+        let mut wide = std::vec![at(1000, 3), at(0, 8), at(300, 1), at(0, 2), at(1000, 1), at(300, 5)];
+        let mut expect = wide.clone();
+        expect.sort_unstable();
+        assert_eq!(group_by_slab(s, c, &mut wide), at(0, 2));
+        assert_eq!(wide, expect, "wider than GROUP_BUCKETS slabs: sorted");
+    }
+
+    /// The in-place counting sort behind the bucket pass: 1000 entries
+    /// with random 8-bit keys come out in non-decreasing key order as a
+    /// permutation of the input.
+    #[test]
+    fn flag_sort_permutes_into_ascending_buckets() {
+        let mut st = 0xdead_beef_cafe_f00du64;
+        let mut v: Vec<*mut u8> = (0..1000).map(|_| (xorshift(&mut st) % 1_000_000) as *mut u8).collect();
+        let mut expect = v.clone();
+        let key = |p: *mut u8| (p as usize) & 0xff;
+        flag_sort(&mut v, 256, key);
+        assert!(v.windows(2).all(|w| key(w[0]) <= key(w[1])), "buckets ascend");
+        v.sort_unstable();
+        expect.sort_unstable();
+        assert_eq!(v, expect);
     }
 
     #[test]

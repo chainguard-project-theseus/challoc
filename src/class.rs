@@ -76,7 +76,7 @@
 //! the bit afterwards.
 
 use crate::bitmap::{AtomicBitmap, TwoLevelBitmap};
-use crate::layout::{CLASSES, Class, LG_MAX_SLAB, LG_MIN_SLAB, NCLASSES, Regions};
+use crate::layout::{CLASSES, Class, LG_MAX_SLAB, LG_MIN_SLAB, MAX_SLAB_WORDS, NCLASSES, Regions};
 use crate::lock::{Lock, PAD_ALIGN, Padded, RawLock};
 use crate::meta::Meta;
 use crate::purge::{self, Batch, Curve, Decayer, STEPS};
@@ -1910,75 +1910,92 @@ impl ClassState {
 
     /// [`release`] of the longest prefix of `ptrs` whose slabs this arena
     /// owns, returning its length (`ptrs.len()` when every slab is ours).
-    /// The batch is sorted by address, so a slab's pointers are contiguous
-    /// and the prefix ends exactly at the first pointer of a slab of another
+    /// The batch is grouped by slab (`Heap::flush`'s bucket pass; a sorted
+    /// batch is one such grouping), so a slab's pointers are contiguous and
+    /// the prefix ends exactly at the first pointer of a slab of another
     /// arena; the caller routes the rest there (`Heap::flush`: a home cache
-    /// takes sized frees of any arena, design 6.3). Every bit cleared is
-    /// checked (an already-clear bit is a double or invalid free and aborts),
-    /// which is where the sized path's deferred check lands. The owner is
-    /// read from the table's dense owner array, once per slab switch.
+    /// takes sized frees of any arena, design 6.3). Within a slab the order
+    /// is free: the slab's bits are accumulated in a scratch bitmap
+    /// (`MAX_SLAB_WORDS` words on the stack) and released at the slab
+    /// switch, one atomic per touched word, so an unsorted slab costs the
+    /// same atomics as a sorted one. Every bit cleared is checked (an
+    /// already-clear bit is a double or invalid free and aborts), which is
+    /// where the sized path's deferred check lands; a duplicate inside one
+    /// slab's group is caught earlier, on the scratch bit. The owner is read
+    /// from the table's dense owner array, once per slab switch.
     ///
     /// [`release`]: ClassState::release
     pub fn release_owned(&self, ptrs: &[*mut u8]) -> usize {
+        let mut local = [0u64; MAX_SLAB_WORDS];
         let mut cur_slab = usize::MAX;
-        let mut cur_word = 0usize;
-        let mut mask = 0u64;
+        let (mut lo_w, mut hi_w) = (usize::MAX, 0usize);
         let mut count = 0usize;
         let mut reopen = Reopen::default();
         let mut end = ptrs.len();
         for (i, &p) in ptrs.iter().enumerate() {
             let (slab, slot) = self.locate(p);
-            let word = slot / 64;
-            if slab != cur_slab || word != cur_word {
-                if mask != 0 {
-                    self.release_word(cur_slab, cur_word, mask, &mut reopen);
-                    mask = 0;
+            if slab != cur_slab {
+                if count != 0 {
+                    self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen);
+                    count = 0;
+                    lo_w = usize::MAX;
+                    hi_w = 0;
                 }
-                if slab != cur_slab {
-                    if count != 0 {
-                        self.dec_live(cur_slab, count);
-                        count = 0;
-                    }
-                    if self.table().owner(slab) != self.arena {
-                        end = i;
-                        break;
-                    }
-                    // The sized path defers its checks to here (design
-                    // 6.3). A guard slab or a slab nothing was ever
-                    // allocated from (`Fresh`: handed to an arena but not
-                    // committed, or committed and never claimed) has no
-                    // slot to release; its bits are clear, so the bit
-                    // test below would abort too, but this names the
-                    // cause. The descriptor line is read by `dec_live`
-                    // anyway.
-                    if self.table().is_guard_slab(slab) {
-                        guard_free(p as usize, self.class as usize, slab);
-                    }
-                    if self.desc(slab).state() == State::Fresh {
-                        release_into_fresh_slab(p as usize, self.class as usize, slab);
-                    }
+                if self.table().owner(slab) != self.arena {
+                    end = i;
+                    break;
+                }
+                // The sized path defers its checks to here (design
+                // 6.3). A guard slab or a slab nothing was ever
+                // allocated from (`Fresh`: handed to an arena but not
+                // committed, or committed and never claimed) has no
+                // slot to release; its bits are clear, so the bit
+                // test below would abort too, but this names the
+                // cause. The descriptor line is read by `dec_live`
+                // anyway.
+                if self.table().is_guard_slab(slab) {
+                    guard_free(p as usize, self.class as usize, slab);
+                }
+                if self.desc(slab).state() == State::Fresh {
+                    release_into_fresh_slab(p as usize, self.class as usize, slab);
                 }
                 cur_slab = slab;
-                cur_word = word;
             }
+            let word = slot / 64;
             let bit = 1u64 << (slot % 64);
-            if mask & bit != 0 {
+            // `slot < nslots <= slab_bits <= 64 * MAX_SLAB_WORDS`
+            // (`locate` checked the slot), so `word` is in range.
+            let w = &mut local[word];
+            if *w & bit != 0 {
                 double_free(p as usize, self.class as usize, slab, slot);
             }
-            mask |= bit;
+            *w |= bit;
             count += 1;
-        }
-        if mask != 0 {
-            self.release_word(cur_slab, cur_word, mask, &mut reopen);
+            lo_w = lo_w.min(word);
+            hi_w = hi_w.max(word);
         }
         if count != 0 {
-            self.dec_live(cur_slab, count);
+            self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen);
         }
         self.reopen(&mut reopen);
         if end != 0 {
             self.released.fetch_add(end as u64, Ordering::Relaxed);
         }
         end
+    }
+
+    /// Clear the bits `local[lo..=hi]` accumulated for `slab` (one atomic
+    /// per non-zero word), zero them for the next slab, and take `count`
+    /// off the slab's `live`.
+    fn release_slab(&self, slab: usize, local: &mut [u64; MAX_SLAB_WORDS], lo: usize, hi: usize, count: usize, reopen: &mut Reopen) {
+        for w in lo..=hi {
+            let mask = local[w];
+            if mask != 0 {
+                local[w] = 0;
+                self.release_word(slab, w, mask, reopen);
+            }
+        }
+        self.dec_live(slab, count);
     }
 
     /// Release the slots of `mask` in `word` of `slab`. The `live` update
@@ -3818,6 +3835,53 @@ mod tests {
         let (p, _) = env.claim(&cs, 3);
         cs.release(&p[..1]);
         cs.release(&p[..1]);
+    }
+
+    /// Plan Phase 2.5 task 1b: a release batch is grouped by slab, not
+    /// sorted. Slabs in any order, and a slab's slots in any order, clear
+    /// exactly their bits with the right live counts.
+    #[test]
+    fn release_takes_slab_groups_in_any_order() {
+        let env = Env::new();
+        let c = small_class();
+        let cs = env.class(c, 0);
+        let n = CLASSES[c].nslots();
+        let (p, _) = env.claim(&cs, 2 * n + 7);
+        assert_eq!(p.len(), 2 * n + 7);
+        // Slab 1 reversed, then slab 0's odd slots scrambled, then slab 2.
+        let mut batch: Vec<*mut u8> = p[n..2 * n].iter().rev().copied().collect();
+        let mut odd: Vec<*mut u8> = (1..n).step_by(2).map(|i| p[i]).collect();
+        let mut st = 0x9e37_79b9_7f4a_7c15u64;
+        for i in (1..odd.len()).rev() {
+            st ^= st << 13;
+            st ^= st >> 7;
+            st ^= st << 17;
+            let j = (st % (i as u64 + 1)) as usize;
+            odd.swap(i, j);
+        }
+        batch.extend_from_slice(&odd);
+        batch.extend_from_slice(&p[2 * n..]);
+        cs.release(&batch);
+        for (i, &q) in p.iter().enumerate() {
+            let (slab, slot) = cs.locate(q);
+            let released = i >= n || i % 2 == 1;
+            assert_eq!(cs.table().bits(slab).is_set(slot), !released, "slot {i}");
+        }
+        assert_eq!(cs.desc(0).live(), n - odd.len());
+        assert_eq!(cs.desc(1).live(), 0);
+        assert_eq!(cs.desc(2).live(), 0);
+    }
+
+    /// A duplicate inside one slab's group aborts even when the two copies
+    /// are not adjacent and not in the same bitmap word: the group's bits
+    /// accumulate in one scratch bitmap.
+    #[test]
+    #[should_panic(expected = "double free of")]
+    fn duplicate_apart_in_one_slab_group_aborts() {
+        let env = Env::new();
+        let cs = env.class(small_class(), 0);
+        let (p, _) = env.claim(&cs, 80);
+        cs.release(&[p[70], p[1], p[5], p[70]]);
     }
 
     #[test]
