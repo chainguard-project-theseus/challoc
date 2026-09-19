@@ -103,24 +103,33 @@ issues is cheap.
 huge region with page granularity, address-ordered, with a guard region after
 each run. Freed runs are retained and decay like slabs.
 
-**Memory return.** Empty slabs and runs are dirty and are returned with
-`MADV_DONTNEED` in batches through `process_madvise` along jemalloc's decay
-curve: about half of what went empty at once within half of `dirty_decay_ms`,
-all of it by the end of the window. Decay
+**Memory return.** Empty slabs and runs are dirty and are returned in
+batches through `process_madvise` along jemalloc's decay curve: about half
+of what went empty at once within half of `dirty_decay_ms`, all of it by
+the end of the window. Decay
 runs from the allocating thread's slow path and, when enabled through the
 jemalloc `background_thread` control, from a background thread. Under a
 cgroup limit (`docs/design.md` section 11) freed-but-unpurged memory is
 capped at 5% of `min(memory.high, memory.max)`, the decay window shortens
 linearly from `dirty_decay_ms` at 70% of the limit to 1 s at 90%, and
 above 90% the window is zero and the cache GC runs at every periodic tick;
-a rise of `memory.events` `high` purges everything freed once. Read
-`stats.cgroup.decay_ms`, `stats.cgroup.retention_cap` and
-`stats.cgroup.empty_bytes` to see the policy at work. Measured in a
+a rise of `memory.events` `high` purges everything freed once. The advice
+follows the same bands: under 70% of a known limit the return is
+`MADV_FREE` (the pages stay charged until the kernel wants them, and a
+reuse before that costs no page fault), everywhere else, with no limit
+included, `MADV_DONTNEED` (RSS drops at once; lazily freed pages would
+mislead a fragmentation ratio or an autoscaler); `lazy_free:true` makes
+every return lazy, `lazy_band:false` every return eager, and
+`malloc_trim(0)` is always eager. Read `stats.cgroup.decay_ms`,
+`stats.cgroup.retention_cap`, `stats.cgroup.empty_bytes` and
+`stats.cgroup.purge_advice` to see the policy at work. Measured in a
 `docker run --memory=512m` container (`make test-cgroup`): 400 MiB
-allocated, freed and idled is back to 13 MiB of RSS within 50 ms of the
-frees; with `MALLOC_CONF=cgroup:false` 319 MiB is still resident 2 s later
-(jemalloc 5.3.1 keeps 190 MiB, mimalloc 3.5.2 407 MiB), and a live set
-swinging between 200 and 480 MiB runs for 5 minutes where jemalloc and
+allocated, freed and idled at 90% of the limit is back to 13 MiB of RSS
+within 50 ms of the frees; with `MALLOC_CONF=cgroup:false` 319 MiB is
+still resident 2 s later (jemalloc 5.3.1 keeps 190 MiB, mimalloc 3.5.2
+407 MiB); 200 MiB freed at 40% of the limit is returned lazily 80 ms
+later and allocating it again takes 5 ms instead of 44 (C4A); and a live
+set swinging between 200 and 480 MiB runs for 5 minutes where jemalloc and
 mimalloc are OOM-killed within 12 s.
 
 **Kernel and CPU features, all runtime detected.** The floor is a
@@ -136,6 +145,7 @@ the task that will use them is named in the design.
 |------------------------------|--------|--------------------------------------------|-----------------------------------|
 | `MADV_GUARD_INSTALL`         | kernel 6.13   | Guard slabs and guards after huge runs     | `PROT_NONE` page after huge runs; no guard slabs |
 | `process_madvise` on self    | kernel 6.13 (`MADV_DONTNEED` through it, with a pidfd of self; 5.10..6.12 refuse the advice), 6.14 (`PIDFD_SELF`); hidden by Docker's default seccomp | Batched purge                              | Loop over `madvise`               |
+| `process_madvise(MADV_FREE)` on self | the same, probed separately (`process_madvise_free`) | Batched lazy purge under 70% of a cgroup limit | Lazy batches loop over `madvise(MADV_FREE)` |
 | `PR_SET_VMA_ANON_NAME`       | kernel 5.17   | Named heap mappings in `/proc/pid/maps`    | Skip                              |
 | `mseal`                      | kernel 6.10   | Seals the never-committed parts of the reservations (the gaps between class regions, the slack around the huge and metadata regions) at init; not the regions or the region table | Skip (also when seccomp filters it, as Docker's default profile does) |
 | PSI triggers                 | kernel 6.4 (unprivileged) | Background thread arms `some 150000 1000000` on the cgroup's `memory.pressure` (or the unprivileged `some 300000 2000000`); a fire takes a sample, re-evaluates the policy and runs a decay pass at once | Sample `memory.current` on the tick; also when the write is refused (Docker's default profile mounts the cgroup read-only: `EROFS`; with `nsdelegate` on the host a container's root cgroup refuses the write: `EPERM`) |

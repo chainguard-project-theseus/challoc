@@ -246,6 +246,7 @@ fn init() {
     unsafe { layout::adopt_page_geometry(features.page_size.trailing_zeros()) };
     let config = config::load();
     purge::configure(features.process_madvise, config.lazy_free);
+    purge::configure_advice(features.process_madvise_free, config.lazy_band);
     purge::set_check_zero(config.check_zero);
     crate::class::set_group_handoff(config.group_handoff);
     purge::background::request(config.background_thread);

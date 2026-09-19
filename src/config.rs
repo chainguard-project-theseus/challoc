@@ -143,7 +143,12 @@ pub struct Config {
     /// the CPU has WAITPKG, `wfe` only on aarch64 under the timer event
     /// stream; else reported and left at `auto`).
     pub spin_hint: SpinChoice,
+    /// `MADV_FREE` for every purge (the override of the two-advice purge,
+    /// design 8).
     pub lazy_free: bool,
+    /// `MADV_FREE` for purges under 70% of a known cgroup limit (design 8
+    /// and 11); off makes every purge `MADV_DONTNEED` unless `lazy_free`.
+    pub lazy_band: bool,
     pub guards: bool,
     /// One guard per N slabs of 64 KiB (per N * 64 KiB of slabs for the
     /// classes with smaller slabs, see `heap::guard_interval_for`); 0 means
@@ -228,6 +233,7 @@ impl Config {
         thp: Thp::Never,
         spin_hint: SpinChoice::Auto,
         lazy_free: false,
+        lazy_band: true,
         guards: true,
         guard_slab_interval: 8,
         huge_retain_max: crate::huge::DEFAULT_RETAIN_MAX,
@@ -325,6 +331,7 @@ impl Config {
                 return Err(Issue::Inert(key));
             }
             b"lazy_free" => self.lazy_free = parse_bool(value).ok_or_else(bad)?,
+            b"lazy_band" => self.lazy_band = parse_bool(value).ok_or_else(bad)?,
             b"guards" => self.guards = parse_bool(value).ok_or_else(bad)?,
             b"guard_slab_interval" => {
                 // 0 is off and N >= 2 is one guard per N x 64 KiB; 1 would
@@ -392,6 +399,7 @@ impl Config {
             b"thp" => Value::Str(self.thp.name()),
             b"spin_hint" => Value::Str(self.spin_hint.name()),
             b"lazy_free" => Value::Bool(self.lazy_free),
+            b"lazy_band" => Value::Bool(self.lazy_band),
             b"guards" => Value::Bool(self.guards),
             b"guard_slab_interval" => Value::Uint(self.guard_slab_interval as u64),
             b"huge_retain_max" => Value::Uint(self.huge_retain_max as u64),
@@ -527,6 +535,7 @@ pub const KEYS: &[&str] = &[
     "thp",
     "spin_hint",
     "lazy_free",
+    "lazy_band",
     "guards",
     "guard_slab_interval",
     "huge_retain_max",
@@ -1012,6 +1021,8 @@ mod tests {
         assert_eq!(clean("tcache_compact_shift:20").compact_mask(), (1 << 20) - 1);
         assert_eq!(d.thp, Thp::Never);
         assert!(!d.lazy_free);
+        assert!(d.lazy_band);
+        assert!(!clean("lazy_band:false").lazy_band);
         assert!(d.guards);
         assert_eq!(d.guard_slab_interval, 8);
         assert_eq!(d.huge_retain_max, 64 << 20);
@@ -1037,6 +1048,7 @@ mod tests {
             "background_thread",
             "tcache",
             "lazy_free",
+            "lazy_band",
             "guards",
             "zero_on_free",
             "pac_pointers",

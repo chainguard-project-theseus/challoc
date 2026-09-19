@@ -7,16 +7,21 @@
 #
 #   sh scripts/cgroup-tests.sh churn     ALLOC MODE MIB THRESHOLD_MIB
 #   sh scripts/cgroup-tests.sh oscillate ALLOC SECONDS [LOW_MIB HIGH_MIB [HOLD_MS]]
+#   sh scripts/cgroup-tests.sh lazy      ALLOC MODE [MIB]        (Phase 2.5 task 10)
 #
 #   ALLOC   challoc       target/release/libchalloc.so, defaults (policy on)
 #           challoc-off   the same with MALLOC_CONF=cgroup:false (the control)
+#           challoc-eager the same with MALLOC_CONF=lazy_band:false (the two-advice
+#                         purge's control: MADV_DONTNEED in every band)
 #           jemalloc      Wolfi's /usr/lib/libjemalloc.so.2 (5.3.1)
 #           mimalloc      target/bench-bin/libmimalloc.so (bench/build.sh)
 #           tcmalloc      Wolfi's /usr/lib/libtcmalloc_minimal.so.4 (gperftools)
 #           glibc         no preload
 #   MODE    purge | keep | report (tests/c/cgroup_churn.c)
+#           lazy | eager | report (tests/c/cgroup_lazy.c)
 #
-# Compiles the program (tests/c/cgroup_churn.c or cgroup_oscillate.c) into
+# Compiles the program (tests/c/cgroup_churn.c, cgroup_oscillate.c or
+# cgroup_lazy.c) into
 # target/cgroup-tests/, prints the kernel, the cgroup's limits and
 # `memory.events` before and after, runs the program under the allocator
 # with a watchdog (WATCHDOG seconds, default 360: a hung oscillation is
@@ -47,6 +52,7 @@ mib() { case $1 in n/a|max) echo "$1";; *) echo "$(( $1 / 1048576 )) MiB";; esac
 case $kind in
   churn)     prog=cgroup_churn; [ $# -ge 3 ] || { echo "churn needs MODE MIB THRESHOLD_MIB" >&2; exit 2; } ;;
   oscillate) prog=cgroup_oscillate; [ $# -ge 1 ] || { echo "oscillate needs SECONDS" >&2; exit 2; } ;;
+  lazy)      prog=cgroup_lazy; [ $# -ge 1 ] || { echo "lazy needs MODE [MIB]" >&2; exit 2; } ;;
   *) echo "unknown test $kind" >&2; exit 2 ;;
 esac
 
@@ -54,6 +60,7 @@ preload=; conf=; extra=
 case $alloc in
   challoc)     preload=$ROOT/target/release/libchalloc.so ;;
   challoc-off) preload=$ROOT/target/release/libchalloc.so; conf=cgroup:false,abort_conf:true ;;
+  challoc-eager) preload=$ROOT/target/release/libchalloc.so; conf=lazy_band:false,abort_conf:true ;;
   jemalloc)    preload=/usr/lib/libjemalloc.so.2; extra=--any-allocator ;;
   mimalloc)    preload=$ROOT/target/bench-bin/libmimalloc.so; extra=--any-allocator ;;
   tcmalloc)    preload=/usr/lib/libtcmalloc_minimal.so.4; extra=--any-allocator ;;

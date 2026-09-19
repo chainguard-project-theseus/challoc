@@ -921,13 +921,52 @@ address, with `dirty_at` per entry. Decay policy is jemalloc's in shape:
   the gate is one `purge::Decayer` (oldest `dirty_at`, next deadline) per
   class state and one in the huge allocator; the walks differ, the gate
   does not. `-1` is never.
-- `muzzy_decay_ms` is accepted and ignored. challoc does not use `MADV_FREE`
-  by default: lazily freed pages remain charged to the cgroup and visible in
-  RSS until reclaim, which misleads both autoscalers and Redis's fragmentation
-  ratio. A `lazy_free` tunable enables `MADV_FREE` for callers who want it.
+- `muzzy_decay_ms` is accepted and ignored. Two advices (plan Phase 2.5
+  task 10, `policy::advice`): a purge is `MADV_DONTNEED` (eager: the
+  pages leave RSS and the cgroup's charge at once, the next touch faults
+  in a zero page) except under the cgroup policy's headroom band, usage
+  under 70% of a known limit (section 11), where it is `MADV_FREE` (lazy:
+  the pages stay mapped and charged until the kernel reclaims them, which
+  it does before anything else when the cgroup nears its limit, and a
+  reuse before that keeps the old contents and costs no fault). With no
+  limit at all, the common case, the advice is eager: lazily freed pages
+  stay charged and visible in RSS until reclaim, which misleads both
+  autoscalers and Redis's fragmentation ratio, so the lazy advice is a
+  saving the policy grants only where it knows the headroom. The scaled
+  and immediate bands are eager (the kernel is about to want the memory),
+  and so is every explicit purge (`malloc_trim(0)`, `arena.<i>.purge`, the
+  full purge a `memory.events` `high` rise owes: the caller asked for RSS
+  to drop). `lazy_free:true` is the override, lazy in every band;
+  `lazy_band:false` (default true) turns the saving off. The advice is read
+  at each batch flush from the band as last evaluated, so it is at most
+  one sample (10 ms) behind; `stats.cgroup.purge_advice`,
+  `stats.cgroup.lazy_purges` and `stats.cgroup.eager_purges` and the
+  `purge advice:` line of the report say which is in force and how many
+  batches each has issued. Measured (`tests/c/cgroup_lazy.c`, `make
+  test-cgroup-lazy`, `bench/results/2026-09-19-lane-b-two-advice-purge.md`):
+  200 MiB freed at 40% of a 512 MiB container is purged lazily 80 ms
+  later, RSS and `memory.current` stay at 202 and 205 MiB while
+  `memory.stat` `pglazyfree` rises by 189 MiB; allocating the same 200 MiB
+  again takes 5 ms on the C4A against 44 ms after an eager purge; and
+  under pressure from a fresh 380 MiB set the kernel reclaims the lazy
+  pages (`pglazyfreed`) and the process fits in the limit.
+- `Purged` memory and zero: `MADV_DONTNEED`ed pages read as zero and
+  `calloc` trusts a `Purged` slab or extent (sections 4 and 7); `MADV_FREE`d
+  pages do not. The answer is one process-wide sticky flag
+  (`purge::purged_is_zero`): true until the first lazy batch of the
+  process, false for good after it, published before the batch's discard
+  under the lock the walk holds, so `calloc` clears `Purged` memory it
+  reuses from then on (a `memset` of the slot or run, on pages that are
+  mostly still resident) and `Fresh` memory stays known zero. Tracking the
+  advice per slab or extent would take a state bit in the descriptors and
+  a read of it in the claim paths for a saving bounded to `calloc` on
+  `Purged` reuse; the sticky flag is the smallest correct form.
 - Purges are batched: collect up to 64 ranges and issue one `process_madvise`
   with `PIDFD_SELF` (kernel 6.14) or a pidfd of self (5.10), falling back to
-  a loop of `madvise`.
+  a loop of `madvise`. Init probes `MADV_FREE` through the same target
+  separately (a kernel may take `MADV_DONTNEED` from a self-targeting
+  `process_madvise` and refuse `MADV_FREE`); where it does not, lazy
+  batches alone take the loop.
 - The period a walk uses is the arena's configured one scaled by the
   cgroup policy (section 11): unchanged without a limit or under 70% of
   it, shrinking linearly to 1000 ms between 70% and 90%, 0 above; `-1`
@@ -995,7 +1034,8 @@ Init must not call anything that allocates. Steps, in the order
 1. Read `AT_PAGESZ` from `getauxval` and probe features by attempting them
    on a scratch page and recording the error: `MADV_GUARD_INSTALL`, `mseal`,
    `process_madvise` (with `PIDFD_SELF`, then with a pidfd of self, which is
-   kept), `PR_SET_VMA_ANON_NAME` (`sys::features`). Then the CPU report
+   kept; then `MADV_FREE` through whichever worked, for the lazy batches
+   of section 8), `PR_SET_VMA_ANON_NAME` (`sys::features`). Then the CPU report
    (`sys::cpu`, section 17): `AT_HWCAP`/`AT_HWCAP2` and `CTR_EL0` on arm64,
    `cpuid` and a hinted `mmap` above 2^47 on x86_64, the sysfs cache files
    where the registers do not give the sizes. The whole probe is formatted
@@ -1003,9 +1043,10 @@ Init must not call anything that allocates. Steps, in the order
 2. Parse configuration (section 12). This happens before anything is
    reserved so that `abort_conf` aborts with nothing mapped; it reads only
    the weak symbols, one file and `environ`.
-3. Configure the purge backend from the probe and `lazy_free`, `check_zero`,
-   apply `group_handoff`, and record a `background_thread` request (the thread itself is created
-   later, 8.1).
+3. Configure the purge backend from the probe and `lazy_free`, the
+   two-advice purge from the `MADV_FREE` probe and `lazy_band`,
+   `check_zero`, apply `group_handoff`, and record a `background_thread`
+   request (the thread itself is created later, 8.1).
 4. Read secrets from `getrandom`, probe reservation sizes (section 2) and
    reserve the three regions in random order. Name them with
    `PR_SET_VMA_ANON_NAME` when the kernel accepts it.
@@ -1111,14 +1152,26 @@ pending full purge) that the decay driver and the periodic tick read.
 Usage is the last `memory.current` sample against the effective limit
 `min(high, max)`:
 
-| Usage vs effective limit          | Behaviour                                                  |
-|-----------------------------------|------------------------------------------------------------|
-| No limit                          | Defaults; nothing beyond the sample is done                |
-| < 70% of `min(high, max)`         | Defaults, retention capped at 5% of the limit              |
-| 70% .. 90%                        | `dirty_decay_ms` scaled down linearly to 1000; the cap     |
-| >= 90%                            | Period 0: purge at the next pass; cache GC every tick      |
-| `memory.events` `high` increased  | Full purge once, at the next decay pass                    |
-| PSI trigger fired                 | Sample and decay pass at once (the background thread)      |
+| Usage vs effective limit          | Behaviour                                                  | Purge advice (section 8) |
+|-----------------------------------|------------------------------------------------------------|---------------------------|
+| No limit                          | Defaults; nothing beyond the sample is done                | `MADV_DONTNEED`           |
+| < 70% of `min(high, max)`         | Defaults, retention capped at 5% of the limit              | `MADV_FREE` (`lazy_band`) |
+| 70% .. 90%                        | `dirty_decay_ms` scaled down linearly to 1000; the cap     | `MADV_DONTNEED`           |
+| >= 90%                            | Period 0: purge at the next pass; cache GC every tick      | `MADV_DONTNEED`           |
+| `memory.events` `high` increased  | Full purge once, at the next decay pass                    | `MADV_DONTNEED`           |
+| PSI trigger fired                 | Sample and decay pass at once (the background thread)      | as the band               |
+
+The advice column is the two-advice purge of section 8: lazy only where
+the headroom is known and wide, eager everywhere else and for every
+explicit purge; `lazy_free:true` makes every row lazy, `lazy_band:false`
+every row eager. One consequence to know: lazily returned pages stay
+charged until the kernel reclaims them, so the `memory.current` sample
+counts them and the band moves toward 70% sooner than live memory alone
+would; that flips the advice to eager and shortens the window while the
+memory is in fact plentiful, a conservative error in the safe direction,
+and the pages already lazy are the first thing the kernel reclaims when
+the cgroup nears `memory.high` or `memory.max` (`memory.stat`
+`pglazyfreed`), so they never stand between the program and its limit.
 
 *Retention* is the `Empty` memory of every class of every arena and of
 the huge allocator: freed, dirty, not yet purged. It is the only memory
@@ -1228,8 +1281,12 @@ Statistics through `mallctl` (13.4): `stats.cgroup.limit`,
 `stats.cgroup.empty_bytes` (the retention, summed by the read) and
 `stats.cgroup.full_purges`; all `size_t` and read-only; `ENOENT` when
 nothing is tracked, like jemalloc's keys behind a disabled build option.
-`malloc_stats_print` prints one `cgroup:` line and one `cgroup policy:`
-line (section 16).
+The two-advice purge's keys (section 8) sit in the same directory and read
+whether or not a cgroup is tracked, since the advice exists either way:
+`stats.cgroup.purge_advice` (1 lazy, 0 eager, the advice the next purge
+issues), `stats.cgroup.lazy_purges` and `stats.cgroup.eager_purges` (batches
+issued with each). `malloc_stats_print` prints one `cgroup:` line, one
+`cgroup policy:` line and one `purge advice:` line (section 16).
 
 ## 12. Configuration
 
@@ -1260,7 +1317,8 @@ jemalloc names where they exist:
 | `group_handoff`           | false   | challoc only; opt-in: an arena takes another arena's idle slab group before a fresh one (5, 13.3); off because it did not move the mstress row it was built for |
 | `thp`                     | never   | `never`, `always`; inert (planned)      |
 | `spin_hint`               | auto    | challoc only; what a contended lock spins with (5): `auto` (the CPU probe's choice: `umwait` with WAITPKG, else the baseline), `baseline` (`pause`/`isb`), `umwait` (reported and left at `auto` without WAITPKG), `wfe` (aarch64; measured slower under contention, never chosen by `auto`) |
-| `lazy_free`               | false   | use `MADV_FREE` for purge               |
+| `lazy_free`               | false   | `MADV_FREE` for every purge, the override of the two-advice purge (8) |
+| `lazy_band`               | true    | challoc only; `MADV_FREE` for purges under 70% of a known cgroup limit (8, 11); `false` makes every purge `MADV_DONTNEED` unless `lazy_free` |
 | `guards`                  | true    | guard slabs and huge runs               |
 | `guard_slab_interval`     | 8       | one guard per N x 64 KiB of slabs, N a power of two (else rounded up, reported); 0 off, 1 out of range (clamps to 2) |
 | `huge_retain_max`         | 67108864 | challoc only; bytes; freed huge runs above it are purged at once (7) |
@@ -1660,8 +1718,13 @@ kernel-owned fields is what broke tcmalloc on Linux 6.19.
   (<reason>)`; and one `cgroup policy:` line with the band as last
   evaluated, arena 0's effective `decay_ms`, the `retention_cap`, the
   `empty_bytes` held, the `full_purges` run and whether `thp` was forced
-  to `never`. The JSON form has a matching `"cgroup"` object with the
-  policy fields.
+  to `never`; and one `purge advice:` line (section 8) with the advice the
+  next purge issues and why (`under 70% of the limit`, `no headroom
+  known`, `lazy_free`, `lazy_band:false`, `explicit purge`), the batches
+  and bytes issued with each advice, whether `Purged` memory is still
+  known zero, and whether lazy batches go through `process_madvise`. The
+  JSON form has a matching `"cgroup"` object with the policy fields and
+  `purge_advice`, `lazy_purges`, `eager_purges`, `purged_is_zero`.
   The run-time options list marks the inert keys "accepted, no effect". The per-class table also carries the compaction
   diagnostics of section 6.4 (`refilled`, `compacted`, caches that entered
   and left compact mode, probes the refill-rate gate declined) and is
@@ -1683,7 +1746,7 @@ kernel-owned fields is what broke tcmalloc on Linux 6.19.
 - `challoc_features()` (`const char *`) is the feature report: one
   NUL-terminated line of `key=value` pairs separated by single spaces, the
   kernel probes first (`page_size=4096 guard_install=yes mseal=yes
-  process_madvise=pidfd_self anon_name=yes`) then the CPU (section 17;
+  process_madvise=pidfd_self process_madvise_free=yes anon_name=yes`) then the CPU (section 17;
   `mte=no mte3=no pac=yes lse=yes lse2=yes bti=yes sve=yes` on arm64,
   `lam=no uai=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes
   fsrm=yes avx512f=yes` on x86_64, then `cacheline=64 l1d=64K l2=2M` on
@@ -1709,6 +1772,8 @@ runs on every row.
 | Page size (`AT_PAGESZ`) | kernel, the auxiliary vector | the granularity of every mapping, slab and purge (4, 16 or 64 KiB) | none: init aborts without it (`/proc/self/auxv` is tried first) |
 | `MADV_GUARD_INSTALL` | kernel 6.13 | guard slabs between slabs and after huge runs (section 14) | a `PROT_NONE` page after huge runs only; no guard slabs |
 | `process_madvise` on self | kernel 6.13 with a pidfd of self (the syscall exists since 5.10 but accepts `MADV_DONTNEED` only from 6.13; the matrix of Phase 2.5 task 3 found it unavailable on 5.10, 6.1 and 6.8 even without seccomp, lit on 7.0); 6.14 with `PIDFD_SELF` | batched purge, one call per decay pass (section 8) | a loop of `madvise(MADV_DONTNEED)` |
+| `process_madvise(MADV_FREE)` on self (`process_madvise_free`) | the same kernels, probed separately through the target the `MADV_DONTNEED` probe found (yes on the 7.0 reference VMs) | the lazy batches of the two-advice purge (section 8) take the batched path | lazy batches through a loop of `madvise(MADV_FREE)`; eager batches unchanged |
+| `MADV_FREE` (the advice itself) | every kernel since 4.5 | `Empty` slabs and huge extents under 70% of a known cgroup limit are returned lazily (sections 8 and 11); `lazy_free` everywhere | `MADV_DONTNEED` everywhere (no limit known, `lazy_band:false`) |
 | `mseal` | kernel 6.10, not filtered by seccomp | seals the never-committed ranges of the reservations at init (section 10 step 5) | skip; `Sealed ranges: 0 of N` |
 | `PR_SET_VMA_ANON_NAME` | kernel 5.17 with `CONFIG_ANON_VMA_NAME` | named `challoc:*` mappings in `/proc/pid/maps` | skip |
 | PSI triggers on `memory.pressure` | kernel 6.4 (unprivileged), cgroup2 mounted writable | the background thread arms a trigger and reacts to pressure at once (section 11) | sample `memory.current` on the tick |
@@ -1729,7 +1794,8 @@ runs on every row.
 | Cache line, L1D and L2 sizes | `CTR_EL0` (arm64), `cpuid` leaf 4 or `0x8000001D` (x86_64), else `/sys/devices/system/cpu/cpu0/cache/index*/` | reported only: the layout constants (`lock.rs` padding, the 512-byte stride rule) and the cache-capacity defaults stay fixed; an L2-derived ladder was priced on the 1 MiB parts and dropped (section 6.2, "Cache geometry") | `unknown` in the line; nothing changes |
 | Model-checked protocol (`cargo test --features std model::`, `src/model.rs`) | the host test suite, no hardware: an exhaustive interleaving model of the claim, release, `on_live_zero`, purge and group-handoff steps of `class.rs`, memoised on the whole state, with the invariants of section 4 and 5 checked at every state (no slot handed to two claimers, a slot reported zero reads zero, `live` equals set bits plus in-flight reservations, a slab in an arena's set is `Empty`/`Purged` with `live == 0` and owned by that arena, a `Purged` slab reads zero) | nothing at run time: it is the proof obligation for a change to the protocol. Replaying the pre-fix step orders finds the calloc race (Phase 1.5 task 7) and the ownership gap the handoff's owner check closes (task 15); the current order passes every scenario | none needed |
 
-The feature report's arm64 keys are `mte mte3 pac lse lse2 bti sve`, the
+The kernel keys of the feature report are `page_size guard_install mseal
+process_madvise process_madvise_free anon_name`; the arm64 keys are `mte mte3 pac lse lse2 bti sve`, the
 x86_64 keys `lam uai la57 la57_enabled cldemote waitpkg erms fsrm avx512f`, and
 `cacheline l1d l2` on both, after the kernel keys of section 10. The
 container test checks each CPU bit against `/proc/cpuinfo` (`Features` or

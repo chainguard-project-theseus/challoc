@@ -118,6 +118,14 @@ pub enum Leaf {
     StatsCgroupRetentionCap,
     StatsCgroupEmptyBytes,
     StatsCgroupFullPurges,
+    /// The two-advice purge (design 8, plan Phase 2.5 task 10): the advice
+    /// the next purge issues (1 lazy, `MADV_FREE`; 0 eager,
+    /// `MADV_DONTNEED`) and the batches issued with each so far. Readable
+    /// without a tracked cgroup too: the advice exists (eager, or lazy
+    /// under `lazy_free`) whether or not a cgroup is read.
+    StatsCgroupPurgeAdvice,
+    StatsCgroupLazyPurges,
+    StatsCgroupEagerPurges,
     /// `stats.arenas.<i>.*`; `mib[2]` is the arena.
     StatsArenaPactive,
     StatsArenaPdirty,
@@ -228,7 +236,7 @@ static STATS_ARENA_I: [Node; 9] = [
     dir("bins", &STATS_BINS),
 ];
 static STATS_ARENAS: [Node; 1] = [num(&STATS_ARENA_I)];
-static STATS_CGROUP: [Node; 8] = [
+static STATS_CGROUP: [Node; 11] = [
     leaf("limit", Leaf::StatsCgroupLimit),
     leaf("high", Leaf::StatsCgroupHigh),
     leaf("current", Leaf::StatsCgroupCurrent),
@@ -237,6 +245,9 @@ static STATS_CGROUP: [Node; 8] = [
     leaf("retention_cap", Leaf::StatsCgroupRetentionCap),
     leaf("empty_bytes", Leaf::StatsCgroupEmptyBytes),
     leaf("full_purges", Leaf::StatsCgroupFullPurges),
+    leaf("purge_advice", Leaf::StatsCgroupPurgeAdvice),
+    leaf("lazy_purges", Leaf::StatsCgroupLazyPurges),
+    leaf("eager_purges", Leaf::StatsCgroupEagerPurges),
 ];
 static STATS: [Node; 8] = [
     leaf("allocated", Leaf::StatsAllocated),
@@ -808,6 +819,15 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
                 _ => policy.full_purges() as usize,
             })
         }
+        StatsCgroupPurgeAdvice | StatsCgroupLazyPurges | StatsCgroupEagerPurges => {
+            io.read_only()?;
+            let (lazy, eager) = crate::purge::batches();
+            io.read(match leaf {
+                StatsCgroupPurgeAdvice => (crate::purge::advice() == crate::purge::Advice::Lazy) as usize,
+                StatsCgroupLazyPurges => lazy as usize,
+                _ => eager as usize,
+            })
+        }
         StatsArenaPactive
         | StatsArenaPdirty
         | StatsArenaPmuzzy
@@ -1159,7 +1179,19 @@ mod tests {
         assert_eq!(mib_of("stats.cgroup.full_purges"), [7, 7, 7]);
         assert_eq!(mib_to_leaf(&[7, 7, 5]), Ok(Leaf::StatsCgroupRetentionCap));
         assert_eq!(mib_to_leaf(&[7, 7, 6]), Ok(Leaf::StatsCgroupEmptyBytes));
-        assert_eq!(mib_to_leaf(&[7, 7, 8]), Err(ENOENT));
+        // The two-advice purge's keys (Phase 2.5 task 10) follow and read
+        // with or without a tracked cgroup: eager by default (no limit on
+        // the host, none in the default container), nothing lazy issued.
+        assert_eq!(mib_of("stats.cgroup.purge_advice"), [7, 7, 8]);
+        assert_eq!(mib_of("stats.cgroup.lazy_purges"), [7, 7, 9]);
+        assert_eq!(mib_of("stats.cgroup.eager_purges"), [7, 7, 10]);
+        assert_eq!(mib_to_leaf(&[7, 7, 11]), Err(ENOENT));
+        let advice: usize = get("stats.cgroup.purge_advice");
+        assert_eq!(advice, 0, "eager without a limit");
+        let lazy: usize = get("stats.cgroup.lazy_purges");
+        assert_eq!(lazy, 0);
+        let _eager: usize = get("stats.cgroup.eager_purges");
+        assert_eq!(set("stats.cgroup.purge_advice", 1usize), EPERM);
         let tracked = shared().cgroup.tracked();
         for key in [
             "stats.cgroup.limit",

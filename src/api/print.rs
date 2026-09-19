@@ -232,7 +232,8 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     // 10 ms window allows), or why nothing is tracked.
     shared.cgroup.sample(crate::sys::now_coarse_ns());
     writeln!(out, "{}", shared.cgroup)?;
-    policy_line(out, shared)
+    policy_line(out, shared)?;
+    advice_line(out)
 }
 
 /// The `cgroup policy:` line (design 11): the band as last evaluated and
@@ -263,6 +264,30 @@ fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
         p.full_purges(),
         if p.full_purge_pending() { " (one pending)" } else { "" },
         if p.thp_forced() { "forced never (limit under 1 GiB)" } else { "as configured" }
+    )
+}
+
+/// The `purge advice:` line (design 8, plan Phase 2.5 task 10): the advice
+/// the next purge issues and why, the batches and bytes issued with each,
+/// whether `Purged` memory is still known zero, and whether lazy batches go
+/// through `process_madvise`. Printed whether or not a cgroup is tracked.
+fn advice_line<W: Write>(out: &mut W) -> fmt::Result {
+    let (lazy, eager) = purge::batches();
+    let (lazy_bytes, eager_bytes) = purge::discarded_bytes();
+    writeln!(
+        out,
+        "purge advice: {} ({}) lazy_purges {} ({} bytes) eager_purges {} ({} bytes) purged_is_zero {} lazy via {}",
+        match purge::advice() {
+            purge::Advice::Lazy => "lazy MADV_FREE",
+            purge::Advice::Eager => "eager MADV_DONTNEED",
+        },
+        purge::advice_reason(),
+        lazy,
+        lazy_bytes,
+        eager,
+        eager_bytes,
+        purge::purged_is_zero(),
+        if purge::lazy_uses_process_madvise() { "process_madvise" } else { "madvise loop" }
     )
 }
 
@@ -441,7 +466,7 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
         cg.sample(crate::sys::now_coarse_ns());
         writeln!(
             out,
-            "\t\t\"cgroup\": {{\"tracked\": {}, \"limit\": {}, \"high\": {}, \"current\": {}, \"pressure_events\": {}, \"decay_ms\": {}, \"retention_cap\": {}, \"empty_bytes\": {}, \"full_purges\": {}, \"thp_forced\": {}}},",
+            "\t\t\"cgroup\": {{\"tracked\": {}, \"limit\": {}, \"high\": {}, \"current\": {}, \"pressure_events\": {}, \"decay_ms\": {}, \"retention_cap\": {}, \"empty_bytes\": {}, \"full_purges\": {}, \"thp_forced\": {}, \"purge_advice\": \"{}\", \"lazy_purges\": {}, \"eager_purges\": {}, \"purged_is_zero\": {}}},",
             cg.tracked(),
             cg.limit(),
             cg.high(),
@@ -454,7 +479,14 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
             shared.policy.cap(),
             crate::policy::empty_bytes(shared),
             shared.policy.full_purges(),
-            shared.policy.thp_forced()
+            shared.policy.thp_forced(),
+            match purge::advice() {
+                purge::Advice::Lazy => "lazy",
+                purge::Advice::Eager => "eager",
+            },
+            purge::batches().0,
+            purge::batches().1,
+            purge::purged_is_zero()
         )?;
         let t = &snap.totals;
         writeln!(
@@ -755,6 +787,7 @@ mod tests {
             "Metadata: reserved ",
             "  gated clamped\n",
             "\ncgroup: ",
+            "\npurge advice: eager MADV_DONTNEED (no headroom known) lazy_purges 0 (0 bytes) eager_purges ",
             "arenas[0]:",
             "  dirty_decay_ms: ",
             "  small:",
@@ -804,6 +837,7 @@ mod tests {
         assert!(text.contains("\"opt\": {"));
         assert!(text.contains("\"stats\": {\"allocated\": "));
         assert!(text.contains("\"cgroup\": {\"tracked\": "));
+        assert!(text.contains("\"purge_advice\": \"eager\", \"lazy_purges\": 0, \"eager_purges\": "), "{text}");
         assert!(text.contains("\"stats.arenas\": {"));
         assert!(text.contains("\"0\": {"));
         assert!(text.contains("\"bins\": ["));

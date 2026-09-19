@@ -70,7 +70,7 @@ int main(void)
     CHECK(strncmp(line, "page_size=", 10) == 0, "line does not start with page_size=");
 
     /* Every key once: the kernel probes, then this architecture's CPU keys. */
-    static const char *const kernel_keys[] = {"page_size", "guard_install", "mseal", "process_madvise", "anon_name"};
+    static const char *const kernel_keys[] = {"page_size", "guard_install", "mseal", "process_madvise", "process_madvise_free", "anon_name"};
 #if defined(__aarch64__)
     static const char *const cpu_keys[] = {"mte", "mte3", "pac", "lse", "lse2", "bti", "sve", "cacheline", "l1d", "l2"};
 #elif defined(__x86_64__)

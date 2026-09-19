@@ -6,9 +6,15 @@
 //!   ranges and flush them with one `process_madvise` (through `PIDFD_SELF`
 //!   or a pidfd of this process, whichever the probe in `sys::features`
 //!   found) or, when neither works, a loop of `madvise`. The advice is
-//!   `MADV_DONTNEED`, or `MADV_FREE` under `lazy_free`. A range that fails
-//!   to discard aborts: the heap's idea of what is resident would otherwise
-//!   be wrong.
+//!   decided at each flush ([`advice`], the two-advice purge of design 8
+//!   and 11): `MADV_FREE` under the cgroup policy's headroom band (under
+//!   70% of a known limit, mirrored here by [`set_headroom`]) or under the
+//!   `lazy_free` override, `MADV_DONTNEED` everywhere else, and always for
+//!   an explicit purge ([`purge_all`], [`purge_arena`]). A lazy batch goes
+//!   through `process_madvise` only where the init probe found the kernel
+//!   takes `MADV_FREE` there, else through the loop. A range that fails to
+//!   discard aborts: the heap's idea of what is resident would otherwise be
+//!   wrong.
 //! - The decay curve and driver. [`Curve`] is jemalloc's decay shape:
 //!   `dirty_decay_ms` is the window in which a page goes from dirty to
 //!   purged, divided into [`STEPS`] steps; the share of a cohort that may
@@ -39,14 +45,22 @@
 //! the duration and that allocation is served straight from the slabs, the
 //! same path `pthread_setspecific` takes during heap creation (design 6.5).
 //!
-//! The `lazy_free` choice is process-wide and read by `class.rs` and
-//! `huge.rs` through [`purged_is_zero`]: memory discarded with `MADV_FREE`
-//! keeps its contents until the kernel reclaims it, so `Purged` slabs and
-//! extents are no longer known to be zero and `calloc` clears them.
+//! Memory discarded with `MADV_FREE` keeps its contents until the kernel
+//! reclaims it, so a `Purged` slab or extent that went out lazily is not
+//! known to be zero. `class.rs` and `huge.rs` read one process-wide answer,
+//! [`purged_is_zero`], under their locks when they hand a `Purged` member
+//! out, and it is sticky: true until the first lazy batch of the process,
+//! false from then on, so `calloc` clears `Purged` memory it reuses after
+//! that (a `memset` of the slot or run, on pages that are mostly still
+//! resident) and `Fresh` memory stays known zero. Tracking the advice per
+//! slab would need a state bit in the descriptors and a read of it in the
+//! claim paths; the sticky flag is the smallest form and its cost is
+//! bounded to `calloc` on `Purged` reuse (plan Phase 2.5 task 10).
 
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 use crate::heap::Shared;
+pub use crate::policy::Advice;
 use crate::sys::features::ProcessMadvise;
 
 /// Ranges per `process_madvise` (design section 8).
@@ -153,14 +167,33 @@ const PIDFD_SELF: i32 = -10000;
 const _: () = assert!(PIDFD_SELF == crate::sys::PIDFD_SELF);
 /// `process_madvise` target: [`LOOP`], `PIDFD_SELF`, or a pidfd.
 static BACKEND: AtomicI32 = AtomicI32::new(LOOP);
-/// `lazy_free`: discard with `MADV_FREE` instead of `MADV_DONTNEED`.
+/// The backend takes `MADV_FREE` (the init probe, `sys::features`); a lazy
+/// batch through a backend that does not goes through the loop.
+static BACKEND_LAZY: AtomicBool = AtomicBool::new(false);
+/// `lazy_free`: the override, discard with `MADV_FREE` everywhere.
 static LAZY: AtomicBool = AtomicBool::new(false);
+/// `lazy_band` (default true): `MADV_FREE` under the headroom band.
+static LAZY_BAND: AtomicBool = AtomicBool::new(true);
+/// The policy's last evaluation put usage under 70% of a known limit
+/// (`policy::evaluate` mirrors it here).
+static HEADROOM: AtomicBool = AtomicBool::new(false);
+/// Explicit purges in flight ([`purge_all`], [`purge_arena`]): eager.
+static EXPLICIT: AtomicU32 = AtomicU32::new(0);
+/// A lazy batch has been issued in this process: `Purged` memory is no
+/// longer known to be zero (the module doc). Sticky.
+static LAZY_EVER: AtomicBool = AtomicBool::new(false);
+/// Batches and bytes issued with each advice (the report, `stats.cgroup.*`).
+static LAZY_BATCHES: AtomicU64 = AtomicU64::new(0);
+static EAGER_BATCHES: AtomicU64 = AtomicU64::new(0);
+static LAZY_BYTES: AtomicU64 = AtomicU64::new(0);
+static EAGER_BYTES: AtomicU64 = AtomicU64::new(0);
 /// `check_zero`: the debug mode that reads every slot or page handed out
 /// as "known zero" and aborts on a dirty word.
 static CHECK_ZERO: AtomicBool = AtomicBool::new(false);
 
-/// Choose the discard backend and advice. Called once at init, before
-/// anything can be purged, and again in the fork child.
+/// Choose the discard backend and the `lazy_free` override. Called once at
+/// init, before anything can be purged, and by the tests. `lazy_free`
+/// makes `Purged` memory unknown-zero from the start (the module doc).
 pub fn configure(pm: ProcessMadvise, lazy_free: bool) {
     let backend = match pm {
         ProcessMadvise::Unavailable => LOOP,
@@ -169,6 +202,86 @@ pub fn configure(pm: ProcessMadvise, lazy_free: bool) {
     };
     BACKEND.store(backend, Ordering::Relaxed);
     LAZY.store(lazy_free, Ordering::Relaxed);
+    if lazy_free {
+        LAZY_EVER.store(true, Ordering::Relaxed);
+    }
+}
+
+/// The two-advice purge's settings (plan Phase 2.5 task 10): whether the
+/// backend takes `MADV_FREE` (the probe) and the `lazy_band` key. Called
+/// once at init after [`configure`].
+pub fn configure_advice(backend_lazy: bool, lazy_band: bool) {
+    BACKEND_LAZY.store(backend_lazy, Ordering::Relaxed);
+    LAZY_BAND.store(lazy_band, Ordering::Relaxed);
+}
+
+/// The policy's mirror: usage is under 70% of a known limit (design 11's
+/// `Low` band). Written where the policy is evaluated, read at each flush.
+pub fn set_headroom(low: bool) {
+    HEADROOM.store(low, Ordering::Relaxed);
+}
+
+/// The advice the next batch flush would issue (the module doc).
+#[inline]
+pub fn advice() -> Advice {
+    let band = if HEADROOM.load(Ordering::Relaxed) { crate::policy::Band::Low } else { crate::policy::Band::Unlimited };
+    crate::policy::advice(
+        band,
+        LAZY.load(Ordering::Relaxed),
+        LAZY_BAND.load(Ordering::Relaxed),
+        EXPLICIT.load(Ordering::Relaxed) != 0,
+    )
+}
+
+/// Why [`advice`] is what it is, for the report: `lazy_free`,
+/// `under 70% of the limit`, `explicit purge`, `lazy_band:false`, or
+/// `no headroom known` (no limit, or 70% and above).
+#[cold]
+pub fn advice_reason() -> &'static str {
+    if LAZY.load(Ordering::Relaxed) {
+        "lazy_free"
+    } else if EXPLICIT.load(Ordering::Relaxed) != 0 {
+        "explicit purge"
+    } else if !LAZY_BAND.load(Ordering::Relaxed) {
+        "lazy_band:false"
+    } else if HEADROOM.load(Ordering::Relaxed) {
+        "under 70% of the limit"
+    } else {
+        "no headroom known"
+    }
+}
+
+/// Whether a lazy batch goes through `process_madvise` (the probe found
+/// the backend takes `MADV_FREE`); false with the loop backend too.
+pub fn lazy_uses_process_madvise() -> bool {
+    uses_process_madvise() && BACKEND_LAZY.load(Ordering::Relaxed)
+}
+
+/// `(lazy batches, eager batches)` flushed so far.
+pub fn batches() -> (u64, u64) {
+    (LAZY_BATCHES.load(Ordering::Relaxed), EAGER_BATCHES.load(Ordering::Relaxed))
+}
+
+/// `(lazy bytes, eager bytes)` discarded so far.
+pub fn discarded_bytes() -> (u64, u64) {
+    (LAZY_BYTES.load(Ordering::Relaxed), EAGER_BYTES.load(Ordering::Relaxed))
+}
+
+/// An explicit purge in progress: every flush until the guard drops is
+/// eager (the caller asked for RSS to drop), whatever the band.
+struct Explicit;
+
+impl Explicit {
+    fn enter() -> Explicit {
+        EXPLICIT.fetch_add(1, Ordering::Relaxed);
+        Explicit
+    }
+}
+
+impl Drop for Explicit {
+    fn drop(&mut self) {
+        EXPLICIT.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 /// Turn the `check_zero` debug mode on or off (init, from the config key;
@@ -188,8 +301,10 @@ pub fn check_zero() -> bool {
     CHECK_ZERO.load(Ordering::Relaxed)
 }
 
-/// The discard backend and advice for diagnostics, e.g.
-/// `process_madvise(PIDFD_SELF) MADV_DONTNEED`.
+/// The discard backend and the advice in force for diagnostics, e.g.
+/// `process_madvise(PIDFD_SELF) MADV_DONTNEED`; the advice reads
+/// `MADV_FREE (some lazy batches issued)` once any lazy batch went out,
+/// since that is what makes `Purged` memory unknown-zero.
 #[cold]
 pub fn backend_name() -> (&'static str, &'static str) {
     let backend = match BACKEND.load(Ordering::Relaxed) {
@@ -197,16 +312,27 @@ pub fn backend_name() -> (&'static str, &'static str) {
         PIDFD_SELF => "process_madvise(PIDFD_SELF)",
         _ => "process_madvise(pidfd)",
     };
-    let advice = if purged_is_zero() { "MADV_DONTNEED" } else { "MADV_FREE" };
+    let advice = match (advice(), purged_is_zero()) {
+        (Advice::Lazy, _) => "MADV_FREE",
+        (Advice::Eager, true) => "MADV_DONTNEED",
+        (Advice::Eager, false) => "MADV_DONTNEED (some lazy batches issued)",
+    };
     (backend, advice)
 }
 
-/// Whether memory in the `Purged` state is known to read as zero. False
-/// under `lazy_free`, where `MADV_FREE` leaves the old contents in place
-/// until the kernel gets around to reclaiming the pages.
+/// Whether memory in the `Purged` state is known to read as zero: until
+/// the first `MADV_FREE` batch of the process (the module doc), which
+/// leaves the old contents in place until the kernel gets around to
+/// reclaiming the pages; false from then on, for good.
 #[inline]
 pub fn purged_is_zero() -> bool {
-    !LAZY.load(Ordering::Relaxed)
+    !LAZY_EVER.load(Ordering::Relaxed)
+}
+
+/// Some lazy batch has been issued (the sticky flag behind
+/// [`purged_is_zero`]), for the report.
+pub fn lazy_ever() -> bool {
+    LAZY_EVER.load(Ordering::Relaxed)
 }
 
 /// Whether batches go through `process_madvise` (false: `madvise` loop).
@@ -267,11 +393,28 @@ impl Batch {
     }
 
     /// Discard every range with one syscall when the kernel allows it and a
-    /// loop of `madvise` otherwise, then empty the batch. Aborts if a range
-    /// cannot be discarded.
+    /// loop of `madvise` otherwise, then empty the batch. The advice is
+    /// [`advice`] at this moment, counted per batch and per byte; a lazy
+    /// flush makes `Purged` memory unknown-zero for the rest of the process
+    /// (the module doc), which is published before the discard so a claim
+    /// of one of these ranges after the caller's lock drops sees it. Aborts
+    /// if a range cannot be discarded.
     pub fn flush(&mut self) {
         if self.n != 0 {
-            os::discard(&self.ranges[..self.n]);
+            let advice = advice();
+            let bytes: u64 = self.ranges[..self.n].iter().map(|&(_, len)| len as u64).sum();
+            match advice {
+                Advice::Lazy => {
+                    LAZY_EVER.store(true, Ordering::Relaxed);
+                    LAZY_BATCHES.fetch_add(1, Ordering::Relaxed);
+                    LAZY_BYTES.fetch_add(bytes, Ordering::Relaxed);
+                }
+                Advice::Eager => {
+                    EAGER_BATCHES.fetch_add(1, Ordering::Relaxed);
+                    EAGER_BYTES.fetch_add(bytes, Ordering::Relaxed);
+                }
+            }
+            os::discard(&self.ranges[..self.n], advice);
             self.n = 0;
         }
     }
@@ -394,8 +537,10 @@ pub fn decay(shared: &Shared, now: u64) -> Option<u64> {
 }
 
 /// Purge every `Empty` slab of every arena and every huge extent
-/// regardless of age. Returns how many were purged.
+/// regardless of age, eagerly (`malloc_trim(0)`, the `high`-rise full
+/// purge: the memory is wanted back now). Returns how many were purged.
 pub fn purge_all(shared: &Shared) -> usize {
+    let _explicit = Explicit::enter();
     let mut n = 0;
     for arena in shared.arenas.iter() {
         n += arena.purge_all();
@@ -405,8 +550,9 @@ pub fn purge_all(shared: &Shared) -> usize {
 
 /// `arena.<i>.purge`: purge every `Empty` slab of one arena regardless of
 /// age (plus, for arena 0, the huge extents, which belong to no single
-/// arena's sets). `None` if the arena does not exist.
+/// arena's sets), eagerly. `None` if the arena does not exist.
 pub fn purge_arena(shared: &Shared, index: u16) -> Option<usize> {
+    let _explicit = Explicit::enter();
     let arena = shared.arenas.get_existing(index)?;
     let mut n = arena.purge_all();
     if index == 0 {
@@ -456,14 +602,17 @@ pub fn note_decay_changed() {
 
 #[cfg(target_os = "linux")]
 mod os {
-    use super::{BACKEND, LAZY, LOOP, MAX_BATCH};
+    use super::{Advice, BACKEND, BACKEND_LAZY, LOOP, MAX_BATCH};
     use crate::sys::{self, IoVec, MADV_DONTNEED, MADV_FREE};
     use core::sync::atomic::Ordering;
 
-    pub fn discard(ranges: &[(usize, usize)]) {
-        let advice = if LAZY.load(Ordering::Relaxed) { MADV_FREE } else { MADV_DONTNEED };
+    pub fn discard(ranges: &[(usize, usize)], advice: Advice) {
+        let lazy = advice == Advice::Lazy;
+        let advice = if lazy { MADV_FREE } else { MADV_DONTNEED };
         let backend = BACKEND.load(Ordering::Relaxed);
-        if backend != LOOP {
+        // A lazy batch takes the batched path only where the probe found
+        // the kernel accepts `MADV_FREE` through `process_madvise`.
+        if backend != LOOP && (!lazy || BACKEND_LAZY.load(Ordering::Relaxed)) {
             let mut iov = [IoVec { base: core::ptr::null(), len: 0 }; MAX_BATCH];
             let mut total = 0usize;
             for (i, &(addr, len)) in ranges.iter().enumerate() {
@@ -492,7 +641,7 @@ mod os {
 /// Off Linux nothing is mapped; host tests only exercise the bookkeeping.
 #[cfg(not(target_os = "linux"))]
 mod os {
-    pub fn discard(_ranges: &[(usize, usize)]) {}
+    pub fn discard(_ranges: &[(usize, usize)], _advice: super::Advice) {}
 }
 
 /// The background thread (design 8.1).
@@ -1019,6 +1168,7 @@ mod tests {
 
     #[test]
     fn batch_merges_adjacent_ranges() {
+        let _serial = ADVICE_TEST.lock().unwrap();
         let page = page_size();
         let base = scratch(8, page);
         let mut b = Batch::new();
@@ -1038,6 +1188,8 @@ mod tests {
 
     #[test]
     fn batch_fills_and_flushes() {
+        let _serial = ADVICE_TEST.lock().unwrap();
+        let (_, eager0) = batches();
         let page = page_size();
         let base = scratch(2 * MAX_BATCH + 4, page);
         let mut b = Batch::new();
@@ -1056,16 +1208,62 @@ mod tests {
         assert!(b.is_empty());
         b.flush();
         assert!(b.is_empty());
+        // Two eager batches were counted (the default advice), none lazy.
+        assert_eq!(batches().1, eager0 + 2);
+        assert!(purged_is_zero());
     }
 
-    /// The default (no `lazy_free`) discards with `MADV_DONTNEED`, so
-    /// purged memory is zero. `lazy_free:true` is exercised end to end by
-    /// `tests/c/decay.c`; toggling the process-wide flag here would race
-    /// the class and huge tests that read it.
+    /// The default (no `lazy_free`, no limit) discards with `MADV_DONTNEED`,
+    /// so purged memory is zero. `lazy_free:true` is exercised end to end by
+    /// `tests/c/decay.c` and the headroom band by `tests/c/cgroup_lazy.c`;
+    /// issuing a lazy batch here would make the flag sticky for the class
+    /// and huge tests that read it.
     #[test]
     fn purged_memory_is_zero_by_default() {
         assert!(purged_is_zero());
+        assert_eq!(advice(), Advice::Eager);
+        assert_eq!(advice_reason(), "no headroom known");
     }
+
+    /// The advice's process-wide wiring (plan Phase 2.5 task 10): the
+    /// policy's headroom mirror, the `lazy_band` key and an explicit purge
+    /// in flight, read without any batch being flushed. Serialised with
+    /// [`ADVICE_TEST`] against the batch tests, which flush.
+    #[test]
+    fn advice_follows_headroom_band_key_and_explicit_purges() {
+        let _serial = ADVICE_TEST.lock().unwrap();
+        assert_eq!(advice(), Advice::Eager);
+        set_headroom(true);
+        assert_eq!(advice(), Advice::Lazy);
+        assert_eq!(advice_reason(), "under 70% of the limit");
+        {
+            let _e = Explicit::enter();
+            assert_eq!(advice(), Advice::Eager);
+            assert_eq!(advice_reason(), "explicit purge");
+            {
+                let _e2 = Explicit::enter();
+                assert_eq!(advice(), Advice::Eager);
+            }
+            assert_eq!(advice(), Advice::Eager);
+        }
+        assert_eq!(advice(), Advice::Lazy);
+        configure_advice(false, false);
+        assert_eq!(advice(), Advice::Eager);
+        assert_eq!(advice_reason(), "lazy_band:false");
+        assert!(!lazy_uses_process_madvise());
+        configure_advice(false, true);
+        assert_eq!(advice(), Advice::Lazy);
+        set_headroom(false);
+        assert_eq!(advice(), Advice::Eager);
+        assert_eq!(advice_reason(), "no headroom known");
+        // Nothing was flushed: the sticky flag is untouched.
+        assert!(purged_is_zero());
+        assert_eq!(batches(), (0, EAGER_BATCHES.load(Ordering::Relaxed)));
+    }
+
+    /// The batch tests flush (on Linux, for real); the advice test flips
+    /// the headroom mirror; one at a time.
+    pub(super) static ADVICE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -1092,6 +1290,7 @@ mod linux_tests {
     #[test]
     fn batch_discards_through_the_probed_backend_and_the_loop() {
         let _serial = BACKEND_TEST.lock().unwrap();
+        let _advice = super::tests::ADVICE_TEST.lock().unwrap();
         let page = crate::sys::features::page_size();
         let mut f = Features::probe();
         let backends = [f.process_madvise, ProcessMadvise::Unavailable];

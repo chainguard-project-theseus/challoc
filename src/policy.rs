@@ -40,6 +40,21 @@
 //! `dirty_decay_ms:-1` (never) is left alone in every band: it is an
 //! explicit choice, as under jemalloc, and the report shows it.
 //!
+//! The advice ([`advice`], plan Phase 2.5 task 10): a purge issues
+//! `MADV_FREE` (lazy: the pages stay mapped and charged until the kernel
+//! reclaims them, and a reuse before that refaults nothing) only where the
+//! policy knows the headroom, under 70% of a known limit, and
+//! `MADV_DONTNEED` (eager) everywhere else: with no limit at all (the
+//! common case; lazily freed pages would stay in RSS and mislead a
+//! fragmentation ratio or an autoscaler that reads it, design 8), in the
+//! scaled and immediate bands (the kernel is about to want the memory), and
+//! for an explicit purge (`malloc_trim(0)`, `arena.<i>.purge`, the full
+//! purge a `memory.events` `high` rise owes: the caller asked for RSS to
+//! drop). `lazy_free:true` is the override, lazy everywhere;
+//! `lazy_band:false` turns the saving off, eager everywhere. The advice is
+//! read at each batch flush from `purge`'s mirror of the band, so it is at
+//! most one sample (10 ms) behind.
+//!
 //! THP: the `thp` key has no mechanism behind it yet (design 10), so
 //! "disabled under small limits" reduces to forcing the stored setting to
 //! `never` at init when the effective limit is under 1 GiB ([`THP_MIN_LIMIT`]);
@@ -128,6 +143,34 @@ pub fn band(limit: u64, current: u64) -> Band {
         Band::Immediate
     } else {
         Band::Scaled(frac16(ppm - SCALED_FROM_PPM, IMMEDIATE_FROM_PPM - SCALED_FROM_PPM))
+    }
+}
+
+/// The advice a purge batch is issued with (design 8).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Advice {
+    /// `MADV_DONTNEED`: the pages leave RSS and the cgroup's charge now;
+    /// the next touch faults in a zero page.
+    Eager,
+    /// `MADV_FREE`: the pages stay mapped and charged until the kernel
+    /// reclaims them; a touch before that keeps the old contents and costs
+    /// no fault.
+    Lazy,
+}
+
+/// The advice for a purge in `band` (the module doc): `lazy_free` wins
+/// (lazy everywhere), then an explicit purge is eager, then the headroom
+/// band (`Low`, under 70% of a known limit) is lazy when `lazy_band`
+/// allows it, and everything else, no limit included, is eager.
+pub fn advice(band: Band, lazy_free: bool, lazy_band: bool, explicit: bool) -> Advice {
+    if lazy_free {
+        Advice::Lazy
+    } else if explicit {
+        Advice::Eager
+    } else if lazy_band && band == Band::Low {
+        Advice::Lazy
+    } else {
+        Advice::Eager
     }
 }
 
@@ -330,6 +373,9 @@ pub fn evaluate(shared: &Shared) {
     let p = &shared.policy;
     let limit = cg.limit().min(cg.high());
     let b = band(limit, cg.current());
+    // The purge side's mirror of "under 70% of a known limit", read at
+    // each batch flush for the advice (the module doc).
+    crate::purge::set_headroom(b == Band::Low);
     if b == Band::Unlimited {
         // A limit that went away (`docker update`) resets the outcome once;
         // otherwise nothing to do and nothing to read.
@@ -506,6 +552,43 @@ mod tests {
         assert!(!p.immediate());
         assert!(!p.thp_forced());
         assert!(Policy::new(0, true).thp_forced());
+    }
+
+    /// The advice at the band edges (plan Phase 2.5 task 10): lazy only
+    /// under 70% of a known limit with `lazy_band` on and no override or
+    /// explicit purge in play; `lazy_free` lazy everywhere; no limit eager.
+    #[test]
+    fn advice_at_the_band_edges() {
+        use Advice::{Eager, Lazy};
+        let defaults = |b| advice(b, false, true, false);
+        // No limit: eager (the headroom is unknown).
+        assert_eq!(defaults(Band::Unlimited), Eager);
+        assert_eq!(defaults(band(UNLIMITED, 0)), Eager);
+        assert_eq!(defaults(band(0, 0)), Eager);
+        // Under 70%: lazy, up to the last byte below the band.
+        assert_eq!(defaults(band(L, 0)), Lazy);
+        assert_eq!(defaults(band(L, L / 2)), Lazy);
+        assert_eq!(defaults(band(L, L * 7 / 10 - 1)), Lazy);
+        // 70% and above: eager.
+        assert_eq!(defaults(band(L, L * 7 / 10)), Eager);
+        assert_eq!(defaults(Band::Scaled(0)), Eager);
+        assert_eq!(defaults(band(L, L * 8 / 10)), Eager);
+        assert_eq!(defaults(band(L, L * 9 / 10 - 1)), Eager);
+        assert_eq!(defaults(band(L, L * 9 / 10)), Eager);
+        assert_eq!(defaults(Band::Immediate), Eager);
+        assert_eq!(defaults(band(L, 2 * L)), Eager);
+        // `memory.high` below `memory.max`: the minimum decides.
+        assert_eq!(defaults(band((256 << 20).min(L), 100 << 20)), Lazy);
+        assert_eq!(defaults(band((256 << 20).min(L), 200 << 20)), Eager);
+        for b in [Band::Unlimited, Band::Low, Band::Scaled(FRAC_ONE / 2), Band::Immediate] {
+            // The override: lazy everywhere, an explicit purge included.
+            assert_eq!(advice(b, true, true, false), Lazy, "{b:?}");
+            assert_eq!(advice(b, true, false, true), Lazy, "{b:?}");
+            // The band saving off: eager everywhere.
+            assert_eq!(advice(b, false, false, false), Eager, "{b:?}");
+            // An explicit purge is eager in every band.
+            assert_eq!(advice(b, false, true, true), Eager, "{b:?}");
+        }
     }
 
     #[test]

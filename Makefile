@@ -18,7 +18,10 @@
 #                            Phase 2 task 6 (b), opt-in (5 min): 200..480 MiB live
 #                            in 512 MiB for OSC_SECS (300); CONTROL=1 adds the
 #                            cgroup:false run
-#   make test-cgroup         both of the above
+#   make test-cgroup-lazy    Phase 2.5 task 10, in `make test`: the two-advice
+#                            purge under --memory=512m at ~50% usage (MADV_FREE,
+#                            tests/c/cgroup_lazy.c) and its lazy_band:false control
+#   make test-cgroup         the three of the above
 #   make test-cgroup-compare Phase 2 task 7: the same runs under CGROUP_ALLOCS
 #                            (jemalloc mimalloc tcmalloc), recorded, no criterion
 #   make test-host           pure-logic unit tests on the host
@@ -167,7 +170,7 @@ DOCKER_RUN = $(DOCKER_BASE) $(DOCKER_FLAGS) $(IMAGE)
 cgroup_docker = $(DOCKER_BASE) --memory=$(1) --memory-swap=$(1) $(if $(CGROUP_WATCHDOG),-e WATCHDOG=$(CGROUP_WATCHDOG)) $(IMAGE) sh scripts/cgroup-tests.sh
 cgroup_run = $(call cgroup_docker,$(1)) $(2)
 
-.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-oscillate test-cgroup test-cgroup-compare test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench check-needed clean-volumes
+.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench check-needed clean-volumes
 
 image:
 	docker build --platform $(PLATFORM) -f Dockerfile.dev -t $(IMAGE) .
@@ -189,6 +192,7 @@ test: image
 	  && cargo test --features std api:: -- --nocapture'
 	$(MAKE) --no-print-directory test-cgroup-limit
 	$(MAKE) --no-print-directory test-cgroup-churn
+	$(MAKE) --no-print-directory test-cgroup-lazy
 
 # Phase 2 task 4: the same tests that read the cgroup, in a container with
 # a 512 MiB limit; the effective `memory.max` must read as that number.
@@ -225,7 +229,20 @@ ifneq ($(CONTROL),)
 	-$(call cgroup_run,512m,oscillate challoc-off $(OSC_SECS))
 endif
 
-test-cgroup: test-cgroup-churn test-cgroup-oscillate
+# Phase 2.5 task 10 (about 20 s, in `make test`): tests/c/cgroup_lazy.c
+# allocates 200 MiB, frees it and idles under --memory=512m, about 50% of
+# the limit, the policy's headroom band: the purge must be MADV_FREE
+# (`stats.cgroup.lazy_purges` rises, RSS and memory.current stay,
+# memory.stat pglazyfree grows) and the pages must be reclaimable (a 380 MiB
+# set of a fresh class fits, pglazyfreed rises); with MALLOC_CONF=
+# lazy_band:false (`eager`, the control) the same run purges with
+# MADV_DONTNEED and RSS falls under a quarter of the churn within 2 s.
+test-cgroup-lazy: image
+	$(DOCKER_RUN) cargo build --release
+	$(call cgroup_run,512m,lazy challoc lazy 200)
+	$(call cgroup_run,512m,lazy challoc-eager eager 200)
+
+test-cgroup: test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate
 
 # Phase 2 task 7: the same runs under other allocators (CGROUP_ALLOCS,
 # default jemalloc, mimalloc and tcmalloc; needs `make bench-build` for mimalloc),

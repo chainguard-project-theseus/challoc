@@ -74,6 +74,13 @@ pub struct Features {
     pub mseal: bool,
     /// How `process_madvise` can target this process, if at all.
     pub process_madvise: ProcessMadvise,
+    /// `process_madvise(MADV_FREE)` through the same target works (probed
+    /// separately: the two-advice purge of design 8 issues `MADV_FREE`
+    /// under the cgroup headroom band, and a kernel may take
+    /// `MADV_DONTNEED` from a self-targeting `process_madvise` but refuse
+    /// `MADV_FREE`; lazy batches then go through the `madvise` loop).
+    /// Always `false` when `process_madvise` is unavailable.
+    pub process_madvise_free: bool,
     /// `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME)` works
     /// (kernel 5.17+ with `CONFIG_ANON_VMA_NAME`).
     pub anon_name: bool,
@@ -103,7 +110,13 @@ impl fmt::Display for Features {
             ProcessMadvise::PidfdSelf => f.write_str("pidfd_self")?,
             ProcessMadvise::Pidfd(fd) => write!(f, "pidfd:{fd}")?,
         }
-        write!(f, " anon_name={} {}", yn(self.anon_name), self.cpu)
+        write!(
+            f,
+            " process_madvise_free={} anon_name={} {}",
+            yn(self.process_madvise_free),
+            yn(self.anon_name),
+            self.cpu
+        )
     }
 }
 
@@ -163,7 +176,7 @@ pub use linux::*;
 mod linux {
     use super::{AT_PAGESZ, Cpu, Features, ProcessMadvise, page_size_from_auxv};
     use crate::sys::{
-        self, IoVec, MADV_DONTNEED, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE, MAP_ANONYMOUS,
+        self, IoVec, MADV_DONTNEED, MADV_FREE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE, MAP_ANONYMOUS,
         MAP_PRIVATE, PIDFD_SELF, PROT_NONE, PROT_READ, PROT_WRITE,
     };
 
@@ -264,12 +277,28 @@ mod linux {
         r == Ok(page) && unsafe { p.read_volatile() } == 0
     }
 
+    /// `process_madvise(pidfd, MADV_FREE)` on a dirtied scratch page must
+    /// report the whole page. The contents cannot be checked (`MADV_FREE`
+    /// leaves them in place until reclaim), so the return value is the
+    /// only evidence; a kernel that refuses the advice through
+    /// `process_madvise` answers `EINVAL`.
+    fn process_madvise_free_works(pidfd: i32, addr: usize, page: usize) -> bool {
+        let p = addr as *mut u8;
+        // SAFETY: `addr` is our writable scratch page.
+        unsafe { p.write_volatile(0xA5) };
+        let iov = IoVec { base: p, len: page };
+        // SAFETY: `iov` is live for the call; FREE on our scratch page.
+        let r = unsafe { sys::process_madvise(pidfd, &iov, 1, MADV_FREE, 0) };
+        r == Ok(page)
+    }
+
     /// `PIDFD_SELF` first (kernel 6.14, no fd); then a real pidfd for the
     /// calling process (kernel 5.10, needs the self-target exemption or
-    /// `CAP_SYS_NICE`); otherwise unavailable.
-    pub fn probe_process_madvise(page: usize) -> ProcessMadvise {
+    /// `CAP_SYS_NICE`); otherwise unavailable. The second value is whether
+    /// `MADV_FREE` goes through the same target (plan Phase 2.5 task 10).
+    pub fn probe_process_madvise(page: usize) -> (ProcessMadvise, bool) {
         let Some(addr) = scratch(page, PROT_READ | PROT_WRITE) else {
-            return ProcessMadvise::Unavailable;
+            return (ProcessMadvise::Unavailable, false);
         };
         let result = if process_madvise_works(PIDFD_SELF, addr, page) {
             ProcessMadvise::PidfdSelf
@@ -283,8 +312,13 @@ mod linux {
                 Err(_) => ProcessMadvise::Unavailable,
             }
         };
+        let lazy = match result {
+            ProcessMadvise::Unavailable => false,
+            ProcessMadvise::PidfdSelf => process_madvise_free_works(PIDFD_SELF, addr, page),
+            ProcessMadvise::Pidfd(fd) => process_madvise_free_works(fd, addr, page),
+        };
         release(addr, page);
-        result
+        (result, lazy)
     }
 
     /// `PR_SET_VMA_ANON_NAME` on a scratch page.
@@ -305,12 +339,14 @@ mod linux {
         /// another pidfd, so init stores the result.
         pub fn probe() -> Features {
             let page_size = page_size();
+            let (process_madvise, process_madvise_free) = probe_process_madvise(page_size);
             Features {
                 page_size,
                 page_shift: page_size.trailing_zeros(),
                 guard_install: probe_guard_install(page_size),
                 mseal: probe_mseal(page_size),
-                process_madvise: probe_process_madvise(page_size),
+                process_madvise,
+                process_madvise_free,
                 anon_name: probe_anon_name(page_size),
                 cpu: Cpu::probe(page_size),
             }
@@ -322,6 +358,7 @@ mod linux {
             if let ProcessMadvise::Pidfd(fd) = self.process_madvise {
                 let _ = sys::close(fd);
                 self.process_madvise = ProcessMadvise::Unavailable;
+                self.process_madvise_free = false;
             }
         }
     }
@@ -378,19 +415,20 @@ mod tests {
             guard_install: false,
             mseal: true,
             process_madvise: ProcessMadvise::Pidfd(7),
+            process_madvise_free: true,
             anon_name: false,
             cpu: axion_cpu(),
         };
         let s = std::format!("{f}");
         assert_eq!(
             s,
-            "page_size=4096 guard_install=no mseal=yes process_madvise=pidfd:7 anon_name=no \
+            "page_size=4096 guard_install=no mseal=yes process_madvise=pidfd:7 process_madvise_free=yes anon_name=no \
              mte=no mte3=no pac=yes lse=yes lse2=yes bti=yes sve=yes cacheline=64 l1d=64K l2=2M"
         );
         let f = Features { process_madvise: ProcessMadvise::PidfdSelf, ..f };
-        assert!(std::format!("{f}").contains("process_madvise=pidfd_self "));
-        let f = Features { process_madvise: ProcessMadvise::Unavailable, ..f };
-        assert!(std::format!("{f}").contains("process_madvise=no "));
+        assert!(std::format!("{f}").contains("process_madvise=pidfd_self process_madvise_free=yes "));
+        let f = Features { process_madvise: ProcessMadvise::Unavailable, process_madvise_free: false, ..f };
+        assert!(std::format!("{f}").contains("process_madvise=no process_madvise_free=no "));
     }
 
     #[test]
@@ -401,6 +439,7 @@ mod tests {
             guard_install: true,
             mseal: true,
             process_madvise: ProcessMadvise::PidfdSelf,
+            process_madvise_free: true,
             anon_name: true,
             cpu: axion_cpu(),
         };
@@ -437,6 +476,7 @@ mod tests {
                 guard_install: true,
                 mseal: true,
                 process_madvise: ProcessMadvise::Pidfd(i32::MAX),
+                process_madvise_free: true,
                 anon_name: true,
                 cpu,
             };
@@ -543,7 +583,7 @@ mod linux_tests {
             }
         }
         match f.process_madvise {
-            ProcessMadvise::Unavailable => {}
+            ProcessMadvise::Unavailable => assert!(!f.process_madvise_free, "{line}"),
             ProcessMadvise::PidfdSelf | ProcessMadvise::Pidfd(_) => {
                 let fd = match f.process_madvise {
                     ProcessMadvise::Pidfd(fd) => fd,
@@ -555,6 +595,11 @@ mod linux_tests {
                     let iov = sys::IoVec { base: p, len: page };
                     assert_eq!(sys::process_madvise(fd, &iov, 1, sys::MADV_DONTNEED, 0), Ok(page));
                     assert_eq!(p.read_volatile(), 0);
+                    // The `MADV_FREE` probe (plan Phase 2.5 task 10) agrees
+                    // with a second call through the same target.
+                    p.write_volatile(9);
+                    let r = sys::process_madvise(fd, &iov, 1, sys::MADV_FREE, 0);
+                    assert_eq!(r == Ok(page), f.process_madvise_free, "{line}: {r:?}");
                 }
             }
         }
@@ -586,6 +631,7 @@ mod linux_tests {
         if let ProcessMadvise::Pidfd(fd) = f.process_madvise {
             f.release();
             assert_eq!(sys::close(fd), Err(sys::Errno::EBADF));
+            assert!(!f.process_madvise_free);
         } else {
             f.release();
         }
