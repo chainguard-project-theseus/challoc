@@ -43,6 +43,13 @@
 #   COMMIT=hash   the commit named in the header (default: git, "unknown" where the
 #                 synced tree has no usable .git, as on a VM)
 #   HOST_CPU, HOST_KIND   recorded in the header (the Makefile passes HOST_CPU)
+#
+# Per-phase cgroup peak (plan Phase 2.5 task 17): soak.rb holds one
+# descriptor on the cgroup's memory.peak, resets it at start and right after
+# the GC.compact sample, and the table carries the cgroup's peak for
+# start..compact and compact..end beside VmHWM (the process's high-water
+# mark). Needs `make ruby-soak CGROUP_PEAK=1` (a writable cgroup tree) on a
+# 6.12+ kernel; otherwise the rows read "-" and the header says why.
 set -eu
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
@@ -128,6 +135,7 @@ done
 
 # ---- report ------------------------------------------------------------------------------
 kv() { awk -v k="$2" '{for (i = 1; i <= NF; i++) {split($i, p, "="); if (p[1] == k) print p[2]}}' "$OUT/$1.out" | tail -1; }
+kb_mib() { awk -v k="$1" 'BEGIN {if (k=="-"||k=="") print "-"; else printf "%.1f", k/1024}'; }
 mib() { awk -v b="$1" 'BEGIN {if (b=="-"||b=="") print "-"; else printf "%.1f", b/1048576}'; }
 # col ALLOC WHAT: one figure from the CSV, in MiB.
 #   peak_rss      max vmrss over the samples        hwm      final VmHWM
@@ -182,6 +190,11 @@ M5=$COMPACT_AT; M10=$DURATION
   echo "- workload: bench/ruby/soak.rb $DURATION s, $THREADS threads${IDLE_THREADS:+ + $IDLE_THREADS mostly idle threads}, seed $SEED, sample every $INTERVAL s, full GC every $GC_EVERY s, GC.compact at $COMPACT_AT s, one full GC after the workers stop (the final row)"
   [ -n "${CHALLOC_CONF:-}" ] && echo "- CHALLOC_CONF=$CHALLOC_CONF (read by challoc alone; jemalloc runs unchanged)"
   echo "- load average at start: $LOAD0; at end: $(loadavg); $(( $(date +%s) - T_START )) s total"
+  first_alloc=$(echo $ALLOCS | cut -d' ' -f1)
+  case $(kv "$first_alloc" cgroup_peak) in
+    yes) echo "- cgroup memory.peak reset per phase by soak.rb (kernel $(uname -r)): the two cgroup rows below are the cgroup's peak for start..compact and compact..end; the cgroup counts the whole container";;
+    *)   echo "- cgroup memory.peak not reset per phase, VmHWM only: $(kv "$first_alloc" cgroup_peak | sed 's/^no(//;s/)$//' | tr '_' ' ')";;
+  esac
   echo "- allocators (run in this order):"
   for a in $ALLOCS; do echo "  - $a: $(describe "$a")"; done
   echo
@@ -205,6 +218,17 @@ M5=$COMPACT_AT; M10=$DURATION
   }
   rowc "peak sampled VmRSS" peak_rss
   rowc "VmHWM at the end" hwm
+  rowk() { # label key: a kB figure from the summary line, as MiB
+    r="| $1 |"
+    for a in $ALLOCS; do r="$r $(kb_mib "$(kv "$a" "$2")") |"; done
+    if has challoc && has jemalloc; then r="$r $(pct_of "$(kb_mib "$(kv challoc "$2")")" "$(kb_mib "$(kv jemalloc "$2")")") |"; fi
+    if has challoc && has challoc-bg; then r="$r $(pct_of "$(kb_mib "$(kv challoc-bg "$2")")" "$(kb_mib "$(kv challoc "$2")")") |"; fi
+    if has challoc && has challoc-1arena; then r="$r $(pct_of "$(kb_mib "$(kv challoc-1arena "$2")")" "$(kb_mib "$(kv challoc "$2")")") |"; fi
+    if has challoc && has challoc-percpu; then r="$r $(pct_of "$(kb_mib "$(kv challoc-percpu "$2")")" "$(kb_mib "$(kv challoc "$2")")") |"; fi
+    echo "$r"
+  }
+  rowk "cgroup memory.peak, start..compact" cgroup_peak_before_compact_kb
+  rowk "cgroup memory.peak, compact..end" cgroup_peak_after_compact_kb
   rowc "at minute 1 (t=60)" at_60
   rowc "at minute 5, before GC.compact (t=$((M5 - INTERVAL)))" at_$((M5 - INTERVAL))
   rowc "at minute 5, after GC.compact (t=$M5)" compact

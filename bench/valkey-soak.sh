@@ -72,9 +72,19 @@
 #   SAVE_BASELINE=0            1: after soaking jemalloc, store its samples CSV, runs
 #                              CSV, VmHWM, dbsize, version and a .meta line under
 #                              target/baselines/ for BASELINES=cached
+#
+# Per-phase cgroup peak (plan Phase 2.5 task 17): beside the server's VmHWM
+# the summary carries the cgroup's memory.peak for the write, delete and
+# settle phases, reset at each boundary through bench/probes/cgpeak.c (the
+# 6.12 reset is scoped to the writer's file description, so a sidecar holds
+# it; bench/lib.sh cgroup_peak_*). The peak is the whole container's
+# (server, valkey-benchmark, memtier and this script). The write needs a
+# writable cgroup tree, `make valkey-soak CGROUP_PEAK=1`, and a 6.12+
+# kernel; otherwise the rows read "-" and the header says why.
 set -eu
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
+. "$ROOT/bench/lib.sh"
 ALLOCS=${ALLOCS:-"challoc jemalloc"}
 DURATION=${DURATION:-1200}
 SETTLE=${SETTLE:-60}
@@ -298,6 +308,7 @@ soak() { # alloc
   echo write > "$D/phase"; rm -f "$D/last" "$D/stop"
   sampler "$D" "$T0" "$D/samples.csv" &
   SAMPLER_PID=$!
+  cgroup_peak_start "$D" || true
   OCC_PID=
   if [ "$OCCUPANCY" = 1 ]; then
     occupancy_sampler "$D" "$T0" "$RESULT_DIR/$DATE-$ARCH-valkey-soak-$alloc-mstats" &
@@ -310,16 +321,19 @@ soak() { # alloc
   while [ $(($(now) - T0)) -lt $half ]; do write_phase; printf .; done; echo
   echo "$(($(now) - T0))" > "$D/write_end"
   echo delete > "$D/phase"; rm -f "$D/last"
+  cgroup_peak_phase "$D" delete
   echo "-- delete phase, ${half}s"
   while [ $(($(now) - T0)) -lt $DURATION ]; do delete_phase; printf .; done; echo
   echo "$(($(now) - T0))" > "$D/delete_end"
   echo settle > "$D/phase"; rm -f "$D/last"
+  cgroup_peak_phase "$D" settle
   echo "-- settle, ${SETTLE}s"
   sleep "$SETTLE"
   # Stop the periodic sampler, then take the post-settle sample explicitly so
   # the summary's "after settle" row exists even when SETTLE < INTERVAL.
   touch "$D/stop"; wait "$SAMPLER_PID" 2>/dev/null || true; SAMPLER_PID=
   [ -z "$OCC_PID" ] || { wait "$OCC_PID" 2>/dev/null || true; OCC_PID=; }
+  cgroup_peak_stop
   sample_once "$D" "$T0" "$D/samples.csv"
 
   # Final state: kernel RSS figures for the server, the full INFO memory and
@@ -332,7 +346,7 @@ soak() { # alloc
   "$CLI" -p "$PORT" shutdown nosave >/dev/null 2>&1 || true
   wait "$SERVER_PID" 2>/dev/null || true; SERVER_PID=
   cp "$D/samples.csv" "$RESULT_DIR/$DATE-$ARCH-valkey-soak-$alloc.csv"
-  echo "$alloc: $(wc -l < "$RUNS") generator runs, $(wc -l < "$D/samples.csv") samples"
+  echo "$alloc: $(wc -l < "$RUNS") generator runs, $(wc -l < "$D/samples.csv") samples; cgroup memory.peak MiB write $(cgroup_peak_mib "$D" write) delete $(cgroup_peak_mib "$D" delete) settle $(cgroup_peak_mib "$D" settle)"
 }
 
 # ---- summary helpers -------------------------------------------------------
@@ -367,6 +381,12 @@ vmhwm() { awk '$1=="VmHWM:" {printf "%.1f", $2/1024}' "$OUT/$1/vm.txt"; }
 # pct A B: (A/B-1)*100 signed, "-" if either is missing
 pct() { awk -v a="$1" -v b="$2" 'BEGIN {if(a=="-"||b=="-"||a==""||b==""||b==0)print "-";else printf "%+.1f%%", (a/b-1)*100}'; }
 
+# The jemalloc server is built before any soak runs: a build inside the
+# container leaves hundreds of MiB of page cache charged to the cgroup, and
+# the per-phase cgroup peak (task 17) would carry it for whichever soak
+# came after the build (the first run of the column showed jemalloc's
+# write-phase peak 311 MiB above challoc's at equal VmHWM for that reason).
+case " $ALLOCS " in *" jemalloc "*) ensure_jemalloc_server;; esac
 for alloc in $ALLOCS; do soak "$alloc"; done
 
 # SAVE_BASELINE=1: keep the jemalloc half for later BASELINES=cached runs.
@@ -378,6 +398,7 @@ if [ "$SAVE_BASELINE" = 1 ]; then
   cp "$OUT/jemalloc/vm.txt" "$BASE.vm.txt"
   cp "$OUT/jemalloc/dbsize.txt" "$BASE.dbsize.txt"
   cp "$OUT/jemalloc/version.txt" "$BASE.version.txt"
+  for ph in write delete settle; do for sfx in "" .file; do rm -f "$BASE.cgpeak.$ph$sfx"; [ -f "$OUT/jemalloc/cgpeak.$ph$sfx" ] && cp "$OUT/jemalloc/cgpeak.$ph$sfx" "$BASE.cgpeak.$ph$sfx"; done; done
   echo "date=$(date -u +%FT%TZ) commit=$COMMIT duration=$DURATION settle=$SETTLE interval=$INTERVAL kernel=$(uname -r) nproc=$(nproc) host=${HOST_CPU:-unknown}" > "$BASE.meta"
   echo "== jemalloc soak cached as $BASE.{csv,runs.csv,vm.txt,dbsize.txt,version.txt,meta}"
 fi
@@ -391,6 +412,7 @@ if [ "$BASELINES" = cached ]; then
   cp "$BASE.vm.txt" "$OUT/jemalloc/vm.txt"
   cp "$BASE.dbsize.txt" "$OUT/jemalloc/dbsize.txt"
   cp "$BASE.version.txt" "$OUT/jemalloc/version.txt"
+  for ph in write delete settle; do for sfx in "" .file; do [ -f "$BASE.cgpeak.$ph$sfx" ] && cp "$BASE.cgpeak.$ph$sfx" "$OUT/jemalloc/cgpeak.$ph$sfx"; done; done
   meta=$(cat "$BASE.meta")
   CACHE_NOTE="the jemalloc column is CACHED, not from this run: $BASE.csv, recorded $(echo "$meta" | tr ' ' '\n' | sed -n 's/^date=//p') at commit $(echo "$meta" | tr ' ' '\n' | sed -n 's/^commit=//p') with DURATION=$(echo "$meta" | tr ' ' '\n' | sed -n 's/^duration=//p') SETTLE=$(echo "$meta" | tr ' ' '\n' | sed -n 's/^settle=//p') (this run: DURATION=$DURATION SETTLE=$SETTLE)"
   case $meta in *"duration=$DURATION "*) ;; *) CACHE_NOTE="$CACHE_NOTE; the phase lengths differ, so the end-of-phase RSS rows compare different points of the drain and only the throughput, p99 and peak rows are like for like";; esac
@@ -411,6 +433,12 @@ ALLOCS=$SUMMARY_ALLOCS
   [ -n "${CHALLOC_CONF:-}" ] && echo "- challoc server MALLOC_CONF: $CHALLOC_CONF (CHALLOC_CONF; the jemalloc server runs stock)"
   echo "- workload: write phase $((DURATION / 2)) s (valkey-benchmark -t set -d $SIZE -r $KEYS -n $VB_REQS -c $VB_CLIENTS -P $PIPELINE, then memtier SET-only $MT_SIZES B over $KEYS keys, $MT_THREADS x $MT_CLIENTS clients, -P $PIPELINE, $CHUNK s), delete phase $((DURATION / 2)) s (valkey-benchmark del key:__rand_int__, then memtier DEL:SET $DEL_RATIO:1), settle $SETTLE s idle; activedefrag $DEFRAG; io-threads $(cat "$OUT/$(echo $ALLOCS | cut -d' ' -f1)/io-threads.txt" 2>/dev/null || echo "${IO_THREADS:-default}"); INFO sampled every $INTERVAL s; memtier key pattern: $KEY_PATTERN$([ "$KEY_PATTERN" = uniform ] && echo " (--randomize, time-seeded random keys in both phases; NOT the acceptance protocol)" || echo " (memtier's fixed-seed key stream, the acceptance protocol)")"
   echo "- throughput is the mean requests/s over a tool's runs in a phase; p99 is the median of the per-run p99 (ms, client-side); peak RSS is the server's VmHWM; the RSS columns are used_memory_rss (MiB) at the last sample of each phase"
+  echo "- $(cgroup_peak_note)"
+  if [ "$CG_PEAK_STATE" = yes ]; then
+    for a in $ALLOCS; do
+      [ -f "$OUT/$a/cgpeak.write.file" ] && echo "  - $a: cgroup page cache (memory.stat file) at the end of the write / delete / settle phases: $(cgroup_peak_file_mib "$OUT/$a" write) / $(cgroup_peak_file_mib "$OUT/$a" delete) / $(cgroup_peak_file_mib "$OUT/$a" settle) MiB"
+    done
+  fi
   [ -z "$CACHE_NOTE" ] || echo "- CACHED BASELINE: $CACHE_NOTE. Acceptance uses the same-run \`make valkey-soak\`."
   [ "$OCCUPANCY" = 1 ] && echo "- occupancy: MEMORY MALLOC-STATS every $MS_INTERVAL s under $RESULT_DIR/$DATE-$ARCH-valkey-soak-<alloc>-mstats/"
   echo
@@ -446,6 +474,9 @@ ALLOCS=$SUMMARY_ALLOCS
     done
   done
   set --; for a in $ALLOCS; do set -- "$@" "$(vmhwm "$a")"; done;               row "peak RSS MiB (VmHWM)" 0 "$@"
+  for ph in write delete settle; do
+    set --; for a in $ALLOCS; do set -- "$@" "$(cgroup_peak_mib "$OUT/$a" $ph)"; done; row "cgroup memory.peak MiB, $ph phase" 0 "$@"
+  done
   set --; for a in $ALLOCS; do set -- "$@" "$(sample_stat "$a" peak_rss)"; done;  row "peak sampled used_memory_rss MiB" 0 "$@"
   set --; for a in $ALLOCS; do set -- "$@" "$(sample_stat "$a" end_write)"; done; row "RSS MiB at end of write phase" 0 "$@"
   set --; for a in $ALLOCS; do set -- "$@" "$(sample_stat "$a" end_delete)"; done; row "RSS MiB at end of delete phase" 0 "$@"

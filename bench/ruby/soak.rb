@@ -34,8 +34,16 @@
 # CSV columns: t_s, event, vmrss_kb, vmhwm_kb, heap_pages, heap_live_slots,
 # gc_count, major, minor, malloc_increase, oldmalloc_increase, jobs,
 # live_objects, alloc_allocated, alloc_active, alloc_resident,
-# alloc_retained, alloc_mapped (the alloc_* columns are "-" without mallctl).
-# The last line on stdout is a key=value summary ruby-soak.sh parses.
+# alloc_retained, alloc_mapped (the alloc_* columns are "-" without mallctl),
+# cgroup_peak_kb (plan Phase 2.5 task 17: the cgroup's memory.peak since
+# the last reset, read through one file description held for the run; the
+# 6.12 reset is scoped to the writer's description, so the same descriptor
+# writes the reset at start and right after the GC.compact sample and reads
+# every value; "-" where the write is not accepted: a read-only cgroup
+# tree, a kernel before 6.12, the nsdelegate boundary; ruby-soak.sh passes
+# the reason on). The last line on stdout is a key=value summary
+# ruby-soak.sh parses; it carries cgroup_peak=yes|no(reason),
+# cgroup_peak_before_compact_kb and cgroup_peak_after_compact_kb.
 
 require "etc"
 duration   = (ARGV[0] || 600).to_i
@@ -51,6 +59,50 @@ def rss_kb
   st = File.read("/proc/self/status")
   [st[/^VmRSS:\s+(\d+)/, 1].to_i, st[/^VmHWM:\s+(\d+)/, 1].to_i]
 end
+
+# ---- the cgroup's memory.peak, reset per phase (plan Phase 2.5 task 17) ----
+# One descriptor for the run: the reset (a write) is scoped to it, the
+# reads go through it (pread at 0). The walk is scripts/cgroup-tests.sh's.
+def cgroup_peak_path
+  mount = File.readlines("/proc/self/mountinfo").grep(/ - cgroup2 /).map { |l| l.split[4] }.first
+  return nil unless mount
+  path = File.read("/proc/self/cgroup")[/^0::(.*)$/, 1]
+  return nil unless path
+  path = "" if path == "/"
+  "#{mount}#{path}/memory.peak"
+end
+$cgpeak = nil
+$cgpeak_reason = nil
+begin
+  cp = cgroup_peak_path
+  if cp.nil?
+    $cgpeak_reason = "no cgroup2 memory controller visible"
+  else
+    f = File.open(cp, "r+")
+    begin
+      f.syswrite("reset")
+      $cgpeak = f
+    rescue Errno::EINVAL
+      $cgpeak_reason = "the kernel #{File.read("/proc/sys/kernel/osrelease").strip} does not accept a write to memory.peak (the reset is 6.12+)"
+      f.close
+    rescue Errno::EPERM, Errno::EACCES
+      $cgpeak_reason = "the write to #{cp} is refused from inside the cgroup namespace (nsdelegate): pass CGROUP_PEAK=1 to make"
+      f.close
+    end
+  end
+rescue Errno::EROFS
+  $cgpeak_reason = "the container's cgroup tree is read-only (Docker's default): pass CGROUP_PEAK=1 to make"
+rescue SystemCallError => e
+  $cgpeak_reason = "memory.peak: #{e.message}"
+end
+def cgroup_peak_kb
+  return "-" unless $cgpeak
+  $cgpeak.pread(64, 0).to_i / 1024
+end
+def cgroup_peak_reset
+  $cgpeak&.syswrite("reset")
+end
+$stderr.puts($cgpeak ? "cgroup memory.peak: #{cgroup_peak_path} accepts a reset; the CSV's cgroup_peak_kb is the cgroup's peak since the last reset (start, then right after GC.compact)" : "cgroup memory.peak: not reset per phase, VmHWM only: #{$cgpeak_reason}")
 
 # ---- allocator stats through mallctl, when the allocator has one ----------
 mallctl = nil
@@ -157,7 +209,7 @@ end
 
 # ---- sampler -----------------------------------------------------------------
 csv = File.open(csv_path, "w")
-csv.puts "t_s,event,vmrss_kb,vmhwm_kb,heap_pages,heap_live_slots,gc_count,major,minor,malloc_increase,oldmalloc_increase,jobs,live_objects,alloc_allocated,alloc_active,alloc_resident,alloc_retained,alloc_mapped"
+csv.puts "t_s,event,vmrss_kb,vmhwm_kb,heap_pages,heap_live_slots,gc_count,major,minor,malloc_increase,oldmalloc_increase,jobs,live_objects,alloc_allocated,alloc_active,alloc_resident,alloc_retained,alloc_mapped,cgroup_peak_kb"
 csv.sync = true
 t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 elapsed = -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0 }
@@ -167,9 +219,10 @@ sample = lambda do |event|
   live = live_sets.sum(&:size)
   row = [elapsed.call.round, event, rss, hwm, st[:heap_allocated_pages], st[:heap_live_slots],
          st[:count], st[:major_gc_count], st[:minor_gc_count],
-         st[:malloc_increase_bytes], st[:oldmalloc_increase_bytes], $jobs.sum, live] + alloc_stats(mallctl)
+         st[:malloc_increase_bytes], st[:oldmalloc_increase_bytes], $jobs.sum, live] + alloc_stats(mallctl) + [cgroup_peak_kb]
   csv.puts row.join(",")
 end
+$cgpeak_before_compact = "-"
 
 sample.call("start")
 next_sample = interval
@@ -184,6 +237,13 @@ while (t = elapsed.call) < duration
     GC.compact
     compacted = true
     event = "compact"
+    # The phase boundary: the sample below records the start..compact peak,
+    # then the peak starts again for compact..end.
+    sample.call(event)
+    $cgpeak_before_compact = cgroup_peak_kb
+    cgroup_peak_reset
+    next_sample += interval
+    next
   elsif t >= next_gc
     GC.start(full_mark: true, immediate_sweep: true)
     next_gc += gc_every
@@ -200,6 +260,7 @@ sample.call("final-fullgc")
 rss, hwm = rss_kb
 st = GC.stat
 al = alloc_stats(mallctl)
+cgpeak_after = cgroup_peak_kb
 csv.close
 # The allocator's own report (per-class slabs and regions, decay state) to
 # stderr; ruby-soak.sh keeps it beside the CSV.
@@ -212,4 +273,6 @@ puts "jobs=#{$jobs.sum} live_objects=#{live_sets.sum(&:size)} gc_count=#{st[:cou
      "minor=#{st[:minor_gc_count]} heap_pages=#{st[:heap_allocated_pages]} rss_final_kb=#{rss} hwm_kb=#{hwm} " \
      "mallctl=#{mallctl ? 'yes' : 'no'} alloc_allocated=#{al[0]} alloc_active=#{al[1]} alloc_resident=#{al[2]} " \
      "alloc_retained=#{al[3]} alloc_mapped=#{al[4]} compacted=#{compacted} " \
-     "threads=#{nthreads} idle_threads=#{idle_threads} idle_bursts=#{$idle_bursts} nproc=#{Etc.nprocessors}"
+     "threads=#{nthreads} idle_threads=#{idle_threads} idle_bursts=#{$idle_bursts} nproc=#{Etc.nprocessors} " \
+     "cgroup_peak=#{$cgpeak ? 'yes' : "no(#{$cgpeak_reason.to_s.tr(' ', '_')})"} " \
+     "cgroup_peak_before_compact_kb=#{$cgpeak_before_compact} cgroup_peak_after_compact_kb=#{cgpeak_after}"

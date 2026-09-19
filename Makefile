@@ -160,11 +160,19 @@ endif
 # forwarded into every container: challoc reads it after MALLOC_CONF and the
 # stock allocators ignore it, so `make <target> CHALLOC_CONF=percpu_arena:percpu`
 # puts challoc alone under a key in any suite (bench/percpu-campaign.sh).
+# CGROUP_PEAK=1 (plan Phase 2.5 task 17): the container joins the host's
+# cgroup namespace and gets /sys/fs/cgroup mounted read-write, so the soak
+# harnesses can reset the cgroup's memory.peak at their phase boundaries
+# (bench/lib.sh cgroup_peak_*; 6.12+ accepts the write, older kernels
+# refuse it with EINVAL and the harness says so). Docker's default mounts
+# the tree read-only and the nsdelegate boundary refuses the write from
+# inside the namespace, hence both flags. Memory limits still apply.
 DOCKER_BASE = docker run --rm --platform $(PLATFORM) \
 	-v "$(CURDIR)":/src -w /src \
 	-v $(TARGET_VOLUME):/src/target \
 	-v $(CARGO_VOLUME):/root/.cargo/registry \
-	$(GIT_MOUNT) $(if $(CHALLOC_CONF),-e CHALLOC_CONF="$(CHALLOC_CONF)")
+	$(GIT_MOUNT) $(if $(CHALLOC_CONF),-e CHALLOC_CONF="$(CHALLOC_CONF)") \
+	$(if $(CGROUP_PEAK),--cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw)
 DOCKER_RUN = $(DOCKER_BASE) $(DOCKER_FLAGS) $(IMAGE)
 # cgroup_run LIMIT,ARGS: one memory-limited container running
 # scripts/cgroup-tests.sh ARGS (Phase 2 tasks 6 and 7). Swap is disabled
@@ -368,7 +376,7 @@ python-bench: image
 # same suites under the default and under CHALLOC_CONF=percpu_arena:percpu,
 # on the VM host (each step is one of the make targets above). MODE=baseline
 # (default only, the half that exists before task 8 merges) or MODE=percpu.
-PERCPU_VARS = MODE STEPS DATE LANE ROUNDS SOAK_DURATION RUBY_SOAK_DURATION IDLE_THREADS VALKEY_FULL CALLOC_ROUNDS CALLOC_MAX_SECS OSC_SECS
+PERCPU_VARS = MODE STEPS DATE LANE ROUNDS SOAK_DURATION RUBY_SOAK_DURATION IDLE_THREADS VALKEY_FULL CALLOC_ROUNDS CALLOC_MAX_SECS OSC_SECS CGROUP_PEAK
 percpu-campaign:
 	env $(foreach v,$(PERCPU_VARS),$(if $($(v)),$(v)="$($(v))")) HOST_CPU="$(HOST_CPU)" sh bench/percpu-campaign.sh
 

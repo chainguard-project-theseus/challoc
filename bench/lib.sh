@@ -92,6 +92,63 @@ python_available() {
   echo "python1: skipped, no $PYTHON in this container (rebuild the image from Dockerfile.dev)" >&2; return 1
 }
 
+# ---- cgroup memory.peak per phase (plan Phase 2.5 task 17) ------------------
+# The kernel's `memory.peak` is a high-water mark since the cgroup's birth;
+# from 6.12 a write resets it, but only for the open file description that
+# wrote (a later `cat` still shows the birth peak), so the reset and the
+# reads go through one long-lived descriptor: the sidecar
+# bench/probes/cgpeak.c, driven by the phase file the soak harness writes
+# (DIR/phase names the phase, DIR/stop ends the run) and answering with
+# DIR/cgpeak.state (`yes <path>` or `no <reason>`), DIR/cgpeak.<phase> (the
+# phase's peak in bytes) and DIR/cgpeak.phase (the acknowledged phase). The
+# write is probed, never assumed: Docker mounts the container's cgroup tree
+# read-only and the nsdelegate boundary would refuse the write from inside
+# the namespace anyway, so `make ... CGROUP_PEAK=1` starts the container
+# with --cgroupns=host and /sys/fs/cgroup mounted read-write (the
+# Makefile); on a kernel before 6.12 the write then fails with EINVAL. The
+# reason is printed once and the callers fall back to VmHWM. The peak is the
+# whole container's (server, load generators, harness), unlike VmHWM.
+CG_PEAK_STATE=unprobed; CG_PEAK_REASON=; CG_PEAK_PID=
+# cgroup_peak_start DIR: start the sidecar on DIR (DIR/phase should already
+# name the first phase); waits for its verdict, prints it once. 0 when the
+# reset is available.
+cgroup_peak_start() {
+  ensure_probe cgpeak
+  rm -f "$1/cgpeak.state" "$1/cgpeak.phase"
+  "$BIN/cgpeak" "$1" &
+  CG_PEAK_PID=$!
+  i=0; while [ ! -e "$1/cgpeak.state" ] && [ $i -lt 50 ]; do sleep 0.1; i=$((i+1)); done
+  cg_state=$(cat "$1/cgpeak.state" 2>/dev/null || echo "no the cgpeak sidecar gave no verdict in 5 s")
+  case $cg_state in
+    yes*) CG_PEAK_STATE=yes; CG_PEAK_REASON=${cg_state#yes };;
+    *)    CG_PEAK_STATE=no; CG_PEAK_REASON=${cg_state#no }; wait "$CG_PEAK_PID" 2>/dev/null || true; CG_PEAK_PID=;;
+  esac
+  if [ "$CG_PEAK_STATE" = yes ]; then echo "== cgroup memory.peak: $CG_PEAK_REASON accepts a reset (kernel $(uname -r)); per-phase peaks are the cgroup's" >&2
+  else echo "== cgroup memory.peak: not reset per phase, VmHWM only: $CG_PEAK_REASON" >&2; fi
+  [ "$CG_PEAK_STATE" = yes ]
+}
+# cgroup_peak_phase DIR NAME: the harness has written NAME to DIR/phase;
+# wait (up to 3 s) until the sidecar has recorded the previous phase and
+# reset, so the new phase's load starts after the reset. No-op without it.
+cgroup_peak_phase() {
+  [ "$CG_PEAK_STATE" = yes ] || return 0
+  i=0; while [ "$(cat "$1/cgpeak.phase" 2>/dev/null)" != "$2" ] && [ $i -lt 30 ]; do sleep 0.1; i=$((i+1)); done
+  [ "$(cat "$1/cgpeak.phase" 2>/dev/null)" = "$2" ] || echo "== cgroup memory.peak: the sidecar did not acknowledge phase $2 within 3 s" >&2
+}
+# cgroup_peak_stop DIR: the harness has touched DIR/stop; wait for the last
+# phase's record.
+cgroup_peak_stop() { [ -n "$CG_PEAK_PID" ] && { wait "$CG_PEAK_PID" 2>/dev/null || true; CG_PEAK_PID=; }; :; }
+# cgroup_peak_mib DIR PHASE: the phase's peak in MiB, "-" without a record.
+cgroup_peak_mib() { awk -v f="$1/cgpeak.$2" 'BEGIN {if ((getline b < f) > 0 && b+0 > 0) printf "%.1f", b/1048576; else print "-"}'; }
+# cgroup_peak_file_mib DIR PHASE: the cgroup's page cache (memory.stat file)
+# at the end of PHASE in MiB, "-" without a record; the peak counts it.
+cgroup_peak_file_mib() { awk -v f="$1/cgpeak.$2.file" 'BEGIN {if ((getline b < f) > 0 && b+0 >= 0) printf "%.1f", b/1048576; else print "-"}'; }
+# cgroup_peak_note: one line for a results file header.
+cgroup_peak_note() {
+  if [ "$CG_PEAK_STATE" = yes ]; then echo "cgroup memory.peak reset per phase through $CG_PEAK_REASON (kernel $(uname -r), bench/probes/cgpeak.c); the cgroup peak counts every process of the container and its page cache (memory.stat file, given per phase below), VmHWM the server alone"
+  else echo "cgroup memory.peak not reset per phase, VmHWM only: $CG_PEAK_REASON"; fi
+}
+
 # ---- protocol rows ----------------------------------------------------------
 
 stock_lib() { # stock_lib ALLOC: LD_PRELOAD path for jemalloc|glibc|mimalloc|tcmalloc, 1 otherwise

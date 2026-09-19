@@ -50,6 +50,9 @@
 #   DATE (UTC today)  LANE=lane-d  ROUNDS=5  SOAK_DURATION=1200  RUBY_SOAK_DURATION=600
 #   IDLE_THREADS=48  VALKEY_FULL=0  CALLOC_ROUNDS=100  CALLOC_MAX_SECS=300  OSC_SECS=300
 #   COMMIT (git)  HOST_CPU (the Makefile's)
+#   CGROUP_PEAK=1  passed to the soak steps (their in-container memory.peak resets per
+#                  phase); every step's line also carries the largest memory.peak of the
+#                  step's container cgroups, read from the host (plan Phase 2.5 task 17)
 set -u
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
@@ -83,18 +86,45 @@ mkdir -p "$OUT" "$ROOT/bench/results"
 T0=$(date +%s)
 NPROC=$(nproc)
 
+# The cgroup peak per row (plan Phase 2.5 task 17): every step's containers
+# are fresh cgroups (`docker run --rm`), so their memory.peak is the row's
+# peak by construction and needs no reset; this runs on the VM host, where
+# the containers' cgroups are /sys/fs/cgroup/system.slice/docker-<id>.scope
+# (the systemd driver) or /sys/fs/cgroup/docker/<id> (cgroupfs), and
+# memory.peak is world-readable. peak_poll samples them every 2 s while a
+# step runs; the step's line gets the largest per-container peak and the
+# container count. The soak steps also get CGROUP_PEAK=1, so their own
+# per-phase resets happen inside the container (bench/valkey-soak.sh,
+# bench/ruby-soak.sh).
+CGROUP_PEAK=${CGROUP_PEAK:-1}
+peak_poll() { # peak_poll FILE: "path bytes" lines until FILE.stop exists
+  : > "$1"
+  while [ ! -e "$1.stop" ]; do
+    for f in /sys/fs/cgroup/system.slice/docker-*.scope/memory.peak /sys/fs/cgroup/docker/*/memory.peak; do
+      [ -r "$f" ] && echo "$f $(cat "$f" 2>/dev/null)" >> "$1"
+    done
+    sleep 2
+  done
+}
+peak_summary() { # peak_summary FILE: "max X MiB over N containers" or a reason
+  [ -s "$1" ] || { echo "no container cgroup seen (no /sys/fs/cgroup/{system.slice/docker-*.scope,docker/*} readable on this host, or the step ran under 2 s)"; return; }
+  awk '{ if ($2+0 > m[$1]) m[$1] = $2+0 } END { for (k in m) { n++; if (m[k] > max) max = m[k] } printf "max %.1f MiB over %d container cgroup(s)\n", max/1048576, n }' "$1"
+}
 # One make invocation with the mode's CHALLOC_CONF (when $1 is "conf"),
-# logged to $OUT/<name>.log; prints the rc and the wall time.
+# logged to $OUT/<name>.log; prints the rc, the wall time and the cgroup
+# peak of the step's containers.
 run_make() { # run_make NAME conf|plain make-args...
   name=$1; how=$2; shift 2
   s=$(date +%s)
+  rm -f "$OUT/$name.peak.stop"; peak_poll "$OUT/$name.peak" & pp=$!
   if [ "$how" = conf ] && [ -n "$CONF" ]; then
     make "$@" CHALLOC_CONF="$CONF" > "$OUT/$name.log" 2>&1; rc=$?
   else
     make "$@" > "$OUT/$name.log" 2>&1; rc=$?
   fi
+  touch "$OUT/$name.peak.stop"; wait $pp 2>/dev/null
   e=$(date +%s)
-  echo "-- $name: make $* ${CONF:+(CHALLOC_CONF=$CONF)}: rc=$rc in $((e - s)) s" | tee -a "$SUMMARY"
+  echo "-- $name: make $* ${CONF:+(CHALLOC_CONF=$CONF)}: rc=$rc in $((e - s)) s; cgroup memory.peak $(peak_summary "$OUT/$name.peak")" | tee -a "$SUMMARY"
   return $rc
 }
 say() { echo "$@" | tee -a "$SUMMARY"; }
@@ -182,11 +212,11 @@ if has_step valkey-soak; then
   make run CMD="test -f target/baselines/valkey-soak-jemalloc-$ARCH.csv" > /dev/null 2>&1 && cached=yes
   if [ "$MODE" = percpu ] && [ "$cached" = yes ]; then
     say "## valkey-soak: \`make valkey-soak\` challoc under CHALLOC_CONF=$CONF for $SOAK_DURATION s against the cached jemalloc soak of the baseline half (BASELINES=cached)"
-    run_make valkey-soak conf valkey-soak ALLOCS=challoc BASELINES=cached DURATION="$SOAK_DURATION" RESULT_DIR="$RD" COMMIT="$COMMIT"
+    run_make valkey-soak conf valkey-soak ALLOCS=challoc BASELINES=cached DURATION="$SOAK_DURATION" RESULT_DIR="$RD" COMMIT="$COMMIT" CGROUP_PEAK="$CGROUP_PEAK"
   else
     under=; [ -n "$CONF" ] && under=", challoc under CHALLOC_CONF=$CONF"
     say "## valkey-soak: \`make valkey-soak\` (challoc and bundled jemalloc, $SOAK_DURATION s of load each, the Phase 1 protocol$under; the jemalloc soak saved as the cached baseline)"
-    run_make valkey-soak conf valkey-soak DURATION="$SOAK_DURATION" RESULT_DIR="$RD" SAVE_BASELINE=1 COMMIT="$COMMIT"
+    run_make valkey-soak conf valkey-soak DURATION="$SOAK_DURATION" RESULT_DIR="$RD" SAVE_BASELINE=1 COMMIT="$COMMIT" CGROUP_PEAK="$CGROUP_PEAK"
   fi
   md=$(ls -t "$ROOT/$RD"/*-valkey-soak.md 2>/dev/null | head -1)
   if [ -n "$md" ]; then
@@ -216,7 +246,7 @@ fi
 # ---- ruby-soak -----------------------------------------------------------------------------
 if has_step ruby-soak; then
   say "## ruby-soak: \`make ruby-soak\` 16 workers, $RUBY_SOAK_DURATION s, challoc against jemalloc${CONF:+, challoc under CHALLOC_CONF=$CONF}"
-  run_make ruby-soak conf ruby-soak ALLOCS="challoc jemalloc" DURATION="$RUBY_SOAK_DURATION" RESULT="$RSTEM-ruby-soak.md" COMMIT="$COMMIT"
+  run_make ruby-soak conf ruby-soak ALLOCS="challoc jemalloc" DURATION="$RUBY_SOAK_DURATION" RESULT="$RSTEM-ruby-soak.md" COMMIT="$COMMIT" CGROUP_PEAK="$CGROUP_PEAK"
   arenas=$(grep -h -m1 -E '^Arenas:' "$STEM-ruby-soak-challoc-mstats.txt" 2>/dev/null || echo -)
   say "- table: \`$(basename "$STEM")-ruby-soak.md\`; arenas from the report: $arenas"
   { echo; awk '/^## RSS/,/^Positive/' "$STEM-ruby-soak.md" 2>/dev/null; echo; } >> "$SUMMARY"
@@ -225,7 +255,7 @@ fi
 # ---- ruby-idle -----------------------------------------------------------------------------
 if has_step ruby-idle; then
   say "## ruby-idle: \`make ruby-soak\` 16 workers + $IDLE_THREADS mostly idle threads on $NPROC CPUs, 300 s${CONF:+, challoc under CHALLOC_CONF=$CONF} (RSS bounded by cores, not threads)"
-  run_make ruby-idle conf ruby-soak ALLOCS="challoc jemalloc" THREADS=16 IDLE_THREADS="$IDLE_THREADS" DURATION=300 COMPACT_AT=150 RESULT="$RSTEM-ruby-idle.md" COMMIT="$COMMIT"
+  run_make ruby-idle conf ruby-soak ALLOCS="challoc jemalloc" THREADS=16 IDLE_THREADS="$IDLE_THREADS" DURATION=300 COMPACT_AT=150 RESULT="$RSTEM-ruby-idle.md" COMMIT="$COMMIT" CGROUP_PEAK="$CGROUP_PEAK"
   arenas=$(grep -h -m1 -E '^Arenas:' "$STEM-ruby-idle-challoc-mstats.txt" 2>/dev/null || echo -)
   # ruby-soak.sh prints each run's summary line (tail -1 of the .out) to
   # its stdout, which run_make logged; the .out files live in the volume.
