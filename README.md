@@ -28,8 +28,11 @@ Goals, in priority order:
    and `memory.events` at most every 10 ms from slow paths, and its
    background thread arms a PSI trigger on `memory.pressure` where the
    kernel allows it; `stats.cgroup.*` and `malloc_stats_print` expose the
-   figures. Acting on them (sizing caches to the limit, returning memory
-   eagerly near `memory.high`, purging on a pressure stall) is the next
+   figures, and the policy acts on them: retention capped at 5% of the
+   limit, the decay window shrinking towards 1 s between 70% and 90% of
+   it, everything freed purged at once above 90%, a full purge when the
+   kernel starts reclaiming (`memory.events` `high`), a decay pass when a
+   pressure trigger fires. Sizing the caches to the limit is the next
    task (Phase 2 task 5).
 5. **Modern and memory safe.** `no_std` Rust, abort on panic, unsafe confined
    to a syscall layer, a thread-local accessor, and the pointer arithmetic of
@@ -101,11 +104,14 @@ each run. Freed runs are retained and decay like slabs.
 curve: about half of what went empty at once within half of `dirty_decay_ms`,
 all of it by the end of the window. Decay
 runs from the allocating thread's slow path and, when enabled through the
-jemalloc `background_thread` control, from a background thread. Planned
-(Phase 2; the limits, `memory.current`, `memory.events` and the PSI trigger
-are read today, the policy is task 5): under a cgroup limit the decay window
-will shorten and retention shrink as usage approaches `memory.high`; near the
-limit, purge will be immediate.
+jemalloc `background_thread` control, from a background thread. Under a
+cgroup limit (`docs/design.md` section 11) freed-but-unpurged memory is
+capped at 5% of `min(memory.high, memory.max)`, the decay window shortens
+linearly from `dirty_decay_ms` at 70% of the limit to 1 s at 90%, and
+above 90% the window is zero and the cache GC runs at every periodic tick;
+a rise of `memory.events` `high` purges everything freed once. Read
+`stats.cgroup.decay_ms`, `stats.cgroup.retention_cap` and
+`stats.cgroup.empty_bytes` to see the policy at work.
 
 **Kernel features, all runtime detected.** Rows marked *planned* are probed
 or reserved for but not yet used by any code path.
@@ -116,7 +122,7 @@ or reserved for but not yet used by any code path.
 | `process_madvise` on self    | 5.10   | Batched purge                              | Loop over `madvise`               |
 | `PR_SET_VMA_ANON_NAME`       | 5.17   | Named heap mappings in `/proc/pid/maps`    | Skip                              |
 | `mseal`                      | 6.10   | Seals the never-committed parts of the reservations (the gaps between class regions, the slack around the huge and metadata regions) at init; not the regions or the region table | Skip (also when seccomp filters it, as Docker's default profile does) |
-| PSI triggers                 | 6.4 (unprivileged) | Background thread arms `some 150000 1000000` on the cgroup's `memory.pressure` (or the unprivileged `some 300000 2000000`) and counts fires; a pressure-driven purge is Phase 2 task 5 | Sample `memory.current` on the tick; also when the write is refused (Docker's default profile mounts the cgroup read-only: `EROFS`; with `nsdelegate` on the host a container's root cgroup refuses the write: `EPERM`) |
+| PSI triggers                 | 6.4 (unprivileged) | Background thread arms `some 150000 1000000` on the cgroup's `memory.pressure` (or the unprivileged `some 300000 2000000`); a fire takes a sample, re-evaluates the policy and runs a decay pass at once | Sample `memory.current` on the tick; also when the write is refused (Docker's default profile mounts the cgroup read-only: `EROFS`; with `nsdelegate` on the host a container's root cgroup refuses the write: `EPERM`) |
 | Transparent huge pages (planned) | any | Opt-in only; the `thp` key is accepted and inert | Off                       |
 | rseq `mm_cid`                | 6.3    | Optional per-CPU mode, later phase         | Thread caches only                |
 
@@ -205,9 +211,9 @@ performance lab) is in its acceptance run: the release-readiness tasks of
 `docs/review-2026-09-18.md` are landing and the mstress RSS row is open.
 `PROGRESS.md` is the task log; `bench/results/scorecard-{aarch64,x86_64}.md`
 record the benchmark trend per commit. Features marked *planned* above
-(the cgroup policy, zero-on-free, slot randomisation, THP) are Phase 2;
-`mseal` of the reservations' never-committed ranges and the cgroup
-measurement layer (`stats.cgroup.*`) have landed.
+(zero-on-free, slot randomisation, THP) are Phase 2; `mseal` of the
+reservations' never-committed ranges, the cgroup measurement layer
+(`stats.cgroup.*`) and the cgroup policy have landed.
 Packaging for Wolfi is Phase 3.
 
 ## Building

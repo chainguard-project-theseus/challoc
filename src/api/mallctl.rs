@@ -110,6 +110,14 @@ pub enum Leaf {
     StatsCgroupHigh,
     StatsCgroupCurrent,
     StatsCgroupPressureEvents,
+    /// The policy's outcome (design 11, `policy.rs`): arena 0's effective
+    /// decay period in ms (`SIZE_MAX` for never), the retention cap in
+    /// bytes (`SIZE_MAX` without a limit), the `Empty` bytes held now, and
+    /// the full purges run on `memory.events` `high` rises.
+    StatsCgroupDecayMs,
+    StatsCgroupRetentionCap,
+    StatsCgroupEmptyBytes,
+    StatsCgroupFullPurges,
     /// `stats.arenas.<i>.*`; `mib[2]` is the arena.
     StatsArenaPactive,
     StatsArenaPdirty,
@@ -220,11 +228,15 @@ static STATS_ARENA_I: [Node; 9] = [
     dir("bins", &STATS_BINS),
 ];
 static STATS_ARENAS: [Node; 1] = [num(&STATS_ARENA_I)];
-static STATS_CGROUP: [Node; 4] = [
+static STATS_CGROUP: [Node; 8] = [
     leaf("limit", Leaf::StatsCgroupLimit),
     leaf("high", Leaf::StatsCgroupHigh),
     leaf("current", Leaf::StatsCgroupCurrent),
     leaf("pressure_events", Leaf::StatsCgroupPressureEvents),
+    leaf("decay_ms", Leaf::StatsCgroupDecayMs),
+    leaf("retention_cap", Leaf::StatsCgroupRetentionCap),
+    leaf("empty_bytes", Leaf::StatsCgroupEmptyBytes),
+    leaf("full_purges", Leaf::StatsCgroupFullPurges),
 ];
 static STATS: [Node; 8] = [
     leaf("allocated", Leaf::StatsAllocated),
@@ -754,7 +766,14 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
                 _ => t.retained,
             })
         }
-        StatsCgroupLimit | StatsCgroupHigh | StatsCgroupCurrent | StatsCgroupPressureEvents => {
+        StatsCgroupLimit
+        | StatsCgroupHigh
+        | StatsCgroupCurrent
+        | StatsCgroupPressureEvents
+        | StatsCgroupDecayMs
+        | StatsCgroupRetentionCap
+        | StatsCgroupEmptyBytes
+        | StatsCgroupFullPurges => {
             io.read_only()?;
             let cg = &shared.cgroup;
             if !cg.tracked() {
@@ -767,11 +786,21 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
                 // at most that many file reads.
                 cg.sample(crate::sys::now_coarse_ns());
             }
+            let policy = &shared.policy;
             io.read(match leaf {
                 StatsCgroupLimit => cg.limit() as usize,
                 StatsCgroupHigh => cg.high() as usize,
                 StatsCgroupCurrent => cg.current() as usize,
-                _ => cg.pressure_events() as usize,
+                StatsCgroupPressureEvents => cg.pressure_events() as usize,
+                StatsCgroupDecayMs => match policy.effective_decay_ns(shared.decay_ns()) {
+                    crate::purge::NEVER => usize::MAX,
+                    ns => (ns / 1_000_000) as usize,
+                },
+                StatsCgroupRetentionCap => policy.cap() as usize,
+                // Live, not the last evaluation's figure: a reader without a
+                // limit would otherwise see 0.
+                StatsCgroupEmptyBytes => crate::policy::empty_bytes(shared) as usize,
+                _ => policy.full_purges() as usize,
             })
         }
         StatsArenaPactive
@@ -1120,9 +1149,23 @@ mod tests {
         assert_eq!(mib_of("stats.cgroup.limit"), [7, 7, 0]);
         assert_eq!(mib_of("stats.cgroup.pressure_events"), [7, 7, 3]);
         assert_eq!(mib_to_leaf(&[7, 7, 2]), Ok(Leaf::StatsCgroupCurrent));
-        assert_eq!(mib_to_leaf(&[7, 7, 4]), Err(ENOENT));
+        // The policy's keys (Phase 2 task 5) follow, in table order.
+        assert_eq!(mib_of("stats.cgroup.decay_ms"), [7, 7, 4]);
+        assert_eq!(mib_of("stats.cgroup.full_purges"), [7, 7, 7]);
+        assert_eq!(mib_to_leaf(&[7, 7, 5]), Ok(Leaf::StatsCgroupRetentionCap));
+        assert_eq!(mib_to_leaf(&[7, 7, 6]), Ok(Leaf::StatsCgroupEmptyBytes));
+        assert_eq!(mib_to_leaf(&[7, 7, 8]), Err(ENOENT));
         let tracked = shared().cgroup.tracked();
-        for key in ["stats.cgroup.limit", "stats.cgroup.high", "stats.cgroup.current", "stats.cgroup.pressure_events"] {
+        for key in [
+            "stats.cgroup.limit",
+            "stats.cgroup.high",
+            "stats.cgroup.current",
+            "stats.cgroup.pressure_events",
+            "stats.cgroup.decay_ms",
+            "stats.cgroup.retention_cap",
+            "stats.cgroup.empty_bytes",
+            "stats.cgroup.full_purges",
+        ] {
             assert_eq!(call(key), if tracked { 0 } else { ENOENT }, "{key} tracked={tracked}");
             assert_eq!(set(key, 1usize), if tracked { EPERM } else { ENOENT }, "{key}");
         }
@@ -1136,6 +1179,23 @@ mod tests {
             assert_eq!(high, shared().cgroup.high() as usize);
             assert!(limit == usize::MAX || limit > 0);
             assert_eq!(events, 0, "no background thread has armed a trigger in this process");
+            // The policy's keys: the defaults without a limit (the period
+            // as configured, no cap), the cap arithmetic with one.
+            let decay_ms: usize = get("stats.cgroup.decay_ms");
+            let cap: usize = get("stats.cgroup.retention_cap");
+            let empty: usize = get("stats.cgroup.empty_bytes");
+            let full: usize = get("stats.cgroup.full_purges");
+            std::eprintln!("stats.cgroup: decay_ms {decay_ms} retention_cap {cap} empty_bytes {empty} full_purges {full}");
+            let effective = limit.min(high);
+            if effective == usize::MAX {
+                assert_eq!(decay_ms, (shared().decay_ns() / 1_000_000) as usize);
+                assert_eq!(cap, usize::MAX);
+            } else {
+                // The sampler may not have run in this process yet: the cap
+                // is either unpublished or the limit's twentieth.
+                assert!(cap == usize::MAX || cap == effective / 20, "cap {cap} for limit {effective}");
+            }
+            assert_eq!(full, 0);
         }
         // `stats.cgroup` itself is interior: it resolves, and is not a key.
         assert_eq!(mib_of("stats.cgroup"), [7, 7]);

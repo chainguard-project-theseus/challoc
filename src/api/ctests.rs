@@ -745,6 +745,30 @@ fn c_cgroup_background_thread() {
     run_bin_env("cgroup", &bin, &["bg"], &[("MALLOC_CONF", "background_thread:true,abort_conf:true")]);
 }
 
+/// `tests/c/cgroup_policy.c bands` (plan Phase 2 task 5): the design 11
+/// policy through the public keys. Without a cgroup2 the policy keys are
+/// `ENOENT`; tracked without a limit `decay_ms` is the configured period
+/// and `retention_cap` `SIZE_MAX`; under `make test-cgroup-limit`'s
+/// 512 MiB the program fills the cgroup to 80% (scaled `decay_ms`, then
+/// the 5% retention cap after freeing) and to 94% (`decay_ms` 0, one tick
+/// purges everything). Filling to 94% is why that target runs
+/// single-threaded.
+#[test]
+fn c_cgroup_policy_bands() {
+    let bin = compile("tests/c", "cgroup_policy", &[]);
+    run_bin_env("cgroup_policy", &bin, &["bands"], &[]);
+}
+
+/// `tests/c/cgroup_policy.c high`: the `memory.events` `high` row, in a
+/// child cgroup the program makes itself when the mount allows it (a
+/// `--privileged` container on a host without `nsdelegate` at the
+/// container's root); each refusal is a pass with a `skip:` line.
+#[test]
+fn c_cgroup_policy_high() {
+    let bin = compile("tests/c", "cgroup_policy", &[]);
+    run_bin_env("cgroup_policy", &bin, &["high"], &[]);
+}
+
 /// `tests/c/guard_slab.c fault` (plan Phase 2 task 1): under the preload,
 /// a write into the guard slab that follows a run of slabs of the 64-byte
 /// class faults (SIGSEGV caught in the program), while the last byte of

@@ -2045,7 +2045,7 @@ impl ClassState {
     /// discards go out in batches under the class lock, as `purge_empty`.
     /// Recomputes `oldest_empty` from the survivors. Returns the number
     /// purged.
-    fn purge_curve(&self, now: u64, curve: &Curve) -> usize {
+    fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32) -> usize {
         let spp = self.table().slabs_per_page();
         let mut g = self.inner.lock();
         // First pass: the age histogram of the empty set and its allowance.
@@ -2071,7 +2071,12 @@ impl ClassState {
             }
             next = g.empty.map.lowest_set_from(slab + 1);
         }
-        let allow = Curve::allowance(weighted);
+        // The cgroup policy's retention cap (design 11): this walk's share
+        // of the process-wide cap, on top of the curve.
+        let mut allow = Curve::allowance(weighted);
+        if keep16 < crate::policy::KEEP_ALL {
+            allow = allow.min(crate::policy::mul16(total as u64, keep16) as usize);
+        }
         if total <= allow {
             self.gate.set_oldest_empty(oldest);
             return 0;
@@ -2145,9 +2150,21 @@ impl ClassState {
     /// class's next deadline, `None` when nothing is `Empty`. Takes the
     /// lock only when a walk is due.
     pub fn decay(&self, now: u64, decay_ns: u64) -> Option<u64> {
+        self.decay_with(now, decay_ns, crate::policy::KEEP_ALL)
+    }
+
+    /// [`decay`](ClassState::decay) with the cgroup policy's keep ratio
+    /// (design 11): the walk keeps at most `keep16 / 65536` of its `Empty`
+    /// slabs on top of the curve's allowance.
+    pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> Option<u64> {
         self.gate.decay(now, decay_ns, |now, curve| {
-            self.purge_curve(now, curve);
+            self.purge_curve(now, curve, keep16);
         })
+    }
+
+    /// Bytes of this arena's `Empty` slabs of the class (one lock hold).
+    pub fn empty_bytes(&self) -> usize {
+        self.inner.lock().stats.empty * self.class().slab_size()
     }
 
     /// This arena's slab counts; `guards` is the class-wide count from the

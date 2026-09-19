@@ -278,17 +278,29 @@ impl Arena {
     /// Decay step over every class (see `ClassState::decay`): the earliest
     /// next deadline, `None` when nothing is `Empty` or decay is off.
     pub fn decay(&self, now: u64) -> Option<u64> {
-        let decay_ns = self.decay_ns();
+        self.decay_with(now, self.decay_ns(), crate::policy::KEEP_ALL)
+    }
+
+    /// [`decay`](Arena::decay) with the period the cgroup policy gives
+    /// this arena and its keep ratio for the retention cap (design 11);
+    /// `NEVER` does nothing.
+    pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> Option<u64> {
         if decay_ns == crate::purge::NEVER {
             return None;
         }
         let mut next: Option<u64> = None;
         for cs in self.classes.iter() {
-            if let Some(d) = cs.decay(now, decay_ns) {
+            if let Some(d) = cs.decay_with(now, decay_ns, keep16) {
                 next = Some(next.map_or(d, |n| n.min(d)));
             }
         }
         next
+    }
+
+    /// `Empty` bytes over every class (one lock hold per class that has
+    /// any), for the cgroup policy's retention figure.
+    pub fn empty_bytes(&self) -> usize {
+        self.classes.iter().filter(|cs| cs.oldest_empty() != 0).map(|cs| cs.empty_bytes()).sum()
     }
 
     /// Purge every `Empty` slab of every class whatever its age. Returns

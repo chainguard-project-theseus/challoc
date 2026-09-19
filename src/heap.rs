@@ -440,6 +440,11 @@ pub struct Shared {
     pub huge: Huge,
     /// Cache GC period (`tcache_gc_interval_ms`).
     pub gc_interval_ns: u64,
+    /// The cgroup policy's outcome (design 11, `policy.rs`): the band,
+    /// the keep ratio, the pending full purge. Next to `gc_interval_ns`
+    /// so the periodic tick's `immediate` load hits the line it reads
+    /// anyway; written at most once per 10 ms by the sampler.
+    pub policy: crate::policy::Policy,
     /// The parsed `malloc_conf` (design section 12). Keys that already have
     /// a knob are applied by `init`; the rest are read by later phases.
     pub config: Config,
@@ -634,6 +639,21 @@ impl Shared {
             Arenas::init(&raw mut (*this).arenas, arena0, config.narenas);
             Tcaches::init(&raw mut (*this).tcaches);
             ptr::write(&raw mut (*this).cgroup, crate::sys::cgroup::Cgroup::discover(config.cgroup));
+            // Design 11: under an effective limit below 1 GiB `thp` is
+            // forced to `never` in the stored configuration (the report
+            // says so); the policy's `high` baseline is the count at init.
+            let cgroup = &*(&raw const (*this).cgroup);
+            let thp_forced = config.thp == crate::config::Thp::Always
+                && cgroup.limit().min(cgroup.high()) < crate::policy::THP_MIN_LIMIT;
+            if thp_forced {
+                config.thp = crate::config::Thp::Never;
+            }
+            ptr::write(&raw mut (*this).policy, crate::policy::Policy::new(cgroup.rises().0, thp_forced));
+            // Applied once on the discovery sample, so the band and the cap
+            // are published before the first 10 ms window closes (nothing
+            // is `Empty` yet: retention 0).
+            let limit = cgroup.limit().min(cgroup.high());
+            (*this).policy.apply(crate::policy::band(limit, cgroup.current()), limit, 0, cgroup.rises().0);
             ptr::write(&raw mut (*this).config, config);
             ptr::write(&raw mut (*this).key, ThreadKey::create());
             ptr::write(&raw mut (*this).stats, Lock::new(crate::stats::Snapshot::EMPTY));
@@ -692,6 +712,14 @@ impl Shared {
     /// A second arena is being built (`Arenas::build`).
     pub fn set_multi_arena(&self) {
         self.multi_arena.store(true, Ordering::Relaxed);
+    }
+
+    /// The cache GC period the periodic tick uses: `tcache_gc_interval_ms`,
+    /// or 0 (GC every tick) while the cgroup policy is in its immediate
+    /// band (design 11).
+    #[inline]
+    pub fn gc_interval(&self) -> u64 {
+        if self.policy.immediate() { 0 } else { self.gc_interval_ns }
     }
 
     /// The decay period new arenas start with (`dirty_decay_ms`).
@@ -2022,7 +2050,7 @@ impl Heap {
         self.slow_ticks = self.slow_ticks.wrapping_add(1);
         if self.slow_ticks % PERIODIC_EVERY == 0 {
             let now = os::now_ns();
-            if now.wrapping_sub(self.last_gc) >= shared.gc_interval_ns {
+            if now.wrapping_sub(self.last_gc) >= shared.gc_interval() {
                 self.last_gc = now;
                 self.gc(shared);
             }
@@ -3489,6 +3517,43 @@ pub(crate) mod tests {
         assert_eq!(s.huge.stats().runs, 0);
         assert!(s.alloc_huge(usize::MAX, 1, 0).0.is_null());
     }
+    /// Design 11: the periodic tick's GC interval is the configured one
+    /// until the policy's immediate band, where it is 0; the effective
+    /// decay period follows the band for arena 0 and the huge allocator;
+    /// `-1` stays never. The host has no cgroup, so the policy is driven
+    /// through `apply` here.
+    #[test]
+    fn cgroup_policy_drives_gc_interval_and_decay_period() {
+        use crate::policy::{Band, KEEP_ALL, band, effective_decay_ns};
+        let s = shared();
+        // At init the outcome is the discovery sample's: no limit on the
+        // host and under Docker's default profile, a band under
+        // `--memory=512m`.
+        let at_init = band(s.cgroup.limit().min(s.cgroup.high()), s.cgroup.current());
+        assert_eq!(s.policy.band(), at_init);
+        assert_eq!(s.gc_interval(), if s.policy.immediate() { 0 } else { s.gc_interval_ns });
+        assert_eq!(s.policy.effective_decay_ns(s.decay_ns()), effective_decay_ns(s.decay_ns(), at_init));
+        assert_eq!(crate::policy::empty_bytes(s), 0);
+        let l = 512u64 << 20;
+        s.policy.apply(band(l, l * 95 / 100), l, 0, 0);
+        assert_eq!(s.gc_interval(), 0);
+        assert_eq!(s.policy.effective_decay_ns(s.decay_ns()), 0);
+        assert_eq!(s.policy.effective_decay_ns(crate::purge::NEVER), crate::purge::NEVER);
+        s.policy.apply(band(l, l * 8 / 10), l, 0, 0);
+        assert_eq!(s.gc_interval(), s.gc_interval_ns);
+        let eff = s.policy.effective_decay_ns(s.decay_ns());
+        assert!(eff < s.decay_ns() && eff > 1_000_000_000, "{eff}");
+        // A decay pass with a pending full purge consumes it.
+        s.policy.apply(band(l, l * 8 / 10), l, 0, 1);
+        assert!(s.policy.full_purge_pending());
+        let _ = crate::purge::decay(s, os::now_ns());
+        assert!(!s.policy.full_purge_pending());
+        assert_eq!(s.policy.full_purges(), 1);
+        s.policy.apply(Band::Unlimited, crate::sys::cgroup::UNLIMITED, 0, 1);
+        assert_eq!(s.policy.keep16(), KEEP_ALL);
+        assert_eq!(s.gc_interval(), s.gc_interval_ns);
+    }
+
     /// The registry: arena 0 is `arena0`, automatic arenas are 0 alone by
     /// default, explicit ones come from `create` in order and are built in
     /// the metadata region with their own class states over the shared

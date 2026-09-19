@@ -141,9 +141,11 @@ test: image
 
 # Phase 2 task 4: the same tests that read the cgroup, in a container with
 # a 512 MiB limit; the effective `memory.max` must read as that number.
+# Single-threaded since task 5: tests/c/cgroup_policy.c fills the cgroup to
+# 94% of the limit, which a concurrent test's 64 MiB would push over it.
 test-cgroup-limit: DOCKER_FLAGS = --memory=512m -e CHALLOC_EXPECT_CGROUP_LIMIT=536870912
 test-cgroup-limit: image
-	$(DOCKER_RUN) sh -c 'cargo test --features std cgroup -- --nocapture'
+	$(DOCKER_RUN) sh -c 'cargo build --release && cargo test --features std cgroup -- --nocapture --test-threads=1'
 
 test-host:
 	cargo test --features std

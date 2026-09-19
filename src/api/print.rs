@@ -160,7 +160,13 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     // nothing; say so next to its value so a report never suggests the
     // feature is on.
     for key in KEYS {
-        let note = if is_inert(key.as_bytes()) { " (accepted, no effect)" } else { "" };
+        let note = if key == &"thp" && shared.policy.thp_forced() {
+            " (accepted, no effect; forced to never by a cgroup limit under 1 GiB)"
+        } else if is_inert(key.as_bytes()) {
+            " (accepted, no effect)"
+        } else {
+            ""
+        };
         match shared.config.get(key.as_bytes()) {
             Some(Value::Bool(b)) => writeln!(out, "  opt.{key}: {b}{note}")?,
             Some(Value::Int(i)) => writeln!(out, "  opt.{key}: {i}{note}")?,
@@ -207,7 +213,39 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     // Design 11: the figures as last sampled (a sample is taken here if the
     // 10 ms window allows), or why nothing is tracked.
     shared.cgroup.sample(crate::sys::now_coarse_ns());
-    writeln!(out, "{}", shared.cgroup)
+    writeln!(out, "{}", shared.cgroup)?;
+    policy_line(out, shared)
+}
+
+/// The `cgroup policy:` line (design 11): the band as last evaluated and
+/// what it gives arena 0.
+fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
+    use crate::policy::{Band, FRAC_ONE};
+    let p = &shared.policy;
+    if !shared.cgroup.tracked() {
+        return writeln!(out, "cgroup policy: off (not tracked)");
+    }
+    write!(out, "cgroup policy: ")?;
+    match p.band() {
+        Band::Unlimited => write!(out, "defaults (no limit)")?,
+        Band::Low => write!(out, "under 70% (defaults, retention capped)")?,
+        Band::Scaled(f) => write!(out, "70..90% (decay scaled, {}% into the band)", f as u64 * 100 / FRAC_ONE as u64)?,
+        Band::Immediate => write!(out, "over 90% (purge at once, cache GC every tick)")?,
+    }
+    write!(out, " decay_ms {}", decay_ms(p.effective_decay_ns(shared.decay_ns())))?;
+    match p.cap() {
+        crate::sys::cgroup::UNLIMITED => write!(out, " retention_cap max")?,
+        c => write!(out, " retention_cap {c}")?,
+    }
+    writeln!(
+        out,
+        " keep {}% empty_bytes {} full_purges {}{} thp {}",
+        p.keep16() as u64 * 100 / FRAC_ONE as u64,
+        crate::policy::empty_bytes(shared),
+        p.full_purges(),
+        if p.full_purge_pending() { " (one pending)" } else { "" },
+        if p.thp_forced() { "forced never (limit under 1 GiB)" } else { "as configured" }
+    )
 }
 
 fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) -> fmt::Result {
@@ -385,12 +423,20 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
         cg.sample(crate::sys::now_coarse_ns());
         writeln!(
             out,
-            "\t\t\"cgroup\": {{\"tracked\": {}, \"limit\": {}, \"high\": {}, \"current\": {}, \"pressure_events\": {}}},",
+            "\t\t\"cgroup\": {{\"tracked\": {}, \"limit\": {}, \"high\": {}, \"current\": {}, \"pressure_events\": {}, \"decay_ms\": {}, \"retention_cap\": {}, \"empty_bytes\": {}, \"full_purges\": {}, \"thp_forced\": {}}},",
             cg.tracked(),
             cg.limit(),
             cg.high(),
             cg.current(),
-            cg.pressure_events()
+            cg.pressure_events(),
+            match shared.policy.effective_decay_ns(shared.decay_ns()) {
+                crate::purge::NEVER => -1i64,
+                ns => (ns / 1_000_000) as i64,
+            },
+            shared.policy.cap(),
+            crate::policy::empty_bytes(shared),
+            shared.policy.full_purges(),
+            shared.policy.thp_forced()
         )?;
         let t = &snap.totals;
         writeln!(

@@ -40,6 +40,7 @@ pub mod huge;
 pub mod layout;
 pub mod lock;
 pub mod meta;
+pub mod policy;
 pub mod purge;
 pub mod slab;
 pub mod stats;

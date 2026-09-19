@@ -588,8 +588,10 @@ to `rallocx` exactly as jemalloc's contract requires.
 - **Cache GC**: every `tcache_gc_interval_ms` (default 10 s) flush three
   quarters of `low_water`, the entries that went unused since the last GC,
   then reset `low_water = len`. `cap` is fixed; it never shrinks. This is
-  jemalloc's incremental tcache GC in spirit. Shortening the interval under
-  cgroup pressure is planned (section 11).
+  jemalloc's incremental tcache GC in spirit. Above 90% of the cgroup
+  limit the interval is 0 (section 11): the GC runs at every periodic
+  tick, which under a flush-driven workload is every 64 flushes or
+  refills; the flush itself is not touched.
 
 ### 6.5 Thread exit
 
@@ -665,6 +667,13 @@ address, with `dirty_at` per entry. Decay policy is jemalloc's in shape:
 - Purges are batched: collect up to 64 ranges and issue one `process_madvise`
   with `PIDFD_SELF` (kernel 6.14) or a pidfd of self (5.10), falling back to
   a loop of `madvise`.
+- The period a walk uses is the arena's configured one scaled by the
+  cgroup policy (section 11): unchanged without a limit or under 70% of
+  it, shrinking linearly to 1000 ms between 70% and 90%, 0 above; `-1`
+  stays never. Scaling the period scales the curve's window, nothing
+  else; and under a limit the walk's allowance is further capped at its
+  share of the 5% retention cap (a keep ratio the policy publishes), the
+  curve still deciding which slabs go first.
 - Decay is driven from the slow path (section 6.4) with a per-class deadline
   at the end of the current step, and from the background thread when
   enabled. Without the background thread
@@ -680,7 +689,8 @@ written through `mallctl`. It is a plain `clone`-based thread created through
 from init (`mallctl("background_thread", true)` creates it synchronously).
 It sleeps on a futex with a timeout equal to the next decay deadline, is woken
 when a class's first slab goes `Empty`, and after `fork` is not recreated in
-the child until the child asks for it again. Waking on PSI events is planned
+the child until the child asks for it again. Where it holds a PSI trigger
+it sleeps in `ppoll` instead and a fired trigger runs a decay pass at once
 (section 11). Its stack is one reservation in the
 metadata region, made by the first start and never freed: a thread that was
 stopped (`background_thread:false`) exits at its next wake-up, and the next
@@ -761,10 +771,10 @@ with a clear message rather than corrupt.
 
 ## 11. cgroup awareness
 
-The measurement layer is implemented (`src/sys/cgroup.rs`, plan Phase 2
-task 4); the policy that acts on it is planned (task 5) and marked so below.
-Everything is gated by the `cgroup` key (default `true`; `cgroup:false`
-reads nothing and reports `cgroup: not tracked (cgroup:false)`).
+The measurement layer is `src/sys/cgroup.rs` (plan Phase 2 task 4), the
+policy that acts on it `src/policy.rs` (task 5). Everything is gated by
+the `cgroup` key (default `true`; `cgroup:false` reads nothing, applies
+nothing and reports `cgroup: not tracked (cgroup:false)`).
 
 Discovery, once at init (section 10 step 7):
 
@@ -822,33 +832,94 @@ Desktop's linuxkit kernel mounts without `nsdelegate` and a `--privileged`
 container there arms the 1 s trigger. The fallback is the same in every
 case: the tick's `memory.current` sample. Armed, the thread sleeps in
 `ppoll` on the trigger (`POLLPRI`) and an eventfd that `wake` writes; a
-fired trigger counts one `pressure_events`, takes an out-of-window sample
-and runs the thread's decay pass at once; `POLLERR`/`POLLHUP` (the cgroup
+fired trigger counts one `pressure_events`, takes an out-of-window sample,
+re-evaluates the policy on it and runs the thread's decay pass at once; `POLLERR`/`POLLHUP` (the cgroup
 removed) disarms. The trigger descriptor is closed when the thread exits
 and in a fork child (whose copy would otherwise wake the parent's thread
 through the shared eventfd).
 
-Policy (planned, task 5), to be applied by the slow path and the background
-thread; nothing reads the figures today except `stats.cgroup.*` and the
-reports:
+Policy (`src/policy.rs`). It is evaluated where a sample was actually
+taken (the periodic tick, the background thread's loop, a fired PSI
+trigger), so at most once per 10 ms process-wide and never on a fast
+path; the outcome is a few atomics on `Shared` (the band, a keep ratio, a
+pending full purge) that the decay driver and the periodic tick read.
+Usage is the last `memory.current` sample against the effective limit
+`min(high, max)`:
 
-| Usage vs effective limit          | Behaviour                                         |
-|-----------------------------------|---------------------------------------------------|
-| No limit                          | Defaults                                          |
-| < 70% of `min(high, max)`         | Defaults, retention capped at 5% of the limit     |
-| 70% .. 90%                        | `dirty_decay_ms` scaled down linearly to 1000     |
-| > 90%                             | Purge immediately on empty; caches GC every flush |
-| `memory.events` `high` increased  | Full purge once                                   |
+| Usage vs effective limit          | Behaviour                                                  |
+|-----------------------------------|------------------------------------------------------------|
+| No limit                          | Defaults; nothing beyond the sample is done                |
+| < 70% of `min(high, max)`         | Defaults, retention capped at 5% of the limit              |
+| 70% .. 90%                        | `dirty_decay_ms` scaled down linearly to 1000; the cap     |
+| >= 90%                            | Period 0: purge at the next pass; cache GC every tick      |
+| `memory.events` `high` increased  | Full purge once, at the next decay pass                    |
+| PSI trigger fired                 | Sample and decay pass at once (the background thread)      |
 
-THP will be disabled regardless of the `thp` tunable when the effective limit
-is under 1 GiB (with the THP work).
+*Retention* is the `Empty` memory of every class of every arena and of
+the huge allocator: freed, dirty, not yet purged. It is the only memory
+the allocator holds that costs RSS without serving anything; `Purged`
+memory is already out of RSS and cached slots are live as far as the
+kernel is concerned. The cap is applied inside the curve walks of section
+8 as a keep ratio `cap / retention` (1 when within the cap): a walk keeps
+the smaller of the curve's allowance and that share of its `Empty` slabs
+or pages, so the sum kept stays under the cap while the curve still
+decides what goes first. The huge walk never splits an extent: along the
+curve alone it skips an extent larger than the remaining excess (a lone
+extent lasts the window), but under the cap it purges the oldest extents
+whole until within the allowance, overshooting rather than staying over
+the cap, because free neighbours coalesce and what a program frees in
+pieces is usually one extent. The sum is taken by the evaluator, under each
+class lock, for classes that have something `Empty` (a lock-free test),
+only when a limit exists. The cap applies in both bands under 90% (a cap
+that vanished at 70% would let retention jump there); at 90% and above
+the zero period empties everything anyway.
+
+Scaling the period scales the curve's window (section 8): at 70% the
+configured `dirty_decay_ms`, just under 90% 1000 ms, linear in usage
+between; a period already at or under 1000 ms is left alone, and `-1`
+(never) is left alone in every band as an explicit choice. "Immediately"
+above 90% means a zero window: the next decay pass (the next periodic
+tick, or the background thread woken by the first `Empty` slab of a
+class) purges everything `Empty`; the `Empty` transition itself is not
+touched. The cache GC at every periodic tick replaces "every flush": the
+tick already sits on every flush and refill path at 1/64, and the flush
+itself stays as it is.
+
+A rise of `memory.events` `high` (the kernel started reclaiming from this
+cgroup) requests one full purge of every `Empty` slab and extent, run by
+the next decay pass; the count at init is the baseline, so a container
+that already had `high` events does not start with one. A limit that
+goes away (`docker update`) resets the outcome to the defaults. Testing
+this row needs `memory.high` below `memory.max`, which `docker run`
+cannot set; what `tests/c/cgroup_policy.c high` found (PROGRESS.md, Phase
+2 task 5): the container's own cgroup cannot enable the memory controller
+for a child (`+memory` to its `cgroup.subtree_control` is `EBUSY` under
+the no-internal-process rule while the container's processes live there,
+`--privileged` or not), but with `--privileged --cgroupns=host` the parent
+is visible and a *sibling* cgroup made there has `memory.high` (the parent
+already delegates memory to the container); a child process moved into
+it and run past its `memory.high` sees the `high` count rise and one
+`full_purges`, on Docker Desktop (`/sys/fs/cgroup/docker/...`) and on the
+systemd GCE host (`/sys/fs/cgroup/system.slice/...`) alike; `nsdelegate`
+does not enter into it, since the cgroup is ours.
+
+THP: `MADV_HUGEPAGE` is not wired yet (section 10, the `thp` key is
+inert), so "disabled under small limits" is, for now, `thp` forced to
+`never` in the stored configuration at init when the effective limit at
+init is under 1 GiB; `opt.thp` reads `never`, the report says why, and
+whatever wires THP later reads the stored setting.
 
 Statistics through `mallctl` (13.4): `stats.cgroup.limit`,
 `stats.cgroup.high` (both `SIZE_MAX` for unlimited), `stats.cgroup.current`
-(the last sample, refreshed by the read if the window allows) and
-`stats.cgroup.pressure_events`, all `size_t` and read-only; `ENOENT` when
+(the last sample, refreshed by the read if the window allows),
+`stats.cgroup.pressure_events`, and the policy's `stats.cgroup.decay_ms`
+(arena 0's effective period, `SIZE_MAX` for never),
+`stats.cgroup.retention_cap` (bytes, `SIZE_MAX` without a limit),
+`stats.cgroup.empty_bytes` (the retention, summed by the read) and
+`stats.cgroup.full_purges`; all `size_t` and read-only; `ENOENT` when
 nothing is tracked, like jemalloc's keys behind a disabled build option.
-`malloc_stats_print` prints one `cgroup:` line (section 16).
+`malloc_stats_print` prints one `cgroup:` line and one `cgroup policy:`
+line (section 16).
 
 ## 12. Configuration
 
@@ -886,7 +957,7 @@ jemalloc names where they exist:
 | `slot_randomize`          | false   | inert (planned, Phase 2 task 3)         |
 | `double_free_scan`        | false   | compare against the top 4 cache entries |
 | `abort_conf`              | false   | abort on unknown keys, bad values and inert keys |
-| `cgroup`                  | true    | read the memory cgroup (11): limits, `memory.current`, events, PSI; `false` reads nothing. The policy is planned (Phase 2 task 5) |
+| `cgroup`                  | true    | read the memory cgroup (11) and apply its policy: limits, `memory.current`, events, PSI; `false` reads and applies nothing |
 | `check_zero`              | false   | challoc only; debug: read every slot/page handed out as zero, abort on a dirty word |
 | `stats_print`             | accepted | inert: nothing prints at exit; no `opt.` value |
 | `junk`, `zero`, `retain`, `oversize_threshold`, `percpu_arena`, `metadata_thp`, `confirm_conf` | accepted | jemalloc keys, ignored with any value |
@@ -1068,7 +1139,8 @@ tcache.create, tcache.flush, tcache.destroy
 experimental.utilization.query, experimental.utilization.batch_query
 config.malloc_conf, config.debug, config.stats
 prof.* -> ENOENT
-stats.cgroup.limit, stats.cgroup.high, stats.cgroup.current, stats.cgroup.pressure_events
+stats.cgroup.limit, stats.cgroup.high, stats.cgroup.current, stats.cgroup.pressure_events,
+stats.cgroup.decay_ms, stats.cgroup.retention_cap, stats.cgroup.empty_bytes, stats.cgroup.full_purges
   (section 11; ENOENT when no cgroup2 is tracked or cgroup:false)
 ```
 
@@ -1200,7 +1272,11 @@ kernel-owned fields is what broke tcmalloc on Linux 6.19.
   rises seen, the PSI state (`not armed (no background thread)`, `armed
   (some ...)`, `unavailable (EROFS)`, `disarmed (background thread gone)`)
   with `pressure_events`, and the CPU figures; or `cgroup: not tracked
-  (<reason>)`. The JSON form has a matching `"cgroup"` object.
+  (<reason>)`; and one `cgroup policy:` line with the band as last
+  evaluated, arena 0's effective `decay_ms`, the `retention_cap`, the
+  `empty_bytes` held, the `full_purges` run and whether `thp` was forced
+  to `never`. The JSON form has a matching `"cgroup"` object with the
+  policy fields.
   The run-time options list marks the inert keys "accepted, no effect". The per-class table also carries the compaction
   diagnostics of section 6.4 (`refilled`, `compacted`, caches that entered
   and left compact mode, probes the refill-rate gate declined) and is
@@ -1240,6 +1316,7 @@ src/heap.rs           Heap, CacheHeader, Shared, fast and slow paths, cache GC, 
 src/huge.rs           huge allocator
 src/meta.rs           metadata region allocator
 src/purge.rs          decay driver, batching, background thread
+src/policy.rs         the cgroup policy table (section 11): bands, retention cap, full purge
 src/arena.rs          arenas, explicit caches, MALLOCX_* routing
 src/config.rs         malloc_conf parsing
 src/stats.rs          counters and epoch merge

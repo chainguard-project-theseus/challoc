@@ -368,6 +368,13 @@ impl Default for Decayer {
 /// nothing is `Empty` or decay is off. Lock-free for a class with nothing
 /// due.
 pub fn decay(shared: &Shared, now: u64) -> Option<u64> {
+    // Design 11: a `memory.events` `high` rise owes one full purge, run
+    // before the walks so they see the survivors (none, normally).
+    let policy = &shared.policy;
+    if policy.take_full_purge() {
+        purge_all(shared);
+    }
+    let keep16 = policy.keep16();
     let mut next: Option<u64> = None;
     let mut fold = |d: Option<u64>| {
         if let Some(d) = d {
@@ -375,12 +382,13 @@ pub fn decay(shared: &Shared, now: u64) -> Option<u64> {
         }
     };
     for arena in shared.arenas.iter() {
-        fold(arena.decay(now));
+        // Each arena's own period, scaled by the policy's band.
+        fold(arena.decay_with(now, policy.effective_decay_ns(arena.decay_ns()), keep16));
     }
     // The huge allocator is shared by every arena and follows arena 0.
-    let decay_ns = shared.decay_ns();
+    let decay_ns = policy.effective_decay_ns(shared.decay_ns());
     if decay_ns != NEVER {
-        fold(shared.huge.decay(now, decay_ns));
+        fold(shared.huge.decay_with(now, decay_ns, keep16));
     }
     next
 }
@@ -411,9 +419,7 @@ pub fn purge_arena(shared: &Shared, index: u16) -> Option<usize> {
 /// requested and does not exist, otherwise run decay here unless the
 /// thread is doing it.
 pub fn on_tick(shared: &Shared, now: u64) {
-    // Design 11: `memory.current` and `memory.events`, at most once per
-    // 10 ms of the coarse clock; nothing when the cgroup is untracked.
-    shared.cgroup.sample(now);
+    sample(shared, now);
     if background::present() {
         return;
     }
@@ -421,6 +427,16 @@ pub fn on_tick(shared: &Shared, now: u64) {
         return;
     }
     let _ = decay(shared, now);
+}
+
+/// Design 11: `memory.current` and `memory.events`, at most once per 10 ms
+/// of the coarse clock, and the policy evaluated on the sample that was
+/// taken; nothing at all when the cgroup is untracked or the window has
+/// not passed. Slow paths only (the periodic tick, the background thread).
+pub fn sample(shared: &Shared, now: u64) {
+    if shared.cgroup.sample(now) {
+        crate::policy::evaluate(shared);
+    }
 }
 
 /// A class or the huge allocator went from no `Empty` slab to one: wake a
@@ -629,7 +645,10 @@ pub mod background {
                 let _ = sys::read(wake, &mut b);
             }
             if fds[0].revents & sys::POLLPRI != 0 {
+                // A stall: sample outside the window and evaluate the
+                // policy on it; the loop's decay pass follows at once.
                 shared.cgroup.note_pressure_event(sys::now_coarse_ns());
+                crate::policy::evaluate(shared);
             }
             if fds[0].revents & (sys::POLLERR | sys::POLLHUP | sys::POLLNVAL) != 0 {
                 disarm(shared, Errno::ENOENT.0);
@@ -798,7 +817,7 @@ pub mod background {
                 return core::ptr::null_mut();
             }
             let now = sys::now_coarse_ns();
-            shared.cgroup.sample(now);
+            super::sample(shared, now);
             let timeout = super::decay(shared, now).map(|deadline| {
                 let ns = deadline.saturating_sub(now).max(MIN_SLEEP_NS);
                 Timespec { sec: (ns / 1_000_000_000) as i64, nsec: (ns % 1_000_000_000) as i64 }

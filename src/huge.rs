@@ -1148,7 +1148,7 @@ impl Huge {
     /// remaining excess is skipped for younger ones that fit), so a lone
     /// extent lasts until its weight is zero, the end of the window, as
     /// before. Returns the number of extents purged.
-    fn purge_curve(&self, now: u64, curve: &Curve) -> usize {
+    fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32) -> usize {
         let mut g = self.inner.lock();
         let mut total = 0usize;
         let mut weighted = 0u64;
@@ -1160,7 +1160,19 @@ impl Huge {
             weighted += pages as u64 * Curve::weight(curve.step(now, dirty_at));
             d = next;
         }
-        let mut excess = total.saturating_sub(Curve::allowance(weighted));
+        // The cgroup policy's retention cap (design 11), as in the class
+        // walk: keep at most this walk's share of the cap.
+        let mut allow = Curve::allowance(weighted);
+        if keep16 < crate::policy::KEEP_ALL {
+            allow = allow.min(crate::policy::mul16(total as u64, keep16) as usize);
+        }
+        let mut excess = total.saturating_sub(allow);
+        // Under the cap an extent larger than the excess goes whole: free
+        // neighbours coalesce, so what a program frees in pieces is often
+        // one extent, and skipping it would keep the retention over the
+        // cap for good (measured: 50 freed 8 MiB runs, one 400 MiB
+        // extent, nothing purged in 3 s). The curve alone keeps the rule.
+        let capped = keep16 < crate::policy::KEEP_ALL;
         let mut n = 0;
         if excess > 0 {
             let mut batch = Batch::new();
@@ -1168,8 +1180,8 @@ impl Huge {
             while !d.is_null() && excess > 0 {
                 // SAFETY: as above; `next` is read before `d` leaves the list.
                 let (pages, next) = unsafe { ((*d).pages(), (*d).next) };
-                if pages <= excess {
-                    excess -= self.purge_extent(&mut g, d, &mut batch);
+                if pages <= excess || capped {
+                    excess = excess.saturating_sub(self.purge_extent(&mut g, d, &mut batch));
                     n += 1;
                 }
                 d = next;
@@ -1191,9 +1203,21 @@ impl Huge {
     /// curve and returns the next deadline, `None` when nothing is
     /// `Empty`. Lock-free unless a walk is due.
     pub fn decay(&self, now: u64, decay_ns: u64) -> Option<u64> {
+        self.decay_with(now, decay_ns, crate::policy::KEEP_ALL)
+    }
+
+    /// [`decay`](Huge::decay) with the cgroup policy's keep ratio (design
+    /// 11), as `ClassState::decay_with`.
+    pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> Option<u64> {
         self.gate.decay(now, decay_ns, |now, curve| {
-            self.purge_curve(now, curve);
+            self.purge_curve(now, curve, keep16);
         })
+    }
+
+    /// Bytes in `Empty` extents (one lock hold), for the cgroup policy's
+    /// retention figure.
+    pub fn empty_bytes(&self) -> usize {
+        self.inner.lock().stats.empty_pages << self.lg_page
     }
 
     pub fn stats(&self) -> HugeStats {
@@ -1725,6 +1749,37 @@ mod tests {
         assert!(zero);
         assert_eq!(env.page_of(p), 0);
         assert_eq!(h.stats().next_page, 9);
+    }
+
+    /// Design 11: under the policy's keep ratio the walk purges the oldest
+    /// extents whole until within `total * keep16`, an extent larger than
+    /// the excess included (free neighbours coalesce, so a program's
+    /// pieces are one extent); along the curve alone (`KEEP_ALL`) such an
+    /// extent is skipped as before.
+    #[test]
+    fn decay_with_a_keep_ratio_purges_coalesced_extents() {
+        use crate::policy::{FRAC_ONE, KEEP_ALL};
+        let env = Env::new();
+        let h = env.huge();
+        const W: u64 = 200_000;
+        let a = env.alloc(&h, 4 * PAGE, 1).0;
+        let b = env.alloc(&h, 4 * PAGE, 1).0;
+        env.free(&h, a);
+        env.free(&h, b);
+        // One coalesced extent.
+        assert_eq!(h.stats().empty, 1);
+        let total = h.stats().empty_pages;
+        assert!(total >= 8, "{total}");
+        let t0 = h.oldest_dirty_at().unwrap();
+        // Uncapped, one step in: nothing goes (the curve keeps it all).
+        assert_eq!(h.decay_with(t0 + 1000, W, KEEP_ALL), Some(t0 + 2000));
+        assert_eq!(h.stats().empty, 1);
+        // Capped at an eighth, a step later: the extent is larger than
+        // the excess and goes whole.
+        assert_eq!(h.empty_bytes(), total << h.lg_page);
+        assert_eq!(h.decay_with(t0 + 2000, W, FRAC_ONE / 8), None);
+        assert_eq!((h.stats().empty, h.stats().purged), (0, 1));
+        assert_eq!(h.empty_bytes(), 0);
     }
 
     /// The decay driver's view of the huge allocator (design section 8):
