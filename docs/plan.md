@@ -1024,19 +1024,42 @@ worktree `../challoc-wt/<lane>` on branch `loop/<lane>` with its own VMs
 `scripts/ralph-prompt.md`, "Lane mode". The lanes are partitioned by the
 files they touch, so they never conflict under `src/`:
 
+First batch (merged into `main` at `322e6bd`, 2026-09-19): lane A tasks
+4g and 7; lane B tasks 10 and 9; lane C tasks 5, 13 and 12's lock and
+geometry items; lane D Phase 3 prerequisites (c), (d), (e). Task 11 moved
+to lane A (it needs `class.rs`/`heap.rs`).
+
+Second batch (from `322e6bd`), the same partition:
+
 - Lane A (stays on `main`; heap fast and warm paths: `src/heap.rs`,
-  `src/arena.rs`, the claim/refill code of `src/class.rs`): tasks 4g, 7, 8,
-  then task 12's CLDEMOTE item, in that order.
-- Lane B (memory return: `src/purge.rs`, `src/policy.rs`, `src/meta.rs`,
-  the commit path of `src/class.rs`, the probes in `src/sys/features.rs`):
-  tasks 10, 11, 9.
-- Lane C (verification and design: task 5's design text; task 13's
-  model-checked slab protocol as test-only code in a new module; task 12's
-  `lock.rs` spin-wait and `config.rs` cache-geometry defaults): tasks 5, 13,
-  then 12-lock and 12-geometry.
-- Lane D (measurement only, no `src/` change): Phase 3 prerequisites (c)
-  the Ruby soak row, (d) the Valkey soak with `io-threads 4`, (e) the
-  `DT_NEEDED` check, plus any acceptance soak this phase still owes.
+  `src/arena.rs`, the claim/refill code of `src/class.rs`, plus a new
+  A-owned module for the raw rseq accessor, never `features.rs`): task 8
+  (per-CPU caches through rseq `mm_cid`: `__rseq_offset` read from the
+  symbol, the `mm_cid` read gated on `__rseq_size >= 28`, pop and push in
+  rseq critical sections via `asm!` on both architectures, kernel fields
+  never written, arenas per CPU when on, thread caches as the fallback;
+  the prerequisites are in PROGRESS.md Notes, "task 8 prerequisites"),
+  then task 11 (prefault), then task 12's CLDEMOTE item where it lands in
+  the claim path. The `percpu_arena` key comes from lane C's first commit,
+  merged early; until then lane A builds against a local stub.
+- Lane B (`src/purge.rs`, `src/policy.rs`, `src/meta.rs`, the commit path
+  of `src/class.rs`, the probes in `src/sys/features.rs`): task 12's
+  CLDEMOTE hint in the commit/flush/free path it owns, and the rseq /
+  `mm_cid` line in the feature report (`features.rs`: `__rseq_size`,
+  `mm_cid` usable yes/no); lane A consumes the raw value through its own
+  accessor, not the report.
+- Lane C (`src/lock.rs`, `src/config.rs`, `src/model.rs`): FIRST the
+  `percpu_arena` config key and its validation (`auto` / `percpu` /
+  `off`, default `auto`, `KEYS.len()` and the cstr arms updated), as its
+  own commit so the coordinator merges it before anything else; then
+  extend `src/model.rs` to model the per-CPU claim protocol (a cache
+  owned by a CPU id, a thread migrating between pops and pushes, the
+  rseq abort path) so task 8 has verification.
+- Lane D (measurement only, no `src/` change): the acceptance campaign
+  for the phase as tasks merge: the mstress x86_64 RSS row re-measured
+  under `percpu_arena:percpu`, the calloc-zero campaign under the mode,
+  the Valkey and Ruby suites, and the "Acceptance for the phase" list
+  below checked item by item with results files.
 
 Rules: a lane's numbers come from `quick`, `quick-perf` and `ab` on the
 lane's own VMs and go into `bench/results/` files named with the lane and
