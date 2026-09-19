@@ -1543,6 +1543,35 @@ change the builds this repository tests (`quantum16` by default,
 string and is the one challoc-specific export (section 16); there is no
 exported accessor for the thread heap slot.
 
+`DT_NEEDED` under `--as-needed` (plan Phase 3 prerequisite (e), measured
+2026-09-19 with `tests/as-needed.sh` on both reference architectures):
+Wolfi's gcc links with `--as-needed` by default, flag or no flag. The
+linker keeps a library only if it resolves a reference made before the
+library is scanned, so an executable that itself calls `malloc` (or any
+symbol of the library) keeps `DT_NEEDED libchalloc.so.0` because
+`-lchalloc` precedes the implicit `-lc` and `malloc` is defined by the
+first library scanned (`-Wl,-y,malloc` shows "definition of malloc" in
+`libchalloc.so`). An executable that references nothing of the library
+drops the entry. The dangerous case is the two-level shape (Ruby: the
+`ruby` binary allocates only through `libruby.so`): the library keeps its
+own `DT_NEEDED`, the executable drops its, and the loader's breadth-first
+search order then puts `libc.so.6` (a direct dependency of the
+executable) ahead of `libchalloc.so.0` (a dependency of the library), so
+`malloc` binds to glibc for the whole process, the library's own calls
+included, with nothing failing. Ruby avoids it by appending
+`-Wl,--no-as-needed` to its LDFLAGS (ruby/ruby#4627), which is why the
+built `ruby` carries `libjemalloc.so.2` without referencing it. A package
+therefore (a) links the executable with `-Wl,--no-as-needed -lchalloc`
+(or `-ljemalloc` for the compat library; `-Wl,--push-state,--no-as-needed
+-lchalloc -Wl,--pop-state` scopes it to the one library), or makes sure
+the executable itself references the allocator, and (b) runs
+`scripts/check-needed.sh <binary> libchalloc.so.0` (or `libjemalloc.so.2`)
+in its package test on every installed executable that must run on
+challoc, plus the shared library that does the allocating; the check is
+`readelf -d` only and exits 1 when the soname is missing.
+`contrib/valkey/build.sh` and `contrib/ruby/build.sh` run it, and `make
+check-needed` runs the link experiments and the built consumers.
+
 ## 14. Hardening summary
 
 Always on:

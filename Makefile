@@ -99,6 +99,22 @@
 #                            ALLOCS, ROWS, HOST_KIND). Needs both `make ruby
 #                            STAGE=build` builds.
 #   make python-bench        Python 3.13 rows (bench/python-bench.sh): the stdlib
+#   make ruby-soak           Ruby soak (bench/ruby-soak.sh, plan Phase 3 prerequisite
+#                            (c)): bench/ruby/soak.rb, a Sidekiq-shaped process (16
+#                            mostly idle threads, short-lived bursts, a growing
+#                            long-lived set, full GC every 30 s, GC.compact at minute
+#                            5) for DURATION (600) s under challoc, Wolfi's jemalloc
+#                            (LD_PRELOAD) and challoc with background_thread:true;
+#                            RSS, GC.stat and mallctl stats every INTERVAL (5) s to
+#                            CSVs; writes bench/results/<date>-<arch>-ruby-soak.md
+#                            (RESULT=path, ALLOCS, THREADS, SEED, GC_EVERY, COMPACT_AT,
+#                            HOST_KIND). Needs `make ruby STAGE=build`.
+#   make check-needed        Phase 3 prerequisite (e): tests/as-needed.sh links
+#                            tests/c/as_needed.c against the release library with
+#                            and without -Wl,--as-needed and checks DT_NEEDED with
+#                            scripts/check-needed.sh, then checks the built Valkey
+#                            (libchalloc.so.0) and Ruby (libjemalloc.so.2) binaries
+#                            when they exist
 #                            workloads under bench/probes/python/ (JSON, dict and
 #                            list churn, regex, object graph), each with
 #                            PYTHONMALLOC unset and =malloc, under challoc,
@@ -150,7 +166,7 @@ DOCKER_RUN = $(DOCKER_BASE) $(DOCKER_FLAGS) $(IMAGE)
 cgroup_docker = $(DOCKER_BASE) --memory=$(1) --memory-swap=$(1) $(if $(CGROUP_WATCHDOG),-e WATCHDOG=$(CGROUP_WATCHDOG)) $(IMAGE) sh scripts/cgroup-tests.sh
 cgroup_run = $(call cgroup_docker,$(1)) $(2)
 
-.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-oscillate test-cgroup test-cgroup-compare test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench python-bench clean-volumes
+.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-oscillate test-cgroup test-cgroup-compare test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench check-needed clean-volumes
 
 image:
 	docker build --platform $(PLATFORM) -f Dockerfile.dev -t $(IMAGE) .
@@ -323,3 +339,10 @@ python-bench: image
 
 clean-volumes:
 	docker volume rm -f $(TARGET_VOLUME) $(CARGO_VOLUME)
+
+# Phase 3 prerequisite (e): DT_NEEDED must name the allocator library
+# (design 13.6); Wolfi's --as-needed drops it from a consumer that
+# references no symbol of it.
+check-needed: image
+	$(DOCKER_RUN) sh -c 'cargo build --release && sh tests/as-needed.sh'
+

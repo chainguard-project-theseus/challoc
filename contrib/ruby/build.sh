@@ -144,11 +144,12 @@ LD_LIBRARY_PATH=$BUILD ./ruby --disable-gems -v
 step "check ($ALLOC)"
 libruby=$(ls libruby.so.3.4* | head -1)
 if [ "$ALLOC" = challoc ]; then
+    # DT_NEEDED through scripts/check-needed.sh, the check a package test
+    # runs (Phase 3 prerequisite (e)); then the rpath.
     for bin in ruby "$libruby"; do
-        dyn=$(readelf -d "$bin")
-        echo "$dyn" | grep -E 'NEEDED.*jemalloc|RUNPATH|RPATH' | sed "s|^|$bin: |" || true
-        echo "$dyn" | grep -q 'NEEDED.*\[libjemalloc.so.2\]' \
+        sh "$ROOT/scripts/check-needed.sh" "$bin" libjemalloc.so.2 \
             || { echo "ruby/build.sh: $bin has no DT_NEEDED libjemalloc.so.2" >&2; exit 1; }
+        dyn=$(readelf -d "$bin")
         echo "$dyn" | grep -E 'RUNPATH|RPATH' | grep -q "$STAGE_LIB" \
             || { echo "ruby/build.sh: $bin has no rpath to $STAGE_LIB" >&2; exit 1; }
     done

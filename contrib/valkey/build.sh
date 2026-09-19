@@ -109,11 +109,13 @@ case "$version" in
     *"malloc=jemalloc-5.3.0-challoc"*) ;;
     *) echo "valkey/build.sh: valkey-server does not report malloc=jemalloc-5.3.0-challoc" >&2; exit 1 ;;
 esac
-# No ldd in the image; read the dynamic section instead.
-dyn=$(readelf -d ./src/valkey-server)
-echo "$dyn" | grep -E 'NEEDED.*libchalloc|RUNPATH|RPATH' || true
-echo "$dyn" | grep -q 'NEEDED.*\[libchalloc.so.0\]' \
+# No ldd in the image; read the dynamic section instead. The DT_NEEDED
+# check is scripts/check-needed.sh, the same one a package test runs
+# (Phase 3 prerequisite (e): --as-needed drops the entry from a binary
+# that references no symbol of the library).
+sh "$ROOT/scripts/check-needed.sh" ./src/valkey-server libchalloc.so.0 \
     || { echo "valkey/build.sh: valkey-server has no DT_NEEDED libchalloc.so.0" >&2; exit 1; }
+dyn=$(readelf -d ./src/valkey-server)
 echo "$dyn" | grep -E 'RUNPATH|RPATH' | grep -q "$LIB" \
     || { echo "valkey/build.sh: valkey-server has no rpath to $LIB" >&2; exit 1; }
 [ -d deps/jemalloc/lib ] && { echo "valkey/build.sh: deps/jemalloc was built" >&2; exit 1; }
