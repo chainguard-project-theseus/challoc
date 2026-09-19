@@ -1686,33 +1686,33 @@ impl Heap {
         let cache = self.cache_ptr(class);
         // SAFETY: this thread's own header, unused (`len == cap == 0`, so
         // nothing is written) or with a stack of `cap` slots.
-        unsafe { Self::push_cache_flags(cache, class, p, flags) }
+        unsafe { Self::push_cache_flags(cache, p, flags) }
     }
 
     /// [`Heap::push_cache`] behind the opt-in hardening: with `flags` zero
-    /// (the default) it is the plain push after one byte test; otherwise
-    /// `zero_on_free` clears the slot's class-size bytes first (whether or
-    /// not the push then succeeds: a slot that goes on to the slow path
-    /// is not cleared twice) and `double_free_scan` compares the top four
-    /// entries. The clear trusts the same check the push does: on the
-    /// sized path that is the size hint, so a stale pointer of the right
-    /// shape is cleared as it is cached, exactly as it would be handed out
-    /// (design 6.3).
+    /// (the default) it is the plain push after one byte test. With
+    /// `zero_on_free` it declines (`false`), so the caller takes the cold
+    /// slow path it already has for a full cache, and that path
+    /// ([`Heap::free_slow_in`]) clears the slot and pushes it: the clear
+    /// must not be a call from here, since a call inside the inlined fast
+    /// path costs every default `free` a callee-saved register spill in
+    /// its prologue (measured: larson1 +1.9% on aarch64 with the `memset`
+    /// call inlined here, the `sdallocx` frame 0x20 -> 0x50 with `x19`
+    /// saved). With `double_free_scan` alone it is the scanning push.
     ///
     /// # Safety
-    /// As for [`Heap::push_cache`]; `p` is a slot of `class`.
+    /// As for [`Heap::push_cache`].
     #[inline(always)]
-    unsafe fn push_cache_flags(cache: *mut CacheHeader, class: usize, p: *mut u8, flags: u8) -> bool {
-        if flags != 0 {
-            if flags & PUSH_ZERO != 0 {
-                // SAFETY: `p` is a slot start of `class` (the caller's check).
-                unsafe { zero_slot(class, p) };
-            }
+    unsafe fn push_cache_flags(cache: *mut CacheHeader, p: *mut u8, flags: u8) -> bool {
+        if flags == 0 {
             // SAFETY: guaranteed by the caller.
-            return unsafe { Self::push_cache(cache, p, flags & PUSH_SCAN != 0) };
+            return unsafe { Self::push_cache(cache, p, false) };
+        }
+        if flags & PUSH_ZERO != 0 {
+            return false;
         }
         // SAFETY: guaranteed by the caller.
-        unsafe { Self::push_cache(cache, p, false) }
+        unsafe { Self::push_cache(cache, p, true) }
     }
 
     /// Push onto `cache` unless it is full. With `scan`, compare `p`
@@ -1867,15 +1867,25 @@ impl Heap {
         if !node.is_null() {
             // SAFETY: `node` is a live block owned by this heap; the cache
             // is unused (`len == cap == 0`) or ours.
-            if unsafe { Self::push_cache_flags(Self::node_cache_ptr(node, class), class, p, shared.push_flags()) } {
+            if unsafe { Self::push_cache_flags(Self::node_cache_ptr(node, class), p, shared.push_flags()) } {
                 return;
             }
         }
         self.free_slow_in(shared, arena, class, p)
     }
 
-    /// The slow free path for any arena.
+    /// The slow free path for any arena. With `zero_on_free` every cached
+    /// free arrives here (the fast push declines, see
+    /// [`Heap::push_cache_flags`]) and the slot is cleared first: the
+    /// class-size bytes, from the class the caller verified (the bit test
+    /// on the plain path; the size hint on the sized path, as the push
+    /// trusts it, so a stale pointer of the right shape is cleared as it
+    /// is cached, exactly as it would be handed out; design 6.3).
     fn free_slow_in(&mut self, shared: &Shared, arena: u16, class: usize, p: *mut u8) {
+        if shared.zero_on_free() {
+            // SAFETY: `p` is a slot start of `class` (the caller's check).
+            unsafe { zero_slot(class, p) };
+        }
         self.tick(shared);
         let cache = self.ensure_cache(shared, arena, class);
         if cache.is_null() {
@@ -1889,8 +1899,6 @@ impl Heap {
                 let half = ((*cache).cap / 2).max(1);
                 self.flush(shared, arena, cache, class, half as usize);
             }
-            // The slot was cleared (`zero_on_free`) by the fast attempt
-            // that brought it here; only the scan is repeated.
             if !Self::push_cache(cache, p, shared.double_free_scan()) {
                 unreachable!("heap: cache still full after a flush");
             }
@@ -2366,10 +2374,11 @@ fn invalid_free(p: usize) -> ! {
 }
 
 /// `zero_on_free`: clear the class-size bytes of slot `p` (plan Phase 2
-/// task 3). Out of line so the default `free` carries nothing of it but
-/// the flag test; a `memset` of the class size, so a 1 KiB value costs a
-/// 1 KiB store per free, which is why the key is off by default (review
-/// 2026-09-18 section 5.1; priced in
+/// task 3). Called from the slow paths only (`Heap::free_slow_in`,
+/// `free_direct`), so the default `free` carries nothing of it but the
+/// flag test; a `memset` of the class size, so a 1 KiB value costs a 1 KiB
+/// store (and the slow-path call) per free, which is why the key is off by
+/// default (review 2026-09-18 section 5.1; priced in
 /// `bench/results/2026-09-18-*-gce-tunables.md`).
 ///
 /// # Safety
@@ -4103,9 +4112,14 @@ pub(crate) mod tests {
         assert!(bytes_of(p, size).iter().all(|&b| b == 0), "plain free left bytes");
         assert_eq!(t.alloc(c), p);
         assert!(bytes_of(p, size).iter().all(|&b| b == 0));
-        // Sized path (`sdallocx`): the size hint's class, no bit test.
+        // Sized path (`sdallocx`): the size hint's class, no bit test. With
+        // the key the fast push declines and `free_sized_slow` takes the
+        // exact route, which clears the slot in `free_slow_in`.
         unsafe { ptr::write_bytes(p, 0xA5, size) };
-        assert!(free_sized_fast(s, t.heap(), p, Some(c)));
+        assert!(!free_sized_fast(s, t.heap(), p, Some(c)), "the fast push accepted a slot under zero_on_free");
+        assert!(bytes_of(p, size).iter().all(|&b| b == 0xA5), "the declined push touched the slot");
+        s.check_size_hint(p, size, Some(c));
+        t.free(p);
         assert!(bytes_of(p, size).iter().all(|&b| b == 0), "sized free left bytes");
         assert_eq!(t.alloc(c), p);
         // A full cache: the slot goes through `free_slow` after the clear.
