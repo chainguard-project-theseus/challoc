@@ -1519,9 +1519,19 @@ Off by default, tunable:
   cross-thread frees and 1..2% of larson on the C4A, over the 1% budget
   for a default-on hardening (`bench/results/2026-09-19-lane-a-pac-pointers.md`).
 
+Planned, hardware-gated (section 18; plan Phase 2.5 tasks 5 and 6):
+tagged pointers behind the `tag_pointers` key, default `off`. On MTE
+hosts a random 4-bit allocation tag per block, retagged on free, checked
+by the hardware on every access (a read through a freed block faults);
+on LAM, UAI or TBI hosts a six-bit class-and-generation tag in the
+ignored top bits that `free`, `realloc`, `malloc_usable_size` and the
+sized path verify (a stale, forged or cross-class pointer aborts; loads
+are not checked). No GCE CPU exposes MTE, LAM or UAI to a guest, so the
+implementation waits for a host that does; the software tag over TBI is
+not gated.
+
 Explicitly not attempted: quarantine (defeats defragmentation and costs
-throughput), canaries (needs bytes inside the block), MTE (only AmpereOne
-exposes it in servers and glibc 2.44 removed its own support). Type-isolated
+throughput), canaries (needs bytes inside the block). Type-isolated
 heaps via Clang's `-fsanitize=alloc-token` are a plausible later addition
 because Wolfi controls compiler flags, tracked in [plan.md](plan.md).
 
@@ -1603,14 +1613,14 @@ runs on every row.
 | PSI triggers on `memory.pressure` | kernel 6.4 (unprivileged), cgroup2 mounted writable | the background thread arms a trigger and reacts to pressure at once (section 11) | sample `memory.current` on the tick |
 | rseq `mm_cid` | kernel 6.3, glibc's registered rseq area | nothing yet: the per-CPU mode (section 15, plan Phase 2.5 task 8) | thread caches |
 | Transparent huge pages | any kernel with THP | nothing: the `thp` key is accepted and inert (plan Phase 2.5 task 9) | off |
-| MTE (`HWCAP2_MTE`, `HWCAP2_MTE3`) | arm64 CPU (Armv8.5) and a kernel with `CONFIG_ARM64_MTE` that exposes it | reported only: tagged pointers (plan Phase 2.5 tasks 5 and 6) | untagged pointers |
+| MTE (`HWCAP2_MTE`, `HWCAP2_MTE3`) | arm64 CPU (Armv8.5) and a kernel with `CONFIG_ARM64_MTE` that exposes it | reported only: tagged pointers (section 18, designed; plan Phase 2.5 task 6 implements) | untagged pointers |
 | PAC (`HWCAP_PACA` and `HWCAP_PACG`) | arm64 CPU (Armv8.3) and kernel | signed cache entries and TLS heap pointer (`pacda`/`autda`, sections 6.1 and 6.2) behind `pac_pointers:true`, off by default on the cost (section 14); `pac=yes` on Axion and the Mac VM, `no` on Altra; FEAT_FPAC decides whether a failure faults at the `autda` or on first use | plain pointers, the same binary, one predicted branch on a byte the fast paths load anyway |
 | LSE (`HWCAP_ATOMICS`) | arm64 CPU (Armv8.1) | reported only; the atomics the crate emits follow the compiler baseline (Rust's outlined `__aarch64_*` helpers already pick LSE at run time) | LL/SC loops in the same helpers |
 | LSE2 (`HWCAP_USCAT`) | arm64 CPU (Armv8.4) | reported only: single-copy 16-byte descriptor atomics (later task) | 64-bit atomics |
 | BTI (`HWCAP2_BTI`), SVE (`HWCAP_SVE`) | arm64 CPU and kernel | reported only (BTI landing pads are the compiler baseline's decision) | none needed |
-| LAM (`cpuid` 7.1 `EAX[26]`) | x86_64 CPU and kernel 6.4 (`arch_prctl(ARCH_ENABLE_TAGGED_ADDR)`) | reported only: tagged pointers (tasks 5 and 6) | untagged pointers |
-| UAI (`cpuid` `0x80000021` `EAX[7]`, read only when leaf `0x80000000` reports an extended range that reaches it) | AMD CPU (Zen 4 and later: upper address ignore, the LAM analogue); no upstream kernel enables it for user space yet (no `arch_prctl`, no `/proc/cpuinfo` flag) | reported only: tagged pointers (tasks 5 and 6) | untagged pointers |
-| LA57 (`cpuid` 7.0 `ECX[16]`), `la57_enabled` (a hinted `mmap` above 2^47 honoured) | x86_64 CPU; kernel with `CONFIG_X86_5LEVEL` booted on it | reported only: the address-space budget for reservations and tag bits (task 5) | 47-bit user addresses |
+| LAM (`cpuid` 7.1 `EAX[26]`) | x86_64 CPU and kernel 6.4 (`arch_prctl(ARCH_ENABLE_TAGGED_ADDR)`) | reported only: tagged pointers (section 18.3, designed; task 6 implements) | untagged pointers |
+| UAI (`cpuid` `0x80000021` `EAX[7]`, read only when leaf `0x80000000` reports an extended range that reaches it) | AMD CPU (Zen 4 and later: upper address ignore, the LAM analogue); no upstream kernel enables it for user space yet (no `arch_prctl`, no `/proc/cpuinfo` flag) | reported only: tagged pointers (section 18.3) once Linux has an enable path | untagged pointers |
+| LA57 (`cpuid` 7.0 `ECX[16]`), `la57_enabled` (a hinted `mmap` above 2^47 honoured) | x86_64 CPU; kernel with `CONFIG_X86_5LEVEL` booted on it | reported only: the address-space budget for reservations and tag bits (section 18.3 uses bits 62:57 on both architectures) | 47-bit user addresses |
 | CLDEMOTE (`cpuid` 7.0 `ECX[25]`), WAITPKG (`ECX[5]`) | x86_64 CPU (Sapphire Rapids and later; a hypervisor may hide WAITPKG) | reported only (task 12) | none needed |
 | ERMS, FSRM, AVX-512F (`cpuid` 7.0 `EBX[9]`, `EDX[4]`, `EBX[16]`) | x86_64 CPU | reported only: `memcpy`/`memset` selection is glibc's; the crate's fills use the compiler baseline | none needed |
 | Cache line, L1D and L2 sizes | `CTR_EL0` (arm64), `cpuid` leaf 4 or `0x8000001D` (x86_64), else `/sys/devices/system/cpu/cpu0/cache/index*/` | reported only: the layout constants (`lock.rs` padding, the 512-byte stride rule) stay fixed | `unknown` in the line; nothing changes |
@@ -1624,7 +1634,355 @@ and `cpuid` registers from the reference machines. The reference hosts'
 lines are recorded in `bench/results/2026-09-19-feature-report.md`; the
 matrix of plan tasks 3 and 4 adds one line per kernel and CPU.
 
-## 18. Source layout
+## 18. Tagged pointers
+
+Plan Phase 2.5 tasks 5 (this section) and 6 (the implementation, gated on
+hardware). Everything below is design against the architecture manuals
+and the kernel's documented ABI; no code path exists yet, the
+`tag_pointers` key is not parsed, and nothing here changes a default.
+Section 14's rule holds: an opt-in per consumer until the Valkey and Ruby
+suites pass with it on.
+
+### 18.1 What the hardware we can reach offers
+
+The probes exist (`src/sys/cpu.rs`, section 17) and ran on every CPU GCE
+sells (`bench/results/2026-09-19-cpu-matrix.md` section 1,
+`2026-09-19-feature-report.md`):
+
+| Feature | Probe | Result on GCE | Hardware that does expose it to a Linux guest or host | Confidence |
+|---|---|---|---|---|
+| MTE (Armv8.5 `FEAT_MTE`) | `HWCAP2_MTE`, `HWCAP2_MTE3` | `mte=no` on Axion (Neoverse V2, `hwcap2=0x3f3ff`, bits 18 and 22 clear) and on Altra (Neoverse N1, Armv8.2, no MTE in silicon) | AmpereOne bare metal: confirmed by Ampere's documentation and by measured numbers (tags in ECC bits, about 7.6% geomean SPECrate for whole-system tagging; `docs/research.md`). AWS Graviton4 (Neoverse V2, the same core as Axion, which hides it) and Azure Cobalt 100 (Neoverse N2): unconfirmed, neither vendor lists it; a `grep mte /proc/cpuinfo` on the smallest instance settles each for cents. Android phones since Tensor G3 / Dimensity 9300 expose it, not a server. | AmpereOne high; Graviton4 and Cobalt low, expect no |
+| LAM (Intel Linear Address Masking, `LAM_U57`) | `cpuid` 7.1 `EAX[26]` | `lam=no` on every x86 cell: Emerald Rapids 8581C (C4, N4), Sapphire Rapids 8481C (C3), Cascade Lake (C2) predate it | Granite Rapids and Sierra Forest (Xeon 6) with kernel 6.4 or later (`arch_prctl(ARCH_ENABLE_TAGGED_ADDR)`); KVM can pass LAM to a guest since 6.8, so the cloud instance generations built on Xeon 6 (AWS's 8th-generation Intel shapes) may show it, unchecked. No cloud host known to us exposes it today. | hardware high; any cloud guest unknown |
+| UAI (AMD Upper Address Ignore) | `cpuid` `0x80000021` `EAX[7]` | `uai=no`: the Genoa guest (C3D, EPYC 9B14) reads `0x10000067`, bit 7 clear, the hypervisor hides it (and LA57); Milan (Zen 3) has none | Zen 4 and later silicon has it (`EFER.UAIE`). Linux has no user-space enable: the 2022 "x86: Implement Upper Address Ignore" series was not merged, there is no `arch_prctl` and no `/proc/cpuinfo` flag, so `uai=yes` from a bare-metal Genoa (a GCE `-metal` shape would show the real CPUID) is still unusable. Re-check upstream at part 2. | silicon high; Linux support: none, to be re-checked |
+| TBI (Armv8.0 top byte ignore) | none needed: every aarch64 Linux ignores bits 63:56 of a user address in loads and stores; `prctl(PR_SET_TAGGED_ADDR_CTRL, PR_TAGGED_ADDR_ENABLE)` (kernel 5.4) makes syscalls accept them | available on Axion and Altra | every arm64 host, the reference C4A included | measured (the ABI is documented; the reference VMs run 7.0) |
+
+Consequence: neither hardware-checked mode runs on any GCE guest.
+The software-tag mode (18.3) needs only ignored address bits, which TBI
+gives on every arm64 host, so that half of part 2 is not gated; the MTE
+half and the LAM cost rows are. Section 18.6 has the cheapest path.
+
+### 18.2 MTE
+
+MTE gives every 16-byte granule of a `PROT_MTE` mapping a 4-bit
+*allocation tag* stored out of line by the hardware, and every pointer a
+4-bit *logical tag* in bits 59:56 (inside the byte TBI ignores). A load
+or store through a pointer whose logical tag differs from the granule's
+allocation tag is a *tag check fault*. The allocator's job is to keep the
+two equal for live blocks and different for everything else.
+
+Mappings. When the mode is on, every `mprotect` that commits a slab or a
+page group (section 5) passes `PROT_READ | PROT_WRITE | PROT_MTE`
+(`PROT_MTE` is per `mprotect` call, not sticky: passing it every time is
+the form that is right on every kernel). Guard slabs and the reserved
+`PROT_NONE` ranges are unchanged. Huge runs are not tagged: a run is
+page-granular and a tag sweep over megabytes per `malloc` is the wrong
+trade when the run's guard page already does the bounds job; huge
+pointers carry tag 0 and their pages have tag 0, so they match. Tag 0 is
+excluded from the tags the allocator generates (`irg` with the exclusion
+mask `GCR_EL1.Exclude` set through the `prctl` below), so an untagged
+pointer into a slab, a forged one, faults. Fresh pages of a `PROT_MTE`
+mapping have tag 0 with their zero data, and `MADV_DONTNEED` resets tags
+with the data, so a `Fresh` or `Purged` slab reads tag 0 everywhere; that
+is the state `claim_prefix` and the zero prefix of section 6.3 already
+know about.
+
+Tagging. The invariant is *the cache holds pointers whose logical tag
+equals their slot's allocation tag*, so the pop of section 6.3 step 4 is
+untouched: `p = slots[--len]` returns a pointer that already checks. The
+tag work sits on the three paths that put a pointer into a cache:
+
+- `free` (and the sized path, and a direct release): after the
+  classification of step 1 (on the stripped address, 18.4) and the checks
+  of step 2, `ldg` the slot's allocation tag (one tag load; the slot's
+  granules all carry one tag, so the first is enough) and compare it with
+  the pointer's. A mismatch aborts (`free of <p>: pointer tag 0x5,
+  allocation tag 0xa (class c, slab s, slot k): stale or forged pointer`):
+  this is the double free after reuse and the stale-copy case the bit
+  test cannot see (the slot is live again, its bit is set). Then `irg`
+  a new tag excluding 0 and the old one (14 candidates, from the CPU's
+  generator; not the heap's xorshift), *retag the slot* to it with
+  `st2g` per 32 bytes (or `dc gva` per `DCZID_EL0` block, 64 bytes on
+  every core we know, when the slot is at least that and aligned), and
+  push `p` with the new tag. From this instant every pointer the program
+  still holds to the block is stale in hardware: a read through it faults
+  (in the mode of 18.2's check paragraph).
+- A refill (`ClassState::finish`, section 5): an `Active` pick's slots
+  were retagged at their last free, so the refill reads each slot's tag
+  with `ldg` and pushes the tagged pointer (one tag load per slot, in the
+  loop that already writes the pointer). A zero pick's slots (a `Fresh`
+  or `Purged` slab, tag 0) are left at tag 0 in the cache's zero prefix
+  and tagged at pop: the pop tests the zero-prefix boundary it already
+  tracks (`len <= zeroed` on a branch that is cold in steady state),
+  `irg`s and sweeps `stg` over the slot, or `stzg`/`dc gzva` on the
+  `calloc` path, which zeroes and tags in one sweep, so the zero prefix
+  still saves `calloc` its `memset`. Tagging at pop rather than at refill
+  keeps the refill from touching (and committing) every page of a batch
+  the program has not asked for yet.
+- A slot that leaves a cache for the slab (`Heap::flush`, thread exit)
+  keeps its allocation tag in memory; nothing to do. `release_owned`
+  receives stripped addresses (18.4).
+
+`realloc(p, n)` checks `p`'s tag as `free` does (abort on a mismatch);
+a same-class resize returns `p` unchanged, tag included; a class change
+allocates (new tag), copies through the new pointer and frees `p` (the
+retag). `calloc` is `malloc` with the zero path above. `malloc_usable_size`,
+`sallocx` and the size read of `rallocx`/`xallocx` check the tag as
+`free` step 2 does and abort on a mismatch with the same message shape.
+`mallctl` lookups that take a pointer (`arenas.lookup`, the batch query,
+`je_get_defrag_hint`, 13.4 and 13.5) classify the stripped address and
+do not check the tag (they answer questions about the slot, not the
+pointer).
+
+Check mode. `prctl(PR_SET_TAGGED_ADDR_CTRL, PR_TAGGED_ADDR_ENABLE |
+PR_MTE_TCF_<mode> | (0xfffe << PR_MTE_TAG_SHIFT))` at activation, then
+in every thread on its first contact with the allocator (the setting is
+per thread, inherited by `clone`; threads that existed before init would
+otherwise run unchecked, so the heap-creation path of 6.4, cold, applies
+it). The modes, and the `tag_check` key that selects them:
+
+- `async` (default): the core records a fault in `TFSR_EL1` and the
+  kernel delivers `SIGSEGV` with `si_code = SEGV_MTEAERR` at the thread's
+  next kernel entry or context switch, *without the faulting address*
+  (`si_addr` is meaningless). Cheapest: the check is off the load path.
+- `asymm` (needs `mte3=yes`, `FEAT_MTE3`, kernel 5.18): reads checked
+  synchronously, writes asynchronously. The read is the leak; the write
+  through a stale pointer is caught a little later. The recommended mode
+  where the CPU has it; not the default only because the plan named
+  `async`.
+- `sync`: every access checked at the instruction, `SIGSEGV` with
+  `SEGV_MTESERR` and `si_addr`. The mode the negative tests run under,
+  and the one to switch a deployment to when an `async` fault has to be
+  located.
+
+Reporting. When the mode is on, challoc installs a `SIGSEGV` handler
+(`rt_sigaction`, `SA_SIGINFO | SA_ONSTACK | SA_NODEFER`, saving the
+previous action). For `SEGV_MTESERR` it writes `challoc: tag check fault
+at <addr> (class c, slab s, slot k; pointer tag 0x5, allocation tag
+0xa)` (or `outside the heap`), for `SEGV_MTEAERR` `challoc: asynchronous
+tag check fault in this thread since its last kernel entry (tag_check:sync
+gives the address)`, then `abort()` through the existing path (section
+16: `write(2)` then `abort`). Any other `si_code` is handed to the
+saved action, so a consumer's own handler still sees its own faults. A
+consumer that installs its own `SIGSEGV` handler after ours (Ruby does,
+for its crash report) replaces it: the fault is still fatal and Ruby's
+report shows the MTE `si_code`; the allocator's line is best-effort and
+is documented as such.
+
+Fork. Allocation tags are part of the page. The kernel copies them with
+the data on a copy-on-write fault of a tagged page (`PG_mte_tagged`,
+`copy_highpage`), 1/32 of the page in bytes, done as a granule loop; the
+child inherits `PROT_MTE` and the checks. Under a Valkey `BGSAVE` this
+is a per-page cost on the parent's write faults for the life of the
+child; part 2 measures fork time and the write-phase p99 with the child
+alive (design 9's shape). `MADV_DONTNEED` of a tagged page in the parent
+is unchanged.
+
+Cost, expected. Retag on free is `zero_on_free`'s store pattern in
+hardware: one store instruction per 32 or 64 bytes of the slot, the same
+instruction count as the `dc zva` `memset`, and on AmpereOne, where tags
+live in the line's ECC bits, the same line fills, since a tag store is a
+read-modify-write of the line. `zero_on_free` measured +87% / +102% on
+`larson1`, +77% / +80% on `larson10`, +55% / +183% on `valkey1` and
++1.6% / +1.3% on `redis` (aarch64 / x86_64,
+`bench/results/2026-09-18-*-gce-tunables.md`), so the working
+expectation for `tag_pointers:mte` is that envelope on the same rows,
+plus one `ldg` per free and per refilled slot (a tag load from a line
+the path may not otherwise touch), plus the check mode's own cost
+(AmpereOne's whole-system figure is 7.6%, which bounds `sync`). That
+puts the mode far outside the 3% budget and confirms the phase rule:
+opt-in, the human decides with part 2's rows. The cheaper variant, for
+part 2 to price next to it: no retag on free, `irg` and sweep at pop
+only. Its sweep touches lines the program is about to write anyway (a
+new block is written before it is read), so it moves the line fills
+rather than adding them; what it gives up is the fault on a read through
+a freed block *before* the slot is reused (the tag still matches until
+the next pop), while the double free after reuse and the forged pointer
+are still caught. The plan's acceptance test "a read through a freed
+pointer faults" needs the retag, so the retag is the design and the
+variant is a measurement.
+
+Consumer contract. A consumer must store nothing in the top byte of a
+pointer it got from the allocator and must pass pointers back unchanged.
+Valkey and Ruby store nothing there (Ruby's immediates live in the low
+bits of a `VALUE`; Valkey's `robj`, `kvobj`, `dict`/`hashtable`, `sds`
+and `listpack` keep pointers whole; both compare pointers only for
+equality). A consumer that packs data into pointer top bits, or sorts
+pointers by address across allocations, must not enable the mode. Every
+tagged pointer is accepted by the kernel's syscalls (`PR_TAGGED_ADDR_ENABLE`
+makes `read`, `write`, `sendmsg`, `io_uring` registration and the rest
+untag their user pointers), except the memory-management calls
+(`mmap`, `mprotect`, `madvise`, `munmap`, `mremap`, `mlock`), which take
+untagged addresses only; those are never called on a user block by a
+sane program, and challoc itself computes their arguments from region
+bases. glibc's aarch64 string functions are MTE-safe by construction
+(16-byte-aligned loads never cross into the next granule past a
+terminator), and glibc 2.44 removed only its own heap tagging, not that
+property.
+
+### 18.3 LAM, UAI and TBI: the software tag
+
+Where the hardware ignores the top bits of an address but does not check
+them, the allocator can still carry a tag there and verify it itself at
+the points where the pointer comes back. Nothing checks a load or a
+store; `free`, `realloc`, `malloc_usable_size` and the sized path do.
+
+Bits. LAM_U57 ignores bits 62:57 (six bits; Linux does not implement
+LAM_U48, and bit 63 stays 0 for a user address). TBI ignores bits 63:56
+(eight); the design uses the same six, 62:57, on both. UAI ignores 63:57
+and would use the same six when Linux gets an enable path.
+
+Enable. x86_64: `arch_prctl(ARCH_ENABLE_TAGGED_ADDR, 6)` (`0x4002`;
+`ARCH_GET_MAX_TAG_BITS` `0x4003` first, `ARCH_GET_UNTAG_MASK` `0x4001` to
+confirm) in init step 3 (section 10), after the configuration and before
+any reservation. The kernel refuses it with `EBUSY` in a process that
+already has more than one thread, `EINVAL` without LAM or on a kernel
+before 6.4; either turns the mode off with a reported reason (`abort_conf`
+turns a refused explicit `lam` into an abort; `auto` never reports). Init
+is lazy on the first `malloc`, which ld.so issues before `main`, so the
+process is single-threaded there in every consumer we have. aarch64:
+`prctl(PR_SET_TAGGED_ADDR_CTRL, PR_TAGGED_ADDR_ENABLE)` per thread as in
+18.2, without the `TCF` bits.
+
+The tag. Six bits: `tag = gen(slot) ^ key[class]`, where `gen(slot)` is a
+per-slot generation byte in a *tag map* next to the class's slot bitmap
+in the metadata region (one byte per slot, `nslots` bytes per slab,
+committed with the slab's bitmap page; 6.25% of the 16-byte class's
+memory, 0.1% of the 1 KiB class's, priced as metadata, and eight times
+the bitmap's footprint, so a 550 MiB Valkey heap of 1 KiB values carries
+a 550 KB map), and `key[class]` six bits per class from the init
+`getrandom`. The class is already exact from the address (section 2), so
+the class key's job is the cross-class substitution: a pointer of class A
+relocated into class B's region classifies as B and is checked against
+`gen ^ key[B]`, which it matches with probability 1/64 rather than 1
+(the generations of two young slots are both 0). A `Fresh` slab's map is
+zero from the kernel; the map is not purged with the slab, so a
+generation keeps counting across a purge and a stale pointer from before
+it still fails.
+
+Where the tag is read and written, mirroring 18.2: `free` (both paths)
+loads the slot's generation byte after the checks of step 2, compares
+`gen ^ key[c]` with the pointer's six bits, aborts on a mismatch (`free
+of <p>: pointer tag 0x2a, expected 0x13 (class c, slab s, slot k): stale
+or forged pointer`), stores `gen + 1` (a relaxed byte store: only the
+slot's owner frees it, and two owners is the double free the compare is
+there to catch) and pushes `p` retagged with the new generation. A refill
+reads each `Active` slot's byte in `finish`'s loop and tags the pointer;
+a zero pick's slots have generation 0 and get `0 ^ key[c]` without a
+load. The pop is untouched. `realloc`, `malloc_usable_size`, `sallocx`
+verify and abort as `free` does; `mallctl` lookups classify the stripped
+address. The sized path verifies at the call too: under this key it
+gives up the "no metadata load per sized free" property of 6.3 for the
+one byte load and store, since the key exists to check pointers; the bit
+test stays deferred to the flush.
+
+What is caught: a free, realloc or size query through a stale pointer
+(the slot was freed and the generation moved on: caught even when the
+slot is live again, which the bit test misses), a forged pointer (63/64),
+a pointer of one class presented as another (63/64), and a consumer
+that clears the top bits before passing a pointer back (a tag of 0 is
+right only for the one generation equal to `key[c]`; making the
+increment skip that value removes the exception, and part 2 should).
+What is not caught: a read or
+write through a stale pointer (the hardware ignores the bits, so the
+access lands on the current owner's data); a double free whose first copy
+is still in the cache (the generation has not moved; `double_free_scan`
+covers the top four entries, as today).
+
+Cost, expected: one byte load and store on the line of the tag map per
+free and one load per refilled slot, no sweep. The map is dense and eight
+times the bitmap, so on Valkey's 550 MiB heap it is a second beyond-L2
+line per free next to the bitmap word (section 4 measured the bitmap
+word's own miss). Part 2 measures it on the C4A under TBI, which is the
+same code as LAM with a different mask.
+
+### 18.4 Stripping the tag before classification
+
+Every entry point that takes a pointer classifies it first (section 2:
+`c = (p - superblock) >> lg_stride`). With tags in the top bits that
+subtraction is wrong, so the address is stripped first: `a = p &
+addr_mask`, where `addr_mask` is a word on the `Shared` line that step 1
+already loads (`superblock`, `lg_stride`, `push_flags`; section 6.2):
+`!0` with tagging off, `!(0xff << 56)` under MTE and TBI, `!(0x3f << 57)`
+under LAM. One load from a hot line and one `and`, no branch, the same
+instructions with the key off, so the default configuration's cost is
+one ALU operation per `free`-family call (part 2 records it on
+`quick-perf`, as CLAUDE.md requires for any fast-path change). The
+pointer's tag is `p >> 56 & 0xf` (MTE) or `p >> 57 & 0x3f` (software),
+taken from `p` after the strip. Paths that strip: `free`, the sized path
+(step 1, before `rel = p - class_base[c_hint]`), `malloc_usable_size`,
+`sallocx`, `realloc`/`rallocx`/`xallocx`, `dallocx`, the `mallctl`
+pointer lookups and `je_get_defrag_hint`, and `Heap::flush` (the cache
+holds tagged pointers; the bucket pass groups by slab from the stripped
+address and `release_owned` receives stripped pointers, so `class.rs`
+never sees a tag). `double_free_scan` compares the tagged values: a
+duplicate carries the same tag.
+
+### 18.5 The `tag_pointers` key, `opt.` and the report
+
+| Key | Default | Values |
+|---|---|---|
+| `tag_pointers` | `off` | `off`; `mte` (requires `mte=yes` in the probe, else a configuration issue and `off`); `lam` (the software tag: LAM on x86_64 when `lam=yes` and the `arch_prctl` succeeds, TBI on aarch64 always; refused, a configuration issue and `off`); `auto` (the strongest the host has, `mte` then `lam`, else `off`, never reported) |
+| `tag_check` | `async` | `async`, `asymm` (needs `mte3=yes`), `sync`; MTE only, ignored otherwise |
+
+`opt.tag_pointers` and `opt.tag_check` read back the configured strings
+(as `opt.thp` does). The effective mode is a `malloc_stats_print` line,
+`Tagged pointers: mte (check async; PROT_MTE regions)`, `Tagged pointers:
+lam (6 bits at 57, arch_prctl ok)`, `Tagged pointers: tbi (6 bits at
+57)`, or `Tagged pointers: off (auto: mte=no lam=no)` / `off (mte
+requested, mte=no)`, with a matching `"tag_pointers": {"mode", "check",
+"reason"}` object in the JSON form. `challoc_features()` is unchanged:
+it reports hardware, and the effective mode is a decision; it is built
+in init step 1 before the configuration is parsed. The abort messages
+of 18.2 and 18.3 are the third surface.
+
+### 18.6 Part 2: tests, cost rows, and what it waits for
+
+Tests part 2 must have (plan task 6): negative modes in
+`tests/c/negative.c`, run under the key: `mte_read_after_free` (a read
+through a freed pointer faults with `SEGV_MTESERR` under
+`tag_check:sync`, and the process dies of `SIGSEGV` before its next
+syscall returns under `async`); `stale_tag_free_aborts` under both modes
+(`free(p)`, `q = malloc` of the same class until `q`'s stripped address
+equals `p`'s, `free(p)` again: the abort of 18.2 or 18.3, the case the
+bit test cannot catch); `forged_untagged_free_aborts` (a slot address
+with a zero top byte); `cross_class_free_aborts` (a class-A pointer with
+class-B tag bits, software mode); `make fuzz` with
+`MALLOC_CONF=tag_pointers:auto`; `make test` (the glibc and mimalloc
+suites), the calloc-zero campaign's `check_zero` configuration, and the
+Valkey and Ruby suites under the key; a host test of the encode, decode
+and strip arithmetic and of the mask table. Cost rows, in the tunables
+files next to `zero_on_free`'s columns and with its protocol (base, off,
+mode, `zero_on_free`, jemalloc; five rounds; same run): `valkey1`,
+`larson1`, `larson10`, `redis`, the Ruby rows of `make ruby-bench`, and
+for MTE the fork row (fork time and write-phase p99 with a `BGSAVE`
+child alive). Then a `quick-perf` attribution of the strip's `and` in
+the default configuration on both reference VMs, since it is the one
+instruction the default pays.
+
+What part 2 waits for, cheapest path first:
+
+1. Nothing, for the software tag on aarch64: `tag_pointers:lam` is TBI
+   on the reference C4A (kernel 7.0), and the arm64 cost rows and the
+   `stale_tag_free_aborts`, forged and cross-class tests run there
+   today. It is the same code as LAM with a different mask, so the x86_64
+   half is one mask and one `arch_prctl` away once a host has LAM.
+2. QEMU TCG for MTE and LAM correctness on any host (the Mac container
+   or a GCE VM): `qemu-system-aarch64 -M virt,mte=on -cpu max` boots an
+   Ubuntu arm64 kernel with `CONFIG_ARM64_MTE` and exposes `mte`;
+   `qemu-system-x86_64 -cpu max` has LAM since QEMU 8.1 with a 6.4+
+   guest. The negative tests and the suites run there; no numbers (TCG is
+   20..50x slower and has no PMU).
+3. MTE numbers: an AmpereOne host. Ampere's own documentation confirms
+   MTE reaches Linux user space on bare metal; the cloud shapes built on
+   AmpereOne (Oracle's A2 family) have not been checked for `mte` in a
+   guest and a bare-metal shape would show the real `HWCAP2`. Graviton4
+   and Cobalt 100 are a `/proc/cpuinfo` away each; expect no, since the
+   same Neoverse V2 core hides it on Axion.
+4. LAM numbers: a Granite Rapids or Sierra Forest host with kernel 6.4+,
+   bare metal or a guest whose hypervisor passes `lam` (KVM 6.8+); no
+   GCE shape does. UAI: nothing to do until Linux has an enable path.
+
+## 19. Source layout
 
 ```
 src/lib.rs            crate root, quantum feature selection, panic handler

@@ -898,6 +898,27 @@ Tasks, in order:
    on every CPU of task 4 in the matrix file; the design section; a note
    for the human on whether the reference VMs can test MTE at all (if not,
    an AmpereOne or Graviton4 box is the prerequisite for part 2).
+   Done 2026-09-19 as design (lane C): the probes ran in task 4
+   (`bench/results/2026-09-19-cpu-matrix.md` section 1: `mte=no` on Axion
+   and Altra, `lam=no` on every x86 cell, `uai=no` on the Genoa guest);
+   `docs/design.md` section 18 "Tagged pointers" (18.1 the hardware table
+   with confidence per vendor, 18.2 MTE: `PROT_MTE` at commit, retag on
+   free with `st2g`/`dc gva`, the tag carried in the cache so the pop is
+   untouched, `ldg` check on `free`/`realloc`/`usable_size`, `tag_check`
+   `async` default with `asymm` and `sync`, the `SIGSEGV` handler for the
+   MTE `si_code`s, fork copy-on-write of tagged pages, the cost expected
+   in `zero_on_free`'s envelope; 18.3 the software tag: six bits at 57,
+   `gen(slot) ^ key[class]` from a per-slot tag map, verified by `free`,
+   `realloc`, `usable_size` and the sized path, `arch_prctl` at init step
+   3, TBI makes it available on every arm64 host today; 18.4 the strip
+   through an `addr_mask` word on the hot `Shared` line; 18.5 the keys and
+   report lines; 18.6 part 2's tests, cost rows and the cheapest path).
+   Design 14 and README's security table carry the planned,
+   hardware-gated row. Note for the human: no reference VM can run MTE or
+   LAM; the software tag over TBI is not gated (the C4A runs it), QEMU
+   TCG gives MTE and LAM correctness without numbers, and an AmpereOne
+   bare-metal host is the prerequisite for MTE numbers
+   (`PROGRESS.d/lane-c-task5.md`).
 6. Tagged pointers, part 2 (gated: no GCP CPU exposes MTE, LAM or UAI to
    a guest, `bench/results/2026-09-19-cpu-matrix.md`; this task waits for a
    host that does, a bare-metal AmpereOne first, and the phase does not

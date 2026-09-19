@@ -141,11 +141,11 @@ the task that will use them is named in the design.
 | PSI triggers                 | kernel 6.4 (unprivileged) | Background thread arms `some 150000 1000000` on the cgroup's `memory.pressure` (or the unprivileged `some 300000 2000000`); a fire takes a sample, re-evaluates the policy and runs a decay pass at once | Sample `memory.current` on the tick; also when the write is refused (Docker's default profile mounts the cgroup read-only: `EROFS`; with `nsdelegate` on the host a container's root cgroup refuses the write: `EPERM`) |
 | Transparent huge pages (reported only) | any kernel | Opt-in only; the `thp` key is accepted and inert | Off                       |
 | rseq `mm_cid` (reported only) | kernel 6.3    | Optional per-CPU mode, later phase         | Thread caches only                |
-| MTE `mte`, `mte3` (reported only) | arm64 CPU (Armv8.5) and kernel, `AT_HWCAP2` | Tagged pointers, a later task | Untagged pointers |
+| MTE `mte`, `mte3` (reported only) | arm64 CPU (Armv8.5) and kernel, `AT_HWCAP2` | Tagged pointers, designed (`docs/design.md` section 18), implementation gated on a host that exposes it | Untagged pointers |
 | PAC `pac` (reported only)    | arm64 CPU (Armv8.3) and kernel, `AT_HWCAP` | Signed cache pointers, a later task | Plain pointers |
 | LSE `lse`, LSE2 `lse2` (reported only) | arm64 CPU (Armv8.1, 8.4), `AT_HWCAP` | 16-byte descriptor atomics, a later task; the atomics emitted today follow the compiler baseline | 64-bit atomics, LL/SC |
 | BTI `bti`, SVE `sve` (reported only) | arm64 CPU and kernel, `AT_HWCAP`/`AT_HWCAP2` | Nothing; recorded for the matrix | None needed |
-| LAM `lam` (reported only)    | x86_64 CPU (`cpuid` 7.1) and kernel 6.4 | Tagged pointers, a later task | Untagged pointers |
+| LAM `lam` (reported only)    | x86_64 CPU (`cpuid` 7.1) and kernel 6.4 | Tagged pointers, designed (section 18.3), gated as MTE | Untagged pointers |
 | UAI `uai` (reported only)    | AMD CPU, Zen 4 and later (`cpuid` `0x80000021`); no kernel enables it for user space yet | Tagged pointers, a later task | Untagged pointers |
 | LA57 `la57`, `la57_enabled` (reported only) | x86_64 CPU (`cpuid` 7.0); the kernel booted with five-level paging (a hinted `mmap` above 2^47 is honoured) | Address-space budget for reservations and tag bits | 47-bit user addresses |
 | CLDEMOTE, WAITPKG, ERMS, FSRM, AVX-512F (reported only) | x86_64 CPU (`cpuid` 7.0) | Nothing yet; recorded for the matrix | None needed |
@@ -173,6 +173,7 @@ CLDEMOTE, ERMS, FSRM and AVX-512F but no LAM or WAITPKG
 | Zero on free                             | Opt-in       | Opt-in: `zero_on_free` clears a block on free (2) |
 | Slot order randomisation                 | No           | Opt-in: `slot_randomize` (2)                |
 | Signed allocator pointers (arm64 PAC)    | No           | Opt-in where the CPU has it: `pac_pointers`, cache entries and the TLS heap pointer `pacda`-signed, authenticated on every `malloc` (3) |
+| Tagged pointers                          | No           | Planned, hardware-gated: `tag_pointers` (4) |
 | Implementation language                  | C            | Rust            |
 
 (1) Through `free`: an invalid pointer aborts at the call, and so does a
@@ -234,6 +235,16 @@ works against the compaction that keeps the heap dense (design 6.4), which
 is why it is not the default. The price of each on `larson`, `redis` and
 the Valkey model is in `bench/results/2026-09-18-*-gce-tunables.md`.
 ## Compatibility
+
+(4) Designed, not implemented (`docs/design.md` section 18, plan Phase 2.5
+tasks 5 and 6): `tag_pointers:mte` gives every block a random 4-bit MTE tag
+retagged on free, so a read through a freed pointer faults in hardware;
+`tag_pointers:lam` carries a six-bit class-and-generation tag in the
+ignored top bits (LAM on x86_64, TBI on aarch64) that `free`, `realloc`,
+`malloc_usable_size` and the sized path verify, so a stale, forged or
+cross-class pointer aborts. Default `off`. No GCE CPU exposes MTE, LAM or
+UAI to a guest (`bench/results/2026-09-19-cpu-matrix.md`), so the
+implementation waits for a host that does.
 
 challoc exports the standard C allocation functions including C23's
 `free_sized` and `free_aligned_sized`, the glibc extras such as
