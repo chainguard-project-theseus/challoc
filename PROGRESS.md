@@ -89,7 +89,7 @@ One line per task, newest at the bottom of each section. Keep it terse.
 
 ## In progress
 
-- (none) Phase 2 is done with acceptance passing (`bench/results/2026-09-18-phase-2-acceptance.md`). Next: the Phase 3 prerequisites (a) to (e) of docs/plan.md, in order, starting with (a), the 64 KiB-page aarch64 run on a throwaway C4A VM with Ubuntu's `linux-generic-64k` kernel.
+- Phase 2.5 task 1 (the comparison matrix), started 2026-09-18: (a) tcmalloc-minimal as the fourth stock allocator, (b) the Python rows (`bench/python-bench.sh`, `python1`/`python1-malloc` scorecard rows), (c) the same-run four-way table on both VMs (`bench/results/<date>-<arch>-gce-four-way.md`).
 
 ## Design decisions
 

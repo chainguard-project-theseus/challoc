@@ -14,7 +14,7 @@
 #
 #   VARIANTS="old=HEAD new=tree jemalloc"
 #       space-separated "name=rev[:MALLOC_CONF]" or a stock allocator name
-#       (jemalloc, glibc, mimalloc). rev is any git rev, or "tree" for the
+#       (jemalloc, glibc, mimalloc, tcmalloc). rev is any git rev, or "tree" for the
 #       working tree. Two variants with the same rev share one build, so
 #       `narenas16=HEAD~1:narenas:16` costs no extra compile next to `old=HEAD~1`.
 #   ROUNDS=5                 timed rounds (plus one warm-up)
@@ -169,9 +169,10 @@ fi
 describe() { # describe VARIANT
   rev=$(v_rev "$1"); conf=$(v_conf "$1")
   case $rev in
-    stock:jemalloc) d="Wolfi's $JEMALLOC_LIB ($(apk list --installed 2>/dev/null | awk '/^jemalloc-[0-9]/ {print $1}' | sed 's/^jemalloc-//;s/-r[0-9]*$//' | head -1))";;
-    stock:glibc)    d="glibc malloc (no LD_PRELOAD)";;
+    stock:jemalloc) d="Wolfi's $JEMALLOC_LIB ($(apk_version jemalloc))";;
+    stock:glibc)    d="glibc malloc (no LD_PRELOAD, $(stock_version glibc))";;
     stock:mimalloc) d="$BIN/libmimalloc.so ($(awk '/^mimalloc /{print $2}' "$BIN/versions.txt"))";;
+    stock:tcmalloc) d="Wolfi's $TCMALLOC_LIB (tcmalloc-minimal $(apk_version tcmalloc-minimal), gperftools without profiler hooks)";;
     tree)           d="working tree (HEAD $(commit_short)$(tree_dirty && echo ' + uncommitted src changes')) built into target/ab/tree";;
     *)              d="$(echo "$rev" | cut -c1-12) built into target/ab/$(echo "$rev" | cut -c1-12)";;
   esac
@@ -187,7 +188,7 @@ first=${NAMES%% *}
   echo "- date: $STAMP"
   echo "- host: ${HOST_CPU:-unknown CPU}, $PROCS CPUs visible to the container"
   echo "- kernel: $(uname -r) (${HOST_KIND:-$(case $(uname -r) in *linuxkit*) echo "Docker Desktop VM";; *) echo "host kernel";; esac)}), container: Wolfi"
-  sed 's/^/- /' "$BIN/versions.txt" | grep -E 'mimalloc-bench|jemalloc-[0-9]|rust-' || true
+  sed 's/^/- /' "$BIN/versions.txt" | grep -E 'mimalloc-bench|jemalloc-[0-9]|tcmalloc-minimal-[0-9]|python-3|rust-' || true
   echo "- load average at start: $LOAD0; at end: $(loadavg); $(( $(date +%s) - T_START )) s total"
   echo "- method: $DONE_ROUNDS timed rounds after one discarded warm-up$([ "$DONE_ROUNDS" != "$ROUNDS" ] && echo " (ADAPTIVE stop, $ROUNDS asked)"), variants interleaved per round, every run's score listed sorted; RSS is bench/rt's median maxrss (KiB) over the timed runs; identical binaries, only LD_PRELOAD and MALLOC_CONF change. Positive percentages mean the variant did worse than $first."
   echo "- programs: larson 5 8 1000 5000 100 4141 N (larsonN), M ops/s, higher is better; xmalloc-test -w 10 -t 5 -s 64 (xmalloc), M frees/s, higher is better; alloc-test 1 and alloc-test min(nproc,16) (alloc-testN), seconds, lower is better; valkey_model -n $VALKEY_MODEL_N -t $VALKEY_MODEL_SECS (valkey1: frees through sdallocx where exported; valkey1-free: plain free), write-phase M ops/s, higher is better, RSS is the peak (bench/probes/valkey_model.c); redis: redis-benchmark -r 1000000 -n $REDIS_N -P 16 lpush/lrange, k req/s, RSS is redis-server's; ruby-churn: bench/ruby/gc_churn.rb 10 10 on the glibc Ruby build; others: wall seconds$([ -n "$PIN" ] && [ "$PIN" != 0 ] && echo "; PIN=$PIN (rows pinned with bench/pin.c, an experiment)")"

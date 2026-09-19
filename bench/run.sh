@@ -16,7 +16,7 @@
 # worse.
 #
 #   RUNS=5                  timed runs per cell
-#   ALLOCS="challoc jemalloc glibc mimalloc"
+#   ALLOCS="challoc jemalloc glibc mimalloc tcmalloc"
 #   BENCHES="cfrac espresso larson mstress xmalloc-test alloc-test1 alloc-testN glibc-simple redis"
 #   HOST_CPU="..."          recorded in the header (the container only sees an implementer id)
 #   HOST_KIND="..."         what runs the kernel (default: "Docker Desktop VM" on a linuxkit
@@ -33,7 +33,7 @@ PROCS=$(nproc)
 ARCH=$(uname -m)
 DATE=$(date -u +%F)
 RESULT=${RESULT:-$ROOT/bench/results/$DATE-$ARCH.md}
-ALLOCS=${ALLOCS:-"challoc jemalloc glibc mimalloc"}
+ALLOCS=${ALLOCS:-"challoc jemalloc glibc mimalloc tcmalloc"}
 BENCHES=${BENCHES:-"cfrac espresso larson mstress xmalloc-test alloc-test1 alloc-testN glibc-simple redis"}
 CHALLOC=$ROOT/target/release/libchalloc.so
 COMMIT=$(git -c safe.directory='*' rev-parse --short HEAD 2>/dev/null || echo unknown)
@@ -58,6 +58,7 @@ lib_for() {
     challoc)  echo "$CHALLOC";;
     jemalloc) echo /usr/lib/libjemalloc.so.2;;
     mimalloc) echo "$BIN/libmimalloc.so";;
+    tcmalloc) echo /usr/lib/libtcmalloc_minimal.so.4;;
     glibc)    echo "";;
     *) echo "unknown allocator $1" >&2; exit 1;;
   esac

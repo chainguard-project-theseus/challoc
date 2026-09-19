@@ -8,6 +8,8 @@
 #                            alloc-test glibc-simple
 #   redis 6.2.7              redis-server redis-benchmark redis-cli, MALLOC=libc
 #   mimalloc (pinned tag)    libmimalloc.so, for the optional third column
+#   (tcmalloc is Wolfi's tcmalloc-minimal package, installed by Dockerfile.dev;
+#   versions.txt records its version and Python's)
 #   bench/rt.c bench/sampler.c
 set -eu
 cd "$(dirname "$0")/.."
@@ -73,7 +75,7 @@ echo "== versions"
   echo "mimalloc-bench $MIMALLOC_BENCH_REV"
   echo "redis $REDIS_TAG"
   echo "mimalloc $MIMALLOC_TAG"
-  apk list --installed 2>/dev/null | grep -E '^(jemalloc|glibc-2\.44|gcc-15|rust-)' | sed 's/ .*//' | sort
+  apk list --installed 2>/dev/null | grep -E '^(jemalloc|glibc-2\.44|gcc-15|rust-|tcmalloc-minimal-[0-9]|python-3\.13-[0-9])' | sed 's/ .*//' | sort
   echo "cmake $(cmake --version | head -1 | sed 's/cmake version //')"
 } > "$BIN/versions.txt"
 cat "$BIN/versions.txt"

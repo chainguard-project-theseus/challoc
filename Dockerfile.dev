@@ -34,7 +34,11 @@ RUN sed -i \
       zlib-dev \
       libffi-dev \
       tzdata \
- && rustc --version && cargo --version
+      tcmalloc-minimal \
+      python-3.13 \
+      py3.13-pip \
+ && rustc --version && cargo --version && python3 --version \
+ && test -f /usr/lib/libtcmalloc_minimal.so.4
 
 # The last seven are for Ruby (contrib/ruby/build.sh, Phase 1 acceptance): a
 # git checkout of Ruby needs autoconf and a base Ruby; the jemalloc header,
@@ -43,6 +47,11 @@ RUN sed -i \
 # <jemalloc/jemalloc.h> as RUBY_ALTERNATIVE_MALLOC_HEADER); tzdata is for
 # `make test-all` (test/ruby/test_time_tz.rb needs zone files). openssl-dev
 # is already there for Valkey.
+#
+# tcmalloc-minimal (gperftools 2.18.1, no profiler hooks) is the fourth stock
+# allocator of the benchmark harness (bench/lib.sh, Phase 2.5 task 1);
+# python-3.13 and its pip are for bench/python-bench.sh (Wolfi has no
+# free-threaded 3.13 package, checked 2026-09-18).
 
 WORKDIR /src
 CMD ["sh"]

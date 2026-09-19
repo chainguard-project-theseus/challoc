@@ -12,7 +12,7 @@
 # not use it. Rerun this after bench/build.sh changes, a kernel update, or a
 # stale verdict.
 #
-#   ROUNDS=5  BENCHES=<ab.sh default>  ALLOCS="jemalloc glibc mimalloc"
+#   ROUNDS=5  BENCHES=<ab.sh default>  ALLOCS="jemalloc glibc mimalloc tcmalloc"
 set -eu
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
@@ -21,6 +21,6 @@ ensure_bench_programs
 mkdir -p "$BASELINE_DIR"
 RESULT=$(baseline_file)
 echo "== baseline for $ARCH, bench build $(bench_build_hash) -> $RESULT"
-RESULT=$RESULT VARIANTS=${ALLOCS:-"jemalloc glibc mimalloc"} ROUNDS=${ROUNDS:-5} BASELINES= TITLE="cached baseline" \
+RESULT=$RESULT VARIANTS=${ALLOCS:-"jemalloc glibc mimalloc tcmalloc"} ROUNDS=${ROUNDS:-5} BASELINES= TITLE="cached baseline" \
   sh "$ROOT/bench/ab.sh"
 echo "== baseline written; quick.sh/ab.sh use it with BASELINES=cached"

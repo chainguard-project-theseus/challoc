@@ -1,6 +1,6 @@
 #!/bin/sh
 # Ruby benchmark rows (docs/plan.md Phase 1.5 task 4b): Ruby 3.4 built
-# `--with-jemalloc` by contrib/ruby/build.sh, measured under four allocators
+# `--with-jemalloc` by contrib/ruby/build.sh, measured under five allocators
 # with a fixed subset of ruby/benchmark run through benchmark-driver, one
 # real command (`gem list`) and a GC-shaped script (bench/ruby/gc_churn.rb).
 # Runs inside the dev container: `make ruby-bench`, or on a VM
@@ -20,6 +20,8 @@
 #              a full GC and has no malloc_usable_size-based accounting)
 #   mimalloc   the --without-jemalloc build with LD_PRELOAD of the mimalloc
 #              built by bench/build.sh
+#   tcmalloc   the --without-jemalloc build with LD_PRELOAD of Wolfi's
+#              tcmalloc-minimal (gperftools, /usr/lib/libtcmalloc_minimal.so.4)
 # Every variant's /proc/self/maps is checked before the rounds: exactly the
 # expected allocator library is mapped.
 #
@@ -51,7 +53,7 @@ set -eu
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
 . "$ROOT/bench/lib.sh"
-ALLOCS=${ALLOCS:-"challoc jemalloc glibc mimalloc"}
+ALLOCS=${ALLOCS:-"challoc jemalloc glibc mimalloc tcmalloc"}
 ROUNDS=${ROUNDS:-5}
 ROWS=${ROWS:-"startup so_binary_trees hash_aref_str array_sample_100k__1k array_sort_block so_nbody app_fib erb_render gem_list gc_churn"}
 WORK=$ROOT/target/ruby
@@ -69,12 +71,12 @@ LOAD0=$(loadavg)
 
 take_bench_lock
 ensure_bench_programs
-for a in $ALLOCS; do case $a in challoc|jemalloc|glibc|mimalloc) ;; *) die "unknown allocator '$a'";; esac; done
+for a in $ALLOCS; do case $a in challoc|jemalloc|glibc|mimalloc|tcmalloc) ;; *) die "unknown allocator '$a'";; esac; done
 rm -rf "$OUT"; mkdir -p "$OUT" "$(dirname "$RESULT")"
 
 # ---- builds, stage, installs ------------------------------------------------
 # The --with-jemalloc build serves challoc and jemalloc, the glibc build
-# serves glibc and mimalloc.
+# serves glibc, mimalloc and tcmalloc.
 build_of() { case $1 in challoc|jemalloc) echo challoc;; *) echo glibc;; esac; }
 for a in $ALLOCS; do
   b=$(build_of "$a")
@@ -108,7 +110,7 @@ BD_VERSION=$(sed -n "s/.*VERSION = '\(.*\)'.*/\1/p" "$BD/lib/benchmark_driver/ve
 # ---- per-allocator ruby command lines -------------------------------------------
 inst_of() { echo "$WORK/install-$(build_of "$1")"; }
 preload_of() { # the LD_PRELOAD value, empty for challoc and glibc
-  case $1 in jemalloc) echo "$JEMALLOC_LIB";; mimalloc) echo "$BIN/libmimalloc.so";; *) echo "";; esac
+  case $1 in jemalloc) echo "$JEMALLOC_LIB";; mimalloc) echo "$BIN/libmimalloc.so";; tcmalloc) echo "$TCMALLOC_LIB";; *) echo "";; esac
 }
 # ruby_cmd ALLOC: "env [LD_PRELOAD=..] LD_LIBRARY_PATH=.. <prefix>/bin/ruby"
 ruby_cmd() {
@@ -128,12 +130,13 @@ DRIVER="$(ruby_cmd "$host") --disable-gems -I $BD/lib $BD/exe/benchmark-driver"
 # ---- binding check ------------------------------------------------------------
 echo "== ruby: $($(ruby_cmd "$host") -v)"
 for a in $ALLOCS; do
-  mapped=$($(ruby_cmd "$a") --disable-gems -e 'puts File.readlines("/proc/self/maps").grep(%r{/lib(jemalloc|mimalloc)[^/ ]*\.so}).map { |l| l.split[5] }.uniq.sort.join(" ")')
+  mapped=$($(ruby_cmd "$a") --disable-gems -e 'puts File.readlines("/proc/self/maps").grep(%r{/lib(jemalloc|mimalloc|tcmalloc)[^/ ]*\.so}).map { |l| l.split[5] }.uniq.sort.join(" ")')
   case $a in
     challoc)  want=$STAGE_LIB/libjemalloc.so.2;;
     jemalloc) want=$JEMALLOC_LIB;;
     glibc)    want=;;
     mimalloc) want=$BIN/libmimalloc.so;;
+    tcmalloc) want=$(readlink -f "$TCMALLOC_LIB");;   # maps shows the resolved .so.4.6.5
   esac
   [ "$mapped" = "$want" ] || die "$a: ruby maps '$mapped', expected '${want:-nothing}'"
   echo "   $a: maps ${mapped:-no allocator library (glibc malloc)}"
@@ -204,6 +207,7 @@ describe() {
     jemalloc) echo "the same --with-jemalloc ruby with LD_PRELOAD=$JEMALLOC_LIB (Wolfi jemalloc $(apk list --installed 2>/dev/null | awk '/^jemalloc-[0-9]/ {print $1}' | sed 's/^jemalloc-//;s/-r[0-9]*$//' | head -1)); the stage is not mapped";;
     glibc)    echo "the --without-jemalloc ruby, glibc malloc";;
     mimalloc) echo "the --without-jemalloc ruby with LD_PRELOAD=$BIN/libmimalloc.so ($(awk '/^mimalloc /{print $2}' "$BIN/versions.txt"))";;
+    tcmalloc) echo "the --without-jemalloc ruby with LD_PRELOAD=$TCMALLOC_LIB (Wolfi tcmalloc-minimal $(apk_version tcmalloc-minimal))";;
   esac
 }
 has() { case " $ALLOCS " in *" $1 "*) return 0;; *) return 1;; esac; }
@@ -256,7 +260,7 @@ has() { case " $ALLOCS " in *" $1 "*) return 0;; *) return 1;; esac; }
       echo "| $a | $(gc_kv gc_count "$a") | $(gc_kv major "$a") | $(gc_kv minor "$a") | $(gc_kv allocated_objects "$a") | $(gc_kv heap_pages "$a") | $(kib_to_mib "$b") | $(kib_to_mib "$af") | $(pct_of "$af" "$b") | $(kib_to_mib "$(gc_kv hwm_kb "$a")") |"
     done
     echo
-    echo "GC counts are the process total (bursts plus the $GC_FORCED forced cycles); \"RSS before\" is after the last burst, before the forced cycles. Ruby's GC calls malloc_trim after a full GC only in the --without-jemalloc build (glibc, mimalloc rows)."
+    echo "GC counts are the process total (bursts plus the $GC_FORCED forced cycles); \"RSS before\" is after the last burst, before the forced cycles. Ruby's GC calls malloc_trim after a full GC only in the --without-jemalloc build (glibc, mimalloc, tcmalloc rows)."
   fi
 } > "$RESULT"
 echo "== wrote $RESULT"

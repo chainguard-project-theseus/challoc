@@ -10,15 +10,15 @@ never used for numbers.
     make quick [OLD=rev]  fast tier: ~2.5 min go/no-go for the working tree vs OLD
                           (PERF=1 adds per-op counters where perf exists)
     make ab VARIANTS=...  protocol tier A/B: the table results files are made of
-    make baseline         cache jemalloc/glibc/mimalloc protocol rows for this machine
+    make baseline         cache jemalloc/glibc/mimalloc/tcmalloc protocol rows for this machine
     make scorecard        the fixed row set vs jemalloc, one line appended to
                           bench/results/scorecard-<arch>.md; RENDER=1 prints the trend
     make valkey-soak      Valkey soak under challoc and its bundled jemalloc
                           (Phase 1 task 8); needs `make valkey STAGE=build`
     make soak-quick       challoc-only 600 s soak vs the cached jemalloc soak
     make soak-baseline    the 1200 s jemalloc soak that soak-quick compares against
-    make ruby-bench       Ruby 3.4 rows under challoc, jemalloc, glibc and mimalloc
-                          (Phase 1.5 task 4b); needs both `make ruby STAGE=build` builds
+    make ruby-bench       Ruby 3.4 rows under challoc, jemalloc, glibc, mimalloc and
+                          tcmalloc (Phase 1.5 task 4b); needs both `make ruby STAGE=build` builds
 
 ## Two tiers
 
@@ -92,7 +92,7 @@ MiB heap whose slab descriptors miss cache on every free of a random key,
   random keys (a DEL of a missing key is a miss, as memtier's are; the key
   count drains toward 20% as in the soak's delete phase). `valkey1` frees
   through `sdallocx(ptr, size, 0)` when the loaded allocator exports it
-  (weak reference: challoc and jemalloc do, glibc and mimalloc fall back to
+  (weak reference: challoc and jemalloc do, glibc, mimalloc and tcmalloc fall back to
   `free` and the log says so), `valkey1-free` forces plain `free`
   (`-f free`; `-f sdallocx` refuses to run without the symbol), and
   `valkey1-usable` (`-u`) precedes every free with a `malloc_usable_size`
@@ -180,7 +180,7 @@ otherwise it runs all `ROUNDS`. Acceptance runs use the defaults: 5 rounds,
 every variant including jemalloc measured in the same run.
 
 **Cached baselines.** `make baseline` (`bench/baseline.sh`) runs the protocol
-rows under jemalloc, glibc and mimalloc once and stores the table under
+rows under jemalloc, glibc, mimalloc and tcmalloc once and stores the table under
 `target/baselines/<arch>-<bench-build-hash>.md`, the hash covering the
 benchmark program versions, kernel and CPU count (`target/` is per machine,
 so a cache is only ever read on the machine that wrote it). `quick.sh` and
@@ -232,7 +232,7 @@ Files:
 - `sampler.c`: `perf record` replacement (Wolfi has no perf): a SIGPROF PC
   sampler preloaded after the allocator; writes `count module offset` lines.
 - `run.sh`: one warm-up plus `RUNS` (5) timed runs per benchmark and
-  allocator (`challoc jemalloc glibc mimalloc`), medians and raw runs into the
+  allocator (`challoc jemalloc glibc mimalloc tcmalloc`), medians and raw runs into the
   results file. larson and xmalloc-test are fixed-duration, so they are scored
   by the throughput they print; redis by redis-benchmark's requests/second.
 - `profile.sh`: larson under challoc with the sampler, attributed to symbols
@@ -265,7 +265,7 @@ Files:
   (same soname, so the loader binds `DT_NEEDED` to the preloaded copy; the
   script checks `/proc/self/maps` for every allocator); the
   `--without-jemalloc` build gives the glibc row and, with `LD_PRELOAD`, the
-  mimalloc row. Rows are one process each: `ruby -e 1` startup,
+  mimalloc and tcmalloc rows. Rows are one process each: `ruby -e 1` startup,
   `so_binary_trees`, `hash_aref_str`, `array_sample_100k__1k`,
   `array_sort_block`, `so_nbody`, `app_fib` and `erb_render.yml` from
   `ruby/benchmark` through `benchmark-driver --runner time` (cloned once into

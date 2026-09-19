@@ -20,7 +20,7 @@
 #                            cgroup:false run
 #   make test-cgroup         both of the above
 #   make test-cgroup-compare Phase 2 task 7: the same runs under CGROUP_ALLOCS
-#                            (jemalloc mimalloc), recorded, no criterion
+#                            (jemalloc mimalloc tcmalloc), recorded, no criterion
 #   make test-host           pure-logic unit tests on the host
 #   make jemalloc-compat     build with the `jemalloc-soname` feature into
 #                            target/jemalloc-compat and stage libjemalloc.so.2,
@@ -58,7 +58,7 @@
 #                            plus warm-up, interleaved, sorted scores and median RSS
 #                            in the results-file table shape (RESULT=path, ADAPTIVE=1,
 #                            BASELINES=cached)
-#   make baseline            cache jemalloc/glibc/mimalloc protocol rows for this
+#   make baseline            cache jemalloc/glibc/mimalloc/tcmalloc protocol rows for this
 #                            machine under target/baselines/ (bench/baseline.sh)
 #   make valkey              build challoc (quantum8) and Valkey at the tag
 #                            Wolfi ships with contrib/valkey/0001-*.patch, then
@@ -92,7 +92,7 @@
 #                            subset of ruby/benchmark through benchmark-driver,
 #                            `gem list` and bench/ruby/gc_churn.rb under challoc's
 #                            stage, Wolfi's jemalloc (LD_PRELOAD), the glibc build
-#                            and mimalloc; wall time and max RSS from bench/rt,
+#                            mimalloc and tcmalloc; wall time and max RSS from bench/rt,
 #                            GC.stat and RSS around forced GCs; ROUNDS=5 plus
 #                            warm-up, interleaved; writes
 #                            bench/results/<date>-<arch>-ruby.md (RESULT=path,
@@ -195,11 +195,11 @@ endif
 test-cgroup: test-cgroup-churn test-cgroup-oscillate
 
 # Phase 2 task 7: the same runs under other allocators (CGROUP_ALLOCS,
-# default jemalloc and mimalloc; needs `make bench-build` for mimalloc),
+# default jemalloc, mimalloc and tcmalloc; needs `make bench-build` for mimalloc),
 # `report` mode for the churn (no criterion) and the oscillation for
 # OSC_SECS; every outcome is printed (OUTCOME lines) and none fails the
 # target, the results file records them.
-CGROUP_ALLOCS ?= jemalloc mimalloc
+CGROUP_ALLOCS ?= jemalloc mimalloc tcmalloc
 test-cgroup-compare: image
 	@for a in $(CGROUP_ALLOCS); do \
 	  $(call cgroup_docker,512m) churn $$a report 400 100; \

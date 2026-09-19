@@ -38,6 +38,7 @@ lib_of() {
     jemalloc) echo /usr/lib/libjemalloc.so.2;;
     glibc) echo "";;
     mimalloc) echo /src/target/bench-bin/libmimalloc.so;;
+    tcmalloc) echo /usr/lib/libtcmalloc_minimal.so.4;;
     *) echo "quick-perf: unknown variant $1" >&2; exit 2;;
   esac
 }

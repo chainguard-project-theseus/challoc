@@ -19,6 +19,9 @@ STAMP=$(date -u +%FT%TZ)
 # Makefile does that).
 GIT="git -c safe.directory=*"
 JEMALLOC_LIB=/usr/lib/libjemalloc.so.2
+# Wolfi's tcmalloc-minimal (gperftools, no profiler hooks): the fourth stock
+# allocator since Phase 2.5 task 1.
+TCMALLOC_LIB=/usr/lib/libtcmalloc_minimal.so.4
 # The Valkey model rows (bench/probes/valkey_model.c): keys and seconds
 # (T/2 write, T/2 delete). quick.sh sets VALKEY_MODEL_SECS=5 before sourcing.
 VALKEY_MODEL_N=${VALKEY_MODEL_N:-850000}
@@ -80,15 +83,28 @@ ruby_available() {
 
 # ---- protocol rows ----------------------------------------------------------
 
-stock_lib() { # stock_lib ALLOC: LD_PRELOAD path for jemalloc|glibc|mimalloc, 1 otherwise
+stock_lib() { # stock_lib ALLOC: LD_PRELOAD path for jemalloc|glibc|mimalloc|tcmalloc, 1 otherwise
   case $1 in
     jemalloc) echo "$JEMALLOC_LIB";;
     mimalloc) echo "$BIN/libmimalloc.so";;
+    tcmalloc) echo "$TCMALLOC_LIB";;
     glibc)    echo "";;
     *) return 1;;
   esac
 }
-is_stock() { case $1 in jemalloc|glibc|mimalloc) return 0;; *) return 1;; esac; }
+is_stock() { case $1 in jemalloc|glibc|mimalloc|tcmalloc) return 0;; *) return 1;; esac; }
+# apk_version PKG: the installed version of a Wolfi package ("5.3.1" for
+# jemalloc-5.3.1-r3), empty when it is not installed.
+apk_version() { apk list --installed 2>/dev/null | awk -v p="^$1-[0-9]" '$1 ~ p {print $1}' | sed "s/^$1-//;s/-r[0-9]*\$//" | head -1; }
+# stock_version ALLOC: a short version string for a stock allocator.
+stock_version() {
+  case $1 in
+    jemalloc) echo "jemalloc $(apk_version jemalloc)";;
+    tcmalloc) echo "tcmalloc-minimal $(apk_version tcmalloc-minimal)";;
+    mimalloc) echo "mimalloc $(awk '/^mimalloc /{print $2}' "$BIN/versions.txt" 2>/dev/null)";;
+    glibc)    echo "glibc $(apk_version glibc-2.44 || true)";;
+  esac
+}
 
 # bench_args BENCH: the command line of one row. larson/xmalloc rows are fixed
 # duration (5 s) and scored by the throughput they print; the Valkey model

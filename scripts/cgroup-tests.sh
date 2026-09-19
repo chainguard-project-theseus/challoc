@@ -12,6 +12,7 @@
 #           challoc-off   the same with MALLOC_CONF=cgroup:false (the control)
 #           jemalloc      Wolfi's /usr/lib/libjemalloc.so.2 (5.3.1)
 #           mimalloc      target/bench-bin/libmimalloc.so (bench/build.sh)
+#           tcmalloc      Wolfi's /usr/lib/libtcmalloc_minimal.so.4 (gperftools)
 #           glibc         no preload
 #   MODE    purge | keep | report (tests/c/cgroup_churn.c)
 #
@@ -55,6 +56,7 @@ case $alloc in
   challoc-off) preload=$ROOT/target/release/libchalloc.so; conf=cgroup:false,abort_conf:true ;;
   jemalloc)    preload=/usr/lib/libjemalloc.so.2; extra=--any-allocator ;;
   mimalloc)    preload=$ROOT/target/bench-bin/libmimalloc.so; extra=--any-allocator ;;
+  tcmalloc)    preload=/usr/lib/libtcmalloc_minimal.so.4; extra=--any-allocator ;;
   glibc)       extra=--any-allocator ;;
   *) echo "unknown allocator $alloc" >&2; exit 2 ;;
 esac
@@ -73,6 +75,7 @@ case $alloc in
   challoc*) version="challoc $(git -c safe.directory='*' rev-parse --short HEAD 2>/dev/null || echo tree)" ;;
   jemalloc) version="jemalloc $(apk info jemalloc 2>/dev/null | sed -n 's/^jemalloc-\([^ ]*\) .*/\1/p' | head -1)" ;;
   mimalloc) version="mimalloc $(sed -n 's/^mimalloc v\{0,1\}\([0-9][^ ]*\).*/\1/p' target/bench-bin/versions.txt 2>/dev/null | head -1)" ;;
+  tcmalloc) version="tcmalloc-minimal $(apk info tcmalloc-minimal 2>/dev/null | sed -n 's/^tcmalloc-minimal-\([^ ]*\) .*/\1/p' | head -1)" ;;
   glibc)    version="glibc $(ldd --version 2>&1 | head -1 | sed 's/.* //')" ;;
 esac
 echo "== $kind under $alloc ($version): $prog $* $extra"
