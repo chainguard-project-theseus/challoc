@@ -365,7 +365,15 @@ page-group density would, both fast-path work not undertaken.
 
 Guard slabs: with `guards` on, every `guard_slab_interval`-th 64 KiB of slabs
 is a *guard slab* that is never handed out (`SlabTable::is_guard_slab`,
-arithmetic on the slab number). When its page group is committed it is made
+arithmetic on the slab number: a shift to the page group, an add and a mask).
+The interval is a power of two (the default 8 is; a configured value that is
+not rounds up to the next one, is reported as a configuration issue, which
+`abort_conf` turns into an abort, and `opt.guard_slab_interval` returns the
+rounded value), so the test costs no division: the runtime `%` it used to be
+was a 32-bit `divl` twice per Valkey SET on the `sdallocx` fast path and the
+largest single term of that path's instruction window on small-L3 hosts
+(`bench/results/2026-09-19-8481c-valkey1-attribution.md` section 7). The
+guard density per byte is unchanged. When its page group is committed it is made
 read-write like its neighbours, so the VMA merges, and `MADV_GUARD_INSTALL`
 is applied to its first page so a write running off the previous slab
 faults; if the install fails the whole slab is left `PROT_NONE` instead. This
@@ -514,8 +522,8 @@ reads; halving the flush rate halves those misses (Phase 0 acceptance,
 1. If `p` is null return. `c_hint = class_for(n, align)` (`None` for a huge
    size). Compute class, slab and slot as in `free` step 2; if `p` is not a
    slot start in a handed-out slab, or the slab is a guard slab (arithmetic
-   on the table line: a shift and a modulo), or its class is not `c_hint`,
-   slow path.
+   on the table line: a shift, an add and a mask, the interval being a
+   power of two), or its class is not `c_hint`, slow path.
 2. `heap = tls()`; `cache = heap.caches[heap.arena][c]`; if `len == cap`,
    slow path. `slots[len++] = p`. Neither the bitmap word nor the owner
    word is loaded.
@@ -1063,7 +1071,7 @@ jemalloc names where they exist:
 | `thp`                     | never   | `never`, `always`; inert (planned)      |
 | `lazy_free`               | false   | use `MADV_FREE` for purge               |
 | `guards`                  | true    | guard slabs and huge runs               |
-| `guard_slab_interval`     | 8       | one guard per N x 64 KiB of slabs; 0 off, 1 out of range (clamps to 2) |
+| `guard_slab_interval`     | 8       | one guard per N x 64 KiB of slabs, N a power of two (else rounded up, reported); 0 off, 1 out of range (clamps to 2) |
 | `huge_retain_max`         | 67108864 | challoc only; bytes; freed huge runs above it are purged at once (7) |
 | `zero_on_free`            | false   | opt-in: clear a block on free (6.3 step 3); priced in `bench/results/2026-09-18-*-gce-tunables.md` |
 | `slot_randomize`          | false   | opt-in: refills claim from a random word and shuffle the batch (4); fights 6.4's compaction |

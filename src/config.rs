@@ -107,7 +107,11 @@ pub struct Config {
     pub guards: bool,
     /// One guard per N slabs of 64 KiB (per N * 64 KiB of slabs for the
     /// classes with smaller slabs, see `heap::guard_interval_for`); 0 means
-    /// none, 1 means every slab.
+    /// none. A power of two, so the sized free's guard test is a mask
+    /// (`SlabTable::is_guard_slab`, plan Phase 2.5 task 4c): a configured
+    /// value that is not one rounds up to the next power of two, reported
+    /// as [`Issue::Rounded`] (an abort under `abort_conf`) and readable
+    /// through `opt.guard_slab_interval`; 1 is out of range (clamps to 2).
     pub guard_slab_interval: u32,
     /// Freed huge runs with more usable bytes than this are purged the
     /// moment they are freed instead of waiting for decay
@@ -265,11 +269,20 @@ impl Config {
                 // 0 is off and N >= 2 is one guard per N x 64 KiB; 1 would
                 // make every slab a guard and leave nothing to allocate
                 // (`SlabTable::new` refuses it), so it is out of range and
-                // clamps to the smallest interval with any slabs, 2.
+                // clamps to the smallest interval with any slabs, 2. The
+                // interval must be a power of two (the sized fast path's
+                // guard test is a mask): anything else rounds up and is
+                // reported, so `abort_conf` refuses it and a plain run says
+                // what it got. The maximum is a power of two, so a clamped
+                // value needs no rounding.
                 let r = num(self, 0, MAX_GUARD_SLAB_INTERVAL as i64, |c, v| c.guard_slab_interval = v as u32);
                 if self.guard_slab_interval == 1 {
                     self.guard_slab_interval = 2;
                     return Err(Issue::OutOfRange { key, value });
+                }
+                if self.guard_slab_interval != 0 && !self.guard_slab_interval.is_power_of_two() {
+                    self.guard_slab_interval = self.guard_slab_interval.next_power_of_two();
+                    return Err(Issue::Rounded { key, value, to: self.guard_slab_interval as u64 });
                 }
                 return r;
             }
@@ -506,6 +519,9 @@ pub enum Issue<'a> {
     BadValue { key: &'a [u8], value: &'a [u8] },
     /// A number outside the key's range; the value was clamped.
     OutOfRange { key: &'a [u8], value: &'a [u8] },
+    /// A number the key needs as a power of two; the value was rounded up
+    /// to `to` (`guard_slab_interval`).
+    Rounded { key: &'a [u8], value: &'a [u8], to: u64 },
     /// One of [`INERT_KEYS`]: parsed and (where it has a field) stored, but
     /// nothing reads it.
     Inert(&'a [u8]),
@@ -521,6 +537,9 @@ impl fmt::Display for Issue<'_> {
             }
             Issue::OutOfRange { key, value } => {
                 write!(f, "out-of-range conf value \"{}\" for {} (clamped)", Bytes(value), Bytes(key))
+            }
+            Issue::Rounded { key, value, to } => {
+                write!(f, "conf value \"{}\" for {} is not a power of two (rounded up to {})", Bytes(value), Bytes(key), to)
             }
             Issue::Inert(key) => {
                 write!(f, "conf key {} is accepted but has no effect (not implemented)", Bytes(key))
@@ -1281,6 +1300,28 @@ mod tests {
         assert_eq!(cfg.effective_guard_slab_interval(), 2);
         assert_eq!(issues.len(), 1);
         assert!(issues[0].contains("out-of-range conf value \"1\" for guard_slab_interval"), "{}", issues[0]);
+        // The interval is a power of two (the sized path's guard test is a
+        // mask): anything else rounds up, is reported, and the rounded value
+        // is what `opt.guard_slab_interval` returns; the maximum is one.
+        for (text, want) in [("3", 4u32), ("5", 8), ("12", 16), ("4194303", 1 << 22)] {
+            let (cfg, issues) = parse(&std::format!("guard_slab_interval:{text}"));
+            assert_eq!(cfg.effective_guard_slab_interval(), want, "{text}");
+            assert_eq!(cfg.get(b"guard_slab_interval"), Some(Value::Uint(want as u64)));
+            assert_eq!(issues.len(), 1, "{text}");
+            assert_eq!(
+                issues[0],
+                std::format!("conf value \"{text}\" for guard_slab_interval is not a power of two (rounded up to {want})")
+            );
+        }
+        for text in ["0", "2", "4", "8", "64", "4194304"] {
+            let (cfg, issues) = parse(&std::format!("guard_slab_interval:{text}"));
+            assert_eq!(cfg.guard_slab_interval, text.parse::<u32>().unwrap());
+            assert!(issues.is_empty(), "{text}: {issues:?}");
+        }
+        // Under `abort_conf` a rounded value counts as a problem, as the
+        // clamp does (`load` aborts on any issue).
+        let (cfg, issues) = parse("guard_slab_interval:6,abort_conf:true");
+        assert!(cfg.abort_conf && cfg.guard_slab_interval == 8 && issues.len() == 1);
         assert_eq!(clean("tcache_gc_interval_ms:0").gc_interval_ns(), 0);
         assert_eq!(clean("tcache_gc_interval_ms:1").gc_interval_ns(), 1_000_000);
     }

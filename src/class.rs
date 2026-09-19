@@ -474,12 +474,14 @@ pub struct SlabTable {
     /// `log2(group)`.
     lg_group: u8,
     /// `log2(slabs_per_page)`: the guard test on the sized fast path is a
-    /// shift and one modulo (`is_guard_slab`).
+    /// shift, an add and a mask (`is_guard_slab`).
     lg_slabs_per_page: u8,
     _pad: [u8; 2],
-    /// Every `guard_interval`-th page group is a guard group; 0 disables
-    /// guards.
-    guard_interval: u32,
+    /// `guard_interval - 1`: every `guard_interval`-th page group is a
+    /// guard group and the interval is a power of two, so `(group + 1) &
+    /// guard_mask == 0` is the test. With guards off the mask is all ones
+    /// and no page group a region can have matches (`u32::MAX` would).
+    guard_mask: u32,
     lg_page: u32,
     /// `desc_stride(class)`.
     desc_stride: u32,
@@ -696,12 +698,19 @@ impl SlabTable {
     /// Create the table for `class`. Reserves the descriptor array, the
     /// class bitmap and the owner array in `meta`; returns `None` if the
     /// metadata region cannot hold them. `guard_interval` of `N > 0` makes
-    /// every `N`-th page group a guard group; callers must pass 0 when
-    /// `MADV_GUARD_INSTALL` is unavailable, since a `PROT_NONE` slab would
-    /// split the region into one VMA per guard (design section 5).
+    /// every `N`-th page group a guard group; `N` must be a power of two
+    /// (`config.rs` rounds a configured value up, `heap::guard_interval_for`
+    /// scales by a power of two), so that the sized fast path's test is a
+    /// mask; callers must pass 0 when `MADV_GUARD_INSTALL` is unavailable,
+    /// since a `PROT_NONE` slab would split the region into one VMA per
+    /// guard (design section 5).
     pub fn new(meta: &Meta, regions: &Regions, class: usize, guard_interval: u32) -> Option<SlabTable> {
         assert!(class < CLASSES.len(), "class: index out of range");
         assert!(guard_interval != 1, "class: a guard interval of 1 leaves no slabs to allocate");
+        assert!(
+            guard_interval == 0 || guard_interval.is_power_of_two(),
+            "class: guard interval {guard_interval} is not a power of two"
+        );
         let cls = &CLASSES[class];
         let page = regions.page_size();
         let nslabs = regions.nslabs(class);
@@ -723,7 +732,7 @@ impl SlabTable {
             lg_group: group.trailing_zeros() as u8,
             lg_slabs_per_page: slabs_per_page.trailing_zeros() as u8,
             _pad: [0; 2],
-            guard_interval,
+            guard_mask: guard_interval.wrapping_sub(1),
             lg_page: regions.lg_page,
             desc_stride: desc_stride(class) as u32,
             slabs_per_page: slabs_per_page as u32,
@@ -762,16 +771,28 @@ impl SlabTable {
     /// page groups (see [`slabs_per_page`]): every `guard_interval`-th group
     /// is a guard group, and with one slab per page (the usual case) that is
     /// every `guard_interval`-th slab. Arithmetic on the table line (a
-    /// shift and one 32-bit modulo), so the sized fast path can reject a
-    /// slot start in a guard slab without a memory access: a guard
-    /// slab's body past its first page is read-write
-    /// memory that was never handed out.
+    /// shift, an add and a mask: the interval is a power of two, and the
+    /// runtime `%` this used to be was a 32-bit `divl` twice per Valkey SET
+    /// on the `sdallocx` path, the largest single term of the sized path's
+    /// instruction window on small-L3 hosts, plan Phase 2.5 task 4c), so
+    /// the sized fast path can reject a slot start in a guard slab without
+    /// a memory access: a guard slab's body past its first page is
+    /// read-write memory that was never handed out. With guards off
+    /// (`guard_mask == u32::MAX`) only page group `u32::MAX` would match,
+    /// which no region has (at most 2^22 slabs), so there is no separate
+    /// "off" branch.
     ///
     /// [`slabs_per_page`]: SlabTable::slabs_per_page
     #[inline(always)]
     pub fn is_guard_slab(&self, slab: usize) -> bool {
         let page_group = (slab >> self.lg_slabs_per_page) as u32;
-        self.guard_interval != 0 && page_group.wrapping_add(1) % self.guard_interval == 0
+        page_group.wrapping_add(1) & self.guard_mask == 0
+    }
+
+    /// The guard interval in page groups (0 when guards are off).
+    #[inline]
+    pub fn guard_interval(&self) -> u32 {
+        self.guard_mask.wrapping_add(1)
     }
 
     /// Slabs per page group; 1 unless the page is larger than the slab.
@@ -2741,11 +2762,12 @@ mod tests {
         let c = min_slab_class();
         let n = CLASSES[c].nslots();
         assert_eq!(CLASSES[c].slab_size(), MIN_SLAB);
-        // Every third page group is a guard group: slabs 8..12.
-        let cs = env.class(c, 3);
+        // Every fourth page group is a guard group: slabs 12..16.
+        let cs = env.class(c, 4);
         assert_eq!(cs.table().slabs_per_page(), 4);
-        for s in 0..16 {
-            assert_eq!(cs.is_guard_slab(s), (8..12).contains(&s), "slab {s}");
+        assert_eq!(cs.table().guard_interval(), 4);
+        for s in 0..20 {
+            assert_eq!(cs.is_guard_slab(s), (12..16).contains(&s), "slab {s}");
         }
         // Fill the first group and the first slab of the second; the
         // second group's page is committed with slab 4, so every slot of
@@ -2768,19 +2790,19 @@ mod tests {
         assert_eq!(cs.oldest_empty(), cs.desc(0).dirty_at());
         // Another arena gets the next group (slabs 128..256: groups are
         // whole page groups, so a page group never straddles arenas);
-        // 128..132 is a guard group (the 33rd page group), so its first
-        // usable slab is 132. Arena 0 then reuses its Empty slab 0 and
-        // commits 5 and 6 (a refill takes Empty slabs before Purged ones
-        // and Purged ones before committing).
+        // 128..132 is page group 32, not a guard (124..128 is), so its
+        // first usable slab is 128. Arena 0 then reuses its Empty slab 0
+        // and commits 5 and 6 (a refill takes Empty slabs before Purged
+        // ones and Purged ones before committing).
         let other = env.class_in_arena(&cs, 1);
         let (q, _) = env.claim(&other, n);
         assert_eq!(cs.table().group(), 128);
-        assert!(cs.is_guard_slab(128) && !cs.is_guard_slab(132));
-        assert_eq!(q[0] as usize, env.regions.slab_addr(c, 132));
+        assert!(cs.is_guard_slab(124) && !cs.is_guard_slab(128));
+        assert_eq!(q[0] as usize, env.regions.slab_addr(c, 128));
         assert_eq!(cs.table().owner(128), 1);
         assert_eq!(cs.table().owner(5), 0);
         assert_eq!(cs.table().committed_slabs(), 256);
-        assert_eq!(cs.table().guards(), 4);
+        assert_eq!(cs.table().guards(), 0);
         let (r, _) = env.claim(&cs, 3 * n);
         assert_eq!(r.len(), 3 * n);
         for s in [0, 5, 6] {
@@ -2788,24 +2810,24 @@ mod tests {
             assert_eq!(cs.desc(s).state(), State::Active, "slab {s}");
             assert_eq!(cs.desc(s).arena(), 0);
         }
-        assert_eq!(cs.desc(132).arena(), 1);
+        assert_eq!(cs.desc(128).arena(), 1);
         // Slab 7 was committed with its page group (by slab 4) and handed
         // to arena 0 with the group, but no refill has used it: Fresh.
         assert_eq!(cs.desc(7).state(), State::Fresh);
-        assert_eq!(cs.stats(), ClassStats { committed: 7, guards: 4, ..Default::default() });
+        assert_eq!(cs.stats(), ClassStats { committed: 7, ..Default::default() });
         // Page group 4..8 with 4, 5, 6 Empty and 7 Fresh is idle, so it is
         // discarded as a whole; 7 stays Fresh (nothing was written to it).
         cs.release(&p[4 * n..]);
         cs.release(&in_slab(&r, 5));
         cs.release(&in_slab(&r, 6));
-        assert_eq!(cs.stats(), ClassStats { committed: 7, guards: 4, empty: 3, ..Default::default() });
+        assert_eq!(cs.stats(), ClassStats { committed: 7, empty: 3, ..Default::default() });
         assert_eq!(other.purge_empty(u64::MAX), 0);
         assert_eq!(cs.purge_empty(u64::MAX), 3);
         for s in 4..7 {
             assert_eq!(cs.desc(s).state(), State::Purged, "slab {s}");
         }
         assert_eq!(cs.desc(7).state(), State::Fresh);
-        assert_eq!(cs.stats(), ClassStats { committed: 7, guards: 4, purged: 3, ..Default::default() });
+        assert_eq!(cs.stats(), ClassStats { committed: 7, purged: 3, ..Default::default() });
         // With 0..4 Empty, purging with a cutoff at the oldest slab's
         // `dirty_at` takes the whole group, a slab released later (younger,
         // whenever the coarse clock has moved on) included.
@@ -2818,7 +2840,7 @@ mod tests {
             assert_eq!(cs.desc(s).state(), State::Purged, "slab {s}");
             assert_eq!(cs.desc(s).dirty_at(), 0);
         }
-        assert_eq!(cs.stats(), ClassStats { committed: 7, guards: 4, purged: 7, ..Default::default() });
+        assert_eq!(cs.stats(), ClassStats { committed: 7, purged: 7, ..Default::default() });
         // Purged neighbours do not block a purge: a claim reuses Purged
         // slab 0 (zero), and releasing it purges it alone inside its
         // Purged group.
@@ -2829,26 +2851,27 @@ mod tests {
         assert_eq!(cs.desc(0).state(), State::Empty);
         assert_eq!(cs.purge_empty(u64::MAX), 1);
         assert_eq!(cs.desc(0).state(), State::Purged);
-        assert_eq!(cs.stats(), ClassStats { committed: 7, guards: 4, purged: 7, ..Default::default() });
-        // Past the guard group: the Purged slabs go first, then slab 7 is
-        // committed, then the next commit skips the guard group 8..12 and
-        // lands on slab 12.
-        let (g, _) = env.claim(&cs, 8 * n + 1);
-        assert_eq!(g.len(), 8 * n + 1);
+        assert_eq!(cs.stats(), ClassStats { committed: 7, purged: 7, ..Default::default() });
+        // Past the guard group: the Purged slabs go first, then slabs 7
+        // and 8..12 are committed, then the next commit skips the guard
+        // group 12..16 and lands on slab 16.
+        let (g, _) = env.claim(&cs, 12 * n + 1);
+        assert_eq!(g.len(), 12 * n + 1);
         assert_eq!(in_slab(&g, 7).len(), n);
-        assert_eq!(in_slab(&g, 12).len(), 1);
-        assert_eq!(cs.table().guards(), 8);
-        assert_eq!(cs.stats().committed, 9);
+        assert_eq!(in_slab(&g, 11).len(), n);
+        assert_eq!(in_slab(&g, 16).len(), 1);
+        assert_eq!(cs.table().guards(), 4);
+        assert_eq!(cs.stats().committed, 13);
         assert_eq!(cs.table().committed_slabs(), 256);
-        for s in 8..12 {
+        for s in 12..16 {
             assert!(cs.is_guard_slab(s));
             assert_eq!(cs.desc(s).state(), State::Fresh);
             assert_eq!(cs.desc(s).live(), 0);
         }
         // The other arena's group is untouched by all of this.
-        assert_eq!(other.desc(132).state(), State::Active);
-        assert_eq!(other.desc(132).live(), n);
-        assert_eq!(other.stats(), ClassStats { committed: 1, guards: 8, ..Default::default() });
+        assert_eq!(other.desc(128).state(), State::Active);
+        assert_eq!(other.desc(128).live(), n);
+        assert_eq!(other.stats(), ClassStats { committed: 1, guards: 4, ..Default::default() });
     }
 
     /// Slabs go to arenas in line-sized groups (design section 4): with 4
@@ -3979,8 +4002,10 @@ mod tests {
         cs.release(&[env.regions.slab_addr(c, 1) as *mut u8]);
     }
 
-    /// The shift form of `is_guard_slab` agrees with the definition for
-    /// every page-group ratio and interval the tables use.
+    /// The mask form of `is_guard_slab` agrees with the definition (every
+    /// `interval`-th page group, counted from 1) for every page-group ratio
+    /// and power-of-two interval the tables use, and with guards off no slab
+    /// of a region is a guard.
     #[test]
     fn guard_slab_test_is_the_page_group_modulo() {
         for lg in [0u32, 2] {
@@ -3989,15 +4014,29 @@ mod tests {
             }
             let env = if lg == 0 { Env::new() } else { Env::with_lg_page(LG_MIN_SLAB + lg) };
             let c = min_slab_class();
-            for interval in [0u32, 2, 3, 8, 32] {
+            for interval in [0u32, 2, 4, 8, 32, 1 << 22] {
                 let t = env.table(c, interval);
+                assert_eq!(t.guard_interval(), interval);
                 let spp = t.slabs_per_page();
                 for s in 0..256 {
                     let want = interval != 0 && (s / spp + 1) % interval as usize == 0;
                     assert_eq!(t.is_guard_slab(s), want, "lg {lg} interval {interval} slab {s}");
                 }
+                if interval == 0 {
+                    assert!((0..t.nslabs()).step_by(4093).all(|s| !t.is_guard_slab(s)));
+                    assert!(!t.is_guard_slab(t.nslabs() - 1));
+                }
             }
         }
+    }
+
+    /// The interval must be a power of two (the sized path's guard test is
+    /// a mask); `config.rs` rounds a configured value up before it gets here.
+    #[test]
+    #[should_panic(expected = "guard interval 3 is not a power of two")]
+    fn guard_interval_must_be_a_power_of_two() {
+        let env = Env::new();
+        let _ = env.table(min_slab_class(), 3);
     }
 
     #[test]

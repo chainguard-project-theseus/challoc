@@ -608,7 +608,10 @@ use os::ThreadKey;
 /// `interval * (64 KiB / slab)` slabs (in page groups when the page is
 /// larger than the slab, see `SlabTable::is_guard_slab`): the same one
 /// guard page per `interval * 64 KiB` of address space and the same
-/// `madvise` count per byte committed for every class. 0 stays 0.
+/// `madvise` count per byte committed for every class. 0 stays 0. The
+/// ratio is a power of two (slab sizes and pages are), so a power-of-two
+/// `interval` (what `config.rs` guarantees) stays one, as the mask test
+/// needs.
 pub(crate) fn guard_interval_for(class: usize, page: usize, interval: u32) -> u32 {
     let unit = (1usize << crate::layout::LG_GUARD_UNIT).max(page);
     let group = CLASSES[class].slab_size().max(page);
@@ -849,7 +852,8 @@ impl Shared {
     /// (`class_base`, `CLASSES`, the class table): the slab descriptor is
     /// not loaded, so the bit test that makes plain `free` exact is left to
     /// the flush. The guard test is arithmetic on the table line the
-    /// watermark load already brings in; whether
+    /// watermark load already brings in (a shift, an add and a mask, no
+    /// division: plan Phase 2.5 task 4c); whether
     /// the slab is below its arena's commit cursor is not knowable without
     /// the arena (the cursor sits under the class lock), so a slot start in
     /// a handed-out but uncommitted slab is caught at the flush, where the

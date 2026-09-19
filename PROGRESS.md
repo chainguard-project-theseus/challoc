@@ -96,7 +96,7 @@ One line per task, newest at the bottom of each section. Keep it terse.
 
 ## In progress
 
-(none)
+- Phase 2.5 task 4c (2026-09-19, started): (a) power-of-two `guard_slab_interval`, the sized path's guard check a mask; (b) the sized path's instruction budget (target under 330 per SET). Attribution before/after: `quick-perf` valkey1/valkey1-free/larson1 with the divider event on both reference VMs, write-phase rate on a C3 lab VM.
 
 ## Design decisions
 

@@ -8,6 +8,7 @@
 #   bash bench/gce/quick-perf.sh arm64|amd64 [ROWS="larson1 valkey1"] [VARIANTS="old new jemalloc"]
 #                                            (a variant may carry a MALLOC_CONF: "new:double_free_scan:true")
 #                                            [EVENTS=cycles,instructions,L1-dcache-load-misses,dTLB-load-misses]
+#                                            (any further event gets its own per-operation column)
 #                                            [OUTDIR=~/logs/quick-perf]
 #
 # For every (row, variant) the container starts detached with `sleep 1; exec
@@ -51,8 +52,15 @@ done
 
 echo "== quick-perf on $(hostname) ($(uname -m)), load $(cut -d' ' -f1-3 /proc/loadavg), events $EVENTS, rows: $ROWS, variants: $VARIANTS"
 echo
-echo "| row | variant | M ops/s | cycles/op | instr/op | L1D miss/op | dTLB miss/op |"
-echo "|---|---|---:|---:|---:|---:|---:|"
+# Events beyond the four standard columns (say `arith.div_active` on Intel,
+# a raw `r09b0`, or `dp_spec` on Arm) get one per-operation column each,
+# in the order given; names with a comma inside (`cpu/event=..,umask=../`)
+# cannot be used here, use the raw `rXXXX` form instead.
+EXTRA=$(echo "$EVENTS" | tr , '\n' | grep -vxE 'cycles|instructions|L1-dcache-load-misses|dTLB-load-misses' | tr '\n' ' ')
+hdr="| row | variant | M ops/s | cycles/op | instr/op | L1D miss/op | dTLB miss/op |"; sep="|---|---|---:|---:|---:|---:|---:|"
+for e in $EXTRA; do hdr="$hdr $e/op |"; sep="$sep---:|"; done
+echo "$hdr"
+echo "$sep"
 for b in $ROWS; do
   cmd=$(in_lib "bench_args $b")
   secs=$(in_lib "secs_of $b")
@@ -79,15 +87,22 @@ for b in $ROWS; do
       b ~ /^larson/ && /Throughput/ {printf "%.0f", $3*secs}
       b ~ /^xmalloc/ && /free\/sec/ {sub(",", "", $4); printf "%.0f", $4*1e6*5}
       b ~ /^valkey/ && /^ops / {for (i=2;i<=NF;i++) {split($i, p, "="); if (p[1]=="total") print p[2]}}' "$OUTDIR/$tag.out");; esac
-    awk -F, -v ops="${ops:--}" -v secs="$secs" -v row="$b" -v var="$v" '
+    awk -F, -v ops="${ops:--}" -v secs="$secs" -v row="$b" -v var="$v" -v extra="$EXTRA" '
       /^#/ || NF < 3 {next}
       {c[$3]=$1}
       END {
         mops = (ops!="-" && secs!="-" && secs>0) ? sprintf("%.2f", ops/secs/1e6) : "-"
+        n = split(extra, ex, " ")
         # A wall-time row without an operation count (python1, cfrac, ...) gets
         # whole-process totals instead: G cycles, G instructions, M misses.
-        if (ops=="-" || ops==0) { printf "| %s | %s | - | %.2f G | %.2f G | %.1f M | %.1f M |\n", row, var, c["cycles"]/1e9, c["instructions"]/1e9, c["L1-dcache-load-misses"]/1e6, c["dTLB-load-misses"]/1e6; exit }
-        printf "| %s | %s | %s | %.1f | %.1f | %.3f | %.3f |\n", row, var, mops, c["cycles"]/ops, c["instructions"]/ops, c["L1-dcache-load-misses"]/ops, c["dTLB-load-misses"]/ops
+        if (ops=="-" || ops==0) {
+          printf "| %s | %s | - | %.2f G | %.2f G | %.1f M | %.1f M |", row, var, c["cycles"]/1e9, c["instructions"]/1e9, c["L1-dcache-load-misses"]/1e6, c["dTLB-load-misses"]/1e6
+          for (i = 1; i <= n; i++) printf " %.1f M |", c[ex[i]]/1e6
+          printf "\n"; exit
+        }
+        printf "| %s | %s | %s | %.1f | %.1f | %.3f | %.3f |", row, var, mops, c["cycles"]/ops, c["instructions"]/ops, c["L1-dcache-load-misses"]/ops, c["dTLB-load-misses"]/ops
+        for (i = 1; i <= n; i++) printf " %.2f |", c[ex[i]]/ops
+        printf "\n"
       }' "$OUTDIR/$tag.csv"
   done
 done
