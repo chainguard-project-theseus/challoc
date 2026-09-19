@@ -568,6 +568,11 @@ fn cstr_of(s: &'static str) -> *const c_char {
     let c: &[u8] = match s {
         "never" => b"never\0",
         "always" => b"always\0",
+        // `opt.spin_hint` (config::SpinChoice::name).
+        "auto" => b"auto\0",
+        "baseline" => b"baseline\0",
+        "umwait" => b"umwait\0",
+        "wfe" => b"wfe\0",
         _ => b"?\0",
     };
     c.as_ptr() as *const c_char

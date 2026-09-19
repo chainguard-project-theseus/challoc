@@ -329,6 +329,46 @@ struct ClassState {                   // one per (arena, class)
 }
 ```
 
+The lock (`lock.rs`, every `Lock` and `RawLock` in the allocator: the class
+locks, the table locks, the huge, metadata and statistics locks, the
+background thread's state) is a futex mutex in the shape of Drepper's
+"mutex, take 3": one `u32` that is unlocked, locked or contended, one CAS to
+acquire uncontended, one swap to release, `FUTEX_WAKE` only when the word
+says a waiter may sleep. A contended locker spins 100 rounds before
+`FUTEX_WAIT`; slow-path critical sections are a few dozen instructions, so
+the holder is usually gone within them. What one round waits with is the
+*spin hint*, chosen once at init by the CPU probe (section 17) and the one
+thing that probe acts on: `pause` (x86_64) or `isb` (aarch64) everywhere;
+with WAITPKG (`cpuid` 7.0 `ECX[5]`) `umonitor` on the lock word and `umwait`
+in C0.1 until a store to its line or a 1024-tick TSC deadline, which hands
+the core to the sibling hyperthread instead of throttling issue; on aarch64
+with the timer event stream (`HWCAP_EVTSTRM`) `ldaxr` of the word, which
+arms the exclusive monitor on its line, then `wfe`, which sleeps until the
+holder's store clears the monitor (the Arm ARM guarantees the wake-up event
+for a monitor clear; Linux's `__cmpwait_case` is the same pattern), an
+interrupt, `sev`, or the event stream's tick (100 us on Linux), so a `wfe`
+that no store ends is bounded and the hint is installed only where the
+stream runs. Arming before the check closes the lost-wake window on both
+architectures: a store between the check and the wait sets the event and
+the wait returns at once. A hint changes nothing about the protocol: every
+hint polls the same word and falls through to the same futex. What the
+probe chooses (`spin_hint:auto`, section 12): `umwait` where WAITPKG is
+exposed, the baseline everywhere else, `wfe` never. GCE's hypervisor hides
+WAITPKG on every CPU of the matrix (Sapphire and Emerald Rapids have it),
+so on GCE x86_64 the lock runs the baseline and only the fallback could be
+measured: the mechanism costs nothing (C4 and C4A larson16, larson10,
+xmalloc within noise of the previous lock, both ways). The `wfe` hint was
+measured on the Altra and the Axion against the same binary at
+`spin_hint:baseline`: larson16 and larson10 within noise, xmalloc-test 3%
+slower with a quarter to a third more RSS (the freeing threads' flushes
+contend on the class locks; a `wfe` wake hands the lock over later than a
+`pause` re-poll, the allocating threads run ahead and the cached residue
+grows), so `wfe` is opt-in (`spin_hint:wfe`) and stays in the tree as the
+cost-free path it is when not selected
+(`bench/results/2026-09-19-lane-c-spin-and-geometry.md`). `lock::spin_hint()`
+says which hint is in use; the container test checks it against
+`/proc/cpuinfo`'s `waitpkg` or `evtstrm` flag.
+
 There is no per-arena high-water mark: the class's commit watermark lives in
 the `SlabTable` and each arena commits the slabs of its current group as it
 uses them.
@@ -575,6 +615,37 @@ writes the descriptor lines of every slab it touches, and with shared slabs
 reads; halving the flush rate halves those misses (Phase 0 acceptance,
 `bench/results/2026-09-16-aarch64-fast-path.md`). Redis itself asks for
 `tcache_nslots_small_max:1000` (section 12).
+
+Cache geometry (plan Phase 2.5 task 12). The two constants above were
+chosen on the reference CPUs, both with a 2 MiB L2 per core (Axion 64 KiB
+L1D, Emerald Rapids 48 KiB); the CPU matrix (task 4,
+`bench/results/2026-09-19-cpu-matrix.md`) has 1 MiB L2s (Cascade Lake,
+Genoa, Altra) and a 512 KiB one (Milan), 32 KiB L1Ds on the x86 parts. The
+model of what a cache costs in cache footprint: the fast path touches one
+line of the header and one of the slot stack per class whatever the
+capacity, so the L1D does not bind; what scales with the capacity is what
+a flush or refill of `cap / 2` slots streams, the half stack (4 KiB at
+1024) and, above all, the descriptor line and bitmap word of every slab it
+touches, at worst one 64-byte line per slot (32 KiB at 1024, 1.6% of a
+2 MiB L2, 6% of a 512 KiB one), which has to stay L2-resident next to the
+program's working set for the flush not to miss on every slot; the largest
+cached class bounds what a cache of `MIN_CAP` slots of it keeps warm (8 x
+32 KiB at the default `tcache_max`). The rule that follows: the ladder's
+top and `tcache_max` halve per full halving of the L2 below 2 MiB (1 MiB:
+512 slots and 16 KiB; 512 KiB: 256 and 8 KiB), floors 128 slots and 8 KiB,
+an unknown L2 keeps the constants, a key a source set keeps its value, and
+at 2 MiB and above the rule gives the constants exactly, so the reference
+scorecards would not move. It was implemented, priced on the Cascade Lake
+(32 KiB / 1 MiB) and the Altra (64 KiB / 1 MiB) against the constants
+through `MALLOC_CONF`, and dropped
+(`bench/results/2026-09-19-lane-c-spin-and-geometry.md`): the rows it was
+meant to help do not move or move the wrong way (Cascade Lake, 512 slots
+against 1024: larson1 +1.3% with disjoint score lists, larson10 +5.4%
+inside its noise, valkey1 +0.7%, redis and alloc-testN flat; 256 slots:
+larson1 +6.2%), and what it buys is RSS (larson10 80 to 69 MiB, the
+smaller residue of caches), which the ladder was never sized for. The
+constants stand on every CPU; `tcache_nslots_small_max:512` is the knob for
+a deployment that wants the residue back on a small-cache part.
 
 ### 6.3 Fast paths
 
@@ -1188,6 +1259,7 @@ jemalloc names where they exist:
 | `tcache_compact_shift`    | 3       | challoc only; one pop in 2^k compacts, 0 = off (6.4) |
 | `group_handoff`           | false   | challoc only; opt-in: an arena takes another arena's idle slab group before a fresh one (5, 13.3); off because it did not move the mstress row it was built for |
 | `thp`                     | never   | `never`, `always`; inert (planned)      |
+| `spin_hint`               | auto    | challoc only; what a contended lock spins with (5): `auto` (the CPU probe's choice: `umwait` with WAITPKG, else the baseline), `baseline` (`pause`/`isb`), `umwait` (reported and left at `auto` without WAITPKG), `wfe` (aarch64; measured slower under contention, never chosen by `auto`) |
 | `lazy_free`               | false   | use `MADV_FREE` for purge               |
 | `guards`                  | true    | guard slabs and huge runs               |
 | `guard_slab_interval`     | 8       | one guard per N x 64 KiB of slabs, N a power of two (else rounded up, reported); 0 off, 1 out of range (clamps to 2) |
@@ -1621,9 +1693,11 @@ runs on every row.
 | LAM (`cpuid` 7.1 `EAX[26]`) | x86_64 CPU and kernel 6.4 (`arch_prctl(ARCH_ENABLE_TAGGED_ADDR)`) | reported only: tagged pointers (section 18.3, designed; task 6 implements) | untagged pointers |
 | UAI (`cpuid` `0x80000021` `EAX[7]`, read only when leaf `0x80000000` reports an extended range that reaches it) | AMD CPU (Zen 4 and later: upper address ignore, the LAM analogue); no upstream kernel enables it for user space yet (no `arch_prctl`, no `/proc/cpuinfo` flag) | reported only: tagged pointers (section 18.3) once Linux has an enable path | untagged pointers |
 | LA57 (`cpuid` 7.0 `ECX[16]`), `la57_enabled` (a hinted `mmap` above 2^47 honoured) | x86_64 CPU; kernel with `CONFIG_X86_5LEVEL` booted on it | reported only: the address-space budget for reservations and tag bits (section 18.3 uses bits 62:57 on both architectures) | 47-bit user addresses |
-| CLDEMOTE (`cpuid` 7.0 `ECX[25]`), WAITPKG (`ECX[5]`) | x86_64 CPU (Sapphire Rapids and later; a hypervisor may hide WAITPKG) | reported only (task 12) | none needed |
+| CLDEMOTE (`cpuid` 7.0 `ECX[25]`) | x86_64 CPU (Sapphire Rapids and later) | reported only (task 12, lane A) | none needed |
+| WAITPKG (`cpuid` 7.0 `ECX[5]`) | x86_64 CPU (Sapphire Rapids and later); GCE's hypervisor hides it on every cell of the matrix | the lock's `umwait` spin hint (section 5; `spin_hint:auto`), so far only ever measured as its fallback | `pause` in the spin; the C4 and the Cascade Lake rows in `bench/results/2026-09-19-lane-c-spin-and-geometry.md` are within noise of the previous lock |
+| Timer event stream (`HWCAP_EVTSTRM`) | arm64 kernel (`CONFIG_ARM_ARCH_TIMER_EVTSTREAM`, on by default, 10 kHz) | nothing by default: the `wfe` spin hint it bounds is opt-in (`spin_hint:wfe`, refused without the stream) because it lost 3% and a quarter of the RSS on xmalloc-test on the Altra and the Axion (section 5, the same results file) | `isb` in the spin |
 | ERMS, FSRM, AVX-512F (`cpuid` 7.0 `EBX[9]`, `EDX[4]`, `EBX[16]`) | x86_64 CPU | reported only: `memcpy`/`memset` selection is glibc's; the crate's fills use the compiler baseline | none needed |
-| Cache line, L1D and L2 sizes | `CTR_EL0` (arm64), `cpuid` leaf 4 or `0x8000001D` (x86_64), else `/sys/devices/system/cpu/cpu0/cache/index*/` | reported only: the layout constants (`lock.rs` padding, the 512-byte stride rule) stay fixed | `unknown` in the line; nothing changes |
+| Cache line, L1D and L2 sizes | `CTR_EL0` (arm64), `cpuid` leaf 4 or `0x8000001D` (x86_64), else `/sys/devices/system/cpu/cpu0/cache/index*/` | reported only: the layout constants (`lock.rs` padding, the 512-byte stride rule) and the cache-capacity defaults stay fixed; an L2-derived ladder was priced on the 1 MiB parts and dropped (section 6.2, "Cache geometry") | `unknown` in the line; nothing changes |
 | Model-checked protocol (`cargo test --features std model::`, `src/model.rs`) | the host test suite, no hardware: an exhaustive interleaving model of the claim, release, `on_live_zero`, purge and group-handoff steps of `class.rs`, memoised on the whole state, with the invariants of section 4 and 5 checked at every state (no slot handed to two claimers, a slot reported zero reads zero, `live` equals set bits plus in-flight reservations, a slab in an arena's set is `Empty`/`Purged` with `live == 0` and owned by that arena, a `Purged` slab reads zero) | nothing at run time: it is the proof obligation for a change to the protocol. Replaying the pre-fix step orders finds the calloc race (Phase 1.5 task 7) and the ownership gap the handoff's owner check closes (task 15); the current order passes every scenario | none needed |
 
 The feature report's arm64 keys are `mte mte3 pac lse lse2 bti sve`, the

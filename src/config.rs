@@ -60,6 +60,41 @@ pub const MAX_COMPACT_SHIFT: u32 = 20;
 /// `layout::LG_HUGE_PREFERRED`); no run can be larger, so anything above
 /// means "retain every freed run for decay".
 pub const MAX_HUGE_RETAIN_MAX: usize = 1 << crate::layout::LG_HUGE_PREFERRED;
+/// `spin_hint` values (design 5): what a contended lock waits with between
+/// two polls. `auto` is the CPU probe's choice (`sys::cpu::spin_hint`:
+/// `umwait` with WAITPKG, else the baseline; never `wfe`, which lost 3%
+/// and a quarter of the RSS on xmalloc-test on the Altra and the Axion,
+/// `bench/results/2026-09-19-lane-c-spin-and-geometry.md`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpinChoice {
+    Auto,
+    Baseline,
+    Umwait,
+    Wfe,
+}
+
+impl SpinChoice {
+    pub const fn name(self) -> &'static str {
+        match self {
+            SpinChoice::Auto => "auto",
+            SpinChoice::Baseline => "baseline",
+            SpinChoice::Umwait => "umwait",
+            SpinChoice::Wfe => "wfe",
+        }
+    }
+
+    /// The lock's hint for an explicit choice; `None` for `auto`.
+    pub const fn hint(self) -> Option<crate::lock::SpinHint> {
+        use crate::lock::SpinHint;
+        match self {
+            SpinChoice::Auto => None,
+            SpinChoice::Baseline => Some(SpinHint::Baseline),
+            SpinChoice::Umwait => Some(SpinHint::Umwait),
+            SpinChoice::Wfe => Some(SpinHint::Wfe),
+        }
+    }
+}
+
 /// `thp` values (`default` is accepted as `never`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Thp {
@@ -103,6 +138,11 @@ pub struct Config {
     pub tcache_compact_shift: u32,
     /// Inert (planned with the THP work): parsed, stored, read by nothing.
     pub thp: Thp,
+    /// The lock's spin hint (design 5, `lock::SpinHint`): `auto` leaves the
+    /// CPU probe's choice; a name installs that hint (`umwait` only where
+    /// the CPU has WAITPKG, `wfe` only on aarch64 under the timer event
+    /// stream; else reported and left at `auto`).
+    pub spin_hint: SpinChoice,
     pub lazy_free: bool,
     pub guards: bool,
     /// One guard per N slabs of 64 KiB (per N * 64 KiB of slabs for the
@@ -186,6 +226,7 @@ impl Config {
         tcache_gc_interval_ms: 10_000,
         tcache_compact_shift: 3,
         thp: Thp::Never,
+        spin_hint: SpinChoice::Auto,
         lazy_free: false,
         guards: true,
         guard_slab_interval: 8,
@@ -266,6 +307,15 @@ impl Config {
             b"tcache_compact_shift" => {
                 return num(self, 0, MAX_COMPACT_SHIFT as i64, |c, v| c.tcache_compact_shift = v as u32);
             }
+            b"spin_hint" => {
+                self.spin_hint = match value {
+                    b"auto" => SpinChoice::Auto,
+                    b"baseline" => SpinChoice::Baseline,
+                    b"umwait" => SpinChoice::Umwait,
+                    b"wfe" => SpinChoice::Wfe,
+                    _ => return Err(bad()),
+                }
+            }
             b"thp" => {
                 self.thp = match value {
                     b"never" | b"default" => Thp::Never,
@@ -340,6 +390,7 @@ impl Config {
             b"tcache_gc_interval_ms" => Value::Int(self.tcache_gc_interval_ms),
             b"tcache_compact_shift" => Value::Uint(self.tcache_compact_shift as u64),
             b"thp" => Value::Str(self.thp.name()),
+            b"spin_hint" => Value::Str(self.spin_hint.name()),
             b"lazy_free" => Value::Bool(self.lazy_free),
             b"guards" => Value::Bool(self.guards),
             b"guard_slab_interval" => Value::Uint(self.guard_slab_interval as u64),
@@ -398,6 +449,29 @@ impl Config {
         self.cap_for(0, 0, class)
     }
 
+    /// Install the configuration's spin hint (design 5): nothing for `auto`
+    /// (the probe's suggestion stands); `umwait` needs WAITPKG on this CPU
+    /// and `wfe` an aarch64 kernel with the timer event stream
+    /// (`event_stream`), else [`Issue::Unavailable`] is returned, the key
+    /// reset to `auto` and nothing installed; `baseline` always installs.
+    pub fn apply_spin_hint(&mut self, cpu: &crate::sys::cpu::Cpu, event_stream: bool) -> Result<(), Issue<'static>> {
+        use crate::lock::SpinHint;
+        use crate::sys::cpu::Isa;
+        let Some(hint) = self.spin_hint.hint() else { return Ok(()) };
+        let available = match hint {
+            SpinHint::Umwait => matches!(cpu.isa, Isa::X86(x) if x.waitpkg),
+            SpinHint::Wfe => matches!(cpu.isa, Isa::Arm(_)) && event_stream,
+            SpinHint::Baseline => true,
+        };
+        if !available {
+            let value = self.spin_hint;
+            self.spin_hint = SpinChoice::Auto;
+            return Err(Issue::Unavailable { key: b"spin_hint", value: value.name().as_bytes() });
+        }
+        crate::lock::set_spin_hint(hint);
+        Ok(())
+    }
+
     /// `tcache_gc_interval_ms` in nanoseconds.
     pub fn gc_interval_ns(&self) -> u64 {
         (self.tcache_gc_interval_ms as u64).saturating_mul(1_000_000)
@@ -451,6 +525,7 @@ pub const KEYS: &[&str] = &[
     "tcache_gc_interval_ms",
     "tcache_compact_shift",
     "thp",
+    "spin_hint",
     "lazy_free",
     "guards",
     "guard_slab_interval",
@@ -540,6 +615,9 @@ pub enum Issue<'a> {
     /// One of [`INERT_KEYS`]: parsed and (where it has a field) stored, but
     /// nothing reads it.
     Inert(&'a [u8]),
+    /// A value this CPU cannot run (`spin_hint:umwait` without WAITPKG);
+    /// the key keeps its default.
+    Unavailable { key: &'a [u8], value: &'a [u8] },
 }
 
 impl fmt::Display for Issue<'_> {
@@ -547,6 +625,9 @@ impl fmt::Display for Issue<'_> {
         match self {
             Issue::Malformed(pair) => write!(f, "malformed conf pair \"{}\"", Bytes(pair)),
             Issue::UnknownKey(key) => write!(f, "unknown conf key \"{}\"", Bytes(key)),
+            Issue::Unavailable { key, value } => {
+                write!(f, "conf value \"{}\" for {} is not available on this CPU; using the default", Bytes(value), Bytes(key))
+            }
             Issue::BadValue { key, value } => {
                 write!(f, "invalid conf value \"{}\" for {}", Bytes(value), Bytes(key))
             }
@@ -684,7 +765,7 @@ mod linux {
     use core::ffi::{c_char, c_void};
     use core::fmt::Write as _;
 
-    use super::{Config, Issue};
+    use super::{Config, Issue, SpinChoice};
     use crate::sys;
 
     /// Longest conf text read from any one source. Longer inputs are cut
@@ -730,6 +811,17 @@ mod linux {
                 if let Some(text) = env_var(name.as_bytes()) {
                     issues += cfg.parse(text, |i| report(name, i));
                 }
+            }
+        }
+        // The configured spin hint (design 5) needs the CPU: the probe
+        // again (init's own result is not in reach here; a few `cpuid`s on
+        // x86_64, up to six sysfs reads on arm64, under 50 us, and it
+        // suggests the same hint twice). Only when a source set the key.
+        if cfg.spin_hint != SpinChoice::Auto {
+            let cpu = crate::sys::cpu::Cpu::probe(sys::features::page_size());
+            if let Err(issue) = cfg.apply_spin_hint(&cpu, crate::sys::cpu::event_stream()) {
+                issues += 1;
+                report("spin_hint", issue);
             }
         }
         out.flush();
@@ -1418,7 +1510,67 @@ mod linux_tests {
         assert_eq!(env_var(b"CHALLOC_CONF"), None, "CHALLOC_CONF is set; the test assumes a clean environment");
         let mut buf = [0u8; MAX_TEXT];
         if first_line_of(b"/etc/challoc.conf\0", &mut buf).is_none() {
-            assert_eq!(load(), Config::DEFAULT);
+            // The constants whatever the CPU: the L2-derived ladder of
+            // design 6.2 ("Cache geometry") was priced and dropped.
+            let got = load();
+            assert_eq!(got, Config::DEFAULT);
+            assert_eq!(got.spin_hint, super::SpinChoice::Auto);
+            std::eprintln!("config: defaults (spin hint in use {})", crate::lock::spin_hint().name());
         }
+    }
+
+    /// The `spin_hint` key against this CPU: `baseline` installs; the
+    /// architecture's own hint installs where the CPU and kernel have
+    /// what it needs (`umwait`: WAITPKG; `wfe`: the event stream) and is
+    /// otherwise reported and leaves the key at `auto`; the other
+    /// architecture's hint is always unavailable; the probe's later
+    /// suggestion does not override a configured hint. Leaves the process
+    /// on the probe's choice again at the end (other tests read it).
+    #[test]
+    fn spin_hint_key_installs_where_available() {
+        use crate::lock::{SpinHint, spin_hint};
+        use crate::sys::cpu::{Cpu, Isa, event_stream};
+        let _serial = crate::lock::SPIN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let cpu = Cpu::probe(crate::sys::features::page_size());
+        let auto = spin_hint();
+        let unavailable = |name: &str| std::format!("conf value \"{name}\" for spin_hint is not available on this CPU; using the default");
+        let mut c = Config::DEFAULT;
+        c.parse(b"spin_hint:baseline", |i| panic!("{i}"));
+        assert_eq!(c.apply_spin_hint(&cpu, event_stream()), Ok(()));
+        assert_eq!(spin_hint(), SpinHint::Baseline);
+        // The other architecture's hint.
+        let (other, own, own_hint) = if cfg!(target_arch = "aarch64") { ("umwait", "wfe", SpinHint::Wfe) } else { ("wfe", "umwait", SpinHint::Umwait) };
+        let mut c = Config::DEFAULT;
+        c.parse(std::format!("spin_hint:{other}").as_bytes(), |i| panic!("{i}"));
+        assert_eq!(std::format!("{}", c.apply_spin_hint(&cpu, event_stream()).unwrap_err()), unavailable(other));
+        assert_eq!(c.spin_hint, SpinChoice::Auto);
+        assert_eq!(spin_hint(), SpinHint::Baseline, "nothing installed");
+        // This architecture's hint.
+        let mut c = Config::DEFAULT;
+        c.parse(std::format!("spin_hint:{own}").as_bytes(), |i| panic!("{i}"));
+        let can = match cpu.isa {
+            Isa::X86(x) => x.waitpkg,
+            Isa::Arm(_) => event_stream(),
+        };
+        if can {
+            assert_eq!(c.apply_spin_hint(&cpu, event_stream()), Ok(()));
+            assert_eq!(spin_hint(), own_hint);
+        } else {
+            assert_eq!(std::format!("{}", c.apply_spin_hint(&cpu, event_stream()).unwrap_err()), unavailable(own));
+            assert_eq!(c.spin_hint, SpinChoice::Auto);
+            assert_eq!(spin_hint(), SpinHint::Baseline, "nothing installed");
+        }
+        // `wfe` without the event stream is refused too.
+        let mut c = Config::DEFAULT;
+        c.parse(b"spin_hint:wfe", |i| panic!("{i}"));
+        assert_eq!(std::format!("{}", c.apply_spin_hint(&cpu, false).unwrap_err()), unavailable("wfe"));
+        std::eprintln!("config: spin_hint auto={} own {own} available={can} event_stream={}", auto.name(), event_stream());
+        // A configured hint is kept against the probe's suggestion.
+        let forced = spin_hint();
+        let _ = Cpu::probe(crate::sys::features::page_size());
+        assert_eq!(spin_hint(), forced);
+        // Back to the probe's choice for the rest of the suite.
+        crate::lock::set_spin_hint(auto);
+        assert_eq!(spin_hint(), auto);
     }
 }
