@@ -176,7 +176,107 @@ One line per task, newest at the bottom of each section. Keep it terse.
 
 ## In progress
 
+- Phase 2.5 task 8 (lane A, 2026-09-19): per-CPU caches through rseq `mm_cid`.
+  Code and tests written (`src/rseq.rs`, `heap.rs` per-CPU paths,
+  `tests/c/percpu.c`, `stats.percpu.*`, the `Per-CPU caches:` report line,
+  design 15/17/19); measurement and the default decision pending (see the
+  Done list once landed).
+
 ## Design decisions
+
+- Phase 2.5 task 8 (lane A, 2026-09-19), the shape: the per-CPU caches are
+  a table of `nr_cpu_ids` `[CacheHeader; NCLASSES]` arrays (`CpuCache`,
+  3.3 KiB per id) reserved zeroed from the metadata region at init and
+  installed header by header on first use; every header mutation (pop,
+  push, batch push, take-all, install) is an rseq critical section in
+  `asm!` on both architectures that reads `mm_cid` itself and commits with
+  one store of `len` (or `cap` for the install). Reason: a zeroed header
+  (`len == cap == 0`) is the slow path by construction, so the table costs
+  no init work; sharing `CacheHeader` keeps one stack layout for the thread
+  and per-CPU paths (PAC signing included); and a section per mutation
+  means no lock and no atomic read-modify-write joins the fast paths, and
+  two threads never touch one header at once (an id has one running
+  holder; a preempted holder is aborted and retries).
+- Phase 2.5 task 8, the thread heap stays under the mode: it is the init
+  witness the fast paths already load, it keeps the byte counters (every
+  per-CPU pop and push is counted there per operation, `thread.allocated`
+  exact), its home caches serve `MALLOCX_ARENA` calls and huge runs, and
+  a heap off the mode (explicit caches, `thread.tcache.enabled:false`, a
+  thread `thread.arena`d onto an explicit arena) takes the thread paths.
+  Reason: `tls_threads.c` and `jemalloc_api.c` check the counters to the
+  byte, and a cache shared by a CPU's threads cannot be folded into one
+  thread's figure; the alternative (approximate counters) breaks the
+  jemalloc contract for two loads on a line the mode touches anyway.
+- Phase 2.5 task 8, arenas per id: the header of `(id, class)` binds to
+  arena `id % narenas` at install (with the default `narenas`, `4 *
+  ncpus` capped at 64, one arena per CPU) and refills claim there; a
+  plain `free` pushes a verified slot of any arena onto the running CPU's
+  cache and skips the owner word, the flush routing it back through
+  `release_routed`. Reason: design 6.3's sized path already caches slots
+  of any arena in one stack and routes at the flush, so the rule and the
+  code exist; the owner load leaves the `free` fast path.
+- Phase 2.5 task 8, compaction keeps its gate and loses its run: the
+  per-header probe/compact modes of design 6.4 are kept (volatile hint
+  stores, a stale mode changes only which pops are scheduled), and a
+  scheduled pop in compact mode claims one slot straight from the arena's
+  lowest partial slab instead of taking the run's lowest entry. Reason:
+  the run pop moves the top entry into the run's slot and shrinks two
+  words, which no single commit store can make consistent under an abort
+  (a partial move duplicates one entry and loses another); the direct
+  claim lands the allocation where the run would have, at one lock hold
+  per scheduled pop in fragmented classes only.
+- Phase 2.5 task 8, the flush takes the whole stack out (`take_all`),
+  selects the highest-address half on the thread's stack buffer exactly as
+  `Heap::flush` does (sorted split or `select_nth_unstable`, the straddle
+  compare, `group_by_slab`), releases it and pushes the kept half back
+  (`push_batch`); a refill claims onto the stack and pushes in one
+  section. Capacities are the thread ladder clamped to `MAX_CAP` (1024),
+  so the buffers are 8 KiB and 4 KiB stack arrays. Reason: the selection
+  cannot run in place on a header another thread may own by the time it
+  finishes, and the two sections cost a copy each; `tcache_nslots_small_max`
+  above 1024 applies to thread caches only (documented).
+- Phase 2.5 task 8, `double_free_scan:true` keeps thread caches
+  (`PercpuState::OffScan`, the report says so). Reason: the scan of the
+  top four entries is not written into the critical sections; the
+  hardening a deployment asked for wins over the mode.
+- Phase 2.5 task 8, `thread.arena` under the mode: an explicit arena takes
+  the thread onto its own caches there (`Heap::percpu` false), an
+  automatic one puts it back on the CPU caches; jemalloc returns `EPERM`
+  for the automatic range under `percpu_arena`. Reason: nothing here needs
+  refusing (the home arena of a per-CPU thread serves huge runs and
+  explicit calls only), and `jemalloc_api.c` restores `thread.arena` to
+  its automatic home and expects 0.
+- Phase 2.5 task 8, the cache GC, `thread.tcache.flush`, `malloc_trim` and
+  the purges' caller flush act on the caches of the CPU the thread runs
+  on; an idle CPU's caches wait for the next thread to run there and tick;
+  thread exit leaves the CPU caches alone. Reason: owning another id's
+  header from outside a section would need `membarrier(RSEQ)` per drain;
+  the residue is at most `cap` slots per (id, class) and is exactly what
+  the mode bounds by cores rather than threads.
+- Phase 2.5 task 8, the decision is made in `Shared::init` behind an
+  `allowed` parameter (the API passes true, the unit tests' `Shared`
+  builders false, `shared_percpu()` true), and the mode is never on where
+  `rseq::probe` says `mm_cid` is unusable whatever the key. Reason: the
+  heap tests reason about thread caches and must not flip on the VMs; a
+  forced request on a kernel that does not write `mm_cid` would read 0 for
+  every thread and let two CPUs mutate one header.
+- Phase 2.5 task 8, the table has `nr_cpu_ids` entries
+  (`/sys/devices/system/cpu/possible`), not the affinity mask's width, and
+  an `mm_cid` at or above it aborts (`cid_out_of_range`). Reason: the
+  kernel bounds `mm_cid` by `nr_cpu_ids`, not by the mask (`taskset` and
+  cpusets shrink the mask, not the id space); an id past the table means
+  the sizing rule is wrong for this kernel, which is a heap inconsistency,
+  not a fallback case. An unreadable file keeps thread caches
+  (`PercpuState::OffCpus`).
+- Phase 2.5 task 8, `Percpu` sits after `regions` in `Shared`. Reason: the
+  thread paths' first line (`multi_arena`, `push_flags`, the `Regions`
+  head) is byte for byte what it was; the per-CPU paths read `base` and
+  `n` from the line after the class bases.
+- Phase 2.5 task 8, `tests/c/tunables.c` runs with `percpu_arena:off` in
+  every mode. Reason: its `dirty` and `random`/`ordered` modes assert one
+  thread's LIFO reuse and one refill batch from at most two slabs, which
+  the per-CPU mode does not promise to a thread that migrates between two
+  calls (it holds by construction with thread caches).
 
 - Phase 2.5 task 4d (2026-09-19): the post-delete RSS criterion fails at 64 KiB pages (224.9 vs 146.1 MiB) by the mechanism design 5 already named, `Empty` 4..16 KiB slabs in mixed 64 KiB page groups, now 79.5 MiB at Valkey's scale against ~2 MiB in the oscillation test; so the sub-page slab geometry is not documented as fine on large pages, 4d closes as a measurement and the allocator-side fix is task 4e (page-sized slabs when the page is larger than the slab, jemalloc's geometry at LG_PAGE 16; refill steering the fallback), with this soak as its acceptance. The delete phase's +1.7..2.4% is read as at the Phase 2 acceptance (the usable-size query residue), not as a page-size finding: both allocators run 7% fewer cycles per command at 64 KiB. No `src/` change in 4d.
 - Phase 2.5 task 4c (2026-09-19), a configured `guard_slab_interval` that is not a power of two rounds *up* to the next one and is reported as a configuration issue (`Issue::Rounded`, its own message naming the rounded value), which `abort_conf` turns into an abort like the 1 -> 2 clamp; `opt.guard_slab_interval` returns the rounded value. Reason: the sized fast path's guard test must be a mask (the runtime `%` was the largest single term of the path's instruction window on small-L3 hosts), rounding up keeps at least the guard density the operator asked for, and reporting it keeps `abort_conf` honest about a value the allocator did not take literally.
@@ -603,6 +703,17 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
 
 ## Notes for the human
 
+- Phase 2.5 task 8 (lane A, 2026-09-19), rseq offsets and sizes observed
+  under this task, all read from the symbols at run time (never
+  constants): on both reference VMs (kernel 7.0.0-1011-gcp, glibc 2.44)
+  `__rseq_size=33`, `__rseq_flags=0`; `__rseq_offset=320` (aarch64) and
+  `-384` (x86_64) inside the `cargo test` binaries, against 192 / -192
+  bare and -256 under the preload measured for the prerequisites, which is
+  the static-TLS dependence the design warns about; `mm_cid` reads 16
+  distinct values over 16 busy threads on each VM (`nr_cpu_ids` 16). On
+  the Mac's Docker VM `__rseq_size=20` (`__rseq_offset=320`), the mode is
+  off with verdict `no-mm_cid` and every per-CPU test takes its fallback
+  branch.
 - Phase 2.5 task 7, for the human (2026-09-19): `pac_pointers` is off by default by the plan's own fallback; the numbers to weigh (`bench/results/2026-09-19-lane-a-pac-pointers.md`): with the key on the C4A pays xmalloc +11.0%, alloc-test1 +3.0%, valkey1 +2.0%, larson1 +1.2%, larson10 +1.9% (`quick`), and per operation larson1 +1.0 cycle, valkey1 +13.0, valkey1-free +16.2 (`quick-perf`); signing the cache entries only (heap pointer plain, a measurement build, not shipped) halves the Valkey cost (+7.4 per SET) and xmalloc's (+5.5%). The floor is two PAC instructions per cached entry and one `autda` per call; nothing cheaper is available without dropping a guarantee. If you want a default on Axion, the split key (entries only) is the trade to consider, and it still fails the 5% gate on xmalloc alone. FEAT_FPAC is present on both the Mac's Apple silicon and Axion, so a corrupted entry is a `SIGILL` at the `autda` in `malloc` on every PAC host we have; the non-FPAC path (Neoverse N1, Apple M1: non-canonical pointer, `SIGSEGV` on first use) is untested on hardware.
 - Phase 2.5 task 8 prerequisites, gathered under this iteration (`.tmp-rseq.c` under the preload, glibc 2.44): on both GCE VMs (kernel 7.0.0-1011-gcp, `CONFIG_RSEQ=y`, `CONFIG_SCHED_MM_CID=y`, arm64 `CONFIG_ARM64_VA_BITS=48`) glibc registers the rseq area with `__rseq_size=33` (`AT_RSEQ_FEATURE_SIZE=33`, `AT_RSEQ_ALIGN=64`), `__rseq_flags=0`, `__rseq_offset=192` on aarch64 (from `tpidr_el0`) and `-192` bare / `-256` with the preload on x86_64 (from `%fs:0`; the offset moves with the static TLS layout, so read the symbol, never a constant); the kernel struct rseq layout is `cpu_id_start` 0, `cpu_id` 4, `rseq_cs` 8, `flags` 16, `node_id` 20, `mm_cid` 24 (u32), so `mm_cid` is inside the registered size (33 >= 28) and usable, and reads as `0` for a single-threaded process. On the Mac's Docker VM (linuxkit 6.10) glibc registers only `__rseq_size=20` (`AT_RSEQ_FEATURE_SIZE=0`: the kernel does not report the extended fields) and `mm_cid` is not written, so task 8 needs its fallback (thread caches) there and the size check `__rseq_size >= 28` before reading `mm_cid`.
 

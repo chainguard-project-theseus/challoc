@@ -743,20 +743,39 @@ fn mimalloc_test_stress_check_zero() {
 /// first allocations in a fresh process are a contiguous slot set in a
 /// non-monotone order; the control is ascending. `abort_conf` accepts
 /// both keys (they are no longer inert).
+///
+/// The four modes run with `percpu_arena:off`: they reason about one
+/// thread's LIFO reuse and one refill batch, which the per-CPU mode (design
+/// 15) does not promise to a thread that migrates between two calls.
 #[test]
 fn c_tunables_zero_on_free() {
     let bin = compile("tests/c", "tunables", &[]);
-    run_bin_env("tunables", &bin, &["zero"], &[("MALLOC_CONF", "abort_conf:true,zero_on_free:true")]);
+    run_bin_env("tunables", &bin, &["zero"], &[("MALLOC_CONF", "abort_conf:true,zero_on_free:true,percpu_arena:off")]);
     let bin = compile("tests/c", "tunables", &[]);
-    run_bin_env("tunables", &bin, &["dirty"], &[("MALLOC_CONF", "abort_conf:true")]);
+    run_bin_env("tunables", &bin, &["dirty"], &[("MALLOC_CONF", "abort_conf:true,percpu_arena:off")]);
 }
 
 #[test]
 fn c_tunables_slot_randomize() {
     let bin = compile("tests/c", "tunables", &[]);
-    run_bin_env("tunables", &bin, &["random"], &[("MALLOC_CONF", "abort_conf:true,slot_randomize:true")]);
+    run_bin_env("tunables", &bin, &["random"], &[("MALLOC_CONF", "abort_conf:true,slot_randomize:true,percpu_arena:off")]);
     let bin = compile("tests/c", "tunables", &[]);
-    run_bin_env("tunables", &bin, &["ordered"], &[("MALLOC_CONF", "abort_conf:true")]);
+    run_bin_env("tunables", &bin, &["ordered"], &[("MALLOC_CONF", "abort_conf:true,percpu_arena:off")]);
+}
+
+/// Plan Phase 2.5 task 8, both ways: `tests/c/percpu.c` under
+/// `percpu_arena:percpu` (on where the kernel and glibc give `mm_cid`,
+/// off with a note elsewhere; the program prints which) and under
+/// `percpu_arena:off` (always off). 64 threads of tagged random
+/// allocation across the small classes, calloc zeroing under churn,
+/// exact per-thread counters, `thread.tcache.flush` and `stats.percpu.*`.
+#[test]
+fn c_percpu_both_ways() {
+    for mode in ["percpu", "off"] {
+        let bin = compile_link("tests/c", "percpu", &[], &["-pthread"]);
+        let conf = std::format!("abort_conf:true,percpu_arena:{mode}");
+        run_bin_env("percpu", &bin, &[mode], &[("MALLOC_CONF", &conf)]);
+    }
 }
 
 /// The fuzz driver (`c_fuzz_short`) once under each key, and both.

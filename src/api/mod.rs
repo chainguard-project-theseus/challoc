@@ -264,7 +264,7 @@ fn init() {
     // published, and `regions` are live reservations this process owns.
     unsafe {
         let pac = matches!(features.cpu.isa, crate::sys::cpu::Isa::Arm(a) if a.pac) && crate::sys::pac::available();
-        let ok = Shared::init((*SHARED.0.get()).as_mut_ptr(), regions, config, features.guard_install, pac);
+        let ok = Shared::init((*SHARED.0.get()).as_mut_ptr(), regions, config, features.guard_install, pac, true);
         if !ok {
             sys::abort("metadata region too small for the allocator tables");
         }
@@ -769,17 +769,35 @@ mod tests {
         // the test thread (the default is `min(4 * ncpus, 64)` arenas).
         let home = h.arena();
         assert_ne!(home, lua);
-        let before = h.cache_in(lua, c).unwrap().len();
+        // In the per-CPU mode (design 15) a plain `free` pushes onto the
+        // running CPU's cache whatever the slot's arena; the thread's
+        // per-arena caches see only explicit-arena traffic.
+        let percpu = s.percpu_on();
+        let cached_in = |h: &heap::Heap| h.cache_in(lua, c).map_or(0, |cc| cc.len());
+        let before = cached_in(h);
         api_libc::free(p);
-        assert_eq!(h.cache_in(lua, c).unwrap().len(), before + 1);
+        if percpu {
+            assert_eq!(cached_in(h), before);
+        } else {
+            assert_eq!(cached_in(h), before + 1);
+        }
         // realloc within the class keeps the pointer and the arena.
         let (p, _) = arena::alloc(s, c, Some(lua), Tcache::Default);
+        // (Written again: without the per-CPU mode this is the slot freed
+        // above, LIFO, and still holds 0xa5; with it that slot went to the
+        // CPU cache and this one is fresh.)
+        unsafe { core::ptr::write_bytes(p, 0xa5, size) };
         assert_eq!(api_libc::realloc(p, size), p);
         let q = api_libc::realloc(p, size * 4);
         assert_ne!(q, p);
         assert_eq!(unsafe { *q }, 0xa5);
-        // Across classes, plain realloc lands in the caller's home arena.
-        assert_eq!(s.classify_free(q).map(|x| x.1), Ok(home));
+        // Across classes, plain realloc lands in the caller's home arena
+        // (in the per-CPU mode: in the running CPU's, an automatic one).
+        if percpu {
+            assert!((s.classify_free(q).map(|x| x.1).unwrap() as u32) < s.arenas.auto());
+        } else {
+            assert_eq!(s.classify_free(q).map(|x| x.1), Ok(home));
+        }
         api_libc::free(q);
 
         // Direct path: live count moves at once, no cache involved.
@@ -790,10 +808,10 @@ mod tests {
         let desc = s.table(c).desc(slab);
         assert_eq!(desc.arena(), lua);
         let live = desc.live();
-        let cached = h.cache_in(lua, c).unwrap().len();
+        let cached = cached_in(h);
         arena::free(s, d, Tcache::None);
         assert_eq!(desc.live(), live - 1);
-        assert_eq!(h.cache_in(lua, c).unwrap().len(), cached);
+        assert_eq!(cached_in(h), cached);
         // A non-existent arena is null, not an abort.
         assert!(arena::alloc(s, c, Some(4000), Tcache::Default).0.is_null());
         assert!(arena::alloc(s, c, Some(4000), Tcache::None).0.is_null());
@@ -845,11 +863,25 @@ mod tests {
         for (i, &p) in ptrs.iter().enumerate() {
             let p = p as *mut u8;
             assert_eq!(unsafe { *p }, i as u8);
-            assert_eq!(s.classify_free(p), Ok((c, if i % 2 == 0 { lua } else { other })));
+            let (class, arena) = s.classify_free(p).unwrap();
+            assert_eq!(class, c);
+            if i % 2 == 0 {
+                assert_eq!(arena, lua);
+            } else if !percpu {
+                assert_eq!(arena, other);
+            }
+            // (In the per-CPU mode a plain allocation is whatever the
+            // running CPU's cache held, this test's own freed Lua slots
+            // included; the arena is not the thread's.)
             api_libc::free(p);
         }
-        assert_eq!(h.cache_in(lua, c).unwrap().len(), 32);
-        assert_eq!(h.cache_in(other, c).unwrap().len(), 32);
+        if percpu {
+            assert_eq!(cached_in(h), 0, "plain frees never reach the thread's per-arena caches");
+            assert_eq!(h.cache_in(other, c).map_or(0, |cc| cc.len()), 0);
+        } else {
+            assert_eq!(h.cache_in(lua, c).unwrap().len(), 32);
+            assert_eq!(h.cache_in(other, c).unwrap().len(), 32);
+        }
         assert!(h.cache(c).is_none_or(|cache| cache.len() == 0), "nothing landed in the home cache");
         h.flush_all(s);
         // Per-arena purge covers the Lua arena's slabs only.

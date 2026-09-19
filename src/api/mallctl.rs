@@ -149,6 +149,12 @@ pub enum Leaf {
     StatsArenaBinCurregs,
     StatsArenaBinCurslabs,
     StatsArenaBinNonfullSlabs,
+    /// `stats.percpu.*` (design 15): whether the per-CPU mode is on, the
+    /// table's id count, installed headers and cached slots.
+    StatsPercpuEnabled,
+    StatsPercpuIds,
+    StatsPercpuHeaders,
+    StatsPercpuCached,
     ThreadTcacheFlush,
     ThreadTcacheEnabled,
     ThreadAllocated,
@@ -266,7 +272,13 @@ static STATS_THP: [Node; 6] = [
     leaf("meta_ranges", Leaf::StatsThpMetaRanges),
     leaf("failures", Leaf::StatsThpFailures),
 ];
-static STATS: [Node; 9] = [
+static STATS_PERCPU: [Node; 4] = [
+    leaf("enabled", Leaf::StatsPercpuEnabled),
+    leaf("ids", Leaf::StatsPercpuIds),
+    leaf("headers", Leaf::StatsPercpuHeaders),
+    leaf("cached", Leaf::StatsPercpuCached),
+];
+static STATS: [Node; 10] = [
     leaf("allocated", Leaf::StatsAllocated),
     leaf("active", Leaf::StatsActive),
     leaf("metadata", Leaf::StatsMetadata),
@@ -276,6 +288,7 @@ static STATS: [Node; 9] = [
     dir("arenas", &STATS_ARENAS),
     dir("cgroup", &STATS_CGROUP),
     dir("thp", &STATS_THP),
+    dir("percpu", &STATS_PERCPU),
 ];
 static THREAD_TCACHE: [Node; 2] = [leaf("flush", Leaf::ThreadTcacheFlush), leaf("enabled", Leaf::ThreadTcacheEnabled)];
 static THREAD: [Node; 6] = [
@@ -899,6 +912,20 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
                 _ => b.nonfull_slabs,
             })
         }
+        StatsPercpuEnabled => {
+            io.read_only()?;
+            io.read(shared.percpu_on())
+        }
+        StatsPercpuIds | StatsPercpuHeaders | StatsPercpuCached => {
+            io.read_only()?;
+            let pc = &shared.percpu;
+            let (headers, cached) = if pc.on() { pc.snapshot() } else { (0, 0) };
+            io.read(match leaf {
+                StatsPercpuIds => pc.ids() as usize,
+                StatsPercpuHeaders => headers,
+                _ => cached,
+            })
+        }
         ThreadTcacheFlush => {
             io.void()?;
             flush_caller(shared);
@@ -935,6 +962,12 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
                 if a as usize >= MAX_ARENAS || shared.arena(a as u16).is_none() {
                     return Err(EFAULT);
                 }
+                // Under the per-CPU mode an explicit arena (`arenas.create`)
+                // takes the thread off the per-CPU paths and onto its own
+                // caches there; an automatic one puts it back (its home
+                // arena then serves huge runs and `MALLOCX_ARENA` calls
+                // only). jemalloc refuses the automatic range with EPERM
+                // under `percpu_arena`; here nothing needs refusing.
                 h.set_arena(shared, a as u16);
             }
             io.read(h.arena() as c_uint)
@@ -1547,7 +1580,19 @@ mod tests {
         }
         let c = crate::layout::class_of(48).unwrap();
         let h = heap::heap_for_thread(s).unwrap();
-        assert!(h.cache(c).map_or(0, |cc| cc.len()) >= 64);
+        // In the per-CPU mode (design 15) the frees went to the running
+        // CPU's cache, which `thread.tcache.flush` drains as well.
+        let percpu = s.percpu_on();
+        if percpu {
+            assert!(h.cache(c).is_none(), "the thread's own cache is untouched in the per-CPU mode");
+            assert!(get::<bool>("stats.percpu.enabled"));
+            assert!(get::<usize>("stats.percpu.cached") >= 64);
+        } else {
+            assert!(!get::<bool>("stats.percpu.enabled"));
+            assert_eq!(get::<usize>("stats.percpu.cached"), 0);
+            assert!(h.cache(c).map_or(0, |cc| cc.len()) >= 64);
+        }
+        assert_eq!(get::<usize>("stats.percpu.ids") > 0, percpu);
         assert_eq!(call("thread.tcache.flush"), 0);
         assert_eq!(h.cache(c).map_or(0, |cc| cc.len()), 0);
         // thread.tcache.enabled: off frees the caches and serves directly;
@@ -1558,6 +1603,7 @@ mod tests {
         assert!(!get::<bool>("thread.tcache.enabled"));
         let h = heap::heap_for_thread(s).unwrap();
         assert!(h.cache(c).is_none(), "caches were freed");
+        assert!(!h.percpu(), "off the per-CPU paths while disabled");
         assert_eq!(get::<u64>("thread.allocated"), a_before);
         let q = malloc(48);
         assert!(h.cache(c).is_none(), "no cache is created while disabled");
@@ -1565,8 +1611,13 @@ mod tests {
         free(q);
         assert!(h.cache(c).is_none());
         assert_eq!(set("thread.tcache.enabled", true), 0);
+        assert_eq!(h.percpu(), percpu);
         let q = malloc(48);
-        assert!(h.cache(c).is_some(), "caches come back");
+        if percpu {
+            assert!(h.cache(c).is_none(), "the per-CPU caches serve again");
+        } else {
+            assert!(h.cache(c).is_some(), "caches come back");
+        }
         free(q);
         // thread.arena moves the home arena.
         let home: c_uint = get("thread.arena");
@@ -1574,6 +1625,9 @@ mod tests {
         let a: c_uint = get("arenas.create");
         assert_eq!(set("thread.arena", a), 0);
         assert_eq!(get::<c_uint>("thread.arena"), a);
+        // An explicit arena takes the thread off the per-CPU paths: plain
+        // malloc comes from that arena through the thread's own caches.
+        assert!(!h.percpu());
         let q = malloc(200);
         assert_eq!(s.classify_free(q).map(|x| x.1), Ok(a as u16));
         free(q);
@@ -1581,6 +1635,7 @@ mod tests {
         assert_eq!(set("thread.arena", 5000 as c_uint), EFAULT);
         assert_eq!(set("thread.arena", home), 0);
         assert_eq!(get::<c_uint>("thread.arena"), home);
+        assert_eq!(h.percpu(), percpu, "back on an automatic arena, back on the per-CPU paths");
         // Explicit caches.
         let t: c_uint = get("tcache.create");
         let flags = mallocx_tcache(t as u16) as c_int;
@@ -1669,7 +1724,13 @@ mod tests {
         let home = crate::heap::existing_heap(s).unwrap().arena();
         let mid = mallocx(8 << 10, 0);
         assert!(crate::layout::class_of(8 << 10).unwrap() >= NBINS);
-        assert_eq!(owner_of(s, mid as *const c_void), Some(home));
+        if s.percpu_on() {
+            // The per-CPU mode (design 15): the running CPU's arena, an
+            // automatic one.
+            assert!(owner_of(s, mid as *const c_void).is_some_and(|a| (a as u32) < s.arenas.auto()));
+        } else {
+            assert_eq!(owner_of(s, mid as *const c_void), Some(home));
+        }
         dallocx(mid, 0);
         dallocx(m, 0);
         dallocx(h, 0);

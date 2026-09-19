@@ -116,6 +116,7 @@ use crate::huge::{GUARD_PAGES, Huge};
 use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
 use crate::lock::Lock;
 use crate::meta::Meta;
+use crate::rseq;
 use crate::sys::pac;
 
 /// Largest default cache capacity (classes up to 128 bytes). 1024 rather
@@ -217,6 +218,15 @@ pub const PUSH_ZERO: u8 = 2;
 /// when the kernel exposes `HWCAP_PACA`/`PACG` and `pac_pointers` is not
 /// `false`; never set on x86_64.
 pub const PUSH_PAC: u8 = 4;
+/// `Shared::push_flags` bit: the per-CPU mode is on (design 15, plan Phase
+/// 2.5 task 8; [`Shared::percpu`]). Both fast paths test it right after
+/// the byte is loaded and, when it is set, take the out-of-line per-CPU
+/// path ([`Heap::pop_percpu_mode`], [`percpu_free_fast`]) instead of the
+/// thread cache; the thread paths themselves are untouched, and a heap
+/// whose [`Heap::percpu`] is false (an explicit cache, a thread homed on
+/// an explicit arena, `thread.tcache.enabled:false`) takes the thread
+/// path from inside the per-CPU one.
+pub const PUSH_PERCPU: u8 = 8;
 /// Pops between two fragmentation probes of a class (minus one).
 pub const PROBE_MASK: u32 = (1 << 12) - 1;
 /// A class is worth compacting when its slabs hold at least this many
@@ -249,6 +259,34 @@ pub const COMPACT_MAX_REFILL_SLABS: usize = 2;
 pub const CACHE_HEADER: usize = core::mem::size_of::<CacheHeader>();
 const _: () = assert!(CACHE_HEADER == 64);
 const _: () = assert!(core::mem::offset_of!(CacheHeader, slots) < 64 - 8);
+
+/// Field offsets of [`CacheHeader`] for the rseq critical sections
+/// (`rseq.rs`), which address the fields from `asm!`.
+pub const OFF_LEN: usize = core::mem::offset_of!(CacheHeader, len);
+pub const OFF_CAP: usize = core::mem::offset_of!(CacheHeader, cap);
+pub const OFF_LOW_WATER: usize = core::mem::offset_of!(CacheHeader, low_water);
+pub const OFF_ZEROED: usize = core::mem::offset_of!(CacheHeader, zeroed);
+pub const OFF_SLOTS: usize = core::mem::offset_of!(CacheHeader, slots);
+pub const OFF_ALLOCS: usize = core::mem::offset_of!(CacheHeader, allocs);
+pub const OFF_COMPACT_MASK: usize = core::mem::offset_of!(CacheHeader, compact_mask);
+
+/// The caches of one concurrency id in the per-CPU mode (design 15): the
+/// same header array as a heap's home caches, one line per class, so the
+/// per-CPU paths and the thread paths share [`CacheHeader`] and its stack
+/// layout. The table is `possible_cpus` of these, contiguous, reserved
+/// zeroed from the metadata region at init and touched only as ids are
+/// used: a zeroed header is `len == cap == 0`, which both fast paths treat
+/// as "slow path", and the first slow path on it installs the stack
+/// ([`Heap::percpu_ensure`]). Memory is bounded by the number of possible
+/// CPUs, never by the number of threads.
+#[repr(C, align(64))]
+pub struct CpuCache {
+    pub caches: [CacheHeader; NCLASSES],
+}
+
+/// Distance between two ids' tables ([`rseq::STRIDE`]).
+pub const CPU_CACHE_SIZE: usize = core::mem::size_of::<CpuCache>();
+const _: () = assert!(CPU_CACHE_SIZE == NCLASSES * CACHE_HEADER);
 
 impl CacheHeader {
     /// A header that has never been used: both fast paths fall through to
@@ -449,9 +487,12 @@ pub struct Heap {
     arena: u16,
     slow_ticks: u32,
     last_gc: u64,
-    /// Bytes that never went through a cache: huge runs and slots served
-    /// directly from a slab because no cache could be allocated. The
-    /// cached classes are derived from their headers in [`Heap::stats`].
+    /// Bytes counted per operation rather than derived from a cache
+    /// header: huge runs, slots served directly from a slab (no cache, or
+    /// `MALLOCX_TCACHE_NONE`) and, in the per-CPU mode, every pop from and
+    /// push onto a CPU cache (a cache shared by the threads of a CPU
+    /// cannot be folded into one thread's counters). The thread caches
+    /// are derived from their headers in [`Heap::stats`].
     uncached: ThreadStats,
     /// Caches of every other arena this heap has touched.
     others: *mut ArenaCaches,
@@ -465,6 +506,18 @@ pub struct Heap {
     /// Counted in `Arenas::bound` for its home arena: thread heaps are,
     /// explicit caches (`create_detached`) are not.
     bound: bool,
+    /// This heap's plain paths use the per-CPU caches (design 15): the
+    /// mode is on ([`Shared::percpu`]), this is a thread heap (`bound`),
+    /// its caches are enabled and its home arena is an automatic one
+    /// (`Arenas::auto`; a thread moved to an explicit arena by
+    /// `thread.arena` allocates from that arena through its own caches, as
+    /// under jemalloc's `percpu_arena`). Recomputed by [`Heap::set_arena`]
+    /// and [`Heap::set_tcache_enabled`]. Read only behind [`PUSH_PERCPU`].
+    percpu: bool,
+    /// The owning thread's rseq area (`rseq::area` at creation; the heap is
+    /// created on its thread), read by the per-CPU paths; null when the
+    /// mode is off.
+    rseq_area: *mut u8,
     /// `slot_randomize`'s xorshift state (plan Phase 2 task 3): 0 until the
     /// heap's first randomised claim seeds it from `getrandom`, so the
     /// default configuration makes no syscall per heap creation.
@@ -515,6 +568,10 @@ pub struct Shared {
     /// (plan Phase 2 task 3).
     push_flags: u8,
     pub regions: Regions,
+    /// The per-CPU mode's table and state (design 15; [`PUSH_PERCPU`]).
+    /// After `regions` so the thread paths' first line is as it was; the
+    /// per-CPU paths read `base`, `n` and the flag byte, two lines.
+    pub percpu: Percpu,
     /// The sized fast path's guard test per class (plan Phase 2.5 task
     /// 4c): a dense array (8 bytes per class, seven lines for all 52) so
     /// `sized_slot` never touches the 384-byte class table line, whose
@@ -573,6 +630,174 @@ impl GuardTest {
     #[inline(always)]
     fn is_guard(self, slab: usize) -> bool {
         (slab as u32).wrapping_add(self.add) & self.mask == 0
+    }
+}
+
+/// The per-CPU mode (design 15, plan Phase 2.5 task 8): the table of
+/// [`CpuCache`]s indexed by the running thread's rseq `mm_cid`, or why
+/// there is none. Built by [`Shared::init`] from the configuration
+/// (`percpu_arena`), the rseq probe (`rseq::probe`) and the possible-CPU
+/// count; read-only afterwards.
+#[repr(C)]
+pub struct Percpu {
+    /// The table: `n` contiguous [`CpuCache`]s; null when the mode is off.
+    base: *mut u8,
+    /// `__rseq_offset`: thread pointer to the thread's rseq area.
+    offset: isize,
+    /// Table entries: the kernel's `nr_cpu_ids`, the bound on `mm_cid`.
+    n: u32,
+    state: PercpuState,
+    /// What glibc registered, for the report.
+    probe: rseq::Probe,
+    /// `percpu_arena:percpu` was asked for (the report notes a fallback).
+    forced: bool,
+}
+
+/// Why the per-CPU mode is on or off ([`Percpu::state`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PercpuState {
+    /// Caches keyed by `mm_cid`.
+    On = 0,
+    /// `percpu_arena:off`.
+    OffKey = 1,
+    /// The rseq probe failed (`rseq::Probe::verdict` says how).
+    OffProbe = 2,
+    /// `/sys/devices/system/cpu/possible` could not be read.
+    OffCpus = 3,
+    /// `double_free_scan:true`: the scan of the top entries is not written
+    /// into the critical sections, so the two keys exclude each other and
+    /// the hardening wins.
+    OffScan = 4,
+    /// The metadata region could not hold the table.
+    OffMemory = 5,
+}
+
+impl PercpuState {
+    pub const fn name(self) -> &'static str {
+        match self {
+            PercpuState::On => "on",
+            PercpuState::OffKey => "off",
+            PercpuState::OffProbe => "off (rseq)",
+            PercpuState::OffCpus => "off (no cpu count)",
+            PercpuState::OffScan => "off (double_free_scan)",
+            PercpuState::OffMemory => "off (no metadata)",
+        }
+    }
+}
+
+// SAFETY: `base` names a process-lifetime metadata reservation whose
+// headers are only ever mutated inside rseq critical sections (one running
+// thread per id) or read racily with volatile loads for diagnostics; the
+// other fields are written once by `init`.
+unsafe impl Sync for Percpu {}
+unsafe impl Send for Percpu {}
+
+impl Percpu {
+    const OFF: Percpu =
+        Percpu { base: ptr::null_mut(), offset: 0, n: 0, state: PercpuState::OffKey, probe: rseq::Probe::NONE, forced: false };
+
+    /// Decide the mode and reserve the table. `allowed` is the caller's
+    /// say (init passes true; the unit tests' `Shared` builders false, so
+    /// their thread-cache assertions hold on a host with `mm_cid`): the
+    /// mode is on when it is allowed, the key permits it for the probe's
+    /// verdict (`PercpuArena::enabled`), `double_free_scan` is off, the
+    /// possible-CPU count is readable and the metadata region has room for
+    /// `n * CPU_CACHE_SIZE` bytes (reserved zeroed, touched as ids are
+    /// used). Off Linux there is no rseq and the mode is off.
+    fn build(meta: &Meta, config: &Config, allowed: bool) -> Percpu {
+        let probe = rseq::probe();
+        let forced = config.percpu_arena.forced();
+        let off = |state: PercpuState| Percpu { state, probe, forced, ..Percpu::OFF };
+        if config.percpu_arena == crate::config::PercpuArena::Off {
+            return off(PercpuState::OffKey);
+        }
+        if !allowed || !config.percpu_arena.enabled(probe.mm_cid_usable()) {
+            return off(PercpuState::OffProbe);
+        }
+        if config.double_free_scan {
+            return off(PercpuState::OffScan);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let Some(n) = rseq::possible_cpus() else { return off(PercpuState::OffCpus) };
+            let n = n.clamp(1, crate::arena::MAX_ARENAS as u32);
+            let Some(base) = meta.reserve_committed(n as usize * CPU_CACHE_SIZE, 64) else {
+                return off(PercpuState::OffMemory);
+            };
+            Percpu { base: base as *mut u8, offset: probe.offset, n, state: PercpuState::On, probe, forced }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = meta;
+            off(PercpuState::OffProbe)
+        }
+    }
+
+    /// Whether the caches are keyed by `mm_cid`.
+    #[inline(always)]
+    pub fn on(&self) -> bool {
+        self.state == PercpuState::On
+    }
+
+    pub fn state(&self) -> PercpuState {
+        self.state
+    }
+
+    /// The rseq probe the decision was made on.
+    pub fn probe(&self) -> rseq::Probe {
+        self.probe
+    }
+
+    /// `percpu_arena:percpu` was configured.
+    pub fn forced(&self) -> bool {
+        self.forced
+    }
+
+    /// Table entries (possible CPUs); 0 when off.
+    pub fn ids(&self) -> u32 {
+        self.n
+    }
+
+    /// The critical sections' view of the table for `class`: the id-0
+    /// header of that class and the id bound.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[inline(always)]
+    fn table(&self, class: usize) -> rseq::Table {
+        debug_assert!(self.on() && class < NCLASSES);
+        // SAFETY: `class < NCLASSES` and the table has `n >= 1` entries.
+        rseq::Table { base: unsafe { self.base.add(class * CACHE_HEADER) }, n: self.n }
+    }
+
+    /// The header of `(id, class)` for diagnostics and statistics (the
+    /// fields are read racily with volatile loads; the owner may be
+    /// writing them from a critical section on another CPU).
+    pub fn header(&self, id: u32, class: usize) -> Option<*const CacheHeader> {
+        if !self.on() || id >= self.n || class >= NCLASSES {
+            return None;
+        }
+        // SAFETY: inside the table.
+        Some(unsafe { self.base.add(id as usize * CPU_CACHE_SIZE + class * CACHE_HEADER) } as *const CacheHeader)
+    }
+
+    /// Installed headers and cached slots over the whole table (a racy
+    /// snapshot for `stats.percpu.*` and the report).
+    pub fn snapshot(&self) -> (usize, usize) {
+        let (mut headers, mut slots) = (0usize, 0usize);
+        for id in 0..self.n {
+            for class in 0..NCLASSES {
+                let h = self.header(id, class).unwrap();
+                // SAFETY: a live header; racy reads of two `u32`s.
+                let (cap, len) = unsafe {
+                    (ptr::read_volatile(&raw const (*h).cap), ptr::read_volatile(&raw const (*h).len))
+                };
+                if cap != 0 {
+                    headers += 1;
+                    slots += len as usize;
+                }
+            }
+        }
+        (headers, slots)
     }
 }
 
@@ -736,7 +961,14 @@ impl Shared {
     /// has `MADV_GUARD_INSTALL`, without which no guard is placed at all
     /// (the `PROT_NONE` fallback would split every class region into one
     /// VMA per guard, see `class.rs`).
-    pub unsafe fn init(this: *mut Shared, regions: Regions, config: Config, guard_install: bool, pac: bool) -> bool {
+    pub unsafe fn init(
+        this: *mut Shared,
+        regions: Regions,
+        config: Config,
+        guard_install: bool,
+        pac: bool,
+        percpu: bool,
+    ) -> bool {
         let mut config = config;
         config.narenas = config.effective_narenas(os::ncpus());
         let guard_interval = if guard_install { config.effective_guard_slab_interval() } else { 0 };
@@ -748,13 +980,16 @@ impl Shared {
             ptr::write(meta, Meta::new(regions.meta_base, regions.meta_len, regions.page_size()));
             ptr::write(&raw mut (*this).regions, regions);
             ptr::write(&raw mut (*this).multi_arena, AtomicBool::new(false));
+            let meta = &*meta;
+            let percpu = Percpu::build(meta, &config, percpu);
             ptr::write(
                 &raw mut (*this).push_flags,
                 (if config.double_free_scan { PUSH_SCAN } else { 0 })
                     | (if config.zero_on_free { PUSH_ZERO } else { 0 })
-                    | (if pac && config.pac_pointers { PUSH_PAC } else { 0 }),
+                    | (if pac && config.pac_pointers { PUSH_PAC } else { 0 })
+                    | (if percpu.on() { PUSH_PERCPU } else { 0 }),
             );
-            let meta = &*meta;
+            ptr::write(&raw mut (*this).percpu, percpu);
             let regions = &*(&raw const (*this).regions);
             let tables = &raw mut (*this).tables;
             for c in 0..NCLASSES {
@@ -856,6 +1091,12 @@ impl Shared {
     #[inline(always)]
     pub fn pac(&self) -> bool {
         self.push_flags & PUSH_PAC != 0
+    }
+
+    /// Whether the per-CPU mode is on ([`PUSH_PERCPU`], design 15).
+    #[inline(always)]
+    pub fn percpu_on(&self) -> bool {
+        self.push_flags & PUSH_PERCPU != 0
     }
 
     /// Whether pushes compare against the top four cache entries
@@ -1106,6 +1347,30 @@ impl Shared {
         Some(class)
     }
 
+    /// [`checked_slot`] without the arena test, for the per-CPU push: a
+    /// CPU cache takes verified slots of every arena and its flush routes
+    /// them by the owner array ([`release_routed`]), as the sized path's
+    /// cache already does.
+    ///
+    /// [`checked_slot`]: Shared::checked_slot
+    /// [`release_routed`]: Shared::release_routed
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[inline(always)]
+    fn checked_slot_any(&self, p: *mut u8) -> Option<usize> {
+        let (class, slab, slot) = self.regions.slab_slot(p as usize)?;
+        // SAFETY: `slab_slot` only returns `class < NCLASSES`.
+        let table = unsafe { self.tables.get_unchecked(class) };
+        if !table.is_handed_out(slab) {
+            return None;
+        }
+        // SAFETY: `slab` is below the watermark, `slab_slot` validated
+        // `slot < nslots`.
+        if !unsafe { table.is_set_unchecked(slab, slot) } {
+            return None;
+        }
+        Some(class)
+    }
+
     /// Allocate a huge run of `size` bytes aligned to `align` in `arena`
     /// (which must exist). Null on exhaustion; the flag says the memory is
     /// known zero.
@@ -1153,10 +1418,34 @@ impl Heap {
         if h.is_null() {
             shared.arenas.unbind(arena);
         } else {
-            // SAFETY: fresh, exclusively owned.
-            unsafe { (*h).bound = true };
+            // SAFETY: fresh, exclusively owned; created on the owning
+            // thread, whose rseq area this is.
+            unsafe {
+                (*h).bound = true;
+                (*h).rseq_area = Self::rseq_area_for(shared);
+                (*h).percpu = Self::percpu_for(shared, true, true, arena);
+            }
         }
         h
+    }
+
+    /// Whether a heap with these properties takes the per-CPU paths
+    /// ([`Heap::percpu`]).
+    fn percpu_for(shared: &Shared, bound: bool, tcache_enabled: bool, arena: u16) -> bool {
+        shared.percpu_on() && bound && tcache_enabled && (arena as u32) < shared.arenas.auto()
+    }
+
+    /// The calling thread's rseq area when the mode is on, else null.
+    fn rseq_area_for(shared: &Shared) -> *mut u8 {
+        #[cfg(target_os = "linux")]
+        {
+            if shared.percpu_on() { rseq::area(shared.percpu.offset) } else { ptr::null_mut() }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = shared;
+            ptr::null_mut()
+        }
     }
 
     /// Create a heap homed on `arena` (an explicit cache, or a thread heap
@@ -1184,6 +1473,8 @@ impl Heap {
             ptr::write(&raw mut (*h).snapshot, ThreadStats::default());
             ptr::write(&raw mut (*h).tcache_enabled, true);
             ptr::write(&raw mut (*h).bound, false);
+            ptr::write(&raw mut (*h).percpu, false);
+            ptr::write(&raw mut (*h).rseq_area, ptr::null_mut());
             ptr::write(&raw mut (*h).rng, 0);
             let caches = (&raw mut (*h).caches).cast::<CacheHeader>();
             for c in 0..NCLASSES {
@@ -1202,7 +1493,7 @@ impl Heap {
     pub unsafe fn destroy(h: *mut Heap, shared: &Shared) {
         // SAFETY: the caller gives us exclusive ownership of the heap.
         let heap = unsafe { &mut *h };
-        heap.flush_all(shared);
+        heap.flush_thread_caches(shared);
         Self::free_caches(shared, &mut heap.caches);
         let mut o = heap.others;
         while !o.is_null() {
@@ -1277,6 +1568,14 @@ impl Heap {
             shared.arenas.unbind(old);
             shared.arenas.bind(arena);
         }
+        self.percpu = Self::percpu_for(shared, self.bound, self.tcache_enabled, arena);
+    }
+
+    /// Whether this heap's plain paths use the per-CPU caches (see the
+    /// field).
+    #[inline]
+    pub fn percpu(&self) -> bool {
+        self.percpu
     }
 
     /// Flush the home caches, fold their byte counters into `uncached` and
@@ -1345,10 +1644,11 @@ impl Heap {
     /// next slow path create caches again.
     pub fn set_tcache_enabled(&mut self, shared: &Shared, on: bool) {
         self.tcache_enabled = on;
+        self.percpu = Self::percpu_for(shared, self.bound, on, self.arena);
         if on {
             return;
         }
-        self.flush_all(shared);
+        self.flush_thread_caches(shared);
         Self::fold_counters(&mut self.uncached, &self.caches);
         Self::free_caches(shared, &mut self.caches);
         let mut o = self.others;
@@ -1429,6 +1729,9 @@ impl Heap {
     /// `Shared::push_flags` (only [`PUSH_PAC`] matters to a pop).
     #[inline(always)]
     pub fn alloc_fast(&mut self, class: usize, flags: u8) -> Option<*mut u8> {
+        if flags & PUSH_PERCPU != 0 {
+            return self.pop_percpu_mode(class, flags).map(|r| r.0);
+        }
         let cache = self.cache_ptr(class);
         // SAFETY: this thread's own header, unused (`len == 0`) or with a
         // stack of `len` entries.
@@ -1445,6 +1748,13 @@ impl Heap {
     /// read as zero, so the caller can skip its `memset`.
     #[inline(always)]
     pub fn alloc_zeroed(&mut self, shared: &Shared, class: usize) -> (*mut u8, bool) {
+        let flags = shared.push_flags();
+        if flags & PUSH_PERCPU != 0 {
+            return match self.pop_percpu_mode(class, flags) {
+                Some(r) => r,
+                None => self.alloc_slow(shared, class),
+            };
+        }
         let cache = self.cache_ptr(class);
         // SAFETY: as in `alloc`.
         unsafe {
@@ -1736,7 +2046,9 @@ impl Heap {
     pub fn free(&mut self, shared: &Shared, p: *mut u8) {
         match shared.classify_free(p) {
             Ok((class, arena)) => {
-                if arena == self.arena {
+                if self.percpu {
+                    self.percpu_free_slow(shared, class, p)
+                } else if arena == self.arena {
                     self.push(shared, class, p)
                 } else {
                     self.free_other(shared, arena, class, p)
@@ -1790,13 +2102,16 @@ impl Heap {
         self.uncached.deallocated += bytes as u64;
     }
 
-    /// A slot of `class` was claimed directly (`MALLOCX_TCACHE_NONE`) on
-    /// this thread: count it.
+    /// A slot of `class` was claimed directly (`MALLOCX_TCACHE_NONE`) or
+    /// popped from a per-CPU cache on this thread: count it.
+    #[inline]
     pub fn count_direct_alloc(&mut self, class: usize) {
         self.count_uncached_alloc(CLASSES[class].size());
     }
 
-    /// A slot of `class` was released directly on this thread: count it.
+    /// A slot of `class` was released directly or pushed onto a per-CPU
+    /// cache on this thread: count it.
+    #[inline]
     pub fn count_direct_free(&mut self, class: usize) {
         self.count_uncached_free(CLASSES[class].size());
     }
@@ -1943,8 +2258,13 @@ impl Heap {
         // `tcache_max`, uncached everywhere) comes from arena 0 whatever
         // the home arena (`Config::shared_class`); explicit `MALLOCX_ARENA`
         // allocations (`alloc_in`) keep theirs.
-        let arena = if shared.config.shared_class(class) { 0 } else { self.arena };
-        self.alloc_slow_in(shared, arena, class)
+        if shared.config.shared_class(class) {
+            return self.alloc_slow_in(shared, 0, class);
+        }
+        if self.percpu {
+            return self.percpu_alloc_slow(shared, class);
+        }
+        self.alloc_slow_in(shared, self.arena, class)
     }
 
     /// Allocation of `class` from another arena than the home one: through
@@ -2361,8 +2681,19 @@ impl Heap {
         }
     }
 
-    /// Return every cached slot to its slab. Caches stay allocated.
+    /// Return every cached slot to its slab: this heap's caches and, in the
+    /// per-CPU mode, the caches of the CPU the thread is running on.
+    /// Caches stay allocated.
     pub fn flush_all(&mut self, shared: &Shared) {
+        if self.percpu {
+            self.percpu_drain(shared);
+        }
+        self.flush_thread_caches(shared);
+    }
+
+    /// [`Heap::flush_all`] for this heap's own caches alone (thread exit,
+    /// `thread.tcache.enabled:false`: the CPU caches are not the thread's).
+    pub fn flush_thread_caches(&mut self, shared: &Shared) {
         let home = self.arena;
         self.flush_arena(shared, home, ptr::null_mut());
         let mut o = self.others;
@@ -2381,6 +2712,9 @@ impl Heap {
     /// the entries that went unused since the last GC, then restart the
     /// low-water tracking from the current length.
     pub fn gc(&mut self, shared: &Shared) {
+        if self.percpu {
+            self.percpu_gc(shared);
+        }
         let home = self.arena;
         self.gc_arena(shared, home, ptr::null_mut());
         let mut o = self.others;
@@ -2427,6 +2761,475 @@ impl Heap {
             }
             crate::purge::on_tick(shared, now);
         }
+    }
+}
+
+/// The per-CPU paths (design 15, plan Phase 2.5 task 8). A process in the
+/// mode ([`Shared::percpu_on`], the [`PUSH_PERCPU`] bit) keys its plain
+/// `malloc`/`free` caches by the running thread's rseq `mm_cid` instead of
+/// by thread: the table of [`CpuCache`]s in [`Percpu`], one header per
+/// (concurrency id, class), every header operation a critical section of
+/// `rseq.rs` that reads the id, so no lock and no atomic read-modify-write
+/// is added to the fast paths and two threads never mutate one header at
+/// the same time (an id is held by one running thread; a thread preempted
+/// inside a section is moved to the abort handler and retries). The thread
+/// heap stays: it is the init witness the fast paths already load, it
+/// keeps the thread's byte counters (every per-CPU pop and push is counted
+/// there, `thread.allocated` stays exact), its home caches serve explicit
+/// `MALLOCX_ARENA` traffic and huge runs as before, and a heap off the mode
+/// ([`Heap::percpu`] false) takes the thread paths.
+///
+/// Arenas are per concurrency id: the header of `(id, class)` is bound to
+/// arena `id % narenas` ([`Percpu::arena_of`]) at its first use and its
+/// refills claim there, so the slabs a CPU touches are its own arena's;
+/// a slot freed on another CPU is pushed onto that CPU's cache whatever
+/// its arena (the flush routes it back through the owner array,
+/// [`Shared::release_routed`], as the sized path's cache already does) and
+/// the `free` fast path skips the owner word. What a slow path touches
+/// besides the header goes through a thread-private buffer: a refill
+/// claims its batch onto the stack and pushes it in one section
+/// ([`rseq::push_batch`]); a flush takes the whole stack out
+/// ([`rseq::take_all`]), selects the highest-address half as the thread
+/// flush does, releases it and pushes the kept half back; if the thread
+/// migrated in between, the batch simply lands on the new CPU's cache and
+/// what does not fit is released to its slabs. Capacities follow the
+/// thread ladder, clamped to [`MAX_CAP`] (the buffers are stack arrays of
+/// that size). Compaction (design 6.4) keeps its gate per header (probe
+/// every 4096 pops, compact while the class is fragmented and refills are
+/// not draining it) but not its run: a scheduled pop in compact mode
+/// claims one slot straight from the arena's lowest partial slab
+/// ([`Heap::percpu_scheduled`]), which lands the allocation where the run
+/// would have, without a two-word update no single commit store can make.
+/// The cache GC and `thread.tcache.flush` act on the caches of the CPU the
+/// thread is running on; an idle CPU's caches are drained the next time a
+/// thread runs there and ticks, which is the residue the mode bounds by
+/// cores. Thread exit leaves the CPU caches alone (they are not the
+/// thread's), and fork needs nothing (no lock, and every section's
+/// pre-commit stores leave a consistent header).
+#[cfg(target_os = "linux")]
+impl Heap {
+    /// The per-CPU cache capacity for `class`: the thread ladder
+    /// (`Config::cache_cap`) clamped to [`MAX_CAP`]; 0 means uncached.
+    #[inline]
+    fn percpu_cap(shared: &Shared, class: usize) -> u32 {
+        shared.config.cache_cap(class).min(MAX_CAP)
+    }
+
+    /// The pop of a heap in a per-CPU process: the [`PUSH_PERCPU`] branch
+    /// of [`Heap::alloc_fast`] and [`Heap::alloc_zeroed`], out of line so
+    /// the thread pop keeps its shape. A heap off the mode pops its own
+    /// cache here. `None` sends the caller to the slow path.
+    #[inline(never)]
+    fn pop_percpu_mode(&mut self, class: usize, flags: u8) -> Option<(*mut u8, bool)> {
+        let pac = flags & PUSH_PAC != 0;
+        if !self.percpu {
+            let cache = self.cache_ptr(class);
+            // SAFETY: this thread's own header, unused or with a stack.
+            unsafe {
+                let len = (*cache).len;
+                if len == 0 {
+                    return None;
+                }
+                return Some(self.pop(cache, class, len, pac));
+            }
+        }
+        // SAFETY: a heap never outlives its `Shared`.
+        let shared: &Shared = unsafe { &*self.shared };
+        // SAFETY: the owning thread registered this area; the table is live.
+        match unsafe { rseq::pop(self.rseq_area, shared.percpu.table(class), pac) } {
+            rseq::Pop::Popped(p, zero) => {
+                self.count_direct_alloc(class);
+                Some((p, zero))
+            }
+            rseq::Pop::Empty => None,
+            rseq::Pop::Scheduled => self.percpu_scheduled(shared, class),
+            rseq::Pop::OutOfRange => cid_out_of_range(),
+        }
+    }
+
+    /// A pop with the schedule already consumed: `Some` or empty.
+    fn percpu_pop_plain(&mut self, shared: &Shared, class: usize) -> Option<(*mut u8, bool)> {
+        // SAFETY: as in `pop_percpu_mode`.
+        match unsafe { rseq::pop(self.rseq_area, shared.percpu.table(class), shared.pac()) } {
+            rseq::Pop::Popped(p, zero) => {
+                self.count_direct_alloc(class);
+                Some((p, zero))
+            }
+            rseq::Pop::Empty | rseq::Pop::Scheduled => None,
+            rseq::Pop::OutOfRange => cid_out_of_range(),
+        }
+    }
+
+    /// The scheduled pop of a per-CPU cache (design 6.4 without the run):
+    /// in probe mode run the periodic work and ask the class whether it is
+    /// fragmented and left alone by refills, entering compact mode if so;
+    /// in compact mode claim one slot from the arena's lowest partial slab
+    /// (re-checking the class every [`PROBE_MASK`] + 1 scheduled pops and
+    /// dropping back to probing once it is dense); otherwise pop the top.
+    /// The header's mode fields are hints written with volatile stores
+    /// (another thread may own the id by the time they land; a stale mode
+    /// changes only which pops are scheduled, never a stack).
+    #[cold]
+    #[inline(never)]
+    fn percpu_scheduled(&mut self, shared: &Shared, class: usize) -> Option<(*mut u8, bool)> {
+        // SAFETY: this thread's area.
+        let cid = unsafe { rseq::mm_cid(self.rseq_area) };
+        let Some(h) = shared.percpu.header(cid, class) else { cid_out_of_range() };
+        let h = h as *mut CacheHeader;
+        // SAFETY: a live header of the table; racy volatile reads.
+        let (mode, arena) = unsafe { (ptr::read_volatile(&raw const (*h).mode), ptr::read_volatile(&raw const (*h).arena)) };
+        let cs = shared.owner(arena).class(class);
+        match mode {
+            MODE_COMPACT => {
+                // SAFETY: as above; `run_end` is unused by per-CPU caches
+                // and counts scheduled pops here.
+                let k = unsafe { ptr::read_volatile(&raw const (*h).run_end) }.wrapping_add(1);
+                unsafe { ptr::write_volatile(&raw mut (*h).run_end, k) };
+                if k & PROBE_MASK == 0 {
+                    self.tick(shared);
+                    if !Self::fragmented(shared, arena, class) {
+                        cs.note_compact_mode(false);
+                        // SAFETY: as above.
+                        unsafe {
+                            ptr::write_volatile(&raw mut (*h).mode, MODE_PROBE);
+                            ptr::write_volatile(&raw mut (*h).compact_mask, PROBE_MASK);
+                        }
+                        return self.percpu_pop_plain(shared, class);
+                    }
+                }
+            }
+            MODE_PROBE => {
+                self.tick(shared);
+                let refilled = cs.refilled() as u32;
+                // SAFETY: as above.
+                let prev = unsafe { ptr::read_volatile(&raw const (*h).probe_refilled) };
+                unsafe { ptr::write_volatile(&raw mut (*h).probe_refilled, refilled) };
+                let delta = refilled.wrapping_sub(prev) as usize;
+                if delta >= COMPACT_MAX_REFILL_SLABS * CLASSES[class].compact_slots() {
+                    if Self::fragmented(shared, arena, class) {
+                        cs.note_gate_refill();
+                    }
+                    return self.percpu_pop_plain(shared, class);
+                }
+                if !Self::fragmented(shared, arena, class) {
+                    return self.percpu_pop_plain(shared, class);
+                }
+                cs.note_compact_mode(true);
+                // SAFETY: as above.
+                unsafe {
+                    ptr::write_volatile(&raw mut (*h).mode, MODE_COMPACT);
+                    ptr::write_volatile(&raw mut (*h).compact_mask, shared.config.compact_mask());
+                    ptr::write_volatile(&raw mut (*h).run_end, 0);
+                }
+            }
+            _ => return self.percpu_pop_plain(shared, class),
+        }
+        let mut out = [ptr::null_mut()];
+        let claim = self.claim(shared, cs, &mut out);
+        if claim.n == 0 {
+            return self.percpu_pop_plain(shared, class);
+        }
+        cs.note_compact(1);
+        self.count_direct_alloc(class);
+        Some((out[0], claim.zeroed))
+    }
+
+    /// One slot of `class` straight from the home arena's bitmaps, counted
+    /// (the per-CPU paths' fallback for an uncached class or an exhausted
+    /// metadata region).
+    fn percpu_alloc_direct(&mut self, shared: &Shared, class: usize) -> (*mut u8, bool) {
+        let Some(a) = shared.arena(self.arena) else { return (ptr::null_mut(), false) };
+        let (p, zero) = shared.alloc_direct(a, class);
+        if !p.is_null() {
+            self.count_direct_alloc(class);
+        }
+        (p, zero)
+    }
+
+    /// Refill the running CPU's cache for `class` and pop (the per-CPU
+    /// [`Heap::alloc_slow`]): claim up to `cap / 2` slots from the id's
+    /// arena into a stack buffer, hand the lowest to the caller and push
+    /// the rest in one section, lowest on top; what the section could not
+    /// take (the thread moved to a CPU whose cache is full) goes back to
+    /// its slabs. Retries from the top after a scheduled pop that served
+    /// nothing.
+    #[cold]
+    #[inline(never)]
+    fn percpu_alloc_slow(&mut self, shared: &Shared, class: usize) -> (*mut u8, bool) {
+        self.tick(shared);
+        let cap = Self::percpu_cap(shared, class);
+        if cap == 0 {
+            return self.percpu_alloc_direct(shared, class);
+        }
+        let pac = shared.pac();
+        let area = self.rseq_area;
+        let t = shared.percpu.table(class);
+        loop {
+            // SAFETY: this thread's area; the table is live.
+            match unsafe { rseq::pop(area, t, pac) } {
+                rseq::Pop::Popped(p, zero) => {
+                    self.count_direct_alloc(class);
+                    return (p, zero);
+                }
+                rseq::Pop::Scheduled => {
+                    if let Some(r) = self.percpu_scheduled(shared, class) {
+                        return r;
+                    }
+                    continue;
+                }
+                rseq::Pop::OutOfRange => cid_out_of_range(),
+                rseq::Pop::Empty => {}
+            }
+            // SAFETY: this thread's area.
+            let cid = unsafe { rseq::mm_cid(area) };
+            if !self.percpu_ensure(shared, class, cap, cid) {
+                return self.percpu_alloc_direct(shared, class);
+            }
+            let arena = Percpu::arena_of(shared, cid);
+            let Some(a) = shared.arena(arena) else { return (ptr::null_mut(), false) };
+            let want = ((cap / 2).max(1) as usize).min(MAX_CAP as usize / 2);
+            let mut buf = [ptr::null_mut::<u8>(); MAX_CAP as usize / 2];
+            let out = &mut buf[..want];
+            let claim = self.claim(shared, a.class(class), out);
+            a.class(class).note_refill(claim.n);
+            if claim.n == 0 {
+                return (ptr::null_mut(), false);
+            }
+            let p = out[0];
+            let rest = &mut out[1..claim.n];
+            rest.reverse();
+            // SAFETY: this thread's area; `rest` are plain slot pointers.
+            let pushed = match unsafe { rseq::push_batch(area, t, rest, claim.zeroed, pac) } {
+                Ok(k) => k,
+                Err(()) => cid_out_of_range(),
+            };
+            if pushed < rest.len() {
+                // A descending batch keeps each slab's slots contiguous,
+                // which is all `release_owned` needs.
+                shared.release_routed(arena, class, &rest[pushed..]);
+            }
+            self.count_direct_alloc(class);
+            return (p, claim.zeroed);
+        }
+    }
+
+    /// Give the header `(cid, class)` its stack if it has none: the
+    /// idempotent fields with plain stores (every installer writes the
+    /// same values, so a racing installer's stores are harmless), then
+    /// `slots` and `cap` in one section ([`rseq::install`]), which refuses
+    /// to publish a header this thread did not prepare (it migrated:
+    /// re-read the id and try again). `false` when no stack could be
+    /// allocated (the caller serves the request directly).
+    fn percpu_ensure(&mut self, shared: &Shared, class: usize, cap: u32, cid: u32) -> bool {
+        let mut cid = cid;
+        loop {
+            let Some(h) = shared.percpu.header(cid, class) else { cid_out_of_range() };
+            let h = h as *mut CacheHeader;
+            // SAFETY: a live header; racy read of `cap`.
+            if unsafe { ptr::read_volatile(&raw const (*h).cap) } != 0 {
+                return true;
+            }
+            let slots = shared.meta.alloc(CacheHeader::slots_layout(cap));
+            if slots.is_null() {
+                return false;
+            }
+            let arena = Percpu::arena_of(shared, cid);
+            let mode = if shared.config.tcache_compact_shift == 0 { MODE_OFF } else { MODE_PROBE };
+            let mask = if mode == MODE_PROBE { PROBE_MASK } else { u32::MAX };
+            // SAFETY: a live header not yet published (`cap == 0`); these
+            // stores are identical from every installer of this header.
+            unsafe {
+                ptr::write_volatile(&raw mut (*h).arena, arena);
+                ptr::write_volatile(&raw mut (*h).mode, mode);
+                ptr::write_volatile(&raw mut (*h).compact_mask, mask);
+                ptr::write_volatile(&raw mut (*h).probe_refilled, shared.owner(arena).class(class).refilled() as u32);
+            }
+            // SAFETY: this thread's area; `slots` holds `cap` pointers.
+            match unsafe { rseq::install(self.rseq_area, shared.percpu.table(class), h as *const u8, slots as *mut *mut u8, cap) } {
+                rseq::Install::Installed => return true,
+                rseq::Install::Exists => {
+                    shared.meta.free(slots, CacheHeader::slots_layout(cap));
+                    return true;
+                }
+                rseq::Install::Moved => {
+                    shared.meta.free(slots, CacheHeader::slots_layout(cap));
+                    // SAFETY: this thread's area.
+                    cid = unsafe { rseq::mm_cid(self.rseq_area) };
+                }
+                rseq::Install::OutOfRange => cid_out_of_range(),
+            }
+        }
+    }
+
+    /// Push a verified slot onto the running CPU's cache, flushing half of
+    /// it first when it is full (the per-CPU [`Heap::free`] for a full or
+    /// uninstalled cache and for `zero_on_free`, which clears here).
+    #[cold]
+    #[inline(never)]
+    fn percpu_free_slow(&mut self, shared: &Shared, class: usize, p: *mut u8) {
+        if shared.zero_on_free() {
+            // SAFETY: `p` is a slot start of `class` (the caller's check).
+            unsafe { zero_slot(class, p) };
+        }
+        self.tick(shared);
+        let cap = Self::percpu_cap(shared, class);
+        if cap == 0 {
+            shared.free_direct(shared.arena_of_slot(class, p), class, p);
+            self.count_direct_free(class);
+            return;
+        }
+        let pac = shared.pac();
+        let area = self.rseq_area;
+        let t = shared.percpu.table(class);
+        loop {
+            // SAFETY: this thread's area; `p` is a verified slot of `class`.
+            match unsafe { rseq::push(area, t, p, pac) } {
+                rseq::Push::Pushed => {
+                    self.count_direct_free(class);
+                    return;
+                }
+                rseq::Push::OutOfRange => cid_out_of_range(),
+                rseq::Push::Full => {}
+            }
+            // SAFETY: this thread's area.
+            let cid = unsafe { rseq::mm_cid(area) };
+            if !self.percpu_ensure(shared, class, cap, cid) {
+                shared.free_direct(shared.arena_of_slot(class, p), class, p);
+                self.count_direct_free(class);
+                return;
+            }
+            self.percpu_flush(shared, class, cap, |len| len / 2);
+        }
+    }
+
+    /// Flush the running CPU's cache for `class`: take every entry out in
+    /// one section, release the `n(len)` highest addresses to their slabs
+    /// (grouped by slab, the straddling double-free compare of
+    /// [`Heap::flush`] included) and push the rest back in one section,
+    /// lowest on top when the stack was in address order. Entries the
+    /// push-back cannot place (the thread migrated to a CPU whose cache is
+    /// full) are released too.
+    fn percpu_flush(&mut self, shared: &Shared, class: usize, cap: u32, n: impl Fn(usize) -> usize) {
+        let pac = shared.pac();
+        let area = self.rseq_area;
+        let t = shared.percpu.table(class);
+        let mut buf = [ptr::null_mut::<u8>(); MAX_CAP as usize];
+        let out = &mut buf[..(cap as usize).min(MAX_CAP as usize)];
+        // SAFETY: this thread's area; `out` holds the cache's capacity.
+        let len = match unsafe { rseq::take_all(area, t, out, pac) } {
+            Ok(len) => len,
+            Err(()) => cid_out_of_range(),
+        };
+        if len == 0 {
+            return;
+        }
+        let all = &mut out[..len];
+        let n = n(len).min(len);
+        let rest_len = len - n;
+        // SAFETY: this thread's area.
+        let arena = Percpu::arena_of(shared, unsafe { rseq::mm_cid(area) });
+        if n > 0 {
+            let sorted = rest_len > 0 && all.is_sorted();
+            if !sorted && rest_len > 0 {
+                all.select_nth_unstable(rest_len - 1);
+            }
+            let (kept, high) = all.split_at_mut(rest_len);
+            let low = if sorted { high[0] } else { group_by_slab(shared, class, high) };
+            if rest_len > 0 && low == kept[rest_len - 1] {
+                straddling_double_free(low, class);
+            }
+            shared.release_routed(arena, class, high);
+            if sorted {
+                kept.reverse();
+            }
+        }
+        if rest_len == 0 {
+            return;
+        }
+        let kept = &mut all[..rest_len];
+        // SAFETY: this thread's area; plain slot pointers.
+        let pushed = match unsafe { rseq::push_batch(area, t, kept, false, pac) } {
+            Ok(k) => k,
+            Err(()) => cid_out_of_range(),
+        };
+        if pushed < kept.len() {
+            let rem = &mut kept[pushed..];
+            group_by_slab(shared, class, rem);
+            shared.release_routed(arena, class, rem);
+        }
+    }
+
+    /// Return every entry of the running CPU's caches to the slabs
+    /// (`thread.tcache.flush`, `malloc_trim`, the purges' caller flush).
+    fn percpu_drain(&mut self, shared: &Shared) {
+        for class in 0..NCLASSES {
+            let cap = Self::percpu_cap(shared, class);
+            if cap == 0 || !self.percpu_current_has(shared, class) {
+                continue;
+            }
+            self.percpu_flush(shared, class, cap, |len| len);
+        }
+    }
+
+    /// The running CPU's caches' GC (design 6.4): release three quarters of
+    /// each class's `low_water`, the entries unused since the last GC; the
+    /// push-back restarts `low_water` at the kept length.
+    fn percpu_gc(&mut self, shared: &Shared) {
+        // SAFETY: this thread's area.
+        let cid = unsafe { rseq::mm_cid(self.rseq_area) };
+        for class in 0..NCLASSES {
+            let cap = Self::percpu_cap(shared, class);
+            let Some(h) = shared.percpu.header(cid, class) else { cid_out_of_range() };
+            // SAFETY: a live header; racy hints.
+            let (hcap, lw) = unsafe { (ptr::read_volatile(&raw const (*h).cap), ptr::read_volatile(&raw const (*h).low_water)) };
+            if cap == 0 || hcap == 0 || lw == 0 {
+                continue;
+            }
+            let lw = lw as usize;
+            self.percpu_flush(shared, class, cap, move |len| (lw - lw / 4).min(len));
+        }
+    }
+
+    /// Whether the running CPU's header for `class` is installed and holds
+    /// anything (a racy hint that saves a drain the empty section).
+    fn percpu_current_has(&self, shared: &Shared, class: usize) -> bool {
+        // SAFETY: this thread's area.
+        let cid = unsafe { rseq::mm_cid(self.rseq_area) };
+        let Some(h) = shared.percpu.header(cid, class) else { cid_out_of_range() };
+        // SAFETY: a live header; racy reads.
+        unsafe { ptr::read_volatile(&raw const (*h).cap) != 0 && ptr::read_volatile(&raw const (*h).len) != 0 }
+    }
+}
+
+/// Off Linux the mode never turns on; the entry points still compile.
+#[cfg(not(target_os = "linux"))]
+impl Heap {
+    fn pop_percpu_mode(&mut self, _class: usize, _flags: u8) -> Option<(*mut u8, bool)> {
+        None
+    }
+
+    fn percpu_alloc_slow(&mut self, shared: &Shared, class: usize) -> (*mut u8, bool) {
+        let arena = self.arena;
+        self.alloc_slow_in(shared, arena, class)
+    }
+
+    fn percpu_free_slow(&mut self, shared: &Shared, class: usize, p: *mut u8) {
+        let arena = self.arena;
+        self.free_slow_in(shared, arena, class, p)
+    }
+
+    fn percpu_drain(&mut self, _shared: &Shared) {}
+
+    fn percpu_gc(&mut self, _shared: &Shared) {}
+}
+
+impl Percpu {
+    /// The arena bound to concurrency id `cid`: `cid % narenas` over the
+    /// automatic arenas, so with the default `narenas` (`4 * ncpus`, at
+    /// most 64) every id has its own arena up to 64 CPUs.
+    #[inline]
+    pub fn arena_of(shared: &Shared, cid: u32) -> u16 {
+        (cid % shared.arenas.auto().max(1)) as u16
     }
 }
 
@@ -2588,10 +3391,54 @@ pub unsafe fn heap_from_slot(t: usize, tp: usize, pac: bool) -> &'static mut Hea
 /// frame.
 #[inline(always)]
 pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> bool {
+    if flags & PUSH_PERCPU != 0 {
+        return percpu_free_fast(shared, h, p, flags, None, false);
+    }
     match shared.checked_slot(p, h) {
         Some(class) => h.push_fast(class, p, flags),
         None => false,
     }
+}
+
+/// The `free` and sized-free fast paths of a process in the per-CPU mode
+/// (design 15), out of line so the thread paths keep their shape: a heap
+/// off the mode ([`Heap::percpu`] false) takes the thread path here;
+/// otherwise the slot is verified (the bit test without the arena test,
+/// [`Shared::checked_slot_any`], or the sized path's arithmetic with the
+/// hint), pushed onto the running CPU's cache in one critical section and
+/// counted in the thread's byte counters. `false` for anything off the
+/// fast path (a full or uninstalled cache, a pointer the checks decline,
+/// `zero_on_free`, which clears on the slow path before the push).
+#[cfg(target_os = "linux")]
+#[inline(never)]
+fn percpu_free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8, hint: Option<usize>, sized: bool) -> bool {
+    if !h.percpu {
+        let class = if sized { shared.sized_slot(p, hint) } else { shared.checked_slot(p, h) };
+        return match class {
+            Some(class) => h.push_fast(class, p, flags),
+            None => false,
+        };
+    }
+    let class = if sized { shared.sized_slot(p, hint) } else { shared.checked_slot_any(p) };
+    let Some(class) = class else { return false };
+    if flags & PUSH_ZERO != 0 {
+        return false;
+    }
+    // SAFETY: the heap's thread registered this area; the table is live;
+    // `p` is a verified slot start of `class`.
+    match unsafe { rseq::push(h.rseq_area, shared.percpu.table(class), p, flags & PUSH_PAC != 0) } {
+        rseq::Push::Pushed => {
+            h.count_direct_free(class);
+            true
+        }
+        rseq::Push::Full => false,
+        rseq::Push::OutOfRange => cid_out_of_range(),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn percpu_free_fast(_: &Shared, _: &mut Heap, _: *mut u8, _: u8, _: Option<usize>, _: bool) -> bool {
+    false
 }
 
 /// The sized free's fast path on an existing heap (`sdallocx`,
@@ -2603,6 +3450,9 @@ pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> bool {
 /// and the exact [`free`]. Contains no call.
 #[inline(always)]
 pub fn free_sized_fast(shared: &Shared, h: &mut Heap, p: *mut u8, hint: Option<usize>, flags: u8) -> bool {
+    if flags & PUSH_PERCPU != 0 {
+        return percpu_free_fast(shared, h, p, flags, hint, true);
+    }
     match shared.sized_slot(p, hint) {
         Some(class) => h.push_fast(class, p, flags),
         None => false,
@@ -2792,6 +3642,16 @@ fn straddling_double_free(p: *mut u8, class: usize) -> ! {
 fn no_such_arena(index: u16) -> ! {
     panic!("arena {index} does not exist")
 }
+
+/// The kernel wrote an `mm_cid` at or above the possible-CPU count the
+/// table was sized for (`rseq::possible_cpus`): the sizing rule is wrong
+/// for this kernel, and the heap must not continue on a guess.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cold]
+#[inline(never)]
+fn cid_out_of_range() -> ! {
+    panic!("rseq mm_cid at or above the possible-CPU count: the per-CPU table is too small")
+}
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -2887,6 +3747,17 @@ pub(crate) mod tests {
     }
 
     fn shared_with_guards(config: Config, guard_install: bool) -> &'static Shared {
+        shared_with_guards_mode(config, guard_install, false)
+    }
+
+    /// A `Shared` with the per-CPU mode allowed (on where the host's rseq
+    /// has `mm_cid`; the tests check `percpu.on()` and skip otherwise).
+    #[cfg(target_os = "linux")]
+    pub(crate) fn shared_percpu() -> &'static Shared {
+        shared_with_guards_mode(Config { narenas: 4, ..Config::DEFAULT }, true, true)
+    }
+
+    pub(crate) fn shared_with_guards_mode(config: Config, guard_install: bool, percpu: bool) -> &'static Shared {
         #[cfg(target_os = "linux")]
         let (sb, mb, hb) = {
             use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
@@ -2911,7 +3782,7 @@ pub(crate) mod tests {
             hb,
         );
         let b: &'static mut MaybeUninit<Shared> = Box::leak(Box::new(MaybeUninit::uninit()));
-        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, config, guard_install, pac::available()) });
+        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, config, guard_install, pac::available(), percpu) });
         unsafe { b.assume_init_ref() }
     }
 
@@ -2941,7 +3812,7 @@ pub(crate) mod tests {
             p
         }
 
-        fn alloc_zeroed(&self, c: usize) -> (*mut u8, bool) {
+        pub(crate) fn alloc_zeroed(&self, c: usize) -> (*mut u8, bool) {
             let (p, z) = self.heap().alloc_zeroed(self.s, c);
             assert!(!p.is_null());
             (p, z)
@@ -2955,7 +3826,7 @@ pub(crate) mod tests {
             self.heap().alloc_huge(self.s, size, align)
         }
 
-        fn stats(&self) -> ThreadStats {
+        pub(crate) fn stats(&self) -> ThreadStats {
             self.heap().stats()
         }
 
@@ -3003,7 +3874,7 @@ pub(crate) mod tests {
         (0..cs.committed_slabs()).filter(|&i| !cs.is_guard_slab(i)).map(|i| cs.desc(i).live()).sum()
     }
 
-    fn xorshift(state: &mut u64) -> u64 {
+    pub(crate) fn xorshift(state: &mut u64) -> u64 {
         let mut x = *state;
         x ^= x << 13;
         x ^= x >> 7;
@@ -4901,7 +5772,8 @@ mod linux_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::vec::Vec;
 
-    use super::tests::page_size;
+    use super::tests::{TestHeap, page_size, shared_percpu, shared_with_guards_mode, xorshift};
+    use std::collections::HashSet;
     const LG_REGION: u32 = crate::layout::LG_MAX_SLAB;
     const LG_STRIDE: u32 = LG_REGION + 2;
     const META_LEN: usize = 16 << 20;
@@ -4935,7 +5807,7 @@ mod linux_tests {
         let b: &'static mut MaybeUninit<Shared> = Box::leak(Box::new(MaybeUninit::uninit()));
         // One automatic arena: the tests below reason about `arena0`.
         let config = Config { narenas: 1, pac_pointers: true, ..Config::DEFAULT };
-        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, config, false, pac::available()) });
+        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, config, false, pac::available(), false) });
         unsafe { b.assume_init_ref() }
     }
 
@@ -5331,5 +6203,254 @@ mod linux_tests {
         for &c in &classes {
             assert_eq!(live(s, c), 0, "class {c}");
         }
+    }
+
+    /// `live` over the class's whole table, whichever arenas own the slabs
+    /// (the per-CPU mode binds ids to arenas, so several are in play).
+    #[cfg(target_os = "linux")]
+    fn live_all(s: &Shared, c: usize) -> usize {
+        let t = s.table(c);
+        (0..t.committed_slabs()).filter(|&i| !t.is_guard_slab(i)).map(|i| t.desc(i).live()).sum()
+    }
+
+    /// Plan Phase 2.5 task 8: the mode follows the probe and the key, both
+    /// ways. On a host whose glibc registered `mm_cid` (the reference
+    /// VMs) the allowed `Shared` is on; on one without (the Mac's Docker
+    /// VM, `__rseq_size` 20) it is off with the probe's verdict; the
+    /// default test builders never turn it on, `percpu_arena:off` never
+    /// does, and `double_free_scan` excludes it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn percpu_mode_follows_the_probe_and_the_key() {
+        use crate::config::PercpuArena;
+        let probe = rseq::probe();
+        let s = shared_percpu();
+        std::eprintln!(
+            "percpu: probe {} (size {}, offset {}), state {}, ids {}",
+            probe.verdict(),
+            probe.size,
+            probe.offset,
+            s.percpu.state().name(),
+            s.percpu.ids()
+        );
+        assert_eq!(s.percpu_on(), probe.mm_cid_usable() && rseq::possible_cpus().is_some());
+        assert_eq!(s.percpu_on(), s.percpu.state() == PercpuState::On);
+        assert_eq!(s.percpu_on(), s.push_flags() & PUSH_PERCPU != 0);
+        if s.percpu_on() {
+            assert_eq!(s.percpu.ids(), rseq::possible_cpus().unwrap());
+            assert!(!s.percpu.forced(), "auto");
+        } else {
+            assert_eq!(s.percpu.state(), PercpuState::OffProbe);
+        }
+        assert!(!shared().percpu_on(), "the default builders keep thread caches");
+        assert_eq!(shared().percpu.state(), PercpuState::OffProbe, "not allowed by the builder");
+        let off = shared_with_guards_mode(Config { percpu_arena: PercpuArena::Off, ..Config::DEFAULT }, false, true);
+        assert!(!off.percpu_on());
+        assert_eq!(off.percpu.state(), PercpuState::OffKey);
+        let forced = shared_with_guards_mode(Config { percpu_arena: PercpuArena::Percpu, ..Config::DEFAULT }, false, true);
+        assert!(forced.percpu.forced());
+        assert_eq!(forced.percpu_on(), s.percpu_on(), "percpu follows the probe like auto");
+        let scan = shared_with_guards_mode(Config { double_free_scan: true, ..Config::DEFAULT }, false, true);
+        assert!(!scan.percpu_on());
+        if probe.mm_cid_usable() {
+            assert_eq!(scan.percpu.state(), PercpuState::OffScan);
+        }
+    }
+
+    /// With the mode on, a thread heap's plain allocations go through the
+    /// running CPU's caches, not the heap's own: the refill installs the
+    /// id's header, the thread's byte counters still move by every pop and
+    /// push, `calloc`'s zero prefix survives the refill, and every slot
+    /// out of the bitmaps is either live in the program or in a CPU cache.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn percpu_caches_serve_plain_allocations() {
+        let s = shared_percpu();
+        if !s.percpu_on() {
+            std::eprintln!("percpu: off on this host ({}), skipping", s.percpu.probe().verdict());
+            return;
+        }
+        std::thread::spawn(move || {
+            let t = TestHeap::new(s);
+            assert!(t.heap().percpu(), "a thread heap on an automatic arena takes the per-CPU paths");
+            let c = class_of(64).unwrap();
+            let before = t.stats();
+            let (p0, zero) = t.alloc_zeroed(c);
+            assert!(zero, "a fresh slab's batch is a zero prefix");
+            let ps: Vec<*mut u8> = (0..7).map(|_| t.alloc(c)).collect();
+            assert!(t.heap().cache(c).is_none(), "the thread's own cache stays untouched");
+            let (headers, cached) = s.percpu.snapshot();
+            assert!(headers >= 1);
+            let half = (Config::DEFAULT.cache_cap(c) / 2) as usize;
+            assert_eq!(cached + 8, live_all(s, c), "cached + live in the program = slots out of the bitmaps");
+            assert!(live_all(s, c) <= 2 * half, "at most two refills happened (one per CPU the thread ran on)");
+            let mid = t.stats();
+            assert_eq!(mid.allocated - before.allocated, 8 * 64, "thread.allocated counts per-CPU pops");
+            for &p in ps.iter().chain([&p0]) {
+                unsafe { *p = 7 };
+                t.free(p);
+            }
+            let after = t.stats();
+            assert_eq!(after.deallocated - mid.deallocated, 8 * 64, "thread.deallocated counts per-CPU pushes");
+            let (_, cached) = s.percpu.snapshot();
+            assert_eq!(cached, live_all(s, c));
+            // A slot freed and popped again is not zero.
+            let (q, zero) = t.alloc_zeroed(c);
+            assert!(!zero || unsafe { *q } == 0, "the zero flag never lies");
+            t.free(q);
+            t.destroy();
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// The per-CPU flush: more frees than a cache holds release the
+    /// highest-address half to the slabs and keep the lowest, the total
+    /// stays conserved, and `flush_all` drains the running CPU's caches.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn percpu_flush_releases_the_high_half_and_drain_empties() {
+        let s = shared_percpu();
+        if !s.percpu_on() {
+            return;
+        }
+        std::thread::spawn(move || {
+            let t = TestHeap::new(s);
+            let c = class_of(64).unwrap();
+            let cap = Config::DEFAULT.cache_cap(c) as usize;
+            let n = 2 * cap + 100;
+            let mut ps: Vec<*mut u8> = (0..n).map(|_| t.alloc(c)).collect();
+            let mut set: HashSet<usize> = ps.iter().map(|&p| p as usize).collect();
+            assert_eq!(set.len(), n, "distinct slots");
+            for &p in &ps {
+                t.free(p);
+            }
+            let (_, cached) = s.percpu.snapshot();
+            assert_eq!(cached, live_all(s, c), "every slot is cached or released");
+            assert!(cached <= cap * s.percpu.ids() as usize);
+            // Allocate again: the cache hands back what it kept, lowest first
+            // after a sorted flush, and the rest come from the slabs' low
+            // addresses; nothing is handed out twice.
+            ps.clear();
+            set.clear();
+            for _ in 0..n {
+                let p = t.alloc(c);
+                assert!(set.insert(p as usize), "slot handed out twice");
+                ps.push(p);
+            }
+            for &p in &ps {
+                t.free(p);
+            }
+            t.flush_all();
+            // The running CPU's caches are empty now; another CPU's may
+            // hold what the thread pushed while it ran there.
+            let cid = unsafe { rseq::mm_cid(rseq::area(s.percpu.probe().offset)) };
+            let h = s.percpu.header(cid, c).unwrap();
+            assert_eq!(unsafe { ptr::read_volatile(&raw const (*h).len) }, 0);
+            let (_, cached) = s.percpu.snapshot();
+            assert_eq!(cached, live_all(s, c));
+            t.destroy();
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// Many threads, more than CPUs, allocate and free at random through
+    /// the per-CPU caches (migrations and aborted sections included): no
+    /// slot is live in two threads at once, and at the end every slot out
+    /// of the bitmaps is in a cache.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn percpu_threads_conserve_slots_under_migration() {
+        let s = shared_percpu();
+        if !s.percpu_on() {
+            return;
+        }
+        let c = class_of(64).unwrap();
+        let nthreads = 2 * (crate::sys::ncpus() as usize).max(2);
+        let handles: Vec<_> = (0..nthreads)
+            .map(|i| {
+                std::thread::spawn(move || {
+                    let t = TestHeap::new(s);
+                    let tag = (i as u64 + 1) * 0x0101_0101_0101_0101;
+                    let mut mine: Vec<*mut u8> = Vec::new();
+                    let mut rng = 0x9E37_79B9_7F4A_7C15u64 ^ (i as u64 + 1);
+                    for _ in 0..20_000 {
+                        let r = xorshift(&mut rng);
+                        if mine.len() < 300 && (r & 1 == 0 || mine.is_empty()) {
+                            let p = t.alloc(c);
+                            unsafe { (p as *mut u64).write(tag) };
+                            mine.push(p);
+                        } else {
+                            let k = (r as usize >> 1) % mine.len();
+                            let p = mine.swap_remove(k);
+                            assert_eq!(unsafe { (p as *mut u64).read() }, tag, "slot {p:?} was handed to another thread");
+                            t.free(p);
+                        }
+                    }
+                    for p in mine {
+                        assert_eq!(unsafe { (p as *mut u64).read() }, tag);
+                        t.free(p);
+                    }
+                    t.destroy();
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        let (headers, cached) = s.percpu.snapshot();
+        assert_eq!(cached, live_all(s, c), "nothing leaked and nothing is counted twice");
+        std::eprintln!("percpu: {nthreads} threads, {headers} headers installed, {cached} slots cached at the end");
+    }
+
+    /// Heaps off the mode inside a per-CPU process take the thread paths:
+    /// an explicit cache, a thread with `thread.tcache.enabled:false`
+    /// (served directly), and a thread moved to an explicit arena (its own
+    /// caches on that arena).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn percpu_heaps_off_the_mode_take_the_thread_paths() {
+        let s = shared_percpu();
+        if !s.percpu_on() {
+            return;
+        }
+        std::thread::spawn(move || {
+            let c = class_of(64).unwrap();
+            // Explicit cache.
+            let e = Heap::create_detached(s, 0);
+            let eh = unsafe { &mut *e };
+            assert!(!eh.percpu());
+            let p = eh.alloc(s, c);
+            assert!(eh.cache(c).is_some(), "an explicit cache uses its own stacks");
+            eh.free(s, p);
+            unsafe { Heap::destroy(e, s) };
+            // Thread caches off: direct.
+            let t = TestHeap::new(s);
+            assert!(t.heap().percpu());
+            t.heap().set_tcache_enabled(s, false);
+            assert!(!t.heap().percpu());
+            let live0 = live_all(s, c);
+            let (_, cached0) = s.percpu.snapshot();
+            let p = t.alloc(c);
+            assert_eq!(live_all(s, c), live0 + 1, "claimed straight from a slab");
+            assert_eq!(s.percpu.snapshot().1, cached0, "no CPU cache touched");
+            t.free(p);
+            assert_eq!(live_all(s, c), live0);
+            t.heap().set_tcache_enabled(s, true);
+            assert!(t.heap().percpu());
+            // An explicit arena: the thread's own caches on it.
+            let a = s.arenas.create(s).expect("arenas.create");
+            t.heap().set_arena(s, a);
+            assert!(!t.heap().percpu());
+            let p = t.alloc(c);
+            assert_eq!(s.classify_free(p), Ok((c, a)));
+            assert!(t.heap().cache(c).is_some());
+            t.free(p);
+            assert!(t.heap().cache(c).unwrap().len() >= 1);
+            t.destroy();
+        })
+        .join()
+        .unwrap();
     }
 }

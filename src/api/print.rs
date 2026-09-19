@@ -183,6 +183,7 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     writeln!(out, "Kernel and CPU features: {}", super::feature_line())?;
     writeln!(out, "Sealed ranges: {} of {}", super::sealed_ranges(), shared.regions.never_committed().1)?;
     writeln!(out, "Background thread: {}", if purge::background::present() { "present" } else { "absent" })?;
+    percpu_line(out, shared)?;
     writeln!(
         out,
         "Arenas: {} ({} automatic), explicit caches: {}",
@@ -734,6 +735,35 @@ mod exports {
     #[unsafe(no_mangle)]
     pub extern "C" fn malloc_stats() {
         super::malloc_stats()
+    }
+}
+
+/// `Per-CPU caches:` (design 15): the mode's state, the id table, what is
+/// installed and cached, the rseq probe behind the decision, and a note
+/// when `percpu_arena:percpu` was asked for and the probe said no.
+fn percpu_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
+    let pc = &shared.percpu;
+    let probe = pc.probe();
+    if pc.on() {
+        let (headers, cached) = pc.snapshot();
+        writeln!(
+            out,
+            "Per-CPU caches: on ({} ids, {} headers installed, {} slots cached; rseq size {} offset {})",
+            pc.ids(),
+            headers,
+            cached,
+            probe.size,
+            probe.offset
+        )
+    } else {
+        writeln!(
+            out,
+            "Per-CPU caches: {} (rseq {}, size {}){}",
+            pc.state().name(),
+            probe.verdict(),
+            probe.size,
+            if pc.forced() { "; percpu_arena:percpu requested, thread caches in use" } else { "" }
+        )
     }
 }
 

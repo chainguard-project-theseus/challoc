@@ -23,6 +23,10 @@
 #   challoc-1arena  challoc with MALLOC_CONF=narenas:1 (optional diagnostic: the
 #                default gives every thread its own arena, so 16 workers build 16
 #                arenas whose slabs are never shared)
+#   challoc-nopercpu  challoc with MALLOC_CONF=percpu_arena:off (plan Phase 2.5
+#                task 8: thread caches against the default's per-CPU caches, the
+#                RSS-by-threads against RSS-by-cores comparison; THREADS=64 or 256
+#                makes the point)
 # Every variant's /proc/self/maps is checked before its run.
 #
 #   DURATION=600  INTERVAL=5  GC_EVERY=30  COMPACT_AT=300  THREADS=16  SEED=4141
@@ -57,7 +61,7 @@ T_START=$(date +%s)
 LOAD0=$(loadavg)
 
 take_bench_lock
-for a in $ALLOCS; do case $a in challoc|jemalloc|challoc-bg|jemalloc-bg|challoc-1arena) ;; *) die "unknown allocator '$a'";; esac; done
+for a in $ALLOCS; do case $a in challoc|jemalloc|challoc-bg|jemalloc-bg|challoc-1arena|challoc-nopercpu) ;; *) die "unknown allocator '$a'";; esac; done
 rm -rf "$OUT"; mkdir -p "$OUT" "$(dirname "$RESULT")"
 
 # ---- build, stage, install -------------------------------------------------------
@@ -81,6 +85,7 @@ ruby_env() {
     challoc-bg)  echo "MALLOC_CONF=background_thread:true LD_LIBRARY_PATH=$INST/lib";;
     jemalloc-bg) echo "LD_PRELOAD=$JEMALLOC_LIB MALLOC_CONF=background_thread:true LD_LIBRARY_PATH=$INST/lib";;
     challoc-1arena) echo "MALLOC_CONF=narenas:1 LD_LIBRARY_PATH=$INST/lib";;
+    challoc-nopercpu) echo "MALLOC_CONF=percpu_arena:off LD_LIBRARY_PATH=$INST/lib";;
   esac
 }
 run_ruby() { a=$1; shift; env $(ruby_env "$a") "$INST/bin/ruby" "$@"; }
@@ -152,6 +157,7 @@ describe() {
     challoc-bg)  echo "as challoc, with MALLOC_CONF=background_thread:true";;
     jemalloc-bg) echo "as jemalloc, with MALLOC_CONF=background_thread:true";;
     challoc-1arena) echo "as challoc, with MALLOC_CONF=narenas:1 (one arena for all threads)";;
+    challoc-nopercpu) echo "as challoc, with MALLOC_CONF=percpu_arena:off (thread caches instead of the per-CPU caches)";;
   esac
 }
 has() { case " $ALLOCS " in *" $1 "*) return 0;; *) return 1;; esac; }
@@ -176,6 +182,7 @@ M5=$COMPACT_AT; M10=$DURATION
   if has challoc && has jemalloc; then hdr="$hdr challoc vs jemalloc |"; sep="$sep---:|"; fi
   if has challoc && has challoc-bg; then hdr="$hdr challoc-bg vs challoc |"; sep="$sep---:|"; fi
   if has challoc && has challoc-1arena; then hdr="$hdr challoc-1arena vs challoc |"; sep="$sep---:|"; fi
+  if has challoc && has challoc-nopercpu; then hdr="$hdr challoc-nopercpu vs challoc |"; sep="$sep---:|"; fi
   echo "$hdr"; echo "$sep"
   rowc() { # label what
     r="| $1 |"
@@ -183,6 +190,7 @@ M5=$COMPACT_AT; M10=$DURATION
     if has challoc && has jemalloc; then r="$r $(pct_of "$(col challoc "$2")" "$(col jemalloc "$2")") |"; fi
     if has challoc && has challoc-bg; then r="$r $(pct_of "$(col challoc-bg "$2")" "$(col challoc "$2")") |"; fi
     if has challoc && has challoc-1arena; then r="$r $(pct_of "$(col challoc-1arena "$2")" "$(col challoc "$2")") |"; fi
+    if has challoc && has challoc-nopercpu; then r="$r $(pct_of "$(col challoc-nopercpu "$2")" "$(col challoc "$2")") |"; fi
     echo "$r"
   }
   rowc "peak sampled VmRSS" peak_rss
