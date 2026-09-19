@@ -146,7 +146,7 @@ first_score() { awk 'NR==1 {print $1}' "$OUT/$1.$2.scores"; }
 confirm=""
 for b in $QUICK_BENCHES; do
   d=$(worse_pct "$b" "$(first_score "$b" new)" "$(first_score "$b" old)")
-  awk -v d="$d" -v t="$QUICK_TOLERANCE" 'BEGIN {gsub(/[%+]/, "", d); if (d=="-" || d > t) exit 1}' || confirm="$confirm $b"
+  awk -v d="$d" -v t="$QUICK_TOLERANCE" 'BEGIN {gsub(/[%+]/, "", d); if (d=="-" || d+0 > t+0) exit 1}' || confirm="$confirm $b"
 done
 if [ -n "$confirm" ] && [ "$QUICK_CONFIRM_ROUNDS" -gt 0 ]; then
   printf '  confirming%s: %s more rounds of old and new' "$confirm" "$QUICK_CONFIRM_ROUNDS"
@@ -184,7 +184,7 @@ for b in $QUICK_BENCHES; do
     j=$(score_of "$b" jemalloc); jr=$(kib_to_mib "$(rss_of "$b" jemalloc)")
   fi
   d_old=$(worse_pct "$b" "$n" "$o"); d_je=$(worse_pct "$b" "$n" "$j")
-  awk -v d="$d_old" -v t="$QUICK_TOLERANCE" 'BEGIN {gsub(/[%+]/, "", d); if (d=="-" || d > t) exit 1}' || fail=1
+  awk -v d="$d_old" -v t="$QUICK_TOLERANCE" 'BEGIN {gsub(/[%+]/, "", d); if (d=="-" || d+0 > t+0) exit 1}' || fail=1
   rn=$(rounds_of "$b" new); rnote=; [ "$rn" -gt 1 ] && rnote=" (median of $rn)"
   echo "| $b | $(unit_of "$b") | $o ($or MiB) | $n ($nr MiB)$rnote | $j ($jr MiB)$jnote | $d_old | $d_je |"
 done
