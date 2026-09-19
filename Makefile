@@ -22,6 +22,8 @@
 #                            purge under --memory=512m at ~50% usage (MADV_FREE,
 #                            tests/c/cgroup_lazy.c) and its lazy_band:false control
 #   make test-cgroup         the three of the above
+#   make test-pagemap-guard  Phase 2.5 task 17, in `make test`: the guard slabs
+#                            seen through PAGEMAP_SCAN, both ways, never touched
 #   make test-cgroup-compare Phase 2 task 7: the same runs under CGROUP_ALLOCS
 #                            (jemalloc mimalloc tcmalloc), recorded, no criterion
 #   make test-host           pure-logic unit tests on the host
@@ -182,7 +184,7 @@ DOCKER_RUN = $(DOCKER_BASE) $(DOCKER_FLAGS) $(IMAGE)
 cgroup_docker = $(DOCKER_BASE) --memory=$(1) --memory-swap=$(1) $(if $(CGROUP_WATCHDOG),-e WATCHDOG=$(CGROUP_WATCHDOG)) $(IMAGE) sh scripts/cgroup-tests.sh
 cgroup_run = $(call cgroup_docker,$(1)) $(2)
 
-.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench check-needed clean-volumes
+.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare test-pagemap-guard test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench check-needed clean-volumes
 
 image:
 	docker build --platform $(PLATFORM) -f Dockerfile.dev -t $(IMAGE) .
@@ -205,6 +207,7 @@ test: image
 	$(MAKE) --no-print-directory test-cgroup-limit
 	$(MAKE) --no-print-directory test-cgroup-churn
 	$(MAKE) --no-print-directory test-cgroup-lazy
+	$(MAKE) --no-print-directory test-pagemap-guard
 
 # Phase 2 task 4: the same tests that read the cgroup, in a container with
 # a 512 MiB limit; the effective `memory.max` must read as that number.
@@ -255,6 +258,20 @@ test-cgroup-lazy: image
 	$(call cgroup_run,512m,lazy challoc-eager eager 200)
 
 test-cgroup: test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate
+
+# Phase 2.5 task 17 (a few seconds, in `make test`): tests/c/pagemap_guard.c
+# through scripts/pagemap-guard-test.sh, both ways. Under the default
+# configuration the guard slabs of four classes are located as the gaps no
+# allocation came from and checked through ioctl(PAGEMAP_SCAN) on
+# /proc/self/pagemap without touching them: PAGE_IS_GUARD on the guard page
+# and nowhere else (6.16+), or the fallback the program names (6.13..6.15:
+# not present, not swapped; before 6.13: no guard slab exists; before 6.7:
+# gap check only). Under MALLOC_CONF=guards:false no gap and no guard page.
+# A separate target rather than a src/api/ctests.rs driver because lane D
+# edits nothing under src/; the coordinator may fold it into the cargo test
+# set with one `run_c("pagemap_guard", &["on"])` driver.
+test-pagemap-guard: image
+	$(DOCKER_RUN) sh -c 'cargo build --release && sh scripts/pagemap-guard-test.sh'
 
 # Phase 2 task 7: the same runs under other allocators (CGROUP_ALLOCS,
 # default jemalloc, mimalloc and tcmalloc; needs `make bench-build` for mimalloc),
