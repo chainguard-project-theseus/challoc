@@ -28,8 +28,9 @@ Environment:
   `apk add rust` by hand on `wolfi-base`: Wolfi's Rust needs the
   `glibc-2.44` stream and the Dockerfile performs that swap.
 - `target/` in the container is a named Docker volume per architecture
-  (`challoc-target-arm64`, `challoc-target-amd64`), so Linux artifacts are
-  only visible inside the container, never mixed with host artifacts.
+  (`challoc-target-arm64`, `challoc-target-amd64`; `TARGET_VOLUME=` renames
+  it, a lane worktree does), so Linux artifacts are only visible inside the
+  container, never mixed with host artifacts.
 - Native aarch64 is the fast path on Apple silicon. Add
   `PLATFORM=linux/amd64` to any make target to also check x86_64; it is
   emulated and only for correctness, never for numbers.
@@ -56,3 +57,27 @@ Environment:
   it is meant to help (`challoc-bench quick-perf`, the soak's perf sidecar,
   or the sampler), recorded in the results file, and the change names the
   mechanism it attacks; larson counters do not stand in for Valkey or Ruby.
+- Lanes (since 2026-09-19; `docs/plan.md` Phase 2.5, "Execution in
+  lanes"; `scripts/ralph-prompt.md`, "Lane mode"): the remaining Phase 2.5
+  tasks run in parallel lanes, each in its own git worktree under
+  `../challoc-wt/<lane>` on branch `loop/<lane>` (`scripts/ralph-lane.sh
+  <lane>` creates it and prints the environment), each with its own VMs
+  under its own `CHALLOC_GCE_PREFIX` (`challoc-<lane>`, so `challoc-bench`
+  names only the lane's VMs and matrix cells) and its own Docker target
+  volume `TARGET_VOLUME=challoc-target-<lane>-$ARCH`. A lane records its
+  progress in `PROGRESS.d/<lane>-<task>.md` and never edits PROGRESS.md;
+  the coordinator merges lane branches into `main` one at a time
+  (`scripts/ralph-lane.sh --merge <lane>`: rebase, fast-forward, fold the
+  notes) and is the only one who runs the scorecard, from `main` on the
+  reference pair `challoc-bench-{arm64,amd64}`, once per merge batch;
+  lanes never touch `bench/results/scorecard-*.md`. The partition, so
+  lanes never conflict in `src/`: lane A (on `main`) owns `src/heap.rs`,
+  `src/arena.rs` and the claim/refill code of `src/class.rs`; lane B owns
+  `src/purge.rs`, `src/policy.rs`, `src/meta.rs`, the commit path of
+  `src/class.rs` and the probes in `src/sys/features.rs`; lane C owns
+  `src/lock.rs`, `src/config.rs` and a new test-only model module; lane D
+  changes nothing under `src/`. A change that needs another lane's file
+  waits for the merge.
+- The repository is not `rustfmt`-clean. Never run `cargo fmt` over files
+  you did not edit (it would rewrite every lane's files and make every
+  merge conflict); format only the lines you touched, by hand if need be.
