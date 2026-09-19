@@ -1,0 +1,540 @@
+[driver 08:04:06] cell 64k-arm64: image ubuntu-2404-noble-arm64-v20260918 (ubuntu-2404-lts-arm64, ubuntu-os-cloud), arm64, c4a-standard-4, prep 64k, extra none, timeout 2700s
+Created [https://www.googleapis.com/compute/v1/projects/dlorenc-dev/zones/us-east4-a/instances/challoc-mtx-64k-arm64].
+WARNING: Some requests generated warnings:
+ - Disk size: '50 GB' is larger than image size: '10 GB'. You might need to resize the root repartition manually if the operating system does not support automatic resizing. See https://cloud.google.com/compute/docs/disks/add-persistent-disk#resize_pd for details.
+
+NAME                   ZONE        MACHINE_TYPE    PREEMPTIBLE  INTERNAL_IP  EXTERNAL_IP  STATUS
+challoc-mtx-64k-arm64  us-east4-a  c4a-standard-4               10.150.0.37  8.228.92.22  RUNNING
+[driver 08:04:16] created challoc-mtx-64k-arm64 at 8.228.92.22; waiting for ssh
+[driver 08:04:35] up: aarch64 7.0.0-1011-gcp page 4096
+[driver 08:04:35] prep 64k: installing the kernel and rebooting (boot id d54a4476-d49c-4422-b1a7-62ec67a26eb7)
+debconf: unable to initialize frontend: Dialog
+debconf: (Dialog frontend will not work on a dumb terminal, an emacs shell buffer, or without a controlling terminal.)
+debconf: falling back to frontend: Readline
+debconf: unable to initialize frontend: Readline
+debconf: (This frontend requires a controlling tty.)
+debconf: falling back to frontend: Teletype
+dpkg-preconfigure: unable to re-open stdin: 
+debconf: unable to initialize frontend: Dialog
+debconf: (Dialog frontend will not work on a dumb terminal, an emacs shell buffer, or without a controlling terminal.)
+debconf: falling back to frontend: Readline
+debconf: unable to initialize frontend: Readline
+debconf: (This frontend requires a controlling tty.)
+debconf: falling back to frontend: Teletype
+
+Running kernel seems to be up-to-date.
+
+No services need to be restarted.
+
+No containers need to be restarted.
+
+No user sessions are running outdated binaries.
+
+No VM guests are running outdated hypervisor (qemu) binaries on this host.
+== installed 6.8.0-139-generic-64k
+== rebooting into 6.8.0-139-generic-64k
+[driver 08:06:21] after reboot: 6.8.0-139-generic-64k 65536
+[driver 08:06:21] provisioning
+debconf: unable to initialize frontend: Dialog
+debconf: (Dialog frontend will not work on a dumb terminal, an emacs shell buffer, or without a controlling terminal.)
+debconf: falling back to frontend: Readline
+debconf: unable to initialize frontend: Readline
+debconf: (This frontend requires a controlling tty.)
+debconf: falling back to frontend: Teletype
+dpkg-preconfigure: unable to re-open stdin: 
+debconf: unable to initialize frontend: Dialog
+debconf: (Dialog frontend will not work on a dumb terminal, an emacs shell buffer, or without a controlling terminal.)
+debconf: falling back to frontend: Readline
+debconf: unable to initialize frontend: Readline
+debconf: (This frontend requires a controlling tty.)
+debconf: falling back to frontend: Teletype
+
+No services need to be restarted.
+
+No containers need to be restarted.
+
+No user sessions are running outdated binaries.
+
+No VM guests are running outdated hypervisor (qemu) binaries on this host.
+== challoc-mtx-64k-arm64.us-east4-a.c.dlorenc-dev.internal: aarch64 6.8.0-139-generic-64k, page 65536, Ubuntu 24.04.5 LTS
+== docker: Docker version 29.1.3, build 29.1.3-0ubuntu3~24.04.2
+[driver 08:06:36] syncing the tree
+[driver 08:06:38] running matrix-cell.sh detached (a new login, so the docker group applies)
+launched
+[driver 08:13:20] run finished: rc=0 after 554 s; fetching ~/logs
+
+==================== ~/logs/matrix.log on challoc-mtx-64k-arm64 ====================
+== cell 64k-arm64 on challoc-mtx-64k-arm64.us-east4-a.c.dlorenc-dev.internal: Ubuntu 24.04.5 LTS
+== image ubuntu-2404-noble-arm64-v20260918, machine c4a-standard-4, aarch64 6.8.0-139-generic-64k, page size 65536
+== cgroup fs: cgroup2fs, docker: Docker version 29.1.3, build 29.1.3-0ubuntu3~24.04.2
+== tree: f1b48dc 10 dirty
+== start 2026-09-19T08:06:38Z
+
+== step image: make image  (08:06:38)
+== step image: rc=0 in 84 s
+   |  ---> Removed intermediate container 4d7a5c8537e5
+   |  ---> a314db7af489
+   | Step 3/4 : WORKDIR /src
+   |  ---> Running in 22e5f0a595f0
+   |  ---> Removed intermediate container 22e5f0a595f0
+   |  ---> 0e42514501e4
+   | Step 4/4 : CMD ["sh"]
+   |  ---> Running in 014feac2e3b2
+   |  ---> Removed intermediate container 014feac2e3b2
+   |  ---> 857271fafd45
+   | Successfully built 857271fafd45
+   | Successfully tagged challoc-dev:arm64
+
+== step test: make test  (08:08:02)
+== step test: rc=2 in 29 s
+   |     huge::tests::exhaustion_returns_null_and_recovers
+   |     huge::tests::metadata_exhaustion_is_reported_not_fatal
+   |     huge::tests::table_grows_and_lookups_survive_backward_shift
+   |     meta::tests::maps_show_commits
+   |     meta::tests::reservations_come_from_the_top
+   |     stats::tests::arenas_split_by_owner_and_sum_to_the_totals
+   |     stats::tests::identities_hold_through_the_lifecycle
+   | 
+   | test result: FAILED. 276 passed; 58 failed; 0 ignored; 0 measured; 107 filtered out; finished in 6.59s
+   | 
+   | error: test failed, to rerun pass `--lib`
+   | make: *** [Makefile:162: test] Error 101
+
+== step probe: probe_cmd  (08:08:31)
+== step probe: rc=0 in 1 s
+   | Step 3/4 : WORKDIR /src
+   |  ---> Using cache
+   |  ---> 0e42514501e4
+   | Step 4/4 : CMD ["sh"]
+   |  ---> Using cache
+   |  ---> 857271fafd45
+   | Successfully built 857271fafd45
+   | Successfully tagged challoc-dev:arm64
+   | docker run --rm --platform linux/arm64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-arm64:/src/target -v challoc-cargo-registry:/root/.cargo/registry   challoc-dev:arm64 sh -c 'getconf PAGESIZE; cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c tests/c/features.c -o target/matrix-features -ldl && LD_PRELOAD=/src/target/release/libchalloc.so ./target/matrix-features'
+   | 65536
+   | features: page_size=65536 guard_install=no mseal=no process_madvise=no anon_name=yes mte=no mte3=no pac=yes lse=yes lse2=yes bti=yes sve=yes cacheline=64 l1d=64K l2=2M
+   | ok features
+
+== step fuzz: make fuzz  (08:08:32)
+== step fuzz: rc=0 in 101 s
+   |  ---> 857271fafd45
+   | Successfully built 857271fafd45
+   | Successfully tagged challoc-dev:arm64
+   | docker run --rm --platform linux/arm64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-arm64:/src/target -v challoc-cargo-registry:/root/.cargo/registry   challoc-dev:arm64 sh -c 'cargo build --release \
+   |   && cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c \
+   |        fuzz/fuzz.c -o target/fuzz -ldl \
+   |   && LD_PRELOAD=/src/target/release/libchalloc.so \
+   |      ./target/fuzz 10000000 4 0xC4A110C 2048'
+   |     Finished `release` profile [optimized + debuginfo] target(s) in 0.02s
+   | fuzz: seed 0xc4a110c, 10000000 ops, 4 threads, table 2048
+   | fuzz: 5121254 allocs (818333 aligned, 1024390 calloc) 5121254 frees (508559 cross-thread) 1456516 reallocs 729410 inspections, 474739.4 MiB filled
+   | ok fuzz
+
+== step test-cgroup: make test-cgroup  (08:10:13)
+== step test-cgroup: rc=2 in 174 s
+   | cycle  48 at   145 s: up 480 MiB in 15 ms (rss 496, current 502 MiB), down to 200 MiB in 14 ms (rss 286, current 292 MiB), 72571 objects
+   | cycle  49 at   148 s: up 480 MiB in 15 ms (rss 491, current 498 MiB), down to 200 MiB in 15 ms (rss 290, current 297 MiB), 76804 objects
+   | cycle  50 at   151 s: up 480 MiB in 15 ms (rss 490, current 497 MiB), down to 200 MiB in 15 ms (rss 292, current 299 MiB), 71830 objects
+   | cycle  51 at   154 s: up 480 MiB in 15 ms (rss 494, current 499 MiB), down to 200 MiB in 16 ms (rss 294, current 299 MiB), 87308 objects
+   | cycle  52 at   157 s: up 480 MiB in 15 ms (rss 492, current 497 MiB), down to 200 MiB in 17 ms (rss 296, current 301 MiB), 79817 objects
+   | cycle  53 at   160 s: up 480 MiB in 15 ms (rss 496, current 504 MiB), down to 200 MiB in 15 ms (rss 291, current 299 MiB), 79956 objects
+   | cycle  54 at   163 s: up 480 MiB in 15 ms (rss 497, current 503 MiB), down to 200 MiB in 15 ms (rss 303, current 309 MiB), 73472 objects
+   | Killed
+   | memory.events after: low 0 high 0 max 38 oom 1 oom_kill 1 oom_group_kill 0 
+   | memory.peak 512 MiB, memory.current 19 MiB
+   | OUTCOME oscillate alloc=challoc args='300' status=137 verdict=OOM-killed oom_kill=1
+   | make: *** [Makefile:199: test-cgroup-oscillate] Error 137
+
+== end 2026-09-19T08:13:07Z, wall 389 s
+FAILED_TESTS class::tests::a_corrupt_owner_word_aborts_the_next_take_group,class::tests::a_corrupt_owner_word_aborts_the_next_take_group - should panic,class::tests::a_group_in_use_is_never_handed_over,class::tests::a_group_is_idle_between_its_last_empty_and_its_next_take,class::tests::a_multi_slab_group_moves_whole_with_its_cursor,class::tests::a_plan_over_a_slab_with_live_above_nslots_aborts,class::tests::a_plan_over_a_slab_with_live_above_nslots_aborts - should panic,class::tests::a_plan_that_takes_an_empty_slab_the_counts_do_not_know_aborts,class::tests::a_plan_that_takes_an_empty_slab_the_counts_do_not_know_aborts - should panic,class::tests::a_purge_of_an_empty_slab_the_counts_do_not_know_aborts,class::tests::a_purge_of_an_empty_slab_the_counts_do_not_know_aborts - should panic,class::tests::a_purged_group_is_handed_over_and_stays_zero,class::tests::a_zero_pick_never_receives_a_slot_another_claim_used_in_between,class::tests::an_idle_group_is_handed_down_to_a_lower_arena,class::tests::an_idle_group_is_handed_up_to_a_higher_arena,class::tests::bin_stats_counts_every_curregs_clamp,class::tests::bitmap_geometry_for_every_class,class::tests::check_after_release_aborts,class::tests::check_after_release_aborts - should panic,class::tests::check_of_a_guard_slab_slot_aborts,class::tests::check_of_a_guard_slab_slot_aborts - should panic,class::tests::check_of_handed_out_uncommitted_slab_aborts,class::tests::check_of_handed_out_uncommitted_slab_aborts - should panic,class::tests::check_of_unclaimed_slot_aborts,class::tests::check_of_unclaimed_slot_aborts - should panic,class::tests::check_of_uncommitted_slab_aborts,class::tests::check_of_uncommitted_slab_aborts - should panic,class::tests::check_through_the_wrong_arena_aborts,class::tests::check_through_the_wrong_arena_aborts - should panic,class::tests::check_zero_aborts_on_a_dirty_purged_slab,class::tests::check_zero_aborts_on_a_dirty_purged_slab - should panic,class::tests::check_zero_passes_fresh_and_purged_slabs,class::tests::claim_spans_slabs_and_reports_shortfall_on_exhaustion,class::tests::concurrent_claims_are_disjoint,class::tests::concurrent_handoffs_keep_sets_and_descriptors_consistent,class::tests::decay_purges_the_oldest_empty_slabs_along_the_curve,class::tests::decay_walks_at_once_after_the_period_shrinks,class::tests::double_release_aborts,class::tests::double_release_aborts - should panic,class::tests::duplicate_apart_in_one_slab_group_aborts,class::tests::duplicate_apart_in_one_slab_group_aborts - should panic,class::tests::duplicate_in_one_batch_aborts,class::tests::duplicate_in_one_batch_aborts - should panic,class::tests::filling_a_live_slab_leaves_a_stale_bit_until_the_next_plan,class::tests::filling_a_slab_moves_on_and_release_reopens_it,class::tests::first_claim_is_lowest_addresses_and_zero,class::tests::guard_slab_test_is_the_page_group_modulo,class::tests::guard_slabs_are_skipped,class::tests::one_plan_spans_many_slabs_and_release_reopens_them_all,class::tests::page_groups_when_the_page_is_larger_than_the_slab,class::tests::purge_batches_a_whole_region,class::tests::purge_never_races_a_claim,class::tests::purge_zeroes_memory_and_commit_is_visible,class::tests::randomised_model_check,class::tests::release_all_makes_empty_then_reuse_then_purge,class::tests::release_into_an_uncommitted_slab_of_the_group_aborts,class::tests::release_into_an_uncommitted_slab_of_the_group_aborts - should panic,class::tests::release_of_interior_pointer_aborts,class::tests::release_of_interior_pointer_aborts - should panic,class::tests::release_outside_region_aborts,class::tests::release_outside_region_aborts - should panic,class::tests::release_takes_slab_groups_in_any_order,class::tests::release_through_the_wrong_arena_aborts,class::tests::release_through_the_wrong_arena_aborts - should panic,class::tests::set_scans_never_read_uncommitted_words,class::tests::set_table_of_many_classes_touches_one_page_per_slab_size,class::tests::slabs_are_handed_out_in_line_sized_groups,class::tests::two_arenas_share_one_region,class::tests::works_for_every_class,huge::tests::exhaustion_returns_null_and_recovers,huge::tests::metadata_exhaustion_is_reported_not_fatal,huge::tests::table_grows_and_lookups_survive_backward_shift,meta::tests::maps_show_commits,meta::tests::reservations_come_from_the_top,stats::tests::arenas_split_by_owner_and_sum_to_the_totals,stats::tests::identities_hold_through_the_lifecycle
+PROBE features: page_size=65536 guard_install=no mseal=no process_madvise=no anon_name=yes mte=no mte3=no pac=yes lse=yes lse2=yes bti=yes sve=yes cacheline=64 l1d=64K l2=2M
+MATRIX cell=64k-arm64 image=ubuntu-2404-noble-arm64-v20260918 kernel=6.8.0-139-generic-64k page=65536 machine=c4a-standard-4 tests=276/58 fuzz=PASS cgroup=FAIL privileged=- wall=389 outcome=FAIL
+
+==================== ~/logs/image.log (last 60 lines) ====================
+(46/88) Installing libldap-2.6 (2.6.14-r0)
+(47/88) Installing libnghttp2-14 (1.70.0-r3)
+(48/88) Installing nghttp3 (1.18.0-r1)
+(49/88) Installing ngtcp2 (1.25.0-r2)
+(50/88) Installing libpsl (0.23.3-r1)
+(51/88) Installing libcurl-openssl4 (8.22.0-r2)
+(52/88) Installing jsoncpp (1.9.8-r3)
+(53/88) Installing librhash0 (1.4.6-r6)
+(54/88) Installing libuv (1.52.1-r2)
+(55/88) Installing cmake (4.4.3-r1)
+(56/88) Installing libpcre2-8-0 (10.48-r0)
+(57/88) Installing git (2.55.0-r7)
+(58/88) Installing libjemalloc2 (5.3.1-r3)
+(59/88) Installing jemalloc (5.3.1-r3)
+(60/88) Installing jemalloc-dev (5.3.1-r3)
+(61/88) Installing libffi (3.8.0-r1)
+(62/88) Installing libffi-dev (3.8.0-r1)
+(63/88) Installing libevent (2.1.13-r1)
+(64/88) Installing memtier-benchmark (2.5.1-r1)
+(65/88) Installing openssl-dev (3.6.4-r7)
+(66/88) Installing bash (5.3-r13)
+(67/88) Installing posix-libc-utils-bin-2.44 (2.44-r6)
+(68/88) Installing posix-libc-utils-2.44 (2.44-r6)
+(69/88) Installing libproc-2-0 (4.0.7-r1)
+(70/88) Installing procps (4.0.7-r1)
+(71/88) Installing py3-pip-wheel (26.2.1-r1)
+(72/88) Installing mpdecimal (4.0.1-r4)
+(73/88) Installing libuuid (2.42.3-r4)
+(74/88) Installing python-3.13-base (3.13.15_git20260918-r1)
+(75/88) Installing py3.13-setuptools (84.0.0-r0)
+(76/88) Installing py3.13-pip-base (26.2.1-r1)
+(77/88) Installing py3.13-pip (26.2.1-r1)
+(78/88) Installing python-3.13 (3.13.15_git20260918-r1)
+(79/88) Installing yaml (0.2.5-r10)
+(80/88) Installing ruby-3.4 (3.4.10-r7)
+(81/88) Installing libxml2-16 (2.15.4-r0)
+(82/88) Installing libLLVM-22 (22.1.8-r4)
+(83/88) Installing rust-1.98 (1.98.1-r0)
+(84/88) Installing tcl (9.0.4-r1)
+(85/88) Installing tcmalloc-minimal (2.18.1-r5)
+(86/88) Installing tzdata (2026d-r0)
+(87/88) Installing yaml-dev (0.2.5-r10)
+(88/88) Installing zlib-dev (1.3.2.1_rc20260601-r0)
+Executing busybox-1.38.0-r2.trigger
+OK: 1517 MiB in 104 packages
+rustc 1.98.1 (48a229cea 2026-09-01)
+cargo 1.98.1 (797e8a9bc 2026-08-05)
+Python 3.13.15
+ ---> Removed intermediate container 4d7a5c8537e5
+ ---> a314db7af489
+Step 3/4 : WORKDIR /src
+ ---> Running in 22e5f0a595f0
+ ---> Removed intermediate container 22e5f0a595f0
+ ---> 0e42514501e4
+Step 4/4 : CMD ["sh"]
+ ---> Running in 014feac2e3b2
+ ---> Removed intermediate container 014feac2e3b2
+ ---> 857271fafd45
+Successfully built 857271fafd45
+Successfully tagged challoc-dev:arm64
+
+==================== ~/logs/test.log (last 60 lines) ====================
+    class::tests::a_multi_slab_group_moves_whole_with_its_cursor
+    class::tests::a_plan_over_a_slab_with_live_above_nslots_aborts
+    class::tests::a_plan_that_takes_an_empty_slab_the_counts_do_not_know_aborts
+    class::tests::a_purge_of_an_empty_slab_the_counts_do_not_know_aborts
+    class::tests::a_purged_group_is_handed_over_and_stays_zero
+    class::tests::a_zero_pick_never_receives_a_slot_another_claim_used_in_between
+    class::tests::an_idle_group_is_handed_down_to_a_lower_arena
+    class::tests::an_idle_group_is_handed_up_to_a_higher_arena
+    class::tests::bin_stats_counts_every_curregs_clamp
+    class::tests::bitmap_geometry_for_every_class
+    class::tests::check_after_release_aborts
+    class::tests::check_of_a_guard_slab_slot_aborts
+    class::tests::check_of_handed_out_uncommitted_slab_aborts
+    class::tests::check_of_unclaimed_slot_aborts
+    class::tests::check_of_uncommitted_slab_aborts
+    class::tests::check_through_the_wrong_arena_aborts
+    class::tests::check_zero_aborts_on_a_dirty_purged_slab
+    class::tests::check_zero_passes_fresh_and_purged_slabs
+    class::tests::claim_spans_slabs_and_reports_shortfall_on_exhaustion
+    class::tests::concurrent_claims_are_disjoint
+    class::tests::concurrent_handoffs_keep_sets_and_descriptors_consistent
+    class::tests::decay_purges_the_oldest_empty_slabs_along_the_curve
+    class::tests::decay_walks_at_once_after_the_period_shrinks
+    class::tests::double_release_aborts
+    class::tests::duplicate_apart_in_one_slab_group_aborts
+    class::tests::duplicate_in_one_batch_aborts
+    class::tests::filling_a_live_slab_leaves_a_stale_bit_until_the_next_plan
+    class::tests::filling_a_slab_moves_on_and_release_reopens_it
+    class::tests::first_claim_is_lowest_addresses_and_zero
+    class::tests::guard_slab_test_is_the_page_group_modulo
+    class::tests::guard_slabs_are_skipped
+    class::tests::one_plan_spans_many_slabs_and_release_reopens_them_all
+    class::tests::page_groups_when_the_page_is_larger_than_the_slab
+    class::tests::purge_batches_a_whole_region
+    class::tests::purge_never_races_a_claim
+    class::tests::purge_zeroes_memory_and_commit_is_visible
+    class::tests::randomised_model_check
+    class::tests::release_all_makes_empty_then_reuse_then_purge
+    class::tests::release_into_an_uncommitted_slab_of_the_group_aborts
+    class::tests::release_of_interior_pointer_aborts
+    class::tests::release_outside_region_aborts
+    class::tests::release_takes_slab_groups_in_any_order
+    class::tests::release_through_the_wrong_arena_aborts
+    class::tests::set_scans_never_read_uncommitted_words
+    class::tests::set_table_of_many_classes_touches_one_page_per_slab_size
+    class::tests::slabs_are_handed_out_in_line_sized_groups
+    class::tests::two_arenas_share_one_region
+    class::tests::works_for_every_class
+    huge::tests::exhaustion_returns_null_and_recovers
+    huge::tests::metadata_exhaustion_is_reported_not_fatal
+    huge::tests::table_grows_and_lookups_survive_backward_shift
+    meta::tests::maps_show_commits
+    meta::tests::reservations_come_from_the_top
+    stats::tests::arenas_split_by_owner_and_sum_to_the_totals
+    stats::tests::identities_hold_through_the_lifecycle
+
+test result: FAILED. 276 passed; 58 failed; 0 ignored; 0 measured; 107 filtered out; finished in 6.59s
+
+error: test failed, to rerun pass `--lib`
+make: *** [Makefile:162: test] Error 101
+
+==================== ~/logs/probe.log (last 60 lines) ====================
+docker build --platform linux/arm64 -f Dockerfile.dev -t challoc-dev:arm64 .
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  23.98MB
+Step 1/4 : FROM cgr.dev/chainguard/wolfi-base
+ ---> 1d95114038f7
+Step 2/4 : RUN sed -i       -e 's/^glibc=.*/glibc-2.44/'       -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/'       -e 's/^ld-linux=.*/ld-linux-2.44/'       -e 's/^libcrypt1=.*/libcrypt1-2.44/'       /etc/apk/world  && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44  && apk add --no-cache       rust       build-base       gcc       jemalloc       git       cmake       tcl       openssl-dev       procps       memtier-benchmark       posix-libc-utils-2.44       autoconf       ruby-3.4       jemalloc-dev       yaml-dev       zlib-dev       libffi-dev       tzdata       tcmalloc-minimal       python-3.13       py3.13-pip  && rustc --version && cargo --version && python3 --version  && test -f /usr/lib/libtcmalloc_minimal.so.4
+ ---> Using cache
+ ---> a314db7af489
+Step 3/4 : WORKDIR /src
+ ---> Using cache
+ ---> 0e42514501e4
+Step 4/4 : CMD ["sh"]
+ ---> Using cache
+ ---> 857271fafd45
+Successfully built 857271fafd45
+Successfully tagged challoc-dev:arm64
+docker run --rm --platform linux/arm64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-arm64:/src/target -v challoc-cargo-registry:/root/.cargo/registry   challoc-dev:arm64 sh -c 'getconf PAGESIZE; cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c tests/c/features.c -o target/matrix-features -ldl && LD_PRELOAD=/src/target/release/libchalloc.so ./target/matrix-features'
+65536
+features: page_size=65536 guard_install=no mseal=no process_madvise=no anon_name=yes mte=no mte3=no pac=yes lse=yes lse2=yes bti=yes sve=yes cacheline=64 l1d=64K l2=2M
+ok features
+
+==================== ~/logs/fuzz.log (last 60 lines) ====================
+docker build --platform linux/arm64 -f Dockerfile.dev -t challoc-dev:arm64 .
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  23.98MB
+Step 1/4 : FROM cgr.dev/chainguard/wolfi-base
+ ---> 1d95114038f7
+Step 2/4 : RUN sed -i       -e 's/^glibc=.*/glibc-2.44/'       -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/'       -e 's/^ld-linux=.*/ld-linux-2.44/'       -e 's/^libcrypt1=.*/libcrypt1-2.44/'       /etc/apk/world  && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44  && apk add --no-cache       rust       build-base       gcc       jemalloc       git       cmake       tcl       openssl-dev       procps       memtier-benchmark       posix-libc-utils-2.44       autoconf       ruby-3.4       jemalloc-dev       yaml-dev       zlib-dev       libffi-dev       tzdata       tcmalloc-minimal       python-3.13       py3.13-pip  && rustc --version && cargo --version && python3 --version  && test -f /usr/lib/libtcmalloc_minimal.so.4
+ ---> Using cache
+ ---> a314db7af489
+Step 3/4 : WORKDIR /src
+ ---> Using cache
+ ---> 0e42514501e4
+Step 4/4 : CMD ["sh"]
+ ---> Using cache
+ ---> 857271fafd45
+Successfully built 857271fafd45
+Successfully tagged challoc-dev:arm64
+docker run --rm --platform linux/arm64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-arm64:/src/target -v challoc-cargo-registry:/root/.cargo/registry   challoc-dev:arm64 sh -c 'cargo build --release \
+  && cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c \
+       fuzz/fuzz.c -o target/fuzz -ldl \
+  && LD_PRELOAD=/src/target/release/libchalloc.so \
+     ./target/fuzz 10000000 4 0xC4A110C 2048'
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.02s
+fuzz: seed 0xc4a110c, 10000000 ops, 4 threads, table 2048
+fuzz: 5121254 allocs (818333 aligned, 1024390 calloc) 5121254 frees (508559 cross-thread) 1456516 reallocs 729410 inspections, 474739.4 MiB filled
+ok fuzz
+
+==================== ~/logs/test-cgroup.log (last 60 lines) ====================
+memory.events before: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0
+cycle   1 at     3 s: up 480 MiB in 14 ms (rss 487, current 497 MiB), down to 200 MiB in 14 ms (rss 288, current 296 MiB), 76771 objects
+cycle   2 at     6 s: up 480 MiB in 15 ms (rss 490, current 498 MiB), down to 200 MiB in 15 ms (rss 292, current 300 MiB), 81742 objects
+cycle   3 at     9 s: up 480 MiB in 15 ms (rss 495, current 502 MiB), down to 200 MiB in 15 ms (rss 291, current 298 MiB), 79880 objects
+cycle   4 at    12 s: up 480 MiB in 15 ms (rss 499, current 506 MiB), down to 200 MiB in 15 ms (rss 298, current 304 MiB), 72420 objects
+cycle   5 at    15 s: up 480 MiB in 15 ms (rss 503, current 508 MiB), down to 200 MiB in 15 ms (rss 286, current 294 MiB), 75036 objects
+cycle   6 at    18 s: up 480 MiB in 15 ms (rss 491, current 498 MiB), down to 200 MiB in 16 ms (rss 287, current 295 MiB), 82267 objects
+cycle   7 at    21 s: up 480 MiB in 15 ms (rss 496, current 503 MiB), down to 200 MiB in 16 ms (rss 294, current 301 MiB), 96691 objects
+cycle   8 at    24 s: up 480 MiB in 15 ms (rss 494, current 500 MiB), down to 200 MiB in 16 ms (rss 288, current 296 MiB), 81551 objects
+cycle   9 at    27 s: up 480 MiB in 15 ms (rss 491, current 495 MiB), down to 200 MiB in 15 ms (rss 305, current 309 MiB), 72535 objects
+cycle  10 at    30 s: up 480 MiB in 15 ms (rss 496, current 501 MiB), down to 200 MiB in 15 ms (rss 297, current 302 MiB), 71368 objects
+cycle  11 at    33 s: up 480 MiB in 15 ms (rss 494, current 501 MiB), down to 200 MiB in 16 ms (rss 300, current 308 MiB), 73719 objects
+cycle  12 at    36 s: up 480 MiB in 15 ms (rss 494, current 500 MiB), down to 200 MiB in 15 ms (rss 296, current 302 MiB), 87087 objects
+cycle  13 at    39 s: up 480 MiB in 15 ms (rss 491, current 496 MiB), down to 200 MiB in 15 ms (rss 290, current 295 MiB), 78424 objects
+cycle  14 at    42 s: up 480 MiB in 16 ms (rss 492, current 498 MiB), down to 200 MiB in 15 ms (rss 293, current 299 MiB), 80397 objects
+cycle  15 at    45 s: up 480 MiB in 15 ms (rss 493, current 499 MiB), down to 200 MiB in 15 ms (rss 284, current 296 MiB), 82898 objects
+cycle  16 at    48 s: up 480 MiB in 16 ms (rss 492, current 500 MiB), down to 200 MiB in 15 ms (rss 294, current 302 MiB), 77272 objects
+cycle  17 at    51 s: up 480 MiB in 15 ms (rss 500, current 506 MiB), down to 200 MiB in 15 ms (rss 295, current 301 MiB), 65229 objects
+cycle  18 at    54 s: up 480 MiB in 15 ms (rss 496, current 501 MiB), down to 200 MiB in 15 ms (rss 286, current 294 MiB), 70333 objects
+cycle  19 at    57 s: up 480 MiB in 15 ms (rss 493, current 498 MiB), down to 200 MiB in 15 ms (rss 289, current 297 MiB), 74256 objects
+cycle  20 at    60 s: up 480 MiB in 16 ms (rss 492, current 496 MiB), down to 200 MiB in 15 ms (rss 287, current 292 MiB), 77254 objects
+cycle  21 at    63 s: up 480 MiB in 15 ms (rss 494, current 500 MiB), down to 200 MiB in 15 ms (rss 293, current 299 MiB), 78329 objects
+cycle  22 at    66 s: up 480 MiB in 15 ms (rss 490, current 495 MiB), down to 200 MiB in 15 ms (rss 287, current 295 MiB), 84190 objects
+cycle  23 at    69 s: up 480 MiB in 16 ms (rss 492, current 499 MiB), down to 200 MiB in 15 ms (rss 295, current 303 MiB), 80542 objects
+cycle  24 at    72 s: up 480 MiB in 14 ms (rss 500, current 507 MiB), down to 200 MiB in 16 ms (rss 300, current 307 MiB), 81437 objects
+cycle  25 at    75 s: up 480 MiB in 15 ms (rss 501, current 506 MiB), down to 200 MiB in 15 ms (rss 294, current 299 MiB), 81815 objects
+cycle  26 at    78 s: up 480 MiB in 15 ms (rss 496, current 501 MiB), down to 200 MiB in 16 ms (rss 293, current 298 MiB), 72950 objects
+cycle  27 at    81 s: up 480 MiB in 15 ms (rss 501, current 509 MiB), down to 200 MiB in 15 ms (rss 300, current 308 MiB), 77886 objects
+cycle  28 at    85 s: up 480 MiB in 15 ms (rss 495, current 500 MiB), down to 200 MiB in 14 ms (rss 291, current 299 MiB), 70546 objects
+cycle  29 at    88 s: up 480 MiB in 15 ms (rss 495, current 503 MiB), down to 200 MiB in 16 ms (rss 293, current 301 MiB), 66936 objects
+cycle  30 at    91 s: up 480 MiB in 15 ms (rss 493, current 497 MiB), down to 200 MiB in 16 ms (rss 287, current 296 MiB), 76221 objects
+cycle  31 at    94 s: up 480 MiB in 15 ms (rss 492, current 500 MiB), down to 200 MiB in 16 ms (rss 291, current 298 MiB), 71928 objects
+cycle  32 at    97 s: up 480 MiB in 15 ms (rss 497, current 502 MiB), down to 200 MiB in 14 ms (rss 301, current 306 MiB), 76553 objects
+cycle  33 at   100 s: up 480 MiB in 15 ms (rss 496, current 501 MiB), down to 200 MiB in 15 ms (rss 293, current 299 MiB), 73834 objects
+cycle  34 at   103 s: up 480 MiB in 16 ms (rss 497, current 501 MiB), down to 200 MiB in 16 ms (rss 294, current 299 MiB), 78849 objects
+cycle  35 at   106 s: up 480 MiB in 15 ms (rss 499, current 507 MiB), down to 200 MiB in 15 ms (rss 306, current 313 MiB), 67888 objects
+cycle  36 at   109 s: up 480 MiB in 15 ms (rss 498, current 504 MiB), down to 200 MiB in 15 ms (rss 300, current 307 MiB), 70374 objects
+cycle  37 at   112 s: up 480 MiB in 15 ms (rss 495, current 502 MiB), down to 200 MiB in 15 ms (rss 299, current 306 MiB), 65867 objects
+cycle  38 at   115 s: up 480 MiB in 15 ms (rss 500, current 506 MiB), down to 200 MiB in 16 ms (rss 289, current 294 MiB), 73076 objects
+cycle  39 at   118 s: up 480 MiB in 15 ms (rss 498, current 505 MiB), down to 200 MiB in 16 ms (rss 286, current 295 MiB), 64732 objects
+cycle  40 at   121 s: up 480 MiB in 15 ms (rss 495, current 502 MiB), down to 200 MiB in 16 ms (rss 294, current 302 MiB), 62331 objects
+cycle  41 at   124 s: up 480 MiB in 15 ms (rss 496, current 501 MiB), down to 200 MiB in 15 ms (rss 290, current 295 MiB), 64521 objects
+cycle  42 at   127 s: up 480 MiB in 15 ms (rss 492, current 497 MiB), down to 200 MiB in 15 ms (rss 301, current 306 MiB), 74198 objects
+cycle  43 at   130 s: up 480 MiB in 15 ms (rss 495, current 500 MiB), down to 200 MiB in 16 ms (rss 293, current 299 MiB), 75335 objects
+cycle  44 at   133 s: up 480 MiB in 15 ms (rss 493, current 500 MiB), down to 200 MiB in 16 ms (rss 295, current 304 MiB), 73344 objects
+cycle  45 at   136 s: up 480 MiB in 16 ms (rss 490, current 497 MiB), down to 200 MiB in 15 ms (rss 298, current 304 MiB), 82897 objects
+cycle  46 at   139 s: up 480 MiB in 15 ms (rss 495, current 503 MiB), down to 200 MiB in 15 ms (rss 288, current 295 MiB), 81983 objects
+cycle  47 at   142 s: up 480 MiB in 16 ms (rss 491, current 499 MiB), down to 200 MiB in 15 ms (rss 298, current 306 MiB), 72848 objects
+cycle  48 at   145 s: up 480 MiB in 15 ms (rss 496, current 502 MiB), down to 200 MiB in 14 ms (rss 286, current 292 MiB), 72571 objects
+cycle  49 at   148 s: up 480 MiB in 15 ms (rss 491, current 498 MiB), down to 200 MiB in 15 ms (rss 290, current 297 MiB), 76804 objects
+cycle  50 at   151 s: up 480 MiB in 15 ms (rss 490, current 497 MiB), down to 200 MiB in 15 ms (rss 292, current 299 MiB), 71830 objects
+cycle  51 at   154 s: up 480 MiB in 15 ms (rss 494, current 499 MiB), down to 200 MiB in 16 ms (rss 294, current 299 MiB), 87308 objects
+cycle  52 at   157 s: up 480 MiB in 15 ms (rss 492, current 497 MiB), down to 200 MiB in 17 ms (rss 296, current 301 MiB), 79817 objects
+cycle  53 at   160 s: up 480 MiB in 15 ms (rss 496, current 504 MiB), down to 200 MiB in 15 ms (rss 291, current 299 MiB), 79956 objects
+cycle  54 at   163 s: up 480 MiB in 15 ms (rss 497, current 503 MiB), down to 200 MiB in 15 ms (rss 303, current 309 MiB), 73472 objects
+Killed
+memory.events after: low 0 high 0 max 38 oom 1 oom_kill 1 oom_group_kill 0 
+memory.peak 512 MiB, memory.current 19 MiB
+OUTCOME oscillate alloc=challoc args='300' status=137 verdict=OOM-killed oom_kill=1
+make: *** [Makefile:199: test-cgroup-oscillate] Error 137
+
+==================== failures in make test ====================
+failures:
+
+---- class::tests::a_corrupt_owner_word_aborts_the_next_take_group stdout ----
+note: panic did not contain expected string
+      panic message: "fake page must be a real page multiple"
+ expected substring: "owner word says arena 7, slab"
+---- class::tests::a_plan_over_a_slab_with_live_above_nslots_aborts stdout ----
+note: panic did not contain expected string
+      panic message: "fake page must be a real page multiple"
+ expected substring: "slab live count above its slot count"
+---- class::tests::a_plan_that_takes_an_empty_slab_the_counts_do_not_know_aborts stdout ----
+note: panic did not contain expected string
+      panic message: "fake page must be a real page multiple"
+ expected substring: "empty slab count underflow"
+---- class::tests::a_purge_of_an_empty_slab_the_counts_do_not_know_aborts stdout ----
+note: panic did not contain expected string
+      panic message: "fake page must be a real page multiple"
+ expected substring: "empty slab count underflow"
+---- class::tests::check_after_release_aborts stdout ----
+note: panic did not contain expected string
+      panic message: "fake page must be a real page multiple"
+ expected substring: "invalid or double free of"
+---- class::tests::check_of_a_guard_slab_slot_aborts stdout ----
+note: panic did not contain expected string
+      panic message: "fake page must be a real page multiple"
+ expected substring: "guard slab"
+---- class::tests::check_of_handed_out_uncommitted_slab_aborts stdout ----
+note: panic did not contain expected string
+      panic message: "fake page must be a real page multiple"
+ expected substring: "invalid or double free of"
+---- class::tests::check_of_unclaimed_slot_aborts stdout ----
+note: panic did not contain expected string
+      panic message: "fake page must be a real page multiple"
+ expected substring: "invalid or double free of"
+---- class::tests::check_of_uncommitted_slab_aborts stdout ----
+note: panic did not contain expected string
+      panic message: "fake page must be a real page multiple"
+ expected substring: "was never allocated"
+---- class::tests::check_through_the_wrong_arena_aborts stdout ----
+note: panic did not contain expected string
+      panic message: "fake page must be a real page multiple"
+ expected substring: "belongs to arena 1 but was released through arena 0"
+---- class::tests::check_zero_aborts_on_a_dirty_purged_slab stdout ----
+note: panic did not contain expected string
+      panic message: "fake page must be a real page multiple"
+ expected substring: "was handed out as zero from a Purged slab but its word at offset"
+---- class::tests::double_release_aborts stdout ----
+note: panic did not contain expected string
+      panic message: "fake page must be a real page multiple"
+ expected substring: "double free of"
+---- class::tests::duplicate_apart_in_one_slab_group_aborts stdout ----
+note: panic did not contain expected string
+      panic message: "fake page must be a real page multiple"
+ expected substring: "double free of"
+---- class::tests::duplicate_in_one_batch_aborts stdout ----
+note: panic did not contain expected string
+      panic message: "fake page must be a real page multiple"
+ expected substring: "double free of"
+---- class::tests::release_into_an_uncommitted_slab_of_the_group_aborts stdout ----
+note: panic did not contain expected string
+      panic message: "fake page must be a real page multiple"
+ expected substring: "the slab has never been allocated from"
+---- class::tests::release_of_interior_pointer_aborts stdout ----
+note: panic did not contain expected string
+      panic message: "fake page must be a real page multiple"
+ expected substring: "not a slot start"
+---- class::tests::release_outside_region_aborts stdout ----
+note: panic did not contain expected string
+      panic message: "fake page must be a real page multiple"
+ expected substring: "outside the class region"
+---- class::tests::release_through_the_wrong_arena_aborts stdout ----
+note: panic did not contain expected string
+      panic message: "fake page must be a real page multiple"
+ expected substring: "belongs to arena 1 but was released through arena 0"
+
+failures:
+    class::tests::a_corrupt_owner_word_aborts_the_next_take_group
+    class::tests::a_group_in_use_is_never_handed_over
+    class::tests::a_group_is_idle_between_its_last_empty_and_its_next_take
+    class::tests::a_multi_slab_group_moves_whole_with_its_cursor
+    class::tests::a_plan_over_a_slab_with_live_above_nslots_aborts
+    class::tests::a_plan_that_takes_an_empty_slab_the_counts_do_not_know_aborts
+    class::tests::a_purge_of_an_empty_slab_the_counts_do_not_know_aborts
+    class::tests::a_purged_group_is_handed_over_and_stays_zero
+    class::tests::a_zero_pick_never_receives_a_slot_another_claim_used_in_between
+    class::tests::an_idle_group_is_handed_down_to_a_lower_arena
+    class::tests::an_idle_group_is_handed_up_to_a_higher_arena
+    class::tests::bin_stats_counts_every_curregs_clamp
+    class::tests::bitmap_geometry_for_every_class
+    class::tests::check_after_release_aborts
+    class::tests::check_of_a_guard_slab_slot_aborts
+    class::tests::check_of_handed_out_uncommitted_slab_aborts
+    class::tests::check_of_unclaimed_slot_aborts
+    class::tests::check_of_uncommitted_slab_aborts
+    class::tests::check_through_the_wrong_arena_aborts
+    class::tests::check_zero_aborts_on_a_dirty_purged_slab
+    class::tests::check_zero_passes_fresh_and_purged_slabs
+    class::tests::claim_spans_slabs_and_reports_shortfall_on_exhaustion
+    class::tests::concurrent_claims_are_disjoint
+    class::tests::concurrent_handoffs_keep_sets_and_descriptors_consistent
+    class::tests::decay_purges_the_oldest_empty_slabs_along_the_curve
+    class::tests::decay_walks_at_once_after_the_period_shrinks
+    class::tests::double_release_aborts
+    class::tests::duplicate_apart_in_one_slab_group_aborts
+    class::tests::duplicate_in_one_batch_aborts
+    class::tests::filling_a_live_slab_leaves_a_stale_bit_until_the_next_plan
+    class::tests::filling_a_slab_moves_on_and_release_reopens_it
+    class::tests::first_claim_is_lowest_addresses_and_zero
+    class::tests::guard_slab_test_is_the_page_group_modulo
+    class::tests::guard_slabs_are_skipped
+    class::tests::one_plan_spans_many_slabs_and_release_reopens_them_all
+    class::tests::page_groups_when_the_page_is_larger_than_the_slab
+    class::tests::purge_batches_a_whole_region
+    class::tests::purge_never_races_a_claim
+    class::tests::purge_zeroes_memory_and_commit_is_visible
+    class::tests::randomised_model_check
+    class::tests::release_all_makes_empty_then_reuse_then_purge
+    class::tests::release_into_an_uncommitted_slab_of_the_group_aborts
+    class::tests::release_of_interior_pointer_aborts
+    class::tests::release_outside_region_aborts
+    class::tests::release_takes_slab_groups_in_any_order
+    class::tests::release_through_the_wrong_arena_aborts
+    class::tests::set_scans_never_read_uncommitted_words
+    class::tests::set_table_of_many_classes_touches_one_page_per_slab_size
+    class::tests::slabs_are_handed_out_in_line_sized_groups
+    class::tests::two_arenas_share_one_region
+    class::tests::works_for_every_class
+    huge::tests::exhaustion_returns_null_and_recovers
+    huge::tests::metadata_exhaustion_is_reported_not_fatal
+    huge::tests::table_grows_and_lookups_survive_backward_shift
+    meta::tests::maps_show_commits
+    meta::tests::reservations_come_from_the_top
+    stats::tests::arenas_split_by_owner_and_sum_to_the_totals
+    stats::tests::identities_hold_through_the_lifecycle
+
+test result: FAILED. 276 passed; 58 failed; 0 ignored; 0 measured; 107 filtered out; finished in 6.59s
+-- class::tests::a_corrupt_owner_word_aborts_the_next_take_group:
+thread 'class::tests::a_corrupt_owner_word_aborts_the_next_take_group' (491) panicked at src/class.rs:2584:13:
+fake page must be a real page multiple
+test class::tests::a_corrupt_owner_word_aborts_the_next_take_group - should panic ... FAILED
+
+-- -:
+[driver 08:13:20] deleting challoc-mtx-64k-arm64
+[driver 08:13:20] deleting challoc-mtx-64k-arm64
+[driver 08:14:13] deleted challoc-mtx-64k-arm64
+[driver 08:14:13] deleted challoc-mtx-64k-arm64
