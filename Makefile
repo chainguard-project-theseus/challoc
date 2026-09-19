@@ -99,7 +99,6 @@
 #                            bench/results/<date>-<arch>-ruby.md (RESULT=path,
 #                            ALLOCS, ROWS, HOST_KIND). Needs both `make ruby
 #                            STAGE=build` builds.
-#   make python-bench        Python 3.13 rows (bench/python-bench.sh): the stdlib
 #   make ruby-soak           Ruby soak (bench/ruby-soak.sh, plan Phase 3 prerequisite
 #                            (c)): bench/ruby/soak.rb, a Sidekiq-shaped process (16
 #                            mostly idle threads, short-lived bursts, a growing
@@ -116,6 +115,7 @@
 #                            scripts/check-needed.sh, then checks the built Valkey
 #                            (libchalloc.so.0) and Ruby (libjemalloc.so.2) binaries
 #                            when they exist
+#   make python-bench        Python 3.13 rows (bench/python-bench.sh): the stdlib
 #                            workloads under bench/probes/python/ (JSON, dict and
 #                            list churn, regex, object graph), each with
 #                            PYTHONMALLOC unset and =malloc, under challoc,
@@ -343,12 +343,11 @@ python-bench: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(PYTHON_BENC
 python-bench: image
 	$(DOCKER_RUN) sh bench/python-bench.sh
 
-clean-volumes:
-	docker volume rm -f $(TARGET_VOLUME) $(CARGO_VOLUME)
-
 # Phase 3 prerequisite (e): DT_NEEDED must name the allocator library
 # (design 13.6); Wolfi's --as-needed drops it from a consumer that
 # references no symbol of it.
 check-needed: image
 	$(DOCKER_RUN) sh -c 'cargo build --release && sh tests/as-needed.sh'
 
+clean-volumes:
+	docker volume rm -f $(TARGET_VOLUME) $(CARGO_VOLUME)
