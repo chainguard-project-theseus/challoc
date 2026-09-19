@@ -298,6 +298,15 @@ Files:
   shape, so it is not used (the script's header says why). The `json`
   workload is also the scorecard's `python1` (default) and `python1-malloc`
   rows (`bench/lib.sh`).
+- `four-way.sh`: assembles the comparison matrix of Phase 2.5 task 1
+  (`bench/results/<date>-<arch>-gce-four-way.md`) from one VM's same-run
+  outputs: an `ab.sh` result (`AB=`, the Phase 0 set and the Valkey model rows
+  under `challoc jemalloc glibc mimalloc tcmalloc`), a `ruby-bench.sh` result
+  (`RUBY=`), a `python-bench.sh` result (`PYTHON=`) and the container-test
+  logs (`CGROUP=`); one table with every allocator's score and peak RSS and
+  challoc against each of the other four (time / RSS, positive = challoc
+  worse), then the list of rows more than 10% behind, under which the
+  attribution is written by hand. Reads only; pure sh + awk, runs on the host.
 - `probes/`: `churn.c` (the post-delete steady-state model `quick` runs;
   `churn-run.sh` runs it by hand with the cache knobs, `CHURN_SECS`),
   `valkey_model.c` (the Valkey model behind the `valkey1` rows, above),
