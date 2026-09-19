@@ -1,0 +1,17 @@
+== churn at 9157450 (pre task 10) 2026-09-19T20:36:26Z 6.1.0-53-cloud-arm64 thp=[always] madvise never
+features: page_size=4096 guard_install=no mseal=no process_madvise=no anon_name=no mte=no mte3=no pac=yes lse=yes lse2=yes bti=yes sve=yes cacheline=64 l1d=64K l2=2M
+ok features
+old-9157450 #1 ok | RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=12 rss_min=12 below_ms=99 current_peak=403 current_2s=12
+old-9157450 #2 ok | RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=13 rss_min=13 below_ms=50 current_peak=403 current_2s=14
+old-9157450 #3 ok | RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=12 rss_min=12 below_ms=100 current_peak=403 current_2s=12
+old-9157450 #4 ok | RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=13 rss_min=13 below_ms=49 current_peak=403 current_2s=14
+old-9157450 #5 ok | RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=13 rss_min=13 below_ms=48 current_peak=403 current_2s=14
+old-9157450 #6 ok | RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=13 rss_min=13 below_ms=50 current_peak=403 current_2s=14
+old-9157450 #7 ok | RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=13 rss_min=13 below_ms=49 current_peak=403 current_2s=14
+old-9157450 #8 ok | RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=13 rss_min=13 below_ms=49 current_peak=403 current_2s=14
+old-9157450 #9 ok | RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=13 rss_min=13 below_ms=50 current_peak=403 current_2s=14
+old-9157450 #10 ok | RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=12 rss_min=12 below_ms=100 current_peak=403 current_2s=12
+old-9157450 #11 ok | RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=13 rss_min=13 below_ms=50 current_peak=403 current_2s=14
+old-9157450 #12 ok | RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=13 rss_min=13 below_ms=49 current_peak=403 current_2s=14
+SUMMARY old-9157450 default: 12 ok, 0 failed of 12 (thp=[always] madvise never)
+== done 2026-09-19T20:37:04Z
