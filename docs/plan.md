@@ -673,6 +673,49 @@ Tasks, in order:
    C4A and C4). Acceptance: the feature report per CPU is recorded; any
    CPU where a default-on feature costs more than 3% on a scorecard row
    has the feature gated on that CPU or the cost recorded as accepted.
+4b. The Valkey model row on non-reference CPUs (found by task 4,
+   `bench/results/2026-09-19-cpu-matrix.md`): `valkey1` against jemalloc
+   reads +42% on Sapphire Rapids (8481C), +43% on Genoa (9B14), +21% on
+   Milan (7B13) and +34% on Cascade Lake, against +4..5% on the reference
+   Emerald Rapids (8581C) at both 8 and 16 vCPUs; `valkey1-free` and
+   `xmalloc` are 8..22 points off on Genoa, Milan and Cascade Lake; the
+   T2A Altra larson rows are 9..19 points off Axion. The SIGPROF sampler
+   on C3 and C3D lab VMs put two thirds of the valkey1 gap in the model
+   program's own time per operation under challoc (61 vs 48 samples per
+   Mop on the 8481C; the working set is 147 MiB active under challoc
+   against 298 under jemalloc for the same 141 MiB allocated) and one
+   third in the allocator, with challoc's sized and plain paths at the
+   same speed while jemalloc's `sdallocx` is 12..23% faster than its
+   `free` on these CPUs. None of these cells has a PMU (GCE refuses
+   `--performance-monitoring-unit=standard` on T2A, C3 and C3D), so the
+   mechanism is not attributed. Attribute it: (a) a PMU host for one
+   session, `c3-standard-192-metal` (bare metal exposes the PMU) for at
+   most two hours, or, if quota refuses it, a `c3-standard-8` with
+   `--performance-monitoring-unit` retried in another zone, or the
+   sampler's per-instruction annotation on the lab VM; (b) `quick-perf`
+   for `valkey1`, `valkey1-free` and `larson1` under challoc and jemalloc
+   (cycles, instructions, L1D, L2, dTLB misses per operation, and the
+   L2/L3 miss split if the PMU has it) and `perf record` with the
+   annotation of the model program's own hot loop, since two thirds of the
+   gap is there: the hypothesis to test first is placement, challoc's
+   denser layout (per-class regions, address-ordered slabs, 147 vs 298
+   MiB) putting the program's hot objects into fewer cache sets or onto
+   shared lines on CPUs whose L2 is 2 MiB but whose L3 slice, prefetcher
+   or set-index hashing differs from the 8581C's (the same shape as the
+   descriptor-aliasing finding of 2026-09-16: compare hot object
+   addresses modulo the L2 way size and the L3 set index under both
+   allocators); the second hypothesis is the sized path (jemalloc's
+   `sdallocx` advantage on these CPUs and challoc's flat sized/plain cost).
+   Record it in `bench/results/2026-09-19-<cpu>-valkey1-attribution.md`
+   with the counters, the annotation and the mechanism named; propose the
+   fix (a placement change such as a per-class or per-slab random offset
+   in slot order, or a sized-path change) as the next task with its
+   expected effect, but do not implement it in this task unless it is one
+   line and its own `quick` on the affected CPU and on both reference VMs
+   is go. Acceptance: the mechanism is named with per-operation counters
+   on at least one affected CPU; the T2A larson rows have a first reading
+   (the N1 core's L1/L2 and the outlined LSE helpers are the candidates);
+   the PMU host, if used, is deleted at the end.
 5. Tagged pointers, part 1, the probes and the design: whether Axion
    exposes MTE (`HWCAP2_MTE`), whether the C4/C3/C3D CPUs expose LAM or
    UAI and the kernel `arch_prctl(ARCH_ENABLE_TAGGED_ADDR)` accepts it;
