@@ -122,11 +122,7 @@ impl Curve {
         // `rust_eh_personality` into the `no_std` library. An age too large
         // to scale is under a period whose step is at least `u64::MAX /
         // STEPS`, so dividing by the step loses nothing that matters.
-        let s = if age > u64::MAX / STEPS as u64 {
-            age / self.step_ns()
-        } else {
-            age * STEPS as u64 / self.decay_ns
-        };
+        let s = if age > u64::MAX / STEPS as u64 { age / self.step_ns() } else { age * STEPS as u64 / self.decay_ns };
         (s as usize).min(STEPS - 1)
     }
 
@@ -201,11 +197,7 @@ pub fn backend_name() -> (&'static str, &'static str) {
         PIDFD_SELF => "process_madvise(PIDFD_SELF)",
         _ => "process_madvise(pidfd)",
     };
-    let advice = if purged_is_zero() {
-        "MADV_DONTNEED"
-    } else {
-        "MADV_FREE"
-    };
+    let advice = if purged_is_zero() { "MADV_DONTNEED" } else { "MADV_FREE" };
     (backend, advice)
 }
 
@@ -238,10 +230,7 @@ impl Default for Batch {
 
 impl Batch {
     pub const fn new() -> Batch {
-        Batch {
-            ranges: [(0, 0); MAX_BATCH],
-            n: 0,
-        }
+        Batch { ranges: [(0, 0); MAX_BATCH], n: 0 }
     }
 
     #[inline]
@@ -306,10 +295,7 @@ pub struct Decayer {
 
 impl Decayer {
     pub const fn new() -> Decayer {
-        Decayer {
-            oldest_empty: AtomicU64::new(0),
-            next_walk: AtomicU64::new(0),
-        }
+        Decayer { oldest_empty: AtomicU64::new(0), next_walk: AtomicU64::new(0) }
     }
 
     /// `dirty_at` of the oldest `Empty` member as the driver sees it (0
@@ -367,11 +353,7 @@ impl Decayer {
         walk(now, &curve);
         let next = now.saturating_add(step);
         self.next_walk.store(next, Ordering::Relaxed);
-        if self.oldest_empty() == 0 {
-            None
-        } else {
-            Some(next)
-        }
+        if self.oldest_empty() == 0 { None } else { Some(next) }
     }
 }
 
@@ -479,29 +461,18 @@ mod os {
     use core::sync::atomic::Ordering;
 
     pub fn discard(ranges: &[(usize, usize)]) {
-        let advice = if LAZY.load(Ordering::Relaxed) {
-            MADV_FREE
-        } else {
-            MADV_DONTNEED
-        };
+        let advice = if LAZY.load(Ordering::Relaxed) { MADV_FREE } else { MADV_DONTNEED };
         let backend = BACKEND.load(Ordering::Relaxed);
         if backend != LOOP {
-            let mut iov = [IoVec {
-                base: core::ptr::null(),
-                len: 0,
-            }; MAX_BATCH];
+            let mut iov = [IoVec { base: core::ptr::null(), len: 0 }; MAX_BATCH];
             let mut total = 0usize;
             for (i, &(addr, len)) in ranges.iter().enumerate() {
-                iov[i] = IoVec {
-                    base: addr as *const u8,
-                    len,
-                };
+                iov[i] = IoVec { base: addr as *const u8, len };
                 total += len;
             }
             // SAFETY: the ranges are page-aligned parts of our own mappings
             // that the caller holds free; `iov` outlives the call.
-            let done =
-                unsafe { sys::process_madvise(backend, iov.as_ptr(), ranges.len(), advice, 0) };
+            let done = unsafe { sys::process_madvise(backend, iov.as_ptr(), ranges.len(), advice, 0) };
             if done == Ok(total) {
                 return;
             }
@@ -556,12 +527,7 @@ pub mod background {
         thread: Option<::libc::pthread_t>,
     }
 
-    static STATE: Lock<State> = Lock::new(State {
-        present: false,
-        creating: false,
-        stack: 0,
-        thread: None,
-    });
+    static STATE: Lock<State> = Lock::new(State { present: false, creating: false, stack: 0, thread: None });
     /// Mirror of `STATE.present` for the lock-free check on every tick.
     static PRESENT: AtomicBool = AtomicBool::new(false);
     /// `background_thread:true` (or, later, `mallctl("background_thread")`).
@@ -635,9 +601,7 @@ pub mod background {
     /// exists; on any failure the cgroup record says why and the thread
     /// sleeps on the futex as before.
     fn arm(shared: &Shared) {
-        let Some(psi) = shared.cgroup.arm_pressure() else {
-            return;
-        };
+        let Some(psi) = shared.cgroup.arm_pressure() else { return };
         if WAKE_FD.load(Ordering::Relaxed) < 0 {
             match sys::eventfd(0, sys::EFD_CLOEXEC | sys::EFD_NONBLOCK) {
                 Ok(fd) => WAKE_FD.store(fd, Ordering::Relaxed),
@@ -669,16 +633,8 @@ pub mod background {
     fn wait_poll(shared: &Shared, psi: i32, timeout: Option<&Timespec>) {
         let wake = WAKE_FD.load(Ordering::Relaxed);
         let mut fds = [
-            PollFd {
-                fd: psi,
-                events: sys::POLLPRI,
-                revents: 0,
-            },
-            PollFd {
-                fd: wake,
-                events: sys::POLLIN,
-                revents: 0,
-            },
+            PollFd { fd: psi, events: sys::POLLPRI, revents: 0 },
+            PollFd { fd: wake, events: sys::POLLIN, revents: 0 },
         ];
         if let Ok(n) = sys::ppoll(&mut fds, timeout) {
             if n == 0 {
@@ -739,11 +695,7 @@ pub mod background {
     /// Create the thread on `stack` (reserving the stack first if there is
     /// none yet), after joining `previous`. Returns the stack (kept even
     /// when creation fails, for the next attempt) and the new thread.
-    fn create(
-        shared: &Shared,
-        stack: usize,
-        previous: Option<::libc::pthread_t>,
-    ) -> (usize, Option<::libc::pthread_t>) {
+    fn create(shared: &Shared, stack: usize, previous: Option<::libc::pthread_t>) -> (usize, Option<::libc::pthread_t>) {
         let page = shared.regions.page_size();
         // The TLS slot is parked on `TLS_CREATING` for the pthread calls:
         // `pthread_create` allocates the new thread's DTV with `calloc`
@@ -763,10 +715,7 @@ pub mod background {
             // SAFETY: a joinable thread this module created and never joined.
             let rc = unsafe { ::libc::pthread_join(t, core::ptr::null_mut()) };
             if rc != 0 {
-                sys::abort_fmt(format_args!(
-                    "pthread_join of the background thread failed: {}",
-                    sys::Errno(rc)
-                ));
+                sys::abort_fmt(format_args!("pthread_join of the background thread failed: {}", sys::Errno(rc)));
             }
         }
         // Reserved once, then committed above the lowest page, which stays
@@ -776,10 +725,7 @@ pub mod background {
         let stack = if stack != 0 {
             Some(stack)
         } else {
-            shared
-                .meta
-                .reserve(STACK_SIZE, page)
-                .filter(|&s| shared.meta.commit(s + page, STACK_SIZE - page).is_ok())
+            shared.meta.reserve(STACK_SIZE, page).filter(|&s| shared.meta.commit(s + page, STACK_SIZE - page).is_ok())
         };
         let thread = match stack {
             Some(stack) => spawn(shared, stack + page, STACK_SIZE - page),
@@ -806,12 +752,7 @@ pub mod background {
             if ::libc::pthread_attr_setstack(&mut attr, base as *mut c_void, len) == 0 {
                 let mask = sys::block_all_signals();
                 let mut tid: ::libc::pthread_t = 0;
-                let rc = ::libc::pthread_create(
-                    &mut tid,
-                    &attr,
-                    main,
-                    shared as *const Shared as *mut c_void,
-                );
+                let rc = ::libc::pthread_create(&mut tid, &attr, main, shared as *const Shared as *mut c_void);
                 sys::set_signal_mask(mask);
                 if rc == 0 {
                     thread = Some(tid);
@@ -879,10 +820,7 @@ pub mod background {
             super::sample(shared, now);
             let timeout = super::decay(shared, now).map(|deadline| {
                 let ns = deadline.saturating_sub(now).max(MIN_SLEEP_NS);
-                Timespec {
-                    sec: (ns / 1_000_000_000) as i64,
-                    nsec: (ns % 1_000_000_000) as i64,
-                }
+                Timespec { sec: (ns / 1_000_000_000) as i64, nsec: (ns % 1_000_000_000) as i64 }
             });
             let psi = PSI_FD.load(Ordering::Relaxed);
             if psi >= 0 {
@@ -976,11 +914,7 @@ pub fn fork_child() -> ProcessMadvise {
         BACKEND.store(LOOP, Ordering::Relaxed);
         return ProcessMadvise::Unavailable;
     }
-    if b == LOOP {
-        ProcessMadvise::Unavailable
-    } else {
-        ProcessMadvise::PidfdSelf
-    }
+    if b == LOOP { ProcessMadvise::Unavailable } else { ProcessMadvise::PidfdSelf }
 }
 
 #[cfg(test)]
@@ -1005,10 +939,7 @@ mod tests {
         for s in 0..STEPS - 1 {
             let mirror = STEPS - 2 - s;
             let sum = WEIGHTS[s] as u64 + WEIGHTS[mirror] as u64;
-            assert!(
-                sum.abs_diff(WEIGHT_ONE) <= 1,
-                "steps {s} and {mirror}: {sum}"
-            );
+            assert!(sum.abs_diff(WEIGHT_ONE) <= 1, "steps {s} and {mirror}: {sum}");
         }
         // A quarter of the way in, 1 - smootherstep(0.25) = 0.896...
         let q = WEIGHTS[STEPS / 4 - 1] as f64 / WEIGHT_ONE as f64;
@@ -1056,10 +987,7 @@ mod tests {
         assert_eq!(decay_ns_from_ms(-1000), NEVER);
         assert_eq!(decay_ns_from_ms(0), 0);
         assert_eq!(decay_ns_from_ms(10_000), 10_000_000_000);
-        assert_eq!(
-            decay_ns_from_ms(crate::config::MAX_INTERVAL_MS),
-            1_000_000_000_000_000_000
-        );
+        assert_eq!(decay_ns_from_ms(crate::config::MAX_INTERVAL_MS), 1_000_000_000_000_000_000);
         assert_ne!(decay_ns_from_ms(i64::MAX), NEVER);
     }
 
@@ -1068,17 +996,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn scratch(pages: usize, page: usize) -> usize {
         use crate::sys::{self, MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
-        unsafe {
-            sys::mmap(
-                0,
-                pages * page,
-                PROT_READ | PROT_WRITE,
-                MAP_PRIVATE | MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-        }
-        .unwrap()
+        unsafe { sys::mmap(0, pages * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) }.unwrap()
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -1153,8 +1071,8 @@ mod tests {
 #[cfg(all(test, target_os = "linux"))]
 mod linux_tests {
     use super::*;
-    use crate::sys::features::Features;
     use crate::sys::{self, MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
+    use crate::sys::features::Features;
 
     /// Both tests below switch the process-wide backend; take turns.
     static BACKEND_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1179,22 +1097,9 @@ mod linux_tests {
         let backends = [f.process_madvise, ProcessMadvise::Unavailable];
         for (i, backend) in backends.iter().enumerate() {
             configure(*backend, false);
-            assert_eq!(
-                uses_process_madvise(),
-                *backend != ProcessMadvise::Unavailable
-            );
+            assert_eq!(uses_process_madvise(), *backend != ProcessMadvise::Unavailable);
             let len = 8 * page;
-            let addr = unsafe {
-                sys::mmap(
-                    0,
-                    len,
-                    PROT_READ | PROT_WRITE,
-                    MAP_PRIVATE | MAP_ANONYMOUS,
-                    -1,
-                    0,
-                )
-            }
-            .unwrap();
+            let addr = unsafe { sys::mmap(0, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) }.unwrap();
             for p in 0..8 {
                 unsafe { *((addr + p * page) as *mut u8) = 0xA5 };
             }
@@ -1207,11 +1112,7 @@ mod linux_tests {
             assert_eq!(resident(addr, len, page), 1, "backend {i}: {backend:?}");
             assert_eq!(unsafe { *((addr + 3 * page) as *const u8) }, 0xA5);
             for p in [0usize, 1, 2, 4, 5, 6, 7] {
-                assert_eq!(
-                    unsafe { *((addr + p * page) as *const u8) },
-                    0,
-                    "page {p} not zero ({backend:?})"
-                );
+                assert_eq!(unsafe { *((addr + p * page) as *const u8) }, 0, "page {p} not zero ({backend:?})");
             }
             unsafe { sys::munmap(addr, len) }.unwrap();
         }

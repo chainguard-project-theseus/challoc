@@ -227,19 +227,11 @@ pub(crate) struct Lazy {
 
 impl Lazy {
     /// A table of no bytes: `ensure` is a no-op on it.
-    pub(crate) const EMPTY: Lazy = Lazy {
-        base: 0,
-        len: 0,
-        committed: 0,
-    };
+    pub(crate) const EMPTY: Lazy = Lazy { base: 0, len: 0, committed: 0 };
 
     pub(crate) fn reserve(meta: &Meta, len: usize, align: usize) -> Option<Lazy> {
         let base = meta.reserve(len, align)?;
-        Some(Lazy {
-            base,
-            len,
-            committed: 0,
-        })
+        Some(Lazy { base, len, committed: 0 })
     }
 
     /// Make the first `upto` bytes committed.
@@ -278,11 +270,7 @@ impl Set {
         table.ensure(meta, page, 8 * l1_words).ok()?;
         // SAFETY: the words come from a fresh, zero, never-freed reservation.
         let map = unsafe { TwoLevelBitmap::from_raw(nslabs, table.base as *mut u64) };
-        Some(Set {
-            map,
-            store: Store::Own(table),
-            l1_words,
-        })
+        Some(Set { map, store: Store::Own(table), l1_words })
     }
 
     /// Set `kind` (0..`SETS_PER_CLASS`) of `class` in `table`, over the
@@ -297,18 +285,8 @@ impl Set {
         // disjoint from every other slot's, zero, never freed; the rows a
         // slab's bit needs are committed by `ensure` before the class
         // touches it (`take_group`).
-        let map = unsafe {
-            TwoLevelBitmap::from_raw_chunked(
-                nslabs,
-                (group.base + 8 * slot) as *mut u64,
-                group.stride,
-            )
-        };
-        Set {
-            map,
-            store: Store::Shared(table, g as u8),
-            l1_words: TwoLevelBitmap::l1_words(nslabs),
-        }
+        let map = unsafe { TwoLevelBitmap::from_raw_chunked(nslabs, (group.base + 8 * slot) as *mut u64, group.stride) };
+        Set { map, store: Store::Shared(table, g as u8), l1_words: TwoLevelBitmap::l1_words(nslabs) }
     }
 
     /// Commit the level-0 words that hold every bit up to and including
@@ -374,11 +352,7 @@ impl SetTable {
     /// `ensure`). `None` if the metadata region cannot hold them.
     pub fn new(meta: &Meta, regions: &Regions) -> Option<SetTable> {
         let page = regions.page_size();
-        let mut groups = [Group {
-            base: 0,
-            stride: 0,
-            count: 0,
-        }; SET_GROUPS];
+        let mut groups = [Group { base: 0, stride: 0, count: 0 }; SET_GROUPS];
         let mut nslabs = [0usize; SET_GROUPS];
         let mut pos = [0u8; NCLASSES];
         for c in 0..NCLASSES {
@@ -397,13 +371,7 @@ impl SetTable {
             tables[g] = Lazy::reserve(meta, 8 * rows * groups[g].stride, page)?;
             groups[g].base = tables[g].base;
         }
-        Some(SetTable {
-            groups,
-            nslabs,
-            pos,
-            tables: Lock::new(tables),
-            page,
-        })
+        Some(SetTable { groups, nslabs, pos, tables: Lock::new(tables), page })
     }
 
     /// Commit the rows of group `g` up to the level-0 word of `slab` (and
@@ -643,8 +611,7 @@ pub struct ClassState {
 }
 
 const _: () = assert!(core::mem::offset_of!(ClassState, inner) == PAD_ALIGN);
-const _: () =
-    assert!(core::mem::offset_of!(ClassState, gate) + core::mem::size_of::<Decayer>() <= PAD_ALIGN);
+const _: () = assert!(core::mem::offset_of!(ClassState, gate) + core::mem::size_of::<Decayer>() <= PAD_ALIGN);
 const _: () = assert!(core::mem::offset_of!(ClassState, claimed) % PAD_ALIGN == 0);
 const _: () = assert!(core::mem::size_of::<ClassState>() % PAD_ALIGN == 0);
 const _: () = assert!(core::mem::size_of::<ClassState>() % 512 != 0);
@@ -732,17 +699,9 @@ impl SlabTable {
     /// every `N`-th page group a guard group; callers must pass 0 when
     /// `MADV_GUARD_INSTALL` is unavailable, since a `PROT_NONE` slab would
     /// split the region into one VMA per guard (design section 5).
-    pub fn new(
-        meta: &Meta,
-        regions: &Regions,
-        class: usize,
-        guard_interval: u32,
-    ) -> Option<SlabTable> {
+    pub fn new(meta: &Meta, regions: &Regions, class: usize, guard_interval: u32) -> Option<SlabTable> {
         assert!(class < CLASSES.len(), "class: index out of range");
-        assert!(
-            guard_interval != 1,
-            "class: a guard interval of 1 leaves no slabs to allocate"
-        );
+        assert!(guard_interval != 1, "class: a guard interval of 1 leaves no slabs to allocate");
         let cls = &CLASSES[class];
         let page = regions.page_size();
         let nslabs = regions.nslabs(class);
@@ -753,11 +712,7 @@ impl SlabTable {
         let group = cls.slabs_per_line().max(slabs_per_page);
         assert!(group.is_power_of_two() && group % slabs_per_page == 0);
         let descs = Lazy::reserve(meta, stagger + nslabs * desc_stride(class), align)?;
-        let bits = Lazy::reserve(
-            meta,
-            stagger + (nslabs * cls.slab_bits()).div_ceil(8),
-            align,
-        )?;
+        let bits = Lazy::reserve(meta, stagger + (nslabs * cls.slab_bits()).div_ceil(8), align)?;
         let owners = Lazy::reserve(meta, stagger + nslabs.div_ceil(group) * 2, align)?;
         Some(SlabTable {
             bits_base: bits.base + stagger,
@@ -777,13 +732,7 @@ impl SlabTable {
             nslabs,
             desc_base: descs.base + stagger,
             states: AtomicPtr::new(core::ptr::null_mut()),
-            inner: Padded(Lock::new(TableInner {
-                descs,
-                bits,
-                owners,
-                next_slab: 0,
-                guards: 0,
-            })),
+            inner: Padded(Lock::new(TableInner { descs, bits, owners, next_slab: 0, guards: 0 })),
             _tail: [0; TABLE_TAIL],
         })
     }
@@ -845,14 +794,10 @@ impl SlabTable {
         let page = 1usize << self.lg_page;
         let stagger = desc_stagger(self.class as usize);
         let mut g = self.inner.lock();
-        g.owners
-            .ensure(meta, page, stagger + group * 2 + 2)
-            .expect("owner page");
+        g.owners.ensure(meta, page, stagger + group * 2 + 2).expect("owner page");
         drop(g);
         // SAFETY: the word's page was just committed.
-        unsafe {
-            (*((self.owners_base + group * 2) as *const AtomicU16)).store(arena, Ordering::Relaxed)
-        };
+        unsafe { (*((self.owners_base + group * 2) as *const AtomicU16)).store(arena, Ordering::Relaxed) };
     }
 
     /// Number of slabs (including guard slabs) handed to an arena: their
@@ -1130,20 +1075,11 @@ impl SlabTable {
         }
         let end = (s + self.group as usize).min(self.nslabs);
         if purge::check_zero() && s != self.committed_slabs.load(Ordering::Relaxed) {
-            panic!(
-                "check_zero: class {class}: take_group at next_slab {s} but the watermark is {}",
-                self.committed_slabs.load(Ordering::Relaxed)
-            );
+            panic!("check_zero: class {class}: take_group at next_slab {s} but the watermark is {}", self.committed_slabs.load(Ordering::Relaxed));
         }
-        g.descs
-            .ensure(meta, page, stagger + end * desc_stride(class))
-            .ok()?;
-        g.bits
-            .ensure(meta, page, stagger + (end * cls.slab_bits()).div_ceil(8))
-            .ok()?;
-        g.owners
-            .ensure(meta, page, stagger + ((end - 1) >> self.lg_group) * 2 + 2)
-            .ok()?;
+        g.descs.ensure(meta, page, stagger + end * desc_stride(class)).ok()?;
+        g.bits.ensure(meta, page, stagger + (end * cls.slab_bits()).div_ceil(8)).ok()?;
+        g.owners.ensure(meta, page, stagger + ((end - 1) >> self.lg_group) * 2 + 2).ok()?;
         ensure_sets(end - 1).ok()?;
         // The owner word and the descriptors' arena field record the same
         // fact (design section 4) and are written together only here, so
@@ -1151,8 +1087,7 @@ impl SlabTable {
         // zero for never-touched memory. A disagreement is a wild write
         // into one of the two arrays and aborts before the group is used.
         // SAFETY: the owner page for the group was committed above.
-        let owner_word =
-            unsafe { &*((self.owners_base + (s >> self.lg_group) * 2) as *const AtomicU16) };
+        let owner_word = unsafe { &*((self.owners_base + (s >> self.lg_group) * 2) as *const AtomicU16) };
         let previous = owner_word.load(Ordering::Relaxed);
         for slab in s..end {
             if self.is_guard_slab(slab) {
@@ -1249,10 +1184,7 @@ impl SlabTable {
             // SAFETY: `state` is a live, never-freed `ClassState` that
             // nothing else reaches until it is published below.
             unsafe { (*state).next.store(head, Ordering::Relaxed) };
-            match self
-                .states
-                .compare_exchange(head, state, Ordering::Release, Ordering::Acquire)
-            {
+            match self.states.compare_exchange(head, state, Ordering::Release, Ordering::Acquire) {
                 Ok(_) => return,
                 Err(h) => head = h,
             }
@@ -1264,13 +1196,7 @@ impl ClassState {
     /// Create the state for `arena` over `table`'s class, with its three
     /// slab sets as views of the arena's `sets` table (slots `kind *
     /// NCLASSES + class`). `table` and `sets` must outlive the state.
-    pub fn new(
-        meta: &Meta,
-        regions: &Regions,
-        table: &SlabTable,
-        arena: u16,
-        sets: &SetTable,
-    ) -> Option<ClassState> {
+    pub fn new(meta: &Meta, regions: &Regions, table: &SlabTable, arena: u16, sets: &SetTable) -> Option<ClassState> {
         let _ = (meta, regions);
         let class = table.class as usize;
         debug_assert_eq!(table.nslabs, sets.nslabs[SetTable::group_of(class)]);
@@ -1411,28 +1337,15 @@ impl ClassState {
     fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>) -> Claim {
         let mut got = 0;
         let mut zeroed = true;
-        let mut picks = [Pick {
-            slab: 0,
-            n: 0,
-            zero: false,
-            state: State::Active,
-        }; MAX_PICKS];
+        let mut picks = [Pick { slab: 0, n: 0, zero: false, state: State::Active }; MAX_PICKS];
         while got < out.len() {
             let np = self.plan(meta, out.len() - got, &mut picks);
             if np == 0 {
                 break;
             }
-            got += self.finish(
-                &picks[..np],
-                &mut out[got..],
-                &mut zeroed,
-                rng.as_deref_mut(),
-            );
+            got += self.finish(&picks[..np], &mut out[got..], &mut zeroed, rng.as_deref_mut());
         }
-        Claim {
-            n: got,
-            zeroed: got > 0 && zeroed,
-        }
+        Claim { n: got, zeroed: got > 0 && zeroed }
     }
 
     /// The unlocked half of a refill: write the slots of `picks` (one
@@ -1448,13 +1361,7 @@ impl ClassState {
     ///
     /// [`plan`]: ClassState::plan
     /// [`take`]: ClassState::take
-    fn finish(
-        &self,
-        picks: &[Pick],
-        out: &mut [*mut u8],
-        zeroed: &mut bool,
-        mut rng: Option<&mut u64>,
-    ) -> usize {
+    fn finish(&self, picks: &[Pick], out: &mut [*mut u8], zeroed: &mut bool, mut rng: Option<&mut u64>) -> usize {
         let cls = self.class();
         let check_zero = purge::check_zero();
         let mut got = 0;
@@ -1491,15 +1398,7 @@ impl ClassState {
                     empty_passes += 1;
                     if empty_passes == MAX_EMPTY_PASSES {
                         let d = self.desc(slab);
-                        reservation_unmet(
-                            self.class as usize,
-                            slab,
-                            want,
-                            k,
-                            d.live(),
-                            bm.allocated(cls.nslots()),
-                            cls.nslots(),
-                        );
+                        reservation_unmet(self.class as usize, slab, want, k, d.live(), bm.allocated(cls.nslots()), cls.nslots());
                     }
                     word = 0;
                     continue;
@@ -1536,24 +1435,8 @@ impl ClassState {
                 if word != 0 {
                     let d = self.desc(pick.slab as usize);
                     let bm = self.table().bits(pick.slab as usize);
-                    let now = (
-                        d.state(),
-                        d.live(),
-                        d.arena(),
-                        bm.allocated(self.class().nslots()),
-                        self.class().nslots(),
-                        d as *const SlabDesc as usize,
-                    );
-                    dirty_zero_slot(
-                        self.class as usize,
-                        size,
-                        pick,
-                        self.arena,
-                        p as usize,
-                        off,
-                        word,
-                        now,
-                    );
+                    let now = (d.state(), d.live(), d.arena(), bm.allocated(self.class().nslots()), self.class().nslots(), d as *const SlabDesc as usize);
+                    dirty_zero_slot(self.class as usize, size, pick, self.arena, p as usize, off, word, now);
                 }
             }
         }
@@ -1589,14 +1472,7 @@ impl ClassState {
     /// background thread once the lock is dropped (as `on_live_zero`).
     ///
     /// [`plan`]: ClassState::plan
-    fn plan_locked(
-        &self,
-        meta: &Meta,
-        want: usize,
-        picks: &mut [Pick; MAX_PICKS],
-        cls: &Class,
-        wake: &mut bool,
-    ) -> usize {
+    fn plan_locked(&self, meta: &Meta, want: usize, picks: &mut [Pick; MAX_PICKS], cls: &Class, wake: &mut bool) -> usize {
         let mut g = self.inner.lock();
         let mut np = 0;
         let mut remaining = want;
@@ -1643,20 +1519,12 @@ impl ClassState {
         loop {
             if let Some(s) = g.empty.map.lowest_set() {
                 g.empty.map.clear(s);
-                g.stats.empty = g
-                    .stats
-                    .empty
-                    .checked_sub(1)
-                    .unwrap_or_else(|| slab_count_underflow("empty"));
+                g.stats.empty = g.stats.empty.checked_sub(1).unwrap_or_else(|| slab_count_underflow("empty"));
                 return Some(s);
             }
             if let Some(s) = g.purged.map.lowest_set() {
                 g.purged.map.clear(s);
-                g.stats.purged = g
-                    .stats
-                    .purged
-                    .checked_sub(1)
-                    .unwrap_or_else(|| slab_count_underflow("purged"));
+                g.stats.purged = g.stats.purged.checked_sub(1).unwrap_or_else(|| slab_count_underflow("purged"));
                 return Some(s);
             }
             if g.group_next >= g.group_end {
@@ -1741,10 +1609,7 @@ impl ClassState {
     fn next_idle_group(&self, dg: &Inner, mut from: usize, budget: &mut usize) -> Option<usize> {
         let table = self.table();
         while from < table.nslabs && *budget > 0 {
-            let s = match (
-                dg.empty.map.lowest_set_from(from),
-                dg.purged.map.lowest_set_from(from),
-            ) {
+            let s = match (dg.empty.map.lowest_set_from(from), dg.purged.map.lowest_set_from(from)) {
                 (Some(a), Some(b)) => a.min(b),
                 (Some(a), None) => a,
                 (None, Some(b)) => b,
@@ -1753,14 +1618,8 @@ impl ClassState {
             let group = s >> table.lg_group;
             let start = group << table.lg_group;
             let end = (start + table.group as usize).min(table.nslabs);
-            let cursor = if dg.group_end == end {
-                dg.group_next
-            } else {
-                end
-            };
-            if (start..cursor).all(|x| {
-                table.is_guard_slab(x) || dg.empty.map.is_set(x) || dg.purged.map.is_set(x)
-            }) {
+            let cursor = if dg.group_end == end { dg.group_next } else { end };
+            if (start..cursor).all(|x| table.is_guard_slab(x) || dg.empty.map.is_set(x) || dg.purged.map.is_set(x)) {
                 return Some(group);
             }
             *budget -= 1;
@@ -1779,15 +1638,7 @@ impl ClassState {
     /// inconsistency. The owner word and the descriptors' arena field are
     /// rewritten together, as `take_group` writes them, so its cross-check
     /// still holds for every group.
-    fn transfer_group(
-        &self,
-        g: &mut Inner,
-        dg: &mut Inner,
-        donor: &ClassState,
-        meta: &Meta,
-        group: usize,
-        wake: &mut bool,
-    ) -> bool {
+    fn transfer_group(&self, g: &mut Inner, dg: &mut Inner, donor: &ClassState, meta: &Meta, group: usize, wake: &mut bool) -> bool {
         let table = self.table();
         let class = self.class as usize;
         let page = 1usize << table.lg_page;
@@ -1812,11 +1663,7 @@ impl ClassState {
         }
         // Slabs below the donor's cursor are committed; the rest of its
         // current group is not and becomes this arena's current group.
-        let cursor = if dg.group_end == end {
-            dg.group_next
-        } else {
-            end
-        };
+        let cursor = if dg.group_end == end { dg.group_next } else { end };
         for s in start..end {
             if table.is_guard_slab(s) {
                 continue;
@@ -1835,24 +1682,8 @@ impl ClassState {
                 State::Fresh => s >= cursor && !dg.empty.map.is_set(s) && !dg.purged.map.is_set(s),
                 State::Active => false,
             };
-            if !in_sets
-                || d.live() != 0
-                || dg.partial.map.is_set(s)
-                || g.partial.map.is_set(s)
-                || g.empty.map.is_set(s)
-                || g.purged.map.is_set(s)
-            {
-                idle_group_in_use(
-                    class,
-                    group,
-                    s,
-                    donor.arena,
-                    self.arena,
-                    state,
-                    d.live(),
-                    in_sets,
-                    dg.partial.map.is_set(s),
-                );
+            if !in_sets || d.live() != 0 || dg.partial.map.is_set(s) || g.partial.map.is_set(s) || g.empty.map.is_set(s) || g.purged.map.is_set(s) {
+                idle_group_in_use(class, group, s, donor.arena, self.arena, state, d.live(), in_sets, dg.partial.map.is_set(s));
             }
         }
         let mut oldest = 0u64;
@@ -1864,11 +1695,7 @@ impl ClassState {
             match d.state() {
                 State::Empty => {
                     dg.empty.map.clear(s);
-                    dg.stats.empty = dg
-                        .stats
-                        .empty
-                        .checked_sub(1)
-                        .unwrap_or_else(|| slab_count_underflow("empty"));
+                    dg.stats.empty = dg.stats.empty.checked_sub(1).unwrap_or_else(|| slab_count_underflow("empty"));
                     g.empty.map.set(s);
                     g.stats.empty += 1;
                     let t = d.dirty_at();
@@ -1878,22 +1705,14 @@ impl ClassState {
                 }
                 State::Purged => {
                     dg.purged.map.clear(s);
-                    dg.stats.purged = dg
-                        .stats
-                        .purged
-                        .checked_sub(1)
-                        .unwrap_or_else(|| slab_count_underflow("purged"));
+                    dg.stats.purged = dg.stats.purged.checked_sub(1).unwrap_or_else(|| slab_count_underflow("purged"));
                     g.purged.map.set(s);
                     g.stats.purged += 1;
                 }
                 State::Fresh | State::Active => {}
             }
             if s < cursor {
-                dg.stats.committed = dg
-                    .stats
-                    .committed
-                    .checked_sub(1)
-                    .unwrap_or_else(|| slab_count_underflow("committed"));
+                dg.stats.committed = dg.stats.committed.checked_sub(1).unwrap_or_else(|| slab_count_underflow("committed"));
                 g.stats.committed += 1;
             }
             d.set_arena(self.arena);
@@ -1921,33 +1740,14 @@ impl ClassState {
 
     /// Reserve `min(nslots - live, *remaining)` slots of `slab` under the
     /// lock, fix up its state and partial bit, and record the pick.
-    fn take(
-        &self,
-        g: &mut Inner,
-        slab: usize,
-        remaining: &mut usize,
-        picks: &mut [Pick; MAX_PICKS],
-        np: &mut usize,
-    ) {
+    fn take(&self, g: &mut Inner, slab: usize, remaining: &mut usize, picks: &mut [Pick; MAX_PICKS], np: &mut usize) {
         let desc = self.desc(slab);
         let live = desc.live();
-        debug_assert_eq!(
-            self.table().owner(slab),
-            self.arena,
-            "take: slab {slab} state {:?} live {live}",
-            desc.state()
-        );
-        debug_assert_eq!(
-            desc.arena(),
-            self.arena,
-            "take: slab {slab} descriptor arena"
-        );
+        debug_assert_eq!(self.table().owner(slab), self.arena, "take: slab {slab} state {:?} live {live}", desc.state());
+        debug_assert_eq!(desc.arena(), self.arena, "take: slab {slab} descriptor arena");
         // `live > nslots` would reserve a wrapped count (the release
         // profile does not check overflow; the dev profile does).
-        assert!(
-            live <= self.class().nslots(),
-            "class: slab live count above its slot count"
-        );
+        assert!(live <= self.class().nslots(), "class: slab live count above its slot count");
         let avail = self.class().nslots() - live;
         let n = avail.min(*remaining);
         let state = desc.state();
@@ -1955,13 +1755,7 @@ impl ClassState {
             self.check_shadow(slab, "take");
             if state == State::Fresh {
                 if live != 0 {
-                    fresh_with_live(
-                        self.class as usize,
-                        slab,
-                        self.arena,
-                        desc,
-                        self.table().bits(slab).allocated(self.class().nslots()),
-                    );
+                    fresh_with_live(self.class as usize, slab, self.arena, desc, self.table().bits(slab).allocated(self.class().nslots()));
                 }
                 self.check_fresh_slab_is_zero(slab);
             }
@@ -1972,10 +1766,7 @@ impl ClassState {
         }
         desc.add_live(n);
         // Under the lock (`g`), so a plain load-add-store is exclusive.
-        self.claimed.store(
-            self.claimed.load(Ordering::Relaxed).wrapping_add(n as u64),
-            Ordering::Relaxed,
-        );
+        self.claimed.store(self.claimed.load(Ordering::Relaxed).wrapping_add(n as u64), Ordering::Relaxed);
         if live == 0 && n == avail {
             g.clear_partial(slab);
         } else {
@@ -1987,12 +1778,7 @@ impl ClassState {
         if zero {
             self.claim_prefix(slab, n, state, live);
         }
-        picks[*np] = Pick {
-            slab: slab as u32,
-            n: n as u32,
-            zero,
-            state,
-        };
+        picks[*np] = Pick { slab: slab as u32, n: n as u32, zero, state };
         *np += 1;
         *remaining -= n;
     }
@@ -2017,16 +1803,7 @@ impl ClassState {
             let expect = if want == 64 { !0 } else { (1u64 << want) - 1 };
             let got = bm.claim_word(w, want);
             if got != expect {
-                zero_slab_had_bits_set(
-                    self.class as usize,
-                    slab,
-                    self.arena,
-                    state,
-                    live,
-                    w,
-                    got,
-                    expect,
-                );
+                zero_slab_had_bits_set(self.class as usize, slab, self.arena, state, live, w, got, expect);
             }
             k += want;
             w += 1;
@@ -2127,12 +1904,7 @@ impl ClassState {
         if n != ptrs.len() {
             let p = ptrs[n];
             let (slab, _) = self.locate(p);
-            wrong_arena(
-                p as usize,
-                self.class as usize,
-                self.table().owner(slab),
-                self.arena,
-            );
+            wrong_arena(p as usize, self.class as usize, self.table().owner(slab), self.arena);
         }
     }
 
@@ -2215,15 +1987,7 @@ impl ClassState {
     /// Clear the bits `local[lo..=hi]` accumulated for `slab` (one atomic
     /// per non-zero word), zero them for the next slab, and take `count`
     /// off the slab's `live`.
-    fn release_slab(
-        &self,
-        slab: usize,
-        local: &mut [u64; MAX_SLAB_WORDS],
-        lo: usize,
-        hi: usize,
-        count: usize,
-        reopen: &mut Reopen,
-    ) {
+    fn release_slab(&self, slab: usize, local: &mut [u64; MAX_SLAB_WORDS], lo: usize, hi: usize, count: usize, reopen: &mut Reopen) {
         for w in lo..=hi {
             let mask = local[w];
             if mask != 0 {
@@ -2241,12 +2005,7 @@ impl ClassState {
         if prev & mask != mask {
             let bad = (mask & !prev).trailing_zeros() as usize;
             let slot = word * 64 + bad;
-            double_free(
-                self.slot_ptr(slab, slot) as usize,
-                self.class as usize,
-                slab,
-                slot,
-            );
+            double_free(self.slot_ptr(slab, slot) as usize, self.class as usize, slab, slot);
         }
         if was_full && !reopen.push(slab) {
             self.reopen(reopen);
@@ -2339,11 +2098,7 @@ impl ClassState {
             d.set_dirty_at(0);
             g.empty.map.clear(s);
             g.purged.map.set(s);
-            g.stats.empty = g
-                .stats
-                .empty
-                .checked_sub(1)
-                .unwrap_or_else(|| slab_count_underflow("empty"));
+            g.stats.empty = g.stats.empty.checked_sub(1).unwrap_or_else(|| slab_count_underflow("empty"));
             g.stats.purged += 1;
             n += 1;
         }
@@ -2448,8 +2203,7 @@ impl ClassState {
                 return false;
             }
             let d = self.desc(s);
-            d.arena() == self.arena
-                && matches!(d.state(), State::Fresh | State::Empty | State::Purged)
+            d.arena() == self.arena && matches!(d.state(), State::Fresh | State::Empty | State::Purged)
         })
     }
 
@@ -2555,12 +2309,7 @@ impl ClassState {
     /// Count a cache entering (`on`) or leaving compact mode.
     #[inline]
     pub fn note_compact_mode(&self, on: bool) {
-        if on {
-            &self.compact_on
-        } else {
-            &self.compact_off
-        }
-        .fetch_add(1, Ordering::Relaxed);
+        if on { &self.compact_on } else { &self.compact_off }.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Count a probe the refill-rate gate declined.
@@ -2615,11 +2364,7 @@ impl ClassState {
     #[cfg(test)]
     pub(crate) fn set_membership(&self, slab: usize) -> (bool, bool, bool) {
         let g = self.inner.lock();
-        (
-            g.partial.map.is_set(slab),
-            g.empty.map.is_set(slab),
-            g.purged.map.is_set(slab),
-        )
+        (g.partial.map.is_set(slab), g.empty.map.is_set(slab), g.purged.map.is_set(slab))
     }
 
     pub fn is_partial(&self, slab: usize) -> bool {
@@ -2646,17 +2391,7 @@ fn owner_mismatch(class: usize, group: usize, slab: usize, word: u16, desc: u16)
 /// bits, so the bitmap or the descriptor is corrupt.
 #[cold]
 #[inline(never)]
-fn idle_group_in_use(
-    class: usize,
-    group: usize,
-    slab: usize,
-    donor: u16,
-    taker: u16,
-    state: State,
-    live: usize,
-    in_sets: bool,
-    partial: bool,
-) -> ! {
+fn idle_group_in_use(class: usize, group: usize, slab: usize, donor: u16, taker: u16, state: State, live: usize, in_sets: bool, partial: bool) -> ! {
     panic!(
         "heap inconsistency: class {class} group {group}: idle by arena {donor}'s sets but slab {slab} is {state:?} with live {live}, in its owner's set {in_sets}, partial {partial} (taker arena {taker})"
     )
@@ -2664,16 +2399,7 @@ fn idle_group_in_use(
 
 #[cold]
 #[inline(never)]
-fn zero_slab_had_bits_set(
-    class: usize,
-    slab: usize,
-    arena: u16,
-    state: State,
-    live: usize,
-    word: usize,
-    got: u64,
-    expect: u64,
-) -> ! {
+fn zero_slab_had_bits_set(class: usize, slab: usize, arena: u16, state: State, live: usize, word: usize, got: u64, expect: u64) -> ! {
     panic!(
         "class {class} slab {slab} (arena {arena}) is {state:?} with live {live} but word {word} of its bitmap had bits set before the refill's claim: claimed {got:#x}, expected {expect:#x}"
     )
@@ -2695,9 +2421,7 @@ fn guard_free(p: usize, class: usize, slab: usize) -> ! {
 #[cold]
 #[inline(never)]
 fn release_into_fresh_slab(p: usize, class: usize, slab: usize) -> ! {
-    panic!(
-        "invalid free of {p:#x} (class {class} slab {slab}): the slab has never been allocated from"
-    )
+    panic!("invalid free of {p:#x} (class {class} slab {slab}): the slab has never been allocated from")
 }
 
 #[cold]
@@ -2711,25 +2435,13 @@ fn invalid_free(p: usize, class: usize, slab: usize, slot: usize) -> ! {
 #[cold]
 #[inline(never)]
 fn wrong_arena(p: usize, class: usize, owner: u16, arena: u16) -> ! {
-    panic!(
-        "slot {p:#x} (class {class}) belongs to arena {owner} but was released through arena {arena}"
-    )
+    panic!("slot {p:#x} (class {class}) belongs to arena {owner} but was released through arena {arena}")
 }
 
 #[cold]
 #[inline(never)]
-fn reservation_unmet(
-    class: usize,
-    slab: usize,
-    want: usize,
-    got: usize,
-    live: usize,
-    set: usize,
-    nslots: usize,
-) -> ! {
-    panic!(
-        "class {class}: slab {slab} yielded {got} of a reservation of {want} slots after {MAX_EMPTY_PASSES} full scans (live {live}, allocated {set}, nslots {nslots}): live count is corrupt"
-    )
+fn reservation_unmet(class: usize, slab: usize, want: usize, got: usize, live: usize, set: usize, nslots: usize) -> ! {
+    panic!("class {class}: slab {slab} yielded {got} of a reservation of {want} slots after {MAX_EMPTY_PASSES} full scans (live {live}, allocated {set}, nslots {nslots}): live count is corrupt")
 }
 
 #[cold]
@@ -2861,18 +2573,9 @@ mod tests {
             meta,
             lg_page,
             [
-                Mapping {
-                    addr: superblock,
-                    len: sb_len,
-                },
-                Mapping {
-                    addr: huge.0,
-                    len: huge.1,
-                },
-                Mapping {
-                    addr: meta.0,
-                    len: meta.1,
-                },
+                Mapping { addr: superblock, len: sb_len },
+                Mapping { addr: huge.0, len: huge.1 },
+                Mapping { addr: meta.0, len: meta.1 },
             ],
         )
     }
@@ -2894,20 +2597,10 @@ mod tests {
             set_group_handoff(true);
             use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
             let page = 1usize << lg_page;
-            assert!(
-                page % crate::sys::features::page_size() == 0,
-                "fake page must be a real page multiple"
-            );
+            assert!(page % crate::sys::features::page_size() == 0, "fake page must be a real page multiple");
             let reserve = |len: usize| -> usize {
                 unsafe {
-                    crate::sys::mmap(
-                        0,
-                        len,
-                        PROT_NONE,
-                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
-                        -1,
-                        0,
-                    )
+                    crate::sys::mmap(0, len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0)
                 }
                 .expect("reserve")
             };
@@ -2918,11 +2611,7 @@ mod tests {
             let mb = align_up(mb_raw, page);
             let superblock = align_up(sb, MAX_SLAB);
             let regions = regions_at(superblock, (mb, meta_len()), lg_page);
-            Env {
-                meta: Meta::new(mb, meta_len(), page),
-                regions,
-                maps: [(sb, sb_len), (mb_raw, mb_len)],
-            }
+            Env { meta: Meta::new(mb, meta_len(), page), regions, maps: [(sb, sb_len), (mb_raw, mb_len)] }
         }
 
         #[cfg(not(target_os = "linux"))]
@@ -2934,11 +2623,7 @@ mod tests {
             let buf = vec![0u8; meta_len() + page];
             let mb = align_up(buf.as_ptr() as usize, page);
             let regions = regions_at(0x1000_0000_0000, (mb, meta_len()), lg_page);
-            Env {
-                meta: Meta::new(mb, meta_len(), page),
-                regions,
-                _buf: buf,
-            }
+            Env { meta: Meta::new(mb, meta_len(), page), regions, _buf: buf }
         }
 
         /// A fresh table for `c` (leaked: the state points at it) and the
@@ -2947,8 +2632,7 @@ mod tests {
         fn class(&self, c: usize, guard_interval: u32) -> &'static ClassState {
             let table = self.table(c, guard_interval);
             let cs = std::boxed::Box::leak(std::boxed::Box::new(
-                ClassState::new(&self.meta, &self.regions, table, 0, self.sets())
-                    .expect("class state"),
+                ClassState::new(&self.meta, &self.regions, table, 0, self.sets()).expect("class state"),
             ));
             table.register_state(cs);
             cs
@@ -2956,9 +2640,7 @@ mod tests {
 
         /// A fresh set table for one arena (leaked: the states point at it).
         fn sets(&self) -> &'static SetTable {
-            std::boxed::Box::leak(std::boxed::Box::new(
-                SetTable::new(&self.meta, &self.regions).expect("set table"),
-            ))
+            std::boxed::Box::leak(std::boxed::Box::new(SetTable::new(&self.meta, &self.regions).expect("set table")))
         }
 
         fn table(&self, c: usize, guard_interval: u32) -> &'static SlabTable {
@@ -2972,8 +2654,7 @@ mod tests {
         fn class_in_arena(&self, cs: &ClassState, arena: u16) -> &'static ClassState {
             let table = cs.table();
             let new = std::boxed::Box::leak(std::boxed::Box::new(
-                ClassState::new(&self.meta, &self.regions, table, arena, self.sets())
-                    .expect("class state"),
+                ClassState::new(&self.meta, &self.regions, table, arena, self.sets()).expect("class state"),
             ));
             table.register_state(new);
             new
@@ -3039,10 +2720,7 @@ mod tests {
     /// The largest class with the minimum slab (1024 bytes: 4 slots of a
     /// 4 KiB slab).
     fn min_slab_class() -> usize {
-        CLASSES
-            .iter()
-            .rposition(|c| c.slab_size() == MIN_SLAB)
-            .unwrap()
+        CLASSES.iter().rposition(|c| c.slab_size() == MIN_SLAB).unwrap()
     }
 
     /// A kernel page larger than the slab (here a page four times the
@@ -3056,10 +2734,7 @@ mod tests {
         if (1usize << (LG_MIN_SLAB + 2)) < page_size() {
             // The faked page must be a multiple of the real one; on a
             // 64 KiB kernel the real page already is the larger-page case.
-            std::eprintln!(
-                "skipped: the real page ({}) is larger than the faked one",
-                page_size()
-            );
+            std::eprintln!("skipped: the real page ({}) is larger than the faked one", page_size());
             return;
         }
         let env = Env::with_lg_page(LG_MIN_SLAB + 2);
@@ -3077,22 +2752,13 @@ mod tests {
         // slabs 4..8 is writable already (Linux touches them in `claim`).
         let (p, _) = env.claim(&cs, 5 * n);
         assert_eq!(p.len(), 5 * n);
-        assert_eq!(
-            cs.stats(),
-            ClassStats {
-                committed: 5,
-                ..Default::default()
-            }
-        );
+        assert_eq!(cs.stats(), ClassStats { committed: 5, ..Default::default() });
         for (s, chunk) in p.chunks(n).enumerate() {
             assert_eq!(chunk[0] as usize, env.regions.slab_addr(c, s));
         }
         let base = env.regions.slab_addr(c, 0);
         let in_slab = |v: &[*mut u8], s: usize| -> Vec<*mut u8> {
-            v.iter()
-                .copied()
-                .filter(|&x| (x as usize - base) / MIN_SLAB == s)
-                .collect()
+            v.iter().copied().filter(|&x| (x as usize - base) / MIN_SLAB == s).collect()
         };
         // Slab 0 goes Empty; its group mates 1..4 are Active, so nothing is purged.
         cs.release(&p[..n]);
@@ -3126,43 +2792,20 @@ mod tests {
         // Slab 7 was committed with its page group (by slab 4) and handed
         // to arena 0 with the group, but no refill has used it: Fresh.
         assert_eq!(cs.desc(7).state(), State::Fresh);
-        assert_eq!(
-            cs.stats(),
-            ClassStats {
-                committed: 7,
-                guards: 4,
-                ..Default::default()
-            }
-        );
+        assert_eq!(cs.stats(), ClassStats { committed: 7, guards: 4, ..Default::default() });
         // Page group 4..8 with 4, 5, 6 Empty and 7 Fresh is idle, so it is
         // discarded as a whole; 7 stays Fresh (nothing was written to it).
         cs.release(&p[4 * n..]);
         cs.release(&in_slab(&r, 5));
         cs.release(&in_slab(&r, 6));
-        assert_eq!(
-            cs.stats(),
-            ClassStats {
-                committed: 7,
-                guards: 4,
-                empty: 3,
-                ..Default::default()
-            }
-        );
+        assert_eq!(cs.stats(), ClassStats { committed: 7, guards: 4, empty: 3, ..Default::default() });
         assert_eq!(other.purge_empty(u64::MAX), 0);
         assert_eq!(cs.purge_empty(u64::MAX), 3);
         for s in 4..7 {
             assert_eq!(cs.desc(s).state(), State::Purged, "slab {s}");
         }
         assert_eq!(cs.desc(7).state(), State::Fresh);
-        assert_eq!(
-            cs.stats(),
-            ClassStats {
-                committed: 7,
-                guards: 4,
-                purged: 3,
-                ..Default::default()
-            }
-        );
+        assert_eq!(cs.stats(), ClassStats { committed: 7, guards: 4, purged: 3, ..Default::default() });
         // With 0..4 Empty, purging with a cutoff at the oldest slab's
         // `dirty_at` takes the whole group, a slab released later (younger,
         // whenever the coarse clock has moved on) included.
@@ -3175,15 +2818,7 @@ mod tests {
             assert_eq!(cs.desc(s).state(), State::Purged, "slab {s}");
             assert_eq!(cs.desc(s).dirty_at(), 0);
         }
-        assert_eq!(
-            cs.stats(),
-            ClassStats {
-                committed: 7,
-                guards: 4,
-                purged: 7,
-                ..Default::default()
-            }
-        );
+        assert_eq!(cs.stats(), ClassStats { committed: 7, guards: 4, purged: 7, ..Default::default() });
         // Purged neighbours do not block a purge: a claim reuses Purged
         // slab 0 (zero), and releasing it purges it alone inside its
         // Purged group.
@@ -3194,15 +2829,7 @@ mod tests {
         assert_eq!(cs.desc(0).state(), State::Empty);
         assert_eq!(cs.purge_empty(u64::MAX), 1);
         assert_eq!(cs.desc(0).state(), State::Purged);
-        assert_eq!(
-            cs.stats(),
-            ClassStats {
-                committed: 7,
-                guards: 4,
-                purged: 7,
-                ..Default::default()
-            }
-        );
+        assert_eq!(cs.stats(), ClassStats { committed: 7, guards: 4, purged: 7, ..Default::default() });
         // Past the guard group: the Purged slabs go first, then slab 7 is
         // committed, then the next commit skips the guard group 8..12 and
         // lands on slab 12.
@@ -3221,14 +2848,7 @@ mod tests {
         // The other arena's group is untouched by all of this.
         assert_eq!(other.desc(132).state(), State::Active);
         assert_eq!(other.desc(132).live(), n);
-        assert_eq!(
-            other.stats(),
-            ClassStats {
-                committed: 1,
-                guards: 8,
-                ..Default::default()
-            }
-        );
+        assert_eq!(other.stats(), ClassStats { committed: 1, guards: 8, ..Default::default() });
     }
 
     /// Slabs go to arenas in line-sized groups (design section 4): with 4
@@ -3288,12 +2908,7 @@ mod tests {
         cs.release(&p[1..3]);
         assert_eq!(t.bits(0).allocated(4), 2);
         assert_eq!(t.bits(1).allocated(4), 1);
-        assert!(
-            t.is_allocated(0, 0)
-                && !t.is_allocated(0, 1)
-                && !t.is_allocated(0, 2)
-                && t.is_allocated(0, 3)
-        );
+        assert!(t.is_allocated(0, 0) && !t.is_allocated(0, 1) && !t.is_allocated(0, 2) && t.is_allocated(0, 3));
         assert!(t.is_allocated(1, 0));
         // Eight groups in the region: arenas 2..8 take the rest, a ninth
         // arena finds nothing to commit and reports the shortfall.
@@ -3301,22 +2916,12 @@ mod tests {
             let csa = env.class_in_arena(&cs, a);
             let (pa, claim) = env.claim(&csa, 1);
             assert_eq!(claim.n, 1, "arena {a}");
-            assert_eq!(
-                pa[0] as usize,
-                env.regions.slab_addr(c, 128 * a as usize),
-                "arena {a}"
-            );
+            assert_eq!(pa[0] as usize, env.regions.slab_addr(c, 128 * a as usize), "arena {a}");
         }
         assert_eq!(t.committed_slabs(), 1024);
         let cs8 = env.class_in_arena(&cs, 8);
         let (_, claim) = env.claim(&cs8, 1);
-        assert_eq!(
-            claim,
-            Claim {
-                n: 0,
-                zeroed: false
-            }
-        );
+        assert_eq!(claim, Claim { n: 0, zeroed: false });
         // Arena 0 still has 126 uncommitted slabs of its own group, plus
         // the 2 + 3 free slots of slabs 0 and 1.
         let (more, claim) = env.claim(&cs, 126 * 4 + 5);
@@ -3325,13 +2930,7 @@ mod tests {
         assert_eq!(cs.locate(more[more.len() - 1]).0, 127);
         assert_eq!(cs.stats().committed, 128);
         let (_, claim) = env.claim(&cs, 1);
-        assert_eq!(
-            claim,
-            Claim {
-                n: 0,
-                zeroed: false
-            }
-        );
+        assert_eq!(claim, Claim { n: 0, zeroed: false });
     }
 
     /// A free into a slab handed to an arena but not yet committed is
@@ -3368,21 +2967,11 @@ mod tests {
             assert_eq!(t.bits(0).nbits(), cls.slab_bits(), "class {c}");
             assert_eq!(t.bits(1).allocated(n), 1, "class {c}");
             assert!(!t.bits(1).is_full(), "class {c}");
-            assert!(
-                t.is_allocated(1, 0) && (n == 1 || !t.is_allocated(1, 1)),
-                "class {c}"
-            );
+            assert!(t.is_allocated(1, 0) && (n == 1 || !t.is_allocated(1, 1)), "class {c}");
             let g = t.group();
-            assert!(
-                g >= cls.slabs_per_line() && g % cls.slabs_per_line() == 0,
-                "class {c}"
-            );
+            assert!(g >= cls.slabs_per_line() && g % cls.slabs_per_line() == 0, "class {c}");
             // Two slabs used: one group unless groups are single slabs.
-            assert_eq!(
-                t.committed_slabs(),
-                if g == 1 { 2 } else { g.min(t.nslabs()) },
-                "class {c}"
-            );
+            assert_eq!(t.committed_slabs(), if g == 1 { 2 } else { g.min(t.nslabs()) }, "class {c}");
             cs.release(&p);
             assert_eq!(t.bits(0).allocated(n), 0, "class {c}");
             assert_eq!(t.bits(1).allocated(n), 0, "class {c}");
@@ -3397,22 +2986,12 @@ mod tests {
         let cls = cs.class();
         assert_eq!(cs.committed_slabs(), 0);
         let (p, claim) = env.claim(&cs, 10);
-        assert_eq!(
-            claim,
-            Claim {
-                n: 10,
-                zeroed: true
-            }
-        );
+        assert_eq!(claim, Claim { n: 10, zeroed: true });
         for (i, &q) in p.iter().enumerate() {
             assert_eq!(q as usize, env.regions.slab_addr(c, 0) + i * cls.size());
             assert_eq!(
                 env.regions.classify(q as usize),
-                Kind::Slab {
-                    class: c as u32,
-                    slab: 0,
-                    slot: i as u32
-                }
+                Kind::Slab { class: c as u32, slab: 0, slot: i as u32 }
             );
             cs.check(q);
             assert_eq!(cs.locate(q), (0, i));
@@ -3422,23 +3001,10 @@ mod tests {
         assert_eq!(d.live(), 10);
         assert_eq!(d.arena(), 0);
         assert_eq!(cs.committed_slabs(), 1);
-        assert_eq!(
-            cs.stats(),
-            ClassStats {
-                committed: 1,
-                nonfull: 1,
-                ..Default::default()
-            }
-        );
+        assert_eq!(cs.stats(), ClassStats { committed: 1, nonfull: 1, ..Default::default() });
         // A second claim from the same, now Active, slab is not known zero.
         let (p2, claim2) = env.claim(&cs, 5);
-        assert_eq!(
-            claim2,
-            Claim {
-                n: 5,
-                zeroed: false
-            }
-        );
+        assert_eq!(claim2, Claim { n: 5, zeroed: false });
         assert_eq!(p2[0] as usize, env.regions.slot_addr(c, 0, 10));
         assert_eq!(d.live(), 15);
     }
@@ -3474,13 +3040,7 @@ mod tests {
         assert_eq!(cs.desc(0).live(), n - 1);
         assert!(!cs.table().is_allocated(0, n / 2));
         let (again, claim) = env.claim(&cs, 2);
-        assert_eq!(
-            claim,
-            Claim {
-                n: 2,
-                zeroed: false
-            }
-        );
+        assert_eq!(claim, Claim { n: 2, zeroed: false });
         assert_eq!(again[0], victim);
         assert_eq!(again[1] as usize, env.regions.slot_addr(c, 1, 1));
     }
@@ -3506,25 +3066,12 @@ mod tests {
         assert_eq!(q[0] as usize, env.regions.slab_addr(c, 1));
         assert!(!cs.is_partial(0));
         assert!(cs.is_partial(1));
-        assert_eq!(
-            cs.stats(),
-            ClassStats {
-                committed: 2,
-                nonfull: 1,
-                ..Default::default()
-            }
-        );
+        assert_eq!(cs.stats(), ClassStats { committed: 2, nonfull: 1, ..Default::default() });
         // A release into the full slab reopens it and first fit prefers it.
         cs.release(&[a[5]]);
         assert!(cs.is_partial(0));
         let (r, claim) = env.claim(&cs, 1);
-        assert_eq!(
-            claim,
-            Claim {
-                n: 1,
-                zeroed: false
-            }
-        );
+        assert_eq!(claim, Claim { n: 1, zeroed: false });
         assert_eq!(r[0], a[5]);
     }
 
@@ -3538,26 +3085,13 @@ mod tests {
         // whole fresh slabs, the second the rest.
         let slabs = 2 * MAX_PICKS + 1;
         let (all, claim) = env.claim(&cs, slabs * n);
-        assert_eq!(
-            claim,
-            Claim {
-                n: slabs * n,
-                zeroed: true
-            }
-        );
+        assert_eq!(claim, Claim { n: slabs * n, zeroed: true });
         for s in 0..slabs {
             assert_eq!(all[s * n] as usize, env.regions.slab_addr(c, s));
             assert!(cs.table().bits(s).is_full());
             assert!(!cs.is_partial(s));
         }
-        assert_eq!(
-            cs.stats(),
-            ClassStats {
-                committed: slabs,
-                nonfull: 0,
-                ..Default::default()
-            }
-        );
+        assert_eq!(cs.stats(), ClassStats { committed: slabs, nonfull: 0, ..Default::default() });
         // One slot per slab, sorted, in one batch: the reopen list overflows
         // at MAX_PICKS and flushes; every slab must be partial afterwards.
         let victims: Vec<*mut u8> = (0..slabs).map(|s| all[s * n + s % n]).collect();
@@ -3570,13 +3104,7 @@ mod tests {
         // Refilling takes exactly those slots, lowest slab first, in one
         // plan per MAX_PICKS slabs.
         let (again, claim) = env.claim(&cs, slabs);
-        assert_eq!(
-            claim,
-            Claim {
-                n: slabs,
-                zeroed: false
-            }
-        );
+        assert_eq!(claim, Claim { n: slabs, zeroed: false });
         assert_eq!(again, victims);
         // Those slabs had live slots, so their bits went stale rather than
         // being cleared; each later plan cleared the previous plan's full
@@ -3617,34 +3145,14 @@ mod tests {
         assert_eq!(d.live(), 0);
         assert!(d.dirty_at() > 0);
         assert!(!cs.is_partial(0));
-        assert_eq!(
-            cs.stats(),
-            ClassStats {
-                committed: 1,
-                empty: 1,
-                ..Default::default()
-            }
-        );
+        assert_eq!(cs.stats(), ClassStats { committed: 1, empty: 1, ..Default::default() });
         // An Empty slab is preferred over committing a new one but is dirty.
         let (q, claim) = env.claim(&cs, 3);
-        assert_eq!(
-            claim,
-            Claim {
-                n: 3,
-                zeroed: false
-            }
-        );
+        assert_eq!(claim, Claim { n: 3, zeroed: false });
         assert_eq!(q[0], p[0]);
         assert_eq!(d.state(), State::Active);
         assert_eq!(d.dirty_at(), 0);
-        assert_eq!(
-            cs.stats(),
-            ClassStats {
-                committed: 1,
-                nonfull: 1,
-                ..Default::default()
-            }
-        );
+        assert_eq!(cs.stats(), ClassStats { committed: 1, nonfull: 1, ..Default::default() });
         cs.release(&q);
         assert_eq!(d.state(), State::Empty);
         // Purge with a cutoff before dirty_at does nothing; after it purges.
@@ -3653,27 +3161,13 @@ mod tests {
         assert_eq!(cs.purge_empty(u64::MAX), 1);
         assert_eq!(d.state(), State::Purged);
         assert_eq!(d.dirty_at(), 0);
-        assert_eq!(
-            cs.stats(),
-            ClassStats {
-                committed: 1,
-                purged: 1,
-                ..Default::default()
-            }
-        );
+        assert_eq!(cs.stats(), ClassStats { committed: 1, purged: 1, ..Default::default() });
         // A Purged slab is reused before a new commit and is zero.
         let (r, claim) = env.claim(&cs, 4);
         assert_eq!(claim, Claim { n: 4, zeroed: true });
         assert_eq!(r[0], p[0]);
         assert_eq!(d.state(), State::Active);
-        assert_eq!(
-            cs.stats(),
-            ClassStats {
-                committed: 1,
-                nonfull: 1,
-                ..Default::default()
-            }
-        );
+        assert_eq!(cs.stats(), ClassStats { committed: 1, nonfull: 1, ..Default::default() });
     }
 
     /// The decay driver's view (design section 8): nothing is purged in
@@ -3717,11 +3211,7 @@ mod tests {
         assert_eq!(st.empty + st.purged, n);
         assert!(st.purged.abs_diff(n / 2) <= n / 10 + 1, "{st:?}");
         for s in 0..n {
-            let want = if s < st.empty {
-                State::Empty
-            } else {
-                State::Purged
-            };
+            let want = if s < st.empty { State::Empty } else { State::Purged };
             assert_eq!(cs.desc(s).state(), want, "slab {s}");
         }
         assert_eq!(cs.oldest_empty(), t0);
@@ -3732,14 +3222,7 @@ mod tests {
         assert!(st2.purged > st.purged && st2.empty > 0, "{st2:?}");
         assert!(st2.empty * 100 / n <= 15, "{st2:?}");
         assert_eq!(cs.decay(t0 + W, W), None);
-        assert_eq!(
-            cs.stats(),
-            ClassStats {
-                committed: n,
-                purged: n,
-                ..Default::default()
-            }
-        );
+        assert_eq!(cs.stats(), ClassStats { committed: n, purged: n, ..Default::default() });
         assert_eq!(cs.oldest_empty(), 0);
         // Two cohorts: slab 0 at t, slab 1 a half window younger. At the
         // last step of slab 0 only it goes; slab 1, alone, lasts until its
@@ -3753,10 +3236,7 @@ mod tests {
         assert_eq!(cs.desc(0).state(), State::Purged);
         assert_eq!(cs.desc(1).state(), State::Empty);
         assert_eq!(cs.oldest_empty(), t + W / 2);
-        assert_eq!(
-            cs.decay(t + W / 2 + W - 2000, W),
-            Some(t + W / 2 + W - 1000)
-        );
+        assert_eq!(cs.decay(t + W / 2 + W - 2000, W), Some(t + W / 2 + W - 1000));
         assert_eq!(cs.desc(1).state(), State::Empty);
         assert_eq!(cs.decay(t + W / 2 + W - 1000, W), None);
         assert_eq!(cs.desc(1).state(), State::Purged);
@@ -3843,45 +3323,21 @@ mod tests {
         assert_eq!(cs.nslabs(), 1);
         assert_eq!(cs.class().nslots(), 16);
         let (p, claim) = env.claim(&cs, 20);
-        assert_eq!(
-            claim,
-            Claim {
-                n: 16,
-                zeroed: true
-            }
-        );
+        assert_eq!(claim, Claim { n: 16, zeroed: true });
         assert_eq!(p.len(), 16);
         let (q, claim) = env.claim(&cs, 1);
-        assert_eq!(
-            claim,
-            Claim {
-                n: 0,
-                zeroed: false
-            }
-        );
+        assert_eq!(claim, Claim { n: 0, zeroed: false });
         assert!(q.is_empty());
         cs.release(&p[..8]);
         let (q, claim) = env.claim(&cs, 20);
-        assert_eq!(
-            claim,
-            Claim {
-                n: 8,
-                zeroed: false
-            }
-        );
+        assert_eq!(claim, Claim { n: 8, zeroed: false });
         assert_eq!(q, p[..8].to_vec());
         // A class with 64 slabs: ask for more than one slab holds.
         let c = small_class();
         let cs = env.class(c, 0);
         let n = cs.class().nslots();
         let (p, claim) = env.claim(&cs, 2 * n + 5);
-        assert_eq!(
-            claim,
-            Claim {
-                n: 2 * n + 5,
-                zeroed: true
-            }
-        );
+        assert_eq!(claim, Claim { n: 2 * n + 5, zeroed: true });
         assert_eq!(cs.stats().committed, 3);
         assert_eq!(cs.stats().nonfull, 1);
         assert_eq!(p[2 * n] as usize, env.regions.slab_addr(c, 2));
@@ -3920,22 +3376,11 @@ mod tests {
             let cls = cs.class();
             let want = cls.nslots().min(70);
             let (p, claim) = env.claim(&cs, want);
-            assert_eq!(
-                claim,
-                Claim {
-                    n: want,
-                    zeroed: true
-                },
-                "class {c}"
-            );
+            assert_eq!(claim, Claim { n: want, zeroed: true }, "class {c}");
             for (i, &q) in p.iter().enumerate() {
                 assert_eq!(
                     env.regions.classify(q as usize),
-                    Kind::Slab {
-                        class: c as u32,
-                        slab: 0,
-                        slot: i as u32
-                    },
+                    Kind::Slab { class: c as u32, slab: 0, slot: i as u32 },
                     "class {c}"
                 );
                 cs.check(q);
@@ -3963,23 +3408,12 @@ mod tests {
         let meta = {
             use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
             let mb = unsafe {
-                crate::sys::mmap(
-                    0,
-                    2 * page_size(),
-                    PROT_NONE,
-                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
-                    -1,
-                    0,
-                )
+                crate::sys::mmap(0, 2 * page_size(), PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0)
             }
             .unwrap();
             Meta::new(mb, 2 * page_size(), page_size())
         };
-        let regions = regions_at(
-            0x1000_0000_0000,
-            (0x2000_0000_0000, 2 * page_size()),
-            page_size().trailing_zeros(),
-        );
+        let regions = regions_at(0x1000_0000_0000, (0x2000_0000_0000, 2 * page_size()), page_size().trailing_zeros());
         assert!(SlabTable::new(&meta, &regions, 0, 0).is_none());
     }
 
@@ -4001,10 +3435,7 @@ mod tests {
         let classes: Vec<usize> = (0..NCLASSES).step_by(5).collect();
         let states: Vec<ClassState> = classes
             .iter()
-            .map(|&c| {
-                ClassState::new(&env.meta, &env.regions, env.table(c, 0), 0, sets)
-                    .expect("class state")
-            })
+            .map(|&c| ClassState::new(&env.meta, &env.regions, env.table(c, 0), 0, sets).expect("class state"))
             .collect();
         for cs in &states {
             let (p, _) = env.claim(cs, 3);
@@ -4014,10 +3445,7 @@ mod tests {
             cs.release(&p[1..]);
         }
         // Every state has slabs in its partial or empty set now.
-        assert!(states.iter().all(|cs| {
-            let s = cs.stats();
-            s.nonfull + s.empty > 0
-        }));
+        assert!(states.iter().all(|cs| { let s = cs.stats(); s.nonfull + s.empty > 0 }));
         let mut groups_used: Vec<usize> = classes.iter().map(|&c| SetTable::group_of(c)).collect();
         groups_used.sort_unstable();
         groups_used.dedup();
@@ -4028,13 +3456,7 @@ mod tests {
             }
             // SAFETY: the committed prefix of a table this test owns.
             let words = unsafe { core::slice::from_raw_parts(base as *const u64, committed / 8) };
-            pages.extend(
-                words
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, w)| **w != 0)
-                    .map(|(i, _)| (base + 8 * i) / page),
-            );
+            pages.extend(words.iter().enumerate().filter(|(_, w)| **w != 0).map(|(i, _)| (base + 8 * i) / page));
         }
         pages.sort_unstable();
         pages.dedup();
@@ -4104,28 +3526,17 @@ mod tests {
         let env = Env::new();
         let c = small_class();
         let cs = env.class(c, 0);
-        assert_eq!(
-            cs.table().group(),
-            1,
-            "the 64-byte class hands out one slab per group"
-        );
+        assert_eq!(cs.table().group(), 1, "the 64-byte class hands out one slab per group");
         assert!(cs.idle_groups().is_empty());
         let (p, _) = env.claim(cs, 3);
         assert!(cs.idle_groups().is_empty());
         cs.release(&p[..2]);
-        assert!(
-            cs.idle_groups().is_empty(),
-            "a slab with a live slot is not idle"
-        );
+        assert!(cs.idle_groups().is_empty(), "a slab with a live slot is not idle");
         cs.release(&p[2..]);
         assert_eq!(cs.desc(0).state(), State::Empty);
         assert_eq!(cs.idle_groups(), vec![0]);
         assert_eq!(cs.purge_empty(u64::MAX), 1);
-        assert_eq!(
-            cs.idle_groups(),
-            vec![0],
-            "Empty to Purged keeps the group idle"
-        );
+        assert_eq!(cs.idle_groups(), vec![0], "Empty to Purged keeps the group idle");
         let (q, claim) = env.claim(cs, 1);
         assert!(claim.zeroed);
         assert!(cs.idle_groups().is_empty(), "a take withdraws the group");
@@ -4154,16 +3565,7 @@ mod tests {
         assert_eq!(t.owner(0), donor_ix);
         donor.release(&p);
         assert_eq!(donor.desc(0).state(), State::Empty);
-        assert_eq!(
-            donor.stats(),
-            ClassStats {
-                committed: 1,
-                guards: 0,
-                empty: 1,
-                purged: 0,
-                nonfull: 0
-            }
-        );
+        assert_eq!(donor.stats(), ClassStats { committed: 1, guards: 0, empty: 1, purged: 0, nonfull: 0 });
         assert_eq!(donor.idle_groups(), vec![0]);
         let dirty_at = donor.desc(0).dirty_at();
         assert!(dirty_at != 0);
@@ -4179,16 +3581,7 @@ mod tests {
         assert_eq!(taker.desc(0).dirty_at(), 0);
         assert!(taker.is_partial(0) && !donor.is_partial(0));
         assert_eq!(donor.stats(), ClassStats::default());
-        assert_eq!(
-            taker.stats(),
-            ClassStats {
-                committed: 1,
-                guards: 0,
-                empty: 0,
-                purged: 0,
-                nonfull: 1
-            }
-        );
+        assert_eq!(taker.stats(), ClassStats { committed: 1, guards: 0, empty: 0, purged: 0, nonfull: 1 });
         assert!(taker.idle_groups().is_empty() && donor.idle_groups().is_empty());
         // Routing follows the group: the taker releases, the donor may not.
         taker.check(q[0]);
@@ -4212,27 +3605,12 @@ mod tests {
         assert_eq!(taker.idle_groups(), vec![0]);
         assert_eq!(donor.idle_groups(), vec![1]);
         let (x, _) = env.claim(donor, nslots + 1);
-        assert_eq!(
-            t.committed_slabs(),
-            2,
-            "slab 0 came back before anything fresh"
-        );
+        assert_eq!(t.committed_slabs(), 2, "slab 0 came back before anything fresh");
         assert_eq!(t.owner(0), donor_ix);
         assert_eq!(donor.desc(0).arena(), donor_ix);
         assert_eq!(taker.stats(), ClassStats::default());
-        assert_eq!(
-            donor.stats(),
-            ClassStats {
-                committed: 2,
-                guards: 0,
-                empty: 0,
-                purged: 0,
-                nonfull: 1
-            }
-        );
-        assert!(
-            x.iter().any(|&p| donor.locate(p).0 == 0) && x.iter().any(|&p| donor.locate(p).0 == 1)
-        );
+        assert_eq!(donor.stats(), ClassStats { committed: 2, guards: 0, empty: 0, purged: 0, nonfull: 1 });
+        assert!(x.iter().any(|&p| donor.locate(p).0 == 0) && x.iter().any(|&p| donor.locate(p).0 == 1));
     }
 
     #[test]
@@ -4332,16 +3710,7 @@ mod tests {
             }
         }
         assert_eq!(donor.stats(), ClassStats::default());
-        assert_eq!(
-            taker.stats(),
-            ClassStats {
-                committed: 2,
-                guards: 0,
-                empty: 1,
-                purged: 0,
-                nonfull: 1
-            }
-        );
+        assert_eq!(taker.stats(), ClassStats { committed: 2, guards: 0, empty: 1, purged: 0, nonfull: 1 });
         // The taker's further claims use slab 1 (Empty), then commit slab
         // 2 of the same group: still no fresh group.
         let (r, _) = env.claim(taker, 2 * nslots);
@@ -4367,15 +3736,7 @@ mod tests {
         let env = Arc::new(Env::new());
         let c = small_class();
         let cs0 = env.class(c, 0);
-        let states: Vec<&'static ClassState> = (0..4u16)
-            .map(|a| {
-                if a == 0 {
-                    cs0
-                } else {
-                    env.class_in_arena(cs0, a)
-                }
-            })
-            .collect();
+        let states: Vec<&'static ClassState> = (0..4u16).map(|a| if a == 0 { cs0 } else { env.class_in_arena(cs0, a) }).collect();
         let threads = 8;
         let rounds = 400;
         let mut handles = Vec::new();
@@ -4422,10 +3783,7 @@ mod tests {
             h.join().unwrap();
         }
         let t = cs0.table();
-        assert!(
-            HANDOFFS.load(Ordering::Relaxed) > 0,
-            "no group changed hands"
-        );
+        assert!(HANDOFFS.load(Ordering::Relaxed) > 0, "no group changed hands");
         let mut committed = 0;
         for a in &states {
             a.purge_empty(u64::MAX);
@@ -4443,12 +3801,7 @@ mod tests {
             for a in &states {
                 let (partial, empty, purged) = a.set_membership(slab);
                 assert!(!partial && !empty, "slab {slab} arena {}", a.arena());
-                assert_eq!(
-                    purged,
-                    a.arena() == owner && d.state() == State::Purged,
-                    "slab {slab} arena {}",
-                    a.arena()
-                );
+                assert_eq!(purged, a.arena() == owner && d.state() == State::Purged, "slab {slab} arena {}", a.arena());
             }
         }
     }
@@ -4602,9 +3955,7 @@ mod tests {
         // Every second page group is a guard group.
         let cs = env.class(c, 2);
         env.claim(&cs, 2 * n + 1);
-        let guard = (0..cs.table().committed_slabs())
-            .find(|&s| cs.is_guard_slab(s))
-            .expect("a guard slab");
+        let guard = (0..cs.table().committed_slabs()).find(|&s| cs.is_guard_slab(s)).expect("a guard slab");
         assert!(guard < cs.table().committed_slabs());
         cs.check(env.regions.slab_addr(c, guard) as *mut u8);
     }
@@ -4622,11 +3973,7 @@ mod tests {
         let cs = env.class(c, 0);
         env.claim(&cs, 1);
         // The whole group was handed out; only slab 0 is committed.
-        assert!(
-            cs.table().committed_slabs() > 1,
-            "group of {}",
-            cs.table().committed_slabs()
-        );
+        assert!(cs.table().committed_slabs() > 1, "group of {}", cs.table().committed_slabs());
         assert_eq!(cs.desc(1).state(), State::Fresh);
         assert_eq!(cs.stats().committed, 1);
         cs.release(&[env.regions.slab_addr(c, 1) as *mut u8]);
@@ -4640,22 +3987,14 @@ mod tests {
             if lg != 0 && (1usize << (LG_MIN_SLAB + lg)) < page_size() {
                 continue; // a faked page smaller than the real one cannot be reserved
             }
-            let env = if lg == 0 {
-                Env::new()
-            } else {
-                Env::with_lg_page(LG_MIN_SLAB + lg)
-            };
+            let env = if lg == 0 { Env::new() } else { Env::with_lg_page(LG_MIN_SLAB + lg) };
             let c = min_slab_class();
             for interval in [0u32, 2, 3, 8, 32] {
                 let t = env.table(c, interval);
                 let spp = t.slabs_per_page();
                 for s in 0..256 {
                     let want = interval != 0 && (s / spp + 1) % interval as usize == 0;
-                    assert_eq!(
-                        t.is_guard_slab(s),
-                        want,
-                        "lg {lg} interval {interval} slab {s}"
-                    );
+                    assert_eq!(t.is_guard_slab(s), want, "lg {lg} interval {interval} slab {s}");
                 }
             }
         }
@@ -4741,10 +4080,7 @@ mod tests {
                     State::Active => {
                         assert!(d.live() > 0 || cs.is_partial(s));
                         if !bm.is_full() {
-                            assert!(
-                                cs.is_partial(s),
-                                "slab {s} has free slots but is not partial"
-                            );
+                            assert!(cs.is_partial(s), "slab {s} has free slots but is not partial");
                         }
                     }
                     other => panic!("slab {s} in state {other:?}"),
@@ -4886,11 +4222,7 @@ mod tests {
                 }
             }
             for &q in &p {
-                assert_eq!(
-                    unsafe { *(q as *const u32) },
-                    i,
-                    "iteration {i}: slot lost its value"
-                );
+                assert_eq!(unsafe { *(q as *const u32) }, i, "iteration {i}: slot lost its value");
             }
             cs.release(&p);
         }
@@ -5006,46 +4338,20 @@ mod tests {
         loop {
             // Slab 0 is not handed out before the first `plan` (so no
             // `desc(0)` yet): `Fresh` then, `Purged` in round 2.
-            let prior = if round == 0 {
-                State::Fresh
-            } else {
-                State::Purged
-            };
+            let prior = if round == 0 { State::Fresh } else { State::Purged };
             // Thread A: one lock hold, one pick of one slot of slab 0.
-            let mut picks = [Pick {
-                slab: 0,
-                n: 0,
-                zero: false,
-                state: State::Active,
-            }; MAX_PICKS];
+            let mut picks = [Pick { slab: 0, n: 0, zero: false, state: State::Active }; MAX_PICKS];
             let np = cs.plan(&env.meta, 1, &mut picks);
             assert_eq!(np, 1);
             assert_eq!((picks[0].slab, picks[0].n, picks[0].state), (0, 1, prior));
-            assert!(
-                picks[0].zero,
-                "round {round}: the {prior:?} slab must be a zero pick"
-            );
+            assert!(picks[0].zero, "round {round}: the {prior:?} slab must be a zero pick");
             assert_eq!(cs.desc(0).live(), 1);
-            assert_eq!(
-                cs.stats().nonfull,
-                1,
-                "slab 0 is partial, so B's plan finds it"
-            );
+            assert_eq!(cs.stats().nonfull, 1, "slab 0 is partial, so B's plan finds it");
             // Thread B: a whole refill of one slot from the same class,
             // the program writes to the slot and frees it.
             let (b, claim) = env.claim(&cs, 1);
-            assert_eq!(
-                claim,
-                Claim {
-                    n: 1,
-                    zeroed: false
-                }
-            );
-            assert_eq!(
-                cs.locate(b[0]).0,
-                0,
-                "B refills from the slab A reserved in"
-            );
+            assert_eq!(claim, Claim { n: 1, zeroed: false });
+            assert_eq!(cs.locate(b[0]).0, 0, "B refills from the slab A reserved in");
             #[cfg(target_os = "linux")]
             unsafe {
                 ptr::write_volatile(b[0], 0xAB);
@@ -5057,26 +4363,11 @@ mod tests {
             let mut zeroed = true;
             assert_eq!(cs.finish(&picks[..np], &mut out, &mut zeroed, None), 1);
             assert!(zeroed);
-            assert_ne!(
-                out[0], b[0],
-                "round {round}: a slot reported zero was allocated, written and freed by another claim in between"
-            );
-            assert_eq!(
-                cs.locate(out[0]),
-                (0, 0),
-                "A's slot was decided under the lock: the lowest"
-            );
-            assert_eq!(
-                cs.locate(b[0]),
-                (0, 1),
-                "B saw A's bit and took the next slot"
-            );
+            assert_ne!(out[0], b[0], "round {round}: a slot reported zero was allocated, written and freed by another claim in between");
+            assert_eq!(cs.locate(out[0]), (0, 0), "A's slot was decided under the lock: the lowest");
+            assert_eq!(cs.locate(b[0]), (0, 1), "B saw A's bit and took the next slot");
             #[cfg(target_os = "linux")]
-            assert_eq!(
-                unsafe { ptr::read_volatile(out[0]) },
-                0,
-                "round {round}: A's slot reads zero"
-            );
+            assert_eq!(unsafe { ptr::read_volatile(out[0]) }, 0, "round {round}: A's slot reads zero");
             cs.release(&out);
             assert_eq!(cs.desc(0).live(), 0);
             assert_eq!(cs.stats().empty, 1);
@@ -5131,12 +4422,10 @@ mod tests {
         }
         let mut status = 0;
         assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
-        assert!(
-            libc::WIFSIGNALED(status),
-            "child did not fault: status {status:#x}"
-        );
+        assert!(libc::WIFSIGNALED(status), "child did not fault: status {status:#x}");
         assert_eq!(libc::WTERMSIG(status), libc::SIGSEGV);
     }
+
 
     #[test]
     fn bin_stats_counts_every_curregs_clamp() {
@@ -5158,6 +4447,7 @@ mod tests {
         assert_eq!((curregs, cs.clamped()), (0, 2));
     }
 
+
     #[test]
     #[should_panic(expected = "slab live count above its slot count")]
     fn a_plan_over_a_slab_with_live_above_nslots_aborts() {
@@ -5173,12 +4463,7 @@ mod tests {
         // hands it straight to `take`).
         let nslots = cs.class().nslots();
         cs.desc(slab).add_live(nslots + 1);
-        let mut picks = [Pick {
-            slab: 0,
-            n: 0,
-            zero: false,
-            state: State::Active,
-        }; MAX_PICKS];
+        let mut picks = [Pick { slab: 0, n: 0, zero: false, state: State::Active }; MAX_PICKS];
         cs.plan(&env.meta, 1, &mut picks);
     }
 
@@ -5193,12 +4478,7 @@ mod tests {
         assert_eq!(cs.stats().empty, 1);
         // Corrupt the count: the set still holds the slab.
         cs.inner.lock().stats.empty = 0;
-        let mut picks = [Pick {
-            slab: 0,
-            n: 0,
-            zero: false,
-            state: State::Active,
-        }; MAX_PICKS];
+        let mut picks = [Pick { slab: 0, n: 0, zero: false, state: State::Active }; MAX_PICKS];
         cs.plan(&env.meta, 1, &mut picks);
     }
 

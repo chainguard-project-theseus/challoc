@@ -376,11 +376,7 @@ const NODE_STAGGER_LINES: usize = 16;
 
 /// Layout of the block an `others` node is carved from.
 fn node_block_layout() -> Layout {
-    Layout::from_size_align(
-        core::mem::size_of::<ArenaCaches>() + 64 * (NODE_STAGGER_LINES - 1),
-        64,
-    )
-    .expect("node block layout")
+    Layout::from_size_align(core::mem::size_of::<ArenaCaches>() + 64 * (NODE_STAGGER_LINES - 1), 64).expect("node block layout")
 }
 
 /// One thread's allocator state (design 6.2). Lives in the metadata region;
@@ -490,13 +486,11 @@ pub struct Shared {
 // line (`Regions` is `repr(C)`, so `superblock` and `lg_stride` lead it).
 const _: () = assert!(
     core::mem::offset_of!(Shared, multi_arena) / 128
-        == (core::mem::offset_of!(Shared, regions) + core::mem::offset_of!(Regions, superblock))
-            / 128
+        == (core::mem::offset_of!(Shared, regions) + core::mem::offset_of!(Regions, superblock)) / 128
 );
 const _: () = assert!(
     core::mem::offset_of!(Shared, multi_arena) / 128
-        == (core::mem::offset_of!(Shared, regions) + core::mem::offset_of!(Regions, lg_stride))
-            / 128
+        == (core::mem::offset_of!(Shared, regions) + core::mem::offset_of!(Regions, lg_stride)) / 128
 );
 
 #[cfg(target_os = "linux")]
@@ -516,10 +510,7 @@ mod os {
             // SAFETY: `key` is a valid out-pointer; the destructor is a plain
             // `extern "C"` function that only touches allocator state.
             let rc = unsafe { libc::pthread_key_create(&mut key, Some(super::heap_destructor)) };
-            ThreadKey {
-                key,
-                valid: rc == 0,
-            }
+            ThreadKey { key, valid: rc == 0 }
         }
 
         pub fn valid(&self) -> bool {
@@ -621,11 +612,7 @@ use os::ThreadKey;
 pub(crate) fn guard_interval_for(class: usize, page: usize, interval: u32) -> u32 {
     let unit = (1usize << crate::layout::LG_GUARD_UNIT).max(page);
     let group = CLASSES[class].slab_size().max(page);
-    if group >= unit {
-        interval
-    } else {
-        interval.saturating_mul((unit / group) as u32)
-    }
+    if group >= unit { interval } else { interval.saturating_mul((unit / group) as u32) }
 }
 
 impl Shared {
@@ -652,48 +639,27 @@ impl Shared {
     /// has `MADV_GUARD_INSTALL`, without which no guard is placed at all
     /// (the `PROT_NONE` fallback would split every class region into one
     /// VMA per guard, see `class.rs`).
-    pub unsafe fn init(
-        this: *mut Shared,
-        regions: Regions,
-        config: Config,
-        guard_install: bool,
-    ) -> bool {
+    pub unsafe fn init(this: *mut Shared, regions: Regions, config: Config, guard_install: bool) -> bool {
         let mut config = config;
         config.narenas = config.effective_narenas(os::ncpus());
-        let guard_interval = if guard_install {
-            config.effective_guard_slab_interval()
-        } else {
-            0
-        };
+        let guard_interval = if guard_install { config.effective_guard_slab_interval() } else { 0 };
         let guard_install = guard_install && config.guards;
         let decay_ns = crate::purge::decay_ns_from_ms(config.dirty_decay_ms);
         // SAFETY: the caller guarantees `this` is writable and unaliased.
         unsafe {
             let meta = &raw mut (*this).meta;
-            ptr::write(
-                meta,
-                Meta::new(regions.meta_base, regions.meta_len, regions.page_size()),
-            );
+            ptr::write(meta, Meta::new(regions.meta_base, regions.meta_len, regions.page_size()));
             ptr::write(&raw mut (*this).regions, regions);
             ptr::write(&raw mut (*this).multi_arena, AtomicBool::new(false));
             ptr::write(
                 &raw mut (*this).push_flags,
-                (if config.double_free_scan {
-                    PUSH_SCAN
-                } else {
-                    0
-                }) | (if config.zero_on_free { PUSH_ZERO } else { 0 }),
+                (if config.double_free_scan { PUSH_SCAN } else { 0 }) | (if config.zero_on_free { PUSH_ZERO } else { 0 }),
             );
             let meta = &*meta;
             let regions = &*(&raw const (*this).regions);
             let tables = &raw mut (*this).tables;
             for c in 0..NCLASSES {
-                match SlabTable::new(
-                    meta,
-                    regions,
-                    c,
-                    guard_interval_for(c, regions.page_size(), guard_interval),
-                ) {
+                match SlabTable::new(meta, regions, c, guard_interval_for(c, regions.page_size(), guard_interval)) {
                     Some(t) => ptr::write(&raw mut (*tables)[c], t),
                     None => return false,
                 }
@@ -712,10 +678,7 @@ impl Shared {
             ptr::write(&raw mut (*this).gc_interval_ns, config.gc_interval_ns());
             Arenas::init(&raw mut (*this).arenas, arena0, config.narenas);
             Tcaches::init(&raw mut (*this).tcaches);
-            ptr::write(
-                &raw mut (*this).cgroup,
-                crate::sys::cgroup::Cgroup::discover(config.cgroup),
-            );
+            ptr::write(&raw mut (*this).cgroup, crate::sys::cgroup::Cgroup::discover(config.cgroup));
             // Design 11: under an effective limit below 1 GiB `thp` is
             // forced to `never` in the stored configuration (the report
             // says so); the policy's `high` baseline is the count at init.
@@ -725,26 +688,15 @@ impl Shared {
             if thp_forced {
                 config.thp = crate::config::Thp::Never;
             }
-            ptr::write(
-                &raw mut (*this).policy,
-                crate::policy::Policy::new(cgroup.rises().0, thp_forced),
-            );
+            ptr::write(&raw mut (*this).policy, crate::policy::Policy::new(cgroup.rises().0, thp_forced));
             // Applied once on the discovery sample, so the band and the cap
             // are published before the first 10 ms window closes (nothing
             // is `Empty` yet: retention 0).
             let limit = cgroup.limit().min(cgroup.high());
-            (*this).policy.apply(
-                crate::policy::band(limit, cgroup.current()),
-                limit,
-                0,
-                cgroup.rises().0,
-            );
+            (*this).policy.apply(crate::policy::band(limit, cgroup.current()), limit, 0, cgroup.rises().0);
             ptr::write(&raw mut (*this).config, config);
             ptr::write(&raw mut (*this).key, ThreadKey::create());
-            ptr::write(
-                &raw mut (*this).stats,
-                Lock::new(crate::stats::Snapshot::EMPTY),
-            );
+            ptr::write(&raw mut (*this).stats, Lock::new(crate::stats::Snapshot::EMPTY));
         }
         true
     }
@@ -821,11 +773,7 @@ impl Shared {
     /// band (design 11).
     #[inline]
     pub fn gc_interval(&self) -> u64 {
-        if self.policy.immediate() {
-            0
-        } else {
-            self.gc_interval_ns
-        }
+        if self.policy.immediate() { 0 } else { self.gc_interval_ns }
     }
 
     /// The decay period new arenas start with (`dirty_decay_ms`).
@@ -868,11 +816,7 @@ impl Shared {
     pub fn alloc_direct(&self, arena: &Arena, class: usize) -> (*mut u8, bool) {
         let mut out = [ptr::null_mut()];
         let c = arena.class(class).claim(&self.meta, &mut out);
-        if c.n == 0 {
-            (ptr::null_mut(), false)
-        } else {
-            (out[0], c.zeroed)
-        }
+        if c.n == 0 { (ptr::null_mut(), false) } else { (out[0], c.zeroed) }
     }
 
     /// Release one slot straight to its slab bitmap through its owning
@@ -890,9 +834,7 @@ impl Shared {
         match self.regions.classify(p as usize) {
             Kind::Slab { class, slab, slot } => {
                 let class = class as usize;
-                let arena =
-                    self.table(class)
-                        .check_located(slab as usize, slot as usize, p as usize);
+                let arena = self.table(class).check_located(slab as usize, slot as usize, p as usize);
                 Ok((class, arena))
             }
             Kind::Huge { page } => Err(page),
@@ -1175,9 +1117,7 @@ impl Heap {
         for cache in caches.iter_mut() {
             if cache.cap != 0 {
                 assert_eq!(cache.len, 0, "heap: freeing a cache that was not flushed");
-                shared
-                    .meta
-                    .free(cache.slots as *mut u8, CacheHeader::slots_layout(cache.cap));
+                shared.meta.free(cache.slots as *mut u8, CacheHeader::slots_layout(cache.cap));
             }
             *cache = CacheHeader::EMPTY;
         }
@@ -1484,12 +1424,7 @@ impl Heap {
     /// cache before popping.
     #[cold]
     #[inline(never)]
-    unsafe fn pop_compact(
-        &mut self,
-        cache: *mut CacheHeader,
-        class: usize,
-        len: u32,
-    ) -> (*mut u8, bool) {
+    unsafe fn pop_compact(&mut self, cache: *mut CacheHeader, class: usize, len: u32) -> (*mut u8, bool) {
         // SAFETY: guaranteed by the caller.
         unsafe {
             match (*cache).mode {
@@ -1504,9 +1439,7 @@ impl Heap {
                     let mut len = (*cache).len;
                     if len == 0 {
                         // The GC emptied the cache.
-                        let Some(a) = shared.arena((*cache).arena) else {
-                            return (ptr::null_mut(), false);
-                        };
+                        let Some(a) = shared.arena((*cache).arena) else { return (ptr::null_mut(), false) };
                         len = self.refill(shared, a, cache, class);
                         if len == 0 {
                             return (ptr::null_mut(), false);
@@ -1540,12 +1473,7 @@ impl Heap {
     ///
     /// # Safety
     /// As for [`Heap::pop`].
-    unsafe fn pop_compact_run(
-        &mut self,
-        cache: *mut CacheHeader,
-        class: usize,
-        len: u32,
-    ) -> (*mut u8, bool) {
+    unsafe fn pop_compact_run(&mut self, cache: *mut CacheHeader, class: usize, len: u32) -> (*mut u8, bool) {
         // SAFETY: guaranteed by the caller.
         unsafe {
             match (*cache).mode {
@@ -1565,9 +1493,7 @@ impl Heap {
                         // the claim came back empty). Refill as the probe
                         // branch does; popping here would wrap `len - 1`.
                         let shared: &Shared = &*self.shared;
-                        let Some(a) = shared.arena((*cache).arena) else {
-                            return (ptr::null_mut(), false);
-                        };
+                        let Some(a) = shared.arena((*cache).arena) else { return (ptr::null_mut(), false) };
                         len = self.refill(shared, a, cache, class);
                         if len == 0 {
                             return (ptr::null_mut(), false);
@@ -1605,8 +1531,7 @@ impl Heap {
     fn fragmented(shared: &Shared, arena: u16, class: usize) -> bool {
         let cs = shared.owner(arena).class(class);
         let (holes, capacity) = cs.holes();
-        holes >= COMPACT_MIN_SLABS * CLASSES[class].compact_slots()
-            && holes * COMPACT_MIN_RATIO >= capacity
+        holes >= COMPACT_MIN_SLABS * CLASSES[class].compact_slots() && holes * COMPACT_MIN_RATIO >= capacity
     }
 
     /// Rebuild the run for a scheduled pop that found it exhausted: run the
@@ -1703,13 +1628,7 @@ impl Heap {
     }
 
     /// Huge allocation on this thread in `arena` (which must exist).
-    pub fn alloc_huge_in(
-        &mut self,
-        shared: &Shared,
-        size: usize,
-        align: usize,
-        arena: u16,
-    ) -> (*mut u8, bool) {
+    pub fn alloc_huge_in(&mut self, shared: &Shared, size: usize, align: usize, arena: u16) -> (*mut u8, bool) {
         let (p, zero) = shared.alloc_huge(size, align, arena);
         if !p.is_null() {
             self.count_uncached_alloc(shared.huge.usable_for(size).unwrap_or(0));
@@ -1822,10 +1741,7 @@ impl Heap {
             if scan && len != 0 {
                 let top = (*cache).slots().add(len as usize);
                 let hit = if len >= 4 {
-                    (*top.sub(1) == p)
-                        | (*top.sub(2) == p)
-                        | (*top.sub(3) == p)
-                        | (*top.sub(4) == p)
+                    (*top.sub(1) == p) | (*top.sub(2) == p) | (*top.sub(3) == p) | (*top.sub(4) == p)
                 } else {
                     (1..=len as usize).any(|i| *top.sub(i) == p)
                 };
@@ -1848,12 +1764,7 @@ impl Heap {
     /// design section 4). The key is read from the configuration here, on
     /// the slow path, so the fast paths carry nothing for it.
     #[inline]
-    fn claim(
-        &mut self,
-        shared: &Shared,
-        cs: &crate::class::ClassState,
-        out: &mut [*mut u8],
-    ) -> crate::class::Claim {
+    fn claim(&mut self, shared: &Shared, cs: &crate::class::ClassState, out: &mut [*mut u8]) -> crate::class::Claim {
         if shared.config.slot_randomize {
             let rng = self.rng();
             cs.claim_random(&shared.meta, out, rng)
@@ -1890,11 +1801,7 @@ impl Heap {
         // `tcache_max`, uncached everywhere) comes from arena 0 whatever
         // the home arena (`Config::shared_class`); explicit `MALLOCX_ARENA`
         // allocations (`alloc_in`) keep theirs.
-        let arena = if shared.config.shared_class(class) {
-            0
-        } else {
-            self.arena
-        };
+        let arena = if shared.config.shared_class(class) { 0 } else { self.arena };
         self.alloc_slow_in(shared, arena, class)
     }
 
@@ -1923,9 +1830,7 @@ impl Heap {
     /// The slow allocation path for any arena.
     fn alloc_slow_in(&mut self, shared: &Shared, arena: u16, class: usize) -> (*mut u8, bool) {
         self.tick(shared);
-        let Some(a) = shared.arena(arena) else {
-            return (ptr::null_mut(), false);
-        };
+        let Some(a) = shared.arena(arena) else { return (ptr::null_mut(), false) };
         let cache = self.ensure_cache(shared, arena, class);
         if cache.is_null() {
             let (p, zero) = shared.alloc_direct(a, class);
@@ -1968,9 +1873,7 @@ impl Heap {
         if !node.is_null() {
             // SAFETY: `node` is a live block owned by this heap; the cache
             // is unused (`len == cap == 0`) or ours.
-            if unsafe {
-                Self::push_cache_flags(Self::node_cache_ptr(node, class), p, shared.push_flags())
-            } {
+            if unsafe { Self::push_cache_flags(Self::node_cache_ptr(node, class), p, shared.push_flags()) } {
                 return;
             }
         }
@@ -2031,10 +1934,7 @@ impl Heap {
         if !create {
             return ptr::null_mut();
         }
-        assert_ne!(
-            arena, self.arena,
-            "heap: others node requested for the home arena"
-        );
+        assert_ne!(arena, self.arena, "heap: others node requested for the home arena");
         let block = shared.meta.alloc(node_block_layout());
         if block.is_null() {
             return ptr::null_mut();
@@ -2116,11 +2016,7 @@ impl Heap {
                     unsorted_flushes: 0,
                 },
             );
-            let mode = if shared.config.tcache_compact_shift == 0 {
-                MODE_OFF
-            } else {
-                MODE_PROBE
-            };
+            let mode = if shared.config.tcache_compact_shift == 0 { MODE_OFF } else { MODE_PROBE };
             (*cache).set_mode(mode, &shared.config);
         }
         cache
@@ -2141,13 +2037,7 @@ impl Heap {
     /// from `ensure_cache` on a fresh header, or after re-reading `len`
     /// following a `tick`. The `assert_eq!` below is the abort on a heap
     /// inconsistency, not the contract.
-    unsafe fn refill(
-        &mut self,
-        shared: &Shared,
-        arena: &Arena,
-        cache: *mut CacheHeader,
-        class: usize,
-    ) -> u32 {
+    unsafe fn refill(&mut self, shared: &Shared, arena: &Arena, cache: *mut CacheHeader, class: usize) -> u32 {
         // SAFETY: the cache is empty and has `cap` slots of storage.
         unsafe {
             assert_eq!((*cache).len, 0, "heap: refill of a cache that is not empty");
@@ -2225,14 +2115,7 @@ impl Heap {
     ///
     /// # Safety
     /// `cache` is this heap's real cache for `(arena, class)` and `n <= len`.
-    unsafe fn flush(
-        &mut self,
-        shared: &Shared,
-        arena: u16,
-        cache: *mut CacheHeader,
-        class: usize,
-        n: usize,
-    ) {
+    unsafe fn flush(&mut self, shared: &Shared, arena: u16, cache: *mut CacheHeader, class: usize, n: usize) {
         if n == 0 {
             return;
         }
@@ -2283,11 +2166,7 @@ impl Heap {
     #[inline]
     unsafe fn header_in(&mut self, node: *mut ArenaCaches, class: usize) -> *mut CacheHeader {
         // SAFETY: guaranteed by the caller.
-        if node.is_null() {
-            self.cache_ptr(class)
-        } else {
-            unsafe { Self::node_cache_ptr(node, class) }
-        }
+        if node.is_null() { self.cache_ptr(class) } else { unsafe { Self::node_cache_ptr(node, class) } }
     }
 
     /// Flush every cache of one array (the home array when `node` is null,
@@ -2577,10 +2456,7 @@ unsafe fn zero_slot(class: usize, p: *mut u8) {
 #[cold]
 #[inline(never)]
 fn cached_twice(p: *mut u8) -> ! {
-    panic!(
-        "double free of {:#x}: the slot is already in the thread cache",
-        p as usize
-    )
+    panic!("double free of {:#x}: the slot is already in the thread cache", p as usize)
 }
 
 /// Two copies of one slot in a cache at flush time, one on each side of
@@ -2666,10 +2542,7 @@ fn flag_sort(v: &mut [*mut u8], nb: usize, key: impl Fn(*mut u8) -> usize) {
 #[cold]
 #[inline(never)]
 fn straddling_double_free(p: *mut u8, class: usize) -> ! {
-    panic!(
-        "double free of {:#x} (class {class}): both copies cached, one at the flush boundary",
-        p as usize
-    )
+    panic!("double free of {:#x} (class {class}): both copies cached, one at the flush boundary", p as usize)
 }
 
 #[cold]
@@ -2727,18 +2600,9 @@ pub(crate) mod tests {
             meta,
             page_size().trailing_zeros(),
             [
-                Mapping {
-                    addr: superblock,
-                    len: sb_len,
-                },
-                Mapping {
-                    addr: huge.0,
-                    len: huge.1,
-                },
-                Mapping {
-                    addr: meta.0,
-                    len: meta.1,
-                },
+                Mapping { addr: superblock, len: sb_len },
+                Mapping { addr: huge.0, len: huge.1 },
+                Mapping { addr: meta.0, len: meta.1 },
             ],
         )
     }
@@ -2752,10 +2616,7 @@ pub(crate) mod tests {
     /// One automatic arena, so every heap of a test shares arena 0 (the
     /// default would spread concurrently live heaps over `4 * ncpus`).
     pub(crate) fn shared() -> &'static Shared {
-        shared_with(Config {
-            narenas: 1,
-            ..Config::DEFAULT
-        })
+        shared_with(Config { narenas: 1, ..Config::DEFAULT })
     }
 
     pub(crate) fn shared_with(config: Config) -> &'static Shared {
@@ -2766,15 +2627,9 @@ pub(crate) mod tests {
     #[test]
     fn huge_retain_max_key_reaches_the_huge_allocator() {
         assert_eq!(shared().huge.retain_max(), crate::huge::DEFAULT_RETAIN_MAX);
-        let s = shared_with(Config {
-            huge_retain_max: 3 << 20,
-            ..Config::DEFAULT
-        });
+        let s = shared_with(Config { huge_retain_max: 3 << 20, ..Config::DEFAULT });
         assert_eq!(s.huge.retain_max(), 3 << 20);
-        let s = shared_with(Config {
-            huge_retain_max: 0,
-            ..Config::DEFAULT
-        });
+        let s = shared_with(Config { huge_retain_max: 0, ..Config::DEFAULT });
         assert_eq!(s.huge.retain_max(), 0);
     }
 
@@ -2783,13 +2638,7 @@ pub(crate) mod tests {
     /// Linux only).
     #[cfg(target_os = "linux")]
     pub(crate) fn shared_guarded() -> &'static Shared {
-        shared_with_guards(
-            Config {
-                narenas: 1,
-                ..Config::DEFAULT
-            },
-            true,
-        )
+        shared_with_guards(Config { narenas: 1, ..Config::DEFAULT }, true)
     }
 
     fn shared_with_guards(config: Config, guard_install: bool) -> &'static Shared {
@@ -2798,33 +2647,18 @@ pub(crate) mod tests {
             use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
             let reserve = |len: usize| -> usize {
                 unsafe {
-                    crate::sys::mmap(
-                        0,
-                        len,
-                        PROT_NONE,
-                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
-                        -1,
-                        0,
-                    )
+                    crate::sys::mmap(0, len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0)
                 }
                 .expect("reserve")
             };
-            (
-                reserve((NCLASSES << LG_STRIDE) + MAX_SLAB),
-                reserve(META_LEN),
-                reserve(HUGE_LEN),
-            )
+            (reserve((NCLASSES << LG_STRIDE) + MAX_SLAB), reserve(META_LEN), reserve(HUGE_LEN))
         };
         #[cfg(not(target_os = "linux"))]
         let (sb, mb, hb) = {
             let mut v: Vec<u8> = Vec::new();
             v.resize(META_LEN + page_size(), 0);
             let buf: &'static mut [u8] = Box::leak(v.into_boxed_slice());
-            (
-                0x1000_0000_0000usize,
-                buf.as_ptr() as usize,
-                0x2000_0000_1000usize,
-            )
+            (0x1000_0000_0000usize, buf.as_ptr() as usize, 0x2000_0000_1000usize)
         };
         let regions = regions_at(
             align_up(sb, MAX_SLAB),
@@ -2908,10 +2742,7 @@ pub(crate) mod tests {
     /// Sum of `live` over every committed slab of a class.
     pub(crate) fn live(s: &Shared, c: usize) -> usize {
         let cs = &s.arena0.classes[c];
-        (0..cs.committed_slabs())
-            .filter(|&i| !cs.is_guard_slab(i))
-            .map(|i| cs.desc(i).live())
-            .sum()
+        (0..cs.committed_slabs()).filter(|&i| !cs.is_guard_slab(i)).map(|i| cs.desc(i).live()).sum()
     }
 
     fn xorshift(state: &mut u64) -> u64 {
@@ -2950,12 +2781,7 @@ pub(crate) mod tests {
         assert_eq!(core::mem::size_of::<CacheHeader>(), 64);
         assert_eq!(core::mem::align_of::<CacheHeader>(), 64);
         assert_eq!(core::mem::offset_of!(Heap, caches), 128);
-        assert_eq!(
-            core::mem::size_of::<Heap>(),
-            128 + 64 * NCLASSES,
-            "heap is {} bytes",
-            core::mem::size_of::<Heap>()
-        );
+        assert_eq!(core::mem::size_of::<Heap>(), 128 + 64 * NCLASSES, "heap is {} bytes", core::mem::size_of::<Heap>());
         assert_eq!(core::mem::size_of::<ArenaCaches>(), 64 + 64 * NCLASSES);
     }
 
@@ -3013,13 +2839,7 @@ pub(crate) mod tests {
         t.free(ps[20]);
         assert_eq!(t.alloc(c), ps[20]);
         assert_eq!(t.alloc(c), ps[10]);
-        assert_eq!(
-            t.heap().stats(),
-            ThreadStats {
-                allocated: (n as u64 + 2) * 16,
-                deallocated: 2 * 16
-            }
-        );
+        assert_eq!(t.heap().stats(), ThreadStats { allocated: (n as u64 + 2) * 16, deallocated: 2 * 16 });
         t.destroy();
         assert_eq!(live(s, c), n);
     }
@@ -3073,14 +2893,7 @@ pub(crate) mod tests {
         assert_eq!(cs.desc(0).state(), State::Active);
         t.free(p);
         t.destroy();
-        assert_eq!(
-            cs.stats(),
-            ClassStats {
-                committed: cs.committed_slabs(),
-                empty: cs.committed_slabs(),
-                ..Default::default()
-            }
-        );
+        assert_eq!(cs.stats(), ClassStats { committed: cs.committed_slabs(), empty: cs.committed_slabs(), ..Default::default() });
     }
 
     /// Plan Phase 1.5 task 9a. Fill the class-64 cache with a double free
@@ -3121,15 +2934,9 @@ pub(crate) mod tests {
         let msg = e
             .downcast_ref::<std::string::String>()
             .cloned()
-            .or_else(|| {
-                e.downcast_ref::<&str>()
-                    .map(|m| std::string::String::from(*m))
-            })
+            .or_else(|| e.downcast_ref::<&str>().map(|m| std::string::String::from(*m)))
             .expect("a message");
-        assert!(
-            msg.contains(&std::format!("double free of {:#x} (class {c}", p as usize)),
-            "{msg}"
-        );
+        assert!(msg.contains(&std::format!("double free of {:#x} (class {c}", p as usize)), "{msg}");
         msg
     }
 
@@ -3138,11 +2945,7 @@ pub(crate) mod tests {
     /// deeper than that it is left to the flush as before.
     #[test]
     fn double_free_scan_compares_the_top_four_entries() {
-        let s = shared_with(Config {
-            narenas: 1,
-            double_free_scan: true,
-            ..Config::DEFAULT
-        });
+        let s = shared_with(Config { narenas: 1, double_free_scan: true, ..Config::DEFAULT });
         assert!(s.double_free_scan());
         let t = TestHeap::new(s);
         let c = class_with(64);
@@ -3159,21 +2962,12 @@ pub(crate) mod tests {
             let msg = |e: Box<dyn std::any::Any + Send>| {
                 e.downcast_ref::<std::string::String>()
                     .cloned()
-                    .or_else(|| {
-                        e.downcast_ref::<&str>()
-                            .map(|m| std::string::String::from(*m))
-                    })
+                    .or_else(|| e.downcast_ref::<&str>().map(|m| std::string::String::from(*m)))
                     .expect("a message")
             };
             if between < 4 {
                 let m = msg(r.expect_err("the push let a double free through"));
-                assert!(
-                    m.contains(&std::format!(
-                        "double free of {:#x}: the slot is already in the thread cache",
-                        p[0] as usize
-                    )),
-                    "{between}: {m}"
-                );
+                assert!(m.contains(&std::format!("double free of {:#x}: the slot is already in the thread cache", p[0] as usize)), "{between}: {m}");
                 // The abort came before the second copy was stored.
                 assert_eq!(t.cache(c).len(), before + between + 1);
                 for &q in &p[between + 1..] {
@@ -3183,11 +2977,7 @@ pub(crate) mod tests {
             } else {
                 r.expect("the fifth entry down is not compared");
                 // Both copies are cached; the flush catches them.
-                let m =
-                    msg(
-                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| t.flush_all()))
-                            .expect_err("flush"),
-                    );
+                let m = msg(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| t.flush_all())).expect_err("flush"));
                 assert!(m.contains("double free of"), "{m}");
             }
         }
@@ -3202,10 +2992,7 @@ pub(crate) mod tests {
     #[test]
     fn flush_aborts_on_a_cached_pair_straddling_the_split() {
         let msg = cached_pair_flush_message(|rest| rest - 1);
-        assert!(
-            msg.contains("both copies cached, one at the flush boundary"),
-            "{msg}"
-        );
+        assert!(msg.contains("both copies cached, one at the flush boundary"), "{msg}");
     }
 
     /// A pair that the split keeps together stays cached (both copies, the
@@ -3214,10 +3001,7 @@ pub(crate) mod tests {
     #[test]
     fn a_cached_pair_kept_by_the_split_is_caught_when_released() {
         let msg = cached_pair_flush_message(|rest| rest / 2);
-        assert!(
-            msg.contains("double free of") && !msg.contains("boundary"),
-            "{msg}"
-        );
+        assert!(msg.contains("double free of") && !msg.contains("boundary"), "{msg}");
     }
 
     /// Plan Phase 1.5 task 9b: the sized fast path's check rejects a slot
@@ -3231,29 +3015,14 @@ pub(crate) mod tests {
         let c = class_with(64);
         let cs = s.arena0.class(c);
         let n = CLASSES[c].nslots();
-        let interval = guard_interval_for(
-            c,
-            s.regions.page_size(),
-            Config::DEFAULT.guard_slab_interval,
-        ) as usize;
+        let interval = guard_interval_for(c, s.regions.page_size(), Config::DEFAULT.guard_slab_interval) as usize;
         let all: Vec<*mut u8> = (0..(interval + 2) * n).map(|_| t.alloc(c)).collect();
         let committed = cs.committed_slabs();
-        let guard = (0..committed)
-            .find(|&i| cs.is_guard_slab(i))
-            .expect("a guard slab was passed");
-        let body =
-            s.regions.slab_addr(c, guard) + s.regions.page_size().min(CLASSES[c].slab_size() / 2);
+        let guard = (0..committed).find(|&i| cs.is_guard_slab(i)).expect("a guard slab was passed");
+        let body = s.regions.slab_addr(c, guard) + s.regions.page_size().min(CLASSES[c].slab_size() / 2);
         assert_eq!(s.sized_slot(all[0], Some(c)), Some(c));
-        assert_eq!(
-            s.sized_slot(body as *mut u8, Some(c)),
-            None,
-            "guard slab {guard}"
-        );
-        assert_eq!(
-            s.sized_slot(s.regions.slab_addr(c, committed) as *mut u8, Some(c)),
-            None,
-            "not handed out"
-        );
+        assert_eq!(s.sized_slot(body as *mut u8, Some(c)), None, "guard slab {guard}");
+        assert_eq!(s.sized_slot(s.regions.slab_addr(c, committed) as *mut u8, Some(c)), None, "not handed out");
         assert_eq!(s.sized_slot(all[0], Some(c + 1)), None, "wrong hint");
         for p in all {
             t.free(p);
@@ -3293,11 +3062,7 @@ pub(crate) mod tests {
         assert_eq!(t.alloc(c), extra);
         let mut kept: Vec<*mut u8> = (0..HALF).map(|_| t.alloc(c)).collect();
         kept.sort_unstable();
-        assert_eq!(
-            kept,
-            cached[..HALF].to_vec(),
-            "the kept half is the lowest addresses, content intact"
-        );
+        assert_eq!(kept, cached[..HALF].to_vec(), "the kept half is the lowest addresses, content intact");
         assert_eq!(t.len(c), 0);
         // The released half is free in the slabs: allocating it again
         // is the only way to get those addresses back, and a refill takes
@@ -3324,10 +3089,7 @@ pub(crate) mod tests {
         let mut v: Vec<*mut u8> = Vec::new();
         for (i, &sl) in slabs.iter().enumerate() {
             for k in 0..(5 + 7 * i) {
-                v.push(
-                    (s.regions.slab_addr(c, sl) + ((k * 37) % cls.nslots()) * cls.size())
-                        as *mut u8,
-                );
+                v.push((s.regions.slab_addr(c, sl) + ((k * 37) % cls.nslots()) * cls.size()) as *mut u8);
             }
         }
         let mut st = 0x1234_5678_9abc_def1u64;
@@ -3348,11 +3110,7 @@ pub(crate) mod tests {
                 seen.push(sl);
             }
         }
-        assert_eq!(
-            seen,
-            slabs.to_vec(),
-            "one contiguous group per slab, ascending"
-        );
+        assert_eq!(seen, slabs.to_vec(), "one contiguous group per slab, ascending");
         let mut got = v.clone();
         got.sort_unstable();
         assert_eq!(got, expect, "a permutation of the input");
@@ -3371,14 +3129,7 @@ pub(crate) mod tests {
         let before = one.clone();
         assert_eq!(group_by_slab(s, c, &mut one), at(4, 0));
         assert_eq!(one, before, "one slab: untouched");
-        let mut wide = std::vec![
-            at(1000, 3),
-            at(0, 8),
-            at(300, 1),
-            at(0, 2),
-            at(1000, 1),
-            at(300, 5)
-        ];
+        let mut wide = std::vec![at(1000, 3), at(0, 8), at(300, 1), at(0, 2), at(1000, 1), at(300, 5)];
         let mut expect = wide.clone();
         expect.sort_unstable();
         assert_eq!(group_by_slab(s, c, &mut wide), at(0, 2));
@@ -3391,16 +3142,11 @@ pub(crate) mod tests {
     #[test]
     fn flag_sort_permutes_into_ascending_buckets() {
         let mut st = 0xdead_beef_cafe_f00du64;
-        let mut v: Vec<*mut u8> = (0..1000)
-            .map(|_| (xorshift(&mut st) % 1_000_000) as *mut u8)
-            .collect();
+        let mut v: Vec<*mut u8> = (0..1000).map(|_| (xorshift(&mut st) % 1_000_000) as *mut u8).collect();
         let mut expect = v.clone();
         let key = |p: *mut u8| (p as usize) & 0xff;
         flag_sort(&mut v, 256, key);
-        assert!(
-            v.windows(2).all(|w| key(w[0]) <= key(w[1])),
-            "buckets ascend"
-        );
+        assert!(v.windows(2).all(|w| key(w[0]) <= key(w[1])), "buckets ascend");
         v.sort_unstable();
         expect.sort_unstable();
         assert_eq!(v, expect);
@@ -3609,13 +3355,7 @@ pub(crate) mod tests {
         // 200 pushes fit in B's cache of CAP; A did one refill of HALF.
         assert_eq!(b.cache(c).len(), 200);
         assert_eq!(a.cache(c).len(), HALF - 200);
-        assert_eq!(
-            b.heap().stats(),
-            ThreadStats {
-                allocated: 0,
-                deallocated: 200 * 64
-            }
-        );
+        assert_eq!(b.heap().stats(), ThreadStats { allocated: 0, deallocated: 200 * 64 });
         // B reuses what it freed, lowest address first after its flushes.
         let q = b.alloc(c);
         assert_eq!(q, ps[199]);
@@ -3633,22 +3373,12 @@ pub(crate) mod tests {
     /// 4-slot slabs.
     const MODEL_SLOTS: usize = 2560;
 
-    fn residue(
-        t: &TestHeap,
-        c: usize,
-        slabs: usize,
-        frac_per_mille: u64,
-        seed: u64,
-    ) -> Vec<*mut u8> {
+    fn residue(t: &TestHeap, c: usize, slabs: usize, frac_per_mille: u64, seed: u64) -> Vec<*mut u8> {
         let nslots = CLASSES[c].nslots();
         let mut st = seed;
         let mut keep = Vec::new();
         for p in (0..slabs * nslots).map(|_| t.alloc(c)).collect::<Vec<_>>() {
-            if xorshift(&mut st) % 1000 < frac_per_mille {
-                t.free(p)
-            } else {
-                keep.push(p)
-            }
+            if xorshift(&mut st) % 1000 < frac_per_mille { t.free(p) } else { keep.push(p) }
         }
         t.flush_all();
         keep
@@ -3657,9 +3387,7 @@ pub(crate) mod tests {
     /// Slabs of `c` with at least one live slot.
     fn occupied(s: &Shared, c: usize) -> usize {
         let cs = &s.arena0.classes[c];
-        (0..cs.committed_slabs())
-            .filter(|&i| !cs.is_guard_slab(i) && cs.desc(i).live() > 0)
-            .count()
+        (0..cs.committed_slabs()).filter(|&i| !cs.is_guard_slab(i) && cs.desc(i).live() > 0).count()
     }
 
     /// Pop one slot of `c` and check the rule against the cache state
@@ -3670,43 +3398,23 @@ pub(crate) mod tests {
     /// refill happened). The run is descending afterwards.
     fn pop_checked(t: &TestHeap, c: usize) -> *mut u8 {
         let (before, run, allocs, compacting) = match t.heap().cache(c) {
-            Some(k) => (
-                k.cached().to_vec(),
-                k.run().to_vec(),
-                k.allocs(),
-                k.compacting(),
-            ),
+            Some(k) => (k.cached().to_vec(), k.run().to_vec(), k.allocs(), k.compacting()),
             None => (Vec::new(), Vec::new(), 0, false),
         };
-        let scheduled =
-            compacting && (allocs + 1) % (1 << Config::DEFAULT.tcache_compact_shift) == 0;
+        let scheduled = compacting && (allocs + 1) % (1 << Config::DEFAULT.tcache_compact_shift) == 0;
         let probe = !compacting && (allocs + 1) % (PROBE_MASK as u64 + 1) == 0;
         let p = t.alloc(c);
         if !before.is_empty() && !probe {
             if scheduled {
                 if let Some(&low) = run.last() {
-                    assert_eq!(
-                        p,
-                        low,
-                        "scheduled pop {} is not the run's lowest entry",
-                        allocs + 1
-                    );
+                    assert_eq!(p, low, "scheduled pop {} is not the run's lowest entry", allocs + 1);
                 } else {
                     // A rebuild: the block came from the lowest partial slab
                     // and its lowest slot was served.
-                    assert!(
-                        t.cache(c).run().iter().all(|&q| q > p),
-                        "rebuild pop {} is not the block minimum",
-                        allocs + 1
-                    );
+                    assert!(t.cache(c).run().iter().all(|&q| q > p), "rebuild pop {} is not the block minimum", allocs + 1);
                 }
             } else if t.cache(c).compacting() || !compacting {
-                assert_eq!(
-                    p,
-                    *before.last().unwrap(),
-                    "pop {} is not the top",
-                    allocs + 1
-                );
+                assert_eq!(p, *before.last().unwrap(), "pop {} is not the top", allocs + 1);
             }
         }
         check_run(t, c);
@@ -3718,10 +3426,7 @@ pub(crate) mod tests {
     fn check_run(t: &TestHeap, c: usize) {
         let k = t.cache(c);
         let run = k.run();
-        assert!(
-            run.windows(2).all(|w| w[0] > w[1]),
-            "run not descending: {run:?}"
-        );
+        assert!(run.windows(2).all(|w| w[0] > w[1]), "run not descending: {run:?}");
         assert!(run.len() <= k.low_water() && k.low_water() <= k.len());
         assert_eq!(run, &k.cached()[..run.len()]);
     }
@@ -3819,10 +3524,7 @@ pub(crate) mod tests {
         assert!(!t.cache(c).compacting());
         // No refill, no flush, no rebuild: the only slow paths were the
         // probes' heartbeats, one per 4096 pops.
-        assert_eq!(
-            t.ticks() as u64,
-            ticks as u64 + pops / (PROBE_MASK as u64 + 1) - 2000 / (PROBE_MASK as u64 + 1)
-        );
+        assert_eq!(t.ticks() as u64, ticks as u64 + pops / (PROBE_MASK as u64 + 1) - 2000 / (PROBE_MASK as u64 + 1));
         assert!(!Heap::fragmented(s, 0, c));
         for p in ps {
             t.free(p);
@@ -3865,8 +3567,7 @@ pub(crate) mod tests {
                     // the lowest partial slab may be a full one.)
                     let nslots = CLASSES[c].nslots();
                     assert!(
-                        cs.lowest_partial()
-                            .is_none_or(|l| l >= top_slab || cs.desc(l).live() == nslots),
+                        cs.lowest_partial().is_none_or(|l| l >= top_slab || cs.desc(l).live() == nslots),
                         "block from slab {top_slab} above the lowest partial slab {:?}",
                         cs.lowest_partial()
                     );
@@ -3906,10 +3607,7 @@ pub(crate) mod tests {
         let before = occupied(s, c);
         // A random 56% deletion empties a 64-slot slab never and a 4-slot
         // slab about one time in ten.
-        assert!(
-            before * 20 >= 17 * (MODEL_SLOTS / nslots),
-            "{before} occupied slabs after the delete"
-        );
+        assert!(before * 20 >= 17 * (MODEL_SLOTS / nslots), "{before} occupied slabs after the delete");
         assert!(Heap::fragmented(s, 0, c));
         let ideal = keep.len().div_ceil(nslots);
         let mut st = 0x2468_ace0u64;
@@ -3927,14 +3625,8 @@ pub(crate) mod tests {
         // Live data plus the holes the gate leaves (under COMPACT_MIN_SLABS
         // 64 KiB slabs' worth, i.e. 64 of the 4 KiB slabs) plus what the
         // cache holds (cap = 128 slots, 32 slabs) plus one partial slab.
-        let bound = ideal
-            + COMPACT_MIN_SLABS * CLASSES[c].compact_slots() / nslots
-            + default_cap(c) as usize / nslots
-            + 1;
-        assert!(
-            after <= bound,
-            "{after} occupied slabs after the churn, ideal {ideal}, bound {bound}, before {before}"
-        );
+        let bound = ideal + COMPACT_MIN_SLABS * CLASSES[c].compact_slots() / nslots + default_cap(c) as usize / nslots + 1;
+        assert!(after <= bound, "{after} occupied slabs after the churn, ideal {ideal}, bound {bound}, before {before}");
         assert!(!Heap::fragmented(s, 0, c));
         assert!(!t.cache(c).compacting(), "still compacting a dense class");
         assert_eq!(live(s, c), keep.len() + t.len(c));
@@ -3980,24 +3672,12 @@ pub(crate) mod tests {
                 direct = p;
             }
         }
-        assert!(
-            cs.claimed() - before_claimed
-                >= windows as u64
-                    * COMPACT_MAX_REFILL_SLABS as u64
-                    * CLASSES[c].compact_slots() as u64
-        );
+        assert!(cs.claimed() - before_claimed >= windows as u64 * COMPACT_MAX_REFILL_SLABS as u64 * CLASSES[c].compact_slots() as u64);
         assert!(was_compacting, "direct claims blocked compaction");
         // The churn model's bound: live data plus the holes the gate
         // leaves plus what the cache holds plus one partial slab.
-        let bound = keep.len().div_ceil(nslots)
-            + COMPACT_MIN_SLABS * CLASSES[c].compact_slots() / nslots
-            + default_cap(c) as usize / nslots
-            + 1;
-        assert!(
-            occupied(s, c) <= bound,
-            "little compacted: {} of {before} slabs still occupied, bound {bound}",
-            occupied(s, c)
-        );
+        let bound = keep.len().div_ceil(nslots) + COMPACT_MIN_SLABS * CLASSES[c].compact_slots() / nslots + default_cap(c) as usize / nslots + 1;
+        assert!(occupied(s, c) <= bound, "little compacted: {} of {before} slabs still occupied, bound {bound}", occupied(s, c));
         s.free_direct(0, c, direct);
         for p in keep {
             t.free(p);
@@ -4036,26 +3716,14 @@ pub(crate) mod tests {
         let t = TestHeap::new(s);
         let c = class_with(1024);
         let nslots = CLASSES[c].nslots();
-        let mut keep = residue(
-            &t,
-            c,
-            MODEL_SLOTS / CLASSES[c].nslots(),
-            560,
-            0x5151_a1a1_7777_0f0f,
-        );
+        let mut keep = residue(&t, c, MODEL_SLOTS / CLASSES[c].nslots(), 560, 0x5151_a1a1_7777_0f0f);
         let target = keep.len();
         let before = occupied(s, c);
         let mut st = 0x1357_9bdfu64;
         let mut was_compacting = false;
         for _ in 0..400_000 {
             let r = xorshift(&mut st);
-            let go_free = if keep.len() > target + 100 {
-                true
-            } else if keep.len() + 100 < target {
-                false
-            } else {
-                r & 1 == 0
-            };
+            let go_free = if keep.len() > target + 100 { true } else if keep.len() + 100 < target { false } else { r & 1 == 0 };
             if go_free {
                 let i = ((r >> 8) % keep.len() as u64) as usize;
                 t.free(keep.swap_remove(i));
@@ -4066,14 +3734,8 @@ pub(crate) mod tests {
         }
         assert!(was_compacting);
         let after = occupied(s, c);
-        let bound = keep.len().div_ceil(nslots)
-            + COMPACT_MIN_SLABS * CLASSES[c].compact_slots() / nslots
-            + default_cap(c) as usize / nslots
-            + 1;
-        assert!(
-            after <= bound,
-            "{after} occupied slabs after the random walk, bound {bound}, before {before}"
-        );
+        let bound = keep.len().div_ceil(nslots) + COMPACT_MIN_SLABS * CLASSES[c].compact_slots() / nslots + default_cap(c) as usize / nslots + 1;
+        assert!(after <= bound, "{after} occupied slabs after the random walk, bound {bound}, before {before}");
         for p in keep {
             t.free(p);
         }
@@ -4082,10 +3744,7 @@ pub(crate) mod tests {
 
     #[test]
     fn compaction_off_keeps_the_lifo_reuse_in_place() {
-        let s = shared_with(Config {
-            tcache_compact_shift: 0,
-            ..Config::DEFAULT
-        });
+        let s = shared_with(Config { tcache_compact_shift: 0, ..Config::DEFAULT });
         let t = TestHeap::new(s);
         let c = class_with(1024);
         let keep = residue(&t, c, MODEL_SLOTS / CLASSES[c].nslots(), 560, 0x1234_5678);
@@ -4109,13 +3768,7 @@ pub(crate) mod tests {
     fn randomised_model_check() {
         let s = shared();
         let heaps: Vec<TestHeap> = (0..3).map(|_| TestHeap::new(s)).collect();
-        let classes = [
-            class_with(16),
-            class_with(48),
-            class_with(64),
-            class_with(256),
-            class_with(4096),
-        ];
+        let classes = [class_with(16), class_with(48), class_with(64), class_with(256), class_with(4096)];
         let mut model: HashSet<usize> = HashSet::new();
         let mut order: Vec<(usize, usize)> = Vec::new();
         let mut st = 0xdead_beef_cafe_f00du64;
@@ -4126,14 +3779,9 @@ pub(crate) mod tests {
                 let ci = (r >> 16) as usize % classes.len();
                 let c = classes[ci];
                 let p = t.alloc(c) as usize;
-                assert!(
-                    model.insert(p),
-                    "step {step}: duplicate live pointer {p:#x}"
-                );
+                assert!(model.insert(p), "step {step}: duplicate live pointer {p:#x}");
                 assert_eq!(class_of(CLASSES[c].size()), Some(c));
-                assert!(
-                    matches!(s.regions.classify(p), Kind::Slab { class, .. } if class as usize == c)
-                );
+                assert!(matches!(s.regions.classify(p), Kind::Slab { class, .. } if class as usize == c));
                 order.push((p, c));
             } else {
                 let i = (r >> 20) as usize % order.len();
@@ -4145,10 +3793,7 @@ pub(crate) mod tests {
                 // Invariant: live == program-live + cached, per class.
                 for &c in &classes {
                     let prog = order.iter().filter(|&&(_, cc)| cc == c).count();
-                    let cached: usize = heaps
-                        .iter()
-                        .map(|h| h.heap().cache(c).map_or(0, |k| k.len()))
-                        .sum();
+                    let cached: usize = heaps.iter().map(|h| h.heap().cache(c).map_or(0, |k| k.len())).sum();
                     assert_eq!(live(s, c), prog + cached, "step {step} class {c}");
                 }
             }
@@ -4250,10 +3895,7 @@ pub(crate) mod tests {
         assert_eq!(q as usize % (1 << 20), 0);
         // Frees route by region: a huge free never touches a cache.
         t.free(p);
-        assert_eq!(
-            t.stats().deallocated,
-            s.huge.usable_for(size).unwrap() as u64
-        );
+        assert_eq!(t.stats().deallocated, s.huge.usable_for(size).unwrap() as u64);
         assert!((0..NCLASSES).all(|c| t.heap().cache(c).is_none()));
         assert_eq!(s.huge.stats().runs, 1);
         // The heap-less path frees huge runs too.
@@ -4278,27 +3920,14 @@ pub(crate) mod tests {
         // `--memory=512m`.
         let at_init = band(s.cgroup.limit().min(s.cgroup.high()), s.cgroup.current());
         assert_eq!(s.policy.band(), at_init);
-        assert_eq!(
-            s.gc_interval(),
-            if s.policy.immediate() {
-                0
-            } else {
-                s.gc_interval_ns
-            }
-        );
-        assert_eq!(
-            s.policy.effective_decay_ns(s.decay_ns()),
-            effective_decay_ns(s.decay_ns(), at_init)
-        );
+        assert_eq!(s.gc_interval(), if s.policy.immediate() { 0 } else { s.gc_interval_ns });
+        assert_eq!(s.policy.effective_decay_ns(s.decay_ns()), effective_decay_ns(s.decay_ns(), at_init));
         assert_eq!(crate::policy::empty_bytes(s), 0);
         let l = 512u64 << 20;
         s.policy.apply(band(l, l * 95 / 100), l, 0, 0);
         assert_eq!(s.gc_interval(), 0);
         assert_eq!(s.policy.effective_decay_ns(s.decay_ns()), 0);
-        assert_eq!(
-            s.policy.effective_decay_ns(crate::purge::NEVER),
-            crate::purge::NEVER
-        );
+        assert_eq!(s.policy.effective_decay_ns(crate::purge::NEVER), crate::purge::NEVER);
         s.policy.apply(band(l, l * 8 / 10), l, 0, 0);
         assert_eq!(s.gc_interval(), s.gc_interval_ns);
         let eff = s.policy.effective_decay_ns(s.decay_ns());
@@ -4309,8 +3938,7 @@ pub(crate) mod tests {
         let _ = crate::purge::decay(s, os::now_ns());
         assert!(!s.policy.full_purge_pending());
         assert_eq!(s.policy.full_purges(), 1);
-        s.policy
-            .apply(Band::Unlimited, crate::sys::cgroup::UNLIMITED, 0, 1);
+        s.policy.apply(Band::Unlimited, crate::sys::cgroup::UNLIMITED, 0, 1);
         assert_eq!(s.policy.keep16(), KEEP_ALL);
         assert_eq!(s.gc_interval(), s.gc_interval_ns);
     }
@@ -4361,10 +3989,7 @@ pub(crate) mod tests {
     /// `destroy` releases the binding, and arenas are built on first touch.
     #[test]
     fn automatic_arenas_are_assigned_least_loaded_and_built_lazily() {
-        let s = shared_with(Config {
-            narenas: 3,
-            ..Config::DEFAULT
-        });
+        let s = shared_with(Config { narenas: 3, ..Config::DEFAULT });
         assert_eq!(s.arenas.count(), 3);
         assert_eq!(s.arenas.auto(), 3);
         assert!(s.arenas.get_existing(1).is_none());
@@ -4372,14 +3997,8 @@ pub(crate) mod tests {
         let mut heaps: Vec<TestHeap> = (0..6).map(|_| TestHeap::new(s)).collect();
         let homes: Vec<u16> = heaps.iter().map(|t| t.heap().arena()).collect();
         assert_eq!(homes, [0, 1, 2, 0, 1, 2]);
-        assert_eq!(
-            (0..3).map(|i| s.arenas.bound(i)).collect::<Vec<_>>(),
-            [2, 2, 2]
-        );
-        assert!(
-            s.arenas.get_existing(1).is_none(),
-            "assignment alone must not build"
-        );
+        assert_eq!((0..3).map(|i| s.arenas.bound(i)).collect::<Vec<_>>(), [2, 2, 2]);
+        assert!(s.arenas.get_existing(1).is_none(), "assignment alone must not build");
         assert!(!s.multi_arena());
         // Destroying a heap frees its binding; the next heap takes the
         // vacated arena.
@@ -4413,10 +4032,7 @@ pub(crate) mod tests {
         for h in heaps {
             h.destroy();
         }
-        assert_eq!(
-            (0..4).map(|i| s.arenas.bound(i)).collect::<Vec<_>>(),
-            [0, 0, 0, 0]
-        );
+        assert_eq!((0..4).map(|i| s.arenas.bound(i)).collect::<Vec<_>>(), [0, 0, 0, 0]);
     }
 
     /// Thread churn under a multi-arena default: a lone heap stays on
@@ -4426,10 +4042,7 @@ pub(crate) mod tests {
     /// alive at once get built; a built idle arena beats an unbuilt one.
     #[test]
     fn heap_churn_reuses_the_vacated_arena() {
-        let s = shared_with(Config {
-            narenas: 8,
-            ..Config::DEFAULT
-        });
+        let s = shared_with(Config { narenas: 8, ..Config::DEFAULT });
         let main = TestHeap::new(s);
         assert_eq!(main.heap().arena(), 0);
         let c = class_with(64);
@@ -4444,10 +4057,7 @@ pub(crate) mod tests {
         }
         assert!(s.multi_arena());
         assert!(s.arenas.get_existing(1).is_some());
-        assert!(
-            (2..8).all(|i| s.arenas.get_existing(i).is_none()),
-            "only arenas 0 and 1 were ever alive at once"
-        );
+        assert!((2..8).all(|i| s.arenas.get_existing(i).is_none()), "only arenas 0 and 1 were ever alive at once");
         assert_eq!((s.arenas.bound(0), s.arenas.bound(1)), (1, 0));
         // Two workers alive at once: the second takes a third arena.
         let w1 = TestHeap::new(s);
@@ -4478,10 +4088,7 @@ pub(crate) mod tests {
         assert_eq!(s.config.narenas, expect);
         assert_eq!(s.arenas.auto(), expect);
         assert_eq!(s.arenas.count(), expect);
-        let s1 = shared_with(Config {
-            narenas: 1,
-            ..Config::DEFAULT
-        });
+        let s1 = shared_with(Config { narenas: 1, ..Config::DEFAULT });
         assert_eq!((s1.config.narenas, s1.arenas.auto()), (1, 1));
     }
 
@@ -4502,18 +4109,12 @@ pub(crate) mod tests {
         assert!(!p1.is_null() && zero);
         assert_eq!(s.classify_free(p0), Ok((c, 0)));
         assert_eq!(s.classify_free(p1), Ok((c, a1)));
-        assert_ne!(
-            s.arena0.classes[c].locate(p0).0,
-            s.arena0.classes[c].locate(p1).0
-        );
+        assert_ne!(s.arena0.classes[c].locate(p0).0, s.arena0.classes[c].locate(p1).0);
         assert_eq!(h.cache(c).unwrap().len(), HALF - 1);
         assert_eq!(h.cache_in(a1, c).unwrap().len(), HALF - 1);
         // One refill spans `HALF / nslots` slabs (one 1024-slot slab at 64 bytes).
         let per_refill = HALF.div_ceil(CLASSES[c].nslots());
-        assert_eq!(
-            s.arena(a1).unwrap().classes[c].stats().committed,
-            per_refill
-        );
+        assert_eq!(s.arena(a1).unwrap().classes[c].stats().committed, per_refill);
         assert_eq!(s.arena0.classes[c].stats().committed, per_refill);
         // Non-existent arena: null, nothing touched.
         assert!(h.alloc_in(s, 77, c).0.is_null());
@@ -4577,11 +4178,7 @@ pub(crate) mod tests {
         let before = s.meta.stats().allocated;
         let (q, _) = h.alloc_in(s, 0, c);
         assert_eq!(s.classify_free(q), Ok((c, 0)));
-        assert_eq!(
-            s.meta.stats().allocated,
-            before,
-            "no others node for an uncached class"
-        );
+        assert_eq!(s.meta.stats().allocated, before, "no others node for an uncached class");
         assert!(h.cache_in(0, c).is_none());
         assert!(h.cache(c).is_none());
         let st = h.stats();
@@ -4613,15 +4210,9 @@ pub(crate) mod tests {
         let meta_before = s.meta.stats().allocated;
         h.drop_home_caches(s);
         assert!(h.cache(c).is_none());
-        assert!(
-            s.meta.stats().allocated < meta_before,
-            "the stack was freed"
-        );
+        assert!(s.meta.stats().allocated < meta_before, "the stack was freed");
         let after = h.stats();
-        assert_eq!(
-            (after.allocated, after.deallocated),
-            (before.allocated, before.deallocated)
-        );
+        assert_eq!((after.allocated, after.deallocated), (before.allocated, before.deallocated));
         h.free(s, q);
         let again = h.stats();
         assert_eq!((again.allocated, again.deallocated), (128, 128));
@@ -4693,6 +4284,7 @@ pub(crate) mod tests {
     // Phase 1.5 task 8: the four cache invariants that were `debug_assert!`
     // abort in release. Each test builds the violating state by hand.
 
+
     // Phase 2 task 3: the opt-in `zero_on_free` and `slot_randomize` keys.
 
     /// The two push flags are one byte on `Shared`'s first line; the
@@ -4701,33 +4293,19 @@ pub(crate) mod tests {
     fn push_flags_encode_zero_on_free_and_double_free_scan() {
         assert_eq!(shared().push_flags(), 0);
         assert!(!shared().zero_on_free());
-        let s = shared_with(Config {
-            narenas: 1,
-            zero_on_free: true,
-            ..Config::DEFAULT
-        });
+        let s = shared_with(Config { narenas: 1, zero_on_free: true, ..Config::DEFAULT });
         assert_eq!(s.push_flags(), PUSH_ZERO);
         assert!(s.zero_on_free() && !s.double_free_scan());
-        let s = shared_with(Config {
-            narenas: 1,
-            zero_on_free: true,
-            double_free_scan: true,
-            ..Config::DEFAULT
-        });
+        let s = shared_with(Config { narenas: 1, zero_on_free: true, double_free_scan: true, ..Config::DEFAULT });
         assert_eq!(s.push_flags(), PUSH_ZERO | PUSH_SCAN);
         assert!(s.zero_on_free() && s.double_free_scan());
-        assert_eq!(
-            core::mem::offset_of!(Shared, push_flags) / 128,
-            core::mem::offset_of!(Shared, multi_arena) / 128
-        );
+        assert_eq!(core::mem::offset_of!(Shared, push_flags) / 128, core::mem::offset_of!(Shared, multi_arena) / 128);
     }
 
     /// Slot memory is real on Linux only (`shared_with_guards`).
     #[cfg(target_os = "linux")]
     fn bytes_of(p: *mut u8, n: usize) -> Vec<u8> {
-        (0..n)
-            .map(|i| unsafe { core::ptr::read_volatile(p.add(i)) })
-            .collect()
+        (0..n).map(|i| unsafe { core::ptr::read_volatile(p.add(i)) }).collect()
     }
 
     /// With the key a freed slot reads as zero the moment `free` returns,
@@ -4749,49 +4327,30 @@ pub(crate) mod tests {
         let t = TestHeap::new(s);
         let p = dirty(&t);
         t.free(p);
-        assert!(
-            bytes_of(p, size).iter().all(|&b| b == 0xA5),
-            "the default path cleared a slot"
-        );
+        assert!(bytes_of(p, size).iter().all(|&b| b == 0xA5), "the default path cleared a slot");
         assert_eq!(t.alloc(c), p);
         t.free(p);
         t.flush_all();
         t.destroy();
 
-        let s = shared_with(Config {
-            narenas: 1,
-            zero_on_free: true,
-            ..Config::DEFAULT
-        });
+        let s = shared_with(Config { narenas: 1, zero_on_free: true, ..Config::DEFAULT });
         let t = TestHeap::new(s);
         // Plain free: cleared, then the same slot comes back zero without
         // `calloc`'s memset.
         let p = dirty(&t);
         t.free(p);
-        assert!(
-            bytes_of(p, size).iter().all(|&b| b == 0),
-            "plain free left bytes"
-        );
+        assert!(bytes_of(p, size).iter().all(|&b| b == 0), "plain free left bytes");
         assert_eq!(t.alloc(c), p);
         assert!(bytes_of(p, size).iter().all(|&b| b == 0));
         // Sized path (`sdallocx`): the size hint's class, no bit test. With
         // the key the fast push declines and `free_sized_slow` takes the
         // exact route, which clears the slot in `free_slow_in`.
         unsafe { ptr::write_bytes(p, 0xA5, size) };
-        assert!(
-            !free_sized_fast(s, t.heap(), p, Some(c)),
-            "the fast push accepted a slot under zero_on_free"
-        );
-        assert!(
-            bytes_of(p, size).iter().all(|&b| b == 0xA5),
-            "the declined push touched the slot"
-        );
+        assert!(!free_sized_fast(s, t.heap(), p, Some(c)), "the fast push accepted a slot under zero_on_free");
+        assert!(bytes_of(p, size).iter().all(|&b| b == 0xA5), "the declined push touched the slot");
         s.check_size_hint(p, size, Some(c));
         t.free(p);
-        assert!(
-            bytes_of(p, size).iter().all(|&b| b == 0),
-            "sized free left bytes"
-        );
+        assert!(bytes_of(p, size).iter().all(|&b| b == 0), "sized free left bytes");
         assert_eq!(t.alloc(c), p);
         // A full cache: the slot goes through `free_slow` after the clear.
         let cap = t.cache(c).cap() as usize;
@@ -4800,18 +4359,12 @@ pub(crate) mod tests {
             t.free(q);
         }
         for &q in &ps {
-            assert!(
-                bytes_of(q, size).iter().all(|&b| b == 0),
-                "a flushed or cached slot kept bytes"
-            );
+            assert!(bytes_of(q, size).iter().all(|&b| b == 0), "a flushed or cached slot kept bytes");
         }
         // Direct release (`MALLOCX_TCACHE_NONE`), with no cache involved.
         unsafe { ptr::write_bytes(p, 0xA5, size) };
         super::free_direct(s, p);
-        assert!(
-            bytes_of(p, size).iter().all(|&b| b == 0),
-            "direct free left bytes"
-        );
+        assert!(bytes_of(p, size).iter().all(|&b| b == 0), "direct free left bytes");
         t.flush_all();
         t.destroy();
     }
@@ -4822,11 +4375,7 @@ pub(crate) mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn zero_on_free_clears_a_huge_run() {
-        let s = shared_with(Config {
-            narenas: 1,
-            zero_on_free: true,
-            ..Config::DEFAULT
-        });
+        let s = shared_with(Config { narenas: 1, zero_on_free: true, ..Config::DEFAULT });
         let t = TestHeap::new(s);
         let n = 1 << 20;
         for direct in [false, true] {
@@ -4835,17 +4384,9 @@ pub(crate) mod tests {
             let usable = s.huge.usable_for(n).unwrap();
             assert!(usable >= n);
             unsafe { ptr::write_bytes(p, 0xA5, usable) };
-            if direct {
-                super::free_direct(s, p)
-            } else {
-                t.free(p)
-            }
+            if direct { super::free_direct(s, p) } else { t.free(p) }
             let b = bytes_of(p, usable);
-            assert!(
-                b.iter().all(|&x| x == 0),
-                "huge free (direct {direct}) left bytes: first non-zero at {:?}",
-                b.iter().position(|&x| x != 0)
-            );
+            assert!(b.iter().all(|&x| x == 0), "huge free (direct {direct}) left bytes: first non-zero at {:?}", b.iter().position(|&x| x != 0));
         }
         // Default: untouched.
         let s = shared();
@@ -4853,10 +4394,7 @@ pub(crate) mod tests {
         let (p, _) = t2.alloc_huge(n, page_size());
         unsafe { ptr::write_bytes(p, 0xA5, n) };
         t2.free(p);
-        assert!(
-            bytes_of(p, n).iter().all(|&x| x == 0xA5),
-            "the default huge free cleared the run"
-        );
+        assert!(bytes_of(p, n).iter().all(|&x| x == 0xA5), "the default huge free cleared the run");
         t2.destroy();
         t.destroy();
     }
@@ -4874,11 +4412,7 @@ pub(crate) mod tests {
         t.free(p);
         t.flush_all();
         t.destroy();
-        let s = shared_with(Config {
-            narenas: 1,
-            slot_randomize: true,
-            ..Config::DEFAULT
-        });
+        let s = shared_with(Config { narenas: 1, slot_randomize: true, ..Config::DEFAULT });
         let t = TestHeap::new(s);
         assert_eq!(t.heap().rng, 0, "heap creation seeded the rng");
         let p = t.alloc(c);
@@ -4923,35 +4457,18 @@ pub(crate) mod tests {
         t.flush_all();
         t.destroy();
 
-        let s = shared_with(Config {
-            narenas: 1,
-            slot_randomize: true,
-            ..Config::DEFAULT
-        });
+        let s = shared_with(Config { narenas: 1, slot_randomize: true, ..Config::DEFAULT });
         let t = TestHeap::new(s);
         let cs = &s.arena0.classes[c];
-        let (first_z, zeroed): (Vec<*mut u8>, Vec<bool>) =
-            (0..batch).map(|_| t.heap().alloc_zeroed(s, c)).unzip();
-        assert!(
-            zeroed.iter().all(|&z| z),
-            "the first batch from a Fresh slab is zero whatever its order"
-        );
+        let (first_z, zeroed): (Vec<*mut u8>, Vec<bool>) = (0..batch).map(|_| t.heap().alloc_zeroed(s, c)).unzip();
+        assert!(zeroed.iter().all(|&z| z), "the first batch from a Fresh slab is zero whatever its order");
         assert!(!ascending(&first_z), "randomised batch is address-ordered");
-        assert!(
-            !first_z.windows(2).all(|w| w[0] > w[1]),
-            "randomised batch is reverse-ordered"
-        );
-        assert!(
-            contiguous(&first_z),
-            "the first batch is not the slab's first {batch} slots"
-        );
+        assert!(!first_z.windows(2).all(|w| w[0] > w[1]), "randomised batch is reverse-ordered");
+        assert!(contiguous(&first_z), "the first batch is not the slab's first {batch} slots");
         let slab = cs.locate(first_z[0]).0;
         assert!(first_z.iter().all(|&p| cs.locate(p).0 == slab));
         let second: Vec<*mut u8> = (0..batch).map(|_| t.alloc(c)).collect();
-        assert!(
-            !ascending(&second) && contiguous(&second),
-            "the second batch (bit loop) is ordered or not one run of slots"
-        );
+        assert!(!ascending(&second) && contiguous(&second), "the second batch (bit loop) is ordered or not one run of slots");
         assert!(second.iter().all(|&p| cs.locate(p).0 == slab));
         let mut all: Vec<usize> = first_z.iter().chain(&second).map(|&p| p as usize).collect();
         all.sort_unstable();
@@ -4973,11 +4490,7 @@ pub(crate) mod tests {
     /// distinct slot of the class and the live accounting holds.
     #[test]
     fn slot_randomize_keeps_the_compacting_run_valid() {
-        let s = shared_with(Config {
-            narenas: 1,
-            slot_randomize: true,
-            ..Config::DEFAULT
-        });
+        let s = shared_with(Config { narenas: 1, slot_randomize: true, ..Config::DEFAULT });
         let t = TestHeap::new(s);
         let c = class_with(1024);
         let cs = &s.arena0.classes[c];
@@ -5091,17 +4604,8 @@ mod linux_tests {
         use crate::layout::{MAX_SLAB, Mapping};
         use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
         let reserve = |len: usize| -> usize {
-            unsafe {
-                crate::sys::mmap(
-                    0,
-                    len,
-                    PROT_NONE,
-                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
-                    -1,
-                    0,
-                )
-            }
-            .expect("reserve")
+            unsafe { crate::sys::mmap(0, len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0) }
+                .expect("reserve")
         };
         let sb_len = (NCLASSES << LG_STRIDE) + MAX_SLAB;
         let sb = reserve(sb_len);
@@ -5117,36 +4621,21 @@ mod linux_tests {
             (mb, META_LEN),
             page_size().trailing_zeros(),
             [
-                Mapping {
-                    addr: superblock,
-                    len: sb_len,
-                },
-                Mapping {
-                    addr: huge.0,
-                    len: huge.1,
-                },
-                Mapping {
-                    addr: mb,
-                    len: META_LEN,
-                },
+                Mapping { addr: superblock, len: sb_len },
+                Mapping { addr: huge.0, len: huge.1 },
+                Mapping { addr: mb, len: META_LEN },
             ],
         );
         let b: &'static mut MaybeUninit<Shared> = Box::leak(Box::new(MaybeUninit::uninit()));
         // One automatic arena: the tests below reason about `arena0`.
-        let config = Config {
-            narenas: 1,
-            ..Config::DEFAULT
-        };
+        let config = Config { narenas: 1, ..Config::DEFAULT };
         assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, config, false) });
         unsafe { b.assume_init_ref() }
     }
 
     fn live(s: &Shared, c: usize) -> usize {
         let cs = &s.arena0.classes[c];
-        (0..cs.committed_slabs())
-            .filter(|&i| !cs.is_guard_slab(i))
-            .map(|i| cs.desc(i).live())
-            .sum()
+        (0..cs.committed_slabs()).filter(|&i| !cs.is_guard_slab(i)).map(|i| cs.desc(i).live()).sum()
     }
 
     fn fill(p: *mut u8, n: usize, v: u8) {
@@ -5155,17 +4644,11 @@ mod linux_tests {
 
     fn check(p: *mut u8, n: usize, v: u8) {
         let s = unsafe { core::slice::from_raw_parts(p, n) };
-        assert!(
-            s.iter().all(|&b| b == v),
-            "memory at {:#x} is not all {v:#x}",
-            p as usize
-        );
+        assert!(s.iter().all(|&b| b == v), "memory at {:#x} is not all {v:#x}", p as usize);
     }
 
     fn is_zero(p: *mut u8, n: usize) -> bool {
-        unsafe { core::slice::from_raw_parts(p, n) }
-            .iter()
-            .all(|&b| b == 0)
+        unsafe { core::slice::from_raw_parts(p, n) }.iter().all(|&b| b == 0)
     }
 
     #[test]
@@ -5192,10 +4675,7 @@ mod linux_tests {
             check(p, CLASSES[c].size(), 0xa5);
             free(s, p);
             free(s, q);
-            assert_eq!(
-                unsafe { &*(h as *mut Heap) }.stats().deallocated,
-                2 * CLASSES[c].size() as u64
-            );
+            assert_eq!(unsafe { &*(h as *mut Heap) }.stats().deallocated, 2 * CLASSES[c].size() as u64);
         })
         .join()
         .unwrap();
@@ -5225,20 +4705,13 @@ mod linux_tests {
                 let (r, zero) = alloc_zeroed(s, c);
                 assert!(!r.is_null());
                 if zero {
-                    assert!(
-                        is_zero(r, size),
-                        "{:#x} flagged zero but is not",
-                        r as usize
-                    );
+                    assert!(is_zero(r, size), "{:#x} flagged zero but is not", r as usize);
                     zeros += 1;
                 }
                 fill(r, size, 0x11);
             }
             let refill = default_cap(c) as usize / 2;
-            assert!(
-                zeros >= refill - 1 && zeros < 3000,
-                "{zeros} zero-flagged of 3000"
-            );
+            assert!(zeros >= refill - 1 && zeros < 3000, "{zeros} zero-flagged of 3000");
         })
         .join()
         .unwrap();
@@ -5279,10 +4752,7 @@ mod linux_tests {
         assert_eq!(live(s, c), leaked.load(Ordering::Relaxed));
         // Heaps and caches went back to the metadata allocator.
         assert_eq!(s.meta.stats().allocated, meta_before);
-        assert_eq!(
-            s.arena0.classes[c].desc(0).state(),
-            crate::slab::State::Active
-        );
+        assert_eq!(s.arena0.classes[c].desc(0).state(), crate::slab::State::Active);
     }
 
     #[test]
@@ -5313,10 +4783,7 @@ mod linux_tests {
             // direct without creating another heap.
             let key = s.thread_key().expect("key");
             assert_eq!(unsafe { libc::pthread_getspecific(key) }, h);
-            assert_eq!(
-                unsafe { libc::pthread_setspecific(key, core::ptr::null()) },
-                0
-            );
+            assert_eq!(unsafe { libc::pthread_setspecific(key, core::ptr::null()) }, 0);
             unsafe { heap_destructor(h) };
             assert_eq!(tls::get() as usize, TLS_EXITED);
             assert_eq!(s.meta.stats().allocated, meta_before);
@@ -5367,10 +4834,7 @@ mod linux_tests {
     #[test]
     fn eight_threads_hammer_disjoint_pointers() {
         let s = shared();
-        let classes: Vec<usize> = [16usize, 64, 320, 2048]
-            .iter()
-            .map(|&n| class_of(n).unwrap())
-            .collect();
+        let classes: Vec<usize> = [16usize, 64, 320, 2048].iter().map(|&n| class_of(n).unwrap()).collect();
         let mut handles = Vec::new();
         for t in 0..8u64 {
             let classes = classes.clone();
