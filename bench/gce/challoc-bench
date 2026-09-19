@@ -167,6 +167,31 @@ REMOTE
   wait
 }
 
+# rsync_tree SSH_CMD DEST: the working tree to DEST:$REMOTE_DIR (the one
+# rsync line `sync`, the matrix cells and `matrix sync` share). In a git
+# worktree (a lane, CLAUDE.md) `.git` is a file naming the main
+# repository's gitdir, which does not exist on the VM, where bench/quick.sh
+# and bench/ab.sh `git archive` revisions; so a worktree ships the common
+# .git directory (objects, refs, packed-refs, config) in its place and the
+# worktree's own HEAD and index over it, and the VM's ~/challoc is a plain
+# checkout of the lane's branch. A plain checkout ships its .git as before.
+rsync_tree() {
+  local ssh="$1" dest="$2" common wtdir
+  local -a ex=(--exclude=/target --exclude=/.ralph --exclude='/.tmp-*' --exclude='/.ralph-*.log')
+  if [ -f "$REPO/.git" ]; then
+    common="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)"
+    wtdir="$(git -C "$REPO" rev-parse --path-format=absolute --git-dir)"
+    # --delete leaves excluded paths alone on the receiver, so the remote
+    # .git survives the first pass and the second brings it up to date.
+    rsync -az --delete "${ex[@]}" --exclude=/.git -e "$ssh" "$REPO/" "$dest:$REMOTE_DIR/" \
+    && rsync -az --delete --exclude=/worktrees --exclude=/HEAD --exclude=/index --exclude=/ORIG_HEAD --exclude=/logs \
+         -e "$ssh" "$common/" "$dest:$REMOTE_DIR/.git/" \
+    && rsync -az -e "$ssh" "$wtdir/HEAD" "$wtdir/index" "$dest:$REMOTE_DIR/.git/"
+  else
+    rsync -az --delete "${ex[@]}" -e "$ssh" "$REPO/" "$dest:$REMOTE_DIR/"
+  fi
+}
+
 # sync mirrors the working tree, uncommitted changes included, with --delete:
 # anything the VM keeps under ~/challoc that is not in the tree (logs) is
 # removed, so VM-side logs belong in ~/logs. It warns when src/ (or the
@@ -182,10 +207,7 @@ cmd_sync() {
   for t in $(targets "${1:-all}"); do
     local dest; dest="$(ssh_target "$t")"
     echo "challoc-bench: syncing $REPO -> $dest:$REMOTE_DIR"
-    rsync -az --delete \
-      --exclude=/target --exclude=/.ralph --exclude='/.tmp-*' --exclude='/.ralph-*.log' \
-      -e "$(ssh_cmd)" \
-      "$REPO/" "$dest:$REMOTE_DIR/" &
+    rsync_tree "$(ssh_cmd)" "$dest" &
   done
   wait
 }
@@ -730,9 +752,7 @@ matrix_cell() {
   say "provisioning"
   matrix_provision_script | matrix_ssh "$dest" bash -s >>"$log" 2>&1 || { say "provision failed"; echo "MATRIX cell=$cell image=$image kernel=$(matrix_ssh "$dest" uname -r 2>/dev/null) page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=provision" >> "$log"; return 1; }
   say "syncing the tree"
-  # shellcheck disable=SC2046
-  rsync -az --delete --exclude=/target --exclude=/.ralph --exclude='/.tmp-*' --exclude='/.ralph-*.log' \
-    -e "ssh $(matrix_ssh_opts)" "$REPO/" "$dest:$REMOTE_DIR/" >>"$log" 2>&1 || { say "sync failed"; echo "MATRIX cell=$cell image=$image kernel=- page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=sync" >> "$log"; return 1; }
+  rsync_tree "ssh $(matrix_ssh_opts)" "$dest" >>"$log" 2>&1 || { say "sync failed"; echo "MATRIX cell=$cell image=$image kernel=- page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=sync" >> "$log"; return 1; }
   if [ -n "${MATRIX_LAB:-}" ]; then
     # Lab mode: the VM stays. `matrix clean` deletes it.
     trap - EXIT
@@ -847,9 +867,7 @@ cmd_matrix() {
       matrix_ssh "$dest" "$@"; return ;;
     sync)
       shift; local dest; dest="$(matrix_lab_dest "${1:?matrix sync: which cell?}")"
-      # shellcheck disable=SC2046
-      rsync -az --delete --exclude=/target --exclude=/.ralph --exclude='/.tmp-*' --exclude='/.ralph-*.log' \
-        -e "ssh $(matrix_ssh_opts)" "$REPO/" "$dest:$REMOTE_DIR/"; return ;;
+      rsync_tree "ssh $(matrix_ssh_opts)" "$dest"; return ;;
   esac
   local cells="${*:-$MATRIX_CELLS}" c pids= failed=0
   for c in $cells; do cell_spec "$c" >/dev/null || die "matrix: unknown cell $c (matrix list)"; done
