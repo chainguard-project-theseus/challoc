@@ -1624,6 +1624,7 @@ runs on every row.
 | CLDEMOTE (`cpuid` 7.0 `ECX[25]`), WAITPKG (`ECX[5]`) | x86_64 CPU (Sapphire Rapids and later; a hypervisor may hide WAITPKG) | reported only (task 12) | none needed |
 | ERMS, FSRM, AVX-512F (`cpuid` 7.0 `EBX[9]`, `EDX[4]`, `EBX[16]`) | x86_64 CPU | reported only: `memcpy`/`memset` selection is glibc's; the crate's fills use the compiler baseline | none needed |
 | Cache line, L1D and L2 sizes | `CTR_EL0` (arm64), `cpuid` leaf 4 or `0x8000001D` (x86_64), else `/sys/devices/system/cpu/cpu0/cache/index*/` | reported only: the layout constants (`lock.rs` padding, the 512-byte stride rule) stay fixed | `unknown` in the line; nothing changes |
+| Model-checked protocol (`cargo test --features std model::`, `src/model.rs`) | the host test suite, no hardware: an exhaustive interleaving model of the claim, release, `on_live_zero`, purge and group-handoff steps of `class.rs`, memoised on the whole state, with the invariants of section 4 and 5 checked at every state (no slot handed to two claimers, a slot reported zero reads zero, `live` equals set bits plus in-flight reservations, a slab in an arena's set is `Empty`/`Purged` with `live == 0` and owned by that arena, a `Purged` slab reads zero) | nothing at run time: it is the proof obligation for a change to the protocol. Replaying the pre-fix step orders finds the calloc race (Phase 1.5 task 7) and the ownership gap the handoff's owner check closes (task 15); the current order passes every scenario | none needed |
 
 The feature report's arm64 keys are `mte mte3 pac lse lse2 bti sve`, the
 x86_64 keys `lam uai la57 la57_enabled cldemote waitpkg erms fsrm avx512f`, and
@@ -2002,6 +2003,7 @@ src/class.rs          SlabTable (descriptors, slot bitmap, owner array, guard sl
 src/heap.rs           Heap, CacheHeader, Shared, fast and slow paths, cache GC, compaction
 src/huge.rs           huge allocator
 src/meta.rs           metadata region allocator
+src/model.rs          test-only: the exhaustive interleaving model of the slab protocol (section 17's row, plan Phase 2.5 task 13)
 src/purge.rs          decay driver, batching, background thread
 src/policy.rs         the cgroup policy table (section 11): bands, retention cap, full purge
 src/arena.rs          arenas, explicit caches, MALLOCX_* routing

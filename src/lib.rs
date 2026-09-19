@@ -40,6 +40,8 @@ pub mod huge;
 pub mod layout;
 pub mod lock;
 pub mod meta;
+#[cfg(test)]
+mod model;
 pub mod policy;
 pub mod purge;
 pub mod slab;

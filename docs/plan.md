@@ -986,6 +986,32 @@ Tasks, in order:
     machine), including the task 7 (c) fix and the task 15 group handoff.
     Acceptance: the model reproduces the pre-fix calloc race and passes on
     the current code; it runs in `cargo test --features std`.
+    Done 2026-09-19 (lane C): `src/model.rs` (test-only, `cargo test
+    --features std model::`), an explicit-state model checker of one
+    class over two slabs of four slots: the state byte, `live`, the
+    bitmap word, the descriptor arena and the slot memory per slab, the
+    class lock and the partial/empty/purged sets and group cursor per
+    arena, the owner word per group; operations `Refill` (`plan_locked`
+    with `take`, `claim_prefix` and `next_slab` including the handoff,
+    then `finish`'s `fetch_or` loop, the re-plan when short), `Write`,
+    `Release` (`fetch_and`, `sub_live`, `on_live_zero` and `reopen` under
+    the lock) and `Purge`, each split into the real code's atomic steps
+    with the `class.rs` lines quoted; every interleaving enumerated depth
+    first with memoisation on the whole state, the invariants checked at
+    every state (no slot held twice, a slot reported zero reads zero,
+    `live` equals set bits plus in-flight reservations plus pending
+    `sub_live`s, set exclusivity and ownership, `Empty`/`Purged`/`Fresh`
+    shapes, `Purged` reads zero, descriptor arena equals owner word). The
+    pre-fix order (`Variant::prefix_claim = false`) finds the calloc race
+    in 58 states and prints the 23-step interleaving (A's zero pick
+    planned, B claims, writes and releases the slot, A's `fetch_or` takes
+    it under the stale flag), on a `Fresh` and on a `Purged` slab; the
+    handoff without the owner check (`owner_check = false`) finds a slab of
+    arena 1 in arena 0's empty set in 561 states; the current protocol
+    passes every scenario: calloc race 2153 states, churn 11214, handoff
+    5759, three threads 59925, 0.99 s for the eight tests on the host.
+    Design 17's table has the row; a `MAX_STATES` budget fails a scenario
+    that outgrows the 30 s rule.
 
 ### Execution in lanes
 
