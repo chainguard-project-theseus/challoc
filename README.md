@@ -149,7 +149,7 @@ the task that will use them is named in the design.
 | `PR_SET_VMA_ANON_NAME`       | kernel 5.17   | Named heap mappings in `/proc/pid/maps`    | Skip                              |
 | `mseal`                      | kernel 6.10   | Seals the never-committed parts of the reservations (the gaps between class regions, the slack around the huge and metadata regions) at init; not the regions or the region table | Skip (also when seccomp filters it, as Docker's default profile does) |
 | PSI triggers                 | kernel 6.4 (unprivileged) | Background thread arms `some 150000 1000000` on the cgroup's `memory.pressure` (or the unprivileged `some 300000 2000000`); a fire takes a sample, re-evaluates the policy and runs a decay pass at once | Sample `memory.current` on the tick; also when the write is refused (Docker's default profile mounts the cgroup read-only: `EROFS`; with `nsdelegate` on the host a container's root cgroup refuses the write: `EPERM`) |
-| Transparent huge pages (reported only) | any kernel | Opt-in only; the `thp` key is accepted and inert | Off                       |
+| Transparent huge pages       | any kernel with THP; per-size knobs since 6.8 | Opt-in: `thp:auto` advises 64 KiB folios on the slab groups and metadata where the host enables `hugepages-64kB` without `madvise`-gating 2 MiB pages (never a 2 MiB page, so fork stays cheap); `thp:always` commits and advises 2 MiB chunks, huge runs and metadata | Off (`thp:never`, the default) |
 | rseq `mm_cid` (reported only) | kernel 6.3    | Optional per-CPU mode, later phase         | Thread caches only                |
 | MTE `mte`, `mte3` (reported only) | arm64 CPU (Armv8.5) and kernel, `AT_HWCAP2` | Tagged pointers, designed (`docs/design.md` section 18), implementation gated on a host that exposes it | Untagged pointers |
 | PAC `pac` (reported only)    | arm64 CPU (Armv8.3) and kernel, `AT_HWCAP` | Signed cache pointers, a later task | Plain pointers |
@@ -291,7 +291,7 @@ performance lab) is in its acceptance run: the release-readiness tasks of
 `docs/review-2026-09-18.md` are landing and the mstress RSS row is open.
 `PROGRESS.md` is the task log; `bench/results/scorecard-{aarch64,x86_64}.md`
 record the benchmark trend per commit. Features marked *planned* above
-(zero-on-free, slot randomisation, THP) are Phase 2; `mseal` of the
+(zero-on-free, slot randomisation) are Phase 2, THP landed with Phase 2.5 task 9 (`thp:auto|always`, off by default); `mseal` of the
 reservations' never-committed ranges, the cgroup measurement layer
 (`stats.cgroup.*`), the cgroup policy and its container tests (`make
 test-cgroup`) have landed.

@@ -70,7 +70,8 @@ int main(void)
     CHECK(strncmp(line, "page_size=", 10) == 0, "line does not start with page_size=");
 
     /* Every key once: the kernel probes, then this architecture's CPU keys. */
-    static const char *const kernel_keys[] = {"page_size", "guard_install", "mseal", "process_madvise", "process_madvise_free", "anon_name"};
+    static const char *const kernel_keys[] = {"page_size", "guard_install", "mseal",     "process_madvise", "process_madvise_free",
+                                              "anon_name", "thp",           "mthp",      "collapse"};
 #if defined(__aarch64__)
     static const char *const cpu_keys[] = {"mte", "mte3", "pac", "lse", "lse2", "bti", "sve", "cacheline", "l1d", "l2"};
 #elif defined(__x86_64__)
@@ -86,6 +87,20 @@ int main(void)
     for (size_t i = 0; i < ncpu; i++)
         CHECK(has_key(line, cpu_keys[i]) == 1, "key %s appears %d times", cpu_keys[i], has_key(line, cpu_keys[i]));
     CHECK((size_t)tokens == nkernel + ncpu, "%d tokens, expected %zu", tokens, nkernel + ncpu);
+
+    /* The THP keys (plan Phase 2.5 task 9): thp is a sysfs setting or none,
+     * mthp a comma list of sizes or none, collapse unprobed/no/a size; the
+     * default configuration never runs the collapse probe. */
+    {
+        const char *v = strstr(line, " thp=") + 5;
+        CHECK(strncmp(v, "never", 5) == 0 || strncmp(v, "madvise", 7) == 0 || strncmp(v, "always", 6) == 0 ||
+                  strncmp(v, "none", 4) == 0,
+              "thp has value `%.12s`", v);
+        v = strstr(line, " mthp=") + 6;
+        CHECK((v[0] >= '1' && v[0] <= '9') || strncmp(v, "none", 4) == 0, "mthp has value `%.12s`", v);
+        v = strstr(line, " collapse=") + 10;
+        CHECK(strncmp(v, "unprobed", 8) == 0, "collapse has value `%.12s` under thp:never", v);
+    }
 
     /* The yes/no keys carry yes or no; the sizes a number with K/M or unknown. */
     for (size_t i = 0; i < ncpu; i++) {

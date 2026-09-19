@@ -238,13 +238,19 @@ pub fn sealed_ranges() -> u32 {
 /// abort on has been mapped yet; it reads only the weak symbols, one file
 /// and `environ`.
 fn init() {
-    let features = Features::probe();
+    let mut features = Features::probe();
     // The slab geometry of the classes whose table slab is below the page
     // (design 3, plan Phase 2.5 task 4e): written once here, before any
     // other thread can see the allocator, never again.
     // SAFETY: `init` runs once, under `INITIALISING`, before `READY`.
     unsafe { layout::adopt_page_geometry(features.page_size.trailing_zeros()) };
     let config = config::load();
+    // The `MADV_COLLAPSE` probe populates a PMD of memory, so only a
+    // configuration that asks for huge pages pays for it (design 10).
+    if config.thp != config::Thp::Never {
+        features.probe_collapse();
+    }
+    crate::thp::configure(config.thp, &features);
     purge::configure(features.process_madvise, config.lazy_free);
     purge::configure_advice(features.process_madvise_free, config.lazy_band);
     purge::set_check_zero(config.check_zero);
@@ -261,6 +267,11 @@ fn init() {
         let ok = Shared::init((*SHARED.0.get()).as_mut_ptr(), regions, config, features.guard_install, pac);
         if !ok {
             sys::abort("metadata region too small for the allocator tables");
+        }
+        // Design 11: `Shared::init` forced the stored `thp` to `never`
+        // under a cgroup limit below 1 GiB; the advice follows.
+        if (*SHARED.0.get()).assume_init_ref().policy.thp_forced() {
+            crate::thp::force_never();
         }
         (*FEATURE_LINE.0.get()).write(FeatureLine::build(&features));
         (*FEATURES.0.get()).write(features);

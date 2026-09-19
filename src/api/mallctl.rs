@@ -126,6 +126,15 @@ pub enum Leaf {
     StatsCgroupPurgeAdvice,
     StatsCgroupLazyPurges,
     StatsCgroupEagerPurges,
+    /// `stats.thp.*` (plan Phase 2.5 task 9, `thp.rs`): the mode in force
+    /// (0 off, 1 folios, 2 PMD chunks) and the ranges advised per region
+    /// kind. Read-only, `size_t`.
+    StatsThpMode,
+    StatsThpClassRanges,
+    StatsThpClassBytes,
+    StatsThpHugeRanges,
+    StatsThpMetaRanges,
+    StatsThpFailures,
     /// `stats.arenas.<i>.*`; `mib[2]` is the arena.
     StatsArenaPactive,
     StatsArenaPdirty,
@@ -249,7 +258,15 @@ static STATS_CGROUP: [Node; 11] = [
     leaf("lazy_purges", Leaf::StatsCgroupLazyPurges),
     leaf("eager_purges", Leaf::StatsCgroupEagerPurges),
 ];
-static STATS: [Node; 8] = [
+static STATS_THP: [Node; 6] = [
+    leaf("mode", Leaf::StatsThpMode),
+    leaf("class_ranges", Leaf::StatsThpClassRanges),
+    leaf("class_bytes", Leaf::StatsThpClassBytes),
+    leaf("huge_ranges", Leaf::StatsThpHugeRanges),
+    leaf("meta_ranges", Leaf::StatsThpMetaRanges),
+    leaf("failures", Leaf::StatsThpFailures),
+];
+static STATS: [Node; 9] = [
     leaf("allocated", Leaf::StatsAllocated),
     leaf("active", Leaf::StatsActive),
     leaf("metadata", Leaf::StatsMetadata),
@@ -258,6 +275,7 @@ static STATS: [Node; 8] = [
     leaf("retained", Leaf::StatsRetained),
     dir("arenas", &STATS_ARENAS),
     dir("cgroup", &STATS_CGROUP),
+    dir("thp", &STATS_THP),
 ];
 static THREAD_TCACHE: [Node; 2] = [leaf("flush", Leaf::ThreadTcacheFlush), leaf("enabled", Leaf::ThreadTcacheEnabled)];
 static THREAD: [Node; 6] = [
@@ -578,6 +596,7 @@ fn batch_query(shared: &Shared, io: &Io) -> Result<(), c_int> {
 fn cstr_of(s: &'static str) -> *const c_char {
     let c: &[u8] = match s {
         "never" => b"never\0",
+        "auto" => b"auto\0",
         "always" => b"always\0",
         // `opt.spin_hint` (config::SpinChoice::name).
         "auto" => b"auto\0",
@@ -826,6 +845,23 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
                 StatsCgroupPurgeAdvice => (crate::purge::advice() == crate::purge::Advice::Lazy) as usize,
                 StatsCgroupLazyPurges => lazy as usize,
                 _ => eager as usize,
+            })
+        }
+        StatsThpMode
+        | StatsThpClassRanges
+        | StatsThpClassBytes
+        | StatsThpHugeRanges
+        | StatsThpMetaRanges
+        | StatsThpFailures => {
+            io.read_only()?;
+            let s = crate::thp::stats();
+            io.read(match leaf {
+                StatsThpMode => crate::thp::decision().mode as usize,
+                StatsThpClassRanges => s.class_ranges as usize,
+                StatsThpClassBytes => s.class_bytes as usize,
+                StatsThpHugeRanges => s.huge_ranges as usize,
+                StatsThpMetaRanges => s.meta_ranges as usize,
+                _ => s.failures as usize,
             })
         }
         StatsArenaPactive

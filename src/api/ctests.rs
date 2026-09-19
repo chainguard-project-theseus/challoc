@@ -416,16 +416,18 @@ fn c_conf_no_tcache() {
 
 #[test]
 fn c_conf_inert_key_aborts_under_abort_conf() {
-    // `thp` is parsed and stored but nothing reads it: with abort_conf a
-    // program cannot start believing it turned THP on. The new
-    // `huge_retain_max` key is a real key and passes.
+    // `stats_print` is parsed but nothing prints at exit: with abort_conf a
+    // program cannot start believing it turned something on. `thp` left
+    // the inert list with plan Phase 2.5 task 9 and passes, as does
+    // `huge_retain_max`.
     run_conf(
         "inert",
         None,
-        &[("MALLOC_CONF", "abort_conf:true,thp:always")],
-        Some("challoc: MALLOC_CONF: conf key thp is accepted but has no effect (not implemented)"),
+        &[("MALLOC_CONF", "abort_conf:true,stats_print:true")],
+        Some("challoc: MALLOC_CONF: conf key stats_print is accepted but has no effect (not implemented)"),
     );
     run_conf("huge_retain_max", None, &[("MALLOC_CONF", "abort_conf:true,huge_retain_max:1048576")], None);
+    run_conf("thp", None, &[("MALLOC_CONF", "abort_conf:true,thp:auto")], None);
 }
 
 #[test]
@@ -802,6 +804,59 @@ fn c_mseal() {
 #[test]
 fn c_features() {
     run_c("features", &[]);
+}
+
+/// `tests/c/thp.c never` (plan Phase 2.5 task 9): the default issues no
+/// `MADV_HUGEPAGE` anywhere (no `hg` on the VMA of a class region,
+/// `stats.thp.mode` 0, nothing advised).
+#[test]
+fn c_thp_never() {
+    run_c("thp", &["never"]);
+}
+
+/// `tests/c/thp.c always` under `thp:always`: with the PMD size enabled in
+/// sysfs the class region is committed in 2 MiB chunks, the VMA has `hg`
+/// and `THPeligible`, and 8 MiB touched show at least 4 MiB of
+/// `AnonHugePages`; with only smaller sizes the groups are advised; with
+/// nothing enabled the mode is off. Forced to `never` under a cgroup
+/// limit below 1 GiB (a pass with a note).
+#[test]
+fn c_thp_always() {
+    let bin = compile("tests/c", "thp", &[]);
+    run_bin_env("thp", &bin, &["always"], &[("MALLOC_CONF", "thp:always")]);
+}
+
+/// `tests/c/thp.c auto` under `thp:auto`: active only where the kernel
+/// enables a folio size below the PMD and does not `madvise`-gate the PMD
+/// (needs `hugepages-64kB/enabled=madvise` and `hugepages-2048kB/enabled=
+/// never` from root; Ubuntu's default makes it inert, which the program
+/// checks as well).
+#[test]
+fn c_thp_auto() {
+    let bin = compile("tests/c", "thp", &[]);
+    run_bin_env("thp", &bin, &["auto"], &[("MALLOC_CONF", "thp:auto")]);
+}
+
+/// `tests/c/fork_cost.c 64` (plan Phase 2.5 task 9): a 64 MiB
+/// Valkey-shaped heap forks and the parent's write burst is copied while
+/// the child is alive. The default configuration only; the `auto` and
+/// `always` modes run with `CHALLOC_THP_TESTS=1` set (they need the sysfs
+/// knobs and print numbers for the results file, not a criterion).
+#[test]
+fn c_fork_cost() {
+    run_c("fork_cost", &["64"]);
+}
+
+#[test]
+fn c_fork_cost_thp_modes() {
+    if env::var("CHALLOC_THP_TESTS").is_err() {
+        std::eprintln!("fork_cost thp modes: skipped (set CHALLOC_THP_TESTS=1)");
+        return;
+    }
+    for conf in ["thp:auto", "thp:always"] {
+        let bin = compile("tests/c", "fork_cost", &[]);
+        run_bin_env("fork_cost", &bin, &["256"], &[("MALLOC_CONF", conf)]);
+    }
 }
 
 /// `tests/c/cgroup.c plain` (plan Phase 2 task 4): `stats.cgroup.*` read

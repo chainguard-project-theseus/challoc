@@ -233,7 +233,31 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     shared.cgroup.sample(crate::sys::now_coarse_ns());
     writeln!(out, "{}", shared.cgroup)?;
     policy_line(out, shared)?;
-    advice_line(out)
+    advice_line(out)?;
+    thp_line(out)
+}
+
+/// The `thp:` line (design 7, 10 and 17; plan Phase 2.5 task 9): the key,
+/// the mode in force and why, the thresholds, and the ranges advised so
+/// far per region kind.
+fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
+    let d = crate::thp::decision();
+    let s = crate::thp::stats();
+    write!(out, "thp: {} -> {} ({})", crate::thp::key().name(), d.mode.name(), d.reason.text())?;
+    if d.mode != crate::thp::Mode::Off {
+        write!(out, " slab_min {}", 1usize << d.lg_slab_min)?;
+        write!(out, " pmd {}", 1usize << d.lg_pmd)?;
+        match d.lg_meta {
+            crate::thp::NO_SIZE => write!(out, " meta off")?,
+            lg => write!(out, " meta {}", 1usize << lg)?,
+        }
+        write!(out, " huge {}", if d.huge { "on" } else { "off" })?;
+    }
+    writeln!(
+        out,
+        " class_ranges {} ({} bytes, {} chunks) huge_ranges {} meta_ranges {} failures {}",
+        s.class_ranges, s.class_bytes, s.chunks, s.huge_ranges, s.meta_ranges, s.failures
+    )
 }
 
 /// The `cgroup policy:` line (design 11): the band as last evaluated and
@@ -462,6 +486,21 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
             shared.regions.page_size()
         )?;
         writeln!(out, "\t\t\"background_thread\": {{\"present\": {}}},", purge::background::present())?;
+        let td = crate::thp::decision();
+        let ts = crate::thp::stats();
+        writeln!(
+            out,
+            "\t\t\"thp\": {{\"key\": \"{}\", \"mode\": \"{}\", \"reason\": \"{}\", \"class_ranges\": {}, \"class_bytes\": {}, \"chunks\": {}, \"huge_ranges\": {}, \"meta_ranges\": {}, \"failures\": {}}},",
+            crate::thp::key().name(),
+            td.mode.name(),
+            td.reason.text(),
+            ts.class_ranges,
+            ts.class_bytes,
+            ts.chunks,
+            ts.huge_ranges,
+            ts.meta_ranges,
+            ts.failures
+        )?;
         let cg = &shared.cgroup;
         cg.sample(crate::sys::now_coarse_ns());
         writeln!(
@@ -771,7 +810,8 @@ mod tests {
             "Version: \"5.3.0-0-gchalloc\"",
             "config.quantum:",
             "opt.dirty_decay_ms: ",
-            "opt.thp: \"never\" (accepted, no effect)",
+            "opt.thp: \"never\"\n",
+            "thp: never -> off (thp:never) class_ranges 0 (0 bytes, 0 chunks) huge_ranges 0 meta_ranges 0 failures 0\n",
             "opt.zero_on_free: false\n",
             "opt.slot_randomize: false\n",
             "opt.cgroup: true\n",
@@ -837,6 +877,7 @@ mod tests {
         assert!(text.contains("\"opt\": {"));
         assert!(text.contains("\"stats\": {\"allocated\": "));
         assert!(text.contains("\"cgroup\": {\"tracked\": "));
+        assert!(text.contains("\"thp\": {\"key\": \"never\", \"mode\": \"off\", "), "{text}");
         assert!(text.contains("\"purge_advice\": \"eager\", \"lazy_purges\": 0, \"eager_purges\": "), "{text}");
         assert!(text.contains("\"stats.arenas\": {"));
         assert!(text.contains("\"0\": {"));

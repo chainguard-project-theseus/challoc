@@ -228,6 +228,12 @@ impl Inner {
         let want = (self.base + align_up(end - self.base, step)).min(self.top);
         if want > self.committed {
             commit_range(self.committed, want - self.committed)?;
+            // Metadata THP (`thp.rs`): the chunk is the folio's size or a
+            // multiple of it (the region base is `MAX_SLAB`-aligned), so
+            // the first touch of a heap or cache maps one folio.
+            if crate::thp::meta_folio_size() != 0 {
+                crate::thp::advise_meta(self.committed, want - self.committed);
+            }
             self.stats.committed += want - self.committed;
             self.committed = want;
         }
@@ -306,6 +312,11 @@ impl Inner {
             "meta: commit outside the reserved area"
         );
         commit_range(addr, len)?;
+        // Metadata THP (`thp.rs`): `Lazy::ensure` rounded the range to the
+        // folio; the advice makes the kernel map it as one.
+        if crate::thp::meta_folio_size() != 0 {
+            crate::thp::advise_meta(addr, len);
+        }
         self.stats.committed += len;
         Ok(())
     }

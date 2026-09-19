@@ -192,6 +192,15 @@ hosts (`bench/results/2026-09-19-page-sized-slabs.md`). The table lives in
 writable memory as a result, like the `Regions` the same paths already
 trust.
 
+The 64 KiB slab is also a folio size on the kernels that enable multi-size
+THP (plan Phase 2.5 task 9, section 17): under `thp:auto` a class whose slab
+can hold an enabled folio size below the PMD (every class from 64 KiB slabs
+up when `hugepages-64kB` is enabled) has its slab groups advised with
+`MADV_HUGEPAGE` at hand-out, so the first touch of a slab maps one 64 KiB
+folio (one TLB entry on arm64's contiguous-PTE hint, 16 fewer page faults
+and one zeroing pass per slab) and nothing about the geometry changes; the
+4..16 KiB slabs cannot hold one and are left alone.
+
 Slab size per class is therefore a table fixed at init. Each class region is
 divided into slabs of that class's slab size, so slab number and slot index
 are:
@@ -421,7 +430,21 @@ class-wide idle set under the commit lock cost `xmalloc` 9% on the fast
 tier, one commit-lock hold and one shared-line write per slab transition
 (PROGRESS, task 15). Committing means
 `mprotect` of the slab's bytes (or of its page group, for slabs smaller than
-a page) to read-write. Fresh slabs are zero from the kernel.
+a page) to read-write. Fresh slabs are zero from the kernel. With the `thp`
+key (`thp.rs`, sections 7, 10 and 17) the commit path grows two branches,
+both off under the default `never`: `take_group` issues `MADV_HUGEPAGE`
+over the group's range (still `PROT_NONE`; the flag survives the split the
+commit makes) when the class qualifies under `auto`, and `commit_slab`
+under `always` with the PMD size enabled commits and advises the
+PMD-sized chunk around the slab, clipped to the region, so the first touch
+maps a 2 MiB page (every slab of the chunk re-issues the two calls, no-ops
+in the kernel after the first, since which arena reaches a chunk first is
+not known; the counters take the one that starts it). A guard slab inside
+such a chunk is left unused but unguarded: a guard marker (or a `PROT_NONE`
+page) inside a 2 MiB page splits it back into small pages the moment the
+arena reaches the guard slab, which is what the first form of the branch
+did to every chunk (`AnonHugePages` 0 after 8 MiB touched, `thp_split_pmd`
+one per chunk).
 
 The cost of sub-page slabs on a large-page kernel, measured (Phase 2.5
 task 3, `bench/results/2026-09-19-matrix.md` F1): a page group is purged
@@ -892,11 +915,14 @@ page granularity.
 - Freed runs become `Empty` and decay like slabs. Runs whose usable size is
   above `huge_retain_max` (a `malloc_conf` key, default 64 MiB, readable as
   `opt.huge_retain_max`) are purged immediately.
-- Planned (with the THP work): optional `MADV_HUGEPAGE` on runs of 2 MiB or
-  more when the `thp` tunable is `always`. Today the `thp` key is accepted
-  and inert and nothing issues `MADV_HUGEPAGE`. The default will stay
-  `never`, because fork-based persistence in Redis and Valkey suffers from
-  copy-on-write amplification with huge pages.
+- `MADV_HUGEPAGE` on runs of a PMD (2 MiB) or more when the `thp` key is
+  `always` (`prepare`, after the commit; `thp.rs`, plan Phase 2.5 task 9).
+  Never under `auto`: `auto` is the multi-size path for the slab regions and
+  promises no 2 MiB page anywhere, because fork-based persistence in Redis
+  and Valkey (BGSAVE) pays for huge pages at every copy-on-write fault, and
+  never under the default `never`. A run is page-aligned, not PMD-aligned,
+  so the kernel backs the PMD-aligned ranges inside it; a refusal is
+  counted (`stats.thp.failures`) and the run works with small pages.
 
 ## 8. Decay and purge
 
@@ -1035,16 +1061,34 @@ Init must not call anything that allocates. Steps, in the order
    on a scratch page and recording the error: `MADV_GUARD_INSTALL`, `mseal`,
    `process_madvise` (with `PIDFD_SELF`, then with a pidfd of self, which is
    kept; then `MADV_FREE` through whichever worked, for the lazy batches
-   of section 8), `PR_SET_VMA_ANON_NAME` (`sys::features`). Then the CPU report
+   of section 8), `PR_SET_VMA_ANON_NAME`, and the transparent-huge-page
+   table: `/sys/kernel/mm/transparent_hugepage/enabled`, `hpage_pmd_size`
+   and every `hugepages-<n>kB/enabled` from two pages to the PMD looked up
+   by path (a size the kernel lists without an `enabled` file, as
+   `hugepages-8kB` on 7.0, or not at all, is absent; a kernel before 6.8
+   lists the PMD size alone under the top-level setting), `inherit`
+   resolved through the top level, about ten sysfs reads (`sys::features`,
+   plan Phase 2.5 task 9). Then the CPU report
    (`sys::cpu`, section 17): `AT_HWCAP`/`AT_HWCAP2` and `CTR_EL0` on arm64,
    `cpuid` and a hinted `mmap` above 2^47 on x86_64, the sysfs cache files
    where the registers do not give the sizes. The whole probe is formatted
    once into the static feature line that `challoc_features()` returns.
 2. Parse configuration (section 12). This happens before anything is
    reserved so that `abort_conf` aborts with nothing mapped; it reads only
-   the weak symbols, one file and `environ`.
-3. Configure the purge backend from the probe and `lazy_free`, the
-   two-advice purge from the `MADV_FREE` probe and `lazy_band`,
+   the weak symbols, one file and `environ`. When `thp` is not `never` the
+   `MADV_COLLAPSE` probe runs now (`Features::probe_collapse`): a populated,
+   aligned, PMD-sized range of a fresh mapping is collapsed and released.
+   The syscall acts on whole PMD ranges only (through 7.0 a request over a
+   smaller range returns 0 having collapsed nothing, so no smaller size can
+   be probed), which is why the probe costs a PMD of memory for a moment
+   and the default configuration leaves it `unprobed` in the feature line.
+   Reported only: the advice at commit (below) makes a collapse
+   unnecessary for the regions, and the metadata takes the folio at its
+   first touch through the rounded commit rather than a copy afterwards.
+3. Decide the THP mode from the key and the table (`thp::configure`,
+   section 17; forced off after step 7 when the cgroup rule of section 11
+   applies), configure the purge backend from the probe and `lazy_free`,
+   the two-advice purge from the `MADV_FREE` probe and `lazy_band`,
    `check_zero`, apply `group_handoff`, and record a `background_thread`
    request (the thread itself is created later, 8.1).
 4. Read secrets from `getrandom`, probe reservation sizes (section 2) and
@@ -1064,11 +1108,6 @@ Init must not call anything that allocates. Steps, in the order
 7. Discover the cgroup and read its limits (section 11; inside
    `Shared::init`, skipped with `cgroup:false`).
 8. Register the fork handlers (section 9).
-
-Planned, not yet performed:
-
-- Probing `MADV_COLLAPSE` and reading `/sys/kernel/mm/transparent_hugepage/
-  enabled` (with the THP work; the `thp` key is inert).
 
 Any pointer passed to `free` before init completes, or that does not classify,
 is treated as invalid. ld.so's minimal startup allocator only frees its own
@@ -1266,11 +1305,13 @@ climb (a 64 KiB climb of 280 MiB takes 15 ms, 3.5 times faster than at
 4 KiB, so the 10 ms sample window sees it at most once) would purge
 nothing more: `dirty_decay_ms:0` leaves the same 2 MiB at the top.
 
-THP: `MADV_HUGEPAGE` is not wired yet (section 10, the `thp` key is
-inert), so "disabled under small limits" is, for now, `thp` forced to
-`never` in the stored configuration at init when the effective limit at
-init is under 1 GiB; `opt.thp` reads `never`, the report says why, and
-whatever wires THP later reads the stored setting.
+THP: "disabled under small limits" is `thp:always` forced to `never` in
+the stored configuration at init when the effective limit at init is under
+1 GiB (`opt.thp` reads `never`, the report says why, `thp.rs` mirrors it as
+`forced never`): a 2 MiB page is the unit a small container cannot afford
+to have partially used. `thp:auto` is not forced: its 64 KiB folio is the
+slab's own granularity, and the metadata rounding it adds is bounded by
+the tables in use.
 
 Statistics through `mallctl` (13.4): `stats.cgroup.limit`,
 `stats.cgroup.high` (both `SIZE_MAX` for unlimited), `stats.cgroup.current`
@@ -1315,7 +1356,7 @@ jemalloc names where they exist:
 | `tcache_gc_interval_ms`   | 10000   | challoc only                            |
 | `tcache_compact_shift`    | 3       | challoc only; one pop in 2^k compacts, 0 = off (6.4) |
 | `group_handoff`           | false   | challoc only; opt-in: an arena takes another arena's idle slab group before a fresh one (5, 13.3); off because it did not move the mstress row it was built for |
-| `thp`                     | never   | `never`, `always`; inert (planned)      |
+| `thp`                     | never   | `never`, `auto`, `always` (7, 17, `thp.rs`): `auto` advises slab groups of classes whose slab holds an enabled sub-PMD folio and rounds metadata commits to it, never a 2 MiB page (inert where the PMD size is `madvise`-gated or no such size is enabled); `always` commits and advises PMD chunks, huge runs of a PMD or more and the metadata; `always` under a cgroup limit below 1 GiB is forced to `never` (11) |
 | `spin_hint`               | auto    | challoc only; what a contended lock spins with (5): `auto` (the CPU probe's choice: `umwait` with WAITPKG, else the baseline), `baseline` (`pause`/`isb`), `umwait` (reported and left at `auto` without WAITPKG), `wfe` (aarch64; measured slower under contention, never chosen by `auto`) |
 | `lazy_free`               | false   | `MADV_FREE` for every purge, the override of the two-advice purge (8) |
 | `lazy_band`               | true    | challoc only; `MADV_FREE` for purges under 70% of a known cgroup limit (8, 11); `false` makes every purge `MADV_DONTNEED` unless `lazy_free` |
@@ -1330,7 +1371,7 @@ jemalloc names where they exist:
 | `cgroup`                  | true    | read the memory cgroup (11) and apply its policy: limits, `memory.current`, events, PSI; `false` reads and applies nothing |
 | `check_zero`              | false   | challoc only; debug: read every slot/page handed out as zero, abort on a dirty word |
 | `stats_print`             | accepted | inert: nothing prints at exit; no `opt.` value |
-| `junk`, `zero`, `retain`, `oversize_threshold`, `percpu_arena`, `metadata_thp`, `confirm_conf` | accepted | jemalloc keys, ignored with any value |
+| `junk`, `zero`, `retain`, `oversize_threshold`, `percpu_arena`, `metadata_thp`, `confirm_conf` | accepted | jemalloc keys, ignored with any value (`metadata_thp` because the metadata follows `thp`, section 17) |
 
 *Inert* keys are parsed and stored (so `opt.<key>` reads back what was set)
 but read by no code; each one is reported like a bad key, so `abort_conf`
@@ -1722,9 +1763,17 @@ kernel-owned fields is what broke tcmalloc on Linux 6.19.
   next purge issues and why (`under 70% of the limit`, `no headroom
   known`, `lazy_free`, `lazy_band:false`, `explicit purge`), the batches
   and bytes issued with each advice, whether `Purged` memory is still
-  known zero, and whether lazy batches go through `process_madvise`. The
+  known zero, and whether lazy batches go through `process_madvise`; and
+  one `thp:` line (section 17) with the key, the mode in force (`off`,
+  `folios`, `chunks`) and why, the slab-size threshold, the PMD size, the
+  metadata folio, whether huge runs are advised, and the ranges advised so
+  far (`class_ranges` with bytes and the chunks among them, `huge_ranges`,
+  `meta_ranges`, `failures`), also readable as `stats.thp.mode`,
+  `stats.thp.class_ranges`, `stats.thp.class_bytes`, `stats.thp.huge_ranges`,
+  `stats.thp.meta_ranges` and `stats.thp.failures` (`size_t`, read-only). The
   JSON form has a matching `"cgroup"` object with the policy fields and
-  `purge_advice`, `lazy_purges`, `eager_purges`, `purged_is_zero`.
+  `purge_advice`, `lazy_purges`, `eager_purges`, `purged_is_zero`, and a
+  `"thp"` object with the same fields as the line.
   The run-time options list marks the inert keys "accepted, no effect". The per-class table also carries the compaction
   diagnostics of section 6.4 (`refilled`, `compacted`, caches that entered
   and left compact mode, probes the refill-rate gate declined) and is
@@ -1746,7 +1795,10 @@ kernel-owned fields is what broke tcmalloc on Linux 6.19.
 - `challoc_features()` (`const char *`) is the feature report: one
   NUL-terminated line of `key=value` pairs separated by single spaces, the
   kernel probes first (`page_size=4096 guard_install=yes mseal=yes
-  process_madvise=pidfd_self process_madvise_free=yes anon_name=yes`) then the CPU (section 17;
+  process_madvise=pidfd_self process_madvise_free=yes anon_name=yes
+  thp=madvise mthp=2M collapse=unprobed`: the THP setting or `none`, the
+  folio sizes a `MADV_HUGEPAGE`d range can get or `none`, and the
+  `MADV_COLLAPSE` probe, `unprobed` under `thp:never`) then the CPU (section 17;
   `mte=no mte3=no pac=yes lse=yes lse2=yes bti=yes sve=yes` on arm64,
   `lam=no uai=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes
   fsrm=yes avx512f=yes` on x86_64, then `cacheline=64 l1d=64K l2=2M` on
@@ -1778,7 +1830,7 @@ runs on every row.
 | `PR_SET_VMA_ANON_NAME` | kernel 5.17 with `CONFIG_ANON_VMA_NAME` | named `challoc:*` mappings in `/proc/pid/maps` | skip |
 | PSI triggers on `memory.pressure` | kernel 6.4 (unprivileged), cgroup2 mounted writable | the background thread arms a trigger and reacts to pressure at once (section 11) | sample `memory.current` on the tick |
 | rseq `mm_cid` | kernel 6.3, glibc's registered rseq area | nothing yet: the per-CPU mode (section 15, plan Phase 2.5 task 8) | thread caches |
-| Transparent huge pages | any kernel with THP | nothing: the `thp` key is accepted and inert (plan Phase 2.5 task 9) | off |
+| Transparent huge pages (`thp`, `mthp`, `collapse`) | any kernel with `CONFIG_TRANSPARENT_HUGEPAGE`; the per-size `hugepages-<n>kB` knobs since 6.8; `MADV_COLLAPSE` since 6.1 | off by default (`thp:never`, byte for byte the allocator without the key). `thp:auto` (plan Phase 2.5 task 9, `thp.rs`): `MADV_HUGEPAGE` on the slab groups of every class whose slab holds an enabled folio size below the PMD (64 KiB slabs and up with `hugepages-64kB` enabled), and metadata commits rounded to and advised with that folio, never a 2 MiB page (the fork copy-on-write cost that makes Redis and Valkey forbid huge pages stays absent); inert, and the report says why, where the kernel enables no such size or where the PMD size is `madvise`-gated (`hugepages-2048kB/enabled` `madvise`, or `inherit` under a `madvise` top level, Ubuntu's default), because the same advice would then make the regions eligible for 2 MiB pages at the fault and through khugepaged; the host requirement is `hugepages-64kB/enabled=madvise` (or `always`) with `hugepages-2048kB/enabled=never` (or `always`, the host's own decision), root-only knobs. `thp:always`: with the PMD size enabled, class regions are committed and advised in PMD-sized chunks so the first touch maps a 2 MiB page (guard slabs inside a chunk stay unused but unguarded: a marker there splits the page), huge runs of a PMD or more are advised (section 7), and the metadata takes the sub-PMD folio if one is enabled; a purge of a slab inside a 2 MiB page splits it, the kernel's cost of the mode. `MADV_COLLAPSE` is probed at the PMD size only (a smaller request is a silent no-op through 7.0), only when `thp` is not `never`, and reported, not used. Measured in `bench/results/2026-09-19-lane-b-mthp.md` | small pages; `thp=none mthp=none` on a kernel without THP |
 | MTE (`HWCAP2_MTE`, `HWCAP2_MTE3`) | arm64 CPU (Armv8.5) and a kernel with `CONFIG_ARM64_MTE` that exposes it | reported only: tagged pointers (section 18, designed; plan Phase 2.5 task 6 implements) | untagged pointers |
 | PAC (`HWCAP_PACA` and `HWCAP_PACG`) | arm64 CPU (Armv8.3) and kernel | signed cache entries and TLS heap pointer (`pacda`/`autda`, sections 6.1 and 6.2) behind `pac_pointers:true`, off by default on the cost (section 14); `pac=yes` on Axion and the Mac VM, `no` on Altra; FEAT_FPAC decides whether a failure faults at the `autda` or on first use | plain pointers, the same binary, one predicted branch on a byte the fast paths load anyway |
 | LSE (`HWCAP_ATOMICS`) | arm64 CPU (Armv8.1) | reported only; the atomics the crate emits follow the compiler baseline (Rust's outlined `__aarch64_*` helpers already pick LSE at run time) | LL/SC loops in the same helpers |
@@ -1795,7 +1847,7 @@ runs on every row.
 | Model-checked protocol (`cargo test --features std model::`, `src/model.rs`) | the host test suite, no hardware: an exhaustive interleaving model of the claim, release, `on_live_zero`, purge and group-handoff steps of `class.rs`, memoised on the whole state, with the invariants of section 4 and 5 checked at every state (no slot handed to two claimers, a slot reported zero reads zero, `live` equals set bits plus in-flight reservations, a slab in an arena's set is `Empty`/`Purged` with `live == 0` and owned by that arena, a `Purged` slab reads zero) | nothing at run time: it is the proof obligation for a change to the protocol. Replaying the pre-fix step orders finds the calloc race (Phase 1.5 task 7) and the ownership gap the handoff's owner check closes (task 15); the current order passes every scenario | none needed |
 
 The kernel keys of the feature report are `page_size guard_install mseal
-process_madvise process_madvise_free anon_name`; the arm64 keys are `mte mte3 pac lse lse2 bti sve`, the
+process_madvise process_madvise_free anon_name thp mthp collapse`; the arm64 keys are `mte mte3 pac lse lse2 bti sve`, the
 x86_64 keys `lam uai la57 la57_enabled cldemote waitpkg erms fsrm avx512f`, and
 `cacheline l1d l2` on both, after the kernel keys of section 10. The
 container test checks each CPU bit against `/proc/cpuinfo` (`Features` or

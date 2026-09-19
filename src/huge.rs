@@ -832,7 +832,7 @@ impl Huge {
         let page = self.page_size();
         let guard = s + usable;
         let end = guard + GUARD_PAGES;
-        if self.guard_install {
+        let r = if self.guard_install {
             if watermark < end {
                 os::commit(self.addr(watermark), (end - watermark) * page)?;
             }
@@ -843,7 +843,15 @@ impl Huge {
                 os::protect_none(self.addr(guard), GUARD_PAGES * page)?;
             }
             Ok(())
+        };
+        // Design 7: `MADV_HUGEPAGE` on runs of a PMD or more under
+        // `thp:always` (`thp.rs`; `usize::MAX` otherwise, so nothing is
+        // advised). A refusal is counted, not an error: the run works
+        // with small pages.
+        if r.is_ok() && usable * page >= crate::thp::huge_min() {
+            crate::thp::advise_huge(self.addr(s), usable * page);
         }
+        r
     }
 
     /// Record the run `[s, s + need)` taken from `ext` (or fresh pages),

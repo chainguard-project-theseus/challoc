@@ -1,0 +1,573 @@
+//! Transparent huge pages for the regions (plan Phase 2.5 task 9; design
+//! 7, 10 and 17).
+//!
+//! The `thp` key (`config::Thp`) names what the program wants; the kernel's
+//! sysfs table (`sys::features::Thp`, read at init) says what a
+//! `MADV_HUGEPAGE`d range can get; [`decide`] turns the two into the
+//! effective [`Mode`] and the thresholds the commit paths read:
+//!
+//! - `never` (the default): [`Mode::Off`]. No advice is issued anywhere and
+//!   the commit paths do exactly what they did before the key existed.
+//! - `auto`: [`Mode::Folios`], the multi-size THP path. `SlabTable::
+//!   take_group` advises each slab group's range of a class whose slab can
+//!   hold an enabled folio size below the PMD (64 KiB slabs with the 64 KiB
+//!   size enabled), and metadata commits are advised and rounded to that
+//!   folio, so the first touch of a slab or a descriptor page maps one
+//!   folio. Never a PMD-sized page: when the PMD size is `madvise`-gated
+//!   (`hugepages-2048kB/enabled` `madvise`, or `inherit` under a `madvise`
+//!   top level, Ubuntu's default) the advice would also make the region
+//!   eligible for 2 MiB pages, at the fault when a whole aligned range is
+//!   untouched and, slowly, through khugepaged (`max_ptes_none` 511 lets
+//!   it collapse any range with one present page), and the fork
+//!   copy-on-write cost that makes Redis and Valkey forbid huge pages
+//!   would be back; so `auto` refuses on such a host ([`Reason::PmdMadvise`])
+//!   and the host requirement is `hugepages-64kB/enabled=madvise` (or
+//!   `always`) with `hugepages-2048kB/enabled=never` (or `always`, the
+//!   host's own decision for every process).
+//! - `always`: every enabled size. With the PMD size enabled,
+//!   [`Mode::Chunks`]: `SlabTable::commit_slab` commits and advises the
+//!   PMD-sized chunk around the slab (clipped to the region) so the first
+//!   touch maps a 2 MiB page, as jemalloc's `thp:always` does for its
+//!   2 MiB extents; huge runs of a PMD or more are advised (design 7);
+//!   metadata takes the sub-PMD folio if one is enabled (never a 2 MiB
+//!   page: a descriptor table's first page would cost 2 MiB of RSS).
+//!   Without the PMD size it is `auto` plus the huge runs.
+//!
+//! Design 11's rule (an effective cgroup limit under 1 GiB forces `thp`
+//! to `never`) is applied by `Shared::init` to the stored key for `always`;
+//! [`force_never`] mirrors it here after init. `auto` is not forced: a
+//! 64 KiB folio is the slab's own granularity.
+//!
+//! Everything here is cold: a decision at init, one `madvise` per slab
+//! group, per PMD chunk, per huge run or per metadata commit. The fast
+//! paths never read this module.
+
+use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+
+use crate::config::Thp as Key;
+use crate::sys::features::{Features, Thp as Table, ThpSetting};
+
+/// The effective mode.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Mode {
+    /// Nothing is advised.
+    Off = 0,
+    /// `MADV_HUGEPAGE` on slab groups (folios below the PMD).
+    Folios = 1,
+    /// PMD-sized chunks committed and advised at slab commit.
+    Chunks = 2,
+}
+
+impl Mode {
+    fn from_u8(v: u8) -> Mode {
+        match v {
+            1 => Mode::Folios,
+            2 => Mode::Chunks,
+            _ => Mode::Off,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Mode::Off => "off",
+            Mode::Folios => "folios",
+            Mode::Chunks => "chunks",
+        }
+    }
+}
+
+/// Why the mode is what it is, for the report.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Reason {
+    /// `thp:never`.
+    Never = 0,
+    /// The kernel has no transparent huge pages (`thp=none`).
+    NoThp = 1,
+    /// `auto`: the kernel enables no folio size below the PMD.
+    NoSubPmd = 2,
+    /// `auto`: the PMD size is `madvise`-gated, so the advice would enable
+    /// 2 MiB pages.
+    PmdMadvise = 3,
+    /// `always`: every size is `never` in sysfs.
+    NoneEnabled = 4,
+    /// Forced to `never` by a cgroup limit under 1 GiB (design 11).
+    Forced = 5,
+    /// The mode is in force.
+    Active = 6,
+}
+
+impl Reason {
+    fn from_u8(v: u8) -> Reason {
+        match v {
+            1 => Reason::NoThp,
+            2 => Reason::NoSubPmd,
+            3 => Reason::PmdMadvise,
+            4 => Reason::NoneEnabled,
+            5 => Reason::Forced,
+            6 => Reason::Active,
+            _ => Reason::Never,
+        }
+    }
+
+    pub const fn text(self) -> &'static str {
+        match self {
+            Reason::Never => "thp:never",
+            Reason::NoThp => "the kernel has no transparent huge pages",
+            Reason::NoSubPmd => "no folio size below the PMD is enabled in sysfs",
+            Reason::PmdMadvise => {
+                "the PMD size is madvise-gated in sysfs, the advice would enable 2 MiB pages"
+            }
+            Reason::NoneEnabled => "every THP size is never in sysfs",
+            Reason::Forced => "forced never by a cgroup limit under 1 GiB",
+            Reason::Active => "active",
+        }
+    }
+}
+
+/// The decision at init: the mode and the thresholds the commit paths read.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Decision {
+    pub mode: Mode,
+    pub reason: Reason,
+    /// `log2` of the smallest slab size a class needs for its groups (or
+    /// chunks) to be advised; `NO_SIZE` when no class is.
+    pub lg_slab_min: u8,
+    /// `log2` of the PMD size.
+    pub lg_pmd: u8,
+    /// `log2` of the folio metadata commits are rounded to and advised
+    /// with; `NO_SIZE` when metadata is left alone.
+    pub lg_meta: u8,
+    /// Huge runs of a PMD or more are advised.
+    pub huge: bool,
+}
+
+/// "No size": `1 << NO_SIZE` overflows every comparison into "never".
+pub const NO_SIZE: u8 = u8::MAX;
+/// The largest folio metadata commits are rounded to: the bump area's
+/// commit chunk (`meta::COMMIT_CHUNK`, 64 KiB), which a larger folio could
+/// not fill.
+const LG_META_MAX: u8 = 16;
+
+impl Decision {
+    pub const OFF: Decision = Decision {
+        mode: Mode::Off,
+        reason: Reason::Never,
+        lg_slab_min: NO_SIZE,
+        lg_pmd: 21,
+        lg_meta: NO_SIZE,
+        huge: false,
+    };
+
+    fn off(reason: Reason, lg_pmd: u8) -> Decision {
+        Decision {
+            reason,
+            lg_pmd,
+            ..Decision::OFF
+        }
+    }
+}
+
+/// The folio metadata commits take: the smallest enabled size below the
+/// PMD when it fits the bump chunk, else none.
+fn meta_folio(t: &Table) -> u8 {
+    match Table::smallest(t.sub_pmd_sizes()) {
+        Some(lg) if lg <= LG_META_MAX => lg,
+        _ => NO_SIZE,
+    }
+}
+
+/// The effective mode for `key` on a kernel described by `t`. Pure.
+pub fn decide(key: Key, t: &Table) -> Decision {
+    let lg_pmd = t.lg_pmd;
+    match key {
+        Key::Never => Decision::off(Reason::Never, lg_pmd),
+        Key::Auto => {
+            if t.enabled.is_none() {
+                return Decision::off(Reason::NoThp, lg_pmd);
+            }
+            let Some(lg_min) = Table::smallest(t.sub_pmd_sizes()) else {
+                return Decision::off(Reason::NoSubPmd, lg_pmd);
+            };
+            if t.pmd_setting() == ThpSetting::Madvise {
+                return Decision::off(Reason::PmdMadvise, lg_pmd);
+            }
+            Decision {
+                mode: Mode::Folios,
+                reason: Reason::Active,
+                lg_slab_min: lg_min,
+                lg_pmd,
+                lg_meta: meta_folio(t),
+                huge: false,
+            }
+        }
+        Key::Always => {
+            if t.enabled.is_none() {
+                return Decision::off(Reason::NoThp, lg_pmd);
+            }
+            let Some(lg_min) = Table::smallest(t.enabled_sizes()) else {
+                return Decision::off(Reason::NoneEnabled, lg_pmd);
+            };
+            if t.pmd_setting() != ThpSetting::Never {
+                // Every class: the chunk makes a 64 KiB slab part of a
+                // 2 MiB page whatever its own size.
+                Decision {
+                    mode: Mode::Chunks,
+                    reason: Reason::Active,
+                    lg_slab_min: 0,
+                    lg_pmd,
+                    lg_meta: meta_folio(t),
+                    huge: true,
+                }
+            } else {
+                Decision {
+                    mode: Mode::Folios,
+                    reason: Reason::Active,
+                    lg_slab_min: lg_min,
+                    lg_pmd,
+                    lg_meta: meta_folio(t),
+                    huge: true,
+                }
+            }
+        }
+    }
+}
+
+static MODE: AtomicU8 = AtomicU8::new(Mode::Off as u8);
+static REASON: AtomicU8 = AtomicU8::new(Reason::Never as u8);
+static LG_SLAB_MIN: AtomicU8 = AtomicU8::new(NO_SIZE);
+static LG_PMD: AtomicU8 = AtomicU8::new(21);
+static LG_META: AtomicU8 = AtomicU8::new(NO_SIZE);
+static HUGE: AtomicU8 = AtomicU8::new(0);
+/// The key as configured, for the report.
+static KEY: AtomicU8 = AtomicU8::new(0);
+
+/// Ranges advised (and bytes) per region kind, and `madvise` failures.
+static CLASS_RANGES: AtomicU64 = AtomicU64::new(0);
+static CLASS_BYTES: AtomicU64 = AtomicU64::new(0);
+static HUGE_RANGES: AtomicU64 = AtomicU64::new(0);
+static META_RANGES: AtomicU64 = AtomicU64::new(0);
+static FAILURES: AtomicU64 = AtomicU64::new(0);
+/// Chunk commits (ranges whose first slab was the one committing).
+static CHUNKS: AtomicU64 = AtomicU64::new(0);
+
+fn store(d: &Decision) {
+    LG_SLAB_MIN.store(d.lg_slab_min, Ordering::Relaxed);
+    LG_PMD.store(d.lg_pmd, Ordering::Relaxed);
+    LG_META.store(d.lg_meta, Ordering::Relaxed);
+    HUGE.store(d.huge as u8, Ordering::Relaxed);
+    REASON.store(d.reason as u8, Ordering::Relaxed);
+    // The mode last: a reader that sees it sees the thresholds.
+    MODE.store(d.mode as u8, Ordering::Release);
+}
+
+/// Apply `key` on the probed kernel. Called once from init, before any
+/// region is committed.
+pub fn configure(key: Key, features: &Features) -> Decision {
+    KEY.store(
+        match key {
+            Key::Never => 0,
+            Key::Auto => 1,
+            Key::Always => 2,
+        },
+        Ordering::Relaxed,
+    );
+    let d = decide(key, &features.thp);
+    store(&d);
+    d
+}
+
+/// Design 11: the stored key was forced to `never` by a cgroup limit under
+/// 1 GiB; mirror it here (init, after the cgroup is read).
+pub fn force_never() {
+    let d = Decision::off(Reason::Forced, LG_PMD.load(Ordering::Relaxed));
+    store(&d);
+}
+
+/// The decision in force.
+pub fn decision() -> Decision {
+    Decision {
+        mode: Mode::from_u8(MODE.load(Ordering::Acquire)),
+        reason: Reason::from_u8(REASON.load(Ordering::Relaxed)),
+        lg_slab_min: LG_SLAB_MIN.load(Ordering::Relaxed),
+        lg_pmd: LG_PMD.load(Ordering::Relaxed),
+        lg_meta: LG_META.load(Ordering::Relaxed),
+        huge: HUGE.load(Ordering::Relaxed) != 0,
+    }
+}
+
+/// The key as configured (after any forcing of the stored value).
+pub fn key() -> Key {
+    match KEY.load(Ordering::Relaxed) {
+        1 => Key::Auto,
+        2 => Key::Always,
+        _ => Key::Never,
+    }
+}
+
+/// What the commit path of a class with `slab_size`-byte slabs does:
+/// `Off`, `Folios` (advise the group in `take_group`) or `Chunks` (commit
+/// and advise the PMD chunk in `commit_slab`).
+#[inline]
+pub fn class_mode(slab_size: usize) -> Mode {
+    let mode = Mode::from_u8(MODE.load(Ordering::Acquire));
+    if mode == Mode::Off {
+        return Mode::Off;
+    }
+    let lg_min = LG_SLAB_MIN.load(Ordering::Relaxed);
+    if lg_min != NO_SIZE && slab_size >= 1usize << lg_min {
+        mode
+    } else {
+        Mode::Off
+    }
+}
+
+/// The PMD size in bytes.
+#[inline]
+pub fn pmd_size() -> usize {
+    1usize << LG_PMD.load(Ordering::Relaxed)
+}
+
+/// The folio metadata commits are rounded to and advised with; 0 when
+/// metadata is left alone.
+#[inline]
+pub fn meta_folio_size() -> usize {
+    match LG_META.load(Ordering::Relaxed) {
+        NO_SIZE => 0,
+        lg if MODE.load(Ordering::Acquire) != Mode::Off as u8 => 1usize << lg,
+        _ => 0,
+    }
+}
+
+/// The smallest huge run (bytes) that is advised; `usize::MAX` when none.
+#[inline]
+pub fn huge_min() -> usize {
+    if MODE.load(Ordering::Acquire) != Mode::Off as u8 && HUGE.load(Ordering::Relaxed) != 0 {
+        pmd_size()
+    } else {
+        usize::MAX
+    }
+}
+
+/// The PMD-aligned chunk around `[addr, addr + len)`, clipped to
+/// `[lo, hi)`. Pure.
+pub fn chunk(addr: usize, len: usize, lo: usize, hi: usize, pmd: usize) -> (usize, usize) {
+    let start = (addr & !(pmd - 1)).max(lo);
+    let end = (addr + len).saturating_add(pmd - 1) & !(pmd - 1);
+    (start, end.min(hi))
+}
+
+#[cfg(target_os = "linux")]
+fn madvise_hugepage(addr: usize, len: usize) -> bool {
+    // SAFETY: the callers pass ranges inside the allocator's own
+    // reservations; `MADV_HUGEPAGE` changes a VMA flag, never contents.
+    unsafe { crate::sys::madvise(addr, len, crate::sys::MADV_HUGEPAGE) }.is_ok()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn madvise_hugepage(_addr: usize, _len: usize) -> bool {
+    true
+}
+
+fn advise(addr: usize, len: usize, ranges: &AtomicU64, count: bool) -> bool {
+    if len == 0 {
+        return true;
+    }
+    let ok = madvise_hugepage(addr, len);
+    if ok {
+        if count {
+            ranges.fetch_add(1, Ordering::Relaxed);
+        }
+    } else {
+        FAILURES.fetch_add(1, Ordering::Relaxed);
+    }
+    ok
+}
+
+/// `MADV_HUGEPAGE` on a class region range (a slab group, or a PMD chunk
+/// from any of its slabs: `count` says whether this call is the one that
+/// starts the range, so the counters see each range once).
+pub fn advise_class(addr: usize, len: usize, count: bool) -> bool {
+    let ok = advise(addr, len, &CLASS_RANGES, count);
+    if ok && count {
+        CLASS_BYTES.fetch_add(len as u64, Ordering::Relaxed);
+        if len >= pmd_size() {
+            CHUNKS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    ok
+}
+
+/// `MADV_HUGEPAGE` on a huge run.
+pub fn advise_huge(addr: usize, len: usize) -> bool {
+    advise(addr, len, &HUGE_RANGES, true)
+}
+
+/// `MADV_HUGEPAGE` on a metadata commit.
+pub fn advise_meta(addr: usize, len: usize) -> bool {
+    advise(addr, len, &META_RANGES, true)
+}
+
+/// The counters, for the report and `stats.thp.*`.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Stats {
+    pub class_ranges: u64,
+    pub class_bytes: u64,
+    pub huge_ranges: u64,
+    pub meta_ranges: u64,
+    pub failures: u64,
+    /// Ranges of a PMD or more among `class_ranges` (the chunks).
+    pub chunks: u64,
+}
+
+pub fn stats() -> Stats {
+    Stats {
+        class_ranges: CLASS_RANGES.load(Ordering::Relaxed),
+        class_bytes: CLASS_BYTES.load(Ordering::Relaxed),
+        huge_ranges: HUGE_RANGES.load(Ordering::Relaxed),
+        meta_ranges: META_RANGES.load(Ordering::Relaxed),
+        failures: FAILURES.load(Ordering::Relaxed),
+        chunks: CHUNKS.load(Ordering::Relaxed),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sys::features::Collapse;
+
+    fn table(enabled: Option<ThpSetting>, always: u64, madvise: u64) -> Table {
+        Table {
+            enabled,
+            lg_pmd: 21,
+            listed: always | madvise | (1 << 21),
+            always,
+            madvise,
+            collapse: Collapse::Unprobed,
+        }
+    }
+
+    const K64: u64 = 1 << 16;
+    const M2: u64 = 1 << 21;
+
+    #[test]
+    fn never_is_off_whatever_the_kernel() {
+        for t in [
+            table(None, 0, 0),
+            table(Some(ThpSetting::Always), M2 | K64, 0),
+            table(Some(ThpSetting::Madvise), 0, M2),
+        ] {
+            let d = decide(Key::Never, &t);
+            assert_eq!(d.mode, Mode::Off);
+            assert_eq!(d.reason, Reason::Never);
+            assert_eq!(d.lg_slab_min, NO_SIZE);
+            assert_eq!(d.lg_meta, NO_SIZE);
+            assert!(!d.huge);
+        }
+    }
+
+    #[test]
+    fn auto_wants_a_sub_pmd_size_and_no_madvise_gated_pmd() {
+        // Ubuntu's default: 2M inherits madvise, nothing below it: refused.
+        let d = decide(Key::Auto, &table(Some(ThpSetting::Madvise), 0, M2));
+        assert_eq!((d.mode, d.reason), (Mode::Off, Reason::NoSubPmd));
+        // 64K madvise but 2M still madvise: refused, the advice would enable 2M.
+        let d = decide(Key::Auto, &table(Some(ThpSetting::Madvise), 0, M2 | K64));
+        assert_eq!((d.mode, d.reason), (Mode::Off, Reason::PmdMadvise));
+        // 64K madvise, 2M never: the multi-size path.
+        let d = decide(Key::Auto, &table(Some(ThpSetting::Madvise), 0, K64));
+        assert_eq!((d.mode, d.reason), (Mode::Folios, Reason::Active));
+        assert_eq!(d.lg_slab_min, 16);
+        assert_eq!(d.lg_meta, 16);
+        assert!(!d.huge);
+        // 64K always, 2M always (the host's decision): folios, harmless.
+        let d = decide(Key::Auto, &table(Some(ThpSetting::Always), K64 | M2, 0));
+        assert_eq!((d.mode, d.reason), (Mode::Folios, Reason::Active));
+        // Only 128K and up below the PMD: 64 KiB slabs do not qualify and
+        // the metadata folio would not fit the bump chunk.
+        let d = decide(Key::Auto, &table(Some(ThpSetting::Never), 0, 1 << 17));
+        assert_eq!(d.mode, Mode::Folios);
+        assert_eq!(d.lg_slab_min, 17);
+        assert_eq!(d.lg_meta, NO_SIZE);
+        // No THP at all.
+        let d = decide(Key::Auto, &table(None, 0, 0));
+        assert_eq!((d.mode, d.reason), (Mode::Off, Reason::NoThp));
+    }
+
+    #[test]
+    fn always_takes_chunks_with_the_pmd_and_folios_without() {
+        let d = decide(Key::Always, &table(Some(ThpSetting::Madvise), 0, M2));
+        assert_eq!((d.mode, d.reason), (Mode::Chunks, Reason::Active));
+        assert_eq!(d.lg_slab_min, 0, "every class");
+        assert_eq!(d.lg_meta, NO_SIZE, "no sub-PMD folio for the metadata");
+        assert!(d.huge);
+        let d = decide(Key::Always, &table(Some(ThpSetting::Madvise), 0, M2 | K64));
+        assert_eq!(d.mode, Mode::Chunks);
+        assert_eq!(d.lg_meta, 16);
+        let d = decide(Key::Always, &table(Some(ThpSetting::Never), 0, K64));
+        assert_eq!((d.mode, d.reason), (Mode::Folios, Reason::Active));
+        assert_eq!(d.lg_slab_min, 16);
+        assert!(d.huge);
+        let d = decide(Key::Always, &table(Some(ThpSetting::Never), 0, 0));
+        assert_eq!((d.mode, d.reason), (Mode::Off, Reason::NoneEnabled));
+        let d = decide(Key::Always, &table(None, 0, 0));
+        assert_eq!((d.mode, d.reason), (Mode::Off, Reason::NoThp));
+    }
+
+    #[test]
+    fn chunk_is_pmd_aligned_and_clipped() {
+        let pmd = 1 << 21;
+        let base = 0x1000_0000;
+        let end = base + 16 * pmd;
+        // A 64 KiB slab in the middle of the third chunk.
+        assert_eq!(
+            chunk(base + 2 * pmd + 0x30000, 0x10000, base, end, pmd),
+            (base + 2 * pmd, base + 3 * pmd)
+        );
+        // The first slab of the region.
+        assert_eq!(chunk(base, 0x10000, base, end, pmd), (base, base + pmd));
+        // The last slab.
+        assert_eq!(
+            chunk(end - 0x10000, 0x10000, base, end, pmd),
+            (end - pmd, end)
+        );
+        // A 4 MiB slab spans two chunks.
+        assert_eq!(
+            chunk(base + pmd, 2 * pmd, base, end, pmd),
+            (base + pmd, base + 3 * pmd)
+        );
+        // A region shorter than a chunk.
+        assert_eq!(
+            chunk(base, 0x10000, base, base + 0x40000, pmd),
+            (base, base + 0x40000)
+        );
+    }
+
+    #[test]
+    fn statics_follow_the_decision() {
+        // Serialised with the other tests through the process-wide statics:
+        // set, read, and restore Off.
+        let t = table(Some(ThpSetting::Madvise), 0, K64);
+        let d = decide(Key::Auto, &t);
+        store(&d);
+        assert_eq!(decision(), d);
+        assert_eq!(class_mode(1 << 16), Mode::Folios);
+        assert_eq!(class_mode(1 << 12), Mode::Off);
+        assert_eq!(meta_folio_size(), 1 << 16);
+        assert_eq!(huge_min(), usize::MAX);
+        let d = decide(Key::Always, &table(Some(ThpSetting::Madvise), 0, M2));
+        store(&d);
+        assert_eq!(class_mode(1 << 12), Mode::Chunks);
+        assert_eq!(meta_folio_size(), 0);
+        assert_eq!(huge_min(), 1 << 21);
+        assert_eq!(pmd_size(), 1 << 21);
+        force_never();
+        assert_eq!(decision().mode, Mode::Off);
+        assert_eq!(decision().reason, Reason::Forced);
+        assert_eq!(class_mode(1 << 16), Mode::Off);
+        assert_eq!(meta_folio_size(), 0);
+        assert_eq!(huge_min(), usize::MAX);
+        store(&Decision::OFF);
+    }
+}

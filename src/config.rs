@@ -21,14 +21,13 @@
 //! it applies to keys that appeared before it in the same or an earlier
 //! source; jemalloc gets the same effect with a separate first pass.
 //!
-//! The *inert* keys ([`INERT_KEYS`]: `thp`, `stats_print`) are parsed
-//! and, where they have a field, stored and readable through `opt.<key>`,
-//! but nothing in the allocator reads them (`thp` is planned with the THP
-//! work; `stats_print` has nothing to print at exit). Each one is reported
-//! as [`Issue::Inert`] so that `abort_conf` rejects it and a program cannot
-//! believe it turned something on; `malloc_stats_print` marks them
-//! "accepted, no effect". `zero_on_free` and `slot_randomize` left the list
-//! with Phase 2 task 3: both are implemented, opt-in and off by default.
+//! The *inert* keys ([`INERT_KEYS`]: `stats_print`) are parsed but nothing
+//! in the allocator reads them (`stats_print` has nothing to print at
+//! exit). Each one is reported as [`Issue::Inert`] so that `abort_conf`
+//! rejects it and a program cannot believe it turned something on;
+//! `malloc_stats_print` marks them "accepted, no effect". `zero_on_free`
+//! and `slot_randomize` left the list with Phase 2 task 3, `thp` with Phase
+//! 2.5 task 9 (`thp.rs`): all implemented, opt-in and off by default.
 
 use core::fmt::{self, Write as _};
 
@@ -95,10 +94,23 @@ impl SpinChoice {
     }
 }
 
-/// `thp` values (`default` is accepted as `never`).
+/// `thp` values (`default` is accepted as `never`; design 7, 10 and 17,
+/// `thp.rs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Thp {
+    /// Nothing is advised: byte for byte the allocator without the key.
     Never,
+    /// Multi-size THP only: `MADV_HUGEPAGE` on class regions whose slab
+    /// size can hold an enabled folio size below the PMD (64 KiB on the
+    /// aarch64 kernels that enable it) and on metadata commits, never a
+    /// 2 MiB page, so the fork copy-on-write cost that makes Redis and
+    /// Valkey forbid huge pages stays absent. Inert on a kernel whose PMD
+    /// size is `madvise`-gated (the advice would enable 2 MiB pages) or
+    /// that enables no size below the PMD.
+    Auto,
+    /// Every enabled size, the PMD included: class regions are committed
+    /// and advised in PMD-sized chunks, huge runs of a PMD or more and
+    /// metadata commits are advised.
     Always,
 }
 
@@ -106,6 +118,7 @@ impl Thp {
     pub const fn name(self) -> &'static str {
         match self {
             Thp::Never => "never",
+            Thp::Auto => "auto",
             Thp::Always => "always",
         }
     }
@@ -136,7 +149,7 @@ pub struct Config {
     /// cached slot instead of the top of the stack (design 6.4); 0 means
     /// never.
     pub tcache_compact_shift: u32,
-    /// Inert (planned with the THP work): parsed, stored, read by nothing.
+    /// Transparent huge pages for the regions (`thp.rs`, design 7, 10, 17).
     pub thp: Thp,
     /// The lock's spin hint (design 5, `lock::SpinHint`): `auto` leaves the
     /// CPU probe's choice; a name installs that hint (`umwait` only where
@@ -325,10 +338,10 @@ impl Config {
             b"thp" => {
                 self.thp = match value {
                     b"never" | b"default" => Thp::Never,
+                    b"auto" => Thp::Auto,
                     b"always" => Thp::Always,
                     _ => return Err(bad()),
-                };
-                return Err(Issue::Inert(key));
+                }
             }
             b"lazy_free" => self.lazy_free = parse_bool(value).ok_or_else(bad)?,
             b"lazy_band" => self.lazy_band = parse_bool(value).ok_or_else(bad)?,
@@ -560,12 +573,11 @@ pub const IGNORED_KEYS: &[&str] = &[
     "confirm_conf",
 ];
 
-/// Keys that parse (and, bar `stats_print`, are stored and readable) but
-/// that no code acts on: `thp` is planned with the THP work and
-/// `stats_print` has nothing to print at exit. Setting one is
-/// [`Issue::Inert`], which `abort_conf` turns into an abort;
-/// `malloc_stats_print` lists them as "accepted, no effect".
-pub const INERT_KEYS: &[&str] = &["thp", "stats_print"];
+/// Keys that parse but that no code acts on: `stats_print` has nothing to
+/// print at exit. Setting one is [`Issue::Inert`], which `abort_conf`
+/// turns into an abort; `malloc_stats_print` lists them as "accepted, no
+/// effect". `thp` left the list with plan Phase 2.5 task 9.
+pub const INERT_KEYS: &[&str] = &["stats_print"];
 
 /// Whether `key` is one of [`INERT_KEYS`].
 pub fn is_inert(key: &[u8]) -> bool {
@@ -1158,14 +1170,20 @@ mod tests {
 
     #[test]
     fn thp_values() {
-        assert_eq!(inert("thp:always", 1).thp, Thp::Always);
-        assert_eq!(inert("thp:never", 1).thp, Thp::Never);
-        assert_eq!(inert("thp:default", 1).thp, Thp::Never);
-        assert_eq!(inert("thp:always", 1).get(b"thp"), Some(Value::Str("always")));
+        assert_eq!(clean("thp:always").thp, Thp::Always);
+        assert_eq!(clean("thp:auto").thp, Thp::Auto);
+        assert_eq!(clean("thp:never").thp, Thp::Never);
+        assert_eq!(clean("thp:default").thp, Thp::Never);
+        assert_eq!(clean("thp:always").get(b"thp"), Some(Value::Str("always")));
+        assert_eq!(clean("thp:auto").get(b"thp"), Some(Value::Str("auto")));
+        assert_eq!(Config::DEFAULT.thp, Thp::Never);
         let (cfg, issues) = parse("thp:madvise");
         assert_eq!(cfg.thp, Thp::Never);
         assert_eq!(issues.len(), 1);
         assert!(issues[0].contains("invalid conf value \"madvise\" for thp"));
+        // No longer inert (plan Phase 2.5 task 9): accepted under abort_conf.
+        assert!(!is_inert(b"thp"));
+        assert_eq!(clean("thp:auto,abort_conf:true").thp, Thp::Auto);
     }
 
     /// The inert keys: stored and readable, but every one is reported so
@@ -1173,11 +1191,11 @@ mod tests {
     /// value is still a bad value, not an inert report.
     #[test]
     fn inert_keys_are_stored_reported_and_rejected_under_abort_conf() {
-        assert_eq!(INERT_KEYS.len(), 2, "thp, stats_print");
+        assert_eq!(INERT_KEYS.len(), 1, "stats_print");
         for key in INERT_KEYS {
             assert!(is_inert(key.as_bytes()), "{key}");
             assert!(!IGNORED_KEYS.contains(key), "{key} cannot be both ignored and inert");
-            let value = if *key == "thp" { "always" } else { "true" };
+            let value = "true";
             let text = std::format!("{key}:{value}");
             let (cfg, issues) = parse(&text);
             assert_eq!(issues.len(), 1, "{text}: {issues:?}");
@@ -1187,7 +1205,6 @@ mod tests {
                 "{text}"
             );
             match *key {
-                "thp" => assert_eq!(cfg.get(b"thp"), Some(Value::Str("always"))),
                 "stats_print" => {
                     assert_eq!(cfg, Config::DEFAULT, "stats_print has no field");
                     assert_eq!(cfg.get(b"stats_print"), None);
@@ -1218,9 +1235,10 @@ mod tests {
         // are counted: what `load` aborts on under `abort_conf`.
         let (cfg, issues) = parse("narenas:3,thp:always,cgroup:false,abort_conf:true,stats_print:true");
         assert_eq!(cfg.narenas, 3);
-        assert!(cfg.abort_conf && !cfg.cgroup);
-        assert_eq!(issues.len(), 2, "cgroup is a real key since Phase 2 task 4: {issues:?}");
+        assert!(cfg.abort_conf && !cfg.cgroup && cfg.thp == Thp::Always);
+        assert_eq!(issues.len(), 1, "cgroup (Phase 2 task 4) and thp (Phase 2.5 task 9) are real keys: {issues:?}");
         assert!(!is_inert(b"cgroup"));
+        assert!(!is_inert(b"thp"));
     }
 
     #[test]
@@ -1282,7 +1300,7 @@ mod tests {
     #[test]
     fn quoted_values_and_the_last_pair_win() {
         assert_eq!(clean("narenas:\"7\"").narenas, 7);
-        assert_eq!(inert("thp:\"always\"", 1).thp, Thp::Always);
+        assert_eq!(clean("thp:\"always\"").thp, Thp::Always);
         // A quoted value may contain a comma; an unbalanced quote is a value.
         let (cfg, issues) = parse("thp:\"al,ways\",narenas:2");
         assert_eq!(cfg.narenas, 2);

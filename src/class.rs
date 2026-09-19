@@ -230,13 +230,20 @@ impl Lazy {
     pub(crate) const EMPTY: Lazy = Lazy { base: 0, len: 0, committed: 0 };
 
     pub(crate) fn reserve(meta: &Meta, len: usize, align: usize) -> Option<Lazy> {
-        let base = meta.reserve(len, align)?;
+        // With metadata THP on (`thp.rs`) the table starts on a folio
+        // boundary, so the rounded commits of `ensure` cover whole aligned
+        // folios and the kernel can map them as such.
+        let base = meta.reserve(len, align.max(crate::thp::meta_folio_size()))?;
         Some(Lazy { base, len, committed: 0 })
     }
 
     /// Make the first `upto` bytes committed.
     pub(crate) fn ensure(&mut self, meta: &Meta, page: usize, upto: usize) -> Result<(), Errno> {
-        let want = ((upto + page - 1) & !(page - 1)).min((self.len + page - 1) & !(page - 1));
+        // With metadata THP on (`thp.rs`) the commit is rounded to the
+        // folio so the first touch of a table page maps one folio; the
+        // table's own end is still the limit.
+        let unit = crate::thp::meta_folio_size().max(page);
+        let want = ((upto + unit - 1) & !(unit - 1)).min((self.len + page - 1) & !(page - 1));
         if want > self.committed {
             meta.commit(self.base + self.committed, want - self.committed)?;
             self.committed = want;
@@ -1163,6 +1170,14 @@ impl SlabTable {
         owner_word.store(arena, Ordering::Relaxed);
         g.next_slab = end;
         self.committed_slabs.store(end, Ordering::Release);
+        // `thp:auto` (design 7, 17; `thp.rs`): the group's range, still
+        // reserved `PROT_NONE`, is advised once here, so the slabs the
+        // arena commits from it fault in as folios of the enabled size.
+        // Off, and under `always` (whose PMD chunks `commit_slab` advises),
+        // this is a load and a compare.
+        if crate::thp::class_mode(cls.slab_size()) == crate::thp::Mode::Folios {
+            crate::thp::advise_class(self.slab_addr(s), (end - s) << cls.lg_slab, true);
+        }
         Some((s, end))
     }
 
@@ -1184,15 +1199,49 @@ impl SlabTable {
         let spp = self.slabs_per_page as usize;
         let len = cls.slab_size().max(page);
         if s % spp == 0 {
-            os::commit(addr, len).ok()?;
+            // `thp:always` with the PMD size enabled (design 7, 17;
+            // `thp.rs`): commit and advise the PMD-sized chunk around the
+            // slab, clipped to the region, so the first touch maps one
+            // 2 MiB page (a chunk already committed costs two no-op
+            // calls). If that fails, the plain commit below is the
+            // fallback and the slab is served with small pages.
+            let mut committed = false;
+            if crate::thp::class_mode(cls.slab_size()) == crate::thp::Mode::Chunks {
+                let pmd = crate::thp::pmd_size();
+                let region_end = self.base + (self.nslabs << cls.lg_slab);
+                let (lo, hi) = crate::thp::chunk(addr, len, self.base, region_end, pmd);
+                // Groups are one to sixteen slabs and arenas commit theirs
+                // in any order, so which call reaches a chunk first is not
+                // known here: every slab of the chunk re-issues the two
+                // calls (no-ops in the kernel once the first has run, a
+                // microsecond each per 64 KiB committed), and the counters
+                // take the one that starts the chunk.
+                if os::commit(lo, hi - lo).is_ok() {
+                    crate::thp::advise_class(lo, hi - lo, addr == lo);
+                    committed = true;
+                }
+            }
+            if !committed {
+                os::commit(addr, len).ok()?;
+            }
         }
         if self.is_guard_slab(s) {
             // Read-write so the VMA merges with its neighbours, with a
             // guard region on the first page so a stray write past the
             // previous slab faults. If the install fails, fall back to
             // leaving the whole slab (or page group) `PROT_NONE`: a hard
-            // guard at the cost of a VMA split.
-            if s % spp == 0 && os::guard(addr, page).is_err() && os::decommit(addr, len).is_err() {
+            // guard at the cost of a VMA split. Under `thp:always` with
+            // PMD chunks the marker is not installed: a guard marker (or a
+            // `PROT_NONE` page) inside a 2 MiB page splits it back into
+            // small pages the moment the arena reaches the guard slab
+            // (measured: every chunk's huge page was gone by the time the
+            // slab was in use), so the slab is left unused and unguarded;
+            // design 17 records the trade.
+            if s % spp == 0
+                && crate::thp::class_mode(cls.slab_size()) != crate::thp::Mode::Chunks
+                && os::guard(addr, page).is_err()
+                && os::decommit(addr, len).is_err()
+            {
                 panic!("class {}: cannot re-protect guard slab {s}", self.class);
             }
             g.guards += 1;
