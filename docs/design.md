@@ -1756,12 +1756,23 @@ keeps thread caches (the scan of the top entries is not written into the
 critical sections; the hardening wins).
 
 What the kernel provides (`src/rseq.rs`). `mm_cid` is a small integer,
-unique among the threads of the process that are running at any instant,
-allocated from the lowest free value and bounded by the number of possible
-CPUs (`nr_cpu_ids`, read from `/sys/devices/system/cpu/possible`), so a
-process with four threads on a 64-CPU host uses ids 0..3 and one with 200
-mostly idle threads on 4 CPUs uses 0..3 as well: cache memory is bounded
-by cores, not threads. The area is at `thread pointer + __rseq_offset`
+unique among the threads of the process that are running at any instant
+and bounded by the number of possible CPUs (`nr_cpu_ids`, read from
+`/sys/devices/system/cpu/possible`), so a process with 200 mostly idle
+threads on 4 CPUs uses ids 0..3: cache memory is bounded by cores, not
+threads. Two implementations exist and the design relies only on what
+they share (docs/research.md, the 6.19 row): before 6.19 (Chainguard OS
+6.18) ids are `< min(threads, cpus)`, a thread gives its id up when it is
+switched out and may come back with another, and the kernel hands ids
+over through fully ordered atomics on the process's id mask; since 6.19
+(the reference VMs' 7.0) a process with no more threads than possible
+CPUs runs in *per-task* mode, every thread keeping its own id across
+migrations (the per-CPU caches then behave like thread caches and no
+header is ever shared), and the shared per-CPU ids are used only above
+that count, switched at fork or exit. In both, an id has one running
+holder at any instant and stays below `nr_cpu_ids`; the sections need
+nothing else, and the aborted-section counter (`stats.percpu.aborts`)
+shows the abort path running once threads outnumber CPUs. The area is at `thread pointer + __rseq_offset`
 (`%fs:0` or `tpidr_el0`; the offset moves with the static TLS layout and
 is read from the symbol, never assumed: on the reference VMs 192 (arm64)
 and -192 (x86_64) bare, 320 and -384 inside the test binaries), the field
@@ -1844,13 +1855,42 @@ a thread runs there and ticks, and that residue, at most `cap` slots per
 caches alone (they are not the thread's); fork needs nothing (no lock, and
 every section's pre-commit stores leave a consistent header; a child's
 ids start over on the same table). Memory ordering across CPUs comes from
-the kernel: an id is given up when its thread is switched out and taken
-through fully ordered atomics on the process's id mask, so the stores of
-an id's previous holder are visible to its next.
+the kernel: an id changes hands only through the scheduler's fully ordered
+atomics on the process's id mask (or, in the 6.19+ per-task mode, never
+while threads fit the CPUs), so the stores of an id's previous holder are
+visible to its next.
+
+Measured (plan task 8, `bench/results/2026-09-19-{aarch64,x86_64}-task8-percpu.md`,
+the `ab` files beside them; `old` main before the task, positive worse).
+The mode on, protocol tier, C4A / C4: larson1 +13.3% / +9.0%, larson16
++18.1% / +28.0%, xmalloc +19.9% / +20.5%, alloc-test1 +10.2% / +10.6%,
+cfrac +11.5% / +12.8%, glibc-simple (aarch64) and the Valkey model
+(`valkey1` +38% / +58%, `valkey1-free` +49.8% on x86_64), mstress +3.5% /
++2.4% wall with 328 / 318 MiB against 330 / 342 (jemalloc 299 / 288: the
+x86_64 row moves from +18.8% to +10.6% against jemalloc, 0.6 points
+outside the Phase 1.5 band, at one arena per CPU). Per operation
+(`quick-perf`): +83 / +65 instructions and +9.7 / +6.3 cycles on larson1
+with L1D misses flat, so the price is instructions (the thread pointer,
+the `mm_cid` load, the table index, the descriptor store, the section's
+bookkeeping, in a called function against an inline two-load pop); on
+the Valkey model +183 / +180 instructions and +68 / +107 cycles, the
+extra being the compact-mode scheduled pop's locked one-slot claim (one
+pop in 8 on a fragmented 500 MiB heap, where the thread run amortises one
+lock over `cap / 4`). The default's own cost (`percpu_arena:off` against
+`old`): +9 instructions and +1.3 / +0.1 cycles per larson operation, the
+`PUSH_PERCPU` test in the entry points; `quick` under the default is GO
+on both VMs. What the mode buys is memory bounded by cores, visible only
+with more threads than CPUs (the Ruby idle-thread soak rows in the same
+files: the Sidekiq-shaped `bench/ruby/soak.rb` at 16 / 64 / 256 mostly
+idle threads peaks at 305 / 1649 / 2426 MiB with thread caches on the C4A
+and 90 / 106 / 115 MiB under the mode, 326 / 2073 / 3570 against 107 /
+150 / 231 on the C4, the live set about 21 MiB in every run; a 64-thread
+larson on 16 vCPUs runs at -31% / -34% throughput and -30% / -22% RSS).
 
 Observability: `stats.percpu.enabled`, `stats.percpu.ids` (table
-entries), `stats.percpu.headers` (installed) and `stats.percpu.cached`
-(slots, a racy snapshot), the `Per-CPU caches:` line of
+entries), `stats.percpu.headers` (installed), `stats.percpu.cached`
+(slots, a racy snapshot) and `stats.percpu.aborts` (sections the kernel
+restarted), the `Per-CPU caches:` line of
 `malloc_stats_print` (state, the same counts, the probe's `__rseq_size`
 and offset, and the note when `percpu_arena:percpu` fell back), and lane
 B's `rseq`/`mm_cid` keys of the feature report. Tests: `rseq.rs` (the

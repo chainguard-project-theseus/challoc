@@ -118,3 +118,123 @@ Verdict: GO (every row inside the 5% gate, one round; larson1 and
 larson10 at +1.9% / +2.5% are inside the 5..9% one-round spread of those
 rows on this VM, bench/README.md "Noise"; the attribution puts the
 default's cost at +1.3 cycles per larson operation).
+
+## 6. The calloc-zero campaign under the mode (`bench/probes/calloc-zero-campaign.sh`, C4A)
+
+`ROUNDS=60 MAX_SECS=600 STANDALONE=10 SKIP_SUITE=1`, four configurations
+with `check_zero:true`, each under a continuous `cargo test api::` load
+(the scheduling the 2026-09-18 failure needed); every run exit 0, no
+`check_zero` abort:
+
+| configuration | `MALLOC_CONF` | runs of `stress 8 50 10` | failed |
+|---|---|---:|---:|
+| percpu | `check_zero:true,percpu_arena:percpu` | 60 | 0 |
+| percpu-nocompact | `check_zero:true,percpu_arena:percpu,tcache_compact_shift:0` | 60 | 0 |
+| percpu-narenas1 | `check_zero:true,percpu_arena:percpu,narenas:1` | 60 | 0 |
+| off | `check_zero:true,percpu_arena:off` | 60 | 0 |
+
+The load ran 6 rounds of `cargo test api::` (116 tests each, 0 failed);
+the standalone `stress 16 100 20` (`check_zero:true`, the default mode) 10
+runs, 0 failed.
+
+## 7. The Valkey soak under the mode (`make valkey-soak ALLOCS='challoc jemalloc' CHALLOC_CONF=percpu_arena:percpu DURATION=600 SETTLE=60`, C4A)
+
+The challoc server (Valkey 9.1.2, `jemalloc-5.3.0-challoc`) ran with
+`MALLOC_CONF=percpu_arena:percpu`, the jemalloc server stock; 300 s write,
+300 s delete, 60 s settle (the 20-minute acceptance protocol shortened to
+10 minutes of load; commit 4864d4b). Summary as the soak wrote it
+(`target/valkey/soak-percpu/2026-09-19-aarch64-valkey-soak.md` on the VM):
+
+| measure | challoc (percpu) | jemalloc | challoc vs jemalloc |
+|---|---:|---:|---:|
+| write: valkey-benchmark req/s | 940885 | 901636 | -4.2% |
+| write: valkey-benchmark p99 ms | 1.039 | 1.095 | -5.1% |
+| write: memtier req/s | 976112 | 970208 | -0.6% |
+| write: memtier p99 ms | 0.94300 | 0.95900 | -1.7% |
+| delete: valkey-benchmark req/s | 1445997 | 1465367 | +1.3% |
+| delete: valkey-benchmark p99 ms | 0.703 | 0.695 | +1.2% |
+| delete: memtier req/s | 1275719 | 1306233 | +2.4% |
+| delete: memtier p99 ms | 0.75900 | 0.74300 | +2.2% |
+| peak RSS MiB (VmHWM) | 579.7 | 576.8 | +0.5% |
+| RSS MiB at end of write phase | 579.4 | 576.5 | +0.5% |
+| RSS MiB at end of delete phase | 128.0 | 135.5 | -5.5% |
+| RSS MiB after settle | 128.0 | 134.8 | -5.0% |
+| allocator_frag_ratio after settle | 1.79 | 1.87 | -4.3% |
+| active_defrag_hits | 232260 | 237492 | +2.3% |
+
+Reading: the soak is green in the plan's sense on RSS (peak +0.5%, after
+settle -5%) and on the write phase; the delete phase is 1.3..2.4% behind
+jemalloc in throughput and p99, which is the mode's per-operation cost
+showing on a server whose main thread migrates between CPUs (the model
+row `valkey1` shows the same direction much larger because it has no
+network between operations). Under thread caches the same soak shape is
+the reference scorecards' soak columns.
+
+## 8. Protocol tier of the committed code (`ab`, 5 rounds, same run; `2026-09-19-aarch64-task8-percpu-ab2.md`)
+
+`new` = the committed tree with `percpu_arena:percpu` (the opt-in), `new-off`
+= the committed tree as shipped (`auto`, thread caches), `old` = 9351eeb,
+jemalloc 5.3.1. The default's RSS is back at `old`'s (larson1 15.9 MiB).
+
+## Medians
+
+| program | unit | old | old RSS MiB | new | new RSS MiB | new-off | new-off RSS MiB | jemalloc | jemalloc RSS MiB | new vs old | new-off vs old | jemalloc vs old |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| larson1 | M ops/s | 42.6 | 15.9 | 37.1 | 16.0 | 41.7 | 15.9 | 45.2 | 18.6 | +14.8% | +2.2% | -5.8% |
+| larson10 | M ops/s | 366.8 | 112.2 | 310.4 | 118.4 | 362.4 | 112.4 | 385.9 | 132.3 | +18.2% | +1.2% | -4.9% |
+| xmalloc | M frees/s | 586.686 | 53.0 | 469.201 | 73.8 | 578.143 | 53.3 | 484.482 | 80.2 | +25.0% | +1.5% | +21.1% |
+| alloc-test1 | s | 2.661 | 12.9 | 2.944 | 12.9 | 2.676 | 12.9 | 2.509 | 12.3 | +10.6% | +0.6% | -5.7% |
+| mstress | s | 0.377 | 321.4 | 0.389 | 320.5 | 0.376 | 324.9 | 0.646 | 291.4 | +3.2% | -0.3% | +71.4% |
+| valkey1 | M ops/s | 7.170 | 584.6 | 6.515 | 584.6 | 7.121 | 584.6 | 7.262 | 585.4 | +10.1% | +0.7% | -1.3% |
+
+Positive percentages mean the variant did worse than old (slower or lower throughput).
+
+## 9. RSS bounded by cores: the Ruby idle-thread soak and a 64-thread larson (C4A, 16 vCPUs)
+
+`make ruby-soak ALLOCS='challoc challoc-percpu' THREADS=T DURATION=180
+COMPACT_AT=90` (bench/ruby/soak.rb, the Sidekiq shape: T mostly idle worker
+threads under the GVL, bursts of 1..4 KiB strings and arrays, a slowly
+growing long-lived set, a full GC every 30 s, `GC.compact` at 90 s; the
+`--with-jemalloc` Ruby 3.4.10 with challoc staged as `libjemalloc.so.2`);
+`challoc` is the shipped default (thread caches), `challoc-percpu`
+`MALLOC_CONF=percpu_arena:percpu`. Full tables and CSVs:
+`2026-09-19-aarch64-task8-ruby-soak-t{16,64,256}*`.
+
+| threads | measure | challoc (thread caches) MiB | challoc-percpu MiB | percpu vs thread caches |
+|---:|---|---:|---:|---:|
+| 16 | peak VmRSS | 305.4 | 89.7 | -70.6% |
+| 16 | after the last full GC | 305.4 | 89.7 | -70.6% |
+| 16 | lowest after a periodic full GC | 279.2 | 65.1 | -76.7% |
+| 64 | peak VmRSS | 1648.8 | 105.7 | -93.6% |
+| 64 | after the last full GC | 1615.7 | 105.5 | -93.5% |
+| 64 | lowest after a periodic full GC | 1575.8 | 73.4 | -95.3% |
+| 256 | peak VmRSS | 2426.0 | 115.0 | -95.3% |
+| 256 | after the last full GC | 2388.1 | 108.6 | -95.5% |
+| 256 | lowest after a periodic full GC | 2308.5 | 83.5 | -96.4% |
+
+Reading: with thread caches the process's RSS grows with the thread count
+(305 -> 1649 -> 2426 MiB for 16 -> 64 -> 256 threads of the same live set,
+about 21 MiB of live objects): each idle worker's heap keeps its own
+caches and, because Ruby's GC frees other threads' objects, one `others`
+node per arena it has freed into (design 6.2's foreign-cache residue
+multiplied by the arena count). Under the mode the RSS is bounded by the
+16 ids (90 -> 106 -> 115 MiB), which is the acceptance the plan asked for;
+the reference soak (`2026-09-19-aarch64-ruby-soak.md`) has jemalloc at
+160 MiB after 10 minutes of the 16-thread shape against challoc's 394,
+so the mode also closes that gap. On this 7.0 kernel the 16-thread run is
+in the per-task id mode (one id per thread, no sharing), so its saving is
+the single any-arena cache per thread replacing the per-arena `others`
+nodes; the 64- and 256-thread runs share ids.
+
+larson with 64 threads (`larson 5 8 1000 5000 100 4141 64`, four times
+the vCPUs, so ids are shared and sections are aborted and retried), three
+runs each, `bench/rt`'s maxrss:
+
+| variant | M ops/s (3 runs) | maxrss MiB |
+|---|---|---:|
+| `percpu_arena:percpu` | 397.8 396.2 398.0 | 392..401 |
+| `percpu_arena:off` (default) | 578.6 582.0 582.1 | 561..562 |
+| jemalloc 5.3.1 | 610.0 609.4 610.4 | 523..528 |
+
+The mode: -31% throughput (the sections plus, at 64 threads on 16 CPUs,
+the retries) and -30% RSS (16 ids' caches instead of 64 threads').

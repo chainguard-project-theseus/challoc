@@ -155,6 +155,8 @@ pub enum Leaf {
     StatsPercpuIds,
     StatsPercpuHeaders,
     StatsPercpuCached,
+    /// `stats.percpu.aborts`: critical sections the kernel restarted.
+    StatsPercpuAborts,
     ThreadTcacheFlush,
     ThreadTcacheEnabled,
     ThreadAllocated,
@@ -272,11 +274,12 @@ static STATS_THP: [Node; 6] = [
     leaf("meta_ranges", Leaf::StatsThpMetaRanges),
     leaf("failures", Leaf::StatsThpFailures),
 ];
-static STATS_PERCPU: [Node; 4] = [
+static STATS_PERCPU: [Node; 5] = [
     leaf("enabled", Leaf::StatsPercpuEnabled),
     leaf("ids", Leaf::StatsPercpuIds),
     leaf("headers", Leaf::StatsPercpuHeaders),
     leaf("cached", Leaf::StatsPercpuCached),
+    leaf("aborts", Leaf::StatsPercpuAborts),
 ];
 static STATS: [Node; 10] = [
     leaf("allocated", Leaf::StatsAllocated),
@@ -916,14 +919,15 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
             io.read_only()?;
             io.read(shared.percpu_on())
         }
-        StatsPercpuIds | StatsPercpuHeaders | StatsPercpuCached => {
+        StatsPercpuIds | StatsPercpuHeaders | StatsPercpuCached | StatsPercpuAborts => {
             io.read_only()?;
             let pc = &shared.percpu;
             let (headers, cached) = if pc.on() { pc.snapshot() } else { (0, 0) };
             io.read(match leaf {
                 StatsPercpuIds => pc.ids() as usize,
                 StatsPercpuHeaders => headers,
-                _ => cached,
+                StatsPercpuCached => cached,
+                _ => crate::rseq::aborts() as usize,
             })
         }
         ThreadTcacheFlush => {

@@ -56,7 +56,9 @@ RUBY_TAG=${RUBY_TAG:-v3_4_10}
 COMPAT=$WORK/jemalloc-compat
 STAGE_LIB=$COMPAT/stage/lib
 INST=$WORK/install-challoc
-COMMIT=${COMMIT:-$(commit_short)$(tree_dirty && echo ' (uncommitted changes in src/)')}
+# (`|| true`: on a clean tree `tree_dirty` returns 1, and under `set -e` a
+# failing substitution in a plain assignment ends the script silently.)
+COMMIT=${COMMIT:-$(commit_short)$(tree_dirty && echo ' (uncommitted changes in src/)' || true)}
 T_START=$(date +%s)
 LOAD0=$(loadavg)
 

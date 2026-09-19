@@ -748,10 +748,11 @@ fn percpu_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
         let (headers, cached) = pc.snapshot();
         writeln!(
             out,
-            "Per-CPU caches: on ({} ids, {} headers installed, {} slots cached; rseq size {} offset {})",
+            "Per-CPU caches: on ({} ids, {} headers installed, {} slots cached, {} sections aborted; rseq size {} offset {})",
             pc.ids(),
             headers,
             cached,
+            crate::rseq::aborts(),
             probe.size,
             probe.offset
         )

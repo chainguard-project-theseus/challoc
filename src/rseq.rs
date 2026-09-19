@@ -27,14 +27,24 @@
 //!
 //! `mm_cid` is the *concurrency id* (kernel 6.3, `CONFIG_SCHED_MM_CID`): a
 //! small integer, unique among the threads of the process that are running
-//! at any instant, allocated from the lowest free value and bounded by the
-//! number of possible CPUs (`nr_cpu_ids`), so a process with four threads
-//! on a 64-CPU host uses ids 0..3 and a 200-thread process on 4 CPUs uses
-//! 0..3 as well. That bound is what makes a cache per concurrency id cost
-//! memory by cores rather than by threads. A thread keeps its id while it
-//! runs and gives it up when it is switched out; the kernel hands ids over
-//! through fully ordered atomics on the process's id mask, so what the
-//! previous holder of an id stored is visible to the next.
+//! at any instant and bounded by the number of possible CPUs
+//! (`nr_cpu_ids`), so a 200-thread process on 4 CPUs uses ids 0..3. That
+//! bound is what makes a cache per concurrency id cost memory by cores
+//! rather than by threads. Two kernel implementations exist and the code
+//! here relies only on what they share (docs/research.md, the 6.19 row):
+//! before 6.19 (Chainguard OS 6.18) ids are `< min(threads, cpus)`, a
+//! thread gives its id up when it is switched out and may get another on
+//! migration, and the kernel hands ids over through fully ordered atomics
+//! on the process's id mask (so what the previous holder of an id stored
+//! is visible to the next); since 6.19 (the reference VMs' 7.0) a process
+//! with no more threads than possible CPUs runs in *per-task* mode, where
+//! every thread keeps its own id across migrations (the caches then behave
+//! like thread caches and no header is ever shared), and switches to the
+//! shared per-CPU ids only above that count, at fork or exit. In both, an
+//! id has one running holder at any instant and stays below `nr_cpu_ids`,
+//! which is all the sections need. [`aborts`] counts the sections the
+//! kernel restarted, so a test can see the abort path taken (it is, once
+//! threads outnumber CPUs).
 //!
 //! A *critical section* is a straight run of instructions `[start_ip,
 //! start_ip + post_commit_offset)` ending in one store, the *commit*. If
@@ -88,6 +98,28 @@ pub const CPU_ID_UNINITIALIZED: u32 = u32::MAX;
 pub const SIG: u32 = 0x5305_3053;
 #[cfg(target_arch = "aarch64")]
 pub const SIG: u32 = 0xd428_bc00;
+
+/// Sections the kernel moved to their abort handler (preempted, migrated
+/// or signalled inside one), summed over the process: a diagnostic
+/// (`stats.percpu.aborts`, the report) and the tests' witness that the
+/// abort path runs. Incremented in the abort handlers themselves, so a
+/// completed section costs nothing for it; the aarch64 increment is a
+/// plain load-add-store (a lost count under a race is acceptable for a
+/// counter).
+#[cfg(target_os = "linux")]
+static ABORTS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// Sections aborted and retried so far (0 off Linux).
+pub fn aborts() -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        ABORTS.load(core::sync::atomic::Ordering::Relaxed)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        0
+    }
+}
 
 /// What glibc registered, read from the three weak symbols.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -390,6 +422,7 @@ pub unsafe fn pop(area: *mut u8, t: Table, pac: bool) -> Pop {
             ".byte 0x0f, 0xb9, 0x3d",
             ".long {sig}",
             "4:",
+            "lock inc qword ptr [rip + {aborts}]",
             "jmp 8b",
             "5:",
             "mov {st:e}, 1",
@@ -419,6 +452,7 @@ pub unsafe fn pop(area: *mut u8, t: Table, pac: bool) -> Pop {
             o_lw = const O_LOW_WATER,
             o_zeroed = const O_ZEROED,
             sig = const SIG,
+            aborts = sym ABORTS,
             options(nostack),
         );
         #[cfg(target_arch = "aarch64")]
@@ -466,6 +500,11 @@ pub unsafe fn pop(area: *mut u8, t: Table, pac: bool) -> Pop {
             "b 13f",
             ".inst {sig}",
             "4:",
+            "adrp {t}, {aborts}",
+            "add {t}, {t}, :lo12:{aborts}",
+            "ldr {h}, [{t}]",
+            "add {h}, {h}, #1",
+            "str {h}, [{t}]",
             "b 8b",
             "5:",
             "mov {st:w}, #1",
@@ -496,6 +535,7 @@ pub unsafe fn pop(area: *mut u8, t: Table, pac: bool) -> Pop {
             o_lw = const O_LOW_WATER,
             o_zeroed = const O_ZEROED,
             sig = const SIG,
+            aborts = sym ABORTS,
             options(nostack),
         );
     }
@@ -556,6 +596,7 @@ pub unsafe fn push(area: *mut u8, t: Table, p: *mut u8, pac: bool) -> Push {
             ".byte 0x0f, 0xb9, 0x3d",
             ".long {sig}",
             "4:",
+            "lock inc qword ptr [rip + {aborts}]",
             "jmp 8b",
             "5:",
             "mov {st:e}, 1",
@@ -579,6 +620,7 @@ pub unsafe fn push(area: *mut u8, t: Table, p: *mut u8, pac: bool) -> Push {
             o_slots = const O_SLOTS,
             o_zeroed = const O_ZEROED,
             sig = const SIG,
+            aborts = sym ABORTS,
             options(nostack),
         );
         #[cfg(target_arch = "aarch64")]
@@ -622,6 +664,11 @@ pub unsafe fn push(area: *mut u8, t: Table, p: *mut u8, pac: bool) -> Push {
             "b 13f",
             ".inst {sig}",
             "4:",
+            "adrp {t}, {aborts}",
+            "add {t}, {t}, :lo12:{aborts}",
+            "ldr {h}, [{t}]",
+            "add {h}, {h}, #1",
+            "str {h}, [{t}]",
             "b 8b",
             "5:",
             "mov {st:w}, #1",
@@ -647,6 +694,7 @@ pub unsafe fn push(area: *mut u8, t: Table, p: *mut u8, pac: bool) -> Push {
             o_slots = const O_SLOTS,
             o_zeroed = const O_ZEROED,
             sig = const SIG,
+            aborts = sym ABORTS,
             options(nostack),
         );
     }
@@ -731,6 +779,7 @@ pub unsafe fn push_batch(area: *mut u8, t: Table, ptrs: &[*mut u8], zeroed: bool
             ".byte 0x0f, 0xb9, 0x3d",
             ".long {sig}",
             "4:",
+            "lock inc qword ptr [rip + {aborts}]",
             "jmp 8b",
             "6:",
             "mov {st:e}, 2",
@@ -757,6 +806,7 @@ pub unsafe fn push_batch(area: *mut u8, t: Table, ptrs: &[*mut u8], zeroed: bool
             o_zeroed = const O_ZEROED,
             o_lw = const O_LOW_WATER,
             sig = const SIG,
+            aborts = sym ABORTS,
             options(nostack),
         );
         #[cfg(target_arch = "aarch64")]
@@ -810,6 +860,11 @@ pub unsafe fn push_batch(area: *mut u8, t: Table, ptrs: &[*mut u8], zeroed: bool
             "b 13f",
             ".inst {sig}",
             "4:",
+            "adrp {t}, {aborts}",
+            "add {t}, {t}, :lo12:{aborts}",
+            "ldr {h}, [{t}]",
+            "add {h}, {h}, #1",
+            "str {h}, [{t}]",
             "b 8b",
             "6:",
             "mov {st:w}, #2",
@@ -837,6 +892,7 @@ pub unsafe fn push_batch(area: *mut u8, t: Table, ptrs: &[*mut u8], zeroed: bool
             o_zeroed = const O_ZEROED,
             o_lw = const O_LOW_WATER,
             sig = const SIG,
+            aborts = sym ABORTS,
             options(nostack),
         );
     }
@@ -896,6 +952,7 @@ pub unsafe fn take_all(area: *mut u8, t: Table, out: &mut [*mut u8], pac: bool) 
             ".byte 0x0f, 0xb9, 0x3d",
             ".long {sig}",
             "4:",
+            "lock inc qword ptr [rip + {aborts}]",
             "jmp 8b",
             "6:",
             "mov {st:e}, 2",
@@ -917,6 +974,7 @@ pub unsafe fn take_all(area: *mut u8, t: Table, out: &mut [*mut u8], pac: bool) 
             o_slots = const O_SLOTS,
             o_lw = const O_LOW_WATER,
             sig = const SIG,
+            aborts = sym ABORTS,
             options(nostack),
         );
         #[cfg(target_arch = "aarch64")]
@@ -959,6 +1017,11 @@ pub unsafe fn take_all(area: *mut u8, t: Table, out: &mut [*mut u8], pac: bool) 
             "b 13f",
             ".inst {sig}",
             "4:",
+            "adrp {t}, {aborts}",
+            "add {t}, {t}, :lo12:{aborts}",
+            "ldr {h}, [{t}]",
+            "add {h}, {h}, #1",
+            "str {h}, [{t}]",
             "b 8b",
             "6:",
             "mov {st:w}, #2",
@@ -981,6 +1044,7 @@ pub unsafe fn take_all(area: *mut u8, t: Table, out: &mut [*mut u8], pac: bool) 
             o_slots = const O_SLOTS,
             o_lw = const O_LOW_WATER,
             sig = const SIG,
+            aborts = sym ABORTS,
             options(nostack),
         );
     }
@@ -1048,6 +1112,7 @@ pub unsafe fn install(area: *mut u8, t: Table, expected: *const u8, slots: *mut 
             ".byte 0x0f, 0xb9, 0x3d",
             ".long {sig}",
             "4:",
+            "lock inc qword ptr [rip + {aborts}]",
             "jmp 8b",
             "5:",
             "mov {st:e}, 1",
@@ -1073,6 +1138,7 @@ pub unsafe fn install(area: *mut u8, t: Table, expected: *const u8, slots: *mut 
             o_cap = const O_CAP,
             o_slots = const O_SLOTS,
             sig = const SIG,
+            aborts = sym ABORTS,
             options(nostack),
         );
         #[cfg(target_arch = "aarch64")]
@@ -1104,6 +1170,11 @@ pub unsafe fn install(area: *mut u8, t: Table, expected: *const u8, slots: *mut 
             "b 13f",
             ".inst {sig}",
             "4:",
+            "adrp {t}, {aborts}",
+            "add {t}, {t}, :lo12:{aborts}",
+            "ldr {h}, [{t}]",
+            "add {h}, {h}, #1",
+            "str {h}, [{t}]",
             "b 8b",
             "5:",
             "mov {st:w}, #1",
@@ -1129,6 +1200,7 @@ pub unsafe fn install(area: *mut u8, t: Table, expected: *const u8, slots: *mut 
             o_cap = const O_CAP,
             o_slots = const O_SLOTS,
             sig = const SIG,
+            aborts = sym ABORTS,
             options(nostack),
         );
     }

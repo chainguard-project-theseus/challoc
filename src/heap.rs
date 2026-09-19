@@ -6404,7 +6404,12 @@ mod linux_tests {
             return;
         }
         let c = class_of(64).unwrap();
-        let nthreads = 2 * (crate::sys::ncpus() as usize).max(2);
+        // More threads than possible CPUs: on a 6.19+ kernel that is what
+        // leaves the per-task id mode (a thread otherwise keeps its own id
+        // across migrations, and no header is ever shared), and on every
+        // kernel it is what makes the abort path run.
+        let nthreads = 2 * (rseq::possible_cpus().unwrap_or(1) as usize).max(2);
+        let aborts0 = rseq::aborts();
         let handles: Vec<_> = (0..nthreads)
             .map(|i| {
                 std::thread::spawn(move || {
@@ -6438,7 +6443,91 @@ mod linux_tests {
         }
         let (headers, cached) = s.percpu.snapshot();
         assert_eq!(cached, live_all(s, c), "nothing leaked and nothing is counted twice");
-        std::eprintln!("percpu: {nthreads} threads, {headers} headers installed, {cached} slots cached at the end");
+        let aborts = rseq::aborts() - aborts0;
+        // (A section is aborted only when a preemption or a signal lands
+        // inside its few instructions; in this short run that is a
+        // handful at most, and `percpu_sections_abort_and_retry_under_signals`
+        // is the test that forces it.)
+        std::eprintln!(
+            "percpu: {nthreads} threads, {headers} headers installed, {cached} slots cached at the end, {aborts} sections aborted and retried"
+        );
+    }
+
+    /// The abort path, forced: a worker pops and pushes through the CPU
+    /// caches while another thread signals it as fast as it can (a signal
+    /// delivered inside a section moves the thread to the abort handler
+    /// before the handler frame is built, on every kernel with rseq), so
+    /// sections are aborted and retried by the hundreds; every block the
+    /// worker frees still carries its tag and the slots are conserved.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn percpu_sections_abort_and_retry_under_signals() {
+        use std::os::unix::thread::JoinHandleExt;
+        let s = shared_percpu();
+        if !s.percpu_on() {
+            return;
+        }
+        extern "C" fn noop(_: libc::c_int) {}
+        // SAFETY: installing a no-op handler for SIGUSR1, which nothing
+        // else in the test binary uses.
+        unsafe {
+            let mut sa: libc::sigaction = core::mem::zeroed();
+            sa.sa_sigaction = noop as extern "C" fn(libc::c_int) as usize;
+            libc::sigemptyset(&mut sa.sa_mask);
+            assert_eq!(libc::sigaction(libc::SIGUSR1, &sa, ptr::null_mut()), 0);
+        }
+        let c = class_of(64).unwrap();
+        let aborts0 = rseq::aborts();
+        let stop = Arc::new(AtomicUsize::new(0));
+        let worker = {
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let t = TestHeap::new(s);
+                let tag = 0xA5A5_0000_0000_0001u64;
+                let mut mine: Vec<*mut u8> = Vec::new();
+                let mut rng = 0x1234_5678_9ABC_DEF1u64;
+                let mut ops = 0u64;
+                while stop.load(Ordering::Relaxed) == 0 {
+                    for _ in 0..256 {
+                        let r = xorshift(&mut rng);
+                        if mine.len() < 200 && (r & 1 == 0 || mine.is_empty()) {
+                            let p = t.alloc(c);
+                            unsafe { (p as *mut u64).write(tag) };
+                            mine.push(p);
+                        } else {
+                            let k = (r as usize >> 1) % mine.len();
+                            let p = mine.swap_remove(k);
+                            assert_eq!(unsafe { (p as *mut u64).read() }, tag);
+                            t.free(p);
+                        }
+                        ops += 1;
+                    }
+                }
+                for p in mine {
+                    t.free(p);
+                }
+                t.destroy();
+                ops
+            })
+        };
+        let target = worker.as_pthread_t();
+        let t0 = std::time::Instant::now();
+        let mut signals = 0u64;
+        while t0.elapsed() < std::time::Duration::from_millis(400) {
+            // SAFETY: the worker is alive until `stop` is set below.
+            unsafe { libc::pthread_kill(target, libc::SIGUSR1) };
+            signals += 1;
+            for _ in 0..200 {
+                core::hint::spin_loop();
+            }
+        }
+        stop.store(1, Ordering::Relaxed);
+        let ops = worker.join().unwrap();
+        let aborts = rseq::aborts() - aborts0;
+        std::eprintln!("percpu: {ops} operations under {signals} signals, {aborts} sections aborted and retried");
+        assert!(aborts > 0, "no section was aborted under {signals} signals");
+        let (_, cached) = s.percpu.snapshot();
+        assert_eq!(cached, live_all(s, c), "slots conserved across the retries");
     }
 
     /// Heaps off the mode inside a per-CPU process take the thread paths:

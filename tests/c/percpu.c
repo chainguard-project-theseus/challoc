@@ -149,15 +149,21 @@ int main(int argc, char **argv)
     CHECK(ops == (uint64_t)NTHREADS * OPS, "ops %llu", (unsigned long long)ops);
 
     CHECK(ctl("thread.tcache.flush", NULL, NULL, NULL, 0) == 0, "thread.tcache.flush");
+    size_t aborts = 0;
     REQUIRE(get_size("stats.percpu.headers", &headers) == 0, "stats.percpu.headers");
     REQUIRE(get_size("stats.percpu.cached", &cached) == 0, "stats.percpu.cached");
+    REQUIRE(get_size("stats.percpu.aborts", &aborts) == 0, "stats.percpu.aborts");
     if (enabled) {
         CHECK(headers > 0, "the workload installed no per-CPU header");
         CHECK(cached <= ids * NSIZES * 1024, "cached %zu above the table's capacity", cached);
+        /* Sections are aborted only when a preemption or a signal lands inside
+         * one; over this short run that is a handful at most (0 has been seen),
+         * so the count is reported, not required: the Rust test
+         * `percpu_sections_abort_and_retry_under_signals` forces the path. */
     } else {
-        CHECK(headers == 0 && cached == 0, "per-CPU state while off (%zu, %zu)", headers, cached);
+        CHECK(headers == 0 && cached == 0 && aborts == 0, "per-CPU state while off (%zu, %zu, %zu)", headers, cached, aborts);
     }
-    printf("percpu: mode %s enabled=%d ids=%zu headers=%zu cached=%zu after %d threads x %d ops\n", mode,
-           enabled, ids, headers, cached, NTHREADS, OPS);
+    printf("percpu: mode %s enabled=%d ids=%zu headers=%zu cached=%zu aborts=%zu after %d threads x %d ops\n", mode,
+           enabled, ids, headers, cached, aborts, NTHREADS, OPS);
     return finish("percpu");
 }
