@@ -1,4 +1,4 @@
-//! Raw Linux syscalls (design.md section 18).
+//! Raw Linux syscalls (design.md section 19).
 //!
 //! Everything the allocator asks the kernel for goes through this module via
 //! `asm!` syscall instructions, never through libc. That keeps `errno`

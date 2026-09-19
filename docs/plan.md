@@ -36,7 +36,7 @@ Tasks:
    Wolfi image with `rust`, `build-base`, `gcc`, `jemalloc`, `git`, `cmake`,
    and a `make dev` target that runs a shell in it with the repo mounted.
 2. `src/sys`: raw syscall wrappers via `asm!` for x86_64 and aarch64, or via
-   `libc::syscall`, for the list in design.md section 18. Include `abort`
+   `libc::syscall`, for the list in design.md section 19. Include `abort`
    that writes a message with `write(2)` and calls `SYS_exit_group` after
    raising `SIGABRT`. Unit test error mapping on the host.
 3. `src/sys/features.rs`: probe `MADV_GUARD_INSTALL`, `mseal`,
