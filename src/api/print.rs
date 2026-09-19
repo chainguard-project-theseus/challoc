@@ -180,7 +180,7 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
             writeln!(out, "  opt.{key}: accepted, no effect")?;
         }
     }
-    writeln!(out, "Kernel features: {}", super::features())?;
+    writeln!(out, "Kernel and CPU features: {}", super::feature_line())?;
     writeln!(out, "Sealed ranges: {} of {}", super::sealed_ranges(), shared.regions.never_committed().1)?;
     writeln!(out, "Background thread: {}", if purge::background::present() { "present" } else { "absent" })?;
     writeln!(
@@ -694,7 +694,7 @@ mod tests {
             "opt.stats_print: accepted, no effect",
             "opt.double_free_scan: false\n",
             "opt.huge_retain_max: 67108864\n",
-            "Kernel features: page_size=",
+            "Kernel and CPU features: page_size=",
             "Sealed ranges: ",
             "Background thread: ",
             "Arenas: ",

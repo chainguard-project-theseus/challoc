@@ -1,4 +1,5 @@
-//! Kernel feature probing (design.md section 10, step 3).
+//! Kernel feature probing (design.md section 10, step 1) and the feature
+//! line that reports it together with the CPU report of `sys::cpu`.
 //!
 //! Every kernel feature the allocator can use is tried once, at init, on a
 //! scratch page, and the outcome is recorded in a [`Features`] value. Nothing
@@ -15,6 +16,8 @@
 //! tested on the host; the probes themselves run inside the Linux container.
 
 use core::fmt;
+
+use super::cpu::Cpu;
 
 /// `AT_NULL`: end of the auxiliary vector.
 const AT_NULL: usize = 0;
@@ -74,12 +77,16 @@ pub struct Features {
     /// `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME)` works
     /// (kernel 5.17+ with `CONFIG_ANON_VMA_NAME`).
     pub anon_name: bool,
+    /// The CPU report (design.md section 17): reported, not acted on.
+    pub cpu: Cpu,
 }
 
 impl fmt::Display for Features {
-    /// One line, `key=value` separated by spaces, for `malloc_stats_print`
-    /// and abort messages. Values are `yes`/`no` except `page_size` and
-    /// `process_madvise` (`no`, `pidfd_self`, or `pidfd:<fd>`).
+    /// One line, `key=value` separated by spaces, for `challoc_features()`,
+    /// `malloc_stats_print` and abort messages: the kernel probes, then the
+    /// CPU report. Values are `yes`/`no` except `page_size`,
+    /// `process_madvise` (`no`, `pidfd_self`, or `pidfd:<fd>`) and the
+    /// cache sizes (`64K`, `2M`, `unknown`).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fn yn(b: bool) -> &'static str {
             if b { "yes" } else { "no" }
@@ -96,7 +103,56 @@ impl fmt::Display for Features {
             ProcessMadvise::PidfdSelf => f.write_str("pidfd_self")?,
             ProcessMadvise::Pidfd(fd) => write!(f, "pidfd:{fd}")?,
         }
-        write!(f, " anon_name={}", yn(self.anon_name))
+        write!(f, " anon_name={} {}", yn(self.anon_name), self.cpu)
+    }
+}
+
+/// The feature line as a NUL-terminated string, built once at init for
+/// `challoc_features()` (design.md section 16) and reused by
+/// `malloc_stats_print`, so the two report the same bytes. Rebuilt in a
+/// fork child, where the purge backend is re-probed.
+pub struct FeatureLine {
+    buf: [u8; FeatureLine::CAP],
+    len: usize,
+}
+
+impl FeatureLine {
+    /// Room for the line and its NUL; the longest possible line (every
+    /// probe `yes`, `pidfd:2147483647`, byte-exact cache sizes) is under 300
+    /// bytes (`feature_line_fits`).
+    pub const CAP: usize = 512;
+
+    /// Format `features` into a fresh line. A line that did not fit is cut,
+    /// which the tests would notice; it cannot happen with the current keys.
+    pub fn build(features: &Features) -> FeatureLine {
+        use fmt::Write as _;
+        let mut line = FeatureLine { buf: [0; Self::CAP], len: 0 };
+        let _ = write!(line, "{features}");
+        line.buf[line.len] = 0;
+        line
+    }
+
+    /// The line without its NUL.
+    pub fn as_str(&self) -> &str {
+        // Only `str` fragments were copied, cut at a fragment boundary.
+        core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+    }
+
+    /// The NUL-terminated line, for C callers.
+    pub fn as_ptr(&self) -> *const core::ffi::c_char {
+        self.buf.as_ptr() as *const core::ffi::c_char
+    }
+}
+
+impl fmt::Write for FeatureLine {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let room = Self::CAP - 1 - self.len;
+        if s.len() > room {
+            return Err(fmt::Error);
+        }
+        self.buf[self.len..self.len + s.len()].copy_from_slice(s.as_bytes());
+        self.len += s.len();
+        Ok(())
     }
 }
 
@@ -105,7 +161,7 @@ pub use linux::*;
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{AT_PAGESZ, Features, ProcessMadvise, page_size_from_auxv};
+    use super::{AT_PAGESZ, Cpu, Features, ProcessMadvise, page_size_from_auxv};
     use crate::sys::{
         self, IoVec, MADV_DONTNEED, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE, MAP_ANONYMOUS,
         MAP_PRIVATE, PIDFD_SELF, PROT_NONE, PROT_READ, PROT_WRITE,
@@ -256,6 +312,7 @@ mod linux {
                 mseal: probe_mseal(page_size),
                 process_madvise: probe_process_madvise(page_size),
                 anon_name: probe_anon_name(page_size),
+                cpu: Cpu::probe(page_size),
             }
         }
 
@@ -303,6 +360,16 @@ mod tests {
         assert_eq!(page_size_from_auxv(&auxv(&[(6, 4096)])[..7]), None);
     }
 
+    use crate::sys::cpu::{Arm, CacheSource, Caches, Cpu, Isa, X86};
+
+    fn axion_cpu() -> Cpu {
+        Cpu {
+            isa: Isa::Arm(Arm { mte: false, mte3: false, pac: true, lse: true, lse2: true, bti: true, sve: true }),
+            caches: Caches { line: 64, l1d: 64 * 1024, l2: 2 * 1024 * 1024 },
+            cache_source: CacheSource::Sysfs,
+        }
+    }
+
     #[test]
     fn display_is_one_line_of_key_values() {
         let f = Features {
@@ -312,16 +379,70 @@ mod tests {
             mseal: true,
             process_madvise: ProcessMadvise::Pidfd(7),
             anon_name: false,
+            cpu: axion_cpu(),
         };
         let s = std::format!("{f}");
         assert_eq!(
             s,
-            "page_size=4096 guard_install=no mseal=yes process_madvise=pidfd:7 anon_name=no"
+            "page_size=4096 guard_install=no mseal=yes process_madvise=pidfd:7 anon_name=no \
+             mte=no mte3=no pac=yes lse=yes lse2=yes bti=yes sve=yes cacheline=64 l1d=64K l2=2M"
         );
         let f = Features { process_madvise: ProcessMadvise::PidfdSelf, ..f };
         assert!(std::format!("{f}").contains("process_madvise=pidfd_self "));
         let f = Features { process_madvise: ProcessMadvise::Unavailable, ..f };
         assert!(std::format!("{f}").contains("process_madvise=no "));
+    }
+
+    #[test]
+    fn feature_line_is_the_display_with_a_nul() {
+        let f = Features {
+            page_size: 16384,
+            page_shift: 14,
+            guard_install: true,
+            mseal: true,
+            process_madvise: ProcessMadvise::PidfdSelf,
+            anon_name: true,
+            cpu: axion_cpu(),
+        };
+        let line = FeatureLine::build(&f);
+        assert_eq!(line.as_str(), std::format!("{f}"));
+        let bytes = unsafe { core::slice::from_raw_parts(line.as_ptr() as *const u8, line.len + 1) };
+        assert_eq!(bytes[line.len], 0);
+        assert_eq!(&bytes[..line.len], line.as_str().as_bytes());
+        assert!(!line.as_str().contains('\n'));
+    }
+
+    #[test]
+    fn feature_line_fits() {
+        // The longest line either architecture can produce.
+        let x86 = Cpu {
+            isa: Isa::X86(X86 {
+                lam: true,
+                la57: true,
+                la57_enabled: true,
+                cldemote: true,
+                waitpkg: true,
+                erms: true,
+                fsrm: true,
+                avx512f: true,
+            }),
+            caches: Caches { line: 4_000_000_001, l1d: 4_000_000_001, l2: 4_000_000_001 },
+            cache_source: CacheSource::Cpuid,
+        };
+        for cpu in [x86, axion_cpu()] {
+            let f = Features {
+                page_size: 65536,
+                page_shift: 16,
+                guard_install: true,
+                mseal: true,
+                process_madvise: ProcessMadvise::Pidfd(i32::MAX),
+                anon_name: true,
+                cpu,
+            };
+            let s = std::format!("{f}");
+            assert!(s.len() < 300, "{} bytes: {s}", s.len());
+            assert_eq!(FeatureLine::build(&f).as_str(), s);
+        }
     }
 }
 

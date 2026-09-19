@@ -1,4 +1,4 @@
-//! Raw Linux syscalls (design.md section 17).
+//! Raw Linux syscalls (design.md section 18).
 //!
 //! Everything the allocator asks the kernel for goes through this module via
 //! `asm!` syscall instructions, never through libc. That keeps `errno`
@@ -11,6 +11,7 @@
 //! std` inside the dev container.
 
 pub mod cgroup;
+pub mod cpu;
 pub mod errno;
 pub mod features;
 pub use errno::{Errno, decode};

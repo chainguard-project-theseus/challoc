@@ -119,23 +119,41 @@ frees; with `MALLOC_CONF=cgroup:false` 319 MiB is still resident 2 s later
 swinging between 200 and 480 MiB runs for 5 minutes where jemalloc and
 mimalloc are OOM-killed within 12 s.
 
-**Kernel features, all runtime detected.** Rows marked *planned* are probed
-or reserved for but not yet used by any code path.
+**Kernel and CPU features, all runtime detected.** The floor is a
+compatibility promise: one binary works on kernel 5.10 and glibc 2.44 with
+Wolfi's compiler baseline. The ceiling is the product: the same binary lights
+whatever the host has, found by probing at init (never `-C target-cpu`), and
+reports it as one line from `challoc_features()` or `malloc_stats_print`'s
+`Kernel and CPU features:` (`docs/design.md` section 17). Rows marked
+*reported only* are probed and reported but not yet used by any code path;
+the task that will use them is named in the design.
 
-| Feature                      | Kernel | Used for                                   | Fallback                          |
+| Feature                      | Provided by | Used for                                   | Fallback                          |
 |------------------------------|--------|--------------------------------------------|-----------------------------------|
-| `MADV_GUARD_INSTALL`         | 6.13   | Guard slabs and guards after huge runs     | `PROT_NONE` page after huge runs; no guard slabs |
-| `process_madvise` on self    | 5.10   | Batched purge                              | Loop over `madvise`               |
-| `PR_SET_VMA_ANON_NAME`       | 5.17   | Named heap mappings in `/proc/pid/maps`    | Skip                              |
-| `mseal`                      | 6.10   | Seals the never-committed parts of the reservations (the gaps between class regions, the slack around the huge and metadata regions) at init; not the regions or the region table | Skip (also when seccomp filters it, as Docker's default profile does) |
-| PSI triggers                 | 6.4 (unprivileged) | Background thread arms `some 150000 1000000` on the cgroup's `memory.pressure` (or the unprivileged `some 300000 2000000`); a fire takes a sample, re-evaluates the policy and runs a decay pass at once | Sample `memory.current` on the tick; also when the write is refused (Docker's default profile mounts the cgroup read-only: `EROFS`; with `nsdelegate` on the host a container's root cgroup refuses the write: `EPERM`) |
-| Transparent huge pages (planned) | any | Opt-in only; the `thp` key is accepted and inert | Off                       |
-| rseq `mm_cid`                | 6.3    | Optional per-CPU mode, later phase         | Thread caches only                |
+| `MADV_GUARD_INSTALL`         | kernel 6.13   | Guard slabs and guards after huge runs     | `PROT_NONE` page after huge runs; no guard slabs |
+| `process_madvise` on self    | kernel 5.10 (pidfd), 6.14 (`PIDFD_SELF`) | Batched purge                              | Loop over `madvise`               |
+| `PR_SET_VMA_ANON_NAME`       | kernel 5.17   | Named heap mappings in `/proc/pid/maps`    | Skip                              |
+| `mseal`                      | kernel 6.10   | Seals the never-committed parts of the reservations (the gaps between class regions, the slack around the huge and metadata regions) at init; not the regions or the region table | Skip (also when seccomp filters it, as Docker's default profile does) |
+| PSI triggers                 | kernel 6.4 (unprivileged) | Background thread arms `some 150000 1000000` on the cgroup's `memory.pressure` (or the unprivileged `some 300000 2000000`); a fire takes a sample, re-evaluates the policy and runs a decay pass at once | Sample `memory.current` on the tick; also when the write is refused (Docker's default profile mounts the cgroup read-only: `EROFS`; with `nsdelegate` on the host a container's root cgroup refuses the write: `EPERM`) |
+| Transparent huge pages (reported only) | any kernel | Opt-in only; the `thp` key is accepted and inert | Off                       |
+| rseq `mm_cid` (reported only) | kernel 6.3    | Optional per-CPU mode, later phase         | Thread caches only                |
+| MTE `mte`, `mte3` (reported only) | arm64 CPU (Armv8.5) and kernel, `AT_HWCAP2` | Tagged pointers, a later task | Untagged pointers |
+| PAC `pac` (reported only)    | arm64 CPU (Armv8.3) and kernel, `AT_HWCAP` | Signed cache pointers, a later task | Plain pointers |
+| LSE `lse`, LSE2 `lse2` (reported only) | arm64 CPU (Armv8.1, 8.4), `AT_HWCAP` | 16-byte descriptor atomics, a later task; the atomics emitted today follow the compiler baseline | 64-bit atomics, LL/SC |
+| BTI `bti`, SVE `sve` (reported only) | arm64 CPU and kernel, `AT_HWCAP`/`AT_HWCAP2` | Nothing; recorded for the matrix | None needed |
+| LAM `lam` (reported only)    | x86_64 CPU (`cpuid` 7.1) and kernel 6.4 | Tagged pointers, a later task | Untagged pointers |
+| LA57 `la57`, `la57_enabled` (reported only) | x86_64 CPU (`cpuid` 7.0); the kernel booted with five-level paging (a hinted `mmap` above 2^47 is honoured) | Address-space budget for reservations and tag bits | 47-bit user addresses |
+| CLDEMOTE, WAITPKG, ERMS, FSRM, AVX-512F (reported only) | x86_64 CPU (`cpuid` 7.0) | Nothing yet; recorded for the matrix | None needed |
+| Cache line, L1D, L2 sizes (reported only) | `CTR_EL0` (arm64), `cpuid` leaf 4 / `0x8000001D` (x86_64), `/sys/devices/system/cpu/cpu0/cache` as fallback | Geometry defaults, a later task | `unknown`; the layout constants stay fixed |
 
-Chainguard OS ships Linux 6.18, so everything above except the per-CPU mode is
-available there. Containers run on whatever kernel the host has, so every path
-is probed at init and degrades without changing observable behaviour; note that
-a kernel before 6.13 (Docker Desktop's 6.10, for one) has no guard slabs.
+Chainguard OS ships Linux 6.18, so every kernel row above except the per-CPU
+mode is available there. Containers run on whatever kernel the host has, so
+every path is probed at init and degrades without changing observable
+behaviour; note that a kernel before 6.13 (Docker Desktop's 6.10, for one) has
+no guard slabs. Of the reference hosts, the C4A Axion VM exposes PAC, LSE2,
+BTI and SVE but no MTE, and the C4 Xeon 8581C exposes LA57 (enabled),
+CLDEMOTE, ERMS, FSRM and AVX-512F but no LAM or WAITPKG
+(`bench/results/2026-09-19-feature-report.md`).
 
 **Security properties versus jemalloc.**
 

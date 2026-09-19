@@ -18,6 +18,10 @@
  *
  * The VMA count is read before and after the first malloc with raw
  * syscalls (a FILE* would allocate and initialise the allocator early).
+ *
+ * malloc_stats_print hands its text over in 1 KiB chunks that can split a
+ * line anywhere, so the callback accumulates the whole report and the
+ * `Sealed ranges: N of M` line is parsed afterwards.
  */
 #include "common.h"
 
@@ -35,12 +39,27 @@ typedef int (*mallctl_fn)(const char *name, void *oldp, size_t *oldlenp, void *n
 typedef void (*stats_print_fn)(void (*cb)(void *, const char *), void *cbopaque, const char *opts);
 
 static int stats_sealed, stats_total;
+static char report[1 << 18];
+static size_t report_len;
 
-/* malloc_stats_print callback: pick out "Sealed ranges: N of M". */
+/* malloc_stats_print callback: accumulate the report. */
 static void stats_cb(void *opaque, const char *s)
 {
     (void)opaque;
-    const char *at = strstr(s, "Sealed ranges: ");
+    size_t n = strlen(s);
+    if (report_len + n < sizeof report) {
+        memcpy(report + report_len, s, n);
+        report_len += n;
+    }
+}
+
+/* Run malloc_stats_print and pick out "Sealed ranges: N of M". */
+static void read_sealed_stats(stats_print_fn msp)
+{
+    report_len = 0;
+    msp(stats_cb, NULL, "");
+    report[report_len] = 0;
+    const char *at = strstr(report, "Sealed ranges: ");
     if (at)
         sscanf(at, "Sealed ranges: %d of %d", &stats_sealed, &stats_total);
 }
@@ -192,7 +211,7 @@ int main(void)
         stats_sealed = stats_total = -1;
         stats_print_fn msp = (stats_print_fn)dlsym(RTLD_DEFAULT, "malloc_stats_print");
         REQUIRE(msp != NULL, "dlsym(malloc_stats_print)");
-        msp(stats_cb, NULL, "");
+        read_sealed_stats(msp);
         CHECK(stats_sealed == 0 && stats_total > 0, "allocator reports %d of %d sealed", stats_sealed, stats_total);
         printf("mseal: unavailable (kernel < 6.10 or seccomp), allocator sealed nothing; maps lines %d -> %d\n",
                before, after);
@@ -204,7 +223,7 @@ int main(void)
     stats_sealed = stats_total = -1;
     stats_print_fn msp = (stats_print_fn)dlsym(RTLD_DEFAULT, "malloc_stats_print");
     REQUIRE(msp != NULL, "dlsym(malloc_stats_print)");
-    msp(stats_cb, NULL, "");
+    read_sealed_stats(msp);
     CHECK(stats_sealed >= 0 && stats_total >= 0, "no `Sealed ranges: N of M` line in malloc_stats_print");
     CHECK(stats_sealed == stats_total, "allocator sealed %d of %d ranges", stats_sealed, stats_total);
     /* NCLASSES + 1 class gaps (the leading one may be empty) plus up to

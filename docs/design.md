@@ -22,6 +22,17 @@ number, the value is a starting point to be validated by benchmarks in
   would be an acceptable alternative behind a Cargo feature; no such feature
   exists and none may be required.
 - Consumers are C programs. There is no Rust `GlobalAlloc` facade in scope.
+- Floor and ceiling (section 17). The floor is a compatibility promise:
+  glibc 2.44, kernel 5.10, Wolfi's compiler baseline, proven on real
+  kernels. The ceiling is the product: the same binary lights every kernel
+  and CPU feature the host offers, found at runtime by probing (a syscall
+  tried on a scratch page, `AT_HWCAP`, `cpuid`, a system register read
+  through `asm!`), never by `-C target-cpu` or a header constant. A feature
+  that is on by default when present must be within noise on the reference
+  scorecard when absent, and may change only cost, memory and detection,
+  never observable behaviour (allocation results, abort conditions). Every
+  probe has a fallback and a line in the feature report
+  (`challoc_features()`, section 16).
 
 ## 2. Address space layout
 
@@ -779,7 +790,11 @@ Init must not call anything that allocates. Steps, in the order
 1. Read `AT_PAGESZ` from `getauxval` and probe features by attempting them
    on a scratch page and recording the error: `MADV_GUARD_INSTALL`, `mseal`,
    `process_madvise` (with `PIDFD_SELF`, then with a pidfd of self, which is
-   kept), `PR_SET_VMA_ANON_NAME` (`sys::features`).
+   kept), `PR_SET_VMA_ANON_NAME` (`sys::features`). Then the CPU report
+   (`sys::cpu`, section 17): `AT_HWCAP`/`AT_HWCAP2` and `CTR_EL0` on arm64,
+   `cpuid` and a hinted `mmap` above 2^47 on x86_64, the sysfs cache files
+   where the registers do not give the sizes. The whole probe is formatted
+   once into the static feature line that `challoc_features()` returns.
 2. Parse configuration (section 12). This happens before anything is
    reserved so that `abort_conf` aborts with nothing mapped; it reads only
    the weak symbols, one file and `environ`.
@@ -1363,8 +1378,61 @@ kernel-owned fields is what broke tcmalloc on Linux 6.19.
   and writes no allocator state and does not initialise the allocator;
   `mallctl("version")` stays the jemalloc-shaped `5.3.0-0-gchalloc` for
   parsers of that string.
+- `challoc_features()` (`const char *`) is the feature report: one
+  NUL-terminated line of `key=value` pairs separated by single spaces, the
+  kernel probes first (`page_size=4096 guard_install=yes mseal=yes
+  process_madvise=pidfd_self anon_name=yes`) then the CPU (section 17;
+  `mte=no mte3=no pac=yes lse=yes lse2=yes bti=yes sve=yes` on arm64,
+  `lam=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes
+  fsrm=yes avx512f=yes` on x86_64, then `cacheline=64 l1d=64K l2=2M` on
+  both, `unknown` where no source had a figure). The string is static,
+  built once at init without allocating (rebuilt in a fork child, whose
+  purge backend is re-probed), and byte-identical to the `Kernel and CPU
+  features:` line of `malloc_stats_print`. Calling it initialises the
+  allocator. Values are `yes`/`no` for bits, so a script can `grep -q
+  'mte=yes'`; keys are only ever added, never renamed.
 
-## 17. Source layout
+## 17. Floor and ceiling
+
+The rule is stated in section 1. This section is the inventory: every
+feature the allocator probes, who provides it, what the allocator turns on
+with it today, and what it does without it. "Reported only" means the probe
+and its line in the feature report exist and no code path reads the result
+yet; the task that will is named. Nothing in this table is decided at build
+time: the compiler baseline stays where Wolfi sets it and the same binary
+runs on every row.
+
+| Feature | Provided by | challoc turns on | Fallback |
+|---|---|---|---|
+| Page size (`AT_PAGESZ`) | kernel, the auxiliary vector | the granularity of every mapping, slab and purge (4, 16 or 64 KiB) | none: init aborts without it (`/proc/self/auxv` is tried first) |
+| `MADV_GUARD_INSTALL` | kernel 6.13 | guard slabs between slabs and after huge runs (section 14) | a `PROT_NONE` page after huge runs only; no guard slabs |
+| `process_madvise` on self | kernel 5.10 with a pidfd of self; 6.14 with `PIDFD_SELF` | batched purge, one call per decay pass (section 8) | a loop of `madvise(MADV_DONTNEED)` |
+| `mseal` | kernel 6.10, not filtered by seccomp | seals the never-committed ranges of the reservations at init (section 10 step 5) | skip; `Sealed ranges: 0 of N` |
+| `PR_SET_VMA_ANON_NAME` | kernel 5.17 with `CONFIG_ANON_VMA_NAME` | named `challoc:*` mappings in `/proc/pid/maps` | skip |
+| PSI triggers on `memory.pressure` | kernel 6.4 (unprivileged), cgroup2 mounted writable | the background thread arms a trigger and reacts to pressure at once (section 11) | sample `memory.current` on the tick |
+| rseq `mm_cid` | kernel 6.3, glibc's registered rseq area | nothing yet: the per-CPU mode (section 15, plan Phase 2.5 task 8) | thread caches |
+| Transparent huge pages | any kernel with THP | nothing: the `thp` key is accepted and inert (plan Phase 2.5 task 9) | off |
+| MTE (`HWCAP2_MTE`, `HWCAP2_MTE3`) | arm64 CPU (Armv8.5) and a kernel with `CONFIG_ARM64_MTE` that exposes it | reported only: tagged pointers (plan Phase 2.5 tasks 5 and 6) | untagged pointers |
+| PAC (`HWCAP_PACA` and `HWCAP_PACG`) | arm64 CPU (Armv8.3) and kernel | reported only: signed cache and heap pointers (task 7) | plain pointers |
+| LSE (`HWCAP_ATOMICS`) | arm64 CPU (Armv8.1) | reported only; the atomics the crate emits follow the compiler baseline (Rust's outlined `__aarch64_*` helpers already pick LSE at run time) | LL/SC loops in the same helpers |
+| LSE2 (`HWCAP_USCAT`) | arm64 CPU (Armv8.4) | reported only: single-copy 16-byte descriptor atomics (later task) | 64-bit atomics |
+| BTI (`HWCAP2_BTI`), SVE (`HWCAP_SVE`) | arm64 CPU and kernel | reported only (BTI landing pads are the compiler baseline's decision) | none needed |
+| LAM (`cpuid` 7.1 `EAX[26]`) | x86_64 CPU and kernel 6.4 (`arch_prctl(ARCH_ENABLE_TAGGED_ADDR)`) | reported only: tagged pointers (tasks 5 and 6) | untagged pointers |
+| LA57 (`cpuid` 7.0 `ECX[16]`), `la57_enabled` (a hinted `mmap` above 2^47 honoured) | x86_64 CPU; kernel with `CONFIG_X86_5LEVEL` booted on it | reported only: the address-space budget for reservations and tag bits (task 5) | 47-bit user addresses |
+| CLDEMOTE (`cpuid` 7.0 `ECX[25]`), WAITPKG (`ECX[5]`) | x86_64 CPU (Sapphire Rapids and later; a hypervisor may hide WAITPKG) | reported only (task 12) | none needed |
+| ERMS, FSRM, AVX-512F (`cpuid` 7.0 `EBX[9]`, `EDX[4]`, `EBX[16]`) | x86_64 CPU | reported only: `memcpy`/`memset` selection is glibc's; the crate's fills use the compiler baseline | none needed |
+| Cache line, L1D and L2 sizes | `CTR_EL0` (arm64), `cpuid` leaf 4 or `0x8000001D` (x86_64), else `/sys/devices/system/cpu/cpu0/cache/index*/` | reported only: the layout constants (`lock.rs` padding, the 512-byte stride rule) stay fixed | `unknown` in the line; nothing changes |
+
+The feature report's arm64 keys are `mte mte3 pac lse lse2 bti sve`, the
+x86_64 keys `lam la57 la57_enabled cldemote waitpkg erms fsrm avx512f`, and
+`cacheline l1d l2` on both, after the kernel keys of section 10. The
+container test checks each CPU bit against `/proc/cpuinfo` (`Features` or
+`flags`) on the host it runs on; the host tests decode captured HWCAP words
+and `cpuid` registers from the reference machines. The reference hosts'
+lines are recorded in `bench/results/2026-09-19-feature-report.md`; the
+matrix of plan tasks 3 and 4 adds one line per kernel and CPU.
+
+## 18. Source layout
 
 ```
 src/lib.rs            crate root, quantum feature selection, panic handler
@@ -1372,7 +1440,8 @@ src/sys/mod.rs        typed syscall wrappers (mmap, mprotect, madvise, process_m
 src/sys/raw.rs        the asm syscall instructions (x86_64, aarch64)
 src/sys/nr.rs         syscall numbers, header-checked
 src/sys/errno.rs      kernel error decoding
-src/sys/features.rs   kernel feature probing
+src/sys/features.rs   kernel feature probing, the feature line
+src/sys/cpu.rs        CPU feature report (HWCAP, cpuid, CTR_EL0, sysfs cache sizes)
 src/sys/cgroup.rs     cgroup2 discovery, limit walk, sampling, PSI trigger arming
 src/tls.rs            initial-exec TLS accessor
 src/lock.rs           futex lock, padded lock
@@ -1388,7 +1457,7 @@ src/policy.rs         the cgroup policy table (section 11): bands, retention cap
 src/arena.rs          arenas, explicit caches, MALLOCX_* routing
 src/config.rs         malloc_conf parsing
 src/stats.rs          counters and epoch merge
-src/api/mod.rs        lazy init, Shared/Features statics, fork handlers
+src/api/mod.rs        lazy init, Shared/Features statics, challoc_version/challoc_features, fork handlers
 src/api/libc.rs       standard entry points, malloc_trim
 src/api/glibc.rs      mallopt, mallinfo, mallinfo2
 src/api/jemalloc.rs   *allocx, mallctl entry points, malloc_conf/malloc_message symbols, je_ aliases

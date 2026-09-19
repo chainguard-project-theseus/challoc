@@ -57,7 +57,7 @@ use crate::heap::Shared;
 use crate::layout::{NCLASSES, Regions};
 use crate::purge;
 use crate::sys;
-use crate::sys::features::Features;
+use crate::sys::features::{FeatureLine, Features};
 
 /// The one challoc-specific export (design 16): the crate version as a
 /// NUL-terminated static string (`"0.1.0"`; the soname's major, design
@@ -105,6 +105,8 @@ impl<T> Global<T> {
 
 static SHARED: Global<Shared> = Global::new();
 static FEATURES: Global<Features> = Global::new();
+/// The feature line for `challoc_features()` and `malloc_stats_print`.
+static FEATURE_LINE: Global<FeatureLine> = Global::new();
 /// Signal mask of the forking thread, saved by `fork_prepare` and restored by
 /// `fork_release`. One slot suffices because it is only written and read
 /// while the writer holds every allocator lock: a second thread in
@@ -155,6 +157,30 @@ pub fn features() -> &'static Features {
     let _ = shared();
     // SAFETY: `shared()` returned, so `READY` has been observed.
     unsafe { FEATURES.get() }
+}
+
+/// The feature line (`Features`'s `Display`, built at init). Initialises
+/// the allocator if needed.
+pub fn feature_line() -> &'static str {
+    let _ = shared();
+    // SAFETY: `shared()` returned, so `READY` has been observed.
+    unsafe { FEATURE_LINE.get() }.as_str()
+}
+
+/// `challoc_features()`: the feature report as one NUL-terminated line of
+/// `key=value` pairs (design.md sections 16 and 17): the kernel probes
+/// (`page_size`, `guard_install`, `mseal`, `process_madvise`, `anon_name`)
+/// then the CPU (`mte`, `pac`, `lse`, `lse2`, `bti`, `sve` on arm64; `lam`,
+/// `la57`, `la57_enabled`, `cldemote`, `waitpkg`, `erms`, `fsrm`, `avx512f`
+/// on x86_64; `cacheline`, `l1d`, `l2` on both). The string is static, built
+/// once at init without allocating, and identical to the `Kernel and CPU
+/// features:` line of `malloc_stats_print`. Initialises the allocator if
+/// needed.
+#[unsafe(no_mangle)]
+pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
+    let _ = shared();
+    // SAFETY: `shared()` returned, so `READY` has been observed.
+    unsafe { FEATURE_LINE.get() }.as_ptr()
 }
 
 /// Whether init has completed (for tests and diagnostics).
@@ -220,6 +246,7 @@ fn init() {
         if !ok {
             sys::abort("metadata region too small for the allocator tables");
         }
+        (*FEATURE_LINE.0.get()).write(FeatureLine::build(&features));
         (*FEATURES.0.get()).write(features);
     }
     // SAFETY: the three handlers are plain `extern "C"` functions that only
@@ -319,7 +346,11 @@ extern "C" fn fork_child() {
     let backend = purge::fork_child();
     // SAFETY: the child is single threaded and every lock is held, so
     // nothing reads the features while they change.
-    unsafe { (*FEATURES.0.get()).assume_init_mut().process_madvise = backend };
+    unsafe {
+        let features = (*FEATURES.0.get()).assume_init_mut();
+        features.process_madvise = backend;
+        (*FEATURE_LINE.0.get()).write(FeatureLine::build(features));
+    }
     fork_release();
 }
 
@@ -344,6 +375,25 @@ mod tests {
         assert!(shared().has_thread_key());
         let f = features();
         assert_eq!(f.page_size, shared().regions.page_size());
+    }
+
+    /// `challoc_features()` is the `Display` of the probe, NUL-terminated,
+    /// static, and the same bytes on every call.
+    #[test]
+    fn challoc_features_is_the_probe_line() {
+        let p = challoc_features();
+        assert!(!p.is_null());
+        assert_eq!(p, challoc_features());
+        let s = unsafe { core::ffi::CStr::from_ptr(p) }.to_str().unwrap();
+        assert_eq!(s, std::format!("{}", features()));
+        assert_eq!(s, feature_line());
+        assert!(s.starts_with("page_size="), "{s}");
+        assert!(s.contains(" cacheline="), "{s}");
+        assert!(!s.contains('\n'));
+        for kv in s.split(' ') {
+            let (k, v) = kv.split_once('=').unwrap_or_else(|| panic!("`{kv}` in {s}"));
+            assert!(!k.is_empty() && !v.is_empty(), "`{kv}` in {s}");
+        }
     }
 
     /// The two handler tests drive the process-wide locks directly and the
