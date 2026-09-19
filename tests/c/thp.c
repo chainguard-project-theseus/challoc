@@ -6,7 +6,15 @@
  *   thp never    no key: after 8 MiB of 64-byte blocks the VMA holding
  *                them has no `hg` in its VmFlags, stats.thp.mode is 0 and
  *                no range was advised (byte for byte the allocator before
- *                the key had a mechanism);
+ *                the key had a mechanism); and, since plan Phase 2.5 task
+ *                16, the VMA has `nh` (MADV_NOHUGEPAGE issued on the
+ *                reservation) on every kernel with THP, so that on a host
+ *                whose global mode is `always` (read from sysfs; Chainguard
+ *                OS and Debian's kernels) the 8 MiB touched show
+ *                AnonHugePages 0 kB and THPeligible 0: `never` means never
+ *                on every host. On a `madvise` host the AnonHugePages
+ *                check passes trivially and the program says so; the `nh`
+ *                check is the both-ways part there;
  *   thp always   MALLOC_CONF=thp:always: opt.thp reads "always" (or
  *                "never" when a cgroup limit under 1 GiB forced it, a pass
  *                with a note); with the PMD size enabled in sysfs (the
@@ -46,8 +54,8 @@ static size_t stat_of(const char *name)
 }
 
 /* The smaps entry holding `p`: AnonHugePages (kB), THPeligible (-1 when
- * the kernel does not print it) and whether VmFlags has `hg`. */
-static int smaps_of(const void *p, long *anon_huge_kb, int *eligible, int *hg)
+ * the kernel does not print it) and whether VmFlags has `hg` and `nh`. */
+static int smaps_of(const void *p, long *anon_huge_kb, int *eligible, int *hg, int *nh)
 {
     FILE *f = fopen("/proc/self/smaps", "r");
     REQUIRE(f, "fopen(/proc/self/smaps)");
@@ -56,6 +64,7 @@ static int smaps_of(const void *p, long *anon_huge_kb, int *eligible, int *hg)
     *anon_huge_kb = 0;
     *eligible = -1;
     *hg = 0;
+    *nh = 0;
     while (fgets(line, sizeof line, f)) {
         unsigned long lo, hi;
         char perms[8];
@@ -75,9 +84,12 @@ static int smaps_of(const void *p, long *anon_huge_kb, int *eligible, int *hg)
         else if (sscanf(line, "THPeligible: %ld", &v) == 1)
             *eligible = (int)v;
         else if (strncmp(line, "VmFlags:", 8) == 0) {
-            for (char *tok = strtok(line + 8, " \n"); tok; tok = strtok(NULL, " \n"))
+            for (char *tok = strtok(line + 8, " \n"); tok; tok = strtok(NULL, " \n")) {
                 if (strcmp(tok, "hg") == 0)
                     *hg = 1;
+                else if (strcmp(tok, "nh") == 0)
+                    *nh = 1;
+            }
         }
     }
     fclose(f);
@@ -135,6 +147,29 @@ static int lists_kb(const char *mthp, unsigned long kb)
     return 0;
 }
 
+/* The bracketed value of /sys/kernel/mm/transparent_hugepage/enabled
+ * (`always`, `madvise`, `never`), or "none" when the file is absent. */
+static const char *global_thp(char *out, size_t n)
+{
+    FILE *f = fopen("/sys/kernel/mm/transparent_hugepage/enabled", "r");
+    if (!f) {
+        snprintf(out, n, "none");
+        return out;
+    }
+    char line[128] = "";
+    if (!fgets(line, sizeof line, f))
+        line[0] = 0;
+    fclose(f);
+    char *lb = strchr(line, '['), *rb = lb ? strchr(lb, ']') : NULL;
+    if (lb && rb) {
+        *rb = 0;
+        snprintf(out, n, "%s", lb + 1);
+    } else {
+        snprintf(out, n, "unknown");
+    }
+    return out;
+}
+
 static unsigned long read_counter(const char *path)
 {
     FILE *f = fopen(path, "r");
@@ -158,9 +193,10 @@ int main(int argc, char **argv)
     size_t len = sizeof opt;
     REQUIRE(mallctl("opt.thp", &opt, &len, NULL, 0) == 0 && opt, "opt.thp");
     const char *line = challoc_features();
-    char thp[16], mthp[128];
+    char thp[16], mthp[128], global[16];
     feature_value(line, "thp", thp, sizeof thp);
     feature_value(line, "mthp", mthp, sizeof mthp);
+    global_thp(global, sizeof global);
     /* The PMD size: sysfs, else the page size's rule (page * page / 8). */
     long page = sysconf(_SC_PAGESIZE);
     unsigned long pmd_kb = read_counter("/sys/kernel/mm/transparent_hugepage/hpage_pmd_size") >> 10;
@@ -169,8 +205,9 @@ int main(int argc, char **argv)
     int pmd_enabled = lists_kb(mthp, pmd_kb);
     int pmd_chunks = pmd_kb <= 2048; /* challoc commits chunks of a 2 MiB PMD only (thp.rs) */
     unsigned long sub_kb = smallest_sub_pmd_kb(mthp, pmd_kb);
-    printf("thp %s: opt.thp=%s sysfs thp=%s mthp=%s pmd %lu kB (page %ld) pmd_enabled=%d sub_pmd %lu kB\n", mode, opt, thp, mthp,
-           pmd_kb, page, pmd_enabled, sub_kb);
+    printf("thp %s: opt.thp=%s sysfs thp=%s (enabled file: %s) mthp=%s pmd %lu kB (page %ld) pmd_enabled=%d sub_pmd %lu kB\n", mode, opt,
+           thp, global, mthp, pmd_kb, page, pmd_enabled, sub_kb);
+    CHECK(strcmp(thp, global) == 0, "feature line thp=%s but sysfs enabled reads %s", thp, global);
 
     if (strcmp(mode, "never") != 0 && strcmp(opt, "never") == 0) {
         printf("thp %s: forced to never by a cgroup limit under 1 GiB; only the never checks apply\n", mode);
@@ -194,21 +231,52 @@ int main(int argc, char **argv)
         memset(blocks[i], 0x5a, 64);
     }
     long anon_kb;
-    int eligible, hg;
-    REQUIRE(smaps_of(blocks[BLOCKS / 2], &anon_kb, &eligible, &hg), "no smaps entry holds a block");
+    int eligible, hg, nh;
+    REQUIRE(smaps_of(blocks[BLOCKS / 2], &anon_kb, &eligible, &hg, &nh), "no smaps entry holds a block");
     size_t smode = stat_of("stats.thp.mode");
     size_t class_ranges = stat_of("stats.thp.class_ranges");
     size_t class_bytes = stat_of("stats.thp.class_bytes");
     size_t madv_failures = stat_of("stats.thp.failures");
-    printf("thp %s: mode %zu class_ranges %zu class_bytes %zu failures %zu; VMA hg=%d THPeligible=%d AnonHugePages=%ld kB\n",
-           mode, smode, class_ranges, class_bytes, madv_failures, hg, eligible, anon_kb);
+    printf("thp %s: mode %zu class_ranges %zu class_bytes %zu failures %zu; VMA hg=%d nh=%d THPeligible=%d AnonHugePages=%ld kB\n",
+           mode, smode, class_ranges, class_bytes, madv_failures, hg, nh, eligible, anon_kb);
     CHECK(madv_failures == 0, "%zu madvise failures", madv_failures);
+    /* One huge run (8 MiB, committed whole in the huge region): unlike a
+     * class region, whose groups are committed a few slabs at a time, its
+     * interior holds whole aligned PMD ranges in one read-write VMA, so
+     * on a host whose global mode is `always` the kernel backs them with
+     * huge pages at the fault unless the reservation carries `nh`. This
+     * is the row that moves under `never` on such a host. */
+    unsigned char *big = malloc(8u << 20);
+    REQUIRE(big, "malloc(8 MiB)");
+    memset(big, 0x5b, 8u << 20);
+    long big_anon_kb;
+    int big_eligible, big_hg, big_nh;
+    REQUIRE(smaps_of(big + (4u << 20), &big_anon_kb, &big_eligible, &big_hg, &big_nh), "no smaps entry holds the huge run");
+    printf("thp %s: huge run 8 MiB: VMA hg=%d nh=%d THPeligible=%d AnonHugePages=%ld kB (global thp %s)\n", mode, big_hg, big_nh,
+           big_eligible, big_anon_kb, global);
 
     if (strcmp(mode, "never") == 0) {
         CHECK(smode == 0, "mode %zu under never", smode);
         CHECK(class_ranges == 0 && class_bytes == 0, "ranges advised under never");
         CHECK(!hg, "VmFlags has hg under never");
         CHECK(stat_of("stats.thp.huge_ranges") == 0 && stat_of("stats.thp.meta_ranges") == 0, "advice under never");
+        /* Plan Phase 2.5 task 16: never means never on an `always` host. */
+        if (strcmp(thp, "none") == 0) {
+            printf("thp never: the kernel has no THP; nothing to forbid\n");
+        } else {
+            CHECK(nh, "VmFlags has no nh under never (MADV_NOHUGEPAGE not issued on the class reservation)");
+            CHECK(big_nh, "VmFlags has no nh on the huge run under never (MADV_NOHUGEPAGE not issued on the huge reservation)");
+            CHECK(eligible <= 0 && big_eligible <= 0, "THPeligible %d / %d under never", eligible, big_eligible);
+            if (strcmp(global, "always") == 0) {
+                printf("thp never: global THP is always: AnonHugePages %ld kB (class region), %ld kB (huge run) after 8 + 8 MiB touched: the both-ways row\n",
+                       anon_kb, big_anon_kb);
+                CHECK(anon_kb == 0, "AnonHugePages %ld kB in the class region under never on an always host", anon_kb);
+                CHECK(big_anon_kb == 0, "AnonHugePages %ld kB in the huge run under never on an always host", big_anon_kb);
+            } else {
+                printf("thp never: global THP is %s, so AnonHugePages %ld / %ld kB is 0 with or without the advice; the nh flags are the check here\n",
+                       global, anon_kb, big_anon_kb);
+            }
+        }
     } else if (strcmp(mode, "always") == 0) {
         if (pmd_enabled && pmd_chunks) {
             CHECK(smode == 2, "mode %zu with the %lu kB PMD enabled", smode, pmd_kb);
@@ -257,6 +325,7 @@ int main(int argc, char **argv)
         REQUIRE(0, "unknown mode %s", mode);
     }
 
+    free(big);
     for (size_t i = 0; i < BLOCKS; i++)
         free(blocks[i]);
     return finish("thp");

@@ -40,17 +40,30 @@
 //!   them a folio), so there `always` takes the folio path over the
 //!   enabled sub-PMD sizes and is inert, with the reason
 //!   [`Reason::PmdTooLarge`], when none is enabled.
+//! - `never` on a host whose global THP mode is `always` (plan Phase 2.5
+//!   task 16; Chainguard OS ships `always` with the 2 MiB size on
+//!   `inherit`): every region challoc maps is `MADV_NOHUGEPAGE`d at
+//!   reservation ([`advise_reservation`], from `layout::Regions::reserve`),
+//!   as jemalloc's `never` does, so the key means the same on every host.
+//!   The advice is a VMA flag that survives the `mprotect` splits of the
+//!   commit path and is inherited by every VMA the reservation is later
+//!   split into, so one call per reservation is enough. `auto` and
+//!   `always` issue no `MADV_NOHUGEPAGE` (on an `always` host their
+//!   unadvised regions stay eligible for the host's PMD pages; the
+//!   process-wide `PR_THP_DISABLE_EXCEPT_ADVISED` prctl of 6.18 is the
+//!   second half of the task and waits for its key).
 //!
 //! Design 11's rule (an effective cgroup limit under 1 GiB forces `thp`
 //! to `never`) is applied by `Shared::init` to the stored key for `always`;
-//! [`force_never`] mirrors it here after init. `auto` is not forced: a
-//! 64 KiB folio is the slab's own granularity.
+//! [`force_never`] mirrors it here after init and advises the reservations
+//! already made with `MADV_NOHUGEPAGE`. `auto` is not forced: a 64 KiB
+//! folio is the slab's own granularity.
 //!
 //! Everything here is cold: a decision at init, one `madvise` per slab
 //! group, per PMD chunk, per huge run or per metadata commit. The fast
 //! paths never read this module.
 
-use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 use crate::config::Thp as Key;
 use crate::sys::features::{Features, Thp as Table, ThpSetting};
@@ -273,6 +286,22 @@ static META_RANGES: AtomicU64 = AtomicU64::new(0);
 static FAILURES: AtomicU64 = AtomicU64::new(0);
 /// Chunk commits (ranges whose first slab was the one committing).
 static CHUNKS: AtomicU64 = AtomicU64::new(0);
+/// Reservations `MADV_NOHUGEPAGE`d under `never` (the module doc).
+static NOHUGE_RANGES: AtomicU64 = AtomicU64::new(0);
+/// The kernel has transparent huge pages at all (the sysfs `enabled` file
+/// exists): `MADV_NOHUGEPAGE` is `EINVAL` without them, so `never` then
+/// has nothing to advise.
+static KERNEL_THP: AtomicU8 = AtomicU8::new(0);
+/// The reservations made so far (`advise_reservation`): the three mappings
+/// of `layout::Regions::reserve`, so [`force_never`] can advise them after
+/// the fact. `(addr, len)`, `len` 0 when unused.
+const MAX_RESERVATIONS: usize = 4;
+static RESERVATIONS: [(AtomicUsize, AtomicUsize); MAX_RESERVATIONS] = [
+    (AtomicUsize::new(0), AtomicUsize::new(0)),
+    (AtomicUsize::new(0), AtomicUsize::new(0)),
+    (AtomicUsize::new(0), AtomicUsize::new(0)),
+    (AtomicUsize::new(0), AtomicUsize::new(0)),
+];
 
 fn store(d: &Decision) {
     LG_SLAB_MIN.store(d.lg_slab_min, Ordering::Relaxed);
@@ -295,16 +324,62 @@ pub fn configure(key: Key, features: &Features) -> Decision {
         },
         Ordering::Relaxed,
     );
+    KERNEL_THP.store(features.thp.enabled.is_some() as u8, Ordering::Relaxed);
     let d = decide(key, &features.thp);
     store(&d);
     d
 }
 
 /// Design 11: the stored key was forced to `never` by a cgroup limit under
-/// 1 GiB; mirror it here (init, after the cgroup is read).
+/// 1 GiB; mirror it here (init, after the cgroup is read) and give the
+/// reservations already made the `never` advice (the module doc).
 pub fn force_never() {
     let d = Decision::off(Reason::Forced, LG_PMD.load(Ordering::Relaxed));
     store(&d);
+    for (addr, len) in RESERVATIONS.iter() {
+        let len = len.load(Ordering::Relaxed);
+        if len != 0 {
+            advise_nohugepage(addr.load(Ordering::Relaxed), len);
+        }
+    }
+}
+
+/// A reservation challoc made (`layout::Regions::reserve`: the class
+/// superblock, the huge region, the metadata region), before anything in
+/// it is committed. Recorded for [`force_never`]; under `thp:never` on a
+/// kernel with THP it is `MADV_NOHUGEPAGE`d here (plan Phase 2.5 task 16,
+/// the module doc). Returns whether the advice was issued.
+pub fn advise_reservation(addr: usize, len: usize) -> bool {
+    for (a, l) in RESERVATIONS.iter() {
+        if l.load(Ordering::Relaxed) == 0 {
+            a.store(addr, Ordering::Relaxed);
+            l.store(len, Ordering::Relaxed);
+            break;
+        }
+    }
+    // The key, not the mode: an `auto` the kernel's table made inert
+    // keeps its regions eligible for the folios the host may enable later
+    // (and `MADV_NOHUGEPAGE` would forbid them as well as the PMD).
+    let never = key() == Key::Never || Reason::from_u8(REASON.load(Ordering::Relaxed)) == Reason::Forced;
+    if !never {
+        return false;
+    }
+    advise_nohugepage(addr, len)
+}
+
+/// `MADV_NOHUGEPAGE` on a reservation, counted; nothing on a kernel
+/// without THP.
+fn advise_nohugepage(addr: usize, len: usize) -> bool {
+    if len == 0 || KERNEL_THP.load(Ordering::Relaxed) == 0 {
+        return false;
+    }
+    if madvise_nohugepage(addr, len) {
+        NOHUGE_RANGES.fetch_add(1, Ordering::Relaxed);
+        true
+    } else {
+        FAILURES.fetch_add(1, Ordering::Relaxed);
+        false
+    }
 }
 
 /// The decision in force.
@@ -392,6 +467,18 @@ fn madvise_hugepage(_addr: usize, _len: usize) -> bool {
     true
 }
 
+#[cfg(target_os = "linux")]
+fn madvise_nohugepage(addr: usize, len: usize) -> bool {
+    // SAFETY: a reservation this process owns; `MADV_NOHUGEPAGE` sets a
+    // VMA flag, never contents.
+    unsafe { crate::sys::madvise(addr, len, crate::sys::MADV_NOHUGEPAGE) }.is_ok()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn madvise_nohugepage(_addr: usize, _len: usize) -> bool {
+    true
+}
+
 fn advise(addr: usize, len: usize, ranges: &AtomicU64, count: bool) -> bool {
     if len == 0 {
         return true;
@@ -441,6 +528,8 @@ pub struct Stats {
     pub failures: u64,
     /// Ranges of a PMD or more among `class_ranges` (the chunks).
     pub chunks: u64,
+    /// Reservations `MADV_NOHUGEPAGE`d under `never` (the module doc).
+    pub nohuge_ranges: u64,
 }
 
 pub fn stats() -> Stats {
@@ -451,6 +540,7 @@ pub fn stats() -> Stats {
         meta_ranges: META_RANGES.load(Ordering::Relaxed),
         failures: FAILURES.load(Ordering::Relaxed),
         chunks: CHUNKS.load(Ordering::Relaxed),
+        nohuge_ranges: NOHUGE_RANGES.load(Ordering::Relaxed),
     }
 }
 
