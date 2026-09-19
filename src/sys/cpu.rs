@@ -13,7 +13,9 @@
 //!   a CPU can have them and the kernel can still withhold them), and the
 //!   cache-line size from `CTR_EL0` (`mrs` from EL0; Linux traps and
 //!   emulates the read where the hardware would fault).
-//! - x86_64: `cpuid` leaf 7 (subleaves 0 and 1) for the feature bits, the
+//! - x86_64: `cpuid` leaf 7 (subleaves 0 and 1) for the feature bits, leaf
+//!   `0x80000021` for AMD's upper address ignore (`uai`, the LAM analogue;
+//!   the leaf exists only where the extended range reaches it), the
 //!   deterministic cache parameters (leaf 4 on Intel, `0x8000001D` on AMD)
 //!   for the cache sizes, and a hinted `mmap` above 2^47 for whether the
 //!   kernel runs five-level paging (`la57_enabled`: `CR4` is not readable
@@ -91,6 +93,10 @@ pub struct X86 {
     /// Leaf 7 subleaf 1 `EAX[26]`: linear address masking (tagged pointers,
     /// a later task).
     pub lam: bool,
+    /// Leaf `0x80000021` `EAX[7]`: AMD's upper address ignore (Zen 4 and
+    /// later; the LAM analogue, same later task). Only read when leaf
+    /// `0x80000000` reports an extended range that reaches `0x80000021`.
+    pub uai: bool,
     /// Leaf 7 subleaf 0 `ECX[16]`: the CPU supports five-level paging.
     pub la57: bool,
     /// The kernel runs five-level paging: a hinted `mmap` above 2^47 was
@@ -111,15 +117,18 @@ pub struct X86 {
 impl X86 {
     /// Decode the feature bits. `max_leaf` is leaf 0 `EAX` (leaf 7 is only
     /// valid when it is at least 7); `leaf7_1` is consulted only when leaf 7
-    /// subleaf 0 reports at least one subleaf in `EAX`. `la57_enabled` is
-    /// left `false` for the probe to set.
-    pub fn from_cpuid(max_leaf: u32, leaf7: Regs, leaf7_1: Regs) -> X86 {
+    /// subleaf 0 reports at least one subleaf in `EAX`; `ext21` is leaf
+    /// `0x80000021`, which the probe passes as `Regs::default()` when the
+    /// extended range does not reach it (Intel's ends at `0x80000008`).
+    /// `la57_enabled` is left `false` for the probe to set.
+    pub fn from_cpuid(max_leaf: u32, leaf7: Regs, leaf7_1: Regs, ext21: Regs) -> X86 {
         if max_leaf < 7 {
             return X86::default();
         }
         let leaf7_1 = if leaf7.eax >= 1 { leaf7_1 } else { Regs::default() };
         X86 {
             lam: leaf7_1.eax & (1 << 26) != 0,
+            uai: ext21.eax & (1 << 7) != 0,
             la57: leaf7.ecx & (1 << 16) != 0,
             la57_enabled: false,
             cldemote: leaf7.ecx & (1 << 25) != 0,
@@ -320,8 +329,9 @@ impl fmt::Display for Cpu {
             )?,
             Isa::X86(x) => write!(
                 f,
-                "lam={} la57={} la57_enabled={} cldemote={} waitpkg={} erms={} fsrm={} avx512f={}",
+                "lam={} uai={} la57={} la57_enabled={} cldemote={} waitpkg={} erms={} fsrm={} avx512f={}",
                 yn(x.lam),
+                yn(x.uai),
                 yn(x.la57),
                 yn(x.la57_enabled),
                 yn(x.cldemote),
@@ -547,7 +557,11 @@ mod linux {
             let max_leaf = cpuid(0, 0).eax;
             let leaf7 = if max_leaf >= 7 { cpuid(7, 0) } else { Regs::default() };
             let leaf7_1 = if max_leaf >= 7 && leaf7.eax >= 1 { cpuid(7, 1) } else { Regs::default() };
-            let mut x86 = X86::from_cpuid(max_leaf, leaf7, leaf7_1);
+            // The extended range: `0x80000021` (AMD's extended feature
+            // identification 2, UAI in `EAX[7]`) exists on Zen 4 and later;
+            // Intel's range ends at `0x80000008` and the leaf is not read.
+            let ext21 = if cpuid(0x8000_0000, 0).eax >= 0x8000_0021 { cpuid(0x8000_0021, 0) } else { Regs::default() };
+            let mut x86 = X86::from_cpuid(max_leaf, leaf7, leaf7_1, ext21);
             if x86.la57 {
                 x86.la57_enabled = la57_enabled(page_size);
             }
@@ -572,6 +586,8 @@ mod tests {
     const XEON_8581C_MAX_LEAF: u32 = 0x20;
     const XEON_8581C_LEAF7: Regs = Regs { eax: 0x0000_0002, ebx: 0xf1bf_2ffb, ecx: 0x1a41_5f46, edx: 0xafc1_4410 };
     const XEON_8581C_LEAF7_1: Regs = Regs { eax: 0x0000_1c30, ebx: 0, ecx: 0, edx: 0 };
+    // Intel's extended range ends at 0x80000008: the probe passes zeros.
+    const XEON_8581C_EXT21: Regs = Regs { eax: 0, ebx: 0, ecx: 0, edx: 0 };
     const XEON_8581C_LEAF4: [Regs; 5] = [
         Regs { eax: 0x1c00_4121, ebx: 0x02c0_003f, ecx: 0x0000_003f, edx: 0 },
         Regs { eax: 0x1c00_4122, ebx: 0x01c0_003f, ecx: 0x0000_003f, edx: 0 },
@@ -584,10 +600,12 @@ mod tests {
     // Ampere Altra (Neoverse N1: `fp asimd evtstrm aes pmull sha1 sha2 crc32
     // atomics fphp asimdhp cpuid asimdrdm lrcpc dcpop asimddp ssbs`) and an
     // AMD Zen 4 (`erms`, `avx512f`, `la57`, `fsrm`; no `cldemote`,
-    // `waitpkg` or `lam`). Task 4's matrix replaces them with captures.
+    // `waitpkg` or `lam`; `uai` in leaf 0x80000021 `EAX[7]`, AMD's upper
+    // address ignore). Task 4's matrix replaces them with captures.
     const ALTRA_HWCAP: (u64, u64) = ((1 << 13) - 1 | 1 << 15 | 1 << 16 | 1 << 20 | 1 << 28, 0);
     const ZEN4_LEAF7: Regs = Regs { eax: 1, ebx: 1 << 9 | 1 << 16, ecx: 1 << 16, edx: 1 << 4 };
     const ZEN4_LEAF7_1: Regs = Regs { eax: 0, ebx: 0, ecx: 0, edx: 0 };
+    const ZEN4_EXT21: Regs = Regs { eax: 1 << 7, ebx: 0, ecx: 0, edx: 0 };
 
     fn cpu(isa: Isa, caches: Caches) -> Cpu {
         Cpu { isa, caches, cache_source: CacheSource::None }
@@ -622,11 +640,12 @@ mod tests {
 
     #[test]
     fn xeon_8581c_cpuid_decodes() {
-        let x = X86::from_cpuid(XEON_8581C_MAX_LEAF, XEON_8581C_LEAF7, XEON_8581C_LEAF7_1);
+        let x = X86::from_cpuid(XEON_8581C_MAX_LEAF, XEON_8581C_LEAF7, XEON_8581C_LEAF7_1, XEON_8581C_EXT21);
         assert_eq!(
             x,
             X86 {
                 lam: false,
+                uai: false,
                 la57: true,
                 la57_enabled: false,
                 cldemote: true,
@@ -640,19 +659,32 @@ mod tests {
 
     #[test]
     fn zen4_cpuid_decodes() {
-        let x = X86::from_cpuid(0x10, ZEN4_LEAF7, ZEN4_LEAF7_1);
-        assert_eq!(x, X86 { la57: true, erms: true, fsrm: true, avx512f: true, ..X86::default() });
+        let x = X86::from_cpuid(0x10, ZEN4_LEAF7, ZEN4_LEAF7_1, ZEN4_EXT21);
+        assert_eq!(x, X86 { uai: true, la57: true, erms: true, fsrm: true, avx512f: true, ..X86::default() });
+    }
+
+    #[test]
+    fn uai_is_leaf_0x80000021_bit_7_alone() {
+        // The bit, and nothing else in the leaf, sets `uai`.
+        let l7 = Regs { eax: 1, ..Regs::default() };
+        assert!(X86::from_cpuid(7, l7, Regs::default(), Regs { eax: 1 << 7, ..Regs::default() }).uai);
+        assert!(!X86::from_cpuid(7, l7, Regs::default(), Regs { eax: !(1 << 7), ..Regs::default() }).uai);
+        // The probe passes zeros where the extended range stops short
+        // (Intel): no `uai`.
+        assert!(!X86::from_cpuid(XEON_8581C_MAX_LEAF, XEON_8581C_LEAF7, XEON_8581C_LEAF7_1, Regs::default()).uai);
+        // No leaf 7 at all: nothing, whatever the extended leaf says.
+        assert_eq!(X86::from_cpuid(6, l7, Regs::default(), ZEN4_EXT21), X86::default());
     }
 
     #[test]
     fn lam_needs_subleaf_1_and_leaf_7() {
         let lam = Regs { eax: 1 << 26, ..Regs::default() };
         let l7 = Regs { eax: 1, ..Regs::default() };
-        assert!(X86::from_cpuid(7, l7, lam).lam);
+        assert!(X86::from_cpuid(7, l7, lam, Regs::default()).lam);
         // Subleaf 1 not reported by subleaf 0: ignored.
-        assert!(!X86::from_cpuid(7, Regs::default(), lam).lam);
+        assert!(!X86::from_cpuid(7, Regs::default(), lam, Regs::default()).lam);
         // No leaf 7 at all: nothing.
-        assert_eq!(X86::from_cpuid(6, l7, lam), X86::default());
+        assert_eq!(X86::from_cpuid(6, l7, lam, Regs::default()), X86::default());
     }
 
     #[test]
@@ -735,12 +767,12 @@ mod tests {
 
     #[test]
     fn display_x86_line() {
-        let mut x = X86::from_cpuid(XEON_8581C_MAX_LEAF, XEON_8581C_LEAF7, XEON_8581C_LEAF7_1);
+        let mut x = X86::from_cpuid(XEON_8581C_MAX_LEAF, XEON_8581C_LEAF7, XEON_8581C_LEAF7_1, XEON_8581C_EXT21);
         x.la57_enabled = true;
         let c = cpu(Isa::X86(x), caches_from_cpuid(&XEON_8581C_LEAF4));
         assert_eq!(
             std::format!("{c}"),
-            "lam=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=48K l2=2M"
+            "lam=no uai=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=48K l2=2M"
         );
         // Odd sizes print in bytes.
         let c = cpu(Isa::X86(X86::default()), Caches { line: 64, l1d: 3000, l2: 1536 * 1024 });
@@ -767,7 +799,10 @@ mod linux_tests {
         line.split_once(':').unwrap().1.split_whitespace().map(String::from).collect()
     }
 
-    /// `(key, value, cpuinfo flags that must all be present for `yes`)`.
+    /// `(key, value, cpuinfo flags that must all be present for `yes`)`; an
+    /// empty flag list means the kernel shows no flag for the bit (`uai`:
+    /// Linux has no `X86_FEATURE` name for it) and only the key's presence
+    /// in the line is checked.
     fn bits(c: &Cpu) -> Vec<(&'static str, bool, &'static [&'static str])> {
         match c.isa {
             Isa::Arm(a) => std::vec![
@@ -781,6 +816,7 @@ mod linux_tests {
             ],
             Isa::X86(x) => std::vec![
                 ("lam", x.lam, &["lam"][..]),
+                ("uai", x.uai, &[]),
                 ("la57", x.la57, &["la57"]),
                 ("cldemote", x.cldemote, &["cldemote"]),
                 ("waitpkg", x.waitpkg, &["waitpkg"]),
@@ -799,8 +835,12 @@ mod linux_tests {
         std::eprintln!("cpu: {line} (cache source {:?})", c.cache_source);
         let flags = cpuinfo_flags();
         for (key, value, needed) in bits(&c) {
-            let expect = needed.iter().all(|f| flags.iter().any(|g| g == f));
-            assert_eq!(value, expect, "{key} disagrees with /proc/cpuinfo {needed:?} in: {line}");
+            if !needed.is_empty() {
+                let expect = needed.iter().all(|f| flags.iter().any(|g| g == f));
+                assert_eq!(value, expect, "{key} disagrees with /proc/cpuinfo {needed:?} in: {line}");
+            } else {
+                std::eprintln!("{key}={} has no /proc/cpuinfo flag to check against", if value { "yes" } else { "no" });
+            }
             assert!(line.contains(&std::format!(" {key}=")) || line.starts_with(&std::format!("{key}=")), "{line}");
         }
         // The architecture we were built for is the one reported.

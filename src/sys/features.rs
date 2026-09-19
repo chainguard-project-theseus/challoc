@@ -418,6 +418,7 @@ mod tests {
         let x86 = Cpu {
             isa: Isa::X86(X86 {
                 lam: true,
+                uai: true,
                 la57: true,
                 la57_enabled: true,
                 cldemote: true,

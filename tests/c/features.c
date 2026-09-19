@@ -74,8 +74,8 @@ int main(void)
 #if defined(__aarch64__)
     static const char *const cpu_keys[] = {"mte", "mte3", "pac", "lse", "lse2", "bti", "sve", "cacheline", "l1d", "l2"};
 #elif defined(__x86_64__)
-    static const char *const cpu_keys[] = {"lam",  "la57", "la57_enabled", "cldemote",  "waitpkg", "erms",
-                                           "fsrm", "avx512f", "cacheline", "l1d", "l2"};
+    static const char *const cpu_keys[] = {"lam",  "uai",     "la57",      "la57_enabled", "cldemote", "waitpkg",
+                                           "erms", "fsrm",    "avx512f",   "cacheline",    "l1d",      "l2"};
 #else
 #error "unsupported architecture"
 #endif

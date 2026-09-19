@@ -93,7 +93,7 @@ One line per task, newest at the bottom of each section. Keep it terse.
 
 ## In progress
 
-(none)
+- Phase 2.5 task 4 (the CPU matrix on GCP, 2026-09-19): `matrix` cells by machine type and zone (`cpu-*` cells, one scorecard run per CPU behind the `scorecard` flag), the `uai` probe (`cpuid` 0x80000021 EAX[7]), eight throwaway `-standard-8` VMs; results in `bench/results/2026-09-19-cpu-matrix.md`.
 
 ## Design decisions
 

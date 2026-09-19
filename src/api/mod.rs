@@ -171,7 +171,7 @@ pub fn feature_line() -> &'static str {
 /// `key=value` pairs (design.md sections 16 and 17): the kernel probes
 /// (`page_size`, `guard_install`, `mseal`, `process_madvise`, `anon_name`)
 /// then the CPU (`mte`, `pac`, `lse`, `lse2`, `bti`, `sve` on arm64; `lam`,
-/// `la57`, `la57_enabled`, `cldemote`, `waitpkg`, `erms`, `fsrm`, `avx512f`
+/// `uai`, `la57`, `la57_enabled`, `cldemote`, `waitpkg`, `erms`, `fsrm`, `avx512f`
 /// on x86_64; `cacheline`, `l1d`, `l2` on both). The string is static, built
 /// once at init without allocating, and identical to the `Kernel and CPU
 /// features:` line of `malloc_stats_print`. Initialises the allocator if

@@ -39,8 +39,10 @@
 #   bench/gce/challoc-bench session   start|stop [arm64|amd64|all]
 #                                                          # the driving session's own start/stop, see below
 #   bench/gce/challoc-bench matrix    [list|clean|CELL...]  # Phase 2.5 task 3: throwaway VMs per kernel
-#   bench/gce/challoc-bench matrix    lab CELL | ssh CELL CMD | sync CELL  # keep one cell VM for experiments
 #                                                          # (5.10, 6.1, 6.8, hwe, 64 KiB pages), tests, delete
+#   bench/gce/challoc-bench matrix    cpu                  # Phase 2.5 task 4: the cpu-* cells (one machine
+#                                                          # type each, tests + one scorecard run per CPU)
+#   bench/gce/challoc-bench matrix    lab CELL | ssh CELL CMD | sync CELL  # keep one cell VM for experiments
 #
 # Environment: CHALLOC_GCE_PROJECT (default: active gcloud project),
 # CHALLOC_GCE_ZONE (default us-east4-a), CHALLOC_GCE_PREFIX (default
@@ -349,6 +351,24 @@ cmd_session() {
 # `clean` deletes it like any other matrix VM. Nothing measured on a lab
 # VM is a benchmark number either.
 #
+# The CPU matrix (task 4): the cpu-* cells run the same Ubuntu 24.04 image
+# and its GCE kernel on one machine type each, so only the CPU varies, and
+# the cell script's `scorecard` flag replaces fuzz and test-cgroup with one
+# `make scorecard ROUNDS=3` (challoc vs jemalloc, the fixed row set) written
+# to bench/results/scorecard-<family>.md on the VM and fetched back next to
+# the two reference files (scorecard-aarch64.md, scorecard-x86_64.md, which
+# stay the acceptance record and are not touched). Families live in
+# different zones (T2A only in us-central1), so a cell names its zones:
+# a comma-separated list tried in order, at most two, for capacity or quota
+# errors (ZONE_RESOURCE_POOL_EXHAUSTED, QUOTA_EXCEEDED); `-` is $ZONE. The
+# -standard-8 shapes are enough for a feature report and a 3-round
+# scorecard; the reference files are 16 vCPU, so a cpu-* scorecard is
+# compared with the reference CPU of its architecture row by row
+# (challoc-vs-jemalloc percentages), never by absolute throughput.
+#
+#   challoc-bench matrix cpu             # every cpu-* cell
+#   challoc-bench matrix cpu-c3d cpu-t2a
+#
 # The table. `prep` installs another kernel on the image and reboots into
 # it (ga: linux-generic, Ubuntu 24.04's 6.8 GA kernel, because the GCE
 # image itself boots the 7.0 linux-gcp kernel since 2026; hwe:
@@ -365,21 +385,42 @@ MATRIX_TIMEOUT="${MATRIX_TIMEOUT:-2700}"
 MATRIX_DATE="${MATRIX_DATE:-$(date +%F)}"
 MATRIX_OUT="${MATRIX_OUT:-$REPO/bench/results/matrix}"
 MATRIX_CELLS="k510-amd64 k61-amd64 k61-arm64 k68-amd64 k68-arm64 hwe-amd64 64k-arm64 gcp-amd64 gcp-arm64"
+# The CPU cells (task 4), 2026-09-19: one -standard-8 per family. Zones from
+# `gcloud compute machine-types list --filter="name~'-standard-8$'"`: every
+# family in us-east4-a except T2A (us-central1-a,b,f only).
+MATRIX_CPU_CELLS="cpu-c4a cpu-t2a cpu-c4 cpu-c3 cpu-c3d cpu-n2d cpu-c2 cpu-n4"
 
-# cell_spec CELL -> "family project arch machine prep extra"
+# cell_spec CELL -> "family project arch machine prep extra zones"
+# (extra: none | privileged | scorecard; zones: comma-separated, `-` = $ZONE)
 cell_spec() {
   case "$1" in
-    k510-amd64) echo "debian-11 debian-cloud amd64 e2-standard-4 none none" ;;
-    k61-amd64)  echo "debian-12 debian-cloud amd64 e2-standard-4 none none" ;;
-    k61-arm64)  echo "debian-12-arm64 debian-cloud arm64 c4a-standard-4 none none" ;;
-    k68-amd64)  echo "ubuntu-2404-lts-amd64 ubuntu-os-cloud amd64 c3-standard-4 ga privileged" ;;
-    k68-arm64)  echo "ubuntu-2404-lts-arm64 ubuntu-os-cloud arm64 c4a-standard-4 ga none" ;;
-    gcp-amd64)  echo "ubuntu-2404-lts-amd64 ubuntu-os-cloud amd64 c3-standard-4 none none" ;;
-    gcp-arm64)  echo "ubuntu-2404-lts-arm64 ubuntu-os-cloud arm64 c4a-standard-4 none none" ;;
-    hwe-amd64)  echo "ubuntu-2404-lts-amd64 ubuntu-os-cloud amd64 c3-standard-4 hwe privileged" ;;
-    64k-arm64)  echo "ubuntu-2404-lts-arm64 ubuntu-os-cloud arm64 c4a-standard-4 64k none" ;;
+    k510-amd64) echo "debian-11 debian-cloud amd64 e2-standard-4 none none -" ;;
+    k61-amd64)  echo "debian-12 debian-cloud amd64 e2-standard-4 none none -" ;;
+    k61-arm64)  echo "debian-12-arm64 debian-cloud arm64 c4a-standard-4 none none -" ;;
+    k68-amd64)  echo "ubuntu-2404-lts-amd64 ubuntu-os-cloud amd64 c3-standard-4 ga privileged -" ;;
+    k68-arm64)  echo "ubuntu-2404-lts-arm64 ubuntu-os-cloud arm64 c4a-standard-4 ga none -" ;;
+    gcp-amd64)  echo "ubuntu-2404-lts-amd64 ubuntu-os-cloud amd64 c3-standard-4 none none -" ;;
+    gcp-arm64)  echo "ubuntu-2404-lts-arm64 ubuntu-os-cloud arm64 c4a-standard-4 none none -" ;;
+    hwe-amd64)  echo "ubuntu-2404-lts-amd64 ubuntu-os-cloud amd64 c3-standard-4 hwe privileged -" ;;
+    64k-arm64)  echo "ubuntu-2404-lts-arm64 ubuntu-os-cloud arm64 c4a-standard-4 64k none -" ;;
+    # The CPU matrix: Ubuntu 24.04 and its GCE kernel everywhere.
+    cpu-c4a)    echo "ubuntu-2404-lts-arm64 ubuntu-os-cloud arm64 c4a-standard-8 none scorecard us-east4-a,us-east4-b" ;;    # Google Axion, Neoverse V2 (reference)
+    cpu-t2a)    echo "ubuntu-2404-lts-arm64 ubuntu-os-cloud arm64 t2a-standard-8 none scorecard us-central1-a,us-central1-b" ;; # Ampere Altra, Neoverse N1
+    cpu-c4)     echo "ubuntu-2404-lts-amd64 ubuntu-os-cloud amd64 c4-standard-8 none scorecard us-east4-a,us-east4-b" ;;     # Xeon 8581C, Emerald Rapids (reference)
+    cpu-c3)     echo "ubuntu-2404-lts-amd64 ubuntu-os-cloud amd64 c3-standard-8 none scorecard us-east4-a,us-east4-b" ;;     # Sapphire Rapids
+    cpu-c3d)    echo "ubuntu-2404-lts-amd64 ubuntu-os-cloud amd64 c3d-standard-8 none scorecard us-east4-a,us-east4-b" ;;    # AMD Genoa, Zen 4
+    cpu-n2d)    echo "ubuntu-2404-lts-amd64 ubuntu-os-cloud amd64 n2d-standard-8 none scorecard us-east4-a,us-east4-b" ;;    # AMD Milan or Rome, whichever the zone gives
+    cpu-c2)     echo "ubuntu-2404-lts-amd64 ubuntu-os-cloud amd64 c2-standard-8 none scorecard us-east4-a,us-east4-b" ;;     # Cascade Lake
+    cpu-n4)     echo "ubuntu-2404-lts-amd64 ubuntu-os-cloud amd64 n4-standard-8 none scorecard us-east4-a,us-east4-b" ;;     # Emerald Rapids on the N4 platform (optional)
     *) return 1 ;;
   esac
+}
+
+# cell_zones CELL: the zone list as words, `-` resolved to $ZONE.
+cell_zones() {
+  local z; z="$(cell_spec "$1" | awk '{ print $7 }')"
+  [ "$z" != - ] && [ -n "$z" ] || z="$ZONE"
+  echo "$z" | tr ',' ' '
 }
 
 # latest_image FAMILY PROJECT: the family's current image, or, for a
@@ -422,20 +463,31 @@ matrix_wait_ssh() {
   return 1
 }
 
+# matrix_delete_vm VM [ZONE...]: delete the VM from each zone named (default
+# $ZONE) where it exists, twice before giving up.
 matrix_delete_vm() {
-  local vm="$1"
-  if g compute instances describe "$vm" --zone="$ZONE" >/dev/null 2>&1; then
-    g compute instances delete "$vm" --zone="$ZONE" --quiet >/dev/null 2>&1 \
-      || g compute instances delete "$vm" --zone="$ZONE" --quiet >/dev/null 2>&1 \
-      || echo "challoc-bench: matrix: WARNING: could not delete $vm; delete it by hand" >&2
-  fi
+  local vm="$1" z; shift
+  [ $# -gt 0 ] || set -- "$ZONE"
+  for z in "$@"; do
+    if g compute instances describe "$vm" --zone="$z" >/dev/null 2>&1; then
+      g compute instances delete "$vm" --zone="$z" --quiet >/dev/null 2>&1 \
+        || g compute instances delete "$vm" --zone="$z" --quiet >/dev/null 2>&1 \
+        || echo "challoc-bench: matrix: WARNING: could not delete $vm in $z; delete it by hand" >&2
+    fi
+  done
+}
+
+# matrix_vm_zone VM: the zone the VM exists in (any zone), or nothing.
+matrix_vm_zone() {
+  g compute instances list --filter="name=$1" --format='value(zone.basename())' 2>/dev/null | head -1
 }
 
 # matrix_lab_dest CELL: user@ip of a kept (lab) cell VM.
 matrix_lab_dest() {
-  local vm ip user
+  local vm ip user z
   vm="$(matrix_vm "$1")"
-  ip="$(g compute instances describe "$vm" --zone="$ZONE" --format='value(networkInterfaces[0].accessConfigs[0].natIP)' 2>/dev/null)" \
+  z="$(matrix_vm_zone "$vm")"; [ -n "$z" ] || die "matrix: no VM $vm (matrix lab $1 creates one)"
+  ip="$(g compute instances describe "$vm" --zone="$z" --format='value(networkInterfaces[0].accessConfigs[0].natIP)' 2>/dev/null)" \
     || die "matrix: no VM $vm (matrix lab $1 creates one)"
   [ -n "$ip" ] || die "matrix: $vm has no external IP"
   user="$(g compute os-login describe-profile --format='value(posixAccounts[0].username)')"
@@ -526,31 +578,49 @@ matrix_cell() {
   # when the cell's subshell exits, after this function has returned and
   # its locals are gone.
   cell="$1"
-  local spec fam proj arch machine prep extra image disk dest user ip t0 deadline rc summary
+  local spec fam proj arch machine prep extra zones image disk dest user ip t0 deadline rc summary z err
   log="$MATRIX_OUT/$MATRIX_DATE-$cell.log"
   spec="$(cell_spec "$cell")" || die "matrix: unknown cell $cell (matrix list)"
-  read -r fam proj arch machine prep extra <<<"$spec"
+  read -r fam proj arch machine prep extra zones <<<"$spec"
+  # shellcheck disable=SC2034
+  zones="$(cell_zones "$cell")"
   vm="$(matrix_vm "$cell")"
   t0=$(date +%s); deadline=$((t0 + MATRIX_TIMEOUT))
   mkdir -p "$MATRIX_OUT"
   : > "$log"
   say() { echo "[driver $(date -u +%H:%M:%S)] $*" | tee -a "$log"; }
-  # Whatever happens below, the VM goes.
-  trap 'say "deleting $vm"; matrix_delete_vm "$vm"; say "deleted $vm"' EXIT
+  # Whatever happens below, the VM goes (from every zone the cell may use).
+  # shellcheck disable=SC2064
+  trap "say \"deleting $vm\"; matrix_delete_vm $vm $zones; say \"deleted $vm\"" EXIT
   trap 'say "signal: cell $cell interrupted"; exit 130' INT TERM HUP
 
   image="$(latest_image "$fam" "$proj")" || { say "no READY image in family $fam ($proj)"; echo "MATRIX cell=$cell image=none/$fam kernel=- page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=0 outcome=FAIL reason=no-image" >> "$log"; return 1; }
-  case "$machine" in e2-*|n1-*|n2-*) disk=pd-balanced ;; *) disk=hyperdisk-balanced ;; esac
-  say "cell $cell: image $image ($fam, $proj), $arch, $machine, prep $prep, extra $extra, timeout ${MATRIX_TIMEOUT}s"
-  matrix_delete_vm "$vm"
-  if ! g compute instances create "$vm" --zone="$ZONE" --machine-type="$machine" \
-        --image="$image" --image-project="$proj" \
-        --boot-disk-size=50GB --boot-disk-type="$disk" \
-        --metadata=enable-oslogin=TRUE --scopes=cloud-platform \
-        --labels="owner=${USER},purpose=challoc-matrix,arch=$arch,cell=$cell" >>"$log" 2>&1; then
-    say "create failed for $vm"; echo "MATRIX cell=$cell image=$image kernel=- page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=create" >> "$log"; return 1
+  # Hyperdisk Balanced is the only disk C4, C4A and N4 take; C2, N2D, T2A,
+  # E2 and N2 take Persistent Disk only (C3 and C3D take both).
+  case "$machine" in e2-*|n1-*|n2-*|n2d-*|c2-*|t2a-*) disk=pd-balanced ;; *) disk=hyperdisk-balanced ;; esac
+  say "cell $cell: image $image ($fam, $proj), $arch, $machine, prep $prep, extra $extra, zones $zones, timeout ${MATRIX_TIMEOUT}s"
+  # shellcheck disable=SC2086
+  matrix_delete_vm "$vm" $zones
+  # One attempt per zone of the list (at most two zones): a zone out of
+  # capacity or quota for the family is recorded and the next one tried.
+  cell_zone=
+  for z in $zones; do
+    if g compute instances create "$vm" --zone="$z" --machine-type="$machine" \
+          --image="$image" --image-project="$proj" \
+          --boot-disk-size=50GB --boot-disk-type="$disk" \
+          --metadata=enable-oslogin=TRUE --scopes=cloud-platform \
+          --labels="owner=${USER},purpose=challoc-matrix,arch=$arch,cell=$cell" >>"$log" 2>&1; then
+      cell_zone="$z"; break
+    fi
+    err="$(grep -o -m1 -E 'ZONE_RESOURCE_POOL_EXHAUSTED[^ ]*|QUOTA_EXCEEDED|Quota [^.]*exceeded[^.]*|does not exist in zone[^.]*|[A-Z_]{8,}' "$log" | tail -1)"
+    say "create failed for $vm in $z: ${err:-see the log}"
+    matrix_delete_vm "$vm" "$z"
+  done
+  if [ -z "$cell_zone" ]; then
+    echo "MATRIX cell=$cell image=$image kernel=- page=- machine=$machine zones=$(echo "$zones" | tr ' ' ',') tests=- fuzz=- cgroup=- privileged=- scorecard=- wall=$(( $(date +%s) - t0 )) outcome=PENDING reason=create:${err:-unknown}" >> "$log"; return 1
   fi
-  ip="$(g compute instances describe "$vm" --zone="$ZONE" --format='value(networkInterfaces[0].accessConfigs[0].natIP)')"
+  say "created $vm in $cell_zone"
+  ip="$(g compute instances describe "$vm" --zone="$cell_zone" --format='value(networkInterfaces[0].accessConfigs[0].natIP)')"
   user="$(g compute os-login describe-profile --format='value(posixAccounts[0].username)')"
   dest="$user@$ip"
   say "created $vm at $ip; waiting for ssh"
@@ -611,11 +681,29 @@ matrix_cell() {
   local tmp; tmp="$(mktemp -d "${TMPDIR:-/tmp}/challoc-matrix-$cell.XXXXXX")"
   # shellcheck disable=SC2046
   rsync -az -e "ssh $(matrix_ssh_opts)" "$dest:logs/" "$tmp/" >>"$log" 2>&1 || say "fetch failed (partial logs)"
+  if [ "$extra" = scorecard ]; then
+    # The per-CPU scorecard file the VM wrote (bench/results/scorecard-<family>.md),
+    # next to the reference files; the VM's copy is the whole file, and a
+    # rerun of the same (date, commit) replaces its line there, so the copy
+    # is the record.
+    local sc="scorecard-${machine%%-*}.md"
+    # shellcheck disable=SC2046
+    if rsync -az -e "ssh $(matrix_ssh_opts)" "$dest:$REMOTE_DIR/bench/results/$sc" "$REPO/bench/results/$sc" >>"$log" 2>&1; then
+      say "fetched bench/results/$sc"
+    else
+      say "no bench/results/$sc on the VM (the scorecard step failed before appending)"
+    fi
+  fi
   {
     echo
     echo "==================== ~/logs/matrix.log on $vm ===================="
     cat "$tmp/matrix.log" 2>/dev/null || echo "(no matrix.log)"
-    for f in image test probe probe-privileged fuzz test-cgroup test-privileged; do
+    if [ -f "$tmp/cpuinfo.log" ]; then
+      echo
+      echo "==================== ~/logs/cpuinfo.log ===================="
+      cat "$tmp/cpuinfo.log"
+    fi
+    for f in image test probe probe-privileged fuzz test-cgroup test-privileged scorecard; do
       [ -f "$tmp/$f.log" ] || continue
       echo
       echo "==================== ~/logs/$f.log (last 60 lines) ===================="
@@ -642,12 +730,17 @@ matrix_cell() {
   case "$summary" in *outcome=PASS*) return 0 ;; *) return 1 ;; esac
 }
 
+# matrix_clean: delete every matrix VM in every zone (the CPU cells live in
+# more than one).
 matrix_clean() {
-  local vms
-  vms="$(g compute instances list --filter="name~^$MATRIX_PREFIX-" --format='value(name)' 2>/dev/null || true)"
+  local vms line
+  vms="$(g compute instances list --filter="name~^$MATRIX_PREFIX-" --format='value(name,zone.basename())' 2>/dev/null || true)"
   [ -n "$vms" ] || { echo "challoc-bench: matrix: no $MATRIX_PREFIX-* VM exists"; return 0; }
-  echo "challoc-bench: matrix: deleting $(echo "$vms" | tr '\n' ' ')"
-  for v in $vms; do matrix_delete_vm "$v" & done
+  echo "challoc-bench: matrix: deleting $(echo "$vms" | awk '{ printf "%s(%s) ", $1, $2 }')"
+  echo "$vms" | while read -r line; do
+    # shellcheck disable=SC2086
+    [ -n "$line" ] && matrix_delete_vm $line &
+  done
   wait
 }
 
@@ -655,9 +748,10 @@ cmd_matrix() {
   local what="${1:-}"
   case "$what" in
     list)
-      printf '%-11s %-22s %-16s %-6s %-15s %-5s %s\n' cell family project arch machine prep extra
-      for c in $MATRIX_CELLS; do printf '%-11s %s\n' "$c" "$(cell_spec "$c" | awk '{ printf "%-22s %-16s %-6s %-15s %-5s %s", $1, $2, $3, $4, $5, $6 }')"; done
+      printf '%-11s %-22s %-16s %-6s %-15s %-5s %-10s %s\n' cell family project arch machine prep extra zones
+      for c in $MATRIX_CELLS $MATRIX_CPU_CELLS; do printf '%-11s %s %s\n' "$c" "$(cell_spec "$c" | awk '{ printf "%-22s %-16s %-6s %-15s %-5s %-10s", $1, $2, $3, $4, $5, $6 }')" "$(cell_zones "$c" | tr ' ' ',')"; done
       return 0 ;;
+    cpu) shift; set -- $MATRIX_CPU_CELLS "$@" ;;
     clean) matrix_clean; return 0 ;;
     lab)
       shift
@@ -680,6 +774,8 @@ cmd_matrix() {
   for c in $cells; do cell_spec "$c" >/dev/null || die "matrix: unknown cell $c (matrix list)"; done
   mkdir -p "$MATRIX_OUT"
   echo "challoc-bench: matrix: cells: $cells; $MATRIX_JOBS at a time, ${MATRIX_TIMEOUT}s each; logs in $MATRIX_OUT/$MATRIX_DATE-<cell>.log"
+  [ -z "$(git -C "$REPO" status --porcelain -- src Cargo.toml Cargo.lock build.rs 2>/dev/null)" ] \
+    || echo "challoc-bench: matrix: WARNING: uncommitted library changes are being synced; a scorecard line would be marked '+'" >&2
   # On any exit: stop the cells (their own traps delete their VMs), then
   # sweep the zone for anything left.
   # `set -e` applies inside the trap too: every step here must not fail

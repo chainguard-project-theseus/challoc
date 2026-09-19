@@ -1415,7 +1415,7 @@ kernel-owned fields is what broke tcmalloc on Linux 6.19.
   kernel probes first (`page_size=4096 guard_install=yes mseal=yes
   process_madvise=pidfd_self anon_name=yes`) then the CPU (section 17;
   `mte=no mte3=no pac=yes lse=yes lse2=yes bti=yes sve=yes` on arm64,
-  `lam=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes
+  `lam=no uai=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes
   fsrm=yes avx512f=yes` on x86_64, then `cacheline=64 l1d=64K l2=2M` on
   both, `unknown` where no source had a figure). The string is static,
   built once at init without allocating (rebuilt in a fork child, whose
@@ -1450,13 +1450,14 @@ runs on every row.
 | LSE2 (`HWCAP_USCAT`) | arm64 CPU (Armv8.4) | reported only: single-copy 16-byte descriptor atomics (later task) | 64-bit atomics |
 | BTI (`HWCAP2_BTI`), SVE (`HWCAP_SVE`) | arm64 CPU and kernel | reported only (BTI landing pads are the compiler baseline's decision) | none needed |
 | LAM (`cpuid` 7.1 `EAX[26]`) | x86_64 CPU and kernel 6.4 (`arch_prctl(ARCH_ENABLE_TAGGED_ADDR)`) | reported only: tagged pointers (tasks 5 and 6) | untagged pointers |
+| UAI (`cpuid` `0x80000021` `EAX[7]`, read only when leaf `0x80000000` reports an extended range that reaches it) | AMD CPU (Zen 4 and later: upper address ignore, the LAM analogue); no upstream kernel enables it for user space yet (no `arch_prctl`, no `/proc/cpuinfo` flag) | reported only: tagged pointers (tasks 5 and 6) | untagged pointers |
 | LA57 (`cpuid` 7.0 `ECX[16]`), `la57_enabled` (a hinted `mmap` above 2^47 honoured) | x86_64 CPU; kernel with `CONFIG_X86_5LEVEL` booted on it | reported only: the address-space budget for reservations and tag bits (task 5) | 47-bit user addresses |
 | CLDEMOTE (`cpuid` 7.0 `ECX[25]`), WAITPKG (`ECX[5]`) | x86_64 CPU (Sapphire Rapids and later; a hypervisor may hide WAITPKG) | reported only (task 12) | none needed |
 | ERMS, FSRM, AVX-512F (`cpuid` 7.0 `EBX[9]`, `EDX[4]`, `EBX[16]`) | x86_64 CPU | reported only: `memcpy`/`memset` selection is glibc's; the crate's fills use the compiler baseline | none needed |
 | Cache line, L1D and L2 sizes | `CTR_EL0` (arm64), `cpuid` leaf 4 or `0x8000001D` (x86_64), else `/sys/devices/system/cpu/cpu0/cache/index*/` | reported only: the layout constants (`lock.rs` padding, the 512-byte stride rule) stay fixed | `unknown` in the line; nothing changes |
 
 The feature report's arm64 keys are `mte mte3 pac lse lse2 bti sve`, the
-x86_64 keys `lam la57 la57_enabled cldemote waitpkg erms fsrm avx512f`, and
+x86_64 keys `lam uai la57 la57_enabled cldemote waitpkg erms fsrm avx512f`, and
 `cacheline l1d l2` on both, after the kernel keys of section 10. The
 container test checks each CPU bit against `/proc/cpuinfo` (`Features` or
 `flags`) on the host it runs on; the host tests decode captured HWCAP words

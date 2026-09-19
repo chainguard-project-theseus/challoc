@@ -173,10 +173,58 @@ within minutes, and `accept-new` against a file then rejects the new key. Two
 drivers must not run at once with the same prefix: the exit sweep deletes
 every VM of the prefix; `CHALLOC_MATRIX_PREFIX` names another.
 
-The last two lines of each VM log are machine-readable:
-`PROBE features: ...` and `MATRIX cell=... kernel=... page=... tests=<passed>/<failed>
-fuzz=... cgroup=... privileged=... wall=... outcome=PASS|FAIL`; the driver
-prints them as the summary. Results: `bench/results/<date>-matrix.md`.
+The last lines of each VM log are machine-readable: `CPU <model>`,
+`PROBE features: ...`, `PROBE_PRIVILEGED features: ...`, `SCORECARD | ... |`
+(CPU cells) and `MATRIX cell=... kernel=... page=... machine=... zone=...
+vcpus=... tests=<passed>/<failed> fuzz=... cgroup=... privileged=...
+scorecard=... wall=... outcome=PASS|FAIL`; the driver prints them as the
+summary. Results: `bench/results/<date>-matrix.md`.
+
+## The CPU matrix (Phase 2.5 task 4)
+
+`challoc-bench matrix cpu` runs the `cpu-*` cells: the same Ubuntu 24.04
+image and its GCE kernel on one machine type per CPU family, so only the
+CPU varies. A CPU cell runs `make image`, `make test`, the two probe lines,
+the CPU capture (`cpuinfo.log`: model name, the `flags`/`Features` line,
+`lscpu`, and the raw `cpuid`/HWCAP registers of `bench/gce/cpuid-dump.c`,
+the source of the host fixtures in `src/sys/cpu.rs`), and, instead of fuzz
+and test-cgroup, one `make scorecard ROUNDS=3` (challoc versus jemalloc, the
+fixed row set) written to `bench/results/scorecard-<family>.md` on the VM
+and fetched back next to the reference files. `scorecard-aarch64.md` and
+`scorecard-x86_64.md` stay the acceptance record (C4A and C4 at 16 vCPU)
+and are not touched; the per-CPU files are 8 vCPU, so compare them with
+the reference CPU of the same architecture row by row (challoc-vs-jemalloc
+percentages), never by absolute throughput.
+
+Cells name their zones (a comma-separated list, tried in order, at most
+two): every family is in `us-east4-a` except T2A (`us-central1-a,b,f`).
+A zone that is out of capacity or quota for the family
+(`ZONE_RESOURCE_POOL_EXHAUSTED`, `QUOTA_EXCEEDED`) is recorded in the
+cell's log and the next zone tried; with no zone left the cell's line reads
+`outcome=PENDING reason=create:<error>`. `matrix clean` and the exit sweep
+delete matrix VMs in every zone. C4, C4A and N4 take Hyperdisk Balanced
+only; C2, N2D and T2A take Persistent Disk only (the driver picks per
+family).
+
+| cell    | machine        | CPU                                  | zones                       |
+|---------|----------------|--------------------------------------|-----------------------------|
+| cpu-c4a | c4a-standard-8 | Google Axion, Neoverse V2 (reference architecture, for the record) | us-east4-a, us-east4-b |
+| cpu-t2a | t2a-standard-8 | Ampere Altra, Neoverse N1            | us-central1-a, us-central1-b |
+| cpu-c4  | c4-standard-8  | Intel Xeon 8581C, Emerald Rapids (reference) | us-east4-a, us-east4-b |
+| cpu-c3  | c3-standard-8  | Intel Sapphire Rapids                | us-east4-a, us-east4-b      |
+| cpu-c3d | c3d-standard-8 | AMD Genoa, Zen 4                     | us-east4-a, us-east4-b      |
+| cpu-n2d | n2d-standard-8 | AMD Milan or Rome, whichever the zone gives (the log records the model) | us-east4-a, us-east4-b |
+| cpu-c2  | c2-standard-8  | Intel Cascade Lake                   | us-east4-a, us-east4-b      |
+| cpu-n4  | n4-standard-8  | Intel Emerald Rapids on the N4 platform (optional) | us-east4-a, us-east4-b |
+
+```
+bench/gce/challoc-bench matrix cpu                 # every cpu-* cell, 3 at a time
+MATRIX_TIMEOUT=3600 bench/gce/challoc-bench matrix cpu-c3d cpu-t2a
+```
+
+Results: `bench/results/<date>-cpu-matrix.md` (one line per cell, the
+feature table across CPUs, the scorecard table across CPUs) and
+`bench/results/scorecard-<family>.md`.
 
 ## Recipes for the traps
 

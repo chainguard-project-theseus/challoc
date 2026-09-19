@@ -142,6 +142,7 @@ the task that will use them is named in the design.
 | LSE `lse`, LSE2 `lse2` (reported only) | arm64 CPU (Armv8.1, 8.4), `AT_HWCAP` | 16-byte descriptor atomics, a later task; the atomics emitted today follow the compiler baseline | 64-bit atomics, LL/SC |
 | BTI `bti`, SVE `sve` (reported only) | arm64 CPU and kernel, `AT_HWCAP`/`AT_HWCAP2` | Nothing; recorded for the matrix | None needed |
 | LAM `lam` (reported only)    | x86_64 CPU (`cpuid` 7.1) and kernel 6.4 | Tagged pointers, a later task | Untagged pointers |
+| UAI `uai` (reported only)    | AMD CPU, Zen 4 and later (`cpuid` `0x80000021`); no kernel enables it for user space yet | Tagged pointers, a later task | Untagged pointers |
 | LA57 `la57`, `la57_enabled` (reported only) | x86_64 CPU (`cpuid` 7.0); the kernel booted with five-level paging (a hinted `mmap` above 2^47 is honoured) | Address-space budget for reservations and tag bits | 47-bit user addresses |
 | CLDEMOTE, WAITPKG, ERMS, FSRM, AVX-512F (reported only) | x86_64 CPU (`cpuid` 7.0) | Nothing yet; recorded for the matrix | None needed |
 | Cache line, L1D, L2 sizes (reported only) | `CTR_EL0` (arm64), `cpuid` leaf 4 / `0x8000001D` (x86_64), `/sys/devices/system/cpu/cpu0/cache` as fallback | Geometry defaults, a later task | `unknown`; the layout constants stay fixed |
