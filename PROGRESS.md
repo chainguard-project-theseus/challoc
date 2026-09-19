@@ -164,6 +164,55 @@ One line per task, newest at the bottom of each section. Keep it terse.
   --release` and the two `make test` cargo lines 376 + 115 green. Design
   12's table has the row, 15 names the key, README's `mm_cid` row points at
   it. No per-CPU behaviour, no `src/model.rs` change (stage 2); no VM used.
+- Phase 2.5 task 10 (lane B), floor fix: done, f78601e. Lane D's acceptance
+  found the container churn (`purge 400 100` in 512 MiB) failing on the
+  Debian cells (5.10 x86_64, 6.1 x86_64 and arm64; RSS 217..349 MiB at
+  2 s). Reproduced on lane B's own lab cells at 9a9c635: 7 of 16 runs
+  fail on 6.1 arm64 (c4a-standard-4), 5 of 16 on 5.10 x86_64
+  (e2-standard-4), 0 of 16 on the 16-vCPU 7.0 lane VM. Mechanism, shown
+  by the advice counters now on the churn's policy line (pre-fix library,
+  new test: `lazy_purges 18 eager_purges 1` in a failing run, `22 / 3` in
+  a passing one): the three classes' walks come due a few ms apart; when
+  they straddle a periodic tick the first tick returns one class eagerly
+  (the band was `Scaled` at 403 MiB), usage drops under 70%, the next
+  sample puts the policy in `Low` and the remaining 200..300 MiB go out
+  with `MADV_FREE`, resident and charged, the cap met in the allocator's
+  accounting and not the cgroup's. Timing, not the kernel: `MADV_FREE`
+  pages stay charged on every kernel. Fix: `Policy::eager_excess`, an
+  excess over the retention cap first seen at 70% or above is returned
+  eagerly until the retention is within the cap; `Policy::headroom` is
+  what `purge::set_headroom` mirrors; `advice_reason` gains `returning
+  the excess over the cap`. After: 24 of 24 on both lab cells, `make
+  test-cgroup` (all limits, the lazy rows included) green on the 7.0 VM,
+  the lazy test unchanged (an excess first seen under 70% stays lazy).
+  Design 8 and 11. `bench/results/2026-09-19-lane-b-floor-fixes.md`
+  sections 1, 2.
+- Phase 2.5 task 9 (lane B), floor fix: done, 4b1e92d. `c_thp_always`
+  failed on the 64 KiB cell because `thp:always` committed and advised
+  512 MiB chunks (the PMD at 64 KiB pages; 1.7 GiB for an 8 MiB test
+  heap, no folio from the kernel) and the test matched `2M` inside
+  `512M`. `thp::decide` takes the chunk path only for a PMD of at most
+  2 MiB (`LG_PMD_CHUNK_MAX`), else the folio path over the enabled sizes
+  below the PMD, inert with reason `PmdTooLarge` when none; `tests/c/thp.c`
+  reads `hpage_pmd_size` and compares tokens. 64k cell `make test` 379 +
+  115 + 23, 0 failures; 4 KiB expectations unchanged (7.0 VM: mode 2,
+  `AnonHugePages 10240 kB`). Results file section 3.
+- Phase 2.5 task 16 (lane B), first half: done, 71f54e0. `thp:never`
+  issues `MADV_NOHUGEPAGE` on the three reservations at
+  `layout::Regions::reserve` (`thp::advise_reservation`; `force_never`
+  advises the recorded reservations too), gated on the key, nothing on a
+  kernel without THP; `auto` and `always` unchanged. Both-ways test in
+  `tests/c/thp.c never` (sysfs global mode, `nh` on the class and huge
+  regions, THPeligible, and on an `always` host AnonHugePages after 8 MiB
+  of small blocks plus an 8 MiB huge run). Measured before/after on the
+  native-`always` Debian 6.1 cell and on the 7.0 VM with the global mode
+  set to `always` for the run: the huge run's AnonHugePages 8192 kB ->
+  0 kB, THPeligible 1 -> 0, `nh` 0 -> 1 on both regions; the class
+  region was 0 kB either way (groups are committed a few slabs at a time,
+  no whole 2 MiB read-write range yet, THPeligible 1 before). Design 11,
+  12, 17; README row. Results file section 4. The prctl half is below.
+- Phase 2.5 task 12, CLDEMOTE item (lane B): done, measured and dropped. The hint (`cldemote` after the bitmap-word `fetch_and` of `release_word` and the descriptor `sub_live` of `dec_live` in `class.rs`, behind the `cpuid` 7.0 `ECX[25]` probe, no-op elsewhere) passed `quick` on both lane VMs but the attribution on the C4 (three `quick-perf` rounds) put it at +2.7/+5.1/+4.9% cycles per operation on xmalloc-test (+5..8% L1D misses/op) and +18.8/+13.4/+17.3% on the Valkey model (+6% instructions/op): the freeing core is usually the next claimer, so the demotion turns an L1 hit into an L3 hit. The `io-threads 4` Valkey soak (old vs new, one round each, perf sidecar) was flat: 10362 -> 10244 cycles/cmd write, 7041 -> 6999 delete, L1D misses/cmd equal. Dropped per task 12's rule; kept the probe, the `cldemote=` key, `src/sys/cldemote.rs` (`configure` from `Features::probe`, `enabled`, `demote`) and its both-ways container test (`present=true enabled=true` on the C4, `present=false` on the C4A and the Mac VM). `class.rs` is byte-identical to the base. `make test` 377 + 115 + 23 on all three hosts with the hint in and with it out; final `quick` on the C4 go. Results: `bench/results/2026-09-19-x86_64-lane-b-task12-cldemote.md`; design 17 and README rows updated.
+- Phase 2.5 task 8 (lane B, the rseq / `mm_cid` line of the feature report): done. `src/sys/features.rs` gains `Rseq` (`size`, `flags`, `offset`, `cpu_id`; `registered()` = size >= 20 and `cpu_id >= 0`, `mm_cid()` = registered and size >= 28) and `Features::rseq`, probed at init from glibc's weak `__rseq_size`/`__rseq_offset`/`__rseq_flags` through GOT loads (the `je_malloc_conf` recipe) plus the area's kernel-written `cpu_id` at `tp + __rseq_offset + 4`; the line gains `rseq=yes|no rseq_size=<n> mm_cid=yes|no` after `collapse`. Both ways: `rseq=yes rseq_size=33 mm_cid=yes` on both lane VMs (7.0, glibc 2.44; `__rseq_offset` 320 aarch64 / -384 x86_64 in the test binary against the note's 192 / -192, so the symbol read is what makes it right), `rseq=yes rseq_size=20 mm_cid=no` on the Mac's 6.10 linuxkit VM. `make test` 376 + 115 + 23 on all three hosts. Results: `bench/results/2026-09-19-lane-b-task8-rseq-report.md`; design 15, 16, 17 and README updated; a note on top of `bench/results/2026-09-19-feature-report.md`. Lane A reads `features().rseq.mm_cid()` for `percpu_arena:auto` and the value through its own accessor.
 - (c) 0604bb3: `bench/ruby-soak.sh`, `make ruby-soak`, `bench/ruby/soak.rb` (16
   threads, bursts, growing long-lived set, full GC every 30 s, GC.compact at
   minute 5, 600 s; VmRSS/VmHWM, GC.stat, mallctl stats via fiddle every 5 s;
@@ -727,6 +776,62 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
   (`PercpuArena::forced`). Reason: a forced request cannot read an `mm_cid`
   field the kernel does not write, and the plan says the fallback holds
   with a note, not an abort.
+- Phase 2.5 task 10 (lane B): the coordinator's candidate (a) (switch to
+  `MADV_DONTNEED` when `memory.current` stays above the band after a lazy
+  pass) did not match the mechanism: the band really was `Low` after the
+  first eager walk and the mirror was fresh. The rule taken is about the
+  cap: an excess over the retention cap is returned with the advice of
+  the band it was first seen in, eager until the retention is within the
+  cap, because the cap is a promise about resident, charged memory that
+  a lazy purge does not keep; an excess first seen under 70% (the lazy
+  test) stays lazy. Alternatives not taken: "the cap is always eager"
+  (would have made the lazy container test and the plan's task 10
+  wording wrong: 200 MiB freed at 39% would return eagerly); candidates
+  (b)/(c) (probe or gate on `memory.stat` `lazyfree`), because no kernel
+  uncharges `MADV_FREE`d pages before reclaim and the line exists on 5.10
+  and 6.1 too, so neither distinguishes the cells. Task 10's results
+  file (`2026-09-19-lane-b-two-advice-purge.md`) said the 512m churn ran
+  "at 89.8% usage, scaled band, eager": it runs at 79% and its eager
+  passes were one-tick luck on the 16-vCPU VMs; the new file says so.
+- Phase 2.5 task 9 (lane B): `always` on a PMD over 2 MiB (16 and 64 KiB
+  pages) is the folio path, not a refusal of the key: an operator asking
+  for `always` on a 64 KiB host with `hugepages-2048kB` enabled gets
+  2 MiB folios on 2 MiB slabs and up, which is the useful reading; with
+  nothing below the PMD enabled the mode is off and the report says why
+  (`PmdTooLarge`). Huge runs of 512 MiB or more are not advised in that
+  case (mode off): a 512 MiB THP per run is not a saving anyone asked
+  for. `auto` is unchanged at 64 KiB (the PMD gating rule applies as at
+  4 KiB).
+- Phase 2.5 task 16 (lane B): the never-advice is gated on the *key*
+  (`never`, or the forced `never` of design 11), not on `Mode::Off`: an
+  `auto` the kernel's sysfs table made inert (no sub-PMD size, or the
+  PMD madvise-gated) keeps its regions eligible for the folios the host
+  may enable later, since `MADV_NOHUGEPAGE` forbids mTHP folios as well
+  as PMD pages. Consequence, recorded in design 17: on an `always` host
+  `auto`'s inert regions and `always`'s unadvised ones still get the
+  host's PMD pages (the huge run under `auto` shows 8192 kB there). The
+  second half of the task, designed here and not implemented (it needs a
+  config key, lane C's `config.rs`): a key `thp_process` with values
+  `default` (nothing) and `advised`; under `advised` init calls
+  `prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED)` (6.18+,
+  probed by the call's return: `EINVAL` below) before the reservations,
+  so the process gets huge pages only where challoc `MADV_HUGEPAGE`d
+  (`auto`'s folios, `always`'s chunks, huge runs), whatever the host's
+  global mode; the feature line gains `thp_process=<mode>` and the
+  report's `thp:` line shows the host's global mode (`sys::features::Thp
+  .enabled`, already read) and whether the prctl is in force; the
+  both-ways container test flips the global mode as `tests/c/thp.c`
+  does and checks AnonHugePages of an unadvised region under `auto`.
+  Off by default because it is process-wide (it changes what the host's
+  `always` means for every mapping of the process, libc's and the
+  program's own included), and `never` does not need it: the
+  `MADV_NOHUGEPAGE` half covers challoc's regions on every kernel.
+  Chainguard OS ships `always` with the 2 MiB size on `inherit`: with
+  this commit `thp:never` (the default) means never there; the cgos
+  four-way RSS rows (plan task 14, lane E) should be re-read at or after
+  71f54e0.
+- Phase 2.5 task 12 (lane B): the drop is decided on the gated rows' attribution (xmalloc-test and the Valkey model), not on the soak, which was flat either way; the soak's one-round throughput (+1..4% for new) and RSS after settle (+6.5%) are inside its run-to-run spread and the sidecar counters did not move. The alternative outcome (keep it because the io-threads soak gained 1..4% in one round) was not taken because the same counters say the gain is not the hint's. The module stays in the tree with an unused `demote` so the next attempt (a hint issued only where `Heap::release_routed` knows the release is cross-arena, heap.rs, lane A's file) is one call plus a measurement.
+- Phase 2.5 task 8 (lane B): `rseq=yes` requires the kernel to have written the area (`cpu_id >= 0`), not just a non-zero `__rseq_size`, so a registration glibc believes in but the kernel refused (`-2`) reads as no rseq and no `mm_cid`; `rseq_size` still prints the symbol's value so the two can be told apart. The three keys sit in the kernel section (after `collapse`), since the registration is a kernel-plus-libc fact rather than a CPU one, and `tests/c/features.c` (a task 2 test file, outside the lane's `src/` partition) was extended with the three keys so its every-key-once count keeps passing.
 - `auto` never installs `wfe`, and the `wfe` path stays in the tree behind the key. Reason: it lost xmalloc-test by 3% with a quarter more RSS on both aarch64 CPUs and gained nothing on larson; unselected it costs nothing (one atomic load per slow-path entry, measured within noise), and a deployment that wants the power saving or a CPU with a different wake latency can turn it on and measure. The explicit `wfe` is refused without the event stream so a `wfe` no store ends is always bounded.
 - The event stream is probed (`HWCAP_EVTSTRM`) but not added to the feature report line. Reason: a new key would change `tests/c/features.c` and every recorded line for a feature nothing acts on by default; `lock::spin_hint()` and `event_stream()` are what the tests check.
 - The probe's suggestion lives in `Cpu::probe` (a side effect on `lock::SPIN_HINT`) rather than in `api/mod.rs`'s init. Reason: init and `features.rs` belong to other lanes; the suggestion is idempotent and a configured hint is kept against it.
@@ -937,6 +1042,24 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
   `percpu_arena.enabled(mm_cid_usable)`; `percpu_arena.forced()` says whether
   a failed probe goes into the feature report. `src/api/mallctl.rs` (not in
   any lane's partition) got two `cstr_of` arms, as the plan's key item asks.
+- Phase 2.5 task 16 (lane B): `src/layout.rs` gained the three-line call
+  site of `thp::advise_reservation` in `Regions::reserve` (after the
+  anon-name calls). `layout.rs` is in no lane's partition list; the
+  coordinator should check it at merge. `thp::Stats` gained
+  `nohuge_ranges` (the struct only): the `stats.thp.*` mallctl key and
+  the report's `thp:` line live in `src/api/` (lane A), so the counter
+  is not exported yet.
+- Phase 2.5 task 10 (lane B): the churn's failure rate depends on the
+  host's speed (0 of 16 on 16 vCPUs, 7 of 16 on 4), so a floor cell
+  with few vCPUs is the right place to keep running it; `make
+  test-cgroup-churn` runs it once per limit. `tests/c/cgroup_churn.c`
+  now prints the advice counters on its policy line so a future failure
+  says whether the memory was purged lazily or not at all.
+- Phase 2.5 task 9 (lane B): the 64k cell's `make test` count is 379 +
+  115 + 23 = 517 at 71f54e0 (513 at 675f357, plus two unit tests from lane B's earlier
+  commits fc081b1 and 9a9c635 and this iteration's two: policy 1, thp 1).
+- Phase 2.5 task 12 (lane B): the VM exposes `cldemote` (the 8581C guest sees the flag), so the "measured absent on GCE" branch of the brief did not apply. A `DATA_LINES` variant (demote the freed slot's first data line too) was written and removed unmeasured after the two-line form lost. If a cross-arena-only form is wanted, it lands in lane A's `heap.rs` (`release_routed` knows when the arena is foreign), and the flat soak counters suggest little to gain on this CPU.
+- Phase 2.5 task 8 (lane B): no cost row was taken (an init-only read, no fast path); if the coordinator wants one, the task 2 probe-cost harness (`sys::cpu::linux_tests::probe_cost_is_small`) is the place.
 - The Cascade Lake's xmalloc row moved 3.5% (disjoint lists) and then 2.7% (overlapping) between `old` and the new lock with the same `pause` in both; the C4 and C4A (same code, PMU available) show nothing. The mechanism is one atomic load and a `match` on the slow path; the likeliest cause is code placement on the Cascade Lake (memory note on page aliasing). It is recorded as open in the results file; a sampler split on a C2 lab would settle it (no PMU there).
 - The geometry numbers say the 1024 ladder is right on 1 MiB L2 parts for throughput, and that 512 buys 12..15% of larson's RSS; if RSS on small parts ever matters more than 1..3% of larson, the knob exists and the model in 6.2 says where it stops paying (256 loses 6% on larson1).
 - Raw `ab` `.md` files on the VMs were deleted by the later `sync --delete` passes (they lived under `bench/results/` on the VM); the `~/logs/ab-*.log` copies, which carry the same tables from `## Sorted scores` on, are what is committed as `2026-09-19-lane-c-ab-*.log`. Worth a driver change: `sync` could exclude `bench/results/2026-*` on the receiver, or `ab` could write under `~/logs`.
