@@ -106,6 +106,53 @@ One line per task, newest at the bottom of each section. Keep it terse.
 - Phase 2.5 task 12 (geometry) DONE as a measurement, code dropped (lane C, 2026-09-19, 23bb3a9; results ce3173f): the model (design 6.2, "Cache geometry": the L1D does not bind, the fast path touches one line of the header and one of the stack per class; what scales with the capacity is the descriptor and bitmap lines a flush of `cap / 2` slots streams, at worst 32 KiB at 1024, which must stay L2-resident; hence the ladder's top and `tcache_max` halve per full halving of the L2 below the reference 2 MiB, floors 128 and 8 KiB, the constants exactly on both reference geometries) was implemented in `config.rs` (`nslots_for_l2`, `tcache_max_for_l2`, `Config::fit_to_caches` from a second `Cpu::probe`, explicit-key bits, a host test asserting the reference ladder class by class) and priced against the constants through `MALLOC_CONF` on the Cascade Lake (32K / 1M; 512 slots: larson1 +1.3% disjoint, larson10 +5.4% noisy, valkey1 +0.7%, redis and alloc-testN flat; 256 slots: larson1 +6.2%; RSS larson10 80.4 to 68.6 MiB) and the Altra (64K / 1M; larson1 +2.9%, larson10 +3.5%, valkey1 +3.2% all disjoint, redis +0.6%, alloc-testN +0.3%; RSS larson10 86.1 to 77.1 MiB). No throughput row improves, so per the acceptance the derivation was removed: the constants stand on every CPU, `opt.tcache_nslots_small_max` and `opt.tcache_max` report them, and only the model and the numbers are recorded (design 6.2 and 17, the results file section 3).
 - Phase 2.5 task 13 DONE (lane C, 2026-09-19): `src/model.rs`, test-only (`#[cfg(test)] mod model;` in `lib.rs`), an explicit-state model checker on stable Rust with no dependency, run by `cargo test --features std model::`. One class, two slabs of four slots, one or two arenas, two or three threads. Shared state: per slab the state byte, `live`, the bitmap word, the descriptor arena and the slot memory (a dirty bit per slot); per arena the class lock, the partial/empty/purged sets and the group cursor; the owner word per group and the class-wide next group. Operations mirror `class.rs` step by step with the lines quoted: `Refill(n)` = lock, `plan_locked` (the partial walk with the full-slab `clear_partial`, `next_slab`: empty, purged, the group cursor, `adopt_idle_group`/`transfer_group` with `group_handoff`, `take_group`; `take` with `add_live`, the partial bit rule, the zero flag and `claim_prefix`), unlock, then `finish` (`claim_word`'s `fetch_or` per step, waiting on a clear bit instead of `MAX_EMPTY_PASSES`), and the `claim_with` re-plan when short; `Write(i)`; `Release` = per slab `fetch_and` (double-free, guard/Fresh and owner checks), `sub_live`, `on_live_zero` (lock, owner check, `Active` with `live == 0` to `Empty`), then `reopen` (lock, `Active` and owner) for full words; `Purge` = lock, every `Empty` slab to `Purged` and its memory to zero. DFS over every interleaving, memoised on the whole state (`HashSet<Node>`), invariants at every state: no slot held by two threads, a held slot's bit set, a slot reported zero and unwritten reads zero, `live == popcount(bits) + reservations in flight + releases between fetch_and and sub_live`, a slab in at most one set and only its owner's, partial implies `Active`, `Empty`/`Purged` in exactly their owner's set with `live 0` and no bits (`Purged` and `Fresh` read zero), descriptor arena equals the owner word; a protocol abort (`zero_slab_had_bits_set`, `double_free`, `idle_group_in_use`, underflow) and a deadlock are violations too. Results: pre-fix order (`Variant { prefix_claim: false }`) finds the calloc race in 58 states and prints the 23-step interleaving (T0 plans a zero pick and unlocks; T1 plans, `fetch_or`s slot 0, writes it, `fetch_and`s it; T0's `fetch_or` takes slot 0 under the stale zero flag), found on the `Purged` round of the two-round scenario and on a dedicated `Purged` scenario (41 states); the test asserts the mechanism's order. Handoff without the owner check (`owner_check: false`, three threads, two arenas, groups of one slab) finds slab 0 owned by arena 1 in arena 0's empty set in 561 states (T0's `on_live_zero` pending across T1's reuse, arena 0's empty, arena 1's adoption and reuse). Current protocol passes: calloc race 2153 states (0.03 s), churn over two slabs 11214 (0.09 s), handoff 5759 (0.07 s), three threads 59925 (0.80 s), `Purged` scenario 755; eight tests in 0.99 s on the Mac (rustc 1.94.1). A `MAX_STATES` budget (5 M) aborts a scenario that outgrows the 30 s rule: three threads with five operations each did not finish in ten minutes. Design 17's table has the "Model-checked protocol" row, the source layout lists the file, plan task 13 has the Done text. Full host suite: 279 passed.
 - Phase 2.5 task 5 DONE as design, commit d8225a8 (lane C, 2026-09-19). The probes ran in task 4 (`bench/results/2026-09-19-cpu-matrix.md` section 1: `mte=no` on Axion and Altra, `lam=no` on every x86 cell, `uai=no` on the Genoa guest, which hides it and LA57). `docs/design.md` section 18 "Tagged pointers" (source layout is 19 now): 18.1 the hardware table with confidence per vendor (AmpereOne bare metal confirmed by Ampere's documentation and measured numbers; Graviton4 and Cobalt 100 unconfirmed, expect no, since the same Neoverse V2 hides it on Axion; LAM on Granite Rapids/Sierra Forest with kernel 6.4+, no cloud guest known; UAI in Zen 4 silicon with no Linux enable path, the 2022 series unmerged; TBI on every arm64 host); 18.2 MTE: `PROT_MTE` on every commit `mprotect`, huge runs untagged, tag 0 excluded, the cache holds pointers whose tag equals the slot's so the pop is untouched, `free` does `ldg` + compare (abort on mismatch) + `irg` + `st2g`/`dc gva` retag + push, refills `ldg` per `Active` slot and tag zero picks at pop (`stzg`/`dc gzva` for `calloc`), `realloc`/`usable_size`/`sallocx` check, `mallctl` lookups classify only; `tag_check` `async` default (no faulting address, `SEGV_MTEAERR`), `asymm` (MTE3) recommended, `sync` for the tests; a `SIGSEGV` handler for the two MTE `si_code`s chaining everything else, best-effort under Ruby's own handler; fork copies tags with the page on COW; cost expected in `zero_on_free`'s envelope (+87%/+102% larson1, +55%/+183% valkey1, aarch64/x86_64) plus one `ldg` per free, so opt-in; the cheaper no-retag variant named for part 2 to price and what it loses; the consumer contract (no data in top bits, mm syscalls untagged, glibc strings MTE-safe). 18.3 the software tag: six bits at 57 on both architectures, `tag = gen(slot) ^ key[class]` from a per-slot byte tag map (8x the bitmap), verified by `free` (both paths, one byte load and store), `realloc`, `usable_size`, refills tag from the map, pop untouched; `arch_prctl(ARCH_ENABLE_TAGGED_ADDR, 6)` in init step 3 (`EBUSY` when multi-threaded, off with a reason); what is caught (stale free even after reuse, forged 63/64, cross-class 63/64) and not (loads and stores). 18.4 the strip: `a = p & addr_mask` from the hot `Shared` line, one `and`, same instructions with the key off; every pointer-taking entry point and `Heap::flush` strip, `class.rs` never sees a tag. 18.5 keys `tag_pointers` (`off`|`mte`|`lam`|`auto`) and `tag_check`, their `opt.` strings and the `Tagged pointers:` report line with reason; `challoc_features()` unchanged. 18.6 part 2's tests (four negative cases, fuzzer, both suites, calloc campaign, Valkey and Ruby, encode/strip host test), cost rows next to `zero_on_free`'s, the fork row, and the cheapest path. Design 14's "not attempted: MTE" replaced by the planned, hardware-gated paragraph; design 17 rows for MTE/LAM/UAI/LA57 point at 18; README security table row plus footnote (3) and the feature table's MTE/LAM cells; plan task 5 "Done as design".
+- (c) 0604bb3: `bench/ruby-soak.sh`, `make ruby-soak`, `bench/ruby/soak.rb` (16
+  threads, bursts, growing long-lived set, full GC every 30 s, GC.compact at
+  minute 5, 600 s; VmRSS/VmHWM, GC.stat, mallctl stats via fiddle every 5 s;
+  malloc_stats_print at the end); results
+  bench/results/2026-09-19-{x86_64,aarch64}-ruby-soak.md + CSVs + reports.
+  challoc default 2.3..4.4x jemalloc's RSS for the whole run (t=600: 419 vs
+  151 MiB x86_64, 393 vs 160 aarch64; peak 422 vs 181, 401 vs 201; after
+  GC.compact 361 vs 129, 321 vs 130; lowest after a full GC 297 vs 68, 279
+  vs 93); allocated within 10% (108 vs 97, 99 vs 90), active/allocated 2.0
+  vs 1.1 (x86_64) and 2.1 vs 1.5 (aarch64, Wolfi's 64 KiB-page jemalloc),
+  resident/active 1.9 vs 1.2..1.3. background_thread:true: within 2% (x86_64)
+  and 0.7% (aarch64) of the default, allocator stats identical: no effect.
+  Mechanism from the reports: `Arenas: 17 (64 automatic)`, one per thread,
+  each ~12 MiB active + ~12 MiB dirty; 1280..2048 B at 47..52% occupancy in
+  64 KiB slabs, 2560..4096 B at 14..28%, compaction `c_on 0` (gated).
+  `narenas:1` on aarch64: 167 MiB at t=600 vs jemalloc 160 (+4%), peak 171
+  vs 201 (-15%), floor after full GC 36 vs 93; active/allocated 1.27,
+  resident-active 55 MiB vs 192. Reading and options in the aarch64 file.
+- (e) 6d1f618: `scripts/check-needed.sh <binary> <soname>...` (readelf, exit 1
+  when missing, prints NEEDED and RUNPATH), wired into contrib/valkey/build.sh
+  (libchalloc.so.0) and contrib/ruby/build.sh (libjemalloc.so.2 on ruby and
+  libruby.so); `make check-needed` = tests/as-needed.sh (tests/c/as_needed.c,
+  as_needed_lib.c) on both lane VMs, green; the truth in design 13.6 and
+  bench/results/2026-09-19-as-needed.md: Wolfi's gcc is --as-needed by
+  default; an executable referencing malloc keeps DT_NEEDED (malloc resolves in
+  libchalloc before libc); one referencing nothing drops it; the two-level
+  shape (executable allocates only through a library that needs libchalloc)
+  drops the executable's entry and the library's malloc binds to glibc for the
+  whole process, silently (BFS search order puts libc.so.6 first); Ruby escapes
+  it with -Wl,--no-as-needed in LDFLAGS (ruby/ruby#4627). Package rule: link
+  with --no-as-needed (or reference the allocator) and run the checker in the
+  package test on every executable and the allocating library.
+- (d) 25021da: `bench/valkey-soak.sh` IO_THREADS (--io-threads N, CONFIG GET
+  read back, header) and COMMIT; results
+  bench/results/2026-09-19-aarch64-gce-valkey-soak-iothreads4.md (C4A lane VM,
+  a3ddd6d, sidecar attached): throughput/p99 FAIL (write valkey-benchmark -6.1%
+  / p99 +9.1%, delete memtier -12.3% / +11.5%, delete valkey-benchmark p99
+  +24.5%), peak RSS 766 vs 682 MiB +12.3% FAIL, RSS after settle +3.5% PASS;
+  cycles/cmd 6842 vs 6598 (+3.7%) write, 4698 vs 4231 (+11.0%) delete (one
+  io-thread: +1.0/+2.6%); allocator code equal (7.80 vs 7.89%, 4.24 vs 4.58% of
+  cycles; free_other + flush + RMWs under 1.5%); the deficit is +10 L1D and +7
+  dTLB misses per command in Valkey's code and libc on memory placed across 4
+  per-thread arenas (values live in the io threads' arenas, every DEL is a
+  cross-arena free; main-thread arena at 17% occupancy after the delete phase,
+  defrag hits 581k vs 339k). MALLOC-STATS after settle and CSVs beside it. The
+  report does not print the `others` node count (bound from design 6.2: at most
+  3 per heap, 12 in the process).
 
 ## In progress
 
@@ -482,6 +529,24 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
 - The sized path verifies the tag at the call under the key (one byte load and store), giving up 6.3's "no metadata load per sized free" only when the key is on. Reason: the key exists to check pointers; the bit test stays deferred.
 - `challoc_features()` does not gain a `tagging=` key; the effective mode is a `malloc_stats_print` line with the reason. Reason: the line is built in init step 1 before the configuration is parsed and reports hardware, not decisions.
 - No `src/` change and no results file: the task is design, and the task 4 matrix already holds the probe results per CPU (the plan's acceptance names the matrix file).
+- (e) as a shell test (tests/as-needed.sh, `make check-needed`), not a test in
+  src/api/ctests.rs: the lane never edits src/. The test's `none-default` case
+  is informational (records the toolchain default) since it depends on the gcc
+  spec, and the two-level case asserts the glibc binding it found.
+- (d) the soak's results go to RESULT_DIR under `.tmp-out/` on the VM (rsync
+  --delete on sync would remove bench/results/ files written on the VM) and are
+  copied into bench/results/ by hand with the `-iothreads4` name; the summary is
+  the soak script's own table with a reference column added by hand.
+- (c) allocator stats via fiddle -> mallctl (`mallctl`, then `je_mallctl`) and a
+  malloc_stats_print dump to stderr at the end of each run, kept beside the CSV
+  as `-mstats.txt`; jemalloc's 65-arena report trimmed to general + merged (+
+  arenas with threads) before committing. `challoc-1arena` (MALLOC_CONF=
+  narenas:1) added as an optional variant after the x86_64 run showed 17
+  per-thread arenas; run on aarch64 only (one extra 10-minute run).
+- Both soak scripts take COMMIT: a worktree synced to a VM has a `.git` file
+  pointing at a Mac path, so git in the container says "unknown".
+- The Makefile hunks were staged per prerequisite; the .PHONY line and the two
+  help blocks (they name both ruby-soak and check-needed) went with (e).
 
 ## Blocked
 
@@ -614,3 +679,28 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
 - MTE numbers need an AmpereOne bare-metal host (Ampere's documentation confirms MTE to Linux user space there; Oracle's A2 shapes unchecked in a guest). Graviton4 (`c8g`) and Cobalt 100 (`Dpsv6`) are each a `grep mte /proc/cpuinfo` on the smallest instance away; expect no.
 - LAM numbers need a Granite Rapids / Sierra Forest host with kernel 6.4+ or a guest whose hypervisor passes `lam` (KVM 6.8+); AWS's 8th-generation Intel shapes are the candidates to check. UAI: nothing until Linux has an enable path.
 - Section references to fix outside the lane: `src/sys/mod.rs:1` and `docs/plan.md:39` say "design.md section 18" for the source layout; it is 19 now.
+- (c) decision: `background_thread` is not the lever for Ruby-shaped
+  consumers (zero effect on both architectures); the automatic arena count
+  is (16 idle-ish threads = 16 private slab sets). Measured option: ship
+  `narenas:1` (or a small fixed count) for the Ruby package through
+  `malloc_conf`/`MALLOC_CONF`, which the compat library honours today;
+  src/ options (arena policy, idle-heap slab release) are listed in the
+  aarch64 reading. The `narenas:1` run exists on aarch64 only.
+- (d) `io-threads 4` FAILS two Phase 1 criteria on the same library that
+  passes them at one io-thread (throughput/p99 up to -12.3% / +24.5%, peak
+  RSS +12.3%). Attribution: allocator code equal, +10 L1D / +7 dTLB misses
+  per command in Valkey and libc on memory placed across 4 per-thread
+  arenas. Suggested next runs: the same soak with `narenas:1` under challoc,
+  `io-threads 2` and `8`; Phase 2.5 task 12's CLDEMOTE has this soak as its
+  workload. The `others` node count is not in the report (a print.rs line
+  would help future runs).
+- (e) Wolfi's gcc is --as-needed by default; a package must link executables
+  with -Wl,--no-as-needed (or reference the allocator) and run
+  scripts/check-needed.sh on every executable and the allocating library.
+  Ruby already does the former (ruby/ruby#4627). Design 13.6 has the text.
+- Both soak scripts' results on a VM go under `.tmp-out/` (sync-safe) and
+  were copied into bench/results/ by hand; `commit:` in the headers comes
+  from COMMIT=a3ddd6d (git says "unknown" in a synced worktree).
+- Makefile help for `ruby-soak` and the .PHONY line landed with the (e)
+  commit (shared hunks); harmless, noted for a reviewer of per-commit diffs.
+- Lane VMs `challoc-lane-d-{arm64,amd64}` deleted (arm64 last, 19:2x UTC).
