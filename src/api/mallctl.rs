@@ -598,8 +598,7 @@ fn cstr_of(s: &'static str) -> *const c_char {
         "never" => b"never\0",
         "auto" => b"auto\0",
         "always" => b"always\0",
-        // `opt.spin_hint` (config::SpinChoice::name).
-        "auto" => b"auto\0",
+        // `opt.spin_hint` (config::SpinChoice::name); `auto` shares the arm above.
         "baseline" => b"baseline\0",
         "umwait" => b"umwait\0",
         "wfe" => b"wfe\0",
