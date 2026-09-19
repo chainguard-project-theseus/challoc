@@ -966,6 +966,44 @@ Tasks, in order:
     Acceptance: the model reproduces the pre-fix calloc race and passes on
     the current code; it runs in `cargo test --features std`.
 
+### Execution in lanes
+
+From 2026-09-19 the remaining tasks of this phase run in four parallel
+lanes instead of one iteration at a time on `main`. Each lane is a git
+worktree `../challoc-wt/<lane>` on branch `loop/<lane>` with its own VMs
+(`CHALLOC_GCE_PREFIX=challoc-<lane>`) and its own Docker target volume
+(`TARGET_VOLUME=challoc-target-<lane>-$ARCH`), prepared by
+`scripts/ralph-lane.sh <lane>`; an iteration in a lane follows
+`scripts/ralph-prompt.md`, "Lane mode". The lanes are partitioned by the
+files they touch, so they never conflict under `src/`:
+
+- Lane A (stays on `main`; heap fast and warm paths: `src/heap.rs`,
+  `src/arena.rs`, the claim/refill code of `src/class.rs`): tasks 4g, 7, 8,
+  then task 12's CLDEMOTE item, in that order.
+- Lane B (memory return: `src/purge.rs`, `src/policy.rs`, `src/meta.rs`,
+  the commit path of `src/class.rs`, the probes in `src/sys/features.rs`):
+  tasks 10, 11, 9.
+- Lane C (verification and design: task 5's design text; task 13's
+  model-checked slab protocol as test-only code in a new module; task 12's
+  `lock.rs` spin-wait and `config.rs` cache-geometry defaults): tasks 5, 13,
+  then 12-lock and 12-geometry.
+- Lane D (measurement only, no `src/` change): Phase 3 prerequisites (c)
+  the Ruby soak row, (d) the Valkey soak with `io-threads 4`, (e) the
+  `DT_NEEDED` check, plus any acceptance soak this phase still owes.
+
+Rules: a lane's numbers come from `quick`, `quick-perf` and `ab` on the
+lane's own VMs and go into `bench/results/` files named with the lane and
+task; a lane records progress in `PROGRESS.d/<lane>-<task>.md` and never
+edits PROGRESS.md or `bench/results/scorecard-*.md`; a lane whose change
+needs a file another lane owns waits for that lane's merge rather than
+editing the file. The merge protocol, run by the coordinator on `main`
+one lane at a time: `scripts/ralph-lane.sh --merge <lane>` rebases
+`loop/<lane>` onto `main` (refusing on a conflict), fast-forwards `main`,
+folds the lane's `PROGRESS.d` notes into PROGRESS.md and deletes them in
+one commit; then `make test` on the merged tree and, once per merge
+batch, the scorecard on both reference VMs, committed as the PROGRESS
+commit. Task 6 stays gated as written and belongs to no lane.
+
 Acceptance for the phase:
 
 - The floor: `make test`, `make fuzz` and the container tests are green on
