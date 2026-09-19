@@ -738,15 +738,21 @@ matrix_cell() {
 # matrix_clean: delete every matrix VM in every zone (the CPU cells live in
 # more than one).
 matrix_clean() {
-  local vms line
+  local vms n z pids=
   vms="$(g compute instances list --filter="name~^$MATRIX_PREFIX-" --format='value(name,zone.basename())' 2>/dev/null || true)"
   [ -n "$vms" ] || { echo "challoc-bench: matrix: no $MATRIX_PREFIX-* VM exists"; return 0; }
   echo "challoc-bench: matrix: deleting $(echo "$vms" | awk '{ printf "%s(%s) ", $1, $2 }')"
-  echo "$vms" | while read -r line; do
-    # shellcheck disable=SC2086
-    [ -n "$line" ] && matrix_delete_vm $line &
-  done
-  wait
+  # A here-string, not a pipeline: the loop must run in this shell so that
+  # `wait` below waits for the deletes (a pipeline's subshell would own them
+  # and exit at once, leaving the VMs running behind a finished `clean`).
+  while read -r n z; do
+    [ -n "$n" ] || continue
+    matrix_delete_vm "$n" "$z" &
+    pids="$pids $!"
+  done <<<"$vms"
+  # shellcheck disable=SC2086
+  wait $pids
+  g compute instances list --filter="name~^$MATRIX_PREFIX-" --format='value(name,zone.basename(),status)' 2>/dev/null | sed 's/^/challoc-bench: matrix: still present: /'
 }
 
 cmd_matrix() {
