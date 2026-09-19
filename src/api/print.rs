@@ -26,7 +26,7 @@ use crate::QUANTUM;
 use crate::arena::Arena;
 use crate::config::{INERT_KEYS, KEYS, Value, is_inert};
 use crate::heap::Shared;
-use crate::layout::NBINS;
+use crate::layout::{CLASSES, NBINS};
 use crate::purge;
 use crate::stats::{self, ArenaStats, Snapshot};
 
@@ -192,6 +192,24 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     )?;
     writeln!(out, "Quantum size: {QUANTUM}")?;
     writeln!(out, "Page size: {}", shared.regions.page_size())?;
+    if let Some((lo, hi)) = crate::layout::page_sized_classes() {
+        // Design 3: on a kernel whose page is larger than a class's table
+        // slab, the class's slab is the page (plan Phase 2.5 task 4e).
+        let base = |f: fn(usize, usize) -> usize| {
+            (lo..=hi).map(|c| crate::layout::BASE_CLASSES[c].slab_size()).reduce(f).unwrap_or(0)
+        };
+        writeln!(
+            out,
+            "Page-sized slabs: classes {}..{} ({}..{} bytes) at {} bytes ({}..{} in the table)",
+            lo,
+            hi,
+            CLASSES[lo].size(),
+            CLASSES[hi].size(),
+            CLASSES[lo].slab_size(),
+            base(usize::min),
+            base(usize::max)
+        )?;
+    }
     let t = &snap.totals;
     writeln!(
         out,
@@ -675,6 +693,40 @@ mod tests {
         let c = std::ffi::CString::new(opts).unwrap();
         malloc_stats_print(Some(capture), 0xC0FFEE as *mut c_void, if opts.is_empty() { core::ptr::null() } else { c.as_ptr() });
         String::from_utf8(CAPTURE.lock().unwrap().clone()).unwrap()
+    }
+
+    /// Plan Phase 2.5 task 4e (design 3): after init no class has a slab
+    /// smaller than the kernel page (up to 64 KiB), so on a 16 or 64 KiB
+    /// kernel the 512..1024-byte classes have page-sized slabs, every
+    /// table's page group is one slab, and the report says so; on a 4 KiB
+    /// kernel the table is the compile-time one and the report is silent.
+    #[test]
+    fn slabs_are_never_smaller_than_the_page() {
+        use crate::layout::{BASE_CLASSES, CLASSES, LG_SMALL_SLAB, MIN_SLAB, NCLASSES, page_sized_classes};
+        let s = crate::api::shared();
+        let page = s.regions.page_size();
+        let floor = page.min(1 << LG_SMALL_SLAB);
+        for c in 0..NCLASSES {
+            let cls = &CLASSES[c];
+            assert!(cls.slab_size() >= floor, "class {c}: slab {} below the page {page}", cls.slab_size());
+            assert_eq!(cls.nslots(), cls.slab_size() / cls.size(), "class {c}");
+            assert_eq!(cls.lg_slab as u32, (BASE_CLASSES[c].lg_slab as u32).max(page.trailing_zeros().min(LG_SMALL_SLAB)), "class {c}");
+            assert_eq!(s.tables()[c].slabs_per_page(), (page / cls.slab_size()).max(1), "class {c}");
+            if page <= 1 << LG_SMALL_SLAB {
+                assert_eq!(s.tables()[c].slabs_per_page(), 1, "class {c}: page groups are dormant");
+            }
+        }
+        let text = report("");
+        if page > MIN_SLAB {
+            let (lo, hi) = page_sized_classes().expect("a large page raises the small-slab classes");
+            assert_eq!((CLASSES[lo].size(), CLASSES[hi].size()), (512, 1024));
+            let want = std::format!("Page-sized slabs: classes {lo}..{hi} (512..1024 bytes) at {} bytes (4096..16384 in the table)\n", floor);
+            assert!(text.contains(&want), "{text}");
+        } else {
+            assert_eq!(page_sized_classes(), None);
+            assert_eq!(&*CLASSES, &BASE_CLASSES);
+            assert!(!text.contains("Page-sized slabs"), "{text}");
+        }
     }
 
     #[test]

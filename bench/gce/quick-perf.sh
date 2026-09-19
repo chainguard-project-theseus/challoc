@@ -56,7 +56,10 @@ echo
 # a raw `r09b0`, or `dp_spec` on Arm) get one per-operation column each,
 # in the order given; names with a comma inside (`cpu/event=..,umask=../`)
 # cannot be used here, use the raw `rXXXX` form instead.
-EXTRA=$(echo "$EVENTS" | tr , '\n' | grep -vxE 'cycles|instructions|L1-dcache-load-misses|dTLB-load-misses' | tr '\n' ' ')
+# (`|| true`: with only the four standard events the grep matches nothing,
+# and under `set -e -o pipefail` that used to end the script right after the
+# header, silently.)
+EXTRA=$(echo "$EVENTS" | tr , '\n' | { grep -vxE 'cycles|instructions|L1-dcache-load-misses|dTLB-load-misses' || true; } | tr '\n' ' ')
 hdr="| row | variant | M ops/s | cycles/op | instr/op | L1D miss/op | dTLB miss/op |"; sep="|---|---|---:|---:|---:|---:|---:|"
 for e in $EXTRA; do hdr="$hdr $e/op |"; sep="$sep---:|"; done
 echo "$hdr"

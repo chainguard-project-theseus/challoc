@@ -480,7 +480,8 @@ pub fn is_inert(key: &[u8]) -> bool {
 /// is the design 6.2 table (`heap::default_cap`); [`Config::cap_for`] adds
 /// the rules for which classes are cached at all.
 pub const fn ladder(class: usize, max: u32, lg_mul: i32) -> u32 {
-    let size = crate::layout::CLASSES[class].size();
+    // Sizes are compile-time (only the slab geometry is fixed at init).
+    let size = crate::layout::BASE_CLASSES[class].size();
     // Doublings above 128 bytes: sizes in (128, 256] halve once, (256, 512]
     // twice, and so on.
     let doublings = if size <= 128 { 0 } else { (size - 1).ilog2() as i32 + 1 - 7 };

@@ -19,7 +19,7 @@
 
 use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
-use crate::layout::{CLASSES, NCLASSES};
+use crate::layout::{BASE_CLASSES, Class, NCLASSES, classes_for_page};
 
 /// Size of the descriptor in bytes.
 pub const HEADER: usize = 16;
@@ -95,7 +95,7 @@ pub struct SlabDesc {
 
 const _: () = assert!(core::mem::size_of::<SlabDesc>() == HEADER);
 
-const fn build_strides() -> [u32; NCLASSES] {
+const fn strides_of(classes: &[Class; NCLASSES]) -> [u32; NCLASSES] {
     let mut out = [0u32; NCLASSES];
     let mut c = 0;
     while c < NCLASSES {
@@ -103,13 +103,41 @@ const fn build_strides() -> [u32; NCLASSES] {
         // a stride of at least `DESC_ALIGN / slabs_per_line` keeps every
         // descriptor line inside one group: refills and flushes of two
         // arenas never write the same line.
-        let per_line = CLASSES[c].slabs_per_line();
+        let per_line = classes[c].slabs_per_line();
         let s = DESC_ALIGN / per_line;
         out[c] = (if s > HEADER { s } else { HEADER }) as u32;
         c += 1;
     }
     out
 }
+
+const fn build_strides() -> [u32; NCLASSES] {
+    strides_of(&BASE_CLASSES)
+}
+
+/// The stride is compile-time although the slab geometry of the 512..1024
+/// classes is fixed at init (`layout::adopt_page_geometry`): on every page
+/// size a class can take (4 KiB to 64 KiB) those classes have at least four
+/// slabs per bitmap line, so their stride is the header either way. This
+/// checks it for every geometry the table can adopt.
+const fn strides_match_every_page() -> bool {
+    let base = build_strides();
+    let mut lg_page = crate::layout::LG_MIN_SLAB;
+    while lg_page <= crate::layout::LG_SMALL_SLAB {
+        let s = strides_of(&classes_for_page(lg_page));
+        let mut c = 0;
+        while c < NCLASSES {
+            if s[c] != base[c] {
+                return false;
+            }
+            c += 1;
+        }
+        lg_page += 1;
+    }
+    true
+}
+
+const _: () = assert!(strides_match_every_page(), "a page-sized slab geometry changes a descriptor stride");
 
 /// Per-class descriptor stride in bytes: 64 for classes whose slabs are
 /// handed out singly, 32 for pairs, 16 (the header) from groups of four.
@@ -225,6 +253,7 @@ impl SlabDesc {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::CLASSES;
     use std::vec;
     use std::vec::Vec;
 
@@ -278,6 +307,27 @@ mod tests {
         // The 1024-byte class (4 slots, groups of 128) is down to the header.
         let c = CLASSES.iter().position(|c| c.size() == 1024).unwrap();
         assert_eq!(desc_stride(c), HEADER);
+    }
+
+    /// The stride table is compile-time; every geometry the class table can
+    /// adopt at init (`layout::adopt_page_geometry`, pages of 4 KiB to
+    /// 64 KiB) yields the same strides, because a raised class keeps at
+    /// least four slabs per bitmap line.
+    #[test]
+    fn strides_are_the_same_for_every_page_geometry() {
+        use crate::layout::{LG_MIN_SLAB, LG_SMALL_SLAB};
+        assert!(strides_match_every_page());
+        for lg_page in LG_MIN_SLAB..=LG_SMALL_SLAB {
+            let t = classes_for_page(lg_page);
+            let s = strides_of(&t);
+            assert_eq!(s, DESC_STRIDE, "pages of 2^{lg_page}");
+            for (c, cls) in t.iter().enumerate() {
+                if cls != &BASE_CLASSES[c] {
+                    assert!(cls.slabs_per_line() >= 4, "class {c} at 2^{lg_page}");
+                    assert_eq!(s[c] as usize, HEADER);
+                }
+            }
+        }
     }
 
     #[test]

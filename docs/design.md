@@ -135,7 +135,7 @@ Tiers:
 | Tier   | Size range              | Slab size          | Slots per slab |
 |--------|-------------------------|--------------------|----------------|
 | Small  | quantum .. 448          | 64 KiB             | 146 .. 8192    |
-| Small  | 512 .. 1024             | 4 .. 16 KiB        | 4 .. 25        |
+| Small  | 512 .. 1024             | 4 .. 16 KiB, or the page when larger (up to 64 KiB) | 4 .. 25 (64 .. 128 at 64 KiB) |
 | Medium | 1280 .. 256 KiB         | max(64 KiB, 16*sz) | >= 16          |
 | Huge   | > 256 KiB               | page-granular runs | 1              |
 
@@ -161,8 +161,40 @@ arena); guard slabs keep their density per byte (one per
 64 KiB slabs' worth of slots whatever the class's slab size; a refill or a
 flush batch reopens up to 16 slabs per lock hold.
 
-Slab size per class is a compile-time table. Each class region is divided into
-slabs of that class's slab size, so slab number and slot index are:
+On a kernel whose page is larger than a class's slab (16 and 64 KiB pages on
+aarch64) the class takes the page as its slab size, up to 64 KiB, decided
+once at init from the probed page size (`layout::adopt_page_geometry`, plan
+Phase 2.5 task 4e). At 64 KiB the five classes have 64 KiB slabs of 128, 102,
+85, 73 and 64 slots (jemalloc's `regs` for 512 and 1024 at `LG_PAGE 16`); at
+16 KiB, 16 KiB slabs of 32, 25, 21, 18 and 16 slots (640 and 768 already had
+them); at 4 KiB nothing changes. Every `Empty` slab is then one purge unit
+and the page groups of section 5 have nothing to do: with sub-page slabs the
+Valkey soak at 64 KiB pages ended its delete phase with 79.5 MiB of `Empty`
+4..16 KiB slabs in mixed page groups that never became idle, `active` equal
+to jemalloc's and RSS 224.9 MiB against 146.1
+(`bench/results/2026-09-19-aarch64-64k-valkey-soak.md`); with page-sized
+slabs the same soak is in `2026-09-19-aarch64-64k-valkey-soak-2.md`.
+Everything keyed off the slab size follows from the table entry: `nslots`,
+`slab_bits`, `slabs_per_line`, the descriptor stride (the header for these
+classes on every page size, checked at compile time in `slab.rs`), the
+compaction unit, the guard interval (unchanged, the group is already 64 KiB),
+`arenas.bin.<j>.slab_size` and `nregs`, the utilization queries; `BIN_MAX`
+and the cache-capacity ladder do not move. The form is the table itself,
+rewritten in place at init (only `lg_slab`, `nslots` and `slab_bits` of the
+raised classes; sizes and reciprocals are constant), not a pointer to one of
+two tables on `Shared` and not a shift applied where `lg_slab` is read: the
+`free` and `sdallocx` fast paths load the class line from a link-time
+constant address exactly as they did from the compile-time table (the sized
+path's class comes from the size hint, so a table pointer would have put a
+dependent load in front of its only geometry load), and the disassembly of
+the exported fast paths is instruction for instruction the same on 4 KiB
+hosts (`bench/results/2026-09-19-page-sized-slabs.md`). The table lives in
+writable memory as a result, like the `Regions` the same paths already
+trust.
+
+Slab size per class is therefore a table fixed at init. Each class region is
+divided into slabs of that class's slab size, so slab number and slot index
+are:
 
 ```
 slab   = (p - base_c) >> lg_slab_c

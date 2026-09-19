@@ -487,10 +487,16 @@ pub struct SlabTable {
     desc_stride: u32,
     /// `max(1, page / slab_size)`, a power of two. Slabs are committed,
     /// guarded and purged in page-sized groups, so on a kernel whose page is
-    /// larger than this class's slab (16 KiB slabs on 64 KiB pages) a group
-    /// of `slabs_per_page` consecutive slabs is committed when its first slab
-    /// is, is one guard region when it is a guard group, and is purged only
-    /// when every slab in it is idle and owned by the purging arena.
+    /// larger than this class's slab a group of `slabs_per_page` consecutive
+    /// slabs is committed when its first slab is, is one guard region when
+    /// it is a guard group, and is purged only when every slab in it is
+    /// idle and owned by the purging arena. Since plan Phase 2.5 task 4e no
+    /// supported kernel has such a class (`layout::adopt_page_geometry`
+    /// raises a class's slab to the page at init, up to 64 KiB: a group of
+    /// `Empty` sub-page slabs was never all idle under Valkey and held
+    /// 79.5 MiB after its delete phase at 64 KiB pages), so this is 1
+    /// everywhere but in the tests that fake a page above the slab, which
+    /// keep the path working for a page above 64 KiB.
     slabs_per_page: u32,
     /// Slabs handed to an arena at a time: `max(slabs_per_line,
     /// slabs_per_page)`, a power of two, so a group is whole bitmap lines

@@ -2,8 +2,10 @@
 //! (design.md sections 2 and 3).
 //!
 //! Everything in this module except [`Regions::reserve`] is pure arithmetic
-//! over a compile-time class table and a handful of runtime bases, and is
-//! unit tested exhaustively on the host. `reserve` is the Linux-only piece
+//! over a class table fixed at init ([`CLASSES`]: the compile-time
+//! [`BASE_CLASSES`] geometry, with the slabs of the classes below the
+//! kernel page raised to the page by [`adopt_page_geometry`]) and a
+//! handful of runtime bases, and is unit tested exhaustively on the host. `reserve` is the Linux-only piece
 //! that probes how much address space the process can get and lays the
 //! regions out.
 //!
@@ -15,6 +17,8 @@
 //! the huge region and the metadata region.
 
 use crate::QUANTUM;
+use core::cell::UnsafeCell;
+use core::ops::Deref;
 
 /// Largest small-tier request.
 pub const SMALL_MAX: usize = 1024;
@@ -42,7 +46,16 @@ pub const MEDIUM_MAX: usize = 256 * 1024;
 /// refill and flush work (`bench/results/2026-09-16-aarch64-gce-min-slab.md`),
 /// and a class with 64 or more regions per slab never empties by chance
 /// after a random deletion either way (0.89^64 = 0.06%). A slab smaller
-/// than the kernel page (4 KiB slabs on a 16 KiB or 64 KiB page kernel) is
+/// than the kernel page never exists on a supported kernel: at init the
+/// classes whose table slab is below the page take the page as their slab
+/// size, up to [`LG_SMALL_SLAB`] ([`adopt_page_geometry`], plan Phase 2.5
+/// task 4e: 64 KiB slabs of 128, 102, 85, 73 and 64 slots for the five
+/// classes on a 64 KiB kernel, 16 KiB slabs on a 16 KiB one), so that every
+/// `Empty` slab is one purge unit; with sub-page slabs the Valkey soak's
+/// post-delete RSS at 64 KiB pages was 79.5 MiB of `Empty` 4..16 KiB slabs
+/// in mixed page groups that never became idle
+/// (`bench/results/2026-09-19-aarch64-64k-valkey-soak.md`). A slab smaller
+/// than the page (a faked page in the tests, or a page above 64 KiB) is
 /// committed, guarded and purged with its whole page of slabs by `class.rs`
 /// (see `SlabTable::slabs_per_page`).
 pub const LG_MIN_SLAB: u32 = 12;
@@ -118,7 +131,10 @@ pub enum Tier {
     Medium,
 }
 
-/// One size class. Everything here is a compile-time constant.
+/// One size class. `size` and `recip` are compile-time constants; the slab
+/// geometry (`lg_slab`, `nslots`, `slab_bits`) is the compile-time
+/// [`BASE_CLASSES`] value unless [`adopt_page_geometry`] raised the slab
+/// to the kernel page at init.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Class {
     /// Slot size in bytes; also the usable size of every allocation in it.
@@ -270,12 +286,27 @@ const fn slab_bits_for(nslots: usize, lg_slab: u32) -> usize {
     if per_line > cap { LINE_BITS / cap } else { raw }
 }
 
-const fn build_classes() -> [Class; NCLASSES] {
+/// Slab size of a class on a kernel with `1 << lg_page` pages: the
+/// compile-time [`lg_slab_for`] value, raised to the page when the page is
+/// larger, but never above [`LG_SMALL_SLAB`] (every table slab below
+/// 64 KiB belongs to the 512..1024-byte classes, so the rule is exactly
+/// "no slab smaller than the page" on every supported page size, 4, 16 and
+/// 64 KiB; a page above 64 KiB, which no supported kernel has, keeps the
+/// table geometry and the page groups of `class.rs`).
+pub const fn lg_slab_at(size: usize, lg_page: u32) -> u32 {
+    let lg = lg_slab_for(size);
+    let floor = if lg_page < LG_SMALL_SLAB { lg_page } else { LG_SMALL_SLAB };
+    if lg < floor { floor } else { lg }
+}
+
+/// The class table for a kernel with `1 << lg_page` pages: sizes and
+/// reciprocals are fixed, the slab geometry follows [`lg_slab_at`].
+pub const fn classes_for_page(lg_page: u32) -> [Class; NCLASSES] {
     let mut out = [Class { size: 0, lg_slab: 0, nslots: 0, recip: 0, slab_bits: 0 }; NCLASSES];
     let mut i = 0;
     while i < NCLASSES {
         let size = class_size_at(i);
-        let lg_slab = lg_slab_for(size);
+        let lg_slab = lg_slab_at(size, lg_page);
         let nslots = (1usize << lg_slab) / size;
         out[i] = Class {
             size: size as u32,
@@ -289,8 +320,103 @@ const fn build_classes() -> [Class; NCLASSES] {
     out
 }
 
-/// The size-class table, indexed by class number.
-pub static CLASSES: [Class; NCLASSES] = build_classes();
+const fn build_classes() -> [Class; NCLASSES] {
+    classes_for_page(LG_MIN_SLAB)
+}
+
+/// The compile-time class table: the geometry of a kernel whose page is at
+/// most [`MIN_SLAB`] (4 KiB, the reference hosts), and the reference the
+/// tests and the compile-time constants ([`NBINS`], [`MAX_SLAB_WORDS`],
+/// `slab::DESC_STRIDE`) are built from.
+pub const BASE_CLASSES: [Class; NCLASSES] = build_classes();
+
+/// The size-class table in use, indexed by class number: [`BASE_CLASSES`]
+/// with the slab geometry of the classes below the kernel page raised to
+/// the page by [`adopt_page_geometry`] once at init (plan Phase 2.5 task
+/// 4e). It is a table at a fixed address, not a pointer selected at init
+/// and not a runtime shift where `lg_slab` is read, so the `free` and
+/// `sdallocx` fast paths (`Regions::slab_slot`, `Regions::slot_in_class`)
+/// load a class's geometry exactly as they did from the compile-time
+/// table: one indexed load per field from a link-time constant address,
+/// nothing dependent added. The price is that the table lives in
+/// writable memory; the process-wide state the fast paths already trust
+/// (`Shared`'s `Regions`) does too.
+pub struct ClassTable(UnsafeCell<[Class; NCLASSES]>);
+
+// SAFETY: the table is written only by `adopt_page_geometry`, once, by the
+// initialising thread before the allocator is published (`api::init`), and
+// only the geometry fields are written, which nothing reads before init
+// (`size`, the one field pre-init callers such as `nallocx` read, is never
+// written). After that it is read-only for the life of the process.
+unsafe impl Sync for ClassTable {}
+
+impl Deref for ClassTable {
+    type Target = [Class; NCLASSES];
+
+    #[inline(always)]
+    fn deref(&self) -> &[Class; NCLASSES] {
+        // SAFETY: see the `Sync` impl; no write can be in flight while a
+        // reference exists.
+        unsafe { &*self.0.get() }
+    }
+}
+
+pub static CLASSES: ClassTable = ClassTable(UnsafeCell::new(BASE_CLASSES));
+
+/// Raise the slab of every class whose table slab is smaller than the
+/// kernel page to the page ([`lg_slab_at`]), writing `lg_slab`, `nslots`
+/// and `slab_bits` of those classes in [`CLASSES`]. Returns how many
+/// classes changed (0 on a 4 KiB kernel, where the table is untouched).
+///
+/// # Safety
+/// Must be called once, before the allocator is published to any other
+/// thread (`api::init` does, right after the page-size probe), and never
+/// again: nothing may read a geometry field concurrently.
+pub unsafe fn adopt_page_geometry(lg_page: u32) -> usize {
+    // SAFETY: the caller guarantees exclusive access during the call.
+    unsafe { apply_page_geometry(CLASSES.0.get(), lg_page) }
+}
+
+/// [`adopt_page_geometry`] over any table (the tests run it on a copy).
+///
+/// # Safety
+/// `table` must be valid for writes and unaliased for the call.
+pub(crate) unsafe fn apply_page_geometry(table: *mut [Class; NCLASSES], lg_page: u32) -> usize {
+    let want = classes_for_page(lg_page);
+    let mut changed = 0;
+    for (c, w) in want.iter().enumerate() {
+        // SAFETY: `c < NCLASSES`; the caller guarantees the table is
+        // writable and unaliased.
+        let cur = unsafe { &raw mut (*table)[c] };
+        if unsafe { (*cur).lg_slab } != w.lg_slab {
+            unsafe {
+                (*cur).lg_slab = w.lg_slab;
+                (*cur).nslots = w.nslots;
+                (*cur).slab_bits = w.slab_bits;
+            }
+            changed += 1;
+        }
+    }
+    changed
+}
+
+/// Classes whose slab in [`CLASSES`] is not the compile-time one (raised
+/// to the page by [`adopt_page_geometry`]), as the inclusive range of
+/// class numbers, or `None` when the geometry is the table's. For the
+/// report (`malloc_stats_print`) and the tests.
+pub fn page_sized_classes() -> Option<(usize, usize)> {
+    let mut lo = None;
+    let mut hi = 0;
+    for c in 0..NCLASSES {
+        if CLASSES[c].lg_slab != BASE_CLASSES[c].lg_slab {
+            if lo.is_none() {
+                lo = Some(c);
+            }
+            hi = c;
+        }
+    }
+    lo.map(|lo| (lo, hi))
+}
 
 /// Bitmap words one slab occupies at most over all classes (`slab_bits /
 /// 64`, at least 1): the size of the scratch bitmap a release batch
@@ -317,7 +443,7 @@ const fn max_slab_words() -> usize {
 const fn class_of_slow(n: usize) -> Option<usize> {
     let mut i = 0;
     while i < NCLASSES {
-        if CLASSES[i].size as usize >= n {
+        if BASE_CLASSES[i].size as usize >= n {
             return Some(i);
         }
         i += 1;
@@ -491,7 +617,7 @@ impl Regions {
 
     /// Slabs that fit in a class region.
     #[inline]
-    pub const fn nslabs(&self, class: usize) -> usize {
+    pub fn nslabs(&self, class: usize) -> usize {
         self.region_len() >> CLASSES[class].lg_slab
     }
 
@@ -502,12 +628,12 @@ impl Regions {
     }
 
     #[inline]
-    pub const fn slab_addr(&self, class: usize, slab: usize) -> usize {
+    pub fn slab_addr(&self, class: usize, slab: usize) -> usize {
         self.class_base[class] + (slab << CLASSES[class].lg_slab)
     }
 
     #[inline]
-    pub const fn slot_addr(&self, class: usize, slab: usize, slot: usize) -> usize {
+    pub fn slot_addr(&self, class: usize, slab: usize, slot: usize) -> usize {
         self.slab_addr(class, slab) + slot * CLASSES[class].size as usize
     }
 
@@ -995,6 +1121,107 @@ mod tests {
             // The reciprocal is exact for every multiple of the size.
             assert_eq!(c.recip as u64, (1u64 << 32).div_ceil(c.size() as u64));
         }
+    }
+
+    /// Design 3, plan Phase 2.5 task 4e: the geometry a kernel with pages
+    /// above 4 KiB adopts. Every class's slab is at least the page (up to
+    /// 64 KiB), only the 512..1024-byte classes change, and for those the
+    /// slot arithmetic, the reciprocal, the bitmap and descriptor
+    /// invariants and the compaction unit hold as at 4 KiB.
+    #[test]
+    fn page_sized_geometry_for_large_pages() {
+        assert_eq!(classes_for_page(LG_MIN_SLAB), BASE_CLASSES);
+        assert_eq!(classes_for_page(LG_MIN_SLAB - 1), BASE_CLASSES, "a smaller page changes nothing");
+        assert_eq!(classes_for_page(LG_MAX_SLAB), classes_for_page(LG_SMALL_SLAB), "capped at 64 KiB");
+        for lg_page in LG_MIN_SLAB..=LG_SMALL_SLAB {
+            let t = classes_for_page(lg_page);
+            let mut changed = 0;
+            for (c, (cls, base)) in t.iter().zip(BASE_CLASSES.iter()).enumerate() {
+                assert_eq!((cls.size, cls.recip), (base.size, base.recip), "class {c}");
+                assert_eq!(cls.lg_slab as u32, (base.lg_slab as u32).max(lg_page), "class {c} at 2^{lg_page}");
+                assert_eq!(cls.lg_slab as u32, lg_slab_at(cls.size(), lg_page));
+                assert!(cls.slab_size() >= 1 << lg_page, "class {c}: slab below the page");
+                if cls == base {
+                    continue;
+                }
+                changed += 1;
+                assert!(cls.size() >= SMALL_SLAB_BELOW && cls.size() <= SMALL_MAX, "class {c}: only the small-slab classes move");
+                assert_eq!(cls.nslots(), cls.slab_size() / cls.size());
+                assert!(cls.nslots() >= 4);
+                assert!(cls.slab_size() % cls.size() <= cls.slab_size() / SLAB_WASTE_DIV, "class {c}: waste");
+                // Slot arithmetic round-trips for every slot and rejects
+                // every other quantum-aligned offset; the reciprocal is exact.
+                for slot in 0..cls.nslots() {
+                    assert_eq!(cls.slot_of_offset(slot * cls.size()), (slot, true), "class {c} slot {slot}");
+                }
+                for off in (0..cls.slab_size()).step_by(QUANTUM) {
+                    let (slot, valid) = cls.slot_of_offset(off);
+                    assert_eq!(valid, off % cls.size() == 0 && off / cls.size() < cls.nslots(), "class {c} offset {off}");
+                    if valid {
+                        assert_eq!(slot, off / cls.size());
+                    }
+                }
+                // Bitmap layout (design 4): whole words or one sub-word
+                // range, a line holds whole slabs, a line's slabs span at
+                // most `LG_GROUP_SPAN`, and the release scratch bitmap holds
+                // a slab.
+                let b = cls.slab_bits();
+                assert!(b >= cls.nslots(), "class {c}");
+                assert!((b.is_power_of_two() && b <= LINE_BITS) || b % LINE_BITS == 0, "class {c}: slab_bits {b}");
+                if b < LINE_BITS {
+                    assert_eq!(cls.slabs_per_line() * b, LINE_BITS, "class {c}");
+                } else {
+                    assert_eq!(cls.slabs_per_line(), 1);
+                }
+                assert!(cls.slabs_per_line() == 1 || cls.slabs_per_line() * cls.slab_size() <= 1 << LG_GROUP_SPAN, "class {c}");
+                assert!(cls.bitmap_words() <= MAX_SLAB_WORDS);
+                // Compaction thresholds count 64 KiB of slots (heap.rs).
+                assert_eq!(cls.compact_slots(), (1usize << LG_COMPACT_UNIT).max(cls.slab_size()) / cls.size());
+                if cls.lg_slab as u32 >= LG_COMPACT_UNIT {
+                    assert_eq!(cls.compact_slots(), cls.nslots());
+                }
+            }
+            let expect = BASE_CLASSES.iter().filter(|c| (c.lg_slab as u32) < lg_page).count();
+            assert_eq!(changed, expect, "at 2^{lg_page}");
+        }
+        // The 64 KiB table by the numbers (jemalloc's bins at LG_PAGE 16
+        // have the same regs for 512 and 1024), and the 16 KiB one.
+        let at = |lg_page: u32, size: u32| -> Class {
+            *classes_for_page(lg_page).iter().find(|c| c.size == size).unwrap()
+        };
+        for (size, nslots) in [(512, 128), (640, 102), (768, 85), (896, 73), (1024, 64)] {
+            let c = at(LG_SMALL_SLAB, size);
+            assert_eq!((c.lg_slab as u32, c.nslots), (LG_SMALL_SLAB, nslots), "{size} at 64 KiB");
+            // 128 bits per slab for the first four (four slabs per bitmap
+            // line), 64 for the last (eight per line).
+            assert_eq!(c.slab_bits as u32, nslots.next_power_of_two(), "{size} at 64 KiB");
+            assert_eq!(c.slabs_per_line(), if size == 1024 { 8 } else { 4 });
+        }
+        assert!(classes_for_page(LG_SMALL_SLAB).iter().all(|c| c.lg_slab as u32 >= LG_SMALL_SLAB));
+        for (size, nslots) in [(512, 32), (640, 25), (768, 21), (896, 18), (1024, 16)] {
+            let c = at(14, size);
+            assert_eq!((c.lg_slab as u32, c.nslots), (14, nslots), "{size} at 16 KiB");
+        }
+        assert!(classes_for_page(14).iter().all(|c| c.lg_slab as u32 >= 14));
+    }
+
+    /// `adopt_page_geometry`'s writer, on a copy: it writes exactly the
+    /// raised classes' geometry and nothing else, and reports the count.
+    #[test]
+    fn apply_page_geometry_writes_only_the_raised_classes() {
+        let mut t = BASE_CLASSES;
+        assert_eq!(unsafe { apply_page_geometry(&mut t, LG_MIN_SLAB) }, 0);
+        assert_eq!(t, BASE_CLASSES);
+        let n = unsafe { apply_page_geometry(&mut t, LG_SMALL_SLAB) };
+        assert_eq!(t, classes_for_page(LG_SMALL_SLAB));
+        assert_eq!(n, 5, "512, 640, 768, 896 and 1024");
+        let mut t = BASE_CLASSES;
+        assert_eq!(unsafe { apply_page_geometry(&mut t, 14) }, 3, "512, 896 and 1024; 640 and 768 already have 16 KiB slabs");
+        assert_eq!(t, classes_for_page(14));
+        // The host test process never adopts a page: the live table is the
+        // compile-time one.
+        assert_eq!(&*CLASSES, &BASE_CLASSES);
+        assert_eq!(page_sized_classes(), None);
     }
 
     #[test]

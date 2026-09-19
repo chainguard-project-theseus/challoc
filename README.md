@@ -69,7 +69,11 @@ resolve to an allocated slot is rejected. Nothing about a block is stored in
 or next to the block.
 
 **Slabs and bitmaps.** Each region is divided into fixed-size slabs of one size
-class, 64 KiB for small classes and larger for medium classes. Every slab has a
+class, 64 KiB for small classes and larger for medium classes, except the
+512..1024-byte classes, whose slabs are 4..16 KiB so that a single long-lived
+value pins little; on a kernel with 16 or 64 KiB pages those classes take the
+page as their slab size at init, so no slab is ever smaller than a page and
+every empty slab can be returned on its own. Every slab has a
 16-byte descriptor in the metadata region holding a live count, its arena,
 and its decay timestamp, and one bit per slot in a dense per-class bitmap (70
 KB for a 550 MiB heap of 1 KiB values, so the `free` check hits L2 instead of

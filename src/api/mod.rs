@@ -54,7 +54,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::config;
 use crate::heap::Shared;
-use crate::layout::{NCLASSES, Regions};
+use crate::layout::{self, NCLASSES, Regions};
 use crate::purge;
 use crate::sys;
 use crate::sys::features::{FeatureLine, Features};
@@ -230,6 +230,11 @@ pub fn sealed_ranges() -> u32 {
 /// and `environ`.
 fn init() {
     let features = Features::probe();
+    // The slab geometry of the classes whose table slab is below the page
+    // (design 3, plan Phase 2.5 task 4e): written once here, before any
+    // other thread can see the allocator, never again.
+    // SAFETY: `init` runs once, under `INITIALISING`, before `READY`.
+    unsafe { layout::adopt_page_geometry(features.page_size.trailing_zeros()) };
     let config = config::load();
     purge::configure(features.process_madvise, config.lazy_free);
     purge::set_check_zero(config.check_zero);
