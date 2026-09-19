@@ -1013,6 +1013,59 @@ Tasks, in order:
     Design 17's table has the row; a `MAX_STATES` budget fails a scenario
     that outgrows the 30 s rule.
 
+14. Chainguard OS cells (the human's request, 2026-09-19; lane E, no
+    `src/` change): `cgos-amd64` and `cgos-arm64` matrix cells from the
+    `kirkland-server-hypervisor-*` image families in project `wolfi-vm`
+    (`docs/runbooks/chainguard-os-gce.md`), provisioned with `sudo
+    podman`; the feature report three ways (natively on the host, in
+    podman with default seccomp, privileged), `make test`, the four-way
+    table, a `scorecard-cgos-<arch>.md` line, and a bounded
+    `c4a-highmem-96-metal` probe for MTE and the PMU. Acceptance: the
+    report lines recorded, `make test` green on both hosts, the table and
+    the scorecard line per host, the metal probe recorded with the
+    instance deleted within the hour.
+15. rseq time slice extension (kernel 7.0; `docs/research.md`, kernel
+    table): probe `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE` (bit 4) in the
+    registered rseq area's `flags` field with `__rseq_size >= 32`, enable
+    per process with `prctl(PR_RSEQ_SLICE_EXTENSION, SET, ENABLE)` and
+    confirm bit 5; then in `lock.rs` store `slice_ctrl.request = 1` (rseq
+    offset 28) on acquire and clear it on release, calling the
+    `rseq_slice_yield` syscall when `granted` (offset 29) reads 1, so a
+    lock holder is not preempted mid-hold; no other rseq field written.
+    Key `slice_ext:auto|on|off` (default `auto`: on when the probe
+    passes). The mechanism it attacks is lock-holder preemption on the
+    contended x86_64 rows (larson16, alloc-testN, larson10); the
+    attribution is the lock-wait share of cycles per operation from
+    `quick-perf` before and after. Acceptance: both-ways test (the
+    reference VMs have it, Chainguard OS 6.18 and the Mac's 6.10 do not);
+    the report line gains `slice_ext=`; `quick` go on both VMs; `ab` rows
+    for larson10/16 and alloc-testN on both architectures in
+    `bench/results/`; scorecard within noise or better; default on only
+    if both hold, else `off` with `auto` documented.
+16. THP policy on `always` hosts (`docs/research.md`, 6.18 row; found on
+    Chainguard OS, which ships `always` with the 2 MiB size on `inherit`):
+    `thp:never` issues `MADV_NOHUGEPAGE` on every region challoc maps
+    (jemalloc's `never` does), so the key means the same on every host;
+    then `thp_process:advised` (or the value the design prefers) calls
+    `prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED)` at init
+    where the kernel accepts it (6.18+; probed by the call's return),
+    opt-in and off by default because it is process-wide. Acceptance:
+    `AnonHugePages` of a challoc process under `thp:never` is zero on an
+    `always` host (the cgos cells); the both-ways test for the prctl
+    (accepted on 6.18+, EINVAL below); the report line shows the host's
+    global THP mode and whether the prctl is in force; the cgos four-way
+    RSS rows re-read with the fix.
+17. Measurement hygiene from the kernel table (lane D, no `src/`
+    change): the soak and campaign harnesses reset `memory.peak` per
+    phase where the write is accepted (6.12+) and fall back to the
+    process's VmHWM where not; the task 9 attribution reads the per-size
+    `hugepages-<size>kB/stats/` and `/proc/vmstat` THP counters around a
+    row; a guard-slab check through `PAGEMAP_SCAN`'s guard-region report
+    (6.16+) joins the container tests as a both-ways test that never
+    faults on a guard. Acceptance: the harness changes land with one
+    re-run each showing the new columns; the guard check passes on 6.16+
+    and is skipped with a reason below.
+
 ### Execution in lanes
 
 From 2026-09-19 the remaining tasks of this phase run in four parallel
@@ -1060,6 +1113,16 @@ Second batch (from `322e6bd`), the same partition:
   under `percpu_arena:percpu`, the calloc-zero campaign under the mode,
   the Valkey and Ruby suites, and the "Acceptance for the phase" list
   below checked item by item with results files.
+- Lane E (no `src/` change): task 14.
+- Added 2026-09-19 after the kernel table grew (the human's "keep things
+  going on this new kernel knowledge"): task 15 to lane C (`lock.rs`,
+  `config.rs` key, the probe reads lane A's `src/rseq.rs` accessor, merged
+  on `main`); task 16's `MADV_NOHUGEPAGE` half to lane B (`thp.rs`) in its
+  floor-fix iteration and the prctl key half to lane B after lane C's key
+  lands; task 17 to lane D. Lane A's queue after task 8: the Altra PAC
+  test gate (heap tests must not force `pac_pointers:true` without the
+  probe), task 11, and a task 8 both-ways check across the two `mm_cid`
+  implementations (6.18 old, 7.0 rewrite) on lane E's cell.
 
 Rules: a lane's numbers come from `quick`, `quick-perf` and `ab` on the
 lane's own VMs and go into `bench/results/` files named with the lane and
