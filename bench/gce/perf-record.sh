@@ -38,7 +38,7 @@ tag=$ROW.${V//:/_}
 SYMFS=$OUTDIR/$tag.symfs
 DATA=$OUTDIR/$tag.perf.data
 
-drun() { docker run --rm -v "$REPO":/src -w /src -v "challoc-target-$T":/src/target "$IMAGE" "$@"; }
+drun() { docker run --rm -v "$REPO":/src -w /src -v "${TARGET_VOLUME:-challoc-target-$T}":/src/target "$IMAGE" "$@"; }
 in_lib() { drun sh -c "ROOT=/src; . /src/bench/lib.sh; $1"; }
 lib_of() {
   case ${1%%:*} in
@@ -56,7 +56,7 @@ in_lib "ensure_probe valkey_model; ensure_probe churn" >/dev/null
 case ${V%%:*} in old|new) in_lib "test -f $(lib_of "$V")" || { echo "perf-record: no $(lib_of "$V") in the target volume; run 'make quick QUICK_BUILD_ONLY=1' first" >&2; exit 1; };; esac
 cmd=$(in_lib "bench_args $ROW")
 
-cid=$(docker run -d -v "$REPO":/src -w /src -v "challoc-target-$T":/src/target "$IMAGE" \
+cid=$(docker run -d -v "$REPO":/src -w /src -v "${TARGET_VOLUME:-challoc-target-$T}":/src/target "$IMAGE" \
       sh -c "sleep 1; exec env MALLOC_CONF=$(conf_of "$V") LD_PRELOAD=$(lib_of "$V") $cmd")
 pid=
 for _ in $(seq 1 50); do pid=$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null || true); [ -n "$pid" ] && [ "$pid" != 0 ] && break; sleep 0.1; done

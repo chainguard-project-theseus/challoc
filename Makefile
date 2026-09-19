@@ -111,12 +111,19 @@
 # `target/` inside the container is a named Docker volume, one per
 # architecture, so Linux artifacts never mix with host artifacts and builds do
 # not go through the slow macOS bind mount. The cargo registry is a named
-# volume too so crates are fetched once.
+# volume too so crates are fetched once. `TARGET_VOLUME` (default
+# `challoc-target-$(ARCH)`) names the target volume and `CARGO_VOLUME`
+# (default `challoc-cargo-registry`) the registry volume; a lane worktree
+# (CLAUDE.md, Environment) exports `TARGET_VOLUME=challoc-target-<lane>-$(ARCH)`
+# so two worktrees never share a `target/`. `make clean-volumes` removes the
+# two volumes the variables name.
 
 HOST_ARCH := $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
 PLATFORM  ?= linux/$(HOST_ARCH)
 ARCH      := $(notdir $(PLATFORM))
 IMAGE     ?= challoc-dev:$(ARCH)
+TARGET_VOLUME ?= challoc-target-$(ARCH)
+CARGO_VOLUME  ?= challoc-cargo-registry
 
 # In a git worktree `.git` is a file pointing at the main repository's
 # `.git/worktrees/<name>`; mount that common dir at the same path so `git
@@ -131,8 +138,8 @@ endif
 
 DOCKER_BASE = docker run --rm --platform $(PLATFORM) \
 	-v "$(CURDIR)":/src -w /src \
-	-v challoc-target-$(ARCH):/src/target \
-	-v challoc-cargo-registry:/root/.cargo/registry \
+	-v $(TARGET_VOLUME):/src/target \
+	-v $(CARGO_VOLUME):/root/.cargo/registry \
 	$(GIT_MOUNT)
 DOCKER_RUN = $(DOCKER_BASE) $(DOCKER_FLAGS) $(IMAGE)
 # cgroup_run LIMIT,ARGS: one memory-limited container running
@@ -315,4 +322,4 @@ python-bench: image
 	$(DOCKER_RUN) sh bench/python-bench.sh
 
 clean-volumes:
-	docker volume rm -f challoc-target-$(ARCH) challoc-cargo-registry
+	docker volume rm -f $(TARGET_VOLUME) $(CARGO_VOLUME)

@@ -29,7 +29,7 @@ IMAGE=challoc-dev:$T
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 mkdir -p "$OUTDIR"
 
-drun() { docker run --rm -v "$REPO":/src -w /src -v "challoc-target-$T":/src/target "$IMAGE" "$@"; }
+drun() { docker run --rm -v "$REPO":/src -w /src -v "${TARGET_VOLUME:-challoc-target-$T}":/src/target "$IMAGE" "$@"; }
 # Row command lines and the probes come from bench/lib.sh inside the container.
 in_lib() { drun sh -c "ROOT=/src; . /src/bench/lib.sh; $1"; }
 lib_of() {
@@ -69,7 +69,7 @@ for b in $ROWS; do
   secs=$(in_lib "secs_of $b")
   for v in $VARIANTS; do
     tag=$b.$v
-    cid=$(docker run -d -v "$REPO":/src -w /src -v "challoc-target-$T":/src/target "$IMAGE" \
+    cid=$(docker run -d -v "$REPO":/src -w /src -v "${TARGET_VOLUME:-challoc-target-$T}":/src/target "$IMAGE" \
           sh -c "sleep 1; exec env MALLOC_CONF=$(conf_of "$v") LD_PRELOAD=$(lib_of "$v") $cmd")
     pid=
     for _ in $(seq 1 50); do pid=$(docker inspect -f '{{.State.Pid}}' "$cid" 2>/dev/null || true); [ -n "$pid" ] && [ "$pid" != 0 ] && break; sleep 0.1; done
