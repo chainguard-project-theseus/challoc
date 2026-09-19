@@ -816,6 +816,10 @@ mod linux {
         pub fn probe() -> Features {
             let page_size = page_size();
             let (process_madvise, process_madvise_free) = probe_process_madvise(page_size);
+            let cpu = Cpu::probe(page_size);
+            // The `cldemote` verdict (plan Phase 2.5 task 12): installed
+            // for `sys::cldemote::demote`, which no path issues today.
+            crate::sys::cldemote::configure(matches!(cpu.isa, super::super::cpu::Isa::X86(x) if x.cldemote));
             Features {
                 page_size,
                 page_shift: page_size.trailing_zeros(),
@@ -826,7 +830,7 @@ mod linux {
                 anon_name: probe_anon_name(page_size),
                 thp: probe_thp(page_size),
                 rseq: probe_rseq(),
-                cpu: Cpu::probe(page_size),
+                cpu,
             }
         }
 

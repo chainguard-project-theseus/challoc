@@ -11,6 +11,7 @@
 //! std` inside the dev container.
 
 pub mod cgroup;
+pub mod cldemote;
 pub mod cpu;
 pub mod errno;
 pub mod features;
