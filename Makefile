@@ -12,6 +12,15 @@
 #                            initialise the real allocator, whose reservations
 #                            plus a second full layout (the layout tests) exceed
 #                            what Rosetta can track under emulation.
+#   make test-cgroup-churn   Phase 2 task 6 (a), in `make test`: the 400 MiB churn
+#                            under --memory=512m and 256m, policy on and off
+#   make test-cgroup-oscillate
+#                            Phase 2 task 6 (b), opt-in (5 min): 200..480 MiB live
+#                            in 512 MiB for OSC_SECS (300); CONTROL=1 adds the
+#                            cgroup:false run
+#   make test-cgroup         both of the above
+#   make test-cgroup-compare Phase 2 task 7: the same runs under CGROUP_ALLOCS
+#                            (jemalloc mimalloc), recorded, no criterion
 #   make test-host           pure-logic unit tests on the host
 #   make jemalloc-compat     build with the `jemalloc-soname` feature into
 #                            target/jemalloc-compat and stage libjemalloc.so.2,
@@ -111,13 +120,21 @@ GIT_MOUNT = -v "$(GIT_COMMON)":"$(GIT_COMMON)":ro
 endif
 endif
 
-DOCKER_RUN = docker run --rm --platform $(PLATFORM) \
+DOCKER_BASE = docker run --rm --platform $(PLATFORM) \
 	-v "$(CURDIR)":/src -w /src \
 	-v challoc-target-$(ARCH):/src/target \
 	-v challoc-cargo-registry:/root/.cargo/registry \
-	$(GIT_MOUNT) $(DOCKER_FLAGS) $(IMAGE)
+	$(GIT_MOUNT)
+DOCKER_RUN = $(DOCKER_BASE) $(DOCKER_FLAGS) $(IMAGE)
+# cgroup_run LIMIT,ARGS: one memory-limited container running
+# scripts/cgroup-tests.sh ARGS (Phase 2 tasks 6 and 7). Swap is disabled
+# (`--memory-swap` equal to `--memory`): Docker Desktop's VM has 1 GiB of
+# swap and `--memory` alone lets a churn spill into it instead of being
+# charged against the limit.
+cgroup_docker = $(DOCKER_BASE) --memory=$(1) --memory-swap=$(1) $(if $(CGROUP_WATCHDOG),-e WATCHDOG=$(CGROUP_WATCHDOG)) $(IMAGE) sh scripts/cgroup-tests.sh
+cgroup_run = $(call cgroup_docker,$(1)) $(2)
 
-.PHONY: image dev run build test test-cgroup-limit test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench clean-volumes
+.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-oscillate test-cgroup test-cgroup-compare test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench clean-volumes
 
 image:
 	docker build --platform $(PLATFORM) -f Dockerfile.dev -t $(IMAGE) .
@@ -138,6 +155,7 @@ test: image
 	  && cargo test --features std -- --nocapture --skip api:: \
 	  && cargo test --features std api:: -- --nocapture'
 	$(MAKE) --no-print-directory test-cgroup-limit
+	$(MAKE) --no-print-directory test-cgroup-churn
 
 # Phase 2 task 4: the same tests that read the cgroup, in a container with
 # a 512 MiB limit; the effective `memory.max` must read as that number.
@@ -146,6 +164,48 @@ test: image
 test-cgroup-limit: DOCKER_FLAGS = --memory=512m -e CHALLOC_EXPECT_CGROUP_LIMIT=536870912
 test-cgroup-limit: image
 	$(DOCKER_RUN) sh -c 'cargo build --release && cargo test --features std cgroup -- --nocapture --test-threads=1'
+
+# Phase 2 task 6: the container tests of plan Phase 2, one container per
+# run (scripts/cgroup-tests.sh; the exit status is the program's, 137 is an
+# OOM kill). test-cgroup-churn (about 40 s, in `make test`): tests/c/
+# cgroup_churn.c allocates 400 MiB, frees it and idles under --memory=512m;
+# RSS must be under 100 MiB within 2 s with the policy on (`purge`) and
+# must not be with MALLOC_CONF=cgroup:false (`keep`, the control); the same
+# at --memory=256m with the sizes scaled to the limit (200 MiB, 50 MiB).
+# test-cgroup-oscillate (OSC_SECS, default 300 s, plus 300 s more with
+# CONTROL=1: the same run under cgroup:false, recorded, not a criterion):
+# tests/c/cgroup_oscillate.c swings between 200 and 480 MiB live in 512 MiB
+# and must not be OOM-killed. Opt-in because of its length: `make
+# test-cgroup` runs both; `make test` runs only the churn.
+OSC_SECS ?= 300
+test-cgroup-churn: image
+	$(DOCKER_RUN) cargo build --release
+	$(call cgroup_run,512m,churn challoc purge 400 100)
+	$(call cgroup_run,512m,churn challoc-off keep 400 100)
+	$(call cgroup_run,256m,churn challoc purge 200 50)
+	$(call cgroup_run,256m,churn challoc-off keep 200 50)
+
+test-cgroup-oscillate: image
+	$(DOCKER_RUN) cargo build --release
+	$(call cgroup_run,512m,oscillate challoc $(OSC_SECS))
+ifneq ($(CONTROL),)
+	-$(call cgroup_run,512m,oscillate challoc-off $(OSC_SECS))
+endif
+
+test-cgroup: test-cgroup-churn test-cgroup-oscillate
+
+# Phase 2 task 7: the same runs under other allocators (CGROUP_ALLOCS,
+# default jemalloc and mimalloc; needs `make bench-build` for mimalloc),
+# `report` mode for the churn (no criterion) and the oscillation for
+# OSC_SECS; every outcome is printed (OUTCOME lines) and none fails the
+# target, the results file records them.
+CGROUP_ALLOCS ?= jemalloc mimalloc
+test-cgroup-compare: image
+	@for a in $(CGROUP_ALLOCS); do \
+	  $(call cgroup_docker,512m) churn $$a report 400 100; \
+	  $(call cgroup_docker,256m) churn $$a report 200 50; \
+	  $(call cgroup_docker,512m) oscillate $$a $(OSC_SECS); \
+	done; true
 
 test-host:
 	cargo test --features std

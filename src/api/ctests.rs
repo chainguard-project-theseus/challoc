@@ -769,6 +769,25 @@ fn c_cgroup_policy_high() {
     run_bin_env("cgroup_policy", &bin, &["high"], &[]);
 }
 
+/// `tests/c/cgroup_churn.c` (plan Phase 2 task 6 (a)): the churn program
+/// builds and runs under the preload at a small size in `report` mode (no
+/// criterion). The criteria (RSS under 100 MiB within 2 s of freeing
+/// 400 MiB with the policy on, not with `cgroup:false`) need a container
+/// of their own per run with swap off (`--memory=L --memory-swap=L`) and
+/// are `make test-cgroup-churn`, chained into `make test`.
+#[test]
+fn c_cgroup_churn_program() {
+    run_c("cgroup_churn", &["report", "64", "16"]);
+}
+
+/// `tests/c/cgroup_oscillate.c` (plan Phase 2 task 6 (b)): the oscillation
+/// program builds and completes a few cycles (3 s, 16..48 MiB live). The
+/// 5-minute run in 512 MiB is `make test-cgroup-oscillate` (opt-in).
+#[test]
+fn c_cgroup_oscillate_program() {
+    run_c("cgroup_oscillate", &["3", "16", "48", "200"]);
+}
+
 /// `tests/c/guard_slab.c fault` (plan Phase 2 task 1): under the preload,
 /// a write into the guard slab that follows a run of slabs of the 64-byte
 /// class faults (SIGSEGV caught in the program), while the last byte of

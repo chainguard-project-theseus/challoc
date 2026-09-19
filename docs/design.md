@@ -903,6 +903,26 @@ it and run past its `memory.high` sees the `high` count rise and one
 systemd GCE host (`/sys/fs/cgroup/system.slice/...`) alike; `nsdelegate`
 does not enter into it, since the cgroup is ours.
 
+The container tests (plan Phase 2 task 6; `tests/c/cgroup_churn.c`,
+`tests/c/cgroup_oscillate.c`, `scripts/cgroup-tests.sh`, `make
+test-cgroup`, one `docker run --memory=L --memory-swap=L` container per
+run) are the policy's end-to-end evidence and fix two facts. First, the
+policy acts at a decay pass, and without a background thread a decay
+pass runs only from the periodic tick, so a process that frees 400 MiB
+and then allocates nothing at all keeps it under every setting; the
+tests' idle phase is therefore an idle event loop (a burst of small
+allocations every 10 ms), under which the first walk after the frees
+(46..82 ms later) purges the whole retention over the cap, RSS 403 to
+13 MiB in 512 MiB and 202 to 8 MiB in 256 MiB, while `cgroup:false`
+leaves 319 and 161 MiB at 2 s (the 10 s curve). Second, the oscillation
+(200..480 MiB live for 5 minutes in 512 MiB) survives with the policy
+and also with it off: `Empty` slabs and extents stay in their classes
+and the next climb reuses them in place, so the policy does not change
+the peak (502 vs 507 MiB of `memory.current`), it changes what is
+resident at the bottom of the swing (~293 vs ~490 MiB). jemalloc 5.3.1
+and mimalloc 3.5.2 are OOM-killed in the same container at the fifth and
+second climb (`bench/results/2026-09-18-aarch64-gce-cgroup-container-tests.md`).
+
 THP: `MADV_HUGEPAGE` is not wired yet (section 10, the `thp` key is
 inert), so "disabled under small limits" is, for now, `thp` forced to
 `never` in the stored configuration at init when the effective limit at
