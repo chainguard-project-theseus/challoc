@@ -28,6 +28,14 @@
  * `stats.cgroup.*` at the end when preloaded, and one RESULT line. Exit 0
  * iff the run completed; the driver's watchdog kills a hung run at 6
  * minutes and an OOM kill shows as exit 137.
+ *
+ * The composition of the charge (Phase 2.5 task 3, the 64 KiB-page cell):
+ * `memory.stat`'s anon, file, kernel, slab and pagetables, plus challoc's
+ * `stats.allocated/active/resident/metadata/retained` and
+ * `stats.cgroup.empty_bytes` (after an `epoch`) when preloaded, printed as
+ * a `composition` line before the first allocation, at the top of cycles
+ * 1, 2, 3, 5, 10, 20, 30, 50, 70 and 90, for the highest peak seen, and
+ * at the end. What is not anon is not the allocator's.
  */
 #include "common.h"
 #include <stdbool.h>
@@ -35,10 +43,27 @@
 
 #define WEAK __attribute__((weak))
 extern int mallctl(const char *, void *, size_t *, void *, size_t) WEAK;
+extern void malloc_stats_print(void (*)(void *, const char *), void *, const char *) WEAK;
 
 #define MIB (1024UL * 1024UL)
 #define KIB 1024UL
 enum { MAX_OBJECTS = 1500000, SAMPLE_EVERY = 8 * MIB, TRICKLE_MS = 10 };
+/*
+ * The page-rounding envelope of a kernel with pages larger than 4 KiB
+ * (Phase 2.5 task 3, bench/results/2026-09-19-matrix.md F1). Measured on
+ * 6.8.0-139-generic-64k against 4 KiB kernels with the same object
+ * sequence: at the top of the swing `memory.stat` anon is 5 MiB higher
+ * (the allocator's page-rounded metadata tables +1, its Empty 4 KiB slabs
+ * scattered through 64 KiB page groups that are never all idle +2, which
+ * a 4 KiB kernel purges, and this program's own data segments +2) and
+ * kernel page tables are 2 MiB higher, with the allocator's `active`
+ * identical; a 300 s run's worst top then crosses 512 MiB. None of it is
+ * retention (the same Empty survives `dirty_decay_ms:0`). When HIGH is not
+ * given on the command line and the page is larger than 4 KiB, the default
+ * target is lowered by this much so the allocator keeps the envelope the
+ * test gives it at 4 KiB; an explicit HIGH is used as given.
+ */
+enum { LARGE_PAGE_ENVELOPE_MIB = 8 };
 
 struct obj {
     void *p;
@@ -140,6 +165,84 @@ static long long sample_current(void)
     if (c > current_peak)
         current_peak = c;
     return c;
+}
+
+static const char *fmt_mib(long long v, char *buf, size_t n);
+
+/* One `memory.stat` field (bytes), -1 when absent. */
+static long long memstat(const char *key)
+{
+    if (!have_cgroup)
+        return -1;
+    char p[8192 + 64], line[256];
+    snprintf(p, sizeof p, "%s/memory.stat", cgroup_dir);
+    FILE *f = fopen(p, "r");
+    if (!f)
+        return -1;
+    long long v = -1;
+    size_t k = strlen(key);
+    while (fgets(line, sizeof line, f))
+        if (strncmp(line, key, k) == 0 && line[k] == ' ') {
+            v = atoll(line + k + 1);
+            break;
+        }
+    fclose(f);
+    return v;
+}
+
+/* The composition of the charge at this moment (see the header). */
+struct comp {
+    long long current, anon, file, kernel, slab, pagetables;
+    size_t rss;
+    int challoc;
+    size_t allocated, active, resident, metadata, retained, empty;
+};
+
+static void read_comp(struct comp *c)
+{
+    memset(c, 0, sizeof *c);
+    c->current = sample_current();
+    c->anon = memstat("anon");
+    c->file = memstat("file");
+    c->kernel = memstat("kernel");
+    c->slab = memstat("slab");
+    c->pagetables = memstat("pagetables");
+    c->rss = rss_bytes();
+    if (!mallctl)
+        return;
+    uint64_t e = 1;
+    if (mallctl("epoch", NULL, NULL, &e, sizeof e) != 0)
+        return;
+    const char *keys[] = { "stats.allocated", "stats.active", "stats.resident", "stats.metadata", "stats.retained", "stats.cgroup.empty_bytes" };
+    size_t *out[] = { &c->allocated, &c->active, &c->resident, &c->metadata, &c->retained, &c->empty };
+    for (size_t i = 0; i < sizeof keys / sizeof keys[0]; i++) {
+        size_t v = 0, len = sizeof v;
+        if (mallctl(keys[i], &v, &len, NULL, 0) == 0 && v != SIZE_MAX)
+            *out[i] = v;
+    }
+    c->challoc = 1;
+}
+
+static void print_comp(const char *tag, const struct comp *c)
+{
+    char b[6][32];
+    printf("composition %s: current %s anon %s file %s kernel %s (slab %s pagetables %s) MiB, rss %zu MiB", tag, fmt_mib(c->current, b[0], 32),
+           fmt_mib(c->anon, b[1], 32), fmt_mib(c->file, b[2], 32), fmt_mib(c->kernel, b[3], 32), fmt_mib(c->slab, b[4], 32),
+           fmt_mib(c->pagetables, b[5], 32), c->rss / MIB);
+    if (c->challoc)
+        printf("; challoc allocated %zu active %zu resident %zu metadata %zu retained %zu empty %zu MiB", c->allocated / MIB, c->active / MIB,
+               c->resident / MIB, c->metadata / MIB, c->retained / MIB, c->empty / MIB);
+    printf("\n");
+    fflush(stdout);
+}
+
+static int comp_cycle(long cycle)
+{
+    static const long at[] = { 1, 2, 3, 5, 10, 20, 30, 50, 70, 90 };
+    for (size_t i = 0; i < sizeof at / sizeof at[0]; i++)
+        if (at[i] == cycle)
+            return 1;
+    return 0;
 }
 
 /* `memory.events` as one line: "low 0 high 0 max 0 oom 0 oom_kill 0 ...". */
@@ -305,6 +408,11 @@ int main(int argc, char **argv)
     if (!any)
         require_challoc();
     page_size = sysconf(_SC_PAGESIZE);
+    if (pos < 3 && page_size > 4096) {
+        high_mib -= LARGE_PAGE_ENVELOPE_MIB;
+        printf("cgroup_oscillate: page size %ld: the default high target is %zu MiB, %d MiB under the 4 KiB default (the page-rounding envelope, see the header)\n",
+               page_size, high_mib, LARGE_PAGE_ENVELOPE_MIB);
+    }
     have_cgroup = find_cgroup();
     char b1[32], b2[32], ev0[512], ev1[512];
     long long limit = read_cgroup_ll("memory.max");
@@ -315,6 +423,12 @@ int main(int argc, char **argv)
     printf("memory.events before: %s\n", ev0);
     fflush(stdout);
 
+    struct comp comp, comp_max;
+    long comp_max_cycle = 0;
+    read_comp(&comp);
+    print_comp("at start", &comp);
+    comp_max = comp;
+
     uint64_t rng = 0x9E3779B97F4A7C15ULL;
     long t_start = now_ms(), deadline = t_start + seconds * 1000;
     long cycles = 0;
@@ -323,8 +437,24 @@ int main(int argc, char **argv)
         long t0 = now_ms();
         grow_to(high_mib * MIB, &rng);
         long t_up = now_ms();
-        long long cur_hi = sample_current();
-        size_t rss_hi = rss_bytes();
+        read_comp(&comp);
+        long long cur_hi = comp.current;
+        size_t rss_hi = comp.rss;
+        if (comp.current > comp_max.current) {
+            comp_max = comp;
+            comp_max_cycle = cycles + 1;
+        }
+        if (comp_cycle(cycles + 1)) {
+            char tag[48];
+            snprintf(tag, sizeof tag, "top of cycle %ld", cycles + 1);
+            print_comp(tag, &comp);
+        }
+        /* Debug: OSC_STATS_AT=<cycle> prints the allocator's full report at
+         * that top (per-class Empty and Purged slabs, the huge extents). */
+        if (malloc_stats_print && getenv("OSC_STATS_AT") && atol(getenv("OSC_STATS_AT")) == cycles + 1) {
+            fflush(stdout);
+            malloc_stats_print(NULL, NULL, "");
+        }
         hold(hold_ms);
         shrink_to(low_mib * MIB, &rng);
         long t_down = now_ms();
@@ -339,6 +469,13 @@ int main(int argc, char **argv)
     }
     events_line(ev1, sizeof ev1);
     printf("memory.events after: %s\n", ev1);
+    {
+        char tag[48];
+        snprintf(tag, sizeof tag, "highest top (cycle %ld)", comp_max_cycle);
+        print_comp(tag, &comp_max);
+        read_comp(&comp);
+        print_comp("at end (bottom)", &comp);
+    }
     challoc_policy_line();
     long long peak_mib = current_peak < 0 ? -1 : current_peak / (long long)MIB;
     printf("RESULT oscillate cycles=%ld seconds=%ld low=%zu high=%zu current_peak=%lld rss_peak=%zu max_before=%lld max_after=%lld high_before=%lld high_after=%lld oom_kill_before=%lld oom_kill_after=%lld\n",

@@ -351,6 +351,18 @@ tier, one commit-lock hold and one shared-line write per slab transition
 `mprotect` of the slab's bytes (or of its page group, for slabs smaller than
 a page) to read-write. Fresh slabs are zero from the kernel.
 
+The cost of sub-page slabs on a large-page kernel, measured (Phase 2.5
+task 3, `bench/results/2026-09-19-matrix.md` F1): a page group is purged
+only when every slab in it is idle, and a workload that frees at random
+leaves `Empty` 4 KiB slabs scattered through 64 KiB groups that are never
+all idle. In the oscillation test on `6.8.0-139-generic-64k` the 1 KiB
+class (4 KiB slabs, 4 slots) holds 571 such slabs at the top of the swing,
+2.2 MiB of 480 MiB live, that a 4 KiB kernel has purged (`retained` 5 MiB
+against 2 + `empty` 2); `dirty_decay_ms:0` does not remove them. It is a
+granularity trade-off, not retention, and no policy timing changes it;
+only page-sized slabs for those classes or allocation steering by
+page-group density would, both fast-path work not undertaken.
+
 Guard slabs: with `guards` on, every `guard_slab_interval`-th 64 KiB of slabs
 is a *guard slab* that is never handed out (`SlabTable::is_guard_slab`,
 arithmetic on the slab number). When its page group is committed it is made
@@ -982,6 +994,26 @@ the peak (502 vs 507 MiB of `memory.current`), it changes what is
 resident at the bottom of the swing (~293 vs ~490 MiB). jemalloc 5.3.1
 and mimalloc 3.5.2 are OOM-killed in the same container at the fifth and
 second climb (`bench/results/2026-09-18-aarch64-gce-cgroup-container-tests.md`).
+
+What the policy can and cannot do at the peak, measured (Phase 2.5 task 3,
+`bench/results/2026-09-19-matrix.md` F1, the `composition` lines of
+`tests/c/cgroup_oscillate.c`): at the top of a climb `stats.cgroup.empty_bytes`
+is 0 on a 4 KiB kernel and 0..2 MiB on a 64 KiB one, and the 2 MiB are
+`Empty` sub-page slabs in mixed page groups that no walk can purge
+(section 5). The peak is `allocated` plus the slack of partially used
+slabs (`active - allocated`, 1..13 MiB over the swing, the classes' top
+slabs drained by random frees and not yet `Empty`), plus metadata; the
+bands, the cap and the sample interval have nothing to discharge there,
+on either page size. On a 64 KiB kernel the top of the same object
+sequence is 5 MiB of anon higher (the allocator's page-rounded tables +1,
+the stuck `Empty` slabs +2, the program's own data segments +2) and 2 MiB
+of page tables higher, with `active` identical, which is what OOM-killed
+the 480-of-512 MiB oscillation there; the test therefore lowers its
+default target by that envelope (8 MiB) when the page is larger than
+4 KiB and says so, and keeps 480 MiB at 4 KiB. Reacting sooner on a fast
+climb (a 64 KiB climb of 280 MiB takes 15 ms, 3.5 times faster than at
+4 KiB, so the 10 ms sample window sees it at most once) would purge
+nothing more: `dirty_decay_ms:0` leaves the same 2 MiB at the top.
 
 THP: `MADV_HUGEPAGE` is not wired yet (section 10, the `thp` key is
 inert), so "disabled under small limits" is, for now, `thp` forced to

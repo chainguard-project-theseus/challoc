@@ -131,7 +131,17 @@ bench/gce/challoc-bench matrix             # every cell, MATRIX_JOBS (3) at a ti
                                            # MATRIX_TIMEOUT (2700 s) each
 bench/gce/challoc-bench matrix k510-amd64 64k-arm64
 bench/gce/challoc-bench matrix clean       # delete every challoc-matrix-* VM
+bench/gce/challoc-bench matrix lab 64k-arm64   # create, prep, provision, sync; keep the VM
+bench/gce/challoc-bench matrix ssh 64k-arm64 'cd ~/challoc && make test-cgroup-oscillate OSC_SECS=60'
+bench/gce/challoc-bench matrix sync 64k-arm64  # rsync the tree again
 ```
+
+`matrix lab` runs a cell up to the sync and keeps the VM for experiments
+(its log goes to `.tmp-matrix-lab/`, not `bench/results/matrix/`); `matrix
+ssh` and `matrix sync` drive it, `matrix clean` (or running the cell for
+real, which recreates the VM under the same name) deletes it. A lab VM
+measures nothing either; it exists to read `memory.stat`, the allocator's
+report and the like on a kernel the reference VMs do not have.
 
 | cell       | image family            | kernel                         | machine        | notes |
 |------------|-------------------------|--------------------------------|----------------|-------|

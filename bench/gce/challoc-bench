@@ -39,6 +39,7 @@
 #   bench/gce/challoc-bench session   start|stop [arm64|amd64|all]
 #                                                          # the driving session's own start/stop, see below
 #   bench/gce/challoc-bench matrix    [list|clean|CELL...]  # Phase 2.5 task 3: throwaway VMs per kernel
+#   bench/gce/challoc-bench matrix    lab CELL | ssh CELL CMD | sync CELL  # keep one cell VM for experiments
 #                                                          # (5.10, 6.1, 6.8, hwe, 64 KiB pages), tests, delete
 #
 # Environment: CHALLOC_GCE_PROJECT (default: active gcloud project),
@@ -339,6 +340,14 @@ cmd_session() {
 #   challoc-bench matrix k510-amd64 64k-arm64
 #   challoc-bench matrix list            # the table
 #   challoc-bench matrix clean           # delete every challoc-matrix-* VM
+#   challoc-bench matrix lab 64k-arm64   # create+prep+provision+sync, keep the VM
+#   challoc-bench matrix ssh 64k-arm64 'make test-cgroup-oscillate OSC_SECS=60'
+#   challoc-bench matrix sync 64k-arm64  # rsync the tree again
+#
+# `lab` runs a cell up to the sync and keeps the VM (its log goes to
+# .tmp-matrix-lab/, not bench/results/matrix/); `ssh` and `sync` drive it;
+# `clean` deletes it like any other matrix VM. Nothing measured on a lab
+# VM is a benchmark number either.
 #
 # The table. `prep` installs another kernel on the image and reboots into
 # it (ga: linux-generic, Ubuntu 24.04's 6.8 GA kernel, because the GCE
@@ -420,6 +429,17 @@ matrix_delete_vm() {
       || g compute instances delete "$vm" --zone="$ZONE" --quiet >/dev/null 2>&1 \
       || echo "challoc-bench: matrix: WARNING: could not delete $vm; delete it by hand" >&2
   fi
+}
+
+# matrix_lab_dest CELL: user@ip of a kept (lab) cell VM.
+matrix_lab_dest() {
+  local vm ip user
+  vm="$(matrix_vm "$1")"
+  ip="$(g compute instances describe "$vm" --zone="$ZONE" --format='value(networkInterfaces[0].accessConfigs[0].natIP)' 2>/dev/null)" \
+    || die "matrix: no VM $vm (matrix lab $1 creates one)"
+  [ -n "$ip" ] || die "matrix: $vm has no external IP"
+  user="$(g compute os-login describe-profile --format='value(posixAccounts[0].username)')"
+  echo "$user@$ip"
 }
 
 # matrix_prep PREP: the remote script that installs the cell's kernel,
@@ -568,6 +588,13 @@ matrix_cell() {
   # shellcheck disable=SC2046
   rsync -az --delete --exclude=/target --exclude=/.ralph --exclude='/.tmp-*' --exclude='/.ralph-*.log' \
     -e "ssh $(matrix_ssh_opts)" "$REPO/" "$dest:$REMOTE_DIR/" >>"$log" 2>&1 || { say "sync failed"; echo "MATRIX cell=$cell image=$image kernel=- page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=sync" >> "$log"; return 1; }
+  if [ -n "${MATRIX_LAB:-}" ]; then
+    # Lab mode: the VM stays. `matrix clean` deletes it.
+    trap - EXIT
+    say "lab: $vm kept at $dest; matrix ssh $cell CMD, matrix sync $cell, matrix clean"
+    echo "LAB cell=$cell vm=$vm dest=$dest" >> "$log"
+    return 0
+  fi
   say "running matrix-cell.sh detached (a new login, so the docker group applies)"
   matrix_ssh "$dest" "rm -f ~/logs/done; (setsid nohup bash -c 'bash ~/challoc/bench/gce/matrix-cell.sh $cell $image $extra; echo \$? > ~/logs/done' > ~/logs/matrix.log 2>&1 < /dev/null &); sleep 1; echo launched" >>"$log" 2>&1 || say "launch ssh returned nonzero (the run may still be going)"
   # Poll for the done marker until the deadline; a lost connection while
@@ -632,6 +659,22 @@ cmd_matrix() {
       for c in $MATRIX_CELLS; do printf '%-11s %s\n' "$c" "$(cell_spec "$c" | awk '{ printf "%-22s %-16s %-6s %-15s %-5s %s", $1, $2, $3, $4, $5, $6 }')"; done
       return 0 ;;
     clean) matrix_clean; return 0 ;;
+    lab)
+      shift
+      [ $# -ge 1 ] || die "matrix lab: which cell? (matrix list)"
+      local c rc=0
+      for c in "$@"; do cell_spec "$c" >/dev/null || die "matrix: unknown cell $c (matrix list)"; done
+      MATRIX_LAB=1; MATRIX_OUT="$REPO/.tmp-matrix-lab"; mkdir -p "$MATRIX_OUT"
+      for c in "$@"; do ( matrix_cell "$c" ) || rc=1; done
+      return $rc ;;
+    ssh)
+      shift; local dest; dest="$(matrix_lab_dest "${1:?matrix ssh: which cell?}")"; shift
+      matrix_ssh "$dest" "$@"; return ;;
+    sync)
+      shift; local dest; dest="$(matrix_lab_dest "${1:?matrix sync: which cell?}")"
+      # shellcheck disable=SC2046
+      rsync -az --delete --exclude=/target --exclude=/.ralph --exclude='/.tmp-*' --exclude='/.ralph-*.log' \
+        -e "ssh $(matrix_ssh_opts)" "$REPO/" "$dest:$REMOTE_DIR/"; return ;;
   esac
   local cells="${*:-$MATRIX_CELLS}" c pids= failed=0
   for c in $cells; do cell_spec "$c" >/dev/null || die "matrix: unknown cell $c (matrix list)"; done
