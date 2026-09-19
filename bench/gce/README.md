@@ -42,6 +42,25 @@ The VMs run the repository's own `Dockerfile.dev` image through the same
 `make test` (image build, release build, both test groups) takes about 100 s
 on either VM.
 
+## Lanes: one prefix per worktree
+
+Every subcommand names its VMs `$CHALLOC_GCE_PREFIX-<arch>` (default
+`challoc-bench`, the reference pair above) and its matrix cells
+`$CHALLOC_GCE_PREFIX-matrix-<cell>` (`challoc-matrix-<cell>` for the
+default prefix). A parallel lane (CLAUDE.md, Environment) exports
+`CHALLOC_GCE_PREFIX=challoc-<lane>` and gets a fully independent pair
+(`create all`, `provision all` once; `stop`/`delete` before its turn ends)
+that `sync`, `run`, `quick`, `quick-perf`, `ab`, `fetch` and `matrix` then
+address; nothing it runs touches another prefix's VMs. `sync` from a git
+worktree ships the repository's common `.git` with the worktree's `HEAD`
+and `index`, so the VM holds a plain checkout of the lane's branch and
+`git archive` of a rev works there. `status` lists the prefix's VMs when
+the variable is set and every `challoc-*` VM when it is not;
+`challoc-bench lanes` groups every VM by prefix with status and uptime,
+the coordinator's view. The scorecard is not a lane command: only the
+coordinator runs `scorecard` from `main` on the reference pair, once per
+merge batch, and only those runs append to `bench/results/scorecard-<arch>.md`.
+
 ## Two tiers on a VM
 
 `bench/README.md` describes the tiers; on a VM they are driven as

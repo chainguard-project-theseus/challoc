@@ -138,7 +138,13 @@ table(s) sorted by date and works on the host. The two files were seeded
 from the GCE results files (the `(from ...)` note names the source; the
 2026-09-16 Mac numbers are not in them). After landing a change, run the
 scorecard on both VMs and commit the appended lines with the PROGRESS
-commit (`scripts/ralph-prompt.md`).
+commit (`scripts/ralph-prompt.md`). Since the lanes (CLAUDE.md,
+Environment) only the coordinator does this, from `main` on the reference
+pair (`CHALLOC_GCE_PREFIX` unset), once per merge batch; a lane iteration
+judges its change with `quick`, `quick-perf` and `ab` on its own VMs
+(`CHALLOC_GCE_PREFIX=challoc-<lane>`), writes those tables to
+`bench/results/<date>-<arch>-<lane>-<task>*.md`, and never appends to the
+two scorecard files.
 
 **Noise.** `xmalloc-test -w 10` spreads about 20% between rounds of the
 same binary on aarch64 (`2026-09-17-aarch64-gce-slab-geometry.md` run 2).
