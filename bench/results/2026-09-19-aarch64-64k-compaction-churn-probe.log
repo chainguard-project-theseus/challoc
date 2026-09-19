@@ -1,0 +1,467 @@
+    Finished `release` profile [optimized + debuginfo] target(s) in 6.60s
+-rwxr-xr-x    2 root     root        877336 Sep 19 17:24 target/release/libchalloc.so
+page 65536
+=== libchalloc.so S=512 N=60000 T=10 pin=0 
+   0.0 full     curslabs    469 curregs   60032 nonfull      0 occ 100.0%  active   29.8 MiB resident   30.2 MiB
+   0.0 deleted  curslabs    469 curregs   26496 nonfull    468 occ  44.1%  active   29.9 MiB resident   30.6 MiB
+   1.0 deleted  curslabs    469 curregs   26496 nonfull    468 occ  44.1%  active   29.9 MiB resident   30.6 MiB
+   2.0 churn    curslabs    214 curregs   26549 nonfull     22 occ  96.9%  active   14.0 MiB resident   30.4 MiB
+   3.0 churn    curslabs    214 curregs   26549 nonfull     22 occ  96.9%  active   14.0 MiB resident   24.9 MiB
+   4.0 churn    curslabs    214 curregs   26549 nonfull     22 occ  96.9%  active   14.0 MiB resident   16.6 MiB
+   5.0 churn    curslabs    214 curregs   26549 nonfull     22 occ  96.9%  active   14.0 MiB resident   14.8 MiB
+   6.0 churn    curslabs    214 curregs   26549 nonfull     22 occ  96.9%  active   14.0 MiB resident   14.8 MiB
+   7.0 churn    curslabs    214 curregs   26549 nonfull     22 occ  96.9%  active   14.0 MiB resident   14.7 MiB
+   8.0 churn    curslabs    214 curregs   26549 nonfull     22 occ  96.9%  active   14.0 MiB resident   14.7 MiB
+   9.0 churn    curslabs    214 curregs   26549 nonfull     22 occ  96.9%  active   14.0 MiB resident   14.7 MiB
+  10.0 churn    curslabs    214 curregs   26549 nonfull     10 occ  96.9%  active   14.0 MiB resident   14.7 MiB
+  11.0 churn    curslabs    214 curregs   26549 nonfull     10 occ  96.9%  active   14.0 MiB resident   14.7 MiB
+ops 244646330 (24464633/s)
+  12.0 end      curslabs    214 curregs   26549 nonfull     10 occ  96.9%  active   14.0 MiB resident   14.6 MiB
+=== libjemalloc.so.2 S=512 N=60000 T=10 pin=0 
+   0.0 full     curslabs    469 curregs   60032 nonfull      0 occ 100.0%  active   30.2 MiB resident   34.1 MiB
+   0.0 deleted  curslabs    469 curregs   26432 nonfull    467 occ  44.0%  active   30.3 MiB resident   34.1 MiB
+   1.0 deleted  curslabs    469 curregs   26432 nonfull    467 occ  44.0%  active   30.3 MiB resident   34.1 MiB
+   2.0 churn    curslabs    469 curregs   26297 nonfull    468 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+   3.0 churn    curslabs    469 curregs   26294 nonfull    467 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+   4.0 churn    curslabs    469 curregs   26294 nonfull    466 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+   5.0 churn    curslabs    469 curregs   26294 nonfull    466 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+   6.0 churn    curslabs    469 curregs   26296 nonfull    465 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+   7.0 churn    curslabs    469 curregs   26294 nonfull    464 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+   8.0 churn    curslabs    469 curregs   26294 nonfull    464 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+   9.0 churn    curslabs    469 curregs   26294 nonfull    463 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+  10.0 churn    curslabs    469 curregs   26297 nonfull    462 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+  11.0 churn    curslabs    469 curregs   26297 nonfull    462 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+ops 231261952 (23126195/s)
+  12.0 end      curslabs    469 curregs   26296 nonfull    461 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+=== libchalloc.so S=512 N=60000 T=20 pin=0.018 
+   0.0 full     curslabs    469 curregs   60032 nonfull      0 occ 100.0%  active   29.8 MiB resident   30.2 MiB
+   0.0 deleted  curslabs    469 curregs   26496 nonfull    468 occ  44.1%  active   29.9 MiB resident   30.6 MiB
+   1.0 deleted  curslabs    469 curregs   26496 nonfull    468 occ  44.1%  active   29.9 MiB resident   30.6 MiB
+pinned 473 of 26294 survivors in 291 distinct 64 KiB slabs (the floor)
+   2.0 churn    curslabs    361 curregs   26549 nonfull    172 occ  57.5%  active   23.2 MiB resident   30.8 MiB
+   3.0 churn    curslabs    361 curregs   26549 nonfull    156 occ  57.5%  active   23.2 MiB resident   28.5 MiB
+   4.0 churn    curslabs    361 curregs   26549 nonfull    159 occ  57.5%  active   23.2 MiB resident   24.8 MiB
+   5.0 churn    curslabs    361 curregs   26549 nonfull    167 occ  57.5%  active   23.2 MiB resident   24.2 MiB
+   6.0 churn    curslabs    361 curregs   26549 nonfull    172 occ  57.5%  active   23.2 MiB resident   24.2 MiB
+   7.0 churn    curslabs    361 curregs   26549 nonfull    167 occ  57.5%  active   23.2 MiB resident   24.1 MiB
+   8.0 churn    curslabs    361 curregs   26549 nonfull    162 occ  57.5%  active   23.2 MiB resident   24.1 MiB
+   9.0 churn    curslabs    361 curregs   26549 nonfull    170 occ  57.5%  active   23.2 MiB resident   24.1 MiB
+  10.0 churn    curslabs    361 curregs   26549 nonfull    169 occ  57.5%  active   23.2 MiB resident   24.1 MiB
+  11.0 churn    curslabs    361 curregs   26549 nonfull    166 occ  57.5%  active   23.2 MiB resident   24.1 MiB
+  12.0 churn    curslabs    361 curregs   26549 nonfull    172 occ  57.5%  active   23.2 MiB resident   24.1 MiB
+  13.0 churn    curslabs    361 curregs   26549 nonfull    161 occ  57.5%  active   23.2 MiB resident   24.1 MiB
+  14.0 churn    curslabs    361 curregs   26549 nonfull    168 occ  57.5%  active   23.2 MiB resident   24.1 MiB
+  15.0 churn    curslabs    361 curregs   26549 nonfull    169 occ  57.5%  active   23.2 MiB resident   24.1 MiB
+  16.0 churn    curslabs    361 curregs   26549 nonfull    172 occ  57.5%  active   23.2 MiB resident   24.1 MiB
+  17.0 churn    curslabs    361 curregs   26549 nonfull    160 occ  57.5%  active   23.2 MiB resident   24.1 MiB
+  18.0 churn    curslabs    361 curregs   26549 nonfull    169 occ  57.5%  active   23.2 MiB resident   24.1 MiB
+  19.0 churn    curslabs    361 curregs   26549 nonfull    171 occ  57.5%  active   23.2 MiB resident   24.1 MiB
+  20.0 churn    curslabs    361 curregs   26485 nonfull    223 occ  57.3%  active   23.2 MiB resident   24.1 MiB
+  21.0 churn    curslabs    361 curregs   26485 nonfull    209 occ  57.3%  active   23.2 MiB resident   24.1 MiB
+ops 389183231 (19459162/s)
+  22.0 end      curslabs    361 curregs   26549 nonfull    172 occ  57.5%  active   23.2 MiB resident   24.1 MiB
+=== libjemalloc.so.2 S=512 N=60000 T=20 pin=0.018 
+   0.0 full     curslabs    469 curregs   60032 nonfull      0 occ 100.0%  active   30.2 MiB resident   34.1 MiB
+   0.0 deleted  curslabs    469 curregs   26432 nonfull    467 occ  44.0%  active   30.3 MiB resident   34.1 MiB
+   1.0 deleted  curslabs    469 curregs   26432 nonfull    467 occ  44.0%  active   30.3 MiB resident   34.1 MiB
+pinned 473 of 26294 survivors in 291 distinct 64 KiB slabs (the floor)
+   2.0 churn    curslabs    469 curregs   26297 nonfull    468 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+   3.0 churn    curslabs    469 curregs   26297 nonfull    467 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+   4.0 churn    curslabs    469 curregs   26297 nonfull    466 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+   5.0 churn    curslabs    469 curregs   26297 nonfull    466 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+   6.0 churn    curslabs    469 curregs   26297 nonfull    465 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+   7.0 churn    curslabs    469 curregs   26297 nonfull    464 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+   8.0 churn    curslabs    469 curregs   26297 nonfull    464 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+   9.0 churn    curslabs    469 curregs   26294 nonfull    463 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+  10.0 churn    curslabs    469 curregs   26294 nonfull    462 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+  11.0 churn    curslabs    469 curregs   26294 nonfull    461 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+  12.0 churn    curslabs    469 curregs   26294 nonfull    461 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+  13.0 churn    curslabs    469 curregs   26294 nonfull    460 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+  14.0 churn    curslabs    469 curregs   26294 nonfull    459 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+  15.0 churn    curslabs    469 curregs   26297 nonfull    459 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+  16.0 churn    curslabs    469 curregs   26297 nonfull    458 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+  17.0 churn    curslabs    469 curregs   26297 nonfull    457 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+  18.0 churn    curslabs    469 curregs   26294 nonfull    456 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+  19.0 churn    curslabs    469 curregs   26294 nonfull    456 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+  20.0 churn    curslabs    469 curregs   26294 nonfull    455 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+  21.0 churn    curslabs    469 curregs   26297 nonfull    454 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+ops 451186290 (22559314/s)
+  22.0 end      curslabs    469 curregs   26294 nonfull    454 occ  43.8%  active   30.3 MiB resident   34.1 MiB
+=== libchalloc.so S=512 N=60000 T=20 pin=0.072 
+   0.0 full     curslabs    469 curregs   60032 nonfull      0 occ 100.0%  active   29.8 MiB resident   30.2 MiB
+   0.0 deleted  curslabs    469 curregs   26496 nonfull    468 occ  44.1%  active   29.9 MiB resident   30.6 MiB
+   1.0 deleted  curslabs    469 curregs   26496 nonfull    468 occ  44.1%  active   29.9 MiB resident   30.6 MiB
+pinned 1893 of 26294 survivors in 465 distinct 64 KiB slabs (the floor)
+   2.0 churn    curslabs    468 curregs   26549 nonfull    289 occ  44.3%  active   30.1 MiB resident   31.1 MiB
+   3.0 churn    curslabs    468 curregs   26549 nonfull    271 occ  44.3%  active   30.1 MiB resident   31.1 MiB
+   4.0 churn    curslabs    468 curregs   26549 nonfull    285 occ  44.3%  active   30.1 MiB resident   31.1 MiB
+   5.0 churn    curslabs    468 curregs   26549 nonfull    272 occ  44.3%  active   30.1 MiB resident   31.1 MiB
+   6.0 churn    curslabs    468 curregs   26549 nonfull    270 occ  44.3%  active   30.1 MiB resident   31.1 MiB
+   7.0 churn    curslabs    468 curregs   26549 nonfull    270 occ  44.3%  active   30.1 MiB resident   31.1 MiB
+   8.0 churn    curslabs    468 curregs   26549 nonfull    273 occ  44.3%  active   30.1 MiB resident   31.1 MiB
+   9.0 churn    curslabs    468 curregs   26549 nonfull    285 occ  44.3%  active   30.1 MiB resident   31.1 MiB
+  10.0 churn    curslabs    468 curregs   26549 nonfull    285 occ  44.3%  active   30.1 MiB resident   31.1 MiB
+  11.0 churn    curslabs    468 curregs   26549 nonfull    287 occ  44.3%  active   30.1 MiB resident   31.1 MiB
+  12.0 churn    curslabs    468 curregs   26549 nonfull    271 occ  44.3%  active   30.1 MiB resident   31.0 MiB
+  13.0 churn    curslabs    468 curregs   26549 nonfull    286 occ  44.3%  active   30.1 MiB resident   31.0 MiB
+  14.0 churn    curslabs    468 curregs   26549 nonfull    279 occ  44.3%  active   30.1 MiB resident   31.0 MiB
+  15.0 churn    curslabs    468 curregs   26549 nonfull    273 occ  44.3%  active   30.1 MiB resident   31.0 MiB
+  16.0 churn    curslabs    468 curregs   26549 nonfull    288 occ  44.3%  active   30.1 MiB resident   31.0 MiB
+  17.0 churn    curslabs    468 curregs   26549 nonfull    281 occ  44.3%  active   30.1 MiB resident   31.0 MiB
+  18.0 churn    curslabs    468 curregs   26549 nonfull    280 occ  44.3%  active   30.1 MiB resident   31.0 MiB
+  19.0 churn    curslabs    468 curregs   26549 nonfull    285 occ  44.3%  active   30.1 MiB resident   31.0 MiB
+  20.0 churn    curslabs    468 curregs   26485 nonfull    321 occ  44.2%  active   29.9 MiB resident   31.0 MiB
+  21.0 churn    curslabs    468 curregs   26485 nonfull    343 occ  44.2%  active   29.9 MiB resident   31.0 MiB
+ops 388300857 (19415043/s)
+  22.0 end      curslabs    468 curregs   26485 nonfull    329 occ  44.2%  active   29.9 MiB resident   31.0 MiB
+=== libjemalloc.so.2 S=512 N=60000 T=20 pin=0.072 
+   0.0 full     curslabs    469 curregs   60032 nonfull      0 occ 100.0%  active   30.2 MiB resident   34.1 MiB
+   0.0 deleted  curslabs    469 curregs   26432 nonfull    467 occ  44.0%  active   30.3 MiB resident   34.1 MiB
+   1.0 deleted  curslabs    469 curregs   26432 nonfull    467 occ  44.0%  active   30.3 MiB resident   34.1 MiB
+pinned 1893 of 26294 survivors in 465 distinct 64 KiB slabs (the floor)
+   2.0 churn    curslabs    469 curregs   26294 nonfull    468 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+   3.0 churn    curslabs    469 curregs   26298 nonfull    468 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+   4.0 churn    curslabs    469 curregs   26297 nonfull    467 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+   5.0 churn    curslabs    469 curregs   26297 nonfull    467 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+   6.0 churn    curslabs    469 curregs   26294 nonfull    466 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+   7.0 churn    curslabs    469 curregs   26294 nonfull    466 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+   8.0 churn    curslabs    469 curregs   26294 nonfull    465 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+   9.0 churn    curslabs    469 curregs   26294 nonfull    465 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+  10.0 churn    curslabs    469 curregs   26297 nonfull    464 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+  11.0 churn    curslabs    469 curregs   26294 nonfull    464 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+  12.0 churn    curslabs    469 curregs   26296 nonfull    464 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+  13.0 churn    curslabs    469 curregs   26296 nonfull    463 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+  14.0 churn    curslabs    469 curregs   26296 nonfull    463 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+  15.0 churn    curslabs    469 curregs   26294 nonfull    462 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+  16.0 churn    curslabs    469 curregs   26297 nonfull    462 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+  17.0 churn    curslabs    469 curregs   26294 nonfull    461 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+  18.0 churn    curslabs    469 curregs   26297 nonfull    461 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+  19.0 churn    curslabs    469 curregs   26297 nonfull    460 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+  20.0 churn    curslabs    469 curregs   26294 nonfull    460 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+  21.0 churn    curslabs    469 curregs   26294 nonfull    459 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+ops 441538999 (22076950/s)
+  22.0 end      curslabs    469 curregs   26297 nonfull    458 occ  43.8%  active   30.3 MiB resident   34.2 MiB
+=== libchalloc.so S=1024 N=30000 T=10 pin=0 
+   0.0 full     curslabs    469 curregs   30016 nonfull      0 occ 100.0%  active   33.3 MiB resident   33.9 MiB
+   0.0 deleted  curslabs    469 curregs   13376 nonfull    468 occ  44.6%  active   33.4 MiB resident   34.3 MiB
+   1.0 deleted  curslabs    469 curregs   13376 nonfull    468 occ  44.6%  active   33.4 MiB resident   34.3 MiB
+   2.0 churn    curslabs    216 curregs   13397 nonfull     57 occ  96.9%  active   17.6 MiB resident   34.1 MiB
+   3.0 churn    curslabs    216 curregs   13397 nonfull     57 occ  96.9%  active   17.6 MiB resident   28.2 MiB
+   4.0 churn    curslabs    216 curregs   13397 nonfull     57 occ  96.9%  active   17.6 MiB resident   20.4 MiB
+   5.0 churn    curslabs    216 curregs   13397 nonfull     57 occ  96.9%  active   17.6 MiB resident   18.7 MiB
+   6.0 churn    curslabs    216 curregs   13397 nonfull     57 occ  96.9%  active   17.6 MiB resident   18.6 MiB
+   7.0 churn    curslabs    216 curregs   13397 nonfull     57 occ  96.9%  active   17.6 MiB resident   18.6 MiB
+   8.0 churn    curslabs    216 curregs   13397 nonfull     57 occ  96.9%  active   17.6 MiB resident   18.6 MiB
+   9.0 churn    curslabs    216 curregs   13397 nonfull     57 occ  96.9%  active   17.6 MiB resident   18.6 MiB
+  10.0 churn    curslabs    216 curregs   13397 nonfull     57 occ  96.9%  active   17.6 MiB resident   18.6 MiB
+  11.0 churn    curslabs    216 curregs   13405 nonfull     47 occ  97.0%  active   17.6 MiB resident   18.6 MiB
+ops 240574299 (24057430/s)
+  12.0 end      curslabs    216 curregs   13405 nonfull     47 occ  97.0%  active   17.6 MiB resident   18.5 MiB
+=== libjemalloc.so.2 S=1024 N=30000 T=10 pin=0 
+   0.0 full     curslabs    469 curregs   30016 nonfull      0 occ 100.0%  active   30.0 MiB resident   33.8 MiB
+   0.0 deleted  curslabs    469 curregs   13376 nonfull    467 occ  44.6%  active   30.1 MiB resident   33.9 MiB
+   1.0 deleted  curslabs    469 curregs   13376 nonfull    467 occ  44.6%  active   30.1 MiB resident   33.9 MiB
+   2.0 churn    curslabs    469 curregs   13302 nonfull    466 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+   3.0 churn    curslabs    469 curregs   13302 nonfull    464 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+   4.0 churn    curslabs    469 curregs   13303 nonfull    461 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+   5.0 churn    curslabs    469 curregs   13304 nonfull    459 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+   6.0 churn    curslabs    469 curregs   13303 nonfull    457 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+   7.0 churn    curslabs    469 curregs   13304 nonfull    454 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+   8.0 churn    curslabs    469 curregs   13303 nonfull    452 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+   9.0 churn    curslabs    469 curregs   13304 nonfull    450 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  10.0 churn    curslabs    469 curregs   13303 nonfull    447 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  11.0 churn    curslabs    469 curregs   13303 nonfull    445 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+ops 234678631 (23467863/s)
+  12.0 end      curslabs    469 curregs   13304 nonfull    443 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+=== libchalloc.so S=1024 N=30000 T=20 pin=0.035 
+   0.0 full     curslabs    469 curregs   30016 nonfull      0 occ 100.0%  active   33.3 MiB resident   33.9 MiB
+   0.0 deleted  curslabs    469 curregs   13376 nonfull    468 occ  44.6%  active   33.4 MiB resident   34.3 MiB
+   1.0 deleted  curslabs    469 curregs   13376 nonfull    468 occ  44.6%  active   33.4 MiB resident   34.3 MiB
+pinned 465 of 13302 survivors in 297 distinct 64 KiB slabs (the floor)
+   2.0 churn    curslabs    371 curregs   13397 nonfull    215 occ  56.4%  active   27.4 MiB resident   34.6 MiB
+   3.0 churn    curslabs    371 curregs   13397 nonfull    211 occ  56.4%  active   27.4 MiB resident   32.4 MiB
+   4.0 churn    curslabs    371 curregs   13397 nonfull    212 occ  56.4%  active   27.4 MiB resident   29.1 MiB
+   5.0 churn    curslabs    371 curregs   13397 nonfull    218 occ  56.4%  active   27.4 MiB resident   28.6 MiB
+   6.0 churn    curslabs    371 curregs   13397 nonfull    221 occ  56.4%  active   27.4 MiB resident   28.6 MiB
+   7.0 churn    curslabs    371 curregs   13397 nonfull    215 occ  56.4%  active   27.4 MiB resident   28.5 MiB
+   8.0 churn    curslabs    371 curregs   13397 nonfull    212 occ  56.4%  active   27.4 MiB resident   28.5 MiB
+   9.0 churn    curslabs    371 curregs   13397 nonfull    215 occ  56.4%  active   27.4 MiB resident   28.5 MiB
+  10.0 churn    curslabs    371 curregs   13397 nonfull    212 occ  56.4%  active   27.4 MiB resident   28.5 MiB
+  11.0 churn    curslabs    371 curregs   13397 nonfull    212 occ  56.4%  active   27.4 MiB resident   28.5 MiB
+  12.0 churn    curslabs    371 curregs   13397 nonfull    223 occ  56.4%  active   27.4 MiB resident   28.4 MiB
+  13.0 churn    curslabs    371 curregs   13397 nonfull    213 occ  56.4%  active   27.4 MiB resident   28.4 MiB
+  14.0 churn    curslabs    371 curregs   13397 nonfull    216 occ  56.4%  active   27.4 MiB resident   28.4 MiB
+  15.0 churn    curslabs    371 curregs   13397 nonfull    217 occ  56.4%  active   27.4 MiB resident   28.4 MiB
+  16.0 churn    curslabs    371 curregs   13397 nonfull    217 occ  56.4%  active   27.4 MiB resident   28.4 MiB
+  17.0 churn    curslabs    371 curregs   13397 nonfull    213 occ  56.4%  active   27.4 MiB resident   28.4 MiB
+  18.0 churn    curslabs    371 curregs   13397 nonfull    210 occ  56.4%  active   27.4 MiB resident   28.4 MiB
+  19.0 churn    curslabs    371 curregs   13397 nonfull    216 occ  56.4%  active   27.4 MiB resident   28.4 MiB
+  20.0 churn    curslabs    371 curregs   13429 nonfull    176 occ  56.6%  active   27.4 MiB resident   28.4 MiB
+  21.0 churn    curslabs    371 curregs   13429 nonfull    177 occ  56.6%  active   27.4 MiB resident   28.4 MiB
+ops 377432272 (18871614/s)
+  22.0 end      curslabs    371 curregs   13397 nonfull    209 occ  56.4%  active   27.4 MiB resident   28.4 MiB
+=== libjemalloc.so.2 S=1024 N=30000 T=20 pin=0.035 
+   0.0 full     curslabs    469 curregs   30016 nonfull      0 occ 100.0%  active   30.0 MiB resident   33.8 MiB
+   0.0 deleted  curslabs    469 curregs   13376 nonfull    467 occ  44.6%  active   30.1 MiB resident   33.9 MiB
+   1.0 deleted  curslabs    469 curregs   13376 nonfull    467 occ  44.6%  active   30.1 MiB resident   33.9 MiB
+pinned 465 of 13302 survivors in 297 distinct 64 KiB slabs (the floor)
+   2.0 churn    curslabs    469 curregs   13304 nonfull    466 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+   3.0 churn    curslabs    469 curregs   13303 nonfull    464 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+   4.0 churn    curslabs    469 curregs   13303 nonfull    461 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+   5.0 churn    curslabs    469 curregs   13303 nonfull    459 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+   6.0 churn    curslabs    469 curregs   13305 nonfull    457 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+   7.0 churn    curslabs    469 curregs   13302 nonfull    454 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+   8.0 churn    curslabs    469 curregs   13304 nonfull    452 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+   9.0 churn    curslabs    469 curregs   13304 nonfull    450 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  10.0 churn    curslabs    469 curregs   13304 nonfull    447 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  11.0 churn    curslabs    469 curregs   13304 nonfull    445 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  12.0 churn    curslabs    469 curregs   13304 nonfull    443 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  13.0 churn    curslabs    469 curregs   13303 nonfull    441 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  14.0 churn    curslabs    469 curregs   13304 nonfull    439 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  15.0 churn    curslabs    469 curregs   13304 nonfull    437 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  16.0 churn    curslabs    469 curregs   13302 nonfull    435 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  17.0 churn    curslabs    469 curregs   13303 nonfull    434 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  18.0 churn    curslabs    469 curregs   13304 nonfull    432 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  19.0 churn    curslabs    469 curregs   13304 nonfull    430 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  20.0 churn    curslabs    469 curregs   13302 nonfull    430 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  21.0 churn    curslabs    469 curregs   13302 nonfull    426 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+ops 373231381 (18661569/s)
+  22.0 end      curslabs    469 curregs   13304 nonfull    424 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+=== libchalloc.so S=1024 N=30000 T=20 pin=0.14 
+   0.0 full     curslabs    469 curregs   30016 nonfull      0 occ 100.0%  active   33.3 MiB resident   33.9 MiB
+   0.0 deleted  curslabs    469 curregs   13376 nonfull    468 occ  44.6%  active   33.4 MiB resident   34.3 MiB
+   1.0 deleted  curslabs    469 curregs   13376 nonfull    468 occ  44.6%  active   33.4 MiB resident   34.3 MiB
+pinned 1862 of 13302 survivors in 465 distinct 64 KiB slabs (the floor)
+   2.0 churn    curslabs    468 curregs   13397 nonfull    326 occ  44.7%  active   33.6 MiB resident   34.8 MiB
+   3.0 churn    curslabs    468 curregs   13397 nonfull    325 occ  44.7%  active   33.6 MiB resident   34.8 MiB
+   4.0 churn    curslabs    468 curregs   13397 nonfull    323 occ  44.7%  active   33.6 MiB resident   34.8 MiB
+   5.0 churn    curslabs    468 curregs   13397 nonfull    322 occ  44.7%  active   33.6 MiB resident   34.8 MiB
+   6.0 churn    curslabs    468 curregs   13397 nonfull    320 occ  44.7%  active   33.6 MiB resident   34.8 MiB
+   7.0 churn    curslabs    468 curregs   13397 nonfull    325 occ  44.7%  active   33.6 MiB resident   34.8 MiB
+   8.0 churn    curslabs    468 curregs   13397 nonfull    322 occ  44.7%  active   33.6 MiB resident   34.8 MiB
+   9.0 churn    curslabs    468 curregs   13397 nonfull    325 occ  44.7%  active   33.6 MiB resident   34.8 MiB
+  10.0 churn    curslabs    468 curregs   13397 nonfull    321 occ  44.7%  active   33.6 MiB resident   34.8 MiB
+  11.0 churn    curslabs    468 curregs   13397 nonfull    320 occ  44.7%  active   33.6 MiB resident   34.8 MiB
+  12.0 churn    curslabs    468 curregs   13397 nonfull    326 occ  44.7%  active   33.6 MiB resident   34.8 MiB
+  13.0 churn    curslabs    468 curregs   13397 nonfull    327 occ  44.7%  active   33.6 MiB resident   34.8 MiB
+  14.0 churn    curslabs    468 curregs   13397 nonfull    319 occ  44.7%  active   33.6 MiB resident   34.8 MiB
+  15.0 churn    curslabs    468 curregs   13397 nonfull    327 occ  44.7%  active   33.6 MiB resident   34.8 MiB
+  16.0 churn    curslabs    468 curregs   13397 nonfull    318 occ  44.7%  active   33.6 MiB resident   34.8 MiB
+  17.0 churn    curslabs    468 curregs   13397 nonfull    323 occ  44.7%  active   33.6 MiB resident   34.8 MiB
+  18.0 churn    curslabs    468 curregs   13397 nonfull    319 occ  44.7%  active   33.6 MiB resident   34.8 MiB
+  19.0 churn    curslabs    468 curregs   13397 nonfull    329 occ  44.7%  active   33.6 MiB resident   34.8 MiB
+  20.0 churn    curslabs    468 curregs   13429 nonfull    291 occ  44.8%  active   33.4 MiB resident   34.8 MiB
+  21.0 churn    curslabs    468 curregs   13429 nonfull    283 occ  44.8%  active   33.4 MiB resident   34.8 MiB
+ops 382529710 (19126486/s)
+  22.0 end      curslabs    468 curregs   13429 nonfull    288 occ  44.8%  active   33.4 MiB resident   34.8 MiB
+=== libjemalloc.so.2 S=1024 N=30000 T=20 pin=0.14 
+   0.0 full     curslabs    469 curregs   30016 nonfull      0 occ 100.0%  active   30.0 MiB resident   33.8 MiB
+   0.0 deleted  curslabs    469 curregs   13376 nonfull    467 occ  44.6%  active   30.1 MiB resident   33.9 MiB
+   1.0 deleted  curslabs    469 curregs   13376 nonfull    467 occ  44.6%  active   30.1 MiB resident   33.9 MiB
+pinned 1862 of 13302 survivors in 465 distinct 64 KiB slabs (the floor)
+   2.0 churn    curslabs    469 curregs   13302 nonfull    466 occ  44.3%  active   30.1 MiB resident   34.0 MiB
+   3.0 churn    curslabs    469 curregs   13304 nonfull    464 occ  44.3%  active   30.1 MiB resident   34.0 MiB
+   4.0 churn    curslabs    469 curregs   13303 nonfull    461 occ  44.3%  active   30.1 MiB resident   34.0 MiB
+   5.0 churn    curslabs    469 curregs   13302 nonfull    459 occ  44.3%  active   30.1 MiB resident   34.0 MiB
+   6.0 churn    curslabs    469 curregs   13302 nonfull    456 occ  44.3%  active   30.1 MiB resident   34.0 MiB
+   7.0 churn    curslabs    469 curregs   13303 nonfull    454 occ  44.3%  active   30.1 MiB resident   34.0 MiB
+   8.0 churn    curslabs    469 curregs   13304 nonfull    451 occ  44.3%  active   30.1 MiB resident   34.0 MiB
+   9.0 churn    curslabs    469 curregs   13304 nonfull    449 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  10.0 churn    curslabs    469 curregs   13304 nonfull    447 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  11.0 churn    curslabs    469 curregs   13302 nonfull    445 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  12.0 churn    curslabs    469 curregs   13304 nonfull    443 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  13.0 churn    curslabs    469 curregs   13303 nonfull    440 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  14.0 churn    curslabs    469 curregs   13303 nonfull    440 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  15.0 churn    curslabs    469 curregs   13304 nonfull    437 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  16.0 churn    curslabs    469 curregs   13302 nonfull    435 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  17.0 churn    curslabs    469 curregs   13304 nonfull    433 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  18.0 churn    curslabs    469 curregs   13303 nonfull    431 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  19.0 churn    curslabs    469 curregs   13302 nonfull    430 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  20.0 churn    curslabs    469 curregs   13302 nonfull    428 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+  21.0 churn    curslabs    469 curregs   13302 nonfull    426 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+ops 448978659 (22448933/s)
+  22.0 end      curslabs    469 curregs   13303 nonfull    424 occ  44.3%  active   30.1 MiB resident   33.9 MiB
+=== libchalloc.so S=640 N=48000 T=10 pin=0 
+   0.0 full     curslabs    471 curregs   48000 nonfull      2 occ  99.9%  active   29.8 MiB resident   30.2 MiB
+   0.0 deleted  curslabs    471 curregs   21120 nonfull    470 occ  44.0%  active   29.9 MiB resident   30.6 MiB
+   1.0 deleted  curslabs    471 curregs   21120 nonfull    470 occ  44.0%  active   29.9 MiB resident   30.6 MiB
+   2.0 churn    curslabs    214 curregs   21163 nonfull     18 occ  97.0%  active   13.9 MiB resident   30.3 MiB
+   3.0 churn    curslabs    214 curregs   21163 nonfull     18 occ  97.0%  active   13.9 MiB resident   24.4 MiB
+   4.0 churn    curslabs    214 curregs   21163 nonfull     18 occ  97.0%  active   13.9 MiB resident   16.4 MiB
+   5.0 churn    curslabs    214 curregs   21163 nonfull     18 occ  97.0%  active   13.9 MiB resident   14.7 MiB
+   6.0 churn    curslabs    214 curregs   21163 nonfull     18 occ  97.0%  active   13.9 MiB resident   14.6 MiB
+   7.0 churn    curslabs    214 curregs   21163 nonfull     18 occ  97.0%  active   13.9 MiB resident   14.6 MiB
+   8.0 churn    curslabs    214 curregs   21163 nonfull     18 occ  97.0%  active   13.9 MiB resident   14.6 MiB
+   9.0 churn    curslabs    214 curregs   21163 nonfull     18 occ  97.0%  active   13.9 MiB resident   14.6 MiB
+  10.0 churn    curslabs    214 curregs   21163 nonfull     18 occ  97.0%  active   13.9 MiB resident   14.6 MiB
+  11.0 churn    curslabs    214 curregs   21163 nonfull     22 occ  97.0%  active   13.9 MiB resident   14.6 MiB
+ops 239972611 (23997261/s)
+  12.0 end      curslabs    214 curregs   21163 nonfull     22 occ  97.0%  active   13.9 MiB resident   14.5 MiB
+=== libjemalloc.so.2 S=640 N=48000 T=10 pin=0 
+   0.0 full     curslabs     94 curregs   48024 nonfull      0 occ  99.8%  active   30.2 MiB resident   33.6 MiB
+   0.0 deleted  curslabs     94 curregs   21224 nonfull     93 occ  44.1%  active   30.2 MiB resident   33.6 MiB
+   1.0 deleted  curslabs     94 curregs   21224 nonfull     93 occ  44.1%  active   30.2 MiB resident   33.6 MiB
+   2.0 churn    curslabs     94 curregs   21036 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.6 MiB
+   3.0 churn    curslabs     94 curregs   21039 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.6 MiB
+   4.0 churn    curslabs     94 curregs   21038 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.6 MiB
+   5.0 churn    curslabs     94 curregs   21036 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.6 MiB
+   6.0 churn    curslabs     94 curregs   21038 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.6 MiB
+   7.0 churn    curslabs     94 curregs   21036 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.6 MiB
+   8.0 churn    curslabs     94 curregs   21036 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.6 MiB
+   9.0 churn    curslabs     94 curregs   21039 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.6 MiB
+  10.0 churn    curslabs     94 curregs   21038 nonfull     92 occ  43.7%  active   30.2 MiB resident   33.6 MiB
+  11.0 churn    curslabs     94 curregs   21036 nonfull     92 occ  43.7%  active   30.2 MiB resident   33.6 MiB
+ops 234892399 (23489240/s)
+  12.0 end      curslabs     94 curregs   21036 nonfull     92 occ  43.7%  active   30.2 MiB resident   33.6 MiB
+=== libchalloc.so S=640 N=48000 T=20 pin=0.022 
+   0.0 full     curslabs    471 curregs   48000 nonfull      2 occ  99.9%  active   29.8 MiB resident   30.2 MiB
+   0.0 deleted  curslabs    471 curregs   21120 nonfull    470 occ  44.0%  active   29.9 MiB resident   30.6 MiB
+   1.0 deleted  curslabs    471 curregs   21120 nonfull    470 occ  44.0%  active   29.9 MiB resident   30.6 MiB
+pinned 462 of 21036 survivors in 301 distinct 64 KiB slabs (the floor)
+   2.0 churn    curslabs    367 curregs   21131 nonfull    215 occ  56.4%  active   23.5 MiB resident   30.8 MiB
+   3.0 churn    curslabs    367 curregs   21131 nonfull    211 occ  56.4%  active   23.5 MiB resident   28.6 MiB
+   4.0 churn    curslabs    367 curregs   21131 nonfull    211 occ  56.4%  active   23.5 MiB resident   25.0 MiB
+   5.0 churn    curslabs    367 curregs   21131 nonfull    213 occ  56.4%  active   23.5 MiB resident   24.5 MiB
+   6.0 churn    curslabs    367 curregs   21131 nonfull    212 occ  56.4%  active   23.5 MiB resident   24.4 MiB
+   7.0 churn    curslabs    367 curregs   21131 nonfull    206 occ  56.4%  active   23.5 MiB resident   24.4 MiB
+   8.0 churn    curslabs    367 curregs   21131 nonfull    211 occ  56.4%  active   23.5 MiB resident   24.4 MiB
+   9.0 churn    curslabs    367 curregs   21131 nonfull    209 occ  56.4%  active   23.5 MiB resident   24.4 MiB
+  10.0 churn    curslabs    367 curregs   21131 nonfull    207 occ  56.4%  active   23.5 MiB resident   24.4 MiB
+  11.0 churn    curslabs    367 curregs   21131 nonfull    209 occ  56.4%  active   23.5 MiB resident   24.4 MiB
+  12.0 churn    curslabs    367 curregs   21131 nonfull    205 occ  56.4%  active   23.5 MiB resident   24.3 MiB
+  13.0 churn    curslabs    367 curregs   21131 nonfull    210 occ  56.4%  active   23.5 MiB resident   24.3 MiB
+  14.0 churn    curslabs    367 curregs   21131 nonfull    218 occ  56.4%  active   23.5 MiB resident   24.3 MiB
+  15.0 churn    curslabs    367 curregs   21131 nonfull    209 occ  56.4%  active   23.5 MiB resident   24.3 MiB
+  16.0 churn    curslabs    367 curregs   21131 nonfull    213 occ  56.4%  active   23.5 MiB resident   24.3 MiB
+  17.0 churn    curslabs    367 curregs   21131 nonfull    213 occ  56.4%  active   23.5 MiB resident   24.3 MiB
+  18.0 churn    curslabs    367 curregs   21131 nonfull    207 occ  56.4%  active   23.5 MiB resident   24.3 MiB
+  19.0 churn    curslabs    367 curregs   21131 nonfull    212 occ  56.4%  active   23.5 MiB resident   24.3 MiB
+  20.0 churn    curslabs    367 curregs   21163 nonfull    175 occ  56.5%  active   23.5 MiB resident   24.3 MiB
+  21.0 churn    curslabs    367 curregs   21163 nonfull    175 occ  56.5%  active   23.5 MiB resident   24.3 MiB
+ops 379798061 (18989903/s)
+  22.0 end      curslabs    367 curregs   21163 nonfull    176 occ  56.5%  active   23.5 MiB resident   24.3 MiB
+=== libjemalloc.so.2 S=640 N=48000 T=20 pin=0.022 
+   0.0 full     curslabs     94 curregs   48024 nonfull      0 occ  99.8%  active   30.2 MiB resident   33.6 MiB
+   0.0 deleted  curslabs     94 curregs   21224 nonfull     93 occ  44.1%  active   30.2 MiB resident   33.6 MiB
+   1.0 deleted  curslabs     94 curregs   21224 nonfull     93 occ  44.1%  active   30.2 MiB resident   33.6 MiB
+pinned 462 of 21036 survivors in 304 distinct 64 KiB slabs (the floor)
+   2.0 churn    curslabs     94 curregs   21036 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.7 MiB
+   3.0 churn    curslabs     94 curregs   21036 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.7 MiB
+   4.0 churn    curslabs     94 curregs   21036 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.7 MiB
+   5.0 churn    curslabs     94 curregs   21036 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.7 MiB
+   6.0 churn    curslabs     94 curregs   21036 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.7 MiB
+   7.0 churn    curslabs     94 curregs   21036 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.7 MiB
+   8.0 churn    curslabs     94 curregs   21038 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.7 MiB
+   9.0 churn    curslabs     94 curregs   21036 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.7 MiB
+  10.0 churn    curslabs     94 curregs   21038 nonfull     92 occ  43.7%  active   30.2 MiB resident   33.7 MiB
+  11.0 churn    curslabs     94 curregs   21036 nonfull     92 occ  43.7%  active   30.2 MiB resident   33.7 MiB
+  12.0 churn    curslabs     94 curregs   21036 nonfull     92 occ  43.7%  active   30.2 MiB resident   33.7 MiB
+  13.0 churn    curslabs     94 curregs   21036 nonfull     92 occ  43.7%  active   30.2 MiB resident   33.7 MiB
+  14.0 churn    curslabs     94 curregs   21036 nonfull     92 occ  43.7%  active   30.2 MiB resident   33.7 MiB
+  15.0 churn    curslabs     94 curregs   21038 nonfull     92 occ  43.7%  active   30.2 MiB resident   33.7 MiB
+  16.0 churn    curslabs     94 curregs   21038 nonfull     92 occ  43.7%  active   30.2 MiB resident   33.7 MiB
+  17.0 churn    curslabs     94 curregs   21036 nonfull     92 occ  43.7%  active   30.2 MiB resident   33.7 MiB
+  18.0 churn    curslabs     94 curregs   21039 nonfull     92 occ  43.7%  active   30.2 MiB resident   33.7 MiB
+  19.0 churn    curslabs     94 curregs   21036 nonfull     91 occ  43.7%  active   30.2 MiB resident   33.7 MiB
+  20.0 churn    curslabs     94 curregs   21036 nonfull     91 occ  43.7%  active   30.2 MiB resident   33.7 MiB
+  21.0 churn    curslabs     94 curregs   21039 nonfull     91 occ  43.7%  active   30.2 MiB resident   33.7 MiB
+ops 438659813 (21932991/s)
+  22.0 end      curslabs     94 curregs   21036 nonfull     91 occ  43.7%  active   30.2 MiB resident   33.7 MiB
+=== libchalloc.so S=640 N=48000 T=20 pin=0.09 
+   0.0 full     curslabs    471 curregs   48000 nonfull      2 occ  99.9%  active   29.8 MiB resident   30.2 MiB
+   0.0 deleted  curslabs    471 curregs   21120 nonfull    470 occ  44.0%  active   29.9 MiB resident   30.6 MiB
+   1.0 deleted  curslabs    471 curregs   21120 nonfull    470 occ  44.0%  active   29.9 MiB resident   30.6 MiB
+pinned 1893 of 21036 survivors in 464 distinct 64 KiB slabs (the floor)
+   2.0 churn    curslabs    469 curregs   21131 nonfull    321 occ  44.2%  active   30.1 MiB resident   31.1 MiB
+   3.0 churn    curslabs    469 curregs   21131 nonfull    322 occ  44.2%  active   30.1 MiB resident   31.1 MiB
+   4.0 churn    curslabs    469 curregs   21131 nonfull    326 occ  44.2%  active   30.1 MiB resident   31.1 MiB
+   5.0 churn    curslabs    469 curregs   21131 nonfull    321 occ  44.2%  active   30.1 MiB resident   31.1 MiB
+   6.0 churn    curslabs    469 curregs   21131 nonfull    321 occ  44.2%  active   30.1 MiB resident   31.1 MiB
+   7.0 churn    curslabs    469 curregs   21131 nonfull    322 occ  44.2%  active   30.1 MiB resident   31.0 MiB
+   8.0 churn    curslabs    469 curregs   21131 nonfull    317 occ  44.2%  active   30.1 MiB resident   31.0 MiB
+   9.0 churn    curslabs    469 curregs   21131 nonfull    325 occ  44.2%  active   30.1 MiB resident   31.0 MiB
+  10.0 churn    curslabs    469 curregs   21131 nonfull    321 occ  44.2%  active   30.1 MiB resident   31.0 MiB
+  11.0 churn    curslabs    469 curregs   21131 nonfull    323 occ  44.2%  active   30.1 MiB resident   30.9 MiB
+  12.0 churn    curslabs    469 curregs   21131 nonfull    316 occ  44.2%  active   30.1 MiB resident   30.9 MiB
+  13.0 churn    curslabs    469 curregs   21131 nonfull    319 occ  44.2%  active   30.1 MiB resident   30.9 MiB
+  14.0 churn    curslabs    469 curregs   21131 nonfull    318 occ  44.2%  active   30.1 MiB resident   30.9 MiB
+  15.0 churn    curslabs    469 curregs   21131 nonfull    321 occ  44.2%  active   30.1 MiB resident   30.9 MiB
+  16.0 churn    curslabs    469 curregs   21131 nonfull    321 occ  44.2%  active   30.1 MiB resident   30.9 MiB
+  17.0 churn    curslabs    469 curregs   21131 nonfull    323 occ  44.2%  active   30.1 MiB resident   30.9 MiB
+  18.0 churn    curslabs    469 curregs   21131 nonfull    321 occ  44.2%  active   30.1 MiB resident   30.9 MiB
+  19.0 churn    curslabs    469 curregs   21131 nonfull    324 occ  44.2%  active   30.1 MiB resident   30.9 MiB
+  20.0 churn    curslabs    469 curregs   21163 nonfull    285 occ  44.2%  active   29.8 MiB resident   30.9 MiB
+  21.0 churn    curslabs    469 curregs   21163 nonfull    285 occ  44.2%  active   29.8 MiB resident   30.9 MiB
+ops 380158619 (19007931/s)
+  22.0 end      curslabs    469 curregs   21131 nonfull    319 occ  44.2%  active   29.8 MiB resident   30.9 MiB
+=== libjemalloc.so.2 S=640 N=48000 T=20 pin=0.09 
+   0.0 full     curslabs     94 curregs   48024 nonfull      0 occ  99.8%  active   30.2 MiB resident   33.6 MiB
+   0.0 deleted  curslabs     94 curregs   21224 nonfull     93 occ  44.1%  active   30.2 MiB resident   33.6 MiB
+   1.0 deleted  curslabs     94 curregs   21224 nonfull     93 occ  44.1%  active   30.2 MiB resident   33.6 MiB
+pinned 1893 of 21036 survivors in 464 distinct 64 KiB slabs (the floor)
+   2.0 churn    curslabs     94 curregs   21039 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.8 MiB
+   3.0 churn    curslabs     94 curregs   21036 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.8 MiB
+   4.0 churn    curslabs     94 curregs   21036 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.8 MiB
+   5.0 churn    curslabs     94 curregs   21036 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.8 MiB
+   6.0 churn    curslabs     94 curregs   21039 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.8 MiB
+   7.0 churn    curslabs     94 curregs   21036 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.8 MiB
+   8.0 churn    curslabs     94 curregs   21036 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.8 MiB
+   9.0 churn    curslabs     94 curregs   21036 nonfull     93 occ  43.7%  active   30.2 MiB resident   33.8 MiB
+  10.0 churn    curslabs     94 curregs   21036 nonfull     92 occ  43.7%  active   30.2 MiB resident   33.8 MiB
+  11.0 churn    curslabs     94 curregs   21036 nonfull     92 occ  43.7%  active   30.2 MiB resident   33.8 MiB
+  12.0 churn    curslabs     94 curregs   21038 nonfull     92 occ  43.7%  active   30.2 MiB resident   33.8 MiB
+  13.0 churn    curslabs     94 curregs   21038 nonfull     92 occ  43.7%  active   30.2 MiB resident   33.6 MiB
+  14.0 churn    curslabs     94 curregs   21039 nonfull     92 occ  43.7%  active   30.2 MiB resident   33.6 MiB
+  15.0 churn    curslabs     94 curregs   21039 nonfull     92 occ  43.7%  active   30.2 MiB resident   33.6 MiB
+  16.0 churn    curslabs     94 curregs   21039 nonfull     92 occ  43.7%  active   30.2 MiB resident   33.6 MiB
+  17.0 churn    curslabs     94 curregs   21036 nonfull     91 occ  43.7%  active   30.2 MiB resident   33.6 MiB
+  18.0 churn    curslabs     94 curregs   21039 nonfull     91 occ  43.7%  active   30.2 MiB resident   33.6 MiB
+  19.0 churn    curslabs     94 curregs   21036 nonfull     91 occ  43.7%  active   30.2 MiB resident   33.6 MiB
+  20.0 churn    curslabs     94 curregs   21039 nonfull     91 occ  43.7%  active   30.2 MiB resident   33.6 MiB
+  21.0 churn    curslabs     94 curregs   21036 nonfull     91 occ  43.7%  active   30.2 MiB resident   33.6 MiB
+ops 445584593 (22279230/s)
+  22.0 end      curslabs     94 curregs   21036 nonfull     91 occ  43.7%  active   30.2 MiB resident   33.6 MiB
+=== knobs at 512 (as churn-run.sh at 1024)
+=== libchalloc.so S=512 N=60000 T=8 pin=0 conf=tcache_compact_shift:0
+   0.0 full     curslabs    469 curregs   60032 nonfull      0 occ 100.0%  active   29.8 MiB resident   30.2 MiB
+   0.0 deleted  curslabs    469 curregs   26496 nonfull    468 occ  44.1%  active   29.9 MiB resident   30.6 MiB
+   1.0 deleted  curslabs    469 curregs   26496 nonfull    468 occ  44.1%  active   29.9 MiB resident   30.6 MiB
+   2.0 churn    curslabs    469 curregs   26496 nonfull    468 occ  44.1%  active   29.9 MiB resident   30.6 MiB
+   3.0 churn    curslabs    469 curregs   26496 nonfull    468 occ  44.1%  active   29.9 MiB resident   30.6 MiB
+   4.0 churn    curslabs    469 curregs   26496 nonfull    468 occ  44.1%  active   29.9 MiB resident   30.6 MiB
+   5.0 churn    curslabs    469 curregs   26496 nonfull    468 occ  44.1%  active   29.9 MiB resident   30.6 MiB
+   6.0 churn    curslabs    469 curregs   26496 nonfull    468 occ  44.1%  active   29.9 MiB resident   30.6 MiB
+   7.0 churn    curslabs    469 curregs   26496 nonfull    468 occ  44.1%  active   29.9 MiB resident   30.6 MiB
+   8.0 churn    curslabs    469 curregs   26496 nonfull    468 occ  44.1%  active   29.9 MiB resident   30.6 MiB
+   9.0 churn    curslabs    469 curregs   26496 nonfull    468 occ  44.1%  active   29.9 MiB resident   30.6 MiB
+ops 200817988 (25102248/s)
+  10.0 end      curslabs    469 curregs   26496 nonfull    468 occ  44.1%  active   29.9 MiB resident   30.6 MiB
+=== libchalloc.so S=512 N=60000 T=8 pin=0 conf=tcache_compact_shift:5
+   0.0 full     curslabs    469 curregs   60032 nonfull      0 occ 100.0%  active   29.8 MiB resident   30.2 MiB
+   0.0 deleted  curslabs    469 curregs   26496 nonfull    468 occ  44.1%  active   29.9 MiB resident   30.6 MiB
+   1.0 deleted  curslabs    469 curregs   26496 nonfull    468 occ  44.1%  active   29.9 MiB resident   30.6 MiB
+   2.0 churn    curslabs    214 curregs   26549 nonfull     20 occ  96.9%  active   14.0 MiB resident   30.5 MiB
+   3.0 churn    curslabs    214 curregs   26549 nonfull     20 occ  96.9%  active   14.0 MiB resident   26.1 MiB
+   4.0 churn    curslabs    214 curregs   26549 nonfull     20 occ  96.9%  active   14.0 MiB resident   17.3 MiB
+   5.0 churn    curslabs    214 curregs   26549 nonfull     20 occ  96.9%  active   14.0 MiB resident   14.8 MiB
+   6.0 churn    curslabs    214 curregs   26549 nonfull     20 occ  96.9%  active   14.0 MiB resident   14.8 MiB
+   7.0 churn    curslabs    214 curregs   26549 nonfull     20 occ  96.9%  active   14.0 MiB resident   14.7 MiB
+   8.0 churn    curslabs    214 curregs   26549 nonfull     20 occ  96.9%  active   14.0 MiB resident   14.7 MiB
+   9.0 churn    curslabs    214 curregs   26549 nonfull     20 occ  96.9%  active   14.0 MiB resident   14.7 MiB
+ops 199731211 (24966401/s)
+  10.0 end      curslabs    214 curregs   26549 nonfull     20 occ  96.9%  active   14.0 MiB resident   14.7 MiB
+=== libchalloc.so S=512 N=60000 T=8 pin=0 conf=tcache_nslots_small_max:64
+   0.0 full     curslabs    469 curregs   60000 nonfull      1 occ  99.9%  active   29.8 MiB resident   30.2 MiB
+   0.0 deleted  curslabs    469 curregs   26304 nonfull    469 occ  43.8%  active   29.9 MiB resident   30.6 MiB
+   1.0 deleted  curslabs    469 curregs   26304 nonfull    469 occ  43.8%  active   29.9 MiB resident   30.6 MiB
+   2.0 churn    curslabs    212 curregs   26305 nonfull     18 occ  96.9%  active   13.9 MiB resident   30.4 MiB
+   3.0 churn    curslabs    212 curregs   26305 nonfull     18 occ  96.9%  active   13.9 MiB resident   24.9 MiB
+   4.0 churn    curslabs    212 curregs   26305 nonfull     18 occ  96.9%  active   13.9 MiB resident   16.4 MiB
+   5.0 churn    curslabs    212 curregs   26305 nonfull     18 occ  96.9%  active   13.9 MiB resident   14.7 MiB
+   6.0 churn    curslabs    212 curregs   26305 nonfull     18 occ  96.9%  active   13.9 MiB resident   14.6 MiB
+   7.0 churn    curslabs    212 curregs   26305 nonfull     18 occ  96.9%  active   13.9 MiB resident   14.6 MiB
+   8.0 churn    curslabs    212 curregs   26305 nonfull     18 occ  96.9%  active   13.9 MiB resident   14.6 MiB
+   9.0 churn    curslabs    212 curregs   26305 nonfull     18 occ  96.9%  active   13.9 MiB resident   14.6 MiB
+ops 199541410 (24942676/s)
+  10.0 end      curslabs    212 curregs   26302 nonfull     21 occ  96.9%  active   13.9 MiB resident   14.6 MiB
+=== done

@@ -1296,8 +1296,14 @@ owner-array load on `free` once a second arena exists.
 
 `tcache.create` allocates a `Heap` owned by no thread (the same caches,
 refill and flush, no TLS); `MALLOCX_TCACHE(t)` uses it. Explicit caches are not thread safe, matching jemalloc. `MALLOCX_TCACHE_NONE`
-bypasses caches and claims or releases directly against slab bitmaps; the
-defragmenter relies on this to land allocations in the fullest slabs.
+bypasses caches and claims or releases directly against slab bitmaps: a
+direct claim lands in the arena's lowest-address partial slab, the slab a
+refill or a compaction rebuild takes next, which is where jemalloc's
+`slabcur` (its lowest non-full slab) puts the same request. Valkey's
+defragmenter only needs its copies to land outside the below-average slabs
+it is emptying, which the lowest partial slab is once the low slabs are
+packed (`bench/results/2026-09-19-aarch64-64k-defrag-attribution.md`); it
+does not need, and does not get, the fullest slab.
 
 ### 13.4 `mallctl` namespace
 

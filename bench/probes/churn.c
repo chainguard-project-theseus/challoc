@@ -5,6 +5,16 @@
 // Every second print the bin's curslabs/curregs through mallctl so the
 // drain (or not) of the slab layout is visible. Works under challoc and
 // jemalloc (weak mallctl).
+//
+//   churn S N T FRAC PIN     (defaults 1024 30000 20 0.56 0)
+//
+// PIN (Phase 2.5 task 4g) is the fraction of the survivors that the churn
+// never frees: values whose keys the soak's load generators never select
+// again (bench/results/2026-09-17-aarch64-gce-compacting-cache-soak3.md).
+// They are picked at random over the survivors, so they are scattered over
+// the address range like the soak's; the probe prints how many distinct
+// 64 KiB slabs hold one (the floor no cache policy can go below: a slab
+// with a pinned block cannot empty). PIN 0 is the quick tier's row.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,6 +48,7 @@ int main(int argc, char **argv) {
     size_t N = argc > 2 ? strtoul(argv[2], 0, 0) : 30000;
     double T = argc > 3 ? atof(argv[3]) : 20;
     double frac = argc > 4 ? atof(argv[4]) : 0.56;
+    double pin = argc > 5 ? atof(argv[5]) : 0;
     if (!mallctl) { fprintf(stderr, "no mallctl\n"); return 1; }
     unsigned j = find_bin(S);
     char **live = calloc(N, sizeof *live);
@@ -49,10 +60,23 @@ int main(int argc, char **argv) {
     for (size_t i = 0; i < N; i++) { if ((rnd() % 1000) < frac * 1000) free(live[i]); else live[n++] = live[i]; }
     report(j, "deleted", now() - t0);
     sleep(1); report(j, "deleted", now() - t0);
-    // balanced churn: free a random live block, allocate a replacement
+    // pinned survivors: move a random PIN fraction to the front of the live
+    // array (partial Fisher-Yates) and count the 64 KiB slabs they hold
+    size_t pinned = (size_t)(pin * n);
+    if (pinned > n) pinned = n;
+    for (size_t i = 0; i < pinned; i++) { size_t k = i + rnd() % (n - i); char *t = live[i]; live[i] = live[k]; live[k] = t; }
+    if (pinned) {
+        uintptr_t *sl = calloc(pinned, sizeof *sl); size_t ns = 0;
+        for (size_t i = 0; i < pinned; i++) sl[i] = (uintptr_t)live[i] >> 16;
+        for (size_t i = 0; i < pinned; i++) { size_t k; for (k = 0; k < ns; k++) if (sl[k] == sl[i]) break; if (k == ns) sl[ns++] = sl[i]; }
+        printf("pinned %zu of %zu survivors in %zu distinct 64 KiB slabs (the floor)\n", pinned, n, ns);
+        free(sl);
+    }
+    if (pinned >= n) { fprintf(stderr, "nothing to churn\n"); return 1; }
+    // balanced churn: free a random live block that is not pinned, allocate a replacement
     double next = now() - t0 + 1; unsigned long ops = 0;
     while (now() - t0 < T + 2) {
-        size_t i = rnd() % n; free(live[i]); live[i] = malloc(S); live[i][0] = 1; ops++;
+        size_t i = pinned + rnd() % (n - pinned); free(live[i]); live[i] = malloc(S); live[i][0] = 1; ops++;
         if ((ops & 1023) == 0 && now() - t0 >= next) { report(j, "churn", now() - t0); next += 1; }
     }
     printf("ops %lu (%.0f/s)\n", ops, ops / T);
