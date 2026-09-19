@@ -1,0 +1,52 @@
+docker build --platform linux/amd64 -f Dockerfile.dev -t challoc-dev:amd64 .
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  31.82MB
+Step 1/4 : FROM cgr.dev/chainguard/wolfi-base
+ ---> 1d95114038f7
+Step 2/4 : RUN sed -i       -e 's/^glibc=.*/glibc-2.44/'       -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/'       -e 's/^ld-linux=.*/ld-linux-2.44/'       -e 's/^libcrypt1=.*/libcrypt1-2.44/'       /etc/apk/world  && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44  && apk add --no-cache       rust       build-base       gcc       jemalloc       git       cmake       tcl       openssl-dev       procps       memtier-benchmark       posix-libc-utils-2.44       autoconf       ruby-3.4       jemalloc-dev       yaml-dev       zlib-dev       libffi-dev       tzdata       tcmalloc-minimal       python-3.13       py3.13-pip  && rustc --version && cargo --version && python3 --version  && test -f /usr/lib/libtcmalloc_minimal.so.4
+ ---> Using cache
+ ---> 3e6a68302d30
+Step 3/4 : WORKDIR /src
+ ---> Using cache
+ ---> 93c02d978e0b
+Step 4/4 : CMD ["sh"]
+ ---> Using cache
+ ---> 4696b40d7f0e
+Successfully built 4696b40d7f0e
+Successfully tagged challoc-dev:amd64
+docker run --rm --platform linux/amd64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-amd64:/src/target -v challoc-cargo-registry:/root/.cargo/registry  -e HOST_CPU="INTEL(R) XEON(R) PLATINUM 8581C CPU @ 2.30GHz" -e VARIANTS="old=HEAD new=tree" -e ROUNDS="5" -e BENCHES="larson16 larson10 xmalloc"    -e RESULT="bench/results/2026-09-19-lane-c-spin-c4.md"      challoc-dev:amd64 sh bench/ab.sh
+== bench programs missing (rt): running bench/build.sh
+== A/B: 2026-09-19T18:37:01Z x86_64 nproc 16 load 6.67 2.18 0.79, HEAD 9ae5a60 + uncommitted src changes
+== building old (9ae5a60bb172) into target/ab/9ae5a60bb172 ... done, a5f6487a105e7f2e
+== building new (tree) into target/ab/tree ... done, ec7cf02f23673c5b
+== 5 rounds + warm-up x 3 benches x 2 variants (old new)
+   round 0 done, load 8.45 3.35 1.28, 18:38:09
+   round 1 done, load 9.92 4.36 1.70, 18:38:47
+   round 2 done, load 10.39 5.19 2.10, 18:39:25
+   round 3 done, load 11.30 5.99 2.48, 18:40:03
+   round 4 done, load 11.49 6.69 2.86, 18:40:41
+   round 5 done, load 11.51 7.29 3.22, 18:41:20
+== wrote bench/results/2026-09-19-lane-c-spin-c4.md
+## Sorted scores
+
+| program | variant | sorted scores | maxrss KiB |
+|---|---|---|---:|
+| larson16 | old | 307.2 311.2 311.7 313.9 316.7 | 119156 |
+| larson16 | new | 302.3 304.5 308.2 308.7 314.7 | 120264 |
+| larson10 | old | 277.2 284.3 285.8 290.2 293.1 | 98468 |
+| larson10 | new | 273.9 284.3 284.6 285.6 290.3 | 99368 |
+| xmalloc | old | 317.765 328.210 331.615 339.395 339.539 | 55780 |
+| xmalloc | new | 328.858 332.985 336.514 341.508 342.683 | 54424 |
+
+## Medians
+
+| program | unit | old | old RSS MiB | new | new RSS MiB | new vs old |
+|---|---|---:|---:|---:|---:|---:|
+| larson16 | M ops/s | 311.7 | 116.4 | 308.2 | 117.4 | +1.1% |
+| larson10 | M ops/s | 285.8 | 96.2 | 284.6 | 97.0 | +0.4% |
+| xmalloc | M frees/s | 331.615 | 54.5 | 336.514 | 53.1 | -1.5% |
+
+Positive percentages mean the variant did worse than old (slower or lower throughput).
