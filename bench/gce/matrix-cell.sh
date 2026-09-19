@@ -37,7 +37,21 @@
 # A step that fails does not stop the following ones: every cell records
 # every step.
 #
-#   bash bench/gce/matrix-cell.sh CELL IMAGE [privileged|scorecard]
+#   - a Chainguard OS cell (third argument `cgos`, task 14; the host is a
+#     bootc image with root podman behind the ~/bin/docker shim the driver's
+#     matrix_provision_bootc_script installed, see challoc-bench): make
+#     test twice (podman's default seccomp profile, then --privileged), the
+#     probe line three ways (podman default, podman --privileged, and
+#     natively on the host: libchalloc.so and the features binary copied
+#     out of the container, LD_PRELOAD on the host's own glibc 2.44), the
+#     host capture (uname, /proc/config.gz keys, THP, glibc, bootc status,
+#     the root mount; host.log), make test-cgroup (the churn at 512 and 256
+#     MiB, the lazy purge, the 300 s oscillation; podman sets the cgroup v2
+#     limits) and one `make scorecard ROUNDS=3` into
+#     bench/results/scorecard-cgos-<arch>.md (never the reference files).
+#     fuzz is skipped (the kernel matrix covers it).
+#
+#   bash bench/gce/matrix-cell.sh CELL IMAGE [privileged|scorecard|cgos]
 set -u
 
 cell="${1:?cell name}"
@@ -45,6 +59,9 @@ image="${2:?image name}"
 extra="${3:-}"
 LOG="$HOME/logs"
 mkdir -p "$LOG"
+# A bootc host has make, getconf and the docker shim in ~/bin (challoc-bench,
+# matrix_provision_bootc_script); harmless elsewhere.
+export PATH="$HOME/bin:$PATH"
 cd "$HOME/challoc" || { echo "no ~/challoc"; exit 1; }
 
 t0=$(date +%s)
@@ -54,12 +71,13 @@ zone="$(meta zone)"; [ -n "$zone" ] || zone=unknown
 family="${machine%%-*}"
 vcpus="$(nproc)"
 os="$(. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-unknown}")"
-page="$(getconf PAGESIZE)"
+page="$(getconf PAGESIZE 2>/dev/null || awk '/^KernelPageSize/ { print $2 * 1024; exit }' /proc/self/smaps)"
 # The CPU model: x86 has `model name` in cpuinfo; arm64 has only implementer
-# and part numbers there, which lscpu decodes (Neoverse-V2, Neoverse-N1).
+# and part numbers there, which lscpu decodes (Neoverse-V2, Neoverse-N1);
+# without lscpu (a bootc host) the two known Arm parts are decoded here.
 model="$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | sed 's/.*: *//')"
 [ -n "$model" ] || model="$(lscpu 2>/dev/null | grep -m1 'Model name' | sed 's/.*: *//')"
-[ -n "$model" ] || model="$(awk -F: '/CPU implementer|CPU part/ { gsub(/ /, "", $2); printf "%s ", $2 }' /proc/cpuinfo | head -c 64)"
+[ -n "$model" ] || model="$(awk -F: '/CPU implementer|CPU part/ { gsub(/ /, "", $2); printf "%s ", $2 }' /proc/cpuinfo | head -c 64 | sed -e 's/0x41 0xd4f/Neoverse-V2 (0x41 0xd4f)/' -e 's/0x41 0xd0c/Neoverse-N1 (0x41 0xd0c)/' -e 's/0x41 0xd8e/Neoverse-N3 (0x41 0xd8e)/' -e 's/ *$//')"
 [ -n "$model" ] || model=unknown
 echo "== cell $cell on $(hostname): $os"
 echo "== image $image, machine $machine ($family) in $zone, $vcpus vCPU, $(uname -m) $(uname -r), page size $page"
@@ -126,12 +144,54 @@ cpuinfo_cmd() {
 }
 step cpuinfo cpuinfo_cmd
 
-RC_fuzz=-; RC_test_cgroup=-; RC_test_privileged=-; RC_scorecard=-
+RC_fuzz=-; RC_test_cgroup=-; RC_test_privileged=-; RC_scorecard=-; RC_probe_native=-; RC_host=-
 case "$extra" in
   scorecard)
     scorecard_cmd() {
       make scorecard ROUNDS=3 SCORECARD_FILE="/src/bench/results/scorecard-$family.md" \
         HOST_KIND="GCE $machine ($model), zone $zone, $vcpus vCPU"
+    }
+    step scorecard scorecard_cmd
+    ;;
+  cgos)
+    # The host as shipped: what the library will see outside any container.
+    host_cmd() {
+      echo "-- uname"; uname -a
+      echo "-- os-release"; cat /etc/os-release
+      echo "-- glibc"; /usr/lib/libc.so.6 2>/dev/null | head -1 || echo "(no /usr/lib/libc.so.6)"
+      echo "-- root mount"; findmnt -no SOURCE,FSTYPE,OPTIONS / 2>/dev/null
+      echo "-- bootc"; sudo bootc status 2>/dev/null | grep -E 'image:|version:|composefs' | head -6
+      echo "-- thp"; for f in enabled defrag shmem_enabled khugepaged/defrag; do printf '%s: ' "$f"; cat "/sys/kernel/mm/transparent_hugepage/$f" 2>/dev/null; done
+      for d in /sys/kernel/mm/transparent_hugepage/hugepages-*; do printf '%s: %s\n' "${d##*/}" "$(cat "$d/enabled" 2>/dev/null)"; done
+      echo "-- sysctls"; sysctl -n kernel.perf_event_paranoid vm.max_map_count vm.overcommit_memory kernel.randomize_va_space 2>/dev/null | paste -sd' '
+      echo "-- kernel config (the keys the probes and the plan name)"
+      zcat /proc/config.gz 2>/dev/null | grep -E '^(CONFIG_(RSEQ|SCHED_MM_CID|PSI|MEMCG|PERF_EVENTS|HZ|HZ_[0-9]+|TRANSPARENT_HUGEPAGE|TRANSPARENT_HUGEPAGE_[A-Z]+|ARM64_MTE|ARM64_PTR_AUTH|ARM64_PTR_AUTH_KERNEL|ARM64_BTI|ARM64_BTI_KERNEL|ARM64_VA_BITS|ARM64_VA_BITS_[0-9]+|ARM64_PAGE_SHIFT|ARM64_[0-9]+K_PAGES|X86_5LEVEL|ADDRESS_MASKING|USERFAULTFD|KSM|ZONE_DEVICE|PAGE_SIZE_[0-9]+KB|SECCOMP|SECCOMP_FILTER|BPF_SYSCALL|CGROUPS|CGROUP_[A-Z_]+|ANON_VMA_NAME|MSEAL_SYSTEM_MAPPINGS|PROC_MEM_[A-Z_]+|LRU_GEN|NUMA_BALANCING|MEMORY_HOTPLUG|ZSWAP|ZSMALLOC|SWAP|VIRTUALIZATION|KVM|KVM_[A-Z_]+|PREEMPT[A-Z_]*|NO_HZ[A-Z_]*|HIGH_RES_TIMERS|SLUB[A-Z_]*|SLAB_[A-Z_]*|RANDOMIZE_BASE|RANDOMIZE_MEMORY|VMAP_STACK|GVE|IDPF|VIRTIO_[A-Z_]+|NVME_CORE|BLK_DEV_NVME))=' || echo "(no /proc/config.gz)"
+      echo "-- cpuinfo (first processor)"; awk '/^processor/ && n++ { exit } { print }' /proc/cpuinfo
+      echo "-- memory"; free -m
+      echo "-- podman"; sudo podman version 2>/dev/null | head -3; sudo podman info --format 'cgroup v{{.Host.CgroupsVersion}} manager {{.Host.CgroupManager}} seccomp {{.Host.Security.SECCOMPEnabled}} {{.Host.Security.SECCOMPProfilePath}} graphroot {{.Store.GraphRoot}} network {{.Host.NetworkBackend}}' 2>/dev/null
+      echo "-- nic driver"; ethtool -i "$(ip -o route get 8.8.8.8 | awk '{ print $5 }')" 2>/dev/null | grep -E '^(driver|version)'
+      echo "-- virt: $(systemd-detect-virt 2>/dev/null)"
+    }
+    step host host_cmd
+    # The probe line natively: the library and the test binary out of the
+    # container (the bind-mounted tree, .tmp-native is excluded from sync),
+    # LD_PRELOAD on the host's own glibc. The first report line from
+    # outside Docker/podman: mseal, process_madvise, anon_name, rseq are the
+    # kernel's answers, not a seccomp profile's.
+    probe_native_cmd() {
+      rm -rf "$HOME/challoc/.tmp-native"; mkdir -p "$HOME/challoc/.tmp-native"
+      make run CMD='cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c tests/c/features.c -o target/matrix-features -ldl && cp target/release/libchalloc.so target/matrix-features /src/.tmp-native/ && chmod -R a+rX /src/.tmp-native' || return 1
+      cp "$HOME/challoc/.tmp-native/libchalloc.so" "$HOME/challoc/.tmp-native/matrix-features" "$HOME/native/"
+      echo "host glibc: $(/usr/lib/libc.so.6 2>/dev/null | head -1)"
+      LD_PRELOAD="$HOME/native/libchalloc.so" "$HOME/native/matrix-features"
+    }
+    step probe-native probe_native_cmd
+    priv_cmd() { DOCKER_FLAGS='--privileged' make test; }
+    step test-privileged priv_cmd
+    step test-cgroup make test-cgroup
+    scorecard_cmd() {
+      make scorecard ROUNDS=3 SCORECARD_FILE="/src/bench/results/scorecard-cgos-$(uname -m | sed -e s/x86_64/amd64/ -e s/aarch64/arm64/).md" \
+        HOST_KIND="Chainguard OS $(uname -r), GCE $machine ($model), zone $zone, $vcpus vCPU, podman --network=host"
     }
     step scorecard scorecard_cmd
     ;;
@@ -154,11 +214,13 @@ tests="$(counts "$LOG/test.log")"
 failed_names="$(grep -E '^test .* FAILED$|^    [a-z_:]+$' "$LOG/test.log" | sed -n 's/^test \(.*\) \.\.\. FAILED$/\1/p; s/^    \([a-z_:]\+\)$/\1/p' | sort -u | tr '\n' ',' | sed 's/,$//')"
 probe_line="$(grep -m1 '^features: ' "$LOG/probe.log" || echo 'features: (none)')"
 probe_priv_line="$(grep -m1 '^features: ' "$LOG/probe-privileged.log" || echo 'features: (none)')"
+probe_native_line="$(grep -m1 '^features: ' "$LOG/probe-native.log" 2>/dev/null || echo 'features: (none)')"
 container_page="$(grep -m1 -E '^[0-9]+$' "$LOG/probe.log" || echo '?')"
 scorecard_line="$(grep -E '^\| 20[0-9][0-9]-' "$LOG/scorecard.log" 2>/dev/null | tail -1)"
+tests_priv="$(counts "$LOG/test-privileged.log")"
 
 outcome=PASS
-for v in "$RC_image" "$RC_test" "$RC_probe" "$RC_probe_privileged" "$RC_cpuinfo" "$RC_fuzz" "$RC_test_cgroup" "$RC_test_privileged" "$RC_scorecard"; do
+for v in "$RC_image" "$RC_test" "$RC_probe" "$RC_probe_privileged" "$RC_cpuinfo" "$RC_fuzz" "$RC_test_cgroup" "$RC_test_privileged" "$RC_scorecard" "$RC_probe_native" "$RC_host"; do
   [ "$v" = FAIL ] && outcome=FAIL
 done
 [ "$container_page" = "$page" ] || echo "== NOTE: container page size $container_page differs from the host's $page"
@@ -169,5 +231,6 @@ echo "== end $(date -u +%FT%TZ), wall $((t1 - t0)) s"
 echo "CPU $model"
 echo "PROBE $probe_line"
 echo "PROBE_PRIVILEGED $probe_priv_line"
+[ "$extra" != cgos ] || echo "PROBE_NATIVE $probe_native_line"
 [ -z "$scorecard_line" ] || echo "SCORECARD $scorecard_line"
-echo "MATRIX cell=$cell image=$image kernel=$(uname -r) page=$page machine=$machine zone=$zone vcpus=$vcpus tests=$tests fuzz=$RC_fuzz cgroup=$RC_test_cgroup privileged=$RC_test_privileged scorecard=$RC_scorecard wall=$((t1 - t0)) outcome=$outcome"
+echo "MATRIX cell=$cell image=$image kernel=$(uname -r) page=$page machine=$machine zone=$zone vcpus=$vcpus tests=$tests fuzz=$RC_fuzz cgroup=$RC_test_cgroup privileged=$RC_test_privileged${tests_priv:+:$tests_priv} scorecard=$RC_scorecard wall=$((t1 - t0)) outcome=$outcome"

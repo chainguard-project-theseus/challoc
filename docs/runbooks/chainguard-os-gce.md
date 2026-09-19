@@ -38,6 +38,59 @@ features a hypervisor hides.
 - Every VM this repo starts is stopped or deleted before the iteration
   ends; metal is about $10/h, so delete it within the hour.
 
+What the first cells found (lane E, 2026-09-19; `bench/gce/challoc-bench`
+`matrix cgos`, `bench/results/2026-09-19-chainguard-os-cells.md`), where
+it adds to or corrects the runbook below:
+
+- The 50 GB boot disk does not give you 50 GB: OS-3363 is live in the
+  2026-09-16 images. `/var` and `/home` are one ext4 of 4.9 GiB on a 49 GiB
+  partition (`lsblk` shows the partition grown, `df` does not). The fix
+  needs no reboot and no image change: `sudo podman run --rm --privileged
+  --network=host -v /dev:/dev -v /var:/mnt/var cgr.dev/chainguard/wolfi-base
+  sh -c 'apk add e2fsprogs-extra; resize2fs /dev/nvme0n1p2'` (p3 on the
+  amd64 image; `findmnt -no SOURCE /var` names it) grows the mounted
+  filesystem online in two seconds. The `-v /var` mount is what makes
+  resize2fs see the filesystem as mounted; without it, it opens the device
+  offline and fails with "Device or resource busy".
+- podman is root-only here: rootless fails with `/run/containers/storage:
+  permission denied`. Use `sudo podman`. Its default seccomp profile is
+  `/usr/share/containers/seccomp.json`, cgroup v2 with the systemd manager,
+  `--memory` limits work (`memory.max` reads the limit inside).
+- podman's default bridge network cannot come up: netavark needs `nft` and
+  the host has none (`iptables` is present, but netavark 1.x uses nftables).
+  Every `podman run` and `podman build` needs `--network=host` (or a
+  `containers.conf` netns setting). Host networking also sidesteps the GCE
+  1460-byte MTU that Docker needed configuring for.
+- The host has no `make`, `getconf`, `gcc`, `git`, `python3`, `perf`,
+  `ldd`, `lscpu`, `nft`; it has `bash`, `curl`, `rsync`, `jq`, `flock`,
+  `setsid`, `ethtool`, `iptables`, `mkfs.ext4` (but not `resize2fs`),
+  `libstdc++.so.6`, and `getenforce` (SELinux is not enabled; no
+  `/sys/fs/selinux`). Binaries copied out of a Wolfi container run
+  natively (glibc 2.44-r6 on the host), which is how the cell gets `make`
+  and `getconf`, and how challoc's `features` probe, larson and the Valkey
+  model ran on the host.
+- A detached job started over ssh with `setsid nohup ... &` dies when the
+  ssh session ends (the session scope is stopped; no `KillUserProcesses`
+  line is set in `logind.conf`, so this is the image's default). Use a
+  transient system unit: `sudo systemd-run --collect --unit=NAME
+  --uid=$(id -u) --gid=$(id -g) --setenv=HOME=$HOME --working-directory=DIR
+  bash -c '...'`; `loginctl show-user` reports `Linger=no`, so a `--user`
+  unit would die too.
+- `gcloud compute ssh` logs in as the local user through the project's
+  `ssh-keys` metadata (no OS Login on this image; the instance carries no
+  metadata). Direct `ssh -i ~/.ssh/google_compute_engine <user>@<ip>` and
+  rsync work. A VM recreated under an old IP changes its host key.
+- `/dev/kvm` is absent on the C4A and C4 VMs (no nested virtualization on
+  these shapes), so nothing here exercised Firecracker; the runbook's
+  x86 pre-flight uses N2 with `--enable-nested-virtualization` for that.
+- The kernel is `6.18.49-r2-gcp-6.18` on both architectures (2026-09-16
+  images): `CONFIG_RSEQ`, `SCHED_MM_CID`, `PSI`, `MEMCG`, `PERF_EVENTS`,
+  HZ 250; arm64 `ARM64_MTE`, `ARM64_PTR_AUTH`, `ARM64_BTI`, 52 VA bits, 4K
+  pages; x86 without `X86_5LEVEL` and without `ADDRESS_MASKING` (LAM), so
+  even a LAM-capable CPU could not be used from this kernel. THP is
+  `always` (2 MiB `inherit`, every mTHP size present and `never`).
+  `perf_event_paranoid` is 2.
+
 ---
 
 The human's runbook follows, verbatim apart from formatting.

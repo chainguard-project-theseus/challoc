@@ -44,6 +44,9 @@
 #   bench/gce/challoc-bench matrix    cpu                  # Phase 2.5 task 4: the cpu-* cells (one machine
 #                                                          # type each, tests + one scorecard run per CPU)
 #   bench/gce/challoc-bench matrix    lab CELL | ssh CELL CMD | sync CELL  # keep one cell VM for experiments
+#   bench/gce/challoc-bench matrix    cgos                 # Phase 2.5 task 14: the cgos-* cells, Chainguard OS
+#                                                          # hosts (bootc, podman, no Docker); MATRIX_ADOPT=<vm>
+#                                                          # runs a cell on an existing VM and keeps it
 #
 # Environment: CHALLOC_GCE_PROJECT (default: active gcloud project),
 # CHALLOC_GCE_ZONE (default us-east4-a), CHALLOC_GCE_PREFIX (default
@@ -468,6 +471,31 @@ cmd_session() {
 # Matrix VMs follow the lane prefix (challoc-lane-b-matrix-<cell>), so one
 # lane's `matrix clean` cannot delete another's cells; the default prefix
 # keeps the historical challoc-matrix-<cell>.
+#
+# The Chainguard OS cells (task 14, 2026-09-19): cgos-arm64 and cgos-amd64
+# boot the product's own image (`kirkland-server-hypervisor-<arch>` in the
+# `wolfi-vm` project, docs/runbooks/chainguard-os-gce.md: kernel 6.18,
+# glibc 2.44 on the host, bootc/composefs with a read-only fs-verity root)
+# on the reference shapes c4a-standard-8 / c4-standard-8, the first "floor
+# as shipped" cells and the only ones without Docker's seccomp profile
+# between the library and the kernel. A bootc host has no apt, no apk on
+# the host, no Docker, no make, no getconf, no perf; rootless podman fails
+# (/run/containers/storage is root's) and netavark has no `nft`, so the
+# provisioning (matrix_provision_bootc_script) grows /var (OS-3363: the
+# image ships without resize2fs, the ext4 root stays at 4.9 GiB; resize2fs
+# from a wolfi-base container seeing the mount does the online grow),
+# installs a `docker` shim in ~/bin that runs `sudo podman` with
+# `--network=host`, copies `make` and `getconf` out of a Wolfi container
+# (the host glibc is the same 2.44, so they run natively), and the cell
+# script's `cgos` mode (bench/gce/matrix-cell.sh) runs the tests inside
+# podman with the default seccomp profile and with --privileged, the probe
+# line three ways (podman, podman --privileged, natively on the host with
+# LD_PRELOAD), the host capture (config.gz keys, THP, glibc) and one
+# scorecard run into bench/results/scorecard-cgos-<arch>.md. Login is the
+# gcloud user through the project's ssh-keys metadata (OS Login is not
+# assumed on this image). `MATRIX_ADOPT=<vm-name>` runs a cell on a VM that
+# already exists (any zone), skipping create and never deleting it: the
+# lane's coordinator-created pair, or a `matrix lab` VM kept from before.
 if [ "$PREFIX" = challoc-bench ]; then
   MATRIX_PREFIX="${CHALLOC_MATRIX_PREFIX:-challoc-matrix}"
 else
@@ -482,11 +510,17 @@ MATRIX_CELLS="k510-amd64 k61-amd64 k61-arm64 k68-amd64 k68-arm64 hwe-amd64 64k-a
 # `gcloud compute machine-types list --filter="name~'-standard-8$'"`: every
 # family in us-east4-a except T2A (us-central1-a,b,f only).
 MATRIX_CPU_CELLS="cpu-c4a cpu-t2a cpu-c4 cpu-c3 cpu-c3d cpu-n2d cpu-c2 cpu-n4"
+# The Chainguard OS cells (task 14): the product's image on the reference
+# shapes, us-east4-a (the image families are in the wolfi-vm project).
+MATRIX_CGOS_CELLS="cgos-arm64 cgos-amd64"
 
 # cell_spec CELL -> "family project arch machine prep extra zones"
-# (extra: none | privileged | scorecard; zones: comma-separated, `-` = $ZONE)
+# (extra: none | privileged | scorecard | cgos; zones: comma-separated, `-` = $ZONE)
 cell_spec() {
   case "$1" in
+    # Chainguard OS (bootc, podman): the runbook's image families.
+    cgos-arm64) echo "kirkland-server-hypervisor-arm64 wolfi-vm arm64 c4a-standard-8 none cgos us-east4-a" ;;  # Axion, kernel 6.18, glibc 2.44
+    cgos-amd64) echo "kirkland-server-hypervisor-amd64 wolfi-vm amd64 c4-standard-8 none cgos us-east4-a" ;;   # Xeon 8581C, the same image for x86_64
     k510-amd64) echo "debian-11 debian-cloud amd64 e2-standard-4 none none -" ;;
     k61-amd64)  echo "debian-12 debian-cloud amd64 e2-standard-4 none none -" ;;
     k61-arm64)  echo "debian-12-arm64 debian-cloud arm64 c4a-standard-4 none none -" ;;
@@ -664,8 +698,69 @@ echo "== docker: $(sudo docker --version)"
 REMOTE
 }
 
+# The bootc (Chainguard OS) provisioning, task 14: nothing is installed on
+# the host (no apt, no apk; /usr is a read-only composefs). Everything the
+# cell needs on the host side comes out of a Wolfi container or is a shell
+# shim, in ~/bin, which matrix-cell.sh puts first on PATH. Idempotent.
+matrix_provision_bootc_script() {
+  cat <<'REMOTE'
+set -euo pipefail
+echo "== $(hostname): $(uname -m) $(uname -r), $(. /etc/os-release; echo "$PRETTY_NAME"), root $(findmnt -no FSTYPE,OPTIONS / | cut -c1-60)"
+command -v podman >/dev/null || { echo "no podman on this host"; exit 1; }
+# Rootless podman fails on this image (/run/containers/storage: permission
+# denied), root podman works; every call below is `sudo podman`.
+sudo podman info --format '{{.Host.CgroupsVersion}} {{.Host.Security.SECCOMPEnabled}} {{.Host.Security.SECCOMPProfilePath}} {{.Store.GraphRoot}}' | sed 's/^/== podman: cgroup /'
+# OS-3363: the image's first-boot growfs never ran (no resize2fs on the
+# host), so /var (with /home) is a 4.9 GiB ext4 on a 49 GiB partition; the
+# dev image plus a target volume with the bench and Ruby builds need about
+# 15 GiB. resize2fs from a container that sees the mount (-v /var) grows
+# the mounted filesystem online.
+dev="$(findmnt -no SOURCE /var | sed 's/\[.*//')"
+avail_g="$(df -BG --output=avail /var | tail -1 | tr -dc 0-9)"
+if [ "${avail_g:-0}" -lt 20 ]; then
+  echo "== growing $dev online (/var has ${avail_g} GiB free)"
+  sudo podman run --rm --privileged --network=host -v /dev:/dev -v /var:/mnt/var cgr.dev/chainguard/wolfi-base \
+    sh -c "apk add --no-cache e2fsprogs-extra >/dev/null 2>&1; resize2fs $dev" 2>&1 | sed 's/^/   | /'
+fi
+df -h /var | sed 's/^/== /'
+mkdir -p ~/bin ~/logs ~/native
+# `docker` -> `sudo podman` with the host's network namespace: netavark
+# needs `nft`, which the host lacks, so the default bridge network cannot be
+# created ("unable to execute nft"); the host network also sidesteps the
+# 1460-byte GCE MTU that Docker needed configuring for.
+cat > ~/bin/docker <<'SHIM'
+#!/bin/sh
+# challoc matrix, Chainguard OS cell: the Makefile speaks docker; this host
+# has root podman only, and no nft for netavark, so containers share the
+# host's network namespace (bench/gce/challoc-bench, matrix_provision_bootc_script).
+cmd=${1:-}; [ $# -gt 0 ] && shift
+case $cmd in
+  run|build) exec sudo podman "$cmd" --network=host "$@" ;;
+  *)         exec sudo podman "$cmd" "$@" ;;
+esac
+SHIM
+chmod +x ~/bin/docker
+# make and getconf out of a Wolfi container: the host glibc is Wolfi's
+# 2.44, so they run natively.
+if [ ! -x ~/bin/make ] || [ ! -x ~/bin/getconf ]; then
+  sudo podman run --rm --network=host -v "$HOME/bin:/out" cgr.dev/chainguard/wolfi-base \
+    sh -c 'apk add --no-cache make posix-libc-utils >/dev/null 2>&1 || apk add --no-cache make posix-libc-utils-2.44 >/dev/null; cp /usr/bin/make /usr/bin/getconf /out/'
+  sudo chown "$USER" ~/bin/make ~/bin/getconf
+fi
+export PATH="$HOME/bin:$PATH"
+echo "== make: $(make --version | head -1); getconf PAGESIZE: $(getconf PAGESIZE); docker shim: $(docker --version)"
+# The negative tests abort on purpose; discard cores (a root-owned core in
+# the bind-mounted tree breaks the next build's context).
+sudo sysctl -q -w 'kernel.core_pattern=|/bin/false' || true
+echo "== glibc: $(/usr/lib/libc.so.6 2>/dev/null | head -1)"
+echo "== thp: $(cat /sys/kernel/mm/transparent_hugepage/enabled), perf_event_paranoid $(cat /proc/sys/kernel/perf_event_paranoid)"
+REMOTE
+}
+
 # matrix_cell CELL: one cell start to finish, in a subshell of its own, its
 # VM deleted on every exit path. Writes $MATRIX_OUT/$MATRIX_DATE-$CELL.log.
+# MATRIX_ADOPT=<vm>: run the cell on that existing VM instead (any zone);
+# it is provisioned and synced like a new one and never deleted.
 matrix_cell() {
   # cell, vm and log are deliberately not local: the EXIT trap below runs
   # when the cell's subshell exits, after this function has returned and
@@ -681,31 +776,53 @@ matrix_cell() {
   # shellcheck disable=SC2034
   zones="$(cell_zones "$cell")"
   vm="$(matrix_vm "$cell")"
+  local adopt="${MATRIX_ADOPT:-}"
+  [ -z "$adopt" ] || vm="$adopt"
   t0=$(date +%s); deadline=$((t0 + MATRIX_TIMEOUT))
   mkdir -p "$MATRIX_OUT"
   : > "$log"
   say() { echo "[driver $(date -u +%H:%M:%S)] $*" | tee -a "$log"; }
-  # Whatever happens below, the VM goes (from every zone the cell may use).
+  # Whatever happens below, the VM goes (from every zone the cell may use);
+  # an adopted VM belongs to whoever created it and stays.
   # shellcheck disable=SC2064
-  trap "say \"deleting $vm\"; matrix_delete_vm $vm $zones; say \"deleted $vm\"" EXIT
+  if [ -z "$adopt" ]; then
+    trap "say \"deleting $vm\"; matrix_delete_vm $vm $zones; say \"deleted $vm\"" EXIT
+  else
+    trap "say \"adopted $vm stays (MATRIX_ADOPT)\"" EXIT
+  fi
   trap 'say "signal: cell $cell interrupted"; exit 130' INT TERM HUP
+
+  # A bootc host (Chainguard OS) takes no OS Login: the login user is the
+  # gcloud user, whose key the project's ssh-keys metadata carries.
+  local oslogin=1
+  [ "$extra" != cgos ] || oslogin=
+  # getconf is absent on a bootc host; the page size from smaps then.
+  local pagesz='$(getconf PAGESIZE 2>/dev/null || awk "/^KernelPageSize/ { print \$2 * 1024; exit }" /proc/self/smaps)'
 
   image="$(latest_image "$fam" "$proj")" || { say "no READY image in family $fam ($proj)"; echo "MATRIX cell=$cell image=none/$fam kernel=- page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=0 outcome=FAIL reason=no-image" >> "$log"; return 1; }
   # Hyperdisk Balanced is the only disk C4, C4A and N4 take; C2, N2D, T2A,
   # E2 and N2 take Persistent Disk only (C3 and C3D take both).
   case "$machine" in e2-*|n1-*|n2-*|n2d-*|c2-*|t2a-*) disk=pd-balanced ;; *) disk=hyperdisk-balanced ;; esac
-  say "cell $cell: image $image ($fam, $proj), $arch, $machine, prep $prep, extra $extra, zones $zones, timeout ${MATRIX_TIMEOUT}s"
+  say "cell $cell: image $image ($fam, $proj), $arch, $machine, prep $prep, extra $extra, zones $zones, timeout ${MATRIX_TIMEOUT}s${adopt:+, adopting $adopt}"
+  cell_zone=
+  if [ -n "$adopt" ]; then
+    cell_zone="$(matrix_vm_zone "$vm")"
+    [ -n "$cell_zone" ] || { say "MATRIX_ADOPT: no VM named $vm exists"; echo "MATRIX cell=$cell image=$image kernel=- page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- scorecard=- wall=0 outcome=FAIL reason=adopt:no-such-vm" >> "$log"; return 1; }
+    machine="$(g compute instances describe "$vm" --zone="$cell_zone" --format='value(machineType.basename())')"
+    local bootdisk; bootdisk="$(g compute instances describe "$vm" --zone="$cell_zone" --format='value(disks[0].source.basename())')"
+    image="$(g compute disks describe "$bootdisk" --zone="$cell_zone" --format='value(sourceImage.basename())' 2>/dev/null || echo unknown)"
+    say "adopting $vm in $cell_zone ($machine, boot image ${image:-unknown})"
+  else
   # shellcheck disable=SC2086
   matrix_delete_vm "$vm" $zones
   # One attempt per zone of the list (at most two zones): a zone out of
   # capacity or quota for the family is recorded and the next one tried.
-  cell_zone=
   for z in $zones; do
     # shellcheck disable=SC2086
     if g compute instances create "$vm" --zone="$z" --machine-type="$machine" \
           --image="$image" --image-project="$proj" \
           --boot-disk-size=50GB --boot-disk-type="$disk" ${MATRIX_PMU:+--performance-monitoring-unit=standard} \
-          --metadata=enable-oslogin=TRUE --scopes=cloud-platform \
+          ${oslogin:+--metadata=enable-oslogin=TRUE} --scopes=cloud-platform \
           --labels="owner=${USER},purpose=challoc-matrix,arch=$arch,cell=$cell" >>"$log" 2>&1; then
       cell_zone="$z"; break
     fi
@@ -717,12 +834,17 @@ matrix_cell() {
     echo "MATRIX cell=$cell image=$image kernel=- page=- machine=$machine zones=$(echo "$zones" | tr ' ' ',') tests=- fuzz=- cgroup=- privileged=- scorecard=- wall=$(( $(date +%s) - t0 )) outcome=PENDING reason=create:${err:-unknown}" >> "$log"; return 1
   fi
   say "created $vm in $cell_zone"
+  fi
   ip="$(g compute instances describe "$vm" --zone="$cell_zone" --format='value(networkInterfaces[0].accessConfigs[0].natIP)')"
-  user="$(g compute os-login describe-profile --format='value(posixAccounts[0].username)')"
+  if [ -n "$oslogin" ]; then
+    user="$(g compute os-login describe-profile --format='value(posixAccounts[0].username)')"
+  else
+    user="${CHALLOC_GCE_USER:-$USER}"
+  fi
   dest="$user@$ip"
-  say "created $vm at $ip; waiting for ssh"
+  say "$vm at $ip; waiting for ssh as $user"
   if ! matrix_wait_ssh "$dest" "$deadline"; then say "ssh never came up"; echo "MATRIX cell=$cell image=$image kernel=- page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=no-ssh" >> "$log"; return 1; fi
-  say "up: $(matrix_ssh "$dest" 'echo "$(uname -m) $(uname -r) page $(getconf PAGESIZE)"' 2>&1)"
+  say "up: $(matrix_ssh "$dest" "echo \"\$(uname -m) \$(uname -r) page $pagesz\"" 2>&1)"
 
   if [ "$prep" != none ]; then
     local boot0 boot1=
@@ -749,8 +871,10 @@ matrix_cell() {
     esac
   fi
 
-  say "provisioning"
-  matrix_provision_script | matrix_ssh "$dest" bash -s >>"$log" 2>&1 || { say "provision failed"; echo "MATRIX cell=$cell image=$image kernel=$(matrix_ssh "$dest" uname -r 2>/dev/null) page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=provision" >> "$log"; return 1; }
+  say "provisioning${extra:+ ($extra)}"
+  local provision=matrix_provision_script
+  [ "$extra" != cgos ] || provision=matrix_provision_bootc_script
+  $provision | matrix_ssh "$dest" bash -s >>"$log" 2>&1 || { say "provision failed"; echo "MATRIX cell=$cell image=$image kernel=$(matrix_ssh "$dest" uname -r 2>/dev/null) page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=provision" >> "$log"; return 1; }
   say "syncing the tree"
   rsync_tree "ssh $(matrix_ssh_opts)" "$dest" >>"$log" 2>&1 || { say "sync failed"; echo "MATRIX cell=$cell image=$image kernel=- page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=sync" >> "$log"; return 1; }
   if [ -n "${MATRIX_LAB:-}" ]; then
@@ -760,8 +884,16 @@ matrix_cell() {
     echo "LAB cell=$cell vm=$vm dest=$dest" >> "$log"
     return 0
   fi
+  if [ "$extra" = cgos ]; then
+    # Chainguard OS ends the session scope with the login (a `setsid nohup`
+    # job died with the ssh session, 2026-09-19); a transient system unit
+    # running as the login user outlives it.
+    say "running matrix-cell.sh as a transient systemd unit"
+    matrix_ssh "$dest" "rm -f ~/logs/done; sudo systemd-run --collect --quiet --unit=challoc-matrix-\$(date +%s) --uid=\$(id -u) --gid=\$(id -g) --setenv=HOME=\$HOME --working-directory=\$HOME/challoc bash -c 'bash ~/challoc/bench/gce/matrix-cell.sh $cell $image $extra > ~/logs/matrix.log 2>&1; echo \$? > ~/logs/done'; sleep 1; echo launched" >>"$log" 2>&1 || say "launch ssh returned nonzero (the run may still be going)"
+  else
   say "running matrix-cell.sh detached (a new login, so the docker group applies)"
   matrix_ssh "$dest" "rm -f ~/logs/done; (setsid nohup bash -c 'bash ~/challoc/bench/gce/matrix-cell.sh $cell $image $extra; echo \$? > ~/logs/done' > ~/logs/matrix.log 2>&1 < /dev/null &); sleep 1; echo launched" >>"$log" 2>&1 || say "launch ssh returned nonzero (the run may still be going)"
+  fi
   # Poll for the done marker until the deadline; a lost connection while
   # polling is not fatal.
   rc=timeout
@@ -776,12 +908,13 @@ matrix_cell() {
   local tmp; tmp="$(mktemp -d "${TMPDIR:-/tmp}/challoc-matrix-$cell.XXXXXX")"
   # shellcheck disable=SC2046
   rsync -az -e "ssh $(matrix_ssh_opts)" "$dest:logs/" "$tmp/" >>"$log" 2>&1 || say "fetch failed (partial logs)"
-  if [ "$extra" = scorecard ]; then
-    # The per-CPU scorecard file the VM wrote (bench/results/scorecard-<family>.md),
-    # next to the reference files; the VM's copy is the whole file, and a
-    # rerun of the same (date, commit) replaces its line there, so the copy
-    # is the record.
+  if [ "$extra" = scorecard ] || [ "$extra" = cgos ]; then
+    # The per-CPU scorecard file the VM wrote (bench/results/scorecard-<family>.md,
+    # scorecard-cgos-<arch>.md for a Chainguard OS cell), next to the
+    # reference files; the VM's copy is the whole file, and a rerun of the
+    # same (date, commit) replaces its line there, so the copy is the record.
     local sc="scorecard-${machine%%-*}.md"
+    [ "$extra" != cgos ] || sc="scorecard-cgos-$arch.md"
     # shellcheck disable=SC2046
     if rsync -az -e "ssh $(matrix_ssh_opts)" "$dest:$REMOTE_DIR/bench/results/$sc" "$REPO/bench/results/$sc" >>"$log" 2>&1; then
       say "fetched bench/results/$sc"
@@ -798,7 +931,7 @@ matrix_cell() {
       echo "==================== ~/logs/cpuinfo.log ===================="
       cat "$tmp/cpuinfo.log"
     fi
-    for f in image test probe probe-privileged fuzz test-cgroup test-privileged scorecard; do
+    for f in image test probe probe-privileged probe-native host fuzz test-cgroup test-privileged scorecard; do
       [ -f "$tmp/$f.log" ] || continue
       echo
       echo "==================== ~/logs/$f.log (last 60 lines) ===================="
@@ -850,9 +983,10 @@ cmd_matrix() {
   case "$what" in
     list)
       printf '%-11s %-22s %-16s %-6s %-15s %-5s %-10s %s\n' cell family project arch machine prep extra zones
-      for c in $MATRIX_CELLS $MATRIX_CPU_CELLS; do printf '%-11s %s %s\n' "$c" "$(cell_spec "$c" | awk '{ printf "%-22s %-16s %-6s %-15s %-5s %-10s", $1, $2, $3, $4, $5, $6 }')" "$(cell_zones "$c" | tr ' ' ',')"; done
+      for c in $MATRIX_CELLS $MATRIX_CPU_CELLS $MATRIX_CGOS_CELLS; do printf '%-11s %s %s\n' "$c" "$(cell_spec "$c" | awk '{ printf "%-22s %-16s %-6s %-15s %-5s %-10s", $1, $2, $3, $4, $5, $6 }')" "$(cell_zones "$c" | tr ' ' ',')"; done
       return 0 ;;
     cpu) shift; set -- $MATRIX_CPU_CELLS "$@" ;;
+    cgos) shift; set -- $MATRIX_CGOS_CELLS "$@" ;;
     clean) matrix_clean; return 0 ;;
     lab)
       shift

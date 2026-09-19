@@ -245,6 +245,72 @@ Results: `bench/results/<date>-cpu-matrix.md` (one line per cell, the
 feature table across CPUs, the scorecard table across CPUs) and
 `bench/results/scorecard-<family>.md`.
 
+## The Chainguard OS cells (Phase 2.5 task 14)
+
+`challoc-bench matrix cgos` runs the `cgos-*` cells: the product's own
+image (`kirkland-server-hypervisor-{arm64,amd64}`, project `wolfi-vm`; the
+boot recipe, the metal shapes and the traps are in
+`docs/runbooks/chainguard-os-gce.md`) on the reference shapes, so the host
+is the kernel and glibc Chainguard ships (6.18 `-gcp`, Wolfi glibc 2.44),
+not Ubuntu's. They are the "floor as shipped" cells and the first without
+Docker between the library and the kernel: the probe line runs three ways,
+inside podman with its default seccomp profile, inside podman
+`--privileged`, and natively on the host (`libchalloc.so` and the
+`features` binary copied out of the container, `LD_PRELOAD` on the host's
+glibc, which is the same 2.44 the dev image has).
+
+| cell       | image family                        | machine        | notes |
+|------------|-------------------------------------|----------------|-------|
+| cgos-arm64 | `kirkland-server-hypervisor-arm64` (`wolfi-vm`) | c4a-standard-8 | Axion; kernel 6.18.49-r2-gcp; THP `always` |
+| cgos-amd64 | `kirkland-server-hypervisor-amd64` (`wolfi-vm`) | c4-standard-8  | Xeon 8581C; the same kernel; no `X86_5LEVEL`, no `ADDRESS_MASKING` |
+
+A bootc host is provisioned differently (`matrix_provision_bootc_script`
+in `challoc-bench`): `/usr` is a read-only composefs with no `apk` on the
+host, so nothing is installed; `/var` and `$HOME` are one ext4 that the
+image's first-boot growfs never grew (OS-3363: `resize2fs` is missing from
+the image), so the provisioning grows it online with `resize2fs` from a
+`wolfi-base` container that sees the mount (`-v /var:/mnt/var`; 4.9 GiB
+to 49 GiB); Docker does not exist, rootless podman fails
+(`/run/containers/storage` is root's) and netavark cannot build its bridge
+(no `nft` on the host), so a `~/bin/docker` shim runs `sudo podman` with
+`--network=host` and the Makefile is untouched; `make` and `getconf` are
+copied out of a Wolfi container into `~/bin` (same glibc, they run
+natively). The login is the gcloud user through the project's `ssh-keys`
+metadata (no OS Login), and the cell runs as a transient systemd unit
+(`sudo systemd-run --uid=...`): this image ends the session scope with the
+ssh login, which killed a `setsid nohup` job. The cell script's `cgos`
+mode (`matrix-cell.sh`) runs `make image`, `make test` under the default
+seccomp profile and again with `DOCKER_FLAGS=--privileged`, the three
+probe lines, the host capture (`host.log`: uname, `/proc/config.gz` keys,
+THP, glibc, bootc status, the root mount, podman, the NIC driver), `make
+test-cgroup` (podman sets the cgroup v2 limits) and one `make scorecard
+ROUNDS=3` into `bench/results/scorecard-cgos-<arch>.md`, fetched back next
+to the per-CPU files; the reference files are not touched. The summary
+line gains `PROBE_NATIVE` and `privileged=PASS:<passed>/<failed>`.
+
+```
+bench/gce/challoc-bench matrix cgos                     # both cells, throwaway VMs
+MATRIX_TIMEOUT=7200 MATRIX_ADOPT=challoc-lane-e-cgos-arm64 bench/gce/challoc-bench matrix cgos-arm64
+                                                        # run the cell on an existing VM, keep it
+```
+
+`MATRIX_ADOPT=<vm>` runs a cell on a VM that already exists in any zone
+(skipping create; the VM is provisioned and synced like a new one and never
+deleted by the driver), for a pair created by hand from the runbook or a
+`matrix lab` VM kept from before. A cell takes about 70 minutes on these
+shapes (two `make test`, the 300 s oscillation, the scorecard), so pass
+`MATRIX_TIMEOUT=7200`. The four-way table on these hosts
+(`bench/results/2026-09-19-<arch>-cgos-four-way.md`) is not part of the
+cell: it is the task 1 sequence (`make bench-build`, the two Ruby builds,
+`make ab` with the five allocators, `make ruby-bench`, `make python-bench`,
+`make test-cgroup-compare`) run on the adopted VM as a systemd unit, plus
+the same rows natively and in the container (`rows.sh`, kept with the
+results file's section on host-native versus in-container numbers).
+Numbers from a `cgos-*` cell are 8 vCPU on a 6.18 kernel with THP
+`always`: compare them with the same-shape `cpu-c4a` / `cpu-c4` cells and
+the reference files by challoc-vs-jemalloc percentages per row, never by
+absolute throughput.
+
 ## Recipes for the traps
 
 - A `challoc-bench ssh <vm> --command='... setsid nohup make ... &'` that
