@@ -50,6 +50,18 @@
 //   -u          call malloc_usable_size(p) before every free, as zfree does
 //   -S SEED     xorshift seed
 //   -s          print allocator stats through mallctl at each phase end
+//   -x K        K rounds of independent integer work (4 xorshift chains, about
+//               4 instructions each) inside every SET, half after the two
+//               mallocs and half after the two frees: a stand-in for a longer
+//               allocator instruction stream at the same miss count, for the
+//               instruction-window experiment of plan Phase 2.5 task 4b
+//   -A FILE     append a sample of the live pointers to FILE after the fill
+//               and after the write phase: one line per pointer,
+//               `<phase> <kind> <hex address> <requested bytes>` for 4096
+//               evenly spaced live keys and each of their four objects
+//               (ent, key, obj, val), plus `<phase> table <hex> <bytes>` for
+//               the key table; the placement analysis of plan Phase 2.5
+//               task 4b histograms these modulo the cache way sizes
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
@@ -74,6 +86,22 @@ static uint64_t rnd(void) { rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17; retur
 static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec / 1e9; }
 
 static int use_sdallocx, query_usable;
+static unsigned extra_rounds;           // -x
+static uint64_t spin_sink;
+// spin: `extra_rounds` rounds of four independent xorshift steps; the four
+// chains keep the work off the loop's critical path, so it costs issue
+// slots and window entries, not latency, like allocator instructions that
+// hit in L1.
+static inline void spin(void) {
+    if (!extra_rounds) return;
+    uint64_t a = spin_sink + 1, b = a * 3, c = a * 5, d = a * 7;
+    for (unsigned i = 0; i < extra_rounds; i++) {
+        a ^= a << 13; b ^= b << 13; c ^= c << 13; d ^= d << 13;
+        a ^= a >> 7;  b ^= b >> 7;  c ^= c >> 7;  d ^= d >> 7;
+        a ^= a << 17; b ^= b << 17; c ^= c << 17; d ^= d << 17;
+    }
+    spin_sink = a + b + c + d;
+}
 static unsigned long long usable_bytes;   // what the queries returned (zfree feeds it to used_memory)
 static void release(void *p, size_t size) {
     if (query_usable) usable_bytes += malloc_usable_size(p);
@@ -98,6 +126,25 @@ static void rss(long *rss_kb, long *hwm_kb) {
     fclose(f);
 }
 static int want_stats;
+static const char *addr_file;
+enum { ADDR_SAMPLE = 4096 };
+// dump_addrs PHASE KEYS N: the -A sample, appended to addr_file.
+static void dump_addrs(const char *phase, struct key *keys, size_t n) {
+    if (!addr_file) return;
+    FILE *f = fopen(addr_file, "a");
+    if (!f) { fprintf(stderr, "valkey_model: cannot open %s\n", addr_file); return; }
+    fprintf(f, "%s table %#lx %zu\n", phase, (unsigned long)keys, n * sizeof *keys);
+    size_t step = n / ADDR_SAMPLE ? n / ADDR_SAMPLE : 1, got = 0;
+    for (size_t i = 0; i < n && got < ADDR_SAMPLE; i += step) {
+        struct key *k = &keys[i];
+        if (!k->vsize) continue;
+        fprintf(f, "%s ent %#lx %d\n%s key %#lx %d\n%s obj %#lx %d\n%s val %#lx %u\n",
+                phase, (unsigned long)k->ent, ENTRY_BYTES, phase, (unsigned long)k->key, KEY_BYTES,
+                phase, (unsigned long)k->obj, OBJ_BYTES, phase, (unsigned long)k->val, k->vsize);
+        got++;
+    }
+    fclose(f);
+}
 static void report_mem(void) {
     long r, h; rss(&r, &h);
     printf(" rss %.1f MiB hwm %.1f MiB", r / 1024.0, h / 1024.0);
@@ -124,7 +171,9 @@ static void set_new(struct key *k) {   // SET of a missing key: four allocations
 static void set_overwrite(struct key *k) {   // SET of a live key: new object and value, old pair freed
     uint32_t ns = value_size();
     char *nv = take(ns), *no = take(OBJ_BYTES);
+    spin();
     release(k->val, k->vsize); release(k->obj, OBJ_BYTES);
+    spin();
     live_bytes += ns; live_bytes -= k->vsize;
     k->val = nv; k->obj = no; k->vsize = ns;
 }
@@ -135,7 +184,7 @@ static void del(struct key *k) {   // DEL of a live key: all four freed
 }
 
 static void usage(void) {
-    fprintf(stderr, "usage: valkey_model [-n keys] [-t secs | -w write_secs -d delete_secs] [-r del:set] [-m min -M max] [-f free|sdallocx|auto] [-u] [-S seed] [-s]\n");
+    fprintf(stderr, "usage: valkey_model [-n keys] [-t secs | -w write_secs -d delete_secs] [-r del:set] [-m min -M max] [-f free|sdallocx|auto] [-u] [-S seed] [-s] [-A addrfile] [-x rounds]\n");
     exit(2);
 }
 
@@ -145,7 +194,7 @@ int main(int argc, char **argv) {
     unsigned ratio = 4;
     const char *mode = "auto";
     int opt;
-    while ((opt = getopt(argc, argv, "n:t:w:d:r:m:M:f:S:suh")) != -1) {
+    while ((opt = getopt(argc, argv, "n:t:w:d:r:m:M:f:S:suhA:x:")) != -1) {
         switch (opt) {
         case 'n': n = strtoul(optarg, 0, 0); break;
         case 't': total = atof(optarg); break;
@@ -158,6 +207,8 @@ int main(int argc, char **argv) {
         case 'S': rs = strtoull(optarg, 0, 0); if (!rs) rs = 1; break;
         case 's': want_stats = 1; break;
         case 'u': query_usable = 1; break;
+        case 'A': addr_file = optarg; break;
+        case 'x': extra_rounds = (unsigned)strtoul(optarg, 0, 0); break;
         default: usage();
         }
     }
@@ -179,6 +230,7 @@ int main(int argc, char **argv) {
            query_usable ? " (malloc_usable_size before every free)" : "",
            !strcmp(mode, "auto") ? (sdallocx ? " (auto: sdallocx exported)" : " (auto: no sdallocx, plain free)") : "",
            (unsigned long long)rs, tw, td, ratio, mallctl ? ", mallctl available" : ", no mallctl");
+    if (extra_rounds) printf("valkey_model: -x %u: %u rounds of independent integer work per SET, split around the frees\n", extra_rounds, extra_rounds);
     fflush(stdout);
 
     // The key table itself is one large allocation from the allocator under
@@ -192,6 +244,7 @@ int main(int argc, char **argv) {
     printf("fill: %zu keys, %zu allocations, %.2f s, %.1f MiB requested;", n, 4 * n, now() - t0, live_bytes / 1048576.0);
     report_mem();
     fflush(stdout);
+    dump_addrs("fill", keys, n);
 
     // ---- write phase: SET only, every key live -------------------------------
     unsigned long sets_w = 0;
@@ -206,6 +259,7 @@ int main(int argc, char **argv) {
     printf("write: %lu SET in %.2f s = %.3f M ops/s (%lu frees); %zu keys live, %.1f MiB requested;", sets_w, dw, write_mops, 2 * sets_w, live_keys, live_bytes / 1048576.0);
     report_mem();
     fflush(stdout);
+    dump_addrs("write", keys, n);
 
     // ---- delete phase: DEL:SET ratio:1 over random keys --------------------------
     unsigned long dels = 0, del_hits = 0, sets_d = 0, overwrites = 0;

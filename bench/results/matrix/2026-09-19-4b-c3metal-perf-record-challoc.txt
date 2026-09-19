@@ -1,0 +1,33 @@
+== rec.W.new: write: 104394752 SET in 8.00 s = 13.049 M ops/s (208789504 frees); 850000 keys live, 490.7 MiB requested; rss 585.8 MiB 
+     3.14%  [kernel.kallsyms]
+     0.01%  [overlay]        
+     0.01%  [vdso]           
+     0.02%  libc.so.6        
+    26.93%  libchalloc.so    
+    69.89%  valkey_model     
+-- top 25 symbols
+    60.58%  valkey_model       [.] set_overwrite
+    20.11%  libchalloc.so      [.] je_sdallocx
+     5.15%  libchalloc.so      [.] je_malloc
+     4.31%  valkey_model       [.] sdallocx@plt
+     2.39%  valkey_model       [.] main
+     1.49%  valkey_model       [.] release
+     0.83%  [kernel.kallsyms]  [k] 0xffffffff8509b803
+     0.73%  valkey_model       [.] malloc@plt
+     0.55%  libchalloc.so      [.] <challoc::class::ClassState>::claim_with
+     0.38%  valkey_model       [.] set_new
+     0.37%  libchalloc.so      [.] <challoc::class::ClassState>::release_owned
+     0.37%  [kernel.kallsyms]  [k] 0xffffffff860d1453
+     0.18%  libchalloc.so      [.] <challoc::class::ClassState>::release_slab
+     0.16%  libchalloc.so      [.] <challoc::class::ClassState>::take
+     0.15%  [kernel.kallsyms]  [k] 0xffffffff860bb84e
+     0.10%  [kernel.kallsyms]  [k] 0xffffffff8514fbe7
+     0.10%  [kernel.kallsyms]  [k] 0xffffffff84a01268
+     0.08%  libchalloc.so      [.] <challoc::heap::Heap>::flush
+     0.07%  [kernel.kallsyms]  [k] 0xffffffff8509b82b
+     0.06%  libchalloc.so      [.] core::slice::sort::unstable::quicksort::quicksort::<*mut u8, <*mut u8 as core::cmp::PartialOrd>::lt>
+     0.06%  libchalloc.so      [.] <challoc::class::ClassState>::bin_stats
+     0.06%  [kernel.kallsyms]  [k] 0xffffffff8509b809
+     0.05%  libchalloc.so      [.] <challoc::class::ClassState>::reopen
+     0.05%  [kernel.kallsyms]  [k] 0xffffffff851333f0
+     0.04%  [kernel.kallsyms]  [k] 0xffffffff8509b81c

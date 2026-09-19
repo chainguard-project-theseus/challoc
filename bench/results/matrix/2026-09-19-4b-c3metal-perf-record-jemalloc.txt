@@ -1,0 +1,35 @@
+== rec.W.jemalloc: write: 102985728 SET in 8.00 s = 12.873 M ops/s (205971456 frees); 850000 keys live, 490.5 MiB requested; rss 595.6 MiB 
+     1.87%  [kernel.kallsyms]   
+     0.14%  [vdso]              
+     0.00%  ld-linux-x86-64.so.2
+     0.61%  libc.so.6           
+    30.70%  libjemalloc.so.2    
+     0.00%  libm.so.6           
+     0.00%  libstdc++.so.6.0.36 
+    66.68%  valkey_model        
+-- top 25 symbols
+    59.13%  valkey_model          [.] set_overwrite
+    14.30%  libjemalloc.so.2      [.] sdallocx
+     6.78%  libjemalloc.so.2      [.] malloc
+     4.19%  valkey_model          [.] main
+     3.25%  libjemalloc.so.2      [.] je_edata_heap_remove_first
+     2.60%  libjemalloc.so.2      [.] je_te_event_trigger
+     1.58%  libjemalloc.so.2      [.] je_arena_ptr_array_flush
+     1.41%  valkey_model          [.] release
+     0.82%  valkey_model          [.] sdallocx@plt
+     0.71%  valkey_model          [.] malloc@plt
+     0.55%  libjemalloc.so.2      [.] je_bin_slab_reg_alloc_batch
+     0.47%  [kernel.kallsyms]     [k] 0xffffffff860d1453
+     0.45%  libc.so.6             [.] pthread_mutex_trylock@@GLIBC_2.34
+     0.42%  valkey_model          [.] set_new
+     0.25%  libjemalloc.so.2      [.] je_sdallocx_default
+     0.24%  libjemalloc.so.2      [.] je_edata_heap_insert
+     0.22%  libjemalloc.so.2      [.] je_arena_ptr_array_fill_small
+     0.16%  [kernel.kallsyms]     [k] 0xffffffff860bb84e
+     0.14%  libjemalloc.so.2      [.] je_malloc_default
+     0.13%  [kernel.kallsyms]     [k] 0xffffffff8514fbe7
+     0.10%  libjemalloc.so.2      [.] tcache_gc_event
+     0.10%  libjemalloc.so.2      [.] je_bin_refill_slabcur_no_fresh_slab
+     0.10%  [kernel.kallsyms]     [k] 0xffffffff84a01268
+     0.09%  libjemalloc.so.2      [.] je_bin_dalloc_locked_handle_newly_nonempty
+     0.07%  libjemalloc.so.2      [.] je_tcache_alloc_small_hard

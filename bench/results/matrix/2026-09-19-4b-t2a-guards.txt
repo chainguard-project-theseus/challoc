@@ -1,0 +1,12 @@
+| larson1 | new: | 21287858 ops/s |
+| larson1 | new:guards:false | 21308234 ops/s |
+| larson1 | jemalloc: | 26485642 ops/s |
+| larson1 | new: | 21354248 ops/s |
+| larson1 | new:guards:false | 21357891 ops/s |
+| larson1 | jemalloc: | 26729188 ops/s |
+| valkey1-free | new: | write 5.699 M ops/s |
+| valkey1-free | new:guards:false | write 5.632 M ops/s |
+| valkey1-free | jemalloc: | write 6.389 M ops/s |
+| valkey1-free | new: | write 5.644 M ops/s |
+| valkey1-free | new:guards:false | write 5.681 M ops/s |
+| valkey1-free | jemalloc: | write 6.519 M ops/s |

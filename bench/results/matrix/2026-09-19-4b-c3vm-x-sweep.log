@@ -1,0 +1,21 @@
+== 12:27:17 the -x sweep on challoc-matrix-cpu-c3.us-east4-a.c.dlorenc-dev.internal (T=amd64 PMU=0 CPUS=any), load 0.74 0.63 0.42
+| run | write M ops/s | fill s | counters per op |
+| xs.jemalloc.0 | 10.196 | allocations, |
+| xs.jemalloc.1 | 9.080 | allocations, |
+| xs.jemalloc.2 | 6.485 | allocations, |
+| xs.jemalloc.3 | 6.437 | allocations, |
+| xs.jemalloc.4 | 6.213 | allocations, |
+| xs.jemalloc.6 | 5.843 | allocations, |
+| xs.new.0 | 7.267 | allocations, |
+| xs.new.1 | 6.592 | allocations, |
+| xs.new.2 | 6.296 | allocations, |
+| xs.new.3 | 6.189 | allocations, |
+| xs.jemalloc.n100k.0 | 20.284 | allocations, |
+| xs.jemalloc.n100k.2 | 15.653 | allocations, |
+| xs.jemalloc.n100k.4 | 14.075 | allocations, |
+| xs.new.n100k.0 | 17.726 | allocations, |
+| xs.new.n100k.2 | 13.882 | allocations, |
+| xs.jemalloc.0.r2 | 10.235 | allocations, |
+| xs.jemalloc.2.r2 | 6.524 | allocations, |
+| xs.new.0.r2 | 7.351 | allocations, |
+== 12:29:32 sweep done

@@ -1,0 +1,260 @@
+== 12:16:05 host challoc-matrix-cpu-t2a.us-central1-a.c.dlorenc-dev.internal 7.0.0-1011-gcp, Neoverse-N1, load 0.00 0.13 0.21; perf perf version 7.0.14
+== perf.larson1.new: Throughput = 20841997 operations per second, relative time: 47.980s.
+-- by dso
+     1.90%  [kernel.kallsyms]    
+     0.03%  [overlay]            
+    49.30%  larson               
+     0.03%  ld-linux-aarch64.so.1
+     0.04%  libc.so.6            
+    48.66%  libchalloc.so        
+     0.04%  libgcc_s.so.1        
+-- top 25 symbols
+    47.68%  larson                 [.] exercise_heap(void*)
+    24.66%  libchalloc.so          [.] operator new[](unsigned long)
+    22.29%  libchalloc.so          [.] operator delete[](void*)
+     0.81%  larson                 [.] operator new[](unsigned long)@plt
+     0.79%  larson                 [.] __printf_chk@plt
+     0.33%  libchalloc.so          [.] <challoc::heap::Heap>::flush
+     0.27%  libchalloc.so          [.] <challoc::class::ClassState>::release_owned
+     0.21%  libchalloc.so          [.] <challoc::class::ClassState>::release_slab
+     0.21%  [kernel.kallsyms]      [k] 0xffffd2352397b364
+     0.19%  libchalloc.so          [.] challoc::api::libc::free_slow
+     0.18%  [kernel.kallsyms]      [k] 0xffffd235239670e0
+     0.12%  libchalloc.so          [.] __aarch64_ldadd4_acq_rel
+     0.09%  libchalloc.so          [.] __aarch64_ldclr8_rel
+     0.09%  libchalloc.so          [.] <challoc::class::ClassState>::claim_with
+     0.07%  [kernel.kallsyms]      [k] 0xffffd23522fbb458
+     0.05%  libchalloc.so          [.] <challoc::heap::Heap>::pop_compact
+     0.04%  libchalloc.so          [.] <challoc::class::ClassState>::take
+     0.04%  [kernel.kallsyms]      [k] 0xffffd2352253124c
+     0.03%  libchalloc.so          [.] core::slice::sort::unstable::quicksort::quicksort::<*mut u8, <*mut u8 as core::cmp::PartialOrd>::lt>
+     0.03%  libchalloc.so          [.] __aarch64_cas4_acq
+     0.03%  libchalloc.so          [.] <challoc::heap::Heap>::refill
+     0.03%  libchalloc.so          [.] <challoc::heap::Heap>::ensure_cache
+     0.03%  libchalloc.so          [.] <challoc::arena::Arena>::decay_with
+     0.03%  [kernel.kallsyms]      [k] 0xffffd2352392a3f0
+     0.03%  [kernel.kallsyms]      [k] 0xffffd23522290804
+-- annotate [.] operator new[](unsigned long): lines >= 3%
+-- annotate [.] operator delete[](void*): lines >= 3%
+-- annotate [.] <challoc::heap::Heap>::flush: lines >= 3%
+-- annotate [.] __aarch64_cas4_acq: lines >= 3%
+-- annotate [.] __aarch64_ldadd4_acq_rel: lines >= 3%
+-- annotate [.] __aarch64_ldadd8_relax: lines >= 3%
+-- annotate [.] __aarch64_ldclr8_rel: lines >= 3%
+-- annotate [.] __aarch64_ldset8_acq: lines >= 3%
+-- annotate [.] __aarch64_swp4_rel: lines >= 3%
+== perf.larson1.jemalloc: Throughput = 26250719 operations per second, relative time: 38.094s.
+-- by dso
+     0.47%  [kernel.kallsyms]    
+     0.01%  [overlay]            
+     0.40%  [vdso]               
+    61.96%  larson               
+     0.01%  ld-linux-aarch64.so.1
+     0.23%  libc.so.6            
+     0.04%  libgcc_s.so.1        
+    36.89%  libjemalloc.so.2     
+-- top 25 symbols
+    60.83%  larson                 [.] exercise_heap(void*)
+    17.97%  libjemalloc.so.2       [.] operator new[](unsigned long)
+    16.66%  libjemalloc.so.2       [.] operator delete[](void*)
+     0.89%  larson                 [.] __printf_chk@plt
+     0.65%  libjemalloc.so.2       [.] je_te_event_trigger
+     0.54%  libjemalloc.so.2       [.] je_free_default
+     0.31%  libjemalloc.so.2       [.] je_malloc_default
+     0.22%  [vdso]                 [.] 0x000000000000077c
+     0.21%  larson                 [.] operator new[](unsigned long)@plt
+     0.17%  libjemalloc.so.2       [.] je_nstime_ns
+     0.12%  libjemalloc.so.2       [.] je_arena_ptr_array_flush
+     0.11%  libjemalloc.so.2       [.] tcache_gc_event
+     0.10%  [vdso]                 [.] 0x0000000000000790
+     0.09%  libjemalloc.so.2       [.] nstime_update_impl
+     0.09%  libjemalloc.so.2       [.] je_te_user_event_enabled
+     0.09%  libc.so.6              [.] clock_gettime@@GLIBC_2.17
+     0.09%  [kernel.kallsyms]      [k] 0xffffd2352397b364
+     0.07%  libc.so.6              [.] __memset_zva64
+     0.06%  libjemalloc.so.2       [.] peak_event_handler
+     0.03%  libjemalloc.so.2       [.] je_bin_slab_reg_alloc_batch
+     0.02%  libc.so.6              [.] __aarch64_cas4_acq
+     0.02%  libc.so.6              [.] __GI___pthread_mutex_unlock_usercnt
+     0.02%  larson                 [.] runthreads(long, int, int, int, int)
+     0.02%  [vdso]                 [.] 0x00000000000005f8
+     0.01%  libjemalloc.so.2       [.] void* fallbackNewImpl<false>(unsigned long)
+-- annotate [.] operator new[](unsigned long): lines >= 3%
+-- annotate [.] operator delete[](void*): lines >= 3%
+-- annotate [.] je_te_event_trigger: lines >= 3%
+-- annotate [.] __aarch64_cas4_acq: lines >= 3%
+== perf.larson10.new: Throughput = 151063166 operations per second, relative time: 6.620s.
+-- by dso
+     1.14%  [kernel.kallsyms]    
+     0.00%  [overlay]            
+    54.53%  larson               
+     0.01%  ld-linux-aarch64.so.1
+     0.06%  libc.so.6            
+    44.23%  libchalloc.so        
+     0.03%  libgcc_s.so.1        
+     0.00%  [unknown]            
+-- top 25 symbols
+    53.20%  larson                 [.] exercise_heap(void*)
+    22.95%  libchalloc.so          [.] operator new[](unsigned long)
+    19.85%  libchalloc.so          [.] operator delete[](void*)
+     0.69%  larson                 [.] operator new[](unsigned long)@plt
+     0.63%  larson                 [.] __printf_chk@plt
+     0.25%  libchalloc.so          [.] <challoc::class::ClassState>::release_owned
+     0.24%  libchalloc.so          [.] <challoc::heap::Heap>::flush
+     0.15%  libchalloc.so          [.] <challoc::class::ClassState>::claim_with
+     0.15%  [kernel.kallsyms]      [k] 0xffffd2352397b364
+     0.09%  libchalloc.so          [.] __aarch64_ldadd4_acq_rel
+     0.09%  libchalloc.so          [.] <challoc::class::ClassState>::release_slab
+     0.09%  libchalloc.so          [.] <challoc::arena::Arena>::decay_with
+     0.08%  libchalloc.so          [.] __aarch64_cas4_acq
+     0.07%  libchalloc.so          [.] challoc::api::libc::free_slow
+     0.07%  [kernel.kallsyms]      [k] 0xffffd235239670e0
+     0.05%  libchalloc.so          [.] core::slice::sort::unstable::quicksort::quicksort::<*mut u8, <*mut u8 as core::cmp::PartialOrd>::lt>
+     0.04%  libchalloc.so          [.] __aarch64_ldclr8_rel
+     0.03%  libchalloc.so          [.] __aarch64_ldset8_acq
+     0.03%  libchalloc.so          [.] <challoc::heap::Heap>::pop_compact
+     0.03%  [kernel.kallsyms]      [k] 0xffffd23523926724
+     0.02%  libchalloc.so          [.] core::slice::sort::shared::pivot::median3_rec::<*mut u8, <*mut u8 as core::cmp::PartialOrd>::lt>
+     0.02%  libchalloc.so          [.] challoc::purge::decay
+     0.02%  libchalloc.so          [.] <challoc::class::Inner>::set_partial
+     0.02%  libchalloc.so          [.] <challoc::class::ClassState>::take
+     0.02%  [kernel.kallsyms]      [k] 0xffffd2352392a3f0
+-- annotate [.] operator new[](unsigned long): lines >= 3%
+-- annotate [.] operator delete[](void*): lines >= 3%
+-- annotate [.] <challoc::class::ClassState>::release_owned: lines >= 3%
+-- annotate [.] __aarch64_cas4_acq: lines >= 3%
+-- annotate [.] __aarch64_swp4_rel: lines >= 3%
+-- annotate [.] __aarch64_cas4_acq: lines >= 3%
+-- annotate [.] __aarch64_ldadd4_acq_rel: lines >= 3%
+-- annotate [.] __aarch64_ldadd4_relax: lines >= 3%
+-- annotate [.] __aarch64_ldadd8_relax: lines >= 3%
+-- annotate [.] __aarch64_ldclr8_rel: lines >= 3%
+-- annotate [.] __aarch64_ldset8_acq: lines >= 3%
+-- annotate [.] __aarch64_swp4_acq: lines >= 3%
+-- annotate [.] __aarch64_swp4_rel: lines >= 3%
+-- annotate [.] __aarch64_swp8_relax: lines >= 3%
+== perf.larson10.jemalloc: Throughput = 173324770 operations per second, relative time: 5.770s.
+-- by dso
+     0.86%  [kernel.kallsyms]    
+     0.37%  [vdso]               
+    64.94%  larson               
+     0.01%  ld-linux-aarch64.so.1
+     0.32%  libc.so.6            
+     0.03%  libgcc_s.so.1        
+    33.47%  libjemalloc.so.2     
+     0.00%  [unknown]            
+-- top 25 symbols
+    63.78%  larson                 [.] exercise_heap(void*)
+    18.12%  libjemalloc.so.2       [.] operator new[](unsigned long)
+    12.66%  libjemalloc.so.2       [.] operator delete[](void*)
+     0.80%  larson                 [.] __printf_chk@plt
+     0.69%  libjemalloc.so.2       [.] je_free_default
+     0.64%  libjemalloc.so.2       [.] je_te_event_trigger
+     0.35%  libjemalloc.so.2       [.] je_arena_ptr_array_flush
+     0.35%  larson                 [.] operator new[](unsigned long)@plt
+     0.28%  libjemalloc.so.2       [.] je_malloc_default
+     0.17%  [vdso]                 [.] 0x000000000000077c
+     0.14%  libjemalloc.so.2       [.] je_nstime_ns
+     0.11%  [kernel.kallsyms]      [k] 0xffffd2352397b364
+     0.10%  libjemalloc.so.2       [.] tcache_gc_event
+     0.09%  [vdso]                 [.] 0x0000000000000790
+     0.08%  libjemalloc.so.2       [.] tcache_try_gc_bin
+     0.08%  libjemalloc.so.2       [.] je_te_user_event_enabled
+     0.07%  libjemalloc.so.2       [.] nstime_update_impl
+     0.06%  libjemalloc.so.2       [.] je_bin_slab_reg_alloc_batch
+     0.06%  libc.so.6              [.] pthread_mutex_trylock@@GLIBC_2.34
+     0.06%  libc.so.6              [.] __memset_zva64
+     0.06%  libc.so.6              [.] __aarch64_cas4_acq
+     0.05%  libjemalloc.so.2       [.] peak_event_handler
+     0.05%  libc.so.6              [.] clock_gettime@@GLIBC_2.17
+     0.04%  libc.so.6              [.] __aarch64_swp4_rel
+     0.03%  [kernel.kallsyms]      [k] 0xffffd23523926724
+-- annotate [.] operator new[](unsigned long): lines >= 3%
+-- annotate [.] operator delete[](void*): lines >= 3%
+-- annotate [.] je_free_default: lines >= 3%
+-- annotate [.] __aarch64_cas4_acq: lines >= 3%
+-- annotate [.] __aarch64_swp4_rel: lines >= 3%
+-- annotate [.] __aarch64_ldadd4_relax: lines >= 3%
+-- annotate [.] __aarch64_ldadd8_relax: lines >= 3%
+== perf.valkey1-free.new: ops total=80571392 write_mops=5.443 delete_mops=10.671 total_mops=8.057 live=170593 rss_kb=263984 hwm_kb=59839
+-- by dso
+     4.47%  [kernel.kallsyms]
+     0.03%  [overlay]        
+     0.06%  [vdso]           
+     0.05%  libc.so.6        
+    33.71%  libchalloc.so    
+    61.68%  valkey_model     
+-- top 25 symbols
+    32.38%  valkey_model       [.] set_overwrite
+    23.02%  valkey_model       [.] main
+    19.80%  libchalloc.so      [.] operator delete[](void*)
+     5.32%  valkey_model       [.] set_new
+     5.30%  libchalloc.so      [.] je_malloc
+     1.53%  libchalloc.so      [.] <challoc::class::ClassState>::claim_with
+     1.27%  libchalloc.so      [.] <challoc::class::ClassState>::release_owned
+     0.94%  libchalloc.so      [.] <challoc::class::ClassState>::release_slab
+     0.93%  libchalloc.so      [.] <challoc::heap::Heap>::flush
+     0.80%  libchalloc.so      [.] __aarch64_ldclr8_rel
+     0.67%  libchalloc.so      [.] core::slice::sort::unstable::quicksort::quicksort::<*mut u8, <*mut u8 as core::cmp::PartialOrd>::lt>
+     0.42%  [kernel.kallsyms]  [k] 0xffffd23523926724
+     0.41%  [kernel.kallsyms]  [k] 0xffffd2352397b364
+     0.40%  libchalloc.so      [.] __aarch64_ldadd4_acq_rel
+     0.39%  valkey_model       [.] release
+     0.38%  [kernel.kallsyms]  [k] 0xffffd235224ce740
+     0.35%  libchalloc.so      [.] __aarch64_ldset8_acq
+     0.33%  libchalloc.so      [.] <challoc::heap::Heap>::pop_compact_run
+     0.33%  libchalloc.so      [.] <challoc::arena::Arena>::decay_with
+     0.25%  valkey_model       [.] __stack_chk_fail@plt
+     0.21%  libchalloc.so      [.] <challoc::heap::Heap>::pop_compact
+     0.21%  [kernel.kallsyms]  [k] 0xffffd235239670e0
+     0.20%  [kernel.kallsyms]  [k] 0xffffd23523965fb4
+     0.19%  [kernel.kallsyms]  [k] 0xffffd235224ce774
+     0.17%  valkey_model       [.] 0x0000000000000ec8
+-- annotate [.] operator delete[](void*): lines >= 3%
+-- annotate [.] je_malloc: lines >= 3%
+-- annotate [.] <challoc::class::ClassState>::claim_with: lines >= 3%
+-- annotate [.] __aarch64_cas4_acq: lines >= 3%
+-- annotate [.] __aarch64_ldadd4_acq_rel: lines >= 3%
+-- annotate [.] __aarch64_ldadd8_relax: lines >= 3%
+-- annotate [.] __aarch64_ldclr8_rel: lines >= 3%
+-- annotate [.] __aarch64_ldset8_acq: lines >= 3%
+-- annotate [.] __aarch64_swp4_rel: lines >= 3%
+== perf.valkey1-free.jemalloc: ops total=98203648 write_mops=6.237 delete_mops=13.403 total_mops=9.820 live=169664 rss_kb=599612 hwm_kb=59964
+-- by dso
+     1.97%  [kernel.kallsyms]    
+     0.15%  [vdso]               
+     0.00%  ld-linux-aarch64.so.1
+     0.18%  libc.so.6            
+    21.53%  libjemalloc.so.2     
+    76.16%  valkey_model         
+-- top 25 symbols
+    36.89%  valkey_model           [.] set_overwrite
+    30.02%  valkey_model           [.] main
+    10.92%  libjemalloc.so.2       [.] free
+     8.07%  valkey_model           [.] set_new
+     7.34%  libjemalloc.so.2       [.] malloc
+     1.17%  libjemalloc.so.2       [.] je_arena_ptr_array_flush
+     0.59%  valkey_model           [.] release
+     0.55%  libjemalloc.so.2       [.] je_free_default
+     0.51%  [kernel.kallsyms]      [k] 0xffffd23523926724
+     0.45%  libjemalloc.so.2       [.] je_bin_slab_reg_alloc_batch
+     0.38%  libjemalloc.so.2       [.] je_te_event_trigger
+     0.25%  libjemalloc.so.2       [.] je_edata_heap_remove_first
+     0.24%  [kernel.kallsyms]      [k] 0xffffd2352397b364
+     0.23%  valkey_model           [.] 0x0000000000000ed4
+     0.20%  [kernel.kallsyms]      [k] 0xffffd23523965fb4
+     0.18%  valkey_model           [.] __stack_chk_fail@plt
+     0.12%  valkey_model           [.] __gmon_start__@plt
+     0.07%  libjemalloc.so.2       [.] je_malloc_default
+     0.07%  [kernel.kallsyms]      [k] 0xffffd2352397b788
+     0.05%  libjemalloc.so.2       [.] tcache_gc_event
+     0.05%  libjemalloc.so.2       [.] je_nstime_ns
+     0.04%  libjemalloc.so.2       [.] je_edata_heap_insert
+     0.04%  libjemalloc.so.2       [.] je_arena_ptr_array_fill_small
+     0.04%  libc.so.6              [.] pthread_mutex_trylock@@GLIBC_2.34
+     0.04%  libc.so.6              [.] __GI___pthread_mutex_unlock_usercnt
+-- annotate [.] free: lines >= 3%
+-- annotate [.] malloc: lines >= 3%
+-- annotate [.] je_arena_ptr_array_flush: lines >= 3%
+-- annotate [.] __aarch64_cas4_acq: lines >= 3%
+== 12:17:09 t2a perf done

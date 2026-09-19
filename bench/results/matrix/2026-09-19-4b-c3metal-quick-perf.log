@@ -1,0 +1,21 @@
+== 11:59:15 host challoc-m4b-c3metal.us-east4-c.c.dlorenc-dev.internal 7.0.0-1011-gcp, Intel(R) Xeon(R) Platinum 8481C, load 2.07 1.53 0.63
+fatal: detected dubious ownership in repository at '/src'
+To add an exception for this directory, call:
+
+	git config --global --add safe.directory /src
+usage: valkey_model [-n keys] [-t secs | -w write_secs -d delete_secs] [-r del:set] [-m min -M max] [-f free|sdallocx|auto] [-u] [-S seed] [-s] [-A addrfile]
+== 11:59:16 step 1: quick-perf
+== quick-perf on challoc-m4b-c3metal.us-east4-c.c.dlorenc-dev.internal (x86_64), load 2.07 1.53 0.63, events cycles,instructions,L1-dcache-load-misses,dTLB-load-misses, rows: valkey1 valkey1-free larson1, variants: new jemalloc
+
+| row | variant | M ops/s | cycles/op | instr/op | L1D miss/op | dTLB miss/op |
+|---|---|---:|---:|---:|---:|---:|
+| valkey1 | new | 20.16 | 176.6 | 259.7 | 3.346 | 0.905 |
+| valkey1 | jemalloc | 23.48 | 160.4 | 154.4 | 3.391 | 0.956 |
+| valkey1-free | new | 21.01 | 178.6 | 230.0 | 4.586 | 0.924 |
+| valkey1-free | jemalloc | 21.12 | 180.2 | 160.3 | 4.735 | 1.216 |
+| larson1 | new | 27.90 | 70.1 | 232.7 | 1.125 | 0.001 |
+| larson1 | jemalloc | 27.45 | 71.1 | 201.2 | 1.892 | 0.001 |
+
+Per-operation counters (whole-process totals for a row without an operation count), one run each: sudo perf stat -x, -e cycles,instructions,L1-dcache-load-misses,dTLB-load-misses --inherit -p <container init pid> (attached before the exec), divided by the program's own operation count. Raw files under /home/dlorenc/logs/4b/quick-perf. Compare variants within a row; attribution, not a gate.
+== 12:00:24 step 2: extended counters, groups:1002
+/home/dlorenc/chain.sh: line 79: !g: unbound variable

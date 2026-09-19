@@ -1,0 +1,52 @@
+== 12:24:56 metal phase 3, load 0.00 0.10 0.34
+usage: valkey_model [-n keys] [-t secs | -w write_secs -d delete_secs] [-r del:set] [-m min -M max] [-f free|sdallocx|auto] [-u] [-S seed] [-s] [-A addrfile] [-x rounds]
+    8 | int main(int c, char **v) { int t = c > 1 ? atoi(v[1]) : 16; pthread_t th[256]; for (int i = 0; i < t && i < 256; i++) pthread_create(&th[i], 0, run, 0); printf("thrash: %d threads\n", t); fflush(stdout); pause(); return 0; }
+      |                                                                                                                                                                                                              ^~~~~
+== 12:24:57 a. the -x sweep, pinned to cpu 2 (write M ops/s; then counters per op)
+| mx.jemalloc.0 | 12.899 | cycles 282.23 | instructions 276.19 | mem_load_retired.l3_miss 0.52 | memory_activity.stalls_l3_miss 99.23 |
+| mx.jemalloc.16 | 5.649 | cycles 696.97 | instructions 1568.28 | mem_load_retired.l3_miss 0.60 | memory_activity.stalls_l3_miss 163.16 |
+| mx.jemalloc.32 | 4.068 | cycles 967.21 | instructions 2830.36 | mem_load_retired.l3_miss 0.62 | memory_activity.stalls_l3_miss 168.33 |
+| mx.jemalloc.48 | 3.170 | cycles 1242.95 | instructions 4092.72 | mem_load_retired.l3_miss 0.62 | memory_activity.stalls_l3_miss 167.40 |
+| mx.jemalloc.64 | 2.589 | cycles 1522.12 | instructions 5354.83 | mem_load_retired.l3_miss 0.63 | memory_activity.stalls_l3_miss 169.30 |
+| mx.jemalloc.96 | 1.892 | cycles 2083.12 | instructions 7879.77 | mem_load_retired.l3_miss 0.66 | memory_activity.stalls_l3_miss 174.32 |
+| mx.new.0 | 12.950 | cycles 303.08 | instructions 400.44 | mem_load_retired.l3_miss 0.52 | memory_activity.stalls_l3_miss 111.89 |
+| mx.new.32 | 3.988 | cycles 988.33 | instructions 2956.32 | mem_load_retired.l3_miss 0.56 | memory_activity.stalls_l3_miss 155.16 |
+| mx.new.64 | 2.551 | cycles 1544.59 | instructions 5481.69 | mem_load_retired.l3_miss 0.59 | memory_activity.stalls_l3_miss 160.02 |
+== 12:26:08 b. with L3/DRAM neighbours (thrash on cpus 4-47, socket 0; the model on cpu 2)
+NUMA node0 CPU(s):                       0-23,96-119
+NUMA node1 CPU(s):                       24-47,120-143
+NUMA node2 CPU(s):                       48-71,144-167
+NUMA node3 CPU(s):                       72-95,168-191
+docker: Error response from daemon: failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: error during container init: exec: "/src/target/bench-bin/thrash": stat /src/target/bench-bin/thrash: no such file or directory
+
+Run 'docker run --help' for more information
+-- 8 neighbour threads, load 1.28 0.48 0.46
+| nb8.W.new.1 | 13.035 | cycles 302.32 | instructions 400.30 | mem_load_retired.l3_miss 0.51 | memory_activity.stalls_l3_miss 110.66 |
+| nb8.W.jemalloc.1 | 13.236 | cycles 297.47 | instructions 275.57 | mem_load_retired.l3_miss 0.52 | memory_activity.stalls_l3_miss 107.47 |
+| nb8.W.new.2 | 13.031 | cycles 302.31 | instructions 400.31 | mem_load_retired.l3_miss 0.52 | memory_activity.stalls_l3_miss 111.00 |
+| nb8.W.jemalloc.2 | 13.178 | cycles 298.86 | instructions 275.57 | mem_load_retired.l3_miss 0.51 | memory_activity.stalls_l3_miss 107.56 |
+docker: Error response from daemon: failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: error during container init: exec: "/src/target/bench-bin/thrash": stat /src/target/bench-bin/thrash: no such file or directory
+
+Run 'docker run --help' for more information
+-- 24 neighbour threads, load 9.53 3.32 1.45
+| nb24.W.new.1 | 13.052 | cycles 302.24 | instructions 400.27 | mem_load_retired.l3_miss 0.51 | memory_activity.stalls_l3_miss 110.73 |
+| nb24.W.jemalloc.1 | 13.210 | cycles 298.15 | instructions 275.52 | mem_load_retired.l3_miss 0.52 | memory_activity.stalls_l3_miss 107.86 |
+| nb24.W.new.2 | 13.025 | cycles 302.60 | instructions 400.28 | mem_load_retired.l3_miss 0.52 | memory_activity.stalls_l3_miss 110.93 |
+| nb24.W.jemalloc.2 | 13.260 | cycles 297.42 | instructions 275.47 | mem_load_retired.l3_miss 0.51 | memory_activity.stalls_l3_miss 107.22 |
+docker: Error response from daemon: failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: error during container init: exec: "/src/target/bench-bin/thrash": stat /src/target/bench-bin/thrash: no such file or directory
+
+Run 'docker run --help' for more information
+-- 44 neighbour threads, load 5.67 3.05 1.43
+| nb44.W.new.1 | 13.036 | cycles 302.33 | instructions 400.34 | mem_load_retired.l3_miss 0.51 | memory_activity.stalls_l3_miss 110.65 |
+| nb44.W.jemalloc.1 | 12.992 | cycles 303.04 | instructions 275.79 | mem_load_retired.l3_miss 0.51 | memory_activity.stalls_l3_miss 108.58 |
+| nb44.W.new.2 | 13.031 | cycles 302.57 | instructions 400.30 | mem_load_retired.l3_miss 0.52 | memory_activity.stalls_l3_miss 110.86 |
+| nb44.W.jemalloc.2 | 13.251 | cycles 297.45 | instructions 275.48 | mem_load_retired.l3_miss 0.52 | memory_activity.stalls_l3_miss 107.83 |
+== 12:27:54 c. the -x sweep with 24 neighbours (does the slope steepen?)
+docker: Error response from daemon: failed to create task for container: failed to create shim task: OCI runtime create failed: runc create failed: unable to start container process: error during container init: exec: "/src/target/bench-bin/thrash": stat /src/target/bench-bin/thrash: no such file or directory
+
+Run 'docker run --help' for more information
+| nbx.jemalloc.0 | 13.224 | cycles 297.92 | instructions 275.58 | mem_load_retired.l3_miss 0.51 | memory_activity.stalls_l3_miss 107.15 |
+| nbx.jemalloc.32 | 4.092 | cycles 962.90 | instructions 2829.89 | mem_load_retired.l3_miss 0.61 | memory_activity.stalls_l3_miss 165.41 |
+| nbx.jemalloc.64 | 2.586 | cycles 1524.21 | instructions 5355.19 | mem_load_retired.l3_miss 0.64 | memory_activity.stalls_l3_miss 170.60 |
+| nbx.jemalloc.96 | 1.892 | cycles 2084.09 | instructions 7879.72 | mem_load_retired.l3_miss 0.66 | memory_activity.stalls_l3_miss 174.74 |
+== 12:28:30 metal phase 3 done

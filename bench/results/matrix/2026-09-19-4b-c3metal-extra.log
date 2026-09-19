@@ -1,0 +1,89 @@
+== 12:17:07 annotate set_overwrite + kernel symbols from the step-3 records
+-- new set_overwrite lines >= 1%
+   21.52 :   268a:        movb    $0x1, (%rax)
+    2.62 :   2695:        movb    $0x1, -0x1(%rax,%rbx)
+   49.88 :   26a7:        movl    0x20(%r12), %esi
+   15.50 :   26ac:        movq    (%r12), %rdi
+-- new kernel symbols
+     1.08%  [k] perf_iterate_ctx
+     0.37%  [k] _raw_spin_lock
+     0.15%  [k] sync_regs
+     0.12%  [k] change_pte_range
+     0.10%  [k] native_irq_return_iret
+     0.05%  [k] pfn_pte
+     0.05%  [k] do_anonymous_page
+     0.05%  [k] rmqueue_bulk
+     0.04%  [k] __rmqueue_pcplist
+     0.04%  [k] mas_walk
+     0.04%  [k] kernel_init_pages
+     0.04%  [k] lru_gen_add_folio
+-- jemalloc set_overwrite lines >= 1%
+   21.01 :   268a:        movb    $0x1, (%rax)
+    2.91 :   2695:        movb    $0x1, -0x1(%rax,%rbx)
+   47.83 :   26a7:        movl    0x20(%r12), %esi
+   14.41 :   26ac:        movq    (%r12), %rdi
+    1.79 :   26b0:        movb    $0x1, (%rax)
+-- jemalloc kernel symbols
+     0.47%  [k] _raw_spin_lock
+     0.17%  [k] sync_regs
+     0.15%  [k] change_pte_range
+     0.10%  [k] native_irq_return_iret
+     0.07%  [k] pfn_pte
+     0.05%  [k] kernel_init_pages
+     0.05%  [k] mas_walk
+     0.05%  [k] __rmqueue_pcplist
+     0.04%  [k] rmqueue_bulk
+     0.04%  [k] __handle_mm_fault
+     0.04%  [k] lru_gen_add_folio
+     0.04%  [k] do_anonymous_page
+== 12:17:08 software counters and the user/kernel split
+-- sw.W.new: write: 103375872 SET in 8.00 s = 12.922 M ops/s (206751744 f
+   task-clock                                           8357.09  0.00008 /op
+   page-faults                                           149900  0.00145 /op
+   minor-faults                                          149900  0.00145 /op
+   major-faults                                               0  0.00000 /op
+   context-switches                                          64  0.00000 /op
+   cpu-migrations                                             0  0.00000 /op
+   cycles:u                                         28926476783  279.81845 /op
+   cycles:k                                           768937535  7.43827 /op
+   instructions:u                                   39391691243  381.05305 /op
+   instructions:k                                    1048035856  10.13811 /op
+-- sw.W.jemalloc: write: 105449472 SET in 8.00 s = 13.181 M ops/s (210898944 f
+   task-clock                                           8354.38  0.00008 /op
+   page-faults                                           153718  0.00146 /op
+   minor-faults                                          153718  0.00146 /op
+   major-faults                                               0  0.00000 /op
+   context-switches                                          53  0.00000 /op
+   cpu-migrations                                             0  0.00000 /op
+   cycles:u                                         29228893689  277.18388 /op
+   cycles:k                                           652844175  6.19106 /op
+   instructions:u                                   27314939378  259.03344 /op
+   instructions:k                                     794133463  7.53094 /op
+== 12:17:28 syscall counts
+-- sys.W.new: write: 99729408 SET in 8.00 s = 12.466 M ops/s (199458816 fr
+   syscalls:sys_enter_madvise                              1169  0.00001 /op
+   syscalls:sys_enter_mmap                                   38  0.00000 /op
+   syscalls:sys_enter_munmap                                  5  0.00000 /op
+   syscalls:sys_enter_mprotect                            60097  0.00060 /op
+   syscalls:sys_enter_read                                 2508  0.00003 /op
+   syscalls:sys_enter_openat                               1258  0.00001 /op
+   syscalls:sys_enter_futex                                   1  0.00000 /op
+   syscalls:sys_enter_clock_nanosleep                         0  0.00000 /op
+   syscalls:sys_enter_ppoll                                   0  0.00000 /op
+   syscalls:sys_enter_process_madvise                         0  0.00000 /op
+   syscalls:sys_enter_getpid                                  1  0.00000 /op
+   syscalls:sys_enter_rt_sigprocmask                          0  0.00000 /op
+-- sys.W.jemalloc: write: 105999360 SET in 8.00 s = 13.250 M ops/s (211998720 f
+   syscalls:sys_enter_madvise                                27  0.00000 /op
+   syscalls:sys_enter_mmap                                   79  0.00000 /op
+   syscalls:sys_enter_munmap                                  2  0.00000 /op
+   syscalls:sys_enter_mprotect                               12  0.00000 /op
+   syscalls:sys_enter_read                                   23  0.00000 /op
+   syscalls:sys_enter_openat                                 14  0.00000 /op
+   syscalls:sys_enter_futex                                   1  0.00000 /op
+   syscalls:sys_enter_clock_nanosleep                         0  0.00000 /op
+   syscalls:sys_enter_ppoll                                   0  0.00000 /op
+   syscalls:sys_enter_process_madvise                         0  0.00000 /op
+   syscalls:sys_enter_getpid                                  0  0.00000 /op
+   syscalls:sys_enter_rt_sigprocmask                          0  0.00000 /op
+== 12:17:48 extra done

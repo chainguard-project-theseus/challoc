@@ -1,0 +1,223 @@
+ Percent |	Source code & Disassembly of libchalloc.so for cpu/cycles/P (6696 samples, percent: local period)
+-----------------------------------------------------------------------------------------------------------------
+         : 0     0x307f0 <je_sdallocx>:
+    1.20 :   307f0:        pushq   %r15
+    0.05 :   307f2:        pushq   %r14
+    0.08 :   307f4:        pushq   %rbx
+    3.29 :   307f5:        subq    $0x10, %rsp
+    0.11 :   307f9:        movl    %edx, %eax
+    0.00 :   307fb:        shrl    $0x8, %eax
+    0.06 :   307fe:        andl    $0xfff, %eax
+    0.00 :   30803:        jne     0x30aa2 <je_sdallocx+0x2b2>
+    3.07 :   30809:        cmpq    $0x401, %rsi
+    0.00 :   30810:        jae     0x30836 <je_sdallocx+0x46>
+    0.03 :   30812:        leaq    0xf(%rsi), %rax
+    0.00 :   30816:        shrq    $0x4, %rax
+    0.05 :   3081a:        leaq    0x4fcf(%rip), %rcx  # 0x357f0 <challoc::layout::SMALL_LOOKUP>
+    3.64 :   30821:        movzbl  (%rax,%rcx), %r8d
+    0.00 :   30826:        andl    $0x3f, %edx
+    0.00 :   30829:        movl    $0x1, %r9d
+    0.02 :   3082f:        cmpl    $0x5, %edx
+    0.00 :   30832:        jae     0x30876 <je_sdallocx+0x86>
+    3.01 :   30834:        jmp     0x30882 <je_sdallocx+0x92>
+    0.03 :   30836:        cmpq    $0x40000, %rsi
+    0.00 :   3083d:        ja      0x3087f <je_sdallocx+0x8f>
+    0.02 :   3083f:        leaq    -0x1(%rsi), %r8
+    0.03 :   30843:        movl    $0x7f, %eax
+    0.00 :   30848:        bsrq    %r8, %rax
+    0.00 :   3084c:        xorq    $0x3f, %rax
+    0.00 :   30850:        movb    $0x3d, %cl
+    0.00 :   30852:        subb    %al, %cl
+    0.02 :   30854:        shrq    %cl, %r8
+    0.00 :   30857:        andl    $0x3, %r8d
+    0.00 :   3085b:        shll    $0x2, %eax
+    0.03 :   3085e:        subq    %rax, %r8
+    0.02 :   30861:        addq    $0xe8, %r8
+    0.00 :   30868:        andl    $0x3f, %edx
+    0.00 :   3086b:        movl    $0x1, %r9d
+    0.00 :   30871:        cmpl    $0x5, %edx
+    0.00 :   30874:        jb      0x30882 <je_sdallocx+0x92>
+    0.00 :   30876:        cmpl    $0x12, %edx
+    0.00 :   30879:        jbe     0x30a12 <je_sdallocx+0x222>
+    0.00 :   3087f:        xorl    %r9d, %r9d
+    0.00 :   30882:        testq   %rdi, %rdi
+    0.00 :   30885:        je      0x30b31 <je_sdallocx+0x341>
+    0.00 :   3088b:        movq    0x1174e(%rip), %r10  # 0x41fe0 <_GLOBAL_OFFSET_TABLE_+0xd8>
+    0.24 :   30892:        movq    %fs:(%r10), %r10
+    3.53 :   30896:        cmpq    $0x3, %r10
+    0.00 :   3089a:        jb      0x30a8e <je_sdallocx+0x29e>
+    0.00 :   308a0:        movq    %rdi, %r11
+    0.03 :   308a3:        subq    0x11a5e(%rip), %r11  # 0x42308 <challoc::api::SHARED+0x8>
+    3.36 :   308aa:        movzbl  0x11a63(%rip), %ecx  # 0x42314 <challoc::api::SHARED+0x14>
+    0.00 :   308b1:        shrq    %cl, %r11
+    0.00 :   308b4:        cmpq    $0x33, %r11
+    0.00 :   308b8:        ja      0x30a8e <je_sdallocx+0x29e>
+    3.61 :   308be:        leaq    0x11a3b(%rip), %rdx  # 0x42300 <challoc::api::SHARED>
+    0.00 :   308c5:        movq    %rdi, %r14
+    0.05 :   308c8:        subq    0x18(%rdx,%r11,8), %r14
+    0.03 :   308cd:        movzbl  0x11a3c(%rip), %ecx  # 0x42310 <challoc::api::SHARED+0x10>
+    3.26 :   308d4:        movq    %r14, %rax
+    0.03 :   308d7:        shrq    %cl, %rax
+    0.00 :   308da:        testq   %rax, %rax
+    0.00 :   308dd:        jne     0x30a8e <je_sdallocx+0x29e>
+    3.52 :   308e3:        movq    %r11, %rax
+    0.00 :   308e6:        shlq    $0x4, %rax
+    0.02 :   308ea:        leaq    0x81c7(%rip), %rbx  # 0x38ab8 <challoc::layout::CLASSES>
+    0.00 :   308f1:        addq    %rax, %rbx
+    3.51 :   308f4:        movzbl  0xe(%rbx), %ecx
+    0.00 :   308f8:        movq    %r14, %rax
+    0.25 :   308fb:        shrq    %cl, %rax
+    3.45 :   308fe:        movq    $-0x1, %r15
+    0.44 :   30905:        shlq    %cl, %r15
+    0.00 :   30908:        notq    %r15
+    3.46 :   3090b:        andq    %r14, %r15
+    0.02 :   3090e:        movl    0x4(%rbx), %r14d
+    0.12 :   30912:        movl    0x8(%rbx), %ecx
+    1.26 :   30915:        imulq   %r15, %rcx
+    3.90 :   30919:        shrq    $0x20, %rcx
+    0.56 :   3091d:        cmpq    %r14, %rcx
+    0.00 :   30920:        jae     0x30a8e <je_sdallocx+0x29e>
+    0.02 :   30926:        movl    (%rbx), %ebx
+    1.16 :   30928:        imulq   %rbx, %rcx
+    3.24 :   3092c:        cmpq    %r15, %rcx
+    0.00 :   3092f:        jne     0x30a8e <je_sdallocx+0x29e>
+    0.00 :   30935:        testb   %r9b, %r9b
+    0.00 :   30938:        je      0x30a8e <je_sdallocx+0x29e>
+    0.00 :   3093e:        cmpq    %r11, %r8
+    0.00 :   30941:        jne     0x30a8e <je_sdallocx+0x29e>
+    0.00 :   30947:        leaq    (%r8,%r8,2), %rcx
+    3.21 :   3094b:        shlq    $0x7, %rcx
+    0.44 :   3094f:        movq    0x290(%rcx,%rdx), %r11
+    0.14 :   30957:        cmpq    %r11, %rax
+    0.00 :   3095a:        jae     0x30a8e <je_sdallocx+0x29e>
+    0.00 :   30960:        addq    %rdx, %rcx
+    2.97 :   30963:        addq    $0x280, %rcx
+    0.06 :   3096a:        movl    0x20(%rcx), %r11d
+    0.14 :   3096e:        testl   %r11d, %r11d
+    0.00 :   30971:        je      0x30989 <je_sdallocx+0x199>
+    0.05 :   30973:        movzbl  0x1d(%rcx), %ecx
+    3.44 :   30977:        shrq    %cl, %rax
+    0.00 :   3097a:        incl    %eax
+    0.00 :   3097c:        xorl    %edx, %edx
+   12.54 :   3097e:        divl    %r11d
+    3.36 :   30981:        testl   %edx, %edx
+    0.00 :   30983:        je      0x30a8e <je_sdallocx+0x29e>
+    0.05 :   30989:        movzbl  0x11971(%rip), %ecx  # 0x42301 <challoc::api::SHARED+0x1>
+    0.00 :   30990:        movq    %r8, %rax
+    0.00 :   30993:        shlq    $0x6, %rax
+    3.15 :   30997:        addq    %r10, %rax
+    0.00 :   3099a:        addq    $0x80, %rax
+    0.00 :   309a0:        testb   %cl, %cl
+    2.74 :   309a2:        je      0x30a6f <je_sdallocx+0x27f>
+    0.00 :   309a8:        testb   $0x2, %cl
+    0.00 :   309ab:        jne     0x30a8e <je_sdallocx+0x29e>
+    0.00 :   309b1:        movl    (%rax), %ecx
+    0.00 :   309b3:        cmpl    0x4(%rax), %ecx
+    0.00 :   309b6:        je      0x30a8e <je_sdallocx+0x29e>
+    0.00 :   309bc:        movq    0x10(%rax), %rdx
+    0.00 :   309c0:        testl   %ecx, %ecx
+    0.00 :   309c2:        je      0x30aad <je_sdallocx+0x2bd>
+    0.00 :   309c8:        movl    %ecx, %esi
+    0.00 :   309ca:        cmpl    $0x3, %ecx
+    0.00 :   309cd:        jbe     0x30ab1 <je_sdallocx+0x2c1>
+    0.00 :   309d3:        movdqu  -0x20(%rdx,%rsi,8), %xmm0
+    0.00 :   309d9:        movdqu  -0x10(%rdx,%rsi,8), %xmm1
+    0.00 :   309df:        movq    %rdi, %xmm2
+    0.00 :   309e4:        pshufd  $0x44, %xmm2, %xmm2
+    0.00 :   309e9:        pcmpeqd %xmm2, %xmm1
+    0.00 :   309ed:        pcmpeqd %xmm2, %xmm0
+    0.00 :   309f1:        movdqa  %xmm0, %xmm2
+    0.00 :   309f5:        shufps  $0xdd, %xmm1, %xmm2
+    0.00 :   309f9:        shufps  $0x88, %xmm1, %xmm0
+    0.00 :   309fd:        andps   %xmm2, %xmm0
+    0.00 :   30a00:        movmskps        %xmm0, %r8d
+    0.00 :   30a04:        testl   %r8d, %r8d
+    0.00 :   30a07:        je      0x30ad3 <je_sdallocx+0x2e3>
+    0.00 :   30a0d:        jmp     0x30ac9 <je_sdallocx+0x2d9>
+    0.00 :   30a12:        cmpq    $0x33, %r8
+    0.00 :   30a16:        ja      0x30a5b <je_sdallocx+0x26b>
+    0.00 :   30a18:        movq    $-0x1, %rax
+    0.00 :   30a1f:        movl    %edx, %ecx
+    0.00 :   30a21:        shlq    %cl, %rax
+    0.00 :   30a24:        notq    %rax
+    0.00 :   30a27:        movq    %r8, %rdx
+    0.00 :   30a2a:        shlq    $0x4, %rdx
+    0.00 :   30a2e:        leaq    0x8083(%rip), %rcx  # 0x38ab8 <challoc::layout::CLASSES>
+    0.00 :   30a35:        addq    %rdx, %rcx
+    0.00 :   30a38:        nopl    (%rax,%rax)
+    0.00 :   30a40:        testl   %eax, (%rcx)
+    0.00 :   30a42:        je      0x30882 <je_sdallocx+0x92>
+    0.00 :   30a48:        incq    %r8
+    0.00 :   30a4b:        addq    $0x10, %rcx
+    0.00 :   30a4f:        cmpq    $0x34, %r8
+    0.00 :   30a53:        jne     0x30a40 <je_sdallocx+0x250>
+    0.00 :   30a55:        movl    $0x34, %r8d
+    0.00 :   30a5b:        leaq    0x1005e(%rip), %rdx  # 0x40ac0 <__do_global_dtors_aux_fini_array_entry+0x12d8>
+    0.00 :   30a62:        movl    $0x34, %esi
+    0.00 :   30a67:        movq    %r8, %rdi
+    0.00 :   30a6a:        callq   0x7c1b <core::panicking::panic_bounds_check>
+    0.07 :   30a6f:        movl    (%rax), %ecx
+    0.00 :   30a71:        cmpl    0x4(%rax), %ecx
+    0.00 :   30a74:        je      0x30a8e <je_sdallocx+0x29e>
+    0.02 :   30a76:        movq    0x10(%rax), %rdx
+    3.72 :   30a7a:        movq    %rdi, (%rdx,%rcx,8)
+    0.00 :   30a7e:        leal    0x1(%rcx), %edx
+    0.05 :   30a81:        movl    %edx, (%rax)
+    0.00 :   30a83:        cmpl    0xc(%rax), %ecx
+    3.17 :   30a86:        jae     0x30b31 <je_sdallocx+0x341>
+    0.00 :   30a8c:        jmp     0x30ae1 <je_sdallocx+0x2f1>
+    0.00 :   30a8e:        movq    %r9, %rdx
+    0.00 :   30a91:        movq    %r8, %rcx
+    0.00 :   30a94:        addq    $0x10, %rsp
+    0.00 :   30a98:        popq    %rbx
+    0.00 :   30a99:        popq    %r14
+    0.00 :   30a9b:        popq    %r15
+    0.00 :   30a9d:        jmp     0x7050 <challoc::api::libc::free_sized_slow>
+    0.00 :   30aa2:        cmpl    $0x1, %eax
+    0.00 :   30aa5:        jne     0x30ae6 <je_sdallocx+0x2f6>
+    0.00 :   30aa7:        movw    $0x1, %cx
+    0.00 :   30aab:        jmp     0x30aed <je_sdallocx+0x2fd>
+    0.00 :   30aad:        xorl    %esi, %esi
+    0.00 :   30aaf:        jmp     0x30ad3 <je_sdallocx+0x2e3>
+    0.00 :   30ab1:        cmpl    $0x1, %ecx
+    0.00 :   30ab4:        je      0x30ace <je_sdallocx+0x2de>
+    0.00 :   30ab6:        cmpq    %rdi, -0x8(%rdx,%rsi,8)
+    0.00 :   30abb:        je      0x30ac9 <je_sdallocx+0x2d9>
+    0.00 :   30abd:        cmpl    $0x2, %ecx
+    0.00 :   30ac0:        je      0x30ace <je_sdallocx+0x2de>
+    0.00 :   30ac2:        cmpq    %rdi, -0x10(%rdx,%rsi,8)
+    0.00 :   30ac7:        jne     0x30ace <je_sdallocx+0x2de>
+    0.00 :   30ac9:        callq   0x5a00 <challoc::heap::cached_twice>
+    0.00 :   30ace:        cmpq    %rdi, (%rdx)
+    0.00 :   30ad1:        je      0x30ac9 <je_sdallocx+0x2d9>
+    0.00 :   30ad3:        movq    %rdi, (%rdx,%rsi,8)
+    0.00 :   30ad7:        leal    0x1(%rcx), %edx
+    0.00 :   30ada:        movl    %edx, (%rax)
+    0.00 :   30adc:        cmpl    0xc(%rax), %ecx
+    0.00 :   30adf:        jae     0x30b31 <je_sdallocx+0x341>
+    0.00 :   30ae1:        movl    %ecx, 0xc(%rax)
+    0.00 :   30ae4:        jmp     0x30b31 <je_sdallocx+0x341>
+    0.00 :   30ae6:        addl    $-0x2, %eax
+    0.00 :   30ae9:        movw    $0x2, %cx
+    0.00 :   30aed:        movl    %edx, %r8d
+    0.00 :   30af0:        andl    $0x3f, %r8d
+    0.00 :   30af4:        movl    %edx, %r9d
+    0.00 :   30af7:        shrb    $0x6, %r9b
+    0.00 :   30afb:        andb    $0x1, %r9b
+    0.00 :   30aff:        xorl    %r10d, %r10d
+    0.00 :   30b02:        shrl    $0x14, %edx
+    0.00 :   30b05:        setne   %r10b
+    0.00 :   30b09:        decl    %edx
+    0.00 :   30b0b:        movw    %r10w, (%rsp)
+    0.00 :   30b10:        movw    %dx, 0x2(%rsp)
+    0.00 :   30b15:        movw    %cx, 0x4(%rsp)
+    0.00 :   30b1a:        movw    %ax, 0x6(%rsp)
+    0.00 :   30b1f:        movl    %r8d, 0x8(%rsp)
+    0.00 :   30b24:        movb    %r9b, 0xc(%rsp)
+    0.00 :   30b29:        movq    %rsp, %rdx
+    0.00 :   30b2c:        callq   0x7610 <challoc::api::jemalloc::sdallocx_routed>
+    0.00 :   30b31:        addq    $0x10, %rsp
+    0.03 :   30b35:        popq    %rbx
+    0.00 :   30b36:        popq    %r14
+    3.44 :   30b38:        popq    %r15
+    3.44 :   30b3a:        retq

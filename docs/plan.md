@@ -716,6 +716,44 @@ Tasks, in order:
    on at least one affected CPU; the T2A larson rows have a first reading
    (the N1 core's L1/L2 and the outlined LSE helpers are the candidates);
    the PMU host, if used, is deleted at the end.
+4c. The sized path's division and instruction budget (the fix task 4b
+   proposes; `bench/results/2026-09-19-8481c-valkey1-attribution.md`
+   sections 7 and 8). (a) `SlabTable::is_guard_slab`'s
+   `page_group.wrapping_add(1) % self.guard_interval`, inlined into
+   `Shared::sized_slot`, is a 32-bit `divl` by a run-time divisor on the
+   `sdallocx` fast path, twice per Valkey SET: 12.5% of `je_sdallocx`'s
+   samples, 12 `arith.div_active` cycles and 16 instructions per SET on
+   the 8481C, and, in the window-bound regime of the small-L3 VMs, the
+   latency that tips the SET past the instruction window (`guards:false`
+   takes the C3 VM's write phase from 7.2 to 9.7 M SET/s against
+   jemalloc's 10.1; `guard_slab_interval:4194304`, which keeps the
+   division, changes nothing). Make `guard_slab_interval` a power of two
+   (round a configured value up, report the rounding in
+   `opt.guard_slab_interval`) and test with a mask or a stored
+   `lg_interval`; `sized_slot_rejects_guard_slabs` and
+   `tests/c/guard_slab.c` keep the semantics. (b) Then the sized path's
+   instruction budget: challoc's SET is 391 instructions against
+   jemalloc's 266 with equal misses at every level, and the `-x` sweep
+   (`valkey_model -x K`, about 80 independent instructions per round)
+   puts the window cliff at 350..430 instructions per SET, where the
+   second SET's dict-entry miss stops overlapping the first; each 80
+   instructions past the knee cost 0.3 ns per SET on a DRAM-bound host
+   and 0.08 where the table is cached. Remove what the flush already
+   checks (`is_handed_out` on the sized path, as task 4e moved the bit
+   test) and the redundant reclassification, target under 330 per SET;
+   `quick-perf`'s instr/op column is the budget and the `-x` sweep on a
+   C3 lab VM the yardstick. Attribution rule: before and after, `quick-perf`
+   valkey1/valkey1-free on both reference VMs (`arith.div_active` added
+   to the events for this task: 32 -> 20 per SET expected on the C4), and
+   the write-phase rate on a `matrix lab cpu-c3` VM (`valkey_model -n
+   850000 -w 8 -d 0 -s` under `target/quick/new` and jemalloc, three
+   interleaved runs). Acceptance: (a) alone brings the C3 lab's valkey1
+   write phase within 10% of jemalloc (from -28%; `guards:false` measured
+   -4%) with `valkey1-free` unchanged; `quick` go on both reference VMs
+   and on the C3 lab; the Altra rows are not the target (their mechanism
+   is the plain free's six-load chain,
+   `2026-09-19-altra-larson-attribution.md`, a separate task if pursued);
+   scorecard on both VMs.
 5. Tagged pointers, part 1, the probes and the design: whether Axion
    exposes MTE (`HWCAP2_MTE`), whether the C4/C3/C3D CPUs expose LAM or
    UAI and the kernel `arch_prctl(ARCH_ENABLE_TAGGED_ADDR)` accepts it;
