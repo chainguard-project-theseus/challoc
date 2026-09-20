@@ -1365,6 +1365,70 @@ pub(crate) mod tests {
         assert_ne!(decay_ns_from_ms(i64::MAX), NEVER);
     }
 
+    /// The step gate: nothing `Empty` is `None` and no walk; the oldest
+    /// member's first step is the deadline until it passes, then one walk
+    /// per step; a deadline set under a longer period since shortened
+    /// (further away than one step) does not delay the walk; the walk's
+    /// republished oldest decides whether a next deadline exists.
+    #[test]
+    fn decayer_walks_once_per_step_and_follows_a_shortened_period() {
+        let d = Decayer::new();
+        // The walks seen, `(now, curve)`; a cell so the assertions between
+        // the calls can read it.
+        let walks = std::cell::RefCell::new(std::vec::Vec::new());
+        let walk_to = |d: &Decayer, now: u64, decay_ns: u64, leave: u64| {
+            d.decay(now, decay_ns, |at, curve| {
+                walks.borrow_mut().push((at, *curve));
+                d.set_oldest_empty(leave);
+            })
+        };
+        let walks = || walks.borrow().clone();
+        // Nothing `Empty`: no deadline, no walk.
+        assert_eq!(d.oldest_empty(), 0);
+        assert_eq!(walk_to(&d, 1_000, 200_000, 0), None);
+        assert!(walks().is_empty());
+        // The first `Empty` member at 1000: the deadline is the end of its
+        // first step (1000 ns steps of a 200 us period), no walk before.
+        assert!(d.note_first_empty(1_000));
+        assert!(!d.note_first_empty(1_500), "the oldest is already known");
+        assert_eq!(d.oldest_empty(), 1_000);
+        assert_eq!(walk_to(&d, 1_500, 200_000, 1_000), Some(2_000));
+        assert_eq!(walk_to(&d, 1_999, 200_000, 1_000), Some(2_000));
+        assert!(walks().is_empty());
+        // At the step: one walk, with the curve of the period, and the
+        // next deadline one step on.
+        assert_eq!(walk_to(&d, 2_000, 200_000, 1_000), Some(3_000));
+        assert_eq!(walks(), [(2_000, Curve::new(200_000))]);
+        // Within the step: the stored deadline, no second walk.
+        assert_eq!(walk_to(&d, 2_500, 200_000, 1_000), Some(3_000));
+        assert_eq!(walks().len(), 1);
+        // The next step: a walk again.
+        assert_eq!(walk_to(&d, 3_000, 200_000, 1_000), Some(4_000));
+        assert_eq!(walks().len(), 2);
+        // The period is shortened to 20 us (100 ns steps): the stored
+        // deadline 4000 is more than a step away from 3_050, so the walk
+        // runs now instead of waiting for it, and the next deadline is a
+        // short step on.
+        assert_eq!(walk_to(&d, 3_050, 20_000, 1_000), Some(3_150));
+        assert_eq!(walks().len(), 3);
+        assert_eq!(walks()[2], (3_050, Curve::new(20_000)));
+        // A walk whose republished oldest is 0 (everything purged) ends
+        // the deadlines; a later `Empty` starts them again from its own
+        // first step.
+        assert_eq!(walk_to(&d, 3_150, 20_000, 0), None);
+        assert_eq!(walks().len(), 4);
+        assert_eq!(d.oldest_empty(), 0);
+        assert!(d.set_oldest_empty(10_000), "from none to one");
+        assert!(!d.set_oldest_empty(10_000), "already one");
+        assert_eq!(walk_to(&d, 10_050, 20_000, 10_000), Some(10_100));
+        assert_eq!(walks().len(), 4);
+        // A zero period: every step is 0 ns, so the walk is due at once
+        // and the deadline is `now` itself.
+        assert_eq!(walk_to(&d, 10_060, 0, 10_000), Some(10_060));
+        assert_eq!(walks().len(), 5);
+        assert_eq!(walks()[4], (10_060, Curve::new(0)));
+    }
+
     /// Pages the bookkeeping test may point a batch at: a real mapping on
     /// Linux (the flush really discards), made-up addresses elsewhere.
     #[cfg(target_os = "linux")]

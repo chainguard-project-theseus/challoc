@@ -1266,6 +1266,20 @@ mod tests {
         cfg
     }
 
+    /// Every value in `bad` is refused for `key`: one issue, `invalid conf
+    /// value` (or `malformed` for the empty value, which has no
+    /// `key:value` shape), and the config left at the defaults.
+    fn rejects_bad_values(key: &str, bad: &[&str]) {
+        for bad in bad {
+            let text = std::format!("{key}:{bad}");
+            let (cfg, issues) = parse(&text);
+            assert_eq!(cfg, Config::DEFAULT, "{text} changed the config");
+            assert_eq!(issues.len(), 1, "{text}: {issues:?}");
+            let expect = if bad.is_empty() { "malformed" } else { "invalid conf value \"" };
+            assert!(issues[0].contains(expect), "{text}: {}", issues[0]);
+        }
+    }
+
     #[test]
     fn defaults_match_the_design_table() {
         let d = Config::DEFAULT;
@@ -1332,13 +1346,7 @@ mod tests {
                 let cfg = if is_inert(key.as_bytes()) { inert(&text, 1) } else { clean(&text) };
                 assert_eq!(cfg.get(key.as_bytes()), Some(Value::Bool(v)), "{key}:{v}");
             }
-            for bad in ["yes", "1", "TRUE", "", "truex"] {
-                let (cfg, issues) = parse(&std::format!("{key}:{bad}"));
-                assert_eq!(cfg, Config::DEFAULT, "{key}:{bad} changed the config");
-                assert_eq!(issues.len(), 1, "{key}:{bad}");
-                let expect = if bad.is_empty() { "malformed" } else { "invalid conf value" };
-                assert!(issues[0].contains(expect), "{key}:{bad}: {}", issues[0]);
-            }
+            rejects_bad_values(key, &["yes", "1", "TRUE", "", "truex"]);
         }
     }
 
@@ -1460,13 +1468,7 @@ mod tests {
             assert_eq!(cfg.get(b"percpu_arena"), Some(Value::Str(want.name())), "{value}");
             assert!(cfg.abort_conf);
         }
-        for bad in ["true", "false", "1", "on", "Auto", "PERCPU", "", "percpux"] {
-            let (cfg, issues) = parse(&std::format!("percpu_arena:{bad}"));
-            assert_eq!(cfg, Config::DEFAULT, "percpu_arena:{bad} changed the config");
-            assert_eq!(issues.len(), 1, "percpu_arena:{bad}: {issues:?}");
-            let expect = if bad.is_empty() { "malformed" } else { "invalid conf value \"" };
-            assert!(issues[0].contains(expect), "percpu_arena:{bad}: {}", issues[0]);
-        }
+        rejects_bad_values("percpu_arena", &["true", "false", "1", "on", "Auto", "PERCPU", "", "percpux"]);
         // The last pair wins, as for every key.
         assert_eq!(clean("percpu_arena:percpu,percpu_arena:off").percpu_arena, PercpuArena::Off);
         assert_eq!(clean("percpu_arena:\"percpu\"").percpu_arena, PercpuArena::Percpu);
@@ -1502,13 +1504,7 @@ mod tests {
             assert_eq!(want.name(), value);
             assert!(cfg.abort_conf);
         }
-        for bad in ["true", "false", "1", "yes", "Auto", "ON", "", "onn", "percpu"] {
-            let (cfg, issues) = parse(&std::format!("slice_ext:{bad}"));
-            assert_eq!(cfg, Config::DEFAULT, "slice_ext:{bad} changed the config");
-            assert_eq!(issues.len(), 1, "slice_ext:{bad}: {issues:?}");
-            let expect = if bad.is_empty() { "malformed" } else { "invalid conf value \"" };
-            assert!(issues[0].contains(expect), "slice_ext:{bad}: {}", issues[0]);
-        }
+        rejects_bad_values("slice_ext", &["true", "false", "1", "yes", "Auto", "ON", "", "onn", "percpu"]);
         assert_eq!(clean("slice_ext:on,slice_ext:off").slice_ext, SliceExt::Off);
         assert_eq!(clean("slice_ext:\"on\"").slice_ext, SliceExt::On);
         // `auto` and `on` consult the probe, `off` never; only `on`
@@ -1535,13 +1531,7 @@ mod tests {
             assert!(cfg.abort_conf);
             assert_eq!(cfg.thp, Thp::Never, "thp_process leaves thp alone");
         }
-        for bad in ["true", "false", "1", "never", "always", "auto", "Default", "ADVISED", "", "advise"] {
-            let (cfg, issues) = parse(&std::format!("thp_process:{bad}"));
-            assert_eq!(cfg, Config::DEFAULT, "thp_process:{bad} changed the config");
-            assert_eq!(issues.len(), 1, "thp_process:{bad}: {issues:?}");
-            let expect = if bad.is_empty() { "malformed" } else { "invalid conf value \"" };
-            assert!(issues[0].contains(expect), "thp_process:{bad}: {}", issues[0]);
-        }
+        rejects_bad_values("thp_process", &["true", "false", "1", "never", "always", "auto", "Default", "ADVISED", "", "advise"]);
         assert_eq!(clean("thp_process:advised,thp_process:default").thp_process, ThpProcess::Default);
         assert_eq!(clean("thp_process:\"advised\"").thp_process, ThpProcess::Advised);
         // Only `advised` issues the prctl; `default` never asks.
@@ -1570,13 +1560,7 @@ mod tests {
             assert!(cfg.abort_conf);
             assert!(!cfg.prefault_active(), "no background thread, no pass");
         }
-        for bad in ["1", "0", "yes", "on", "True", "", "advised"] {
-            let (cfg, issues) = parse(&std::format!("prefault:{bad}"));
-            assert_eq!(cfg, Config::DEFAULT, "prefault:{bad} changed the config");
-            assert_eq!(issues.len(), 1, "prefault:{bad}: {issues:?}");
-            let expect = if bad.is_empty() { "malformed" } else { "invalid conf value \"" };
-            assert!(issues[0].contains(expect), "prefault:{bad}: {}", issues[0]);
-        }
+        rejects_bad_values("prefault", &["1", "0", "yes", "on", "True", "", "advised"]);
         assert!(!clean("prefault:true,prefault:false").prefault);
         assert!(clean("prefault:\"true\"").prefault);
         // The pass needs the thread, in either key order.
@@ -1738,12 +1722,98 @@ mod tests {
             let round = if is_inert(key.as_bytes()) { inert(&text, 1) } else { clean(&text) };
             assert_eq!(round, cfg, "{key}:{value} round trip");
         }
-        assert_eq!(KEYS.len(), 29, "27 + thp_process and prefault (plan Phase 2.5 tasks 16 and 11)");
+        assert_eq!(KEYS.len(), 29, "a new key goes into KEYS, `set`, `get` and this count");
         assert_eq!(cfg.get(b"nonsense"), None);
         assert_eq!(cfg.get(b""), None);
         for key in IGNORED_KEYS {
             assert_eq!(cfg.get(key.as_bytes()), None, "{key}");
         }
+    }
+
+    /// The three tables and `set` agree: every name in `KEYS`,
+    /// `IGNORED_KEYS` and `INERT_KEYS` is one `set` knows (a bad value is
+    /// refused as a value, never as an unknown key; an ignored key takes
+    /// any value; an inert key is reported as inert), the tables are
+    /// disjoint, and a name in none of them is [`Issue::UnknownKey`], so a
+    /// key added to `set` without its table entry (or the reverse) fails
+    /// here rather than in `opt.<key>` or `malloc_stats_print`.
+    #[test]
+    fn set_knows_exactly_the_tabled_keys() {
+        for key in KEYS.iter().chain(IGNORED_KEYS).chain(INERT_KEYS) {
+            let mut cfg = Config::DEFAULT;
+            let r = cfg.set(key.as_bytes(), b"nonsense-value");
+            assert!(!matches!(r, Err(Issue::UnknownKey(_))), "{key}: {r:?}");
+            if IGNORED_KEYS.contains(key) {
+                assert_eq!(r, Ok(()), "{key} takes any value");
+            } else if is_inert(key.as_bytes()) {
+                assert_eq!(r, Err(Issue::BadValue { key: key.as_bytes(), value: b"nonsense-value" }), "{key}");
+                assert_eq!(cfg.set(key.as_bytes(), b"true"), Err(Issue::Inert(key.as_bytes())), "{key}");
+            } else {
+                assert_eq!(r, Err(Issue::BadValue { key: key.as_bytes(), value: b"nonsense-value" }), "{key}");
+                assert!(cfg.get(key.as_bytes()).is_some(), "{key} is readable");
+            }
+            let n = [KEYS.contains(key), IGNORED_KEYS.contains(key), INERT_KEYS.contains(key)];
+            assert_eq!(n.iter().filter(|&&b| b).count(), 1, "{key} is in exactly one table");
+        }
+        for unknown in ["nonsense", "tcache_maxx", "Tcache", "stats_prin", "thp_proces", ""] {
+            let mut cfg = Config::DEFAULT;
+            assert_eq!(cfg.set(unknown.as_bytes(), b"true"), Err(Issue::UnknownKey(unknown.as_bytes())), "{unknown:?}");
+            assert_eq!(cfg, Config::DEFAULT);
+        }
+    }
+
+    /// `spin_hint`, the pure part: the four values parse and read back
+    /// through `opt.spin_hint`, anything else is refused and leaves the
+    /// default, `hint()` maps the explicit choices to the lock's hints and
+    /// `auto` to none; `apply_spin_hint` refuses the other architecture's
+    /// hint and this one's without its prerequisite (WAITPKG, the event
+    /// stream), resets the key to `auto` and installs nothing (the install
+    /// itself is `linux_tests::spin_hint_key_installs_where_available`).
+    #[test]
+    fn spin_hint_values() {
+        use crate::lock::SpinHint;
+        use crate::sys::cpu::{Arm, CacheSource, Caches, Cpu, Isa, X86};
+        assert!(KEYS.contains(&"spin_hint"));
+        assert!(!IGNORED_KEYS.contains(&"spin_hint") && !is_inert(b"spin_hint"));
+        assert_eq!(Config::DEFAULT.spin_hint, SpinChoice::Auto);
+        for (value, want, hint) in [
+            ("auto", SpinChoice::Auto, None),
+            ("baseline", SpinChoice::Baseline, Some(SpinHint::Baseline)),
+            ("umwait", SpinChoice::Umwait, Some(SpinHint::Umwait)),
+            ("wfe", SpinChoice::Wfe, Some(SpinHint::Wfe)),
+        ] {
+            let cfg = clean(&std::format!("spin_hint:{value},abort_conf:true"));
+            assert_eq!(cfg.spin_hint, want, "{value}");
+            assert_eq!(cfg.get(b"spin_hint"), Some(Value::Str(want.name())), "{value}");
+            assert_eq!(want.name(), value);
+            assert_eq!(want.hint(), hint, "{value}");
+            assert!(cfg.abort_conf);
+        }
+        rejects_bad_values("spin_hint", &["true", "false", "1", "pause", "Auto", "UMWAIT", "", "wfet", "yield"]);
+        assert_eq!(clean("spin_hint:wfe,spin_hint:baseline").spin_hint, SpinChoice::Baseline);
+        assert_eq!(clean("spin_hint:\"umwait\"").spin_hint, SpinChoice::Umwait);
+        // Unavailable hints: no install, the key back at `auto`, the
+        // issue names the value.
+        let x86 = Cpu { isa: Isa::X86(X86::default()), caches: Caches::UNKNOWN, cache_source: CacheSource::None };
+        let arm = Cpu { isa: Isa::Arm(Arm::default()), caches: Caches::UNKNOWN, cache_source: CacheSource::None };
+        let unavailable = |name: &str| std::format!("conf value \"{name}\" for spin_hint is not available on this CPU; using the default");
+        for (cpu, event_stream, value) in [
+            (&x86, true, "umwait"),
+            (&x86, true, "wfe"),
+            (&arm, true, "umwait"),
+            (&arm, false, "wfe"),
+        ] {
+            let mut cfg = clean(&std::format!("spin_hint:{value}"));
+            let err = cfg.apply_spin_hint(cpu, event_stream).unwrap_err();
+            assert_eq!(err, Issue::Unavailable { key: b"spin_hint", value: value.as_bytes() }, "{value}");
+            assert_eq!(std::format!("{err}"), unavailable(value));
+            assert_eq!(cfg.spin_hint, SpinChoice::Auto, "{value}: reset to auto");
+            assert_eq!(cfg.get(b"spin_hint"), Some(Value::Str("auto")));
+        }
+        // `auto` is never applied: no probe consulted, nothing installed.
+        let mut cfg = Config::DEFAULT;
+        assert_eq!(cfg.apply_spin_hint(&x86, false), Ok(()));
+        assert_eq!(cfg.spin_hint, SpinChoice::Auto);
     }
 
     #[test]
