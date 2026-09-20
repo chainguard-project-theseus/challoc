@@ -634,30 +634,74 @@ mod tests {
     }
 
     /// One waiter parked in the hint's spin while the holder sleeps past
-    /// the spin phase: the waiter must reach the futex and be woken by the
-    /// release (a `wfe` that no store ends is bounded by the event stream,
-    /// and here a store does end it).
+    /// the spin phase: the waiter must reach the futex (announce
+    /// `CONTENDED`), stay parked while the lock is held, and be woken by
+    /// the release (a `wfe` that no store ends is bounded by the event
+    /// stream, and here a store does end it).
+    ///
+    /// Every wait is bounded by `BOUND` and fails instead of hanging, and
+    /// the waiter is a detached thread, not a scoped one: `thread::scope`
+    /// joins its threads on the way out even when the body panicked, so
+    /// an assertion that failed while the lock was still held (the
+    /// announce asserted at a fixed 20 ms, missed once under host load,
+    /// 2026-09-20) left the waiter parked on a lock nobody would release
+    /// and the test thread parked in the join: two threads in
+    /// `futex_wait` for forty minutes, the panic message captured by the
+    /// harness until the test ends. The announce is now waited for, and
+    /// the lock is released before anything is asserted about it.
     #[test]
     fn a_parked_waiter_is_released() {
+        use std::sync::Arc;
+        use std::time::{Duration, Instant};
+        /// Long enough for a thread to be scheduled and woken on a host
+        /// under load; a wait that outlasts it is a failure, not a delay.
+        const BOUND: Duration = Duration::from_secs(10);
+        /// Poll `done` every millisecond for up to `BOUND`.
+        fn within_bound(mut done: impl FnMut() -> bool) -> bool {
+            let deadline = Instant::now() + BOUND;
+            loop {
+                if done() {
+                    return true;
+                }
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
         for hint in testable_hints() {
-            let l = RawLock::new();
+            let l = Arc::new(RawLock::new());
             l.lock();
-            let t0 = std::time::Instant::now();
-            std::thread::scope(|s| {
-                let waiter = s.spawn(|| {
+            let waiter = {
+                let l = Arc::clone(&l);
+                std::thread::spawn(move || {
                     l.lock_with(hint);
-                    let held = t0.elapsed();
+                    let acquired_at = Instant::now();
                     l.unlock();
-                    held
-                });
-                std::thread::sleep(std::time::Duration::from_millis(20));
-                assert_eq!(l.state.load(Ordering::Relaxed), CONTENDED, "{hint:?}: the waiter did not announce itself within 20 ms");
+                    acquired_at
+                })
+            };
+            // The announce: the spin phase ends with the swap to `CONTENDED`.
+            if !within_bound(|| l.state.load(Ordering::Relaxed) == CONTENDED) {
                 l.unlock();
-                let held = waiter.join().unwrap();
-                assert!(held >= std::time::Duration::from_millis(20), "{hint:?}: acquired before the release ({held:?})");
-                assert!(held < std::time::Duration::from_millis(2000), "{hint:?}: the wake took {held:?}");
-            });
-            assert_eq!(l.state.load(Ordering::Relaxed), UNLOCKED);
+                panic!("{hint:?}: the waiter did not announce itself within {BOUND:?}");
+            }
+            // Parked: while the lock stays held the word stays `CONTENDED`
+            // and the waiter does not get through. Read, then release, then
+            // assert, so a failure leaves nothing parked.
+            std::thread::sleep(Duration::from_millis(20));
+            let word = l.state.load(Ordering::Relaxed);
+            let through = waiter.is_finished();
+            let released_at = Instant::now();
+            l.unlock();
+            assert_eq!(word, CONTENDED, "{hint:?}: the word changed while the lock was held");
+            assert!(!through, "{hint:?}: the waiter got through while the lock was held");
+            // Released: the wake reaches the waiter. On failure the waiter
+            // stays parked (a lost wake); the test fails rather than joins.
+            assert!(within_bound(|| waiter.is_finished()), "{hint:?}: the waiter was not woken within {BOUND:?} of the release");
+            let acquired_at = waiter.join().unwrap();
+            assert!(acquired_at >= released_at, "{hint:?}: acquired {:?} before the release", released_at - acquired_at);
+            assert_eq!(l.state.load(Ordering::Relaxed), UNLOCKED, "{hint:?}");
         }
     }
 
