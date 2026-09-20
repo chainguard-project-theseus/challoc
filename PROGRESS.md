@@ -1358,6 +1358,83 @@ One line per task, newest at the bottom of each section. Keep it terse.
   probes, init), 92a5a27 (rseq macros).
 - Maintainability pass, batch three (lane tidy-api, 2026-09-20): deduplication with proof in `src/api/`, seven tasks, eight commits `c611757..a70c844` on `loop/tidy-api`. (1) `mallctl.rs`: the sixty-eight plain read-only keys carry their reader in the name tree (`stat(name, Leaf, fn(&[usize]) -> Result<Reading, c_int>)`, `Reading` tagging the value with its C type); `ctl()` runs the read-only check and the reader before a match that keeps only the keys that do something (`epoch`, `background_thread`, `max_background_threads`, `arenas.create/lookup`, `arena.<i>.*`, the `thread.*` and `tcache.*` writes, the utilization queries); a new read-only stat is one `Leaf` variant and one `stat` line; every existing mallctl test passes unchanged. A reader takes the MIB only and fetches the static `Shared` itself: the first cut passed `&Shared` through the fn pointer and the compare showed `heap::thread::create_heap_for_thread`, `Heap::create_detached`, `Tcaches::create`, `Config::get`, `arena::free`, `stats::snapshot`, `alloc_huge`, `malloc_slow*`, `free_slow`, `free_sized_slow`, `alloc_aligned`, `alloc_with` changed (an argument LLVM can no longer trace to the one static loses the constant it was specialised on downstream); with the static fetched inside the reader the changes are confined to `mallctl.rs`. (2) `export_pair!` (`api/mod.rs`, `#[cfg(not(test))]`): the forty-two plain/`je_` wrapper pairs of `libc.rs`, `jemalloc.rs`, `mallctl.rs`, `print.rs` are twenty-one macro entries; the glibc-only names and `cxx.rs` stay; landed, every exported entry point exact or reloc-only in the compare. (3) `libc::old_size_or_keep(shared, what, p, size, align)` shared by `realloc` (align 1) and `rallocx`; `realloc` 695 -> 588 instructions, `rallocx` 239 -> 81, the new function 203: the callers became a let-else around a call, the abort message text is unchanged. (4) `print.rs`: `json_report` is `json_general(out, shared, snap, arenas_follow)` + `json_arena(out, arena, s, bins)` mirroring the text side; byte-identical output proven by `json_report_shape_is_pinned`, written and committed against the old writer first (every character of the `J`, `Jb`, `Ja`, `Jg` reports with digits, booleans and string values masked). (5a) `opt.tcache_max` and `opt.huge_retain_max` read as `size_t` (`mallctl::SIZE_T_OPTS`); `narenas`, `tcache_nslots_small_max`, `tcache_compact_shift`, `guard_slab_interval` stay `unsigned`, the `Int` keys stay `ssize_t`; `config::Value` untouched (config.rs is not this lane's file). (5b) `stats.arenas.4097.*` (`MALLCTL_ARENAS_DESTROYED`) answers all-zero statistics, bins included, by name and through a patched MIB; recognised in `arena_stats` before the `MAX_ARENAS` range check; `arena.4097.*` stays `ENOENT`, 4098 is nothing; both shipped headers say so at the define. (6) `arenas_route_mallocx_allocations_and_plain_frees` moved out of `api/mod.rs` into `jemalloc.rs`'s tests beside `mallocx_routes_arenas_and_caches` (the same ground through the public API), name and body kept. (7) `ctests::release_so()` is `pub(crate)`, `libc.rs`'s copy gone. Codegen compare (baseline 29c0eda, `.tmp-codegen/report-q16.txt`): 435 -> 500 functions, 44 exact + 377 reloc-only + 79 changed in both variants, `.text` q16 `03bea0` -> `03d900`, q8 `03c1c0` -> `03dc80`, instructions 61445 -> 63133 (q8 61645 -> 63357), all cold. Changed, all in this lane's files: `mallctl::ctl` (1312 -> 648, the readers left it), `mallctl::mallctl`, `mallctl::name_to_mib` (returns the node), `mallctl::arena_stats` (120 -> 490: `ArenaStats::empty` for 4097 inlined), `mallctl::opt_value` (new; `cstr_of` inlined into it), the sixty-eight reader closures (new, `mallctl::{ROOT,ARENAS,BIN_GEOMETRY,STATS,STATS_ARENA_I,STATS_SMALL,STATS_LARGE,STATS_BIN_FIELDS,STATS_CGROUP,STATS_THP,STATS_PREFAULT,STATS_PERCPU,THREAD,CONFIG}::{closure}`), `je_mallctlnametomib` and `je_mallctlbymib` (inline the changed resolution), `libc::realloc`, `libc::old_size_or_keep` (new), `jemalloc::rallocx`, `print::malloc_stats_print` (2879 -> 2876, the JSON split); baseline functions with no counterpart, inlined into the readers that were their only callers: `Policy::effective_decay_ns`, `Heap::materialise_stats`, `Percpu::snapshot`, `mallctl::cstr_of`; toolchain only: `__aarch64_ldset8_acq` (q16) and `<bool as Display>::fmt` (q8) differ by trailing `nop` padding. Not in `changed`: every exported allocation entry point and everything `#[inline(always)]`. Container `make test` on the committed tree: 441 + 135 + 25 passed (main 441 + 133 + 25; the two new tests are `print::tests::json_report_shape_is_pinned` and `mallctl::tests::destroyed_arenas_index_reads_zeros_and_is_no_arena`), the cgroup and pagemap-guard steps `ok`, skips as allowed on this host.
 - Maintainability pass, batch three (lane tidy-class, 2026-09-20): deduplication in `src/class/` with codegen proof, four commits 09ab24a (the seam), 5b49d17 (the walks), b19a773 (the handoff and commit splits, `group_range`), 1d07a33 (the protocol names). `Inner::{empty_add, empty_take, purged_add, purged_take}` pair each set's bit with its count as `set_partial`/`clear_partial` do and replace the inline pairs in `on_live_zero`, `prefault_one` and the handoff's move (six of the eleven sites; the other five stay spelled out with a comment saying why, see the notes). `ClassState::walk_empty` is the one empty-set walk with the state assertion, behind `purge_empty` and both passes of `purge_curve`; `decay::min_nonzero` is the four `oldest == 0 || t < oldest` folds; `SlabTable::group_range` the three `start = group << lg_group; end = (start + group).min(nslabs)` computations (`next_idle_group`, `transfer_group`, `take_group`). `transfer_group` is the owner-word check, the set-word commit, `verify_idle_group` (reads only; the invariant "every non-guard slab of the group is idle, live 0, owned by the donor, in exactly its set" stated at the seam) and `move_group` (sets, counts, descriptors; returns the oldest stamp), then the owner word, the cursors and the gate; `commit_slab`'s four-clause `&&` with side effects is `commit_page_group` plus `install_guard` with the thp mode read once. `#[cfg(test)] class::protocol` names the atomic steps of `claim` (`Refill`), `release_owned`/`dec_live`/`on_live_zero`/`reopen` (`Release`) and `purge_empty` (`Purge`) in code order with the model's sub-step numbers as discriminants; `model::steps` matches each enum exhaustively (a new step without a model step fails to compile), the two release sub-steps that were out of code order are renumbered, and `model::MAX_PICKS <= class::MAX_PICKS` is a compile-time assert. Behaviour, printed text and abort messages unchanged (one provably redundant assertion added: `purge_curve`'s second pass now asserts what its first pass asserted on the same set under the same lock hold). `scripts/codegen-diff.sh compare .tmp-codegen` against a baseline captured at 29c0eda (`.tmp-codegen/report-q16.txt`, `report-q8.txt`): 435 functions before and after in both variants; `changed`: `ClassState::next_fresh_slab` (1948 -> 2002 instructions; it inlines `transfer_group`, `commit_slab` and `take_group`, so the two splits and `group_range`), `Arena::purge_all` (516 -> 513; inlines `purge_empty`, so `walk_empty` and `min_nonzero`) and `Arena::decay_with` (533 -> 544; inlines `purge_curve`, same), plus `<bool as Display>::fmt` and `__aarch64_ldset8_acq`, which differ only by trailing `nop` alignment padding (no instruction changed); everything else exact or reloc-only, in particular `claim_with`, `take`, `finish`, `release_owned`, `release_word`, `dec_live`, `on_live_zero`, `reopen`, `purge_group`, `locate`, `check_*`, `is_guard_slab`. Host `cargo test --features std` 350 passed (341 + 9 new: the set helpers keep the counts in step; a plan over a Purged slab the counts do not know aborts; `walk_empty` order and skipping; a purge over an empty-set slab that is not Empty aborts; `min_nonzero`; `group_range`; `verify_idle_group` then `move_group`; a handoff of a group the taker already holds aborts; the protocol steps round-trip in order) and `guard_slabs_are_skipped` extended with `commit_slab` of a guard slab; container `make test` 450 + 133 + 25 passed, every C step `ok`, cgroup and pagemap-guard steps `ok`.
+- Maintainability pass, batch three (lane tidy-heap, 2026-09-20): the seven
+  dedup items of `src/heap/*`, `src/arena.rs`, `src/stats.rs` landed in five
+  commits (5615f0a, 06994e8, 52a573c, 5f5e04c, 0758dd9), cold and scheduled
+  paths only. (1) `Heap::nodes(head)` iterates an `others` list for the six
+  cold walks (`stats`, `set_tcache_enabled`, `destroy`,
+  `flush_thread_caches`, `cache_in`, the GC); `other_caches` on the
+  cross-arena free path keeps its loop. (2) `Heap::probe_verdict(shared,
+  arena, class, prev_refilled) -> (u32, Verdict)` is the compaction probe
+  gate `pop_compact` and `percpu_scheduled` each spelled out;
+  `CacheHeader::mask_for` is the one mode-to-mask rule (review 2026-09-18
+  item 25), applied by `set_mode` and the new `set_mode_volatile` at the
+  four per-CPU store sites. (3) Item 30: `Huge::alloc_run` returns `Placed
+  { ptr, zeroed, pages }` with the pages read from the descriptor `take`
+  wrote; `Shared::alloc_huge` adds those to the arena; the arena's
+  `(large_runs, large_pages)` is one `AtomicU64` (runs high, pages low) so
+  a reader's pair is always consistent, and `stats::collect_arena_with`
+  subtracts the guards exactly behind a release `assert!` (no
+  `saturating_sub`). (4) Item 16: `Shared::owner` resolves through
+  `Arenas::get_existing` and aborts "arena N does not exist" for an index no
+  arena was built for; `ensure_cache` validates the arena before creating an
+  `others` node; the two paths that legitimately meet an unbuilt automatic
+  arena (`Shared::alloc_huge` on a heap whose first allocation is huge,
+  `percpu_ensure` at an id's first header install) resolve it through
+  `Shared::arena`. (5) `Heap::pop_fast(class, flags) -> Option<(ptr,
+  zeroed)>` is the one "load `len`, zero means slow, else pop" body behind
+  `alloc_fast`, `alloc_zeroed` and the per-CPU off-mode arm. (6)
+  `Shared::set_slot` is the bit test `checked_slot` and `checked_slot_any`
+  share. (7) `Flags`, `Tcache`, the `MALLOCX_*` constants and builders and
+  the `alloc`/`alloc_huge`/`free` routing moved from arena.rs to
+  `src/heap/mallocx.rs`, re-exported by arena.rs so `api/` is unchanged.
+  Proof (`scripts/codegen-diff.sh compare .tmp-codegen`, baseline 911a1ed):
+  tasks 5 and 6 are `.text` hash IDENTICAL in q16 and q8 against the tree
+  before them; task 7 is `.text` size identical, 436 functions exact or
+  reloc-only, 0 changed. The final tree against 911a1ed: q16 `.text`
+  0x3bea0 -> 0x3bec0, 435 -> 436 functions (`Huge::alloc_run` is now its
+  own symbol), exact 58, reloc-only 354, changed 24; q8 exact 44,
+  reloc-only 366, changed 26. No per-allocation path is in either list
+  (`malloc`, `free`, `calloc`, `sdallocx`, `alloc_fast`, `alloc_zeroed`,
+  `pop`/`push`, `classify_free`, `sized_slot`, `checked_slot*`,
+  `percpu_pop_raw`, `percpu_push_raw`, `percpu_pop_miss`, `refill` all
+  exact). The changed functions, with why (`.tmp-codegen/report-q16.txt`
+  has the diffs): `Heap::pop_compact` (probe_verdict; owner),
+  `Heap::rebuild_run`, `Heap::fragmented`, `Shared::free_direct`,
+  `Shared::release_routed`, `Shared::free_huge` (owner: one atomic load and
+  a null test instead of the inlined `Arenas::get` and its `materialise`
+  call), `Heap::ensure_cache` (owner, and the refill counter read before
+  `cache_slot`), `Heap::destroy`, `Heap::set_tcache_enabled`,
+  `Heap::materialise_stats`, `Heap::tick` (the GC walk), `Tcaches::flush`,
+  `api::mallctl::flush_caller`, `malloc_trim` (they inline
+  `flush_thread_caches`/`stats`: the `nodes` iterator reads `next` before
+  the body, one instruction moved), `percpu_scheduled`, `percpu_run_pop`
+  (probe_verdict, set_mode_volatile), `percpu_ensure` (set_mode_volatile;
+  `Shared::arena` before the stack allocation), `Huge::alloc_run` vs the
+  old inlined `Shared::alloc_huge` (returns the descriptor's pages; now a
+  separate symbol) and the new 64-instruction `Shared::alloc_huge`
+  (resolves the arena first, adds `r.pages`), `api::libc::alloc_huge` (now
+  inlines the small `Shared::alloc_huge`, including the `large_word`
+  range assert), `Arena::init` (one `AtomicU64` store for two),
+  `stats::collect_arena_with` (the exact subtraction and its assert),
+  `Arenas::materialise` (LTO re-inlined the under-lock re-check now that
+  `Shared::owner` no longer calls `Arenas::get`; cold, arena creation),
+  and three toolchain entries that are trailing `nop` padding only
+  (`core::slice::sort::...::panic_on_ord_violation`, and in q8
+  `core::fmt::Display::fmt` and `__aarch64_ldset8_acq`). Tests: host
+  `cargo test --features std` 350 passed (341 before); container `make
+  test` 450 + 133 + 25 passed (main 441 + 133 + 25), cgroup limit/churn/lazy
+  and pagemap-guard steps `ok`. New tests (heap/tests.rs):
+  `others_nodes_iterate_newest_first_and_survive_freeing`,
+  `probe_verdict_applies_the_gate_and_records_it`,
+  `set_mode_volatile_derives_the_same_mask_as_set_mode`,
+  `huge_run_pages_are_counted_from_the_descriptor`,
+  `a_free_routed_to_an_unbuilt_arena_aborts` (plants an owner word for an
+  unbuilt arena, expects the abort), `a_huge_first_allocation_builds_the_home_arena`,
+  `a_huge_allocation_in_an_arena_that_does_not_exist_aborts`,
+  `pop_fast_pops_the_top_with_the_zero_flag`,
+  `checked_slot_any_is_checked_slot_without_the_arena_test`; the stats
+  lifecycle test also pins `arena0.large()` to the descriptor's pages.
 
 ## In progress
 
@@ -3552,3 +3629,42 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
 - `debug_assert!`s added (debug builds only, compiled out of release, `.text` proves it): the seam helpers assert the bit's prior state, `min_nonzero` that a stamp is never 0, `take_group` that the watermark is group-aligned before `group_range`.
 - `pub(super)` opened for the tests: `ClassState::{walk_empty, verify_idle_group, move_group}`, `SlabTable::group_range`, `decay::min_nonzero`; `class::MAX_PICKS` is `pub(crate)` for the model's assert.
 - The codegen baseline in `.tmp-codegen` (ignored by git) is now at 29c0eda, not ea9532a: batch two's code motion made every function reloc-only against ea9532a, which would have hidden nothing but made the report unreadable; `capture` again after the merge if the next batch wants a clean baseline.
+- Design 19 needs one line for the new module, under `src/heap.rs` (or the
+  heap/ list once it exists there): `src/heap/mallocx.rs   MALLOCX_* flag
+  decoding (Flags, Tcache) and the routing of mallocx/dallocx/sdallocx onto
+  heaps, explicit caches and the direct paths (design 13.2); arena.rs
+  re-exports it`. The heap module doc's file list already carries it.
+  arena.rs still imports `Heap` and `Shared` (for `Arenas::get` and
+  `Tcaches`), so the heap<->arena import cycle is thinner, not gone.
+- No lock moved files (heap/mallocx.rs holds none); the fork-lock inventory
+  in api/mod.rs is untouched and `fork_lock_list_matches_the_source_tree`
+  passes.
+- Task 5, partly: routing `alloc_zeroed` through one merged `match` on the
+  shared `Option` was not byte-identical (`calloc` +9 instructions,
+  `jemalloc::alloc_with` +13, `.text` +0x60) and was reverted; the landed
+  form keeps `alloc_zeroed`'s early-return shape and calls `pop_fast` in
+  the thread arm, which is `.text` IDENTICAL. `alloc_fast` and the per-CPU
+  off-mode arm go through `pop_fast` too.
+- Task 3: `Huge::alloc` keeps its `(ptr, zeroed)` shape as a `#[cfg(test)]`
+  shim because huge/tests.rs (lane tidy-huge's file) returns it as such;
+  tidy-huge may fold it into `alloc_run`. The "alloc and free disagree"
+  test could not be constructed: `take` writes `pages = usable_pages(size)
+  + GUARD_PAGES`, the same formula the heap used, so the two never differed
+  for one run; the `saturating_sub` was guarding a torn read of two
+  separate atomics during a concurrent alloc (runs incremented before
+  pages), which the single word removes.
+- Behaviour that moved, all on cold paths and unobservable except by the
+  abort: `Shared::alloc_huge` resolves (and, for an automatic index,
+  builds) the arena before placing the run rather than after; an index
+  that does not exist aborts with the same message before the run is
+  placed. `ensure_cache` reads the class's refill counter (one atomic
+  load) on every slow path, not only when it creates the header.
+  `Arena::large()` returns a consistent pair under a concurrent huge
+  alloc/free where it could return a torn one.
+- Not done from item 16: the per-slab-switch compare of the owner word
+  with `desc.arena()` in `release_owned` is class.rs (lane tidy-class).
+- The per-CPU changes (`percpu_scheduled`, `percpu_run_pop`,
+  `percpu_ensure`) compiled and were compared but were not executed here:
+  Docker on this Mac has no usable `mm_cid`, so `c_percpu_both_ways`
+  SKIPs and the per-CPU tests skip. The coordinator's `quick` tier on the
+  VMs (kernel with MM_CID) is the first run of that code.
