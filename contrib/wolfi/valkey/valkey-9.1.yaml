@@ -1,0 +1,289 @@
+# valkey-9.1 on challoc: the Wolfi package definition with the allocator
+# switched from the bundled jemalloc to challoc (docs/plan.md Phase 3 task
+# 2, docs/design.md section 13.6). Based on wolfi-dev/os valkey-9.1.yaml at
+# a944f08 (2026-09-19; the file itself last changed in 195f812, the 9.1.2
+# update); contrib/wolfi/README.md ("Valkey") lists every change from it,
+# and bench/results/2026-09-20-phase3-task2-valkey-package.md the build.
+#
+# Two libraries, one soname (design 13.6): the system libchalloc.so.0 in
+# /usr/lib is a quantum16 build (the class table Wolfi's jemalloc
+# consumers run on); Valkey's defragmenter asserts arenas.quantum == 8
+# (allocator_defrag.c, from the --with-lg-quantum=3 of its bundled
+# jemalloc), so Valkey gets a private quantum8 build of the same source,
+# built here from the challoc tree the way the bundled jemalloc was built
+# from deps/jemalloc, installed as /usr/lib/valkey/libchalloc.so.0 and
+# found through the binaries' rpath. melange's SCA files a shared object
+# outside the library directories under `vendored:` rather than
+# `provides:` and drops the package's own DT_NEEDED dependency on it, so
+# nothing else can pick this build and valkey-9.1 pulls in no challoc
+# package. Valkey links every binary with the allocator, so valkey-cli
+# and valkey-benchmark carry the same DT_NEEDED and rpath: their
+# subpackages get an automatic `so:libchalloc.so.0` dependency, which apk
+# satisfies with the system challoc package (they have no quantum
+# requirement); next to valkey-9.1 they load the private copy through the
+# rpath. The system challoc and this package coexist (the results file
+# has the co-installation check and the both-ways check).
+#
+# Local build: contrib/wolfi/valkey/stage.sh assembles the source
+# directory (the two patches and a copy of the challoc tree), then
+#
+#   melange build contrib/wolfi/valkey/valkey-9.1.yaml --arch aarch64 \
+#     --source-dir <staged> --build-option local-challoc \
+#     --pipeline-dir /path/to/wolfi-dev/os/pipelines \
+#     --signing-key melange.rsa --out-dir packages
+#
+# The Wolfi copy drops the option and the challoc checkout runs.
+package:
+  name: valkey-9.1
+  version: "9.1.2"
+  epoch: 1 # allocator: bundled jemalloc -> challoc (private quantum8 build)
+  description: Advanced key-value store
+  copyright:
+    - license: BSD-3-Clause
+    # The private allocator build (challoc, Apache-2.0) is part of this
+    # package; melange records its source under `vendored:`.
+    - license: Apache-2.0
+      paths:
+        - /usr/lib/valkey/libchalloc.so.0
+  dependencies:
+    provides:
+      - valkey=${{package.full-version}}
+    runtime:
+      - posix-libc-utils # `getent` is required on startup in ha mode for ip introspection cluster formation
+  resources:
+    cpu: "5"
+    memory: 7Gi
+  test-resources:
+    cpu: "1"
+    memory: 1Gi
+
+vars:
+  # The challoc release built into /usr/lib/valkey (contrib/wolfi/challoc.yaml
+  # carries the same version for the system packages; keep them together).
+  challoc-version: "0.1.0"
+  rust-version: "1.98"
+  # What valkey-server --version and INFO memory's mem_allocator report:
+  # "jemalloc-" JEMALLOC_VERSION_{MAJOR,MINOR,BUGFIX} "-challoc" from
+  # challoc's <challoc/jemalloc.h> (contrib/valkey patch, src/zmalloc.h).
+  allocator-name: jemalloc-5.3.0-challoc
+
+options:
+  # `--build-option local-challoc`: the source directory melange was given
+  # already holds the challoc tree under challoc/ (contrib/wolfi/valkey/
+  # stage.sh), skip its git-checkout. For a local or CI build from the
+  # challoc repository; the Wolfi copy never sets it.
+  local-challoc: {}
+
+environment:
+  contents:
+    packages:
+      - autoconf
+      - automake
+      - bash
+      - binutils # readelf for the DT_NEEDED and RUNPATH check of the built binary
+      - build-base
+      - busybox
+      - ca-certificates-bundle
+      - glibc-2.44-dev
+      - linux-headers
+      - openssl-dev # FTBFS with openssl-hardened-dev due to missing ERR_load_crypto_strings, SSL_load_error_strings, SSL_library_init
+      - rust-${{vars.rust-version}} # the private challoc build
+
+pipeline:
+  - uses: git-checkout
+    with:
+      repository: https://github.com/valkey-io/valkey
+      tag: ${{package.version}}
+      expected-commit: 7f1dffedff6de73058b2c2a389422b6ecd56c8fb
+
+  # 0001-Add-MALLOC-challoc.patch is challoc's contrib/valkey patch for this
+  # tag: `make MALLOC=challoc` keeps every USE_JEMALLOC code path (stats,
+  # purge, background thread, active defrag) and links -lchalloc instead
+  # of building deps/jemalloc; zmalloc.h includes <challoc/jemalloc.h>
+  # and reports the allocator as jemalloc-5.3.0-challoc; the test suite's
+  # eval-scripts defrag test gets a challoc stop threshold (its Lua heap is
+  # in the allocator under challoc, in glibc under the je_-prefixed
+  # bundled jemalloc). The package build does not run the suite; the hunk
+  # is carried so the patch is the one the suite was passed with.
+  - uses: patch
+    with:
+      patches: 0000-Disable-protected-mode.patch 0001-Add-MALLOC-challoc.patch
+
+  - uses: git-checkout
+    if: ${{options.local-challoc.enabled}} == 'false'
+    with:
+      repository: https://github.com/chainguard-dev/challoc
+      tag: v${{vars.challoc-version}}
+      # No release tag yet (2026-09-20): the main commit this definition
+      # was written against. The Wolfi PR sets the tag and its commit.
+      expected-commit: 5a1e715bca2f11402b998a18664016a47fa5a938
+      destination: challoc
+
+  - name: Build the private challoc (quantum8, soname libchalloc.so.0)
+    working-directory: challoc
+    runs: |
+      crate=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
+      [ "$crate" = "${{vars.challoc-version}}" ] || {
+        echo "challoc Cargo.toml version $crate != vars.challoc-version ${{vars.challoc-version}}"; exit 1; }
+      rustc --version; cargo --version
+      cargo build --release --locked --no-default-features --features quantum8
+      readelf -d target/release/libchalloc.so | grep -q 'Library soname: \[libchalloc.so.0\]'
+
+  - name: Build Valkey against it
+    runs: |
+      # The header is challoc's own (<challoc/jemalloc.h>, never
+      # <jemalloc/...>); -L finds libchalloc.so in the cargo output (the
+      # link records the soname, libchalloc.so.0); the RUNPATH is where
+      # this package installs it. -Wl,--no-as-needed is not needed:
+      # valkey-server calls je_mallctl and friends itself, so --as-needed
+      # keeps the entry (design 13.6); the next step checks it anyway.
+      lib="$PWD/challoc/target/release"
+      export CFLAGS="$CFLAGS -DUSE_MALLOC_USABLE_SIZE -I$PWD/challoc/contrib/valkey/include"
+      export LDFLAGS="$LDFLAGS -L$lib -Wl,-rpath,/usr/lib/valkey"
+      # MALLOC on every invocation: Valkey's Makefile persists its settings
+      # and a `make install` without it would rebuild with the bundled
+      # jemalloc.
+      make MALLOC=challoc BUILD_TLS=yes all -j$(nproc)
+      make MALLOC=challoc BUILD_TLS=yes install PREFIX=/usr INSTALL_BIN="${{targets.destdir}}/usr/bin"
+      install -Dm755 "$lib/libchalloc.so" "${{targets.destdir}}/usr/lib/valkey/libchalloc.so.0"
+      [ ! -d deps/jemalloc/lib ] || { echo "deps/jemalloc was built"; exit 1; }
+
+  - name: Check the built server names the allocator and the private library
+    runs: |
+      bin="${{targets.destdir}}/usr/bin/valkey-server"
+      # The RUNPATH (/usr/lib/valkey) exists only once the package is
+      # installed; here the loader is pointed at the staged copy (the
+      # cargo output is named libchalloc.so, the loader wants the soname).
+      export LD_LIBRARY_PATH="${{targets.destdir}}/usr/lib/valkey"
+      "$bin" --version
+      "$bin" --version | grep -q 'malloc=${{vars.allocator-name}}'
+      sh challoc/scripts/check-needed.sh "$bin" libchalloc.so.0
+      readelf -d "$bin" | grep -E 'RUNPATH|RPATH' | grep -q '\[/usr/lib/valkey\]'
+
+  - uses: strip
+
+subpackages:
+  # Both client tools are linked against libchalloc.so.0 with the rpath
+  # (see the header comment); melange derives their so:libchalloc.so.0
+  # dependency, satisfied by the system challoc package when valkey-9.1
+  # is not installed alongside.
+  - name: ${{package.name}}-cli
+    dependencies:
+      provides:
+        - valkey-cli=${{package.full-version}}
+    pipeline:
+      - runs: |
+          mkdir -p "${{targets.subpkgdir}}"/usr/bin
+          mv "${{targets.destdir}}"/usr/bin/valkey-cli "${{targets.subpkgdir}}"/usr/bin/valkey-cli
+    description: valkey-cli is the command line interface utility to talk with Valkey.
+    test:
+      pipeline:
+        - runs: |
+            valkey-cli --version
+            valkey-cli --help
+
+  - name: ${{package.name}}-benchmark
+    dependencies:
+      provides:
+        - valkey-benchmark=${{package.full-version}}
+    pipeline:
+      - runs: |
+          mkdir -p "${{targets.subpkgdir}}"/usr/bin
+          mv "${{targets.destdir}}"/usr/bin/valkey-benchmark "${{targets.subpkgdir}}"/usr/bin/valkey-benchmark
+    description: valkey-benchmark utility that simulates running commands done by N clients while at the same time sending M total queries.
+    test:
+      pipeline:
+        - runs: |
+            valkey-benchmark --version
+            valkey-benchmark --help
+
+update:
+  enabled: true
+  github:
+    identifier: valkey-io/valkey
+    tag-filter-prefix: "9.1"
+
+test:
+  environment:
+    contents:
+      packages:
+        - ${{package.name}}-benchmark
+        - ${{package.name}}-cli
+        - binutils
+  pipeline:
+    - uses: test/tw/ldd-check
+    - name: The server is linked against the private challoc and says so
+      runs: |
+        set -eux
+        valkey-server --version
+        valkey-server --version | grep -q 'malloc=${{vars.allocator-name}}'
+        readelf -d /usr/bin/valkey-server | grep -E 'NEEDED|RUNPATH|RPATH'
+        readelf -d /usr/bin/valkey-server | grep -q 'NEEDED.*\[libchalloc.so.0\]'
+        readelf -d /usr/bin/valkey-server | grep -E 'RUNPATH|RPATH' | grep -q '\[/usr/lib/valkey\]'
+        readelf -d /usr/lib/valkey/libchalloc.so.0 | grep -q 'Library soname: \[libchalloc.so.0\]'
+        # The client tools are linked the same way (Valkey links every
+        # binary with FINAL_LIBS); their subpackages depend on
+        # so:libchalloc.so.0, the system challoc, and prefer this copy
+        # through the rpath when it is installed.
+        for b in valkey-cli valkey-benchmark; do
+          readelf -d /usr/bin/$b | grep -q 'NEEDED.*\[libchalloc.so.0\]'
+          readelf -d /usr/bin/$b | grep -E 'RUNPATH|RPATH' | grep -q '\[/usr/lib/valkey\]'
+        done
+        valkey-cli --version
+        valkey-benchmark --version
+    - name: A running server uses the private library, defragments and purges
+      runs: |
+        set -eux
+        # A unix socket, so no port has to be free in the test environment.
+        cat <<EOF > /tmp/valkey.conf
+        port 0
+        unixsocket /tmp/valkey.sock
+        unixsocketperm 700
+        pidfile /tmp/valkey.pid
+        dir /tmp/
+        dbfilename dump.rdb
+        EOF
+        valkey-server /tmp/valkey.conf > /tmp/valkey.log 2>&1 &
+        pid=$!
+        for i in $(seq 1 100); do
+          valkey-cli -s /tmp/valkey.sock PING 2>/dev/null | grep -q PONG && break
+          sleep 0.2
+        done
+        valkey-cli -s /tmp/valkey.sock PING | grep -q PONG
+        # The one libchalloc mapped in the server is the private build.
+        awk '$6 ~ /libchalloc/ {print $6}' /proc/$pid/maps | sort -u
+        [ "$(awk '$6 ~ /libchalloc/ {print $6}' /proc/$pid/maps | sort -u)" = /usr/lib/valkey/libchalloc.so.0 ]
+        valkey-cli -s /tmp/valkey.sock INFO memory | tr -d '\r' | grep -E '^(mem_allocator|allocator_frag_ratio|allocator_allocated):'
+        valkey-cli -s /tmp/valkey.sock INFO memory | tr -d '\r' | grep -qx 'mem_allocator:${{vars.allocator-name}}'
+        # Active defrag needs HAVE_DEFRAG and an allocator whose
+        # arenas.quantum is 8; the bundled-jemalloc error text is
+        # "Active defragmentation cannot be enabled: ...".
+        valkey-cli -s /tmp/valkey.sock CONFIG SET activedefrag yes | grep -qx OK
+        valkey-cli -s /tmp/valkey.sock CONFIG GET activedefrag | grep -qx yes
+        valkey-cli -s /tmp/valkey.sock MEMORY PURGE | grep -qx OK
+        valkey-cli -s /tmp/valkey.sock MEMORY MALLOC-STATS | head -3
+        valkey-cli -s /tmp/valkey.sock MEMORY MALLOC-STATS | grep -q 'jemalloc statistics'
+        valkey-cli -s /tmp/valkey.sock SET bike:1 "Process 134" | grep -qx OK
+        valkey-cli -s /tmp/valkey.sock GET bike:1 | grep -q 'Process 134'
+        valkey-cli -s /tmp/valkey.sock EXISTS bike:1 | grep -qx 1
+        valkey-cli -s /tmp/valkey.sock EXISTS bike:2 | grep -qx 0
+        # Some traffic through the allocator, then the server is still up.
+        valkey-benchmark -s /tmp/valkey.sock -t set,get -n 20000 -q
+        valkey-cli -s /tmp/valkey.sock DBSIZE
+        valkey-cli -s /tmp/valkey.sock INFO memory | tr -d '\r' | grep -E '^(used_memory|allocator_active|allocator_resident):'
+        valkey-cli -s /tmp/valkey.sock CONFIG SET activedefrag no | grep -qx OK
+        valkey-cli -s /tmp/valkey.sock SHUTDOWN NOSAVE || true
+        wait $pid || true
+        ! grep -iE 'challoc:|assert|crash' /tmp/valkey.log
+    - name: The Wolfi checks kept from the jemalloc build
+      runs: |
+        redis-check-aof --version
+        set +e; output=$(redis-check-rdb 2>&1); set -e
+        echo "$output" | grep -F "Usage:"
+        redis-sentinel --version
+        redis-server --version
+        valkey-check-aof --version
+        set +e; output=$(valkey-check-rdb 2>&1); set -e
+        echo "$output" | grep -F "Usage:"
+        valkey-sentinel --version
+        valkey-server --version

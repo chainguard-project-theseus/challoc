@@ -1,0 +1,169 @@
+From: challoc <noreply@chainguard.dev>
+Subject: [PATCH] Add MALLOC=challoc: link the system challoc instead of the bundled jemalloc
+
+Valkey 9.1.2 (tag 9.1.2, commit 7f1dffedff6de73058b2c2a389422b6ecd56c8fb).
+
+challoc (https://github.com/chainguard-dev/challoc) is a malloc replacement
+that exports jemalloc's je_-prefixed API and mallctl namespace, including
+experimental.utilization.batch_query, arena.<i>.purge, background_thread
+and the stats.* keys Valkey reads. `make MALLOC=challoc` (or
+`USE_CHALLOC=yes`) keeps every USE_JEMALLOC code path (stats, purge,
+background thread, active defrag) and links -lchalloc instead of building
+deps/jemalloc. Modelled on Debian's USE_SYSTEM_JEMALLOC patch, but no symbol
+renames are needed because challoc exports the je_ names itself.
+
+- src/Makefile: MALLOC=challoc adds -DUSE_JEMALLOC -DUSE_CHALLOC and links
+  -lchalloc; no jemalloc dependency target. Include and library paths for a
+  non-system install go through CFLAGS/LDFLAGS as usual.
+- src/zmalloc.h: under USE_CHALLOC include <challoc/jemalloc.h> (challoc's
+  own header, so it never collides with jemalloc-dev) and report
+  ZMALLOC_LIB as "jemalloc-<version>-challoc": everything keyed on the
+  "jemalloc" prefix (tests, INFO consumers) keeps working and
+  `valkey-server --version` says which library is behind it.
+- src/allocator_defrag.h: HAVE_DEFRAG is defined for USE_CHALLOC; the
+  vendored-jemalloc version check does not apply.
+- deps/Makefile is untouched: its jemalloc distclean is already guarded.
+- tests/unit/memefficiency.tcl: perform_defrag_test takes an ignore_bytes
+  option (default the stock 2500kb) and the "Active Defrag eval scripts"
+  test passes 5000kb when mem_allocator is challoc. With the bundled
+  jemalloc (je_-prefixed, so Lua's l_alloc goes to glibc) the Lua heap is
+  invisible to allocator_frag_bytes; challoc replaces libc malloc, so the
+  same 12.1 MB Lua heap sits in its bins and SCRIPT LOAD's not-yet-swept
+  Lua garbage leaves about 2.4 MB in partially filled slabs the
+  defragmenter cannot move (measured; see PROGRESS.md in challoc).
+
+Build: make MALLOC=challoc BUILD_TLS=yes CFLAGS="-I<challoc>/contrib/valkey/include"
+       LDFLAGS="-L<libdir> -Wl,-rpath,<libdir>"
+challoc must be built with the quantum8 feature: allocator_defrag.c asserts
+arenas.quantum == 8.
+
+---
+ src/Makefile                 | 14 ++++++++++++++
+ src/allocator_defrag.h       |  9 +++++++--
+ src/zmalloc.h                | 11 +++++++++++
+ tests/unit/memefficiency.tcl | 18 ++++++++++++++++--
+ 4 files changed, 48 insertions(+), 4 deletions(-)
+
+diff --git a/src/Makefile b/src/Makefile
+index 2812c4d..ff82dfe 100644
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -98,6 +98,9 @@ endif
+ ifeq ($(USE_JEMALLOC),no)
+ 	MALLOC=libc
+ endif
++ifeq ($(USE_CHALLOC),yes)
++	MALLOC=challoc
++endif
+ 
+ ifdef SANITIZER
+ ifeq ($(SANITIZER),address)
+@@ -335,6 +338,17 @@ ifeq ($(MALLOC),jemalloc)
+ 	FINAL_LIBS := ../deps/jemalloc/lib/libjemalloc.a $(FINAL_LIBS)
+ endif
+ 
++# challoc (https://github.com/chainguard-dev/challoc) is a system allocator
++# that exports jemalloc's je_-prefixed API and mallctl namespace. Keep the
++# USE_JEMALLOC code paths (stats, purge, background thread, defrag) and link
++# the shared library instead of building the bundled jemalloc. The header
++# comes from challoc (<challoc/jemalloc.h>); pass -I/-L/-rpath through
++# CFLAGS and LDFLAGS when it is not installed system wide.
++ifeq ($(MALLOC),challoc)
++	FINAL_CFLAGS+= -DUSE_JEMALLOC -DUSE_CHALLOC
++	FINAL_LIBS := -lchalloc $(FINAL_LIBS)
++endif
++
+ ifeq ($(USE_LTTNG),yes)
+ 	FINAL_CFLAGS+=-DUSE_LTTNG
+ 	FINAL_LIBS += -llttng-ust
+diff --git a/src/allocator_defrag.h b/src/allocator_defrag.h
+index 43d89e3..0d1c1cd 100644
+--- a/src/allocator_defrag.h
++++ b/src/allocator_defrag.h
+@@ -2,14 +2,19 @@
+ #define __ALLOCATOR_DEFRAG_H
+ 
+ #if defined(USE_JEMALLOC)
++#if defined(USE_CHALLOC)
++#include <challoc/jemalloc.h>
++#else
+ #include <jemalloc/jemalloc.h>
++#endif
+ /* We can enable the server defrag capabilities only if we are using Jemalloc
+- * and the version that has the experimental.utilization namespace in mallctl . */
++ * and the version that has the experimental.utilization namespace in mallctl,
++ * or challoc, which implements that namespace. */
+ #if (defined(VALKEY_VENDORED_JEMALLOC) && defined(JEMALLOC_VERSION_MAJOR) &&                            \
+      (JEMALLOC_VERSION_MAJOR > 5 ||                                                                     \
+       (JEMALLOC_VERSION_MAJOR == 5 && JEMALLOC_VERSION_MINOR > 2) ||                                    \
+       (JEMALLOC_VERSION_MAJOR == 5 && JEMALLOC_VERSION_MINOR == 2 && JEMALLOC_VERSION_BUGFIX >= 1))) || \
+-    defined(DEBUG_FORCE_DEFRAG)
++    defined(USE_CHALLOC) || defined(DEBUG_FORCE_DEFRAG)
+ #define HAVE_DEFRAG
+ #endif
+ #endif
+diff --git a/src/zmalloc.h b/src/zmalloc.h
+index a35b7cb..74837cb 100644
+--- a/src/zmalloc.h
++++ b/src/zmalloc.h
+@@ -47,6 +47,17 @@
+ #error "Newer version of tcmalloc required"
+ #endif
+ 
++#elif defined(USE_CHALLOC)
++/* challoc implements jemalloc's API; the name keeps the "jemalloc" prefix so
++ * that everything keyed on it (tests, tooling) still recognises the API, and
++ * the suffix says which library is really behind it. */
++#define ZMALLOC_LIB                                                                                                   \
++    ("jemalloc-" __xstr(JEMALLOC_VERSION_MAJOR) "." __xstr(JEMALLOC_VERSION_MINOR) "." __xstr(JEMALLOC_VERSION_BUGFIX) \
++     "-challoc")
++#include <challoc/jemalloc.h>
++#define HAVE_MALLOC_SIZE 1
++#define zmalloc_size(p) je_malloc_usable_size(p)
++
+ #elif defined(USE_JEMALLOC)
+ #define ZMALLOC_LIB \
+     ("jemalloc-" __xstr(JEMALLOC_VERSION_MAJOR) "." __xstr(JEMALLOC_VERSION_MINOR) "." __xstr(JEMALLOC_VERSION_BUGFIX))
+diff --git a/tests/unit/memefficiency.tcl b/tests/unit/memefficiency.tcl
+index 825b9c0..05eb195 100644
+--- a/tests/unit/memefficiency.tcl
++++ b/tests/unit/memefficiency.tcl
+@@ -185,6 +185,7 @@ run_solo {defrag} {
+     proc perform_defrag_test {name args} {
+         set opts(latency) 5
+         set opts(while_defragging) {}
++        set opts(ignore_bytes) 2500kb
+         array set opts $args
+         assert {[info exists opts(populate)]}
+         assert {[info exists opts(fragment)]}
+@@ -192,7 +193,7 @@ run_solo {defrag} {
+         r config set active-defrag-threshold-lower 5
+         r config set active-defrag-cycle-min 40
+         r config set active-defrag-cycle-max 60
+-        r config set active-defrag-ignore-bytes 2500kb
++        r config set active-defrag-ignore-bytes $opts(ignore_bytes)
+         r config set maxmemory 0
+ 
+         log_frag "test start ($name)"
+@@ -327,7 +328,20 @@ run_solo {defrag} {
+             set n 50000
+ 
+             # scripts aren't defragged incrementally, expect big latency
+-            perform_defrag_test $title latency 200 populate {
++            # Under challoc the Lua heap is in the same allocator as the
++            # server: challoc replaces libc malloc, whereas the bundled
++            # jemalloc is je_-prefixed and Lua's l_alloc (plain realloc/free)
++            # goes to glibc, so with jemalloc the Lua heap never shows in
++            # allocator_frag_bytes. SCRIPT LOAD leaves about 2.4 MB of Lua
++            # garbage that its collector has not swept yet in partially
++            # filled slabs the defragmenter cannot move (same Lua heap size
++            # under both allocators, 12.1 MB for these 50k scripts), so the
++            # stop threshold has to allow for it.
++            set ignore_bytes 2500kb
++            if {[string match {*challoc*} [s mem_allocator]]} {
++                set ignore_bytes 5000kb
++            }
++            perform_defrag_test $title latency 200 ignore_bytes $ignore_bytes populate {
+                 # Populate memory with interleaving script-key pattern of same size
+                 set dummy_script "--[string repeat x 450]\nreturn "
+                 set rd [valkey_deferring_client]
