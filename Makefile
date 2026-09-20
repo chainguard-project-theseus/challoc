@@ -129,6 +129,18 @@
 #                            warm-up, interleaved; writes
 #                            bench/results/<date>-<arch>-python.md (RESULT=path,
 #                            ALLOCS, WORKLOADS, MODES, HOST_KIND)
+#   make node-bench          Node.js rows (bench/node-bench.sh, Phase 3 task 5 (c)):
+#                            `node -e 0` startup, bench/node/json_churn.js
+#                            (JSON.parse(JSON.stringify) over a 100 KiB object,
+#                            2000 times) and bench/node/server.js (plain http,
+#                            /json and 1 MiB /blob bodies from per-request
+#                            Buffer.allocUnsafe, --max-old-space-size=256) under
+#                            ab for DURATION (300) s per allocator, RSS sampled;
+#                            challoc, jemalloc, glibc, mimalloc, tcmalloc via
+#                            LD_PRELOAD on the image's nodejs-22; ROUNDS=5 plus
+#                            warm-up for the process rows; writes
+#                            bench/results/<date>-<arch>-node.md (RESULT=path,
+#                            ALLOCS, ROWS, DURATION, CONNS, HOST_KIND)
 #
 # `target/` inside the container is a named Docker volume, one per
 # architecture, so Linux artifacts never mix with host artifacts and builds do
@@ -184,7 +196,7 @@ DOCKER_RUN = $(DOCKER_BASE) $(DOCKER_FLAGS) $(IMAGE)
 cgroup_docker = $(DOCKER_BASE) --memory=$(1) --memory-swap=$(1) $(if $(CGROUP_WATCHDOG),-e WATCHDOG=$(CGROUP_WATCHDOG)) $(IMAGE) sh scripts/cgroup-tests.sh
 cgroup_run = $(call cgroup_docker,$(1)) $(2)
 
-.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare test-pagemap-guard test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench check-needed clean-volumes
+.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare test-pagemap-guard test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench node-bench check-needed clean-volumes
 
 image:
 	docker build --platform $(PLATFORM) -f Dockerfile.dev -t $(IMAGE) .
@@ -388,6 +400,15 @@ PYTHON_BENCH_VARS = ALLOCS ROUNDS WORKLOADS MODES RESULT OUT HOST_KIND REV
 python-bench: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(PYTHON_BENCH_VARS),$(if $($(v)),-e $(v)="$($(v))"))
 python-bench: image
 	$(DOCKER_RUN) sh bench/python-bench.sh
+
+# Node.js rows (bench/node-bench.sh, Phase 3 task 5 (c)): node -e 0 startup,
+# bench/node/json_churn.js and the bench/node/server.js http server under ab
+# (both endpoints, DURATION s per allocator), under challoc (the working
+# tree) and the stock allocators via LD_PRELOAD, the image's nodejs-22.
+NODE_BENCH_VARS = ALLOCS ROUNDS ROWS RESULT OUT HOST_KIND REV DURATION CONNS PORT JSON_ITERS SAMPLE WARM_N OLD_SPACE
+node-bench: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(NODE_BENCH_VARS),$(if $($(v)),-e $(v)="$($(v))"))
+node-bench: image
+	$(DOCKER_RUN) sh bench/node-bench.sh
 
 # Phase 2.5 task 8's acceptance rows (bench/percpu-campaign.sh, lane D): the
 # same suites under the default and under CHALLOC_CONF=percpu_arena:percpu,

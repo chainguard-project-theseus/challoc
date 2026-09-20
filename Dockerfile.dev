@@ -37,8 +37,11 @@ RUN sed -i \
       tcmalloc-minimal \
       python-3.13 \
       py3.13-pip \
+      nodejs-22 \
+      apache2-utils \
  && rustc --version && cargo --version && python3 --version \
- && test -f /usr/lib/libtcmalloc_minimal.so.4
+ && test -f /usr/lib/libtcmalloc_minimal.so.4 \
+ && node --version && ab -V | head -1
 
 # The last seven are for Ruby (contrib/ruby/build.sh, Phase 1 acceptance): a
 # git checkout of Ruby needs autoconf and a base Ruby; the jemalloc header,
@@ -52,6 +55,11 @@ RUN sed -i \
 # allocator of the benchmark harness (bench/lib.sh, Phase 2.5 task 1);
 # python-3.13 and its pip are for bench/python-bench.sh (Wolfi has no
 # free-threaded 3.13 package, checked 2026-09-18).
+#
+# Node.js rows (Phase 3 task 5c): nodejs-22 is the node bench/node-bench.sh
+# measures (Wolfi's nodejs-22, the plan's version; node 22.23 at the time)
+# and apache2-utils gives `ab`, the load generator for its server row (Wolfi
+# has no wrk or oha package, checked 2026-09-20).
 
 WORKDIR /src
 CMD ["sh"]

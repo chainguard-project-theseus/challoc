@@ -21,6 +21,8 @@ never used for numbers.
                           tcmalloc (Phase 1.5 task 4b); needs both `make ruby STAGE=build` builds
     make python-bench     Python 3.13 rows (Phase 2.5 task 1): four stdlib workloads, each
                           with PYTHONMALLOC unset and =malloc, under the same five allocators
+    make node-bench       Node.js 22 rows (Phase 3 task 5 (c)): node -e 0 startup, a JSON
+                          churn process and an http server under ab for DURATION s per allocator
 
 ## Two tiers
 
@@ -304,6 +306,33 @@ Files:
   shape, so it is not used (the script's header says why). The `json`
   workload is also the scorecard's `python1` (default) and `python1-malloc`
   rows (`bench/lib.sh`).
+- `node-bench.sh`, `node/server.js`, `node/json_churn.js`: the Node.js rows
+  (docs/plan.md Phase 3 task 5 (c)). Wolfi's `nodejs-22` from the image, the
+  same binary under every allocator via `LD_PRELOAD` (challoc built from
+  `REV`, default the working tree, into `target/node/lib`; `/proc/self/maps`
+  checked once per allocator). Three rows: `startup` (`node -e 0`, wall
+  time and max RSS from `rt`), `json_churn` (`node/json_churn.js`:
+  `JSON.parse(JSON.stringify(obj))` over a 100 KiB object 2000 times in one
+  process, wall time and max RSS, the Python rows' shape; both with
+  `ROUNDS` (5) plus warm-up, allocators interleaved, sorted wall times and
+  median RSS), and `server` (`node/server.js`, plain `http`, no npm
+  dependencies, under `node --max-old-space-size=256` so the V8 heap is
+  bounded and native memory is what differs: `GET /json` builds and
+  stringifies a small object per request, `GET /blob` streams a 1 MiB body
+  from a per-request `Buffer.allocUnsafe(1 << 20)`, filled and written in
+  64 KiB chunks, so 1 MiB ArrayBuffer backing stores go through `malloc`
+  and `free` at the request rate). The server row runs once per allocator
+  for `DURATION` (300) s under `ab` from Wolfi's `apache2-utils` (Wolfi has
+  no `wrk` or `oha`; two `ab` processes at once, `CONNS`/2 = 32 keep-alive
+  connections on each endpoint; `-t` before `-n`, because `ab -t` resets
+  `-n` to 50000), after a short warm-up; it reports each endpoint's req/s
+  and p99 from `ab`, and the server's RSS as `/proc/PID/smaps_rollup` Rss
+  sampled every `SAMPLE` (5) s during the load (peak and final sample),
+  `VmHWM` at the end, and the end-of-load RSS summed by mapping name from
+  `/proc/PID/smaps` (challoc's regions are named `challoc:classes`,
+  `challoc:huge`, `challoc:meta`, so a gap can be placed). Written to
+  `bench/results/<date>-<arch>-node.md` (`RESULT`, `ALLOCS`, `ROWS`,
+  `DURATION`, `CONNS`, `HOST_KIND`).
 - `four-way.sh`: assembles the comparison matrix of Phase 2.5 task 1
   (`bench/results/<date>-<arch>-gce-four-way.md`) from one VM's same-run
   outputs: an `ab.sh` result (`AB=`, the Phase 0 set and the Valkey model rows
