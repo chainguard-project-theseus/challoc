@@ -3,9 +3,15 @@
 //! This is the measurement layer only: where the process's cgroup is, what
 //! its effective memory limits are, how much it is charged right now, and
 //! whether the kernel has raised the `high`/`max` event counters or a
-//! pressure-stall trigger. The policy that acts on the figures (decay and
-//! cache GC scaling, THP suppression) is plan Phase 2 task 5; today nothing
-//! reads them but `stats.cgroup.*` and `malloc_stats_print`.
+//! pressure-stall trigger. The policy that acts on the figures is
+//! `policy.rs` (plan Phase 2 task 5, design 11): the headroom band over
+//! the effective limit (the retention cap, the decay window, cache GC at
+//! every tick and the immediate purge above 90%), the lazy-or-eager purge
+//! advice (`MADV_FREE` under 70% of a known limit, `MADV_DONTNEED` above),
+//! the full purge on a `high` event, the `thp:always` force to `never`
+//! under 1 GiB, and the decay pass the PSI trigger requests from the
+//! background thread; `stats.cgroup.*` and `malloc_stats_print` expose the
+//! same figures.
 //!
 //! Everything is read with raw `open`/`read`/`close` on fixed-size stack
 //! buffers through `sys`, never libc stdio, and nothing here allocates. The

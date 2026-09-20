@@ -32,8 +32,11 @@ Goals, in priority order:
    limit, the decay window shrinking towards 1 s between 70% and 90% of
    it, everything freed purged at once above 90%, a full purge when the
    kernel starts reclaiming (`memory.events` `high`), a decay pass when a
-   pressure trigger fires. Sizing the caches to the limit is the next
-   task (Phase 2 task 5).
+   pressure trigger fires, thread caches collected at every periodic tick
+   above 90%, `MADV_FREE` below 70% of a known limit and `MADV_DONTNEED`
+   above, and `thp:always` forced to `never` under a 1 GiB limit. The
+   policy is `docs/design.md` section 11 (`src/policy.rs`), exercised by
+   the container tests (`make test-cgroup`).
 5. **Modern and memory safe.** `no_std` Rust, abort on panic, unsafe confined
    to a syscall layer, a thread-local accessor, and the pointer arithmetic of
    the slab allocator itself.
@@ -286,21 +289,27 @@ See [docs/design.md](docs/design.md) for the full design and
 
 ## Status
 
-Implemented and under test, not yet packaged. Phases 0 and 1 of
-[docs/plan.md](docs/plan.md) are done: the allocator builds as a `cdylib`, its
-unit tests and C programs run under `LD_PRELOAD` in the dev container (267 +
-89 tests as of Phase 1.5 task 11, plus the glibc and mimalloc suites and the
-fuzz driver), and the Valkey soak, Valkey test suite and Ruby suites run
-against it (`make valkey-soak`, `make ruby-bench`). Phase 1.5 (the GCE
-performance lab) is in its acceptance run: the release-readiness tasks of
-`docs/review-2026-09-18.md` are landing and the mstress RSS row is open.
+Implemented, tested and packaged for Wolfi; the consumer rows of Phase 3
+are in progress. Phases 0, 1, 1.5, 2 and 2.5 of [docs/plan.md](docs/plan.md)
+are done: the allocator builds as a `cdylib`, its unit tests and C programs
+run under `LD_PRELOAD` in the dev container (`make test`, plus the glibc and
+mimalloc suites and the fuzz driver), and the Valkey soak, Valkey test suite
+and Ruby suites run against it (`make valkey-soak`, `make ruby-bench`).
+Phase 2.5 was accepted on 2026-09-20 on every row reachable from GCE
+(`bench/results/2026-09-20-phase-2.5-acceptance.md`); two rows stay open on
+hardware the plan gates on the human (WAITPKG; MTE, LAM and UAI). Phase 3:
+`contrib/wolfi/challoc.yaml` builds `challoc`, `challoc-dev` and
+`challoc-jemalloc-compat` with melange, and Wolfi's Valkey 9.1 and Ruby 3.4
+are built and tested on challoc on both architectures (`contrib/wolfi/`);
+`docs/tuning.md` is the operator's guide; the consumer benchmark rows (plan
+Phase 3 task 5) have the JVM and Node.js rows done and PostgreSQL pending.
 `PROGRESS.md` is the task log; `bench/results/scorecard-{aarch64,x86_64}.md`
-record the benchmark trend per commit. Features marked *planned* above
-(zero-on-free, slot randomisation) are Phase 2, THP landed with Phase 2.5 task 9 (`thp:auto|always`, off by default); `mseal` of the
-reservations' never-committed ranges, the cgroup measurement layer
-(`stats.cgroup.*`), the cgroup policy and its container tests (`make
-test-cgroup`) have landed.
-Packaging for Wolfi is Phase 3.
+record the benchmark trend per commit. Of the features above, zero-on-free
+and slot randomisation landed with Phase 2 (opt-in), THP with Phase 2.5 task
+9 (`thp:auto|always`, off by default), `mseal` of the reservations'
+never-committed ranges, the cgroup measurement layer (`stats.cgroup.*`) and
+the cgroup policy with its container tests (`make test-cgroup`) have landed;
+tagged pointers (`tag_pointers`) are designed and wait for hardware.
 
 ## Building
 

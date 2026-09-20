@@ -65,11 +65,15 @@
 //! batch flush from `purge`'s mirror of the band, so it is at most one
 //! sample (10 ms) behind.
 //!
-//! THP: the `thp` key has no mechanism behind it yet (design 10), so
-//! "disabled under small limits" reduces to forcing the stored setting to
-//! `never` at init when the effective limit is under 1 GiB ([`THP_MIN_LIMIT`]);
-//! the report says so, and whatever wires `MADV_HUGEPAGE` later reads the
-//! stored setting.
+//! THP: the `thp` key's mechanism is `thp.rs` (design 10 and 17: `auto`
+//! the sub-PMD folio path, `always` the PMD-sized chunks, `never` the
+//! `MADV_NOHUGEPAGE` on the slab regions of an `always` host). Design 11's
+//! "disabled under small limits" is applied once, at init (`Shared::init`):
+//! when the effective limit is under 1 GiB ([`THP_MIN_LIMIT`]) a configured
+//! `thp:always` is forced to `never` in the stored configuration, which
+//! `thp.rs` then reads as any `never`; the report says so
+//! ([`Policy::thp_forced`], `opt.thp` reads `never`). `thp:auto` is not
+//! forced: its folio is the slab's own granularity, not a 2 MiB page.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 

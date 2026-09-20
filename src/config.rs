@@ -132,25 +132,30 @@ impl Thp {
 
 /// `percpu_arena` values (design 15, plan Phase 2.5 task 8): whether the
 /// caches and arenas are keyed by the running CPU's rseq `mm_cid` instead
-/// of by thread. The mode needs the runtime probe to pass: glibc has
-/// registered an rseq area whose `__rseq_size >= 28` covers the `mm_cid`
-/// field (kernel 6.3+, glibc 2.41+, `CONFIG_SCHED_MM_CID`); nothing here
-/// assumes it from a header constant. jemalloc's spellings are accepted as
+/// of by thread. The mode needs the runtime probe to pass (`rseq::probe`,
+/// checked at run time, never assumed from a header constant or a library
+/// version): glibc exports `__rseq_offset`, `__rseq_size` and
+/// `__rseq_flags` (2.35+) and the registered `__rseq_size` is at least 28,
+/// so the area covers the `mm_cid` field the kernel writes on 6.3+ with
+/// `CONFIG_SCHED_MM_CID` (glibc reports the kernel's feature size there
+/// since 2.41, docs/research.md). jemalloc's spellings are accepted as
 /// aliases (`disabled` is `off`, `phycpu` is `percpu`: the nearest mode, a
 /// concurrency id is not a physical CPU) so a conf string written against
 /// jemalloc, which this key used to accept with any value, still parses
 /// clean under `abort_conf`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PercpuArena {
-    /// The default: on when the probe passes, thread caches otherwise;
-    /// nothing is reported either way.
+    /// The default: thread caches (`heap::PercpuState::OffAuto`; the
+    /// human's decision of 2026-09-20, PROGRESS.md "Phase 2.5 defaults, the
+    /// human's decisions" item 2, design 12 and 15). The per-CPU mode is
+    /// the opt-in below; nothing is reported.
     Auto,
     /// The request is forced: on when the probe passes; when it fails the
     /// allocator still falls back to thread caches and the feature report
     /// notes that `percpu_arena:percpu` was asked for and not available.
     Percpu,
-    /// Thread caches whatever the probe says: byte for byte the allocator
-    /// without the key.
+    /// Thread caches whatever the probe says, no dispatch: byte for byte
+    /// the allocator without the key.
     Off,
 }
 
@@ -165,8 +170,10 @@ impl PercpuArena {
 
     /// Whether the per-CPU mode runs, given the probe's verdict
     /// (`mm_cid_usable`: the registered `__rseq_size` covers `mm_cid`).
-    /// `auto` and `percpu` both follow the probe (a forced request cannot
-    /// read a field the kernel does not write); `off` never runs.
+    /// `percpu` follows the probe (a forced request cannot read a field
+    /// the kernel does not write); `off` never runs. `auto` answers as
+    /// `percpu` here, but `heap::Percpu::build` returns thread caches for
+    /// `auto` before asking, so that arm is reached by the unit tests only.
     #[inline]
     pub const fn enabled(self, mm_cid_usable: bool) -> bool {
         match self {
@@ -289,9 +296,10 @@ pub struct Config {
     /// `t` live threads ever touches `min(t, narenas)` of them.
     pub narenas: u32,
     /// Per-CPU caches and arenas keyed by rseq `mm_cid` (design 15,
-    /// [`PercpuArena`]): `auto` follows the runtime probe, `percpu` forces
-    /// the request (thread caches with a report note when the probe
-    /// fails), `off` disables. Read at init through this field, as `thp`
+    /// [`PercpuArena`]): `auto`, the default, is thread caches; `percpu`
+    /// turns the mode on where the runtime probe allows and otherwise keeps
+    /// thread caches with a note in the report; `off` is thread caches with
+    /// no dispatch. Read at init through this field, as `thp`
     /// and `pac_pointers` are; the probe itself lives with the heap.
     pub percpu_arena: PercpuArena,
     pub tcache: bool,

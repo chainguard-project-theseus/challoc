@@ -668,9 +668,10 @@ pub enum PercpuState {
     On = 0,
     /// `percpu_arena:off`.
     OffKey = 1,
-    /// `percpu_arena:auto`, the key's default: thread caches until the
-    /// default is decided with the numbers in front of the human (plan
-    /// Phase 2.5 task 8, PROGRESS.md); `percpu` is the opt-in.
+    /// `percpu_arena:auto`, the key's default: thread caches, the human's
+    /// decision of 2026-09-20 with the task 8 numbers in front of them
+    /// (PROGRESS.md "Phase 2.5 defaults, the human's decisions" item 2);
+    /// `percpu` is the opt-in.
     OffAuto = 6,
     /// The rseq probe failed (`rseq::Probe::verdict` says how).
     OffProbe = 2,
@@ -727,10 +728,11 @@ impl Percpu {
     /// ([`PercpuState::OffAuto`]): the mode measured 8..24% behind thread
     /// caches on `quick`'s rows and worse on the Valkey model on both
     /// reference VMs (PROGRESS.md, `bench/results/2026-09-19-*-task8-*`),
-    /// so it is not on by default; the plan leaves the default to the
-    /// human, and the key's default lives in `config.rs`, another lane's
-    /// file, so this is where `auto` is read as "not yet". Off Linux there
-    /// is no rseq and the mode is off.
+    /// so the human kept thread caches as the default (2026-09-20,
+    /// PROGRESS.md "Phase 2.5 defaults, the human's decisions" item 2);
+    /// `auto` is read here, next to the probe, and `config::PercpuArena`
+    /// documents the three values. Off Linux there is no rseq and the mode
+    /// is off.
     fn build(meta: &Meta, config: &Config, allowed: bool) -> Percpu {
         use crate::config::PercpuArena;
         let probe = rseq::probe();
@@ -1068,9 +1070,10 @@ impl Shared {
             Arenas::init(&raw mut (*this).arenas, arena0, config.narenas);
             Tcaches::init(&raw mut (*this).tcaches);
             ptr::write(&raw mut (*this).cgroup, crate::sys::cgroup::Cgroup::discover(config.cgroup));
-            // Design 11: under an effective limit below 1 GiB `thp` is
-            // forced to `never` in the stored configuration (the report
-            // says so); the policy's `high` baseline is the count at init.
+            // Design 11: under an effective limit below 1 GiB a configured
+            // `thp:always` is forced to `never` in the stored configuration
+            // (`auto` is left alone; the report says so); the policy's
+            // `high` baseline is the count at init.
             let cgroup = &*(&raw const (*this).cgroup);
             let thp_forced = config.thp == crate::config::Thp::Always
                 && cgroup.limit().min(cgroup.high()) < crate::policy::THP_MIN_LIMIT;
