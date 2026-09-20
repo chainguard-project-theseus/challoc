@@ -33,15 +33,32 @@ pub(super) struct Table {
 }
 
 impl Table {
+    /// Storage layout of a table of `1 << lg_cap` entries: the one source
+    /// for `storage` and `release`.
+    const fn layout(lg_cap: u32) -> Layout {
+        match Layout::from_size_align(core::mem::size_of::<Entry>() << lg_cap, 16) {
+            Ok(l) => l,
+            Err(_) => panic!("huge: descriptor table layout"),
+        }
+    }
+
     fn storage(meta: &Meta, page: usize, lg_cap: u32) -> Option<(*mut Entry, bool)> {
-        let bytes = core::mem::size_of::<Entry>() << lg_cap;
-        if bytes <= meta::MAX_BINNED {
-            let layout = Layout::from_size_align(bytes, 16).ok()?;
+        let layout = Table::layout(lg_cap);
+        if layout.size() <= meta::MAX_BINNED {
             let p = meta.alloc_zeroed(layout);
             if p.is_null() { None } else { Some((p as *mut Entry, true)) }
         } else {
-            let p = meta.reserve_committed(bytes, page)?;
+            let p = meta.reserve_committed(layout.size(), page)?;
             Some((p as *mut Entry, false))
+        }
+    }
+
+    /// Give the storage back if it was binned. A reserved table cannot be
+    /// given back; it is leaked (at most the size of the final table in
+    /// total).
+    fn release(&self, meta: &Meta) {
+        if self.binned {
+            meta.free(self.entries as *mut u8, Table::layout(self.lg_cap));
         }
     }
 
@@ -68,7 +85,8 @@ impl Table {
         unsafe { &mut *self.entries.add(i) }
     }
 
-    /// Slot index holding `key`, if present.
+    /// Slot index holding `key`, if present. Terminates because the table
+    /// always has an empty slot (`insert` keeps `count < cap`).
     fn find(&self, key: usize) -> Option<usize> {
         let mask = self.cap() - 1;
         let mut i = self.hash(key);
@@ -91,9 +109,13 @@ impl Table {
         }
     }
 
-    /// Insert `key`, which must not be present. The table must not be full.
+    /// Insert `key`, which must not be present. Aborts rather than fill
+    /// the last slot: a probe for an absent key ends at an empty slot, so
+    /// a full table would spin in `find`. `ensure` keeps production load
+    /// at or below one half; only a free after a failed growth (its
+    /// `ensure` is best effort) can get here.
     pub(super) fn insert(&mut self, key: usize, desc: *mut HugeDesc) {
-        assert!(self.count < self.cap(), "huge: descriptor table full");
+        assert!(self.count + 1 < self.cap(), "huge: descriptor table full");
         let mask = self.cap() - 1;
         let mut i = self.hash(key);
         loop {
@@ -153,12 +175,7 @@ impl Table {
                 self.insert(e.key, e.desc);
             }
         }
-        if old.binned {
-            let bytes = core::mem::size_of::<Entry>() << old.lg_cap;
-            meta.free(old.entries as *mut u8, Layout::from_size_align(bytes, 16).unwrap());
-        }
-        // A reserved table cannot be given back; it is leaked (at most the
-        // size of the final table in total).
+        old.release(meta);
         Ok(())
     }
 }
@@ -260,7 +277,8 @@ mod tests {
         }
         // The table is fuller than `ensure` would allow, and still works
         // up to one slot short of full (a probe for an absent key ends at
-        // an empty slot; with none left it would not end).
+        // an empty slot; `insert` refuses to take the last one, see
+        // `the_table_never_fills_its_last_slot`).
         let extra = t.cap() - t.count - 1;
         for k in keys.len() + 1..=keys.len() + extra {
             assert!(t.ensure(&env.meta, page, 1).is_err());
@@ -273,6 +291,49 @@ mod tests {
         assert_eq!(t.get(1), ptr::null_mut());
         assert_eq!(t.get(2), desc(2));
         assert_eq!(t.get(keys.len() + extra), desc(keys.len() + extra));
+    }
+
+    /// `insert` without `ensure` (as a free after a failed growth does)
+    /// takes keys until exactly one slot is left; absent keys are still
+    /// found absent (the probe ends at that slot), and the insert that
+    /// would fill it aborts instead of leaving a table that `find` cannot
+    /// terminate on.
+    #[test]
+    fn the_table_never_fills_its_last_slot() {
+        let env = Env::new();
+        let mut t = Table::new(&env.meta, page_size()).expect("table");
+        let cap = t.cap();
+        let desc = |k: usize| k as *mut HugeDesc;
+        for k in 1..cap {
+            t.insert(k, desc(k));
+        }
+        assert_eq!(t.count, cap - 1);
+        for k in [0, cap, cap + 1, usize::MAX] {
+            assert!(t.find(k).is_none(), "absent key {k} found");
+            assert!(t.get(k).is_null());
+        }
+        for k in [1, cap / 2, cap - 1] {
+            assert_eq!(t.get(k), desc(k));
+        }
+        // Removing and re-adding at the limit works: one slot stays free.
+        t.remove(cap / 2);
+        assert!(t.get(cap / 2).is_null());
+        t.insert(cap / 2, desc(cap / 2));
+        assert_eq!(t.get(cap / 2), desc(cap / 2));
+        assert_eq!(t.count, cap - 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "descriptor table full")]
+    fn the_table_aborts_before_its_last_slot_fills() {
+        let env = Env::new();
+        let mut t = Table::new(&env.meta, page_size()).expect("table");
+        let cap = t.cap();
+        for k in 1..cap {
+            t.insert(k, k as *mut HugeDesc);
+        }
+        assert_eq!(t.count, cap - 1);
+        t.insert(cap, cap as *mut HugeDesc);
     }
 
     #[test]
