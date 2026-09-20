@@ -2354,3 +2354,62 @@ fn a_plan_that_takes_a_purged_slab_the_counts_do_not_know_aborts() {
     let mut picks = [Pick::EMPTY; MAX_PICKS];
     cs.plan(&env.meta, 1, &mut picks);
 }
+
+/// `walk_empty`, the one walk behind `purge_empty` and both passes of
+/// `purge_curve`: the empty set in address order with each slab's
+/// `dirty_at`; a slab the visitor takes out ahead of the walk (a purge
+/// takes a whole page group) is not visited.
+#[test]
+fn walk_empty_visits_the_set_in_address_order_and_skips_what_the_visitor_takes() {
+    let env = Env::new();
+    let cs = env.class(small_class(), 0);
+    let n = cs.class().nslots();
+    let (p, _) = env.claim(&cs, 3 * n);
+    cs.release(&p);
+    for s in 0..3 {
+        assert_eq!(cs.desc(s).state(), State::Empty, "slab {s}");
+    }
+    let mut g = cs.inner.lock();
+    let mut seen = Vec::new();
+    cs.walk_empty(&mut g, |_, slab, dirty_at| seen.push((slab, dirty_at)));
+    assert_eq!(seen, (0..3).map(|s| (s, cs.desc(s).dirty_at())).collect::<Vec<_>>());
+    assert!(seen.iter().all(|&(_, t)| t != 0), "an Empty slab's stamp is never 0");
+    let mut seen = Vec::new();
+    cs.walk_empty(&mut g, |g: &mut Inner, slab, _| {
+        if slab == 0 {
+            g.empty_take(1);
+        }
+        seen.push(slab);
+    });
+    assert_eq!(seen, vec![0, 2]);
+    g.empty_add(1);
+    drop(g);
+    assert_eq!(cs.stats().empty, 3);
+}
+
+/// The walk's cross-check: a slab of the empty set whose descriptor is
+/// not `Empty` is a heap inconsistency, in every purge walk.
+#[test]
+#[should_panic(expected = "slab 1 in the empty set is not empty")]
+fn a_purge_over_an_empty_set_slab_that_is_not_empty_aborts() {
+    let env = Env::new();
+    let cs = env.class(small_class(), 0);
+    let n = cs.class().nslots();
+    let (p, _) = env.claim(&cs, 2 * n);
+    cs.release(&p);
+    assert_eq!(cs.stats().empty, 2);
+    // Corrupt the descriptor: the set says `Empty`, the state byte says
+    // `Active`.
+    cs.desc(1).set_state(State::Active);
+    cs.purge_empty(u64::MAX);
+}
+
+/// `min_nonzero`: the fold of the walks and the handoff over `dirty_at`
+/// stamps, where 0 is "none yet" and a stamp is never 0.
+#[test]
+fn min_nonzero_treats_zero_as_none() {
+    assert_eq!(decay::min_nonzero(0, 7), 7);
+    assert_eq!(decay::min_nonzero(7, 5), 5);
+    assert_eq!(decay::min_nonzero(5, 7), 5);
+    assert_eq!(decay::min_nonzero(5, 5), 5);
+}

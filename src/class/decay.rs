@@ -5,7 +5,37 @@ use super::{ClassState, Inner};
 use crate::purge::{Batch, Curve, STEPS};
 use crate::slab::State;
 
+/// The older of two `dirty_at` stamps where 0 means "none yet": the fold
+/// of the purge walks and the handoff over the `Empty` slabs they keep or
+/// move, feeding the gate's `oldest_empty` (0 when no slab is `Empty`).
+/// An `Empty` slab's stamp is never 0 (`on_live_zero` writes
+/// `now.max(1)`), so 0 is unambiguous.
+pub(super) fn min_nonzero(cur: u64, t: u64) -> u64 {
+    debug_assert!(t != 0, "min_nonzero: an Empty slab's dirty_at is never 0");
+    if cur == 0 || t < cur { t } else { cur }
+}
+
 impl ClassState {
+    /// Walk this arena's empty set in address order under the class lock
+    /// (`g`): `f(g, slab, dirty_at)` for every slab in it, after the
+    /// check that the slab is what the set says (`Empty`, `live == 0`;
+    /// anything else is a heap inconsistency and aborts). `f` may take
+    /// slabs out of the set, including ones ahead of the walk (a purge
+    /// takes the whole page group), and the walk does not visit those.
+    pub(super) fn walk_empty(&self, g: &mut Inner, mut f: impl FnMut(&mut Inner, usize, u64)) {
+        let mut next = g.empty.map.lowest_set();
+        while let Some(slab) = next {
+            let desc = self.desc(slab);
+            assert!(
+                desc.state() == State::Empty && desc.live() == 0,
+                "class {}: slab {slab} in the empty set is not empty",
+                self.class
+            );
+            f(g, slab, desc.dirty_at());
+            next = g.empty.map.lowest_set_from(slab + 1);
+        }
+    }
+
     /// Purge every `Empty` slab whose `dirty_at` is at or before `cutoff`
     /// (`u64::MAX` for all of them) and make it `Purged`. The discards go
     /// out in batches of [`purge::MAX_BATCH`] under the class lock, so no
@@ -18,22 +48,13 @@ impl ClassState {
         let mut n = 0;
         let mut batch = Batch::new();
         let mut oldest = 0u64;
-        let mut next = g.empty.map.lowest_set();
-        while let Some(slab) = next {
-            let desc = self.desc(slab);
-            assert!(
-                desc.state() == State::Empty && desc.live() == 0,
-                "class {}: slab {slab} in the empty set is not empty",
-                self.class
-            );
-            let dirty_at = desc.dirty_at();
+        self.walk_empty(&mut g, |g, slab, dirty_at| {
             if dirty_at <= cutoff && (spp == 1 || self.page_group_is_idle(slab, spp)) {
-                n += self.purge_group(&mut g, slab, spp, &mut batch);
-            } else if oldest == 0 || dirty_at < oldest {
-                oldest = dirty_at;
+                n += self.purge_group(g, slab, spp, &mut batch);
+            } else {
+                oldest = min_nonzero(oldest, dirty_at);
             }
-            next = g.empty.map.lowest_set_from(slab + 1);
-        }
+        });
         batch.flush();
         self.gate.set_oldest_empty(oldest);
         n
@@ -87,24 +108,13 @@ impl ClassState {
         let mut total = 0usize;
         let mut weighted = 0u64;
         let mut oldest = 0u64;
-        let mut next = g.empty.map.lowest_set();
-        while let Some(slab) = next {
-            let desc = self.desc(slab);
-            assert!(
-                desc.state() == State::Empty && desc.live() == 0,
-                "class {}: slab {slab} in the empty set is not empty",
-                self.class
-            );
-            let dirty_at = desc.dirty_at();
+        self.walk_empty(&mut g, |_, _, dirty_at| {
             let step = curve.step(now, dirty_at);
             counts[step] += 1;
             total += 1;
             weighted += Curve::weight(step);
-            if oldest == 0 || dirty_at < oldest {
-                oldest = dirty_at;
-            }
-            next = g.empty.map.lowest_set_from(slab + 1);
-        }
+            oldest = min_nonzero(oldest, dirty_at);
+        });
         // The cgroup policy's retention cap (design 11): this walk's share
         // of the process-wide cap, on top of the curve.
         let mut allow = Curve::allowance(weighted);
@@ -129,9 +139,7 @@ impl ClassState {
         let mut n = 0;
         let mut batch = Batch::new();
         oldest = 0;
-        let mut next = g.empty.map.lowest_set();
-        while let Some(slab) = next {
-            let dirty_at = self.desc(slab).dirty_at();
+        self.walk_empty(&mut g, |g, slab, dirty_at| {
             let step = curve.step(now, dirty_at);
             let purge = step > cut
                 || (step == cut && {
@@ -143,12 +151,11 @@ impl ClassState {
                     }
                 });
             if purge && (spp == 1 || self.page_group_is_idle(slab, spp)) {
-                n += self.purge_group(&mut g, slab, spp, &mut batch);
-            } else if oldest == 0 || dirty_at < oldest {
-                oldest = dirty_at;
+                n += self.purge_group(g, slab, spp, &mut batch);
+            } else {
+                oldest = min_nonzero(oldest, dirty_at);
             }
-            next = g.empty.map.lowest_set_from(slab + 1);
-        }
+        });
         batch.flush();
         self.gate.set_oldest_empty(oldest);
         n
