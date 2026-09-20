@@ -1,4 +1,4 @@
-STATUS: BLOCKED
+STATUS: RUNNING
 
 Progress log for the unattended implementation loop (scripts/ralph.sh).
 One line per task, newest at the bottom of each section. Keep it terse.
@@ -1848,6 +1848,25 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
   jemalloc's rtree. Measurement plan named (`valkey1-usable` under
   `quick-perf` on the C4, `quick` on both reference VMs and a C3 lab cell,
   then this soak protocol with the sidecar).
+- Phase 2.5 defaults, the human's decisions (2026-09-20, on the
+  coordinator's recommendations with the numbers in "Notes for the human"):
+  (1) `thp`: the shipped `never` advises `MADV_NOHUGEPAGE` on the class
+  superblock and the metadata region only; the huge region stays eligible
+  for the host's policy (option (d) of `2026-09-20-aarch64-cgos-thp-ab.md`:
+  keeps the slab regions' RSS discipline and gives the huge tier back the
+  32 MiB it took under `always` before task 16, expected to read as (b)
+  `thp:auto` on Chainguard OS, +6.3% instead of +16.1% behind jemalloc on
+  valkey1). Lane B implements, lane E re-measures on the cgos cell.
+  (2) `percpu_arena`: `auto` stays thread caches; the mode remains the
+  opt-in (its costs 4..38% on the rows, its RSS win with idle threads
+  available through the key). (3) `prefault`: stays off; the README
+  documents `prefault:true,background_thread:true` for Valkey-shaped
+  services (write-phase main-thread faults -83%, p99 unmoved, +4..6 MiB
+  per bursting heap). (4) the `malloc_usable_size` design note stays a
+  note, not a task (a safety-versus-speed change: a use-after-free query
+  would return a size instead of aborting). Phase 3 starts now; the
+  hardware rows 2a (ii)/(vi) and 4b stay open until a host exists.
+
 - `auto` never installs `wfe`, and the `wfe` path stays in the tree behind the key. Reason: it lost xmalloc-test by 3% with a quarter more RSS on both aarch64 CPUs and gained nothing on larson; unselected it costs nothing (one atomic load per slow-path entry, measured within noise), and a deployment that wants the power saving or a CPU with a different wake latency can turn it on and measure. The explicit `wfe` is refused without the event stream so a `wfe` no store ends is always bounded.
 - The event stream is probed (`HWCAP_EVTSTRM`) but not added to the feature report line. Reason: a new key would change `tests/c/features.c` and every recorded line for a feature nothing acts on by default; `lock::spin_hint()` and `event_stream()` are what the tests check.
 - The probe's suggestion lives in `Cpu::probe` (a side effect on `lock::SPIN_HINT`) rather than in `api/mod.rs`'s init. Reason: init and `features.rs` belong to other lanes; the suggestion is idempotent and a configured hint is kept against it.
