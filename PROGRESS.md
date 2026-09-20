@@ -343,6 +343,33 @@ One line per task, newest at the bottom of each section. Keep it terse.
   and lane B's four commits cost nothing there, and the row's band is
   +7.5..+8.5% from 4864d4b on. `bench/results/2026-09-20-aarch64-larson1-drift.md`
   (commit 95be6ff). Reference VM started and stopped by the coordinator.
+- Phase 2.5 task 16 (lane C, 2026-09-20), the key half: done, commit 3352bf0.
+  `thp_process:default|advised` (default `default`) in `src/config.rs`:
+  `config::ThpProcess { Default, Advised }` with `name()` and
+  `requested()` (true only for `advised`), the field
+  `Config::thp_process` and the accessor `Config::thp_process()`;
+  `KEYS` 27 -> 29, the `get` arm, the `cstr_of` arms for `default` and
+  `advised` in `src/api/mallctl.rs`, the `opt.thp_process: "default"`
+  needle in the `src/api/print.rs` report test, the section 12 row in
+  `docs/design.md`; `config::tests::thp_process_values` (both values,
+  ten bad spellings left at the default and reported, the last pair wins,
+  quoted values, `opt.` read-back, `thp:default` is still `thp:never` and
+  not this key). The `prctl` itself is lane B's (`thp.rs`,
+  `features.rs`): `Config::thp_process().requested()` says whether to
+  issue it. Host `cargo test --features std`: 311 passed; `make test` in
+  the lane's container (`TARGET_VOLUME=challoc-target-lane-c-arm64`): 402
+  + 117 + 23 passed, `EXIT 0`. No VM, no numbers: cold-path keys.
+- Phase 2.5 task 11 (lane C, 2026-09-20), the key half: done, commit
+  3352bf0. `prefault:true|false` (default `false`) in `src/config.rs`:
+  the field `Config::prefault`, the accessors `Config::prefault()` (the
+  key as set) and `Config::prefault_active()` (`prefault &&
+  background_thread`: the pass runs on the background thread, so without
+  it the key is stored and readable but does nothing, as `tcache_max`
+  without `tcache`); `KEYS` (after `background_thread`), the `get` arm,
+  the `opt.prefault: false` needle in the report test, the section 12 row
+  in `docs/design.md`; `config::tests::prefault_values`. The pass is lane
+  B's (the thread and the commit path) and the claim side lane A's, as
+  PROGRESS.md's task 11 plan says.
 
 - (c) 0604bb3: `bench/ruby-soak.sh`, `make ruby-soak`, `bench/ruby/soak.rb` (16
   threads, bursts, growing long-lived set, full GC every 30 s, GC.compact at
@@ -1074,6 +1101,31 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
 - Phase 2.5 task 14: the cgos cell writes `bench/results/scorecard-cgos-<arch>.md` (not `scorecard-c4a.md` / `scorecard-c4.md`, the same machine families): the per-CPU files record the Ubuntu 7.0 kernel with THP `madvise`, this one a 6.18 kernel with THP `always`, and a line for the same commit must not replace the other's.
 - Phase 2.5 task 14: 3 rounds for the cgos four-way (the plan's table is 5) and the cells' scorecard: 5 rounds would have been about 35 minutes for the `ab` step alone per host and the shapes are 8 vCPU, so the file says 3 and the comparison with Ubuntu is by percentages and mechanism, never absolute.
 - Phase 2.5 task 14: the four-way's container rows take the cell's protocol run (`make test-cgroup`) and the post-run repetition is quoted below them, so a reader sees both the passing protocol value and the stall frequency instead of one or the other.
+- Phase 2.5 task 16 (lane C): the key is `thp_process`, values `default`
+  and `advised`, following the plan text. `default` means "nothing
+  issued", not "the kernel's default": the process keeps whatever policy
+  it inherited (a parent's `PR_SET_THP_DISABLE` included), so
+  `thp_process:default` is byte for byte the allocator without the key.
+  No `never`/`always` values: a process-wide `PR_SET_THP_DISABLE` of 1
+  without the except-advised flag would also disable the pages `thp:auto`
+  advises, and `always` is not something `prctl` can grant; if lane B
+  wants the plain disable as a value later, `ThpProcess` gains a variant
+  and `requested()` stays the "issue a prctl" gate. The enum is stored on
+  `Config` next to `thp`, not folded into `Thp`, because the two compose
+  (`thp:auto,thp_process:advised` is the Chainguard OS configuration the
+  plan aims at) and because `thp:default` already means `never` for
+  jemalloc compatibility.
+- Phase 2.5 task 11 (lane C): `prefault` is a plain bool with no
+  cross-key validation at parse time (no `Issue` when
+  `background_thread` is false): the parser is per pair and the last
+  pair wins in either order, so a "prefault needs the thread" report
+  would depend on key order; instead `Config::prefault_active()` gives
+  lane B the one predicate to gate the pass on and the report can say
+  `prefault: requested, no background thread` from it. `KEYS` order puts
+  `prefault` right after `background_thread` (the report reads in that
+  order) and `thp_process` right after `thp`; `opt.` mib indices of the
+  later keys shift by one and two, which nothing pins (the mallctl tests
+  compute them from `KEYS`).
 - `auto` never installs `wfe`, and the `wfe` path stays in the tree behind the key. Reason: it lost xmalloc-test by 3% with a quarter more RSS on both aarch64 CPUs and gained nothing on larson; unselected it costs nothing (one atomic load per slow-path entry, measured within noise), and a deployment that wants the power saving or a CPU with a different wake latency can turn it on and measure. The explicit `wfe` is refused without the event stream so a `wfe` no store ends is always bounded.
 - The event stream is probed (`HWCAP_EVTSTRM`) but not added to the feature report line. Reason: a new key would change `tests/c/features.c` and every recorded line for a feature nothing acts on by default; `lock::spin_hint()` and `event_stream()` are what the tests check.
 - The probe's suggestion lives in `Cpu::probe` (a side effect on `lock::SPIN_HINT`) rather than in `api/mod.rs`'s init. Reason: init and `features.rs` belong to other lanes; the suggestion is idempotent and a configured hint is kept against it.
@@ -1473,6 +1525,33 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
   `thp:always` the default only when the host reads `thp=always`, or a
   size-banded `always` (lane B's design item); the prctl half of task 16
   (opt-in, in flight) is independent of this choice.
+- Phase 2.5 task 11 (lane C): the model test ("a fresh slab committed
+  and populated by the background thread is taken by the next claim as
+  any committed empty slab") was not added, on purpose. `src/model.rs`
+  quotes the real `class.rs` lines for every step, and the step it would
+  need does not exist yet: the prefault pass has to decide what a
+  committed-but-unclaimed slab looks like to `next_slab` (in the `empty`
+  set with its state left `Fresh`, so the claim still knows it is zero
+  for `calloc`, which `MADV_POPULATE_WRITE` preserves; or state `Empty`
+  and the zero knowledge lost; or a new state), and whether the cursor
+  slab check in `take_group`/`commit next` still holds with a committed
+  slab below the cursor that no claim has touched. That is the commit
+  path's decision (lane B). Once it lands, the model op is small: under
+  the class lock, `s = group_next; commit_slab(s); group_next = s + 1;`
+  then the set insert, and the invariant is "no committed slab is in no
+  set and unclaimed" (`model::check` line 1761 already has the leak
+  check to extend). Lane C can add it in one iteration after the merge.
+- Phase 2.5 task 16 (lane C): for lane B, the exact names to code
+  against: `crate::config::ThpProcess::{Default, Advised}`,
+  `config.thp_process()` (also the pub field `thp_process`),
+  `ThpProcess::requested()`, `ThpProcess::name()` (`"default"`,
+  `"advised"`); `config.prefault()`, `config.prefault_active()`, the pub
+  field `prefault`. `README.md` has no key table (only the feature
+  table), so it was left alone; the feature-table row for THP is lane
+  B's to extend when the `prctl` lands. Files touched outside the
+  partition: `src/api/mallctl.rs` (two `cstr_of` arms), `src/api/print.rs`
+  (two needles in the report test), `docs/design.md` (two rows in the
+  section 12 table).
 
 - The Cascade Lake's xmalloc row moved 3.5% (disjoint lists) and then 2.7% (overlapping) between `old` and the new lock with the same `pause` in both; the C4 and C4A (same code, PMU available) show nothing. The mechanism is one atomic load and a `match` on the slow path; the likeliest cause is code placement on the Cascade Lake (memory note on page aliasing). It is recorded as open in the results file; a sampler split on a C2 lab would settle it (no PMU there).
 - The geometry numbers say the 1024 ladder is right on 1 MiB L2 parts for throughput, and that 512 buys 12..15% of larson's RSS; if RSS on small parts ever matters more than 1..3% of larson, the knob exists and the model in 6.2 says where it stops paying (256 loses 6% on larson1).
