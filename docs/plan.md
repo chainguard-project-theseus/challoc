@@ -1279,6 +1279,40 @@ Tasks:
 4. `docs/tuning.md` explaining every tunable and the cgroup policy for
    operators.
 
+5. Consumer benchmark rows (the human, 2026-09-20: "valkey redis are good
+   but not the most important"): the allocator measured under the three
+   runtimes that carry the most memory in Wolfi images, each as a
+   measurement lane with no `src/` change, each on its own VMs, both
+   architectures, Ruby's protocol (`bench/ruby-bench.sh`: 5 interleaved
+   rounds after a warm-up, sorted lists, medians, RSS sampled, one results
+   file per architecture, challoc against glibc, jemalloc, mimalloc and
+   tcmalloc, glibc the baseline to beat). Rows per consumer:
+   (a) JVM (Wolfi's `openjdk-21`): `java -version` startup time and idle
+   RSS; an HTTP server on the JDK's own `com.sun.net.httpserver` with a
+   200-thread executor serving JSON and 64 KiB direct-`ByteBuffer` bodies
+   under a load generator from Wolfi for 5 minutes, RSS sampled every 5 s
+   (peak and final), p99 and req/s; the same with `MALLOC_ARENA_MAX=2` for
+   glibc (the fleet's usual mitigation) as a sixth variant; `-Xmx` fixed so
+   only native memory differs. (b) PostgreSQL (Wolfi's `postgresql-17`):
+   `pgbench -i -s 50`; `pgbench -S` (select-only) and TPC-B at `-c 100` and
+   `-c 500 -j 16` for 60 s each; RSS as the sum of every backend's
+   `smaps_rollup` Pss plus the postmaster's, sampled; connection setup
+   latency with `pgbench -C`; the allocator through the postmaster's
+   environment so every backend inherits it. (c) Node.js (Wolfi's
+   `nodejs-22`): `node -e 0` startup and idle RSS; an `http` server
+   answering JSON and streaming 1 MiB `Buffer` bodies with per-request
+   `Buffer.allocUnsafe` churn under the same load generator for 5 minutes,
+   RSS sampled, p99 and req/s; `--max-old-space-size` fixed. Harness per
+   consumer: `bench/<consumer>-bench.sh` and `make <consumer>-bench` in the
+   style of `ruby-bench.sh`, packages added to `Dockerfile.dev` in one
+   marked block per consumer, the load generator from Wolfi (`wrk`, `oha`
+   or `ab`, whichever installs). Acceptance: the six results files exist
+   with every row and its sorted lists; every row where challoc is more
+   than 10% behind the best of glibc and jemalloc on time or RSS is
+   attributed (sampler or `perf` on the VM host, the mechanism named) or
+   carried as an open item with an owner; the rows join the scorecard as
+   columns only by the coordinator's decision afterwards.
+
 Acceptance: packages build and pass tests in Wolfi CI. This phase is executed
 in the Wolfi repository, not here; this repository only tracks the patches and
 package definition drafts under `contrib/`.
