@@ -1028,6 +1028,29 @@ One line per task, newest at the bottom of each section. Keep it terse.
   and tested on the lane's VM).
 - Phase 3 task 1: Wolfi package definition `contrib/wolfi/challoc.yaml` producing `challoc` (`/usr/lib/libchalloc.so.0`, `quantum16`, soname checked in the pipeline), `challoc-dev` (`split/dev`: `libchalloc.so -> libchalloc.so.0`, `/usr/include/challoc/jemalloc.h` from `contrib/valkey/include/`, a pipeline-written `challoc.pc`) and `challoc-jemalloc-compat` (`scripts/jemalloc-compat.sh` with `QUANTUM=16 PREFIX=/usr` inside the pipeline: `libjemalloc.so.2`, `libjemalloc.so`, `jemalloc.pc` `Version: 5.3.0`; `provides: libjemalloc2`), with a `test:` block per package (`test/tw/ldd-check`, `test/pkgconf`, soname via `readelf -d`, `LD_PRELOAD` runs, `pkg-config --modversion/--libs/--atleast-version`, a link-only consumer checked for `DT_NEEDED` and `dladdr` into the compat library, the as-needed rule of design 13.6 both ways). Built for real with Wolfi's melange 0.60.0 (`--runner bubblewrap`, `--build-option local-source --source-dir .`, Wolfi `pipelines/` at a944f08, `rust-1.98`) on the lane VMs for aarch64 and x86_64; `melange test` passes on both; the three `.apk`s were installed into a clean `wolfi-base` container from the local repository on both architectures and every check repeated by hand, plus `scripts/check-needed.sh`, `tests/c/jemalloc_link.c` against the installed pc file, and the jemalloc swap on Wolfi's `ruby-3.4`. Recipe and layout: `contrib/wolfi/README.md`; outputs: `bench/results/2026-09-20-phase3-task1-wolfi-package.md`. Not exercised: the `git-checkout` step (no public repository, no tag) and Wolfi CI itself (the phase's acceptance runs there). Nothing under `src/`, `Cargo.toml` or `build.rs` changed. Commits 92bde5b (YAML + README), 61c55f7 (results).
 - Phase 3 task 2: Wolfi's Valkey 9.1 package on challoc, built and tested for real on both architectures. `contrib/wolfi/valkey/valkey-9.1.yaml` is wolfi-dev/os's `valkey-9.1.yaml` (main `a944f08`, 2026-09-19; last changed in `195f812`) with the allocator switched: `contrib/valkey/0001-Add-MALLOC-challoc.patch` applied (copied to `contrib/wolfi/valkey/valkey-9.1/` next to Wolfi's `0000-Disable-protected-mode.patch`; `stage.sh` refuses to build if the copy drifts), a `cargo build --release --locked --no-default-features --features quantum8` of the challoc tree (a second `git-checkout` into `challoc/`, skipped by `--build-option local-challoc` when `contrib/wolfi/valkey/stage.sh` has staged the tree) installed as `/usr/lib/valkey/libchalloc.so.0`, `make MALLOC=challoc BUILD_TLS=yes` with `-I<challoc>/contrib/valkey/include`, `-L<cargo output> -Wl,-rpath,/usr/lib/valkey` (on `make install` too: Valkey's persisted settings would otherwise rebuild with the bundled jemalloc), a check step (`malloc=jemalloc-5.3.0-challoc`, `scripts/check-needed.sh`, the rpath), `epoch` 1, `rust-1.98` and `binutils` in the environment, `jemalloc` (unused) out, and a `test:` block: `test/tw/ldd-check`, `valkey-server --version` contains `challoc`, `readelf -d` shows `NEEDED [libchalloc.so.0]` and `RPATH|RUNPATH [/usr/lib/valkey]` (server, cli and benchmark), a server on a unix socket whose `/proc/<pid>/maps` names exactly `/usr/lib/valkey/libchalloc.so.0`, `INFO memory` `mem_allocator:jemalloc-5.3.0-challoc`, `CONFIG SET activedefrag yes` -> `OK`, `MEMORY PURGE` -> `OK`, `MEMORY MALLOC-STATS`, `SET`/`GET`, `valkey-benchmark -t set,get -n 20000 -q`, clean shutdown, Wolfi's `redis-*` checks. Built with melange 0.60.0 (bubblewrap, Wolfi pipelines at `a944f08`, `--test-package-append=wolfi-base` as Wolfi's Makefile) on the lane VMs: `valkey-9.1`, `-cli`, `-benchmark` 9.1.2-r1 on aarch64 and x86_64, lints clean, the quantum8 build 8.2 s inside a 30 s pipeline, two builds of the same tree giving identical apk sha256; `melange test` passes on both with the committed YAML. By hand in clean `wolfi-base` containers (both architectures): every assertion above verbatim, `ldd` resolving `libchalloc.so.0 => /usr/lib/valkey/libchalloc.so.0`, `MEMORY MALLOC-STATS` with `config.quantum: 8`, `valkey-benchmark -t set -n 200000 -q` (137 k / 172 k req/s, a traffic check, not a number), co-installation with the system `challoc` (the server still maps only the private copy, `activedefrag` still `OK`), and both ways: `LD_LIBRARY_PATH=/usr/lib` cannot displace the private library (`DT_RPATH` precedence), `LD_PRELOAD` of the system quantum16 library kills the server at start in `main -> allocatorDefragInit -> _serverAssert` (gdb; the quantum assertion fires before the log exists, so a segfault in `serverLogRaw`, exit 139, no text). Valkey's `unit/memefficiency` against the packaged binary (the Phase 1 gate, contrib patch applied for its tcl hunk): 33 ok / 0 failed on both (418 s aarch64, 433 s x86_64). `contrib/wolfi/README.md` gains the "Valkey" section (two-library layout, why quantum8 is private, the client tools, how to build and test). Results, verbatim outputs, package metadata and the diff against Wolfi's file: `bench/results/2026-09-20-phase3-task2-valkey-package.md`. Nothing under `src/`, `Cargo.toml` or `build.rs` changed (the `quantum8` feature exists). VMs deleted. Commits 6a14d5b (definition, patches, stage.sh, README), 1450ea2 (results).
+- Phase 3 task 5 (c): done (213fc12 harness, a3121bb results). Node.js rows under
+  challoc, glibc, jemalloc, mimalloc and tcmalloc on Wolfi's nodejs-22
+  (v22.23.2, V8 12.4), both architectures, on the lane's VMs
+  challoc-lane-n-{arm64,amd64}, results in
+  bench/results/2026-09-20-{aarch64,x86_64}-node.md. Harness:
+  bench/node-bench.sh, `make node-bench` (NODE_BENCH_VARS), bench/node/server.js
+  and bench/node/json_churn.js, the `# Node.js rows (Phase 3 task 5c)` block in
+  Dockerfile.dev (nodejs-22, apache2-utils), a node-bench paragraph in
+  bench/README.md. Headline medians (challoc vs glibc / vs jemalloc, positive =
+  challoc worse): aarch64 startup 0.021 s +10.5% / +5.0% (RSS -11.9% / +0.3%),
+  json_churn 2.622 s +0.5% / -0.2% (RSS -10.3% / -0.3%), server 2568 req/s per
+  endpoint -2.0% fewer than glibc / +1.6% more than jemalloc, p99 13 ms (glibc
+  13, jemalloc 15), RSS peak 130.6 MiB (-3.2% / -4.5%), final 108.9 MiB (-17.2% /
+  -9.6%); x86_64 startup 0.024 s +4.3% / +0.0% (RSS +3.7% / +0.4%), json_churn
+  2.334 s -7.1% / -1.1% (RSS +2.8% / -0.1%), server 3694 req/s +5.5% more than
+  glibc / -1.5% fewer than jemalloc, p99 9 ms (glibc 13, jemalloc 10..11), RSS
+  peak 138.9 MiB (+0.7% / +3.5%), final 138.8 MiB (+9.8% / +7.8%). The one row
+  past the 10% line, aarch64 startup, is attributed in the results file: system
+  time only (sys 7.8 vs 6.2 ms, user equal), about 270 more mprotect calls and
+  880 more minor faults from committing each size class's first slabs over the
+  PROT_NONE class reservations while V8 deserialises its snapshot; challoc's own
+  init costs nothing measurable (/bin/true 1 ms under both). Server row ran the
+  full 5 minutes per allocator on both VMs.
 
 ## In progress
 
@@ -2015,6 +2038,25 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
 - Phase 3 task 2: `-Wl,-rpath,/usr/lib/valkey` produces `DT_RPATH` with Wolfi's binutils 2.47 (no `--enable-new-dtags` default); design 13.6 says "RUNPATH". Kept as the linker gives it, the definition and test accept `RUNPATH|RPATH`. Reason: for a private library `DT_RPATH` is the better semantics (searched before `LD_LIBRARY_PATH`, so an environment pointing at `/usr/lib` cannot swap in the quantum16 build; only `LD_PRELOAD` can, and then the server dies at start instead of running on the wrong class table), and it is one flag (`-Wl,--enable-new-dtags`) if Wolfi wants `RUNPATH`.
 - Phase 3 task 2: the package test starts the server on a unix socket (`port 0`, `unixsocket /tmp/valkey.sock`) rather than a TCP port. Reason: the task's "free port" is guaranteed by construction and `valkey-cli -s`/`valkey-benchmark -s` cover everything the test needs; the by-hand checks used TCP 6399 to show the same on a port.
 - Phase 3 task 2: the pipeline's check step runs the freshly built `valkey-server` with `LD_LIBRARY_PATH=<destdir>/usr/lib/valkey`. Reason: the rpath does not exist in the build environment, and the loader wants the soname file name (`libchalloc.so.0`, which only the staged copy has; cargo's output is `libchalloc.so`). Two build failures before this was right; both in the results file.
+- Phase 3 task 5 (c): the load generator is `ab` from Wolfi's apache2-utils
+  because Wolfi has neither `wrk` nor `oha` (apk search, 2026-09-20). ab is
+  single-threaded and one URL per process, so the server row runs two ab
+  processes at once (32 keep-alive connections each, /json and /blob) against
+  one node process; `-t DURATION` must precede `-n` because ab's -t resets
+  -n to 50000, and `-l` accepts the variable-length JSON body. Node's single
+  event loop shared by both endpoints makes the two req/s figures equal (the 1
+  MiB /blob responses set the pace); the row is still a same-generator
+  comparison across allocators.
+- Phase 3 task 5 (c): the server keeps an explicit Content-Length on the 1 MiB
+  body (written as 64 KiB subarray views of one Buffer.allocUnsafe(1 << 20)),
+  so ab sees a fixed-length keep-alive response rather than chunked encoding;
+  the backing store is still one malloc(1 MiB) per request, freed when the GC
+  collects the Buffer, which is what the row is for.
+- Phase 3 task 5 (c): server RSS is the process's smaps_rollup Rss sampled every
+  5 s (peak and final) plus VmHWM at the end, and the end-of-load smaps summed
+  by mapping name (challoc:classes|huge|meta) so an RSS gap is placed without a
+  second run; the process rows use bench/rt's maxrss as the Ruby and Python
+  rows do.
 
 ## Blocked
 
@@ -2759,3 +2801,21 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
 - Phase 3 task 2, a decision with two reasonable outcomes for the coordinator: `DT_RPATH` was kept (see the design decision); design 13.6's "RUNPATH" text could be amended to "rpath (`DT_RPATH` or `DT_RUNPATH`)" or the package could pass `-Wl,--enable-new-dtags`. And the client tools: a server image with `valkey-9.1-cli` carries both libraries (the private quantum8 and the system quantum16 for the cli's `so:` dependency, about 400 KiB); the way to remove it is a static link from `libchalloc.a` into the three binaries, which is a Phase 3 follow-up if wanted, not done here.
 - Phase 3 task 2, the results file's numbers are traffic checks, not benchmark rows (`valkey-benchmark` at 137 k / 172 k SET/s on the lane VMs inside containers); nothing here goes to the scorecard, and `src/` is untouched.
 - Phase 3 task 3 (Ruby), the header question from task 1 restated with what this task adds: Valkey sidestepped `<jemalloc/jemalloc.h>` because its patch includes challoc's own `<challoc/jemalloc.h>`; Ruby's `--with-jemalloc` configure checks `jemalloc/jemalloc.h` and links `-ljemalloc`, so it needs a header under that path. The options stand: (a) `challoc-jemalloc-compat` grows a `-dev` subpackage with `/usr/include/jemalloc/jemalloc.h` (declaring the unprefixed and `je_` API, `JEMALLOC_VERSION*` 5.3.0, the `MALLOCX_*` macros; no `JEMALLOC_MANGLE`), conflicting with `jemalloc-dev` by path so a consumer names one of them, the same alternatives-by-name rule the runtime already follows; or (b) Ruby's environment keeps `jemalloc-dev` for the header and the compat library is what the built `ruby` finds at run time (the link name `libjemalloc.so` would then be jemalloc-dev's, pointing at Wolfi's `libjemalloc.so.2`, replaced at install by the compat package's file with the same soname; `DT_NEEDED libjemalloc.so.2` is satisfied either way, `scripts/check-needed.sh` verifies it). (a) is the honest package; (b) needs nothing new but builds Ruby against jemalloc's header, which for the symbols Ruby uses (`malloc_conf`, `mallctl`) is the same ABI. Lane P's recommendation for task 3 is (a), with `tests/c/jemalloc_link.c` compiled against the new header as its test.
+- Phase 3 task 5 (c): on x86_64 the server's final RSS is +9.8% against glibc
+  and +7.8% against jemalloc (under the threshold, not attributed as a gap):
+  62 MiB of it is challoc:huge, the freed 1 MiB Buffer backing stores retained
+  for reuse up to huge_retain_max (64 MiB default). If Node-shaped consumers
+  matter for RSS, a lower default or decay of retained huge blocks is lane B's
+  call (src/purge.rs, src/policy.rs); this lane changed nothing under src/.
+- Phase 3 task 5 (c): the Dockerfile.dev block adds nodejs-22 and apache2-utils
+  right after the python packages, marked `# Node.js rows (Phase 3 task 5c)`
+  in the comment below the apk list, and the RUN's final check line gains
+  `node --version && ab -V | head -1`; the JVM and PostgreSQL lanes' blocks
+  will need unioning there and in the Makefile's .PHONY line.
+- Phase 3 task 5 (c): json_churn's document is 180906 bytes (177 KiB), not the
+  plan's "about 100 KiB": the generator's 400 records came out at ~450 bytes
+  each and the size was only read from the results header after the runs. The
+  rows were measured at that size (recorded in both files' header line) and
+  the harness comments, README and Makefile help say so (63ebd0c). Shrinking
+  it to 100 KiB is a one-line change to bench/node/json_churn.js (200 records)
+  if the coordinator wants the plan's figure, followed by a re-run of that row.
