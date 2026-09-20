@@ -1,0 +1,2622 @@
+# make test on an Ampere Altra (T2A, Neoverse N1, the arm64 host without PAC), 2026-09-20, lane D, tree 0c60b1a (library b43532f's PAC gate in)
+# VM challoc-lane-d-matrix-cpu-t2a (t2a-standard-8, us-central1-a, 7.0.0-1011-gcp), a 'matrix lab cpu-t2a' cell; driven by lane D, deleted after this log was taken.
+# Part 1: make test as is (rc=2: the unit-test binary dies with SIGILL) and the feature report (tests/c/features.c under LD_PRELOAD).
+# Part 2: the single-threaded reruns naming the test: sys::pac::tests::sign_auth_round_trip SIGILLs; heap::linux_tests::heap_off_pac_executes_no_pac_instruction passes.
+# Part 3: make test with that one test skipped (--skip sys::pac::tests::sign_auth_round_trip) and the four cgroup/pagemap steps of the test target: 399 + 117 + 23 = 539/0, every OUTCOME ok.
+
+==================== Part 1: make test, as is
+== challoc-lane-d-matrix-cpu-t2a 7.0.0-1011-gcp aarch64 tree 0c60b1a
+== cpu: Neoverse-N1, 8 vCPU; 
+== hwcap: Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm lrcpc dcpop asimddp
+== start 2026-09-20T04:47:47Z
+docker build --platform linux/arm64 -f Dockerfile.dev -t challoc-dev:arm64 .
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  53.08MB
+Step 1/4 : FROM cgr.dev/chainguard/wolfi-base
+latest: Pulling from chainguard/wolfi-base
+405730c6bc6b: Pulling fs layer
+0f5c1acc319b: Pulling fs layer
+5d31da5b5595: Pulling fs layer
+af5eeeb42690: Pulling fs layer
+538c7e5ed418: Pulling fs layer
+f8b42eb065a4: Pulling fs layer
+35d410870310: Pulling fs layer
+0a153062968a: Pulling fs layer
+48e40e3adc96: Pulling fs layer
+ac5779d72c09: Pulling fs layer
+cb5586a85f19: Pulling fs layer
+f8b42eb065a4: Download complete
+35d410870310: Download complete
+af5eeeb42690: Download complete
+405730c6bc6b: Download complete
+cb5586a85f19: Download complete
+5d31da5b5595: Download complete
+0f5c1acc319b: Download complete
+ac5779d72c09: Download complete
+538c7e5ed418: Download complete
+0a153062968a: Download complete
+48e40e3adc96: Download complete
+538c7e5ed418: Pull complete
+48e40e3adc96: Pull complete
+f8b42eb065a4: Pull complete
+35d410870310: Pull complete
+5d31da5b5595: Pull complete
+0f5c1acc319b: Pull complete
+ac5779d72c09: Pull complete
+0a153062968a: Pull complete
+af5eeeb42690: Pull complete
+405730c6bc6b: Pull complete
+cb5586a85f19: Pull complete
+Digest: sha256:1d95114038f76513a9ace6fca107d5582b08c65981f81f61cb56bf7fd2ef216d
+Status: Downloaded newer image for cgr.dev/chainguard/wolfi-base:latest
+ ---> 1d95114038f7
+Step 2/4 : RUN sed -i       -e 's/^glibc=.*/glibc-2.44/'       -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/'       -e 's/^ld-linux=.*/ld-linux-2.44/'       -e 's/^libcrypt1=.*/libcrypt1-2.44/'       /etc/apk/world  && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44  && apk add --no-cache       rust       build-base       gcc       jemalloc       git       cmake       tcl       openssl-dev       procps       memtier-benchmark       posix-libc-utils-2.44       autoconf       ruby-3.4       jemalloc-dev       yaml-dev       zlib-dev       libffi-dev       tzdata       tcmalloc-minimal       python-3.13       py3.13-pip  && rustc --version && cargo --version && python3 --version  && test -f /usr/lib/libtcmalloc_minimal.so.4
+ ---> Running in 2440cabaafa1
+fetch https://apk.cgr.dev/chainguard/aarch64/APKINDEX.tar.gz
+OK: 14 MiB in 16 packages
+fetch https://apk.cgr.dev/chainguard/aarch64/APKINDEX.tar.gz
+(1/88) Installing libbz2-1 (1.0.8-r24)
+(2/88) Installing perl (5.44.0-r1)
+(3/88) Installing m4 (1.4.21-r8)
+(4/88) Installing autoconf (2.73-r0)
+(5/88) Installing libstdc++ (16.2.0-r1)
+(6/88) Installing libzstd1 (1.5.7-r10)
+(7/88) Installing binutils (2.47-r1)
+(8/88) Installing libxcrypt-dev (4.5.2-r5)
+(9/88) Installing linux-headers (7.2.6-r0)
+(10/88) Installing glibc-2.44-dev (2.44-r6)
+(11/88) Installing libquadmath (16.2.0-r1)
+(12/88) Installing libstdc++-dev (16.2.0-r1)
+(13/88) Installing openssf-compiler-options (20250904-r9)
+(14/88) Installing posix-cc-wrappers (2-r10)
+(15/88) Installing libatomic (16.2.0-r1)
+(16/88) Installing gmp (6.3.0-r10)
+(17/88) Installing libgomp (16.2.0-r1)
+(18/88) Installing isl (0.28-r3)
+(19/88) Installing mpfr (4.2.2-r3)
+(20/88) Installing mpc (1.4.1-r1)
+(21/88) Installing gcc (16.2.0-r1)
+(22/88) Installing make (4.4.1-r13)
+(23/88) Installing pkgconf (3.0.7-r0)
+(24/88) Installing build-base (1-r9)
+(25/88) Installing libacl1 (2.4.0-r3)
+(26/88) Installing libexpat1 (2.8.4-r0)
+(27/88) Installing liblz4-1 (1.10.0-r10)
+(28/88) Installing xz (5.8.4-r0)
+(29/88) Installing libarchive (3.8.9-r1)
+(30/88) Installing libbrotlicommon1 (1.2.0-r5)
+(31/88) Installing libbrotlidec1 (1.2.0-r5)
+(32/88) Installing krb5-conf (1.0-r9)
+(33/88) Installing libcom_err (1.47.4-r2)
+(34/88) Installing keyutils-libs (1.6.3-r40)
+(35/88) Installing libverto (0.3.2-r8)
+(36/88) Installing krb5-libs (1.22.2-r3)
+(37/88) Installing libunistring (1.4.2-r3)
+(38/88) Installing libidn2 (2.3.8-r9)
+(39/88) Installing gdbm (1.26-r6)
+(40/88) Installing ncurses-terminfo-base (6.6.20260919-r0)
+(41/88) Installing ncurses (6.6.20260919-r0)
+(42/88) Installing readline (8.3-r3)
+(43/88) Installing sqlite-libs (3.53.4-r2)
+(44/88) Installing heimdal-libs (7.8.0-r52)
+(45/88) Installing cyrus-sasl-heimdal-libs (2.1.28-r56)
+(46/88) Installing libldap-2.6 (2.6.14-r0)
+(47/88) Installing libnghttp2-14 (1.70.0-r3)
+(48/88) Installing nghttp3 (1.18.0-r1)
+(49/88) Installing ngtcp2 (1.25.0-r2)
+(50/88) Installing libpsl (0.23.3-r1)
+(51/88) Installing libcurl-openssl4 (8.22.0-r2)
+(52/88) Installing jsoncpp (1.9.8-r3)
+(53/88) Installing librhash0 (1.4.6-r6)
+(54/88) Installing libuv (1.52.1-r2)
+(55/88) Installing cmake (4.4.3-r1)
+(56/88) Installing libpcre2-8-0 (10.48-r0)
+(57/88) Installing git (2.55.0-r7)
+(58/88) Installing libjemalloc2 (5.3.1-r3)
+(59/88) Installing jemalloc (5.3.1-r3)
+(60/88) Installing jemalloc-dev (5.3.1-r3)
+(61/88) Installing libffi (3.8.0-r1)
+(62/88) Installing libffi-dev (3.8.0-r1)
+(63/88) Installing libevent (2.1.13-r1)
+(64/88) Installing memtier-benchmark (2.5.1-r1)
+(65/88) Installing openssl-dev (3.6.4-r7)
+(66/88) Installing bash (5.3-r13)
+(67/88) Installing posix-libc-utils-bin-2.44 (2.44-r6)
+(68/88) Installing posix-libc-utils-2.44 (2.44-r6)
+(69/88) Installing libproc-2-0 (4.0.7-r1)
+(70/88) Installing procps (4.0.7-r1)
+(71/88) Installing py3-pip-wheel (26.2.1-r1)
+(72/88) Installing mpdecimal (4.0.1-r4)
+(73/88) Installing libuuid (2.42.3-r4)
+(74/88) Installing python-3.13-base (3.13.15_git20260918-r1)
+(75/88) Installing py3.13-setuptools (84.0.0-r0)
+(76/88) Installing py3.13-pip-base (26.2.1-r1)
+(77/88) Installing py3.13-pip (26.2.1-r1)
+(78/88) Installing python-3.13 (3.13.15_git20260918-r1)
+(79/88) Installing yaml (0.2.5-r10)
+(80/88) Installing ruby-3.4 (3.4.10-r7)
+(81/88) Installing libxml2-16 (2.15.4-r0)
+(82/88) Installing libLLVM-22 (22.1.8-r4)
+(83/88) Installing rust-1.98 (1.98.1-r0)
+(84/88) Installing tcl (9.0.4-r1)
+(85/88) Installing tcmalloc-minimal (2.18.1-r5)
+(86/88) Installing tzdata (2026d-r0)
+(87/88) Installing yaml-dev (0.2.5-r10)
+(88/88) Installing zlib-dev (1.3.2.1_rc20260601-r0)
+Executing busybox-1.38.0-r2.trigger
+OK: 1517 MiB in 104 packages
+rustc 1.98.1 (48a229cea 2026-09-01)
+cargo 1.98.1 (797e8a9bc 2026-08-05)
+Python 3.13.15
+ ---> Removed intermediate container 2440cabaafa1
+ ---> 7e28b4937527
+Step 3/4 : WORKDIR /src
+ ---> Running in 21f32f3df3b2
+ ---> Removed intermediate container 21f32f3df3b2
+ ---> 78d1a859a60f
+Step 4/4 : CMD ["sh"]
+ ---> Running in 356857bfdb2b
+ ---> Removed intermediate container 356857bfdb2b
+ ---> 108b5df1e30f
+Successfully built 108b5df1e30f
+Successfully tagged challoc-dev:arm64
+docker run --rm --platform linux/arm64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-arm64:/src/target -v challoc-cargo-registry:/root/.cargo/registry     challoc-dev:arm64 sh -c 'cargo build --release \
+  && sh scripts/jemalloc-compat.sh \
+  && cargo test --features std -- --nocapture --skip api:: \
+  && cargo test --features std api:: -- --nocapture'
+    Updating crates.io index
+ Downloading crates ...
+  Downloaded libc v0.2.189
+   Compiling libc v0.2.189
+   Compiling challoc v0.1.0 (/src)
+    Finished `release` profile [optimized + debuginfo] target(s) in 14.86s
+   Compiling libc v0.2.189
+   Compiling challoc v0.1.0 (/src)
+    Finished `release` profile [optimized + debuginfo] target(s) in 14.22s
+jemalloc-compat: quantum16, version 5.3.0, prefix /src/target/jemalloc-compat/stage
+/src/target/jemalloc-compat/stage/lib:
+total 1176
+lrwxrwxrwx    1 root     root            16 Sep 20 04:50 libjemalloc.so -> libjemalloc.so.2
+-rwxr-xr-x    1 root     root       1196360 Sep 20 04:50 libjemalloc.so.2
+drwxr-xr-x    2 root     root          4096 Sep 20 04:50 pkgconfig
+
+/src/target/jemalloc-compat/stage/lib/pkgconfig:
+total 4
+-rw-r--r--    1 root     root           415 Sep 20 04:50 jemalloc.pc
+   Compiling libc v0.2.189
+   Compiling challoc v0.1.0 (/src)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 16.05s
+     Running unittests src/lib.rs (target/debug/deps/challoc-543929ce36c3f060)
+
+running 400 tests
+test bitmap::tests::a_release_outside_the_sub_word_view_aborts - should panic ... ok
+
+thread 'bitmap::tests::a_release_outside_the_sub_word_view_aborts' (467) panicked at src/bitmap.rs:174:9:
+bitmap: release outside the slab
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'bitmap::tests::a_cleared_padding_bit_aborts_the_allocated_count' (466) panicked at src/bitmap.rs:200:9:
+bitmap: a padding bit of the slab was cleared
+test bitmap::tests::a_cleared_padding_bit_aborts_the_allocated_count - should panic ... ok
+test arena::tests::flag_decoding_matches_jemalloc ... ok
+test bitmap::tests::release_reports_double_release ... ok
+test bitmap::tests::claim_from_wraps ... ok
+test bitmap::tests::claim_takes_lowest_bits_first_and_never_padding ... ok
+test bitmap::tests::sub_word_views_are_independent ... ok
+test bitmap::tests::two_level_basics ... ok
+test bitmap::tests::lowest_n_bits_keeps_the_lowest ... ok
+test bitmap::tests::init_sets_padding_only ... ok
+test bitmap::tests::words_needed_is_exact ... ok
+test bitmap::tests::two_level_tiny_universes ... ok
+
+thread 'class::tests::a_corrupt_owner_word_aborts_the_next_take_group' (483) panicked at src/class.rs:2470:5:
+heap inconsistency: class 3 group 1: owner word says arena 7, slab 1's descriptor says arena 0
+test class::tests::a_corrupt_owner_word_aborts_the_next_take_group - should panic ... ok
+test class::tests::a_group_is_idle_between_its_last_empty_and_its_next_take ... ok
+test class::tests::a_multi_slab_group_moves_whole_with_its_cursor ... ok
+
+thread 'class::tests::a_plan_over_a_slab_with_live_above_nslots_aborts' (495) panicked at src/class.rs:1836:9:
+class: slab live count above its slot count
+test class::tests::a_plan_over_a_slab_with_live_above_nslots_aborts - should panic ... ok
+
+thread 'class::tests::a_plan_that_takes_an_empty_slab_the_counts_do_not_know_aborts' (496) panicked at src/class.rs:2550:5:
+class: empty slab count underflow
+test class::tests::a_plan_that_takes_an_empty_slab_the_counts_do_not_know_aborts - should panic ... ok
+
+thread 'class::tests::a_purge_of_an_empty_slab_the_counts_do_not_know_aborts' (497) panicked at src/class.rs:2550:5:
+class: empty slab count underflow
+test class::tests::a_purge_of_an_empty_slab_the_counts_do_not_know_aborts - should panic ... ok
+test bitmap::tests::concurrent_claims_are_disjoint ... ok
+test class::tests::a_group_in_use_is_never_handed_over ... ok
+test class::tests::a_purged_group_is_handed_over_and_stays_zero ... ok
+test class::tests::an_idle_group_is_handed_up_to_a_higher_arena ... ok
+test class::tests::an_idle_group_is_handed_down_to_a_lower_arena ... ok
+test class::tests::a_zero_pick_never_receives_a_slot_another_claim_used_in_between ... ok
+test class::tests::bin_stats_counts_every_curregs_clamp ... ok
+
+thread 'class::tests::check_after_release_aborts' (504) panicked at src/class.rs:2516:5:
+invalid or double free of 0xffd616800000 (class 3 slab 0 slot 0): slot is not allocated
+test class::tests::bitmap_geometry_for_every_class ... ok
+
+thread 'class::tests::check_of_a_guard_slab_slot_aborts' (505) panicked at src/class.rs:2501:5:
+invalid free of 0xffd5e2410000 (class 3 slab 1): guard slab
+test class::tests::check_after_release_aborts - should panic ... ok
+test class::tests::check_of_a_guard_slab_slot_aborts - should panic ... ok
+
+thread 'class::tests::check_of_handed_out_uncommitted_slab_aborts' (506) panicked at src/class.rs:2516:5:
+invalid or double free of 0xffd65ac05000 (class 19 slab 5 slot 0): slot is not allocated
+
+thread 'class::tests::check_of_uncommitted_slab_aborts' (508) panicked at src/class.rs:2464:5:
+invalid free: class 3 slab 5 was never allocated
+test class::tests::check_of_handed_out_uncommitted_slab_aborts - should panic ... ok
+test class::tests::check_of_uncommitted_slab_aborts - should panic ... ok
+
+thread 'class::tests::check_of_unclaimed_slot_aborts' (507) panicked at src/class.rs:2516:5:
+invalid or double free of 0xffd616800080 (class 3 slab 0 slot 2): slot is not allocated
+
+thread 'class::tests::check_through_the_wrong_arena_aborts' (509) panicked at src/class.rs:2524:5:
+slot 0xffd64ac10000 (class 3) belongs to arena 1 but was released through arena 0
+test class::tests::check_of_unclaimed_slot_aborts - should panic ... ok
+
+thread 'class::tests::check_zero_aborts_on_a_dirty_purged_slab' (510) panicked at src/class.rs:2595:5:
+check_zero: slot 0xffd616800040 (class 3, size 64, slab 0, arena 0) was handed out as zero from a Purged slab but its word at offset 56 reads 0xdeadbeef (discard backend madvise loop, MADV_DONTNEED; descriptor at 0xffd69bffd480 now Active live 2 owner 0, 2 of 1024 bits set, pick of 2 slots)
+test class::tests::check_zero_passes_fresh_and_purged_slabs ... ok
+test class::tests::check_zero_aborts_on_a_dirty_purged_slab - should panic ... ok
+test class::tests::check_through_the_wrong_arena_aborts - should panic ... ok
+test class::tests::claim_spans_slabs_and_reports_shortfall_on_exhaustion ... ok
+test bitmap::tests::sub_word_matches_model ... ok
+test class::tests::decay_walks_at_once_after_the_period_shrinks ... ok
+test class::tests::double_release_aborts - should panic ... ok
+
+thread 'class::tests::double_release_aborts' (533) panicked at src/class.rs:2542:5:
+double free of 0xffd579c00000 (class 3 slab 0 slot 0)
+
+thread 'class::tests::duplicate_apart_in_one_slab_group_aborts' (534) panicked at src/class.rs:2542:5:
+double free of 0xffd579c01180 (class 3 slab 0 slot 70)
+test class::tests::concurrent_claims_are_disjoint ... ok
+
+thread 'class::tests::duplicate_in_one_batch_aborts' (535) panicked at src/class.rs:2542:5:
+double free of 0xffd64ac00040 (class 3 slab 0 slot 1)
+test class::tests::duplicate_apart_in_one_slab_group_aborts - should panic ... ok
+test class::tests::duplicate_in_one_batch_aborts - should panic ... ok
+test class::tests::filling_a_live_slab_leaves_a_stale_bit_until_the_next_plan ... ok
+test class::tests::first_claim_is_lowest_addresses_and_zero ... ok
+test class::tests::filling_a_slab_moves_on_and_release_reopens_it ... ok
+
+thread 'class::tests::guard_interval_must_be_a_power_of_two' (539) panicked at src/class.rs:723:9:
+class: guard interval 3 is not a power of two
+test class::tests::guard_interval_must_be_a_power_of_two - should panic ... ok
+test class::tests::guard_slab_test_is_the_page_group_modulo ... ok
+test class::tests::decay_purges_the_oldest_empty_slabs_along_the_curve ... ok
+test class::tests::guard_slabs_are_skipped ... ok
+test class::tests::metadata_exhaustion_is_reported_not_fatal ... ok
+test class::tests::page_groups_when_the_page_is_larger_than_the_slab ... ok
+test class::tests::guard_slab_faults_when_supported ... ok
+test class::tests::one_plan_spans_many_slabs_and_release_reopens_them_all ... ok
+test class::tests::purge_zeroes_memory_and_commit_is_visible ... ok
+test class::tests::concurrent_handoffs_keep_sets_and_descriptors_consistent ... ok
+test class::tests::release_all_makes_empty_then_reuse_then_purge ... ok
+
+thread 'class::tests::release_into_an_uncommitted_slab_of_the_group_aborts' (553) panicked at src/class.rs:2510:5:
+invalid free of 0xffd626801000 (class 19 slab 1): the slab has never been allocated from
+test class::tests::release_into_an_uncommitted_slab_of_the_group_aborts - should panic ... ok
+
+thread 'class::tests::release_of_interior_pointer_aborts' (554) panicked at src/class.rs:2536:5:
+invalid free of 0xffd616800001 (class 3): not a slot start
+test class::tests::release_of_interior_pointer_aborts - should panic ... ok
+
+thread 'class::tests::release_outside_region_aborts' (555) panicked at src/class.rs:2536:5:
+invalid free of 0xffd687c00000 (class 3): outside the class region
+test class::tests::release_outside_region_aborts - should panic ... ok
+test class::tests::release_takes_slab_groups_in_any_order ... ok
+
+thread 'class::tests::release_through_the_wrong_arena_aborts' (557) panicked at src/class.rs:2524:5:
+slot 0xffd616810000 (class 3) belongs to arena 1 but was released through arena 0
+test class::tests::release_through_the_wrong_arena_aborts - should panic ... ok
+test class::tests::set_scans_never_read_uncommitted_words ... ok
+test class::tests::set_table_of_many_classes_touches_one_page_per_slab_size ... ok
+test class::tests::purge_batches_a_whole_region ... ok
+test class::tests::two_arenas_share_one_region ... ok
+test class::tests::slabs_are_handed_out_in_line_sized_groups ... ok
+test config::linux_tests::env_var_is_read_from_environ ... ok
+test class::tests::works_for_every_class ... ok
+config: defaults (spin hint in use baseline)
+test config::linux_tests::load_with_a_clean_environment_gives_the_defaults ... ok
+test config::linux_tests::no_malloc_conf_symbol_in_the_test_binary ... ok
+config: spin_hint auto=baseline own wfe available=true event_stream=true
+test config::linux_tests::spin_hint_key_installs_where_available ... ok
+test config::tests::cache_caps_follow_the_ladder_and_the_overrides ... ok
+test config::tests::cap_for_is_the_one_rule ... ok
+test config::tests::compatibility_keys_are_accepted_with_any_value ... ok
+test config::tests::defaults_match_the_design_table ... ok
+test config::linux_tests::first_line_of_a_file ... ok
+test config::tests::empty_and_separator_only_input_changes_nothing ... ok
+test config::tests::every_bool_key_parses_true_and_false ... ok
+test config::tests::every_numeric_key_parses_and_clamps ... ok
+test config::tests::get_covers_every_key_and_only_those ... ok
+test config::tests::guards_off_zeroes_the_interval ... ok
+test config::tests::huge_retain_max_is_a_byte_count ... ok
+test config::tests::inert_keys_are_stored_reported_and_rejected_under_abort_conf ... ok
+test config::tests::integers_accept_hex_octal_and_signs ... ok
+test config::tests::issue_display_is_printable_and_bounded ... ok
+test config::tests::malformed_pairs_are_reported_and_the_rest_still_applies ... ok
+test config::tests::narenas_default_resolves_from_the_cpu_count ... ok
+test config::tests::quoted_values_and_the_last_pair_win ... ok
+test config::tests::percpu_arena_values ... ok
+test config::tests::redis_and_valkey_conf_strings_parse_clean ... ok
+test config::tests::slice_ext_values ... ok
+test config::tests::thp_values ... ok
+test config::tests::unknown_keys_are_reported_and_skipped ... pac: off on this host, skipping
+ok
+test heap::linux_tests::cache_entries_and_the_tls_heap_pointer_are_signed ... ok
+test heap::linux_tests::corrupted_cache_entry_or_heap_pointer_faults ... ok
+test heap::linux_tests::creating_and_exited_sentinels_are_served_directly ... ok
+pac: off on this host, skipping
+test heap::linux_tests::calloc_flag_is_honest_about_memory ... ok
+test heap::linux_tests::heap_is_created_on_first_use_through_tls ... ok
+pac: forced_off=true available=false on=false: no unexpected PAC instruction
+pac: forced_off=false available=false on=false: no unexpected PAC instruction
+test heap::linux_tests::heap_off_pac_executes_no_pac_instruction ... ok
+pac: available=false on=false fpac=false
+test heap::linux_tests::pac_flag_follows_the_probe_and_the_key ... ok
+test bitmap::tests::chunked_views_interleave_and_match_model ... ok
+test heap::linux_tests::percpu_caches_serve_plain_allocations ... ok
+test heap::linux_tests::percpu_heaps_off_the_mode_take_the_thread_paths ... ok
+percpu: probe usable (size 33, offset 320), state on, ids 8
+test heap::linux_tests::percpu_flush_releases_the_high_half_and_drain_empties ... ok
+test heap::linux_tests::percpu_mode_follows_the_probe_and_the_key ... ok
+test heap::linux_tests::percpu_scheduled_pops_come_from_a_run_claimed_a_block_at_a_time ... ok
+test class::tests::randomised_model_check ... ok
+percpu: 16 threads, 5 headers installed, 3072 slots cached at the end, 5 sections aborted and retried
+test heap::linux_tests::percpu_threads_conserve_slots_under_migration ... ok
+test heap::linux_tests::thread_exit_flushes_and_frees_the_heap ... ok
+
+thread 'heap::tests::a_cached_pair_kept_by_the_split_is_caught_when_released' (658) panicked at src/class.rs:2542:5:
+double free of 0xffd057c20000 (class 3 slab 2 slot 0)
+test heap::tests::a_cached_pair_kept_by_the_split_is_caught_when_released ... ok
+test heap::linux_tests::producer_consumer_across_threads_with_patterns ... ok
+test heap::tests::a_refill_of_a_cache_that_is_not_empty_aborts - should panic ... ok
+
+thread 'heap::tests::a_refill_of_a_cache_that_is_not_empty_aborts' (660) panicked at src/heap.rs:2559:13:
+assertion `left == right` failed: heap: refill of a cache that is not empty
+  left: 511
+ right: 0
+test heap::tests::a_scheduled_pop_aborts_when_the_run_reaches_past_the_length - should panic ... ok
+
+thread 'heap::tests::a_scheduled_pop_aborts_when_the_run_reaches_past_the_length' (661) panicked at src/heap.rs:1993:13:
+heap: cache run invariant violated (run_end > low_water or low_water > len)
+test heap::tests::a_scheduled_pop_whose_gc_empties_the_cache_refills_instead_of_wrapping ... ok
+test heap::tests::allocations_are_address_ordered_and_lifo_after_free ... ok
+test heap::tests::an_others_node_for_the_home_arena_aborts - should panic ... ok
+
+thread 'heap::tests::an_others_node_for_the_home_arena_aborts' (664) panicked at src/heap.rs:2453:9:
+assertion `left != right` failed: heap: others node requested for the home arena
+  left: 0
+ right: 0
+test heap::tests::arena_registry_creates_and_looks_up ... ok
+test heap::tests::automatic_arenas_are_assigned_least_loaded_and_built_lazily ... ok
+
+thread 'heap::tests::cached_double_free_aborts_at_the_flush' (667) panicked at src/class.rs:2542:5:
+double free of 0xffce7d800000 (class 3 slab 0 slot 0)
+test heap::tests::cached_double_free_aborts_at_the_flush - should panic ... ok
+test heap::tests::caches_are_keyed_by_arena ... ok
+test heap::tests::cgroup_policy_drives_gc_interval_and_decay_period ... ok
+test class::tests::purge_never_races_a_claim ... ok
+test heap::tests::compaction_off_keeps_the_lifo_reuse_in_place ... ok
+test heap::tests::cross_thread_frees_land_in_the_freeing_heap ... ok
+test heap::tests::default_caps_follow_the_design_table ... ok
+test heap::tests::default_narenas_is_resolved_at_init ... ok
+test heap::linux_tests::eight_threads_hammer_disjoint_pointers ... ok
+test heap::tests::direct_paths_bypass_the_cache ... ok
+
+thread 'heap::tests::double_free_scan_compares_the_top_four_entries' (677) panicked at src/heap.rs:3812:5:
+double free of 0xffcc77400000: the slot is already in the thread cache
+
+thread 'heap::tests::double_free_scan_compares_the_top_four_entries' (677) panicked at src/heap.rs:3812:5:
+double free of 0xffcc77400000: the slot is already in the thread cache
+
+thread 'heap::tests::double_free_scan_compares_the_top_four_entries' (677) panicked at src/heap.rs:3812:5:
+double free of 0xffcc77400000: the slot is already in the thread cache
+
+thread 'heap::tests::double_free_scan_compares_the_top_four_entries' (677) panicked at src/heap.rs:3812:5:
+double free of 0xffcc77400000: the slot is already in the thread cache
+
+thread 'heap::tests::double_free_scan_compares_the_top_four_entries' (677) panicked at src/class.rs:2542:5:
+double free of 0xffcc77400000 (class 3 slab 0 slot 0)
+test heap::tests::double_free_scan_compares_the_top_four_entries ... ok
+test heap::tests::double_free_scan_off_by_default_leaves_the_push_alone ... ok
+test heap::tests::dropping_the_home_caches_keeps_the_thread_counters ... ok
+test heap::tests::explicit_arena_keeps_a_shared_class_in_its_arena ... ok
+test heap::tests::explicit_caches_create_flush_destroy ... ok
+test heap::tests::flag_sort_permutes_into_ascending_buckets ... ok
+
+thread 'heap::tests::flush_aborts_on_a_cached_pair_straddling_the_split' (683) panicked at src/heap.rs:3898:5:
+double free of 0xffcb59020000 (class 3): both copies cached, one at the flush boundary
+test heap::tests::flush_aborts_on_a_cached_pair_straddling_the_split ... ok
+test heap::tests::direct_claims_do_not_block_compaction_but_cache_refills_do ... ok
+test heap::tests::flush_drops_the_zeroed_prefix ... ok
+
+thread 'heap::tests::free_into_an_uncommitted_slab_aborts' (686) panicked at src/class.rs:2464:5:
+invalid free: class 3 slab 5 was never allocated
+test heap::tests::free_into_an_uncommitted_slab_aborts - should panic ... ok
+
+thread 'heap::tests::free_of_a_misaligned_pointer_aborts' (687) panicked at src/heap.rs:3787:5:
+invalid free of 0xffca74000008: not an allocation
+test heap::tests::free_of_a_misaligned_pointer_aborts - should panic ... ok
+
+thread 'heap::tests::free_of_a_never_allocated_slot_aborts' (688) panicked at src/class.rs:2516:5:
+invalid or double free of 0xffca37c02c80 (class 0 slab 0 slot 712): slot is not allocated
+test heap::tests::free_of_a_never_allocated_slot_aborts - should panic ... ok
+
+thread 'heap::tests::free_of_a_pointer_outside_every_region_aborts' (689) panicked at src/heap.rs:3787:5:
+invalid free of 0xffd6a1ecdf30: not an allocation
+test heap::tests::free_of_a_pointer_outside_every_region_aborts - should panic ... ok
+
+thread 'heap::tests::free_of_an_unallocated_huge_pointer_aborts' (690) panicked at src/huge.rs:1347:5:
+invalid free of 0xffc9c0400000: not the start of a huge allocation
+test heap::tests::flush_releases_the_highest_addresses_and_keeps_the_lowest ... ok
+test heap::tests::free_of_an_unallocated_huge_pointer_aborts - should panic ... ok
+
+thread 'heap::tests::freeing_caches_that_were_not_flushed_aborts' (691) panicked at src/heap.rs:1573:17:
+assertion `left == right` failed: heap: freeing a cache that was not flushed
+  left: 511
+ right: 0
+test heap::tests::freeing_caches_that_were_not_flushed_aborts - should panic ... ok
+test heap::tests::gc_releases_unused_entries_by_low_water ... percpu: 847360 operations under 23252 signals, 266 sections aborted and retried
+ok
+test heap::tests::group_by_slab_groups_a_scrambled_batch ... ok
+test heap::linux_tests::percpu_sections_abort_and_retry_under_signals ... ok
+test heap::tests::group_by_slab_single_slab_and_wide_span ... ok
+test heap::tests::churn_model_empties_the_high_slabs_and_then_stops_compacting ... ok
+test heap::tests::guard_test_agrees_with_the_tables ... ok
+test heap::tests::full_cache_flushes_the_highest_half_sorted_and_slabs_empty ... ok
+test heap::tests::heap_starts_with_the_sentinel_and_allocates_caches_lazily ... ok
+test heap::tests::huge_runs_go_through_the_heap_without_caches ... ok
+test heap::tests::heap_churn_reuses_the_vacated_arena ... ok
+test heap::tests::huge_retain_max_key_reaches_the_huge_allocator ... ok
+test heap::tests::push_flags_encode_zero_on_free_and_double_free_scan ... ok
+test heap::tests::periodic_work_runs_gc_on_the_interval ... ok
+test heap::tests::set_arena_swaps_cache_arrays ... ok
+
+thread 'heap::tests::sized_free_past_the_watermark_aborts_at_the_flush' (707) panicked at src/class.rs:2464:5:
+invalid free: class 3 slab 2 was never allocated
+test heap::tests::sized_free_past_the_watermark_aborts_at_the_flush - should panic ... ok
+test heap::tests::sized_slot_rejects_guard_slabs ... ok
+test heap::tests::a_dense_class_is_probed_but_never_compacted ... ok
+test heap::tests::slot_randomize_seeds_the_heap_lazily ... ok
+test heap::tests::slot_randomize_shuffles_the_batch_and_keeps_the_slot_set ... ok
+
+thread 'heap::tests::stale_double_free_aborts_at_the_check' (712) panicked at src/class.rs:2516:5:
+invalid or double free of 0xffc2d9800000 (class 3 slab 0 slot 0): slot is not allocated
+test heap::tests::stale_double_free_aborts_at_the_check - should panic ... ok
+test heap::tests::randomised_model_check ... ok
+test heap::tests::zero_on_free_clears_the_slot_on_the_plain_sized_and_direct_paths ... ok
+test heap::tests::zeroed_prefix_tracks_fresh_memory ... ok
+test huge::linux_tests::aligned_runs_are_usable_end_to_end ... ok
+test heap::tests::random_walk_churn_model_compacts_too ... ok
+
+thread 'huge::linux_tests::check_zero_aborts_on_a_dirty_purged_run' (718) panicked at src/huge.rs:1361:5:
+check_zero: huge run 0xffc1e3000000 (3 pages from page 0, arena 0) was handed out as zero from Purged pages but the word at 0xffc1e3002ff8 reads 0xdeadbeef (discard backend madvise loop, MADV_DONTNEED)
+test huge::linux_tests::check_zero_aborts_on_a_dirty_purged_run - should panic ... ok
+test huge::linux_tests::check_zero_passes_fresh_and_purged_runs ... ok
+test huge::linux_tests::alignment_holes_are_committed_and_writable ... ok
+test huge::linux_tests::guard_page_faults ... ok
+test huge::linux_tests::memory_is_writable_and_the_zero_flag_is_honest ... ok
+test huge::linux_tests::stale_guards_inside_a_reused_extent_are_writable_and_purgeable ... ok
+test huge::tests::a_run_can_grow_past_the_mark_from_a_trailing_extent ... ok
+
+thread 'huge::tests::a_run_state_byte_no_state_has_aborts' (735) panicked at src/huge.rs:227:5:
+huge: run state byte 0x3 is not a run state
+test huge::tests::a_run_state_byte_no_state_has_aborts - should panic ... ok
+test huge::tests::alignment_at_the_mark_leaves_a_clean_hole ... ok
+test huge::tests::alignment_over_allocates_and_frees_head_and_tail ... ok
+test huge::tests::concurrent_runs_are_disjoint ... ok
+test huge::tests::decay_purges_the_oldest_extents_along_the_curve ... ok
+test huge::tests::decay_with_a_keep_ratio_purges_coalesced_extents ... ok
+
+thread 'huge::tests::double_free_aborts' (750) panicked at src/huge.rs:1353:5:
+double free of 0xffc1e8400000: huge allocation already freed
+test huge::tests::desc_layout_fits_a_small_bin ... ok
+test huge::tests::double_free_aborts - should panic ... ok
+test huge::linux_tests::concurrent_threads_see_their_own_patterns ... ok
+test huge::tests::first_run_is_at_the_base_and_zero ... ok
+test huge::tests::free_and_reuse_prefers_the_lowest_address ... ok
+test heap::tests::zero_on_free_clears_a_huge_run ... ok
+
+thread 'huge::tests::free_beyond_the_mark_aborts' (754) panicked at src/huge.rs:1347:5:
+invalid free of 0xffc1e4064000: not the start of a huge allocation
+
+thread 'huge::tests::free_of_a_free_extents_last_page_aborts' (755) panicked at src/huge.rs:1353:5:
+double free of 0xffc1a2804000: huge allocation already freed
+test huge::tests::free_beyond_the_mark_aborts - should panic ... ok
+test huge::tests::free_of_a_free_extents_last_page_aborts - should panic ... ok
+
+thread 'huge::tests::free_of_an_interior_page_aborts' (757) panicked at src/huge.rs:1347:5:
+invalid free of 0xffc1e4001000: not the start of a huge allocation
+
+thread 'huge::tests::free_of_a_guard_page_aborts' (756) panicked at src/huge.rs:1347:5:
+invalid free of 0xffc1a2804000: not the start of a huge allocation
+test huge::tests::free_of_an_interior_page_aborts - should panic ... ok
+test huge::tests::free_of_a_guard_page_aborts - should panic ... ok
+
+thread 'huge::tests::huge_stats_abort_on_a_free_count_going_below_zero' (758) panicked at src/huge.rs:233:5:
+huge: Empty extent count underflow
+test huge::tests::huge_stats_abort_on_a_free_count_going_below_zero - should panic ... ok
+test huge::tests::neighbours_coalesce_and_keep_the_oldest_dirty_time ... ok
+test heap::tests::slot_randomize_keeps_the_compacting_run_valid ... ok
+test huge::tests::purged_and_empty_merge_to_empty ... ok
+test huge::tests::exhaustion_returns_null_and_recovers ... ok
+test huge::tests::run_state_round_trips_and_rejects_other_bytes ... ok
+test huge::tests::table_grows_and_lookups_survive_backward_shift ... ok
+
+thread 'huge::tests::the_table_aborts_when_its_count_disagrees_with_its_entries' (766) panicked at src/huge.rs:354:66:
+huge: descriptor table count underflow
+test huge::tests::the_table_aborts_when_its_count_disagrees_with_its_entries - should panic ... ok
+test huge::tests::the_table_rejects_a_duplicate_key - should panic ... ok
+
+thread 'huge::tests::the_table_rejects_a_duplicate_key' (767) panicked at src/huge.rs:326:13:
+huge: key inserted twice
+
+thread 'huge::tests::usable_size_of_a_bad_pointer_aborts' (768) panicked at src/huge.rs:1347:5:
+invalid free of 0xffc19a002000: not the start of a huge allocation
+layout: lg_region=38 lg_stride=40 huge=2^40 meta=2^36 superblock=0xcbc19e000000
+test huge::tests::usable_size_of_a_bad_pointer_aborts - should panic ... ok
+test layout::linux_tests::reserve_lays_out_regions_and_commits_a_slab ... ok
+test layout::linux_tests::reserve_randomises_class_offsets_and_order ... ok
+seal: mseal unavailable here (kernel < 6.10 or seccomp), skipped
+test layout::linux_tests::seal_locks_the_gaps_and_leaves_the_regions_usable ... ok
+test layout::tests::apply_page_geometry_writes_only_the_raised_classes ... ok
+test layout::tests::class_count_matches_quantum ... ok
+test layout::tests::class_sizes_follow_the_design ... ok
+test layout::tests::classes_do_not_overlap_each_other_or_huge ... ok
+test huge::tests::purge_respects_the_cutoff_in_fifo_order ... ok
+test bitmap::tests::two_level_matches_model ... ok
+test layout::tests::from_parts_layout_invariants ... ok
+test layout::tests::huge_and_meta_classification ... ok
+test layout::tests::minimal_stride_layout_still_classifies ... ok
+test layout::tests::misaligned_and_out_of_region_pointers_are_invalid ... ok
+test layout::tests::never_committed_is_the_complement_of_the_regions ... ok
+test layout::tests::page_sized_geometry_for_large_pages ... ok
+test layout::tests::slab_geometry ... ok
+test layout::tests::slot_arithmetic_round_trips_for_every_slot ... ok
+test layout::tests::small_slab_classes_are_the_pinned_range ... ok
+test lock::tests::a_parked_waiter_is_released ... ok
+test lock::tests::contended_counter_is_exact ... ok
+test heap::tests::scheduled_pops_take_the_run_minimum_and_rebuild_from_the_lowest_slab ... ok
+test lock::tests::guard_releases_on_drop ... ok
+test lock::tests::raw_lock_state_machine ... ok
+test lock::tests::sleepers_are_woken ... ok
+test lock::tests::spin_hint_availability_follows_the_architecture ... ok
+test lock::tests::every_hint_wakes_under_contention ... ok
+
+thread 'meta::tests::a_double_free_of_the_list_head_aborts' (834) panicked at src/meta.rs:281:9:
+meta: double free of the free list head
+test meta::tests::a_double_free_of_the_list_head_aborts - should panic ... ok
+test meta::tests::a_free_below_the_list_head_is_accepted ... ok
+test meta::tests::alignment_is_honoured ... ok
+test meta::tests::bin_for_promotes_on_alignment ... ok
+test layout::tests::every_request_maps_to_the_tightest_class ... ok
+test meta::tests::bins_are_well_formed ... ok
+
+thread 'meta::tests::commit_outside_reservations_aborts' (848) panicked at src/meta.rs:310:9:
+meta: commit outside the reserved area
+test meta::tests::commit_outside_reservations_aborts - should panic ... ok
+test meta::tests::empty_then_init ... ok
+test meta::tests::exhaustion_returns_null_and_recovers ... ok
+test meta::tests::first_objects_come_from_zero_committed_memory ... ok
+
+thread 'meta::tests::free_beyond_bump_aborts' (852) panicked at src/meta.rs:273:9:
+meta: free of a pointer that was never allocated here
+test meta::tests::free_beyond_bump_aborts - should panic ... ok
+test meta::tests::free_list_is_lifo_and_per_bin ... ok
+
+thread 'meta::tests::free_of_foreign_pointer_aborts' (854) panicked at src/meta.rs:273:9:
+meta: free of a pointer that was never allocated here
+test meta::tests::free_of_foreign_pointer_aborts - should panic ... ok
+
+thread 'meta::tests::free_of_misaligned_pointer_aborts' (855) panicked at src/meta.rs:273:9:
+meta: free of a pointer that was never allocated here
+test meta::tests::free_of_misaligned_pointer_aborts - should panic ... ok
+test meta::tests::fresh_region_stats ... ok
+test meta::tests::maps_show_commits ... ok
+lock: spin_hint=baseline uncontended 72.0 ns/pair, contended 155.5 ns/acquire (8 threads x 100000), in use: baseline
+
+thread 'meta::tests::overaligned_object_aborts' (859) panicked at src/meta.rs:368:9:
+meta: alignment too large for an object
+test meta::tests::bin_of_matches_linear_scan ... ok
+test meta::tests::overaligned_object_aborts - should panic ... ok
+test meta::tests::oversized_object_aborts - should panic ... ok
+test meta::tests::reservations_come_from_the_top ... ok
+test meta::tests::reserve_too_large_fails_cleanly ... ok
+
+thread 'meta::tests::oversized_object_aborts' (860) panicked at src/meta.rs:369:48:
+meta: object too large
+test huge::tests::metadata_exhaustion_is_reported_not_fatal ... ok
+test model::tests::lowest_n_clear_takes_the_lowest_clear_bits ... ok
+test model::tests::the_cid_read_before_the_section_is_the_same_bug ... ok
+model: per-CPU: three threads on two cids under Variant { prefix_claim: true, owner_check: true, section: CidOutside, strict_cid: true }: 35 states in 0.00 s, VIOLATION: cache 0 was mutated by thread 1's section after the thread lost cid 0 (the index came from a stale mm_cid read)
+   0. T0 Pop[0]: pop: mm_cid = 0, cache 0 (read before the section)
+   1. T0 Pop[1]: pop: cache 0 empty, leave the section, refill from arena 0
+   2. T0 Pop[10]: lock arena 0
+   3. T0 Pop[11]: plan: next_slab: commit fresh slab 0 of arena 0's group; take slab 0 (Fresh, live 0 -> 2, n 2, zero pick), prefix 0b0011 claimed under the lock;
+   4. T0 Pop[12]: unlock
+   5. T0 Pop[13]: finish: zero pick, slots 0..2 of slab 0 handed out
+   6. T0 Pop[20]: refill push-back: mm_cid = 0, cache 0 (read before the section)
+   7. T0 Pop[21]: refill push-back: cache 0 len 0 (speculative)
+   8. T0 Pop[22]: refill push-back: commit slab 0 slot 0 owned, 1 into cache 0 (len 0 -> 1, zeroed 1)
+   9. T0 Write(0)[0]: write slot 0 of slab 0
+  10. T0 Push(0)[0]: push: mm_cid = 0, cache 0 (read before the section)
+  11. T0 Push(0)[1]: push: cache 0 len 1 (speculative)
+  12. T0 Push(0)[2]: push: commit slots[1] = slab 0 slot 0 on cache 0 (len 1 -> 2)
+  13. T1 Pop[0]: pop: mm_cid = 0, cache 0 (read before the section)
+  14. T1 Pop[1]: pop: cache 0 len 2, top slab 0 slot 0 (speculative)
+  15. T2 Pop[0]: pop: mm_cid = 0, cache 0 (read before the section); T1 was descheduled inside its section on cid 0: rseq abort, retry at [1]
+  16. T1 Pop[1]: pop: cache 0 len 2, top slab 0 slot 0 (speculative)
+  17. T1 Pop[2]: pop: commit len 2 -> 1 on cache 0, slab 0 slot 0 owned; STALE: the thread lost this cid before the commit
+
+test meta::tests::threads_get_disjoint_objects ... ok
+model: calloc race (Fresh, then Purged) under Variant { prefix_claim: true, owner_check: true, section: Rseq, strict_cid: true }: 943 states in 0.03 s, no violation
+test model::tests::the_current_order_passes_the_calloc_race_scenario ... ok
+test meta::tests::matches_model ... ok
+lock: spin_hint=wfe uncontended 59.7 ns/pair, contended 192.8 ns/acquire (8 threads x 100000), in use: baseline
+test lock::tests::spin_hint_costs ... ok
+model: group handoff under Variant { prefix_claim: true, owner_check: false, section: Rseq, strict_cid: true }: 561 states in 0.03 s, VIOLATION: slab 0 is in more than one set
+   0. T0 Refill(1)[0]: lock arena 0
+   1. T0 Refill(1)[1]: plan: next_slab: commit fresh slab 0 of arena 0's group; take slab 0 (Fresh, live 0 -> 1, n 1, zero pick), prefix 0b0001 claimed under the lock;
+   2. T0 Refill(1)[2]: unlock
+   3. T0 Refill(1)[3]: finish: zero pick, slots 0..1 of slab 0 handed out
+   4. T0 Release[0]: release: slabs 0b01
+   5. T0 Release[1]: release: fetch_and !0b0001 on slab 0 of arena 0 (bits 0b0001 -> 0b0000)
+   6. T0 Release[2]: release: sub_live(1) on slab 0 (1 -> 0), reached zero
+   7. T1 Refill(1)[0]: lock arena 0
+   8. T1 Refill(1)[1]: plan: take slab 0 (Active, live 0 -> 1, n 1);
+   9. T1 Refill(1)[2]: unlock
+  10. T0 Release[3]: on_live_zero: lock arena 0
+  11. T1 Refill(1)[3]: finish: fetch_or 0b0001 on slab 0 (bits 0b0000 -> 0b0001)
+  12. T1 Release[0]: release: slabs 0b01
+  13. T1 Release[1]: release: fetch_and !0b0001 on slab 0 of arena 0 (bits 0b0001 -> 0b0000)
+  14. T1 Release[2]: release: sub_live(1) on slab 0 (1 -> 0), reached zero
+  15. T0 Release[4]: on_live_zero: slab 0 -> Empty, into arena 0's empty set; unlock
+  16. T0 Release[6]: release: batch done
+  17. T2 Refill(1)[0]: lock arena 1
+  18. T2 Refill(1)[1]: plan: adopt: group 0 from arena 0: slab 0 (Empty); next_slab: Empty slab 0 out of the empty set; take slab 0 (Empty, live 0 -> 1, n 1);
+  19. T1 Release[3]: on_live_zero: lock arena 0
+  20. T2 Refill(1)[2]: unlock
+  21. T2 Refill(1)[3]: finish: fetch_or 0b0001 on slab 0 (bits 0b0000 -> 0b0001)
+  22. T2 Release[0]: release: slabs 0b01
+  23. T2 Release[1]: release: fetch_and !0b0001 on slab 0 of arena 1 (bits 0b0001 -> 0b0000)
+  24. T2 Release[2]: release: sub_live(1) on slab 0 (1 -> 0), reached zero
+  25. T1 Release[4]: on_live_zero: slab 0 -> Empty, into arena 0's empty set; unlock
+
+test model::tests::the_handoff_without_the_owner_check_puts_a_foreign_slab_in_an_arenas_sets ... ok
+model: calloc race (Fresh, then Purged) under Variant { prefix_claim: false, owner_check: true, section: Rseq, strict_cid: true }: 58 states in 0.00 s, VIOLATION: thread 0 holds slot 0 of slab 0 reported zero, and its memory is dirty (the calloc race)
+   0. T0 Refill(1)[0]: lock arena 0
+   1. T0 Refill(1)[1]: plan: next_slab: commit fresh slab 0 of arena 0's group; take slab 0 (Fresh, live 0 -> 1, n 1, zero pick);
+   2. T0 Refill(1)[2]: unlock
+   3. T0 Refill(1)[3]: finish: fetch_or 0b0001 on slab 0 (bits 0b0000 -> 0b0001), pick flagged zero
+   4. T0 Release[0]: release: slabs 0b01
+   5. T0 Release[1]: release: fetch_and !0b0001 on slab 0 of arena 0 (bits 0b0001 -> 0b0000)
+   6. T0 Release[2]: release: sub_live(1) on slab 0 (1 -> 0), reached zero
+   7. T0 Release[3]: on_live_zero: lock arena 0
+   8. T0 Release[4]: on_live_zero: slab 0 -> Empty, into arena 0's empty set; unlock
+   9. T0 Release[6]: release: batch done
+  10. T0 Purge[0]: purge: lock arena 0
+  11. T0 Purge[1]: purge: slab 0 -> Purged, memory zero; unlock
+  12. T0 Refill(1)[0]: lock arena 0
+  13. T0 Refill(1)[1]: plan: next_slab: Purged slab 0 out of the purged set; take slab 0 (Purged, live 0 -> 1, n 1, zero pick);
+  14. T0 Refill(1)[2]: unlock
+  15. T1 Refill(1)[0]: lock arena 0
+  16. T1 Refill(1)[1]: plan: take slab 0 (Active, live 1 -> 2, n 1);
+  17. T1 Refill(1)[2]: unlock
+  18. T1 Refill(1)[3]: finish: fetch_or 0b0001 on slab 0 (bits 0b0000 -> 0b0001)
+  19. T1 Write(0)[0]: write slot 0 of slab 0
+  20. T1 Release[0]: release: slabs 0b01
+  21. T1 Release[1]: release: fetch_and !0b0001 on slab 0 of arena 0 (bits 0b0001 -> 0b0000)
+  22. T0 Refill(1)[3]: finish: fetch_or 0b0001 on slab 0 (bits 0b0000 -> 0b0001), pick flagged zero
+
+test model::tests::the_pre_fix_order_has_the_calloc_race_and_the_model_prints_it ... ok
+model: calloc race on a Purged slab under Variant { prefix_claim: false, owner_check: true, section: Rseq, strict_cid: true }: 41 states in 0.00 s, VIOLATION: thread 0 holds slot 0 of slab 0 reported zero, and its memory is dirty (the calloc race)
+   0. T0 Refill(1)[0]: lock arena 0
+   1. T0 Refill(1)[1]: plan: next_slab: commit fresh slab 0 of arena 0's group; take slab 0 (Fresh, live 0 -> 1, n 1, zero pick);
+   2. T0 Refill(1)[2]: unlock
+   3. T0 Refill(1)[3]: finish: fetch_or 0b0001 on slab 0 (bits 0b0000 -> 0b0001), pick flagged zero
+   4. T0 Write(0)[0]: write slot 0 of slab 0
+   5. T0 Release[0]: release: slabs 0b01
+   6. T0 Release[1]: release: fetch_and !0b0001 on slab 0 of arena 0 (bits 0b0001 -> 0b0000)
+   7. T0 Release[2]: release: sub_live(1) on slab 0 (1 -> 0), reached zero
+   8. T0 Release[3]: on_live_zero: lock arena 0
+   9. T0 Release[4]: on_live_zero: slab 0 -> Empty, into arena 0's empty set; unlock
+  10. T0 Release[6]: release: batch done
+  11. T0 Purge[0]: purge: lock arena 0
+  12. T0 Purge[1]: purge: slab 0 -> Purged, memory zero; unlock
+  13. T0 Refill(1)[0]: lock arena 0
+  14. T0 Refill(1)[1]: plan: next_slab: Purged slab 0 out of the purged set; take slab 0 (Purged, live 0 -> 1, n 1, zero pick);
+  15. T0 Refill(1)[2]: unlock
+  16. T1 Refill(1)[0]: lock arena 0
+  17. T1 Refill(1)[1]: plan: take slab 0 (Active, live 1 -> 2, n 1);
+  18. T1 Refill(1)[2]: unlock
+  19. T1 Refill(1)[3]: finish: fetch_or 0b0001 on slab 0 (bits 0b0000 -> 0b0001)
+  20. T1 Write(0)[0]: write slot 0 of slab 0
+  21. T1 Release[0]: release: slabs 0b01
+  22. T1 Release[1]: release: fetch_and !0b0001 on slab 0 of arena 0 (bits 0b0001 -> 0b0000)
+  23. T0 Refill(1)[3]: finish: fetch_or 0b0001 on slab 0 (bits 0b0000 -> 0b0001), pick flagged zero
+
+model: calloc race on a Purged slab under Variant { prefix_claim: true, owner_check: true, section: Rseq, strict_cid: true }: 435 states in 0.01 s, no violation
+test model::tests::the_pre_fix_order_has_the_race_on_a_purged_slab_too ... ok
+test model::tests::the_current_order_passes_the_handoff_scenario ... ok
+model: group handoff under Variant { prefix_claim: true, owner_check: true, section: Rseq, strict_cid: true }: 4271 states in 0.27 s, no violation
+test model::tests::the_current_order_passes_the_churn_scenario ... ok
+model: churn over two slabs under Variant { prefix_claim: true, owner_check: true, section: Rseq, strict_cid: true }: 8427 states in 0.34 s, no violation
+test huge::tests::randomised_model_check ... ok
+model: per-CPU: three threads on two cids under Variant { prefix_claim: true, owner_check: true, section: None, strict_cid: false }: 39 states in 0.00 s, VIOLATION: slot 0 of slab 0 is held by thread 1 and thread 2 at once
+   0. T0 Pop[0]: pop: mm_cid = 0, cache 0 (no section)
+   1. T0 Pop[1]: pop: cache 0 empty, leave the section, refill from arena 0
+   2. T0 Pop[10]: lock arena 0
+   3. T0 Pop[11]: plan: next_slab: commit fresh slab 0 of arena 0's group; take slab 0 (Fresh, live 0 -> 2, n 2, zero pick), prefix 0b0011 claimed under the lock;
+   4. T0 Pop[12]: unlock
+   5. T0 Pop[13]: finish: zero pick, slots 0..2 of slab 0 handed out
+   6. T0 Pop[20]: refill push-back: mm_cid = 0, cache 0 (no section)
+   7. T0 Pop[21]: refill push-back: cache 0 len 0 (speculative)
+   8. T0 Pop[22]: refill push-back: commit slab 0 slot 0 owned, 1 into cache 0 (len 0 -> 1, zeroed 1)
+   9. T0 Write(0)[0]: write slot 0 of slab 0
+  10. T0 Push(0)[0]: push: mm_cid = 0, cache 0 (no section)
+  11. T0 Push(0)[1]: push: cache 0 len 1 (speculative)
+  12. T0 Push(0)[2]: push: commit slots[1] = slab 0 slot 0 on cache 0 (len 1 -> 2)
+  13. T1 Pop[0]: pop: mm_cid = 0, cache 0 (no section)
+  14. T1 Pop[1]: pop: cache 0 len 2, top slab 0 slot 0 (speculative)
+  15. T2 Pop[0]: pop: mm_cid = 0, cache 0 (no section); T1 was descheduled with cid 0 read, no section: it goes on stale
+  16. T2 Pop[1]: pop: cache 0 len 2, top slab 0 slot 0 (speculative)
+  17. T1 Pop[2]: pop: commit len 2 -> 1 on cache 0, slab 0 slot 0 owned; STALE: the thread lost this cid before the commit
+  18. T2 Pop[2]: pop: commit len 1 -> 1 on cache 0, slab 0 slot 0 owned
+
+model: per-CPU: three threads on two cids under Variant { prefix_claim: true, owner_check: true, section: None, strict_cid: true }: 34 states in 0.00 s, VIOLATION: cache 0 was mutated by thread 1's section after the thread lost cid 0 (the index came from a stale mm_cid read)
+   0. T0 Pop[0]: pop: mm_cid = 0, cache 0 (no section)
+   1. T0 Pop[1]: pop: cache 0 empty, leave the section, refill from arena 0
+   2. T0 Pop[10]: lock arena 0
+   3. T0 Pop[11]: plan: next_slab: commit fresh slab 0 of arena 0's group; take slab 0 (Fresh, live 0 -> 2, n 2, zero pick), prefix 0b0011 claimed under the lock;
+   4. T0 Pop[12]: unlock
+   5. T0 Pop[13]: finish: zero pick, slots 0..2 of slab 0 handed out
+   6. T0 Pop[20]: refill push-back: mm_cid = 0, cache 0 (no section)
+   7. T0 Pop[21]: refill push-back: cache 0 len 0 (speculative)
+   8. T0 Pop[22]: refill push-back: commit slab 0 slot 0 owned, 1 into cache 0 (len 0 -> 1, zeroed 1)
+   9. T0 Write(0)[0]: write slot 0 of slab 0
+  10. T0 Push(0)[0]: push: mm_cid = 0, cache 0 (no section)
+  11. T0 Push(0)[1]: push: cache 0 len 1 (speculative)
+  12. T0 Push(0)[2]: push: commit slots[1] = slab 0 slot 0 on cache 0 (len 1 -> 2)
+  13. T1 Pop[0]: pop: mm_cid = 0, cache 0 (no section)
+  14. T1 Pop[1]: pop: cache 0 len 2, top slab 0 slot 0 (speculative)
+  15. T2 Pop[0]: pop: mm_cid = 0, cache 0 (no section); T1 was descheduled with cid 0 read, no section: it goes on stale
+  16. T1 Pop[2]: pop: commit len 2 -> 1 on cache 0, slab 0 slot 0 owned; STALE: the thread lost this cid before the commit
+
+test model::tests::without_the_section_a_slot_is_handed_to_two_threads_or_a_push_is_lost ... ok
+test policy::tests::advice_at_the_band_edges ... ok
+test policy::tests::bands_at_the_edges ... ok
+test policy::tests::eager_return_of_the_excess_holds_until_within_the_cap ... ok
+test policy::tests::effective_period_follows_the_table ... ok
+test policy::tests::frac16_and_mul16_agree_with_the_arithmetic ... ok
+test policy::tests::policy_apply_publishes_the_outcome_and_the_full_purge ... ok
+test policy::tests::retention_cap_and_keep_ratio ... ok
+test policy::tests::thp_threshold ... ok
+test policy::tests::usage_ppm_saturates_and_scales ... ok
+test purge::linux_tests::batch_discards_through_the_probed_backend_and_the_loop ... ok
+test purge::linux_tests::fork_child_downgrades_a_pidfd_backend ... ok
+test purge::tests::advice_follows_headroom_band_key_and_explicit_purges ... ok
+test purge::tests::batch_fills_and_flushes ... ok
+test purge::tests::batch_merges_adjacent_ranges ... ok
+test purge::tests::decay_period_from_ms ... ok
+test purge::tests::purged_memory_is_zero_by_default ... ok
+test purge::tests::steps_and_allowance ... ok
+test purge::tests::weights_are_a_smootherstep_from_one_to_zero ... ok
+test rseq::tests::possible_cpu_lists_parse ... ok
+rseq: present=true size=33 flags=0 offset=320 registered=true verdict=usable
+rseq: 6 distinct mm_cid values over 8 busy threads
+test rseq::tests::probe_reads_the_registered_area ... ok
+test rseq::tests::verdicts_follow_the_gate ... ok
+test slab::tests::a_state_byte_no_state_has_aborts - should panic ... ok
+test slab::tests::header_layout_is_fixed ... ok
+test slab::tests::init_sets_the_header ... ok
+test slab::tests::live_counter_and_state ... ok
+test slab::tests::live_underflow_aborts - should panic ... ok
+test slab::tests::neighbouring_descriptors_do_not_overlap ... ok
+test slab::tests::state_bytes_no_state_has_decode_to_none ... ok
+
+thread 'slab::tests::a_state_byte_no_state_has_aborts' (936) panicked at src/slab.rs:33:5:
+slab: state byte 0x4 is not a slab state
+
+thread 'slab::tests::live_underflow_aborts' (940) panicked at src/slab.rs:231:9:
+slab: live count underflow (1 - 2)
+test slab::tests::state_round_trips ... ok
+test slab::tests::strides_are_the_same_for_every_page_geometry ... ok
+test slab::tests::strides_keep_a_line_inside_one_group ... ok
+model: three threads, both slabs under Variant { prefix_claim: true, owner_check: true, section: Rseq, strict_cid: true }: 42047 states in 3.71 s, no violation
+test model::tests::the_current_order_passes_the_three_way_scenario ... ok
+test slice::tests::layout_constants ... ok
+slice_ext: 32 lock threads and 8 hogs on 8 CPUs, 9095 holds, 0 grants yielded via rseq_slice_yield, threads enabled 0, state kernel-disabled
+slice_ext: rseq size 33 offset 320 available=false enabled=false yield_syscall=false verdict=kernel-disabled
+test slice::tests::grants_are_yielded_under_oversubscription ... ok
+test slice::tests::probe_both_ways_and_off_never_requests ... ok
+test stats::tests::arenas_split_by_owner_and_sum_to_the_totals ... ok
+test stats::tests::helpers_and_identity_check ... ok
+test stats::tests::identities_hold_through_the_lifecycle ... ok
+test stats::tests::curregs_matches_live_under_random_traffic ... ok
+cgroup: /sys/fs/cgroup (mount /sys/fs/cgroup, path /) limit max high max current 303423488 events high 0 (+0) max 0 (+0) psi not armed (no background thread) pressure_events 0 cpus 8 cpu.max max/100000
+cgroup: /proc/self/cgroup path Some("/"), cgroup2 mount Some("/sys/fs/cgroup")
+cgroup: memory.max=max memory.high=max memory.current=303423488 memory.pressure=some avg10=0.00 avg60=0.00 avg300=0.00 total=0
+test sys::cgroup::linux_tests::discover_matches_std_reading_of_the_same_files ... ok
+test sys::cgroup::linux_tests::eventfd_and_ppoll_work ... ok
+test sys::cgroup::linux_tests::pressure_trigger_probe ... ok
+cgroup: /proc/pressure/memory true; memory.pressure present
+cgroup: PSI trigger: Unavailable errno 30 fd None
+cgroup: 10 reads in 390296 sample calls over 100 ms
+test sys::cgroup::linux_tests::sampling_is_rate_limited_to_ten_milliseconds ... ok
+test sys::cgroup::tests::cpu_files ... ok
+test sys::cgroup::tests::effective_limit_walk ... ok
+test sys::cgroup::tests::events_files ... ok
+test sys::cgroup::tests::join_dir_forms ... ok
+test sys::cgroup::tests::limit_files ... ok
+test sys::cgroup::tests::line_scanner_reassembles_across_chunks ... ok
+test sys::cgroup::tests::mountinfo_lines ... ok
+test sys::cgroup::tests::pressure_files ... ok
+test sys::cgroup::tests::proc_self_cgroup_lines ... ok
+test sys::cgroup::tests::untracked_states_display ... ok
+cldemote: present=false enabled=false
+test sys::cldemote::linux_tests::demote_follows_the_probe_and_never_changes_memory ... ok
+test sys::cpu::linux_tests::hwcap_constants_match_the_header ... ok
+Cpu::probe: min 48.8 us, median 50.48 us, p90 60.4 us over 1000 runs
+test sys::cpu::linux_tests::probe_cost_is_small ... ok
+cpu: mte=no mte3=no pac=no lse=yes lse2=no bti=no sve=no cacheline=64 l1d=64K l2=1M (cache source Sysfs)
+cpu: spin_hint=baseline event_stream=true
+test sys::cpu::linux_tests::probe_matches_proc_cpuinfo ... ok
+test sys::cpu::tests::altra_hwcap_decodes_to_lse_only ... ok
+test sys::cpu::tests::apple_silicon_vm_hwcap_decodes ... ok
+test sys::cpu::tests::axion_hwcap_decodes_without_mte ... ok
+test sys::cpu::tests::caches_fill_from_the_fallback ... ok
+test sys::cpu::tests::ctr_el0_gives_the_line_size ... ok
+test sys::cpu::tests::display_arm_line ... ok
+test sys::cpu::tests::display_x86_line ... ok
+test sys::cpu::tests::genoa_9b14_cpuid_decodes_without_la57_or_uai ... ok
+test sys::cpu::tests::genoa_9b14_leaf_8000001d_gives_32k_l1d_and_1m_l2 ... ok
+test sys::cpu::tests::lam_needs_subleaf_1_and_leaf_7 ... ok
+test sys::cpu::tests::milan_7b13_cpuid_decodes ... ok
+test sys::cpu::tests::mte_bits_are_seen_when_present ... ok
+test sys::cpu::tests::spin_hint_follows_waitpkg_and_never_wfe ... ok
+test sys::cpu::tests::sysfs_cache_directories_decode ... ok
+test sys::cpu::tests::sysfs_sizes_parse ... ok
+test sys::cpu::tests::uai_is_leaf_0x80000021_bit_7_alone ... ok
+test sys::cpu::tests::xeon_8581c_cpuid_decodes ... ok
+test sys::cpu::tests::xeon_8581c_leaf4_gives_48k_l1d_and_2m_l2 ... ok
+test sys::errno::tests::addresses_are_ok ... ok
+test sys::errno::tests::boundary_is_exactly_max_errno ... ok
+test sys::errno::tests::display_names_known_and_unknown ... ok
+test sys::errno::tests::every_code_round_trips ... ok
+test sys::errno::tests::negative_errnos_map ... ok
+test sys::errno::tests::zero_and_small_positives_are_ok ... ok
+test sys::features::linux_tests::page_size_matches_libc_and_auxv ... ok
+kernel 7.0: page_size=4096 guard_install=yes mseal=no process_madvise=no process_madvise_free=no anon_name=yes thp=madvise mthp=2M collapse=unprobed rseq=yes rseq_size=33 mm_cid=yes mte=no mte3=no pac=no lse=yes lse2=no bti=no sve=no cacheline=64 l1d=64K l2=1M
+rseq: __rseq_size=33 __rseq_offset=320 __rseq_flags=0 cpu_id=0
+test sys::features::linux_tests::probe_prints_and_matches_kernel_version ... ok
+test sys::features::linux_tests::release_closes_pidfd ... ok
+test sys::features::tests::auxv_parse_finds_pagesz ... ok
+test sys::features::tests::auxv_parse_rejects_bad_input ... ok
+test sys::features::tests::display_is_one_line_of_key_values ... ok
+test sys::features::tests::feature_line_fits ... ok
+test sys::features::tests::feature_line_is_the_display_with_a_nul ... ok
+test sys::features::tests::rseq_verdicts_follow_size_and_cpu_id ... ok
+test sys::features::tests::thp_setting_parses_the_bracketed_word ... ok
+test sys::features::tests::thp_table_before_6_8_has_the_pmd_alone ... ok
+test sys::features::tests::thp_table_gce_default_lists_eight_sizes_and_enables_the_pmd_alone ... ok
+test sys::features::tests::thp_table_missing_directory_is_none ... ok
+test sys::features::tests::thp_table_with_64k_madvise_and_pmd_never ... ok
+pac: not available on this host, skipping
+test sys::pac::tests::mismatched_modifier_faults ... ok
+error: test failed, to rerun pass `--lib`
+
+Caused by:
+  process didn't exit successfully: `/src/target/debug/deps/challoc-543929ce36c3f060 --nocapture --skip 'api::'` (signal: 4, SIGILL: illegal instruction)
+make: *** [Makefile:203: test] Error 101
+make test rc=2
+== features report (tests/c/features.c under LD_PRELOAD)
+docker build --platform linux/arm64 -f Dockerfile.dev -t challoc-dev:arm64 .
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  53.08MB
+Step 1/4 : FROM cgr.dev/chainguard/wolfi-base
+ ---> 1d95114038f7
+Step 2/4 : RUN sed -i       -e 's/^glibc=.*/glibc-2.44/'       -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/'       -e 's/^ld-linux=.*/ld-linux-2.44/'       -e 's/^libcrypt1=.*/libcrypt1-2.44/'       /etc/apk/world  && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44  && apk add --no-cache       rust       build-base       gcc       jemalloc       git       cmake       tcl       openssl-dev       procps       memtier-benchmark       posix-libc-utils-2.44       autoconf       ruby-3.4       jemalloc-dev       yaml-dev       zlib-dev       libffi-dev       tzdata       tcmalloc-minimal       python-3.13       py3.13-pip  && rustc --version && cargo --version && python3 --version  && test -f /usr/lib/libtcmalloc_minimal.so.4
+ ---> Using cache
+ ---> 7e28b4937527
+Step 3/4 : WORKDIR /src
+ ---> Using cache
+ ---> 78d1a859a60f
+Step 4/4 : CMD ["sh"]
+ ---> Using cache
+ ---> 108b5df1e30f
+Successfully built 108b5df1e30f
+Successfully tagged challoc-dev:arm64
+docker run --rm --platform linux/arm64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-arm64:/src/target -v challoc-cargo-registry:/root/.cargo/registry     challoc-dev:arm64 sh -c 'cargo build --release >/dev/null 2>&1; cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c tests/c/features.c -o target/lane-features -ldl && LD_PRELOAD=/src/target/release/libchalloc.so target/lane-features'
+features: page_size=4096 guard_install=yes mseal=no process_madvise=no process_madvise_free=no anon_name=yes thp=madvise mthp=2M collapse=unprobed rseq=yes rseq_size=33 mm_cid=yes mte=no mte3=no pac=no lse=yes lse2=no bti=no sve=no cacheline=64 l1d=64K l2=1M
+rseq: rseq=yes rseq_size=33 mm_cid=yes
+ok features
+== end 2026-09-20T04:50:36Z
+
+==================== Part 2: single-threaded reruns
+docker build --platform linux/arm64 -f Dockerfile.dev -t challoc-dev:arm64 .
+
+docker run --rm --platform linux/arm64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-arm64:/src/target -v challoc-cargo-registry:/root/.cargo/registry     challoc-dev:arm64 sh -c 'cargo test --features std sys::pac -- --test-threads=1 --nocapture 2>&1 | grep -v "^\s*Compiling\|^\s*Finished"'
+     Running unittests src/lib.rs (target/debug/deps/challoc-543929ce36c3f060)
+
+running 2 tests
+test sys::pac::tests::mismatched_modifier_faults ... pac: not available on this host, skipping
+ok
+test sys::pac::tests::sign_auth_round_trip ... error: test failed, to rerun pass `--lib`
+
+Caused by:
+  process didn't exit successfully: `/src/target/debug/deps/challoc-543929ce36c3f060 'sys::pac' --test-threads=1 --nocapture` (signal: 4, SIGILL: illegal instruction)
+docker build --platform linux/arm64 -f Dockerfile.dev -t challoc-dev:arm64 .
+
+docker run --rm --platform linux/arm64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-arm64:/src/target -v challoc-cargo-registry:/root/.cargo/registry     challoc-dev:arm64 sh -c 'cargo test --features std heap::linux_tests::heap_off_pac -- --test-threads=1 --nocapture 2>&1 | tail -8'
+
+running 1 test
+test heap::linux_tests::heap_off_pac_executes_no_pac_instruction ... pac: forced_off=true available=false on=false: no unexpected PAC instruction
+pac: forced_off=false available=false on=false: no unexpected PAC instruction
+ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 516 filtered out; finished in 0.01s
+
+
+==================== Part 3: make test with sys::pac::tests::sign_auth_round_trip skipped
+== challoc-lane-d-matrix-cpu-t2a 7.0.0-1011-gcp aarch64 tree 0c60b1a; make test with sys::pac::tests::sign_auth_round_trip skipped (SIGILL on this host, see t2a-make-test.log)
+== start 2026-09-20T04:54:25Z
+docker build --platform linux/arm64 -f Dockerfile.dev -t challoc-dev:arm64 .
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  53.08MB
+Step 1/4 : FROM cgr.dev/chainguard/wolfi-base
+ ---> 1d95114038f7
+Step 2/4 : RUN sed -i       -e 's/^glibc=.*/glibc-2.44/'       -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/'       -e 's/^ld-linux=.*/ld-linux-2.44/'       -e 's/^libcrypt1=.*/libcrypt1-2.44/'       /etc/apk/world  && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44  && apk add --no-cache       rust       build-base       gcc       jemalloc       git       cmake       tcl       openssl-dev       procps       memtier-benchmark       posix-libc-utils-2.44       autoconf       ruby-3.4       jemalloc-dev       yaml-dev       zlib-dev       libffi-dev       tzdata       tcmalloc-minimal       python-3.13       py3.13-pip  && rustc --version && cargo --version && python3 --version  && test -f /usr/lib/libtcmalloc_minimal.so.4
+ ---> Using cache
+ ---> 7e28b4937527
+Step 3/4 : WORKDIR /src
+ ---> Using cache
+ ---> 78d1a859a60f
+Step 4/4 : CMD ["sh"]
+ ---> Using cache
+ ---> 108b5df1e30f
+Successfully built 108b5df1e30f
+Successfully tagged challoc-dev:arm64
+docker run --rm --platform linux/arm64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-arm64:/src/target -v challoc-cargo-registry:/root/.cargo/registry     challoc-dev:arm64 sh -c 'cargo build --release && sh scripts/jemalloc-compat.sh && cargo test --features std -- --nocapture --skip api:: --skip sys::pac::tests::sign_auth_round_trip && cargo test --features std api:: -- --nocapture'
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.02s
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.01s
+jemalloc-compat: quantum16, version 5.3.0, prefix /src/target/jemalloc-compat/stage
+/src/target/jemalloc-compat/stage/lib:
+total 1176
+lrwxrwxrwx    1 root     root            16 Sep 20 04:54 libjemalloc.so -> libjemalloc.so.2
+-rwxr-xr-x    1 root     root       1196360 Sep 20 04:54 libjemalloc.so.2
+drwxr-xr-x    2 root     root          4096 Sep 20 04:54 pkgconfig
+
+/src/target/jemalloc-compat/stage/lib/pkgconfig:
+total 4
+-rw-r--r--    1 root     root           415 Sep 20 04:54 jemalloc.pc
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+     Running unittests src/lib.rs (target/debug/deps/challoc-543929ce36c3f060)
+
+running 399 tests
+
+thread 'bitmap::tests::a_release_outside_the_sub_word_view_aborts' (32) panicked at src/bitmap.rs:174:9:
+bitmap: release outside the slab
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'bitmap::tests::a_cleared_padding_bit_aborts_the_allocated_count' (31) panicked at src/bitmap.rs:200:9:
+bitmap: a padding bit of the slab was cleared
+test arena::tests::flag_decoding_matches_jemalloc ... ok
+test bitmap::tests::a_release_outside_the_sub_word_view_aborts - should panic ... ok
+test bitmap::tests::claim_from_wraps ... ok
+test bitmap::tests::a_cleared_padding_bit_aborts_the_allocated_count - should panic ... ok
+test bitmap::tests::claim_takes_lowest_bits_first_and_never_padding ... ok
+test bitmap::tests::init_sets_padding_only ... ok
+test bitmap::tests::sub_word_views_are_independent ... ok
+test bitmap::tests::two_level_basics ... ok
+test bitmap::tests::release_reports_double_release ... ok
+test bitmap::tests::lowest_n_bits_keeps_the_lowest ... ok
+test bitmap::tests::two_level_tiny_universes ... ok
+test bitmap::tests::words_needed_is_exact ... ok
+test class::tests::a_corrupt_owner_word_aborts_the_next_take_group - should panic ... ok
+test class::tests::a_group_is_idle_between_its_last_empty_and_its_next_take ... ok
+
+thread 'class::tests::a_corrupt_owner_word_aborts_the_next_take_group' (56) panicked at src/class.rs:2470:5:
+heap inconsistency: class 3 group 1: owner word says arena 7, slab 1's descriptor says arena 0
+test class::tests::a_group_in_use_is_never_handed_over ... ok
+test class::tests::a_multi_slab_group_moves_whole_with_its_cursor ... ok
+
+thread 'class::tests::a_plan_over_a_slab_with_live_above_nslots_aborts' (60) panicked at src/class.rs:1836:9:
+class: slab live count above its slot count
+
+thread 'class::tests::a_plan_that_takes_an_empty_slab_the_counts_do_not_know_aborts' (61) panicked at src/class.rs:2550:5:
+class: empty slab count underflow
+test class::tests::a_plan_over_a_slab_with_live_above_nslots_aborts - should panic ... ok
+test class::tests::a_plan_that_takes_an_empty_slab_the_counts_do_not_know_aborts - should panic ... ok
+
+thread 'class::tests::a_purge_of_an_empty_slab_the_counts_do_not_know_aborts' (62) panicked at src/class.rs:2550:5:
+class: empty slab count underflow
+test class::tests::a_purge_of_an_empty_slab_the_counts_do_not_know_aborts - should panic ... ok
+test class::tests::a_purged_group_is_handed_over_and_stays_zero ... ok
+test class::tests::a_zero_pick_never_receives_a_slot_another_claim_used_in_between ... ok
+test class::tests::an_idle_group_is_handed_down_to_a_lower_arena ... ok
+test class::tests::an_idle_group_is_handed_up_to_a_higher_arena ... ok
+test bitmap::tests::concurrent_claims_are_disjoint ... ok
+test class::tests::bin_stats_counts_every_curregs_clamp ... ok
+
+thread 'class::tests::check_after_release_aborts' (69) panicked at src/class.rs:2516:5:
+invalid or double free of 0xe1b376000000 (class 3 slab 0 slot 0): slot is not allocated
+
+thread 'class::tests::check_of_a_guard_slab_slot_aborts' (70) panicked at src/class.rs:2501:5:
+invalid free of 0xe1b3aa410000 (class 3 slab 1): guard slab
+test class::tests::check_after_release_aborts - should panic ... ok
+test class::tests::check_of_a_guard_slab_slot_aborts - should panic ... ok
+
+thread 'class::tests::check_of_handed_out_uncommitted_slab_aborts' (71) panicked at src/class.rs:2516:5:
+invalid or double free of 0xe1b3ba405000 (class 19 slab 5 slot 0): slot is not allocated
+test class::tests::check_of_handed_out_uncommitted_slab_aborts - should panic ... ok
+
+thread 'class::tests::check_of_uncommitted_slab_aborts' (73) panicked at src/class.rs:2464:5:
+invalid free: class 3 slab 5 was never allocated
+
+thread 'class::tests::check_of_unclaimed_slot_aborts' (72) panicked at src/class.rs:2516:5:
+invalid or double free of 0xe1b376000080 (class 3 slab 0 slot 2): slot is not allocated
+test class::tests::check_of_uncommitted_slab_aborts - should panic ... ok
+test class::tests::check_of_unclaimed_slot_aborts - should panic ... ok
+
+thread 'class::tests::check_through_the_wrong_arena_aborts' (74) panicked at src/class.rs:2524:5:
+slot 0xe1b412c10000 (class 3) belongs to arena 1 but was released through arena 0
+test class::tests::bitmap_geometry_for_every_class ... ok
+test class::tests::check_through_the_wrong_arena_aborts - should panic ... ok
+
+thread 'class::tests::check_zero_aborts_on_a_dirty_purged_slab' (75) panicked at src/class.rs:2595:5:
+check_zero: slot 0xe1b412c00040 (class 3, size 64, slab 0, arena 0) was handed out as zero from a Purged slab but its word at offset 56 reads 0xdeadbeef (discard backend madvise loop, MADV_DONTNEED; descriptor at 0xe1b456d6d480 now Active live 2 owner 0, 2 of 1024 bits set, pick of 2 slots)
+test class::tests::check_zero_aborts_on_a_dirty_purged_slab - should panic ... ok
+test class::tests::check_zero_passes_fresh_and_purged_slabs ... ok
+test class::tests::claim_spans_slabs_and_reports_shortfall_on_exhaustion ... ok
+test class::tests::concurrent_claims_are_disjoint ... ok
+test class::tests::decay_walks_at_once_after_the_period_shrinks ... ok
+
+thread 'class::tests::double_release_aborts' (98) panicked at src/class.rs:2542:5:
+double free of 0xe1b376000000 (class 3 slab 0 slot 0)
+test class::tests::double_release_aborts - should panic ... ok
+
+thread 'class::tests::duplicate_apart_in_one_slab_group_aborts' (99) panicked at src/class.rs:2542:5:
+double free of 0xe1b376001180 (class 3 slab 0 slot 70)
+test class::tests::duplicate_apart_in_one_slab_group_aborts - should panic ... ok
+
+thread 'class::tests::duplicate_in_one_batch_aborts' (100) panicked at src/class.rs:2542:5:
+double free of 0xe1b376000040 (class 3 slab 0 slot 1)
+test class::tests::duplicate_in_one_batch_aborts - should panic ... ok
+test class::tests::filling_a_live_slab_leaves_a_stale_bit_until_the_next_plan ... ok
+test bitmap::tests::sub_word_matches_model ... ok
+test class::tests::filling_a_slab_moves_on_and_release_reopens_it ... ok
+
+thread 'class::tests::guard_interval_must_be_a_power_of_two' (104) panicked at src/class.rs:723:9:
+class: guard interval 3 is not a power of two
+test class::tests::guard_interval_must_be_a_power_of_two - should panic ... ok
+test class::tests::first_claim_is_lowest_addresses_and_zero ... ok
+test class::tests::guard_slab_test_is_the_page_group_modulo ... ok
+test class::tests::guard_slabs_are_skipped ... ok
+test class::tests::metadata_exhaustion_is_reported_not_fatal ... ok
+test class::tests::guard_slab_faults_when_supported ... ok
+test class::tests::page_groups_when_the_page_is_larger_than_the_slab ... ok
+test class::tests::decay_purges_the_oldest_empty_slabs_along_the_curve ... ok
+test class::tests::concurrent_handoffs_keep_sets_and_descriptors_consistent ... ok
+test class::tests::one_plan_spans_many_slabs_and_release_reopens_them_all ... ok
+test class::tests::purge_zeroes_memory_and_commit_is_visible ... ok
+test class::tests::release_all_makes_empty_then_reuse_then_purge ... ok
+
+thread 'class::tests::release_into_an_uncommitted_slab_of_the_group_aborts' (118) panicked at src/class.rs:2510:5:
+invalid free of 0xe1b3ee001000 (class 19 slab 1): the slab has never been allocated from
+test class::tests::release_into_an_uncommitted_slab_of_the_group_aborts - should panic ... ok
+
+thread 'class::tests::release_of_interior_pointer_aborts' (119) panicked at src/class.rs:2536:5:
+invalid free of 0xe1b3de000001 (class 3): not a slot start
+test class::tests::release_of_interior_pointer_aborts - should panic ... ok
+
+thread 'class::tests::release_outside_region_aborts' (120) panicked at src/class.rs:2536:5:
+invalid free of 0xe1b44f400000 (class 3): outside the class region
+test class::tests::release_outside_region_aborts - should panic ... ok
+test class::tests::release_takes_slab_groups_in_any_order ... ok
+
+thread 'class::tests::release_through_the_wrong_arena_aborts' (122) panicked at src/class.rs:2524:5:
+slot 0xe1b3de010000 (class 3) belongs to arena 1 but was released through arena 0
+test class::tests::release_through_the_wrong_arena_aborts - should panic ... ok
+test class::tests::set_scans_never_read_uncommitted_words ... ok
+test class::tests::set_table_of_many_classes_touches_one_page_per_slab_size ... ok
+test class::tests::slabs_are_handed_out_in_line_sized_groups ... ok
+test class::tests::two_arenas_share_one_region ... ok
+test class::tests::purge_batches_a_whole_region ... ok
+test config::linux_tests::env_var_is_read_from_environ ... ok
+test config::linux_tests::first_line_of_a_file ... ok
+config: defaults (spin hint in use baseline)
+test config::linux_tests::load_with_a_clean_environment_gives_the_defaults ... ok
+test config::linux_tests::no_malloc_conf_symbol_in_the_test_binary ... ok
+config: spin_hint auto=baseline own wfe available=true event_stream=true
+test config::linux_tests::spin_hint_key_installs_where_available ... ok
+test config::tests::cache_caps_follow_the_ladder_and_the_overrides ... ok
+test config::tests::cap_for_is_the_one_rule ... ok
+test config::tests::compatibility_keys_are_accepted_with_any_value ... ok
+test config::tests::defaults_match_the_design_table ... ok
+test config::tests::empty_and_separator_only_input_changes_nothing ... ok
+test config::tests::every_bool_key_parses_true_and_false ... ok
+test config::tests::every_numeric_key_parses_and_clamps ... ok
+test config::tests::get_covers_every_key_and_only_those ... ok
+test config::tests::guards_off_zeroes_the_interval ... ok
+test config::tests::huge_retain_max_is_a_byte_count ... ok
+test config::tests::inert_keys_are_stored_reported_and_rejected_under_abort_conf ... ok
+test config::tests::integers_accept_hex_octal_and_signs ... ok
+test config::tests::issue_display_is_printable_and_bounded ... ok
+test config::tests::malformed_pairs_are_reported_and_the_rest_still_applies ... ok
+test class::tests::works_for_every_class ... ok
+test config::tests::narenas_default_resolves_from_the_cpu_count ... ok
+test config::tests::percpu_arena_values ... ok
+test config::tests::quoted_values_and_the_last_pair_win ... ok
+test config::tests::redis_and_valkey_conf_strings_parse_clean ... ok
+test config::tests::slice_ext_values ... ok
+test config::tests::thp_values ... ok
+test config::tests::unknown_keys_are_reported_and_skipped ... ok
+pac: off on this host, skipping
+test heap::linux_tests::cache_entries_and_the_tls_heap_pointer_are_signed ... ok
+pac: off on this host, skipping
+test heap::linux_tests::corrupted_cache_entry_or_heap_pointer_faults ... ok
+test heap::linux_tests::calloc_flag_is_honest_about_memory ... ok
+test heap::linux_tests::creating_and_exited_sentinels_are_served_directly ... ok
+test heap::linux_tests::heap_is_created_on_first_use_through_tls ... ok
+pac: forced_off=true available=false on=false: no unexpected PAC instruction
+pac: forced_off=false available=false on=false: no unexpected PAC instruction
+test heap::linux_tests::heap_off_pac_executes_no_pac_instruction ... ok
+pac: available=false on=false fpac=false
+test heap::linux_tests::pac_flag_follows_the_probe_and_the_key ... ok
+test heap::linux_tests::percpu_caches_serve_plain_allocations ... ok
+test heap::linux_tests::percpu_flush_releases_the_high_half_and_drain_empties ... ok
+test bitmap::tests::chunked_views_interleave_and_match_model ... ok
+percpu: probe usable (size 33, offset 320), state on, ids 8
+test heap::linux_tests::percpu_heaps_off_the_mode_take_the_thread_paths ... ok
+test heap::linux_tests::percpu_mode_follows_the_probe_and_the_key ... ok
+test heap::linux_tests::percpu_scheduled_pops_come_from_a_run_claimed_a_block_at_a_time ... ok
+percpu: 16 threads, 6 headers installed, 3935 slots cached at the end, 17 sections aborted and retried
+test heap::linux_tests::percpu_threads_conserve_slots_under_migration ... ok
+test heap::linux_tests::producer_consumer_across_threads_with_patterns ... ok
+test heap::linux_tests::thread_exit_flushes_and_frees_the_heap ... ok
+
+thread 'heap::tests::a_cached_pair_kept_by_the_split_is_caught_when_released' (223) panicked at src/class.rs:2542:5:
+double free of 0xe1ae11c20000 (class 3 slab 2 slot 0)
+test heap::tests::a_cached_pair_kept_by_the_split_is_caught_when_released ... ok
+test class::tests::purge_never_races_a_claim ... ok
+
+thread 'heap::tests::a_refill_of_a_cache_that_is_not_empty_aborts' (225) panicked at src/heap.rs:2559:13:
+assertion `left == right` failed: heap: refill of a cache that is not empty
+  left: 511
+ right: 0
+test heap::tests::a_refill_of_a_cache_that_is_not_empty_aborts - should panic ... ok
+
+thread 'heap::tests::a_scheduled_pop_aborts_when_the_run_reaches_past_the_length' (226) panicked at src/heap.rs:1993:13:
+heap: cache run invariant violated (run_end > low_water or low_water > len)
+test heap::tests::a_scheduled_pop_aborts_when_the_run_reaches_past_the_length - should panic ... ok
+test heap::tests::a_scheduled_pop_whose_gc_empties_the_cache_refills_instead_of_wrapping ... ok
+test heap::tests::allocations_are_address_ordered_and_lifo_after_free ... ok
+test heap::tests::an_others_node_for_the_home_arena_aborts - should panic ... ok
+
+thread 'heap::tests::an_others_node_for_the_home_arena_aborts' (229) panicked at src/heap.rs:2453:9:
+assertion `left != right` failed: heap: others node requested for the home arena
+  left: 0
+ right: 0
+test heap::tests::arena_registry_creates_and_looks_up ... ok
+test heap::tests::automatic_arenas_are_assigned_least_loaded_and_built_lazily ... ok
+test heap::tests::cached_double_free_aborts_at_the_flush - should panic ... ok
+
+thread 'heap::tests::cached_double_free_aborts_at_the_flush' (232) panicked at src/class.rs:2542:5:
+double free of 0xe1ac42c00000 (class 3 slab 0 slot 0)
+test heap::tests::caches_are_keyed_by_arena ... ok
+test heap::tests::cgroup_policy_drives_gc_interval_and_decay_period ... ok
+test class::tests::randomised_model_check ... ok
+test heap::tests::compaction_off_keeps_the_lifo_reuse_in_place ... ok
+test heap::tests::cross_thread_frees_land_in_the_freeing_heap ... ok
+test heap::tests::default_caps_follow_the_design_table ... ok
+test heap::tests::default_narenas_is_resolved_at_init ... ok
+test heap::tests::churn_model_empties_the_high_slabs_and_then_stops_compacting ... ok
+test heap::tests::direct_paths_bypass_the_cache ... ok
+
+thread 'heap::tests::double_free_scan_compares_the_top_four_entries' (242) panicked at src/heap.rs:3812:5:
+double free of 0xe1aa24400000: the slot is already in the thread cache
+
+thread 'heap::tests::double_free_scan_compares_the_top_four_entries' (242) panicked at src/heap.rs:3812:5:
+double free of 0xe1aa24400000: the slot is already in the thread cache
+
+thread 'heap::tests::double_free_scan_compares_the_top_four_entries' (242) panicked at src/heap.rs:3812:5:
+double free of 0xe1aa24400000: the slot is already in the thread cache
+
+thread 'heap::tests::double_free_scan_compares_the_top_four_entries' (242) panicked at src/heap.rs:3812:5:
+double free of 0xe1aa24400000: the slot is already in the thread cache
+
+thread 'heap::tests::double_free_scan_compares_the_top_four_entries' (242) panicked at src/class.rs:2542:5:
+double free of 0xe1aa24400000 (class 3 slab 0 slot 0)
+test heap::tests::double_free_scan_compares_the_top_four_entries ... ok
+test heap::tests::double_free_scan_off_by_default_leaves_the_push_alone ... ok
+test heap::tests::dropping_the_home_caches_keeps_the_thread_counters ... ok
+test heap::tests::explicit_arena_keeps_a_shared_class_in_its_arena ... ok
+test heap::tests::explicit_caches_create_flush_destroy ... ok
+test heap::tests::flag_sort_permutes_into_ascending_buckets ... ok
+
+thread 'heap::tests::flush_aborts_on_a_cached_pair_straddling_the_split' (248) panicked at src/heap.rs:3898:5:
+double free of 0xe1a91b020000 (class 3): both copies cached, one at the flush boundary
+test heap::tests::flush_aborts_on_a_cached_pair_straddling_the_split ... ok
+test heap::tests::flush_drops_the_zeroed_prefix ... ok
+test heap::tests::flush_releases_the_highest_addresses_and_keeps_the_lowest ... ok
+
+thread 'heap::tests::free_into_an_uncommitted_slab_aborts' (251) panicked at src/class.rs:2464:5:
+invalid free: class 3 slab 5 was never allocated
+test heap::tests::free_into_an_uncommitted_slab_aborts - should panic ... ok
+percpu: 826880 operations under 30979 signals, 322 sections aborted and retried
+
+thread 'heap::tests::free_of_a_misaligned_pointer_aborts' (252) panicked at src/heap.rs:3787:5:
+invalid free of 0xe1a837000008: not an allocation
+test heap::tests::free_of_a_misaligned_pointer_aborts - should panic ... ok
+
+thread 'heap::tests::free_of_a_pointer_outside_every_region_aborts' (254) panicked at src/heap.rs:3787:5:
+invalid free of 0xe1b46480df30: not an allocation
+
+thread 'heap::tests::free_of_a_never_allocated_slot_aborts' (253) panicked at src/class.rs:2516:5:
+invalid or double free of 0xe1a7fac02c80 (class 0 slab 0 slot 712): slot is not allocated
+test heap::linux_tests::percpu_sections_abort_and_retry_under_signals ... ok
+test heap::tests::free_of_a_pointer_outside_every_region_aborts - should panic ... ok
+test heap::tests::free_of_a_never_allocated_slot_aborts - should panic ... ok
+test heap::tests::free_of_an_unallocated_huge_pointer_aborts - should panic ... ok
+
+thread 'heap::tests::free_of_an_unallocated_huge_pointer_aborts' (255) panicked at src/huge.rs:1347:5:
+invalid free of 0xe1a783400000: not the start of a huge allocation
+
+thread 'heap::tests::freeing_caches_that_were_not_flushed_aborts' (256) panicked at src/heap.rs:1573:17:
+assertion `left == right` failed: heap: freeing a cache that was not flushed
+  left: 511
+ right: 0
+test heap::tests::freeing_caches_that_were_not_flushed_aborts - should panic ... ok
+test heap::tests::gc_releases_unused_entries_by_low_water ... ok
+test heap::tests::group_by_slab_groups_a_scrambled_batch ... ok
+test heap::tests::group_by_slab_single_slab_and_wide_span ... ok
+test heap::tests::full_cache_flushes_the_highest_half_sorted_and_slabs_empty ... ok
+test heap::tests::guard_test_agrees_with_the_tables ... ok
+test heap::tests::heap_starts_with_the_sentinel_and_allocates_caches_lazily ... ok
+test heap::tests::huge_retain_max_key_reaches_the_huge_allocator ... ok
+test heap::tests::heap_churn_reuses_the_vacated_arena ... ok
+test heap::tests::huge_runs_go_through_the_heap_without_caches ... ok
+test heap::tests::push_flags_encode_zero_on_free_and_double_free_scan ... ok
+test heap::linux_tests::eight_threads_hammer_disjoint_pointers ... ok
+test heap::tests::direct_claims_do_not_block_compaction_but_cache_refills_do ... ok
+test heap::tests::periodic_work_runs_gc_on_the_interval ... ok
+test heap::tests::set_arena_swaps_cache_arrays ... ok
+
+thread 'heap::tests::sized_free_past_the_watermark_aborts_at_the_flush' (272) panicked at src/class.rs:2464:5:
+invalid free: class 3 slab 2 was never allocated
+test heap::tests::sized_free_past_the_watermark_aborts_at_the_flush - should panic ... ok
+test heap::tests::sized_slot_rejects_guard_slabs ... ok
+test heap::tests::randomised_model_check ... ok
+test heap::tests::slot_randomize_seeds_the_heap_lazily ... ok
+test heap::tests::slot_randomize_shuffles_the_batch_and_keeps_the_slot_set ... ok
+
+thread 'heap::tests::stale_double_free_aborts_at_the_check' (277) panicked at src/class.rs:2516:5:
+invalid or double free of 0xe1a09c800000 (class 3 slab 0 slot 0): slot is not allocated
+test heap::tests::stale_double_free_aborts_at_the_check - should panic ... ok
+test heap::tests::random_walk_churn_model_compacts_too ... ok
+test heap::tests::zero_on_free_clears_the_slot_on_the_plain_sized_and_direct_paths ... ok
+test heap::tests::zeroed_prefix_tracks_fresh_memory ... ok
+test huge::linux_tests::aligned_runs_are_usable_end_to_end ... ok
+test huge::linux_tests::alignment_holes_are_committed_and_writable ... ok
+
+thread 'huge::linux_tests::check_zero_aborts_on_a_dirty_purged_run' (283) panicked at src/huge.rs:1361:5:
+check_zero: huge run 0xe19fab400000 (3 pages from page 0, arena 0) was handed out as zero from Purged pages but the word at 0xe19fab402ff8 reads 0xdeadbeef (discard backend madvise loop, MADV_DONTNEED)
+test huge::linux_tests::check_zero_aborts_on_a_dirty_purged_run - should panic ... ok
+test huge::linux_tests::check_zero_passes_fresh_and_purged_runs ... ok
+test heap::tests::a_dense_class_is_probed_but_never_compacted ... ok
+test huge::linux_tests::guard_page_faults ... ok
+test huge::linux_tests::memory_is_writable_and_the_zero_flag_is_honest ... ok
+test huge::linux_tests::stale_guards_inside_a_reused_extent_are_writable_and_purgeable ... ok
+test huge::tests::a_run_can_grow_past_the_mark_from_a_trailing_extent ... ok
+
+thread 'huge::tests::a_run_state_byte_no_state_has_aborts' (300) panicked at src/huge.rs:227:5:
+huge: run state byte 0x3 is not a run state
+test huge::tests::a_run_state_byte_no_state_has_aborts - should panic ... ok
+test huge::tests::alignment_at_the_mark_leaves_a_clean_hole ... ok
+test huge::tests::alignment_over_allocates_and_frees_head_and_tail ... ok
+test huge::tests::concurrent_runs_are_disjoint ... ok
+test huge::tests::decay_purges_the_oldest_extents_along_the_curve ... ok
+test huge::tests::decay_with_a_keep_ratio_purges_coalesced_extents ... ok
+test huge::tests::desc_layout_fits_a_small_bin ... ok
+
+thread 'huge::tests::double_free_aborts' (315) panicked at src/huge.rs:1353:5:
+double free of 0xe19fa6000000: huge allocation already freed
+test huge::tests::double_free_aborts - should panic ... ok
+test huge::tests::exhaustion_returns_null_and_recovers ... ok
+test huge::tests::first_run_is_at_the_base_and_zero ... ok
+test heap::tests::zero_on_free_clears_a_huge_run ... ok
+
+thread 'huge::tests::free_beyond_the_mark_aborts' (319) panicked at src/huge.rs:1347:5:
+invalid free of 0xe19fa6064000: not the start of a huge allocation
+test huge::tests::free_and_reuse_prefers_the_lowest_address ... ok
+
+thread 'huge::tests::free_of_a_free_extents_last_page_aborts' (320) panicked at src/huge.rs:1353:5:
+double free of 0xe19fa6004000: huge allocation already freed
+test huge::tests::free_beyond_the_mark_aborts - should panic ... ok
+
+thread 'huge::tests::free_of_a_guard_page_aborts' (321) panicked at src/huge.rs:1347:5:
+invalid free of 0xe19f66804000: not the start of a huge allocation
+test huge::tests::free_of_a_free_extents_last_page_aborts - should panic ... ok
+test huge::tests::free_of_a_guard_page_aborts - should panic ... 
+thread 'huge::tests::free_of_an_interior_page_aborts' (322) panicked at src/huge.rs:1347:5:
+invalid free of 0xe19fa6001000: not the start of a huge allocation
+ok
+
+thread 'huge::tests::huge_stats_abort_on_a_free_count_going_below_zero' (323) panicked at src/huge.rs:233:5:
+huge: Empty extent count underflow
+test heap::tests::slot_randomize_keeps_the_compacting_run_valid ... ok
+test huge::tests::huge_stats_abort_on_a_free_count_going_below_zero - should panic ... ok
+test huge::tests::free_of_an_interior_page_aborts - should panic ... ok
+test huge::tests::neighbours_coalesce_and_keep_the_oldest_dirty_time ... ok
+test huge::tests::purged_and_empty_merge_to_empty ... ok
+test huge::linux_tests::concurrent_threads_see_their_own_patterns ... ok
+test huge::tests::run_state_round_trips_and_rejects_other_bytes ... ok
+test bitmap::tests::two_level_matches_model ... ok
+
+thread 'huge::tests::the_table_aborts_when_its_count_disagrees_with_its_entries' (331) panicked at src/huge.rs:354:66:
+huge: descriptor table count underflow
+
+thread 'huge::tests::the_table_rejects_a_duplicate_key' (332) panicked at src/huge.rs:326:13:
+huge: key inserted twice
+test huge::tests::the_table_aborts_when_its_count_disagrees_with_its_entries - should panic ... ok
+test huge::tests::the_table_rejects_a_duplicate_key - should panic ... ok
+
+thread 'huge::tests::usable_size_of_a_bad_pointer_aborts' (333) panicked at src/huge.rs:1347:5:
+invalid free of 0xe19f5c002000: not the start of a huge allocation
+test huge::tests::usable_size_of_a_bad_pointer_aborts - should panic ... ok
+layout: lg_region=38 lg_stride=40 huge=2^40 meta=2^36 superblock=0x8a427d800000
+test layout::linux_tests::reserve_lays_out_regions_and_commits_a_slab ... ok
+test layout::linux_tests::reserve_randomises_class_offsets_and_order ... ok
+seal: mseal unavailable here (kernel < 6.10 or seccomp), skipped
+test layout::linux_tests::seal_locks_the_gaps_and_leaves_the_regions_usable ... ok
+test layout::tests::apply_page_geometry_writes_only_the_raised_classes ... ok
+test layout::tests::class_count_matches_quantum ... ok
+test layout::tests::class_sizes_follow_the_design ... ok
+test layout::tests::classes_do_not_overlap_each_other_or_huge ... ok
+test huge::tests::table_grows_and_lookups_survive_backward_shift ... ok
+test huge::tests::purge_respects_the_cutoff_in_fifo_order ... ok
+test layout::tests::from_parts_layout_invariants ... ok
+test layout::tests::huge_and_meta_classification ... ok
+test layout::tests::minimal_stride_layout_still_classifies ... ok
+test layout::tests::misaligned_and_out_of_region_pointers_are_invalid ... ok
+test layout::tests::never_committed_is_the_complement_of_the_regions ... ok
+test layout::tests::page_sized_geometry_for_large_pages ... ok
+test layout::tests::slab_geometry ... ok
+test layout::tests::slot_arithmetic_round_trips_for_every_slot ... ok
+test layout::tests::small_slab_classes_are_the_pinned_range ... ok
+test lock::tests::a_parked_waiter_is_released ... ok
+test lock::tests::contended_counter_is_exact ... ok
+test heap::tests::scheduled_pops_take_the_run_minimum_and_rebuild_from_the_lowest_slab ... ok
+test lock::tests::guard_releases_on_drop ... ok
+test lock::tests::raw_lock_state_machine ... ok
+test lock::tests::sleepers_are_woken ... ok
+test lock::tests::spin_hint_availability_follows_the_architecture ... ok
+test lock::tests::every_hint_wakes_under_contention ... ok
+
+thread 'meta::tests::a_double_free_of_the_list_head_aborts' (399) panicked at src/meta.rs:281:9:
+meta: double free of the free list head
+test meta::tests::a_double_free_of_the_list_head_aborts - should panic ... ok
+test meta::tests::a_free_below_the_list_head_is_accepted ... ok
+test meta::tests::alignment_is_honoured ... ok
+test meta::tests::bin_for_promotes_on_alignment ... ok
+test layout::tests::every_request_maps_to_the_tightest_class ... ok
+test meta::tests::bins_are_well_formed ... ok
+test meta::tests::commit_outside_reservations_aborts - should panic ... ok
+test meta::tests::empty_then_init ... ok
+test meta::tests::exhaustion_returns_null_and_recovers ... ok
+
+thread 'meta::tests::commit_outside_reservations_aborts' (405) panicked at src/meta.rs:310:9:
+meta: commit outside the reserved area
+
+thread 'meta::tests::free_beyond_bump_aborts' (409) panicked at src/meta.rs:273:9:
+meta: free of a pointer that was never allocated here
+test meta::tests::first_objects_come_from_zero_committed_memory ... ok
+test meta::tests::free_beyond_bump_aborts - should panic ... ok
+
+thread 'meta::tests::free_of_foreign_pointer_aborts' (411) panicked at src/meta.rs:273:9:
+meta: free of a pointer that was never allocated here
+
+thread 'meta::tests::free_of_misaligned_pointer_aborts' (412) panicked at src/meta.rs:273:9:
+meta: free of a pointer that was never allocated here
+test meta::tests::free_list_is_lifo_and_per_bin ... ok
+test meta::tests::free_of_foreign_pointer_aborts - should panic ... ok
+test meta::tests::free_of_misaligned_pointer_aborts - should panic ... ok
+test meta::tests::fresh_region_stats ... ok
+test meta::tests::maps_show_commits ... ok
+test meta::tests::bin_of_matches_linear_scan ... ok
+
+thread 'meta::tests::overaligned_object_aborts' (424) panicked at src/meta.rs:368:9:
+meta: alignment too large for an object
+test meta::tests::overaligned_object_aborts - should panic ... ok
+
+thread 'meta::tests::oversized_object_aborts' (425) panicked at src/meta.rs:369:48:
+meta: object too large
+test meta::tests::oversized_object_aborts - should panic ... ok
+test meta::tests::reservations_come_from_the_top ... ok
+test meta::tests::reserve_too_large_fails_cleanly ... ok
+lock: spin_hint=baseline uncontended 60.1 ns/pair, contended 195.9 ns/acquire (8 threads x 100000), in use: baseline
+test huge::tests::metadata_exhaustion_is_reported_not_fatal ... ok
+test model::tests::lowest_n_clear_takes_the_lowest_clear_bits ... ok
+model: per-CPU: three threads on two cids under Variant { prefix_claim: true, owner_check: true, section: CidOutside, strict_cid: true }: 35 states in 0.00 s, VIOLATION: cache 0 was mutated by thread 1's section after the thread lost cid 0 (the index came from a stale mm_cid read)
+   0. T0 Pop[0]: pop: mm_cid = 0, cache 0 (read before the section)
+   1. T0 Pop[1]: pop: cache 0 empty, leave the section, refill from arena 0
+   2. T0 Pop[10]: lock arena 0
+   3. T0 Pop[11]: plan: next_slab: commit fresh slab 0 of arena 0's group; take slab 0 (Fresh, live 0 -> 2, n 2, zero pick), prefix 0b0011 claimed under the lock;
+   4. T0 Pop[12]: unlock
+   5. T0 Pop[13]: finish: zero pick, slots 0..2 of slab 0 handed out
+   6. T0 Pop[20]: refill push-back: mm_cid = 0, cache 0 (read before the section)
+   7. T0 Pop[21]: refill push-back: cache 0 len 0 (speculative)
+   8. T0 Pop[22]: refill push-back: commit slab 0 slot 0 owned, 1 into cache 0 (len 0 -> 1, zeroed 1)
+   9. T0 Write(0)[0]: write slot 0 of slab 0
+  10. T0 Push(0)[0]: push: mm_cid = 0, cache 0 (read before the section)
+  11. T0 Push(0)[1]: push: cache 0 len 1 (speculative)
+  12. T0 Push(0)[2]: push: commit slots[1] = slab 0 slot 0 on cache 0 (len 1 -> 2)
+  13. T1 Pop[0]: pop: mm_cid = 0, cache 0 (read before the section)
+  14. T1 Pop[1]: pop: cache 0 len 2, top slab 0 slot 0 (speculative)
+  15. T2 Pop[0]: pop: mm_cid = 0, cache 0 (read before the section); T1 was descheduled inside its section on cid 0: rseq abort, retry at [1]
+  16. T1 Pop[1]: pop: cache 0 len 2, top slab 0 slot 0 (speculative)
+  17. T1 Pop[2]: pop: commit len 2 -> 1 on cache 0, slab 0 slot 0 owned; STALE: the thread lost this cid before the commit
+
+test model::tests::the_cid_read_before_the_section_is_the_same_bug ... ok
+test meta::tests::threads_get_disjoint_objects ... ok
+model: calloc race (Fresh, then Purged) under Variant { prefix_claim: true, owner_check: true, section: Rseq, strict_cid: true }: 943 states in 0.03 s, no violation
+test model::tests::the_current_order_passes_the_calloc_race_scenario ... ok
+test meta::tests::matches_model ... ok
+lock: spin_hint=wfe uncontended 68.8 ns/pair, contended 276.9 ns/acquire (8 threads x 100000), in use: baseline
+test lock::tests::spin_hint_costs ... ok
+model: group handoff under Variant { prefix_claim: true, owner_check: true, section: Rseq, strict_cid: true }: 4271 states in 0.33 s, no violation
+test model::tests::the_current_order_passes_the_handoff_scenario ... ok
+model: calloc race (Fresh, then Purged) under Variant { prefix_claim: false, owner_check: true, section: Rseq, strict_cid: true }: 58 states in 0.00 s, VIOLATION: thread 0 holds slot 0 of slab 0 reported zero, and its memory is dirty (the calloc race)
+   0. T0 Refill(1)[0]: lock arena 0
+   1. T0 Refill(1)[1]: plan: next_slab: commit fresh slab 0 of arena 0's group; take slab 0 (Fresh, live 0 -> 1, n 1, zero pick);
+   2. T0 Refill(1)[2]: unlock
+   3. T0 Refill(1)[3]: finish: fetch_or 0b0001 on slab 0 (bits 0b0000 -> 0b0001), pick flagged zero
+   4. T0 Release[0]: release: slabs 0b01
+   5. T0 Release[1]: release: fetch_and !0b0001 on slab 0 of arena 0 (bits 0b0001 -> 0b0000)
+   6. T0 Release[2]: release: sub_live(1) on slab 0 (1 -> 0), reached zero
+   7. T0 Release[3]: on_live_zero: lock arena 0
+   8. T0 Release[4]: on_live_zero: slab 0 -> Empty, into arena 0's empty set; unlock
+   9. T0 Release[6]: release: batch done
+  10. T0 Purge[0]: purge: lock arena 0
+  11. T0 Purge[1]: purge: slab 0 -> Purged, memory zero; unlock
+  12. T0 Refill(1)[0]: lock arena 0
+  13. T0 Refill(1)[1]: plan: next_slab: Purged slab 0 out of the purged set; take slab 0 (Purged, live 0 -> 1, n 1, zero pick);
+  14. T0 Refill(1)[2]: unlock
+  15. T1 Refill(1)[0]: lock arena 0
+  16. T1 Refill(1)[1]: plan: take slab 0 (Active, live 1 -> 2, n 1);
+  17. T1 Refill(1)[2]: unlock
+  18. T1 Refill(1)[3]: finish: fetch_or 0b0001 on slab 0 (bits 0b0000 -> 0b0001)
+  19. T1 Write(0)[0]: write slot 0 of slab 0
+  20. T1 Release[0]: release: slabs 0b01
+  21. T1 Release[1]: release: fetch_and !0b0001 on slab 0 of arena 0 (bits 0b0001 -> 0b0000)
+  22. T0 Refill(1)[3]: finish: fetch_or 0b0001 on slab 0 (bits 0b0000 -> 0b0001), pick flagged zero
+
+test model::tests::the_pre_fix_order_has_the_calloc_race_and_the_model_prints_it ... ok
+model: calloc race on a Purged slab under Variant { prefix_claim: false, owner_check: true, section: Rseq, strict_cid: true }: 41 states in 0.00 s, VIOLATION: thread 0 holds slot 0 of slab 0 reported zero, and its memory is dirty (the calloc race)
+   0. T0 Refill(1)[0]: lock arena 0
+   1. T0 Refill(1)[1]: plan: next_slab: commit fresh slab 0 of arena 0's group; take slab 0 (Fresh, live 0 -> 1, n 1, zero pick);
+   2. T0 Refill(1)[2]: unlock
+   3. T0 Refill(1)[3]: finish: fetch_or 0b0001 on slab 0 (bits 0b0000 -> 0b0001), pick flagged zero
+   4. T0 Write(0)[0]: write slot 0 of slab 0
+   5. T0 Release[0]: release: slabs 0b01
+   6. T0 Release[1]: release: fetch_and !0b0001 on slab 0 of arena 0 (bits 0b0001 -> 0b0000)
+   7. T0 Release[2]: release: sub_live(1) on slab 0 (1 -> 0), reached zero
+   8. T0 Release[3]: on_live_zero: lock arena 0
+   9. T0 Release[4]: on_live_zero: slab 0 -> Empty, into arena 0's empty set; unlock
+  10. T0 Release[6]: release: batch done
+  11. T0 Purge[0]: purge: lock arena 0
+  12. T0 Purge[1]: purge: slab 0 -> Purged, memory zero; unlock
+  13. T0 Refill(1)[0]: lock arena 0
+  14. T0 Refill(1)[1]: plan: next_slab: Purged slab 0 out of the purged set; take slab 0 (Purged, live 0 -> 1, n 1, zero pick);
+  15. T0 Refill(1)[2]: unlock
+  16. T1 Refill(1)[0]: lock arena 0
+  17. T1 Refill(1)[1]: plan: take slab 0 (Active, live 1 -> 2, n 1);
+  18. T1 Refill(1)[2]: unlock
+  19. T1 Refill(1)[3]: finish: fetch_or 0b0001 on slab 0 (bits 0b0000 -> 0b0001)
+  20. T1 Write(0)[0]: write slot 0 of slab 0
+  21. T1 Release[0]: release: slabs 0b01
+  22. T1 Release[1]: release: fetch_and !0b0001 on slab 0 of arena 0 (bits 0b0001 -> 0b0000)
+  23. T0 Refill(1)[3]: finish: fetch_or 0b0001 on slab 0 (bits 0b0000 -> 0b0001), pick flagged zero
+
+model: group handoff under Variant { prefix_claim: true, owner_check: false, section: Rseq, strict_cid: true }: 561 states in 0.03 s, VIOLATION: slab 0 is in more than one set
+   0. T0 Refill(1)[0]: lock arena 0
+   1. T0 Refill(1)[1]: plan: next_slab: commit fresh slab 0 of arena 0's group; take slab 0 (Fresh, live 0 -> 1, n 1, zero pick), prefix 0b0001 claimed under the lock;
+   2. T0 Refill(1)[2]: unlock
+   3. T0 Refill(1)[3]: finish: zero pick, slots 0..1 of slab 0 handed out
+   4. T0 Release[0]: release: slabs 0b01
+   5. T0 Release[1]: release: fetch_and !0b0001 on slab 0 of arena 0 (bits 0b0001 -> 0b0000)
+   6. T0 Release[2]: release: sub_live(1) on slab 0 (1 -> 0), reached zero
+   7. T1 Refill(1)[0]: lock arena 0
+   8. T1 Refill(1)[1]: plan: take slab 0 (Active, live 0 -> 1, n 1);
+   9. T1 Refill(1)[2]: unlock
+  10. T0 Release[3]: on_live_zero: lock arena 0
+  11. T1 Refill(1)[3]: finish: fetch_or 0b0001 on slab 0 (bits 0b0000 -> 0b0001)
+  12. T1 Release[0]: release: slabs 0b01
+  13. T1 Release[1]: release: fetch_and !0b0001 on slab 0 of arena 0 (bits 0b0001 -> 0b0000)
+  14. T1 Release[2]: release: sub_live(1) on slab 0 (1 -> 0), reached zero
+  15. T0 Release[4]: on_live_zero: slab 0 -> Empty, into arena 0's empty set; unlock
+  16. T0 Release[6]: release: batch done
+  17. T2 Refill(1)[0]: lock arena 1
+  18. T2 Refill(1)[1]: plan: adopt: group 0 from arena 0: slab 0 (Empty); next_slab: Empty slab 0 out of the empty set; take slab 0 (Empty, live 0 -> 1, n 1);
+  19. T1 Release[3]: on_live_zero: lock arena 0
+  20. T2 Refill(1)[2]: unlock
+  21. T2 Refill(1)[3]: finish: fetch_or 0b0001 on slab 0 (bits 0b0000 -> 0b0001)
+  22. T2 Release[0]: release: slabs 0b01
+  23. T2 Release[1]: release: fetch_and !0b0001 on slab 0 of arena 1 (bits 0b0001 -> 0b0000)
+  24. T2 Release[2]: release: sub_live(1) on slab 0 (1 -> 0), reached zero
+  25. T1 Release[4]: on_live_zero: slab 0 -> Empty, into arena 0's empty set; unlock
+
+model: test model::tests::the_handoff_without_the_owner_check_puts_a_foreign_slab_in_an_arenas_sets ... ok
+churn over two slabs under Variant { prefix_claim: true, owner_check: true, section: Rseq, strict_cid: true }: 8427 states in 0.36 s, no violation
+test model::tests::the_current_order_passes_the_churn_scenario ... ok
+test model::tests::the_pre_fix_order_has_the_race_on_a_purged_slab_too ... ok
+model: calloc race on a Purged slab under Variant { prefix_claim: true, owner_check: true, section: Rseq, strict_cid: true }: 435 states in 0.01 s, no violation
+test huge::tests::randomised_model_check ... ok
+model: per-CPU: three threads on two cids under Variant { prefix_claim: true, owner_check: true, section: None, strict_cid: false }: 39 states in 0.00 s, VIOLATION: slot 0 of slab 0 is held by thread 1 and thread 2 at once
+   0. T0 Pop[0]: pop: mm_cid = 0, cache 0 (no section)
+   1. T0 Pop[1]: pop: cache 0 empty, leave the section, refill from arena 0
+   2. T0 Pop[10]: lock arena 0
+   3. T0 Pop[11]: plan: next_slab: commit fresh slab 0 of arena 0's group; take slab 0 (Fresh, live 0 -> 2, n 2, zero pick), prefix 0b0011 claimed under the lock;
+   4. T0 Pop[12]: unlock
+   5. T0 Pop[13]: finish: zero pick, slots 0..2 of slab 0 handed out
+   6. T0 Pop[20]: refill push-back: mm_cid = 0, cache 0 (no section)
+   7. T0 Pop[21]: refill push-back: cache 0 len 0 (speculative)
+   8. T0 Pop[22]: refill push-back: commit slab 0 slot 0 owned, 1 into cache 0 (len 0 -> 1, zeroed 1)
+   9. T0 Write(0)[0]: write slot 0 of slab 0
+  10. T0 Push(0)[0]: push: mm_cid = 0, cache 0 (no section)
+  11. T0 Push(0)[1]: push: cache 0 len 1 (speculative)
+  12. T0 Push(0)[2]: push: commit slots[1] = slab 0 slot 0 on cache 0 (len 1 -> 2)
+  13. T1 Pop[0]: pop: mm_cid = 0, cache 0 (no section)
+  14. T1 Pop[1]: pop: cache 0 len 2, top slab 0 slot 0 (speculative)
+  15. T2 Pop[0]: pop: mm_cid = 0, cache 0 (no section); T1 was descheduled with cid 0 read, no section: it goes on stale
+  16. T2 Pop[1]: pop: cache 0 len 2, top slab 0 slot 0 (speculative)
+  17. T1 Pop[2]: pop: commit len 2 -> 1 on cache 0, slab 0 slot 0 owned; STALE: the thread lost this cid before the commit
+  18. T2 Pop[2]: pop: commit len 1 -> 1 on cache 0, slab 0 slot 0 owned
+
+model: per-CPU: three threads on two cids under Variant { prefix_claim: true, owner_check: true, section: None, strict_cid: true }: 34 states in 0.00 s, VIOLATION: cache 0 was mutated by thread 1's section after the thread lost cid 0 (the index came from a stale mm_cid read)
+   0. T0 Pop[0]: pop: mm_cid = 0, cache 0 (no section)
+   1. T0 Pop[1]: pop: cache 0 empty, leave the section, refill from arena 0
+   2. T0 Pop[10]: lock arena 0
+   3. T0 Pop[11]: plan: next_slab: commit fresh slab 0 of arena 0's group; take slab 0 (Fresh, live 0 -> 2, n 2, zero pick), prefix 0b0011 claimed under the lock;
+   4. T0 Pop[12]: unlock
+   5. T0 Pop[13]: finish: zero pick, slots 0..2 of slab 0 handed out
+   6. T0 Pop[20]: refill push-back: mm_cid = 0, cache 0 (no section)
+   7. T0 Pop[21]: refill push-back: cache 0 len 0 (speculative)
+   8. T0 Pop[22]: refill push-back: commit slab 0 slot 0 owned, 1 into cache 0 (len 0 -> 1, zeroed 1)
+   9. T0 Write(0)[0]: write slot 0 of slab 0
+  10. T0 Push(0)[0]: push: mm_cid = 0, cache 0 (no section)
+  11. T0 Push(0)[1]: push: cache 0 len 1 (speculative)
+  12. T0 Push(0)[2]: push: commit slots[1] = slab 0 slot 0 on cache 0 (len 1 -> 2)
+  13. T1 Pop[0]: pop: mm_cid = 0, cache 0 (no section)
+  14. T1 Pop[1]: pop: cache 0 len 2, top slab 0 slot 0 (speculative)
+  15. T2 Pop[0]: pop: mm_cid = 0, cache 0 (no section); T1 was descheduled with cid 0 read, no section: it goes on stale
+  16. T1 Pop[2]: pop: commit len 2 -> 1 on cache 0, slab 0 slot 0 owned; STALE: the thread lost this cid before the commit
+
+test model::tests::without_the_section_a_slot_is_handed_to_two_threads_or_a_push_is_lost ... ok
+test policy::tests::advice_at_the_band_edges ... ok
+test policy::tests::bands_at_the_edges ... ok
+test policy::tests::eager_return_of_the_excess_holds_until_within_the_cap ... ok
+test policy::tests::effective_period_follows_the_table ... ok
+test policy::tests::frac16_and_mul16_agree_with_the_arithmetic ... ok
+test policy::tests::policy_apply_publishes_the_outcome_and_the_full_purge ... ok
+test policy::tests::retention_cap_and_keep_ratio ... ok
+test policy::tests::thp_threshold ... ok
+test policy::tests::usage_ppm_saturates_and_scales ... ok
+test purge::linux_tests::batch_discards_through_the_probed_backend_and_the_loop ... ok
+test purge::linux_tests::fork_child_downgrades_a_pidfd_backend ... ok
+test purge::tests::advice_follows_headroom_band_key_and_explicit_purges ... ok
+test purge::tests::batch_fills_and_flushes ... ok
+test purge::tests::batch_merges_adjacent_ranges ... ok
+test purge::tests::decay_period_from_ms ... ok
+test purge::tests::purged_memory_is_zero_by_default ... ok
+test purge::tests::steps_and_allowance ... ok
+test purge::tests::weights_are_a_smootherstep_from_one_to_zero ... ok
+test rseq::tests::possible_cpu_lists_parse ... ok
+rseq: present=true size=33 flags=0 offset=320 registered=true verdict=usable
+rseq: 7 distinct mm_cid values over 8 busy threads
+
+thread 'slab::tests::a_state_byte_no_state_has_aborts' (501) panicked at src/slab.rs:33:5:
+slab: state byte 0x4 is not a slab state
+
+thread 'slab::tests::live_underflow_aborts' (505) panicked at src/slab.rs:231:9:
+slab: live count underflow (1 - 2)
+test rseq::tests::probe_reads_the_registered_area ... ok
+test rseq::tests::verdicts_follow_the_gate ... ok
+test slab::tests::a_state_byte_no_state_has_aborts - should panic ... ok
+test slab::tests::header_layout_is_fixed ... ok
+test slab::tests::init_sets_the_header ... ok
+test slab::tests::live_counter_and_state ... ok
+test slab::tests::live_underflow_aborts - should panic ... ok
+test slab::tests::neighbouring_descriptors_do_not_overlap ... ok
+test slab::tests::state_bytes_no_state_has_decode_to_none ... ok
+test slab::tests::state_round_trips ... ok
+test slab::tests::strides_are_the_same_for_every_page_geometry ... ok
+test slab::tests::strides_keep_a_line_inside_one_group ... ok
+model: three threads, both slabs under Variant { prefix_claim: true, owner_check: true, section: Rseq, strict_cid: true }: 42047 states in 3.57 s, no violation
+test model::tests::the_current_order_passes_the_three_way_scenario ... ok
+test slice::tests::layout_constants ... ok
+slice_ext: 32 lock threads and 8 hogs on 8 CPUs, 8675 holds, 0 grants yielded via rseq_slice_yield, threads enabled 0, state kernel-disabled
+test slice::tests::grants_are_yielded_under_oversubscription ... ok
+slice_ext: rseq size 33 offset 320 available=false enabled=false yield_syscall=false verdict=kernel-disabled
+test slice::tests::probe_both_ways_and_off_never_requests ... ok
+test stats::tests::arenas_split_by_owner_and_sum_to_the_totals ... ok
+test stats::tests::helpers_and_identity_check ... ok
+test stats::tests::identities_hold_through_the_lifecycle ... ok
+test stats::tests::curregs_matches_live_under_random_traffic ... ok
+cgroup: /sys/fs/cgroup (mount /sys/fs/cgroup, path /) limit max high max current 100335616 events high 0 (+0) max 0 (+0) psi not armed (no background thread) pressure_events 0 cpus 8 cpu.max max/100000
+cgroup: /proc/self/cgroup path Some("/"), cgroup2 mount Some("/sys/fs/cgroup")
+cgroup: memory.max=max memory.high=max memory.current=104529920 memory.pressure=some avg10=0.00 avg60=0.00 avg300=0.00 total=0
+test sys::cgroup::linux_tests::discover_matches_std_reading_of_the_same_files ... ok
+test sys::cgroup::linux_tests::eventfd_and_ppoll_work ... ok
+cgroup: /proc/pressure/memory true; memory.pressure present
+cgroup: PSI trigger: Unavailable errno 30 fd None
+test sys::cgroup::linux_tests::pressure_trigger_probe ... ok
+cgroup: 10 reads in 391286 sample calls over 100 ms
+test sys::cgroup::linux_tests::sampling_is_rate_limited_to_ten_milliseconds ... ok
+test sys::cgroup::tests::cpu_files ... ok
+test sys::cgroup::tests::effective_limit_walk ... ok
+test sys::cgroup::tests::events_files ... ok
+test sys::cgroup::tests::join_dir_forms ... ok
+test sys::cgroup::tests::limit_files ... ok
+test sys::cgroup::tests::line_scanner_reassembles_across_chunks ... ok
+test sys::cgroup::tests::mountinfo_lines ... ok
+test sys::cgroup::tests::pressure_files ... ok
+test sys::cgroup::tests::proc_self_cgroup_lines ... ok
+test sys::cgroup::tests::untracked_states_display ... ok
+cldemote: present=false enabled=false
+test sys::cldemote::linux_tests::demote_follows_the_probe_and_never_changes_memory ... ok
+test sys::cpu::linux_tests::hwcap_constants_match_the_header ... ok
+test bitmap::tests::two_level_ranges_match_model ... ok
+cpu: mte=no mte3=no pac=no lse=yes lse2=no bti=no sve=no cacheline=64 l1d=64K l2=1M (cache source Sysfs)
+cpu: spin_hint=baseline event_stream=true
+kernel 7.0: page_size=4096 guard_install=yes mseal=no process_madvise=no process_madvise_free=no anon_name=yes thp=madvise mthp=2M collapse=unprobed rseq=yes rseq_size=33 mm_cid=yes mte=no mte3=no pac=no lse=yes lse2=no bti=no sve=no cacheline=64 l1d=64K l2=1M
+rseq: __rseq_size=33 __rseq_offset=320 __rseq_flags=0 cpu_id=4
+pac: not available on this host, skipping
+test sys::cpu::linux_tests::probe_matches_proc_cpuinfo ... ok
+test sys::cpu::tests::altra_hwcap_decodes_to_lse_only ... ok
+test sys::cpu::tests::apple_silicon_vm_hwcap_decodes ... ok
+test sys::cpu::tests::axion_hwcap_decodes_without_mte ... ok
+test sys::cpu::tests::caches_fill_from_the_fallback ... ok
+test sys::cpu::tests::ctr_el0_gives_the_line_size ... ok
+test sys::cpu::tests::display_arm_line ... ok
+test sys::cpu::tests::display_x86_line ... ok
+test sys::cpu::tests::genoa_9b14_cpuid_decodes_without_la57_or_uai ... ok
+test sys::cpu::tests::genoa_9b14_leaf_8000001d_gives_32k_l1d_and_1m_l2 ... ok
+test sys::cpu::tests::lam_needs_subleaf_1_and_leaf_7 ... ok
+test sys::cpu::tests::milan_7b13_cpuid_decodes ... ok
+test sys::cpu::tests::mte_bits_are_seen_when_present ... ok
+test sys::cpu::tests::spin_hint_follows_waitpkg_and_never_wfe ... ok
+test sys::cpu::tests::sysfs_cache_directories_decode ... ok
+test sys::cpu::tests::sysfs_sizes_parse ... ok
+test sys::cpu::tests::uai_is_leaf_0x80000021_bit_7_alone ... ok
+test sys::cpu::tests::xeon_8581c_cpuid_decodes ... ok
+test sys::cpu::tests::xeon_8581c_leaf4_gives_48k_l1d_and_2m_l2 ... ok
+test sys::errno::tests::addresses_are_ok ... ok
+test sys::errno::tests::boundary_is_exactly_max_errno ... ok
+test sys::errno::tests::display_names_known_and_unknown ... ok
+test sys::errno::tests::every_code_round_trips ... ok
+test sys::errno::tests::negative_errnos_map ... ok
+test sys::errno::tests::zero_and_small_positives_are_ok ... ok
+test sys::features::linux_tests::page_size_matches_libc_and_auxv ... ok
+test sys::features::linux_tests::probe_prints_and_matches_kernel_version ... ok
+test sys::features::linux_tests::release_closes_pidfd ... ok
+test sys::features::tests::auxv_parse_finds_pagesz ... ok
+test sys::features::tests::auxv_parse_rejects_bad_input ... ok
+test sys::features::tests::display_is_one_line_of_key_values ... ok
+test sys::features::tests::feature_line_fits ... ok
+test sys::features::tests::feature_line_is_the_display_with_a_nul ... ok
+test sys::features::tests::rseq_verdicts_follow_size_and_cpu_id ... ok
+test sys::features::tests::thp_setting_parses_the_bracketed_word ... ok
+test sys::features::tests::thp_table_before_6_8_has_the_pmd_alone ... ok
+test sys::features::tests::thp_table_gce_default_lists_eight_sizes_and_enables_the_pmd_alone ... ok
+test sys::features::tests::thp_table_missing_directory_is_none ... ok
+test sys::features::tests::thp_table_with_64k_madvise_and_pmd_never ... ok
+test sys::pac::tests::mismatched_modifier_faults ... ok
+test sys::tests::abort_child_hook ... ok
+test sys::tests::abort_defeats_a_blocked_signal ... ok
+test sys::tests::abort_defeats_a_returning_handler ... ok
+test sys::tests::abort_flushes_long_messages ... ok
+test sys::tests::abort_macro_formats ... ok
+test sys::tests::abort_writes_message_and_raises_sigabrt ... ok
+Cpu::probe: min 48.28 us, median 49.88 us, p90 63.36 us over 1000 runs
+test sys::cpu::linux_tests::probe_cost_is_small ... ok
+test sys::tests::errno_display_from_syscall ... ok
+test sys::tests::files_open_read_close ... ok
+test sys::tests::futex_wake_and_mismatch ... ok
+test sys::tests::clocks_advance ... ok
+test sys::tests::getrandom_fills ... ok
+test sys::tests::mmap_errors_decode ... ok
+test sys::tests::mmap_fixed_noreplace_refuses_overlap ... ok
+test sys::tests::mmap_mprotect_madvise_munmap ... ok
+mseal: ENOSYS on this kernel, skipping
+test sys::tests::mseal_blocks_munmap_when_supported ... ok
+test sys::tests::ncpus_counts_the_affinity_mask ... ok
+process_madvise: EPERM (no CAP_SYS_NICE), skipping
+test sys::tests::pid_and_tid ... ok
+test sys::tests::process_madvise_via_pidfd ... ok
+test sys::tests::futex_wakes_a_sleeping_thread ... ok
+test sys::tests::vma_naming_shows_in_maps_when_supported ... ok
+test sys::tests::write_to_devnull_and_bad_fd ... ok
+test tests::quantum_is_a_power_of_two ... ok
+test thp::tests::always_refuses_chunks_on_a_pmd_over_2m ... ok
+test thp::tests::always_takes_chunks_with_the_pmd_and_folios_without ... ok
+test thp::tests::auto_wants_a_sub_pmd_size_and_no_madvise_gated_pmd ... ok
+test thp::tests::chunk_is_pmd_aligned_and_clipped ... ok
+test thp::tests::never_is_off_whatever_the_kernel ... ok
+test thp::tests::statics_follow_the_decision ... ok
+test sys::tests::syscall_numbers_match_kernel_headers ... ok
+test tls::tests::get_tp_agrees_with_get_and_names_the_thread_pointer ... ok
+test tls::tests::shared_object_uses_initial_exec_tls ... ok
+test tls::tests::slot_starts_null_and_round_trips ... ok
+test tls::tests::threads_have_distinct_slots ... ok
+tls_threads: ok 64 threads, distinct heaps (challoc 0.1.0)
+test tls::tests::c_program_with_64_threads_sees_distinct_slots ... ok
+cgroup: memory.current 98529280 -> 173920256 after 64 MiB (kernel says 173920256)
+test sys::cgroup::linux_tests::current_tracks_a_large_allocation ... ok
+model: per-CPU: pop on one cid, push on another under Variant { prefix_claim: true, owner_check: true, section: Rseq, strict_cid: true }: 66746 states in 4.06 s, no violation
+test model::tests::the_rseq_protocol_passes_the_per_cpu_migrate_scenario ... ok
+test layout::tests::every_in_slab_offset_classifies_exactly ... ok
+test bitmap::tests::atomic_bitmap_matches_model ... ok
+model: per-CPU: three threads on two cids under Variant { prefix_claim: true, owner_check: true, section: Rseq, strict_cid: true }: 163125 states in 9.80 s, no violation
+test model::tests::the_rseq_protocol_passes_the_per_cpu_share_scenario ... ok
+model: per-CPU: purge and the zero prefix under Variant { prefix_claim: true, owner_check: true, section: Rseq, strict_cid: true }: 241740 states in 12.13 s, no violation
+test model::tests::the_rseq_protocol_passes_the_per_cpu_purge_scenario ... ok
+
+test result: ok. 399 passed; 0 failed; 0 ignored; 0 measured; 118 filtered out; finished in 13.87s
+
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+     Running unittests src/lib.rs (target/debug/deps/challoc-543929ce36c3f060)
+
+running 117 tests
+test api::ctests::c_cgroup_off ... ok
+cgroup: ok cgroup
+calloc_zero: ok calloc_zero
+test api::ctests::c_calloc_zero ... ok
+test api::ctests::c_align ... ok
+test api::ctests::c_conf_bad_env_aborts_even_when_abort_conf_comes_later ... ok
+align: ok align
+conf badenv: challoc: CHALLOC_CONF: invalid conf value "1x" for tcache_nslots_small_max
+challoc: abort_conf: 1 configuration problem(s), see above
+cgroup_policy: skip: cannot create a child cgroup under /sys/fs/cgroup (Read-only file system)
+ok cgroup_policy
+test api::ctests::c_cgroup_policy_high ... ok
+cgroup_policy: cgroup policy: defaults (no limit) decay_ms 10000 retention_cap max keep 100% empty_bytes 0 full_purges 0 thp as configured
+base 10000 ms, limit 18446744073709551615, high 18446744073709551615, decay_ms 10000, retention_cap 18446744073709551615
+empty_bytes 67207168 after freeing 64 MiB, no limit
+skip: no cgroup limit, bands not exercised
+ok cgroup_policy
+test api::ctests::c_cgroup_policy_bands ... ok
+conf badsym: challoc: je_malloc_conf: unknown conf key "no_such_key"
+challoc: abort_conf: 1 configuration problem(s), see above
+test api::ctests::c_conf_bad_symbol_aborts ... ok
+conf env: 
+test api::ctests::c_conf_env ... ok
+conf override: challoc: je_malloc_conf: unknown conf key "no_such_key"
+challoc: MALLOC_CONF: out-of-range conf value "-1" for narenas (clamped)
+test api::ctests::c_conf_env_overrides_the_symbol ... ok
+cgroup: ok cgroup
+test api::ctests::c_cgroup_stats ... ok
+conf inert: challoc: MALLOC_CONF: conf key stats_print is accepted but has no effect (not implemented)
+challoc: abort_conf: 1 configuration problem(s), see above
+conf plain: challoc: malloc_conf: unknown conf key "no_such_key"
+challoc: abort_conf: 1 configuration problem(s), see above
+conf notcache: 
+conf symbol: 
+test api::ctests::c_conf_symbol ... ok
+conf huge_retain_max: 
+conf check_zero: 
+test api::ctests::c_conf_no_tcache ... ok
+test api::ctests::c_conf_plain_symbol_interposes_the_library_definition ... ok
+conf plain_ok: 
+conf thp: 
+test api::ctests::c_conf_inert_key_aborts_under_abort_conf ... ok
+decay: decay: start lazy
+trim: rss 50 -> 50 MiB
+ok decay
+test api::ctests::c_decay_lazy_free ... ok
+test api::ctests::c_cgroup_background_thread ... ok
+cgroup: psi unavailable
+ok cgroup
+test api::ctests::c_decay_trim ... ok
+decay: decay: start trim
+trim: rss 50 -> 2 MiB
+ok decay
+test api::ctests::c_decay_background_thread ... ok
+decay: decay: start background
+background: rss 50 -> 2 MiB
+ok decay
+test api::ctests::c_features ... ok
+features: features: page_size=4096 guard_install=yes mseal=no process_madvise=no process_madvise_free=no anon_name=yes thp=madvise mthp=2M collapse=unprobed rseq=yes rseq_size=33 mm_cid=yes mte=no mte3=no pac=no lse=yes lse2=no bti=no sve=no cacheline=64 l1d=64K l2=1M
+rseq: rseq=yes rseq_size=33 mm_cid=yes
+ok features
+test api::ctests::c_decay_never ... ok
+decay: decay: start never
+never: rss 50 -> 50 MiB
+never+trim: rss 50 -> 2 MiB
+ok decay
+fork_cost thp modes: skipped (set CHALLOC_THP_TESTS=1)
+test api::ctests::c_fork_cost_thp_modes ... ok
+test api::ctests::c_fork_signal ... ok
+fork_signal: ok fork_signal
+fork_cost: fork_cost: live 64 MiB in 125337 values (16..1024 bytes)
+fork_cost: fork_us=2879 burst_ms=54.2 burst_faults=17523 pages=16384 total_ms=64.0 maxrss_kb=74872
+ok fork_cost
+test api::ctests::c_fork_cost ... ok
+decay: decay: start decay
+decay early: rss 50 -> 50 MiB
+decay late: rss 50 -> 2 MiB
+ok decay
+test api::ctests::c_decay_window ... ok
+cgroup_churn: cgroup_churn report: 64 MiB churn, threshold 16 MiB; cgroup /sys/fs/cgroup memory.max max memory.current 127 MiB, rss 1 MiB
+allocated 64 MiB in 28 ms (32 x 1 MiB, 512 x 32 KiB, 16384 x 1 KiB): rss 66 MiB, memory.current 179 MiB
+challoc: stats.cgroup.limit 0 MiB decay_ms 10000 retention_cap 0 MiB empty_bytes 0 MiB full_purges 0 purge_advice eager lazy_purges 0 eager_purges 0
+freed in 2 ms: rss 66 MiB, memory.current 179 MiB
+  t+ 105 ms: rss   66 MiB, memory.current 195 MiB
+  t+ 208 ms: rss   66 MiB, memory.current 204 MiB
+  t+ 300 ms: rss   66 MiB, memory.current 205 MiB
+  t+ 403 ms: rss   66 MiB, memory.current 219 MiB
+  t+ 505 ms: rss   66 MiB, memory.current 214 MiB
+  t+ 608 ms: rss   66 MiB, memory.current 218 MiB
+  t+ 701 ms: rss   66 MiB, memory.current 223 MiB
+  t+ 804 ms: rss   66 MiB, memory.current 276 MiB
+  t+ 906 ms: rss   65 MiB, memory.current 284 MiB
+  t+1009 ms: rss   65 MiB, memory.current 265 MiB
+  t+1101 ms: rss   65 MiB, memory.current 304 MiB
+  t+1204 ms: rss   65 MiB, memory.current 322 MiB
+  t+1307 ms: rss   64 MiB, memory.current 313 MiB
+  t+1401 ms: rss   64 MiB, memory.current 269 MiB
+  t+1504 ms: rss   63 MiB, memory.current 308 MiB
+  t+1606 ms: rss   62 MiB, memory.current 422 MiB
+  t+1700 ms: rss   61 MiB, memory.current 311 MiB
+  t+1807 ms: rss   59 MiB, memory.current 375 MiB
+  t+1905 ms: rss   57 MiB, memory.current 364 MiB
+  t+2005 ms: rss   55 MiB, memory.current 374 MiB
+at 2000 ms: rss 55 MiB (min 55 MiB, never under the threshold; 2000 ms), memory.current 374 MiB
+challoc: stats.cgroup.limit 0 MiB decay_ms 10000 retention_cap 0 MiB empty_bytes 53 MiB full_purges 0 purge_advice eager lazy_purges 0 eager_purges 40
+RESULT churn mode=report mib=64 threshold=16 rss_peak=66 rss_2s=55 rss_min=55 below_ms=-1 current_peak=179 current_2s=374
+ok cgroup_churn
+test api::ctests::c_cgroup_churn_program ... ok
+decay: decay: start curve
+curve early: rss 50 -> 50 MiB
+curve mid: rss 50 -> 34 MiB
+curve late: rss 50 -> 2 MiB
+ok decay
+test api::ctests::c_decay_curve ... ok
+cgroup_oscillate: cgroup_oscillate: 16..48 MiB live for 3 s, hold 200 ms; cgroup /sys/fs/cgroup memory.max max MiB memory.current 207 MiB rss 1 MiB
+memory.events before: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0
+composition at start: current 207 anon 200 file 1 kernel 4 (slab 1 pagetables 2) MiB, rss 1 MiB; challoc allocated 0 active 0 resident 0 metadata 0 retained 0 empty 0 MiB
+composition top of cycle 1: current 260 anon 250 file 2 kernel 4 (slab 1 pagetables 2) MiB, rss 50 MiB; challoc allocated 48 active 49 resident 50 metadata 0 retained 0 empty 0 MiB
+cycle   1 at     0 s: up 48 MiB in 12 ms (rss 50, current 260 MiB), down to 16 MiB in 5 ms (rss 50, current 191 MiB), 4921 objects
+composition top of cycle 2: current 198 anon 191 file 1 kernel 3 (slab 1 pagetables 2) MiB, rss 52 MiB; challoc allocated 48 active 49 resident 51 metadata 0 retained 0 empty 1 MiB
+cycle   2 at     0 s: up 48 MiB in 2 ms (rss 52, current 198 MiB), down to 16 MiB in 6 ms (rss 52, current 280 MiB), 5952 objects
+composition top of cycle 3: current 299 anon 291 file 2 kernel 4 (slab 1 pagetables 2) MiB, rss 52 MiB; challoc allocated 48 active 49 resident 52 metadata 0 retained 0 empty 1 MiB
+cycle   3 at     1 s: up 48 MiB in 3 ms (rss 52, current 299 MiB), down to 16 MiB in 5 ms (rss 52, current 321 MiB), 5036 objects
+cycle   4 at     1 s: up 48 MiB in 2 ms (rss 52, current 269 MiB), down to 16 MiB in 5 ms (rss 52, current 423 MiB), 6847 objects
+composition top of cycle 5: current 376 anon 366 file 1 kernel 7 (slab 1 pagetables 5) MiB, rss 54 MiB; challoc allocated 48 active 50 resident 53 metadata 0 retained 0 empty 3 MiB
+cycle   5 at     2 s: up 48 MiB in 7 ms (rss 54, current 376 MiB), down to 16 MiB in 10 ms (rss 54, current 320 MiB), 5885 objects
+cycle   6 at     2 s: up 48 MiB in 2 ms (rss 54, current 279 MiB), down to 16 MiB in 3 ms (rss 54, current 386 MiB), 7863 objects
+cycle   7 at     2 s: up 48 MiB in 2 ms (rss 54, current 828 MiB), down to 16 MiB in 9 ms (rss 54, current 1279 MiB), 5944 objects
+cycle   8 at     3 s: up 48 MiB in 2 ms (rss 54, current 1547 MiB), down to 16 MiB in 8 ms (rss 54, current 1731 MiB), 6817 objects
+memory.events after: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0
+composition highest top (cycle 8): current 1547 anon 1528 file 1 kernel 15 (slab 2 pagetables 12) MiB, rss 54 MiB; challoc allocated 49 active 51 resident 54 metadata 0 retained 0 empty 2 MiB
+composition at end (bottom): current 1849 anon 1831 file 1 kernel 15 (slab 2 pagetables 12) MiB, rss 54 MiB; challoc allocated 16 active 25 resident 54 metadata 0 retained 0 empty 28 MiB
+challoc: stats.cgroup.limit 0 MiB current 1849 MiB decay_ms 10000 retention_cap 0 MiB empty_bytes 28 MiB full_purges 0 pressure_events 0
+RESULT oscillate cycles=8 seconds=3 low=16 high=48 current_peak=1849 rss_peak=54 max_before=0 max_after=0 high_before=0 high_after=0 oom_kill_before=0 oom_kill_after=0
+ok cgroup_oscillate
+test api::ctests::c_cgroup_oscillate_program ... ok
+guard_slab: guard_slab fault: 64-byte class, slab 65536, guard every 8 groups of 65536; guard slab at 0x940b93470000: last slot byte 0x940b9346ffff writable, guard bytes 0x940b93470000 and 0x940b93470fff fault (SIGSEGV, si_addr 0x940b93470000), read faults 1
+ok guard_slab
+test api::ctests::c_guard_slab_fault ... ok
+huge_hole: shape 1: 25 fillers in the hole below 0xf3d19b800000
+shape 2: 23 fillers in the hole below 0xf3d19c000000
+ok huge_hole
+test api::ctests::c_huge_hole ... ok
+huge_hole: shape 1: 25 fillers in the hole below 0xf469cb800000
+shape 2: 23 fillers in the hole below 0xf469cc000000
+ok huge_hole
+test api::ctests::c_huge_hole_no_guards ... ok
+test api::ctests::c_guard_slab_vmas ... ok
+guard_slab: guard_slab vmas: MADV_GUARD_INSTALL available, guard slabs on; 16-byte class, slab 65536; 10001 slabs allocated from over a 11429-slab span (714 MiB), 1428 guard slabs (expected 1428); maps lines intersecting the span 1 (1 rw, bound 8); process maps lines 58 -> 58
+ok guard_slab
+mseal: mseal: unavailable (kernel < 6.10 or seccomp), allocator sealed nothing; maps lines 23 -> 40
+ok msealtest api::ctests::c_mseal ... ok
+
+negative double_free_cached: challoc: double free of 0x96ec79840000 (class 3): both copies cached, one at the flush boundary [src/heap.rs:3898]
+test api::ctests::c_negative_double_free_cached ... ok
+test api::ctests::c_jemalloc_api ... ok
+jemalloc_api: ok jemalloc_api
+negative double_free_cached: challoc: double free of 0x97a537440000 (class 3): both copies cached, one at the flush boundary [src/heap.rs:3898]
+test api::ctests::c_negative_double_free_cached_with_pac_pointers ... ok
+negative double_free_cached: challoc: double free of 0x8c2063c40000: the slot is already in the thread cache [src/heap.rs:3812]
+test api::ctests::c_negative_double_free_cached_with_scan ... ok
+test api::ctests::c_negative_double_free_stale ... ok
+negative double_free_stale: challoc: invalid or double free of 0xc8de73c40000 (class 3 slab 4 slot 0): slot is not allocated [src/class.rs:2516]
+negative free_sized_mismatch: challoc: sized free of 0x87959c440000: size hint 65 does not match the allocation (class 3, 64 bytes) [src/heap.rs:1293]
+test api::ctests::c_negative_free_sized_mismatch ... ok
+test api::ctests::c_negative_double_free_straddle ... ok
+negative double_free_straddle: challoc: double free of 0xb64921820000 (class 3): both copies cached, one at the flush boundary [src/heap.rs:3898]
+negative interior_free: challoc: invalid free of 0xcc2a61400020: not an allocation [src/heap.rs:3787]
+test api::ctests::c_negative_interior_free ... ok
+negative huge_overflow: signal 11
+test api::ctests::c_negative_huge_overflow ... ok
+negative sized_double_free: challoc: double free of 0x95a682840000 (class 3): both copies cached, one at the flush boundary [src/heap.rs:3898]
+test api::ctests::c_negative_sized_double_free ... ok
+negative sized_double_free: challoc: double free of 0x97e530040000: the slot is already in the thread cache [src/heap.rs:3812]
+test api::ctests::c_negative_sized_double_free_with_scan ... ok
+negative sized_guard: challoc: invalid free of 0xb5dc4fc71000 (class 3 slab 7): guard slab [src/class.rs:2501]
+test api::ctests::c_negative_sized_guard ... ok
+negative sized_mismatch: challoc: sized free of 0x8fd39e440000: size hint 1000 does not match the allocation (class 3, 64 bytes) [src/heap.rs:1293]
+test api::ctests::c_negative_sized_mismatch ... ok
+test api::ctests::c_negative_stack_free ... ok
+negative stack_free: challoc: invalid free of 0xfffffd70b3a8: not an allocation [src/heap.rs:3787]
+test api::ctests::c_negative_usable_size_freed ... ok
+negative usable_size_freed: challoc: invalid or double free of 0xcdfb28040000 (class 3 slab 4 slot 0): slot is not allocated [src/class.rs:2516]
+percpu: percpu: mode percpu enabled=1 ids=8 headers=117 cached=24611 aborts=4 after 64 threads x 20000 ops
+ok percpu
+percpu: percpu: mode off enabled=0 ids=0 headers=0 cached=0 aborts=0 after 64 threads x 20000 ops
+ok percpu
+test api::ctests::c_percpu_both_ways ... ok
+test api::ctests::c_fork_alloc_under_mallctl ... ok
+fork_alloc: fork_alloc: mallctl mode, 200 forks, 1254470 epoch/tcache rounds in 3 threads
+ok fork_alloc
+test api::ctests::c_fuzz_short ... ok
+fuzz: fuzz: seed 0xc4a110c, 400000 ops, 4 threads, table 2048
+fuzz: 207687 allocs (32928 aligned, 41610 calloc) 207687 frees (19833 cross-thread) 57339 reallocs 28775 inspections, 18751.3 MiB filled
+ok fuzz
+fuzz: fuzz: seed 0xc4a110c, 400000 ops, 4 threads, table 2048
+fuzz: 207643 allocs (32908 aligned, 41632 calloc) 207643 frees (19536 cross-thread) 57244 reallocs 28796 inspections, 18611.9 MiB filled
+ok fuzz
+fuzz: fuzz: seed 0xc4a110c, 400000 ops, 4 threads, table 2048
+fuzz: 207729 allocs (32956 aligned, 41582 calloc) 207729 frees (19804 cross-thread) 57243 reallocs 28745 inspections, 18679.7 MiB filled
+ok fuzz
+test api::ctests::c_fuzz_short_under_zero_on_free ... ok
+slice_ext: slice_ext: mode on, __rseq_size 33, available 0, main thread enabled -1 (flags bit 5: 0)
+slice_ext: 32 threads: 0 enabled before their first allocation, 0 after
+Slice extension: off (kernel-disabled); slice_ext:on requested, unavailable
+ok slice_ext
+random_ops: random_ops: 1000000 ops, 8 threads: 608738 allocs 538844 frees 106704 reallocs 69894 cross-thread frees
+ok random_ops
+test api::ctests::c_random_ops_one_million_across_eight_threads ... ok
+test api::ctests::c_slice_ext_both_ways ... ok
+slice_ext: slice_ext: mode off, __rseq_size 33, available 0, main thread enabled -1 (flags bit 5: 0)
+slice_ext: 32 threads: 0 enabled before their first allocation, 0 after
+Slice extension: off (slice_ext:off)
+ok slice_ext
+thp: thp always: opt.thp=always sysfs thp=madvise (enabled file: madvise) mthp=2M pmd 2048 kB (page 4096) pmd_enabled=1 sub_pmd 0 kB
+thp always: mode 2 class_ranges 9 class_bytes 18874368 failures 0; VMA hg=1 nh=0 THPeligible=1 AnonHugePages=10240 kB
+thp always: huge run 8 MiB: VMA hg=1 nh=0 THPeligible=1 AnonHugePages=8192 kB (global thp madvise)
+ok thp
+test api::ctests::c_thp_always ... ok
+thp: thp auto: opt.thp=auto sysfs thp=madvise (enabled file: madvise) mthp=2M pmd 2048 kB (page 4096) pmd_enabled=1 sub_pmd 0 kB
+thp auto: mode 0 class_ranges 0 class_bytes 0 failures 0; VMA hg=0 nh=0 THPeligible=0 AnonHugePages=0 kB
+thp auto: huge run 8 MiB: VMA hg=0 nh=0 THPeligible=0 AnonHugePages=0 kB (global thp madvise)
+thp auto: inert on this host (no size below the PMD enabled)
+ok thp
+test api::ctests::c_thp_auto ... ok
+producer_consumer: ok producer_consumer
+test api::ctests::c_producer_consumer ... ok
+test api::ctests::c_thp_never ... ok
+thp: thp never: opt.thp=never sysfs thp=madvise (enabled file: madvise) mthp=2M pmd 2048 kB (page 4096) pmd_enabled=1 sub_pmd 0 kB
+thp never: mode 0 class_ranges 0 class_bytes 0 failures 0; VMA hg=0 nh=1 THPeligible=0 AnonHugePages=0 kB
+thp never: huge run 8 MiB: VMA hg=0 nh=1 THPeligible=0 AnonHugePages=0 kB (global thp madvise)
+thp never: global THP is madvise, so AnonHugePages 0 / 0 kB is 0 with or without the advice; the nh flags are the check here
+ok thp
+test api::ctests::c_tls_threads_with_pac_pointers ... ok
+tls_threads (pac_pointers:true): ok 64 threads, distinct heaps (challoc 0.1.0)
+tunables: slot_randomize=1: 247 steps up, 264 down
+ok tunables
+fork_alloc: ok fork_alloc
+test api::ctests::c_fork_alloc ... ok
+tunables: zero_on_free=1: 7 sizes through free, sdallocx and free_sized
+ok tunables
+tunables: slot_randomize=0: 511 steps up, 0 down
+ok tunables
+test api::ctests::c_tunables_slot_randomize ... ok
+test api::ctests::cxx_symbols_in_release_so ... ok
+test api::ctests::c_tunables_zero_on_free ... ok
+tunables: zero_on_free=0: 7 sizes through free, sdallocx and free_sized
+ok tunables
+test api::ctests::glibc_tst_calloc ... ok
+tst-calloc: ok tst-calloc
+tst-mallocfork: ok tst-mallocfork
+test api::ctests::glibc_tst_mallocfork ... ok
+tst-malloc: ok tst-malloc
+test api::ctests::glibc_tst_malloc ... ok
+test api::ctests::c_thread_exit ... ok
+thread_exit: ok thread_exit
+tst-posix_memalign: ok tst-posix_memalign
+test api::ctests::glibc_tst_posix_memalign ... ok
+test api::ctests::jemalloc_symbols_in_release_so ... ok
+tst-realloc: size: 3, usable size: 16, extra: 13
+size: 2051, usable size: 2560, extra: 509
+size: 4099, usable size: 5120, extra: 1021
+size: 6147, usable size: 7168, extra: 1021
+size: 8195, usable size: 10240, extra: 2045
+ok tst-realloc
+test api::ctests::glibc_tst_realloc ... ok
+jemalloc_link: ok jemalloc_link
+test api::ctests::jemalloc_compat_stage ... ok
+random_ops: random_ops: 200000 ops, 1 threads: 121642 allocs 107488 frees 21623 reallocs 14154 cross-thread frees
+ok random_ops
+test api::ctests::c_random_ops_single_thread ... ok
+test api::cxx::tests::libstdcxx_symbols_are_absent_from_the_test_binary ... ok
+test api::glibc::tests::mallinfo_reflects_live_allocations_and_keeps_glibcs_identities ... ok
+test api::glibc::tests::mallopt_accepts_everything ... ok
+challoc: malloc_write test line
+test api::jemalloc::tests::malloc_write_goes_to_the_hook_when_set ... ok
+test api::ctests::c_fuzz_single_thread_small_table ... ok
+fuzz: fuzz: seed 0x7, 200000 ops, 1 threads, table 64
+fuzz: 97288 allocs (15606 aligned, 19635 calloc) 97288 frees (0 cross-thread) 30582 reallocs 15260 inspections, 8874.0 MiB filled
+ok fuzz
+test api::jemalloc::tests::mallocx_routes_arenas_and_caches ... ok
+test api::jemalloc::tests::rallocx_keeps_moves_zeroes_and_preserves_content ... ok
+test api::libc::tests::aligned_allocation_picks_the_smallest_fitting_class ... ok
+stress: Using 8 threads with a 50% load-per-thread and 10 iterations
+- iterations left:   0
+ok stress
+test api::ctests::mimalloc_test_stress_check_zero ... ok
+test api::libc::tests::bad_alignment_is_einval_and_exhaustion_is_enomem ... ok
+test api::ctests::mimalloc_test_stress ... ok
+stress: Using 8 threads with a 50% load-per-thread and 10 iterations
+- iterations left:   0
+ok stress
+test api::libc::tests::calloc_zeroes_reused_slots_and_huge_runs ... ok
+test api::libc::tests::cross_thread_free_and_thread_exit_with_full_cache ... ok
+test api::libc::tests::free_preserves_errno ... ok
+cxx_new: ok cxx_new
+test api::ctests::cxx_new ... ok
+test api::libc::tests::malloc_zero_returns_distinct_pointers ... ok
+test api::ctests::mimalloc_test_stress_check_zero_slot_randomize ... ok
+stress: Using 8 threads with a 50% load-per-thread and 10 iterations
+- iterations left:   0
+ok stress
+test api::libc::tests::shared_object_exports_every_libc_entry_point ... ok
+test api::libc::tests::valloc_and_pvalloc_are_page_aligned ... ok
+stats.cgroup: limit 18446744073709551615 high 18446744073709551615 current 1103986688 pressure_events 0
+stats.cgroup: decay_ms 10000 retention_cap 18446744073709551615 empty_bytes 65536 full_purges 0
+test api::mallctl::tests::arena_keys_create_lookup_purge_decay_and_destroy ... ok
+test api::mallctl::tests::names_resolve_to_positional_mibs_and_back ... ok
+test api::mallctl::tests::read_write_rules_match_jemalloc ... ok
+test api::mallctl::tests::static_and_opt_keys_report_the_build_and_configuration ... ok
+test api::mallctl::tests::stats_are_frozen_between_epochs_and_arenas_all_sums ... ok
+test api::mallctl::tests::thread_and_tcache_keys ... ok
+test api::mallctl::tests::utilization_queries_answer_valkeys_defragmenter ... ok
+test api::libc::tests::realloc_moves_and_preserves_content ... ok
+test api::print::tests::json_report_is_well_formed_enough_to_parse_by_hand ... ok
+test api::print::tests::slabs_are_never_smaller_than_the_page ... ok
+test api::print::tests::stats_print_without_callback_uses_the_message_hook ... ok
+Arena 0:
+system bytes     =   10215424
+in use bytes     =     376832
+Arena 1:
+system bytes     =    2424832
+in use bytes     =     770048
+Arena 2:
+system bytes     =     393216
+in use bytes     =     253952
+Arena 3:
+system bytes     =     786432
+in use bytes     =      98304
+Arena 4:
+system bytes     =     507904
+in use bytes     =      98304
+Arena 32:
+system bytes     =          0
+in use bytes     =          0
+Arena 33:
+system bytes     =      65536
+in use bytes     =          0
+Arena 34:
+system bytes     =      65536
+in use bytes     =          0
+Total (incl. mmap):
+system bytes     =   31174656
+in use bytes     =   18313216
+max mmap regions =          3
+max mmap bytes   =   16715776
+test api::print::tests::malloc_info_writes_glibc_xml_to_the_stream ... ok
+test api::tests::arenas_route_mallocx_allocations_and_plain_frees ... ok
+test api::print::tests::text_report_has_every_section_and_live_figures ... ok
+test api::tests::background_stack_is_reused_across_restarts ... ok
+test api::tests::challoc_features_is_the_probe_line ... ok
+test api::tests::background_thread_starts_purges_and_is_absent_after_fork ... ok
+test api::tests::fork_handlers_take_and_release_every_lock ... ok
+test api::tests::fork_handlers_block_signals_while_locked ... ok
+test api::tests::init_is_idempotent_and_concurrent ... ok
+test api::tests::fork_lock_list_matches_the_source_tree ... ok
+test api::libc::tests::malloc_free_round_trip_every_tier ... ok
+test api::jemalloc::tests::mallocx_honours_size_alignment_and_zero_and_matches_nallocx ... ok
+test api::libc::tests::c_program_exercises_the_api_under_ld_preload ... ok
+realloc_tiers: ok realloc_tiers
+test api::ctests::c_realloc_tiers ... ok
+fuzz: fuzz: seed 0xc4a110c, 200000 ops, 4 threads, table 2048
+fuzz: 105387 allocs (16618 aligned, 21094 calloc) 105387 frees (9696 cross-thread) 28211 reallocs 14047 inspections, 9559.9 MiB filled
+ok fuzz
+test api::ctests::c_fuzz_short_under_slot_randomize ... ok
+test api::libc::tests::aligned_allocations_honour_every_power_of_two ... ok
+
+test result: ok. 117 passed; 0 failed; 0 ignored; 0 measured; 400 filtered out; finished in 37.36s
+
+unit+api rc=0
+docker build --platform linux/arm64 -f Dockerfile.dev -t challoc-dev:arm64 .
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  53.08MB
+Step 1/4 : FROM cgr.dev/chainguard/wolfi-base
+ ---> 1d95114038f7
+Step 2/4 : RUN sed -i       -e 's/^glibc=.*/glibc-2.44/'       -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/'       -e 's/^ld-linux=.*/ld-linux-2.44/'       -e 's/^libcrypt1=.*/libcrypt1-2.44/'       /etc/apk/world  && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44  && apk add --no-cache       rust       build-base       gcc       jemalloc       git       cmake       tcl       openssl-dev       procps       memtier-benchmark       posix-libc-utils-2.44       autoconf       ruby-3.4       jemalloc-dev       yaml-dev       zlib-dev       libffi-dev       tzdata       tcmalloc-minimal       python-3.13       py3.13-pip  && rustc --version && cargo --version && python3 --version  && test -f /usr/lib/libtcmalloc_minimal.so.4
+ ---> Using cache
+ ---> 7e28b4937527
+Step 3/4 : WORKDIR /src
+ ---> Using cache
+ ---> 78d1a859a60f
+Step 4/4 : CMD ["sh"]
+ ---> Using cache
+ ---> 108b5df1e30f
+Successfully built 108b5df1e30f
+Successfully tagged challoc-dev:arm64
+docker run --rm --platform linux/arm64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-arm64:/src/target -v challoc-cargo-registry:/root/.cargo/registry    --memory=512m -e CHALLOC_EXPECT_CGROUP_LIMIT=536870912 challoc-dev:arm64 sh -c 'cargo build --release && cargo test --features std cgroup -- --nocapture --test-threads=1'
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.02s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.01s
+     Running unittests src/lib.rs (target/debug/deps/challoc-543929ce36c3f060)
+
+running 23 tests
+test api::ctests::c_cgroup_background_thread ... ok
+test api::ctests::c_cgroup_churn_program ... cgroup: psi unavailable
+ok cgroup
+cgroup_churn: cgroup_churn report: 64 MiB churn, threshold 16 MiB; cgroup /sys/fs/cgroup memory.max 512 MiB memory.current 14 MiB, rss 1 MiB
+allocated 64 MiB in 29 ms (32 x 1 MiB, 512 x 32 KiB, 16384 x 1 KiB): rss 66 MiB, memory.current 78 MiB
+challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 0 MiB full_purges 0 purge_advice lazy lazy_purges 0 eager_purges 0
+freed in 1 ms: rss 66 MiB, memory.current 78 MiB
+  t+ 108 ms: rss   66 MiB, memory.current 78 MiB
+  t+ 201 ms: rss   66 MiB, memory.current 78 MiB
+  t+ 304 ms: rss   66 MiB, memory.current 78 MiB
+  t+ 407 ms: rss   66 MiB, memory.current 78 MiB
+  t+ 500 ms: rss   66 MiB, memory.current 78 MiB
+  t+ 603 ms: rss   66 MiB, memory.current 78 MiB
+  t+ 706 ms: rss   66 MiB, memory.current 78 MiB
+  t+ 809 ms: rss   66 MiB, memory.current 78 MiB
+  t+ 902 ms: rss   66 MiB, memory.current 78 MiB
+  t+1005 ms: rss   66 MiB, memory.current 78 MiB
+  t+1108 ms: rss   66 MiB, memory.current 78 MiB
+  t+1201 ms: rss   66 MiB, memory.current 78 MiB
+  t+1304 ms: rss   66 MiB, memory.current 78 MiB
+  t+1407 ms: rss   66 MiB, memory.current 78 MiB
+  t+1500 ms: rss   66 MiB, memory.current 78 MiB
+  t+1603 ms: rss   66 MiB, memory.current 78 MiB
+  t+1706 ms: rss   66 MiB, memory.current 78 MiB
+  t+1809 ms: rss   66 MiB, memory.current 78 MiB
+  t+1902 ms: rss   66 MiB, memory.current 78 MiB
+  t+2006 ms: rss   66 MiB, memory.current 78 MiB
+at 2000 ms: rss 66 MiB (min 66 MiB, never under the threshold; 2000 ms), memory.current 78 MiB
+challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 8 MiB full_purges 0 purge_advice lazy lazy_purges 34 eager_purges 0
+RESULT churn mode=report mib=64 threshold=16 rss_peak=66 rss_2s=66 rss_min=66 below_ms=-1 current_peak=78 current_2s=78
+ok cgroup_churn
+ok
+test api::ctests::c_cgroup_off ... ok
+test api::ctests::c_cgroup_oscillate_program ... cgroup: ok cgroup
+cgroup_oscillate: cgroup_oscillate: 16..48 MiB live for 3 s, hold 200 ms; cgroup /sys/fs/cgroup memory.max 512 MiB memory.current 14 MiB rss 1 MiB
+memory.events before: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0
+composition at start: current 14 anon 11 file 0 kernel 1 (slab 0 pagetables 0) MiB, rss 1 MiB; challoc allocated 0 active 0 resident 0 metadata 0 retained 0 empty 0 MiB
+composition top of cycle 1: current 62 anon 60 file 0 kernel 1 (slab 0 pagetables 0) MiB, rss 50 MiB; challoc allocated 48 active 49 resident 50 metadata 0 retained 0 empty 0 MiB
+cycle   1 at     0 s: up 48 MiB in 14 ms (rss 50, current 62 MiB), down to 16 MiB in 6 ms (rss 50, current 63 MiB), 4921 objects
+composition top of cycle 2: current 64 anon 61 file 0 kernel 1 (slab 0 pagetables 0) MiB, rss 52 MiB; challoc allocated 48 active 49 resident 51 metadata 0 retained 0 empty 1 MiB
+cycle   2 at     0 s: up 48 MiB in 3 ms (rss 52, current 64 MiB), down to 16 MiB in 5 ms (rss 52, current 64 MiB), 5952 objects
+composition top of cycle 3: current 64 anon 61 file 0 kernel 1 (slab 0 pagetables 0) MiB, rss 52 MiB; challoc allocated 48 active 49 resident 50 metadata 0 retained 1 empty 0 MiB
+cycle   3 at     1 s: up 48 MiB in 2 ms (rss 52, current 64 MiB), down to 16 MiB in 5 ms (rss 52, current 64 MiB), 5036 objects
+cycle   4 at     1 s: up 48 MiB in 2 ms (rss 52, current 65 MiB), down to 16 MiB in 6 ms (rss 52, current 65 MiB), 6847 objects
+composition top of cycle 5: current 66 anon 63 file 0 kernel 1 (slab 0 pagetables 0) MiB, rss 54 MiB; challoc allocated 48 active 50 resident 50 metadata 0 retained 3 empty 0 MiB
+cycle   5 at     2 s: up 48 MiB in 3 ms (rss 54, current 66 MiB), down to 16 MiB in 7 ms (rss 54, current 66 MiB), 5885 objects
+cycle   6 at     2 s: up 48 MiB in 2 ms (rss 54, current 66 MiB), down to 16 MiB in 6 ms (rss 54, current 65 MiB), 7863 objects
+cycle   7 at     2 s: up 48 MiB in 3 ms (rss 54, current 66 MiB), down to 16 MiB in 6 ms (rss 54, current 66 MiB), 5944 objects
+cycle   8 at     3 s: up 48 MiB in 3 ms (rss 54, current 66 MiB), down to 16 MiB in 6 ms (rss 54, current 66 MiB), 6817 objects
+memory.events after: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0
+composition highest top (cycle 5): current 66 anon 63 file 0 kernel 1 (slab 0 pagetables 0) MiB, rss 54 MiB; challoc allocated 48 active 50 resident 50 metadata 0 retained 3 empty 0 MiB
+composition at end (bottom): current 66 anon 64 file 0 kernel 1 (slab 0 pagetables 0) MiB, rss 54 MiB; challoc allocated 16 active 25 resident 49 metadata 0 retained 5 empty 23 MiB
+challoc: stats.cgroup.limit 512 MiB current 66 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 23 MiB full_purges 0 pressure_events 0
+RESULT oscillate cycles=8 seconds=3 low=16 high=48 current_peak=66 rss_peak=54 max_before=0 max_after=0 high_before=0 high_after=0 oom_kill_before=0 oom_kill_after=0
+ok cgroup_oscillate
+ok
+test api::ctests::c_cgroup_policy_bands ... ok
+test api::ctests::c_cgroup_policy_high ... cgroup_policy: cgroup policy: under 70% (defaults, retention capped) decay_ms 10000 retention_cap 26843545 keep 100% empty_bytes 0 full_purges 0 thp as configured
+base 10000 ms, limit 536870912, high 18446744073709551615, decay_ms 10000, retention_cap 26843545
+limit 512 MiB, memory.current 14 MiB before, rss 1 MiB
+80%: allocated 400 MiB, current 415 MiB (81.1%), decay_ms 5010
+cgroup policy: 70..90% (decay scaled, 55% into the band) decay_ms 5010 retention_cap 26843545 keep 100% empty_bytes 65536 full_purges 0 thp as configured
+80% freed: empty_bytes 0 MiB (cap 25 MiB) after 57 ms, rss 2 MiB (base 1 MiB)
+cgroup policy: under 70% (defaults, retention capped) decay_ms 10000 retention_cap 26843545 keep 100% empty_bytes 65536 full_purges 0 thp as configured
+after the purge: current 14 MiB (2.8%), decay_ms 10000
+94%: allocated 472 MiB, current 487 MiB (95.2%), decay_ms 0
+cgroup policy: over 90% (purge at once, cache GC every tick) decay_ms 0 retention_cap 26843545 keep 100% empty_bytes 65536 full_purges 0 thp as configured
+94% freed: one tick later (37 ms) empty_bytes 131072, rss 2 MiB (base 1 MiB)
+bands: limit 512 MiB, scaled decay_ms observed, immediate purge in 37 ms
+ok cgroup_policy
+ok
+test api::ctests::c_cgroup_stats ... cgroup_policy: skip: cannot create a child cgroup under /sys/fs/cgroup (Read-only file system)
+ok cgroup_policy
+cgroup: ok cgroup
+ok
+test heap::tests::cgroup_policy_drives_gc_interval_and_decay_period ... ok
+test sys::cgroup::linux_tests::current_tracks_a_large_allocation ... cgroup: memory.current 14663680 -> 81494016 after 64 MiB (kernel says 81494016)
+ok
+test sys::cgroup::linux_tests::discover_matches_std_reading_of_the_same_files ... cgroup: /sys/fs/cgroup (mount /sys/fs/cgroup, path /) limit 536870912 high max current 14376960 events high 0 (+0) max 0 (+0) psi not armed (no background thread) pressure_events 0 cpus 8 cpu.max max/100000
+cgroup: /proc/self/cgroup path Some("/"), cgroup2 mount Some("/sys/fs/cgroup")
+cgroup: memory.max=536870912 memory.high=max memory.current=14372864 memory.pressure=some avg10=0.00 avg60=0.00 avg300=0.00 total=0
+cgroup: effective limit 536870912 matches CHALLOC_EXPECT_CGROUP_LIMIT
+ok
+test sys::cgroup::linux_tests::eventfd_and_ppoll_work ... ok
+test sys::cgroup::linux_tests::pressure_trigger_probe ... ok
+test sys::cgroup::linux_tests::sampling_is_rate_limited_to_ten_milliseconds ... cgroup: /proc/pressure/memory true; memory.pressure present
+cgroup: PSI trigger: Unavailable errno 30 fd None
+cgroup: 10 reads in 385663 sample calls over 100 ms
+ok
+test sys::cgroup::tests::cpu_files ... ok
+test sys::cgroup::tests::effective_limit_walk ... ok
+test sys::cgroup::tests::events_files ... ok
+test sys::cgroup::tests::join_dir_forms ... ok
+test sys::cgroup::tests::limit_files ... ok
+test sys::cgroup::tests::line_scanner_reassembles_across_chunks ... ok
+test sys::cgroup::tests::mountinfo_lines ... ok
+test sys::cgroup::tests::pressure_files ... ok
+test sys::cgroup::tests::proc_self_cgroup_lines ... ok
+test sys::cgroup::tests::untracked_states_display ... ok
+
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 494 filtered out; finished in 10.41s
+
+test-cgroup-limit rc=0
+docker build --platform linux/arm64 -f Dockerfile.dev -t challoc-dev:arm64 .
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  53.08MB
+Step 1/4 : FROM cgr.dev/chainguard/wolfi-base
+ ---> 1d95114038f7
+Step 2/4 : RUN sed -i       -e 's/^glibc=.*/glibc-2.44/'       -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/'       -e 's/^ld-linux=.*/ld-linux-2.44/'       -e 's/^libcrypt1=.*/libcrypt1-2.44/'       /etc/apk/world  && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44  && apk add --no-cache       rust       build-base       gcc       jemalloc       git       cmake       tcl       openssl-dev       procps       memtier-benchmark       posix-libc-utils-2.44       autoconf       ruby-3.4       jemalloc-dev       yaml-dev       zlib-dev       libffi-dev       tzdata       tcmalloc-minimal       python-3.13       py3.13-pip  && rustc --version && cargo --version && python3 --version  && test -f /usr/lib/libtcmalloc_minimal.so.4
+ ---> Using cache
+ ---> 7e28b4937527
+Step 3/4 : WORKDIR /src
+ ---> Using cache
+ ---> 78d1a859a60f
+Step 4/4 : CMD ["sh"]
+ ---> Using cache
+ ---> 108b5df1e30f
+Successfully built 108b5df1e30f
+Successfully tagged challoc-dev:arm64
+docker run --rm --platform linux/arm64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-arm64:/src/target -v challoc-cargo-registry:/root/.cargo/registry     challoc-dev:arm64 cargo build --release
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.02s
+docker run --rm --platform linux/arm64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-arm64:/src/target -v challoc-cargo-registry:/root/.cargo/registry    --memory=512m --memory-swap=512m  challoc-dev:arm64 sh scripts/cgroup-tests.sh churn challoc purge 400 100
+== churn under challoc (challoc 0c60b1a): cgroup_churn purge 400 100 
+kernel 7.0.0-1011-gcp aarch64; cgroup /sys/fs/cgroup: memory.max 512 MiB, memory.swap.max 0 MiB, memory.current 2 MiB
+memory.events before: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0 
+cgroup_churn purge: 400 MiB churn, threshold 100 MiB; cgroup /sys/fs/cgroup memory.max 512 MiB memory.current 3 MiB, rss 1 MiB
+allocated 400 MiB in 173 ms (200 x 1 MiB, 3200 x 32 KiB, 102400 x 1 KiB): rss 403 MiB, memory.current 405 MiB
+challoc: stats.cgroup.limit 512 MiB decay_ms 6934 retention_cap 25 MiB empty_bytes 0 MiB full_purges 0 purge_advice eager lazy_purges 0 eager_purges 0
+freed in 9 ms: rss 403 MiB, memory.current 405 MiB
+  t+ 106 ms: rss   16 MiB, memory.current 17 MiB
+  t+ 209 ms: rss   16 MiB, memory.current 17 MiB
+  t+ 302 ms: rss   16 MiB, memory.current 17 MiB
+  t+ 405 ms: rss   16 MiB, memory.current 17 MiB
+  t+ 508 ms: rss   16 MiB, memory.current 17 MiB
+  t+ 601 ms: rss   16 MiB, memory.current 17 MiB
+  t+ 704 ms: rss   16 MiB, memory.current 17 MiB
+  t+ 807 ms: rss   16 MiB, memory.current 17 MiB
+  t+ 900 ms: rss   16 MiB, memory.current 17 MiB
+  t+1003 ms: rss   16 MiB, memory.current 17 MiB
+  t+1106 ms: rss   16 MiB, memory.current 17 MiB
+  t+1210 ms: rss   16 MiB, memory.current 17 MiB
+  t+1303 ms: rss   16 MiB, memory.current 17 MiB
+  t+1406 ms: rss   16 MiB, memory.current 17 MiB
+  t+1509 ms: rss   16 MiB, memory.current 17 MiB
+  t+1602 ms: rss   16 MiB, memory.current 17 MiB
+  t+1706 ms: rss   16 MiB, memory.current 17 MiB
+  t+1809 ms: rss   16 MiB, memory.current 17 MiB
+  t+1902 ms: rss   16 MiB, memory.current 17 MiB
+  t+2005 ms: rss   16 MiB, memory.current 17 MiB
+at 2000 ms: rss 16 MiB (min 16 MiB, under the threshold after 65 ms), memory.current 17 MiB
+challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 9 MiB full_purges 0 purge_advice lazy lazy_purges 29 eager_purges 5
+RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=16 rss_min=16 below_ms=65 current_peak=405 current_2s=17
+ok cgroup_churn
+memory.events after: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0 
+memory.peak 405 MiB, memory.current 3 MiB
+OUTCOME churn alloc=challoc args='purge 400 100' status=0 verdict=ok oom_kill=0
+docker run --rm --platform linux/arm64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-arm64:/src/target -v challoc-cargo-registry:/root/.cargo/registry    --memory=512m --memory-swap=512m  challoc-dev:arm64 sh scripts/cgroup-tests.sh churn challoc-off keep 400 100
+== churn under challoc-off (challoc 0c60b1a): cgroup_churn keep 400 100 
+kernel 7.0.0-1011-gcp aarch64; cgroup /sys/fs/cgroup: memory.max 512 MiB, memory.swap.max 0 MiB, memory.current 2 MiB
+MALLOC_CONF=cgroup:false,abort_conf:true
+memory.events before: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0 
+cgroup_churn keep: 400 MiB churn, threshold 100 MiB; cgroup /sys/fs/cgroup memory.max 512 MiB memory.current 3 MiB, rss 1 MiB
+allocated 400 MiB in 172 ms (200 x 1 MiB, 3200 x 32 KiB, 102400 x 1 KiB): rss 403 MiB, memory.current 404 MiB
+challoc: stats.cgroup.* ENOENT (cgroup not tracked)
+freed in 9 ms: rss 403 MiB, memory.current 404 MiB
+  t+ 103 ms: rss  403 MiB, memory.current 404 MiB
+  t+ 206 ms: rss  403 MiB, memory.current 404 MiB
+  t+ 300 ms: rss  403 MiB, memory.current 404 MiB
+  t+ 404 ms: rss  403 MiB, memory.current 404 MiB
+  t+ 507 ms: rss  403 MiB, memory.current 404 MiB
+  t+ 600 ms: rss  402 MiB, memory.current 404 MiB
+  t+ 704 ms: rss  402 MiB, memory.current 403 MiB
+  t+ 808 ms: rss  401 MiB, memory.current 402 MiB
+  t+ 902 ms: rss  399 MiB, memory.current 400 MiB
+  t+1006 ms: rss  396 MiB, memory.current 397 MiB
+  t+1100 ms: rss  394 MiB, memory.current 395 MiB
+  t+1204 ms: rss  388 MiB, memory.current 390 MiB
+  t+1309 ms: rss  382 MiB, memory.current 383 MiB
+  t+1403 ms: rss  379 MiB, memory.current 380 MiB
+  t+1508 ms: rss  370 MiB, memory.current 371 MiB
+  t+1603 ms: rss  361 MiB, memory.current 362 MiB
+  t+1708 ms: rss  351 MiB, memory.current 352 MiB
+  t+1802 ms: rss  345 MiB, memory.current 346 MiB
+  t+1907 ms: rss  332 MiB, memory.current 333 MiB
+  t+2001 ms: rss  318 MiB, memory.current 319 MiB
+at 2000 ms: rss 318 MiB (min 318 MiB, never under the threshold; 2000 ms), memory.current 319 MiB
+challoc: stats.cgroup.* ENOENT (cgroup not tracked)
+RESULT churn mode=keep mib=400 threshold=100 rss_peak=403 rss_2s=318 rss_min=318 below_ms=-1 current_peak=404 current_2s=319
+ok cgroup_churn
+memory.events after: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0 
+memory.peak 404 MiB, memory.current 3 MiB
+OUTCOME churn alloc=challoc-off args='keep 400 100' status=0 verdict=ok oom_kill=0
+docker run --rm --platform linux/arm64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-arm64:/src/target -v challoc-cargo-registry:/root/.cargo/registry    --memory=256m --memory-swap=256m  challoc-dev:arm64 sh scripts/cgroup-tests.sh churn challoc purge 200 50
+== churn under challoc (challoc 0c60b1a): cgroup_churn purge 200 50 
+kernel 7.0.0-1011-gcp aarch64; cgroup /sys/fs/cgroup: memory.max 256 MiB, memory.swap.max 0 MiB, memory.current 2 MiB
+memory.events before: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0 
+cgroup_churn purge: 200 MiB churn, threshold 50 MiB; cgroup /sys/fs/cgroup memory.max 256 MiB memory.current 3 MiB, rss 1 MiB
+allocated 200 MiB in 88 ms (100 x 1 MiB, 1600 x 32 KiB, 51200 x 1 KiB): rss 202 MiB, memory.current 203 MiB
+challoc: stats.cgroup.limit 256 MiB decay_ms 7145 retention_cap 12 MiB empty_bytes 0 MiB full_purges 0 purge_advice eager lazy_purges 0 eager_purges 0
+freed in 5 ms: rss 202 MiB, memory.current 203 MiB
+  t+ 110 ms: rss    9 MiB, memory.current 10 MiB
+  t+ 202 ms: rss    9 MiB, memory.current 10 MiB
+  t+ 306 ms: rss    9 MiB, memory.current 10 MiB
+  t+ 409 ms: rss    9 MiB, memory.current 10 MiB
+  t+ 501 ms: rss    9 MiB, memory.current 10 MiB
+  t+ 605 ms: rss    9 MiB, memory.current 10 MiB
+  t+ 708 ms: rss    9 MiB, memory.current 10 MiB
+  t+ 801 ms: rss    9 MiB, memory.current 10 MiB
+  t+ 904 ms: rss    9 MiB, memory.current 10 MiB
+  t+1007 ms: rss    9 MiB, memory.current 10 MiB
+  t+1100 ms: rss    9 MiB, memory.current 10 MiB
+  t+1203 ms: rss    9 MiB, memory.current 10 MiB
+  t+1306 ms: rss    9 MiB, memory.current 10 MiB
+  t+1409 ms: rss    9 MiB, memory.current 10 MiB
+  t+1502 ms: rss    9 MiB, memory.current 10 MiB
+  t+1605 ms: rss    9 MiB, memory.current 10 MiB
+  t+1708 ms: rss    9 MiB, memory.current 10 MiB
+  t+1800 ms: rss    9 MiB, memory.current 10 MiB
+  t+1903 ms: rss    9 MiB, memory.current 10 MiB
+  t+2007 ms: rss    9 MiB, memory.current 10 MiB
+at 2000 ms: rss 9 MiB (min 9 MiB, under the threshold after 89 ms), memory.current 10 MiB
+challoc: stats.cgroup.limit 256 MiB decay_ms 10000 retention_cap 12 MiB empty_bytes 4 MiB full_purges 0 purge_advice lazy lazy_purges 27 eager_purges 5
+RESULT churn mode=purge mib=200 threshold=50 rss_peak=202 rss_2s=9 rss_min=9 below_ms=89 current_peak=203 current_2s=10
+ok cgroup_churn
+memory.events after: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0 
+memory.peak 203 MiB, memory.current 3 MiB
+OUTCOME churn alloc=challoc args='purge 200 50' status=0 verdict=ok oom_kill=0
+docker run --rm --platform linux/arm64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-arm64:/src/target -v challoc-cargo-registry:/root/.cargo/registry    --memory=256m --memory-swap=256m  challoc-dev:arm64 sh scripts/cgroup-tests.sh churn challoc-off keep 200 50
+== churn under challoc-off (challoc 0c60b1a): cgroup_churn keep 200 50 
+kernel 7.0.0-1011-gcp aarch64; cgroup /sys/fs/cgroup: memory.max 256 MiB, memory.swap.max 0 MiB, memory.current 2 MiB
+MALLOC_CONF=cgroup:false,abort_conf:true
+memory.events before: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0 
+cgroup_churn keep: 200 MiB churn, threshold 50 MiB; cgroup /sys/fs/cgroup memory.max 256 MiB memory.current 3 MiB, rss 1 MiB
+allocated 200 MiB in 89 ms (100 x 1 MiB, 1600 x 32 KiB, 51200 x 1 KiB): rss 202 MiB, memory.current 203 MiB
+challoc: stats.cgroup.* ENOENT (cgroup not tracked)
+freed in 5 ms: rss 202 MiB, memory.current 203 MiB
+  t+ 103 ms: rss  202 MiB, memory.current 203 MiB
+  t+ 206 ms: rss  202 MiB, memory.current 203 MiB
+  t+ 310 ms: rss  202 MiB, memory.current 203 MiB
+  t+ 403 ms: rss  202 MiB, memory.current 203 MiB
+  t+ 507 ms: rss  202 MiB, memory.current 203 MiB
+  t+ 600 ms: rss  202 MiB, memory.current 203 MiB
+  t+ 704 ms: rss  202 MiB, memory.current 202 MiB
+  t+ 807 ms: rss  202 MiB, memory.current 202 MiB
+  t+ 900 ms: rss  201 MiB, memory.current 202 MiB
+  t+1004 ms: rss  200 MiB, memory.current 201 MiB
+  t+1108 ms: rss  199 MiB, memory.current 199 MiB
+  t+1202 ms: rss  197 MiB, memory.current 197 MiB
+  t+1306 ms: rss  194 MiB, memory.current 195 MiB
+  t+1410 ms: rss  190 MiB, memory.current 191 MiB
+  t+1503 ms: rss  188 MiB, memory.current 189 MiB
+  t+1607 ms: rss  184 MiB, memory.current 185 MiB
+  t+1701 ms: rss  178 MiB, memory.current 179 MiB
+  t+1806 ms: rss  172 MiB, memory.current 172 MiB
+  t+1910 ms: rss  165 MiB, memory.current 166 MiB
+  t+2003 ms: rss  162 MiB, memory.current 163 MiB
+at 2000 ms: rss 162 MiB (min 162 MiB, never under the threshold; 2000 ms), memory.current 163 MiB
+challoc: stats.cgroup.* ENOENT (cgroup not tracked)
+RESULT churn mode=keep mib=200 threshold=50 rss_peak=202 rss_2s=162 rss_min=162 below_ms=-1 current_peak=203 current_2s=163
+ok cgroup_churn
+memory.events after: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0 
+memory.peak 203 MiB, memory.current 2 MiB
+OUTCOME churn alloc=challoc-off args='keep 200 50' status=0 verdict=ok oom_kill=0
+test-cgroup-churn rc=0
+docker build --platform linux/arm64 -f Dockerfile.dev -t challoc-dev:arm64 .
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  53.08MB
+Step 1/4 : FROM cgr.dev/chainguard/wolfi-base
+ ---> 1d95114038f7
+Step 2/4 : RUN sed -i       -e 's/^glibc=.*/glibc-2.44/'       -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/'       -e 's/^ld-linux=.*/ld-linux-2.44/'       -e 's/^libcrypt1=.*/libcrypt1-2.44/'       /etc/apk/world  && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44  && apk add --no-cache       rust       build-base       gcc       jemalloc       git       cmake       tcl       openssl-dev       procps       memtier-benchmark       posix-libc-utils-2.44       autoconf       ruby-3.4       jemalloc-dev       yaml-dev       zlib-dev       libffi-dev       tzdata       tcmalloc-minimal       python-3.13       py3.13-pip  && rustc --version && cargo --version && python3 --version  && test -f /usr/lib/libtcmalloc_minimal.so.4
+ ---> Using cache
+ ---> 7e28b4937527
+Step 3/4 : WORKDIR /src
+ ---> Using cache
+ ---> 78d1a859a60f
+Step 4/4 : CMD ["sh"]
+ ---> Using cache
+ ---> 108b5df1e30f
+Successfully built 108b5df1e30f
+Successfully tagged challoc-dev:arm64
+docker run --rm --platform linux/arm64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-arm64:/src/target -v challoc-cargo-registry:/root/.cargo/registry     challoc-dev:arm64 cargo build --release
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.02s
+docker run --rm --platform linux/arm64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-arm64:/src/target -v challoc-cargo-registry:/root/.cargo/registry    --memory=512m --memory-swap=512m  challoc-dev:arm64 sh scripts/cgroup-tests.sh lazy challoc lazy 200
+== lazy under challoc (challoc 0c60b1a): cgroup_lazy lazy 200 
+kernel 7.0.0-1011-gcp aarch64; cgroup /sys/fs/cgroup: memory.max 512 MiB, memory.swap.max 0 MiB, memory.current 3 MiB
+memory.events before: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0 
+cgroup_lazy lazy: 200 MiB churn; cgroup /sys/fs/cgroup memory.max 512 MiB memory.current 3 MiB, rss 1 MiB, page 4096
+  memory.stat at start: anon 0 MiB file 0 MiB inactive_file 0 MiB pglazyfree 0 pglazyfreed 0 (pages)
+  challoc at start: limit 512 MiB retention_cap 25 MiB empty_bytes 0 MiB purge_advice eager lazy_purges 0 eager_purges 0
+  expected usage at the frees: 203 MiB of 512 MiB (39%)
+allocated 200 MiB in 88 ms (100 x 1 MiB, 1600 x 32 KiB, 51200 x 1 KiB): rss 202 MiB, memory.current 203 MiB
+  challoc at the peak: limit 512 MiB retention_cap 25 MiB empty_bytes 0 MiB purge_advice lazy lazy_purges 0 eager_purges 0
+freed: rss 202 MiB, memory.current 203 MiB
+  t+ 109 ms: rss  202 MiB, memory.current 203 MiB
+  t+ 202 ms: rss  202 MiB, memory.current 203 MiB
+  t+ 305 ms: rss  202 MiB, memory.current 203 MiB
+  t+ 408 ms: rss  202 MiB, memory.current 203 MiB
+  t+ 501 ms: rss  202 MiB, memory.current 203 MiB
+  t+ 605 ms: rss  202 MiB, memory.current 203 MiB
+  t+ 708 ms: rss  202 MiB, memory.current 203 MiB
+  t+ 800 ms: rss  202 MiB, memory.current 203 MiB
+  t+ 903 ms: rss  202 MiB, memory.current 203 MiB
+  t+1007 ms: rss  202 MiB, memory.current 203 MiB
+  t+1110 ms: rss  202 MiB, memory.current 203 MiB
+  t+1203 ms: rss  202 MiB, memory.current 203 MiB
+  t+1306 ms: rss  202 MiB, memory.current 203 MiB
+  t+1409 ms: rss  202 MiB, memory.current 203 MiB
+  t+1502 ms: rss  202 MiB, memory.current 203 MiB
+  t+1605 ms: rss  202 MiB, memory.current 203 MiB
+  t+1709 ms: rss  202 MiB, memory.current 203 MiB
+  t+1801 ms: rss  202 MiB, memory.current 203 MiB
+  t+1905 ms: rss  202 MiB, memory.current 203 MiB
+  t+2008 ms: rss  202 MiB, memory.current 203 MiB
+at 2000 ms: rss 202 MiB (min 202 MiB), memory.current 203 MiB, first lazy purge after 89 ms
+  challoc at 2 s: limit 512 MiB retention_cap 25 MiB empty_bytes 9 MiB purge_advice lazy lazy_purges 34 eager_purges 0
+  memory.stat at 2 s: anon 201 MiB file 0 MiB inactive_file 189 MiB pglazyfree 48565 pglazyfreed 0 (pages)
+  pglazyfree rose by 48565 pages (189 MiB) over the 51200 pages of the churn
+reallocated 200 MiB in 14 ms (first time 88 ms): rss 202 MiB, memory.current 203 MiB
+  t+ 109 ms: rss  202 MiB, memory.current 203 MiB
+  t+ 202 ms: rss  202 MiB, memory.current 203 MiB
+  t+ 305 ms: rss  202 MiB, memory.current 203 MiB
+  t+ 409 ms: rss  202 MiB, memory.current 203 MiB
+  t+ 501 ms: rss  202 MiB, memory.current 203 MiB
+  challoc after the second free: limit 512 MiB retention_cap 25 MiB empty_bytes 12 MiB purge_advice lazy lazy_purges 40 eager_purges 0
+  memory.stat before pressure: anon 201 MiB file 0 MiB inactive_file 190 MiB pglazyfree 48732 pglazyfreed 0 (pages)
+  memory.reclaim: not writable (Read-only file system)
+pressure: 380 MiB of 8192 B objects in 161 ms: rss 510 MiB, memory.current 511 MiB, memory.peak 512 MiB
+  memory.stat under pressure: anon 508 MiB file 0 MiB inactive_file 127 MiB pglazyfree 48732 pglazyfreed 15124 (pages)
+  pglazyfreed rose by 15124 pages (59 MiB): lazy-free pages the kernel reclaimed
+  challoc at the end: limit 512 MiB retention_cap 25 MiB empty_bytes 392 MiB purge_advice eager lazy_purges 41 eager_purges 54
+RESULT lazy mode=lazy mib=200 rss_peak=202 rss_2s=202 rss_min=202 current_peak=203 current_2s=203 event_ms=89 lazy_purges=34 eager_purges=0 advice_2s=lazy pglazyfree_pages=48565 alloc_ms=88 reuse_ms=14 pressure_ms=161 pglazyfreed_pages=15124 current_pressure=511 reclaim_on_request=0
+ok cgroup_lazy
+memory.events after: low 0 high 0 max 275 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0 
+memory.peak 512 MiB, memory.current 4 MiB
+OUTCOME lazy alloc=challoc args='lazy 200' status=0 verdict=ok oom_kill=0
+docker run --rm --platform linux/arm64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-arm64:/src/target -v challoc-cargo-registry:/root/.cargo/registry    --memory=512m --memory-swap=512m  challoc-dev:arm64 sh scripts/cgroup-tests.sh lazy challoc-eager eager 200
+== lazy under challoc-eager (challoc 0c60b1a): cgroup_lazy eager 200 
+kernel 7.0.0-1011-gcp aarch64; cgroup /sys/fs/cgroup: memory.max 512 MiB, memory.swap.max 0 MiB, memory.current 2 MiB
+MALLOC_CONF=lazy_band:false,abort_conf:true
+memory.events before: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0 
+cgroup_lazy eager: 200 MiB churn; cgroup /sys/fs/cgroup memory.max 512 MiB memory.current 2 MiB, rss 1 MiB, page 4096
+  memory.stat at start: anon 0 MiB file 0 MiB inactive_file 0 MiB pglazyfree 0 pglazyfreed 0 (pages)
+  challoc at start: limit 512 MiB retention_cap 25 MiB empty_bytes 0 MiB purge_advice eager lazy_purges 0 eager_purges 0
+  expected usage at the frees: 202 MiB of 512 MiB (39%)
+allocated 200 MiB in 90 ms (100 x 1 MiB, 1600 x 32 KiB, 51200 x 1 KiB): rss 202 MiB, memory.current 203 MiB
+  challoc at the peak: limit 512 MiB retention_cap 25 MiB empty_bytes 0 MiB purge_advice eager lazy_purges 0 eager_purges 0
+freed: rss 202 MiB, memory.current 203 MiB
+  t+ 100 ms: rss   15 MiB, memory.current 16 MiB
+  t+ 203 ms: rss   15 MiB, memory.current 16 MiB
+  t+ 306 ms: rss   15 MiB, memory.current 16 MiB
+  t+ 409 ms: rss   15 MiB, memory.current 16 MiB
+  t+ 502 ms: rss   15 MiB, memory.current 16 MiB
+  t+ 605 ms: rss   15 MiB, memory.current 16 MiB
+  t+ 708 ms: rss   15 MiB, memory.current 16 MiB
+  t+ 801 ms: rss   15 MiB, memory.current 16 MiB
+  t+ 904 ms: rss   15 MiB, memory.current 16 MiB
+  t+1007 ms: rss   15 MiB, memory.current 16 MiB
+  t+1100 ms: rss   15 MiB, memory.current 16 MiB
+  t+1204 ms: rss   15 MiB, memory.current 15 MiB
+  t+1307 ms: rss   15 MiB, memory.current 15 MiB
+  t+1410 ms: rss   14 MiB, memory.current 15 MiB
+  t+1502 ms: rss   14 MiB, memory.current 15 MiB
+  t+1605 ms: rss   14 MiB, memory.current 14 MiB
+  t+1708 ms: rss   14 MiB, memory.current 14 MiB
+  t+1800 ms: rss   13 MiB, memory.current 14 MiB
+  t+1904 ms: rss   13 MiB, memory.current 13 MiB
+  t+2007 ms: rss   13 MiB, memory.current 13 MiB
+at 2000 ms: rss 13 MiB (min 13 MiB), memory.current 13 MiB, first eager purge after 89 ms
+  challoc at 2 s: limit 512 MiB retention_cap 25 MiB empty_bytes 9 MiB purge_advice eager lazy_purges 0 eager_purges 34
+  memory.stat at 2 s: anon 11 MiB file 0 MiB inactive_file 0 MiB pglazyfree 0 pglazyfreed 0 (pages)
+  pglazyfree rose by 0 pages (0 MiB) over the 51200 pages of the churn
+reallocated 200 MiB in 74 ms (first time 90 ms): rss 202 MiB, memory.current 203 MiB
+  t+ 101 ms: rss    6 MiB, memory.current 6 MiB
+  t+ 204 ms: rss    6 MiB, memory.current 6 MiB
+  t+ 307 ms: rss    6 MiB, memory.current 6 MiB
+  t+ 400 ms: rss    6 MiB, memory.current 6 MiB
+  t+ 503 ms: rss    6 MiB, memory.current 6 MiB
+  challoc after the second free: limit 512 MiB retention_cap 25 MiB empty_bytes 2 MiB purge_advice eager lazy_purges 0 eager_purges 42
+  memory.stat before pressure: anon 4 MiB file 0 MiB inactive_file 0 MiB pglazyfree 0 pglazyfreed 0 (pages)
+pressure: 380 MiB of 8192 B objects in 149 ms: rss 386 MiB, memory.current 387 MiB, memory.peak 387 MiB
+  memory.stat under pressure: anon 384 MiB file 0 MiB inactive_file 0 MiB pglazyfree 0 pglazyfreed 0 (pages)
+  pglazyfreed rose by 0 pages (0 MiB): lazy-free pages the kernel reclaimed
+  challoc at the end: limit 512 MiB retention_cap 25 MiB empty_bytes 484 MiB purge_advice eager lazy_purges 0 eager_purges 43
+RESULT lazy mode=eager mib=200 rss_peak=202 rss_2s=13 rss_min=13 current_peak=203 current_2s=13 event_ms=89 lazy_purges=0 eager_purges=34 advice_2s=eager pglazyfree_pages=0 alloc_ms=90 reuse_ms=74 pressure_ms=149 pglazyfreed_pages=0 current_pressure=387 reclaim_on_request=0
+ok cgroup_lazy
+memory.events after: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0 
+memory.peak 387 MiB, memory.current 2 MiB
+OUTCOME lazy alloc=challoc-eager args='eager 200' status=0 verdict=ok oom_kill=0
+test-cgroup-lazy rc=0
+docker build --platform linux/arm64 -f Dockerfile.dev -t challoc-dev:arm64 .
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  53.08MB
+Step 1/4 : FROM cgr.dev/chainguard/wolfi-base
+ ---> 1d95114038f7
+Step 2/4 : RUN sed -i       -e 's/^glibc=.*/glibc-2.44/'       -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/'       -e 's/^ld-linux=.*/ld-linux-2.44/'       -e 's/^libcrypt1=.*/libcrypt1-2.44/'       /etc/apk/world  && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44  && apk add --no-cache       rust       build-base       gcc       jemalloc       git       cmake       tcl       openssl-dev       procps       memtier-benchmark       posix-libc-utils-2.44       autoconf       ruby-3.4       jemalloc-dev       yaml-dev       zlib-dev       libffi-dev       tzdata       tcmalloc-minimal       python-3.13       py3.13-pip  && rustc --version && cargo --version && python3 --version  && test -f /usr/lib/libtcmalloc_minimal.so.4
+ ---> Using cache
+ ---> 7e28b4937527
+Step 3/4 : WORKDIR /src
+ ---> Using cache
+ ---> 78d1a859a60f
+Step 4/4 : CMD ["sh"]
+ ---> Using cache
+ ---> 108b5df1e30f
+Successfully built 108b5df1e30f
+Successfully tagged challoc-dev:arm64
+docker run --rm --platform linux/arm64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-arm64:/src/target -v challoc-cargo-registry:/root/.cargo/registry     challoc-dev:arm64 sh -c 'cargo build --release && sh scripts/pagemap-guard-test.sh'
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.02s
+== pagemap_guard on (kernel 7.0.0-1011-gcp aarch64, default configuration)
+pagemap_guard on: PAGEMAP_SCAN available with PAGE_IS_GUARD (6.16+); MADV_GUARD_INSTALL available (6.13+); opt.guards true, opt.guard_slab_interval 8; page 4096
+pagemap_guard: 16-byte class: categories of the guard page 0x112, of the slot pages before and after 0xa / 0xa
+pagemap_guard on: 16-byte class, slab 65536, group 65536, guard every 8 groups: 40960 blocks over 11 groups, 1 guard slab(s), first at 0xcb843ac70000; guard page PAGE_IS_GUARD (a swap-type entry, not present), neighbours present and not guard
+pagemap_guard on: 16-byte class: 1 PAGE_IS_GUARD page(s) in the span, 1 per guard slab, none elsewhere
+pagemap_guard: 64-byte class: categories of the guard page 0x112, of the slot pages before and after 0xa / 0xa
+pagemap_guard on: 64-byte class, slab 65536, group 65536, guard every 8 groups: 10240 blocks over 11 groups, 1 guard slab(s), first at 0xce82fc070000; guard page PAGE_IS_GUARD (a swap-type entry, not present), neighbours present and not guard
+pagemap_guard on: 64-byte class: 1 PAGE_IS_GUARD page(s) in the span, 1 per guard slab, none elsewhere
+pagemap_guard: 256-byte class: categories of the guard page 0x112, of the slot pages before and after 0xa / 0xa
+pagemap_guard on: 256-byte class, slab 65536, group 65536, guard every 8 groups: 2560 blocks over 11 groups, 1 guard slab(s), first at 0xd65cdf870000; guard page PAGE_IS_GUARD (a swap-type entry, not present), neighbours present and not guard
+pagemap_guard on: 256-byte class: 1 PAGE_IS_GUARD page(s) in the span, 1 per guard slab, none elsewhere
+pagemap_guard: 1024-byte class: categories of the guard page 0x112, of the slot pages before and after 0xa / 0xa
+pagemap_guard on: 1024-byte class, slab 4096, group 4096, guard every 128 groups: 520 blocks over 131 groups, 1 guard slab(s), first at 0xde84f607f000; guard page PAGE_IS_GUARD (a swap-type entry, not present), neighbours present and not guard
+pagemap_guard on: 1024-byte class: 1 PAGE_IS_GUARD page(s) in the span, 1 per guard slab, none elsewhere
+pagemap_guard on: PAGEMAP_SCAN available with PAGE_IS_GUARD (6.16+): guard slabs reported as guard regions, both ways
+ok pagemap_guard
+== pagemap_guard off (MALLOC_CONF=guards:false)
+pagemap_guard off: PAGEMAP_SCAN available with PAGE_IS_GUARD (6.16+); MADV_GUARD_INSTALL available (6.13+); opt.guards false, opt.guard_slab_interval 8; page 4096
+pagemap_guard: 16-byte class, 40960 blocks over 10 groups: no gap, no PAGE_IS_GUARD page in the span
+pagemap_guard: 64-byte class, 10240 blocks over 10 groups: no gap, no PAGE_IS_GUARD page in the span
+pagemap_guard: 256-byte class, 2560 blocks over 10 groups: no gap, no PAGE_IS_GUARD page in the span
+pagemap_guard: 1024-byte class, 520 blocks over 130 groups: no gap, no PAGE_IS_GUARD page in the span
+pagemap_guard off: PAGEMAP_SCAN available with PAGE_IS_GUARD (6.16+): no guard slab and no guard page in any span
+ok pagemap_guard
+test-pagemap-guard rc=0
+== end 2026-09-20T04:55:49Z
