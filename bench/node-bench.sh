@@ -151,12 +151,13 @@ ab_fields() {
 run_server_row() {
   a=$1; lib=$(lib_of "$a"); d=$OUT/server.$a; mkdir -p "$d"
   rm -f "$d/pid"
-  env ${lib:+LD_PRELOAD=$lib} "$NODE" "--max-old-space-size=$OLD_SPACE" "$SCRIPTS/server.js" "$PORT" "$d/pid" > "$d/server.log" 2>&1 &
+  env ${lib:+LD_PRELOAD=$lib} "$NODE" "--max-old-space-size=$OLD_SPACE" "$SCRIPTS/server.js" "$PORT" "$d/pid" > "$d/server.log" 2>&1 9>&- &
   wrapper=$!
   i=0; while [ ! -s "$d/pid" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done
   [ -s "$d/pid" ] || { cat "$d/server.log" >&2; die "server ($a) did not start on port $PORT"; }
   pid=$(cat "$d/pid")
   [ -d "/proc/$pid" ] || die "server ($a) pid $pid gone"
+  BENCH_PIDS="$pid $wrapper"   # the bench lock's trap kills them if the harness dies here
   echo "$(rss_kb "$pid")" > "$d/rss.idle"
   # warm-up: WARM_N requests on each endpoint, sequentially, not scored
   "$AB" -q -k -l -c $((CONNS/2)) -n "$WARM_N" "http://127.0.0.1:$PORT/json" > "$d/warm.json.ab" 2>&1 || { tail -5 "$d/warm.json.ab" >&2; die "ab warm-up (/json, $a) failed"; }
@@ -182,6 +183,7 @@ run_server_row() {
   kill -TERM "$pid" 2>/dev/null || true
   wait $wrapper 2>/dev/null || true
   [ -d "/proc/$pid" ] && { sleep 1; kill -KILL "$pid" 2>/dev/null || true; }
+  BENCH_PIDS=
   printf '   server.%s done: /json %s, /blob %s, rss peak %s KiB, %s\n' "$a" "$(ab_fields "$d/json.ab" | awk '{print $2 " req/s p99 " $3 " ms"}')" "$(ab_fields "$d/blob.ab" | awk '{print $2 " req/s p99 " $3 " ms"}')" "$(awk '$2!="-" && $2>m {m=$2} END {print m+0}' "$d/rss.samples")" "$(date -u +%T)"
 }
 if has_row server; then

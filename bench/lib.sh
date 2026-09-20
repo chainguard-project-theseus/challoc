@@ -70,11 +70,37 @@ tree_dirty() {
   esac
 }
 
-
 # take_bench_lock: one protocol run per target volume (see bench/run.sh).
+# The lock is the flock on fd 9, released by the kernel when every holder of
+# the descriptor exits. A server the harness starts in the background
+# inherits fd 9 and keeps the lock for as long as it lives, so a harness
+# that dies with its server up blocks the next harness in the container
+# (2026-09-20). Two defences: every server start closes the descriptor for
+# the child (`... 9>&- &`, so the child never holds the lock), and the trap
+# installed here kills the children the harness registered in BENCH_PIDS
+# (space-separated; each one's own children first, `rt` and `env` wrappers
+# forward no signal) and runs the harness's own cleanup, named in
+# BENCH_CLEANUP (a function; set it instead of trapping EXIT yourself, a
+# second `trap ... EXIT` would replace this one). INT and TERM turn into an
+# exit so the EXIT trap runs once. The lock file itself stays: unlinking it
+# would let a waiter that had already opened the old inode and a newcomer
+# on the new one both take "the" lock.
+BENCH_PIDS=
+BENCH_CLEANUP=
 take_bench_lock() {
   exec 9>"$ROOT/target/bench.lock"
   flock -n 9 || die "another bench run holds target/bench.lock; wait for it or check docker ps"
+  trap bench_exit EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+}
+bench_exit() {
+  be_st=$?
+  trap - EXIT INT TERM
+  [ -z "$BENCH_CLEANUP" ] || $BENCH_CLEANUP
+  for be_p in $BENCH_PIDS; do pkill -P "$be_p" 2>/dev/null || true; kill "$be_p" 2>/dev/null || true; done
+  exec 9>&-
+  exit $be_st
 }
 
 # ensure_bench_programs: bench/build.sh is idempotent but slow to even check
@@ -364,10 +390,11 @@ run_redis() {
   srv_rt=$rt.server
   : > "$srv_rt"
   if [ -n "$conf" ]; then
-    RT_OUT=$srv_rt "$BIN/rt" env MALLOC_CONF="$conf" LD_PRELOAD="$lib" "$@" --port "$REDIS_PORT" --save "" --appendonly no --daemonize no --logfile /dev/null >/dev/null 2>&1 &
+    RT_OUT=$srv_rt "$BIN/rt" env MALLOC_CONF="$conf" LD_PRELOAD="$lib" "$@" --port "$REDIS_PORT" --save "" --appendonly no --daemonize no --logfile /dev/null >/dev/null 2>&1 9>&- &
   else
-    RT_OUT=$srv_rt "$BIN/rt" env LD_PRELOAD="$lib" "$@" --port "$REDIS_PORT" --save "" --appendonly no --daemonize no --logfile /dev/null >/dev/null 2>&1 &
+    RT_OUT=$srv_rt "$BIN/rt" env LD_PRELOAD="$lib" "$@" --port "$REDIS_PORT" --save "" --appendonly no --daemonize no --logfile /dev/null >/dev/null 2>&1 9>&- &
   fi
+  BENCH_PIDS=$!   # the bench lock's trap kills the server if the harness dies here
   i=0
   until [ "$("$BIN/redis-cli" -p "$REDIS_PORT" ping 2>/dev/null)" = PONG ]; do
     i=$((i+1)); [ $i -gt 100 ] && { echo "redis-server did not start (port $REDIS_PORT busy?)" >&2; echo "0 0 0 0 1" > "$rt"; return; }
@@ -377,6 +404,7 @@ run_redis() {
   RT_OUT=$rt.client "$BIN/rt" "$BIN/redis-benchmark" -p "$REDIS_PORT" -r 1000000 -n "$REDIS_N" -q -P 16 lpush a 1 2 3 4 5 lrange a 1 5 2>&1 | tr '\r' '\n' > "$log" || true
   "$BIN/redis-cli" -p "$REDIS_PORT" shutdown nosave >/dev/null 2>&1 || true
   wait
+  BENCH_PIDS=
   # elapsed/user/sys from the client, maxrss from the server, exit = client's
   # or 1 when the server's rt line is missing.
   awk 'FNR==NR {c=$0} FILENAME!=ARGV[1] {s=$0} END {

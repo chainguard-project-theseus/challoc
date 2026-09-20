@@ -145,7 +145,7 @@ fi
 psql_() { psql -h "$SOCK" -U "$DBUSER" -X -Atq "$@" "$DB"; }
 pg_start() { # pg_start ALLOC: start the server with the allocator in its environment
   lib=$(lib_of "$1")
-  as_pg "env ${lib:+LD_PRELOAD=$lib }pg_ctl -D $PGDATA -w -t 120 -l $PGLOGS/$1.log -o '$PG_OPTS' start" > "$OUT/start.$1.log" 2>&1 \
+  as_pg "env ${lib:+LD_PRELOAD=$lib }pg_ctl -D $PGDATA -w -t 120 -l $PGLOGS/$1.log -o '$PG_OPTS' start" > "$OUT/start.$1.log" 2>&1 9>&- \
     || { tail -5 "$OUT/start.$1.log" "$PGLOGS/$1.log" >&2; die "server did not start under $1"; }
   i=0; until psql_ -c 'select 1' >/dev/null 2>&1; do i=$((i+1)); [ $i -gt 100 ] && die "server under $1 not answering on $SOCK"; sleep 0.1; done
   PM_PID=$(head -1 "$PGDATA/postmaster.pid")
@@ -153,7 +153,7 @@ pg_start() { # pg_start ALLOC: start the server with the allocator in its enviro
 pg_stop() { as_pg "pg_ctl -D $PGDATA -m fast -w -t 120 stop" > "$OUT/stop.log" 2>&1 || { tail -5 "$OUT/stop.log" >&2; die "server did not stop"; }; PM_PID=; }
 PM_PID=
 cleanup() { [ -n "$PM_PID" ] && as_pg "pg_ctl -D $PGDATA -m immediate stop" >/dev/null 2>&1; touch "$OUT/stop" 2>/dev/null; :; }
-trap cleanup EXIT INT TERM
+BENCH_CLEANUP=cleanup   # run by the bench lock's EXIT/INT/TERM trap (bench/lib.sh take_bench_lock)
 # The data set, loaded once under glibc (the data files are the same
 # whatever the server's allocator) and kept when the scale matches.
 pg_start glibc
@@ -177,7 +177,7 @@ maps_of() { as_pg "grep -oE '/[^ ]*/lib(challoc|jemalloc|mimalloc|tcmalloc)[^/ ]
   pg_start "$a"
   lib=$(lib_of "$a"); want=; [ -n "$lib" ] && want=$(readlink -f "$lib")
   pm_maps=$(maps_of "$PM_PID")
-  psql_ -c "select pg_sleep(5)" >/dev/null 2>&1 &
+  psql_ -c "select pg_sleep(5)" >/dev/null 2>&1 9>&- &
   sl=$!
   bp=; i=0
   until [ -n "$bp" ] || [ $i -gt 40 ]; do bp=$(psql_ -c "select pid from pg_stat_activity where query like '%pg_sleep%' and pid <> pg_backend_pid()"); i=$((i+1)); sleep 0.1; done
@@ -215,7 +215,7 @@ run_pg_row() {
   n=$(wc -l < "$OUT/$tag.scores")
   log=$OUT/$tag.$n.out
   rm -f "$OUT/stop"
-  as_pg "sh $SAMPLER $OSUSER $DBUSER $PGDATA $INTERVAL $OUT" > "$OUT/$tag.$n.samples" &
+  as_pg "sh $SAMPLER $OSUSER $DBUSER $PGDATA $INTERVAL $OUT" > "$OUT/$tag.$n.samples" 9>&- &
   sp=$!
   set -- $(row_args "$row")
   ex=0

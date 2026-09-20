@@ -238,7 +238,12 @@ Files:
   building a variant from a rev or the working tree with its own
   `CARGO_TARGET_DIR` and remapped paths (`build_lib`), sorted lists,
   medians, overlap and percentage helpers, the baseline file name and row
-  parser, the bench lock shared with `run.sh`, and the pieces every consumer
+  parser, the bench lock shared with `run.sh` (`take_bench_lock` also
+  installs the EXIT/INT/TERM trap that kills the servers a harness
+  registered in `BENCH_PIDS`, runs its `BENCH_CLEANUP` function and closes
+  the lock's descriptor; every server start closes that descriptor for the
+  child with `9>&-`, so a harness that dies with its server up no longer
+  blocks the next one), and the pieces every consumer
   harness (python, node, jvm, postgres, ruby) repeats: the allocator
   description lines of a results header (`describe_stock`,
   `describe_challoc`), the `LD_PRELOAD` path of an allocator

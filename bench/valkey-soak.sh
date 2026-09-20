@@ -180,7 +180,7 @@ cleanup() {
   [ -n "${OCC_PID:-}" ] && kill "$OCC_PID" 2>/dev/null
   :
 }
-trap cleanup EXIT INT TERM
+BENCH_CLEANUP=cleanup   # run by the bench lock's EXIT/INT/TERM trap (bench/lib.sh take_bench_lock)
 
 # info_field SECTION FIELD: one INFO value, CRLF stripped.
 info_field() { "$CLI" -p "$PORT" info "$1" | tr -d '\r' | awk -F: -v k="$2" '$1==k {print $2}'; }
@@ -285,7 +285,7 @@ soak() { # alloc
   conf_env=
   case $alloc in challoc) [ -n "${CHALLOC_CONF:-}" ] && conf_env="MALLOC_CONF=$CHALLOC_CONF";; esac
   env $conf_env "$server" --port "$PORT" --save "" --appendonly no --daemonize no \
-    --logfile "$D/server.log" --activedefrag "$DEFRAG" ${IO_THREADS:+--io-threads $IO_THREADS} >/dev/null 2>&1 &
+    --logfile "$D/server.log" --activedefrag "$DEFRAG" ${IO_THREADS:+--io-threads $IO_THREADS} >/dev/null 2>&1 9>&- &
   SERVER_PID=$!
   i=0
   until [ "$("$CLI" -p "$PORT" ping 2>/dev/null)" = PONG ]; do
@@ -302,12 +302,12 @@ soak() { # alloc
 
   T0=$(now)
   echo write > "$D/phase"; rm -f "$D/last" "$D/stop"
-  sampler "$D" "$T0" "$D/samples.csv" &
+  sampler "$D" "$T0" "$D/samples.csv" 9>&- &
   SAMPLER_PID=$!
   cgroup_peak_start "$D" || true
   OCC_PID=
   if [ "$OCCUPANCY" = 1 ]; then
-    occupancy_sampler "$D" "$T0" "$RESULT_DIR/$DATE-$ARCH-valkey-soak-$alloc-mstats" &
+    occupancy_sampler "$D" "$T0" "$RESULT_DIR/$DATE-$ARCH-valkey-soak-$alloc-mstats" 9>&- &
     OCC_PID=$!
     echo "occupancy sampler: MEMORY MALLOC-STATS every ${MS_INTERVAL}s into $RESULT_DIR/$DATE-$ARCH-valkey-soak-$alloc-mstats/"
   fi

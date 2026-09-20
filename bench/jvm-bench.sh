@@ -320,8 +320,9 @@ fetch() { python3 -c 'import sys,urllib.request; sys.stdout.write(urllib.request
 # in DIR/pid, 1 when it did not come up (recorded in $OUT/<row>.failed).
 start_jvm() {
   a=$1; d=$2; mode=$3; shift 3
-  env $(env_of "$a" server) "$JAVA" $JAVA_OPTS $(opts_of "$a") $(nmt_opts) "-Xlog:gc:file=$d/gc.log" -cp "$CLASSES" HttpBench "$mode" "$PORT" "$@" > "$d/stdout" 2> "$d/stderr" &
+  env $(env_of "$a" server) "$JAVA" $JAVA_OPTS $(opts_of "$a") $(nmt_opts) "-Xlog:gc:file=$d/gc.log" -cp "$CLASSES" HttpBench "$mode" "$PORT" "$@" > "$d/stdout" 2> "$d/stderr" 9>&- &
   pid=$!; echo "$pid" > "$d/pid"
+  BENCH_PIDS=$pid   # the bench lock's trap kills it if the harness dies here
   i=0; until grep -q '^READY' "$d/stdout" 2>/dev/null; do
     i=$((i+1)); if [ $i -gt 300 ] || ! kill -0 "$pid" 2>/dev/null; then echo "  server ($a) did not start; stderr:" >&2; tail -5 "$d/stderr" >&2; echo "$a start-failed" >> "$OUT/$mode.failed"; wait "$pid" 2>/dev/null || true; return 1; fi
     sleep 0.1
@@ -342,6 +343,7 @@ finish_jvm() {
   i=0; while [ -d "/proc/$pid" ] && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done
   [ -d "/proc/$pid" ] && { echo "  $a: server did not exit on /quit, killing" >&2; kill "$pid" 2>/dev/null || true; }
   if wait "$pid" 2>/dev/null; then ex=0; else ex=$?; fi
+  BENCH_PIDS=
   echo "$ex" > "$d/exit"
 }
 

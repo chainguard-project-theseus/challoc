@@ -50,6 +50,15 @@ REDIS_N=${REDIS_N:-1000000}
 # and is released by the kernel when the holder exits.
 exec 9>"$ROOT/target/bench.lock"
 flock -n 9 || { echo "another bench run holds target/bench.lock; wait for it or check docker ps" >&2; exit 1; }
+# A background server inherits fd 9 and would keep the lock after this
+# script died (bench/lib.sh take_bench_lock has the full note): the server
+# start below closes the descriptor for the child, and the trap kills a
+# server still up when the script exits or is interrupted (the server
+# first: SERVER_PID is its `rt` wrapper, which forwards no signal).
+SERVER_PID=
+trap '[ -z "$SERVER_PID" ] || { pkill -P "$SERVER_PID" 2>/dev/null; kill "$SERVER_PID" 2>/dev/null; }; exec 9>&-' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 rm -rf "$OUT"
 mkdir -p "$OUT" "$(dirname "$RESULT")"
 
@@ -83,7 +92,8 @@ run_one() {
       # fixed request count, RSS is the server's.
       RT_OUT=$OUT/redis-server.$alloc.rt "$BIN/rt" env LD_PRELOAD="$lib" \
         "$BIN/redis-server" --port 6379 --save "" --appendonly no --daemonize no \
-        --logfile /dev/null >/dev/null 2>&1 &
+        --logfile /dev/null >/dev/null 2>&1 9>&- &
+      SERVER_PID=$!
       i=0
       until [ "$("$BIN/redis-cli" -p 6379 ping 2>/dev/null)" = PONG ]; do
         i=$((i+1)); [ $i -gt 100 ] && { echo "redis-server did not start" >&2; exit 1; }
@@ -93,6 +103,7 @@ run_one() {
       RT_OUT=$OUT/redis.$alloc.rt "$BIN/rt" "$BIN/redis-benchmark" -p 6379 \
         -r 1000000 -n "$REDIS_N" -q -P 16 lpush a 1 2 3 4 5 lrange a 1 5 2>&1 | tr '\r' '\n' >"$log" || true
       "$BIN/redis-cli" -p 6379 shutdown nosave >/dev/null 2>&1 || true
+      wait "$SERVER_PID" 2>/dev/null || true; SERVER_PID=
       wait
       return;;
     *) echo "unknown benchmark $bench" >&2; exit 1;;
