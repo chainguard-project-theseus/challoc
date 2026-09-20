@@ -45,6 +45,10 @@ impl ClassState {
     /// [`adopt_idle_group`]: ClassState::adopt_idle_group
     pub(super) fn next_slab(&self, g: &mut Inner, meta: &Meta, wake: &mut bool) -> Option<usize> {
         loop {
+            // Spelled out, not `empty_take` and `purged_take`: this runs
+            // inlined in `claim_with` (through `plan_locked`), whose
+            // machine code the helpers reorder (`scripts/codegen-diff.sh`);
+            // the per-allocation path stays as measured.
             if let Some(s) = g.empty.map.lowest_set() {
                 g.empty.map.clear(s);
                 g.stats.empty = g.stats.empty.checked_sub(1).unwrap_or_else(|| slab_count_underflow("empty"));

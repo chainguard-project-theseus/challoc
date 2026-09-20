@@ -139,8 +139,7 @@ impl ClassState {
                 populate(self.table().slab_addr(s), cls.slab_size());
                 d.set_state(State::Purged);
                 d.set_dirty_at(0);
-                g.purged.map.set(s);
-                g.stats.purged += 1;
+                g.purged_add(s);
                 self.prefaulted.fetch_add(1, Ordering::Relaxed);
                 Ok(Some(s))
             }

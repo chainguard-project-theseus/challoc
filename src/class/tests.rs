@@ -2306,3 +2306,51 @@ fn claim_random_hands_out_the_same_slots_in_a_random_order() {
     assert_eq!(all, out.iter().copied().collect());
     assert!(cs.table().bits(0).is_full());
 }
+
+/// The set/count seam of `Inner` (`empty_add`, `empty_take`,
+/// `purged_add`, `purged_take`): each helper moves the bit and the count
+/// together, so the count is always the set's population.
+#[test]
+fn the_set_helpers_keep_the_counts_in_step_with_the_bits() {
+    let env = Env::new();
+    let cs = env.class(small_class(), 0);
+    let n = cs.class().nslots();
+    // Two groups of one slab handed out, both `Empty`.
+    let (p, _) = env.claim(&cs, n + 1);
+    cs.release(&p);
+    assert_eq!(cs.stats(), ClassStats { committed: 2, empty: 2, ..Default::default() });
+    {
+        let mut g = cs.inner.lock();
+        g.empty_take(0);
+        assert!(!g.empty.map.is_set(0));
+        assert_eq!((g.stats.empty, g.stats.purged), (1, 0));
+        g.purged_add(0);
+        assert!(g.purged.map.is_set(0));
+        assert_eq!((g.stats.empty, g.stats.purged), (1, 1));
+        g.purged_take(0);
+        assert!(!g.purged.map.is_set(0));
+        assert_eq!((g.stats.empty, g.stats.purged), (1, 0));
+        g.empty_add(0);
+        assert!(g.empty.map.is_set(0));
+        assert_eq!((g.stats.empty, g.stats.purged), (2, 0));
+    }
+    assert_eq!(cs.stats(), ClassStats { committed: 2, empty: 2, ..Default::default() });
+    assert_eq!(cs.set_membership(0), (false, true, false));
+    assert_eq!(cs.set_membership(1), (false, true, false));
+}
+
+#[test]
+#[should_panic(expected = "purged slab count underflow")]
+fn a_plan_that_takes_a_purged_slab_the_counts_do_not_know_aborts() {
+    let env = Env::new();
+    let cs = env.class(small_class(), 0);
+    let (b, claim) = env.claim(&cs, 1);
+    assert_eq!(claim.n, 1);
+    cs.release(&b);
+    assert_eq!(cs.purge_empty(u64::MAX), 1);
+    assert_eq!(cs.stats().purged, 1);
+    // Corrupt the count: the set still holds the slab.
+    cs.inner.lock().stats.purged = 0;
+    let mut picks = [Pick::EMPTY; MAX_PICKS];
+    cs.plan(&env.meta, 1, &mut picks);
+}

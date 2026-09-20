@@ -110,7 +110,7 @@ pub(crate) use handoff::HANDOFFS;
 pub use sets::{SET_GROUPS, SETS_PER_CLASS, SetTable};
 pub(crate) use sets::Set;
 pub use table::{SlabTable, desc_stagger};
-use abort::{double_free, guard_free, release_into_fresh_slab, reservation_unmet, wrong_arena, zero_slab_had_bits_set};
+use abort::{double_free, guard_free, release_into_fresh_slab, reservation_unmet, slab_count_underflow, wrong_arena, zero_slab_had_bits_set};
 use table::os;
 use verify::{fresh_with_live, release_into_fresh};
 
@@ -361,6 +361,15 @@ const _: () = assert!(core::mem::size_of::<ClassState>() % 512 != 0);
 unsafe impl Sync for ClassState {}
 unsafe impl Send for ClassState {}
 
+/// The set/count seam: each of the three sets is one bitmap plus one
+/// `ClassStats` count, and the two are written together, here or at the
+/// two sites that spell the pair out and say why (`next_slab`,
+/// `purge_group`), so `nonfull`, `empty` and `purged` are always the
+/// population of their set. `partial` is idempotent (a release batch may
+/// name a slab whose bit a refill set meanwhile); `empty` and `purged`
+/// are exact: a slab enters when its state changes and leaves when a
+/// refill takes it or a purge moves it, so a count that would go below
+/// zero is a heap inconsistency and aborts (`slab_count_underflow`).
 impl Inner {
     fn set_partial(&mut self, slab: usize) {
         if !self.partial.map.is_set(slab) {
@@ -374,6 +383,38 @@ impl Inner {
             self.partial.map.clear(slab);
             self.stats.nonfull -= 1;
         }
+    }
+
+    /// `slab` into the empty set (it went `Empty`, or arrived `Empty`
+    /// with an adopted group).
+    fn empty_add(&mut self, slab: usize) {
+        debug_assert!(!self.empty.map.is_set(slab), "empty_add: slab {slab} already in the empty set");
+        self.empty.map.set(slab);
+        self.stats.empty += 1;
+    }
+
+    /// `slab` out of the empty set (a refill takes it, a purge moves it
+    /// to `purged`, a handoff moves it to another arena).
+    fn empty_take(&mut self, slab: usize) {
+        debug_assert!(self.empty.map.is_set(slab), "empty_take: slab {slab} not in the empty set");
+        self.empty.map.clear(slab);
+        self.stats.empty = self.stats.empty.checked_sub(1).unwrap_or_else(|| slab_count_underflow("empty"));
+    }
+
+    /// `slab` into the purged set (a purge discarded it, the prefault
+    /// pass published it, or it arrived `Purged` with an adopted group).
+    fn purged_add(&mut self, slab: usize) {
+        debug_assert!(!self.purged.map.is_set(slab), "purged_add: slab {slab} already in the purged set");
+        self.purged.map.set(slab);
+        self.stats.purged += 1;
+    }
+
+    /// `slab` out of the purged set (a refill takes it, a handoff moves
+    /// it to another arena).
+    fn purged_take(&mut self, slab: usize) {
+        debug_assert!(self.purged.map.is_set(slab), "purged_take: slab {slab} not in the purged set");
+        self.purged.map.clear(slab);
+        self.stats.purged = self.stats.purged.checked_sub(1).unwrap_or_else(|| slab_count_underflow("purged"));
     }
 }
 
@@ -770,8 +811,7 @@ impl ClassState {
                 desc.set_state(State::Empty);
                 desc.set_dirty_at(now);
                 g.clear_partial(slab);
-                g.empty.map.set(slab);
-                g.stats.empty += 1;
+                g.empty_add(slab);
                 if self.gate.note_first_empty(now) {
                     first = true;
                 }
