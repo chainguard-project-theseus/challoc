@@ -515,9 +515,9 @@ mod tests {
         "arena.rs:Arena.stats",
         "arena.rs:Arenas.lock",
         "arena.rs:Tcaches.lock",
-        "class.rs:ClassState.inner",
-        "class.rs:SetTable.tables",
-        "class.rs:SlabTable.inner",
+        "class/mod.rs:ClassState.inner",
+        "class/sets.rs:SetTable.tables",
+        "class/table.rs:SlabTable.inner",
         "heap/shared.rs:Shared.stats",
         "huge.rs:Huge.inner",
         "meta.rs:Meta.inner",
@@ -539,19 +539,19 @@ mod tests {
                 }
                 "arena.rs:Arenas.lock" => state(s.arenas.raw_lock().is_locked(), "arena registry"),
                 "arena.rs:Tcaches.lock" => state(s.tcaches.raw_lock().is_locked(), "tcache table"),
-                "class.rs:ClassState.inner" => {
+                "class/mod.rs:ClassState.inner" => {
                     for &a in arenas {
                         for c in 0..NCLASSES {
                             state(s.arena(a).unwrap().classes[c].raw_lock().is_locked(), &std::format!("arena {a} class {c}"));
                         }
                     }
                 }
-                "class.rs:SetTable.tables" => {
+                "class/sets.rs:SetTable.tables" => {
                     for &a in arenas {
                         state(s.arena(a).unwrap().sets().raw_lock().is_locked(), &std::format!("arena {a} sets"));
                     }
                 }
-                "class.rs:SlabTable.inner" => {
+                "class/table.rs:SlabTable.inner" => {
                     for c in 0..NCLASSES {
                         state(s.tables()[c].raw_lock().is_locked(), &std::format!("table {c}"));
                     }
