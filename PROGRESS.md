@@ -1145,6 +1145,36 @@ One line per task, newest at the bottom of each section. Keep it terse.
 - Maintainability pass (lane tidy-sys, 2026-09-20): `src/sys/*`, `src/rseq.rs`, `tests/c/sysnr.c` tidied with zero machine-code change (`scripts/codegen-diff.sh compare`: `.text` IDENTICAL for q16 `91f2b6b9ca6c5059` and q8 `de1d548d53808c5c`, baseline 0f5dee4); `make test` 424 + 120 + 25 (was 411 + 120 + 23), cgroup and pagemap-guard steps `ok`. Commits c908ef6 (`MINCORE` header-checked: `nr::TABLE` row, `sysnr.c` printer, a test that `TABLE` covers every `nr.rs` constant; `Errno::name` completeness test), 5519e4e (dead `MAP_POPULATE`/`MAP_FAILED`/`MADV_NORMAL`/`MADV_PAGEOUT`/`GRND_*` removed; `MAP_SHARED`/`MAP_FIXED_NOREPLACE`/`MADV_COLD`/`O_WRONLY` `#[cfg(test)]`; raw `futex` private; `PIDFD_SELF` doc dated 6.15 from the kernel history, value unchanged; test fixes: dead `read_link`, literal `1 /* O_WRONLY */`, misplaced nr.rs doc, SAFETY comments, `map_anon` helper), 9d5ccba (`probe_prints_and_matches_kernel_version` split into ten per-feature container tests sharing `probed()`, the old name kept for `bench/probes/calloc-zero-campaign.sh`; the `PIDFD_SELF` gate 6.16 -> 6.15 to match the constant; two re-inlined `mmap`s replaced by `sys::tests::map_anon`; `Isa` import; task numbers and lane names out of the doc comments), 0571597 (rseq.rs: seven per-const cfgs -> one `mod hdr`, FPAC postmortem moved from the asm block to the `push_batch` doc, comment on why aarch64 `install` needs no `.arch_extension pauth`, SAFETY comments; cgroup.rs: `walk_min` trailing-slash / short-dir / root-mount tests, `join_dir` with `mount == "/"`, `Cgroup::events()` documents its partial fields; cpu.rs, pac.rs, cldemote.rs: dates and task numbers out, capture provenance and bench citations kept).
 - Maintainability pass (lane tidy-purge, 2026-09-20): purge.rs, policy.rs, thp.rs, config.rs brought to their current state with zero machine-code change (`scripts/codegen-diff.sh compare`: `.text hash IDENTICAL` for q16 and q8 after every commit). Stale prose fixed (purge.rs lists four things and the prefault pass keeps up to `MAX_AHEAD` = 8 slabs per class, not one; policy.rs cites the churn-test figures of `bench/results/2026-09-19-lane-b-floor-fixes.md`, 7 of 16 and 5 of 16; config.rs's module doc describes the three key tables as they are, the `cgroup` field names `policy.rs`, the `percpu_arena` default's assertion says thread caches); plan-task numbers, review dates and lane names stripped from doc comments across the four files, bench/results citations kept. Dead items removed: `purge::lazy_ever`, `purge::background::psi_armed`, `impl Default for Decayer`, the unreachable `_ =>` arm of the inert-keys test; `purge::sample` made private. New host tests: `config::tests::spin_hint_values` (parse, `opt.spin_hint` read-back, bad values, `hint()`, `apply_spin_hint` refusals on synthetic CPUs), `config::tests::set_knows_exactly_the_tabled_keys` (every name in `KEYS | IGNORED_KEYS | INERT_KEYS` is one `set` accepts, the tables are disjoint, unknown names are `UnknownKey`), the shared `rejects_bad_values` helper replacing five copies of the bad-value loop, `purge::tests::decayer_walks_once_per_step_and_follows_a_shortened_period` (`Decayer::decay` directly, shortened-period branch included), `thp::tests::reservations_are_recorded_in_order_up_to_the_limit` (slot order, the `MAX_RESERVATIONS` cap, the huge kind unrecorded, the advice counted with and without kernel THP, `force_never`'s re-advice); the thp tests that touch the process-wide statics take one mutex. stats.rs needed nothing. `make test`: 415 + 120 + 23 passed (baseline 411 + 120 + 23), cgroup and pagemap-guard steps `ok`; host `cargo test --features std` 323 passed. Commits 7caf957, d070f9a, 9972f9e.
 - Maintainability pass (lane tidy-class, 2026-09-20): docs in `src/class.rs` and `src/slab.rs` name the code as it is (`commit_next` -> `next_fresh_slab`/`commit_slab`; the sets are views into the arena's `SetTable`; `ClassState::new`'s slot formula; `check_live`'s guard test is shift/add/mask; `SlabDesc::at`'s SAFETY note says zero decodes as `Fresh` and a byte above 3 aborts; the misattached docs on `idle_groups`/`is_partial` and `idle_group_in_use`/`zero_slab_had_bits_set` sit on the right item; the page-group test says why the path is dormant); the 13 "plan Phase/task" citations in non-test docs replaced by what the code does (bench citations kept); `page_group_is_idle` says why the descriptor's arena agrees with the owner word; `take`, `finish`, `release_owned`, `on_live_zero`, `reopen` point at their `model::Model::step_refill`/`step_release` steps. Test-only API under `#[cfg(test)]`: `SlabTable::check`, `ClassState::check`, `SlabTable::group`, `SlabTable::guard_interval`, `SetTable::committed_ranges`, `AtomicBitmap::claim`, `TwoLevelBitmap::len`/`is_empty`; `SlabTable::class_index` and `ClassState::class_index` (no callers) deleted. Tests: `Pick::EMPTY` (test-only) for the four test literals, the tests use the module's `xorshift` and `shuffle`, the two "uncommitted slab" tests renamed below/above the watermark, and six new tests: `idle_group_in_use`, `zero_slab_had_bits_set`, `AtomicBitmap::init`'s nbits assert (whole-word and sub-word), `shuffle`, `claim_random`. Zero machine-code change: `scripts/codegen-diff.sh compare` .text IDENTICAL for q16 and q8 against 0f5dee4. Host 325; `make test` 417 + 120 + 23, cgroup and pagemap-guard steps ok. Commits ee0403d, 447dde6, 5e2f829, 4aba62e.
+- Maintainability pass (lane tidy-huge, 2026-09-20): docs and test-only
+  API of `src/huge.rs`, `src/meta.rs`, `src/layout.rs`, `src/slice.rs`
+  with zero machine-code change (`scripts/codegen-diff.sh compare`
+  `.text hash IDENTICAL` for q16 and q8 after every group). Docs: huge's
+  module doc now describes `find` as it is (each free extent's start, then
+  the mark, rounded up to the alignment; taken when the run fits below the
+  extent's end or the extent touches the mark; `take` leaves the pages
+  before and after as free extents), the free-page mirror is `class::Set`
+  (the `TwoLevelBitmap` link dangled); meta's stats identities name the
+  fields that exist (`committed_bump`/`committed_reserved` did not), its
+  object and reservation lists match the callers (every bitmap is a
+  reservation), and the `Meta` doc says heap.rs builds it with `Meta::new`;
+  plan-task and dated citations stripped from layout.rs, slice.rs and two
+  huge test docs (bench citations behind constants kept). Gated
+  `#[cfg(test)]`: `Huge::free`, `npages`, `oldest_dirty_at`; `Meta::init`,
+  `is_initialised`, `base`, `top`, `contains`; `layout::Tier`,
+  `Class::tier`, `Class::bitmap_words`, `Regions::stride`, `gap`,
+  `in_meta`; `slice::thread_enabled` (with `target_os = "linux"`); the
+  slice test module and its lock are private. Deleted (no callers):
+  `Huge::guard_install()`, `HugeDesc::usable()`, `HugeDesc::dirty_at()`.
+  Tests (+7 on the host, +6 on Linux): `Regions::slot_in_class` agrees
+  with `slab_slot` for every class and in-slab offset and is `None`
+  outside the class; `Huge::alloc(0, ..)` gets one page; `huge::Table`
+  backward-shift deletion across the wrap from the last slot to slot 0;
+  `Table::ensure` failing cleanly on metadata exhaustion; `slice::Verdict`
+  byte round trip and distinct report words, `Probe::verdict`, and the
+  off-Linux inert paths (the verdict loop left `layout_constants`). Host
+  `cargo test --features std`: 326 passed (was 319). `make test` in the
+  container: 417 + 120 + 23 passed, cgroup and pagemap-guard steps `ok`.
+  Commits 30cb2d6, 1914119, 04013e1, eb65199.
 
 ## In progress
 
@@ -3098,3 +3128,53 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
 - `src/arena.rs` needed nothing: none of the review's findings touched it, and its `len()`/`is_empty()` at line 613 is on its own type, not `TwoLevelBitmap`.
 - `docs/design.md`: no edit owed. Section 4's text does not repeat the "garbage decodes as `Purged`" claim the `SlabDesc::at` SAFETY comment had (the only place it lived), and none of the pruned accessors is named in `docs/`. `docs/review-2026-09-18.md` item 31 (vestigial `ClassState::check`/`SlabTable::check`) is now addressed by `#[cfg(test)]` rather than deletion, since 15 class tests and one heap test use them as the exact check of a pointer; the coordinator may want to tick that item.
 - `is_partial` is not test-only (`api::print` bins table) and `lowest_partial` is used by `mallctl`; both stay public.
+- Skipped, later-batch candidate: the unreachable `RunState::Active =>
+  "Active"` arm in `Huge::prior_state` (huge.rs). Replacing the three-arm
+  match with a two-way test shrank `.text` by 0x40 bytes (two functions
+  reloc-only), so identity did not hold and it stays as it was.
+- Skipped, later-batch candidate: `impl Default for Meta` and `Meta::empty`
+  (meta.rs). Nothing calls them, but removing the impl block renumbers the
+  v0 mangling disambiguator of `impl Meta` (`Ms1_` to `Ms0_`), which moves
+  its six functions in `.text`: all 435 functions match exactly, the
+  sections have the same sizes, only the hash differs. A comment on the
+  impl says so. General gotcha for every lane in this batch: adding or
+  removing an impl block in a module changes the symbol names, and so the
+  `.text` order, of every later impl in that module even when no code
+  changes; methods inside an impl can be gated or removed freely.
+- Found, not changed (behaviour): `huge::Table::find` does not terminate
+  when the table is completely full and the key is absent (`insert` lets
+  `count` reach `cap`; a probe for an absent key ends only at an empty
+  slot). Production keeps the load at or below one half through `ensure`,
+  but `free_run`'s `ensure` is best-effort and a free adds up to one net
+  key, so after a failed growth (metadata exhausted) a long free-only
+  sequence could in principle fill the table and then spin in
+  `free_before`/`free_after` instead of aborting. Candidates: make
+  `insert` abort at `cap - 1`, or bound `find` to `cap` probes and abort.
+  The new `table_growth_failure_leaves_the_table_working` test stops one
+  slot short of full for this reason (its first form hung the host run).
+- `make test`, first run: `api::ctests::c_thp_never` failed with
+  "AnonHugePages 0 kB in the 8 MiB huge run under never on an always host"
+  while another lane's Valkey soak container ran on the same host (load
+  average 16-24). It passed alone right after (8192 kB) and in the full
+  rerun. The kernel backs a fresh run with a PMD page at fault time only
+  when one is available, so the check is sensitive to a loaded host;
+  worth a retry or a tolerance in `tests/c/thp.c` if it recurs.
+- docs/design.md edits for the coordinator (lane D owns docs):
+  - Section 7, the alignment bullet ("Alignment requests above page size
+    are satisfied by over-allocating and releasing the head and tail pages
+    back to the bitmap"): the code does not over-allocate. `find` rounds
+    the start of each free extent (and finally the high-water mark) up to
+    the alignment and takes the extent when the run fits below its end or
+    the extent touches the mark and can grow; `take` records the pages
+    before the aligned start (and any left after the run) as free
+    extents, a hole at the mark as a `Purged` one. An alignment above the
+    region's size is refused. The first bullet's "`TwoLevelBitmap` over
+    pages" is the `class::Set` shared with the arenas.
+  - Section 19 (source layout) lacks four files: `src/slice.rs` (rseq
+    time slice extension for lock holders, section 17), `src/thp.rs`
+    (transparent huge pages: the `thp` key against the sysfs table,
+    reservation advice, metadata folios, `MADV_HUGEPAGE` on huge runs;
+    sections 7, 10, 17), `src/sys/cldemote.rs` (the `cldemote` cache-line
+    hint: probed, reported, tested both ways, issued on no path; section
+    17) and `src/sys/pac.rs` (pointer authentication of the TLS heap
+    pointer on arm64 with FEAT_PAuth; sections 6.1, 6.2, 17).
