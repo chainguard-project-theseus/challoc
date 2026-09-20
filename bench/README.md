@@ -23,6 +23,9 @@ never used for numbers.
                           with PYTHONMALLOC unset and =malloc, under the same five allocators
     make node-bench       Node.js 22 rows (Phase 3 task 5 (c)): node -e 0 startup, a JSON
                           churn process and an http server under ab for DURATION s per allocator
+    make jvm-bench        JVM rows (Phase 3 task 5 (a)): `java -version` startup and a
+                          200-thread com.sun.net.httpserver server under ab for 5 minutes per
+                          allocator, plus glibc with MALLOC_ARENA_MAX=2 as a sixth variant
 
 ## Two tiers
 
@@ -334,6 +337,35 @@ Files:
   `challoc:huge`, `challoc:meta`, so a gap can be placed). Written to
   `bench/results/<date>-<arch>-node.md` (`RESULT`, `ALLOCS`, `ROWS`,
   `DURATION`, `CONNS`, `HOST_KIND`).
+- `jvm-bench.sh`, `jvm/HttpBench.java`: the JVM rows (docs/plan.md Phase 3
+  task 5 (a)). Wolfi's `openjdk-21` from the image (under
+  `/usr/lib/jvm/java-21-openjdk`, not on PATH; the script finds the newest
+  JDK there or takes `JAVA_HOME`). Two rows: `startup`, `java -version` one
+  process per round under `rt` (`ROUNDS` (5) plus warm-up, six variants
+  interleaved, sorted wall times, median max RSS); and `server`,
+  `HttpBench.java` (a plain JDK program, `javac`'d once into
+  `target/jvm/classes`) on `com.sun.net.httpserver` with a fixed 200-thread
+  executor (`THREADS`) and `-Xms512m -Xmx512m -XX:+AlwaysPreTouch`
+  (`HEAP`; the Java heap is constant and resident from the start, so RSS
+  differs between allocators by native memory only), served once per
+  allocator for `DURATION` (300) s to two `ab -k -c 32` processes
+  (`CONNECTIONS` (64) total; Wolfi's `apache2-utils`, since `wrk` and `oha`
+  are not in Wolfi), one on `/json` (a ~300-byte body built per request) and
+  one on `/blob` (64 KiB copied out of a per-request
+  `ByteBuffer.allocateDirect`, one `malloc(65536)` in the JVM per request,
+  freed in bursts when the buffer's Cleaner runs after a GC), after `WARMUP`
+  (15) s of discarded load. The server's `/proc/<pid>/smaps_rollup` Rss and
+  `/proc/<pid>/status` VmHWM are sampled every `INTERVAL` (5) s (idle before
+  the load, peak, final), `ab` gives req/s and p99 per endpoint, `-Xlog:gc`
+  the GC count, and the final `/proc/<pid>/smaps` Rss by mapping name
+  (`[heap]`, challoc's named regions, unnamed anonymous, file-backed) plus
+  the allocator's own stats print at exit (`MALLOC_CONF=stats_print:true`,
+  `MIMALLOC_SHOW_STATS=1`, server row only) go to `OUT` for attribution.
+  Variants (`ALLOCS`): challoc (`REV`, default the working tree, built into
+  `target/jvm/lib`), glibc, `glibc-arena2` (glibc with `MALLOC_ARENA_MAX=2`,
+  the fleet's usual mitigation for the per-thread arenas), jemalloc,
+  mimalloc, tcmalloc, every one's `/proc/self/maps` checked once. Written to
+  `bench/results/<date>-<arch>-jvm.md` (`RESULT`, `ROWS`, `HOST_KIND`).
 - `four-way.sh`: assembles the comparison matrix of Phase 2.5 task 1
   (`bench/results/<date>-<arch>-gce-four-way.md`) from one VM's same-run
   outputs: an `ab.sh` result (`AB=`, the Phase 0 set and the Valkey model rows

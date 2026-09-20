@@ -38,6 +38,8 @@ RUN sed -i \
       python-3.13 \
       py3.13-pip \
       nodejs-22 \
+      # JVM rows (Phase 3 task 5a)
+      openjdk-21 \
       apache2-utils \
  && rustc --version && cargo --version && python3 --version \
  && test -f /usr/lib/libtcmalloc_minimal.so.4 \
@@ -60,6 +62,11 @@ RUN sed -i \
 # measures (Wolfi's nodejs-22, the plan's version; node 22.23 at the time)
 # and apache2-utils gives `ab`, the load generator for its server row (Wolfi
 # has no wrk or oha package, checked 2026-09-20).
+# JVM rows (Phase 3 task 5a): openjdk-21 (the JDK: javac compiles
+# bench/jvm/HttpBench.java at run time; it lives under
+# /usr/lib/jvm/java-21-openjdk and is not on PATH, bench/jvm-bench.sh finds
+# it) and apache2-utils for `ab`, the load generator (wrk and oha are not in
+# Wolfi, checked 2026-09-20).
 
 WORKDIR /src
 CMD ["sh"]

@@ -141,6 +141,18 @@
 #                            warm-up for the process rows; writes
 #                            bench/results/<date>-<arch>-node.md (RESULT=path,
 #                            ALLOCS, ROWS, DURATION, CONNS, HOST_KIND)
+#   make jvm-bench           JVM rows (bench/jvm-bench.sh, Phase 3 task 5 (a)):
+#                            `java -version` startup (ROUNDS=5 plus warm-up,
+#                            interleaved, bench/rt) and bench/jvm/HttpBench.java
+#                            (com.sun.net.httpserver, 200 threads, -Xms/-Xmx
+#                            512m, /json and 64 KiB direct-ByteBuffer /blob) under
+#                            two `ab` generators for DURATION (300) s per
+#                            allocator, RSS sampled every INTERVAL (5) s; under
+#                            challoc, glibc, glibc with MALLOC_ARENA_MAX=2,
+#                            jemalloc, mimalloc and tcmalloc; writes
+#                            bench/results/<date>-<arch>-jvm.md (RESULT=path,
+#                            ALLOCS, ROWS, DURATION, WARMUP, CONNECTIONS, THREADS,
+#                            HEAP, HOST_KIND)
 #
 # `target/` inside the container is a named Docker volume, one per
 # architecture, so Linux artifacts never mix with host artifacts and builds do
@@ -196,7 +208,7 @@ DOCKER_RUN = $(DOCKER_BASE) $(DOCKER_FLAGS) $(IMAGE)
 cgroup_docker = $(DOCKER_BASE) --memory=$(1) --memory-swap=$(1) $(if $(CGROUP_WATCHDOG),-e WATCHDOG=$(CGROUP_WATCHDOG)) $(IMAGE) sh scripts/cgroup-tests.sh
 cgroup_run = $(call cgroup_docker,$(1)) $(2)
 
-.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare test-pagemap-guard test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench node-bench check-needed clean-volumes
+.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare test-pagemap-guard test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench node-bench check-needed clean-volumes jvm-bench
 
 image:
 	docker build --platform $(PLATFORM) -f Dockerfile.dev -t $(IMAGE) .
@@ -409,6 +421,14 @@ NODE_BENCH_VARS = ALLOCS ROUNDS ROWS RESULT OUT HOST_KIND REV DURATION CONNS POR
 node-bench: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(NODE_BENCH_VARS),$(if $($(v)),-e $(v)="$($(v))"))
 node-bench: image
 	$(DOCKER_RUN) sh bench/node-bench.sh
+# JVM rows (bench/jvm-bench.sh, Phase 3 task 5 (a)): `java -version` startup
+# and the com.sun.net.httpserver server of bench/jvm/HttpBench.java under ab,
+# on the image's openjdk-21, under challoc (the working tree), glibc, glibc
+# with MALLOC_ARENA_MAX=2 and the stock allocators.
+JVM_BENCH_VARS = ALLOCS ROUNDS ROWS DURATION WARMUP INTERVAL CONNECTIONS THREADS HEAP PORT RESULT OUT HOST_KIND REV JAVA_OPTS IDLE_SECS
+jvm-bench: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(JVM_BENCH_VARS),$(if $($(v)),-e $(v)="$($(v))"))
+jvm-bench: image
+	$(DOCKER_RUN) sh bench/jvm-bench.sh
 
 # Phase 2.5 task 8's acceptance rows (bench/percpu-campaign.sh, lane D): the
 # same suites under the default and under CHALLOC_CONF=percpu_arena:percpu,
