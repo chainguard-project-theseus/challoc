@@ -20,10 +20,6 @@
 #include <sys/wait.h>
 #include <time.h>
 
-/* Weak so the program links against libc alone; under the preload they
- * resolve to libchalloc.so (the pattern of jemalloc_api.c). */
-extern int mallctl(const char *, void *, size_t *, void *, size_t) __attribute__((weak));
-
 #define INHERITED 64
 
 struct inherited {

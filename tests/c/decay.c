@@ -37,25 +37,6 @@
 enum { SMALL_N = 32768, SMALL_SIZE = 1024, HUGE_N = 4, HUGE_SIZE = 4 << 20 };
 #define MIB (1024UL * 1024UL)
 
-static long page_size;
-
-static size_t rss_bytes(void)
-{
-    FILE *f = fopen("/proc/self/statm", "r");
-    REQUIRE(f != NULL, "open /proc/self/statm: %s", strerror(errno));
-    unsigned long size, resident;
-    REQUIRE(fscanf(f, "%lu %lu", &size, &resident) == 2, "parse statm");
-    fclose(f);
-    return (size_t)resident * (size_t)page_size;
-}
-
-static void sleep_ms(long ms)
-{
-    struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
-    while (nanosleep(&ts, &ts) != 0 && errno == EINTR)
-        ;
-}
-
 /* Number of threads in this process and whether one is named challoc-bg. */
 static int count_tasks(int *bg)
 {
@@ -317,7 +298,6 @@ static void mode_background(void)
 int main(int argc, char **argv)
 {
     REQUIRE(argc == 2, "usage: decay <trim|decay|curve|never|background|lazy>");
-    page_size = sysconf(_SC_PAGESIZE);
     printf("decay: start %s\n", argv[1]);
     fflush(stdout);
     require_challoc();

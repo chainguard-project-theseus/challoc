@@ -41,10 +41,6 @@
 #include <stdbool.h>
 #include <time.h>
 
-#define WEAK __attribute__((weak))
-extern int mallctl(const char *, void *, size_t *, void *, size_t) WEAK;
-extern void malloc_stats_print(void (*)(void *, const char *), void *, const char *) WEAK;
-
 #define MIB (1024UL * 1024UL)
 #define KIB 1024UL
 enum { MAX_OBJECTS = 1500000, SAMPLE_EVERY = 8 * MIB, TRICKLE_MS = 10 };
@@ -82,31 +78,13 @@ static const size_t class_size[] = { 1 * MIB, 64 * KIB, 16 * KIB, 4 * KIB, 1 * K
 static const int class_share[] = { 15, 20, 20, 20, 15, 5, 5 };
 enum { NCLASS = sizeof class_size / sizeof class_size[0] };
 
-static size_t rss_bytes(void)
+/* RSS now, with the run's peak kept. */
+static size_t rss_now(void)
 {
-    FILE *f = fopen("/proc/self/statm", "r");
-    REQUIRE(f != NULL, "open /proc/self/statm: %s", strerror(errno));
-    unsigned long size, resident;
-    REQUIRE(fscanf(f, "%lu %lu", &size, &resident) == 2, "parse statm");
-    fclose(f);
-    size_t r = (size_t)resident * (size_t)page_size;
+    size_t r = rss_bytes();
     if (r > rss_peak)
         rss_peak = r;
     return r;
-}
-
-static void sleep_ms(long ms)
-{
-    struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
-    while (nanosleep(&ts, &ts) != 0 && errno == EINTR)
-        ;
-}
-
-static long now_ms(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
 }
 
 static int find_cgroup(void)
@@ -207,7 +185,7 @@ static void read_comp(struct comp *c)
     c->kernel = memstat("kernel");
     c->slab = memstat("slab");
     c->pagetables = memstat("pagetables");
-    c->rss = rss_bytes();
+    c->rss = rss_now();
     if (!mallctl)
         return;
     uint64_t e = 1;
@@ -419,7 +397,7 @@ int main(int argc, char **argv)
     events_line(ev0, sizeof ev0);
     printf("cgroup_oscillate: %zu..%zu MiB live for %ld s, hold %ld ms; cgroup %s memory.max %s MiB memory.current %s MiB rss %zu MiB\n",
            low_mib, high_mib, seconds, hold_ms, have_cgroup ? cgroup_dir : "(none)", fmt_mib(limit, b1, sizeof b1),
-           fmt_mib(sample_current(), b2, sizeof b2), rss_bytes() / MIB);
+           fmt_mib(sample_current(), b2, sizeof b2), rss_now() / MIB);
     printf("memory.events before: %s\n", ev0);
     fflush(stdout);
 
@@ -459,7 +437,7 @@ int main(int argc, char **argv)
         shrink_to(low_mib * MIB, &rng);
         long t_down = now_ms();
         long long cur_lo = sample_current();
-        size_t rss_lo = rss_bytes();
+        size_t rss_lo = rss_now();
         hold(hold_ms);
         cycles++;
         printf("cycle %3ld at %5ld s: up %zu MiB in %ld ms (rss %zu, current %s MiB), down to %zu MiB in %ld ms (rss %zu, current %s MiB), %zu objects\n",

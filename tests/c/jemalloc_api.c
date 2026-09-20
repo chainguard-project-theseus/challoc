@@ -24,20 +24,9 @@
 #include <sched.h>
 #include "common.h"
 
-#define WEAK __attribute__((weak))
-
-extern void *mallocx(size_t, int) WEAK;
-extern void *rallocx(void *, size_t, int) WEAK;
-extern size_t xallocx(void *, size_t, size_t, int) WEAK;
-extern size_t sallocx(const void *, int) WEAK;
-extern void dallocx(void *, int) WEAK;
-extern void sdallocx(void *, size_t, int) WEAK;
-extern size_t nallocx(size_t, int) WEAK;
-extern int mallctl(const char *, void *, size_t *, void *, size_t) WEAK;
-extern int mallctlnametomib(const char *, size_t *, size_t *) WEAK;
-extern int mallctlbymib(const size_t *, size_t, void *, size_t *, void *, size_t) WEAK;
-extern void malloc_stats_print(void (*)(void *, const char *), void *, const char *) WEAK;
-extern void (*malloc_message)(void *, const char *) WEAK;
+/* The jemalloc entry points and the MALLOCX_* flags are declared (weak) in
+ * common.h; the configuration symbols and the je_ aliases are this
+ * program's own. */
 extern const char *malloc_conf WEAK;
 extern const char *je_malloc_conf WEAK;
 
@@ -63,14 +52,6 @@ extern int je_mallctlnametomib(const char *, size_t *, size_t *) WEAK;
 extern int je_mallctlbymib(const size_t *, size_t, void *, size_t *, void *, size_t) WEAK;
 extern void je_malloc_stats_print(void (*)(void *, const char *), void *, const char *) WEAK;
 extern void (*je_malloc_message)(void *, const char *) WEAK;
-
-/* jemalloc.h */
-#define MALLOCX_LG_ALIGN(la) ((int)(la))
-#define MALLOCX_ZERO ((int)0x40)
-#define MALLOCX_TCACHE(tc) ((int)(((tc) + 2) << 8))
-#define MALLOCX_TCACHE_NONE MALLOCX_TCACHE(-1)
-#define MALLOCX_ARENA(a) ((((int)(a)) + 1) << 20)
-#define MALLCTL_ARENAS_ALL 4096
 
 #define MEDIUM_MAX (256 * 1024)
 

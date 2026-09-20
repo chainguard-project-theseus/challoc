@@ -23,10 +23,6 @@
 #include <stdbool.h>
 #include <time.h>
 
-#define WEAK __attribute__((weak))
-extern int mallctl(const char *, void *, size_t *, void *, size_t) WEAK;
-extern void malloc_stats_print(void (*)(void *, const char *), void *, const char *) WEAK;
-
 static char report[1 << 16];
 static size_t report_len;
 
@@ -112,12 +108,6 @@ static size_t kernel_current(void)
         v = 0;
     fclose(f);
     return (size_t)v;
-}
-
-static void sleep_ms(long ms)
-{
-    struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
-    nanosleep(&ts, NULL);
 }
 
 static void mode_plain(void)
@@ -220,6 +210,8 @@ static void mode_bg(void)
     size_t events = 1;
     REQUIRE(read_size("stats.cgroup.pressure_events", &events) == 0, "pressure_events");
     CHECK(events == 0, "pressure_events %zu with no pressure", events);
+    if (!armed)
+        skip_note("cgroup/bg", "PSI trigger unavailable (memory.pressure not writable here), pressure_events checked only");
     printf("psi %s\n", armed ? "armed" : "unavailable");
 }
 

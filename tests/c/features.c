@@ -17,8 +17,6 @@
 #include <sys/mman.h>
 #include <sys/prctl.h>
 
-__attribute__((weak)) const char *challoc_features(void);
-
 typedef void (*stats_print_fn)(void (*cb)(void *, const char *), void *cbopaque, const char *opts);
 
 static char report[1 << 18];

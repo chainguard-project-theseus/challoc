@@ -22,7 +22,7 @@
 #define OPS 20000
 #define LIVE 256
 
-static int (*ctl)(const char *, void *, size_t *, void *, size_t);
+static mallctl_fn ctl;
 
 static int get_bool(const char *key, bool *out)
 {
@@ -104,7 +104,7 @@ int main(int argc, char **argv)
 {
     const char *mode = argc > 1 ? argv[1] : "percpu";
     require_challoc();
-    ctl = (int (*)(const char *, void *, size_t *, void *, size_t))dlsym(RTLD_DEFAULT, "mallctl");
+    ctl = mallctl_dl();
     REQUIRE(ctl != NULL, "mallctl");
 
     const char *opt = NULL;
@@ -119,6 +119,8 @@ int main(int argc, char **argv)
     REQUIRE(get_size("stats.percpu.cached", &cached) == 0, "stats.percpu.cached");
     if (strcmp(mode, "off") == 0)
         CHECK(!enabled, "percpu_arena:off but the mode is on");
+    else if (!enabled)
+        skip_note("percpu/percpu", "mm_cid is not usable on this kernel or glibc, the per-CPU mode is off; the workload ran on thread caches");
     CHECK(enabled == (ids > 0), "ids %zu with enabled %d", ids, enabled);
     if (!enabled)
         CHECK(headers == 0 && cached == 0, "nothing installed while off (%zu, %zu)", headers, cached);

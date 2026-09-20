@@ -34,16 +34,11 @@
 #include <sys/wait.h>
 #include <time.h>
 
-#define WEAK __attribute__((weak))
-extern int mallctl(const char *, void *, size_t *, void *, size_t) WEAK;
-extern void malloc_stats_print(void (*)(void *, const char *), void *, const char *) WEAK;
-
 #define MIB (1024UL * 1024UL)
 enum { CHUNK = 8 * MIB, MAX_CHUNKS = 4096 };
 
 static char report[1 << 16];
 static size_t report_len;
-static long page_size;
 static char cgroup_dir[8192];
 
 static void append(void *opaque, const char *s)
@@ -94,30 +89,6 @@ static long base_decay_ms(void)
     size_t len = sizeof v;
     REQUIRE(mallctl("opt.dirty_decay_ms", &v, &len, NULL, 0) == 0, "opt.dirty_decay_ms");
     return (long)v;
-}
-
-static size_t rss_bytes(void)
-{
-    FILE *f = fopen("/proc/self/statm", "r");
-    REQUIRE(f != NULL, "open /proc/self/statm: %s", strerror(errno));
-    unsigned long size, resident;
-    REQUIRE(fscanf(f, "%lu %lu", &size, &resident) == 2, "parse statm");
-    fclose(f);
-    return (size_t)resident * (size_t)page_size;
-}
-
-static void sleep_ms(long ms)
-{
-    struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
-    while (nanosleep(&ts, &ts) != 0 && errno == EINTR)
-        ;
-}
-
-static long now_ms(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
 }
 
 /* The cgroup directory, found the way the library finds it. */
@@ -240,7 +211,7 @@ static void mode_bands(void)
         CHECK(read_size("stats.cgroup.full_purges", &v) == ENOENT, "full_purges without a cgroup2");
         const char *l = report_line("cgroup policy: ");
         CHECK(l && strcmp(l, "cgroup policy: off (not tracked)") == 0, "%s", l ? l : "(no policy line)");
-        printf("skip: no cgroup2, policy keys are ENOENT\n");
+        skip_note("cgroup_policy/bands", "no cgroup2, policy keys are ENOENT");
         return;
     }
     long base = base_decay_ms();
@@ -267,7 +238,7 @@ static void mode_bands(void)
         CHECK(get_size("stats.cgroup.retention_cap") == SIZE_MAX, "retention_cap changed without a limit");
         printf("empty_bytes %zu after freeing 64 MiB, no limit\n", empty);
         CHECK(empty >= 32 * MIB, "empty_bytes %zu after freeing 64 MiB (nothing should have been purged yet)", empty);
-        printf("skip: no cgroup limit, bands not exercised\n");
+        skip_note("cgroup_policy/bands", "no cgroup limit, bands not exercised");
         return;
     }
     CHECK(cap == l / 20, "retention_cap %zu, limit %zu", cap, l);
@@ -378,13 +349,13 @@ static int write_str(const char *path, const char *s)
 static void mode_high(const char *self)
 {
     if (!has_cgroup2()) {
-        printf("skip: no cgroup2\n");
+        skip_note("cgroup_policy/high", "no cgroup2");
         return;
     }
     char child[8192 + 64], p[8192 + 128];
     snprintf(child, sizeof child, "%s/challoc-policy-%d", cgroup_dir, (int)getpid());
     if (mkdir(child, 0755) != 0) {
-        printf("skip: cannot create a child cgroup under %s (%s)\n", cgroup_dir, strerror(errno));
+        skip_note("cgroup_policy/high", "cannot create a child cgroup under %s (%s)", cgroup_dir, strerror(errno));
         return;
     }
     snprintf(p, sizeof p, "%s/memory.high", child);
@@ -402,19 +373,19 @@ static void mode_high(const char *self)
             rmdir(child);
             char *slash = strrchr(cgroup_dir, '/');
             if (!slash || slash == cgroup_dir || strstr(cgroup_dir, "/sys/fs/cgroup/") == NULL || strlen(slash) < 2) {
-                printf("skip: no memory controller for a child cgroup (+memory to %s: %s) and no visible parent\n", sc,
-                       strerror(saved));
+                skip_note("cgroup_policy/high", "no memory controller for a child cgroup (+memory to %s: %s) and no visible parent", sc,
+                          strerror(saved));
                 return;
             }
             snprintf(child, sizeof child, "%.*s/challoc-policy-%d", (int)(slash - cgroup_dir), cgroup_dir, (int)getpid());
             if (mkdir(child, 0755) != 0) {
-                printf("skip: no memory controller for a child cgroup (%s) and cannot create a sibling %s (%s)\n", strerror(saved),
-                       child, strerror(errno));
+                skip_note("cgroup_policy/high", "no memory controller for a child cgroup (%s) and cannot create a sibling %s (%s)",
+                          strerror(saved), child, strerror(errno));
                 return;
             }
             snprintf(p, sizeof p, "%s/memory.high", child);
             if (access(p, W_OK) != 0) {
-                printf("skip: sibling cgroup %s has no memory.high (%s)\n", child, strerror(errno));
+                skip_note("cgroup_policy/high", "sibling cgroup %s has no memory.high (%s)", child, strerror(errno));
                 rmdir(child);
                 return;
             }
@@ -444,7 +415,7 @@ static void mode_high(const char *self)
     for (int i = 0; i < 50 && rmdir(child) != 0; i++)
         sleep_ms(20);
     if (WIFEXITED(status) && WEXITSTATUS(status) == 75) {
-        printf("skip: the child cgroup could not be used (see stderr)\n");
+        skip_note("cgroup_policy/high", "the child cgroup could not be used (see stderr)");
         return;
     }
     REQUIRE(WIFEXITED(status) && WEXITSTATUS(status) == 0, "high-child failed (status %d)", status);
@@ -485,7 +456,6 @@ int main(int argc, char **argv)
 {
     require_challoc();
     REQUIRE(mallctl != NULL && malloc_stats_print != NULL, "jemalloc extras not preloaded");
-    page_size = sysconf(_SC_PAGESIZE);
     const char *mode = argc > 1 ? argv[1] : "bands";
     if (strcmp(mode, "bands") == 0)
         mode_bands();

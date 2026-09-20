@@ -20,6 +20,10 @@
  *
  *   --any-allocator  skip `require_challoc` (task 7's comparison runs).
  *
+ * `report` and `--any-allocator` are bench probes, not tests: they print
+ * the RSS curve for the results file (`make test-cgroup-compare`) and pass
+ * whatever it shows. The tests are `purge` and `keep` under challoc.
+ *
  * Idle means what an idle server does: the program sleeps in 10 ms steps
  * and, at each step, allocates and frees a burst of small objects (an
  * event loop's transient allocations). This matters: without a background
@@ -37,39 +41,11 @@
 #include <stdbool.h>
 #include <time.h>
 
-#define WEAK __attribute__((weak))
-extern int mallctl(const char *, void *, size_t *, void *, size_t) WEAK;
-
 #define MIB (1024UL * 1024UL)
 enum { WINDOW_MS = 2000, STEP_MS = 100, TRICKLE_MS = 10 };
 
-static long page_size;
 static char cgroup_dir[8192];
 static int have_cgroup;
-
-static size_t rss_bytes(void)
-{
-    FILE *f = fopen("/proc/self/statm", "r");
-    REQUIRE(f != NULL, "open /proc/self/statm: %s", strerror(errno));
-    unsigned long size, resident;
-    REQUIRE(fscanf(f, "%lu %lu", &size, &resident) == 2, "parse statm");
-    fclose(f);
-    return (size_t)resident * (size_t)page_size;
-}
-
-static void sleep_ms(long ms)
-{
-    struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
-    while (nanosleep(&ts, &ts) != 0 && errno == EINTR)
-        ;
-}
-
-static long now_ms(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
-}
 
 /* The cgroup directory, found the way the library finds it (design 11). */
 static int find_cgroup(void)
@@ -220,7 +196,6 @@ int main(int argc, char **argv)
     REQUIRE(total_mib >= 4 && threshold_mib >= 1, "sizes");
     if (!any)
         require_challoc();
-    page_size = sysconf(_SC_PAGESIZE);
     have_cgroup = find_cgroup();
     char b1[32], b2[32];
     long long limit = read_cgroup_ll("memory.max"), cur0 = read_cgroup_ll("memory.current");

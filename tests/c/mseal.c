@@ -35,7 +35,6 @@
 #define SYS_mseal 462
 #endif
 
-typedef int (*mallctl_fn)(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 typedef void (*stats_print_fn)(void (*cb)(void *, const char *), void *cbopaque, const char *opts);
 
 static int stats_sealed, stats_total;
@@ -161,8 +160,7 @@ static void allocator_still_works(void)
         free(held[i]);
     }
 
-    mallctl_fn mallctl = (mallctl_fn)dlsym(RTLD_DEFAULT, "mallctl");
-    REQUIRE(mallctl != NULL, "dlsym(mallctl)");
+    REQUIRE(mallctl != NULL, "mallctl not exported");
     unsigned arena = 0;
     size_t len = sizeof arena;
     CHECK(mallctl("arenas.create", &arena, &len, NULL, 0) == 0, "arenas.create");
@@ -213,8 +211,7 @@ int main(void)
         REQUIRE(msp != NULL, "dlsym(malloc_stats_print)");
         read_sealed_stats(msp);
         CHECK(stats_sealed == 0 && stats_total > 0, "allocator reports %d of %d sealed", stats_sealed, stats_total);
-        printf("mseal: unavailable (kernel < 6.10 or seccomp), allocator sealed nothing; maps lines %d -> %d\n",
-               before, after);
+        skip_note("mseal", "unavailable (kernel < 6.10 or seccomp), allocator sealed nothing; maps lines %d -> %d", before, after);
         allocator_still_works();
         return finish("mseal");
     }

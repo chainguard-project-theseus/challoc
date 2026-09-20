@@ -298,7 +298,7 @@ static void check_class(size_t size, bool expect)
 {
     struct geom g;
     if (!geom_of(size, &g)) {
-        printf("pagemap_guard: no %zu-byte bin in this build, skipped\n", size);
+        skip_note("pagemap_guard", "no %zu-byte bin in this build", size);
         return;
     }
     size_t n = g.per_slab * (g.group / g.slab) * (g.effective + 2);

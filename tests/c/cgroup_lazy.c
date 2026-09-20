@@ -38,6 +38,10 @@
  *
  *   --any-allocator  skip `require_challoc` (no criterion then: `report`).
  *
+ * `report` and `--any-allocator` are bench probes, not tests: they print
+ * the curve for a results file and pass whatever it shows. The tests are
+ * `lazy` and `eager` under challoc.
+ *
  * Single-threaded, no `malloc_trim`, no background thread: the periodic
  * tick is the only purge path, as in cgroup_churn.c.
  */
@@ -46,39 +50,12 @@
 #include <stdbool.h>
 #include <time.h>
 
-#define WEAK __attribute__((weak))
-extern int mallctl(const char *, void *, size_t *, void *, size_t) WEAK;
-
 #define MIB (1024UL * 1024UL)
 enum { WINDOW_MS = 2000, STEP_MS = 100, TRICKLE_MS = 10, PRESSURE_MIB = 380, PRESSURE_OBJ = 8192 };
 
 static long page_size;
 static char cgroup_dir[8192];
 static int have_cgroup;
-
-static size_t rss_bytes(void)
-{
-    FILE *f = fopen("/proc/self/statm", "r");
-    REQUIRE(f != NULL, "open /proc/self/statm: %s", strerror(errno));
-    unsigned long size, resident;
-    REQUIRE(fscanf(f, "%lu %lu", &size, &resident) == 2, "parse statm");
-    fclose(f);
-    return (size_t)resident * (size_t)page_size;
-}
-
-static void sleep_ms(long ms)
-{
-    struct timespec ts = { ms / 1000, (ms % 1000) * 1000000L };
-    while (nanosleep(&ts, &ts) != 0 && errno == EINTR)
-        ;
-}
-
-static long now_ms(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_sec * 1000L + ts.tv_nsec / 1000000L;
-}
 
 /* The cgroup directory, found the way the library finds it (design 11). */
 static int find_cgroup(void)

@@ -47,9 +47,6 @@
  * splitting at the ends of the span. */
 #define VMA_BOUND 8
 
-/* From the preloaded allocator; weak so the binary links without it. */
-extern int mallctl(const char *, void *, size_t *, void *, size_t) __attribute__((weak));
-
 static unsigned ctl_uint(const char *name)
 {
     unsigned v = 0;
@@ -179,7 +176,7 @@ static int read_faults(uintptr_t addr)
 static int mode_fault(void)
 {
     if (!guard_install_available()) {
-        printf("guard_slab fault: MADV_GUARD_INSTALL unavailable (kernel < 6.13), no guard slabs exist; skipped\n");
+        skip_note("guard_slab/fault", "MADV_GUARD_INSTALL unavailable (kernel < 6.13), no guard slabs exist");
         return finish("guard_slab");
     }
     struct geom g = geom_of(64);

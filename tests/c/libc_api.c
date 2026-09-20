@@ -1,59 +1,19 @@
 /*
  * Smoke test for challoc's libc entry points (Phase 0 task 11), run under
- * LD_PRELOAD=libchalloc.so by the Rust test in src/api/libc.rs. Fails fast
- * when it is not actually running on challoc so a broken preload cannot
- * pass by accident. QUANTUM is passed by the build (-DQUANTUM=16 or 8).
+ * LD_PRELOAD=libchalloc.so by the Rust test in src/api/libc.rs (which
+ * compiles it without -Itests/c: common.h is found next to this file).
+ * Fails fast when it is not actually running on challoc so a broken
+ * preload cannot pass by accident. QUANTUM is passed by the build
+ * (-DQUANTUM=16 or 8).
  *
  * The thorough per-feature programs are Phase 0 task 12; this one touches
  * every entry point once, checks errno semantics, and forks while another
  * thread is allocating so the atfork handlers get exercised.
  */
-#define _GNU_SOURCE
-#include <dlfcn.h>
-#include <errno.h>
-#include <malloc.h>
-#include <pthread.h>
-#include <stdbool.h>
-#include <stdint.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <sys/wait.h>
-#include <unistd.h>
+#include "common.h"
 
-/* C23 names; glibc's headers may or may not declare them yet. */
-extern void free_sized(void *, size_t);
-extern void free_aligned_sized(void *, size_t, size_t);
-
-static int failures;
 /* Sizes gcc must not see as constants (-Walloc-size-larger-than). */
 static volatile size_t huge_n = SIZE_MAX;
-/* Results gcc must not fold away (an allocation whose result is only
- * compared with NULL is otherwise assumed to succeed and removed). */
-static void *volatile sink;
-#define CHECK(cond, ...)                                                   \
-    do {                                                                   \
-        if (!(cond)) {                                                     \
-            failures++;                                                    \
-            fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__);           \
-            fprintf(stderr, __VA_ARGS__);                                  \
-            fputc('\n', stderr);                                           \
-        }                                                                  \
-    } while (0)
-
-static void fill(unsigned char *p, size_t n, unsigned seed)
-{
-    for (size_t i = 0; i < n; i++)
-        p[i] = (unsigned char)(seed + i);
-}
-
-static int check(const unsigned char *p, size_t n, unsigned seed)
-{
-    for (size_t i = 0; i < n; i++)
-        if (p[i] != (unsigned char)(seed + i))
-            return 0;
-    return 1;
-}
 
 static const size_t sizes[] = {0, 1, 7, 8, 15, 16, 17, 48, 100, 1000, 1024, 1025,
                                4096, 65536, 262144, 262145, 1 << 20, 10 << 20};
@@ -73,7 +33,7 @@ static void test_basic(void)
         ptrs[i] = p;
     }
     for (size_t i = 0; i < NSIZES; i++)
-        CHECK(check(ptrs[i], malloc_usable_size(ptrs[i]), (unsigned)i), "content %zu", sizes[i]);
+        CHECK(check_fill(ptrs[i], malloc_usable_size(ptrs[i]), (unsigned)i), "content %zu", sizes[i]);
     for (size_t i = 0; i < NSIZES; i++)
         free(ptrs[i]);
 
@@ -115,7 +75,7 @@ static void test_realloc(void)
     for (size_t i = 1; i < n; i++) {
         p = realloc(p, chain[i]);
         CHECK(p != NULL, "realloc to %zu", chain[i]);
-        CHECK(check(p, prev < chain[i] ? prev : chain[i], 7), "realloc content at %zu", chain[i]);
+        CHECK(check_fill(p, prev < chain[i] ? prev : chain[i], 7), "realloc content at %zu", chain[i]);
         fill(p, chain[i], 7);
         prev = chain[i];
     }
@@ -144,7 +104,7 @@ static void test_aligned(void)
             CHECK(p && ((uintptr_t)p % align) == 0, "aligned_alloc(%zu, %zu) = %p", align, n, (void *)p);
             CHECK(malloc_usable_size(p) >= n, "aligned usable");
             fill(p, n, 5);
-            CHECK(check(p, n, 5), "aligned content");
+            CHECK(check_fill(p, n, 5), "aligned content");
             free_aligned_sized(p, align, n);
 
             p = memalign(align, n);
@@ -194,10 +154,6 @@ static void test_errno(void)
 }
 
 /* ---- errno across a free that starts the background thread ------------ */
-
-/* Weak: the program links against libc alone and the reference binds to
- * libchalloc.so under the preload. */
-extern int mallctl(const char *, void *, size_t *, void *, size_t) __attribute__((weak));
 
 static int background_present(void)
 {
@@ -324,7 +280,7 @@ static void *hammer(void *arg)
 
 static int child_body(unsigned char *inherited)
 {
-    if (!check(inherited, 1000, 11))
+    if (!check_fill(inherited, 1000, 11))
         return 2;
     void *ptrs[500];
     for (int i = 0; i < 500; i++) {
@@ -364,28 +320,18 @@ static void test_fork(void)
     }
     stop_hammer = 1;
     pthread_join(th, NULL);
-    CHECK(check(inherited, 1000, 11), "parent block intact after forks");
+    CHECK(check_fill(inherited, 1000, 11), "parent block intact after forks");
     free(inherited);
 }
 
 int main(int argc, char **argv)
 {
-    void *probe = malloc(1);
-    if (malloc_usable_size(probe) != QUANTUM || dlsym(RTLD_DEFAULT, "challoc_version") == NULL) {
-        fprintf(stderr, "not running under challoc (usable(1) = %zu)\n", malloc_usable_size(probe));
-        return 1;
-    }
-    free(probe);
+    require_challoc();
 
     /* `libc_api background`, run with MALLOC_CONF=background_thread:true. */
     if (argc > 1 && strcmp(argv[1], "background") == 0) {
         test_errno_background();
-        if (failures) {
-            fprintf(stderr, "%d failures\n", failures);
-            return 1;
-        }
-        puts("ok libc_api");
-        return 0;
+        return finish("libc_api");
     }
 
     test_basic();
@@ -395,11 +341,5 @@ int main(int argc, char **argv)
     test_errno();
     test_threads();
     test_fork();
-
-    if (failures) {
-        fprintf(stderr, "%d failures\n", failures);
-        return 1;
-    }
-    puts("ok libc_api");
-    return 0;
+    return finish("libc_api");
 }

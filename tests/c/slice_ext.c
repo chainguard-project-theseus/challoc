@@ -42,7 +42,7 @@
 extern __attribute__((weak)) const ptrdiff_t __rseq_offset;
 extern __attribute__((weak)) const unsigned int __rseq_size;
 
-static int (*ctl)(const char *, void *, size_t *, void *, size_t);
+static mallctl_fn ctl;
 static void (*stats_print)(void (*)(void *, const char *), void *, const char *);
 
 static uintptr_t thread_pointer(void)
@@ -136,7 +136,7 @@ int main(int argc, char **argv)
     REQUIRE(argc == 2 && (strcmp(argv[1], "on") == 0 || strcmp(argv[1], "off") == 0), "usage: slice_ext on|off");
     int mode_on = strcmp(argv[1], "on") == 0;
     require_challoc();
-    ctl = dlsym(RTLD_DEFAULT, "mallctl");
+    ctl = mallctl_dl();
     stats_print = dlsym(RTLD_DEFAULT, "malloc_stats_print");
     REQUIRE(ctl && stats_print, "mallctl / malloc_stats_print");
     REQUIRE(&__rseq_size != NULL && &__rseq_offset != NULL, "glibc without __rseq_size");
@@ -155,6 +155,8 @@ int main(int argc, char **argv)
           "opt.slice_ext reads %s", opt ? opt : "(null)");
 
     int expect_on = mode_on && available;
+    if (mode_on && !available)
+        skip_note("slice_ext/on", "the kernel has no rseq slice extension, the request was refused; the off branch was checked");
     if (expect_on) {
         CHECK(main_enabled == 1, "the init thread is not enabled (%d)", main_enabled);
         CHECK(flags_enabled, "bit 5 clear on the init thread");

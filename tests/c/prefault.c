@@ -33,9 +33,6 @@
 #include <sys/mman.h>
 #include <time.h>
 
-extern int mallctl(const char *, void *, size_t *, void *, size_t) __attribute__((weak));
-__attribute__((weak)) const char *challoc_features(void);
-
 typedef void (*stats_print_fn)(void (*cb)(void *, const char *), void *cbopaque, const char *opts);
 
 static char report[1 << 18];
@@ -97,12 +94,6 @@ static void class_of(size_t size, size_t *bin_size, size_t *slab_size)
         }
     }
     REQUIRE(0, "no class for %zu", size);
-}
-
-static void sleep_ms(long ms)
-{
-    struct timespec ts = {ms / 1000, (ms % 1000) * 1000000L};
-    nanosleep(&ts, NULL);
 }
 
 #define SIZE 64u

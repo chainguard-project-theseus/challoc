@@ -320,12 +320,12 @@ int main(int argc, char **argv)
             CHECK(process == 2, "stats.thp.process %zu with thp_except_advised=no", process);
             CHECK(get == 0, "PR_GET_THP_DISABLE %ld after a refused call", get);
             CHECK(strstr(thp_report, "process advised: skipped, the kernel refuses") != NULL, "thp: line does not say skipped");
-            printf("thp process: skipped, the kernel refuses PR_THP_DISABLE_EXCEPT_ADVISED (EINVAL before 6.18); nothing issued\n");
+            skip_note("thp/process", "the kernel refuses PR_THP_DISABLE_EXCEPT_ADVISED (EINVAL before 6.18); nothing issued");
         } else {
             CHECK(process == 3, "stats.thp.process %zu with thp_except_advised=inherited", process);
             CHECK(get != 0, "PR_GET_THP_DISABLE %ld but the probe said inherited", get);
             CHECK(strstr(thp_report, "process advised: skipped, the process inherited") != NULL, "thp: line does not say inherited");
-            printf("thp process: skipped, the process inherited a THP policy (PR_GET_THP_DISABLE %ld); nothing issued\n", get);
+            skip_note("thp/process", "the process inherited a THP policy (PR_GET_THP_DISABLE %ld); nothing issued", get);
         }
         /* The regions below run the `auto` checks: the key is thp:auto. */
         mode = "auto";
@@ -454,8 +454,8 @@ int main(int argc, char **argv)
             CHECK(smode == 0, "mode %zu with nothing usable enabled (pmd %lu kB enabled=%d)", smode, pmd_kb, pmd_enabled);
             CHECK(!hg, "hg with nothing usable enabled");
             CHECK(class_ranges == 0, "%zu ranges advised with mode 0", class_ranges);
-            printf("thp always: inert on this host (%s)\n",
-                   pmd_enabled ? "the PMD is over 2 MiB and no smaller size is enabled" : "no size enabled");
+            skip_note("thp/always", "inert on this host (%s)",
+                      pmd_enabled ? "the PMD is over 2 MiB and no smaller size is enabled" : "no size enabled");
         }
     } else if (strcmp(mode, "auto") == 0) {
         if (smode == 1) {
@@ -474,7 +474,7 @@ int main(int argc, char **argv)
             CHECK(smode == 0, "mode %zu under auto", smode);
             CHECK(!hg, "hg but mode 0");
             CHECK(class_ranges == 0, "ranges advised but mode 0");
-            printf("thp auto: inert on this host (%s)\n", sub_kb ? "the PMD size is madvise-gated" : "no size below the PMD enabled");
+            skip_note("thp/auto", "inert on this host (%s)", sub_kb ? "the PMD size is madvise-gated" : "no size below the PMD enabled");
         }
     } else {
         REQUIRE(0, "unknown mode %s", mode);

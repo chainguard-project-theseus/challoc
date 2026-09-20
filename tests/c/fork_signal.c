@@ -28,9 +28,6 @@
 #include <sys/wait.h>
 #include <time.h>
 
-/* Weak so the bare run (no preload) links and fails fast at the check. */
-extern const char *challoc_version(void) __attribute__((weak));
-
 static volatile sig_atomic_t armed;      /* raise in the atfork handlers */
 static volatile sig_atomic_t handled;    /* SIGALRM handler runs */
 static volatile sig_atomic_t nested_ok;  /* the handler's fork+wait worked */
