@@ -5,6 +5,11 @@ edition = "2024"
 description = "A memory-safe, jemalloc-compatible malloc replacement for Wolfi and Chainguard OS"
 license = "Apache-2.0"
 publish = false
+# The verified floor, not the true minimum: the host's rustc 1.94.1 builds
+# the crate and runs the pure-logic tests (`cargo test --features std`),
+# and nothing older has been tried. Dockerfile.dev and the Wolfi package
+# (contrib/wolfi/challoc.yaml) pin 1.98; that is what ships.
+rust-version = "1.94"
 
 [lib]
 crate-type = ["cdylib", "staticlib"]
