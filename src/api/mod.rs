@@ -519,7 +519,7 @@ mod tests {
         "class/sets.rs:SetTable.tables",
         "class/table.rs:SlabTable.inner",
         "heap/shared.rs:Shared.stats",
-        "huge.rs:Huge.inner",
+        "huge/mod.rs:Huge.inner",
         "meta.rs:Meta.inner",
         "purge/background.rs:static.STATE",
     ];
@@ -557,7 +557,7 @@ mod tests {
                     }
                 }
                 "heap/shared.rs:Shared.stats" => state(s.stats.raw().is_locked(), "process stats"),
-                "huge.rs:Huge.inner" => state(s.huge.raw_lock().is_locked(), "huge"),
+                "huge/mod.rs:Huge.inner" => state(s.huge.raw_lock().is_locked(), "huge"),
                 "meta.rs:Meta.inner" => state(s.meta.raw_lock().is_locked(), "meta"),
                 "purge/background.rs:static.STATE" => state(purge::background::is_locked(), "background state"),
                 other => panic!("no fork-handler assertion for lock {other}"),
