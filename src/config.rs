@@ -1601,13 +1601,8 @@ mod tests {
                 std::format!("conf key {key} is accepted but has no effect (not implemented)"),
                 "{text}"
             );
-            match *key {
-                "stats_print" => {
-                    assert_eq!(cfg, Config::DEFAULT, "stats_print has no field");
-                    assert_eq!(cfg.get(b"stats_print"), None);
-                }
-                _ => assert_eq!(cfg.get(key.as_bytes()), Some(Value::Bool(true)), "{key}"),
-            }
+            assert_eq!(cfg, Config::DEFAULT, "{key} has no field");
+            assert_eq!(cfg.get(key.as_bytes()), None, "{key}");
             let (cfg, issues) = parse(&std::format!("{key}:nonsense"));
             assert_eq!(cfg, Config::DEFAULT, "{key}:nonsense changed the config");
             assert_eq!(issues.len(), 1, "{key}:nonsense: {issues:?}");

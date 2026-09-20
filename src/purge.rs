@@ -358,12 +358,6 @@ pub fn purged_is_zero() -> bool {
     !LAZY_EVER.load(Ordering::Relaxed)
 }
 
-/// Some lazy batch has been issued (the sticky flag behind
-/// [`purged_is_zero`]), for the report.
-pub fn lazy_ever() -> bool {
-    LAZY_EVER.load(Ordering::Relaxed)
-}
-
 /// Whether batches go through `process_madvise` (false: `madvise` loop).
 pub fn uses_process_madvise() -> bool {
     BACKEND.load(Ordering::Relaxed) != LOOP
@@ -529,12 +523,6 @@ impl Decayer {
     }
 }
 
-impl Default for Decayer {
-    fn default() -> Decayer {
-        Decayer::new()
-    }
-}
-
 /// Run every decay walk that is due at `now` (coarse monotonic
 /// nanoseconds) and return the earliest future deadline, `None` when
 /// nothing is `Empty` or decay is off. Lock-free for a class with nothing
@@ -608,7 +596,7 @@ pub fn on_tick(shared: &Shared, now: u64) {
 /// of the coarse clock, and the policy evaluated on the sample that was
 /// taken; nothing at all when the cgroup is untracked or the window has
 /// not passed. Slow paths only (the periodic tick, the background thread).
-pub fn sample(shared: &Shared, now: u64) {
+fn sample(shared: &Shared, now: u64) {
     if shared.cgroup.sample(now) {
         crate::policy::evaluate(shared);
     }
@@ -768,11 +756,6 @@ pub mod background {
                 let _ = sys::write(fd, &1u64.to_ne_bytes());
             }
         }
-    }
-
-    /// Whether the thread holds a PSI trigger (for tests and the report).
-    pub fn psi_armed() -> bool {
-        PSI_ARMED.load(Ordering::Relaxed)
     }
 
     /// Arm the PSI trigger (design 11) and make sure the wake eventfd
