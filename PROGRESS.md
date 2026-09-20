@@ -944,6 +944,35 @@ One line per task, newest at the bottom of each section. Keep it terse.
   `docs/plan.md` task 16 (a parenthetical narrowing the acceptance to the
   slab regions), the module doc of `src/thp.rs` and the header of
   `tests/c/thp.c`.
+- Phase 2.5 task 16 (lane E, 2026-09-20), the re-measurement of the
+  human's `thp` default decision on the cgos cell: done, f1b45ef. The
+  same-host A/B of `2026-09-20-aarch64-cgos-thp-ab.md` repeated on
+  `cgos-arm64` (Axion c4a-standard-8, Chainguard OS 6.18.49, THP
+  `always`, image `kirkland-server-hypervisor-arm64-20260916-1358`) at the
+  merged tree 6ea842d with the shipped default (4678fcd: `thp:never`
+  advising the class superblock and the metadata region only, the huge
+  region following the host), `thp:auto`, `thp:always` and jemalloc, 7
+  interleaved rounds, medians, natively under LD_PRELOAD:
+  `bench/results/2026-09-20-aarch64-cgos-thp-decision.md`. The default
+  reads within the spread of `thp:auto` on every row (-1.4% / -0.7% /
+  -0.2%) and +5.1% / +6.4% / +6.0% behind jemalloc on valkey1 /
+  valkey1-free / larson16 (this morning's every-reservation `never`:
+  +16.1% / +9.0% / +5.5%), with 32 MiB of `AnonHugePages` at the Valkey
+  model's peak (`thp_fault_alloc` 29 per run, up from 12) and peak RSS
+  unchanged (584.8 MiB; larson16 173.7 MiB, 2 MiB of AnonHugePages that
+  are the program's own mappings, as this morning's (a)); `thp:always`
+  still buys parity (-0.2% / +0.8%) for +9.5% RSS on the 585 MiB heap
+  and +39.9% on larson's retained memory. `tests/c/thp.c never` on the
+  host printed `AnonHugePages 0 kB (class region), 8192 kB (huge run)`,
+  the report line `nohuge 2 (classes, metadata; huge follows host)`. The
+  cell's own steps once at 6ea842d (`matrix-cell.sh ... cgos` on the same
+  VM): `make test` 411 + 120 + 23 passed, 0 failed, in both the default
+  and the `--privileged` podman profile; `test-cgroup` PASS; the
+  `scorecard-cgos-arm64.md` line appended (valkey1 +6.3%, valkey1-free
+  +5.9%, back to the 2026-09-19 pre-task-16 level from +11.7% / +12.9%);
+  cell log `bench/results/matrix/2026-09-20-cgos-arm64-thp-decision.log`.
+  `bench/gce/thp-ab.sh` takes its setting list from `SETS` now (default
+  unchanged). Nothing under `src/`. VM deleted (`matrix clean`).
 
 
 
@@ -2626,6 +2655,28 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
   rows as before. `tests/c/thp.c never` on that host must print
   `AnonHugePages 0 kB (class region), 8192 kB (huge run)`; the Mac
   container's `always` kernel already printed exactly that.
+- Phase 2.5 task 16 (lane E, 2026-09-20): lane B's expectations hold
+  except one figure. valkey1 about +6% behind jemalloc: +5.1% (yes).
+  larson16 unmoved at +5..6%: +6.0% (yes). AnonHugePages about 32 MiB at
+  the Valkey peak and the program's 2..4 MiB on larson16: yes. RSS
+  unchanged: yes. valkey1-free about +1%: measured +6.4%, but `thp:auto`
+  itself reads +5.8% in the same run (+1.1% this morning) with the two
+  sorted lists overlapping over their whole range, so the default does
+  read as (b) as intended and the +1% was that morning VM's jemalloc
+  spread on that row, not a property of the default. Caveat for anyone
+  comparing the two files: the afternoon VM's absolute level was 23..26%
+  below the morning's on the Valkey rows (jemalloc 7.09 vs 9.59 M ops/s
+  on valkey1; larson16 only -2.5%), a different Axion host under the
+  same name, so only within-run ratios compare between them.
+- Phase 2.5 task 16 (lane E): the cell run adopted the lab VM
+  (`MATRIX_ADOPT`), whose name matches the matrix prefix, so the
+  driver's `cmd_matrix` exit trap (`matrix_clean`) would have deleted it
+  the moment the driver ended; the driver was detached after launching
+  the VM-side unit and the polling, `~/logs` fetch, the scorecard file
+  fetch and the log assembly were done by hand with the driver's own
+  rsync. A driver change worth making: `matrix_clean` should skip
+  `MATRIX_ADOPT`, or `cmd_matrix` should not sweep when a cell was
+  adopted; not done here (lane D's file).
 
 - The Cascade Lake's xmalloc row moved 3.5% (disjoint lists) and then 2.7% (overlapping) between `old` and the new lock with the same `pause` in both; the C4 and C4A (same code, PMU available) show nothing. The mechanism is one atomic load and a `match` on the slow path; the likeliest cause is code placement on the Cascade Lake (memory note on page aliasing). It is recorded as open in the results file; a sampler split on a C2 lab would settle it (no PMU there).
 - The geometry numbers say the 1024 ladder is right on 1 MiB L2 parts for throughput, and that 512 buys 12..15% of larson's RSS; if RSS on small parts ever matters more than 1..3% of larson, the knob exists and the model in 6.2 says where it stops paying (256 loses 6% on larson1).
