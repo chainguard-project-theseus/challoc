@@ -3,7 +3,7 @@
 //! Two structures live here and both are pure logic, unit tested on the host.
 //!
 //! [`AtomicBitmap`] is one slab's view of its class's slot bitmap, a
-//! contiguous `[AtomicU64]` array in the metadata region (`class.rs`). It
+//! contiguous `[AtomicU64]` array in the metadata region (`class/`). It
 //! has no owner and is only ever touched with atomic read-modify-write
 //! operations. A set bit means "not available to a refill": the slot is
 //! live in the program or sitting in a thread cache. Padding bits past the
@@ -428,7 +428,7 @@ impl TwoLevelBitmap {
     ///
     /// Level-0 words are read only when their level-1 bit is set. A set
     /// level-1 bit means the word is non-zero, so it has been written; the
-    /// lazily committed tables in `class.rs` and `huge.rs` rely on this to
+    /// lazily committed tables in `class/` and `huge/` rely on this to
     /// keep scans away from words whose page is still `PROT_NONE`.
     pub fn lowest_set_from(&self, from: usize) -> Option<usize> {
         if from >= self.nbits {
@@ -932,7 +932,7 @@ mod tests {
 
     /// Randomised model check of `TwoLevelBitmap` against a `Vec<bool>`.
     /// Several chunked views interleaved in one table (the per-arena slab
-    /// set table of `class.rs`: row `r` of view `v` at `r * stride + v`),
+    /// set table of `class/`: row `r` of view `v` at `r * stride + v`),
     /// with universes of different sizes, each checked against its own
     /// model and against the dense form.
     #[test]

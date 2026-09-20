@@ -26,7 +26,7 @@
 //! Memory never migrates between arenas: a slot is claimed from and
 //! released to the state of the arena that committed its slab, and a
 //! thread's heap keeps one cache per `(arena, class)` it has touched
-//! (`heap.rs`). Once a second arena exists `Shared::multi_arena` is set and
+//! (`heap/`). Once a second arena exists `Shared::multi_arena` is set and
 //! the `free` fast path reads the slab group's word in the class's owner
 //! array (`SlabTable`, never the descriptor) to pick the cache; with one
 //! arena that load is skipped, since every slab and every heap is arena 0.
@@ -68,7 +68,7 @@ pub struct Arena {
     /// `purge::NEVER` for `-1`.
     decay_ns: AtomicU64,
     /// The slab sets of every class, one interleaved table per slab size
-    /// (`class.rs`), a separate metadata object so that `Arena` keeps its
+    /// (`class/`), a separate metadata object so that `Arena` keeps its
     /// size and the offsets of everything allocated after it.
     sets: *const SetTable,
     pub classes: [ClassState; NCLASSES],

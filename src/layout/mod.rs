@@ -61,7 +61,7 @@ pub const MEDIUM_MAX: usize = 256 * 1024;
 /// in mixed page groups that never became idle
 /// (`bench/results/2026-09-19-aarch64-64k-valkey-soak.md`). A slab smaller
 /// than the page (a faked page in the tests, or a page above 64 KiB) is
-/// committed, guarded and purged with its whole page of slabs by `class.rs`
+/// committed, guarded and purged with its whole page of slabs by `class/`
 /// (see `SlabTable::slabs_per_page`).
 pub const LG_MIN_SLAB: u32 = 12;
 pub const MIN_SLAB: usize = 1 << LG_MIN_SLAB;
@@ -73,7 +73,7 @@ pub const LG_MEDIUM_MIN_SLAB: u32 = 16;
 /// Largest internal waste of a class between [`SMALL_SLAB_BELOW`] and
 /// [`SMALL_MAX`], as a fraction of its slab (see [`LG_MIN_SLAB`]).
 pub const SLAB_WASTE_DIV: usize = 32;
-/// The compaction thresholds of `heap.rs` are counted in slabs of this
+/// The compaction thresholds of `heap/` are counted in slabs of this
 /// size (64 KiB), so they mean the same bytes whatever a class's slab size
 /// (see [`Class::compact_slots`]).
 pub const LG_COMPACT_UNIT: u32 = 16;
@@ -166,7 +166,7 @@ pub struct Class {
 pub const LINE_BITS: usize = 512;
 
 /// Slabs are handed to an arena in groups that own whole bitmap lines
-/// (`class.rs`, design section 4); a group spans at most this much of the
+/// (`class/`, design section 4); a group spans at most this much of the
 /// class region (2 MiB), so a class whose slabs are large pads each slab's
 /// bits to a line rather than letting one line's group cover tens of MiB
 /// of address space per arena.
@@ -194,7 +194,7 @@ impl Class {
     }
 
     /// Slots per [`LG_COMPACT_UNIT`] bytes of slabs (per slab when the slab
-    /// is larger): the unit of the compaction thresholds in `heap.rs`, equal
+    /// is larger): the unit of the compaction thresholds in `heap/`, equal
     /// to `nslots` for every class whose slab is 64 KiB or more.
     #[inline]
     pub const fn compact_slots(&self) -> usize {
@@ -215,7 +215,7 @@ impl Class {
     }
 
     /// Consecutive slabs whose bits fill one bitmap line: the unit in which
-    /// `class.rs` hands slabs to an arena, so that every line has one owner.
+    /// `class/` hands slabs to an arena, so that every line has one owner.
     /// A power of two; 1 when a slab's bits are a line or more.
     #[inline]
     pub const fn slabs_per_line(&self) -> usize {
@@ -299,7 +299,7 @@ const fn slab_bits_for(nslots: usize, lg_slab: u32) -> usize {
 /// 64 KiB belongs to the 512..1024-byte classes, so the rule is exactly
 /// "no slab smaller than the page" on every supported page size, 4, 16 and
 /// 64 KiB; a page above 64 KiB, which no supported kernel has, keeps the
-/// table geometry and the page groups of `class.rs`).
+/// table geometry and the page groups of `class/`).
 pub const fn lg_slab_at(size: usize, lg_page: u32) -> u32 {
     let lg = lg_slab_for(size);
     let floor = if lg_page < LG_SMALL_SLAB { lg_page } else { LG_SMALL_SLAB };

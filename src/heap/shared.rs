@@ -281,7 +281,7 @@ impl Shared {
     /// number in use); `guard_install` says whether the kernel
     /// has `MADV_GUARD_INSTALL`, without which no guard is placed at all
     /// (the `PROT_NONE` fallback would split every class region into one
-    /// VMA per guard, see `class.rs`).
+    /// VMA per guard, see `class/`).
     pub unsafe fn init(
         this: *mut Shared,
         regions: Regions,

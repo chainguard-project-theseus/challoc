@@ -218,7 +218,7 @@ fn page_sized_geometry_for_large_pages() {
             }
             assert!(cls.slabs_per_line() == 1 || cls.slabs_per_line() * cls.slab_size() <= 1 << LG_GROUP_SPAN, "class {c}");
             assert!(cls.bitmap_words() <= MAX_SLAB_WORDS);
-            // Compaction thresholds count 64 KiB of slots (heap.rs).
+            // Compaction thresholds count 64 KiB of slots (heap/).
             assert_eq!(cls.compact_slots(), (1usize << LG_COMPACT_UNIT).max(cls.slab_size()) / cls.size());
             if cls.lg_slab as u32 >= LG_COMPACT_UNIT {
                 assert_eq!(cls.compact_slots(), cls.nslots());

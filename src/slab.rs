@@ -5,7 +5,7 @@
 //! count and its decay stamp. Descriptors for class `c` form a dense array
 //! indexed by slab number with a per-class stride ([`desc_stride`]). The
 //! allocation bits are not here: they live in the class's slot bitmap
-//! (`class.rs`, `SlabTable::bits`), one contiguous array per class that the
+//! (`class/`, `SlabTable::bits`), one contiguous array per class that the
 //! `free` check reads instead of a descriptor line.
 //!
 //! The header is `repr(C)` so that the offsets are fixed. Descriptors live
@@ -13,7 +13,7 @@
 //! with the caller's lifetime and no `Drop` is involved.
 //!
 //! `live` counts set bitmap bits plus in-flight claim reservations (see
-//! `class.rs`); it is what drives the `Active -> Empty` transition.
+//! `class/`); it is what drives the `Active -> Empty` transition.
 //! `dirty_at` is the coarse monotonic time the slab became `Empty`, or 0 in
 //! any other state.
 
@@ -99,7 +99,7 @@ const fn strides_of(classes: &[Class; NCLASSES]) -> [u32; NCLASSES] {
     let mut out = [0u32; NCLASSES];
     let mut c = 0;
     while c < NCLASSES {
-        // Slabs go to arenas in groups of `slabs_per_line` (class.rs), so
+        // Slabs go to arenas in groups of `slabs_per_line` (class/), so
         // a stride of at least `DESC_ALIGN / slabs_per_line` keeps every
         // descriptor line inside one group: refills and flushes of two
         // arenas never write the same line.
@@ -203,7 +203,7 @@ impl SlabDesc {
     }
 
     /// Move the slab to `arena`. Only ever called by a group handoff
-    /// (`class.rs`), with both arenas' class locks and the commit lock
+    /// (`class/`), with both arenas' class locks and the commit lock
     /// held and `live == 0`.
     #[inline]
     pub fn set_arena(&self, arena: u16) {
@@ -211,7 +211,7 @@ impl SlabDesc {
     }
 
     /// Acquire: a releaser clears bits and then subtracts, so a reader that
-    /// sees the smaller count also sees the cleared bits. `class.rs` relies
+    /// sees the smaller count also sees the cleared bits. `class/` relies
     /// on that to treat `nslots - live` as a lower bound on claimable slots.
     #[inline]
     pub fn live(&self) -> usize {

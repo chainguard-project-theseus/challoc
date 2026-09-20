@@ -7,7 +7,7 @@
 //! never faults, never changes the line's contents and may be ignored.
 //! It was tried on the lines a freeing thread writes last and another
 //! thread may read next, the class bitmap word a release clears and the
-//! slab descriptor whose `live` count it lowers (`class.rs`, `release_word`
+//! slab descriptor whose `live` count it lowers (`class/`, `release_word`
 //! and `dec_live`), and it did not pay: the freeing core is usually the
 //! next claimer too, so the demotion turns its L1 hit into an L3 hit
 //! (xmalloc-test +5% cycles per operation, the single-threaded Valkey

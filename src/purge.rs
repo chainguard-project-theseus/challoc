@@ -70,7 +70,7 @@
 //!
 //! Memory discarded with `MADV_FREE` keeps its contents until the kernel
 //! reclaims it, so a `Purged` slab or extent that went out lazily is not
-//! known to be zero. `class.rs` and `huge.rs` read one process-wide answer,
+//! known to be zero. `class/` and `huge/` read one process-wide answer,
 //! [`purged_is_zero`], under their locks when they hand a `Purged` member
 //! out, and it is sticky: true until the first lazy batch of the process,
 //! false from then on, so `calloc` clears `Purged` memory it reuses after

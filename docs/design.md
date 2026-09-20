@@ -308,7 +308,7 @@ slab but no longer fills it from the bottom. Priced in
 
 ## 5. Per-class state and slab selection
 
-Each class has one process-wide `SlabTable` (`class.rs`): the class's
+Each class has one process-wide `SlabTable` (`class/`): the class's
 descriptor array, slot bitmap and owner array, and, behind its own lock, the
 commit watermark and the cursor that hands slab groups to arenas (section 4).
 Each `(arena, class)` pair then has a `ClassState` over that table:
@@ -571,7 +571,7 @@ struct CacheHeader {                         // one per (arena, class), 64 bytes
 
 The per-thread byte counters are not kept per operation: `allocs` is bumped
 on the header line a pop writes anyway and the free count follows from the
-stack arithmetic (`heap.rs`, `Heap::stats`). An explicit cache
+stack arithmetic (`heap/`, `Heap::stats`). An explicit cache
 (`tcache.create`) is a `Heap` owned by no thread.
 
 Signed entries (plan Phase 2.5 task 7). With `Shared::pac()` set, every
@@ -605,7 +605,7 @@ PAuth (Neoverse N1, Apple M1) the pointer comes out non-canonical (an
 error code in the PAC field) and the program's first access to it faults
 (`SIGSEGV`); the PAC is 7 bits wide on Linux's default 48-bit VA with
 top-byte-ignore (bits 54:48), so a forged entry passes one time in 128 and
-every failure is a crash. `heap.rs` `corrupted_cache_entry_or_heap_pointer_faults`
+every failure is a crash. `heap/` `corrupted_cache_entry_or_heap_pointer_faults`
 is the test, in a forked child.
 
 Heaps and slot stacks live in the metadata region and are allocated by a
@@ -1958,7 +1958,7 @@ the dead part of a stack, a lower bound shrunk); the kernel clears
 `rseq_cs` when it finds the thread outside the section, so a completed
 section is one store plus the work.
 
-The caches (`heap.rs`, `Percpu`, `CpuCache`). One table of `nr_cpu_ids`
+The caches (`heap/`, `Percpu`, `CpuCache`). One table of `nr_cpu_ids`
 `[CacheHeader; NCLASSES]` arrays, the same headers and slot stacks as a
 heap's home caches, reserved zeroed from the metadata region at init
 (3.3 KiB per id, touched only as ids are used) and indexed
@@ -2087,7 +2087,7 @@ restarted), the `Per-CPU caches:` line of
 `malloc_stats_print` (state, the same counts, the probe's `__rseq_size`
 and offset, and the note when `percpu_arena:percpu` fell back), and lane
 B's `rseq`/`mm_cid` keys of the feature report. Tests: `rseq.rs` (the
-both-ways probe, `mm_cid` distinct across busy threads), `heap.rs`
+both-ways probe, `mm_cid` distinct across busy threads), `heap/`
 `linux_tests::percpu_*` (the mode follows the probe and the key; plain
 allocations through the CPU caches with exact thread counters and the
 zero prefix; the flush's high-half release and the drain; slot
@@ -2231,7 +2231,7 @@ runs on every row.
 | rseq time slice extension (`slice_ctrl`, `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE`) | kernel 7.0 with `CONFIG_RSEQ_SLICE_EXTENSION` (default N; needs `GENERIC_ENTRY` and `HAVE_GENERIC_TIF_BITS`, which x86_64 has and arm64 does not, through master) and glibc registering the v2 size (`__rseq_size >= 32`: 2.44 registers 33); Ubuntu's `7.0.0-1011-gcp` leaves the option off, so the GCE reference VMs read `kernel-disabled` and the numbers come from a 7.0.14 built with it (`bench/results/2026-09-19-x86_64-lane-c-task15-slice-ext.md`) | every lock holder's request to defer a preemption until the release (`slice.rs`, the subsection below; `slice_ext:auto`), the `prctl` enable per thread on its first hold, `rseq_slice_yield` (or `sched_yield` where seccomp hides the new syscall) after a granted release; the feature line's `slice_ext=` key (`sys::features::SliceExt`, read through `slice::probe` and `slice::verdict`, plan task 15) says `on` when lock holders request it and otherwise the kernel's answer (`available` under `slice_ext:off`, `kernel-disabled`, `no-slice_ctrl`, `no-rseq`, `prctl-failed`) | the lock without the request: one relaxed load per hold; `Slice extension: off (<why>)` in the report and the same word after `slice_ext=` in the feature line |
 | ERMS, FSRM, AVX-512F (`cpuid` 7.0 `EBX[9]`, `EDX[4]`, `EBX[16]`) | x86_64 CPU | reported only: `memcpy`/`memset` selection is glibc's; the crate's fills use the compiler baseline | none needed |
 | Cache line, L1D and L2 sizes | `CTR_EL0` (arm64), `cpuid` leaf 4 or `0x8000001D` (x86_64), else `/sys/devices/system/cpu/cpu0/cache/index*/` | reported only: the layout constants (`lock.rs` padding, the 512-byte stride rule) and the cache-capacity defaults stay fixed; an L2-derived ladder was priced on the 1 MiB parts and dropped (section 6.2, "Cache geometry") | `unknown` in the line; nothing changes |
-| Model-checked protocol (`cargo test --features std model::`, `src/model.rs`) | the host test suite, no hardware: an exhaustive interleaving model of the claim, release, `on_live_zero`, purge and group-handoff steps of `class.rs`, memoised on the whole state, with the invariants of section 4 and 5 checked at every state (no slot handed to two claimers, a slot reported zero reads zero, `live` equals set bits plus in-flight reservations, a slab in an arena's set is `Empty`/`Purged` with `live == 0` and owned by that arena, a `Purged` slab reads zero) | nothing at run time: it is the proof obligation for a change to the protocol. Replaying the pre-fix step orders finds the calloc race (Phase 1.5 task 7) and the ownership gap the handoff's owner check closes (task 15); the current order passes every scenario. Since 2026-09-19 (lane C, plan Phase 2.5 task 8) the `percpu_*` scenarios model the per-CPU claim protocol of section 15 (caches owned by an `mm_cid` read inside an rseq critical section with one commit store, the kernel's abort of a section whose thread was descheduled, threads that pop on one cid and push on another, the refill and the flush through the cid's arena, the zero prefix) with the further invariants that no slot is in two caches or in a cache and owned by a thread, that every set bit has exactly one holder (a lost push is a bit with none) and that a cache is mutated only by a section whose thread kept its cid to the commit; the variants without a section, or with `mm_cid` read outside it, hand a slot to two threads within 40 states, and lane A's implementation is compared against the properties listed in section 15 at merge | none needed |
+| Model-checked protocol (`cargo test --features std model::`, `src/model.rs`) | the host test suite, no hardware: an exhaustive interleaving model of the claim, release, `on_live_zero`, purge and group-handoff steps of `class/`, memoised on the whole state, with the invariants of section 4 and 5 checked at every state (no slot handed to two claimers, a slot reported zero reads zero, `live` equals set bits plus in-flight reservations, a slab in an arena's set is `Empty`/`Purged` with `live == 0` and owned by that arena, a `Purged` slab reads zero) | nothing at run time: it is the proof obligation for a change to the protocol. Replaying the pre-fix step orders finds the calloc race (Phase 1.5 task 7) and the ownership gap the handoff's owner check closes (task 15); the current order passes every scenario. Since 2026-09-19 (lane C, plan Phase 2.5 task 8) the `percpu_*` scenarios model the per-CPU claim protocol of section 15 (caches owned by an `mm_cid` read inside an rseq critical section with one commit store, the kernel's abort of a section whose thread was descheduled, threads that pop on one cid and push on another, the refill and the flush through the cid's arena, the zero prefix) with the further invariants that no slot is in two caches or in a cache and owned by a thread, that every set bit has exactly one holder (a lost push is a bit with none) and that a cache is mutated only by a section whose thread kept its cid to the commit; the variants without a section, or with `mm_cid` read outside it, hand a slot to two threads within 40 states, and lane A's implementation is compared against the properties listed in section 15 at merge | none needed |
 
 The kernel keys of the feature report are `page_size guard_install mseal
 process_madvise process_madvise_free anon_name populate_write thp mthp
@@ -2611,7 +2611,7 @@ taken from `p` after the strip. Paths that strip: `free`, the sized path
 `sallocx`, `realloc`/`rallocx`/`xallocx`, `dallocx`, the `mallctl`
 pointer lookups and `je_get_defrag_hint`, and `Heap::flush` (the cache
 holds tagged pointers; the bucket pass groups by slab from the stripped
-address and `release_owned` receives stripped pointers, so `class.rs`
+address and `release_owned` receives stripped pointers, so `class/`
 never sees a tag). `double_free_scan` compares the tagged values: a
 duplicate carries the same tag.
 

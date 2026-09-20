@@ -434,7 +434,7 @@ pub struct ClassState {
     /// batch): the part of `claimed` that ordinary allocation traffic
     /// accounts for, as opposed to compaction rebuilds and direct
     /// (`MALLOCX_TCACHE_NONE`) claims such as Valkey's defragmenter's. The
-    /// compaction gate in `heap.rs` watches its rate.
+    /// compaction gate in `heap/` watches its rate.
     refilled: AtomicU64,
     /// Compaction diagnostics, printed in the bins table of
     /// `malloc_stats_print`: slots claimed by
@@ -1152,7 +1152,7 @@ impl ClassState {
     }
 
     /// Slots claimed by cache refills (see the field); the compaction gate
-    /// in `heap.rs` watches its rate.
+    /// in `heap/` watches its rate.
     #[inline]
     pub fn refilled(&self) -> u64 {
         self.refilled.load(Ordering::Relaxed)
@@ -1196,7 +1196,7 @@ impl ClassState {
     /// `(holes, capacity)`: the free slots of the slabs that can hold live
     /// slots (neither `Empty` nor `Purged`), i.e. slots that are in no
     /// cache and no program, and those slabs' total slot count. The
-    /// compaction gate in `heap.rs` reads this; one lock hold.
+    /// compaction gate in `heap/` reads this; one lock hold.
     pub fn holes(&self) -> (usize, usize) {
         let (s, curregs) = self.bin_stats();
         let capacity = s.curslabs() * self.class().nslots();

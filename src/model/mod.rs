@@ -5,13 +5,13 @@
 //! What is modelled. One class, [`NSLABS`] slabs of [`NSLOTS`] slots each
 //! (the bits of a slab fit one word, as every real slab's do), one or two
 //! arenas, two or three threads, and the shared state the protocol of
-//! `class.rs` runs on: per slab the state byte, the `live` count, the
+//! `class/` runs on: per slab the state byte, the `live` count, the
 //! slot bitmap word, the descriptor's arena field and the slot memory
 //! (one bit per slot: zero or dirty); per arena the class lock and the
 //! `partial`, `empty` and `purged` sets and the group cursor; the owner
 //! word per group and the class-wide next fresh group. Every thread runs
 //! a short program of operations, each split into the atomic steps of the
-//! real code in the real order (the line of `class.rs` each step mirrors
+//! real code in the real order (the line of `class/` each step mirrors
 //! is quoted at the step), and [`explore`] enumerates every interleaving
 //! of those steps depth first, memoising on the whole state, and checks
 //! the invariants of [`check`] at every state. A violation returns the
@@ -55,7 +55,7 @@
 //! and with `group_handoff` on the model finds a slab of one arena in
 //! another arena's sets. With both on, every scenario passes.
 //!
-//! A change to the protocol in `class.rs` is a change to a step here.
+//! A change to the protocol in `class/` is a change to a step here.
 //!
 //! The per-CPU mode (design section 15, plan Phase 2.5 task 8; the
 //! scenarios `percpu_*`). With [`Scenario::percpu`] the caches are owned

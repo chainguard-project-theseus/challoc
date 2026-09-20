@@ -80,7 +80,7 @@ impl Cache {
 
     /// A push at index `at` (the speculative `len`): the entry, then the
     /// zero prefix rule of design 6.3 (a zero entry extends a prefix that
-    /// reaches it; a dirty entry below the prefix clips it: `heap.rs`,
+    /// reaches it; a dirty entry below the prefix clips it: `heap/`,
     /// `if len < zeroed { zeroed = len }`), then `len = at + 1`.
     pub(super) fn push_at(&mut self, at: u8, h: Held) {
         self.slots[at as usize] = Held { zero: false, ..h };
@@ -342,7 +342,7 @@ impl Model<'_> {
     }
 
     /// The flush's commit: `len -= k`, the `k` entries staged; the zero
-    /// prefix is dropped by a flush (`heap.rs`, `zeroed = 0`).
+    /// prefix is dropped by a flush (`heap/`, `zeroed = 0`).
     pub(super) fn flush_commit(&self, sh: &mut Shared, th: &mut Thread, t: usize) -> Result<String, String> {
         let stale = Self::commit(sh, th, t as u8);
         let k = th.spec_len.min(FLUSH_HALF);

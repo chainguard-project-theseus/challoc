@@ -45,7 +45,7 @@ pub enum Kind {
 
 /// The reserved regions of one process. `repr(C)` keeps `superblock`,
 /// `lg_region` and `lg_stride` at the front, on the cache line the `free`
-/// fast path reads (see `Shared` in `heap.rs`).
+/// fast path reads (see `Shared` in `heap/`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub struct Regions {

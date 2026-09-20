@@ -298,7 +298,7 @@ pub unsafe fn cpu_id(area: *mut u8) -> u32 {
 /// [`POP_HIT`] set (and [`POP_ZERO`] when the slot is known zero); a push
 /// hit is [`PUSH_PUSHED`], zero. The other values are the misses the cold paths
 /// decode; [`POP_OFF_MODE`] / [`PUSH_OFF_MODE`] are the heap's own
-/// (`heap.rs`: a heap off the mode), never the sections'.
+/// (`heap/`: a heap off the mode), never the sections'.
 pub const POP_HIT: u32 = 1;
 pub const POP_ZERO: u32 = 2;
 pub const POP_EMPTY: u32 = 0;
@@ -323,7 +323,7 @@ pub enum Pop {
     /// the slow path refills.
     Empty,
     /// This pop's count hit the compaction schedule (`allocs & compact_mask
-    /// == 0`, `heap.rs`): nothing was popped, `allocs` was counted, the
+    /// == 0`, `heap/`): nothing was popped, `allocs` was counted, the
     /// slow path serves the scheduled allocation.
     Scheduled,
     /// `mm_cid >= n`: the table is smaller than the kernel's id space,

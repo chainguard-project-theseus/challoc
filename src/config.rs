@@ -283,7 +283,7 @@ pub struct Config {
     /// changes nothing ([`Config::prefault_active`]). Off by default (the
     /// decision on the Valkey soak's write-phase p99 and main-thread page
     /// faults, design 12). Read at init by the thread (`purge.rs`) and the
-    /// commit path (`class.rs`).
+    /// commit path (`class/`).
     pub prefault: bool,
     /// `-1` means never purge.
     pub dirty_decay_ms: i64,

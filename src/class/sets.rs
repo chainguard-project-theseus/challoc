@@ -9,7 +9,7 @@ use crate::meta::Meta;
 use crate::sys::Errno;
 
 /// A never-freed table in the metadata region, committed page by page as
-/// the high-water mark grows. Shared with `huge.rs`.
+/// the high-water mark grows. Shared with `huge/`.
 pub(crate) struct Lazy {
     pub(crate) base: usize,
     len: usize,
@@ -44,8 +44,8 @@ impl Lazy {
 }
 
 /// A slab-number (or huge-page) set: a [`TwoLevelBitmap`] over a lazily
-/// committed table, either its own ([`Set::new`], `huge.rs`) or one view
-/// of an arena's [`SetTable`] ([`Set::in_table`]). Shared with `huge.rs`.
+/// committed table, either its own ([`Set::new`], `huge/`) or one view
+/// of an arena's [`SetTable`] ([`Set::in_table`]). Shared with `huge/`.
 pub(crate) struct Set {
     pub(crate) map: TwoLevelBitmap,
     store: Store,

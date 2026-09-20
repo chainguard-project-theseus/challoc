@@ -166,7 +166,7 @@ struct Inner {
 // any thread; the `Lock` serialises every access.
 unsafe impl Send for Inner {}
 
-/// The metadata allocator for one region. One per process: `heap.rs`
+/// The metadata allocator for one region. One per process: `heap/`
 /// writes it in place with [`Meta::new`] when the regions are reserved.
 pub struct Meta {
     inner: Lock<Inner>,

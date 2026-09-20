@@ -4,7 +4,7 @@
 //!
 //! Nothing here is counted on the fast paths. The inputs are counters the
 //! slow paths already maintain: each `ClassState` keeps its slab counts
-//! under the class lock and `claimed - released` (see `class.rs`) gives
+//! under the class lock and `claimed - released` (see `class/`) gives
 //! `curregs`, the slots out of the bitmaps; the huge allocator keeps its
 //! extent counts under its lock and each `Arena` counts the runs allocated
 //! through it; the metadata allocator counts its committed bytes. An

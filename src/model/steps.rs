@@ -1,6 +1,6 @@
 //! The steps (module docs in `mod.rs`): which step a thread takes next,
 //! whether it is enabled, and its effect on the state, one method per
-//! operation of `class.rs` (`Refill` is `ClassState::claim`, `Release` is
+//! operation of `class/` (`Refill` is `ClassState::claim`, `Release` is
 //! `release_owned` and `dec_live`, `Purge` is `purge_empty`; the line each
 //! step mirrors is quoted at the step); then the invariants checked at
 //! every state and the depth-first exploration itself. A step returns
