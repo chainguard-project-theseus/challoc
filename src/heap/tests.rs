@@ -2195,3 +2195,98 @@ fn an_others_node_for_the_home_arena_aborts() {
     assert!(h.other_caches(s, home, false).is_null());
     h.other_caches(s, home, true);
 }
+
+/// The cold walks of the `others` list ([`Heap::nodes`]) see every node,
+/// the most recently created first, and a walk may free the node it was
+/// handed (`destroy` does).
+#[test]
+fn others_nodes_iterate_newest_first_and_survive_freeing() {
+    let s = shared();
+    let a1 = s.arenas.create(s).unwrap();
+    let a2 = s.arenas.create(s).unwrap();
+    let t = TestHeap::new(s);
+    let h = t.heap();
+    assert_eq!(Heap::nodes(h.others).count(), 0);
+    let c = class_with(64);
+    let (p1, _) = h.alloc_in(s, a1, c);
+    let (p2, _) = h.alloc_in(s, a2, c);
+    assert!(!p1.is_null() && !p2.is_null());
+    let arenas: Vec<u16> = Heap::nodes(h.others).map(|o| unsafe { (*o).arena }).collect();
+    assert_eq!(arenas, [a2, a1]);
+    assert!(h.cache_in(a1, c).is_some() && h.cache_in(a2, c).is_some());
+    assert!(h.cache_in(7, c).is_none(), "an arena never touched has no node");
+    assert_eq!(h.stats().allocated, 2 * 64, "the byte counters fold every node");
+    h.free(s, p1);
+    h.free(s, p2);
+    assert_eq!(h.stats().deallocated, 2 * 64);
+    // Turning the caches off walks the list, flushes and frees every
+    // node's caches (the nodes stay) and folds their counters.
+    h.set_tcache_enabled(s, false);
+    assert_eq!(Heap::nodes(h.others).count(), 2);
+    assert!(h.cache_in(a1, c).is_none() && h.cache_in(a2, c).is_none());
+    assert_eq!(h.stats(), ThreadStats { allocated: 2 * 64, deallocated: 2 * 64 });
+    // `destroy` frees each node as the walk hands it over.
+    let before = s.meta.stats().allocated;
+    unsafe { Heap::destroy(t.h, s) };
+    assert!(s.meta.stats().allocated < before);
+    core::mem::forget(t);
+}
+
+/// The compaction probe's gate ([`Heap::probe_verdict`], shared by the
+/// thread and per-CPU scheduled pops): dense classes keep probing, a
+/// fragmented class enters compaction (`compact_on` counted) unless
+/// ordinary refills claimed the gate's worth of slabs since the previous
+/// probe (`gate_refill` counted). The refill counter it returns is the
+/// class's current one.
+#[test]
+fn probe_verdict_applies_the_gate_and_records_it() {
+    let s = shared();
+    let t = TestHeap::new(s);
+    let c = class_with(1024);
+    let cs = &s.arena0.classes[c];
+    let ps: Vec<*mut u8> = (0..4).map(|_| t.alloc(c)).collect();
+    assert!(!Heap::fragmented(s, 0, c));
+    let now = cs.refilled() as u32;
+    assert_eq!(Heap::probe_verdict(s, 0, c, now), (now, Verdict::Dense));
+    for p in &ps {
+        t.free(*p);
+    }
+    let keep = residue(&t, c, MODEL_SLOTS / CLASSES[c].nslots(), 560, 0x0bad_cafe);
+    assert!(Heap::fragmented(s, 0, c));
+    let now = cs.refilled() as u32;
+    let before = cs.compaction_stats();
+    assert_eq!(Heap::probe_verdict(s, 0, c, now), (now, Verdict::Fragmented));
+    let after = cs.compaction_stats();
+    assert_eq!((after.1 - before.1, after.3 - before.3), (1, 0), "(compact_on, gate_refill)");
+    let gate = (COMPACT_MAX_REFILL_SLABS * CLASSES[c].compact_slots()) as u32;
+    let before = cs.compaction_stats();
+    assert_eq!(Heap::probe_verdict(s, 0, c, now.wrapping_sub(gate)), (now, Verdict::Refilling));
+    let after = cs.compaction_stats();
+    assert_eq!((after.1 - before.1, after.3 - before.3), (0, 1), "(compact_on, gate_refill)");
+    assert_eq!(Heap::probe_verdict(s, 0, c, now.wrapping_sub(gate - 1)).1, Verdict::Fragmented, "one refill short of the gate");
+    for p in keep {
+        t.free(p);
+    }
+    t.destroy();
+}
+
+/// The mode-to-mask rule has one home ([`CacheHeader::mask_for`]): the
+/// per-CPU volatile store and the thread store agree for every mode.
+#[test]
+fn set_mode_volatile_derives_the_same_mask_as_set_mode() {
+    let config = Config { tcache_compact_shift: 5, ..Config::DEFAULT };
+    for mode in [MODE_OFF, MODE_PROBE, MODE_COMPACT] {
+        let mut a = CacheHeader::EMPTY;
+        let mut b = CacheHeader::EMPTY;
+        a.set_mode(mode, &config);
+        unsafe { CacheHeader::set_mode_volatile(&mut b, mode, &config) };
+        assert_eq!((a.mode, a.compact_mask), (b.mode, b.compact_mask));
+        let want = match mode {
+            MODE_PROBE => PROBE_MASK,
+            MODE_COMPACT => config.compact_mask(),
+            _ => u32::MAX,
+        };
+        assert_eq!(a.compact_mask, want, "mode {mode}");
+    }
+}
+

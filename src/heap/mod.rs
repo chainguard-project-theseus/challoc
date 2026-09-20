@@ -288,6 +288,19 @@ pub const COMPACT_MAX_REFILL_SLABS: usize = 2;
 // Both slab counts are in 64 KiB slabs (`Class::compact_slots`), so the
 // thresholds mean the same bytes for the 4 KiB-slab classes as for the rest.
 
+/// What a compaction probe decided ([`Heap::probe_verdict`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Verdict {
+    /// Ordinary refills claimed [`COMPACT_MAX_REFILL_SLABS`] slabs' worth
+    /// of slots since the previous probe: the class is being drained by
+    /// them and is left alone.
+    Refilling,
+    /// Not fragmented ([`Heap::fragmented`]): keep probing.
+    Dense,
+    /// Fragmented and left alone by refills: enter compact mode.
+    Fragmented,
+}
+
 /// Size of a [`CacheHeader`]: one line, so a class's header never shares
 /// a line with another class's.
 pub const CACHE_HEADER: usize = core::mem::size_of::<CacheHeader>();
@@ -419,17 +432,41 @@ impl CacheHeader {
         if pac { pac::auth(e as usize, self.slots as usize) as *mut u8 } else { e }
     }
 
-    /// Enter `mode` and derive the scheduled-pop mask from it, so the two
-    /// fields never disagree: [`PROBE_MASK`] while probing, the configured
-    /// `tcache_compact_shift` mask while compacting, `u32::MAX` when off
-    /// (one pop in 2^32 then reaches `pop_compact`, which pops the top).
-    fn set_mode(&mut self, mode: u16, config: &Config) {
-        self.mode = mode;
-        self.compact_mask = match mode {
+    /// The scheduled-pop mask `mode` implies: [`PROBE_MASK`] while
+    /// probing, the configured `tcache_compact_shift` mask while
+    /// compacting, `u32::MAX` when off (one pop in 2^32 then reaches
+    /// `pop_compact`, which pops the top). The one home of the
+    /// mode-to-mask rule; [`CacheHeader::set_mode`] and
+    /// [`CacheHeader::set_mode_volatile`] apply it.
+    fn mask_for(mode: u16, config: &Config) -> u32 {
+        match mode {
             MODE_PROBE => PROBE_MASK,
             MODE_COMPACT => config.compact_mask(),
             _ => u32::MAX,
-        };
+        }
+    }
+
+    /// Enter `mode` and derive the scheduled-pop mask from it
+    /// ([`CacheHeader::mask_for`]), so the two fields never disagree.
+    fn set_mode(&mut self, mode: u16, config: &Config) {
+        self.mode = mode;
+        self.compact_mask = Self::mask_for(mode, config);
+    }
+
+    /// [`CacheHeader::set_mode`] for a header of the per-CPU table
+    /// (`percpu.rs`), whose mode fields are hints written with volatile
+    /// stores: another thread may own the id by the time they land, and
+    /// a stale mode changes only which pops are scheduled, never a stack.
+    ///
+    /// # Safety
+    /// `h` is a live header of the per-CPU table.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    unsafe fn set_mode_volatile(h: *mut CacheHeader, mode: u16, config: &Config) {
+        // SAFETY: guaranteed by the caller.
+        unsafe {
+            ptr::write_volatile(&raw mut (*h).mode, mode);
+            ptr::write_volatile(&raw mut (*h).compact_mask, Self::mask_for(mode, config));
+        }
     }
 
     /// Cached pointers, bottom of the stack first (the top is popped next).
@@ -633,16 +670,14 @@ impl Heap {
         let heap = unsafe { &mut *h };
         heap.flush_thread_caches(shared);
         Self::free_caches(shared, &mut heap.caches);
-        let mut o = heap.others;
-        while !o.is_null() {
+        for o in Self::nodes(heap.others) {
             // SAFETY: `others` is a list of live metadata blocks owned by
-            // this heap.
+            // this heap; the iterator has read `next` already, so the
+            // block can go.
             unsafe {
-                let next = (*o).next;
                 Self::free_caches(shared, &mut (*o).caches);
                 let block = (o as *mut u8).sub(64 * (*o).pad as usize);
                 shared.meta.free(block, node_block_layout());
-                o = next;
             }
         }
         heap.others = ptr::null_mut();
@@ -749,14 +784,10 @@ impl Heap {
     pub fn stats(&self) -> ThreadStats {
         let mut s = self.uncached;
         Self::fold_counters(&mut s, &self.caches);
-        let mut o = self.others;
-        while !o.is_null() {
+        for o in Self::nodes(self.others) {
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap.
-            unsafe {
-                Self::fold_counters(&mut s, &(*o).caches);
-                o = (*o).next;
-            }
+            unsafe { Self::fold_counters(&mut s, &(*o).caches) };
         }
         s
     }
@@ -791,14 +822,12 @@ impl Heap {
         self.flush_thread_caches(shared);
         Self::fold_counters(&mut self.uncached, &self.caches);
         Self::free_caches(shared, &mut self.caches);
-        let mut o = self.others;
-        while !o.is_null() {
+        for o in Self::nodes(self.others) {
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap.
             unsafe {
                 Self::fold_counters(&mut self.uncached, &(*o).caches);
                 Self::free_caches(shared, &mut (*o).caches);
-                o = (*o).next;
             }
         }
     }
@@ -822,19 +851,12 @@ impl Heap {
         if arena == self.arena {
             return self.cache(class);
         }
-        let mut o = self.others;
-        while !o.is_null() {
-            // SAFETY: `others` is a list of live metadata blocks owned by
-            // this heap.
-            unsafe {
-                if (*o).arena == arena {
-                    let c = &(*o).caches[class];
-                    return if c.cap == 0 { None } else { Some(c) };
-                }
-                o = (*o).next;
-            }
-        }
-        None
+        // SAFETY: `others` is a list of live metadata blocks owned by this
+        // heap.
+        let node = Self::nodes(self.others).find(|&o| unsafe { (*o).arena } == arena)?;
+        // SAFETY: as above.
+        let c = unsafe { &(*node).caches[class] };
+        if c.cap == 0 { None } else { Some(c) }
     }
 
     /// The home header for `class`: `heap + 128 + 64 * class`, no load.
@@ -1019,20 +1041,12 @@ impl Heap {
                             return (ptr::null_mut(), false);
                         }
                     }
-                    let cs = shared.owner((*cache).arena).class(class);
-                    let refilled = cs.refilled() as u32;
-                    let delta = refilled.wrapping_sub((*cache).probe_refilled) as usize;
+                    let (refilled, verdict) = Self::probe_verdict(shared, (*cache).arena, class, (*cache).probe_refilled);
                     (*cache).probe_refilled = refilled;
-                    if delta >= COMPACT_MAX_REFILL_SLABS * CLASSES[class].compact_slots() {
-                        if Self::fragmented(shared, (*cache).arena, class) {
-                            cs.note_gate_refill();
-                        }
-                        return Self::pop_top(cache, len, pac);
+                    match verdict {
+                        Verdict::Refilling | Verdict::Dense => return Self::pop_top(cache, len, pac),
+                        Verdict::Fragmented => {}
                     }
-                    if !Self::fragmented(shared, (*cache).arena, class) {
-                        return Self::pop_top(cache, len, pac);
-                    }
-                    cs.note_compact_mode(true);
                     (*cache).set_mode(MODE_COMPACT, &shared.config);
                     return self.pop_compact_run(cache, class, len);
                 }
@@ -1111,6 +1125,30 @@ impl Heap {
         let cs = shared.owner(arena).class(class);
         let (holes, capacity) = cs.holes();
         holes >= COMPACT_MIN_SLABS * CLASSES[class].compact_slots() && holes * COMPACT_MIN_RATIO >= capacity
+    }
+
+    /// The compaction probe's gate (module doc), shared by the thread
+    /// ([`Heap::pop_compact`]) and per-CPU (`percpu_scheduled`) scheduled
+    /// pops: the class's refill counter now (the caller stores it as the
+    /// header's `probe_refilled`) and the verdict, given the counter at
+    /// the previous probe. Records the class's `note_gate_refill` and
+    /// `note_compact_mode(true)` statistics as it decides.
+    fn probe_verdict(shared: &Shared, arena: u16, class: usize, prev_refilled: u32) -> (u32, Verdict) {
+        let cs = shared.owner(arena).class(class);
+        let refilled = cs.refilled() as u32;
+        let delta = refilled.wrapping_sub(prev_refilled) as usize;
+        let verdict = if delta >= COMPACT_MAX_REFILL_SLABS * CLASSES[class].compact_slots() {
+            if Self::fragmented(shared, arena, class) {
+                cs.note_gate_refill();
+            }
+            Verdict::Refilling
+        } else if !Self::fragmented(shared, arena, class) {
+            Verdict::Dense
+        } else {
+            cs.note_compact_mode(true);
+            Verdict::Fragmented
+        };
+        (refilled, verdict)
     }
 
     /// Rebuild the run for a scheduled pop that found it exhausted: run the
@@ -1517,6 +1555,25 @@ impl Heap {
         }
     }
 
+    /// The nodes of an `others` list headed by `head`, in list order, for
+    /// the cold walks (statistics, flush, GC, `cache_in`, destruction).
+    /// Each node's `next` is read before the node is yielded, so a caller
+    /// may free the node it was handed. The lookup on the cross-arena free
+    /// path ([`Heap::other_caches`]) keeps its own loop.
+    fn nodes(head: *mut ArenaCaches) -> impl Iterator<Item = *mut ArenaCaches> {
+        let mut o = head;
+        core::iter::from_fn(move || {
+            if o.is_null() {
+                return None;
+            }
+            let cur = o;
+            // SAFETY: the list is live metadata blocks owned by the heap
+            // whose `others` head this was.
+            o = unsafe { (*cur).next };
+            Some(cur)
+        })
+    }
+
     /// The `others` node for `arena`, created (if `create`) on first use.
     /// Null when there is none (and none could be allocated). Never called
     /// with the home arena: creating a node for it would split the home
@@ -1843,15 +1900,11 @@ impl Heap {
     pub fn flush_thread_caches(&mut self, shared: &Shared) {
         let home = self.arena;
         self.flush_arena(shared, home, ptr::null_mut());
-        let mut o = self.others;
-        while !o.is_null() {
+        for o in Self::nodes(self.others) {
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap.
-            unsafe {
-                let arena = (*o).arena;
-                self.flush_arena(shared, arena, o);
-                o = (*o).next;
-            }
+            let arena = unsafe { (*o).arena };
+            self.flush_arena(shared, arena, o);
         }
     }
 
@@ -1864,14 +1917,10 @@ impl Heap {
         }
         let home = self.arena;
         self.gc_arena(shared, home, ptr::null_mut());
-        let mut o = self.others;
-        while !o.is_null() {
-            // SAFETY: as in `flush_all`.
-            unsafe {
-                let arena = (*o).arena;
-                self.gc_arena(shared, arena, o);
-                o = (*o).next;
-            }
+        for o in Self::nodes(self.others) {
+            // SAFETY: as in `flush_thread_caches`.
+            let arena = unsafe { (*o).arena };
+            self.gc_arena(shared, arena, o);
         }
     }
 

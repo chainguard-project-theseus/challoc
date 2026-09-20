@@ -13,9 +13,7 @@ use super::{CACHE_HEADER, CacheHeader, Heap, Shared};
 #[cfg(target_os = "linux")]
 use super::flush::{group_by_slab, straddling_double_free};
 #[cfg(target_os = "linux")]
-use super::{COMPACT_MAX_REFILL_SLABS, MAX_CAP, MODE_COMPACT, MODE_OFF, MODE_PROBE, PROBE_MASK, PUSH_PAC, PUSH_ZERO, zero_slot};
-#[cfg(target_os = "linux")]
-use crate::layout::CLASSES;
+use super::{MAX_CAP, MODE_COMPACT, MODE_OFF, MODE_PROBE, PROBE_MASK, PUSH_PAC, PUSH_ZERO, Verdict, zero_slot};
 
 
 /// The caches of one concurrency id in the per-CPU mode (design 15): the
@@ -442,10 +440,7 @@ impl Heap {
                     if !Self::fragmented(shared, arena, class) {
                         cs.note_compact_mode(false);
                         // SAFETY: as above.
-                        unsafe {
-                            ptr::write_volatile(&raw mut (*h).mode, MODE_PROBE);
-                            ptr::write_volatile(&raw mut (*h).compact_mask, PROBE_MASK);
-                        }
+                        unsafe { CacheHeader::set_mode_volatile(h, MODE_PROBE, &shared.config) };
                         return self.percpu_pop_plain(shared, class);
                     }
                 }
@@ -453,25 +448,17 @@ impl Heap {
             }
             MODE_PROBE => {
                 self.tick(shared);
-                let refilled = cs.refilled() as u32;
                 // SAFETY: as above.
                 let prev = unsafe { ptr::read_volatile(&raw const (*h).probe_refilled) };
+                let (refilled, verdict) = Self::probe_verdict(shared, arena, class, prev);
                 unsafe { ptr::write_volatile(&raw mut (*h).probe_refilled, refilled) };
-                let delta = refilled.wrapping_sub(prev) as usize;
-                if delta >= COMPACT_MAX_REFILL_SLABS * CLASSES[class].compact_slots() {
-                    if Self::fragmented(shared, arena, class) {
-                        cs.note_gate_refill();
-                    }
-                    return self.percpu_pop_plain(shared, class);
+                match verdict {
+                    Verdict::Refilling | Verdict::Dense => return self.percpu_pop_plain(shared, class),
+                    Verdict::Fragmented => {}
                 }
-                if !Self::fragmented(shared, arena, class) {
-                    return self.percpu_pop_plain(shared, class);
-                }
-                cs.note_compact_mode(true);
                 // SAFETY: as above.
                 unsafe {
-                    ptr::write_volatile(&raw mut (*h).mode, MODE_COMPACT);
-                    ptr::write_volatile(&raw mut (*h).compact_mask, shared.config.compact_mask());
+                    CacheHeader::set_mode_volatile(h, MODE_COMPACT, &shared.config);
                     ptr::write_volatile(&raw mut (*h).run_end, 0);
                 }
             }
@@ -521,10 +508,7 @@ impl Heap {
             if !Self::fragmented(shared, arena, class) {
                 cs.note_compact_mode(false);
                 // SAFETY: a live header; racy hints (see `percpu_scheduled`).
-                unsafe {
-                    ptr::write_volatile(&raw mut (*h).mode, MODE_PROBE);
-                    ptr::write_volatile(&raw mut (*h).compact_mask, PROBE_MASK);
-                }
+                unsafe { CacheHeader::set_mode_volatile(h, MODE_PROBE, &shared.config) };
                 return self.percpu_pop_plain(shared, class);
             }
             let want = (run_cap as usize).min(MAX_CAP as usize / 4);
@@ -655,13 +639,11 @@ impl Heap {
             }
             let arena = Percpu::arena_of(shared, cid);
             let mode = if run || shared.config.tcache_compact_shift == 0 { MODE_OFF } else { MODE_PROBE };
-            let mask = if mode == MODE_PROBE { PROBE_MASK } else { u32::MAX };
             // SAFETY: a live header not yet published (`cap == 0`); these
             // stores are identical from every installer of this header.
             unsafe {
                 ptr::write_volatile(&raw mut (*h).arena, arena);
-                ptr::write_volatile(&raw mut (*h).mode, mode);
-                ptr::write_volatile(&raw mut (*h).compact_mask, mask);
+                CacheHeader::set_mode_volatile(h, mode, &shared.config);
                 ptr::write_volatile(&raw mut (*h).probe_refilled, shared.owner(arena).class(class).refilled() as u32);
             }
             let t = if run { shared.percpu.run_table(class) } else { shared.percpu.table(class) };
