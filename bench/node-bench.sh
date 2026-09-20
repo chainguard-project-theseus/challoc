@@ -9,7 +9,7 @@
 #               per round (the V8 snapshot deserialisation plus the module
 #               loader's allocations; nothing of the user's).
 #   json_churn  bench/node/json_churn.js: JSON.parse(JSON.stringify(obj)) over
-#               a ~100 KiB object JSON_ITERS (2000) times in one process; wall
+#               a 177 KiB object (180906 bytes) JSON_ITERS (2000) times in one process; wall
 #               time and max RSS from bench/rt (the Python rows' shape).
 #   server      bench/node/server.js under `node --max-old-space-size=256`
 #               (the V8 heap bounded so native memory is what differs),

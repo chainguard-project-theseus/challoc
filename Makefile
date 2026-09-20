@@ -131,7 +131,7 @@
 #                            ALLOCS, WORKLOADS, MODES, HOST_KIND)
 #   make node-bench          Node.js rows (bench/node-bench.sh, Phase 3 task 5 (c)):
 #                            `node -e 0` startup, bench/node/json_churn.js
-#                            (JSON.parse(JSON.stringify) over a 100 KiB object,
+#                            (JSON.parse(JSON.stringify) over a 177 KiB object,
 #                            2000 times) and bench/node/server.js (plain http,
 #                            /json and 1 MiB /blob bodies from per-request
 #                            Buffer.allocUnsafe, --max-old-space-size=256) under

@@ -312,8 +312,9 @@ Files:
   `REV`, default the working tree, into `target/node/lib`; `/proc/self/maps`
   checked once per allocator). Three rows: `startup` (`node -e 0`, wall
   time and max RSS from `rt`), `json_churn` (`node/json_churn.js`:
-  `JSON.parse(JSON.stringify(obj))` over a 100 KiB object 2000 times in one
-  process, wall time and max RSS, the Python rows' shape; both with
+  `JSON.parse(JSON.stringify(obj))` over a 177 KiB object (180906 bytes;
+  the plan said about 100 KiB, the results header records the size) 2000
+  times in one process, wall time and max RSS, the Python rows' shape; both with
   `ROUNDS` (5) plus warm-up, allocators interleaved, sorted wall times and
   median RSS), and `server` (`node/server.js`, plain `http`, no npm
   dependencies, under `node --max-old-space-size=256` so the V8 heap is
