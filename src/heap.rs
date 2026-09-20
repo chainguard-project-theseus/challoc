@@ -6623,7 +6623,13 @@ mod linux_tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn percpu_batch_onto_a_non_empty_stack_authenticates() {
-        let s = shared_percpu();
+        // The mode with the key: `PUSH_PAC` needs `pac_pointers:true` and
+        // the probe (`shared_percpu` leaves the key off).
+        let s = shared_with_guards_mode(
+            Config { narenas: 4, percpu_arena: crate::config::PercpuArena::Percpu, pac_pointers: true, ..Config::DEFAULT },
+            true,
+            true,
+        );
         if !s.percpu_on() {
             std::eprintln!("percpu: off on this host ({}), skipping", s.percpu.probe().verdict());
             return;
