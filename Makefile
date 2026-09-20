@@ -443,7 +443,7 @@ jvm-bench: image
 # PostgreSQL rows (bench/postgres-bench.sh, Phase 3 task 5b): Wolfi's
 # postgresql-17 from the image, the server run as a non-root user the script
 # creates, the allocator in the postmaster's environment, pgbench rows.
-POSTGRES_BENCH_VARS = ALLOCS ROUNDS ROWS RESULT OUT HOST_KIND REV SCALE DURATION CONN_DURATION INTERVAL SAMPLING_RATE JOBS CLIENTS_A CLIENTS_B CONN_CLIENTS CONN_JOBS SHARED_BUFFERS MAX_CONNECTIONS REINIT
+POSTGRES_BENCH_VARS = ALLOCS ROUNDS ROWS RESULT OUT HOST_KIND REV SCALE DURATION CONN_DURATION INTERVAL SAMPLING_RATE JOBS CLIENTS_A CLIENTS_B CONN_CLIENTS CONN_JOBS SHARED_BUFFERS MAX_CONNECTIONS REINIT REPORT_ONLY
 postgres-bench: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(POSTGRES_BENCH_VARS),$(if $($(v)),-e $(v)="$($(v))"))
 postgres-bench: image
 	$(DOCKER_RUN) sh bench/postgres-bench.sh

@@ -5,8 +5,13 @@
 # postmaster, its client backends and its auxiliary processes) and prints
 # one sample to stdout:
 #
-#   S <n> <epoch> <postmaster_pid> <processes>
+#   S <n> <epoch> <postmaster_pid> <processes> <seconds>
 #   P <pid> <role> <pss_kb> <pss_anon_kb> <pss_shmem_kb> <rss_kb>   (one per process)
+#
+# <seconds> is how long the sample took: 500 smaps_rollup reads under load
+# take a few seconds, so a sample can straddle the end of the row while
+# the backends exit and count only part of them (the report picks the
+# last sample with at least 90% of the run's maximum backend count).
 #
 # role is postmaster (the pid in PGDATA/postmaster.pid), backend (a process
 # whose title starts with "postgres: <DBUSER> ", the client backends pgbench
@@ -33,7 +38,7 @@ while [ ! -e "$DIR/stop" ]; do
   ts=$(date +%s)
   if [ -n "$pids" ]; then
     ps -o pid=,args= -p "$pids" 2>/dev/null
-  fi | awk -v user="$DBUSER" -v pm="$pm" -v n="$n" -v ts="$ts" '
+  fi | awk -v user="$DBUSER" -v pm="$pm" -v n="$n" -v ts="$ts" -v t1="$(date +%s)" '
     {
       pid = $1; args = substr($0, index($0, $2))
       if (pid == pm) role = "postmaster"
@@ -48,7 +53,7 @@ while [ ! -e "$DIR/stop" ]; do
       close(f)
       if (pss != "") out[++k] = "P " pid " " role " " pss " " anon " " shm " " rss
     }
-    END { print "S " n " " ts " " pm " " k+0; for (i = 1; i <= k; i++) print out[i] }'
+    END { srand(); print "S " n " " ts " " pm " " k+0 " " (systime() - ts); for (i = 1; i <= k; i++) print out[i] }'
   n=$((n+1))
   i=0; while [ $i -lt "$INTERVAL" ] && [ ! -e "$DIR/stop" ]; do sleep 1; i=$((i+1)); done
 done

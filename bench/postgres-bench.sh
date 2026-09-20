@@ -61,6 +61,10 @@
 #   OUT=dir       raw logs, samples and score files (default target/postgres/bench-out)
 #   REV=tree      challoc rev (any git rev; "tree" = the working tree)
 #   REINIT=0      1: drop PGDATA and initdb + load again
+#   REPORT_ONLY=0 1: render RESULT again from the samples and scores already
+#                 under OUT (no build, no rounds; the server is started once
+#                 for its version and settings); the commit, date and load
+#                 lines of an existing RESULT are kept
 #   HOST_CPU, HOST_KIND   recorded in the header (the Makefile passes HOST_CPU)
 set -eu
 cd "$(dirname "$0")/.."
@@ -83,6 +87,7 @@ CONN_JOBS=${CONN_JOBS:-4}
 SHARED_BUFFERS=${SHARED_BUFFERS:-1GB}
 MAX_CONNECTIONS=${MAX_CONNECTIONS:-600}
 REINIT=${REINIT:-0}
+REPORT_ONLY=${REPORT_ONLY:-0}
 OSUSER=${OSUSER:-pgb}
 DBUSER=$OSUSER
 DB=postgres
@@ -104,7 +109,8 @@ for b in postgres pg_ctl initdb pgbench psql; do command -v "$b" >/dev/null 2>&1
 case " $ALLOCS " in *" mimalloc "*) ensure_bench_programs;; esac
 [ "$(id -u)" = 0 ] || die "must run as root in the container (creates user $OSUSER and runs the server as it)"
 id "$OSUSER" >/dev/null 2>&1 || adduser -D -H -s /bin/sh "$OSUSER" || die "cannot create user $OSUSER"
-rm -rf "$OUT"; mkdir -p "$OUT" "$WORK" "$SOCK" "$PGLOGS" "$(dirname "$RESULT")"
+[ "$REPORT_ONLY" = 1 ] || rm -rf "$OUT"
+mkdir -p "$OUT" "$WORK" "$SOCK" "$PGLOGS" "$(dirname "$RESULT")"
 chown "$OSUSER:$OSUSER" "$SOCK" "$PGLOGS"
 # as_pg CMD...: run a command line as the postgres OS user (busybox su; the
 # environment for the server goes inside the command line, `env LD_PRELOAD=...`).
@@ -115,11 +121,16 @@ PGBENCH_VERSION=$(pgbench --version)
 # ---- the challoc library ----------------------------------------------------------
 CHALLOC_LIB=
 case " $ALLOCS " in *" challoc "*)
-  rev=$(resolve_rev "$REV")
-  printf '== building challoc (%s) into target/postgres/lib ... ' "$([ "$rev" = tree ] && echo "working tree, HEAD $(commit_short)$(tree_dirty && echo ' + uncommitted src changes')" || echo "$rev" | cut -c1-12)"
-  build_lib "$rev" "$WORK/lib"; CHALLOC_LIB=$WORK/lib/release/libchalloc.so
-  chmod 644 "$CHALLOC_LIB"
-  echo "done, $(so_hash "$CHALLOC_LIB")";;
+  CHALLOC_LIB=$WORK/lib/release/libchalloc.so
+  if [ "$REPORT_ONLY" = 1 ]; then
+    [ -f "$CHALLOC_LIB" ] || die "REPORT_ONLY=1 but no $CHALLOC_LIB from the measured run"
+  else
+    rev=$(resolve_rev "$REV")
+    printf '== building challoc (%s) into target/postgres/lib ... ' "$([ "$rev" = tree ] && echo "working tree, HEAD $(commit_short)$(tree_dirty && echo ' + uncommitted src changes')" || echo "$rev" | cut -c1-12)"
+    build_lib "$rev" "$WORK/lib"
+    chmod 644 "$CHALLOC_LIB"
+    echo "done, $(so_hash "$CHALLOC_LIB")"
+  fi;;
 esac
 lib_of() { case $1 in challoc) echo "$CHALLOC_LIB";; *) stock_lib "$1";; esac; }
 
@@ -162,7 +173,7 @@ echo "== $PG_VERSION (Wolfi postgresql-17 $(apk_version postgresql-17)); scale $
 # ---- binding check ------------------------------------------------------------------
 # maps_of PID: the allocator libraries mapped by PID, read as the owner.
 maps_of() { as_pg "grep -oE '/[^ ]*/lib(challoc|jemalloc|mimalloc|tcmalloc)[^/ ]*\.so[.0-9]*' /proc/$1/maps" | sort -u | tr '\n' ' ' | sed 's/ $//'; }
-for a in $ALLOCS; do
+[ "$REPORT_ONLY" = 1 ] || for a in $ALLOCS; do
   pg_start "$a"
   lib=$(lib_of "$a"); want=; [ -n "$lib" ] && want=$(readlink -f "$lib")
   pm_maps=$(maps_of "$PM_PID")
@@ -221,8 +232,9 @@ run_pg_row() {
 }
 
 # ---- rounds -------------------------------------------------------------------------
-echo "== $ROUNDS rounds + warm-up x $(echo $ROWS | wc -w) rows x $(echo $ALLOCS | wc -w) allocators ($ALLOCS); load $LOAD0"
+[ "$REPORT_ONLY" = 1 ] && echo "== REPORT_ONLY: rendering from $OUT" || echo "== $ROUNDS rounds + warm-up x $(echo $ROWS | wc -w) rows x $(echo $ALLOCS | wc -w) allocators ($ALLOCS); load $LOAD0"
 r=0
+[ "$REPORT_ONLY" = 1 ] && r=$((ROUNDS+1))
 while [ $r -le "$ROUNDS" ]; do
   for a in $ALLOCS; do
     pg_start "$a"
@@ -247,9 +259,13 @@ lat_of() { col_median "$OUT/$1.$2.scores" 2; }
 p99_med() { col_median "$OUT/$1.$2.scores" 3; }
 conn_of() { col_median "$OUT/$1.$2.scores" 4; }
 # rss_stats FILE: one samples file -> "peak_pss final_pss peak_anon final_anon
-# backends backend_pss_med backend_anon_med last_pss" in KiB (final = the
-# last sample with a live backend, or the last sample when none had one;
-# last = the very last sample).
+# backends backend_pss_med backend_anon_med last_pss samples" in KiB. final = the
+# last sample whose backend count is at least 90% of the run's maximum (a
+# sample of 500 smaps_rollup files takes seconds and can straddle the end
+# of the row while the backends exit, counting only part of them; such a
+# partial sample is not the row's end state), or the last sample when no
+# sample saw a backend (connect20's backends live milliseconds); last = the
+# very last sample. Peaks are over every sample.
 rss_stats() {
   awk '
     function med(arr, n,   i, j, t) {   # insertion sort, n <= a few hundred
@@ -258,16 +274,19 @@ rss_stats() {
     }
     function flush() {
       if (!have) return
-      if (sum > peak) peak = sum; if (anon > peaka) peaka = anon
-      last = sum; lasta = anon
-      if (nb > 0) { fin = sum; fina = anon; fnb = nb; fbm = med(bp, nb); fam = med(ba, nb) }
+      ns++; S[ns] = sum; A[ns] = anon; NB[ns] = nb
+      BM[ns] = (nb > 0) ? med(bp, nb) : "-"; AM[ns] = (nb > 0) ? med(ba, nb) : "-"
+      if (sum > peak) peak = sum; if (anon > peaka) peaka = anon; if (nb > maxnb) maxnb = nb
     }
     $1 == "S" { flush(); have = 1; sum = 0; anon = 0; nb = 0; next }
     $1 == "P" { sum += $4; anon += $5; if ($3 == "backend") { nb++; bp[nb] = $4; ba[nb] = $5 } }
-    END { flush(); if (fin == "") { fin = last; fina = lasta }   # no sample saw a live backend (connect20 backends live milliseconds)
-          printf "%s %s %s %s %s %s %s %s\n", peak+0, fin+0, peaka+0, fina+0, fnb+0, (fbm == "" ? "-" : fbm), (fam == "" ? "-" : fam), last+0 }' "$1"
+    END {
+      flush()
+      if (!ns) { print "0 0 0 0 0 - - 0 0"; exit }
+      f = ns; if (maxnb > 0) { for (i = ns; i >= 1; i--) if (NB[i] >= 0.9 * maxnb) { f = i; break } }
+      printf "%s %s %s %s %s %s %s %s %s\n", peak+0, S[f]+0, peaka+0, A[f]+0, NB[f]+0, BM[f], AM[f], S[ns]+0, ns }' "$1"
 }
-# rss_med ROW ALLOC FIELD: median over the timed runs of rss_stats field FIELD (1..8), KiB.
+# rss_med ROW ALLOC FIELD: median over the timed runs of rss_stats field FIELD (1..9), KiB (9: sample count).
 rss_med() {
   i=1
   while [ $i -le "$ROUNDS" ]; do
@@ -298,18 +317,31 @@ delta() {
     "$(pct_of "$(rss_med "$row" challoc 2)" "$(rss_med "$row" "$a" 2)")" \
     "$(pct_of "$(rss_med "$row" challoc 6)" "$(rss_med "$row" "$a" 6)")"
 }
+# In REPORT_ONLY mode the measured run's commit, date, load and duration
+# lines are kept from the existing file (the tables are re-rendered from
+# its raw samples and scores; the library is the one that run built).
+COMMIT_LINE="- commit: $(commit_short)$(tree_dirty && echo ' (uncommitted changes in src/)')"
+DATE_LINE="- date: $STAMP"
+LOAD_LINE="- load average at start: $LOAD0; at end: $(loadavg); $(( $(date +%s) - T_START )) s total"
+TITLE_LINE="# PostgreSQL 17 benchmark rows, $DATE, $ARCH"
+if [ "$REPORT_ONLY" = 1 ] && [ -f "$RESULT" ]; then
+  for v in COMMIT_LINE:commit DATE_LINE:date LOAD_LINE:"load average" TITLE_LINE:"# PostgreSQL"; do
+    k=${v#*:}; l=$(grep -m1 "^\(- \)\?$k" "$RESULT" || true); [ -n "$l" ] && eval "${v%%:*}=\$l"
+  done
+  LOAD_LINE="$LOAD_LINE; tables re-rendered from the run's samples on $STAMP (REPORT_ONLY)"
+fi
 {
-  echo "# PostgreSQL 17 benchmark rows, $DATE, $ARCH"
+  echo "$TITLE_LINE"
   echo
-  echo "- commit: $(commit_short)$(tree_dirty && echo ' (uncommitted changes in src/)')"
-  echo "- date: $STAMP"
+  echo "$COMMIT_LINE"
+  echo "$DATE_LINE"
   echo "- host: ${HOST_CPU:-unknown CPU}, $PROCS CPUs visible to the container${HOST_KIND:+; $HOST_KIND}"
   echo "- kernel: $(uname -r), container: Wolfi"
   echo "- server: $PG_VERSION, $PGBENCH_VERSION (Wolfi postgresql-17 $(apk_version postgresql-17)); PGDATA target/postgres/data (initdb --locale=C -E UTF8, OS and database user $OSUSER, trust auth on a unix socket), started by \`pg_ctl start\` as $OSUSER with the allocator in its environment (LD_PRELOAD), so the postmaster and every backend and auxiliary process it forks run on it; pgbench (the client, its -j threads) runs as root on glibc malloc, the same binary for every allocator. Options on the command line: $SETTINGS(postgresql.conf untouched otherwise)"
   echo "- data: pgbench -i -s $SCALE ($ACCOUNTS accounts rows), database size $DB_SIZE, loaded once and shared by every allocator (the data files do not depend on the server's allocator)"
   echo "- rows: select100 = \`pgbench $(row_args select100)\` (select-only); tpcb100 = \`pgbench $(row_args tpcb100)\` (TPC-B); select500 = \`pgbench $(row_args select500)\` (select-only, max_connections $MAX_CONNECTIONS); connect20 = \`pgbench $(row_args connect20)\` (a new connection per transaction: fork, backend start-up, one TPC-B transaction, exit); all with pgbench's default pre-run vacuum of pgbench_branches/tellers and truncate of pgbench_history (outside the timed window) and -l --sampling-rate=$SAMPLING_RATE for the latency percentiles"
-  echo "- load average at start: $LOAD0; at end: $(loadavg); $(( $(date +%s) - T_START )) s total"
-  echo "- method: $ROUNDS timed rounds after one discarded warm-up, allocators interleaved per round (one server start per allocator per round, the rows in the order above against it, then a fast stop), every run's tps listed sorted. tps and latency average are pgbench's lines (connect20's tps includes the reconnection times); p99 is of the transaction latencies pgbench logged (a $SAMPLING_RATE sample; excludes the connect in connect20, whose \"average connection time\" is the conn ms column). RSS is the sum of smaps_rollup Pss over every postgres process of user $OSUSER (postmaster, backends, auxiliary processes; Pss counts a shared_buffers page once across them), sampled every $INTERVAL s while pgbench runs (bench/probes/pg-rss-sampler.sh): peak = the largest sample of the run, final = the last sample with a live backend; Pss_Anon is the anonymous share of the same sums (the allocators' heaps and stacks; shared_buffers is Pss_Shmem and identical for every allocator); per-backend = the median over the backends of one backend's Pss / Pss_Anon at the final sample (the 100- and 500-connection points). Every RSS figure is the median over the timed runs, in MiB. Percentages are challoc against the other allocator: positive means challoc is slower (fewer tps), higher latency or larger."
+  echo "$LOAD_LINE"
+  echo "- method: $ROUNDS timed rounds after one discarded warm-up, allocators interleaved per round (one server start per allocator per round, the rows in the order above against it, then a fast stop), every run's tps listed sorted. tps and latency average are pgbench's lines (connect20's tps includes the reconnection times); p99 is of the transaction latencies pgbench logged (a $SAMPLING_RATE sample; excludes the connect in connect20, whose \"average connection time\" is the conn ms column). RSS is the sum of smaps_rollup Pss over every postgres process of user $OSUSER (postmaster, backends, auxiliary processes; Pss counts a shared_buffers page once across them), sampled every $INTERVAL s plus the pass's own duration while pgbench runs (bench/probes/pg-rss-sampler.sh; the samples-per-run column says how many passes a run got): peak = the largest sample of the run, final = the last sample with at least 90% of the run's maximum backend count (a sample of 500 processes takes seconds and can straddle the row's end while the backends exit); Pss_Anon is the anonymous share of the same sums (the allocators' heaps and stacks; shared_buffers is Pss_Shmem and identical for every allocator); per-backend = the median over the backends of one backend's Pss / Pss_Anon at the final sample (the 100- and 500-connection points). Every RSS figure is the median over the timed runs, in MiB. Percentages are challoc against the other allocator: positive means challoc is slower (fewer tps), higher latency or larger."
   echo "- allocators (postmaster and one live backend checked in /proc/<pid>/maps before the rounds):"
   for a in $ALLOCS; do echo "  - $a: $(describe "$a")"; done
   echo
@@ -339,11 +371,13 @@ delta() {
   echo
   echo "## Medians: RSS (MiB, sum of smaps_rollup Pss over every postgres process)"
   echo
-  echo "| row | allocator | peak Pss | final Pss | peak Pss_Anon | final Pss_Anon | backends at final | per-backend Pss | per-backend Pss_Anon |"
-  echo "|---|---|---:|---:|---:|---:|---:|---:|---:|"
+  echo "| row | allocator | peak Pss | final Pss | peak Pss_Anon | final Pss_Anon | backends at final | per-backend Pss | per-backend Pss_Anon | samples per run |"
+  echo "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|"
   for row in $ROWS; do for a in $ALLOCS; do
-    echo "| $row | $a | $(rss_mib "$row" "$a" 1) | $(rss_mib "$row" "$a" 2) | $(rss_mib "$row" "$a" 3) | $(rss_mib "$row" "$a" 4) | $(rss_med "$row" "$a" 5) | $(rss_mib "$row" "$a" 6) | $(rss_mib "$row" "$a" 7) |"
+    echo "| $row | $a | $(rss_mib "$row" "$a" 1) | $(rss_mib "$row" "$a" 2) | $(rss_mib "$row" "$a" 3) | $(rss_mib "$row" "$a" 4) | $(rss_med "$row" "$a" 5) | $(rss_mib "$row" "$a" 6) | $(rss_mib "$row" "$a" 7) | $(rss_med "$row" "$a" 9) |"
   done; done
+  echo
+  echo "\"samples per run\" is the median number of sampler passes in a run: one pass reads smaps_rollup for every postgres process and, with 500 backends on a saturated host, takes tens of seconds, so the 500-client row has few complete samples and its peak and final are the same steady-state pass. The sampler records each pass's duration in its S lines (bench/probes/pg-rss-sampler.sh)."
   if has challoc; then
     echo
     echo "## challoc against glibc and jemalloc"
