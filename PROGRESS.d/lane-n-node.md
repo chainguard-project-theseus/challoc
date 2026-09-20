@@ -59,3 +59,10 @@
   in the comment below the apk list, and the RUN's final check line gains
   `node --version && ab -V | head -1`; the JVM and PostgreSQL lanes' blocks
   will need unioning there and in the Makefile's .PHONY line.
+- Phase 3 task 5 (c): json_churn's document is 180906 bytes (177 KiB), not the
+  plan's "about 100 KiB": the generator's 400 records came out at ~450 bytes
+  each and the size was only read from the results header after the runs. The
+  rows were measured at that size (recorded in both files' header line) and
+  the harness comments, README and Makefile help say so (63ebd0c). Shrinking
+  it to 100 KiB is a one-line change to bench/node/json_churn.js (200 records)
+  if the coordinator wants the plan's figure, followed by a re-run of that row.
