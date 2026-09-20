@@ -905,8 +905,16 @@ pub unsafe fn push_batch(area: *mut u8, t: Table, ptrs: &[*mut u8], zeroed: bool
             "sub {r:w}, {r:w}, {l:w}",
             "cmp {r}, {k}",
             "csel {r}, {r}, {k}, ls",
+            // `t` stays the stack base: it is the PAC modifier every pop
+            // and `take_all` authenticate with. The first form advanced it
+            // by `len` entries before the loop and signed with that, so a
+            // batch pushed onto a non-empty stack (a free on this CPU
+            // between the empty pop and the refill's push) was signed
+            // under another modifier and the next pop's `autda` faulted
+            // (FEAT_FPAC: `SIGILL`; lane D's campaign, 2026-09-20). `a`
+            // is the write position.
             "ldr {t}, [{h}, #{o_slots}]",
-            "add {t}, {t}, {l:x}, lsl #3",
+            "add {a}, {t}, {l:x}, lsl #3",
             "mov {i}, #0",
             "14:",
             "cmp {i}, {r}",
@@ -915,7 +923,7 @@ pub unsafe fn push_batch(area: *mut u8, t: Table, ptrs: &[*mut u8], zeroed: bool
             "cbz {pac}, 12f",
             "pacda {e}, {t}",
             "12:",
-            "str {e}, [{t}, {i}, lsl #3]",
+            "str {e}, [{a}, {i}, lsl #3]",
             "add {i}, {i}, #1",
             "b 14b",
             "15:",
@@ -952,6 +960,7 @@ pub unsafe fn push_batch(area: *mut u8, t: Table, ptrs: &[*mut u8], zeroed: bool
             l = out(reg) _,
             r = out(reg) pushed,
             t = out(reg) _,
+            a = out(reg) _,
             i = out(reg) _,
             e = out(reg) _,
             st = lateout(reg) st,

@@ -114,7 +114,10 @@ fn run_bin_env(name: &str, bin: &str, args: &[&str], env: &[(&str, &str)]) {
     );
 
     let mut cmd = Command::new(bin);
-    cmd.args(args).env("LD_PRELOAD", &so);
+    // A suite run under `CHALLOC_CONF` (lane D's campaign, 2026-09-20)
+    // would override the test's own `MALLOC_CONF` (the environment key is
+    // read after it and wins) and turn every both-ways test one way.
+    cmd.args(args).env_remove("CHALLOC_CONF").env("LD_PRELOAD", &so);
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -263,18 +266,22 @@ fn c_negative_double_free_cached_with_pac_pointers() {
 #[test]
 fn c_tls_threads_with_pac_pointers() {
     let so = release_so();
-    let bin = compile_link("tests/c", "tls_threads", &[], &["-ldl"]);
-    let run = Command::new(&bin)
-        .env("LD_PRELOAD", &so)
-        .env("MALLOC_CONF", "pac_pointers:true,abort_conf:true")
-        .output()
-        .unwrap();
-    let _ = std::fs::remove_file(&bin);
-    let stdout = String::from_utf8_lossy(&run.stdout);
-    let stderr = String::from_utf8_lossy(&run.stderr);
-    assert!(run.status.success(), "tls_threads with pac_pointers failed ({:?})\nstdout: {stdout}\nstderr: {stderr}", run.status);
-    assert!(stdout.contains("ok 64 threads"), "stdout: {stdout}");
-    std::eprintln!("tls_threads (pac_pointers:true): {}", stdout.trim_end());
+    // Both cache modes under the key: thread caches, and the per-CPU mode
+    // (plan Phase 2.5 task 8; thread caches again where `mm_cid` is not
+    // usable). The combination faulted on FEAT_FPAC until 2026-09-20: the
+    // per-CPU batch push signed with the write position instead of the
+    // stack base (`rseq::push_batch`), so a batch pushed onto a non-empty
+    // stack failed the next pop's `autda`.
+    for conf in ["pac_pointers:true,abort_conf:true", "pac_pointers:true,abort_conf:true,percpu_arena:percpu"] {
+        let bin = compile_link("tests/c", "tls_threads", &[], &["-ldl"]);
+        let run = Command::new(&bin).env_remove("CHALLOC_CONF").env("LD_PRELOAD", &so).env("MALLOC_CONF", conf).output().unwrap();
+        let _ = std::fs::remove_file(&bin);
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        let stderr = String::from_utf8_lossy(&run.stderr);
+        assert!(run.status.success(), "tls_threads with {conf} failed ({:?})\nstdout: {stdout}\nstderr: {stderr}", run.status);
+        assert!(stdout.contains("ok 64 threads"), "stdout: {stdout}");
+        std::eprintln!("tls_threads ({conf}): {}", stdout.trim_end());
+    }
 }
 
 #[test]
@@ -776,6 +783,11 @@ fn c_percpu_both_ways() {
         let conf = std::format!("abort_conf:true,percpu_arena:{mode}");
         run_bin_env("percpu", &bin, &[mode], &[("MALLOC_CONF", &conf)]);
     }
+    // The mode with signed cache entries (plan Phase 2.5 task 7 with task
+    // 8): 64 threads x 20000 operations across the per-CPU stacks, the
+    // shape that faulted 2/2 on FEAT_FPAC before the `push_batch` fix.
+    let bin = compile_link("tests/c", "percpu", &[], &["-pthread"]);
+    run_bin_env("percpu", &bin, &["percpu"], &[("MALLOC_CONF", "abort_conf:true,percpu_arena:percpu,pac_pointers:true")]);
 }
 
 /// Plan Phase 2.5 task 15, both ways: `tests/c/slice_ext.c` under

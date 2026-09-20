@@ -6605,6 +6605,92 @@ mod linux_tests {
         }
     }
 
+    /// Plan Phase 2.5 tasks 7 and 8 together: a batch pushed onto a
+    /// non-empty per-CPU stack is signed with the stack base like every
+    /// other entry, so the pops that follow authenticate it. The first
+    /// form of `rseq::push_batch` signed with the write position (`slots +
+    /// len * 8`), which is the base only for an empty stack; a free on the
+    /// same CPU between a refill's empty pop and its push left `len > 0`,
+    /// and the next pop's `autda` faulted under FEAT_FPAC (lane D's
+    /// campaign of 2026-09-20: `tests/c/percpu percpu` 2/2, `tls_threads`
+    /// 3 of 6 under `pac_pointers:true,percpu_arena:percpu`). Here the
+    /// sections are driven directly on a fresh `Shared` of the mode: one
+    /// entry, then a batch of three, then everything taken out and
+    /// compared with what went in (a mis-signed entry is a `SIGILL` with
+    /// FPAC and a non-canonical pointer without it). Without PAC the
+    /// same sequence checks the stack order alone; skipped where the mode
+    /// is off.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn percpu_batch_onto_a_non_empty_stack_authenticates() {
+        let s = shared_percpu();
+        if !s.percpu_on() {
+            std::eprintln!("percpu: off on this host ({}), skipping", s.percpu.probe().verdict());
+            return;
+        }
+        std::thread::spawn(move || {
+            let t = TestHeap::new(s);
+            let c = class_of(64).unwrap();
+            let pac = s.pac();
+            let area = t.heap().rseq_area;
+            let tbl = s.percpu.table(c);
+            let cap = Heap::percpu_cap(s, c);
+            // Install the running id's header (a refill does), then start
+            // from an empty stack, whatever id this thread is on now.
+            let p0 = t.alloc(c);
+            let mut buf = std::vec![ptr::null_mut::<u8>(); cap as usize];
+            let taken = unsafe { rseq::take_all(area, tbl, &mut buf, pac) }.expect("id in range");
+            let cid = unsafe { rseq::mm_cid(area) };
+            if !t.heap().percpu_current_has(s, c, false) {
+                // Migrated to an id without a header: install it here.
+                assert!(t.heap().percpu_ensure(s, c, cap, cid, false));
+            }
+            // Fake entries: never dereferenced, only signed, stored,
+            // authenticated and compared.
+            let fakes: Vec<*mut u8> = (1..=4u8).map(|i| (0x0000_5a5a_0000_0000usize + (i as usize) * 64) as *mut u8).collect();
+            assert!(matches!(unsafe { rseq::push(area, tbl, fakes[0], pac) }, rseq::Push::Pushed));
+            let mut batch = [fakes[1], fakes[2], fakes[3]];
+            let pushed = unsafe { rseq::push_batch(area, tbl, &mut batch, false, pac) }.expect("id in range");
+            let mut out = std::vec![ptr::null_mut::<u8>(); cap as usize];
+            let n = unsafe { rseq::take_all(area, tbl, &mut out, pac) }.expect("id in range");
+            let got = &out[..n];
+            // Everything that went in came back plain (a migration between
+            // the sections leaves some on another id's stack: then only
+            // what came back is compared, and the rest is not lost, it is
+            // signed under that id's base and pops there).
+            let mut seen = 0;
+            for &f in &fakes[..1 + pushed] {
+                if got.contains(&f) {
+                    seen += 1;
+                }
+            }
+            assert!(got.iter().all(|&e| fakes.contains(&e) || !e.is_null()), "a corrupted entry came back");
+            std::eprintln!(
+                "percpu batch: pac={pac} cid {cid}: {taken} entries taken first, 1 + {pushed} pushed, {n} taken, {seen} of them the fakes ({} authenticated)",
+                if pac { "pacda/autda" } else { "plain" }
+            );
+            assert!(seen >= 1, "not one fake entry came back through take_all");
+            if n == 1 + pushed {
+                assert_eq!(got, &fakes[..1 + pushed], "stack order bottom to top");
+            }
+            // Put the real entries back where a refill would want them and
+            // leave the fakes out of the heap for good.
+            let real: Vec<*mut u8> = buf[..taken].iter().copied().filter(|e| !e.is_null()).collect();
+            if !real.is_empty() {
+                let mut real = real;
+                let k = unsafe { rseq::push_batch(area, tbl, &mut real, false, pac) }.expect("id in range");
+                if k < real.len() {
+                    s.release_routed(t.heap().arena, c, &real[k..]);
+                }
+            }
+            t.free(p0);
+            t.flush_all();
+            t.destroy();
+        })
+        .join()
+        .unwrap();
+    }
+
     /// With the mode on, a thread heap's plain allocations go through the
     /// running CPU's caches, not the heap's own: the refill installs the
     /// id's header, the thread's byte counters still move by every pop and
