@@ -1,11 +1,14 @@
 //! Decay and purge (design.md section 8) and the background thread (8.1).
 //!
-//! Four things live here:
+//! Four things live here; the curve and the prefault pass each have a file
+//! under `purge/`, the rest is this file:
 //!
-//! - [`Batch`], the discard primitive. Callers collect up to [`MAX_BATCH`]
-//!   ranges and flush them with one `process_madvise` (through `PIDFD_SELF`
-//!   or a pidfd of this process, whichever the probe in `sys::features`
-//!   found) or, when neither works, a loop of `madvise`. The advice is
+//! - [`Batch`], the discard primitive (this file, with the advice statics,
+//!   `os::discard`, the decay driver and [`Decayer`]). Callers collect up
+//!   to [`MAX_BATCH`] ranges and flush them with one `process_madvise`
+//!   (through `PIDFD_SELF` or a pidfd of this process, whichever the probe
+//!   in `sys::features` found) or, when neither works, a loop of `madvise`.
+//!   The advice is
 //!   decided at each flush ([`advice`], the two-advice purge of design 8
 //!   and 11): `MADV_FREE` under the cgroup policy's headroom band (under
 //!   70% of a known limit and no eager return of the excess over the cap
@@ -17,7 +20,8 @@
 //!   takes `MADV_FREE` there, else through the loop. A range that fails to
 //!   discard aborts: the heap's idea of what is resident would otherwise be
 //!   wrong.
-//! - The decay curve and driver. [`Curve`] is jemalloc's decay shape:
+//! - The decay curve (`purge/curve.rs`) and driver (this file). [`Curve`]
+//!   is jemalloc's decay shape:
 //!   `dirty_decay_ms` is the window in which a page goes from dirty to
 //!   purged, divided into [`STEPS`] steps; the share of a cohort that may
 //!   still be dirty at step `s` of its age is [`WEIGHTS`]`[s]`, a
@@ -33,8 +37,9 @@
 //!   [`on_tick`] is the hook the slow path calls every `PERIODIC_EVERY`
 //!   slow paths (design 6.4); [`purge_all`] is `malloc_trim(0)` and
 //!   `arena.<i>.purge`.
-//! - The background thread. Created on the first periodic tick after it was
-//!   requested (never from init), on a stack carved from the metadata region
+//! - The background thread ([`background`], this file). Created on the
+//!   first periodic tick after it was requested (never from init), on a
+//!   stack carved from the metadata region
 //!   with a `PROT_NONE` guard page below it, with every signal blocked. It
 //!   loops over `decay` and sleeps on a futex until the next deadline; a
 //!   class whose first slab goes `Empty` bumps the futex word so a thread
@@ -42,9 +47,10 @@
 //!   no purging of its own. After `fork` the child marks it absent and does
 //!   not recreate it until asked again.
 //!
-//! - The prefault pass ([`prefault`], behind the `prefault` key and the
-//!   background thread): after each decay pass the thread visits every
-//!   `(arena, class)` whose `refilled` counter moved since its last visit
+//! - The prefault pass ([`prefault`], `purge/prefault.rs`, behind the
+//!   `prefault` key and the background thread): after each decay pass the
+//!   thread visits every `(arena, class)` whose `refilled` counter moved
+//!   since its last visit
 //!   and, where the arena has fewer idle (`Empty` or `Purged`) slabs of
 //!   that class than the class refilled since the last pass, in slabs (at
 //!   least one, at most [`prefault::MAX_AHEAD`]), commits the missing
@@ -73,6 +79,11 @@
 //! slab would need a state bit in the descriptors and a read of it in the
 //! claim paths; the sticky flag is the smallest form and its cost is
 //! bounded to `calloc` on `Purged` reuse.
+//!
+//! The curve's tests sit in `purge/curve.rs`; `purge/tests.rs` holds the
+//! rest of the host tests and the `serial` lock the class tests share
+//! (`purge::tests::serial`), `purge/linux_tests.rs` the two that need a
+//! kernel.
 
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
@@ -80,100 +91,17 @@ use crate::heap::Shared;
 pub use crate::policy::Advice;
 use crate::sys::features::ProcessMadvise;
 
+mod curve;
+pub mod prefault;
+#[cfg(test)]
+pub(crate) mod tests;
+#[cfg(all(test, target_os = "linux"))]
+mod linux_tests;
+
+pub use curve::{decay_ns_from_ms, Curve, NEVER, STEPS, WEIGHTS, WEIGHT_ONE};
+
 /// Ranges per `process_madvise` (design section 8).
 pub const MAX_BATCH: usize = 64;
-
-/// `decay_ns` value meaning "never purge" (`dirty_decay_ms:-1`).
-pub const NEVER: u64 = u64::MAX;
-
-/// `dirty_decay_ms` to a nanosecond period; negative means [`NEVER`].
-pub const fn decay_ns_from_ms(ms: i64) -> u64 {
-    if ms < 0 {
-        NEVER
-    } else {
-        let ns = (ms as u64).saturating_mul(1_000_000);
-        if ns == NEVER { NEVER - 1 } else { ns }
-    }
-}
-
-/// Steps of the decay curve over one window (jemalloc's
-/// `SMOOTHSTEP_NSTEPS`).
-pub const STEPS: usize = 200;
-/// Fixed-point one of the curve weights (jemalloc's `SMOOTHSTEP_BFP`).
-pub const WEIGHT_ONE: u64 = 1 << 24;
-
-/// `WEIGHTS[s]`: the share of a cohort of dirty memory that may stay dirty
-/// while its age is in step `s` of the window, as
-/// `WEIGHT_ONE * (1 - smootherstep((s + 1) / STEPS))` (jemalloc's
-/// `h_steps`, variant "smoother": `6x^5 - 15x^4 + 10x^3`). Non-increasing,
-/// from just under one to zero at `STEPS - 1`, positive before that.
-pub static WEIGHTS: [u32; STEPS] = build_weights();
-
-const fn build_weights() -> [u32; STEPS] {
-    let mut w = [0u32; STEPS];
-    let n = STEPS as i128;
-    let n5 = n * n * n * n * n;
-    let mut s = 0;
-    while s < STEPS {
-        let t = (s + 1) as i128;
-        // smootherstep(t / n), scaled by n^5.
-        let num = 6 * t * t * t * t * t - 15 * t * t * t * t * n + 10 * t * t * t * n * n;
-        w[s] = (((n5 - num) * WEIGHT_ONE as i128 + n5 / 2) / n5) as u32;
-        s += 1;
-    }
-    w
-}
-
-/// The decay curve of one period (design section 8).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Curve {
-    decay_ns: u64,
-}
-
-impl Curve {
-    pub const fn new(decay_ns: u64) -> Curve {
-        Curve { decay_ns }
-    }
-
-    /// Length of one step; 0 for a zero period, where everything is past
-    /// the window at once.
-    #[inline]
-    pub const fn step_ns(&self) -> u64 {
-        self.decay_ns / STEPS as u64
-    }
-
-    /// The step something dirty since `dirty_at` is in at `now`:
-    /// `STEPS - 1` (weight zero) for anything in or past the last step.
-    pub fn step(&self, now: u64, dirty_at: u64) -> usize {
-        let age = now.saturating_sub(dirty_at);
-        if age >= self.decay_ns {
-            return STEPS - 1;
-        }
-        // `u64` only: the 128-bit division helper on aarch64 drags
-        // `rust_eh_personality` into the `no_std` library. An age too large
-        // to scale is under a period whose step is at least `u64::MAX /
-        // STEPS`, so dividing by the step loses nothing that matters.
-        let s = if age > u64::MAX / STEPS as u64 { age / self.step_ns() } else { age * STEPS as u64 / self.decay_ns };
-        (s as usize).min(STEPS - 1)
-    }
-
-    /// Weight of `step`, in units of [`WEIGHT_ONE`].
-    #[inline]
-    pub fn weight(step: usize) -> u64 {
-        WEIGHTS[step] as u64
-    }
-
-    /// Units (slabs, pages) that may stay dirty given `weighted`, the sum
-    /// of `units * weight(step)` over everything dirty: the curve's value
-    /// rounded up, so a lone slab is not purged before its cohort's weight
-    /// reaches zero (jemalloc rounds its page count down; here the unit is
-    /// a slab of 16 pages, and a purge-and-refault of it for one unit of
-    /// rounding is not worth it).
-    #[inline]
-    pub fn allowance(weighted: u64) -> usize {
-        weighted.div_ceil(WEIGHT_ONE) as usize
-    }
-}
 
 /// `BACKEND` value for "loop over `madvise`".
 const LOOP: i32 = i32::MIN;
@@ -1052,209 +980,6 @@ pub mod background {
     }
 }
 
-/// Prefaulted fresh slabs (the module doc). The
-/// pass runs on the background thread; the commit path calls
-/// [`note_commit`]; init calls [`configure`].
-pub mod prefault {
-    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-
-    use crate::heap::Shared;
-    use crate::layout::NCLASSES;
-
-    /// `prefault:true` with the background thread (`Config::prefault_active`).
-    static ENABLED: AtomicBool = AtomicBool::new(false);
-    /// The kernel takes `MADV_POPULATE_WRITE` (else the touch fallback).
-    static POPULATE: AtomicBool = AtomicBool::new(false);
-    /// A pass is running: its own commits wake nobody.
-    static IN_PASS: AtomicBool = AtomicBool::new(false);
-    /// Passes run, slabs prefaulted, bytes populated, passes skipped for
-    /// want of headroom, `MADV_POPULATE_WRITE` calls that failed and fell
-    /// back to the touch.
-    static PASSES: AtomicU64 = AtomicU64::new(0);
-    static SLABS: AtomicU64 = AtomicU64::new(0);
-    static BYTES: AtomicU64 = AtomicU64::new(0);
-    static SKIPPED: AtomicU64 = AtomicU64::new(0);
-    static FALLBACKS: AtomicU64 = AtomicU64::new(0);
-    /// Wakes the commit path issued.
-    static WAKES: AtomicU64 = AtomicU64::new(0);
-    /// Wakes the claim path issued (`ClassState::plan`: a refill took the
-    /// arena's last idle slab of a class).
-    static TAKEN: AtomicU64 = AtomicU64::new(0);
-    /// Passes that found at least one class refilling (and so re-armed
-    /// the poll).
-    static ACTIVE: AtomicU64 = AtomicU64::new(0);
-
-    /// The background thread's sleep while classes keep refilling: at
-    /// 100 k Valkey SETs of a few hundred bytes per second a hot class
-    /// takes a 64 KiB slab every millisecond or so, and a pass is a few
-    /// microseconds, so a millisecond keeps the next slab ready without
-    /// the thread spinning; a quiet pass stops the poll.
-    pub const POLL_NS: u64 = 1_000_000;
-
-    /// The most slabs a pass keeps ready per `(arena, class)`: the
-    /// class's refills since the last pass in slabs, at least one and at
-    /// most this many (`ClassState::prefault_ahead`; one slab per class
-    /// is the floor, the burst rate raises it). Eight 64 KiB
-    /// slabs is half a megabyte resident ahead of a class taking several
-    /// slabs per millisecond, and nothing more for a class that does not.
-    pub const MAX_AHEAD: u64 = 8;
-
-    /// Init: the key's outcome and the probe's.
-    pub fn configure(active: bool, populate_write: bool) {
-        POPULATE.store(populate_write, Ordering::Relaxed);
-        ENABLED.store(active, Ordering::Release);
-    }
-
-    /// Whether the pass runs at all.
-    #[inline]
-    pub fn enabled() -> bool {
-        ENABLED.load(Ordering::Relaxed)
-    }
-
-    /// `MADV_POPULATE_WRITE` is the populate in use (else the touch).
-    pub fn uses_populate_write() -> bool {
-        POPULATE.load(Ordering::Relaxed)
-    }
-
-    /// The counters: passes, slabs, bytes, skipped passes, fallbacks, wakes.
-    pub fn stats() -> Stats {
-        Stats {
-            passes: PASSES.load(Ordering::Relaxed),
-            slabs: SLABS.load(Ordering::Relaxed),
-            bytes: BYTES.load(Ordering::Relaxed),
-            skipped: SKIPPED.load(Ordering::Relaxed),
-            fallbacks: FALLBACKS.load(Ordering::Relaxed),
-            wakes: WAKES.load(Ordering::Relaxed),
-            active: ACTIVE.load(Ordering::Relaxed),
-            taken: TAKEN.load(Ordering::Relaxed),
-        }
-    }
-
-    /// The counters, for the report and `stats.prefault.*`.
-    #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-    pub struct Stats {
-        pub passes: u64,
-        pub slabs: u64,
-        pub bytes: u64,
-        pub skipped: u64,
-        pub fallbacks: u64,
-        pub wakes: u64,
-        pub active: u64,
-        pub taken: u64,
-    }
-
-    /// A fresh slab went into service (`SlabTable::commit_slab`): wake the
-    /// thread for a pass, unless the pass itself is committing. Off: one
-    /// relaxed load.
-    #[inline]
-    pub fn note_commit() {
-        if enabled() && !IN_PASS.load(Ordering::Relaxed) {
-            WAKES.fetch_add(1, Ordering::Relaxed);
-            super::background::wake();
-        }
-    }
-
-    /// A refill took the arena's last idle slab of a class
-    /// (`ClassState::plan`, the claim side):
-    /// wake the thread so the class's next slab is committed now rather
-    /// than at the next poll or the next fresh commit. The caller tests
-    /// [`enabled`] first.
-    #[inline]
-    pub fn note_taken() {
-        if enabled() {
-            TAKEN.fetch_add(1, Ordering::Relaxed);
-            super::background::wake();
-        }
-    }
-
-    /// One pass over every `(arena, class)`: the classes that refilled
-    /// since the last pass get their next fresh slabs committed and
-    /// populated (`ClassState::prefault_ahead`), as many as the class
-    /// refilled since the last pass in slabs, at least one and at most
-    /// [`MAX_AHEAD`], when the cgroup policy shows headroom. Returns
-    /// whether any class had refilled (the
-    /// thread then polls, `POLL_NS`). Background thread only.
-    pub fn pass(shared: &Shared) -> bool {
-        if !enabled() {
-            return false;
-        }
-        if !shared.policy.prefault_allowed() {
-            SKIPPED.fetch_add(1, Ordering::Relaxed);
-            return false;
-        }
-        PASSES.fetch_add(1, Ordering::Relaxed);
-        IN_PASS.store(true, Ordering::Relaxed);
-        let page = shared.regions.page_size();
-        let mut due = false;
-        for arena in shared.arenas.iter() {
-            for class in 0..NCLASSES {
-                let cs = arena.class(class);
-                let delta = cs.prefault_delta();
-                if delta == 0 {
-                    continue;
-                }
-                due = true;
-                // The class's refills since the last pass, in slabs: the
-                // pipeline to keep ready (`MAX_AHEAD`).
-                let ahead = delta.div_ceil(cs.class().nslots() as u64).clamp(1, MAX_AHEAD) as usize;
-                let n = cs.prefault_ahead(&shared.meta, ahead, |addr, len| populate(addr, len, page));
-                SLABS.fetch_add(n as u64, Ordering::Relaxed);
-            }
-        }
-        IN_PASS.store(false, Ordering::Relaxed);
-        if due {
-            ACTIVE.fetch_add(1, Ordering::Relaxed);
-        }
-        due
-    }
-
-    /// Fault `[addr, addr + len)` in writable: `MADV_POPULATE_WRITE` where
-    /// the probe found it, else one write of zero per page (the slab is
-    /// fresh, unpublished and zero, so the write changes nothing and is
-    /// this thread's alone). Counted.
-    pub fn populate(addr: usize, len: usize, page: usize) {
-        BYTES.fetch_add(len as u64, Ordering::Relaxed);
-        if POPULATE.load(Ordering::Relaxed) && os::populate_write(addr, len) {
-            return;
-        }
-        if POPULATE.load(Ordering::Relaxed) {
-            FALLBACKS.fetch_add(1, Ordering::Relaxed);
-        }
-        let mut off = 0;
-        while off < len {
-            // SAFETY: a committed, read-write slab this thread holds the
-            // class lock for and nothing else references yet; a zero over
-            // a zero.
-            unsafe { ((addr + off) as *mut u8).write_volatile(0) };
-            off += page;
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    mod os {
-        pub fn populate_write(addr: usize, len: usize) -> bool {
-            // SAFETY: a committed range of a class region this process
-            // owns; populating changes residency, never contents.
-            unsafe { crate::sys::madvise(addr, len, crate::sys::MADV_POPULATE_WRITE) }.is_ok()
-        }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    mod os {
-        pub fn populate_write(_addr: usize, _len: usize) -> bool {
-            false
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn reset_for_test(active: bool, populate_write: bool) {
-        configure(active, populate_write);
-        for c in [&PASSES, &SLABS, &BYTES, &SKIPPED, &FALLBACKS, &WAKES, &ACTIVE, &TAKEN] {
-            c.store(0, Ordering::Relaxed);
-        }
-    }
-}
-
 #[cfg(not(target_os = "linux"))]
 pub mod background {
     use crate::heap::Shared;
@@ -1289,422 +1014,4 @@ pub fn fork_child() -> ProcessMadvise {
         return ProcessMadvise::Unavailable;
     }
     if b == LOOP { ProcessMadvise::Unavailable } else { ProcessMadvise::PidfdSelf }
-}
-
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
-
-    /// The curve is jemalloc's: just under one at the start, zero only at
-    /// the last step, half at mid-window, non-increasing, and symmetric
-    /// about the middle.
-    #[test]
-    fn weights_are_a_smootherstep_from_one_to_zero() {
-        // 1 - smootherstep(1 / 200) = 1 - 1.24e-6 (jemalloc: 0x14 of 2^24).
-        assert_eq!(WEIGHTS[0] as u64, WEIGHT_ONE - 21);
-        assert_eq!(WEIGHTS[STEPS - 2], 21);
-        assert_eq!(WEIGHTS[STEPS - 1], 0);
-        // 1 - smootherstep(100 / 200) = 0.5 exactly.
-        assert_eq!(WEIGHTS[STEPS / 2 - 1] as u64, WEIGHT_ONE / 2);
-        for s in 1..STEPS {
-            assert!(WEIGHTS[s] <= WEIGHTS[s - 1], "step {s}");
-        }
-        // smootherstep(1 - x) = 1 - smootherstep(x).
-        for s in 0..STEPS - 1 {
-            let mirror = STEPS - 2 - s;
-            let sum = WEIGHTS[s] as u64 + WEIGHTS[mirror] as u64;
-            assert!(sum.abs_diff(WEIGHT_ONE) <= 1, "steps {s} and {mirror}: {sum}");
-        }
-        // A quarter of the way in, 1 - smootherstep(0.25) = 0.896...
-        let q = WEIGHTS[STEPS / 4 - 1] as f64 / WEIGHT_ONE as f64;
-        assert!((q - 0.896484375).abs() < 0.001, "{q}");
-    }
-
-    #[test]
-    fn steps_and_allowance() {
-        let c = Curve::new(200_000);
-        assert_eq!(c.step_ns(), 1000);
-        assert_eq!(c.step(5000, 5000), 0);
-        assert_eq!(c.step(5999, 5000), 0);
-        assert_eq!(c.step(6000, 5000), 1);
-        assert_eq!(c.step(5000 + 100_000, 5000), 100);
-        assert_eq!(c.step(5000 + 199_000, 5000), STEPS - 1);
-        assert_eq!(c.step(u64::MAX, 5000), STEPS - 1);
-        // `now` before `dirty_at` (a stale clock read) is age zero.
-        assert_eq!(c.step(4000, 5000), 0);
-        // A zero period puts everything in the last step.
-        assert_eq!(Curve::new(0).step(5000, 5000), STEPS - 1);
-        assert_eq!(Curve::new(0).step_ns(), 0);
-        // Ages beyond the scaling range, under a period longer still.
-        let huge = Curve::new(u64::MAX - 1);
-        assert_eq!(huge.step(u64::MAX / 2, 0), STEPS / 2);
-        assert_eq!(huge.step(u64::MAX - 1, 0), STEPS - 1);
-        assert_eq!(huge.step(1000, 0), 0);
-        // A period shorter than the step count still ends.
-        assert_eq!(Curve::new(7).step(5007, 5000), STEPS - 1);
-        assert_eq!(Curve::new(7).step(5000, 5000), 0);
-        // The allowance rounds up.
-        assert_eq!(Curve::allowance(0), 0);
-        assert_eq!(Curve::allowance(1), 1);
-        assert_eq!(Curve::allowance(WEIGHT_ONE), 1);
-        assert_eq!(Curve::allowance(WEIGHT_ONE + 1), 2);
-        assert_eq!(Curve::allowance(100 * Curve::weight(STEPS / 2 - 1)), 50);
-        assert_eq!(Curve::allowance(100 * Curve::weight(STEPS - 1)), 0);
-        // Half of a cohort of 100 at mid-window, all of it at the end, and
-        // none of it in the first step.
-        assert_eq!(Curve::allowance(100 * Curve::weight(0)), 100);
-    }
-
-    #[test]
-    fn decay_period_from_ms() {
-        assert_eq!(decay_ns_from_ms(-1), NEVER);
-        assert_eq!(decay_ns_from_ms(-1000), NEVER);
-        assert_eq!(decay_ns_from_ms(0), 0);
-        assert_eq!(decay_ns_from_ms(10_000), 10_000_000_000);
-        assert_eq!(decay_ns_from_ms(crate::config::MAX_INTERVAL_MS), 1_000_000_000_000_000_000);
-        assert_ne!(decay_ns_from_ms(i64::MAX), NEVER);
-    }
-
-    /// The step gate: nothing `Empty` is `None` and no walk; the oldest
-    /// member's first step is the deadline until it passes, then one walk
-    /// per step; a deadline set under a longer period since shortened
-    /// (further away than one step) does not delay the walk; the walk's
-    /// republished oldest decides whether a next deadline exists.
-    #[test]
-    fn decayer_walks_once_per_step_and_follows_a_shortened_period() {
-        let d = Decayer::new();
-        // The walks seen, `(now, curve)`; a cell so the assertions between
-        // the calls can read it.
-        let walks = std::cell::RefCell::new(std::vec::Vec::new());
-        let walk_to = |d: &Decayer, now: u64, decay_ns: u64, leave: u64| {
-            d.decay(now, decay_ns, |at, curve| {
-                walks.borrow_mut().push((at, *curve));
-                d.set_oldest_empty(leave);
-            })
-        };
-        let walks = || walks.borrow().clone();
-        // Nothing `Empty`: no deadline, no walk.
-        assert_eq!(d.oldest_empty(), 0);
-        assert_eq!(walk_to(&d, 1_000, 200_000, 0), None);
-        assert!(walks().is_empty());
-        // The first `Empty` member at 1000: the deadline is the end of its
-        // first step (1000 ns steps of a 200 us period), no walk before.
-        assert!(d.note_first_empty(1_000));
-        assert!(!d.note_first_empty(1_500), "the oldest is already known");
-        assert_eq!(d.oldest_empty(), 1_000);
-        assert_eq!(walk_to(&d, 1_500, 200_000, 1_000), Some(2_000));
-        assert_eq!(walk_to(&d, 1_999, 200_000, 1_000), Some(2_000));
-        assert!(walks().is_empty());
-        // At the step: one walk, with the curve of the period, and the
-        // next deadline one step on.
-        assert_eq!(walk_to(&d, 2_000, 200_000, 1_000), Some(3_000));
-        assert_eq!(walks(), [(2_000, Curve::new(200_000))]);
-        // Within the step: the stored deadline, no second walk.
-        assert_eq!(walk_to(&d, 2_500, 200_000, 1_000), Some(3_000));
-        assert_eq!(walks().len(), 1);
-        // The next step: a walk again.
-        assert_eq!(walk_to(&d, 3_000, 200_000, 1_000), Some(4_000));
-        assert_eq!(walks().len(), 2);
-        // The period is shortened to 20 us (100 ns steps): the stored
-        // deadline 4000 is more than a step away from 3_050, so the walk
-        // runs now instead of waiting for it, and the next deadline is a
-        // short step on.
-        assert_eq!(walk_to(&d, 3_050, 20_000, 1_000), Some(3_150));
-        assert_eq!(walks().len(), 3);
-        assert_eq!(walks()[2], (3_050, Curve::new(20_000)));
-        // A walk whose republished oldest is 0 (everything purged) ends
-        // the deadlines; a later `Empty` starts them again from its own
-        // first step.
-        assert_eq!(walk_to(&d, 3_150, 20_000, 0), None);
-        assert_eq!(walks().len(), 4);
-        assert_eq!(d.oldest_empty(), 0);
-        assert!(d.set_oldest_empty(10_000), "from none to one");
-        assert!(!d.set_oldest_empty(10_000), "already one");
-        assert_eq!(walk_to(&d, 10_050, 20_000, 10_000), Some(10_100));
-        assert_eq!(walks().len(), 4);
-        // A zero period: every step is 0 ns, so the walk is due at once
-        // and the deadline is `now` itself.
-        assert_eq!(walk_to(&d, 10_060, 0, 10_000), Some(10_060));
-        assert_eq!(walks().len(), 5);
-        assert_eq!(walks()[4], (10_060, Curve::new(0)));
-    }
-
-    /// Pages the bookkeeping test may point a batch at: a real mapping on
-    /// Linux (the flush really discards), made-up addresses elsewhere.
-    #[cfg(target_os = "linux")]
-    fn scratch(pages: usize, page: usize) -> usize {
-        use crate::sys::{self, MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
-        unsafe { sys::mmap(0, pages * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) }.unwrap()
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    fn scratch(_pages: usize, _page: usize) -> usize {
-        0x1000_0000
-    }
-
-    /// The page the batch tests work in: the kernel's on Linux (the flush
-    /// really discards, so the ranges must be page-aligned there), 4 KiB
-    /// elsewhere.
-    #[cfg(target_os = "linux")]
-    fn page_size() -> usize {
-        crate::sys::features::page_size()
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    fn page_size() -> usize {
-        4096
-    }
-
-    #[test]
-    fn batch_merges_adjacent_ranges() {
-        let _serial = serial();
-        let page = page_size();
-        let base = scratch(8, page);
-        let mut b = Batch::new();
-        b.push(base, page);
-        b.push(base + page, page);
-        b.push(base + 2 * page, 2 * page);
-        assert_eq!(b.len(), 1);
-        assert_eq!(b.ranges[0], (base, 4 * page));
-        // A gap starts a new range; so does a range that is not the next one.
-        b.push(base + 5 * page, page);
-        assert_eq!(b.len(), 2);
-        b.push(base + 4 * page, page);
-        assert_eq!(b.len(), 3);
-        b.flush();
-        assert!(b.is_empty());
-    }
-
-    #[test]
-    fn batch_fills_and_flushes() {
-        let _serial = serial();
-        let (_, eager0) = batches();
-        let page = page_size();
-        let base = scratch(2 * MAX_BATCH + 4, page);
-        let mut b = Batch::new();
-        assert!(b.is_empty());
-        // Every other page, so nothing merges.
-        for i in 0..MAX_BATCH {
-            assert!(!b.is_full());
-            b.push(base + 2 * page * i, page);
-        }
-        assert!(b.is_full());
-        assert_eq!(b.len(), MAX_BATCH);
-        // The 65th push flushes the first 64 first.
-        b.push(base + 2 * page * MAX_BATCH, 2 * page);
-        assert_eq!(b.len(), 1);
-        b.flush();
-        assert!(b.is_empty());
-        b.flush();
-        assert!(b.is_empty());
-        // At least the two eager batches of this test were counted (the
-        // default advice; other tests flush their own batches concurrently
-        // in this process), none lazy.
-        assert!(batches().1 >= eager0 + 2);
-        assert!(purged_is_zero());
-    }
-
-    /// The default (no `lazy_free`, no limit) discards with `MADV_DONTNEED`,
-    /// so purged memory is zero. `lazy_free:true` is exercised end to end by
-    /// `tests/c/decay.c` and the headroom band by `tests/c/cgroup_lazy.c`;
-    /// issuing a lazy batch here would make the flag sticky for the class
-    /// and huge tests that read it.
-    #[test]
-    fn purged_memory_is_zero_by_default() {
-        assert!(purged_is_zero());
-        assert_eq!(advice(), Advice::Eager);
-        assert_eq!(advice_reason(), "no headroom known");
-    }
-
-    /// The page size and the `MADV_POPULATE_WRITE` probe of the
-    /// environment, as `api::init` reads them: the kernel's on Linux (the
-    /// 5.10 and 64 KiB-page matrix cells found a 4 KiB constant and a
-    /// forced populate word), 4 KiB and "unusable" in the synthetic host
-    /// environment, where `os::populate_write` always fails.
-    #[cfg(target_os = "linux")]
-    fn prefault_env() -> (usize, bool) {
-        let page = crate::sys::features::page_size();
-        (page, crate::sys::features::probe_populate_write(page))
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    fn prefault_env() -> (usize, bool) {
-        (4096, false)
-    }
-
-    /// The prefault pass's plumbing, host side,
-    /// at the kernel's page size and in the populate direction the real
-    /// probe reports: `populate` counts the bytes; configured as the probe
-    /// says it never falls back (the advice works, or the touch is the
-    /// populate); told the advice works where the probe says it does not
-    /// (before 5.14, off Linux always), one fallback, the bytes still
-    /// counted and the touch done, so a zero buffer stays zero either
-    /// way; `note_commit` counts a wake only while the pass is enabled;
-    /// `configure` is what `enabled` and the populate word report.
-    #[test]
-    fn prefault_populate_and_wakes_are_counted() {
-        let _serial = serial();
-        let (page, usable) = prefault_env();
-        std::println!(
-            "prefault test: page_size={page} populate_write={} (probed)",
-            if usable { "yes" } else { "no" }
-        );
-        let buf = std::vec![0u8; 4 * page + page];
-        let addr = (buf.as_ptr() as usize + page - 1) & !(page - 1);
-        prefault::reset_for_test(false, false);
-        assert!(!prefault::enabled() && !prefault::uses_populate_write());
-        prefault::note_commit();
-        assert_eq!(prefault::stats().wakes, 0, "off: no wake");
-        prefault::populate(addr, 4 * page, page);
-        let s = prefault::stats();
-        assert_eq!((s.bytes, s.fallbacks), (4 * page as u64, 0), "the touch is the populate, not a fallback");
-        assert!(buf.iter().all(|&b| b == 0));
-        // The probe's direction, as `api::init` configures the pass.
-        prefault::reset_for_test(true, usable);
-        assert!(prefault::enabled() && prefault::uses_populate_write() == usable);
-        prefault::note_commit();
-        prefault::note_commit();
-        // At least this test's two wakes (other tests' fresh commits wake
-        // too while the pass is on here).
-        assert!(prefault::stats().wakes >= 2);
-        prefault::populate(addr, 2 * page, page);
-        let s = prefault::stats();
-        assert_eq!((s.bytes, s.fallbacks), (2 * page as u64, 0), "the probe's direction never falls back");
-        assert!(buf.iter().all(|&b| b == 0));
-        // The fallback contract: the populate word set where the kernel
-        // lacks the advice (or the address is not page-aligned), the
-        // `madvise` fails, one fallback is counted, the bytes are counted
-        // and the touch populates; where the probe says yes this is the
-        // probe's direction again.
-        prefault::reset_for_test(true, true);
-        prefault::populate(addr, page, page);
-        let s = prefault::stats();
-        let expected = if usable { 0 } else { 1 };
-        assert_eq!((s.bytes, s.fallbacks), (page as u64, expected), "forced populate_write against the probe");
-        assert!(buf.iter().all(|&b| b == 0));
-        std::println!(
-            "prefault test: probed direction fallbacks=0, forced populate_write fallbacks={} (expected {expected})",
-            s.fallbacks
-        );
-        prefault::reset_for_test(false, false);
-    }
-
-    /// The advice's process-wide wiring: the
-    /// policy's headroom mirror, the `lazy_band` key and an explicit purge
-    /// in flight, read without any batch being flushed. Serialised with
-    /// [`ADVICE_TEST`] against the batch tests, which flush.
-    #[test]
-    fn advice_follows_headroom_band_key_and_explicit_purges() {
-        let _serial = serial();
-        assert_eq!(advice(), Advice::Eager);
-        set_headroom(true, false);
-        assert_eq!(advice(), Advice::Lazy);
-        assert_eq!(advice_reason(), "under 70% of the limit");
-        {
-            let _e = Explicit::enter();
-            assert_eq!(advice(), Advice::Eager);
-            assert_eq!(advice_reason(), "explicit purge");
-            {
-                let _e2 = Explicit::enter();
-                assert_eq!(advice(), Advice::Eager);
-            }
-            assert_eq!(advice(), Advice::Eager);
-        }
-        assert_eq!(advice(), Advice::Lazy);
-        configure_advice(false, false);
-        assert_eq!(advice(), Advice::Eager);
-        assert_eq!(advice_reason(), "lazy_band:false");
-        assert!(!lazy_uses_process_madvise());
-        configure_advice(false, true);
-        assert_eq!(advice(), Advice::Lazy);
-        set_headroom(false, true);
-        assert_eq!(advice(), Advice::Eager);
-        assert_eq!(advice_reason(), "returning the excess over the cap");
-        set_headroom(false, false);
-        assert_eq!(advice(), Advice::Eager);
-        assert_eq!(advice_reason(), "no headroom known");
-        // Nothing was flushed: the sticky flag is untouched.
-        assert!(purged_is_zero());
-        assert_eq!(batches(), (0, EAGER_BATCHES.load(Ordering::Relaxed)));
-    }
-
-    /// The batch tests flush (on Linux, for real); the advice test flips
-    /// the headroom mirror; one at a time.
-    pub(super) static ADVICE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// Take [`ADVICE_TEST`]; a panic in one holder must not fail the rest.
-    pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
-        ADVICE_TEST.lock().unwrap_or_else(|e| e.into_inner())
-    }
-}
-
-#[cfg(all(test, target_os = "linux"))]
-mod linux_tests {
-    use super::*;
-    use crate::sys::{self, MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
-    use crate::sys::features::Features;
-
-    /// Both tests below switch the process-wide backend; take turns.
-    static BACKEND_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// Resident pages of `[addr, addr + len)` via `mincore`.
-    fn resident(addr: usize, len: usize, page: usize) -> usize {
-        let n = len / page;
-        let mut vec = std::vec![0u8; n];
-        let rc = unsafe { ::libc::mincore(addr as *mut _, len, vec.as_mut_ptr()) };
-        assert_eq!(rc, 0);
-        vec.iter().filter(|&&b| b & 1 != 0).count()
-    }
-
-    /// A batch through whatever backend the kernel offers (and, when that
-    /// is `process_madvise`, again through the loop) discards every range
-    /// and leaves the pages zero.
-    #[test]
-    fn batch_discards_through_the_probed_backend_and_the_loop() {
-        let _serial = BACKEND_TEST.lock().unwrap();
-        let _advice = super::tests::serial();
-        let page = crate::sys::features::page_size();
-        let mut f = Features::probe();
-        let backends = [f.process_madvise, ProcessMadvise::Unavailable];
-        for (i, backend) in backends.iter().enumerate() {
-            configure(*backend, false);
-            assert_eq!(uses_process_madvise(), *backend != ProcessMadvise::Unavailable);
-            let len = 8 * page;
-            let addr = unsafe { sys::mmap(0, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) }.unwrap();
-            for p in 0..8 {
-                unsafe { *((addr + p * page) as *mut u8) = 0xA5 };
-            }
-            assert_eq!(resident(addr, len, page), 8);
-            let mut b = Batch::new();
-            // Two ranges with a hole between them; the hole stays resident.
-            b.push(addr, 3 * page);
-            b.push(addr + 4 * page, 4 * page);
-            b.flush();
-            assert_eq!(resident(addr, len, page), 1, "backend {i}: {backend:?}");
-            assert_eq!(unsafe { *((addr + 3 * page) as *const u8) }, 0xA5);
-            for p in [0usize, 1, 2, 4, 5, 6, 7] {
-                assert_eq!(unsafe { *((addr + p * page) as *const u8) }, 0, "page {p} not zero ({backend:?})");
-            }
-            unsafe { sys::munmap(addr, len) }.unwrap();
-        }
-        configure(ProcessMadvise::Unavailable, false);
-        f.release();
-    }
-
-    /// The fork child drops an inherited pidfd and keeps `PIDFD_SELF`.
-    #[test]
-    fn fork_child_downgrades_a_pidfd_backend() {
-        let _serial = BACKEND_TEST.lock().unwrap();
-        configure(ProcessMadvise::PidfdSelf, false);
-        assert_eq!(fork_child(), ProcessMadvise::PidfdSelf);
-        assert!(uses_process_madvise());
-        let fd = sys::open(b"/dev/null\0", sys::O_RDONLY).unwrap();
-        configure(ProcessMadvise::Pidfd(fd), false);
-        assert_eq!(fork_child(), ProcessMadvise::Unavailable);
-        assert!(!uses_process_madvise());
-        // The fd was closed.
-        assert!(sys::close(fd).is_err());
-        configure(ProcessMadvise::Unavailable, false);
-        assert_eq!(fork_child(), ProcessMadvise::Unavailable);
-    }
 }
