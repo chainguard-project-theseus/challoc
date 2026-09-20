@@ -1,24 +1,28 @@
 //! Metadata region allocator (design.md sections 2, 6.2 and 17).
 //!
 //! Everything the allocator has to remember lives in the metadata region
-//! reserved by `layout::Regions`: slab descriptor arrays, the huge page
-//! bitmap and descriptor table, thread heaps and their class caches, the
-//! background thread's stack. None of it may come from `malloc`, so this is
-//! the one module that carves that region up.
+//! reserved by `layout::Regions`: slab descriptor arrays and slot bitmaps,
+//! the huge page bitmap and descriptor table, thread heaps and their class
+//! caches, the background thread's stack. None of it may come from
+//! `malloc`, so this is the one module that carves that region up.
 //!
 //! Two kinds of request come from the two ends of the region:
 //!
 //! - **Reservations** ([`Meta::reserve`]) are large, fixed-address, never
-//!   freed arrays such as a class's descriptor table. They are carved
+//!   freed arrays: a class's descriptor table and slot bitmap, the huge
+//!   allocator's free-page bitmap, the arenas, the per-CPU caches, the
+//!   background thread's stack. They are carved
 //!   downward from the top of the region and handed back *uncommitted*; the
 //!   owner calls [`Meta::commit`] on the pages it starts to use, so a class
 //!   with three live slabs commits one page of descriptors, not the whole
-//!   table.
-//! - **Objects** ([`Meta::alloc`] / [`Meta::free`]) are small: `Heap`,
-//!   cache slot stacks, bitmap words. They come from a bump pointer growing
-//!   upward from the base, with the region committed ahead of the bump in
-//!   [`COMMIT_CHUNK`] steps, and freed objects go on one of [`NBINS`]
-//!   size-classed free lists for reuse.
+//!   table ([`Meta::reserve_committed`] commits the whole range at once).
+//! - **Objects** ([`Meta::alloc`] / [`Meta::free`]) are small: heaps,
+//!   cache slot stacks, node blocks, an arena's `SetTable`, huge
+//!   descriptors and the huge descriptor table while it is small. They
+//!   come from a bump pointer
+//!   growing upward from the base, with the region committed ahead of the
+//!   bump in [`COMMIT_CHUNK`] steps, and freed objects go on one of
+//!   [`NBINS`] size-classed free lists for reuse.
 //!
 //! Committing is `mprotect(PROT_READ | PROT_WRITE)` on the `PROT_NONE`
 //! reservation. The kernel supplies zero pages on first touch, so committed
@@ -123,9 +127,9 @@ pub const fn bin_for(layout: Layout) -> Option<usize> {
 }
 
 /// Counters for `stats.metadata` and diagnostics. Identities:
-/// `allocated <= bumped <= committed_bump <= top - base`,
-/// `committed = committed_bump + committed_reserved`, and
-/// `bumped + reserved <= len`.
+/// `allocated <= bumped <= committed <= len` and `bumped + reserved <= len`
+/// (`committed` counts the bump chunks and the explicitly committed pages
+/// of reservations together).
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct MetaStats {
     /// Length of the whole region.
@@ -162,8 +166,8 @@ struct Inner {
 // any thread; the `Lock` serialises every access.
 unsafe impl Send for Inner {}
 
-/// The metadata allocator for one region. One per process, in a `static`,
-/// unusable until [`Meta::init`].
+/// The metadata allocator for one region. One per process: `heap.rs`
+/// writes it in place with [`Meta::new`] when the regions are reserved.
 pub struct Meta {
     inner: Lock<Inner>,
 }
@@ -322,6 +326,12 @@ impl Inner {
     }
 }
 
+// Nothing calls this (the production allocator is built with `Meta::new`),
+// but it stays for now: an impl block fewer renumbers the v0 symbol
+// disambiguator of `impl Meta` below and with it the order of its
+// functions in `.text`, which the maintainability batches keep
+// byte-identical. Drop it, with `Meta::empty`, in a batch that allows
+// reordering.
 impl Default for Meta {
     fn default() -> Self {
         Self::empty()
@@ -329,7 +339,9 @@ impl Default for Meta {
 }
 
 impl Meta {
-    /// An allocator with no region. Every request fails until [`Meta::init`].
+    /// An allocator with no region. Every request fails until [`Meta::init`]
+    /// (the `len == 0` guards in `alloc` and `reserve`). Only tests use it;
+    /// see the `Default` impl for why it is not `#[cfg(test)]`.
     pub const fn empty() -> Meta {
         Meta { inner: Lock::new(Inner::empty()) }
     }
@@ -339,12 +351,12 @@ impl Meta {
         Meta { inner: Lock::new(Inner::new(base, len, page)) }
     }
 
-    /// Point an [`empty`](Meta::empty) allocator at its region. Called once
-    /// from init, before any other thread can reach the allocator.
+    /// Point an [`empty`](Meta::empty) allocator at its region, once.
     ///
     /// # Safety
     /// `[base, base + len)` must be a `PROT_NONE` reservation owned by the
     /// caller that nothing else will ever map, protect or touch.
+    #[cfg(test)]
     pub unsafe fn init(&self, base: usize, len: usize, page: usize) {
         let mut g = self.inner.lock();
         assert!(g.len == 0, "meta: initialised twice");
@@ -424,13 +436,14 @@ impl Meta {
     }
 
     /// Whether `p` lies anywhere in the region.
-    #[inline]
+    #[cfg(test)]
     pub fn contains(&self, p: usize) -> bool {
         let g = self.inner.lock();
         p.wrapping_sub(g.base) < g.len
     }
 
     /// Whether the region has been set.
+    #[cfg(test)]
     pub fn is_initialised(&self) -> bool {
         self.inner.lock().len != 0
     }
@@ -440,11 +453,13 @@ impl Meta {
     }
 
     /// Start of the region.
+    #[cfg(test)]
     pub fn base(&self) -> usize {
         self.inner.lock().base
     }
 
     /// Lowest reserved address; the object area may grow up to here.
+    #[cfg(test)]
     pub fn top(&self) -> usize {
         self.inner.lock().top
     }
