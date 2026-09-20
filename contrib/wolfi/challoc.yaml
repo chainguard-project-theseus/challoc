@@ -2,7 +2,7 @@
 # docs/design.md section 13.6). Draft tracked here under contrib/; the copy
 # that ships lives in the wolfi-dev/os repository.
 #
-# Three packages from one source tree and two cargo builds:
+# Four packages from one source tree and two cargo builds:
 #
 #   challoc                  /usr/lib/libchalloc.so.0        quantum16 (the
 #                            system library, the class table Wolfi's jemalloc
@@ -12,9 +12,17 @@
 #                            /usr/lib/pkgconfig/challoc.pc
 #   challoc-jemalloc-compat  /usr/lib/libjemalloc.so.2       quantum16, built
 #                            with the `jemalloc-soname` feature and staged by
-#                            scripts/jemalloc-compat.sh (design 13.2),
+#                            scripts/jemalloc-compat.sh (design 13.2); the
+#                            file set of Wolfi's libjemalloc2, which it
+#                            provides
+#   challoc-jemalloc-compat-dev
 #                            /usr/lib/libjemalloc.so -> libjemalloc.so.2,
-#                            /usr/lib/pkgconfig/jemalloc.pc (Version 5.3.0)
+#                            /usr/lib/pkgconfig/jemalloc.pc (Version 5.3.0),
+#                            /usr/include/jemalloc/jemalloc.h (jemalloc 5.3's
+#                            unprefixed API as challoc exports it); the file
+#                            set of Wolfi's jemalloc-dev, which it provides,
+#                            for a consumer that includes <jemalloc/jemalloc.h>
+#                            (Ruby's --with-jemalloc; plan Phase 3 task 3)
 #
 # Valkey's private quantum8 build is task 2 and lives in valkey.yaml, not
 # here (two libraries with one soname cannot share /usr/lib).
@@ -171,14 +179,14 @@ subpackages:
             ./none
 
   - name: challoc-jemalloc-compat
-    description: challoc under jemalloc's soname (libjemalloc.so.2) and jemalloc.pc, for link-only jemalloc consumers
+    description: challoc under jemalloc's soname (libjemalloc.so.2), a drop-in for libjemalloc2
     dependencies:
-      # A drop-in for Wolfi's libjemalloc2 runtime and, for the link name
-      # and the pc file, jemalloc-dev: same file paths, so the packages
-      # conflict and a consumer picks one by name. No header is shipped:
-      # a program that includes <jemalloc/jemalloc.h> takes it from
-      # jemalloc-dev (Phase 1 task 6 decision), so the two -dev packages
-      # cannot be co-installed; contrib/wolfi/README.md discusses it.
+      # The file set of Wolfi's libjemalloc2 runtime (the one file), so the
+      # two conflict and a consumer picks one by name; the automatic
+      # `so:libjemalloc.so.2` provide is what a jemalloc consumer's own
+      # automatic dependency resolves to once this package is chosen. The
+      # link name, the pc file and the header are the -dev package's, as
+      # jemalloc-dev's are (Phase 3 task 3; task 1 had the first two here).
       provides:
         - libjemalloc2=${{package.full-version}}
     pipeline:
@@ -186,12 +194,64 @@ subpackages:
         runs: |
           QUANTUM=16 PREFIX=/usr OUT="$PWD/compat-stage" TARGET_DIR="$PWD/target/jemalloc-compat" \
             sh scripts/jemalloc-compat.sh
-          mkdir -p ${{targets.contextdir}}/usr/lib/pkgconfig
-          cp -a compat-stage/lib/libjemalloc.so.2 compat-stage/lib/libjemalloc.so ${{targets.contextdir}}/usr/lib/
+          mkdir -p ${{targets.contextdir}}/usr/lib
+          cp compat-stage/lib/libjemalloc.so.2 ${{targets.contextdir}}/usr/lib/
+          readelf -d ${{targets.contextdir}}/usr/lib/libjemalloc.so.2 | grep -q 'Library soname: \[libjemalloc.so.2\]'
+      - uses: strip
+    test:
+      environment:
+        contents:
+          packages:
+            - binutils
+            - posix-libc-utils
+      pipeline:
+        - uses: test/tw/ldd-check
+        - name: The library carries jemalloc's soname, loads, and is challoc
+          runs: |
+            set -eux
+            readelf -d /usr/lib/libjemalloc.so.2 | grep -q 'Library soname: \[libjemalloc.so.2\]'
+            ldd /usr/lib/libjemalloc.so.2
+            ! ldd /usr/lib/libjemalloc.so.2 | grep -q 'not found'
+            # The runtime package ships no link name and no pc file: those
+            # are challoc-jemalloc-compat-dev's.
+            ! [ -e /usr/lib/libjemalloc.so ]
+            ! [ -e /usr/lib/pkgconfig/jemalloc.pc ]
+            LD_PRELOAD=/usr/lib/libjemalloc.so.2 ls / >/dev/null
+            LD_PRELOAD=/usr/lib/libjemalloc.so.2 readelf -h /usr/lib/libjemalloc.so.2 | grep -q 'Shared object file'
+
+  - name: challoc-jemalloc-compat-dev
+    description: link name, jemalloc.pc and <jemalloc/jemalloc.h> for building a jemalloc consumer against challoc, a drop-in for jemalloc-dev
+    dependencies:
+      runtime:
+        - challoc-jemalloc-compat=${{package.full-version}}
+      # The file set of Wolfi's jemalloc-dev (/usr/lib/libjemalloc.so,
+      # /usr/lib/pkgconfig/jemalloc.pc, /usr/include/jemalloc/jemalloc.h),
+      # so the two conflict and apk refuses to co-install them; a consumer
+      # swaps by naming this package in place of jemalloc-dev in its build
+      # environment (and challoc-jemalloc-compat in its runtime
+      # dependencies, so the automatic so:libjemalloc.so.2 dependency is
+      # not resolved to libjemalloc2 by name preference). `provides:
+      # jemalloc-dev` mirrors the runtime's `provides: libjemalloc2`: a
+      # dependency on jemalloc-dev is satisfied once this package is
+      # installed, and no provider-priority, so nothing flips merely because
+      # it exists (Phase 3 task 1 decision; contrib/wolfi/README.md,
+      # "Swapping"). Wolfi may prefer no provides here: it is one line.
+      provides:
+        - jemalloc-dev=${{package.full-version}}
+    pipeline:
+      - name: Install the link name, jemalloc.pc and the header from the compat stage
+        runs: |
+          mkdir -p ${{targets.contextdir}}/usr/lib/pkgconfig ${{targets.contextdir}}/usr/include/jemalloc
+          cp -a compat-stage/lib/libjemalloc.so ${{targets.contextdir}}/usr/lib/
+          [ "$(readlink ${{targets.contextdir}}/usr/lib/libjemalloc.so)" = libjemalloc.so.2 ]
           cp compat-stage/lib/pkgconfig/jemalloc.pc ${{targets.contextdir}}/usr/lib/pkgconfig/
           grep -q '^Version: ${{vars.jemalloc-version}}$' ${{targets.contextdir}}/usr/lib/pkgconfig/jemalloc.pc
           grep -q '^prefix=/usr$' ${{targets.contextdir}}/usr/lib/pkgconfig/jemalloc.pc
-      - uses: strip
+          install -Dm644 compat-stage/include/jemalloc/jemalloc.h \
+            ${{targets.contextdir}}/usr/include/jemalloc/jemalloc.h
+          # The header's version macros agree with the library and the pc file.
+          grep -q '^#define JEMALLOC_VERSION "${{vars.jemalloc-version}}-0-gchalloc"$' \
+            ${{targets.contextdir}}/usr/include/jemalloc/jemalloc.h
     test:
       environment:
         contents:
@@ -201,51 +261,87 @@ subpackages:
             - pkgconf
       pipeline:
         - uses: test/tw/ldd-check
+          with:
+            packages: challoc-jemalloc-compat
         - uses: test/pkgconf
-        - name: The library carries jemalloc's soname and is challoc
+        - name: The link name and jemalloc.pc are jemalloc-dev's
           runs: |
             set -eux
-            readelf -d /usr/lib/libjemalloc.so.2 | grep -q 'Library soname: \[libjemalloc.so.2\]'
             [ "$(readlink /usr/lib/libjemalloc.so)" = libjemalloc.so.2 ]
             [ "$(pkg-config --modversion jemalloc)" = "${{vars.jemalloc-version}}" ]
             pkg-config --atleast-version=5.3 jemalloc
             pkg-config --libs jemalloc | grep -q -- '-ljemalloc'
-            LD_PRELOAD=/usr/lib/libjemalloc.so.2 ls / >/dev/null
-        - name: A link-only jemalloc consumer resolves mallocx into the compat library
+            pkg-config --cflags jemalloc
+            [ -f /usr/include/jemalloc/jemalloc.h ]
+        - name: A consumer that includes <jemalloc/jemalloc.h> builds, and resolves into the compat library
           runs: |
             set -eux
+            # Ruby's configure probe (configure.ac, --with-jemalloc): a read
+            # of malloc_conf through the header, linked with -ljemalloc.
+            cat > probe.c <<'EOF'
+            #include <stdio.h>
+            #include <jemalloc/jemalloc.h>
+            int main(void) {
+                if (malloc_conf) printf("malloc_conf=%s\n", malloc_conf);
+                return 0;
+            }
+            EOF
+            gcc $(pkg-config --cflags jemalloc) probe.c -o probe $(pkg-config --libs jemalloc)
+            ./probe
+            # The API the header declares, in C and in C++ (Ruby's
+            # ruby/missing.h includes the header into every translation
+            # unit, extensions in C++ included).
             cat > compat.c <<'EOF'
-            #define _GNU_SOURCE
+            #ifndef _GNU_SOURCE
+            #define _GNU_SOURCE /* g++ predefines it */
+            #endif
             #include <dlfcn.h>
             #include <stdio.h>
             #include <stdlib.h>
             #include <string.h>
-            extern void *mallocx(size_t, int);
-            extern void dallocx(void *, int);
-            extern size_t sallocx(const void *, int);
-            extern int mallctl(const char *, void *, size_t *, void *, size_t);
+            #include <jemalloc/jemalloc.h>
             int main(void) {
-                void *p = mallocx(64, 0);
-                if (!p || sallocx(p, 0) < 64) return 1;
-                Dl_info di;
-                if (!dladdr((void *)mallocx, &di) || !dladdr((void *)malloc, &di)) return 2;
-                Dl_info dm; dladdr((void *)malloc, &dm);
+                void *p = mallocx(64, MALLOCX_ALIGN(64));
+                if (!p || sallocx(p, 0) < 64 || ((size_t)p & 63) != 0) return 1;
+                if (nallocx(64, MALLOCX_ALIGN(64)) != sallocx(p, 0)) return 7;
+                Dl_info di, dm;
+                if (!dladdr((void *)mallocx, &di) || !dladdr((void *)malloc, &dm)) return 2;
                 const char *v = NULL; size_t sz = sizeof v;
                 if (mallctl("version", &v, &sz, NULL, 0) != 0) return 3;
-                printf("mallocx from %s\nmalloc from %s\nversion %s\n", di.dli_fname, dm.dli_fname, v);
+                size_t mib[2], miblen = 2; size_t alloc = 0, al = sizeof alloc;
+                uint64_t epoch = 1;
+                if (mallctl("epoch", NULL, NULL, &epoch, sizeof epoch) != 0) return 8;
+                if (mallctlnametomib("stats.allocated", mib, &miblen) != 0) return 9;
+                if (mallctlbymib(mib, miblen, &alloc, &al, NULL, 0) != 0 || alloc < 64) return 10;
+                void *q = je_malloc(10);
+                if (!q || malloc_usable_size(q) < 10 || je_malloc_usable_size(q) < 10) return 11;
+                je_free(q);
+                printf("mallocx from %s\nmalloc from %s\nversion %s (header %s)\nstats.allocated %zu\n",
+                       di.dli_fname, dm.dli_fname, v, JEMALLOC_VERSION, alloc);
                 dallocx(p, 0);
                 const char *tail = strrchr(di.dli_fname, '/');
                 if (!tail || strcmp(tail, "/libjemalloc.so.2") != 0) return 4;
                 tail = strrchr(dm.dli_fname, '/');
                 if (!tail || strcmp(tail, "/libjemalloc.so.2") != 0) return 5;
+                if (strcmp(v, JEMALLOC_VERSION) != 0) return 12;
                 return strstr(v, "challoc") ? 0 : 6;
             }
             EOF
-            gcc compat.c -o compat $(pkg-config --libs jemalloc) -ldl
+            gcc -Wall -Wextra -Werror $(pkg-config --cflags jemalloc) compat.c -o compat $(pkg-config --libs jemalloc) -ldl
             readelf -d compat | grep NEEDED
             # scripts/check-needed.sh's rule: DT_NEEDED must name the library.
             readelf -d compat | grep -q 'NEEDED.*\[libjemalloc.so.2\]'
             ./compat
+            g++ -Wall -Wextra -Werror -x c++ $(pkg-config --cflags jemalloc) compat.c -o compatxx $(pkg-config --libs jemalloc) -ldl
+            ./compatxx
+            # malloc_stats_print reaches the library and names it.
+            cat > stats.c <<'EOF'
+            #include <jemalloc/jemalloc.h>
+            int main(void) { malloc_stats_print(NULL, NULL, NULL); return 0; }
+            EOF
+            gcc stats.c -o stats $(pkg-config --libs jemalloc)
+            ./stats 2>&1 | head -3
+            ./stats 2>&1 | grep -q '^Version: "${{vars.jemalloc-version}}-0-gchalloc"'
 
 update:
   enabled: false

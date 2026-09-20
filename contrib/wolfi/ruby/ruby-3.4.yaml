@@ -1,0 +1,334 @@
+# ruby-3.4 on challoc: Wolfi's ruby-3.4.yaml (wolfi-dev/os main a944f08,
+# 2026-09-19; the file last changed in 1c5cd09, the resolv cherry-pick) with
+# the allocator switched from jemalloc to challoc through
+# challoc-jemalloc-compat (docs/plan.md Phase 3 task 3, design 13.2, 13.6).
+#
+# What changes (contrib/wolfi/README.md, "Ruby", has the reasoning and the
+# results of the first real build):
+#   - the build environment lists challoc-jemalloc-compat-dev in place of
+#     jemalloc-dev: the same file set (/usr/lib/libjemalloc.so, jemalloc.pc,
+#     <jemalloc/jemalloc.h>), so `--with-jemalloc` and Ruby's configure
+#     probe (a read of malloc_conf through the header, -ljemalloc) are
+#     unchanged, and the built ruby/libruby record DT_NEEDED libjemalloc.so.2
+#     as before (Ruby appends --no-as-needed itself, ruby/ruby#4627);
+#   - the package names challoc-jemalloc-compat in its runtime dependencies:
+#     melange derives `so:libjemalloc.so.2` from the binaries, and apk would
+#     satisfy that with Wolfi's libjemalloc2 by name preference (the compat
+#     package only provides it); the explicit dependency picks the compat
+#     library, which is what the package was built and tested against;
+#   - ruby-3.4-dev's runtime dependency jemalloc-dev becomes
+#     challoc-jemalloc-compat-dev (extensions built with mkmf link
+#     -ljemalloc through DLDLIBS);
+#   - a check step after the build and a test step that proves which
+#     allocator a running ruby is on (the mapped file, and mallctl("version")
+#     called from Ruby through Fiddle: "5.3.0-0-gchalloc").
+# Everything else is Wolfi's file, unchanged.
+package:
+  name: ruby-3.4
+  version: "3.4.10"
+  epoch: 8 # allocator: jemalloc -> challoc (challoc-jemalloc-compat); 7 was CVE-2026-80212, CVE-2026-80213
+  description: "the Ruby programming language"
+  copyright:
+    - license: Ruby
+    - license: BSD-2-Clause
+  dependencies:
+    provides:
+      - ruby=${{package.full-version}}
+      # These are bundled gems
+      - ruby3.4-csv
+      - ruby3.4-base64
+      - ruby3.4-drb
+    runtime:
+      # Not derived: melange records so:libjemalloc.so.2, which apk would
+      # resolve to libjemalloc2 by name preference (challoc-jemalloc-compat
+      # provides it); name the library the package was built against.
+      - challoc-jemalloc-compat
+      - glibc
+      - gmp
+      - libgcc
+      - yaml
+      - zlib
+  resources:
+    cpu: "4"
+    memory: 8Gi
+  test-resources:
+    cpu: "1"
+    memory: 1Gi
+
+environment:
+  environment:
+    CFLAGS: -DOPENSSL_NO_ENGINE
+  contents:
+    packages:
+      - autoconf
+      - build-base
+      - busybox
+      - ca-certificates-bundle
+      - coreutils
+      - expat-dev
+      - gcc-14-default
+      - gdbm-dev
+      - glibc-2.44-dev
+      - gmp-dev
+      - challoc-jemalloc-compat-dev # in place of jemalloc-dev: the same file set, challoc underneath
+      - graphviz
+      - libffi-dev
+      - libxcrypt-dev
+      - linux-headers
+      - mpdecimal-dev
+      - ncurses-dev
+      - oniguruma-dev
+      - openssl-dev
+      - pkgconf
+      - readline-dev
+      - ruby-3.4
+      - rust-${{vars.rust-version}}
+      - tk-dev
+      - yaml-dev
+      - zlib-dev
+
+vars:
+  prefix: /usr
+  rust-version: "1.98"
+
+var-transforms:
+  - from: ${{package.version}}
+    match: \.
+    replace: _
+    to: underscore-package-version
+
+pipeline:
+  - uses: git-checkout
+    with:
+      repository: https://github.com/ruby/ruby
+      tag: v${{vars.underscore-package-version}}
+      expected-commit: 2b0b7728dc7f0561c35c3d8c4489945c94b783ad
+      cherry-picks: |
+        # https://bugs.ruby-lang.org/issues/22196
+        ruby_3_4/b92c8c225351f6d61a8aabd54e6f57d5a7503a53: heap-use-after-free in fiber_switch introduced in 3.4.10
+        # https://www.ruby-lang.org/en/news/2026/08/27/multiple-vulnerabilities-in-resolv
+        ruby_3_4/6deacfb8275bd1583ffa1b8c2b87f25484586a91: bump resolv to 0.7.2 for CVE-2026-80212 and CVE-2026-80213
+
+  - uses: patch
+    with:
+      patches: remove-already-provided-gems-from-gems_bundled_gems.patch
+
+  - name: Generate and Configure
+    runs: |
+      ./autogen.sh
+      ./configure \
+         --host=${{host.triplet.gnu}} \
+         --build=${{host.triplet.gnu}} \
+         --target=${{host.triplet.gnu}} \
+         --prefix=${{vars.prefix}} \
+         --enable-shared \
+         --disable-rpath \
+         --sysconfdir=/etc \
+         --enable-mkmf-verbose \
+         --enable-yjit \
+         --with-jemalloc
+
+  - uses: autoconf/make
+
+  - name: Check the build is on challoc's libjemalloc.so.2
+    runs: |
+      set -eux
+      # configure found the header and linked -ljemalloc (config.h, as
+      # contrib/ruby/build.sh checks): every translation unit includes
+      # <jemalloc/jemalloc.h> through ruby/missing.h.
+      grep -h 'define HAVE_MALLOC_CONF\|define RUBY_ALTERNATIVE_MALLOC_HEADER' .ext/include/*/ruby/config.h
+      grep -q 'define HAVE_MALLOC_CONF 1' .ext/include/*/ruby/config.h
+      grep -q 'define RUBY_ALTERNATIVE_MALLOC_HEADER <jemalloc/jemalloc.h>' .ext/include/*/ruby/config.h
+      # The header is challoc's (challoc-jemalloc-compat-dev), not jemalloc-dev's.
+      grep -q '^#define JEMALLOC_CHALLOC 1' /usr/include/jemalloc/jemalloc.h
+      # DT_NEEDED names the library on the binary and on libruby
+      # (scripts/check-needed.sh's rule; design 13.6: Ruby's --no-as-needed
+      # keeps it on the binary, which references no allocator symbol itself).
+      for f in ruby libruby.so.3.4*; do
+        readelf -d "$f" | grep NEEDED
+        readelf -d "$f" | grep -q 'NEEDED.*\[libjemalloc.so.2\]'
+      done
+      # The library the build environment resolves the soname to is
+      # challoc's (it exports challoc_version; jemalloc's does not). No apk
+      # in a build environment, so the file is asked, not the database.
+      readelf -d /usr/lib/libjemalloc.so.2 | grep -q 'Library soname: \[libjemalloc.so.2\]'
+      ls -l /usr/lib/libjemalloc.so /usr/lib/libjemalloc.so.2
+      readelf --dyn-syms /usr/lib/libjemalloc.so.2 | grep -q ' challoc_version$'
+
+  # Update and Extract bundled gems
+  - uses: autoconf/make
+    with:
+      opts: update-gems extract-gems
+
+  # Build documentation
+  - uses: autoconf/make
+    with:
+      opts: rdoc capi
+
+  - uses: autoconf/make-install
+
+  - runs: |
+      # Ignore the patch version of ruby since ruby will install under the
+      # version of the latest standard library. Should produce the string 3.4.*
+      RUBYWILD="$(echo ${{package.version}} | cut -d. -f-2).*"
+
+      RUBYDIR=${{targets.destdir}}${{vars.prefix}}/lib/ruby/$RUBYWILD
+      rm -rf ${RUBYDIR}/bundler
+      rm -f ${RUBYDIR}/bundler.rb
+
+      GEMDIR=${{targets.destdir}}${{vars.prefix}}/lib/ruby/gems/$RUBYWILD
+      rm -rf ${GEMDIR}/gems/bundler-*
+      rm -f ${GEMDIR}/specifications/default/bundler-*.gemspec
+
+      rm -f ${{targets.destdir}}/usr/bin/bundle \
+         ${{targets.destdir}}/usr/bin/bundler
+
+  - runs: |
+      find ${{targets.destdir}} -name 'mkmf.log' -exec rm {} \;
+
+subpackages:
+  - name: "ruby-3.4-doc"
+    description: "ruby documentation"
+    pipeline:
+      - uses: split/manpages
+      - runs: |
+          mkdir -p "${{targets.subpkgdir}}"/usr/share
+          mv "${{targets.destdir}}"/usr/share/doc "${{targets.subpkgdir}}"/usr/share/
+          mv "${{targets.destdir}}"/usr/share/ri "${{targets.subpkgdir}}"/usr/share/
+    test:
+      pipeline:
+        - uses: test/tw/docs
+
+  - name: "ruby-3.4-dev"
+    description: "ruby development headers"
+    dependencies:
+      runtime:
+        - challoc-jemalloc-compat-dev # was jemalloc-dev: extensions link -ljemalloc (DLDLIBS)
+    pipeline:
+      - uses: split/dev
+    test:
+      pipeline:
+        - uses: test/pkgconf
+        - uses: test/tw/ldd-check
+
+update:
+  enabled: true
+  version-transform:
+    - match: "_"
+      replace: .
+  github:
+    identifier: ruby/ruby
+    strip-prefix: v
+    use-tag: true
+    tag-filter-prefix: v3_4_
+
+test:
+  environment:
+    contents:
+      packages:
+        - apk-tools
+        - binutils
+        - ruby3.4-bundler
+  pipeline:
+    - uses: test/tw/ver-check
+      with:
+        bins: ruby
+        version: ${{package.version}}
+    - uses: test/tw/help-check
+      with:
+        bins: |
+          gem
+          irb
+          rake
+          rdbg
+          rdoc
+          ri
+          ruby
+    - name: Test hello world script
+      runs: |
+        cat >>/tmp/hello.rb <<'EOF'
+        puts("Hello Wolfi!")
+        EOF
+        ruby /tmp/hello.rb
+    - name: Ruby runs on challoc (the compat libjemalloc.so.2), and says so
+      runs: |
+        set -eux
+        ruby -e 1
+        ruby -rjson -e 'puts JSON.generate(a: 1)' | grep -qx '{"a":1}'
+        ruby -e 'p RbConfig::CONFIG["MAINLIBS"]' | grep -q -- '-ljemalloc'
+        # Linked against the soname (ruby and libruby), the file is the
+        # compat package's.
+        libruby=$(ruby -e 'puts File.join(RbConfig::CONFIG["libdir"], RbConfig::CONFIG["LIBRUBY_SO"])')
+        for f in "$(command -v ruby)" "$libruby"; do
+          readelf -d "$f" | grep -q 'NEEDED.*\[libjemalloc.so.2\]'
+        done
+        # (/lib is a link to usr/lib in Wolfi; ldd prints whichever the
+        # loader searched, /proc/self/maps the resolved path.)
+        ldd "$(command -v ruby)" | grep libjemalloc.so.2
+        ldd "$(command -v ruby)" | grep -qE 'libjemalloc.so.2 => /(usr/)?lib/libjemalloc.so.2'
+        apk info --who-owns /usr/lib/libjemalloc.so.2
+        apk info --who-owns /usr/lib/libjemalloc.so.2 | grep -q challoc-jemalloc-compat
+        ! apk info -e libjemalloc2
+        # A running ruby maps exactly that file.
+        mapped=$(ruby -e 'puts File.readlines("/proc/self/maps").grep(/libjemalloc/).map { |l| l.split[5] }.uniq')
+        echo "mapped: $mapped"
+        case "$mapped" in /usr/lib/libjemalloc.so.2|/lib/libjemalloc.so.2) ;; *) exit 1 ;; esac
+        # And the allocator the process is on reports itself as challoc:
+        # mallctl("version") and challoc_version() called from Ruby through
+        # Fiddle, and the process's malloc is the compat library's malloc.
+        # (MALLOC_CONF=stats_print:true prints nothing under challoc: the key
+        # is accepted and inert, src/config.rs INERT_KEYS; so the report is
+        # asked for directly.)
+        cat > /tmp/alloc.rb <<'EOF'
+        require "fiddle"
+        h = Fiddle::Handle::DEFAULT
+        mallctl = Fiddle::Function.new(h["mallctl"],
+          [Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T],
+          Fiddle::TYPE_INT)
+        out = Fiddle::Pointer.malloc(Fiddle::SIZEOF_VOIDP, Fiddle::RUBY_FREE)
+        len = Fiddle::Pointer.malloc(Fiddle::SIZEOF_SIZE_T, Fiddle::RUBY_FREE)
+        len[0, Fiddle::SIZEOF_SIZE_T] = [Fiddle::SIZEOF_VOIDP].pack("J")
+        rc = mallctl.call("version", out, len, nil, 0)
+        raise "mallctl(version) rc=#{rc}" unless rc == 0
+        version = Fiddle::Pointer.new(out[0, Fiddle::SIZEOF_VOIDP].unpack1("J")).to_s
+        cv = Fiddle::Function.new(h["challoc_version"], [], Fiddle::TYPE_VOIDP).call.to_s
+        lib = Fiddle::Handle.new("libjemalloc.so.2")
+        same = h["malloc"] == lib["malloc"] && h["free"] == lib["free"]
+        puts "mallctl.version=#{version} challoc_version=#{cv} malloc_is_libjemalloc=#{same}"
+        Fiddle::Function.new(h["malloc_stats_print"],
+          [Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP], Fiddle::TYPE_VOID).call(nil, nil, nil)
+        exit(version.include?("challoc") && same ? 0 : 1)
+        EOF
+        ruby /tmp/alloc.rb > /tmp/alloc.out 2> /tmp/alloc.err
+        cat /tmp/alloc.out
+        head -3 /tmp/alloc.err
+        grep -q 'mallctl.version=5.3.0-0-gchalloc' /tmp/alloc.out
+        grep -q 'malloc_is_libjemalloc=true' /tmp/alloc.out
+        grep -q '^Version: "5.3.0-0-gchalloc"' /tmp/alloc.err
+        # MALLOC_CONF reaches the allocator: challoc answers stats_print with
+        # a "challoc: ... accepted but has no effect" diagnostic today and
+        # would print the statistics if it implemented the key; jemalloc
+        # prints its report; glibc prints nothing.
+        MALLOC_CONF=stats_print:true ruby -e 1 2>&1 | grep -q 'challoc\|jemalloc statistics'
+        # The package is seen allocating: medium objects that reach malloc
+        # (strings over ~600 B, hashes over 8 entries), a burst of garbage,
+        # forced full GCs (bench/ruby/gc_churn.rb's shape, cut down).
+        cat > /tmp/churn.rb <<'EOF'
+        live = Array.new(20_000) { |i| "x" * (1024 + (i * 613) % 3072) }
+        hashes = Array.new(20_000) { |i| h = {}; 12.times { |k| h[k] = i + k }; h }
+        3.times { Array.new(50_000) { |i| "y" * (700 + i % 2000) }; GC.start }
+        3.times { GC.start(full_mark: true, immediate_sweep: true) }
+        rss = File.read("/proc/self/status")[/^VmRSS:\s+(\d+)/, 1].to_i
+        puts "gc_count=#{GC.stat[:count]} live=#{live.size + hashes.size} rss_kb=#{rss}"
+        exit(GC.stat[:count] >= 6 && live.all? { |s| s.start_with?("x") } ? 0 : 1)
+        EOF
+        ruby /tmp/churn.rb
+    - name: Validate HTTPS support
+      runs: |
+        bundle init
+        OUTPUT=$(bundle doctor --ssl 2>&1)
+        echo "$OUTPUT"
+        if echo "$OUTPUT" | grep -Fi "failed"; then
+          exit 1
+        fi
+    - uses: test/tw/ldd-check

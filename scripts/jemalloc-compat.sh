@@ -8,10 +8,14 @@
 #   lib/libjemalloc.so.2       the library; DT_SONAME libjemalloc.so.2
 #   lib/libjemalloc.so         link name, so `-ljemalloc` finds it
 #   lib/pkgconfig/jemalloc.pc  pkg-config file; `Libs: -L${libdir} -ljemalloc`
-#
-# No header is staged: challoc has none of its own and the pc file is for
-# consumers that link against jemalloc's ABI (Ruby, KeyDB, RethinkDB); a
-# program that includes <jemalloc/jemalloc.h> takes it from jemalloc-dev.
+#   include/jemalloc/jemalloc.h
+#                              contrib/jemalloc-compat/include/jemalloc/jemalloc.h:
+#                              jemalloc 5.3's unprefixed API as challoc exports
+#                              it, for a consumer that includes
+#                              <jemalloc/jemalloc.h> (Ruby's --with-jemalloc;
+#                              plan Phase 3 task 3). The pc file's Cflags point
+#                              at it. The Wolfi package puts it in
+#                              challoc-jemalloc-compat-dev.
 #
 # Environment:
 #   QUANTUM     16 (default) or 8; picks the quantum8/quantum16 feature
@@ -50,8 +54,9 @@ so="$TARGET_DIR/release/libchalloc.so"
 readelf -d "$so" | grep -q 'Library soname: \[libjemalloc.so.2\]' \
     || { echo "jemalloc-compat: $so has no libjemalloc.so.2 soname" >&2; exit 1; }
 
-rm -rf "$OUT/lib"
-mkdir -p "$OUT/lib/pkgconfig"
+rm -rf "$OUT/lib" "$OUT/include"
+mkdir -p "$OUT/lib/pkgconfig" "$OUT/include/jemalloc"
+cp contrib/jemalloc-compat/include/jemalloc/jemalloc.h "$OUT/include/jemalloc/jemalloc.h"
 cp "$so" "$OUT/lib/libjemalloc.so.2"
 ln -s libjemalloc.so.2 "$OUT/lib/libjemalloc.so"
 cat > "$OUT/lib/pkgconfig/jemalloc.pc" <<PC
@@ -70,4 +75,4 @@ Libs: -L\${libdir} -ljemalloc\${install_suffix}
 PC
 
 echo "jemalloc-compat: quantum$QUANTUM, version $VERSION, prefix $PREFIX"
-ls -l "$OUT/lib" "$OUT/lib/pkgconfig"
+ls -l "$OUT/lib" "$OUT/lib/pkgconfig" "$OUT/include/jemalloc"

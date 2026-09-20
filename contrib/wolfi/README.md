@@ -1,13 +1,17 @@
 # contrib/wolfi: the Wolfi package definitions
 
-`challoc.yaml` is the melange definition for the three Wolfi packages of
-docs/plan.md Phase 3 task 1 (design 13.6); `valkey/valkey-9.1.yaml` is
-Wolfi's Valkey 9.1 package switched to challoc (task 2, the "Valkey"
-section below). Phase 3 runs in the wolfi-dev/os repository; this
+`challoc.yaml` is the melange definition for the Wolfi packages of
+docs/plan.md Phase 3 task 1 (design 13.6; three packages, plus the
+`challoc-jemalloc-compat-dev` header package task 3 added);
+`valkey/valkey-9.1.yaml` is Wolfi's Valkey 9.1 package switched to
+challoc (task 2, the "Valkey" section below); `ruby/ruby-3.4.yaml` is
+Wolfi's Ruby 3.4 switched to `challoc-jemalloc-compat` (task 3, the
+"Ruby" section). Phase 3 runs in the wolfi-dev/os repository; this
 directory tracks the drafts and the recipes that build and test them
-here. Results of the first real builds (both architectures, 2026-09-20):
-`bench/results/2026-09-20-phase3-task1-wolfi-package.md` and
-`bench/results/2026-09-20-phase3-task2-valkey-package.md`.
+here. Results of the first real builds (2026-09-20):
+`bench/results/2026-09-20-phase3-task1-wolfi-package.md`,
+`bench/results/2026-09-20-phase3-task2-valkey-package.md` and
+`bench/results/2026-09-20-phase3-task3-ruby-package.md`.
 
 ## Packages
 
@@ -15,7 +19,8 @@ here. Results of the first real builds (both architectures, 2026-09-20):
 |---|---|---|
 | `challoc` | `/usr/lib/libchalloc.so.0` | the runtime: `quantum16`, `DT_SONAME libchalloc.so.0`; `provides so:libchalloc.so.0` (auto). Nothing else: the link name is the -dev package's, as Wolfi's `split/dev` does for every library. |
 | `challoc-dev` | `/usr/lib/libchalloc.so -> libchalloc.so.0`, `/usr/include/challoc/jemalloc.h`, `/usr/lib/pkgconfig/challoc.pc` | `runtime: challoc=<version>`. The header is `contrib/valkey/include/challoc/jemalloc.h` (the `je_` API under `<challoc/...>`, never `<jemalloc/...>`). `challoc.pc` is written by the pipeline: `Version` is the crate version, `Libs: -L${libdir} -Wl,--push-state,--no-as-needed -lchalloc -Wl,--pop-state` (see "as-needed" below). |
-| `challoc-jemalloc-compat` | `/usr/lib/libjemalloc.so.2`, `/usr/lib/libjemalloc.so -> libjemalloc.so.2`, `/usr/lib/pkgconfig/jemalloc.pc` | `quantum16` built with the `jemalloc-soname` feature and staged by `scripts/jemalloc-compat.sh` (`QUANTUM=16 PREFIX=/usr`), so the file set and the pc file (`Version: 5.3.0`, upstream's `jemalloc.pc.in` fields) are exactly what `make jemalloc-compat` produces. `provides: libjemalloc2=<version>` plus the automatic `so:libjemalloc.so.2=2` and `pc:jemalloc`. No header (a consumer that includes `<jemalloc/jemalloc.h>` still needs `jemalloc-dev`; see "Swapping" below). |
+| `challoc-jemalloc-compat` | `/usr/lib/libjemalloc.so.2` | `quantum16` built with the `jemalloc-soname` feature and staged by `scripts/jemalloc-compat.sh` (`QUANTUM=16 PREFIX=/usr`). The file set of Wolfi's `libjemalloc2`, which it `provides` (plus the automatic `so:libjemalloc.so.2=2`). Task 1 had the link name and the pc file here too; task 3 moved them to the -dev package, where `jemalloc-dev` keeps its own. |
+| `challoc-jemalloc-compat-dev` | `/usr/lib/libjemalloc.so -> libjemalloc.so.2`, `/usr/lib/pkgconfig/jemalloc.pc`, `/usr/include/jemalloc/jemalloc.h` | `runtime: challoc-jemalloc-compat=<version>`; `provides: jemalloc-dev=<version>` (the file set of Wolfi's `jemalloc-dev`, so the two conflict and apk refuses to co-install them). The pc file is the stage's (`Version: 5.3.0`, upstream's `jemalloc.pc.in` fields, `Cflags: -I${includedir}/jemalloc`, `Libs: -L${libdir} -ljemalloc`); the header is `contrib/jemalloc-compat/include/jemalloc/jemalloc.h`: jemalloc 5.3's unprefixed API as challoc exports it (`malloc_conf`, `malloc_message`, the `mallocx` family, `mallctl*`, `malloc_stats_print`, the `MALLOCX_*`/`MALLCTL_ARENAS_*` and `JEMALLOC_VERSION*` macros, the `je_` spellings as prototypes) with the standard entry points left to `<stdlib.h>`/`<malloc.h>` so C++ sees one declaration of `malloc`. `scripts/jemalloc-compat.sh` stages the same header under `include/jemalloc/`, so the stage and the packages have one file set. See "Ruby" below. |
 
 Valkey's private `quantum8` build is not one of these packages: it is
 built inside `valkey/valkey-9.1.yaml` (`/usr/lib/valkey/`, design 13.6:
@@ -160,14 +165,18 @@ one configured (results file, "co-installation"):
   (the name is provided); `apk add jemalloc-dev` is refused
   (`conflicts: challoc-jemalloc-compat[pc:jemalloc]`): the two are
   alternatives, by design.
-- Open point for task 3: a consumer that includes `<jemalloc/jemalloc.h>`
-  (Ruby's `--with-jemalloc`) builds against `jemalloc-dev`, which
-  conflicts with the compat package's `libjemalloc.so` and `jemalloc.pc`.
-  Either the compat package grows a `/usr/include/jemalloc/jemalloc.h`
-  (a header declaring the unprefixed API; `contrib/valkey/include/challoc/jemalloc.h`
-  declares the `je_` one) or the consumer's build environment lists
-  `jemalloc-dev` for the header and links against the compat library from
-  a `--repository-append` of its own; the PROGRESS.d note records it.
+- A consumer that includes `<jemalloc/jemalloc.h>` (Ruby's
+  `--with-jemalloc`) lists `challoc-jemalloc-compat-dev` in place of
+  `jemalloc-dev` in its build environment (task 3; the task 1 open point).
+  The -dev package carries the header, the link name and the pc file, the
+  file set of `jemalloc-dev`, so the consumer's configure sees nothing
+  different; `apk add jemalloc-dev` is refused while it is installed and
+  a dependency on `jemalloc-dev` is satisfied by it (`provides`), with no
+  `provider-priority`, so nothing flips merely because it exists. The
+  consumer's runtime dependency must still name `challoc-jemalloc-compat`
+  explicitly: melange derives `so:libjemalloc.so.2` from the binaries and
+  apk would resolve that to `libjemalloc2` by name preference (the results
+  file of task 3, "Package metadata").
 
 ## Valkey
 
@@ -340,3 +349,76 @@ Two more things learned:
   `.make-settings` machinery rebuilds everything when the allocator
   setting changes between invocations, and the rebuild would be with the
   bundled jemalloc.
+
+## Ruby
+
+`ruby/ruby-3.4.yaml` is wolfi-dev/os's `ruby-3.4.yaml` (main at
+`a944f08`, 2026-09-19; the file last changed in `1c5cd09`, the resolv
+0.7.2 cherry-pick, `epoch: 7`) with the allocator switched from Wolfi's
+jemalloc to challoc through `challoc-jemalloc-compat`.
+`ruby/ruby-3.4/remove-already-provided-gems-from-gems_bundled_gems.patch`
+is Wolfi's own patch, unchanged (Wolfi keeps it in a directory named after
+the package, and melange resolves `patches:` against `--source-dir`).
+`bench/results/2026-09-20-phase3-task3-ruby-package.md` has the diff
+against Wolfi's file, the build and every assertion's output.
+
+The changes, in file order:
+
+| where | Wolfi | here | why |
+|---|---|---|---|
+| `epoch` | 7 | 8 | the allocator switch is a rebuild of the same version |
+| `dependencies.runtime` | (derived) | `challoc-jemalloc-compat` added | melange derives `so:libjemalloc.so.2` from `ruby` and `libruby.so.3.4`; apk resolves a bare `so:` name to the package that carries it (`libjemalloc2`) over a provider, so without the explicit name an image would run the package on Wolfi's jemalloc, not on what it was built and tested against |
+| `environment.contents.packages` | `jemalloc-dev` | `challoc-jemalloc-compat-dev` | the same file set (`libjemalloc.so`, `jemalloc.pc`, `<jemalloc/jemalloc.h>`); configure's `--with-jemalloc` probe (a read of `malloc_conf` through the header, then `-ljemalloc`) is unchanged, `HAVE_MALLOC_CONF` and `RUBY_ALTERNATIVE_MALLOC_HEADER <jemalloc/jemalloc.h>` are defined as before, and `--no-as-needed` (Ruby's own, ruby/ruby#4627) keeps `DT_NEEDED libjemalloc.so.2` on the binary that references no allocator symbol itself (design 13.6) |
+| after `autoconf/make` | - | a check step | `config.h` has `HAVE_MALLOC_CONF 1` and the header path; the header is challoc's (`JEMALLOC_CHALLOC`); `ruby` and `libruby.so.3.4*` have `NEEDED libjemalloc.so.2`; the environment's `libjemalloc.so.2` exports `challoc_version` (a build environment has no `apk`, so the file is asked, not the database) |
+| `ruby-3.4-dev` `runtime` | `jemalloc-dev` | `challoc-jemalloc-compat-dev` | extensions built with mkmf link `-ljemalloc` through `DLDLIBS`; the -dev package satisfies a `jemalloc-dev` dependency too (`provides`), but the package names what it means |
+| `test.environment` | `ruby3.4-bundler` | plus `apk-tools`, `binutils` | for `apk info --who-owns` and `readelf` |
+| `test.pipeline` | Wolfi's five steps | plus "Ruby runs on challoc" | below; Wolfi's steps (`ver-check`, `help-check`, hello world, `bundle doctor --ssl`, `ldd-check`) stay |
+
+The bootstrap `ruby-3.4` in the build environment (Wolfi builds Ruby with
+Ruby) also needs `so:libjemalloc.so.2`; with `challoc-jemalloc-compat-dev`
+in the environment apko resolves it to the compat library, so the
+bootstrap interpreter runs on challoc during the build as well.
+
+### What the package test proves
+
+The prompt's `MALLOC_CONF=stats_print:true ruby -e 1 | grep challoc` does
+not work under challoc: `stats_print` is parsed and inert (`src/config.rs`
+`INERT_KEYS`; nothing is printed at exit), so the report is asked for
+directly, from inside the running interpreter, through Fiddle (a default
+gem in 3.4, built here because `libffi-dev` is in the environment):
+
+| check | how |
+|---|---|
+| runs | `ruby -e 1`; `ruby -rjson -e 'puts JSON.generate(a: 1)'` = `{"a":1}` |
+| linked the jemalloc way | `RbConfig::CONFIG["MAINLIBS"]` contains `-ljemalloc`; `readelf -d` on `ruby` and on `libruby.so.3.4.10` has `NEEDED [libjemalloc.so.2]` |
+| the file is the compat package's | `ldd ruby` resolves `libjemalloc.so.2 => /usr/lib/libjemalloc.so.2`; `apk info --who-owns /usr/lib/libjemalloc.so.2` names `challoc-jemalloc-compat`; `libjemalloc2` is not installed |
+| a running ruby maps exactly that file | `/proc/self/maps` filtered for `libjemalloc` = `/usr/lib/libjemalloc.so.2` |
+| the process's allocator says challoc | Fiddle: `mallctl("version")` = `5.3.0-0-gchalloc`, `challoc_version()` = `0.1.0`, `Fiddle::Handle::DEFAULT["malloc"] == Fiddle::Handle.new("libjemalloc.so.2")["malloc"]` (and `free`), `malloc_stats_print(NULL, NULL, NULL)` writes `Version: "5.3.0-0-gchalloc"` |
+| it allocates | 40 k live medium objects (strings of 1..4 KiB, 12-entry hashes: what reaches `malloc` from Ruby's heap), three garbage bursts with `GC.start`, three forced full GCs (bench/ruby/gc_churn.rb's shape, cut down); `GC.stat[:count] >= 6`, the live set intact, RSS printed |
+
+### Building and testing locally
+
+Same VM and container as "Building locally" above (melange with
+bubblewrap in a privileged `wolfi-base` container, Wolfi's `pipelines/`
+at `a944f08`), after `challoc.yaml` has been built into the local
+repository (the Ruby build environment takes
+`challoc-jemalloc-compat-dev` from it):
+
+```sh
+melange build /work/contrib/wolfi/ruby/ruby-3.4.yaml --arch $(uname -m) \
+  --source-dir /work/contrib/wolfi/ruby/ruby-3.4 \
+  --pipeline-dir /tmp/os/pipelines $WOLFI \
+  --repository-append /out/packages --keyring-append /out/melange.rsa.pub \
+  --signing-key /out/melange.rsa --out-dir /out/packages --runner bubblewrap
+melange test /work/contrib/wolfi/ruby/ruby-3.4.yaml --arch $(uname -m) \
+  --pipeline-dirs /tmp/os/pipelines $WOLFI \
+  --repository-append /out/packages --keyring-append /out/melange.rsa.pub \
+  --test-package-append=wolfi-base --runner bubblewrap
+```
+
+`--source-dir` is the patch directory (Wolfi's Makefile passes
+`./ruby-3.4`); the Ruby checkout comes from GitHub. The full `make
+test-all` is not part of the package test (Phase 1 ran it against the
+same tag and the same library under this soname,
+`bench/results/2026-09-17-ruby-test-all.md`); the results file has the
+short subset run by hand against the packaged interpreter.

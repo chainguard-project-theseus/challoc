@@ -1745,7 +1745,12 @@ defragmenter asserts `arenas.quantum == 8`, from the `--with-lg-quantum=3`
 of its bundled jemalloc) and gets it the way it gets jemalloc today: a
 private `quantum8` build of the same source in its own package, installed
 under a private library directory (`/usr/lib/valkey/`) named in the
-binary's `RUNPATH`, or linked statically from `libchalloc.a`. Two
+binary's rpath (`DT_RPATH` or `DT_RUNPATH`: Wolfi's binutils 2.47 emits
+`DT_RPATH` for `-Wl,-rpath` without `--enable-new-dtags`, which for a
+private library is the better of the two, since `DT_RPATH` is searched
+before `LD_LIBRARY_PATH` and only `LD_PRELOAD` can displace the file;
+`contrib/wolfi/valkey/valkey-9.1.yaml` and its test accept either), or
+linked statically from `libchalloc.a`. Two
 libraries with one soname cannot share `/usr/lib`, so the system library
 is never `quantum8`. This is a packaging rule for Phase 3; it does not
 change the builds this repository tests (`quantum16` by default,
