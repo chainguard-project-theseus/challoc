@@ -19,7 +19,8 @@
 //! cross-thread-only path (one that knows the claimer is another core,
 //! which the release path does not) can be measured by adding one call.
 //!
-//! [`configure`] installs the probe's verdict at init (`Features::probe`);
+//! [`configure`] installs the probe's verdict at init (`api::init`, from
+//! `X86::cldemote` of the CPU report; the probe itself is pure);
 //! without the bit, on another architecture, or before init, [`demote`] is
 //! a predicted-not-taken branch on one byte. Nothing observable changes
 //! between hosts.

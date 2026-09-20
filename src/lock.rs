@@ -10,8 +10,8 @@
 //! sleeping.
 //!
 //! The spin between two polls of the word is a [`SpinHint`]: `pause` or
-//! `isb` (`core::hint::spin_loop`) everywhere, and, when the CPU probe
-//! (`sys::cpu::Cpu::probe`, the one thing it acts on) says so, x86_64's
+//! `isb` (`core::hint::spin_loop`) everywhere, and, when the CPU report
+//! (`sys::cpu::spin_hint`, the one thing `api::init` acts on) says so, x86_64's
 //! `umonitor`/`umwait` on the lock word or aarch64's `ldaxr`/`wfe` on it,
 //! which park the waiter until the holder's store instead of re-polling
 //! (design 5). A hint changes nothing about the protocol: every hint polls
@@ -40,8 +40,9 @@ const CONTENDED: u32 = 2;
 const SPINS: u32 = 100;
 
 /// How a contended locker waits between two polls of the word during the
-/// [`SPINS`] phase (design 5). Chosen once at init from the CPU probe
-/// (`sys::cpu::Cpu::probe` calls [`set_spin_hint`]); until then, and on a
+/// [`SPINS`] phase (design 5). Chosen once at init from the CPU report
+/// (`api::init` calls [`suggest_spin_hint`] with `sys::cpu::spin_hint`;
+/// the configuration key's [`set_spin_hint`] wins); until then, and on a
 /// CPU without the instruction, [`SpinHint::Baseline`].
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -106,8 +107,9 @@ static SPIN_HINT: AtomicU8 = AtomicU8::new(SpinHint::Baseline as u8);
 /// probe's later suggestions (a second probe at init, a test's) are ignored.
 static SPIN_FORCED: AtomicBool = AtomicBool::new(false);
 
-/// The CPU probe's choice (`sys::cpu::spin_hint`), installed unless the
-/// configuration chose one. Returns the hint in use afterwards.
+/// The CPU report's choice (`sys::cpu::spin_hint`, passed by `api::init`),
+/// installed unless the configuration chose one. Returns the hint in use
+/// afterwards.
 pub fn suggest_spin_hint(hint: SpinHint) -> SpinHint {
     if !SPIN_FORCED.load(Ordering::Acquire) {
         SPIN_HINT.store(hint.available() as u8, Ordering::Relaxed);
@@ -126,9 +128,10 @@ pub fn set_spin_hint(hint: SpinHint) -> SpinHint {
 }
 
 /// Held by the tests that install a hint or assert the process-wide one
-/// (`config::linux_tests::spin_hint_key_installs_and_umwait_needs_waitpkg`,
-/// `sys::cpu::linux_tests::probe_matches_proc_cpuinfo`), so they do not
-/// observe each other; the lock tests force their hint per call instead.
+/// (`config::linux_tests::spin_hint_key_installs_where_available`,
+/// `sys::cpu::linux_tests::probe_has_no_side_effects` and
+/// `init_installs_the_spin_hint_and_cldemote`), so they do not observe
+/// each other; the lock tests force their hint per call instead.
 #[cfg(all(test, target_os = "linux"))]
 pub(crate) static SPIN_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

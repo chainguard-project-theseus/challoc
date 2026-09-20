@@ -898,14 +898,13 @@ mod linux {
     impl Features {
         /// Probe everything. Called once from init (design.md section 10);
         /// calling it again is harmless but leaks a sealed page and may open
-        /// another pidfd, so init stores the result.
+        /// another pidfd, so init stores the result. Pure apart from those
+        /// two resources: what the result is acted on (the lock's spin
+        /// hint, the `cldemote` verdict) is installed by `api::init`.
         pub fn probe() -> Features {
             let page_size = page_size();
             let (process_madvise, process_madvise_free) = probe_process_madvise(page_size);
             let cpu = Cpu::probe(page_size);
-            // The `cldemote` verdict: installed for `sys::cldemote::demote`,
-            // which no path issues today.
-            crate::sys::cldemote::configure(matches!(cpu.isa, Isa::X86(x) if x.cldemote));
             Features {
                 page_size,
                 page_shift: page_size.trailing_zeros(),
@@ -1115,15 +1114,15 @@ mod tests {
         assert_eq!(t.enabled, None);
         assert_eq!(t, Thp::NONE);
     }
-    use crate::rseq::Probe;
 
+    use crate::rseq::Probe;
     use crate::sys::cpu::{Arm, CacheSource, Caches, Cpu, Isa, X86};
+
     /// What `rseq::probe` reads on a host whose glibc registered `size`
     /// bytes at `offset` (registered when the size is not 0).
     fn rseq_probe(size: u32, offset: isize) -> Probe {
         Probe { present: true, size, flags: 0, offset, registered: size != 0 }
     }
-
 
     fn axion_cpu() -> Cpu {
         Cpu {
@@ -1263,6 +1262,7 @@ mod tests {
             };
             let s = std::format!("{f}");
             assert!(s.len() < FeatureLine::CAP - 64, "{} bytes: {s}", s.len());
+            assert_eq!(FeatureLine::build(&f).as_str(), s);
             // The table is what the line is made of: the same bytes, word
             // by word.
             let by_words: usize = f.words().map(|(k, v)| k.len() + 1 + std::format!("{v}").len() + 1).sum::<usize>() - 1;
@@ -1312,7 +1312,6 @@ mod tests {
             assert_eq!(std::format!("{f}"), joined.join(" "));
             assert_eq!(std::format!("{}", f.cpu), joined[kernel.len()..].join(" "));
             assert_eq!(std::format!("{}", f.thp), joined[7..10].join(" "));
-            assert_eq!(FeatureLine::build(&f).as_str(), s);
         }
     }
 
@@ -1602,8 +1601,8 @@ mod linux_tests {
     /// registers 20). Both ways: it runs on hosts of each kind.
     #[test]
     fn rseq_words_match_glibc_symbols_and_the_feature_size() {
-        assert_eq!(f.rseq, crate::rseq::probe(), "the line's probe is the mode's");
         let (kv, f, line) = probed();
+        assert_eq!(f.rseq, crate::rseq::probe(), "the line's probe is the mode's");
         let sym = |name: &[u8]| -> *const u8 {
             // SAFETY: `dlsym` on a NUL-terminated name in the test.
             unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr().cast()) }.cast()
@@ -1615,8 +1614,8 @@ mod linux_tests {
             return;
         }
         // SAFETY: glibc's exported objects of these types.
-        assert!(f.rseq.present, "{line}");
         let (size, offset, flags) = unsafe { (ps.cast::<u32>().read(), po.cast::<isize>().read(), pf.cast::<u32>().read()) };
+        assert!(f.rseq.present, "{line}");
         assert_eq!((f.rseq.size, f.rseq.offset, f.rseq.flags), (size, offset, flags), "{line}");
         let registered = size >= crate::rseq::BASE_SIZE && f.rseq.registered;
         eprintln!("rseq: __rseq_size={size} __rseq_offset={offset} __rseq_flags={flags} registered={}", f.rseq.registered);

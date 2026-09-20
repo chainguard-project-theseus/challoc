@@ -27,14 +27,16 @@
 //!
 //! The decoders at the top are pure and unit tested on the host against
 //! captured register and file contents; the probes run in the container.
+//! [`Cpu::probe`] is pure: the one thing the report is acted on, the
+//! lock's spin hint ([`spin_hint`]), is installed by `api::init`.
 
 use core::fmt;
 
-/// One `cpuid` result (x86_64), or a captured one in a test fixture.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 use super::features::{Value, write_words};
 use super::{Trailing, parse_decimal};
 
+/// One `cpuid` result (x86_64), or a captured one in a test fixture.
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Regs {
     pub eax: u32,
     pub ebx: u32,
@@ -163,8 +165,8 @@ pub enum Isa {
 /// (`bench/results/2026-09-19-lane-c-spin-and-geometry.md`), so `wfe` is
 /// the explicit key's alone, gated on the event stream ([`HWCAP_EVTSTRM`],
 /// `linux::event_stream`). Not a key of the report line: `lock::spin_hint()`
-/// says what is in use. The probe suggests it (`lock::suggest_spin_hint`;
-/// the configuration key wins), the one thing the report acts on.
+/// says what is in use. `api::init` suggests it (`lock::suggest_spin_hint`;
+/// the configuration key wins), the one thing the report is acted on.
 pub fn spin_hint(isa: &Isa) -> crate::lock::SpinHint {
     use crate::lock::SpinHint;
     match isa {
@@ -372,12 +374,10 @@ mod linux {
         /// whatever cache figure they did not give. Never allocates; at most
         /// six small file reads (about 35 us on the C4A, `probe_cost_is_small`)
         /// and, on x86_64 with `la57`, one `mmap`/`munmap` pair of
-        /// `page_size` bytes.
+        /// `page_size` bytes. Pure: nothing process-wide changes (the spin
+        /// hint is `api::init`'s to suggest from the result).
         pub fn probe(page_size: usize) -> Cpu {
             let (isa, from_regs) = arch::probe(page_size);
-            // The one thing the report acts on: the lock's spin hint
-            // (`lock::SpinHint`), suggested before any lock is contended.
-            crate::lock::suggest_spin_hint(super::spin_hint(&isa));
             let mut caches = from_regs;
             let mut source = if caches.l1d != 0 && caches.l2 != 0 { CacheSource::Cpuid } else { CacheSource::None };
             if !caches.complete() {
@@ -910,7 +910,6 @@ mod linux_tests {
 
     #[test]
     fn probe_matches_proc_cpuinfo() {
-        let _serial = crate::lock::SPIN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let page = crate::sys::features::page_size();
         let c = Cpu::probe(page);
         let line = std::format!("{c}");
@@ -927,19 +926,19 @@ mod linux_tests {
         }
         // The architecture we were built for is the one reported.
         assert_eq!(matches!(c.isa, Isa::Arm(_)), cfg!(target_arch = "aarch64"));
-        // The probe suggested the lock's spin hint, and it matches the
-        // kernel's flags: `umwait` with `waitpkg` on x86_64 (hidden by
-        // GCE's hypervisor, so the baseline there), the baseline on arm64
-        // (`wfe` is the explicit key's); the event stream the key needs
-        // is `evtstrm`.
+        // The spin hint the report suggests matches the kernel's flags:
+        // `umwait` with `waitpkg` on x86_64 (hidden by GCE's hypervisor,
+        // so the baseline there), the baseline on arm64 (`wfe` is the
+        // explicit key's); the event stream the key needs is `evtstrm`.
+        // Whether it is in use is `init_installs_the_spin_hint_and_cldemote`.
         let has = |f: &str| flags.iter().any(|g| g == f);
         let want = match c.isa {
             Isa::X86(_) if has("waitpkg") => crate::lock::SpinHint::Umwait,
             _ => crate::lock::SpinHint::Baseline,
         };
-        assert_eq!(crate::lock::spin_hint(), want, "spin hint in use against /proc/cpuinfo");
+        assert_eq!(spin_hint(&c.isa), want, "suggested spin hint against /proc/cpuinfo");
         assert_eq!(event_stream(), has("evtstrm") && cfg!(target_arch = "aarch64"), "event stream against /proc/cpuinfo");
-        std::eprintln!("cpu: spin_hint={} event_stream={}", crate::lock::spin_hint().name(), event_stream());
+        std::eprintln!("cpu: spin_hint={} event_stream={}", spin_hint(&c.isa).name(), event_stream());
         // Every CPU we run on has a 32..256-byte line and, when known, a
         // plausible L1D and L2.
         assert!(matches!(c.caches.line, 32 | 64 | 128 | 256), "{line}");
@@ -994,6 +993,59 @@ mod linux_tests {
                     }
                 }
             }
+        }
+    }
+
+    /// The probe is pure: a hundred runs change neither the process-wide
+    /// spin hint nor the `cldemote` verdict (both are `api::init`'s,
+    /// `init_installs_the_spin_hint_and_cldemote`). Under the lock the
+    /// tests that install a hint hold, so a forced hint is not misread as
+    /// the probe's doing.
+    #[test]
+    fn probe_has_no_side_effects() {
+        let _serial = crate::lock::SPIN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let page = crate::sys::features::page_size();
+        let hint = crate::lock::spin_hint();
+        let demote = crate::sys::cldemote::enabled();
+        // A hint the probe would never suggest, and the opposite verdict:
+        // if either moves back, the probe wrote them.
+        crate::lock::set_spin_hint(crate::lock::SpinHint::Baseline);
+        crate::sys::cldemote::configure(!demote);
+        let c = Cpu::probe(page);
+        for _ in 0..100 {
+            assert_eq!(Cpu::probe(page), c);
+        }
+        assert_eq!(crate::lock::spin_hint(), crate::lock::SpinHint::Baseline, "the probe installed a spin hint");
+        assert_eq!(crate::sys::cldemote::enabled(), !demote && cfg!(target_arch = "x86_64"), "the probe configured cldemote");
+        crate::sys::cldemote::configure(demote);
+        crate::lock::set_spin_hint(hint);
+    }
+
+    /// The one test here that initialises the real allocator. Its module
+    /// is named `api` so the Makefile's `--skip api::` filter puts it in
+    /// the second test process with the other tests that do (`make test`;
+    /// the first process must not carry the allocator's reservations
+    /// under emulation).
+    mod api {
+        use super::super::*;
+
+        /// What `api::init` does with the report, both ways: once the
+        /// allocator is initialised the lock's spin hint is the one this
+        /// CPU suggests (the configuration of the test binary sets no
+        /// `spin_hint` key) and the `cldemote` verdict is the CPU's bit (on
+        /// x86_64; never on elsewhere). Init runs once per process, so this
+        /// reads the installed state rather than running it again; a test
+        /// that forced a hint holds the same lock and puts the probe's
+        /// choice back.
+        #[test]
+        fn init_installs_the_spin_hint_and_cldemote() {
+            let _serial = crate::lock::SPIN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _ = crate::api::shared();
+            let c = Cpu::probe(crate::sys::features::page_size());
+            assert_eq!(crate::lock::spin_hint(), spin_hint(&c.isa), "init did not suggest the CPU's spin hint");
+            let present = matches!(c.isa, Isa::X86(x) if x.cldemote);
+            assert_eq!(crate::sys::cldemote::enabled(), present && cfg!(target_arch = "x86_64"), "init did not configure cldemote");
+            std::eprintln!("init: spin_hint={} cldemote={}", crate::lock::spin_hint().name(), crate::sys::cldemote::enabled());
         }
     }
 
