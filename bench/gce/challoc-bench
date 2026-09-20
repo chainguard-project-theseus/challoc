@@ -139,6 +139,7 @@ cmd_create() {
 # provision installs Docker, perf for the running kernel, rsync, and opens
 # perf_event access for unprivileged users. Idempotent.
 cmd_provision() {
+  local -a pids=() names=()
   for t in $(targets "${1:-all}"); do
     echo "challoc-bench: provisioning $(vm_name "$t")"
     gssh "$t" --command="bash -s" -- -T <<'REMOTE' &
@@ -166,8 +167,13 @@ echo "== docker: $(sudo docker --version)"
 echo "== perf: $(perf --version)"
 echo "== pmu: $(ls /sys/bus/event_source/devices/ | tr '\n' ' ')"
 REMOTE
+    pids+=($!); names+=("$(vm_name "$t")")
   done
-  wait
+  # The exit code is the worst of the targets' (a VM still booting refuses
+  # ssh; before 2026-09-20 that returned 0 and the next step ran unprovisioned).
+  local i failed=
+  for i in "${!pids[@]}"; do wait "${pids[$i]}" || failed="$failed ${names[$i]}"; done
+  [ -z "$failed" ] || die "provision FAILED for:$failed"
 }
 
 # rsync_tree SSH_CMD DEST: the working tree to DEST:$REMOTE_DIR (the one
@@ -207,12 +213,19 @@ cmd_sync() {
     echo "challoc-bench: WARNING: uncommitted changes in the library sources are being synced (the VM's working tree != HEAD $(git -C "$REPO" rev-parse --short HEAD)):" >&2
     echo "$dirty" | sed 's/^/    /' >&2
   fi
+  # One rsync per target in parallel; the exit code is the worst of them.
+  # (Before 2026-09-20 a failed rsync, say after a VM restart changed its
+  # host key, returned 0 and the VM went on measuring its stale tree.)
+  local -a pids=() names=()
   for t in $(targets "${1:-all}"); do
     local dest; dest="$(ssh_target "$t")"
     echo "challoc-bench: syncing $REPO -> $dest:$REMOTE_DIR"
     rsync_tree "$(ssh_cmd)" "$dest" &
+    pids+=($!); names+=("$(vm_name "$t")")
   done
-  wait
+  local i failed=
+  for i in "${!pids[@]}"; do wait "${pids[$i]}" || failed="$failed ${names[$i]}"; done
+  [ -z "$failed" ] || die "sync FAILED for:$failed (host key changed after a restart? ssh-keygen -R <ip> -f ~/.ssh/google_compute_known_hosts)"
 }
 
 cmd_run() {
