@@ -41,9 +41,9 @@
 //!
 //! Everything is probed at run time ([`probe`]): the symbols and the size
 //! from `rseq::probe`, bit 4 of this thread's `flags`, the `prctl`, bit 5
-//! after it, and the syscall (an `ENOSYS` from `rseq_slice_yield` on a
-//! kernel that has the option compiled out, or that predates it, is the
-//! fallback's signature; the number, 471 on both architectures, is from
+//! after it, and the syscall (an `ENOSYS` from `sys::rseq_slice_yield` on
+//! a kernel that has the option compiled out, or that predates it, is the
+//! fallback's signature; the number is `sys::nr::RSEQ_SLICE_YIELD`, from
 //! the unified table since 7.0). Where any step fails the module is off
 //! and a lock hold costs one relaxed load of [`STATE`]. Ubuntu's
 //! `7.0.0-1011-gcp` kernel (the GCE reference VMs) does not set the
@@ -72,22 +72,6 @@ pub const PR_RSEQ_SLICE_EXTENSION: i32 = 79;
 pub const PR_RSEQ_SLICE_EXTENSION_GET: usize = 1;
 pub const PR_RSEQ_SLICE_EXTENSION_SET: usize = 2;
 pub const PR_RSEQ_SLICE_EXT_ENABLE: usize = 1;
-/// `__NR_rseq_slice_yield` (7.0, the unified table, so the same on x86_64
-/// and aarch64; `arch/x86/entry/syscalls/syscall_64.tbl` and
-/// `include/uapi/asm-generic/unistd.h` at v7.0 both say 471). Probed with
-/// `ENOSYS`, never assumed.
-pub const NR_RSEQ_SLICE_YIELD: usize = 471;
-/// `__NR_sched_yield`: the grant-ending syscall where a seccomp filter
-/// returns `ENOSYS` for the dedicated one (Docker's default profile does
-/// for every syscall newer than its table). Any syscall entry inside a
-/// granted extension revokes the grant and reschedules; `sched_yield`
-/// is the cheapest one that also means "yield".
-#[cfg(target_arch = "x86_64")]
-pub const NR_SCHED_YIELD: usize = 24;
-#[cfg(target_arch = "aarch64")]
-pub const NR_SCHED_YIELD: usize = 124;
-#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-pub const NR_SCHED_YIELD: usize = 0;
 
 /// Process-wide state, one byte read on every lock hold.
 const OFF: u8 = 0;
@@ -225,7 +209,7 @@ pub fn probe() -> Probe {
         }
         // The syscall with no grant outstanding returns 0 and does nothing
         // else; `ENOSYS` is the kernel without it.
-        let yield_syscall = available && matches!(slice_yield(), Ok(_));
+        let yield_syscall = available && matches!(crate::sys::rseq_slice_yield(), Ok(_));
         Probe { size: r.size, offset: r.offset, available, enabled, yield_syscall }
     }
     #[cfg(not(target_os = "linux"))]
@@ -320,26 +304,6 @@ pub fn thread_enabled() -> Result<usize, crate::sys::Errno> {
     unsafe { crate::sys::prctl(PR_RSEQ_SLICE_EXTENSION, PR_RSEQ_SLICE_EXTENSION_GET, 0, 0, 0) }
 }
 
-/// `rseq_slice_yield(2)`: end a granted extension now. `Ok(1)` when the
-/// kernel had marked the thread as yielded, `Ok(0)` otherwise,
-/// `Err(ENOSYS)` on a kernel without it.
-#[cfg(target_os = "linux")]
-#[inline]
-pub fn slice_yield() -> Result<usize, crate::sys::Errno> {
-    let ret: usize;
-    // SAFETY: a syscall with no arguments; it reads and writes nothing of
-    // ours. The same register contract as `sys::raw::syscall0`, which is
-    // private to `sys` (this module keeps its one syscall to itself).
-    unsafe {
-        #[cfg(target_arch = "x86_64")]
-        core::arch::asm!("syscall", inlateout("rax") NR_RSEQ_SLICE_YIELD => ret,
-             lateout("rcx") _, lateout("r11") _, options(nostack));
-        #[cfg(target_arch = "aarch64")]
-        core::arch::asm!("svc 0", in("x8") NR_RSEQ_SLICE_YIELD, lateout("x0") ret, options(nostack));
-    }
-    crate::sys::decode(ret)
-}
-
 /// Whether the extension is on for this process.
 #[inline]
 pub fn on() -> bool {
@@ -366,7 +330,13 @@ pub fn yields() -> u64 {
     YIELDS.load(Ordering::Relaxed)
 }
 
-/// The syscall a grant is ended with, for the report.
+/// The syscall a grant is ended with, for the report: `rseq_slice_yield`
+/// (`sys::rseq_slice_yield`), or `sched_yield` (`sys::sched_yield`) where
+/// a seccomp filter returns `ENOSYS` for the dedicated one (Docker's
+/// default profile does for every syscall newer than its table; any
+/// syscall entry inside a granted extension revokes the grant and
+/// reschedules, and `sched_yield` is the cheapest one that also means
+/// "yield").
 pub fn yield_name() -> &'static str {
     if YIELD_SCHED.load(Ordering::Relaxed) { "sched_yield" } else { "rseq_slice_yield" }
 }
@@ -474,33 +444,18 @@ pub fn released(area: *mut u8) {
     }
 }
 
+/// A grant seen after the release: count it and give the CPU back with
+/// the syscall the probe settled on ([`yield_name`]).
 #[cold]
 #[inline(never)]
 fn yield_now() {
     YIELDS.fetch_add(1, Ordering::Relaxed);
     #[cfg(target_os = "linux")]
     if YIELD_SCHED.load(Ordering::Relaxed) {
-        let _ = sched_yield();
+        let _ = crate::sys::sched_yield();
     } else {
-        let _ = slice_yield();
+        let _ = crate::sys::rseq_slice_yield();
     }
-}
-
-/// `sched_yield(2)`, the grant-ending syscall where `rseq_slice_yield` is
-/// filtered.
-#[cfg(target_os = "linux")]
-#[inline]
-pub fn sched_yield() -> Result<usize, crate::sys::Errno> {
-    let ret: usize;
-    // SAFETY: a syscall with no arguments and no memory effect of ours.
-    unsafe {
-        #[cfg(target_arch = "x86_64")]
-        core::arch::asm!("syscall", inlateout("rax") NR_SCHED_YIELD => ret,
-             lateout("rcx") _, lateout("r11") _, options(nostack));
-        #[cfg(target_arch = "aarch64")]
-        core::arch::asm!("svc 0", in("x8") NR_SCHED_YIELD, lateout("x0") ret, options(nostack));
-    }
-    crate::sys::decode(ret)
 }
 
 /// The pure parts, on every host.
@@ -676,7 +631,7 @@ mod tests {
                 assert_eq!(thread_enabled(), Ok(1), "the init thread is enabled");
                 assert!(!forced_off());
                 std::eprintln!("slice_ext: grants end with {}", yield_name());
-                assert_eq!(sched_yield(), Ok(0));
+                assert_eq!(crate::sys::sched_yield(), Ok(0));
                 assert_eq!(yield_name() == "rseq_slice_yield", p.yield_syscall);
                 // The request is set exactly while the lock is held (the
                 // process-wide counter also moves, but other tests' holds
@@ -716,7 +671,7 @@ mod tests {
                 }
                 assert_eq!((byte(REQUEST_OFFSET), byte(GRANTED_OFFSET)), (0, 0), "slice_ctrl touched on the fallback");
                 if v == Verdict::KernelDisabled || v == Verdict::NoSliceCtrl {
-                    assert_eq!(slice_yield(), Err(crate::sys::Errno::ENOSYS), "the syscall exists but bit 4 is clear");
+                    assert_eq!(crate::sys::rseq_slice_yield(), Err(crate::sys::Errno::ENOSYS), "the syscall exists but bit 4 is clear");
                     assert!(thread_enabled().is_err(), "prctl GET on a kernel without the option");
                 }
             }
