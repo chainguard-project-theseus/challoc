@@ -308,3 +308,57 @@ VMs, one scorecard line per architecture. Batch 3: per item as above.
 At the end: every lane worktree merged and clean, design 19 and
 `docs/testing.md` current, one PROGRESS.md entry per merged lane, this
 file's section 6 recording what landed and what was dropped.
+
+## 6. What landed (closed 2026-09-20)
+
+All three batches merged; final `main` verified with `make test` at
+473 + 136 + 26 tests (from 411 + 120 + 23), every C step `ok`, and the
+codegen comparison at every merge. `bench/results/2026-09-20-maintainability-pass.md`
+holds the numbers; PROGRESS.md holds one bullet per lane and batch.
+
+**Batch 1** landed in full, byte-identical `.text` in both variants.
+**Batch 2** landed in full: heap/, class/, huge/, layout/, purge/ (with
+`background.rs` and `background_host.rs` selected by `#[path]`),
+sys/abort.rs, model/; zero changed functions, `.text` sizes identical;
+quick tier on both VMs within one to three percent, tolerance five.
+**Batch 3** landed with these exceptions, each recorded in the lane's
+PROGRESS bullet: `Pick::EMPTY` at the one release-path site (one
+instruction fewer, kept as the literal); the set/count helpers at the two
+`next_slab` sites (inlined into `claim_with`) and the two `purge_group`
+sites (perturbed an unrelated per-CPU function); the flush selector split
+(not attempted); `alloc_zeroed` as a merged `match` (nine instructions
+more in `calloc`; the early-return form landed byte-identical); passing
+`pac` to the x86_64 rseq blocks; merging `random_ops.c` into the fuzzer;
+a shared `sys::commit` shim; a `layout::classes` split (the name clashes
+with `class`).
+
+**The items section 4 left for the human, now done:** the huge table
+never fills (abort before the last slot, with the test); `Cgroup::events()`
+samples every counter; `stats.arenas.<MALLCTL_ARENAS_DESTROYED>.*`
+answers zeros and both headers say so; `Shared::owner` no longer
+materialises an arena (item 16's free-path half; the per-slab owner
+compare in `release_owned` is hot and was not done); `opt.tcache_max`
+and `opt.huge_retain_max` read as `size_t`; the `Batch` precondition is
+a documented invariant; the probes are pure and `init` applies their
+side effects; `c_fork_cost` is gone from the suite.
+
+**Found along the way, still open:**
+- `lock::tests::a_parked_waiter_is_released` hung for forty minutes once
+  under host load 7 to 17 (two threads in `futex_wait`) and passed on the
+  rerun; a timing-sensitive test worth a bounded wait.
+- A harness that dies with its server up leaves `target/bench.lock` held
+  through an inherited descriptor and blocks the next harness in the same
+  container; a `trap` in the harnesses would release it.
+- The tooling lane's `rust-version = "1.98"` was reverted: the host's
+  rustc 1.94.1 builds the crate and runs the pure-logic tests, and the
+  pin refused it. The Dockerfile and the Wolfi package still pin 1.98.
+- Local `make test` allows structured skips; the reference VMs run
+  without `CHALLOC_TEST_ALLOW_SKIP`, so an unavailable kernel feature
+  fails there by design. The first VM run of the suite after this pass
+  is the first execution of the new per-CPU GC and run tests.
+- On aarch64, GNU ld's Cortex-A53 erratum 843419 workaround can rewrite
+  an `adrp` at a page boundary into a veneer after any code motion; it
+  appeared in one intermediate tree and not in the final one. It is not
+  a code change, but it means `.text`-size identity is not a stable
+  property of aarch64 refactors; the per-function comparison is.
+

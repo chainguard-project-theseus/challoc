@@ -52,5 +52,31 @@ after batch 3 says whether they sit in their historic bands
 
 ## Batch 3 (deduplication and the requested behaviour fixes)
 
-(appended when the batch closes: per-lane changed-function lists are in
-PROGRESS.md under each lane's bullet; the scorecard lines follow.)
+Six lanes (heap, class, huge, purge, api, sys), each with a per-function
+comparison against the tree it started from and a `make test` run;
+every changed function is named with a reason in the lane's PROGRESS.md
+bullet. The rule held: no per-allocation function changed (`malloc`,
+`free`, `calloc`, `sdallocx`, `alloc_fast`, `alloc_zeroed`, `pop`/`push`,
+`classify_free`, `sized_slot`, `checked_slot*`, `claim_with`, `take`,
+`release_owned`, `release_word`, `dec_live`, `locate`, `check_*`, the
+rseq sections, the TLS accessor, the lock fast path); the two items that
+would have changed one (`Pick::EMPTY` at the refill site, the set/count
+helpers inside `claim_with`) were kept as they were.
+
+Size: `.text` q16 `03bea0` -> `03cac0` (+0xc20, about 3 KiB: the config
+key table's closures and the mallctl readers replacing a match, minus the
+dead code), `.data.rel.ro` `002d28` -> `003680` (the two tables).
+
+Behaviour changes, each with a test: the huge descriptor table aborts
+before its last slot fills (`find` always terminates); `Cgroup::events()`
+samples all five `memory.events` counters; `stats.arenas.4097.*`
+(`MALLCTL_ARENAS_DESTROYED`) answers zeros; a corrupt owner word on the
+cross-arena free path aborts instead of materialising an arena;
+`opt.tcache_max` and `opt.huge_retain_max` read as `size_t`; the huge
+run's page count comes from its descriptor and the arena's run/page
+counters are one word with an exact subtraction.
+
+Final `make test` on `main` (208c23c): 473 + 136 + 26 passed, every C
+step `ok`.
+
+Final comparison against `ea9532a` and the scorecard lines: below.
