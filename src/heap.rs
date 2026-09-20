@@ -17,13 +17,12 @@
 //! Each header keeps a pointer to its stack of `cap` slot pointers, on the
 //! same line as `len`; the stack is its own metadata object, allocated on
 //! the class's first slow path, so a thread that only uses five classes
-//! pays for five stacks. The alternative, one contiguous slot
-//! block per heap, was built and measured
-//! (`bench/results/2026-09-18-*-gce-dense-headers.md`): a stack inside a
-//! 128 KiB metadata object costs xmalloc-test's freeing threads three to
-//! four times the L1D fills of a stack in an 8 KiB object (the same lines,
-//! the same page geometry), whatever the offset inside the object, so the
-//! stacks stay separate objects.
+//! pays for five stacks. The stacks are not carved from one contiguous
+//! slot block per heap: a stack inside a 128 KiB metadata object costs
+//! xmalloc-test's freeing threads three to four times the L1D fills of a
+//! stack in an 8 KiB object (the same lines, the same page geometry),
+//! whatever the offset inside the object
+//! (`bench/results/2026-09-18-*-gce-dense-headers.md`).
 //!
 //! - `alloc`: pop the top of the class's cache; if it is empty, *refill* by
 //!   claiming up to `cap / 2` slots from the class's lowest partial slab
@@ -77,7 +76,7 @@
 //! pushed below that index since, so `calloc` can skip its `memset` when it
 //! pops from inside the prefix.
 //!
-//! Signed pointers (plan Phase 2.5 task 7, `sys::pac`). On an arm64 host
+//! Signed pointers (`sys::pac`). On an arm64 host
 //! whose kernel exposes pointer authentication (`HWCAP_PACA`/`PACG`;
 //! `Shared::pac()`, the [`PUSH_PAC`] bit of the byte every `free` already
 //! reads), every pointer stored in a cache's stack is signed with `pacda`,
@@ -150,8 +149,8 @@ pub const fn default_cap(class: usize) -> u32 {
 
 /// One thread's cache header for one size class: exactly one cache line,
 /// inline in the heap ([`Heap::caches`]) or in an [`ArenaCaches`] node,
-/// pointing at its stack of `cap` slot pointers inside the owner's slot
-/// block. The fields the fast paths read (`len`, `cap`, `zeroed`, `slots`,
+/// pointing at its stack of `cap` slot pointers, a metadata object of its
+/// own (module doc, Layout). The fields the fast paths read (`len`, `cap`, `zeroed`, `slots`,
 /// `allocs`, `compact_mask`, `low_water`) come first; a header whose `cap`
 /// is zero has never been used (`slots` is null and never dereferenced,
 /// because `len == cap == 0` sends both fast paths to the slow path).
@@ -210,16 +209,16 @@ pub const PUSH_SCAN: u8 = 1;
 /// `Shared::push_flags` bit: `zero_on_free` (clear the block before the
 /// push or the huge release).
 pub const PUSH_ZERO: u8 = 2;
-/// `Shared::push_flags` bit: pointer authentication is on (`sys::pac`,
-/// plan Phase 2.5 task 7). Read by the pop as well as the push: every slot
+/// `Shared::push_flags` bit: pointer authentication is on (`sys::pac`).
+/// Read by the pop as well as the push: every slot
 /// pointer in a cache's stack is stored signed (`pacda`, modifier the
 /// stack's base address) and authenticated on the way out (`autda`), and
 /// the heap pointer in TLS is signed with the thread pointer. Set by `init`
 /// when the kernel exposes `HWCAP_PACA`/`PACG` and `pac_pointers` is not
 /// `false`; never set on x86_64.
 pub const PUSH_PAC: u8 = 4;
-/// `Shared::push_flags` bit: the per-CPU mode is on (design 15, plan Phase
-/// 2.5 task 8; [`Shared::percpu`]). Both fast paths test it right after
+/// `Shared::push_flags` bit: the per-CPU mode is on (design 15;
+/// [`Shared::percpu`]). Both fast paths test it right after
 /// the byte is loaded and, when it is set, take the out-of-line per-CPU
 /// path ([`Heap::pop_percpu_mode`], [`percpu_free_fast`]) instead of the
 /// thread cache; the thread paths themselves are untouched, and a heap
@@ -246,10 +245,10 @@ pub const COMPACT_MIN_RATIO: usize = 32;
 /// is not compacted. Only refills count (`ClassState::refilled`), not
 /// compaction's own rebuild claims and not direct `MALLOCX_TCACHE_NONE`
 /// claims: Valkey's active defragmenter allocates that way at hundreds of
-/// slots per second, which at one slab per window kept the frozen residue
-/// of the 2026-09-17 soak from ever being compacted. The residue itself
-/// sees a refill only when a class's random-size churn walks a cache to
-/// empty, a few per second.
+/// slots per second, which at one slab per window would keep the frozen
+/// residue of the Valkey soak from ever being compacted. The residue
+/// itself sees a refill only when a class's random-size churn walks a
+/// cache to empty, a few per second.
 pub const COMPACT_MAX_REFILL_SLABS: usize = 2;
 // Both slab counts are in 64 KiB slabs (`Class::compact_slots`), so the
 // thresholds mean the same bytes for the 4 KiB-slab classes as for the rest.
@@ -518,8 +517,8 @@ pub struct Heap {
     /// created on its thread), read by the per-CPU paths; null when the
     /// mode is off.
     rseq_area: *mut u8,
-    /// `slot_randomize`'s xorshift state (plan Phase 2 task 3): 0 until the
-    /// heap's first randomised claim seeds it from `getrandom`, so the
+    /// `slot_randomize`'s xorshift state: 0 until the heap's first
+    /// randomised claim seeds it from `getrandom`, so the
     /// default configuration makes no syscall per heap creation.
     rng: u64,
     /// Caches of the home arena, one line per class; last, so the small
@@ -560,22 +559,22 @@ pub struct Shared {
     /// slot against the top four cache entries and aborts on a match) and
     /// [`PUSH_ZERO`] (`zero_on_free`: the slot's class-size bytes are
     /// cleared before the push, and a huge run's usable bytes before its
-    /// release), and [`PUSH_PAC`] (signed cache and heap pointers where
-    /// the CPU has pointer authentication, plan Phase 2.5 task 7; read by
-    /// the pop too). Written once by `init`; kept on the line every `free`
-    /// reads, and zero in the default configuration on a CPU without PAC,
-    /// so the fast path tests one byte and takes one predicted branch
-    /// (plan Phase 2 task 3).
+    /// release), [`PUSH_PAC`] (signed cache and heap pointers where the
+    /// CPU has pointer authentication; read by the pop too) and
+    /// [`PUSH_PERCPU`] (the per-CPU mode). Written once by `init`; kept on
+    /// the line every `free` reads, and zero in the default configuration
+    /// on a CPU without PAC, so the fast path tests one byte and takes one
+    /// predicted branch.
     push_flags: u8,
     pub regions: Regions,
     /// The per-CPU mode's table and state (design 15; [`PUSH_PERCPU`]).
     /// After `regions` so the thread paths' first line is as it was; the
     /// per-CPU paths read `base`, `n` and the flag byte, two lines.
     pub percpu: Percpu,
-    /// The sized fast path's guard test per class (plan Phase 2.5 task
-    /// 4c): a dense array (8 bytes per class, seven lines for all 52) so
-    /// `sized_slot` never touches the 384-byte class table line, whose
-    /// only other use on that path was the watermark it no longer reads.
+    /// The sized fast path's guard test per class: a dense array (8 bytes
+    /// per class, seven lines for all 52) so `sized_slot` never touches
+    /// the 384-byte class table line (it reads neither the watermark nor
+    /// the descriptor; both checks are the flush's).
     guard_test: [GuardTest; NCLASSES],
     tables: [SlabTable; NCLASSES],
     pub arena0: Arena,
@@ -588,8 +587,11 @@ pub struct Shared {
     /// so the periodic tick's `immediate` load hits the line it reads
     /// anyway; written at most once per 10 ms by the sampler.
     pub policy: crate::policy::Policy,
-    /// The parsed `malloc_conf` (design section 12). Keys that already have
-    /// a knob are applied by `init`; the rest are read by later phases.
+    /// The parsed `malloc_conf` (design section 12) as `init` applied it
+    /// (`narenas` resolved from the CPU count, `thp` forced to `never`
+    /// under a small cgroup limit). Read back by `opt.*` and the report,
+    /// and on the slow paths for the cache ladder (`cache_cap`) and the
+    /// compaction mask (`compact_mask`).
     pub config: Config,
     key: ThreadKey,
     pub arenas: Arenas,
@@ -633,7 +635,7 @@ impl GuardTest {
     }
 }
 
-/// The per-CPU mode (design 15, plan Phase 2.5 task 8): the table of
+/// The per-CPU mode (design 15): the table of
 /// [`CpuCache`]s indexed by the running thread's rseq `mm_cid`, or why
 /// there is none. Built by [`Shared::init`] from the configuration
 /// (`percpu_arena`), the rseq probe (`rseq::probe`) and the possible-CPU
@@ -668,9 +670,8 @@ pub enum PercpuState {
     On = 0,
     /// `percpu_arena:off`.
     OffKey = 1,
-    /// `percpu_arena:auto`, the key's default: thread caches, the human's
-    /// decision of 2026-09-20 with the task 8 numbers in front of them
-    /// (PROGRESS.md "Phase 2.5 defaults, the human's decisions" item 2);
+    /// `percpu_arena:auto`, the key's default: thread caches (the mode
+    /// measured behind them on every row, see [`Percpu::build`]);
     /// `percpu` is the opt-in.
     OffAuto = 6,
     /// The rseq probe failed (`rseq::Probe::verdict` says how).
@@ -727,12 +728,10 @@ impl Percpu {
     /// used). `auto`, the key's default, keeps thread caches
     /// ([`PercpuState::OffAuto`]): the mode measured 8..24% behind thread
     /// caches on `quick`'s rows and worse on the Valkey model on both
-    /// reference VMs (PROGRESS.md, `bench/results/2026-09-19-*-task8-*`),
-    /// so the human kept thread caches as the default (2026-09-20,
-    /// PROGRESS.md "Phase 2.5 defaults, the human's decisions" item 2);
-    /// `auto` is read here, next to the probe, and `config::PercpuArena`
-    /// documents the three values. Off Linux there is no rseq and the mode
-    /// is off.
+    /// reference VMs (`bench/results/2026-09-19-*-task8-percpu*.md`), so
+    /// thread caches stay the default; `auto` is read here, next to the
+    /// probe, and `config::PercpuArena` documents the three values. Off
+    /// Linux there is no rseq and the mode is off.
     fn build(meta: &Meta, config: &Config, allowed: bool) -> Percpu {
         use crate::config::PercpuArena;
         let probe = rseq::probe();
@@ -1134,8 +1133,9 @@ impl Shared {
         self.multi_arena.load(Ordering::Relaxed)
     }
 
-    /// The opt-in hardening every push applies ([`PUSH_SCAN`],
-    /// [`PUSH_ZERO`]); 0 by default.
+    /// The flag byte both fast paths load: [`PUSH_SCAN`], [`PUSH_ZERO`],
+    /// [`PUSH_PAC`] and [`PUSH_PERCPU`]; 0 in the default configuration on
+    /// a CPU without pointer authentication.
     #[inline(always)]
     pub fn push_flags(&self) -> u8 {
         self.push_flags
@@ -1252,7 +1252,7 @@ impl Shared {
     /// Arithmetic on the pointer and two dense lines: the hint names the
     /// region, so [`Regions::slot_in_class`] checks the pointer against
     /// that region alone (no superblock classification and no class
-    /// compare, plan Phase 2.5 task 4c), and the guard test is one
+    /// compare), and the guard test is one
     /// 8-byte load from [`GuardTest`]'s dense array. Neither the slab
     /// descriptor nor the class table line is touched: the bit test that
     /// makes plain `free` exact is left to the flush, and so is the
@@ -1348,14 +1348,14 @@ impl Shared {
     /// already known to be below `nslots` in a slab below the watermark.
     ///
     /// The two loads that depend on the pointer are from dense structures
-    /// (design section 4, plan task 4f): the class bitmap word (one bit per
-    /// slot, so a 550 MiB heap of 1 KiB values is 70 KB of bitmap and stays
-    /// in L2) and, with several arenas, the group owner word (one `u16` per
-    /// line-sized group of slabs). Neither touches the slab descriptor,
-    /// which used to be one 64-byte line per slab and a cache miss per free
-    /// on a large heap, and both are lines only the owning arena's refills
-    /// and flushes write, because slabs are handed to arenas in groups
-    /// that own whole lines.
+    /// (design section 4): the class bitmap word (one bit per slot, so a
+    /// 550 MiB heap of 1 KiB values is 70 KB of bitmap and stays in L2)
+    /// and, with several arenas, the group owner word (one `u16` per
+    /// line-sized group of slabs). Neither touches the slab descriptor
+    /// (one 64-byte line per slab, a cache miss per free on a large heap),
+    /// and both are lines only the owning arena's refills and flushes
+    /// write, because slabs are handed to arenas in groups that own whole
+    /// lines.
     ///
     /// The geometry comes from [`Regions::slab_slot`] (`class_base[c]`,
     /// `lg_region`, `CLASSES[c]`), not from a copy in `tables[c]`: those
@@ -1511,9 +1511,9 @@ impl Heap {
         }
         // SAFETY: `h` is a fresh, exclusively owned metadata block of the
         // right size and alignment. Field by field: a whole `Heap`
-        // temporary (3.4 KiB since the headers moved inline) deepened the
+        // temporary (3.4 KiB with the headers inline) would deepen the
         // stack of every thread's first allocation by one page, which
-        // larson's thread churn turned into +1.7 MiB of RSS per 437
+        // larson's thread churn turns into +1.7 MiB of RSS per 437
         // threads (thread stacks stay mapped; measured on the arm64 VM,
         // `bench/results/2026-09-18-aarch64-gce-dense-headers.md`).
         unsafe {
@@ -2229,8 +2229,8 @@ impl Heap {
     }
 
     /// Push onto `cache` unless it is full. With `scan`, compare `p`
-    /// against the top four entries first (design 6.3 step 3, plan Phase
-    /// 1.5 task 9c): a match is a double free whose first copy is still
+    /// against the top four entries first (design 6.3 step 3): a match is
+    /// a double free whose first copy is still
     /// cached, which the bit test cannot see, and it aborts before the
     /// second copy is stored. Four unconditional compares from the line
     /// the push writes to; a cache holding fewer than four takes the loop.
@@ -2369,8 +2369,8 @@ impl Heap {
     }
 
     /// Flush the highest-address half of the home cache and push,
-    /// allocating the cache first if this is the class's first use. Releases directly to
-    /// the slab when there is no cache to be had.
+    /// allocating the cache first if this is the class's first use.
+    /// Releases directly to the slab when there is no cache to be had.
     #[cold]
     #[inline(never)]
     fn free_slow(&mut self, shared: &Shared, class: usize, p: *mut u8) {
@@ -2580,16 +2580,16 @@ impl Heap {
     /// Release the `n` highest-address entries of a cache to their slabs
     /// (in `arena`, which owns them) in one batch grouped by slab and keep
     /// the rest. Selecting by address sends the holes to the high slabs,
-    /// which is what lets them drain (module doc). Until Phase 2.5 task 1b
-    /// this was one `sort_unstable` of the whole slot array, which under
-    /// tiny-object churn was 8..9% of glibc-simple and 5% of the Python
-    /// json row on both VMs, the largest single term wherever challoc
-    /// trailed mimalloc or tcmalloc by more than 10%
-    /// (`bench/results/2026-09-19-*-gce-flush-sort.md`). Now:
+    /// which is what lets them drain (module doc). One `sort_unstable` of
+    /// the whole slot array per flush would be 8..9% of glibc-simple and
+    /// 5% of the Python json row under tiny-object churn on both VMs, the
+    /// largest single term wherever challoc trailed mimalloc or tcmalloc
+    /// by more than 10% (`bench/results/2026-09-19-*-gce-flush-sort.md`),
+    /// so the ordering work is the least that keeps the release grouped:
     ///
     /// - A slot array already in address order (a cache pushed in the order
     ///   a producer's refill batch was handed out, xmalloc-test's consumer
-    ///   side, where the old sort took ipnsort's O(n) path at about 1.25k
+    ///   side, where even a sort's O(n) presorted path is about 1.25k
     ///   cycles per flush) is split directly: `is_sorted` is one pass that
     ///   stops at the first inversion, the released half is sorted and so
     ///   grouped, and the kept half stays sorted for the next flush.
@@ -2603,17 +2603,17 @@ impl Heap {
     ///   in order that met one unsorted flush (its first fill, a producer
     ///   moving to a lower slab) gets back onto the sorted path, where a
     ///   scrambled kept half would have kept it on the selection forever
-    ///   (xmalloc-test +16% that way; the old sort re-established the order
+    ///   (xmalloc-test +16% that way; a full sort re-establishes the order
     ///   at every flush), while a cache pushed in arbitrary order pays two
     ///   sorts of half the array and then one in 32 (the unconditional
     ///   kept sort cost glibc-simple and Python their whole gain). The run
     ///   is dropped in every case and rebuilt by the scheduled pop (design
     ///   6.4); the zero prefix is given up.
     ///
-    /// Candidates rejected on the way, all in the results file: a selection
-    /// followed by a sort of the released half (the selection scrambles it,
-    /// so that is a full sort: xmalloc +51%); an in-place bucket pass over
-    /// the whole array by address (about 10 cycles per entry, the old sort's
+    /// Candidates rejected, all in the results file: a selection followed
+    /// by a sort of the released half (the selection scrambles it, so that
+    /// is a full sort: xmalloc +51%); an in-place bucket pass over the
+    /// whole array by address (about 10 cycles per entry, a full sort's
     /// cost on random input and ten times its cost on sorted input: xmalloc
     /// +49%); the selection alone (xmalloc +21%, no self-healing).
     ///
@@ -2659,9 +2659,8 @@ impl Heap {
             // pointer sort's specialisations, which costs every flush even
             // when the key is the identity. The mask itself only when
             // signed: `pac::mask` is an `xpacd`, UNDEFINED on a CPU without
-            // the extension (`SIGILL` on Neoverse N1, the Altra `make test`
-            // of 2026-09-19), and no PAC instruction may run unless the
-            // probe said yes.
+            // the extension (`SIGILL` on Neoverse N1, the Altra), and no
+            // PAC instruction may run unless the probe said yes.
             let addr_mask = if pac { !pac::mask() } else { usize::MAX };
             let key = |e: &*mut u8| (*e as usize) & addr_mask;
             let all = (*cache).entries();
@@ -2825,7 +2824,7 @@ impl Heap {
     }
 }
 
-/// The per-CPU paths (design 15, plan Phase 2.5 task 8). A process in the
+/// The per-CPU paths (design 15). A process in the
 /// mode ([`Shared::percpu_on`], the [`PUSH_PERCPU`] bit) keys its plain
 /// `malloc`/`free` caches by the running thread's rseq `mm_cid` instead of
 /// by thread: the table of [`CpuCache`]s in [`Percpu`], one header per
@@ -2866,9 +2865,9 @@ impl Heap {
 /// a scheduled pop in compact mode pops the id's run
 /// ([`Heap::percpu_run_pop`]), and an exhausted run is rebuilt by one
 /// block claim from the arena's lowest partial slab, one lock hold per
-/// `cap / 4` scheduled pops as in the thread rebuild (the first form
-/// claimed one slot under the lock per scheduled pop: most of the Valkey
-/// model's cost, `bench/results/2026-09-19-*-task8-percpu-fastpath.md`).
+/// `cap / 4` scheduled pops as in the thread rebuild (one locked claim
+/// per scheduled pop instead was most of the Valkey model's cost under
+/// the mode, `bench/results/2026-09-19-*-task8-percpu-fastpath.md`).
 /// The cache GC and `thread.tcache.flush` act on the caches of the CPU the
 /// thread is running on (the drain takes the run too; the GC returns a
 /// run whose class stopped compacting); an idle CPU's caches are drained
@@ -2899,9 +2898,9 @@ impl Heap {
     /// points' per-CPU wrappers (`api::libc::percpu_malloc`), which inline
     /// it: the section itself sits in the wrapper the entry point
     /// tail-calls, so the mode's pop is one jump, the `percpu` byte, the
-    /// section and the byte count, with no further call (the first form
-    /// called this out of line and then `rseq::pop`'s wrapper: two frames
-    /// and the decode, +65 instructions per larson operation on the C4;
+    /// section and the byte count, with no further call (an out-of-line
+    /// call here and then into `rseq::pop`'s wrapper costs two frames and
+    /// the decode, +65 instructions per larson operation on the C4;
     /// `bench/results/2026-09-19-*-task8-percpu-fastpath.md`). A heap off
     /// the mode pops its own cache out of line ([`Heap::pop_off_mode`],
     /// cold, so the thread pop's registers never join this frame). `None`
@@ -3058,8 +3057,8 @@ impl Heap {
     /// re-checked (dense: back to probing, pop the top), else a block of
     /// `cap / 4` slots is claimed from the arena's lowest partial slab
     /// under the class lock, once per block instead of once per scheduled
-    /// pop (the first form's cost: one lock hold in 8 pops on the Valkey
-    /// model), and pushed onto the run in one section, lowest on top,
+    /// pop (which would be one lock hold in 8 pops on the Valkey model),
+    /// and pushed onto the run in one section, lowest on top,
     /// whatever did not fit (the thread migrated to an id whose run is
     /// full) going back to its slab; then the pop is retried. The zero
     /// prefix travels with the block, so `calloc` stays honest.
@@ -3647,7 +3646,8 @@ pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> bool {
 /// which inlines this and compares the status with [`rseq::PUSH_PUSHED`];
 /// every other outcome is one cold tail call to [`percpu_push_miss`], so
 /// the thread paths keep their shape (no frame, as the disassembly of
-/// `malloc`/`free` in `bench/results/2026-09-19-*-task8-*` records) and
+/// `malloc`/`free` in `bench/results/2026-09-19-*-task8-percpu*.md`
+/// records) and
 /// the mode's push is one jump, the check, the section and the byte count
 /// with no call. A heap off the mode ([`Heap::percpu`] false) reports
 /// [`rseq::PUSH_OFF_MODE`] before any check; otherwise the slot is
@@ -3790,12 +3790,11 @@ fn invalid_free(p: usize) -> ! {
     panic!("invalid free of {p:#x}: not an allocation")
 }
 
-/// `zero_on_free`: clear the class-size bytes of slot `p` (plan Phase 2
-/// task 3). Called from the slow paths only (`Heap::free_slow_in`,
-/// `free_direct`), so the default `free` carries nothing of it but the
-/// flag test; a `memset` of the class size, so a 1 KiB value costs a 1 KiB
-/// store (and the slow-path call) per free, which is why the key is off by
-/// default (review 2026-09-18 section 5.1; priced in
+/// `zero_on_free`: clear the class-size bytes of slot `p`. Called from the
+/// slow paths only (`Heap::free_slow_in`, `free_direct`), so the default
+/// `free` carries nothing of it but the flag test; a `memset` of the class
+/// size, so a 1 KiB value costs a 1 KiB store (and the slow-path call) per
+/// free, which is why the key is off by default (priced in
 /// `bench/results/2026-09-18-*-gce-tunables.md`).
 ///
 /// # Safety
@@ -3815,9 +3814,6 @@ fn cached_twice(p: *mut u8) -> ! {
     panic!("double free of {:#x}: the slot is already in the thread cache", p as usize)
 }
 
-/// Two copies of one slot in a cache at flush time, one on each side of
-/// the split (`Heap::flush`): the flush would have released one and kept
-/// the other.
 /// Buckets of [`group_by_slab`]'s counting pass: a batch whose slab
 /// numbers span fewer than this many slabs is grouped in one in-place
 /// pass; a batch spread wider is sorted instead.
@@ -3832,8 +3828,8 @@ const GROUP_BUCKETS: usize = 256;
 /// done; one spanning fewer than [`GROUP_BUCKETS`] slabs is permuted by
 /// [`flag_sort`] on `slab - lowest`; anything wider, a cache holding slots
 /// of more than 256 slabs' span, falls back to `sort_unstable` on the
-/// address. Every path is O(n) but the last, which is the old sort on
-/// half the entries.
+/// address. Every path is O(n) but the last, a full sort of half the
+/// entries.
 fn group_by_slab(shared: &Shared, class: usize, high: &mut [*mut u8]) -> *mut u8 {
     let base = shared.regions.class_base[class];
     let lg = CLASSES[class].lg_slab as u32;
@@ -3895,6 +3891,9 @@ fn flag_sort(v: &mut [*mut u8], nb: usize, key: impl Fn(*mut u8) -> usize) {
     }
 }
 
+/// Two copies of one slot in a cache at flush time, one on each side of
+/// the split (`Heap::flush`): the flush would have released one and kept
+/// the other.
 #[cold]
 #[inline(never)]
 fn straddling_double_free(p: *mut u8, class: usize) -> ! {
@@ -3993,8 +3992,7 @@ pub(crate) mod tests {
     /// One automatic arena, so every heap of a test shares arena 0 (the
     /// default would spread concurrently live heaps over `4 * ncpus`).
     /// `pac_pointers` on: the signed path runs in every heap test on a
-    /// host with pointer authentication (plan Phase 2.5 task 7), and is
-    /// the plain path elsewhere.
+    /// host with pointer authentication, and is the plain path elsewhere.
     pub(crate) fn shared() -> &'static Shared {
         shared_with(Config { narenas: 1, pac_pointers: true, ..Config::DEFAULT })
     }
@@ -4304,7 +4302,7 @@ pub(crate) mod tests {
         assert_eq!(cs.stats(), ClassStats { committed: cs.committed_slabs(), empty: cs.committed_slabs(), ..Default::default() });
     }
 
-    /// Plan Phase 1.5 task 9a. Fill the class-64 cache with a double free
+    /// Fill the class-64 cache with a double free
     /// and exactly the right number of other slots, so that after the
     /// flush's sort the pair sits at `lower` and `lower + 1`; the push that
     /// overflows the cache triggers the flush. Returns the flush's panic
@@ -4348,7 +4346,7 @@ pub(crate) mod tests {
         msg
     }
 
-    /// Plan Phase 1.5 task 9c: with `double_free_scan` a second free of a
+    /// With `double_free_scan` a second free of a
     /// slot that is one of the top four cache entries aborts at the push;
     /// deeper than that it is left to the flush as before.
     #[test]
@@ -4431,12 +4429,11 @@ pub(crate) mod tests {
         }
     }
 
-    /// Plan Phase 1.5 task 9b: the sized fast path's check rejects a slot
+    /// The sized fast path's check rejects a slot
     /// start inside a guard slab (arithmetic on a dense per-class pair), so
     /// the exact slow path aborts instead of the guard memory being cached.
-    /// Since Phase 2.5 task 4c it does not read the watermark: a slot start
-    /// in a slab past it passes here and aborts at the flush (the next
-    /// test).
+    /// It does not read the watermark: a slot start in a slab past it
+    /// passes here and aborts at the flush (the next test).
     #[cfg(target_os = "linux")]
     #[test]
     fn sized_slot_rejects_guard_slabs() {
@@ -4464,8 +4461,8 @@ pub(crate) mod tests {
         t.destroy();
     }
 
-    /// The watermark check the sized fast path gave up (plan Phase 2.5
-    /// task 4c) is the flush's: a sized free of a slot start in a slab no
+    /// The watermark check the sized fast path does not make is the
+    /// flush's: a sized free of a slot start in a slab no
     /// arena has been handed is cached and aborts by name when the cache
     /// flushes it.
     #[cfg(target_os = "linux")]
@@ -4528,7 +4525,7 @@ pub(crate) mod tests {
         t.destroy();
     }
 
-    /// Plan Phase 2.5 task 1b: the flush groups its released half by slab
+    /// The flush groups its released half by slab
     /// with a counting pass instead of sorting. Fake slot addresses (never
     /// dereferenced) from five slabs inside a 256-slab window, scrambled,
     /// come out slab-contiguous in ascending slab order as a permutation
@@ -4884,7 +4881,7 @@ pub(crate) mod tests {
         assert_eq!(run, &t.cached_plain(c)[..run.len()]);
     }
 
-    /// The compaction wrap (review 2026-09-18, section 1.4): a scheduled
+    /// The compaction wrap: a scheduled
     /// pop finds a compact-mode cache holding one entry with `low_water ==
     /// len == 1`, an exhausted run and the GC due. `rebuild_run`'s tick
     /// runs the GC, which flushes the whole cache (`lw - lw / 4 == lw`
@@ -5734,18 +5731,14 @@ pub(crate) mod tests {
         assert_eq!(s.tcaches.create(s, 0), Some(t0));
     }
 
-    // Phase 1.5 task 8: the four cache invariants that were `debug_assert!`
-    // abort in release. Each test builds the violating state by hand.
-
-
-    // Phase 2 task 3: the opt-in `zero_on_free` and `slot_randomize` keys.
+    // The opt-in `zero_on_free` and `slot_randomize` keys.
 
     /// The two push flags are one byte on `Shared`'s first line; the
     /// default configuration leaves it zero.
     #[test]
     fn push_flags_encode_zero_on_free_and_double_free_scan() {
-        // `PUSH_PAC` follows the host (plan Phase 2.5 task 7); the two
-        // opt-in bits are what this test is about.
+        // `PUSH_PAC` follows the host; the two opt-in bits are what this
+        // test is about.
         let pac = if pac::available() { PUSH_PAC } else { 0 };
         assert_eq!(shared().push_flags(), pac, "the test builder asks for pac_pointers");
         assert!(!shared().zero_on_free());
@@ -5983,6 +5976,10 @@ pub(crate) mod tests {
         t.destroy();
         assert_eq!(live(s, c), 0);
     }
+
+    // The four cache invariants are release assertions, not
+    // `debug_assert!`s: each test below builds the violating state by hand
+    // and expects the abort.
 
     #[test]
     #[should_panic(expected = "cache run invariant violated")]
@@ -6284,7 +6281,7 @@ mod linux_tests {
         .unwrap();
     }
 
-    /// Plan Phase 2.5 task 7: `PUSH_PAC` follows the probe and the key,
+    /// `PUSH_PAC` follows the probe and the key,
     /// and the key is off by default (the test builders turn it on).
     #[test]
     fn pac_flag_follows_the_probe_and_the_key() {
@@ -6300,9 +6297,9 @@ mod linux_tests {
         std::eprintln!("pac: available={} on={} fpac={}", pac::available(), s.pac(), pac::fpac());
     }
 
-    /// Plan Phase 2.5 task 7, the fallback direction (the Altra `make test`
-    /// of 2026-09-19 died with `SIGILL`: `Heap::flush` ran `pac::mask`'s
-    /// `xpacd` whatever the probe said). With `pac_pointers:true` and the
+    /// The fallback direction (a `Heap::flush` that ran `pac::mask`'s
+    /// `xpacd` whatever the probe said died with `SIGILL` on the Altra, a
+    /// Neoverse N1 without the extension). With `pac_pointers:true` and the
     /// probe answering no, a heap's pop, push, refill, flush and the TLS
     /// heap pointer execute no PAC instruction at all, counted by
     /// `sys::pac::test_ops` in a forked child (the only thread there, so
@@ -6356,7 +6353,7 @@ mod linux_tests {
         }
     }
 
-    /// Plan Phase 2.5 task 7. With pointer authentication on, every entry
+    /// With pointer authentication on, every entry
     /// of a cache's stack is stored signed (strips to the slot it names,
     /// authenticates against the stack's base) and pops return the plain
     /// pointers; the TLS slot holds the heap pointer signed with the thread
@@ -6403,7 +6400,7 @@ mod linux_tests {
         .unwrap();
     }
 
-    /// Plan Phase 2.5 task 7, the acceptance test: a corrupted cache entry
+    /// The signed pointers' acceptance test: a corrupted cache entry
     /// (an address bit flipped by a write into the metadata region) never
     /// comes back from `malloc` as a usable pointer, and a corrupted heap
     /// pointer in the TLS slot never reaches a heap. In a forked child:
@@ -6555,7 +6552,7 @@ mod linux_tests {
         (0..t.committed_slabs()).filter(|&i| !t.is_guard_slab(i)).map(|i| t.desc(i).live()).sum()
     }
 
-    /// Plan Phase 2.5 task 8: the mode follows the probe and the key, both
+    /// The per-CPU mode follows the probe and the key, both
     /// ways. On a host whose glibc registered `mm_cid` (the reference
     /// VMs) the allowed `Shared` is on; on one without (the Mac's Docker
     /// VM, `__rseq_size` 20) it is off with the probe's verdict; the
@@ -6608,15 +6605,14 @@ mod linux_tests {
         }
     }
 
-    /// Plan Phase 2.5 tasks 7 and 8 together: a batch pushed onto a
+    /// Signed pointers under the per-CPU mode: a batch pushed onto a
     /// non-empty per-CPU stack is signed with the stack base like every
-    /// other entry, so the pops that follow authenticate it. The first
-    /// form of `rseq::push_batch` signed with the write position (`slots +
-    /// len * 8`), which is the base only for an empty stack; a free on the
-    /// same CPU between a refill's empty pop and its push left `len > 0`,
-    /// and the next pop's `autda` faulted under FEAT_FPAC (lane D's
-    /// campaign of 2026-09-20: `tests/c/percpu percpu` 2/2, `tls_threads`
-    /// 3 of 6 under `pac_pointers:true,percpu_arena:percpu`). Here the
+    /// other entry, so the pops that follow authenticate it. Signing with
+    /// the write position (`slots + len * 8`) instead is the base only for
+    /// an empty stack; a free on the same CPU between a refill's empty pop
+    /// and its push leaves `len > 0`, and the next pop's `autda` then
+    /// faults under FEAT_FPAC (seen in `tests/c/percpu` and `tls_threads`
+    /// under `pac_pointers:true,percpu_arena:percpu`). Here the
     /// sections are driven directly on a fresh `Shared` of the mode: one
     /// entry, then a batch of three, then everything taken out and
     /// compared with what went in (a mis-signed entry is a `SIGILL` with
@@ -6798,8 +6794,7 @@ mod linux_tests {
         .unwrap();
     }
 
-    /// Design 6.4 under the mode (plan Phase 2.5 task 8, mechanism (b) of
-    /// the fast-path follow-up): a fragmented class's scheduled pops are
+    /// Design 6.4 under the mode: a fragmented class's scheduled pops are
     /// served from the id's *run*, a header of the second per-CPU table
     /// filled by one block claim of `cap / 4` slots from the lowest partial
     /// slab, not by a locked one-slot claim per scheduled pop. The test
