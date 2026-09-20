@@ -46,6 +46,7 @@ mod arch {
     pub const RT_SIGACTION: usize = 13;
     pub const RT_SIGPROCMASK: usize = 14;
     pub const MADVISE: usize = 28;
+    pub const MINCORE: usize = 27;
     pub const GETPID: usize = 39;
     pub const PRCTL: usize = 157;
     pub const GETTID: usize = 186;
@@ -82,6 +83,7 @@ mod arch {
     pub const MMAP: usize = 222;
     pub const MPROTECT: usize = 226;
     pub const MADVISE: usize = 233;
+    pub const MINCORE: usize = 232;
     pub const GETRANDOM: usize = 278;
 }
 

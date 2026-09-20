@@ -872,6 +872,37 @@ fn c_thp_auto() {
     run_bin_env("thp", &bin, &["auto"], &[("MALLOC_CONF", "thp:auto")]);
 }
 
+/// `tests/c/prefault.c` (plan Phase 2.5 task 11), both ways: under
+/// `prefault:true,background_thread:true` the pass commits and populates
+/// the next fresh slab of a class that refilled (resident per `mincore`
+/// before any allocation touched it, one slab only, zero, and the next
+/// refills take it); under the default nothing is prefaulted and the
+/// counters stay zero; `prefault:true` without the thread is inert and
+/// the report says why.
+#[test]
+fn c_prefault_both_ways() {
+    for (mode, conf) in [
+        ("on", "abort_conf:true,prefault:true,background_thread:true"),
+        ("off", "abort_conf:true"),
+        ("inert", "abort_conf:true,prefault:true"),
+    ] {
+        let bin = compile("tests/c", "prefault", &[]);
+        run_bin_env("prefault", &bin, &[mode], &[("MALLOC_CONF", conf)]);
+    }
+}
+
+/// `tests/c/thp.c process` under `thp_process:advised,thp:auto` (plan
+/// Phase 2.5 task 16, the process-wide `prctl`), both ways by the
+/// kernel's answer: in force on 6.18+ (`PR_GET_THP_DISABLE` reads 3,
+/// `stats.thp.process` 1, the `thp:` line says so; an `always` host shows
+/// 0 kB of `AnonHugePages` in the unadvised regions), skipped with the
+/// reason below 6.18 (`EINVAL`) or where the process inherited a policy.
+#[test]
+fn c_thp_process() {
+    let bin = compile("tests/c", "thp", &[]);
+    run_bin_env("thp", &bin, &["process"], &[("MALLOC_CONF", "abort_conf:true,thp_process:advised,thp:auto")]);
+}
+
 /// `tests/c/fork_cost.c 64` (plan Phase 2.5 task 9): a 64 MiB
 /// Valkey-shaped heap forks and the parent's write burst is copied while
 /// the child is alive. The default configuration only; the `auto` and

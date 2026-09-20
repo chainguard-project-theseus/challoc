@@ -183,6 +183,7 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     writeln!(out, "Kernel and CPU features: {}", super::feature_line())?;
     writeln!(out, "Sealed ranges: {} of {}", super::sealed_ranges(), shared.regions.never_committed().1)?;
     writeln!(out, "Background thread: {}", if purge::background::present() { "present" } else { "absent" })?;
+    prefault_line(out, shared)?;
     percpu_line(out, shared)?;
     slice_line(out)?;
     writeln!(
@@ -255,10 +256,18 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
         }
         write!(out, " huge {}", if d.huge { "on" } else { "off" })?;
     }
-    writeln!(
+    write!(
         out,
         " class_ranges {} ({} bytes, {} chunks) huge_ranges {} meta_ranges {} failures {}",
         s.class_ranges, s.class_bytes, s.chunks, s.huge_ranges, s.meta_ranges, s.failures
+    )?;
+    // Plan Phase 2.5 task 16: the host's global mode and whether the
+    // process-wide `prctl` is in force (`thp_process`).
+    writeln!(
+        out,
+        "; host {} process {}",
+        crate::thp::host_mode().map_or("none", crate::sys::features::ThpSetting::name),
+        crate::thp::process().text()
     )
 }
 
@@ -492,7 +501,7 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
         let ts = crate::thp::stats();
         writeln!(
             out,
-            "\t\t\"thp\": {{\"key\": \"{}\", \"mode\": \"{}\", \"reason\": \"{}\", \"class_ranges\": {}, \"class_bytes\": {}, \"chunks\": {}, \"huge_ranges\": {}, \"meta_ranges\": {}, \"failures\": {}}},",
+            "\t\t\"thp\": {{\"key\": \"{}\", \"mode\": \"{}\", \"reason\": \"{}\", \"class_ranges\": {}, \"class_bytes\": {}, \"chunks\": {}, \"huge_ranges\": {}, \"meta_ranges\": {}, \"failures\": {}, \"host\": \"{}\", \"process\": \"{}\"}},",
             crate::thp::key().name(),
             td.mode.name(),
             td.reason.text(),
@@ -501,7 +510,9 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
             ts.chunks,
             ts.huge_ranges,
             ts.meta_ranges,
-            ts.failures
+            ts.failures,
+            crate::thp::host_mode().map_or("none", crate::sys::features::ThpSetting::name),
+            crate::thp::process().name()
         )?;
         let cg = &shared.cgroup;
         cg.sample(crate::sys::now_coarse_ns());
@@ -769,12 +780,40 @@ fn percpu_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
     }
 }
 
+/// `Prefault:` (design 8, plan Phase 2.5 task 11, `purge::prefault`): off
+/// with the reason (the key, or the key without its thread), or on with
+/// the populate in use and the counters.
+fn prefault_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
+    use crate::purge::prefault;
+    if !prefault::enabled() {
+        return writeln!(
+            out,
+            "Prefault: off ({})",
+            if shared.config.prefault() { "prefault:true without background_thread" } else { "prefault:false" }
+        );
+    }
+    let s = prefault::stats();
+    writeln!(
+        out,
+        "Prefault: on ({}) passes {} (active {}) slabs {} ({} bytes) skipped_no_headroom {} fallbacks {} wakes {}",
+        if prefault::uses_populate_write() { "MADV_POPULATE_WRITE" } else { "touch per page" },
+        s.passes,
+        s.active,
+        s.slabs,
+        s.bytes,
+        s.skipped,
+        s.fallbacks,
+        s.wakes
+    )
+}
+
 /// `Slice extension:` (design 17, `slice.rs`): whether lock holders request
 /// the rseq time slice extension, the probe's verdict when not, how many
 /// threads the `prctl` enabled and how many grants were yielded, and a
 /// note when `slice_ext:on` was asked for and the probe said no. The
-/// `slice_ext=` key of the feature line (`sys::features`) is lane B's to
-/// add; until then this line is the report.
+/// `slice_ext=` key of the feature line (`sys::features::SliceExt`) carries
+/// the same verdict word (`on` here is `on` there; `off (<word>)` here is
+/// `<word>` there, or `available` when the key turned it off).
 fn slice_line<W: Write>(out: &mut W) -> fmt::Result {
     use crate::slice;
     if slice::on() {
@@ -871,7 +910,8 @@ mod tests {
             "opt.thp: \"never\"\n",
             "opt.thp_process: \"default\"\n",
             "opt.prefault: false\n",
-            "thp: never -> off (thp:never) class_ranges 0 (0 bytes, 0 chunks) huge_ranges 0 meta_ranges 0 failures 0\n",
+            "thp: never -> off (thp:never) class_ranges 0 (0 bytes, 0 chunks) huge_ranges 0 meta_ranges 0 failures 0; host ",
+            " process default (nothing issued)\n",
             "opt.zero_on_free: false\n",
             "opt.slot_randomize: false\n",
             "opt.cgroup: true\n",
@@ -881,6 +921,7 @@ mod tests {
             "Kernel and CPU features: page_size=",
             "Sealed ranges: ",
             "Background thread: ",
+            "Prefault: off (prefault:false)\n",
             "Arenas: ",
             "Allocated: ",
             "Huge: ",
@@ -928,6 +969,33 @@ mod tests {
         assert_eq!(ga, "--- End jemalloc statistics ---\n");
     }
 
+    /// The feature line's `slice_ext=` key (plan Phase 2.5 task 15) agrees
+    /// with the `Slice extension:` line of the same report: `on` with
+    /// `on (`, else the line's `off (<word>)` word (or `available` when
+    /// the key turned it off with the kernel offering it).
+    #[test]
+    fn feature_line_slice_ext_agrees_with_the_slice_line() {
+        let text = report("");
+        let features = text.lines().find(|l| l.starts_with("Kernel and CPU features: ")).unwrap();
+        let word = features
+            .split(' ')
+            .find_map(|kv| kv.strip_prefix("slice_ext="))
+            .unwrap_or_else(|| panic!("no slice_ext= in {features}"));
+        let slice = text.lines().find(|l| l.starts_with("Slice extension: ")).unwrap();
+        if word == "on" {
+            assert!(slice.starts_with("Slice extension: on ("), "{slice} vs {features}");
+        } else {
+            assert!(slice.starts_with("Slice extension: off ("), "{slice} vs {features}");
+            let why = slice.trim_start_matches("Slice extension: off (").split(')').next().unwrap();
+            if why == "slice_ext:off" {
+                assert!(matches!(word, "available" | "kernel-disabled" | "no-slice_ctrl" | "no-rseq"), "{slice} vs {features}");
+            } else {
+                assert_eq!(word, why, "{slice} vs {features}");
+            }
+        }
+        assert_eq!(crate::api::features().slice_ext.name(), word);
+    }
+
     #[test]
     fn json_report_is_well_formed_enough_to_parse_by_hand() {
         let text = report("J");
@@ -938,6 +1006,7 @@ mod tests {
         assert!(text.contains("\"stats\": {\"allocated\": "));
         assert!(text.contains("\"cgroup\": {\"tracked\": "));
         assert!(text.contains("\"thp\": {\"key\": \"never\", \"mode\": \"off\", "), "{text}");
+        assert!(text.contains("\"failures\": 0, \"host\": \"") && text.contains("\", \"process\": \"default\"}"), "{text}");
         assert!(text.contains("\"purge_advice\": \"eager\", \"lazy_purges\": 0, \"eager_purges\": "), "{text}");
         assert!(text.contains("\"stats.arenas\": {"));
         assert!(text.contains("\"0\": {"));

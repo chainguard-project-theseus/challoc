@@ -42,6 +42,21 @@
 //!   no purging of its own. After `fork` the child marks it absent and does
 //!   not recreate it until asked again.
 //!
+//! - The prefault pass ([`prefault`], plan Phase 2.5 task 11, behind the
+//!   `prefault` key and the background thread): after each decay pass the
+//!   thread visits every `(arena, class)` whose `refilled` counter moved
+//!   since its last visit and, where the arena has no `Empty` or `Purged`
+//!   slab of that class (so the next refill would commit a fresh slab),
+//!   commits that slab through the refill's own selection
+//!   (`ClassState::prefault_next`), populates it with one
+//!   `madvise(MADV_POPULATE_WRITE)` (5.14+, probed at init; else a touch
+//!   per page) while it is still unpublished, and publishes it as
+//!   `Purged`, which the refill takes first; one slab per class per pass,
+//!   nothing at all unless the cgroup policy shows headroom
+//!   (`Policy::prefault_allowed`). The commit path wakes the thread once
+//!   per fresh slab it puts into service, so the pass runs right after the
+//!   refill that consumed the previous one.
+//!
 //! `pthread_create` allocates (glibc's `allocate_dtv` calls `calloc`), so
 //! the creating thread parks its TLS slot on the `TLS_CREATING` sentinel for
 //! the duration and that allocation is served straight from the slabs, the
@@ -981,7 +996,18 @@ pub mod background {
             }
             let now = sys::now_coarse_ns();
             super::sample(shared, now);
-            let timeout = super::decay(shared, now).map(|deadline| {
+            let mut deadline = super::decay(shared, now);
+            // Plan Phase 2.5 task 11: after the walks, so a class whose
+            // `Empty` slabs were just purged is not prefaulted on top of
+            // them (they veto the pass while they exist). While a pass
+            // finds classes refilling, the thread polls (`POLL_NS`) so the
+            // next slab is ready before the refill that needs it; a quiet
+            // pass leaves the sleep to the decay deadline and the wakes.
+            if super::prefault::pass(shared) {
+                let poll = now.saturating_add(super::prefault::POLL_NS);
+                deadline = Some(deadline.map_or(poll, |d| d.min(poll)));
+            }
+            let timeout = deadline.map(|deadline| {
                 let ns = deadline.saturating_sub(now).max(MIN_SLEEP_NS);
                 Timespec { sec: (ns / 1_000_000_000) as i64, nsec: (ns % 1_000_000_000) as i64 }
             });
@@ -1040,6 +1066,178 @@ pub mod background {
             if fd >= 0 {
                 let _ = sys::close(fd);
             }
+        }
+    }
+}
+
+/// Prefaulted fresh slabs (plan Phase 2.5 task 11; the module doc). The
+/// pass runs on the background thread; the commit path calls
+/// [`note_commit`]; init calls [`configure`].
+pub mod prefault {
+    use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    use crate::heap::Shared;
+    use crate::layout::NCLASSES;
+
+    /// `prefault:true` with the background thread (`Config::prefault_active`).
+    static ENABLED: AtomicBool = AtomicBool::new(false);
+    /// The kernel takes `MADV_POPULATE_WRITE` (else the touch fallback).
+    static POPULATE: AtomicBool = AtomicBool::new(false);
+    /// A pass is running: its own commits wake nobody.
+    static IN_PASS: AtomicBool = AtomicBool::new(false);
+    /// Passes run, slabs prefaulted, bytes populated, passes skipped for
+    /// want of headroom, `MADV_POPULATE_WRITE` calls that failed and fell
+    /// back to the touch.
+    static PASSES: AtomicU64 = AtomicU64::new(0);
+    static SLABS: AtomicU64 = AtomicU64::new(0);
+    static BYTES: AtomicU64 = AtomicU64::new(0);
+    static SKIPPED: AtomicU64 = AtomicU64::new(0);
+    static FALLBACKS: AtomicU64 = AtomicU64::new(0);
+    /// Wakes the commit path issued.
+    static WAKES: AtomicU64 = AtomicU64::new(0);
+    /// Passes that found at least one class refilling (and so re-armed
+    /// the poll).
+    static ACTIVE: AtomicU64 = AtomicU64::new(0);
+
+    /// The background thread's sleep while classes keep refilling: at
+    /// 100 k Valkey SETs of a few hundred bytes per second a hot class
+    /// takes a 64 KiB slab every millisecond or so, and a pass is a few
+    /// microseconds, so a millisecond keeps the next slab ready without
+    /// the thread spinning; a quiet pass stops the poll.
+    pub const POLL_NS: u64 = 1_000_000;
+
+    /// Init: the key's outcome and the probe's.
+    pub fn configure(active: bool, populate_write: bool) {
+        POPULATE.store(populate_write, Ordering::Relaxed);
+        ENABLED.store(active, Ordering::Release);
+    }
+
+    /// Whether the pass runs at all.
+    #[inline]
+    pub fn enabled() -> bool {
+        ENABLED.load(Ordering::Relaxed)
+    }
+
+    /// `MADV_POPULATE_WRITE` is the populate in use (else the touch).
+    pub fn uses_populate_write() -> bool {
+        POPULATE.load(Ordering::Relaxed)
+    }
+
+    /// The counters: passes, slabs, bytes, skipped passes, fallbacks, wakes.
+    pub fn stats() -> Stats {
+        Stats {
+            passes: PASSES.load(Ordering::Relaxed),
+            slabs: SLABS.load(Ordering::Relaxed),
+            bytes: BYTES.load(Ordering::Relaxed),
+            skipped: SKIPPED.load(Ordering::Relaxed),
+            fallbacks: FALLBACKS.load(Ordering::Relaxed),
+            wakes: WAKES.load(Ordering::Relaxed),
+            active: ACTIVE.load(Ordering::Relaxed),
+        }
+    }
+
+    /// The counters, for the report and `stats.prefault.*`.
+    #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Stats {
+        pub passes: u64,
+        pub slabs: u64,
+        pub bytes: u64,
+        pub skipped: u64,
+        pub fallbacks: u64,
+        pub wakes: u64,
+        pub active: u64,
+    }
+
+    /// A fresh slab went into service (`SlabTable::commit_slab`): wake the
+    /// thread for a pass, unless the pass itself is committing. Off: one
+    /// relaxed load.
+    #[inline]
+    pub fn note_commit() {
+        if enabled() && !IN_PASS.load(Ordering::Relaxed) {
+            WAKES.fetch_add(1, Ordering::Relaxed);
+            super::background::wake();
+        }
+    }
+
+    /// One pass over every `(arena, class)`: the classes that refilled
+    /// since the last pass get their next fresh slab committed and
+    /// populated (`ClassState::prefault_next`), one each, when the cgroup
+    /// policy shows headroom. Returns whether any class had refilled (the
+    /// thread then polls, `POLL_NS`). Background thread only.
+    pub fn pass(shared: &Shared) -> bool {
+        if !enabled() {
+            return false;
+        }
+        if !shared.policy.prefault_allowed() {
+            SKIPPED.fetch_add(1, Ordering::Relaxed);
+            return false;
+        }
+        PASSES.fetch_add(1, Ordering::Relaxed);
+        IN_PASS.store(true, Ordering::Relaxed);
+        let page = shared.regions.page_size();
+        let mut due = false;
+        for arena in shared.arenas.iter() {
+            for class in 0..NCLASSES {
+                let cs = arena.class(class);
+                if !cs.prefault_due() {
+                    continue;
+                }
+                due = true;
+                if cs.prefault_next(&shared.meta, |addr, len| populate(addr, len, page)).is_some() {
+                    SLABS.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+        IN_PASS.store(false, Ordering::Relaxed);
+        if due {
+            ACTIVE.fetch_add(1, Ordering::Relaxed);
+        }
+        due
+    }
+
+    /// Fault `[addr, addr + len)` in writable: `MADV_POPULATE_WRITE` where
+    /// the probe found it, else one write of zero per page (the slab is
+    /// fresh, unpublished and zero, so the write changes nothing and is
+    /// this thread's alone). Counted.
+    pub fn populate(addr: usize, len: usize, page: usize) {
+        BYTES.fetch_add(len as u64, Ordering::Relaxed);
+        if POPULATE.load(Ordering::Relaxed) && os::populate_write(addr, len) {
+            return;
+        }
+        if POPULATE.load(Ordering::Relaxed) {
+            FALLBACKS.fetch_add(1, Ordering::Relaxed);
+        }
+        let mut off = 0;
+        while off < len {
+            // SAFETY: a committed, read-write slab this thread holds the
+            // class lock for and nothing else references yet; a zero over
+            // a zero.
+            unsafe { ((addr + off) as *mut u8).write_volatile(0) };
+            off += page;
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    mod os {
+        pub fn populate_write(addr: usize, len: usize) -> bool {
+            // SAFETY: a committed range of a class region this process
+            // owns; populating changes residency, never contents.
+            unsafe { crate::sys::madvise(addr, len, crate::sys::MADV_POPULATE_WRITE) }.is_ok()
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    mod os {
+        pub fn populate_write(_addr: usize, _len: usize) -> bool {
+            false
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_for_test(active: bool, populate_write: bool) {
+        configure(active, populate_write);
+        for c in [&PASSES, &SLABS, &BYTES, &SKIPPED, &FALLBACKS, &WAKES, &ACTIVE] {
+            c.store(0, Ordering::Relaxed);
         }
     }
 }
@@ -1245,6 +1443,37 @@ mod tests {
     /// policy's headroom mirror, the `lazy_band` key and an explicit purge
     /// in flight, read without any batch being flushed. Serialised with
     /// [`ADVICE_TEST`] against the batch tests, which flush.
+    /// The prefault pass's plumbing (plan Phase 2.5 task 11), host side:
+    /// `populate` counts the bytes and, where `MADV_POPULATE_WRITE` is
+    /// believed available but fails (off Linux it always does), one
+    /// fallback, and the touch leaves a zero buffer zero; `note_commit`
+    /// counts a wake only while the pass is enabled; `configure` is what
+    /// `enabled` and the populate word report.
+    #[test]
+    fn prefault_populate_and_wakes_are_counted() {
+        let _serial = serial();
+        let page = 4096;
+        let buf = std::vec![0u8; 4 * page + page];
+        let addr = (buf.as_ptr() as usize + page - 1) & !(page - 1);
+        prefault::reset_for_test(false, false);
+        assert!(!prefault::enabled() && !prefault::uses_populate_write());
+        prefault::note_commit();
+        assert_eq!(prefault::stats().wakes, 0, "off: no wake");
+        prefault::populate(addr, 4 * page, page);
+        let s = prefault::stats();
+        assert_eq!((s.bytes, s.fallbacks), (4 * page as u64, 0), "the touch is the populate, not a fallback");
+        assert!(buf.iter().all(|&b| b == 0));
+        prefault::reset_for_test(true, true);
+        assert!(prefault::enabled() && prefault::uses_populate_write());
+        prefault::note_commit();
+        prefault::note_commit();
+        assert_eq!(prefault::stats().wakes, 2);
+        prefault::populate(addr, 2 * page, page);
+        let s = prefault::stats();
+        assert_eq!((s.bytes, s.fallbacks), (2 * page as u64, if cfg!(target_os = "linux") { 0 } else { 1 }));
+        prefault::reset_for_test(false, false);
+    }
+
     #[test]
     fn advice_follows_headroom_band_key_and_explicit_purges() {
         let _serial = serial();

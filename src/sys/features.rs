@@ -115,6 +115,45 @@ pub enum Collapse {
     Yes(u8),
 }
 
+/// The kernel's answer for `prctl(PR_SET_THP_DISABLE, 1,
+/// PR_THP_DISABLE_EXCEPT_ADVISED)` (kernel 6.18; plan Phase 2.5 task 16,
+/// design 17), the `thp_except_advised=` key. Probed by the call itself,
+/// never by a version: on a process that carries no THP policy
+/// (`PR_GET_THP_DISABLE` reads 0) the flag is set and cleared again, one
+/// `prctl` each way; a kernel before 6.18 refuses a non-zero flags word
+/// with `EINVAL`. A process whose parent set a policy (`PR_GET_THP_DISABLE`
+/// non-zero: `PR_SET_THP_DISABLE` is inherited across `fork` and `execve`)
+/// is left as it is and the key says so; the `thp_process` key then issues
+/// nothing either (`thp.rs`).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ThpDisable {
+    /// The kernel took the flag (6.18+); the process carried no policy.
+    Yes,
+    /// The kernel refused it (`EINVAL` before 6.18; any other error).
+    No,
+    /// `PR_GET_THP_DISABLE` read this non-zero value: a policy inherited
+    /// from the parent, not probed, not changed (`1` = THP disabled for
+    /// the process, `3` = disabled except where advised).
+    Inherited(u8),
+}
+
+impl ThpDisable {
+    /// `yes`, `no`, `inherited`.
+    pub const fn name(self) -> &'static str {
+        match self {
+            ThpDisable::Yes => "yes",
+            ThpDisable::No => "no",
+            ThpDisable::Inherited(_) => "inherited",
+        }
+    }
+}
+
+impl fmt::Display for ThpDisable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "thp_except_advised={}", self.name())
+    }
+}
+
 /// The kernel's transparent-huge-page configuration as read at init from
 /// `/sys/kernel/mm/transparent_hugepage` with raw syscalls (design 10 step
 /// 1, plan Phase 2.5 task 9). Folio sizes are bit sets over `log2(size)`:
@@ -402,6 +441,87 @@ impl fmt::Display for Rseq {
     }
 }
 
+/// The kernel's answer for the rseq time slice extension (design 17, "Time
+/// slice extension"; plan Phase 2.5 task 15), the `slice_ext=` key of the
+/// feature line. The probe itself is `slice::probe` (lane C's module,
+/// read here through its public API, never duplicated): glibc's
+/// registration, its size against `slice_ctrl`, and bit 4 of the thread's
+/// `flags`. `Features::probe` records what the kernel offers before the
+/// configuration is read; `Features::note_slice_ext` folds in the
+/// configured outcome (`slice::configure`'s verdict) once `config::load`
+/// has run, so the word says what is in force, not only what could be.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SliceExt {
+    /// The extension is requested by every lock holder of this process
+    /// (`slice::on()`): the kernel has it and the key allowed it.
+    On,
+    /// The kernel offers it (bit 4 set) and the process does not use it
+    /// (`slice_ext:off`, or the report is built before `configure` ran).
+    Available,
+    /// The kernel offers it, the `prctl` enable failed on the init thread.
+    PrctlFailed,
+    /// `__rseq_size >= 32` but bit 4 clear: the kernel has the option
+    /// compiled out or disabled (`rseq_slice_ext=0`); Ubuntu's
+    /// `7.0.0-1011-gcp` on the GCE VMs.
+    KernelDisabled,
+    /// `__rseq_size < 32`: the kernel does not write `slice_ctrl` (6.18
+    /// and earlier).
+    NoSliceCtrl,
+    /// No rseq registration at all.
+    NoRseq,
+}
+
+impl SliceExt {
+    /// The word in the line; the same vocabulary as the `Slice extension:`
+    /// report line's verdict words, plus `on` and `available`.
+    pub const fn name(self) -> &'static str {
+        match self {
+            SliceExt::On => "on",
+            SliceExt::Available => "available",
+            SliceExt::PrctlFailed => "prctl-failed",
+            SliceExt::KernelDisabled => "kernel-disabled",
+            SliceExt::NoSliceCtrl => "no-slice_ctrl",
+            SliceExt::NoRseq => "no-rseq",
+        }
+    }
+
+    /// What the kernel offers, from the probe's verdict alone (`Enabled`
+    /// there means "available": the probe does not enable). Pure, host
+    /// tested.
+    pub const fn from_probe(v: crate::slice::Verdict) -> SliceExt {
+        use crate::slice::Verdict;
+        match v {
+            Verdict::NoRseq => SliceExt::NoRseq,
+            Verdict::NoSliceCtrl => SliceExt::NoSliceCtrl,
+            Verdict::KernelDisabled => SliceExt::KernelDisabled,
+            Verdict::PrctlFailed => SliceExt::PrctlFailed,
+            Verdict::Enabled => SliceExt::Available,
+            // `Unprobed`, `Key`, `NoSyscall` are not kernel answers; a
+            // probe never returns them.
+            Verdict::Unprobed | Verdict::Key | Verdict::NoSyscall => SliceExt::NoRseq,
+        }
+    }
+
+    /// Fold the configured outcome into the kernel's answer: `Enabled`
+    /// makes it `on`, a failed `prctl` says so, a key that turned it off
+    /// (or a kernel answer that never reached the `prctl`) leaves the
+    /// kernel's word. Pure, host tested.
+    pub const fn with_configured(self, v: crate::slice::Verdict) -> SliceExt {
+        use crate::slice::Verdict;
+        match v {
+            Verdict::Enabled => SliceExt::On,
+            Verdict::PrctlFailed => SliceExt::PrctlFailed,
+            _ => self,
+        }
+    }
+}
+
+impl fmt::Display for SliceExt {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "slice_ext={}", self.name())
+    }
+}
+
 /// Result of probing the running kernel. Plain data; safe to copy into a
 /// global once init is done.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -427,13 +547,24 @@ pub struct Features {
     /// `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME)` works
     /// (kernel 5.17+ with `CONFIG_ANON_VMA_NAME`).
     pub anon_name: bool,
+    /// `madvise(MADV_POPULATE_WRITE)` works (kernel 5.14+; plan Phase 2.5
+    /// task 11): the prefault pass populates a slab with one call, else
+    /// touches it a page at a time.
+    pub populate_write: bool,
     /// The transparent-huge-page configuration and the `MADV_COLLAPSE`
     /// probe (plan Phase 2.5 task 9): what the `thp` key can turn on.
     pub thp: Thp,
+    /// Whether the kernel takes `PR_THP_DISABLE_EXCEPT_ADVISED` (plan Phase
+    /// 2.5 task 16): what `thp_process:advised` can issue.
+    pub thp_disable: ThpDisable,
     /// glibc's rseq registration and whether it covers `mm_cid` (plan
     /// Phase 2.5 task 8): the per-CPU mode's `auto` decision reads
     /// [`Rseq::mm_cid`]; the value itself is read elsewhere.
     pub rseq: Rseq,
+    /// The kernel's answer for the rseq time slice extension and whether
+    /// the process uses it (plan Phase 2.5 task 15; `slice.rs` decides,
+    /// this is the report of it).
+    pub slice_ext: SliceExt,
     /// The CPU report (design.md section 17): reported, not acted on.
     pub cpu: Cpu,
 }
@@ -445,7 +576,11 @@ impl fmt::Display for Features {
     /// `process_madvise` (`no`, `pidfd_self`, or `pidfd:<fd>`) and the
     /// cache sizes (`64K`, `2M`, `unknown`), the THP keys (`thp=never|
     /// madvise|always|none`, `mthp=64K,2M|none`, `collapse=unprobed|no|2M`)
-    /// and `rseq_size` (a byte count, `0` without a registration).
+    /// `populate_write` (`yes`/`no`), `thp_except_advised` (`yes`, `no`,
+    /// `inherited`), `rseq_size` (a byte
+    /// count, `0` without a registration) and `slice_ext` (`on`,
+    /// `available`, `prctl-failed`, `kernel-disabled`, `no-slice_ctrl`,
+    /// `no-rseq`).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         fn yn(b: bool) -> &'static str {
             if b { "yes" } else { "no" }
@@ -464,11 +599,14 @@ impl fmt::Display for Features {
         }
         write!(
             f,
-            " process_madvise_free={} anon_name={} {} {} {}",
+            " process_madvise_free={} anon_name={} populate_write={} {} {} {} {} {}",
             yn(self.process_madvise_free),
             yn(self.anon_name),
+            yn(self.populate_write),
             self.thp,
+            self.thp_disable,
             self.rseq,
+            self.slice_ext,
             self.cpu
         )
     }
@@ -486,8 +624,10 @@ pub struct FeatureLine {
 impl FeatureLine {
     /// Room for the line and its NUL; the longest possible line (every
     /// probe `yes`, `pidfd:2147483647`, byte-exact cache sizes, every THP
-    /// size listed) is under 400 bytes (`feature_line_fits`).
-    pub const CAP: usize = 512;
+    /// size listed, the longest `thp_except_advised` and `slice_ext`
+    /// words) is under `CAP - 64` bytes (`feature_line_fits`: 462 with the
+    /// plan Phase 2.5 task 11, 15 and 16 keys; 512 held 414 before them).
+    pub const CAP: usize = 640;
 
     /// Format `features` into a fresh line. A line that did not fit is cut,
     /// which the tests would notice; it cannot happen with the current keys.
@@ -528,10 +668,11 @@ pub use linux::*;
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{AT_PAGESZ, Collapse, Cpu, Features, ProcessMadvise, Rseq, Thp, page_size_from_auxv};
+    use super::{AT_PAGESZ, Collapse, Cpu, Features, ProcessMadvise, Rseq, Thp, ThpDisable, page_size_from_auxv};
     use crate::sys::{
         self, IoVec, MADV_COLLAPSE, MADV_DONTNEED, MADV_FREE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE,
-        MAP_ANONYMOUS, MAP_PRIVATE, PIDFD_SELF, PROT_NONE, PROT_READ, PROT_WRITE,
+        MADV_POPULATE_WRITE, MAP_ANONYMOUS, MAP_PRIVATE, PIDFD_SELF, PR_GET_THP_DISABLE, PR_SET_THP_DISABLE,
+        PR_THP_DISABLE_EXCEPT_ADVISED, PROT_NONE, PROT_READ, PROT_WRITE,
     };
 
     unsafe extern "C" {
@@ -687,6 +828,25 @@ mod linux {
         ok
     }
 
+    /// `madvise(MADV_POPULATE_WRITE)` on a fresh scratch page (plan Phase
+    /// 2.5 task 11): the call must succeed and the page must be resident
+    /// afterwards (`mincore`), so a kernel that takes the advice and does
+    /// nothing would not count. `EINVAL` before 5.14.
+    pub fn probe_populate_write(page: usize) -> bool {
+        let Some(addr) = scratch(page, PROT_READ | PROT_WRITE) else {
+            return false;
+        };
+        // SAFETY: our scratch page; populating changes residency, not
+        // contents.
+        let ok = unsafe { sys::madvise(addr, page, MADV_POPULATE_WRITE) }.is_ok() && {
+            let mut vec = [0u8; 1];
+            // SAFETY: one page, one byte of output.
+            sys::mincore(addr, page, &mut vec).is_ok() && vec[0] & 1 != 0
+        };
+        release(addr, page);
+        ok
+    }
+
 
     /// Read one sysfs file into `buf`; 0 when it is missing or unreadable.
     fn read_sysfs(path: &[u8], buf: &mut [u8]) -> usize {
@@ -774,6 +934,35 @@ mod linux {
         Rseq::from_symbols(size, flags, offset, cpu_id)
     }
 
+    /// `prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED)` tried
+    /// and undone (plan Phase 2.5 task 16): the answer is the call's
+    /// return, `EINVAL` before 6.18. Nothing is tried on a process that
+    /// already carries a THP policy from its parent. Three `prctl`s at
+    /// most, no memory touched.
+    pub fn probe_thp_disable() -> ThpDisable {
+        // SAFETY: a query with no pointer arguments.
+        let before = match unsafe { sys::prctl(PR_GET_THP_DISABLE, 0, 0, 0, 0) } {
+            Ok(v) => v,
+            Err(_) => return ThpDisable::No,
+        };
+        if before != 0 {
+            return ThpDisable::Inherited(before.min(u8::MAX as usize) as u8);
+        }
+        // SAFETY: integer arguments; the flag is process-wide and cleared
+        // again below, so nothing else observes it for more than the
+        // instant between the two calls.
+        let taken = unsafe { sys::prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED, 0, 0) }.is_ok();
+        if taken {
+            // SAFETY: as above; `0` restores the state read before.
+            if unsafe { sys::prctl(PR_SET_THP_DISABLE, 0, 0, 0, 0) }.is_err() {
+                sys::abort("prctl(PR_SET_THP_DISABLE, 0) failed after the probe set it");
+            }
+            ThpDisable::Yes
+        } else {
+            ThpDisable::No
+        }
+    }
+
     /// The THP table from `/sys/kernel/mm/transparent_hugepage` (about ten
     /// sysfs reads on a 4 KiB kernel). The `MADV_COLLAPSE` probe is not run
     /// here: see [`Features::probe_collapse`].
@@ -828,10 +1017,24 @@ mod linux {
                 process_madvise,
                 process_madvise_free,
                 anon_name: probe_anon_name(page_size),
+                populate_write: probe_populate_write(page_size),
                 thp: probe_thp(page_size),
+                thp_disable: probe_thp_disable(),
                 rseq: probe_rseq(),
+                // The kernel's answer alone: `config::load` has not run
+                // yet, so nothing is enabled; `note_slice_ext` follows.
+                slice_ext: super::SliceExt::from_probe(crate::slice::probe().verdict()),
                 cpu,
             }
+        }
+
+        /// Fold `slice::configure`'s verdict into the `slice_ext=` word
+        /// (plan Phase 2.5 task 15). Init calls it after `config::load`
+        /// (which runs `configure` on the init thread) and before the
+        /// line is built, so the line says `on` when lock holders request
+        /// the extension.
+        pub fn note_slice_ext(&mut self) {
+            self.slice_ext = self.slice_ext.with_configured(crate::slice::verdict());
         }
 
         /// Run the `MADV_COLLAPSE` probe (plan Phase 2.5 task 9). Separate
@@ -1037,24 +1240,41 @@ mod tests {
             process_madvise: ProcessMadvise::Pidfd(7),
             process_madvise_free: true,
             anon_name: false,
+            populate_write: true,
             thp: Thp { enabled: Some(ThpSetting::Madvise), lg_pmd: 21, listed: (1 << 16) | (1 << 21), always: 0, madvise: (1 << 16) | (1 << 21), collapse: Collapse::Unprobed },
+            thp_disable: ThpDisable::Yes,
             rseq: Rseq::from_symbols(33, 0, 192, 5),
+            slice_ext: SliceExt::KernelDisabled,
             cpu: axion_cpu(),
         };
         let s = std::format!("{f}");
         assert_eq!(
             s,
-            "page_size=4096 guard_install=no mseal=yes process_madvise=pidfd:7 process_madvise_free=yes anon_name=no \
-             thp=madvise mthp=64K,2M collapse=unprobed rseq=yes rseq_size=33 mm_cid=yes \
+            "page_size=4096 guard_install=no mseal=yes process_madvise=pidfd:7 process_madvise_free=yes anon_name=no populate_write=yes \
+             thp=madvise mthp=64K,2M collapse=unprobed thp_except_advised=yes rseq=yes rseq_size=33 mm_cid=yes slice_ext=kernel-disabled \
              mte=no mte3=no pac=yes lse=yes lse2=yes bti=yes sve=yes cacheline=64 l1d=64K l2=2M"
         );
-        // The Mac's Docker VM (linuxkit 6.10): registered, no `mm_cid`.
-        let f = Features { rseq: Rseq::from_symbols(20, 0, 192, 0), ..f };
-        assert!(std::format!("{f}").contains(" collapse=unprobed rseq=yes rseq_size=20 mm_cid=no mte="));
-        let f = Features { rseq: Rseq::NONE, ..f };
-        assert!(std::format!("{f}").contains(" rseq=no rseq_size=0 mm_cid=no "));
+        // Before 6.18 the flag is refused; a parent's policy is kept.
+        let f = Features { thp_disable: ThpDisable::No, ..f };
+        assert!(std::format!("{f}").contains(" collapse=unprobed thp_except_advised=no rseq=yes "));
+        let f = Features { thp_disable: ThpDisable::Inherited(3), ..f };
+        assert!(std::format!("{f}").contains(" collapse=unprobed thp_except_advised=inherited rseq=yes "));
+        assert_eq!(ThpDisable::Inherited(1).name(), "inherited");
+        let f = Features { thp_disable: ThpDisable::Yes, ..f };
+        // The Mac's Docker VM (linuxkit 6.10): registered, no `mm_cid`, no
+        // `slice_ctrl`.
+        let f = Features { rseq: Rseq::from_symbols(20, 0, 192, 0), slice_ext: SliceExt::NoSliceCtrl, ..f };
+        assert!(std::format!("{f}").contains(" collapse=unprobed thp_except_advised=yes rseq=yes rseq_size=20 mm_cid=no slice_ext=no-slice_ctrl mte="));
+        let f = Features { rseq: Rseq::NONE, slice_ext: SliceExt::NoRseq, ..f };
+        assert!(std::format!("{f}").contains(" rseq=no rseq_size=0 mm_cid=no slice_ext=no-rseq "));
+        // A 7.0.14 built with the option (lane C's C4): on under the
+        // default key, available under `slice_ext:off`.
+        let f = Features { rseq: Rseq::from_symbols(33, 0, -192, 5), slice_ext: SliceExt::On, ..f };
+        assert!(std::format!("{f}").contains(" mm_cid=yes slice_ext=on "));
+        let f = Features { slice_ext: SliceExt::Available, ..f };
+        assert!(std::format!("{f}").contains(" mm_cid=yes slice_ext=available "));
         let f = Features { thp: Thp { collapse: Collapse::Yes(21), ..f.thp }, ..f };
-        assert!(std::format!("{f}").contains(" thp=madvise mthp=64K,2M collapse=2M "));
+        assert!(std::format!("{f}").contains(" thp=madvise mthp=64K,2M collapse=2M thp_except_advised=yes "));
         let f = Features { thp: Thp::NONE, ..f };
         assert!(std::format!("{f}").contains(" thp=none mthp=none collapse=no "));
         let f = Features { thp: Thp { enabled: Some(ThpSetting::Never), listed: 1 << 21, always: 0, madvise: 0, collapse: Collapse::No, lg_pmd: 21 }, ..f };
@@ -1063,6 +1283,9 @@ mod tests {
         assert!(std::format!("{f}").contains("process_madvise=pidfd_self process_madvise_free=yes "));
         let f = Features { process_madvise: ProcessMadvise::Unavailable, process_madvise_free: false, ..f };
         assert!(std::format!("{f}").contains("process_madvise=no process_madvise_free=no "));
+        // Before 5.14 (plan Phase 2.5 task 11).
+        let f = Features { populate_write: false, ..f };
+        assert!(std::format!("{f}").contains(" anon_name=no populate_write=no thp="));
     }
 
     #[test]
@@ -1075,8 +1298,11 @@ mod tests {
             process_madvise: ProcessMadvise::PidfdSelf,
             process_madvise_free: true,
             anon_name: true,
+            populate_write: false,
             thp: Thp::NONE,
+            thp_disable: ThpDisable::No,
             rseq: Rseq::NONE,
+            slice_ext: SliceExt::NoRseq,
             cpu: axion_cpu(),
         };
         let line = FeatureLine::build(&f);
@@ -1114,6 +1340,7 @@ mod tests {
                 process_madvise: ProcessMadvise::Pidfd(i32::MAX),
                 process_madvise_free: true,
                 anon_name: true,
+                populate_write: true,
                 // A 64 KiB-page kernel listing every size from 128K to 512M.
                 thp: Thp {
                     enabled: Some(ThpSetting::Madvise),
@@ -1123,11 +1350,14 @@ mod tests {
                     madvise: 0,
                     collapse: Collapse::Yes(29),
                 },
+                // The longest words.
+                thp_disable: ThpDisable::Inherited(u8::MAX),
                 rseq: Rseq::from_symbols(u32::MAX, u32::MAX, isize::MIN, i32::MAX),
+                slice_ext: SliceExt::KernelDisabled,
                 cpu,
             };
             let s = std::format!("{f}");
-            assert!(s.len() < 400, "{} bytes: {s}", s.len());
+            assert!(s.len() < FeatureLine::CAP - 64, "{} bytes: {s}", s.len());
             assert_eq!(FeatureLine::build(&f).as_str(), s);
         }
     }
@@ -1165,6 +1395,54 @@ mod tests {
         assert!(!Rseq::from_symbols(19, 0, 192, 0).registered());
         assert_eq!(Rseq::MM_CID_END, 28);
         assert_eq!(Rseq::CPU_ID_OFFSET, 4);
+    }
+
+    /// The `slice_ext=` word (plan Phase 2.5 task 15) from the probe's
+    /// verdict and the configured one: the 7.0 GCE kernels (`33` bytes,
+    /// bit 4 clear) read `kernel-disabled` whatever the key; a 6.18 or
+    /// 6.10 kernel `no-slice_ctrl`; no registration `no-rseq`; a kernel
+    /// with the option reads `on` once `configure` enabled the init thread,
+    /// `available` under `slice_ext:off` (or before `configure`), and
+    /// `prctl-failed` when the enable was refused. Every word is a single
+    /// token without spaces or `=`.
+    #[test]
+    fn slice_ext_words_follow_the_verdicts() {
+        use crate::slice::Verdict;
+        let gce = SliceExt::from_probe(Verdict::KernelDisabled);
+        assert_eq!(gce, SliceExt::KernelDisabled);
+        for v in [Verdict::Unprobed, Verdict::Key, Verdict::KernelDisabled, Verdict::NoRseq] {
+            assert_eq!(gce.with_configured(v), SliceExt::KernelDisabled, "{v:?}");
+        }
+        assert_eq!(SliceExt::from_probe(Verdict::NoSliceCtrl), SliceExt::NoSliceCtrl);
+        assert_eq!(SliceExt::from_probe(Verdict::NoSliceCtrl).with_configured(Verdict::Key), SliceExt::NoSliceCtrl);
+        assert_eq!(SliceExt::from_probe(Verdict::NoRseq), SliceExt::NoRseq);
+        let has = SliceExt::from_probe(Verdict::Enabled);
+        assert_eq!(has, SliceExt::Available);
+        assert_eq!(has.with_configured(Verdict::Enabled), SliceExt::On);
+        assert_eq!(has.with_configured(Verdict::Key), SliceExt::Available);
+        assert_eq!(has.with_configured(Verdict::Unprobed), SliceExt::Available);
+        assert_eq!(has.with_configured(Verdict::PrctlFailed), SliceExt::PrctlFailed);
+        // `Probe::verdict` never yields these; they map to the weakest word.
+        for v in [Verdict::Unprobed, Verdict::Key, Verdict::NoSyscall] {
+            assert_eq!(SliceExt::from_probe(v), SliceExt::NoRseq, "{v:?}");
+        }
+        for w in [
+            SliceExt::On,
+            SliceExt::Available,
+            SliceExt::PrctlFailed,
+            SliceExt::KernelDisabled,
+            SliceExt::NoSliceCtrl,
+            SliceExt::NoRseq,
+        ] {
+            let name = w.name();
+            assert!(!name.is_empty() && !name.contains(' ') && !name.contains('='), "{name}");
+            assert_eq!(std::format!("{w}"), std::format!("slice_ext={name}"));
+        }
+        // The report line's words are the same vocabulary.
+        assert_eq!(SliceExt::KernelDisabled.name(), Verdict::KernelDisabled.name());
+        assert_eq!(SliceExt::NoSliceCtrl.name(), Verdict::NoSliceCtrl.name());
+        assert_eq!(SliceExt::NoRseq.name(), Verdict::NoRseq.name());
+        assert_eq!(SliceExt::PrctlFailed.name(), Verdict::PrctlFailed.name());
     }
 }
 
@@ -1240,6 +1518,13 @@ mod linux_tests {
         if !at_least(kv, (5, 17)) {
             assert!(!f.anon_name, "PR_SET_VMA_ANON_NAME predates 5.17: {line}");
         }
+        // `MADV_POPULATE_WRITE` (plan Phase 2.5 task 11): 5.14, and never
+        // filtered (plain `madvise`), so both directions hold.
+        if !at_least(kv, (5, 14)) {
+            assert!(!f.populate_write, "MADV_POPULATE_WRITE predates 5.14: {line}");
+        } else {
+            assert!(f.populate_write, "MADV_POPULATE_WRITE should work on 5.14+: {line}");
+        }
         // The rseq probe (plan Phase 2.5 task 8) against glibc's own
         // symbols through `dlsym` and the kernel's `AT_RSEQ_FEATURE_SIZE`:
         // the values must be the symbols', and `mm_cid` is `yes` exactly
@@ -1282,6 +1567,74 @@ mod linux_tests {
                     assert!(line.contains(" mm_cid=no "), "{line}");
                 }
             }
+        }
+        // `PR_THP_DISABLE_EXCEPT_ADVISED` (plan Phase 2.5 task 16), both
+        // ways: `yes` needs 6.18 and a process without a THP policy; below
+        // 6.18 the flag is `EINVAL`, so `no`; and the probe leaves the
+        // process's policy as it found it (`PR_GET_THP_DISABLE` unchanged),
+        // which the kernel's own `/proc/self/status` field confirms.
+        {
+            // SAFETY: a query with no pointer arguments.
+            let get = unsafe { sys::prctl(sys::PR_GET_THP_DISABLE, 0, 0, 0, 0) }.unwrap_or(usize::MAX);
+            match f.thp_disable {
+                ThpDisable::Yes => {
+                    assert!(at_least(kv, (6, 18)), "PR_THP_DISABLE_EXCEPT_ADVISED predates 6.18: {line}");
+                    assert_eq!(get, 0, "the probe changed the process's policy: {line}");
+                }
+                ThpDisable::No => {
+                    // A kernel from 6.18 on takes it unless something in
+                    // front of `prctl` refuses (seccomp).
+                    assert!(get == 0 || get == usize::MAX, "{line}");
+                }
+                ThpDisable::Inherited(v) => {
+                    assert_eq!(get, v as usize, "{line}");
+                }
+            }
+            if !at_least(kv, (6, 18)) {
+                assert_ne!(f.thp_disable, ThpDisable::Yes, "{line}");
+            }
+            let status = std::fs::read_to_string("/proc/self/status").unwrap();
+            let thp_enabled = status.lines().find(|l| l.starts_with("THP_enabled:")).map(str::trim);
+            eprintln!("thp_except_advised: {} (PR_GET_THP_DISABLE {get}, {})", f.thp_disable.name(), thp_enabled.unwrap_or("no THP_enabled field"));
+            if f.thp_disable == ThpDisable::Yes {
+                // The probe: take it and undo it once more, watching the
+                // kernel's view move and come back.
+                let mid = unsafe { sys::prctl(sys::PR_SET_THP_DISABLE, 1, sys::PR_THP_DISABLE_EXCEPT_ADVISED, 0, 0) };
+                assert_eq!(mid, Ok(0), "{line}");
+                let got = unsafe { sys::prctl(sys::PR_GET_THP_DISABLE, 0, 0, 0, 0) }.unwrap();
+                assert_eq!(got, 1 | sys::PR_THP_DISABLE_EXCEPT_ADVISED, "{line}");
+                assert_eq!(unsafe { sys::prctl(sys::PR_SET_THP_DISABLE, 0, 0, 0, 0) }, Ok(0));
+                assert_eq!(unsafe { sys::prctl(sys::PR_GET_THP_DISABLE, 0, 0, 0, 0) }, Ok(0));
+                assert_eq!(probe_thp_disable(), ThpDisable::Yes);
+            }
+        }
+        // The `slice_ext=` word against `slice::probe` (plan Phase 2.5 task
+        // 15): the probe, not enabled by `Features::probe` (`configure` has
+        // not run for this value), must read what the module's own probe
+        // says; the 7.0 GCE kernels read `kernel-disabled`, the Mac's 6.10
+        // `no-slice_ctrl`. Both ways: a kernel with the option reads
+        // `available` here (the line of the shipped library says `on`).
+        {
+            let p = crate::slice::probe();
+            assert_eq!(f.slice_ext, SliceExt::from_probe(p.verdict()), "{line}: {p:?}");
+            let word = std::format!(" slice_ext={} ", f.slice_ext.name());
+            assert!(line.contains(&word), "{line}");
+            if p.size != 0 && p.size < crate::slice::SLICE_CTRL_END {
+                assert_eq!(f.slice_ext, SliceExt::NoSliceCtrl, "{line}");
+            }
+            if p.size >= crate::slice::SLICE_CTRL_END && !p.available {
+                assert_eq!(f.slice_ext, SliceExt::KernelDisabled, "{line}");
+            }
+            if p.available {
+                assert!(at_least(kv, (7, 0)), "slice extension predates 7.0: {line}");
+                assert_eq!(f.slice_ext, SliceExt::Available, "{line}");
+                let mut g = f;
+                // The configured outcome folds in as `on` only when the
+                // module is on in this process.
+                g.note_slice_ext();
+                assert_eq!(g.slice_ext == SliceExt::On, crate::slice::on(), "{line}");
+            }
+            eprintln!("slice_ext: {} (probe {:?})", f.slice_ext.name(), p);
         }
         // The THP table against the same files read through std.
         let dir = std::path::Path::new("/sys/kernel/mm/transparent_hugepage");
@@ -1352,6 +1705,19 @@ mod linux_tests {
                     assert_eq!(r == Ok(page), f.process_madvise_free, "{line}: {r:?}");
                 }
             }
+        }
+        if f.populate_write {
+            // Usable as reported: a fresh page is not resident, one call
+            // makes it so, and its contents stay zero.
+            let mut vec = [0u8; 1];
+            sys::mincore(addr, page, &mut vec).unwrap();
+            assert_eq!(vec[0] & 1, 0, "fresh scratch page resident before the populate");
+            // SAFETY: our page.
+            unsafe { sys::madvise(addr, page, sys::MADV_POPULATE_WRITE).unwrap() };
+            sys::mincore(addr, page, &mut vec).unwrap();
+            assert_eq!(vec[0] & 1, 1, "page not resident after MADV_POPULATE_WRITE");
+            // SAFETY: our page.
+            assert_eq!(unsafe { p.read_volatile() }, 0);
         }
         if f.anon_name {
             // SAFETY: our page, static name.

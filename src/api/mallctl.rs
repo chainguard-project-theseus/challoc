@@ -135,6 +135,22 @@ pub enum Leaf {
     StatsThpHugeRanges,
     StatsThpMetaRanges,
     StatsThpFailures,
+    /// `stats.prefault.*` (plan Phase 2.5 task 11, `purge::prefault`):
+    /// whether the pass runs, whether `MADV_POPULATE_WRITE` is the populate,
+    /// and its counters. Read-only, `size_t`.
+    StatsPrefaultEnabled,
+    StatsPrefaultPopulateWrite,
+    StatsPrefaultPasses,
+    StatsPrefaultSlabs,
+    StatsPrefaultBytes,
+    StatsPrefaultSkipped,
+    StatsPrefaultFallbacks,
+    StatsPrefaultWakes,
+    StatsPrefaultActive,
+    /// `stats.thp.process` (plan Phase 2.5 task 16, `thp::Process`): 0
+    /// nothing issued, 1 `PR_THP_DISABLE_EXCEPT_ADVISED` in force, 2 the
+    /// kernel refused it, 3 an inherited policy was kept, 4 the call failed.
+    StatsThpProcess,
     /// `stats.arenas.<i>.*`; `mib[2]` is the arena.
     StatsArenaPactive,
     StatsArenaPdirty,
@@ -266,13 +282,25 @@ static STATS_CGROUP: [Node; 11] = [
     leaf("lazy_purges", Leaf::StatsCgroupLazyPurges),
     leaf("eager_purges", Leaf::StatsCgroupEagerPurges),
 ];
-static STATS_THP: [Node; 6] = [
+static STATS_THP: [Node; 7] = [
     leaf("mode", Leaf::StatsThpMode),
     leaf("class_ranges", Leaf::StatsThpClassRanges),
     leaf("class_bytes", Leaf::StatsThpClassBytes),
     leaf("huge_ranges", Leaf::StatsThpHugeRanges),
     leaf("meta_ranges", Leaf::StatsThpMetaRanges),
     leaf("failures", Leaf::StatsThpFailures),
+    leaf("process", Leaf::StatsThpProcess),
+];
+static STATS_PREFAULT: [Node; 9] = [
+    leaf("enabled", Leaf::StatsPrefaultEnabled),
+    leaf("populate_write", Leaf::StatsPrefaultPopulateWrite),
+    leaf("passes", Leaf::StatsPrefaultPasses),
+    leaf("slabs", Leaf::StatsPrefaultSlabs),
+    leaf("bytes", Leaf::StatsPrefaultBytes),
+    leaf("skipped", Leaf::StatsPrefaultSkipped),
+    leaf("fallbacks", Leaf::StatsPrefaultFallbacks),
+    leaf("wakes", Leaf::StatsPrefaultWakes),
+    leaf("active", Leaf::StatsPrefaultActive),
 ];
 static STATS_PERCPU: [Node; 5] = [
     leaf("enabled", Leaf::StatsPercpuEnabled),
@@ -281,7 +309,7 @@ static STATS_PERCPU: [Node; 5] = [
     leaf("cached", Leaf::StatsPercpuCached),
     leaf("aborts", Leaf::StatsPercpuAborts),
 ];
-static STATS: [Node; 10] = [
+static STATS: [Node; 11] = [
     leaf("allocated", Leaf::StatsAllocated),
     leaf("active", Leaf::StatsActive),
     leaf("metadata", Leaf::StatsMetadata),
@@ -291,6 +319,7 @@ static STATS: [Node; 10] = [
     dir("arenas", &STATS_ARENAS),
     dir("cgroup", &STATS_CGROUP),
     dir("thp", &STATS_THP),
+    dir("prefault", &STATS_PREFAULT),
     dir("percpu", &STATS_PERCPU),
 ];
 static THREAD_TCACHE: [Node; 2] = [leaf("flush", Leaf::ThreadTcacheFlush), leaf("enabled", Leaf::ThreadTcacheEnabled)];
@@ -870,16 +899,41 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
                 _ => eager as usize,
             })
         }
+        StatsPrefaultEnabled
+        | StatsPrefaultPopulateWrite
+        | StatsPrefaultPasses
+        | StatsPrefaultSlabs
+        | StatsPrefaultBytes
+        | StatsPrefaultSkipped
+        | StatsPrefaultFallbacks
+        | StatsPrefaultWakes
+        | StatsPrefaultActive => {
+            io.read_only()?;
+            let s = crate::purge::prefault::stats();
+            io.read(match leaf {
+                StatsPrefaultEnabled => crate::purge::prefault::enabled() as usize,
+                StatsPrefaultPopulateWrite => crate::purge::prefault::uses_populate_write() as usize,
+                StatsPrefaultPasses => s.passes as usize,
+                StatsPrefaultSlabs => s.slabs as usize,
+                StatsPrefaultBytes => s.bytes as usize,
+                StatsPrefaultSkipped => s.skipped as usize,
+                StatsPrefaultFallbacks => s.fallbacks as usize,
+                StatsPrefaultWakes => s.wakes as usize,
+                _ => s.active as usize,
+            })
+        }
         StatsThpMode
         | StatsThpClassRanges
         | StatsThpClassBytes
         | StatsThpHugeRanges
         | StatsThpMetaRanges
-        | StatsThpFailures => {
+        | StatsThpFailures
+        | StatsThpProcess => {
             io.read_only()?;
             let s = crate::thp::stats();
             io.read(match leaf {
                 StatsThpMode => crate::thp::decision().mode as usize,
+                StatsThpProcess => crate::thp::process() as usize,
                 StatsThpClassRanges => s.class_ranges as usize,
                 StatsThpClassBytes => s.class_bytes as usize,
                 StatsThpHugeRanges => s.huge_ranges as usize,

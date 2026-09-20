@@ -245,16 +245,25 @@ fn init() {
     // SAFETY: `init` runs once, under `INITIALISING`, before `READY`.
     unsafe { layout::adopt_page_geometry(features.page_size.trailing_zeros()) };
     let config = config::load();
+    // `config::load` ran `slice::configure` on this thread: the feature
+    // line's `slice_ext=` word can now say `on` (plan Phase 2.5 task 15).
+    features.note_slice_ext();
     // The `MADV_COLLAPSE` probe populates a PMD of memory, so only a
     // configuration that asks for huge pages pays for it (design 10).
     if config.thp != config::Thp::Never {
         features.probe_collapse();
     }
     crate::thp::configure(config.thp, &features);
+    // `thp_process:advised` (plan Phase 2.5 task 16): process-wide, so
+    // before any region exists; a refused call is reported, not retried.
+    crate::thp::configure_process(config.thp_process(), &features);
     purge::configure(features.process_madvise, config.lazy_free);
     purge::configure_advice(features.process_madvise_free, config.lazy_band);
     purge::set_check_zero(config.check_zero);
     crate::class::set_group_handoff(config.group_handoff);
+    // Plan Phase 2.5 task 11: the pass needs the thread; `prefault_active`
+    // is the one gate (the key without the thread is stored and inert).
+    purge::prefault::configure(config.prefault_active(), features.populate_write);
     purge::background::request(config.background_thread);
     let regions = Regions::reserve(features.page_size, features.anon_name);
     if features.mseal {

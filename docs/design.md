@@ -1045,6 +1045,79 @@ parent's thread (it does not exist there) and reuses the stack directly.
 Creating the thread from a `free` slow path saves and restores `errno`
 around the pthread calls, since `free` must leave it alone (section 1).
 
+### 8.2 Prefaulted fresh slabs (plan Phase 2.5 task 11)
+
+Behind `prefault:true` (section 12), and only with the background thread
+(`Config::prefault_active`: the pass runs on it, so the key without
+`background_thread:true` is stored, readable and inert, and the report
+says so), the thread runs one pass after each decay pass
+(`purge::prefault::pass`): every `(arena, class)` whose `refilled`
+counter (`ClassState::refilled`, one add per cache refill, already kept
+for the compaction gate) moved since the pass last looked
+(`prefault_due`, a snapshot the thread alone writes, in the state's tail
+line) is asked for its next fresh slab (`ClassState::prefault_next`).
+Under the class lock: if the arena has an `Empty` or `Purged` slab of the
+class, nothing is done, since the next refill takes that; otherwise
+`next_slab`, the refill's own selection (the current group's next slab,
+else an idle group adopted from another arena, else a fresh group from
+the region, guard slabs committed as guards and skipped), yields the slab
+the refill would have committed, `commit_slab` and all. If it is `Fresh`
+it is populated with the lock still held, before anything can see it:
+one `madvise(MADV_POPULATE_WRITE)` over the slab where the init probe
+found the kernel takes it (5.14+, `populate_write=yes` in the feature
+line), else one write of zero per page (a zero over the kernel's zero,
+this thread's alone); then it is published as `Purged` in the `purged`
+set. That state is chosen because it is the one `next_slab` already
+prefers right after `Empty` (so the next refill takes the prefaulted slab
+first, at the lowest address), because its memory reads zero (the
+populate leaves the fresh pages as they are, so `take` still reports the
+claim zero for `calloc` wherever `purged_is_zero` holds) and because the
+decay walks never touch the `purged` set (the pages stay resident until
+the refill). The one thing the word gets wrong is "not resident": the
+`purged` count of the bins table includes prefaulted slabs until they are
+taken, and the RSS the statistics derive from slab counts is under by
+those slabs. A slab the adoption yields as `Empty` or `Purged` goes back
+into its set untouched: the next refill takes it and nothing needs
+prefaulting. A prefaulted slab in an otherwise used-up group is an idle
+group by the handoff's definition (13.3) and may be adopted by another
+arena's refill, which is the same memory serving the same class one
+arena over.
+
+One slab per class per pass, so at most one prefaulted slab per `(arena,
+class)` waits at any time; nothing at all unless the cgroup policy shows
+headroom (`Policy::prefault_allowed`: no limit, or under 70% of it with
+no eager return of the excess over the cap in progress, section 11), since
+resident memory nobody asked for yet is the first thing the scaled and
+immediate bands exist to take back. The commit path (`SlabTable::
+commit_slab`, on a usable slab) wakes the thread once per fresh slab it
+puts into service (`prefault::note_commit`, one relaxed load when the key
+is off), so the pass runs right after the refill that consumed the
+previous prefaulted slab, and a thread sleeping with no decay deadline
+still runs it; the pass's own commits wake nobody. A wake per fresh
+commit alone would leave every other slab of a steady stream unprefaulted
+(the refill that takes a prefaulted slab commits nothing), so a pass that
+found any class refilling re-arms the thread's sleep to at most
+`prefault::POLL_NS` (1 ms: a hot Valkey class takes a 64 KiB slab about
+that often, a pass is a few microseconds) and a quiet pass lets the sleep
+fall back to the decay deadline and the wakes. The fast paths are
+untouched: the pop and push never see the pass, and the refill's
+selection is unchanged (it finds a `Purged` slab where it would have
+committed a fresh one). Report: `Prefault: on (MADV_POPULATE_WRITE |
+touch per page) passes N (active N) slabs N (B bytes) skipped_no_headroom
+N fallbacks N wakes N` or `off (<why>)`; `stats.prefault.{enabled,
+populate_write, passes, slabs, bytes, skipped, fallbacks, wakes, active}`.
+Tests: `class::tests::prefault_next_*` (the selection, the veto by the
+arena's own `Empty`/`Purged` slabs, the guard skip, the adoption),
+`policy::tests::prefault_allowed_only_with_headroom`,
+`purge::tests::prefault_populate_and_wakes_are_counted`, and
+`tests/c/prefault.c` both ways (under the key the next fresh slab of the
+64-byte class is fully resident per `mincore` before any allocation
+touched it, exactly one, zero, and the next refills come from it; under
+the default nothing past the slabs in service is resident and the
+counters stay zero). The acceptance measure is the Valkey soak's
+write-phase p99 and the main thread's page faults, the first reading in
+`bench/results/2026-09-20-aarch64-lane-b-task11-prefault.md`.
+
 ## 9. Fork
 
 `pthread_atfork` handlers registered at init: the prepare handler blocks every
@@ -1340,6 +1413,9 @@ slab's own granularity, and the metadata rounding it adds is bounded by
 the tables in use. A forced `never` is a `never` (section 17, plan Phase
 2.5 task 16): the reservations already made are `MADV_NOHUGEPAGE`d when the
 key is forced, as they are at reservation under a configured `never`.
+`thp_process:advised` (section 17) is not forced either way by the limit:
+it only narrows where huge pages may land, so a small container that asks
+for it keeps it.
 
 Statistics through `mallctl` (13.4): `stats.cgroup.limit`,
 `stats.cgroup.high` (both `SIZE_MAX` for unlimited), `stats.cgroup.current`
@@ -2038,11 +2114,15 @@ protocol as stated passes every scenario.
   NUL-terminated line of `key=value` pairs separated by single spaces, the
   kernel probes first (`page_size=4096 guard_install=yes mseal=yes
   process_madvise=pidfd_self process_madvise_free=yes anon_name=yes
-  thp=madvise mthp=2M collapse=unprobed rseq=yes rseq_size=33 mm_cid=yes`:
-  the THP setting or `none`, the
+  populate_write=yes thp=madvise mthp=2M collapse=unprobed
+  thp_except_advised=yes rseq=yes rseq_size=33 mm_cid=yes
+  slice_ext=kernel-disabled`: whether `MADV_POPULATE_WRITE` works (5.14,
+  section 8), the THP setting or `none`, the
   folio sizes a `MADV_HUGEPAGE`d range can get or `none`, the
-  `MADV_COLLAPSE` probe, `unprobed` under `thp:never`, and glibc's rseq
-  registration with whether it covers `mm_cid`, section 15) then the CPU (section 17;
+  `MADV_COLLAPSE` probe, `unprobed` under `thp:never`, whether the kernel
+  takes `PR_THP_DISABLE_EXCEPT_ADVISED` (6.18, section 17), glibc's rseq
+  registration with whether it covers `mm_cid`, section 15, and the
+  kernel's answer for the time slice extension, section 17) then the CPU (section 17;
   `mte=no mte3=no pac=yes lse=yes lse2=yes bti=yes sve=yes` on arm64,
   `lam=no uai=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes
   fsrm=yes avx512f=yes` on x86_64, then `cacheline=64 l1d=64K l2=2M` on
@@ -2072,9 +2152,10 @@ runs on every row.
 | `MADV_FREE` (the advice itself) | every kernel since 4.5 | `Empty` slabs and huge extents under 70% of a known cgroup limit are returned lazily (sections 8 and 11); `lazy_free` everywhere | `MADV_DONTNEED` everywhere (no limit known, `lazy_band:false`) |
 | `mseal` | kernel 6.10, not filtered by seccomp | seals the never-committed ranges of the reservations at init (section 10 step 5) | skip; `Sealed ranges: 0 of N` |
 | `PR_SET_VMA_ANON_NAME` | kernel 5.17 with `CONFIG_ANON_VMA_NAME` | named `challoc:*` mappings in `/proc/pid/maps` | skip |
+| `MADV_POPULATE_WRITE` (`populate_write`) | kernel 5.14 (probed on a scratch page: the call and `mincore` afterwards) | the prefault pass (section 8, plan Phase 2.5 task 11; `purge::prefault`, `ClassState::prefault_next`), behind `prefault:true` with `background_thread:true`: the background thread commits the slab the next refill of a class would commit and populates it with one call while it is still unpublished, then publishes it as `Purged` for the refill to take; `stats.prefault.*` and the `Prefault:` report line | the same pass with one write of zero per page; `Prefault: off (prefault:false)` by default |
 | PSI triggers on `memory.pressure` | kernel 6.4 (unprivileged), cgroup2 mounted writable | the background thread arms a trigger and reacts to pressure at once (section 11) | sample `memory.current` on the tick |
 | rseq `mm_cid` (`rseq`, `rseq_size`, `mm_cid`) | kernel 6.3 (`CONFIG_RSEQ`, `CONFIG_SCHED_MM_CID`) reporting `AT_RSEQ_FEATURE_SIZE >= 28`, glibc 2.35+'s registered area (`__rseq_size`, `__rseq_offset`, `__rseq_flags`, read from the weak symbols at init, and the area's own `cpu_id` for the fact of registration; `sys::features::Rseq` for the report, `rseq::probe` for the mode; `__rseq_size >= 28` is the gate) | the per-CPU mode (section 15, plan Phase 2.5 task 8): caches and arenas keyed by the running thread's concurrency id, pop and push in rseq critical sections, `percpu_arena:auto` (the default) and `percpu`; the cost and the default decision are in PROGRESS.md; `rseq=yes rseq_size=33 mm_cid=yes` on the 7.0 GCE VMs | thread caches (`percpu_arena:off`, `double_free_scan:true`, or `rseq=yes rseq_size=20 mm_cid=no` as on the Mac's 6.10 linuxkit VM, `rseq=no rseq_size=0` without a registration: `GLIBC_TUNABLES=glibc.pthread.rseq=0`, no `CONFIG_RSEQ`, a libc without the symbols); `percpu` says so in the report |
-| Transparent huge pages (`thp`, `mthp`, `collapse`) | any kernel with `CONFIG_TRANSPARENT_HUGEPAGE`; the per-size `hugepages-<n>kB` knobs since 6.8; `MADV_COLLAPSE` since 6.1 | off by default (`thp:never`: byte for byte the allocator without the key on the fast paths, plus one `MADV_NOHUGEPAGE` per reservation at init (plan Phase 2.5 task 16, `thp::advise_reservation` from `layout::Regions::reserve`, and again from `force_never`), a VMA flag every later split inherits, so that on a host whose global mode is `always` (Chainguard OS ships `always` with the 2 MiB size on `inherit`; Debian's kernels boot `always`) no region of challoc's gets a huge page (the both-ways test `tests/c/thp.c never` reads the global mode from sysfs, checks `nh` on the class and huge regions on every kernel with THP and, on an `always` host, `AnonHugePages` 0 kB and `THPeligible` 0 after 8 MiB of small blocks and an 8 MiB huge run; the before/after numbers on the 7.0 VM with the global mode set to `always` are in `bench/results/2026-09-19-lane-b-floor-fixes.md`). `auto` and `always` issue no `MADV_NOHUGEPAGE`: on an `always` host their unadvised regions stay eligible for the host's PMD pages, and the process-wide `prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED)` of 6.18 (`docs/research.md`) is the second half of task 16, behind a key). `thp:auto` (plan Phase 2.5 task 9, `thp.rs`): `MADV_HUGEPAGE` on the slab groups of every class whose slab holds an enabled folio size below the PMD (64 KiB slabs and up with `hugepages-64kB` enabled), and metadata commits rounded to and advised with that folio, never a 2 MiB page (the fork copy-on-write cost that makes Redis and Valkey forbid huge pages stays absent); inert, and the report says why, where the kernel enables no such size or where the PMD size is `madvise`-gated (`hugepages-2048kB/enabled` `madvise`, or `inherit` under a `madvise` top level, Ubuntu's default), because the same advice would then make the regions eligible for 2 MiB pages at the fault and through khugepaged; the host requirement is `hugepages-64kB/enabled=madvise` (or `always`) with `hugepages-2048kB/enabled=never` (or `always`, the host's own decision), root-only knobs. `thp:always`: with the PMD size enabled and no larger than 2 MiB (`thp::LG_PMD_CHUNK_MAX`: the PMD is `page * page / 8`, 2 MiB at 4 KiB pages, 32 MiB at 16 KiB, 512 MiB at 64 KiB, and a chunk of the larger sizes committed and advised per class would be the RSS floor of the process: the 64 KiB matrix cell showed 1.7 GiB of advised chunks for an 8 MiB test heap and the kernel gave none of them a folio, `THPeligible 0`), class regions are committed and advised in PMD-sized chunks so the first touch maps a 2 MiB page (guard slabs inside a chunk stay unused but unguarded: a marker there splits the page), huge runs of a PMD or more are advised (section 7), and the metadata takes the sub-PMD folio if one is enabled; a purge of a slab inside a 2 MiB page splits it, the kernel's cost of the mode. On a PMD over 2 MiB `always` is the folio path over the enabled sizes below the PMD (2 MiB slabs and up when `hugepages-2048kB` is enabled at 64 KiB pages) and inert, reason `PmdTooLarge`, when none is. `MADV_COLLAPSE` is probed at the PMD size only (a smaller request is a silent no-op through 7.0), only when `thp` is not `never`, and reported, not used. Measured in `bench/results/2026-09-19-lane-b-mthp.md`: `auto` takes a quarter of larson1's dTLB refills on the C4A (4.0 -> 3.05 per operation, jemalloc 1.75) and puts valkey1's below jemalloc's (2.81 -> 2.44), leaves the Valkey-shaped rows flat, makes `fork()` 18% cheaper on a 500 MiB heap and the copy-on-write burst unchanged, and costs larson 1.6% with 7..19% more RSS on 16..100 MiB heaps (a folio per touched slab and table), which is why it is the documented opt-in and not the default; `always` is +10..15% on valkey1 at +10% RSS on 585 MiB and 2..4x on small heaps | small pages; `thp=none mthp=none` on a kernel without THP |
+| Transparent huge pages (`thp`, `mthp`, `collapse`) | any kernel with `CONFIG_TRANSPARENT_HUGEPAGE`; the per-size `hugepages-<n>kB` knobs since 6.8; `MADV_COLLAPSE` since 6.1 | off by default (`thp:never`: byte for byte the allocator without the key on the fast paths, plus one `MADV_NOHUGEPAGE` per reservation at init (plan Phase 2.5 task 16, `thp::advise_reservation` from `layout::Regions::reserve`, and again from `force_never`), a VMA flag every later split inherits, so that on a host whose global mode is `always` (Chainguard OS ships `always` with the 2 MiB size on `inherit`; Debian's kernels boot `always`) no region of challoc's gets a huge page (the both-ways test `tests/c/thp.c never` reads the global mode from sysfs, checks `nh` on the class and huge regions on every kernel with THP and, on an `always` host, `AnonHugePages` 0 kB and `THPeligible` 0 after 8 MiB of small blocks and an 8 MiB huge run; the before/after numbers on the 7.0 VM with the global mode set to `always` are in `bench/results/2026-09-19-lane-b-floor-fixes.md`). `auto` and `always` issue no `MADV_NOHUGEPAGE`: on an `always` host their unadvised regions stay eligible for the host's PMD pages unless the process-wide `prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED)` of 6.18 (`docs/research.md`; the second half of task 16) is in force: `thp_process:advised` (section 12) issues it once at init (`thp::configure_process`), where the probe `sys::features::probe_thp_disable` found the kernel takes the flag (`PR_GET_THP_DISABLE` 0, then the call and its undo, one `prctl` each: `thp_except_advised=yes`; `EINVAL` before 6.18 is `no`; a process whose parent set a THP policy is `inherited` and left alone), so huge pages land only where something was `MADV_HUGEPAGE`d, libc's and the program's mappings included, which is why it is opt-in; the `thp:` report line ends `; host <global mode> process <default (nothing issued) | advised: PR_THP_DISABLE_EXCEPT_ADVISED in force | advised: skipped, <reason>>`, `stats.thp.process` reads 0..4 (`thp::Process`), and `tests/c/thp.c process` under `thp_process:advised,thp:auto` is the both-ways test: on 6.18+ `PR_GET_THP_DISABLE` reads 3 and, on an `always` host, the unadvised class region and huge run show `AnonHugePages` 0 kB; below 6.18 the line says skipped and `PR_GET_THP_DISABLE` stays 0). `thp:auto` (plan Phase 2.5 task 9, `thp.rs`): `MADV_HUGEPAGE` on the slab groups of every class whose slab holds an enabled folio size below the PMD (64 KiB slabs and up with `hugepages-64kB` enabled), and metadata commits rounded to and advised with that folio, never a 2 MiB page (the fork copy-on-write cost that makes Redis and Valkey forbid huge pages stays absent); inert, and the report says why, where the kernel enables no such size or where the PMD size is `madvise`-gated (`hugepages-2048kB/enabled` `madvise`, or `inherit` under a `madvise` top level, Ubuntu's default), because the same advice would then make the regions eligible for 2 MiB pages at the fault and through khugepaged; the host requirement is `hugepages-64kB/enabled=madvise` (or `always`) with `hugepages-2048kB/enabled=never` (or `always`, the host's own decision), root-only knobs. `thp:always`: with the PMD size enabled and no larger than 2 MiB (`thp::LG_PMD_CHUNK_MAX`: the PMD is `page * page / 8`, 2 MiB at 4 KiB pages, 32 MiB at 16 KiB, 512 MiB at 64 KiB, and a chunk of the larger sizes committed and advised per class would be the RSS floor of the process: the 64 KiB matrix cell showed 1.7 GiB of advised chunks for an 8 MiB test heap and the kernel gave none of them a folio, `THPeligible 0`), class regions are committed and advised in PMD-sized chunks so the first touch maps a 2 MiB page (guard slabs inside a chunk stay unused but unguarded: a marker there splits the page), huge runs of a PMD or more are advised (section 7), and the metadata takes the sub-PMD folio if one is enabled; a purge of a slab inside a 2 MiB page splits it, the kernel's cost of the mode. On a PMD over 2 MiB `always` is the folio path over the enabled sizes below the PMD (2 MiB slabs and up when `hugepages-2048kB` is enabled at 64 KiB pages) and inert, reason `PmdTooLarge`, when none is. `MADV_COLLAPSE` is probed at the PMD size only (a smaller request is a silent no-op through 7.0), only when `thp` is not `never`, and reported, not used. Measured in `bench/results/2026-09-19-lane-b-mthp.md`: `auto` takes a quarter of larson1's dTLB refills on the C4A (4.0 -> 3.05 per operation, jemalloc 1.75) and puts valkey1's below jemalloc's (2.81 -> 2.44), leaves the Valkey-shaped rows flat, makes `fork()` 18% cheaper on a 500 MiB heap and the copy-on-write burst unchanged, and costs larson 1.6% with 7..19% more RSS on 16..100 MiB heaps (a folio per touched slab and table), which is why it is the documented opt-in and not the default; `always` is +10..15% on valkey1 at +10% RSS on 585 MiB and 2..4x on small heaps | small pages; `thp=none mthp=none` on a kernel without THP |
 | MTE (`HWCAP2_MTE`, `HWCAP2_MTE3`) | arm64 CPU (Armv8.5) and a kernel with `CONFIG_ARM64_MTE` that exposes it | reported only: tagged pointers (section 18, designed; plan Phase 2.5 task 6 implements) | untagged pointers |
 | PAC (`HWCAP_PACA` and `HWCAP_PACG`) | arm64 CPU (Armv8.3) and kernel | signed cache entries and TLS heap pointer (`pacda`/`autda`, sections 6.1 and 6.2) behind `pac_pointers:true`, off by default on the cost (section 14); `pac=yes` on Axion and the Mac VM, `no` on Altra; FEAT_FPAC decides whether a failure faults at the `autda` or on first use | plain pointers, the same binary, one predicted branch on a byte the fast paths load anyway |
 | LSE (`HWCAP_ATOMICS`) | arm64 CPU (Armv8.1) | reported only; the atomics the crate emits follow the compiler baseline (Rust's outlined `__aarch64_*` helpers already pick LSE at run time) | LL/SC loops in the same helpers |
@@ -2086,15 +2167,21 @@ runs on every row.
 | CLDEMOTE (`cpuid` 7.0 `ECX[25]`) | x86_64 CPU (Sapphire Rapids and later; the C4's 8581C exposes it to the guest) | reported only, by measurement (plan Phase 2.5 task 12, lane B): the hint on the bitmap word and descriptor line a batch release writes last cost xmalloc-test +5% and the Valkey model +13..17% cycles per operation and left the `io-threads 4` soak's per-command counters flat (`bench/results/2026-09-19-x86_64-lane-b-task12-cldemote.md`), because the freeing core is usually the next claimer; the call sites were dropped. `sys::cldemote` keeps the probe's verdict (`configure` at init), `demote` and a both-ways container test, so a release path that knows the claimer is another core can be measured by adding one call | none needed |
 | WAITPKG (`cpuid` 7.0 `ECX[5]`) | x86_64 CPU (Sapphire Rapids and later); GCE's hypervisor hides it on every cell of the matrix | the lock's `umwait` spin hint (section 5; `spin_hint:auto`), so far only ever measured as its fallback | `pause` in the spin; the C4 and the Cascade Lake rows in `bench/results/2026-09-19-lane-c-spin-and-geometry.md` are within noise of the previous lock |
 | Timer event stream (`HWCAP_EVTSTRM`) | arm64 kernel (`CONFIG_ARM_ARCH_TIMER_EVTSTREAM`, on by default, 10 kHz) | nothing by default: the `wfe` spin hint it bounds is opt-in (`spin_hint:wfe`, refused without the stream) because it lost 3% and a quarter of the RSS on xmalloc-test on the Altra and the Axion (section 5, the same results file) | `isb` in the spin |
-| rseq time slice extension (`slice_ctrl`, `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE`) | kernel 7.0 with `CONFIG_RSEQ_SLICE_EXTENSION` (default N; needs `GENERIC_ENTRY` and `HAVE_GENERIC_TIF_BITS`, which x86_64 has and arm64 does not, through master) and glibc registering the v2 size (`__rseq_size >= 32`: 2.44 registers 33); Ubuntu's `7.0.0-1011-gcp` leaves the option off, so the GCE reference VMs read `kernel-disabled` and the numbers come from a 7.0.14 built with it (`bench/results/2026-09-19-x86_64-lane-c-task15-slice-ext.md`) | every lock holder's request to defer a preemption until the release (`slice.rs`, the subsection below; `slice_ext:auto`), the `prctl` enable per thread on its first hold, `rseq_slice_yield` (or `sched_yield` where seccomp hides the new syscall) after a granted release | the lock without the request: one relaxed load per hold; `Slice extension: off (<why>)` in the report |
+| rseq time slice extension (`slice_ctrl`, `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE`) | kernel 7.0 with `CONFIG_RSEQ_SLICE_EXTENSION` (default N; needs `GENERIC_ENTRY` and `HAVE_GENERIC_TIF_BITS`, which x86_64 has and arm64 does not, through master) and glibc registering the v2 size (`__rseq_size >= 32`: 2.44 registers 33); Ubuntu's `7.0.0-1011-gcp` leaves the option off, so the GCE reference VMs read `kernel-disabled` and the numbers come from a 7.0.14 built with it (`bench/results/2026-09-19-x86_64-lane-c-task15-slice-ext.md`) | every lock holder's request to defer a preemption until the release (`slice.rs`, the subsection below; `slice_ext:auto`), the `prctl` enable per thread on its first hold, `rseq_slice_yield` (or `sched_yield` where seccomp hides the new syscall) after a granted release; the feature line's `slice_ext=` key (`sys::features::SliceExt`, read through `slice::probe` and `slice::verdict`, plan task 15) says `on` when lock holders request it and otherwise the kernel's answer (`available` under `slice_ext:off`, `kernel-disabled`, `no-slice_ctrl`, `no-rseq`, `prctl-failed`) | the lock without the request: one relaxed load per hold; `Slice extension: off (<why>)` in the report and the same word after `slice_ext=` in the feature line |
 | ERMS, FSRM, AVX-512F (`cpuid` 7.0 `EBX[9]`, `EDX[4]`, `EBX[16]`) | x86_64 CPU | reported only: `memcpy`/`memset` selection is glibc's; the crate's fills use the compiler baseline | none needed |
 | Cache line, L1D and L2 sizes | `CTR_EL0` (arm64), `cpuid` leaf 4 or `0x8000001D` (x86_64), else `/sys/devices/system/cpu/cpu0/cache/index*/` | reported only: the layout constants (`lock.rs` padding, the 512-byte stride rule) and the cache-capacity defaults stay fixed; an L2-derived ladder was priced on the 1 MiB parts and dropped (section 6.2, "Cache geometry") | `unknown` in the line; nothing changes |
 | Model-checked protocol (`cargo test --features std model::`, `src/model.rs`) | the host test suite, no hardware: an exhaustive interleaving model of the claim, release, `on_live_zero`, purge and group-handoff steps of `class.rs`, memoised on the whole state, with the invariants of section 4 and 5 checked at every state (no slot handed to two claimers, a slot reported zero reads zero, `live` equals set bits plus in-flight reservations, a slab in an arena's set is `Empty`/`Purged` with `live == 0` and owned by that arena, a `Purged` slab reads zero) | nothing at run time: it is the proof obligation for a change to the protocol. Replaying the pre-fix step orders finds the calloc race (Phase 1.5 task 7) and the ownership gap the handoff's owner check closes (task 15); the current order passes every scenario. Since 2026-09-19 (lane C, plan Phase 2.5 task 8) the `percpu_*` scenarios model the per-CPU claim protocol of section 15 (caches owned by an `mm_cid` read inside an rseq critical section with one commit store, the kernel's abort of a section whose thread was descheduled, threads that pop on one cid and push on another, the refill and the flush through the cid's arena, the zero prefix) with the further invariants that no slot is in two caches or in a cache and owned by a thread, that every set bit has exactly one holder (a lost push is a bit with none) and that a cache is mutated only by a section whose thread kept its cid to the commit; the variants without a section, or with `mm_cid` read outside it, hand a slot to two threads within 40 states, and lane A's implementation is compared against the properties listed in section 15 at merge | none needed |
 
 The kernel keys of the feature report are `page_size guard_install mseal
-process_madvise process_madvise_free anon_name thp mthp collapse rseq
-rseq_size mm_cid` (the last three since plan Phase 2.5 task 8, lane B: the
-glibc registration is probed like a kernel feature and printed with them);
+process_madvise process_madvise_free anon_name populate_write thp mthp
+collapse thp_except_advised rseq rseq_size mm_cid slice_ext`
+(`populate_write` since plan Phase 2.5 task 11: the prefault pass's
+populate; `thp_except_advised` since task 16: the `PR_SET_THP_DISABLE`
+flag probed by the call and undone; `rseq`, `rseq_size` and `mm_cid` since plan
+Phase 2.5 task 8, lane B: the glibc registration is probed like a kernel
+feature and printed with them; `slice_ext` since task 15: the kernel's
+answer for the time slice extension, `kernel-disabled` on the 7.0 GCE
+kernels, `on` where the module is in force);
 the arm64 keys are `mte mte3 pac lse lse2 bti sve`, the
 x86_64 keys `lam uai la57 la57_enabled cldemote waitpkg erms fsrm avx512f`, and
 `cacheline l1d l2` on both, after the kernel keys of section 10. The
@@ -2162,7 +2249,17 @@ syscall; each failure is a word in `Slice extension: off (<word>)`:
 `no-rseq`, `no-slice_ctrl` (6.18 and earlier), `kernel-disabled` (the
 option compiled out or `rseq_slice_ext=0`; Ubuntu's `7.0.0-1011-gcp` on
 the GCE reference VMs, whose config has no `CONFIG_RSEQ_SLICE_EXTENSION`
-line), `prctl-failed`. On aarch64 the probe fails on every kernel to
+line), `prctl-failed`. The feature line carries the same word after
+`slice_ext=` (`sys::features::SliceExt`, plan task 15, lane B): `Features::
+probe` reads `slice::probe().verdict()` before the configuration is read,
+which gives the kernel's answer (`available` when it has the option), and
+init folds `slice::verdict()` in after `config::load` has run `configure`,
+so the line says `on` exactly when lock holders request the extension,
+`available` when the key turned it off on a kernel that has it, and the
+probe's own word otherwise; `tests/c/features.c` checks the word against
+`rseq_size` and against the `Slice extension:` line of the same report,
+and `sys::features::linux_tests` against `slice::probe` on the running
+kernel. On aarch64 the probe fails on every kernel to
 date: the option depends on `GENERIC_ENTRY` and `HAVE_GENERIC_TIF_BITS`,
 which arm64 selects neither of through 7.2 and master, so the aarch64 rows
 measure the fallback's one load. The `on` way was measured on the lane's

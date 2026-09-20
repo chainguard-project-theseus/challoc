@@ -622,7 +622,15 @@ pub struct ClassState {
     /// includes its slots); a count that keeps growing while nothing is
     /// freed is a bookkeeping bug. Printed in the bins table.
     clamped: AtomicU64,
-    _tail: [u8; PAD_ALIGN - 64],
+    /// The prefault pass's snapshot of `refilled` (plan Phase 2.5 task 11,
+    /// `purge::prefault`): the pass prefaults a class only when the
+    /// counter moved since its last visit. Written by the background
+    /// thread alone, on its own line (the tail), never by a refill.
+    prefault_seen: AtomicU64,
+    /// Slabs the pass committed and populated ahead of a refill for this
+    /// arena and class (the bins table and `stats.prefault.slabs`).
+    prefaulted: AtomicU64,
+    _tail: [u8; PAD_ALIGN - 80],
 }
 
 const _: () = assert!(core::mem::offset_of!(ClassState, inner) == PAD_ALIGN);
@@ -1247,6 +1255,11 @@ impl SlabTable {
             g.guards += 1;
             return Some(false);
         }
+        // A fresh slab went into service (plan Phase 2.5 task 11): the
+        // prefault pass, when on, gets one wake per commit so it can
+        // commit and populate this class's next slab before the refill
+        // that will need it. Off: one relaxed load.
+        purge::prefault::note_commit();
         Some(true)
     }
 
@@ -1311,7 +1324,9 @@ impl ClassState {
             compact_off: AtomicU64::new(0),
             gate_refill: AtomicU64::new(0),
             clamped: AtomicU64::new(0),
-            _tail: [0; PAD_ALIGN - 64],
+            prefault_seen: AtomicU64::new(0),
+            prefaulted: AtomicU64::new(0),
+            _tail: [0; PAD_ALIGN - 80],
         })
     }
 
@@ -2386,6 +2401,92 @@ impl ClassState {
         self.refilled.fetch_add(n as u64, Ordering::Relaxed);
     }
 
+    /// The prefault pass's question (plan Phase 2.5 task 11): did a refill
+    /// take slots of this class from this arena since the pass last
+    /// asked? Advances the snapshot. Background thread only.
+    pub fn prefault_due(&self) -> bool {
+        let now = self.refilled();
+        if now == self.prefault_seen.load(Ordering::Relaxed) {
+            return false;
+        }
+        self.prefault_seen.store(now, Ordering::Relaxed);
+        true
+    }
+
+    /// Slabs prefaulted for this arena and class so far.
+    pub fn prefaulted(&self) -> u64 {
+        self.prefaulted.load(Ordering::Relaxed)
+    }
+
+    /// Commit the slab the next refill of this class would commit, ahead
+    /// of it, and hand it to `populate` while it is still this thread's
+    /// alone (plan Phase 2.5 task 11, the commit-path half; design 8).
+    /// Under the class lock: when the arena has an `Empty` or `Purged`
+    /// slab the next refill takes that, so nothing is done; otherwise
+    /// [`next_slab`] runs exactly the refill's own selection (the current
+    /// group's next slab, else an idle group adopted from another arena,
+    /// else a fresh group from the region) and the slab it yields is
+    /// populated by `populate(addr, len)` (`MADV_POPULATE_WRITE`, or a
+    /// touch per page, `purge::prefault`) with the lock still held, so no
+    /// refill can be writing into it meanwhile, then published as
+    /// `Purged` in the `purged` set: a `Purged` slab is what `next_slab`
+    /// takes first after `Empty` ones, its memory reads zero (the kernel's
+    /// fresh pages, which the populate leaves as they are), so `take`
+    /// still reports it zero for `calloc` where `purged_is_zero` holds,
+    /// and the decay walks leave the `purged` set alone, so the pages
+    /// stay resident until the refill. When the adoption gave the arena an
+    /// `Empty` or `Purged` slab instead, that slab goes back where it came
+    /// from: the next refill takes it and nothing needs prefaulting. One
+    /// slab per call. Returns the slab prefaulted, `None` when nothing
+    /// was.
+    ///
+    /// [`next_slab`]: ClassState::next_slab
+    pub fn prefault_next(&self, meta: &Meta, populate: impl FnOnce(usize, usize)) -> Option<usize> {
+        let mut wake = false;
+        let result = {
+            let mut g = self.inner.lock();
+            if g.empty.map.lowest_set().is_some() || g.purged.map.lowest_set().is_some() {
+                None
+            } else {
+                match self.next_slab(&mut g, meta, &mut wake) {
+                    None => None,
+                    Some(s) => {
+                        let d = self.desc(s);
+                        match d.state() {
+                            State::Fresh => {
+                                let cls = self.class();
+                                populate(self.table().slab_addr(s), cls.slab_size());
+                                d.set_state(State::Purged);
+                                d.set_dirty_at(0);
+                                g.purged.map.set(s);
+                                g.stats.purged += 1;
+                                self.prefaulted.fetch_add(1, Ordering::Relaxed);
+                                Some(s)
+                            }
+                            // An adopted group's slab: `next_slab` took it out
+                            // of the set it belongs in; put it back untouched.
+                            State::Empty => {
+                                g.empty.map.set(s);
+                                g.stats.empty += 1;
+                                None
+                            }
+                            State::Purged => {
+                                g.purged.map.set(s);
+                                g.stats.purged += 1;
+                                None
+                            }
+                            State::Active => panic!("class {}: prefault: next_slab yielded an Active slab {s}", self.class),
+                        }
+                    }
+                }
+            }
+        };
+        if wake {
+            purge::note_empty();
+        }
+        result
+    }
+
     /// Count a compaction rebuild's claim of `n` slots.
     #[inline]
     pub fn note_compact(&self, n: usize) {
@@ -2752,6 +2853,131 @@ mod tests {
             out.truncate(c.n);
             (out, c)
         }
+    }
+
+    /// The prefault pass's commit-path half (plan Phase 2.5 task 11):
+    /// `prefault_next` commits the slab the next refill would commit,
+    /// populates it while it is unpublished, publishes it as `Purged`,
+    /// and the next refill takes exactly that slab, reading zero; nothing
+    /// is done while the arena has an `Empty` or `Purged` slab of its own;
+    /// `prefault_due` moves with `refilled` alone.
+    #[test]
+    fn prefault_next_commits_what_the_next_refill_takes() {
+        let env = Env::new();
+        let c = 3;
+        let cs = env.class(c, 0);
+        let n = cs.class().nslots();
+        // Nothing refilled yet: not due. A refill: due once.
+        assert!(!cs.prefault_due());
+        let (p, claim) = env.claim(&cs, n);
+        assert_eq!(p.len(), n);
+        assert!(claim.zeroed);
+        cs.note_refill(n);
+        assert!(cs.prefault_due());
+        assert!(!cs.prefault_due());
+        assert_eq!(cs.stats(), ClassStats { committed: 1, ..Default::default() });
+        // Slab 0 is full and Active; the next refill would commit slab 1.
+        let populated = std::cell::Cell::new(None);
+        let got = cs.prefault_next(&env.meta, |addr, len| populated.set(Some((addr, len))));
+        assert_eq!(got, Some(1));
+        assert_eq!(populated.get(), Some((env.regions.slab_addr(c, 1), cs.class().slab_size())));
+        assert_eq!(cs.desc(1).state(), State::Purged);
+        assert_eq!(cs.desc(1).arena(), 0);
+        assert_eq!(cs.stats(), ClassStats { committed: 2, purged: 1, ..Default::default() });
+        assert_eq!(cs.prefaulted(), 1);
+        // A `Purged` slab of its own: the next refill takes it, so a
+        // second pass does nothing.
+        assert_eq!(cs.prefault_next(&env.meta, |_, _| panic!("populated with a Purged slab at hand")), None);
+        assert_eq!(cs.stats(), ClassStats { committed: 2, purged: 1, ..Default::default() });
+        // The refill takes slab 1 and reports it zero.
+        let (q, claim) = env.claim(&cs, n);
+        assert_eq!(q.len(), n);
+        assert!(claim.zeroed, "a prefaulted slab reads zero");
+        assert_eq!(q[0] as usize, env.regions.slab_addr(c, 1));
+        assert_eq!(cs.desc(1).state(), State::Active);
+        assert_eq!(cs.stats(), ClassStats { committed: 2, ..Default::default() });
+        // An `Empty` slab of its own vetoes the pass too.
+        cs.release(&p);
+        assert_eq!(cs.stats(), ClassStats { committed: 2, empty: 1, ..Default::default() });
+        assert_eq!(cs.prefault_next(&env.meta, |_, _| panic!("populated with an Empty slab at hand")), None);
+        assert_eq!(cs.desc(0).state(), State::Empty);
+        // Purge it: still vetoed (the refill takes the `Purged` one).
+        assert_eq!(cs.purge_empty(u64::MAX), 1);
+        assert_eq!(cs.prefault_next(&env.meta, |_, _| panic!("populated")), None);
+        // Take it (the refill takes the `Purged` slab 0 first), then the
+        // pass commits slab 2.
+        let (r, _) = env.claim(&cs, n);
+        assert_eq!(r[0] as usize, env.regions.slab_addr(c, 0));
+        assert_eq!(cs.stats(), ClassStats { committed: 2, ..Default::default() });
+        assert_eq!(cs.prefault_next(&env.meta, |_, _| {}), Some(2));
+        assert_eq!(cs.stats(), ClassStats { committed: 3, purged: 1, ..Default::default() });
+        assert_eq!(cs.prefaulted(), 2);
+    }
+
+    /// With guard slabs the pass skips the guard as `next_slab` does, and a
+    /// handoff's idle group is taken over rather than prefaulted (its
+    /// `Empty`/`Purged` slabs go back into the sets for the refill).
+    #[test]
+    fn prefault_next_skips_guards_and_adopts_before_committing() {
+        set_group_handoff(true);
+        let env = Env::new();
+        let c = 3;
+        let cs = env.class(c, 8);
+        let n = cs.class().nslots();
+        let spp = cs.table().slabs_per_page();
+        // Fill slabs until the next one to come up (this arena's group
+        // cursor, or the region's watermark when the group is used up:
+        // this arena is the only taker) is a guard slab.
+        let mut live = Vec::new();
+        let next_up = || {
+            let g = cs.inner.lock();
+            if g.group_next < g.group_end { g.group_next } else { cs.table().committed_slabs() }
+        };
+        let mut committed = 0;
+        while !cs.is_guard_slab(next_up()) {
+            let (p, _) = env.claim(&cs, n);
+            live.push(p);
+            committed += 1;
+            assert!(committed < 64, "no guard slab in the first 64");
+        }
+        let guard = next_up();
+        assert!(cs.is_guard_slab(guard));
+        // The pass commits the guard as a guard and prefaults the slab
+        // after its page group.
+        let got = cs.prefault_next(&env.meta, |_, _| {}).unwrap();
+        assert_eq!(got, guard + spp.max(1));
+        assert!(!cs.is_guard_slab(got));
+        assert_eq!(cs.desc(got).state(), State::Purged);
+        assert!(cs.table().guards() >= 1);
+        // The refill takes the prefaulted slab; this arena's group is then
+        // used up with nothing in its sets. (Done before the second arena
+        // appears: a `Purged` slab in an otherwise used-up group is an idle
+        // group, which the other arena's first refill would adopt instead
+        // of taking a fresh group of its own.)
+        let (p, _) = env.claim(&cs, n);
+        assert_eq!(cs.table().locate(p[0]).0, got);
+        live.push(p);
+        {
+            let g = cs.inner.lock();
+            assert!(g.group_next >= g.group_end && g.purged.map.lowest_set().is_none() && g.empty.map.lowest_set().is_none());
+        }
+        // Another arena takes a fresh group and leaves it idle: the pass
+        // adopts it instead of committing, and its slab goes back into the
+        // `empty` set for the refill.
+        let other = env.class_in_arena(&cs, 1);
+        let (q, _) = env.claim(&other, n);
+        let donor_slab = cs.table().locate(q[0]).0;
+        assert_eq!(cs.desc(donor_slab).arena(), 1, "a fresh group of its own");
+        other.release(&q);
+        assert_eq!(other.stats().empty, 1);
+        assert_eq!(cs.prefault_next(&env.meta, |_, _| panic!("populated an adopted Empty slab")), None);
+        assert_eq!(cs.desc(donor_slab).arena(), 0, "the idle group changed hands");
+        assert_eq!(cs.desc(donor_slab).state(), State::Empty);
+        assert_eq!(cs.stats().empty, 1);
+        assert_eq!(other.stats().empty, 0);
+        // And a refill now takes that slab.
+        let (r, _) = env.claim(&cs, n);
+        assert_eq!(cs.table().locate(r[0]).0, donor_slab);
     }
 
     /// Regression: with 2^21 members the level-1 table is exactly one page,

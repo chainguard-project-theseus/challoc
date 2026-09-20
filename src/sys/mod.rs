@@ -56,6 +56,9 @@ mod linux {
     pub const MADV_NOHUGEPAGE: i32 = 15;
     pub const MADV_COLD: i32 = 20;
     pub const MADV_PAGEOUT: i32 = 21;
+    /// Populate (prefault) page tables writable (kernel 5.14; plan Phase
+    /// 2.5 task 11): the pages fault in as if written, contents untouched.
+    pub const MADV_POPULATE_WRITE: i32 = 23;
     pub const MADV_COLLAPSE: i32 = 25;
     pub const MADV_GUARD_INSTALL: i32 = 102;
     pub const MADV_GUARD_REMOVE: i32 = 103;
@@ -63,6 +66,13 @@ mod linux {
     /// `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, addr, len, name)`.
     pub const PR_SET_VMA: i32 = 0x5356_4d41;
     pub const PR_SET_VMA_ANON_NAME: usize = 0;
+    /// `prctl(PR_SET_THP_DISABLE, 1, flags, 0, 0)` and its query (plan
+    /// Phase 2.5 task 16): `PR_THP_DISABLE_EXCEPT_ADVISED` (6.18) keeps
+    /// huge pages where a range was `MADV_HUGEPAGE`d; the query returns
+    /// `1 | flags` when disabled, `0` otherwise.
+    pub const PR_SET_THP_DISABLE: i32 = 41;
+    pub const PR_GET_THP_DISABLE: i32 = 42;
+    pub const PR_THP_DISABLE_EXCEPT_ADVISED: usize = 1 << 1;
 
     pub const GRND_NONBLOCK: u32 = 1;
     pub const GRND_RANDOM: u32 = 2;
@@ -210,6 +220,14 @@ mod linux {
         // SAFETY: forwarded to the caller's contract.
         decode(unsafe { raw::syscall3(nr::MADVISE, addr, len, advice as isize as usize) })
             .map(|_| ())
+    }
+
+    /// `mincore(2)`: one byte per page of `[addr, addr + len)` into `vec`
+    /// (bit 0 set when resident). `vec` must hold `len / page` bytes.
+    pub fn mincore(addr: usize, len: usize, vec: &mut [u8]) -> Result<(), Errno> {
+        // SAFETY: the kernel writes at most `len / page` bytes, which the
+        // caller sized `vec` for; nothing else is read or written.
+        decode(unsafe { raw::syscall3(nr::MINCORE, addr, len, vec.as_mut_ptr() as usize) }).map(|_| ())
     }
 
     /// `process_madvise(2)`. Returns the number of bytes advised.
