@@ -129,8 +129,6 @@ use crate::sys::pac;
 pub const MAX_CAP: u32 = 1024;
 /// Smallest cache capacity.
 pub const MIN_CAP: u32 = 8;
-/// Cache GC period when nothing overrides it (`tcache_gc_interval_ms`).
-pub const DEFAULT_GC_INTERVAL_NS: u64 = 10_000_000_000;
 /// Slow-path entries between two periodic-work checks (design 6.4).
 pub const PERIODIC_EVERY: u32 = 64;
 
@@ -335,9 +333,9 @@ impl CacheHeader {
         self.zeroed as usize
     }
 
-    /// The run of low addresses, `slots[..run_end]`, descending (for tests
-    /// and diagnostics), as stored: signed when `Shared::pac()`
-    /// ([`CacheHeader::plain`]).
+    /// The run of low addresses, `slots[..run_end]`, descending, as
+    /// stored: signed when `Shared::pac()` ([`CacheHeader::plain`]).
+    #[cfg(test)]
     pub fn run(&self) -> &[*mut u8] {
         debug_assert!(self.run_end <= self.low_water && self.low_water <= self.len);
         if self.run_end == 0 {
@@ -347,9 +345,9 @@ impl CacheHeader {
         unsafe { core::slice::from_raw_parts(self.slots, self.run_end as usize) }
     }
 
-    /// Cached pointers, bottom of the stack first (for tests and
-    /// diagnostics), as stored: signed when `Shared::pac()`
-    /// ([`CacheHeader::plain`]).
+    /// Cached pointers, bottom of the stack first, as stored: signed when
+    /// `Shared::pac()` ([`CacheHeader::plain`]).
+    #[cfg(test)]
     pub fn cached(&self) -> &[*mut u8] {
         if self.len == 0 {
             return &[];
@@ -359,13 +357,13 @@ impl CacheHeader {
     }
 
     /// Pops served from this cache since it was created.
-    #[inline]
+    #[cfg(test)]
     pub fn allocs(&self) -> u64 {
         self.allocs
     }
 
     /// Whether the cache is currently compacting its class.
-    #[inline]
+    #[cfg(test)]
     pub fn compacting(&self) -> bool {
         self.mode == MODE_COMPACT
     }
@@ -395,9 +393,10 @@ impl CacheHeader {
     }
 
     /// The plain pointer a stored entry names: authenticated when `pac`
-    /// (`Shared::pac()`), the entry itself otherwise. For diagnostics and
-    /// tests reading [`CacheHeader::cached`] or [`CacheHeader::run`], which
-    /// return the entries as stored.
+    /// (`Shared::pac()`), the entry itself otherwise. For tests reading
+    /// [`CacheHeader::cached`] or [`CacheHeader::run`], which return the
+    /// entries as stored.
+    #[cfg(test)]
     pub fn plain(&self, e: *mut u8, pac: bool) -> *mut u8 {
         if pac { pac::auth(e as usize, self.slots as usize) as *mut u8 } else { e }
     }
@@ -823,7 +822,7 @@ impl Percpu {
     }
 
     /// The run header of `(id, class)` (see `runs`), as [`Percpu::header`].
-    pub fn run_header(&self, id: u32, class: usize) -> Option<*const CacheHeader> {
+    fn run_header(&self, id: u32, class: usize) -> Option<*const CacheHeader> {
         if !self.on() || id >= self.n || class >= NCLASSES {
             return None;
         }
@@ -1580,13 +1579,15 @@ impl Heap {
         }
     }
 
-    #[inline]
+    /// The `Shared` this heap was created on.
+    #[cfg(test)]
     pub fn shared(&self) -> &Shared {
         // SAFETY: a heap never outlives the `Shared` it was created on.
         unsafe { &*self.shared }
     }
 
-    #[inline]
+    /// The owning thread's kernel thread id at creation.
+    #[cfg(test)]
     pub fn tid(&self) -> u32 {
         self.tid
     }
@@ -1717,7 +1718,8 @@ impl Heap {
         }
     }
 
-    #[inline]
+    /// Slow-path entries so far (the periodic tick's counter).
+    #[cfg(test)]
     pub fn slow_ticks(&self) -> u32 {
         self.slow_ticks
     }
@@ -2148,14 +2150,14 @@ impl Heap {
     /// cache (a huge run, or a slot served straight from a slab): count
     /// them in `thread.allocated`. The one way `uncached` grows.
     #[inline]
-    pub fn count_uncached_alloc(&mut self, bytes: usize) {
+    fn count_uncached_alloc(&mut self, bytes: usize) {
         self.uncached.allocated += bytes as u64;
     }
 
     /// `bytes` were freed on this thread without passing through a cache:
     /// count them in `thread.deallocated`.
     #[inline]
-    pub fn count_uncached_free(&mut self, bytes: usize) {
+    fn count_uncached_free(&mut self, bytes: usize) {
         self.uncached.deallocated += bytes as u64;
     }
 
@@ -4735,7 +4737,7 @@ pub(crate) mod tests {
         // default 10 s it means no GC in a test.
         let c = class_with(16);
         let d = class_with(48);
-        for interval in [0u64, DEFAULT_GC_INTERVAL_NS] {
+        for interval in [0u64, Config::DEFAULT.gc_interval_ns()] {
             let s = shared();
             // SAFETY: nothing else references `s` yet; the field is plain data.
             unsafe { (*(s as *const Shared as *mut Shared)).gc_interval_ns = interval };
