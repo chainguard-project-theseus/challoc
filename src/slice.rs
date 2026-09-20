@@ -510,9 +510,55 @@ pub(crate) mod tests {
     /// Serialises the tests that reconfigure the process-wide state.
     pub(crate) static SLICE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+    /// The process-wide switches a test flips through `configure`, taken
+    /// before and put back after, so a test leaves the module as it found
+    /// it whatever ran first. Alone in the binary the module is `Unprobed`
+    /// and off, a state `configure` cannot reproduce: it turns the module
+    /// on wherever the kernel has the option, which is what the earlier
+    /// restore (`configure(before.0 != Key, false)`) did, so a test run
+    /// alone on the 7.2 Chainguard OS host failed its teardown (7 runs of
+    /// 10 in lane E's report), and only a whole-binary run, where
+    /// `config::load` had already turned it on, hid it. `PROBED`, `OFFSET` and `YIELD_SCHED` stay: they are facts
+    /// about the process once set, and `PROBED` is never cleared by
+    /// design (another thread's hold may be releasing). The counters stay
+    /// too; tests read deltas.
+    struct Saved {
+        state: u8,
+        verdict: u8,
+        forced: bool,
+    }
+
+    fn save() -> Saved {
+        Saved {
+            state: STATE.load(Ordering::Relaxed),
+            verdict: VERDICT.load(Ordering::Relaxed),
+            forced: FORCED.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Put the switches back and check they read as saved.
+    fn restore(s: &Saved) {
+        VERDICT.store(s.verdict, Ordering::Relaxed);
+        FORCED.store(s.forced, Ordering::Relaxed);
+        STATE.store(s.state, Ordering::Release);
+        assert_eq!(on(), s.state == ON, "the module is not back where the test found it");
+        assert_eq!(verdict(), Verdict::from_u8(s.verdict));
+    }
+
     fn hold_once(l: &RawLock) {
         l.lock();
         l.unlock();
+    }
+
+    /// The calling thread's `slice_ctrl` byte at `off` (0 where its area
+    /// has none: `__rseq_size < 32`).
+    fn ctrl_byte(p: &Probe, off: usize) -> u8 {
+        if p.size >= SLICE_CTRL_END {
+            // SAFETY: this thread's area covers `slice_ctrl`.
+            unsafe { crate::rseq::area(p.offset).add(off).read_volatile() }
+        } else {
+            0
+        }
     }
 
     /// Both ways: on a kernel with the option (bit 4 set, `prctl` and the
@@ -525,7 +571,7 @@ pub(crate) mod tests {
     #[test]
     fn probe_both_ways_and_off_never_requests() {
         let _serial = SLICE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let before = (verdict(), on());
+        let saved = save();
         let p = probe();
         std::eprintln!(
             "slice_ext: rseq size {} offset {} available={} enabled={} yield_syscall={} verdict={}",
@@ -543,14 +589,7 @@ pub(crate) mod tests {
         assert!(!on());
         assert_eq!(verdict(), Verdict::Key);
         let l = RawLock::new();
-        let byte = |off: usize| -> u8 {
-            if p.size >= SLICE_CTRL_END {
-                // SAFETY: this thread's area covers `slice_ctrl`.
-                unsafe { crate::rseq::area(p.offset).add(off).read_volatile() }
-            } else {
-                0
-            }
-        };
+        let byte = |off: usize| -> u8 { ctrl_byte(&p, off) };
         for _ in 0..100 {
             l.lock();
             assert_eq!(byte(REQUEST_OFFSET), 0, "slice_ext:off stored a request");
@@ -613,31 +652,83 @@ pub(crate) mod tests {
                 }
             }
         }
-        // Back to what init chose, for the rest of the suite.
-        let _ = configure(before.0 != Verdict::Key, false);
-        assert_eq!(on(), before.1);
+        // Back to what the test found, for the rest of the suite.
+        restore(&saved);
     }
 
-    /// The granted path: with a CPU hog per CPU keeping every run queue
-    /// busy (waiters asleep in the futex are not competition: a holder
-    /// alone on its CPU is never preempted) and holds long enough for a
-    /// tick to land inside one, the scheduler wants to preempt holders,
-    /// grants the extension instead, and every grant is followed by one
-    /// yield syscall (the counter). On a kernel without the option the
-    /// counter stays where it was.
+    /// The granted path, both ways. What the extension defers is a
+    /// preemption that would land inside a hold, so the test makes the
+    /// scheduler want one in every hold: two CPU hogs per CPU keep every
+    /// run queue at two or more runnable tasks (the fair class preempts a
+    /// task that has run past its slice only when another is queued on
+    /// its CPU, and one hog per CPU can be balanced away), and each hold
+    /// runs until it is granted or a cap of work well past the slice
+    /// (about 3 ms on 8 CPUs), so the tick that finds the holder over its
+    /// deadline asks for a lazy reschedule, which the return to user
+    /// space turns into a grant because `request` is set. The holder
+    /// watches its own `granted` byte and releases the moment it reads 1,
+    /// inside the 5 us the grant is good for, so `released` sees it and
+    /// yields. The hold makes no syscall (the cap is work, not time: any
+    /// syscall ends a grant first), and the lock is the thread's own: an
+    /// unlock that wakes a sleeper ends the grant with its own
+    /// `FUTEX_WAKE` and the yield counter never sees it, which is why the
+    /// earlier form of this test (32 threads on one lock, 20 us holds, a
+    /// 3 s window) counted 0..6 coincidences in 10,000 holds and read zero
+    /// on 3 runs of 13 on the 7.2 host.
+    ///
+    /// Bounded in holds, not seconds: each lock thread makes at most
+    /// `HOLDS` holds of at most `cap` rounds each and stops once the
+    /// process has seen `GRANTS` grants. Where the kernel has the option
+    /// but granted nothing in all of them (a policy that never asks
+    /// lazily, or `slice_ext_nsec` 0), the test says so and skips that
+    /// check, never passes it; the request path is asserted on
+    /// regardless. Without the option the two `slice_ctrl` bytes stay
+    /// zero and nothing yields.
     #[test]
     fn grants_are_yielded_under_oversubscription() {
         let _serial = SLICE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let before = (verdict(), on());
+        let saved = save();
         let res = configure(true, false);
-        let y0 = yields();
+        let p = probe();
+        let (y0, r0) = (yields(), requests());
         let cpus = crate::sys::ncpus().max(1) as usize;
-        let threads = 4 * cpus;
-        let l = RawLock::new();
+        let hogs = 2 * cpus;
+        const HOLDS: u32 = 32;
+        const GRANTS: u64 = 16;
+        // One round is 100 dependent multiply-adds between two looks at
+        // `granted`: about 1.3 us in the debug build the tests run as
+        // (0.13 us in release), well inside the 5 us of a grant. It has to
+        // be: on the 7.2 host a hold that looked every 13 us (the first
+        // form of this loop) missed its grant and was then preempted 350
+        // more times in that hold without another, so a missed grant is
+        // the hold's last. The cap is 2^17 rounds, some 170 ms of
+        // them in debug and 17 ms in release, several slices either way;
+        // without the option no hold is ever granted and 2^12 keeps that
+        // direction quick.
+        const ROUND: u64 = 100;
+        let cap: u32 = if res.is_ok() { 1 << 17 } else { 1 << 12 };
         let stop = AtomicBool::new(false);
         let holds = AtomicU64::new(0);
+        let requested = AtomicU64::new(0);
+        let granted = AtomicU64::new(0);
+        let capped = AtomicU64::new(0);
+        // Diagnostics for the printed line: rounds to the grant (min, max)
+        // and the holder's involuntary context switches inside the holds
+        // that ran to the cap (preempted without a grant, or not at all).
+        let (min_rounds, max_rounds) = (AtomicU32::new(u32::MAX), AtomicU32::new(0));
+        let capped_switches = AtomicU64::new(0);
+        let switches = || -> u64 {
+            std::fs::read_to_string("/proc/thread-self/status")
+                .ok()
+                .and_then(|s| {
+                    s.lines()
+                        .find_map(|l| l.strip_prefix("nonvoluntary_ctxt_switches:"))
+                        .and_then(|v| v.trim().parse().ok())
+                })
+                .unwrap_or(0)
+        };
         std::thread::scope(|s| {
-            for _ in 0..cpus {
+            for _ in 0..hogs {
                 s.spawn(|| {
                     let mut x = 0u64;
                     while !stop.load(Ordering::Relaxed) {
@@ -646,42 +737,84 @@ pub(crate) mod tests {
                     }
                 });
             }
-            for _ in 0..threads {
-                s.spawn(|| {
-                    while !stop.load(Ordering::Relaxed) {
-                        l.lock();
-                        // About 20 us of work under the lock.
-                        let mut x = 0u64;
-                        for i in 0..20_000u64 {
-                            x = x.wrapping_mul(6364136223846793005).wrapping_add(i);
+            let lockers: std::vec::Vec<_> = (0..cpus)
+                .map(|_| {
+                    s.spawn(|| {
+                        let l = RawLock::new();
+                        for _ in 0..HOLDS {
+                            if granted.load(Ordering::Relaxed) >= GRANTS {
+                                break;
+                            }
+                            let s0 = switches();
+                            l.lock();
+                            if ctrl_byte(&p, REQUEST_OFFSET) != 0 {
+                                requested.fetch_add(1, Ordering::Relaxed);
+                            }
+                            let mut x = 0u64;
+                            let mut rounds = 0u32;
+                            let seen = loop {
+                                for i in 0..ROUND {
+                                    x = x.wrapping_mul(6364136223846793005).wrapping_add(i);
+                                }
+                                core::hint::black_box(x);
+                                rounds += 1;
+                                if ctrl_byte(&p, GRANTED_OFFSET) != 0 {
+                                    break true;
+                                }
+                                if rounds >= cap {
+                                    break false;
+                                }
+                            };
+                            l.unlock();
+                            holds.fetch_add(1, Ordering::Relaxed);
+                            if seen {
+                                granted.fetch_add(1, Ordering::Relaxed);
+                                min_rounds.fetch_min(rounds, Ordering::Relaxed);
+                                max_rounds.fetch_max(rounds, Ordering::Relaxed);
+                            } else {
+                                capped.fetch_add(1, Ordering::Relaxed);
+                                capped_switches.fetch_add(switches() - s0, Ordering::Relaxed);
+                            }
                         }
-                        core::hint::black_box(x);
-                        l.unlock();
-                        holds.fetch_add(1, Ordering::Relaxed);
-                    }
-                });
+                    })
+                })
+                .collect();
+            for t in lockers {
+                t.join().unwrap();
             }
-            std::thread::sleep(std::time::Duration::from_secs(3));
             stop.store(true, Ordering::Relaxed);
         });
-        let y = yields() - y0;
-        std::eprintln!(
-            "slice_ext: {} lock threads and {cpus} hogs on {} CPUs, {} holds, {} grants yielded via {}, threads enabled {}, state {}",
-            threads,
-            crate::sys::ncpus(),
+        let (y, holds, requested, granted, capped) = (
+            yields() - y0,
             holds.load(Ordering::Relaxed),
-            y,
+            requested.load(Ordering::Relaxed),
+            granted.load(Ordering::Relaxed),
+            capped.load(Ordering::Relaxed),
+        );
+        std::eprintln!(
+            "slice_ext: {cpus} lock threads and {hogs} hogs on {} CPUs, {holds} holds (cap {cap} rounds of {ROUND}), {requested} with the request set, {granted} granted during the hold (after {}..{} rounds), {capped} ran to the cap ({} involuntary switches in them), {y} grants yielded via {}, threads enabled {}, state {}",
+            crate::sys::ncpus(),
+            if granted > 0 { min_rounds.load(Ordering::Relaxed) } else { 0 },
+            max_rounds.load(Ordering::Relaxed),
+            capped_switches.load(Ordering::Relaxed),
             yield_name(),
             enabled_threads(),
             verdict().name()
         );
         if res.is_ok() {
-            assert!(y > 0, "no grant in 3 s of oversubscribed holds");
+            assert_eq!(requested, holds, "a hold without the request");
+            assert!(requests() - r0 >= holds, "the request counter did not move with the holds");
+            if granted == 0 {
+                std::eprintln!(
+                    "slice_ext: skip the grant check: the kernel granted nothing in {holds} holds of up to {cap} rounds of {ROUND}, each run past the scheduler slice with {hogs} hogs on {cpus} CPUs"
+                );
+            } else {
+                assert!(y > 0, "{granted} grants seen during the hold, none yielded after the release");
+            }
         } else {
-            assert_eq!(y, 0, "a grant without the extension");
+            assert_eq!((requested, granted, y), (0, 0, 0), "slice_ctrl touched or a yield without the extension");
         }
-        let _ = configure(before.0 != Verdict::Key, false);
-        assert_eq!(on(), before.1);
+        restore(&saved);
     }
 
     /// The constants against the kernel's layout: `slice_ctrl` follows
