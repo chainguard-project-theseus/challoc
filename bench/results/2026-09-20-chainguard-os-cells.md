@@ -185,8 +185,13 @@ scorecards (THP `madvise`) never see. Whether the extra 4..8 points on
 `MADV_NOHUGEPAGE` on the reservations under `thp:never` on an `always`
 host, task 16's first half, is the one merged change that touches this
 mechanism: it removes even the 32 MiB challoc took yesterday) or the
-tier's spread is a same-host A/B question for lane B or D; section 6a
-records challoc's `AnonHugePages` under the default on both kernels. The
+tier's spread was a same-host A/B question; **answered the same day in
+`2026-09-20-aarch64-cgos-thp-ab.md`** (lane E, cgos-arm64, 7 interleaved
+rounds: `thp:never` with the advice reads +16.1% / +9.0% against jemalloc
+where `thp:auto`, the pre-task-16 regions, reads +6.3% / +1.1%; the
+advice alone is -10.4% / -8.1% on the two Valkey rows, nil on larson16,
+and `thp:always` is parity for +9.5% RSS). Section 6a records challoc's
+`AnonHugePages` under the default on both kernels. The
 `RSS larson10` ratio on 7.2 is 1.03 against 0.83 on 6.18: under `madvise`
 jemalloc's larson10 footprint no longer grows with huge pages, so the
 ratio returns to the reference files' 1.0..1.05.

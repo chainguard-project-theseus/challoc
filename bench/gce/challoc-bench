@@ -622,15 +622,25 @@ matrix_vm_zone() {
   g compute instances list --filter="name=$1" --format='value(zone.basename())' 2>/dev/null | head -1
 }
 
-# matrix_lab_dest CELL: user@ip of a kept (lab) cell VM.
+# matrix_lab_dest CELL: user@ip of a kept (lab) cell VM. The user is the
+# one matrix_cell logged in as: the OS Login posix user everywhere except
+# on a Chainguard OS server image (kirkland-server-hypervisor-*), which
+# takes no OS Login and has the gcloud user from the ssh-keys metadata
+# (2026-09-20, lane E: `matrix ssh cgos-arm64` used to try the OS Login
+# user on that image and was refused).
 matrix_lab_dest() {
-  local vm ip user z
+  local vm ip user z fam extra
   vm="$(matrix_vm "$1")"
   z="$(matrix_vm_zone "$vm")"; [ -n "$z" ] || die "matrix: no VM $vm (matrix lab $1 creates one)"
   ip="$(g compute instances describe "$vm" --zone="$z" --format='value(networkInterfaces[0].accessConfigs[0].natIP)' 2>/dev/null)" \
     || die "matrix: no VM $vm (matrix lab $1 creates one)"
   [ -n "$ip" ] || die "matrix: $vm has no external IP"
-  user="$(g compute os-login describe-profile --format='value(posixAccounts[0].username)')"
+  read -r fam _ _ _ _ extra _ <<<"$(cell_spec "$1")"
+  if [ "$extra" = cgos ] && [ "${fam#kirkland-workstation-}" = "$fam" ]; then
+    user="${CHALLOC_GCE_USER:-$USER}"
+  else
+    user="$(g compute os-login describe-profile --format='value(posixAccounts[0].username)')"
+  fi
   echo "$user@$ip"
 }
 
