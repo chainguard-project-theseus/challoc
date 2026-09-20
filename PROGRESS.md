@@ -718,6 +718,44 @@ One line per task, newest at the bottom of each section. Keep it terse.
   shift**, the a999097 line is the coordinator's; row 4a **met** (the
   combination 30/30 clean, 11155f3; `make test` 553/0 on both lane VMs).
   The phase is not marked accepted; the coordinator does that.
+- Phase 2.5 task 15 (lane C, test fix): the `slice::tests` on a kernel
+  with `CONFIG_RSEQ_SLICE_EXTENSION` on, `5c421f4`. Lane E's cgos72-amd64
+  cell (Chainguard OS kernel 7.2.3, the first host in the matrix with the
+  option; `bench/results/2026-09-20-chainguard-os-cells.md`, "At a999097
+  (third run)") found two faults in the tests, invisible on the reference
+  VMs (Ubuntu 7.0 has the option compiled out): the teardown
+  `configure(before.0 != Key, false)` turned the module on when a test ran
+  alone (module `Unprobed`, off, a state `configure` cannot reproduce), so
+  `assert_eq!(on(), before.1)` failed 7 runs of 10 and only the whole
+  binary, where `config::load` had already turned it on, hid it; and
+  `grants_are_yielded_under_oversubscription` counted coincidences (32
+  threads on one lock, 20 us holds, a 3 s window: 0..6 yields in ~10k
+  holds, zero on 3 runs of 13) because an unlock that wakes a sleeper ends
+  the grant with its own `FUTEX_WAKE` before `released` reads `granted`.
+  Now the tests snapshot and restore the switches themselves (`STATE`,
+  `VERDICT`, `FORCED`; `PROBED`, `OFFSET`, `YIELD_SCHED` stay by design)
+  and are order-independent, and the grants test makes the scheduler want
+  to preempt every holder (two hogs per CPU, a hold run past the slice on
+  the thread's own lock, no syscall inside) while the holder watches its
+  own `granted` byte and releases inside the grant; bounded in holds and
+  work, not seconds; a kernel with the option that grants nothing prints a
+  skip line, never a pass, and the request path is asserted on regardless.
+  Verified on a `matrix lab cgos72-amd64` VM under the lane's prefix
+  (`challoc-lane-c-matrix-cgos72-amd64`, c4-standard-8, 7.2.3-r0-desktop-7.2,
+  `slice_ext_nsec=5000`, `preempt=(full) lazy`), inside podman under the
+  default profile: the `slice::` tests alone 10 of 10 passed, each run 23
+  holds, 22..23 granted during the hold (after 436..1920 rounds of 100
+  multiply-adds, i.e. inside the first slice), 22..23 yielded via
+  `sched_yield`, 0.06..0.47 s; the whole `make test` once with the same
+  code 410 + 120 + 23 passed, 0 failed, every churn/lazy `verdict=ok`
+  (the test inside the whole binary: 23 granted, 23 yielded); one
+  `--privileged` run alone: 23 granted, 23 yielded via `rseq_slice_yield`.
+  Mac container (6.10, no extension): `slice::` alone 3 passed and the
+  whole `make test` 410 + 120 + 23 passed, 0 failed, the test reading
+  `320 holds ... 0 with the request set, 0 granted ... state
+  no-slice_ctrl`. Logs (not committed): `.tmp-matrix-lab/2026-09-20-cgos72-amd64-{slice10,maketest-summary}.log`
+  in the lane worktree. VM deleted (`matrix clean`, `delete all`);
+  `gcloud compute instances list --filter=name~challoc-lane-c` empty.
 
 
 - (c) 0604bb3: `bench/ruby-soak.sh`, `make ruby-soak`, `bench/ruby/soak.rb` (16
@@ -1620,6 +1658,20 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
   script checks the build exists and never rebuilds it), so the first
   probe read no prefault at all; `make valkey STAGE=build` before any
   soak that follows a library change.
+- Phase 2.5 task 15 (lane C): the grants test proves the mechanism per
+  hold rather than over a window. Two things the 7.2 host showed, both in
+  the test's comments: the kernel grants once per syscall-free stretch of a
+  hold (a hold that polled `granted` every 13 us, the debug-build cost of
+  1000 dependent multiply-adds, missed its grant and was then preempted
+  ~350 more times without another; the poll is now 100 multiply-adds,
+  ~1.3 us in debug), and an unlock that wakes a futex sleeper ends the
+  grant before `released` can see it, so the test holds the thread's own
+  lock. The restore is a test-only snapshot of three statics, not another
+  `configure`, because `Unprobed` cannot be reached through the API. The
+  test-only diagnostics (`nonvoluntary_ctxt_switches` per capped hold, the
+  rounds-to-grant range) stay in the printed line: they are what tells
+  "preempted but not granted" from "not preempted" when the skip line
+  fires on some other kernel.
 - `auto` never installs `wfe`, and the `wfe` path stays in the tree behind the key. Reason: it lost xmalloc-test by 3% with a quarter more RSS on both aarch64 CPUs and gained nothing on larson; unselected it costs nothing (one atomic load per slow-path entry, measured within noise), and a deployment that wants the power saving or a CPU with a different wake latency can turn it on and measure. The explicit `wfe` is refused without the event stream so a `wfe` no store ends is always bounded.
 - The event stream is probed (`HWCAP_EVTSTRM`) but not added to the feature report line. Reason: a new key would change `tests/c/features.c` and every recorded line for a feature nothing acts on by default; `lock::spin_hint()` and `event_stream()` are what the tests check.
 - The probe's suggestion lives in `Cpu::probe` (a side effect on `lock::SPIN_HINT`) rather than in `api/mod.rs`'s init. Reason: init and `features.rs` belong to other lanes; the suggestion is idempotent and a configured hint is kept against it.
@@ -2256,6 +2308,13 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
   bring-up should check the sync's own output. (5) The morning's Ruby idle
   soak tables' jemalloc `final-fullgc` row was a table gap, not a missing
   sample: the `after the last full GC (final)` rows were right.
+- Phase 2.5 task 15 (lane C): one of four `make test` runs on the 7.2 host
+  today failed `api::mallctl::tests::arena_keys_create_lookup_purge_decay_and_destroy`
+  (`src/api/mallctl.rs:1599`, `arena.{narenas+1}.purge` returned 0 where
+  `ENOENT` was expected: an arena existed one past `narenas`, i.e. another
+  api test's `arenas.create` raced it); the api binary passed 120/0 on the
+  two reruns and in the other whole runs. Not lane C's file; a
+  parallel-test ordering race worth a look by the owner of `src/api/`.
 
 - The Cascade Lake's xmalloc row moved 3.5% (disjoint lists) and then 2.7% (overlapping) between `old` and the new lock with the same `pause` in both; the C4 and C4A (same code, PMU available) show nothing. The mechanism is one atomic load and a `match` on the slow path; the likeliest cause is code placement on the Cascade Lake (memory note on page aliasing). It is recorded as open in the results file; a sampler split on a C2 lab would settle it (no PMU there).
 - The geometry numbers say the 1024 ladder is right on 1 MiB L2 parts for throughput, and that 512 buys 12..15% of larson's RSS; if RSS on small parts ever matters more than 1..3% of larson, the knob exists and the model in 6.2 says where it stops paying (256 loses 6% on larson1).
