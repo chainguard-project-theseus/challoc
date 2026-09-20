@@ -204,6 +204,11 @@ struct Pick {
     state: State,
 }
 
+impl Pick {
+    /// An unused entry of a plan's pick array: no slab, no slots.
+    const EMPTY: Pick = Pick { slab: 0, n: 0, zero: false, state: State::Active };
+}
+
 /// Slabs a release batch must put back in the partial set. Consecutive
 /// duplicates are dropped; a full list is flushed under the lock.
 #[derive(Default)]
@@ -1449,7 +1454,7 @@ impl ClassState {
     fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>) -> Claim {
         let mut got = 0;
         let mut zeroed = true;
-        let mut picks = [Pick { slab: 0, n: 0, zero: false, state: State::Active }; MAX_PICKS];
+        let mut picks = [Pick::EMPTY; MAX_PICKS];
         while got < out.len() {
             let np = self.plan(meta, out.len() - got, &mut picks);
             if np == 0 {
@@ -3090,7 +3095,7 @@ mod tests {
         purge::prefault::reset_for_test(true, false);
         let cls = cs.class();
         let plan = |cs: &ClassState, want: usize| -> (Vec<*mut u8>, bool, bool) {
-            let mut picks = [Pick { slab: 0, n: 0, zero: false, state: State::Active }; MAX_PICKS];
+            let mut picks = [Pick::EMPTY; MAX_PICKS];
             let (mut wake, mut taken) = (false, false);
             let np = cs.plan_locked(&env.meta, want, &mut picks, cls, &mut wake, &mut taken);
             let mut out = vec![ptr::null_mut(); want];
@@ -3225,15 +3230,6 @@ mod tests {
                 unsafe { crate::sys::munmap(addr, len) }.unwrap();
             }
         }
-    }
-
-    fn xorshift(state: &mut u64) -> u64 {
-        let mut x = *state;
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        *state = x;
-        x
     }
 
     /// A class with 64 KiB slabs and a handful of bitmap words.
@@ -3467,7 +3463,7 @@ mod tests {
     /// rejected by its clear bit, at the same point as any invalid free.
     #[test]
     #[should_panic(expected = "invalid or double free of")]
-    fn check_of_handed_out_uncommitted_slab_aborts() {
+    fn check_below_the_watermark_in_a_slab_not_yet_committed_aborts() {
         let env = Env::new();
         let c = min_slab_class();
         let cs = env.class(c, 0);
@@ -4403,14 +4399,7 @@ mod tests {
         // Slab 1 reversed, then slab 0's odd slots scrambled, then slab 2.
         let mut batch: Vec<*mut u8> = p[n..2 * n].iter().rev().copied().collect();
         let mut odd: Vec<*mut u8> = (1..n).step_by(2).map(|i| p[i]).collect();
-        let mut st = 0x9e37_79b9_7f4a_7c15u64;
-        for i in (1..odd.len()).rev() {
-            st ^= st << 13;
-            st ^= st >> 7;
-            st ^= st << 17;
-            let j = (st % (i as u64 + 1)) as usize;
-            odd.swap(i, j);
-        }
+        shuffle(&mut odd, &mut 0x9e37_79b9_7f4a_7c15u64);
         batch.extend_from_slice(&odd);
         batch.extend_from_slice(&p[2 * n..]);
         cs.release(&batch);
@@ -4465,7 +4454,7 @@ mod tests {
 
     #[test]
     #[should_panic(expected = "was never allocated")]
-    fn check_of_uncommitted_slab_aborts() {
+    fn check_above_the_watermark_aborts() {
         let env = Env::new();
         let c = small_class();
         let cs = env.class(c, 0);
@@ -4886,7 +4875,7 @@ mod tests {
             // `desc(0)` yet): `Fresh` then, `Purged` in round 2.
             let prior = if round == 0 { State::Fresh } else { State::Purged };
             // Thread A: one lock hold, one pick of one slot of slab 0.
-            let mut picks = [Pick { slab: 0, n: 0, zero: false, state: State::Active }; MAX_PICKS];
+            let mut picks = [Pick::EMPTY; MAX_PICKS];
             let np = cs.plan(&env.meta, 1, &mut picks);
             assert_eq!(np, 1);
             assert_eq!((picks[0].slab, picks[0].n, picks[0].state), (0, 1, prior));
@@ -5009,7 +4998,7 @@ mod tests {
         // hands it straight to `take`).
         let nslots = cs.class().nslots();
         cs.desc(slab).add_live(nslots + 1);
-        let mut picks = [Pick { slab: 0, n: 0, zero: false, state: State::Active }; MAX_PICKS];
+        let mut picks = [Pick::EMPTY; MAX_PICKS];
         cs.plan(&env.meta, 1, &mut picks);
     }
 
@@ -5024,7 +5013,7 @@ mod tests {
         assert_eq!(cs.stats().empty, 1);
         // Corrupt the count: the set still holds the slab.
         cs.inner.lock().stats.empty = 0;
-        let mut picks = [Pick { slab: 0, n: 0, zero: false, state: State::Active }; MAX_PICKS];
+        let mut picks = [Pick::EMPTY; MAX_PICKS];
         cs.plan(&env.meta, 1, &mut picks);
     }
 
@@ -5039,5 +5028,112 @@ mod tests {
         assert_eq!(cs.stats().empty, 1);
         cs.inner.lock().stats.empty = 0;
         cs.purge_empty(u64::MAX);
+    }
+
+    /// `transfer_group`'s cross-check: a group the donor's sets call idle
+    /// whose descriptor says otherwise (here `live` bumped on an `Empty`
+    /// slab) aborts instead of moving to the taker.
+    #[test]
+    #[should_panic(expected = "idle by arena 0's sets but slab 0 is Empty with live 1")]
+    fn a_handoff_of_a_group_whose_descriptor_is_in_use_aborts() {
+        let env = Env::new();
+        let donor = env.class(small_class(), 0);
+        let taker = env.class_in_arena(donor, 1);
+        let (p, _) = env.claim(donor, 3);
+        donor.release(&p);
+        assert_eq!(donor.desc(0).state(), State::Empty);
+        assert_eq!(donor.idle_groups(), vec![0]);
+        // Corrupt the descriptor: a live slot the sets do not know about.
+        donor.desc(0).add_live(1);
+        env.claim(taker, 1);
+    }
+
+    /// `claim_prefix`'s cross-check: a `Fresh` slab (handed out, not yet
+    /// committed) with a bit already set when a refill takes it aborts
+    /// instead of reporting the pick zero.
+    #[test]
+    #[should_panic(expected = "slab 1 (arena 0) is Fresh with live 0 but word 0 of its bitmap had bits set before the refill's claim")]
+    fn a_fresh_slab_with_a_bit_set_before_its_first_take_aborts() {
+        let env = Env::new();
+        let c = min_slab_class();
+        let n = CLASSES[c].nslots();
+        let cs = env.class(c, 0);
+        // Slab 0 fills; slab 1 is handed out with the group (its bitmap
+        // line is initialised) and not yet committed.
+        let (p, _) = env.claim(&cs, n);
+        assert_eq!(p.len(), n);
+        assert_eq!(cs.desc(1).state(), State::Fresh);
+        assert_eq!(cs.table().bits(1).claim_word(0, 1), 0b1, "bit 0 of slab 1 set behind the protocol's back");
+        // The next refill commits slab 1 and takes it as a zero pick.
+        env.claim(&cs, 1);
+    }
+
+    /// `shuffle` is a permutation (Fisher-Yates over `xorshift`): the
+    /// same elements, deterministic for a seed, not the identity on a
+    /// batch a cache would fill; a batch of one or none is left alone
+    /// without touching the generator.
+    #[test]
+    fn shuffle_permutes_the_batch() {
+        let orig: Vec<*mut u8> = (1..=64usize).map(|i| (i * 16) as *mut u8).collect();
+        let (mut a, mut b) = (orig.clone(), orig.clone());
+        let (mut ra, mut rb) = (0x9e37_79b9_7f4a_7c15u64, 0x9e37_79b9_7f4a_7c15u64);
+        shuffle(&mut a, &mut ra);
+        shuffle(&mut b, &mut rb);
+        assert_eq!(a, b, "the same seed gives the same order");
+        assert_eq!(ra, rb);
+        assert_ne!(a, orig);
+        let mut sorted = a.clone();
+        sorted.sort();
+        assert_eq!(sorted, orig, "the same slots");
+        let mut none: Vec<*mut u8> = Vec::new();
+        let mut one = vec![orig[0]];
+        let before = ra;
+        shuffle(&mut none, &mut ra);
+        shuffle(&mut one, &mut ra);
+        assert_eq!((ra, one[0]), (before, orig[0]));
+    }
+
+    /// `claim_random`: the slots `claim` would hand out, in a shuffled
+    /// order, and the zero report unchanged. A `Fresh` slab's prefix
+    /// `0..n` is claimed under the lock (zero); after a release of all of
+    /// it the `Empty` slab is dirty, its bits are scanned from a random
+    /// word, and two refills between them hand out every slot exactly
+    /// once.
+    #[test]
+    fn claim_random_hands_out_the_same_slots_in_a_random_order() {
+        let env = Env::new();
+        let c = small_class();
+        let n = CLASSES[c].nslots();
+        let cs = env.class(c, 0);
+        let mut rng = 0x2545_f491_4f6c_dd1du64;
+        let mut out = vec![ptr::null_mut(); n];
+        let claim = cs.claim_random(&env.meta, &mut out, &mut rng);
+        assert_eq!(claim.n, n);
+        assert!(claim.zeroed, "a Fresh slab's prefix, claimed under the lock");
+        let slots: Vec<usize> = out
+            .iter()
+            .map(|&q| {
+                let (slab, slot) = cs.locate(q);
+                assert_eq!(slab, 0);
+                slot
+            })
+            .collect();
+        let mut sorted = slots.clone();
+        sorted.sort();
+        assert_eq!(sorted, (0..n).collect::<Vec<_>>(), "slots 0..n of slab 0, each once");
+        assert_ne!(slots, sorted, "shuffled");
+        assert!(cs.table().bits(0).is_full());
+        cs.release(&out);
+        assert_eq!(cs.desc(0).state(), State::Empty);
+        let mut half = vec![ptr::null_mut(); n / 2];
+        let c1 = cs.claim_random(&env.meta, &mut half, &mut rng);
+        assert_eq!((c1.n, c1.zeroed), (n / 2, false), "an Empty slab is dirty");
+        let mut rest = vec![ptr::null_mut(); n - n / 2];
+        let c2 = cs.claim_random(&env.meta, &mut rest, &mut rng);
+        assert_eq!((c2.n, c2.zeroed), (n - n / 2, false), "a partial slab is dirty");
+        let all: HashSet<*mut u8> = half.iter().chain(rest.iter()).copied().collect();
+        assert_eq!(all.len(), n, "every slot once across the two refills");
+        assert_eq!(all, out.iter().copied().collect());
+        assert!(cs.table().bits(0).is_full());
     }
 }

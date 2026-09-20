@@ -530,6 +530,20 @@ mod tests {
     }
 
     #[test]
+    #[should_panic(expected = "nbits does not match the view")]
+    fn init_with_more_bits_than_the_view_aborts() {
+        let words = atomic_words(1);
+        AtomicBitmap::from_words(&words).init(65);
+    }
+
+    #[test]
+    #[should_panic(expected = "nbits does not match the view")]
+    fn init_of_a_sub_word_view_past_its_share_aborts() {
+        let word = AtomicU64::new(0);
+        AtomicBitmap::sub_word(&word, 8, 4).init(5);
+    }
+
+    #[test]
     fn claim_takes_lowest_bits_first_and_never_padding() {
         let nbits = 130;
         let words = atomic_words(3);
