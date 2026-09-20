@@ -23,6 +23,26 @@
 //   /quit   answers, then System.exit(0) so the allocator's atexit stats print
 //           (MALLOC_CONF=stats_print:true, MIMALLOC_SHOW_STATS=1) runs
 //
+// The soak mode (bench/jvm-bench.sh ROWS=soak, second iteration of the task,
+// 2026-09-20: a shape that can separate the allocators, where a 5-minute run
+// with one buffer size never lets glibc's arenas fragment)
+//
+//   java ... HttpBench soak PORT CORE MAX KEEPALIVE_S MIN_BYTES MAX_BYTES
+//
+// serves the same endpoints from a ThreadPoolExecutor that grows and shrinks
+// (core CORE, maximum MAX, idle threads retired after KEEPALIVE_S seconds, a
+// SynchronousQueue so a request beyond the live threads starts a new one;
+// 16 / 400 / 2 s in the protocol) while the load generator alternates 60 s
+// at 256 connections with 60 s at 8, so threads are created and retired all
+// run long (each new thread is a fresh glibc arena candidate and a fresh
+// per-thread cache in every allocator), and /blob draws its body size per
+// request from a log-uniform distribution between MIN_BYTES and MAX_BYTES
+// (256 bytes .. 1 MiB in the protocol: direct ByteBuffers of mixed sizes, so
+// no single size class dominates and fragmentation can appear). The body
+// is copied out of the direct buffer in 64 KiB heap chunks, so the Java
+// heap sees no humongous arrays and the native side dominates. /stats
+// answers "pool=<live> largest=<max ever> active=<busy> completed=<tasks>".
+//
 // `HttpBench maps` prints the allocator libraries in /proc/self/maps and
 // exits (the harness's binding check).
 //
@@ -44,29 +64,41 @@ import java.nio.file.Files;
 import java.nio.file.Paths;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 public final class HttpBench {
     static final int BLOB = 65536;
-    static final byte[] TEMPLATE = new byte[BLOB];
+    static final int TEMPLATE_MAX = 1 << 20;
+    static final byte[] TEMPLATE = new byte[TEMPLATE_MAX];
     static final AtomicLong COUNTER = new AtomicLong();
 
     static {
-        for (int i = 0; i < BLOB; i++) TEMPLATE[i] = (byte) (i * 31 + 7);
+        for (int i = 0; i < TEMPLATE_MAX; i++) TEMPLATE[i] = (byte) (i * 31 + 7);
     }
 
     public static void main(String[] args) throws Exception {
         if (args.length == 0) usage();
         switch (args[0]) {
             case "maps" -> maps();
-            case "serve" -> serve(Integer.parseInt(args[1]), Integer.parseInt(args[2]));
+            case "serve" -> serve(Integer.parseInt(args[1]), Executors.newFixedThreadPool(Integer.parseInt(args[2])), new BlobHandler());
+            case "soak" -> {
+                int core = Integer.parseInt(args[2]), max = Integer.parseInt(args[3]), keep = Integer.parseInt(args[4]);
+                int min = Integer.parseInt(args[5]), maxBytes = Integer.parseInt(args[6]);
+                if (min < 8 || maxBytes > TEMPLATE_MAX || min > maxBytes) usage();
+                ThreadPoolExecutor pool = new ThreadPoolExecutor(core, max, keep, TimeUnit.SECONDS,
+                    new SynchronousQueue<>(), new ThreadPoolExecutor.CallerRunsPolicy());
+                serve(Integer.parseInt(args[1]), pool, new MixedBlobHandler(min, maxBytes));
+            }
             default -> usage();
         }
     }
 
     static void usage() {
-        System.err.println("usage: HttpBench serve PORT THREADS | HttpBench maps");
+        System.err.println("usage: HttpBench serve PORT THREADS | HttpBench soak PORT CORE MAX KEEPALIVE_S MIN_BYTES MAX_BYTES | HttpBench maps");
         System.exit(2);
     }
 
@@ -81,12 +113,17 @@ public final class HttpBench {
             .forEach(System.out::println);
     }
 
-    static void serve(int port, int threads) throws IOException {
+    static void serve(int port, ExecutorService pool, HttpHandler blob) throws IOException {
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", port), 4096);
-        ExecutorService pool = Executors.newFixedThreadPool(threads);
         server.setExecutor(pool);
         server.createContext("/json", new JsonHandler());
-        server.createContext("/blob", new BlobHandler());
+        server.createContext("/blob", blob);
+        server.createContext("/stats", ex -> {
+            String s = pool instanceof ThreadPoolExecutor t
+                ? "pool=" + t.getPoolSize() + " largest=" + t.getLargestPoolSize() + " active=" + t.getActiveCount() + " completed=" + t.getCompletedTaskCount() + "\n"
+                : "pool=fixed\n";
+            reply(ex, "text/plain", s.getBytes(StandardCharsets.US_ASCII));
+        });
         server.createContext("/quit", ex -> {
             reply(ex, "text/plain", "bye\n".getBytes(StandardCharsets.US_ASCII));
             // Stop accepting, then exit through the normal path so atexit
@@ -137,12 +174,49 @@ public final class HttpBench {
     static final class BlobHandler implements HttpHandler {
         @Override public void handle(HttpExchange ex) throws IOException {
             ByteBuffer direct = ByteBuffer.allocateDirect(BLOB);
-            direct.put(TEMPLATE);
+            direct.put(TEMPLATE, 0, BLOB);
             direct.putLong(0, COUNTER.incrementAndGet());
             direct.flip();
             byte[] out = new byte[BLOB];
             direct.get(out);
             reply(ex, "application/octet-stream", out);
+        }
+    }
+
+    // The soak's /blob: a fresh direct ByteBuffer of a log-uniform size in
+    // [min, max] per request (one malloc(n) in the JVM, freed when the
+    // buffer's Cleaner runs after a later GC), filled from the template and
+    // copied out to the socket in 64 KiB heap chunks (no humongous heap
+    // arrays: the Java heap's churn stays small and constant per byte, the
+    // native side is what varies). Content-Length is the drawn size.
+    static final class MixedBlobHandler implements HttpHandler {
+        final double lnMin, lnRange;
+        final int min, max;
+        MixedBlobHandler(int min, int max) {
+            this.min = min; this.max = max;
+            lnMin = Math.log(min); lnRange = Math.log(max) - lnMin;
+        }
+        int draw() {
+            int n = (int) Math.round(Math.exp(lnMin + ThreadLocalRandom.current().nextDouble() * lnRange));
+            return Math.max(min, Math.min(max, n));
+        }
+        @Override public void handle(HttpExchange ex) throws IOException {
+            int n = draw();
+            ByteBuffer direct = ByteBuffer.allocateDirect(n);
+            direct.put(TEMPLATE, 0, n);
+            if (n >= 8) direct.putLong(0, COUNTER.incrementAndGet());
+            direct.flip();
+            ex.getRequestBody().readAllBytes();
+            ex.getResponseHeaders().set("Content-Type", "application/octet-stream");
+            ex.sendResponseHeaders(200, n);
+            byte[] chunk = new byte[Math.min(n, BLOB)];
+            try (OutputStream os = ex.getResponseBody()) {
+                while (direct.hasRemaining()) {
+                    int k = Math.min(chunk.length, direct.remaining());
+                    direct.get(chunk, 0, k);
+                    os.write(chunk, 0, k);
+                }
+            }
         }
     }
 }

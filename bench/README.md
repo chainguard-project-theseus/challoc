@@ -25,7 +25,12 @@ never used for numbers.
                           churn process and an http server under ab for DURATION s per allocator
     make jvm-bench        JVM rows (Phase 3 task 5 (a)): `java -version` startup and a
                           200-thread com.sun.net.httpserver server under ab for 5 minutes per
-                          allocator, plus glibc with MALLOC_ARENA_MAX=2 as a sixth variant
+                          allocator with NMT (allocator overhead = Rss - NMT committed), plus
+                          glibc with MALLOC_ARENA_MAX=2 and glibc with the JVM's periodic
+                          malloc_trim (-XX:TrimNativeHeapInterval) as the sixth and seventh variant
+    make jvm-soak         the JVM soak that can separate the allocators: a 16..400-thread pool,
+                          log-uniform 256 B..1 MiB direct buffers, 60 s windows alternating 256
+                          and 8 connections, 20 minutes per allocator, Rss series and slope
     make postgres-bench   PostgreSQL 17 rows (Phase 3 task 5b): pgbench select-only at 100 and
                           500 clients, TPC-B, connection setup; RSS over every postgres process
 
@@ -363,11 +368,46 @@ Files:
   (`[heap]`, challoc's named regions, unnamed anonymous, file-backed) plus
   the allocator's own stats print at exit (`MALLOC_CONF=stats_print:true`,
   `MIMALLOC_SHOW_STATS=1`, server row only) go to `OUT` for attribution.
-  Variants (`ALLOCS`): challoc (`REV`, default the working tree, built into
-  `target/jvm/lib`), glibc, `glibc-arena2` (glibc with `MALLOC_ARENA_MAX=2`,
-  the fleet's usual mitigation for the per-thread arenas), jemalloc,
-  mimalloc, tcmalloc, every one's `/proc/self/maps` checked once. Written to
+  The server JVM runs with `-XX:NativeMemoryTracking=summary` (`NMT`; `off`
+  disables it) and `jcmd <pid> VM.native_memory summary` is taken at the
+  peak-Rss sample (whenever a sample sets a new peak, at most once per
+  `NMT_GAP` (30) s) and at the end: the results carry NMT's total committed,
+  its malloc total and the Java Heap, Class, Thread, Code, GC, Compiler,
+  Internal and Other categories, and "allocator overhead" = Rss minus NMT
+  committed at the same instant, the number an operator fights (NMT's own
+  cost, a 16-byte header per malloc plus its tables, is the same for every
+  allocator and is reported; the header does move `malloc(65536)` across a
+  power-of-two class boundary in every size-class allocator, see the
+  results files' reading). Variants (`ALLOCS`): challoc (`REV`, default the
+  working tree, built into `target/jvm/lib`), glibc, `glibc-arena2` (glibc
+  with `MALLOC_ARENA_MAX=2`, the fleet's usual mitigation for the per-thread
+  arenas), `glibc-trim` (glibc with the JVM's own
+  `-XX:+UnlockExperimentalVMOptions -XX:TrimNativeHeapInterval=5000`,
+  `TRIM_MS`: a `malloc_trim(0)` from the JVM's service thread every 5 s,
+  what a well-tuned Java image ships today; the script checks that the JDK
+  accepts the flag and refuses the variant otherwise), jemalloc, mimalloc,
+  tcmalloc, every one's `/proc/self/maps` checked once. Written to
   `bench/results/<date>-<arch>-jvm.md` (`RESULT`, `ROWS`, `HOST_KIND`).
+  `make jvm-soak` (`ROWS=soak`, alone) is the shape that can separate the
+  allocators where the 5-minute row with one buffer size cannot (glibc's
+  arenas never fragment there and the JVM's biggest native consumers are
+  mmapped by the JVM itself): `HttpBench soak`, a `ThreadPoolExecutor` of
+  `SOAK_CORE` (16) core and `SOAK_MAX` (400) maximum threads retired after
+  `SOAK_KEEPALIVE` (2) s idle, `/blob` bodies drawn per request log-uniform
+  between `SOAK_MIN` (256) and `SOAK_MAXB` (1048576) bytes (direct
+  ByteBuffers of mixed sizes, no single size class dominates), the two
+  generators alternating `SOAK_WINDOW` (60) s windows at `SOAK_HIGH` (256)
+  and `SOAK_LOW` (8) total connections (threads are created and retired all
+  run long: what makes glibc's arenas multiply), `SOAK_DURATION` (1200) s
+  per allocator under challoc, glibc, glibc-arena2, glibc-trim and jemalloc
+  (`ALLOCS`); Rss every `INTERVAL` s into
+  `bench/results/<date>-<arch>-jvm-soak-<allocator>.csv` beside the results
+  file (`-<allocator>-windows.csv` has ab's req/s and p99 per endpoint, the
+  server's CPU per request, Rss, threads and the pool's size per window),
+  summarised as peak, final, the mean and the least-squares slope over the
+  last `SOAK_TAIL` (600) s in MiB per minute (growth after warm-up is the
+  fragmentation signal), NMT at the end. Written to
+  `bench/results/<date>-<arch>-jvm-soak.md`.
 - `postgres-bench.sh`, `probes/pg-rss-sampler.sh`: the PostgreSQL rows
   (docs/plan.md Phase 3 task 5 (b)). Wolfi's `postgresql-17` from the image:
   the script creates a non-root OS user (`pgb`; postgres refuses to run as

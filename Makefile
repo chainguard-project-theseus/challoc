@@ -147,12 +147,31 @@
 #                            (com.sun.net.httpserver, 200 threads, -Xms/-Xmx
 #                            512m, /json and 64 KiB direct-ByteBuffer /blob) under
 #                            two `ab` generators for DURATION (300) s per
-#                            allocator, RSS sampled every INTERVAL (5) s; under
-#                            challoc, glibc, glibc with MALLOC_ARENA_MAX=2,
+#                            allocator, RSS sampled every INTERVAL (5) s, the
+#                            JVM's Native Memory Tracking (NMT=summary, jcmd at
+#                            the peak sample and at the end: NMT committed and
+#                            "allocator overhead" = Rss - NMT committed); under
+#                            challoc, glibc, glibc with MALLOC_ARENA_MAX=2, glibc
+#                            with -XX:TrimNativeHeapInterval=TRIM_MS (5000),
 #                            jemalloc, mimalloc and tcmalloc; writes
 #                            bench/results/<date>-<arch>-jvm.md (RESULT=path,
 #                            ALLOCS, ROWS, DURATION, WARMUP, CONNECTIONS, THREADS,
-#                            HEAP, HOST_KIND)
+#                            HEAP, NMT, TRIM_MS, HOST_KIND)
+#   make jvm-soak            the JVM soak that can separate the allocators
+#                            (bench/jvm-bench.sh ROWS=soak): HttpBench in soak
+#                            mode, a 16..400-thread pool with a 2 s keep-alive
+#                            (SOAK_CORE, SOAK_MAX, SOAK_KEEPALIVE), /blob bodies
+#                            log-uniform between 256 bytes and 1 MiB (SOAK_MIN,
+#                            SOAK_MAXB), 60 s windows (SOAK_WINDOW) alternating
+#                            256 and 8 connections (SOAK_HIGH, SOAK_LOW) for
+#                            SOAK_DURATION (1200) s per allocator under challoc,
+#                            glibc, glibc-arena2, glibc-trim and jemalloc
+#                            (ALLOCS); Rss every INTERVAL s into a CSV per
+#                            allocator beside the results file, summarised as
+#                            peak, final and the slope over the last SOAK_TAIL
+#                            (600) s in MiB/min, req/s and p99 per window, NMT
+#                            at the end; writes
+#                            bench/results/<date>-<arch>-jvm-soak.md
 #   make postgres-bench      PostgreSQL 17 rows (bench/postgres-bench.sh, Phase 3
 #                            task 5b): Wolfi's postgresql-17 started by pg_ctl as a
 #                            non-root user with the allocator in its environment
@@ -219,7 +238,7 @@ DOCKER_RUN = $(DOCKER_BASE) $(DOCKER_FLAGS) $(IMAGE)
 cgroup_docker = $(DOCKER_BASE) --memory=$(1) --memory-swap=$(1) $(if $(CGROUP_WATCHDOG),-e WATCHDOG=$(CGROUP_WATCHDOG)) $(IMAGE) sh scripts/cgroup-tests.sh
 cgroup_run = $(call cgroup_docker,$(1)) $(2)
 
-.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare test-pagemap-guard test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench node-bench check-needed clean-volumes jvm-bench postgres-bench
+.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare test-pagemap-guard test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench node-bench check-needed clean-volumes jvm-bench postgres-bench jvm-soak
 
 image:
 	docker build --platform $(PLATFORM) -f Dockerfile.dev -t $(IMAGE) .
@@ -436,9 +455,16 @@ node-bench: image
 # and the com.sun.net.httpserver server of bench/jvm/HttpBench.java under ab,
 # on the image's openjdk-21, under challoc (the working tree), glibc, glibc
 # with MALLOC_ARENA_MAX=2 and the stock allocators.
-JVM_BENCH_VARS = ALLOCS ROUNDS ROWS DURATION WARMUP INTERVAL CONNECTIONS THREADS HEAP PORT RESULT OUT HOST_KIND REV JAVA_OPTS IDLE_SECS
+JVM_BENCH_VARS = ALLOCS ROUNDS ROWS DURATION WARMUP INTERVAL CONNECTIONS THREADS HEAP PORT RESULT OUT HOST_KIND REV JAVA_OPTS IDLE_SECS NMT NMT_GAP TRIM_MS SOAK_DURATION SOAK_WINDOW SOAK_HIGH SOAK_LOW SOAK_CORE SOAK_MAX SOAK_KEEPALIVE SOAK_MIN SOAK_MAXB SOAK_TAIL
 jvm-bench: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(JVM_BENCH_VARS),$(if $($(v)),-e $(v)="$($(v))"))
 jvm-bench: image
+	$(DOCKER_RUN) sh bench/jvm-bench.sh
+# The mixed-size soak (the same script, ROWS=soak: a growing and shrinking
+# pool, log-uniform direct-buffer sizes, alternating load, 20 minutes per
+# allocator); writes bench/results/<date>-<arch>-jvm-soak.md and the Rss
+# series CSVs beside it.
+jvm-soak: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" -e ROWS=soak $(foreach v,$(filter-out ROWS,$(JVM_BENCH_VARS)),$(if $($(v)),-e $(v)="$($(v))"))
+jvm-soak: image
 	$(DOCKER_RUN) sh bench/jvm-bench.sh
 # PostgreSQL rows (bench/postgres-bench.sh, Phase 3 task 5b): Wolfi's
 # postgresql-17 from the image, the server run as a non-root user the script
