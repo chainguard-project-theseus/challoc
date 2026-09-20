@@ -1596,7 +1596,23 @@ mod tests {
         let narenas: c_uint = get("arenas.narenas");
         assert_eq!(call(&std::format!("arena.{narenas}.purge")), 0);
         assert_eq!(call(&std::format!("arena.{narenas}.decay")), 0);
-        assert_eq!(call(&std::format!("arena.{}.purge", narenas + 1)), ENOENT);
+        // The first unused index is ENOENT at this instant. Another api
+        // test's `arenas.create` can land between the count read and the
+        // call (the api tests share one process; on the 7.2 Chainguard OS
+        // host `arena.{narenas+1}.purge` once answered 0, the moved count's
+        // new all-arenas alias), so the pair is retried until the count did
+        // not move across it; the far range below no concurrent test reaches.
+        let mut stable = false;
+        for _ in 0..8 {
+            let n: c_uint = get("arenas.narenas");
+            let rc = call(&std::format!("arena.{}.purge", n + 1));
+            if get::<c_uint>("arenas.narenas") == n {
+                assert_eq!(rc, ENOENT, "arena.{}.purge with {n} arenas", n + 1);
+                stable = true;
+                break;
+            }
+        }
+        assert!(stable, "arenas.narenas moved across eight consecutive probes");
         assert_eq!(call("arena.4000.purge"), ENOENT);
         assert_eq!(call("arena.5000.purge"), ENOENT);
         assert_eq!(call("arena.0.decay"), 0);
