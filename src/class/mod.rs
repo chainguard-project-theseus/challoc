@@ -181,7 +181,123 @@ pub struct Claim {
 /// class fit in one hold: with the 4 KiB slabs of the 512 and 1024-byte
 /// classes (`layout::LG_MIN_SLAB`) a 128-slot refill of the 512 class and a
 /// 64-slot one of the 1024 class each span 16 slabs.
-const MAX_PICKS: usize = 16;
+pub(crate) const MAX_PICKS: usize = 16;
+
+/// The atomic steps of the protocol, named in the order the code takes
+/// them, for the model (`model::steps`): each enum is one operation of
+/// [`ClassState`], each variant one step that interleaves with other
+/// threads' steps (a lock hold that only touches lock-protected state is
+/// one step; a lock-free atomic is one step), with its discriminant the
+/// model's sub-step number. The model matches every enum exhaustively,
+/// so a step added here without a model step, or a reordering that
+/// leaves the model's numbering behind, does not compile. Kept next to
+/// the code it names: a change to the protocol is a change here first.
+#[cfg(test)]
+pub(crate) mod protocol {
+    /// [`claim`](super::ClassState::claim): one round of `claim_with`'s
+    /// loop (`plan`, then `finish`; short, plan again).
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    #[repr(u8)]
+    pub(crate) enum Refill {
+        /// `plan_locked`: `self.inner.lock()`.
+        Lock = 0,
+        /// `plan_locked` under the lock, one step: the partial walk
+        /// (`clear_partial` of a full slab), `next_slab` (the empty and
+        /// purged sets, the group cursor with `commit_slab`, the handoff
+        /// `adopt_idle_group`/`transfer_group`, `take_group`), and `take`
+        /// per slab: the `live` reservation, the `Active` transition, the
+        /// partial bit, `claim_prefix` for a zero pick.
+        PlanLocked = 1,
+        /// `plan` returns: the lock hold ends.
+        Unlock = 2,
+        /// `finish`, one pick at a time: a zero pick's slots `0..n` as
+        /// claimed, else one `claim_from` (`fetch_or`) on the slab's word.
+        Finish = 3,
+    }
+
+    /// [`release_owned`](super::ClassState::release_owned) of a batch
+    /// grouped by slab, through `Heap::release_routed` (one run per owner
+    /// arena), with `dec_live`, `on_live_zero` and `reopen`.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    #[repr(u8)]
+    pub(crate) enum Release {
+        /// The batch grouped by slab (`Heap::flush`'s bucket pass),
+        /// before anything is touched.
+        Group = 0,
+        /// `release_word`: the owner word read, the `Fresh` check,
+        /// `bits(slab).release(word, mask)` (the `fetch_and`) and the
+        /// double-free check on what it returned.
+        FetchAnd = 1,
+        /// `dec_live`: `sub_live(n)`, and whether it reached zero.
+        SubLive = 2,
+        /// `on_live_zero`: `self.inner.lock()`.
+        LockLiveZero = 3,
+        /// `on_live_zero` under the lock: the owner test, `Active` with
+        /// `live == 0` to `Empty` and into the empty set (`empty_add`),
+        /// unlock.
+        OnLiveZero = 4,
+        /// `release_owned` runs on to the next slab of the batch while it
+        /// is the same owner's, else the run is done and `reopen` is
+        /// pending for it.
+        NextSlab = 5,
+        /// `reopen`: `self.inner.lock()`.
+        LockReopen = 6,
+        /// `reopen` under the lock: per slab whose word was full, the
+        /// `Active` and owner test and `set_partial`; unlock.
+        Reopen = 7,
+    }
+
+    /// [`purge_empty`](super::ClassState::purge_empty).
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    #[repr(u8)]
+    pub(crate) enum Purge {
+        /// `self.inner.lock()`.
+        Lock = 0,
+        /// Under the lock, one step: `walk_empty` (the state assertion),
+        /// `purge_group` (`Purged`, `empty_take`, `purged_add`), the
+        /// discard (`batch.flush()`), unlock.
+        PurgeLocked = 1,
+    }
+
+    impl Refill {
+        /// The step at sub-step `sub` (`Finish` repeats, one pick at a time).
+        pub(crate) fn at(sub: u8) -> Refill {
+            match sub {
+                0 => Refill::Lock,
+                1 => Refill::PlanLocked,
+                2 => Refill::Unlock,
+                3 => Refill::Finish,
+                _ => panic!("protocol: Refill has no step {sub}"),
+            }
+        }
+    }
+
+    impl Release {
+        pub(crate) fn at(sub: u8) -> Release {
+            match sub {
+                0 => Release::Group,
+                1 => Release::FetchAnd,
+                2 => Release::SubLive,
+                3 => Release::LockLiveZero,
+                4 => Release::OnLiveZero,
+                5 => Release::NextSlab,
+                6 => Release::LockReopen,
+                7 => Release::Reopen,
+                _ => panic!("protocol: Release has no step {sub}"),
+            }
+        }
+    }
+
+    impl Purge {
+        pub(crate) fn at(sub: u8) -> Purge {
+            match sub {
+                0 => Purge::Lock,
+                1 => Purge::PurgeLocked,
+                _ => panic!("protocol: Purge has no step {sub}"),
+            }
+        }
+    }
+}
 
 /// Full bitmap scans of one slab that find nothing before a claim gives up
 /// on its reservation and aborts. A scan comes up empty only while other
@@ -574,8 +690,8 @@ impl ClassState {
     /// random word rather than word 0; a rescan after a full pass still
     /// starts at 0. Without it the code is the address-ordered claim.
     ///
-    /// Modelled at `model::Model::step_refill`, the sub-steps after
-    /// `unlock` (one pick at a time).
+    /// Modelled at `model::Model::step_refill`, `protocol::Refill::Finish`
+    /// (one pick at a time).
     ///
     /// [`plan`]: ClassState::plan
     /// [`take`]: ClassState::take
@@ -717,8 +833,8 @@ impl ClassState {
 
     /// Reserve `min(nslots - live, *remaining)` slots of `slab` under the
     /// lock, fix up its state and partial bit, and record the pick.
-    /// Modelled at `model::Model::take`, inside the locked sub-step 1 of
-    /// `model::Model::step_refill`.
+    /// Modelled at `model::Model::take`, inside the locked step
+    /// `protocol::Refill::PlanLocked` of `model::Model::step_refill`.
     fn take(&self, g: &mut Inner, slab: usize, remaining: &mut usize, picks: &mut [Pick; MAX_PICKS], np: &mut usize) {
         let desc = self.desc(slab);
         let live = desc.live();
@@ -791,7 +907,8 @@ impl ClassState {
 
     /// `live` reached zero: make the slab `Empty` unless a refill has
     /// already reserved it again. Modelled at `model::Model::step_release`,
-    /// sub-steps 3 (the lock) and 4 (the owner test and the transition).
+    /// `protocol::Release::LockLiveZero` (the lock) and `OnLiveZero` (the
+    /// owner test and the transition).
     fn on_live_zero(&self, slab: usize) {
         let mut first = false;
         {
@@ -854,8 +971,8 @@ impl ClassState {
     /// where the sized path's deferred check lands; a duplicate inside one
     /// slab's group is caught earlier, on the scratch bit. The owner is read
     /// from the table's dense owner array, once per slab switch.
-    /// Modelled at `model::Model::step_release`, sub-steps 1 (the
-    /// `fetch_and` and the double-free check) and 2 (`sub_live`).
+    /// Modelled at `model::Model::step_release`, `protocol::Release::FetchAnd`
+    /// (the `fetch_and` and the double-free check) and `SubLive`.
     ///
     /// [`release`]: ClassState::release
     pub fn release_owned(&self, ptrs: &[*mut u8]) -> usize {
@@ -950,8 +1067,8 @@ impl ClassState {
     /// list. A slab that went `Empty` (or was purged) since its word was
     /// released stays out: it is in the empty or purged set, and a refill
     /// taking it from there sets its partial bit itself. Modelled at
-    /// `model::Model::step_release`, sub-step 5 (the lock) and the final
-    /// arm (the state and owner test per slab).
+    /// `model::Model::step_release`, `protocol::Release::LockReopen` (the
+    /// lock) and `Reopen` (the state and owner test per slab).
     fn reopen(&self, reopen: &mut Reopen) {
         if reopen.len == 0 {
             return;

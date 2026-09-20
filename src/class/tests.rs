@@ -2498,3 +2498,33 @@ fn a_handoff_of_a_group_the_taker_already_holds_aborts() {
     let cursor = if dg.group_end == end { dg.group_next } else { end };
     taker.verify_idle_group(&g, &dg, donor, 0, start, end, cursor);
 }
+
+/// The protocol's step names (`class::protocol`) are numbered in the
+/// order the code takes them and round-trip through `at`, which is what
+/// the model's sub-step numbers rely on.
+#[test]
+fn the_protocol_steps_are_numbered_in_order() {
+    use protocol::{Purge, Refill, Release};
+    for (i, s) in [Refill::Lock, Refill::PlanLocked, Refill::Unlock, Refill::Finish].into_iter().enumerate() {
+        assert_eq!(s as u8 as usize, i);
+        assert_eq!(Refill::at(i as u8), s);
+    }
+    let release = [
+        Release::Group,
+        Release::FetchAnd,
+        Release::SubLive,
+        Release::LockLiveZero,
+        Release::OnLiveZero,
+        Release::NextSlab,
+        Release::LockReopen,
+        Release::Reopen,
+    ];
+    for (i, s) in release.into_iter().enumerate() {
+        assert_eq!(s as u8 as usize, i);
+        assert_eq!(Release::at(i as u8), s);
+    }
+    for (i, s) in [Purge::Lock, Purge::PurgeLocked].into_iter().enumerate() {
+        assert_eq!(s as u8 as usize, i);
+        assert_eq!(Purge::at(i as u8), s);
+    }
+}

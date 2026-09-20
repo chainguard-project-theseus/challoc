@@ -5,9 +5,12 @@
 //! step mirrors is quoted at the step); then the invariants checked at
 //! every state and the depth-first exploration itself. A step returns
 //! `Err` on an abort of the real code (a heap inconsistency the protocol
-//! detects itself).
+//! detects itself). The sub-steps are the variants of
+//! [`class::protocol`](crate::class::protocol), matched exhaustively: a
+//! step the code gains that the model lacks does not compile.
 
 use super::*;
+use crate::class::protocol::{Purge, Refill, Release};
 
 impl Model<'_> {
     pub(super) fn program(&self, t: usize) -> &[Op] {
@@ -28,13 +31,15 @@ impl Model<'_> {
         let a = th.arena as usize;
         match micro(self.program(t)[th.pc as usize], th.sub) {
             // Lock acquisitions: `self.inner.lock()` blocks while held.
-            Micro::Refill(_, 0) => sh.lock[a].is_none(),
-            Micro::Purge(0) => sh.lock[self.purge_arena(th, t)].is_none(),
-            Micro::Release(3) | Micro::Release(5) => sh.lock[th.rel_arena as usize].is_none(),
+            Micro::Refill(_, s) if Refill::at(s) == Refill::Lock => sh.lock[a].is_none(),
+            Micro::Purge(s) if Purge::at(s) == Purge::Lock => sh.lock[self.purge_arena(th, t)].is_none(),
+            Micro::Release(s) if matches!(Release::at(s), Release::LockLiveZero | Release::LockReopen) => {
+                sh.lock[th.rel_arena as usize].is_none()
+            }
             // `finish`'s bit loop: `claim_from` finds nothing while every
             // word is full and rescans (`MAX_EMPTY_PASSES`); the model
             // waits for a clear bit instead of spinning.
-            Micro::Refill(_, 3) => {
+            Micro::Refill(_, s) if Refill::at(s) == Refill::Finish => {
                 let p = th.picks[th.cur as usize];
                 p.zero && self.v.prefix_claim || sh.slabs[p.slab as usize].bits != FULL
             }
@@ -90,47 +95,7 @@ impl Model<'_> {
                 Ok(format!("write slot {} of slab {}", h.slot, h.slab))
             }
             Micro::Release(sub) => self.step_release(sh, th, tid, op, sub),
-            Micro::Purge(0) => {
-                // purge_empty: `let mut g = self.inner.lock();`
-                let a = self.purge_arena(th, t);
-                th.arena = a as u8;
-                sh.lock[a] = Some(tid);
-                th.sub = 1;
-                Ok(format!("purge: lock arena {a}"))
-            }
-            Micro::Purge(_) => {
-                // purge_empty under the lock: for every slab of the
-                // empty set, `assert!(desc.state() == State::Empty &&
-                // desc.live() == 0)`, then `purge_group`:
-                // `d.set_state(State::Purged); d.set_dirty_at(0);
-                // g.empty.map.clear(s); g.purged.map.set(s);` and the
-                // discard (`batch.flush()` before the lock is dropped),
-                // after which the memory reads zero.
-                let a = th.arena as usize;
-                let mut desc = String::from("purge:");
-                let mut set = sh.empty[a];
-                while let Some(slab) = lowest_set(set) {
-                    set &= !(1 << slab);
-                    let s = &mut sh.slabs[slab as usize];
-                    if s.state != St::Empty || s.live != 0 {
-                        return Err(format!(
-                            "purge_empty: slab {slab} in the empty set is {:?} with live {}",
-                            s.state, s.live
-                        ));
-                    }
-                    s.state = St::Purged;
-                    s.mem = 0;
-                    sh.empty[a] &= !(1 << slab);
-                    sh.purged[a] |= 1 << slab;
-                    desc += &format!(" slab {slab} -> Purged, memory zero;");
-                }
-                if sh.empty[a] == 0 && desc == "purge:" {
-                    desc += " nothing Empty;";
-                }
-                sh.lock[a] = None;
-                th.done();
-                Ok(desc + " unlock")
-            }
+            Micro::Purge(sub) => self.step_purge(sh, th, tid, t, sub),
             Micro::Pop(0) => {
                 // design 6.3 `malloc` steps 2 and 3 in the per-CPU mode:
                 // the section opens, `mm_cid` is read, the cache picked.
@@ -251,6 +216,53 @@ impl Model<'_> {
         }
     }
 
+    /// `ClassState::purge_empty`: the steps of `Purge`.
+    pub(super) fn step_purge(&self, sh: &mut Shared, th: &mut Thread, tid: u8, t: usize, sub: u8) -> Result<String, String> {
+        match Purge::at(sub) {
+            Purge::Lock => {
+                // purge_empty: `let mut g = self.inner.lock();`
+                let a = self.purge_arena(th, t);
+                th.arena = a as u8;
+                sh.lock[a] = Some(tid);
+                th.sub = Purge::PurgeLocked as u8;
+                Ok(format!("purge: lock arena {a}"))
+            }
+            Purge::PurgeLocked => {
+                // purge_empty under the lock: `walk_empty` asserts
+                // `desc.state() == State::Empty && desc.live() == 0` for
+                // every slab of the empty set, then `purge_group`:
+                // `d.set_state(State::Purged); d.set_dirty_at(0);
+                // g.empty_take(s); g.purged_add(s);` and the discard
+                // (`batch.flush()` before the lock is dropped), after
+                // which the memory reads zero.
+                let a = th.arena as usize;
+                let mut desc = String::from("purge:");
+                let mut set = sh.empty[a];
+                while let Some(slab) = lowest_set(set) {
+                    set &= !(1 << slab);
+                    let s = &mut sh.slabs[slab as usize];
+                    if s.state != St::Empty || s.live != 0 {
+                        return Err(format!(
+                            "purge_empty: slab {slab} in the empty set is {:?} with live {}",
+                            s.state, s.live
+                        ));
+                    }
+                    s.state = St::Purged;
+                    s.mem = 0;
+                    sh.empty[a] &= !(1 << slab);
+                    sh.purged[a] |= 1 << slab;
+                    desc += &format!(" slab {slab} -> Purged, memory zero;");
+                }
+                if sh.empty[a] == 0 && desc == "purge:" {
+                    desc += " nothing Empty;";
+                }
+                sh.lock[a] = None;
+                th.done();
+                Ok(desc + " unlock")
+            }
+        }
+    }
+
     /// `ClassState::claim`: the steps of `Refill`, at sub-step base
     /// `micro_base(th.sub)` (0 for `Op::Refill`, `POP_REFILL` inside a
     /// `Pop`).
@@ -265,23 +277,23 @@ impl Model<'_> {
     ) -> Result<String, String> {
         let base = micro_base(th.sub);
         let a = th.arena as usize;
-        match sub {
-            0 => {
+        match Refill::at(sub) {
+            Refill::Lock => {
                 // plan_locked: `let mut g = self.inner.lock();`
                 sh.lock[a] = Some(tid);
-                th.sub = base + 1;
+                th.sub = base + Refill::PlanLocked as u8;
                 Ok(format!("lock arena {a}"))
             }
-            1 => {
+            Refill::PlanLocked => {
                 // plan_locked under the lock: the partial walk, then
                 // `next_slab` (empty, purged, the group cursor, the
                 // handoff, a fresh group), `take` per slab.
                 // `self.plan(meta, out.len() - got, &mut picks)`
                 let desc = self.plan_locked(sh, th, want - th.got)?;
-                th.sub = base + 2;
+                th.sub = base + Refill::Unlock as u8;
                 Ok(desc)
             }
-            2 => {
+            Refill::Unlock => {
                 // `plan` returns: the lock hold ends.
                 sh.lock[a] = None;
                 th.cur = 0;
@@ -289,10 +301,10 @@ impl Model<'_> {
                     self.micro_done(th, op);
                     return Ok(String::from("unlock; nothing to commit, claim returns 0"));
                 }
-                th.sub = base + 3;
+                th.sub = base + Refill::Finish as u8;
                 Ok(String::from("unlock"))
             }
-            _ => {
+            Refill::Finish => {
                 // finish: one pick at a time.
                 let p = th.picks[th.cur as usize];
                 let s = &mut sh.slabs[p.slab as usize];
@@ -349,7 +361,7 @@ impl Model<'_> {
                         // self.finish(..); }`: short, so plan again.
                         th.np = 0;
                         if th.got < want {
-                            th.sub = base;
+                            th.sub = base + Refill::Lock as u8;
                             return Ok(desc + "; short, plan again");
                         }
                         self.micro_done(th, op);
@@ -375,8 +387,8 @@ impl Model<'_> {
         sub: u8,
     ) -> Result<String, String> {
         let base = micro_base(th.sub);
-        match sub {
-            0 => {
+        match Release::at(sub) {
+            Release::Group => {
                 // In the per-CPU mode a program's `Release` is the direct
                 // free (`MALLOCX_TCACHE_NONE`): its owned slots are the
                 // batch. Then release_owned: the batch grouped by slab,
@@ -398,10 +410,10 @@ impl Model<'_> {
                 }
                 th.rel_todo = todo;
                 th.was_full = 0;
-                th.sub = base + 1;
+                th.sub = base + Release::FetchAnd as u8;
                 Ok(format!("release: slabs {todo:#04b}"))
             }
-            1 => {
+            Release::FetchAnd => {
                 // release_routed: `self.owner(a).class(class).release_owned(..)`
                 // with `a` the owner word's arena (`arena_of_slot`), then
                 // release_word for the slab's one word:
@@ -441,14 +453,14 @@ impl Model<'_> {
                 th.rel_slab = slab;
                 th.rel_count = count;
                 th.dec_pending = true;
-                th.sub = base + 2;
+                th.sub = base + Release::SubLive as u8;
                 Ok(format!(
                     "release: fetch_and !{mask:#06b} on slab {slab} of arena {owner} (bits {prev:#06b} -> {:#06b}){}",
                     s.bits,
                     if prev == FULL { ", was full" } else { "" }
                 ))
             }
-            2 => {
+            Release::SubLive => {
                 // dec_live: `if self.desc(slab).sub_live(n) == n { self.on_live_zero(slab); }`
                 let s = &mut sh.slabs[th.rel_slab as usize];
                 let prev = s.live;
@@ -461,7 +473,7 @@ impl Model<'_> {
                 s.live -= th.rel_count;
                 th.dec_pending = false;
                 th.rel_zero = prev == th.rel_count;
-                th.sub = base + if th.rel_zero { 3 } else { 6 };
+                th.sub = base + if th.rel_zero { Release::LockLiveZero } else { Release::NextSlab } as u8;
                 Ok(format!(
                     "release: sub_live({}) on slab {} ({prev} -> {}){}",
                     th.rel_count,
@@ -470,19 +482,19 @@ impl Model<'_> {
                     if th.rel_zero { ", reached zero" } else { "" }
                 ))
             }
-            3 => {
+            Release::LockLiveZero => {
                 // on_live_zero: `let mut g = self.inner.lock();`
                 let a = th.rel_arena as usize;
                 sh.lock[a] = Some(tid);
-                th.sub = base + 4;
+                th.sub = base + Release::OnLiveZero as u8;
                 Ok(format!("on_live_zero: lock arena {a}"))
             }
-            4 => {
+            Release::OnLiveZero => {
                 // on_live_zero under the lock:
                 // `if self.table().owner(slab) != self.arena { return; }`
                 // `if desc.live() == 0 && desc.state() == State::Active {`
                 //   `desc.set_state(State::Empty); desc.set_dirty_at(now);`
-                //   `g.clear_partial(slab); g.empty.map.set(slab); g.stats.empty += 1;`
+                //   `g.clear_partial(slab); g.empty_add(slab);`
                 let a = th.rel_arena as usize;
                 let slab = th.rel_slab;
                 let desc;
@@ -508,37 +520,37 @@ impl Model<'_> {
                     }
                 }
                 sh.lock[a] = None;
-                th.sub = base + 6;
+                th.sub = base + Release::NextSlab as u8;
                 Ok(desc + "; unlock")
             }
-            5 => {
-                // reopen: `let mut g = self.inner.lock();`
-                let a = th.rel_arena as usize;
-                sh.lock[a] = Some(tid);
-                th.sub = base + 7;
-                Ok(format!("reopen: lock arena {a}"))
-            }
-            6 => {
+            Release::NextSlab => {
                 // The next slab of the batch while it is the same owner's
                 // (`release_owned` runs on); else `self.reopen(&mut reopen)`
                 // for the run just done, then `release_routed` moves to
                 // the next owner.
                 let next_owner = lowest_set(th.rel_todo).map(|s| sh.owner(self.sc, s));
                 if th.was_full != 0 && next_owner != Some(th.rel_arena) {
-                    th.sub = base + 5;
+                    th.sub = base + Release::LockReopen as u8;
                     return Ok(format!(
                         "release: run of arena {} done, reopen pending",
                         th.rel_arena
                     ));
                 }
                 if th.rel_todo != 0 {
-                    th.sub = base + 1;
+                    th.sub = base + Release::FetchAnd as u8;
                     return Ok(String::from("release: next slab"));
                 }
                 self.micro_done(th, op);
                 Ok(String::from("release: batch done"))
             }
-            _ => {
+            Release::LockReopen => {
+                // reopen: `let mut g = self.inner.lock();`
+                let a = th.rel_arena as usize;
+                sh.lock[a] = Some(tid);
+                th.sub = base + Release::Reopen as u8;
+                Ok(format!("reopen: lock arena {a}"))
+            }
+            Release::Reopen => {
                 // reopen under the lock, per slab:
                 // `if self.desc(slab).state() == State::Active && self.table().owner(slab) == self.arena { g.set_partial(slab); }`
                 let a = th.rel_arena as usize;
@@ -563,7 +575,7 @@ impl Model<'_> {
                 th.was_full = 0;
                 sh.lock[a] = None;
                 if th.rel_todo != 0 {
-                    th.sub = base + 1;
+                    th.sub = base + Release::FetchAnd as u8;
                     return Ok(desc + " unlock; next owner's slabs");
                 }
                 self.micro_done(th, op);

@@ -131,7 +131,10 @@ const FULL: u8 = (1 << NSLOTS) - 1;
 const NARENAS: usize = 2;
 const MAX_THREADS: usize = 3;
 const MAX_HELD: usize = 4;
+/// Picks per plan: the real bound is `class::MAX_PICKS`; the model's
+/// smaller one is enough for [`NSLABS`] slabs and must not exceed it.
 const MAX_PICKS: usize = 2;
+const _: () = assert!(MAX_PICKS <= crate::class::MAX_PICKS);
 const MAX_OPS: usize = 6;
 /// States one exploration may visit before it gives up: a scenario past
 /// this is too large for the 30 s budget of the host suite and must be
