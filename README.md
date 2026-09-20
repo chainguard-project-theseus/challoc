@@ -263,7 +263,10 @@ challoc exports the standard C allocation functions including C23's
 `malloc_usable_size`, `malloc_trim`, `mallopt`, and `mallinfo2`, and the
 jemalloc surface: `mallocx`, `rallocx`, `xallocx`, `sallocx`, `dallocx`,
 `sdallocx`, `nallocx`, `mallctl`, `mallctlnametomib`, `mallctlbymib`,
-`malloc_stats_print`, and the `malloc_conf` configuration string. Every
+`malloc_stats_print`, and the `malloc_conf` configuration string
+(`docs/tuning.md` is the operator's guide: every key, how to set it
+through `malloc_conf`, `/etc/challoc.conf` or `MALLOC_CONF`, the cgroup
+policy, THP on `always` hosts, and how to read the report). Every
 jemalloc symbol is also exported with the `je_` prefix, and the C++
 `operator new`/`operator delete` forms are exported under their Itanium
 names. The shared library's soname is `libchalloc.so.0`; the build can

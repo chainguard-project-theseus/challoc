@@ -1440,6 +1440,13 @@ issued with each). `malloc_stats_print` prints one `cgroup:` line, one
 
 ## 12. Configuration
 
+`docs/tuning.md` is the operator's reading of this section: one row per
+key with when to change it and what it costs, the consumer settings, the
+cgroup and THP behaviour, and the report's lines. This table stays the
+source of truth for the key list, the defaults and the value grammar,
+with `src/config.rs` (`KEYS`, `Config::DEFAULT`, `Config::set`) as the
+code it describes.
+
 Sources, in increasing priority:
 
 1. Compiled defaults.
