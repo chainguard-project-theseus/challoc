@@ -579,6 +579,17 @@ ctests! {
     c_align => [ CTest { prog: "align", ..BASE } ];
     c_realloc_tiers => [ CTest { prog: "realloc_tiers", ..BASE } ];
     c_calloc_zero => [ CTest { prog: "calloc_zero", ..BASE } ];
+    /// 64 pthreads each see their own heap (`thread.allocatedp` distinct per
+    /// thread, per-thread counters moved only by that thread).
+    c_tls_threads => [ CTest { prog: "tls_threads", ..BASE } ];
+    /// The standard entry points from C (`tests/c/libc_api.c`), then the
+    /// same program with the background thread requested by the
+    /// configuration and created by a periodic tick that lands in a `free`:
+    /// `errno` must survive it (design 8.1).
+    c_libc_api => [
+        CTest { prog: "libc_api", ..BASE },
+        CTest { prog: "libc_api", args: &["background"], conf: Some("abort_conf:true,background_thread:true"), ..BASE },
+    ];
     c_random_ops_one_million_across_eight_threads => [ CTest { prog: "random_ops", args: &["1000000", "8"], ..BASE } ];
     /// Same driver, one thread: no cross-thread traffic, so a failure here
     /// is in the per-thread paths alone.
@@ -1136,4 +1147,24 @@ fn jemalloc_compat_stage() {
     assert!(run.status.success(), "jemalloc_link failed ({:?})\nstdout: {stdout}\nstderr: {stderr}", run.status);
     assert!(stdout.lines().any(|l| l == "ok jemalloc_link"), "stdout: {stdout}\nstderr: {stderr}");
     std::eprintln!("jemalloc_link: {}", stdout.trim_end());
+}
+
+/// A few ordinary programs under `LD_PRELOAD`: the library survives real
+/// startup sequences (a shell, readelf, the C compiler).
+#[test]
+fn ordinary_programs_run_under_ld_preload() {
+    let so = release_so();
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+    for cmd in [
+        std::vec!["sh", "-c", "ls /usr/lib >/dev/null && echo preload-ok"],
+        std::vec!["readelf", "-h", so.as_str()],
+        std::vec![cc.as_str(), "--version"],
+    ] {
+        let run = std::process::Command::new(cmd[0]).args(&cmd[1..]).env("LD_PRELOAD", &so).output().unwrap();
+        assert!(
+            run.status.success(),
+            "{cmd:?} failed under LD_PRELOAD: {}",
+            String::from_utf8_lossy(&run.stderr)
+        );
+    }
 }

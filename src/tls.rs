@@ -284,33 +284,4 @@ mod tests {
             "challoc_tls slot leaked as a dynamic symbol:\n{dynsyms}"
         );
     }
-
-    /// 64 pthreads under `LD_PRELOAD` each see their own heap
-    /// (`thread.allocatedp` distinct per thread and per-thread counters
-    /// that only that thread's allocations move).
-    #[test]
-    fn c_program_with_64_threads_sees_distinct_slots() {
-        let so = release_so();
-        let root = env!("CARGO_MANIFEST_DIR");
-        let src = format!("{root}/tests/c/tls_threads.c");
-        let out = format!("{}/tls_threads-{}", env::temp_dir().display(), std::process::id());
-        let cc = env::var("CC").unwrap_or_else(|_| "cc".into());
-        let status = Command::new(&cc)
-            .args(["-O2", "-Wall", "-Wextra", "-Werror", "-pthread", &src, "-o", &out, "-ldl"])
-            .status()
-            .unwrap();
-        assert!(status.success(), "compiling {src} failed");
-
-        // Without the preload the program must report the missing probe.
-        let bare = Command::new(&out).output().unwrap();
-        assert!(!bare.status.success(), "tls_threads passed without libchalloc preloaded");
-
-        let run = Command::new(&out).env("LD_PRELOAD", &so).output().unwrap();
-        let _ = std::fs::remove_file(&out);
-        let stdout = String::from_utf8_lossy(&run.stdout);
-        let stderr = String::from_utf8_lossy(&run.stderr);
-        assert!(run.status.success(), "tls_threads failed\nstdout: {stdout}\nstderr: {stderr}");
-        assert!(stdout.contains("ok 64 threads"), "stdout: {stdout}");
-        std::eprintln!("tls_threads: {}", stdout.trim_end());
-    }
 }
