@@ -21,18 +21,19 @@
 //! it applies to keys that appeared before it in the same or an earlier
 //! source; jemalloc gets the same effect with a separate first pass.
 //!
-//! Three tables name the keys. [`KEYS`] are the tunables the allocator
+//! Three tables name the keys. [`TABLE`] holds the tunables the allocator
 //! reads, jemalloc's and challoc's own (`thp_process`, `prefault`,
-//! `spin_hint`, `slice_ext`, ...), each readable through [`Config::get`]
-//! as `opt.<key>`; this module holds the keys and their parsing, the
-//! modules named in each field's doc act on them. [`IGNORED_KEYS`] are
-//! jemalloc keys accepted with any value and ignored, so a conf string
-//! written against jemalloc parses clean. The *inert* keys
-//! ([`INERT_KEYS`]: `stats_print`) are parsed but nothing in the
-//! allocator reads them (`stats_print` has nothing to print at exit).
-//! Each one is reported as [`Issue::Inert`] so that `abort_conf` rejects
-//! it and a program cannot believe it turned something on;
-//! `malloc_stats_print` marks them "accepted, no effect".
+//! `spin_hint`, `slice_ext`, ...): one [`Key`] per tunable with its name,
+//! its parser and its reader, so [`Config::set`], [`Config::get`]
+//! (`opt.<key>`) and the name list [`KEYS`] all come from the one entry;
+//! the modules named in each field's doc act on the values.
+//! [`IGNORED_KEYS`] are jemalloc keys accepted with any value and ignored,
+//! so a conf string written against jemalloc parses clean. The *inert*
+//! key ([`INERT_KEYS`]: `stats_print`) is parsed as a bool but nothing in
+//! the allocator reads it (there is nothing to print at exit); it is
+//! reported as [`Issue::Inert`] so that `abort_conf` rejects it and a
+//! program cannot believe it turned something on, and
+//! `malloc_stats_print` lists it as "accepted, no effect".
 
 use core::fmt::{self, Write as _};
 
@@ -471,168 +472,36 @@ impl Config {
         self.set(key, value)
     }
 
-    /// Set one key from its textual value. An out-of-range number is
-    /// clamped *and* returned as [`Issue::OutOfRange`].
+    /// Set one key from its textual value: a [`KEYS`] entry's parser
+    /// ([`TABLE`]), an inert key ([`INERT_KEYS`]: validated as a bool, then
+    /// [`Issue::Inert`]), an ignored key ([`IGNORED_KEYS`]: any value), else
+    /// [`Issue::UnknownKey`]. An out-of-range number is clamped *and*
+    /// returned as [`Issue::OutOfRange`].
     pub fn set<'a>(&mut self, key: &'a [u8], value: &'a [u8]) -> Result<(), Issue<'a>> {
-        let bad = || Issue::BadValue { key, value };
-        // Numeric keys: parse, clamp, assign through `store`, then report a
-        // clamp as an issue.
-        let num = |cfg: &mut Config, min: i64, max: i64, store: fn(&mut Config, i64)| -> Result<(), Issue<'a>> {
-            let (v, clamped) = clamped(key, value, min, max)?;
-            store(cfg, v);
-            if clamped { Err(Issue::OutOfRange { key, value }) } else { Ok(()) }
-        };
-        match key {
-            b"background_thread" => self.background_thread = parse_bool(value).ok_or_else(bad)?,
-            b"prefault" => self.prefault = parse_bool(value).ok_or_else(bad)?,
-            b"dirty_decay_ms" => return num(self, -1, MAX_INTERVAL_MS, |c, v| c.dirty_decay_ms = v),
-            b"muzzy_decay_ms" => return num(self, -1, MAX_INTERVAL_MS, |c, v| c.muzzy_decay_ms = v),
-            b"narenas" => return num(self, 0, u32::MAX as i64, |c, v| c.narenas = v as u32),
-            b"percpu_arena" => {
-                self.percpu_arena = match value {
-                    b"auto" => PercpuArena::Auto,
-                    b"percpu" | b"phycpu" => PercpuArena::Percpu,
-                    b"off" | b"disabled" => PercpuArena::Off,
-                    _ => return Err(bad()),
-                }
-            }
-            b"tcache" => self.tcache = parse_bool(value).ok_or_else(bad)?,
-            b"tcache_max" => {
-                return num(self, 0, crate::layout::MEDIUM_MAX as i64, |c, v| c.tcache_max = v as usize);
-            }
-            b"tcache_nslots_small_max" => {
-                return num(self, MIN_CAP as i64, MAX_NSLOTS as i64, |c, v| c.tcache_nslots_small_max = v as u32);
-            }
-            b"lg_tcache_nslots_mul" => {
-                return num(self, LG_NSLOTS_MUL_MIN as i64, LG_NSLOTS_MUL_MAX as i64, |c, v| {
-                    c.lg_tcache_nslots_mul = v as i32
-                });
-            }
-            b"tcache_gc_interval_ms" => {
-                return num(self, 0, MAX_INTERVAL_MS, |c, v| c.tcache_gc_interval_ms = v);
-            }
-            b"tcache_compact_shift" => {
-                return num(self, 0, MAX_COMPACT_SHIFT as i64, |c, v| c.tcache_compact_shift = v as u32);
-            }
-            b"spin_hint" => {
-                self.spin_hint = match value {
-                    b"auto" => SpinChoice::Auto,
-                    b"baseline" => SpinChoice::Baseline,
-                    b"umwait" => SpinChoice::Umwait,
-                    b"wfe" => SpinChoice::Wfe,
-                    _ => return Err(bad()),
-                }
-            }
-            b"thp" => {
-                self.thp = match value {
-                    b"never" | b"default" => Thp::Never,
-                    b"auto" => Thp::Auto,
-                    b"always" => Thp::Always,
-                    _ => return Err(bad()),
-                }
-            }
-            b"thp_process" => {
-                self.thp_process = match value {
-                    b"default" => ThpProcess::Default,
-                    b"advised" => ThpProcess::Advised,
-                    _ => return Err(bad()),
-                }
-            }
-            b"slice_ext" => {
-                self.slice_ext = match value {
-                    b"auto" => SliceExt::Auto,
-                    b"on" => SliceExt::On,
-                    b"off" => SliceExt::Off,
-                    _ => return Err(bad()),
-                }
-            }
-            b"lazy_free" => self.lazy_free = parse_bool(value).ok_or_else(bad)?,
-            b"lazy_band" => self.lazy_band = parse_bool(value).ok_or_else(bad)?,
-            b"guards" => self.guards = parse_bool(value).ok_or_else(bad)?,
-            b"guard_slab_interval" => {
-                // 0 is off and N >= 2 is one guard per N x 64 KiB; 1 would
-                // make every slab a guard and leave nothing to allocate
-                // (`SlabTable::new` refuses it), so it is out of range and
-                // clamps to the smallest interval with any slabs, 2. The
-                // interval must be a power of two (the sized fast path's
-                // guard test is a mask): anything else rounds up and is
-                // reported, so `abort_conf` refuses it and a plain run says
-                // what it got. The maximum is a power of two, so a clamped
-                // value needs no rounding.
-                let r = num(self, 0, MAX_GUARD_SLAB_INTERVAL as i64, |c, v| c.guard_slab_interval = v as u32);
-                if self.guard_slab_interval == 1 {
-                    self.guard_slab_interval = 2;
-                    return Err(Issue::OutOfRange { key, value });
-                }
-                if self.guard_slab_interval != 0 && !self.guard_slab_interval.is_power_of_two() {
-                    self.guard_slab_interval = self.guard_slab_interval.next_power_of_two();
-                    return Err(Issue::Rounded { key, value, to: self.guard_slab_interval as u64 });
-                }
-                return r;
-            }
-            b"huge_retain_max" => {
-                return num(self, 0, MAX_HUGE_RETAIN_MAX as i64, |c, v| c.huge_retain_max = v as usize);
-            }
-            b"zero_on_free" => self.zero_on_free = parse_bool(value).ok_or_else(bad)?,
-            b"pac_pointers" => self.pac_pointers = parse_bool(value).ok_or_else(bad)?,
-            b"slot_randomize" => self.slot_randomize = parse_bool(value).ok_or_else(bad)?,
-            b"cgroup" => self.cgroup = parse_bool(value).ok_or_else(bad)?,
+        if let Some(k) = Key::find(key) {
+            return (k.parse)(self, key, value);
+        }
+        if is_inert(key) {
             // jemalloc's `stats_print` (report at exit): no field, since
             // there is nothing to print at exit; validated as a bool and
-            // reported as inert so `abort_conf` does not let a program expect
-            // the report.
-            b"stats_print" => {
-                parse_bool(value).ok_or_else(bad)?;
-                return Err(Issue::Inert(key));
-            }
-            b"double_free_scan" => self.double_free_scan = parse_bool(value).ok_or_else(bad)?,
-            b"abort_conf" => self.abort_conf = parse_bool(value).ok_or_else(bad)?,
-            b"check_zero" => self.check_zero = parse_bool(value).ok_or_else(bad)?,
-            b"group_handoff" => self.group_handoff = parse_bool(value).ok_or_else(bad)?,
+            // reported as inert so `abort_conf` does not let a program
+            // expect the report.
+            parse_bool(value).ok_or(Issue::BadValue { key, value })?;
+            return Err(Issue::Inert(key));
+        }
+        if IGNORED_KEYS.iter().any(|k| k.as_bytes() == key) {
             // jemalloc keys accepted for compatibility and ignored: their
             // values are not validated because we do nothing with them.
-            b"junk" | b"zero" | b"retain" | b"oversize_threshold" | b"metadata_thp"
-            | b"confirm_conf" => {}
-            _ => return Err(Issue::UnknownKey(key)),
+            return Ok(());
         }
-        Ok(())
+        Err(Issue::UnknownKey(key))
     }
 
-    /// The value of a key by name, for `mallctl("opt.<key>")`. `None` for
-    /// keys that are only accepted and ignored, and for unknown keys.
+    /// The value of a key by name, for `mallctl("opt.<key>")`: the
+    /// [`TABLE`] entry's reader. `None` for keys that are only accepted
+    /// and ignored, for inert keys and for unknown keys.
     pub fn get(&self, key: &[u8]) -> Option<Value> {
-        Some(match key {
-            b"background_thread" => Value::Bool(self.background_thread),
-            b"prefault" => Value::Bool(self.prefault),
-            b"dirty_decay_ms" => Value::Int(self.dirty_decay_ms),
-            b"muzzy_decay_ms" => Value::Int(self.muzzy_decay_ms),
-            b"narenas" => Value::Uint(self.narenas as u64),
-            b"percpu_arena" => Value::Str(self.percpu_arena.name()),
-            b"tcache" => Value::Bool(self.tcache),
-            b"tcache_max" => Value::Uint(self.tcache_max as u64),
-            b"tcache_nslots_small_max" => Value::Uint(self.tcache_nslots_small_max as u64),
-            b"lg_tcache_nslots_mul" => Value::Int(self.lg_tcache_nslots_mul as i64),
-            b"tcache_gc_interval_ms" => Value::Int(self.tcache_gc_interval_ms),
-            b"tcache_compact_shift" => Value::Uint(self.tcache_compact_shift as u64),
-            b"thp" => Value::Str(self.thp.name()),
-            b"thp_process" => Value::Str(self.thp_process.name()),
-            b"spin_hint" => Value::Str(self.spin_hint.name()),
-            b"slice_ext" => Value::Str(self.slice_ext.name()),
-            b"lazy_free" => Value::Bool(self.lazy_free),
-            b"lazy_band" => Value::Bool(self.lazy_band),
-            b"guards" => Value::Bool(self.guards),
-            b"guard_slab_interval" => Value::Uint(self.guard_slab_interval as u64),
-            b"huge_retain_max" => Value::Uint(self.huge_retain_max as u64),
-            b"zero_on_free" => Value::Bool(self.zero_on_free),
-            b"pac_pointers" => Value::Bool(self.pac_pointers),
-            b"slot_randomize" => Value::Bool(self.slot_randomize),
-            b"double_free_scan" => Value::Bool(self.double_free_scan),
-            b"abort_conf" => Value::Bool(self.abort_conf),
-            b"cgroup" => Value::Bool(self.cgroup),
-            b"check_zero" => Value::Bool(self.check_zero),
-            b"group_handoff" => Value::Bool(self.group_handoff),
-            _ => return None,
-        })
+        Key::find(key).map(|k| (k.read)(self))
     }
 
     /// Whether `class` is a *shared* class: larger than `tcache_max`, so no
@@ -775,39 +644,235 @@ impl Config {
 /// Cap of the automatic `narenas` default (design section 13.3).
 pub const MAX_AUTO_ARENAS: u32 = 64;
 
-/// Every key readable through [`Config::get`], in table order, for the
-/// `opt.` namespace and the tests.
-pub const KEYS: &[&str] = &[
-    "background_thread",
-    "prefault",
-    "dirty_decay_ms",
-    "muzzy_decay_ms",
-    "narenas",
-    "percpu_arena",
-    "tcache",
-    "tcache_max",
-    "tcache_nslots_small_max",
-    "lg_tcache_nslots_mul",
-    "tcache_gc_interval_ms",
-    "tcache_compact_shift",
-    "thp",
-    "thp_process",
-    "spin_hint",
-    "slice_ext",
-    "lazy_free",
-    "lazy_band",
-    "guards",
-    "guard_slab_interval",
-    "huge_retain_max",
-    "zero_on_free",
-    "pac_pointers",
-    "slot_randomize",
-    "double_free_scan",
-    "abort_conf",
-    "cgroup",
-    "check_zero",
-    "group_handoff",
+/// A key's parser: `(config, key, value)`; the key is passed so the issue
+/// can name it.
+type Parse = for<'a> fn(&mut Config, &'a [u8], &'a [u8]) -> Result<(), Issue<'a>>;
+
+/// One tunable of design section 12: its name (`opt.<name>`), the parser
+/// [`Config::set`] runs on its value and the reader [`Config::get`]
+/// answers with. The entries are [`TABLE`]; [`KEYS`] is their names.
+pub struct Key {
+    pub name: &'static str,
+    parse: Parse,
+    read: fn(&Config) -> Value,
+}
+
+impl Key {
+    /// The entry named `key`, if any.
+    fn find(key: &[u8]) -> Option<&'static Key> {
+        TABLE.iter().find(|k| k.name.as_bytes() == key)
+    }
+}
+
+/// A bool key: `true` / `false` into `slot`.
+fn bool_into<'a>(slot: &mut bool, key: &'a [u8], value: &'a [u8]) -> Result<(), Issue<'a>> {
+    *slot = parse_bool(value).ok_or(Issue::BadValue { key, value })?;
+    Ok(())
+}
+
+/// A numeric key: parse, clamp into `[min, max]`, assign through `store`,
+/// then report a clamp as [`Issue::OutOfRange`].
+fn num<'a>(
+    cfg: &mut Config,
+    key: &'a [u8],
+    value: &'a [u8],
+    min: i64,
+    max: i64,
+    store: fn(&mut Config, i64),
+) -> Result<(), Issue<'a>> {
+    let (v, clamped) = clamped(key, value, min, max)?;
+    store(cfg, v);
+    if clamped { Err(Issue::OutOfRange { key, value }) } else { Ok(()) }
+}
+
+/// A named-value key: `value` looked up in `names` (aliases are extra
+/// rows), anything else [`Issue::BadValue`].
+fn pick<'a, T: Copy>(names: &[(&str, T)], key: &'a [u8], value: &'a [u8]) -> Result<T, Issue<'a>> {
+    names.iter().find(|(n, _)| n.as_bytes() == value).map(|&(_, t)| t).ok_or(Issue::BadValue { key, value })
+}
+
+/// A [`TABLE`] entry for a bool key stored in `field`.
+macro_rules! bool_key {
+    ($name:literal, $field:ident) => {
+        Key { name: $name, parse: |c, k, v| bool_into(&mut c.$field, k, v), read: |c| Value::Bool(c.$field) }
+    };
+}
+
+/// Every tunable, in table order (the order of the `opt.` namespace, the
+/// report and `KEYS`). A new key is one entry here plus its field; the
+/// tests check that every entry reads back, round-trips through `set`
+/// and is in no other table.
+pub const TABLE: &[Key] = &[
+    bool_key!("background_thread", background_thread),
+    bool_key!("prefault", prefault),
+    Key {
+        name: "dirty_decay_ms",
+        parse: |c, k, v| num(c, k, v, -1, MAX_INTERVAL_MS, |c, v| c.dirty_decay_ms = v),
+        read: |c| Value::Int(c.dirty_decay_ms),
+    },
+    Key {
+        name: "muzzy_decay_ms",
+        parse: |c, k, v| num(c, k, v, -1, MAX_INTERVAL_MS, |c, v| c.muzzy_decay_ms = v),
+        read: |c| Value::Int(c.muzzy_decay_ms),
+    },
+    Key {
+        name: "narenas",
+        parse: |c, k, v| num(c, k, v, 0, u32::MAX as i64, |c, v| c.narenas = v as u32),
+        read: |c| Value::Uint(c.narenas as u64),
+    },
+    Key {
+        // jemalloc's `phycpu` and `disabled` spellings are aliases.
+        name: "percpu_arena",
+        parse: |c, k, v| {
+            c.percpu_arena = pick(
+                &[
+                    ("auto", PercpuArena::Auto),
+                    ("percpu", PercpuArena::Percpu),
+                    ("phycpu", PercpuArena::Percpu),
+                    ("off", PercpuArena::Off),
+                    ("disabled", PercpuArena::Off),
+                ],
+                k,
+                v,
+            )?;
+            Ok(())
+        },
+        read: |c| Value::Str(c.percpu_arena.name()),
+    },
+    bool_key!("tcache", tcache),
+    Key {
+        name: "tcache_max",
+        parse: |c, k, v| num(c, k, v, 0, crate::layout::MEDIUM_MAX as i64, |c, v| c.tcache_max = v as usize),
+        read: |c| Value::Uint(c.tcache_max as u64),
+    },
+    Key {
+        name: "tcache_nslots_small_max",
+        parse: |c, k, v| num(c, k, v, MIN_CAP as i64, MAX_NSLOTS as i64, |c, v| c.tcache_nslots_small_max = v as u32),
+        read: |c| Value::Uint(c.tcache_nslots_small_max as u64),
+    },
+    Key {
+        name: "lg_tcache_nslots_mul",
+        parse: |c, k, v| {
+            num(c, k, v, LG_NSLOTS_MUL_MIN as i64, LG_NSLOTS_MUL_MAX as i64, |c, v| c.lg_tcache_nslots_mul = v as i32)
+        },
+        read: |c| Value::Int(c.lg_tcache_nslots_mul as i64),
+    },
+    Key {
+        name: "tcache_gc_interval_ms",
+        parse: |c, k, v| num(c, k, v, 0, MAX_INTERVAL_MS, |c, v| c.tcache_gc_interval_ms = v),
+        read: |c| Value::Int(c.tcache_gc_interval_ms),
+    },
+    Key {
+        name: "tcache_compact_shift",
+        parse: |c, k, v| num(c, k, v, 0, MAX_COMPACT_SHIFT as i64, |c, v| c.tcache_compact_shift = v as u32),
+        read: |c| Value::Uint(c.tcache_compact_shift as u64),
+    },
+    Key {
+        // `default` is jemalloc's spelling of `never`.
+        name: "thp",
+        parse: |c, k, v| {
+            c.thp = pick(
+                &[("never", Thp::Never), ("default", Thp::Never), ("auto", Thp::Auto), ("always", Thp::Always)],
+                k,
+                v,
+            )?;
+            Ok(())
+        },
+        read: |c| Value::Str(c.thp.name()),
+    },
+    Key {
+        name: "thp_process",
+        parse: |c, k, v| {
+            c.thp_process = pick(&[("default", ThpProcess::Default), ("advised", ThpProcess::Advised)], k, v)?;
+            Ok(())
+        },
+        read: |c| Value::Str(c.thp_process.name()),
+    },
+    Key {
+        name: "spin_hint",
+        parse: |c, k, v| {
+            c.spin_hint = pick(
+                &[
+                    ("auto", SpinChoice::Auto),
+                    ("baseline", SpinChoice::Baseline),
+                    ("umwait", SpinChoice::Umwait),
+                    ("wfe", SpinChoice::Wfe),
+                ],
+                k,
+                v,
+            )?;
+            Ok(())
+        },
+        read: |c| Value::Str(c.spin_hint.name()),
+    },
+    Key {
+        name: "slice_ext",
+        parse: |c, k, v| {
+            c.slice_ext = pick(&[("auto", SliceExt::Auto), ("on", SliceExt::On), ("off", SliceExt::Off)], k, v)?;
+            Ok(())
+        },
+        read: |c| Value::Str(c.slice_ext.name()),
+    },
+    bool_key!("lazy_free", lazy_free),
+    bool_key!("lazy_band", lazy_band),
+    bool_key!("guards", guards),
+    Key {
+        name: "guard_slab_interval",
+        parse: |c, k, v| {
+            // 0 is off and N >= 2 is one guard per N x 64 KiB; 1 would
+            // make every slab a guard and leave nothing to allocate
+            // (`SlabTable::new` refuses it), so it is out of range and
+            // clamps to the smallest interval with any slabs, 2. The
+            // interval must be a power of two (the sized fast path's
+            // guard test is a mask): anything else rounds up and is
+            // reported, so `abort_conf` refuses it and a plain run says
+            // what it got. The maximum is a power of two, so a clamped
+            // value needs no rounding.
+            let r = num(c, k, v, 0, MAX_GUARD_SLAB_INTERVAL as i64, |c, v| c.guard_slab_interval = v as u32);
+            if c.guard_slab_interval == 1 {
+                c.guard_slab_interval = 2;
+                return Err(Issue::OutOfRange { key: k, value: v });
+            }
+            if c.guard_slab_interval != 0 && !c.guard_slab_interval.is_power_of_two() {
+                c.guard_slab_interval = c.guard_slab_interval.next_power_of_two();
+                return Err(Issue::Rounded { key: k, value: v, to: c.guard_slab_interval as u64 });
+            }
+            r
+        },
+        read: |c| Value::Uint(c.guard_slab_interval as u64),
+    },
+    Key {
+        name: "huge_retain_max",
+        parse: |c, k, v| num(c, k, v, 0, MAX_HUGE_RETAIN_MAX as i64, |c, v| c.huge_retain_max = v as usize),
+        read: |c| Value::Uint(c.huge_retain_max as u64),
+    },
+    bool_key!("zero_on_free", zero_on_free),
+    bool_key!("pac_pointers", pac_pointers),
+    bool_key!("slot_randomize", slot_randomize),
+    bool_key!("double_free_scan", double_free_scan),
+    bool_key!("abort_conf", abort_conf),
+    bool_key!("cgroup", cgroup),
+    bool_key!("check_zero", check_zero),
+    bool_key!("group_handoff", group_handoff),
 ];
+
+/// The names of [`TABLE`], in its order.
+const fn names() -> [&'static str; TABLE.len()] {
+    let mut out = [""; TABLE.len()];
+    let mut i = 0;
+    while i < TABLE.len() {
+        out[i] = TABLE[i].name;
+        i += 1;
+    }
+    out
+}
+
+const NAMES: [&str; TABLE.len()] = names();
+
+/// Every key readable through [`Config::get`], in table order, for the
+/// `opt.` namespace (`mallctl` builds its `opt.` nodes from this slice at
+/// compile time, by position) and the tests: the names of [`TABLE`].
+pub const KEYS: &[&str] = &NAMES;
 
 /// jemalloc keys that are accepted and ignored.
 pub const IGNORED_KEYS: &[&str] = &[
@@ -819,13 +884,14 @@ pub const IGNORED_KEYS: &[&str] = &[
     "confirm_conf",
 ];
 
-/// Keys that parse but that no code acts on: `stats_print` has nothing to
-/// print at exit. Setting one is [`Issue::Inert`], which `abort_conf`
-/// turns into an abort; `malloc_stats_print` lists them as "accepted, no
-/// effect".
+/// Keys that parse (as bools) but that no code acts on and no field
+/// stores: `stats_print` has nothing to print at exit. Setting one is
+/// [`Issue::Inert`], which `abort_conf` turns into an abort;
+/// `malloc_stats_print` lists them as "accepted, no effect".
 pub const INERT_KEYS: &[&str] = &["stats_print"];
 
-/// Whether `key` is one of [`INERT_KEYS`].
+/// Whether `key` is one of [`INERT_KEYS`] (the report's loop over `KEYS`;
+/// `set` and the tests use the table directly).
 pub fn is_inert(key: &[u8]) -> bool {
     INERT_KEYS.iter().any(|k| k.as_bytes() == key)
 }
@@ -879,8 +945,8 @@ pub enum Issue<'a> {
     /// A number the key needs as a power of two; the value was rounded up
     /// to `to` (`guard_slab_interval`).
     Rounded { key: &'a [u8], value: &'a [u8], to: u64 },
-    /// One of [`INERT_KEYS`]: parsed and (where it has a field) stored, but
-    /// nothing reads it.
+    /// One of [`INERT_KEYS`]: parsed, but no field stores it and nothing
+    /// reads it.
     Inert(&'a [u8]),
     /// A value this CPU cannot run (`spin_hint:umwait` without WAITPKG);
     /// the key keeps its default.
@@ -1255,17 +1321,6 @@ mod tests {
         cfg
     }
 
-    /// Parse a string whose only problems are inert keys (one report per
-    /// inert pair, `n` of them) and return the config.
-    fn inert(text: &str, n: usize) -> Config {
-        let (cfg, issues) = parse(text);
-        assert_eq!(issues.len(), n, "{text}: {issues:?}");
-        for issue in &issues {
-            assert!(issue.contains("accepted but has no effect"), "{text}: {issue}");
-        }
-        cfg
-    }
-
     /// Every value in `bad` is refused for `key`: one issue, `invalid conf
     /// value` (or `malformed` for the empty value, which has no
     /// `key:value` shape), and the config left at the defaults.
@@ -1343,8 +1398,7 @@ mod tests {
         for key in keys {
             for v in [true, false] {
                 let text = std::format!("{key}:{v}");
-                let cfg = if is_inert(key.as_bytes()) { inert(&text, 1) } else { clean(&text) };
-                assert_eq!(cfg.get(key.as_bytes()), Some(Value::Bool(v)), "{key}:{v}");
+                assert_eq!(clean(&text).get(key.as_bytes()), Some(Value::Bool(v)), "{key}:{v}");
             }
             rejects_bad_values(key, &["yes", "1", "TRUE", "", "truex"]);
         }
@@ -1444,8 +1498,7 @@ mod tests {
         assert_eq!(cfg.thp, Thp::Never);
         assert_eq!(issues.len(), 1);
         assert!(issues[0].contains("invalid conf value \"madvise\" for thp"));
-        // Not inert: accepted under abort_conf.
-        assert!(!is_inert(b"thp"));
+        // Accepted under abort_conf.
         assert_eq!(clean("thp:auto,abort_conf:true").thp, Thp::Auto);
     }
 
@@ -1454,8 +1507,7 @@ mod tests {
     /// the heap's init reads.
     #[test]
     fn percpu_arena_values() {
-        assert!(!IGNORED_KEYS.contains(&"percpu_arena"), "a real key, not an ignored jemalloc one");
-        assert!(!is_inert(b"percpu_arena"));
+        assert!(KEYS.contains(&"percpu_arena"), "a real key, not an ignored jemalloc one");
         for (value, want) in [
             ("auto", PercpuArena::Auto),
             ("percpu", PercpuArena::Percpu),
@@ -1496,7 +1548,6 @@ mod tests {
     #[test]
     fn slice_ext_values() {
         assert!(KEYS.contains(&"slice_ext"));
-        assert!(!IGNORED_KEYS.contains(&"slice_ext") && !is_inert(b"slice_ext"));
         for (value, want) in [("auto", SliceExt::Auto), ("on", SliceExt::On), ("off", SliceExt::Off)] {
             let cfg = clean(&std::format!("slice_ext:{value},abort_conf:true"));
             assert_eq!(cfg.slice_ext, want, "{value}");
@@ -1521,7 +1572,6 @@ mod tests {
     #[test]
     fn thp_process_values() {
         assert!(KEYS.contains(&"thp_process"));
-        assert!(!IGNORED_KEYS.contains(&"thp_process") && !is_inert(b"thp_process"));
         for (value, want) in [("default", ThpProcess::Default), ("advised", ThpProcess::Advised)] {
             let cfg = clean(&std::format!("thp_process:{value},abort_conf:true"));
             assert_eq!(cfg.thp_process, want, "{value}");
@@ -1551,7 +1601,6 @@ mod tests {
     #[test]
     fn prefault_values() {
         assert!(KEYS.contains(&"prefault"));
-        assert!(!IGNORED_KEYS.contains(&"prefault") && !is_inert(b"prefault"));
         for (value, want) in [("true", true), ("false", false)] {
             let cfg = clean(&std::format!("prefault:{value},abort_conf:true"));
             assert_eq!(cfg.prefault, want, "{value}");
@@ -1570,12 +1619,14 @@ mod tests {
         assert!(!clean("background_thread:true,prefault:true,background_thread:false").prefault_active());
     }
 
+    /// The one inert key: a bool by value, no field, unreadable, one
+    /// `Issue::Inert` per pair (what `abort_conf` aborts on), and the
+    /// report's `is_inert` agrees with the table.
     #[test]
-    fn inert_keys_are_stored_reported_and_rejected_under_abort_conf() {
-        assert_eq!(INERT_KEYS.len(), 1, "stats_print");
+    fn inert_keys_are_reported_and_rejected_under_abort_conf() {
+        assert_eq!(INERT_KEYS, &["stats_print"]);
         for key in INERT_KEYS {
             assert!(is_inert(key.as_bytes()), "{key}");
-            assert!(!IGNORED_KEYS.contains(key), "{key} cannot be both ignored and inert");
             let value = "true";
             let text = std::format!("{key}:{value}");
             let (cfg, issues) = parse(&text);
@@ -1593,13 +1644,11 @@ mod tests {
             assert!(issues[0].contains("invalid conf value"), "{key}:nonsense: {}", issues[0]);
         }
         for key in KEYS {
-            assert_eq!(is_inert(key.as_bytes()), INERT_KEYS.contains(key), "{key}");
+            assert!(!is_inert(key.as_bytes()), "{key}");
         }
-        assert!(!is_inert(b"double_free_scan"));
         // The two hardening keys are real, opt-in keys: no report, stored,
         // readable, and `abort_conf` accepts them.
         for key in ["zero_on_free", "slot_randomize"] {
-            assert!(!is_inert(key.as_bytes()), "{key}");
             let (cfg, issues) = parse(&std::format!("{key}:true,abort_conf:true"));
             assert!(issues.is_empty(), "{key}: {issues:?}");
             assert_eq!(cfg.get(key.as_bytes()), Some(Value::Bool(true)), "{key}");
@@ -1613,8 +1662,6 @@ mod tests {
         assert_eq!(cfg.narenas, 3);
         assert!(cfg.abort_conf && !cfg.cgroup && cfg.thp == Thp::Always);
         assert_eq!(issues.len(), 1, "cgroup and thp are real keys: {issues:?}");
-        assert!(!is_inert(b"cgroup"));
-        assert!(!is_inert(b"thp"));
     }
 
     #[test]
@@ -1719,10 +1766,8 @@ mod tests {
                 Value::Str(s) => s.into(),
             };
             let text = std::format!("{key}:{value}");
-            let round = if is_inert(key.as_bytes()) { inert(&text, 1) } else { clean(&text) };
-            assert_eq!(round, cfg, "{key}:{value} round trip");
+            assert_eq!(clean(&text), cfg, "{key}:{value} round trip");
         }
-        assert_eq!(KEYS.len(), 29, "a new key goes into KEYS, `set`, `get` and this count");
         assert_eq!(cfg.get(b"nonsense"), None);
         assert_eq!(cfg.get(b""), None);
         for key in IGNORED_KEYS {
@@ -1735,8 +1780,8 @@ mod tests {
     /// refused as a value, never as an unknown key; an ignored key takes
     /// any value; an inert key is reported as inert), the tables are
     /// disjoint, and a name in none of them is [`Issue::UnknownKey`], so a
-    /// key added to `set` without its table entry (or the reverse) fails
-    /// here rather than in `opt.<key>` or `malloc_stats_print`.
+    /// key added to one table that another also names (or a typo in a
+    /// test) fails here rather than in `opt.<key>` or `malloc_stats_print`.
     #[test]
     fn set_knows_exactly_the_tabled_keys() {
         for key in KEYS.iter().chain(IGNORED_KEYS).chain(INERT_KEYS) {
@@ -1745,7 +1790,7 @@ mod tests {
             assert!(!matches!(r, Err(Issue::UnknownKey(_))), "{key}: {r:?}");
             if IGNORED_KEYS.contains(key) {
                 assert_eq!(r, Ok(()), "{key} takes any value");
-            } else if is_inert(key.as_bytes()) {
+            } else if INERT_KEYS.contains(key) {
                 assert_eq!(r, Err(Issue::BadValue { key: key.as_bytes(), value: b"nonsense-value" }), "{key}");
                 assert_eq!(cfg.set(key.as_bytes(), b"true"), Err(Issue::Inert(key.as_bytes())), "{key}");
             } else {
@@ -1762,6 +1807,49 @@ mod tests {
         }
     }
 
+    /// `KEYS` is `TABLE`'s names in `TABLE`'s order (what `mallctl`
+    /// indexes the `opt.` MIB by), every name is unique, and every entry's
+    /// reader and parser are the field's: reading an entry, setting a
+    /// different value of its type through `set` and reading it back
+    /// changes that entry and no other. Replaces a hand-kept count: a new
+    /// key is one `TABLE` entry, and it is checked here whatever its name.
+    #[test]
+    fn the_table_is_the_one_spelling_of_every_key() {
+        assert_eq!(KEYS.len(), TABLE.len());
+        for (i, key) in TABLE.iter().enumerate() {
+            assert_eq!(KEYS[i], key.name);
+            assert_eq!(KEYS.iter().filter(|k| **k == key.name).count(), 1, "{} is named once", key.name);
+            assert!(!IGNORED_KEYS.contains(&key.name) && !INERT_KEYS.contains(&key.name), "{}", key.name);
+            // A value of the key's type that differs from the default.
+            let d = Config::DEFAULT;
+            let other = match (key.read)(&d) {
+                Value::Bool(b) => std::format!("{}", !b),
+                Value::Int(i) => std::format!("{}", if i == 0 { 1 } else { 0 }),
+                // Doubling stays in every unsigned key's range and keeps
+                // `guard_slab_interval` a power of two.
+                Value::Uint(u) => std::format!("{}", if u == 0 { 2 } else { u * 2 }),
+                Value::Str(s) => match key.name {
+                    "percpu_arena" | "slice_ext" => "off".into(),
+                    "spin_hint" => "baseline".into(),
+                    "thp" => "always".into(),
+                    "thp_process" => "advised".into(),
+                    _ => panic!("{}: a string key with no test value ({s})", key.name),
+                },
+            };
+            let mut cfg = d;
+            assert_eq!(cfg.set(key.name.as_bytes(), other.as_bytes()), Ok(()), "{}:{other}", key.name);
+            assert_ne!((key.read)(&cfg), (key.read)(&d), "{}:{other} read back through its own entry", key.name);
+            assert_eq!(cfg.get(key.name.as_bytes()), Some((key.read)(&cfg)), "{}", key.name);
+            for o in TABLE.iter().filter(|o| o.name != key.name) {
+                assert_eq!((o.read)(&cfg), (o.read)(&d), "{}:{other} changed {}", key.name, o.name);
+            }
+        }
+        // The aliases of the named-value keys: one entry, several spellings.
+        assert_eq!(clean("thp:default").thp, clean("thp:never").thp);
+        assert_eq!(clean("percpu_arena:phycpu").percpu_arena, clean("percpu_arena:percpu").percpu_arena);
+        assert_eq!(clean("percpu_arena:disabled").percpu_arena, clean("percpu_arena:off").percpu_arena);
+    }
+
     /// `spin_hint`, the pure part: the four values parse and read back
     /// through `opt.spin_hint`, anything else is refused and leaves the
     /// default, `hint()` maps the explicit choices to the lock's hints and
@@ -1774,7 +1862,6 @@ mod tests {
         use crate::lock::SpinHint;
         use crate::sys::cpu::{Arm, CacheSource, Caches, Cpu, Isa, X86};
         assert!(KEYS.contains(&"spin_hint"));
-        assert!(!IGNORED_KEYS.contains(&"spin_hint") && !is_inert(b"spin_hint"));
         assert_eq!(Config::DEFAULT.spin_hint, SpinChoice::Auto);
         for (value, want, hint) in [
             ("auto", SpinChoice::Auto, None),
