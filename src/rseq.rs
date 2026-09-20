@@ -89,6 +89,9 @@ pub const CPU_ID_OFFSET: usize = 4;
 pub const MM_CID_OFFSET: usize = 24;
 /// The registered size that covers `mm_cid`: the field ends at byte 28.
 pub const MM_CID_END: u32 = 28;
+/// The size of the original `struct rseq` (through `flags`), the least a
+/// successful registration reports; `__rseq_size` is 0 or at least this.
+pub const BASE_SIZE: u32 = 20;
 /// `RSEQ_CPU_ID_UNINITIALIZED`.
 pub const CPU_ID_UNINITIALIZED: u32 = u32::MAX;
 /// The abort signature the kernel checks before `abort_ip` (x86_64: the
@@ -1303,7 +1306,7 @@ pub unsafe fn install(area: *mut u8, t: Table, expected: *const u8, slots: *mut 
 #[cfg(target_os = "linux")]
 pub fn possible_cpus() -> Option<u32> {
     let mut buf = [0u8; 256];
-    let n = crate::sys::cgroup::read_file(b"/sys/devices/system/cpu/possible\0", &mut buf)?;
+    let n = crate::sys::read_small_file(b"/sys/devices/system/cpu/possible\0", &mut buf)?;
     possible_cpus_from(&buf[..n])
 }
 

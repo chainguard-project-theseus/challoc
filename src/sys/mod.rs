@@ -10,6 +10,7 @@
 //! Everything else is Linux-only and is exercised by `cargo test --features
 //! std` inside the dev container.
 
+pub mod auxv;
 pub mod cgroup;
 pub mod cldemote;
 pub mod cpu;
@@ -115,6 +116,35 @@ const SIG_SETMASK: i32 = 2;
 const SIGSET_WORDS_BYTES: usize = 8;
 
 pub const STDERR_FILENO: i32 = 2;
+
+// ---- pure helpers shared by the probes and the cgroup parsers ----------
+
+/// `yes` or `no`: the value of every boolean key of the feature line and
+/// the CPU report.
+pub const fn yn(b: bool) -> &'static str {
+    if b { "yes" } else { "no" }
+}
+
+/// What [`parse_decimal`] accepts after the digits.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Trailing {
+    /// Anything: `42 x` and `2097152\n` both read 42 and 2097152 (a
+    /// `memory.events` value, a sysfs number with its newline).
+    Ignore,
+    /// Newlines only: `1\n` reads 1, `1x` is `None` (the cache `level`
+    /// files, where a stray byte means the file is not what was expected).
+    Newlines,
+}
+
+/// The leading decimal digits of `bytes` as a `u64`; `None` without a
+/// digit, on overflow, or when `trailing` refuses what follows them.
+pub fn parse_decimal(bytes: &[u8], trailing: Trailing) -> Option<u64> {
+    let digits = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
+    if digits == 0 || (trailing == Trailing::Newlines && !bytes[digits..].iter().all(|&b| b == b'\n')) {
+        return None;
+    }
+    bytes[..digits].iter().try_fold(0u64, |acc, &b| acc.checked_mul(10)?.checked_add(u64::from(b - b'0')))
+}
 
 #[cfg(target_os = "linux")]
 mod linux {
@@ -475,6 +505,17 @@ mod linux {
         Ok(filled)
     }
 
+    /// One small file (sysfs, cgroupfs, `/proc/self/*`) into `buf`:
+    /// `open`, [`read_full`], `close`. The byte count, or `None` when the
+    /// file cannot be opened (absent, or the controller is not here) or
+    /// read. A file longer than `buf` is cut at `buf.len()`.
+    pub fn read_small_file(path: &[u8], buf: &mut [u8]) -> Option<usize> {
+        let fd = open(path, super::O_RDONLY).ok()?;
+        let r = read_full(fd, buf).ok();
+        let _ = close(fd);
+        r
+    }
+
     /// `write(2)`.
     #[inline]
     pub fn write(fd: i32, buf: &[u8]) -> Result<usize, Errno> {
@@ -538,6 +579,26 @@ mod linux {
     pub fn gettid() -> i32 {
         // SAFETY: no arguments; cannot fail.
         unsafe { raw::syscall0(nr::GETTID) as i32 }
+    }
+
+    /// `sched_yield(2)`: give the CPU up; any syscall ends an rseq time
+    /// slice grant (`slice.rs`), this is the cheapest that also means
+    /// "yield". Always `Ok(0)`.
+    #[inline]
+    pub fn sched_yield() -> Result<usize, Errno> {
+        // SAFETY: no arguments, no memory effect of ours.
+        decode(unsafe { raw::syscall0(nr::SCHED_YIELD) })
+    }
+
+    /// `rseq_slice_yield(2)` (kernel 7.0, `CONFIG_RSEQ_SLICE_EXTENSION`):
+    /// end a granted time slice extension now. `Ok(1)` when the kernel
+    /// had marked the calling thread as yielded, `Ok(0)` otherwise,
+    /// `Err(ENOSYS)` on a kernel without it or behind a seccomp filter
+    /// that predates the number (Docker's default profile).
+    #[inline]
+    pub fn rseq_slice_yield() -> Result<usize, Errno> {
+        // SAFETY: no arguments, no memory effect of ours.
+        decode(unsafe { raw::syscall0(nr::RSEQ_SLICE_YIELD) })
     }
 
     /// CPUs the calling thread may run on: the bits set in the affinity
@@ -626,7 +687,39 @@ mod linux {
 
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
+mod pure_tests {
+    use super::{Trailing, parse_decimal, yn};
+
+    #[test]
+    fn yes_no() {
+        assert_eq!(yn(true), "yes");
+        assert_eq!(yn(false), "no");
+    }
+
+    /// The one digit loop behind the sysfs, cgroup and THP readers: a
+    /// prefix read ignores what follows the digits, a newline-only read
+    /// refuses anything else, both refuse an empty prefix and overflow.
+    #[test]
+    fn decimal_prefixes_and_trailing_bytes() {
+        for t in [Trailing::Ignore, Trailing::Newlines] {
+            assert_eq!(parse_decimal(b"2097152\n", t), Some(2097152), "{t:?}");
+            assert_eq!(parse_decimal(b"0", t), Some(0), "{t:?}");
+            assert_eq!(parse_decimal(b"18446744073709551615\n", t), Some(u64::MAX), "{t:?}");
+            assert_eq!(parse_decimal(b"18446744073709551616\n", t), None, "{t:?}: overflow");
+            assert_eq!(parse_decimal(b"", t), None, "{t:?}");
+            assert_eq!(parse_decimal(b"\n", t), None, "{t:?}");
+            assert_eq!(parse_decimal(b"-1\n", t), None, "{t:?}");
+            assert_eq!(parse_decimal(b"x", t), None, "{t:?}");
+        }
+        assert_eq!(parse_decimal(b"42 x", Trailing::Ignore), Some(42));
+        assert_eq!(parse_decimal(b"64K\n", Trailing::Ignore), Some(64));
+        assert_eq!(parse_decimal(b"42 x", Trailing::Newlines), None);
+        assert_eq!(parse_decimal(b"64K\n", Trailing::Newlines), None);
+        assert_eq!(parse_decimal(b"1\n\n", Trailing::Newlines), Some(1));
+    }
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
@@ -837,6 +930,34 @@ mod tests {
             .unwrap();
         assert_ne!(oflags & (O_CLOEXEC as usize), 0, "{flags_line}");
         close(fd).unwrap();
+    }
+
+    /// The shared small-file reader: the count of a real file, a cut at
+    /// the buffer, `None` for an absent path and for a read that fails
+    /// (a directory opens but does not read).
+    #[test]
+    fn small_files_read_whole_cut_or_not_at_all() {
+        let mut buf = [0u8; 64];
+        let n = read_small_file(b"/proc/self/comm\0", &mut buf).unwrap();
+        assert!(n > 0 && n < 64 && buf[n - 1] == b'\n', "{n}");
+        assert_eq!(&buf[..n], std::fs::read("/proc/self/comm").unwrap().as_slice());
+        let mut two = [0u8; 2];
+        assert_eq!(read_small_file(b"/proc/self/comm\0", &mut two), Some(2));
+        assert_eq!(two, buf[..2]);
+        assert_eq!(read_small_file(b"/nonexistent/challoc\0", &mut buf), None);
+        assert_eq!(read_small_file(b"/proc\0", &mut buf), None, "a directory opens and fails to read");
+        assert_eq!(read_small_file(b"/dev/null\0", &mut buf), Some(0));
+    }
+
+    /// Both yields reach the kernel: `sched_yield` always answers 0;
+    /// `rseq_slice_yield` answers 0 (no grant outstanding) or `ENOSYS`,
+    /// never anything else, and never `EINVAL` for the number.
+    #[test]
+    fn yields_answer_zero_or_enosys() {
+        assert_eq!(sched_yield(), Ok(0));
+        let r = rseq_slice_yield();
+        assert!(matches!(r, Ok(0) | Err(Errno::ENOSYS)), "{r:?}");
+        std::eprintln!("rseq_slice_yield: {r:?}");
     }
 
     #[test]

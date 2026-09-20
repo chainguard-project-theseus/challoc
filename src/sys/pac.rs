@@ -63,12 +63,7 @@ fn count_op() {
 pub fn available() -> bool {
     #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
     {
-        unsafe extern "C" {
-            /// glibc/musl `getauxval(3)`; reads the saved vector, never
-            /// allocates (see `features.rs`).
-            safe fn getauxval(kind: usize) -> usize;
-        }
-        const AT_HWCAP: usize = 16;
+        use super::auxv::{AT_HWCAP, getauxval};
         let hwcap = getauxval(AT_HWCAP) as u64;
         hwcap & super::cpu::HWCAP_PACA != 0 && hwcap & super::cpu::HWCAP_PACG != 0
     }
