@@ -2535,14 +2535,20 @@ impl ClassState {
     pub fn prefault_ahead(&self, meta: &Meta, ahead: usize, mut populate: impl FnMut(usize, usize)) -> usize {
         let mut wake = false;
         let mut n = 0;
-        {
+        // One slab per lock hold: the populate runs under the class lock
+        // (the slab is unpublished), and a refill of the class on another
+        // thread waits for it, so the hold is bounded by one slab's
+        // populate rather than `ahead` of them; the idle count is re-read
+        // under the lock each time, so refills between the holds are seen.
+        loop {
             let mut g = self.inner.lock();
-            while g.stats.empty + g.stats.purged < ahead {
-                match self.prefault_one(&mut g, meta, &mut wake, &mut populate) {
-                    Ok(Some(_)) => n += 1,
-                    Ok(None) => {}
-                    Err(()) => break,
-                }
+            if g.stats.empty + g.stats.purged >= ahead {
+                break;
+            }
+            match self.prefault_one(&mut g, meta, &mut wake, &mut populate) {
+                Ok(Some(_)) => n += 1,
+                Ok(None) => {}
+                Err(()) => break,
             }
         }
         if wake {
