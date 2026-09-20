@@ -24,7 +24,7 @@ use super::jemalloc::malloc_write;
 use super::mallctl::VERSION_STR;
 use crate::QUANTUM;
 use crate::arena::Arena;
-use crate::config::{INERT_KEYS, KEYS, Value, is_inert};
+use crate::config::{INERT_KEYS, KEYS, Value};
 use crate::heap::Shared;
 use crate::layout::{CLASSES, NBINS};
 use crate::purge;
@@ -166,14 +166,9 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     writeln!(out, "  config.stats: true")?;
     writeln!(out, "  config.quantum: {QUANTUM}")?;
     writeln!(out, "Run-time option settings")?;
-    // An inert key (`config::INERT_KEYS`) is parsed and stored but read by
-    // nothing; say so next to its value so a report never suggests the
-    // feature is on.
     for key in KEYS {
         let note = if key == &"thp" && shared.policy.thp_forced() {
             " (accepted, no effect; forced to never by a cgroup limit under 1 GiB)"
-        } else if is_inert(key.as_bytes()) {
-            " (accepted, no effect)"
         } else {
             ""
         };
@@ -185,10 +180,11 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
             None => {}
         }
     }
+    // An inert key (`config::INERT_KEYS`) is parsed and validated but has
+    // no field and is read by nothing; say so, so a report never suggests
+    // the feature is on.
     for key in INERT_KEYS {
-        if shared.config.get(key.as_bytes()).is_none() {
-            writeln!(out, "  opt.{key}: accepted, no effect")?;
-        }
+        writeln!(out, "  opt.{key}: accepted, no effect")?;
     }
     writeln!(out, "Kernel and CPU features: {}", super::feature_line())?;
     writeln!(out, "Sealed ranges: {} of {}", super::sealed_ranges(), shared.regions.never_committed().1)?;
@@ -328,11 +324,9 @@ fn advice_line<W: Write>(out: &mut W) -> fmt::Result {
     let (lazy_bytes, eager_bytes) = purge::discarded_bytes();
     writeln!(
         out,
-        "purge advice: {} ({}) lazy_purges {} ({} bytes) eager_purges {} ({} bytes) purged_is_zero {} lazy via {}",
-        match purge::advice() {
-            purge::Advice::Lazy => "lazy MADV_FREE",
-            purge::Advice::Eager => "eager MADV_DONTNEED",
-        },
+        "purge advice: {} {} ({}) lazy_purges {} ({} bytes) eager_purges {} ({} bytes) purged_is_zero {} lazy via {}",
+        purge::advice().name(),
+        purge::advice().madv_name(),
         purge::advice_reason(),
         lazy,
         lazy_bytes,
@@ -548,10 +542,7 @@ fn json_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot, arenas_
         crate::policy::empty_bytes(shared),
         shared.policy.full_purges(),
         shared.policy.thp_forced(),
-        match purge::advice() {
-            purge::Advice::Lazy => "lazy",
-            purge::Advice::Eager => "eager",
-        },
+        purge::advice().name(),
         purge::batches().0,
         purge::batches().1,
         purge::purged_is_zero()

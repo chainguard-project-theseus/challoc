@@ -22,6 +22,10 @@ pub const AT_HWCAP2: usize = 26;
 /// (6.3+); read by the tests, glibc uses it to size its registration.
 #[cfg(all(test, target_os = "linux"))]
 pub const AT_RSEQ_FEATURE_SIZE: usize = 27;
+/// `AT_SECURE`: set for setuid/setgid/capability-elevated processes, whose
+/// environment is untrusted (glibc's `secure_getenv` rule; `config::load`
+/// skips the environment sources when it is set).
+pub const AT_SECURE: usize = 23;
 
 #[cfg(target_os = "linux")]
 unsafe extern "C" {

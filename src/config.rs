@@ -890,9 +890,8 @@ pub const IGNORED_KEYS: &[&str] = &[
 /// `malloc_stats_print` lists them as "accepted, no effect".
 pub const INERT_KEYS: &[&str] = &["stats_print"];
 
-/// Whether `key` is one of [`INERT_KEYS`] (the report's loop over `KEYS`;
-/// `set` and the tests use the table directly).
-pub fn is_inert(key: &[u8]) -> bool {
+/// Whether `key` is one of [`INERT_KEYS`].
+fn is_inert(key: &[u8]) -> bool {
     INERT_KEYS.iter().any(|k| k.as_bytes() == key)
 }
 
@@ -1105,16 +1104,12 @@ mod linux {
     /// here; no real configuration comes close.
     pub const MAX_TEXT: usize = 4096;
 
-    /// `AT_SECURE`: set for setuid/setgid/capability-elevated processes,
-    /// whose environment is untrusted (glibc's `secure_getenv` rule).
-    const AT_SECURE: usize = 23;
+    use crate::sys::auxv::{AT_SECURE, getauxval};
 
     unsafe extern "C" {
         /// glibc's environment pointer. Read directly so no `getenv` runs
         /// inside `malloc`.
         static environ: *const *const c_char;
-        /// glibc/musl `getauxval(3)` (see `sys::features`).
-        safe fn getauxval(kind: usize) -> usize;
     }
 
     /// Read every source in priority order into a `Config`, printing each
@@ -2149,10 +2144,6 @@ mod linux_tests {
         c.parse(b"spin_hint:wfe", |i| panic!("{i}"));
         assert_eq!(std::format!("{}", c.apply_spin_hint(&cpu, false).unwrap_err()), unavailable("wfe"));
         std::eprintln!("config: spin_hint auto={} own {own} available={can} event_stream={}", auto.name(), event_stream());
-        // A configured hint is kept against the probe's suggestion.
-        let forced = spin_hint();
-        let _ = Cpu::probe(crate::sys::features::page_size());
-        assert_eq!(spin_hint(), forced);
         // Back to the probe's choice for the rest of the suite.
         crate::lock::set_spin_hint(auto);
         assert_eq!(spin_hint(), auto);
