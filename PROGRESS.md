@@ -1177,6 +1177,27 @@ One line per task, newest at the bottom of each section. Keep it terse.
   Commits 30cb2d6, 1914119, 04013e1, eb65199.
 - Maintainability pass (lane tidy-tooling, 2026-09-20): Makefile: one `env_flags` macro for the thirteen `-e VAR=` forwarding copies, one `bench_target` define (`$(eval $(call ...))`) for the eleven harness targets (quick, ab, baseline, valkey-soak, ruby-bench, ruby-soak, python-bench, node-bench, jvm-bench, jvm-soak, postgres-bench), `baseline` from a BASELINE_VARS list, HOST_CPU recursively expanded (its three probes run only for targets that read it), the duplicated CHALLOC_CONF dropped from SOAK_VARS (DOCKER_BASE forwards it), percpu-campaign in .PHONY, `make help` from `##` comments, the 195-line header shrunk to a pointer at bench/README.md, `make clean-tmp` and `make print-docker-run`; `make -n` for every target with three variable sets (108 captures) byte-identical before and after except the nine soak captures that lose the duplicated `-e CHALLOC_CONF` (and one padding space). Dockerfile.dev: one apk layer per consumer group (toolchain with the glibc-2.44 swap and `rust-1.98`; stock allocators; Valkey; Ruby; Python; Node; JVM; Postgres), comments above each instruction, the three copies of the ab/"no wrk or oha" note folded into one; `rust-version = "1.98"` in Cargo.toml; `apk info` and `apk list --installed` identical (147 packages, same versions) between challoc-dev:arm64 and the new image; `make test` green on it (411 + 120 + 23, the cgroup churn/lazy/limit steps, pagemap-guard both ways). bench/lib.sh: `tree_label`/`rev_label`, `default_lib_of`, `describe_stock`/`describe_challoc`, `record_rt`, `check_score_lines`, `result_header`, `maps_expect` adopted by python-, node-, jvm-, postgres- and ruby-bench.sh (ruby: describe jemalloc line and the rt/score blocks; postgres keeps its REPORT_ONLY header and two-process maps check), `run_row` gains the rt line check, valkey-soak.sh takes ARCH/DATE/BASELINE_DIR/commit_short/take_bench_lock from lib.sh, and lib.sh's header names the globals its functions set; verified byte-identical in structure, labels and describe lines (measured values masked) before/after in the Mac container for python, node, jvm, jvm-soak, postgres and the Valkey soak (the pre-edit soak from a pristine copy of the base commit's script); ruby-bench.sh not run (no Ruby builds in this volume), its one changed expression shown equal. Sidecars valkey-defrag-sidecar.sh and valkey-perf-sidecar.sh under `set -u` with quoting. challoc-bench: `matrix_fail REASON [KERNEL [PAGE [OUTCOME]]]` replaces the eleven MATRIX FAIL/PENDING lines with one field set, `matrix_oslogin`/`matrix_user` fold the OS-Login-versus-ssh-keys decision, the header names the Xeon Platinum 8581C; bench/gce/README.md gains the environment table (CHALLOC_GCE_ZONE/SSH_KEY/USER, MATRIX_MACHINE/PMU/DATE/OUT/ADOPT), the login rule and its workstation-image inversion, the worst-target status of provision/sync, and a file inventory (perf-record.sh, drun.sh, thp-ab.sh, pmu-probe.c, cpuid-dump.c, the probes run from a VM host). bench/gce/drun.sh is the one docker run line quick-perf.sh, perf-record.sh and probes/churn-run.sh source (flags unchanged). bench/README.md marks `make bench`, run.sh and profile.sh legacy. Commits f850154, bf33811, da5bf58, bd8d068, 91d18b1, 99d91ce.
 - Maintainability pass (lane tidy-tests, 2026-09-20): `src/api/ctests.rs` is one `CTest` table and one driver (`run_row`: gate, cached compile, bare run, preloaded run, expectation, skip lines; `ctests!` keeps one `#[test]` per entry, `run_c_negative`, `run_conf_flags` and the readelf tests stay functions; programs compile once per distinct flags through the new `scripts/ctest-cc.sh`, the one compiler line with QUANTUM read from the built library, used by ctests.rs, `scripts/cgroup-tests.sh`, `scripts/pagemap-guard-test.sh` and `tests/as-needed.sh`); skips are one `SKIP <test> <reason>` line (Rust `skip!`, C `skip_note`) that fails unless `CHALLOC_TEST_ALLOW_SKIP` is set; `tests/c/common.h` gained `sleep_ms`, `now_ms`, `rss_bytes`, `fork_and_wait`, `expect_signal`, `mallctl_dl`, the weak API block and the `MALLOCX_*` flags, and the programs that re-spelled them (the cgroup programs, decay, prefault, jemalloc_api, negative, libc_api, tls_threads) use the shared ones; item 43 of the 2026-09-18 review is covered (negative modes `guard_free`, `realloc_stale`, `sallocx_stale`, `dallocx_none_twice`, `free_sized_huge_hint`, `huge_double_free`, `huge_interior_free`; `tests/c/positive.c` with `free_sized`, `xallocx_extra`, `malloc_trim_idle`); `fork_cost.c` is `bench/probes/fork_cost.c` and its two rows are gone; `src/model.rs` is `src/model/{mod,state,steps,percpu,scenarios}.rs`; `docs/testing.md` is the test pyramid. Verified in the container: 411 unit + 128 `api::` (was 120: +10 rows, -2 fork_cost) + 23 cgroup-limit, churn/lazy/pagemap-guard/as-needed green, host `cargo test --features std` 319, codegen compare IDENTICAL for q16 and q8. Commits 4c3699b, b1e9da4, d6e6d2c, 9f714b8, e911c9f, 7211f76.
+- Maintainability pass, batch two (lane tidy-sys, 2026-09-20): code motion
+  in `src/sys/` with no machine-code change. `src/sys/abort.rs` (new)
+  holds `Stderr`, `abort`, `abort_fmt`, `die`, the `abort!` macro and the
+  private `KernelSigaction` only `die` uses, moved verbatim from
+  `mod linux` in `src/sys/mod.rs` with their six tests (the child hook is
+  now `sys::abort::tests::abort_child_hook`); `sys/mod.rs` re-exports it
+  with `pub use abort::*`, so `sys::abort_fmt`, `sys::Stderr`,
+  `sys::abort` and `crate::abort!` resolve as before (lib.rs's panic
+  handler, api/print.rs, config.rs untouched). The constants block
+  (`PROT_*`, `MAP_*`, `MADV_*`, `PR_*`, futex, clock, `O_*`, `EFD_*`,
+  `POLL*`, `AT_FDCWD`, `PIDFD_SELF`, signals, `STDERR_FILENO`) moved out of
+  `mod linux` to the top of `sys/mod.rs`, values and the batch-one
+  `#[cfg(test)]` gates unchanged, so host builds see them; `mod linux`
+  imports the ones it uses by name. Codegen (`scripts/codegen-diff.sh
+  compare .tmp-codegen`, baseline 0f5dee4 at ea9532a): q16 and q8 both
+  `exact functions 435, reloc-only 0, changed 0`, `.text=03bea0` (q16) and
+  `.text=03c1c0` (q8) identical to the baseline, every other section size
+  identical too; only the `.text` hash differs (symbol order). Host `cargo
+  test --features std`: 341 passed. `make test` in the container: 442 +
+  123 + 25 passed, cgroup and pagemap-guard steps `ok`, zero warnings.
+  Commits 5fe3f1b (constants), 777dbc1 (abort.rs).
 
 ## In progress
 
@@ -3194,3 +3215,21 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
 - Program-level `SKIP` lines are strict too: a program's `SKIP` on stdout fails the test without `CHALLOC_TEST_ALLOW_SKIP`, the same as a closed Rust gate. This is stricter than the review asked for (it asked only for the line format) and is what makes `grep '^SKIP '` a complete list; loosen by deleting the assert in `report_program_skips` if the VMs turn out to skip something legitimately.
 - Two findings while wiring item 43: `malloc_trim(0)` returns 1 after any `fopen`/`fclose` because stdio's FILE and buffer slabs go Empty (not a bug; positive.c trims once after `rss_bytes()` before asserting 0), and `api::tests::lock_inventory` reads every `Lock<` under src/ as a fork-handler lock, so ctests.rs imports `OnceLock as Once`.
 - Model/class coupling proposal (not done: class.rs is another lane's): (1) a `#[cfg(test)] pub(crate) mod protocol` in `class.rs` with an enum of the atomic steps of `claim`, `release_owned`/`dec_live` and `purge_empty`, one variant per step in order, each variant's doc quoting the line it is; `model::steps` maps its sub-steps onto that enum (a `match` with no wildcard) so a step added to class.rs without a model step fails to compile; (2) the model's copied constants (`REFILL` = cap/2, `FLUSH_HALF`) read from `class`/`config` consts instead of literals; (3) a class.rs test that parses the `class.rs:NNN` quotes in the model's step descriptions and checks each named function still starts within a few lines of the quoted number, so the quotes cannot rot silently.
+- `crate::sys::PIDFD_SELF` is now a plain `pub const` at the top of
+  `src/sys/mod.rs`, visible to host builds, so the `PIDFD_SELF` mirror and
+  its `const _` assertion in `src/purge.rs` (lines 180-184) can go and
+  `configure` can use `crate::sys::PIDFD_SELF` directly. The doc comment
+  on `sys::PIDFD_SELF` still says "`purge.rs` mirrors the value"; drop that
+  clause with the mirror.
+- One deviation from "no new attributes": the four private signal
+  constants (`SIG_BLOCK`, `SIG_UNBLOCK`, `SIG_SETMASK`,
+  `SIGSET_WORDS_BYTES`) carry `#[cfg(target_os = "linux")]` after the
+  hoist. They are private, only Linux code reads them, and the crate is
+  `#![deny(warnings)]`, so an ungated hoist fails the host build on
+  `dead_code`. The alternative (leaving them inside `mod linux`) would
+  have kept `die` from seeing them from `sys/abort.rs`.
+- Design 19 (`docs/design.md`, the source-layout table) needs one new
+  line and one edit; the lane may not touch that file:
+- Nothing else skipped. `use core::fmt;` left `mod linux` with the abort
+  code (it was its only user); the two `// ---- abort ----` section
+  headers were not carried over, the module doc of `abort.rs` covers them.
