@@ -110,9 +110,13 @@ print-docker-run: ## print the docker run line the targets use (challoc-bench pe
 # allocator, whose reservations plus a second full layout (the layout tests)
 # exceed what Rosetta can track under emulation.
 # CHALLOC_TEST_ALLOW_SKIP=1 lets a kernel- or privilege-gated test print its
-# `SKIP <test> <reason>` line and pass (docs/testing.md); the reference VMs
-# run without it so an unavailable feature fails loudly there.
-test: DOCKER_FLAGS = -e CHALLOC_TEST_ALLOW_SKIP=1
+# `SKIP <test> <reason>` line and pass (docs/testing.md). `make test` sets it
+# everywhere, the reference VMs included (checked 2026-09-20: their
+# containers still skip mseal (Docker's seccomp), the cgroup writes, the
+# rseq slice extension and mTHP); `make test TEST_ALLOW_SKIP=` runs strict,
+# and `grep '^SKIP '` on a log lists what a run did not check.
+TEST_ALLOW_SKIP ?= 1
+test: DOCKER_FLAGS = $(if $(TEST_ALLOW_SKIP),-e CHALLOC_TEST_ALLOW_SKIP=$(TEST_ALLOW_SKIP))
 test: image ## release build, the jemalloc-compat stage, both cargo test groups, then the cgroup and pagemap-guard steps
 	$(DOCKER_RUN) sh -c 'cargo build --release \
 	  && sh scripts/jemalloc-compat.sh \
@@ -127,7 +131,7 @@ test: image ## release build, the jemalloc-compat stage, both cargo test groups,
 # a 512 MiB limit; the effective `memory.max` must read as that number.
 # Single-threaded since task 5: tests/c/cgroup_policy.c fills the cgroup to
 # 94% of the limit, which a concurrent test's 64 MiB would push over it.
-test-cgroup-limit: DOCKER_FLAGS = --memory=512m -e CHALLOC_EXPECT_CGROUP_LIMIT=536870912 -e CHALLOC_TEST_ALLOW_SKIP=1
+test-cgroup-limit: DOCKER_FLAGS = --memory=512m -e CHALLOC_EXPECT_CGROUP_LIMIT=536870912 $(if $(TEST_ALLOW_SKIP),-e CHALLOC_TEST_ALLOW_SKIP=$(TEST_ALLOW_SKIP))
 test-cgroup-limit: image ## the cgroup-reading tests under --memory=512m (in `make test`)
 	$(DOCKER_RUN) sh -c 'cargo build --release && cargo test --features std cgroup -- --nocapture --test-threads=1'
 
