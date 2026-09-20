@@ -645,6 +645,20 @@ One line per task, newest at the bottom of each section. Keep it terse.
   the same; the x86_64 section has no PAC). Follow-up 0823a00: the unit
   test builds its own `Shared` with `pac_pointers:true` (`shared_percpu`
   leaves the key off, so its first run drove the sections plain).
+- Phase 2.5 coordinator (2026-09-20), the x86_64 larson16 scorecard band
+  (+6.4..9.6% before the first lane batch, +10.3..12.9% since 0f5fea8)
+  attributed on the reference C4: `quick-perf amd64 OLD=9157450` against
+  a999097 reads larson16 169.4 -> 168.3 cycles per operation (+8
+  instructions, the task 8 dispatch, no cycles), and a per-commit bisect
+  over the first batch's six `src/` commits (two runs each) finds the
+  instruction stream at 235.6..235.8 and cycles at 162.9..168.5 on every
+  commit, inside 9157450's own spread; the scorecard's 3-round medians of
+  a 16-thread row on a 16-vCPU guest spread 5% on each side (today's run:
+  challoc 299..315, jemalloc 328..341 M ops/s), which is the whole band
+  shift. Row 2b holds on x86_64 as on aarch64; read the row against a
+  +6..13% band. `bench/results/2026-09-20-x86_64-larson16-band.md`
+  (commit 25f1d54). Reference amd64 VM started and stopped by the coordinator.
+
 
 - (c) 0604bb3: `bench/ruby-soak.sh`, `make ruby-soak`, `bench/ruby/soak.rb` (16
   threads, bursts, growing long-lived set, full GC every 30 s, GC.compact at
