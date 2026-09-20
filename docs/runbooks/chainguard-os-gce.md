@@ -37,6 +37,16 @@ features a hypervisor hides.
   `us-east5-b`, `us-west4-a/c`, not `us-east4-a`.
 - Every VM this repo starts is stopped or deleted before the iteration
   ends; metal is about $10/h, so delete it within the hour.
+- Kernel 7.2 images (the human, 2026-09-20; verified with `gcloud compute
+  images describe-from-family`): `kirkland-workstation-7dot2-amd64` for
+  VMs (guest features UEFI/GVNIC/IDPF, no `BARE_METAL_LINUX_COMPATIBLE`)
+  and `kirkland-workstation-7dot2-metal-amd64` for `*-metal` shapes, both
+  in `wolfi-vm`, x86_64 only. These are the first hosts newer than GCE's
+  Ubuntu 7.0: use them for the 7.2 items in `docs/research.md` (khugepaged
+  anon mTHP collapse, cache-aware scheduling) and to see whether
+  `CONFIG_RSEQ_SLICE_EXTENSION` is on (`slice_ext=` in the report). A
+  `cgos72-amd64` cell should be a copy of `cgos-amd64` with the family
+  swapped (`bench/gce/challoc-bench`, the cell table).
 
 What the first cells found (lane E, 2026-09-19; `bench/gce/challoc-bench`
 `matrix cgos`, `bench/results/2026-09-19-chainguard-os-cells.md`), where
