@@ -786,6 +786,41 @@ One line per task, newest at the bottom of each section. Keep it terse.
   read and `arena.{narenas+1}.purge` (the moved count's new all-arenas
   alias answers 0); the pair is retried until the count did not move
   across it and asserts ENOENT then, the far-range probes unchanged.
+- Phase 2.5 task 11 (lane B, test fix): `purge::tests::prefault_populate_and_wakes_are_counted`
+  follows the kernel's page size and the `MADV_POPULATE_WRITE` probe (51f2cae).
+  Lane D's reading (bench/results/2026-09-20-phase-2.5-acceptance.md, "At a999097",
+  row 1) confirmed in the code: the test hard-coded `page = 4096` and
+  `reset_for_test(true, true)` forced the populate word on whatever the probe
+  said, so on k510-amd64 (5.10, no `MADV_POPULATE_WRITE`, which is 5.14) and on
+  64k-arm64 (a 4 KiB-aligned address is not page-aligned) the `madvise` failed
+  with EINVAL and `fallbacks` read 1 against the asserted 0. The library is
+  right (`api::init` hands the probe's `features.populate_write` to
+  `prefault::configure`; the pass populates page-aligned slabs; the touch
+  fallback counts and completes), so purge.rs changes only in its tests: a
+  cfg'd `prefault_env()` reads `sys::features::page_size()` and runs the real
+  `probe_populate_write(page)` on Linux (4 KiB and "no" off Linux, where
+  `os::populate_write` always fails), the pass is configured in the probe's
+  direction and asserts no fallback there (the advice works, or the touch is
+  the populate), then a third leg forces the populate word and asserts one
+  fallback with the bytes still counted exactly where the probe said no (the
+  touch fallback contract), a zero buffer zero throughout; the wake
+  assertions are unchanged; the test prints the probed direction and the
+  forced leg's count. The advice test's misplaced doc comment moved back
+  onto `advice_follows_headroom_band_key_and_explicit_purges`.
+  Verified: host `cargo test --features std` 318/0 (`page_size=4096
+  populate_write=no (probed)`, forced `fallbacks=1 (expected 1)`); Mac
+  container `make test` 553/0 (410 + 120 + 23; 6.10, `page_size=4096
+  populate_write=yes (probed)`, forced `fallbacks=0 (expected 0)`);
+  `challoc-bench matrix k510-amd64 64k-arm64` under `challoc-lane-b`:
+  k510-amd64 (Debian 11, 5.10.0-46-cloud-amd64, 4 KiB) `tests=553/0 fuzz=PASS
+  cgroup=PASS outcome=PASS`, the test printing `page_size=4096
+  populate_write=no (probed)` and forced `fallbacks=1 (expected 1)`;
+  64k-arm64 (Ubuntu 24.04, 6.8.0-139-generic-64k, 64 KiB) `tests=553/0
+  fuzz=PASS cgroup=PASS outcome=PASS`, printing `page_size=65536
+  populate_write=yes (probed)` and forced `fallbacks=0 (expected 0)`
+  (bench/results/matrix/2026-09-20-lane-b-{k510-amd64,64k-arm64}.log; the
+  printed lines were read off the cells' `~/logs/test.log` before deletion,
+  the fetched log keeps only the tail). Cells deleted, no lane-b VM remains.
 
 
 - (c) 0604bb3: `bench/ruby-soak.sh`, `make ruby-soak`, `bench/ruby/soak.rb` (16
@@ -2354,6 +2389,13 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
   api test's `arenas.create` raced it); the api binary passed 120/0 on the
   two reruns and in the other whole runs. Not lane C's file; a
   parallel-test ordering race worth a look by the owner of `src/api/`.
+- Phase 2.5 task 11 (lane B): the second test fix lane D named, (b)
+  `sys::features::linux_tests::probe_prints_and_matches_kernel_version`'s
+  `populate_write` block under `--privileged` on 6.16+ (the `process_madvise`
+  block's `MADV_FREE`d scratch page still resident), is not in this commit;
+  it is the next lane B iteration. Lane D's re-run of k510-amd64 and 64k-arm64
+  is done here under the lane-b prefix (553/0 both); hwe-amd64 privileged
+  waits for (b).
 
 - The Cascade Lake's xmalloc row moved 3.5% (disjoint lists) and then 2.7% (overlapping) between `old` and the new lock with the same `pause` in both; the C4 and C4A (same code, PMU available) show nothing. The mechanism is one atomic load and a `match` on the slow path; the likeliest cause is code placement on the Cascade Lake (memory note on page aliasing). It is recorded as open in the results file; a sampler split on a C2 lab would settle it (no PMU there).
 - The geometry numbers say the 1024 ladder is right on 1 MiB L2 parts for throughput, and that 512 buys 12..15% of larson's RSS; if RSS on small parts ever matters more than 1..3% of larson, the knob exists and the model in 6.2 says where it stops paying (256 loses 6% on larson1).
