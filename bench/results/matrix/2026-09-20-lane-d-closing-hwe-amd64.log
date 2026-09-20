@@ -1,0 +1,650 @@
+[driver 09:51:58] cell hwe-amd64: image ubuntu-2404-noble-amd64-v20260918 (ubuntu-2404-lts-amd64, ubuntu-os-cloud), amd64, c3-standard-4, prep hwe, extra privileged, zones us-east4-a, timeout 2700s
+Created [https://www.googleapis.com/compute/v1/projects/dlorenc-dev/zones/us-east4-a/instances/challoc-lane-d-matrix-hwe-amd64].
+WARNING: Some requests generated warnings:
+ - Disk size: '50 GB' is larger than image size: '10 GB'. You might need to resize the root repartition manually if the operating system does not support automatic resizing. See https://cloud.google.com/compute/docs/disks/add-persistent-disk#resize_pd for details.
+
+NAME                             ZONE        MACHINE_TYPE   PREEMPTIBLE  INTERNAL_IP  EXTERNAL_IP   STATUS
+challoc-lane-d-matrix-hwe-amd64  us-east4-a  c3-standard-4               10.150.0.29  34.21.120.40  RUNNING
+[driver 09:52:09] created challoc-lane-d-matrix-hwe-amd64 in us-east4-a
+[driver 09:52:11] challoc-lane-d-matrix-hwe-amd64 at 34.21.120.40; waiting for ssh as dlorenc_chainguard_dev
+[driver 09:52:49] up: x86_64 7.0.0-1011-gcp page 4096
+[driver 09:52:49] prep hwe: installing the kernel and rebooting (boot id 7d3e3063-cc08-4831-99b3-1a845210188d)
+debconf: unable to initialize frontend: Dialog
+debconf: (Dialog frontend will not work on a dumb terminal, an emacs shell buffer, or without a controlling terminal.)
+debconf: falling back to frontend: Readline
+debconf: unable to initialize frontend: Readline
+debconf: (This frontend requires a controlling tty.)
+debconf: falling back to frontend: Teletype
+dpkg-preconfigure: unable to re-open stdin: 
+debconf: unable to initialize frontend: Dialog
+debconf: (Dialog frontend will not work on a dumb terminal, an emacs shell buffer, or without a controlling terminal.)
+debconf: falling back to frontend: Readline
+debconf: unable to initialize frontend: Readline
+debconf: (This frontend requires a controlling tty.)
+debconf: falling back to frontend: Teletype
+
+Running kernel seems to be up-to-date.
+
+No services need to be restarted.
+
+No containers need to be restarted.
+
+No user sessions are running outdated binaries.
+
+No VM guests are running outdated hypervisor (qemu) binaries on this host.
+== installed 7.0.0-31-generic
+== rebooting into 7.0.0-31-generic
+[driver 09:55:29] after reboot: 7.0.0-31-generic 4096
+[driver 09:55:29] provisioning (privileged)
+debconf: unable to initialize frontend: Dialog
+debconf: (Dialog frontend will not work on a dumb terminal, an emacs shell buffer, or without a controlling terminal.)
+debconf: falling back to frontend: Readline
+debconf: unable to initialize frontend: Readline
+debconf: (This frontend requires a controlling tty.)
+debconf: falling back to frontend: Teletype
+dpkg-preconfigure: unable to re-open stdin: 
+debconf: unable to initialize frontend: Dialog
+debconf: (Dialog frontend will not work on a dumb terminal, an emacs shell buffer, or without a controlling terminal.)
+debconf: falling back to frontend: Readline
+debconf: unable to initialize frontend: Readline
+debconf: (This frontend requires a controlling tty.)
+debconf: falling back to frontend: Teletype
+
+No services need to be restarted.
+
+No containers need to be restarted.
+
+No user sessions are running outdated binaries.
+
+No VM guests are running outdated hypervisor (qemu) binaries on this host.
+== challoc-lane-d-matrix-hwe-amd64: x86_64 7.0.0-31-generic, page 4096, Ubuntu 24.04.5 LTS
+== docker: Docker version 29.1.3, build 29.1.3-0ubuntu3~24.04.2
+[driver 09:55:43] syncing the tree
+[driver 09:55:56] running matrix-cell.sh detached (a new login, so the docker group applies)
+launched
+[driver 10:11:18] run finished: rc=0 after 1161 s; fetching ~/logs
+
+==================== ~/logs/matrix.log on challoc-lane-d-matrix-hwe-amd64 ====================
+== cell hwe-amd64 on challoc-lane-d-matrix-hwe-amd64: Ubuntu 24.04.5 LTS
+== image ubuntu-2404-noble-amd64-v20260918, machine c3-standard-4 (c3) in us-east4-a, 4 vCPU, x86_64 7.0.0-31-generic, page size 4096
+== cpu: Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz
+== cgroup fs: cgroup2fs, docker: Docker version 29.1.3, build 29.1.3-0ubuntu3~24.04.2
+== tree: e3e5fc3 2 dirty
+== mode: privileged
+== start 2026-09-20T09:55:57Z
+
+== step image: make image  (09:55:57)
+== step image: rc=0 in 111 s
+   |  ---> Removed intermediate container c3f8e7a0c626
+   |  ---> 694ac60a575d
+   | Step 3/4 : WORKDIR /src
+   |  ---> Running in 012ef5fe8d83
+   |  ---> Removed intermediate container 012ef5fe8d83
+   |  ---> 9a28b57025c3
+   | Step 4/4 : CMD ["sh"]
+   |  ---> Running in 8c4e1997cd0c
+   |  ---> Removed intermediate container 8c4e1997cd0c
+   |  ---> 974f1326f33d
+   | Successfully built 974f1326f33d
+   | Successfully tagged challoc-dev:amd64
+
+== step test: make test  (09:57:48)
+== step test: rc=0 in 154 s
+   | pagemap_guard on: 1024-byte class, slab 4096, group 4096, guard every 128 groups: 520 blocks over 131 groups, 1 guard slab(s), first at 0x40450747f000; guard page PAGE_IS_GUARD (a swap-type entry, not present), neighbours present and not guard
+   | pagemap_guard on: 1024-byte class: 1 PAGE_IS_GUARD page(s) in the span, 1 per guard slab, none elsewhere
+   | pagemap_guard on: PAGEMAP_SCAN available with PAGE_IS_GUARD (6.16+): guard slabs reported as guard regions, both ways
+   | ok pagemap_guard
+   | == pagemap_guard off (MALLOC_CONF=guards:false)
+   | pagemap_guard off: PAGEMAP_SCAN available with PAGE_IS_GUARD (6.16+); MADV_GUARD_INSTALL available (6.13+); opt.guards false, opt.guard_slab_interval 8; page 4096
+   | pagemap_guard: 16-byte class, 40960 blocks over 10 groups: no gap, no PAGE_IS_GUARD page in the span
+   | pagemap_guard: 64-byte class, 10240 blocks over 10 groups: no gap, no PAGE_IS_GUARD page in the span
+   | pagemap_guard: 256-byte class, 2560 blocks over 10 groups: no gap, no PAGE_IS_GUARD page in the span
+   | pagemap_guard: 1024-byte class, 520 blocks over 130 groups: no gap, no PAGE_IS_GUARD page in the span
+   | pagemap_guard off: PAGEMAP_SCAN available with PAGE_IS_GUARD (6.16+): no guard slab and no guard page in any span
+   | ok pagemap_guard
+
+== step probe: probe_cmd  (10:00:22)
+== step probe: rc=0 in 1 s
+   |  ---> Using cache
+   |  ---> 974f1326f33d
+   | Successfully built 974f1326f33d
+   | Successfully tagged challoc-dev:amd64
+   | docker run --rm --platform linux/amd64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-amd64:/src/target -v challoc-cargo-registry:/root/.cargo/registry     challoc-dev:amd64 sh -c 'getconf PAGESIZE; cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c tests/c/features.c -o target/matrix-features -ldl && LD_PRELOAD=/src/target/release/libchalloc.so ./target/matrix-features'
+   | 4096
+   | features: page_size=4096 guard_install=yes mseal=no process_madvise=no process_madvise_free=no anon_name=yes populate_write=yes thp=madvise mthp=2M collapse=unprobed thp_except_advised=yes rseq=yes rseq_size=33 mm_cid=yes slice_ext=kernel-disabled lam=no uai=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=48K l2=2M
+   | populate_write: yes (madvise rc 0)
+   | thp_except_advised: yes (PR_GET_THP_DISABLE 0)
+   | rseq: rseq=yes rseq_size=33 mm_cid=yes
+   | slice_ext: kernel-disabled
+   | ok features
+
+== step probe-privileged: probe_priv_cmd  (10:00:23)
+== step probe-privileged: rc=0 in 1 s
+   | Step 4/4 : CMD ["sh"]
+   |  ---> Using cache
+   |  ---> 974f1326f33d
+   | Successfully built 974f1326f33d
+   | Successfully tagged challoc-dev:amd64
+   | docker run --rm --platform linux/amd64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-amd64:/src/target -v challoc-cargo-registry:/root/.cargo/registry    --privileged challoc-dev:amd64 sh -c 'cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c tests/c/features.c -o target/matrix-features -ldl && LD_PRELOAD=/src/target/release/libchalloc.so ./target/matrix-features'
+   | features: page_size=4096 guard_install=yes mseal=yes process_madvise=pidfd_self process_madvise_free=yes anon_name=yes populate_write=yes thp=madvise mthp=2M collapse=unprobed thp_except_advised=yes rseq=yes rseq_size=33 mm_cid=yes slice_ext=kernel-disabled lam=no uai=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=48K l2=2M
+   | populate_write: yes (madvise rc 0)
+   | thp_except_advised: yes (PR_GET_THP_DISABLE 0)
+   | rseq: rseq=yes rseq_size=33 mm_cid=yes
+   | slice_ext: kernel-disabled
+   | ok features
+
+== step cpuinfo: cpuinfo_cmd  (10:00:24)
+== step cpuinfo: rc=0 in 1 s
+   | cpuid leaf=0x00000001 sub=0 eax=0x000806f8 ebx=0x02040800 ecx=0xfefa3203 edx=0x1f8bfbff
+   | cpuid leaf=0x00000007 sub=0 eax=0x00000002 ebx=0xf1bf2feb ecx=0x1a415f46 edx=0xafc14410
+   | cpuid leaf=0x00000007 sub=1 eax=0x00001c30 ebx=0x00000000 ecx=0x00000000 edx=0x00000000
+   | cpuid leaf=0x00000004 sub=0 eax=0x04004121 ebx=0x02c0003f ecx=0x0000003f edx=0x00000000
+   | cpuid leaf=0x00000004 sub=1 eax=0x04004122 ebx=0x01c0003f ecx=0x0000003f edx=0x00000000
+   | cpuid leaf=0x00000004 sub=2 eax=0x04004143 ebx=0x03c0003f ecx=0x000007ff edx=0x00000000
+   | cpuid leaf=0x00000004 sub=3 eax=0x0400c163 ebx=0x0380003f ecx=0x0001bfff edx=0x00000004
+   | cpuid leaf=0x00000004 sub=4 eax=0x00000000 ebx=0x00000000 ecx=0x00000000 edx=0x00000000
+   | cpuid leaf=0x80000000 sub=0 eax=0x80000008 ebx=0x00000000 ecx=0x00000000 edx=0x00000000
+   | cpuid leaf=0x80000008 sub=0 eax=0x00003934 ebx=0x0100d000 ecx=0x00000000 edx=0x00000000
+   | cpuid leaf=0x8000001d sub=0 absent (max 0x80000008)
+   | cpuid leaf=0x80000021 sub=0 absent (max 0x80000008)
+
+== step fuzz: make fuzz  (10:00:25)
+== step fuzz: rc=0 in 200 s
+   |  ---> 974f1326f33d
+   | Successfully built 974f1326f33d
+   | Successfully tagged challoc-dev:amd64
+   | docker run --rm --platform linux/amd64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-amd64:/src/target -v challoc-cargo-registry:/root/.cargo/registry     challoc-dev:amd64 sh -c 'cargo build --release \
+   |   && cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c \
+   |        fuzz/fuzz.c -o target/fuzz -ldl \
+   |   && LD_PRELOAD=/src/target/release/libchalloc.so \
+   |      ./target/fuzz 10000000 4 0xC4A110C 2048'
+   |     Finished `release` profile [optimized + debuginfo] target(s) in 0.02s
+   | fuzz: seed 0xc4a110c, 10000000 ops, 4 threads, table 2048
+   | fuzz: 5121262 allocs (818352 aligned, 1024474 calloc) 5121262 frees (508567 cross-thread) 1456462 reallocs 729400 inspections, 470856.9 MiB filled
+   | ok fuzz
+
+== step test-cgroup: make test-cgroup  (10:03:45)
+== step test-cgroup: rc=0 in 319 s
+   | cycle  94 at   294 s: up 480 MiB in 105 ms (rss 491, current 491 MiB), down to 200 MiB in 17 ms (rss 369, current 369 MiB), 76004 objects
+   | cycle  95 at   297 s: up 480 MiB in 106 ms (rss 490, current 491 MiB), down to 200 MiB in 17 ms (rss 379, current 379 MiB), 77048 objects
+   | cycle  96 at   300 s: up 480 MiB in 106 ms (rss 488, current 488 MiB), down to 200 MiB in 18 ms (rss 395, current 395 MiB), 85785 objects
+   | memory.events after: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0
+   | composition highest top (cycle 55): current 502 anon 500 file 0 kernel 2 (slab 0 pagetables 1) MiB, rss 502 MiB; challoc allocated 480 active 496 resident 497 metadata 1 retained 11 empty 0 MiB
+   | composition at end (bottom): current 288 anon 286 file 0 kernel 1 (slab 0 pagetables 1) MiB, rss 288 MiB; challoc allocated 200 active 269 resident 295 metadata 1 retained 213 empty 25 MiB
+   | challoc: stats.cgroup.limit 512 MiB current 288 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 25 MiB full_purges 0 pressure_events 0
+   | RESULT oscillate cycles=96 seconds=300 low=200 high=480 current_peak=502 rss_peak=502 max_before=0 max_after=0 high_before=0 high_after=0 oom_kill_before=0 oom_kill_after=0
+   | ok cgroup_oscillate
+   | memory.events after: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0 
+   | memory.peak 502 MiB, memory.current 3 MiB
+   | OUTCOME oscillate alloc=challoc args='300' status=0 verdict=ok oom_kill=0
+
+== step test-privileged: priv_cmd  (10:09:04)
+== step test-privileged: rc=0 in 121 s
+   | pagemap_guard on: 1024-byte class, slab 4096, group 4096, guard every 128 groups: 520 blocks over 131 groups, 1 guard slab(s), first at 0x3f06b147f000; guard page PAGE_IS_GUARD (a swap-type entry, not present), neighbours present and not guard
+   | pagemap_guard on: 1024-byte class: 1 PAGE_IS_GUARD page(s) in the span, 1 per guard slab, none elsewhere
+   | pagemap_guard on: PAGEMAP_SCAN available with PAGE_IS_GUARD (6.16+): guard slabs reported as guard regions, both ways
+   | ok pagemap_guard
+   | == pagemap_guard off (MALLOC_CONF=guards:false)
+   | pagemap_guard off: PAGEMAP_SCAN available with PAGE_IS_GUARD (6.16+); MADV_GUARD_INSTALL available (6.13+); opt.guards false, opt.guard_slab_interval 8; page 4096
+   | pagemap_guard: 16-byte class, 40960 blocks over 10 groups: no gap, no PAGE_IS_GUARD page in the span
+   | pagemap_guard: 64-byte class, 10240 blocks over 10 groups: no gap, no PAGE_IS_GUARD page in the span
+   | pagemap_guard: 256-byte class, 2560 blocks over 10 groups: no gap, no PAGE_IS_GUARD page in the span
+   | pagemap_guard: 1024-byte class, 520 blocks over 130 groups: no gap, no PAGE_IS_GUARD page in the span
+   | pagemap_guard off: PAGEMAP_SCAN available with PAGE_IS_GUARD (6.16+): no guard slab and no guard page in any span
+   | ok pagemap_guard
+
+== end 2026-09-20T10:11:05Z, wall 909 s
+CPU Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz
+PROBE features: page_size=4096 guard_install=yes mseal=no process_madvise=no process_madvise_free=no anon_name=yes populate_write=yes thp=madvise mthp=2M collapse=unprobed thp_except_advised=yes rseq=yes rseq_size=33 mm_cid=yes slice_ext=kernel-disabled lam=no uai=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=48K l2=2M
+PROBE_PRIVILEGED features: page_size=4096 guard_install=yes mseal=yes process_madvise=pidfd_self process_madvise_free=yes anon_name=yes populate_write=yes thp=madvise mthp=2M collapse=unprobed thp_except_advised=yes rseq=yes rseq_size=33 mm_cid=yes slice_ext=kernel-disabled lam=no uai=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=48K l2=2M
+MATRIX cell=hwe-amd64 image=ubuntu-2404-noble-amd64-v20260918 kernel=7.0.0-31-generic page=4096 machine=c3-standard-4 zone=us-east4-a vcpus=4 tests=553/0 fuzz=PASS cgroup=PASS privileged=PASS:553/0 scorecard=- wall=909 outcome=PASS
+
+==================== ~/logs/cpuinfo.log ====================
+model: Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz
+vcpus: 4
+machine: c3-standard-4 zone: us-east4-a
+-- /proc/cpuinfo (first processor)
+processor	: 0
+vendor_id	: GenuineIntel
+cpu family	: 6
+model		: 143
+model name	: Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz
+stepping	: 8
+microcode	: 0xffffffff
+cpu MHz		: 2699.998
+cache size	: 107520 KB
+physical id	: 0
+siblings	: 4
+core id		: 0
+cpu cores	: 2
+apicid		: 0
+initial apicid	: 0
+fpu		: yes
+fpu_exception	: yes
+cpuid level	: 31
+wp		: yes
+flags		: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology nonstop_tsc cpuid tsc_known_freq pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor lahf_lm abm 3dnowprefetch ssbd ibrs ibpb stibp ibrs_enhanced fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rtm avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves avx_vnni avx512_bf16 arat avx512vbmi umip avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq la57 rdpid cldemote movdiri movdir64b fsrm md_clear serialize tsxldtrk amx_bf16 avx512_fp16 amx_tile amx_int8 arch_capabilities
+bugs		: spectre_v1 spectre_v2 spec_store_bypass swapgs eibrs_pbrsb bhi ibpb_no_ret spectre_v2_user
+bogomips	: 5399.99
+clflush size	: 64
+cache_alignment	: 64
+address sizes	: 52 bits physical, 57 bits virtual
+power management:
+
+-- lscpu
+Architecture:                            x86_64
+CPU op-mode(s):                          32-bit, 64-bit
+Address sizes:                           52 bits physical, 57 bits virtual
+Byte Order:                              Little Endian
+CPU(s):                                  4
+On-line CPU(s) list:                     0-3
+Vendor ID:                               GenuineIntel
+Model name:                              Intel(R) Xeon(R) Platinum 8481C CPU @ 2.70GHz
+CPU family:                              6
+Model:                                   143
+Thread(s) per core:                      2
+Core(s) per socket:                      2
+Socket(s):                               1
+Stepping:                                8
+BogoMIPS:                                5399.99
+Flags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ss ht syscall nx pdpe1gb rdtscp lm constant_tsc rep_good nopl xtopology nonstop_tsc cpuid tsc_known_freq pni pclmulqdq ssse3 fma cx16 pcid sse4_1 sse4_2 x2apic movbe popcnt aes xsave avx f16c rdrand hypervisor lahf_lm abm 3dnowprefetch ssbd ibrs ibpb stibp ibrs_enhanced fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid rtm avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves avx_vnni avx512_bf16 arat avx512vbmi umip avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg avx512_vpopcntdq la57 rdpid cldemote movdiri movdir64b fsrm md_clear serialize tsxldtrk amx_bf16 avx512_fp16 amx_tile amx_int8 arch_capabilities
+Hypervisor vendor:                       KVM
+Virtualization type:                     full
+L1d cache:                               96 KiB (2 instances)
+L1i cache:                               64 KiB (2 instances)
+L2 cache:                                4 MiB (2 instances)
+L3 cache:                                105 MiB (1 instance)
+NUMA node(s):                            1
+NUMA node0 CPU(s):                       0-3
+Vulnerability Gather data sampling:      Not affected
+Vulnerability Ghostwrite:                Not affected
+Vulnerability Indirect target selection: Not affected
+Vulnerability Itlb multihit:             Not affected
+Vulnerability L1tf:                      Not affected
+Vulnerability Mds:                       Not affected
+Vulnerability Meltdown:                  Not affected
+Vulnerability Mmio stale data:           Not affected
+Vulnerability Old microcode:             Not affected
+Vulnerability Reg file data sampling:    Not affected
+Vulnerability Retbleed:                  Not affected
+Vulnerability Spec rstack overflow:      Not affected
+Vulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization
+Vulnerability Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; PBRSB-eIBRS SW sequence; BHI BHI_DIS_S
+Vulnerability Srbds:                     Not affected
+Vulnerability Tsa:                       Not affected
+Vulnerability Tsx async abort:           Not affected
+Vulnerability Vmscape:                   Not affected
+-- cpuid-dump (in the container)
+docker build --platform linux/amd64 -f Dockerfile.dev -t challoc-dev:amd64 .
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  68.55MB
+Step 1/4 : FROM cgr.dev/chainguard/wolfi-base
+ ---> 1d95114038f7
+Step 2/4 : RUN sed -i       -e 's/^glibc=.*/glibc-2.44/'       -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/'       -e 's/^ld-linux=.*/ld-linux-2.44/'       -e 's/^libcrypt1=.*/libcrypt1-2.44/'       /etc/apk/world  && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44  && apk add --no-cache       rust       build-base       gcc       jemalloc       git       cmake       tcl       openssl-dev       procps       memtier-benchmark       posix-libc-utils-2.44       autoconf       ruby-3.4       jemalloc-dev       yaml-dev       zlib-dev       libffi-dev       tzdata       tcmalloc-minimal       python-3.13       py3.13-pip  && rustc --version && cargo --version && python3 --version  && test -f /usr/lib/libtcmalloc_minimal.so.4
+ ---> Using cache
+ ---> 694ac60a575d
+Step 3/4 : WORKDIR /src
+ ---> Using cache
+ ---> 9a28b57025c3
+Step 4/4 : CMD ["sh"]
+ ---> Using cache
+ ---> 974f1326f33d
+Successfully built 974f1326f33d
+Successfully tagged challoc-dev:amd64
+docker run --rm --platform linux/amd64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-amd64:/src/target -v challoc-cargo-registry:/root/.cargo/registry     challoc-dev:amd64 sh -c 'cc -O2 -Wall -Wextra -Werror bench/gce/cpuid-dump.c -o target/cpuid-dump && ./target/cpuid-dump'
+vendor=GenuineIntel max_leaf=0x0000001f max_ext_leaf=0x80000008
+cpuid leaf=0x00000000 sub=0 eax=0x0000001f ebx=0x756e6547 ecx=0x6c65746e edx=0x49656e69
+cpuid leaf=0x00000001 sub=0 eax=0x000806f8 ebx=0x02040800 ecx=0xfefa3203 edx=0x1f8bfbff
+cpuid leaf=0x00000007 sub=0 eax=0x00000002 ebx=0xf1bf2feb ecx=0x1a415f46 edx=0xafc14410
+cpuid leaf=0x00000007 sub=1 eax=0x00001c30 ebx=0x00000000 ecx=0x00000000 edx=0x00000000
+cpuid leaf=0x00000004 sub=0 eax=0x04004121 ebx=0x02c0003f ecx=0x0000003f edx=0x00000000
+cpuid leaf=0x00000004 sub=1 eax=0x04004122 ebx=0x01c0003f ecx=0x0000003f edx=0x00000000
+cpuid leaf=0x00000004 sub=2 eax=0x04004143 ebx=0x03c0003f ecx=0x000007ff edx=0x00000000
+cpuid leaf=0x00000004 sub=3 eax=0x0400c163 ebx=0x0380003f ecx=0x0001bfff edx=0x00000004
+cpuid leaf=0x00000004 sub=4 eax=0x00000000 ebx=0x00000000 ecx=0x00000000 edx=0x00000000
+cpuid leaf=0x80000000 sub=0 eax=0x80000008 ebx=0x00000000 ecx=0x00000000 edx=0x00000000
+cpuid leaf=0x80000008 sub=0 eax=0x00003934 ebx=0x0100d000 ecx=0x00000000 edx=0x00000000
+cpuid leaf=0x8000001d sub=0 absent (max 0x80000008)
+cpuid leaf=0x80000021 sub=0 absent (max 0x80000008)
+
+==================== ~/logs/image.log (last 60 lines) ====================
+(46/88) Installing libldap (2.6.10-r5)
+(47/88) Installing libnghttp2-14 (1.70.0-r3)
+(48/88) Installing nghttp3 (1.18.0-r1)
+(49/88) Installing ngtcp2 (1.25.0-r2)
+(50/88) Installing libpsl (0.23.3-r1)
+(51/88) Installing libcurl-openssl4 (8.22.0-r2)
+(52/88) Installing jsoncpp (1.9.8-r3)
+(53/88) Installing librhash0 (1.4.6-r6)
+(54/88) Installing libuv (1.52.1-r2)
+(55/88) Installing cmake (4.4.3-r1)
+(56/88) Installing libpcre2-8-0 (10.48-r0)
+(57/88) Installing git (2.55.0-r7)
+(58/88) Installing libjemalloc2 (5.3.1-r3)
+(59/88) Installing jemalloc (5.3.1-r3)
+(60/88) Installing jemalloc-dev (5.3.1-r3)
+(61/88) Installing libffi (3.8.0-r1)
+(62/88) Installing libffi-dev (3.8.0-r1)
+(63/88) Installing libevent (2.1.13-r1)
+(64/88) Installing memtier-benchmark (2.5.1-r1)
+(65/88) Installing openssl-dev (3.6.4-r7)
+(66/88) Installing bash (5.3-r13)
+(67/88) Installing posix-libc-utils-bin-2.44 (2.44-r6)
+(68/88) Installing posix-libc-utils-2.44 (2.44-r6)
+(69/88) Installing libproc-2-0 (4.0.7-r1)
+(70/88) Installing procps (4.0.7-r1)
+(71/88) Installing py3-pip-wheel (26.2.1-r1)
+(72/88) Installing mpdecimal (4.0.1-r4)
+(73/88) Installing libuuid (2.42.3-r4)
+(74/88) Installing python-3.13-base (3.13.15_git20260918-r1)
+(75/88) Installing py3.13-setuptools (84.0.0-r0)
+(76/88) Installing py3.13-pip-base (26.2.1-r1)
+(77/88) Installing py3.13-pip (26.2.1-r1)
+(78/88) Installing python-3.13 (3.13.15_git20260918-r1)
+(79/88) Installing yaml (0.2.5-r10)
+(80/88) Installing ruby-3.4 (3.4.10-r7)
+(81/88) Installing libxml2-16 (2.15.4-r0)
+(82/88) Installing libLLVM-22 (22.1.8-r4)
+(83/88) Installing rust-1.98 (1.98.1-r0)
+(84/88) Installing tcl (9.0.4-r1)
+(85/88) Installing tcmalloc-minimal (2.18.1-r5)
+(86/88) Installing tzdata (2026d-r0)
+(87/88) Installing yaml-dev (0.2.5-r10)
+(88/88) Installing zlib-dev (1.3.2.1_rc20260601-r0)
+Executing busybox-1.38.0-r2.trigger
+OK: 1435 MiB in 104 packages
+rustc 1.98.1 (48a229cea 2026-09-01)
+cargo 1.98.1 (797e8a9bc 2026-08-05)
+Python 3.13.15
+ ---> Removed intermediate container c3f8e7a0c626
+ ---> 694ac60a575d
+Step 3/4 : WORKDIR /src
+ ---> Running in 012ef5fe8d83
+ ---> Removed intermediate container 012ef5fe8d83
+ ---> 9a28b57025c3
+Step 4/4 : CMD ["sh"]
+ ---> Running in 8c4e1997cd0c
+ ---> Removed intermediate container 8c4e1997cd0c
+ ---> 974f1326f33d
+Successfully built 974f1326f33d
+Successfully tagged challoc-dev:amd64
+
+==================== ~/logs/test.log (last 60 lines) ====================
+  t+ 304 ms: rss    6 MiB, memory.current 6 MiB
+  t+ 405 ms: rss    6 MiB, memory.current 6 MiB
+  t+ 506 ms: rss    6 MiB, memory.current 6 MiB
+  challoc after the second free: limit 512 MiB retention_cap 25 MiB empty_bytes 2 MiB purge_advice eager lazy_purges 0 eager_purges 36
+  memory.stat before pressure: anon 4 MiB file 0 MiB inactive_file 0 MiB pglazyfree 0 pglazyfreed 0 (pages)
+pressure: 380 MiB of 8192 B objects in 174 ms: rss 386 MiB, memory.current 387 MiB, memory.peak 387 MiB
+  memory.stat under pressure: anon 384 MiB file 0 MiB inactive_file 0 MiB pglazyfree 0 pglazyfreed 0 (pages)
+  pglazyfreed rose by 0 pages (0 MiB): lazy-free pages the kernel reclaimed
+  challoc at the end: limit 512 MiB retention_cap 25 MiB empty_bytes 484 MiB purge_advice eager lazy_purges 0 eager_purges 37
+RESULT lazy mode=eager mib=200 rss_peak=203 rss_2s=13 rss_min=13 current_peak=203 current_2s=13 event_ms=79 lazy_purges=0 eager_purges=29 advice_2s=eager pglazyfree_pages=0 alloc_ms=99 reuse_ms=88 pressure_ms=174 pglazyfreed_pages=0 current_pressure=387 reclaim_on_request=0
+ok cgroup_lazy
+memory.events after: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0 
+memory.peak 387 MiB, memory.current 3 MiB
+OUTCOME lazy alloc=challoc-eager args='eager 200' status=0 verdict=ok oom_kill=0
+make --no-print-directory test-pagemap-guard
+docker build --platform linux/amd64 -f Dockerfile.dev -t challoc-dev:amd64 .
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  68.55MB
+Step 1/4 : FROM cgr.dev/chainguard/wolfi-base
+ ---> 1d95114038f7
+Step 2/4 : RUN sed -i       -e 's/^glibc=.*/glibc-2.44/'       -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/'       -e 's/^ld-linux=.*/ld-linux-2.44/'       -e 's/^libcrypt1=.*/libcrypt1-2.44/'       /etc/apk/world  && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44  && apk add --no-cache       rust       build-base       gcc       jemalloc       git       cmake       tcl       openssl-dev       procps       memtier-benchmark       posix-libc-utils-2.44       autoconf       ruby-3.4       jemalloc-dev       yaml-dev       zlib-dev       libffi-dev       tzdata       tcmalloc-minimal       python-3.13       py3.13-pip  && rustc --version && cargo --version && python3 --version  && test -f /usr/lib/libtcmalloc_minimal.so.4
+ ---> Using cache
+ ---> 694ac60a575d
+Step 3/4 : WORKDIR /src
+ ---> Using cache
+ ---> 9a28b57025c3
+Step 4/4 : CMD ["sh"]
+ ---> Using cache
+ ---> 974f1326f33d
+Successfully built 974f1326f33d
+Successfully tagged challoc-dev:amd64
+docker run --rm --platform linux/amd64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-amd64:/src/target -v challoc-cargo-registry:/root/.cargo/registry     challoc-dev:amd64 sh -c 'cargo build --release && sh scripts/pagemap-guard-test.sh'
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.02s
+== pagemap_guard on (kernel 7.0.0-31-generic x86_64, default configuration)
+pagemap_guard on: PAGEMAP_SCAN available with PAGE_IS_GUARD (6.16+); MADV_GUARD_INSTALL available (6.13+); opt.guards true, opt.guard_slab_interval 8; page 4096
+pagemap_guard: 16-byte class: categories of the guard page 0x112, of the slot pages before and after 0xa / 0xa
+pagemap_guard on: 16-byte class, slab 65536, group 65536, guard every 8 groups: 40960 blocks over 11 groups, 1 guard slab(s), first at 0x2ddab2870000; guard page PAGE_IS_GUARD (a swap-type entry, not present), neighbours present and not guard
+pagemap_guard on: 16-byte class: 1 PAGE_IS_GUARD page(s) in the span, 1 per guard slab, none elsewhere
+pagemap_guard: 64-byte class: categories of the guard page 0x112, of the slot pages before and after 0xa / 0xa
+pagemap_guard on: 64-byte class, slab 65536, group 65536, guard every 8 groups: 10240 blocks over 11 groups, 1 guard slab(s), first at 0x3050f1870000; guard page PAGE_IS_GUARD (a swap-type entry, not present), neighbours present and not guard
+pagemap_guard on: 64-byte class: 1 PAGE_IS_GUARD page(s) in the span, 1 per guard slab, none elsewhere
+pagemap_guard: 256-byte class: categories of the guard page 0x112, of the slot pages before and after 0xa / 0xa
+pagemap_guard on: 256-byte class, slab 65536, group 65536, guard every 8 groups: 2560 blocks over 11 groups, 1 guard slab(s), first at 0x38dbc1870000; guard page PAGE_IS_GUARD (a swap-type entry, not present), neighbours present and not guard
+pagemap_guard on: 256-byte class: 1 PAGE_IS_GUARD page(s) in the span, 1 per guard slab, none elsewhere
+pagemap_guard: 1024-byte class: categories of the guard page 0x112, of the slot pages before and after 0xa / 0xa
+pagemap_guard on: 1024-byte class, slab 4096, group 4096, guard every 128 groups: 520 blocks over 131 groups, 1 guard slab(s), first at 0x40450747f000; guard page PAGE_IS_GUARD (a swap-type entry, not present), neighbours present and not guard
+pagemap_guard on: 1024-byte class: 1 PAGE_IS_GUARD page(s) in the span, 1 per guard slab, none elsewhere
+pagemap_guard on: PAGEMAP_SCAN available with PAGE_IS_GUARD (6.16+): guard slabs reported as guard regions, both ways
+ok pagemap_guard
+== pagemap_guard off (MALLOC_CONF=guards:false)
+pagemap_guard off: PAGEMAP_SCAN available with PAGE_IS_GUARD (6.16+); MADV_GUARD_INSTALL available (6.13+); opt.guards false, opt.guard_slab_interval 8; page 4096
+pagemap_guard: 16-byte class, 40960 blocks over 10 groups: no gap, no PAGE_IS_GUARD page in the span
+pagemap_guard: 64-byte class, 10240 blocks over 10 groups: no gap, no PAGE_IS_GUARD page in the span
+pagemap_guard: 256-byte class, 2560 blocks over 10 groups: no gap, no PAGE_IS_GUARD page in the span
+pagemap_guard: 1024-byte class, 520 blocks over 130 groups: no gap, no PAGE_IS_GUARD page in the span
+pagemap_guard off: PAGEMAP_SCAN available with PAGE_IS_GUARD (6.16+): no guard slab and no guard page in any span
+ok pagemap_guard
+
+==================== ~/logs/probe.log (last 60 lines) ====================
+docker build --platform linux/amd64 -f Dockerfile.dev -t challoc-dev:amd64 .
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  68.55MB
+Step 1/4 : FROM cgr.dev/chainguard/wolfi-base
+ ---> 1d95114038f7
+Step 2/4 : RUN sed -i       -e 's/^glibc=.*/glibc-2.44/'       -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/'       -e 's/^ld-linux=.*/ld-linux-2.44/'       -e 's/^libcrypt1=.*/libcrypt1-2.44/'       /etc/apk/world  && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44  && apk add --no-cache       rust       build-base       gcc       jemalloc       git       cmake       tcl       openssl-dev       procps       memtier-benchmark       posix-libc-utils-2.44       autoconf       ruby-3.4       jemalloc-dev       yaml-dev       zlib-dev       libffi-dev       tzdata       tcmalloc-minimal       python-3.13       py3.13-pip  && rustc --version && cargo --version && python3 --version  && test -f /usr/lib/libtcmalloc_minimal.so.4
+ ---> Using cache
+ ---> 694ac60a575d
+Step 3/4 : WORKDIR /src
+ ---> Using cache
+ ---> 9a28b57025c3
+Step 4/4 : CMD ["sh"]
+ ---> Using cache
+ ---> 974f1326f33d
+Successfully built 974f1326f33d
+Successfully tagged challoc-dev:amd64
+docker run --rm --platform linux/amd64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-amd64:/src/target -v challoc-cargo-registry:/root/.cargo/registry     challoc-dev:amd64 sh -c 'getconf PAGESIZE; cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c tests/c/features.c -o target/matrix-features -ldl && LD_PRELOAD=/src/target/release/libchalloc.so ./target/matrix-features'
+4096
+features: page_size=4096 guard_install=yes mseal=no process_madvise=no process_madvise_free=no anon_name=yes populate_write=yes thp=madvise mthp=2M collapse=unprobed thp_except_advised=yes rseq=yes rseq_size=33 mm_cid=yes slice_ext=kernel-disabled lam=no uai=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=48K l2=2M
+populate_write: yes (madvise rc 0)
+thp_except_advised: yes (PR_GET_THP_DISABLE 0)
+rseq: rseq=yes rseq_size=33 mm_cid=yes
+slice_ext: kernel-disabled
+ok features
+
+==================== ~/logs/probe-privileged.log (last 60 lines) ====================
+docker build --platform linux/amd64 -f Dockerfile.dev -t challoc-dev:amd64 .
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  68.55MB
+Step 1/4 : FROM cgr.dev/chainguard/wolfi-base
+ ---> 1d95114038f7
+Step 2/4 : RUN sed -i       -e 's/^glibc=.*/glibc-2.44/'       -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/'       -e 's/^ld-linux=.*/ld-linux-2.44/'       -e 's/^libcrypt1=.*/libcrypt1-2.44/'       /etc/apk/world  && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44  && apk add --no-cache       rust       build-base       gcc       jemalloc       git       cmake       tcl       openssl-dev       procps       memtier-benchmark       posix-libc-utils-2.44       autoconf       ruby-3.4       jemalloc-dev       yaml-dev       zlib-dev       libffi-dev       tzdata       tcmalloc-minimal       python-3.13       py3.13-pip  && rustc --version && cargo --version && python3 --version  && test -f /usr/lib/libtcmalloc_minimal.so.4
+ ---> Using cache
+ ---> 694ac60a575d
+Step 3/4 : WORKDIR /src
+ ---> Using cache
+ ---> 9a28b57025c3
+Step 4/4 : CMD ["sh"]
+ ---> Using cache
+ ---> 974f1326f33d
+Successfully built 974f1326f33d
+Successfully tagged challoc-dev:amd64
+docker run --rm --platform linux/amd64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-amd64:/src/target -v challoc-cargo-registry:/root/.cargo/registry    --privileged challoc-dev:amd64 sh -c 'cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c tests/c/features.c -o target/matrix-features -ldl && LD_PRELOAD=/src/target/release/libchalloc.so ./target/matrix-features'
+features: page_size=4096 guard_install=yes mseal=yes process_madvise=pidfd_self process_madvise_free=yes anon_name=yes populate_write=yes thp=madvise mthp=2M collapse=unprobed thp_except_advised=yes rseq=yes rseq_size=33 mm_cid=yes slice_ext=kernel-disabled lam=no uai=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=48K l2=2M
+populate_write: yes (madvise rc 0)
+thp_except_advised: yes (PR_GET_THP_DISABLE 0)
+rseq: rseq=yes rseq_size=33 mm_cid=yes
+slice_ext: kernel-disabled
+ok features
+
+==================== ~/logs/fuzz.log (last 60 lines) ====================
+docker build --platform linux/amd64 -f Dockerfile.dev -t challoc-dev:amd64 .
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  68.55MB
+Step 1/4 : FROM cgr.dev/chainguard/wolfi-base
+ ---> 1d95114038f7
+Step 2/4 : RUN sed -i       -e 's/^glibc=.*/glibc-2.44/'       -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/'       -e 's/^ld-linux=.*/ld-linux-2.44/'       -e 's/^libcrypt1=.*/libcrypt1-2.44/'       /etc/apk/world  && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44  && apk add --no-cache       rust       build-base       gcc       jemalloc       git       cmake       tcl       openssl-dev       procps       memtier-benchmark       posix-libc-utils-2.44       autoconf       ruby-3.4       jemalloc-dev       yaml-dev       zlib-dev       libffi-dev       tzdata       tcmalloc-minimal       python-3.13       py3.13-pip  && rustc --version && cargo --version && python3 --version  && test -f /usr/lib/libtcmalloc_minimal.so.4
+ ---> Using cache
+ ---> 694ac60a575d
+Step 3/4 : WORKDIR /src
+ ---> Using cache
+ ---> 9a28b57025c3
+Step 4/4 : CMD ["sh"]
+ ---> Using cache
+ ---> 974f1326f33d
+Successfully built 974f1326f33d
+Successfully tagged challoc-dev:amd64
+docker run --rm --platform linux/amd64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-amd64:/src/target -v challoc-cargo-registry:/root/.cargo/registry     challoc-dev:amd64 sh -c 'cargo build --release \
+  && cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c \
+       fuzz/fuzz.c -o target/fuzz -ldl \
+  && LD_PRELOAD=/src/target/release/libchalloc.so \
+     ./target/fuzz 10000000 4 0xC4A110C 2048'
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.02s
+fuzz: seed 0xc4a110c, 10000000 ops, 4 threads, table 2048
+fuzz: 5121262 allocs (818352 aligned, 1024474 calloc) 5121262 frees (508567 cross-thread) 1456462 reallocs 729400 inspections, 470856.9 MiB filled
+ok fuzz
+
+==================== ~/logs/test-cgroup.log (last 60 lines) ====================
+cycle  49 at   153 s: up 480 MiB in 106 ms (rss 487, current 488 MiB), down to 200 MiB in 17 ms (rss 379, current 380 MiB), 76804 objects
+composition top of cycle 50: current 487 anon 485 file 0 kernel 2 (slab 0 pagetables 1) MiB, rss 486 MiB; challoc allocated 480 active 482 resident 483 metadata 1 retained 25 empty 0 MiB
+cycle  50 at   156 s: up 480 MiB in 105 ms (rss 486, current 487 MiB), down to 200 MiB in 16 ms (rss 382, current 383 MiB), 71830 objects
+cycle  51 at   159 s: up 480 MiB in 104 ms (rss 489, current 490 MiB), down to 200 MiB in 18 ms (rss 387, current 388 MiB), 87308 objects
+cycle  52 at   162 s: up 480 MiB in 104 ms (rss 488, current 489 MiB), down to 200 MiB in 21 ms (rss 370, current 370 MiB), 79817 objects
+cycle  53 at   166 s: up 480 MiB in 104 ms (rss 493, current 494 MiB), down to 200 MiB in 16 ms (rss 372, current 372 MiB), 79956 objects
+cycle  54 at   169 s: up 480 MiB in 104 ms (rss 492, current 493 MiB), down to 200 MiB in 17 ms (rss 374, current 374 MiB), 73472 objects
+cycle  55 at   172 s: up 480 MiB in 109 ms (rss 502, current 502 MiB), down to 200 MiB in 16 ms (rss 375, current 375 MiB), 77499 objects
+cycle  56 at   175 s: up 480 MiB in 104 ms (rss 491, current 491 MiB), down to 200 MiB in 17 ms (rss 378, current 379 MiB), 78130 objects
+cycle  57 at   178 s: up 480 MiB in 105 ms (rss 493, current 493 MiB), down to 200 MiB in 18 ms (rss 341, current 342 MiB), 77985 objects
+cycle  58 at   181 s: up 480 MiB in 95 ms (rss 490, current 491 MiB), down to 200 MiB in 17 ms (rss 372, current 372 MiB), 81835 objects
+cycle  59 at   184 s: up 480 MiB in 108 ms (rss 490, current 490 MiB), down to 200 MiB in 18 ms (rss 365, current 365 MiB), 85097 objects
+cycle  60 at   187 s: up 480 MiB in 106 ms (rss 489, current 490 MiB), down to 200 MiB in 18 ms (rss 381, current 382 MiB), 86998 objects
+cycle  61 at   191 s: up 480 MiB in 105 ms (rss 490, current 490 MiB), down to 200 MiB in 19 ms (rss 373, current 374 MiB), 91965 objects
+cycle  62 at   194 s: up 480 MiB in 106 ms (rss 490, current 490 MiB), down to 200 MiB in 18 ms (rss 382, current 383 MiB), 88262 objects
+cycle  63 at   197 s: up 480 MiB in 105 ms (rss 497, current 497 MiB), down to 200 MiB in 16 ms (rss 388, current 389 MiB), 76351 objects
+cycle  64 at   200 s: up 480 MiB in 103 ms (rss 489, current 490 MiB), down to 200 MiB in 17 ms (rss 373, current 373 MiB), 76942 objects
+cycle  65 at   203 s: up 480 MiB in 105 ms (rss 490, current 490 MiB), down to 200 MiB in 17 ms (rss 380, current 381 MiB), 82954 objects
+cycle  66 at   206 s: up 480 MiB in 107 ms (rss 491, current 492 MiB), down to 200 MiB in 17 ms (rss 380, current 380 MiB), 81708 objects
+cycle  67 at   209 s: up 480 MiB in 107 ms (rss 493, current 493 MiB), down to 200 MiB in 17 ms (rss 388, current 388 MiB), 81581 objects
+cycle  68 at   212 s: up 480 MiB in 106 ms (rss 489, current 490 MiB), down to 200 MiB in 18 ms (rss 386, current 387 MiB), 80992 objects
+cycle  69 at   216 s: up 480 MiB in 105 ms (rss 489, current 490 MiB), down to 200 MiB in 18 ms (rss 374, current 375 MiB), 82058 objects
+composition top of cycle 70: current 491 anon 489 file 0 kernel 2 (slab 0 pagetables 1) MiB, rss 491 MiB; challoc allocated 481 active 486 resident 487 metadata 1 retained 21 empty 0 MiB
+cycle  70 at   219 s: up 480 MiB in 106 ms (rss 491, current 491 MiB), down to 200 MiB in 16 ms (rss 387, current 388 MiB), 71399 objects
+cycle  71 at   222 s: up 480 MiB in 104 ms (rss 491, current 491 MiB), down to 200 MiB in 16 ms (rss 376, current 376 MiB), 82277 objects
+cycle  72 at   225 s: up 480 MiB in 106 ms (rss 491, current 491 MiB), down to 200 MiB in 17 ms (rss 363, current 363 MiB), 77282 objects
+cycle  73 at   228 s: up 480 MiB in 108 ms (rss 492, current 493 MiB), down to 200 MiB in 17 ms (rss 373, current 374 MiB), 71336 objects
+cycle  74 at   231 s: up 480 MiB in 109 ms (rss 500, current 500 MiB), down to 200 MiB in 18 ms (rss 396, current 397 MiB), 76115 objects
+cycle  75 at   234 s: up 480 MiB in 107 ms (rss 492, current 493 MiB), down to 200 MiB in 17 ms (rss 369, current 369 MiB), 73398 objects
+cycle  76 at   238 s: up 480 MiB in 105 ms (rss 489, current 489 MiB), down to 200 MiB in 17 ms (rss 362, current 363 MiB), 71466 objects
+cycle  77 at   241 s: up 480 MiB in 108 ms (rss 491, current 491 MiB), down to 200 MiB in 17 ms (rss 369, current 370 MiB), 74683 objects
+cycle  78 at   244 s: up 480 MiB in 108 ms (rss 487, current 488 MiB), down to 200 MiB in 19 ms (rss 366, current 367 MiB), 77289 objects
+cycle  79 at   247 s: up 480 MiB in 106 ms (rss 488, current 489 MiB), down to 200 MiB in 17 ms (rss 381, current 382 MiB), 74033 objects
+cycle  80 at   250 s: up 480 MiB in 103 ms (rss 490, current 490 MiB), down to 200 MiB in 18 ms (rss 369, current 370 MiB), 75535 objects
+cycle  81 at   253 s: up 480 MiB in 113 ms (rss 499, current 499 MiB), down to 200 MiB in 17 ms (rss 378, current 378 MiB), 73204 objects
+cycle  82 at   256 s: up 480 MiB in 108 ms (rss 499, current 499 MiB), down to 200 MiB in 19 ms (rss 362, current 362 MiB), 76362 objects
+cycle  83 at   259 s: up 480 MiB in 104 ms (rss 486, current 487 MiB), down to 200 MiB in 17 ms (rss 379, current 380 MiB), 91675 objects
+cycle  84 at   263 s: up 480 MiB in 106 ms (rss 487, current 487 MiB), down to 200 MiB in 19 ms (rss 375, current 376 MiB), 87368 objects
+cycle  85 at   266 s: up 480 MiB in 104 ms (rss 491, current 491 MiB), down to 200 MiB in 17 ms (rss 386, current 387 MiB), 76298 objects
+cycle  86 at   269 s: up 480 MiB in 105 ms (rss 490, current 491 MiB), down to 200 MiB in 17 ms (rss 375, current 375 MiB), 90554 objects
+cycle  87 at   272 s: up 480 MiB in 105 ms (rss 490, current 491 MiB), down to 200 MiB in 17 ms (rss 373, current 374 MiB), 87767 objects
+cycle  88 at   275 s: up 480 MiB in 107 ms (rss 488, current 489 MiB), down to 200 MiB in 18 ms (rss 378, current 378 MiB), 79072 objects
+cycle  89 at   278 s: up 480 MiB in 106 ms (rss 499, current 499 MiB), down to 200 MiB in 17 ms (rss 383, current 384 MiB), 72450 objects
+composition top of cycle 90: current 497 anon 495 file 0 kernel 2 (slab 0 pagetables 1) MiB, rss 497 MiB; challoc allocated 480 active 491 resident 492 metadata 1 retained 15 empty 0 MiB
+cycle  90 at   281 s: up 480 MiB in 107 ms (rss 497, current 497 MiB), down to 200 MiB in 17 ms (rss 374, current 375 MiB), 75817 objects
+cycle  91 at   285 s: up 480 MiB in 107 ms (rss 490, current 490 MiB), down to 200 MiB in 17 ms (rss 364, current 364 MiB), 74519 objects
+cycle  92 at   288 s: up 480 MiB in 107 ms (rss 489, current 489 MiB), down to 200 MiB in 16 ms (rss 369, current 369 MiB), 78722 objects
+cycle  93 at   291 s: up 480 MiB in 106 ms (rss 491, current 492 MiB), down to 200 MiB in 18 ms (rss 402, current 403 MiB), 66323 objects
+cycle  94 at   294 s: up 480 MiB in 105 ms (rss 491, current 491 MiB), down to 200 MiB in 17 ms (rss 369, current 369 MiB), 76004 objects
+cycle  95 at   297 s: up 480 MiB in 106 ms (rss 490, current 491 MiB), down to 200 MiB in 17 ms (rss 379, current 379 MiB), 77048 objects
+cycle  96 at   300 s: up 480 MiB in 106 ms (rss 488, current 488 MiB), down to 200 MiB in 18 ms (rss 395, current 395 MiB), 85785 objects
+memory.events after: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0
+composition highest top (cycle 55): current 502 anon 500 file 0 kernel 2 (slab 0 pagetables 1) MiB, rss 502 MiB; challoc allocated 480 active 496 resident 497 metadata 1 retained 11 empty 0 MiB
+composition at end (bottom): current 288 anon 286 file 0 kernel 1 (slab 0 pagetables 1) MiB, rss 288 MiB; challoc allocated 200 active 269 resident 295 metadata 1 retained 213 empty 25 MiB
+challoc: stats.cgroup.limit 512 MiB current 288 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 25 MiB full_purges 0 pressure_events 0
+RESULT oscillate cycles=96 seconds=300 low=200 high=480 current_peak=502 rss_peak=502 max_before=0 max_after=0 high_before=0 high_after=0 oom_kill_before=0 oom_kill_after=0
+ok cgroup_oscillate
+memory.events after: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0 
+memory.peak 502 MiB, memory.current 3 MiB
+OUTCOME oscillate alloc=challoc args='300' status=0 verdict=ok oom_kill=0
+
+==================== ~/logs/test-privileged.log (last 60 lines) ====================
+  t+ 306 ms: rss    6 MiB, memory.current 5 MiB
+  t+ 407 ms: rss    6 MiB, memory.current 5 MiB
+  t+ 509 ms: rss    6 MiB, memory.current 5 MiB
+  challoc after the second free: limit 512 MiB retention_cap 25 MiB empty_bytes 2 MiB purge_advice eager lazy_purges 0 eager_purges 36
+  memory.stat before pressure: anon 4 MiB file 0 MiB inactive_file 0 MiB pglazyfree 0 pglazyfreed 0 (pages)
+pressure: 380 MiB of 8192 B objects in 174 ms: rss 386 MiB, memory.current 387 MiB, memory.peak 387 MiB
+  memory.stat under pressure: anon 384 MiB file 0 MiB inactive_file 0 MiB pglazyfree 0 pglazyfreed 0 (pages)
+  pglazyfreed rose by 0 pages (0 MiB): lazy-free pages the kernel reclaimed
+  challoc at the end: limit 512 MiB retention_cap 25 MiB empty_bytes 484 MiB purge_advice eager lazy_purges 0 eager_purges 37
+RESULT lazy mode=eager mib=200 rss_peak=203 rss_2s=13 rss_min=13 current_peak=203 current_2s=13 event_ms=81 lazy_purges=0 eager_purges=29 advice_2s=eager pglazyfree_pages=0 alloc_ms=100 reuse_ms=85 pressure_ms=174 pglazyfreed_pages=0 current_pressure=387 reclaim_on_request=0
+ok cgroup_lazy
+memory.events after: low 0 high 0 max 0 oom 0 oom_kill 0 oom_group_kill 0 sock_throttled 0 
+memory.peak 387 MiB, memory.current 3 MiB
+OUTCOME lazy alloc=challoc-eager args='eager 200' status=0 verdict=ok oom_kill=0
+make --no-print-directory test-pagemap-guard
+docker build --platform linux/amd64 -f Dockerfile.dev -t challoc-dev:amd64 .
+DEPRECATED: The legacy builder is deprecated and will be removed in a future release.
+            Install the buildx component to build images with BuildKit:
+            https://docs.docker.com/go/buildx/
+
+Sending build context to Docker daemon  68.55MB
+Step 1/4 : FROM cgr.dev/chainguard/wolfi-base
+ ---> 1d95114038f7
+Step 2/4 : RUN sed -i       -e 's/^glibc=.*/glibc-2.44/'       -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/'       -e 's/^ld-linux=.*/ld-linux-2.44/'       -e 's/^libcrypt1=.*/libcrypt1-2.44/'       /etc/apk/world  && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44  && apk add --no-cache       rust       build-base       gcc       jemalloc       git       cmake       tcl       openssl-dev       procps       memtier-benchmark       posix-libc-utils-2.44       autoconf       ruby-3.4       jemalloc-dev       yaml-dev       zlib-dev       libffi-dev       tzdata       tcmalloc-minimal       python-3.13       py3.13-pip  && rustc --version && cargo --version && python3 --version  && test -f /usr/lib/libtcmalloc_minimal.so.4
+ ---> Using cache
+ ---> 694ac60a575d
+Step 3/4 : WORKDIR /src
+ ---> Using cache
+ ---> 9a28b57025c3
+Step 4/4 : CMD ["sh"]
+ ---> Using cache
+ ---> 974f1326f33d
+Successfully built 974f1326f33d
+Successfully tagged challoc-dev:amd64
+docker run --rm --platform linux/amd64 -v "/home/dlorenc_chainguard_dev/challoc":/src -w /src -v challoc-target-amd64:/src/target -v challoc-cargo-registry:/root/.cargo/registry    --privileged challoc-dev:amd64 sh -c 'cargo build --release && sh scripts/pagemap-guard-test.sh'
+    Finished `release` profile [optimized + debuginfo] target(s) in 0.02s
+== pagemap_guard on (kernel 7.0.0-31-generic x86_64, default configuration)
+pagemap_guard on: PAGEMAP_SCAN available with PAGE_IS_GUARD (6.16+); MADV_GUARD_INSTALL available (6.13+); opt.guards true, opt.guard_slab_interval 8; page 4096
+pagemap_guard: 16-byte class: categories of the guard page 0x112, of the slot pages before and after 0xa / 0xa
+pagemap_guard on: 16-byte class, slab 65536, group 65536, guard every 8 groups: 40960 blocks over 11 groups, 1 guard slab(s), first at 0x2c62e1070000; guard page PAGE_IS_GUARD (a swap-type entry, not present), neighbours present and not guard
+pagemap_guard on: 16-byte class: 1 PAGE_IS_GUARD page(s) in the span, 1 per guard slab, none elsewhere
+pagemap_guard: 64-byte class: categories of the guard page 0x112, of the slot pages before and after 0xa / 0xa
+pagemap_guard on: 64-byte class, slab 65536, group 65536, guard every 8 groups: 10240 blocks over 11 groups, 1 guard slab(s), first at 0x2f90b1870000; guard page PAGE_IS_GUARD (a swap-type entry, not present), neighbours present and not guard
+pagemap_guard on: 64-byte class: 1 PAGE_IS_GUARD page(s) in the span, 1 per guard slab, none elsewhere
+pagemap_guard: 256-byte class: categories of the guard page 0x112, of the slot pages before and after 0xa / 0xa
+pagemap_guard on: 256-byte class, slab 65536, group 65536, guard every 8 groups: 2560 blocks over 11 groups, 1 guard slab(s), first at 0x37b2aac70000; guard page PAGE_IS_GUARD (a swap-type entry, not present), neighbours present and not guard
+pagemap_guard on: 256-byte class: 1 PAGE_IS_GUARD page(s) in the span, 1 per guard slab, none elsewhere
+pagemap_guard: 1024-byte class: categories of the guard page 0x112, of the slot pages before and after 0xa / 0xa
+pagemap_guard on: 1024-byte class, slab 4096, group 4096, guard every 128 groups: 520 blocks over 131 groups, 1 guard slab(s), first at 0x3f06b147f000; guard page PAGE_IS_GUARD (a swap-type entry, not present), neighbours present and not guard
+pagemap_guard on: 1024-byte class: 1 PAGE_IS_GUARD page(s) in the span, 1 per guard slab, none elsewhere
+pagemap_guard on: PAGEMAP_SCAN available with PAGE_IS_GUARD (6.16+): guard slabs reported as guard regions, both ways
+ok pagemap_guard
+== pagemap_guard off (MALLOC_CONF=guards:false)
+pagemap_guard off: PAGEMAP_SCAN available with PAGE_IS_GUARD (6.16+); MADV_GUARD_INSTALL available (6.13+); opt.guards false, opt.guard_slab_interval 8; page 4096
+pagemap_guard: 16-byte class, 40960 blocks over 10 groups: no gap, no PAGE_IS_GUARD page in the span
+pagemap_guard: 64-byte class, 10240 blocks over 10 groups: no gap, no PAGE_IS_GUARD page in the span
+pagemap_guard: 256-byte class, 2560 blocks over 10 groups: no gap, no PAGE_IS_GUARD page in the span
+pagemap_guard: 1024-byte class, 520 blocks over 130 groups: no gap, no PAGE_IS_GUARD page in the span
+pagemap_guard off: PAGEMAP_SCAN available with PAGE_IS_GUARD (6.16+): no guard slab and no guard page in any span
+ok pagemap_guard
+[driver 10:11:19] MATRIX cell=hwe-amd64 image=ubuntu-2404-noble-amd64-v20260918 kernel=7.0.0-31-generic page=4096 machine=c3-standard-4 zone=us-east4-a vcpus=4 tests=553/0 fuzz=PASS cgroup=PASS privileged=PASS:553/0 scorecard=- wall=909 outcome=PASS
+[driver 10:11:19] deleting challoc-lane-d-matrix-hwe-amd64
+[driver 10:12:10] deleted challoc-lane-d-matrix-hwe-amd64
