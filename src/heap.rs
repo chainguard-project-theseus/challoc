@@ -642,6 +642,13 @@ impl GuardTest {
 pub struct Percpu {
     /// The table: `n` contiguous [`CpuCache`]s; null when the mode is off.
     base: *mut u8,
+    /// The runs (design 6.4 under the mode): a second table of the same
+    /// shape whose header `(id, class)` is the id's *run* for the class, a
+    /// stack of `cap / 4` low-address slots claimed from the arena's lowest
+    /// partial slab, served one per scheduled pop in compact mode through
+    /// the same sections as the caches ([`Heap::percpu_run_pop`]). Null
+    /// when the mode is off.
+    runs: *mut u8,
     /// `__rseq_offset`: thread pointer to the thread's rseq area.
     offset: isize,
     /// Table entries: the kernel's `nr_cpu_ids`, the bound on `mm_cid`.
@@ -699,8 +706,15 @@ unsafe impl Sync for Percpu {}
 unsafe impl Send for Percpu {}
 
 impl Percpu {
-    const OFF: Percpu =
-        Percpu { base: ptr::null_mut(), offset: 0, n: 0, state: PercpuState::OffKey, probe: rseq::Probe::NONE, forced: false };
+    const OFF: Percpu = Percpu {
+        base: ptr::null_mut(),
+        runs: ptr::null_mut(),
+        offset: 0,
+        n: 0,
+        state: PercpuState::OffKey,
+        probe: rseq::Probe::NONE,
+        forced: false,
+    };
 
     /// Decide the mode and reserve the table. `allowed` is the caller's
     /// say (init passes true; the unit tests' `Shared` builders false, so
@@ -740,7 +754,10 @@ impl Percpu {
             let Some(base) = meta.reserve_committed(n as usize * CPU_CACHE_SIZE, 64) else {
                 return off(PercpuState::OffMemory);
             };
-            Percpu { base: base as *mut u8, offset: probe.offset, n, state: PercpuState::On, probe, forced }
+            let Some(runs) = meta.reserve_committed(n as usize * CPU_CACHE_SIZE, 64) else {
+                return off(PercpuState::OffMemory);
+            };
+            Percpu { base: base as *mut u8, runs: runs as *mut u8, offset: probe.offset, n, state: PercpuState::On, probe, forced }
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -784,6 +801,15 @@ impl Percpu {
         rseq::Table { base: unsafe { self.base.add(class * CACHE_HEADER) }, n: self.n }
     }
 
+    /// The sections' view of the run table for `class` (see `runs`).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[inline(always)]
+    fn run_table(&self, class: usize) -> rseq::Table {
+        debug_assert!(self.on() && class < NCLASSES);
+        // SAFETY: `class < NCLASSES` and the table has `n >= 1` entries.
+        rseq::Table { base: unsafe { self.runs.add(class * CACHE_HEADER) }, n: self.n }
+    }
+
     /// The header of `(id, class)` for diagnostics and statistics (the
     /// fields are read racily with volatile loads; the owner may be
     /// writing them from a critical section on another CPU).
@@ -795,20 +821,30 @@ impl Percpu {
         Some(unsafe { self.base.add(id as usize * CPU_CACHE_SIZE + class * CACHE_HEADER) } as *const CacheHeader)
     }
 
-    /// Installed headers and cached slots over the whole table (a racy
-    /// snapshot for `stats.percpu.*` and the report).
+    /// The run header of `(id, class)` (see `runs`), as [`Percpu::header`].
+    pub fn run_header(&self, id: u32, class: usize) -> Option<*const CacheHeader> {
+        if !self.on() || id >= self.n || class >= NCLASSES {
+            return None;
+        }
+        // SAFETY: inside the run table.
+        Some(unsafe { self.runs.add(id as usize * CPU_CACHE_SIZE + class * CACHE_HEADER) } as *const CacheHeader)
+    }
+
+    /// Installed headers and cached slots over both tables, the caches and
+    /// the runs (a racy snapshot for `stats.percpu.*` and the report).
     pub fn snapshot(&self) -> (usize, usize) {
         let (mut headers, mut slots) = (0usize, 0usize);
         for id in 0..self.n {
             for class in 0..NCLASSES {
-                let h = self.header(id, class).unwrap();
-                // SAFETY: a live header; racy reads of two `u32`s.
-                let (cap, len) = unsafe {
-                    (ptr::read_volatile(&raw const (*h).cap), ptr::read_volatile(&raw const (*h).len))
-                };
-                if cap != 0 {
-                    headers += 1;
-                    slots += len as usize;
+                for h in [self.header(id, class).unwrap(), self.run_header(id, class).unwrap()] {
+                    // SAFETY: a live header; racy reads of two `u32`s.
+                    let (cap, len) = unsafe {
+                        (ptr::read_volatile(&raw const (*h).cap), ptr::read_volatile(&raw const (*h).len))
+                    };
+                    if cap != 0 {
+                        headers += 1;
+                        slots += len as usize;
+                    }
                 }
             }
         }
@@ -2818,16 +2854,25 @@ impl Heap {
 /// thread ladder, clamped to [`MAX_CAP`] (the buffers are stack arrays of
 /// that size). Compaction (design 6.4) keeps its gate per header (probe
 /// every 4096 pops, compact while the class is fragmented and refills are
-/// not draining it) but not its run: a scheduled pop in compact mode
-/// claims one slot straight from the arena's lowest partial slab
-/// ([`Heap::percpu_scheduled`]), which lands the allocation where the run
-/// would have, without a two-word update no single commit store can make.
+/// not draining it) and its run as a header of its own: the thread run
+/// lives at the bottom of the cache's stack and a run pop moves the top
+/// entry into the hole, two words no single commit store can make
+/// consistent under an abort, so under the mode the run is a second table
+/// of headers (`Percpu::runs`, one per (id, class), capacity `cap / 4`)
+/// that the same `pop`/`push_batch`/`take_all`/`install` sections serve:
+/// a scheduled pop in compact mode pops the id's run
+/// ([`Heap::percpu_run_pop`]), and an exhausted run is rebuilt by one
+/// block claim from the arena's lowest partial slab, one lock hold per
+/// `cap / 4` scheduled pops as in the thread rebuild (the first form
+/// claimed one slot under the lock per scheduled pop: most of the Valkey
+/// model's cost, `bench/results/2026-09-19-*-task8-percpu-fastpath.md`).
 /// The cache GC and `thread.tcache.flush` act on the caches of the CPU the
-/// thread is running on; an idle CPU's caches are drained the next time a
-/// thread runs there and ticks, which is the residue the mode bounds by
-/// cores. Thread exit leaves the CPU caches alone (they are not the
-/// thread's), and fork needs nothing (no lock, and every section's
-/// pre-commit stores leave a consistent header).
+/// thread is running on (the drain takes the run too; the GC returns a
+/// run whose class stopped compacting); an idle CPU's caches are drained
+/// the next time a thread runs there and ticks, which is the residue the
+/// mode bounds by cores. Thread exit leaves the CPU caches alone (they
+/// are not the thread's), and fork needs nothing (no lock, and every
+/// section's pre-commit stores leave a consistent header).
 #[cfg(target_os = "linux")]
 impl Heap {
     /// The per-CPU cache capacity for `class`: the thread ladder
@@ -2835,6 +2880,15 @@ impl Heap {
     #[inline]
     fn percpu_cap(shared: &Shared, class: usize) -> u32 {
         shared.config.cache_cap(class).min(MAX_CAP)
+    }
+
+    /// The run's capacity for `class`: the thread rebuild's block, a
+    /// quarter of the cache (`Heap::rebuild_run`), at least one; 0 for an
+    /// uncached class.
+    #[inline]
+    fn percpu_run_cap(shared: &Shared, class: usize) -> u32 {
+        let cap = Self::percpu_cap(shared, class);
+        if cap == 0 { 0 } else { (cap / 4).max(1) }
     }
 
     /// The pop of a heap in a per-CPU process: the [`PUSH_PERCPU`] branch
@@ -2922,15 +2976,16 @@ impl Heap {
         }
     }
 
-    /// The scheduled pop of a per-CPU cache (design 6.4 without the run):
+    /// The scheduled pop of a per-CPU cache (design 6.4 under the mode):
     /// in probe mode run the periodic work and ask the class whether it is
     /// fragmented and left alone by refills, entering compact mode if so;
-    /// in compact mode claim one slot from the arena's lowest partial slab
-    /// (re-checking the class every [`PROBE_MASK`] + 1 scheduled pops and
-    /// dropping back to probing once it is dense); otherwise pop the top.
-    /// The header's mode fields are hints written with volatile stores
-    /// (another thread may own the id by the time they land; a stale mode
-    /// changes only which pops are scheduled, never a stack).
+    /// in compact mode serve the id's run ([`Heap::percpu_run_pop`]: the
+    /// lowest slots of the arena's lowest partial slab, claimed a block at
+    /// a time), re-checking the class every [`PROBE_MASK`] + 1 scheduled
+    /// pops and dropping back to probing once it is dense; otherwise pop
+    /// the top. The header's mode fields are hints written with volatile
+    /// stores (another thread may own the id by the time they land; a
+    /// stale mode changes only which pops are scheduled, never a stack).
     #[cold]
     #[inline(never)]
     fn percpu_scheduled(&mut self, shared: &Shared, class: usize) -> Option<(*mut u8, bool)> {
@@ -2944,7 +2999,8 @@ impl Heap {
         match mode {
             MODE_COMPACT => {
                 // SAFETY: as above; `run_end` is unused by per-CPU caches
-                // and counts scheduled pops here.
+                // (the run is a header of its own) and counts scheduled
+                // pops here.
                 let k = unsafe { ptr::read_volatile(&raw const (*h).run_end) }.wrapping_add(1);
                 unsafe { ptr::write_volatile(&raw mut (*h).run_end, k) };
                 if k & PROBE_MASK == 0 {
@@ -2959,6 +3015,7 @@ impl Heap {
                         return self.percpu_pop_plain(shared, class);
                     }
                 }
+                return self.percpu_run_pop(shared, class, h, arena);
             }
             MODE_PROBE => {
                 self.tick(shared);
@@ -2986,14 +3043,76 @@ impl Heap {
             }
             _ => return self.percpu_pop_plain(shared, class),
         }
-        let mut out = [ptr::null_mut()];
-        let claim = self.claim(shared, cs, &mut out);
-        if claim.n == 0 {
-            return self.percpu_pop_plain(shared, class);
+        self.percpu_run_pop(shared, class, h, arena)
+    }
+
+    /// The compacting half of the scheduled pop (design 6.4's run under
+    /// the mode; `h` is the running id's cache header, `arena` its arena).
+    /// Pop the running id's run for `class` (the second table of
+    /// [`Percpu`], through the same `pop` section as a cache; its header
+    /// never schedules, `compact_mask == u32::MAX`). An exhausted or
+    /// uninstalled run is *rebuilt* as the thread run is: the class is
+    /// re-checked (dense: back to probing, pop the top), else a block of
+    /// `cap / 4` slots is claimed from the arena's lowest partial slab
+    /// under the class lock, once per block instead of once per scheduled
+    /// pop (the first form's cost: one lock hold in 8 pops on the Valkey
+    /// model), and pushed onto the run in one section, lowest on top,
+    /// whatever did not fit (the thread migrated to an id whose run is
+    /// full) going back to its slab; then the pop is retried. The zero
+    /// prefix travels with the block, so `calloc` stays honest.
+    #[cold]
+    #[inline(never)]
+    fn percpu_run_pop(&mut self, shared: &Shared, class: usize, h: *mut CacheHeader, arena: u16) -> Option<(*mut u8, bool)> {
+        let pac = shared.pac();
+        let area = self.rseq_area;
+        let rt = shared.percpu.run_table(class);
+        let cs = shared.owner(arena).class(class);
+        loop {
+            // SAFETY: this thread's area; the run table is live.
+            match unsafe { rseq::pop(area, rt, pac) } {
+                rseq::Pop::Popped(p, zero) => {
+                    self.count_direct_alloc(class);
+                    return Some((p, zero));
+                }
+                rseq::Pop::OutOfRange => cid_out_of_range(),
+                rseq::Pop::Empty | rseq::Pop::Scheduled => {}
+            }
+            // Rebuild.
+            let run_cap = Self::percpu_run_cap(shared, class);
+            // SAFETY: this thread's area.
+            let cid = unsafe { rseq::mm_cid(area) };
+            if run_cap == 0 || !self.percpu_ensure(shared, class, run_cap, cid, true) {
+                return self.percpu_pop_plain(shared, class);
+            }
+            if !Self::fragmented(shared, arena, class) {
+                cs.note_compact_mode(false);
+                // SAFETY: a live header; racy hints (see `percpu_scheduled`).
+                unsafe {
+                    ptr::write_volatile(&raw mut (*h).mode, MODE_PROBE);
+                    ptr::write_volatile(&raw mut (*h).compact_mask, PROBE_MASK);
+                }
+                return self.percpu_pop_plain(shared, class);
+            }
+            let want = (run_cap as usize).min(MAX_CAP as usize / 4);
+            let mut buf = [ptr::null_mut::<u8>(); MAX_CAP as usize / 4];
+            let out = &mut buf[..want];
+            let claim = self.claim(shared, cs, out);
+            if claim.n == 0 {
+                return self.percpu_pop_plain(shared, class);
+            }
+            cs.note_compact(claim.n);
+            let block = &mut out[..claim.n];
+            block.reverse();
+            // SAFETY: this thread's area; `block` are plain slot pointers.
+            let pushed = match unsafe { rseq::push_batch(area, rt, block, claim.zeroed, pac) } {
+                Ok(k) => k,
+                Err(()) => cid_out_of_range(),
+            };
+            if pushed < block.len() {
+                // A descending batch keeps each slab's slots contiguous.
+                shared.release_routed(arena, class, &block[pushed..]);
+            }
         }
-        cs.note_compact(1);
-        self.count_direct_alloc(class);
-        Some((out[0], claim.zeroed))
     }
 
     /// One slot of `class` straight from the home arena's bitmaps, counted
@@ -3044,7 +3163,7 @@ impl Heap {
             }
             // SAFETY: this thread's area.
             let cid = unsafe { rseq::mm_cid(area) };
-            if !self.percpu_ensure(shared, class, cap, cid) {
+            if !self.percpu_ensure(shared, class, cap, cid, false) {
                 return self.percpu_alloc_direct(shared, class);
             }
             let arena = Percpu::arena_of(shared, cid);
@@ -3082,11 +3201,15 @@ impl Heap {
     /// to publish a header this thread did not prepare (it migrated:
     /// re-read the id and try again). `false` when no stack could be
     /// allocated (the caller serves the request directly).
+    ///
+    /// `run` selects the run table (a run header never schedules:
+    /// `MODE_OFF`, `compact_mask == u32::MAX`).
     #[inline(never)]
-    fn percpu_ensure(&mut self, shared: &Shared, class: usize, cap: u32, cid: u32) -> bool {
+    fn percpu_ensure(&mut self, shared: &Shared, class: usize, cap: u32, cid: u32, run: bool) -> bool {
         let mut cid = cid;
         loop {
-            let Some(h) = shared.percpu.header(cid, class) else { cid_out_of_range() };
+            let h = if run { shared.percpu.run_header(cid, class) } else { shared.percpu.header(cid, class) };
+            let Some(h) = h else { cid_out_of_range() };
             let h = h as *mut CacheHeader;
             // SAFETY: a live header; racy read of `cap`.
             if unsafe { ptr::read_volatile(&raw const (*h).cap) } != 0 {
@@ -3097,7 +3220,7 @@ impl Heap {
                 return false;
             }
             let arena = Percpu::arena_of(shared, cid);
-            let mode = if shared.config.tcache_compact_shift == 0 { MODE_OFF } else { MODE_PROBE };
+            let mode = if run || shared.config.tcache_compact_shift == 0 { MODE_OFF } else { MODE_PROBE };
             let mask = if mode == MODE_PROBE { PROBE_MASK } else { u32::MAX };
             // SAFETY: a live header not yet published (`cap == 0`); these
             // stores are identical from every installer of this header.
@@ -3107,8 +3230,9 @@ impl Heap {
                 ptr::write_volatile(&raw mut (*h).compact_mask, mask);
                 ptr::write_volatile(&raw mut (*h).probe_refilled, shared.owner(arena).class(class).refilled() as u32);
             }
+            let t = if run { shared.percpu.run_table(class) } else { shared.percpu.table(class) };
             // SAFETY: this thread's area; `slots` holds `cap` pointers.
-            match unsafe { rseq::install(self.rseq_area, shared.percpu.table(class), h as *const u8, slots as *mut *mut u8, cap) } {
+            match unsafe { rseq::install(self.rseq_area, t, h as *const u8, slots as *mut *mut u8, cap) } {
                 rseq::Install::Installed => return true,
                 rseq::Install::Exists => {
                     shared.meta.free(slots, CacheHeader::slots_layout(cap));
@@ -3156,7 +3280,7 @@ impl Heap {
             }
             // SAFETY: this thread's area.
             let cid = unsafe { rseq::mm_cid(area) };
-            if !self.percpu_ensure(shared, class, cap, cid) {
+            if !self.percpu_ensure(shared, class, cap, cid, false) {
                 shared.free_direct(shared.arena_of_slot(class, p), class, p);
                 self.count_direct_free(class);
                 return;
@@ -3232,11 +3356,38 @@ impl Heap {
     fn percpu_drain(&mut self, shared: &Shared) {
         for class in 0..NCLASSES {
             let cap = Self::percpu_cap(shared, class);
-            if cap == 0 || !self.percpu_current_has(shared, class) {
+            if cap == 0 {
                 continue;
             }
-            self.percpu_flush(shared, class, cap, |len| len);
+            if self.percpu_current_has(shared, class, false) {
+                self.percpu_flush(shared, class, cap, |len| len);
+            }
+            if self.percpu_current_has(shared, class, true) {
+                self.percpu_run_drain(shared, class);
+            }
         }
+    }
+
+    /// Return every entry of the running id's run for `class` to the slabs
+    /// (`take_all` on the run header, grouped by slab, routed by owner).
+    #[inline(never)]
+    fn percpu_run_drain(&mut self, shared: &Shared, class: usize) {
+        let area = self.rseq_area;
+        let mut buf = [ptr::null_mut::<u8>(); MAX_CAP as usize / 4];
+        let out = &mut buf[..(Self::percpu_run_cap(shared, class) as usize).min(MAX_CAP as usize / 4)];
+        // SAFETY: this thread's area; `out` holds the run's capacity.
+        let len = match unsafe { rseq::take_all(area, shared.percpu.run_table(class), out, shared.pac()) } {
+            Ok(len) => len,
+            Err(()) => cid_out_of_range(),
+        };
+        if len == 0 {
+            return;
+        }
+        // SAFETY: this thread's area.
+        let arena = Percpu::arena_of(shared, unsafe { rseq::mm_cid(area) });
+        let all = &mut out[..len];
+        group_by_slab(shared, class, all);
+        shared.release_routed(arena, class, all);
     }
 
     /// The running CPU's caches' GC (design 6.4): release three quarters of
@@ -3257,14 +3408,26 @@ impl Heap {
             let lw = lw as usize;
             self.percpu_flush(shared, class, cap, move |len| (lw - lw / 4).min(len));
         }
+        // A run left behind by a class that stopped compacting is returned
+        // whole; a compacting class keeps its run (it is being consumed).
+        for class in 0..NCLASSES {
+            let Some(h) = shared.percpu.header(cid, class) else { cid_out_of_range() };
+            // SAFETY: a live header; racy hint.
+            let mode = unsafe { ptr::read_volatile(&raw const (*h).mode) };
+            if mode != MODE_COMPACT && self.percpu_current_has(shared, class, true) {
+                self.percpu_run_drain(shared, class);
+            }
+        }
     }
 
-    /// Whether the running CPU's header for `class` is installed and holds
-    /// anything (a racy hint that saves a drain the empty section).
-    fn percpu_current_has(&self, shared: &Shared, class: usize) -> bool {
+    /// Whether the running CPU's header (or, with `run`, its run header)
+    /// for `class` is installed and holds anything (a racy hint that saves
+    /// a drain the empty section).
+    fn percpu_current_has(&self, shared: &Shared, class: usize, run: bool) -> bool {
         // SAFETY: this thread's area.
         let cid = unsafe { rseq::mm_cid(self.rseq_area) };
-        let Some(h) = shared.percpu.header(cid, class) else { cid_out_of_range() };
+        let h = if run { shared.percpu.run_header(cid, class) } else { shared.percpu.header(cid, class) };
+        let Some(h) = h else { cid_out_of_range() };
         // SAFETY: a live header; racy reads.
         unsafe { ptr::read_volatile(&raw const (*h).cap) != 0 && ptr::read_volatile(&raw const (*h).len) != 0 }
     }
@@ -6534,6 +6697,188 @@ mod linux_tests {
             assert_eq!(unsafe { ptr::read_volatile(&raw const (*h).len) }, 0);
             let (_, cached) = s.percpu.snapshot();
             assert_eq!(cached, live_all(s, c));
+            t.destroy();
+        })
+        .join()
+        .unwrap();
+    }
+
+    /// Design 6.4 under the mode (plan Phase 2.5 task 8, mechanism (b) of
+    /// the fast-path follow-up): a fragmented class's scheduled pops are
+    /// served from the id's *run*, a header of the second per-CPU table
+    /// filled by one block claim of `cap / 4` slots from the lowest partial
+    /// slab, not by a locked one-slot claim per scheduled pop. The test
+    /// leaves a residue of holes through the CPU caches, forces scheduled
+    /// pops by setting the header's `allocs` to the schedule (as the
+    /// thread-mode tests do), watches the class enter compact mode, and
+    /// then checks that the run header is installed with one block, that
+    /// the next `block - 1` scheduled pops come out of it without another
+    /// claim, that each lands in the lowest slab with room (below every
+    /// kept allocation), that conservation holds with the run counted, and
+    /// that `flush_all` drains the run as well as the cache. One automatic
+    /// arena, so the holes are in the arena every id binds to whatever id
+    /// the thread ran under; the header the test schedules is re-derived
+    /// from the current id before every scheduled pop, and a thread whose
+    /// id changes in the middle (the test harness runs more threads than
+    /// CPUs, where the kernel shares ids) says so and stops rather than
+    /// asserting on another id's header.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn percpu_scheduled_pops_come_from_a_run_claimed_a_block_at_a_time() {
+        let s = shared_with_guards_mode(
+            Config { narenas: 1, percpu_arena: crate::config::PercpuArena::Percpu, ..Config::DEFAULT },
+            true,
+            true,
+        );
+        if !s.percpu_on() {
+            return;
+        }
+        std::thread::spawn(move || {
+            let t = TestHeap::new(s);
+            // 292 slots per slab, cap 512, block 128 (as the thread test).
+            let c = super::tests::class_with(224);
+            let cap = Config::DEFAULT.cache_cap(c) as usize;
+            let block = cap / 4;
+            let area = rseq::area(s.percpu.probe().offset);
+            let cid = unsafe { rseq::mm_cid(area) };
+            let arena = Percpu::arena_of(s, cid);
+            assert_eq!(arena, 0, "one automatic arena");
+            let cs = s.owner(arena).class(c);
+            // A residue: 30 slabs' worth allocated, 56% freed at random,
+            // the caches flushed, so the class has holes in most slabs and
+            // the kept allocations are spread over all of them.
+            let nslots = CLASSES[c].nslots();
+            let mut st = 0x5eed_1234u64;
+            let mut keep: Vec<*mut u8> = Vec::new();
+            for p in (0..30 * nslots).map(|_| t.alloc(c)).collect::<Vec<_>>() {
+                if xorshift(&mut st) % 1000 < 560 { t.free(p) } else { keep.push(p) }
+            }
+            t.flush_all();
+            if unsafe { rseq::mm_cid(area) } != cid {
+                std::eprintln!("percpu: the thread changed id during the residue, skipping");
+                for p in keep { t.free(p) }
+                t.destroy();
+                return;
+            }
+            assert!(Heap::fragmented(s, arena, c), "the residue is a fragmented class");
+            let h = s.percpu.header(cid, c).unwrap() as *mut CacheHeader;
+            let rh = s.percpu.run_header(cid, c).unwrap();
+            assert_eq!(unsafe { ptr::read_volatile(&raw const (*rh).cap) }, 0, "no run before compaction");
+            // Refill the cache once (the pops below must be scheduled pops,
+            // not refills), then quieten the refill gate: the probe compares
+            // the class's refill counter with the header's snapshot.
+            let p0 = t.alloc(c);
+            unsafe {
+                ptr::write_volatile(&raw mut (*h).probe_refilled, cs.refilled() as u32);
+                assert_eq!(ptr::read_volatile(&raw const (*h).mode), MODE_PROBE);
+            }
+            // Schedule the next pop on the current id's header; `false`
+            // when the thread's id is no longer `cid`.
+            let schedule = |h: *mut CacheHeader| unsafe {
+                if rseq::mm_cid(area) != cid {
+                    return false;
+                }
+                let m = ptr::read_volatile(&raw const (*h).compact_mask) as u64;
+                ptr::write_volatile(&raw mut (*h).allocs, m);
+                true
+            };
+            let moved = |what: &str| {
+                std::eprintln!("percpu: the thread changed id {what}, stopping the test here");
+            };
+            let (compacted0, on0, _, _) = cs.compaction_stats();
+            // The probe: enters compact mode, and the same scheduled pop is
+            // served from a freshly built run.
+            if !schedule(h) {
+                moved("before the probe");
+                t.free(p0);
+                for p in keep { t.free(p) }
+                t.destroy();
+                return;
+            }
+            let p1 = t.alloc(c);
+            if unsafe { rseq::mm_cid(area) } != cid {
+                moved("at the probe");
+                t.free(p0);
+                t.free(p1);
+                for p in keep { t.free(p) }
+                t.destroy();
+                return;
+            }
+            assert_eq!(unsafe { ptr::read_volatile(&raw const (*h).mode) }, MODE_COMPACT, "the probe found the residue");
+            let (compacted1, on1, _, _) = cs.compaction_stats();
+            assert_eq!(on1, on0 + 1);
+            assert_eq!(compacted1 - compacted0, block as u64, "one block claim of cap / 4");
+            assert_ne!(unsafe { ptr::read_volatile(&raw const (*rh).cap) }, 0, "the run header is installed");
+            assert_eq!(unsafe { ptr::read_volatile(&raw const (*rh).cap) } as usize, block);
+            assert_eq!(unsafe { ptr::read_volatile(&raw const (*rh).len) } as usize, block - 1, "one served, the rest waits");
+            // Where the run's slots land: the block is claimed from the
+            // lowest partial slab at the time of the rebuild. The refill
+            // that served `p0` took `cap / 2` of the lowest holes first, so
+            // the block starts above those; it is still in the low half of
+            // the residue's slabs, below the median kept slot, which is
+            // what moves the live set downward.
+            let slab_of = |p: *mut u8| s.regions.slab_slot(p as usize).unwrap().1;
+            let mut kept_slabs: Vec<usize> = keep.iter().map(|&p| slab_of(p)).collect();
+            kept_slabs.sort_unstable();
+            let median_kept_slab = kept_slabs[kept_slabs.len() / 2];
+            let min_kept_slab = median_kept_slab;
+            assert!(
+                slab_of(p1) < median_kept_slab,
+                "the run's slot (slab {}) is in the low half of the residue (median kept slab {median_kept_slab})",
+                slab_of(p1)
+            );
+            // The rest of the block, one per scheduled pop, no claim.
+            let mut from_run = std::vec![p1];
+            let mut stable = true;
+            for _ in 1..block {
+                if !schedule(h) {
+                    stable = false;
+                    break;
+                }
+                let p = t.alloc(c);
+                from_run.push(p);
+                if unsafe { rseq::mm_cid(area) } != cid {
+                    stable = false;
+                    break;
+                }
+                assert!(slab_of(p) < min_kept_slab, "every run slot is in the low half");
+            }
+            let mut p2 = None;
+            if stable {
+                assert_eq!(cs.compaction_stats().0, compacted1, "no claim while the run lasts");
+                assert_eq!(unsafe { ptr::read_volatile(&raw const (*rh).len) }, 0, "the run is exhausted");
+                let (_, cached) = s.percpu.snapshot();
+                assert_eq!(cached + keep.len() + from_run.len() + 1, live_all(s, c), "cached (runs included) + live = out of the bitmaps");
+                // The next scheduled pop rebuilds: a second block.
+                if schedule(h) {
+                    let q = t.alloc(c);
+                    p2 = Some(q);
+                    if unsafe { rseq::mm_cid(area) } == cid {
+                        assert_eq!(cs.compaction_stats().0 - compacted1, block as u64, "the rebuild claims the next block");
+                        assert!(slab_of(q) <= min_kept_slab);
+                        assert_eq!(unsafe { ptr::read_volatile(&raw const (*rh).len) } as usize, block - 1);
+                    } else {
+                        moved("at the rebuild");
+                    }
+                } else {
+                    moved("before the rebuild");
+                }
+            } else {
+                moved("while the run was being consumed");
+            }
+            // The drain empties the run too (of the id the thread runs on
+            // now, whose headers are re-derived).
+            t.flush_all();
+            let now = unsafe { rseq::mm_cid(area) };
+            let (h, rh) = (s.percpu.header(now, c).unwrap(), s.percpu.run_header(now, c).unwrap());
+            assert_eq!(unsafe { ptr::read_volatile(&raw const (*rh).len) }, 0, "flush_all drains the run");
+            assert_eq!(unsafe { ptr::read_volatile(&raw const (*h).len) }, 0);
+            for p in keep.into_iter().chain(from_run).chain([p0]).chain(p2) {
+                t.free(p);
+            }
+            t.flush_all();
+            let (_, cached) = s.percpu.snapshot();
+            assert_eq!(cached, live_all(s, c), "everything is cached or released at the end");
             t.destroy();
         })
         .join()

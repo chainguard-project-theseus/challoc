@@ -859,7 +859,10 @@ to `rallocx` exactly as jemalloc's contract requires.
   so a class they are draining has only transient holes; direct
   `MALLOCX_TCACHE_NONE` claims such as Valkey's defragmenter's do not
   count); a rebuild re-checks the holes and drops back to probing once
-  the class is dense. Why:
+  the class is dense. Under the per-CPU mode (section 15) the run is a
+  header of its own per (id, class) rather than the bottom of the stack,
+  rebuilt by the same block claim and served one entry per scheduled pop
+  through the `pop` section. Why:
   a LIFO cache hands every allocation the slot just freed, so under a
   balanced alloc/free churn (Valkey's DEL:SET steady state) the cache never
   reaches either boundary, no refill or flush runs, and the slab layout is
@@ -1840,12 +1843,23 @@ that size).
 
 The paths. The `PUSH_PERCPU` bit of `Shared::push_flags`, the byte every
 fast path already loads, sends `malloc`, `calloc`, `free` and the sized
-free to out-of-line per-CPU functions (`Heap::pop_percpu_mode`,
-`percpu_free_fast`) so the thread paths keep their shape byte for byte;
-in the mode a pop or push is the thread-pointer load, the `mm_cid` load,
-the table index and the section, and the `free` fast path skips the owner
-word (a CPU cache takes verified slots of every arena, section 6.3's sized
-path already does the same). The thread heap stays: it is the init
+free by one tail call to their per-CPU wrappers (`api::libc::percpu_malloc`,
+`percpu_free`, `percpu_free_sized`), so the thread paths keep their shape
+byte for byte. The wrapper inlines the whole hit path
+(`Heap::percpu_pop_raw`, `heap::percpu_push_raw`: the heap's `percpu`
+byte, the slot check for a free, the section, the byte count) and tests
+one bit of the section's raw status word (`rseq::pop_raw`/`push_raw`,
+the `POP_*`/`PUSH_*` constants); every miss (a heap off the mode, an
+empty or full cache, a declined pointer, the scheduled pop, an id out of
+range) is one cold tail call that finishes the operation
+(`percpu_*_miss`), so the wrapper has no frame and no call of its own.
+In the mode a pop or push is therefore the entry point's dispatch plus
+the thread-pointer load, the `mm_cid` load, the table index and the
+section; the `free` fast path skips the owner word (a CPU cache takes
+verified slots of every arena, section 6.3's sized path already does the
+same). The first form (a wrapper calling a second function that held the
+section and returned an enum) cost +65..83 instructions per larson
+operation; this one +33..47 (`bench/results/2026-09-19-*-task8-percpu-fastpath.md`). The thread heap stays: it is the init
 witness the fast paths load anyway, it keeps the thread's byte counters
 (every per-CPU pop and push is counted there per operation, so
 `thread.allocated` stays exact), its own caches serve explicit
@@ -1869,14 +1883,31 @@ stack was in order); if the thread migrated between the two sections the
 batch lands on the new CPU's cache and what does not fit is released to
 its slabs. Compaction keeps its gate per header (probe every 4096 pops,
 compact while the class is fragmented and refills are not draining it)
-but not its run: a scheduled pop in compact mode claims one slot straight
-from the arena's lowest partial slab, which lands the allocation where the
-run would have without the two-word update no single commit can make
-(`Heap::percpu_scheduled`). The cache GC and `thread.tcache.flush`,
-`malloc_trim` and the purges' caller flush act on the caches of the CPU
-the thread is running on; an idle CPU's caches are drained the next time
-a thread runs there and ticks, and that residue, at most `cap` slots per
-(id, class), is what the mode bounds by cores. Thread exit leaves the CPU
+and its run as a header of its own: the thread run sits at the bottom of
+the cache's stack and a run pop moves the top entry into the hole, a
+two-word update no single commit can make consistent under an abort, so
+under the mode the run is a second table of `nr_cpu_ids`
+`[CacheHeader; NCLASSES]` (`Percpu::runs`), the header of `(id, class)`
+holding up to `cap / 4` slots (`compact_mask == u32::MAX`, so it never
+schedules), served by the same `pop` section a cache is. A scheduled pop
+in compact mode pops the id's run (`Heap::percpu_run_pop`); an exhausted
+or uninstalled run is *rebuilt* as the thread run is: the class
+re-checked (dense: back to probing), else a block of `cap / 4` claimed
+from the arena's lowest partial slab under the class lock, one hold per
+block instead of one per scheduled pop, and pushed onto the run with
+`push_batch`, lowest on top, the zero prefix travelling with it; what
+does not fit after a migration goes back to its slab. (The first form
+claimed one slot under the lock per scheduled pop, one pop in 8 on a
+fragmented class: on the Valkey model that was most of the mode's cost,
++148 instructions per operation on the C4 against +58 with the run;
+`bench/results/2026-09-19-*-task8-percpu-fastpath.md`.) The cache GC and
+`thread.tcache.flush`, `malloc_trim` and the purges' caller flush act on
+the caches of the CPU the thread is running on (the drain takes the run
+as well; the GC returns a run whose class stopped compacting and leaves a
+compacting one, which is being consumed); an idle CPU's caches are
+drained the next time a thread runs there and ticks, and that residue,
+at most `cap + cap / 4` slots per (id, class), is what the mode bounds by
+cores. `stats.percpu.headers` and `.cached` count both tables. Thread exit leaves the CPU
 caches alone (they are not the thread's); fork needs nothing (no lock, and
 every section's pre-commit stores leave a consistent header; a child's
 ids start over on the same table). Memory ordering across CPUs comes from
