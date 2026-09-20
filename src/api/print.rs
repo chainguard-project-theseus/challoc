@@ -482,6 +482,148 @@ fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
 // JSON report.
 // ---------------------------------------------------------------------------
 
+/// The general section of the JSON report: build and options, the
+/// arena/bin geometry, the background thread, the `thp`, `cgroup` and
+/// `stats` objects. `arenas_follow` says whether a `stats.arenas` object
+/// follows (the `stats` line then ends with a comma).
+fn json_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot, arenas_follow: bool) -> fmt::Result {
+    writeln!(out, "\t\t\"config\": {{\"debug\": false, \"stats\": true, \"quantum\": {QUANTUM}}},")?;
+    writeln!(out, "\t\t\"opt\": {{")?;
+    let mut first = true;
+    for key in KEYS {
+        let Some(v) = shared.config.get(key.as_bytes()) else { continue };
+        if !first {
+            writeln!(out, ",")?;
+        }
+        first = false;
+        match v {
+            Value::Bool(b) => write!(out, "\t\t\t\"{key}\": {b}")?,
+            Value::Int(i) => write!(out, "\t\t\t\"{key}\": {i}")?,
+            Value::Uint(u) => write!(out, "\t\t\t\"{key}\": {u}")?,
+            Value::Str(s) => write!(out, "\t\t\t\"{key}\": \"{s}\"")?,
+        }
+    }
+    writeln!(out)?;
+    writeln!(out, "\t\t}},")?;
+    writeln!(
+        out,
+        "\t\t\"arenas\": {{\"narenas\": {}, \"nbins\": {NBINS}, \"quantum\": {QUANTUM}, \"page\": {}}},",
+        snap.narenas,
+        shared.regions.page_size()
+    )?;
+    writeln!(out, "\t\t\"background_thread\": {{\"present\": {}}},", purge::background::present())?;
+    let td = crate::thp::decision();
+    let ts = crate::thp::stats();
+    writeln!(
+        out,
+        "\t\t\"thp\": {{\"key\": \"{}\", \"mode\": \"{}\", \"reason\": \"{}\", \"class_ranges\": {}, \"class_bytes\": {}, \"chunks\": {}, \"huge_ranges\": {}, \"meta_ranges\": {}, \"failures\": {}, \"nohuge_ranges\": {}, \"host\": \"{}\", \"process\": \"{}\"}},",
+        crate::thp::key().name(),
+        td.mode.name(),
+        td.reason.text(),
+        ts.class_ranges,
+        ts.class_bytes,
+        ts.chunks,
+        ts.huge_ranges,
+        ts.meta_ranges,
+        ts.failures,
+        ts.nohuge_ranges,
+        crate::thp::host_mode().map_or("none", crate::sys::features::ThpSetting::name),
+        crate::thp::process().name()
+    )?;
+    let cg = &shared.cgroup;
+    cg.sample(crate::sys::now_coarse_ns());
+    writeln!(
+        out,
+        "\t\t\"cgroup\": {{\"tracked\": {}, \"limit\": {}, \"high\": {}, \"current\": {}, \"pressure_events\": {}, \"decay_ms\": {}, \"retention_cap\": {}, \"empty_bytes\": {}, \"full_purges\": {}, \"thp_forced\": {}, \"purge_advice\": \"{}\", \"lazy_purges\": {}, \"eager_purges\": {}, \"purged_is_zero\": {}}},",
+        cg.tracked(),
+        cg.limit(),
+        cg.high(),
+        cg.current(),
+        cg.pressure_events(),
+        match shared.policy.effective_decay_ns(shared.decay_ns()) {
+            crate::purge::NEVER => -1i64,
+            ns => (ns / 1_000_000) as i64,
+        },
+        shared.policy.cap(),
+        crate::policy::empty_bytes(shared),
+        shared.policy.full_purges(),
+        shared.policy.thp_forced(),
+        match purge::advice() {
+            purge::Advice::Lazy => "lazy",
+            purge::Advice::Eager => "eager",
+        },
+        purge::batches().0,
+        purge::batches().1,
+        purge::purged_is_zero()
+    )?;
+    let t = &snap.totals;
+    writeln!(
+        out,
+        "\t\t\"stats\": {{\"allocated\": {}, \"active\": {}, \"metadata\": {}, \"resident\": {}, \"mapped\": {}, \"retained\": {}}}{}",
+        t.allocated,
+        t.active,
+        t.metadata,
+        t.resident,
+        t.mapped,
+        t.retained,
+        if arenas_follow { "," } else { "" }
+    )
+}
+
+/// One arena's object of the JSON report's `stats.arenas`, without the
+/// separating comma (the caller joins the arenas) or a trailing newline.
+fn json_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) -> fmt::Result {
+    writeln!(out, "\t\t\t\"{}\": {{", arena.index())?;
+    writeln!(out, "\t\t\t\t\"dirty_decay_ms\": {},", decay_ms(arena.decay_ns()))?;
+    writeln!(out, "\t\t\t\t\"pactive\": {}, \"pdirty\": {}, \"pmuzzy\": {},", s.pactive, s.pdirty, s.pmuzzy)?;
+    writeln!(
+        out,
+        "\t\t\t\t\"small\": {{\"allocated\": {}, \"active\": {}, \"dirty\": {}, \"retained\": {}}},",
+        s.small_allocated, s.small_active, s.small_dirty, s.small_retained
+    )?;
+    writeln!(
+        out,
+        "\t\t\t\t\"large\": {{\"allocated\": {}, \"active\": {}, \"dirty\": {}, \"retained\": {}, \"runs\": {}}},",
+        s.large_allocated,
+        s.large_active,
+        s.large_dirty + s.huge_dirty,
+        s.large_retained + s.huge_retained,
+        s.large_runs
+    )?;
+    writeln!(
+        out,
+        "\t\t\t\t\"metadata\": {}, \"resident\": {}, \"mapped\": {}, \"retained\": {}{}",
+        s.metadata,
+        s.resident,
+        s.mapped,
+        s.retained,
+        if bins { "," } else { "" }
+    )?;
+    if bins {
+        writeln!(out, "\t\t\t\t\"bins\": [")?;
+        for (j, b) in s.bins[..NBINS].iter().enumerate() {
+            writeln!(
+                out,
+                "\t\t\t\t\t{{\"size\": {}, \"nregs\": {}, \"slab_size\": {}, \"curregs\": {}, \"curslabs\": {}, \"nonfull_slabs\": {}, \"empty_slabs\": {}, \"purged_slabs\": {}}}{}",
+                b.size,
+                b.nregs,
+                b.slab_size,
+                b.curregs,
+                b.curslabs,
+                b.nonfull_slabs,
+                b.empty_slabs,
+                b.purged_slabs,
+                if j + 1 == NBINS { "" } else { "," }
+            )?;
+        }
+        writeln!(out, "\t\t\t\t]")?;
+    }
+    write!(out, "\t\t\t}}")
+}
+
+/// The JSON report (`J`): the `jemalloc` object with `version` and
+/// `implementation`, then [`json_general`] and the `stats.arenas` object of
+/// [`json_arena`]s, each under its option letter as in [`text_report`].
 fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result {
     let snap = stats::collect(shared);
     writeln!(out, "{{")?;
@@ -489,148 +631,22 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
     writeln!(out, "\t\t\"version\": \"{VERSION_STR}\",")?;
     writeln!(out, "\t\t\"implementation\": \"challoc\",")?;
     if !o.no_general {
-        writeln!(out, "\t\t\"config\": {{\"debug\": false, \"stats\": true, \"quantum\": {QUANTUM}}},")?;
-        writeln!(out, "\t\t\"opt\": {{")?;
-        let mut first = true;
-        for key in KEYS {
-            let Some(v) = shared.config.get(key.as_bytes()) else { continue };
-            if !first {
-                writeln!(out, ",")?;
-            }
-            first = false;
-            match v {
-                Value::Bool(b) => write!(out, "\t\t\t\"{key}\": {b}")?,
-                Value::Int(i) => write!(out, "\t\t\t\"{key}\": {i}")?,
-                Value::Uint(u) => write!(out, "\t\t\t\"{key}\": {u}")?,
-                Value::Str(s) => write!(out, "\t\t\t\"{key}\": \"{s}\"")?,
-            }
-        }
-        writeln!(out)?;
-        writeln!(out, "\t\t}},")?;
-        writeln!(
-            out,
-            "\t\t\"arenas\": {{\"narenas\": {}, \"nbins\": {NBINS}, \"quantum\": {QUANTUM}, \"page\": {}}},",
-            snap.narenas,
-            shared.regions.page_size()
-        )?;
-        writeln!(out, "\t\t\"background_thread\": {{\"present\": {}}},", purge::background::present())?;
-        let td = crate::thp::decision();
-        let ts = crate::thp::stats();
-        writeln!(
-            out,
-            "\t\t\"thp\": {{\"key\": \"{}\", \"mode\": \"{}\", \"reason\": \"{}\", \"class_ranges\": {}, \"class_bytes\": {}, \"chunks\": {}, \"huge_ranges\": {}, \"meta_ranges\": {}, \"failures\": {}, \"nohuge_ranges\": {}, \"host\": \"{}\", \"process\": \"{}\"}},",
-            crate::thp::key().name(),
-            td.mode.name(),
-            td.reason.text(),
-            ts.class_ranges,
-            ts.class_bytes,
-            ts.chunks,
-            ts.huge_ranges,
-            ts.meta_ranges,
-            ts.failures,
-            ts.nohuge_ranges,
-            crate::thp::host_mode().map_or("none", crate::sys::features::ThpSetting::name),
-            crate::thp::process().name()
-        )?;
-        let cg = &shared.cgroup;
-        cg.sample(crate::sys::now_coarse_ns());
-        writeln!(
-            out,
-            "\t\t\"cgroup\": {{\"tracked\": {}, \"limit\": {}, \"high\": {}, \"current\": {}, \"pressure_events\": {}, \"decay_ms\": {}, \"retention_cap\": {}, \"empty_bytes\": {}, \"full_purges\": {}, \"thp_forced\": {}, \"purge_advice\": \"{}\", \"lazy_purges\": {}, \"eager_purges\": {}, \"purged_is_zero\": {}}},",
-            cg.tracked(),
-            cg.limit(),
-            cg.high(),
-            cg.current(),
-            cg.pressure_events(),
-            match shared.policy.effective_decay_ns(shared.decay_ns()) {
-                crate::purge::NEVER => -1i64,
-                ns => (ns / 1_000_000) as i64,
-            },
-            shared.policy.cap(),
-            crate::policy::empty_bytes(shared),
-            shared.policy.full_purges(),
-            shared.policy.thp_forced(),
-            match purge::advice() {
-                purge::Advice::Lazy => "lazy",
-                purge::Advice::Eager => "eager",
-            },
-            purge::batches().0,
-            purge::batches().1,
-            purge::purged_is_zero()
-        )?;
-        let t = &snap.totals;
-        writeln!(
-            out,
-            "\t\t\"stats\": {{\"allocated\": {}, \"active\": {}, \"metadata\": {}, \"resident\": {}, \"mapped\": {}, \"retained\": {}}}{}",
-            t.allocated,
-            t.active,
-            t.metadata,
-            t.resident,
-            t.mapped,
-            t.retained,
-            if o.no_arenas { "" } else { "," }
-        )?;
+        json_general(out, shared, &snap, !o.no_arenas)?;
     }
     if !o.no_arenas {
         writeln!(out, "\t\t\"stats.arenas\": {{")?;
         let mut r = Ok(());
         let mut first = true;
         for_each_arena(shared, |a, s| {
-            if r.is_err() {
-                return;
-            }
-            r = (|| {
+            if r.is_ok() {
                 if !first {
-                    writeln!(out, ",")?;
+                    r = writeln!(out, ",");
                 }
                 first = false;
-                writeln!(out, "\t\t\t\"{}\": {{", a.index())?;
-                writeln!(out, "\t\t\t\t\"dirty_decay_ms\": {},", decay_ms(a.decay_ns()))?;
-                writeln!(out, "\t\t\t\t\"pactive\": {}, \"pdirty\": {}, \"pmuzzy\": {},", s.pactive, s.pdirty, s.pmuzzy)?;
-                writeln!(
-                    out,
-                    "\t\t\t\t\"small\": {{\"allocated\": {}, \"active\": {}, \"dirty\": {}, \"retained\": {}}},",
-                    s.small_allocated, s.small_active, s.small_dirty, s.small_retained
-                )?;
-                writeln!(
-                    out,
-                    "\t\t\t\t\"large\": {{\"allocated\": {}, \"active\": {}, \"dirty\": {}, \"retained\": {}, \"runs\": {}}},",
-                    s.large_allocated,
-                    s.large_active,
-                    s.large_dirty + s.huge_dirty,
-                    s.large_retained + s.huge_retained,
-                    s.large_runs
-                )?;
-                writeln!(
-                    out,
-                    "\t\t\t\t\"metadata\": {}, \"resident\": {}, \"mapped\": {}, \"retained\": {}{}",
-                    s.metadata,
-                    s.resident,
-                    s.mapped,
-                    s.retained,
-                    if o.no_bins { "" } else { "," }
-                )?;
-                if !o.no_bins {
-                    writeln!(out, "\t\t\t\t\"bins\": [")?;
-                    for (j, b) in s.bins[..NBINS].iter().enumerate() {
-                        writeln!(
-                            out,
-                            "\t\t\t\t\t{{\"size\": {}, \"nregs\": {}, \"slab_size\": {}, \"curregs\": {}, \"curslabs\": {}, \"nonfull_slabs\": {}, \"empty_slabs\": {}, \"purged_slabs\": {}}}{}",
-                            b.size,
-                            b.nregs,
-                            b.slab_size,
-                            b.curregs,
-                            b.curslabs,
-                            b.nonfull_slabs,
-                            b.empty_slabs,
-                            b.purged_slabs,
-                            if j + 1 == NBINS { "" } else { "," }
-                        )?;
-                    }
-                    writeln!(out, "\t\t\t\t]")?;
+                if r.is_ok() {
+                    r = json_arena(out, a, s, !o.no_bins);
                 }
-                write!(out, "\t\t\t}}")
-            })();
+            }
         });
         r?;
         writeln!(out)?;
