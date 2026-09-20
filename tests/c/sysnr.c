@@ -56,6 +56,11 @@
 #else
 #define PV_madvise printf("-")
 #endif
+#ifdef __NR_mincore
+#define PV_mincore printf("%d", __NR_mincore)
+#else
+#define PV_mincore printf("-")
+#endif
 #ifdef __NR_getpid
 #define PV_getpid printf("%d", __NR_getpid)
 #else
@@ -134,7 +139,7 @@
 
 int main(void) {
     P(read); P(write); P(close); P(mmap); P(mprotect); P(munmap);
-    P(rt_sigaction); P(rt_sigprocmask); P(madvise); P(getpid); P(prctl);
+    P(rt_sigaction); P(rt_sigprocmask); P(madvise); P(mincore); P(getpid); P(prctl);
     P(gettid); P(futex); P(clock_gettime); P(exit_group); P(tgkill);
     P(openat); P(getrandom); P(pidfd_open); P(process_madvise); P(mseal);
     P(sched_getaffinity); P(ppoll); P(eventfd2);

@@ -124,6 +124,25 @@ mod tests {
         }
     }
 
+    /// Every named code has a name: the `pub const E...: Errno = Errno(n)`
+    /// lines of this file, read from the source so a code added without a
+    /// `name` arm fails here.
+    #[test]
+    fn every_named_code_has_a_name() {
+        let src = std::fs::read_to_string(std::concat!(env!("CARGO_MANIFEST_DIR"), "/src/sys/errno.rs")).unwrap();
+        let mut seen = 0;
+        for line in src.lines() {
+            let Some(rest) = line.trim_start().strip_prefix("pub const E") else { continue };
+            let Some((name, value)) = rest.split_once(": Errno = Errno(") else { continue };
+            let code: i32 = value.trim_end_matches([')', ';']).parse().unwrap();
+            let name = std::format!("E{name}");
+            assert_eq!(Errno(code).name(), name, "Errno({code})");
+            assert_eq!(std::format!("{}", Errno(code)), name);
+            seen += 1;
+        }
+        assert!(seen >= 15, "found {seen} named codes");
+    }
+
     #[test]
     fn display_names_known_and_unknown() {
         assert_eq!(std::format!("{}", Errno::EINVAL), "EINVAL");

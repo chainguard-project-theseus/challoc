@@ -6,7 +6,9 @@
 //! `sys::tests` checks every constant against it.
 
 /// Name/number pairs, in the same order as `tests/c/sysnr.c`, for the
-/// header cross-check test.
+/// header cross-check test. `table_covers_every_constant` below keeps it
+/// complete: a constant added to `arch` or the unified list without a row
+/// here would never be checked against the headers.
 #[cfg(test)]
 pub const TABLE: &[(&str, usize)] = &[
     ("read", READ),
@@ -18,6 +20,7 @@ pub const TABLE: &[(&str, usize)] = &[
     ("rt_sigaction", RT_SIGACTION),
     ("rt_sigprocmask", RT_SIGPROCMASK),
     ("madvise", MADVISE),
+    ("mincore", MINCORE),
     ("getpid", GETPID),
     ("prctl", PRCTL),
     ("gettid", GETTID),
@@ -93,3 +96,32 @@ pub use arch::*;
 pub const PIDFD_OPEN: usize = 434;
 pub const PROCESS_MADVISE: usize = 440;
 pub const MSEAL: usize = 462;
+
+#[cfg(test)]
+mod tests {
+    /// Every `pub const NAME: usize` in this file (both `arch` blocks and
+    /// the unified numbers) has a `TABLE` row under its lowercase name,
+    /// and every row names a constant. Reads the source, so a new
+    /// constant fails here until it is header-checked.
+    #[test]
+    fn table_covers_every_constant() {
+        let src = std::fs::read_to_string(std::concat!(env!("CARGO_MANIFEST_DIR"), "/src/sys/nr.rs")).unwrap();
+        let mut consts = std::vec::Vec::new();
+        for line in src.lines() {
+            let Some(rest) = line.trim_start().strip_prefix("pub const ") else { continue };
+            let Some((name, _)) = rest.split_once(": usize") else { continue };
+            if name.chars().all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit()) {
+                consts.push(name.to_ascii_lowercase());
+            }
+        }
+        consts.sort();
+        consts.dedup();
+        assert!(consts.len() >= super::TABLE.len(), "{consts:?}");
+        for name in &consts {
+            assert!(super::TABLE.iter().any(|(n, _)| n == name), "{name} declared in nr.rs but missing from TABLE");
+        }
+        for (name, _) in super::TABLE {
+            assert!(consts.iter().any(|c| c == name), "TABLE row {name} names no constant");
+        }
+    }
+}
