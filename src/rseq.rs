@@ -407,7 +407,89 @@ const _: () = assert!(
 // of the digits 0 and 1 alone are avoided, as the `asm!` documentation
 // asks): 9 the descriptor, 8 the `rseq_cs` store the abort handler jumps
 // back to, 2 `start_ip`, 3 `post_commit_ip`, 4 `abort_ip` (preceded by the
-// signature), 5..7 and 12.. the status exits.
+// signature), 5..7 and 12.. the status exits. The two parts every section
+// spells the same way are the macros below; each expands to one string
+// with embedded newlines, which `asm!` assembles exactly as the separate
+// lines it replaces (the machine code is byte-identical).
+
+/// The entry of a section: its `struct rseq_cs` in `__rseq_cs` (`version`
+/// 0, `flags` 0, `start_ip` 2, `post_commit_offset` 3 - 2, `abort_ip` 4),
+/// label 8, the store of the descriptor's address into `rseq_cs`, and
+/// label 2, `start_ip`. Operands: `t` a scratch register, `rs` the area,
+/// `off_cs` [`RSEQ_CS_OFFSET`].
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+macro_rules! rseq_enter {
+    () => {
+        concat!(
+            ".pushsection __rseq_cs, \"aw\"\n",
+            ".balign 32\n",
+            "9:\n",
+            ".long 0, 0\n",
+            ".quad 2f, 3f - 2f, 4f\n",
+            ".popsection\n",
+            "8:\n",
+            "lea {t}, [rip + 9b]\n",
+            "mov qword ptr [{rs} + {off_cs}], {t}\n",
+            "2:"
+        )
+    };
+}
+
+/// [`rseq_enter!`] for aarch64 (the descriptor address by `adrp`/`add`).
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+macro_rules! rseq_enter {
+    () => {
+        concat!(
+            ".pushsection __rseq_cs, \"aw\"\n",
+            ".balign 32\n",
+            "9:\n",
+            ".long 0, 0\n",
+            ".quad 2f, 3f - 2f, 4f\n",
+            ".popsection\n",
+            "8:\n",
+            "adrp {t}, 9b\n",
+            "add {t}, {t}, :lo12:9b\n",
+            "str {t}, [{rs}, #{off_cs}]\n",
+            "2:"
+        )
+    };
+}
+
+/// The abort handler: the signature the kernel checks before `abort_ip`
+/// (a `ud1 <sig>(%rip), %edi` on x86_64), label 4, the [`ABORTS`]
+/// increment (a `lock inc` on x86_64), and the jump back to label 8 to
+/// re-enter the section. Operands: `sig` [`SIG`], `aborts` the counter.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+macro_rules! rseq_abort {
+    () => {
+        concat!(
+            ".byte 0x0f, 0xb9, 0x3d\n",
+            ".long {sig}\n",
+            "4:\n",
+            "lock inc qword ptr [rip + {aborts}]\n",
+            "jmp 8b"
+        )
+    };
+}
+
+/// [`rseq_abort!`] for aarch64: the `.inst` signature and a plain
+/// load-add-store on the counter through `t` and `h` (module doc: a lost
+/// count under a race is acceptable for a counter).
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+macro_rules! rseq_abort {
+    () => {
+        concat!(
+            ".inst {sig}\n",
+            "4:\n",
+            "adrp {t}, {aborts}\n",
+            "add {t}, {t}, :lo12:{aborts}\n",
+            "ldr {h}, [{t}]\n",
+            "add {h}, {h}, #1\n",
+            "str {h}, [{t}]\n",
+            "b 8b"
+        )
+    };
+}
 
 /// Pop the top entry of the running CPU's header for the class `t.base`
 /// names, counting the pop in `allocs` and clipping `low_water`.
@@ -448,16 +530,7 @@ pub unsafe fn pop_raw(area: *mut u8, t: Table, pac: bool) -> (*mut u8, u32) {
     unsafe {
         #[cfg(target_arch = "x86_64")]
         asm!(
-            ".pushsection __rseq_cs, \"aw\"",
-            ".balign 32",
-            "9:",
-            ".long 0, 0",
-            ".quad 2f, 3f - 2f, 4f",
-            ".popsection",
-            "8:",
-            "lea {t}, [rip + 9b]",
-            "mov qword ptr [{rs} + {off_cs}], {t}",
-            "2:",
+            rseq_enter!(),
             "mov {h:e}, dword ptr [{rs} + {off_cid}]",
             "cmp {h:e}, {n:e}",
             "jae 6f",
@@ -485,11 +558,7 @@ pub unsafe fn pop_raw(area: *mut u8, t: Table, pac: bool) -> (*mut u8, u32) {
             "jae 13f",
             "mov {st:e}, 3",
             "jmp 13f",
-            ".byte 0x0f, 0xb9, 0x3d",
-            ".long {sig}",
-            "4:",
-            "lock inc qword ptr [rip + {aborts}]",
-            "jmp 8b",
+            rseq_abort!(),
             "5:",
             "xor {st:e}, {st:e}",
             "jmp 13f",
@@ -523,17 +592,7 @@ pub unsafe fn pop_raw(area: *mut u8, t: Table, pac: bool) -> (*mut u8, u32) {
         #[cfg(target_arch = "aarch64")]
         asm!(
             ".arch_extension pauth",
-            ".pushsection __rseq_cs, \"aw\"",
-            ".balign 32",
-            "9:",
-            ".long 0, 0",
-            ".quad 2f, 3f - 2f, 4f",
-            ".popsection",
-            "8:",
-            "adrp {t}, 9b",
-            "add {t}, {t}, :lo12:9b",
-            "str {t}, [{rs}, #{off_cs}]",
-            "2:",
+            rseq_enter!(),
             "ldr {h:w}, [{rs}, #{off_cid}]",
             "cmp {h:w}, {n:w}",
             "b.hs 6f",
@@ -566,14 +625,7 @@ pub unsafe fn pop_raw(area: *mut u8, t: Table, pac: bool) -> (*mut u8, u32) {
             "b.hs 13f",
             "mov {st:w}, #3",
             "b 13f",
-            ".inst {sig}",
-            "4:",
-            "adrp {t}, {aborts}",
-            "add {t}, {t}, :lo12:{aborts}",
-            "ldr {h}, [{t}]",
-            "add {h}, {h}, #1",
-            "str {h}, [{t}]",
-            "b 8b",
+            rseq_abort!(),
             "5:",
             "mov {st:w}, #0",
             "b 13f",
@@ -639,16 +691,7 @@ pub unsafe fn push_raw(area: *mut u8, t: Table, p: *mut u8, pac: bool) -> u32 {
     unsafe {
         #[cfg(target_arch = "x86_64")]
         asm!(
-            ".pushsection __rseq_cs, \"aw\"",
-            ".balign 32",
-            "9:",
-            ".long 0, 0",
-            ".quad 2f, 3f - 2f, 4f",
-            ".popsection",
-            "8:",
-            "lea {t}, [rip + 9b]",
-            "mov qword ptr [{rs} + {off_cs}], {t}",
-            "2:",
+            rseq_enter!(),
             "mov {h:e}, dword ptr [{rs} + {off_cid}]",
             "cmp {h:e}, {n:e}",
             "jae 6f",
@@ -668,11 +711,7 @@ pub unsafe fn push_raw(area: *mut u8, t: Table, p: *mut u8, pac: bool) -> u32 {
             "3:",
             "xor {st:e}, {st:e}",
             "jmp 13f",
-            ".byte 0x0f, 0xb9, 0x3d",
-            ".long {sig}",
-            "4:",
-            "lock inc qword ptr [rip + {aborts}]",
-            "jmp 8b",
+            rseq_abort!(),
             "5:",
             "mov {st:e}, 1",
             "jmp 13f",
@@ -701,17 +740,7 @@ pub unsafe fn push_raw(area: *mut u8, t: Table, p: *mut u8, pac: bool) -> u32 {
         #[cfg(target_arch = "aarch64")]
         asm!(
             ".arch_extension pauth",
-            ".pushsection __rseq_cs, \"aw\"",
-            ".balign 32",
-            "9:",
-            ".long 0, 0",
-            ".quad 2f, 3f - 2f, 4f",
-            ".popsection",
-            "8:",
-            "adrp {t}, 9b",
-            "add {t}, {t}, :lo12:9b",
-            "str {t}, [{rs}, #{off_cs}]",
-            "2:",
+            rseq_enter!(),
             "ldr {h:w}, [{rs}, #{off_cid}]",
             "cmp {h:w}, {n:w}",
             "b.hs 6f",
@@ -737,14 +766,7 @@ pub unsafe fn push_raw(area: *mut u8, t: Table, p: *mut u8, pac: bool) -> u32 {
             "3:",
             "mov {st:w}, #0",
             "b 13f",
-            ".inst {sig}",
-            "4:",
-            "adrp {t}, {aborts}",
-            "add {t}, {t}, :lo12:{aborts}",
-            "ldr {h}, [{t}]",
-            "add {h}, {h}, #1",
-            "str {h}, [{t}]",
-            "b 8b",
+            rseq_abort!(),
             "5:",
             "mov {st:w}, #1",
             "b 13f",
@@ -808,16 +830,7 @@ pub unsafe fn push_batch(area: *mut u8, t: Table, ptrs: &[*mut u8], zeroed: bool
     unsafe {
         #[cfg(target_arch = "x86_64")]
         asm!(
-            ".pushsection __rseq_cs, \"aw\"",
-            ".balign 32",
-            "9:",
-            ".long 0, 0",
-            ".quad 2f, 3f - 2f, 4f",
-            ".popsection",
-            "8:",
-            "lea {t}, [rip + 9b]",
-            "mov qword ptr [{rs} + {off_cs}], {t}",
-            "2:",
+            rseq_enter!(),
             "mov {h:e}, dword ptr [{rs} + {off_cid}]",
             "cmp {h:e}, {n:e}",
             "jae 6f",
@@ -856,11 +869,7 @@ pub unsafe fn push_batch(area: *mut u8, t: Table, ptrs: &[*mut u8], zeroed: bool
             "3:",
             "xor {st:e}, {st:e}",
             "jmp 13f",
-            ".byte 0x0f, 0xb9, 0x3d",
-            ".long {sig}",
-            "4:",
-            "lock inc qword ptr [rip + {aborts}]",
-            "jmp 8b",
+            rseq_abort!(),
             "6:",
             "mov {st:e}, 2",
             "13:",
@@ -892,17 +901,7 @@ pub unsafe fn push_batch(area: *mut u8, t: Table, ptrs: &[*mut u8], zeroed: bool
         #[cfg(target_arch = "aarch64")]
         asm!(
             ".arch_extension pauth",
-            ".pushsection __rseq_cs, \"aw\"",
-            ".balign 32",
-            "9:",
-            ".long 0, 0",
-            ".quad 2f, 3f - 2f, 4f",
-            ".popsection",
-            "8:",
-            "adrp {t}, 9b",
-            "add {t}, {t}, :lo12:9b",
-            "str {t}, [{rs}, #{off_cs}]",
-            "2:",
+            rseq_enter!(),
             "ldr {h:w}, [{rs}, #{off_cid}]",
             "cmp {h:w}, {n:w}",
             "b.hs 6f",
@@ -940,14 +939,7 @@ pub unsafe fn push_batch(area: *mut u8, t: Table, ptrs: &[*mut u8], zeroed: bool
             "3:",
             "mov {st:w}, #0",
             "b 13f",
-            ".inst {sig}",
-            "4:",
-            "adrp {t}, {aborts}",
-            "add {t}, {t}, :lo12:{aborts}",
-            "ldr {h}, [{t}]",
-            "add {h}, {h}, #1",
-            "str {h}, [{t}]",
-            "b 8b",
+            rseq_abort!(),
             "6:",
             "mov {st:w}, #2",
             "13:",
@@ -1001,16 +993,7 @@ pub unsafe fn take_all(area: *mut u8, t: Table, out: &mut [*mut u8], pac: bool) 
     unsafe {
         #[cfg(target_arch = "x86_64")]
         asm!(
-            ".pushsection __rseq_cs, \"aw\"",
-            ".balign 32",
-            "9:",
-            ".long 0, 0",
-            ".quad 2f, 3f - 2f, 4f",
-            ".popsection",
-            "8:",
-            "lea {t}, [rip + 9b]",
-            "mov qword ptr [{rs} + {off_cs}], {t}",
-            "2:",
+            rseq_enter!(),
             "mov {h:e}, dword ptr [{rs} + {off_cid}]",
             "cmp {h:e}, {n:e}",
             "jae 6f",
@@ -1032,11 +1015,7 @@ pub unsafe fn take_all(area: *mut u8, t: Table, out: &mut [*mut u8], pac: bool) 
             "3:",
             "xor {st:e}, {st:e}",
             "jmp 13f",
-            ".byte 0x0f, 0xb9, 0x3d",
-            ".long {sig}",
-            "4:",
-            "lock inc qword ptr [rip + {aborts}]",
-            "jmp 8b",
+            rseq_abort!(),
             "6:",
             "mov {st:e}, 2",
             "13:",
@@ -1063,17 +1042,7 @@ pub unsafe fn take_all(area: *mut u8, t: Table, out: &mut [*mut u8], pac: bool) 
         #[cfg(target_arch = "aarch64")]
         asm!(
             ".arch_extension pauth",
-            ".pushsection __rseq_cs, \"aw\"",
-            ".balign 32",
-            "9:",
-            ".long 0, 0",
-            ".quad 2f, 3f - 2f, 4f",
-            ".popsection",
-            "8:",
-            "adrp {t}, 9b",
-            "add {t}, {t}, :lo12:9b",
-            "str {t}, [{rs}, #{off_cs}]",
-            "2:",
+            rseq_enter!(),
             "ldr {h:w}, [{rs}, #{off_cid}]",
             "cmp {h:w}, {n:w}",
             "b.hs 6f",
@@ -1098,14 +1067,7 @@ pub unsafe fn take_all(area: *mut u8, t: Table, out: &mut [*mut u8], pac: bool) 
             "3:",
             "mov {st:w}, #0",
             "b 13f",
-            ".inst {sig}",
-            "4:",
-            "adrp {t}, {aborts}",
-            "add {t}, {t}, :lo12:{aborts}",
-            "ldr {h}, [{t}]",
-            "add {h}, {h}, #1",
-            "str {h}, [{t}]",
-            "b 8b",
+            rseq_abort!(),
             "6:",
             "mov {st:w}, #2",
             "13:",
@@ -1168,16 +1130,7 @@ pub unsafe fn install(area: *mut u8, t: Table, expected: *const u8, slots: *mut 
     unsafe {
         #[cfg(target_arch = "x86_64")]
         asm!(
-            ".pushsection __rseq_cs, \"aw\"",
-            ".balign 32",
-            "9:",
-            ".long 0, 0",
-            ".quad 2f, 3f - 2f, 4f",
-            ".popsection",
-            "8:",
-            "lea {t}, [rip + 9b]",
-            "mov qword ptr [{rs} + {off_cs}], {t}",
-            "2:",
+            rseq_enter!(),
             "mov {h:e}, dword ptr [{rs} + {off_cid}]",
             "cmp {h:e}, {n:e}",
             "jae 6f",
@@ -1192,11 +1145,7 @@ pub unsafe fn install(area: *mut u8, t: Table, expected: *const u8, slots: *mut 
             "3:",
             "xor {st:e}, {st:e}",
             "jmp 13f",
-            ".byte 0x0f, 0xb9, 0x3d",
-            ".long {sig}",
-            "4:",
-            "lock inc qword ptr [rip + {aborts}]",
-            "jmp 8b",
+            rseq_abort!(),
             "5:",
             "mov {st:e}, 1",
             "jmp 13f",
@@ -1229,17 +1178,7 @@ pub unsafe fn install(area: *mut u8, t: Table, expected: *const u8, slots: *mut 
         // has no `pacda`/`autda` to assemble.
         #[cfg(target_arch = "aarch64")]
         asm!(
-            ".pushsection __rseq_cs, \"aw\"",
-            ".balign 32",
-            "9:",
-            ".long 0, 0",
-            ".quad 2f, 3f - 2f, 4f",
-            ".popsection",
-            "8:",
-            "adrp {t}, 9b",
-            "add {t}, {t}, :lo12:9b",
-            "str {t}, [{rs}, #{off_cs}]",
-            "2:",
+            rseq_enter!(),
             "ldr {h:w}, [{rs}, #{off_cid}]",
             "cmp {h:w}, {n:w}",
             "b.hs 6f",
@@ -1254,14 +1193,7 @@ pub unsafe fn install(area: *mut u8, t: Table, expected: *const u8, slots: *mut 
             "3:",
             "mov {st:w}, #0",
             "b 13f",
-            ".inst {sig}",
-            "4:",
-            "adrp {t}, {aborts}",
-            "add {t}, {t}, :lo12:{aborts}",
-            "ldr {h}, [{t}]",
-            "add {h}, {h}, #1",
-            "str {h}, [{t}]",
-            "b 8b",
+            rseq_abort!(),
             "5:",
             "mov {st:w}, #1",
             "b 13f",
