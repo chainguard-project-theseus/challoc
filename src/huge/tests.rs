@@ -761,6 +761,58 @@ fn randomised_model_check() {
     assert_eq!(h.stats().purged_pages, st.next_page);
 }
 
+/// A run is keyed by its start page only, a free extent by its first
+/// and last page (`Inner::add_extent`), which is what `free_before` and
+/// `free_after` rely on; `drop_extent` takes the same keys out again and
+/// the counters follow the state. `table_cap` is read from the table.
+#[test]
+fn runs_have_one_key_and_free_extents_two() {
+    let env = Env::new();
+    let h = env.huge();
+    assert_eq!(h.stats().table_cap, h.inner.lock().table.cap());
+    let (p, _) = env.alloc(&h, 3 * page_size(), 1);
+    let page = env.page_of(p);
+    let run = h.lookup(page).expect("run keyed by its start");
+    assert_eq!((run.pages, run.state), (3 + GUARD_PAGES, RunState::Active));
+    assert_eq!(h.lookup(page + 1), None);
+    assert_eq!(h.lookup(page + run.pages - 1), None, "a run has no last-page key");
+    let st = h.stats();
+    assert_eq!((st.runs, st.run_pages, st.empty + st.purged), (1, run.pages, 0));
+    env.free(&h, p);
+    let ext = h.lookup(page).expect("free extent keyed by its first page");
+    assert_eq!(h.lookup(page + ext.pages - 1), Some(ext), "and by its last");
+    assert_eq!(h.lookup(page + 1), None);
+    let st = h.stats();
+    assert_eq!((st.runs, st.run_pages, st.empty + st.purged), (0, 0, 1));
+    // Taking the whole extent drops both keys and counts it out.
+    let (q, _) = env.alloc(&h, 3 * page_size(), 1);
+    assert_eq!(q, p);
+    assert_eq!(h.lookup(page + ext.pages - 1), None);
+    let st = h.stats();
+    assert_eq!((st.runs, st.empty + st.purged), (1, 0));
+}
+
+/// `prior_state` names where a run's pages come from for `check_zero`:
+/// fresh at or past the mark (or past the extent's end), else the
+/// extent's state.
+#[test]
+fn prior_state_names_the_source_of_the_pages() {
+    let env = Env::new();
+    let h = env.huge();
+    assert_eq!(h.prior_state(0, core::ptr::null_mut()), "fresh");
+    let (p, _) = env.alloc(&h, page_size(), 1);
+    let (q, _) = env.alloc(&h, page_size(), 1);
+    env.free(&h, p);
+    let ext = h.inner.lock().table.get(0);
+    assert_eq!(h.lookup(0).map(|i| (i.pages, i.state)), Some((1 + GUARD_PAGES, RunState::Empty)));
+    assert_eq!(h.prior_state(0, ext), "Empty");
+    assert_eq!(h.prior_state(1 + GUARD_PAGES, ext), "fresh", "pages past the extent's end");
+    h.purge_empty(u64::MAX);
+    assert_eq!(h.prior_state(0, ext), "Purged");
+    env.free(&h, q);
+    h.audit();
+}
+
 /// Eight threads allocate and free concurrently; no run is ever held
 /// by two threads and the counters settle.
 #[test]
@@ -887,5 +939,18 @@ fn a_run_state_byte_no_state_has_aborts() {
 #[should_panic(expected = "Empty extent count underflow")]
 fn huge_stats_abort_on_a_free_count_going_below_zero() {
     let mut s = HugeStats::default();
-    s.sub_free(RunState::Empty, 1);
+    s.sub(RunState::Empty, 1);
+}
+
+/// The run counters go through the same checked path as the free ones
+/// since `drop_extent` uncounts a freed run through `HugeStats::sub`.
+#[test]
+#[should_panic(expected = "Active extent count underflow")]
+fn huge_stats_abort_on_a_run_count_going_below_zero() {
+    let mut s = HugeStats::default();
+    s.add(RunState::Active, 3);
+    assert_eq!((s.runs, s.run_pages), (1, 3));
+    s.sub(RunState::Active, 3);
+    assert_eq!(s, HugeStats::default());
+    s.sub(RunState::Active, 1);
 }
