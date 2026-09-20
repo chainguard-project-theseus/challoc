@@ -21,19 +21,18 @@
 //! it applies to keys that appeared before it in the same or an earlier
 //! source; jemalloc gets the same effect with a separate first pass.
 //!
-//! The *inert* keys ([`INERT_KEYS`]: `stats_print`) are parsed but nothing
-//! in the allocator reads them (`stats_print` has nothing to print at
-//! exit). Each one is reported as [`Issue::Inert`] so that `abort_conf`
-//! rejects it and a program cannot believe it turned something on;
-//! `malloc_stats_print` marks them "accepted, no effect". `zero_on_free`
-//! and `slot_randomize` left the list with Phase 2 task 3, `thp` with Phase
-//! 2.5 task 9 (`thp.rs`): all implemented, opt-in and off by default.
-//! `percpu_arena` left the *ignored* jemalloc keys ([`IGNORED_KEYS`]) with
-//! Phase 2.5 task 8: it is a real key ([`PercpuArena`]) whose jemalloc
-//! spellings are accepted as aliases. `thp_process` ([`ThpProcess`], plan
-//! Phase 2.5 task 16) and `prefault` (task 11) are challoc keys, opt-in and
-//! off by default; this module holds the keys, `thp.rs` the `prctl` and
-//! `purge.rs`/`class.rs` the prefault pass.
+//! Three tables name the keys. [`KEYS`] are the tunables the allocator
+//! reads, jemalloc's and challoc's own (`thp_process`, `prefault`,
+//! `spin_hint`, `slice_ext`, ...), each readable through [`Config::get`]
+//! as `opt.<key>`; this module holds the keys and their parsing, the
+//! modules named in each field's doc act on them. [`IGNORED_KEYS`] are
+//! jemalloc keys accepted with any value and ignored, so a conf string
+//! written against jemalloc parses clean. The *inert* keys
+//! ([`INERT_KEYS`]: `stats_print`) are parsed but nothing in the
+//! allocator reads them (`stats_print` has nothing to print at exit).
+//! Each one is reported as [`Issue::Inert`] so that `abort_conf` rejects
+//! it and a program cannot believe it turned something on;
+//! `malloc_stats_print` marks them "accepted, no effect".
 
 use core::fmt::{self, Write as _};
 
@@ -130,7 +129,7 @@ impl Thp {
     }
 }
 
-/// `percpu_arena` values (design 15, plan Phase 2.5 task 8): whether the
+/// `percpu_arena` values (design 15): whether the
 /// caches and arenas are keyed by the running CPU's rseq `mm_cid` instead
 /// of by thread. The mode needs the runtime probe to pass (`rseq::probe`,
 /// checked at run time, never assumed from a header constant or a library
@@ -145,10 +144,8 @@ impl Thp {
 /// clean under `abort_conf`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PercpuArena {
-    /// The default: thread caches (`heap::PercpuState::OffAuto`; the
-    /// human's decision of 2026-09-20, PROGRESS.md "Phase 2.5 defaults, the
-    /// human's decisions" item 2, design 12 and 15). The per-CPU mode is
-    /// the opt-in below; nothing is reported.
+    /// The default: thread caches (`heap::PercpuState::OffAuto`, design 12
+    /// and 15). The per-CPU mode is the opt-in below; nothing is reported.
     Auto,
     /// The request is forced: on when the probe passes; when it fails the
     /// allocator still falls back to thread caches and the feature report
@@ -190,8 +187,8 @@ impl PercpuArena {
     }
 }
 
-/// `slice_ext` values (design 17, "Time slice extension"; plan Phase 2.5
-/// task 15): whether a lock holder asks the kernel, through the rseq
+/// `slice_ext` values (design 17, "Time slice extension"): whether a lock
+/// holder asks the kernel, through the rseq
 /// `slice_ctrl` bytes, to defer a preemption until the release
 /// (`slice.rs`). The runtime probe must pass: glibc's registered
 /// `__rseq_size >= 32`, the kernel's `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE`
@@ -234,8 +231,8 @@ impl SliceExt {
     }
 }
 
-/// `thp_process` values (design 12 and 17, plan Phase 2.5 task 16, the
-/// prctl half): the process-wide THP policy challoc asks the kernel for at
+/// `thp_process` values (design 12 and 17, the prctl half): the
+/// process-wide THP policy challoc asks the kernel for at
 /// init, `prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED)`,
 /// so that on an `always` host (Chainguard OS) only the regions challoc
 /// `MADV_HUGEPAGE`s under `thp:auto|always` get huge pages and the rest
@@ -244,7 +241,7 @@ impl SliceExt {
 /// (`EINVAL` below), never assumed from a header constant. Off by default
 /// because it is process-wide: a library must not change the THP policy
 /// of the program that loaded it unless asked. The call itself lives in
-/// `thp.rs` (lane B); this key only says whether to issue it.
+/// `thp.rs`; this key only says whether to issue it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ThpProcess {
     /// The default: no `prctl` is issued; the process keeps the policy it
@@ -275,16 +272,17 @@ impl ThpProcess {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Config {
     pub background_thread: bool,
-    /// Prefaulted fresh slabs (plan Phase 2.5 task 11): the background
-    /// thread commits and `MADV_POPULATE_WRITE`s (5.14+, probed; fallback:
-    /// touch) the next fresh slab of every class that refilled since its
-    /// last pass, one slab per class per pass and within the cgroup
-    /// headroom, so the claim path's first write into a fresh slab does
-    /// not take the page faults. Needs the background thread
-    /// (`background_thread:true`): without it the key changes nothing
-    /// ([`Config::prefault_active`]). Off by default until measured (the
-    /// Valkey soak's write-phase p99 and main-thread page faults). Read at
-    /// init by the thread (`purge.rs`) and the commit path (`class.rs`).
+    /// Prefaulted fresh slabs: the background thread commits and
+    /// `MADV_POPULATE_WRITE`s (5.14+, probed; fallback: touch) the next
+    /// fresh slabs of every class that refilled since its last pass, as
+    /// many as it refilled in slabs (at most `purge::prefault::MAX_AHEAD`)
+    /// and within the cgroup headroom, so the claim path's first write
+    /// into a fresh slab does not take the page faults. Needs the
+    /// background thread (`background_thread:true`): without it the key
+    /// changes nothing ([`Config::prefault_active`]). Off by default (the
+    /// decision on the Valkey soak's write-phase p99 and main-thread page
+    /// faults, design 12). Read at init by the thread (`purge.rs`) and the
+    /// commit path (`class.rs`).
     pub prefault: bool,
     /// `-1` means never purge.
     pub dirty_decay_ms: i64,
@@ -317,7 +315,7 @@ pub struct Config {
     /// Transparent huge pages for the regions (`thp.rs`, design 7, 10, 17).
     pub thp: Thp,
     /// The process-wide THP policy asked for at init ([`ThpProcess`],
-    /// design 17, plan Phase 2.5 task 16): `default` issues nothing,
+    /// design 17): `default` issues nothing,
     /// `advised` issues `prctl(PR_SET_THP_DISABLE, 1,
     /// PR_THP_DISABLE_EXCEPT_ADVISED)` where the kernel accepts it (6.18+,
     /// probed by the return). Read at init by `thp.rs`, as `thp` is.
@@ -343,7 +341,7 @@ pub struct Config {
     /// One guard per N slabs of 64 KiB (per N * 64 KiB of slabs for the
     /// classes with smaller slabs, see `heap::guard_interval_for`); 0 means
     /// none. A power of two, so the sized free's guard test is a mask
-    /// (`SlabTable::is_guard_slab`, plan Phase 2.5 task 4c): a configured
+    /// (`SlabTable::is_guard_slab`): a configured
     /// value that is not one rounds up to the next power of two, reported
     /// as [`Issue::Rounded`] (an abort under `abort_conf`) and readable
     /// through `opt.guard_slab_interval`; 1 is out of range (clamps to 2).
@@ -356,13 +354,13 @@ pub struct Config {
     /// class-size bytes on the plain and sized free paths, a huge run's
     /// usable bytes): `Shared::push_flags`, `heap::zero_slot`,
     /// `Shared::zero_huge`. Off by default: a `memset` per free is more
-    /// than the 3% budget on Valkey's 1 KiB values (review 2026-09-18
-    /// section 5.1; priced in `bench/results/2026-09-18-*-gce-tunables.md`).
+    /// than the 3% budget on Valkey's 1 KiB values (priced in
+    /// `bench/results/2026-09-18-*-gce-tunables.md`).
     pub zero_on_free: bool,
     /// Sign the thread caches' slot pointers and the heap pointer in TLS
     /// with `pacda` where the CPU and kernel expose pointer authentication
-    /// (`HWCAP_PACA`/`PACG`; `sys::pac`, design 6.1, 6.2 and 17; plan
-    /// Phase 2.5 task 7). `Shared::push_flags` bit `PUSH_PAC`. Opt-in:
+    /// (`HWCAP_PACA`/`PACG`; `sys::pac`, design 6.1, 6.2 and 17).
+    /// `Shared::push_flags` bit `PUSH_PAC`. Opt-in:
     /// an entry's two PAC instructions (sign in, authenticate out) are 11%
     /// of xmalloc-test's cross-thread frees and 1..2% of larson on Axion,
     /// over the 1% budget for a default-on hardening
@@ -381,8 +379,8 @@ pub struct Config {
     pub abort_conf: bool,
     /// Read the memory cgroup (design 11, `sys::cgroup`): the effective
     /// limits, `memory.current`, `memory.events` and the PSI trigger, for
-    /// `stats.cgroup.*` and the reports. `false` reads nothing. The policy
-    /// that acts on the figures is Phase 2 task 5.
+    /// `stats.cgroup.*`, the reports and the policy of `policy.rs` that
+    /// acts on the figures. `false` reads nothing.
     pub cgroup: bool,
     /// Debug mode: every slot or page handed out as "known zero" (`Fresh`
     /// or `Purged` memory behind `calloc`) is read at its first and last
@@ -394,8 +392,8 @@ pub struct Config {
     /// (design 13.3, `ClassState::adopt_idle_group`). `false`, the
     /// default, keeps every group with the arena that first committed it:
     /// the handoff moved nothing on the 16-arena mstress row it was built
-    /// for and cost that row 2.4% of RSS on aarch64 (Phase 1.5 task 15,
-    /// `bench/results/2026-09-18-{aarch64,x86_64}-gce-group-handoff.md`);
+    /// for and cost that row 2.4% of RSS on aarch64
+    /// (`bench/results/2026-09-18-{aarch64,x86_64}-gce-group-handoff.md`);
     /// it takes a fifth off xmalloc-test's RSS, so it stays as an opt-in.
     /// Slow paths only.
     pub group_handoff: bool,
@@ -824,7 +822,7 @@ pub const IGNORED_KEYS: &[&str] = &[
 /// Keys that parse but that no code acts on: `stats_print` has nothing to
 /// print at exit. Setting one is [`Issue::Inert`], which `abort_conf`
 /// turns into an abort; `malloc_stats_print` lists them as "accepted, no
-/// effect". `thp` left the list with plan Phase 2.5 task 9.
+/// effect".
 pub const INERT_KEYS: &[&str] = &["stats_print"];
 
 /// Whether `key` is one of [`INERT_KEYS`].
@@ -1274,8 +1272,8 @@ mod tests {
         assert!(!d.background_thread);
         assert_eq!(d.dirty_decay_ms, 10_000);
         assert_eq!(d.narenas, 0);
-        assert_eq!(d.percpu_arena, PercpuArena::Auto, "on where the mm_cid probe passes (plan Phase 2.5 task 8)");
-        assert_eq!(d.slice_ext, SliceExt::Auto, "on where the slice extension probe passes (plan Phase 2.5 task 15)");
+        assert_eq!(d.percpu_arena, PercpuArena::Auto, "thread caches; `percpu` is the opt-in");
+        assert_eq!(d.slice_ext, SliceExt::Auto, "on where the slice extension probe passes");
         assert!(d.tcache);
         assert_eq!(d.tcache_max, 32 * 1024);
         assert_eq!(d.tcache_nslots_small_max, 1024);
@@ -1286,8 +1284,8 @@ mod tests {
         assert_eq!(clean("tcache_compact_shift:0").compact_mask(), u32::MAX);
         assert_eq!(clean("tcache_compact_shift:20").compact_mask(), (1 << 20) - 1);
         assert_eq!(d.thp, Thp::Never);
-        assert_eq!(d.thp_process, ThpProcess::Default, "process-wide, so opt-in (plan Phase 2.5 task 16)");
-        assert!(!d.prefault, "off until measured (plan Phase 2.5 task 11)");
+        assert_eq!(d.thp_process, ThpProcess::Default, "process-wide, so opt-in");
+        assert!(!d.prefault, "opt-in");
         assert!(!d.prefault_active());
         assert!(!d.lazy_free);
         assert!(d.lazy_band);
@@ -1297,7 +1295,7 @@ mod tests {
         assert_eq!(d.huge_retain_max, 64 << 20);
         assert_eq!(d.huge_retain_max, crate::huge::DEFAULT_RETAIN_MAX);
         assert!(!d.zero_on_free && !d.slot_randomize && !d.double_free_scan && !d.abort_conf && !d.check_zero);
-        assert!(!d.pac_pointers, "signed pointers are opt-in (plan Phase 2.5 task 7, priced in bench/results/2026-09-19-lane-a-pac-pointers.md)");
+        assert!(!d.pac_pointers, "signed pointers are opt-in (priced in bench/results/2026-09-19-lane-a-pac-pointers.md)");
         assert!(d.cgroup && !d.group_handoff);
         assert_eq!(Config::default(), d);
         assert_eq!(d.gc_interval_ns(), 10_000_000_000);
@@ -1438,20 +1436,17 @@ mod tests {
         assert_eq!(cfg.thp, Thp::Never);
         assert_eq!(issues.len(), 1);
         assert!(issues[0].contains("invalid conf value \"madvise\" for thp"));
-        // No longer inert (plan Phase 2.5 task 9): accepted under abort_conf.
+        // Not inert: accepted under abort_conf.
         assert!(!is_inert(b"thp"));
         assert_eq!(clean("thp:auto,abort_conf:true").thp, Thp::Auto);
     }
 
-    /// The inert keys: stored and readable, but every one is reported so
-    /// that `abort_conf` rejects a configuration that relies on it; a bad
-    /// value is still a bad value, not an inert report.
-    /// `percpu_arena` (plan Phase 2.5 task 8): the three values, jemalloc's
-    /// spellings as aliases, anything else reported and left at the
-    /// default, and the helpers lane A's init reads.
+    /// `percpu_arena`: the three values, jemalloc's spellings as aliases,
+    /// anything else reported and left at the default, and the helpers
+    /// the heap's init reads.
     #[test]
     fn percpu_arena_values() {
-        assert!(!IGNORED_KEYS.contains(&"percpu_arena"), "a real key since Phase 2.5 task 8");
+        assert!(!IGNORED_KEYS.contains(&"percpu_arena"), "a real key, not an ignored jemalloc one");
         assert!(!is_inert(b"percpu_arena"));
         for (value, want) in [
             ("auto", PercpuArena::Auto),
@@ -1493,8 +1488,8 @@ mod tests {
         }
     }
 
-    /// `slice_ext` (plan Phase 2.5 task 15): the three values, anything
-    /// else reported and left at the default, `opt.slice_ext` reads back,
+    /// `slice_ext`: the three values, anything else reported and left at
+    /// the default, `opt.slice_ext` reads back,
     /// and the helpers `slice::configure` is called with.
     #[test]
     fn slice_ext_values() {
@@ -1522,8 +1517,8 @@ mod tests {
         assert!(SliceExt::On.forced() && !SliceExt::Auto.forced() && !SliceExt::Off.forced());
     }
 
-    /// `thp_process` (plan Phase 2.5 task 16, the prctl half): the two
-    /// values, anything else reported and left at the default,
+    /// `thp_process` (the prctl half): the two values, anything else
+    /// reported and left at the default,
     /// `opt.thp_process` reads back, the accessor `thp.rs` decides the
     /// `prctl` on, and `thp` untouched by it (they are separate keys: the
     /// per-region advice and the process-wide policy).
@@ -1560,8 +1555,8 @@ mod tests {
         assert_eq!((cfg.thp, cfg.thp_process), (Thp::Never, ThpProcess::Default));
     }
 
-    /// `prefault` (plan Phase 2.5 task 11): a bool key, off by default,
-    /// readable, accepted under `abort_conf`; `prefault_active` is the
+    /// `prefault`: a bool key, off by default, readable, accepted under
+    /// `abort_conf`; `prefault_active` is the
     /// key and the background thread that runs the pass.
     #[test]
     fn prefault_values() {
@@ -1621,9 +1616,9 @@ mod tests {
         for key in KEYS {
             assert_eq!(is_inert(key.as_bytes()), INERT_KEYS.contains(key), "{key}");
         }
-        assert!(!is_inert(b"double_free_scan"), "implemented since Phase 1.5 task 9");
-        // Phase 2 task 3: the two hardening keys are real, opt-in keys: no
-        // report, stored, readable, and `abort_conf` accepts them.
+        assert!(!is_inert(b"double_free_scan"));
+        // The two hardening keys are real, opt-in keys: no report, stored,
+        // readable, and `abort_conf` accepts them.
         for key in ["zero_on_free", "slot_randomize"] {
             assert!(!is_inert(key.as_bytes()), "{key}");
             let (cfg, issues) = parse(&std::format!("{key}:true,abort_conf:true"));
@@ -1638,7 +1633,7 @@ mod tests {
         let (cfg, issues) = parse("narenas:3,thp:always,cgroup:false,abort_conf:true,stats_print:true");
         assert_eq!(cfg.narenas, 3);
         assert!(cfg.abort_conf && !cfg.cgroup && cfg.thp == Thp::Always);
-        assert_eq!(issues.len(), 1, "cgroup (Phase 2 task 4) and thp (Phase 2.5 task 9) are real keys: {issues:?}");
+        assert_eq!(issues.len(), 1, "cgroup and thp are real keys: {issues:?}");
         assert!(!is_inert(b"cgroup"));
         assert!(!is_inert(b"thp"));
     }

@@ -40,7 +40,7 @@
 //! `dirty_decay_ms:-1` (never) is left alone in every band: it is an
 //! explicit choice, as under jemalloc, and the report shows it.
 //!
-//! The advice ([`advice`], plan Phase 2.5 task 10): a purge issues
+//! The advice ([`advice`]): a purge issues
 //! `MADV_FREE` (lazy: the pages stay mapped and charged until the kernel
 //! reclaims them, and a reuse before that refaults nothing) only where the
 //! policy knows the headroom, under 70% of a known limit, and
@@ -51,7 +51,8 @@
 //! for an explicit purge (`malloc_trim(0)`, `arena.<i>.purge`, the full
 //! purge a `memory.events` `high` rise owes: the caller asked for RSS to
 //! drop), and while an eager return of the excess over the retention cap
-//! is in progress ([`Policy::headroom`], the floor fix of 2026-09-19): a
+//! is in progress ([`Policy::headroom`]; the floor fix of
+//! `bench/results/2026-09-19-lane-b-floor-fixes.md`): a
 //! retention over the cap first seen at 70% or above is returned eagerly
 //! until it is back within the cap, even though the first eager walks
 //! bring usage under 70% before the rest is purged. Without that rule the
@@ -59,7 +60,7 @@
 //! charged (the cap met in the allocator's accounting, not in the
 //! cgroup's), with the split between the eager and the lazy part decided
 //! by which walks shared a periodic tick: the container churn test failed
-//! 3 of 16 runs on a 4-vCPU 6.1 host and 4 of 4 on a 2-vCPU 5.10 host.
+//! 7 of 16 runs on a 4-vCPU 6.1 host and 5 of 16 on a 2-vCPU 5.10 host.
 //! `lazy_free:true` is the override, lazy everywhere; `lazy_band:false`
 //! turns the saving off, eager everywhere. The advice is read at each
 //! batch flush from `purge`'s mirror of the band, so it is at most one
@@ -303,7 +304,7 @@ impl Policy {
         self.band() == Band::Low && !self.eager_excess.load(Ordering::Relaxed)
     }
 
-    /// The prefault pass's bound (plan Phase 2.5 task 11, `purge::prefault`):
+    /// The prefault pass's bound (`purge::prefault`):
     /// a slab may be committed and populated ahead of its refill only
     /// while there is headroom, that is with no limit known, or under 70%
     /// of it with no eager return of the excess over the cap in progress;
@@ -610,7 +611,7 @@ mod tests {
         assert!(Policy::new(0, true).thp_forced());
     }
 
-    /// The advice at the band edges (plan Phase 2.5 task 10): lazy only
+    /// The advice at the band edges: lazy only
     /// under 70% of a known limit with `lazy_band` on and no override or
     /// explicit purge in play; `lazy_free` lazy everywhere; no limit eager.
     #[test]
@@ -647,7 +648,7 @@ mod tests {
         }
     }
 
-    /// The floor fix of 2026-09-19 (the module doc): an excess over the
+    /// The floor fix (the module doc): an excess over the
     /// cap first seen at 70% or above is returned eagerly until the
     /// retention is back within the cap, through the `Low` band the first
     /// eager walks bring usage into; an excess first seen under 70% is
@@ -706,7 +707,7 @@ mod tests {
         assert!(UNLIMITED >= THP_MIN_LIMIT);
     }
 
-    /// The prefault bound (plan Phase 2.5 task 11): allowed with no limit
+    /// The prefault bound: allowed with no limit
     /// and in the `Low` band, never in the scaled or immediate bands, and
     /// not while the excess over the cap is being returned eagerly.
     #[test]

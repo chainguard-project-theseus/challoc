@@ -1,6 +1,6 @@
 //! Decay and purge (design.md section 8) and the background thread (8.1).
 //!
-//! Three things live here:
+//! Four things live here:
 //!
 //! - [`Batch`], the discard primitive. Callers collect up to [`MAX_BATCH`]
 //!   ranges and flush them with one `process_madvise` (through `PIDFD_SELF`
@@ -42,20 +42,20 @@
 //!   no purging of its own. After `fork` the child marks it absent and does
 //!   not recreate it until asked again.
 //!
-//! - The prefault pass ([`prefault`], plan Phase 2.5 task 11, behind the
-//!   `prefault` key and the background thread): after each decay pass the
-//!   thread visits every `(arena, class)` whose `refilled` counter moved
-//!   since its last visit and, where the arena has no `Empty` or `Purged`
-//!   slab of that class (so the next refill would commit a fresh slab),
-//!   commits that slab through the refill's own selection
-//!   (`ClassState::prefault_next`), populates it with one
+//! - The prefault pass ([`prefault`], behind the `prefault` key and the
+//!   background thread): after each decay pass the thread visits every
+//!   `(arena, class)` whose `refilled` counter moved since its last visit
+//!   and, where the arena has fewer idle (`Empty` or `Purged`) slabs of
+//!   that class than the class refilled since the last pass, in slabs (at
+//!   least one, at most [`prefault::MAX_AHEAD`]), commits the missing
+//!   slabs through the refill's own selection
+//!   (`ClassState::prefault_ahead`), populates each with one
 //!   `madvise(MADV_POPULATE_WRITE)` (5.14+, probed at init; else a touch
 //!   per page) while it is still unpublished, and publishes it as
-//!   `Purged`, which the refill takes first; one slab per class per pass,
-//!   nothing at all unless the cgroup policy shows headroom
-//!   (`Policy::prefault_allowed`). The commit path wakes the thread once
-//!   per fresh slab it puts into service, so the pass runs right after the
-//!   refill that consumed the previous one.
+//!   `Purged`, which the refill takes first; nothing at all unless the
+//!   cgroup policy shows headroom (`Policy::prefault_allowed`). The commit
+//!   path wakes the thread once per fresh slab it puts into service, so
+//!   the pass runs right after the refill that consumed the previous one.
 //!
 //! `pthread_create` allocates (glibc's `allocate_dtv` calls `calloc`), so
 //! the creating thread parks its TLS slot on the `TLS_CREATING` sentinel for
@@ -72,7 +72,7 @@
 //! resident) and `Fresh` memory stays known zero. Tracking the advice per
 //! slab would need a state bit in the descriptors and a read of it in the
 //! claim paths; the sticky flag is the smallest form and its cost is
-//! bounded to `calloc` on `Purged` reuse (plan Phase 2.5 task 10).
+//! bounded to `calloc` on `Purged` reuse.
 
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
@@ -228,8 +228,8 @@ pub fn configure(pm: ProcessMadvise, lazy_free: bool) {
     }
 }
 
-/// The two-advice purge's settings (plan Phase 2.5 task 10): whether the
-/// backend takes `MADV_FREE` (the probe) and the `lazy_band` key. Called
+/// The two-advice purge's settings: whether the backend takes `MADV_FREE`
+/// (the probe) and the `lazy_band` key. Called
 /// once at init after [`configure`].
 pub fn configure_advice(backend_lazy: bool, lazy_band: bool) {
     BACKEND_LAZY.store(backend_lazy, Ordering::Relaxed);
@@ -698,7 +698,7 @@ pub mod background {
         present: bool,
         creating: bool,
         /// The one stack, reserved by the first `start` and reused by every
-        /// later one (review 2026-09-18 item 14); 0 until then.
+        /// later one; 0 until then.
         stack: usize,
         /// The last thread created on that stack, until it has been joined.
         /// `None` in a fork child, whose copy of the stack has no thread.
@@ -840,8 +840,7 @@ pub mod background {
     ///
     /// `errno` is preserved: this runs from `free`'s slow path (design
     /// section 1 promises `free` leaves `errno` alone) and glibc's
-    /// `pthread_create` / `pthread_join` may set it on their way (review
-    /// 2026-09-18 item 13).
+    /// `pthread_create` / `pthread_join` may set it on their way.
     pub fn start(shared: &Shared) -> bool {
         let (stack, previous) = {
             let mut g = STATE.lock();
@@ -997,7 +996,7 @@ pub mod background {
             let now = sys::now_coarse_ns();
             super::sample(shared, now);
             let mut deadline = super::decay(shared, now);
-            // Plan Phase 2.5 task 11: after the walks, so a class whose
+            // After the walks, so a class whose
             // `Empty` slabs were just purged is not prefaulted on top of
             // them (they veto the pass while they exist). While a pass
             // finds classes refilling, the thread polls (`POLL_NS`) so the
@@ -1070,7 +1069,7 @@ pub mod background {
     }
 }
 
-/// Prefaulted fresh slabs (plan Phase 2.5 task 11; the module doc). The
+/// Prefaulted fresh slabs (the module doc). The
 /// pass runs on the background thread; the commit path calls
 /// [`note_commit`]; init calls [`configure`].
 pub mod prefault {
@@ -1111,8 +1110,8 @@ pub mod prefault {
 
     /// The most slabs a pass keeps ready per `(arena, class)`: the
     /// class's refills since the last pass in slabs, at least one and at
-    /// most this many (`ClassState::prefault_ahead`; the plan's "one slab
-    /// per class" is the floor, the burst rate raises it). Eight 64 KiB
+    /// most this many (`ClassState::prefault_ahead`; one slab per class
+    /// is the floor, the burst rate raises it). Eight 64 KiB
     /// slabs is half a megabyte resident ahead of a class taking several
     /// slabs per millisecond, and nothing more for a class that does not.
     pub const MAX_AHEAD: u64 = 8;
@@ -1173,7 +1172,7 @@ pub mod prefault {
     }
 
     /// A refill took the arena's last idle slab of a class
-    /// (`ClassState::plan`, the claim side; plan Phase 2.5 task 11):
+    /// (`ClassState::plan`, the claim side):
     /// wake the thread so the class's next slab is committed now rather
     /// than at the next poll or the next fresh commit. The caller tests
     /// [`enabled`] first.
@@ -1186,9 +1185,11 @@ pub mod prefault {
     }
 
     /// One pass over every `(arena, class)`: the classes that refilled
-    /// since the last pass get their next fresh slab committed and
-    /// populated (`ClassState::prefault_next`), one each, when the cgroup
-    /// policy shows headroom. Returns whether any class had refilled (the
+    /// since the last pass get their next fresh slabs committed and
+    /// populated (`ClassState::prefault_ahead`), as many as the class
+    /// refilled since the last pass in slabs, at least one and at most
+    /// [`MAX_AHEAD`], when the cgroup policy shows headroom. Returns
+    /// whether any class had refilled (the
     /// thread then polls, `POLL_NS`). Background thread only.
     pub fn pass(shared: &Shared) -> bool {
         if !enabled() {
@@ -1484,7 +1485,7 @@ pub(crate) mod tests {
         (4096, false)
     }
 
-    /// The prefault pass's plumbing (plan Phase 2.5 task 11), host side,
+    /// The prefault pass's plumbing, host side,
     /// at the kernel's page size and in the populate direction the real
     /// probe reports: `populate` counts the bytes; configured as the probe
     /// says it never falls back (the advice works, or the touch is the
@@ -1541,7 +1542,7 @@ pub(crate) mod tests {
         prefault::reset_for_test(false, false);
     }
 
-    /// The advice's process-wide wiring (plan Phase 2.5 task 10): the
+    /// The advice's process-wide wiring: the
     /// policy's headroom mirror, the `lazy_band` key and an explicit purge
     /// in flight, read without any batch being flushed. Serialised with
     /// [`ADVICE_TEST`] against the batch tests, which flush.

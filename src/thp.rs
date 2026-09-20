@@ -1,5 +1,4 @@
-//! Transparent huge pages for the regions (plan Phase 2.5 task 9; design
-//! 7, 10 and 17).
+//! Transparent huge pages for the regions (design 7, 10 and 17).
 //!
 //! The `thp` key (`config::Thp`) names what the program wants; the kernel's
 //! sysfs table (`sys::features::Thp`, read at init) says what a
@@ -40,23 +39,24 @@
 //!   them a folio), so there `always` takes the folio path over the
 //!   enabled sub-PMD sizes and is inert, with the reason
 //!   [`Reason::PmdTooLarge`], when none is enabled.
-//! - `never` on a host whose global THP mode is `always` (plan Phase 2.5
-//!   task 16; Chainguard OS ships `always` with the 2 MiB size on
-//!   `inherit`): the class superblock and the metadata region are
+//! - `never` on a host whose global THP mode is `always` (Chainguard OS
+//!   ships `always` with the 2 MiB size on `inherit`): the class
+//!   superblock and the metadata region are
 //!   `MADV_NOHUGEPAGE`d at reservation ([`advise_reservation`], from
 //!   `layout::Regions::reserve`), so the slab regions keep their RSS
 //!   discipline on every host (a 2 MiB page under a few touched slabs is
 //!   the RSS a small heap cannot afford, and the fork copy-on-write cost
 //!   Redis and Valkey forbid). The huge region is left alone
-//!   ([`Reservation::Huge`], the human's decision of 2026-09-20 on
+//!   ([`Reservation::Huge`]; the decision recorded in
 //!   `bench/results/2026-09-20-aarch64-cgos-thp-ab.md`, option (d)): a
 //!   huge run is a whole multi-page allocation the program asked for, and
 //!   it follows the host's policy as jemalloc's large allocations do
 //!   (jemalloc's `never` advises its slab extents, and its large extents
 //!   take huge pages on an `always` host); the 32 MiB of tables the
-//!   Valkey model keeps in huge runs took 2 MiB pages before task 16 and
-//!   was 10 points of `valkey1` on Chainguard OS when the advice covered
-//!   them. So `never` reads `AnonHugePages` 0 on the class and metadata
+//!   Valkey model keeps in huge runs take 2 MiB pages under the host's
+//!   policy, and covering them with the advice cost 10 points of
+//!   `valkey1` on Chainguard OS. So `never` reads `AnonHugePages` 0 on
+//!   the class and metadata
 //!   regions on every host and the host's answer on the huge region; on a
 //!   `madvise` host (the reference kernels) nothing differs from a
 //!   `never` that advised everything. `thp_process:advised` (below) is the
@@ -66,8 +66,8 @@
 //!   split into, so one call per reservation is enough. `auto` and
 //!   `always` issue no `MADV_NOHUGEPAGE` (on an `always` host their
 //!   unadvised regions stay eligible for the host's PMD pages).
-//! - `thp_process:advised` (plan Phase 2.5 task 16, the second half;
-//!   `config::ThpProcess`): init issues `prctl(PR_SET_THP_DISABLE, 1,
+//! - `thp_process:advised` (`config::ThpProcess`): init issues
+//!   `prctl(PR_SET_THP_DISABLE, 1,
 //!   PR_THP_DISABLE_EXCEPT_ADVISED)` ([`configure_process`]) where the
 //!   probe found the kernel takes it (`sys::features::ThpDisable::Yes`,
 //!   6.18+, probed by the call's return), so the process gets huge pages
@@ -404,9 +404,9 @@ impl Reservation {
 /// A reservation challoc made (`layout::Regions::reserve`), before
 /// anything in it is committed. A class or metadata reservation is
 /// recorded for [`force_never`] and, under `thp:never` on a kernel with
-/// THP, `MADV_NOHUGEPAGE`d here (plan Phase 2.5 task 16, the module doc);
-/// the huge reservation is neither (it follows the host's policy, the
-/// 2026-09-20 decision). Returns whether the advice was issued.
+/// THP, `MADV_NOHUGEPAGE`d here (the module doc); the huge reservation is
+/// neither (it follows the host's policy). Returns whether the advice was
+/// issued.
 pub fn advise_reservation(kind: Reservation, addr: usize, len: usize) -> bool {
     if kind.follows_host() {
         return false;
@@ -533,7 +533,7 @@ pub fn decide_process(key: ThpProcess, probe: ThpDisable) -> Process {
     }
 }
 
-/// Apply `thp_process` (plan Phase 2.5 task 16): under `advised`, where
+/// Apply `thp_process`: under `advised`, where
 /// the probe found the kernel takes the flag, issue `prctl(PR_SET_THP_
 /// DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED)` once for the process.
 /// Called once from init, after [`configure`] and before the reservations
@@ -933,7 +933,7 @@ mod tests {
             .all(|(a, l)| l.load(Ordering::Relaxed) == 0 || a.load(Ordering::Relaxed) != 1 << 40));
     }
 
-    /// `thp_process` (plan Phase 2.5 task 16): `default` issues nothing
+    /// `thp_process`: `default` issues nothing
     /// whatever the kernel; `advised` is in force only where the probe
     /// took the flag, skipped with its reason below 6.18 or in a process
     /// with an inherited policy. Every outcome has distinct words.
