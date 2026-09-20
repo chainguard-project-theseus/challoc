@@ -31,6 +31,8 @@
 use core::fmt;
 use core::sync::atomic::{AtomicI32, AtomicU64, AtomicU8, Ordering};
 
+use super::{Trailing, parse_decimal};
+
 /// Longest cgroup directory (mount point plus path) that is tracked. Real
 /// paths are a few hundred bytes (Kubernetes' pod and container scopes);
 /// anything longer is reported as untracked rather than truncated.
@@ -73,18 +75,9 @@ fn lines(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
 }
 
 /// Leading decimal number of `bytes`, ignoring what follows the digits.
-/// `None` without a digit or on overflow.
-pub fn parse_u64_prefix(bytes: &[u8]) -> Option<u64> {
-    let mut v: u64 = 0;
-    let mut n = 0;
-    for &b in bytes {
-        if !b.is_ascii_digit() {
-            break;
-        }
-        v = v.checked_mul(10)?.checked_add((b - b'0') as u64)?;
-        n += 1;
-    }
-    (n > 0).then_some(v)
+/// `None` without a digit or on overflow (`sys::parse_decimal`).
+fn parse_u64_prefix(bytes: &[u8]) -> Option<u64> {
+    parse_decimal(bytes, Trailing::Ignore)
 }
 
 /// Strip leading and trailing ASCII whitespace.
@@ -675,21 +668,9 @@ impl Cgroup {
 }
 
 #[cfg(target_os = "linux")]
-pub use linux::*;
-
-#[cfg(target_os = "linux")]
 mod linux {
     use super::*;
-    use crate::sys::{self, Errno, O_RDONLY, O_RDWR};
-
-    /// Read up to `buf.len()` bytes of the NUL-terminated `path`. `None`
-    /// when it cannot be opened (absent, or the controller is not here).
-    pub fn read_file(path: &[u8], buf: &mut [u8]) -> Option<usize> {
-        let fd = sys::open(path, O_RDONLY).ok()?;
-        let r = sys::read_full(fd, buf).ok();
-        let _ = sys::close(fd);
-        r
-    }
+    use crate::sys::{self, Errno, O_RDONLY, O_RDWR, read_small_file};
 
     /// `dir/name`, NUL-terminated, in `out`.
     fn file_path<'a>(out: &'a mut [u8; PATH_CAP + FILE_ROOM], dir: &[u8], name: &[u8]) -> &'a [u8] {
@@ -705,7 +686,7 @@ mod linux {
     fn read_in(dir: &[u8], name: &[u8], buf: &mut [u8]) -> Option<usize> {
         let mut p = [0u8; PATH_CAP + FILE_ROOM];
         let path = file_path(&mut p, dir, name);
-        read_file(path, buf)
+        read_small_file(path, buf)
     }
 
     /// `dir/name` parsed as a limit file; `None` when absent or malformed.
@@ -724,7 +705,7 @@ mod linux {
             }
             let mut cg = Cgroup::untracked(State::NoUnifiedPath);
             let mut pathbuf = [0u8; FILE_BUF];
-            let Some(n) = read_file(b"/proc/self/cgroup\0", &mut pathbuf) else { return cg };
+            let Some(n) = read_small_file(b"/proc/self/cgroup\0", &mut pathbuf) else { return cg };
             let Some(path) = cgroup_path(&pathbuf[..n]) else { return cg };
 
             let mut mount = [0u8; PATH_CAP];
