@@ -4036,7 +4036,16 @@ pub(crate) mod tests {
         )
     }
 
+    /// [`shared_build`] with the PAC probe's real answer.
     pub(crate) fn shared_with_guards_mode(config: Config, guard_install: bool, percpu: bool) -> &'static Shared {
+        shared_build(config, guard_install, percpu, pac::available())
+    }
+
+    /// The builder every `Shared` of the heap tests goes through. `pac`
+    /// stands in for the PAC probe: `false` on a host that has the
+    /// extension builds the fallback (plain pointers) the Altra and every
+    /// other Neoverse N1 take.
+    pub(crate) fn shared_build(config: Config, guard_install: bool, percpu: bool, pac: bool) -> &'static Shared {
         #[cfg(target_os = "linux")]
         let (sb, mb, hb) = {
             use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
@@ -4061,8 +4070,17 @@ pub(crate) mod tests {
             hb,
         );
         let b: &'static mut MaybeUninit<Shared> = Box::leak(Box::new(MaybeUninit::uninit()));
-        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, config, guard_install, pac::available(), percpu) });
+        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, config, guard_install, pac, percpu) });
         unsafe { b.assume_init_ref() }
+    }
+
+    /// The message of a caught panic (`catch_unwind`'s payload is a
+    /// `String` from `panic!` with arguments, a `&str` without).
+    pub(crate) fn panic_message(e: Box<dyn std::any::Any + Send>) -> std::string::String {
+        e.downcast_ref::<std::string::String>()
+            .cloned()
+            .or_else(|| e.downcast_ref::<&str>().map(|m| std::string::String::from(*m)))
+            .expect("a message")
     }
 
     pub(crate) fn class_with(size: usize) -> usize {
@@ -4338,12 +4356,7 @@ pub(crate) mod tests {
             // flush of the whole cache.
             t.flush_all();
         }));
-        let e = r.expect_err("the flushes let a cached double free through");
-        let msg = e
-            .downcast_ref::<std::string::String>()
-            .cloned()
-            .or_else(|| e.downcast_ref::<&str>().map(|m| std::string::String::from(*m)))
-            .expect("a message");
+        let msg = panic_message(r.expect_err("the flushes let a cached double free through"));
         assert!(msg.contains(&std::format!("double free of {:#x} (class {c}", p as usize)), "{msg}");
         msg
     }
@@ -4367,14 +4380,8 @@ pub(crate) mod tests {
                 }
                 t.free(p[0]);
             }));
-            let msg = |e: Box<dyn std::any::Any + Send>| {
-                e.downcast_ref::<std::string::String>()
-                    .cloned()
-                    .or_else(|| e.downcast_ref::<&str>().map(|m| std::string::String::from(*m)))
-                    .expect("a message")
-            };
             if between < 4 {
-                let m = msg(r.expect_err("the push let a double free through"));
+                let m = panic_message(r.expect_err("the push let a double free through"));
                 assert!(m.contains(&std::format!("double free of {:#x}: the slot is already in the thread cache", p[0] as usize)), "{between}: {m}");
                 // The abort came before the second copy was stored.
                 assert_eq!(t.cache(c).len(), before + between + 1);
@@ -4385,7 +4392,7 @@ pub(crate) mod tests {
             } else {
                 r.expect("the fifth entry down is not compared");
                 // Both copies are cached; the flush catches them.
-                let m = msg(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| t.flush_all())).expect_err("flush"));
+                let m = panic_message(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| t.flush_all())).expect_err("flush"));
                 assert!(m.contains("double free of"), "{m}");
             }
         }
@@ -4412,6 +4419,54 @@ pub(crate) mod tests {
         assert!(msg.contains("double free of") && !msg.contains("boundary"), "{msg}");
     }
 
+    /// A flush of the whole cache (`n == len`, `rest_len == 0`): the sorted
+    /// split is not taken even when the stack is in address order (there
+    /// is no kept half to keep sorted), the kept-half sort has nothing to
+    /// do, the straddling compare has no kept maximum to match, and the
+    /// header comes out empty with its run, zero prefix and low water
+    /// reset. `flush_all` is such a flush of every class.
+    #[test]
+    fn a_whole_cache_flush_keeps_nothing_and_takes_the_unsorted_branch() {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        // Drain the first refill so the cache is empty, then push ten
+        // slots in ascending address order: a sorted stack.
+        let mut ps: Vec<*mut u8> = (0..HALF).map(|_| t.alloc(c)).collect();
+        assert_eq!(t.len(c), 0);
+        ps.sort_unstable();
+        for &p in &ps[..10] {
+            t.free(p);
+        }
+        assert_eq!(t.len(c), 10);
+        assert!(t.cached_plain(c).is_sorted());
+        assert_eq!(t.cache(c).unsorted_flushes, 0);
+        t.flush_all();
+        let k = t.cache(c);
+        assert_eq!((k.len(), k.run().len(), k.zeroed(), k.low_water()), (0, 0, 0, 0));
+        assert_eq!(k.unsorted_flushes, 1, "a whole-cache flush never takes the sorted split");
+        assert_eq!(live(s, c), HALF - 10);
+        // The same with a scrambled stack: evens first, then odds.
+        for (i, &p) in ps[10..].iter().enumerate() {
+            if i % 2 == 0 {
+                t.free(p);
+            }
+        }
+        for (i, &p) in ps[10..].iter().enumerate() {
+            if i % 2 == 1 {
+                t.free(p);
+            }
+        }
+        assert_eq!(t.len(c), HALF - 10);
+        assert!(!t.cached_plain(c).is_sorted());
+        t.flush_all();
+        let k = t.cache(c);
+        assert_eq!((k.len(), k.run().len(), k.zeroed(), k.low_water()), (0, 0, 0, 0));
+        assert_eq!(k.unsorted_flushes, 2);
+        assert_eq!(live(s, c), 0);
+        t.destroy();
+    }
+
     /// The dense [`GuardTest`] the sized fast path reads agrees with
     /// [`SlabTable::is_guard_slab`] for every class over the first slabs of
     /// the region and around its end, with guards on and off.
@@ -4429,6 +4484,40 @@ pub(crate) mod tests {
                 }
             }
         }
+    }
+
+    /// `guard_interval_for` alone: a class whose slab (or page, when that
+    /// is larger) is at least the 64 KiB guard unit keeps the configured
+    /// interval; a smaller one multiplies it so that every class places
+    /// one guard per `interval * unit` of address space; 0 stays 0, a
+    /// power of two stays one, and the product saturates instead of
+    /// wrapping.
+    #[test]
+    fn guard_interval_for_places_one_guard_per_unit_of_address_space() {
+        let unit = 1usize << crate::layout::LG_GUARD_UNIT;
+        let small = (0..NCLASSES).find(|&c| CLASSES[c].slab_size() < unit).expect("a class with slabs below the guard unit");
+        let large = (0..NCLASSES).find(|&c| CLASSES[c].slab_size() >= unit).expect("a class with slabs at or above the guard unit");
+        for page in [4096usize, 16 << 10, 64 << 10] {
+            let unit = unit.max(page);
+            for interval in [1u32, 4, 16, 64] {
+                for c in 0..NCLASSES {
+                    let group = CLASSES[c].slab_size().max(page);
+                    let r = guard_interval_for(c, page, interval);
+                    assert_eq!(guard_interval_for(c, page, 0), 0, "class {c} page {page}");
+                    assert!(r.is_power_of_two(), "class {c} page {page} interval {interval}: {r}");
+                    if group >= unit {
+                        assert_eq!(r, interval, "class {c} page {page}");
+                    } else {
+                        assert_eq!(r as usize * group, interval as usize * unit, "class {c} page {page}");
+                    }
+                }
+            }
+        }
+        assert_eq!(guard_interval_for(small, 4096, 4) as usize, 4 * unit / CLASSES[small].slab_size().max(4096));
+        assert!(guard_interval_for(small, 4096, 4) > 4, "the scaling branch was taken");
+        assert_eq!(guard_interval_for(large, 4096, 4), 4);
+        assert_eq!(guard_interval_for(small, 64 << 10, 4), 4, "a 64 KiB page makes every group the unit");
+        assert_eq!(guard_interval_for(small, 4096, u32::MAX), u32::MAX, "saturates");
     }
 
     /// The sized fast path's check rejects a slot
@@ -6044,61 +6133,23 @@ mod linux_tests {
     use super::*;
     use crate::layout::class_of;
     use crate::tls;
-    use std::boxed::Box;
-    use std::mem::MaybeUninit;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::vec::Vec;
 
-    use super::tests::{TestHeap, page_size, shared_percpu, shared_with_guards_mode, xorshift};
+    use super::tests::{TestHeap, live, shared_build, shared_percpu, shared_with_guards_mode, xorshift};
     use std::collections::HashSet;
-    const LG_REGION: u32 = crate::layout::LG_MAX_SLAB;
-    const LG_STRIDE: u32 = LG_REGION + 2;
-    const META_LEN: usize = 16 << 20;
 
+    /// One automatic arena (the tests below reason about `arena0`), no
+    /// guard slabs, the thread-cache mode, the PAC probe's real answer.
     fn shared() -> &'static Shared {
         shared_pac(pac::available())
     }
 
-    /// `shared()` with the PAC probe's answer given by the caller: `false`
-    /// on a host that has the extension builds the fallback (plain
-    /// pointers) the Altra and every other Neoverse N1 take.
+    /// `shared()` with the PAC probe's answer given by the caller
+    /// (`shared_build`'s `pac`).
     fn shared_pac(pac: bool) -> &'static Shared {
-        use crate::layout::{MAX_SLAB, Mapping};
-        use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
-        let reserve = |len: usize| -> usize {
-            unsafe { crate::sys::mmap(0, len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0) }
-                .expect("reserve")
-        };
-        let sb_len = (NCLASSES << LG_STRIDE) + MAX_SLAB;
-        let sb = reserve(sb_len);
-        let mb = reserve(META_LEN);
-        let superblock = (sb + MAX_SLAB - 1) & !(MAX_SLAB - 1);
-        let huge = (reserve(64 << 20), 64usize << 20);
-        let regions = Regions::from_parts(
-            superblock,
-            LG_REGION,
-            LG_STRIDE,
-            &[0usize; NCLASSES],
-            huge,
-            (mb, META_LEN),
-            page_size().trailing_zeros(),
-            [
-                Mapping { addr: superblock, len: sb_len },
-                Mapping { addr: huge.0, len: huge.1 },
-                Mapping { addr: mb, len: META_LEN },
-            ],
-        );
-        let b: &'static mut MaybeUninit<Shared> = Box::leak(Box::new(MaybeUninit::uninit()));
-        // One automatic arena: the tests below reason about `arena0`.
-        let config = Config { narenas: 1, pac_pointers: true, ..Config::DEFAULT };
-        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, config, false, pac, false) });
-        unsafe { b.assume_init_ref() }
-    }
-
-    fn live(s: &Shared, c: usize) -> usize {
-        let cs = &s.arena0.classes[c];
-        (0..cs.committed_slabs()).filter(|&i| !cs.is_guard_slab(i)).map(|i| cs.desc(i).live()).sum()
+        shared_build(Config { narenas: 1, pac_pointers: true, ..Config::DEFAULT }, false, false, pac)
     }
 
     fn fill(p: *mut u8, n: usize, v: u8) {
@@ -6957,6 +7008,32 @@ mod linux_tests {
                 }
             } else {
                 moved("while the run was being consumed");
+            }
+            // The cache GC (`percpu_gc`) keeps the run of a class that is
+            // still compacting and returns the run of one that stopped:
+            // the second loop of the GC reads the cache header's mode.
+            if unsafe { rseq::mm_cid(area) } == cid {
+                let rh_len = unsafe { ptr::read_volatile(&raw const (*rh).len) };
+                if rh_len != 0 && unsafe { ptr::read_volatile(&raw const (*h).mode) } == MODE_COMPACT {
+                    t.heap().gc(s);
+                    if unsafe { rseq::mm_cid(area) } == cid {
+                        assert_eq!(unsafe { ptr::read_volatile(&raw const (*rh).len) }, rh_len, "a compacting class keeps its run through the GC");
+                        unsafe {
+                            ptr::write_volatile(&raw mut (*h).mode, MODE_PROBE);
+                            ptr::write_volatile(&raw mut (*h).compact_mask, PROBE_MASK);
+                        }
+                        t.heap().gc(s);
+                        if unsafe { rseq::mm_cid(area) } == cid {
+                            assert_eq!(unsafe { ptr::read_volatile(&raw const (*rh).len) }, 0, "the GC returns the run of a class that stopped compacting");
+                        } else {
+                            moved("at the second GC");
+                        }
+                    } else {
+                        moved("at the first GC");
+                    }
+                } else {
+                    std::eprintln!("percpu: no run to hand the GC (len {rh_len}), skipping the GC check");
+                }
             }
             // The drain empties the run too (of the id the thread runs on
             // now, whose headers are re-derived).
