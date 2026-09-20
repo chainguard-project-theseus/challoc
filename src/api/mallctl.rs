@@ -170,8 +170,7 @@ pub enum Leaf {
     /// `stats.thp.nohuge_ranges` (design 17, `thp.rs`): the
     /// reservations `never` `MADV_NOHUGEPAGE`d, the class superblock and
     /// the metadata region (2 on a kernel with THP; the huge region follows
-    /// the host's policy, the 2026-09-20 decision); 0 under `auto` and
-    /// `always`.
+    /// the host's policy, design 17); 0 under `auto` and `always`.
     StatsThpNohugeRanges,
     /// `stats.arenas.<i>.*`; `mib[2]` is the arena.
     StatsArenaPactive,
