@@ -146,15 +146,24 @@ pub fn parse_limit(contents: &[u8]) -> Option<u64> {
     parse_u64_prefix(t)
 }
 
-/// The counters of `memory.events` (cgroup v2 format: `low 0`, `high 3`,
-/// `max 1`, `oom 0`, `oom_kill 0`, one per line; newer kernels add lines,
-/// which are ignored). A missing line reads as 0.
+/// The counters of `memory.events` (cgroup v2 format, one `key value` per
+/// line, all five since kernel 4.13: `low 0`, `high 3`, `max 1`, `oom 0`,
+/// `oom_kill 0`; `oom_kill` was added in 4.13 and reads 0 on the 4.5..4.12
+/// kernels that lack the line, and `oom_group_kill`, 5.17, is ignored). A
+/// missing line reads as 0. [`Cgroup::events`] returns the last sample of
+/// all five; the policy acts on `high` and `max`.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct Events {
+    /// Times the cgroup was reclaimed below `memory.low`.
     pub low: u64,
+    /// Times `memory.high` was exceeded and reclaim started.
     pub high: u64,
+    /// Times `memory.max` was hit.
     pub max: u64,
+    /// Times the cgroup's usage reached the limit and the kernel had
+    /// nothing left to reclaim (an OOM condition, kill or not).
     pub oom: u64,
+    /// Processes of the cgroup the OOM killer killed (4.13+).
     pub oom_kill: u64,
 }
 
@@ -420,11 +429,15 @@ pub struct Cgroup {
     sampled_at: AtomicU64,
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     limits_at: AtomicU64,
-    /// Last `memory.events` counters read, and how many samples saw each
-    /// one rise (what the policy will act on: a rise of `high` means the
-    /// kernel started reclaiming from this cgroup).
+    /// Last `memory.events` counters read (all five, [`Events`]), and how
+    /// many samples saw `high` and `max` rise (what the policy acts on: a
+    /// rise of `high` means the kernel started reclaiming from this
+    /// cgroup).
+    events_low: AtomicU64,
     events_high: AtomicU64,
     events_max: AtomicU64,
+    events_oom: AtomicU64,
+    events_oom_kill: AtomicU64,
     high_rises: AtomicU64,
     max_rises: AtomicU64,
     /// PSI trigger fires seen by the background thread.
@@ -456,8 +469,11 @@ impl Cgroup {
             current: AtomicU64::new(0),
             sampled_at: AtomicU64::new(0),
             limits_at: AtomicU64::new(0),
+            events_low: AtomicU64::new(0),
             events_high: AtomicU64::new(0),
             events_max: AtomicU64::new(0),
+            events_oom: AtomicU64::new(0),
+            events_oom_kill: AtomicU64::new(0),
             high_rises: AtomicU64::new(0),
             max_rises: AtomicU64::new(0),
             pressure_events: AtomicU64::new(0),
@@ -508,14 +524,31 @@ impl Cgroup {
         self.current.load(Ordering::Relaxed)
     }
 
-    /// The last `memory.events` counters sampled. Partial: only `high`
-    /// and `max` are tracked (the two the policy acts on); `low`, `oom`
-    /// and `oom_kill` read 0 here whatever the file says.
+    /// The last `memory.events` counters sampled, every field the file
+    /// has (zero before the first sample, and for a line the kernel does
+    /// not print: `oom_kill` before 4.13).
     pub fn events(&self) -> Events {
         Events {
+            low: self.events_low.load(Ordering::Relaxed),
             high: self.events_high.load(Ordering::Relaxed),
             max: self.events_max.load(Ordering::Relaxed),
-            ..Events::default()
+            oom: self.events_oom.load(Ordering::Relaxed),
+            oom_kill: self.events_oom_kill.load(Ordering::Relaxed),
+        }
+    }
+
+    /// Record one read of `memory.events`: store all five counters and
+    /// count a sample that saw `high` or `max` rise. The sampler's store,
+    /// split out so the host tests can drive it with fixtures.
+    fn note_events(&self, e: Events) {
+        self.events_low.store(e.low, Ordering::Relaxed);
+        self.events_oom.store(e.oom, Ordering::Relaxed);
+        self.events_oom_kill.store(e.oom_kill, Ordering::Relaxed);
+        if e.high > self.events_high.swap(e.high, Ordering::Relaxed) {
+            self.high_rises.fetch_add(1, Ordering::Relaxed);
+        }
+        if e.max > self.events_max.swap(e.max, Ordering::Relaxed) {
+            self.max_rises.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -779,13 +812,7 @@ mod linux {
             if self.has_events {
                 let mut buf = [0u8; FILE_BUF];
                 if let Some(n) = read_in(self.dir(), b"memory.events", &mut buf) {
-                    let e = parse_events(&buf[..n]);
-                    if e.high > self.events_high.swap(e.high, Ordering::Relaxed) {
-                        self.high_rises.fetch_add(1, Ordering::Relaxed);
-                    }
-                    if e.max > self.events_max.swap(e.max, Ordering::Relaxed) {
-                        self.max_rises.fetch_add(1, Ordering::Relaxed);
-                    }
+                    self.note_events(parse_events(&buf[..n]));
                 }
             }
             if now.wrapping_sub(self.limits_at.load(Ordering::Relaxed)) >= LIMIT_INTERVAL_NS {
@@ -943,6 +970,33 @@ mod tests {
         assert_eq!(parse_events(b"high 9\n"), Events { high: 9, ..Events::default() });
         assert_eq!(parse_events(b""), Events::default());
         assert_eq!(parse_events(b"high x\nmax\n"), Events::default());
+        // A 4.5..4.12 file has no `oom_kill` line: it reads 0.
+        assert_eq!(parse_events(b"low 1\nhigh 2\nmax 3\noom 4\n"), Events { low: 1, high: 2, max: 3, oom: 4, oom_kill: 0 });
+    }
+
+    /// The sampled counters are the file's, all five, and the rise counts
+    /// move with `high` and `max` alone: three samples of a cgroup that
+    /// hit `memory.high` twice and was OOM-killed once.
+    #[test]
+    fn sampled_events_carry_every_counter() {
+        let cg = Cgroup::untracked(State::Tracked);
+        assert_eq!(cg.events(), Events::default(), "zero before the first sample");
+        cg.note_events(parse_events(b"low 0\nhigh 3\nmax 1\noom 0\noom_kill 0\n"));
+        assert_eq!(cg.events(), Events { low: 0, high: 3, max: 1, oom: 0, oom_kill: 0 });
+        assert_eq!(cg.rises(), (1, 1), "the first sample rises from zero");
+        cg.note_events(parse_events(b"low 7\nhigh 5\nmax 1\noom 1\noom_kill 1\noom_group_kill 0\n"));
+        assert_eq!(cg.events(), Events { low: 7, high: 5, max: 1, oom: 1, oom_kill: 1 });
+        assert_eq!(cg.rises(), (2, 1), "high rose, max did not; low and oom are not rises");
+        cg.note_events(parse_events(b"low 7\nhigh 5\nmax 2\noom 1\noom_kill 1\n"));
+        assert_eq!(cg.events(), Events { low: 7, high: 5, max: 2, oom: 1, oom_kill: 1 });
+        assert_eq!(cg.rises(), (2, 2));
+        // A kernel without the `oom_kill` line: the field reads 0, the
+        // others are kept.
+        cg.note_events(parse_events(b"low 8\nhigh 5\nmax 2\noom 2\n"));
+        assert_eq!(cg.events(), Events { low: 8, high: 5, max: 2, oom: 2, oom_kill: 0 });
+        assert_eq!(cg.rises(), (2, 2));
+        let s = std::format!("{cg}");
+        assert!(s.contains(" events high 5 (+2) max 2 (+2) "), "{s}");
     }
 
     #[test]
@@ -1260,6 +1314,23 @@ mod linux_tests {
                 assert_eq!(cg.has_limit_files(), std::path::Path::new(&format!("{dir}/memory.max")).exists());
                 assert_eq!(cg.has_current(), std::path::Path::new(&format!("{dir}/memory.current")).exists());
                 assert_eq!(cg.has_events(), std::path::Path::new(&format!("{dir}/memory.events")).exists());
+                if cg.has_events() {
+                    // Discovery sampled the file: every counter is the
+                    // kernel's (they only grow, so at most a later rise
+                    // separates the two reads).
+                    let now = parse_events(std::fs::read(format!("{dir}/memory.events")).unwrap().as_slice());
+                    let e = cg.events();
+                    eprintln!("cgroup: memory.events {e:?} (file now {now:?})");
+                    for (name, sampled, file) in [
+                        ("low", e.low, now.low),
+                        ("high", e.high, now.high),
+                        ("max", e.max, now.max),
+                        ("oom", e.oom, now.oom),
+                        ("oom_kill", e.oom_kill, now.oom_kill),
+                    ] {
+                        assert!(sampled <= file, "{name}: sampled {sampled} > file {file}");
+                    }
+                }
                 eprintln!(
                     "cgroup: memory.max={} memory.high={} memory.current={} memory.pressure={}",
                     read_opt(&format!("{dir}/memory.max")).unwrap_or_else(|| "(absent)".into()).trim(),
