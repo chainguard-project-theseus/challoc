@@ -1,31 +1,58 @@
-//! Drivers for the per-feature C programs in `tests/c/` (plan Phase 0
-//! task 12), the fuzz driver in `fuzz/` (task 13), the negative tests
-//! (task 14), the glibc malloc tests in `tests/glibc/` (task 15) and
-//! mimalloc's stress test in `tests/mimalloc/` (task 16). Each
-//! program is compiled with the container's C compiler, run once without
-//! the preload to prove it notices when challoc is not serving `malloc`,
-//! then run under `LD_PRELOAD=libchalloc.so` and must exit 0 and print
-//! `ok <name>`. The programs check their own invariants; this file only
+//! Drivers for the C test programs: the per-feature programs in `tests/c/`
+//! (plan Phase 0 task 12 and everything since), the fuzz driver in `fuzz/`
+//! (task 13), the negative tests (task 14), the glibc malloc tests in
+//! `tests/glibc/` (task 15) and mimalloc's stress test in `tests/mimalloc/`
+//! (task 16). The programs check their own invariants; this file only
 //! reports their verdict.
+//!
+//! One table, one driver. Every test is a row of [`CTest`] (or a few rows
+//! under one name): the program, its arguments, `MALLOC_CONF` and other
+//! environment for the preloaded run, compiler flags, what to expect
+//! ([`Expect::Ok`]: exit 0 and an `ok <prog>` line; [`Expect::Abort`]: a
+//! signal and the `challoc: ` line on stderr), strings the stdout must and
+//! must not carry, and a [`Gate`] naming the host feature the row needs.
+//! [`run_row`] compiles the program once per distinct (dir, program, flags)
+//! through `scripts/ctest-cc.sh`, the one compiler line every driver
+//! shares (a process-wide cache: negative.c used to be compiled once per
+//! mode), runs it bare (it must refuse to run without the preload), then
+//! under `LD_PRELOAD=libchalloc.so`, and checks the expectation.
+//! [`ctests!`] makes one `#[test]` per table entry so `cargo test` still
+//! names every test.
+//!
+//! Skips. A row whose gate is closed on this host, and a program that
+//! prints a `SKIP <name> <reason>` line (tests/c/common.h `skip_note`),
+//! is reported as one `SKIP <test> <reason>` line on stderr and fails the
+//! test unless `CHALLOC_TEST_ALLOW_SKIP` is set (docs/testing.md,
+//! "Skips"); the Makefile sets it for local runs.
 //!
 //! These tests need `target/release/libchalloc.so`; `make test` builds it
 //! first. They never touch the in-process allocator, but they live under
 //! `api::` so `make test` groups them with the other `LD_PRELOAD` tests.
 
-use crate::QUANTUM;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use std::collections::HashMap;
 use std::env;
-use std::process::Command;
+use std::os::unix::process::ExitStatusExt;
+use std::process::{Command, ExitStatus};
 use std::string::String;
+// `OnceLock` under another name: `api::tests::lock_inventory` reads every
+// `Lock<` declaration under src/ as a fork-handler lock to account for.
+use std::sync::{Arc, Mutex, OnceLock as Once};
+use std::vec::Vec;
 
 /// Linux signal numbers (same on x86_64 and aarch64) for the negative tests.
 const SIGABRT: i32 = 6;
 const SIGSEGV: i32 = 11;
 
+fn root() -> &'static str {
+    env!("CARGO_MANIFEST_DIR")
+}
+
+fn target_dir() -> String {
+    env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| std::format!("{}/target", root()))
+}
+
 fn release_so() -> String {
-    let target =
-        env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| std::format!("{}/target", env!("CARGO_MANIFEST_DIR")));
-    let so = std::format!("{target}/release/libchalloc.so");
+    let so = std::format!("{}/release/libchalloc.so", target_dir());
     assert!(
         std::path::Path::new(&so).exists(),
         "{so} missing: run `cargo build --release` first (`make test` does)"
@@ -33,309 +60,766 @@ fn release_so() -> String {
     so
 }
 
-/// Compile `<dir>/<name>.c` (with `tests/c` on the include path for
-/// `common.h`, plus `flags`) and return the path of the binary.
-fn compile(dir: &str, name: &str, flags: &[&str]) -> String {
-    compile_link(dir, name, flags, &[])
+// ---------------------------------------------------------------------------
+// Skips
+// ---------------------------------------------------------------------------
+
+/// Whether a skip is a pass with a note (`CHALLOC_TEST_ALLOW_SKIP` set) or
+/// a failure (unset: the strict mode of a host that must have every
+/// feature, the reference VMs).
+fn skips_allowed() -> bool {
+    env::var_os("CHALLOC_TEST_ALLOW_SKIP").is_some()
 }
 
-/// [`compile`] with `ldflags` placed after the source file, where `-l`
-/// options must go for the linker to resolve the program's references.
-fn compile_link(dir: &str, name: &str, flags: &[&str], ldflags: &[&str]) -> String {
-    let root = env!("CARGO_MANIFEST_DIR");
-    let src = std::format!("{root}/{dir}/{name}.c");
-    let include = std::format!("-I{root}/tests/c");
-    // Tests run concurrently in one process and two may compile the same
-    // program with different arguments, so the path needs more than the pid.
-    static SEQ: AtomicUsize = AtomicUsize::new(0);
-    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-    let out = std::format!("{}/challoc-{name}-{}-{seq}", env::temp_dir().display(), std::process::id());
-    let cc = env::var("CC").unwrap_or_else(|_| "cc".into());
-    let quantum = std::format!("-DQUANTUM={QUANTUM}");
-    let status = Command::new(&cc)
-        .args(["-O2", "-g", "-Wall", "-Wextra", "-Werror", "-pthread", &quantum, &include])
-        .args(flags)
-        .args([&src, "-o", &out, "-ldl"])
-        .args(ldflags)
-        .status()
-        .unwrap();
-    assert!(status.success(), "compiling {src} failed");
-    out
-}
-
-/// Compile `tests/c/<name>.cpp` with the container's C++ compiler (C++17
-/// for `std::align_val_t`) and return the path of the binary.
-fn compile_cxx(name: &str) -> String {
-    let root = env!("CARGO_MANIFEST_DIR");
-    let src = std::format!("{root}/tests/c/{name}.cpp");
-    static SEQ: AtomicUsize = AtomicUsize::new(0);
-    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
-    let out = std::format!("{}/challoc-{name}-{}-{seq}", env::temp_dir().display(), std::process::id());
-    let cxx = env::var("CXX").unwrap_or_else(|_| "c++".into());
-    let quantum = std::format!("-DQUANTUM={QUANTUM}");
-    let status = Command::new(&cxx)
-        .args(["-std=c++17", "-O2", "-g", "-Wall", "-Wextra", "-Werror", "-pthread", &quantum])
-        .args([&src, "-o", &out, "-ldl"])
-        .status()
-        .unwrap();
-    assert!(status.success(), "compiling {src} failed");
-    out
-}
-
-/// Build, run bare (must fail), run under the preload (must pass).
-fn run_c(name: &str, args: &[&str]) {
-    run_c_in("tests/c", name, args);
-}
-
-fn run_c_in(dir: &str, name: &str, args: &[&str]) {
-    run_c_flags(dir, name, args, &[]);
-}
-
-fn run_c_flags(dir: &str, name: &str, args: &[&str], flags: &[&str]) {
-    let bin = compile(dir, name, flags);
-    run_bin(name, &bin, args);
-}
-
-/// Run a compiled test program bare (must fail) and under the preload
-/// (must pass and print `ok <name>`), then delete it.
-fn run_bin(name: &str, bin: &str, args: &[&str]) {
-    run_bin_env(name, bin, args, &[]);
-}
-
-/// [`run_bin`] with extra environment variables for the preloaded run.
-fn run_bin_env(name: &str, bin: &str, args: &[&str], env: &[(&str, &str)]) {
-    let so = release_so();
-
-    let bare = Command::new(bin).args(args).output().unwrap();
+/// Print the one structured skip line and, in the strict mode, fail.
+fn skip_line(test: &str, reason: &str) {
+    std::eprintln!("SKIP {test} {reason}");
     assert!(
-        !bare.status.success(),
-        "{name} passed without libchalloc preloaded:\n{}",
-        String::from_utf8_lossy(&bare.stdout)
+        skips_allowed(),
+        "SKIP {test} {reason}\n(set CHALLOC_TEST_ALLOW_SKIP=1 to let a test pass with a note on a host without the feature)"
     );
+}
 
-    let mut cmd = Command::new(bin);
-    // A suite run under `CHALLOC_CONF` (lane D's campaign, 2026-09-20)
-    // would override the test's own `MALLOC_CONF` (the environment key is
-    // read after it and wins) and turn every both-ways test one way.
-    cmd.args(args).env_remove("CHALLOC_CONF").env("LD_PRELOAD", &so);
-    for (k, v) in env {
-        cmd.env(k, v);
+/// `skip!(test, "reason {}", arg)`: report the skip as `SKIP <test>
+/// <reason>`, fail unless skips are allowed, and return from the test.
+macro_rules! skip {
+    ($test:expr, $($arg:tt)*) => {{
+        skip_line($test, &std::format!($($arg)*));
+        return;
+    }};
+}
+
+/// The `SKIP <name> <reason>` lines a program printed: each becomes a
+/// `SKIP <test> <name> <reason>` line here and, in the strict mode, a
+/// failure.
+fn report_program_skips(test: &str, stdout: &str) {
+    let skips: Vec<&str> = stdout.lines().filter(|l| l.starts_with("SKIP ")).collect();
+    for s in &skips {
+        std::eprintln!("SKIP {test} {}", &s[5..]);
     }
-    let run = cmd.output().unwrap();
-    let _ = std::fs::remove_file(bin);
-    let stdout = String::from_utf8_lossy(&run.stdout);
-    let stderr = String::from_utf8_lossy(&run.stderr);
-    assert!(run.status.success(), "{name} failed ({:?})\nstdout: {stdout}\nstderr: {stderr}", run.status);
-    let ok = std::format!("ok {name}");
-    assert!(stdout.lines().any(|l| l == ok), "{name} did not print `{ok}`\nstdout: {stdout}\nstderr: {stderr}");
-    std::eprintln!("{name}: {}", stdout.trim_end());
+    assert!(
+        skips.is_empty() || skips_allowed(),
+        "{test}: the program skipped a claim on this host:\n{}\n(set CHALLOC_TEST_ALLOW_SKIP=1 to accept)",
+        skips.join("\n")
+    );
 }
 
-/// Run one mode of `tests/c/negative.c` (plan Phase 0 task 14). Bare, the
-/// program must exit non-zero without a signal (`require_challoc` refuses
-/// to run). Under the preload it must die with `signal`, its stdout must
-/// show it reached the bad operation and never survived it, and for aborts
-/// stderr must carry the `challoc: ` line with every string in `expect`.
-fn run_c_negative(mode: &str, signal: i32, expect: &[&str]) -> std::string::String {
-    run_c_negative_env(mode, signal, expect, &[])
+// ---------------------------------------------------------------------------
+// The table
+// ---------------------------------------------------------------------------
+
+/// What the preloaded run must do.
+#[derive(Clone, Copy)]
+enum Expect<'a> {
+    /// Exit 0 and print a line `ok <prog>`.
+    Ok,
+    /// Die of `signal` after printing a `<prog>: ...` line (the program
+    /// started); for `SIGABRT` stderr must carry `challoc: ` lines and every
+    /// string in `stderr_contains` must appear in one of them. The program
+    /// must not have finished (no `survived`, no `ok <prog>`).
+    Abort { signal: i32, stderr_contains: &'a [&'a str] },
 }
 
-/// [`run_c_negative`] with extra environment for the preloaded run
-/// (`MALLOC_CONF` for the tunable modes).
-fn run_c_negative_env(mode: &str, signal: i32, expect: &[&str], env: &[(&str, &str)]) -> std::string::String {
-    use std::os::unix::process::ExitStatusExt;
+/// The host feature a row needs; a closed gate is a skip.
+#[derive(Clone, Copy)]
+enum Gate {
+    Always,
+    /// The kernel installs guard regions (`MADV_GUARD_INSTALL`, 6.13+), so
+    /// guard slabs exist.
+    GuardInstall,
+}
+
+/// One run of one C program.
+#[derive(Clone, Copy)]
+struct CTest<'a> {
+    /// Directory of the source, relative to the crate root.
+    dir: &'a str,
+    /// Program name: `<dir>/<prog>.c` (`.cpp` with `cxx`), and the name in
+    /// its `ok <prog>` line.
+    prog: &'a str,
+    /// Compile with the C++ compiler (`-std=c++17`).
+    cxx: bool,
+    /// Extra compiler flags, before the source (`-D`, `-I`, `-Wno-`).
+    cflags: &'a [&'a str],
+    /// Extra linker flags, after the source (`-L`, `-l`).
+    ldflags: &'a [&'a str],
+    /// Program arguments (the same for the bare and the preloaded run).
+    args: &'a [&'a str],
+    /// `MALLOC_CONF` for the preloaded run.
+    conf: Option<&'a str>,
+    /// Other environment for the preloaded run.
+    env: &'a [(&'a str, &'a str)],
+    expect: Expect<'a>,
+    /// Strings the preloaded run's stdout must contain.
+    stdout_has: &'a [&'a str],
+    /// Strings the preloaded run's stdout must not contain.
+    stdout_lacks: &'a [&'a str],
+    /// Strings the preloaded run's stderr must contain.
+    stderr_has: &'a [&'a str],
+    /// Strings the preloaded run's stderr must not contain.
+    stderr_lacks: &'a [&'a str],
+    gate: Gate,
+}
+
+/// The defaults a row overrides with `..BASE`.
+const BASE: CTest<'static> = CTest {
+    dir: "tests/c",
+    prog: "",
+    cxx: false,
+    cflags: &[],
+    ldflags: &[],
+    args: &[],
+    conf: None,
+    env: &[],
+    expect: Expect::Ok,
+    stdout_has: &[],
+    stdout_lacks: &[],
+    stderr_has: &[],
+    stderr_lacks: &[],
+    gate: Gate::Always,
+};
+
+/// A mode of `tests/c/negative.c` that must die of `signal` with the
+/// strings in its `challoc: ` line (the driver checks the program printed
+/// `negative: <mode>` first). Further fields follow by name.
+macro_rules! negative {
+    ($mode:literal, $signal:expr, $stderr:expr $(, $field:ident : $value:expr)* $(,)?) => {
+        CTest {
+            prog: "negative",
+            args: &[$mode],
+            expect: Expect::Abort { signal: $signal, stderr_contains: $stderr },
+            $($field: $value,)*
+            ..BASE
+        }
+    };
+}
+
+/// `mimalloc/test-stress.c` through `tests/mimalloc/stress.c` at THREADS=8
+/// SCALE=50 ITER=10 (plan Phase 0 task 16); the include shims stand in for
+/// mimalloc's headers. `-Wno-unused-parameter`: `run_os_threads()` ignores
+/// its subproc argument on POSIX.
+const MIMALLOC_STRESS: CTest<'static> = CTest {
+    dir: "tests/mimalloc",
+    prog: "stress",
+    cflags: &["-Wno-unused-parameter", "-Itests/mimalloc/include"],
+    args: &["8", "50", "10"],
+    ..BASE
+};
+
+/// One unmodified glibc malloc test from `tests/glibc/malloc/` (plan Phase
+/// 0 task 15). `tests/glibc/test-skeleton.c` supplies `main` and the `ok
+/// <name>` line; `tests/glibc/include/` shims glibc's internal headers.
+/// glibc builds its tests with `-Wall -Werror` but not `-Wextra`; the
+/// sources are unmodified, so drop the one `-Wextra` warning they trip.
+macro_rules! glibc {
+    ($name:literal) => {
+        CTest {
+            dir: "tests/glibc/malloc",
+            prog: $name,
+            cflags: &["-D_GNU_SOURCE", "-Wno-unused-parameter", "-Itests/glibc/include", concat!("-DTEST_NAME=\"", $name, "\"")],
+            ..BASE
+        }
+    };
+}
+
+/// One `#[test]` per entry, named as the entry; the entry's rows run in
+/// order. Doc comments on an entry are kept on the test.
+macro_rules! ctests {
+    ($( $(#[$m:meta])* $name:ident => [ $($row:expr),+ $(,)? ] ;)+) => {
+        $(
+            $(#[$m])*
+            #[test]
+            fn $name() {
+                $( run_row(stringify!($name), &$row); )+
+            }
+        )+
+    };
+}
+
+// ---------------------------------------------------------------------------
+// Compiling
+// ---------------------------------------------------------------------------
+
+/// What makes two compilations the same binary.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct Key {
+    dir: String,
+    prog: String,
+    cxx: bool,
+    cflags: Vec<String>,
+    ldflags: Vec<String>,
+}
+
+/// The binary for `row`, compiled once per process for each distinct
+/// [`Key`] (tests run concurrently: the map lock is held only to find the
+/// cell, the cell's `Once` serialises the one compile).
+fn compiled(row: &CTest<'_>) -> String {
+    static CACHE: Once<Mutex<HashMap<Key, Arc<Once<String>>>>> = Once::new();
+    let key = Key {
+        dir: row.dir.into(),
+        prog: row.prog.into(),
+        cxx: row.cxx,
+        cflags: row.cflags.iter().map(|s| String::from(*s)).collect(),
+        ldflags: row.ldflags.iter().map(|s| String::from(*s)).collect(),
+    };
+    let cell = {
+        let mut map = CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
+        map.entry(key.clone()).or_insert_with(|| Arc::new(Once::new())).clone()
+    };
+    cell.get_or_init(|| compile_now(&key)).clone()
+}
+
+/// Compile `<dir>/<prog>.c` (or `.cpp`) through `scripts/ctest-cc.sh` into
+/// `target/ctests/<prog>-<hash>`: the script holds the flag line and reads
+/// QUANTUM from the built library. Relative `-I` flags are made absolute
+/// (the table writes them from the crate root).
+fn compile_now(key: &Key) -> String {
+    use std::hash::{Hash, Hasher};
+    let root = root();
+    let src = std::format!("{root}/{}/{}.{}", key.dir, key.prog, if key.cxx { "cpp" } else { "c" });
+    let dir = std::format!("{}/ctests", target_dir());
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut h);
+    let out = std::format!("{dir}/{}-{:016x}", key.prog, h.finish());
+    let tmp = std::format!("{out}.tmp-{}", std::process::id());
+    let cflags: Vec<String> = key
+        .cflags
+        .iter()
+        .map(|f| match f.strip_prefix("-I") {
+            Some(p) if !p.starts_with('/') => std::format!("-I{root}/{p}"),
+            _ => f.clone(),
+        })
+        .collect();
+    let mut cmd = Command::new("sh");
+    cmd.arg(std::format!("{root}/scripts/ctest-cc.sh")).env("CHALLOC_LIB", release_so());
+    if key.cxx {
+        cmd.arg("--cxx");
+    }
+    let status = cmd.args(&cflags).args([&src, "-o", &tmp]).args(&key.ldflags).status().unwrap();
+    assert!(status.success(), "compiling {src} failed");
+    std::fs::rename(&tmp, &out).unwrap();
+    out
+}
+
+// ---------------------------------------------------------------------------
+// The driver
+// ---------------------------------------------------------------------------
+
+/// Run one row: the gate, the compile, the bare run (must exit non-zero
+/// without a signal: `require_challoc` refuses to run on glibc), the
+/// preloaded run, the expectation, the stdout/stderr strings, and the
+/// program's skip lines.
+fn run_row(test: &str, row: &CTest<'_>) {
+    let prog = row.prog;
+    let args = row.args;
+    match row.gate {
+        Gate::Always => {}
+        Gate::GuardInstall => {
+            // Guard slabs exist only where the kernel installs guard regions
+            // (`Shared::init` zeroes the interval otherwise); the Rust test
+            // `heap::tests::sized_slot_rejects_guard_slabs` forces them on.
+            if !crate::sys::features::Features::probe().guard_install {
+                skip!(test, "guard_install=no on this kernel; {prog} {} not run", args.join(" "));
+            }
+        }
+    }
     let so = release_so();
-    let bin = compile("tests/c", "negative", &[]);
+    let bin = compiled(row);
 
-    let bare = Command::new(&bin).arg(mode).output().unwrap();
+    let bare = Command::new(&bin).args(args).env_remove("LD_PRELOAD").output().unwrap();
     assert!(
         !bare.status.success() && bare.status.signal().is_none(),
-        "negative {mode} without libchalloc preloaded: {:?}\n{}",
+        "{test}: {prog} {args:?} without libchalloc preloaded: {:?}\nstdout: {}\nstderr: {}",
         bare.status,
+        String::from_utf8_lossy(&bare.stdout),
         String::from_utf8_lossy(&bare.stderr)
     );
 
     let mut cmd = Command::new(&bin);
-    cmd.arg(mode).env("LD_PRELOAD", &so);
-    for (k, v) in env {
+    // A suite run under `CHALLOC_CONF` (lane D's campaign, 2026-09-20)
+    // would override the test's own `MALLOC_CONF` (the environment key is
+    // read after it and wins) and turn every both-ways test one way.
+    cmd.args(args).env_remove("CHALLOC_CONF").env("LD_PRELOAD", &so);
+    if let Some(conf) = row.conf {
+        cmd.env("MALLOC_CONF", conf);
+    }
+    for (k, v) in row.env {
         cmd.env(k, v);
     }
     let run = cmd.output().unwrap();
-    let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&run.stdout);
     let stderr = String::from_utf8_lossy(&run.stderr);
+    let what = std::format!("{test}: {prog} {}", args.join(" "));
     let detail = std::format!("({:?})\nstdout: {stdout}\nstderr: {stderr}", run.status);
-    assert!(stdout.lines().any(|l| l == std::format!("negative: {mode}")), "{mode} never started {detail}");
-    assert!(!stdout.contains("survived"), "{mode} survived {detail}");
-    assert_eq!(run.status.signal(), Some(signal), "{mode} wrong signal {detail}");
-    if signal == SIGABRT {
-        let line = stderr.lines().find(|l| l.starts_with("challoc: "));
-        let line = line.unwrap_or_else(|| panic!("{mode} printed no `challoc: ` line {detail}"));
-        for e in expect {
-            assert!(line.contains(e), "{mode}: `{line}` lacks `{e}` {detail}");
+    match row.expect {
+        Expect::Ok => {
+            assert!(run.status.success(), "{what} failed {detail}");
+            let ok = std::format!("ok {prog}");
+            assert!(stdout.lines().any(|l| l == ok), "{what} did not print `{ok}` {detail}");
         }
-        std::eprintln!("negative {mode}: {line}");
+        Expect::Abort { signal, stderr_contains } => {
+            run_c_negative(&what, prog, args, signal, stderr_contains, run.status, &stdout, &stderr, &detail)
+        }
+    }
+    for s in row.stdout_has {
+        assert!(stdout.contains(s), "{what}: stdout lacks `{s}` {detail}");
+    }
+    for s in row.stdout_lacks {
+        assert!(!stdout.contains(s), "{what}: stdout has `{s}` {detail}");
+    }
+    for s in row.stderr_has {
+        assert!(stderr.contains(s), "{what}: stderr lacks `{s}` {detail}");
+    }
+    for s in row.stderr_lacks {
+        assert!(!stderr.contains(s), "{what}: stderr has `{s}` {detail}");
+    }
+    if matches!(row.expect, Expect::Ok) {
+        std::eprintln!("{what}: {}", stdout.trim_end());
+    }
+    report_program_skips(test, &stdout);
+}
+
+/// The checks of a row that must abort (plan Phase 0 task 14): the program
+/// started, the run died of `signal`, the program never finished (no `survived`, no `ok
+/// <prog>`), and for an abort stderr carries `challoc: ` lines with every
+/// string in `expect` found in one of them (the allocator's own message,
+/// or for the conf tests the issue line and the `abort_conf` line).
+#[allow(clippy::too_many_arguments)]
+fn run_c_negative(
+    what: &str,
+    prog: &str,
+    args: &[&str],
+    signal: i32,
+    expect: &[&str],
+    status: ExitStatus,
+    stdout: &str,
+    stderr: &str,
+    detail: &str,
+) {
+    // A mode program reached its bad operation (`negative: <mode>`). A row
+    // without arguments aborts before `main` (tests/c/conf.c: the first
+    // allocation is libc's, and `abort_conf` fires there), so nothing on
+    // stdout is expected of it.
+    if let Some(mode) = args.first() {
+        let started = std::format!("{prog}: {mode}");
+        assert!(stdout.lines().any(|l| l == started), "{what} never started (no `{started}` line) {detail}");
+    }
+    assert!(!stdout.contains("survived"), "{what} survived {detail}");
+    assert!(!stdout.contains(&std::format!("ok {prog}")), "{what} finished {detail}");
+    assert_eq!(status.signal(), Some(signal), "{what} wrong signal {detail}");
+    if signal == SIGABRT {
+        let lines: Vec<&str> = stderr.lines().filter(|l| l.starts_with("challoc: ")).collect();
+        assert!(!lines.is_empty(), "{what} printed no `challoc: ` line {detail}");
+        for e in expect {
+            assert!(lines.iter().any(|l| l.contains(e)), "{what}: no `challoc: ` line has `{e}` {detail}");
+        }
+        std::eprintln!("{what}: {}", lines.join(" | "));
     } else {
-        std::eprintln!("negative {mode}: signal {signal}");
-    }
-    stdout.into_owned()
-}
-
-#[test]
-fn c_negative_double_free_stale() {
-    // The first free flushed to the slab before the second: the slot bit is
-    // clear, so the one-load check on `free` catches it.
-    run_c_negative("double_free_stale", SIGABRT, &["invalid or double free of 0x", "slot is not allocated"]);
-}
-
-#[test]
-fn c_negative_double_free_cached() {
-    // Both frees land in the thread cache; the batched release to the slab
-    // sees the duplicate (or the second release finds the bit clear).
-    run_c_negative("double_free_cached", SIGABRT, &["double free of 0x"]);
-}
-
-/// A sized double free returns from the second call (the sized path loads
-/// no descriptor) and is caught when the cache flushes both copies.
-#[test]
-fn c_negative_sized_double_free() {
-    let out = run_c_negative("sized_double_free", SIGABRT, &["double free of 0x"]);
-    assert!(out.contains("sized double free of 0x"), "the second sdallocx did not return: {out}");
-}
-
-#[test]
-fn c_negative_sized_mismatch() {
-    run_c_negative("sized_mismatch", SIGABRT, &["sized free of 0x", "size hint 1000 does not match"]);
-}
-
-#[test]
-fn c_negative_free_sized_mismatch() {
-    run_c_negative("free_sized_mismatch", SIGABRT, &["sized free of 0x", "size hint 65 does not match"]);
-}
-
-#[test]
-fn c_negative_interior_free() {
-    run_c_negative("interior_free", SIGABRT, &["invalid free of 0x", "not an allocation"]);
-}
-
-#[test]
-fn c_negative_stack_free() {
-    run_c_negative("stack_free", SIGABRT, &["invalid free of 0x", "not an allocation"]);
-}
-
-/// Plan Phase 1.5 task 14: `malloc_usable_size` reads the located slot's
-/// bit the way `free` does and still aborts on a slot that is not
-/// allocated (the query of a freed, flushed block).
-#[test]
-fn c_negative_usable_size_freed() {
-    let out = run_c_negative("usable_size_freed", SIGABRT, &["invalid or double free of 0x", "slot is not allocated"]);
-    assert!(!out.contains("returned"), "the query of a freed slot returned: {out}");
-}
-
-#[test]
-fn c_negative_huge_overflow() {
-    // The byte after a huge run is its guard page (`PROT_NONE`, or
-    // `MADV_GUARD_INSTALL` where the kernel has it); either way SIGSEGV.
-    run_c_negative("huge_overflow", SIGSEGV, &[]);
-}
-
-/// Plan Phase 1.5 task 9c: with `double_free_scan` the second free is
-/// caught at the call, while the first copy is one of the top four cache
-/// entries, on plain `free` and on the sized path (which otherwise defers
-/// every check to the flush).
-/// Plan Phase 2.5 task 7: the same cached double free with
-/// `pac_pointers:true`, so the C-level detection at the flush split runs
-/// over signed entries (the straddle compare is signed against signed;
-/// the release authenticates the batch first). On a host without PAC the
-/// key is accepted and inert.
-#[test]
-fn c_negative_double_free_cached_with_pac_pointers() {
-    run_c_negative_env(
-        "double_free_cached",
-        SIGABRT,
-        &["double free of 0x"],
-        &[("MALLOC_CONF", "pac_pointers:true,abort_conf:true")],
-    );
-}
-
-/// Plan Phase 2.5 task 7: `tests/c/tls_threads.c` (64 pthreads, distinct
-/// heaps through `thread.allocatedp`, allocations and frees on every
-/// thread) under `pac_pointers:true`: the shipped library's signed cache
-/// entries and signed TLS heap pointers, from C, on a PAC host; the plain
-/// path with the key accepted elsewhere.
-#[test]
-fn c_tls_threads_with_pac_pointers() {
-    let so = release_so();
-    // Both cache modes under the key: thread caches, and the per-CPU mode
-    // (plan Phase 2.5 task 8; thread caches again where `mm_cid` is not
-    // usable). The combination faulted on FEAT_FPAC until 2026-09-20: the
-    // per-CPU batch push signed with the write position instead of the
-    // stack base (`rseq::push_batch`), so a batch pushed onto a non-empty
-    // stack failed the next pop's `autda`.
-    for conf in ["pac_pointers:true,abort_conf:true", "pac_pointers:true,abort_conf:true,percpu_arena:percpu"] {
-        let bin = compile_link("tests/c", "tls_threads", &[], &["-ldl"]);
-        let run = Command::new(&bin).env_remove("CHALLOC_CONF").env("LD_PRELOAD", &so).env("MALLOC_CONF", conf).output().unwrap();
-        let _ = std::fs::remove_file(&bin);
-        let stdout = String::from_utf8_lossy(&run.stdout);
-        let stderr = String::from_utf8_lossy(&run.stderr);
-        assert!(run.status.success(), "tls_threads with {conf} failed ({:?})\nstdout: {stdout}\nstderr: {stderr}", run.status);
-        assert!(stdout.contains("ok 64 threads"), "stdout: {stdout}");
-        std::eprintln!("tls_threads ({conf}): {}", stdout.trim_end());
+        assert!(expect.is_empty(), "{what}: stderr strings are checked for SIGABRT only");
+        std::eprintln!("{what}: signal {signal}");
     }
 }
 
-#[test]
-fn c_negative_double_free_cached_with_scan() {
-    run_c_negative_env(
-        "double_free_cached",
-        SIGABRT,
-        &["double free of 0x", "already in the thread cache"],
-        &[("MALLOC_CONF", "double_free_scan:true")],
-    );
+// ---------------------------------------------------------------------------
+// Negative tests (plan Phase 0 task 14, Phase 1.5 tasks 9 and 14, review
+// 2026-09-18 item 43): one mode of tests/c/negative.c per row.
+// ---------------------------------------------------------------------------
+
+ctests! {
+    /// The first free flushed to the slab before the second: the slot bit is
+    /// clear, so the one-load check on `free` catches it.
+    c_negative_double_free_stale => [
+        negative!("double_free_stale", SIGABRT, &["invalid or double free of 0x", "slot is not allocated"]),
+    ];
+    /// Both frees land in the thread cache; the batched release to the slab
+    /// sees the duplicate (or the second release finds the bit clear).
+    c_negative_double_free_cached => [
+        negative!("double_free_cached", SIGABRT, &["double free of 0x"]),
+    ];
+    /// A sized double free returns from the second call (the sized path loads
+    /// no descriptor) and is caught when the cache flushes both copies.
+    c_negative_sized_double_free => [
+        negative!("sized_double_free", SIGABRT, &["double free of 0x"],
+            stdout_has: &["sized double free of 0x"]),
+    ];
+    c_negative_sized_mismatch => [
+        negative!("sized_mismatch", SIGABRT, &["sized free of 0x", "size hint 1000 does not match"]),
+    ];
+    c_negative_free_sized_mismatch => [
+        negative!("free_sized_mismatch", SIGABRT, &["sized free of 0x", "size hint 65 does not match"]),
+    ];
+    c_negative_interior_free => [
+        negative!("interior_free", SIGABRT, &["invalid free of 0x", "not an allocation"]),
+    ];
+    c_negative_stack_free => [
+        negative!("stack_free", SIGABRT, &["invalid free of 0x", "not an allocation"]),
+    ];
+    /// Plan Phase 1.5 task 14: `malloc_usable_size` reads the located slot's
+    /// bit the way `free` does and still aborts on a slot that is not
+    /// allocated (the query of a freed, flushed block).
+    c_negative_usable_size_freed => [
+        negative!("usable_size_freed", SIGABRT, &["invalid or double free of 0x", "slot is not allocated"],
+            stdout_lacks: &["returned"]),
+    ];
+    /// The byte after a huge run is its guard page (`PROT_NONE`, or
+    /// `MADV_GUARD_INSTALL` where the kernel has it); either way SIGSEGV.
+    c_negative_huge_overflow => [
+        negative!("huge_overflow", SIGSEGV, &[]),
+    ];
+    /// Plan Phase 1.5 task 9c: with `double_free_scan` the second free is
+    /// caught at the call, while the first copy is one of the top four cache
+    /// entries, on plain `free` and on the sized path (which otherwise defers
+    /// every check to the flush).
+    /// Plan Phase 2.5 task 7: the same cached double free with
+    /// `pac_pointers:true`, so the C-level detection at the flush split runs
+    /// over signed entries (the straddle compare is signed against signed;
+    /// the release authenticates the batch first). On a host without PAC the
+    /// key is accepted and inert.
+    c_negative_double_free_cached_with_pac_pointers => [
+        negative!("double_free_cached", SIGABRT, &["double free of 0x"],
+            conf: Some("pac_pointers:true,abort_conf:true")),
+    ];
+    c_negative_double_free_cached_with_scan => [
+        negative!("double_free_cached", SIGABRT, &["double free of 0x", "already in the thread cache"],
+            conf: Some("double_free_scan:true")),
+    ];
+    c_negative_sized_double_free_with_scan => [
+        negative!("sized_double_free", SIGABRT, &["double free of 0x", "already in the thread cache"],
+            conf: Some("double_free_scan:true"),
+            stdout_lacks: &["returned"]),
+    ];
+    /// Plan Phase 1.5 task 9a: the two copies of a cached double free sort to
+    /// the flush's split point, one released and one kept; the flush's
+    /// neighbour pass over the kept half catches it.
+    c_negative_double_free_straddle => [
+        negative!("double_free_straddle", SIGABRT, &["double free of 0x", "both copies cached, one at the flush boundary"],
+            stdout_has: &["pair at sorted indices"]),
+    ];
+    /// Plan Phase 1.5 task 9b: a sized free of a slot start inside a guard slab
+    /// is rejected on the sized fast path (guard slabs are arithmetic on the
+    /// table line) and aborts in the exact slow path with the guard named.
+    c_negative_sized_guard => [
+        negative!("sized_guard", SIGABRT, &["invalid free of 0x", "guard slab"],
+            stdout_has: &["guard region at"],
+            gate: Gate::GuardInstall),
+    ];
+    /// Review 2026-09-18 item 43: a plain `free` into a guard gap. The exact
+    /// bit test finds the slot clear and the slab a guard, and says so.
+    c_negative_guard_free => [
+        negative!("guard_free", SIGABRT, &["invalid free of 0x", "guard slab"],
+            stdout_has: &["guard region at"],
+            gate: Gate::GuardInstall),
+    ];
+    /// Item 43: `realloc` and `sallocx` on a stale pointer (freed and
+    /// flushed) take the exact bit test of `check_live` and abort.
+    c_negative_realloc_stale => [
+        negative!("realloc_stale", SIGABRT, &["invalid or double free of 0x", "slot is not allocated"],
+            stdout_lacks: &["returned"]),
+    ];
+    c_negative_sallocx_stale => [
+        negative!("sallocx_stale", SIGABRT, &["invalid or double free of 0x", "slot is not allocated"],
+            stdout_lacks: &["returned"]),
+    ];
+    /// Item 43: `dallocx(p, MALLOCX_TCACHE_NONE)` twice. The uncached release
+    /// checks the bit at the call, so the second is caught there, not at a
+    /// flush.
+    c_negative_dallocx_none_twice => [
+        negative!("dallocx_none_twice", SIGABRT, &["invalid or double free of 0x", "slot is not allocated"],
+            stdout_lacks: &["returned"]),
+    ];
+    /// Item 43: `free_sized` with a huge size hint on a slab pointer. The hint
+    /// names no class, so the sized fast path declines and the slow path's
+    /// hint check aborts at the call.
+    c_negative_free_sized_huge_hint => [
+        negative!("free_sized_huge_hint", SIGABRT, &["sized free of 0x", "size hint 1048576 does not match"],
+            stdout_lacks: &["returned"]),
+    ];
+    /// Item 43: a huge run freed twice, and a free of a page inside a huge
+    /// run; both are the huge allocator's own aborts.
+    c_negative_huge_double_free => [
+        negative!("huge_double_free", SIGABRT, &["free of 0x", "huge allocation"],
+            stdout_lacks: &["returned"]),
+    ];
+    c_negative_huge_interior_free => [
+        negative!("huge_interior_free", SIGABRT, &["invalid free of 0x", "not the start of a huge allocation"],
+            stdout_lacks: &["returned"]),
+    ];
 }
 
-#[test]
-fn c_negative_sized_double_free_with_scan() {
-    let out = run_c_negative_env(
-        "sized_double_free",
-        SIGABRT,
-        &["double free of 0x", "already in the thread cache"],
-        &[("MALLOC_CONF", "double_free_scan:true")],
-    );
-    assert!(!out.contains("returned"), "the second sdallocx returned under double_free_scan: {out}");
+// ---------------------------------------------------------------------------
+// Positive programs
+// ---------------------------------------------------------------------------
+
+ctests! {
+    /// Plan Phase 2.5 task 7: `tests/c/tls_threads.c` (64 pthreads, distinct
+    /// heaps through `thread.allocatedp`, allocations and frees on every
+    /// thread) under `pac_pointers:true`: the shipped library's signed cache
+    /// entries and signed TLS heap pointers, from C, on a PAC host; the plain
+    /// path with the key accepted elsewhere. Both cache modes under the key:
+    /// thread caches, and the per-CPU mode (plan Phase 2.5 task 8; thread
+    /// caches again where `mm_cid` is not usable). The combination faulted
+    /// on FEAT_FPAC until 2026-09-20: the per-CPU batch push signed with the
+    /// write position instead of the stack base (`rseq::push_batch`), so a
+    /// batch pushed onto a non-empty stack failed the next pop's `autda`.
+    c_tls_threads_with_pac_pointers => [
+        CTest { prog: "tls_threads", conf: Some("pac_pointers:true,abort_conf:true"), ..BASE },
+        CTest { prog: "tls_threads", conf: Some("pac_pointers:true,abort_conf:true,percpu_arena:percpu"), ..BASE },
+    ];
+    /// `tests/c/decay.c` (plan Phase 1 task 2), one mode per test with its
+    /// `MALLOC_CONF`.
+    c_decay_trim => [ CTest { prog: "decay", args: &["trim"], conf: Some("abort_conf:true"), ..BASE } ];
+    c_decay_window => [ CTest { prog: "decay", args: &["decay"], conf: Some("abort_conf:true,dirty_decay_ms:200"), ..BASE } ];
+    c_decay_curve => [ CTest { prog: "decay", args: &["curve"], conf: Some("abort_conf:true,dirty_decay_ms:2000"), ..BASE } ];
+    c_decay_never => [ CTest { prog: "decay", args: &["never"], conf: Some("abort_conf:true,dirty_decay_ms:-1"), ..BASE } ];
+    c_decay_background_thread => [
+        CTest { prog: "decay", args: &["background"], conf: Some("abort_conf:true,background_thread:true,dirty_decay_ms:200"), ..BASE },
+    ];
+    c_decay_lazy_free => [ CTest { prog: "decay", args: &["lazy"], conf: Some("abort_conf:true,lazy_free:true"), ..BASE } ];
+    c_align => [ CTest { prog: "align", ..BASE } ];
+    c_realloc_tiers => [ CTest { prog: "realloc_tiers", ..BASE } ];
+    c_calloc_zero => [ CTest { prog: "calloc_zero", ..BASE } ];
+    c_random_ops_one_million_across_eight_threads => [ CTest { prog: "random_ops", args: &["1000000", "8"], ..BASE } ];
+    /// Same driver, one thread: no cross-thread traffic, so a failure here
+    /// is in the per-thread paths alone.
+    c_random_ops_single_thread => [ CTest { prog: "random_ops", args: &["200000", "1", "0x1234"], ..BASE } ];
+    c_producer_consumer => [ CTest { prog: "producer_consumer", ..BASE } ];
+    c_fork_alloc => [ CTest { prog: "fork_alloc", ..BASE } ];
+    /// `tests/c/fork_alloc.c mallctl` (plan Phase 1.5 task 10a): forks while
+    /// other threads hold the statistics and explicit-cache locks; every child
+    /// must call `epoch` and `tcache.create` itself and exit 0 within its alarm.
+    c_fork_alloc_under_mallctl => [ CTest { prog: "fork_alloc", args: &["mallctl"], ..BASE } ];
+    /// A signal handler that forks, delivered while this thread is inside the
+    /// fork handlers with every allocator lock held (the race in glibc's
+    /// `tst-mallocfork`, made deterministic).
+    c_fork_signal => [ CTest { prog: "fork_signal", ..BASE } ];
+    c_thread_exit => [ CTest { prog: "thread_exit", ..BASE } ];
+    /// `tests/c/jemalloc_api.c` (plan Phase 1 task 5): the jemalloc and glibc
+    /// extras under the real `.so`, every non-standard symbol reached through
+    /// a weak reference.
+    c_jemalloc_api => [ CTest { prog: "jemalloc_api", ..BASE } ];
+    /// Review 2026-09-18 item 43, the positive paths (`tests/c/positive.c`):
+    /// `free_sized`/`free_aligned_sized` from C over every tier with the
+    /// slots coming back, `xallocx` with `extra > 0` (in place, unchanged,
+    /// the real size), and `malloc_trim` with nothing purgeable (0, nothing
+    /// touched) then with a freed set (1, RSS down) then again (0).
+    c_positive_free_sized => [ CTest { prog: "positive", args: &["free_sized"], ..BASE } ];
+    c_positive_xallocx_extra => [ CTest { prog: "positive", args: &["xallocx_extra"], ..BASE } ];
+    c_positive_malloc_trim_idle => [ CTest { prog: "positive", args: &["malloc_trim_idle"], conf: Some("abort_conf:true"), ..BASE } ];
+    /// The C++ operators (`src/api/cxx.rs`): resolution into libchalloc,
+    /// round trips, `std::bad_alloc` thrown through challoc's frames and the
+    /// `new_handler` loop.
+    cxx_new => [ CTest { prog: "cxx_new", cxx: true, ..BASE } ];
+    glibc_tst_malloc => [ glibc!("tst-malloc") ];
+    glibc_tst_calloc => [ glibc!("tst-calloc") ];
+    glibc_tst_mallocfork => [ glibc!("tst-mallocfork") ];
+    glibc_tst_posix_memalign => [ glibc!("tst-posix_memalign") ];
+    glibc_tst_realloc => [ glibc!("tst-realloc") ];
+    mimalloc_test_stress => [ MIMALLOC_STRESS ];
+    /// The same stress test with `check_zero` on (plan Phase 1.5 task 7b):
+    /// every `Fresh` or `Purged` slot and page behind its `calloc`s is read by
+    /// the allocator before it is handed out, so a dirty "zero" allocation
+    /// aborts inside the allocator with the slab's prior state and the
+    /// discard backend instead of in the C assertion. Stays in `make test` so a
+    /// recurrence of the 2026-09-18 failure is diagnosable.
+    mimalloc_test_stress_check_zero => [
+        CTest { conf: Some("abort_conf:true,check_zero:true"), ..MIMALLOC_STRESS },
+    ];
+    /// `check_zero` under `slot_randomize`: a shuffled batch from a `Fresh` or
+    /// `Purged` slab is still all zero (the shuffle changes the order, not the
+    /// set), so the campaign's default configuration stays clean.
+    mimalloc_test_stress_check_zero_slot_randomize => [
+        CTest { conf: Some("abort_conf:true,check_zero:true,slot_randomize:true"), ..MIMALLOC_STRESS },
+    ];
+    /// Plan Phase 2 task 3: the opt-in hardening tunables (`tests/c/tunables.c`).
+    /// `zero_on_free`: a written block reads as zero after `free`, `sdallocx`
+    /// and `free_sized`, and comes back zero from `malloc`; the control mode
+    /// proves the default leaves the bytes. `slot_randomize`: one class's
+    /// first allocations in a fresh process are a contiguous slot set in a
+    /// non-monotone order; the control is ascending. `abort_conf` accepts
+    /// both keys (they are no longer inert).
+    ///
+    /// The four modes run with `percpu_arena:off`: they reason about one
+    /// thread's LIFO reuse and one refill batch, which the per-CPU mode (design
+    /// 15) does not promise to a thread that migrates between two calls.
+    c_tunables_zero_on_free => [
+        CTest { prog: "tunables", args: &["zero"], conf: Some("abort_conf:true,zero_on_free:true,percpu_arena:off"), ..BASE },
+        CTest { prog: "tunables", args: &["dirty"], conf: Some("abort_conf:true,percpu_arena:off"), ..BASE },
+    ];
+    c_tunables_slot_randomize => [
+        CTest { prog: "tunables", args: &["random"], conf: Some("abort_conf:true,slot_randomize:true,percpu_arena:off"), ..BASE },
+        CTest { prog: "tunables", args: &["ordered"], conf: Some("abort_conf:true,percpu_arena:off"), ..BASE },
+    ];
+    /// Plan Phase 2.5 task 8, both ways: `tests/c/percpu.c` under
+    /// `percpu_arena:percpu` (on where the kernel and glibc give `mm_cid`,
+    /// off with a `SKIP` line elsewhere; the program prints which) and under
+    /// `percpu_arena:off` (always off). 64 threads of tagged random
+    /// allocation across the small classes, calloc zeroing under churn,
+    /// exact per-thread counters, `thread.tcache.flush` and `stats.percpu.*`.
+    /// Then the mode with signed cache entries (plan Phase 2.5 task 7 with
+    /// task 8): 64 threads x 20000 operations across the per-CPU stacks, the
+    /// shape that faulted 2/2 on FEAT_FPAC before the `push_batch` fix.
+    c_percpu_both_ways => [
+        CTest { prog: "percpu", args: &["percpu"], conf: Some("abort_conf:true,percpu_arena:percpu"), ..BASE },
+        CTest { prog: "percpu", args: &["off"], conf: Some("abort_conf:true,percpu_arena:off"), ..BASE },
+        CTest { prog: "percpu", args: &["percpu"], conf: Some("abort_conf:true,percpu_arena:percpu,pac_pointers:true"), ..BASE },
+    ];
+    /// Plan Phase 2.5 task 15, both ways: `tests/c/slice_ext.c` under
+    /// `slice_ext:on` (the rseq time slice extension on where the kernel has
+    /// `CONFIG_RSEQ_SLICE_EXTENSION`, refused with a report note and a `SKIP`
+    /// line elsewhere: the program reads the kernel's view through `prctl`
+    /// and asserts the right branch) and under `slice_ext:off` (never
+    /// enabled). 32 threads of tagged random allocation, the per-task enable
+    /// on a thread's first hold, the fork child's inherited enable,
+    /// `opt.slice_ext`.
+    c_slice_ext_both_ways => [
+        CTest { prog: "slice_ext", args: &["on"], conf: Some("abort_conf:true,slice_ext:on"), ..BASE },
+        CTest { prog: "slice_ext", args: &["off"], conf: Some("abort_conf:true,slice_ext:off"), ..BASE },
+    ];
+    /// The fuzz driver (`c_fuzz_short`) once under each key, and both.
+    c_fuzz_short_under_zero_on_free => [
+        CTest { dir: "fuzz", prog: "fuzz", args: &["400000", "4"], conf: Some("abort_conf:true,zero_on_free:true"), ..BASE },
+    ];
+    c_fuzz_short_under_slot_randomize => [
+        CTest { dir: "fuzz", prog: "fuzz", args: &["400000", "4"], conf: Some("abort_conf:true,slot_randomize:true"), ..BASE },
+        CTest { dir: "fuzz", prog: "fuzz", args: &["200000", "4"],
+            conf: Some("abort_conf:true,slot_randomize:true,zero_on_free:true,double_free_scan:true"), ..BASE },
+    ];
+    /// `tests/c/mseal.c` (plan Phase 2 task 2): the never-committed ranges of
+    /// the reservations are sealed after init where the kernel allows it, and
+    /// the allocator keeps working. A `SKIP` line where `mseal` is
+    /// unavailable (Docker's default seccomp profile filters it).
+    c_mseal => [ CTest { prog: "mseal", ..BASE } ];
+    /// `tests/c/features.c` (plan Phase 2.5 task 2): `challoc_features()` is a
+    /// NUL-terminated `key=value` line equal to the `Kernel and CPU features:`
+    /// line of `malloc_stats_print`, with every CPU key of this architecture.
+    c_features => [ CTest { prog: "features", ..BASE } ];
+    /// `tests/c/thp.c never` (plan Phase 2.5 task 9 and 16): the default issues
+    /// no `MADV_HUGEPAGE` anywhere (no `hg` on the VMA of a class region,
+    /// `stats.thp.mode` 0, nothing advised), `MADV_NOHUGEPAGE`s the class and
+    /// metadata reservations (`nh`, `stats.thp.nohuge_ranges` 2) and leaves
+    /// the huge region to the host's policy (no `nh` on the huge run; on an
+    /// `always` host it shows `AnonHugePages` again).
+    c_thp_never => [ CTest { prog: "thp", args: &["never"], ..BASE } ];
+    /// `tests/c/thp.c always` under `thp:always`: with the PMD size enabled in
+    /// sysfs the class region is committed in 2 MiB chunks, the VMA has `hg`
+    /// and `THPeligible`, and 8 MiB touched show at least 4 MiB of
+    /// `AnonHugePages`; with only smaller sizes the groups are advised; with
+    /// nothing enabled the mode is off (a `SKIP` line). Forced to `never`
+    /// under a cgroup limit below 1 GiB (a pass with a note).
+    c_thp_always => [ CTest { prog: "thp", args: &["always"], conf: Some("thp:always"), ..BASE } ];
+    /// `tests/c/thp.c auto` under `thp:auto`: active only where the kernel
+    /// enables a folio size below the PMD and does not `madvise`-gate the PMD
+    /// (needs `hugepages-64kB/enabled=madvise` and `hugepages-2048kB/enabled=
+    /// never` from root; Ubuntu's default makes it inert, which the program
+    /// checks as well, with a `SKIP` line).
+    c_thp_auto => [ CTest { prog: "thp", args: &["auto"], conf: Some("thp:auto"), ..BASE } ];
+    /// `tests/c/prefault.c` (plan Phase 2.5 task 11), both ways: under
+    /// `prefault:true,background_thread:true` the pass commits and populates
+    /// the next fresh slab of a class that refilled (resident per `mincore`
+    /// before any allocation touched it, one slab only, zero, and the next
+    /// refills take it); under the default nothing is prefaulted and the
+    /// counters stay zero; `prefault:true` without the thread is inert and
+    /// the report says why.
+    c_prefault_both_ways => [
+        CTest { prog: "prefault", args: &["on"], conf: Some("abort_conf:true,prefault:true,background_thread:true"), ..BASE },
+        CTest { prog: "prefault", args: &["off"], conf: Some("abort_conf:true"), ..BASE },
+        CTest { prog: "prefault", args: &["inert"], conf: Some("abort_conf:true,prefault:true"), ..BASE },
+    ];
+    /// `tests/c/thp.c process` under `thp_process:advised,thp:auto` (plan
+    /// Phase 2.5 task 16, the process-wide `prctl`), both ways by the
+    /// kernel's answer: in force on 6.18+ (`PR_GET_THP_DISABLE` reads 3,
+    /// `stats.thp.process` 1, the `thp:` line says so; an `always` host shows
+    /// 0 kB of `AnonHugePages` in the unadvised regions), a `SKIP` line with
+    /// the reason below 6.18 (`EINVAL`) or where the process inherited a
+    /// policy.
+    c_thp_process => [
+        CTest { prog: "thp", args: &["process"], conf: Some("abort_conf:true,thp_process:advised,thp:auto"), ..BASE },
+    ];
+    /// `tests/c/cgroup.c plain` (plan Phase 2 task 4): `stats.cgroup.*` read
+    /// from C, `ENOENT` without a cgroup2, else `max` or a number that equals
+    /// `CHALLOC_EXPECT_CGROUP_LIMIT` when `make test-cgroup-limit`'s
+    /// `--memory=512m` run set it (the variable reaches the program through
+    /// the inherited environment), and `current` following a 64 MiB
+    /// allocation after the 10 ms sampling window.
+    c_cgroup_stats => [ CTest { prog: "cgroup", args: &["plain"], ..BASE } ];
+    /// `tests/c/cgroup.c off`: `cgroup:false` reads nothing (the keys are
+    /// `ENOENT`, the report says `not tracked (cgroup:false)`) and the key is
+    /// accepted by `abort_conf`, since it is no longer inert.
+    c_cgroup_off => [ CTest { prog: "cgroup", args: &["off"], conf: Some("cgroup:false,abort_conf:true"), ..BASE } ];
+    /// `tests/c/cgroup.c bg`: with a background thread the report says whether
+    /// the PSI trigger on `memory.pressure` was armed (Docker's default profile
+    /// mounts the cgroup read-only, so "unavailable (EROFS)" is a pass with a
+    /// `SKIP` line), and `pressure_events` is 0 under no pressure.
+    c_cgroup_background_thread => [
+        CTest { prog: "cgroup", args: &["bg"], conf: Some("background_thread:true,abort_conf:true"), ..BASE },
+    ];
+    /// `tests/c/cgroup_policy.c bands` (plan Phase 2 task 5): the design 11
+    /// policy through the public keys. Without a cgroup2 the policy keys are
+    /// `ENOENT`; tracked without a limit `decay_ms` is the configured period
+    /// and `retention_cap` `SIZE_MAX`; under `make test-cgroup-limit`'s
+    /// 512 MiB the program fills the cgroup to 80% (scaled `decay_ms`, then
+    /// the 5% retention cap after freeing) and to 94% (`decay_ms` 0, one tick
+    /// purges everything). Filling to 94% is why that target runs
+    /// single-threaded.
+    c_cgroup_policy_bands => [ CTest { prog: "cgroup_policy", args: &["bands"], ..BASE } ];
+    /// `tests/c/cgroup_policy.c high`: the `memory.events` `high` row, in a
+    /// child cgroup the program makes itself when the mount allows it (a
+    /// `--privileged` container on a host without `nsdelegate` at the
+    /// container's root); each refusal is a pass with a `SKIP` line.
+    c_cgroup_policy_high => [ CTest { prog: "cgroup_policy", args: &["high"], ..BASE } ];
+    /// `tests/c/cgroup_churn.c` (plan Phase 2 task 6 (a)): the churn program
+    /// builds and runs under the preload at a small size in `report` mode (no
+    /// criterion: the row proves the program runs). The criteria (RSS under
+    /// 100 MiB within 2 s of freeing 400 MiB with the policy on, not with
+    /// `cgroup:false`) need a container of their own per run with swap off
+    /// (`--memory=L --memory-swap=L`) and are `make test-cgroup-churn`,
+    /// chained into `make test`.
+    c_cgroup_churn_program => [ CTest { prog: "cgroup_churn", args: &["report", "64", "16"], ..BASE } ];
+    /// `tests/c/cgroup_oscillate.c` (plan Phase 2 task 6 (b)): the oscillation
+    /// program builds and completes a few cycles (3 s, 16..48 MiB live). The
+    /// 5-minute run in 512 MiB is `make test-cgroup-oscillate` (opt-in).
+    c_cgroup_oscillate_program => [ CTest { prog: "cgroup_oscillate", args: &["3", "16", "48", "200"], ..BASE } ];
+    /// `tests/c/guard_slab.c fault` (plan Phase 2 task 1): under the preload,
+    /// a write into the guard slab that follows a run of slabs of the 64-byte
+    /// class faults (SIGSEGV caught in the program), while the last byte of
+    /// the last slot before it and the first slot after it are writable. Guard
+    /// slabs exist only where the kernel installs guard regions (6.13+), so
+    /// the test skips elsewhere; the program finds the guard as the one slab
+    /// no allocation came from, with the geometry from public `mallctl` keys.
+    c_guard_slab_fault => [ CTest { prog: "guard_slab", args: &["fault"], gate: Gate::GuardInstall, ..BASE } ];
+    /// `tests/c/guard_slab.c vmas` (plan Phase 2 task 1): 10,000 committed
+    /// slabs of the 16-byte class (640 MiB of address space, one guard slab
+    /// in eight where the kernel has `MADV_GUARD_INSTALL`) intersect at most
+    /// `VMA_BOUND` (8) lines of `/proc/self/maps`: guard regions inside the
+    /// read-write range do not split it. Runs on every kernel; without guard
+    /// regions it checks that no slab was skipped and the bound still holds.
+    c_guard_slab_vmas => [ CTest { prog: "guard_slab", args: &["vmas"], ..BASE } ];
+    /// `tests/c/huge_hole.c`: the alignment holes the huge allocator leaves
+    /// below an aligned run are committed memory. Once in the probed guard mode
+    /// (guard-install on kernels with `MADV_GUARD_INSTALL`, where the Phase 0
+    /// regression lived) and once forced onto the `PROT_NONE` fallback.
+    c_huge_hole => [ CTest { prog: "huge_hole", ..BASE } ];
+    c_huge_hole_no_guards => [ CTest { prog: "huge_hole", conf: Some("abort_conf:true,guards:false"), ..BASE } ];
+    /// The Phase 0 task 13 fuzz driver at a fraction of `make fuzz` (10M ops,
+    /// 4 threads) so every `make test` runs it. Same seed as `make fuzz`.
+    c_fuzz_short => [ CTest { dir: "fuzz", prog: "fuzz", args: &["400000", "4"], ..BASE } ];
+    /// One thread and a 64-entry table: high churn per slot, no cross-thread
+    /// traffic, so slots are reused quickly through the thread cache.
+    c_fuzz_single_thread_small_table => [ CTest { dir: "fuzz", prog: "fuzz", args: &["200000", "1", "0x7", "64"], ..BASE } ];
 }
 
-/// Plan Phase 1.5 task 9a: the two copies of a cached double free sort to
-/// the flush's split point, one released and one kept; the flush's
-/// neighbour pass over the kept half catches it.
-#[test]
-fn c_negative_double_free_straddle() {
-    let out = run_c_negative("double_free_straddle", SIGABRT, &["double free of 0x", "both copies cached, one at the flush boundary"]);
-    assert!(out.contains("pair at sorted indices"), "the mode never primed the cache: {out}");
-}
+// ---------------------------------------------------------------------------
+// Configuration sources (plan Phase 1 task 1): tests/c/conf.c under the
+// real `.so`, through `run_conf`.
+// ---------------------------------------------------------------------------
 
-/// Plan Phase 1.5 task 9b: a sized free of a slot start inside a guard slab
-/// is rejected on the sized fast path (guard slabs are arithmetic on the
-/// table line) and aborts in the exact slow path with the guard named.
-#[test]
-fn c_negative_sized_guard() {
-    // Guard slabs exist only where the kernel installs guard regions
-    // (`Shared::init` zeroes the interval otherwise); the Rust test
-    // `heap::tests::sized_slot_rejects_guard_slabs` forces them on.
-    if !crate::sys::features::Features::probe().guard_install {
-        std::eprintln!("guard_install=no on this kernel; skipping sized_guard");
-        return;
-    }
-    let out = run_c_negative("sized_guard", SIGABRT, &["invalid free of 0x", "guard slab"]);
-    assert!(out.contains("sized free of slot"), "the mode never found a guard: {out}");
-}
-
-/// `tests/c/conf.c` (plan Phase 1 task 1): the configuration sources under
-/// the real `.so`. `conf` becomes the program's `je_malloc_conf` (statically
-/// initialised and exported with `-rdynamic`, as a program linked against
-/// the allocator would have it), `env` is added to the environment. With
+/// `conf` becomes the program's `je_malloc_conf` (statically initialised
+/// and exported with `-rdynamic`, as a program linked against the
+/// allocator would have it), `env` is added to the environment. With
 /// `expect_abort` the first allocation must abort and stderr must carry
-/// both the issue text and the `abort_conf` line.
+/// both the issue text and the `abort_conf` line; otherwise the program
+/// must print `ok conf` and the allocator must not have complained.
 fn run_conf(name: &str, conf: Option<&str>, env: &[(&str, &str)], expect_abort: Option<&str>) {
     run_conf_flags(name, conf, &[], env, expect_abort);
 }
@@ -343,39 +827,26 @@ fn run_conf(name: &str, conf: Option<&str>, env: &[(&str, &str)], expect_abort: 
 /// [`run_conf`] with extra compiler flags (`-DPLAIN` puts `conf` in the
 /// program's `malloc_conf` instead of `je_malloc_conf`).
 fn run_conf_flags(name: &str, conf: Option<&str>, extra: &[&str], env: &[(&str, &str)], expect_abort: Option<&str>) {
-    use std::os::unix::process::ExitStatusExt;
-    let so = release_so();
     let define = conf.map(|c| std::format!("-DCONF=\"{c}\""));
-    let mut flags = std::vec!["-rdynamic"];
-    flags.extend_from_slice(extra);
+    let mut cflags = std::vec!["-rdynamic"];
+    cflags.extend_from_slice(extra);
     if let Some(d) = &define {
-        flags.push(d);
+        cflags.push(d);
     }
-    let bin = compile("tests/c", "conf", &flags);
-    let mut cmd = Command::new(&bin);
-    cmd.env("LD_PRELOAD", &so);
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
-    let run = cmd.output().unwrap();
-    let _ = std::fs::remove_file(&bin);
-    let stdout = String::from_utf8_lossy(&run.stdout);
-    let stderr = String::from_utf8_lossy(&run.stderr);
-    let detail = std::format!("({:?})\nstdout: {stdout}\nstderr: {stderr}", run.status);
+    let test = std::format!("c_conf {name}");
     match expect_abort {
-        None => {
-            assert!(run.status.success(), "conf {name} failed {detail}");
-            assert!(stdout.lines().any(|l| l == "ok conf"), "conf {name} did not print `ok conf` {detail}");
-            assert!(!stderr.contains("challoc:"), "conf {name} complained {detail}");
-        }
-        Some(text) => {
-            assert_eq!(run.status.signal(), Some(SIGABRT), "conf {name} did not abort {detail}");
-            assert!(!stdout.contains("ok conf"), "conf {name} survived {detail}");
-            assert!(stderr.contains(text), "conf {name}: stderr lacks `{text}` {detail}");
-            assert!(stderr.contains("challoc: abort_conf:"), "conf {name}: no abort_conf line {detail}");
-        }
+        None => run_row(&test, &CTest { prog: "conf", cflags: &cflags, env, stderr_lacks: &["challoc:"], ..BASE }),
+        Some(text) => run_row(
+            &test,
+            &CTest {
+                prog: "conf",
+                cflags: &cflags,
+                env,
+                expect: Expect::Abort { signal: SIGABRT, stderr_contains: &[text, "challoc: abort_conf:"] },
+                ..BASE
+            },
+        ),
     }
-    std::eprintln!("conf {name}: {}", stderr.trim_end());
 }
 
 #[test]
@@ -463,127 +934,24 @@ fn c_conf_bad_env_aborts_even_when_abort_conf_comes_later() {
 fn c_conf_env_overrides_the_symbol() {
     // The symbol asks for abort_conf, the environment turns it back off,
     // so the unknown key in the symbol only warns.
-    let so = release_so();
-    let bin = compile("tests/c", "conf", &["-rdynamic", "-DCONF=\"abort_conf:true,no_such_key:1\""]);
-    let run = Command::new(&bin)
-        .env("LD_PRELOAD", &so)
-        .env("MALLOC_CONF", "abort_conf:false,narenas:-1")
-        .output()
-        .unwrap();
-    let _ = std::fs::remove_file(&bin);
-    let stdout = String::from_utf8_lossy(&run.stdout);
-    let stderr = String::from_utf8_lossy(&run.stderr);
-    assert!(run.status.success(), "({:?})\nstdout: {stdout}\nstderr: {stderr}", run.status);
-    assert!(stdout.lines().any(|l| l == "ok conf"), "stdout: {stdout}");
-    assert!(stderr.contains("challoc: je_malloc_conf: unknown conf key \"no_such_key\""), "stderr: {stderr}");
-    assert!(stderr.contains("challoc: MALLOC_CONF: out-of-range conf value \"-1\" for narenas"), "stderr: {stderr}");
-    std::eprintln!("conf override: {}", stderr.trim_end());
+    run_row(
+        "c_conf_env_overrides_the_symbol",
+        &CTest {
+            prog: "conf",
+            cflags: &["-rdynamic", "-DCONF=\"abort_conf:true,no_such_key:1\""],
+            conf: Some("abort_conf:false,narenas:-1"),
+            stderr_has: &[
+                "challoc: je_malloc_conf: unknown conf key \"no_such_key\"",
+                "challoc: MALLOC_CONF: out-of-range conf value \"-1\" for narenas",
+            ],
+            ..BASE
+        },
+    );
 }
 
-/// One mode of `tests/c/decay.c` (plan Phase 1 task 2) with `MALLOC_CONF`.
-fn run_decay(mode: &str, conf: &str) {
-    let bin = compile("tests/c", "decay", &[]);
-    run_bin_env("decay", &bin, &[mode], &[("MALLOC_CONF", conf)]);
-}
-
-#[test]
-fn c_decay_trim() {
-    run_decay("trim", "abort_conf:true");
-}
-
-#[test]
-fn c_decay_window() {
-    run_decay("decay", "abort_conf:true,dirty_decay_ms:200");
-}
-
-#[test]
-fn c_decay_curve() {
-    run_decay("curve", "abort_conf:true,dirty_decay_ms:2000");
-}
-
-#[test]
-fn c_decay_never() {
-    run_decay("never", "abort_conf:true,dirty_decay_ms:-1");
-}
-
-#[test]
-fn c_decay_background_thread() {
-    run_decay("background", "abort_conf:true,background_thread:true,dirty_decay_ms:200");
-}
-
-#[test]
-fn c_decay_lazy_free() {
-    run_decay("lazy", "abort_conf:true,lazy_free:true");
-}
-
-#[test]
-fn c_align() {
-    run_c("align", &[]);
-}
-
-#[test]
-fn c_realloc_tiers() {
-    run_c("realloc_tiers", &[]);
-}
-
-#[test]
-fn c_calloc_zero() {
-    run_c("calloc_zero", &[]);
-}
-
-#[test]
-fn c_random_ops_one_million_across_eight_threads() {
-    run_c("random_ops", &["1000000", "8"]);
-}
-
-#[test]
-fn c_random_ops_single_thread() {
-    // Same driver, one thread: no cross-thread traffic, so a failure here
-    // is in the per-thread paths alone.
-    run_c("random_ops", &["200000", "1", "0x1234"]);
-}
-
-#[test]
-fn c_producer_consumer() {
-    run_c("producer_consumer", &[]);
-}
-
-#[test]
-fn c_fork_alloc() {
-    run_c("fork_alloc", &[]);
-}
-
-/// `tests/c/fork_alloc.c mallctl` (plan Phase 1.5 task 10a): forks while
-/// other threads hold the statistics and explicit-cache locks; every child
-/// must call `epoch` and `tcache.create` itself and exit 0 within its alarm.
-#[test]
-fn c_fork_alloc_under_mallctl() {
-    run_c("fork_alloc", &["mallctl"]);
-}
-
-/// A signal handler that forks, delivered while this thread is inside the
-/// fork handlers with every allocator lock held (the race in glibc's
-/// `tst-mallocfork`, made deterministic).
-#[test]
-fn c_fork_signal() {
-    run_c("fork_signal", &[]);
-}
-
-#[test]
-fn c_thread_exit() {
-    run_c("thread_exit", &[]);
-}
-
-/// The C++ operators (`src/api/cxx.rs`): resolution into libchalloc,
-/// round trips, `std::bad_alloc` thrown through challoc's frames and the
-/// `new_handler` loop.
-/// `tests/c/jemalloc_api.c` (plan Phase 1 task 5): the jemalloc and glibc
-/// extras under the real `.so`, every non-standard symbol reached through
-/// a weak reference.
-#[test]
-fn c_jemalloc_api() {
-    run_c("jemalloc_api", &[]);
-}
+// ---------------------------------------------------------------------------
+// The release .so itself: symbol tables and the jemalloc-soname stage.
+// ---------------------------------------------------------------------------
 
 /// The release `.so` exports the whole design 13.1/13.2 symbol list: the
 /// `*allocx` family, `mallctl*`, the reports, the glibc extras and every
@@ -620,12 +988,6 @@ fn jemalloc_symbols_in_release_so() {
         let l = l.unwrap_or_else(|| panic!("{sym} not referenced by {so}:\n{dynsym}"));
         assert!(l.contains(" WEAK ") && l.contains(" UND "), "{sym} must be a weak undefined reference: {l}");
     }
-}
-
-#[test]
-fn cxx_new() {
-    let bin = compile_cxx("cxx_new");
-    run_bin("cxx_new", &bin, &[]);
 }
 
 /// The release `.so` defines all 20 operator symbols, references
@@ -679,397 +1041,6 @@ fn cxx_symbols_in_release_so() {
     assert!(covered, "no FDE covers _Znwm at {addr:#x}");
 }
 
-/// Run one unmodified glibc malloc test from `tests/glibc/malloc/` (plan
-/// Phase 0 task 15). `tests/glibc/test-skeleton.c` supplies `main` and the
-/// `ok <name>` line; `tests/glibc/include/` shims glibc's internal headers.
-fn run_glibc(name: &str) {
-    let root = env!("CARGO_MANIFEST_DIR");
-    let include = std::format!("-I{root}/tests/glibc/include");
-    let test_name = std::format!("-DTEST_NAME=\"{name}\"");
-    // glibc builds its tests with `-Wall -Werror` but not `-Wextra`; the
-    // sources are unmodified, so drop the one `-Wextra` warning they trip.
-    let flags = ["-D_GNU_SOURCE", "-Wno-unused-parameter", &include, &test_name];
-    run_c_flags("tests/glibc/malloc", name, &[], &flags);
-}
-
-#[test]
-fn glibc_tst_malloc() {
-    run_glibc("tst-malloc");
-}
-
-#[test]
-fn glibc_tst_calloc() {
-    run_glibc("tst-calloc");
-}
-
-#[test]
-fn glibc_tst_mallocfork() {
-    run_glibc("tst-mallocfork");
-}
-
-#[test]
-fn glibc_tst_posix_memalign() {
-    run_glibc("tst-posix_memalign");
-}
-
-#[test]
-fn glibc_tst_realloc() {
-    run_glibc("tst-realloc");
-}
-
-#[test]
-fn mimalloc_test_stress() {
-    // mimalloc's test/test-stress.c with USE_STD_MALLOC at THREADS=8
-    // SCALE=50 ITER=10 (plan Phase 0 task 16). `tests/mimalloc/stress.c`
-    // wraps the unmodified source; the include shims stand in for
-    // mimalloc's headers. `-Wno-unused-parameter`: run_os_threads()
-    // ignores its subproc argument on POSIX.
-    let root = env!("CARGO_MANIFEST_DIR");
-    let include = std::format!("-I{root}/tests/mimalloc/include");
-    run_c_flags("tests/mimalloc", "stress", &["8", "50", "10"], &["-Wno-unused-parameter", &include]);
-}
-
-/// The same stress test with `check_zero` on (plan Phase 1.5 task 7b):
-/// every `Fresh` or `Purged` slot and page behind its `calloc`s is read by
-/// the allocator before it is handed out, so a dirty "zero" allocation
-/// aborts inside the allocator with the slab's prior state and the
-/// discard backend instead of in the C assertion. Stays in `make test` so a
-/// recurrence of the 2026-09-18 failure is diagnosable.
-#[test]
-fn mimalloc_test_stress_check_zero() {
-    let root = env!("CARGO_MANIFEST_DIR");
-    let include = std::format!("-I{root}/tests/mimalloc/include");
-    let bin = compile("tests/mimalloc", "stress", &["-Wno-unused-parameter", &include]);
-    run_bin_env("stress", &bin, &["8", "50", "10"], &[("MALLOC_CONF", "abort_conf:true,check_zero:true")]);
-}
-
-/// Plan Phase 2 task 3: the opt-in hardening tunables (`tests/c/tunables.c`).
-/// `zero_on_free`: a written block reads as zero after `free`, `sdallocx`
-/// and `free_sized`, and comes back zero from `malloc`; the control mode
-/// proves the default leaves the bytes. `slot_randomize`: one class's
-/// first allocations in a fresh process are a contiguous slot set in a
-/// non-monotone order; the control is ascending. `abort_conf` accepts
-/// both keys (they are no longer inert).
-///
-/// The four modes run with `percpu_arena:off`: they reason about one
-/// thread's LIFO reuse and one refill batch, which the per-CPU mode (design
-/// 15) does not promise to a thread that migrates between two calls.
-#[test]
-fn c_tunables_zero_on_free() {
-    let bin = compile("tests/c", "tunables", &[]);
-    run_bin_env("tunables", &bin, &["zero"], &[("MALLOC_CONF", "abort_conf:true,zero_on_free:true,percpu_arena:off")]);
-    let bin = compile("tests/c", "tunables", &[]);
-    run_bin_env("tunables", &bin, &["dirty"], &[("MALLOC_CONF", "abort_conf:true,percpu_arena:off")]);
-}
-
-#[test]
-fn c_tunables_slot_randomize() {
-    let bin = compile("tests/c", "tunables", &[]);
-    run_bin_env("tunables", &bin, &["random"], &[("MALLOC_CONF", "abort_conf:true,slot_randomize:true,percpu_arena:off")]);
-    let bin = compile("tests/c", "tunables", &[]);
-    run_bin_env("tunables", &bin, &["ordered"], &[("MALLOC_CONF", "abort_conf:true,percpu_arena:off")]);
-}
-
-/// Plan Phase 2.5 task 8, both ways: `tests/c/percpu.c` under
-/// `percpu_arena:percpu` (on where the kernel and glibc give `mm_cid`,
-/// off with a note elsewhere; the program prints which) and under
-/// `percpu_arena:off` (always off). 64 threads of tagged random
-/// allocation across the small classes, calloc zeroing under churn,
-/// exact per-thread counters, `thread.tcache.flush` and `stats.percpu.*`.
-#[test]
-fn c_percpu_both_ways() {
-    for mode in ["percpu", "off"] {
-        let bin = compile_link("tests/c", "percpu", &[], &["-pthread"]);
-        let conf = std::format!("abort_conf:true,percpu_arena:{mode}");
-        run_bin_env("percpu", &bin, &[mode], &[("MALLOC_CONF", &conf)]);
-    }
-    // The mode with signed cache entries (plan Phase 2.5 task 7 with task
-    // 8): 64 threads x 20000 operations across the per-CPU stacks, the
-    // shape that faulted 2/2 on FEAT_FPAC before the `push_batch` fix.
-    let bin = compile_link("tests/c", "percpu", &[], &["-pthread"]);
-    run_bin_env("percpu", &bin, &["percpu"], &[("MALLOC_CONF", "abort_conf:true,percpu_arena:percpu,pac_pointers:true")]);
-}
-
-/// Plan Phase 2.5 task 15, both ways: `tests/c/slice_ext.c` under
-/// `slice_ext:on` (the rseq time slice extension on where the kernel has
-/// `CONFIG_RSEQ_SLICE_EXTENSION`, refused with a report note elsewhere:
-/// the program reads the kernel's view through `prctl` and asserts the
-/// right branch) and under `slice_ext:off` (never enabled). 32 threads
-/// of tagged random allocation, the per-task enable on a thread's first
-/// hold, the fork child's inherited enable, `opt.slice_ext`.
-#[test]
-fn c_slice_ext_both_ways() {
-    for mode in ["on", "off"] {
-        let bin = compile_link("tests/c", "slice_ext", &[], &["-pthread"]);
-        let conf = std::format!("abort_conf:true,slice_ext:{mode}");
-        run_bin_env("slice_ext", &bin, &[mode], &[("MALLOC_CONF", &conf)]);
-    }
-}
-
-/// The fuzz driver (`c_fuzz_short`) once under each key, and both.
-#[test]
-fn c_fuzz_short_under_zero_on_free() {
-    let bin = compile("fuzz", "fuzz", &[]);
-    run_bin_env("fuzz", &bin, &["400000", "4"], &[("MALLOC_CONF", "abort_conf:true,zero_on_free:true")]);
-}
-
-#[test]
-fn c_fuzz_short_under_slot_randomize() {
-    let bin = compile("fuzz", "fuzz", &[]);
-    run_bin_env("fuzz", &bin, &["400000", "4"], &[("MALLOC_CONF", "abort_conf:true,slot_randomize:true")]);
-    let bin = compile("fuzz", "fuzz", &[]);
-    run_bin_env("fuzz", &bin, &["200000", "4"], &[("MALLOC_CONF", "abort_conf:true,slot_randomize:true,zero_on_free:true,double_free_scan:true")]);
-}
-
-/// `check_zero` under `slot_randomize`: a shuffled batch from a `Fresh` or
-/// `Purged` slab is still all zero (the shuffle changes the order, not the
-/// set), so the campaign's default configuration stays clean.
-#[test]
-fn mimalloc_test_stress_check_zero_slot_randomize() {
-    let root = env!("CARGO_MANIFEST_DIR");
-    let include = std::format!("-I{root}/tests/mimalloc/include");
-    let bin = compile("tests/mimalloc", "stress", &["-Wno-unused-parameter", &include]);
-    run_bin_env("stress", &bin, &["8", "50", "10"], &[("MALLOC_CONF", "abort_conf:true,check_zero:true,slot_randomize:true")]);
-}
-
-/// `tests/c/huge_hole.c`: the alignment holes the huge allocator leaves
-/// below an aligned run are committed memory. Once in the probed guard mode
-/// (guard-install on kernels with `MADV_GUARD_INSTALL`, where the Phase 0
-/// regression lived) and once forced onto the `PROT_NONE` fallback.
-/// `tests/c/mseal.c` (plan Phase 2 task 2): the never-committed ranges of
-/// the reservations are sealed after init where the kernel allows it, and
-/// the allocator keeps working. Passes with a note where `mseal` is
-/// unavailable (Docker's default seccomp profile filters it).
-#[test]
-fn c_mseal() {
-    run_c("mseal", &[]);
-}
-
-/// `tests/c/features.c` (plan Phase 2.5 task 2): `challoc_features()` is a
-/// NUL-terminated `key=value` line equal to the `Kernel and CPU features:`
-/// line of `malloc_stats_print`, with every CPU key of this architecture.
-#[test]
-fn c_features() {
-    run_c("features", &[]);
-}
-
-/// `tests/c/thp.c never` (plan Phase 2.5 task 9 and 16): the default issues
-/// no `MADV_HUGEPAGE` anywhere (no `hg` on the VMA of a class region,
-/// `stats.thp.mode` 0, nothing advised), `MADV_NOHUGEPAGE`s the class and
-/// metadata reservations (`nh`, `stats.thp.nohuge_ranges` 2) and leaves
-/// the huge region to the host's policy (no `nh` on the huge run; on an
-/// `always` host it shows `AnonHugePages` again).
-#[test]
-fn c_thp_never() {
-    run_c("thp", &["never"]);
-}
-
-/// `tests/c/thp.c always` under `thp:always`: with the PMD size enabled in
-/// sysfs the class region is committed in 2 MiB chunks, the VMA has `hg`
-/// and `THPeligible`, and 8 MiB touched show at least 4 MiB of
-/// `AnonHugePages`; with only smaller sizes the groups are advised; with
-/// nothing enabled the mode is off. Forced to `never` under a cgroup
-/// limit below 1 GiB (a pass with a note).
-#[test]
-fn c_thp_always() {
-    let bin = compile("tests/c", "thp", &[]);
-    run_bin_env("thp", &bin, &["always"], &[("MALLOC_CONF", "thp:always")]);
-}
-
-/// `tests/c/thp.c auto` under `thp:auto`: active only where the kernel
-/// enables a folio size below the PMD and does not `madvise`-gate the PMD
-/// (needs `hugepages-64kB/enabled=madvise` and `hugepages-2048kB/enabled=
-/// never` from root; Ubuntu's default makes it inert, which the program
-/// checks as well).
-#[test]
-fn c_thp_auto() {
-    let bin = compile("tests/c", "thp", &[]);
-    run_bin_env("thp", &bin, &["auto"], &[("MALLOC_CONF", "thp:auto")]);
-}
-
-/// `tests/c/prefault.c` (plan Phase 2.5 task 11), both ways: under
-/// `prefault:true,background_thread:true` the pass commits and populates
-/// the next fresh slab of a class that refilled (resident per `mincore`
-/// before any allocation touched it, one slab only, zero, and the next
-/// refills take it); under the default nothing is prefaulted and the
-/// counters stay zero; `prefault:true` without the thread is inert and
-/// the report says why.
-#[test]
-fn c_prefault_both_ways() {
-    for (mode, conf) in [
-        ("on", "abort_conf:true,prefault:true,background_thread:true"),
-        ("off", "abort_conf:true"),
-        ("inert", "abort_conf:true,prefault:true"),
-    ] {
-        let bin = compile("tests/c", "prefault", &[]);
-        run_bin_env("prefault", &bin, &[mode], &[("MALLOC_CONF", conf)]);
-    }
-}
-
-/// `tests/c/thp.c process` under `thp_process:advised,thp:auto` (plan
-/// Phase 2.5 task 16, the process-wide `prctl`), both ways by the
-/// kernel's answer: in force on 6.18+ (`PR_GET_THP_DISABLE` reads 3,
-/// `stats.thp.process` 1, the `thp:` line says so; an `always` host shows
-/// 0 kB of `AnonHugePages` in the unadvised regions), skipped with the
-/// reason below 6.18 (`EINVAL`) or where the process inherited a policy.
-#[test]
-fn c_thp_process() {
-    let bin = compile("tests/c", "thp", &[]);
-    run_bin_env("thp", &bin, &["process"], &[("MALLOC_CONF", "abort_conf:true,thp_process:advised,thp:auto")]);
-}
-
-/// `tests/c/fork_cost.c 64` (plan Phase 2.5 task 9): a 64 MiB
-/// Valkey-shaped heap forks and the parent's write burst is copied while
-/// the child is alive. The default configuration only; the `auto` and
-/// `always` modes run with `CHALLOC_THP_TESTS=1` set (they need the sysfs
-/// knobs and print numbers for the results file, not a criterion).
-#[test]
-fn c_fork_cost() {
-    run_c("fork_cost", &["64"]);
-}
-
-#[test]
-fn c_fork_cost_thp_modes() {
-    if env::var("CHALLOC_THP_TESTS").is_err() {
-        std::eprintln!("fork_cost thp modes: skipped (set CHALLOC_THP_TESTS=1)");
-        return;
-    }
-    for conf in ["thp:auto", "thp:always"] {
-        let bin = compile("tests/c", "fork_cost", &[]);
-        run_bin_env("fork_cost", &bin, &["256"], &[("MALLOC_CONF", conf)]);
-    }
-}
-
-/// `tests/c/cgroup.c plain` (plan Phase 2 task 4): `stats.cgroup.*` read
-/// from C, `ENOENT` without a cgroup2, else `max` or a number that equals
-/// `CHALLOC_EXPECT_CGROUP_LIMIT` when `make test`'s `--memory=512m` run
-/// set it, and `current` following a 64 MiB allocation after the 10 ms
-/// sampling window.
-#[test]
-fn c_cgroup_stats() {
-    let bin = compile("tests/c", "cgroup", &[]);
-    let mut env = std::vec::Vec::new();
-    let want = env::var("CHALLOC_EXPECT_CGROUP_LIMIT").ok();
-    if let Some(w) = want.as_deref() {
-        env.push(("CHALLOC_EXPECT_CGROUP_LIMIT", w));
-    }
-    run_bin_env("cgroup", &bin, &["plain"], &env);
-}
-
-/// `tests/c/cgroup.c off`: `cgroup:false` reads nothing (the keys are
-/// `ENOENT`, the report says `not tracked (cgroup:false)`) and the key is
-/// accepted by `abort_conf`, since it is no longer inert.
-#[test]
-fn c_cgroup_off() {
-    let bin = compile("tests/c", "cgroup", &[]);
-    run_bin_env("cgroup", &bin, &["off"], &[("MALLOC_CONF", "cgroup:false,abort_conf:true")]);
-}
-
-/// `tests/c/cgroup.c bg`: with a background thread the report says whether
-/// the PSI trigger on `memory.pressure` was armed (Docker's default profile
-/// mounts the cgroup read-only, so "unavailable (EROFS)" is a pass with a
-/// note), and `pressure_events` is 0 under no pressure.
-#[test]
-fn c_cgroup_background_thread() {
-    let bin = compile("tests/c", "cgroup", &[]);
-    run_bin_env("cgroup", &bin, &["bg"], &[("MALLOC_CONF", "background_thread:true,abort_conf:true")]);
-}
-
-/// `tests/c/cgroup_policy.c bands` (plan Phase 2 task 5): the design 11
-/// policy through the public keys. Without a cgroup2 the policy keys are
-/// `ENOENT`; tracked without a limit `decay_ms` is the configured period
-/// and `retention_cap` `SIZE_MAX`; under `make test-cgroup-limit`'s
-/// 512 MiB the program fills the cgroup to 80% (scaled `decay_ms`, then
-/// the 5% retention cap after freeing) and to 94% (`decay_ms` 0, one tick
-/// purges everything). Filling to 94% is why that target runs
-/// single-threaded.
-#[test]
-fn c_cgroup_policy_bands() {
-    let bin = compile("tests/c", "cgroup_policy", &[]);
-    run_bin_env("cgroup_policy", &bin, &["bands"], &[]);
-}
-
-/// `tests/c/cgroup_policy.c high`: the `memory.events` `high` row, in a
-/// child cgroup the program makes itself when the mount allows it (a
-/// `--privileged` container on a host without `nsdelegate` at the
-/// container's root); each refusal is a pass with a `skip:` line.
-#[test]
-fn c_cgroup_policy_high() {
-    let bin = compile("tests/c", "cgroup_policy", &[]);
-    run_bin_env("cgroup_policy", &bin, &["high"], &[]);
-}
-
-/// `tests/c/cgroup_churn.c` (plan Phase 2 task 6 (a)): the churn program
-/// builds and runs under the preload at a small size in `report` mode (no
-/// criterion). The criteria (RSS under 100 MiB within 2 s of freeing
-/// 400 MiB with the policy on, not with `cgroup:false`) need a container
-/// of their own per run with swap off (`--memory=L --memory-swap=L`) and
-/// are `make test-cgroup-churn`, chained into `make test`.
-#[test]
-fn c_cgroup_churn_program() {
-    run_c("cgroup_churn", &["report", "64", "16"]);
-}
-
-/// `tests/c/cgroup_oscillate.c` (plan Phase 2 task 6 (b)): the oscillation
-/// program builds and completes a few cycles (3 s, 16..48 MiB live). The
-/// 5-minute run in 512 MiB is `make test-cgroup-oscillate` (opt-in).
-#[test]
-fn c_cgroup_oscillate_program() {
-    run_c("cgroup_oscillate", &["3", "16", "48", "200"]);
-}
-
-/// `tests/c/guard_slab.c fault` (plan Phase 2 task 1): under the preload,
-/// a write into the guard slab that follows a run of slabs of the 64-byte
-/// class faults (SIGSEGV caught in the program), while the last byte of
-/// the last slot before it and the first slot after it are writable. Guard
-/// slabs exist only where the kernel installs guard regions (6.13+), so
-/// the test skips elsewhere; the program finds the guard as the one slab
-/// no allocation came from, with the geometry from public `mallctl` keys.
-#[test]
-fn c_guard_slab_fault() {
-    if !crate::sys::features::Features::probe().guard_install {
-        std::eprintln!("guard_install=no on this kernel; skipping guard_slab fault");
-        return;
-    }
-    run_c("guard_slab", &["fault"]);
-}
-
-/// `tests/c/guard_slab.c vmas` (plan Phase 2 task 1): 10,000 committed
-/// slabs of the 16-byte class (640 MiB of address space, one guard slab
-/// in eight where the kernel has `MADV_GUARD_INSTALL`) intersect at most
-/// `VMA_BOUND` (8) lines of `/proc/self/maps`: guard regions inside the
-/// read-write range do not split it. Runs on every kernel; without guard
-/// regions it checks that no slab was skipped and the bound still holds.
-#[test]
-fn c_guard_slab_vmas() {
-    run_c("guard_slab", &["vmas"]);
-}
-
-#[test]
-fn c_huge_hole() {
-    run_c("huge_hole", &[]);
-}
-
-#[test]
-fn c_huge_hole_no_guards() {
-    let bin = compile("tests/c", "huge_hole", &[]);
-    run_bin_env("huge_hole", &bin, &[], &[("MALLOC_CONF", "abort_conf:true,guards:false")]);
-}
-
-#[test]
-fn c_fuzz_short() {
-    // The Phase 0 task 13 fuzz driver at a fraction of `make fuzz` (10M ops,
-    // 4 threads) so every `make test` runs it. Same seed as `make fuzz`.
-    run_c_in("fuzz", "fuzz", &["400000", "4"]);
-}
-
-#[test]
-fn c_fuzz_single_thread_small_table() {
-    // One thread and a 64-entry table: high churn per slot, no cross-thread
-    // traffic, so slots are reused quickly through the thread cache.
-    run_c_in("fuzz", "fuzz", &["200000", "1", "0x7", "64"]);
-}
-
 /// Phase 1 task 6: the `jemalloc-soname` build staged by
 /// `scripts/jemalloc-compat.sh` (`make jemalloc-compat`; `make test` runs it
 /// after the release build). The staged `libjemalloc.so.2` carries that
@@ -1081,9 +1052,7 @@ fn c_fuzz_single_thread_small_table() {
 /// and with it has every malloc entry point served from that file.
 #[test]
 fn jemalloc_compat_stage() {
-    let target =
-        env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| std::format!("{}/target", env!("CARGO_MANIFEST_DIR")));
-    let lib = std::format!("{target}/jemalloc-compat/stage/lib");
+    let lib = std::format!("{}/jemalloc-compat/stage/lib", target_dir());
     let so2 = std::format!("{lib}/libjemalloc.so.2");
     assert!(
         std::path::Path::new(&so2).exists(),
@@ -1118,8 +1087,8 @@ fn jemalloc_compat_stage() {
     assert!(
         compat == default,
         "export lists differ\nonly in libjemalloc.so.2: {:?}\nonly in libchalloc.so: {:?}",
-        compat.difference(&default).collect::<std::vec::Vec<_>>(),
-        default.difference(&compat).collect::<std::vec::Vec<_>>()
+        compat.difference(&default).collect::<Vec<_>>(),
+        default.difference(&compat).collect::<Vec<_>>()
     );
     for sym in ["malloc", "free", "mallctl", "mallocx", "je_malloc", "je_mallctl"] {
         assert!(compat.contains(sym), "{sym} not exported by {so2}");
@@ -1144,13 +1113,13 @@ fn jemalloc_compat_stage() {
     pkg_config(&["--exists", "--atleast-version=5.3"]);
     let libs = pkg_config(&["--libs"]);
     let cflags = pkg_config(&["--cflags"]);
-    let libs: std::vec::Vec<&str> = libs.split_whitespace().collect();
-    let cflags: std::vec::Vec<&str> = cflags.split_whitespace().collect();
+    let libs: Vec<&str> = libs.split_whitespace().collect();
+    let cflags: Vec<&str> = cflags.split_whitespace().collect();
     assert!(libs.contains(&std::format!("-L{lib}").as_str()) && libs.contains(&"-ljemalloc"), "pkg-config --libs: {libs:?}");
 
     // A link-only consumer: DT_NEEDED names the soname, not the file it was
     // linked against; the loader needs the staging directory to find it.
-    let bin = compile_link("tests/c", "jemalloc_link", &cflags, &libs);
+    let bin = compiled(&CTest { prog: "jemalloc_link", cflags: &cflags, ldflags: &libs, ..BASE });
     let needed = dynamic(&bin);
     assert!(needed.contains("Shared library: [libjemalloc.so.2]"), "jemalloc_link DT_NEEDED:\n{needed}");
     assert!(!needed.contains("libchalloc"), "jemalloc_link must not need libchalloc:\n{needed}");
@@ -1162,7 +1131,6 @@ fn jemalloc_compat_stage() {
         String::from_utf8_lossy(&bare.stdout)
     );
     let run = Command::new(&bin).arg(&lib).env("LD_LIBRARY_PATH", &lib).output().unwrap();
-    let _ = std::fs::remove_file(&bin);
     let stdout = String::from_utf8_lossy(&run.stdout);
     let stderr = String::from_utf8_lossy(&run.stderr);
     assert!(run.status.success(), "jemalloc_link failed ({:?})\nstdout: {stdout}\nstderr: {stderr}", run.status);
