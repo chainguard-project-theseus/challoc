@@ -7,9 +7,12 @@
 set -uo pipefail
 ARCH=$(uname -m); case $ARCH in aarch64) T=arm64;; x86_64) T=amd64;; esac
 CHURN_SECS=${CHURN_SECS:-20}
-cd ~/challoc
+# The docker run line (the repository at /src, the target volume, IMAGE):
+# bench/gce/drun.sh; the cargo registry volume is added here for the build.
+. "$(dirname "$0")/../gce/drun.sh"
+cd "$REPO"
 echo "== $(hostname) $(uname -m) load $(cut -d' ' -f1-3 /proc/loadavg) commit $(git rev-parse --short HEAD 2>/dev/null) churn ${CHURN_SECS}s"
-docker run --rm -e S="$CHURN_SECS" -v $PWD:/src -w /src -v "${TARGET_VOLUME:-challoc-target-$T}":/src/target -v "${CARGO_VOLUME:-challoc-cargo-registry}":/root/.cargo/registry challoc-dev:$T sh -c '
+docker run --rm -e S="$CHURN_SECS" "${DRUN_ARGS[@]}" -v "${CARGO_VOLUME:-challoc-cargo-registry}":/root/.cargo/registry "$IMAGE" sh -c '
 cargo build --release 2>&1 | grep -E "^error|Finished"; ls -la target/release/libchalloc.so &&
 cc -O2 -Wall -o target/churn bench/probes/churn.c &&
 for a in challoc jemalloc; do

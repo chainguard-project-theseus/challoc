@@ -29,7 +29,6 @@ VARIANTS=${VARIANTS:-"old new jemalloc"}
 EVENTS=${EVENTS:-cycles,instructions,L1-dcache-load-misses,dTLB-load-misses}
 OUTDIR=${OUTDIR:-$HOME/logs/quick-perf}
 CHALLOC_THP_COUNTERS=${CHALLOC_THP_COUNTERS:-0}
-IMAGE=challoc-dev:$T
 # The THP counter snapshot of bench/lib.sh, on the host side (the same files;
 # sysfs and /proc/vmstat are the host's from either side).
 thp_snapshot() {
@@ -48,10 +47,10 @@ thp_state() {
   for d in $t/hugepages-*kB; do [ -f "$d/enabled" ] || continue; v=$(sed -n 's/.*\[\(.*\)\].*/\1/p' "$d/enabled"); [ "$v" = never ] || sizes="$sizes ${d##*/hugepages-}=$v"; done
   echo "enabled=${en:--} defrag=${df:--}${sizes:+ per-size:$sizes}"
 }
-REPO=$(cd "$(dirname "$0")/../.." && pwd)
+# The docker run line (REPO at /src, the target volume, IMAGE): bench/gce/drun.sh.
+. "$(dirname "$0")/drun.sh"
 mkdir -p "$OUTDIR"
 
-drun() { docker run --rm -v "$REPO":/src -w /src -v "${TARGET_VOLUME:-challoc-target-$T}":/src/target "$IMAGE" "$@"; }
 # Row command lines and the probes come from bench/lib.sh inside the container.
 in_lib() { drun sh -c "ROOT=/src; . /src/bench/lib.sh; $1"; }
 lib_of() {
@@ -91,7 +90,7 @@ for b in $ROWS; do
   secs=$(in_lib "secs_of $b")
   for v in $VARIANTS; do
     tag=$b.$v
-    cid=$(docker run -d -v "$REPO":/src -w /src -v "${TARGET_VOLUME:-challoc-target-$T}":/src/target "$IMAGE" \
+    cid=$(docker run -d "${DRUN_ARGS[@]}" "$IMAGE" \
           sh -c "sleep 1; exec env MALLOC_CONF=$(conf_of "$v") LD_PRELOAD=$(lib_of "$v") $cmd")
     [ "$CHALLOC_THP_COUNTERS" = 1 ] && thp_snapshot "$OUTDIR/$tag.thp0"
     pid=
