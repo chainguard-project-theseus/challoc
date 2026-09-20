@@ -1344,6 +1344,47 @@ mod tests {
         }
     }
 
+    /// The sized free's `slot_in_class` agrees with `slab_slot` for every
+    /// class, at both ends of the region and at every in-slab offset, and
+    /// answers `None` for a pointer anywhere but in that class's region.
+    #[test]
+    fn slot_in_class_agrees_with_slab_slot() {
+        let r = synthetic(32, 34);
+        for c in 0..NCLASSES {
+            let cls = &CLASSES[c];
+            let last = r.nslabs(c) - 1;
+            for slab in [0usize, last] {
+                let base = r.slab_addr(c, slab);
+                for offset in 0..cls.slab_size() {
+                    let p = base + offset;
+                    let want = r.slab_slot(p).map(|(cc, s, slot)| {
+                        assert_eq!(cc, c, "slab_slot names another class at offset {offset}");
+                        (s, slot)
+                    });
+                    assert_eq!(r.slot_in_class(c, p), want, "class {c} slab {slab} offset {offset}");
+                    if offset % cls.size() == 0 && offset / cls.size() < cls.nslots() {
+                        assert_eq!(want, Some((slab, offset / cls.size())));
+                    }
+                }
+            }
+            // Outside the region: the bytes on either side of it, another
+            // class's slot start, the huge and metadata regions, both ends
+            // of the address space.
+            let other = (c + 1) % NCLASSES;
+            for p in [
+                r.class_base[c] - 1,
+                r.class_base[c] + r.region_len(),
+                r.slot_addr(other, 0, 0),
+                r.huge_base,
+                r.meta_base,
+                0,
+                usize::MAX,
+            ] {
+                assert_eq!(r.slot_in_class(c, p), None, "class {c} pointer {p:#x}");
+            }
+        }
+    }
+
     #[test]
     fn misaligned_and_out_of_region_pointers_are_invalid() {
         let r = synthetic(32, 34);

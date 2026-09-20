@@ -503,6 +503,74 @@ pub fn sched_yield() -> Result<usize, crate::sys::Errno> {
     crate::sys::decode(ret)
 }
 
+/// The pure parts, on every host.
+#[cfg(test)]
+mod pure_tests {
+    use super::*;
+
+    const ALL: [Verdict; 8] = [
+        Verdict::Unprobed,
+        Verdict::Key,
+        Verdict::NoRseq,
+        Verdict::NoSliceCtrl,
+        Verdict::KernelDisabled,
+        Verdict::PrctlFailed,
+        Verdict::NoSyscall,
+        Verdict::Enabled,
+    ];
+
+    /// The byte encoding of `VERDICT` round-trips, every other byte reads
+    /// as `Unprobed`, and the report words are distinct (the results
+    /// files key on them).
+    #[test]
+    fn verdict_bytes_round_trip_and_the_names_are_distinct() {
+        for (i, &v) in ALL.iter().enumerate() {
+            assert_eq!(v as u8, i as u8);
+            assert_eq!(Verdict::from_u8(v as u8), v);
+            assert!(!v.name().is_empty());
+            for &w in &ALL[i + 1..] {
+                assert_ne!(v.name(), w.name(), "{v:?} and {w:?} share a report word");
+            }
+        }
+        for b in ALL.len() as u8..=u8::MAX {
+            assert_eq!(Verdict::from_u8(b), Verdict::Unprobed, "byte {b}");
+        }
+        assert_eq!(Verdict::Key.name(), "slice_ext:off");
+        assert_eq!(Verdict::Enabled.name(), "enabled");
+    }
+
+    /// `Probe::verdict` names the first missing piece, in the order the
+    /// probe checks them; the enable and the syscall do not decide it.
+    #[test]
+    fn probe_verdict_names_the_first_missing_piece() {
+        assert_eq!(Probe::NONE.verdict(), Verdict::NoRseq);
+        let p = |size: u32, available: bool| Probe { size, offset: -32, available, enabled: false, yield_syscall: false };
+        assert_eq!(p(0, true).verdict(), Verdict::NoRseq, "no registration");
+        assert_eq!(p(20, true).verdict(), Verdict::NoSliceCtrl, "the 6.18 and earlier size");
+        assert_eq!(p(SLICE_CTRL_END - 1, true).verdict(), Verdict::NoSliceCtrl);
+        assert_eq!(p(SLICE_CTRL_END, false).verdict(), Verdict::KernelDisabled);
+        assert_eq!(p(SLICE_CTRL_END, true).verdict(), Verdict::Enabled);
+        assert_eq!(p(33, true).verdict(), Verdict::Enabled, "the 7.0 kernels register 33 bytes");
+        let q = Probe { enabled: true, yield_syscall: true, ..p(SLICE_CTRL_END, true) };
+        assert_eq!(q.verdict(), Verdict::Enabled);
+        let r = Probe { enabled: true, yield_syscall: true, ..p(SLICE_CTRL_END, false) };
+        assert_eq!(r.verdict(), Verdict::KernelDisabled);
+    }
+
+    /// Off Linux nothing is registered: the probe is empty, a hold
+    /// requests nothing and the release paths accept the null area.
+    #[cfg(not(target_os = "linux"))]
+    #[test]
+    fn off_linux_the_module_is_inert() {
+        assert_eq!(probe(), Probe::NONE);
+        assert_eq!(acquired(), core::ptr::null_mut());
+        assert_eq!(acquired_area(), core::ptr::null_mut());
+        releasing(core::ptr::null_mut());
+        released(core::ptr::null_mut());
+        assert_eq!(yields(), 0);
+    }
+}
+
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
@@ -828,14 +896,5 @@ mod tests {
         assert_eq!(FLAG_AVAILABLE, 16);
         assert_eq!(FLAG_ENABLED, 32);
         assert_eq!(FLAGS_OFFSET, 16);
-        for v in 0..=8u8 {
-            let d = Verdict::from_u8(v);
-            if v <= 7 {
-                assert_eq!(d as u8, v);
-            } else {
-                assert_eq!(d, Verdict::Unprobed);
-            }
-            assert!(!d.name().is_empty());
-        }
     }
 }

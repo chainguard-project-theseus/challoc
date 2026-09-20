@@ -1955,6 +1955,131 @@ mod tests {
         assert!(env.alloc(&h, page_size(), 2 * huge_len()).0.is_null(), "alignment beyond the region");
     }
 
+    /// `malloc(0)`-style requests that reach the huge allocator (a zero
+    /// size with an alignment above the largest slab class) get one usable
+    /// page, as `usable_pages` promises.
+    #[test]
+    fn a_zero_byte_request_gets_one_page() {
+        let env = Env::new();
+        let h = env.huge();
+        assert_eq!(h.usable_pages(0), Some(1));
+        assert_eq!(h.usable_for(0), Some(page_size()));
+        let (p, zero) = env.alloc(&h, 0, 1);
+        assert!(!p.is_null() && zero);
+        let page = env.page_of(p);
+        let info = h.lookup(page).expect("run descriptor");
+        assert_eq!((info.pages, info.usable, info.state), (1 + GUARD_PAGES, page_size(), RunState::Active));
+        assert_eq!(h.usable_size(page), page_size());
+        assert_eq!(env.free(&h, p), page_size());
+        assert_eq!(h.stats().runs, 0);
+    }
+
+    /// Backward-shift deletion across the wrap from the last slot to slot
+    /// 0, on the table alone: keys that hash to the last slot and to slot
+    /// 0 collide there, and removing any of them must pull the rest of the
+    /// chain back over the wrap while an entry already in its ideal slot
+    /// stays put. The descriptors are opaque non-null pointers; the table
+    /// never dereferences them.
+    #[test]
+    fn table_removal_shifts_across_the_wrap_around() {
+        let env = Env::new();
+        let page = page_size();
+        let mut t = Table::new(&env.meta, page).expect("table");
+        let last = t.cap() - 1;
+        let key_with_hash = |t: &Table, h: usize, from: usize| (from..).find(|&k| t.hash(k) == h).unwrap();
+        // Three keys hashing to the last slot, one hashing to slot 0 and
+        // one hashing to slot 1.
+        let a = key_with_hash(&t, last, 1);
+        let b = key_with_hash(&t, last, a + 1);
+        let d = key_with_hash(&t, last, b + 1);
+        let c = key_with_hash(&t, 0, 1);
+        let e = key_with_hash(&t, 1, 1);
+        let desc = |k: usize| k as *mut HugeDesc;
+
+        // Insertion order a, b, c, d: a takes the last slot, b wraps to 0,
+        // c (ideal 0) is pushed to 1, d (ideal last) to 2.
+        for k in [a, b, c, d] {
+            t.insert(k, desc(k));
+        }
+        assert_eq!([t.find(a), t.find(b), t.find(c), t.find(d)], [Some(last), Some(0), Some(1), Some(2)]);
+        // Removing the head of the chain pulls b back across the wrap, c
+        // into its ideal slot and d after it.
+        t.remove(a);
+        assert_eq!([t.find(b), t.find(c), t.find(d)], [Some(last), Some(0), Some(1)]);
+        assert!(t.find(a).is_none() && t.get(a).is_null());
+        assert_eq!(t.count, 3);
+        for k in [b, c, d] {
+            assert_eq!(t.get(k), desc(k));
+        }
+        // Removing the entry at slot 0 with the chain continuing past it.
+        t.remove(c);
+        assert_eq!([t.find(b), t.find(d)], [Some(last), Some(0)]);
+        // An entry already in its ideal slot is not moved into the hole
+        // before it: e sits at 1, its ideal, and stays when d leaves 0.
+        t.insert(e, desc(e));
+        assert_eq!(t.find(e), Some(1));
+        t.remove(d);
+        assert_eq!([t.find(b), t.find(e), t.find(d)], [Some(last), Some(1), None]);
+        t.remove(b);
+        assert_eq!([t.find(b), t.find(e)], [None, Some(1)]);
+        assert_eq!(t.count, 1);
+        // The wrap slot is reusable.
+        t.insert(a, desc(a));
+        assert_eq!(t.find(a), Some(last));
+        assert_eq!(t.count, 2);
+    }
+
+    /// `Table::ensure` fails cleanly when the metadata region cannot hold
+    /// the grown table: the old table is untouched and still answers, and
+    /// keeps taking keys up to its capacity.
+    #[test]
+    fn table_growth_failure_leaves_the_table_working() {
+        // 64 KiB of metadata: the initial 16 KiB table fits and so does
+        // its first doubling (32 KiB); the second (64 KiB) does not.
+        let env = Env::with_meta_len(64 * 1024);
+        let page = page_size();
+        let mut t = Table::new(&env.meta, page).expect("table");
+        assert_eq!(t.cap(), 1 << LG_INITIAL_TABLE);
+        let desc = |k: usize| k as *mut HugeDesc;
+        let mut keys = Vec::new();
+        let mut grew = 0;
+        loop {
+            let cap = t.cap();
+            if t.ensure(&env.meta, page, 1).is_err() {
+                break;
+            }
+            if t.cap() > cap {
+                grew += 1;
+            }
+            let k = keys.len() + 1;
+            t.insert(k, desc(k));
+            keys.push(k);
+            assert!(keys.len() <= 1 << 16, "the table never ran out of metadata");
+        }
+        assert_eq!(grew, 1, "one doubling fits, the second does not");
+        assert_eq!(t.cap(), 2 << LG_INITIAL_TABLE);
+        assert_eq!(t.count, keys.len());
+        assert_eq!(keys.len() * 2, t.cap(), "ensure refused exactly at half load");
+        for &k in &keys {
+            assert_eq!(t.get(k), desc(k), "key {k} lost in the failed growth");
+        }
+        // The table is fuller than `ensure` would allow, and still works
+        // up to one slot short of full (a probe for an absent key ends at
+        // an empty slot; with none left it would not end).
+        let extra = t.cap() - t.count - 1;
+        for k in keys.len() + 1..=keys.len() + extra {
+            assert!(t.ensure(&env.meta, page, 1).is_err());
+            t.insert(k, desc(k));
+            assert!(t.find(k).is_some());
+        }
+        assert_eq!(t.count, t.cap() - 1);
+        assert_eq!(t.get(0), ptr::null_mut());
+        t.remove(1);
+        assert_eq!(t.get(1), ptr::null_mut());
+        assert_eq!(t.get(2), desc(2));
+        assert_eq!(t.get(keys.len() + extra), desc(keys.len() + extra));
+    }
+
     #[test]
     fn table_grows_and_lookups_survive_backward_shift() {
         let env = Env::new();
