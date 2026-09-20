@@ -1770,20 +1770,36 @@ headers declare it and define `JEMALLOC_FRAG_HINT`, from which KeyDB's
 `je_get_defrag_hint` in `activeDefragAlloc` and has no other defragmenter
 input (plan Phase 3 task 3). It answers 1 when moving the allocation is
 worth it by the rule of Redis's `iget_defrag_hint`, computed from the same
-data as the utilization queries: the pointer is a live slot of a bin class
-(up to `BIN_MAX`), its slab has a free slot, the slab is not the one a
+data as the utilization queries: the pointer is a live slot of a slab
+class, its slab has a free slot, the slab is not the one a
 `MALLOCX_TCACHE_NONE` claim takes from next (jemalloc's `slabcur`,
 challoc's lowest partial slab in the owning arena: the move would land
 the object back in it), and its live count is at or below the average
-live count of the bin's other slabs in that arena
-(`live * (curslabs - 1) <= curregs - live(slabcur)`). It answers 0 for
-everything else, a huge run, a slot of a class above `BIN_MAX` (one region
-of its own, as the utilization queries report it), a full slab, a freed or
-foreign pointer, null, and never aborts: the defragmenter asks about
-pointers it owns, and a wrong answer only costs it a move. It is a cold
-statistics read (two class-lock acquisitions, as the verbose utilization
-query) with no effect on any allocation path. The `*_with_usize` family
-stays out of scope: no Wolfi package calls it.
+live count of the class's other slabs in that arena
+(`live * (curslabs - 1) <= curregs - live(slabcur)`). Every slab class
+answers, the ones above `BIN_MAX` included: the utilization queries report
+those as one region each because Valkey's bin arithmetic is calibrated to
+jemalloc's bins (13.4), but the hint carries no geometry, and a live
+16 KiB block pinning a 16-slot slab is exactly the waste a move recovers
+(measured on KeyDB's memefficiency suite,
+`bench/results/2026-09-20-phase3-task3-keydb-package.md`: the classes
+above 4 KiB held about half of the fragmentation KeyDB's defragmenter
+could not reduce with the bin-only hint). It answers 0 for everything
+else, a huge run (no slab to consolidate), a full slab, a freed or foreign
+pointer, null, and never aborts: the defragmenter asks about pointers it
+owns, and a wrong answer only costs it a move. It is a cold statistics
+read (two class-lock acquisitions, as the verbose utilization query) with
+no effect on any allocation path. The `*_with_usize` family stays out of
+scope: no Wolfi package calls it.
+
+What the hint cannot recover, measured on the same suite: free slots the
+freeing thread's cache still holds pin their slabs (KeyDB frees through
+the cache and its defragmenter asks only about live objects), so the
+`allocator_frag_bytes` KeyDB's stop rule reads (`stats.active -
+stats.allocated`, Redis 6's rule; Valkey 9 reads the bins' figures from
+the utilization queries instead) keeps the cached slots' slabs until the
+cache GC (`tcache_gc_interval_ms`, 10 s) returns them, plus the slab tails
+(`slab_size - nregs * size`) that `active` counts and the queries do not.
 
 ### 13.6 Library name, soname and packaging
 

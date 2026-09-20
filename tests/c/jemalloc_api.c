@@ -415,17 +415,39 @@ static void test_defrag_hint(void)
     }
     CHECK(full_hinted == 0, "%zu hints on full slabs", full_hinted);
     CHECK(hints >= nregs / 2 * 8, "%zu hints for %zu slots in half-full slabs", hints, sparse_seen);
-    /* Not a hint: a huge run, a class above the bins, null, the stack. */
+    /* Not a hint: a huge run, null, the stack. */
     void *h = mallocx(3 << 20, flags);
-    void *m = mallocx(100 << 10, flags);
-    REQUIRE(h && m, "huge and large");
+    REQUIRE(h, "huge");
     int on_stack = 0;
     CHECK(get_defrag_hint(h) == 0, "huge run");
-    CHECK(get_defrag_hint(m) == 0, "class above the bins");
     CHECK(get_defrag_hint(NULL) == 0, "null");
     CHECK(get_defrag_hint(&on_stack) == 0, "stack");
     dallocx(h, flags);
-    dallocx(m, flags);
+    /* A class above the bins answers like a bin, although the utilization
+     * query reports it as one region (design 13.5): 40 blocks of 16 KiB in
+     * 16-slot slabs, every other one freed, and some of the survivors are
+     * worth moving. */
+    void *big[40];
+    for (int i = 0; i < 40; i++) {
+        big[i] = mallocx(16 << 10, flags);
+        REQUIRE(big[i], "mallocx 16 KiB");
+    }
+    struct {
+        void *slabcur_addr;
+        size_t nfree, nregs, size, bin_nfree, bin_nregs;
+    } ub;
+    size_t ublen = sizeof ub;
+    void *b0 = big[0];
+    REQUIRE(mallctl("experimental.utilization.query", &ub, &ublen, &b0, sizeof b0) == 0, "utilization.query 16 KiB");
+    CHECK(ub.nregs == 1 && ub.nfree == 0 && ub.size == (16 << 10), "the query keeps the large-extent shape (%zu, %zu, %zu)", ub.nregs, ub.nfree, ub.size);
+    for (int i = 0; i < 40; i += 2)
+        dallocx(big[i], flags);
+    size_t big_hints = 0;
+    for (int i = 1; i < 40; i += 2)
+        big_hints += get_defrag_hint(big[i]) == 1;
+    CHECK(big_hints >= 1, "%zu of 20 half-emptied 16 KiB blocks worth moving", big_hints);
+    for (int i = 1; i < 40; i += 2)
+        dallocx(big[i], flags);
     for (size_t i = 0; i < n; i++) {
         if (i < n / 2 && i % 2 == 0)
             continue;

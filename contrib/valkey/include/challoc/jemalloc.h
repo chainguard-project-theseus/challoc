@@ -92,10 +92,11 @@ void je_malloc_stats_print(void (*write_cb)(void *, const char *), void *cbopaqu
 
 /* Redis's extension of its bundled jemalloc (design.md section 13.5), which
  * KeyDB's defragmenter calls on every allocation it considers moving: 1
- * when ptr is a live small allocation whose slab has a free slot, is not
- * the slab new allocations are placed in, and is used at or below the
- * average of the bin's other slabs; 0 otherwise (a huge run, a class above
- * the bins, a full slab, a freed or foreign pointer, null). Defining
+ * when ptr is a live slab allocation (any slab class, the ones above the
+ * bins included) whose slab has a free slot, is not the slab new
+ * allocations are placed in, and is used at or below the average of the
+ * class's other slabs; 0 otherwise (a huge run, a full slab, a freed or
+ * foreign pointer, null). Defining
  * JEMALLOC_FRAG_HINT is how Redis's header announces it (zmalloc.h derives
  * HAVE_DEFRAG from it). */
 #define JEMALLOC_FRAG_HINT

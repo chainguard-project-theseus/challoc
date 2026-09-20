@@ -53,7 +53,7 @@ use core::ptr;
 use super::libc::{class_for, old_size_or_keep, usable_size};
 use crate::arena::{self, Flags, Tcache};
 use crate::heap::Shared;
-use crate::layout::{CLASSES, Kind, NBINS};
+use crate::layout::{CLASSES, Kind};
 
 /// `void (*malloc_message)(void *cbopaque, const char *s)`; null when the
 /// program has not installed one.
@@ -264,29 +264,30 @@ pub fn nallocx(size: usize, flags: c_int) -> usize {
 /// `je_get_defrag_hint` on every allocation it considers moving
 /// (`activeDefragAlloc`; design 13.5). Returns 1 when moving `p` is worth
 /// it, by jemalloc's rule and from the data the utilization queries report
-/// (`mallctl::utilization`): `p` is a live slot of a bin class (up to
-/// `BIN_MAX`), its slab has a free slot, the slab is not the one a
-/// `MALLOCX_TCACHE_NONE` claim takes from next (jemalloc's `slabcur`,
-/// challoc's lowest partial slab: the move would land the object back in
-/// it), and its live count is at or below the average live count of the
-/// bin's other slabs in the owning arena
-/// (`live * (curslabs - 1) <= curregs - live(slabcur)`, jemalloc's
-/// multiplication in place of a division). 0 for everything else: a huge
-/// run, a slot of a class above `BIN_MAX` (one region of its own, as the
-/// utilization queries report it), a full slab, a freed or foreign pointer,
-/// null, and before the allocator is initialised. Never aborts: a
-/// defragmenter asks about pointers it owns, and a wrong answer only
-/// costs it a move. Cold: two class-lock acquisitions per call, as the
-/// verbose utilization query.
+/// (`mallctl::utilization`): `p` is a live slot of a slab class, its slab
+/// has a free slot, the slab is not the one a `MALLOCX_TCACHE_NONE` claim
+/// takes from next (jemalloc's `slabcur`, challoc's lowest partial slab:
+/// the move would land the object back in it), and its live count is at
+/// or below the average live count of the class's other slabs in the
+/// owning arena (`live * (curslabs - 1) <= curregs - live(slabcur)`,
+/// jemalloc's multiplication in place of a division). Every slab class
+/// answers, the ones above `BIN_MAX` included: the utilization queries
+/// report those as one region each because Valkey's bin arithmetic is
+/// calibrated to jemalloc's bins (13.4), but the hint has no geometry
+/// contract, and one live 16 KiB block pinning a 16-slot slab is exactly
+/// the waste a move recovers (measured on KeyDB's memefficiency suite,
+/// `bench/results/2026-09-20-phase3-task3-keydb-package.md`). 0 for
+/// everything else: a huge run (no slab to consolidate), a full slab, a
+/// freed or foreign pointer, null, and before the allocator is
+/// initialised. Never aborts: a defragmenter asks about pointers it owns,
+/// and a wrong answer only costs it a move. Cold: two class-lock
+/// acquisitions per call, as the verbose utilization query.
 #[cold]
 #[inline(never)]
 pub fn get_defrag_hint(p: *const u8) -> c_int {
     let Some(shared) = super::shared_if_ready() else { return 0 };
     let Kind::Slab { class, slab, slot } = shared.regions.classify(p as usize) else { return 0 };
     let class = class as usize;
-    if class >= NBINS {
-        return 0;
-    }
     let t = shared.table(class);
     let (slab, slot) = (slab as usize, slot as usize);
     if !t.is_allocated(slab, slot) {
@@ -721,19 +722,38 @@ mod tests {
         // are below the average; the full ones are never hinted.
         assert!(moved >= cls.nslots() / 2 * 8, "{moved} hints for {} half-full slots", n / 4);
         assert!(live[n / 4..].iter().all(|p| get_defrag_hint(*p) == 0 || utilization(s, *p as *const c_void, false).nfree > 0));
-        // Not a hint: a freed slot, a huge run, a class above BIN_MAX
-        // (reported as one region of its own), null, a stack address.
+        // Not a hint: a freed slot, a huge run, null, a stack address.
         assert_eq!(get_defrag_hint(ptrs[0]), 0, "freed");
         let h = mallocx(3 << 20, flags);
-        let m = mallocx(100 << 10, flags);
-        assert!(crate::layout::class_of(100 << 10).unwrap() >= NBINS);
         assert_eq!(get_defrag_hint(h), 0, "huge");
-        assert_eq!(get_defrag_hint(m), 0, "above BIN_MAX");
         assert_eq!(get_defrag_hint(ptr::null()), 0, "null");
         let stack = 0u64;
         assert_eq!(get_defrag_hint(&stack as *const u64 as *const u8), 0, "stack");
         dallocx(h, flags);
-        dallocx(m, flags);
+        // A class above BIN_MAX answers like a bin (the utilization queries
+        // report it as one region; the hint has no geometry contract): two
+        // full slabs of 16 KiB slots plus one slab holding a single slot,
+        // whose block is below the average and worth moving unless it sits
+        // in the slab a claim takes from next.
+        let cm = crate::layout::class_of(16 << 10).unwrap();
+        assert!(cm >= crate::layout::NBINS);
+        let clm = &CLASSES[cm];
+        let big: Vec<*mut u8> = (0..2 * clm.nslots() + 1).map(|_| mallocx(16 << 10, flags)).collect();
+        assert!(big.iter().all(|p| !p.is_null()));
+        let um = utilization(s, big[0] as *const c_void, true);
+        assert_eq!((um.nregs, um.nfree), (1, 0), "the utilization query keeps jemalloc's large-extent shape");
+        let tm = s.table(cm);
+        let csm = s.arena(a).unwrap().class(cm);
+        let (lone_slab, _) = tm.locate(*big.last().unwrap());
+        assert_eq!(tm.desc(lone_slab).live(), 1);
+        let lone_hint = get_defrag_hint(*big.last().unwrap());
+        assert_eq!(lone_hint, (csm.lowest_partial() != Some(lone_slab)) as c_int, "the lone block moves unless its slab is the current one");
+        for p in &big[..2 * clm.nslots()] {
+            assert_eq!(get_defrag_hint(*p), 0, "a full slab is never worth moving out of");
+        }
+        for p in big {
+            dallocx(p, flags);
+        }
         for p in live {
             dallocx(p, flags);
         }
