@@ -29,6 +29,9 @@
 #
 #   OLD=HEAD                 rev of the base library (any git rev; "tree" = working tree)
 #   NEW=tree                 rev of the candidate (default: the working tree)
+#   NEW_CONF= OLD_CONF=      MALLOC_CONF for the new / old library's rows (e.g.
+#                            NEW_CONF=percpu_arena:percpu judges an opt-in mode
+#                            against the base's default; both default empty)
 #   QUICK_TOLERANCE=5        percent new may trail old before the exit status says no
 #   QUICK_CONFIRM_ROUNDS=2   extra rounds of old and new for a row that failed the gate once
 #   QUICK_BENCHES="larson1 larson10 xmalloc alloc-test1 valkey1"
@@ -53,6 +56,8 @@ VALKEY_MODEL_SECS=${VALKEY_MODEL_SECS:-5}
 . "$ROOT/bench/lib.sh"
 OLD=${OLD:-HEAD}
 NEW=${NEW:-tree}
+OLD_CONF=${OLD_CONF:-}
+NEW_CONF=${NEW_CONF:-}
 QUICK_TOLERANCE=${QUICK_TOLERANCE:-5}
 QUICK_BENCHES=${QUICK_BENCHES:-"larson1 larson10 xmalloc alloc-test1 valkey1"}
 PERF=${PERF:-0}
@@ -120,6 +125,8 @@ fi
 # ---- one round --------------------------------------------------------------
 VARIANTS="old new jemalloc"
 lib_of() { case $1 in old) echo "$OLD_SO";; new) echo "$NEW_SO";; jemalloc) echo "$JEMALLOC_LIB";; esac; }
+conf_of() { case $1 in old) echo "$OLD_CONF";; new) echo "$NEW_CONF";; *) echo "";; esac; }
+[ -z "$OLD_CONF$NEW_CONF" ] || echo "== MALLOC_CONF: old '${OLD_CONF}', new '${NEW_CONF}'"
 runs_jemalloc() { # runs_jemalloc BENCH: does jemalloc run BENCH this time?
   [ -z "$BASELINE" ] && return 0
   case " $QUICK_SANITY " in *" $1 "*) return 0;; *) return 1;; esac
@@ -128,12 +135,12 @@ for b in $QUICK_BENCHES; do
   printf '  %-12s' "$b"
   for v in $VARIANTS; do
     if [ "$v" = jemalloc ] && ! runs_jemalloc "$b"; then printf ' %s(cached)' "$v"; continue; fi
-    run_row "$b" "$(lib_of "$v")" "" "$b.$v"; printf ' %s' "$v"
+    run_row "$b" "$(lib_of "$v")" "$(conf_of "$v")" "$b.$v"; printf ' %s' "$v"
   done
   echo
 done
 printf '  %-12s' "churn $CHURN_CLASS"
-for v in $VARIANTS; do run_churn "$(lib_of "$v")" "" "$v" "$CHURN_SECS" "$CHURN_CLASS"; printf ' %s' "$v"; done
+for v in $VARIANTS; do run_churn "$(lib_of "$v")" "$(conf_of "$v")" "$v" "$CHURN_SECS" "$CHURN_CLASS"; printf ' %s' "$v"; done
 echo
 
 # ---- confirmation ---------------------------------------------------------------
@@ -152,7 +159,7 @@ if [ -n "$confirm" ] && [ "$QUICK_CONFIRM_ROUNDS" -gt 0 ]; then
   printf '  confirming%s: %s more rounds of old and new' "$confirm" "$QUICK_CONFIRM_ROUNDS"
   r=1
   while [ "$r" -le "$QUICK_CONFIRM_ROUNDS" ]; do
-    for b in $confirm; do for v in old new; do run_row "$b" "$(lib_of "$v")" "" "$b.$v"; done; done
+    for b in $confirm; do for v in old new; do run_row "$b" "$(lib_of "$v")" "$(conf_of "$v")" "$b.$v"; done; done
     printf ' .'; r=$((r+1))
   done
   echo
@@ -212,7 +219,7 @@ if [ "$PERF" = 1 ]; then
     for b in $PERF_BENCHES; do
       for v in $VARIANTS; do
         set -- $(bench_args "$b")
-        perf stat -x, -e "$PERF_EVENTS" -o "$OUT/perf.$b.$v.csv" -- env LD_PRELOAD="$(lib_of "$v")" "$@" > "$OUT/perf.$b.$v.out" 2>&1 || true
+        perf stat -x, -e "$PERF_EVENTS" -o "$OUT/perf.$b.$v.csv" -- env MALLOC_CONF="$(conf_of "$v")" LD_PRELOAD="$(lib_of "$v")" "$@" > "$OUT/perf.$b.$v.out" 2>&1 || true
         ops=$(ops_of "$b" "$OUT/perf.$b.$v.out")
         secs=$(secs_of "$b")
         awk -F, -v ops="$ops" -v secs="$secs" -v row="$b" -v var="$v" '

@@ -291,6 +291,27 @@ pub unsafe fn cpu_id(area: *mut u8) -> u32 {
     unsafe { area.add(CPU_ID_OFFSET).cast::<u32>().read_volatile() }
 }
 
+/// Status words of [`pop_raw`] and [`push_raw`], the sections' raw
+/// results the entry points decode with one test each (plan Phase 2.5
+/// task 8, the fast-path form): a pop hit has [`POP_HIT`] set (and
+/// [`POP_ZERO`] when the slot is known zero); a push hit is
+/// [`PUSH_PUSHED`], zero. The other values are the misses the cold paths
+/// decode; [`POP_OFF_MODE`] / [`PUSH_OFF_MODE`] are the heap's own
+/// (`heap.rs`: a heap off the mode), never the sections'.
+pub const POP_HIT: u32 = 1;
+pub const POP_ZERO: u32 = 2;
+pub const POP_EMPTY: u32 = 0;
+pub const POP_OUT_OF_RANGE: u32 = 2;
+pub const POP_SCHEDULED: u32 = 4;
+pub const POP_OFF_MODE: u32 = 8;
+pub const PUSH_PUSHED: u32 = 0;
+pub const PUSH_FULL: u32 = 1;
+pub const PUSH_OUT_OF_RANGE: u32 = 2;
+/// The heap declined the push before the section (a pointer the checks
+/// did not verify, `zero_on_free`).
+pub const PUSH_DECLINED: u32 = 3;
+pub const PUSH_OFF_MODE: u32 = 8;
+
 /// Outcome of [`pop`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pop {
@@ -309,6 +330,21 @@ pub enum Pop {
     OutOfRange,
 }
 
+impl Pop {
+    /// [`pop_raw`]'s `(p, status)` as the enum.
+    #[inline(always)]
+    pub fn decode(p: *mut u8, st: u32) -> Pop {
+        if st & POP_HIT != 0 {
+            return Pop::Popped(p, st & POP_ZERO != 0);
+        }
+        match st {
+            POP_EMPTY => Pop::Empty,
+            POP_OUT_OF_RANGE => Pop::OutOfRange,
+            _ => Pop::Scheduled,
+        }
+    }
+}
+
 /// Outcome of [`push`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Push {
@@ -316,6 +352,18 @@ pub enum Push {
     /// `len == cap` (also a never-installed header, `cap == 0`).
     Full,
     OutOfRange,
+}
+
+impl Push {
+    /// [`push_raw`]'s status as the enum.
+    #[inline(always)]
+    pub fn decode(st: u32) -> Push {
+        match st {
+            PUSH_PUSHED => Push::Pushed,
+            PUSH_FULL => Push::Full,
+            _ => Push::OutOfRange,
+        }
+    }
 }
 
 /// The table geometry every section takes: `base` is the address of the
@@ -372,13 +420,30 @@ const _: () = assert!(
 #[cfg(target_os = "linux")]
 #[inline(always)]
 pub unsafe fn pop(area: *mut u8, t: Table, pac: bool) -> Pop {
+    // SAFETY: guaranteed by the caller.
+    let (p, st) = unsafe { pop_raw(area, t, pac) };
+    Pop::decode(p, st)
+}
+
+/// [`pop`] returning the section's raw status word (`POP_*`) beside the
+/// pointer: what the entry points inline, so a hit is one bit test.
+///
+/// # Safety
+/// As for [`pop`].
+#[cfg(target_os = "linux")]
+#[inline(always)]
+pub unsafe fn pop_raw(area: *mut u8, t: Table, pac: bool) -> (*mut u8, u32) {
     let p: *mut u8;
     // x86_64 has no pointer authentication; the flag is for aarch64.
     #[cfg(target_arch = "x86_64")]
     let _ = pac;
+    // The status word, decoded below: bit 0 set is a pop (bit 1 then says
+    // the slot is known zero, `len < zeroed` after the pop, compared inside
+    // the asm so the entry point needs no register for `zeroed`); 0 is
+    // empty, 2 out of range, 4 scheduled. One test of bit 0 is all
+    // `malloc` decodes; the entry point inlines this section (plan Phase
+    // 2.5 task 8, the fast-path form of 2026-09-19).
     let st: u32;
-    let len: u32;
-    let zeroed: u32;
     // SAFETY: guaranteed by the caller; the section reads the header the
     // kernel's `mm_cid` names and commits with one store of `len`.
     unsafe {
@@ -414,10 +479,12 @@ pub unsafe fn pop(area: *mut u8, t: Table, pac: bool) -> Pop {
             "jae 12f",
             "mov dword ptr [{h} + {o_lw}], {l:e}",
             "12:",
-            "mov {z:e}, dword ptr [{h} + {o_zeroed}]",
             "mov dword ptr [{h} + {o_len}], {l:e}",
             "3:",
-            "xor {st:e}, {st:e}",
+            "mov {st:e}, 1",
+            "cmp {l:e}, dword ptr [{h} + {o_zeroed}]",
+            "jae 13f",
+            "mov {st:e}, 3",
             "jmp 13f",
             ".byte 0x0f, 0xb9, 0x3d",
             ".long {sig}",
@@ -425,22 +492,21 @@ pub unsafe fn pop(area: *mut u8, t: Table, pac: bool) -> Pop {
             "lock inc qword ptr [rip + {aborts}]",
             "jmp 8b",
             "5:",
-            "mov {st:e}, 1",
+            "xor {st:e}, {st:e}",
             "jmp 13f",
             "6:",
             "mov {st:e}, 2",
             "jmp 13f",
             "7:",
-            "mov {st:e}, 3",
+            "mov {st:e}, 4",
             "13:",
             rs = in(reg) area,
             base = in(reg) t.base,
             n = in(reg) t.n,
             h = out(reg) _,
-            l = out(reg) len,
+            l = out(reg) _,
             t = out(reg) _,
             p = out(reg) p,
-            z = out(reg) zeroed,
             st = lateout(reg) st,
             off_cs = const RSEQ_CS_OFFSET,
             off_cid = const MM_CID_OFFSET,
@@ -496,7 +562,10 @@ pub unsafe fn pop(area: *mut u8, t: Table, pac: bool) -> Pop {
             "ldr {z:w}, [{h}, #{o_zeroed}]",
             "str {l:w}, [{h}, #{o_len}]",
             "3:",
-            "mov {st:w}, #0",
+            "cmp {l:w}, {z:w}",
+            "mov {st:w}, #1",
+            "b.hs 13f",
+            "mov {st:w}, #3",
             "b 13f",
             ".inst {sig}",
             "4:",
@@ -507,23 +576,23 @@ pub unsafe fn pop(area: *mut u8, t: Table, pac: bool) -> Pop {
             "str {h}, [{t}]",
             "b 8b",
             "5:",
-            "mov {st:w}, #1",
+            "mov {st:w}, #0",
             "b 13f",
             "6:",
             "mov {st:w}, #2",
             "b 13f",
             "7:",
-            "mov {st:w}, #3",
+            "mov {st:w}, #4",
             "13:",
             rs = in(reg) area,
             base = in(reg) t.base,
             n = in(reg) t.n,
             pac = in(reg) pac as usize,
             h = out(reg) _,
-            l = out(reg) len,
+            l = out(reg) _,
             t = out(reg) _,
             p = out(reg) p,
-            z = out(reg) zeroed,
+            z = out(reg) _,
             st = lateout(reg) st,
             off_cs = const RSEQ_CS_OFFSET,
             off_cid = const MM_CID_OFFSET,
@@ -539,12 +608,7 @@ pub unsafe fn pop(area: *mut u8, t: Table, pac: bool) -> Pop {
             options(nostack),
         );
     }
-    match st {
-        0 => Pop::Popped(p, len < zeroed),
-        1 => Pop::Empty,
-        2 => Pop::OutOfRange,
-        _ => Pop::Scheduled,
-    }
+    (p, st)
 }
 
 /// Push `p` onto the running CPU's header for the class `t.base` names,
@@ -556,6 +620,18 @@ pub unsafe fn pop(area: *mut u8, t: Table, pac: bool) -> Pop {
 #[cfg(target_os = "linux")]
 #[inline(always)]
 pub unsafe fn push(area: *mut u8, t: Table, p: *mut u8, pac: bool) -> Push {
+    // SAFETY: guaranteed by the caller.
+    Push::decode(unsafe { push_raw(area, t, p, pac) })
+}
+
+/// [`push`] returning the section's raw status word (`PUSH_*`): what the
+/// entry points inline, so a hit is one compare with zero.
+///
+/// # Safety
+/// As for [`push`].
+#[cfg(target_os = "linux")]
+#[inline(always)]
+pub unsafe fn push_raw(area: *mut u8, t: Table, p: *mut u8, pac: bool) -> u32 {
     let st: u32;
     // x86_64 has no pointer authentication; the flag is for aarch64.
     #[cfg(target_arch = "x86_64")]
@@ -698,11 +774,7 @@ pub unsafe fn push(area: *mut u8, t: Table, p: *mut u8, pac: bool) -> Push {
             options(nostack),
         );
     }
-    match st {
-        0 => Push::Pushed,
-        1 => Push::Full,
-        _ => Push::OutOfRange,
-    }
+    st
 }
 
 /// Push as many of `ptrs` (in order, so `ptrs[k-1]` ends on top) as the

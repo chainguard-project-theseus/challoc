@@ -2122,16 +2122,16 @@ impl Heap {
 
     /// A slot of `class` was claimed directly (`MALLOCX_TCACHE_NONE`) or
     /// popped from a per-CPU cache on this thread: count it.
-    #[inline]
+    #[inline(always)]
     pub fn count_direct_alloc(&mut self, class: usize) {
-        self.count_uncached_alloc(CLASSES[class].size());
+        self.count_uncached_alloc(class_size(class));
     }
 
     /// A slot of `class` was released directly or pushed onto a per-CPU
     /// cache on this thread: count it.
-    #[inline]
+    #[inline(always)]
     pub fn count_direct_free(&mut self, class: usize) {
-        self.count_uncached_free(CLASSES[class].size());
+        self.count_uncached_free(class_size(class));
     }
 
     /// Push a checked slot of `class` (home arena) onto its cache.
@@ -2838,34 +2838,73 @@ impl Heap {
     }
 
     /// The pop of a heap in a per-CPU process: the [`PUSH_PERCPU`] branch
-    /// of [`Heap::alloc_fast`] and [`Heap::alloc_zeroed`], out of line so
-    /// the thread pop keeps its shape. A heap off the mode pops its own
-    /// cache here. `None` sends the caller to the slow path.
-    #[inline(never)]
+    /// of [`Heap::alloc_fast`], [`Heap::alloc_zeroed`] and the entry
+    /// points' per-CPU wrappers (`api::libc::percpu_malloc`), which inline
+    /// it: the section itself sits in the wrapper the entry point
+    /// tail-calls, so the mode's pop is one jump, the `percpu` byte, the
+    /// section and the byte count, with no further call (the first form
+    /// called this out of line and then `rseq::pop`'s wrapper: two frames
+    /// and the decode, +65 instructions per larson operation on the C4;
+    /// `bench/results/2026-09-19-*-task8-percpu-fastpath.md`). A heap off
+    /// the mode pops its own cache out of line ([`Heap::pop_off_mode`],
+    /// cold, so the thread pop's registers never join this frame). `None`
+    /// sends the caller to the slow path.
+    #[inline(always)]
     pub(crate) fn pop_percpu_mode(&mut self, class: usize, flags: u8) -> Option<(*mut u8, bool)> {
-        let pac = flags & PUSH_PAC != 0;
+        let (p, st) = self.percpu_pop_raw(class, flags);
+        if st & rseq::POP_HIT != 0 { Some((p, st & rseq::POP_ZERO != 0)) } else { self.percpu_pop_miss(class, flags, st) }
+    }
+
+    /// The hit path of the per-CPU pop, raw: the section on the running
+    /// CPU's header for `class` and its status word (`rseq::POP_*`;
+    /// [`rseq::POP_OFF_MODE`] for a heap off the mode, before any section),
+    /// the byte count taken on a hit. The entry points inline this and
+    /// test [`rseq::POP_HIT`]; everything else goes to
+    /// [`Heap::percpu_pop_miss`] in one cold tail call, which is what
+    /// keeps the wrapper frameless (a miss that returned here to be
+    /// decoded gave it a frame and the decode).
+    #[inline(always)]
+    pub(crate) fn percpu_pop_raw(&mut self, class: usize, flags: u8) -> (*mut u8, u32) {
         if !self.percpu {
-            let cache = self.cache_ptr(class);
-            // SAFETY: this thread's own header, unused or with a stack.
-            unsafe {
-                let len = (*cache).len;
-                if len == 0 {
-                    return None;
-                }
-                return Some(self.pop(cache, class, len, pac));
-            }
+            return (ptr::null_mut(), rseq::POP_OFF_MODE);
         }
         // SAFETY: a heap never outlives its `Shared`.
         let shared: &Shared = unsafe { &*self.shared };
         // SAFETY: the owning thread registered this area; the table is live.
-        match unsafe { rseq::pop(self.rseq_area, shared.percpu.table(class), pac) } {
-            rseq::Pop::Popped(p, zero) => {
-                self.count_direct_alloc(class);
-                Some((p, zero))
+        let (p, st) = unsafe { rseq::pop_raw(self.rseq_area, shared.percpu.table(class), flags & PUSH_PAC != 0) };
+        if st & rseq::POP_HIT != 0 {
+            self.count_direct_alloc(class);
+        }
+        (p, st)
+    }
+
+    /// Every outcome of [`Heap::percpu_pop_raw`] but a hit: the thread pop
+    /// of a heap off the mode (an explicit cache, `thread.tcache.enabled:
+    /// false`, a thread homed on an explicit arena; [`Heap::alloc_fast`]'s
+    /// body), the scheduled pop, an empty cache (`None`: the caller
+    /// refills), an id out of range (abort).
+    #[cold]
+    #[inline(never)]
+    pub(crate) fn percpu_pop_miss(&mut self, class: usize, flags: u8, st: u32) -> Option<(*mut u8, bool)> {
+        match st {
+            rseq::POP_OFF_MODE => {
+                let cache = self.cache_ptr(class);
+                // SAFETY: this thread's own header, unused or with a stack.
+                unsafe {
+                    let len = (*cache).len;
+                    if len == 0 {
+                        return None;
+                    }
+                    Some(self.pop(cache, class, len, flags & PUSH_PAC != 0))
+                }
             }
-            rseq::Pop::Empty => None,
-            rseq::Pop::Scheduled => self.percpu_scheduled(shared, class),
-            rseq::Pop::OutOfRange => cid_out_of_range(),
+            rseq::POP_EMPTY => None,
+            rseq::POP_SCHEDULED => {
+                // SAFETY: a heap never outlives its `Shared`.
+                let shared: &Shared = unsafe { &*self.shared };
+                self.percpu_scheduled(shared, class)
+            }
+            _ => cid_out_of_range(),
         }
     }
 
@@ -3234,7 +3273,16 @@ impl Heap {
 /// Off Linux the mode never turns on; the entry points still compile.
 #[cfg(not(target_os = "linux"))]
 impl Heap {
-    pub(crate) fn pop_percpu_mode(&mut self, _class: usize, _flags: u8) -> Option<(*mut u8, bool)> {
+    pub(crate) fn pop_percpu_mode(&mut self, class: usize, flags: u8) -> Option<(*mut u8, bool)> {
+        let (_, st) = self.percpu_pop_raw(class, flags);
+        self.percpu_pop_miss(class, flags, st)
+    }
+
+    pub(crate) fn percpu_pop_raw(&mut self, _class: usize, _flags: u8) -> (*mut u8, u32) {
+        (ptr::null_mut(), rseq::POP_EMPTY)
+    }
+
+    pub(crate) fn percpu_pop_miss(&mut self, _class: usize, _flags: u8, _st: u32) -> Option<(*mut u8, bool)> {
         None
     }
 
@@ -3428,47 +3476,69 @@ pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> bool {
 }
 
 /// The `free` and sized-free fast paths of a process in the per-CPU mode
-/// (design 15). The entry points (`api::libc`) test [`PUSH_PERCPU`] on the
-/// flag byte they load anyway and tail-call their per-CPU wrapper, which
-/// calls this, so the thread paths keep their shape (no frame, as the
-/// disassembly of `malloc`/`free` in `bench/results/2026-09-19-*-task8-*`
-/// records; a call inside the inlined fast path gave both a frame). A heap
-/// off the mode ([`Heap::percpu`] false) takes the thread path here;
-/// otherwise the slot is verified (the bit test without the arena test,
+/// (design 15), raw. The entry points (`api::libc`) test [`PUSH_PERCPU`]
+/// on the flag byte they load anyway and tail-call their per-CPU wrapper,
+/// which inlines this and compares the status with [`rseq::PUSH_PUSHED`];
+/// every other outcome is one cold tail call to [`percpu_push_miss`], so
+/// the thread paths keep their shape (no frame, as the disassembly of
+/// `malloc`/`free` in `bench/results/2026-09-19-*-task8-*` records) and
+/// the mode's push is one jump, the check, the section and the byte count
+/// with no call. A heap off the mode ([`Heap::percpu`] false) reports
+/// [`rseq::PUSH_OFF_MODE`] before any check; otherwise the slot is
+/// verified (the bit test without the arena test,
 /// [`Shared::checked_slot_any`], or the sized path's arithmetic with the
-/// hint), pushed onto the running CPU's cache in one critical section and
-/// counted in the thread's byte counters. `false` for anything off the
-/// fast path (a full or uninstalled cache, a pointer the checks decline,
-/// `zero_on_free`, which clears on the slow path before the push).
+/// hint; [`rseq::PUSH_DECLINED`] when it is not, or under `zero_on_free`,
+/// which clears on the slow path before the push), pushed onto the running
+/// CPU's cache in one critical section and counted in the thread's byte
+/// counters.
 #[cfg(target_os = "linux")]
-#[inline(never)]
-pub fn percpu_free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8, hint: Option<usize>, sized: bool) -> bool {
+#[inline(always)]
+pub fn percpu_push_raw(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8, hint: Option<usize>, sized: bool) -> u32 {
     if !h.percpu {
-        let class = if sized { shared.sized_slot(p, hint) } else { shared.checked_slot(p, h) };
-        return match class {
-            Some(class) => h.push_fast(class, p, flags),
-            None => false,
-        };
+        return rseq::PUSH_OFF_MODE;
     }
     let class = if sized { shared.sized_slot(p, hint) } else { shared.checked_slot_any(p) };
-    let Some(class) = class else { return false };
+    let Some(class) = class else { return rseq::PUSH_DECLINED };
     if flags & PUSH_ZERO != 0 {
-        return false;
+        return rseq::PUSH_DECLINED;
     }
     // SAFETY: the heap's thread registered this area; the table is live;
     // `p` is a verified slot start of `class`.
-    match unsafe { rseq::push(h.rseq_area, shared.percpu.table(class), p, flags & PUSH_PAC != 0) } {
-        rseq::Push::Pushed => {
-            h.count_direct_free(class);
-            true
+    let st = unsafe { rseq::push_raw(h.rseq_area, shared.percpu.table(class), p, flags & PUSH_PAC != 0) };
+    if st == rseq::PUSH_PUSHED {
+        h.count_direct_free(class);
+    }
+    st
+}
+
+/// Every outcome of [`percpu_push_raw`] but a push: the thread push of a
+/// heap off the mode ([`free_fast`] or [`free_sized_fast`]), an id out of
+/// range (abort), and `false` for a full cache or a declined pointer,
+/// which the caller sends to its exact slow path.
+#[cfg(target_os = "linux")]
+#[cold]
+#[inline(never)]
+pub fn percpu_push_miss(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8, hint: Option<usize>, sized: bool, st: u32) -> bool {
+    match st {
+        rseq::PUSH_OFF_MODE => {
+            let class = if sized { shared.sized_slot(p, hint) } else { shared.checked_slot(p, h) };
+            match class {
+                Some(class) => h.push_fast(class, p, flags),
+                None => false,
+            }
         }
-        rseq::Push::Full => false,
-        rseq::Push::OutOfRange => cid_out_of_range(),
+        rseq::PUSH_OUT_OF_RANGE => cid_out_of_range(),
+        _ => false,
     }
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn percpu_free_fast(_: &Shared, _: &mut Heap, _: *mut u8, _: u8, _: Option<usize>, _: bool) -> bool {
+pub fn percpu_push_raw(_: &Shared, _: &mut Heap, _: *mut u8, _: u8, _: Option<usize>, _: bool) -> u32 {
+    rseq::PUSH_DECLINED
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn percpu_push_miss(_: &Shared, _: &mut Heap, _: *mut u8, _: u8, _: Option<usize>, _: bool, _: u32) -> bool {
     false
 }
 
@@ -3669,6 +3739,17 @@ fn straddling_double_free(p: *mut u8, class: usize) -> ! {
 #[inline(never)]
 fn no_such_arena(index: u16) -> ! {
     panic!("arena {index} does not exist")
+}
+
+/// `CLASSES[class].size()` without the bounds check: every `class` on the
+/// fast paths came from `class_of` or a slab descriptor, so it is below
+/// `NCLASSES`, and the check was two instructions and a panic call in the
+/// per-CPU wrappers.
+#[inline(always)]
+fn class_size(class: usize) -> usize {
+    debug_assert!(class < NCLASSES);
+    // SAFETY: as above.
+    unsafe { CLASSES.get_unchecked(class) }.size()
 }
 
 /// The kernel wrote an `mm_cid` at or above the possible-CPU count the

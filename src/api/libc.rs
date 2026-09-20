@@ -87,7 +87,7 @@ pub fn malloc(size: usize) -> *mut u8 {
     // load, merged by the compiler).
     let flags = unsafe { heap::fast_flags(shared) };
     if flags & heap::PUSH_PERCPU != 0 {
-        return percpu_malloc(h, c, flags, size);
+        return percpu_malloc(h, c, flags);
     }
     match h.alloc_fast(c, flags) {
         Some(p) => p,
@@ -95,14 +95,38 @@ pub fn malloc(size: usize) -> *mut u8 {
     }
 }
 
-/// `malloc` in the per-CPU mode: the running CPU's cache, then the slow
-/// path. A tail call from `malloc`, so the thread path keeps its shape.
+/// `malloc` in the per-CPU mode: the running CPU's cache (the critical
+/// section inlined here, `Heap::pop_percpu_mode`), then the slow path by
+/// class (`class_of(size)` already ran). A tail call from `malloc`, so the
+/// thread path keeps its shape; this function has no call of its own on
+/// the hit path, so the mode's `malloc` is the entry point's dispatch plus
+/// this body.
 #[inline(never)]
-fn percpu_malloc(h: &mut heap::Heap, class: usize, flags: u8, size: usize) -> *mut u8 {
-    match h.pop_percpu_mode(class, flags) {
+fn percpu_malloc(h: &mut heap::Heap, class: usize, flags: u8) -> *mut u8 {
+    let (p, st) = h.percpu_pop_raw(class, flags);
+    if st & crate::rseq::POP_HIT != 0 { p } else { percpu_malloc_miss(h, class, flags, st) }
+}
+
+/// Everything `percpu_malloc` does off its hit path (the heap off the
+/// mode, the scheduled pop, the refill, an id out of range), one cold tail
+/// call away.
+#[cold]
+#[inline(never)]
+fn percpu_malloc_miss(h: &mut heap::Heap, class: usize, flags: u8, st: u32) -> *mut u8 {
+    match h.percpu_pop_miss(class, flags, st) {
         Some((p, _)) => p,
-        None => malloc_slow(size),
+        None => malloc_slow_class(class),
     }
+}
+
+/// `malloc_slow` for a size whose class is known: the refill (or the
+/// scheduled pop) through `heap::alloc`, null with `errno = ENOMEM` on
+/// failure.
+#[cold]
+#[inline(never)]
+fn malloc_slow_class(class: usize) -> *mut u8 {
+    let p = heap::alloc(super::shared(), class);
+    if p.is_null() { enomem() } else { p }
 }
 
 /// The cache pop alone: `None` whenever anything is off the fast path (no
@@ -177,10 +201,21 @@ pub fn free(p: *mut u8) {
     free_slow(p)
 }
 
-/// `free` in the per-CPU mode (a tail call from `free`, see `malloc`).
+/// `free` in the per-CPU mode (a tail call from `free`, see `malloc`):
+/// the check and the section inline, every other outcome one cold tail
+/// call.
 #[inline(never)]
 fn percpu_free(shared: &Shared, h: &mut heap::Heap, p: *mut u8, flags: u8) {
-    if !heap::percpu_free_fast(shared, h, p, flags, None, false) {
+    let st = heap::percpu_push_raw(shared, h, p, flags, None, false);
+    if st != crate::rseq::PUSH_PUSHED {
+        percpu_free_miss(shared, h, p, flags, st)
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn percpu_free_miss(shared: &Shared, h: &mut heap::Heap, p: *mut u8, flags: u8, st: u32) {
+    if !heap::percpu_push_miss(shared, h, p, flags, None, false, st) {
         free_slow(p)
     }
 }
@@ -210,10 +245,20 @@ pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>) {
     free_sized_slow(p, size, hint)
 }
 
-/// The sized free in the per-CPU mode (a tail call, see `malloc`).
+/// The sized free in the per-CPU mode (a tail call, see `malloc` and
+/// `percpu_free`).
 #[inline(never)]
 fn percpu_free_sized(shared: &Shared, h: &mut heap::Heap, p: *mut u8, size: usize, hint: Option<usize>, flags: u8) {
-    if !heap::percpu_free_fast(shared, h, p, flags, hint, true) {
+    let st = heap::percpu_push_raw(shared, h, p, flags, hint, true);
+    if st != crate::rseq::PUSH_PUSHED {
+        percpu_free_sized_miss(shared, h, p, size, hint, flags, st)
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn percpu_free_sized_miss(shared: &Shared, h: &mut heap::Heap, p: *mut u8, size: usize, hint: Option<usize>, flags: u8, st: u32) {
+    if !heap::percpu_push_miss(shared, h, p, flags, hint, true, st) {
         free_sized_slow(p, size, hint)
     }
 }
