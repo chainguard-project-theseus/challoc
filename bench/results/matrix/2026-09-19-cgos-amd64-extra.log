@@ -1,0 +1,440 @@
+==================== ~/logs/churn-exp.log ====================
+== A default seccomp (repro) (flags: none; alloc challoc): thp=[always] madvise never
+cgroup_churn purge: 400 MiB churn, threshold 100 MiB; cgroup /sys/fs/cgroup memory.max 512 MiB memory.current 4 MiB, rss 2 MiB
+challoc: stats.cgroup.limit 512 MiB decay_ms 6298 retention_cap 25 MiB empty_bytes 0 MiB full_purges 0
+freed in 8 ms: rss 403 MiB, memory.current 404 MiB
+  t+ 101 ms: rss   16 MiB, memory.current 16 MiB
+  t+1005 ms: rss   16 MiB, memory.current 16 MiB
+  t+2002 ms: rss   16 MiB, memory.current 16 MiB
+challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 10 MiB full_purges 0
+RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=16 rss_min=16 below_ms=91 current_peak=404 current_2s=16
+OUTCOME churn alloc=challoc args='purge 400 100' status=0 verdict=ok oom_kill=0
+== B seccomp unconfined, default caps (flags: --security-opt seccomp=unconfined; alloc challoc): thp=[always] madvise never
+cgroup_churn purge: 400 MiB churn, threshold 100 MiB; cgroup /sys/fs/cgroup memory.max 512 MiB memory.current 4 MiB, rss 2 MiB
+challoc: stats.cgroup.limit 512 MiB decay_ms 6675 retention_cap 25 MiB empty_bytes 0 MiB full_purges 0
+freed in 7 ms: rss 403 MiB, memory.current 404 MiB
+  t+ 110 ms: rss  310 MiB, memory.current 310 MiB
+  t+1004 ms: rss  310 MiB, memory.current 310 MiB
+  t+2009 ms: rss  310 MiB, memory.current 310 MiB
+challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 8 MiB full_purges 0
+RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=310 rss_min=310 below_ms=-1 current_peak=404 current_2s=310
+OUTCOME churn alloc=challoc args='purge 400 100' status=1 verdict=FAIL oom_kill=0
+== C --privileged (the passing configuration) (flags: --privileged; alloc challoc): thp=[always] madvise never
+cgroup_churn purge: 400 MiB churn, threshold 100 MiB; cgroup /sys/fs/cgroup memory.max 512 MiB memory.current 3 MiB, rss 2 MiB
+challoc: stats.cgroup.limit 512 MiB decay_ms 8038 retention_cap 25 MiB empty_bytes 0 MiB full_purges 0
+freed in 7 ms: rss 403 MiB, memory.current 404 MiB
+  t+ 109 ms: rss   16 MiB, memory.current 17 MiB
+  t+1003 ms: rss   16 MiB, memory.current 16 MiB
+  t+2009 ms: rss   16 MiB, memory.current 16 MiB
+challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 10 MiB full_purges 0
+RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=16 rss_min=16 below_ms=99 current_peak=404 current_2s=16
+OUTCOME churn alloc=challoc args='purge 400 100' status=0 verdict=ok oom_kill=0
+== D default seccomp, lazy_band:false (eager everywhere) (flags: none; alloc challoc-eager): thp=[always] madvise never
+cgroup_churn purge: 400 MiB churn, threshold 100 MiB; cgroup /sys/fs/cgroup memory.max 512 MiB memory.current 3 MiB, rss 2 MiB
+challoc: stats.cgroup.limit 512 MiB decay_ms 7768 retention_cap 25 MiB empty_bytes 0 MiB full_purges 0
+freed in 7 ms: rss 403 MiB, memory.current 403 MiB
+  t+ 108 ms: rss   16 MiB, memory.current 16 MiB
+  t+1002 ms: rss   16 MiB, memory.current 15 MiB
+  t+2008 ms: rss   14 MiB, memory.current 13 MiB
+challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 10 MiB full_purges 0
+RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=14 rss_min=14 below_ms=87 current_peak=403 current_2s=13
+OUTCOME churn alloc=challoc-eager args='purge 400 100' status=0 verdict=ok oom_kill=0
+== E default seccomp, cgroup:false control (flags: none; alloc challoc-off): thp=[always] madvise never
+cgroup_churn purge: 400 MiB churn, threshold 100 MiB; cgroup /sys/fs/cgroup memory.max 512 MiB memory.current 4 MiB, rss 2 MiB
+challoc: stats.cgroup.* ENOENT (cgroup not tracked)
+freed in 7 ms: rss 403 MiB, memory.current 404 MiB
+  t+ 102 ms: rss  403 MiB, memory.current 404 MiB
+  t+1001 ms: rss  400 MiB, memory.current 401 MiB
+  t+2006 ms: rss  318 MiB, memory.current 319 MiB
+challoc: stats.cgroup.* ENOENT (cgroup not tracked)
+RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=318 rss_min=318 below_ms=-1 current_peak=404 current_2s=319
+OUTCOME churn alloc=challoc-off args='purge 400 100' status=1 verdict=FAIL oom_kill=0
+== F: host THP -> madvise, default seccomp
+== F default seccomp under THP madvise (flags: none; alloc challoc): thp=always [madvise] never
+cgroup_churn purge: 400 MiB churn, threshold 100 MiB; cgroup /sys/fs/cgroup memory.max 512 MiB memory.current 4 MiB, rss 2 MiB
+challoc: stats.cgroup.limit 512 MiB decay_ms 7763 retention_cap 25 MiB empty_bytes 0 MiB full_purges 0
+freed in 8 ms: rss 403 MiB, memory.current 403 MiB
+  t+ 116 ms: rss  217 MiB, memory.current 217 MiB
+  t+1000 ms: rss  217 MiB, memory.current 217 MiB
+  t+2005 ms: rss  217 MiB, memory.current 217 MiB
+challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 1 MiB full_purges 0
+RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=217 rss_min=217 below_ms=-1 current_peak=403 current_2s=217
+OUTCOME churn alloc=challoc args='purge 400 100' status=1 verdict=FAIL oom_kill=0
+thp restored: [always] madvise never
+== G: the report line inside each container (what the library thinks the backend is)
+features: page_size=4096 guard_install=yes mseal=no process_madvise=no process_madvise_free=no anon_name=no thp=always mthp=2M collapse=unprobed lam=no uai=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=48K l2=2M
+ok features
+
+==================== ~/logs/rseq-rerun.log ====================
+rseq: present=true size=28 flags=0 offset=-320 registered=true verdict=usable
+rseq: 8 distinct mm_cid values over 8 busy threads
+test rseq::tests::probe_reads_the_registered_area ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 499 filtered out; finished in 0.05s
+rseq: present=true size=28 flags=0 offset=-320 registered=true verdict=usable
+rseq: 8 distinct mm_cid values over 8 busy threads
+test rseq::tests::probe_reads_the_registered_area ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 499 filtered out; finished in 0.05s
+rseq: present=true size=28 flags=0 offset=-320 registered=true verdict=usable
+rseq: 8 distinct mm_cid values over 8 busy threads
+test rseq::tests::probe_reads_the_registered_area ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 499 filtered out; finished in 0.05s
+-- seccomp=unconfined
+rseq: present=true size=28 flags=0 offset=-320 registered=true verdict=usable
+rseq: 8 distinct mm_cid values over 8 busy threads
+test rseq::tests::probe_reads_the_registered_area ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 499 filtered out; finished in 0.05s
+
+==================== ~/logs/oscillate.log ====================
+composition top of cycle 90: current 499 anon 495 file 0 kernel 1 (slab 0 pagetables 1) MiB, rss 497 MiB; challoc allocated 480 active 492 resident 493 metadata 1 retained 15 empty 0 MiB
+cycle  90 at   281 s: up 480 MiB in 96 ms (rss 497, current 499 MiB), down to 200 MiB in 22 ms (rss 442, current 443 MiB), 75817 objects
+cycle  91 at   284 s: up 480 MiB in 102 ms (rss 490, current 494 MiB), down to 200 MiB in 22 ms (rss 422, current 423 MiB), 74519 objects
+cycle  92 at   287 s: up 480 MiB in 101 ms (rss 489, current 491 MiB), down to 200 MiB in 23 ms (rss 410, current 412 MiB), 78722 objects
+cycle  93 at   290 s: up 480 MiB in 101 ms (rss 492, current 493 MiB), down to 200 MiB in 24 ms (rss 431, current 432 MiB), 66323 objects
+cycle  94 at   293 s: up 480 MiB in 99 ms (rss 491, current 492 MiB), down to 200 MiB in 21 ms (rss 434, current 435 MiB), 76004 objects
+cycle  95 at   297 s: up 480 MiB in 101 ms (rss 491, current 492 MiB), down to 200 MiB in 20 ms (rss 434, current 435 MiB), 77048 objects
+cycle  96 at   300 s: up 480 MiB in 98 ms (rss 489, current 490 MiB), down to 200 MiB in 22 ms (rss 428, current 429 MiB), 85785 objects
+composition highest top (cycle 55): current 503 anon 500 file 0 kernel 1 (slab 0 pagetables 1) MiB, rss 502 MiB; challoc allocated 480 active 496 resident 497 metadata 1 retained 10 empty 0 MiB
+composition at end (bottom): current 294 anon 291 file 0 kernel 1 (slab 0 pagetables 1) MiB, rss 293 MiB; challoc allocated 200 active 269 resident 295 metadata 1 retained 213 empty 25 MiB
+RESULT oscillate cycles=96 seconds=300 low=200 high=480 current_peak=503 rss_peak=502 max_before=0 max_after=0 high_before=0 high_after=0 oom_kill_before=0 oom_kill_after=0
+OUTCOME oscillate alloc=challoc args='300' status=0 verdict=ok oom_kill=0
+
+==================== ~/logs/post.log ====================
+== 10 x churn challoc purge 400 100, default profile, thp=[always] madvise never (2026-09-20T00:02:30Z)
+run 1:   t+ 106 ms: rss   16 MiB, memory.current 16 MiB
+   RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=16 rss_min=16 below_ms=96 current_peak=403 current_2s=16
+   challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 10 MiB full_purges 0
+   OUTCOME churn alloc=challoc args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 2:   t+ 107 ms: rss   16 MiB, memory.current 16 MiB
+   RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=16 rss_min=16 below_ms=97 current_peak=404 current_2s=16
+   challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 9 MiB full_purges 0
+   OUTCOME churn alloc=challoc args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 3:   t+ 100 ms: rss   16 MiB, memory.current 16 MiB
+   RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=16 rss_min=16 below_ms=90 current_peak=404 current_2s=16
+   challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 9 MiB full_purges 0
+   OUTCOME churn alloc=challoc args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 4:   t+ 101 ms: rss   16 MiB, memory.current 16 MiB
+   RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=16 rss_min=16 below_ms=101 current_peak=404 current_2s=16
+   challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 10 MiB full_purges 0
+   OUTCOME churn alloc=challoc args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 5:   t+ 111 ms: rss  310 MiB, memory.current 310 MiB
+   RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=310 rss_min=310 below_ms=-1 current_peak=404 current_2s=310
+   challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 8 MiB full_purges 0
+   OUTCOME churn alloc=challoc args='purge 400 100' status=1 verdict=FAIL oom_kill=0
+run 6:   t+ 104 ms: rss   16 MiB, memory.current 16 MiB
+   RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=16 rss_min=16 below_ms=104 current_peak=403 current_2s=16
+   challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 9 MiB full_purges 0
+   OUTCOME churn alloc=challoc args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 7:   t+ 106 ms: rss   16 MiB, memory.current 16 MiB
+   RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=16 rss_min=16 below_ms=106 current_peak=404 current_2s=16
+   challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 9 MiB full_purges 0
+   OUTCOME churn alloc=challoc args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 8:   t+ 108 ms: rss   16 MiB, memory.current 16 MiB
+   RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=16 rss_min=16 below_ms=88 current_peak=404 current_2s=16
+   challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 10 MiB full_purges 0
+   OUTCOME churn alloc=challoc args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 9:   t+ 105 ms: rss   16 MiB, memory.current 16 MiB
+   RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=16 rss_min=16 below_ms=94 current_peak=404 current_2s=16
+   challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 9 MiB full_purges 0
+   OUTCOME churn alloc=challoc args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 10:   t+ 101 ms: rss   16 MiB, memory.current 16 MiB
+   RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=16 rss_min=16 below_ms=90 current_peak=404 current_2s=16
+   challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 10 MiB full_purges 0
+   OUTCOME churn alloc=challoc args='purge 400 100' status=0 verdict=ok oom_kill=0
+== 10 x churn challoc-eager purge 400 100, default profile, thp=[always] madvise never (2026-09-20T00:02:54Z)
+run 1:   t+ 104 ms: rss   16 MiB, memory.current 16 MiB
+   RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=14 rss_min=14 below_ms=93 current_peak=403 current_2s=13
+   challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 10 MiB full_purges 0
+   OUTCOME churn alloc=challoc-eager args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 2:   t+ 102 ms: rss   16 MiB, memory.current 16 MiB
+   RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=14 rss_min=14 below_ms=102 current_peak=404 current_2s=14
+   challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 10 MiB full_purges 0
+   OUTCOME churn alloc=challoc-eager args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 3:   t+ 100 ms: rss   16 MiB, memory.current 16 MiB
+   RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=14 rss_min=14 below_ms=90 current_peak=403 current_2s=13
+   challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 9 MiB full_purges 0
+   OUTCOME churn alloc=challoc-eager args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 4:   t+ 108 ms: rss   16 MiB, memory.current 16 MiB
+   RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=14 rss_min=14 below_ms=97 current_peak=403 current_2s=13
+   challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 10 MiB full_purges 0
+   OUTCOME churn alloc=challoc-eager args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 5:   t+ 101 ms: rss   16 MiB, memory.current 16 MiB
+   RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=14 rss_min=14 below_ms=91 current_peak=404 current_2s=13
+   challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 9 MiB full_purges 0
+   OUTCOME churn alloc=challoc-eager args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 6:   t+ 108 ms: rss   16 MiB, memory.current 16 MiB
+   RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=14 rss_min=14 below_ms=88 current_peak=404 current_2s=14
+   challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 10 MiB full_purges 0
+   OUTCOME churn alloc=challoc-eager args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 7:   t+ 102 ms: rss   16 MiB, memory.current 16 MiB
+   RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=14 rss_min=14 below_ms=92 current_peak=403 current_2s=13
+   challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 10 MiB full_purges 0
+   OUTCOME churn alloc=challoc-eager args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 8:   t+ 109 ms: rss   16 MiB, memory.current 16 MiB
+   RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=14 rss_min=14 below_ms=88 current_peak=404 current_2s=13
+   challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 10 MiB full_purges 0
+   OUTCOME churn alloc=challoc-eager args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 9:   t+ 143 ms: rss   12 MiB, memory.current 13 MiB
+   RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=12 rss_min=12 below_ms=143 current_peak=404 current_2s=12
+   challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 8 MiB full_purges 0
+   OUTCOME churn alloc=challoc-eager args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 10:   t+ 109 ms: rss   16 MiB, memory.current 16 MiB
+   RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=14 rss_min=14 below_ms=89 current_peak=404 current_2s=14
+   challoc: stats.cgroup.limit 512 MiB decay_ms 10000 retention_cap 25 MiB empty_bytes 10 MiB full_purges 0
+   OUTCOME churn alloc=challoc-eager args='purge 400 100' status=0 verdict=ok oom_kill=0
+== make test-cgroup-churn (2026-09-20T00:03:17Z)
+== churn under challoc (challoc 4864d4b): cgroup_churn purge 400 100 
+RESULT churn mode=purge mib=400 threshold=100 rss_peak=403 rss_2s=310 rss_min=310 below_ms=-1 current_peak=404 current_2s=310
+FAIL tests/c/cgroup_churn.c:297: rss never fell below 100 MiB within 2000 ms (min 310 MiB, at 2000 ms 310 MiB)
+OUTCOME churn alloc=challoc args='purge 400 100' status=1 verdict=FAIL oom_kill=0
+make: *** [Makefile:220: test-cgroup-churn] Error 1
+== post done (2026-09-20T00:03:20Z)
+
+==================== ~/logs/fw-rows-container.log ====================
+docker build --platform linux/amd64 -f Dockerfile.dev -t challoc-dev:amd64 .
+# rows (container) on challoc-lane-e-cgos-amd64: x86_64 6.18.49-r2-gcp-6.18, 8 CPUs, glibc 2.442.44, 2026-09-19T23:39:05Z
+- rows: larson1 larson16 valkey1 valkey1-free; allocators: challoc glibc jemalloc mimalloc tcmalloc; 3 timed rounds after one warm-up, interleaved
+- load at start: 0.70 0.98 1.63
+- challoc: /src/target/release/libchalloc.so mapped=5
+- glibc: no LD_PRELOAD (the host's libc malloc)
+- jemalloc: /usr/lib/libjemalloc.so.2 mapped=5
+- mimalloc: /src/target/bench-bin/libmimalloc.so mapped=5
+- tcmalloc: /usr/lib/libtcmalloc_minimal.so.4 mapped=5
+
+## Sorted scores (container)
+
+| program | variant | sorted scores | median | maxrss MiB |
+|---|---|---|---:|---:|
+| larson1 | challoc | 43.3 44.1 44.2 | 44.1 | 21.0 |
+| larson1 | glibc | 39.9 40.0 40.3 | 40.0 | 17.9 |
+| larson1 | jemalloc | 44.2 44.6 45.9 | 44.6 | 28.6 |
+| larson1 | mimalloc | 40.0 40.2 40.3 | 40.2 | 19.2 |
+| larson1 | tcmalloc | 52.4 52.6 52.9 | 52.6 | 22.3 |
+| larson16 | challoc | 173.5 174.4 175.8 | 174.4 | 140.5 |
+| larson16 | glibc | 122.7 126.2 126.3 | 126.2 | 118.7 |
+| larson16 | jemalloc | 184.7 190.6 190.8 | 190.6 | 165.7 |
+| larson16 | mimalloc | 165.9 166.4 167.0 | 166.4 | 149.7 |
+| larson16 | tcmalloc | 202.6 204.8 205.9 | 204.8 | 81.7 |
+| valkey1 | challoc | 15.468 15.475 15.519 | 15.475 | 585.6 |
+| valkey1 | glibc | 9.092 9.149 9.250 | 9.149 | 568.5 |
+| valkey1 | jemalloc | 16.744 17.068 17.110 | 17.068 | 599.6 |
+| valkey1 | mimalloc | 3.937 3.983 4.006 | 3.983 | 586.2 |
+| valkey1 | tcmalloc | 15.976 16.058 16.132 | 16.058 | 590.9 |
+| valkey1-free | challoc | 15.756 15.805 15.865 | 15.805 | 585.6 |
+| valkey1-free | glibc | 9.271 9.281 9.290 | 9.281 | 568.6 |
+| valkey1-free | jemalloc | 15.700 15.787 15.846 | 15.787 | 599.6 |
+| valkey1-free | mimalloc | 3.966 3.991 4.041 | 3.991 | 586.2 |
+| valkey1-free | tcmalloc | 15.585 15.670 16.106 | 15.670 | 591.0 |
+
+## challoc against each (positive = challoc worse), container
+
+| program | vs glibc | vs jemalloc | vs mimalloc | vs tcmalloc |
+|---|---:|---:|---:|---:|
+| larson1 | -9.3% | +1.1% | -8.8% | +19.3% |
+| larson16 | -27.6% | +9.3% | -4.6% | +17.4% |
+| valkey1 | -40.9% | +10.3% | -74.3% | +3.8% |
+| valkey1-free | -41.3% | -0.1% | -74.7% | -0.9% |
+- load at end: 1.98 2.83 2.45
+
+## THP under always (container): peak AnonHugePages per allocator, /proc/vmstat deltas
+
+- thp enabled: [always] madvise never; defrag: always defer defer+madvise [madvise] never; khugepaged/max_ptes_none: 511; hugepages-2048kB: always [inherit] madvise never
+
+| program | variant | score | peak Rss MiB | peak AnonHugePages MiB | thp_fault_alloc | thp_fault_fallback | thp_split_page | thp_deferred_split_page |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| valkey1 larson16 | challoc | - | 2.5 | 0.0 | 0 | 0 | 0 | 0 |
+| valkey1 larson16 | glibc | - | 0.0 | 0.0 | 0 | 0 | 0 | 0 |
+| valkey1 larson16 | jemalloc | - | 0.0 | 0.0 | 0 | 0 | 0 | 0 |
+| valkey1 larson16 | mimalloc | - | 0.0 | 0.0 | 0 | 0 | 0 | 0 |
+| valkey1 larson16 | tcmalloc | - | 0.0 | 0.0 | 0 | 0 | 0 | 0 |
+
+==================== ~/logs/fw-rows-native.log ====================
+# rows (native) on challoc-lane-e-cgos-amd64: x86_64 6.18.49-r2-gcp-6.18, 8 CPUs, glibc 2.44, 2026-09-19T23:50:37Z
+- rows: larson1 larson16 valkey1 valkey1-free; allocators: challoc glibc jemalloc mimalloc tcmalloc; 3 timed rounds after one warm-up, interleaved
+- load at start: 1.98 2.83 2.45
+- challoc: /home/dlorenc/native/target/bench-bin/libchalloc.so mapped=5
+- glibc: no LD_PRELOAD (the host's libc malloc)
+- jemalloc: /home/dlorenc/native/target/bench-bin/libjemalloc.so.2 mapped=5
+- mimalloc: /home/dlorenc/native/target/bench-bin/libmimalloc.so mapped=5
+- tcmalloc: /home/dlorenc/native/target/bench-bin/libtcmalloc_minimal.so.4 mapped=5
+
+## Sorted scores (native)
+
+| program | variant | sorted scores | median | maxrss MiB |
+|---|---|---|---:|---:|
+| larson1 | challoc | 43.1 44.3 44.6 | 44.3 | 21.2 |
+| larson1 | glibc | 40.2 40.6 40.9 | 40.6 | 17.9 |
+| larson1 | jemalloc | 45.3 45.4 45.9 | 45.4 | 28.2 |
+| larson1 | mimalloc | 36.3 39.9 39.9 | 39.9 | 19.1 |
+| larson1 | tcmalloc | 51.7 52.5 52.7 | 52.5 | 20.1 |
+| larson16 | challoc | 171.7 174.0 174.5 | 174.0 | 141.8 |
+| larson16 | glibc | 122.5 123.3 124.6 | 123.3 | 120.5 |
+| larson16 | jemalloc | 185.5 189.6 191.1 | 189.6 | 164.9 |
+| larson16 | mimalloc | 166.6 166.9 167.5 | 166.9 | 149.2 |
+| larson16 | tcmalloc | 205.8 205.9 206.9 | 205.9 | 83.5 |
+| valkey1 | challoc | 15.163 15.344 15.442 | 15.344 | 585.5 |
+| valkey1 | glibc | 9.087 9.123 9.355 | 9.123 | 568.5 |
+| valkey1 | jemalloc | 16.736 16.956 16.961 | 16.956 | 599.4 |
+| valkey1 | mimalloc | 3.975 3.988 4.006 | 3.988 | 586.2 |
+| valkey1 | tcmalloc | 14.992 15.973 16.018 | 15.973 | 590.9 |
+| valkey1-free | challoc | 15.469 15.523 15.587 | 15.523 | 585.5 |
+| valkey1-free | glibc | 9.031 9.148 9.164 | 9.148 | 568.4 |
+| valkey1-free | jemalloc | 15.491 15.667 15.793 | 15.667 | 599.5 |
+| valkey1-free | mimalloc | 3.473 3.990 4.020 | 3.990 | 586.1 |
+| valkey1-free | tcmalloc | 15.798 15.943 16.001 | 15.943 | 590.6 |
+
+## challoc against each (positive = challoc worse), native
+
+| program | vs glibc | vs jemalloc | vs mimalloc | vs tcmalloc |
+|---|---:|---:|---:|---:|
+| larson1 | -8.4% | +2.5% | -9.9% | +18.5% |
+| larson16 | -29.1% | +9.0% | -4.1% | +18.3% |
+| valkey1 | -40.5% | +10.5% | -74.0% | +4.1% |
+| valkey1-free | -41.1% | +0.9% | -74.3% | +2.7% |
+- load at end: 1.96 2.96 2.79
+
+## THP under always (native): peak AnonHugePages per allocator, /proc/vmstat deltas
+
+- thp enabled: [always] madvise never; defrag: always defer defer+madvise [madvise] never; khugepaged/max_ptes_none: 511; hugepages-2048kB: always [inherit] madvise never
+
+| program | variant | score | peak Rss MiB | peak AnonHugePages MiB | thp_fault_alloc | thp_fault_fallback | thp_split_page | thp_deferred_split_page |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| valkey1 larson16 | challoc | - | 4.9 | 0.0 | 0 | 0 | 0 | 0 |
+| valkey1 larson16 | glibc | - | 0.0 | 0.0 | 0 | 0 | 0 | 0 |
+| valkey1 larson16 | jemalloc | - | 4.9 | 0.0 | 0 | 0 | 0 | 0 |
+| valkey1 larson16 | mimalloc | - | 0.0 | 0.0 | 0 | 0 | 0 | 0 |
+| valkey1 larson16 | tcmalloc | - | 5.1 | 0.0 | 0 | 0 | 0 | 0 |
+
+==================== ~/logs/thp-container.log ====================
+docker build --platform linux/amd64 -f Dockerfile.dev -t challoc-dev:amd64 .
+# rows (container) on challoc-lane-e-cgos-amd64: x86_64 6.18.49-r2-gcp-6.18, 8 CPUs, glibc 2.44, 2026-09-20T00:03:21Z
+- rows: larson1 larson16 valkey1 valkey1-free; allocators: challoc glibc jemalloc mimalloc tcmalloc; 3 timed rounds after one warm-up, interleaved
+- load at start: 0.67 2.35 2.59
+- challoc: /src/target/release/libchalloc.so mapped=5
+- glibc: no LD_PRELOAD (the host's libc malloc)
+- jemalloc: /usr/lib/libjemalloc.so.2 mapped=5
+- mimalloc: /src/target/bench-bin/libmimalloc.so mapped=5
+- tcmalloc: /usr/lib/libtcmalloc_minimal.so.4 mapped=5
+
+## THP under always (container): peak AnonHugePages per allocator, /proc/vmstat deltas
+
+- thp enabled: [always] madvise never; defrag: always defer defer+madvise [madvise] never; khugepaged/max_ptes_none: 511; hugepages-2048kB: always [inherit] madvise never
+
+| program | variant | score | peak Rss MiB | peak AnonHugePages MiB | thp_fault_alloc | thp_fault_fallback | thp_split_page | thp_deferred_split_page |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| valkey1 | challoc | 15.103 | 585.6 | 32.0 | 16 | 0 | 0 | 0 |
+| valkey1 | glibc | 9.021 | 568.6 | 32.0 | 17 | 0 | 0 | 0 |
+| valkey1 | jemalloc | 17.013 | 599.6 | 588.0 | 294 | 0 | 0 | 269 |
+| valkey1 | mimalloc | 3.975 | 586.2 | 584.0 | 292 | 0 | 0 | 0 |
+| valkey1 | tcmalloc | 14.932 | 590.4 | 36.0 | 19 | 0 | 0 | 0 |
+| larson16 | challoc | 172.4 | 140.1 | 4.0 | 2 | 0 | 0 | 0 |
+| larson16 | glibc | 125.4 | 120.2 | 2.0 | 1 | 0 | 0 | 0 |
+| larson16 | jemalloc | 188.0 | 167.7 | 84.0 | 72 | 0 | 0 | 48 |
+| larson16 | mimalloc | 163.0 | 147.1 | 130.0 | 67 | 0 | 0 | 4 |
+| larson16 | tcmalloc | 206.3 | 86.1 | 10.0 | 5 | 0 | 0 | 0 |
+
+==================== ~/logs/thp-native.log ====================
+# rows (native) on challoc-lane-e-cgos-amd64: x86_64 6.18.49-r2-gcp-6.18, 8 CPUs, glibc 2.44, 2026-09-20T00:04:48Z
+- rows: larson1 larson16 valkey1 valkey1-free; allocators: challoc glibc jemalloc mimalloc tcmalloc; 3 timed rounds after one warm-up, interleaved
+- load at start: 5.86 3.22 2.85
+- challoc: /home/dlorenc/native/target/bench-bin/libchalloc.so mapped=5
+- glibc: no LD_PRELOAD (the host's libc malloc)
+- jemalloc: /home/dlorenc/native/target/bench-bin/libjemalloc.so.2 mapped=5
+- mimalloc: /home/dlorenc/native/target/bench-bin/libmimalloc.so mapped=5
+- tcmalloc: /home/dlorenc/native/target/bench-bin/libtcmalloc_minimal.so.4 mapped=5
+
+## THP under always (native): peak AnonHugePages per allocator, /proc/vmstat deltas
+
+- thp enabled: [always] madvise never; defrag: always defer defer+madvise [madvise] never; khugepaged/max_ptes_none: 511; hugepages-2048kB: always [inherit] madvise never
+
+| program | variant | score | peak Rss MiB | peak AnonHugePages MiB | thp_fault_alloc | thp_fault_fallback | thp_split_page | thp_deferred_split_page |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| valkey1 | challoc | 15.018 | 585.7 | 32.0 | 16 | 0 | 0 | 0 |
+| valkey1 | glibc | 8.883 | 568.6 | 46.0 | 16 | 0 | 0 | 0 |
+| valkey1 | jemalloc | 16.754 | 599.6 | 586.0 | 294 | 0 | 0 | 269 |
+| valkey1 | mimalloc | 3.979 | 586.2 | 584.0 | 292 | 0 | 0 | 0 |
+| valkey1 | tcmalloc | 15.828 | 590.7 | 40.0 | 21 | 0 | 0 | 0 |
+| larson16 | challoc | 169.3 | 142.1 | 4.0 | 2 | 0 | 0 | 0 |
+| larson16 | glibc | 124.4 | 120.7 | 4.0 | 2 | 0 | 0 | 0 |
+| larson16 | jemalloc | 189.9 | 163.8 | 84.0 | 68 | 0 | 0 | 45 |
+| larson16 | mimalloc | 166.2 | 162.1 | 130.0 | 73 | 0 | 0 | 11 |
+| larson16 | tcmalloc | 200.1 | 83.7 | 6.0 | 4 | 0 | 0 | 0 |
+
+==================== ~/logs/thpctl.log ====================
+== 2026-09-20T00:07:26Z thp -> madvise
+always [madvise] never
+# rows (native) on challoc-lane-e-cgos-amd64: x86_64 6.18.49-r2-gcp-6.18, 8 CPUs, glibc 2.44, 2026-09-20T00:07:26Z
+- rows: valkey1 larson16; allocators: challoc jemalloc; 3 timed rounds after one warm-up, interleaved
+- load at start: 2.26 3.12 2.89
+- challoc: /home/dlorenc/native/target/bench-bin/libchalloc.so mapped=5
+- jemalloc: /home/dlorenc/native/target/bench-bin/libjemalloc.so.2 mapped=5
+
+## Sorted scores (native)
+
+| program | variant | sorted scores | median | maxrss MiB |
+|---|---|---|---:|---:|
+| valkey1 | challoc | 14.440 15.001 15.096 | 15.001 | 585.6 |
+| valkey1 | jemalloc | 14.433 14.436 14.609 | 14.436 | 592.2 |
+| larson16 | challoc | 169.6 171.9 172.3 | 171.9 | 137.4 |
+| larson16 | jemalloc | 183.4 184.6 185.0 | 184.6 | 119.9 |
+
+## challoc against each (positive = challoc worse), native
+
+| program | vs jemalloc |
+|---|---:|
+| valkey1 | -3.8% |
+| larson16 | +7.4% |
+- load at end: 5.81 4.07 3.26
+
+## THP under always (native): peak AnonHugePages per allocator, /proc/vmstat deltas
+
+- thp enabled: always [madvise] never; defrag: always defer defer+madvise [madvise] never; khugepaged/max_ptes_none: 511; hugepages-2048kB: always [inherit] madvise never
+
+| program | variant | score | peak Rss MiB | peak AnonHugePages MiB | thp_fault_alloc | thp_fault_fallback | thp_split_page | thp_deferred_split_page |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| valkey1 | challoc | 14.171 | 585.7 | 0.0 | 0 | 0 | 0 | 0 |
+| valkey1 | jemalloc | 14.845 | 592.4 | 0.0 | 0 | 0 | 0 | 0 |
+| larson16 | challoc | 165.5 | 134.6 | 0.0 | 0 | 0 | 0 | 0 |
+| larson16 | jemalloc | 178.1 | 119.8 | 0.0 | 0 | 0 | 0 | 0 |
+== 2026-09-20T00:10:20Z thp -> always (restored)
+[always] madvise never
+
+==================== ~/logs/thpopt.log ====================
+# rows (native) on challoc-lane-e-cgos-amd64: x86_64 6.18.49-r2-gcp-6.18, 8 CPUs, glibc 2.44, 2026-09-20T00:11:08Z
+- rows: valkey1 larson16; allocators: challoc challoc-thp jemalloc; 3 timed rounds after one warm-up, interleaved
+- load at start: 2.79 3.65 3.18
+- challoc: /home/dlorenc/native/target/bench-bin/libchalloc.so mapped=5
+- challoc-thp: /home/dlorenc/native/target/bench-bin/libchalloc.so mapped=5
+- jemalloc: /home/dlorenc/native/target/bench-bin/libjemalloc.so.2 mapped=5
+
+## Sorted scores (native)
+
+| program | variant | sorted scores | median | maxrss MiB |
+|---|---|---|---:|---:|
+| valkey1 | challoc | 15.082 15.246 15.429 | 15.246 | 585.6 |
+| valkey1 | challoc-thp | 17.630 17.807 17.986 | 17.807 | 640.6 |
+| valkey1 | jemalloc | 16.853 16.952 17.212 | 16.952 | 599.5 |
+| larson16 | challoc | 169.0 174.3 174.6 | 174.3 | 141.9 |
+| larson16 | challoc-thp | 178.9 181.6 184.9 | 181.6 | 206.1 |
+| larson16 | jemalloc | 184.5 189.5 193.0 | 189.5 | 168.4 |
+
+## challoc against each (positive = challoc worse), native
+
+| program | vs challoc-thp | vs jemalloc |
+|---|---:|---:|
+| valkey1 | +16.8% | +11.2% |
+| larson16 | +4.2% | +8.7% |
+- load at end: 6.57 4.70 3.66
+
+## THP under always (native): peak AnonHugePages per allocator, /proc/vmstat deltas
+
+- thp enabled: [always] madvise never; defrag: always defer defer+madvise [madvise] never; khugepaged/max_ptes_none: 511; hugepages-2048kB: always [inherit] madvise never
+
+| program | variant | score | peak Rss MiB | peak AnonHugePages MiB | thp_fault_alloc | thp_fault_fallback | thp_split_page | thp_deferred_split_page |
+|---|---|---:|---:|---:|---:|---:|---:|---:|
+| valkey1 | challoc | 15.312 | 585.7 | 32.0 | 16 | 0 | 0 | 0 |
+| valkey1 | challoc-thp | 17.691 | 640.6 | 636.0 | 319 | 0 | 0 | 280 |
+| valkey1 | jemalloc | 16.987 | 599.5 | 588.0 | 294 | 0 | 0 | 269 |
+| larson16 | challoc | 174.4 | 142.8 | 4.0 | 2 | 0 | 0 | 0 |
+| larson16 | challoc-thp | 182.5 | 211.4 | 170.0 | 98 | 0 | 0 | 36 |
+| larson16 | jemalloc | 185.8 | 161.3 | 82.0 | 66 | 0 | 0 | 44 |
+

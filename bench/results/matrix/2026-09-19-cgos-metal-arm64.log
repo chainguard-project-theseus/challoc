@@ -1,0 +1,495 @@
+[metal 2026-09-19T22:35:30Z] creating challoc-lane-e-cgos-metal-arm64 (c4a-highmem-96-metal, us-central1-a)
+Created [https://www.googleapis.com/compute/v1/projects/dlorenc-dev/zones/us-central1-a/instances/challoc-lane-e-cgos-metal-arm64].
+WARNING: Some requests generated warnings:
+ - Disk size: '200 GB' is larger than image size: '10 GB'. You might need to resize the root repartition manually if the operating system does not support automatic resizing. See https://cloud.google.com/compute/docs/disks/add-persistent-disk#resize_pd for details.
+
+NAME                             ZONE           MACHINE_TYPE          PREEMPTIBLE  INTERNAL_IP  EXTERNAL_IP   STATUS
+challoc-lane-e-cgos-metal-arm64  us-central1-a  c4a-highmem-96-metal               10.128.0.10  34.30.83.224  RUNNING
+[metal 2026-09-19T22:35:42Z] create rc=0 at 2026-09-19T22:35:42Z
+[metal 2026-09-19T22:35:43Z] external IP 34.30.83.224; waiting for ssh (20 min max)
+[metal 2026-09-19T22:36:36Z] ssh up after 66 s
+  | Linux challoc-lane-e-cgos-metal-arm64 6.18.49-r2-gcp-6.18 #Chainguard SMP Fri Sep 11 18:10:11 UTC 2026 aarch64 GNU/Linux
+  | + uname -a
+  | + . /etc/os-release
+  | ++ ID=chainguard
+  | Chainguard
+  | ++ NAME=Chainguard
+  | ++ PRETTY_NAME=Chainguard
+  | ++ VERSION_ID=20230214
+  | ++ HOME_URL=https://chainguard.dev/
+  | + echo Chainguard
+  | ++ systemd-detect-virt
+  | virt: google
+  | + echo 'virt: google'
+  | 96
+  |               total        used        free      shared  buff/cache   available
+  | Mem:            743           1         741           0           0         738
+  | efi: yes
+  | driver: idpf
+  | version: 6.18.49-r2-gcp-6.18
+  | + nproc
+  | + free -g
+  | + head -2
+  | + ls /sys/firmware/efi
+  | + echo 'efi: yes'
+  | + grep -E '^(driver|version)'
+  | ++ ip -o route get 8.8.8.8
+  | ++ awk '{print $5}'
+  | + ethtool -i eth0
+  | + sudo bootc status --json
+  | + grep -o 'composefs=[^ "]*'
+  | + head -1
+  | + findmnt -no OPTIONS /
+  | ro,relatime,lowerdir=/proc/self/fd/5::/proc/self/fd/6,index=off,verity=require
+  | + systemctl is-system-running
+  | starting
+  | + systemctl --failed --no-legend
+  | + head
+  | + grep -m1 -E '^Features' /proc/cpuinfo
+  | Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 sm3 sm4 asimddp sha512 sve asimdfhm dit uscat ilrcpc flagm sb paca pacg dcpodp sve2 sveaes svepmull svebitperm svesha3 svesm4 flagm2 frint svei8mm svebf16 i8mm bf16 dgh rng bti ecv afp wfxt
+  | + grep -E 'CPU implementer|CPU architecture|CPU variant|CPU part|CPU revision' /proc/cpuinfo
+  | + sort
+  | + uniq -c
+  |      96 CPU architecture: 8
+  |      96 CPU implementer	: 0x41
+  |      96 CPU part	: 0xd8e
+  |      96 CPU revision	: 0
+  |      96 CPU variant	: 0x0
+  | 96
+  | mte in Features: 
+  | + grep -c '^processor' /proc/cpuinfo
+  | ++ grep -m1 Features /proc/cpuinfo
+  | ++ grep -ow 'mte[a-z0-9]*'
+  | ++ tr '\n' ' '
+  | + echo 'mte in Features: '
+  | + sudo dmesg
+  | + grep -iE 'mte|memory tagging|pointer authentication|branch target|cpu features'
+  | [    0.000000] CPU features: detected: Address authentication (architected QARMA3 algorithm)
+  | [    0.000000] CPU features: detected: GICv3 CPU interface
+  | [    0.000000] CPU features: detected: HCRX_EL2 register
+  | [    0.000000] CPU features: detected: Virtualization Host Extensions
+  | [    0.000000] CPU features: detected: Spectre-v4
+  | [    0.000000] CPU features: detected: Spectre-BHB
+  | [    0.000000] CPU features: detected: SSBS not fully self-synchronizing
+  | [    0.025201] CPU features: detected: Branch Target Identification
+  | [    0.025202] CPU features: detected: ARMv8.4 Translation Table Level
+  | [    0.025203] CPU features: detected: Instruction cache invalidation not required for I/D coherence
+  | [    0.025203] CPU features: detected: Data cache clean to the PoU not required for I/D coherence
+  | [    0.025204] CPU features: detected: Common not Private translations
+  | [    0.025205] CPU features: detected: CRC32 instructions
+  | [    0.025206] CPU features: detected: Data cache clean to Point of Deep Persistence
+  | [    0.025206] CPU features: detected: Data cache clean to Point of Persistence
+  | [    0.025206] CPU features: detected: Data independent timing control (DIT)
+  | [    0.025207] CPU features: detected: E0PD
+  | [    0.025207] CPU features: detected: Enhanced Counter Virtualization
+  | [    0.025208] CPU features: detected: Enhanced Counter Virtualization (CNTPOFF)
+  | [    0.025208] CPU features: detected: Enhanced Privileged Access Never
+  | CONFIG_PREEMPT_NONE_BUILD=y
+  | CONFIG_PREEMPT_NONE=y
+  | CONFIG_SCHED_MM_CID=y
+  | CONFIG_RSEQ=y
+  | CONFIG_PERF_EVENTS=y
+  | CONFIG_ARM64_VA_BITS_52=y
+  | CONFIG_ARM64_VA_BITS=52
+  | CONFIG_NUMA=y
+  | CONFIG_HZ=250
+  | CONFIG_HW_PERF_EVENTS=y
+  | CONFIG_ARM64_PAN=y
+  | CONFIG_ARM64_LSE_ATOMICS=y
+  | CONFIG_ARM64_PTR_AUTH=y
+  | CONFIG_ARM64_BTI=y
+  | CONFIG_ARM64_E0PD=y
+  | CONFIG_ARM64_MTE=y
+  | CONFIG_ARM64_EPAN=y
+  | CONFIG_ARM64_SVE=y
+  | CONFIG_ARM64_SME=y
+  | CONFIG_KVM=y
+  | CONFIG_PREEMPT_NOTIFIERS=y
+  | CONFIG_TRANSPARENT_HUGEPAGE=y
+  | CONFIG_ARM_PMU=y
+  | CONFIG_ARM_PMUV3=y
+  | [always] madvise never
+  | 4096
+  | + head -20
+  | + zcat /proc/config.gz
+  | + grep -E '^CONFIG_(ARM64_MTE|ARM64_PTR_AUTH|ARM64_BTI|ARM64_VA_BITS|ARM64_VA_BITS_[0-9]+|ARM64_PAGE_SHIFT|RSEQ|SCHED_MM_CID|PERF_EVENTS|TRANSPARENT_HUGEPAGE|HZ|KVM|PREEMPT[A-Z_]*|NUMA|ARM64_LSE_ATOMICS|ARM64_PAN|ARM64_EPAN|ARM64_SVE|ARM64_SME|ARM64_E0PD|ARM_PMU|ARM_PMUV3|HW_PERF_EVENTS)='
+  | + cat /sys/kernel/mm/transparent_hugepage/enabled
+  | + getconf PAGESIZE
+  | + awk '/^KernelPageSize/ {print $2*1024; exit}' /proc/self/smaps
+  | 2
+  | arm_cmn_0
+  | arm_spe_0
+  | armv8_pmuv3_0
+  | breakpoint
+  | cs_etm
+  | kprobe
+  | smmuv3_pmcg_32002
+  | smmuv3_pmcg_32042
+  | smmuv3_pmcg_32062
+  | smmuv3_pmcg_3ea02
+  | smmuv3_pmcg_3ea42
+  | smmuv3_pmcg_42a02
+  | smmuv3_pmcg_42a42
+  | smmuv3_pmcg_46a02
+  | smmuv3_pmcg_46a42
+  | smmuv3_pmcg_4aa02
+  | smmuv3_pmcg_4aa42
+  | smmuv3_pmcg_4ea02
+  | smmuv3_pmcg_4ea42
+  | software
+  | tracepoint
+  | uprobe
+  | 0-95
+  | 
+  | /dev/kvm
+  | + cat /proc/sys/kernel/perf_event_paranoid
+  | + ls /sys/bus/event_source/devices/
+  | + cat /sys/bus/event_source/devices/armv8_pmuv3_0/cpus
+  | + head -c 60
+  | + echo
+  | + ls /dev/kvm
+  | + lsmod
+  | + grep -w kvm
+  | + head -2
+  | + firecracker --version
+  | + head -1
+  | Firecracker v1.17.0
+  | + /usr/lib/libc.so.6
+  | + head -1
+  | GNU C Library (glibc-2.44-r6) stable release version 2.44.
+  | + sudo podman info --format 'podman {{.Version.Version}} cgroup v{{.Host.CgroupsVersion}}'
+  | podman 6.1.2 cgroup vv2
+  | + lscpu
+  | + head -20
+  | Architecture:                            aarch64
+  | CPU op-mode(s):                          64-bit
+  | Byte Order:                              Little Endian
+  | CPU(s):                                  96
+  | On-line CPU(s) list:                     0-95
+  | Vendor ID:                               ARM
+  | Model name:                              Neoverse-N3
+  | Model:                                   0
+  | Thread(s) per core:                      1
+  | Core(s) per socket:                      96
+  | Socket(s):                               1
+  | Stepping:                                r0p0
+  | BogoMIPS:                                2000.00
+  | Flags:                                   fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 sm3 sm4 asimddp sha512 sve asimdfhm dit uscat ilrcpc flagm sb paca pacg dcpodp sve2 sveaes svepmull svebitperm svesha3 svesm4 flagm2 frint svei8mm svebf16 i8mm bf16 dgh rng bti ecv afp wfxt
+  | L1d cache:                               6 MiB (96 instances)
+  | L1i cache:                               6 MiB (96 instances)
+  | L2 cache:                                192 MiB (96 instances)
+  | L3 cache:                                112 MiB (1 instance)
+  | NUMA node(s):                            1
+  | NUMA node0 CPU(s):                       0-95
+  | + cat /sys/devices/system/cpu/cpu0/cache/index0/size /sys/devices/system/cpu/cpu0/cache/index1/size /sys/devices/system/cpu/cpu0/cache/index2/size /sys/devices/system/cpu/cpu0/cache/index3/size
+  | + paste '-sd '
+  | 64K 64K 2048K 114688K
+  | + for d in /sys/devices/system/cpu/cpu0/cache/index*
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index0/level
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index0/type
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index0/size
+  | 1 Data 64K
+  | + echo '1 Data 64K'
+  | + for d in /sys/devices/system/cpu/cpu0/cache/index*
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index1/level
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index1/type
+  | 1 Instruction 64K
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index1/size
+  | + echo '1 Instruction 64K'
+  | + for d in /sys/devices/system/cpu/cpu0/cache/index*
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index2/level
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index2/type
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index2/size
+  | 2 Unified 2048K
+  | + echo '2 Unified 2048K'
+  | + for d in /sys/devices/system/cpu/cpu0/cache/index*
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index3/level
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index3/type
+  | 3 Unified 114688K
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index3/size
+  | + echo '3 Unified 114688K'
+[metal 2026-09-19T22:36:37Z] pushing the arm64 cell's native binaries
+[metal 2026-09-19T22:36:41Z] PROBE_NATIVE (metal): features: page_size=4096 guard_install=yes mseal=yes process_madvise=pidfd_self process_madvise_free=yes anon_name=no thp=always mthp=2M collapse=unprobed mte=no mte3=no pac=yes lse=yes lse2=yes bti=yes sve=yes cacheline=64 l1d=64K l2=2M ok features 
+[metal 2026-09-19T22:36:41Z] the PMU: perf from a Wolfi container with --privileged
+  | perf-not-installable
+[metal 2026-09-19T22:36:43Z] native rows (challoc vs glibc vs jemalloc vs mimalloc vs tcmalloc), 3 rounds, up to 25 min budget
+  | # rows (native) on challoc-lane-e-cgos-metal-arm64: aarch64 6.18.49-r2-gcp-6.18, 96 CPUs, glibc 2.44, 2026-09-19T22:41:44Z
+  | - rows: larson1 larson16 valkey1; allocators: challoc glibc jemalloc mimalloc tcmalloc; 3 timed rounds after one warm-up, interleaved
+  | - load at start: 0.82 0.23 0.08
+  | - challoc: /home/dlorenc/native/target/bench-bin/libchalloc.so mapped=4
+  | - glibc: no LD_PRELOAD (the host's libc malloc)
+  | - jemalloc: /home/dlorenc/native/target/bench-bin/libjemalloc.so.2 mapped=4
+  | - mimalloc: /home/dlorenc/native/target/bench-bin/libmimalloc.so mapped=4
+  | - tcmalloc: /home/dlorenc/native/target/bench-bin/libtcmalloc_minimal.so.4 mapped=4
+  | rows.sh: no source for probe valkey_model
+[metal 2026-09-19T22:37:54Z] probe done after 144 s; deleting
+[metal 2026-09-19T22:38:21Z] delete issued: 
+.tmp-vm/metal.sh: line 90: 82530 Terminated: 15          ( sleep 3300; echo "[metal $(date -u +%FT%TZ)] WATCHDOG at 55 min" >> "$LOG"; gcloud compute instances delete "$NAME" --zone="$ZONE" --quiet > /dev/null 2>&1; echo "[metal $(date -u +%FT%TZ)] watchdog delete issued" >> "$LOG" )
+[metal 2026-09-19T22:38:42Z] final: [end]
+==== round 2 ====
+[metal 2026-09-19T22:40:36Z] creating challoc-lane-e-cgos-metal-arm64 (c4a-highmem-96-metal, us-central1-a)
+Created [https://www.googleapis.com/compute/v1/projects/dlorenc-dev/zones/us-central1-a/instances/challoc-lane-e-cgos-metal-arm64].
+WARNING: Some requests generated warnings:
+ - Disk size: '200 GB' is larger than image size: '10 GB'. You might need to resize the root repartition manually if the operating system does not support automatic resizing. See https://cloud.google.com/compute/docs/disks/add-persistent-disk#resize_pd for details.
+
+NAME                             ZONE           MACHINE_TYPE          PREEMPTIBLE  INTERNAL_IP  EXTERNAL_IP   STATUS
+challoc-lane-e-cgos-metal-arm64  us-central1-a  c4a-highmem-96-metal               10.128.0.11  35.192.230.1  RUNNING
+[metal 2026-09-19T22:40:48Z] create rc=0 at 2026-09-19T22:40:48Z
+[metal 2026-09-19T22:40:49Z] external IP 35.192.230.1; waiting for ssh (20 min max)
+[metal 2026-09-19T22:42:36Z] ssh up after 120 s
+  | Linux challoc-lane-e-cgos-metal-arm64 6.18.49-r2-gcp-6.18 #Chainguard SMP Fri Sep 11 18:10:11 UTC 2026 aarch64 GNU/Linux
+  | + uname -a
+  | + . /etc/os-release
+  | Chainguard
+  | ++ ID=chainguard
+  | ++ NAME=Chainguard
+  | ++ PRETTY_NAME=Chainguard
+  | ++ VERSION_ID=20230214
+  | ++ HOME_URL=https://chainguard.dev/
+  | + echo Chainguard
+  | ++ systemd-detect-virt
+  | virt: google
+  | + echo 'virt: google'
+  | 96
+  |               total        used        free      shared  buff/cache   available
+  | Mem:            743           1         741           0           0         738
+  | efi: yes
+  | driver: idpf
+  | version: 6.18.49-r2-gcp-6.18
+  | + nproc
+  | + free -g
+  | + head -2
+  | + ls /sys/firmware/efi
+  | + echo 'efi: yes'
+  | + grep -E '^(driver|version)'
+  | ++ ip -o route get 8.8.8.8
+  | ++ awk '{print $5}'
+  | + ethtool -i eth0
+  | + sudo bootc status --json
+  | + grep -o 'composefs=[^ "]*'
+  | + head -1
+  | + findmnt -no OPTIONS /
+  | ro,relatime,lowerdir=/proc/self/fd/5::/proc/self/fd/6,index=off,verity=require
+  | + systemctl is-system-running
+  | starting
+  | Features	: fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 sm3 sm4 asimddp sha512 sve asimdfhm dit uscat ilrcpc flagm sb paca pacg dcpodp sve2 sveaes svepmull svebitperm svesha3 svesm4 flagm2 frint svei8mm svebf16 i8mm bf16 dgh rng bti ecv afp wfxt
+  | + systemctl --failed --no-legend
+  | + head
+  | + grep -m1 -E '^Features' /proc/cpuinfo
+  | + grep -E 'CPU implementer|CPU architecture|CPU variant|CPU part|CPU revision' /proc/cpuinfo
+  | + sort
+  | + uniq -c
+  |      96 CPU architecture: 8
+  |      96 CPU implementer	: 0x41
+  |      96 CPU part	: 0xd8e
+  |      96 CPU revision	: 0
+  |      96 CPU variant	: 0x0
+  | + grep -c '^processor' /proc/cpuinfo
+  | 96
+  | ++ grep -m1 Features /proc/cpuinfo
+  | ++ grep -ow 'mte[a-z0-9]*'
+  | ++ tr '\n' ' '
+  | mte in Features: 
+  | + echo 'mte in Features: '
+  | + sudo dmesg
+  | [    0.000000] CPU features: detected: Address authentication (architected QARMA3 algorithm)
+  | [    0.000000] CPU features: detected: GICv3 CPU interface
+  | [    0.000000] CPU features: detected: HCRX_EL2 register
+  | [    0.000000] CPU features: detected: Virtualization Host Extensions
+  | [    0.000000] CPU features: detected: Spectre-v4
+  | [    0.000000] CPU features: detected: Spectre-BHB
+  | [    0.000000] CPU features: detected: SSBS not fully self-synchronizing
+  | [    0.025289] CPU features: detected: Branch Target Identification
+  | [    0.025291] CPU features: detected: ARMv8.4 Translation Table Level
+  | [    0.025292] CPU features: detected: Instruction cache invalidation not required for I/D coherence
+  | [    0.025292] CPU features: detected: Data cache clean to the PoU not required for I/D coherence
+  | [    0.025293] CPU features: detected: Common not Private translations
+  | [    0.025294] CPU features: detected: CRC32 instructions
+  | [    0.025294] CPU features: detected: Data cache clean to Point of Deep Persistence
+  | [    0.025295] CPU features: detected: Data cache clean to Point of Persistence
+  | [    0.025295] CPU features: detected: Data independent timing control (DIT)
+  | [    0.025296] CPU features: detected: E0PD
+  | [    0.025296] CPU features: detected: Enhanced Counter Virtualization
+  | [    0.025297] CPU features: detected: Enhanced Counter Virtualization (CNTPOFF)
+  | [    0.025297] CPU features: detected: Enhanced Privileged Access Never
+  | CONFIG_PREEMPT_NONE_BUILD=y
+  | CONFIG_PREEMPT_NONE=y
+  | CONFIG_SCHED_MM_CID=y
+  | CONFIG_RSEQ=y
+  | CONFIG_PERF_EVENTS=y
+  | CONFIG_ARM64_VA_BITS_52=y
+  | CONFIG_ARM64_VA_BITS=52
+  | CONFIG_NUMA=y
+  | CONFIG_HZ=250
+  | CONFIG_HW_PERF_EVENTS=y
+  | CONFIG_ARM64_PAN=y
+  | CONFIG_ARM64_LSE_ATOMICS=y
+  | CONFIG_ARM64_PTR_AUTH=y
+  | CONFIG_ARM64_BTI=y
+  | CONFIG_ARM64_E0PD=y
+  | CONFIG_ARM64_MTE=y
+  | CONFIG_ARM64_EPAN=y
+  | CONFIG_ARM64_SVE=y
+  | CONFIG_ARM64_SME=y
+  | CONFIG_KVM=y
+  | CONFIG_PREEMPT_NOTIFIERS=y
+  | CONFIG_TRANSPARENT_HUGEPAGE=y
+  | CONFIG_ARM_PMU=y
+  | CONFIG_ARM_PMUV3=y
+  | [always] madvise never
+  | + grep -iE 'mte|memory tagging|pointer authentication|branch target|cpu features'
+  | + head -20
+  | + zcat /proc/config.gz
+  | + grep -E '^CONFIG_(ARM64_MTE|ARM64_PTR_AUTH|ARM64_BTI|ARM64_VA_BITS|ARM64_VA_BITS_[0-9]+|ARM64_PAGE_SHIFT|RSEQ|SCHED_MM_CID|PERF_EVENTS|TRANSPARENT_HUGEPAGE|HZ|KVM|PREEMPT[A-Z_]*|NUMA|ARM64_LSE_ATOMICS|ARM64_PAN|ARM64_EPAN|ARM64_SVE|ARM64_SME|ARM64_E0PD|ARM_PMU|ARM_PMUV3|HW_PERF_EVENTS)='
+  | + cat /sys/kernel/mm/transparent_hugepage/enabled
+  | + getconf PAGESIZE
+  | 4096
+  | 2
+  | arm_cmn_0
+  | arm_spe_0
+  | armv8_pmuv3_0
+  | breakpoint
+  | cs_etm
+  | kprobe
+  | smmuv3_pmcg_32002
+  | smmuv3_pmcg_32042
+  | smmuv3_pmcg_32062
+  | smmuv3_pmcg_3ea02
+  | smmuv3_pmcg_3ea42
+  | smmuv3_pmcg_42a02
+  | smmuv3_pmcg_42a42
+  | smmuv3_pmcg_46a02
+  | smmuv3_pmcg_46a42
+  | smmuv3_pmcg_4aa02
+  | smmuv3_pmcg_4aa42
+  | smmuv3_pmcg_4ea02
+  | smmuv3_pmcg_4ea42
+  | software
+  | tracepoint
+  | uprobe
+  | 0-95
+  | 
+  | /dev/kvm
+  | + awk '/^KernelPageSize/ {print $2*1024; exit}' /proc/self/smaps
+  | + cat /proc/sys/kernel/perf_event_paranoid
+  | + ls /sys/bus/event_source/devices/
+  | + cat /sys/bus/event_source/devices/armv8_pmuv3_0/cpus
+  | + head -c 60
+  | + echo
+  | + ls /dev/kvm
+  | + lsmod
+  | + grep -w kvm
+  | + head -2
+  | + firecracker --version
+  | + head -1
+  | Firecracker v1.17.0
+  | + /usr/lib/libc.so.6
+  | + head -1
+  | GNU C Library (glibc-2.44-r6) stable release version 2.44.
+  | + sudo podman info --format 'podman {{.Version.Version}} cgroup v{{.Host.CgroupsVersion}}'
+  | podman 6.1.2 cgroup vv2
+  | + lscpu
+  | + head -20
+  | Architecture:                            aarch64
+  | CPU op-mode(s):                          64-bit
+  | Byte Order:                              Little Endian
+  | CPU(s):                                  96
+  | On-line CPU(s) list:                     0-95
+  | Vendor ID:                               ARM
+  | Model name:                              Neoverse-N3
+  | Model:                                   0
+  | Thread(s) per core:                      1
+  | Core(s) per socket:                      96
+  | Socket(s):                               1
+  | Stepping:                                r0p0
+  | BogoMIPS:                                2000.00
+  | Flags:                                   fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm jscvt fcma lrcpc dcpop sha3 sm3 sm4 asimddp sha512 sve asimdfhm dit uscat ilrcpc flagm sb paca pacg dcpodp sve2 sveaes svepmull svebitperm svesha3 svesm4 flagm2 frint svei8mm svebf16 i8mm bf16 dgh rng bti ecv afp wfxt
+  | L1d cache:                               6 MiB (96 instances)
+  | L1i cache:                               6 MiB (96 instances)
+  | L2 cache:                                192 MiB (96 instances)
+  | L3 cache:                                112 MiB (1 instance)
+  | NUMA node(s):                            1
+  | NUMA node0 CPU(s):                       0-95
+  | + cat /sys/devices/system/cpu/cpu0/cache/index0/size /sys/devices/system/cpu/cpu0/cache/index1/size /sys/devices/system/cpu/cpu0/cache/index2/size /sys/devices/system/cpu/cpu0/cache/index3/size
+  | + paste '-sd '
+  | 64K 64K 2048K 114688K
+  | + for d in /sys/devices/system/cpu/cpu0/cache/index*
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index0/level
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index0/type
+  | 1 Data 64K
+  | 1 Instruction 64K
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index0/size
+  | + echo '1 Data 64K'
+  | + for d in /sys/devices/system/cpu/cpu0/cache/index*
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index1/level
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index1/type
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index1/size
+  | + echo '1 Instruction 64K'
+  | + for d in /sys/devices/system/cpu/cpu0/cache/index*
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index2/level
+  | 2 Unified 2048K
+  | 3 Unified 114688K
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index2/type
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index2/size
+  | + echo '2 Unified 2048K'
+  | + for d in /sys/devices/system/cpu/cpu0/cache/index*
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index3/level
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index3/type
+  | ++ cat /sys/devices/system/cpu/cpu0/cache/index3/size
+  | + echo '3 Unified 114688K'
+[metal 2026-09-19T22:42:37Z] pushing the arm64 cell's native binaries
+[metal 2026-09-19T22:42:40Z] PROBE_NATIVE (metal): features: page_size=4096 guard_install=yes mseal=yes process_madvise=pidfd_self process_madvise_free=yes anon_name=no thp=always mthp=2M collapse=unprobed mte=no mte3=no pac=yes lse=yes lse2=yes bti=yes sve=yes cacheline=64 l1d=64K l2=2M ok features 
+[metal 2026-09-19T22:42:40Z] the PMU: perf_event_open natively (bench/gce/pmu-probe.c), then from a podman container default and --privileged (Wolfi has no perf package: apk add perf fails, checked on the first attempt)
+[metal 2026-09-19T22:42:41Z] PMU native: pmu cycles=700599050 instructions=700000066 paranoid=2 x=6847923063769669761
+[metal 2026-09-19T22:42:43Z] PMU podman default: pmu cycles=-1 instructions=-1 cycles_open_errno=1(Operation not permitted) instructions_open_errno=1(Operation not permitted) paranoid=2 x=6847923063769669761
+[metal 2026-09-19T22:42:44Z] PMU podman --privileged: pmu cycles=700610829 instructions=700000066 paranoid=2 x=6847923063769669761
+[metal 2026-09-19T22:42:44Z] native rows (challoc vs glibc vs jemalloc vs mimalloc vs tcmalloc), 3 rounds, up to 25 min budget
+  | # rows (native) on challoc-lane-e-cgos-metal-arm64: aarch64 6.18.49-r2-gcp-6.18, 96 CPUs, glibc 2.44, 2026-09-19T22:47:46Z
+  | - rows: larson1 larson16 valkey1; allocators: challoc glibc jemalloc mimalloc tcmalloc; 3 timed rounds after one warm-up, interleaved
+  | - load at start: 0.46 0.15 0.05
+  | - challoc: /home/dlorenc/native/target/bench-bin/libchalloc.so mapped=4
+  | - glibc: no LD_PRELOAD (the host's libc malloc)
+  | - jemalloc: /home/dlorenc/native/target/bench-bin/libjemalloc.so.2 mapped=4
+  | - mimalloc: /home/dlorenc/native/target/bench-bin/libmimalloc.so mapped=4
+  | - tcmalloc: /home/dlorenc/native/target/bench-bin/libtcmalloc_minimal.so.4 mapped=4
+  | 
+  | ## Sorted scores (native)
+  | 
+  | | program | variant | sorted scores | median | maxrss MiB |
+  | |---|---|---|---:|---:|
+  | | larson1 | challoc | 43.5 43.5 43.5 | 43.5 | 13.6 |
+  | | larson1 | glibc | 39.7 39.7 39.8 | 39.7 | 16.8 |
+  | | larson1 | jemalloc | 49.7 49.9 49.9 | 49.9 | 26.3 |
+  | | larson1 | mimalloc | 30.8 30.9 30.9 | 30.9 | 15.5 |
+  | | larson1 | tcmalloc | 50.0 50.2 50.8 | 50.2 | 13.1 |
+  | | larson16 | challoc | 593.4 596.5 596.8 | 596.5 | 150.2 |
+  | | larson16 | glibc | 455.3 456.0 456.7 | 456.0 | 123.4 |
+  | | larson16 | jemalloc | 667.8 673.6 674.0 | 673.6 | 252.7 |
+  | | larson16 | mimalloc | 464.7 465.4 466.9 | 465.4 | 119.5 |
+  | | larson16 | tcmalloc | 633.6 636.0 637.1 | 636.0 | 115.1 |
+  | | valkey1 | challoc | 12.549 13.318 13.346 | 13.318 | 584.6 |
+  | | valkey1 | glibc | 6.789 6.802 6.802 | 6.802 | 568.6 |
+  | | valkey1 | jemalloc | 13.992 14.139 14.250 | 14.139 | 610.4 |
+  | | valkey1 | mimalloc | 3.743 3.753 3.760 | 3.753 | 585.0 |
+  | | valkey1 | tcmalloc | 12.452 12.755 12.882 | 12.755 | 589.5 |
+  | 
+  | ## challoc against each (positive = challoc worse), native
+  | 
+  | | program | vs glibc | vs jemalloc | vs mimalloc | vs tcmalloc |
+  | |---|/home/dlorenc/native/rows.sh: line 68: printf: --: invalid option
+  | printf: usage: printf [-v var] format [arguments]
+  | /home/dlorenc/native/rows.sh: line 68: printf: --: invalid option
+  | printf: usage: printf [-v var] format [arguments]
+  | 
+  | | larson1 |/home/dlorenc/native/rows.sh: line 68: printf: --: invalid option
+  | printf: usage: printf [-v var] format [arguments]
+  | /home/dlorenc/native/rows.sh: line 68: printf: --: invalid option
+  | printf: usage: printf [-v var] format [arguments]
+  |  -8.7% | +14.7% | -29.0% | +15.4% |
+  | | larson16 | -23.6% | +12.9% | -22.0% | +6.6% |
+  | | valkey1 | -48.9% | +6.2% | -71.8% | -4.2% |
+  | - load at end: 3.36 3.17 1.64
+[metal 2026-09-19T22:50:48Z] probe done after 612 s; deleting
+[metal 2026-09-19T22:51:25Z] delete issued: 
+.tmp-vm/metal.sh: line 92: 84163 Terminated: 15          ( sleep 3300; echo "[metal $(date -u +%FT%TZ)] WATCHDOG at 55 min" >> "$LOG"; gcloud compute instances delete "$NAME" --zone="$ZONE" --quiet > /dev/null 2>&1; echo "[metal $(date -u +%FT%TZ)] watchdog delete issued" >> "$LOG" )
+[metal 2026-09-19T22:51:46Z] final: [end]

@@ -304,7 +304,7 @@ shapes (two `make test`, the 300 s oscillation, the scorecard), so pass
 cell: it is the task 1 sequence (`make bench-build`, the two Ruby builds,
 `make ab` with the five allocators, `make ruby-bench`, `make python-bench`,
 `make test-cgroup-compare`) run on the adopted VM as a systemd unit, plus
-the same rows natively and in the container (`rows.sh`, kept with the
+the same rows natively and in the container (`bench/gce/native-rows.sh`, kept with the
 results file's section on host-native versus in-container numbers).
 Numbers from a `cgos-*` cell are 8 vCPU on a 6.18 kernel with THP
 `always`: compare them with the same-shape `cpu-c4a` / `cpu-c4` cells and

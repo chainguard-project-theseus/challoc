@@ -1,0 +1,7 @@
+# challoc scorecard, x86_64
+
+One line per (date, commit): the fixed row set under challoc and jemalloc, 3 interleaved rounds (bench/scorecard.sh, `make scorecard`, `challoc-bench scorecard <vm>`), as signed percentages against jemalloc (positive = challoc worse), RSS ratios challoc/jemalloc for larson10 and valkey1, and the most recent Valkey soak for the commit (challoc vs jemalloc: the worse of the two generators' throughput rows per phase, peak RSS, RSS after settle). Reference numbers are the GCE VMs' (bench/gce/README.md); a line from another machine says so in its note. `bench/scorecard.sh --render` prints this table sorted by date.
+
+| date | commit | larson1 | larson10 | larson16 | xmalloc | alloc-test1 | alloc-testN | valkey1 | valkey1-free | cfrac | espresso | mstress | glibc-simple | redis | python1 | python1-malloc | RSS larson10 | RSS valkey1 | soak write | soak delete | soak peak RSS | soak post-delete RSS | note |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| 2026-09-19 | 4864d4b | +6.4% | +8.0% | +9.9% | +3.5% | +6.2% | +8.3% | +8.0% | -1.2% | +4.4% | -0.6% | -50.1% | +3.3% | -20.8% | +0.7% | +3.9% | 0.83 | 0.98 | - | - | - | - | 3 rounds, Chainguard OS 6.18.49-r2-gcp-6.18, GCE c4-standard-8 (INTEL(R) XEON(R) PLATINUM 8581C CPU @ 2.30GHz), zone us-east4-a, 8 vCPU, podman --network=host; no soak for 4864d4b |
