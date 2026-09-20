@@ -1084,17 +1084,6 @@ Tasks, in order:
     twice, 3 and 11 minutes each, Neoverse N3, **no MTE**, PMU counts
     natively and in a privileged container, `idpf`, deleted.
 
-14. Chainguard OS cells (the human's request, 2026-09-19; lane E, no
-    `src/` change): `cgos-amd64` and `cgos-arm64` matrix cells from the
-    `kirkland-server-hypervisor-*` image families in project `wolfi-vm`
-    (`docs/runbooks/chainguard-os-gce.md`), provisioned with `sudo
-    podman`; the feature report three ways (natively on the host, in
-    podman with default seccomp, privileged), `make test`, the four-way
-    table, a `scorecard-cgos-<arch>.md` line, and a bounded
-    `c4a-highmem-96-metal` probe for MTE and the PMU. Acceptance: the
-    report lines recorded, `make test` green on both hosts, the table and
-    the scorecard line per host, the metal probe recorded with the
-    instance deleted within the hour.
 15. rseq time slice extension (kernel 7.0; `docs/research.md`, kernel
     table): probe `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE` (bit 4) in the
     registered rseq area's `flags` field with `__rseq_size >= 32`, enable
