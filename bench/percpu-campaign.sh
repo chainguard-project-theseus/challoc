@@ -136,7 +136,7 @@ has_step() { case " $STEPS " in *" $1 "*) return 0;; *) return 1;; esac; }
 loadavg() { cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || echo -; }
 
 # ---- header -------------------------------------------------------------------------
-make run CMD='cargo build --release >/dev/null 2>&1; cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c tests/c/features.c -o target/lane-features -ldl && LD_PRELOAD=/src/target/release/libchalloc.so target/lane-features' > "$OUT/features.log" 2>&1
+make run CMD='cargo build --release >/dev/null 2>&1; sh scripts/ctest-cc.sh tests/c/features.c -o target/lane-features && LD_PRELOAD=/src/target/release/libchalloc.so target/lane-features' > "$OUT/features.log" 2>&1
 FEATURES=$(grep -h '^features:' "$OUT/features.log" | tail -1)
 modeline=
 [ -n "$CONF" ] && modeline=", challoc under CHALLOC_CONF=$CONF in every step but ab (there the variant percpu=tree:$KEY carries the key and default=tree is the same run default)"

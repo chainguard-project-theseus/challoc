@@ -82,7 +82,7 @@ endef
 # reads it (a recursively expanded variable: `make build` runs no probe).
 HOST_CPU = $(shell sysctl -n machdep.cpu.brand_string 2>/dev/null || grep -m1 'model name' /proc/cpuinfo 2>/dev/null | sed 's/.*: //' | grep . || lscpu 2>/dev/null | grep -m1 'Model name' | sed 's/.*: *//')
 
-.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare test-pagemap-guard test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench node-bench check-needed clean-volumes jvm-bench postgres-bench jvm-soak percpu-campaign help print-docker-run clean-tmp
+.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare test-pagemap-guard test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench node-bench check-needed clean-volumes jvm-bench postgres-bench jvm-soak percpu-campaign help print-docker-run clean-tmp test-all
 
 help: ## list the targets (this text; the `##` comments in the Makefile)
 	@awk -F' ## ' '/ ## / { n = $$1; if (n ~ /^\$$\(eval/) { sub(/^[^,]*,/, "", n); sub(/,.*/, "", n) } else { sub(/:.*/, "", n) } if (n !~ /^[a-zA-Z0-9_-]+$$/) next; printf "  %-22s %s\n", n, $$2 }' $(MAKEFILE_LIST)
@@ -109,6 +109,10 @@ print-docker-run: ## print the docker run line the targets use (challoc-bench pe
 # The `api::` tests run in a second process: they initialise the real
 # allocator, whose reservations plus a second full layout (the layout tests)
 # exceed what Rosetta can track under emulation.
+# CHALLOC_TEST_ALLOW_SKIP=1 lets a kernel- or privilege-gated test print its
+# `SKIP <test> <reason>` line and pass (docs/testing.md); the reference VMs
+# run without it so an unavailable feature fails loudly there.
+test: DOCKER_FLAGS = -e CHALLOC_TEST_ALLOW_SKIP=1
 test: image ## release build, the jemalloc-compat stage, both cargo test groups, then the cgroup and pagemap-guard steps
 	$(DOCKER_RUN) sh -c 'cargo build --release \
 	  && sh scripts/jemalloc-compat.sh \
@@ -123,7 +127,7 @@ test: image ## release build, the jemalloc-compat stage, both cargo test groups,
 # a 512 MiB limit; the effective `memory.max` must read as that number.
 # Single-threaded since task 5: tests/c/cgroup_policy.c fills the cgroup to
 # 94% of the limit, which a concurrent test's 64 MiB would push over it.
-test-cgroup-limit: DOCKER_FLAGS = --memory=512m -e CHALLOC_EXPECT_CGROUP_LIMIT=536870912
+test-cgroup-limit: DOCKER_FLAGS = --memory=512m -e CHALLOC_EXPECT_CGROUP_LIMIT=536870912 -e CHALLOC_TEST_ALLOW_SKIP=1
 test-cgroup-limit: image ## the cgroup-reading tests under --memory=512m (in `make test`)
 	$(DOCKER_RUN) sh -c 'cargo build --release && cargo test --features std cgroup -- --nocapture --test-threads=1'
 
@@ -169,6 +173,8 @@ test-cgroup-lazy: image ## Phase 2.5 task 10: the two-advice purge under --memor
 
 test-cgroup: test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate ## the three cgroup tests above
 
+test-all: test fuzz test-cgroup-oscillate check-needed ## everything that runs locally: test, the 10M fuzz, the oscillation soak and the DT_NEEDED check (docs/testing.md)
+
 # Phase 2.5 task 17 (a few seconds, in `make test`): tests/c/pagemap_guard.c
 # through scripts/pagemap-guard-test.sh, both ways. Under the default
 # configuration the guard slabs of four classes are located as the gaps no
@@ -209,8 +215,7 @@ FUZZ_SEED    ?= 0xC4A110C
 FUZZ_TABLE   ?= 2048
 fuzz: image ## fuzz/fuzz.c under LD_PRELOAD for FUZZ_OPS (10M) operations on FUZZ_THREADS (4) threads (FUZZ_SEED; `random` draws one)
 	$(DOCKER_RUN) sh -c 'cargo build --release \
-	  && cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c \
-	       fuzz/fuzz.c -o target/fuzz -ldl \
+	  && sh scripts/ctest-cc.sh fuzz/fuzz.c -o target/fuzz \
 	  && LD_PRELOAD=/src/target/release/libchalloc.so \
 	     ./target/fuzz $(FUZZ_OPS) $(FUZZ_THREADS) $(FUZZ_SEED) $(FUZZ_TABLE)'
 
