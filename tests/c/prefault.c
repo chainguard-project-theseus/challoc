@@ -219,14 +219,23 @@ int main(int argc, char **argv)
             break;
         sleep_ms(10);
     }
+    /* The pipeline after it: consecutive fully resident slabs from `next`
+     * on (a guard slab or an uncommitted one ends the count). The pass
+     * keeps as many ready as the class's refills since its last pass
+     * needed, at most purge::prefault::MAX_AHEAD (8): the burst above is
+     * 12 slabs in one go, so more than one is expected, never more than
+     * eight. */
+    long pipeline = 0;
+    while (pipeline < 16 && resident_pages(next + (uintptr_t)pipeline * slab_size, slab_size, page) == full)
+        pipeline++;
     long res_after = resident_pages(next + slab_size, slab_size, page);
     size_t passes = stat_of("stats.prefault.passes");
     size_t wakes = stat_of("stats.prefault.wakes");
     size_t bytes = stat_of("stats.prefault.bytes");
-    printf("prefault %s: highest block in slab at %#lx; next fresh slab %#lx%s: %ld of %zu pages resident (the one after: %ld); "
+    printf("prefault %s: highest block in slab at %#lx; next fresh slab %#lx%s: %ld of %zu pages resident (the one after: %ld; pipeline %ld slabs); "
            "stats.prefault passes %zu (active %zu) slabs %zu bytes %zu wakes %zu fallbacks %zu skipped %zu\n",
            mode, (unsigned long)slab_base, (unsigned long)next, is_guard[0] ? " (after a guard slab)" : "", res_next,
-           slab_size / page, res_after, passes, stat_of("stats.prefault.active"), slabs, bytes, wakes, stat_of("stats.prefault.fallbacks"),
+           slab_size / page, res_after, pipeline, passes, stat_of("stats.prefault.active"), slabs, bytes, wakes, stat_of("stats.prefault.fallbacks"),
            stat_of("stats.prefault.skipped"));
 
     stats_print_fn msp = (stats_print_fn)dlsym(RTLD_DEFAULT, "malloc_stats_print");
@@ -248,8 +257,9 @@ int main(int argc, char **argv)
         CHECK(wakes >= 1, "the commit path issued no wake");
         CHECK(res_next == full, "next fresh slab %#lx: %ld of %ld pages resident before any allocation touched it", (unsigned long)next,
               res_next, full);
-        /* One slab per class per pass: the one after it is not resident. */
-        CHECK(res_after == 0, "the slab after the prefaulted one has %ld resident pages", res_after);
+        /* The pipeline is bounded by MAX_AHEAD slabs (the plan's one per
+         * class is the floor; the burst rate raises it). */
+        CHECK(pipeline >= 1 && pipeline <= 8, "%ld consecutive prefaulted slabs from the next fresh one (bound 8)", pipeline);
         /* Its memory reads zero and the next allocations of the class,
          * once the slab in service is used up, come from it. (Read only
          * when resident: an uncommitted slab is PROT_NONE.) */

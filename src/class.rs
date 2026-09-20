@@ -179,6 +179,15 @@ pub fn set_group_handoff(on: bool) {
 #[cfg(test)]
 pub(crate) static HANDOFFS: AtomicUsize = AtomicUsize::new(0);
 
+/// What [`ClassState::next_fresh_slab`] yielded: a slab committed this
+/// instant, or a group adopted from another arena whose idle slabs went
+/// into the sets.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Fresh {
+    Slab(usize),
+    Adopted,
+}
+
 /// One slab's share of a refill: `n` slots reserved in its `live` count.
 #[derive(Copy, Clone)]
 struct Pick {
@@ -1561,19 +1570,32 @@ impl ClassState {
     fn plan(&self, meta: &Meta, want: usize, picks: &mut [Pick; MAX_PICKS]) -> usize {
         let cls = self.class();
         let mut wake = false;
-        let np = self.plan_locked(meta, want, picks, cls, &mut wake);
+        let mut taken = false;
+        let np = self.plan_locked(meta, want, picks, cls, &mut wake, &mut taken);
         if wake {
             purge::note_empty();
+        }
+        if taken {
+            purge::prefault::note_taken();
         }
         np
     }
 
     /// [`plan`] under the lock; `wake` is set when a handoff gave this
     /// arena its first `Empty` slab, which the caller reports to the
-    /// background thread once the lock is dropped (as `on_live_zero`).
+    /// background thread once the lock is dropped (as `on_live_zero`);
+    /// `taken` when, with the prefault pass on, a pick took an idle
+    /// (`Empty` or `Purged`) slab and the arena has none of the class left
+    /// (plan Phase 2.5 task 11, the claim-side wake: the slab taken may
+    /// have been the prefaulted one, and the next refill of the class
+    /// would commit and fault a fresh slab itself unless the pass runs
+    /// before it; an idle slab with others behind it wakes nobody, the
+    /// next refill takes one of those; a fresh commit woke the thread
+    /// itself, `SlabTable::commit_slab`). Off the key: one relaxed load
+    /// per refill that reached `next_slab`, nothing on the partial path.
     ///
     /// [`plan`]: ClassState::plan
-    fn plan_locked(&self, meta: &Meta, want: usize, picks: &mut [Pick; MAX_PICKS], cls: &Class, wake: &mut bool) -> usize {
+    fn plan_locked(&self, meta: &Meta, want: usize, picks: &mut [Pick; MAX_PICKS], cls: &Class, wake: &mut bool, taken: &mut bool) -> usize {
         let mut g = self.inner.lock();
         let mut np = 0;
         let mut remaining = want;
@@ -1592,12 +1614,20 @@ impl ClassState {
             }
             next = g.partial.map.lowest_set_from(s + 1);
         }
+        let first_fresh = np;
         while remaining > 0 && np < MAX_PICKS {
             let s = match self.next_slab(&mut g, meta, wake) {
                 Some(s) => s,
                 None => break,
             };
             self.take(&mut g, s, &mut remaining, picks, &mut np);
+        }
+        if np > first_fresh
+            && purge::prefault::enabled()
+            && g.stats.empty + g.stats.purged == 0
+            && picks[first_fresh..np].iter().any(|p| matches!(p.state, State::Empty | State::Purged))
+        {
+            *taken = true;
         }
         np
     }
@@ -1615,8 +1645,6 @@ impl ClassState {
     ///
     /// [`adopt_idle_group`]: ClassState::adopt_idle_group
     fn next_slab(&self, g: &mut Inner, meta: &Meta, wake: &mut bool) -> Option<usize> {
-        let table = self.table();
-        let page = 1usize << table.lg_page;
         loop {
             if let Some(s) = g.empty.map.lowest_set() {
                 g.empty.map.clear(s);
@@ -1628,9 +1656,32 @@ impl ClassState {
                 g.stats.purged = g.stats.purged.checked_sub(1).unwrap_or_else(|| slab_count_underflow("purged"));
                 return Some(s);
             }
+            match self.next_fresh_slab(g, meta, wake)? {
+                Fresh::Slab(s) => return Some(s),
+                // The adopted group's idle slabs are in the sets now.
+                Fresh::Adopted => {}
+            }
+        }
+    }
+
+    /// The fresh half of [`next_slab`], for an arena whose sets are empty
+    /// (or, the prefault pass, one that wants a slab beyond them): the
+    /// next slab of this arena's current group, committed, else an idle
+    /// group taken over from another arena ([`Fresh::Adopted`]: its
+    /// `Empty` and `Purged` slabs are in this arena's sets and its
+    /// uncommitted rest is the current group; nothing is committed), else
+    /// the next fresh group of the class region, committed. Guard slabs
+    /// are committed as guards and skipped. `None` when the region, the
+    /// metadata region or a commit is exhausted.
+    ///
+    /// [`next_slab`]: ClassState::next_slab
+    fn next_fresh_slab(&self, g: &mut Inner, meta: &Meta, wake: &mut bool) -> Option<Fresh> {
+        let table = self.table();
+        let page = 1usize << table.lg_page;
+        loop {
             if g.group_next >= g.group_end {
                 if self.adopt_idle_group(g, meta, wake) {
-                    continue;
+                    return Some(Fresh::Adopted);
                 }
                 let (start, end) = table.take_group(meta, self.arena, |s| {
                     g.partial.ensure(meta, page, s)?;
@@ -1645,7 +1696,7 @@ impl ClassState {
             g.group_next = s + 1;
             if usable {
                 g.stats.committed += 1;
-                return Some(s);
+                return Some(Fresh::Slab(s));
             }
         }
     }
@@ -2405,12 +2456,23 @@ impl ClassState {
     /// take slots of this class from this arena since the pass last
     /// asked? Advances the snapshot. Background thread only.
     pub fn prefault_due(&self) -> bool {
+        self.prefault_delta() != 0
+    }
+
+    /// The slots refills took from this arena's slabs of the class since
+    /// the pass last asked (0: not due), the pass's measure of the class's
+    /// burst rate (plan Phase 2.5 task 11, [`prefault_ahead`]). Advances
+    /// the snapshot. Background thread only.
+    ///
+    /// [`prefault_ahead`]: ClassState::prefault_ahead
+    pub fn prefault_delta(&self) -> u64 {
         let now = self.refilled();
-        if now == self.prefault_seen.load(Ordering::Relaxed) {
-            return false;
+        let seen = self.prefault_seen.load(Ordering::Relaxed);
+        if now == seen {
+            return 0;
         }
         self.prefault_seen.store(now, Ordering::Relaxed);
-        true
+        now.wrapping_sub(seen)
     }
 
     /// Slabs prefaulted for this arena and class so far.
@@ -2448,43 +2510,78 @@ impl ClassState {
             if g.empty.map.lowest_set().is_some() || g.purged.map.lowest_set().is_some() {
                 None
             } else {
-                match self.next_slab(&mut g, meta, &mut wake) {
-                    None => None,
-                    Some(s) => {
-                        let d = self.desc(s);
-                        match d.state() {
-                            State::Fresh => {
-                                let cls = self.class();
-                                populate(self.table().slab_addr(s), cls.slab_size());
-                                d.set_state(State::Purged);
-                                d.set_dirty_at(0);
-                                g.purged.map.set(s);
-                                g.stats.purged += 1;
-                                self.prefaulted.fetch_add(1, Ordering::Relaxed);
-                                Some(s)
-                            }
-                            // An adopted group's slab: `next_slab` took it out
-                            // of the set it belongs in; put it back untouched.
-                            State::Empty => {
-                                g.empty.map.set(s);
-                                g.stats.empty += 1;
-                                None
-                            }
-                            State::Purged => {
-                                g.purged.map.set(s);
-                                g.stats.purged += 1;
-                                None
-                            }
-                            State::Active => panic!("class {}: prefault: next_slab yielded an Active slab {s}", self.class),
-                        }
-                    }
-                }
+                self.prefault_one(&mut g, meta, &mut wake, populate).unwrap_or(None)
             }
         };
         if wake {
             purge::note_empty();
         }
         result
+    }
+
+    /// [`prefault_next`] sized to the class's burst rate (plan Phase 2.5
+    /// task 11, the claim-side half): commit and populate fresh slabs, as
+    /// `prefault_next` does one, until the arena holds `ahead` idle
+    /// (`Empty` or `Purged`) slabs of the class or the region is
+    /// exhausted; `ahead` of 1 is `prefault_next`. A refill that needs
+    /// more than one slab per pass interval (`refilled` moved by more
+    /// than a slab's slots since the last pass) then finds the next ones
+    /// ready too, where one slab per pass gives it every other one. The
+    /// idle count is the sets' own (`stats.empty + stats.purged`), so a
+    /// slab the adoption yielded counts and is not prefaulted over.
+    /// Returns the number of slabs prefaulted.
+    ///
+    /// [`prefault_next`]: ClassState::prefault_next
+    pub fn prefault_ahead(&self, meta: &Meta, ahead: usize, mut populate: impl FnMut(usize, usize)) -> usize {
+        let mut wake = false;
+        let mut n = 0;
+        {
+            let mut g = self.inner.lock();
+            while g.stats.empty + g.stats.purged < ahead {
+                match self.prefault_one(&mut g, meta, &mut wake, &mut populate) {
+                    Ok(Some(_)) => n += 1,
+                    Ok(None) => {}
+                    Err(()) => break,
+                }
+            }
+        }
+        if wake {
+            purge::note_empty();
+        }
+        n
+    }
+
+    /// One step of [`prefault_next`] under the lock: the refill's own
+    /// [`next_fresh_slab`] (the sets are the caller's business: a refill
+    /// takes them first, and a slab the pass took out of them would only
+    /// go back), populated and published `Purged` (`Ok(Some(slab))`);
+    /// `Ok(None)` when the adoption gave the arena idle slabs instead
+    /// (they are in the sets untouched, the idle count grew); `Err` when
+    /// the region, the metadata or a commit is exhausted.
+    ///
+    /// [`prefault_next`]: ClassState::prefault_next
+    /// [`next_fresh_slab`]: ClassState::next_fresh_slab
+    fn prefault_one(&self, g: &mut Inner, meta: &Meta, wake: &mut bool, populate: impl FnOnce(usize, usize)) -> Result<Option<usize>, ()> {
+        match self.next_fresh_slab(g, meta, wake) {
+            None => Err(()),
+            // The adopted group's idle slabs are in the sets, untouched:
+            // the refill takes them and the idle count grew.
+            Some(Fresh::Adopted) => Ok(None),
+            Some(Fresh::Slab(s)) => {
+                let d = self.desc(s);
+                // A slab committed this instant is `Fresh`; anything else
+                // is a descriptor written outside the protocol.
+                assert!(d.state() == State::Fresh, "class {}: prefault: freshly committed slab {s} reads {:?}", self.class, d.state());
+                let cls = self.class();
+                populate(self.table().slab_addr(s), cls.slab_size());
+                d.set_state(State::Purged);
+                d.set_dirty_at(0);
+                g.purged.map.set(s);
+                g.stats.purged += 1;
+                self.prefaulted.fetch_add(1, Ordering::Relaxed);
+                Ok(Some(s))
+            }
+        }
     }
 
     /// Count a compaction rebuild's claim of `n` slots.
@@ -2912,6 +3009,92 @@ mod tests {
         assert_eq!(cs.prefault_next(&env.meta, |_, _| {}), Some(2));
         assert_eq!(cs.stats(), ClassStats { committed: 3, purged: 1, ..Default::default() });
         assert_eq!(cs.prefaulted(), 2);
+    }
+
+    /// The claim-side half (plan Phase 2.5 task 11, lane A):
+    /// `prefault_delta` is the slots refills took since the pass last
+    /// asked; `prefault_ahead` keeps that many slabs idle (`Empty` or
+    /// `Purged`, the sets' own count) and publishes the ones it commits
+    /// `Purged`; and a refill that takes the arena's last idle slab wakes
+    /// the pass (`purge::prefault::note_taken`) while one that leaves an
+    /// idle slab behind, or runs with the key off, does not.
+    #[test]
+    fn prefault_ahead_keeps_the_burst_rate_ready_and_the_last_take_wakes() {
+        let _serial = purge::tests::serial();
+        let env = Env::new();
+        let c = 3;
+        let cs = env.class(c, 0);
+        let n = cs.class().nslots();
+        let slab = cs.class().slab_size();
+        assert_eq!(cs.prefault_delta(), 0);
+        // Three slabs' worth of refills since the last pass.
+        let (p, _) = env.claim(&cs, 3 * n);
+        assert_eq!(p.len(), 3 * n);
+        cs.note_refill(3 * n);
+        assert_eq!(cs.prefault_delta(), 3 * n as u64);
+        assert_eq!(cs.prefault_delta(), 0);
+        assert_eq!(cs.stats(), ClassStats { committed: 3, ..Default::default() });
+        // A pipeline of three: slabs 3, 4, 5 committed, populated and published.
+        let mut populated = Vec::new();
+        assert_eq!(cs.prefault_ahead(&env.meta, 3, |addr, len| populated.push((addr, len))), 3);
+        assert_eq!(populated, (3..6).map(|s| (env.regions.slab_addr(c, s), slab)).collect::<Vec<_>>());
+        assert_eq!(cs.stats(), ClassStats { committed: 6, purged: 3, ..Default::default() });
+        for s in 3..6 {
+            assert_eq!(cs.desc(s).state(), State::Purged, "slab {s}");
+            assert_eq!(cs.desc(s).dirty_at(), 0);
+        }
+        assert_eq!(cs.prefaulted(), 3);
+        // Enough idle: nothing more for the same ask; an `Empty` slab
+        // counts as idle, so four need no commit and five need one.
+        assert_eq!(cs.prefault_ahead(&env.meta, 3, |_, _| panic!("populated over an idle pipeline")), 0);
+        cs.release(&p[..n]);
+        assert_eq!(cs.stats(), ClassStats { committed: 6, empty: 1, purged: 3, ..Default::default() });
+        assert_eq!(cs.prefault_ahead(&env.meta, 4, |_, _| panic!("populated with four idle slabs")), 0);
+        assert_eq!(cs.prefault_ahead(&env.meta, 5, |_, _| {}), 1);
+        assert_eq!(cs.stats(), ClassStats { committed: 7, empty: 1, purged: 4, ..Default::default() });
+        // With the pass on: the refills take the `Empty` slab 0, then the
+        // prefaulted 3, 4, 5 (zero), each leaving idle slabs behind: no
+        // wake. The one that takes the last idle slab (6) sets the flag
+        // (`plan_locked` called directly: the counter behind `note_taken`
+        // is process-wide and other tests' refills move it).
+        purge::prefault::reset_for_test(true, false);
+        let cls = cs.class();
+        let plan = |cs: &ClassState, want: usize| -> (Vec<*mut u8>, bool, bool) {
+            let mut picks = [Pick { slab: 0, n: 0, zero: false, state: State::Active }; MAX_PICKS];
+            let (mut wake, mut taken) = (false, false);
+            let np = cs.plan_locked(&env.meta, want, &mut picks, cls, &mut wake, &mut taken);
+            let mut out = vec![ptr::null_mut(); want];
+            let mut zeroed = true;
+            let got = cs.finish(&picks[..np], &mut out, &mut zeroed, None);
+            out.truncate(got);
+            (out, zeroed, taken)
+        };
+        let (q, _, taken) = plan(&cs, n);
+        assert_eq!(q[0] as usize, env.regions.slab_addr(c, 0));
+        assert!(!taken, "the Empty slab taken with four Purged behind it: no wake");
+        for s in 3..6 {
+            let (r, zeroed, taken) = plan(&cs, n);
+            assert!(zeroed, "prefaulted slab {s} reads zero");
+            assert_eq!(r[0] as usize, env.regions.slab_addr(c, s));
+            assert!(!taken, "slab {s} taken with idle slabs behind it: no wake");
+        }
+        let (r, zeroed, taken) = plan(&cs, n);
+        assert!(zeroed);
+        assert_eq!(r[0] as usize, env.regions.slab_addr(c, 6));
+        assert_eq!(cs.stats(), ClassStats { committed: 7, ..Default::default() });
+        assert!(taken, "the last idle slab taken: a wake");
+        // A fresh commit is not a take (its own wake is the commit path's).
+        let (_, zeroed, taken) = plan(&cs, n);
+        assert!(zeroed);
+        assert_eq!(cs.stats(), ClassStats { committed: 8, ..Default::default() });
+        assert!(!taken);
+        // Off the key the last idle slab's take wakes nobody.
+        purge::prefault::reset_for_test(false, false);
+        assert_eq!(cs.prefault_ahead(&env.meta, 1, |_, _| {}), 1);
+        let (_, zeroed, taken) = plan(&cs, n);
+        assert!(zeroed);
+        assert_eq!(cs.stats(), ClassStats { committed: 9, ..Default::default() });
+        assert!(!taken);
     }
 
     /// With guard slabs the pass skips the guard as `next_slab` does, and a

@@ -1095,6 +1095,9 @@ pub mod prefault {
     static FALLBACKS: AtomicU64 = AtomicU64::new(0);
     /// Wakes the commit path issued.
     static WAKES: AtomicU64 = AtomicU64::new(0);
+    /// Wakes the claim path issued (`ClassState::plan`: a refill took the
+    /// arena's last idle slab of a class).
+    static TAKEN: AtomicU64 = AtomicU64::new(0);
     /// Passes that found at least one class refilling (and so re-armed
     /// the poll).
     static ACTIVE: AtomicU64 = AtomicU64::new(0);
@@ -1105,6 +1108,14 @@ pub mod prefault {
     /// microseconds, so a millisecond keeps the next slab ready without
     /// the thread spinning; a quiet pass stops the poll.
     pub const POLL_NS: u64 = 1_000_000;
+
+    /// The most slabs a pass keeps ready per `(arena, class)`: the
+    /// class's refills since the last pass in slabs, at least one and at
+    /// most this many (`ClassState::prefault_ahead`; the plan's "one slab
+    /// per class" is the floor, the burst rate raises it). Eight 64 KiB
+    /// slabs is half a megabyte resident ahead of a class taking several
+    /// slabs per millisecond, and nothing more for a class that does not.
+    pub const MAX_AHEAD: u64 = 8;
 
     /// Init: the key's outcome and the probe's.
     pub fn configure(active: bool, populate_write: bool) {
@@ -1133,6 +1144,7 @@ pub mod prefault {
             fallbacks: FALLBACKS.load(Ordering::Relaxed),
             wakes: WAKES.load(Ordering::Relaxed),
             active: ACTIVE.load(Ordering::Relaxed),
+            taken: TAKEN.load(Ordering::Relaxed),
         }
     }
 
@@ -1146,6 +1158,7 @@ pub mod prefault {
         pub fallbacks: u64,
         pub wakes: u64,
         pub active: u64,
+        pub taken: u64,
     }
 
     /// A fresh slab went into service (`SlabTable::commit_slab`): wake the
@@ -1155,6 +1168,19 @@ pub mod prefault {
     pub fn note_commit() {
         if enabled() && !IN_PASS.load(Ordering::Relaxed) {
             WAKES.fetch_add(1, Ordering::Relaxed);
+            super::background::wake();
+        }
+    }
+
+    /// A refill took the arena's last idle slab of a class
+    /// (`ClassState::plan`, the claim side; plan Phase 2.5 task 11):
+    /// wake the thread so the class's next slab is committed now rather
+    /// than at the next poll or the next fresh commit. The caller tests
+    /// [`enabled`] first.
+    #[inline]
+    pub fn note_taken() {
+        if enabled() {
+            TAKEN.fetch_add(1, Ordering::Relaxed);
             super::background::wake();
         }
     }
@@ -1179,13 +1205,16 @@ pub mod prefault {
         for arena in shared.arenas.iter() {
             for class in 0..NCLASSES {
                 let cs = arena.class(class);
-                if !cs.prefault_due() {
+                let delta = cs.prefault_delta();
+                if delta == 0 {
                     continue;
                 }
                 due = true;
-                if cs.prefault_next(&shared.meta, |addr, len| populate(addr, len, page)).is_some() {
-                    SLABS.fetch_add(1, Ordering::Relaxed);
-                }
+                // The class's refills since the last pass, in slabs: the
+                // pipeline to keep ready (`MAX_AHEAD`).
+                let ahead = delta.div_ceil(cs.class().nslots() as u64).clamp(1, MAX_AHEAD) as usize;
+                let n = cs.prefault_ahead(&shared.meta, ahead, |addr, len| populate(addr, len, page));
+                SLABS.fetch_add(n as u64, Ordering::Relaxed);
             }
         }
         IN_PASS.store(false, Ordering::Relaxed);
@@ -1236,7 +1265,7 @@ pub mod prefault {
     #[cfg(test)]
     pub(crate) fn reset_for_test(active: bool, populate_write: bool) {
         configure(active, populate_write);
-        for c in [&PASSES, &SLABS, &BYTES, &SKIPPED, &FALLBACKS, &WAKES, &ACTIVE] {
+        for c in [&PASSES, &SLABS, &BYTES, &SKIPPED, &FALLBACKS, &WAKES, &ACTIVE, &TAKEN] {
             c.store(0, Ordering::Relaxed);
         }
     }
@@ -1279,7 +1308,7 @@ pub fn fork_child() -> ProcessMadvise {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// The curve is jemalloc's: just under one at the start, zero only at
@@ -1467,7 +1496,9 @@ mod tests {
         assert!(prefault::enabled() && prefault::uses_populate_write());
         prefault::note_commit();
         prefault::note_commit();
-        assert_eq!(prefault::stats().wakes, 2);
+        // At least this test's two wakes (other tests' fresh commits wake
+        // too while the pass is on here).
+        assert!(prefault::stats().wakes >= 2);
         prefault::populate(addr, 2 * page, page);
         let s = prefault::stats();
         assert_eq!((s.bytes, s.fallbacks), (2 * page as u64, if cfg!(target_os = "linux") { 0 } else { 1 }));
@@ -1514,7 +1545,7 @@ mod tests {
     pub(super) static ADVICE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Take [`ADVICE_TEST`]; a panic in one holder must not fail the rest.
-    pub(super) fn serial() -> std::sync::MutexGuard<'static, ()> {
+    pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
         ADVICE_TEST.lock().unwrap_or_else(|e| e.into_inner())
     }
 }

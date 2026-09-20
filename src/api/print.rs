@@ -795,7 +795,7 @@ fn prefault_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
     let s = prefault::stats();
     writeln!(
         out,
-        "Prefault: on ({}) passes {} (active {}) slabs {} ({} bytes) skipped_no_headroom {} fallbacks {} wakes {}",
+        "Prefault: on ({}) passes {} (active {}) slabs {} ({} bytes) skipped_no_headroom {} fallbacks {} wakes {} taken {}",
         if prefault::uses_populate_write() { "MADV_POPULATE_WRITE" } else { "touch per page" },
         s.passes,
         s.active,
@@ -803,7 +803,8 @@ fn prefault_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
         s.bytes,
         s.skipped,
         s.fallbacks,
-        s.wakes
+        s.wakes,
+        s.taken
     )
 }
 
