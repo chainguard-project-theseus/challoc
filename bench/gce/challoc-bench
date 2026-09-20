@@ -805,10 +805,15 @@ matrix_cell() {
   fi
   trap 'say "signal: cell $cell interrupted"; exit 130' INT TERM HUP
 
-  # A bootc host (Chainguard OS) takes no OS Login: the login user is the
-  # gcloud user, whose key the project's ssh-keys metadata carries.
+  # A bootc server host (Chainguard OS, kirkland-server-hypervisor-*) takes
+  # no OS Login: the login user is the gcloud user, whose key the project's
+  # ssh-keys metadata carries. The workstation images (kirkland-workstation-*,
+  # the kernel 7.2 cell) are the other way round (2026-09-20): their guest
+  # agent creates no user from ssh-keys metadata, and OS Login works
+  # (enable-oslogin=TRUE at create, the OS Login posix user logs in with
+  # sudo and the docker group).
   local oslogin=1
-  [ "$extra" != cgos ] || oslogin=
+  if [ "$extra" = cgos ]; then case "$fam" in kirkland-workstation-*) ;; *) oslogin= ;; esac; fi
   # getconf is absent on a bootc host; the page size from smaps then.
   local pagesz='$(getconf PAGESIZE 2>/dev/null || awk "/^KernelPageSize/ { print \$2 * 1024; exit }" /proc/self/smaps)'
 
