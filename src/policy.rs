@@ -74,7 +74,8 @@
 //! `thp:always` is forced to `never` in the stored configuration, which
 //! `thp.rs` then reads as any `never`; the report says so
 //! ([`Policy::thp_forced`], `opt.thp` reads `never`). `thp:auto` is not
-//! forced: its folio is the slab's own granularity, not a 2 MiB page.
+//! forced: its folio is the slab's own granularity, not a 2 MiB page. The
+//! rule itself is `thp::forced_by_limit`.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
@@ -94,7 +95,8 @@ pub const IMMEDIATE_FROM_PPM: u64 = 900_000;
 pub const FLOOR_NS: u64 = 1_000_000_000;
 /// Retention cap: the limit divided by this (5%).
 pub const RETENTION_DIVISOR: u64 = 20;
-/// Effective limit under which `thp` is forced to `never`.
+/// Effective limit under which `thp:always` is forced to `never`
+/// (`thp::forced_by_limit`).
 pub const THP_MIN_LIMIT: u64 = 1 << 30;
 
 /// The row of the table usage falls in.
@@ -173,16 +175,43 @@ pub enum Advice {
     Lazy,
 }
 
-/// The advice for a purge in `band` (the module doc): `lazy_free` wins
-/// (lazy everywhere), then an explicit purge is eager, then the headroom
-/// band (`Low`, under 70% of a known limit) is lazy when `lazy_band`
+impl Advice {
+    /// The advice as the reports and `stats.cgroup.purge_advice` name it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Advice::Eager => "eager",
+            Advice::Lazy => "lazy",
+        }
+    }
+
+    /// The `madvise` advice a batch is issued with.
+    pub const fn madv(self) -> i32 {
+        match self {
+            Advice::Eager => crate::sys::MADV_DONTNEED,
+            Advice::Lazy => crate::sys::MADV_FREE,
+        }
+    }
+
+    /// [`Advice::madv`] by name, for the reports.
+    pub const fn madv_name(self) -> &'static str {
+        match self {
+            Advice::Eager => "MADV_DONTNEED",
+            Advice::Lazy => "MADV_FREE",
+        }
+    }
+}
+
+/// The advice for a purge (the module doc): `lazy_free` wins (lazy
+/// everywhere), then an explicit purge is eager, then `headroom` (the
+/// `Low` band, under 70% of a known limit, with no eager return of the
+/// excess in progress: [`Policy::headroom`]) is lazy when `lazy_band`
 /// allows it, and everything else, no limit included, is eager.
-pub fn advice(band: Band, lazy_free: bool, lazy_band: bool, explicit: bool) -> Advice {
+pub fn advice(headroom: bool, lazy_free: bool, lazy_band: bool, explicit: bool) -> Advice {
     if lazy_free {
         Advice::Lazy
     } else if explicit {
         Advice::Eager
-    } else if lazy_band && band == Band::Low {
+    } else if lazy_band && headroom {
         Advice::Lazy
     } else {
         Advice::Eager
@@ -259,7 +288,8 @@ pub struct Policy {
     /// the `Low` band until then (the module doc).
     eager_excess: AtomicBool,
     /// `thp` was forced to `never` at init by a limit under
-    /// [`THP_MIN_LIMIT`].
+    /// [`THP_MIN_LIMIT`] (`thp::forced_by_limit`, decided by
+    /// `Shared::init`).
     thp_forced: bool,
 }
 
@@ -611,12 +641,14 @@ mod tests {
         assert!(Policy::new(0, true).thp_forced());
     }
 
-    /// The advice at the band edges: lazy only
-    /// under 70% of a known limit with `lazy_band` on and no override or
-    /// explicit purge in play; `lazy_free` lazy everywhere; no limit eager.
+    /// The advice at the band edges (the headroom is the `Low` band): lazy
+    /// only under 70% of a known limit with `lazy_band` on and no override
+    /// or explicit purge in play; `lazy_free` lazy everywhere; no limit
+    /// eager.
     #[test]
     fn advice_at_the_band_edges() {
         use Advice::{Eager, Lazy};
+        let advice = |b: Band, lazy_free, lazy_band, explicit| advice(b == Band::Low, lazy_free, lazy_band, explicit);
         let defaults = |b| advice(b, false, true, false);
         // No limit: eager (the headroom is unknown).
         assert_eq!(defaults(Band::Unlimited), Eager);
@@ -700,11 +732,36 @@ mod tests {
         assert!(p.headroom());
     }
 
+    /// The two names of each advice are the report's words, and the
+    /// `madvise` flag is the one the kernel knows by that name.
+    #[test]
+    fn advice_names_and_flags() {
+        assert_eq!(Advice::Lazy.name(), "lazy");
+        assert_eq!(Advice::Eager.name(), "eager");
+        assert_eq!(Advice::Lazy.madv(), crate::sys::MADV_FREE);
+        assert_eq!(Advice::Eager.madv(), crate::sys::MADV_DONTNEED);
+        assert_eq!((Advice::Lazy.madv_name(), Advice::Lazy.madv()), ("MADV_FREE", 8));
+        assert_eq!((Advice::Eager.madv_name(), Advice::Eager.madv()), ("MADV_DONTNEED", 4));
+    }
+
+    /// The forced-`never` rule (`thp::forced_by_limit`): `always` under 1
+    /// GiB and nothing else; the test constants sit on either side.
     #[test]
     fn thp_threshold() {
+        use crate::config::Thp;
+        use crate::thp::forced_by_limit;
         assert!(L < THP_MIN_LIMIT);
         assert!(GIB >= THP_MIN_LIMIT);
         assert!(UNLIMITED >= THP_MIN_LIMIT);
+        assert!(forced_by_limit(Thp::Always, L));
+        assert!(forced_by_limit(Thp::Always, THP_MIN_LIMIT - 1));
+        assert!(!forced_by_limit(Thp::Always, THP_MIN_LIMIT));
+        assert!(!forced_by_limit(Thp::Always, GIB));
+        assert!(!forced_by_limit(Thp::Always, UNLIMITED));
+        for key in [Thp::Auto, Thp::Never] {
+            assert!(!forced_by_limit(key, L), "{key:?} is never forced");
+            assert!(!forced_by_limit(key, 0), "{key:?} is never forced");
+        }
     }
 
     /// The prefault bound: allowed with no limit

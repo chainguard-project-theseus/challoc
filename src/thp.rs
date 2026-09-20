@@ -81,8 +81,9 @@
 //!   does not need this for them; the huge region under `never`, and
 //!   every region under `auto` and `always`, on an `always` host do.
 //!
-//! Design 11's rule (an effective cgroup limit under 1 GiB forces `thp`
-//! to `never`) is applied by `Shared::init` to the stored key for `always`;
+//! Design 11's rule ([`forced_by_limit`]: an effective cgroup limit under
+//! 1 GiB forces a configured `thp:always` to `never`) is applied by
+//! `Shared::init` to the stored key;
 //! [`force_never`] mirrors it here after init and advises the class and
 //! metadata reservations already made with `MADV_NOHUGEPAGE` (the huge
 //! reservation is not recorded, so a forced `never` leaves it to the host
@@ -143,7 +144,8 @@ pub enum Reason {
     PmdMadvise = 3,
     /// `always`: every size is `never` in sysfs.
     NoneEnabled = 4,
-    /// Forced to `never` by a cgroup limit under 1 GiB (design 11).
+    /// Forced to `never` by a cgroup limit under 1 GiB (design 11,
+    /// [`forced_by_limit`]).
     Forced = 5,
     /// The mode is in force.
     Active = 6,
@@ -363,11 +365,21 @@ pub fn configure(key: Key, features: &Features) -> Decision {
     d
 }
 
+/// Design 11's rule in one place: a configured `thp:always` under an
+/// effective cgroup limit (`min(memory.high, memory.max)`, `limit`) below
+/// `policy::THP_MIN_LIMIT` (1 GiB) is forced to `never` (`Shared::init`
+/// rewrites the stored key and calls [`force_never`]; the report says
+/// so). `auto` and `never` are never forced, and no limit
+/// (`sys::cgroup::UNLIMITED`) forces nothing.
+pub fn forced_by_limit(key: Key, limit: u64) -> bool {
+    key == Key::Always && limit < crate::policy::THP_MIN_LIMIT
+}
+
 /// Design 11: the stored key was forced to `never` by a cgroup limit under
-/// 1 GiB; mirror it here (init, after the cgroup is read) and give the
-/// class and metadata reservations already made the `never` advice (the
-/// module doc; the huge reservation was never recorded and stays with the
-/// host's policy, as under a configured `never`).
+/// 1 GiB ([`forced_by_limit`]); mirror it here (init, after the cgroup is
+/// read) and give the class and metadata reservations already made the
+/// `never` advice (the module doc; the huge reservation was never recorded
+/// and stays with the host's policy, as under a configured `never`).
 pub fn force_never() {
     let d = Decision::off(Reason::Forced, LG_PMD.load(Ordering::Relaxed));
     store(&d);

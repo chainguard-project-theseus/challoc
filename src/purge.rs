@@ -172,9 +172,8 @@ pub fn set_headroom(low: bool, eager_excess: bool) {
 /// The advice the next batch flush would issue (the module doc).
 #[inline]
 pub fn advice() -> Advice {
-    let band = if HEADROOM.load(Ordering::Relaxed) { crate::policy::Band::Low } else { crate::policy::Band::Unlimited };
     crate::policy::advice(
-        band,
+        HEADROOM.load(Ordering::Relaxed),
         LAZY.load(Ordering::Relaxed),
         LAZY_BAND.load(Ordering::Relaxed),
         EXPLICIT.load(Ordering::Relaxed) != 0,
@@ -265,9 +264,8 @@ pub fn backend_name() -> (&'static str, &'static str) {
         _ => "process_madvise(pidfd)",
     };
     let advice = match (advice(), purged_is_zero()) {
-        (Advice::Lazy, _) => "MADV_FREE",
-        (Advice::Eager, true) => "MADV_DONTNEED",
         (Advice::Eager, false) => "MADV_DONTNEED (some lazy batches issued)",
+        (a, _) => a.madv_name(),
     };
     (backend, advice)
 }
@@ -543,12 +541,12 @@ pub fn note_decay_changed() {
 #[cfg(target_os = "linux")]
 mod os {
     use super::{Advice, BACKEND, BACKEND_LAZY, LOOP, MAX_BATCH};
-    use crate::sys::{self, IoVec, MADV_DONTNEED, MADV_FREE};
+    use crate::sys::{self, IoVec};
     use core::sync::atomic::Ordering;
 
     pub fn discard(ranges: &[(usize, usize)], advice: Advice) {
         let lazy = advice == Advice::Lazy;
-        let advice = if lazy { MADV_FREE } else { MADV_DONTNEED };
+        let advice = advice.madv();
         let backend = BACKEND.load(Ordering::Relaxed);
         // A lazy batch takes the batched path only where the probe found
         // the kernel accepts `MADV_FREE` through `process_madvise`.
