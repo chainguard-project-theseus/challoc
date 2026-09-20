@@ -92,7 +92,8 @@
 #   SOAK_DURATION=1200 SOAK_WINDOW=60 SOAK_HIGH=256 SOAK_LOW=8 SOAK_CORE=16
 #   SOAK_MAX=400 SOAK_KEEPALIVE=2 SOAK_MIN=256 SOAK_MAXB=1048576 SOAK_TAIL=600
 #   RESULT=path    markdown output (default bench/results/<date>-<arch>-jvm[-soak].md)
-#   OUT=dir        raw logs, samples and score files (default target/jvm/bench-out)
+#   OUT=dir        raw logs, samples and score files (default target/jvm/bench-out,
+#                  target/jvm/soak-out for ROWS=soak: each run starts with rm -rf OUT)
 #   REV=tree       challoc rev (any git rev; "tree" = the working tree)
 #   HOST_CPU, HOST_KIND   recorded in the header (the Makefile passes HOST_CPU)
 set -eu
@@ -126,7 +127,10 @@ SOAK_MAXB=${SOAK_MAXB:-1048576}
 SOAK_TAIL=${SOAK_TAIL:-600}
 REV=${REV:-tree}
 WORK=$ROOT/target/jvm
-OUT=${OUT:-$WORK/bench-out}
+# The soak's raw output lives apart from the other rows' (each run starts
+# with rm -rf OUT, and a server row after a soak must not erase the soak's
+# stats prints and NMT snapshots before they are read).
+if [ $SOAK = 1 ]; then OUT=${OUT:-$WORK/soak-out}; else OUT=${OUT:-$WORK/bench-out}; fi
 if [ $SOAK = 1 ]; then RESULT=${RESULT:-$ROOT/bench/results/$DATE-$ARCH-jvm-soak.md}
 else RESULT=${RESULT:-$ROOT/bench/results/$DATE-$ARCH-jvm.md}; fi
 # -Dsun.net.httpserver.nodelay=true sets TCP_NODELAY on the server's sockets
