@@ -343,8 +343,7 @@ impl Shared {
             // (`auto` is left alone; the report says so); the policy's
             // `high` baseline is the count at init.
             let cgroup = &*(&raw const (*this).cgroup);
-            let thp_forced = config.thp == crate::config::Thp::Always
-                && cgroup.limit().min(cgroup.high()) < crate::policy::THP_MIN_LIMIT;
+            let thp_forced = crate::thp::forced_by_limit(config.thp, cgroup.limit().min(cgroup.high()));
             if thp_forced {
                 config.thp = crate::config::Thp::Never;
             }
