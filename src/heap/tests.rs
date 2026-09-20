@@ -2330,3 +2330,50 @@ fn huge_run_pages_are_counted_from_the_descriptor() {
     t.destroy();
 }
 
+/// Item 16 of the 2026-09-18 review: an owner word naming an arena that
+/// was never built is corruption. The cross-arena free aborts by name
+/// (`Shared::owner` does not build arenas) instead of quietly building
+/// the automatic arena and caching the slot for it.
+#[test]
+#[should_panic(expected = "arena 5 does not exist")]
+fn a_free_routed_to_an_unbuilt_arena_aborts() {
+    let s = shared_with(Config { narenas: 8, pac_pointers: true, ..Config::DEFAULT });
+    let t = TestHeap::new(s);
+    let h = t.heap();
+    assert_eq!(h.arena(), 0);
+    let c = class_with(64);
+    let p = t.alloc(c);
+    let Kind::Slab { slab, .. } = s.regions.classify(p as usize) else { panic!("not a slab slot") };
+    let table = s.table(c);
+    assert!(s.arenas.get_existing(5).is_none());
+    table.corrupt_owner_word(&s.meta, slab as usize / table.group(), 5);
+    assert_eq!(s.classify_free(p), Ok((c, 5)));
+    h.free(s, p);
+}
+
+/// A heap homed on an automatic arena nothing has built yet
+/// (`Arenas::assign` does not build) may start with a huge allocation:
+/// `Shared::alloc_huge` builds the arena, and the run's free finds it as
+/// the owner.
+#[test]
+fn a_huge_first_allocation_builds_the_home_arena() {
+    let s = shared_with(Config { narenas: 4, pac_pointers: true, ..Config::DEFAULT });
+    let hp = Heap::create_detached(s, 2);
+    assert!(!hp.is_null());
+    let h = unsafe { &mut *hp };
+    assert!(s.arenas.get_existing(2).is_none());
+    let (p, _) = h.alloc_huge(s, 300 * 1024, 16);
+    assert!(!p.is_null());
+    let a2 = s.arenas.get_existing(2).expect("built by the huge allocation");
+    assert_eq!(a2.large().0, 1);
+    assert_eq!(s.huge.lookup(0).unwrap().arena, 2);
+    h.free(s, p);
+    assert_eq!(a2.large(), (0, 0));
+    unsafe { Heap::destroy(hp, s) };
+}
+
+#[test]
+#[should_panic(expected = "arena 77 does not exist")]
+fn a_huge_allocation_in_an_arena_that_does_not_exist_aborts() {
+    shared().alloc_huge(300 * 1024, 16, 77);
+}

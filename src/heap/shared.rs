@@ -387,10 +387,17 @@ impl Shared {
     }
 
     /// Arena `index`, which must exist: the index came from a slab or run
-    /// descriptor, so it was built before that memory was handed out.
+    /// descriptor, an owner word or a cache header, so it was built before
+    /// that memory was handed out. Never builds one: an index no arena was
+    /// built for is a corrupt word (design 6.3 step 4), and aborts here
+    /// instead of quietly materialising an automatic arena to release the
+    /// slot through.
     #[inline]
     pub(super) fn owner(&self, index: u16) -> &Arena {
-        match self.arena(index) {
+        if index == 0 {
+            return &self.arena0;
+        }
+        match self.arenas.get_existing(index) {
             Some(a) => a,
             None => no_such_arena(index),
         }
@@ -694,15 +701,17 @@ impl Shared {
         Some(class)
     }
 
-    /// Allocate a huge run of `size` bytes aligned to `align` in `arena`
-    /// (which must exist). Null on exhaustion; the flag says the memory is
-    /// known zero.
+    /// Allocate a huge run of `size` bytes aligned to `align` in `arena`:
+    /// an automatic arena not built yet (a thread whose first allocation
+    /// is huge) is built here, an index that does not exist aborts. Null
+    /// on exhaustion; the flag says the memory is known zero.
     pub fn alloc_huge(&self, size: usize, align: usize, arena: u16) -> (*mut u8, bool) {
+        let Some(a) = self.arena(arena) else { no_such_arena(arena) };
         let r = self.huge.alloc_run(&self.meta, size, align, arena);
         if !r.ptr.is_null() {
             // The pages the run's descriptor records, which is what
             // `free_huge` will subtract.
-            self.owner(arena).note_huge_alloc(r.pages);
+            a.note_huge_alloc(r.pages);
         }
         (r.ptr, r.zeroed)
     }

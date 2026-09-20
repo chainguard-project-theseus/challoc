@@ -1646,6 +1646,10 @@ impl Heap {
         if cap == 0 || !self.tcache_enabled {
             return ptr::null_mut();
         }
+        // The arena before the node: `arena` came from an owner word on
+        // the free path, and a word naming an arena that was never built
+        // aborts here (`Shared::owner`) before a node is created for it.
+        let refilled = shared.owner(arena).class(class).refilled() as u32;
         let cache = self.cache_slot(shared, arena, class);
         if cache.is_null() {
             return ptr::null_mut();
@@ -1673,7 +1677,7 @@ impl Heap {
                     compact_mask: u32::MAX,
                     run_end: 0,
                     moved: 0,
-                    probe_refilled: shared.owner(arena).class(class).refilled() as u32,
+                    probe_refilled: refilled,
                     arena,
                     mode: MODE_OFF,
                     unsorted_flushes: 0,

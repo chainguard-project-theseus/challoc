@@ -633,18 +633,21 @@ impl Heap {
             if unsafe { ptr::read_volatile(&raw const (*h).cap) } != 0 {
                 return true;
             }
+            // The id's arena, built here if this is its first use (the
+            // header is bound to it; `Shared::owner` would not build it).
+            let arena = Percpu::arena_of(shared, cid);
+            let Some(a) = shared.arena(arena) else { return false };
             let slots = shared.meta.alloc(CacheHeader::slots_layout(cap));
             if slots.is_null() {
                 return false;
             }
-            let arena = Percpu::arena_of(shared, cid);
             let mode = if run || shared.config.tcache_compact_shift == 0 { MODE_OFF } else { MODE_PROBE };
             // SAFETY: a live header not yet published (`cap == 0`); these
             // stores are identical from every installer of this header.
             unsafe {
                 ptr::write_volatile(&raw mut (*h).arena, arena);
                 CacheHeader::set_mode_volatile(h, mode, &shared.config);
-                ptr::write_volatile(&raw mut (*h).probe_refilled, shared.owner(arena).class(class).refilled() as u32);
+                ptr::write_volatile(&raw mut (*h).probe_refilled, a.class(class).refilled() as u32);
             }
             let t = if run { shared.percpu.run_table(class) } else { shared.percpu.table(class) };
             // SAFETY: this thread's area; `slots` holds `cap` pointers.
