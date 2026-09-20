@@ -1375,41 +1375,157 @@ mod tests {
         let cpu = unsafe { cpu_id(a) };
         let ncpus = possible_cpus().expect("/sys/devices/system/cpu/possible");
         assert!(cpu < ncpus, "cpu_id {cpu} below the possible count {ncpus}");
-        if p.mm_cid_usable() {
-            assert!(p.size >= MM_CID_END);
-            let cid = unsafe { mm_cid(a) };
-            assert!(cid < ncpus, "mm_cid {cid} below the possible count {ncpus}");
-            // Every thread of a process sees a distinct id while it runs;
-            // with as many threads as CPUs busy at once the ids observed
-            // cover more than one value on a multi-CPU host.
-            if ncpus > 1 {
-                let seen = std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
-                let barrier = std::sync::Arc::new(std::sync::Barrier::new(ncpus as usize));
-                let hs: std::vec::Vec<_> = (0..ncpus)
-                    .map(|_| {
-                        let seen = seen.clone();
-                        let barrier = barrier.clone();
-                        std::thread::spawn(move || {
-                            barrier.wait();
-                            let a = area(probe().offset);
-                            let t0 = std::time::Instant::now();
-                            while t0.elapsed() < std::time::Duration::from_millis(50) {
-                                let c = unsafe { mm_cid(a) };
-                                assert!(c < ncpus);
-                                seen.lock().unwrap().insert(c);
-                            }
-                        })
-                    })
-                    .collect();
-                for h in hs {
-                    h.join().unwrap();
-                }
-                let n = seen.lock().unwrap().len();
-                std::eprintln!("rseq: {n} distinct mm_cid values over {ncpus} busy threads");
-                assert!(n > 1, "several running threads share one mm_cid");
-            }
-        } else {
+        if !p.mm_cid_usable() {
             assert!(p.size < MM_CID_END || p.flags != 0, "unusable for a reason the verdict names: {}", p.verdict());
+            return;
+        }
+        assert!(p.size >= MM_CID_END);
+        let cid = unsafe { mm_cid(a) };
+        assert!(cid < ncpus, "mm_cid {cid} below the possible count {ncpus}");
+        pinned_threads_read_live_ids(p, ncpus);
+    }
+
+    /// The calling thread's allowed CPUs (`sched_getaffinity`: the cpuset
+    /// or container mask, not the machine's), lowest first.
+    #[cfg(target_os = "linux")]
+    fn allowed_cpus() -> Option<std::vec::Vec<usize>> {
+        // SAFETY: a zeroed `cpu_set_t` is a valid empty set; the call
+        // writes at most `size_of::<cpu_set_t>()` bytes into it.
+        let mut set: ::libc::cpu_set_t = unsafe { core::mem::zeroed() };
+        let rc = unsafe { ::libc::sched_getaffinity(0, core::mem::size_of::<::libc::cpu_set_t>(), &mut set) };
+        if rc != 0 {
+            return None;
+        }
+        Some((0..::libc::CPU_SETSIZE as usize).filter(|&c| unsafe { ::libc::CPU_ISSET(c, &set) }).collect())
+    }
+
+    /// Pin the calling thread to `cpu` alone; `false` when the kernel
+    /// refuses (the CPU left the allowed set meanwhile).
+    #[cfg(target_os = "linux")]
+    fn pin_to(cpu: usize) -> bool {
+        // SAFETY: as above; `CPU_SET` writes one bit of the set.
+        let mut set: ::libc::cpu_set_t = unsafe { core::mem::zeroed() };
+        unsafe { ::libc::CPU_SET(cpu, &mut set) };
+        unsafe { ::libc::sched_setaffinity(0, core::mem::size_of::<::libc::cpu_set_t>(), &set) == 0 }
+    }
+
+    /// What one pinned thread saw.
+    #[cfg(target_os = "linux")]
+    struct Pinned {
+        cpu: usize,
+        pinned: bool,
+        /// `cpu_id` reads that were not the pinned CPU: (count, first value).
+        strays: (u64, u32),
+        reads: u64,
+        cids: std::collections::BTreeSet<u32>,
+    }
+
+    /// Threads pinned to distinct allowed CPUs, at most this many.
+    #[cfg(target_os = "linux")]
+    const MAX_PINNED: usize = 64;
+    /// The spin window when the ids are slow to spread (a loaded host);
+    /// the common case ends as soon as every pinned thread has shown its
+    /// own id.
+    #[cfg(target_os = "linux")]
+    const PIN_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
+
+    /// The live half of the probe test. The unhardened form spawned as
+    /// many spinners as CPUs and asserted more than one `mm_cid` after 50
+    /// ms, which depended on the scheduler spreading them: inside the
+    /// whole unit-test binary on an 8-vCPU Chainguard OS cell it read one
+    /// id on the first run of every cell (`bench/results/2026-09-20-
+    /// chainguard-os-cells.md`, section 3). This form pins one thread per
+    /// allowed CPU with `sched_setaffinity`, which makes two facts
+    /// deterministic on both `mm_cid` implementations (6.18's, where an id
+    /// follows the running task and is recycled when it sleeps; 6.19+'s
+    /// rewrite, per-task ids while threads <= CPUs, per-CPU ids beyond):
+    /// a pinned thread's `cpu_id` field reads its CPU on every load (the
+    /// kernel writes the area, and the probe reads the registered one),
+    /// and two pinned threads running at the same time on two CPUs hold
+    /// two ids, so the spinners' ids cover more than one value as soon as
+    /// any two overlap, which the window is long enough for on any host
+    /// that runs two threads in two seconds. Where the check cannot be
+    /// made (one CPU allowed, a pin refused, or a host that never ran two
+    /// of them together) the test says so and skips it, never passes it.
+    #[cfg(target_os = "linux")]
+    fn pinned_threads_read_live_ids(p: Probe, ncpus: u32) {
+        let Some(allowed) = allowed_cpus() else {
+            std::eprintln!("rseq: skip the pinned check: sched_getaffinity failed");
+            return;
+        };
+        if allowed.len() < 2 {
+            std::eprintln!("rseq: skip the pinned check: {} CPU allowed ({:?})", allowed.len(), allowed);
+            return;
+        }
+        let cpus: std::vec::Vec<usize> = allowed.iter().copied().take(MAX_PINNED).collect();
+        let n = cpus.len();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(n));
+        let distinct = std::sync::Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hs: std::vec::Vec<_> = cpus
+            .iter()
+            .map(|&cpu| {
+                let barrier = barrier.clone();
+                let distinct = distinct.clone();
+                let done = done.clone();
+                std::thread::spawn(move || {
+                    let mut r = Pinned { cpu, pinned: pin_to(cpu), strays: (0, 0), reads: 0, cids: std::collections::BTreeSet::new() };
+                    barrier.wait();
+                    if !r.pinned {
+                        return r;
+                    }
+                    let a = area(p.offset);
+                    let t0 = std::time::Instant::now();
+                    loop {
+                        // SAFETY: this thread's registered area, `size >= MM_CID_END`.
+                        let (c, id) = unsafe { (cpu_id(a), mm_cid(a)) };
+                        r.reads += 1;
+                        if c as usize != cpu {
+                            if r.strays.0 == 0 {
+                                r.strays.1 = c;
+                            }
+                            r.strays.0 += 1;
+                        }
+                        assert!(id < ncpus, "mm_cid {id} below the possible count {ncpus}");
+                        if r.cids.insert(id) {
+                            let mut d = distinct.lock().unwrap();
+                            d.insert(id);
+                            if d.len() >= n {
+                                done.store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                        if done.load(std::sync::atomic::Ordering::Relaxed) || t0.elapsed() >= PIN_WINDOW {
+                            return r;
+                        }
+                    }
+                })
+            })
+            .collect();
+        let rs: std::vec::Vec<Pinned> = hs.into_iter().map(|h| h.join().unwrap()).collect();
+        let d = distinct.lock().unwrap().len();
+        let reads: u64 = rs.iter().map(|r| r.reads).sum();
+        std::eprintln!(
+            "rseq: {d} distinct mm_cid values over {n} threads pinned to CPUs {:?} of {ncpus} possible ({reads} reads)",
+            cpus
+        );
+        if let Some(r) = rs.iter().find(|r| !r.pinned) {
+            std::eprintln!("rseq: skip the pinned check: sched_setaffinity to CPU {} refused", r.cpu);
+            return;
+        }
+        // Deterministic on both implementations: the kernel keeps a pinned
+        // thread's `cpu_id` at its CPU, so every load through the probe's
+        // offset read the registered area.
+        for r in &rs {
+            assert_eq!(
+                r.strays.0, 0,
+                "thread pinned to CPU {} read cpu_id {} on {} of {} loads: the area at offset {} is not the registered one",
+                r.cpu, r.strays.1, r.strays.0, r.reads, p.offset
+            );
+        }
+        if d == 1 {
+            // Two pinned spinners never overlapped in two seconds: nothing
+            // to assert about, and said so rather than passed.
+            std::eprintln!("rseq: skip the distinctness check: every pinned thread read one mm_cid over {:?} (a host too loaded to run two of them at once)", PIN_WINDOW);
         }
     }
 }
