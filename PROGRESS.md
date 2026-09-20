@@ -680,6 +680,25 @@ One line per task, newest at the bottom of each section. Keep it terse.
   and `slice::tests::grants_are_yielded_under_oversubscription` on the
   7.2 host (a 0-grants-in-3-s flake 3/13 in the binary and alone, and
   alone always its teardown `assert_eq!(on(), before.1)`, lane C).
+- Phase 2.5 task 11 (lane B, test fix): the `populate_write` block of
+  `sys::features::linux_tests::probe_prints_and_matches_kernel_version`
+  maps its own fresh anonymous page instead of reusing the scratch page the
+  `process_madvise` block has just written, dropped, read back and written
+  again, so its "fresh scratch page resident before the populate"
+  assertion (features.rs:1714, `left 1 right 0`; lane E's
+  `bench/results/2026-09-20-chainguard-os-cells.md`, third run: 3/3 on both
+  Chainguard OS 6.18 hosts under `--privileged` or `seccomp=unconfined`)
+  no longer depends on block order; every assertion keeps its meaning and
+  the page is unmapped in the block. Commit b17ed3a. Verified both ways on
+  challoc-lane-b-arm64 (C4A, 7.0.0-1011-gcp): default seccomp `make test`
+  410/0 + 120/0 + 23/0 with the branch skipped (`process_madvise=no`);
+  `docker run --privileged` (`process_madvise=pidfd_self
+  process_madvise_free=yes`) 410/0 + 120/0 with the fix, and the old test
+  reproduced 2/1 at features.rs:1714 on the same VM before it. Mac dev
+  container (6.10 linuxkit) `make test` 410/0 + 120/0 + 23/0 and the
+  privileged features tests 15/0; 6.10 predates self-targeted
+  `process_madvise(MADV_DONTNEED)` (6.13), so the branch cannot run there
+  even privileged. VM deleted.
 
 
 - (c) 0604bb3: `bench/ruby-soak.sh`, `make ruby-soak`, `bench/ruby/soak.rb` (16
@@ -2195,6 +2214,12 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
   by hand and adopted as in the morning (so they outlived the driver for
   the follow-up runs); all three deleted at 09:01 UTC, `matrix clean` and
   `delete all` confirm none left.
+- Phase 2.5 task 11 (lane B): `challoc-bench sync`/`provision` exit 0 when
+  ssh fails (a rsync "unexpected end of file" after a host-key mismatch for
+  a reused NAT IP, and "Connection refused" from a VM that has not finished
+  booting); the failure is only visible in the log. Not fixed here (lane B
+  does not own `bench/gce/`); `ssh-keygen -R <ip> -f
+  ~/.ssh/google_compute_known_hosts` and a second `provision` cleared it.
 
 - The Cascade Lake's xmalloc row moved 3.5% (disjoint lists) and then 2.7% (overlapping) between `old` and the new lock with the same `pause` in both; the C4 and C4A (same code, PMU available) show nothing. The mechanism is one atomic load and a `match` on the slow path; the likeliest cause is code placement on the Cascade Lake (memory note on page aliasing). It is recorded as open in the results file; a sampler split on a C2 lab would settle it (no PMU there).
 - The geometry numbers say the 1024 ladder is right on 1 MiB L2 parts for throughput, and that 512 buys 12..15% of larson's RSS; if RSS on small parts ever matters more than 1..3% of larson, the knob exists and the model in 6.2 says where it stops paying (256 loses 6% on larson1).
