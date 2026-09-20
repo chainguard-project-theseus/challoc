@@ -267,7 +267,7 @@ M5=$COMPACT_AT; M10=$DURATION
   awk -F, 'NR>1 && ($1 % 30 == 0 || $2=="compact" || $2=="final-fullgc") {print $1 "," $2}' "$STEM-$first.csv" | while IFS=, read -r t ev; do
     r="| $t | $ev |"
     for a in $ALLOCS; do
-      r="$r $(awk -F, -v t="$t" -v ev="$ev" 'NR==1 {for (i=1;i<=NF;i++) c[$i]=i; next} ($1==t && (ev!="final-fullgc" || $2==ev)) {rss=$c["vmrss_kb"]; res=$c["alloc_resident"]; ret=$c["alloc_retained"]} END {printf "%.1f | %s | %s", rss/1024, (res=="-"||res=="")?"-":sprintf("%.1f", res/1048576), (ret=="-"||ret=="")?"-":sprintf("%.1f", ret/1048576)}' "$STEM-$a.csv") |"
+      r="$r $(awk -F, -v t="$t" -v ev="$ev" 'NR==1 {for (i=1;i<=NF;i++) c[$i]=i; next} ((ev=="final-fullgc") ? ($2==ev) : ($1==t && $2!="final-fullgc")) {rss=$c["vmrss_kb"]; res=$c["alloc_resident"]; ret=$c["alloc_retained"]} END {printf "%.1f | %s | %s", rss/1024, (res=="-"||res=="")?"-":sprintf("%.1f", res/1048576), (ret=="-"||ret=="")?"-":sprintf("%.1f", ret/1048576)}' "$STEM-$a.csv") |"
     done
     echo "$r"
   done
