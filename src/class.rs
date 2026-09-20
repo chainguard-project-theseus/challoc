@@ -399,7 +399,8 @@ impl SetTable {
         self.tables.lock()[g].ensure(meta, self.page, 8 * (row + 1) * self.groups[g].stride)
     }
 
-    /// Committed byte ranges of the groups (tests, stats).
+    /// Tests: committed byte ranges of the groups.
+    #[cfg(test)]
     pub fn committed_ranges(&self) -> [(usize, usize); SET_GROUPS] {
         let t = self.tables.lock();
         let mut out = [(0usize, 0usize); SET_GROUPS];
@@ -779,11 +780,6 @@ impl SlabTable {
     }
 
     #[inline]
-    pub fn class_index(&self) -> usize {
-        self.class as usize
-    }
-
-    #[inline]
     pub fn class(&self) -> &'static Class {
         &CLASSES[self.class as usize]
     }
@@ -821,8 +817,8 @@ impl SlabTable {
         page_group.wrapping_add(1) & self.guard_mask == 0
     }
 
-    /// The guard interval in page groups (0 when guards are off).
-    #[inline]
+    /// Tests: the guard interval in page groups (0 when guards are off).
+    #[cfg(test)]
     pub fn guard_interval(&self) -> u32 {
         self.guard_mask.wrapping_add(1)
     }
@@ -843,8 +839,8 @@ impl SlabTable {
         self.slabs_per_page as usize
     }
 
-    /// Slabs handed to an arena at a time (see the field).
-    #[inline]
+    /// Tests: slabs handed to an arena at a time (see the field).
+    #[cfg(test)]
     pub fn group(&self) -> usize {
         self.group as usize
     }
@@ -1049,7 +1045,7 @@ impl SlabTable {
     /// calls `check_located` or `check_live` itself.
     ///
     /// [`check_located`]: SlabTable::check_located
-    #[inline]
+    #[cfg(test)]
     pub fn check(&self, p: *mut u8) -> u16 {
         let (slab, slot) = self.locate(p);
         self.check_located(slab, slot, p as usize)
@@ -1354,11 +1350,6 @@ impl ClassState {
     }
 
     #[inline]
-    pub fn class_index(&self) -> usize {
-        self.class as usize
-    }
-
-    #[inline]
     pub fn class(&self) -> &'static Class {
         &CLASSES[self.class as usize]
     }
@@ -1419,7 +1410,7 @@ impl ClassState {
     /// owner test (`wrong_arena` in [`release`]).
     ///
     /// [`release`]: ClassState::release
-    #[inline]
+    #[cfg(test)]
     pub fn check(&self, p: *mut u8) {
         let arena = self.table().check(p);
         if arena != self.arena {

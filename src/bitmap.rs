@@ -133,19 +133,20 @@ impl<'a> AtomicBitmap<'a> {
         (want & !prev) >> self.shift
     }
 
-    /// Claim up to `n` bits from the lowest word that has a clear bit. Returns
-    /// the word index and the claimed mask, or `None` if every word was full
-    /// at the time it was inspected. A single call never spans words; callers
-    /// loop until they have enough or get `None`.
-    #[inline]
+    /// Tests: [`claim_from`] word 0.
+    ///
+    /// [`claim_from`]: AtomicBitmap::claim_from
+    #[cfg(test)]
     pub fn claim(&self, n: usize) -> Option<(usize, u64)> {
         self.claim_from(0, n)
     }
 
-    /// Like [`claim`] but starts the search at word `start`, wrapping around,
-    /// for the `slot_randomize` tunable.
-    ///
-    /// [`claim`]: AtomicBitmap::claim
+    /// Claim up to `n` bits from the lowest word at or after `start`
+    /// (wrapping around; `slot_randomize` starts at a random word, the
+    /// address-ordered claim at 0) that has a clear bit. Returns the word
+    /// index and the claimed mask, or `None` if every word was full at the
+    /// time it was inspected. A single call never spans words; callers loop
+    /// until they have enough or get `None`.
     pub fn claim_from(&self, start: usize, n: usize) -> Option<(usize, u64)> {
         let len = self.words.len();
         assert!(start < len, "bitmap: start word out of range");
@@ -303,14 +304,14 @@ impl TwoLevelBitmap {
         if self.chunked { Self::chunked_l0_row(w) * self.stride } else { self.l1_words + w }
     }
 
-    /// Number of bits in the set's universe.
-    #[inline]
+    /// Tests: number of bits in the set's universe.
+    #[cfg(test)]
     pub const fn len(&self) -> usize {
         self.nbits
     }
 
-    /// Whether no bit is set.
-    #[inline]
+    /// Tests: whether no bit is set.
+    #[cfg(test)]
     pub const fn is_empty(&self) -> bool {
         self.l1_used == 0
     }
