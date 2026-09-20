@@ -598,7 +598,8 @@ impl SlabTable {
         if s >= self.nslabs {
             return None;
         }
-        let end = (s + self.group as usize).min(self.nslabs);
+        debug_assert_eq!(s & ((1 << self.lg_group) - 1), 0, "take_group: the watermark is group-aligned");
+        let (_, end) = self.group_range(s >> self.lg_group);
         if purge::check_zero() && s != self.committed_slabs.load(Ordering::Relaxed) {
             panic!("check_zero: class {class}: take_group at next_slab {s} but the watermark is {}", self.committed_slabs.load(Ordering::Relaxed));
         }
@@ -662,6 +663,15 @@ impl SlabTable {
         Some((s, end))
     }
 
+    /// The slab range of `group`: `group << lg_group` and the `group`
+    /// slabs from there, clipped to the class's slab count (the last
+    /// group of a region may be short).
+    #[inline]
+    pub(super) fn group_range(&self, group: usize) -> (usize, usize) {
+        let start = group << self.lg_group;
+        (start, (start + self.group as usize).min(self.nslabs))
+    }
+
     /// Commit slab `s` of a group handed to the caller's arena: make its
     /// memory (or its whole page group, when the page is larger than the
     /// slab and `s` starts one) read-write, or install the guard when `s`
@@ -679,51 +689,20 @@ impl SlabTable {
         // of the page group find it committed.
         let spp = self.slabs_per_page as usize;
         let len = cls.slab_size().max(page);
-        if s % spp == 0 {
-            // `thp:always` with the PMD size enabled (design 7, 17;
-            // `thp.rs`): commit and advise the PMD-sized chunk around the
-            // slab, clipped to the region, so the first touch maps one
-            // 2 MiB page (a chunk already committed costs two no-op
-            // calls). If that fails, the plain commit below is the
-            // fallback and the slab is served with small pages.
-            let mut committed = false;
-            if crate::thp::class_mode(cls.slab_size()) == crate::thp::Mode::Chunks {
-                let pmd = crate::thp::pmd_size();
-                let region_end = self.base + (self.nslabs << cls.lg_slab);
-                let (lo, hi) = crate::thp::chunk(addr, len, self.base, region_end, pmd);
-                // Groups are one to sixteen slabs and arenas commit theirs
-                // in any order, so which call reaches a chunk first is not
-                // known here: every slab of the chunk re-issues the two
-                // calls (no-ops in the kernel once the first has run, a
-                // microsecond each per 64 KiB committed), and the counters
-                // take the one that starts the chunk.
-                if os::commit(lo, hi - lo).is_ok() {
-                    crate::thp::advise_class(lo, hi - lo, addr == lo);
-                    committed = true;
-                }
-            }
-            if !committed {
-                os::commit(addr, len).ok()?;
-            }
+        let mode = crate::thp::class_mode(cls.slab_size());
+        let first_of_page_group = s % spp == 0;
+        if first_of_page_group {
+            self.commit_page_group(addr, len, mode)?;
         }
         if self.is_guard_slab(s) {
-            // Read-write so the VMA merges with its neighbours, with a
-            // guard region on the first page so a stray write past the
-            // previous slab faults. If the install fails, fall back to
-            // leaving the whole slab (or page group) `PROT_NONE`: a hard
-            // guard at the cost of a VMA split. Under `thp:always` with
-            // PMD chunks the marker is not installed: a guard marker (or a
-            // `PROT_NONE` page) inside a 2 MiB page splits it back into
-            // small pages the moment the arena reaches the guard slab
-            // (measured: every chunk's huge page was gone by the time the
-            // slab was in use), so the slab is left unused and unguarded;
-            // design 17 records the trade.
-            if s % spp == 0
-                && crate::thp::class_mode(cls.slab_size()) != crate::thp::Mode::Chunks
-                && os::guard(addr, page).is_err()
-                && os::decommit(addr, len).is_err()
-            {
-                panic!("class {}: cannot re-protect guard slab {s}", self.class);
+            // Under `thp:always` with PMD chunks the marker is not
+            // installed: a guard marker (or a `PROT_NONE` page) inside a
+            // 2 MiB page splits it back into small pages the moment the
+            // arena reaches the guard slab (measured: every chunk's huge
+            // page was gone by the time the slab was in use), so the slab
+            // is left unused and unguarded; design 17 records the trade.
+            if first_of_page_group && mode != crate::thp::Mode::Chunks {
+                self.install_guard(s, addr, page, len);
             }
             g.guards += 1;
             return Some(false);
@@ -734,6 +713,49 @@ impl SlabTable {
         // that will need it. Off: one relaxed load.
         purge::prefault::note_commit();
         Some(true)
+    }
+
+    /// Make the `len` bytes at `addr` (a slab, or the page group it
+    /// starts) read-write. Under `thp:always` with the PMD size enabled
+    /// (`Mode::Chunks`; design 7, 17; `thp.rs`) the PMD-sized chunk
+    /// around them, clipped to the region, is committed and advised
+    /// instead, so the first touch maps one 2 MiB page (a chunk already
+    /// committed costs two no-op calls); if that fails, the plain commit
+    /// is the fallback and the slab is served with small pages. `None`
+    /// when the plain commit fails too.
+    fn commit_page_group(&self, addr: usize, len: usize, mode: crate::thp::Mode) -> Option<()> {
+        if mode == crate::thp::Mode::Chunks {
+            let cls = self.class();
+            let pmd = crate::thp::pmd_size();
+            let region_end = self.base + (self.nslabs << cls.lg_slab);
+            let (lo, hi) = crate::thp::chunk(addr, len, self.base, region_end, pmd);
+            // Groups are one to sixteen slabs and arenas commit theirs
+            // in any order, so which call reaches a chunk first is not
+            // known here: every slab of the chunk re-issues the two
+            // calls (no-ops in the kernel once the first has run, a
+            // microsecond each per 64 KiB committed), and the counters
+            // take the one that starts the chunk.
+            if os::commit(lo, hi - lo).is_ok() {
+                crate::thp::advise_class(lo, hi - lo, addr == lo);
+                return Some(());
+            }
+        }
+        os::commit(addr, len).ok()
+    }
+
+    /// Guard slab `s`, just committed read-write at `addr` (so the VMA
+    /// merges with its neighbours): a guard region on its first page, so
+    /// a stray write past the previous slab faults. If the install
+    /// fails, fall back to leaving the whole slab (or page group, `len`)
+    /// `PROT_NONE`: a hard guard at the cost of a VMA split. A slab that
+    /// can be neither guarded nor re-protected aborts.
+    fn install_guard(&self, s: usize, addr: usize, page: usize, len: usize) {
+        if os::guard(addr, page).is_ok() {
+            return;
+        }
+        if os::decommit(addr, len).is_err() {
+            panic!("class {}: cannot re-protect guard slab {s}", self.class);
+        }
     }
 
     /// The owner word of `group`.

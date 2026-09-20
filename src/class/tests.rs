@@ -1062,6 +1062,12 @@ fn guard_slabs_are_skipped() {
     // A guard slab's descriptor is zero: any free into it aborts.
     assert_eq!(cs.desc(3).state(), State::Fresh);
     assert_eq!(cs.desc(3).live(), 0);
+    // `commit_slab` of a guard slab (here slab 11, handed out with the
+    // group of slab 8 and not yet reached): committed, the guard installed
+    // (`install_guard`), counted, never handed out.
+    assert_eq!(cs.table().commit_slab(11), Some(false));
+    assert_eq!(cs.stats().guards, 3);
+    assert_eq!(cs.committed_slabs(), 9, "the watermark is `take_group`'s, not `commit_slab`'s");
 }
 
 #[test]
@@ -2412,4 +2418,83 @@ fn min_nonzero_treats_zero_as_none() {
     assert_eq!(decay::min_nonzero(7, 5), 5);
     assert_eq!(decay::min_nonzero(5, 7), 5);
     assert_eq!(decay::min_nonzero(5, 5), 5);
+}
+
+/// `SlabTable::group_range`: the slabs of a group, the last one clipped
+/// to the class's slab count.
+#[test]
+fn group_range_is_the_groups_slabs_clipped_to_the_class() {
+    let env = Env::new();
+    let t = env.table(min_slab_class(), 0);
+    let group = t.group();
+    assert!(group > 1, "the 4 KiB-slab class hands out many slabs per group");
+    assert_eq!(t.group_range(0), (0, group));
+    assert_eq!(t.group_range(1), (group, 2 * group));
+    let last = (t.nslabs - 1) >> t.lg_group;
+    assert_eq!(t.group_range(last), (last << t.lg_group, t.nslabs));
+    assert!(t.group_range(last + 1).0 >= t.nslabs, "one past the last group starts beyond the class");
+    let one = env.table(small_class(), 0);
+    assert_eq!(one.group(), 1);
+    assert_eq!(one.group_range(5), (5, 6));
+}
+
+/// `transfer_group`'s two halves at their seam: `verify_idle_group`
+/// passes an idle group, and `move_group` moves its slabs between the
+/// two arenas' sets, slab counts and descriptors and returns the oldest
+/// `dirty_at` moved; the owner word and the cursors are the caller's.
+#[test]
+fn move_group_moves_an_idle_groups_sets_counts_and_descriptors() {
+    let env = Env::new();
+    let donor = env.class(small_class(), 0);
+    let taker = env.class_in_arena(donor, 1);
+    let (p, _) = env.claim(donor, 3);
+    donor.release(&p);
+    assert_eq!(donor.desc(0).state(), State::Empty);
+    let t = donor.table();
+    let (start, end) = t.group_range(0);
+    assert_eq!((start, end), (0, 1));
+    let page = 1usize << t.lg_page;
+    let mut g = taker.inner.lock();
+    let mut dg = donor.inner.lock();
+    // The taker's set words for the group, as `transfer_group` commits
+    // them before the verification reads them.
+    g.partial.ensure(&env.meta, page, end - 1).unwrap();
+    g.empty.ensure(&env.meta, page, end - 1).unwrap();
+    g.purged.ensure(&env.meta, page, end - 1).unwrap();
+    let cursor = if dg.group_end == end { dg.group_next } else { end };
+    assert_eq!(cursor, end, "the donor moved on to its next group");
+    taker.verify_idle_group(&g, &dg, donor, 0, start, end, cursor);
+    let oldest = taker.move_group(&mut g, &mut dg, start, end, cursor);
+    assert_eq!(oldest, donor.desc(0).dirty_at());
+    assert_ne!(oldest, 0);
+    assert_eq!((dg.stats.empty, dg.stats.committed), (0, 0));
+    assert_eq!((g.stats.empty, g.stats.committed), (1, 1));
+    assert!(!dg.empty.map.is_set(0));
+    assert!(g.empty.map.is_set(0));
+    assert_eq!(donor.desc(0).arena(), 1);
+    assert_eq!(t.owner(0), 0, "the owner word is the caller's");
+}
+
+/// `verify_idle_group`'s cross-check on the taker's side: a slab of the
+/// group already in one of the taker's sets aborts.
+#[test]
+#[should_panic(expected = "idle by arena 0's sets but slab 0 is Empty with live 0, in its owner's set true, partial false (taker arena 1)")]
+fn a_handoff_of_a_group_the_taker_already_holds_aborts() {
+    let env = Env::new();
+    let donor = env.class(small_class(), 0);
+    let taker = env.class_in_arena(donor, 1);
+    let (p, _) = env.claim(donor, 3);
+    donor.release(&p);
+    let t = donor.table();
+    let (start, end) = t.group_range(0);
+    let page = 1usize << t.lg_page;
+    let mut g = taker.inner.lock();
+    let dg = donor.inner.lock();
+    g.purged.ensure(&env.meta, page, end - 1).unwrap();
+    g.partial.ensure(&env.meta, page, end - 1).unwrap();
+    g.empty.ensure(&env.meta, page, end - 1).unwrap();
+    // Corrupt the taker's sets: the slab is in its purged set too.
+    g.purged_add(0);
+    let cursor = if dg.group_end == end { dg.group_next } else { end };
+    taker.verify_idle_group(&g, &dg, donor, 0, start, end, cursor);
 }

@@ -3,6 +3,7 @@
 //! 13.3), or the next fresh group of the region.
 
 use super::abort::{idle_group_in_use, owner_mismatch, slab_count_underflow};
+use super::decay::min_nonzero;
 use super::{ClassState, GROUP_HANDOFF, Inner};
 use crate::meta::Meta;
 use crate::purge;
@@ -171,8 +172,7 @@ impl ClassState {
                 (None, None) => return None,
             };
             let group = s >> table.lg_group;
-            let start = group << table.lg_group;
-            let end = (start + table.group as usize).min(table.nslabs);
+            let (start, end) = table.group_range(group);
             let cursor = if dg.group_end == end { dg.group_next } else { end };
             if (start..cursor).all(|x| table.is_guard_slab(x) || dg.empty.map.is_set(x) || dg.purged.map.is_set(x)) {
                 return Some(group);
@@ -187,18 +187,19 @@ impl ClassState {
     /// donor's (`dg`) held. `false` only when this arena's set words for
     /// the group cannot be committed (done first: the verification reads
     /// them, and on Linux an uncommitted metadata page faults), with
-    /// nothing changed. Aborts when
-    /// the descriptors disagree with the donor's sets (an `Active` slab, a
-    /// live slot, a slab of another arena, a partial bit): a heap
-    /// inconsistency. The owner word and the descriptors' arena field are
-    /// rewritten together, as `take_group` writes them, so its cross-check
-    /// still holds for every group.
+    /// nothing changed. Aborts when the descriptors disagree with the
+    /// donor's sets ([`verify_idle_group`]): a heap inconsistency. The
+    /// owner word and the descriptors' arena field are rewritten together
+    /// ([`move_group`] and the store below), as `take_group` writes them,
+    /// so its cross-check still holds for every group.
+    ///
+    /// [`verify_idle_group`]: ClassState::verify_idle_group
+    /// [`move_group`]: ClassState::move_group
     fn transfer_group(&self, g: &mut Inner, dg: &mut Inner, donor: &ClassState, meta: &Meta, group: usize, wake: &mut bool) -> bool {
         let table = self.table();
         let class = self.class as usize;
         let page = 1usize << table.lg_page;
-        let start = group << table.lg_group;
-        let end = (start + table.group as usize).min(table.nslabs);
+        let (start, end) = table.group_range(group);
         // SAFETY: the group holds a slab of the donor's sets, so it was
         // handed out and its owner page is committed.
         let owner_word = unsafe { table.owner_word(group) };
@@ -219,6 +220,44 @@ impl ClassState {
         // Slabs below the donor's cursor are committed; the rest of its
         // current group is not and becomes this arena's current group.
         let cursor = if dg.group_end == end { dg.group_next } else { end };
+        self.verify_idle_group(g, dg, donor, group, start, end, cursor);
+        let oldest = self.move_group(g, dg, start, end, cursor);
+        owner_word.store(self.arena, Ordering::Relaxed);
+        #[cfg(test)]
+        HANDOFFS.fetch_add(1, Ordering::Relaxed);
+        if dg.group_end == end {
+            g.group_next = dg.group_next;
+            g.group_end = end;
+            dg.group_next = end;
+            dg.group_end = end;
+        }
+        // This arena's oldest `Empty` slab may now be one of the moved
+        // ones. The donor's gate is left as it is: at worst it is too
+        // early, and its next walk recomputes it (see `purge::Decayer`).
+        if oldest != 0 {
+            let cur = self.gate.oldest_empty();
+            if (cur == 0 || oldest < cur) && self.gate.set_oldest_empty(oldest) {
+                *wake = true;
+            }
+        }
+        true
+    }
+
+    /// The handoff's cross-check, under both class locks, reading only.
+    /// Establishes the invariant [`move_group`] moves under: every
+    /// non-guard slab of `start..end` is idle (`Empty`, `Purged`, or
+    /// `Fresh` at or above the donor's `cursor`, never `Active`), has
+    /// `live == 0`, is owned by the donor (its descriptor's arena), and
+    /// is in exactly its set: the donor's `empty` or `purged` for an
+    /// `Empty` or `Purged` slab, neither for a `Fresh` one, never the
+    /// donor's `partial` and never any of this arena's three. Anything
+    /// else means the sets and the descriptors disagree, so one of them
+    /// is corrupt: abort (`idle_group_in_use`, `owner_mismatch`).
+    ///
+    /// [`move_group`]: ClassState::move_group
+    pub(super) fn verify_idle_group(&self, g: &Inner, dg: &Inner, donor: &ClassState, group: usize, start: usize, end: usize, cursor: usize) {
+        let table = self.table();
+        let class = self.class as usize;
         for s in start..end {
             if table.is_guard_slab(s) {
                 continue;
@@ -241,6 +280,20 @@ impl ClassState {
                 idle_group_in_use(class, group, s, donor.arena, self.arena, state, d.live(), in_sets, dg.partial.map.is_set(s));
             }
         }
+    }
+
+    /// The move, under both class locks, after [`verify_idle_group`]
+    /// held: every non-guard slab of `start..end` leaves the donor's set
+    /// for this arena's (an `Empty` slab `empty` to `empty`, a `Purged`
+    /// one `purged` to `purged`, a `Fresh` one is in no set), the
+    /// committed ones (below `cursor`) move between the two `committed`
+    /// counts, and every descriptor's arena becomes this arena. The
+    /// owner word and the cursors are the caller's. Returns the oldest
+    /// `dirty_at` among the `Empty` slabs moved (0 when none).
+    ///
+    /// [`verify_idle_group`]: ClassState::verify_idle_group
+    pub(super) fn move_group(&self, g: &mut Inner, dg: &mut Inner, start: usize, end: usize, cursor: usize) -> u64 {
+        let table = self.table();
         let mut oldest = 0u64;
         for s in start..end {
             if table.is_guard_slab(s) {
@@ -249,20 +302,13 @@ impl ClassState {
             let d = self.desc(s);
             match d.state() {
                 State::Empty => {
-                    dg.empty.map.clear(s);
-                    dg.stats.empty = dg.stats.empty.checked_sub(1).unwrap_or_else(|| slab_count_underflow("empty"));
-                    g.empty.map.set(s);
-                    g.stats.empty += 1;
-                    let t = d.dirty_at();
-                    if oldest == 0 || t < oldest {
-                        oldest = t;
-                    }
+                    dg.empty_take(s);
+                    g.empty_add(s);
+                    oldest = min_nonzero(oldest, d.dirty_at());
                 }
                 State::Purged => {
-                    dg.purged.map.clear(s);
-                    dg.stats.purged = dg.stats.purged.checked_sub(1).unwrap_or_else(|| slab_count_underflow("purged"));
-                    g.purged.map.set(s);
-                    g.stats.purged += 1;
+                    dg.purged_take(s);
+                    g.purged_add(s);
                 }
                 State::Fresh | State::Active => {}
             }
@@ -272,25 +318,7 @@ impl ClassState {
             }
             d.set_arena(self.arena);
         }
-        owner_word.store(self.arena, Ordering::Relaxed);
-        #[cfg(test)]
-        HANDOFFS.fetch_add(1, Ordering::Relaxed);
-        if dg.group_end == end {
-            g.group_next = dg.group_next;
-            g.group_end = end;
-            dg.group_next = end;
-            dg.group_end = end;
-        }
-        // This arena's oldest `Empty` slab may now be one of the moved
-        // ones. The donor's gate is left as it is: at worst it is too
-        // early, and its next walk recomputes it (see `purge::Decayer`).
-        if oldest != 0 {
-            let cur = self.gate.oldest_empty();
-            if (cur == 0 || oldest < cur) && self.gate.set_oldest_empty(oldest) {
-                *wake = true;
-            }
-        }
-        true
+        oldest
     }
 
     /// Tests: this arena's idle groups, the ones a handoff would offer.
@@ -302,7 +330,7 @@ impl ClassState {
         let mut budget = usize::MAX;
         while let Some(group) = self.next_idle_group(&g, from, &mut budget) {
             out.push(group);
-            from = (group + 1) << self.table().lg_group;
+            from = self.table().group_range(group + 1).0;
         }
         out
     }
