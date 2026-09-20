@@ -4,7 +4,7 @@
 # (docs/plan.md, Phase 1.5). One VM per architecture:
 #
 #   arm64  c4a-standard-16  Google Axion (Neoverse V2)   aarch64
-#   amd64  c4-standard-16   Intel Xeon 6 (Granite Rapids) x86_64
+#   amd64  c4-standard-16   Intel Xeon Platinum 8581C (Emerald Rapids) x86_64
 #
 # Both are created with --performance-monitoring-unit=standard, which
 # exposes the core PMU (cycles, instructions, branch, L1/L2 cache, dTLB and
@@ -635,12 +635,32 @@ matrix_vm_zone() {
   g compute instances list --filter="name=$1" --format='value(zone.basename())' 2>/dev/null | head -1
 }
 
-# matrix_lab_dest CELL: user@ip of a kept (lab) cell VM. The user is the
-# one matrix_cell logged in as: the OS Login posix user everywhere except
-# on a Chainguard OS server image (kirkland-server-hypervisor-*), which
-# takes no OS Login and has the gcloud user from the ssh-keys metadata
-# (2026-09-20, lane E: `matrix ssh cgos-arm64` used to try the OS Login
-# user on that image and was refused).
+# matrix_oslogin FAM EXTRA: 0 when a cell on image family FAM logs in
+# through OS Login (the VM is created with enable-oslogin=TRUE and the OS
+# Login posix user logs in with sudo and the docker group). That is every
+# cell except a Chainguard OS server image (kirkland-server-hypervisor-*,
+# `cgos` cells): a bootc server host takes no OS Login, and the login user
+# is the gcloud user, whose key the project's ssh-keys metadata carries
+# (CHALLOC_GCE_USER, default $USER). The workstation images
+# (kirkland-workstation-*, the kernel 7.2 cell) are the other way round
+# (2026-09-20): their guest agent creates no user from ssh-keys metadata,
+# and OS Login works. (Lane E, 2026-09-20: `matrix ssh cgos-arm64` used to
+# try the OS Login user on the server image and was refused.)
+matrix_oslogin() {
+  [ "$2" = cgos ] || return 0
+  case "$1" in kirkland-workstation-*) return 0 ;; *) return 1 ;; esac
+}
+# matrix_user FAM EXTRA: the login user of a cell VM, per matrix_oslogin.
+matrix_user() {
+  if matrix_oslogin "$1" "$2"; then
+    g compute os-login describe-profile --format='value(posixAccounts[0].username)'
+  else
+    echo "${CHALLOC_GCE_USER:-$USER}"
+  fi
+}
+
+# matrix_lab_dest CELL: user@ip of a kept (lab) cell VM, the user the one
+# matrix_cell logged in as (matrix_user).
 matrix_lab_dest() {
   local vm ip user z fam extra
   vm="$(matrix_vm "$1")"
@@ -649,12 +669,20 @@ matrix_lab_dest() {
     || die "matrix: no VM $vm (matrix lab $1 creates one)"
   [ -n "$ip" ] || die "matrix: $vm has no external IP"
   read -r fam _ _ _ _ extra _ <<<"$(cell_spec "$1")"
-  if [ "$extra" = cgos ] && [ "${fam#kirkland-workstation-}" = "$fam" ]; then
-    user="${CHALLOC_GCE_USER:-$USER}"
-  else
-    user="$(g compute os-login describe-profile --format='value(posixAccounts[0].username)')"
-  fi
+  user="$(matrix_user "$fam" "$extra")"
   echo "$user@$ip"
+}
+
+# matrix_fail REASON [KERNEL [PAGE [OUTCOME]]]: the cell's summary line when
+# the driver gives up before matrix-cell.sh writes its own (that one carries
+# the measured fields: tests, fuzz, cgroup, privileged, scorecard). The
+# summary of cmd_matrix and the results file read the last `MATRIX ` line
+# of the cell's log, so every exit path writes the same field set, the
+# unmeasured fields `-`, outcome FAIL unless given (PENDING: no zone had
+# capacity) and a reason. Uses matrix_cell's cell, image, fam, machine, t0
+# and log (bash's dynamic scope; it is only called from there).
+matrix_fail() {
+  echo "MATRIX cell=$cell image=${image:-none/$fam} kernel=${2:--} page=${3:--} machine=$machine tests=- fuzz=- cgroup=- privileged=- scorecard=- wall=$(( $(date +%s) - t0 )) outcome=${4:-FAIL} reason=$1" >> "$log"
 }
 
 # matrix_prep PREP: the remote script that installs the cell's kernel,
@@ -828,19 +856,14 @@ matrix_cell() {
   fi
   trap 'say "signal: cell $cell interrupted"; exit 130' INT TERM HUP
 
-  # A bootc server host (Chainguard OS, kirkland-server-hypervisor-*) takes
-  # no OS Login: the login user is the gcloud user, whose key the project's
-  # ssh-keys metadata carries. The workstation images (kirkland-workstation-*,
-  # the kernel 7.2 cell) are the other way round (2026-09-20): their guest
-  # agent creates no user from ssh-keys metadata, and OS Login works
-  # (enable-oslogin=TRUE at create, the OS Login posix user logs in with
-  # sudo and the docker group).
-  local oslogin=1
-  if [ "$extra" = cgos ]; then case "$fam" in kirkland-workstation-*) ;; *) oslogin= ;; esac; fi
+  # OS Login or the gcloud user from the ssh-keys metadata (matrix_oslogin):
+  # decides the create flag and the login user below.
+  local oslogin=
+  ! matrix_oslogin "$fam" "$extra" || oslogin=1
   # getconf is absent on a bootc host; the page size from smaps then.
   local pagesz='$(getconf PAGESIZE 2>/dev/null || awk "/^KernelPageSize/ { print \$2 * 1024; exit }" /proc/self/smaps)'
 
-  image="$(latest_image "$fam" "$proj")" || { say "no READY image in family $fam ($proj)"; echo "MATRIX cell=$cell image=none/$fam kernel=- page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=0 outcome=FAIL reason=no-image" >> "$log"; return 1; }
+  image="$(latest_image "$fam" "$proj")" || { say "no READY image in family $fam ($proj)"; matrix_fail no-image; return 1; }
   # Hyperdisk Balanced is the only disk C4, C4A and N4 take; C2, N2D, T2A,
   # E2 and N2 take Persistent Disk only (C3 and C3D take both).
   case "$machine" in e2-*|n1-*|n2-*|n2d-*|c2-*|t2a-*) disk=pd-balanced ;; *) disk=hyperdisk-balanced ;; esac
@@ -848,7 +871,7 @@ matrix_cell() {
   cell_zone=
   if [ -n "$adopt" ]; then
     cell_zone="$(matrix_vm_zone "$vm")"
-    [ -n "$cell_zone" ] || { say "MATRIX_ADOPT: no VM named $vm exists"; echo "MATRIX cell=$cell image=$image kernel=- page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- scorecard=- wall=0 outcome=FAIL reason=adopt:no-such-vm" >> "$log"; return 1; }
+    [ -n "$cell_zone" ] || { say "MATRIX_ADOPT: no VM named $vm exists"; matrix_fail adopt:no-such-vm; return 1; }
     machine="$(g compute instances describe "$vm" --zone="$cell_zone" --format='value(machineType.basename())')"
     local bootdisk; bootdisk="$(g compute instances describe "$vm" --zone="$cell_zone" --format='value(disks[0].source.basename())')"
     image="$(g compute disks describe "$bootdisk" --zone="$cell_zone" --format='value(sourceImage.basename())' 2>/dev/null || echo unknown)"
@@ -872,26 +895,23 @@ matrix_cell() {
     matrix_delete_vm "$vm" "$z"
   done
   if [ -z "$cell_zone" ]; then
-    echo "MATRIX cell=$cell image=$image kernel=- page=- machine=$machine zones=$(echo "$zones" | tr ' ' ',') tests=- fuzz=- cgroup=- privileged=- scorecard=- wall=$(( $(date +%s) - t0 )) outcome=PENDING reason=create:${err:-unknown}" >> "$log"; return 1
+    # The zones tried are in the `cell ...: zones` line above.
+    matrix_fail "create:${err:-unknown}" - - PENDING; return 1
   fi
   say "created $vm in $cell_zone"
   fi
   ip="$(g compute instances describe "$vm" --zone="$cell_zone" --format='value(networkInterfaces[0].accessConfigs[0].natIP)')"
-  if [ -n "$oslogin" ]; then
-    user="$(g compute os-login describe-profile --format='value(posixAccounts[0].username)')"
-  else
-    user="${CHALLOC_GCE_USER:-$USER}"
-  fi
+  user="$(matrix_user "$fam" "$extra")"
   dest="$user@$ip"
   say "$vm at $ip; waiting for ssh as $user"
-  if ! matrix_wait_ssh "$dest" "$deadline"; then say "ssh never came up"; echo "MATRIX cell=$cell image=$image kernel=- page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=no-ssh" >> "$log"; return 1; fi
+  if ! matrix_wait_ssh "$dest" "$deadline"; then say "ssh never came up"; matrix_fail no-ssh; return 1; fi
   say "up: $(matrix_ssh "$dest" "echo \"\$(uname -m) \$(uname -r) page $pagesz\"" 2>&1)"
 
   if [ "$prep" != none ]; then
     local boot0 boot1=
     boot0="$(matrix_ssh "$dest" cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)"
     say "prep $prep: installing the kernel and rebooting (boot id $boot0)"
-    matrix_prep_script "$prep" | matrix_ssh "$dest" bash -s >>"$log" 2>&1 || { say "prep failed"; echo "MATRIX cell=$cell image=$image kernel=$(matrix_ssh "$dest" uname -r 2>/dev/null) page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=prep" >> "$log"; return 1; }
+    matrix_prep_script "$prep" | matrix_ssh "$dest" bash -s >>"$log" 2>&1 || { say "prep failed"; matrix_fail prep "$(matrix_ssh "$dest" uname -r 2>/dev/null)"; return 1; }
     # ssh keeps answering for a while after the reboot is issued: wait for
     # a new boot id, not merely for a connection.
     while [ "$(date +%s)" -lt "$deadline" ]; do
@@ -900,24 +920,24 @@ matrix_cell() {
       [ -n "$boot1" ] && [ "$boot1" != "$boot0" ] && break
       boot1=
     done
-    if [ -z "$boot1" ]; then say "the VM did not come back with a new boot id after the reboot"; echo "MATRIX cell=$cell image=$image kernel=- page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=reboot" >> "$log"; return 1; fi
+    if [ -z "$boot1" ]; then say "the VM did not come back with a new boot id after the reboot"; matrix_fail reboot; return 1; fi
     local kp; kp="$(matrix_ssh "$dest" 'echo "$(uname -r) $(getconf PAGESIZE)"' 2>/dev/null || true)"
     say "after reboot: $kp"
     case "$prep:$kp" in
       64k:6.8.*-generic-64k\ 65536) ;;
       ga:6.8.*-generic\ 4096) ;;
-      hwe:6.8.*) say "the hwe kernel is still 6.8 (got: $kp)"; echo "MATRIX cell=$cell image=$image kernel=${kp% *} page=${kp##* } machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=wrong-kernel" >> "$log"; return 1 ;;
+      hwe:6.8.*) say "the hwe kernel is still 6.8 (got: $kp)"; matrix_fail wrong-kernel "${kp% *}" "${kp##* }"; return 1 ;;
       hwe:*-generic\ 4096) ;;
-      *) say "the VM did not boot the $prep kernel (got: $kp)"; echo "MATRIX cell=$cell image=$image kernel=${kp% *} page=${kp##* } machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=wrong-kernel" >> "$log"; return 1 ;;
+      *) say "the VM did not boot the $prep kernel (got: $kp)"; matrix_fail wrong-kernel "${kp% *}" "${kp##* }"; return 1 ;;
     esac
   fi
 
   say "provisioning${extra:+ ($extra)}"
   local provision=matrix_provision_script
   [ "$extra" != cgos ] || provision=matrix_provision_bootc_script
-  $provision | matrix_ssh "$dest" bash -s >>"$log" 2>&1 || { say "provision failed"; echo "MATRIX cell=$cell image=$image kernel=$(matrix_ssh "$dest" uname -r 2>/dev/null) page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=provision" >> "$log"; return 1; }
+  $provision | matrix_ssh "$dest" bash -s >>"$log" 2>&1 || { say "provision failed"; matrix_fail provision "$(matrix_ssh "$dest" uname -r 2>/dev/null)"; return 1; }
   say "syncing the tree"
-  rsync_tree "ssh $(matrix_ssh_opts)" "$dest" >>"$log" 2>&1 || { say "sync failed"; echo "MATRIX cell=$cell image=$image kernel=- page=- machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=sync" >> "$log"; return 1; }
+  rsync_tree "ssh $(matrix_ssh_opts)" "$dest" >>"$log" 2>&1 || { say "sync failed"; matrix_fail sync; return 1; }
   if [ -n "${MATRIX_LAB:-}" ]; then
     # Lab mode: the VM stays. `matrix clean` deletes it.
     trap - EXIT
@@ -993,9 +1013,7 @@ matrix_cell() {
     fi
   } >> "$log"
   rm -rf "$tmp"
-  if [ "$rc" = timeout ]; then
-    echo "MATRIX cell=$cell image=$image kernel=? page=? machine=$machine tests=- fuzz=- cgroup=- privileged=- wall=$(( $(date +%s) - t0 )) outcome=FAIL reason=timeout" >> "$log"
-  fi
+  [ "$rc" != timeout ] || matrix_fail timeout '?' '?'
   summary="$(grep '^MATRIX ' "$log" | tail -1)"
   say "$summary"
   case "$summary" in *outcome=PASS*) return 0 ;; *) return 1 ;; esac

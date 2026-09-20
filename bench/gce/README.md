@@ -40,7 +40,40 @@ bench/gce/challoc-bench stop all           # do this before an iteration ends (u
 The VMs run the repository's own `Dockerfile.dev` image through the same
 `Makefile` as the Mac, so the toolchain is pinned identically. A full
 `make test` (image build, release build, both test groups) takes about 100 s
-on either VM.
+on either VM. `provision` and `sync` run their targets in parallel and exit
+with the worst target's status (since 2026-09-20: before that a VM still
+booting, or a host key changed by a restart, returned 0 and the next step
+ran on an unprovisioned or stale VM).
+
+### Environment
+
+| variable | default | what |
+|---|---|---|
+| `CHALLOC_GCE_PROJECT` | the active `gcloud` project | project of every VM |
+| `CHALLOC_GCE_ZONE` | `us-east4-a` | zone of the reference pair and of every cell whose zone list is `-` |
+| `CHALLOC_GCE_PREFIX` | `challoc-bench` | the VM name prefix (`<prefix>-arm64`, `<prefix>-amd64`); a lane's pair |
+| `CHALLOC_MATRIX_PREFIX` | `challoc-matrix`, or `<prefix>-matrix` for a lane | the matrix cells' name prefix (the exit sweep deletes every VM under it) |
+| `CHALLOC_GCE_SSH_KEY` | `~/.ssh/google_compute_engine` | the key `sync`, `fetch` and the matrix cells use for direct ssh/rsync (gcloud mints it on the first `challoc-bench ssh <vm> -- true`) |
+| `CHALLOC_GCE_USER` | `$USER` | the login user on a host without OS Login (the Chainguard OS server images, below) |
+| `CHALLOC_GCE_WARM` | unset | set: `start` and `stop` do nothing, the session owns the VMs |
+| `MATRIX_JOBS` | 3 | cells at a time |
+| `MATRIX_TIMEOUT` | 2700 s | per cell, create to fetched logs (7200 for a `cgos-*` cell) |
+| `MATRIX_MACHINE` | the cell's | replaces the cell's machine type (`MATRIX_MACHINE=c4a-standard-16 matrix lab 64k-arm64` for a soak at 64 KiB pages) |
+| `MATRIX_PMU` | unset | set: create the cell VM with `--performance-monitoring-unit=standard` (C3, C3D, C4, C4A and N4 take it; T2A, C2 and N2D refuse it), so a lab cell can run `quick-perf.sh` once `linux-tools-$(uname -r)` is installed on it |
+| `MATRIX_DATE` | today (`%F`) | the date in the cells' log names and the summary; set it to rerun a cell into an earlier day's set |
+| `MATRIX_OUT` | `bench/results/matrix` | where the cell logs go (`matrix lab` uses `.tmp-matrix-lab/`) |
+| `MATRIX_ADOPT` | unset | `<vm>`: run a cell on that existing VM (any zone), never delete it |
+
+Login: every VM is created with `enable-oslogin=TRUE` and the OS Login
+posix user logs in (with sudo and the docker group), except a Chainguard
+OS server image (`kirkland-server-hypervisor-*`, the `cgos-arm64` and
+`cgos-amd64` cells): a bootc server host takes no OS Login, the VM is
+created without the metadata key and the login is `CHALLOC_GCE_USER`
+through the project's `ssh-keys` metadata. The workstation images
+(`kirkland-workstation-*`, the `cgos72-amd64` cell) invert this again:
+their guest agent creates no user from `ssh-keys` metadata, and OS Login
+works. `matrix_oslogin` in `challoc-bench` is the one place that decides
+(the create flag, the login user of a cell, `matrix ssh`).
 
 ## Lanes: one prefix per worktree
 
@@ -390,3 +423,36 @@ and `kernel.kptr_restrict` is 0 on the VMs.
   run `challoc-bench ssh arm64 -- true` once to have gcloud mint it.
 - A running 16-vCPU C4A or C4 costs roughly $0.70 to $0.90 per hour. Stop
   the VMs when idle; `start` brings them back with the disk intact.
+
+## Files
+
+- `challoc-bench`: the driver (this README's commands; `challoc-bench` with
+  no argument prints its header).
+- `quick-perf.sh`: `challoc-bench quick-perf`'s VM side, per-operation
+  counters with `perf stat` attached from the host ("Two tiers on a VM").
+- `perf-record.sh arm64|amd64 ROW VARIANT`: the `perf record` companion of
+  `quick-perf.sh`: symbol shares of one row under one library, the DSOs
+  copied out of the finished container for `perf report --symfs`; the
+  attribution CLAUDE.md asks for before a fast-path change.
+- `drun.sh`: the one `docker run` line the two scripts above and
+  `probes/churn-run.sh` share (the repository at `/src`, the architecture's
+  target volume, `IMAGE`, default `challoc-dev:<arch>`).
+- `matrix-cell.sh`: the VM side of `matrix` (the steps, the `MATRIX ...`
+  summary line); `native-rows.sh`: the `ab.sh` rows run natively and in the
+  container on a Chainguard OS host (the four-way tables' host-native
+  section); `thp-ab.sh prep|run`: the THP A/B on a THP=always host.
+- `cpuid-dump.c`: the raw CPUID/HWCAP registers a CPU cell captures (the
+  fixtures of `src/sys/cpu.rs`); `pmu-probe.c`: does `perf_event_open`
+  count on a host without a `perf` binary (Chainguard OS).
+- In `bench/probes/`, used from a VM host beside a detached soak:
+  `valkey-perf-sidecar.sh` (root: `perf stat -I 1000` for each server's
+  life, 60 s `perf record` windows, `INFO commandstats` snapshots),
+  `valkey-defrag-sidecar.sh` (no root: `loglevel verbose` so defrag's
+  decision lines land in the server log, `INFO` sampled once a second),
+  `churn-run.sh` (the churn probe under challoc and jemalloc with the cache
+  knobs), `calloc-zero-campaign.sh` (the 2026-09-18 calloc reproduction
+  campaign, inside the container, detached with the log under `~/logs/`);
+  and two `LD_PRELOAD` sidecars built from source: `statsdump.c` (an
+  `atexit` `malloc_stats_print` for a program that cannot call it, the JVM
+  rows) and `arenasample.c` (per-second arena RSS attribution from
+  `malloc_stats_print`).
