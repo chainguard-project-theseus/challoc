@@ -328,6 +328,22 @@ One line per task, newest at the bottom of each section. Keep it terse.
   the amd64 VM with the new target: 523 passed, 0 failed, container tests
   ok, `pagemap_guard` on/off ok.
 - Phase 2.5 task 14 (Chainguard OS cells) DONE, commits 22c32b6 (the cells: `bench/gce/challoc-bench` `cgos-arm64`/`cgos-amd64` with the bootc provisioning, `MATRIX_ADOPT=<vm>`, transient systemd units, the gcloud user instead of OS Login, the `scorecard-cgos-<arch>.md` fetch; `bench/gce/matrix-cell.sh` `cgos` mode: `make test` under podman's default profile and `--privileged`, the probe line three ways including natively, the host capture, `make test-cgroup`, one scorecard; `bench/gce/pmu-probe.c`; `bench/gce/README.md`; the runbook preamble) and 228ec92 (the measurements: `bench/results/2026-09-19-chainguard-os-cells.md`, `2026-09-19-{aarch64,x86_64}-cgos-four-way.md` with `-ab`/`-ruby`/`-python`, `2026-09-19-cgos-metal-arm64.md`, `scorecard-cgos-{arm64,amd64}.md`, `matrix/2026-09-19-cgos-*.log`, `bench/gce/native-rows.sh`). Ran on the coordinator's adopted VMs `challoc-lane-e-cgos-{arm64,amd64}` (c4a-standard-8 / c4-standard-8, image `kirkland-server-hypervisor-*-20260916`, kernel 6.18.49-r2-gcp-6.18, glibc 2.44-r6, THP `always`) through the driver (`MATRIX_ADOPT`), library `4864d4b`. Report lines: native equals `--privileged` on both hosts (`guard_install=yes mseal=yes process_madvise=pidfd_self process_madvise_free=yes`), podman's default profile hides mseal and process_madvise as Docker's does; `anon_name=no` in every mode (no `CONFIG_ANON_VMA_NAME` in the product's kernel); `thp=always mthp=2M`; arm64 `mte=no pac=yes lse2=yes bti=yes sve=yes l1d=64K l2=2M`, x86_64 `lam=no la57_enabled=yes cldemote=yes waitpkg=no l1d=48K l2=2M`. `make test`: x86_64 384+116+23 passed / 0 failed in both podman modes; arm64 `--privileged` 523/0, default 383/1 (`rseq::tests::probe_reads_the_registered_area` saw one mm_cid over 8 threads once; 4/4 on rerun). The 512m churn container stalled (RSS 403 -> 309/310 MiB and flat) in 7 of 27 default-configuration runs on arm64 and 4 of 18 on x86_64, 0 of 24 with `lazy_band:false`: the task 10 lazy band crossed mid-purge (podman charges no page cache to the cgroup, so usage = RSS drops under 70% after the first class and the rest goes out as `MADV_FREE`). 256m churn, lazy purge and the 300 s oscillation `ok` on both. Four-way (3 rounds): rows behind by more than 10% are the task 1 mechanisms plus THP `always` on the huge tier (Python json/regex RSS +30% against glibc: challoc 75 -> 89 MiB, jemalloc 83 -> 95, glibc 68 -> 68); valkey1 against jemalloc +4.0% / +7.2% (Ubuntu +1.9% / +3.3%), against tcmalloc 10% ahead on Axion (was 19.6% behind: tcmalloc fell 8.5 -> 6.4 M ops/s on this host). THP measured per allocator: challoc's class regions take no huge pages under `always` (32 MiB AnonHugePages on a 585 MiB heap, jemalloc/mimalloc 586, glibc 564 on arm64; larson16 4 MiB vs 84..172); the control at `madvise` reads challoc vs jemalloc +0.1% / -3.8% on valkey1, so the cross-host movement is THP; challoc's own `thp:always` gives 7.01 -> 7.39 (parity with jemalloc) on Axion and 15.25 -> 17.81 (5% ahead) on the 8581C for RSS 585 -> 640 MiB. Scorecard lines (8 vCPU, 3 rounds) next to the same-shape cpu-c4a/cpu-c4 lines: arm64 valkey1 +6.4% (cpu-c4a +1.2%), mstress -35.7% (-46.0%), RSS larson10 0.65 (0.83); x86_64 larson1 +6.4% (-2.0%), valkey1-free -1.2% (-15.4%), RSS larson10 0.83 (1.05); different commits (`4864d4b` vs `7b2c50b`). Host-native and in-container rows agree to a point or two on every row. Metal: `c4a-highmem-96-metal` created 22:35:42Z and 22:40:48Z, deleted by 22:38:42Z and 22:51:46Z (ssh in 66 and 120 s, not 8..15 minutes): Neoverse N3 `0xd8e`, 96 cores, no `mte` in Features and none in dmesg on a `CONFIG_ARM64_MTE=y` kernel, PAC/BTI/SVE2/SME present, `armv8_pmuv3_0` counts through `perf_event_open` natively and in a `--privileged` container (`EPERM` in a default one; no perf binary in Wolfi or on the host), `idpf`, UEFI, `verity=require`, `/dev/kvm` + Firecracker 1.17.0; native rows challoc vs jemalloc larson1 +14.7%, larson16 +12.9%, valkey1 +6.2%, vs tcmalloc valkey1 -4.2%.
+- Phase 2.5 coordinator (2026-09-20), the aarch64 larson1 scorecard
+  drift attributed before any new work: `challoc-bench quick-perf arm64
+  OLD=0f5fea8` on the reference VM reads +9.1 instructions and +1.2
+  cycles per larson1 operation (255.4 -> 264.5, 71.0 -> 72.2; larson10
+  +9.1 / +2.2; alloc-test1 +3.0% instructions) with L1D and dTLB misses
+  flat; a per-commit instruction bisect over every `src/` commit in
+  0f5fea8..856f103 (two runs each) puts the whole step in 4864d4b (task
+  8's dispatch to the per-CPU paths on the shipped default: `tbnz` in
+  `malloc`, `mov`+`tbnz` in `free`, the rest in the same commit's refill
+  and flush paths) and finds every later commit byte-identical on the
+  row (264.5 in 22 runs, cycles 71.9..72.8), so the +7.6% -> +8.4% move
+  between 34af56c and 856f103 is scorecard noise, lane C's slice hooks
+  and lane B's four commits cost nothing there, and the row's band is
+  +7.5..+8.5% from 4864d4b on. `bench/results/2026-09-20-aarch64-larson1-drift.md`
+  (commit 95be6ff). Reference VM started and stopped by the coordinator.
+
 - (c) 0604bb3: `bench/ruby-soak.sh`, `make ruby-soak`, `bench/ruby/soak.rb` (16
   threads, bursts, growing long-lived set, full GC every 30 s, GC.compact at
   minute 5, 600 s; VmRSS/VmHWM, GC.stat, mallctl stats via fiddle every 5 s;
@@ -1427,6 +1443,37 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
 - Phase 2.5 task 14: the product's kernel has **no `CONFIG_ANON_VMA_NAME`**, so `anon_name=no` natively and challoc's `[anon:challoc:classes]` names never appear in `smaps` on Chainguard OS; the RSS attribution tooling of the four-way files (by mapping name) does not work there. A request to the kernel team if the names are wanted in production, otherwise the fallback is exercised and fine. Also no `X86_5LEVEL`/`ADDRESS_MASKING` (LAM impossible from this kernel), `PREEMPT_NONE` on arm64 vs `PREEMPT_DYNAMIC`+`PREEMPT_LAZY` on x86_64.
 - Phase 2.5 task 14: lane A's `rseq::tests::probe_reads_the_registered_area` failed once on the arm64 cell under podman's default profile ("1 distinct mm_cid values over 8 busy threads") and passed 4/4 on rerun (and 2/2 on x86_64): with the pre-6.19 `mm_cid` on a VM whose vCPUs were being scheduled onto the host, 8 threads x 50 ms can all read one id. A flaky assertion, not a seccomp effect; worth a longer window or a retry in the test.
 - Phase 2.5 task 14: what the coordinator must check by hand: (1) files outside the lane's partition: none under `src/`; `bench/gce/challoc-bench`, `bench/gce/matrix-cell.sh`, `bench/gce/README.md` (shared with lane D and the coordinator's matrix work: the edits are additive, new cells and a new mode, the Docker cells' paths are untouched), `docs/runbooks/chainguard-os-gce.md` (preamble only, the human's text untouched), `docs/plan.md` (task 14 and the lane E bullet); (2) the cgos cells' `outcome=FAIL` in the matrix summary is the churn stall (and the one rseq flake on arm64), not a build or API failure; (3) the scorecard lines are 8 vCPU on a 6.18 kernel with THP `always` at `4864d4b`, compared here with the `7b2c50b` same-shape cells, so a same-commit reference line does not exist; (4) the four-way is 3 rounds, not the plan's 5; (5) the metal probe's `systemd-detect-virt` reads `google`, not the runbook's `none`, and `bootc status --json` has no `composefs=` token on this build (the `findmnt` `verity=require` line is the evidence), two runbook checks the human may want to reword; (6) Wolfi has no `perf` package, so nothing here ran perf (the PMU test is `bench/gce/pmu-probe.c`), and there is no perf on the host either: a cgos perf attribution needs a perf binary brought along.
+- Phase 2.5 decisions for the human (coordinator, 2026-09-20), with the
+  numbers, nothing changed in the code:
+  (1) the per-CPU mode default (`percpu_arena`, task 8): still NO-GO for
+  `auto` = per-CPU. On `ab` (5 rounds) the mode costs, against thread
+  caches: aarch64 larson1 +5.3%, larson10 +9.4%, xmalloc +18.9%, valkey1
+  +4.7%, alloc-testN +4.8% (`2026-09-19-aarch64-task8-percpu-fastpath-ab.md`);
+  x86_64 larson1 +3.7%, larson10 +16.6%, xmalloc +16.1%, valkey1 +37.8%,
+  alloc-testN +3.9% (`2026-09-19-x86_64-task8-percpu-fastpath-ab.md`).
+  Attributed: +47 (Axion) / +33 (8581C) instructions per operation of
+  section cost, which is the design's floor; the larson10 / xmalloc rows
+  are the per-CPU flush's copies (unattributed to an instruction). The
+  dispatch alone, which the default does pay, is +9 instructions and
+  +1.8% of larson1 cycles on the C4A (the drift entry above). Options:
+  keep `auto` = thread caches (the lanes' recommendation), or accept the
+  gap for the thread-migration workloads the mode is for (no row in the
+  suite shows a win yet: lane D's `MODE=percpu` campaign, queued, is the
+  test). (2) the `thp` default on `THP=always` hosts (Chainguard OS ships
+  `always`, 2 MiB `inherit`): challoc's regions take no huge pages under
+  `always` (32 MiB of AnonHugePages on a 585 MiB Valkey heap against
+  jemalloc's whole heap), so on the product's host challoc gives up +4.0%
+  (Axion) / +7..10% (8581C) of valkey1 against jemalloc where the same
+  pair reads +0.1% / -3.8% on a `madvise` host; `MALLOC_CONF=thp:always`
+  natively brings valkey1 to parity on Axion (7.01 -> 7.39 M ops/s vs
+  7.38) and 5% ahead on the 8581C (15.25 -> 17.81 vs 16.95) for +9.5%
+  RSS on that heap and +38..45% on larson16's retained memory, with 280
+  deferred splits per run (`2026-09-19-chainguard-os-cells.md`, section
+  6). Options: keep `never` (RSS first, the soak criterion), make
+  `thp:always` the default only when the host reads `thp=always`, or a
+  size-banded `always` (lane B's design item); the prctl half of task 16
+  (opt-in, in flight) is independent of this choice.
+
 - The Cascade Lake's xmalloc row moved 3.5% (disjoint lists) and then 2.7% (overlapping) between `old` and the new lock with the same `pause` in both; the C4 and C4A (same code, PMU available) show nothing. The mechanism is one atomic load and a `match` on the slow path; the likeliest cause is code placement on the Cascade Lake (memory note on page aliasing). It is recorded as open in the results file; a sampler split on a C2 lab would settle it (no PMU there).
 - The geometry numbers say the 1024 ladder is right on 1 MiB L2 parts for throughput, and that 512 buys 12..15% of larson's RSS; if RSS on small parts ever matters more than 1..3% of larson, the knob exists and the model in 6.2 says where it stops paying (256 loses 6% on larson1).
 - Raw `ab` `.md` files on the VMs were deleted by the later `sync --delete` passes (they lived under `bench/results/` on the VM); the `~/logs/ab-*.log` copies, which carry the same tables from `## Sorted scores` on, are what is committed as `2026-09-19-lane-c-ab-*.log`. Worth a driver change: `sync` could exclude `bench/results/2026-*` on the receiver, or `ab` could write under `~/logs`.
