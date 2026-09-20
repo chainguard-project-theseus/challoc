@@ -399,7 +399,11 @@ Files:
   round), sorted tps and medians written to
   `bench/results/<date>-<arch>-postgres.md` (`RESULT`, `ALLOCS`, `ROWS`,
   `SCALE`, `DURATION`, `CONN_DURATION`, `CLIENTS_A`, `CLIENTS_B`,
-  `HOST_KIND`). A protocol run is about two hours per architecture.
+  `HOST_KIND`; `REPORT_ONLY=1` re-renders the file from a finished run's
+  raw samples and scores under `OUT`). A protocol run is about two hours
+  per architecture; a sampler pass over 500 backends takes tens of
+  seconds on a saturated host, so the 500-client row gets a few passes
+  per run (the table says how many).
 - `four-way.sh`: assembles the comparison matrix of Phase 2.5 task 1
   (`bench/results/<date>-<arch>-gce-four-way.md`) from one VM's same-run
   outputs: an `ab.sh` result (`AB=`, the Phase 0 set and the Valkey model rows
