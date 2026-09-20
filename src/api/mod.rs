@@ -518,7 +518,7 @@ mod tests {
         "class.rs:ClassState.inner",
         "class.rs:SetTable.tables",
         "class.rs:SlabTable.inner",
-        "heap.rs:Shared.stats",
+        "heap/shared.rs:Shared.stats",
         "huge.rs:Huge.inner",
         "meta.rs:Meta.inner",
         "purge/background.rs:static.STATE",
@@ -556,7 +556,7 @@ mod tests {
                         state(s.tables()[c].raw_lock().is_locked(), &std::format!("table {c}"));
                     }
                 }
-                "heap.rs:Shared.stats" => state(s.stats.raw().is_locked(), "process stats"),
+                "heap/shared.rs:Shared.stats" => state(s.stats.raw().is_locked(), "process stats"),
                 "huge.rs:Huge.inner" => state(s.huge.raw_lock().is_locked(), "huge"),
                 "meta.rs:Meta.inner" => state(s.meta.raw_lock().is_locked(), "meta"),
                 "purge/background.rs:static.STATE" => state(purge::background::is_locked(), "background state"),
