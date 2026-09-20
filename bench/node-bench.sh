@@ -84,11 +84,11 @@ rm -rf "$OUT"; mkdir -p "$OUT" "$(dirname "$RESULT")"
 CHALLOC_LIB=
 case " $ALLOCS " in *" challoc "*)
   rev=$(resolve_rev "$REV")
-  printf '== building challoc (%s) into target/node/lib ... ' "$([ "$rev" = tree ] && echo "working tree, HEAD $(commit_short)$(tree_dirty && echo ' + uncommitted src changes')" || echo "$rev" | cut -c1-12)"
+  printf '== building challoc (%s) into target/node/lib ... ' "$(rev_label "$rev")"
   build_lib "$rev" "$WORK/lib"; CHALLOC_LIB=$WORK/lib/release/libchalloc.so
   echo "done, $(so_hash "$CHALLOC_LIB")";;
 esac
-lib_of() { case $1 in challoc) echo "$CHALLOC_LIB";; *) stock_lib "$1";; esac; }
+lib_of() { default_lib_of "$1"; }
 
 # ---- binding check ----------------------------------------------------------------
 NODE_VERSION=$("$NODE" --version 2>&1)
@@ -98,9 +98,7 @@ echo "== node: $NODE_VERSION (Wolfi ${NODE_PKG:-nodejs}), V8 $("$NODE" -p 'proce
 for a in $ALLOCS; do
   lib=$(lib_of "$a")
   mapped=$(env ${lib:+LD_PRELOAD=$lib} "$NODE" -e 'const fs=require("fs"); const s=new Set(); for (const l of fs.readFileSync("/proc/self/maps","utf8").split("\n")) { const m=l.match(/\S+$/); if (m && /\/lib(challoc|jemalloc|mimalloc|tcmalloc)[^\/ ]*\.so/.test(m[0])) s.add(m[0]); } console.log([...s].sort().join(" "))')
-  want=; [ -n "$lib" ] && want=$(readlink -f "$lib")
-  [ "$mapped" = "$want" ] || die "$a: node maps '$mapped', expected '${want:-nothing}'"
-  echo "   $a: maps ${mapped:-no allocator library (glibc malloc)}"
+  maps_expect "$a" node "$lib" "$mapped"
 done
 
 # ---- one process row ----------------------------------------------------------------
@@ -115,13 +113,7 @@ run_node_row() {
     startup)    RT_OUT=$rt "$BIN/rt" env ${lib:+LD_PRELOAD=$lib} "$NODE" -e 0 > "$log" 2>&1 || true;;
     json_churn) RT_OUT=$rt "$BIN/rt" env ${lib:+LD_PRELOAD=$lib} "$NODE" "$SCRIPTS/json_churn.js" "$JSON_ITERS" > "$log" 2>&1 || true;;
   esac
-  if [ -s "$rt" ] && [ "$(wc -l < "$rt")" = 1 ]; then
-    read -r el _us _sy rss ex < "$rt"
-  else
-    el=-; rss=-; ex=1; echo "  $tag run $n: rt wrote $(wc -l < "$rt" 2>/dev/null || echo 0) lines, expected 1; see $log" >&2
-  fi
-  [ "$ex" = 0 ] || { el=-; echo "  $tag run $n failed (exit $ex), see $log" >&2; }
-  echo "$el $rss $ex" >> "$OUT/$tag.scores"
+  record_rt "$tag" "$rt" "$log"
 }
 PROC_ROWS=; for row in $ROWS; do [ "$row" = server ] || PROC_ROWS="$PROC_ROWS $row"; done; PROC_ROWS=${PROC_ROWS# }
 
@@ -136,10 +128,7 @@ if [ -n "$PROC_ROWS" ]; then
     printf '   round %d done, load %s, %s\n' $r "$(loadavg)" "$(date -u +%T)"
     r=$((r+1))
   done
-  for row in $PROC_ROWS; do for a in $ALLOCS; do
-    n=$(wc -l < "$OUT/$row.$a.scores")
-    [ "$n" -eq $((ROUNDS+1)) ] || die "$OUT/$row.$a.scores has $n lines, expected $((ROUNDS+1)): concurrent run?"
-  done; done
+  check_score_lines "$PROC_ROWS" "$ALLOCS" $((ROUNDS+1))
 fi
 
 # ---- the server row ------------------------------------------------------------------
@@ -212,23 +201,10 @@ srv_ab() { ab_fields "$OUT/server.$1/$2.ab" | cut -d' ' -f"$3"; }   # 1 reqs, 2 
 srv_name_kb() { awk -v n="$2" '$1==n {print $2; f=1} END {if (!f) print "-"}' "$OUT/server.$1/smaps.byname"; }
 # rps_pct A B: challoc's req/s against B's (positive = challoc worse = fewer req/s)
 rps_pct() { awk -v a="$1" -v b="$2" 'BEGIN {if (a=="-"||b=="-"||a==""||b==""||a==0) print "-"; else printf "%+.1f%%", (b/a-1)*100}'; }
-describe() {
-  case $1 in
-    challoc)  echo "LD_PRELOAD=$CHALLOC_LIB ($([ "$REV" = tree ] && echo "working tree, HEAD $(commit_short)$(tree_dirty && echo ' + uncommitted src changes')" || echo "$REV"), sha256 $(so_hash "$CHALLOC_LIB"))";;
-    jemalloc) echo "LD_PRELOAD=$JEMALLOC_LIB (Wolfi $(stock_version jemalloc))";;
-    glibc)    echo "no LD_PRELOAD ($(stock_version glibc) malloc)";;
-    mimalloc) echo "LD_PRELOAD=$BIN/libmimalloc.so ($(stock_version mimalloc), bench/build.sh)";;
-    tcmalloc) echo "LD_PRELOAD=$TCMALLOC_LIB (Wolfi $(stock_version tcmalloc), gperftools without profiler hooks)";;
-  esac
-}
+describe() { case $1 in challoc) describe_challoc "$CHALLOC_LIB" "$REV";; *) describe_stock "$1";; esac; }
 has() { case " $ALLOCS " in *" $1 "*) return 0;; *) return 1;; esac; }
 {
-  echo "# Node.js benchmark rows, $DATE, $ARCH"
-  echo
-  echo "- commit: $(commit_short)$(tree_dirty && echo ' (uncommitted changes in src/)')"
-  echo "- date: $STAMP"
-  echo "- host: ${HOST_CPU:-unknown CPU}, $PROCS CPUs visible to the container${HOST_KIND:+; $HOST_KIND}"
-  echo "- kernel: $(uname -r), container: Wolfi"
+  result_header "Node.js benchmark rows"
   echo "- node: $NODE_VERSION (Wolfi ${NODE_PKG:-nodejs}), V8 $("$NODE" -p 'process.versions.v8'); the same binary under every allocator, LD_PRELOAD only"
   has_row server && echo "- load generator: $AB_VERSION (Wolfi apache2-utils; no wrk or oha package in Wolfi, checked 2026-09-20), two processes at once, \`-k -l -c $((CONNS/2)) -t $DURATION -n $AB_N\` on /json and on /blob"
   echo "- rows: startup = \`node -e 0\`; json_churn = bench/node/json_churn.js $JSON_ITERS (JSON.parse(JSON.stringify(obj)) over a $JSON_BYTES-byte JSON document, $JSON_ITERS times, one process); server = bench/node/server.js under \`node --max-old-space-size=$OLD_SPACE\`, GET /json (a small JSON object built and stringified per request) and GET /blob (a 1 MiB body from a per-request Buffer.allocUnsafe(1 << 20), filled, written in 64 KiB chunks with Content-Length), $DURATION s per allocator after a $WARM_N-request warm-up per endpoint, once per allocator"

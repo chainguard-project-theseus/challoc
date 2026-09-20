@@ -114,17 +114,15 @@ OCCUPANCY=${OCCUPANCY:-0}
 MS_INTERVAL=${MS_INTERVAL:-20}
 BASELINES=${BASELINES:-}
 SAVE_BASELINE=${SAVE_BASELINE:-0}
-BASELINE_DIR=$ROOT/target/baselines
 VALKEY_TAG=${VALKEY_TAG:-9.1.2}
 WORK=$ROOT/target/valkey
 SRC=$WORK/src-$VALKEY_TAG
 SRC_JE=$WORK/src-$VALKEY_TAG-jemalloc
 CLI=$SRC/src/valkey-cli
 VB=$SRC/src/valkey-benchmark
-ARCH=$(uname -m)
-DATE=$(date -u +%F)
-# COMMIT overrides git's answer (a tree synced to a VM from a git worktree has no usable .git).
-COMMIT=${COMMIT:-$(git -c safe.directory='*' rev-parse --short HEAD 2>/dev/null || echo unknown)}
+# ARCH, DATE and BASELINE_DIR come from bench/lib.sh. COMMIT overrides git's
+# answer (a tree synced to a VM from a git worktree has no usable .git).
+COMMIT=${COMMIT:-$(commit_short)}
 RESULT=$RESULT_DIR/$DATE-$ARCH-valkey-soak.md
 BASE=$BASELINE_DIR/valkey-soak-jemalloc-$ARCH
 
@@ -145,9 +143,7 @@ fi
   || { echo "valkey-soak: $SRC is not built; run 'make valkey STAGE=build' first" >&2; exit 1; }
 command -v memtier_benchmark >/dev/null || { echo "valkey-soak: memtier_benchmark not installed" >&2; exit 1; }
 
-# One protocol run at a time (see bench/run.sh).
-exec 9>"$ROOT/target/bench.lock"
-flock -n 9 || { echo "another bench run holds target/bench.lock; wait for it or check docker ps" >&2; exit 1; }
+take_bench_lock   # one protocol run at a time (bench/lib.sh)
 rm -rf "$OUT"
 mkdir -p "$OUT" "$RESULT_DIR"
 

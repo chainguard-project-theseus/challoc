@@ -165,13 +165,7 @@ run_ruby_row() {
     gc_churn) RT_OUT=$rt "$BIN/rt" "$@" --disable-gems "$ROOT/bench/ruby/gc_churn.rb" "$GC_ROUNDS" "$GC_FORCED" > "$log" 2>&1 || true;;
     *)        RT_OUT=$rt $DRIVER --runner time -o simple -e "$a::$OUT/wrap-$a.sh" "$(bench_file "$row")" > "$log" 2>&1 || true;;
   esac
-  if [ -s "$rt" ] && [ "$(wc -l < "$rt")" = 1 ]; then
-    read -r el _us _sy rss ex < "$rt"
-  else
-    el=-; rss=-; ex=1; echo "  $tag run $n: rt wrote $(wc -l < "$rt" 2>/dev/null || echo 0) lines, expected 1; see $log" >&2
-  fi
-  [ "$ex" = 0 ] || { el=-; echo "  $tag run $n failed (exit $ex), see $log" >&2; }
-  echo "$el $rss $ex" >> "$OUT/$tag.scores"
+  record_rt "$tag" "$rt" "$log"
 }
 
 # ---- rounds -------------------------------------------------------------------
@@ -184,10 +178,7 @@ while [ $r -le "$ROUNDS" ]; do
   printf '   round %d done, load %s, %s\n' $r "$(loadavg)" "$(date -u +%T)"
   r=$((r+1))
 done
-for row in $ROWS; do for a in $ALLOCS; do
-  n=$(wc -l < "$OUT/$row.$a.scores")
-  [ "$n" -eq $((ROUNDS+1)) ] || die "$OUT/$row.$a.scores has $n lines, expected $((ROUNDS+1)): concurrent run?"
-done; done
+check_score_lines "$ROWS" "$ALLOCS" $((ROUNDS+1))
 
 # ---- report -------------------------------------------------------------------
 list_of() { sorted_scores "$OUT/$1.$2.scores" 1; }
@@ -204,7 +195,7 @@ gc_kv() {
 describe() {
   case $1 in
     challoc)  echo "the --with-jemalloc ruby, DT_NEEDED libjemalloc.so.2 bound via rpath to $STAGE_LIB/libjemalloc.so.2 (challoc, quantum16, sha256 $STAGE_HASH)";;
-    jemalloc) echo "the same --with-jemalloc ruby with LD_PRELOAD=$JEMALLOC_LIB (Wolfi jemalloc $(apk list --installed 2>/dev/null | awk '/^jemalloc-[0-9]/ {print $1}' | sed 's/^jemalloc-//;s/-r[0-9]*$//' | head -1)); the stage is not mapped";;
+    jemalloc) echo "the same --with-jemalloc ruby with LD_PRELOAD=$JEMALLOC_LIB (Wolfi $(stock_version jemalloc)); the stage is not mapped";;
     glibc)    echo "the --without-jemalloc ruby, glibc malloc";;
     mimalloc) echo "the --without-jemalloc ruby with LD_PRELOAD=$BIN/libmimalloc.so ($(awk '/^mimalloc /{print $2}' "$BIN/versions.txt"))";;
     tcmalloc) echo "the --without-jemalloc ruby with LD_PRELOAD=$TCMALLOC_LIB (Wolfi tcmalloc-minimal $(apk_version tcmalloc-minimal))";;
@@ -212,12 +203,7 @@ describe() {
 }
 has() { case " $ALLOCS " in *" $1 "*) return 0;; *) return 1;; esac; }
 {
-  echo "# Ruby 3.4 benchmark rows, $DATE, $ARCH"
-  echo
-  echo "- commit: $(commit_short)$(tree_dirty && echo ' (uncommitted changes in src/)')"
-  echo "- date: $STAMP"
-  echo "- host: ${HOST_CPU:-unknown CPU}, $PROCS CPUs visible to the container${HOST_KIND:+; $HOST_KIND}"
-  echo "- kernel: $(uname -r), container: Wolfi"
+  result_header "Ruby 3.4 benchmark rows"
   echo "- ruby: $($(ruby_cmd "$host") -v) (tag $RUBY_TAG built by contrib/ruby/build.sh with Wolfi's flags, --enable-yjit configured but YJIT not enabled at run time), installed under target/ruby/install-{challoc,glibc}"
   echo "- benchmark-driver $BD_VERSION ($BD_COMMIT), --runner time -o simple, one job per process, ruby --disable-gems for the ruby/benchmark rows"
   echo "- load average at start: $LOAD0; at end: $(loadavg); $(( $(date +%s) - T_START )) s total"

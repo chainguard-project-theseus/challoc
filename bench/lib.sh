@@ -7,7 +7,16 @@
 # comparable across hosts), running one row under one library and scoring it,
 # building a variant library from a git rev or the working tree into its own
 # CARGO_TARGET_DIR, sorted-list/median arithmetic, the cached-baseline file
-# name, and the bench lock every tier shares with run.sh.
+# name, the bench lock every tier shares with run.sh, and the pieces the
+# consumer harnesses (python, node, jvm, postgres, ruby) share.
+#
+# POSIX sh has no `local`: every function here writes plain globals, and
+# some callers rely on them. run_row sets bench lib conf tag n log rt (and
+# el rss ex s from the rt line); run_redis lib conf log rt srv_rt; run_churn
+# lib conf tag secs class log ex; record_rt n el rss ex; check_score_lines
+# row a n; maps_expect want; ensure_probe src; build_lib rev tdir srcdir;
+# resolve_rev nothing. A harness that keeps its own lib, tag, n, row or a
+# across one of these calls must expect it changed.
 
 BIN=$ROOT/target/bench-bin
 PROCS=$(nproc)
@@ -320,7 +329,8 @@ run_row() {
   if [ "$CHALLOC_THP_COUNTERS" = 1 ]; then
     thp_snapshot "$OUT/$tag.$n.thp1"; thp_delta "$OUT/$tag.$n.thp0" "$OUT/$tag.$n.thp1" > "$OUT/$tag.$n.thp"; rm -f "$OUT/$tag.$n.thp0" "$OUT/$tag.$n.thp1"
   fi
-  read -r el _us _sy rss ex < "$rt"
+  if [ -s "$rt" ] && [ "$(wc -l < "$rt")" = 1 ]; then read -r el _us _sy rss ex < "$rt"
+  else el=-; rss=-; ex=1; echo "  $tag run $n: rt wrote $(wc -l < "$rt" 2>/dev/null || echo 0) lines, expected 1; see $log" >&2; fi
   case $bench in
     larson*)  s=$(awk '/Throughput/ {printf "%.1f", $3/1e6}' "$log");;
     xmalloc*) s=$(awk '/free\/sec/ {sub(",", "", $4); print $4}' "$log");;
@@ -449,6 +459,78 @@ build_lib() {
   [ -f "$tdir/release/libchalloc.so" ] || die "build of $rev produced no $tdir/release/libchalloc.so"
 }
 so_hash() { sha256sum "$1" | cut -c1-16; }
+
+# ---- what the consumer harnesses share ---------------------------------------
+# bench/python-bench.sh, node-bench.sh, jvm-bench.sh, postgres-bench.sh and
+# ruby-bench.sh have one shape (rounds of one process per row under rt,
+# allocators interleaved, a markdown results file with the same header);
+# these are the pieces they used to repeat.
+
+# tree_label: "working tree, HEAD <short>[ + uncommitted src changes]".
+tree_label() { echo "working tree, HEAD $(commit_short)$(tree_dirty && echo ' + uncommitted src changes')"; }
+# rev_label REV: tree_label for "tree", else the rev cut to 12 characters
+# (the build line's label; the header's describe line keeps REV as spelled).
+rev_label() { if [ "$1" = tree ]; then tree_label; else echo "$1" | cut -c1-12; fi; }
+# default_lib_of ALLOC: the LD_PRELOAD path of a harness allocator: challoc
+# is $CHALLOC_LIB (the harness's own build, set before the rounds), the
+# rest stock_lib. A harness with more variants wraps it (jvm-bench.sh).
+default_lib_of() { case $1 in challoc) echo "$CHALLOC_LIB";; *) stock_lib "$1";; esac; }
+# describe_stock ALLOC: the results-header line of a stock allocator.
+describe_stock() {
+  case $1 in
+    jemalloc) echo "LD_PRELOAD=$JEMALLOC_LIB (Wolfi $(stock_version jemalloc))";;
+    glibc)    echo "no LD_PRELOAD ($(stock_version glibc) malloc)";;
+    mimalloc) echo "LD_PRELOAD=$BIN/libmimalloc.so ($(stock_version mimalloc), bench/build.sh)";;
+    tcmalloc) echo "LD_PRELOAD=$TCMALLOC_LIB (Wolfi $(stock_version tcmalloc), gperftools without profiler hooks)";;
+    *) return 1;;
+  esac
+}
+# describe_challoc LIB REV: the same line for the harness's challoc build
+# (REV as the caller spelled it; "tree" = the working tree).
+describe_challoc() { echo "LD_PRELOAD=$1 ($([ "$2" = tree ] && tree_label || echo "$2"), sha256 $(so_hash "$1"))"; }
+# record_rt TAG RT LOG: read rt's "elapsed user sys maxrss exit" line for
+# run n of TAG (n = the lines already in $OUT/TAG.scores) and append
+# "elapsed maxrss exit" to it; a missing or malformed rt line, or a non-zero
+# exit, scores "-" and is said on stderr. Sets n el rss ex.
+record_rt() {
+  n=$(wc -l < "$OUT/$1.scores")
+  if [ -s "$2" ] && [ "$(wc -l < "$2")" = 1 ]; then
+    read -r el _us _sy rss ex < "$2"
+  else
+    el=-; rss=-; ex=1; echo "  $1 run $n: rt wrote $(wc -l < "$2" 2>/dev/null || echo 0) lines, expected 1; see $3" >&2
+  fi
+  [ "$ex" = 0 ] || { el=-; echo "  $1 run $n failed (exit $ex), see $3" >&2; }
+  echo "$el $rss $ex" >> "$OUT/$1.scores"
+}
+# check_score_lines ROWS ALLOCS EXPECTED: every $OUT/ROW.ALLOC.scores must
+# have EXPECTED lines (the warm-up plus the timed rounds); more means a
+# concurrent run wrote into OUT.
+check_score_lines() {
+  for row in $1; do for a in $2; do
+    n=$(wc -l < "$OUT/$row.$a.scores")
+    [ "$n" -eq "$3" ] || die "$OUT/$row.$a.scores has $n lines, expected $3: concurrent run?"
+  done; done
+}
+# result_header TITLE: the first lines of a results file: the title with
+# the date and architecture, commit, timestamp, host, kernel.
+result_header() {
+  echo "# $1, $DATE, $ARCH"
+  echo
+  echo "- commit: $(commit_short)$(tree_dirty && echo ' (uncommitted changes in src/)')"
+  echo "- date: $STAMP"
+  echo "- host: ${HOST_CPU:-unknown CPU}, $PROCS CPUs visible to the container${HOST_KIND:+; $HOST_KIND}"
+  echo "- kernel: $(uname -r), container: Wolfi"
+}
+# maps_expect ALLOC WHAT LIB MAPPED [SUFFIX]: the binding check. MAPPED (the
+# allocator libraries WHAT mapped, from /proc/<pid>/maps) must be exactly
+# LIB resolved (readlink -f: maps shows libtcmalloc_minimal.so.4.6.5 for
+# the .so.4 link), or nothing when LIB is empty (glibc). Dies otherwise,
+# prints the "   ALLOC: maps ..." line with SUFFIX appended. Sets want.
+maps_expect() {
+  want=; [ -n "$3" ] && want=$(readlink -f "$3")
+  [ "$4" = "$want" ] || die "$1: $2 maps '$4', expected '${want:-nothing}'"
+  echo "   $1: maps ${4:-no allocator library (glibc malloc)}${5:-}"
+}
 
 # ---- cached baselines --------------------------------------------------------
 

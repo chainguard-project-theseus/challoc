@@ -4,9 +4,9 @@ Benchmark protocol for challoc (docs/plan.md, "Benchmark protocol"). Everything
 runs inside the dev container on the native architecture; emulated x86_64 is
 never used for numbers.
 
-    make bench            build the programs (once), cargo build --release,
-                          run the protocol, write bench/results/<date>-<arch>.md
-    make bench-build      just fetch and build the programs
+    make bench-build      fetch and build the benchmark programs (once per target volume)
+    make bench            LEGACY: the Phase 0 protocol runner (bench/run.sh, bench/profile.sh),
+                          kept for reference; the tiers below are what results files come from
     make quick [OLD=rev]  fast tier: ~2.5 min go/no-go for the working tree vs OLD
                           (PERF=1 adds per-op counters where perf exists)
     make ab VARIANTS=...  protocol tier A/B: the table results files are made of
@@ -230,7 +230,7 @@ unchanged and remains the acceptance run.
 
 Files:
 
-- `lib.sh`: what the tiers share: the protocol rows as command lines
+- `lib.sh`: what the tiers and the consumer harnesses share: the protocol rows as command lines
   (`bench_args`, including `valkey1`, `valkey1-free`, `redis`,
   `ruby-churn`), running and scoring one row (`run_row`, `run_redis`, the
   `PIN` experiment), operation counts for per-op counters (`ops_of`), the
@@ -238,7 +238,15 @@ Files:
   building a variant from a rev or the working tree with its own
   `CARGO_TARGET_DIR` and remapped paths (`build_lib`), sorted lists,
   medians, overlap and percentage helpers, the baseline file name and row
-  parser, and the bench lock shared with `run.sh`.
+  parser, the bench lock shared with `run.sh`, and the pieces every consumer
+  harness (python, node, jvm, postgres, ruby) repeats: the allocator
+  description lines of a results header (`describe_stock`,
+  `describe_challoc`), the `LD_PRELOAD` path of an allocator
+  (`default_lib_of`), reading `rt`'s line into a score file (`record_rt`),
+  the concurrent-run check on the score files (`check_score_lines`), the
+  common header lines (`result_header`) and the `/proc/<pid>/maps` binding
+  check (`maps_expect`). Its functions set globals, not locals (POSIX sh):
+  the comment at the top of the file names the ones callers rely on.
 - `quick.sh`, `ab.sh`, `baseline.sh`, `scorecard.sh`: the two tiers, the
   cache and the trend record, above.
 - `pin.c`: `sched_setaffinity` to a CPU list, then exec (`PIN=1`).
@@ -251,13 +259,20 @@ Files:
   user, sys, max RSS and exit code from `wait4`, appended to `$RT_OUT`.
 - `sampler.c`: `perf record` replacement (Wolfi has no perf): a SIGPROF PC
   sampler preloaded after the allocator; writes `count module offset` lines.
-- `run.sh`: one warm-up plus `RUNS` (5) timed runs per benchmark and
-  allocator (`challoc jemalloc glibc mimalloc tcmalloc`), medians and raw runs into the
-  results file. larson and xmalloc-test are fixed-duration, so they are scored
-  by the throughput they print; redis by redis-benchmark's requests/second.
-- `profile.sh`: larson under challoc with the sampler, attributed to symbols
-  (`nm`) and instructions (`objdump`), flagging lock and atomic RMW
-  instructions. Appended to the results file by `run.sh`.
+- `run.sh` (legacy, `make bench`): the Phase 0 protocol runner, one warm-up
+  plus `RUNS` (5) timed runs per benchmark and allocator (`challoc jemalloc
+  glibc mimalloc tcmalloc`), medians and raw runs into the results file.
+  larson and xmalloc-test are fixed-duration, so they are scored by the
+  throughput they print; redis by redis-benchmark's requests/second. Kept
+  for reference and for reading the Phase 0 and Phase 1 results files it
+  wrote; since Phase 1.5 every results file comes from `ab.sh` (`make ab`),
+  `scorecard.sh` or a consumer harness, and `lib.sh` carries the same rows
+  (`bench_args`, `run_row`).
+- `profile.sh` (legacy): larson under challoc with the sampler, attributed
+  to symbols (`nm`) and instructions (`objdump`), flagging lock and atomic
+  RMW instructions. Appended to the results file by `run.sh`; the sampler
+  itself (`sampler.c`) is still used by hand for attribution
+  (`bench/results/*` "sampler" sections).
 - `valkey-soak.sh`: starts `valkey-server` from the challoc tree built by
   `contrib/valkey/build.sh` and from an unpatched clone of the same tag built
   with bundled jemalloc 5.3.0 (`target/valkey/src-<tag>-jemalloc`, built on

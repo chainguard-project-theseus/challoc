@@ -126,13 +126,13 @@ case " $ALLOCS " in *" challoc "*)
     [ -f "$CHALLOC_LIB" ] || die "REPORT_ONLY=1 but no $CHALLOC_LIB from the measured run"
   else
     rev=$(resolve_rev "$REV")
-    printf '== building challoc (%s) into target/postgres/lib ... ' "$([ "$rev" = tree ] && echo "working tree, HEAD $(commit_short)$(tree_dirty && echo ' + uncommitted src changes')" || echo "$rev" | cut -c1-12)"
+    printf '== building challoc (%s) into target/postgres/lib ... ' "$(rev_label "$rev")"
     build_lib "$rev" "$WORK/lib"
     chmod 644 "$CHALLOC_LIB"
     echo "done, $(so_hash "$CHALLOC_LIB")"
   fi;;
 esac
-lib_of() { case $1 in challoc) echo "$CHALLOC_LIB";; *) stock_lib "$1";; esac; }
+lib_of() { default_lib_of "$1"; }
 
 # ---- cluster ------------------------------------------------------------------------
 [ "$REINIT" = 1 ] && rm -rf "$PGDATA"
@@ -244,10 +244,7 @@ while [ $r -le "$ROUNDS" ]; do
   printf '   round %d done, load %s, %s\n' $r "$(loadavg)" "$(date -u +%T)"
   r=$((r+1))
 done
-for row in $ROWS; do for a in $ALLOCS; do
-  n=$(wc -l < "$OUT/$row.$a.scores")
-  [ "$n" -eq $((ROUNDS+1)) ] || die "$OUT/$row.$a.scores has $n lines, expected $((ROUNDS+1)): concurrent run?"
-done; done
+check_score_lines "$ROWS" "$ALLOCS" $((ROUNDS+1))
 
 # ---- report ---------------------------------------------------------------------------
 # col_median FILE COL: median of column COL over the timed runs (line 2 on).
@@ -295,15 +292,7 @@ rss_med() {
   done | awk '$1!="-"' | sort -n | awk '{a[NR]=$1} END {if (NR) print a[int((NR+1)/2)]; else print "-"}'
 }
 rss_mib() { kib_to_mib "$(rss_med "$1" "$2" "$3")"; }
-describe() {
-  case $1 in
-    challoc)  echo "LD_PRELOAD=$CHALLOC_LIB ($([ "$REV" = tree ] && echo "working tree, HEAD $(commit_short)$(tree_dirty && echo ' + uncommitted src changes')" || echo "$REV"), sha256 $(so_hash "$CHALLOC_LIB"))";;
-    jemalloc) echo "LD_PRELOAD=$JEMALLOC_LIB (Wolfi $(stock_version jemalloc))";;
-    glibc)    echo "no LD_PRELOAD ($(stock_version glibc) malloc)";;
-    mimalloc) echo "LD_PRELOAD=$BIN/libmimalloc.so ($(stock_version mimalloc), bench/build.sh)";;
-    tcmalloc) echo "LD_PRELOAD=$TCMALLOC_LIB (Wolfi $(stock_version tcmalloc), gperftools without profiler hooks)";;
-  esac
-}
+describe() { case $1 in challoc) describe_challoc "$CHALLOC_LIB" "$REV";; *) describe_stock "$1";; esac; }
 has() { case " $ALLOCS " in *" $1 "*) return 0;; *) return 1;; esac; }
 # delta ROW ALLOC: challoc against ALLOC on tps (sign flipped: positive =
 # challoc slower), latency, p99, peak Pss, final Pss, per-backend Pss.

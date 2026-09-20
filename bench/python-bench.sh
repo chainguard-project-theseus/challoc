@@ -68,11 +68,11 @@ rm -rf "$OUT"; mkdir -p "$OUT" "$(dirname "$RESULT")"
 CHALLOC_LIB=
 case " $ALLOCS " in *" challoc "*)
   rev=$(resolve_rev "$REV")
-  printf '== building challoc (%s) into target/python/lib ... ' "$([ "$rev" = tree ] && echo "working tree, HEAD $(commit_short)$(tree_dirty && echo ' + uncommitted src changes')" || echo "$rev" | cut -c1-12)"
+  printf '== building challoc (%s) into target/python/lib ... ' "$(rev_label "$rev")"
   build_lib "$rev" "$WORK/lib"; CHALLOC_LIB=$WORK/lib/release/libchalloc.so
   echo "done, $(so_hash "$CHALLOC_LIB")";;
 esac
-lib_of() { case $1 in challoc) echo "$CHALLOC_LIB";; *) stock_lib "$1";; esac; }
+lib_of() { default_lib_of "$1"; }
 mode_env() { case $1 in malloc) echo "PYTHONMALLOC=malloc";; *) echo "";; esac; }
 
 # ---- binding check ----------------------------------------------------------------
@@ -82,9 +82,7 @@ for a in $ALLOCS; do
   lib=$(lib_of "$a")
   mapped=$(env ${lib:+LD_PRELOAD=$lib} "$PYTHON" -c 'import re; print(" ".join(sorted({l.split()[5] for l in open("/proc/self/maps") if re.search(r"/lib(challoc|jemalloc|mimalloc|tcmalloc)[^/ ]*\.so", l)})))')
   # /proc/self/maps shows the resolved file (libtcmalloc_minimal.so.4.6.5 for the .so.4 link)
-  want=; [ -n "$lib" ] && want=$(readlink -f "$lib")
-  [ "$mapped" = "$want" ] || die "$a: python maps '$mapped', expected '${want:-nothing}'"
-  echo "   $a: maps ${mapped:-no allocator library (glibc malloc)}"
+  maps_expect "$a" python "$lib" "$mapped"
 done
 # PYTHONMALLOC=malloc must be accepted (an unknown value makes python exit 1).
 env PYTHONMALLOC=malloc "$PYTHON" -c 'pass' || die "PYTHONMALLOC=malloc rejected by $PYTHON"
@@ -98,13 +96,7 @@ run_py_row() {
   log=$OUT/$tag.$n.out; rt=$OUT/$tag.$n.rt
   lib=$(lib_of "$a")
   RT_OUT=$rt "$BIN/rt" env ${lib:+LD_PRELOAD=$lib} $(mode_env "$m") "$PYTHON" "$PROBES/${w}_bench.py" > "$log" 2>&1 || true
-  if [ -s "$rt" ] && [ "$(wc -l < "$rt")" = 1 ]; then
-    read -r el _us _sy rss ex < "$rt"
-  else
-    el=-; rss=-; ex=1; echo "  $tag run $n: rt wrote $(wc -l < "$rt" 2>/dev/null || echo 0) lines, expected 1; see $log" >&2
-  fi
-  [ "$ex" = 0 ] || { el=-; echo "  $tag run $n failed (exit $ex), see $log" >&2; }
-  echo "$el $rss $ex" >> "$OUT/$tag.scores"
+  record_rt "$tag" "$rt" "$log"
 }
 ROWS=; for w in $WORKLOADS; do for m in $MODES; do ROWS="$ROWS $w-$m"; done; done; ROWS=${ROWS# }
 
@@ -118,32 +110,16 @@ while [ $r -le "$ROUNDS" ]; do
   printf '   round %d done, load %s, %s\n' $r "$(loadavg)" "$(date -u +%T)"
   r=$((r+1))
 done
-for row in $ROWS; do for a in $ALLOCS; do
-  n=$(wc -l < "$OUT/$row.$a.scores")
-  [ "$n" -eq $((ROUNDS+1)) ] || die "$OUT/$row.$a.scores has $n lines, expected $((ROUNDS+1)): concurrent run?"
-done; done
+check_score_lines "$ROWS" "$ALLOCS" $((ROUNDS+1))
 
 # ---- report ---------------------------------------------------------------------------
 list_of() { sorted_scores "$OUT/$1.$2.scores" 1; }
 rss_of() { median_rss "$OUT/$1.$2.scores" 1; }
 med_of() { median_list "$(list_of "$1" "$2")"; }
-describe() {
-  case $1 in
-    challoc)  echo "LD_PRELOAD=$CHALLOC_LIB ($([ "$REV" = tree ] && echo "working tree, HEAD $(commit_short)$(tree_dirty && echo ' + uncommitted src changes')" || echo "$REV"), sha256 $(so_hash "$CHALLOC_LIB"))";;
-    jemalloc) echo "LD_PRELOAD=$JEMALLOC_LIB (Wolfi $(stock_version jemalloc))";;
-    glibc)    echo "no LD_PRELOAD ($(stock_version glibc) malloc)";;
-    mimalloc) echo "LD_PRELOAD=$BIN/libmimalloc.so ($(stock_version mimalloc), bench/build.sh)";;
-    tcmalloc) echo "LD_PRELOAD=$TCMALLOC_LIB (Wolfi $(stock_version tcmalloc), gperftools without profiler hooks)";;
-  esac
-}
+describe() { case $1 in challoc) describe_challoc "$CHALLOC_LIB" "$REV";; *) describe_stock "$1";; esac; }
 has() { case " $ALLOCS " in *" $1 "*) return 0;; *) return 1;; esac; }
 {
-  echo "# Python 3.13 benchmark rows, $DATE, $ARCH"
-  echo
-  echo "- commit: $(commit_short)$(tree_dirty && echo ' (uncommitted changes in src/)')"
-  echo "- date: $STAMP"
-  echo "- host: ${HOST_CPU:-unknown CPU}, $PROCS CPUs visible to the container${HOST_KIND:+; $HOST_KIND}"
-  echo "- kernel: $(uname -r), container: Wolfi"
+  result_header "Python 3.13 benchmark rows"
   echo "- python: $PY_VERSION (Wolfi python-3.13 $(apk_version python-3.13), pymalloc built in); modes: default = PYTHONMALLOC unset (pymalloc for objects under 512 bytes, the allocator sees the rest), malloc = PYTHONMALLOC=malloc (every object through the allocator)"
   echo "- workloads (bench/probes/python/): json = json_bench.py (json.dumps/loads of 20000 records, 40 rounds); dict_list = dict_list_bench.py (2000 live dicts and lists, 30000 replacements); regex = regex_bench.py (four patterns over 3.5 MB, 6 rounds); object_graph = object_graph_bench.py (150000-node tree, BFS, detach and rebuild, 2 rounds)"
   echo "- load average at start: $LOAD0; at end: $(loadavg); $(( $(date +%s) - T_START )) s total"

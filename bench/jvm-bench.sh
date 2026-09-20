@@ -184,11 +184,11 @@ esac
 CHALLOC_LIB=
 case " $ALLOCS " in *" challoc "*)
   rev=$(resolve_rev "$REV")
-  printf '== building challoc (%s) into target/jvm/lib ... ' "$([ "$rev" = tree ] && echo "working tree, HEAD $(commit_short)$(tree_dirty && echo ' + uncommitted src changes')" || echo "$rev" | cut -c1-12)"
+  printf '== building challoc (%s) into target/jvm/lib ... ' "$(rev_label "$rev")"
   build_lib "$rev" "$WORK/lib"; CHALLOC_LIB=$WORK/lib/release/libchalloc.so
   echo "done, $(so_hash "$CHALLOC_LIB")";;
 esac
-lib_of() { case $1 in challoc) echo "$CHALLOC_LIB";; glibc-arena2|glibc-trim) echo "";; *) stock_lib "$1";; esac; }
+lib_of() { case $1 in glibc-arena2|glibc-trim) echo "";; *) default_lib_of "$1";; esac; }
 # env_of ALLOC [server]: the extra environment of a variant (LD_PRELOAD and
 # tunables). The server rows add the stats prints at exit (they only act at
 # exit and are ignored by the other allocators); the startup row must not
@@ -217,9 +217,7 @@ STATSDUMP=$BIN/statsdump.so
 echo "== java: $(echo "$JAVA_VERSION" | head -1) ($JAVA, Wolfi ${JDK_PKG:-openjdk}); generator: $AB_VERSION; NMT: $NMT"
 for a in $ALLOCS; do
   mapped=$(env $(env_of "$a") "$JAVA" $(opts_of "$a") -cp "$CLASSES" HttpBench maps | tr '\n' ' ' | sed 's/ $//')
-  lib=$(lib_of "$a"); want=; [ -n "$lib" ] && want=$(readlink -f "$lib")
-  [ "$mapped" = "$want" ] || die "$a: java maps '$mapped', expected '${want:-nothing}'"
-  echo "   $a: maps ${mapped:-no allocator library (glibc malloc)}$(case $a in glibc-arena2) echo ', MALLOC_ARENA_MAX=2';; glibc-trim) echo ", $TRIM_OPTS";; esac)"
+  maps_expect "$a" java "$(lib_of "$a")" "$mapped" "$(case $a in glibc-arena2) echo ', MALLOC_ARENA_MAX=2';; glibc-trim) echo ", $TRIM_OPTS";; esac)"
 done
 
 # ---- startup row -------------------------------------------------------------------
@@ -230,13 +228,7 @@ run_startup() {
   n=$(wc -l < "$OUT/$tag.scores")
   log=$OUT/$tag.$n.out; rt=$OUT/$tag.$n.rt
   RT_OUT=$rt "$BIN/rt" env $(env_of "$a") "$JAVA" $(opts_of "$a") -version > "$log" 2>&1 || true
-  if [ -s "$rt" ] && [ "$(wc -l < "$rt")" = 1 ]; then
-    read -r el _us _sy rss ex < "$rt"
-  else
-    el=-; rss=-; ex=1; echo "  $tag run $n: rt wrote $(wc -l < "$rt" 2>/dev/null || echo 0) lines, expected 1; see $log" >&2
-  fi
-  [ "$ex" = 0 ] || { el=-; echo "  $tag run $n failed (exit $ex), see $log" >&2; }
-  echo "$el $rss $ex" >> "$OUT/$tag.scores"
+  record_rt "$tag" "$rt" "$log"
 }
 has_row() { case " $ROWS " in *" $1 "*) return 0;; *) return 1;; esac; }
 if has_row startup; then
@@ -247,10 +239,7 @@ if has_row startup; then
     r=$((r+1))
   done
   printf '   startup rounds done, load %s, %s\n' "$(loadavg)" "$(date -u +%T)"
-  for a in $ALLOCS; do
-    n=$(wc -l < "$OUT/startup.$a.scores")
-    [ "$n" -eq $((ROUNDS+1)) ] || die "$OUT/startup.$a.scores has $n lines, expected $((ROUNDS+1)): concurrent run?"
-  done
+  check_score_lines startup "$ALLOCS" $((ROUNDS+1))
 fi
 
 # ---- server and soak rows: shared machinery ---------------------------------------------
@@ -514,13 +503,11 @@ pct_lower() { pct_of "$1" "$2"; }
 pct_higher() { pct_of "$2" "$1"; }
 describe() {
   case $1 in
-    challoc)  echo "LD_PRELOAD=$CHALLOC_LIB ($([ "$REV" = tree ] && echo "working tree, HEAD $(commit_short)$(tree_dirty && echo ' + uncommitted src changes')" || echo "$REV"), sha256 $(so_hash "$CHALLOC_LIB"))";;
+    challoc)  describe_challoc "$CHALLOC_LIB" "$REV";;
     glibc)    echo "no LD_PRELOAD ($(stock_version glibc) malloc, default arenas: up to 8 x CPUs)";;
     glibc-arena2) echo "no LD_PRELOAD, MALLOC_ARENA_MAX=2 ($(stock_version glibc) malloc; the fleet's usual mitigation for the per-thread arenas)";;
     glibc-trim) echo "no LD_PRELOAD, \`$TRIM_OPTS\` ($(stock_version glibc) malloc; the JVM's service thread calls malloc_trim(0) every $TRIM_MS ms: what a well-tuned Java image ships today)";;
-    jemalloc) echo "LD_PRELOAD=$JEMALLOC_LIB (Wolfi $(stock_version jemalloc))";;
-    mimalloc) echo "LD_PRELOAD=$BIN/libmimalloc.so ($(stock_version mimalloc), bench/build.sh)";;
-    tcmalloc) echo "LD_PRELOAD=$TCMALLOC_LIB (Wolfi $(stock_version tcmalloc), gperftools without profiler hooks)";;
+    *)        describe_stock "$1";;
   esac
 }
 has() { case " $ALLOCS " in *" $1 "*) return 0;; *) return 1;; esac; }
@@ -539,12 +526,7 @@ nmt_note() {
   echo "NMT (\`-XX:NativeMemoryTracking=$NMT\`, \`jcmd <pid> VM.native_memory summary scale=KB\`) is the JVM's own account of the native memory it asked for: \"committed\" counts the bytes the JVM malloc'd (with NMT's 16-byte header each) plus the pages it committed by mmap (Java heap, metaspace, code cache, thread stacks and GC structures). Rss minus NMT committed at the same instant is what the allocator adds on its own account (caching, size-class rounding, fragmentation, retained pages, metadata) less what the JVM committed but never touched (NMT counts mmap commits, not resident pages, so the gap understates the allocator by the same untouched amount under every variant). \"malloc'd\" is NMT's malloc total across categories: \`Other\` holds the direct ByteBuffers (\`Unsafe.allocateMemory\`), \`Internal\` the JVM's miscellany, \`Thread\` the stacks (touched pages) and per-thread arenas, \`Class\` metaspace, \`Code\` the code cache, \`GC\` the card table and remembered sets, \`Compiler\` the JIT arenas. NMT's own overhead (its header per malloc plus its tables, the last column) is the same bytes for every allocator, so the comparisons between allocators hold; the header does push a malloc(65536) to 65552 bytes, across a power-of-two class boundary in every size-class allocator (see the reading). jcmd is a second JVM started from the harness shell (no LD_PRELOAD) and wakes the server's attach listener (one more thread, the same for every variant)."
 }
 {
-  echo "# JVM benchmark rows$([ $SOAK = 1 ] && echo ': the mixed-size soak'), $DATE, $ARCH"
-  echo
-  echo "- commit: $(commit_short)$(tree_dirty && echo ' (uncommitted changes in src/)')"
-  echo "- date: $STAMP"
-  echo "- host: ${HOST_CPU:-unknown CPU}, $PROCS CPUs visible to the container${HOST_KIND:+; $HOST_KIND}"
-  echo "- kernel: $(uname -r), container: Wolfi"
+  result_header "JVM benchmark rows$([ $SOAK = 1 ] && echo ': the mixed-size soak')"
   echo "- java: $JAVA (Wolfi ${JDK_PKG:-openjdk}); \`java -version\`:"
   echo "$JAVA_VERSION" | sed 's/^/      /'
   echo "- generator: $AB_VERSION (Wolfi apache2-utils $(apk_version apache2-utils)); wrk and oha are not in Wolfi"
