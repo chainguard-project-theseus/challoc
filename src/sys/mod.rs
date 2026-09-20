@@ -40,24 +40,23 @@ mod linux {
     pub const PROT_READ: i32 = 1;
     pub const PROT_WRITE: i32 = 2;
 
+    #[cfg(test)]
     pub const MAP_SHARED: i32 = 0x01;
     pub const MAP_PRIVATE: i32 = 0x02;
     pub const MAP_FIXED: i32 = 0x10;
     pub const MAP_ANONYMOUS: i32 = 0x20;
-    pub const MAP_POPULATE: i32 = 0x8000;
     pub const MAP_NORESERVE: i32 = 0x4000;
+    #[cfg(test)]
     pub const MAP_FIXED_NOREPLACE: i32 = 0x10_0000;
-    pub const MAP_FAILED: usize = usize::MAX;
 
-    pub const MADV_NORMAL: i32 = 0;
     pub const MADV_DONTNEED: i32 = 4;
     pub const MADV_FREE: i32 = 8;
     pub const MADV_HUGEPAGE: i32 = 14;
     pub const MADV_NOHUGEPAGE: i32 = 15;
+    #[cfg(test)]
     pub const MADV_COLD: i32 = 20;
-    pub const MADV_PAGEOUT: i32 = 21;
-    /// Populate (prefault) page tables writable (kernel 5.14; plan Phase
-    /// 2.5 task 11): the pages fault in as if written, contents untouched.
+    /// Populate (prefault) page tables writable (kernel 5.14): the pages
+    /// fault in as if written, contents untouched.
     pub const MADV_POPULATE_WRITE: i32 = 23;
     pub const MADV_COLLAPSE: i32 = 25;
     pub const MADV_GUARD_INSTALL: i32 = 102;
@@ -66,17 +65,13 @@ mod linux {
     /// `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, addr, len, name)`.
     pub const PR_SET_VMA: i32 = 0x5356_4d41;
     pub const PR_SET_VMA_ANON_NAME: usize = 0;
-    /// `prctl(PR_SET_THP_DISABLE, 1, flags, 0, 0)` and its query (plan
-    /// Phase 2.5 task 16): `PR_THP_DISABLE_EXCEPT_ADVISED` (6.18) keeps
-    /// huge pages where a range was `MADV_HUGEPAGE`d; the query returns
+    /// `prctl(PR_SET_THP_DISABLE, 1, flags, 0, 0)` and its query:
+    /// `PR_THP_DISABLE_EXCEPT_ADVISED` (6.18) keeps huge pages where a
+    /// range was `MADV_HUGEPAGE`d; the query returns
     /// `1 | flags` when disabled, `0` otherwise.
     pub const PR_SET_THP_DISABLE: i32 = 41;
     pub const PR_GET_THP_DISABLE: i32 = 42;
     pub const PR_THP_DISABLE_EXCEPT_ADVISED: usize = 1 << 1;
-
-    pub const GRND_NONBLOCK: u32 = 1;
-    pub const GRND_RANDOM: u32 = 2;
-    pub const GRND_INSECURE: u32 = 4;
 
     pub const FUTEX_WAIT: i32 = 0;
     pub const FUTEX_WAKE: i32 = 1;
@@ -86,6 +81,7 @@ mod linux {
     pub const CLOCK_MONOTONIC_COARSE: i32 = 6;
 
     pub const O_RDONLY: i32 = 0;
+    #[cfg(test)]
     pub const O_WRONLY: i32 = 1;
     pub const O_RDWR: i32 = 2;
     pub const O_NONBLOCK: i32 = 0o4000;
@@ -102,8 +98,10 @@ mod linux {
     pub const POLLNVAL: i16 = 0x020;
     pub const AT_FDCWD: i32 = -100;
 
-    /// Sentinel pidfd meaning "the calling thread", accepted by
-    /// `process_madvise` on kernels that have it (6.14, `docs/research.md`;
+    /// Sentinel pidfd meaning "the calling thread" (`PIDFD_SELF_THREAD` of
+    /// `include/uapi/linux/pidfd.h`), accepted by `process_madvise` on
+    /// kernels that have it: 6.15, the first release whose header defines
+    /// it and whose `pidfd_get_task` honours it (6.14 has neither;
     /// `purge.rs` mirrors the value). Probed at runtime by `sys::features`;
     /// older kernels return `EBADF`.
     pub const PIDFD_SELF: i32 = -10000;
@@ -345,12 +343,12 @@ mod linux {
         Ok(())
     }
 
-    /// `futex(2)`.
+    /// `futex(2)`, the raw form behind [`futex_wait`] and [`futex_wake`].
     ///
     /// # Safety
     /// `uaddr` must be a live, 4-byte-aligned `u32`; `timeout` null or valid.
     #[inline]
-    pub unsafe fn futex(
+    unsafe fn futex(
         uaddr: *const u32,
         op: i32,
         val: u32,
@@ -743,11 +741,17 @@ mod tests {
 
     const PAGE: usize = 4096;
 
-    fn map_page() -> usize {
+    /// A fresh read/write private anonymous mapping of `len` bytes, for
+    /// this module's tests and `features::linux_tests`.
+    pub(super) fn map_anon(len: usize) -> usize {
         // SAFETY: fresh anonymous private mapping, no fixed address.
         unsafe {
-            mmap(0, PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0).unwrap()
+            mmap(0, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0).unwrap()
         }
+    }
+
+    fn map_page() -> usize {
+        map_anon(PAGE)
     }
 
     #[test]
@@ -848,8 +852,8 @@ mod tests {
                     Err(Errno::ENOSYS) => std::eprintln!("process_madvise: ENOSYS, skipping"),
                     // Before the self-process exemption (6.13-era kernels),
                     // process_madvise needs CAP_SYS_NICE even on oneself.
-                    // Containers usually lack it. The feature probe (task 3)
-                    // must treat this as "unavailable".
+                    // Containers usually lack it. The feature probe must
+                    // treat this as "unavailable".
                     Err(Errno::EPERM) => std::eprintln!("process_madvise: EPERM (no CAP_SYS_NICE), skipping"),
                     Err(e) => panic!("process_madvise: unexpected {e}"),
                 }
@@ -933,8 +937,6 @@ mod tests {
         assert_eq!(open(b"/nonexistent/challoc\0", O_RDONLY), Err(Errno::ENOENT));
         // O_CLOEXEC is forced on.
         let fd = open(b"/dev/null\0", O_RDONLY).unwrap();
-        let flags = std::fs::read_link(format!("/proc/self/fdinfo/{fd}")).ok();
-        let _ = flags;
         let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{fd}")).unwrap();
         let flags_line = info.lines().find(|l| l.starts_with("flags:")).unwrap();
         let oflags = usize::from_str_radix(flags_line.split_whitespace().nth(1).unwrap(), 8)
@@ -945,7 +947,7 @@ mod tests {
 
     #[test]
     fn write_to_devnull_and_bad_fd() {
-        let fd = open(b"/dev/null\0", 1 /* O_WRONLY */).unwrap();
+        let fd = open(b"/dev/null\0", O_WRONLY).unwrap();
         assert_eq!(write(fd, b"hello"), Ok(5));
         write_all(fd, b"more");
         close(fd).unwrap();
@@ -1016,19 +1018,23 @@ mod tests {
         assert_eq!(format!("{}", close(-1).unwrap_err()), "EBADF");
     }
 
-    /// Cross-check `nr.rs` against the kernel headers via a tiny C program.
     #[test]
     fn ncpus_counts_the_affinity_mask() {
         let n = ncpus();
         assert!(n >= 1);
         // The mask can only be narrower than the configured CPU count.
+        // SAFETY: `sysconf` has no preconditions.
         let conf = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_CONF) };
         assert!(conf >= 1 && n as i64 <= conf, "ncpus {n}, _SC_NPROCESSORS_CONF {conf}");
+        // SAFETY: a zeroed `cpu_set_t` is a valid empty set; the call writes
+        // at most `size_of::<cpu_set_t>()` bytes into it, and `CPU_COUNT`
+        // only reads it.
         let mut set: libc::cpu_set_t = unsafe { core::mem::zeroed() };
         assert_eq!(unsafe { libc::sched_getaffinity(0, core::mem::size_of::<libc::cpu_set_t>(), &mut set) }, 0);
         assert_eq!(n as i32, unsafe { libc::CPU_COUNT(&set) });
     }
 
+    /// Cross-check `nr.rs` against the kernel headers via a tiny C program.
     #[test]
     fn syscall_numbers_match_kernel_headers() {
         let root = env!("CARGO_MANIFEST_DIR");
