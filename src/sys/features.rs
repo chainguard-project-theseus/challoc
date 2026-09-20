@@ -14,15 +14,16 @@
 //! `PROT_NONE` page mapped (the sealed page, which by definition cannot be
 //! unmapped again). The pure `auxv` parsing at the top of the module is unit
 //! tested on the host; the probes themselves run inside the Linux container.
+//!
+//! The line is a table: [`Features::words`] yields every `(key, value)`
+//! pair in order, and `Display`, [`FeatureLine`] and the tests all iterate
+//! it, so a new kernel feature is one probe, one field and one row.
 
 use core::fmt;
 
+use super::auxv::{AT_NULL, AT_PAGESZ};
 use super::cpu::Cpu;
-
-/// `AT_NULL`: end of the auxiliary vector.
-const AT_NULL: usize = 0;
-/// `AT_PAGESZ`: system page size.
-const AT_PAGESZ: usize = 6;
+use super::{Trailing, parse_decimal, yn};
 
 /// Find `AT_PAGESZ` in a raw auxiliary vector (`/proc/self/auxv` contents:
 /// pairs of native-endian `usize`, terminated by `AT_NULL`). Returns `None`
@@ -197,7 +198,7 @@ impl Thp {
         let lg_page = page.trailing_zeros() as u8;
         let mut lg_pmd = (2 * lg_page).saturating_sub(3);
         let n = read(b"/sys/kernel/mm/transparent_hugepage/hpage_pmd_size\0", &mut buf);
-        if let Some(v) = parse_decimal(&buf[..n]) {
+        if let Some(v) = parse_decimal(&buf[..n], Trailing::Ignore) {
             if v.is_power_of_two() && v.trailing_zeros() as u8 > lg_page {
                 lg_pmd = v.trailing_zeros() as u8;
             }
@@ -314,31 +315,81 @@ impl fmt::Display for LgSize {
     }
 }
 
+impl Thp {
+    /// The three THP keys: `thp=<setting|none> mthp=<sizes|none>
+    /// collapse=<unprobed|no|size>`.
+    pub fn words(&self) -> impl Iterator<Item = (&'static str, Value)> {
+        [
+            ("thp", Value::Word(self.enabled.map_or("none", ThpSetting::name))),
+            ("mthp", Value::Sizes(self.enabled_sizes())),
+            (
+                "collapse",
+                match self.collapse {
+                    Collapse::Unprobed => Value::Word("unprobed"),
+                    Collapse::No => Value::Word("no"),
+                    Collapse::Yes(lg) => Value::LgSize(lg),
+                },
+            ),
+        ]
+        .into_iter()
+    }
+}
+
 impl fmt::Display for Thp {
-    /// `thp=<setting|none> mthp=<sizes|none> collapse=<unprobed|no|size>`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "thp={}", self.enabled.map_or("none", ThpSetting::name))?;
-        write!(f, " mthp={}", SizeSet(self.enabled_sizes()))?;
-        match self.collapse {
-            Collapse::Unprobed => f.write_str(" collapse=unprobed"),
-            Collapse::No => f.write_str(" collapse=no"),
-            Collapse::Yes(lg) => write!(f, " collapse={}", LgSize(lg)),
+        write_words(f, self.words())
+    }
+}
+
+/// One value of the feature line, printed after its `key=`. Every
+/// variant prints one token without spaces or `=`.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Value {
+    /// `yes` or `no`.
+    YesNo(bool),
+    /// A plain number (`page_size`, `rseq_size`).
+    Num(u64),
+    /// A fixed word (`madvise`, `unprobed`, `kernel-disabled`).
+    Word(&'static str),
+    /// The `process_madvise` target: `no`, `pidfd_self` or `pidfd:<fd>`.
+    Target(ProcessMadvise),
+    /// A bit set over `log2(size)` as `64K,2M`, or `none`.
+    Sizes(u64),
+    /// `1 << lg` bytes as `64K`, `2M`, `1G`.
+    LgSize(u8),
+    /// A cache size in bytes as `<n>M`, `<n>K` or `<n>`, `unknown` for 0.
+    Cache(u32),
+}
+
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Value::YesNo(b) => f.write_str(yn(b)),
+            Value::Num(n) => write!(f, "{n}"),
+            Value::Word(w) => f.write_str(w),
+            Value::Target(ProcessMadvise::Unavailable) => f.write_str("no"),
+            Value::Target(ProcessMadvise::PidfdSelf) => f.write_str("pidfd_self"),
+            Value::Target(ProcessMadvise::Pidfd(fd)) => write!(f, "pidfd:{fd}"),
+            Value::Sizes(set) => write!(f, "{}", SizeSet(set)),
+            Value::LgSize(lg) => write!(f, "{}", LgSize(lg)),
+            Value::Cache(0) => f.write_str("unknown"),
+            Value::Cache(n) if n % (1 << 20) == 0 => write!(f, "{}M", n >> 20),
+            Value::Cache(n) if n % (1 << 10) == 0 => write!(f, "{}K", n >> 10),
+            Value::Cache(n) => write!(f, "{n}"),
         }
     }
 }
 
-/// Leading decimal digits of `bytes` (a sysfs number with its newline).
-fn parse_decimal(bytes: &[u8]) -> Option<u64> {
-    let mut v: u64 = 0;
-    let mut any = false;
-    for &b in bytes {
-        if !b.is_ascii_digit() {
-            break;
+/// `key=value` pairs separated by single spaces: the shape of the whole
+/// line and of each part that prints on its own (`Thp`, `Cpu`).
+pub fn write_words(f: &mut fmt::Formatter<'_>, words: impl Iterator<Item = (&'static str, Value)>) -> fmt::Result {
+    for (i, (key, value)) in words.enumerate() {
+        if i > 0 {
+            f.write_str(" ")?;
         }
-        v = v.checked_mul(10)?.checked_add((b - b'0') as u64)?;
-        any = true;
+        write!(f, "{key}={value}")?;
     }
-    any.then_some(v)
+    Ok(())
 }
 
 /// `v` in decimal into `out`; returns the digit count.
@@ -359,86 +410,31 @@ fn write_decimal(out: &mut [u8], mut v: u64) -> usize {
     n
 }
 
-/// glibc's registered rseq area as the running process sees it (design 15
-/// and 17): the three variables glibc 2.35+ exports
-/// beside its registration, read from the symbols at init (weak references,
-/// so a libc without them reads as "no rseq"), and the kernel-written
-/// `cpu_id` field of the area itself, which says whether the registration
-/// took. Nothing here is a header constant: `__rseq_offset` differs between
-/// architectures and moves with the static TLS layout (192 from
-/// `tpidr_el0` on aarch64, -192 or -256 from `%fs:0` on x86_64 depending on
-/// what else is preloaded), and `__rseq_size` is whatever the kernel's
-/// `AT_RSEQ_FEATURE_SIZE` let glibc register (33 on the 7.0 GCE kernels,
-/// 20 on a 6.10 linuxkit kernel that reports no feature size).
+/// The `rseq=`, `rseq_size=` and `mm_cid=` words from `rseq::probe`
+/// (design 15 and 17; the same three weak symbols the per-CPU mode reads,
+/// read once at init, and this thread's `cpu_id`). `rseq=yes` when glibc
+/// registered an area (`__rseq_size` covers the original 20-byte struct,
+/// [`rseq::BASE_SIZE`]) and the kernel has written this thread's `cpu_id`;
+/// `rseq_size` is the symbol's value even when the registration did not
+/// take (`0` without one: `GLIBC_TUNABLES=glibc.pthread.rseq=0`, a kernel
+/// without `CONFIG_RSEQ`, a libc without the symbols); `mm_cid=yes` when
+/// the registered area covers the field (`__rseq_size >= 28`,
+/// [`rseq::MM_CID_END`]; 33 on the 7.0 GCE kernels, 20 on a 6.10 linuxkit
+/// kernel that reports no feature size). The mode's own gate is
+/// [`rseq::Probe::mm_cid_usable`], which also wants `flags == 0`: the line
+/// reports what exists, the mode what it acts on.
 ///
-/// The struct is `Copy` plain data; the report prints `rseq=yes|no
-/// rseq_size=<n> mm_cid=yes|no`. The per-CPU mode (design 15) reads the
-/// `mm_cid` value itself through its own accessor, gated on [`mm_cid`]
-/// here; this type only answers whether the field exists.
-///
-/// [`mm_cid`]: Rseq::mm_cid
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct Rseq {
-    /// `__rseq_size`: the bytes of `struct rseq` the kernel registered
-    /// (glibc's `rseq_area` feature size); `0` when glibc did not register
-    /// (`GLIBC_TUNABLES=glibc.pthread.rseq=0`, a kernel without
-    /// `CONFIG_RSEQ`, or the symbol absent).
-    pub size: u32,
-    /// `__rseq_flags`: the flags of the registration (`0` today).
-    pub flags: u32,
-    /// `__rseq_offset`: the area's offset from the thread pointer, as read.
-    pub offset: isize,
-    /// The area's `cpu_id` field (offset 4), read once after the symbols:
-    /// `>= 0` once the kernel has written the area, `-1`
-    /// (`RSEQ_CPU_ID_UNINITIALIZED`) or `-2` (`RSEQ_CPU_ID_REGISTRATION_FAILED`)
-    /// otherwise. `-1` when the area was not read (`size == 0`).
-    pub cpu_id: i32,
-}
-
-impl Rseq {
-    /// Offset of the `mm_cid` field in `struct rseq` (`cpu_id_start` 0,
-    /// `cpu_id` 4, `rseq_cs` 8, `flags` 16, `node_id` 20, `mm_cid` 24).
-    pub const MM_CID_OFFSET: u32 = 24;
-    /// The registered size that covers `mm_cid` (kernel 6.3+ registrations).
-    pub const MM_CID_END: u32 = Self::MM_CID_OFFSET + 4;
-    /// Offset of the `cpu_id` field.
-    pub const CPU_ID_OFFSET: u32 = 4;
-    /// The size of the original `struct rseq` (through `flags`), the least
-    /// a successful registration reports.
-    pub const BASE_SIZE: u32 = 20;
-
-    /// No rseq at all: the symbols are absent or glibc registered nothing.
-    pub const NONE: Rseq = Rseq { size: 0, flags: 0, offset: 0, cpu_id: -1 };
-
-    /// The verdict from the symbol values and the area's `cpu_id`. Pure
-    /// logic, host tested.
-    pub const fn from_symbols(size: u32, flags: u32, offset: isize, cpu_id: i32) -> Rseq {
-        Rseq { size, flags, offset, cpu_id }
-    }
-
-    /// glibc registered an rseq area and the kernel has written it: the
-    /// size covers the original struct and `cpu_id` is a CPU number.
-    pub const fn registered(&self) -> bool {
-        self.size >= Self::BASE_SIZE && self.cpu_id >= 0
-    }
-
-    /// The registered area covers the `mm_cid` field (`__rseq_size >= 28`):
-    /// the per-CPU mode of design 15 may read it. `false` without a
-    /// registration.
-    pub const fn mm_cid(&self) -> bool {
-        self.registered() && self.size >= Self::MM_CID_END
-    }
-}
-
-impl fmt::Display for Rseq {
-    /// `rseq=yes rseq_size=33 mm_cid=yes`; `rseq_size` is the symbol's
-    /// value even when the registration did not take.
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fn yn(b: bool) -> &'static str {
-            if b { "yes" } else { "no" }
-        }
-        write!(f, "rseq={} rseq_size={} mm_cid={}", yn(self.registered()), self.size, yn(self.mm_cid()))
-    }
+/// [`rseq::BASE_SIZE`]: crate::rseq::BASE_SIZE
+/// [`rseq::MM_CID_END`]: crate::rseq::MM_CID_END
+/// [`rseq::Probe::mm_cid_usable`]: crate::rseq::Probe::mm_cid_usable
+pub fn rseq_words(p: &crate::rseq::Probe) -> impl Iterator<Item = (&'static str, Value)> {
+    let registered = p.present && p.registered && p.size >= crate::rseq::BASE_SIZE;
+    [
+        ("rseq", Value::YesNo(registered)),
+        ("rseq_size", Value::Num(u64::from(p.size))),
+        ("mm_cid", Value::YesNo(registered && p.size >= crate::rseq::MM_CID_END)),
+    ]
+    .into_iter()
 }
 
 /// The kernel's answer for the rseq time slice extension (design 17, "Time
@@ -557,10 +553,10 @@ pub struct Features {
     /// Whether the kernel takes `PR_THP_DISABLE_EXCEPT_ADVISED`: what
     /// `thp_process:advised` can issue.
     pub thp_disable: ThpDisable,
-    /// glibc's rseq registration and whether it covers `mm_cid`: the
-    /// per-CPU mode's `auto` decision reads
-    /// [`Rseq::mm_cid`]; the value itself is read elsewhere.
-    pub rseq: Rseq,
+    /// glibc's rseq registration as `rseq::probe` read it at init: the
+    /// `rseq`, `rseq_size` and `mm_cid` keys ([`rseq_words`]); the
+    /// per-CPU mode reads the same probe for its gate.
+    pub rseq: crate::rseq::Probe,
     /// The kernel's answer for the rseq time slice extension and whether
     /// the process uses it (`slice.rs` decides,
     /// this is the report of it).
@@ -569,46 +565,40 @@ pub struct Features {
     pub cpu: Cpu,
 }
 
+impl Features {
+    /// Every key of the line in order: the kernel probes, then the CPU
+    /// report (`Cpu::words`). Values are `yes`/`no` except `page_size`,
+    /// `process_madvise` (`no`, `pidfd_self`, or `pidfd:<fd>`), the THP
+    /// keys (`thp=never|madvise|always|none`, `mthp=64K,2M|none`,
+    /// `collapse=unprobed|no|2M`), `thp_except_advised` (`yes`, `no`,
+    /// `inherited`), `rseq_size` (a byte count, `0` without a
+    /// registration), `slice_ext` (`on`, `available`, `prctl-failed`,
+    /// `kernel-disabled`, `no-slice_ctrl`, `no-rseq`) and the cache sizes
+    /// (`64K`, `2M`, `unknown`). `tests/c/features.c` lists the same keys.
+    pub fn words(&self) -> impl Iterator<Item = (&'static str, Value)> + '_ {
+        [
+            ("page_size", Value::Num(self.page_size as u64)),
+            ("guard_install", Value::YesNo(self.guard_install)),
+            ("mseal", Value::YesNo(self.mseal)),
+            ("process_madvise", Value::Target(self.process_madvise)),
+            ("process_madvise_free", Value::YesNo(self.process_madvise_free)),
+            ("anon_name", Value::YesNo(self.anon_name)),
+            ("populate_write", Value::YesNo(self.populate_write)),
+        ]
+        .into_iter()
+        .chain(self.thp.words())
+        .chain([("thp_except_advised", Value::Word(self.thp_disable.name()))])
+        .chain(rseq_words(&self.rseq))
+        .chain([("slice_ext", Value::Word(self.slice_ext.name()))])
+        .chain(self.cpu.words())
+    }
+}
+
 impl fmt::Display for Features {
     /// One line, `key=value` separated by spaces, for `challoc_features()`,
-    /// `malloc_stats_print` and abort messages: the kernel probes, then the
-    /// CPU report. Values are `yes`/`no` except `page_size`,
-    /// `process_madvise` (`no`, `pidfd_self`, or `pidfd:<fd>`) and the
-    /// cache sizes (`64K`, `2M`, `unknown`), the THP keys (`thp=never|
-    /// madvise|always|none`, `mthp=64K,2M|none`, `collapse=unprobed|no|2M`)
-    /// `populate_write` (`yes`/`no`), `thp_except_advised` (`yes`, `no`,
-    /// `inherited`), `rseq_size` (a byte
-    /// count, `0` without a registration) and `slice_ext` (`on`,
-    /// `available`, `prctl-failed`, `kernel-disabled`, `no-slice_ctrl`,
-    /// `no-rseq`).
+    /// `malloc_stats_print` and abort messages: [`Features::words`].
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fn yn(b: bool) -> &'static str {
-            if b { "yes" } else { "no" }
-        }
-        write!(
-            f,
-            "page_size={} guard_install={} mseal={} process_madvise=",
-            self.page_size,
-            yn(self.guard_install),
-            yn(self.mseal),
-        )?;
-        match self.process_madvise {
-            ProcessMadvise::Unavailable => f.write_str("no")?,
-            ProcessMadvise::PidfdSelf => f.write_str("pidfd_self")?,
-            ProcessMadvise::Pidfd(fd) => write!(f, "pidfd:{fd}")?,
-        }
-        write!(
-            f,
-            " process_madvise_free={} anon_name={} populate_write={} {} {} {} {} {}",
-            yn(self.process_madvise_free),
-            yn(self.anon_name),
-            yn(self.populate_write),
-            self.thp,
-            self.thp_disable,
-            self.rseq,
-            self.slice_ext,
-            self.cpu
-        )
+        write_words(f, self.words())
     }
 }
 
@@ -669,21 +659,13 @@ pub use linux::*;
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{AT_PAGESZ, Collapse, Cpu, Features, ProcessMadvise, Rseq, Thp, ThpDisable, page_size_from_auxv};
-    use crate::sys::cpu::Isa;
+    use super::{AT_PAGESZ, Collapse, Cpu, Features, ProcessMadvise, Thp, ThpDisable, page_size_from_auxv};
+    use crate::sys::auxv::getauxval;
     use crate::sys::{
         self, IoVec, MADV_COLLAPSE, MADV_DONTNEED, MADV_FREE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE,
         MADV_POPULATE_WRITE, MAP_ANONYMOUS, MAP_PRIVATE, PIDFD_SELF, PR_GET_THP_DISABLE, PR_SET_THP_DISABLE,
         PR_THP_DISABLE_EXCEPT_ADVISED, PROT_NONE, PROT_READ, PROT_WRITE,
     };
-
-    unsafe extern "C" {
-        /// glibc/musl `getauxval(3)`. Reads the saved auxiliary vector; it
-        /// never allocates and is safe to call from within `malloc`, which is
-        /// exactly how glibc's own malloc learns the page size
-        /// (`GLRO(dl_pagesize)`).
-        safe fn getauxval(kind: usize) -> usize;
-    }
 
     /// The system page size. `getauxval(AT_PAGESZ)` first; if that yields
     /// nothing (a libc without the vector, or a static binary started in an
@@ -849,92 +831,6 @@ mod linux {
         ok
     }
 
-    /// Read one sysfs file into `buf`; 0 when it is missing or unreadable.
-    fn read_sysfs(path: &[u8], buf: &mut [u8]) -> usize {
-        let Ok(fd) = sys::open(path, sys::O_RDONLY) else { return 0 };
-        let n = sys::read_full(fd, buf).unwrap_or(0);
-        let _ = sys::close(fd);
-        n
-    }
-
-    /// Address of a weak data symbol through the GOT, or null when the
-    /// process does not define it (the `je_malloc_conf` recipe of
-    /// `config.rs`). Each of the three rseq variables has its own copy
-    /// because the symbol name must be spelled in the instruction.
-    macro_rules! weak_addr {
-        ($name:ident, $sym:literal) => {
-            #[inline(never)]
-            fn $name() -> *const u8 {
-                let out: *const u8;
-                // SAFETY: a GOT load of a (possibly absent, then null) data
-                // symbol; nothing is written.
-                unsafe {
-                    #[cfg(target_arch = "x86_64")]
-                    core::arch::asm!(
-                        concat!(".weak ", $sym),
-                        concat!("mov {out}, qword ptr [rip + ", $sym, "@GOTPCREL]"),
-                        out = out(reg) out,
-                        options(nostack, readonly, preserves_flags),
-                    );
-                    #[cfg(target_arch = "aarch64")]
-                    core::arch::asm!(
-                        concat!(".weak ", $sym),
-                        concat!("adrp {out}, :got:", $sym),
-                        concat!("ldr {out}, [{out}, :got_lo12:", $sym, "]"),
-                        out = out(reg) out,
-                        options(nostack, readonly, preserves_flags),
-                    );
-                }
-                out
-            }
-        };
-    }
-    weak_addr!(rseq_size_addr, "__rseq_size");
-    weak_addr!(rseq_offset_addr, "__rseq_offset");
-    weak_addr!(rseq_flags_addr, "__rseq_flags");
-
-    /// The calling thread's thread pointer: what `__rseq_offset` is
-    /// relative to (`%fs:0` holds the TCB's own address on x86_64;
-    /// `tpidr_el0` on aarch64).
-    #[inline(always)]
-    fn thread_pointer() -> usize {
-        let tp: usize;
-        // SAFETY: reads a register (and, on x86_64, the TCB's self word).
-        unsafe {
-            #[cfg(target_arch = "x86_64")]
-            core::arch::asm!("mov {tp}, qword ptr fs:0", tp = out(reg) tp, options(nostack, readonly, preserves_flags));
-            #[cfg(target_arch = "aarch64")]
-            core::arch::asm!("mrs {tp}, tpidr_el0", tp = out(reg) tp, options(nomem, nostack, preserves_flags));
-        }
-        tp
-    }
-
-    /// glibc's rseq registration: `__rseq_size`,
-    /// `__rseq_flags` and `__rseq_offset` from the weak symbols (all three
-    /// or nothing: glibc exports them together since 2.35), then the
-    /// area's `cpu_id` at `tp + __rseq_offset + 4`, read only when the
-    /// size says the field exists. Read-only: the area is kernel-owned and
-    /// glibc's, nothing here writes it. Never allocates, no syscall.
-    pub fn probe_rseq() -> Rseq {
-        let (ps, po, pf) = (rseq_size_addr(), rseq_offset_addr(), rseq_flags_addr());
-        if ps.is_null() || po.is_null() || pf.is_null() {
-            return Rseq::NONE;
-        }
-        // SAFETY: the symbols resolved to glibc's `unsigned int
-        // __rseq_size`, `ptrdiff_t __rseq_offset` and `unsigned int
-        // __rseq_flags` objects.
-        let (size, offset, flags) = unsafe { (ps.cast::<u32>().read(), po.cast::<isize>().read(), pf.cast::<u32>().read()) };
-        let cpu_id = if size >= Rseq::BASE_SIZE {
-            let area = (thread_pointer() as isize).wrapping_add(offset) as usize;
-            // SAFETY: glibc registered `size` bytes at `tp + offset` for
-            // this thread (`__rseq_size != 0`); `cpu_id` is inside them.
-            unsafe { ((area + Rseq::CPU_ID_OFFSET as usize) as *const i32).read_volatile() }
-        } else {
-            -1
-        };
-        Rseq::from_symbols(size, flags, offset, cpu_id)
-    }
-
     /// `prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED)` tried
     /// and undone: the answer is the call's
     /// return, `EINVAL` before 6.18. Nothing is tried on a process that
@@ -968,7 +864,7 @@ mod linux {
     /// sysfs reads on a 4 KiB kernel). The `MADV_COLLAPSE` probe is not run
     /// here: see [`Features::probe_collapse`].
     pub fn probe_thp(page: usize) -> Thp {
-        Thp::from_reader(page, read_sysfs)
+        Thp::from_reader(page, |path, buf| sys::read_small_file(path, buf).unwrap_or(0))
     }
 
     /// `madvise(MADV_COLLAPSE)` over a populated, aligned, PMD-sized range
@@ -1021,7 +917,7 @@ mod linux {
                 populate_write: probe_populate_write(page_size),
                 thp: probe_thp(page_size),
                 thp_disable: probe_thp_disable(),
-                rseq: probe_rseq(),
+                rseq: crate::rseq::probe(),
                 // The kernel's answer alone: `config::load` has not run
                 // yet, so nothing is enabled; `note_slice_ext` follows.
                 slice_ext: super::SliceExt::from_probe(crate::slice::probe().verdict()),
@@ -1121,8 +1017,8 @@ mod tests {
         assert_eq!(parse_thp_setting(b"always madvise never\n"), None);
         assert_eq!(parse_thp_setting(b"[defer]\n"), None);
         assert_eq!(parse_thp_setting(b""), None);
-        assert_eq!(parse_decimal(b"2097152\n"), Some(2097152));
-        assert_eq!(parse_decimal(b"\n"), None);
+        assert_eq!(parse_decimal(b"2097152\n", Trailing::Ignore), Some(2097152));
+        assert_eq!(parse_decimal(b"\n", Trailing::Ignore), None);
         let mut b = [0u8; 8];
         assert_eq!(write_decimal(&mut b, 2048), 4);
         assert_eq!(&b[..4], b"2048");
@@ -1219,8 +1115,15 @@ mod tests {
         assert_eq!(t.enabled, None);
         assert_eq!(t, Thp::NONE);
     }
+    use crate::rseq::Probe;
 
     use crate::sys::cpu::{Arm, CacheSource, Caches, Cpu, Isa, X86};
+    /// What `rseq::probe` reads on a host whose glibc registered `size`
+    /// bytes at `offset` (registered when the size is not 0).
+    fn rseq_probe(size: u32, offset: isize) -> Probe {
+        Probe { present: true, size, flags: 0, offset, registered: size != 0 }
+    }
+
 
     fn axion_cpu() -> Cpu {
         Cpu {
@@ -1243,7 +1146,7 @@ mod tests {
             populate_write: true,
             thp: Thp { enabled: Some(ThpSetting::Madvise), lg_pmd: 21, listed: (1 << 16) | (1 << 21), always: 0, madvise: (1 << 16) | (1 << 21), collapse: Collapse::Unprobed },
             thp_disable: ThpDisable::Yes,
-            rseq: Rseq::from_symbols(33, 0, 192, 5),
+            rseq: rseq_probe(33, 192),
             slice_ext: SliceExt::KernelDisabled,
             cpu: axion_cpu(),
         };
@@ -1263,13 +1166,13 @@ mod tests {
         let f = Features { thp_disable: ThpDisable::Yes, ..f };
         // The Mac's Docker VM (linuxkit 6.10): registered, no `mm_cid`, no
         // `slice_ctrl`.
-        let f = Features { rseq: Rseq::from_symbols(20, 0, 192, 0), slice_ext: SliceExt::NoSliceCtrl, ..f };
+        let f = Features { rseq: rseq_probe(20, 192), slice_ext: SliceExt::NoSliceCtrl, ..f };
         assert!(std::format!("{f}").contains(" collapse=unprobed thp_except_advised=yes rseq=yes rseq_size=20 mm_cid=no slice_ext=no-slice_ctrl mte="));
-        let f = Features { rseq: Rseq::NONE, slice_ext: SliceExt::NoRseq, ..f };
+        let f = Features { rseq: Probe::NONE, slice_ext: SliceExt::NoRseq, ..f };
         assert!(std::format!("{f}").contains(" rseq=no rseq_size=0 mm_cid=no slice_ext=no-rseq "));
         // A 7.0.14 built with the option (a GCE C4): on under the
         // default key, available under `slice_ext:off`.
-        let f = Features { rseq: Rseq::from_symbols(33, 0, -192, 5), slice_ext: SliceExt::On, ..f };
+        let f = Features { rseq: rseq_probe(33, -192), slice_ext: SliceExt::On, ..f };
         assert!(std::format!("{f}").contains(" mm_cid=yes slice_ext=on "));
         let f = Features { slice_ext: SliceExt::Available, ..f };
         assert!(std::format!("{f}").contains(" mm_cid=yes slice_ext=available "));
@@ -1301,7 +1204,7 @@ mod tests {
             populate_write: false,
             thp: Thp::NONE,
             thp_disable: ThpDisable::No,
-            rseq: Rseq::NONE,
+            rseq: Probe::NONE,
             slice_ext: SliceExt::NoRseq,
             cpu: axion_cpu(),
         };
@@ -1354,49 +1257,103 @@ mod tests {
                 },
                 // The longest words.
                 thp_disable: ThpDisable::Inherited(u8::MAX),
-                rseq: Rseq::from_symbols(u32::MAX, u32::MAX, isize::MIN, i32::MAX),
+                rseq: Probe { present: true, size: u32::MAX, flags: u32::MAX, offset: isize::MIN, registered: true },
                 slice_ext: SliceExt::KernelDisabled,
                 cpu,
             };
             let s = std::format!("{f}");
             assert!(s.len() < FeatureLine::CAP - 64, "{} bytes: {s}", s.len());
+            // The table is what the line is made of: the same bytes, word
+            // by word.
+            let by_words: usize = f.words().map(|(k, v)| k.len() + 1 + std::format!("{v}").len() + 1).sum::<usize>() - 1;
+            assert_eq!(by_words, s.len());
+        }
+    }
+
+    /// The key table: every key of `tests/c/features.c`, once, in order,
+    /// the kernel probes first and this architecture's CPU keys after;
+    /// every value one token. Adding a feature means one row here, one
+    /// in `features.c`, and the probe.
+    #[test]
+    fn words_are_the_key_table() {
+        let kernel = [
+            "page_size", "guard_install", "mseal", "process_madvise", "process_madvise_free", "anon_name", "populate_write",
+            "thp", "mthp", "collapse", "thp_except_advised", "rseq", "rseq_size", "mm_cid", "slice_ext",
+        ];
+        let arm = ["mte", "mte3", "pac", "lse", "lse2", "bti", "sve", "cacheline", "l1d", "l2"];
+        let x86 = ["lam", "uai", "la57", "la57_enabled", "cldemote", "waitpkg", "erms", "fsrm", "avx512f", "cacheline", "l1d", "l2"];
+        let x86_cpu = Cpu { isa: Isa::X86(X86::default()), caches: Caches::UNKNOWN, cache_source: CacheSource::None };
+        for (cpu, cpu_keys) in [(axion_cpu(), &arm[..]), (x86_cpu, &x86[..])] {
+            let f = Features {
+                page_size: 4096,
+                page_shift: 12,
+                guard_install: true,
+                mseal: false,
+                process_madvise: ProcessMadvise::PidfdSelf,
+                process_madvise_free: true,
+                anon_name: true,
+                populate_write: true,
+                thp: Thp::NONE,
+                thp_disable: ThpDisable::No,
+                rseq: rseq_probe(33, 192),
+                slice_ext: SliceExt::Available,
+                cpu,
+            };
+            let keys: std::vec::Vec<&str> = f.words().map(|(k, _)| k).collect();
+            let want: std::vec::Vec<&str> = kernel.iter().chain(cpu_keys).copied().collect();
+            assert_eq!(keys, want);
+            let mut seen = std::collections::BTreeSet::new();
+            for (k, v) in f.words() {
+                assert!(seen.insert(k), "{k} twice");
+                let v = std::format!("{v}");
+                assert!(!k.is_empty() && !v.is_empty() && !k.contains([' ', '=']) && !v.contains([' ', '=']), "{k}={v}");
+            }
+            let joined: std::vec::Vec<std::string::String> = f.words().map(|(k, v)| std::format!("{k}={v}")).collect();
+            assert_eq!(std::format!("{f}"), joined.join(" "));
+            assert_eq!(std::format!("{}", f.cpu), joined[kernel.len()..].join(" "));
+            assert_eq!(std::format!("{}", f.thp), joined[7..10].join(" "));
             assert_eq!(FeatureLine::build(&f).as_str(), s);
         }
     }
 
-    /// The verdicts on the values the prerequisites note recorded: the
-    /// GCE VMs (glibc 2.44 on 7.0, `__rseq_size=33`,
-    /// offset 192 on aarch64 and -192/-256 on x86_64), the Mac's Docker VM
-    /// (6.10, `__rseq_size=20`), a libc without the symbols, a registration
-    /// the kernel refused (`cpu_id` -2) or never wrote (-1), and the sizes
-    /// around the `mm_cid` boundary.
+    /// The three rseq words on the values the prerequisites note recorded:
+    /// the GCE VMs (glibc 2.44 on 7.0, `__rseq_size=33`, offset 192 on
+    /// aarch64 and -192/-256 on x86_64), the Mac's Docker VM (6.10,
+    /// `__rseq_size=20`), a libc without the symbols, a registration the
+    /// kernel never wrote, and the sizes around the `mm_cid` boundary.
     #[test]
-    fn rseq_verdicts_follow_size_and_cpu_id() {
+    fn rseq_words_follow_size_and_registration() {
+        let line = |p: &Probe| -> std::string::String {
+            let v: std::vec::Vec<std::string::String> = rseq_words(p).map(|(k, v)| std::format!("{k}={v}")).collect();
+            v.join(" ")
+        };
         for off in [192isize, -192, -256] {
-            let r = Rseq::from_symbols(33, 0, off, 3);
-            assert!(r.registered() && r.mm_cid(), "{r:?}");
-            assert_eq!(std::format!("{r}"), "rseq=yes rseq_size=33 mm_cid=yes");
+            let p = rseq_probe(33, off);
+            assert!(p.mm_cid_usable(), "{p:?}");
+            assert_eq!(line(&p), "rseq=yes rseq_size=33 mm_cid=yes");
         }
-        let r = Rseq::from_symbols(20, 0, 192, 0);
-        assert!(r.registered() && !r.mm_cid(), "{r:?}");
-        assert_eq!(std::format!("{r}"), "rseq=yes rseq_size=20 mm_cid=no");
-        assert_eq!(std::format!("{}", Rseq::NONE), "rseq=no rseq_size=0 mm_cid=no");
-        assert!(!Rseq::NONE.registered() && !Rseq::NONE.mm_cid());
+        let p = rseq_probe(20, 192);
+        assert!(!p.mm_cid_usable());
+        assert_eq!(line(&p), "rseq=yes rseq_size=20 mm_cid=no");
+        assert_eq!(line(&Probe::NONE), "rseq=no rseq_size=0 mm_cid=no");
+        assert_eq!(line(&rseq_probe(0, 0)), "rseq=no rseq_size=0 mm_cid=no", "symbols present, nothing registered");
         // The kernel did not write the area: no registration, whatever the size says.
-        for cpu_id in [-1, -2] {
-            let r = Rseq::from_symbols(33, 0, -192, cpu_id);
-            assert!(!r.registered() && !r.mm_cid(), "{r:?}");
-            assert_eq!(std::format!("{r}"), "rseq=no rseq_size=33 mm_cid=no");
-        }
-        // The boundary: 27 bytes do not hold a 4-byte `mm_cid` at 24; 28 do; 32 (a
-        // glibc that rounds to the alignment) does.
-        assert!(!Rseq::from_symbols(27, 0, 192, 0).mm_cid());
-        assert!(Rseq::from_symbols(28, 0, 192, 0).mm_cid());
-        assert!(Rseq::from_symbols(32, 0, 192, 0).mm_cid());
+        let p = Probe { registered: false, ..rseq_probe(33, -192) };
+        assert_eq!(line(&p), "rseq=no rseq_size=33 mm_cid=no");
+        // Flags the mode does not know keep the mode off; the line still
+        // says what exists.
+        let p = Probe { flags: 1, ..rseq_probe(33, 192) };
+        assert!(!p.mm_cid_usable());
+        assert_eq!(line(&p), "rseq=yes rseq_size=33 mm_cid=yes");
+        // The boundary: 27 bytes do not hold a 4-byte `mm_cid` at 24; 28
+        // do; 32 (a glibc that rounds to the alignment) does.
+        assert!(line(&rseq_probe(27, 192)).ends_with(" mm_cid=no"));
+        assert!(line(&rseq_probe(28, 192)).ends_with(" mm_cid=yes"));
+        assert!(line(&rseq_probe(32, 192)).ends_with(" mm_cid=yes"));
         // Below the original struct nothing is registered.
-        assert!(!Rseq::from_symbols(19, 0, 192, 0).registered());
-        assert_eq!(Rseq::MM_CID_END, 28);
-        assert_eq!(Rseq::CPU_ID_OFFSET, 4);
+        assert_eq!(line(&rseq_probe(19, 192)), "rseq=no rseq_size=19 mm_cid=no");
+        assert_eq!(crate::rseq::MM_CID_END, 28);
+        assert_eq!(crate::rseq::BASE_SIZE, 20);
     }
 
     /// The `slice_ext=` word from the probe's
@@ -1636,14 +1593,16 @@ mod linux_tests {
         }
     }
 
-    /// The rseq probe against glibc's own symbols through `dlsym` and the
+    /// The rseq words against glibc's own symbols through `dlsym` and the
     /// kernel's `AT_RSEQ_FEATURE_SIZE`: the values must be the symbols',
-    /// and `mm_cid` is `yes` exactly when glibc registered an area whose
-    /// size reaches 28, which the kernel allows from 6.3 (the GCE 7.0 VMs:
-    /// 33; the Mac's 6.10 linuxkit VM reports no feature size and glibc
+    /// the probe the line is built from must be `rseq::probe`'s, and
+    /// `mm_cid` is `yes` exactly when glibc registered an area whose size
+    /// reaches 28, which the kernel allows from 6.3 (the GCE 7.0 VMs: 33;
+    /// the Mac's 6.10 linuxkit VM reports no feature size and glibc
     /// registers 20). Both ways: it runs on hosts of each kind.
     #[test]
-    fn probe_rseq_matches_glibc_symbols_and_the_feature_size() {
+    fn rseq_words_match_glibc_symbols_and_the_feature_size() {
+        assert_eq!(f.rseq, crate::rseq::probe(), "the line's probe is the mode's");
         let (kv, f, line) = probed();
         let sym = |name: &[u8]| -> *const u8 {
             // SAFETY: `dlsym` on a NUL-terminated name in the test.
@@ -1651,32 +1610,35 @@ mod linux_tests {
         };
         let (ps, po, pf) = (sym(b"__rseq_size\0"), sym(b"__rseq_offset\0"), sym(b"__rseq_flags\0"));
         if ps.is_null() {
-            assert_eq!(f.rseq, Rseq::NONE, "no __rseq_size symbol: {line}");
+            assert_eq!(f.rseq, crate::rseq::Probe::NONE, "no __rseq_size symbol: {line}");
+            assert!(line.contains(" rseq=no rseq_size=0 mm_cid=no "), "{line}");
             return;
         }
         // SAFETY: glibc's exported objects of these types.
+        assert!(f.rseq.present, "{line}");
         let (size, offset, flags) = unsafe { (ps.cast::<u32>().read(), po.cast::<isize>().read(), pf.cast::<u32>().read()) };
         assert_eq!((f.rseq.size, f.rseq.offset, f.rseq.flags), (size, offset, flags), "{line}");
-        eprintln!("rseq: __rseq_size={size} __rseq_offset={offset} __rseq_flags={flags} cpu_id={}", f.rseq.cpu_id);
-        if size >= Rseq::BASE_SIZE {
+        let registered = size >= crate::rseq::BASE_SIZE && f.rseq.registered;
+        eprintln!("rseq: __rseq_size={size} __rseq_offset={offset} __rseq_flags={flags} registered={}", f.rseq.registered);
+        assert!(line.contains(&format!(" rseq={} rseq_size={size} mm_cid=", sys::yn(registered))), "{line}");
+        if size >= crate::rseq::BASE_SIZE {
             // glibc registered: the kernel wrote a CPU number.
-            assert!(f.rseq.cpu_id >= 0, "{line}");
-            assert!(f.rseq.registered(), "{line}");
+            assert!(f.rseq.registered, "{line}");
+            // SAFETY: this thread's registered area of `size` bytes.
+            let cpu = unsafe { crate::rseq::cpu_id(crate::rseq::area(offset)) };
             // SAFETY: no preconditions; the count bounds `cpu_id`.
             let ncpu = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_CONF) };
-            assert!((f.rseq.cpu_id as i64) < ncpu, "cpu_id {} of {ncpu}", f.rseq.cpu_id);
+            assert!((cpu as i64) < ncpu, "cpu_id {cpu} of {ncpu}");
         } else {
-            assert!(!f.rseq.registered(), "{line}");
+            assert!(!registered, "{line}");
         }
-        // AT_RSEQ_FEATURE_SIZE (27): the fields the kernel offers.
-        // SAFETY: getauxval has no preconditions.
-        let feat = unsafe { libc::getauxval(27) } as u32;
-        if feat >= Rseq::MM_CID_END && size >= Rseq::BASE_SIZE {
+        // AT_RSEQ_FEATURE_SIZE: the fields the kernel offers.
+        let feat = sys::auxv::getauxval(sys::auxv::AT_RSEQ_FEATURE_SIZE) as u32;
+        if feat >= crate::rseq::MM_CID_END && size >= crate::rseq::BASE_SIZE {
             assert!(at_least(kv, (6, 3)), "mm_cid predates 6.3: {line}");
-            assert!(f.rseq.mm_cid(), "kernel offers {feat} bytes, glibc registered {size}: {line}");
+            assert!(size >= crate::rseq::MM_CID_END, "kernel offers {feat} bytes, glibc registered {size}: {line}");
             assert!(line.contains(" rseq=yes rseq_size=") && line.contains(" mm_cid=yes "), "{line}");
         } else {
-            assert!(!f.rseq.mm_cid(), "feature size {feat}, registered {size}: {line}");
             assert!(line.contains(" mm_cid=no "), "{line}");
         }
     }

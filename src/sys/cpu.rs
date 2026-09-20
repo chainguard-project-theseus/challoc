@@ -32,6 +32,9 @@ use core::fmt;
 
 /// One `cpuid` result (x86_64), or a captured one in a test fixture.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+use super::features::{Value, write_words};
+use super::{Trailing, parse_decimal};
+
 pub struct Regs {
     pub eax: u32,
     pub ebx: u32,
@@ -250,13 +253,10 @@ pub fn caches_from_cpuid(subleaves: &[Regs]) -> Caches {
 }
 
 /// Parse a decimal sysfs value (`level`, `coherency_line_size`), tolerating
-/// a trailing newline. `None` for an empty or malformed file.
+/// a trailing newline. `None` for an empty or malformed file, or a value
+/// past `u32` ([`parse_decimal`] with [`Trailing::Newlines`]).
 pub fn parse_sysfs_dec(b: &[u8]) -> Option<u32> {
-    let digits = b.iter().take_while(|c| c.is_ascii_digit()).count();
-    if digits == 0 || !b[digits..].iter().all(|c| *c == b'\n') {
-        return None;
-    }
-    b[..digits].iter().try_fold(0u32, |acc, c| acc.checked_mul(10)?.checked_add(u32::from(c - b'0')))
+    u32::try_from(parse_decimal(b, Trailing::Newlines)?).ok()
 }
 
 /// Parse a sysfs `size` file: decimal bytes with an optional `K` or `M`
@@ -315,62 +315,47 @@ pub fn cacheline_from_ctr(ctr: u64) -> u32 {
     4u32 << ((ctr >> 16) & 0xf)
 }
 
-fn yn(b: bool) -> &'static str {
-    if b { "yes" } else { "no" }
-}
-
-/// A size in bytes as `<n>M`, `<n>K` or `<n>`, or `unknown` for 0.
-struct Size(u32);
-
-impl fmt::Display for Size {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0 {
-            0 => f.write_str("unknown"),
-            n if n % (1 << 20) == 0 => write!(f, "{}M", n >> 20),
-            n if n % (1 << 10) == 0 => write!(f, "{}K", n >> 10),
-            n => write!(f, "{n}"),
-        }
+impl Cpu {
+    /// The CPU half of the feature line: this architecture's bits as
+    /// `yes`/`no` (seven on arm64, nine on x86_64), then the three cache
+    /// sizes (`64K`/`2M`, `unknown` where a source was absent).
+    pub fn words(&self) -> impl Iterator<Item = (&'static str, Value)> {
+        let b = |k: &'static str, v: bool| Some((k, Value::YesNo(v)));
+        let isa: [Option<(&'static str, Value)>; 9] = match self.isa {
+            Isa::Arm(a) => [
+                b("mte", a.mte),
+                b("mte3", a.mte3),
+                b("pac", a.pac),
+                b("lse", a.lse),
+                b("lse2", a.lse2),
+                b("bti", a.bti),
+                b("sve", a.sve),
+                None,
+                None,
+            ],
+            Isa::X86(x) => [
+                b("lam", x.lam),
+                b("uai", x.uai),
+                b("la57", x.la57),
+                b("la57_enabled", x.la57_enabled),
+                b("cldemote", x.cldemote),
+                b("waitpkg", x.waitpkg),
+                b("erms", x.erms),
+                b("fsrm", x.fsrm),
+                b("avx512f", x.avx512f),
+            ],
+        };
+        isa.into_iter().flatten().chain([
+            ("cacheline", Value::Cache(self.caches.line)),
+            ("l1d", Value::Cache(self.caches.l1d)),
+            ("l2", Value::Cache(self.caches.l2)),
+        ])
     }
 }
 
 impl fmt::Display for Cpu {
-    /// The CPU half of the feature line: `key=value` pairs separated by
-    /// spaces, `yes`/`no` for the bits, sizes as `64K`/`2M`, `unknown`
-    /// where a source was absent.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.isa {
-            Isa::Arm(a) => write!(
-                f,
-                "mte={} mte3={} pac={} lse={} lse2={} bti={} sve={}",
-                yn(a.mte),
-                yn(a.mte3),
-                yn(a.pac),
-                yn(a.lse),
-                yn(a.lse2),
-                yn(a.bti),
-                yn(a.sve),
-            )?,
-            Isa::X86(x) => write!(
-                f,
-                "lam={} uai={} la57={} la57_enabled={} cldemote={} waitpkg={} erms={} fsrm={} avx512f={}",
-                yn(x.lam),
-                yn(x.uai),
-                yn(x.la57),
-                yn(x.la57_enabled),
-                yn(x.cldemote),
-                yn(x.waitpkg),
-                yn(x.erms),
-                yn(x.fsrm),
-                yn(x.avx512f),
-            )?,
-        }
-        write!(
-            f,
-            " cacheline={} l1d={} l2={}",
-            Size(self.caches.line),
-            Size(self.caches.l1d),
-            Size(self.caches.l2)
-        )
+        write_words(f, self.words())
     }
 }
 
@@ -406,12 +391,10 @@ mod linux {
         }
     }
 
-    /// Read a small sysfs file into `buf`; the empty slice when the file is
-    /// absent or unreadable.
+    /// A small sysfs file as the slice of `buf` it filled (`sys::
+    /// read_small_file`); the empty slice when it is absent or unreadable.
     fn read_small<'a>(path: &[u8], buf: &'a mut [u8]) -> &'a [u8] {
-        let Ok(fd) = sys::open(path, sys::O_RDONLY) else { return &[] };
-        let n = sys::read_full(fd, buf).unwrap_or(0);
-        let _ = sys::close(fd);
+        let n = sys::read_small_file(path, buf).unwrap_or(0);
         &buf[..n]
     }
 
@@ -472,15 +455,7 @@ mod linux {
     #[cfg(target_arch = "aarch64")]
     mod arch {
         use super::super::{Arm, Caches, Isa, cacheline_from_ctr};
-
-        const AT_HWCAP: usize = 16;
-        const AT_HWCAP2: usize = 26;
-
-        unsafe extern "C" {
-            /// glibc/musl `getauxval(3)`; reads the saved vector, never
-            /// allocates (see `features.rs`).
-            safe fn getauxval(kind: usize) -> usize;
-        }
+        use crate::sys::auxv::{AT_HWCAP, AT_HWCAP2, getauxval};
 
         /// `CTR_EL0`, readable from EL0 (Linux sets `SCTLR_EL1.UCT`, and
         /// traps and emulates the read where the hardware would not allow it).
