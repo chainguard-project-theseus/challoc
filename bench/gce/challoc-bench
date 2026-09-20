@@ -477,7 +477,8 @@ cmd_session() {
 # `wolfi-vm` project, docs/runbooks/chainguard-os-gce.md: kernel 6.18,
 # glibc 2.44 on the host, bootc/composefs with a read-only fs-verity root)
 # on the reference shapes c4a-standard-8 / c4-standard-8, the first "floor
-# as shipped" cells and the only ones without Docker's seccomp profile
+# as shipped" cells (cgos72-amd64, 2026-09-20, is the same cell on the
+# kernel 7.2 workstation image, x86_64 only; see the cell table) and the only ones without Docker's seccomp profile
 # between the library and the kernel. A bootc host has no apt, no apk on
 # the host, no Docker, no make, no getconf, no perf; rootless podman fails
 # (/run/containers/storage is root's) and netavark has no `nft`, so the
@@ -511,8 +512,11 @@ MATRIX_CELLS="k510-amd64 k61-amd64 k61-arm64 k68-amd64 k68-arm64 hwe-amd64 64k-a
 # family in us-east4-a except T2A (us-central1-a,b,f only).
 MATRIX_CPU_CELLS="cpu-c4a cpu-t2a cpu-c4 cpu-c3 cpu-c3d cpu-n2d cpu-c2 cpu-n4"
 # The Chainguard OS cells (task 14): the product's image on the reference
-# shapes, us-east4-a (the image families are in the wolfi-vm project).
-MATRIX_CGOS_CELLS="cgos-arm64 cgos-amd64"
+# shapes, us-east4-a (the image families are in the wolfi-vm project), plus
+# the kernel 7.2 workstation image on the x86_64 shape (2026-09-20): all
+# three run concurrently under MATRIX_JOBS=3, so `matrix cgos` costs the
+# same wall time with or without the third cell.
+MATRIX_CGOS_CELLS="cgos-arm64 cgos-amd64 cgos72-amd64"
 
 # cell_spec CELL -> "family project arch machine prep extra zones"
 # (extra: none | privileged | scorecard | cgos; zones: comma-separated, `-` = $ZONE)
@@ -521,6 +525,15 @@ cell_spec() {
     # Chainguard OS (bootc, podman): the runbook's image families.
     cgos-arm64) echo "kirkland-server-hypervisor-arm64 wolfi-vm arm64 c4a-standard-8 none cgos us-east4-a" ;;  # Axion, kernel 6.18, glibc 2.44
     cgos-amd64) echo "kirkland-server-hypervisor-amd64 wolfi-vm amd64 c4-standard-8 none cgos us-east4-a" ;;   # Xeon 8581C, the same image for x86_64
+    # Kernel 7.2 (2026-09-20): the workstation image family, x86_64 only
+    # (kirkland-workstation-7dot2-amd64-20260920-0028, created 2026-09-20
+    # 00:50 UTC; the metal twin is kirkland-workstation-7dot2-metal-amd64,
+    # not a cell). A copy of cgos-amd64 with the family swapped: the first
+    # host newer than GCE's Ubuntu 7.0, for the 7.2 rows of docs/research.md
+    # (khugepaged anon mTHP collapse, cache-aware scheduling,
+    # CONFIG_RSEQ_SLICE_EXTENSION). Its scorecard file is
+    # scorecard-cgos72-amd64.md (the cell name's prefix), never the 6.18 one.
+    cgos72-amd64) echo "kirkland-workstation-7dot2-amd64 wolfi-vm amd64 c4-standard-8 none cgos us-east4-a" ;;  # Xeon 8581C, kernel 7.2
     k510-amd64) echo "debian-11 debian-cloud amd64 e2-standard-4 none none -" ;;
     k61-amd64)  echo "debian-12 debian-cloud amd64 e2-standard-4 none none -" ;;
     k61-arm64)  echo "debian-12-arm64 debian-cloud arm64 c4a-standard-4 none none -" ;;
@@ -914,7 +927,9 @@ matrix_cell() {
     # reference files; the VM's copy is the whole file, and a rerun of the
     # same (date, commit) replaces its line there, so the copy is the record.
     local sc="scorecard-${machine%%-*}.md"
-    [ "$extra" != cgos ] || sc="scorecard-cgos-$arch.md"
+    # (the cell name's prefix: cgos-* -> scorecard-cgos-<arch>.md, cgos72-* ->
+    # scorecard-cgos72-<arch>.md, so kernels do not share a trend file).
+    [ "$extra" != cgos ] || sc="scorecard-${cell%-*}-$arch.md"
     # shellcheck disable=SC2046
     if rsync -az -e "ssh $(matrix_ssh_opts)" "$dest:$REMOTE_DIR/bench/results/$sc" "$REPO/bench/results/$sc" >>"$log" 2>&1; then
       say "fetched bench/results/$sc"

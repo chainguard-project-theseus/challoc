@@ -263,6 +263,7 @@ glibc, which is the same 2.44 the dev image has).
 |------------|-------------------------------------|----------------|-------|
 | cgos-arm64 | `kirkland-server-hypervisor-arm64` (`wolfi-vm`) | c4a-standard-8 | Axion; kernel 6.18.49-r2-gcp; THP `always` |
 | cgos-amd64 | `kirkland-server-hypervisor-amd64` (`wolfi-vm`) | c4-standard-8  | Xeon 8581C; the same kernel; no `X86_5LEVEL`, no `ADDRESS_MASKING` |
+| cgos72-amd64 | `kirkland-workstation-7dot2-amd64` (`wolfi-vm`) | c4-standard-8 | Xeon 8581C; kernel 7.2 (the workstation image, x86_64 only; added 2026-09-20 for the 7.2 rows of `docs/research.md`); scorecard file `scorecard-cgos72-amd64.md` |
 
 A bootc host is provisioned differently (`matrix_provision_bootc_script`
 in `challoc-bench`): `/usr` is a read-only composefs with no `apk` on the
@@ -284,12 +285,14 @@ seccomp profile and again with `DOCKER_FLAGS=--privileged`, the three
 probe lines, the host capture (`host.log`: uname, `/proc/config.gz` keys,
 THP, glibc, bootc status, the root mount, podman, the NIC driver), `make
 test-cgroup` (podman sets the cgroup v2 limits) and one `make scorecard
-ROUNDS=3` into `bench/results/scorecard-cgos-<arch>.md`, fetched back next
-to the per-CPU files; the reference files are not touched. The summary
+ROUNDS=3` into `bench/results/scorecard-<cellprefix>-<arch>.md` (`cgos-*` ->
+`scorecard-cgos-<arch>.md`, `cgos72-amd64` -> `scorecard-cgos72-amd64.md`, so
+the two kernels do not share a trend file), fetched back next to the
+per-CPU files; the reference files are not touched. The summary
 line gains `PROBE_NATIVE` and `privileged=PASS:<passed>/<failed>`.
 
 ```
-bench/gce/challoc-bench matrix cgos                     # both cells, throwaway VMs
+bench/gce/challoc-bench matrix cgos                     # all three cells (6.18 arm64, 6.18 amd64, 7.2 amd64), throwaway VMs, concurrently
 MATRIX_TIMEOUT=7200 MATRIX_ADOPT=challoc-lane-e-cgos-arm64 bench/gce/challoc-bench matrix cgos-arm64
                                                         # run the cell on an existing VM, keep it
 ```

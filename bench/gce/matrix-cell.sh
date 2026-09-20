@@ -48,8 +48,9 @@
 #     the root mount; host.log), make test-cgroup (the churn at 512 and 256
 #     MiB, the lazy purge, the 300 s oscillation; podman sets the cgroup v2
 #     limits) and one `make scorecard ROUNDS=3` into
-#     bench/results/scorecard-cgos-<arch>.md (never the reference files).
-#     fuzz is skipped (the kernel matrix covers it).
+#     bench/results/scorecard-<cellprefix>-<arch>.md (cgos-* -> scorecard-
+#     cgos-<arch>.md, the 7.2 cell cgos72-amd64 -> scorecard-cgos72-amd64.md;
+#     never the reference files). fuzz is skipped (the kernel matrix covers it).
 #
 #   bash bench/gce/matrix-cell.sh CELL IMAGE [privileged|scorecard|cgos]
 set -u
@@ -190,7 +191,7 @@ case "$extra" in
     step test-privileged priv_cmd
     step test-cgroup make test-cgroup
     scorecard_cmd() {
-      make scorecard ROUNDS=3 SCORECARD_FILE="/src/bench/results/scorecard-cgos-$(uname -m | sed -e s/x86_64/amd64/ -e s/aarch64/arm64/).md" \
+      make scorecard ROUNDS=3 SCORECARD_FILE="/src/bench/results/scorecard-${cell%-*}-$(uname -m | sed -e s/x86_64/amd64/ -e s/aarch64/arm64/).md" \
         HOST_KIND="Chainguard OS $(uname -r), GCE $machine ($model), zone $zone, $vcpus vCPU, podman --network=host"
     }
     step scorecard scorecard_cmd

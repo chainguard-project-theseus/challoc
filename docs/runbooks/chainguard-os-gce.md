@@ -125,6 +125,8 @@ Both arches are published and ready **today**:
 |--|--|--|
 | x86_64 | `kirkland-server-hypervisor-amd64` | `kirkland-server-hypervisor-amd64-20260916-1603` |
 | arm64 | `kirkland-server-hypervisor-arm64` | `kirkland-server-hypervisor-arm64-20260916-1358` |
+| x86_64, kernel 7.2 (VM; added 2026-09-20, lane E) | `kirkland-workstation-7dot2-amd64` | `kirkland-workstation-7dot2-amd64-20260920-0028` (created 2026-09-20 00:50 UTC; UEFI/GVNIC/IDPF, **no** `BARE_METAL_LINUX_COMPATIBLE`, so VMs only; the `cgos72-amd64` cell) |
+| x86_64, kernel 7.2 (metal; added 2026-09-20, lane E) | `kirkland-workstation-7dot2-metal-amd64` | `kirkland-workstation-7dot2-metal-amd64-20260919-2048` (created 2026-09-20 02:11 UTC; carries `BARE_METAL_LINUX_COMPATIBLE`) |
 
 Both carry the guest OS features metal requires, confirmed with `gcloud
 compute images describe`:
