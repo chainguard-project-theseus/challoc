@@ -49,10 +49,10 @@
 use core::ffi::{c_char, c_int, c_void};
 use core::ptr;
 
-use super::libc::{class_for, usable_size};
+use super::libc::{class_for, old_size_or_keep, usable_size};
 use crate::arena::{self, Flags, Tcache};
 use crate::heap::Shared;
-use crate::layout::{CLASSES, Kind};
+use crate::layout::CLASSES;
 
 /// `void (*malloc_message)(void *cbopaque, const char *s)`; null when the
 /// program has not installed one.
@@ -159,35 +159,18 @@ pub fn mallocx(size: usize, flags: c_int) -> *mut u8 {
 
 /// `rallocx(p, size, flags)`: in place when the new size maps to the same
 /// class (whose slots satisfy the requested alignment by construction) or
-/// the same number of huge pages at a start that satisfies it; otherwise
-/// allocate per `flags`, copy `min(old usable, size)`, free `p` through
-/// the flags' cache. `MALLOCX_ZERO` zeroes the bytes beyond the copied
-/// prefix of a moved block. On failure `p` is intact and null comes back.
+/// the same number of huge pages at a start that satisfies it
+/// (`libc::old_size_or_keep`); otherwise allocate per `flags`, copy
+/// `min(old usable, size)`, free `p` through the flags' cache.
+/// `MALLOCX_ZERO` zeroes the bytes beyond the copied prefix of a moved
+/// block. On failure `p` is intact and null comes back.
 pub fn rallocx(p: *mut u8, size: usize, flags: c_int) -> *mut u8 {
     let f = Flags::decode(flags as u32);
     if p.is_null() {
         return alloc_with(super::shared(), size, &f);
     }
     let Some(shared) = super::shared_if_ready() else { not_an_allocation("rallocx", p) };
-    let align = f.align();
-    let old = match shared.regions.classify(p as usize) {
-        Kind::Slab { class, slab, slot } => {
-            let class = class as usize;
-            shared.table(class).check_live(slab as usize, slot as usize, p as usize);
-            if class_for(size, align) == Some(class) {
-                return p;
-            }
-            CLASSES[class].size()
-        }
-        Kind::Huge { page } => {
-            let old = shared.huge.usable_size(page);
-            if class_for(size, align).is_none() && shared.huge.usable_for(size) == Some(old) && (p as usize) % align == 0 {
-                return p;
-            }
-            old
-        }
-        Kind::Invalid => not_an_allocation("rallocx", p),
-    };
+    let Some(old) = old_size_or_keep(shared, "rallocx", p, size, f.align()) else { return p };
     let q = alloc_with(shared, size, &f);
     if q.is_null() {
         return q;

@@ -358,9 +358,40 @@ pub fn malloc_usable_size(p: *mut u8) -> usize {
     }
 }
 
+/// The reallocation decision shared by `realloc` and `rallocx`: `None`
+/// when the live allocation `p` already serves `size` bytes at `align`
+/// (a power of two; 1 or the quantum means the natural alignment) and
+/// keeps its pointer, that is when the new size maps to `p`'s class
+/// (whose slots satisfy the alignment by construction) or to a huge run
+/// of the same number of pages at a start that satisfies it; otherwise
+/// `Some(old)`, the usable bytes of `p`, the most a move has to copy.
+/// Aborts, naming `what`, unless `p` is a live slab slot or huge run
+/// start.
+pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: usize, align: usize) -> Option<usize> {
+    match shared.regions.classify(p as usize) {
+        Kind::Slab { class, slab, slot } => {
+            let class = class as usize;
+            shared.table(class).check_live(slab as usize, slot as usize, p as usize);
+            if class_for(size, align) == Some(class) {
+                return None;
+            }
+            Some(CLASSES[class].size())
+        }
+        Kind::Huge { page } => {
+            let old = shared.huge.usable_size(page);
+            if class_for(size, align).is_none() && shared.huge.usable_for(size) == Some(old) && (p as usize) % align == 0 {
+                return None;
+            }
+            Some(old)
+        }
+        Kind::Invalid => crate::sys::abort_fmt(format_args!("{what} of {:#x}: not an allocation", p as usize)),
+    }
+}
+
 /// `realloc`. The same pointer comes back when the new size maps to the
-/// same class or the same number of huge pages; otherwise allocate, copy
-/// `min(old usable, new size)`, free. On failure the old block is intact.
+/// same class or the same number of huge pages (`old_size_or_keep`);
+/// otherwise allocate, copy `min(old usable, new size)`, free. On failure
+/// the old block is intact.
 pub fn realloc(p: *mut u8, size: usize) -> *mut u8 {
     if p.is_null() {
         return malloc(size);
@@ -370,27 +401,7 @@ pub fn realloc(p: *mut u8, size: usize) -> *mut u8 {
         return ptr::null_mut();
     }
     let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
-    let old = match shared.regions.classify(p as usize) {
-        Kind::Slab { class, slab, slot } => {
-            let class = class as usize;
-            shared.table(class).check_live(slab as usize, slot as usize, p as usize);
-            if class_of(size) == Some(class) {
-                return p;
-            }
-            CLASSES[class].size()
-        }
-        Kind::Huge { page } => {
-            let old = shared.huge.usable_size(page);
-            if class_of(size).is_none() && shared.huge.usable_for(size) == Some(old) {
-                return p;
-            }
-            old
-        }
-        Kind::Invalid => crate::sys::abort_fmt(format_args!(
-            "realloc of {:#x}: not an allocation",
-            p as usize
-        )),
-    };
+    let Some(old) = old_size_or_keep(shared, "realloc", p, size, 1) else { return p };
     let q = malloc(size);
     if q.is_null() {
         return q;
