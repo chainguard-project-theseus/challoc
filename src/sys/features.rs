@@ -98,8 +98,8 @@ pub fn parse_thp_setting(bytes: &[u8]) -> Option<ThpSetting> {
     }
 }
 
-/// What `madvise(MADV_COLLAPSE)` did when probed (design 10 step 1, plan
-/// Phase 2.5 task 9). The syscall acts on whole PMD-sized ranges only
+/// What `madvise(MADV_COLLAPSE)` did when probed (design 10 step 1).
+/// The syscall acts on whole PMD-sized ranges only
 /// (through 7.0 a request over a smaller range returns 0 having collapsed
 /// nothing), so the probe populates and collapses one PMD-sized range and
 /// costs a PMD of memory for a moment; init runs it only when the `thp`
@@ -116,9 +116,9 @@ pub enum Collapse {
 }
 
 /// The kernel's answer for `prctl(PR_SET_THP_DISABLE, 1,
-/// PR_THP_DISABLE_EXCEPT_ADVISED)` (kernel 6.18; plan Phase 2.5 task 16,
-/// design 17), the `thp_except_advised=` key. Probed by the call itself,
-/// never by a version: on a process that carries no THP policy
+/// PR_THP_DISABLE_EXCEPT_ADVISED)` (kernel 6.18; design 17), the
+/// `thp_except_advised=` key. Probed by the call itself, never by a
+/// version: on a process that carries no THP policy
 /// (`PR_GET_THP_DISABLE` reads 0) the flag is set and cleared again, one
 /// `prctl` each way; a kernel before 6.18 refuses a non-zero flags word
 /// with `EINVAL`. A process whose parent set a policy (`PR_GET_THP_DISABLE`
@@ -156,7 +156,7 @@ impl fmt::Display for ThpDisable {
 
 /// The kernel's transparent-huge-page configuration as read at init from
 /// `/sys/kernel/mm/transparent_hugepage` with raw syscalls (design 10 step
-/// 1, plan Phase 2.5 task 9). Folio sizes are bit sets over `log2(size)`:
+/// 1). Folio sizes are bit sets over `log2(size)`:
 /// bit `k` set means the `1 << k`-byte size. Every candidate size from four
 /// pages up to the PMD is looked up by path, so a size the kernel does not
 /// list (a directory without an `enabled` file, as `hugepages-8kB` on 7.0,
@@ -360,7 +360,7 @@ fn write_decimal(out: &mut [u8], mut v: u64) -> usize {
 }
 
 /// glibc's registered rseq area as the running process sees it (design 15
-/// and 17, plan Phase 2.5 task 8): the three variables glibc 2.35+ exports
+/// and 17): the three variables glibc 2.35+ exports
 /// beside its registration, read from the symbols at init (weak references,
 /// so a libc without them reads as "no rseq"), and the kernel-written
 /// `cpu_id` field of the area itself, which says whether the registration
@@ -442,9 +442,9 @@ impl fmt::Display for Rseq {
 }
 
 /// The kernel's answer for the rseq time slice extension (design 17, "Time
-/// slice extension"; plan Phase 2.5 task 15), the `slice_ext=` key of the
-/// feature line. The probe itself is `slice::probe` (lane C's module,
-/// read here through its public API, never duplicated): glibc's
+/// slice extension"), the `slice_ext=` key of the
+/// feature line. The probe itself is `slice::probe` (`slice.rs`, read
+/// here through its public API, never duplicated): glibc's
 /// registration, its size against `slice_ctrl`, and bit 4 of the thread's
 /// `flags`. `Features::probe` records what the kernel offers before the
 /// configuration is read; `Features::note_slice_ext` folds in the
@@ -547,22 +547,22 @@ pub struct Features {
     /// `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME)` works
     /// (kernel 5.17+ with `CONFIG_ANON_VMA_NAME`).
     pub anon_name: bool,
-    /// `madvise(MADV_POPULATE_WRITE)` works (kernel 5.14+; plan Phase 2.5
-    /// task 11): the prefault pass populates a slab with one call, else
-    /// touches it a page at a time.
+    /// `madvise(MADV_POPULATE_WRITE)` works (kernel 5.14+): the prefault
+    /// pass populates a slab with one call, else touches it a page at a
+    /// time.
     pub populate_write: bool,
     /// The transparent-huge-page configuration and the `MADV_COLLAPSE`
-    /// probe (plan Phase 2.5 task 9): what the `thp` key can turn on.
+    /// probe: what the `thp` key can turn on.
     pub thp: Thp,
-    /// Whether the kernel takes `PR_THP_DISABLE_EXCEPT_ADVISED` (plan Phase
-    /// 2.5 task 16): what `thp_process:advised` can issue.
+    /// Whether the kernel takes `PR_THP_DISABLE_EXCEPT_ADVISED`: what
+    /// `thp_process:advised` can issue.
     pub thp_disable: ThpDisable,
-    /// glibc's rseq registration and whether it covers `mm_cid` (plan
-    /// Phase 2.5 task 8): the per-CPU mode's `auto` decision reads
+    /// glibc's rseq registration and whether it covers `mm_cid`: the
+    /// per-CPU mode's `auto` decision reads
     /// [`Rseq::mm_cid`]; the value itself is read elsewhere.
     pub rseq: Rseq,
     /// The kernel's answer for the rseq time slice extension and whether
-    /// the process uses it (plan Phase 2.5 task 15; `slice.rs` decides,
+    /// the process uses it (`slice.rs` decides,
     /// this is the report of it).
     pub slice_ext: SliceExt,
     /// The CPU report (design.md section 17): reported, not acted on.
@@ -626,7 +626,8 @@ impl FeatureLine {
     /// probe `yes`, `pidfd:2147483647`, byte-exact cache sizes, every THP
     /// size listed, the longest `thp_except_advised` and `slice_ext`
     /// words) is under `CAP - 64` bytes (`feature_line_fits`: 462 with the
-    /// plan Phase 2.5 task 11, 15 and 16 keys; 512 held 414 before them).
+    /// `populate_write`, `slice_ext` and `thp_except_advised` keys; 512
+    /// held 414 before them).
     pub const CAP: usize = 640;
 
     /// Format `features` into a fresh line. A line that did not fit is cut,
@@ -669,6 +670,7 @@ pub use linux::*;
 #[cfg(target_os = "linux")]
 mod linux {
     use super::{AT_PAGESZ, Collapse, Cpu, Features, ProcessMadvise, Rseq, Thp, ThpDisable, page_size_from_auxv};
+    use crate::sys::cpu::Isa;
     use crate::sys::{
         self, IoVec, MADV_COLLAPSE, MADV_DONTNEED, MADV_FREE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE,
         MADV_POPULATE_WRITE, MAP_ANONYMOUS, MAP_PRIVATE, PIDFD_SELF, PR_GET_THP_DISABLE, PR_SET_THP_DISABLE,
@@ -787,10 +789,10 @@ mod linux {
         r == Ok(page)
     }
 
-    /// `PIDFD_SELF` first (kernel 6.14, no fd); then a real pidfd for the
+    /// `PIDFD_SELF` first (kernel 6.15, no fd); then a real pidfd for the
     /// calling process (kernel 5.10, needs the self-target exemption or
     /// `CAP_SYS_NICE`); otherwise unavailable. The second value is whether
-    /// `MADV_FREE` goes through the same target (plan Phase 2.5 task 10).
+    /// `MADV_FREE` goes through the same target.
     pub fn probe_process_madvise(page: usize) -> (ProcessMadvise, bool) {
         let Some(addr) = scratch(page, PROT_READ | PROT_WRITE) else {
             return (ProcessMadvise::Unavailable, false);
@@ -828,8 +830,8 @@ mod linux {
         ok
     }
 
-    /// `madvise(MADV_POPULATE_WRITE)` on a fresh scratch page (plan Phase
-    /// 2.5 task 11): the call must succeed and the page must be resident
+    /// `madvise(MADV_POPULATE_WRITE)` on a fresh scratch page: the call
+    /// must succeed and the page must be resident
     /// afterwards (`mincore`), so a kernel that takes the advice and does
     /// nothing would not count. `EINVAL` before 5.14.
     pub fn probe_populate_write(page: usize) -> bool {
@@ -846,7 +848,6 @@ mod linux {
         release(addr, page);
         ok
     }
-
 
     /// Read one sysfs file into `buf`; 0 when it is missing or unreadable.
     fn read_sysfs(path: &[u8], buf: &mut [u8]) -> usize {
@@ -908,7 +909,7 @@ mod linux {
         tp
     }
 
-    /// glibc's rseq registration (plan Phase 2.5 task 8): `__rseq_size`,
+    /// glibc's rseq registration: `__rseq_size`,
     /// `__rseq_flags` and `__rseq_offset` from the weak symbols (all three
     /// or nothing: glibc exports them together since 2.35), then the
     /// area's `cpu_id` at `tp + __rseq_offset + 4`, read only when the
@@ -935,7 +936,7 @@ mod linux {
     }
 
     /// `prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED)` tried
-    /// and undone (plan Phase 2.5 task 16): the answer is the call's
+    /// and undone: the answer is the call's
     /// return, `EINVAL` before 6.18. Nothing is tried on a process that
     /// already carries a THP policy from its parent. Three `prctl`s at
     /// most, no memory touched.
@@ -1006,9 +1007,9 @@ mod linux {
             let page_size = page_size();
             let (process_madvise, process_madvise_free) = probe_process_madvise(page_size);
             let cpu = Cpu::probe(page_size);
-            // The `cldemote` verdict (plan Phase 2.5 task 12): installed
-            // for `sys::cldemote::demote`, which no path issues today.
-            crate::sys::cldemote::configure(matches!(cpu.isa, super::super::cpu::Isa::X86(x) if x.cldemote));
+            // The `cldemote` verdict: installed for `sys::cldemote::demote`,
+            // which no path issues today.
+            crate::sys::cldemote::configure(matches!(cpu.isa, Isa::X86(x) if x.cldemote));
             Features {
                 page_size,
                 page_shift: page_size.trailing_zeros(),
@@ -1028,8 +1029,8 @@ mod linux {
             }
         }
 
-        /// Fold `slice::configure`'s verdict into the `slice_ext=` word
-        /// (plan Phase 2.5 task 15). Init calls it after `config::load`
+        /// Fold `slice::configure`'s verdict into the `slice_ext=` word.
+        /// Init calls it after `config::load`
         /// (which runs `configure` on the init thread) and before the
         /// line is built, so the line says `on` when lock holders request
         /// the extension.
@@ -1037,7 +1038,7 @@ mod linux {
             self.slice_ext = self.slice_ext.with_configured(crate::slice::verdict());
         }
 
-        /// Run the `MADV_COLLAPSE` probe (plan Phase 2.5 task 9). Separate
+        /// Run the `MADV_COLLAPSE` probe. Separate
         /// from [`probe`](Features::probe) because it populates a PMD of
         /// memory: init calls it only when the configuration's `thp` key is
         /// not `never`, and the line says `collapse=unprobed` otherwise.
@@ -1094,7 +1095,6 @@ mod tests {
         assert_eq!(page_size_from_auxv(&[]), None);
         assert_eq!(page_size_from_auxv(&auxv(&[(6, 4096)])[..7]), None);
     }
-
 
     /// A fake sysfs: `(path, contents)` pairs; a missing path reads 0 bytes.
     fn sysfs<'a>(files: &'a [(&'a str, &'a str)]) -> impl FnMut(&[u8], &mut [u8]) -> usize + 'a {
@@ -1267,7 +1267,7 @@ mod tests {
         assert!(std::format!("{f}").contains(" collapse=unprobed thp_except_advised=yes rseq=yes rseq_size=20 mm_cid=no slice_ext=no-slice_ctrl mte="));
         let f = Features { rseq: Rseq::NONE, slice_ext: SliceExt::NoRseq, ..f };
         assert!(std::format!("{f}").contains(" rseq=no rseq_size=0 mm_cid=no slice_ext=no-rseq "));
-        // A 7.0.14 built with the option (lane C's C4): on under the
+        // A 7.0.14 built with the option (a GCE C4): on under the
         // default key, available under `slice_ext:off`.
         let f = Features { rseq: Rseq::from_symbols(33, 0, -192, 5), slice_ext: SliceExt::On, ..f };
         assert!(std::format!("{f}").contains(" mm_cid=yes slice_ext=on "));
@@ -1283,7 +1283,7 @@ mod tests {
         assert!(std::format!("{f}").contains("process_madvise=pidfd_self process_madvise_free=yes "));
         let f = Features { process_madvise: ProcessMadvise::Unavailable, process_madvise_free: false, ..f };
         assert!(std::format!("{f}").contains("process_madvise=no process_madvise_free=no "));
-        // Before 5.14 (plan Phase 2.5 task 11).
+        // Before 5.14.
         let f = Features { populate_write: false, ..f };
         assert!(std::format!("{f}").contains(" anon_name=no populate_write=no thp="));
     }
@@ -1307,6 +1307,8 @@ mod tests {
         };
         let line = FeatureLine::build(&f);
         assert_eq!(line.as_str(), std::format!("{f}"));
+        // SAFETY: `as_ptr` names the line's own buffer, which holds `len`
+        // bytes of text and the NUL after them.
         let bytes = unsafe { core::slice::from_raw_parts(line.as_ptr() as *const u8, line.len + 1) };
         assert_eq!(bytes[line.len], 0);
         assert_eq!(&bytes[..line.len], line.as_str().as_bytes());
@@ -1362,8 +1364,8 @@ mod tests {
         }
     }
 
-    /// The verdicts on the values the prerequisites note recorded (plan
-    /// Phase 2.5 task 8): the GCE VMs (glibc 2.44 on 7.0, `__rseq_size=33`,
+    /// The verdicts on the values the prerequisites note recorded: the
+    /// GCE VMs (glibc 2.44 on 7.0, `__rseq_size=33`,
     /// offset 192 on aarch64 and -192/-256 on x86_64), the Mac's Docker VM
     /// (6.10, `__rseq_size=20`), a libc without the symbols, a registration
     /// the kernel refused (`cpu_id` -2) or never wrote (-1), and the sizes
@@ -1397,7 +1399,7 @@ mod tests {
         assert_eq!(Rseq::CPU_ID_OFFSET, 4);
     }
 
-    /// The `slice_ext=` word (plan Phase 2.5 task 15) from the probe's
+    /// The `slice_ext=` word from the probe's
     /// verdict and the configured one: the 7.0 GCE kernels (`33` bytes,
     /// bit 4 clear) read `kernel-disabled` whatever the key; a 6.18 or
     /// 6.10 kernel `no-slice_ctrl`; no registration `no-rseq`; a kernel
@@ -1484,159 +1486,284 @@ mod linux_tests {
         assert_eq!(page_size_from_auxv(&raw), Some(ps));
     }
 
-    #[test]
-    fn probe_prints_and_matches_kernel_version() {
+    /// The real probe and the running kernel's version, the line printed
+    /// so `--nocapture` shows what the kernel gave us. Each test probes
+    /// afresh (harmless: one more sealed page, perhaps one more pidfd).
+    fn probed() -> ((u32, u32), Features, String) {
         let kv = kernel_version();
         let f = Features::probe();
         let line = format!("{f}");
         eprintln!("kernel {}.{}: {line}", kv.0, kv.1);
+        (kv, f, line)
+    }
+
+    // A feature newer than the kernel must probe absent. The converse is
+    // only asserted where nothing but the kernel decides: seccomp filters
+    // mseal/process_madvise and CONFIG_ANON_VMA_NAME is optional, but
+    // madvise itself is never filtered.
+
+    /// The line prints and the page geometry is consistent. The name is
+    /// the filter `bench/probes/calloc-zero-campaign.sh` runs.
+    #[test]
+    fn probe_prints_and_matches_kernel_version() {
+        let (_, f, _) = probed();
         assert_eq!(f.page_shift, f.page_size.trailing_zeros());
         assert_eq!(1usize << f.page_shift, f.page_size);
+    }
 
-        // A feature newer than the kernel must probe absent. The converse
-        // is only asserted where nothing but the kernel decides: seccomp
-        // filters mseal/process_madvise and CONFIG_ANON_VMA_NAME is optional,
-        // but madvise itself is never filtered.
+    #[test]
+    fn probe_guard_install_follows_the_kernel_both_ways() {
+        let (kv, f, line) = probed();
         if !at_least(kv, (6, 13)) {
             assert!(!f.guard_install, "MADV_GUARD_INSTALL predates 6.13: {line}");
         } else {
             assert!(f.guard_install, "MADV_GUARD_INSTALL should work on 6.13+: {line}");
         }
+        if f.guard_install {
+            // Usable exactly as reported.
+            let page = f.page_size;
+            let addr = sys::tests::map_anon(page);
+            // SAFETY: our page, mapped above and unmapped here.
+            unsafe {
+                sys::madvise(addr, page, sys::MADV_GUARD_INSTALL).unwrap();
+                sys::madvise(addr, page, sys::MADV_GUARD_REMOVE).unwrap();
+                sys::munmap(addr, page).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn probe_mseal_predates_nothing_before_6_10_and_keeps_its_sealed_page() {
+        let (kv, f, line) = probed();
         if !at_least(kv, (6, 10)) {
             assert!(!f.mseal, "mseal predates 6.10: {line}");
         }
-        if !at_least(kv, (6, 16)) {
-            assert_ne!(
-                f.process_madvise,
-                ProcessMadvise::PidfdSelf,
-                "PIDFD_SELF predates 6.16: {line}"
-            );
+        if f.mseal {
+            // Sealing works, so the probe's own sealed page must still be
+            // mapped: a PROT_NONE page. Find it via /proc.
+            let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+            assert!(maps.lines().any(|l| l.split_whitespace().nth(1) == Some("---p")), "{maps}");
+        }
+    }
+
+    /// `PIDFD_SELF` is 6.15 (`sys::PIDFD_SELF`), `process_madvise` 5.10;
+    /// whatever target was reported must work exactly as reported, and the
+    /// `MADV_FREE` verdict must agree with a second call through it.
+    #[test]
+    fn probe_process_madvise_follows_the_kernel_and_is_usable() {
+        let (kv, f, line) = probed();
+        if !at_least(kv, (6, 15)) {
+            assert_ne!(f.process_madvise, ProcessMadvise::PidfdSelf, "PIDFD_SELF predates 6.15: {line}");
         }
         if !at_least(kv, (5, 10)) {
             assert_eq!(f.process_madvise, ProcessMadvise::Unavailable, "{line}");
         }
+        let page = f.page_size;
+        let addr = sys::tests::map_anon(page);
+        let p = addr as *mut u8;
+        match f.process_madvise {
+            ProcessMadvise::Unavailable => assert!(!f.process_madvise_free, "{line}"),
+            ProcessMadvise::PidfdSelf | ProcessMadvise::Pidfd(_) => {
+                let fd = match f.process_madvise {
+                    ProcessMadvise::Pidfd(fd) => fd,
+                    _ => sys::PIDFD_SELF,
+                };
+                // SAFETY: our page, live iov.
+                unsafe {
+                    p.write_volatile(7);
+                    let iov = sys::IoVec { base: p, len: page };
+                    assert_eq!(sys::process_madvise(fd, &iov, 1, sys::MADV_DONTNEED, 0), Ok(page));
+                    assert_eq!(p.read_volatile(), 0);
+                    p.write_volatile(9);
+                    let r = sys::process_madvise(fd, &iov, 1, sys::MADV_FREE, 0);
+                    assert_eq!(r == Ok(page), f.process_madvise_free, "{line}: {r:?}");
+                }
+            }
+        }
+        // SAFETY: our page.
+        unsafe { sys::munmap(addr, page).unwrap() };
+    }
+
+    #[test]
+    fn probe_anon_name_follows_the_kernel_and_releases_its_page() {
+        let (kv, f, line) = probed();
         if !at_least(kv, (5, 17)) {
             assert!(!f.anon_name, "PR_SET_VMA_ANON_NAME predates 5.17: {line}");
         }
-        // `MADV_POPULATE_WRITE` (plan Phase 2.5 task 11): 5.14, and never
-        // filtered (plain `madvise`), so both directions hold.
+        if f.anon_name {
+            let page = f.page_size;
+            let addr = sys::tests::map_anon(page);
+            // SAFETY: our page, static name.
+            unsafe { sys::set_vma_anon_name(addr, page, b"challoc:probe2\0").unwrap() };
+            let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+            let l: Vec<&str> = maps.lines().filter(|l| l.starts_with(&format!("{addr:x}-"))).collect();
+            assert!(l.iter().any(|l| l.contains("[anon:challoc:probe2]")), "{l:?}");
+            // SAFETY: our page.
+            unsafe { sys::munmap(addr, page).unwrap() };
+        }
+        // The probe must not have left its named scratch page behind: it
+        // releases the page whether or not the prctl worked.
+        let maps: String = std::fs::read_to_string("/proc/self/maps").unwrap();
+        assert!(!maps.contains("[anon:challoc:probe]"), "probe page leaked: {maps}");
+    }
+
+    /// `MADV_POPULATE_WRITE`: 5.14, and never filtered (plain `madvise`),
+    /// so both directions hold. Usable as reported: a fresh page is not
+    /// resident, one call makes it so, and its contents stay zero.
+    #[test]
+    fn probe_populate_write_follows_the_kernel_both_ways() {
+        let (kv, f, line) = probed();
         if !at_least(kv, (5, 14)) {
             assert!(!f.populate_write, "MADV_POPULATE_WRITE predates 5.14: {line}");
         } else {
             assert!(f.populate_write, "MADV_POPULATE_WRITE should work on 5.14+: {line}");
         }
-        // The rseq probe (plan Phase 2.5 task 8) against glibc's own
-        // symbols through `dlsym` and the kernel's `AT_RSEQ_FEATURE_SIZE`:
-        // the values must be the symbols', and `mm_cid` is `yes` exactly
-        // when glibc registered an area whose size reaches 28, which the
-        // kernel allows from 6.3 (the GCE 7.0 VMs: 33; the Mac's 6.10
-        // linuxkit VM reports no feature size and glibc registers 20).
-        // This is the both-ways test: it runs on hosts of each kind.
-        {
-            let sym = |name: &[u8]| -> *const u8 {
-                // SAFETY: `dlsym` on a NUL-terminated name in the test.
-                unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr().cast()) }.cast()
-            };
-            let (ps, po, pf) = (sym(b"__rseq_size\0"), sym(b"__rseq_offset\0"), sym(b"__rseq_flags\0"));
-            if ps.is_null() {
-                assert_eq!(f.rseq, Rseq::NONE, "no __rseq_size symbol: {line}");
-            } else {
-                // SAFETY: glibc's exported objects of these types.
-                let (size, offset, flags) = unsafe { (ps.cast::<u32>().read(), po.cast::<isize>().read(), pf.cast::<u32>().read()) };
-                assert_eq!((f.rseq.size, f.rseq.offset, f.rseq.flags), (size, offset, flags), "{line}");
-                eprintln!("rseq: __rseq_size={size} __rseq_offset={offset} __rseq_flags={flags} cpu_id={}", f.rseq.cpu_id);
-                if size >= Rseq::BASE_SIZE {
-                    // glibc registered: the kernel wrote a CPU number.
-                    assert!(f.rseq.cpu_id >= 0, "{line}");
-                    assert!(f.rseq.registered(), "{line}");
-                    // SAFETY: no preconditions; the count bounds `cpu_id`.
-                    let ncpu = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_CONF) };
-                    assert!((f.rseq.cpu_id as i64) < ncpu, "cpu_id {} of {ncpu}", f.rseq.cpu_id);
-                } else {
-                    assert!(!f.rseq.registered(), "{line}");
-                }
-                // AT_RSEQ_FEATURE_SIZE (27): the fields the kernel offers.
-                // SAFETY: getauxval has no preconditions.
-                let feat = unsafe { libc::getauxval(27) } as u32;
-                if feat >= Rseq::MM_CID_END && size >= Rseq::BASE_SIZE {
-                    assert!(at_least(kv, (6, 3)), "mm_cid predates 6.3: {line}");
-                    assert!(f.rseq.mm_cid(), "kernel offers {feat} bytes, glibc registered {size}: {line}");
-                    assert!(line.contains(" rseq=yes rseq_size=") && line.contains(" mm_cid=yes "), "{line}");
-                } else {
-                    assert!(!f.rseq.mm_cid(), "feature size {feat}, registered {size}: {line}");
-                    assert!(line.contains(" mm_cid=no "), "{line}");
-                }
+        if f.populate_write {
+            let page = f.page_size;
+            let fresh = sys::tests::map_anon(page);
+            let mut vec = [0u8; 1];
+            sys::mincore(fresh, page, &mut vec).unwrap();
+            assert_eq!(vec[0] & 1, 0, "fresh scratch page resident before the populate");
+            // SAFETY: our page.
+            unsafe { sys::madvise(fresh, page, sys::MADV_POPULATE_WRITE).unwrap() };
+            sys::mincore(fresh, page, &mut vec).unwrap();
+            assert_eq!(vec[0] & 1, 1, "page not resident after MADV_POPULATE_WRITE");
+            // SAFETY: our page, mapped above and unmapped here.
+            unsafe {
+                assert_eq!((fresh as *mut u8).read_volatile(), 0);
+                sys::munmap(fresh, page).unwrap();
             }
         }
-        // `PR_THP_DISABLE_EXCEPT_ADVISED` (plan Phase 2.5 task 16), both
-        // ways: `yes` needs 6.18 and a process without a THP policy; below
-        // 6.18 the flag is `EINVAL`, so `no`; and the probe leaves the
-        // process's policy as it found it (`PR_GET_THP_DISABLE` unchanged),
-        // which the kernel's own `/proc/self/status` field confirms.
-        {
-            // SAFETY: a query with no pointer arguments.
-            let get = unsafe { sys::prctl(sys::PR_GET_THP_DISABLE, 0, 0, 0, 0) }.unwrap_or(usize::MAX);
-            match f.thp_disable {
-                ThpDisable::Yes => {
-                    assert!(at_least(kv, (6, 18)), "PR_THP_DISABLE_EXCEPT_ADVISED predates 6.18: {line}");
-                    assert_eq!(get, 0, "the probe changed the process's policy: {line}");
-                }
-                ThpDisable::No => {
-                    // A kernel from 6.18 on takes it unless something in
-                    // front of `prctl` refuses (seccomp).
-                    assert!(get == 0 || get == usize::MAX, "{line}");
-                }
-                ThpDisable::Inherited(v) => {
-                    assert_eq!(get, v as usize, "{line}");
-                }
+    }
+
+    /// The rseq probe against glibc's own symbols through `dlsym` and the
+    /// kernel's `AT_RSEQ_FEATURE_SIZE`: the values must be the symbols',
+    /// and `mm_cid` is `yes` exactly when glibc registered an area whose
+    /// size reaches 28, which the kernel allows from 6.3 (the GCE 7.0 VMs:
+    /// 33; the Mac's 6.10 linuxkit VM reports no feature size and glibc
+    /// registers 20). Both ways: it runs on hosts of each kind.
+    #[test]
+    fn probe_rseq_matches_glibc_symbols_and_the_feature_size() {
+        let (kv, f, line) = probed();
+        let sym = |name: &[u8]| -> *const u8 {
+            // SAFETY: `dlsym` on a NUL-terminated name in the test.
+            unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr().cast()) }.cast()
+        };
+        let (ps, po, pf) = (sym(b"__rseq_size\0"), sym(b"__rseq_offset\0"), sym(b"__rseq_flags\0"));
+        if ps.is_null() {
+            assert_eq!(f.rseq, Rseq::NONE, "no __rseq_size symbol: {line}");
+            return;
+        }
+        // SAFETY: glibc's exported objects of these types.
+        let (size, offset, flags) = unsafe { (ps.cast::<u32>().read(), po.cast::<isize>().read(), pf.cast::<u32>().read()) };
+        assert_eq!((f.rseq.size, f.rseq.offset, f.rseq.flags), (size, offset, flags), "{line}");
+        eprintln!("rseq: __rseq_size={size} __rseq_offset={offset} __rseq_flags={flags} cpu_id={}", f.rseq.cpu_id);
+        if size >= Rseq::BASE_SIZE {
+            // glibc registered: the kernel wrote a CPU number.
+            assert!(f.rseq.cpu_id >= 0, "{line}");
+            assert!(f.rseq.registered(), "{line}");
+            // SAFETY: no preconditions; the count bounds `cpu_id`.
+            let ncpu = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_CONF) };
+            assert!((f.rseq.cpu_id as i64) < ncpu, "cpu_id {} of {ncpu}", f.rseq.cpu_id);
+        } else {
+            assert!(!f.rseq.registered(), "{line}");
+        }
+        // AT_RSEQ_FEATURE_SIZE (27): the fields the kernel offers.
+        // SAFETY: getauxval has no preconditions.
+        let feat = unsafe { libc::getauxval(27) } as u32;
+        if feat >= Rseq::MM_CID_END && size >= Rseq::BASE_SIZE {
+            assert!(at_least(kv, (6, 3)), "mm_cid predates 6.3: {line}");
+            assert!(f.rseq.mm_cid(), "kernel offers {feat} bytes, glibc registered {size}: {line}");
+            assert!(line.contains(" rseq=yes rseq_size=") && line.contains(" mm_cid=yes "), "{line}");
+        } else {
+            assert!(!f.rseq.mm_cid(), "feature size {feat}, registered {size}: {line}");
+            assert!(line.contains(" mm_cid=no "), "{line}");
+        }
+    }
+
+    /// `PR_THP_DISABLE_EXCEPT_ADVISED`, both ways: `yes` needs 6.18 and a
+    /// process without a THP policy; below 6.18 the flag is `EINVAL`, so
+    /// `no`; and the probe leaves the process's policy as it found it
+    /// (`PR_GET_THP_DISABLE` unchanged), which the kernel's own
+    /// `/proc/self/status` field confirms.
+    #[test]
+    fn probe_thp_disable_follows_the_kernel_and_restores_the_policy() {
+        let (kv, f, line) = probed();
+        // SAFETY: a query with no pointer arguments.
+        let get = unsafe { sys::prctl(sys::PR_GET_THP_DISABLE, 0, 0, 0, 0) }.unwrap_or(usize::MAX);
+        match f.thp_disable {
+            ThpDisable::Yes => {
+                assert!(at_least(kv, (6, 18)), "PR_THP_DISABLE_EXCEPT_ADVISED predates 6.18: {line}");
+                assert_eq!(get, 0, "the probe changed the process's policy: {line}");
             }
-            if !at_least(kv, (6, 18)) {
-                assert_ne!(f.thp_disable, ThpDisable::Yes, "{line}");
+            ThpDisable::No => {
+                // A kernel from 6.18 on takes it unless something in
+                // front of `prctl` refuses (seccomp).
+                assert!(get == 0 || get == usize::MAX, "{line}");
             }
-            let status = std::fs::read_to_string("/proc/self/status").unwrap();
-            let thp_enabled = status.lines().find(|l| l.starts_with("THP_enabled:")).map(str::trim);
-            eprintln!("thp_except_advised: {} (PR_GET_THP_DISABLE {get}, {})", f.thp_disable.name(), thp_enabled.unwrap_or("no THP_enabled field"));
-            if f.thp_disable == ThpDisable::Yes {
-                // The probe: take it and undo it once more, watching the
-                // kernel's view move and come back.
-                let mid = unsafe { sys::prctl(sys::PR_SET_THP_DISABLE, 1, sys::PR_THP_DISABLE_EXCEPT_ADVISED, 0, 0) };
+            ThpDisable::Inherited(v) => {
+                assert_eq!(get, v as usize, "{line}");
+            }
+        }
+        if !at_least(kv, (6, 18)) {
+            assert_ne!(f.thp_disable, ThpDisable::Yes, "{line}");
+        }
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        let thp_enabled = status.lines().find(|l| l.starts_with("THP_enabled:")).map(str::trim);
+        eprintln!("thp_except_advised: {} (PR_GET_THP_DISABLE {get}, {})", f.thp_disable.name(), thp_enabled.unwrap_or("no THP_enabled field"));
+        if f.thp_disable == ThpDisable::Yes {
+            // The probe: take it and undo it once more, watching the
+            // kernel's view move and come back.
+            // SAFETY: integer arguments only; the flag is process-wide and
+            // cleared again two calls below, restoring the state read
+            // above, so no other test observes a changed policy.
+            unsafe {
+                let mid = sys::prctl(sys::PR_SET_THP_DISABLE, 1, sys::PR_THP_DISABLE_EXCEPT_ADVISED, 0, 0);
                 assert_eq!(mid, Ok(0), "{line}");
-                let got = unsafe { sys::prctl(sys::PR_GET_THP_DISABLE, 0, 0, 0, 0) }.unwrap();
+                let got = sys::prctl(sys::PR_GET_THP_DISABLE, 0, 0, 0, 0).unwrap();
                 assert_eq!(got, 1 | sys::PR_THP_DISABLE_EXCEPT_ADVISED, "{line}");
-                assert_eq!(unsafe { sys::prctl(sys::PR_SET_THP_DISABLE, 0, 0, 0, 0) }, Ok(0));
-                assert_eq!(unsafe { sys::prctl(sys::PR_GET_THP_DISABLE, 0, 0, 0, 0) }, Ok(0));
-                assert_eq!(probe_thp_disable(), ThpDisable::Yes);
+                assert_eq!(sys::prctl(sys::PR_SET_THP_DISABLE, 0, 0, 0, 0), Ok(0));
+                assert_eq!(sys::prctl(sys::PR_GET_THP_DISABLE, 0, 0, 0, 0), Ok(0));
             }
+            assert_eq!(probe_thp_disable(), ThpDisable::Yes);
         }
-        // The `slice_ext=` word against `slice::probe` (plan Phase 2.5 task
-        // 15): the probe, not enabled by `Features::probe` (`configure` has
-        // not run for this value), must read what the module's own probe
-        // says; the 7.0 GCE kernels read `kernel-disabled`, the Mac's 6.10
-        // `no-slice_ctrl`. Both ways: a kernel with the option reads
-        // `available` here (the line of the shipped library says `on`).
-        {
-            let p = crate::slice::probe();
-            assert_eq!(f.slice_ext, SliceExt::from_probe(p.verdict()), "{line}: {p:?}");
-            let word = std::format!(" slice_ext={} ", f.slice_ext.name());
-            assert!(line.contains(&word), "{line}");
-            if p.size != 0 && p.size < crate::slice::SLICE_CTRL_END {
-                assert_eq!(f.slice_ext, SliceExt::NoSliceCtrl, "{line}");
-            }
-            if p.size >= crate::slice::SLICE_CTRL_END && !p.available {
-                assert_eq!(f.slice_ext, SliceExt::KernelDisabled, "{line}");
-            }
-            if p.available {
-                assert!(at_least(kv, (7, 0)), "slice extension predates 7.0: {line}");
-                assert_eq!(f.slice_ext, SliceExt::Available, "{line}");
-                let mut g = f;
-                // The configured outcome folds in as `on` only when the
-                // module is on in this process.
-                g.note_slice_ext();
-                assert_eq!(g.slice_ext == SliceExt::On, crate::slice::on(), "{line}");
-            }
-            eprintln!("slice_ext: {} (probe {:?})", f.slice_ext.name(), p);
+    }
+
+    /// The `slice_ext=` word against `slice::probe`: the probe, not
+    /// enabled by `Features::probe` (`configure` has not run for this
+    /// value), must read what the module's own probe says; the 7.0 GCE
+    /// kernels read `kernel-disabled`, the Mac's 6.10 `no-slice_ctrl`.
+    /// Both ways: a kernel with the option reads `available` here (the
+    /// line of the shipped library says `on`).
+    #[test]
+    fn probe_slice_ext_matches_the_slice_module() {
+        let (kv, f, line) = probed();
+        let p = crate::slice::probe();
+        assert_eq!(f.slice_ext, SliceExt::from_probe(p.verdict()), "{line}: {p:?}");
+        let word = std::format!(" slice_ext={} ", f.slice_ext.name());
+        assert!(line.contains(&word), "{line}");
+        if p.size != 0 && p.size < crate::slice::SLICE_CTRL_END {
+            assert_eq!(f.slice_ext, SliceExt::NoSliceCtrl, "{line}");
         }
-        // The THP table against the same files read through std.
+        if p.size >= crate::slice::SLICE_CTRL_END && !p.available {
+            assert_eq!(f.slice_ext, SliceExt::KernelDisabled, "{line}");
+        }
+        if p.available {
+            assert!(at_least(kv, (7, 0)), "slice extension predates 7.0: {line}");
+            assert_eq!(f.slice_ext, SliceExt::Available, "{line}");
+            let mut g = f;
+            // The configured outcome folds in as `on` only when the
+            // module is on in this process.
+            g.note_slice_ext();
+            assert_eq!(g.slice_ext == SliceExt::On, crate::slice::on(), "{line}");
+        }
+        eprintln!("slice_ext: {} (probe {:?})", f.slice_ext.name(), p);
+    }
+
+    /// The THP table against the same files read through std.
+    #[test]
+    fn probe_thp_table_matches_sysfs() {
+        let (kv, f, line) = probed();
         let dir = std::path::Path::new("/sys/kernel/mm/transparent_hugepage");
         match std::fs::read_to_string(dir.join("enabled")) {
             Ok(e) => {
@@ -1662,103 +1789,6 @@ mod linux_tests {
             Err(_) => assert_eq!(f.thp, Thp::NONE, "{line}"),
         }
         assert!(f.thp.lg_pmd as usize > f.page_shift as usize, "{line}");
-
-        // Whatever was reported must be usable exactly as reported.
-        let page = f.page_size;
-        // SAFETY: fresh scratch page used only here.
-        let addr = unsafe {
-            sys::mmap(
-                0,
-                page,
-                sys::PROT_READ | sys::PROT_WRITE,
-                sys::MAP_PRIVATE | sys::MAP_ANONYMOUS,
-                -1,
-                0,
-            )
-            .unwrap()
-        };
-        let p = addr as *mut u8;
-        if f.guard_install {
-            // SAFETY: our page.
-            unsafe {
-                sys::madvise(addr, page, sys::MADV_GUARD_INSTALL).unwrap();
-                sys::madvise(addr, page, sys::MADV_GUARD_REMOVE).unwrap();
-            }
-        }
-        match f.process_madvise {
-            ProcessMadvise::Unavailable => assert!(!f.process_madvise_free, "{line}"),
-            ProcessMadvise::PidfdSelf | ProcessMadvise::Pidfd(_) => {
-                let fd = match f.process_madvise {
-                    ProcessMadvise::Pidfd(fd) => fd,
-                    _ => sys::PIDFD_SELF,
-                };
-                // SAFETY: our page, live iov.
-                unsafe {
-                    p.write_volatile(7);
-                    let iov = sys::IoVec { base: p, len: page };
-                    assert_eq!(sys::process_madvise(fd, &iov, 1, sys::MADV_DONTNEED, 0), Ok(page));
-                    assert_eq!(p.read_volatile(), 0);
-                    // The `MADV_FREE` probe (plan Phase 2.5 task 10) agrees
-                    // with a second call through the same target.
-                    p.write_volatile(9);
-                    let r = sys::process_madvise(fd, &iov, 1, sys::MADV_FREE, 0);
-                    assert_eq!(r == Ok(page), f.process_madvise_free, "{line}: {r:?}");
-                }
-            }
-        }
-        if f.populate_write {
-            // Usable as reported: a fresh page is not resident, one call
-            // makes it so, and its contents stay zero. Its own mapping: the
-            // process_madvise block above writes, drops, reads back and
-            // writes the shared scratch page again wherever that syscall is
-            // visible (privileged containers, native runs), so that page is
-            // resident here and the "fresh" assertion would fail on the
-            // order of the blocks rather than on the feature.
-            // SAFETY: fresh page used only in this block.
-            let fresh = unsafe {
-                sys::mmap(
-                    0,
-                    page,
-                    sys::PROT_READ | sys::PROT_WRITE,
-                    sys::MAP_PRIVATE | sys::MAP_ANONYMOUS,
-                    -1,
-                    0,
-                )
-                .unwrap()
-            };
-            let mut vec = [0u8; 1];
-            sys::mincore(fresh, page, &mut vec).unwrap();
-            assert_eq!(vec[0] & 1, 0, "fresh scratch page resident before the populate");
-            // SAFETY: our page.
-            unsafe { sys::madvise(fresh, page, sys::MADV_POPULATE_WRITE).unwrap() };
-            sys::mincore(fresh, page, &mut vec).unwrap();
-            assert_eq!(vec[0] & 1, 1, "page not resident after MADV_POPULATE_WRITE");
-            // SAFETY: our page, mapped above and unmapped here.
-            unsafe {
-                assert_eq!((fresh as *mut u8).read_volatile(), 0);
-                sys::munmap(fresh, page).unwrap();
-            }
-        }
-        if f.anon_name {
-            // SAFETY: our page, static name.
-            unsafe { sys::set_vma_anon_name(addr, page, b"challoc:probe2\0").unwrap() };
-            let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
-            let l: Vec<&str> = maps.lines().filter(|l| l.starts_with(&format!("{addr:x}-"))).collect();
-            assert!(l.iter().any(|l| l.contains("[anon:challoc:probe2]")), "{l:?}");
-        }
-        if f.mseal {
-            // Sealing works, so the probe's own sealed page must still be
-            // mapped: exactly one PROT_NONE page. Find it via /proc.
-            let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
-            assert!(maps.lines().any(|l| l.split_whitespace().nth(1) == Some("---p")), "{maps}");
-        }
-        // SAFETY: our page.
-        unsafe { sys::munmap(addr, page).unwrap() };
-
-        // The probe must not have left a readable scratch page behind: the
-        // process_madvise probe releases its page whether or not it worked.
-        let maps: String = std::fs::read_to_string("/proc/self/maps").unwrap();
-        assert!(!maps.contains("[anon:challoc:probe]"), "probe page leaked: {maps}");
     }
 
     #[test]
