@@ -19,7 +19,11 @@ tree the tests reach for:
   `include/support/test-pointer.h`: the few macros and one inline function
   the tests use from glibc's internal headers.
 
-`src/api/ctests.rs` compiles each program with
-`-D_GNU_SOURCE -DQUANTUM=<n> -DTEST_NAME="<name>" -Itests/glibc/include` and
-runs it bare (must fail) and under `LD_PRELOAD=libchalloc.so` (must pass),
-as part of `make test` (plan Phase 0 task 15).
+`src/api/ctests.rs` (the `glibc!` rows) compiles each program through
+`scripts/ctest-cc.sh` (the shared flag line, `-DQUANTUM=<n>` read from the
+built library) plus `-D_GNU_SOURCE -Wno-unused-parameter
+-DTEST_NAME="<name>" -Itests/glibc/include`, and runs it bare (must fail)
+and under `LD_PRELOAD=libchalloc.so` (must pass), as part of `make test`
+(plan Phase 0 task 15). To update the vendored copy, replace the five files
+and `tst-malloc-aux.h` from the new tag and change the tag and commit above;
+nothing else here depends on the glibc version.

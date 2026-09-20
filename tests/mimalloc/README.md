@@ -18,7 +18,11 @@ Everything else here is challoc's:
   mimalloc's headers unconditionally; under `USE_STD_MALLOC` the only thing
   it needs from them is the `mi_subproc_id_t` type.
 
-`src/api/ctests.rs` compiles `stress.c` with the common flags plus
-`-Wno-unused-parameter -Itests/mimalloc/include` and runs it bare (must
-fail) and under `LD_PRELOAD=libchalloc.so` with `8 50 10`
+`src/api/ctests.rs` (the `MIMALLOC_STRESS` row and its two `check_zero`
+variants) compiles `stress.c` through `scripts/ctest-cc.sh` (the shared
+flag line) plus `-Wno-unused-parameter -Itests/mimalloc/include` and runs it
+bare (must fail) and under `LD_PRELOAD=libchalloc.so` with `8 50 10`
 (`THREADS=8 SCALE=50 ITER=10`, plan Phase 0 task 16) as part of `make test`.
+To update the vendored copy, replace `test-stress.c` from the new tag and
+change the tag and commit above; `stress.c` renames its `main`, so check
+that the new file still defines one.
