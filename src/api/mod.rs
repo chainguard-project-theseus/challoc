@@ -196,7 +196,9 @@ pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
     unsafe { FEATURE_LINE.get() }.as_ptr()
 }
 
-/// Whether init has completed (for tests and diagnostics).
+/// Whether init has completed (for the tests; the entry points use
+/// [`shared_if_ready`]).
+#[cfg(test)]
 pub fn is_ready() -> bool {
     STATE.load(Ordering::Acquire) == READY
 }

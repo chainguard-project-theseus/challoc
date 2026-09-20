@@ -48,18 +48,20 @@ use core::ptr;
 use crate::QUANTUM;
 use crate::arena::{ARENAS_ALL, MAX_ARENAS};
 use crate::config::{KEYS, Value};
-use crate::heap::{self, Shared};
+use crate::heap::{self, Heap, Shared};
 use crate::huge::RunState;
 use crate::layout::{CLASSES, Kind, NBINS};
 use crate::purge;
 use crate::stats::{self, ArenaStats};
 use crate::sys;
+use crate::sys::Errno;
 
-pub const EPERM: c_int = 1;
-pub const ENOENT: c_int = 2;
-pub const EAGAIN: c_int = 11;
-pub const EFAULT: c_int = 14;
-pub const EINVAL: c_int = 22;
+// `mallctl`'s return codes as `c_int`; the numbers live in `sys::errno`.
+const EPERM: c_int = Errno::EPERM.0;
+const ENOENT: c_int = Errno::ENOENT.0;
+const EAGAIN: c_int = Errno::EAGAIN.0;
+const EFAULT: c_int = Errno::EFAULT.0;
+const EINVAL: c_int = Errno::EINVAL.0;
 
 /// `version`: jemalloc's `<major>.<minor>.<bugfix>-<nrev>-g<gid>` shape,
 /// so parsers that split on `-` and `.` (tikv-jemalloc-ctl, Redis's
@@ -705,8 +707,6 @@ fn flush_caller(shared: &Shared) {
 fn thread_heap<'a>(shared: &'a Shared) -> Result<&'a mut Heap, c_int> {
     heap::heap_for_thread(shared).ok_or(EAGAIN)
 }
-
-use crate::heap::Heap;
 
 /// Perform `leaf` with the numeric components of `mib`.
 pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_int> {

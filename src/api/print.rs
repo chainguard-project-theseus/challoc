@@ -692,7 +692,7 @@ fn xml_report<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
 pub fn malloc_info(options: c_int, stream: *mut libc::FILE) -> c_int {
     if options != 0 || stream.is_null() {
         // SAFETY: `__errno_location` returns the calling thread's `errno`.
-        unsafe { *libc::__errno_location() = 22 };
+        unsafe { *libc::__errno_location() = crate::sys::Errno::EINVAL.0 };
         return -1;
     }
     let shared = super::shared();

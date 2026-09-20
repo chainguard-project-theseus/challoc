@@ -37,9 +37,12 @@ use core::ptr;
 use crate::QUANTUM;
 use crate::heap::{self, Shared};
 use crate::layout::{CLASSES, Kind, MEDIUM_MAX, class_of};
+use crate::sys::Errno;
 
-const ENOMEM: c_int = 12;
-const EINVAL: c_int = 22;
+// The codes as `c_int`, for `errno` and `posix_memalign`'s return; the
+// numbers live in `sys::errno`.
+const ENOMEM: c_int = Errno::ENOMEM.0;
+const EINVAL: c_int = Errno::EINVAL.0;
 
 #[inline(always)]
 fn set_errno(e: c_int) {
