@@ -161,10 +161,11 @@ impl SlabDesc {
         debug_assert!(base % DESC_ALIGN == 0);
         // SAFETY: the caller guarantees the entry is inside a committed array;
         // descriptors are plain atomics valid for any bit pattern. Valid to
-        // read is not the same as meaningful: zero or garbage bytes decode
-        // as `Purged` (`from_u8`) with arena 0, which is why `take_group`
-        // cross-checks the arena against the owner word and `check_zero`
-        // exists.
+        // read is not the same as meaningful: zero bytes decode as `Fresh`
+        // with arena 0 and `live` 0, a state byte above 3 aborts in
+        // `from_u8`, and garbage in 1..=3 reads as a plausible state, which
+        // is why `take_group` cross-checks the arena against the owner word
+        // and `check_zero` exists.
         unsafe { &*((base + slab * desc_stride(class)) as *const SlabDesc) }
     }
 

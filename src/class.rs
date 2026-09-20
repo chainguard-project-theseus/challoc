@@ -3,8 +3,9 @@
 //!
 //! One [`SlabTable`] exists per class: the class region's descriptor array
 //! and the commit watermark, shared by every arena, behind a commit lock.
-//! One [`ClassState`] exists per `(arena, class)`. It owns three
-//! [`TwoLevelBitmap`]s over slab numbers: `partial` (slabs believed to have
+//! One [`ClassState`] exists per `(arena, class)`. It holds three
+//! [`TwoLevelBitmap`] views over slab numbers, into the arena's
+//! [`SetTable`] (`Set::in_table`): `partial` (slabs believed to have
 //! a claimable slot), `empty` (`live == 0`, dirty, not yet purged) and
 //! `purged` (`live == 0`, pages discarded). All three are behind one futex
 //! lock that is taken only on slab transitions: selecting a slab for a
@@ -17,18 +18,19 @@
 //! class bitmap, `Class::slabs_per_line`, or one page group if that is
 //! larger), lowest group first to whichever arena runs out of slabs next.
 //! A group's slabs are committed one at a time by their arena as it needs
-//! them (`ClassState::commit_next`), so an arena owns whole bitmap lines
-//! and whole descriptor lines: the `free` check of one arena's slot never
-//! reads a line another arena's refills and flushes write. Every slab
-//! belongs to the arena of its group (`SlabTable::owner`, a dense array of
-//! one `u16` per group, and `SlabDesc::arena`), and only that arena's state
-//! may claim from or release to it.
+//! them (`ClassState::next_fresh_slab`, `SlabTable::commit_slab`), so an
+//! arena owns whole bitmap lines and whole descriptor lines: the `free`
+//! check of one arena's slot never reads a line another arena's refills
+//! and flushes write. Every slab belongs to the arena of its group
+//! (`SlabTable::owner`, a dense array of one `u16` per group, and
+//! `SlabDesc::arena`), and only that arena's state may claim from or
+//! release to it.
 //!
-//! An arena owns its groups until it lends an idle one (design 13.3, plan
-//! Phase 1.5 task 15). A group is *idle* when none of its slabs is
-//! `Active`: every committed slab of it is in its owner's `empty` or
-//! `purged` set (so `live == 0`: no slot of it is in the program or in any
-//! cache) and the rest are `Fresh`. An arena whose current group is used
+//! An arena owns its groups until it lends an idle one (design 13.3). A
+//! group is *idle* when none of its slabs is `Active`: every committed
+//! slab of it is in its owner's `empty` or `purged` set (so `live == 0`:
+//! no slot of it is in the program or in any cache) and the rest are
+//! `Fresh`. An arena whose current group is used
 //! up and whose sets are empty looks for such a group in the other arenas'
 //! sets before it takes a fresh group from the region
 //! ([`ClassState::adopt_idle_group`]): under the donor's class lock it
@@ -506,8 +508,8 @@ pub struct SlabTable {
     /// larger than this class's slab a group of `slabs_per_page` consecutive
     /// slabs is committed when its first slab is, is one guard region when
     /// it is a guard group, and is purged only when every slab in it is
-    /// idle and owned by the purging arena. Since plan Phase 2.5 task 4e no
-    /// supported kernel has such a class (`layout::adopt_page_geometry`
+    /// idle and owned by the purging arena. No supported kernel has such a
+    /// class (`layout::adopt_page_geometry`
     /// raises a class's slab to the page at init, up to 64 KiB: a group of
     /// `Empty` sub-page slabs was never all idle under Valkey and held
     /// 79.5 MiB after its delete phase at 64 KiB pages), so this is 1
@@ -556,7 +558,7 @@ struct Inner {
     purged: Set,
     stats: ClassStats,
     /// This arena's current slab group: `group_next..group_end` are handed
-    /// to it and not yet committed (see [`ClassState::commit_next`]).
+    /// to it and not yet committed (see [`ClassState::next_fresh_slab`]).
     group_next: usize,
     group_end: usize,
 }
@@ -631,8 +633,8 @@ pub struct ClassState {
     /// includes its slots); a count that keeps growing while nothing is
     /// freed is a bookkeeping bug. Printed in the bins table.
     clamped: AtomicU64,
-    /// The prefault pass's snapshot of `refilled` (plan Phase 2.5 task 11,
-    /// `purge::prefault`): the pass prefaults a class only when the
+    /// The prefault pass's snapshot of `refilled` (`purge::prefault`): the
+    /// pass prefaults a class only when the
     /// counter moved since its last visit. Written by the background
     /// thread alone, on its own line (the tail), never by a refill.
     prefault_seen: AtomicU64,
@@ -804,7 +806,7 @@ impl SlabTable {
     /// shift, an add and a mask: the interval is a power of two, and the
     /// runtime `%` this used to be was a 32-bit `divl` twice per Valkey SET
     /// on the `sdallocx` path, the largest single term of the sized path's
-    /// instruction window on small-L3 hosts, plan Phase 2.5 task 4c), so
+    /// instruction window on small-L3 hosts), so
     /// the sized fast path can reject a slot start in a guard slab without
     /// a memory access: a guard slab's body past its first page is
     /// read-write memory that was never handed out. With guards off
@@ -1041,19 +1043,21 @@ impl SlabTable {
         (rel >> cls.lg_slab, slot)
     }
 
-    /// The `free` check: `p` must be a slot start whose bit is set. Returns
-    /// the arena that owns the slab.
+    /// Tests: [`check_located`] for a pointer not yet located (`p` must be
+    /// a slot start whose bit is set). Returns the arena that owns the
+    /// slab. The release path locates through `Regions::classify` and
+    /// calls `check_located` or `check_live` itself.
+    ///
+    /// [`check_located`]: SlabTable::check_located
     #[inline]
     pub fn check(&self, p: *mut u8) -> u16 {
         let (slab, slot) = self.locate(p);
         self.check_located(slab, slot, p as usize)
     }
 
-    /// [`check`] for a pointer already located (`Regions::classify`):
+    /// The `free` check of a pointer already located (`Regions::classify`):
     /// aborts unless `slab` has been handed out and `slot`'s bit is set,
     /// with the pointer and its location; returns the owning arena.
-    ///
-    /// [`check`]: SlabTable::check
     #[inline]
     pub fn check_located(&self, slab: usize, slot: usize, p: usize) -> u16 {
         self.check_live(slab, slot, p);
@@ -1063,7 +1067,7 @@ impl SlabTable {
 
     /// The bit test of [`check_located`], without the owner: the exact
     /// check of `malloc_usable_size`, `realloc` and `rallocx` on a slot
-    /// `Regions::classify` located (plan Phase 1.5 task 14). The loads that
+    /// `Regions::classify` located. The loads that
     /// depend on the pointer are the `free` fast path's
     /// (`Shared::checked_slot`): the watermark, `bits_base` and
     /// `slab_bits` from this table line, then the class bitmap word; the
@@ -1075,7 +1079,8 @@ impl SlabTable {
     /// gives: for a live slot the program's own ordering makes the group's
     /// words visible, and for anything else every observable value aborts.
     /// Aborts by name for a slab never handed out, a guard slab, or a
-    /// clear bit; the guard test (a 32-bit division) runs only once the bit
+    /// clear bit; the guard test (`is_guard_slab`: a shift, an add and a
+    /// mask) runs only once the bit
     /// is clear, which it always is in a guard slab (`take_group` never
     /// sets one), so the messages are unchanged and the hot path is the
     /// watermark compare and the bit test.
@@ -1264,7 +1269,7 @@ impl SlabTable {
             g.guards += 1;
             return Some(false);
         }
-        // A fresh slab went into service (plan Phase 2.5 task 11): the
+        // A fresh slab went into service: the
         // prefault pass, when on, gets one wake per commit so it can
         // commit and populate this class's next slab before the refill
         // that will need it. Off: one relaxed load.
@@ -1302,8 +1307,10 @@ impl SlabTable {
 
 impl ClassState {
     /// Create the state for `arena` over `table`'s class, with its three
-    /// slab sets as views of the arena's `sets` table (slots `kind *
-    /// NCLASSES + class`). `table` and `sets` must outlive the state.
+    /// slab sets as views of the arena's `sets` table (slot `kind * count +
+    /// pos[class]` of the class's set group, `Set::in_table`). `table` and
+    /// `sets` must outlive the state. `meta` and `regions` are unused:
+    /// the sets live in `sets`, the descriptors in `table`.
     pub fn new(meta: &Meta, regions: &Regions, table: &SlabTable, arena: u16, sets: &SetTable) -> Option<ClassState> {
         let _ = (meta, regions);
         let class = table.class as usize;
@@ -1406,8 +1413,12 @@ impl ClassState {
         self.table().locate(p)
     }
 
-    /// The `free` check: `p` must be a slot start whose bit is set, in a
-    /// slab of this arena.
+    /// Tests: `SlabTable::check` plus the owner test (`p` must be a slot
+    /// start whose bit is set, in a slab of this arena). The release path
+    /// runs `check_located`/`check_live` on the located slot and its own
+    /// owner test (`wrong_arena` in [`release`]).
+    ///
+    /// [`release`]: ClassState::release
     #[inline]
     pub fn check(&self, p: *mut u8) {
         let arena = self.table().check(p);
@@ -1426,8 +1437,8 @@ impl ClassState {
         self.claim_with(meta, out, None)
     }
 
-    /// [`claim`] for `slot_randomize` (design section 4, plan Phase 2 task
-    /// 3): the same slabs and the same reservations (`plan` is untouched,
+    /// [`claim`] for `slot_randomize` (design section 4): the same slabs
+    /// and the same reservations (`plan` is untouched,
     /// so the slabs are still the lowest partial ones and a `Fresh` or
     /// `Purged` slab's prefix is still claimed under the lock), but the
     /// bit scan of every other pick starts at a word drawn from `rng`
@@ -1468,6 +1479,9 @@ impl ClassState {
     /// With `rng` (`slot_randomize`) the bit loop of a pick starts at a
     /// random word rather than word 0; a rescan after a full pass still
     /// starts at 0. Without it the code is the address-ordered claim.
+    ///
+    /// Modelled at `model::Model::step_refill`, the sub-steps after
+    /// `unlock` (one pick at a time).
     ///
     /// [`plan`]: ClassState::plan
     /// [`take`]: ClassState::take
@@ -1586,7 +1600,7 @@ impl ClassState {
     /// background thread once the lock is dropped (as `on_live_zero`);
     /// `taken` when, with the prefault pass on, a pick took an idle
     /// (`Empty` or `Purged`) slab and the arena has none of the class left
-    /// (plan Phase 2.5 task 11, the claim-side wake: the slab taken may
+    /// (the prefault pass's claim-side wake: the slab taken may
     /// have been the prefaulted one, and the next refill of the class
     /// would commit and fault a fresh slab itself unless the pass runs
     /// before it; an idle slab with others behind it wakes nobody, the
@@ -1892,6 +1906,8 @@ impl ClassState {
 
     /// Reserve `min(nslots - live, *remaining)` slots of `slab` under the
     /// lock, fix up its state and partial bit, and record the pick.
+    /// Modelled at `model::Model::take`, inside the locked sub-step 1 of
+    /// `model::Model::step_refill`.
     fn take(&self, g: &mut Inner, slab: usize, remaining: &mut usize, picks: &mut [Pick; MAX_PICKS], np: &mut usize) {
         let desc = self.desc(slab);
         let live = desc.live();
@@ -1935,8 +1951,8 @@ impl ClassState {
         *remaining -= n;
     }
 
-    /// The slots of a zero pick, decided under the class lock (plan Phase
-    /// 1.5 task 7c). A `Fresh` or `Purged` slab has `live == 0` and no bit
+    /// The slots of a zero pick, decided under the class lock. A `Fresh`
+    /// or `Purged` slab has `live == 0` and no bit
     /// set, so its lowest `n` bits are free and nothing contends for them.
     /// Setting them here, in the lock hold that makes the slab `Active` and
     /// partial, is what makes the pick's zero flag sound: decided after
@@ -2011,7 +2027,8 @@ impl ClassState {
     }
 
     /// `live` reached zero: make the slab `Empty` unless a refill has
-    /// already reserved it again.
+    /// already reserved it again. Modelled at `model::Model::step_release`,
+    /// sub-steps 3 (the lock) and 4 (the owner test and the transition).
     fn on_live_zero(&self, slab: usize) {
         let mut first = false;
         {
@@ -2075,6 +2092,8 @@ impl ClassState {
     /// where the sized path's deferred check lands; a duplicate inside one
     /// slab's group is caught earlier, on the scratch bit. The owner is read
     /// from the table's dense owner array, once per slab switch.
+    /// Modelled at `model::Model::step_release`, sub-steps 1 (the
+    /// `fetch_and` and the double-free check) and 2 (`sub_live`).
     ///
     /// [`release`]: ClassState::release
     pub fn release_owned(&self, ptrs: &[*mut u8]) -> usize {
@@ -2168,7 +2187,9 @@ impl ClassState {
     /// Put the slabs in `reopen` back in the partial set, then clear the
     /// list. A slab that went `Empty` (or was purged) since its word was
     /// released stays out: it is in the empty or purged set, and a refill
-    /// taking it from there sets its partial bit itself.
+    /// taking it from there sets its partial bit itself. Modelled at
+    /// `model::Model::step_release`, sub-step 5 (the lock) and the final
+    /// arm (the state and owner test per slab).
     fn reopen(&self, reopen: &mut Reopen) {
         if reopen.len == 0 {
             return;
@@ -2344,9 +2365,16 @@ impl ClassState {
     /// discarded: every slab in it is committed, owned by this arena, and
     /// `Fresh`, `Empty` or `Purged`. Called under this arena's class lock,
     /// which is what pins those states for this arena's slabs; a slab of
-    /// another arena, or one not yet handed out by `commit_next`, could be
-    /// claimed under a lock this thread does not hold, so it vetoes the
+    /// another arena, or one not yet handed out by `next_fresh_slab`, could
+    /// be claimed under a lock this thread does not hold, so it vetoes the
     /// purge.
+    ///
+    /// The owner is read from the descriptor here where the release path
+    /// reads the owner word: they agree because a page group never
+    /// straddles a hand-out group (`SlabTable::new` asserts `group %
+    /// slabs_per_page == 0`), so every slab here is under one owner word,
+    /// and `transfer_group` rewrites that word and every descriptor's
+    /// arena in one hold of both class locks.
     fn page_group_is_idle(&self, slab: usize, spp: usize) -> bool {
         let first = slab & !(spp - 1);
         let committed = self.table().committed_slabs();
@@ -2452,7 +2480,7 @@ impl ClassState {
         self.refilled.fetch_add(n as u64, Ordering::Relaxed);
     }
 
-    /// The prefault pass's question (plan Phase 2.5 task 11): did a refill
+    /// The prefault pass's question: did a refill
     /// take slots of this class from this arena since the pass last
     /// asked? Advances the snapshot. Background thread only.
     pub fn prefault_due(&self) -> bool {
@@ -2461,7 +2489,7 @@ impl ClassState {
 
     /// The slots refills took from this arena's slabs of the class since
     /// the pass last asked (0: not due), the pass's measure of the class's
-    /// burst rate (plan Phase 2.5 task 11, [`prefault_ahead`]). Advances
+    /// burst rate ([`prefault_ahead`]). Advances
     /// the snapshot. Background thread only.
     ///
     /// [`prefault_ahead`]: ClassState::prefault_ahead
@@ -2482,7 +2510,7 @@ impl ClassState {
 
     /// Commit the slab the next refill of this class would commit, ahead
     /// of it, and hand it to `populate` while it is still this thread's
-    /// alone (plan Phase 2.5 task 11, the commit-path half; design 8).
+    /// alone (the prefault pass's commit-path half; design 8).
     /// Under the class lock: when the arena has an `Empty` or `Purged`
     /// slab the next refill takes that, so nothing is done; otherwise
     /// [`next_slab`] runs exactly the refill's own selection (the current
@@ -2519,8 +2547,8 @@ impl ClassState {
         result
     }
 
-    /// [`prefault_next`] sized to the class's burst rate (plan Phase 2.5
-    /// task 11, the claim-side half): commit and populate fresh slabs, as
+    /// [`prefault_next`] sized to the class's burst rate (the prefault
+    /// pass's claim-side half): commit and populate fresh slabs, as
     /// `prefault_next` does one, until the arena holds `ahead` idle
     /// (`Empty` or `Purged`) slabs of the class or the region is
     /// exhausted; `ahead` of 1 is `prefault_next`. A refill that needs
@@ -2634,7 +2662,6 @@ impl ClassState {
         self.inner.lock().partial.map.lowest_set()
     }
 
-    /// Whether `slab` is in the partial set.
     /// Tests: this arena's idle groups, the ones a handoff would offer.
     #[cfg(test)]
     pub(crate) fn idle_groups(&self) -> std::vec::Vec<usize> {
@@ -2657,6 +2684,8 @@ impl ClassState {
         (g.partial.map.is_set(slab), g.empty.map.is_set(slab), g.purged.map.is_set(slab))
     }
 
+    /// Whether `slab` is in the partial set (tests and the bins table,
+    /// `api::print`).
     pub fn is_partial(&self, slab: usize) -> bool {
         self.inner.lock().partial.map.is_set(slab)
     }
@@ -2676,9 +2705,10 @@ fn owner_mismatch(class: usize, group: usize, slab: usize, word: u16, desc: u16)
     )
 }
 
-/// A `Fresh` or `Purged` slab selected by a refill had a bit set before
-/// its slots were claimed under the lock: `live` no longer bounds the set
-/// bits, so the bitmap or the descriptor is corrupt.
+/// A group the donor's sets said was idle (`next_idle_group`) holds a slab
+/// that is not: `Active`, live slots, in the donor's partial set or already
+/// in the taker's sets. The sets and the descriptors disagree, so one of
+/// them is corrupt (`transfer_group`).
 #[cold]
 #[inline(never)]
 fn idle_group_in_use(class: usize, group: usize, slab: usize, donor: u16, taker: u16, state: State, live: usize, in_sets: bool, partial: bool) -> ! {
@@ -2687,6 +2717,9 @@ fn idle_group_in_use(class: usize, group: usize, slab: usize, donor: u16, taker:
     )
 }
 
+/// A `Fresh` or `Purged` slab selected by a refill had a bit set before
+/// its slots were claimed under the lock (`claim_prefix`): `live` no longer
+/// bounds the set bits, so the bitmap or the descriptor is corrupt.
 #[cold]
 #[inline(never)]
 fn zero_slab_had_bits_set(class: usize, slab: usize, arena: u16, state: State, live: usize, word: usize, got: u64, expect: u64) -> ! {
@@ -3228,8 +3261,11 @@ mod tests {
     /// minimum slab, faked through the layout): slabs are committed,
     /// guarded and purged in page groups of `slabs_per_page`, and a group
     /// is purged only when every slab in it is idle, committed and owned by
-    /// the purging arena. Dormant while the minimum slab is 64 KiB (no
-    /// supported page is larger); this test keeps the path working.
+    /// the purging arena. Dormant on every supported kernel:
+    /// `layout::adopt_page_geometry` raises a class's slab to the page at
+    /// init (up to 64 KiB), so `slabs_per_page` is 1 everywhere but here,
+    /// where the page is faked above the slab; this test keeps the path
+    /// working.
     #[test]
     fn page_groups_when_the_page_is_larger_than_the_slab() {
         if (1usize << (LG_MIN_SLAB + 2)) < page_size() {
