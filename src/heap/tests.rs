@@ -82,6 +82,90 @@ fn huge_retain_max_key_reaches_the_huge_allocator() {
     assert_eq!(s.huge.retain_max(), 0);
 }
 
+/// `huge_dirty_decay_ms` (design 7): unset, the huge tier decays on
+/// arena 0's live period (the default, and `arena.0.dirty_decay_ms`
+/// moves both); set, `purge::decay` walks the huge extents on the huge
+/// period alone, a freed run under `huge_retain_max` going by its own
+/// window while the slab period stays what `dirty_decay_ms` says; `0`
+/// purges a freed run as it is freed; `-1` never purges one.
+#[test]
+fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
+    use crate::huge::RunState;
+    let page_of = |s: &Shared, p: *mut u8| match s.regions.classify(p as usize) {
+        Kind::Huge { page } => page,
+        other => panic!("{other:?}"),
+    };
+    // A run's `dirty_at` after its free, from the huge allocator's gate.
+    let free_at = |s: &Shared, p: *mut u8| {
+        s.free_huge(page_of(s, p));
+        s.huge.oldest_empty()
+    };
+    let size = 300 * 1024;
+    const S: u64 = 1_000_000_000;
+
+    // Unset: arena 0's period, live.
+    let s = shared_with(Config { narenas: 1, ..Config::DEFAULT });
+    assert_eq!(s.config.huge_dirty_decay_ms, None);
+    assert_eq!(s.huge_decay_ns(), s.decay_ns());
+    assert_eq!(s.huge_decay_ns(), 10 * S);
+    s.arena0.set_decay_ms(3000);
+    assert_eq!(s.huge_decay_ns(), 3 * S, "follows arena 0");
+    s.arena0.set_decay_ms(-1);
+    assert_eq!(s.huge_decay_ns(), crate::purge::NEVER);
+    s.arena0.set_decay_ms(10_000);
+    // A freed run is still `Empty` two seconds in on the 10 s window.
+    let p = s.alloc_huge(size, 16, 0).0;
+    assert!(!p.is_null());
+    let t0 = free_at(s, p);
+    assert!(t0 > 0);
+    assert_eq!(s.huge.stats().empty, 1);
+    assert!(crate::purge::decay(s, t0 + 2 * S).is_some());
+    assert_eq!((s.huge.stats().empty, s.huge.stats().purged), (1, 0));
+    assert_eq!(crate::purge::decay(s, t0 + 10 * S), None, "the window ends: purged");
+    assert_eq!((s.huge.stats().empty, s.huge.stats().purged), (0, 1));
+
+    // Set to 2 s: the huge extent is gone at 2 s while arena 0 keeps
+    // its 10 s (and moving arena 0 no longer moves the huge period).
+    let s = shared_with(Config { narenas: 1, huge_dirty_decay_ms: Some(2000), ..Config::DEFAULT });
+    assert_eq!(s.huge_decay_ns(), 2 * S);
+    assert_eq!(s.decay_ns(), 10 * S);
+    s.arena0.set_decay_ms(500);
+    assert_eq!((s.huge_decay_ns(), s.decay_ns()), (2 * S, S / 2), "its own period");
+    s.arena0.set_decay_ms(10_000);
+    let p = s.alloc_huge(size, 16, 0).0;
+    let t0 = free_at(s, p);
+    assert_eq!(s.huge.lookup(page_of(s, p)).unwrap().state, RunState::Empty, "retained: under huge_retain_max");
+    // One step in (10 ms of a 2 s window): a walk that purges nothing.
+    assert_eq!(crate::purge::decay(s, t0 + 2 * S / 200), Some(t0 + 2 * 2 * S / 200));
+    assert_eq!(s.huge.stats().empty, 1);
+    assert_eq!(crate::purge::decay(s, t0 + 2 * S), None, "the 2 s window ends: purged");
+    assert_eq!((s.huge.stats().empty, s.huge.stats().purged), (0, 1));
+    assert_eq!(s.huge.lookup(page_of(s, p)).unwrap().state, RunState::Purged);
+
+    // Set to 0: purged as it is freed, no `Empty` extent ever.
+    let s = shared_with(Config { narenas: 1, huge_dirty_decay_ms: Some(0), ..Config::DEFAULT });
+    assert!(s.huge.purge_on_free());
+    assert_eq!(s.huge_decay_ns(), 0);
+    let p = s.alloc_huge(size, 16, 0).0;
+    s.free_huge(page_of(s, p));
+    assert_eq!(s.huge.oldest_empty(), 0);
+    assert_eq!((s.huge.stats().empty, s.huge.stats().purged), (0, 1));
+    assert_eq!(s.huge.lookup(page_of(s, p)).unwrap().state, RunState::Purged);
+    assert_eq!(crate::purge::decay(s, u64::MAX / 2), None);
+
+    // Set to -1: never, while arena 0 still decays.
+    let s = shared_with(Config { narenas: 1, huge_dirty_decay_ms: Some(-1), ..Config::DEFAULT });
+    assert!(!s.huge.purge_on_free());
+    assert_eq!(s.huge_decay_ns(), crate::purge::NEVER);
+    assert_eq!(s.decay_ns(), 10 * S);
+    let p = s.alloc_huge(size, 16, 0).0;
+    let t0 = free_at(s, p);
+    assert_eq!(crate::purge::decay(s, t0 + 1000 * S), None);
+    assert_eq!((s.huge.stats().empty, s.huge.stats().purged), (1, 0), "never purged by decay");
+    assert_eq!(crate::purge::purge_all(s), 1, "malloc_trim still purges it");
+    assert_eq!((s.huge.stats().empty, s.huge.stats().purged), (0, 1));
+}
+
 /// `shared()` with guard slabs at the default interval (`guard_install`
 /// as on a kernel with guard regions; a real reservation is needed, so
 /// Linux only).

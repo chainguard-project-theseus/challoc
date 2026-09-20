@@ -77,6 +77,13 @@
 # Every variant's /proc/self/maps is checked once before the rounds: exactly
 # the expected library is mapped into the JVM. The soak's default set is
 # SOAK_ALLOCS (challoc, glibc, glibc-arena2, glibc-trim, jemalloc).
+# challoc-<label> is the same challoc library under a configuration:
+# CHALLOC_VARIANTS lists "<label>=<conf>" pairs (jemalloc's key:value,key:value
+# grammar) and the variant runs with CHALLOC_CONF=<conf> in its environment
+# (read after MALLOC_CONF, so it wins over the harness's stats_print), e.g.
+# CHALLOC_VARIANTS="hd2000=huge_dirty_decay_ms:2000" ALLOCS="challoc
+# challoc-hd2000 glibc-trim" (the huge-decay rows, 2026-09-20). The report
+# compares plain challoc against every other variant, its own included.
 #
 #   ROUNDS=5       timed startup rounds after one discarded warm-up
 #   DURATION=300   measured server seconds per allocator (the plan's 5 minutes)
@@ -95,6 +102,7 @@
 #   OUT=dir        raw logs, samples and score files (default target/jvm/bench-out,
 #                  target/jvm/soak-out for ROWS=soak: each run starts with rm -rf OUT)
 #   REV=tree       challoc rev (any git rev; "tree" = the working tree)
+#   CHALLOC_VARIANTS="<label>=<conf> ..."   the configurations behind the challoc-<label> variants
 #   HOST_CPU, HOST_KIND   recorded in the header (the Makefile passes HOST_CPU)
 set -eu
 cd "$(dirname "$0")/.."
@@ -126,7 +134,19 @@ SOAK_MIN=${SOAK_MIN:-256}
 SOAK_MAXB=${SOAK_MAXB:-1048576}
 SOAK_TAIL=${SOAK_TAIL:-600}
 REV=${REV:-tree}
+CHALLOC_VARIANTS=${CHALLOC_VARIANTS:-}
 WORK=$ROOT/target/jvm
+# conf_of ALLOC: the CHALLOC_CONF of a challoc-<label> variant from
+# CHALLOC_VARIANTS; empty for plain challoc, dies on a label with no pair.
+conf_of() {
+  case $1 in challoc-*) ;; *) return 0;; esac
+  label=${1#challoc-}
+  for pair in $CHALLOC_VARIANTS; do
+    [ "${pair%%=*}" = "$label" ] && { printf '%s' "${pair#*=}"; return 0; }
+  done
+  die "allocator '$1' has no CHALLOC_VARIANTS entry '$label=<conf>'"
+}
+is_challoc() { case $1 in challoc|challoc-*) return 0;; *) return 1;; esac; }
 # The soak's raw output lives apart from the other rows' (each run starts
 # with rm -rf OUT, and a server row after a soak must not erase the soak's
 # stats prints and NMT snapshots before they are read).
@@ -146,7 +166,7 @@ LOAD0=$(loadavg)
 
 take_bench_lock
 ensure_bench_programs
-for a in $ALLOCS; do case $a in challoc|glibc-arena2|glibc-trim) ;; *) is_stock "$a" || die "unknown allocator '$a'";; esac; done
+for a in $ALLOCS; do case $a in challoc|glibc-arena2|glibc-trim) ;; challoc-*) conf_of "$a" > /dev/null;; *) is_stock "$a" || die "unknown allocator '$a'";; esac; done
 for row in $ROWS; do case $row in startup|server|soak) ;; *) die "unknown row '$row' (startup|server|soak)";; esac; done
 rm -rf "$OUT"; mkdir -p "$OUT" "$(dirname "$RESULT")"
 
@@ -182,13 +202,13 @@ esac
 
 # ---- the challoc library --------------------------------------------------------
 CHALLOC_LIB=
-case " $ALLOCS " in *" challoc "*)
+case " $ALLOCS " in *" challoc "*|*" challoc-"*)
   rev=$(resolve_rev "$REV")
   printf '== building challoc (%s) into target/jvm/lib ... ' "$(rev_label "$rev")"
   build_lib "$rev" "$WORK/lib"; CHALLOC_LIB=$WORK/lib/release/libchalloc.so
   echo "done, $(so_hash "$CHALLOC_LIB")";;
 esac
-lib_of() { case $1 in glibc-arena2|glibc-trim) echo "";; *) default_lib_of "$1";; esac; }
+lib_of() { case $1 in glibc-arena2|glibc-trim) echo "";; challoc-*) echo "$CHALLOC_LIB";; *) default_lib_of "$1";; esac; }
 # env_of ALLOC [server]: the extra environment of a variant (LD_PRELOAD and
 # tunables). The server rows add the stats prints at exit (they only act at
 # exit and are ignored by the other allocators); the startup row must not
@@ -203,9 +223,11 @@ env_of() {
   else
     printf '%s' "${lib:+LD_PRELOAD=$lib}"
   fi
-  case $1 in glibc-arena2) printf ' MALLOC_ARENA_MAX=2';; esac
+  case $1 in glibc-arena2) printf ' MALLOC_ARENA_MAX=2';; challoc-*) printf ' CHALLOC_CONF=%s' "$(conf_of "$1")";; esac
   :
 }
+# note_of ALLOC: what distinguishes a variant, for the maps line.
+note_of() { case $1 in glibc-arena2) echo ', MALLOC_ARENA_MAX=2';; glibc-trim) echo ", $TRIM_OPTS";; challoc-*) echo ", CHALLOC_CONF=$(conf_of "$1")";; esac; :; }
 # opts_of ALLOC: the variant's extra JVM flags (glibc-trim's periodic trim).
 opts_of() { case $1 in glibc-trim) printf '%s' "$TRIM_OPTS";; esac; :; }
 # nmt_opts: the JVM's Native Memory Tracking flag for the server rows.
@@ -217,7 +239,7 @@ STATSDUMP=$BIN/statsdump.so
 echo "== java: $(echo "$JAVA_VERSION" | head -1) ($JAVA, Wolfi ${JDK_PKG:-openjdk}); generator: $AB_VERSION; NMT: $NMT"
 for a in $ALLOCS; do
   mapped=$(env $(env_of "$a") "$JAVA" $(opts_of "$a") -cp "$CLASSES" HttpBench maps | tr '\n' ' ' | sed 's/ $//')
-  maps_expect "$a" java "$(lib_of "$a")" "$mapped" "$(case $a in glibc-arena2) echo ', MALLOC_ARENA_MAX=2';; glibc-trim) echo ", $TRIM_OPTS";; esac)"
+  maps_expect "$a" java "$(lib_of "$a")" "$mapped" "$(note_of "$a")"
 done
 
 # ---- startup row -------------------------------------------------------------------
@@ -506,6 +528,7 @@ pct_higher() { pct_of "$2" "$1"; }
 describe() {
   case $1 in
     challoc)  describe_challoc "$CHALLOC_LIB" "$REV";;
+    challoc-*) echo "$(describe_challoc "$CHALLOC_LIB" "$REV") with CHALLOC_CONF=$(conf_of "$1") (the same library as challoc under the key)";;
     glibc)    echo "no LD_PRELOAD ($(stock_version glibc) malloc, default arenas: up to 8 x CPUs)";;
     glibc-arena2) echo "no LD_PRELOAD, MALLOC_ARENA_MAX=2 ($(stock_version glibc) malloc; the fleet's usual mitigation for the per-thread arenas)";;
     glibc-trim) echo "no LD_PRELOAD, \`$TRIM_OPTS\` ($(stock_version glibc) malloc; the JVM's service thread calls malloc_trim(0) every $TRIM_MS ms: what a well-tuned Java image ships today)";;

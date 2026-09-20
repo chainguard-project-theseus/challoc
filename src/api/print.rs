@@ -338,11 +338,17 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
         t.allocated, t.active, t.metadata, t.resident, t.mapped, t.retained
     )?;
     let h = &snap.huge;
-    writeln!(
+    write!(
         out,
         concat!(head!(HUGE), "{} runs ({} pages), {} empty extents ({} pages), {} purged extents ({} pages), high-water page {}"),
         h.runs, h.run_pages, h.empty, h.empty_pages, h.purged, h.purged_pages, h.next_page
     )?;
+    // The huge tier's own decay period (`huge_dirty_decay_ms`, design 7),
+    // named only when it differs from arena 0's, which it follows otherwise.
+    if shared.huge_decay_ns() != shared.decay_ns() {
+        write!(out, ", dirty_decay_ms {} (huge_dirty_decay_ms)", decay_ms(shared.huge_decay_ns()))?;
+    }
+    writeln!(out)?;
     let m = &snap.meta;
     writeln!(
         out,
@@ -411,6 +417,9 @@ fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
         Band::Immediate => write!(out, head!(POLICY_IMMEDIATE))?,
     }
     write!(out, " decay_ms {}", decay_ms(p.effective_decay_ns(shared.decay_ns())))?;
+    if shared.huge_decay_ns() != shared.decay_ns() {
+        write!(out, " huge_decay_ms {}", decay_ms(p.effective_decay_ns(shared.huge_decay_ns())))?;
+    }
     match p.cap() {
         crate::sys::cgroup::UNLIMITED => write!(out, " retention_cap max")?,
         c => write!(out, " retention_cap {c}")?,

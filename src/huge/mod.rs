@@ -33,9 +33,11 @@
 //! the extent touches the mark and can grow; `take` leaves the pages
 //! before the aligned start and any left after the run as free extents.
 //! Runs whose usable size exceeds `retain_max` (default 64 MiB) are
-//! `MADV_DONTNEED`ed the moment they are freed; smaller ones become
-//! `Empty` and wait for the decay walk ([`Huge::decay`]) or a full purge
-//! ([`Huge::purge_empty`]). `Empty` extents sit in a FIFO list ordered by
+//! `MADV_DONTNEED`ed the moment they are freed (every run under
+//! `huge_dirty_decay_ms:0`, [`Huge::set_purge_on_free`]); smaller ones
+//! become `Empty` and wait for the decay walk ([`Huge::decay`], on arena
+//! 0's period or the huge tier's own `huge_dirty_decay_ms`, design 7) or a
+//! full purge ([`Huge::purge_empty`]). `Empty` extents sit in a FIFO list ordered by
 //! `dirty_at`, so purging is a pop from the head.
 //!
 //! Everything is under one futex lock: huge operations are rare compared to
@@ -47,7 +49,7 @@
 
 use core::alloc::Layout;
 use core::ptr;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::class::Set;
 use crate::layout::Regions;
@@ -282,6 +284,10 @@ pub struct Huge {
     npages: usize,
     guard_install: bool,
     retain_max: AtomicUsize,
+    /// `huge_dirty_decay_ms:0` (design 7): a freed run is purged as it is
+    /// freed, whatever its size, instead of waiting in the `Empty` list
+    /// for a decay pass; set once at init (`Shared::init`).
+    purge_on_free: AtomicBool,
     /// The decay step gate (`purge::Decayer`): `dirty_at` of the head of
     /// the `Empty` list (its oldest member), kept in step with the list
     /// under the lock by `sync_oldest` and read without it by the decay
@@ -534,6 +540,7 @@ impl Huge {
             npages,
             guard_install,
             retain_max: AtomicUsize::new(DEFAULT_RETAIN_MAX),
+            purge_on_free: AtomicBool::new(false),
             gate: Decayer::new(),
             inner: Lock::new(Inner {
                 free,
@@ -570,6 +577,16 @@ impl Huge {
 
     pub fn set_retain_max(&self, bytes: usize) {
         self.retain_max.store(bytes, Ordering::Relaxed);
+    }
+
+    /// Whether a freed run is purged as it is freed (`huge_dirty_decay_ms:0`).
+    #[inline]
+    pub fn purge_on_free(&self) -> bool {
+        self.purge_on_free.load(Ordering::Relaxed)
+    }
+
+    pub fn set_purge_on_free(&self, on: bool) {
+        self.purge_on_free.store(on, Ordering::Relaxed);
     }
 
     #[inline]
@@ -887,7 +904,9 @@ impl Huge {
             }
         }
         let now = os::now_ns().max(1);
-        let st = if usable > self.retain_max() {
+        // Purged at once: above `huge_retain_max`, or under a zero huge
+        // decay period (`huge_dirty_decay_ms:0`).
+        let st = if usable > self.retain_max() || self.purge_on_free() {
             let mut batch = Batch::new();
             batch.push(addr, n * page_size);
             batch.flush();

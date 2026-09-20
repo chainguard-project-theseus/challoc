@@ -1399,6 +1399,7 @@ mod tests {
         assert_eq!(half as usize, cfg.tcache_max & u32::MAX as usize, "the low half was still copied");
         assert_eq!(get::<c_uint>("opt.narenas"), cfg.narenas as c_uint, "a count stays unsigned");
         assert_eq!(get::<isize>("opt.dirty_decay_ms"), cfg.dirty_decay_ms as isize, "a period stays ssize_t");
+        assert_eq!(get::<isize>("opt.huge_dirty_decay_ms"), cfg.huge_decay_ms() as isize, "unset: the slab period");
         // `opt.huge_retain_max` reports the value the huge allocator uses.
         assert_eq!(get::<usize>("opt.huge_retain_max"), shared().huge.retain_max());
         assert_eq!(get::<usize>("opt.huge_retain_max"), crate::huge::DEFAULT_RETAIN_MAX);

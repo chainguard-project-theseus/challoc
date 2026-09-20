@@ -29,7 +29,8 @@
 //!   once is purged by mid-window and all of it by the end. Each
 //!   `(arena, class)` and the huge allocator purge their oldest `Empty`
 //!   slabs (extents) until what is left is within the curve's allowance,
-//!   at most once per step. [`decay`] visits every class of every arena
+//!   at most once per step (the huge allocator on arena 0's period, or
+//!   its own under `huge_dirty_decay_ms`, design 7). [`decay`] visits every class of every arena
 //!   and the huge allocator and reports the earliest next deadline (the
 //!   end of the current step of whoever has something `Empty`). Each class
 //!   keeps the `dirty_at` of its oldest `Empty` slab and its next deadline
@@ -470,8 +471,9 @@ pub fn decay(shared: &Shared, now: u64) -> Option<u64> {
         // Each arena's own period, scaled by the policy's band.
         fold(arena.decay_with(now, policy.effective_decay_ns(arena.decay_ns()), keep16));
     }
-    // The huge allocator is shared by every arena and follows arena 0.
-    let decay_ns = policy.effective_decay_ns(shared.decay_ns());
+    // The huge allocator is shared by every arena: its own period when
+    // `huge_dirty_decay_ms` is set, else arena 0's (design 7).
+    let decay_ns = policy.effective_decay_ns(shared.huge_decay_ns());
     if decay_ns != NEVER {
         fold(shared.huge.decay_with(now, decay_ns, keep16));
     }

@@ -330,6 +330,9 @@ impl Shared {
             match Huge::new(meta, regions, guard_install) {
                 Some(h) => {
                     h.set_retain_max(config.huge_retain_max);
+                    // `huge_dirty_decay_ms:0`: a freed run is purged at
+                    // once rather than at the next decay pass (design 7).
+                    h.set_purge_on_free(config.huge_dirty_decay_ms == Some(0));
                     ptr::write(&raw mut (*this).huge, h)
                 }
                 None => return false,
@@ -461,10 +464,23 @@ impl Shared {
     }
 
     /// Arena 0's decay period in nanoseconds (`purge::NEVER` when purging
-    /// is off), which the huge allocator shares.
+    /// is off), which the huge allocator shares unless
+    /// `huge_dirty_decay_ms` gives it its own ([`Shared::huge_decay_ns`]).
     #[inline]
     pub fn decay_ns(&self) -> u64 {
         self.arena0.decay_ns()
+    }
+
+    /// The huge allocator's decay period in nanoseconds (design 7): its
+    /// own when `huge_dirty_decay_ms` is set (fixed at init; `-1` is
+    /// `purge::NEVER`), else arena 0's live period ([`Shared::decay_ns`],
+    /// which `arena.0.dirty_decay_ms` moves). The cgroup policy scales
+    /// whichever it is (`purge::decay`).
+    pub fn huge_decay_ns(&self) -> u64 {
+        match self.config.huge_dirty_decay_ms {
+            Some(ms) => crate::purge::decay_ns_from_ms(ms),
+            None => self.decay_ns(),
+        }
     }
 
     /// Change the decay period of every existing arena; `-1` turns purging

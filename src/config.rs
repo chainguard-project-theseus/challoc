@@ -351,6 +351,17 @@ pub struct Config {
     /// moment they are freed instead of waiting for decay
     /// (`Huge::set_retain_max`, design 7).
     pub huge_retain_max: usize,
+    /// The huge tier's own decay period (design 7): the window over which
+    /// a freed huge run at or under `huge_retain_max` goes from `Empty` to
+    /// purged. `None`, the default, follows arena 0's period
+    /// (`dirty_decay_ms`, and `arena.0.dirty_decay_ms` at run time), so
+    /// the huge extents decay with the slabs; `Some(ms)` is the huge
+    /// tier's own window (`Shared::huge_decay_ns`, read by the decay
+    /// driver), `Some(0)` purges a freed run at once (`Huge::free_run`,
+    /// as `huge_retain_max:0`) and `Some(-1)` never purges one.
+    /// `opt.huge_dirty_decay_ms` reads the period in force at init:
+    /// `dirty_decay_ms` when unset.
+    pub huge_dirty_decay_ms: Option<i64>,
     /// Clear a freed block before it is cached or released (a slot's
     /// class-size bytes on the plain and sized free paths, a huge run's
     /// usable bytes): `Shared::push_flags`, `heap::zero_slot`,
@@ -430,6 +441,7 @@ impl Config {
         guards: true,
         guard_slab_interval: 8,
         huge_retain_max: crate::huge::DEFAULT_RETAIN_MAX,
+        huge_dirty_decay_ms: None,
         zero_on_free: false,
         pac_pointers: false,
         slot_randomize: false,
@@ -639,6 +651,15 @@ impl Config {
         }
         ncpus.max(1).saturating_mul(4).min(MAX_AUTO_ARENAS)
     }
+
+    /// The huge tier's decay period in milliseconds as configured:
+    /// `huge_dirty_decay_ms` when set, else `dirty_decay_ms` (the value
+    /// `opt.huge_dirty_decay_ms` reads). At run time the huge tier
+    /// follows arena 0's live period when the key is unset
+    /// (`Shared::huge_decay_ns`).
+    pub fn huge_decay_ms(&self) -> i64 {
+        self.huge_dirty_decay_ms.unwrap_or(self.dirty_decay_ms)
+    }
 }
 
 /// Cap of the automatic `narenas` default (design section 13.3).
@@ -845,6 +866,12 @@ pub const TABLE: &[Key] = &[
         name: "huge_retain_max",
         parse: |c, k, v| num(c, k, v, 0, MAX_HUGE_RETAIN_MAX as i64, |c, v| c.huge_retain_max = v as usize),
         read: |c| Value::Size(c.huge_retain_max),
+    },
+    Key {
+        // Unset it follows `dirty_decay_ms`, which is what it reads back.
+        name: "huge_dirty_decay_ms",
+        parse: |c, k, v| num(c, k, v, -1, MAX_INTERVAL_MS, |c, v| c.huge_dirty_decay_ms = Some(v)),
+        read: |c| Value::Int(c.huge_decay_ms()),
     },
     bool_key!("zero_on_free", zero_on_free),
     bool_key!("pac_pointers", pac_pointers),
@@ -1425,8 +1452,9 @@ mod tests {
     #[test]
     fn every_numeric_key_parses_and_clamps() {
         // (key, in-range value, below-min input, clamped min, above-max input, clamped max)
-        let cases: [(&str, i64, &str, i64, &str, i64); 10] = [
+        let cases: [(&str, i64, &str, i64, &str, i64); 11] = [
             ("dirty_decay_ms", 5000, "-2", -1, "9999999999999999", MAX_INTERVAL_MS),
+            ("huge_dirty_decay_ms", 2000, "-2", -1, "9999999999999999", MAX_INTERVAL_MS),
             ("muzzy_decay_ms", 0, "-5", -1, "9999999999999999", MAX_INTERVAL_MS),
             ("narenas", 4, "-1", 0, "99999999999", u32::MAX as i64),
             ("tcache_max", 4096, "-1", 0, "9999999", crate::layout::MEDIUM_MAX as i64),
@@ -1666,6 +1694,38 @@ mod tests {
         assert_eq!(issues.len(), 1, "cgroup and thp are real keys: {issues:?}");
     }
 
+    /// `huge_dirty_decay_ms` (design 7): unset it follows `dirty_decay_ms`
+    /// (the default reads as the slab period, and moves with it); set, it
+    /// is the huge tier's own period with `dirty_decay_ms`'s range, `-1`
+    /// never and `0` at once, and it round-trips through `set`/`get`.
+    #[test]
+    fn huge_dirty_decay_ms_follows_dirty_decay_ms_until_set() {
+        let d = Config::DEFAULT;
+        assert_eq!(d.huge_dirty_decay_ms, None);
+        assert_eq!(d.huge_decay_ms(), d.dirty_decay_ms);
+        assert_eq!(d.get(b"huge_dirty_decay_ms"), Some(Value::Int(10_000)));
+        let cfg = clean("dirty_decay_ms:3000");
+        assert_eq!(cfg.huge_dirty_decay_ms, None, "the slab key leaves it following");
+        assert_eq!(cfg.huge_decay_ms(), 3000);
+        assert_eq!(cfg.get(b"huge_dirty_decay_ms"), Some(Value::Int(3000)));
+        let cfg = clean("huge_dirty_decay_ms:2000,dirty_decay_ms:3000");
+        assert_eq!(cfg.huge_dirty_decay_ms, Some(2000));
+        assert_eq!((cfg.huge_decay_ms(), cfg.dirty_decay_ms), (2000, 3000));
+        assert_eq!(cfg.get(b"huge_dirty_decay_ms"), Some(Value::Int(2000)));
+        assert_eq!(cfg.get(b"dirty_decay_ms"), Some(Value::Int(3000)), "the huge key leaves the slab key alone");
+        assert_eq!(clean("huge_dirty_decay_ms:0").huge_dirty_decay_ms, Some(0));
+        assert_eq!(clean("huge_dirty_decay_ms:-1").huge_dirty_decay_ms, Some(-1));
+        assert_eq!(clean("huge_dirty_decay_ms:-1").get(b"huge_dirty_decay_ms"), Some(Value::Int(-1)));
+        // Set to the slab period explicitly it stays pinned there when
+        // the slab period later differs.
+        let cfg = clean("huge_dirty_decay_ms:10000,dirty_decay_ms:500");
+        assert_eq!((cfg.huge_decay_ms(), cfg.dirty_decay_ms), (10_000, 500));
+        let (cfg, issues) = parse("huge_dirty_decay_ms:-2");
+        assert_eq!(cfg.huge_dirty_decay_ms, Some(-1), "clamped like dirty_decay_ms");
+        assert_eq!(issues.len(), 1);
+        assert!(issues[0].contains("out-of-range conf value \"-2\" for huge_dirty_decay_ms"), "{}", issues[0]);
+    }
+
     #[test]
     fn huge_retain_max_is_a_byte_count() {
         assert_eq!(clean("huge_retain_max:0").huge_retain_max, 0);
@@ -1769,7 +1829,16 @@ mod tests {
                 Value::Str(s) => s.into(),
             };
             let text = std::format!("{key}:{value}");
-            assert_eq!(clean(&text), cfg, "{key}:{value} round trip");
+            let parsed = clean(&text);
+            if *key == "huge_dirty_decay_ms" {
+                // Its default is "follow `dirty_decay_ms`" (`None`), which
+                // reads back as that period; setting the reading pins it.
+                assert_eq!(parsed.get(key.as_bytes()), cfg.get(key.as_bytes()), "{text}");
+                assert_eq!(parsed.huge_dirty_decay_ms, Some(cfg.dirty_decay_ms), "{text}");
+                assert_eq!(Config { huge_dirty_decay_ms: None, ..parsed }, cfg, "{text} changed another field");
+            } else {
+                assert_eq!(parsed, cfg, "{key}:{value} round trip");
+            }
         }
         assert_eq!(cfg.get(b"nonsense"), None);
         assert_eq!(cfg.get(b""), None);
@@ -1845,6 +1914,12 @@ mod tests {
             assert_ne!((key.read)(&cfg), (key.read)(&d), "{}:{other} read back through its own entry", key.name);
             assert_eq!(cfg.get(key.name.as_bytes()), Some((key.read)(&cfg)), "{}", key.name);
             for o in TABLE.iter().filter(|o| o.name != key.name) {
+                if key.name == "dirty_decay_ms" && o.name == "huge_dirty_decay_ms" {
+                    // Unset, the huge period reads as the slab period
+                    // (design 7): the one reading that moves with another key.
+                    assert_eq!((o.read)(&cfg), (key.read)(&cfg), "huge_dirty_decay_ms follows dirty_decay_ms");
+                    continue;
+                }
                 assert_eq!((o.read)(&cfg), (o.read)(&d), "{}:{other} changed {}", key.name, o.name);
             }
         }
