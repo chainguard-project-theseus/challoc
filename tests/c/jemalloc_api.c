@@ -16,7 +16,9 @@
  *     malloc_message hook that the program installs;
  *   - malloc_conf defined by the library and null, je_malloc_conf only
  *     referenced (a weak reference stays null);
- *   - mallopt, mallinfo, mallinfo2, malloc_info, malloc_stats.
+ *   - mallopt, mallinfo, mallinfo2, malloc_info, malloc_stats;
+ *   - get_defrag_hint / je_get_defrag_hint (Redis's extension, design 13.5)
+ *     checked against experimental.utilization.query for the same pointers.
  */
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -52,6 +54,8 @@ extern int je_mallctlnametomib(const char *, size_t *, size_t *) WEAK;
 extern int je_mallctlbymib(const size_t *, size_t, void *, size_t *, void *, size_t) WEAK;
 extern void je_malloc_stats_print(void (*)(void *, const char *), void *, const char *) WEAK;
 extern void (*je_malloc_message)(void *, const char *) WEAK;
+extern int get_defrag_hint(void *) WEAK;
+extern int je_get_defrag_hint(void *) WEAK;
 
 #define MEDIUM_MAX (256 * 1024)
 
@@ -333,6 +337,103 @@ static void test_valkey_defrag_pattern(void)
         dallocx(ptrs[i], MALLOCX_TCACHE_NONE);
 }
 
+/* Design 13.5: the hint KeyDB's defragmenter reads, against the
+ * utilization query for the same pointer. A private arena keeps the bin
+ * figures this test's own; every other slot of the first half is freed, so
+ * those slabs are half full and the second half's stay full. With
+ * jemalloc's rule (live * curslabs' <= curregs', the primes excluding the
+ * current slab) and the query's figures including it, a hint of 1 implies
+ * live * curslabs <= curregs + nregs, and a 0 on a slab with a free slot
+ * that is not the current one implies live * curslabs > curregs - nregs;
+ * the Rust unit test has the exact reference. */
+static void test_defrag_hint(void)
+{
+    unsigned arena = 0;
+    size_t len = sizeof arena;
+    REQUIRE(mallctl("arenas.create", &arena, &len, NULL, 0) == 0, "arenas.create");
+    int flags = MALLOCX_ARENA(arena) | MALLOCX_TCACHE_NONE;
+    enum { SZ = 100 };
+    size_t nregs = 0;
+    size_t slab_size = 0;
+    {
+        /* The bin of SZ: its nregs and slab_size. */
+        unsigned nbins = get_unsigned("arenas.nbins");
+        char name[64];
+        for (unsigned j = 0; j < nbins; j++) {
+            snprintf(name, sizeof name, "arenas.bin.%u.size", j);
+            if (get_size(name) >= SZ) {
+                snprintf(name, sizeof name, "arenas.bin.%u.nregs", j);
+                nregs = get_unsigned(name);
+                snprintf(name, sizeof name, "arenas.bin.%u.slab_size", j);
+                slab_size = get_size(name);
+                break;
+            }
+        }
+    }
+    REQUIRE(nregs > 0 && slab_size > 0, "bin geometry for %d bytes", SZ);
+    size_t n = 20 * nregs;
+    void **ptrs = malloc(n * sizeof *ptrs);
+    REQUIRE(ptrs, "malloc");
+    for (size_t i = 0; i < n; i++) {
+        ptrs[i] = mallocx(SZ, flags);
+        REQUIRE(ptrs[i], "mallocx");
+    }
+    for (size_t i = 0; i < n / 2; i += 2) {
+        dallocx(ptrs[i], flags);
+    }
+    CHECK(get_defrag_hint(ptrs[0]) == 0, "a freed slot is not a hint");
+    size_t hints = 0, full_hinted = 0, sparse_seen = 0;
+    for (size_t i = 0; i < n; i++) {
+        if (i < n / 2 && i % 2 == 0)
+            continue;
+        void *p = ptrs[i];
+        int hint = get_defrag_hint(p);
+        CHECK(hint == 0 || hint == 1, "ptr %zu: hint %d", i, hint);
+        CHECK(hint == je_get_defrag_hint(p), "ptr %zu: both spellings agree", i);
+        struct {
+            void *slabcur_addr;
+            size_t nfree, nregs, size, bin_nfree, bin_nregs;
+        } u;
+        size_t ulen = sizeof u;
+        REQUIRE(mallctl("experimental.utilization.query", &u, &ulen, &p, sizeof p) == 0, "utilization.query %zu", i);
+        REQUIRE(u.nregs == nregs, "ptr %zu: nregs %zu != %zu", i, u.nregs, nregs);
+        size_t live = u.nregs - u.nfree;
+        size_t curslabs = u.bin_nregs / u.nregs, curregs = u.bin_nregs - u.bin_nfree;
+        int in_slabcur = u.slabcur_addr && (char *)p >= (char *)u.slabcur_addr && (char *)p < (char *)u.slabcur_addr + slab_size;
+        if (hint) {
+            hints++;
+            CHECK(u.nfree > 0, "ptr %zu: hinted with a full slab", i);
+            CHECK(!in_slabcur, "ptr %zu: hinted in the current slab", i);
+            CHECK(live * curslabs <= curregs + nregs, "ptr %zu: hinted above the average (%zu * %zu > %zu + %zu)", i, live, curslabs, curregs, nregs);
+        } else if (u.nfree > 0 && !in_slabcur) {
+            CHECK(live * curslabs + nregs > curregs, "ptr %zu: not hinted below the average (%zu * %zu + %zu <= %zu)", i, live, curslabs, nregs, curregs);
+        }
+        if (u.nfree == 0 && hint)
+            full_hinted++;
+        if (i < n / 2)
+            sparse_seen++;
+    }
+    CHECK(full_hinted == 0, "%zu hints on full slabs", full_hinted);
+    CHECK(hints >= nregs / 2 * 8, "%zu hints for %zu slots in half-full slabs", hints, sparse_seen);
+    /* Not a hint: a huge run, a class above the bins, null, the stack. */
+    void *h = mallocx(3 << 20, flags);
+    void *m = mallocx(100 << 10, flags);
+    REQUIRE(h && m, "huge and large");
+    int on_stack = 0;
+    CHECK(get_defrag_hint(h) == 0, "huge run");
+    CHECK(get_defrag_hint(m) == 0, "class above the bins");
+    CHECK(get_defrag_hint(NULL) == 0, "null");
+    CHECK(get_defrag_hint(&on_stack) == 0, "stack");
+    dallocx(h, flags);
+    dallocx(m, flags);
+    for (size_t i = 0; i < n; i++) {
+        if (i < n / 2 && i % 2 == 0)
+            continue;
+        dallocx(ptrs[i], flags);
+    }
+    free(ptrs);
+}
+
 static void test_arenas_threads_tcaches(void)
 {
     unsigned arena = 0;
@@ -518,10 +619,12 @@ int main(void)
     REQUIRE(je_memalign && je_valloc && je_pvalloc, "je_memalign/je_valloc/je_pvalloc exported");
     REQUIRE(je_mallocx && je_rallocx && je_xallocx && je_sallocx && je_dallocx && je_sdallocx && je_nallocx, "je_*allocx exported");
     REQUIRE(je_mallctl && je_mallctlnametomib && je_mallctlbymib && je_malloc_stats_print, "je_mallctl family exported");
+    REQUIRE(get_defrag_hint && je_get_defrag_hint, "get_defrag_hint exported under both spellings");
     test_allocx();
     test_mallctl_basics();
     test_stats_and_epoch();
     test_valkey_defrag_pattern();
+    test_defrag_hint();
     test_arenas_threads_tcaches();
     test_reports();
     return finish("jemalloc_api");

@@ -139,6 +139,17 @@ int mallctlbymib(const size_t *mib, size_t miblen, void *oldp, size_t *oldlenp, 
 
 void malloc_stats_print(void (*write_cb)(void *, const char *), void *cbopaque, const char *opts);
 
+/* Redis's extension of its bundled jemalloc (design.md section 13.5), which
+ * KeyDB's defragmenter calls (as je_get_defrag_hint) on every allocation it
+ * considers moving: 1 when ptr is a live small allocation whose slab has a
+ * free slot, is not the slab new allocations are placed in, and is used at
+ * or below the average of the bin's other slabs; 0 otherwise (a huge run, a
+ * class above the bins, a full slab, a freed or foreign pointer, null).
+ * Defining JEMALLOC_FRAG_HINT is how Redis's jemalloc_macros.h announces
+ * it (KeyDB's zmalloc.h derives HAVE_DEFRAG from USE_JEMALLOC and it). */
+#define JEMALLOC_FRAG_HINT
+int get_defrag_hint(void *ptr);
+
 /* The same entry points under jemalloc's je_ prefix; real symbols of the
  * library, not renames (a jemalloc built --with-jemalloc-prefix=je_ exports
  * these, and challoc exports both spellings). */
@@ -162,6 +173,7 @@ int je_mallctl(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t
 int je_mallctlnametomib(const char *name, size_t *mibp, size_t *miblenp);
 int je_mallctlbymib(const size_t *mib, size_t miblen, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 void je_malloc_stats_print(void (*write_cb)(void *, const char *), void *cbopaque, const char *opts);
+int je_get_defrag_hint(void *ptr);
 extern void (*je_malloc_message)(void *cbopaque, const char *s);
 
 #ifdef __cplusplus

@@ -1762,8 +1762,28 @@ to each allocator's waste.
 ### 13.5 Redis-specific extensions
 
 `get_defrag_hint(void *ptr)` and the `*_with_usize` family exist only in
-Redis's patched bundled jemalloc. They are out of scope unless a Wolfi Redis
-package appears; Valkey uses the standard `experimental.utilization` keys.
+Redis's patched bundled jemalloc. Valkey uses the standard
+`experimental.utilization` keys (13.4). `get_defrag_hint` is exported
+(both spellings, `get_defrag_hint` and `je_get_defrag_hint`; the shipped
+headers declare it and define `JEMALLOC_FRAG_HINT`, from which KeyDB's
+`zmalloc.h` derives `HAVE_DEFRAG`) because KeyDB, a Wolfi package, calls
+`je_get_defrag_hint` in `activeDefragAlloc` and has no other defragmenter
+input (plan Phase 3 task 3). It answers 1 when moving the allocation is
+worth it by the rule of Redis's `iget_defrag_hint`, computed from the same
+data as the utilization queries: the pointer is a live slot of a bin class
+(up to `BIN_MAX`), its slab has a free slot, the slab is not the one a
+`MALLOCX_TCACHE_NONE` claim takes from next (jemalloc's `slabcur`,
+challoc's lowest partial slab in the owning arena: the move would land
+the object back in it), and its live count is at or below the average
+live count of the bin's other slabs in that arena
+(`live * (curslabs - 1) <= curregs - live(slabcur)`). It answers 0 for
+everything else, a huge run, a slot of a class above `BIN_MAX` (one region
+of its own, as the utilization queries report it), a full slab, a freed or
+foreign pointer, null, and never aborts: the defragmenter asks about
+pointers it owns, and a wrong answer only costs it a move. It is a cold
+statistics read (two class-lock acquisitions, as the verbose utilization
+query) with no effect on any allocation path. The `*_with_usize` family
+stays out of scope: no Wolfi package calls it.
 
 ### 13.6 Library name, soname and packaging
 

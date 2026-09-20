@@ -1,8 +1,9 @@
 //! jemalloc's non-standard allocation entry points (design.md section
 //! 13.2): `mallocx`, `rallocx`, `xallocx`, `sallocx`, `dallocx`,
 //! `sdallocx`, `nallocx`, the `malloc_message` hook and the read-only
-//! `malloc_conf` symbols, each also exported under its `je_` name. The
-//! `mallctl` family is in `mallctl.rs`, the reports in `print.rs`.
+//! `malloc_conf` symbols, each also exported under its `je_` name, and
+//! Redis's `get_defrag_hint` (design 13.5). The `mallctl` family is in
+//! `mallctl.rs`, the reports in `print.rs`.
 //!
 //! `MALLOCX_*` flags are decoded by `arena::Flags` and routed by
 //! `arena::alloc` / `alloc_huge` / `free`: the arena and
@@ -52,7 +53,7 @@ use core::ptr;
 use super::libc::{class_for, old_size_or_keep, usable_size};
 use crate::arena::{self, Flags, Tcache};
 use crate::heap::Shared;
-use crate::layout::CLASSES;
+use crate::layout::{CLASSES, Kind, NBINS};
 
 /// `void (*malloc_message)(void *cbopaque, const char *s)`; null when the
 /// program has not installed one.
@@ -258,6 +259,61 @@ pub fn nallocx(size: usize, flags: c_int) -> usize {
     usable_for(super::shared(), size, &f).unwrap_or(0)
 }
 
+/// `get_defrag_hint(ptr)`: the extension Redis adds to its bundled jemalloc
+/// (`iget_defrag_hint`), which KeyDB's defragmenter calls as
+/// `je_get_defrag_hint` on every allocation it considers moving
+/// (`activeDefragAlloc`; design 13.5). Returns 1 when moving `p` is worth
+/// it, by jemalloc's rule and from the data the utilization queries report
+/// (`mallctl::utilization`): `p` is a live slot of a bin class (up to
+/// `BIN_MAX`), its slab has a free slot, the slab is not the one a
+/// `MALLOCX_TCACHE_NONE` claim takes from next (jemalloc's `slabcur`,
+/// challoc's lowest partial slab: the move would land the object back in
+/// it), and its live count is at or below the average live count of the
+/// bin's other slabs in the owning arena
+/// (`live * (curslabs - 1) <= curregs - live(slabcur)`, jemalloc's
+/// multiplication in place of a division). 0 for everything else: a huge
+/// run, a slot of a class above `BIN_MAX` (one region of its own, as the
+/// utilization queries report it), a full slab, a freed or foreign pointer,
+/// null, and before the allocator is initialised. Never aborts: a
+/// defragmenter asks about pointers it owns, and a wrong answer only
+/// costs it a move. Cold: two class-lock acquisitions per call, as the
+/// verbose utilization query.
+#[cold]
+#[inline(never)]
+pub fn get_defrag_hint(p: *const u8) -> c_int {
+    let Some(shared) = super::shared_if_ready() else { return 0 };
+    let Kind::Slab { class, slab, slot } = shared.regions.classify(p as usize) else { return 0 };
+    let class = class as usize;
+    if class >= NBINS {
+        return 0;
+    }
+    let t = shared.table(class);
+    let (slab, slot) = (slab as usize, slot as usize);
+    if !t.is_allocated(slab, slot) {
+        return 0;
+    }
+    let Some(d) = t.desc_if_committed(slab) else { return 0 };
+    let cls = t.class();
+    let live = d.live();
+    if live >= cls.nslots() {
+        return 0;
+    }
+    let Some(a) = shared.arenas.get_existing(d.arena()) else { return 0 };
+    let cs = a.class(class);
+    let slabcur = cs.lowest_partial();
+    if slabcur == Some(slab) {
+        return 0;
+    }
+    let (st, mut curregs) = cs.bin_stats();
+    let mut curslabs = st.curslabs();
+    if let Some(dc) = slabcur.and_then(|s| t.desc_if_committed(s)) {
+        // Take the current slab out of the average, as jemalloc does.
+        curregs = curregs.saturating_sub(dc.live());
+        curslabs = curslabs.saturating_sub(1);
+    }
+    (live * curslabs <= curregs) as c_int
+}
+
 // ---------------------------------------------------------------------------
 // C ABI. Compiled out of the test binary (see `libc.rs`).
 // ---------------------------------------------------------------------------
@@ -287,6 +343,9 @@ mod exports {
         }
         fn nallocx / je_nallocx(size: usize, flags: c_int) -> usize {
             super::nallocx(size, flags)
+        }
+        fn get_defrag_hint / je_get_defrag_hint(p: *mut c_void) -> c_int {
+            super::get_defrag_hint(p as *const u8)
         }
     }
 }
@@ -612,5 +671,71 @@ mod tests {
         assert!(message_hook().is_none());
         // Without a hook it goes to stderr and must not crash.
         malloc_write(b"challoc: malloc_write test line\n");
+    }
+    /// Design 13.5: `get_defrag_hint` answers from the utilization data
+    /// with jemalloc's rule. A private arena keeps the bin figures this
+    /// test's own.
+    #[test]
+    fn get_defrag_hint_follows_the_utilization_data() {
+        use crate::api::mallctl::utilization;
+        let s = shared();
+        let a = s.arenas.create(s).expect("arenas.create");
+        let flags = (mallocx_arena(a) | MALLOCX_TCACHE_NONE) as c_int;
+        let c = crate::layout::class_of(100).unwrap();
+        let cls = &CLASSES[c];
+        let n = 20 * cls.nslots();
+        let ptrs: Vec<*mut u8> = (0..n).map(|_| mallocx(100, flags)).collect();
+        assert!(ptrs.iter().all(|p| !p.is_null()));
+        // Every other slot of the first half goes back: those slabs are
+        // half full, the second half's stay full.
+        for p in ptrs[..n / 2].iter().step_by(2) {
+            dallocx(*p, flags);
+        }
+        let live: Vec<*mut u8> = ptrs.iter().enumerate().filter(|(i, _)| *i >= n / 2 || i % 2 == 1).map(|(_, p)| *p).collect();
+        let t = s.table(c);
+        let cs = s.arena(a).unwrap().class(c);
+        let mut moved = 0;
+        for &p in &live {
+            let hint = get_defrag_hint(p);
+            let u = utilization(s, p as *const c_void, true);
+            assert_eq!(u.nregs, cls.nslots());
+            // The reference: jemalloc's rule over the same figures.
+            let (slab, _) = t.locate(p);
+            let slabcur = cs.lowest_partial();
+            let mut curslabs = u.bin_nregs / u.nregs;
+            let mut curregs = u.bin_nregs - u.bin_nfree;
+            if let Some(sc) = slabcur {
+                curregs -= t.desc(sc).live();
+                curslabs -= 1;
+            }
+            let want = u.nfree > 0 && slabcur != Some(slab) && (u.nregs - u.nfree) * curslabs <= curregs;
+            assert_eq!(hint, want as c_int, "ptr {p:p}: nfree {} of {}, bin {}/{}, slabcur {slabcur:?} slab {slab}", u.nfree, u.nregs, curregs, curslabs);
+            if hint == 1 {
+                assert!(u.nfree > 0, "a full slab is never worth moving out of");
+                moved += 1;
+            } else if u.nfree == 0 {
+                // Full: 0 whatever the average.
+            }
+        }
+        // The half-full slabs (all but the one a claim takes from next)
+        // are below the average; the full ones are never hinted.
+        assert!(moved >= cls.nslots() / 2 * 8, "{moved} hints for {} half-full slots", n / 4);
+        assert!(live[n / 4..].iter().all(|p| get_defrag_hint(*p) == 0 || utilization(s, *p as *const c_void, false).nfree > 0));
+        // Not a hint: a freed slot, a huge run, a class above BIN_MAX
+        // (reported as one region of its own), null, a stack address.
+        assert_eq!(get_defrag_hint(ptrs[0]), 0, "freed");
+        let h = mallocx(3 << 20, flags);
+        let m = mallocx(100 << 10, flags);
+        assert!(crate::layout::class_of(100 << 10).unwrap() >= NBINS);
+        assert_eq!(get_defrag_hint(h), 0, "huge");
+        assert_eq!(get_defrag_hint(m), 0, "above BIN_MAX");
+        assert_eq!(get_defrag_hint(ptr::null()), 0, "null");
+        let stack = 0u64;
+        assert_eq!(get_defrag_hint(&stack as *const u64 as *const u8), 0, "stack");
+        dallocx(h, flags);
+        dallocx(m, flags);
+        for p in live {
+            dallocx(p, flags);
+        }
     }
 }
