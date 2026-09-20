@@ -908,6 +908,9 @@ page granularity.
   by its start page, a free extent by both its first and its last page so
   that a free finds both neighbours and free extents are always coalesced;
   `free` of a pointer inside the huge region that is not a run start aborts.
+  The table keeps its load at or below one half through `ensure`; `insert`
+  aborts rather than fill the last slot, so a probe for an absent key
+  always ends at an empty slot.
 - Runs are followed by a guard: `MADV_GUARD_INSTALL` on one page when
   available, `PROT_NONE` (the reserved default) otherwise. Since the region is
   reserved `PROT_NONE`, the fallback costs no memory, only VMAs: the
@@ -1477,7 +1480,7 @@ jemalloc names where they exist:
 | `narenas`                 | 0       | automatic arenas; 0 = `min(4 * ncpus, 64)`; see 13.3 |
 | `percpu_arena`            | auto    | `auto`, `percpu`, `off` (15, plan Phase 2.5 task 8): caches and arenas keyed by the running CPU's rseq `mm_cid` instead of by thread. `percpu` turns the mode on where the runtime probe passes (`rseq::probe`, checked at run time, never assumed from a version: glibc exports `__rseq_offset`, `__rseq_size` and `__rseq_flags` (2.35+) and the registered `__rseq_size >= 28`, so the area covers the `mm_cid` the kernel writes on 6.3+ with `CONFIG_SCHED_MM_CID`; glibc reports the kernel's feature size there since 2.41, `research.md`) and falls back to thread caches with a note in the report when it fails; `off` is thread caches whatever the probe says; `auto`, the default, keeps thread caches for now (`heap::PercpuState::OffAuto`): the mode measured 8..24% behind thread caches on the `quick` rows and far behind on the Valkey model on both reference VMs (section 15, PROGRESS.md), so the plan's fallback rule applies and the default is the human's call with those numbers. jemalloc's `disabled` and `phycpu` are accepted as `off` and `percpu` (the key used to be accepted with any value) |
 | `tcache`                  | true    | false disables caches                   |
-| `tcache_max`              | 32768   | largest cached class size (bytes)       |
+| `tcache_max`              | 32768   | largest cached class size (bytes); `opt.tcache_max` reads as `size_t` |
 | `tcache_nslots_small_max` | 1024    |                                         |
 | `lg_tcache_nslots_mul`    | 1       |                                         |
 | `tcache_gc_interval_ms`   | 10000   | challoc only                            |
@@ -1491,7 +1494,7 @@ jemalloc names where they exist:
 | `lazy_band`               | true    | challoc only; `MADV_FREE` for purges under 70% of a known cgroup limit (8, 11); `false` makes every purge `MADV_DONTNEED` unless `lazy_free` |
 | `guards`                  | true    | guard slabs and huge runs               |
 | `guard_slab_interval`     | 8       | one guard per N x 64 KiB of slabs, N a power of two (else rounded up, reported); 0 off, 1 out of range (clamps to 2) |
-| `huge_retain_max`         | 67108864 | challoc only; bytes; freed huge runs above it are purged at once (7) |
+| `huge_retain_max`         | 67108864 | challoc only; bytes; freed huge runs above it are purged at once (7); `opt.huge_retain_max` reads as `size_t` |
 | `zero_on_free`            | false   | opt-in: clear a block on free (6.3 step 3); priced in `bench/results/2026-09-18-*-gce-tunables.md` |
 | `pac_pointers`            | false   | challoc only; opt-in: sign cache entries and the TLS heap pointer with `pacda` where the kernel exposes `HWCAP_PACA`/`PACG` (6.1, 6.2, 17); inert elsewhere; priced in `bench/results/2026-09-19-lane-a-pac-pointers.md` |
 | `slot_randomize`          | false   | opt-in: refills claim from a random word and shuffle the batch (4); fights 6.4's compaction |
@@ -1679,6 +1682,7 @@ stats.arenas.<i>.large.allocated, stats.arenas.<i>.resident,
 stats.arenas.<i>.mapped, stats.arenas.<i>.retained,
 stats.arenas.<i>.bins.<j>.curregs, stats.arenas.<i>.bins.<j>.curslabs,
 stats.arenas.<i>.bins.<j>.nonfull_slabs
+stats.arenas.<MALLCTL_ARENAS_DESTROYED>.*  (all zero; see below)
 thread.tcache.flush, thread.tcache.enabled, thread.allocated, thread.allocatedp,
 thread.deallocated, thread.deallocatedp, thread.arena
 tcache.create, tcache.flush, tcache.destroy
@@ -1704,10 +1708,15 @@ flushes and purges the arena and leaves it registered and usable
 arena 0 and `MALLCTL_ARENAS_ALL`). Reading `thread.arena` builds the
 calling thread's heap if it has none (`EAGAIN` while a heap is being
 created or torn down); writing it to an unbuilt automatic arena builds
-that arena. Every unsigned key (`opt.tcache_max` included) reads back as
-`unsigned`, not jemalloc's `size_t`. The `MALLCTL_ARENAS_DESTROYED` index
-the shipped headers define (4097) is above `MAX_ARENAS`, so
-`arena.4097.*` and `stats.arenas.4097.*` answer `ENOENT`.
+that arena. `opt.tcache_max` and `opt.huge_retain_max` read back as
+`size_t` (byte counts, as jemalloc's `opt.tcache_max`); the other unsigned
+keys (`opt.narenas`, `opt.tcache_nslots_small_max`,
+`opt.tcache_compact_shift`, `opt.guard_slab_interval`) as `unsigned`; the
+signed ones (`opt.dirty_decay_ms`, `opt.muzzy_decay_ms`,
+`opt.lg_tcache_nslots_mul`, `opt.tcache_gc_interval_ms`) as `ssize_t`.
+`stats.arenas.4097.*` (`MALLCTL_ARENAS_DESTROYED`) answers all-zero
+statistics, bins included: challoc never destroys an arena, so the merged
+figures of the destroyed ones are zero; `arena.4097.*` answers `ENOENT`.
 
 Everything else returns `ENOENT`. `arenas.nbins` counts the classes up to
 4 KiB (32 with `quantum8`, 28 with `quantum16`), a fixed boundary that does
