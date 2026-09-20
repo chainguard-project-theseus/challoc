@@ -2377,3 +2377,64 @@ fn a_huge_first_allocation_builds_the_home_arena() {
 fn a_huge_allocation_in_an_arena_that_does_not_exist_aborts() {
     shared().alloc_huge(300 * 1024, 16, 77);
 }
+
+/// `pop_fast` is the one body behind `alloc_fast`, `alloc_zeroed` and
+/// the per-CPU off-mode arm: same slot, same zero flag as the cache
+/// header says, `None` from an empty cache.
+#[test]
+fn pop_fast_pops_the_top_with_the_zero_flag() {
+    let s = shared();
+    let t = TestHeap::new(s);
+    let c = class_with(64);
+    let flags = s.push_flags();
+    let h = t.heap();
+    assert_eq!(h.pop_fast(c, flags), None, "no cache yet");
+    assert_eq!(h.alloc_fast(c, flags), None);
+    let first = t.alloc(c);
+    // The refill batch is a fresh slab: the zero prefix covers it all.
+    let len = t.len(c);
+    let top = t.cached_plain(c)[len - 1];
+    assert_eq!(h.pop_fast(c, flags), Some((top, true)));
+    assert_eq!(t.len(c), len - 1);
+    let top = t.cached_plain(c)[len - 2];
+    assert_eq!(h.alloc_fast(c, flags), Some(top));
+    // A slot pushed back is no longer known zero (the push clips the
+    // prefix), and the flag says so.
+    t.free(first);
+    assert_eq!(h.pop_fast(c, flags), Some((first, false)));
+    assert_eq!(t.alloc_zeroed(c).1, true, "below the pushed entry the prefix still holds");
+    t.flush_all();
+    assert_eq!(h.pop_fast(c, flags), None, "flushed");
+    t.destroy();
+}
+
+/// `checked_slot_any` is `checked_slot`'s bit test without the arena
+/// test: they agree on every pointer of the home arena and on anything
+/// that is not a live slot, and differ only for a live slot of another
+/// arena, which the per-CPU push takes and the thread push declines.
+#[test]
+fn checked_slot_any_is_checked_slot_without_the_arena_test() {
+    let s = shared();
+    let a1 = s.arenas.create(s).unwrap();
+    let t = TestHeap::new(s);
+    let h = t.heap();
+    let c = class_with(64);
+    let p0 = t.alloc(c);
+    let (p1, _) = h.alloc_in(s, a1, c);
+    assert!(s.multi_arena());
+    assert_eq!((s.checked_slot(p0, h), s.checked_slot_any(p0)), (Some(c), Some(c)));
+    assert_eq!((s.checked_slot(p1, h), s.checked_slot_any(p1)), (None, Some(c)));
+    // Not a slot start, a never-claimed slot, a pointer outside every region.
+    let mid = unsafe { p0.add(8) };
+    assert_eq!((s.checked_slot(mid, h), s.checked_slot_any(mid)), (None, None));
+    let unclaimed = unsafe { p0.add((HALF + 200) * 64) };
+    assert_eq!((s.checked_slot(unclaimed, h), s.checked_slot_any(unclaimed)), (None, None));
+    let outside = 0x10usize as *mut u8;
+    assert_eq!((s.checked_slot(outside, h), s.checked_slot_any(outside)), (None, None));
+    // A freed slot's bit clears at the flush; until then it is cached and set.
+    h.free(s, p0);
+    h.free(s, p1);
+    assert_eq!(s.checked_slot_any(p0), Some(c));
+    h.flush_all(s);
+    assert_eq!((s.checked_slot(p0, h), s.checked_slot_any(p0), s.checked_slot_any(p1)), (None, None, None));
+}

@@ -650,17 +650,7 @@ impl Shared {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     #[inline(always)]
     pub(super) fn checked_slot(&self, p: *mut u8, h: &Heap) -> Option<usize> {
-        let (class, slab, slot) = self.regions.slab_slot(p as usize)?;
-        // SAFETY: `slab_slot` only returns `class < NCLASSES`.
-        let table = unsafe { self.tables.get_unchecked(class) };
-        if !table.is_handed_out(slab) {
-            return None;
-        }
-        // SAFETY: `slab` is below the watermark, `slab_slot` validated
-        // `slot < nslots`.
-        if !unsafe { table.is_set_unchecked(slab, slot) } {
-            return None;
-        }
+        let (class, table, slab) = self.set_slot(p)?;
         if self.multi_arena() {
             // The home arena is read on this branch only. A plain load is
             // hoisted above the flag test (the heap is known valid) and
@@ -687,6 +677,19 @@ impl Shared {
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     #[inline(always)]
     pub(super) fn checked_slot_any(&self, p: *mut u8) -> Option<usize> {
+        self.set_slot(p).map(|(class, _, _)| class)
+    }
+
+    /// The bit test the two `free` fast-path checks share: `Some((class,
+    /// table, slab))` when `p` is a slot start in a handed-out slab of
+    /// `class` whose bit is set (the table and slab are what
+    /// [`checked_slot`]'s arena test then reads), `None` for anything
+    /// else; never aborts.
+    ///
+    /// [`checked_slot`]: Shared::checked_slot
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[inline(always)]
+    fn set_slot(&self, p: *mut u8) -> Option<(usize, &SlabTable, usize)> {
         let (class, slab, slot) = self.regions.slab_slot(p as usize)?;
         // SAFETY: `slab_slot` only returns `class < NCLASSES`.
         let table = unsafe { self.tables.get_unchecked(class) };
@@ -698,7 +701,7 @@ impl Shared {
         if !unsafe { table.is_set_unchecked(slab, slot) } {
             return None;
         }
-        Some(class)
+        Some((class, table, slab))
     }
 
     /// Allocate a huge run of `size` bytes aligned to `align` in `arena`:

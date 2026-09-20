@@ -373,17 +373,7 @@ impl Heap {
     #[inline(never)]
     pub(crate) fn percpu_pop_miss(&mut self, class: usize, flags: u8, st: u32) -> Option<(*mut u8, bool)> {
         match st {
-            rseq::POP_OFF_MODE => {
-                let cache = self.cache_ptr(class);
-                // SAFETY: this thread's own header, unused or with a stack.
-                unsafe {
-                    let len = (*cache).len;
-                    if len == 0 {
-                        return None;
-                    }
-                    Some(self.pop(cache, class, len, flags & PUSH_PAC != 0))
-                }
-            }
+            rseq::POP_OFF_MODE => self.pop_fast(class, flags),
             rseq::POP_EMPTY => None,
             rseq::POP_SCHEDULED => {
                 // SAFETY: a heap never outlives its `Shared`.

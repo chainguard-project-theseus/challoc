@@ -898,6 +898,15 @@ impl Heap {
     /// `Shared::push_flags` (only [`PUSH_PAC`] matters to a pop).
     #[inline(always)]
     pub fn alloc_fast(&mut self, class: usize, flags: u8) -> Option<*mut u8> {
+        self.pop_fast(class, flags).map(|r| r.0)
+    }
+
+    /// [`Heap::alloc_fast`] with the zero flag: the one body of the home
+    /// cache's "load `len`, zero means slow, else pop", shared by `malloc`
+    /// (`alloc_fast`), `calloc` ([`Heap::alloc_zeroed`]) and the per-CPU
+    /// mode's off-mode arm (`percpu_pop_miss`).
+    #[inline(always)]
+    pub(super) fn pop_fast(&mut self, class: usize, flags: u8) -> Option<(*mut u8, bool)> {
         let cache = self.cache_ptr(class);
         // SAFETY: this thread's own header, unused (`len == 0`) or with a
         // stack of `len` entries.
@@ -906,7 +915,7 @@ impl Heap {
             if len == 0 {
                 return None;
             }
-            Some(self.pop(cache, class, len, flags & PUSH_PAC != 0).0)
+            Some(self.pop(cache, class, len, flags & PUSH_PAC != 0))
         }
     }
 
@@ -921,14 +930,9 @@ impl Heap {
                 None => self.alloc_slow(shared, class),
             };
         }
-        let cache = self.cache_ptr(class);
-        // SAFETY: as in `alloc`.
-        unsafe {
-            let len = (*cache).len;
-            if len == 0 {
-                return self.alloc_slow(shared, class);
-            }
-            self.pop(cache, class, len, shared.pac())
+        match self.pop_fast(class, flags) {
+            Some(r) => r,
+            None => self.alloc_slow(shared, class),
         }
     }
 
