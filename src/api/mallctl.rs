@@ -21,13 +21,20 @@
 //! (`thread.arena` to an index that does not exist, `arena.0.destroy`);
 //! `EAGAIN` when a resource could not be created.
 //!
+//! A read-only key carries its answer in the tree: a [`Reader`] on the
+//! node (`stat(...)`), called by [`ctl`] after the read-only check, with
+//! the numeric MIB components as its argument. Adding such a key is one
+//! `Leaf` variant and one `stat` line. The keys that do something (`epoch`,
+//! the `arena.<i>.*` operations, `arenas.create`/`lookup`, the `thread.*`
+//! and `tcache.*` writes, the utilization queries) are arms of `ctl`.
+//!
 //! `stats.*` values are those stored by the last `epoch` (all zero before
 //! the first), as in jemalloc; `stats.arenas.4096.*` (`MALLCTL_ARENAS_ALL`)
-//! sums every existing arena. The type of each value is jemalloc's:
-//! `size_t` for byte and page counts, `unsigned` for indices and counts of
-//! arenas and bins, `uint32_t` for `arenas.bin.<j>.nregs`, `ssize_t` for
-//! decay times, `uint64_t` for `epoch` and the thread counters, `bool`
-//! (one byte) for flags, `const char *` for strings.
+//! sums every existing arena. The type of each value ([`Reading`]) is
+//! jemalloc's: `size_t` for byte and page counts, `unsigned` for indices
+//! and counts of arenas and bins, `uint32_t` for `arenas.bin.<j>.nregs`,
+//! `ssize_t` for decay times, `uint64_t` for `epoch` and the thread
+//! counters, `bool` (one byte) for flags, `const char *` for strings.
 //!
 //! `experimental.utilization.query` fills jemalloc's
 //! `extent_util_stats_verbose_t` (`slabcur_addr, nfree, nregs, size,
@@ -52,9 +59,11 @@ use crate::heap::{self, Heap, Shared};
 use crate::huge::RunState;
 use crate::layout::{CLASSES, Kind, NBINS};
 use crate::purge;
-use crate::stats::{self, ArenaStats};
+use crate::stats::{self, ArenaStats, BinStats};
 use crate::sys;
 use crate::sys::Errno;
+use Leaf::*;
+use Reading::*;
 
 // `mallctl`'s return codes as `c_int`; the numbers live in `sys::errno`.
 const EPERM: c_int = Errno::EPERM.0;
@@ -198,35 +207,77 @@ pub enum Leaf {
     ConfigStats,
 }
 
+/// A read-only key's answer, tagged with the C type the caller's buffer
+/// must have (`*oldlenp` is checked against it).
+#[derive(Copy, Clone)]
+enum Reading {
+    /// `bool`, one byte.
+    Bool(bool),
+    /// `unsigned`.
+    Unsigned(c_uint),
+    /// `uint32_t`.
+    U32(u32),
+    /// `size_t`.
+    Size(usize),
+    /// `ssize_t`.
+    Ssize(isize),
+    /// `uint64_t`.
+    U64(u64),
+    /// `const char *`, a NUL-terminated static string.
+    Str(*const c_char),
+    /// `uint64_t *` (`thread.allocatedp`, `thread.deallocatedp`).
+    U64Ptr(*const u64),
+}
+
+/// A read-only key's implementation: the MIB (for its numeric components)
+/// in, the answer or an error code out. The allocator state is [`shared`],
+/// not a parameter: a reader is called through a pointer, and a `&Shared`
+/// argument the optimiser cannot trace to the one static would cost every
+/// function downstream (`heap_for_thread`, `stats::snapshot`,
+/// `Config::get`) the constant it is specialised on today.
+type Reader = fn(&[usize]) -> Result<Reading, c_int>;
+
+/// The allocator state, initialised (the readers run inside `mallctl`,
+/// after its own [`super::shared`]).
+fn shared() -> &'static Shared {
+    super::shared()
+}
+
 /// One node of the name tree. A node named [`NUMERIC`] is the only child
 /// of its parent and matches any decimal component, which becomes the MIB
-/// entry.
+/// entry. A leaf with a `read` is a read-only key answered by it; a leaf
+/// without one is an arm of [`ctl`].
 #[derive(Copy, Clone)]
 struct Node {
     name: &'static str,
     leaf: Option<Leaf>,
+    read: Option<Reader>,
     children: &'static [Node],
 }
 
 const NUMERIC: &str = "*";
 
 const fn leaf(name: &'static str, l: Leaf) -> Node {
-    Node { name, leaf: Some(l), children: &[] }
+    Node { name, leaf: Some(l), read: None, children: &[] }
+}
+
+const fn stat(name: &'static str, l: Leaf, read: Reader) -> Node {
+    Node { name, leaf: Some(l), read: Some(read), children: &[] }
 }
 
 const fn dir(name: &'static str, children: &'static [Node]) -> Node {
-    Node { name, leaf: None, children }
+    Node { name, leaf: None, read: None, children }
 }
 
 const fn num(children: &'static [Node]) -> Node {
-    Node { name: NUMERIC, leaf: None, children }
+    Node { name: NUMERIC, leaf: None, read: None, children }
 }
 
 const fn opt_nodes() -> [Node; KEYS.len()] {
     let mut out = [dir("", &[]); KEYS.len()];
     let mut i = 0;
     while i < KEYS.len() {
-        out[i] = leaf(KEYS[i], Leaf::Opt);
+        out[i] = stat(KEYS[i], Leaf::Opt, opt_value);
         i += 1;
     }
     out
@@ -234,123 +285,160 @@ const fn opt_nodes() -> [Node; KEYS.len()] {
 
 static OPT: [Node; KEYS.len()] = opt_nodes();
 static BIN_GEOMETRY: [Node; 3] = [
-    leaf("size", Leaf::ArenasBinSize),
-    leaf("nregs", Leaf::ArenasBinNregs),
-    leaf("slab_size", Leaf::ArenasBinSlabSize),
+    stat("size", ArenasBinSize, |m| Ok(Size(bin_class(m)?.size()))),
+    stat("nregs", ArenasBinNregs, |m| Ok(U32(bin_class(m)?.nslots() as u32))),
+    stat("slab_size", ArenasBinSlabSize, |m| Ok(Size(bin_class(m)?.slab_size()))),
 ];
 static ARENAS_BIN: [Node; 1] = [num(&BIN_GEOMETRY)];
 static ARENAS: [Node; 8] = [
-    leaf("narenas", Leaf::ArenasNarenas),
-    leaf("nbins", Leaf::ArenasNbins),
-    leaf("nlextents", Leaf::ArenasNlextents),
-    leaf("page", Leaf::ArenasPage),
-    leaf("quantum", Leaf::ArenasQuantum),
+    stat("narenas", ArenasNarenas, |_| Ok(Unsigned(shared().arenas.count() as c_uint))),
+    stat("nbins", ArenasNbins, |_| Ok(Unsigned(NBINS as c_uint))),
+    stat("nlextents", ArenasNlextents, |_| Ok(Unsigned(0))),
+    stat("page", ArenasPage, |_| Ok(Size(shared().regions.page_size()))),
+    stat("quantum", ArenasQuantum, |_| Ok(Size(QUANTUM))),
     dir("bin", &ARENAS_BIN),
-    leaf("create", Leaf::ArenasCreate),
-    leaf("lookup", Leaf::ArenasLookup),
+    leaf("create", ArenasCreate),
+    leaf("lookup", ArenasLookup),
 ];
 static ARENA_I: [Node; 4] = [
-    leaf("purge", Leaf::ArenaPurge),
-    leaf("decay", Leaf::ArenaDecay),
-    leaf("destroy", Leaf::ArenaDestroy),
-    leaf("dirty_decay_ms", Leaf::ArenaDirtyDecayMs),
+    leaf("purge", ArenaPurge),
+    leaf("decay", ArenaDecay),
+    leaf("destroy", ArenaDestroy),
+    leaf("dirty_decay_ms", ArenaDirtyDecayMs),
 ];
 static ARENA: [Node; 1] = [num(&ARENA_I)];
 static STATS_BIN_FIELDS: [Node; 3] = [
-    leaf("curregs", Leaf::StatsArenaBinCurregs),
-    leaf("curslabs", Leaf::StatsArenaBinCurslabs),
-    leaf("nonfull_slabs", Leaf::StatsArenaBinNonfullSlabs),
+    stat("curregs", StatsArenaBinCurregs, |m| Ok(Size(bin_stats(m)?.curregs))),
+    stat("curslabs", StatsArenaBinCurslabs, |m| Ok(Size(bin_stats(m)?.curslabs))),
+    stat("nonfull_slabs", StatsArenaBinNonfullSlabs, |m| Ok(Size(bin_stats(m)?.nonfull_slabs))),
 ];
 static STATS_BINS: [Node; 1] = [num(&STATS_BIN_FIELDS)];
-static STATS_SMALL: [Node; 2] =
-    [leaf("allocated", Leaf::StatsArenaSmallAllocated), leaf("resident", Leaf::StatsArenaSmallResident)];
-static STATS_LARGE: [Node; 1] = [leaf("allocated", Leaf::StatsArenaLargeAllocated)];
+static STATS_SMALL: [Node; 2] = [
+    stat("allocated", StatsArenaSmallAllocated, |m| Ok(Size(arena_stats(shared(), at(m, 2))?.small_allocated))),
+    stat("resident", StatsArenaSmallResident, |m| {
+        let a = arena_stats(shared(), at(m, 2))?;
+        Ok(Size(a.small_active + a.small_dirty))
+    }),
+];
+static STATS_LARGE: [Node; 1] =
+    [stat("allocated", StatsArenaLargeAllocated, |m| Ok(Size(arena_stats(shared(), at(m, 2))?.large_allocated)))];
 static STATS_ARENA_I: [Node; 9] = [
-    leaf("pactive", Leaf::StatsArenaPactive),
-    leaf("pdirty", Leaf::StatsArenaPdirty),
-    leaf("pmuzzy", Leaf::StatsArenaPmuzzy),
+    stat("pactive", StatsArenaPactive, |m| Ok(Size(arena_stats(shared(), at(m, 2))?.pactive))),
+    stat("pdirty", StatsArenaPdirty, |m| Ok(Size(arena_stats(shared(), at(m, 2))?.pdirty))),
+    stat("pmuzzy", StatsArenaPmuzzy, |m| Ok(Size(arena_stats(shared(), at(m, 2))?.pmuzzy))),
     dir("small", &STATS_SMALL),
     dir("large", &STATS_LARGE),
-    leaf("resident", Leaf::StatsArenaResident),
-    leaf("mapped", Leaf::StatsArenaMapped),
-    leaf("retained", Leaf::StatsArenaRetained),
+    stat("resident", StatsArenaResident, |m| Ok(Size(arena_stats(shared(), at(m, 2))?.resident))),
+    stat("mapped", StatsArenaMapped, |m| Ok(Size(arena_stats(shared(), at(m, 2))?.mapped))),
+    stat("retained", StatsArenaRetained, |m| Ok(Size(arena_stats(shared(), at(m, 2))?.retained))),
     dir("bins", &STATS_BINS),
 ];
 static STATS_ARENAS: [Node; 1] = [num(&STATS_ARENA_I)];
+// `stats.cgroup.*` (design 11): the first eight need a tracked cgroup
+// (`tracked`); the policy's figures are arena 0's effective decay period
+// in ms (`SIZE_MAX` for never), the retention cap in bytes (`SIZE_MAX`
+// without a limit), the `Empty` bytes held now (live, not the last
+// evaluation's figure: a reader without a limit would otherwise see 0)
+// and the full purges run on `memory.events` `high` rises. The last three
+// read with or without a cgroup: the advice exists (eager, or lazy under
+// `lazy_free`) whether or not one is read.
 static STATS_CGROUP: [Node; 11] = [
-    leaf("limit", Leaf::StatsCgroupLimit),
-    leaf("high", Leaf::StatsCgroupHigh),
-    leaf("current", Leaf::StatsCgroupCurrent),
-    leaf("pressure_events", Leaf::StatsCgroupPressureEvents),
-    leaf("decay_ms", Leaf::StatsCgroupDecayMs),
-    leaf("retention_cap", Leaf::StatsCgroupRetentionCap),
-    leaf("empty_bytes", Leaf::StatsCgroupEmptyBytes),
-    leaf("full_purges", Leaf::StatsCgroupFullPurges),
-    leaf("purge_advice", Leaf::StatsCgroupPurgeAdvice),
-    leaf("lazy_purges", Leaf::StatsCgroupLazyPurges),
-    leaf("eager_purges", Leaf::StatsCgroupEagerPurges),
+    stat("limit", StatsCgroupLimit, |_| Ok(Size(tracked()?.limit() as usize))),
+    stat("high", StatsCgroupHigh, |_| Ok(Size(tracked()?.high() as usize))),
+    stat("current", StatsCgroupCurrent, |_| {
+        // Rate limited to once per 10 ms, so a polling reader costs at
+        // most that many file reads.
+        let cg = tracked()?;
+        cg.sample(sys::now_coarse_ns());
+        Ok(Size(cg.current() as usize))
+    }),
+    stat("pressure_events", StatsCgroupPressureEvents, |_| Ok(Size(tracked()?.pressure_events() as usize))),
+    stat("decay_ms", StatsCgroupDecayMs, |_| {
+        tracked()?;
+        Ok(Size(match shared().policy.effective_decay_ns(shared().decay_ns()) {
+            purge::NEVER => usize::MAX,
+            ns => (ns / 1_000_000) as usize,
+        }))
+    }),
+    stat("retention_cap", StatsCgroupRetentionCap, |_| {
+        tracked()?;
+        Ok(Size(shared().policy.cap() as usize))
+    }),
+    stat("empty_bytes", StatsCgroupEmptyBytes, |_| {
+        tracked()?;
+        Ok(Size(crate::policy::empty_bytes(shared()) as usize))
+    }),
+    stat("full_purges", StatsCgroupFullPurges, |_| {
+        tracked()?;
+        Ok(Size(shared().policy.full_purges() as usize))
+    }),
+    stat("purge_advice", StatsCgroupPurgeAdvice, |_| Ok(Size((purge::advice() == purge::Advice::Lazy) as usize))),
+    stat("lazy_purges", StatsCgroupLazyPurges, |_| Ok(Size(purge::batches().0 as usize))),
+    stat("eager_purges", StatsCgroupEagerPurges, |_| Ok(Size(purge::batches().1 as usize))),
 ];
 static STATS_THP: [Node; 8] = [
-    leaf("mode", Leaf::StatsThpMode),
-    leaf("class_ranges", Leaf::StatsThpClassRanges),
-    leaf("class_bytes", Leaf::StatsThpClassBytes),
-    leaf("huge_ranges", Leaf::StatsThpHugeRanges),
-    leaf("meta_ranges", Leaf::StatsThpMetaRanges),
-    leaf("failures", Leaf::StatsThpFailures),
-    leaf("process", Leaf::StatsThpProcess),
-    leaf("nohuge_ranges", Leaf::StatsThpNohugeRanges),
+    stat("mode", StatsThpMode, |_| Ok(Size(crate::thp::decision().mode as usize))),
+    stat("class_ranges", StatsThpClassRanges, |_| Ok(Size(crate::thp::stats().class_ranges as usize))),
+    stat("class_bytes", StatsThpClassBytes, |_| Ok(Size(crate::thp::stats().class_bytes as usize))),
+    stat("huge_ranges", StatsThpHugeRanges, |_| Ok(Size(crate::thp::stats().huge_ranges as usize))),
+    stat("meta_ranges", StatsThpMetaRanges, |_| Ok(Size(crate::thp::stats().meta_ranges as usize))),
+    stat("failures", StatsThpFailures, |_| Ok(Size(crate::thp::stats().failures as usize))),
+    stat("process", StatsThpProcess, |_| Ok(Size(crate::thp::process() as usize))),
+    stat("nohuge_ranges", StatsThpNohugeRanges, |_| Ok(Size(crate::thp::stats().nohuge_ranges as usize))),
 ];
 static STATS_PREFAULT: [Node; 9] = [
-    leaf("enabled", Leaf::StatsPrefaultEnabled),
-    leaf("populate_write", Leaf::StatsPrefaultPopulateWrite),
-    leaf("passes", Leaf::StatsPrefaultPasses),
-    leaf("slabs", Leaf::StatsPrefaultSlabs),
-    leaf("bytes", Leaf::StatsPrefaultBytes),
-    leaf("skipped", Leaf::StatsPrefaultSkipped),
-    leaf("fallbacks", Leaf::StatsPrefaultFallbacks),
-    leaf("wakes", Leaf::StatsPrefaultWakes),
-    leaf("active", Leaf::StatsPrefaultActive),
+    stat("enabled", StatsPrefaultEnabled, |_| Ok(Size(purge::prefault::enabled() as usize))),
+    stat("populate_write", StatsPrefaultPopulateWrite, |_| Ok(Size(purge::prefault::uses_populate_write() as usize))),
+    stat("passes", StatsPrefaultPasses, |_| Ok(Size(purge::prefault::stats().passes as usize))),
+    stat("slabs", StatsPrefaultSlabs, |_| Ok(Size(purge::prefault::stats().slabs as usize))),
+    stat("bytes", StatsPrefaultBytes, |_| Ok(Size(purge::prefault::stats().bytes as usize))),
+    stat("skipped", StatsPrefaultSkipped, |_| Ok(Size(purge::prefault::stats().skipped as usize))),
+    stat("fallbacks", StatsPrefaultFallbacks, |_| Ok(Size(purge::prefault::stats().fallbacks as usize))),
+    stat("wakes", StatsPrefaultWakes, |_| Ok(Size(purge::prefault::stats().wakes as usize))),
+    stat("active", StatsPrefaultActive, |_| Ok(Size(purge::prefault::stats().active as usize))),
 ];
 static STATS_PERCPU: [Node; 5] = [
-    leaf("enabled", Leaf::StatsPercpuEnabled),
-    leaf("ids", Leaf::StatsPercpuIds),
-    leaf("headers", Leaf::StatsPercpuHeaders),
-    leaf("cached", Leaf::StatsPercpuCached),
-    leaf("aborts", Leaf::StatsPercpuAborts),
+    stat("enabled", StatsPercpuEnabled, |_| Ok(Bool(shared().percpu_on()))),
+    stat("ids", StatsPercpuIds, |_| Ok(Size(shared().percpu.ids() as usize))),
+    stat("headers", StatsPercpuHeaders, |_| Ok(Size(percpu_snapshot().0))),
+    stat("cached", StatsPercpuCached, |_| Ok(Size(percpu_snapshot().1))),
+    stat("aborts", StatsPercpuAborts, |_| Ok(Size(crate::rseq::aborts() as usize))),
 ];
 static STATS: [Node; 11] = [
-    leaf("allocated", Leaf::StatsAllocated),
-    leaf("active", Leaf::StatsActive),
-    leaf("metadata", Leaf::StatsMetadata),
-    leaf("resident", Leaf::StatsResident),
-    leaf("mapped", Leaf::StatsMapped),
-    leaf("retained", Leaf::StatsRetained),
+    stat("allocated", StatsAllocated, |_| Ok(Size(stats::snapshot(shared()).totals.allocated))),
+    stat("active", StatsActive, |_| Ok(Size(stats::snapshot(shared()).totals.active))),
+    stat("metadata", StatsMetadata, |_| Ok(Size(stats::snapshot(shared()).totals.metadata))),
+    stat("resident", StatsResident, |_| Ok(Size(stats::snapshot(shared()).totals.resident))),
+    stat("mapped", StatsMapped, |_| Ok(Size(stats::snapshot(shared()).totals.mapped))),
+    stat("retained", StatsRetained, |_| Ok(Size(stats::snapshot(shared()).totals.retained))),
     dir("arenas", &STATS_ARENAS),
     dir("cgroup", &STATS_CGROUP),
     dir("thp", &STATS_THP),
     dir("prefault", &STATS_PREFAULT),
     dir("percpu", &STATS_PERCPU),
 ];
-static THREAD_TCACHE: [Node; 2] = [leaf("flush", Leaf::ThreadTcacheFlush), leaf("enabled", Leaf::ThreadTcacheEnabled)];
+static THREAD_TCACHE: [Node; 2] = [leaf("flush", ThreadTcacheFlush), leaf("enabled", ThreadTcacheEnabled)];
 static THREAD: [Node; 6] = [
     dir("tcache", &THREAD_TCACHE),
-    leaf("allocated", Leaf::ThreadAllocated),
-    leaf("allocatedp", Leaf::ThreadAllocatedp),
-    leaf("deallocated", Leaf::ThreadDeallocated),
-    leaf("deallocatedp", Leaf::ThreadDeallocatedp),
-    leaf("arena", Leaf::ThreadArena),
+    stat("allocated", ThreadAllocated, |_| Ok(U64(thread_heap(shared())?.materialise_stats().allocated))),
+    stat("allocatedp", ThreadAllocatedp, |_| Ok(U64Ptr(&thread_heap(shared())?.materialise_stats().allocated))),
+    stat("deallocated", ThreadDeallocated, |_| Ok(U64(thread_heap(shared())?.materialise_stats().deallocated))),
+    stat("deallocatedp", ThreadDeallocatedp, |_| Ok(U64Ptr(&thread_heap(shared())?.materialise_stats().deallocated))),
+    leaf("arena", ThreadArena),
 ];
-static TCACHE: [Node; 3] =
-    [leaf("create", Leaf::TcacheCreate), leaf("flush", Leaf::TcacheFlush), leaf("destroy", Leaf::TcacheDestroy)];
-static UTILIZATION: [Node; 2] = [leaf("query", Leaf::UtilQuery), leaf("batch_query", Leaf::UtilBatchQuery)];
+static TCACHE: [Node; 3] = [leaf("create", TcacheCreate), leaf("flush", TcacheFlush), leaf("destroy", TcacheDestroy)];
+static UTILIZATION: [Node; 2] = [leaf("query", UtilQuery), leaf("batch_query", UtilBatchQuery)];
 static EXPERIMENTAL: [Node; 1] = [dir("utilization", &UTILIZATION)];
-static CONFIG: [Node; 3] =
-    [leaf("malloc_conf", Leaf::ConfigMallocConf), leaf("debug", Leaf::ConfigDebug), leaf("stats", Leaf::ConfigStats)];
+static CONFIG: [Node; 3] = [
+    stat("malloc_conf", ConfigMallocConf, |_| Ok(Str(EMPTY_CSTR.as_ptr() as *const c_char))),
+    stat("debug", ConfigDebug, |_| Ok(Bool(false))),
+    stat("stats", ConfigStats, |_| Ok(Bool(true))),
+];
 static ROOT: [Node; 12] = [
-    leaf("version", Leaf::Version),
-    leaf("epoch", Leaf::Epoch),
-    leaf("background_thread", Leaf::BackgroundThread),
-    leaf("max_background_threads", Leaf::MaxBackgroundThreads),
+    stat("version", Version, |_| Ok(Str(VERSION_CSTR.as_ptr() as *const c_char))),
+    leaf("epoch", Epoch),
+    leaf("background_thread", BackgroundThread),
+    leaf("max_background_threads", MaxBackgroundThreads),
     dir("opt", &OPT),
     dir("arenas", &ARENAS),
     dir("arena", &ARENA),
@@ -406,7 +494,7 @@ fn child_by_index(nodes: &'static [Node], i: usize) -> Option<&'static Node> {
 /// Resolve a dotted name to its MIB. The node reached may be interior
 /// (`mallctlnametomib("arenas")` is valid in jemalloc); using it as a key
 /// is then `ENOENT`.
-pub fn name_to_mib(name: &[u8], mib: &mut [usize; MAX_MIB]) -> Result<(usize, Option<Leaf>), c_int> {
+fn name_to_mib(name: &[u8], mib: &mut [usize; MAX_MIB]) -> Result<(usize, &'static Node), c_int> {
     let mut nodes: &'static [Node] = &ROOT;
     let mut rest = name;
     let mut len = 0;
@@ -419,7 +507,7 @@ pub fn name_to_mib(name: &[u8], mib: &mut [usize; MAX_MIB]) -> Result<(usize, Op
         mib[len] = i;
         len += 1;
         match tail {
-            None => return Ok((len, node.leaf)),
+            None => return Ok((len, node)),
             Some(t) => {
                 if node.children.is_empty() {
                     return Err(ENOENT);
@@ -431,8 +519,8 @@ pub fn name_to_mib(name: &[u8], mib: &mut [usize; MAX_MIB]) -> Result<(usize, Op
     }
 }
 
-/// The key a MIB names; `ENOENT` for an interior node or a bad index.
-pub fn mib_to_leaf(mib: &[usize]) -> Result<Leaf, c_int> {
+/// The node a MIB names; `ENOENT` for a bad index or an empty MIB.
+fn mib_to_node(mib: &[usize]) -> Result<&'static Node, c_int> {
     let mut nodes: &'static [Node] = &ROOT;
     let mut last: Option<&'static Node> = None;
     for &i in mib {
@@ -440,7 +528,13 @@ pub fn mib_to_leaf(mib: &[usize]) -> Result<Leaf, c_int> {
         nodes = n.children;
         last = Some(n);
     }
-    last.and_then(|n| n.leaf).ok_or(ENOENT)
+    last.ok_or(ENOENT)
+}
+
+/// The key a MIB names; `ENOENT` for an interior node or a bad index.
+#[cfg(test)]
+fn mib_to_leaf(mib: &[usize]) -> Result<Leaf, c_int> {
+    mib_to_node(mib)?.leaf.ok_or(ENOENT)
 }
 
 /// A C string as bytes, at most [`MAX_NAME`] long. `None` for null or a
@@ -679,6 +773,45 @@ fn arena_index(i: usize) -> Result<u16, c_int> {
     if i < MAX_ARENAS { Ok(i as u16) } else { Err(ENOENT) }
 }
 
+/// `mib[i]`, or an index that matches nothing when the MIB is shorter.
+fn at(mib: &[usize], i: usize) -> usize {
+    mib.get(i).copied().unwrap_or(usize::MAX)
+}
+
+/// `opt.<key>`: the key's value with its jemalloc type.
+fn opt_value(mib: &[usize]) -> Result<Reading, c_int> {
+    let key = KEYS.get(at(mib, 1)).ok_or(ENOENT)?;
+    Ok(match shared().config.get(key.as_bytes()).ok_or(ENOENT)? {
+        Value::Bool(b) => Bool(b),
+        Value::Int(i) => Ssize(i as isize),
+        Value::Uint(u) => Unsigned(u as c_uint),
+        Value::Str(s) => Str(cstr_of(s)),
+    })
+}
+
+/// `arenas.bin.<j>.*`: the bin's class; `ENOENT` past `arenas.nbins`.
+fn bin_class(mib: &[usize]) -> Result<crate::layout::Class, c_int> {
+    CLASSES[..NBINS].get(at(mib, 2)).copied().ok_or(ENOENT)
+}
+
+/// `stats.arenas.<i>.bins.<j>.*`: the stored bin figures.
+fn bin_stats(mib: &[usize]) -> Result<BinStats, c_int> {
+    arena_stats(shared(), at(mib, 2))?.bins[..NBINS].get(at(mib, 4)).copied().ok_or(ENOENT)
+}
+
+/// The tracked cgroup, or `ENOENT`: like jemalloc's keys behind a disabled
+/// build option, the name resolves and the read says the facility is off.
+fn tracked() -> Result<&'static crate::sys::cgroup::Cgroup, c_int> {
+    let s = shared();
+    if s.cgroup.tracked() { Ok(&s.cgroup) } else { Err(ENOENT) }
+}
+
+/// `(headers installed, slots cached)` of the per-CPU mode; zeros off it.
+fn percpu_snapshot() -> (usize, usize) {
+    let s = shared();
+    if s.percpu.on() { s.percpu.snapshot() } else { (0, 0) }
+}
+
 /// `arena.<i>.purge` and `arena.<i>.decay` address every arena when `i` is
 /// `MALLCTL_ARENAS_ALL` or, jemalloc's pre-5.0 convention that it still
 /// honours, `arenas.narenas`. Redis and Valkey (`jemalloc_purge`, behind
@@ -714,15 +847,30 @@ fn thread_heap<'a>(shared: &'a Shared) -> Result<&'a mut Heap, c_int> {
     heap::heap_for_thread(shared).ok_or(EAGAIN)
 }
 
-/// Perform `leaf` with the numeric components of `mib`.
-pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_int> {
-    use Leaf::*;
-    let at = |i: usize| mib.get(i).copied().unwrap_or(usize::MAX);
+/// Copy a reading out with its type's size.
+fn read_out(io: &Io, r: Reading) -> Result<(), c_int> {
+    match r {
+        Bool(v) => io.read(v),
+        Unsigned(v) => io.read(v),
+        U32(v) => io.read(v),
+        Size(v) => io.read(v),
+        Ssize(v) => io.read(v),
+        U64(v) => io.read(v),
+        Str(v) => io.read(v),
+        U64Ptr(v) => io.read(v),
+    }
+}
+
+/// Perform the key `node` names with the numeric components of `mib`:
+/// a read-only key through its reader, the others as arms. `ENOENT` for
+/// an interior node.
+fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int> {
+    let leaf = node.leaf.ok_or(ENOENT)?;
+    if let Some(read) = node.read {
+        io.read_only()?;
+        return read_out(io, read(mib)?);
+    }
     match leaf {
-        Version => {
-            io.read_only()?;
-            io.read(VERSION_CSTR.as_ptr() as *const c_char)
-        }
         Epoch => {
             if io.write::<u64>()?.is_some() {
                 stats::epoch(shared);
@@ -746,45 +894,6 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
             }
             io.read(1usize)
         }
-        Opt => {
-            io.read_only()?;
-            let key = KEYS.get(at(1)).ok_or(ENOENT)?;
-            match shared.config.get(key.as_bytes()).ok_or(ENOENT)? {
-                Value::Bool(b) => io.read(b),
-                Value::Int(i) => io.read(i as isize),
-                Value::Uint(u) => io.read(u as c_uint),
-                Value::Str(s) => io.read(cstr_of(s)),
-            }
-        }
-        ArenasNarenas => {
-            io.read_only()?;
-            io.read(shared.arenas.count() as c_uint)
-        }
-        ArenasNbins => {
-            io.read_only()?;
-            io.read(NBINS as c_uint)
-        }
-        ArenasNlextents => {
-            io.read_only()?;
-            io.read(0 as c_uint)
-        }
-        ArenasPage => {
-            io.read_only()?;
-            io.read(shared.regions.page_size())
-        }
-        ArenasQuantum => {
-            io.read_only()?;
-            io.read(QUANTUM)
-        }
-        ArenasBinSize | ArenasBinNregs | ArenasBinSlabSize => {
-            io.read_only()?;
-            let cls = CLASSES[..NBINS].get(at(2)).ok_or(ENOENT)?;
-            match leaf {
-                ArenasBinSize => io.read(cls.size()),
-                ArenasBinNregs => io.read(cls.nslots() as u32),
-                _ => io.read(cls.slab_size()),
-            }
-        }
         ArenasCreate => {
             // `newp` may carry extent hooks, which challoc has no use for.
             let i = shared.arenas.create(shared).ok_or(EAGAIN)?;
@@ -798,7 +907,7 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
         ArenaPurge => {
             io.void()?;
             flush_caller(shared);
-            let i = at(1);
+            let i = at(mib, 1);
             if all_arenas(shared, i) {
                 purge::purge_all(shared);
             } else {
@@ -809,7 +918,7 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
         ArenaDecay => {
             io.void()?;
             let now = sys::now_coarse_ns();
-            let i = at(1);
+            let i = at(mib, 1);
             if all_arenas(shared, i) {
                 purge::decay(shared, now);
             } else {
@@ -826,7 +935,7 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
         }
         ArenaDestroy => {
             io.void()?;
-            let i = at(1);
+            let i = at(mib, 1);
             if i == 0 || i == ARENAS_ALL as usize {
                 return Err(EFAULT);
             }
@@ -835,7 +944,7 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
             Ok(())
         }
         ArenaDirtyDecayMs => {
-            let i = at(1);
+            let i = at(mib, 1);
             let new = io.write::<isize>()?;
             if let Some(ms) = new {
                 if ms < -1 {
@@ -854,156 +963,6 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
             }
             io.read(ms_of(arena.decay_ns()))
         }
-        StatsAllocated | StatsActive | StatsMetadata | StatsResident | StatsMapped | StatsRetained => {
-            io.read_only()?;
-            let t = stats::snapshot(shared).totals;
-            io.read(match leaf {
-                StatsAllocated => t.allocated,
-                StatsActive => t.active,
-                StatsMetadata => t.metadata,
-                StatsResident => t.resident,
-                StatsMapped => t.mapped,
-                _ => t.retained,
-            })
-        }
-        StatsCgroupLimit
-        | StatsCgroupHigh
-        | StatsCgroupCurrent
-        | StatsCgroupPressureEvents
-        | StatsCgroupDecayMs
-        | StatsCgroupRetentionCap
-        | StatsCgroupEmptyBytes
-        | StatsCgroupFullPurges => {
-            io.read_only()?;
-            let cg = &shared.cgroup;
-            if !cg.tracked() {
-                // Like jemalloc's keys behind a disabled build option: the
-                // name resolves, the read says the facility is off.
-                return Err(ENOENT);
-            }
-            if leaf == StatsCgroupCurrent {
-                // Rate limited to once per 10 ms, so a polling reader costs
-                // at most that many file reads.
-                cg.sample(crate::sys::now_coarse_ns());
-            }
-            let policy = &shared.policy;
-            io.read(match leaf {
-                StatsCgroupLimit => cg.limit() as usize,
-                StatsCgroupHigh => cg.high() as usize,
-                StatsCgroupCurrent => cg.current() as usize,
-                StatsCgroupPressureEvents => cg.pressure_events() as usize,
-                StatsCgroupDecayMs => match policy.effective_decay_ns(shared.decay_ns()) {
-                    crate::purge::NEVER => usize::MAX,
-                    ns => (ns / 1_000_000) as usize,
-                },
-                StatsCgroupRetentionCap => policy.cap() as usize,
-                // Live, not the last evaluation's figure: a reader without a
-                // limit would otherwise see 0.
-                StatsCgroupEmptyBytes => crate::policy::empty_bytes(shared) as usize,
-                _ => policy.full_purges() as usize,
-            })
-        }
-        StatsCgroupPurgeAdvice | StatsCgroupLazyPurges | StatsCgroupEagerPurges => {
-            io.read_only()?;
-            let (lazy, eager) = crate::purge::batches();
-            io.read(match leaf {
-                StatsCgroupPurgeAdvice => (crate::purge::advice() == crate::purge::Advice::Lazy) as usize,
-                StatsCgroupLazyPurges => lazy as usize,
-                _ => eager as usize,
-            })
-        }
-        StatsPrefaultEnabled
-        | StatsPrefaultPopulateWrite
-        | StatsPrefaultPasses
-        | StatsPrefaultSlabs
-        | StatsPrefaultBytes
-        | StatsPrefaultSkipped
-        | StatsPrefaultFallbacks
-        | StatsPrefaultWakes
-        | StatsPrefaultActive => {
-            io.read_only()?;
-            let s = crate::purge::prefault::stats();
-            io.read(match leaf {
-                StatsPrefaultEnabled => crate::purge::prefault::enabled() as usize,
-                StatsPrefaultPopulateWrite => crate::purge::prefault::uses_populate_write() as usize,
-                StatsPrefaultPasses => s.passes as usize,
-                StatsPrefaultSlabs => s.slabs as usize,
-                StatsPrefaultBytes => s.bytes as usize,
-                StatsPrefaultSkipped => s.skipped as usize,
-                StatsPrefaultFallbacks => s.fallbacks as usize,
-                StatsPrefaultWakes => s.wakes as usize,
-                _ => s.active as usize,
-            })
-        }
-        StatsThpMode
-        | StatsThpClassRanges
-        | StatsThpClassBytes
-        | StatsThpHugeRanges
-        | StatsThpMetaRanges
-        | StatsThpFailures
-        | StatsThpProcess
-        | StatsThpNohugeRanges => {
-            io.read_only()?;
-            let s = crate::thp::stats();
-            io.read(match leaf {
-                StatsThpMode => crate::thp::decision().mode as usize,
-                StatsThpProcess => crate::thp::process() as usize,
-                StatsThpClassRanges => s.class_ranges as usize,
-                StatsThpClassBytes => s.class_bytes as usize,
-                StatsThpHugeRanges => s.huge_ranges as usize,
-                StatsThpMetaRanges => s.meta_ranges as usize,
-                StatsThpNohugeRanges => s.nohuge_ranges as usize,
-                _ => s.failures as usize,
-            })
-        }
-        StatsArenaPactive
-        | StatsArenaPdirty
-        | StatsArenaPmuzzy
-        | StatsArenaSmallAllocated
-        | StatsArenaSmallResident
-        | StatsArenaLargeAllocated
-        | StatsArenaResident
-        | StatsArenaMapped
-        | StatsArenaRetained => {
-            io.read_only()?;
-            let s = arena_stats(shared, at(2))?;
-            io.read(match leaf {
-                StatsArenaPactive => s.pactive,
-                StatsArenaPdirty => s.pdirty,
-                StatsArenaPmuzzy => s.pmuzzy,
-                StatsArenaSmallAllocated => s.small_allocated,
-                StatsArenaSmallResident => s.small_active + s.small_dirty,
-                StatsArenaLargeAllocated => s.large_allocated,
-                StatsArenaResident => s.resident,
-                StatsArenaMapped => s.mapped,
-                _ => s.retained,
-            })
-        }
-        StatsArenaBinCurregs | StatsArenaBinCurslabs | StatsArenaBinNonfullSlabs => {
-            io.read_only()?;
-            let s = arena_stats(shared, at(2))?;
-            let b = s.bins[..NBINS].get(at(4)).ok_or(ENOENT)?;
-            io.read(match leaf {
-                StatsArenaBinCurregs => b.curregs,
-                StatsArenaBinCurslabs => b.curslabs,
-                _ => b.nonfull_slabs,
-            })
-        }
-        StatsPercpuEnabled => {
-            io.read_only()?;
-            io.read(shared.percpu_on())
-        }
-        StatsPercpuIds | StatsPercpuHeaders | StatsPercpuCached | StatsPercpuAborts => {
-            io.read_only()?;
-            let pc = &shared.percpu;
-            let (headers, cached) = if pc.on() { pc.snapshot() } else { (0, 0) };
-            io.read(match leaf {
-                StatsPercpuIds => pc.ids() as usize,
-                StatsPercpuHeaders => headers,
-                StatsPercpuCached => cached,
-                _ => crate::rseq::aborts() as usize,
-            })
-        }
         ThreadTcacheFlush => {
             io.void()?;
             flush_caller(shared);
@@ -1015,24 +974,6 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
                 h.set_tcache_enabled(shared, on);
             }
             io.read(h.tcache_enabled())
-        }
-        ThreadAllocated => {
-            io.read_only()?;
-            io.read(thread_heap(shared)?.materialise_stats().allocated)
-        }
-        ThreadDeallocated => {
-            io.read_only()?;
-            io.read(thread_heap(shared)?.materialise_stats().deallocated)
-        }
-        ThreadAllocatedp => {
-            io.read_only()?;
-            let s = thread_heap(shared)?.materialise_stats();
-            io.read(&s.allocated as *const u64)
-        }
-        ThreadDeallocatedp => {
-            io.read_only()?;
-            let s = thread_heap(shared)?.materialise_stats();
-            io.read(&s.deallocated as *const u64)
         }
         ThreadArena => {
             let h = thread_heap(shared)?;
@@ -1073,18 +1014,8 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
             io.read(utilization(shared, p, true))
         }
         UtilBatchQuery => batch_query(shared, io),
-        ConfigMallocConf => {
-            io.read_only()?;
-            io.read(EMPTY_CSTR.as_ptr() as *const c_char)
-        }
-        ConfigDebug => {
-            io.read_only()?;
-            io.read(false)
-        }
-        ConfigStats => {
-            io.read_only()?;
-            io.read(true)
-        }
+        // Every other leaf is a read-only key with a reader.
+        _ => Err(ENOENT),
     }
 }
 
@@ -1099,13 +1030,12 @@ fn result(r: Result<(), c_int>) -> c_int {
 pub fn mallctl(name: *const c_char, oldp: *mut c_void, oldlenp: *mut usize, newp: *const c_void, newlen: usize) -> c_int {
     let Some(name) = cstr(name) else { return EINVAL };
     let mut mib = [0usize; MAX_MIB];
-    let (len, leaf) = match name_to_mib(name, &mut mib) {
+    let (len, node) = match name_to_mib(name, &mut mib) {
         Ok(x) => x,
         Err(e) => return e,
     };
-    let Some(leaf) = leaf else { return ENOENT };
     let shared = super::shared();
-    result(ctl(shared, leaf, &mib[..len], &Io { oldp, oldlenp, newp, newlen }))
+    result(ctl(shared, node, &mib[..len], &Io { oldp, oldlenp, newp, newlen }))
 }
 
 /// `mallctlnametomib(name, mibp, miblenp)`: `*miblenp` is the capacity in
@@ -1147,12 +1077,12 @@ pub fn mallctlbymib(
     let mut local = [0usize; MAX_MIB];
     // SAFETY: `miblen` entries are readable at `mib`.
     unsafe { ptr::copy_nonoverlapping(mib, local.as_mut_ptr(), miblen) };
-    let leaf = match mib_to_leaf(&local[..miblen]) {
-        Ok(l) => l,
+    let node = match mib_to_node(&local[..miblen]) {
+        Ok(n) => n,
         Err(e) => return e,
     };
     let shared = super::shared();
-    result(ctl(shared, leaf, &local[..miblen], &Io { oldp, oldlenp, newp, newlen }))
+    result(ctl(shared, node, &local[..miblen], &Io { oldp, oldlenp, newp, newlen }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1198,10 +1128,6 @@ mod tests {
     use crate::config::Config;
     use std::ffi::CString;
     use std::vec::Vec;
-
-    fn shared() -> &'static Shared {
-        super::super::shared()
-    }
 
     /// `mallctl` by name with typed in/out values.
     fn ctl_rw<T: Copy>(name: &str, old: Option<&mut T>, new: Option<&T>) -> c_int {
