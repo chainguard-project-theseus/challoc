@@ -384,3 +384,20 @@ RUN round=7 row=larson16 set=c score=308.7 rss_kib=250556 ahp_kib=196608 thp_ena
 RUN round=7 row=larson16 set=d score=304.9 rss_kib=174580 ahp_kib=0 thp_enabled=1 fault_alloc=7 fault_fallback=0 split=0 deferred_split=0 exit=0 secs=7.1 load=5.96
 RUN round=7 row=larson16 set=j score=326.1 rss_kib=282652 ahp_kib=174080 thp_enabled=1 fault_alloc=106 fault_fallback=0 split=0 deferred_split=32 exit=0 secs=7.2 load=6.92
 ```
+
+## 7. Follow-up (2026-09-20, afternoon)
+
+The fourth option of section 4 (keep `never` for the class regions and
+leave the huge runs eligible) became the human's decision and lane B's
+4678fcd; `2026-09-20-aarch64-cgos-thp-decision.md` is the same A/B on
+the same cell at the merged tree `6ea842d` (the shipped default,
+`thp:auto`, `thp:always`, jemalloc; 7 interleaved rounds, the same
+script with `SETS="a b c j"`). There the default reads within the
+spread of (b) on every row (-1.4% / -0.7% / -0.2%), +5.1% / +6.4% /
++6.0% behind jemalloc (this file's (a): +16.1% / +9.0% / +5.5%), with
+32 MiB of `AnonHugePages` at the Valkey model's peak and peak RSS
+unchanged (584.8 MiB); `tests/c/thp.c never` on the host prints
+`AnonHugePages 0 kB (class region), 8192 kB (huge run)`. That VM's
+absolute level was 23..26% below this one's on the Valkey rows (a
+different Axion host), so read the two files by their within-run ratios
+only.

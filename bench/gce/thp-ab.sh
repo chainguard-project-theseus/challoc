@@ -11,12 +11,17 @@
 #   run   the A/B (the default), writing RUN lines and a summary table to
 #         stdout and the per-run outputs to ~/thp-ab-out/.
 #
-# Five settings on the same tree:
-#   a  challoc, MALLOC_CONF unset             (thp:never, the shipped default: MADV_NOHUGEPAGE on every reservation)
+# Five settings on the same tree (SETS picks a subset, default all five;
+# the letters are the ones of the 2026-09-20 results file):
+#   a  challoc, MALLOC_CONF unset             (thp:never, the shipped default; at f2d9558 MADV_NOHUGEPAGE on every
+#                                              reservation, since 4678fcd on the class superblock and the metadata
+#                                              region only, the huge region following the host's policy)
 #   b  challoc, thp:auto                      (no advice either way: the pre-task-16 behaviour on this host)
 #   c  challoc, thp:always                    (MADV_HUGEPAGE on the regions)
 #   d  challoc, thp:never,thp_process:advised (the task 16 prctl on top of the default)
 #   j  jemalloc                               (the reference)
+# The re-measurement of the default decision (2026-09-20-aarch64-cgos-thp-
+# decision.md) ran `SETS="a b c j"` at 6ea842d.
 # Rows valkey1, valkey1-free, larson16; one discarded warm-up round then
 # ROUNDS (7) timed rounds, interleaved (round > row > setting); per run the
 # score, peak Rss and peak AnonHugePages from /proc/<pid>/smaps_rollup at
@@ -53,7 +58,7 @@ BIN=$HOME/native/target/bench-bin
 T=/sys/kernel/mm/transparent_hugepage
 ROUNDS=${ROUNDS:-7}
 N=${VALKEY_MODEL_N:-850000}; SECS=${VALKEY_MODEL_SECS:-10}
-SETS="a b c d j"
+SETS=${SETS:-"a b c d j"}
 ROWS="valkey1 valkey1-free larson16"
 OUT=$HOME/thp-ab-out; rm -rf "$OUT"; mkdir -p "$OUT"
 say() { echo; echo "#### $* ($(date -u +%T))"; }
@@ -82,8 +87,8 @@ echo "# load at start: $(cut -d' ' -f1-3 /proc/loadavg)"
 for s in a j; do l=$(lib_of $s); echo "# $s: $l mapped=$(LD_PRELOAD="$l" cat /proc/self/maps 2>&1 | grep -c "$(basename "$l")")"; done
 
 say "the thp: report line, the feature line and the kernel's view per setting (tests/c/thp.c and features.c, natively)"
-for s in a b c d; do
-  case $s in a) m=never;; b) m=auto;; c) m=always;; d) m=process;; esac
+for s in $SETS; do
+  case $s in a) m=never;; b) m=auto;; c) m=always;; d) m=process;; j) continue;; esac
   cf=$(conf_of $s)
   echo "-- setting $s: $(name_of $s); MALLOC_CONF='${cf}'; thp-ab-thp $m"
   if [ -n "$cf" ]; then
