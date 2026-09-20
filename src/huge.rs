@@ -11,11 +11,11 @@
 //!
 //! Adjacent free extents are always coalesced, whatever their states (the
 //! merge is `Empty` unless both were `Purged`), so a maximal run of free
-//! pages is exactly one extent. Free pages are also mirrored in a
-//! [`TwoLevelBitmap`] so that allocation is lowest-address first fit: walk
-//! the free extents in address order, take the first that fits (or the last
-//! one if it touches the high-water mark and can grow), else carve fresh
-//! pages at the mark. Descriptors live in an open-addressing hash table
+//! pages is exactly one extent. Free pages are also mirrored in a [`Set`]
+//! (a `TwoLevelBitmap` over pages) so that allocation is lowest-address
+//! first fit: walk the free extents in address order, take the first that
+//! fits (or the last one if it touches the high-water mark and can grow),
+//! else carve fresh pages at the mark. Descriptors live in an open-addressing hash table
 //! keyed by page number: a run is keyed by its start page, a free extent by
 //! its first and last page so that a free can find both neighbours.
 //!
@@ -27,13 +27,16 @@
 //! its usable range so stale `PROT_NONE` guards inside a reused extent are
 //! made writable again.
 //!
-//! Alignment above a page is met by searching for `need + align_pages - 1`
-//! pages and taking the aligned run inside; the pages before and after stay
-//! free extents. Runs whose usable size exceeds `retain_max` (default
-//! 64 MiB) are `MADV_DONTNEED`ed the moment they are freed; smaller ones
-//! become `Empty` and wait for the decay walk ([`Huge::decay`]) or a full
-//! purge ([`Huge::purge_empty`]). `Empty` extents sit in a FIFO
-//! list ordered by `dirty_at`, so purging is a pop from the head.
+//! Alignment above a page is met in `find`: the start of each free extent
+//! (and finally the high-water mark) is rounded up to the alignment and the
+//! extent is taken when the whole run still fits below its end, or when
+//! the extent touches the mark and can grow; `take` leaves the pages
+//! before the aligned start and any left after the run as free extents.
+//! Runs whose usable size exceeds `retain_max` (default 64 MiB) are
+//! `MADV_DONTNEED`ed the moment they are freed; smaller ones become
+//! `Empty` and wait for the decay walk ([`Huge::decay`]) or a full purge
+//! ([`Huge::purge_empty`]). `Empty` extents sit in a FIFO list ordered by
+//! `dirty_at`, so purging is a pop from the head.
 //!
 //! Everything is under one futex lock: huge operations are rare compared to
 //! slab operations and each already costs at least one syscall.
@@ -136,11 +139,6 @@ impl HugeDesc {
     }
 
     #[inline]
-    pub fn usable(&self) -> usize {
-        self.usable
-    }
-
-    #[inline]
     pub fn arena(&self) -> u16 {
         self.arena
     }
@@ -148,11 +146,6 @@ impl HugeDesc {
     #[inline]
     pub fn state(&self) -> RunState {
         RunState::from_u8(self.state)
-    }
-
-    #[inline]
-    pub fn dirty_at(&self) -> u64 {
-        self.dirty_at
     }
 }
 
@@ -646,14 +639,9 @@ impl Huge {
     }
 
     /// Pages in the region.
-    #[inline]
+    #[cfg(test)]
     pub fn npages(&self) -> usize {
         self.npages
-    }
-
-    #[inline]
-    pub fn guard_install(&self) -> bool {
-        self.guard_install
     }
 
     /// Usable-byte threshold above which freed runs are purged at once.
@@ -952,15 +940,16 @@ impl Huge {
         zeroed
     }
 
-    /// Free the run starting at `page` (from `Regions::classify`). Aborts
-    /// unless it is the start of a live run. Returns the usable bytes
-    /// released, for the caller's counters.
+    /// [`Huge::free_run`] returning only the usable bytes released.
+    #[cfg(test)]
     pub fn free(&self, meta: &Meta, page: usize) -> usize {
         self.free_run(meta, page).usable
     }
 
-    /// [`Huge::free`] returning the run as it was (`start`, `pages` with
-    /// the guard, `usable`, `arena`), for the per-arena counters.
+    /// Free the run starting at `page` (from `Regions::classify`). Aborts
+    /// unless it is the start of a live run. Returns the run as it was
+    /// (`start`, `pages` with the guard, `usable`, `arena`), for the
+    /// caller's per-arena counters.
     pub fn free_run(&self, meta: &Meta, page: usize) -> RunInfo {
         let page_size = self.page_size();
         let mut g = self.inner.lock();
@@ -1232,7 +1221,9 @@ impl Huge {
         self.inner.lock().stats
     }
 
-    /// Oldest `Empty` extent's `dirty_at`, for the decay driver.
+    /// Oldest `Empty` extent's `dirty_at`, read under the lock (the decay
+    /// driver reads the copy in [`Huge::oldest_empty`] instead).
+    #[cfg(test)]
     pub fn oldest_dirty_at(&self) -> Option<u64> {
         let g = self.inner.lock();
         if g.empty_head.is_null() {
@@ -1518,7 +1509,7 @@ mod tests {
                 Kind::Huge { page } => page,
                 other => panic!("{p:?} classified as {other:?}"),
             };
-            let n = h.free(&self.meta, page);
+            let n = h.free_run(&self.meta, page).usable;
             h.audit();
             n
         }
@@ -1988,7 +1979,7 @@ mod tests {
         // remaining key must still resolve.
         for (i, &page) in runs.iter().enumerate() {
             if i % 3 == 0 {
-                h.free(&env.meta, page);
+                h.free_run(&env.meta, page);
             }
         }
         h.audit();
@@ -2003,7 +1994,7 @@ mod tests {
         }
         for (i, &page) in runs.iter().enumerate() {
             if i % 3 != 0 {
-                h.free(&env.meta, page);
+                h.free_run(&env.meta, page);
             }
         }
         h.audit();
@@ -2098,7 +2089,7 @@ mod tests {
         }
         assert!(zero_flags > 0);
         for (page, _, _) in live.drain(..) {
-            h.free(&env.meta, page);
+            h.free_run(&env.meta, page);
         }
         h.audit();
         let st = h.stats();
@@ -2139,7 +2130,7 @@ mod tests {
                     }
                 }
                 for (page, _) in held {
-                    h.free(&env.meta, page);
+                    h.free_run(&env.meta, page);
                 }
                 got
             }));
@@ -2274,7 +2265,7 @@ mod linux_tests {
         s.iter().all(|&b| b == v)
     }
 
-    /// `check_zero` (plan Phase 1.5 task 7b) on a healthy huge heap: fresh
+    /// `check_zero` on a healthy huge heap: fresh
     /// and purged runs read zero, dirty `Empty` reuse is not checked (it is
     /// not reported zero), and the flag stays on for the rest of the process.
     #[test]
@@ -2448,7 +2439,7 @@ mod linux_tests {
         assert_eq!(h.stats().runs, 0);
     }
 
-    /// The Phase 0 regression found on the GCE VMs: in guard-install mode
+    /// The alignment-hole regression: in guard-install mode
     /// `prepare` committed only `[max(s, mark), end)`, so the alignment
     /// hole `[mark, s)` that `take` records as a free extent stayed
     /// `PROT_NONE` and the first run refilled into it faulted. Both hole
