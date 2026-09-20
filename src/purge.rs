@@ -1468,20 +1468,39 @@ pub(crate) mod tests {
         assert_eq!(advice_reason(), "no headroom known");
     }
 
-    /// The advice's process-wide wiring (plan Phase 2.5 task 10): the
-    /// policy's headroom mirror, the `lazy_band` key and an explicit purge
-    /// in flight, read without any batch being flushed. Serialised with
-    /// [`ADVICE_TEST`] against the batch tests, which flush.
-    /// The prefault pass's plumbing (plan Phase 2.5 task 11), host side:
-    /// `populate` counts the bytes and, where `MADV_POPULATE_WRITE` is
-    /// believed available but fails (off Linux it always does), one
-    /// fallback, and the touch leaves a zero buffer zero; `note_commit`
-    /// counts a wake only while the pass is enabled; `configure` is what
-    /// `enabled` and the populate word report.
+    /// The page size and the `MADV_POPULATE_WRITE` probe of the
+    /// environment, as `api::init` reads them: the kernel's on Linux (the
+    /// 5.10 and 64 KiB-page matrix cells found a 4 KiB constant and a
+    /// forced populate word), 4 KiB and "unusable" in the synthetic host
+    /// environment, where `os::populate_write` always fails.
+    #[cfg(target_os = "linux")]
+    fn prefault_env() -> (usize, bool) {
+        let page = crate::sys::features::page_size();
+        (page, crate::sys::features::probe_populate_write(page))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn prefault_env() -> (usize, bool) {
+        (4096, false)
+    }
+
+    /// The prefault pass's plumbing (plan Phase 2.5 task 11), host side,
+    /// at the kernel's page size and in the populate direction the real
+    /// probe reports: `populate` counts the bytes; configured as the probe
+    /// says it never falls back (the advice works, or the touch is the
+    /// populate); told the advice works where the probe says it does not
+    /// (before 5.14, off Linux always), one fallback, the bytes still
+    /// counted and the touch done, so a zero buffer stays zero either
+    /// way; `note_commit` counts a wake only while the pass is enabled;
+    /// `configure` is what `enabled` and the populate word report.
     #[test]
     fn prefault_populate_and_wakes_are_counted() {
         let _serial = serial();
-        let page = 4096;
+        let (page, usable) = prefault_env();
+        std::println!(
+            "prefault test: page_size={page} populate_write={} (probed)",
+            if usable { "yes" } else { "no" }
+        );
         let buf = std::vec![0u8; 4 * page + page];
         let addr = (buf.as_ptr() as usize + page - 1) & !(page - 1);
         prefault::reset_for_test(false, false);
@@ -1492,8 +1511,9 @@ pub(crate) mod tests {
         let s = prefault::stats();
         assert_eq!((s.bytes, s.fallbacks), (4 * page as u64, 0), "the touch is the populate, not a fallback");
         assert!(buf.iter().all(|&b| b == 0));
-        prefault::reset_for_test(true, true);
-        assert!(prefault::enabled() && prefault::uses_populate_write());
+        // The probe's direction, as `api::init` configures the pass.
+        prefault::reset_for_test(true, usable);
+        assert!(prefault::enabled() && prefault::uses_populate_write() == usable);
         prefault::note_commit();
         prefault::note_commit();
         // At least this test's two wakes (other tests' fresh commits wake
@@ -1501,10 +1521,30 @@ pub(crate) mod tests {
         assert!(prefault::stats().wakes >= 2);
         prefault::populate(addr, 2 * page, page);
         let s = prefault::stats();
-        assert_eq!((s.bytes, s.fallbacks), (2 * page as u64, if cfg!(target_os = "linux") { 0 } else { 1 }));
+        assert_eq!((s.bytes, s.fallbacks), (2 * page as u64, 0), "the probe's direction never falls back");
+        assert!(buf.iter().all(|&b| b == 0));
+        // The fallback contract: the populate word set where the kernel
+        // lacks the advice (or the address is not page-aligned), the
+        // `madvise` fails, one fallback is counted, the bytes are counted
+        // and the touch populates; where the probe says yes this is the
+        // probe's direction again.
+        prefault::reset_for_test(true, true);
+        prefault::populate(addr, page, page);
+        let s = prefault::stats();
+        let expected = if usable { 0 } else { 1 };
+        assert_eq!((s.bytes, s.fallbacks), (page as u64, expected), "forced populate_write against the probe");
+        assert!(buf.iter().all(|&b| b == 0));
+        std::println!(
+            "prefault test: probed direction fallbacks=0, forced populate_write fallbacks={} (expected {expected})",
+            s.fallbacks
+        );
         prefault::reset_for_test(false, false);
     }
 
+    /// The advice's process-wide wiring (plan Phase 2.5 task 10): the
+    /// policy's headroom mirror, the `lazy_band` key and an explicit purge
+    /// in flight, read without any batch being flushed. Serialised with
+    /// [`ADVICE_TEST`] against the batch tests, which flush.
     #[test]
     fn advice_follows_headroom_band_key_and_explicit_purges() {
         let _serial = serial();
