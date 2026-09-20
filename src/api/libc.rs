@@ -16,8 +16,10 @@
 //!   `memalign` set `EINVAL` for a bad alignment; `posix_memalign` returns
 //!   the error and leaves `errno` alone.
 //! - `free` preserves `errno`. Nothing on its path calls into libc: the
-//!   fast path touches only the heap, the cache and one descriptor word,
-//!   and the slow paths use raw syscalls that never write `errno`.
+//!   fast path touches only the heap, the cache, the slab's bitmap word
+//!   and (with several arenas) its owner word, never the descriptor
+//!   (design 6.3), and the slow paths use raw syscalls that never write
+//!   `errno`.
 //! - `malloc(0)` returns a distinct pointer (a real class-0 slot);
 //!   `realloc(p, 0)` frees `p` and returns null, as glibc does.
 //!
@@ -424,8 +426,8 @@ pub(super) fn class_for(size: usize, align: usize) -> Option<usize> {
     // is at most `MEDIUM_MAX`, so this stops inside the table; `get` (not
     // an index) so that no bounds-check panic call sits in the functions
     // this is inlined into (`sdallocx`: a call in the body costs the fast
-    // path a frame, plan Phase 2.5 task 4c), and `align` is a power of two
-    // so the divisibility test is a mask.
+    // path a frame it otherwise needs no part of, design 6.3), and `align`
+    // is a power of two so the divisibility test is a mask.
     let mut c = c;
     loop {
         let cls = CLASSES.get(c)?;
@@ -941,7 +943,7 @@ mod tests {
         assert!(stdout.contains("ok libc_api"), "stdout: {stdout}");
 
         // `errno` across the `free` that creates the background thread
-        // (plan Phase 1.5 task 10c): the thread is requested by the
+        // (design 8.1): the thread is requested by the
         // configuration and created by a periodic tick, which the mode
         // arranges to land in a free.
         let run = Command::new(&out)

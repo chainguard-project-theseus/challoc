@@ -118,7 +118,7 @@ pub enum Leaf {
     StatsCgroupRetentionCap,
     StatsCgroupEmptyBytes,
     StatsCgroupFullPurges,
-    /// The two-advice purge (design 8, plan Phase 2.5 task 10): the advice
+    /// The two-advice purge (design 8): the advice
     /// the next purge issues (1 lazy, `MADV_FREE`; 0 eager,
     /// `MADV_DONTNEED`) and the batches issued with each so far. Readable
     /// without a tracked cgroup too: the advice exists (eager, or lazy
@@ -126,7 +126,7 @@ pub enum Leaf {
     StatsCgroupPurgeAdvice,
     StatsCgroupLazyPurges,
     StatsCgroupEagerPurges,
-    /// `stats.thp.*` (plan Phase 2.5 task 9, `thp.rs`): the mode in force
+    /// `stats.thp.*` (design 7 and 17, `thp.rs`): the mode in force
     /// (0 off, 1 folios, 2 PMD chunks) and the ranges advised per region
     /// kind. Read-only, `size_t`.
     StatsThpMode,
@@ -135,7 +135,7 @@ pub enum Leaf {
     StatsThpHugeRanges,
     StatsThpMetaRanges,
     StatsThpFailures,
-    /// `stats.prefault.*` (plan Phase 2.5 task 11, `purge::prefault`):
+    /// `stats.prefault.*` (design 8.2, `purge::prefault`):
     /// whether the pass runs, whether `MADV_POPULATE_WRITE` is the populate,
     /// and its counters. Read-only, `size_t`.
     StatsPrefaultEnabled,
@@ -147,11 +147,11 @@ pub enum Leaf {
     StatsPrefaultFallbacks,
     StatsPrefaultWakes,
     StatsPrefaultActive,
-    /// `stats.thp.process` (plan Phase 2.5 task 16, `thp::Process`): 0
+    /// `stats.thp.process` (design 17, `thp::Process`): 0
     /// nothing issued, 1 `PR_THP_DISABLE_EXCEPT_ADVISED` in force, 2 the
     /// kernel refused it, 3 an inherited policy was kept, 4 the call failed.
     StatsThpProcess,
-    /// `stats.thp.nohuge_ranges` (plan Phase 2.5 task 16, `thp.rs`): the
+    /// `stats.thp.nohuge_ranges` (design 17, `thp.rs`): the
     /// reservations `never` `MADV_NOHUGEPAGE`d, the class superblock and
     /// the metadata region (2 on a kernel with THP; the huge region follows
     /// the host's policy, the 2026-09-20 decision); 0 under `auto` and
@@ -1312,17 +1312,17 @@ mod tests {
         assert_eq!(mib_to_leaf(&[5, 5, 7, 9]), Err(ENOENT));
         assert_eq!(mib_to_leaf(&[]), Err(ENOENT));
         // Unknown, malformed, and prof.* names.
-        // `stats.cgroup.*` (Phase 2 task 4): the names resolve; a read is
+        // `stats.cgroup.*` (design 11): the names resolve; a read is
         // `ENOENT` only where no cgroup2 is tracked.
         assert_eq!(mib_of("stats.cgroup.limit"), [7, 7, 0]);
         assert_eq!(mib_of("stats.cgroup.pressure_events"), [7, 7, 3]);
         assert_eq!(mib_to_leaf(&[7, 7, 2]), Ok(Leaf::StatsCgroupCurrent));
-        // The policy's keys (Phase 2 task 5) follow, in table order.
+        // The policy's keys (design 11, `policy.rs`) follow, in table order.
         assert_eq!(mib_of("stats.cgroup.decay_ms"), [7, 7, 4]);
         assert_eq!(mib_of("stats.cgroup.full_purges"), [7, 7, 7]);
         assert_eq!(mib_to_leaf(&[7, 7, 5]), Ok(Leaf::StatsCgroupRetentionCap));
         assert_eq!(mib_to_leaf(&[7, 7, 6]), Ok(Leaf::StatsCgroupEmptyBytes));
-        // The two-advice purge's keys (Phase 2.5 task 10) follow and read
+        // The two-advice purge's keys (design 8) follow and read
         // with or without a tracked cgroup: eager by default (no limit on
         // the host, none in the default container), nothing lazy issued.
         assert_eq!(mib_of("stats.cgroup.purge_advice"), [7, 7, 8]);

@@ -16,15 +16,19 @@
 //! `pthread_key_create` and `pthread_atfork` do not allocate for the first
 //! keys and handlers, which is all we need.
 //!
-//! The fork prepare handler takes the arena creation lock, every arena's
-//! class locks, every class's commit lock, then the huge lock, then the
-//! metadata lock, then the background thread's state lock. That order
-//! matches the allocator's own nesting (arena creation takes the metadata
-//! lock; a class lock nests its commit lock, and class, commit and huge code
-//! take the metadata lock while holding their own; nothing takes a class or
-//! huge lock while holding metadata; the background state lock is only ever
-//! held alone), so a thread that is mid-operation when another thread forks
-//! can always finish and release. Parent and child release in reverse. The
+//! The fork prepare handler takes every allocator lock in nesting order
+//! (design section 9; the list is [`fork_prepare`]'s body): the explicit-cache
+//! table lock, the arena creation lock, every arena's class locks and
+//! slab-set lock, the slab table locks, the huge lock, the metadata lock,
+//! the process and per-arena statistics locks, then the background
+//! thread's state lock. That order matches the allocator's own nesting (the
+//! explicit-cache table lock is held across heap creation and destruction,
+//! which take the arena creation lock, class locks and the metadata lock;
+//! class, slab table and huge code take the metadata lock while holding
+//! their own; nothing takes a class or huge lock while holding metadata;
+//! the statistics locks and the background state lock are leaves, only
+//! ever held alone), so a thread that is mid-operation when another thread
+//! forks can always finish and release. Parent and child release in reverse. The
 //! child also marks the background thread absent and drops a `process_madvise`
 //! pidfd that now names the parent. Other threads' heaps are left alone in
 //! the child, as in every other allocator.
@@ -233,20 +237,21 @@ pub fn sealed_ranges() -> u32 {
     SEALED.load(Ordering::Relaxed)
 }
 
-/// Design section 10 steps 1 to 6 (cgroups join in Phase 2). Configuration
-/// (step 2) is read before the regions are reserved so that nothing it may
-/// abort on has been mapped yet; it reads only the weak symbols, one file
-/// and `environ`.
+/// Design section 10 steps 1 to 8 (step 7, the cgroup discovery, happens
+/// inside `Shared::init`). Configuration (step 2) is read before the
+/// regions are reserved so that nothing it may abort on has been mapped
+/// yet; it reads only the weak symbols, one file and `environ`.
 fn init() {
     let mut features = Features::probe();
     // The slab geometry of the classes whose table slab is below the page
-    // (design 3, plan Phase 2.5 task 4e): written once here, before any
-    // other thread can see the allocator, never again.
+    // (design 3, page-sized slabs): written once here, before any other
+    // thread can see the allocator, never again.
     // SAFETY: `init` runs once, under `INITIALISING`, before `READY`.
     unsafe { layout::adopt_page_geometry(features.page_size.trailing_zeros()) };
     let config = config::load();
     // `config::load` ran `slice::configure` on this thread: the feature
-    // line's `slice_ext=` word can now say `on` (plan Phase 2.5 task 15).
+    // line's `slice_ext=` word can now say `on` (design 17, "Time slice
+    // extension").
     features.note_slice_ext();
     // The `MADV_COLLAPSE` probe populates a PMD of memory, so only a
     // configuration that asks for huge pages pays for it (design 10).
@@ -254,15 +259,17 @@ fn init() {
         features.probe_collapse();
     }
     crate::thp::configure(config.thp, &features);
-    // `thp_process:advised` (plan Phase 2.5 task 16): process-wide, so
-    // before any region exists; a refused call is reported, not retried.
+    // `thp_process:advised` (design 17, `PR_THP_DISABLE_EXCEPT_ADVISED`):
+    // process-wide, so before any region exists; a refused call is
+    // reported, not retried.
     crate::thp::configure_process(config.thp_process(), &features);
     purge::configure(features.process_madvise, config.lazy_free);
     purge::configure_advice(features.process_madvise_free, config.lazy_band);
     purge::set_check_zero(config.check_zero);
     crate::class::set_group_handoff(config.group_handoff);
-    // Plan Phase 2.5 task 11: the pass needs the thread; `prefault_active`
-    // is the one gate (the key without the thread is stored and inert).
+    // The prefault pass (design 8.2) runs on the background thread, so
+    // `prefault_active` is the one gate (the key without the thread is
+    // stored and inert).
     purge::prefault::configure(config.prefault_active(), features.populate_write);
     purge::background::request(config.background_thread);
     let regions = Regions::reserve(features.page_size, features.anon_name);
@@ -557,7 +564,7 @@ mod tests {
     }
 
     /// The set of locks the handlers cover is exactly the set of locks in
-    /// the crate (plan Phase 1.5 task 10a).
+    /// the crate (design 9).
     #[test]
     fn fork_lock_list_matches_the_source_tree() {
         let found = lock_inventory();
@@ -670,7 +677,7 @@ mod tests {
         assert_eq!(unsafe { ::libc::pthread_join(thread, core::ptr::null_mut()) }, 0);
     }
 
-    /// One stack for the life of the process (plan Phase 1.5 task 10d): a
+    /// One stack for the life of the process (design 8.1): a
     /// stop/start cycle joins the exited thread and hands the same
     /// reservation to the next one, so toggling `background_thread` does
     /// not grow the metadata region.

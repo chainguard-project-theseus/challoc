@@ -197,7 +197,7 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     writeln!(out, "Page size: {}", shared.regions.page_size())?;
     if let Some((lo, hi)) = crate::layout::page_sized_classes() {
         // Design 3: on a kernel whose page is larger than a class's table
-        // slab, the class's slab is the page (plan Phase 2.5 task 4e).
+        // slab, the class's slab is the page.
         let base = |f: fn(usize, usize) -> usize| {
             (lo..=hi).map(|c| crate::layout::BASE_CLASSES[c].slab_size()).reduce(f).unwrap_or(0)
         };
@@ -240,16 +240,17 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     thp_line(out)
 }
 
-/// The `thp:` line (design 7, 10 and 17; plan Phase 2.5 task 9): the key,
+/// The `thp:` line (design 7, 10 and 17): the key,
 /// the mode in force and why, the thresholds, and the ranges advised so
 /// far per region kind.
 fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
     let d = crate::thp::decision();
     let s = crate::thp::stats();
     write!(out, "thp: {} -> {} ({})", crate::thp::key().name(), d.mode.name(), d.reason.text())?;
-    // Plan Phase 2.5 task 16 and the 2026-09-20 decision: `never` covers
-    // the class and metadata reservations; the huge region follows the
-    // host's global mode (named at the end of the line).
+    // Design 17 (`MADV_NOHUGEPAGE` under `never`) and the 2026-09-20
+    // decision: `never` covers the class and metadata reservations; the
+    // huge region follows the host's global mode (named at the end of
+    // the line).
     if crate::thp::is_never() {
         write!(out, " nohuge {} (classes, metadata; huge follows host)", s.nohuge_ranges)?;
     }
@@ -267,8 +268,8 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
         " class_ranges {} ({} bytes, {} chunks) huge_ranges {} meta_ranges {} failures {}",
         s.class_ranges, s.class_bytes, s.chunks, s.huge_ranges, s.meta_ranges, s.failures
     )?;
-    // Plan Phase 2.5 task 16: the host's global mode and whether the
-    // process-wide `prctl` is in force (`thp_process`).
+    // Design 17: the host's global mode and whether the process-wide
+    // `prctl` is in force (`thp_process`).
     writeln!(
         out,
         "; host {} process {}",
@@ -308,7 +309,7 @@ fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
     )
 }
 
-/// The `purge advice:` line (design 8, plan Phase 2.5 task 10): the advice
+/// The `purge advice:` line (design 8, the two-advice purge): the advice
 /// the next purge issues and why, the batches and bytes issued with each,
 /// whether `Purged` memory is still known zero, and whether lazy batches go
 /// through `process_madvise`. Printed whether or not a cgroup is tracked.
@@ -787,7 +788,7 @@ fn percpu_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
     }
 }
 
-/// `Prefault:` (design 8, plan Phase 2.5 task 11, `purge::prefault`): off
+/// `Prefault:` (design 8.2, `purge::prefault`): off
 /// with the reason (the key, or the key without its thread), or on with
 /// the populate in use and the counters.
 fn prefault_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
@@ -871,7 +872,7 @@ mod tests {
         String::from_utf8(CAPTURE.lock().unwrap().clone()).unwrap()
     }
 
-    /// Plan Phase 2.5 task 4e (design 3): after init no class has a slab
+    /// Page-sized slabs (design 3): after init no class has a slab
     /// smaller than the kernel page (up to 64 KiB), so on a 16 or 64 KiB
     /// kernel the 512..1024-byte classes have page-sized slabs, every
     /// table's page group is one slab, and the report says so; on a 4 KiB
@@ -978,7 +979,7 @@ mod tests {
         assert_eq!(ga, "--- End jemalloc statistics ---\n");
     }
 
-    /// The feature line's `slice_ext=` key (plan Phase 2.5 task 15) agrees
+    /// The feature line's `slice_ext=` key (design 17) agrees
     /// with the `Slice extension:` line of the same report: `on` with
     /// `on (`, else the line's `off (<word>)` word (or `available` when
     /// the key turned it off with the kernel offering it).

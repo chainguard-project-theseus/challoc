@@ -241,7 +241,8 @@ pub fn sdallocx(p: *mut u8, size: usize, flags: c_int) {
         Tcache::Default => super::libc::free_sized_hint(p, size, class_for(size, f.align())),
         // The raw flags, not `f`: a `Flags` argument goes by pointer to a
         // stack copy, and that copy is a frame every default `sdallocx`
-        // sets up and tears down (plan Phase 2.5 task 4c).
+        // sets up and tears down (the sized path's instruction budget,
+        // design 6.3).
         _ => sdallocx_routed(p, size, flags),
     }
 }
