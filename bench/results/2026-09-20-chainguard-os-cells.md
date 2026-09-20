@@ -394,3 +394,199 @@ family exists only for x86_64 anyway).
   `MATRIX_TIMEOUT=7200` is not needed for the cell alone.
 - `khugepaged` and THP sysfs are writable by root on both images; every
   write in section 6 was accepted and restored.
+
+## At a999097 (third run)
+
+08:33..09:00 UTC, the re-verification lane A asked for after `8ea835a`
+(the rseq probe test pins one thread per allowed CPU and skips with a
+printed reason where it cannot prove migration). The tree is `main`
+`a999097` (lane A's task 8 and 11 commits merged on top of the morning's
+`0c60b1a`; the worktree `loop/lane-e` is at the same commit, nothing
+uncommitted, so the scorecard lines name `a999097` without a `+`). The
+same three shapes, recreated by hand from the same three images (no newer
+image in any family since the morning) and adopted by the driver
+(`MATRIX_ADOPT`, `MATRIX_OUT` pointed away so the morning's logs stay),
+all in `us-east4-a`, the three cells concurrently, all three VMs deleted
+at 09:01 UTC:
+
+| VM | cell | image | shape |
+|---|---|---|---|
+| `challoc-lane-e-cgos-arm64` | `cgos-arm64` | `kirkland-server-hypervisor-arm64-20260916-1358` | c4a-standard-8 |
+| `challoc-lane-e-cgos-amd64` | `cgos-amd64` | `kirkland-server-hypervisor-amd64-20260916-1603` | c4-standard-8 |
+| `challoc-lane-e-cgos72-amd64` | `cgos72-amd64` | `kirkland-workstation-7dot2-amd64-20260920-0028` | c4-standard-8 |
+
+Logs: `bench/results/matrix/2026-09-20-<cell>-final.log` (the cell as the
+driver fetched it, then the follow-up runs of the same host appended under
+their own headers). The tree now has 553 tests where the morning's had
+540 (410 unit + 120 api + 23 cgroup-limit).
+
+### The cells
+
+| cell | `make test`, podman default profile | `make test`, `--privileged` | `make test-cgroup` | churn lines (default `make test` + `test-cgroup`) | scorecard | wall |
+|---|---|---|---|---|---|---|
+| cgos-arm64 (6.18) | **553/0** (410 + 120 + 23; rseq test `8 distinct`, 319 reads) | **409/1**: `sys::features::linux_tests::probe_prints_and_matches_kernel_version` (below); `make` stopped there | PASS (churn x4, lazy x2, oscillate 300 s, all `ok`) | 512m purge, 512m keep (off), 256m purge, 256m keep: all `verdict=ok oom_kill=0`, twice | appended, `a999097` | 1073 s |
+| cgos-amd64 (6.18) | **553/0** (rseq `8 distinct`, 357220 reads) | **409/1**, the same test | PASS | all `ok`, twice | appended | 1133 s |
+| cgos72-amd64 (7.2) | **409/1**: `slice::tests::grants_are_yielded_under_oversubscription` (below; `make` stopped there, so the api and cgroup-limit tests did not run in the cell); the rseq test `8 distinct`, 62509 reads | **409/1**, the features test | PASS | `test-cgroup`'s all `ok`; the default `make test`'s churn steps did not run (stopped before them); the rerun's (next table) all `ok` | appended, `a999097` | 1070 s |
+
+Every `outcome=FAIL` in the three `MATRIX` lines is one of those two
+tests; no build, probe, cgroup or scorecard step failed. The probe lines
+three ways are byte-identical to section 2's except for the new keys the
+tree added since (`populate_write=yes thp_except_advised=yes` on all
+three, `slice_ext=no-slice_ctrl` on 6.18, `slice_ext=available` on 7.2).
+
+### The rseq test (lane A's `8ea835a`): passes everywhere, never skipped
+
+The check-by-hand item this file left open in section 3 (the first
+`make test` of every cell red on `rseq::tests::probe_reads_the_registered_area`,
+PROGRESS.md's "`make test` under podman's default seccomp profile is red
+on every Chainguard OS host today" and lane D's acceptance item (c)) is
+closed: at `a999097` the test passed in every whole-binary run on the
+three hosts and never took its skip path. The printed line, every
+occurrence in the final logs (whole binary = `make test`'s
+`cargo test --features std -- --nocapture --skip api::`):
+
+| host | whole binary, default profile (the cell) | whole binary, `--privileged` (the cell) | whole binary reruns |
+|---|---|---|---|
+| cgos-arm64 (6.18) | ok: `8 distinct mm_cid values over 8 threads pinned to CPUs [0, 1, 2, 3, 4, 5, 6, 7] of 8 possible (319 reads)` | ok, `8 distinct` (149675 reads) | privileged rerun: 409/1 (the features test), the rseq test among the passes |
+| cgos-amd64 (6.18) | ok, `8 distinct` (357220 reads) | ok, `8 distinct` (382964 reads) | privileged rerun: 409/1 (the features test), the rseq test among the passes |
+| cgos72-amd64 (7.2) | ok, `8 distinct` (62509 reads) | ok, `8 distinct` (999 reads) | default-profile `make test` rerun: **553/0**, rseq `8 distinct` |
+
+Alone, 10 times under the default profile on cgos-amd64 (`make run
+CMD='cargo test --features std rseq::tests::probe_reads_the_registered_area
+-- --nocapture'`, one container per run, 08:56:45..08:56:50 UTC, nothing
+else running on the host; `bench/results/matrix/2026-09-20-cgos-amd64-final.log`,
+`~/logs/rseq-final.log`), the probe line each time
+`rseq: present=true size=28 flags=0 offset=-320 registered=true verdict=usable`
+and then:
+
+```
+ 1: rseq: 8 distinct mm_cid values over 8 threads pinned to CPUs [0, 1, 2, 3, 4, 5, 6, 7] of 8 possible (1348 reads)  test result: ok. 1 passed; 0 failed
+ 2: rseq: 8 distinct mm_cid values over 8 threads pinned to CPUs [0, 1, 2, 3, 4, 5, 6, 7] of 8 possible (1765 reads)  test result: ok. 1 passed; 0 failed
+ 3: rseq: 8 distinct mm_cid values over 8 threads pinned to CPUs [0, 1, 2, 3, 4, 5, 6, 7] of 8 possible (1593 reads)  test result: ok. 1 passed; 0 failed
+ 4: rseq: 8 distinct mm_cid values over 8 threads pinned to CPUs [0, 1, 2, 3, 4, 5, 6, 7] of 8 possible (1675 reads)  test result: ok. 1 passed; 0 failed
+ 5: rseq: 8 distinct mm_cid values over 8 threads pinned to CPUs [0, 1, 2, 3, 4, 5, 6, 7] of 8 possible (1390 reads)  test result: ok. 1 passed; 0 failed
+ 6: rseq: 8 distinct mm_cid values over 8 threads pinned to CPUs [0, 1, 2, 3, 4, 5, 6, 7] of 8 possible (1525 reads)  test result: ok. 1 passed; 0 failed
+ 7: rseq: 8 distinct mm_cid values over 8 threads pinned to CPUs [0, 1, 2, 3, 4, 5, 6, 7] of 8 possible (1463 reads)  test result: ok. 1 passed; 0 failed
+ 8: rseq: 8 distinct mm_cid values over 8 threads pinned to CPUs [0, 1, 2, 3, 4, 5, 6, 7] of 8 possible (1708 reads)  test result: ok. 1 passed; 0 failed
+ 9: rseq: 8 distinct mm_cid values over 8 threads pinned to CPUs [0, 1, 2, 3, 4, 5, 6, 7] of 8 possible (1529 reads)  test result: ok. 1 passed; 0 failed
+10: rseq: 8 distinct mm_cid values over 8 threads pinned to CPUs [0, 1, 2, 3, 4, 5, 6, 7] of 8 possible (1704 reads)  test result: ok. 1 passed; 0 failed
+```
+
+(The script's container-view line `nproc= cpus_allowed=` is empty because
+`make run CMD='...$(nproc)...'` hands `$(...)` to make, not the shell; the
+cells' `--skip api::` runs and the morning's `-extra.log` record the
+container's `nproc=8 cpus_allowed=0-7`, and the test's own line says which
+CPUs it pinned.) The `mm_cid` implementations are the same two as in the
+morning (6.18's recycled ids at `rseq_size=28`, 7.2's per-task ids at
+`rseq_size=33`); on both the pinned form reads all 8 ids inside a few
+hundred to a few hundred thousand reads, the window being 2 s.
+
+### The 512m churn re-check, cgos-amd64 (6.18)
+
+The same single container as in section 4, 10 times after the cell
+(08:56:50..08:57:14 UTC, `~/logs/churn-final.log` in the final log):
+`docker run --rm ... --memory=512m --memory-swap=512m challoc-dev:amd64 sh
+scripts/cgroup-tests.sh churn challoc purge 400 100`, **10 ok, 0 failed of
+10**, every line `OUTCOME churn alloc=challoc args='purge 400 100'
+status=0 verdict=ok oom_kill=0`. With the cells' own churn steps (three
+hosts, default `make test` where it ran, `test-cgroup` everywhere, 512m
+and 256m, purge and keep) that is 0 red churns of 34 today at `a999097`;
+lane B's `f78601e` holds.
+
+### Two new failures, both in tests outside lane E's partition, neither the library
+
+**(a) `sys::features::linux_tests::probe_prints_and_matches_kernel_version`
+under `--privileged`, 3/3 hosts, deterministic.** `src/sys/features.rs:1714`,
+`assertion left == right failed: fresh scratch page resident before the
+populate, left: 1, right: 0`. Alone (`~/logs/features-final.log` on the two
+6.18 hosts): `--privileged` 3/3 FAILED, `--security-opt seccomp=unconfined`
+(no other privilege) 3/3 FAILED with the same message, default profile
+3/3 ok; the whole unit binary under `--privileged` once more on each host:
+409/1, the same test. The reason is in the test body: the `populate_write`
+block (`7ab6916`, lane B) asserts the scratch page is not resident and
+runs after the `process_madvise` branch, which, where `process_madvise` is
+available, writes `7` to that page, `MADV_DONTNEED`s it, reads it back
+(mapping the zero page), writes `9` and `MADV_FREE`s it, so `mincore` reads
+resident. Under podman's (and Docker's) default seccomp profile
+`process_madvise=no`, that branch is skipped, the page is untouched and
+the assertion holds, which is why the reference `make test` and every
+default-profile run here pass it and only the seccomp-free runs (privileged,
+unconfined, and natively on any host with 5.10+) fail it. The library's
+`populate_write=yes` probe and the `MADV_POPULATE_WRITE` itself are not
+implicated (the assertions after it are never reached). A fix is a fresh
+page for the populate check or ordering the blocks; lane B's file.
+
+**(b) `slice::tests::grants_are_yielded_under_oversubscription` on the 7.2
+host (the only kernel here with `CONFIG_RSEQ_SLICE_EXTENSION`), two
+assertions.** In the cell's default-profile `make test`: `src/slice.rs:679`
+`no grant in 3 s of oversubscribed holds` with `32 lock threads and 8 hogs
+on 8 CPUs, 6269 holds, 0 grants yielded via sched_yield, threads enabled
+278, state enabled`; the same binary under `--privileged` in the cell read
+`10113 holds, 3 grants yielded via rseq_slice_yield` and passed; the whole
+`make test` rerun under the default profile read `9531 holds, 6 grants
+yielded via sched_yield` and passed (553/0). Alone (`~/logs/slice-final.log`,
+`slice-final-extra.log`), 10 runs across the three profiles: 0 passed. 7 of
+10 fail at `src/slice.rs:684` `assert_eq!(on(), before.1)`: `left: true,
+right: false`, the teardown: alone, `before.1` (`on()` before the test) is
+false, and the restore `configure(before.0 != Verdict::Key, false)` turns
+the extension on (the verdict on this host is `enabled`, not `Key`), so
+`on()` is true; in the whole binary an earlier test has already turned it
+on and the equation holds. 3 of 10 fail at 679 with 0 grants in 3 s (one
+default, one unconfined, one privileged), the rest of the runs read 1..4
+grants: a grant is a rare event in this workload (1..6 in ~10,000 holds),
+so a 3 s window is one coincidence away from zero whatever the profile;
+today 3 of 13 runs on this host read zero. Neither is the library: the
+counts on the six other runs show the extension enabled, granted and
+yielded through both paths. Lane C's test (`80f52b4`); the probe and the
+`slice_ext=` key are lane B's (`7ab6916`).
+
+Two readings for the floor that the same lines give: under podman's
+default profile on 7.2 the `rseq_slice_yield` syscall is filtered
+(`yield_syscall=false`, the profile knows no such syscall), the module
+falls back to `sched_yield` and grants still happen and are yielded
+(`6 grants yielded via sched_yield`); under `--privileged` and
+`seccomp=unconfined` the syscall works (`via rseq_slice_yield`). On 6.18
+(`state no-slice_ctrl`) the test asserts 0 grants and passes on every run,
+alone or not.
+
+### The scorecard lines (8 vCPU, 3 rounds, challoc vs jemalloc, positive = challoc worse)
+
+Appended by the cells to `bench/results/scorecard-cgos-{arm64,amd64}.md`
+and `scorecard-cgos72-amd64.md`; the morning's `e0fdf71` lines (section 5)
+for the same shapes and images:
+
+| host / file | commit | larson1 | larson10 | larson16 | xmalloc | alloc-test1 | alloc-testN | valkey1 | valkey1-free | cfrac | espresso | mstress | glibc-simple | redis | python1 | python1-malloc | RSS larson10 | RSS valkey1 |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| cgos-arm64, 6.18, THP always | `a999097` (third run) | +7.1% | +4.8% | +5.1% | -24.8% | +5.7% | +4.3% | +9.8% | +10.0% | +1.0% | -2.3% | -37.6% | -14.1% | -18.9% | +1.0% | +2.2% | 0.64 | 0.98 |
+| cgos-arm64, 6.18, THP always | `e0fdf71` (morning) | +8.2% | +4.3% | +5.1% | -24.8% | +9.0% | +4.6% | +11.7% | +12.9% | +1.2% | -2.1% | -35.4% | -14.0% | -17.9% | +1.4% | +3.5% | 0.65 | 0.98 |
+| cgos-amd64, 6.18, THP always | `a999097` (third run) | +2.9% | +12.3% | +9.6% | +0.6% | +7.3% | +10.3% | +12.5% | +0.2% | +2.8% | -1.2% | -48.1% | -0.7% | -19.9% | +0.2% | +2.0% | 0.78 | 0.98 |
+| cgos-amd64, 6.18, THP always | `e0fdf71` (morning) | +2.4% | +9.7% | +10.1% | +1.0% | +7.6% | +8.1% | +12.9% | +6.9% | +3.9% | -1.1% | -51.0% | -0.5% | -24.6% | +0.6% | +2.5% | 0.83 | 0.98 |
+| cgos72-amd64, 7.2, THP madvise | `a999097` (third run) | +3.4% | +15.7% | +10.4% | +2.4% | +5.2% | +6.9% | -2.2% | -11.2% | +4.9% | -0.0% | -55.4% | -0.5% | -19.7% | -1.6% | +0.6% | 1.03 | 0.99 |
+| cgos72-amd64, 7.2, THP madvise | `e0fdf71` (morning) | +0.4% | +9.1% | +10.1% | +1.2% | +8.1% | +7.7% | -1.2% | -7.2% | +3.5% | -0.6% | -54.6% | +2.8% | -21.2% | +1.1% | +0.5% | 1.03 | 0.99 |
+
+Reading: the Valkey rows kept the morning's shape (6.18 hosts under THP
+`always` +9.8..+12.5 on `valkey1`, the 7.2 `madvise` host ahead at -2.2 /
+-11.2), the `valkey1-free` rows moved in challoc's favour on all three
+(+12.9 -> +10.0, +6.9 -> +0.2, -7.2 -> -11.2). The one column that moved
+the other way on both x86_64 hosts is `larson10`, +9.7 -> +12.3 and +9.1 ->
++15.7 (arm64 +4.3 -> +4.8), with `RSS larson10` 0.83 -> 0.78 on 6.18; the
+tree between the two lines is lane A's `c66048b` (the prefault pipeline
+takes the class lock once per slab) and the task 7/8 fixes, and this
+tier's 3 rounds on an 8-vCPU shape do not separate a 3..6 point move from
+its spread (the same column read +8.0 / +9.7 on the two 6.18 mornings).
+Worth one look at the coordinator's reference `larson10` row for
+`a999097` before anyone acts on it; not a cgos finding.
+
+### Check by hand
+
+- Files touched: `bench/results/2026-09-20-chainguard-os-cells.md` (this
+  section), the three `bench/results/matrix/2026-09-20-<cell>-final.log`,
+  one line each in `bench/results/scorecard-cgos-arm64.md`,
+  `scorecard-cgos-amd64.md`, `scorecard-cgos72-amd64.md` (the cells' own
+  trend files), `PROGRESS.d/lane-e-cgos-final.md`. Nothing under `src/`,
+  nothing in `bench/gce/`, no reference scorecard file.
+- The two test failures above are lane B's (`src/sys/features.rs`) and lane
+  C's (`src/slice.rs`) to fix; both are visible only where the default
+  seccomp profile is absent (a) or on a kernel with the slice extension (b),
+  so the reference Docker cells do not see them; the metal / native runs
+  and the 7.2 cells will until they are fixed.
