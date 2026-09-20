@@ -266,74 +266,28 @@ pub fn nallocx(size: usize, flags: c_int) -> usize {
 mod exports {
     use core::ffi::{c_int, c_void};
 
-    #[unsafe(no_mangle)]
-    pub extern "C" fn mallocx(size: usize, flags: c_int) -> *mut c_void {
-        super::mallocx(size, flags) as *mut c_void
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn rallocx(p: *mut c_void, size: usize, flags: c_int) -> *mut c_void {
-        super::rallocx(p as *mut u8, size, flags) as *mut c_void
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn xallocx(p: *mut c_void, size: usize, extra: usize, flags: c_int) -> usize {
-        super::xallocx(p as *mut u8, size, extra, flags)
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn sallocx(p: *mut c_void, flags: c_int) -> usize {
-        super::sallocx(p as *mut u8, flags)
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn dallocx(p: *mut c_void, flags: c_int) {
-        super::dallocx(p as *mut u8, flags)
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn sdallocx(p: *mut c_void, size: usize, flags: c_int) {
-        super::sdallocx(p as *mut u8, size, flags)
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn nallocx(size: usize, flags: c_int) -> usize {
-        super::nallocx(size, flags)
-    }
-
-    #[unsafe(export_name = "je_mallocx")]
-    pub extern "C" fn je_mallocx(size: usize, flags: c_int) -> *mut c_void {
-        super::mallocx(size, flags) as *mut c_void
-    }
-
-    #[unsafe(export_name = "je_rallocx")]
-    pub extern "C" fn je_rallocx(p: *mut c_void, size: usize, flags: c_int) -> *mut c_void {
-        super::rallocx(p as *mut u8, size, flags) as *mut c_void
-    }
-
-    #[unsafe(export_name = "je_xallocx")]
-    pub extern "C" fn je_xallocx(p: *mut c_void, size: usize, extra: usize, flags: c_int) -> usize {
-        super::xallocx(p as *mut u8, size, extra, flags)
-    }
-
-    #[unsafe(export_name = "je_sallocx")]
-    pub extern "C" fn je_sallocx(p: *mut c_void, flags: c_int) -> usize {
-        super::sallocx(p as *mut u8, flags)
-    }
-
-    #[unsafe(export_name = "je_dallocx")]
-    pub extern "C" fn je_dallocx(p: *mut c_void, flags: c_int) {
-        super::dallocx(p as *mut u8, flags)
-    }
-
-    #[unsafe(export_name = "je_sdallocx")]
-    pub extern "C" fn je_sdallocx(p: *mut c_void, size: usize, flags: c_int) {
-        super::sdallocx(p as *mut u8, size, flags)
-    }
-
-    #[unsafe(export_name = "je_nallocx")]
-    pub extern "C" fn je_nallocx(size: usize, flags: c_int) -> usize {
-        super::nallocx(size, flags)
+    export_pair! {
+        fn mallocx / je_mallocx(size: usize, flags: c_int) -> *mut c_void {
+            super::mallocx(size, flags) as *mut c_void
+        }
+        fn rallocx / je_rallocx(p: *mut c_void, size: usize, flags: c_int) -> *mut c_void {
+            super::rallocx(p as *mut u8, size, flags) as *mut c_void
+        }
+        fn xallocx / je_xallocx(p: *mut c_void, size: usize, extra: usize, flags: c_int) -> usize {
+            super::xallocx(p as *mut u8, size, extra, flags)
+        }
+        fn sallocx / je_sallocx(p: *mut c_void, flags: c_int) -> usize {
+            super::sallocx(p as *mut u8, flags)
+        }
+        fn dallocx / je_dallocx(p: *mut c_void, flags: c_int) {
+            super::dallocx(p as *mut u8, flags)
+        }
+        fn sdallocx / je_sdallocx(p: *mut c_void, size: usize, flags: c_int) {
+            super::sdallocx(p as *mut u8, size, flags)
+        }
+        fn nallocx / je_nallocx(size: usize, flags: c_int) -> usize {
+            super::nallocx(size, flags)
+        }
     }
 }
 

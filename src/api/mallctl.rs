@@ -1163,60 +1163,29 @@ pub fn mallctlbymib(
 mod exports {
     use core::ffi::{c_char, c_int, c_void};
 
-    #[unsafe(no_mangle)]
-    pub extern "C" fn mallctl(
-        name: *const c_char,
-        oldp: *mut c_void,
-        oldlenp: *mut usize,
-        newp: *const c_void,
-        newlen: usize,
-    ) -> c_int {
-        super::mallctl(name, oldp, oldlenp, newp, newlen)
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize) -> c_int {
-        super::mallctlnametomib(name, mibp, miblenp)
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn mallctlbymib(
-        mib: *const usize,
-        miblen: usize,
-        oldp: *mut c_void,
-        oldlenp: *mut usize,
-        newp: *const c_void,
-        newlen: usize,
-    ) -> c_int {
-        super::mallctlbymib(mib, miblen, oldp, oldlenp, newp, newlen)
-    }
-
-    #[unsafe(export_name = "je_mallctl")]
-    pub extern "C" fn je_mallctl(
-        name: *const c_char,
-        oldp: *mut c_void,
-        oldlenp: *mut usize,
-        newp: *const c_void,
-        newlen: usize,
-    ) -> c_int {
-        super::mallctl(name, oldp, oldlenp, newp, newlen)
-    }
-
-    #[unsafe(export_name = "je_mallctlnametomib")]
-    pub extern "C" fn je_mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize) -> c_int {
-        super::mallctlnametomib(name, mibp, miblenp)
-    }
-
-    #[unsafe(export_name = "je_mallctlbymib")]
-    pub extern "C" fn je_mallctlbymib(
-        mib: *const usize,
-        miblen: usize,
-        oldp: *mut c_void,
-        oldlenp: *mut usize,
-        newp: *const c_void,
-        newlen: usize,
-    ) -> c_int {
-        super::mallctlbymib(mib, miblen, oldp, oldlenp, newp, newlen)
+    export_pair! {
+        fn mallctl / je_mallctl(
+            name: *const c_char,
+            oldp: *mut c_void,
+            oldlenp: *mut usize,
+            newp: *const c_void,
+            newlen: usize
+        ) -> c_int {
+            super::mallctl(name, oldp, oldlenp, newp, newlen)
+        }
+        fn mallctlnametomib / je_mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize) -> c_int {
+            super::mallctlnametomib(name, mibp, miblenp)
+        }
+        fn mallctlbymib / je_mallctlbymib(
+            mib: *const usize,
+            miblen: usize,
+            oldp: *mut c_void,
+            oldlenp: *mut usize,
+            newp: *const c_void,
+            newlen: usize
+        ) -> c_int {
+            super::mallctlbymib(mib, miblen, oldp, oldlenp, newp, newlen)
+        }
     }
 }
 

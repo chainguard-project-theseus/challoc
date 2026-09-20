@@ -526,54 +526,44 @@ mod exports {
     use super::*;
     use core::ffi::c_void;
 
-    #[unsafe(no_mangle)]
-    pub extern "C" fn malloc(size: usize) -> *mut c_void {
-        super::malloc(size) as *mut c_void
+    export_pair! {
+        fn malloc / je_malloc(size: usize) -> *mut c_void {
+            super::malloc(size) as *mut c_void
+        }
+        fn free / je_free(p: *mut c_void) {
+            super::free(p as *mut u8)
+        }
+        fn calloc / je_calloc(n: usize, m: usize) -> *mut c_void {
+            super::calloc(n, m) as *mut c_void
+        }
+        fn realloc / je_realloc(p: *mut c_void, size: usize) -> *mut c_void {
+            super::realloc(p as *mut u8, size) as *mut c_void
+        }
+        fn aligned_alloc / je_aligned_alloc(align: usize, size: usize) -> *mut c_void {
+            super::aligned_alloc(align, size) as *mut c_void
+        }
+        fn memalign / je_memalign(align: usize, size: usize) -> *mut c_void {
+            super::aligned_alloc(align, size) as *mut c_void
+        }
+        fn posix_memalign / je_posix_memalign(out: *mut *mut c_void, align: usize, size: usize) -> c_int {
+            super::posix_memalign(out as *mut *mut u8, align, size)
+        }
+        fn valloc / je_valloc(size: usize) -> *mut c_void {
+            super::valloc(size) as *mut c_void
+        }
+        fn pvalloc / je_pvalloc(size: usize) -> *mut c_void {
+            super::pvalloc(size) as *mut c_void
+        }
+        fn malloc_usable_size / je_malloc_usable_size(p: *mut c_void) -> usize {
+            super::malloc_usable_size(p as *mut u8)
+        }
     }
 
-    #[unsafe(no_mangle)]
-    pub extern "C" fn free(p: *mut c_void) {
-        super::free(p as *mut u8)
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn calloc(n: usize, m: usize) -> *mut c_void {
-        super::calloc(n, m) as *mut c_void
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn realloc(p: *mut c_void, size: usize) -> *mut c_void {
-        super::realloc(p as *mut u8, size) as *mut c_void
-    }
+    // The glibc-only names, which jemalloc does not prefix.
 
     #[unsafe(no_mangle)]
     pub extern "C" fn reallocarray(p: *mut c_void, n: usize, m: usize) -> *mut c_void {
         super::reallocarray(p as *mut u8, n, m) as *mut c_void
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn aligned_alloc(align: usize, size: usize) -> *mut c_void {
-        super::aligned_alloc(align, size) as *mut c_void
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn memalign(align: usize, size: usize) -> *mut c_void {
-        super::aligned_alloc(align, size) as *mut c_void
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn posix_memalign(out: *mut *mut c_void, align: usize, size: usize) -> c_int {
-        super::posix_memalign(out as *mut *mut u8, align, size)
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn valloc(size: usize) -> *mut c_void {
-        super::valloc(size) as *mut c_void
-    }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn pvalloc(size: usize) -> *mut c_void {
-        super::pvalloc(size) as *mut c_void
     }
 
     /// C23 `free_sized`: the size is checked against the class and stands
@@ -593,71 +583,12 @@ mod exports {
     pub extern "C" fn malloc_trim(pad: usize) -> c_int {
         super::malloc_trim(pad)
     }
-
-    #[unsafe(no_mangle)]
-    pub extern "C" fn malloc_usable_size(p: *mut c_void) -> usize {
-        super::malloc_usable_size(p as *mut u8)
-    }
-
-    // `je_` aliases (design 13.2): what a program built against a
-    // `--with-jemalloc-prefix=je_` jemalloc, such as Valkey, calls.
-
-    #[unsafe(export_name = "je_malloc")]
-    pub extern "C" fn je_malloc(size: usize) -> *mut c_void {
-        super::malloc(size) as *mut c_void
-    }
-
-    #[unsafe(export_name = "je_free")]
-    pub extern "C" fn je_free(p: *mut c_void) {
-        super::free(p as *mut u8)
-    }
-
-    #[unsafe(export_name = "je_calloc")]
-    pub extern "C" fn je_calloc(n: usize, m: usize) -> *mut c_void {
-        super::calloc(n, m) as *mut c_void
-    }
-
-    #[unsafe(export_name = "je_realloc")]
-    pub extern "C" fn je_realloc(p: *mut c_void, size: usize) -> *mut c_void {
-        super::realloc(p as *mut u8, size) as *mut c_void
-    }
-
-    #[unsafe(export_name = "je_aligned_alloc")]
-    pub extern "C" fn je_aligned_alloc(align: usize, size: usize) -> *mut c_void {
-        super::aligned_alloc(align, size) as *mut c_void
-    }
-
-    #[unsafe(export_name = "je_memalign")]
-    pub extern "C" fn je_memalign(align: usize, size: usize) -> *mut c_void {
-        super::aligned_alloc(align, size) as *mut c_void
-    }
-
-    #[unsafe(export_name = "je_posix_memalign")]
-    pub extern "C" fn je_posix_memalign(out: *mut *mut c_void, align: usize, size: usize) -> c_int {
-        super::posix_memalign(out as *mut *mut u8, align, size)
-    }
-
-    #[unsafe(export_name = "je_valloc")]
-    pub extern "C" fn je_valloc(size: usize) -> *mut c_void {
-        super::valloc(size) as *mut c_void
-    }
-
-    #[unsafe(export_name = "je_pvalloc")]
-    pub extern "C" fn je_pvalloc(size: usize) -> *mut c_void {
-        super::pvalloc(size) as *mut c_void
-    }
-
-    #[unsafe(export_name = "je_malloc_usable_size")]
-    pub extern "C" fn je_malloc_usable_size(p: *mut c_void) -> usize {
-        super::malloc_usable_size(p as *mut u8)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::layout::{MEDIUM_MAX, class_size_of};
-    use std::env;
     use std::process::Command;
     use std::string::String;
     use std::vec::Vec;

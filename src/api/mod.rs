@@ -42,6 +42,27 @@
 //! and glibc's `tst-mallocfork` provokes exactly that when the child's
 //! `SIGALRM` overtakes the parent's post-fork release (seen under Rosetta).
 
+/// One entry point exported twice, under its plain name and its `je_`
+/// alias (design 13.2: what a program built against a
+/// `--with-jemalloc-prefix=je_` jemalloc calls), as two thin `extern "C"`
+/// wrappers with the same body: stable Rust has no symbol aliases. Used in
+/// the `exports` modules, which are compiled out of the test binary (see
+/// `libc.rs`); `#[unsafe(no_mangle)]` exports each function under its own
+/// name, so the alias is spelled out in full at the definition.
+#[cfg(not(test))]
+macro_rules! export_pair {
+    ($($(#[$m:meta])* fn $name:ident / $je:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)? $body:block)*) => {
+        $(
+            $(#[$m])*
+            #[unsafe(no_mangle)]
+            pub extern "C" fn $name($($arg: $ty),*) $(-> $ret)? $body
+            $(#[$m])*
+            #[unsafe(no_mangle)]
+            pub extern "C" fn $je($($arg: $ty),*) $(-> $ret)? $body
+        )*
+    };
+}
+
 pub mod cxx;
 pub mod glibc;
 pub mod jemalloc;

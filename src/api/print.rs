@@ -763,14 +763,10 @@ pub fn malloc_stats() {
 mod exports {
     use core::ffi::{c_char, c_int, c_void};
 
-    #[unsafe(no_mangle)]
-    pub extern "C" fn malloc_stats_print(write_cb: super::WriteCb, cbopaque: *mut c_void, opts: *const c_char) {
-        super::malloc_stats_print(write_cb, cbopaque, opts)
-    }
-
-    #[unsafe(export_name = "je_malloc_stats_print")]
-    pub extern "C" fn je_malloc_stats_print(write_cb: super::WriteCb, cbopaque: *mut c_void, opts: *const c_char) {
-        super::malloc_stats_print(write_cb, cbopaque, opts)
+    export_pair! {
+        fn malloc_stats_print / je_malloc_stats_print(write_cb: super::WriteCb, cbopaque: *mut c_void, opts: *const c_char) {
+            super::malloc_stats_print(write_cb, cbopaque, opts)
+        }
     }
 
     #[unsafe(no_mangle)]
