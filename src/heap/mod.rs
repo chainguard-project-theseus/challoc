@@ -25,6 +25,9 @@
 //!                      per-CPU impl Heap blocks (pop, scheduled pop and run, refill,
 //!                      flush, GC, drain) and the entry points' push wrappers
 //!                      percpu_push_raw/percpu_push_miss
+//! heap/mallocx.rs      MALLOCX_* flag decoding (Flags, Tcache) and the routing of
+//!                      mallocx/dallocx/sdallocx onto heaps, explicit caches and the
+//!                      direct paths (design 13.2); arena.rs re-exports it for api/
 //! heap/thread.rs       thread lifecycle (design 6.5): TLS_CREATING/TLS_EXITED,
 //!                      heap_for_thread, existing_heap, tls_heap_slot, fast_flags,
 //!                      heap_from_slot, the exit destructor
@@ -130,6 +133,7 @@
 
 
 mod flush;
+pub mod mallocx;
 mod percpu;
 mod shared;
 mod thread;
