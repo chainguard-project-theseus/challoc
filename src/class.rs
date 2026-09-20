@@ -204,8 +204,12 @@ struct Pick {
     state: State,
 }
 
+#[cfg(test)]
 impl Pick {
-    /// An unused entry of a plan's pick array: no slab, no slots.
+    /// Tests: an unused entry of a plan's pick array (no slab, no slots).
+    /// `claim_with` spells the same literal out: written as this const
+    /// there, the array fill compiles to one instruction fewer
+    /// (`scripts/codegen-diff.sh`), which is a code change, not a cleanup.
     const EMPTY: Pick = Pick { slab: 0, n: 0, zero: false, state: State::Active };
 }
 
@@ -1454,7 +1458,7 @@ impl ClassState {
     fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>) -> Claim {
         let mut got = 0;
         let mut zeroed = true;
-        let mut picks = [Pick::EMPTY; MAX_PICKS];
+        let mut picks = [Pick { slab: 0, n: 0, zero: false, state: State::Active }; MAX_PICKS];
         while got < out.len() {
             let np = self.plan(meta, out.len() - got, &mut picks);
             if np == 0 {
