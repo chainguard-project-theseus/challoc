@@ -227,10 +227,21 @@ mod tests {
     fn sign_auth_round_trip() {
         let p = 0x0000_7f12_3456_7890usize;
         if !available() {
-            assert_eq!(sign(p, 1), p);
-            assert_eq!(auth(p, 1), p);
-            assert_eq!(strip(p), p);
-            std::eprintln!("pac: not available on this host, identity checked");
+            // Off aarch64 the three are the identity. On an aarch64 host
+            // without the extension (Ampere Altra, lane D's T2A of
+            // 2026-09-20) they are `pacda`/`autda`/`xpacd`, UNDEFINED
+            // there, so nothing may call them: the library never does
+            // without the probe, and neither does this test.
+            #[cfg(not(target_arch = "aarch64"))]
+            {
+                assert_eq!(sign(p, 1), p);
+                assert_eq!(auth(p, 1), p);
+                assert_eq!(strip(p), p);
+                std::eprintln!("pac: not available on this host, identity checked");
+            }
+            #[cfg(target_arch = "aarch64")]
+            std::eprintln!("pac: not available on this aarch64 host (no HWCAP_PACA/PACG), no PAC instruction executed");
+            assert!(!fpac(), "fpac without the extension");
             return;
         }
         let s = sign(p, 0x1000);
