@@ -37,7 +37,7 @@
 //! this to land allocations in the fullest slabs).
 
 use core::ptr;
-use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 use crate::class::{ClassState, SetTable, SlabTable};
 use crate::heap::{Heap, Shared};
@@ -143,8 +143,12 @@ pub struct Arena {
     /// Live huge runs allocated through this arena and their pages (guard
     /// included), kept by `Shared::alloc_huge` / `free_huge` since the huge
     /// allocator itself is shared by every arena (`stats.arenas.<i>.large`).
-    large_runs: AtomicUsize,
-    large_pages: AtomicUsize,
+    /// One word, runs in the high half and pages in the low
+    /// ([`Arena::LARGE_RUN`]), so a reader's `(runs, pages)` is always a
+    /// pair one run's add or subtract produced together and `pages >=
+    /// runs * GUARD_PAGES` holds for every snapshot (`stats.rs` subtracts
+    /// the guards exactly).
+    large: AtomicU64,
     /// This arena's statistics as of the last `epoch` (`stats.rs`).
     stats: Lock<ArenaStats>,
 }
@@ -196,33 +200,39 @@ impl Arena {
                 // group handoff walks these (never freed, design 13.3).
                 tables[c].register_state(&raw const (*this).classes[c]);
             }
-            ptr::write(&raw mut (*this).large_runs, AtomicUsize::new(0));
-            ptr::write(&raw mut (*this).large_pages, AtomicUsize::new(0));
+            ptr::write(&raw mut (*this).large, AtomicU64::new(0));
             ptr::write(&raw mut (*this).stats, Lock::new(ArenaStats::empty(index)));
         }
         true
     }
 
+    /// One run in the `large` word; the low 32 bits count pages (a run's
+    /// `pages` is a `u32` in its descriptor, and the region holds fewer
+    /// than 2^32 pages in all).
+    const LARGE_RUN: u64 = 1 << 32;
+
+    /// The `large` word for one run of `pages` (guard included).
+    fn large_word(pages: usize) -> u64 {
+        assert!(pages < (1 << 32), "arena: huge run of {pages} pages");
+        Self::LARGE_RUN | pages as u64
+    }
+
     /// A huge run of `pages` (guard included) was allocated through this
     /// arena.
     pub fn note_huge_alloc(&self, pages: usize) {
-        self.large_runs.fetch_add(1, Ordering::Relaxed);
-        self.large_pages.fetch_add(pages, Ordering::Relaxed);
+        self.large.fetch_add(Self::large_word(pages), Ordering::Relaxed);
     }
 
     /// A huge run of `pages` (guard included) of this arena was freed.
     pub fn note_huge_free(&self, pages: usize) {
-        self.large_runs.fetch_sub(1, Ordering::Relaxed);
-        self.large_pages.fetch_sub(pages, Ordering::Relaxed);
+        self.large.fetch_sub(Self::large_word(pages), Ordering::Relaxed);
     }
 
-    /// Live huge runs of this arena and their pages, guards included. Read
-    /// pages first: a run's pages are added after and removed before its
-    /// count, so `pages >= runs * GUARD_PAGES` whenever both are non-zero.
+    /// Live huge runs of this arena and their pages, guards included, as
+    /// one snapshot (see the field).
     pub fn large(&self) -> (usize, usize) {
-        let pages = self.large_pages.load(Ordering::Relaxed);
-        let runs = self.large_runs.load(Ordering::Relaxed);
-        (runs, pages)
+        let w = self.large.load(Ordering::Relaxed);
+        ((w >> 32) as usize, (w & (Self::LARGE_RUN - 1)) as usize)
     }
 
     /// The statistics stored by the last `epoch`.

@@ -155,6 +155,22 @@ impl HugeDesc {
     }
 }
 
+/// What [`Huge::alloc_run`] placed: the run's start, whether it reads as
+/// zero, and its pages with the guard, read from the descriptor it wrote.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Placed {
+    /// Null when nothing was placed.
+    pub ptr: *mut u8,
+    pub zeroed: bool,
+    /// The run's pages, guard included (0 when nothing was placed).
+    pub pages: usize,
+}
+
+impl Placed {
+    /// Nothing placed.
+    pub const NONE: Placed = Placed { ptr: ptr::null_mut(), zeroed: false, pages: 0 };
+}
+
 /// A copy of a descriptor for callers outside the lock (tests, stats).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RunInfo {
@@ -586,31 +602,41 @@ impl Huge {
         (aligned - self.base) >> self.lg_page
     }
 
-    /// Allocate `size` bytes aligned to `align` (a power of two; anything
-    /// up to a page is free). Returns the pointer and whether the memory is
-    /// known to read as zero, or null when the region, the metadata region
-    /// or the kernel refuses.
+    /// [`Huge::alloc_run`] as the pointer and the zero flag alone.
+    #[cfg(test)]
     pub fn alloc(&self, meta: &Meta, size: usize, align: usize, arena: u16) -> (*mut u8, bool) {
+        let r = self.alloc_run(meta, size, align, arena);
+        (r.ptr, r.zeroed)
+    }
+
+    /// Allocate `size` bytes aligned to `align` (a power of two; anything
+    /// up to a page is free). Returns the pointer, whether the memory is
+    /// known to read as zero and the pages of the run as its descriptor
+    /// records them (the guard included; what [`Huge::free_run`] will
+    /// report as `pages`, so the caller's per-arena page count never
+    /// drifts from what the free subtracts); [`Placed::NONE`] when the
+    /// region, the metadata region or the kernel refuses.
+    pub fn alloc_run(&self, meta: &Meta, size: usize, align: usize, arena: u16) -> Placed {
         assert!(align.is_power_of_two(), "huge: alignment not a power of two");
-        let Some(usable_pages) = self.usable_pages(size) else { return (ptr::null_mut(), false) };
-        let Some(need) = usable_pages.checked_add(GUARD_PAGES) else { return (ptr::null_mut(), false) };
+        let Some(usable_pages) = self.usable_pages(size) else { return Placed::NONE };
+        let Some(need) = usable_pages.checked_add(GUARD_PAGES) else { return Placed::NONE };
         if need > self.npages || align > (self.npages << self.lg_page) {
-            return (ptr::null_mut(), false);
+            return Placed::NONE;
         }
         let page = self.page_size();
         let mut g = self.inner.lock();
-        let Some((s, ext)) = self.find(&g, need, align) else { return (ptr::null_mut(), false) };
+        let Some((s, ext)) = self.find(&g, need, align) else { return Placed::NONE };
         let end = s + need;
 
         // Everything fallible happens before any state changes.
         let run = meta.alloc(HugeDesc::LAYOUT) as *mut HugeDesc;
         if run.is_null() {
-            return (ptr::null_mut(), false);
+            return Placed::NONE;
         }
         let spare = meta.alloc(HugeDesc::LAYOUT) as *mut HugeDesc;
         if spare.is_null() {
             meta.free(run as *mut u8, HugeDesc::LAYOUT);
-            return (ptr::null_mut(), false);
+            return Placed::NONE;
         }
         let ok = g.table.ensure(meta, page, 3).is_ok()
             && (end <= g.next_page || g.free.ensure(meta, page, end - 1).is_ok())
@@ -618,17 +644,19 @@ impl Huge {
         if !ok {
             meta.free(run as *mut u8, HugeDesc::LAYOUT);
             meta.free(spare as *mut u8, HugeDesc::LAYOUT);
-            return (ptr::null_mut(), false);
+            return Placed::NONE;
         }
 
         // `check_zero` needs the extent's state before `take` may free it.
         let prior = if purge::check_zero() { Some(self.prior_state(s, ext)) } else { None };
         let zeroed = self.take(&mut g, meta, Placement { start: s, pages: need, ext }, run, spare, arena);
+        // SAFETY: `take` wrote the run's descriptor; the lock is still held.
+        let pages = unsafe { (*run).pages() };
         self.sync_oldest(&g);
         if let (true, Some(prior)) = (zeroed, prior) {
             self.check_zero(s, usable_pages, prior, arena);
         }
-        (self.addr(s) as *mut u8, zeroed)
+        Placed { ptr: self.addr(s) as *mut u8, zeroed, pages }
     }
 
     /// Where the pages of a run at `s` come from, for `check_zero`: the

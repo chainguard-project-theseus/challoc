@@ -355,7 +355,12 @@ fn collect_arena_with(shared: &Shared, arena: &Arena, huge: &HugeStats, meta: &M
         }
     }
     let (runs, pages) = arena.large();
-    let huge_usable = pages.saturating_sub(runs * GUARD_PAGES) * page;
+    // Every run carries its guard: the pair comes from one atomic word
+    // (`Arena::large`), and the pages a run adds are the pages its free
+    // subtracts (`Huge::alloc_run` reads them from the descriptor), so a
+    // shortfall is a corrupt counter, not a race.
+    assert!(pages >= runs * GUARD_PAGES, "stats: arena {}: {runs} huge runs in {pages} pages", arena.index());
+    let huge_usable = (pages - runs * GUARD_PAGES) * page;
     a.large_runs = runs;
     a.large_allocated += huge_usable;
     a.large_active += huge_usable;
@@ -506,6 +511,7 @@ mod tests {
         assert!(!h.is_null());
         let usable = s.huge.usable_for(huge_size).unwrap();
         let run_pages = s.huge.usable_pages(huge_size).unwrap() + GUARD_PAGES;
+        assert_eq!(s.arena0.large(), (1, run_pages), "the descriptor's pages, guard included");
 
         // Frozen until the next epoch; `collect` sees the live figures.
         assert_eq!(snapshot(s), first);

@@ -8,7 +8,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use crate::arena::{Arena, Arenas, Tcaches};
 use crate::class::SlabTable;
 use crate::config::Config;
-use crate::huge::{GUARD_PAGES, Huge};
+use crate::huge::Huge;
 use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
 use crate::lock::Lock;
 use crate::meta::Meta;
@@ -698,14 +698,13 @@ impl Shared {
     /// (which must exist). Null on exhaustion; the flag says the memory is
     /// known zero.
     pub fn alloc_huge(&self, size: usize, align: usize, arena: u16) -> (*mut u8, bool) {
-        let r = self.huge.alloc(&self.meta, size, align, arena);
-        if !r.0.is_null() {
-            // The run's pages are what `Huge::alloc` committed for `size`
-            // (see `usable_pages`) plus the guard.
-            let pages = self.huge.usable_pages(size).unwrap_or(0) + GUARD_PAGES;
-            self.owner(arena).note_huge_alloc(pages);
+        let r = self.huge.alloc_run(&self.meta, size, align, arena);
+        if !r.ptr.is_null() {
+            // The pages the run's descriptor records, which is what
+            // `free_huge` will subtract.
+            self.owner(arena).note_huge_alloc(r.pages);
         }
-        r
+        (r.ptr, r.zeroed)
     }
 
     /// `zero_on_free` for a huge run: clear the usable bytes of the live

@@ -2290,3 +2290,43 @@ fn set_mode_volatile_derives_the_same_mask_as_set_mode() {
     }
 }
 
+/// Item 30 of the 2026-09-18 review: the pages `Shared::alloc_huge` adds
+/// to the arena are the ones the run's descriptor records
+/// (`Huge::alloc_run`), which is what `free_huge` subtracts, so the
+/// arena's `(runs, pages)` returns to zero and `stats.rs` subtracts the
+/// guards exactly.
+#[test]
+fn huge_run_pages_are_counted_from_the_descriptor() {
+    use crate::huge::GUARD_PAGES;
+    let s = shared();
+    let t = TestHeap::new(s);
+    let page_of = |p: *mut u8| match s.regions.classify(p as usize) {
+        Kind::Huge { page } => page,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(s.arena0.large(), (0, 0));
+    let size = 300 * 1024;
+    let (p, _) = t.alloc_huge(size, 16);
+    let info = s.huge.lookup(page_of(p)).unwrap();
+    assert_eq!(info.pages, s.huge.usable_pages(size).unwrap() + GUARD_PAGES);
+    assert_eq!(s.arena0.large(), (1, info.pages));
+    // An aligned run: the hole alignment leaves in front of it is a free
+    // extent, not the run's pages.
+    let (q, _) = t.alloc_huge(size, 1 << 20);
+    let qinfo = s.huge.lookup(page_of(q)).unwrap();
+    assert_eq!(qinfo.pages, info.pages);
+    assert_eq!(s.arena0.large(), (2, 2 * info.pages));
+    // `alloc_run` reports the descriptor's pages, and the free the same.
+    let r = s.huge.alloc_run(&s.meta, 5 * page_size() + 1, 1, 0);
+    assert!(!r.ptr.is_null());
+    assert_eq!(r.pages, 6 + GUARD_PAGES);
+    assert_eq!(r.pages, s.huge.lookup(page_of(r.ptr)).unwrap().pages);
+    assert_eq!(s.huge.free_run(&s.meta, page_of(r.ptr)).pages, r.pages);
+    t.free(p);
+    assert_eq!(s.arena0.large(), (1, info.pages));
+    t.free(q);
+    assert_eq!(s.arena0.large(), (0, 0));
+    assert_eq!(s.huge.alloc_run(&s.meta, usize::MAX, 1, 0), crate::huge::Placed::NONE);
+    t.destroy();
+}
+
