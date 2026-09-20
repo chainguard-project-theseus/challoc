@@ -1201,6 +1201,24 @@ One line per task, newest at the bottom of each section. Keep it terse.
 - Maintainability pass, batch two (lane tidy-purge, 2026-09-20): `src/purge.rs` (1710 lines) split into the module root `src/purge.rs` (1013 lines: `Batch`, the advice statics, `os::discard`, the decay driver, `Decayer`, the background thread) and `src/purge/curve.rs` (174: `NEVER`, `decay_ns_from_ms`, `STEPS`, `WEIGHT_ONE`, `WEIGHTS`, `Curve`, with the three curve tests), `src/purge/prefault.rs` (201), `src/purge/tests.rs` (273, with `purge::tests::serial`), `src/purge/linux_tests.rs` (67); code moved verbatim, dedented one level, at b1a954b. Codegen against the ea9532a baseline (`scripts/codegen-diff.sh compare`): q16 and q8 both `exact functions 435, reloc-only 0, changed 0`, `.text` sizes identical (`03bea0`, `03c1c0`; the hashes differ, symbol order). Host `cargo test --features std` 341 passed; container `make test` 442 + 123 + 25 passed, cgroup and pagemap-guard steps `ok`; the eleven purge tests keep their names (the three curve tests now under `purge::curve::tests`).
 - Maintainability pass, batch two (lane tidy-heap, 2026-09-20): `src/heap.rs` (7339 lines) is the directory module `src/heap/`, code moved without changing it: `mod.rs` 2043 lines (consts, `CacheHeader`, `ThreadStats`, `ArenaCaches`, `Heap` with create/destroy, the thread-cache fast and slow paths, refill, flush, compaction, GC, tick; `alloc`/`alloc_zeroed`/`free`/`free_direct`, `free_fast`, `free_sized_fast`; the module doc lists the files), `shared.rs` 737 (`Shared`, init and the free checks, `GuardTest`, `guard_interval_for`, `mod os`, `no_such_arena`), `percpu.rs` 987 (`Percpu`, `PercpuState`, `CpuCache`, `CPU_CACHE_SIZE`, both per-CPU `impl Heap` blocks and their non-Linux stubs, `percpu_push_raw`/`percpu_push_miss`, `cid_out_of_range`), `thread.rs` 169 (`TLS_CREATING`/`TLS_EXITED`, `heap_destructor`, `heap_for_thread`, `existing_heap`, `tls_heap_slot`, `fast_flags`, `heap_from_slot`), `flush.rs` 93 (`group_by_slab`, `flag_sort`, `straddling_double_free`, `GROUP_BUCKETS`), `tests.rs` 2197 and `linux_tests.rs` 1207 (the two test modules, de-indented; `heap::tests::{shared, shared_with, shared_build, TestHeap, live, xorshift, panic_message, ...}` unchanged for stats.rs and api/ctests.rs). Every external path resolves through `pub use` in `mod.rs`; no file outside `src/heap/` changes. Proof of motion: the sorted line multiset of the new files equals the old file's except the 27 `pub(super)` openings, the file headers and imports, the module doc and three import lines in the test modules (`Kind, Regions`, `flag_sort`, `c_void`). `scripts/codegen-diff.sh compare` against the 0f5dee4 baseline: q8 `.text=03c1c0` identical, 435 exact, 0 reloc-only, 0 changed; q16 `.text` 03bea0 -> 03dec0 with, by the script, 431 exact, 3 reloc-only, 1 changed, and by a demangled per-function comparison (the script joins by mangled name, which the module path changed for every heap function) 434 functions on both sides, 430 identical (71 exact, 359 reloc-only) and 4 differing, all four linker artefacts and none a compiler change: two are trailing `nop` alignment padding (`<bool as Display>::fmt`, `__aarch64_ldset8_acq`) and two are GNU ld's Cortex-A53 erratum-843419 workaround (`Shared::alloc_huge`, `purge::Batch::flush`: an `adrp` that now lands at page offset 0xff8/0xffc is rewritten to `adr` and its load moved to a veneer, each veneer in its own 4096-byte zero-filled `.text` stub section, which is the whole 0x2020 growth; see the note below). Host `cargo test --features std` 341 passed (341 before). Container `make test`, with the one-line `FORK_LOCKS` path fix of the first note applied locally: 442 + 123 + 25 passed (baseline of the review 411 + 120 + 23), cgroup-limit, cgroup-churn, cgroup-lazy and pagemap-guard steps `ok`; without it the one inventory test fails and nothing else. Commit d2c2b11.
 - Maintainability pass, batch two (lane tidy-class, 2026-09-20): `src/class.rs` (5143 lines) is the directory module `src/class/`, code moved without change: `mod.rs` 1067 lines (module doc naming the submodules, `ClassStats`, `Claim`, `Pick`, `Reopen`, `Inner`, `ClassState`, the protocol `claim`/`claim_with`/`finish`/`plan`/`plan_locked`/`take`/`claim_prefix`, `release`/`release_owned`/`release_slab`/`release_word`/`reopen`/`dec_live`/`on_live_zero`, the stats accessors, `xorshift`, `shuffle`, `GROUP_HANDOFF` and `set_group_handoff`, the re-exports), `table.rs` 765 (`TableInner`, `desc_stagger`, `SlabTable` and its impl, the `os` shim), `sets.rs` 198 (`Lazy`, `Set`, `Store`, `SetTable`, `Group`), `handoff.rs` 305 (`MAX_ADOPT_TRIES`, `HANDOFFS`, `Fresh`, `next_slab`, `next_fresh_slab`, `adopt_idle_group`, `next_idle_group`, `transfer_group`, the test-only `idle_groups`), `decay.rs` 203 (`purge_empty`, `purge_group`, `purge_curve`, `page_group_is_idle`, `oldest_empty`, `decay`, `decay_with`, `empty_bytes`), `prefault.rs` 149 (the `prefault_*` methods), `verify.rs` 159 (`check_zero`, `check_fresh_slab_is_zero`, `check_shadow`, `fresh_with_live`, `release_into_fresh`, `dirty_zero_slot`, the `#[cfg(test)]` `SlabTable::check`/`ClassState::check` pair), `abort.rs` 101 (the twelve `#[cold]` `-> !` aborts), `tests.rs` 2308 (the 61 tests, every name kept). Every path other files use (`crate::class::{ClassState, ClassStats, Claim, SlabTable, SetTable, Set, set_group_handoff, HANDOFFS}`) resolves through `pub use` in `mod.rs`; no other file changed. 218 functions before and after; no rename, no statement reordered, no function merged or split, every `#[inline(always)]`/`#[cold]`/`#[inline(never)]`/`#[repr]`/`const _: () = assert!` kept. `scripts/codegen-diff.sh compare .tmp-codegen` (baseline ea9532a) on the committed tree: q16 `.text=03bea0` old and new, q8 `.text=03c1c0` old and new, `changed 0` in both (`.text` hash differs as expected: q16 91f2b6b9ca6c5059 -> 134f72e8955d3523, q8 de1d548d53808c5c -> cc8d1483384b5d36); a per-function comparison with a correct fingerprint (see the notes) gives 146 exact + 289 reloc-only, 0 changed, 61445 / 61645 instructions old and new. Host `cargo test --features std` 341 passed; container `make test` 442 + 122 of 123 (the one failure is `api::tests::fork_lock_list_matches_the_source_tree`, which needs the six-line `src/api/mod.rs` edit below) and the cgroup and pagemap-guard steps `ok` (25 passed). Commit 3d99203.
+- Maintainability pass, batch two (lane tidy-huge, 2026-09-20): `src/huge.rs`
+  (2682 lines) is the directory module `src/huge/`: `mod.rs` 1217 lines
+  (module doc, `HugeDesc`/`RunState`/`RunInfo`/`HugeStats`, the `os` shim,
+  `Inner`, `Huge`, the cold aborts), `table.rs` 298 (`Entry`,
+  `LG_INITIAL_TABLE`, the open-addressing `Table`, and its own test module
+  with the four tests that drive `Table` directly: wrap-around,
+  growth-failure, the two `should_panic`), `tests.rs` 891 (the host tests),
+  `linux_tests.rs` 302. Code motion only: no function body, attribute or
+  name changed; every `crate::huge::` path other files use still names an
+  item defined in `mod.rs`, so no other file changed.
+  `scripts/codegen-diff.sh compare .tmp-codegen` against ea9532a: q16 and
+  q8 both `.text` size identical (`03bea0`, `03c1c0`), 435 functions
+  `exact`, 0 `reloc-only`, 0 `changed` (the `.text` hash differs only
+  through symbol order and path strings). Host `cargo test --features std`
+  341 passed (38 huge tests before and after). Container `make test`: 442
+  passed in the non-api binary, 123 passed in the api binary once the one
+  path-keyed literal below is updated (122 + 1 failed without it), cgroup
+  limit/churn/lazy and pagemap-guard steps `ok`. Commit 16293f8.
 
 ## In progress
 
@@ -3274,3 +3292,38 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
   `src/class/verify.rs     the check_zero debug mode and the test-only pointer checks`
   `src/class/abort.rs      the #[cold] heap-inconsistency aborts of the class protocol`
   `src/class/tests.rs      the class tests over a synthetic region (Env)`
+- Needs a two-literal edit in a file this lane may not touch, at merge:
+  `api::tests::fork_lock_list_matches_the_source_tree` keys every lock by
+  its path under `src/` and now finds `huge/mod.rs:Huge.inner`; change
+  `"huge.rs:Huge.inner"` to `"huge/mod.rs:Huge.inner"` in `FORK_LOCKS`
+  (src/api/mod.rs:522) and in `assert_locks` (src/api/mod.rs:560). Verified
+  in the container with the edit applied temporarily: api 123 passed; the
+  edit was reverted before the commit. Note the inventory's `mod tests {`
+  stop rule no longer applies to huge (its tests are separate files), which
+  is why the key lists `huge/mod.rs` and nothing from `tests.rs`.
+- `pub(super)` surface opened in `huge/table.rs`: `struct Table`, its
+  `count` field, and `Table::{new, cap, get, insert, remove, ensure}` (what
+  `Inner`, `Huge` and the audit use). `Entry`, `LG_INITIAL_TABLE`,
+  `storage`, `hash`, `find`, `slot` and the other fields stay private;
+  `table.rs`'s tests reach `Env` and `page_size` via `crate::huge::tests`
+  (already `pub(super)`). No `pub use` re-exports were needed. One import
+  narrowed in `mod.rs`: `use crate::meta::Meta` (the `meta::` module path
+  was used only by `Table::storage` and the tests; `tests.rs` imports
+  `crate::meta` itself). `huge::tests::table_grows_and_lookups_survive_backward_shift`
+  stays in `tests.rs` because it drives `Huge`, not `Table`.
+- Skipped, as instructed: `add_free_extent`/`drop_extent`, `Huge::alloc`
+  returning its pages (batch three); the `impl Default for Meta` /
+  `Meta::empty` leftovers (meta.rs).
+- Observed once, not reproduced: the first `make test` run hung for 40
+  minutes in `lock::tests::a_parked_waiter_is_released` (two threads in
+  `futex_wait`, host load 7-17 from unrelated Go link jobs); the rerun
+  finished the same binary in 6.4 s. Lane C's file; worth a look at the
+  20 ms window if it recurs.
+- Design 19 lines to write, replacing `src/huge.rs           huge allocator`:
+  ```
+  src/huge/mod.rs       huge allocator: extents, guards, first fit, decay, the audit
+  src/huge/table.rs     the open-addressing descriptor table (page number to HugeDesc)
+  src/huge/tests.rs, src/huge/linux_tests.rs  huge tests: host, and the ones that need a kernel
+  ```
+  Also stale after the move: `huge.rs` named in src/bitmap.rs:431,
+  src/class.rs:241,276-277, src/purge.rs:67 (prose, other lanes' files).
