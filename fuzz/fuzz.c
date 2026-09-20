@@ -26,8 +26,10 @@
  *   table    live blocks per thread (default 2048)
  *
  * Exits 0 and prints "ok fuzz" on success, non-zero otherwise. Compile with
- * -DQUANTUM=16 (or 8) and -I tests/c; run under LD_PRELOAD=libchalloc.so.
- * `make fuzz` does all of that.
+ * scripts/ctest-cc.sh (the test programs' one compiler line: -DQUANTUM from
+ * the built library, -I tests/c) and run under LD_PRELOAD=libchalloc.so;
+ * `make fuzz` does all of that, `make test` runs a 400k-operation slice
+ * (src/api/ctests.rs, `c_fuzz_short` and the rows under the tunables).
  */
 #include "common.h"
 

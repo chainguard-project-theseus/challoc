@@ -21,8 +21,9 @@
 #           lazy | eager | report (tests/c/cgroup_lazy.c)
 #
 # Compiles the program (tests/c/cgroup_churn.c, cgroup_oscillate.c or
-# cgroup_lazy.c) into
-# target/cgroup-tests/, prints the kernel, the cgroup's limits and
+# cgroup_lazy.c) with scripts/ctest-cc.sh into target/cgroup-tests/ (the
+# programs use QUANTUM only in `require_challoc`, which --any-allocator
+# skips, so a missing library is fine there), prints the kernel, the cgroup's limits and
 # `memory.events` before and after, runs the program under the allocator
 # with a watchdog (WATCHDOG seconds, default 360: a hung oscillation is
 # killed and fails) and exits with the program's status: 0 is a pass, 137
@@ -74,7 +75,7 @@ fi
 mkdir -p target/cgroup-tests
 bin=target/cgroup-tests/$prog
 if [ ! -x "$bin" ] || [ "tests/c/$prog.c" -nt "$bin" ] || [ tests/c/common.h -nt "$bin" ]; then
-  cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c "tests/c/$prog.c" -o "$bin" -ldl || exit 2
+  sh scripts/ctest-cc.sh "tests/c/$prog.c" -o "$bin" || exit 2
 fi
 
 version=

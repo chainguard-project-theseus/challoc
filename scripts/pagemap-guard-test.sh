@@ -16,7 +16,7 @@ lib=target/release/libchalloc.so
 mkdir -p target/ctests
 bin=target/ctests/pagemap_guard
 if [ ! -x "$bin" ] || [ tests/c/pagemap_guard.c -nt "$bin" ] || [ tests/c/common.h -nt "$bin" ]; then
-  cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c tests/c/pagemap_guard.c -o "$bin" -ldl || exit 2
+  sh scripts/ctest-cc.sh tests/c/pagemap_guard.c -o "$bin" || exit 2
 fi
 echo "== pagemap_guard on (kernel $(uname -r) $(uname -m), default configuration)"
 LD_PRELOAD=$ROOT/$lib "$bin" on || exit 1

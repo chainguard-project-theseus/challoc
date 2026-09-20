@@ -39,14 +39,17 @@ cd "$(dirname "$0")/.."
 ROOT=$(pwd)
 LIB=${LIB:-$ROOT/target/release}
 [ -f "$LIB/libchalloc.so" ] || { echo "as-needed: $LIB/libchalloc.so missing: cargo build --release first" >&2; exit 1; }
-CC=${CC:-cc}
+# Every link goes through scripts/ctest-cc.sh (the test programs' one
+# compiler line: it appends -ldl and reads QUANTUM from the library).
+CHALLOC_LIB=$LIB/libchalloc.so; export CHALLOC_LIB
+CTEST_CC="sh $ROOT/scripts/ctest-cc.sh"
 T=$(mktemp -d)
 trap 'rm -rf "$T"' EXIT
 ln -s "$LIB/libchalloc.so" "$T/libchalloc.so.0"
 fail=0
 check() { # NAME EXPECT(yes|no) flags...
     name=$1; expect=$2; shift 2
-    $CC -O2 -Wall -Wextra -Werror -I"$ROOT/tests/c" "$@" "$ROOT/tests/c/as_needed.c" -o "$T/$name" -L"$LIB" -lchalloc -ldl
+    $CTEST_CC "$@" "$ROOT/tests/c/as_needed.c" -o "$T/$name" -L"$LIB" -lchalloc
     if sh "$ROOT/scripts/check-needed.sh" "$T/$name" libchalloc.so.0 >"$T/$name.out" 2>&1; then got=yes; else got=no; fi
     if [ "$expect" = any ]; then
         printf '%-28s DT_NEEDED libchalloc.so.0: %-3s (the toolchain default with no flag: %s)\n' "$name" "$got" "$([ "$got" = no ] && echo '--as-needed' || echo '--no-as-needed')"
@@ -56,7 +59,7 @@ check() { # NAME EXPECT(yes|no) flags...
     fi
     sed 's/^/    /' "$T/$name.out" | head -1
 }
-echo "== $($CC --version | head -1); $(ld --version 2>/dev/null | head -1 || true)"
+echo "== $(${CC:-cc} --version | head -1); $(ld --version 2>/dev/null | head -1 || true); $($CTEST_CC --flags)"
 check malloc                 yes
 check malloc-as-needed       yes -Wl,--as-needed
 check version                yes -DREF_VERSION
@@ -65,11 +68,11 @@ check none-no-as-needed      yes -DREF_NONE -Wl,--no-as-needed
 check none-as-needed         no  -DREF_NONE -Wl,--as-needed
 check none-default           any -DREF_NONE
 # The two-level shape: the library needs libchalloc, the executable does or does not.
-$CC -O2 -Wall -Wextra -Werror -shared -fPIC "$ROOT/tests/c/as_needed_lib.c" -o "$T/libas_needed_lib.so" -L"$LIB" -lchalloc -ldl
+$CTEST_CC -shared -fPIC "$ROOT/tests/c/as_needed_lib.c" -o "$T/libas_needed_lib.so" -L"$LIB" -lchalloc
 sh "$ROOT/scripts/check-needed.sh" "$T/libas_needed_lib.so" libchalloc.so.0 | head -1 | sed 's/^/    /'
 via_lib() { # NAME flags...
     name=$1; shift
-    $CC -O2 -Wall -Wextra -Werror "$@" -DREF_NONE -DVIA_LIB "$ROOT/tests/c/as_needed.c" -o "$T/$name" -L"$T" -L"$LIB" -las_needed_lib -lchalloc -ldl
+    $CTEST_CC "$@" -DREF_NONE -DVIA_LIB "$ROOT/tests/c/as_needed.c" -o "$T/$name" -L"$T" -L"$LIB" -las_needed_lib -lchalloc
     if sh "$ROOT/scripts/check-needed.sh" "$T/$name" libchalloc.so.0 >"$T/$name.out" 2>&1; then got=yes; else got=no; fi
     out=$(LD_LIBRARY_PATH=$T "$T/$name" 2>&1 | head -1)
     printf '%-28s executable DT_NEEDED libchalloc.so.0: %-3s; at run time %s\n' "$name" "$got" "$out"
@@ -84,7 +87,7 @@ case $r2 in *"libc.so.6"*) echo "    confirmed: with --as-needed the executable 
             *) echo "    FAIL: unexpected: $r2"; fail=1;; esac
 # -Wl,-y,malloc: the linker's own trace of who defines and references malloc.
 echo "== linker trace for the malloc variant under --as-needed:"
-$CC -O2 -Wl,--as-needed -Wl,-y,malloc "$ROOT/tests/c/as_needed.c" -o "$T/trace" -L"$LIB" -lchalloc -ldl 2>&1 | sed 's/^/    /' || true
+$CTEST_CC -Wl,--as-needed -Wl,-y,malloc "$ROOT/tests/c/as_needed.c" -o "$T/trace" -L"$LIB" -lchalloc 2>&1 | sed 's/^/    /' || true
 echo "== running the --as-needed malloc variant:"
 out=$(LD_LIBRARY_PATH=$T "$T/malloc-as-needed" 2>&1) || { echo "    FAIL: did not run: $out"; fail=1; }
 echo "    with libchalloc.so.0 on LD_LIBRARY_PATH: $(echo "$out" | head -1)"
