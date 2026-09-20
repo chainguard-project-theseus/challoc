@@ -79,4 +79,46 @@ counters are one word with an exact subtraction.
 Final `make test` on `main` (208c23c): 473 + 136 + 26 passed, every C
 step `ok`.
 
-Final comparison against `ea9532a` and the scorecard lines: below.
+Final comparison against `ea9532a` (whole pass, `scripts/codegen-diff.sh
+compare`): q16 `.text` `03bea0` -> `03cac0`, `.rodata` `005fc0` ->
+`005f9c`, `.data.rel.ro` `002d28` -> `003680`; 435 -> 536 functions,
+instructions 61445 -> 62221 (+1.3%). The whole-pass match is 31 exact +
+322 reloc-only + 183 unmatched, but that number is not "183 functions
+changed": the 101 new functions (the config key table's parse/read
+closures, the mallctl readers) have no baseline counterpart and every
+inlined callee they replaced counts once more. The attribution that
+matters is per batch: batch 2 zero changed; batch 3 every changed
+function named in its lane's PROGRESS.md bullet, none on a per-allocation
+path.
+
+## Scorecard for the final tree
+
+`bench/gce/challoc-bench scorecard` on both reference VMs, 3 rounds, tree
+`3c6602b` (the lines are in `bench/results/scorecard-{aarch64,x86_64}.md`
+tagged `3c6602b+`: the VM-side `tree_dirty` check reported uncommitted
+`src/` changes although the local tree was clean at the sync; the cause
+was not established and is worth one `git status` on a VM after a sync).
+
+aarch64, against the four earlier lines of 2026-09-20 (856f103, 8e2d201,
+a999097, 5a1e715): every column inside their spread: larson1 +7.7%
+(+7.4..+8.4), larson10 +6.3% (+5.0..+7.3), larson16 +3.6% (+3.7..+5.4;
+better), xmalloc -17.2%, alloc-test1 +6.5% (+5.2..+7.5), alloc-testN
++4.6%, valkey1 +0.5% (-0.6..+1.4), valkey1-free -1.1%, cfrac +1.1%,
+espresso -2.4%, mstress -41.4%, glibc-simple -14.2%, redis -17.3%,
+python1 +0.2%, python1-malloc -0.1%; RSS ratios 0.85 / 1.00 unchanged.
+
+x86_64, same comparison: larson1 +1.4% (-1.8..+0.9; the row's history
+spans -8.8..+4.9), larson10 +6.8% (+1.1..+5.2 today, +8.4 in the history),
+larson16 +12.8% (+7.9..+12.6 today, +12.9 in the history), xmalloc +1.0%,
+alloc-test1 +6.8% (+6.5..+6.7), alloc-testN +8.9% (+8.2..+10.0), valkey1
+-1.6% (-2.9..+0.4), valkey1-free -11.6%, cfrac +4.5%, espresso -0.3%,
+mstress -40.2%, glibc-simple +2.1%, redis -21.2%, python1 -0.7%,
+python1-malloc +0.4%; RSS ratios 1.06 / 0.99 unchanged.
+
+Reading: no row leaves its band on either architecture. The x86_64
+larson rows land at the high end of theirs, as the quick tier's larson10
+did; with every per-allocation function byte-identical to the baseline
+that is placement or the row's own noise (the same code scored +1.1% and
++8.4% on different days). If the next scorecards keep larson10 and
+larson16 at the top of the band, `ab old=ea9532a new=HEAD ROUNDS=5` on
+amd64 is the protocol-tier tie-breaker.
