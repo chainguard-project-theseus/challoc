@@ -274,6 +274,59 @@ One line per task, newest at the bottom of each section. Keep it terse.
 - Phase 2.5 task 8 (lane B, the rseq / `mm_cid` line of the feature report): done. `src/sys/features.rs` gains `Rseq` (`size`, `flags`, `offset`, `cpu_id`; `registered()` = size >= 20 and `cpu_id >= 0`, `mm_cid()` = registered and size >= 28) and `Features::rseq`, probed at init from glibc's weak `__rseq_size`/`__rseq_offset`/`__rseq_flags` through GOT loads (the `je_malloc_conf` recipe) plus the area's kernel-written `cpu_id` at `tp + __rseq_offset + 4`; the line gains `rseq=yes|no rseq_size=<n> mm_cid=yes|no` after `collapse`. Both ways: `rseq=yes rseq_size=33 mm_cid=yes` on both lane VMs (7.0, glibc 2.44; `__rseq_offset` 320 aarch64 / -384 x86_64 in the test binary against the note's 192 / -192, so the symbol read is what makes it right), `rseq=yes rseq_size=20 mm_cid=no` on the Mac's 6.10 linuxkit VM. `make test` 376 + 115 + 23 on all three hosts. Results: `bench/results/2026-09-19-lane-b-task8-rseq-report.md`; design 15, 16, 17 and README updated; a note on top of `bench/results/2026-09-19-feature-report.md`. Lane A reads `features().rseq.mm_cid()` for `percpu_arena:auto` and the value through its own accessor.
 - Phase 2.5 task 15 (lane C): done, commit 2cd06e2. The rseq time slice extension for lock holders: `src/slice.rs` (new; the probe through lane A's `rseq::probe` plus bit 4 of this thread's area `flags` when `__rseq_size >= 32`, the per-thread `prctl(79, 2, 1)` confirmed by bit 5, `configure` from `config::load` on the init thread, `acquired`/`releasing`/`released` for the lock, the lazy per-thread enable on a thread's first hold, `rseq_slice_yield` (471, unified table, probed with `ENOSYS`) with `sched_yield` where a seccomp filter hides it, the counters and the report words), `src/lock.rs` (`RawLock::lock`/`try_lock` request after the CAS, `unlock` withdraws before the release swap and yields after it when granted; every `RawLock`, none on the fast path), `src/config.rs` (`slice_ext:auto|on|off`, default `auto`, `KEYS` 27, `Config::apply_slice_ext`), `src/api/mallctl.rs` (`cstr_of` knows `on`), `src/api/print.rs` (`Slice extension: on (N threads enabled, M grants yielded via <syscall>)` / `off (<why>)` with the refused-`on` note), `tests/c/slice_ext.c` and its driver `api::ctests::c_slice_ext_both_ways`, `slice::tests::{probe_both_ways_and_off_never_requests, grants_are_yielded_under_oversubscription, layout_constants}`, `config::tests::slice_ext_values`; design 12 (the key row), design 17 (the table row and the "Time slice extension" subsection), README's feature table, the research row corrected. Findings and numbers in `bench/results/2026-09-19-x86_64-lane-c-task15-slice-ext.md` and `2026-09-19-aarch64-lane-c-task15-slice-ext.md` (with the `ab` files `...-task15-ab.md`): Ubuntu's `7.0.0-1011-gcp` on both reference shapes has the option compiled out (`kernel-disabled`), arm64 cannot have it on any kernel through master (no `GENERIC_ENTRY`/`HAVE_GENERIC_TIF_BITS`), so the `on` way was measured on the lane C4 under a 7.0.14 built with `CONFIG_RSEQ_SLICE_EXTENSION=y`: the lock-wait path is 0.01..0.12% of samples on larson16/larson10/alloc-testN, holder preemptions are 17 per 10^9 larson16 operations and 0 on the other two (34 and 58 at 2x and 4x oversubscription), instructions per operation identical, cycles within 0.3%, `quick` go on both VMs, `ab` 5 rounds within noise on both (x86_64 +1.8% / -1.8% / +0.8%, aarch64 +0.7% / -0.3% / +0.0%, every sorted pair overlapping), `auto` against `off` on one binary within noise oversubscribed. `make test` green on both lane VMs (393 + 117 + 23 each; the C4 with the extension on, the C4A on the fallback) and 306 on the host.
 - Phase 2.5 task 8 (lane C, the model): done, commit 01adade. `src/model.rs` models the per-CPU claim protocol of design 15 so that lane A's implementation has verification before it lands: `Scenario::percpu` turns on two caches owned by a concurrency id (cache `c` bound to arena `c`), each an array plus `len` and the `zeroed` prefix of design 6.3; `Op::Pop` and `Op::Push(i)` are rseq critical sections (`mm_cid` read and the cache picked, the speculative reads of `len` and the top entry, one commit store) composed with the existing `Refill` (an empty cache refills from the cid's arena, the batch pushed back through a second section on whatever cid the thread is on then, the overflow released) and `Release` (a full cache flushes half through a section, then `release_routed`: each slab through its owner word's arena, a reopen per owner run) machines. `Variant::section` is `Rseq` (the protocol), `None` (plain loads and stores under the cid last read) or `CidOutside` (`mm_cid` read before the section); `Variant::strict_cid` checks that a cache is only mutated by a section whose thread kept its cid to the commit. New invariants: no slot in two caches or in a cache and owned by a thread (the holders table now covers caches, owned and staged slots), every set bit has exactly one holder once a zero pick's prefix bits reach their thread (a lost push is a bit with none), the zero prefix reads zero, the stale-commit flag. Scenarios: `percpu_share` (three threads on two cids: 163125 states, 3.6 s), `percpu_migrate` (a thread pops twice and pushes later, 4030 cross-cid pushes counted: 66746 states, 1.1 s), `percpu_purge` (direct free, purge, the `Purged` slab's zero pick reaching a cache's zero prefix, checked by a coverage probe: 241740 states, 4.5 s); `None` hands slab 0 slot 0 to threads 1 and 2 in 39 states (18 steps printed: T1's speculative read, T2's entry on the same cid marks T1 descheduled, both commit), `CidOutside` in 35 (T2's entry aborts T1, which retries at the section's start with the stale index and commits). 13 model tests in 8.6 s on the host (`cargo test --features std model::`), 9.2 s on Linux aarch64 in the dev container; the whole host suite 303 passed. Design 15 gained the paragraph listing the properties an implementation must satisfy, design 17's model row and plan task 13's Done paragraph point at the scenarios.
+- Phase 2.5 acceptance (lane D) DONE as a measurement campaign, no `src/`
+  change, commits 6c2c495 (the driver), ed45135 (the kernel matrix re-run
+  and the findings) and the results commit that follows. The checklist is
+  `bench/results/2026-09-19-phase-2.5-acceptance.md`, one row per criterion
+  of "Acceptance for the phase" with the evidence, the verdict and what
+  remains, all at 675f357 on the lane's own VMs (`challoc-lane-d-*`, nine
+  matrix cells and three lab cells, every one deleted). Verdicts: the floor
+  **not yet** (two regressions, below); the ceiling table **not yet** (one
+  red host, below; every probed feature otherwise has its both-ways run,
+  cost row and design entry, with four precise gaps: no host exposes
+  WAITPKG so `umwait` never ran, no cost row for the `process_madvise`
+  batch against the loop, none for `anon_name` and the PSI trigger, task 8
+  and task 6 pending); the reference scorecard **met** (every C4A row
+  within 1.5 points of 3ed77b7; on the C4 larson16 +12.9% on the merge
+  line, above the row's 20-line band, to watch); the CPU matrix records
+  **met**; the four-way table **met with attribution** (challoc is not
+  literally at or ahead on every Ruby row: startup +5.3% / +10.8%,
+  erb_render +10.3% vs tcmalloc, small-process RSS +10..16% vs glibc, all
+  attributed M1/M4/M6 in the files); per-CPU caches **blocked on task 8**
+  (the measurement is ready: `bench/percpu-campaign.sh`, `make
+  percpu-campaign MODE=baseline|percpu`, baseline half in
+  `bench/results/2026-09-19-{aarch64,x86_64}-lane-d-percpu-baseline*`);
+  tagged pointers **blocked on hardware** (task 6); the Phase 0..2 criteria
+  with defaults **met on the reference kernel** (`make test` 513/0 on both
+  VMs, the Phase 0 set within 10% on time with mstress RSS the accepted row
+  at +16.7% x86_64, Valkey `memefficiency` 33 ok on both and the full suite
+  5189 ok on x86_64, the aarch64 soak ahead in the write phase with the
+  standing +1.4% delete residue and RSS +1.1% / +0.8%, Ruby `test-all` the
+  same nine environmental failures, the container tests green), with the
+  x86_64 soak's write phase 1.5..4.9% behind jemalloc on req/s as a first
+  same-protocol reading on the C4.
+- Phase 2.5 task 17 (lane D) DONE, measurement hygiene from the kernel
+  table, no `src/` change, three commits on `loop/lane-d`: a5a05c3
+  (`memory.peak` reset per phase: `bench/probes/cgpeak.c` sidecar,
+  `bench/lib.sh cgroup_peak_*`, Makefile `CGROUP_PEAK=1`, the Valkey soak's
+  three per-phase rows beside VmHWM, the Ruby soak's start..compact and
+  compact..end rows from `soak.rb`, the campaign's host-side per-step peak),
+  faaadd4 (`CHALLOC_THP_COUNTERS=1`: `/proc/vmstat thp_*` and
+  `hugepages-<size>kB/stats/*` deltas around every run in `quick`, `ab` and
+  `quick-perf`), 26e897e (`tests/c/pagemap_guard.c` through
+  `scripts/pagemap-guard-test.sh` and `make test-pagemap-guard` in `make
+  test`: guard slabs of four classes checked both ways through
+  `ioctl(PAGEMAP_SCAN)` without touching them). Runs on the lane's VMs
+  (`challoc-lane-d-{arm64,amd64}`, kernel 7.0.0-1011-gcp, created for the
+  task, deleted at its end) and the Mac container (6.10) for the fallback
+  branches: `bench/results/2026-09-19-lane-d-task17-hygiene.md` (the three
+  items, every run, the acceptance lines),
+  `bench/results/2026-09-19-aarch64-lane-d-task17-thp-counters.md` (the
+  counters next to task 9's dTLB column in three sysfs states, with the two
+  `ab` files), `2026-09-19-aarch64-lane-d-task17-soak/` (and `-run1/`),
+  `...-task17-ruby-soak*`, `...-task17-percpu-baseline.md`. `make test` on
+  the amd64 VM with the new target: 523 passed, 0 failed, container tests
+  ok, `pagemap_guard` on/off ok.
 - (c) 0604bb3: `bench/ruby-soak.sh`, `make ruby-soak`, `bench/ruby/soak.rb` (16
   threads, bursts, growing long-lived set, full GC every 30 s, GC.compact at
   minute 5, 600 s; VmRSS/VmHWM, GC.stat, mallctl stats via fiddle every 5 s;
@@ -942,6 +995,62 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
 - Phase 2.5 task 8 (lane C): the model's `Release` routes each slab to its owner word's arena (`Heap::release_routed`) instead of aborting when the owner is not the thread's arena; a per-CPU cache holds slots of another cid's arena after a migration, and the real code routes. The abort that remains is a slab never handed out (`SlabTable::owner` past the watermark). A reopen runs per owner run, as `release_owned` does.
 - Phase 2.5 task 8 (lane C): `Held` lost its `from` field (the cache a slot was popped from) to keep owned slots canonical; `Outcome::cross_pushes` counts pushes of a slot whose slab's owner arena is not the cache's cid, which is exactly the case that makes the flush route to another arena. `Purge` in the per-CPU mode runs on the arena the scenario names for the thread (decay is an arena's work, not a CPU's). The exploration runs on a scoped thread with a 1 GiB stack: the depth-first path is one frame per step with a `Node` clone, and a per-CPU path overflowed the 2 MiB test-thread stack.
 - Phase 2.5 task 8 (lane C): `CACHE_CAP` is 2 and a refill claims 2 slots (one handed out, one pushed back) where the real code claims `cap / 2`: the model wants a push-back and a flush in every scenario at the smallest cache.
+- Phase 2.5 acceptance (lane D): the task 8 campaign puts challoc alone
+  under a key through `CHALLOC_CONF` (read by challoc after `MALLOC_CONF`,
+  by no stock allocator), which `DOCKER_BASE` in the Makefile now forwards
+  into every container when set, so the same suite (Valkey soak, Ruby
+  rows, `test-all`, Ruby soak, container tests) runs with jemalloc's column
+  untouched; only `ab` uses the variant's own `MALLOC_CONF`
+  (`percpu=tree:percpu_arena:percpu` next to `default=tree` in one run).
+  Reason: the suites take one environment for every allocator, and a
+  `MALLOC_CONF` value would also reach jemalloc, which has a `percpu_arena`
+  key of its own.
+- Phase 2.5 acceptance (lane D): the "many idle threads" Ruby soak is a
+  variant of `bench/ruby/soak.rb` (`IDLE_THREADS`, threads that allocate a
+  burst once and then a tiny one every 5..10 s) rather than a new script,
+  and `larson64` a new `lib.sh` row (64 threads on 16 CPUs), so the percpu
+  half compares like with like against the baseline half. Baseline shape:
+  64 threads make `Arenas: 64` and 415..463 MiB against jemalloc's
+  115..192 MiB at t=300.
+- Phase 2.5 acceptance (lane D): the kernel matrix re-run logs are named
+  `bench/results/matrix/2026-09-19-lane-d-acceptance-<cell>.log`
+  (`MATRIX_DATE` override) so task 3's records of the morning stay intact;
+  lab cells run under `CHALLOC_MATRIX_PREFIX=challoc-lane-d-lab` so the
+  driver's exit sweep of the matrix prefix does not delete them.
+- Phase 2.5 task 17 (lane D): the `memory.peak` reset lives in a sidecar
+  (`bench/probes/cgpeak.c`) that holds one file description for the run,
+  because the 6.12 reset is scoped to the description that wrote it (a
+  shell's `echo reset > memory.peak` followed by `cat` shows the birth peak
+  again; measured on 7.0), and it is driven by the phase file the Valkey soak
+  already writes, with an acknowledgement so the phase's load starts after
+  the reset. Reason: the alternative (a host-side reset triggered from the
+  container) needs a second channel; the sidecar reuses the one the soak has.
+- Phase 2.5 task 17 (lane D): the write happens inside the container, made
+  possible by `make ... CGROUP_PEAK=1` (`--cgroupns=host` and a read-write
+  bind mount of `/sys/fs/cgroup`), opt-in and probed by the write's success,
+  never on by default: Docker mounts the tree read-only and the nsdelegate
+  boundary refuses the write from inside a cgroup namespace, and the flags
+  change the container's view of its cgroup path (`0::/system.slice/...`
+  instead of `0::/`), which the container tests should not see unasked. The
+  campaign, which runs on the VM host, reads the fresh containers'
+  `memory.peak` from the host instead (no reset needed for a fresh cgroup).
+- Phase 2.5 task 17 (lane D): the Valkey soak builds the jemalloc server
+  before any soak runs and the sidecar records the cgroup's page cache
+  (`memory.stat file`) at each phase end, after the first run of the column
+  charged a ~300 MiB build cache to jemalloc's phases; the cgroup peak counts
+  every process of the container and its page cache, which is the figure the
+  plan asked for, and the header now says so with the numbers.
+- Phase 2.5 task 17 (lane D): `tests/c/pagemap_guard.c` expects
+  `PAGE_IS_SWAPPED` beside `PAGE_IS_GUARD` on a guard page (the kernel's
+  `pagemap_page_category` classifies the guard marker as a swap-type PTE
+  first: `0x112` on 7.0), and its 6.13..6.15 fallback checks "not present,
+  a swap-type entry" rather than "neither present nor swapped"; every
+  capability is probed by the ioctl's own answer (ENOTTY, EINVAL on an
+  unknown category bit), never by a kernel version.
+- Phase 2.5 task 17 (lane D): the guard test is a Makefile target
+  (`test-pagemap-guard`, hooked into `make test` after the cgroup targets)
+  rather than a `src/api/ctests.rs` driver, because lane D edits nothing
+  under `src/`.
 - `auto` never installs `wfe`, and the `wfe` path stays in the tree behind the key. Reason: it lost xmalloc-test by 3% with a quarter more RSS on both aarch64 CPUs and gained nothing on larson; unselected it costs nothing (one atomic load per slow-path entry, measured within noise), and a deployment that wants the power saving or a CPU with a different wake latency can turn it on and measure. The explicit `wfe` is refused without the event stream so a `wfe` no store ends is always bounded.
 - The event stream is probed (`HWCAP_EVTSTRM`) but not added to the feature report line. Reason: a new key would change `tests/c/features.c` and every recorded line for a feature nothing acts on by default; `lock::spin_hint()` and `event_stream()` are what the tests check.
 - The probe's suggestion lives in `Cpu::probe` (a side effect on `lock::SPIN_HINT`) rather than in `api/mod.rs`'s init. Reason: init and `features.rs` belong to other lanes; the suggestion is idempotent and a configured hint is kept against it.
@@ -1228,6 +1337,83 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
 - Phase 2.5 task 15 (lane C): the syscall numbers used are `rseq_slice_yield` 471 on both architectures (v7.0 `syscall_64.tbl` and `asm-generic/unistd.h`; confirmed by the call returning 0 on the custom x86_64 kernel with seccomp unconfined) and `sched_yield` 24 (x86_64) / 124 (aarch64), asserted against the `libc` crate in `slice::tests::layout_constants`. The lane VMs are deleted (`gcloud compute instances list --filter='name~challoc-lane-c'` empty); the custom kernel went with the C4.
 - Phase 2.5 task 8 (lane C): lane A's implementation is not in this tree; the coordinator checks it against the model at merge by reading the diff for these properties, all of which the model assumes of `Section::Rseq` and shows the loss of otherwise: (1) `mm_cid` is read inside the rseq critical section (after `rseq_cs` is armed) and the cache index (and the per-CPU arena of a refill) is derived only from that in-section read, never from a value read earlier; (2) the section ends with a single commit store, the `len` write (a push's `slots[len] = p` before it is dead until `len` moves; a pop's entry load is speculative until `len` is stored); (3) the abort handler restarts at the section's start and re-reads `mm_cid`, never resumes with the old index or the old `len`; (4) no kernel-owned field of the rseq area (`cpu_id_start`, `cpu_id`, `node_id`, `mm_cid`, `flags`) is written; `rseq_cs` is the only field the code stores to, and only with a descriptor or zero; (5) the refill and the flush run outside the section: the batch is claimed under the class lock of the arena picked by the in-section read, then pushed back through a second section on whatever cid the thread is on then, and the part of a batch a fuller cache has no room for is released, not dropped; (6) a flush takes entries out of the cache in one committed `len` store and releases them slab by slab through the owner word's arena (`release_routed`), since a cache holds slots of another arena after a migration; (7) the zero prefix follows design 6.3 through both sections (a zero batch extends it, a push below it clips it, a flush drops it) so `calloc` through a per-CPU cache never reports a dirty slot zero; (8) the fallback (thread caches when `__rseq_size < 28` or the key is `off`) is the thread-mode protocol the model already covers. A change to the protocol (a second store in the section, a batch pushed back without a section, an index read before `rseq_cs` is armed) is a change to a step in `src/model.rs`.
 - Phase 2.5 task 8 (lane C): the `MAX_STATES` budget (5 M) is about 120 s on the host, so the practical ceiling for a scenario under the 30 s rule is about 1 M states (40 k states/s: a `Node` clone and a `HashSet` insert per state). Three per-CPU threads with two pushes each is 2 M; if lane A's code needs a bigger scenario, the next reduction is a symmetry between the two cids/arenas, not a finer abstraction.
+- Phase 2.5 acceptance (lane D), three regressions found at 675f357 that
+  belong to other lanes, with the evidence in
+  `bench/results/2026-09-19-phase-2.5-acceptance.md` sections 1.2, 1.3 and
+  2.1: (1) lane B, task 10: the container churn test (`cgroup_churn purge
+  400 100`, RSS under 100 MiB within 2 s) fails on the 5.10 and 6.1 Debian
+  cells (deterministic on the 2-shared-core e2 x86 cells, 3 of 16 on a
+  4-vCPU Axion), passed at d152a64 this morning; on a kept 6.1 cell
+  `lazy_band:false` passes 24/24 and the pre-task-10 tree 12/12 against
+  the default 13/16, THP setting irrelevant: the freed memory goes out as
+  `MADV_FREE` (the slabs are `Purged`, `empty_bytes` 1..8 MiB, RSS stays
+  at 216..349 MiB), although the churn frees at 79% of the limit, above
+  the `Low` band; the suspect is the band mirror `purge::set_headroom`
+  reading a sample from before the 400 MiB ramp on a slow host, but the
+  larger point stands: no lazy purge can meet the churn criterion, so
+  either the churn's flush must see the eager band or the criterion must
+  read `pglazyfree`. (2) lane B, task 9: `api::ctests::c_thp_always` fails
+  on the 64 KiB kernel, whose PMD is 512 MiB (`mthp=512M`): `thp:always`
+  advises 1.3 GiB of PMD chunks for an 8 MiB touch, the kernel gives no
+  folio, and the test asserts a 2 MiB PMD; `thp` is off by default, so the
+  floor with defaults is untouched, but the suite is red at 64 KiB and
+  `thp:always` should refuse or fall back where the PMD is not 2 MiB.
+  (3) lane A, task 7: `make test` on an Ampere Altra (the arm64 host
+  without PAC, `pac=no`) dies with `SIGILL` in
+  `heap::linux_tests::calloc_flag_is_honest_about_memory`, the first heap
+  test after the two PAC tests skip: the heap tests' `Shared` builders set
+  `pac_pointers: true` without the probe and `pacda`/`autda` run on a CPU
+  without FEAT_PAuth; the library's own init gates on the HWCAP probe (the
+  features program and every earlier Altra run were fine), so this is a
+  test bug, but it means the arm64-without-PAC direction of task 7 has no
+  green run yet. Until (1) and (2) are fixed and the four cells re-run,
+  the floor criterion is not met.
+- Phase 2.5 acceptance (lane D), two readings to weigh: the x86_64 Valkey
+  soak at 675f357 (`bench/results/2026-09-19-x86_64-lane-d-percpu-baseline-soak/`)
+  has the write phase 1.5% (valkey-benchmark) and 4.9% (memtier) behind
+  bundled jemalloc on req/s with p99 -1.3% / +1.7%, peak RSS +0.4% and
+  post-settle RSS -3.6%; it is the first 20-minute soak under the
+  acceptance protocol on the C4 in the records (the Phase 2 acceptance
+  soaked the C4A), so it is a reading, not a regression call; a second run
+  would say. And the C4 scorecard line of the merge (0f5fea8) has larson16
+  at +12.9%, 2.1 points above the row's highest of twenty lines; lane C's
+  `ab` on the lock change read that row within noise; the coordinator's
+  next scorecard decides.
+- Phase 2.5 acceptance (lane D), what only lands after task 8 merges: the
+  percpu half, `make percpu-campaign MODE=percpu` on both lane VMs (about
+  two hours each; the baseline half saved the jemalloc soak as the cached
+  baseline in the lane VMs' target volumes, which the deletion discarded,
+  so the percpu half will soak both allocators again unless the VMs are
+  recreated and `make soak-baseline` is run first), then the comparison of
+  the rows task 8 names (mstress x86_64 RSS +16.7%, alloc-testN, larson64,
+  the calloc-zero campaign under the key, the Valkey and Ruby suites, the
+  idle-thread soak's arena count and RSS). Tagged pointers stay the
+  hardware item of task 6 (no GCP CPU exposes MTE, LAM or UAI).
+- Phase 2.5 task 17 (lane D), for the coordinator: folding
+  `tests/c/pagemap_guard.c` into the cargo-driven C test set is one
+  `run_c("pagemap_guard", &["on"])` driver plus a `run_bin_env` for `off`
+  under `MALLOC_CONF=guards:false` in `src/api/ctests.rs`; the Makefile
+  target can then stay as the standalone form or go.
+- Phase 2.5 task 17 (lane D), a latent harness bug fixed in a5a05c3: a plain
+  `make ruby-soak` (without `COMMIT=`) exited silently on a clean tree
+  because a bare `COMMIT=...$(tree_dirty && echo ...)` assignment took the
+  substitution's status under `set -e`; the campaign always passed
+  `COMMIT=`, so the acceptance runs were unaffected.
+- Phase 2.5 task 17 (lane D), two readings for task 9's file, not
+  regressions: under `thp:auto` in the auto sysfs state valkey1 takes 2788
+  64 KiB folios = 174 MiB of its 585 MiB heap, because only the classes with
+  64 KiB slabs are advised (the 1024-byte class has a 4 KiB slab), which
+  bounds what the mode can do for a Valkey-shaped heap; under `thp:always`
+  with the PMD, 280..282 of the 318 PMD pages are split again within a 10 s
+  run by the delete phase's purges (`thp_split_pmd`), the counter form of
+  the RSS price lane B named. And `thp_collapse_alloc=1` per process start
+  whenever `thp` is not `never` is the `MADV_COLLAPSE` probe.
+- Phase 2.5 task 17 (lane D), not run: no 6.13..6.15 host exists in the
+  lane's cells, so the guard test's "ioctl without the category" branch was
+  written from the kernel source, not exercised; the 5.10 / 6.1 / 6.8 cells
+  would take the "no ioctl" and "no guard slab" branches the 6.10 run covers
+  in substance. A matrix pass with `make test` on task 3's cells will run
+  the target on each.
 - The Cascade Lake's xmalloc row moved 3.5% (disjoint lists) and then 2.7% (overlapping) between `old` and the new lock with the same `pause` in both; the C4 and C4A (same code, PMU available) show nothing. The mechanism is one atomic load and a `match` on the slow path; the likeliest cause is code placement on the Cascade Lake (memory note on page aliasing). It is recorded as open in the results file; a sampler split on a C2 lab would settle it (no PMU there).
 - The geometry numbers say the 1024 ladder is right on 1 MiB L2 parts for throughput, and that 512 buys 12..15% of larson's RSS; if RSS on small parts ever matters more than 1..3% of larson, the knob exists and the model in 6.2 says where it stops paying (256 loses 6% on larson1).
 - Raw `ab` `.md` files on the VMs were deleted by the later `sync --delete` passes (they lived under `bench/results/` on the VM); the `~/logs/ab-*.log` copies, which carry the same tables from `## Sorted scores` on, are what is committed as `2026-09-19-lane-c-ab-*.log`. Worth a driver change: `sync` could exclude `bench/results/2026-*` on the receiver, or `ab` could write under `~/logs`.
