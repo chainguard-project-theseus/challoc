@@ -863,6 +863,39 @@ One line per task, newest at the bottom of each section. Keep it terse.
   at 10:12 UTC, `matrix clean` none, `delete all` none, `gcloud compute
   instances list --filter=name~challoc-lane-d` empty; the reference pair
   not touched, no scorecard run.
+- Phase 2.5 acceptance (lane A, 2026-09-20), the x86_64 Valkey write-phase
+  reading of rows 3 and 5 attributed, commit 4a9cbae
+  (`bench/results/2026-09-20-x86_64-valkey-write-phase-attribution.md`,
+  soak files `-soak.md`/`-soak-{challoc,jemalloc}.csv`, perf appendix
+  `-perf-report.txt`, sidecar `-perf-stat-*.csv`, `-snapshots-*.txt`,
+  `-generator-cpu.log`, `-mstats-*-t{580,1180}.txt`). The acceptance
+  protocol (`make valkey-soak ALLOCS="challoc jemalloc" DURATION=1200
+  OCCUPANCY=1`, e3e5fc3, the reference C4 after `make valkey STAGE=build`
+  relinked the quantum8 library) under `bench/probes/valkey-perf-sidecar.sh`
+  plus an unprivileged per-process generator sampler. Verdict in the plan's
+  words: the write-phase gap is outside the allocator. Both main threads
+  saturated (99.9% / 100.7%), valkey-benchmark at 0.4 of a CPU and memtier's
+  four workers at 1.0 together under both allocators, so throughput is clock
+  over cycles per command; challoc's cycles per SET are lower (4251 vs 4464
+  at the same 3.26 GHz on valkey-benchmark, 3458 vs 3506 on memtier, 3770
+  vs 3884 in the 60 s window) and the vCPU's effective clock moved
+  3.08..3.27 GHz within the one soak (the two halves up to 4% apart in the
+  same minute of the protocol), which is the amplitude of the three
+  same-protocol readings (-4.0..+5.8%); this run read challoc ahead in the
+  write phase (761,992 vs 731,845 req/s, 912,526 vs 916,554; p99 -2.5% /
+  -0.8%), RSS criteria met. Inside the allocator the one entry point above
+  jemalloc's cost on this CPU is `je_malloc_usable_size` (Valkey's
+  `zmalloc_size`): 346 vs 229 cycles per valkey-benchmark SET (+117), 250
+  vs 187 per memtier SET, 153 vs 86 per DEL, the bitmap-word load of the
+  exact liveness check (since task 4e's sized free no longer touches the
+  word, the query is the slot's first touch: +1.0 L1D miss per SET) on a
+  six-load classify chain; `je_malloc` (89 vs 76) and `je_sdallocx` (88 vs
+  95) at parity, `calloc`/`realloc`/plain `free`/refill/flush below 0.05%,
+  the kernel identical work (TCP family 12.89% vs 12.88%). The excess is
+  compensated in the write phase by Valkey's own code, libc and the kernel
+  (-332 cycles per SET); the delete phase, met yesterday, read +3.8% / +3.9%
+  today, which is that term (+3.3% cycles per DEL) plus the clock. No code
+  changed (the tree under acceptance stays byte-identical).
 
 
 - (c) 0604bb3: `bench/ruby-soak.sh`, `make ruby-soak`, `bench/ruby/soak.rb` (16
@@ -1788,6 +1821,18 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
   handler's entry (moved there by an earlier fixup, the increment not
   yet run) counts once more than the handler runs (716 against 712 in
   one `make test` on the C4), and the aarch64 increment is not atomic.
+- Phase 2.5 acceptance (lane A, 2026-09-20): the fix the attribution supports
+  is recorded as a design note, not implemented (results file section 8):
+  (1) `usable_size` on a slab pointer answers from `Regions::classify` alone
+  without `check_live` (the 09-18 aarch64 variant, rejected then because
+  `free` had just loaded the same line; tasks 4e/4f removed that premise),
+  which trades the abort of a use-after-free `malloc_usable_size` query for
+  up to 117 cycles per SET on the C4, a human's decision like 4e; or (2)
+  keep the check and put `bits_base[c]` beside `class_base[c]` in the dense
+  `Regions` arrays so the word is three dependent loads away, like
+  jemalloc's rtree. Measurement plan named (`valkey1-usable` under
+  `quick-perf` on the C4, `quick` on both reference VMs and a C3 lab cell,
+  then this soak protocol with the sidecar).
 - `auto` never installs `wfe`, and the `wfe` path stays in the tree behind the key. Reason: it lost xmalloc-test by 3% with a quarter more RSS on both aarch64 CPUs and gained nothing on larson; unselected it costs nothing (one atomic load per slow-path entry, measured within noise), and a deployment that wants the power saving or a CPU with a different wake latency can turn it on and measure. The explicit `wfe` is refused without the event stream so a `wfe` no store ends is always bounded.
 - The event stream is probed (`HWCAP_EVTSTRM`) but not added to the feature report line. Reason: a new key would change `tests/c/features.c` and every recorded line for a feature nothing acts on by default; `lock::spin_hint()` and `event_stream()` are what the tests check.
 - The probe's suggestion lives in `Cpu::probe` (a side effect on `lock::SPIN_HINT`) rather than in `api/mod.rs`'s init. Reason: init and `features.rs` belong to other lanes; the suggestion is idempotent and a configured hint is kept against it.
@@ -2447,6 +2492,16 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
   coordinator; task 14, outside row 1's criterion). The five cells cited
   from a999097 ran that tree's versions of the four changed tests on the
   identical library, not e3e5fc3's; recorded in the section, not re-run.
+- Phase 2.5 acceptance (lane A, 2026-09-20): two things the coordinator
+  should weigh. The x86_64 soak's throughput rows carry the vCPU's clock
+  ratio directly (3.08..3.27 GHz within one soak, the halves 21 minutes
+  apart), so "at least equal" on the C4 is decidable only on the sidecar's
+  cycles per command (the plan's tie-breaker), which read challoc ahead in
+  the write phase in this run; the results file records the clock series
+  per minute so a future soak can check the same. And the delete phase,
+  which met yesterday, read 3.8..3.9% behind today with +3.3% cycles per
+  DEL in `je_malloc_usable_size`; whether to open the design note as a task
+  is the human's call (it changes what a use-after-free query does).
 
 - The Cascade Lake's xmalloc row moved 3.5% (disjoint lists) and then 2.7% (overlapping) between `old` and the new lock with the same `pause` in both; the C4 and C4A (same code, PMU available) show nothing. The mechanism is one atomic load and a `match` on the slow path; the likeliest cause is code placement on the Cascade Lake (memory note on page aliasing). It is recorded as open in the results file; a sampler split on a C2 lab would settle it (no PMU there).
 - The geometry numbers say the 1024 ladder is right on 1 MiB L2 parts for throughput, and that 512 buys 12..15% of larson's RSS; if RSS on small parts ever matters more than 1..3% of larson, the knob exists and the model in 6.2 says where it stops paying (256 loses 6% on larson1).
