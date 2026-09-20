@@ -443,7 +443,13 @@ pub fn mib_to_leaf(mib: &[usize]) -> Result<Leaf, c_int> {
     last.and_then(|n| n.leaf).ok_or(ENOENT)
 }
 
-/// A C string as bytes, at most [`MAX_NAME`] long.
+/// A C string as bytes, at most [`MAX_NAME`] long. `None` for null or a
+/// string of `MAX_NAME` bytes or more.
+///
+/// `p` is the caller's `name` argument: null, or readable up to and
+/// including its NUL terminator (the `mallctl` contract); at most
+/// `MAX_NAME` bytes are ever read, and the slice borrows the caller's
+/// memory for the duration of the call.
 fn cstr(p: *const c_char) -> Option<&'static [u8]> {
     if p.is_null() {
         return None;

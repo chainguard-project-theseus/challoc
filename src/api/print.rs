@@ -70,7 +70,14 @@ impl Sink {
             Target::Callback(None, _) => malloc_write(&self.buf[..self.len]),
             Target::File(f) => {
                 // SAFETY: `f` is the caller's open stream; `len` bytes are
-                // readable.
+                // readable. `fwrite` may itself call `malloc` (glibc
+                // allocates a stream's buffer on its first write), which
+                // re-enters this allocator from inside `malloc_info`: that
+                // is safe because no allocator lock is held while the sink
+                // flushes (`stats::collect_arena` returns its figures before
+                // they are formatted, and `Arenas::iter` is a lock-free scan
+                // of the table) and the report's own state is this stack
+                // buffer.
                 unsafe { libc::fwrite(self.buf.as_ptr() as *const c_void, 1, self.len, f) };
             }
             Target::Stderr => crate::sys::write_all(crate::sys::STDERR_FILENO, &self.buf[..self.len]),
@@ -106,6 +113,9 @@ struct Opts {
 }
 
 impl Opts {
+    /// `opts` is the caller's option string: null, or readable up to and
+    /// including its NUL terminator (jemalloc's contract); at most 64
+    /// bytes are read, so a longer string is truncated, never overrun.
     fn parse(opts: *const c_char) -> Opts {
         let mut o = Opts::default();
         if opts.is_null() {
