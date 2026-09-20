@@ -149,6 +149,65 @@ One line per task, newest at the bottom of each section. Keep it terse.
   64-thread larson (4x the vCPUs, ids shared, sections aborted and retried): the mode -31% / -34% throughput at -30% / -22% RSS against thread caches (398 vs 580 M ops/s at 401 vs 575 MiB on the C4A; 223 vs 337 at 374 vs 475 MiB on the C4; jemalloc 610 / 370 at 540 / 419 MiB). Default: `percpu_arena:percpu` opts in,
   `auto` keeps thread caches (the Design decision below; the human decides
   the final default with the numbers, config.rs's line is under Notes).
+- Phase 2.5 task 7 follow-up (lane A, 2026-09-20), the Altra SIGILL: lane
+  D's T2A `make test` died with `SIGILL` in the first heap test that
+  flushed. Not the test builders (they passed the probe to `Shared::init`
+  and the flag was clear): `Heap::flush` ran `pac::mask()`'s `xpacd` on
+  every aarch64 flush whatever the probe said, so the shipped library
+  itself faulted on its first flush on a Neoverse N1 (Altra, Graviton2).
+  The mask is taken only under the flag now. Proof both ways on a PAC host:
+  `sys::pac::test_ops` counts the PAC instructions executed in test builds;
+  `heap::linux_tests::heap_off_pac_executes_no_pac_instruction` forks a
+  child on a `Shared` built with the probe forced off (`shared_pac(false)`)
+  and drives refills, a full cache, its flushes and the TLS heap pointer:
+  the count does not move (without the gate it counts the two flushes); a
+  second child with the probe's answer executes some where PAC exists and
+  none where it does not. Mac `make test` 390 + 116 + 23 + 6 cgroup
+  outcomes; the reference VMs' `make test` green at the commit and after
+  (below). Commit b43532f.
+- Phase 2.5 task 8 follow-up (lane A, 2026-09-20), the fast path of the
+  mode, two mechanisms from the predecessor's attribution (the mode was
+  instructions, not misses). (a) `ee0ecd8`: the per-CPU wrappers
+  (`api::libc::percpu_malloc`, `percpu_free`, `percpu_free_sized`) inline
+  the hit path (`Heap::percpu_pop_raw`, `heap::percpu_push_raw`) and test
+  one bit of the section's raw status word (`rseq::pop_raw`/`push_raw`,
+  `POP_*`/`PUSH_*`; `pop`/`push` decode); every miss is one cold tail
+  call that finishes the operation (`percpu_*_miss`, `Heap::percpu_pop_miss`,
+  `heap::percpu_push_miss`), so the wrappers are frameless with no call
+  (aarch64: `percpu_malloc` 97 -> 66 instructions, `percpu_free` 120 ->
+  106; `malloc`/`free` unchanged); the x86_64 pop compares `len` with
+  `zeroed` in the asm; the `CLASSES` bounds check left the byte count
+  (`class_size`). `bench/quick.sh` takes `NEW_CONF`/`OLD_CONF`. (b) (this
+  commit): the run as a per-CPU header of its own, a second table
+  `Percpu::runs` of `nr_cpu_ids` `[CacheHeader; NCLASSES]` (capacity
+  `cap / 4`, `compact_mask == u32::MAX`) served by the existing sections:
+  a scheduled pop in compact mode pops the id's run (`Heap::percpu_run_pop`),
+  an exhausted run is rebuilt by one block claim from the lowest partial
+  slab (`push_batch`, lowest on top, the zero prefix with it) instead of a
+  locked one-slot claim per scheduled pop; the drain takes the run, the GC
+  returns a run whose class stopped compacting; `stats.percpu.*` count
+  both tables; test `percpu_scheduled_pops_come_from_a_run_claimed_a_block_at_a_time`
+  (one automatic arena, id-change tolerant; its body verified with
+  `--test-threads=1` on both VMs). Measured (`bench/results/2026-09-19-{aarch64,x86_64}-task8-percpu-fastpath.md`
+  and the `-ab.md` files; `old` dfe3f60): per operation on the C4A / C4,
+  the mode over thread caches on larson1 +73.7 / +55.8 -> +46.7 / +32.5
+  instructions and +8.3 / +5.8 -> +4.1 / +3.8 cycles after (a); on the
+  Valkey model +177 / +148 -> +78 / +58 instructions and +70 / +81 -> +28
+  / +31 cycles after (a) + (b); `quick` (mode vs the base's default, median
+  of 3): C4A larson1 +5.8%, larson10 +9.0%, xmalloc +19.8%, alloc-test1
+  +4.9%, valkey1 +4.6%; C4 +5.9%, +22.4%, +16.5%, +2.6%, +39.3% (from
+  +15.1/+18.7/+23.9/+10.2/+9.7 and +11.1/+18.9/+23.8/+8.2/+67.5); the
+  churn probe compacts under the mode (97.0%); `ab` 5 rounds: C4A larson1
+  +5.3%, larson10 +9.4%, xmalloc +18.9%, valkey1 +4.7%, alloc-testN +4.8%;
+  C4 +3.7%, +16.6%, +16.1%, +37.8%, +3.9%. The shipped default (`auto`,
+  thread caches) is `quick` GO on both VMs (C4A -0.7/+0.3/+1.2/-0.6/+1.1%,
+  C4 -2.0/-0.2/+2.6/-0.3/-0.7%) and within noise on `ab` (C4A -0.7/-0.4/
+  +0.5/-0.3/-0.7%, C4 -0.9/-0.9/-0.2/+0.3/+1.4%): the acceptance holds. The
+  mode is not within noise, so the item stops here as the brief says:
+  `auto` keeps thread caches, `percpu_arena:percpu` stays the opt-in
+  (Design decision below). `make test` green on both VMs at (a) (390 + 116
+  + 23 + cgroup) and at (a) + (b) (391 + 116 + 23 + cgroup); design 6.4
+  and 15 updated. Commit 01439ab.
 - Phase 2.5 task 8 (lane C, the key; 2026-09-19): `percpu_arena` is a real
   config key (baa8bc2): `config::PercpuArena::{Auto, Percpu, Off}`, default
   `auto`, field `Config::percpu_arena` (after `narenas`, read at init like
@@ -370,6 +429,42 @@ One line per task, newest at the bottom of each section. Keep it terse.
   the `ab` tables (`bench/results/2026-09-19-*-task8-percpu.md`). Why in
   `heap.rs` and not in the key's default: `src/config.rs` is lane C's file
   (the one-line change is under Notes for the human).
+- Phase 2.5 task 8 follow-up (lane A, 2026-09-20), the fast-path form:
+  the per-CPU wrapper the entry point tail-calls inlines the section and
+  returns on a hit; every miss is one cold tail call that completes the
+  operation, and the sections hand back a raw status word rather than an
+  enum. Reason: the frame and the decode were the cost, not the section
+  (a wrapper that called the section's function and matched its enum
+  opened a frame, decoded an `Option`, and bounds-checked `CLASSES`: +65..83
+  instructions per larson operation; the same section inlined with cold
+  tail-call misses is +33..47, the floor of the design as written: the
+  descriptor store, the `mm_cid` load and range check, the table index,
+  three loads, the status bit and the 7-instruction byte count). A tail
+  call is what keeps `malloc`/`free` frameless in thread mode, so the mode
+  cannot be inlined into the entry point itself without the frame the
+  first form had; the wrapper is where the section belongs.
+- Phase 2.5 task 8 follow-up (lane A, 2026-09-20), the run under the mode
+  is a second per-CPU table, not the bottom of the stack. Reason: the
+  thread run's pop moves the top entry into the hole, two words no single
+  commit store can make consistent under an abort, which is why the landed
+  form claimed one slot under the lock per scheduled pop (most of the
+  Valkey model's cost); a run that is a `CacheHeader` of its own needs no
+  new section (`pop`, `push_batch`, `take_all`, `install` on the second
+  table), keeps the thread rebuild's shape (a block of `cap / 4` from the
+  lowest partial slab, one lock hold per block, the class re-checked), and
+  carries the zero prefix so `calloc` stays honest. The cost is `cap / 4`
+  more slots of residue per (id, class) in compact mode and 3.3 KiB per
+  id of zeroed table; the run of a class that stops compacting is returned
+  by the GC.
+- Phase 2.5 task 8 follow-up (lane A, 2026-09-20), the default after the
+  follow-up: `auto` still keeps thread caches. Reason: the plan's rule
+  (default-on only if `quick` and `ab` are within noise on both reference
+  VMs) still fails: after both mechanisms the mode is at larson1 +5.3% /
+  +3.7%, larson10 +9.4% / +16.6%, xmalloc +18.9% / +16.1%, valkey1 +4.7% /
+  +37.8%, alloc-testN +4.8% / +3.9% on `ab` (C4A / C4), half or less of
+  what it was but not noise; the brief says record how far and stop. The
+  one-line flip in `src/config.rs` (lane C's file) is not made; Notes for
+  the human say what is left.
 - Phase 2.5 task 8 (lane A, 2026-09-19), the eight properties lane C's
   model states (design 15 at merge), checked against the code: (1)
   `mm_cid` is read inside the armed section and the header address is
@@ -892,6 +987,59 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
 
 ## Notes for the human
 
+- Phase 2.5 task 7 follow-up, for the human (lane A, 2026-09-20): the
+  Altra `SIGILL` was a shipped-library bug, not only a test bug: since task
+  7 landed (9157450) every aarch64 flush executed `xpacd` through
+  `pac::mask()` whatever the probe said, so challoc on a Neoverse N1 host
+  (Altra, Graviton2) died at its first cache flush; the four-way and
+  CPU-matrix runs on T2A predate task 7 (7b2c50b). Fixed in b43532f, proven
+  on the Mac by counting PAC instructions in a forked child with the probe
+  forced off (0 executed); the T2A itself has not run since (lane D's cell,
+  `make test` there closes the ceiling gap (i)). No T2A VM was created here
+  (the forced-off proof stood, as the brief allowed).
+- Phase 2.5 task 8 follow-up, for the human (lane A, 2026-09-20): the mode
+  is cheaper by about half but not free, and the default stays thread
+  caches. Where it stands (`ab`, C4A / C4, against dfe3f60's default):
+  larson1 +5.3% / +3.7%, larson10 +9.4% / +16.6%, xmalloc +18.9% / +16.1%,
+  valkey1 +4.7% / +37.8%, alloc-testN +4.8% / +3.9%. What is attributed:
+  the per-side section floor (+47 / +33 instructions per larson operation,
+  4 cycles: the rseq descriptor store, the `mm_cid` load and range check,
+  the table index, the status word, the 7-instruction byte count), and
+  the Valkey model's remaining +28 / +31 cycles (the scheduled pop's cold
+  path once in 8 pops and one block claim per `cap / 4` of them; `quick`'s
+  5 s score reads the write phase only, where compaction is busiest, hence
+  +39% there against +22% in cycles per operation). What is not attributed
+  and would be next: the larson10 and xmalloc rows (cross-thread frees and
+  a producer/consumer): the per-CPU flush copies the stack out and back
+  through two sections and releases by owner, where the thread flush works
+  in place and `free_other` batches per arena, and xmalloc's RSS under the
+  mode (53 -> 82 MiB on the C4A) says the copies keep more slots in
+  flight; a `quick-perf` with the sampler split by function on xmalloc is
+  the first step. Two cheap trims of the floor if you want them: the byte
+  count as a per-heap per-class counter (4 instructions instead of 7 per
+  side; `thread.allocated` summed at stats time) and a `pop_raw` variant
+  without the `zeroed` compare for `malloc` (3..5 instructions per pop,
+  a second asm block per architecture). If the default is ever flipped,
+  the change is in `heap::Percpu::build` (lane A's file): delete the `Auto`
+  arm of its match so `auto` follows the probe as the key's doc in
+  `config.rs` already says; nothing in `config.rs` needs to move.
+- Phase 2.5 task 11 (lane A, 2026-09-20), the plan, not done: prefaulted
+  fresh slabs need the background thread (lane B's `purge.rs`) and the
+  commit path (lane B's `class.rs` half), so nothing was coded. The
+  claim-side hook it needs already exists: `ClassState::refilled` counts
+  refills per (arena, class) and `note_refill` is called on every per-CPU
+  and thread refill, so a background pass can find "classes that refilled
+  since the last pass" by diffing that counter against a snapshot of its
+  own; the pass would then commit the class's next fresh slab (the commit
+  path's `commit next` step, but from the thread and without a claim) and
+  `MADV_POPULATE_WRITE` it (5.14+, probed in `features.rs`; fallback:
+  touch one byte per page), one slab per class per pass, bounded by the
+  cgroup headroom (`policy.rs`'s band), and the claim path would take the
+  prefaulted slab as it takes any committed empty slab (lowest-address
+  selection already prefers it once committed). Acceptance as the plan
+  says: the Valkey soak's write-phase p99 and the main thread's page
+  faults from the perf sidecar, scorecard within noise. Suggested owner:
+  lane B, with lane A reviewing the claim side.
 - Phase 2.5 task 8, for the human (lane A, 2026-09-19): the per-CPU mode
   is implemented, tested both ways and measured, and it loses to thread
   caches on every `quick` row on both reference VMs (the Design decision
