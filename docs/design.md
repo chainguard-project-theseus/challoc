@@ -900,9 +900,9 @@ be correct.
 Requests above the largest medium class are served from the huge region with
 page granularity.
 
-- A `TwoLevelBitmap` over pages tracks free pages; allocation is lowest-address
-  first fit of `ceil(n / page) + guard_pages` contiguous pages, under the huge
-  lock.
+- A page-granular `class::Set` (the `TwoLevelBitmap` view the arenas' set
+  tables use) tracks free pages; allocation is lowest-address first fit of
+  `ceil(n / page) + guard_pages` contiguous pages, under the huge lock.
 - An open-addressing hash table keyed by page number holds `HugeDesc {
   start, pages, usable, arena, state, dirty_at, prev, next }`: a run is keyed
   by its start page, a free extent by both its first and its last page so
@@ -917,8 +917,11 @@ page granularity.
   which is why slabs have no such fallback; Phase 2 task 1). The guard
   install variant exists so that a later commit of the neighbouring run
   does not silently remove the guard.
-- Alignment requests above page size are satisfied by over-allocating and
-  releasing the head and tail pages back to the bitmap.
+- Alignment requests above page size are satisfied inside a free extent:
+  `find` rounds the extent's start (or the allocation mark) up to the
+  alignment and takes the run there when it fits below the extent's end;
+  the pages before and after the run stay free extents (no over-allocation,
+  nothing to give back). An alignment beyond the region is refused.
 - Freed runs become `Empty` and decay like slabs. Runs whose usable size is
   above `huge_retain_max` (a `malloc_conf` key, default 64 MiB, readable as
   `opt.huge_retain_max`) are purged immediately.
@@ -1007,7 +1010,7 @@ address, with `dirty_at` per entry. Decay policy is jemalloc's in shape:
   a read of it in the claim paths for a saving bounded to `calloc` on
   `Purged` reuse; the sticky flag is the smallest correct form.
 - Purges are batched: collect up to 64 ranges and issue one `process_madvise`
-  with `PIDFD_SELF` (kernel 6.14) or a pidfd of self (5.10), falling back to
+  with `PIDFD_SELF` (kernel 6.15) or a pidfd of self (5.10), falling back to
   a loop of `madvise`. Init probes `MADV_FREE` through the same target
   separately (a kernel may take `MADV_DONTNEED` from a self-targeting
   `process_madvise` and refuse `MADV_FREE`); where it does not, lazy
@@ -1087,8 +1090,10 @@ group by the handoff's definition (13.3) and may be adopted by another
 arena's refill, which is the same memory serving the same class one
 arena over.
 
-One slab per class per pass, so at most one prefaulted slab per `(arena,
-class)` waits at any time; nothing at all unless the cgroup policy shows
+As many slabs per class per pass as the class refilled since the last pass,
+at least one and at most `MAX_AHEAD` (8; `ClassState::prefault_ahead`), so a
+bounded number of prefaulted slabs per `(arena, class)` waits at any time;
+nothing at all unless the cgroup policy shows
 headroom (`Policy::prefault_allowed`: no limit, or under 70% of it with
 no eager return of the excess over the cap in progress, section 11), since
 resident memory nobody asked for yet is the first thing the scaled and
@@ -1466,7 +1471,7 @@ jemalloc names where they exist:
 | Key                       | Default | Notes                                   |
 |---------------------------|---------|-----------------------------------------|
 | `background_thread`       | false   |                                         |
-| `prefault`                | false   | challoc only; opt-in (plan Phase 2.5 task 11): the background thread commits and `MADV_POPULATE_WRITE`s (5.14+, probed; fallback: touch) the next fresh slab of every class that refilled since its last pass, one slab per class per pass and within the cgroup headroom (11), so the claim path's first write into a fresh slab takes no page faults; the claim takes a prefaulted slab as any committed empty slab. Needs `background_thread:true` in the same configuration at init (`Config::prefault_active` is read once there; a background thread Valkey starts later through `mallctl` does not turn the pass on, so Valkey is given both keys, `docs/tuning.md` section 3); off by default (the human's decision of 2026-09-20 on the Valkey soak's write-phase p99 and main-thread page faults, PROGRESS.md "Phase 2.5 defaults" item 3) |
+| `prefault`                | false   | challoc only; opt-in (plan Phase 2.5 task 11): the background thread commits and `MADV_POPULATE_WRITE`s (5.14+, probed; fallback: touch) the next fresh slabs of every class that refilled since its last pass (as many as it refilled, at least one and at most 8 per class per pass) within the cgroup headroom (11), so the claim path's first write into a fresh slab takes no page faults; the claim takes a prefaulted slab as any committed empty slab. Needs `background_thread:true` in the same configuration at init (`Config::prefault_active` is read once there; a background thread Valkey starts later through `mallctl` does not turn the pass on, so Valkey is given both keys, `docs/tuning.md` section 3); off by default (the human's decision of 2026-09-20 on the Valkey soak's write-phase p99 and main-thread page faults, PROGRESS.md "Phase 2.5 defaults" item 3) |
 | `dirty_decay_ms`          | 10000   |                                         |
 | `muzzy_decay_ms`          | ignored | accepted for compatibility              |
 | `narenas`                 | 0       | automatic arenas; 0 = `min(4 * ncpus, 64)`; see 13.3 |
@@ -1683,7 +1688,26 @@ prof.* -> ENOENT
 stats.cgroup.limit, stats.cgroup.high, stats.cgroup.current, stats.cgroup.pressure_events,
 stats.cgroup.decay_ms, stats.cgroup.retention_cap, stats.cgroup.empty_bytes, stats.cgroup.full_purges
   (section 11; ENOENT when no cgroup2 is tracked or cgroup:false)
+stats.cgroup.purge_advice, stats.cgroup.lazy_purges, stats.cgroup.eager_purges
+  (section 11; readable without a tracked cgroup)
+stats.thp.mode, stats.thp.class_ranges, stats.thp.class_bytes, stats.thp.huge_ranges,
+stats.thp.meta_ranges, stats.thp.nohuge_ranges, stats.thp.failures, stats.thp.process (section 10)
+stats.prefault.enabled, stats.prefault.populate_write, stats.prefault.passes, stats.prefault.slabs,
+stats.prefault.bytes, stats.prefault.skipped, stats.prefault.fallbacks, stats.prefault.wakes,
+stats.prefault.active (section 8.2)
+stats.percpu.enabled, stats.percpu.ids, stats.percpu.headers, stats.percpu.cached, stats.percpu.aborts (section 15)
 ```
+
+Semantics that differ from jemalloc's, deliberately: `arena.<i>.destroy`
+flushes and purges the arena and leaves it registered and usable
+(`narenas` does not move; `MALLOCX_ARENA(i)` keeps working; `EFAULT` for
+arena 0 and `MALLCTL_ARENAS_ALL`). Reading `thread.arena` builds the
+calling thread's heap if it has none (`EAGAIN` while a heap is being
+created or torn down); writing it to an unbuilt automatic arena builds
+that arena. Every unsigned key (`opt.tcache_max` included) reads back as
+`unsigned`, not jemalloc's `size_t`. The `MALLCTL_ARENAS_DESTROYED` index
+the shipped headers define (4097) is above `MAX_ARENAS`, so
+`arena.4097.*` and `stats.arenas.4097.*` answer `ENOENT`.
 
 Everything else returns `ENOENT`. `arenas.nbins` counts the classes up to
 4 KiB (32 with `quantum8`, 28 with `quantum16`), a fixed boundary that does
@@ -2175,7 +2199,7 @@ runs on every row.
 |---|---|---|---|
 | Page size (`AT_PAGESZ`) | kernel, the auxiliary vector | the granularity of every mapping, slab and purge (4, 16 or 64 KiB) | none: init aborts without it (`/proc/self/auxv` is tried first) |
 | `MADV_GUARD_INSTALL` | kernel 6.13 | guard slabs between slabs and after huge runs (section 14) | a `PROT_NONE` page after huge runs only; no guard slabs |
-| `process_madvise` on self | kernel 6.13 with a pidfd of self (the syscall exists since 5.10 but accepts `MADV_DONTNEED` only from 6.13; the matrix of Phase 2.5 task 3 found it unavailable on 5.10, 6.1 and 6.8 even without seccomp, lit on 7.0); 6.14 with `PIDFD_SELF` | batched purge, one call per decay pass (section 8) | a loop of `madvise(MADV_DONTNEED)` |
+| `process_madvise` on self | kernel 6.13 with a pidfd of self (the syscall exists since 5.10 but accepts `MADV_DONTNEED` only from 6.13; the matrix of Phase 2.5 task 3 found it unavailable on 5.10, 6.1 and 6.8 even without seccomp, lit on 7.0); 6.15 with `PIDFD_SELF` | batched purge, one call per decay pass (section 8) | a loop of `madvise(MADV_DONTNEED)` |
 | `process_madvise(MADV_FREE)` on self (`process_madvise_free`) | the same kernels, probed separately through the target the `MADV_DONTNEED` probe found (yes on the 7.0 reference VMs) | the lazy batches of the two-advice purge (section 8) take the batched path | lazy batches through a loop of `madvise(MADV_FREE)`; eager batches unchanged |
 | `MADV_FREE` (the advice itself) | every kernel since 4.5 | `Empty` slabs and huge extents under 70% of a known cgroup limit are returned lazily (sections 8 and 11); `lazy_free` everywhere | `MADV_DONTNEED` everywhere (no limit known, `lazy_band:false`) |
 | `mseal` | kernel 6.10, not filtered by seccomp | seals the never-committed ranges of the reservations at init (section 10 step 5) | skip; `Sealed ranges: 0 of N` |

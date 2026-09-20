@@ -177,7 +177,7 @@ impl Curve {
 
 /// `BACKEND` value for "loop over `madvise`".
 const LOOP: i32 = i32::MIN;
-/// The kernel's `PIDFD_SELF` sentinel (Linux 6.14). Mirrored here so the
+/// The kernel's `PIDFD_SELF` sentinel (Linux 6.15). Mirrored here so the
 /// host build of this module type-checks; the Linux build checks it.
 const PIDFD_SELF: i32 = -10000;
 #[cfg(target_os = "linux")]

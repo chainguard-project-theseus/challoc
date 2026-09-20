@@ -92,7 +92,7 @@ could not be independently confirmed.
 
 | Feature                         | Version | Notes                                                                 |
 |---------------------------------|---------|-----------------------------------------------------------------------|
-| `process_madvise`               | 5.10    | Any advice on own mm; `PIDFD_SELF` from 6.14                          |
+| `process_madvise`               | 5.10    | Any advice on own mm; `PIDFD_SELF` from 6.15                          |
 | `MADV_POPULATE_READ/WRITE`      | 5.14    |                                                                       |
 | `PR_SET_VMA_ANON_NAME`          | 5.17    |                                                                       |
 | `MADV_DONTNEED_LOCKED`          | 5.18    |                                                                       |
