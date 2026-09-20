@@ -153,6 +153,17 @@
 #                            bench/results/<date>-<arch>-jvm.md (RESULT=path,
 #                            ALLOCS, ROWS, DURATION, WARMUP, CONNECTIONS, THREADS,
 #                            HEAP, HOST_KIND)
+#   make postgres-bench      PostgreSQL 17 rows (bench/postgres-bench.sh, Phase 3
+#                            task 5b): Wolfi's postgresql-17 started by pg_ctl as a
+#                            non-root user with the allocator in its environment
+#                            (LD_PRELOAD inherited by every backend), pgbench -i -s 50,
+#                            then select-only at 100 and 500 clients, TPC-B at 100
+#                            and a connection-per-transaction row (-C); tps, latency
+#                            average and p99, RSS as the sum of every postgres
+#                            process's smaps_rollup Pss sampled every 5 s; ROUNDS=5
+#                            plus warm-up, interleaved; writes
+#                            bench/results/<date>-<arch>-postgres.md (RESULT=path,
+#                            ALLOCS, ROWS, SCALE, DURATION, HOST_KIND)
 #
 # `target/` inside the container is a named Docker volume, one per
 # architecture, so Linux artifacts never mix with host artifacts and builds do
@@ -208,7 +219,7 @@ DOCKER_RUN = $(DOCKER_BASE) $(DOCKER_FLAGS) $(IMAGE)
 cgroup_docker = $(DOCKER_BASE) --memory=$(1) --memory-swap=$(1) $(if $(CGROUP_WATCHDOG),-e WATCHDOG=$(CGROUP_WATCHDOG)) $(IMAGE) sh scripts/cgroup-tests.sh
 cgroup_run = $(call cgroup_docker,$(1)) $(2)
 
-.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare test-pagemap-guard test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench node-bench check-needed clean-volumes jvm-bench
+.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare test-pagemap-guard test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench node-bench check-needed clean-volumes jvm-bench postgres-bench
 
 image:
 	docker build --platform $(PLATFORM) -f Dockerfile.dev -t $(IMAGE) .
@@ -429,6 +440,13 @@ JVM_BENCH_VARS = ALLOCS ROUNDS ROWS DURATION WARMUP INTERVAL CONNECTIONS THREADS
 jvm-bench: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(JVM_BENCH_VARS),$(if $($(v)),-e $(v)="$($(v))"))
 jvm-bench: image
 	$(DOCKER_RUN) sh bench/jvm-bench.sh
+# PostgreSQL rows (bench/postgres-bench.sh, Phase 3 task 5b): Wolfi's
+# postgresql-17 from the image, the server run as a non-root user the script
+# creates, the allocator in the postmaster's environment, pgbench rows.
+POSTGRES_BENCH_VARS = ALLOCS ROUNDS ROWS RESULT OUT HOST_KIND REV SCALE DURATION CONN_DURATION INTERVAL SAMPLING_RATE JOBS CLIENTS_A CLIENTS_B CONN_CLIENTS CONN_JOBS SHARED_BUFFERS MAX_CONNECTIONS REINIT
+postgres-bench: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(foreach v,$(POSTGRES_BENCH_VARS),$(if $($(v)),-e $(v)="$($(v))"))
+postgres-bench: image
+	$(DOCKER_RUN) sh bench/postgres-bench.sh
 
 # Phase 2.5 task 8's acceptance rows (bench/percpu-campaign.sh, lane D): the
 # same suites under the default and under CHALLOC_CONF=percpu_arena:percpu,

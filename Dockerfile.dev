@@ -44,6 +44,13 @@ RUN sed -i \
  && rustc --version && cargo --version && python3 --version \
  && test -f /usr/lib/libtcmalloc_minimal.so.4 \
  && node --version && ab -V | head -1
+      # PostgreSQL rows (Phase 3 task 5b): the server package carries initdb,
+      # pg_ctl, pgbench and postgres; the client package psql (bench/postgres-bench.sh)
+      postgresql-17 \
+      postgresql-17-client \
+ && rustc --version && cargo --version && python3 --version \
+ && test -f /usr/lib/libtcmalloc_minimal.so.4 \
+ && pgbench --version && test -x /usr/bin/psql
 
 # The last seven are for Ruby (contrib/ruby/build.sh, Phase 1 acceptance): a
 # git checkout of Ruby needs autoconf and a base Ruby; the jemalloc header,

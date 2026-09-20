@@ -26,6 +26,8 @@ never used for numbers.
     make jvm-bench        JVM rows (Phase 3 task 5 (a)): `java -version` startup and a
                           200-thread com.sun.net.httpserver server under ab for 5 minutes per
                           allocator, plus glibc with MALLOC_ARENA_MAX=2 as a sixth variant
+    make postgres-bench   PostgreSQL 17 rows (Phase 3 task 5b): pgbench select-only at 100 and
+                          500 clients, TPC-B, connection setup; RSS over every postgres process
 
 ## Two tiers
 
@@ -366,6 +368,38 @@ Files:
   the fleet's usual mitigation for the per-thread arenas), jemalloc,
   mimalloc, tcmalloc, every one's `/proc/self/maps` checked once. Written to
   `bench/results/<date>-<arch>-jvm.md` (`RESULT`, `ROWS`, `HOST_KIND`).
+- `postgres-bench.sh`, `probes/pg-rss-sampler.sh`: the PostgreSQL rows
+  (docs/plan.md Phase 3 task 5 (b)). Wolfi's `postgresql-17` from the image:
+  the script creates a non-root OS user (`pgb`; postgres refuses to run as
+  the container's root), runs `initdb` into `target/postgres/data`
+  (`--locale=C`, trust auth on a unix socket), loads `pgbench -i -s 50` once
+  (the data files do not depend on the server's allocator) and, per
+  allocator and round, starts the server with `pg_ctl start` as that user
+  with the allocator in its environment (`LD_PRELOAD`; challoc built from
+  `REV`, default the working tree, into `target/postgres/lib`; jemalloc,
+  mimalloc, tcmalloc by path; glibc none), so the postmaster and every
+  backend and auxiliary process it forks inherit it; the postmaster's and
+  one live backend's `/proc/<pid>/maps` are checked once per allocator.
+  Server options go on the command line (`shared_buffers` 1 GB so the
+  scale-50 set is served from shared memory, `max_connections` 600,
+  `huge_pages=off`, `synchronous_commit=off`, no checkpoint inside a row).
+  Rows are one pgbench run each (pgbench, the client, runs as root on glibc
+  malloc, the same binary for every allocator): `select100` (`-S -c 100 -j
+  16 -T 60`), `tpcb100` (TPC-B, `-c 100 -j 16 -T 60`), `select500` (`-S -c
+  500 -j 16 -T 60`) and `connect20` (`-C -c 20 -j 4 -T 30`, a new
+  connection per transaction: the fork and backend start-up row). Scores:
+  pgbench's tps and latency average, p99 from `-l --sampling-rate=0.05`,
+  connect20's "average connection time", and RSS from the sidecar
+  `pg-rss-sampler.sh`, which runs as the postgres user (root in the
+  container cannot read another uid's `smaps_rollup`) and sums
+  `smaps_rollup` Pss and Pss_Anon over every postgres process every
+  `INTERVAL` (5) s: peak and final of the run, and the per-backend median
+  at the final sample (the 100- and 500-connection points). `ROUNDS` (5)
+  plus warm-up, allocators interleaved (one server start per allocator per
+  round), sorted tps and medians written to
+  `bench/results/<date>-<arch>-postgres.md` (`RESULT`, `ALLOCS`, `ROWS`,
+  `SCALE`, `DURATION`, `CONN_DURATION`, `CLIENTS_A`, `CLIENTS_B`,
+  `HOST_KIND`). A protocol run is about two hours per architecture.
 - `four-way.sh`: assembles the comparison matrix of Phase 2.5 task 1
   (`bench/results/<date>-<arch>-gce-four-way.md`) from one VM's same-run
   outputs: an `ab.sh` result (`AB=`, the Phase 0 set and the Valkey model rows
