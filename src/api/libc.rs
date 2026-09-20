@@ -898,22 +898,9 @@ mod tests {
         }
     }
 
-    // ---- release .so under LD_PRELOAD -------------------------------------
-
-    fn release_so() -> String {
-        let target = env::var("CARGO_TARGET_DIR")
-            .unwrap_or_else(|_| std::format!("{}/target", env!("CARGO_MANIFEST_DIR")));
-        let so = std::format!("{target}/release/libchalloc.so");
-        assert!(
-            std::path::Path::new(&so).exists(),
-            "{so} missing: run `cargo build --release` first (`make test` does)"
-        );
-        so
-    }
-
     #[test]
     fn shared_object_exports_every_libc_entry_point() {
-        let so = release_so();
+        let so = crate::api::ctests::release_so();
         let out = Command::new("readelf").args(["--dyn-syms", "-W", &so]).output().expect("readelf");
         assert!(out.status.success());
         let syms = String::from_utf8(out.stdout).unwrap();

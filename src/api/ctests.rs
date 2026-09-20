@@ -51,7 +51,9 @@ fn target_dir() -> String {
     env::var("CARGO_TARGET_DIR").unwrap_or_else(|_| std::format!("{}/target", root()))
 }
 
-fn release_so() -> String {
+/// The release `.so` the C tests load (`CARGO_TARGET_DIR` or the tree's
+/// `target/`); shared with the symbol-table tests of the sibling modules.
+pub(crate) fn release_so() -> String {
     let so = std::format!("{}/release/libchalloc.so", target_dir());
     assert!(
         std::path::Path::new(&so).exists(),
