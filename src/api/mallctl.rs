@@ -623,6 +623,9 @@ fn cstr_of(s: &'static str) -> *const c_char {
         "off" => b"off\0",
         // `opt.slice_ext` (config::SliceExt::name); `auto` and `off` share the arms above.
         "on" => b"on\0",
+        // `opt.thp_process` (config::ThpProcess::name).
+        "default" => b"default\0",
+        "advised" => b"advised\0",
         _ => b"?\0",
     };
     c.as_ptr() as *const c_char

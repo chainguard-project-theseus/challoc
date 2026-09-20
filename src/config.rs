@@ -30,7 +30,10 @@
 //! 2.5 task 9 (`thp.rs`): all implemented, opt-in and off by default.
 //! `percpu_arena` left the *ignored* jemalloc keys ([`IGNORED_KEYS`]) with
 //! Phase 2.5 task 8: it is a real key ([`PercpuArena`]) whose jemalloc
-//! spellings are accepted as aliases.
+//! spellings are accepted as aliases. `thp_process` ([`ThpProcess`], plan
+//! Phase 2.5 task 16) and `prefault` (task 11) are challoc keys, opt-in and
+//! off by default; this module holds the keys, `thp.rs` the `prctl` and
+//! `purge.rs`/`class.rs` the prefault pass.
 
 use core::fmt::{self, Write as _};
 
@@ -224,10 +227,58 @@ impl SliceExt {
     }
 }
 
+/// `thp_process` values (design 12 and 17, plan Phase 2.5 task 16, the
+/// prctl half): the process-wide THP policy challoc asks the kernel for at
+/// init, `prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED)`,
+/// so that on an `always` host (Chainguard OS) only the regions challoc
+/// `MADV_HUGEPAGE`s under `thp:auto|always` get huge pages and the rest
+/// of the process (libc's own mappings, the stack, other allocators) does
+/// not. Kernel 6.18+ accepts the flag; it is probed by the call's return
+/// (`EINVAL` below), never assumed from a header constant. Off by default
+/// because it is process-wide: a library must not change the THP policy
+/// of the program that loaded it unless asked. The call itself lives in
+/// `thp.rs` (lane B); this key only says whether to issue it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThpProcess {
+    /// The default: no `prctl` is issued; the process keeps the policy it
+    /// inherited (byte for byte the allocator without the key).
+    Default,
+    /// Issue the `prctl` at init; where the kernel refuses it the process
+    /// keeps its inherited policy and the report says so.
+    Advised,
+}
+
+impl ThpProcess {
+    pub const fn name(self) -> &'static str {
+        match self {
+            ThpProcess::Default => "default",
+            ThpProcess::Advised => "advised",
+        }
+    }
+
+    /// Whether init issues the `prctl` at all (`advised`); `default` never
+    /// calls it, so a kernel without the flag is never even asked.
+    #[inline]
+    pub const fn requested(self) -> bool {
+        matches!(self, ThpProcess::Advised)
+    }
+}
+
 /// Every tunable of design section 12 with its compiled default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Config {
     pub background_thread: bool,
+    /// Prefaulted fresh slabs (plan Phase 2.5 task 11): the background
+    /// thread commits and `MADV_POPULATE_WRITE`s (5.14+, probed; fallback:
+    /// touch) the next fresh slab of every class that refilled since its
+    /// last pass, one slab per class per pass and within the cgroup
+    /// headroom, so the claim path's first write into a fresh slab does
+    /// not take the page faults. Needs the background thread
+    /// (`background_thread:true`): without it the key changes nothing
+    /// ([`Config::prefault_active`]). Off by default until measured (the
+    /// Valkey soak's write-phase p99 and main-thread page faults). Read at
+    /// init by the thread (`purge.rs`) and the commit path (`class.rs`).
+    pub prefault: bool,
     /// `-1` means never purge.
     pub dirty_decay_ms: i64,
     /// Accepted for compatibility; nothing reads it.
@@ -257,6 +308,12 @@ pub struct Config {
     pub tcache_compact_shift: u32,
     /// Transparent huge pages for the regions (`thp.rs`, design 7, 10, 17).
     pub thp: Thp,
+    /// The process-wide THP policy asked for at init ([`ThpProcess`],
+    /// design 17, plan Phase 2.5 task 16): `default` issues nothing,
+    /// `advised` issues `prctl(PR_SET_THP_DISABLE, 1,
+    /// PR_THP_DISABLE_EXCEPT_ADVISED)` where the kernel accepts it (6.18+,
+    /// probed by the return). Read at init by `thp.rs`, as `thp` is.
+    pub thp_process: ThpProcess,
     /// The lock's spin hint (design 5, `lock::SpinHint`): `auto` leaves the
     /// CPU probe's choice; a name installs that hint (`umwait` only where
     /// the CPU has WAITPKG, `wfe` only on aarch64 under the timer event
@@ -346,6 +403,7 @@ impl Config {
     /// The compiled defaults (design section 12).
     pub const DEFAULT: Config = Config {
         background_thread: false,
+        prefault: false,
         dirty_decay_ms: 10_000,
         muzzy_decay_ms: 0,
         narenas: 0,
@@ -357,6 +415,7 @@ impl Config {
         tcache_gc_interval_ms: 10_000,
         tcache_compact_shift: 3,
         thp: Thp::Never,
+        thp_process: ThpProcess::Default,
         spin_hint: SpinChoice::Auto,
         slice_ext: SliceExt::Auto,
         lazy_free: false,
@@ -419,6 +478,7 @@ impl Config {
         };
         match key {
             b"background_thread" => self.background_thread = parse_bool(value).ok_or_else(bad)?,
+            b"prefault" => self.prefault = parse_bool(value).ok_or_else(bad)?,
             b"dirty_decay_ms" => return num(self, -1, MAX_INTERVAL_MS, |c, v| c.dirty_decay_ms = v),
             b"muzzy_decay_ms" => return num(self, -1, MAX_INTERVAL_MS, |c, v| c.muzzy_decay_ms = v),
             b"narenas" => return num(self, 0, u32::MAX as i64, |c, v| c.narenas = v as u32),
@@ -462,6 +522,13 @@ impl Config {
                     b"never" | b"default" => Thp::Never,
                     b"auto" => Thp::Auto,
                     b"always" => Thp::Always,
+                    _ => return Err(bad()),
+                }
+            }
+            b"thp_process" => {
+                self.thp_process = match value {
+                    b"default" => ThpProcess::Default,
+                    b"advised" => ThpProcess::Advised,
                     _ => return Err(bad()),
                 }
             }
@@ -530,6 +597,7 @@ impl Config {
     pub fn get(&self, key: &[u8]) -> Option<Value> {
         Some(match key {
             b"background_thread" => Value::Bool(self.background_thread),
+            b"prefault" => Value::Bool(self.prefault),
             b"dirty_decay_ms" => Value::Int(self.dirty_decay_ms),
             b"muzzy_decay_ms" => Value::Int(self.muzzy_decay_ms),
             b"narenas" => Value::Uint(self.narenas as u64),
@@ -541,6 +609,7 @@ impl Config {
             b"tcache_gc_interval_ms" => Value::Int(self.tcache_gc_interval_ms),
             b"tcache_compact_shift" => Value::Uint(self.tcache_compact_shift as u64),
             b"thp" => Value::Str(self.thp.name()),
+            b"thp_process" => Value::Str(self.thp_process.name()),
             b"spin_hint" => Value::Str(self.spin_hint.name()),
             b"slice_ext" => Value::Str(self.slice_ext.name()),
             b"lazy_free" => Value::Bool(self.lazy_free),
@@ -636,6 +705,31 @@ impl Config {
         crate::slice::configure(self.slice_ext.wanted(), self.slice_ext.forced())
     }
 
+    /// The process-wide THP policy to ask for at init (`thp_process`,
+    /// [`ThpProcess`]); `thp.rs` issues the `prctl` when
+    /// `thp_process().requested()`.
+    #[inline]
+    pub const fn thp_process(&self) -> ThpProcess {
+        self.thp_process
+    }
+
+    /// The `prefault` key as set: whether prefaulted fresh slabs were asked
+    /// for. See [`Config::prefault_active`] for whether a pass can run.
+    #[inline]
+    pub const fn prefault(&self) -> bool {
+        self.prefault
+    }
+
+    /// Whether the prefault pass runs: `prefault:true` and the background
+    /// thread that runs it (`background_thread:true`). `prefault` without
+    /// the thread is stored and readable (`opt.prefault`) but does nothing,
+    /// as `tcache_max` does nothing without `tcache`; the report can say
+    /// so from this method.
+    #[inline]
+    pub const fn prefault_active(&self) -> bool {
+        self.prefault && self.background_thread
+    }
+
     /// `tcache_gc_interval_ms` in nanoseconds.
     pub fn gc_interval_ns(&self) -> u64 {
         (self.tcache_gc_interval_ms as u64).saturating_mul(1_000_000)
@@ -679,6 +773,7 @@ pub const MAX_AUTO_ARENAS: u32 = 64;
 /// `opt.` namespace and the tests.
 pub const KEYS: &[&str] = &[
     "background_thread",
+    "prefault",
     "dirty_decay_ms",
     "muzzy_decay_ms",
     "narenas",
@@ -690,6 +785,7 @@ pub const KEYS: &[&str] = &[
     "tcache_gc_interval_ms",
     "tcache_compact_shift",
     "thp",
+    "thp_process",
     "spin_hint",
     "slice_ext",
     "lazy_free",
@@ -1182,6 +1278,9 @@ mod tests {
         assert_eq!(clean("tcache_compact_shift:0").compact_mask(), u32::MAX);
         assert_eq!(clean("tcache_compact_shift:20").compact_mask(), (1 << 20) - 1);
         assert_eq!(d.thp, Thp::Never);
+        assert_eq!(d.thp_process, ThpProcess::Default, "process-wide, so opt-in (plan Phase 2.5 task 16)");
+        assert!(!d.prefault, "off until measured (plan Phase 2.5 task 11)");
+        assert!(!d.prefault_active());
         assert!(!d.lazy_free);
         assert!(d.lazy_band);
         assert!(!clean("lazy_band:false").lazy_band);
@@ -1415,6 +1514,75 @@ mod tests {
         assert!(SliceExt::On.forced() && !SliceExt::Auto.forced() && !SliceExt::Off.forced());
     }
 
+    /// `thp_process` (plan Phase 2.5 task 16, the prctl half): the two
+    /// values, anything else reported and left at the default,
+    /// `opt.thp_process` reads back, the accessor `thp.rs` decides the
+    /// `prctl` on, and `thp` untouched by it (they are separate keys: the
+    /// per-region advice and the process-wide policy).
+    #[test]
+    fn thp_process_values() {
+        assert!(KEYS.contains(&"thp_process"));
+        assert!(!IGNORED_KEYS.contains(&"thp_process") && !is_inert(b"thp_process"));
+        for (value, want) in [("default", ThpProcess::Default), ("advised", ThpProcess::Advised)] {
+            let cfg = clean(&std::format!("thp_process:{value},abort_conf:true"));
+            assert_eq!(cfg.thp_process, want, "{value}");
+            assert_eq!(cfg.thp_process(), want, "{value}");
+            assert_eq!(cfg.get(b"thp_process"), Some(Value::Str(want.name())), "{value}");
+            assert_eq!(want.name(), value);
+            assert!(cfg.abort_conf);
+            assert_eq!(cfg.thp, Thp::Never, "thp_process leaves thp alone");
+        }
+        for bad in ["true", "false", "1", "never", "always", "auto", "Default", "ADVISED", "", "advise"] {
+            let (cfg, issues) = parse(&std::format!("thp_process:{bad}"));
+            assert_eq!(cfg, Config::DEFAULT, "thp_process:{bad} changed the config");
+            assert_eq!(issues.len(), 1, "thp_process:{bad}: {issues:?}");
+            let expect = if bad.is_empty() { "malformed" } else { "invalid conf value \"" };
+            assert!(issues[0].contains(expect), "thp_process:{bad}: {}", issues[0]);
+        }
+        assert_eq!(clean("thp_process:advised,thp_process:default").thp_process, ThpProcess::Default);
+        assert_eq!(clean("thp_process:\"advised\"").thp_process, ThpProcess::Advised);
+        // Only `advised` issues the prctl; `default` never asks.
+        assert!(ThpProcess::Advised.requested() && !ThpProcess::Default.requested());
+        assert!(!Config::DEFAULT.thp_process().requested());
+        // The two THP keys compose: the process policy with any per-region
+        // advice, and `thp:default` (an alias of `never`) is not this key.
+        let cfg = clean("thp:auto,thp_process:advised");
+        assert_eq!((cfg.thp, cfg.thp_process), (Thp::Auto, ThpProcess::Advised));
+        let cfg = clean("thp:default");
+        assert_eq!((cfg.thp, cfg.thp_process), (Thp::Never, ThpProcess::Default));
+    }
+
+    /// `prefault` (plan Phase 2.5 task 11): a bool key, off by default,
+    /// readable, accepted under `abort_conf`; `prefault_active` is the
+    /// key and the background thread that runs the pass.
+    #[test]
+    fn prefault_values() {
+        assert!(KEYS.contains(&"prefault"));
+        assert!(!IGNORED_KEYS.contains(&"prefault") && !is_inert(b"prefault"));
+        for (value, want) in [("true", true), ("false", false)] {
+            let cfg = clean(&std::format!("prefault:{value},abort_conf:true"));
+            assert_eq!(cfg.prefault, want, "{value}");
+            assert_eq!(cfg.prefault(), want, "{value}");
+            assert_eq!(cfg.get(b"prefault"), Some(Value::Bool(want)), "{value}");
+            assert!(cfg.abort_conf);
+            assert!(!cfg.prefault_active(), "no background thread, no pass");
+        }
+        for bad in ["1", "0", "yes", "on", "True", "", "advised"] {
+            let (cfg, issues) = parse(&std::format!("prefault:{bad}"));
+            assert_eq!(cfg, Config::DEFAULT, "prefault:{bad} changed the config");
+            assert_eq!(issues.len(), 1, "prefault:{bad}: {issues:?}");
+            let expect = if bad.is_empty() { "malformed" } else { "invalid conf value \"" };
+            assert!(issues[0].contains(expect), "prefault:{bad}: {}", issues[0]);
+        }
+        assert!(!clean("prefault:true,prefault:false").prefault);
+        assert!(clean("prefault:\"true\"").prefault);
+        // The pass needs the thread, in either key order.
+        assert!(clean("prefault:true,background_thread:true").prefault_active());
+        assert!(clean("background_thread:true,prefault:true").prefault_active());
+        assert!(!clean("background_thread:true").prefault_active());
+        assert!(!clean("background_thread:true,prefault:true,background_thread:false").prefault_active());
+    }
+
     #[test]
     fn inert_keys_are_stored_reported_and_rejected_under_abort_conf() {
         assert_eq!(INERT_KEYS.len(), 1, "stats_print");
@@ -1572,7 +1740,7 @@ mod tests {
             let round = if is_inert(key.as_bytes()) { inert(&text, 1) } else { clean(&text) };
             assert_eq!(round, cfg, "{key}:{value} round trip");
         }
-        assert_eq!(KEYS.len(), 27);
+        assert_eq!(KEYS.len(), 29, "27 + thp_process and prefault (plan Phase 2.5 tasks 16 and 11)");
         assert_eq!(cfg.get(b"nonsense"), None);
         assert_eq!(cfg.get(b""), None);
         for key in IGNORED_KEYS {

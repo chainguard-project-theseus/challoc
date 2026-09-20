@@ -869,6 +869,8 @@ mod tests {
             "config.quantum:",
             "opt.dirty_decay_ms: ",
             "opt.thp: \"never\"\n",
+            "opt.thp_process: \"default\"\n",
+            "opt.prefault: false\n",
             "thp: never -> off (thp:never) class_ranges 0 (0 bytes, 0 chunks) huge_ranges 0 meta_ranges 0 failures 0\n",
             "opt.zero_on_free: false\n",
             "opt.slot_randomize: false\n",
