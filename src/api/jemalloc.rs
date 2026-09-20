@@ -358,7 +358,8 @@ mod exports {
 mod tests {
     use super::*;
     use crate::arena::{MALLOCX_TCACHE_NONE, MALLOCX_ZERO, Tcache, mallocx_arena, mallocx_lg_align, mallocx_tcache};
-    use crate::layout::{MEDIUM_MAX, class_size_of};
+    use crate::layout::{Kind, MEDIUM_MAX, class_size_of};
+    use std::thread;
     use std::vec::Vec;
 
     const SIZES: &[usize] = &[0, 1, 16, 17, 100, 1000, 4096, 65_536, MEDIUM_MAX, MEDIUM_MAX + 1, 1 << 20, 5 << 20];
@@ -501,6 +502,160 @@ mod tests {
         assert!(mallocx(300, mallocx_arena(4000) as c_int).is_null());
         assert!(mallocx(2 << 20, mallocx_arena(4000) as c_int).is_null());
         let _ = Tcache::Default;
+    }
+
+    /// Arenas and explicit caches against the real allocator (design 13.3):
+    /// `MALLOCX_ARENA` allocations come from the named arena and plain
+    /// `free` returns them to a cache keyed by that arena, on the freeing
+    /// thread whichever thread that is; `MALLOCX_TCACHE_NONE` claims and
+    /// releases against the slab bitmaps at once; an explicit cache holds
+    /// its own slots until flushed.
+    #[test]
+    fn arenas_route_mallocx_allocations_and_plain_frees() {
+        use crate::api::libc as api_libc;
+        use crate::heap;
+        use crate::layout::class_of;
+        let s = shared();
+        let lua = s.arenas.create(s).expect("arenas.create");
+        assert!(s.multi_arena());
+        let c = class_of(200).unwrap();
+        let size = crate::layout::CLASSES[c].size();
+        let f = Flags::decode(mallocx_arena(lua));
+        assert_eq!((f.arena, f.tcache), (Some(lua), Tcache::Default));
+
+        // Default cache, explicit arena: through this thread's heap.
+        let (p, _) = arena::alloc(s, c, f.arena, f.tcache);
+        assert!(!p.is_null());
+        unsafe { core::ptr::write_bytes(p, 0xa5, size) };
+        assert_eq!(s.classify_free(p), Ok((c, lua)));
+        let h = heap::existing_heap(s).unwrap();
+        // This thread's automatic arena: whichever `Arenas::assign` gave
+        // the test thread (the default is `min(4 * ncpus, 64)` arenas).
+        let home = h.arena();
+        assert_ne!(home, lua);
+        // In the per-CPU mode (design 15) a plain `free` pushes onto the
+        // running CPU's cache whatever the slot's arena; the thread's
+        // per-arena caches see only explicit-arena traffic.
+        let percpu = s.percpu_on();
+        let cached_in = |h: &heap::Heap| h.cache_in(lua, c).map_or(0, |cc| cc.len());
+        let before = cached_in(h);
+        api_libc::free(p);
+        if percpu {
+            assert_eq!(cached_in(h), before);
+        } else {
+            assert_eq!(cached_in(h), before + 1);
+        }
+        // realloc within the class keeps the pointer and the arena.
+        let (p, _) = arena::alloc(s, c, Some(lua), Tcache::Default);
+        // (Written again: without the per-CPU mode this is the slot freed
+        // above, LIFO, and still holds 0xa5; with it that slot went to the
+        // CPU cache and this one is fresh.)
+        unsafe { core::ptr::write_bytes(p, 0xa5, size) };
+        assert_eq!(api_libc::realloc(p, size), p);
+        let q = api_libc::realloc(p, size * 4);
+        assert_ne!(q, p);
+        assert_eq!(unsafe { *q }, 0xa5);
+        // Across classes, plain realloc lands in the caller's home arena
+        // (in the per-CPU mode: in the running CPU's, an automatic one).
+        if percpu {
+            assert!((s.classify_free(q).map(|x| x.1).unwrap() as u32) < s.arenas.auto());
+        } else {
+            assert_eq!(s.classify_free(q).map(|x| x.1), Ok(home));
+        }
+        api_libc::free(q);
+
+        // Direct path: live count moves at once, no cache involved.
+        let f = Flags::decode(mallocx_arena(lua) | MALLOCX_TCACHE_NONE);
+        assert_eq!(f.tcache, Tcache::None);
+        let (d, _) = arena::alloc(s, c, f.arena, f.tcache);
+        let (slab, _) = s.table(c).locate(d);
+        let desc = s.table(c).desc(slab);
+        assert_eq!(desc.arena(), lua);
+        let live = desc.live();
+        let cached = cached_in(h);
+        arena::free(s, d, Tcache::None);
+        assert_eq!(desc.live(), live - 1);
+        assert_eq!(cached_in(h), cached);
+        // A non-existent arena is null, not an abort.
+        assert!(arena::alloc(s, c, Some(4000), Tcache::Default).0.is_null());
+        assert!(arena::alloc(s, c, Some(4000), Tcache::None).0.is_null());
+        assert!(arena::alloc_huge(s, 1 << 20, 1, Some(4000), Tcache::Default).0.is_null());
+
+        // Huge runs record the arena too.
+        let (hp, _) = arena::alloc_huge(s, 3 << 20, 1, Some(lua), Tcache::Default);
+        assert!(!hp.is_null());
+        let Err(page) = s.classify_free(hp) else { panic!("not huge") };
+        assert_eq!(s.huge.lookup(page).unwrap().arena, lua);
+        api_libc::free(hp);
+
+        // Explicit cache.
+        let t = s.tcaches.create(s, 0).expect("tcache.create");
+        let f = Flags::decode(mallocx_tcache(t) | mallocx_arena(lua));
+        assert_eq!(f.tcache, Tcache::Explicit(t));
+        let (e, _) = arena::alloc(s, c, f.arena, f.tcache);
+        assert_eq!(s.classify_free(e), Ok((c, lua)));
+        let th = s.tcaches.get(t).unwrap();
+        let before = th.cache_in(lua, c).unwrap().len();
+        arena::free(s, e, Tcache::Explicit(t));
+        assert_eq!(th.cache_in(lua, c).unwrap().len(), before + 1);
+        assert!(s.tcaches.flush(s, t));
+        assert_eq!(th.cache_in(lua, c).unwrap().len(), 0);
+        assert!(s.tcaches.destroy(s, t));
+
+        // Cross-thread: another thread allocates from the Lua arena and its
+        // own home arena; this thread frees both with plain `free`, and each
+        // lands in the cache of its own arena.
+        let (other, ptrs) = thread::spawn(move || {
+            let s = shared();
+            let mut v = Vec::new();
+            for i in 0..64 {
+                let a = if i % 2 == 0 { Some(lua) } else { None };
+                let (p, _) = arena::alloc(s, c, a, Tcache::Default);
+                assert!(!p.is_null());
+                unsafe { *p = i as u8 };
+                v.push(p as usize);
+            }
+            (heap::existing_heap(s).unwrap().arena(), v)
+        })
+        .join()
+        .unwrap();
+        // The other thread was bound to an idle automatic arena, not ours.
+        assert_ne!(other, home);
+        assert_ne!(other, lua);
+        let h = heap::existing_heap(s).unwrap();
+        h.flush_all(s);
+        for (i, &p) in ptrs.iter().enumerate() {
+            let p = p as *mut u8;
+            assert_eq!(unsafe { *p }, i as u8);
+            let (class, arena) = s.classify_free(p).unwrap();
+            assert_eq!(class, c);
+            if i % 2 == 0 {
+                assert_eq!(arena, lua);
+            } else if !percpu {
+                assert_eq!(arena, other);
+            }
+            // (In the per-CPU mode a plain allocation is whatever the
+            // running CPU's cache held, this test's own freed Lua slots
+            // included; the arena is not the thread's.)
+            api_libc::free(p);
+        }
+        if percpu {
+            assert_eq!(cached_in(h), 0, "plain frees never reach the thread's per-arena caches");
+            assert_eq!(h.cache_in(other, c).map_or(0, |cc| cc.len()), 0);
+        } else {
+            assert_eq!(h.cache_in(lua, c).unwrap().len(), 32);
+            assert_eq!(h.cache_in(other, c).unwrap().len(), 32);
+        }
+        assert!(h.cache(c).is_none_or(|cache| cache.len() == 0), "nothing landed in the home cache");
+        h.flush_all(s);
+        // Per-arena purge covers the Lua arena's slabs only.
+        let lua_arena = s.arena(lua).unwrap();
+        let empty_before = lua_arena.classes[c].stats().empty;
+        assert!(empty_before >= 1, "the Lua arena's slab should be Empty after the flush");
+        let purged = crate::purge::purge_arena(s, lua).unwrap();
+        assert!(purged >= empty_before);
+        assert_eq!(lua_arena.classes[c].stats().empty, 0);
+        assert!(crate::purge::purge_arena(s, 4000).is_none());
     }
 
     #[test]
