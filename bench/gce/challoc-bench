@@ -1043,7 +1043,7 @@ cmd_matrix() {
   # sweep the zone for anything left.
   # `set -e` applies inside the trap too: every step here must not fail
   # (a pkill that finds no children returns 1), or the sweep never runs.
-  trap 'echo "challoc-bench: matrix: cleaning up"; for p in $pids; do pkill -TERM -P "$p" 2>/dev/null || true; kill -TERM "$p" 2>/dev/null || true; done; wait 2>/dev/null || true; matrix_clean || true; g compute instances list --filter="name~^$MATRIX_PREFIX-" 2>/dev/null || true' EXIT
+  trap 'echo "challoc-bench: matrix: cleaning up"; for p in ${pids:-}; do pkill -TERM -P "$p" 2>/dev/null || true; kill -TERM "$p" 2>/dev/null || true; done; wait 2>/dev/null || true; matrix_clean || true; g compute instances list --filter="name~^$MATRIX_PREFIX-" 2>/dev/null || true' EXIT
   trap 'exit 130' INT TERM HUP
   for c in $cells; do
     while [ "$(jobs -rp | wc -l | tr -d ' ')" -ge "$MATRIX_JOBS" ]; do sleep 15; done
