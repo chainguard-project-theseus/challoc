@@ -1023,6 +1023,66 @@ Tasks, in order:
     per-CPU ones 163125 (three threads on two cids), 66746 (pop on one
     cid, push on another) and 241740 (purge and the zero prefix), 8.6 s
     for the thirteen tests on the host.
+14. Chainguard OS cells (the human's request, 2026-09-19; lane E, no
+    `src/` change): the product's own kernel and glibc as matrix cells.
+    `challoc-bench matrix cgos` boots `kirkland-server-hypervisor-{arm64,amd64}`
+    (project `wolfi-vm`; the boot recipe, the metal shapes and the traps
+    are `docs/runbooks/chainguard-os-gce.md`) on the reference shapes
+    c4a-standard-8 / c4-standard-8 in us-east4-a, with a provisioning path
+    for a bootc host: no apt or apk on the host, root podman behind a
+    `~/bin/docker` shim that adds `--network=host` (no `nft` for netavark),
+    `make` and `getconf` copied out of a Wolfi container (the host glibc is
+    the same 2.44), `/var` grown online with `resize2fs` from a container
+    (OS-3363), detached jobs as transient systemd units (the session scope
+    dies with the ssh login); `MATRIX_ADOPT=<vm>` runs a cell on an
+    existing VM and keeps it. What a cell measures (`matrix-cell.sh`
+    `cgos` mode): the floor as shipped (uname, `/proc/config.gz` keys,
+    cpuinfo, THP, glibc, bootc status, the root mount, podman, the NIC
+    driver into `host.log`), `make test` inside podman with its default
+    seccomp profile and again with `--privileged`, the feature report line
+    three ways (podman default, podman `--privileged`, natively on the host
+    with `LD_PRELOAD`: the first line from outside any container runtime),
+    the container tests at 512 and 256 MiB, and one `make scorecard
+    ROUNDS=3` into `bench/results/scorecard-cgos-<arch>.md` (the reference
+    files untouched). Outside the cell, on the same hosts: the task 1
+    four-way table (`bench/results/<date>-<arch>-cgos-four-way.md`, the
+    Phase 0 set, the Valkey model, Ruby and Python rows under glibc,
+    jemalloc, mimalloc, tcmalloc and challoc, same run, 3 rounds on these
+    8-vCPU shapes), the same rows natively and inside the container to
+    show whether the two agree, a summary
+    `bench/results/<date>-chainguard-os-cells.md` against the Ubuntu 7.0
+    reference rows (THP is `always` on this host, the first under
+    `always`), and a bounded arm64 metal probe (`c4a-highmem-96-metal`,
+    created and deleted inside 60 minutes: cpuinfo and `mte`, the PMU, the
+    runbook's acceptance checks, the native probe line and rows) in
+    `bench/results/<date>-cgos-metal-arm64.md`. Acceptance: the three
+    report lines per host recorded verbatim; `make test` green in both
+    podman modes or every failure attributed to its mechanism; the
+    four-way table and the scorecard line per host; the metal probe
+    recorded with its creation and deletion times.
+    Done 2026-09-19 (lane E): cells and docs `22c32b6`, measurements
+    `228ec92`. Both cells ran on the adopted VMs
+    (`bench/results/matrix/2026-09-19-cgos-{arm64,amd64}.log`); the three
+    report lines per host are in `2026-09-19-chainguard-os-cells.md`
+    section 2 (native = `--privileged`: `mseal=yes
+    process_madvise=pidfd_self`; `anon_name=no` everywhere: the kernel has
+    no `CONFIG_ANON_VMA_NAME`; `thp=always`). `make test`: 523/0 on x86_64
+    in both modes and on arm64 `--privileged`; on arm64 default one rseq
+    test flake (4/4 on rerun); the 512m churn container stalls in about a
+    quarter of the default-configuration runs on both hosts (one class
+    released, then `MADV_FREE`: the task 10 lazy band crossed mid-purge
+    because podman charges no page cache to the cgroup), never with
+    `lazy_band:false`, attributed for lane B in section 7. Four-way
+    tables `2026-09-19-{aarch64,x86_64}-cgos-four-way.md` (3 rounds, every
+    row over 10% attributed); scorecard lines `scorecard-cgos-{arm64,amd64}.md`.
+    THP `always`: challoc's class regions take no huge pages (32 MiB on a
+    585 MiB heap against jemalloc's 586), which is the whole cross-host
+    movement of the Valkey model rows (control at `madvise`: parity);
+    challoc's own `thp:always` reaches parity on Axion and 5% ahead of
+    jemalloc on the 8581C for +9.5% RSS, a task 9 decision for the human.
+    Metal (`2026-09-19-cgos-metal-arm64.md`): `c4a-highmem-96-metal`
+    twice, 3 and 11 minutes each, Neoverse N3, **no MTE**, PMU counts
+    natively and in a privileged container, `idpf`, deleted.
 
 14. Chainguard OS cells (the human's request, 2026-09-19; lane E, no
     `src/` change): `cgos-amd64` and `cgos-arm64` matrix cells from the
@@ -1124,7 +1184,14 @@ Second batch (from `322e6bd`), the same partition:
   under `percpu_arena:percpu`, the calloc-zero campaign under the mode,
   the Valkey and Ruby suites, and the "Acceptance for the phase" list
   below checked item by item with results files.
-- Lane E (no `src/` change): task 14.
+- Lane E (no `src/` change; added 2026-09-19 at the human's request):
+  task 14, the Chainguard OS cells: `bench/gce/challoc-bench` and
+  `bench/gce/matrix-cell.sh` (the `cgos-*` cells, the bootc provisioning,
+  `MATRIX_ADOPT`), `bench/gce/README.md`, the runbook's challoc preamble,
+  and the results files of task 14 under `bench/results/` (never the two
+  reference scorecards). Its VMs are `challoc-lane-e-cgos-{arm64,amd64}`
+  and the metal probe `challoc-lane-e-cgos-metal-arm64`, all deleted when
+  the lane's turn ends.
 - Added 2026-09-19 after the kernel table grew (the human's "keep things
   going on this new kernel knowledge"): task 15 to lane C (`lock.rs`,
   `config.rs` key, the probe reads lane A's `src/rseq.rs` accessor, merged
