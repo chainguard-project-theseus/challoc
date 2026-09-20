@@ -54,10 +54,14 @@ pass. There are two sources:
   below 6.13.
 
 `grep '^SKIP ' <log>` lists every claim a run did not check. With
-`CHALLOC_TEST_ALLOW_SKIP` set (the Makefile sets it for the local targets)
-a skip passes with the note; unset, it fails the test. The reference VMs
-(6.13+ kernels, `mm_cid`, privileged containers) run without it, so a
-feature that stops being checked there fails loudly.
+`CHALLOC_TEST_ALLOW_SKIP` set a skip passes with the note; unset, it fails
+the test. `make test` sets it everywhere (`TEST_ALLOW_SKIP ?= 1`): on the
+reference VMs too, seven skips are container or host facts (a read-only
+cgroup tree, Docker's seccomp hiding `mseal`, no rseq slice extension, no
+mTHP size below the PMD), not missing coverage. `make test TEST_ALLOW_SKIP=`
+runs strict; real coverage of the cgroup writes and `mseal` needs
+`--security-opt seccomp=unconfined` and a writable cgroup (the privileged
+matrix cells).
 
 ## Adding a C test
 
