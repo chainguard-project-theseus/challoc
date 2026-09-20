@@ -743,7 +743,7 @@ pub const TABLE: &[Key] = &[
     Key {
         name: "tcache_max",
         parse: |c, k, v| num(c, k, v, 0, crate::layout::MEDIUM_MAX as i64, |c, v| c.tcache_max = v as usize),
-        read: |c| Value::Uint(c.tcache_max as u64),
+        read: |c| Value::Size(c.tcache_max),
     },
     Key {
         name: "tcache_nslots_small_max",
@@ -844,7 +844,7 @@ pub const TABLE: &[Key] = &[
     Key {
         name: "huge_retain_max",
         parse: |c, k, v| num(c, k, v, 0, MAX_HUGE_RETAIN_MAX as i64, |c, v| c.huge_retain_max = v as usize),
-        read: |c| Value::Uint(c.huge_retain_max as u64),
+        read: |c| Value::Size(c.huge_retain_max),
     },
     bool_key!("zero_on_free", zero_on_free),
     bool_key!("pac_pointers", pac_pointers),
@@ -921,12 +921,19 @@ pub const fn ladder(class: usize, max: u32, lg_mul: i32) -> u32 {
     if cap < MIN_CAP { MIN_CAP } else { cap }
 }
 
-/// A readable configuration value (`mallctl` `opt.*`).
+/// A readable configuration value (`mallctl` `opt.*`, the report's
+/// `opt.` lines). The variant is the key's C type in `mallctl`,
+/// jemalloc's for the keys jemalloc has: `Int` is `ssize_t` (the decay
+/// times and the other signed keys), `Uint` is `unsigned` (a count or a
+/// shift: `narenas`, `tcache_nslots_small_max`, `tcache_compact_shift`,
+/// `guard_slab_interval`), `Size` is `size_t` (a byte count:
+/// `tcache_max`, `huge_retain_max`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Value {
     Bool(bool),
     Int(i64),
     Uint(u64),
+    Size(usize),
     Str(&'static str),
 }
 
@@ -1432,8 +1439,8 @@ mod tests {
         ];
         for (key, ok, low, min, high, max) in cases {
             let as_value = |v: i64| match key {
-                "narenas" | "tcache_max" | "tcache_nslots_small_max" | "guard_slab_interval" | "tcache_compact_shift"
-                | "huge_retain_max" => Value::Uint(v as u64),
+                "tcache_max" | "huge_retain_max" => Value::Size(v as usize),
+                "narenas" | "tcache_nslots_small_max" | "guard_slab_interval" | "tcache_compact_shift" => Value::Uint(v as u64),
                 _ => Value::Int(v),
             };
             let cfg = clean(&std::format!("{key}:{ok}"));
@@ -1664,7 +1671,7 @@ mod tests {
         assert_eq!(clean("huge_retain_max:0").huge_retain_max, 0);
         assert_eq!(clean("huge_retain_max:0x100000").huge_retain_max, 1 << 20);
         assert_eq!(clean("huge_retain_max:1099511627776").huge_retain_max, MAX_HUGE_RETAIN_MAX);
-        assert_eq!(clean("huge_retain_max:1").get(b"huge_retain_max"), Some(Value::Uint(1)));
+        assert_eq!(clean("huge_retain_max:1").get(b"huge_retain_max"), Some(Value::Size(1)));
         let (cfg, issues) = parse("huge_retain_max:1099511627777");
         assert_eq!(cfg.huge_retain_max, MAX_HUGE_RETAIN_MAX, "clamped to the huge region");
         assert_eq!(issues.len(), 1);
@@ -1758,6 +1765,7 @@ mod tests {
                 Value::Bool(b) => std::format!("{b}"),
                 Value::Int(i) => std::format!("{i}"),
                 Value::Uint(u) => std::format!("{u}"),
+                Value::Size(n) => std::format!("{n}"),
                 Value::Str(s) => s.into(),
             };
             let text = std::format!("{key}:{value}");
@@ -1823,6 +1831,7 @@ mod tests {
                 // Doubling stays in every unsigned key's range and keeps
                 // `guard_slab_interval` a power of two.
                 Value::Uint(u) => std::format!("{}", if u == 0 { 2 } else { u * 2 }),
+                Value::Size(n) => std::format!("{}", if n == 0 { 2 } else { n * 2 }),
                 Value::Str(s) => match key.name {
                     "percpu_arena" | "slice_ext" => "off".into(),
                     "spin_hint" => "baseline".into(),

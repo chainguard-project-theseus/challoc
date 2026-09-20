@@ -287,6 +287,7 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
             Some(Value::Bool(b)) => writeln!(out, concat!("  ", head!(OPT), "{}: {}{}"), key, b, note)?,
             Some(Value::Int(i)) => writeln!(out, concat!("  ", head!(OPT), "{}: {}{}"), key, i, note)?,
             Some(Value::Uint(u)) => writeln!(out, concat!("  ", head!(OPT), "{}: {}{}"), key, u, note)?,
+            Some(Value::Size(n)) => writeln!(out, concat!("  ", head!(OPT), "{}: {}{}"), key, n, note)?,
             Some(Value::Str(s)) => writeln!(out, concat!("  ", head!(OPT), "{}: \"{}\"{}"), key, s, note)?,
             None => {}
         }
@@ -604,6 +605,7 @@ fn json_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot, arenas_
             Value::Bool(b) => write!(out, "\t\t\t\"{key}\": {b}")?,
             Value::Int(i) => write!(out, "\t\t\t\"{key}\": {i}")?,
             Value::Uint(u) => write!(out, "\t\t\t\"{key}\": {u}")?,
+            Value::Size(n) => write!(out, "\t\t\t\"{key}\": {n}")?,
             Value::Str(s) => write!(out, "\t\t\t\"{key}\": \"{s}\"")?,
         }
     }
@@ -1216,7 +1218,7 @@ mod tests {
                 let v = crate::api::shared().config.get(key.as_bytes())?;
                 let shape = match v {
                     Value::Bool(_) => "B",
-                    Value::Int(_) | Value::Uint(_) => "N",
+                    Value::Int(_) | Value::Uint(_) | Value::Size(_) => "N",
                     Value::Str(_) => "\"S\"",
                 };
                 Some(std::format!("\t\t\t\"{key}\": {shape}"))

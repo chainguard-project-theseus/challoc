@@ -33,9 +33,10 @@
 //! sums every existing arena and `stats.arenas.4097.*`
 //! (`MALLCTL_ARENAS_DESTROYED`) is all zero, see [`ARENAS_DESTROYED`]. The
 //! type of each value ([`Reading`]) is jemalloc's: `size_t` for byte and
-//! page counts (`opt.tcache_max` and `opt.huge_retain_max` included,
-//! [`SIZE_T_OPTS`]), `unsigned` for indices and counts of arenas, bins and
-//! slabs (`opt.narenas`, `opt.tcache_nslots_small_max`), `uint32_t` for
+//! page counts (`opt.tcache_max` and `opt.huge_retain_max` included: the
+//! `opt.*` types are the `config::Value` variants), `unsigned` for
+//! indices and counts of arenas, bins and slabs (`opt.narenas`,
+//! `opt.tcache_nslots_small_max`), `uint32_t` for
 //! `arenas.bin.<j>.nregs`, `ssize_t` for decay times and the other signed
 //! options, `uint64_t` for `epoch` and the thread counters, `bool` (one
 //! byte) for flags, `const char *` for strings.
@@ -218,13 +219,6 @@ pub enum Leaf {
 /// `arena.4097.*` is `ENOENT` like every index at or above `MAX_ARENAS`.
 const ARENAS_DESTROYED: usize = 4097;
 const _: () = assert!(ARENAS_DESTROYED >= MAX_ARENAS && ARENAS_DESTROYED != ARENAS_ALL as usize);
-
-/// The `opt.*` keys jemalloc types `size_t`: byte counts. Every other
-/// `Value::Uint` key (`narenas`, `tcache_nslots_small_max`,
-/// `tcache_compact_shift`, `guard_slab_interval`) is a count or a shift
-/// and reads as `unsigned`, as jemalloc's `opt.narenas` and
-/// `opt.tcache_nslots_small_max` do.
-const SIZE_T_OPTS: &[&str] = &["tcache_max", "huge_retain_max"];
 
 /// A read-only key's answer, tagged with the C type the caller's buffer
 /// must have (`*oldlenp` is checked against it).
@@ -797,14 +791,15 @@ fn at(mib: &[usize], i: usize) -> usize {
     mib.get(i).copied().unwrap_or(usize::MAX)
 }
 
-/// `opt.<key>`: the key's value with its jemalloc type (`SIZE_T_OPTS`).
+/// `opt.<key>`: the key's value with its jemalloc type, the
+/// `config::Value` variant's.
 fn opt_value(mib: &[usize]) -> Result<Reading, c_int> {
     let key = KEYS.get(at(mib, 1)).ok_or(ENOENT)?;
     Ok(match shared().config.get(key.as_bytes()).ok_or(ENOENT)? {
         Value::Bool(b) => Bool(b),
         Value::Int(i) => Ssize(i as isize),
-        Value::Uint(u) if SIZE_T_OPTS.contains(key) => Size(u as usize),
         Value::Uint(u) => Unsigned(u as c_uint),
+        Value::Size(n) => Size(n),
         Value::Str(s) => Str(cstr_of(s)),
     })
 }
@@ -1377,22 +1372,22 @@ mod tests {
         }
         assert_eq!(call(&std::format!("arenas.bin.{NBINS}.size")), ENOENT);
         // Every opt key with its jemalloc type, against the live Config:
-        // `ssize_t` for the signed keys, `size_t` for the byte counts of
-        // `SIZE_T_OPTS`, `unsigned` for the other counts.
+        // `ssize_t` for the signed keys, `size_t` for the byte counts
+        // (`Value::Size`), `unsigned` for the other counts.
         let cfg: &Config = &shared().config;
         for key in KEYS {
             let name = std::format!("opt.{key}");
             match cfg.get(key.as_bytes()).unwrap() {
                 Value::Bool(b) => assert_eq!(get::<bool>(&name), b, "{name}"),
                 Value::Int(i) => assert_eq!(get::<isize>(&name), i as isize, "{name}"),
-                Value::Uint(u) if SIZE_T_OPTS.contains(key) => assert_eq!(get::<usize>(&name), u as usize, "{name}"),
                 Value::Uint(u) => assert_eq!(get::<c_uint>(&name), u as c_uint, "{name}"),
+                Value::Size(n) => assert_eq!(get::<usize>(&name), n, "{name}"),
                 Value::Str(s) => assert_eq!(cstring_at(get::<*const c_char>(&name)), s, "{name}"),
             }
             assert_eq!(set(&name, 0u8), EPERM, "{name} must be read-only");
         }
-        for key in SIZE_T_OPTS {
-            assert!(matches!(cfg.get(key.as_bytes()), Some(Value::Uint(_))), "opt.{key} is an unsigned key of the table");
+        for key in ["tcache_max", "huge_retain_max"] {
+            assert!(matches!(cfg.get(key.as_bytes()), Some(Value::Size(_))), "opt.{key} is a byte count of the table");
         }
         assert_eq!(call("opt.junk"), ENOENT, "accepted-and-ignored conf keys are not readable");
         assert_eq!(call("opt.stats_print"), ENOENT, "the inert key without a field is not readable");
