@@ -93,7 +93,6 @@ use crate::sys::PIDFD_SELF;
 use crate::sys::features::ProcessMadvise;
 
 mod curve;
-pub mod prefault;
 #[cfg(test)]
 pub(crate) mod tests;
 #[cfg(all(test, target_os = "linux"))]
@@ -585,8 +584,15 @@ mod os {
     pub fn discard(_ranges: &[(usize, usize)], _advice: super::Advice) {}
 }
 
-/// The background thread (design 8.1).
+/// The background thread (design 8.1); the host build gets the stub.
+#[cfg(target_os = "linux")]
+#[path = "purge/background.rs"]
 pub mod background;
+#[cfg(not(target_os = "linux"))]
+#[path = "purge/background_host.rs"]
+pub mod background;
+/// The prefault pass (design 8.2), the background thread's second job.
+pub mod prefault;
 
 /// The fork child's view of the discard backend: a pidfd inherited from the
 /// parent names the parent, so it is closed and purges fall back to the
