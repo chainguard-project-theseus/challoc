@@ -38,20 +38,20 @@ RUN sed -i \
       python-3.13 \
       py3.13-pip \
       nodejs-22 \
-      # JVM rows (Phase 3 task 5a)
       openjdk-21 \
       apache2-utils \
- && rustc --version && cargo --version && python3 --version \
- && test -f /usr/lib/libtcmalloc_minimal.so.4 \
- && node --version && ab -V | head -1
-      # PostgreSQL rows (Phase 3 task 5b): the server package carries initdb,
-      # pg_ctl, pgbench and postgres; the client package psql (bench/postgres-bench.sh)
       postgresql-17 \
       postgresql-17-client \
  && rustc --version && cargo --version && python3 --version \
  && test -f /usr/lib/libtcmalloc_minimal.so.4 \
+ && node --version && ab -V | head -1 \
  && pgbench --version && test -x /usr/bin/psql
 
+# JVM rows (Phase 3 task 5a): openjdk-21 (javac at run time, under
+# /usr/lib/jvm/java-21-openjdk) and apache2-utils for `ab`, the load generator
+# (wrk and oha are not in Wolfi, checked 2026-09-20). PostgreSQL rows (Phase 3
+# task 5b): postgresql-17 carries initdb, pg_ctl, pgbench and postgres;
+# postgresql-17-client carries psql (bench/postgres-bench.sh).
 # The last seven are for Ruby (contrib/ruby/build.sh, Phase 1 acceptance): a
 # git checkout of Ruby needs autoconf and a base Ruby; the jemalloc header,
 # yaml, zlib and libffi are what Wolfi's ruby-3.4.yaml environment gives its
