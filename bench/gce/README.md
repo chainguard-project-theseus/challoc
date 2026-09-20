@@ -43,7 +43,15 @@ The VMs run the repository's own `Dockerfile.dev` image through the same
 on either VM. `provision` and `sync` run their targets in parallel and exit
 with the worst target's status (since 2026-09-20: before that a VM still
 booting, or a host key changed by a restart, returned 0 and the next step
-ran on an unprovisioned or stale VM).
+ran on an unprovisioned or stale VM). After the copy, `sync` checks that
+the VM's HEAD is the local HEAD and that its commit object is readable,
+copies once more if not, and fails if the two still disagree: rsync lists
+the files before it copies them, so a commit made during a sync leaves the
+VM's HEAD naming an object it never received (the `3c6602b+` scorecard
+lines of 2026-09-20 came from that: `git diff HEAD` on the VM failed with
+"bad object HEAD" and `bench/lib.sh tree_dirty` read the failure as a dirty
+tree; `tree_dirty` now stops a run when git cannot answer). Do not commit
+while a sync runs, or sync again afterwards.
 
 ### Environment
 

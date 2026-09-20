@@ -55,8 +55,21 @@ die() { echo "${0##*/}: $*" >&2; exit 1; }
 loadavg() { cut -d' ' -f1-3 /proc/loadavg; }
 commit_short() { $GIT -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown; }
 # tree_dirty: 0 if the working tree differs from HEAD in what the library is
-# built from.
-tree_dirty() { ! $GIT -C "$ROOT" diff --quiet HEAD -- src Cargo.toml Cargo.lock build.rs 2>/dev/null; }
+# built from. Only git's answer counts: `git diff --quiet` exits 1 for a
+# difference and 128 when it cannot answer (2026-09-20: a `challoc-bench
+# sync` racing a local commit left the VM's .git without HEAD's commit
+# object, "fatal: bad object HEAD"; the old `! git diff --quiet 2>/dev/null`
+# read that failure as "dirty" and tagged a clean 3c6602b scorecard `+`).
+# A git that cannot answer stops the run: the label would be a guess.
+tree_dirty() {
+  td_err=$($GIT -C "$ROOT" diff --quiet HEAD -- src Cargo.toml Cargo.lock build.rs 2>&1); td_rc=$?
+  case $td_rc in
+    0) return 1;;
+    1) return 0;;
+    *) die "tree_dirty: 'git diff HEAD' failed ($td_rc): $td_err (is .git complete? challoc-bench sync again)";;
+  esac
+}
+
 
 # take_bench_lock: one protocol run per target volume (see bench/run.sh).
 take_bench_lock() {

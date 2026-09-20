@@ -184,7 +184,33 @@ REMOTE
 # .git directory (objects, refs, packed-refs, config) in its place and the
 # worktree's own HEAD and index over it, and the VM's ~/challoc is a plain
 # checkout of the lane's branch. A plain checkout ships its .git as before.
+#
+# rsync lists the files first and copies them after, so a commit made while
+# a sync runs writes loose objects the list does not have while the ref the
+# copy reads already names the new commit: the VM's HEAD then points at an
+# object it never received, `git diff HEAD` there fails with "bad object
+# HEAD", and bench/lib.sh's tree_dirty used to read that failure as a dirty
+# tree (2026-09-20, the 3c6602b scorecard, tagged `+` on both VMs from a
+# clean tree). After the copy the remote HEAD must be the local HEAD and its
+# commit readable; a second pass copies what the first missed, and a
+# mismatch after that fails the sync. A host without git (a Chainguard OS
+# cell runs everything in podman) is not checked.
 rsync_tree() {
+  local ssh="$1" dest="$2" pass want got
+  for pass in 1 2; do
+    rsync_pass "$ssh" "$dest" || return 1
+    want="$(git -C "$REPO" rev-parse HEAD)"
+    got="$($ssh "$dest" "command -v git >/dev/null 2>&1 || { echo nogit; exit 0; }; cd $REMOTE_DIR && git cat-file -e 'HEAD^{commit}' 2>/dev/null && git rev-parse HEAD" 2>/dev/null || echo failed)"
+    case "$got" in
+      "$want") return 0 ;;
+      nogit)   echo "challoc-bench: $dest has no git; the synced HEAD was not verified" >&2; return 0 ;;
+    esac
+    [ "$pass" = 1 ] && echo "challoc-bench: $dest: HEAD after the sync is '$got', local HEAD is $want (a commit during the sync?); syncing again" >&2
+  done
+  echo "challoc-bench: $dest: the synced tree's HEAD ($got) is not the local HEAD ($want) after two passes" >&2
+  return 1
+}
+rsync_pass() {
   local ssh="$1" dest="$2" common wtdir
   local -a ex=(--exclude=/target --exclude=/.ralph --exclude='/.tmp-*' --exclude='/.ralph-*.log')
   if [ -f "$REPO/.git" ]; then
@@ -225,7 +251,7 @@ cmd_sync() {
   done
   local i failed=
   for i in "${!pids[@]}"; do wait "${pids[$i]}" || failed="$failed ${names[$i]}"; done
-  [ -z "$failed" ] || die "sync FAILED for:$failed (host key changed after a restart? ssh-keygen -R <ip> -f ~/.ssh/google_compute_known_hosts)"
+  [ -z "$failed" ] || die "sync FAILED for:$failed (host key changed after a restart? ssh-keygen -R <ip> -f ~/.ssh/google_compute_known_hosts; or the HEAD check above)"
 }
 
 cmd_run() {
