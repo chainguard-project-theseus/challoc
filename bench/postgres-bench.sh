@@ -320,7 +320,7 @@ delta() {
 # In REPORT_ONLY mode the measured run's commit, date, load and duration
 # lines are kept from the existing file (the tables are re-rendered from
 # its raw samples and scores; the library is the one that run built).
-COMMIT_LINE="- commit: $(commit_short)$(tree_dirty && echo ' (uncommitted changes in src/)')"
+COMMIT_LINE="- commit: $(commit_short)$(tree_dirty && echo ' (uncommitted changes in src/)' || true)"   # an assignment takes the substitution's status: || true for set -e
 DATE_LINE="- date: $STAMP"
 LOAD_LINE="- load average at start: $LOAD0; at end: $(loadavg); $(( $(date +%s) - T_START )) s total"
 TITLE_LINE="# PostgreSQL 17 benchmark rows, $DATE, $ARCH"
