@@ -26,93 +26,102 @@ mod raw;
 #[cfg(target_os = "linux")]
 pub use linux::*;
 
+// ---- constants -------------------------------------------------------
+// Values are identical on x86_64 and aarch64 (both use the asm-generic
+// definitions for everything below).
+
+pub const PROT_NONE: i32 = 0;
+pub const PROT_READ: i32 = 1;
+pub const PROT_WRITE: i32 = 2;
+
+#[cfg(test)]
+pub const MAP_SHARED: i32 = 0x01;
+pub const MAP_PRIVATE: i32 = 0x02;
+pub const MAP_FIXED: i32 = 0x10;
+pub const MAP_ANONYMOUS: i32 = 0x20;
+pub const MAP_NORESERVE: i32 = 0x4000;
+#[cfg(test)]
+pub const MAP_FIXED_NOREPLACE: i32 = 0x10_0000;
+
+pub const MADV_DONTNEED: i32 = 4;
+pub const MADV_FREE: i32 = 8;
+pub const MADV_HUGEPAGE: i32 = 14;
+pub const MADV_NOHUGEPAGE: i32 = 15;
+#[cfg(test)]
+pub const MADV_COLD: i32 = 20;
+/// Populate (prefault) page tables writable (kernel 5.14): the pages
+/// fault in as if written, contents untouched.
+pub const MADV_POPULATE_WRITE: i32 = 23;
+pub const MADV_COLLAPSE: i32 = 25;
+pub const MADV_GUARD_INSTALL: i32 = 102;
+pub const MADV_GUARD_REMOVE: i32 = 103;
+
+/// `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, addr, len, name)`.
+pub const PR_SET_VMA: i32 = 0x5356_4d41;
+pub const PR_SET_VMA_ANON_NAME: usize = 0;
+/// `prctl(PR_SET_THP_DISABLE, 1, flags, 0, 0)` and its query:
+/// `PR_THP_DISABLE_EXCEPT_ADVISED` (6.18) keeps huge pages where a
+/// range was `MADV_HUGEPAGE`d; the query returns
+/// `1 | flags` when disabled, `0` otherwise.
+pub const PR_SET_THP_DISABLE: i32 = 41;
+pub const PR_GET_THP_DISABLE: i32 = 42;
+pub const PR_THP_DISABLE_EXCEPT_ADVISED: usize = 1 << 1;
+
+pub const FUTEX_WAIT: i32 = 0;
+pub const FUTEX_WAKE: i32 = 1;
+pub const FUTEX_PRIVATE_FLAG: i32 = 128;
+
+pub const CLOCK_MONOTONIC: i32 = 1;
+pub const CLOCK_MONOTONIC_COARSE: i32 = 6;
+
+pub const O_RDONLY: i32 = 0;
+#[cfg(test)]
+pub const O_WRONLY: i32 = 1;
+pub const O_RDWR: i32 = 2;
+pub const O_NONBLOCK: i32 = 0o4000;
+pub const O_CLOEXEC: i32 = 0o2_000_000;
+
+/// `eventfd2` flags (the same bits as the `O_*` flags they mirror).
+pub const EFD_NONBLOCK: i32 = O_NONBLOCK;
+pub const EFD_CLOEXEC: i32 = O_CLOEXEC;
+
+pub const POLLIN: i16 = 0x001;
+pub const POLLPRI: i16 = 0x002;
+pub const POLLERR: i16 = 0x008;
+pub const POLLHUP: i16 = 0x010;
+pub const POLLNVAL: i16 = 0x020;
+pub const AT_FDCWD: i32 = -100;
+
+/// Sentinel pidfd meaning "the calling thread" (`PIDFD_SELF_THREAD` of
+/// `include/uapi/linux/pidfd.h`), accepted by `process_madvise` on
+/// kernels that have it: 6.15, the first release whose header defines
+/// it and whose `pidfd_get_task` honours it (6.14 has neither;
+/// `purge.rs` mirrors the value). Probed at runtime by `sys::features`;
+/// older kernels return `EBADF`.
+pub const PIDFD_SELF: i32 = -10000;
+
+pub const SIGABRT: i32 = 6;
+#[cfg(target_os = "linux")]
+const SIG_BLOCK: i32 = 0;
+#[cfg(target_os = "linux")]
+const SIG_UNBLOCK: i32 = 1;
+#[cfg(target_os = "linux")]
+const SIG_SETMASK: i32 = 2;
+#[cfg(target_os = "linux")]
+const SIGSET_WORDS_BYTES: usize = 8;
+
+pub const STDERR_FILENO: i32 = 2;
+
 #[cfg(target_os = "linux")]
 mod linux {
     use super::errno::{Errno, decode};
     use super::{nr, raw};
+    use super::{
+        AT_FDCWD, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, FUTEX_PRIVATE_FLAG, FUTEX_WAIT, FUTEX_WAKE,
+        O_CLOEXEC, PR_SET_VMA, PR_SET_VMA_ANON_NAME, SIGABRT, SIGSET_WORDS_BYTES, SIG_BLOCK, SIG_SETMASK,
+        SIG_UNBLOCK, STDERR_FILENO,
+    };
     use core::fmt;
-
-    // ---- constants -------------------------------------------------------
-    // Values are identical on x86_64 and aarch64 (both use the asm-generic
-    // definitions for everything below).
-
-    pub const PROT_NONE: i32 = 0;
-    pub const PROT_READ: i32 = 1;
-    pub const PROT_WRITE: i32 = 2;
-
-    #[cfg(test)]
-    pub const MAP_SHARED: i32 = 0x01;
-    pub const MAP_PRIVATE: i32 = 0x02;
-    pub const MAP_FIXED: i32 = 0x10;
-    pub const MAP_ANONYMOUS: i32 = 0x20;
-    pub const MAP_NORESERVE: i32 = 0x4000;
-    #[cfg(test)]
-    pub const MAP_FIXED_NOREPLACE: i32 = 0x10_0000;
-
-    pub const MADV_DONTNEED: i32 = 4;
-    pub const MADV_FREE: i32 = 8;
-    pub const MADV_HUGEPAGE: i32 = 14;
-    pub const MADV_NOHUGEPAGE: i32 = 15;
-    #[cfg(test)]
-    pub const MADV_COLD: i32 = 20;
-    /// Populate (prefault) page tables writable (kernel 5.14): the pages
-    /// fault in as if written, contents untouched.
-    pub const MADV_POPULATE_WRITE: i32 = 23;
-    pub const MADV_COLLAPSE: i32 = 25;
-    pub const MADV_GUARD_INSTALL: i32 = 102;
-    pub const MADV_GUARD_REMOVE: i32 = 103;
-
-    /// `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, addr, len, name)`.
-    pub const PR_SET_VMA: i32 = 0x5356_4d41;
-    pub const PR_SET_VMA_ANON_NAME: usize = 0;
-    /// `prctl(PR_SET_THP_DISABLE, 1, flags, 0, 0)` and its query:
-    /// `PR_THP_DISABLE_EXCEPT_ADVISED` (6.18) keeps huge pages where a
-    /// range was `MADV_HUGEPAGE`d; the query returns
-    /// `1 | flags` when disabled, `0` otherwise.
-    pub const PR_SET_THP_DISABLE: i32 = 41;
-    pub const PR_GET_THP_DISABLE: i32 = 42;
-    pub const PR_THP_DISABLE_EXCEPT_ADVISED: usize = 1 << 1;
-
-    pub const FUTEX_WAIT: i32 = 0;
-    pub const FUTEX_WAKE: i32 = 1;
-    pub const FUTEX_PRIVATE_FLAG: i32 = 128;
-
-    pub const CLOCK_MONOTONIC: i32 = 1;
-    pub const CLOCK_MONOTONIC_COARSE: i32 = 6;
-
-    pub const O_RDONLY: i32 = 0;
-    #[cfg(test)]
-    pub const O_WRONLY: i32 = 1;
-    pub const O_RDWR: i32 = 2;
-    pub const O_NONBLOCK: i32 = 0o4000;
-    pub const O_CLOEXEC: i32 = 0o2_000_000;
-
-    /// `eventfd2` flags (the same bits as the `O_*` flags they mirror).
-    pub const EFD_NONBLOCK: i32 = O_NONBLOCK;
-    pub const EFD_CLOEXEC: i32 = O_CLOEXEC;
-
-    pub const POLLIN: i16 = 0x001;
-    pub const POLLPRI: i16 = 0x002;
-    pub const POLLERR: i16 = 0x008;
-    pub const POLLHUP: i16 = 0x010;
-    pub const POLLNVAL: i16 = 0x020;
-    pub const AT_FDCWD: i32 = -100;
-
-    /// Sentinel pidfd meaning "the calling thread" (`PIDFD_SELF_THREAD` of
-    /// `include/uapi/linux/pidfd.h`), accepted by `process_madvise` on
-    /// kernels that have it: 6.15, the first release whose header defines
-    /// it and whose `pidfd_get_task` honours it (6.14 has neither;
-    /// `purge.rs` mirrors the value). Probed at runtime by `sys::features`;
-    /// older kernels return `EBADF`.
-    pub const PIDFD_SELF: i32 = -10000;
-
-    pub const SIGABRT: i32 = 6;
-    const SIG_BLOCK: i32 = 0;
-    const SIG_UNBLOCK: i32 = 1;
-    const SIG_SETMASK: i32 = 2;
-    const SIGSET_WORDS_BYTES: usize = 8;
-
-    pub const STDERR_FILENO: i32 = 2;
 
     // ---- structs ---------------------------------------------------------
 
