@@ -1,5 +1,5 @@
 //! rseq time slice extension for lock holders (design.md section 17,
-//! "Time slice extension"; plan Phase 2.5 task 15; kernel 7.0,
+//! "Time slice extension"; kernel 7.0,
 //! `CONFIG_RSEQ_SLICE_EXTENSION`).
 //!
 //! A thread that holds one of the allocator's locks (class, table, huge,
@@ -312,8 +312,9 @@ unsafe fn enable_thread(area: *mut u8) -> bool {
 
 /// `prctl(PR_RSEQ_SLICE_EXTENSION, GET)`: whether the calling thread is
 /// enabled (`Ok(1)`), not (`Ok(0)`), or the kernel has no such option
-/// (`Err(ENOTSUPP)`, `Err(EINVAL)`). Diagnostics and tests.
-#[cfg(target_os = "linux")]
+/// (`Err(ENOTSUPP)`, `Err(EINVAL)`). The tests' view of the per-thread
+/// enable; the module itself reads bit 5 of the area.
+#[cfg(all(test, target_os = "linux"))]
 pub fn thread_enabled() -> Result<usize, crate::sys::Errno> {
     // SAFETY: a query with integer arguments and no pointer.
     unsafe { crate::sys::prctl(PR_RSEQ_SLICE_EXTENSION, PR_RSEQ_SLICE_EXTENSION_GET, 0, 0, 0) }
@@ -503,12 +504,12 @@ pub fn sched_yield() -> Result<usize, crate::sys::Errno> {
 }
 
 #[cfg(all(test, target_os = "linux"))]
-pub(crate) mod tests {
+mod tests {
     use super::*;
     use crate::lock::RawLock;
 
     /// Serialises the tests that reconfigure the process-wide state.
-    pub(crate) static SLICE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static SLICE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// The process-wide switches a test flips through `configure`, taken
     /// before and put back after, so a test leaves the module as it found

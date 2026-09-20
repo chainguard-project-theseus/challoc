@@ -48,9 +48,9 @@ pub const MEDIUM_MAX: usize = 256 * 1024;
 /// after a random deletion either way (0.89^64 = 0.06%). A slab smaller
 /// than the kernel page never exists on a supported kernel: at init the
 /// classes whose table slab is below the page take the page as their slab
-/// size, up to [`LG_SMALL_SLAB`] ([`adopt_page_geometry`], plan Phase 2.5
-/// task 4e: 64 KiB slabs of 128, 102, 85, 73 and 64 slots for the five
-/// classes on a 64 KiB kernel, 16 KiB slabs on a 16 KiB one), so that every
+/// size, up to [`LG_SMALL_SLAB`] ([`adopt_page_geometry`]: 64 KiB slabs
+/// of 128, 102, 85, 73 and 64 slots for the five classes on a 64 KiB
+/// kernel, 16 KiB slabs on a 16 KiB one), so that every
 /// `Empty` slab is one purge unit; with sub-page slabs the Valkey soak's
 /// post-delete RSS at 64 KiB pages was 79.5 MiB of `Empty` 4..16 KiB slabs
 /// in mixed page groups that never became idle
@@ -124,7 +124,9 @@ const _: () = assert!(BIN_MAX >= SMALL_MAX && lg_slab_for(BIN_MAX) >= LG_MIN_SLA
 const _: () = assert!(NCLASSES <= 64, "pointer classification assumes at most 64 classes");
 const _: () = assert!(MEDIUM_MAX * 16 == MAX_SLAB);
 
-/// Allocation tier of a class (design section 3 table).
+/// Allocation tier of a class (design section 3 table); the tests check
+/// the geometry per tier, nothing else distinguishes them.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tier {
     Small,
@@ -181,7 +183,7 @@ impl Class {
         self.nslots as usize
     }
 
-    #[inline]
+    #[cfg(test)]
     pub const fn tier(&self) -> Tier {
         if self.size as usize <= SMALL_MAX { Tier::Small } else { Tier::Medium }
     }
@@ -218,7 +220,7 @@ impl Class {
 
     /// `u64` words a slab's bits touch in the class bitmap: `slab_bits / 64`
     /// for whole-word slabs, 1 for a sub-word slab.
-    #[inline]
+    #[cfg(test)]
     pub const fn bitmap_words(&self) -> usize {
         self.slab_bits().div_ceil(64)
     }
@@ -332,8 +334,8 @@ pub const BASE_CLASSES: [Class; NCLASSES] = build_classes();
 
 /// The size-class table in use, indexed by class number: [`BASE_CLASSES`]
 /// with the slab geometry of the classes below the kernel page raised to
-/// the page by [`adopt_page_geometry`] once at init (plan Phase 2.5 task
-/// 4e). It is a table at a fixed address, not a pointer selected at init
+/// the page by [`adopt_page_geometry`] once at init. It is a table at a
+/// fixed address, not a pointer selected at init
 /// and not a runtime shift where `lg_slab` is read, so the `free` and
 /// `sdallocx` fast paths (`Regions::slab_slot`, `Regions::slot_in_class`)
 /// load a class's geometry exactly as they did from the compile-time
@@ -600,12 +602,12 @@ impl Regions {
         1 << self.lg_region
     }
 
-    #[inline]
+    #[cfg(test)]
     pub const fn stride(&self) -> usize {
         1 << self.lg_stride
     }
 
-    #[inline]
+    #[cfg(test)]
     pub const fn gap(&self) -> usize {
         self.stride() - self.region_len()
     }
@@ -710,8 +712,8 @@ impl Regions {
         Some((c, slab, slot))
     }
 
-    /// The sized free's classification (design 6.3, plan Phase 2.5 task
-    /// 4c): the size hint names `class`, so the region is known and the
+    /// The sized free's classification (design 6.3): the size hint names
+    /// `class`, so the region is known and the
     /// pointer is only checked against it, `Some((slab, slot))` when `p` is
     /// exactly a slot start inside class `class`'s region, `None` otherwise
     /// (outside the region, which covers every other class's region, the
@@ -764,7 +766,7 @@ impl Regions {
     }
 
     /// True when `p` is anywhere inside the metadata reservation.
-    #[inline]
+    #[cfg(test)]
     pub fn in_meta(&self, p: usize) -> bool {
         p.wrapping_sub(self.meta_base) < self.meta_len
     }
@@ -894,11 +896,11 @@ mod linux {
                 name_mapping(huge_map, b"challoc:huge\0");
                 name_mapping(meta_map, b"challoc:meta\0");
             }
-            // `thp:never` on a host whose global mode is `always` (`thp.rs`,
-            // plan Phase 2.5 task 16): the class and metadata reservations
-            // are `MADV_NOHUGEPAGE`d before anything in them is committed;
-            // the huge region follows the host's policy (`thp::Reservation`,
-            // the 2026-09-20 decision), so `thp.rs` skips it by kind.
+            // `thp:never` on a host whose global mode is `always` (`thp.rs`):
+            // the class and metadata reservations are `MADV_NOHUGEPAGE`d
+            // before anything in them is committed; the huge region follows
+            // the host's policy (`thp::Reservation`), so `thp.rs` skips it
+            // by kind.
             use crate::thp::Reservation;
             for (kind, m) in [
                 (Reservation::Classes, sb_map),
@@ -1136,7 +1138,7 @@ mod tests {
         }
     }
 
-    /// Design 3, plan Phase 2.5 task 4e: the geometry a kernel with pages
+    /// Design 3: the geometry a kernel with pages
     /// above 4 KiB adopts. Every class's slab is at least the page (up to
     /// 64 KiB), only the 512..1024-byte classes change, and for those the
     /// slot arithmetic, the reciprocal, the bitmap and descriptor
