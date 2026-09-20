@@ -1746,6 +1746,18 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
   `thp:always` the default only when the host reads `thp=always`, or a
   size-banded `always` (lane B's design item); the prctl half of task 16
   (opt-in, in flight) is independent of this choice.
+  Update, same day, same host (lane E's `2026-09-20-aarch64-cgos-thp-ab.md`,
+  cgos-arm64, 7 interleaved rounds, medians vs jemalloc, positive = challoc
+  worse): the shipped default `thp:never` reads valkey1 +16.1% / valkey1-free
+  +9.0% because task 16's `MADV_NOHUGEPAGE` (cdca1f1) now also covers the
+  huge region, where the Valkey model's own tables took 32 MiB of huge
+  pages; `thp:auto` (no advice, the pre-task-16 behaviour) +6.3% / +1.1% at
+  the same RSS; `thp:always` +3.2% / -3.1% for +9.5% RSS on that heap and
+  +40% on larson16's retained memory; `thp:never,thp_process:advised` is
+  nil on top of the default (the kernel takes it, 0 AnonHugePages). So
+  the task-16 advice is the whole +6.4 -> +11.7 movement of the cgos
+  scorecard, and a fourth option exists: `never` on the class regions with
+  the huge runs left eligible (lane B's file, one line in `thp.rs`).
 - Phase 2.5 task 11 (lane C): the model test ("a fresh slab committed
   and populated by the background thread is taken by the next claim as
   any committed empty slab") was not added, on purpose. `src/model.rs`
