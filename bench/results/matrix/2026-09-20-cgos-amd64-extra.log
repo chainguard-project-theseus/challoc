@@ -1,0 +1,161 @@
+# lane E 2026-09-20, cgos-amd64 (challoc-lane-e-cgos-amd64, 6.18.49-r2-gcp-6.18, c4-standard-8), the runs after the cell on
+# the adopted VM: the 512m churn re-check, the rseq test rerun, and the kernel 7.2 items' comparison rows on 6.18 (k72.sh).
+# Transcribed from the session's ssh reads of ~/logs/{churn,rseq,k72}.log (the VM was deleted before the rsync copy landed;
+# a zsh word-splitting slip named the copy wrong). The churn lines are the per-run OUTCOME lines (the `t+` timeline tail was
+# not read back); the rseq lines are complete; k72.log is complete except three lines cut at 330 characters (marked [cut]).
+
+==================== ~/logs/churn.log ====================
+# churn re-check on challoc-lane-e-cgos-amd64 6.18.49-r2-gcp-6.18, tree (e0fdf71; no git on the host), 05:24:48
+# command: docker run --rm --platform linux/amd64 -v "/home/dlorenc/challoc":/src -w /src -v challoc-target-amd64:/src/target -v challoc-cargo-registry:/root/.cargo/registry    --memory=512m --memory-swap=512m  challoc-dev:amd64 sh scripts/cgroup-tests.sh churn challoc purge 400 100
+run 1: OUTCOME churn alloc=challoc args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 2: OUTCOME churn alloc=challoc args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 3: OUTCOME churn alloc=challoc args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 4: OUTCOME churn alloc=challoc args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 5: OUTCOME churn alloc=challoc args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 6: OUTCOME churn alloc=challoc args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 7: OUTCOME churn alloc=challoc args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 8: OUTCOME churn alloc=challoc args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 9: OUTCOME churn alloc=challoc args='purge 400 100' status=0 verdict=ok oom_kill=0
+run 10: OUTCOME churn alloc=challoc args='purge 400 100' status=0 verdict=ok oom_kill=0
+# churn purge 400 100 in 512 MiB, default configuration: 10 ok, 0 failed of 10
+# end 05:25:47
+
+==================== ~/logs/rseq.log ====================
+# rseq rerun on challoc-lane-e-cgos-amd64 6.18.49-r2-gcp-6.18, 05:26:55
+-- default: nproc=8 cpus_allowed=0-7 cpu.max=max/100000 possible=0-7
+   1..5: rseq: present=true size=28 flags=0 offset=-320 registered=true verdict=usable rseq: 8 distinct mm_cid values over 8 busy threads test result: ok (five identical lines)
+-- unconfined: nproc=8 cpus_allowed=0-7 cpu.max=max/100000 possible=0-7
+   1..5: rseq: present=true size=28 flags=0 offset=-320 registered=true verdict=usable rseq: 8 distinct mm_cid values over 8 busy threads test result: ok (five identical lines)
+-- privileged: nproc=8 cpus_allowed=0-7 cpu.max=max/100000 possible=0-7
+   1..5: rseq: present=true size=28 flags=0 offset=-320 registered=true verdict=usable rseq: 8 distinct mm_cid values over 8 busy threads test result: ok (five identical lines)
+-- the whole unit-test binary under the default profile (as make test runs it), 3 times:
+   1: rseq: 4 distinct mm_cid values over 8 busy threads test result: ok. 400 passed; 0 failed; 0 ignored; 0 measured; 117 filtered out; finished in 8.xx s
+   2: rseq: 3 distinct mm_cid values over 8 busy threads test result: ok. 400 passed; 0 failed; 0 ignored; 0 measured; 117 filtered out; finished in 8.xx s
+   3: rseq: 2 distinct mm_cid values over 8 busy threads test result: ok. 400 passed; 0 failed; 0 ignored; 0 measured; 117 filtered out; finished in 8.xx s
+# end 05:27:34
+
+==================== ~/logs/k72.log ====================
+# k72 on challoc-lane-e-cgos-amd64: 6.18.49-r2-gcp-6.18, 8 CPUs, 2026-09-20T05:27:34Z, tree e0fdf71
+# L3: 266240K shared by cpus 0-7; NUMA nodes: 1
+
+#### (a) khugepaged anon mTHP collapse: the host as shipped (05:27:34)
+  thp enabled: [always] madvise never; defrag: always defer defer+madvise [madvise] never; shrink_underused: 1
+  1024kB=never  128kB=never  16kB=never  2048kB=inherit  256kB=never  32kB=never  512kB=never  64kB=never  8kB=
+  khugepaged: alloc_sleep_millisecs=60000 defrag=1 full_scans=47 max_ptes_none=511 max_ptes_shared=256 max_ptes_swap=64 pages_collapsed=28 pages_to_scan=4096 scan_sleep_millisecs=10000
+  hugepages-64kB/stats: anon_fault_alloc anon_fault_fallback anon_fault_fallback_charge nr_anon nr_anon_partially_mapped shmem_alloc shmem_fallback shmem_fallback_charge split split_deferred split_failed swpin swpin_fallback swpin_fallback_charge swpout swpout_fallback zswpout
+  hpage_pmd_size=2097152
+
+#### (a0) as shipped: valkey1 and larson16 under challoc (thp:never default) and challoc thp:always (05:27:35)
+-- valkey1 challoc
+  | valkey1 | challoc | 14.865 | 585.7 | 0.0 | 0 | 0 | 0 | 0 |
+  per-size and khugepaged deltas: 2048kB/anon_fault_alloc=+29 thp_fault_alloc=+29
+-- valkey1 challoc-thp
+  | valkey1 | challoc-thp | 17.277 | 640.7 | 636.0 | 319 | 0 | 0 | 281 |
+  per-size and khugepaged deltas: 2048kB/anon_fault_alloc=+352 2048kB/split_deferred=+283 thp_fault_alloc=+351 thp_deferred_split_page=+283 thp_split_pmd=+283
+-- larson16 challoc
+  | larson16 | challoc | 175.3 | 141.7 | 4.0 | 2 | 0 | 0 | 0 |
+  per-size and khugepaged deltas: 2048kB/anon_fault_alloc=+32 thp_fault_alloc=+32
+-- larson16 challoc-thp
+  | larson16 | challoc-thp | 185.4 | 209.1 | 172.0 | 96 | 0 | 0 | 37 |
+  per-size and khugepaged deltas: 2048kB/anon_fault_alloc=+126 2048kB/split_deferred=+40 thp_fault_alloc=+126 thp_deferred_split_page=+40 thp_split_pmd=+40
+
+#### (a1) 64 KiB enabled=madvise, 2 MiB left as shipped, khugepaged accelerated (scan_sleep 100 ms, 65536 pages per scan), max_ptes_none 511 (05:28:14)
+  wrote /sys/kernel/mm/transparent_hugepage/hugepages-64kB/enabled = madvise
+  wrote /sys/kernel/mm/transparent_hugepage/khugepaged/scan_sleep_millisecs = 100
+  wrote /sys/kernel/mm/transparent_hugepage/khugepaged/alloc_sleep_millisecs = 1000
+  wrote /sys/kernel/mm/transparent_hugepage/khugepaged/pages_to_scan = 65536
+  wrote /sys/kernel/mm/transparent_hugepage/khugepaged/max_ptes_none = 511
+  thp enabled: [always] madvise never; defrag: always defer defer+madvise [madvise] never; shrink_underused: 1
+  1024kB=never  128kB=never  16kB=never  2048kB=inherit  256kB=never  32kB=never  512kB=never  64kB=madvise  8kB=
+  khugepaged: alloc_sleep_millisecs=1000 defrag=1 full_scans=48 max_ptes_none=511 max_ptes_shared=256 max_ptes_swap=64 pages_collapsed=28 pages_to_scan=65536 scan_sleep_millisecs=100
+-- valkey1 challoc-thp (MALLOC_CONF=thp:always)
+  | valkey1 | challoc-thp | 17.331 | 641.7 | 636.0 | 319 | 0 | 0 | 2176 |
+  per-size and khugepaged deltas: 2048kB/anon_fault_alloc=+350 2048kB/split_deferred=+2177 64kB/anon_fault_alloc=+34 khugepaged/pages_collapsed=+2096 khugepaged/full_scans=+42 thp_fault_alloc=+350 thp_collapse_alloc=+2096 thp_deferred_split_page=+2177 thp_split_pmd=+2177
+-- larson16 challoc-thp (MALLOC_CONF=thp:always)
+  | larson16 | challoc-thp | 185.6 | 220.1 | 194.0 | 97 | 0 | 0 | 115 |
+  per-size and khugepaged deltas: 2048kB/anon_fault_alloc=+127 2048kB/split_deferred=+115 64kB/anon_fault_alloc=+96 khugepaged/pages_collapsed=+117 khugepaged/full_scans=+69 thp_fault_alloc=+127 thp_collapse_alloc=+117 thp_deferred_split_page=+115 thp_split_pmd=+115
+
+#### (a2) 64 KiB enabled=madvise and 2 MiB enabled=never (only the 64 KiB order is enabled), max_ptes_none 511 then 0; challoc thp:always takes the folio path (05:28:34)
+  wrote /sys/kernel/mm/transparent_hugepage/hugepages-2048kB/enabled = never
+  thp enabled: [always] madvise never; defrag: always defer defer+madvise [madvise] never; shrink_underused: 1
+  1024kB=never  128kB=never  16kB=never  2048kB=never  256kB=never  32kB=never  512kB=never  64kB=madvise  8kB=
+  khugepaged: alloc_sleep_millisecs=1000 defrag=1 full_scans=166 max_ptes_none=511 max_ptes_shared=256 max_ptes_swap=64 pages_collapsed=2241 pages_to_scan=65536 scan_sleep_millisecs=100
+-- valkey1 challoc-thp, max_ptes_none 511
+  | valkey1 | challoc-thp | 13.805 | 587.3 | 0.0 | 0 | 0 | 0 | 0 |
+  per-size and khugepaged deltas: 64kB/anon_fault_alloc=+3316 thp_collapse_alloc=+1
+-- larson16 challoc-thp, max_ptes_none 511
+  | larson16 | challoc-thp | 172.7 | 152.0 | 0.0 | 0 | 0 | 0 | 0 |
+  per-size and khugepaged deltas: 64kB/anon_fault_alloc=+740 thp_collapse_alloc=+1
+  wrote /sys/kernel/mm/transparent_hugepage/khugepaged/max_ptes_none = 0
+-- valkey1 challoc-thp, max_ptes_none 0
+  | valkey1 | challoc-thp | 14.594 | 587.4 | 0.0 | 0 | 0 | 0 | 0 |
+  per-size and khugepaged deltas: 64kB/anon_fault_alloc=+3317 thp_collapse_alloc=+1
+-- larson16 challoc-thp, max_ptes_none 0
+  | larson16 | challoc-thp | 167.4 | 149.2 | 0.0 | 0 | 0 | 0 | 0 |
+  per-size and khugepaged deltas: 64kB/anon_fault_alloc=+715 thp_collapse_alloc=+1
+  wrote /sys/kernel/mm/transparent_hugepage/khugepaged/max_ptes_none = 511
+
+#### (a3) 64 KiB enabled=always, 2 MiB never: challoc's DEFAULT (thp:never, no advice; the host's top level is not always so no MADV_NOHUGEPAGE is issued on a madvise host) -- does khugepaged collapse unadvised class regions to 64 KiB in the background? (05:29:14)
+  wrote /sys/kernel/mm/transparent_hugepage/hugepages-64kB/enabled = always
+  thp enabled: [always] madvise never; defrag: always defer defer+madvise [madvise] never; shrink_underused: 1
+  1024kB=never  128kB=never  16kB=never  2048kB=never  256kB=never  32kB=never  512kB=never  64kB=always  8kB=
+  khugepaged: alloc_sleep_millisecs=1000 defrag=1 full_scans=166 max_ptes_none=511 max_ptes_shared=256 max_ptes_swap=64 pages_collapsed=2241 pages_to_scan=65536 scan_sleep_millisecs=100
+-- valkey1 challoc (default)
+  | valkey1 | challoc | 14.446 | 585.8 | 0.0 | 0 | 0 | 0 | 0 |
+  per-size and khugepaged deltas: 64kB/anon_fault_alloc=+1385 64kB/nr_anon=+8 64kB/nr_anon_partially_mapped=+1 64kB/split_deferred=+36
+-- larson16 challoc (default)
+  | larson16 | challoc | 170.5 | 140.7 | 0.0 | 0 | 0 | 0 | 0 |
+  per-size and khugepaged deltas: 64kB/anon_fault_alloc=+1390 64kB/nr_anon=+12 64kB/nr_anon_partially_mapped=+1 64kB/split_deferred=+50
+-- valkey1 jemalloc (control)
+  | valkey1 | jemalloc | 14.583 | 594.2 | 0.0 | 0 | 0 | 0 | 0 |
+  per-size and khugepaged deltas: 64kB/anon_fault_alloc=+10747 64kB/nr_anon=-20 64kB/nr_anon_partially_mapped=-3 64kB/split_deferred=+7894
+
+#### (a-restore) host THP state restored (05:29:46)
+  wrote 64kB/enabled = never; 2048kB/enabled = inherit; scan_sleep_millisecs = 10000; alloc_sleep_millisecs = 60000; pages_to_scan = 4096; max_ptes_none = 511
+  thp enabled: [always] madvise never; 2048kB=inherit, every other size never; khugepaged defaults restored (full_scans=169 pages_collapsed=2241 at that point)
+
+#### (b) cache-aware scheduling: what the kernel exposes (05:29:46)
+  no /sys/kernel/debug/sched/llc_balancing on this kernel
+  sched debugfs: base_slice_ns debug fair_server features latency_warn_ms latency_warn_once migration_cost_ns nr_migrate numa_balancing preempt tunable_scaling verbose
+  features: PLACE_LAG PLACE_DEADLINE_INITIAL PLACE_REL_DEADLINE RUN_TO_PARITY PREEMPT_SHORT NO_NEXT_BUDDY PICK_BUDDY CACHE_HOT_BUDDY DELAY_DEQUEUE DELAY_ZERO WAKEUP_PREEMPTION NO_HRTICK NO_HRTICK_DL NONTASK_CAPACITY TTWU_QUEUE SIS_UTIL NO_WARN_DOUBLE_CLOCK NO_RT_PUSH_IPI NO_RT_RUNTIME_SHARE NO_LB_MIN ATTACH_AGE_LOAD WA_IDLE WA_W[cut]
+  sysctl: kernel.sched_autogroup_enabled = 1;kernel.sched_cfs_bandwidth_slice_us = 5000;kernel.sched_deadline_period_max_us = 4194304;kernel.sched_deadline_period_min_us = 100;kernel.sched_rr_timeslice_ms = 100;kernel.sched_rt_period_us = 1000000;kernel.sched_rt_runtime_us = 950000;kernel.sched_schedstats = 0;kernel.sched_util_c[cut]
+  kallsyms sched_cache/llc: 0
+
+#### (b) rows on this kernel (no knob): larson10, larson16, valkey1, 3 rounds sorted (05:29:46)
+  | program | variant | sorted scores | median | maxrss MiB |
+  |---|---|---|---:|---:|
+  | larson10 | challoc | 165.9 167.9 170.5 | 167.9 | 94.3 |
+  | larson10 | jemalloc | 185.2 185.4 185.8 | 185.4 | 114.4 |
+  | larson16 | challoc | 172.8 173.3 175.7 | 173.3 | 140.3 |
+  | larson16 | jemalloc | 189.5 190.0 190.8 | 190.0 | 163.4 |
+  | valkey1 | challoc | 14.537 14.844 14.871 | 14.844 | 585.6 |
+  | valkey1 | jemalloc | 16.518 16.974 16.975 | 16.974 | 599.6 |
+  | program | vs jemalloc |
+  |---|---:|
+  | larson10 | +10.4% |
+  | larson16 | +9.6% |
+  | valkey1 | +14.3% |
+  - load at end: 5.48 4.62 3.14
+
+#### (c) CONFIG_RSEQ_SLICE_EXTENSION (05:33:36)
+  /proc/config.gz: /proc/config.gz
+  CONFIG_SCHED_MM_CID=y CONFIG_RSEQ=y CONFIG_GENERIC_ENTRY=y CONFIG_HAVE_GENERIC_TIF_BITS=y   (no CONFIG_RSEQ_SLICE_EXTENSION line: the option does not exist before 7.0)
+  /sys/kernel/debug/rseq: ls: cannot access '/sys/kernel/debug/rseq': No such file or directory
+  kallsyms: (no rseq_slice_* symbol)
+  glibc: GNU C Library (glibc-2.44-r6) stable release version 2.44.
+-- natively on the host, slice_ext:on
+  slice_ext: mode on, __rseq_size 28, available 0, main thread enabled -1 (flags bit 5: 0)
+  slice_ext: 32 threads: 0 enabled before their first allocation, 0 after
+  Slice extension: off (no-slice_ctrl); slice_ext:on requested, unavailable
+  ok slice_ext
+-- natively on the host, slice_ext:off
+  slice_ext: mode off, __rseq_size 28, available 0, main thread enabled -1 (flags bit 5: 0)
+  slice_ext: 32 threads: 0 enabled before their first allocation, 0 after
+  Slice extension: off (slice_ext:off)
+  ok slice_ext
+-- podman default seccomp, slice_ext:on: the same three lines as natively (no-slice_ctrl; slice_ext:on requested, unavailable), ok slice_ext
+-- podman default seccomp, slice_ext:off: Slice extension: off (slice_ext:off), ok slice_ext
+-- podman --privileged, slice_ext:on: the same as natively (no-slice_ctrl), ok slice_ext
+-- the feature line natively (features.c) with slice_ext:on
+  features: page_size=4096 guard_install=yes mseal=yes process_madvise=pidfd_self process_madvise_free=yes anon_name=no thp=always mthp=2M collapse=unprobed rseq=yes rseq_size=28 mm_cid=yes lam=no uai=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=48K l2=2M
+# k72 end 2026-09-20T05:33:38Z

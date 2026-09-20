@@ -100,6 +100,29 @@ it adds to or corrects the runbook below:
   even a LAM-capable CPU could not be used from this kernel. THP is
   `always` (2 MiB `inherit`, every mTHP size present and `never`).
   `perf_event_paranoid` is 2.
+- The kernel 7.2 workstation image (`kirkland-workstation-7dot2-amd64-
+  20260920-0028`, measured 2026-09-20 by the `cgos72-amd64` cell,
+  `bench/results/2026-09-20-chainguard-os-cells.md`): kernel
+  `7.2.3-r0-desktop-7.2 #Chainguard SMP PREEMPT_DYNAMIC` (`sched/preempt`
+  `(full) lazy`), glibc 2.44-r6, THP **`madvise`** (2 MiB `inherit`,
+  16kB..1024kB `never`), `khugepaged` defaults (`max_ptes_none 511`,
+  `pages_to_scan 4096`, `scan_sleep 10 s`), `perf_event_paranoid` 2, no
+  PMU. **No `/proc/config.gz`** and no config file under `/boot` or
+  `/usr/lib/modules`, so the option bits are read from `kallsyms` and
+  debugfs: `RSEQ` and `SCHED_MM_CID` (`mm_cid_*` symbols, `rseq_size=33
+  mm_cid=yes` in the feature line), **`RSEQ_SLICE_EXTENSION` on**
+  (`/sys/kernel/debug/rseq/{debug=0,slice_ext_nsec=5000}`, `T
+  __x64_sys_rseq_slice_yield`), `SCHED_CACHE`
+  (`/sys/kernel/debug/sched/llc_balancing/`, `enabled=1`),
+  `ANON_VMA_NAME` (`anon_name=yes`, unlike the 6.18 server kernel), the
+  per-size `hugepages-<size>kB/stats/collapse_*` counters. Other
+  differences from the server image: **OS Login only** (the guest agent
+  creates no user from `ssh-keys` metadata; `enable-oslogin=TRUE` on the
+  instance and the OS Login posix user, with `sudo` and the `docker`
+  group, log in), **Docker 29.8.1 with `dockerd` running** plus `make`,
+  `gcc`, `git` on the host (still no `perf`, `nft`, `lscpu`; rootless
+  podman still fails), `/var` 19 GiB as shipped (the cell grows it),
+  NIC `gve`, `systemd-detect-virt` = `google`.
 
 ---
 

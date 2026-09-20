@@ -1083,6 +1083,24 @@ Tasks, in order:
     Metal (`2026-09-19-cgos-metal-arm64.md`): `c4a-highmem-96-metal`
     twice, 3 and 11 minutes each, Neoverse N3, **no MTE**, PMU counts
     natively and in a privileged container, `idpf`, deleted.
+    Second run 2026-09-20 (lane E, `2026-09-20-chainguard-os-cells.md`):
+    the merged tree on both 6.18 cells and the new `cgos72-amd64` cell
+    (`kirkland-workstation-7dot2-amd64`, kernel `7.2.3-r0-desktop-7.2`,
+    x86_64 only, OS Login, THP `madvise`, no `/proc/config.gz`; in
+    `MATRIX_CGOS_CELLS`, its own `scorecard-cgos72-amd64.md`). `make
+    test` 540/0 under `--privileged` on all three; under the default
+    profile one unit test fails on all three (lane A's
+    `rseq::tests::probe_reads_the_registered_area`, `1 distinct mm_cid`
+    with the whole suite sharing 8 vCPUs; 45/45 alone). The 512m churn
+    stall is gone with lane B's `f78601e` (0 of 26 default runs against
+    11 of 45 yesterday). The 7.2 items: khugepaged does collapse
+    challoc's regions to 64 KiB in the background (`64kB/collapse_alloc`
+    +187621 advised, +19186 unadvised on valkey1; a collapse/split loop
+    with the purge path, 25..40% throughput at the accelerated pace,
+    untested at the shipped pace); cache-aware scheduling has a root-only
+    debugfs knob (`sched/llc_balancing/enabled`), inert on the one-LLC
+    shape; `CONFIG_RSEQ_SLICE_EXTENSION` is on (the first such host:
+    `Slice extension: on`, both ways green). No metal.
 
 15. rseq time slice extension (kernel 7.0; `docs/research.md`, kernel
     table): probe `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE` (bit 4) in the
