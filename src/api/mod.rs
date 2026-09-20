@@ -521,7 +521,7 @@ mod tests {
         "heap.rs:Shared.stats",
         "huge.rs:Huge.inner",
         "meta.rs:Meta.inner",
-        "purge.rs:static.STATE",
+        "purge/background.rs:static.STATE",
     ];
 
     /// Assert that every lock in [`FORK_LOCKS`] is held (`locked`) or free
@@ -559,7 +559,7 @@ mod tests {
                 "heap.rs:Shared.stats" => state(s.stats.raw().is_locked(), "process stats"),
                 "huge.rs:Huge.inner" => state(s.huge.raw_lock().is_locked(), "huge"),
                 "meta.rs:Meta.inner" => state(s.meta.raw_lock().is_locked(), "meta"),
-                "purge.rs:static.STATE" => state(purge::background::is_locked(), "background state"),
+                "purge/background.rs:static.STATE" => state(purge::background::is_locked(), "background state"),
                 other => panic!("no fork-handler assertion for lock {other}"),
             }
         }

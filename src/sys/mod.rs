@@ -99,8 +99,8 @@ pub const AT_FDCWD: i32 = -100;
 /// Sentinel pidfd meaning "the calling thread" (`PIDFD_SELF_THREAD` of
 /// `include/uapi/linux/pidfd.h`), accepted by `process_madvise` on
 /// kernels that have it: 6.15, the first release whose header defines
-/// it and whose `pidfd_get_task` honours it (6.14 has neither;
-/// `purge.rs` mirrors the value). Probed at runtime by `sys::features`;
+/// it and whose `pidfd_get_task` honours it (6.14 has neither).
+/// Probed at runtime by `sys::features`;
 /// older kernels return `EBADF`.
 pub const PIDFD_SELF: i32 = -10000;
 
