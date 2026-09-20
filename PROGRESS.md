@@ -1,4 +1,4 @@
-STATUS: RUNNING
+STATUS: BLOCKED
 
 Progress log for the unattended implementation loop (scripts/ralph.sh).
 One line per task, newest at the bottom of each section. Keep it terse.
@@ -896,6 +896,21 @@ One line per task, newest at the bottom of each section. Keep it terse.
   (-332 cycles per SET); the delete phase, met yesterday, read +3.8% / +3.9%
   today, which is that term (+3.3% cycles per DEL) plus the clock. No code
   changed (the tree under acceptance stays byte-identical).
+- Phase 2.5 acceptance recorded (coordinator, 2026-09-20, tree 29b398d,
+  library byte-identical to a999097): accepted on every row reachable
+  from GCE (rows 1, 2b, 2c, 4a, 5 met; 2a and 3 met with attribution),
+  two rows open on hardware the plan gates on the human (2a (ii) WAITPKG,
+  2a (vi) and 4b MTE / LAM / UAI, task 6). Evidence and the per-row table:
+  `bench/results/2026-09-20-phase-2.5-acceptance.md`, section "Acceptance
+  (the coordinator)" (commit 9cb7272). Today's session: the aarch64
+  larson1 drift and the x86_64 larson16 band attributed (95be6ff,
+  25f1d54), lanes B, C, D, E and A merged in three batches (scorecards
+  8e2d201 and a999097), every red test of the floor fixed and re-run on
+  the cell that showed it, the x86_64 Valkey write phase attributed
+  outside the allocator (4a9cbae). No default changed. The loop stops
+  here on the human's standing instruction; Phase 3 (packaging) is next
+  and starts from the decisions under Blocked.
+
 
 
 - (c) 0604bb3: `bench/ruby-soak.sh`, `make ruby-soak`, `bench/ruby/soak.rb` (16
@@ -1890,6 +1905,21 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
 - (resolved 2026-09-18: the driving session's `gcloud auth print-access-token` succeeded minutes later; the failure was a transient refresh, no `gcloud auth login` was needed; the next iteration resumes at the task-15 measurement list) Phase 1.5 task 15 (2026-09-18, this iteration): the measurements owed by the task (`quick`, `quick-perf` larson10 L1D, the mstress `ab` with arenasample, `make valkey STAGE=memefficiency`, the scorecards, on both VMs) could not be run: the VMs are stopped and every `gcloud` call fails with "Reauthentication failed. cannot prompt during non-interactive execution" (user credential and application-default credential both; `bench/gce/challoc-bench start all` and `gcloud compute instances list` alike). A human must run `gcloud auth login` (and `gcloud auth application-default login` if the ADC is wanted). Nothing was started, so nothing is left running. What did run is recorded under In progress; the next iteration starts at the measurement list of task 15 against 8630ca2 (01e15ad, the code commit of this iteration, is the `new` variant; `new:group_handoff:false` the control).
 
 - (resolved 2026-09-18 by the review and plan task 15; kept for the record) Phase 1.5 acceptance (2026-09-18, iteration 28): criterion 3's RSS band fails on one row, mstress on x86_64 (+19.1%, `bench/results/2026-09-18-phase-1.5-acceptance-3.md`), and the fix is a design choice, not a tuning: the row's excess is 16 arenas times per-(arena, class) `Empty` and partial slabs that only their own arena and class can reuse (per-class regions, design section 3; arena ownership, 13.3), against jemalloc's one dirty pool per arena; the decay window is irrelevant to it (a 0.63 s process, jemalloc's RSS is the same with decay off). Pick one of (d) an `Empty`-slab handoff between arenas on the fresh-commit path (recommended, changes 13.3's ownership rule), (b) a per-arena dirty budget purging beyond it at once (jemalloc 4's `lg_dirty_mult`, refault cost), or (c) accept the row; details under Notes for the human. Everything else in the phase's acceptance passes on both VMs (tests, PMU, every time row, every other RSS row, larson10 counters, memefficiency, the soak).
+- Phase 2.5 wind-down (coordinator, 2026-09-20): stopped on purpose, not
+  on a failure. Only a human can close what is left: (1) hardware for
+  acceptance rows 2a (ii) (a WAITPKG-capable `-metal` C3 for the `umwait`
+  "with" direction), 2a (vi) and 4b (an MTE host such as AmpereOne bare
+  metal, and a LAM / UAI host such as Granite Rapids or bare-metal Genoa;
+  task 6 is gated on them by the plan); (2) three default decisions with
+  the numbers under "Notes for the human" dated 2026-09-20: `percpu_arena`
+  (the lanes read NO-GO), `thp` on `THP=always` hosts (four options; the
+  shipped `never` now costs 10 points of valkey1 on Chainguard OS because
+  task 16's advice covers the huge region), `prefault` (lane A: opt-in,
+  it implies the background thread); (3) whether the `malloc_usable_size`
+  design note (`2026-09-20-x86_64-valkey-write-phase-attribution.md`,
+  section 8) becomes a task. Everything else in Phase 2.5 is done and
+  recorded; Phase 3 can start once (2) is decided.
+
 
 ## Notes for the human
 
