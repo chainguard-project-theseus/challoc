@@ -1052,6 +1052,99 @@ mod tests {
         assert!(ga.contains("\"version\"") && !ga.contains("\"opt\"") && !ga.contains("\"stats.arenas\""), "{ga}");
     }
 
+    /// Every printable character of a report except the figures: digit runs
+    /// (with a sign) become `N`, `true`/`false` become `B`, a quoted value
+    /// after `: ` becomes `"S"`. Keys, punctuation and indentation stay.
+    fn masked(text: &str) -> String {
+        let mut out = String::new();
+        let mut rest = text;
+        while let Some(c) = rest.chars().next() {
+            if let Some(r) = rest.strip_prefix(": \"") {
+                let end = r.find('"').expect("closing quote");
+                out.push_str(": \"S\"");
+                rest = &r[end + 1..];
+            } else if let Some(r) = rest.strip_prefix("true") {
+                out.push('B');
+                rest = r;
+            } else if let Some(r) = rest.strip_prefix("false") {
+                out.push('B');
+                rest = r;
+            } else if c.is_ascii_digit() || (c == '-' && rest[1..].starts_with(|d: char| d.is_ascii_digit())) {
+                out.push('N');
+                rest = rest[1..].trim_start_matches(|d: char| d.is_ascii_digit());
+            } else {
+                out.push(c);
+                rest = &rest[c.len_utf8()..];
+            }
+        }
+        out
+    }
+
+    /// The JSON report's shape, pinned character for character with the
+    /// figures masked (`masked`): the general section once, then one
+    /// arena block per arena in the report with `NBINS` bin rows each.
+    /// A change to the report's layout has to change this text; a refactor
+    /// of the writer that keeps the output byte-identical does not.
+    #[test]
+    fn json_report_shape_is_pinned() {
+        let mut general = String::from(
+            "{\n\t\"jemalloc\": {\n\t\t\"version\": \"S\",\n\t\t\"implementation\": \"S\",\n\t\t\"config\": {\"debug\": B, \"stats\": B, \"quantum\": N},\n\t\t\"opt\": {\n",
+        );
+        let opts: Vec<String> = KEYS
+            .iter()
+            .filter_map(|key| {
+                let v = crate::api::shared().config.get(key.as_bytes())?;
+                let shape = match v {
+                    Value::Bool(_) => "B",
+                    Value::Int(_) | Value::Uint(_) => "N",
+                    Value::Str(_) => "\"S\"",
+                };
+                Some(std::format!("\t\t\t\"{key}\": {shape}"))
+            })
+            .collect();
+        general.push_str(&opts.join(",\n"));
+        general.push_str(concat!(
+            "\n\t\t},\n",
+            "\t\t\"arenas\": {\"narenas\": N, \"nbins\": N, \"quantum\": N, \"page\": N},\n",
+            "\t\t\"background_thread\": {\"present\": B},\n",
+            "\t\t\"thp\": {\"key\": \"S\", \"mode\": \"S\", \"reason\": \"S\", \"class_ranges\": N, \"class_bytes\": N, \"chunks\": N, \"huge_ranges\": N, \"meta_ranges\": N, \"failures\": N, \"nohuge_ranges\": N, \"host\": \"S\", \"process\": \"S\"},\n",
+            "\t\t\"cgroup\": {\"tracked\": B, \"limit\": N, \"high\": N, \"current\": N, \"pressure_events\": N, \"decay_ms\": N, \"retention_cap\": N, \"empty_bytes\": N, \"full_purges\": N, \"thp_forced\": B, \"purge_advice\": \"S\", \"lazy_purges\": N, \"eager_purges\": N, \"purged_is_zero\": B},\n",
+            "\t\t\"stats\": {\"allocated\": N, \"active\": N, \"metadata\": N, \"resident\": N, \"mapped\": N, \"retained\": N},\n",
+            "\t\t\"stats.arenas\": {\n",
+        ));
+        let mut arena = String::from(concat!(
+            "\t\t\t\"N\": {\n",
+            "\t\t\t\t\"dirty_decay_ms\": N,\n",
+            "\t\t\t\t\"pactive\": N, \"pdirty\": N, \"pmuzzy\": N,\n",
+            "\t\t\t\t\"small\": {\"allocated\": N, \"active\": N, \"dirty\": N, \"retained\": N},\n",
+            "\t\t\t\t\"large\": {\"allocated\": N, \"active\": N, \"dirty\": N, \"retained\": N, \"runs\": N},\n",
+            "\t\t\t\t\"metadata\": N, \"resident\": N, \"mapped\": N, \"retained\": N,\n",
+            "\t\t\t\t\"bins\": [\n",
+        ));
+        for j in 0..NBINS {
+            arena.push_str("\t\t\t\t\t{\"size\": N, \"nregs\": N, \"slab_size\": N, \"curregs\": N, \"curslabs\": N, \"nonfull_slabs\": N, \"empty_slabs\": N, \"purged_slabs\": N}");
+            arena.push_str(if j + 1 == NBINS { "\n" } else { ",\n" });
+        }
+        arena.push_str("\t\t\t\t]\n\t\t\t}");
+        let text = report("J");
+        let got = masked(&text);
+        let narenas = text.matches("\"pactive\": ").count();
+        assert!(narenas >= 1, "{text}");
+        let mut want = general;
+        want.push_str(&std::vec![arena.as_str(); narenas].join(",\n"));
+        want.push_str("\n\t\t}\n\t}\n}\n");
+        assert_eq!(got, want, "masked JSON report:\n{got}");
+        // Without bins the arena block ends at the totals line; without
+        // arenas the general section closes the object itself.
+        let b = masked(&report("Jb"));
+        assert!(b.contains("\"retained\": N\n\t\t\t}"), "{b}");
+        assert!(!b.contains("\"bins\""), "{b}");
+        let a = masked(&report("Ja"));
+        assert!(a.ends_with("\"retained\": N}\n\t}\n}\n"), "{a}");
+        let g = masked(&report("Jg"));
+        assert!(g.starts_with("{\n\t\"jemalloc\": {\n\t\t\"version\": \"S\",\n\t\t\"implementation\": \"S\",\n\t\t\"stats.arenas\": {\n"), "{g}");
+    }
+
     /// The module docs promise that nothing in a report allocates: the
     /// calling thread's `thread.allocated` and `thread.deallocated` do not
     /// move across a text and a JSON report written to a sink callback
