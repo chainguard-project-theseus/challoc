@@ -57,7 +57,10 @@ extern "C" {
 /* Bias arena index bits so that 0 encodes "use an automatically chosen arena". */
 #define MALLOCX_ARENA(a) ((((int)(a)) + 1) << 20)
 
-/* Special arena indices for the arena.<i>.* and stats.arenas.<i>.* keys. */
+/* Special arena indices for the arena.<i>.* and stats.arenas.<i>.* keys.
+ * challoc never destroys an arena (arena.<i>.destroy purges it and keeps
+ * it), so stats.arenas.MALLCTL_ARENAS_DESTROYED.* reads all zero and
+ * arena.MALLCTL_ARENAS_DESTROYED.* is ENOENT. */
 #define MALLCTL_ARENAS_ALL 4096
 #define MALLCTL_ARENAS_DESTROYED 4097
 

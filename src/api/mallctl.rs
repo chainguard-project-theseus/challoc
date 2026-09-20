@@ -30,11 +30,15 @@
 //!
 //! `stats.*` values are those stored by the last `epoch` (all zero before
 //! the first), as in jemalloc; `stats.arenas.4096.*` (`MALLCTL_ARENAS_ALL`)
-//! sums every existing arena. The type of each value ([`Reading`]) is
-//! jemalloc's: `size_t` for byte and page counts, `unsigned` for indices
-//! and counts of arenas and bins, `uint32_t` for `arenas.bin.<j>.nregs`,
-//! `ssize_t` for decay times, `uint64_t` for `epoch` and the thread
-//! counters, `bool` (one byte) for flags, `const char *` for strings.
+//! sums every existing arena and `stats.arenas.4097.*`
+//! (`MALLCTL_ARENAS_DESTROYED`) is all zero, see [`ARENAS_DESTROYED`]. The
+//! type of each value ([`Reading`]) is jemalloc's: `size_t` for byte and
+//! page counts (`opt.tcache_max` and `opt.huge_retain_max` included,
+//! [`SIZE_T_OPTS`]), `unsigned` for indices and counts of arenas, bins and
+//! slabs (`opt.narenas`, `opt.tcache_nslots_small_max`), `uint32_t` for
+//! `arenas.bin.<j>.nregs`, `ssize_t` for decay times and the other signed
+//! options, `uint64_t` for `epoch` and the thread counters, `bool` (one
+//! byte) for flags, `const char *` for strings.
 //!
 //! `experimental.utilization.query` fills jemalloc's
 //! `extent_util_stats_verbose_t` (`slabcur_addr, nfree, nregs, size,
@@ -206,6 +210,21 @@ pub enum Leaf {
     ConfigDebug,
     ConfigStats,
 }
+
+/// `MALLCTL_ARENAS_DESTROYED` (4097 in both shipped headers): jemalloc's
+/// merged statistics of the arenas destroyed so far. challoc never
+/// destroys an arena (`arena.<i>.destroy` purges it and keeps it
+/// registered, design 13.4), so `stats.arenas.4097.*` answers zeros and
+/// `arena.4097.*` is `ENOENT` like every index at or above `MAX_ARENAS`.
+const ARENAS_DESTROYED: usize = 4097;
+const _: () = assert!(ARENAS_DESTROYED >= MAX_ARENAS && ARENAS_DESTROYED != ARENAS_ALL as usize);
+
+/// The `opt.*` keys jemalloc types `size_t`: byte counts. Every other
+/// `Value::Uint` key (`narenas`, `tcache_nslots_small_max`,
+/// `tcache_compact_shift`, `guard_slab_interval`) is a count or a shift
+/// and reads as `unsigned`, as jemalloc's `opt.narenas` and
+/// `opt.tcache_nslots_small_max` do.
+const SIZE_T_OPTS: &[&str] = &["tcache_max", "huge_retain_max"];
 
 /// A read-only key's answer, tagged with the C type the caller's buffer
 /// must have (`*oldlenp` is checked against it).
@@ -778,12 +797,13 @@ fn at(mib: &[usize], i: usize) -> usize {
     mib.get(i).copied().unwrap_or(usize::MAX)
 }
 
-/// `opt.<key>`: the key's value with its jemalloc type.
+/// `opt.<key>`: the key's value with its jemalloc type (`SIZE_T_OPTS`).
 fn opt_value(mib: &[usize]) -> Result<Reading, c_int> {
     let key = KEYS.get(at(mib, 1)).ok_or(ENOENT)?;
     Ok(match shared().config.get(key.as_bytes()).ok_or(ENOENT)? {
         Value::Bool(b) => Bool(b),
         Value::Int(i) => Ssize(i as isize),
+        Value::Uint(u) if SIZE_T_OPTS.contains(key) => Size(u as usize),
         Value::Uint(u) => Unsigned(u as c_uint),
         Value::Str(s) => Str(cstr_of(s)),
     })
@@ -825,10 +845,15 @@ fn ms_of(ns: u64) -> isize {
     if ns == purge::NEVER { -1 } else { (ns / 1_000_000) as isize }
 }
 
-/// The stored statistics of arena `i`, or the `MALLCTL_ARENAS_ALL` merge.
+/// The stored statistics of arena `i`, the `MALLCTL_ARENAS_ALL` merge, or
+/// the zeros of `MALLCTL_ARENAS_DESTROYED` (both recognised before the
+/// range check, which they fail).
 fn arena_stats(shared: &Shared, i: usize) -> Result<ArenaStats, c_int> {
     if i == ARENAS_ALL as usize {
         return Ok(stats::arena_stats_all(shared));
+    }
+    if i == ARENAS_DESTROYED {
+        return Ok(ArenaStats::empty(ARENAS_DESTROYED as u16));
     }
     stats::arena_stats(shared, arena_index(i)?).ok_or(ENOENT)
 }
@@ -1351,23 +1376,38 @@ mod tests {
             assert_eq!(get::<usize>(&std::format!("arenas.bin.{j}.slab_size")), CLASSES[j].slab_size());
         }
         assert_eq!(call(&std::format!("arenas.bin.{NBINS}.size")), ENOENT);
-        // Every opt key with its jemalloc type, against the live Config.
+        // Every opt key with its jemalloc type, against the live Config:
+        // `ssize_t` for the signed keys, `size_t` for the byte counts of
+        // `SIZE_T_OPTS`, `unsigned` for the other counts.
         let cfg: &Config = &shared().config;
         for key in KEYS {
             let name = std::format!("opt.{key}");
             match cfg.get(key.as_bytes()).unwrap() {
                 Value::Bool(b) => assert_eq!(get::<bool>(&name), b, "{name}"),
                 Value::Int(i) => assert_eq!(get::<isize>(&name), i as isize, "{name}"),
+                Value::Uint(u) if SIZE_T_OPTS.contains(key) => assert_eq!(get::<usize>(&name), u as usize, "{name}"),
                 Value::Uint(u) => assert_eq!(get::<c_uint>(&name), u as c_uint, "{name}"),
                 Value::Str(s) => assert_eq!(cstring_at(get::<*const c_char>(&name)), s, "{name}"),
             }
             assert_eq!(set(&name, 0u8), EPERM, "{name} must be read-only");
         }
+        for key in SIZE_T_OPTS {
+            assert!(matches!(cfg.get(key.as_bytes()), Some(Value::Uint(_))), "opt.{key} is an unsigned key of the table");
+        }
         assert_eq!(call("opt.junk"), ENOENT, "accepted-and-ignored conf keys are not readable");
         assert_eq!(call("opt.stats_print"), ENOENT, "the inert key without a field is not readable");
+        // The two byte-count options are `size_t`, as jemalloc's
+        // `opt.tcache_max` is: an `unsigned` buffer is the wrong size and
+        // gets the low half plus `EINVAL`, as for any size_t key.
+        assert_eq!(get::<usize>("opt.tcache_max"), cfg.tcache_max);
+        let mut half: c_uint = 0;
+        assert_eq!(ctl_rw("opt.tcache_max", Some(&mut half), None), EINVAL);
+        assert_eq!(half as usize, cfg.tcache_max & u32::MAX as usize, "the low half was still copied");
+        assert_eq!(get::<c_uint>("opt.narenas"), cfg.narenas as c_uint, "a count stays unsigned");
+        assert_eq!(get::<isize>("opt.dirty_decay_ms"), cfg.dirty_decay_ms as isize, "a period stays ssize_t");
         // `opt.huge_retain_max` reports the value the huge allocator uses.
-        assert_eq!(get::<c_uint>("opt.huge_retain_max") as usize, shared().huge.retain_max());
-        assert_eq!(get::<c_uint>("opt.huge_retain_max") as usize, crate::huge::DEFAULT_RETAIN_MAX);
+        assert_eq!(get::<usize>("opt.huge_retain_max"), shared().huge.retain_max());
+        assert_eq!(get::<usize>("opt.huge_retain_max"), crate::huge::DEFAULT_RETAIN_MAX);
         assert_eq!(get::<isize>("arena.0.dirty_decay_ms"), cfg.dirty_decay_ms as isize);
         // A background thread is neither requested by default nor running.
         let _ = get::<bool>("background_thread");
@@ -1511,6 +1551,46 @@ mod tests {
         for p in live {
             free(p);
         }
+    }
+
+    /// `MALLCTL_ARENAS_DESTROYED` (4097, `ARENAS_DESTROYED`): the
+    /// statistics of the arenas destroyed so far are all zero, by name and
+    /// through a MIB with the index patched in as Valkey does, bins
+    /// included; the index is still no arena for `arena.4097.*`, and 4098
+    /// is nothing at all.
+    #[test]
+    fn destroyed_arenas_index_reads_zeros_and_is_no_arena() {
+        for key in [
+            "pactive",
+            "pdirty",
+            "pmuzzy",
+            "small.allocated",
+            "small.resident",
+            "large.allocated",
+            "resident",
+            "mapped",
+            "retained",
+            "bins.0.curregs",
+            "bins.0.curslabs",
+            "bins.0.nonfull_slabs",
+        ] {
+            let name = std::format!("stats.arenas.4097.{key}");
+            assert_eq!(get::<usize>(&name), 0, "{name}");
+            assert_eq!(set(&name, 1usize), EPERM, "{name} is read-only");
+            assert_eq!(call(&std::format!("stats.arenas.4098.{key}")), ENOENT, "{key}: 4098 is nothing");
+        }
+        let c = crate::layout::class_of(200).unwrap();
+        let mut m = mib_of("stats.arenas.0.bins.0.curregs");
+        m[2] = ARENAS_DESTROYED;
+        m[4] = c;
+        assert_eq!(get_mib::<usize>(&m), 0);
+        assert_eq!(call(&std::format!("stats.arenas.4097.bins.{NBINS}.curregs")), ENOENT, "past arenas.nbins");
+        for key in ["purge", "decay", "destroy", "dirty_decay_ms"] {
+            assert_eq!(call(&std::format!("arena.4097.{key}")), ENOENT, "arena.4097.{key}");
+        }
+        assert_eq!(set("arena.4097.dirty_decay_ms", 5isize), ENOENT);
+        assert_eq!(set("thread.arena", ARENAS_DESTROYED as c_uint), EFAULT);
+        assert_eq!(ARENAS_DESTROYED, ARENAS_ALL as usize + 1, "the headers' value");
     }
 
     #[test]
