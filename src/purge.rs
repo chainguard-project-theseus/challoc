@@ -284,18 +284,20 @@ pub fn uses_process_madvise() -> bool {
     BACKEND.load(Ordering::Relaxed) != LOOP
 }
 
-/// Up to [`MAX_BATCH`] page ranges to discard together. Callers push while
-/// holding the lock that keeps the ranges free and flush before releasing
-/// it; the batch never outlives that hold.
+/// Up to [`MAX_BATCH`] page ranges to discard together.
+///
+/// Invariant the callers uphold (the reason [`Batch::push`] and
+/// [`Batch::flush`] are safe functions over an `madvise` that drops page
+/// contents): every range pushed is a page-aligned part of one of this
+/// process's own reservations whose pages are *free* (an `Empty` slab, a
+/// freed huge run: reachable through no live pointer) and stay so until
+/// the flush returns. The callers (`ClassState::purge_empty` and
+/// `purge_curve`, `Huge::free_run`, `purge_empty` and `purge_curve`) push
+/// under the class or huge lock that keeps the ranges free and flush
+/// before releasing it; the batch never outlives that hold.
 pub struct Batch {
     ranges: [(usize, usize); MAX_BATCH],
     n: usize,
-}
-
-impl Default for Batch {
-    fn default() -> Self {
-        Batch::new()
-    }
 }
 
 impl Batch {
@@ -318,7 +320,8 @@ impl Batch {
         self.n == MAX_BATCH
     }
 
-    /// Add `[addr, addr + len)`, flushing first if the batch is full.
+    /// Add `[addr, addr + len)` (free, per the type's invariant), flushing
+    /// first if the batch is full.
     pub fn push(&mut self, addr: usize, len: usize) {
         // Adjacent ranges pushed in address order (a run of empty 4 KiB
         // slabs) go out as one.
@@ -342,7 +345,8 @@ impl Batch {
     /// flush makes `Purged` memory unknown-zero for the rest of the process
     /// (the module doc), which is published before the discard so a claim
     /// of one of these ranges after the caller's lock drops sees it. Aborts
-    /// if a range cannot be discarded.
+    /// if a range cannot be discarded. The ranges are free (the type's
+    /// invariant), which is what makes the discard sound.
     pub fn flush(&mut self) {
         if self.n != 0 {
             let advice = advice();
@@ -544,6 +548,11 @@ mod os {
     use crate::sys::{self, IoVec};
     use core::sync::atomic::Ordering;
 
+    /// Issue `advice` on `ranges`, which are free (the [`Batch`]
+    /// invariant; this is the one place the batch's ranges reach the
+    /// kernel).
+    ///
+    /// [`Batch`]: super::Batch
     pub fn discard(ranges: &[(usize, usize)], advice: Advice) {
         let lazy = advice == Advice::Lazy;
         let advice = advice.madv();
@@ -558,7 +567,8 @@ mod os {
                 total += len;
             }
             // SAFETY: the ranges are page-aligned parts of our own mappings
-            // that the caller holds free; `iov` outlives the call.
+            // that the caller holds free (the `Batch` invariant); `iov`
+            // outlives the call.
             let done = unsafe { sys::process_madvise(backend, iov.as_ptr(), ranges.len(), advice, 0) };
             if done == Ok(total) {
                 return;
