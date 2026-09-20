@@ -32,15 +32,22 @@
  *                                 slab, then malloc: the sized path must
  *                                 reject the guard slab, not cache it and hand
  *                                 the guard memory out (task 9b)
+ *   negative guard_free           plain free of the same guard-slab slot: the
+ *                                 exact bit test finds the slot clear and the
+ *                                 slab a guard (review 2026-09-18 item 43)
+ *   negative realloc_stale        realloc(p, n) after free(p) and a flush: the
+ *                                 bit test of realloc's check_live (item 43)
+ *   negative sallocx_stale        sallocx(p, 0) after free(p) and a flush
+ *   negative dallocx_none_twice   dallocx(p, MALLOCX_TCACHE_NONE) twice: the
+ *                                 uncached release checks the bit at once
+ *   negative free_sized_huge_hint free_sized(slab pointer, 1 MiB): a huge
+ *                                 size hint on a slab pointer aborts at the
+ *                                 call (the hint names no class)
+ *   negative huge_double_free     free of a 1 MiB run twice
+ *   negative huge_interior_free   free of the second page of a 1 MiB run
  */
 #include "common.h"
 #include <stdbool.h>
-
-/* From the preloaded allocator; weak so the binary links without it (the
- * driver only runs these modes with libchalloc loaded). */
-extern void sdallocx(void *, size_t, int) __attribute__((weak));
-extern void free_sized(void *, size_t) __attribute__((weak));
-extern int mallctl(const char *, void *, size_t *, void *, size_t) __attribute__((weak));
 
 /* Enough blocks of one class that freeing them all flushes the thread cache
  * several times (the largest cache holds 1024 slots and flushes 512). They
@@ -117,6 +124,15 @@ static int cmp_ptr(const void *a, const void *b)
     uintptr_t x = (uintptr_t)*(void *const *)a, y = (uintptr_t)*(void *const *)b;
     return x < y ? -1 : x > y;
 }
+
+/* Fill enough of the 64-byte class that the arena walks past its first
+ * guard group; the guard is the one page group of slabs in the used range
+ * that no block came from. Its body past the first page is read-write
+ * memory (or PROT_NONE on a kernel without MADV_GUARD_INSTALL); nothing
+ * here touches it. Returns a slot start in the body of the guard region:
+ * past the first page when the region is more than one page, else its
+ * middle. */
+static uintptr_t guard_slot_of_64(void);
 
 /* Bin index of the 64-byte class. */
 static unsigned bin_of_64(void)
@@ -238,57 +254,104 @@ int main(int argc, char **argv)
         void *q = malloc(64);
         printf("flush kept a copy: malloc(64) returned %p, the pair was %p\n", q, bad);
     } else if (strcmp(mode, "sized_guard") == 0) {
-        /* Fill enough of the 64-byte class that the arena walks past its
-         * first guard group; the guard is the one page group of slabs in
-         * the used range that no block came from. Its body past the first
-         * page is read-write memory (or PROT_NONE on a kernel without
-         * MADV_GUARD_INSTALL); nothing here touches it. */
         REQUIRE(sdallocx != NULL, "sdallocx not exported");
-        unsigned interval = ctl_uint("opt.guard_slab_interval");
-        REQUIRE(ctl_bool("opt.guards") && interval > 0, "guards are off (interval %u)", interval);
-        unsigned bin = bin_of_64();
-        char name[64];
-        snprintf(name, sizeof name, "arenas.bin.%u.slab_size", bin);
-        size_t slab = ctl_size(name), page = ctl_size("arenas.page");
-        size_t group = slab > page ? slab : page; /* one page group of slabs */
-        /* One guard per `interval` units of 64 KiB (heap::guard_interval_for):
-         * a class with smaller page groups has proportionally more groups
-         * between guards. */
-        size_t unit = page > 65536 ? page : 65536;
-        size_t effective = group >= unit ? interval : interval * (unit / group);
-        size_t per_slab = slab / 64;
-        size_t n = per_slab * (group / slab) * (effective + 2);
-        void **a = malloc(n * sizeof *a);
-        REQUIRE(a != NULL, "malloc failed");
-        for (size_t i = 0; i < n; i++) {
-            a[i] = malloc(64);
-            REQUIRE(a[i] != NULL, "malloc(64) failed");
-        }
-        qsort(a, n, sizeof *a, cmp_ptr);
-        uintptr_t guard = 0;
-        for (size_t i = 1; i < n; i++) {
-            uintptr_t lo = (uintptr_t)a[i - 1] & ~(uintptr_t)(group - 1);
-            uintptr_t hi = (uintptr_t)a[i] & ~(uintptr_t)(group - 1);
-            if (hi - lo == 2 * group) {
-                guard = lo + group;
-                break;
-            }
-        }
-        REQUIRE(guard != 0, "no one-group gap among %zu blocks (slab %zu, page %zu)", n, slab, page);
-        /* A slot start in the body of the guard region: past the first page
-         * when the region is more than one page, else its middle. */
-        uintptr_t body = group > page ? guard + page : guard + group / 2;
-        body &= ~(uintptr_t)63;
-        printf("guard region at %#lx, sized free of slot %#lx\n", (unsigned long)guard, (unsigned long)body);
-        fflush(stdout);
-        bad = (void *)body;
+        bad = (void *)guard_slot_of_64();
         sdallocx(bad, 64, 0); /* must abort: the slot is in a guard slab */
         void *q = malloc(64);
         printf("sized free of guard memory %p was cached: malloc(64) returned %p\n", bad, q);
+    } else if (strcmp(mode, "guard_free") == 0) {
+        bad = (void *)guard_slot_of_64();
+        free(bad); /* must abort: the slot bit is clear and the slab is a guard */
+        void *q = malloc(64);
+        printf("free of guard memory %p was accepted: malloc(64) returned %p\n", bad, q);
+    } else if (strcmp(mode, "realloc_stale") == 0) {
+        void *p = victim(64);
+        bad = p;
+        free(bad);
+        drain(); /* p leaves the cache and its slot bit clears */
+        void *q = realloc(bad, 128); /* must abort: the slot is not allocated */
+        printf("realloc of the freed %p returned %p\n", bad, q);
+    } else if (strcmp(mode, "sallocx_stale") == 0) {
+        REQUIRE(sallocx != NULL, "sallocx not exported");
+        void *p = victim(64);
+        bad = p;
+        free(bad);
+        drain();
+        size_t u = sallocx(bad, 0); /* must abort: the slot is not allocated */
+        printf("sallocx of the freed %p returned %zu\n", bad, u);
+    } else if (strcmp(mode, "dallocx_none_twice") == 0) {
+        REQUIRE(dallocx != NULL, "dallocx not exported");
+        void *p = victim(64);
+        bad = p;
+        dallocx(bad, MALLOCX_TCACHE_NONE); /* straight to the slab bitmap */
+        dallocx(bad, MALLOCX_TCACHE_NONE); /* must abort: the bit is already clear */
+        printf("second uncached dallocx of %p returned\n", bad);
+    } else if (strcmp(mode, "free_sized_huge_hint") == 0) {
+        REQUIRE(free_sized != NULL, "free_sized not exported");
+        void *p = victim(64);
+        bad = p;
+        free_sized(bad, 1u << 20); /* must abort: a huge hint on a slab slot */
+        printf("free_sized(%p, 1 MiB) returned\n", bad);
+    } else if (strcmp(mode, "huge_double_free") == 0) {
+        size_t size = 1u << 20;
+        bad = malloc(size);
+        REQUIRE(bad != NULL, "malloc(%zu) failed", size);
+        memset(bad, 0x5A, size);
+        free(bad);
+        free(bad); /* must abort: the run is no longer live */
+        printf("second free of the huge run %p returned\n", bad);
+    } else if (strcmp(mode, "huge_interior_free") == 0) {
+        size_t size = 1u << 20, page = (size_t)sysconf(_SC_PAGESIZE);
+        char *p = malloc(size);
+        REQUIRE(p != NULL, "malloc(%zu) failed", size);
+        memset(p, 0x5A, size);
+        bad = p + page; /* page-aligned, inside the run, not its start */
+        free(bad);      /* must abort: not the start of a huge allocation */
+        printf("free of the interior page %p of %p returned\n", bad, (void *)p);
     } else {
         REQUIRE(0, "unknown mode %s", mode);
     }
 
     printf("survived %s\n", mode);
     return 0;
+}
+
+static uintptr_t guard_slot_of_64(void)
+{
+    unsigned interval = ctl_uint("opt.guard_slab_interval");
+    REQUIRE(ctl_bool("opt.guards") && interval > 0, "guards are off (interval %u)", interval);
+    unsigned bin = bin_of_64();
+    char name[64];
+    snprintf(name, sizeof name, "arenas.bin.%u.slab_size", bin);
+    size_t slab = ctl_size(name), page = ctl_size("arenas.page");
+    size_t group = slab > page ? slab : page; /* one page group of slabs */
+    /* One guard per `interval` units of 64 KiB (heap::guard_interval_for):
+     * a class with smaller page groups has proportionally more groups
+     * between guards. */
+    size_t unit = page > 65536 ? page : 65536;
+    size_t effective = group >= unit ? interval : interval * (unit / group);
+    size_t per_slab = slab / 64;
+    size_t n = per_slab * (group / slab) * (effective + 2);
+    void **a = malloc(n * sizeof *a);
+    REQUIRE(a != NULL, "malloc failed");
+    for (size_t i = 0; i < n; i++) {
+        a[i] = malloc(64);
+        REQUIRE(a[i] != NULL, "malloc(64) failed");
+    }
+    qsort(a, n, sizeof *a, cmp_ptr);
+    uintptr_t guard = 0;
+    for (size_t i = 1; i < n; i++) {
+        uintptr_t lo = (uintptr_t)a[i - 1] & ~(uintptr_t)(group - 1);
+        uintptr_t hi = (uintptr_t)a[i] & ~(uintptr_t)(group - 1);
+        if (hi - lo == 2 * group) {
+            guard = lo + group;
+            break;
+        }
+    }
+    REQUIRE(guard != 0, "no one-group gap among %zu blocks (slab %zu, page %zu)", n, slab, page);
+    uintptr_t body = group > page ? guard + page : guard + group / 2;
+    body &= ~(uintptr_t)63;
+    printf("guard region at %#lx, slot in its body %#lx\n", (unsigned long)guard, (unsigned long)body);
+    fflush(stdout);
+    return body;
 }
