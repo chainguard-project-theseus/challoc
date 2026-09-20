@@ -1708,16 +1708,36 @@ mod linux_tests {
         }
         if f.populate_write {
             // Usable as reported: a fresh page is not resident, one call
-            // makes it so, and its contents stay zero.
+            // makes it so, and its contents stay zero. Its own mapping: the
+            // process_madvise block above writes, drops, reads back and
+            // writes the shared scratch page again wherever that syscall is
+            // visible (privileged containers, native runs), so that page is
+            // resident here and the "fresh" assertion would fail on the
+            // order of the blocks rather than on the feature.
+            // SAFETY: fresh page used only in this block.
+            let fresh = unsafe {
+                sys::mmap(
+                    0,
+                    page,
+                    sys::PROT_READ | sys::PROT_WRITE,
+                    sys::MAP_PRIVATE | sys::MAP_ANONYMOUS,
+                    -1,
+                    0,
+                )
+                .unwrap()
+            };
             let mut vec = [0u8; 1];
-            sys::mincore(addr, page, &mut vec).unwrap();
+            sys::mincore(fresh, page, &mut vec).unwrap();
             assert_eq!(vec[0] & 1, 0, "fresh scratch page resident before the populate");
             // SAFETY: our page.
-            unsafe { sys::madvise(addr, page, sys::MADV_POPULATE_WRITE).unwrap() };
-            sys::mincore(addr, page, &mut vec).unwrap();
+            unsafe { sys::madvise(fresh, page, sys::MADV_POPULATE_WRITE).unwrap() };
+            sys::mincore(fresh, page, &mut vec).unwrap();
             assert_eq!(vec[0] & 1, 1, "page not resident after MADV_POPULATE_WRITE");
-            // SAFETY: our page.
-            assert_eq!(unsafe { p.read_volatile() }, 0);
+            // SAFETY: our page, mapped above and unmapped here.
+            unsafe {
+                assert_eq!((fresh as *mut u8).read_volatile(), 0);
+                sys::munmap(fresh, page).unwrap();
+            }
         }
         if f.anon_name {
             // SAFETY: our page, static name.
