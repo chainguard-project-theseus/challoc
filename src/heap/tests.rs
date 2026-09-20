@@ -1577,7 +1577,7 @@ fn arena_registry_creates_and_looks_up() {
     assert!(s.multi_arena());
     let a = s.arena(1).unwrap();
     assert_eq!(a.index(), 1);
-    assert!(s.meta.contains(a as *const Arena as usize));
+    assert!(s.regions.in_meta(a as *const Arena as usize));
     assert!(core::ptr::eq(a.class(3).table(), s.table(3)));
     assert_eq!(a.class(3).arena(), 1);
     assert_eq!(a.decay_ns(), s.decay_ns());

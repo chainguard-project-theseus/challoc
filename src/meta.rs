@@ -192,19 +192,6 @@ fn commit_range(_addr: usize, _len: usize) -> Result<(), Errno> {
 }
 
 impl Inner {
-    const fn empty() -> Inner {
-        Inner {
-            base: 0,
-            len: 0,
-            page: 0,
-            bump: 0,
-            committed: 0,
-            top: 0,
-            free: [ptr::null_mut(); NBINS],
-            stats: MetaStats { len: 0, committed: 0, allocated: 0, bumped: 0, reserved: 0 },
-        }
-    }
-
     const fn new(base: usize, len: usize, page: usize) -> Inner {
         assert!(page.is_power_of_two() && page >= MIN_ALIGN, "meta: bad page size");
         assert!(base % page == 0 && len % page == 0 && len > 0, "meta: region not page aligned");
@@ -245,9 +232,6 @@ impl Inner {
     }
 
     fn alloc(&mut self, bin: usize) -> *mut u8 {
-        if self.len == 0 {
-            return ptr::null_mut();
-        }
         let size = BINS[bin] as usize;
         let head = self.free[bin];
         if !head.is_null() {
@@ -292,7 +276,7 @@ impl Inner {
 
     fn reserve(&mut self, len: usize, align: usize) -> Option<usize> {
         assert!(align.is_power_of_two(), "meta: reserve alignment not a power of two");
-        if self.len == 0 || len > self.top - self.committed {
+        if len > self.top - self.committed {
             return None;
         }
         let align = align.max(self.page);
@@ -326,41 +310,10 @@ impl Inner {
     }
 }
 
-// Nothing calls this (the production allocator is built with `Meta::new`),
-// but it stays for now: an impl block fewer renumbers the v0 symbol
-// disambiguator of `impl Meta` below and with it the order of its
-// functions in `.text`, which the maintainability batches keep
-// byte-identical. Drop it, with `Meta::empty`, in a batch that allows
-// reordering.
-impl Default for Meta {
-    fn default() -> Self {
-        Self::empty()
-    }
-}
-
 impl Meta {
-    /// An allocator with no region. Every request fails until [`Meta::init`]
-    /// (the `len == 0` guards in `alloc` and `reserve`). Only tests use it;
-    /// see the `Default` impl for why it is not `#[cfg(test)]`.
-    pub const fn empty() -> Meta {
-        Meta { inner: Lock::new(Inner::empty()) }
-    }
-
     /// An allocator over `[base, base + len)`, both page multiples.
     pub const fn new(base: usize, len: usize, page: usize) -> Meta {
         Meta { inner: Lock::new(Inner::new(base, len, page)) }
-    }
-
-    /// Point an [`empty`](Meta::empty) allocator at its region, once.
-    ///
-    /// # Safety
-    /// `[base, base + len)` must be a `PROT_NONE` reservation owned by the
-    /// caller that nothing else will ever map, protect or touch.
-    #[cfg(test)]
-    pub unsafe fn init(&self, base: usize, len: usize, page: usize) {
-        let mut g = self.inner.lock();
-        assert!(g.len == 0, "meta: initialised twice");
-        *g = Inner::new(base, len, page);
     }
 
     /// The lock, for the fork handlers.
@@ -433,19 +386,6 @@ impl Meta {
             return None;
         }
         Some(start)
-    }
-
-    /// Whether `p` lies anywhere in the region.
-    #[cfg(test)]
-    pub fn contains(&self, p: usize) -> bool {
-        let g = self.inner.lock();
-        p.wrapping_sub(g.base) < g.len
-    }
-
-    /// Whether the region has been set.
-    #[cfg(test)]
-    pub fn is_initialised(&self) -> bool {
-        self.inner.lock().len != 0
     }
 
     pub fn stats(&self) -> MetaStats {
@@ -596,28 +536,9 @@ mod tests {
     fn fresh_region_stats() {
         let b = Backing::new(1 << 20);
         let m = b.meta();
-        assert!(m.is_initialised());
         assert_eq!(m.base(), b.base);
         assert_eq!(m.top(), b.base + b.len);
         assert_eq!(m.stats(), MetaStats { len: 1 << 20, ..MetaStats::default() });
-        assert!(m.contains(b.base));
-        assert!(m.contains(b.base + b.len - 1));
-        assert!(!m.contains(b.base + b.len));
-        assert!(!m.contains(b.base.wrapping_sub(1)));
-    }
-
-    #[test]
-    fn empty_then_init() {
-        let b = Backing::new(1 << 16);
-        let m = Meta::empty();
-        assert!(!m.is_initialised());
-        assert!(m.alloc(layout(64, 8)).is_null());
-        assert_eq!(m.reserve(page_size(), page_size()), None);
-        unsafe { m.init(b.base, b.len, page_size()) };
-        assert!(m.is_initialised());
-        let p = m.alloc(layout(64, 8));
-        assert!(!p.is_null());
-        assert!(m.contains(p as usize));
     }
 
     #[test]
@@ -859,7 +780,7 @@ mod tests {
                 assert!(!p.is_null());
                 let bin = BINS[bin_for(l).unwrap()] as usize;
                 assert_eq!(p as usize % align, 0);
-                assert!(m.contains(p as usize) && m.contains(p as usize + bin - 1));
+                assert!(b.base <= p as usize && p as usize + bin <= b.base + b.len, "object outside the region");
                 for (q, ql, _) in &live {
                     let qb = BINS[bin_for(*ql).unwrap()] as usize;
                     let (a0, a1) = (p as usize, p as usize + bin);
