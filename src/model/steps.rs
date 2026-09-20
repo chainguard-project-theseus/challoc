@@ -419,7 +419,8 @@ impl Model<'_> {
                 // release_word for the slab's one word:
                 // `let (prev, was_full) = self.table().bits(slab).release(word, mask);`
                 // `if prev & mask != mask { double_free(...) }`
-                // preceded by `release_owned`'s `Fresh` check.
+                // preceded by `release_owned`'s owner compare (the
+                // descriptor's arena against the word) and `Fresh` check.
                 let slab = lowest_set(th.rel_todo).unwrap();
                 th.rel_todo &= !(1 << slab);
                 let owner = sh.owner(self.sc, slab);

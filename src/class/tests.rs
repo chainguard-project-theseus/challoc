@@ -1526,6 +1526,23 @@ fn a_corrupt_owner_word_aborts_the_next_take_group() {
     let _ = env.claim(&cs1, 1);
 }
 
+/// `release_owned` cross-checks the owner word it routes by against the
+/// slab descriptor's arena at every slab switch (the 2026-09-18 review's
+/// item 16, the release half): a descriptor that disagrees with the word
+/// means one of them is corrupt, and the batch aborts before a bit is
+/// cleared.
+#[test]
+#[should_panic(expected = "owner word says arena 0, slab")]
+fn a_disagreeing_descriptor_arena_aborts_the_release() {
+    let env = Env::new();
+    let cs = env.class(small_class(), 0);
+    let (p, _) = env.claim(&cs, 1);
+    let (slab, _) = cs.locate(p[0]);
+    assert_eq!(cs.table().owner(slab), 0);
+    cs.desc(slab).set_arena(1);
+    cs.release(&p);
+}
+
 #[test]
 #[should_panic(expected = "belongs to arena 1 but was released through arena 0")]
 fn release_through_the_wrong_arena_aborts() {

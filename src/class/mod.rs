@@ -110,7 +110,7 @@ pub(crate) use handoff::HANDOFFS;
 pub use sets::{SET_GROUPS, SETS_PER_CLASS, SetTable};
 pub(crate) use sets::Set;
 pub use table::{SlabTable, desc_stagger};
-use abort::{double_free, guard_free, release_into_fresh_slab, reservation_unmet, slab_count_underflow, wrong_arena, zero_slab_had_bits_set};
+use abort::{double_free, guard_free, owner_mismatch, release_into_fresh_slab, reservation_unmet, slab_count_underflow, wrong_arena, zero_slab_had_bits_set};
 use table::os;
 use verify::{fresh_with_live, release_into_fresh};
 
@@ -224,9 +224,10 @@ pub(crate) mod protocol {
         /// The batch grouped by slab (`Heap::flush`'s bucket pass),
         /// before anything is touched.
         Group = 0,
-        /// `release_word`: the owner word read, the `Fresh` check,
-        /// `bits(slab).release(word, mask)` (the `fetch_and`) and the
-        /// double-free check on what it returned.
+        /// `release_word`: the owner word read, the descriptor's arena
+        /// checked against it, the `Fresh` check, `bits(slab).release(word,
+        /// mask)` (the `fetch_and`) and the double-free check on what it
+        /// returned.
         FetchAnd = 1,
         /// `dec_live`: `sub_live(n)`, and whether it reached zero.
         SubLive = 2,
@@ -970,7 +971,11 @@ impl ClassState {
     /// already-clear bit is a double or invalid free and aborts), which is
     /// where the sized path's deferred check lands; a duplicate inside one
     /// slab's group is caught earlier, on the scratch bit. The owner is read
-    /// from the table's dense owner array, once per slab switch.
+    /// from the table's dense owner array, once per slab switch, and checked
+    /// against the slab descriptor's `arena` (a line `dec_live` reads
+    /// anyway): the word routed the batch here, so a descriptor that
+    /// disagrees means one of them is corrupt, and the batch aborts before
+    /// a bit is cleared (`owner_mismatch`, the 2026-09-18 review's item 16).
     /// Modelled at `model::Model::step_release`, `protocol::Release::FetchAnd`
     /// (the `fetch_and` and the double-free check) and `SubLive`.
     ///
@@ -1006,7 +1011,11 @@ impl ClassState {
                 if self.table().is_guard_slab(slab) {
                     guard_free(p as usize, self.class as usize, slab);
                 }
-                if self.desc(slab).state() == State::Fresh {
+                let d = self.desc(slab);
+                if d.arena() != self.arena {
+                    owner_mismatch(self.class as usize, slab >> self.table().lg_group, slab, self.arena, d.arena());
+                }
+                if d.state() == State::Fresh {
                     release_into_fresh_slab(p as usize, self.class as usize, slab);
                 }
                 cur_slab = slab;
