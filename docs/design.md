@@ -2684,43 +2684,72 @@ What part 2 waits for, cheapest path first:
 
 ```
 src/lib.rs            crate root, quantum feature selection, panic handler
-src/sys/mod.rs        typed syscall wrappers (mmap, mprotect, madvise, process_madvise, mseal, prctl, getrandom, futex, clock_gettime, open/read/close, write, ppoll, eventfd, signals), abort, stderr sink
+src/sys/mod.rs        the kernel constants; typed syscall wrappers (mmap, mprotect, madvise, process_madvise, mseal, prctl, getrandom, futex, clock_gettime, open/read/close, write, ppoll, eventfd, signals, sched_yield, rseq_slice_yield); read_small_file, parse_decimal, yn
+src/sys/abort.rs      abort (`challoc: <msg>` on stderr, SIGABRT the way glibc delivers it), the stderr sink, the `abort!` macro
+src/sys/auxv.rs       getauxval and the AT_* keys (AT_PAGESZ, AT_HWCAP, AT_HWCAP2, AT_SECURE)
 src/sys/raw.rs        the asm syscall instructions (x86_64, aarch64)
-src/sys/nr.rs         syscall numbers, header-checked
+src/sys/nr.rs         syscall numbers, header-checked (tests/c/sysnr.c)
 src/sys/errno.rs      kernel error decoding
-src/sys/features.rs   kernel feature probing, the feature line
-src/sys/cpu.rs        CPU feature report (HWCAP, cpuid, CTR_EL0, sysfs cache sizes)
-src/sys/cgroup.rs     cgroup2 discovery, limit walk, sampling, PSI trigger arming
+src/sys/features.rs   kernel feature probing; the feature line as a key table (words) that Display and the tests iterate
+src/sys/cpu.rs        CPU feature report (HWCAP, cpuid, CTR_EL0, sysfs cache sizes); pure, the spin hint is applied by api::init
+src/sys/cgroup.rs     cgroup2 discovery, limit walk, sampling (memory.current, every memory.events counter), PSI trigger arming
+src/sys/cldemote.rs   the `cldemote` hint: probed and reported, issued on no path
+src/sys/pac.rs        pointer authentication of the TLS heap pointer (arm64 FEAT_PAuth)
 src/tls.rs            initial-exec TLS accessor
-src/rseq.rs           restartable sequences: the rseq probe (__rseq_offset/size/flags, mm_cid) and the per-CPU cache critical sections (asm, both architectures)
-src/lock.rs           futex lock, padded lock
-src/layout.rs         size classes, regions, pointer classification
+src/rseq.rs           restartable sequences: the rseq probe (__rseq_offset/size/flags, mm_cid; also the feature line's rseq= words) and the per-CPU cache critical sections (asm, both architectures, one descriptor and abort-handler macro)
+src/slice.rs          the rseq time-slice extension for lock holders (`slice_ext`)
+src/lock.rs           futex lock, padded lock, spin hint
+src/layout/mod.rs     size classes (Class, CLASSES, class_of), address-space parameters
+src/layout/regions.rs Regions: the reservations, pointer classification (slab_slot, slot_in_class), seal and release
+src/layout/tests.rs, src/layout/linux_tests.rs   layout tests
 src/bitmap.rs         atomic bitmap and TwoLevelBitmap
 src/slab.rs           SlabDesc (the descriptor only)
-src/class.rs          SlabTable (descriptors, slot bitmap, owner array, guard slabs), SetTable, ClassState: claim/release, slab selection, decay
-src/heap.rs           Heap, CacheHeader, Shared, fast and slow paths, cache GC, compaction
-src/huge.rs           huge allocator
+src/class/mod.rs      ClassState: claim/plan/take, release/reopen, the stats accessors; Pick, Claim, Inner (with the set/count helpers); xorshift, shuffle; the test-only `protocol` step enums the model matches
+src/class/table.rs    SlabTable: descriptors, slot bitmap, owner array, guard slabs, group hand-out (take_group) and slab commit (commit_slab, commit_page_group, install_guard)
+src/class/sets.rs     Lazy (a lazily committed metadata table), Set, SetTable (one arena's interleaved slab sets)
+src/class/handoff.rs  next_slab, next_fresh_slab, the idle-group handoff between arenas (verify_idle_group, move_group; section 13.3)
+src/class/decay.rs    purge_empty, purge_curve (walk_empty), decay (section 8)
+src/class/prefault.rs the prefault pass's commit-ahead (prefault_next, prefault_ahead)
+src/class/verify.rs   the check_zero debug mode and the test-only pointer checks
+src/class/abort.rs    the #[cold] heap-inconsistency aborts of the class protocol
+src/class/tests.rs    the class tests over a synthetic region (Env)
+src/heap/mod.rs       CacheHeader, Heap: thread-cache fast and slow paths, refill, flush, compaction, cache GC; the crate-facing alloc/free entry functions
+src/heap/shared.rs    Shared: process-wide state, init, the free checks and routing (owner lookup never materialises an arena), GuardTest, the thread-exit key
+src/heap/percpu.rs    the per-CPU mode (section 15): Percpu, CpuCache, the per-CPU Heap paths and push wrappers
+src/heap/thread.rs    thread lifecycle (6.5): TLS sentinels, heap_for_thread/existing_heap, the exit destructor
+src/heap/flush.rs     the flush's grouping pass (group_by_slab, flag_sort) and the straddling double-free abort
+src/heap/mallocx.rs   MALLOCX_* flag decoding, explicit tcache ids, the mallocx/dallocx routing (re-exported by arena.rs)
+src/heap/tests.rs, src/heap/linux_tests.rs   heap tests; tests.rs holds the Shared/TestHeap builders stats.rs and api/ctests.rs reuse
+src/huge/mod.rs       huge allocator: extents (add_extent/drop_extent/retire), guards, first fit, decay, the audit
+src/huge/table.rs     the open-addressing descriptor table (page number to HugeDesc); never fills its last slot
+src/huge/tests.rs, src/huge/linux_tests.rs  huge tests: host, and the ones that need a kernel
 src/meta.rs           metadata region allocator
-src/model.rs          test-only: the exhaustive interleaving model of the slab protocol (section 17's row, plan Phase 2.5 task 13)
-src/purge.rs          decay driver, batching, background thread
-src/policy.rs         the cgroup policy table (section 11): bands, retention cap, full purge
-src/arena.rs          arenas, explicit caches, MALLOCX_* routing
-src/config.rs         malloc_conf parsing
+src/model/            test-only: the exhaustive interleaving model of the slab protocol (mod, state, steps, percpu, scenarios; section 17's row); steps.rs matches class::protocol exhaustively
+src/purge.rs          decay driver, batching and advice, Decayer; root of purge/
+src/purge/curve.rs    the decay period and curve (NEVER, STEPS, WEIGHTS, Curve)
+src/purge/background.rs, src/purge/background_host.rs   the background thread (section 8.1) and the host stub with the same names, selected by cfg + #[path]
+src/purge/prefault.rs the prefault pass (section 8.2)
+src/purge/tests.rs, src/purge/linux_tests.rs   purge tests; purge::tests::serial
+src/policy.rs         the cgroup policy table (section 11): bands, retention cap, full purge, Advice (name, madv)
+src/arena.rs          arenas, explicit caches; re-exports heap::mallocx
+src/config.rs         malloc_conf parsing: one key table (name, parse, read) behind set/get/KEYS
 src/stats.rs          counters and epoch merge
-src/api/mod.rs        lazy init, Shared/Features statics, challoc_version/challoc_features, fork handlers
+src/thp.rs            THP: the `thp` key against the sysfs table, reservation advice, metadata folios, MADV_HUGEPAGE on huge runs, forced_by_limit
+src/api/mod.rs        lazy init (applies the spin hint and cldemote), Shared/Features statics, challoc_version/challoc_features, fork handlers, export_pair!
 src/api/libc.rs       standard entry points, malloc_trim
 src/api/glibc.rs      mallopt, mallinfo, mallinfo2
 src/api/jemalloc.rs   *allocx, mallctl entry points, malloc_conf/malloc_message symbols, je_ aliases
 src/api/cxx.rs        operator new / delete
-src/api/mallctl.rs    control namespace
+src/api/mallctl.rs    control namespace: the name tree carries each read-only key's reader; ctl() keeps the keys that do something
 src/api/print.rs      malloc_stats_print, malloc_stats, malloc_info
-src/api/ctests.rs     drivers for tests/c, fuzz/, tests/glibc, tests/mimalloc (test builds only)
-tests/c/              C programs run under LD_PRELOAD against the cdylib
+src/api/ctests.rs     the C-test table and its driver: tests/c, fuzz/, tests/glibc, tests/mimalloc (test builds only)
+tests/c/              C programs run under LD_PRELOAD against the cdylib (common.h is the shared harness; scripts/ctest-cc.sh the one compiler line)
 tests/glibc/, tests/mimalloc/  vendored suites
-bench/                benchmark drivers, GCE scripts, results
+bench/                benchmark drivers, GCE scripts, results, probes
 fuzz/                 randomized alloc/free driver with seeds
-contrib/              Valkey build patch
-docs/
+contrib/              Valkey build patch, the jemalloc-compat header, the Wolfi package definitions
+scripts/              the dev scripts; codegen-diff.sh proves a refactor left the machine code unchanged
+docs/                 design, plan, research, tuning, testing, the reviews
 ```
 
 Pure logic (`layout`, `bitmap`, size-class math, config parsing, and the
