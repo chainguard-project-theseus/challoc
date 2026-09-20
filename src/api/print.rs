@@ -1052,6 +1052,29 @@ mod tests {
         assert!(ga.contains("\"version\"") && !ga.contains("\"opt\"") && !ga.contains("\"stats.arenas\""), "{ga}");
     }
 
+    /// The module docs promise that nothing in a report allocates: the
+    /// calling thread's `thread.allocated` and `thread.deallocated` do not
+    /// move across a text and a JSON report written to a sink callback
+    /// that itself allocates nothing.
+    #[test]
+    fn stats_print_does_not_allocate() {
+        unsafe extern "C" fn sink(_opaque: *mut c_void, _s: *const c_char) {}
+        let s = crate::api::shared();
+        // Make sure this thread has a heap (the counters live in it), then
+        // read them through the same materialisation `mallctl` uses.
+        free(malloc(64));
+        let counters = || {
+            let st = crate::heap::heap_for_thread(s).unwrap().materialise_stats();
+            (st.allocated, st.deallocated)
+        };
+        let before = counters();
+        let _serial = REPORT.lock().unwrap_or_else(|e| e.into_inner());
+        malloc_stats_print(Some(sink), core::ptr::null_mut(), core::ptr::null());
+        let json = std::ffi::CString::new("J").unwrap();
+        malloc_stats_print(Some(sink), core::ptr::null_mut(), json.as_ptr());
+        assert_eq!(counters(), before, "a report moved this thread's allocation counters");
+    }
+
     #[test]
     fn stats_print_without_callback_uses_the_message_hook() {
         use crate::api::jemalloc::set_message_hook_for_tests;

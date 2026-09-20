@@ -1479,6 +1479,72 @@ mod tests {
         assert_eq!(set("background_thread", false), 0);
     }
 
+    /// `cstr_of` mirrors the `name()` of every string-valued key's enum by
+    /// hand, so a variant it does not know reads back as `"?"` through
+    /// `opt.<key>`. Every variant of every such enum goes through
+    /// `Config::get` (the `opt.<key>` read) and `cstr_of` here; the
+    /// exhaustive `match` on each enum makes a new variant a compile error
+    /// in this test until it is added to the array (and to `cstr_of`).
+    #[test]
+    fn every_string_opt_variant_reads_back_through_cstr_of() {
+        use crate::config::{PercpuArena, SliceExt, SpinChoice, Thp, ThpProcess};
+        fn check(cfg: &Config, key: &str, want: &str) {
+            match cfg.get(key.as_bytes()) {
+                Some(Value::Str(s)) => {
+                    assert_eq!(s, want, "opt.{key}");
+                    assert_eq!(cstring_at(cstr_of(s)), want, "opt.{key}: cstr_of does not know `{want}`");
+                }
+                other => panic!("opt.{key} is not a string: {other:?}"),
+            }
+        }
+        let mut cfg = Config::DEFAULT;
+        for v in [Thp::Never, Thp::Auto, Thp::Always] {
+            match v {
+                Thp::Never | Thp::Auto | Thp::Always => {}
+            }
+            cfg.thp = v;
+            check(&cfg, "thp", v.name());
+        }
+        for v in [ThpProcess::Default, ThpProcess::Advised] {
+            match v {
+                ThpProcess::Default | ThpProcess::Advised => {}
+            }
+            cfg.thp_process = v;
+            check(&cfg, "thp_process", v.name());
+        }
+        for v in [SpinChoice::Auto, SpinChoice::Baseline, SpinChoice::Umwait, SpinChoice::Wfe] {
+            match v {
+                SpinChoice::Auto | SpinChoice::Baseline | SpinChoice::Umwait | SpinChoice::Wfe => {}
+            }
+            cfg.spin_hint = v;
+            check(&cfg, "spin_hint", v.name());
+        }
+        for v in [PercpuArena::Auto, PercpuArena::Percpu, PercpuArena::Off] {
+            match v {
+                PercpuArena::Auto | PercpuArena::Percpu | PercpuArena::Off => {}
+            }
+            cfg.percpu_arena = v;
+            check(&cfg, "percpu_arena", v.name());
+        }
+        for v in [SliceExt::Auto, SliceExt::On, SliceExt::Off] {
+            match v {
+                SliceExt::Auto | SliceExt::On | SliceExt::Off => {}
+            }
+            cfg.slice_ext = v;
+            check(&cfg, "slice_ext", v.name());
+        }
+        // Every string-valued key of the table is one of the five above.
+        for key in KEYS {
+            if let Some(Value::Str(_)) = cfg.get(key.as_bytes()) {
+                assert!(
+                    matches!(*key, "thp" | "thp_process" | "spin_hint" | "percpu_arena" | "slice_ext"),
+                    "opt.{key} is a string key this test does not cover"
+                );
+            }
+        }
+        assert_eq!(cstring_at(cstr_of("not-a-name")), "?");
+    }
+
     #[test]
     fn stats_are_frozen_between_epochs_and_arenas_all_sums() {
         let s = shared();
@@ -1634,14 +1700,25 @@ mod tests {
         assert_eq!(call(&std::format!("arena.{a}.decay")), 0);
         assert_eq!(call("arena.4096.decay"), 0);
         assert_eq!(call("arena.4000.decay"), ENOENT);
-        // destroy: never arena 0 or all; otherwise a purge that leaves the
-        // arena usable.
+        // destroy: `EFAULT` for arena 0 and for `MALLCTL_ARENAS_ALL`,
+        // `ENOENT` for an index that was never created. For an existing
+        // arena challoc's `arena.<i>.destroy` is a flush of the caller's
+        // caches plus a purge of that arena, nothing more: the arena index
+        // stays registered, `arenas.narenas` does not move, and a later
+        // `MALLOCX_ARENA(i)` allocation is served from it (jemalloc would
+        // retire the index and, with live allocations, fail). Pinned here
+        // so a change of these semantics has to change this test.
         assert_eq!(call("arena.0.destroy"), EFAULT);
         assert_eq!(call("arena.4096.destroy"), EFAULT);
         assert_eq!(call("arena.4000.destroy"), ENOENT);
+        let narenas_before: c_uint = get("arenas.narenas");
         assert_eq!(call(&std::format!("arena.{a}.destroy")), 0);
+        assert!(s.arenas.get_existing(a as u16).is_some(), "destroy keeps the arena registered");
+        assert!(get::<c_uint>("arenas.narenas") >= narenas_before, "destroy retires no index");
         let again = mallocx(500, mallocx_arena(a as u16) as c_int);
-        assert!(!again.is_null());
+        assert!(!again.is_null(), "the destroyed arena still serves MALLOCX_ARENA allocations");
+        assert_eq!(s.classify_free(again).map(|x| x.1), Ok(a as u16));
+        assert_eq!(call(&std::format!("arena.{a}.destroy")), 0, "destroy is repeatable");
         dallocx(again, 0);
     }
 

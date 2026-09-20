@@ -854,6 +854,26 @@ mod tests {
         assert_eq!(errno(), 1234);
     }
 
+    /// `malloc_trim` answers 1 when it purged something and 0 when there
+    /// was nothing to purge: a freed huge run is `Empty` until a purge
+    /// takes it, so the call right after its free says 1, and a call with
+    /// nothing `Empty` anywhere says 0. Other tests of this binary free and
+    /// purge concurrently, so each answer is looked for over a few
+    /// attempts rather than asserted of one call.
+    #[test]
+    fn malloc_trim_reports_whether_anything_was_purged() {
+        let purged = (0..8).any(|_| {
+            let h = malloc(4 << 20);
+            assert!(!h.is_null());
+            unsafe { ptr::write_bytes(h, 1, 4 << 20) };
+            free(h);
+            malloc_trim(0) == 1
+        });
+        assert!(purged, "malloc_trim never reported the freed run purged");
+        let quiet = (0..32).any(|_| malloc_trim(0) == 0);
+        assert!(quiet, "malloc_trim never found nothing to purge");
+    }
+
     #[test]
     fn cross_thread_free_and_thread_exit_with_full_cache() {
         let blocks: Vec<usize> = (0..4096).map(|i| malloc(32 + (i % 8) * 16) as usize).collect();

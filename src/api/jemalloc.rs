@@ -444,9 +444,15 @@ mod tests {
         let s = rallocx(h2, 24, 0);
         assert_eq!(sallocx(s, 0), class_size_of(24).unwrap());
         assert_eq!(unsafe { *s.add(9) }, 9);
-        // xallocx never moves and reports the current usable size.
+        // xallocx never moves and reports the current usable size, with
+        // or without `extra` (jemalloc may grow into `size + extra`;
+        // challoc never grows in place, so `extra` changes nothing).
         assert_eq!(xallocx(s, 1 << 20, 0, 0), class_size_of(24).unwrap());
         assert_eq!(xallocx(s, 1, 0, 0), class_size_of(24).unwrap());
+        assert_eq!(xallocx(s, 1, 100, 0), class_size_of(24).unwrap());
+        assert_eq!(xallocx(s, 24, 1 << 20, 0), class_size_of(24).unwrap());
+        assert_eq!(xallocx(s, 1 << 20, 1 << 20, MALLOCX_ZERO as c_int), class_size_of(24).unwrap());
+        assert_eq!(unsafe { *s.add(9) }, 9, "xallocx touched nothing");
         // A failed rallocx leaves the block intact.
         assert!(rallocx(s, usize::MAX / 2, 0).is_null());
         assert_eq!(unsafe { *s.add(9) }, 9);
