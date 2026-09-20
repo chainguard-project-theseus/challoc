@@ -1,5 +1,4 @@
-//! Pointer authentication (design.md sections 6.1, 6.2 and 17; plan Phase
-//! 2.5 task 7).
+//! Pointer authentication (design.md sections 6.1, 6.2 and 17).
 //!
 //! On an arm64 host whose kernel exposes `HWCAP_PACA` and `HWCAP_PACG`
 //! (Armv8.3 FEAT_PAuth with the keys enabled for user space; every
@@ -33,8 +32,8 @@
 /// child, drives a heap built with the probe forced off and asserts the
 /// count did not move: the proof, on a host that has the extension, that
 /// the fallback path executes no PAC instruction (a host without it,
-/// Neoverse N1, would take `SIGILL`; plan Phase 2.5 task 7, the Altra
-/// `make test` of 2026-09-19). Compiled out of the library.
+/// Neoverse N1, would take `SIGILL`, as the Altra's `make test` did
+/// before this gate). Compiled out of the library.
 #[cfg(all(test, target_arch = "aarch64"))]
 static TEST_OPS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
@@ -228,9 +227,9 @@ mod tests {
         let p = 0x0000_7f12_3456_7890usize;
         if !available() {
             // Off aarch64 the three are the identity. On an aarch64 host
-            // without the extension (Ampere Altra, lane D's T2A of
-            // 2026-09-20) they are `pacda`/`autda`/`xpacd`, UNDEFINED
-            // there, so nothing may call them: the library never does
+            // without the extension (Ampere Altra, a GCE T2A) they are
+            // `pacda`/`autda`/`xpacd`, UNDEFINED there, so nothing may
+            // call them: the library never does
             // without the probe, and neither does this test.
             #[cfg(not(target_arch = "aarch64"))]
             {
@@ -287,16 +286,22 @@ mod tests {
         // 127/128 per try; try modifiers until one differs in the signed
         // form, which guarantees the mismatch.
         let bad = (1..1000usize).find(|&m| sign(p, m) != s).expect("a modifier that changes the PAC");
+        // SAFETY: the child only executes the lines below and exits or
+        // dies; nothing of the parent's other threads is touched.
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0);
         if pid == 0 {
             let q = auth(s, bad);
             // Non-FPAC: `q` is non-canonical; reading through it faults.
+            // SAFETY: the fault is the point; `q` is `word`'s address only
+            // if the authentication passed, and `_exit` ends the child
+            // without unwinding.
             let v = unsafe { core::ptr::read_volatile(q as *const u64) };
             // Neither path may get here.
             unsafe { libc::_exit(if v == 42 { 3 } else { 4 }) };
         }
         let mut status = 0;
+        // SAFETY: `status` is a live `int` for the call.
         assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
         assert!(libc::WIFSIGNALED(status), "child survived a failed authentication: status {status:#x}");
         let sig = libc::WTERMSIG(status);

@@ -1,5 +1,5 @@
 //! Restartable sequences: the per-CPU mode's kernel interface (design.md
-//! section 15, plan Phase 2.5 task 8).
+//! section 15).
 //!
 //! glibc (2.35+) registers one `struct rseq` per thread with the kernel
 //! and exports three symbols from the dynamic loader: `__rseq_offset`, the
@@ -71,12 +71,11 @@
 //! to it; the Rust wrappers only decode the status word. The batch
 //! sections copy their pointers in a loop inside the section: a long
 //! section is simply more likely to be aborted and retried, never
-//! incorrect. With pointer authentication on (`sys::pac`, plan Phase 2.5
-//! task 7) the sections sign a stored entry with `pacda` and authenticate
-//! a loaded one with `autda`, the stack's base as the modifier, exactly as
-//! the thread caches do; the branch on the `pac` flag is inside the
-//! section and the instruction is never executed on a CPU without the
-//! extension.
+//! incorrect. With pointer authentication on (`sys::pac`) the sections
+//! sign a stored entry with `pacda` and authenticate a loaded one with
+//! `autda`, the stack's base as the modifier, exactly as the thread caches
+//! do; the branch on the `pac` flag is inside the section and the
+//! instruction is never executed on a CPU without the extension.
 
 #[cfg(target_os = "linux")]
 use core::arch::asm;
@@ -292,10 +291,9 @@ pub unsafe fn cpu_id(area: *mut u8) -> u32 {
 }
 
 /// Status words of [`pop_raw`] and [`push_raw`], the sections' raw
-/// results the entry points decode with one test each (plan Phase 2.5
-/// task 8, the fast-path form): a pop hit has [`POP_HIT`] set (and
-/// [`POP_ZERO`] when the slot is known zero); a push hit is
-/// [`PUSH_PUSHED`], zero. The other values are the misses the cold paths
+/// results the entry points decode with one test each: a pop hit has
+/// [`POP_HIT`] set (and [`POP_ZERO`] when the slot is known zero); a push
+/// hit is [`PUSH_PUSHED`], zero. The other values are the misses the cold paths
 /// decode; [`POP_OFF_MODE`] / [`PUSH_OFF_MODE`] are the heap's own
 /// (`heap.rs`: a heap off the mode), never the sections'.
 pub const POP_HIT: u32 = 1;
@@ -380,21 +378,20 @@ pub struct Table {
 /// `heap::CpuCache`.
 pub const STRIDE: usize = crate::heap::CPU_CACHE_SIZE;
 
-// The header field offsets the sections use (`heap::CacheHeader`).
+// The header field offsets the sections use (`heap::CacheHeader`); only
+// the Linux sections read them, hence the cfg.
 #[cfg(target_os = "linux")]
-const O_LEN: usize = crate::heap::OFF_LEN;
+mod hdr {
+    pub const O_LEN: usize = crate::heap::OFF_LEN;
+    pub const O_CAP: usize = crate::heap::OFF_CAP;
+    pub const O_LOW_WATER: usize = crate::heap::OFF_LOW_WATER;
+    pub const O_ZEROED: usize = crate::heap::OFF_ZEROED;
+    pub const O_SLOTS: usize = crate::heap::OFF_SLOTS;
+    pub const O_ALLOCS: usize = crate::heap::OFF_ALLOCS;
+    pub const O_MASK: usize = crate::heap::OFF_COMPACT_MASK;
+}
 #[cfg(target_os = "linux")]
-const O_CAP: usize = crate::heap::OFF_CAP;
-#[cfg(target_os = "linux")]
-const O_LOW_WATER: usize = crate::heap::OFF_LOW_WATER;
-#[cfg(target_os = "linux")]
-const O_ZEROED: usize = crate::heap::OFF_ZEROED;
-#[cfg(target_os = "linux")]
-const O_SLOTS: usize = crate::heap::OFF_SLOTS;
-#[cfg(target_os = "linux")]
-const O_ALLOCS: usize = crate::heap::OFF_ALLOCS;
-#[cfg(target_os = "linux")]
-const O_MASK: usize = crate::heap::OFF_COMPACT_MASK;
+use hdr::*;
 const _: () = assert!(STRIDE < i32::MAX as usize && STRIDE % 64 == 0);
 const _: () = assert!(
     crate::heap::OFF_LEN < 4096
@@ -441,8 +438,7 @@ pub unsafe fn pop_raw(area: *mut u8, t: Table, pac: bool) -> (*mut u8, u32) {
     // the slot is known zero, `len < zeroed` after the pop, compared inside
     // the asm so the entry point needs no register for `zeroed`); 0 is
     // empty, 2 out of range, 4 scheduled. One test of bit 0 is all
-    // `malloc` decodes; the entry point inlines this section (plan Phase
-    // 2.5 task 8, the fast-path form of 2026-09-19).
+    // `malloc` decodes; the entry point inlines this section.
     let st: u32;
     // SAFETY: guaranteed by the caller; the section reads the header the
     // kernel's `mm_cid` names and commits with one store of `len`.
@@ -785,6 +781,15 @@ pub unsafe fn push_raw(area: *mut u8, t: Table, p: *mut u8, pac: bool) -> u32 {
 /// installed has `cap == 0` and takes nothing; the caller checks `cap` and
 /// installs.
 ///
+/// With `pac` the entries are signed under the stack's base as the
+/// modifier, the one every pop and `take_all` authenticate with. An
+/// earlier form of the aarch64 section advanced the base register by
+/// `len` entries before the copy loop and signed with that, so a batch
+/// pushed onto a non-empty stack (a free on this CPU between the empty
+/// pop and the refill's push) was signed under another modifier and the
+/// next pop's `autda` faulted (`SIGILL` under FEAT_FPAC). The base is
+/// now kept in its own register for the whole section.
+///
 /// # Safety
 /// As for [`pop`]; `ptrs` are plain slot pointers of the class.
 #[cfg(target_os = "linux")]
@@ -905,14 +910,8 @@ pub unsafe fn push_batch(area: *mut u8, t: Table, ptrs: &[*mut u8], zeroed: bool
             "sub {r:w}, {r:w}, {l:w}",
             "cmp {r}, {k}",
             "csel {r}, {r}, {k}, ls",
-            // `t` stays the stack base: it is the PAC modifier every pop
-            // and `take_all` authenticate with. The first form advanced it
-            // by `len` entries before the loop and signed with that, so a
-            // batch pushed onto a non-empty stack (a free on this CPU
-            // between the empty pop and the refill's push) was signed
-            // under another modifier and the next pop's `autda` faulted
-            // (FEAT_FPAC: `SIGILL`; lane D's campaign, 2026-09-20). `a`
-            // is the write position.
+            // `t` stays the stack base, the PAC modifier (function doc);
+            // `a` is the write position.
             "ldr {t}, [{h}, #{o_slots}]",
             "add {a}, {t}, {l:x}, lsl #3",
             "mov {i}, #0",
@@ -1222,6 +1221,9 @@ pub unsafe fn install(area: *mut u8, t: Table, expected: *const u8, slots: *mut 
             aborts = sym ABORTS,
             options(nostack),
         );
+        // No `.arch_extension pauth` here, unlike the four sections above:
+        // this one stores `slots` and `cap`, never a signed entry, so it
+        // has no `pacda`/`autda` to assemble.
         #[cfg(target_arch = "aarch64")]
         asm!(
             ".pushsection __rseq_cs, \"aw\"",
@@ -1381,6 +1383,8 @@ mod tests {
         }
         assert!(p.registered, "cpu_id is written at registration");
         let a = area(p.offset);
+        // SAFETY: this thread's registered area (`registered`), which
+        // holds `cpu_id` from `BASE_SIZE` on.
         let cpu = unsafe { cpu_id(a) };
         let ncpus = possible_cpus().expect("/sys/devices/system/cpu/possible");
         assert!(cpu < ncpus, "cpu_id {cpu} below the possible count {ncpus}");
@@ -1389,6 +1393,7 @@ mod tests {
             return;
         }
         assert!(p.size >= MM_CID_END);
+        // SAFETY: as above, and `size >= MM_CID_END` covers `mm_cid`.
         let cid = unsafe { mm_cid(a) };
         assert!(cid < ncpus, "mm_cid {cid} below the possible count {ncpus}");
         pinned_threads_read_live_ids(p, ncpus);
@@ -1405,6 +1410,8 @@ mod tests {
         if rc != 0 {
             return None;
         }
+        // SAFETY: `CPU_ISSET` reads one bit of the set for `c` below
+        // `CPU_SETSIZE`.
         Some((0..::libc::CPU_SETSIZE as usize).filter(|&c| unsafe { ::libc::CPU_ISSET(c, &set) }).collect())
     }
 
@@ -1412,7 +1419,9 @@ mod tests {
     /// refuses (the CPU left the allowed set meanwhile).
     #[cfg(target_os = "linux")]
     fn pin_to(cpu: usize) -> bool {
-        // SAFETY: as above; `CPU_SET` writes one bit of the set.
+        // SAFETY: as above; `CPU_SET` writes one bit of the set (`cpu` came
+        // from `allowed_cpus`, so it is below `CPU_SETSIZE`), and
+        // `sched_setaffinity` only reads it.
         let mut set: ::libc::cpu_set_t = unsafe { core::mem::zeroed() };
         unsafe { ::libc::CPU_SET(cpu, &mut set) };
         unsafe { ::libc::sched_setaffinity(0, core::mem::size_of::<::libc::cpu_set_t>(), &set) == 0 }
@@ -1438,11 +1447,11 @@ mod tests {
     #[cfg(target_os = "linux")]
     const PIN_WINDOW: std::time::Duration = std::time::Duration::from_secs(2);
 
-    /// The live half of the probe test. The unhardened form spawned as
-    /// many spinners as CPUs and asserted more than one `mm_cid` after 50
-    /// ms, which depended on the scheduler spreading them: inside the
-    /// whole unit-test binary on an 8-vCPU Chainguard OS cell it read one
-    /// id on the first run of every cell (`bench/results/2026-09-20-
+    /// The live half of the probe test. An earlier form spawned as many
+    /// spinners as CPUs and asserted more than one `mm_cid` after 50 ms,
+    /// which depended on the scheduler spreading them: inside the whole
+    /// unit-test binary on an 8-vCPU Chainguard OS cell it read one id on
+    /// the first run of every cell (`bench/results/2026-09-20-
     /// chainguard-os-cells.md`, section 3). This form pins one thread per
     /// allowed CPU with `sched_setaffinity`, which makes two facts
     /// deterministic on both `mm_cid` implementations (6.18's, where an id

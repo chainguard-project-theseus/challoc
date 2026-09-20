@@ -4,7 +4,7 @@
 //! its effective memory limits are, how much it is charged right now, and
 //! whether the kernel has raised the `high`/`max` event counters or a
 //! pressure-stall trigger. The policy that acts on the figures is
-//! `policy.rs` (plan Phase 2 task 5, design 11): the headroom band over
+//! `policy.rs` (design 11): the headroom band over
 //! the effective limit (the retention cap, the decay window, cache GC at
 //! every tick and the immediate purge above 90%), the lazy-or-eager purge
 //! advice (`MADV_FREE` under 70% of a known limit, `MADV_DONTNEED` above),
@@ -515,6 +515,9 @@ impl Cgroup {
         self.current.load(Ordering::Relaxed)
     }
 
+    /// The last `memory.events` counters sampled. Partial: only `high`
+    /// and `max` are tracked (the two the policy acts on); `low`, `oom`
+    /// and `oom_kill` read 0 here whatever the file says.
     pub fn events(&self) -> Events {
         Events {
             high: self.events_high.load(Ordering::Relaxed),
@@ -1051,6 +1054,41 @@ mod tests {
         assert_eq!(walk(&t, "/sys/fs/cgroup/a/b", m, "memory.max").0, 4096);
     }
 
+    /// The edges of the walk: `mount_len` is what `join_dir` returns (no
+    /// trailing slash), so a slash-terminated mount length stops one level
+    /// short of the mount itself rather than visiting it; and a directory
+    /// shorter than `mount_len` is read once, whole, and never sliced past
+    /// its end.
+    #[test]
+    fn effective_limit_walk_edges() {
+        let t = tree(&[
+            ("/sys/fs/cgroup/a/b", "memory.max", "max\n"),
+            ("/sys/fs/cgroup/a", "memory.max", "536870912\n"),
+            ("/sys/fs/cgroup", "memory.max", "4096\n"),
+        ]);
+        // Mount given with its trailing slash: `a` is the last level.
+        let (limit, visited) = walk(&t, "/sys/fs/cgroup/a/b", "/sys/fs/cgroup/", "memory.max");
+        assert_eq!(limit, 536_870_912);
+        assert_eq!(visited, ["/sys/fs/cgroup/a/b", "/sys/fs/cgroup/a"]);
+        // Without it the mount level is read too.
+        let (limit, visited) = walk(&t, "/sys/fs/cgroup/a/b", "/sys/fs/cgroup", "memory.max");
+        assert_eq!(limit, 4096);
+        assert_eq!(visited, ["/sys/fs/cgroup/a/b", "/sys/fs/cgroup/a", "/sys/fs/cgroup"]);
+        // A directory shorter than the mount length: one read of the
+        // whole directory, then stop.
+        let (limit, visited) = walk(&t, "/sys/fs/cgroup", "/sys/fs/cgroup/unified", "memory.max");
+        assert_eq!(limit, 4096);
+        assert_eq!(visited, ["/sys/fs/cgroup"]);
+        let (limit, visited) = walk(&t, "/sys", "/sys/fs/cgroup", "memory.max");
+        assert_eq!(limit, UNLIMITED);
+        assert_eq!(visited, ["/sys"]);
+        // The mount at the root: every `/` of the path is a level.
+        let t = tree(&[("/a/b", "memory.max", "8192\n"), ("", "memory.max", "4096\n")]);
+        let (limit, visited) = walk(&t, "/a/b", "", "memory.max");
+        assert_eq!(limit, 4096);
+        assert_eq!(visited, ["/a/b", "/a", ""]);
+    }
+
     #[test]
     fn join_dir_forms() {
         let mut out = [0u8; PATH_CAP];
@@ -1066,6 +1104,20 @@ mod tests {
         assert_eq!(join_dir(&mut out, b"/sys/fs/cgroup", &long), None);
         let mut small = [0u8; 40];
         assert_eq!(join_dir(&mut small, b"/sys/fs/cgroup", b"/a"), None, "must leave FILE_ROOM");
+    }
+
+    /// A cgroup2 mounted at `/` (a container whose root is the cgroup
+    /// filesystem): the mount strips to nothing, the path is the whole
+    /// directory and the mount length is 0, so `walk_min` visits every
+    /// level down to the empty string and `Cgroup::path` reports the path.
+    #[test]
+    fn join_dir_with_the_mount_at_root() {
+        let mut out = [0u8; PATH_CAP];
+        let (n, m) = join_dir(&mut out, b"/", b"/a/b").unwrap();
+        assert_eq!(&out[..n], b"/a/b");
+        assert_eq!(m, 0);
+        let (n, m) = join_dir(&mut out, b"/", b"/").unwrap();
+        assert_eq!((n, m), (0, 0), "the root cgroup at a root mount is the empty directory");
     }
 
     /// Feed `contents` to `scan_lines` in chunks of `chunk` bytes through a

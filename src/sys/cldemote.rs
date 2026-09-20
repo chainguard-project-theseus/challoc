@@ -1,11 +1,11 @@
-//! The `cldemote` cache-line hint (plan Phase 2.5 task 12, design 17):
+//! The `cldemote` cache-line hint (design 17):
 //! probed, reported, tested both ways, and issued on no path.
 //!
 //! `cldemote m8` asks the core to move the line holding `m8` out of its own
 //! L1/L2 towards the shared level (L3), so the next core to touch the line
 //! finds it there instead of paying a cross-core transfer. It is a hint: it
 //! never faults, never changes the line's contents and may be ignored.
-//! Task 12 tried it on the lines a freeing thread writes last and another
+//! It was tried on the lines a freeing thread writes last and another
 //! thread may read next, the class bitmap word a release clears and the
 //! slab descriptor whose `live` count it lowers (`class.rs`, `release_word`
 //! and `dec_live`), and it did not pay: the freeing core is usually the

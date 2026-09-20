@@ -643,7 +643,7 @@ mod tests {
         Regs { eax: 0, ebx: 0, ecx: 0, edx: 0 },
     ];
 
-    // Captured by the CPU matrix (Phase 2.5 task 4, 2026-09-19,
+    // Captured by the CPU matrix (2026-09-19,
     // `bench/gce/cpuid-dump.c` on the cells, `bench/results/matrix/
     // 2026-09-19-cpu-*.log`): a GCE T2A (Ampere Altra, Neoverse N1, MIDR
     // 0x413fd0c1: `atomics` and nothing else the report looks at), a GCE
@@ -1005,7 +1005,7 @@ mod linux_tests {
         // prints 57 bits virtual while the hypervisor hides the LA57
         // feature bit (leaf 7 `ECX[16]`), so its kernel cannot run
         // five-level paging and the hinted `mmap` lands below 2^47
-        // (`la57_enabled=no`; the CPU matrix of 2026-09-19). With the
+        // (`la57_enabled=no`, the C3D cell of the CPU matrix). With the
         // feature bit, the kernel's width and the hinted `mmap` agree.
         if let Isa::X86(x) = c.isa {
             let text = std::fs::read_to_string("/proc/cpuinfo").unwrap();
