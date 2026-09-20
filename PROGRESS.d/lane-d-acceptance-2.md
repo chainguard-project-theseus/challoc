@@ -1,6 +1,6 @@
 ## Done
 
-- Phase 2.5 acceptance (lane D), second pass, 2026-09-20: done, 6516d24, c6834a6, e400f64, 299ba2e.
+- Phase 2.5 acceptance (lane D), second pass, 2026-09-20: done, 31e8a25, 9455485, e902399, 6ddaed8.
   `bench/results/2026-09-20-phase-2.5-acceptance.md` re-verdicts the plan's
   "Acceptance for the phase" list at 0c60b1a from today's evidence on the
   lane's own VMs (both lane VMs, ten kernel-matrix cells, one T2A lab),
@@ -27,11 +27,11 @@
   percpu half (below). Row 5 **met on the reference kernel**, the x86_64
   Valkey write-phase reading (yesterday's default run, +1.5 / +4.9%
   behind) still a single reading. The phase is not marked accepted by the
-  lane. Also `bench/gce/challoc-bench` (c6834a6): the matrix driver's exit
+  lane. Also `bench/gce/challoc-bench` (9455485): the matrix driver's exit
   trap died with `pids: unbound variable` under `set -u` (a local of
   `cmd_matrix`, gone at script exit), so its sweep never ran; `${pids:-}`.
 
-- Phase 2.5 task 8 campaign (lane D), the percpu half: done, e400f64.
+- Phase 2.5 task 8 campaign (lane D), the percpu half: done, e902399.
   `make percpu-campaign MODE=percpu LANE=lane-d DATE=2026-09-20` on both
   lane VMs at 0c60b1a, compared row by row with the 2026-09-19 baseline
   half in `bench/results/2026-09-20-lane-d-percpu-campaign.md` (per-step
