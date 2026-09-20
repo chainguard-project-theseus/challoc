@@ -2159,6 +2159,15 @@ protocol as stated passes every scenario.
   followed by a per-class occupancy histogram of the non-empty slabs
   (slabs per eighth of `nslots`), so a soak's `MEMORY MALLOC-STATS` shows
   where the live data sits and whether the schedule is running.
+- The heads of the text report's lines (`Kernel and CPU features: `,
+  `Prefault: `, `cgroup policy: `, ...) and the fixed words a line can
+  continue with are spelled once, in `src/api/print.rs` (`head!`, listed
+  in `LINES`); the writers build their format strings from them. The test
+  `print::tests::quoted_needles_match_the_report` reads `tests/c/*.c`,
+  `docs/tuning.md` and sections 1..16 of this document, takes every
+  quoted string that starts like one of those lines and checks it, with
+  the figures masked, against a report, so a renamed or dropped line
+  fails the suite at the stale quote.
 - Mappings named `challoc:classes` (the one class superblock), `challoc:huge`
   and `challoc:meta` (`PR_SET_VMA_ANON_NAME`, when the kernel has it).
 - `stats_print:true` is accepted and inert: nothing prints at exit and there
