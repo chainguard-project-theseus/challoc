@@ -346,8 +346,8 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     let m = &snap.meta;
     writeln!(
         out,
-        concat!(head!(METADATA), "{}, committed {}, allocated {}, bumped {}, tables {}"),
-        m.len, m.committed, m.allocated, m.bumped, m.reserved
+        concat!(head!(METADATA), "{}, committed {}, writable {}, allocated {}, bumped {}, tables {}, small tables {}"),
+        m.len, m.committed, m.writable, m.allocated, m.bumped, m.reserved, m.eager
     )?;
     // Design 11: the figures as last sampled (a sample is taken here if the
     // 10 ms window allows), or why nothing is tracked.

@@ -262,7 +262,7 @@ impl Snapshot {
         narenas: 0,
         totals: Totals::EMPTY,
         huge: HugeStats { runs: 0, run_pages: 0, empty: 0, empty_pages: 0, purged: 0, purged_pages: 0, next_page: 0, table_cap: 0 },
-        meta: MetaStats { len: 0, committed: 0, allocated: 0, bumped: 0, reserved: 0 },
+        meta: MetaStats { len: 0, committed: 0, allocated: 0, bumped: 0, reserved: 0, writable: 0, eager: 0 },
     };
 }
 

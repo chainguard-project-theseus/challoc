@@ -1092,7 +1092,8 @@ fn works_for_every_class() {
         assert_eq!(cs.purge_empty(u64::MAX), 1);
     }
     let s = env.meta.stats();
-    assert!(s.reserved > 0 && s.committed > 0);
+    // The tables are reservations or, at this layout's sizes, eager carves.
+    assert!(s.reserved + s.eager > 0 && s.committed > 0);
 }
 
 #[test]
@@ -1132,7 +1133,11 @@ fn set_table_of_many_classes_touches_one_page_per_slab_size() {
     let env = Env::new();
     let before = env.meta.stats().committed;
     let sets = env.sets();
-    assert_eq!(env.meta.stats().committed, before, "reservation only");
+    // The set tables commit nothing of their own; the ones small enough to
+    // be carved from the object side (`meta::EAGER_MAX`) bring at most
+    // their alignment padding and one chunk's rounding into the count.
+    let slack = env.meta.stats().committed - before;
+    assert!(slack < crate::meta::COMMIT_CHUNK + SET_GROUPS * env.regions.page_size(), "reservation only, slack {slack}");
     let page = env.regions.page_size();
     let classes: Vec<usize> = (0..NCLASSES).step_by(5).collect();
     let states: Vec<ClassState> = classes

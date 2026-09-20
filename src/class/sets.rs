@@ -9,7 +9,9 @@ use crate::meta::Meta;
 use crate::sys::Errno;
 
 /// A never-freed table in the metadata region, committed page by page as
-/// the high-water mark grows. Shared with `huge/`.
+/// the high-water mark grows (a table of at most `meta::EAGER_MAX` bytes
+/// is carved writable from the object side and the commits are accounting
+/// only; `meta.rs`, the module doc). Shared with `huge/`.
 pub(crate) struct Lazy {
     pub(crate) base: usize,
     len: usize,
@@ -24,7 +26,7 @@ impl Lazy {
         // With metadata THP on (`thp.rs`) the table starts on a folio
         // boundary, so the rounded commits of `ensure` cover whole aligned
         // folios and the kernel can map them as such.
-        let base = meta.reserve(len, align.max(crate::thp::meta_folio_size()))?;
+        let base = meta.reserve_table(len, align.max(crate::thp::meta_folio_size()))?;
         Some(Lazy { base, len, committed: 0 })
     }
 

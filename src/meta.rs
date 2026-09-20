@@ -8,10 +8,10 @@
 //!
 //! Two kinds of request come from the two ends of the region:
 //!
-//! - **Reservations** ([`Meta::reserve`]) are large, fixed-address, never
-//!   freed arrays: a class's descriptor table and slot bitmap, the huge
-//!   allocator's free-page bitmap, the arenas, the per-CPU caches, the
-//!   background thread's stack. They are carved
+//! - **Reservations** ([`Meta::reserve`], [`Meta::reserve_table`]) are
+//!   large, fixed-address, never freed arrays: a class's descriptor table
+//!   and slot bitmap, the huge allocator's free-page bitmap, the arenas,
+//!   the per-CPU caches, the background thread's stack. They are carved
 //!   downward from the top of the region and handed back *uncommitted*; the
 //!   owner calls [`Meta::commit`] on the pages it starts to use, so a class
 //!   with three live slabs commits one page of descriptors, not the whole
@@ -28,6 +28,38 @@
 //! reservation. The kernel supplies zero pages on first touch, so committed
 //! but untouched metadata costs address space and overcommit charge, never
 //! RSS. Nothing is ever uncommitted or returned to the kernel.
+//!
+//! **Small tables share the object side's mapping.** Every committed range
+//! on the reservation side is its own VMA: a table's first page sits at
+//! its base and its uncommitted tail, up to the next table's base, keeps
+//! the kernel from merging it with anything (measured on a process that
+//! touched every class: 167 tables, 337 lines in `/proc/self/maps` for the
+//! metadata region alone, 168 `rw-p` and 169 `---p` with the object side
+//! and the region's free middle among them, one page each of RSS and of
+//! page table; `bench/probes/fork_maps.c`). A forked child
+//! inherits every one of them, and `fork`, its first-touch faults and its
+//! exit pay per VMA and per page-table page (design 2, the PostgreSQL row
+//! `connect20`). So a table of at most [`EAGER_MAX`] bytes is not put on
+//! the reservation side at all: [`Meta::reserve_table`] (and
+//! [`Meta::reserve_committed`]) carve it from the object side, page
+//! aligned, inside the chunked commit that already covers the objects,
+//! where it is writable from the start and merges with the heaps and
+//! caches into the one mapping that grows from the base. Its owner still
+//! calls [`Meta::commit`] on the pages it uses, which for such a table is
+//! accounting only. Larger tables (a small class's 256 MiB descriptor
+//! array or 2 GiB slot bitmap) stay on the reservation side, committed
+//! page by page as before: making them writable whole would put gigabytes
+//! of never-touched address space into every core dump (a private
+//! writable mapping with a page in it is dumped whole), into `mlockall`
+//! and `RLIMIT_DATA`, and under 2 MiB pages on a `thp=always` host.
+//! [`EAGER_MAX`] is the cap on that exposure, chosen from the measured
+//! table sizes (the constant's doc). Eager carving is off when the kernel
+//! would charge the writable bytes against its commit limit
+//! (`vm.overcommit_memory=2`, where `MAP_NORESERVE` is ignored and every
+//! backend would carry the tables' commit charge) or when the region can
+//! take PMD-sized pages (any `thp` key but `never`, whose
+//! `MADV_NOHUGEPAGE` on the reservation keeps a table's first touch to one
+//! page); both are probed on the first table, never assumed.
 //!
 //! All state sits behind one [`Lock`], the "metadata lock" of design
 //! section 9. None of this is on the `malloc`/`free` fast path.
@@ -60,6 +92,19 @@ pub const NBINS: usize = 6 + 2 * (LG_MAX_BINNED as usize - 8);
 /// Granularity of bump-area commits. Only address space and overcommit
 /// charge, not RSS, so a coarse step keeps `mprotect` calls rare.
 pub const COMMIT_CHUNK: usize = 64 * 1024;
+/// Largest table [`Meta::reserve_table`] carves from the object side,
+/// fully writable, instead of reserving it uncommitted at the top (the
+/// module doc). The tables at the preferred layout (2^38 per class,
+/// measured with `bench/probes/fork_maps.c`, 2026-09-20): the owner
+/// arrays of every class and every table of the medium classes are at
+/// most 8 MiB (56 of 167 tables, 82 MiB together); the set tables are
+/// 96 KiB to 49 MiB; the small classes' descriptor arrays are 64 MiB to
+/// 256 MiB and their slot bitmaps 128 MiB to 2 GiB. 8 MiB takes the
+/// first group and bounds the writable-but-untouched address space a
+/// process carries to under 100 MiB; 16 MiB would take 45 more tables for
+/// 450 MiB. The measured VMA and fork-cost curve against this cap is in
+/// `bench/results/2026-09-20-*-postgres-vmas.md`.
+pub const EAGER_MAX: usize = 8 << 20;
 
 /// Bin sizes, ascending.
 pub static BINS: [u32; NBINS] = build_bins();
@@ -127,32 +172,57 @@ pub const fn bin_for(layout: Layout) -> Option<usize> {
 }
 
 /// Counters for `stats.metadata` and diagnostics. Identities:
-/// `allocated <= bumped <= committed <= len` and `bumped + reserved <= len`
-/// (`committed` counts the bump chunks and the explicitly committed pages
-/// of reservations together).
+/// `allocated + eager <= bumped <= writable <= len`, `committed <=
+/// writable` and `bumped + reserved <= len` (`committed` counts the bump
+/// chunks taken for objects and the pages the owners of tables asked for,
+/// on either side; `writable` is what is actually readable and writable,
+/// which on the object side includes the tails of the eagerly carved
+/// tables).
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct MetaStats {
     /// Length of the whole region.
     pub len: usize,
-    /// Bytes readable and writable: bump chunks plus explicit commits.
+    /// Bytes in use at page granularity: object bump chunks plus the pages
+    /// table owners have committed (`stats.metadata`, the `resident`
+    /// identity of `stats.rs`; the same figure whichever side a table sits
+    /// on).
     pub committed: usize,
     /// Bytes in live objects, each rounded to its bin.
     pub allocated: usize,
-    /// Bytes the bump pointer has passed, including padding and freed objects.
+    /// Bytes the bump pointer has passed, including padding, freed objects
+    /// and the tables carved from the object side.
     pub bumped: usize,
-    /// Bytes handed out by `reserve`, committed or not.
+    /// Bytes handed out by `reserve` on the reservation side, committed or
+    /// not.
     pub reserved: usize,
+    /// Bytes readable and writable: the object side's chunked frontier
+    /// plus the reservation side's commits.
+    pub writable: usize,
+    /// Bytes of tables carved from the object side (`reserve_table`,
+    /// `reserve_committed` up to `EAGER_MAX`), all writable.
+    pub eager: usize,
 }
 
 struct FreeNode {
     next: *mut FreeNode,
 }
 
+/// Whether small tables may be carved from the object side (the module
+/// doc): decided on the first table from the kernel's overcommit mode and
+/// the THP policy in force, never assumed. A `u8` with three values, not
+/// an enum: an enum's niche makes rustc regroup every field of `Inner`
+/// and the offsets the inlined object paths use would move (measured:
+/// `Meta::free` and `claim_with` changed with an enum here).
+const EAGER_UNPROBED: u8 = 0;
+const EAGER_ON: u8 = 1;
+const EAGER_OFF: u8 = 2;
+
 struct Inner {
     base: usize,
     len: usize,
     page: usize,
-    /// Next byte for objects. `base <= bump <= committed <= top`.
+    /// Next byte for objects and eagerly carved tables. `base <= bump <=
+    /// committed <= top`.
     bump: usize,
     /// Bump area is writable below here; always page aligned.
     committed: usize,
@@ -160,6 +230,13 @@ struct Inner {
     top: usize,
     free: [*mut FreeNode; NBINS],
     stats: MetaStats,
+    // The fields below were added after the fields the inlined object
+    // paths (`Meta::alloc` in `claim_with`, `Meta::free`) address, so
+    // those offsets, and their machine code, did not move.
+    /// Bytes committed on the reservation side (`commit` above `top`).
+    top_committed: usize,
+    /// One of `EAGER_UNPROBED`, `EAGER_ON`, `EAGER_OFF`.
+    eager: u8,
 }
 
 // SAFETY: the raw pointers are addresses inside the region, meaningful in
@@ -204,13 +281,18 @@ impl Inner {
             committed: base,
             top: base + len,
             free: [ptr::null_mut(); NBINS],
-            stats: MetaStats { len, committed: 0, allocated: 0, bumped: 0, reserved: 0 },
+            stats: MetaStats { len, committed: 0, allocated: 0, bumped: 0, reserved: 0, writable: 0, eager: 0 },
+            top_committed: 0,
+            eager: EAGER_UNPROBED,
         }
     }
 
     /// Make the bump area writable through `end`, in `COMMIT_CHUNK` steps,
-    /// never past `top`.
-    fn commit_bump_to(&mut self, end: usize) -> Result<(), Errno> {
+    /// never past `top`. Returns the bytes newly made writable; the caller
+    /// decides how much of that counts as `committed` (an object's chunk
+    /// does whole, an eagerly carved table's own bytes do not: its owner's
+    /// `commit` calls count that table's pages as it uses them).
+    fn commit_bump_to(&mut self, end: usize) -> Result<usize, Errno> {
         debug_assert!(end <= self.top);
         // Chunks are measured from the base: the region is only page
         // aligned, so rounding the absolute address would make the first
@@ -225,10 +307,52 @@ impl Inner {
             if crate::thp::meta_folio_size() != 0 {
                 crate::thp::advise_meta(self.committed, want - self.committed);
             }
-            self.stats.committed += want - self.committed;
+            let delta = want - self.committed;
             self.committed = want;
+            return Ok(delta);
         }
-        Ok(())
+        Ok(0)
+    }
+
+    /// Whether a table of `len` bytes goes on the object side (the module
+    /// doc): small enough, and the kernel neither charges writable bytes
+    /// against a commit limit nor may back the region with PMD pages.
+    fn eager_ok(&mut self, len: usize) -> bool {
+        if len > EAGER_MAX {
+            return false;
+        }
+        if self.eager == EAGER_UNPROBED {
+            self.eager = if eager_policy() { EAGER_ON } else { EAGER_OFF };
+        }
+        self.eager == EAGER_ON
+    }
+
+    /// Carve a fully writable, page-aligned, never freed table of `len`
+    /// bytes aligned to `align` from the object side. `None` when it would
+    /// reach the reservation side or the kernel refuses the commit (the
+    /// caller then falls back to a reservation).
+    fn reserve_eager(&mut self, len: usize, align: usize) -> Option<usize> {
+        let align = align.max(self.page);
+        let len = align_up(len.max(1), self.page);
+        let start = align_up(self.bump, align);
+        let end = start.checked_add(len)?;
+        if end > self.top {
+            return None;
+        }
+        let delta = if end > self.committed { self.commit_bump_to(end).ok()? } else { 0 };
+        // The object side counts as committed everything below its frontier
+        // except the tables carved from it (their owners' `commit` calls
+        // count their pages as they use them): the chunk's slack around a
+        // table, like an object's padding, is in; the table's bytes, new or
+        // carved out of slack already counted, are out. `committed + delta
+        // >= len` because the table lies inside the frontier and overlaps no
+        // other table.
+        self.stats.committed = self.stats.committed + delta - len;
+        // Fresh memory above the old bump pointer: zero, never written.
+        self.bump = end;
+        self.stats.bumped = end - self.base;
+        self.stats.eager += len;
+        Some(start)
     }
 
     fn alloc(&mut self, bin: usize) -> *mut u8 {
@@ -246,8 +370,11 @@ impl Inner {
         if end > self.top {
             return ptr::null_mut();
         }
-        if end > self.committed && self.commit_bump_to(end).is_err() {
-            return ptr::null_mut();
+        if end > self.committed {
+            match self.commit_bump_to(end) {
+                Ok(delta) => self.stats.committed += delta,
+                Err(_) => return ptr::null_mut(),
+            }
         }
         self.bump = end;
         self.stats.bumped = end - self.base;
@@ -295,19 +422,60 @@ impl Inner {
             addr % self.page == 0 && len % self.page == 0 && len > 0,
             "meta: commit range not page aligned"
         );
-        assert!(
-            addr >= self.top && addr + len <= self.base + self.len,
-            "meta: commit outside the reserved area"
-        );
+        assert!(addr.checked_add(len).is_some(), "meta: commit range wraps");
+        let end = addr + len;
+        if addr < self.top {
+            // A table carved from the object side (`reserve_eager`): inside
+            // the chunked commit and writable already, so this is the
+            // owner's accounting of the pages it uses.
+            assert!(
+                addr >= self.base && end <= self.committed,
+                "meta: commit outside the reserved area"
+            );
+            self.stats.committed += len;
+            return Ok(());
+        }
+        assert!(end <= self.base + self.len, "meta: commit outside the reserved area");
         commit_range(addr, len)?;
         // Metadata THP (`thp.rs`): `Lazy::ensure` rounded the range to the
         // folio; the advice makes the kernel map it as one.
         if crate::thp::meta_folio_size() != 0 {
             crate::thp::advise_meta(addr, len);
         }
+        self.top_committed += len;
         self.stats.committed += len;
         Ok(())
     }
+
+    fn stats(&self) -> MetaStats {
+        MetaStats { writable: (self.committed - self.base) + self.top_committed, ..self.stats }
+    }
+}
+
+/// Whether tables may be carved eagerly on this host (the module doc):
+/// the `thp` key is `never` (the region is `MADV_NOHUGEPAGE`d, or the
+/// kernel has no THP, so a table's first touch costs one page) and the
+/// kernel honours `MAP_NORESERVE` (`vm.overcommit_memory` 0 or 1; under 2
+/// every writable page is charged to the commit limit and a forked child
+/// is charged again). Read once, on the first table.
+#[cfg(target_os = "linux")]
+fn eager_policy() -> bool {
+    if !crate::thp::is_never() {
+        return false;
+    }
+    let mut buf = [0u8; 8];
+    match crate::sys::read_small_file(b"/proc/sys/vm/overcommit_memory\0", &mut buf) {
+        Some(n) if n > 0 => buf[0] != b'2',
+        // Unreadable (a sandbox without /proc): the mode cannot be known,
+        // so take the safe side.
+        _ => false,
+    }
+}
+
+/// Host unit tests: the backing is ordinary memory, nothing to probe.
+#[cfg(not(target_os = "linux"))]
+fn eager_policy() -> bool {
+    true
 }
 
 impl Meta {
@@ -361,22 +529,49 @@ impl Meta {
     /// Carve `len` bytes (rounded up to pages) aligned to `align` (at least a
     /// page) from the top of the region. Uncommitted: the owner calls
     /// [`commit`](Meta::commit) on the pages it uses. Never freed. `None`
-    /// when it would collide with the object area.
+    /// when it would collide with the object area. For a table that is
+    /// used from its base up, [`reserve_table`](Meta::reserve_table); this
+    /// is for a reservation that needs a `PROT_NONE` part (the background
+    /// thread's stack guard).
     pub fn reserve(&self, len: usize, align: usize) -> Option<usize> {
         self.inner.lock().reserve(len, align)
     }
 
-    /// Make `[addr, addr + len)`, page aligned and inside a reservation,
-    /// readable and writable. Each page should be committed once; the
+    /// A never-freed table of `len` bytes aligned to `align` whose owner
+    /// commits pages from its base as it uses them. Up to [`EAGER_MAX`]
+    /// bytes, and where the host allows (the module doc), it is carved
+    /// from the object side and is writable from the start; otherwise, or
+    /// when the object side cannot hold it, it is a
+    /// [`reserve`](Meta::reserve). Either way the owner calls
+    /// [`commit`](Meta::commit) on the pages it uses before touching them.
+    pub fn reserve_table(&self, len: usize, align: usize) -> Option<usize> {
+        let mut g = self.inner.lock();
+        if g.eager_ok(len) {
+            if let Some(p) = g.reserve_eager(len, align) {
+                return Some(p);
+            }
+        }
+        g.reserve(len, align)
+    }
+
+    /// Make `[addr, addr + len)`, page aligned and inside a reservation or
+    /// an eagerly carved table, readable and writable (accounting only for
+    /// the latter). Each page should be committed once; the
     /// committed-bytes counter trusts the caller on that.
     pub fn commit(&self, addr: usize, len: usize) -> Result<(), Errno> {
         self.inner.lock().commit(addr, len)
     }
 
-    /// [`reserve`](Meta::reserve) and commit the whole range. Zero on
-    /// return. `None` on either failure, leaving nothing reserved.
+    /// [`reserve_table`](Meta::reserve_table) and commit the whole range.
+    /// Zero on return. `None` on either failure, leaving nothing reserved.
     pub fn reserve_committed(&self, len: usize, align: usize) -> Option<usize> {
         let mut g = self.inner.lock();
+        if g.eager_ok(len) {
+            if let Some(p) = g.reserve_eager(len, align) {
+                g.stats.committed += align_up(len.max(1), g.page);
+                return Some(p);
+            }
+        }
         let old_top = g.top;
         let old_reserved = g.stats.reserved;
         let start = g.reserve(len, align)?;
@@ -389,7 +584,20 @@ impl Meta {
     }
 
     pub fn stats(&self) -> MetaStats {
-        self.inner.lock().stats
+        self.inner.lock().stats()
+    }
+
+    /// Tests: force tables onto the object side (`true`) or the
+    /// reservation side (`false`), whatever the host's policy says.
+    #[cfg(test)]
+    pub fn set_eager_for_test(&self, on: bool) {
+        self.inner.lock().eager = if on { EAGER_ON } else { EAGER_OFF };
+    }
+
+    /// Tests: whether the host's policy allows eager tables.
+    #[cfg(test)]
+    pub fn eager_allowed(&self) -> bool {
+        self.inner.lock().eager_ok(1)
     }
 
     /// Start of the region.
@@ -670,13 +878,18 @@ mod tests {
         m.commit(r1 + page_size(), page_size()).unwrap();
         assert_eq!(m.stats().committed, page_size());
         unsafe { core::slice::from_raw_parts_mut((r1 + page_size()) as *mut u8, page_size()) }.fill(7);
-        // reserve_committed is zero and writable.
+        // A small reserve_committed is zero and writable, and (eager) sits
+        // on the object side, not below r2.
         let r3 = m.reserve_committed(2 * page_size(), page_size()).unwrap();
-        assert!(r3 + 2 * page_size() <= r2);
+        assert_eq!(r3, b.base, "a small committed reservation is carved from the object side");
+        assert_eq!(m.top(), r2);
         let sl = unsafe { core::slice::from_raw_parts_mut(r3 as *mut u8, 2 * page_size()) };
         assert!(sl.iter().all(|&x| x == 0));
         sl.fill(9);
-        assert_eq!(m.stats().committed, 3 * page_size());
+        let s = m.stats();
+        assert_eq!(s.committed, COMMIT_CHUNK + page_size(), "r1's page, r3's two and the chunk's slack around r3");
+        assert_eq!(s.eager, 2 * page_size());
+        assert_eq!(s.bumped, 2 * page_size());
         // Objects and reservations never overlap: fill the rest with
         // objects and check the boundary.
         let mut n = 0;
@@ -684,10 +897,136 @@ mod tests {
             n += 1;
         }
         assert_eq!(m.stats().bumped, m.top() - b.base);
-        assert_eq!(n, (m.top() - b.base) / page_size());
+        assert_eq!(n, (m.top() - b.base) / page_size() - 2);
         assert_eq!(m.reserve(page_size(), page_size()), None);
-        // Object area is committed exactly up to the reservation boundary.
-        assert_eq!(m.stats().committed, 3 * page_size() + (m.top() - b.base));
+        assert_eq!(m.reserve_table(page_size(), page_size()), None);
+        // Object side writable exactly up to the reservation boundary;
+        // committed counts r1's page, r3 and the objects' chunks.
+        let s = m.stats();
+        assert_eq!(s.writable, page_size() + (m.top() - b.base));
+        assert_eq!(s.committed, page_size() + (m.top() - b.base));
+    }
+
+    /// Reservations larger than `EAGER_MAX`, or any table once eager
+    /// carving is off, come from the top uncommitted; `commit` then really
+    /// makes pages writable and counts them.
+    #[test]
+    fn large_and_forced_tables_stay_on_the_reservation_side() {
+        let b = Backing::new(EAGER_MAX + (EAGER_MAX >> 1) + 64 * page_size());
+        let m = b.meta();
+        let end = b.base + b.len;
+        let big = m.reserve_table(EAGER_MAX + page_size(), page_size()).unwrap();
+        assert_eq!(big, end - EAGER_MAX - page_size(), "larger than EAGER_MAX: from the top");
+        assert_eq!(m.stats().eager, 0);
+        assert_eq!(m.stats().reserved, EAGER_MAX + page_size());
+        m.commit(big, page_size()).unwrap();
+        let s = m.stats();
+        assert_eq!((s.committed, s.writable), (page_size(), page_size()));
+        m.set_eager_for_test(false);
+        let small = m.reserve_table(page_size(), page_size()).unwrap();
+        assert_eq!(small, big - page_size(), "eager off: from the top too");
+        assert_eq!(m.stats().eager, 0);
+        let c = m.reserve_committed(3 * page_size(), page_size()).unwrap();
+        assert_eq!(c, small - 3 * page_size());
+        assert_eq!(m.stats().committed, 4 * page_size());
+        m.set_eager_for_test(true);
+        let e = m.reserve_table(page_size(), page_size()).unwrap();
+        assert_eq!(e, b.base, "eager on again: from the base");
+        assert_eq!(m.stats().eager, page_size());
+    }
+
+    /// Eager tables, objects and more tables interleave on the object side
+    /// and stay one contiguous writable range: no hole, no page committed
+    /// twice, every table aligned as asked, and `commit` on such a table
+    /// only counts.
+    #[test]
+    fn eager_tables_pack_on_the_object_side() {
+        let b = Backing::new(16 << 20);
+        let m = b.meta();
+        m.set_eager_for_test(true);
+        let o1 = m.alloc(layout(200, 8));
+        assert_eq!(o1 as usize, b.base);
+        let t1 = m.reserve_table(3 * page_size(), page_size()).unwrap();
+        assert_eq!(t1, b.base + page_size(), "page aligned, right after the objects' page");
+        let t2 = m.reserve_table(10, 8 * page_size()).unwrap();
+        assert_eq!(t2 % (8 * page_size()), 0);
+        assert!(t2 >= t1 + 3 * page_size());
+        let o2 = m.alloc(layout(1000, 8));
+        assert_eq!(o2 as usize, t2 + page_size(), "objects resume right after the table");
+        let t3 = m.reserve_table(EAGER_MAX, page_size()).unwrap();
+        assert!(t3 >= o2 as usize + 1024);
+        let before = m.stats();
+        assert_eq!(before.eager, 3 * page_size() + page_size() + EAGER_MAX);
+        assert_eq!(before.bumped, t3 + EAGER_MAX - b.base);
+        assert!(before.writable >= before.bumped && before.writable % page_size() == 0);
+        assert!(before.committed <= before.writable);
+        // The owner's commits: writable does not move, committed counts.
+        m.commit(t1, page_size()).unwrap();
+        m.commit(t3 + EAGER_MAX - page_size(), page_size()).unwrap();
+        let after = m.stats();
+        assert_eq!(after.writable, before.writable);
+        assert_eq!(after.committed, before.committed + 2 * page_size());
+        // Every byte of every table is writable and zero.
+        for (t, len) in [(t1, 3 * page_size()), (t2, page_size()), (t3, EAGER_MAX)] {
+            let sl = unsafe { core::slice::from_raw_parts_mut(t as *mut u8, len) };
+            assert!(sl.iter().all(|&x| x == 0), "table at {t:#x} not zero");
+            sl[0] = 1;
+            sl[len - 1] = 1;
+        }
+        // Identities.
+        let s = m.stats();
+        assert!(s.allocated + s.eager <= s.bumped && s.bumped <= s.writable && s.writable <= s.len);
+        assert!(s.bumped + s.reserved <= s.len);
+    }
+
+    /// An eager table that would reach the reservations is refused (and
+    /// the reservation side, already up against the chunk frontier, has no
+    /// room either); a smaller one still fits, then nothing fits either
+    /// way, and the failure leaves the allocator working for what does.
+    #[test]
+    fn eager_carve_stops_at_the_reservations() {
+        let b = Backing::new(16 * page_size());
+        let m = b.meta();
+        m.set_eager_for_test(true);
+        let top = m.reserve(4 * page_size(), page_size()).unwrap();
+        assert_eq!(top, b.base + 12 * page_size());
+        // 10 pages fit on the object side (12 free); the chunk commit
+        // stops at the reservations.
+        let t1 = m.reserve_table(10 * page_size(), page_size()).unwrap();
+        assert_eq!(t1, b.base);
+        assert_eq!(m.stats().writable, 12 * page_size());
+        // 3 more do not: not eagerly (past `top`), not as a reservation
+        // (the frontier is at `top`).
+        assert_eq!(m.reserve_table(3 * page_size(), page_size()), None);
+        assert_eq!(m.reserve_committed(3 * page_size(), page_size()), None);
+        assert_eq!(m.top(), top, "a failed table reserves nothing");
+        // 2 do, eagerly; then nothing, while an object in the free list
+        // still does.
+        let t2 = m.reserve_table(2 * page_size(), page_size()).unwrap();
+        assert_eq!(t2, b.base + 10 * page_size());
+        assert_eq!(m.reserve_table(page_size(), page_size()), None);
+        let l = layout(16, 8);
+        assert!(m.alloc(l).is_null());
+        let s = m.stats();
+        assert_eq!((s.bumped, s.eager, s.reserved, s.writable), (12 * page_size(), 12 * page_size(), 4 * page_size(), 12 * page_size()));
+        assert_eq!(s.committed, 0, "nothing asked for yet");
+        m.commit(t1, 10 * page_size()).unwrap();
+        m.commit(t2, 2 * page_size()).unwrap();
+        assert_eq!(m.stats().committed, 12 * page_size());
+    }
+
+    /// The host policy: eager carving is on under the default `thp:never`
+    /// on a kernel that honours `MAP_NORESERVE` (the reference VMs), off
+    /// under `vm.overcommit_memory=2`; the probe reads the sysctl.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn eager_policy_follows_overcommit_mode() {
+        let mode = std::fs::read_to_string("/proc/sys/vm/overcommit_memory").unwrap();
+        let expect = mode.trim() != "2" && crate::thp::is_never();
+        assert_eq!(eager_policy(), expect, "overcommit_memory {mode:?}");
+        let b = Backing::new(1 << 20);
+        let m = b.meta();
+        assert_eq!(m.eager_allowed(), expect);
     }
 
     #[test]
@@ -857,21 +1196,12 @@ mod tests {
         assert!(!m.raw_lock().is_locked());
     }
 
-    /// On Linux the committed part of the region must show up as exactly one
-    /// `rw-p` mapping per committed range, and nothing else in the region
-    /// may be writable.
+    /// The `rw-p` ranges of `/proc/self/maps` inside `[base, base + len)`,
+    /// clipped to it (a committed range at either end merges with an
+    /// adjacent `rw-p` anonymous mapping of another test); everything else
+    /// in the region must be `---p`.
     #[cfg(target_os = "linux")]
-    #[test]
-    fn maps_show_commits() {
-        let b = Backing::new(64 << 20);
-        let m = b.meta();
-        for _ in 0..10 {
-            assert!(!m.alloc(layout(1000, 8)).is_null());
-        }
-        let r = m.reserve_committed(3 * page_size(), page_size()).unwrap();
-        let st = m.stats();
-        assert_eq!(st.committed, COMMIT_CHUNK + 3 * page_size());
-
+    fn writable_ranges(base: usize, len: usize) -> Vec<(usize, usize)> {
         let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
         let mut rw: Vec<(usize, usize)> = Vec::new();
         for line in maps.lines() {
@@ -881,23 +1211,59 @@ mod tests {
             let (lo, hi) = range.split_once('-').unwrap();
             let lo = usize::from_str_radix(lo, 16).unwrap();
             let hi = usize::from_str_radix(hi, 16).unwrap();
-            if hi <= b.base || lo >= b.base + b.len {
+            if hi <= base || lo >= base + len {
                 continue;
             }
             if perms.starts_with("rw") {
-                // Clip to the region: a committed range at either end merges
-                // with an adjacent `rw-p` anonymous mapping of another test.
-                rw.push((lo.max(b.base), hi.min(b.base + b.len)));
+                rw.push((lo.max(base), hi.min(base + len)));
             } else {
                 assert!(perms.starts_with("---"), "unexpected perms {perms} at {range}");
             }
         }
         rw.sort_unstable();
+        rw
+    }
+
+    /// On Linux the committed part of the region must show up as exactly one
+    /// `rw-p` mapping per committed range, and nothing else in the region
+    /// may be writable: the object side with a small table inside it is one
+    /// range, a page committed in a large reservation another.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn maps_show_commits() {
+        let b = Backing::new(64 << 20);
+        let m = b.meta();
+        m.set_eager_for_test(true);
+        for _ in 0..10 {
+            assert!(!m.alloc(layout(1000, 8)).is_null());
+        }
+        let small = m.reserve_committed(3 * page_size(), page_size()).unwrap();
+        assert_eq!(small, b.base + align_up(10 * 1024, page_size()), "page aligned, after the ten 1 KiB objects");
+        let big = m.reserve_table(EAGER_MAX + page_size(), page_size()).unwrap();
+        m.commit(big + page_size(), page_size()).unwrap();
+        let st = m.stats();
+        assert_eq!(st.committed, COMMIT_CHUNK + page_size(), "the objects' chunk with the table in it, plus big's page");
+        assert_eq!(st.writable, COMMIT_CHUNK + page_size());
         assert_eq!(
-            rw,
-            vec![(b.base, b.base + COMMIT_CHUNK), (r, r + 3 * page_size())],
+            writable_ranges(b.base, b.len),
+            vec![(b.base, b.base + COMMIT_CHUNK), (big + page_size(), big + 2 * page_size())],
             "writable ranges in the region"
         );
+        // The small table's pages are writable, the large table's
+        // uncommitted pages are not (a write there faults: checked in a
+        // child so the test survives).
+        unsafe { core::ptr::write_volatile(small as *mut u8, 1) };
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            unsafe {
+                core::ptr::write_volatile(big as *mut u8, 1);
+                libc::_exit(0);
+            }
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(libc::WIFSIGNALED(status) && libc::WTERMSIG(status) == libc::SIGSEGV, "status {status:#x}");
     }
 
 
@@ -923,5 +1289,45 @@ mod tests {
         m.free(q, layout(64, 8));
         assert_eq!(m.alloc(layout(64, 8)), q);
         assert_eq!(m.alloc(layout(64, 8)), p);
+    }
+
+    /// Many small tables with objects between them are one `rw-p` mapping
+    /// from the base to the chunk frontier, and a forked child sees the same
+    /// one mapping: what a PostgreSQL backend inherits (the module doc).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn eager_tables_are_one_mapping_in_parent_and_child() {
+        let b = Backing::new(64 << 20);
+        let m = b.meta();
+        m.set_eager_for_test(true);
+        let mut tables = Vec::new();
+        for i in 0..40usize {
+            assert!(!m.alloc(layout(64 + i * 16, 8)).is_null());
+            let len = (1 + i % 7) * page_size() + (i % 3) * 100;
+            let t = m.reserve_table(len, if i % 4 == 0 { 16 * page_size() } else { page_size() }).unwrap();
+            m.commit(t, page_size()).unwrap();
+            unsafe { core::ptr::write_volatile(t as *mut u64, i as u64 + 1) };
+            tables.push((t, len));
+        }
+        let s = m.stats();
+        assert_eq!(s.reserved, 0, "nothing on the reservation side");
+        assert_eq!(s.eager, tables.iter().map(|&(_, l)| align_up(l, page_size())).sum::<usize>());
+        let expect = vec![(b.base, b.base + s.writable)];
+        assert_eq!(writable_ranges(b.base, b.len), expect, "one writable range for 40 tables and 40 objects");
+        // No hole: every byte from the base to the frontier is writable
+        // (read back through a volatile touch of each page).
+        for off in (0..s.writable).step_by(page_size()) {
+            unsafe { core::ptr::read_volatile((b.base + off) as *const u8) };
+        }
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0);
+        if pid == 0 {
+            let ok = writable_ranges(b.base, b.len) == expect
+                && tables.iter().enumerate().all(|(i, &(t, _))| unsafe { core::ptr::read_volatile(t as *const u64) } == i as u64 + 1);
+            unsafe { libc::_exit(if ok { 0 } else { 1 }) };
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0, "child saw a different mapping");
     }
 }
