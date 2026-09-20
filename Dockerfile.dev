@@ -1,13 +1,18 @@
 # Development container for challoc. Nothing in this repository builds or
 # runs on macOS; everything happens inside this Wolfi image. See CLAUDE.md
-# and the Makefile (`make dev`).
+# and the Makefile (`make dev`). One layer per consumer group below, so a
+# package added for one harness does not rebuild the toolchain.
 FROM cgr.dev/chainguard/wolfi-base
 
-# Wolfi's `rust` (via libLLVM-22) is built against the versioned `glibc-2.44`
-# stream, while wolfi-base pins the unversioned `glibc` 2.43 in the apk world
-# file. apk satisfies `so:libc.so.6` with whichever is installed, so a plain
-# `apk add rust` yields a rustc that cannot start. Move the four pinned glibc
-# packages onto the 2.44 stream first, then install the toolchain.
+# Toolchain. Wolfi's `rust` (via libLLVM-22) is built against the versioned
+# `glibc-2.44` stream, while wolfi-base pins the unversioned `glibc` 2.43 in
+# the apk world file. apk satisfies `so:libc.so.6` with whichever is
+# installed, so a plain `apk add rust` yields a rustc that cannot start. Move
+# the four pinned glibc packages onto the 2.44 stream first, then install the
+# toolchain. `rust-1.98` is the stream contrib/wolfi/challoc.yaml builds the
+# package with (Cargo.toml `rust-version`); `rust` alone would follow Wolfi's
+# default stream when it moves. posix-libc-utils gives `getconf` (the
+# harnesses read the page size and CLK_TCK), procps `ps`/`pgrep`.
 RUN sed -i \
       -e 's/^glibc=.*/glibc-2.44/' \
       -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/' \
@@ -16,64 +21,60 @@ RUN sed -i \
       /etc/apk/world \
  && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44 \
  && apk add --no-cache \
-      rust \
+      rust-1.98 \
       build-base \
       gcc \
-      jemalloc \
       git \
       cmake \
-      tcl \
-      openssl-dev \
       procps \
-      memtier-benchmark \
       posix-libc-utils-2.44 \
-      autoconf \
-      ruby-3.4 \
-      jemalloc-dev \
-      yaml-dev \
-      zlib-dev \
-      libffi-dev \
-      tzdata \
-      tcmalloc-minimal \
-      python-3.13 \
-      py3.13-pip \
-      nodejs-22 \
-      openjdk-21 \
-      apache2-utils \
-      postgresql-17 \
-      postgresql-17-client \
- && rustc --version && cargo --version && python3 --version \
- && test -f /usr/lib/libtcmalloc_minimal.so.4 \
- && node --version && ab -V | head -1 \
- && pgbench --version && test -x /usr/bin/psql
+ && rustc --version && cargo --version && getconf PAGESIZE
 
-# JVM rows (Phase 3 task 5a): openjdk-21 (javac at run time, under
-# /usr/lib/jvm/java-21-openjdk) and apache2-utils for `ab`, the load generator
-# (wrk and oha are not in Wolfi, checked 2026-09-20). PostgreSQL rows (Phase 3
-# task 5b): postgresql-17 carries initdb, pg_ctl, pgbench and postgres;
-# postgresql-17-client carries psql (bench/postgres-bench.sh).
-# The last seven are for Ruby (contrib/ruby/build.sh, Phase 1 acceptance): a
-# git checkout of Ruby needs autoconf and a base Ruby; the jemalloc header,
-# yaml, zlib and libffi are what Wolfi's ruby-3.4.yaml environment gives its
-# `--with-jemalloc` build (psych, zlib and fiddle extensions, and
-# <jemalloc/jemalloc.h> as RUBY_ALTERNATIVE_MALLOC_HEADER); tzdata is for
-# `make test-all` (test/ruby/test_time_tz.rb needs zone files). openssl-dev
-# is already there for Valkey.
-#
-# tcmalloc-minimal (gperftools 2.18.1, no profiler hooks) is the fourth stock
-# allocator of the benchmark harness (bench/lib.sh, Phase 2.5 task 1);
-# python-3.13 and its pip are for bench/python-bench.sh (Wolfi has no
-# free-threaded 3.13 package, checked 2026-09-18).
-#
-# Node.js rows (Phase 3 task 5c): nodejs-22 is the node bench/node-bench.sh
-# measures (Wolfi's nodejs-22, the plan's version; node 22.23 at the time)
-# and apache2-utils gives `ab`, the load generator for its server row (Wolfi
-# has no wrk or oha package, checked 2026-09-20).
-# JVM rows (Phase 3 task 5a): openjdk-21 (the JDK: javac compiles
-# bench/jvm/HttpBench.java at run time; it lives under
-# /usr/lib/jvm/java-21-openjdk and is not on PATH, bench/jvm-bench.sh finds
-# it) and apache2-utils for `ab`, the load generator (wrk and oha are not in
-# Wolfi, checked 2026-09-20).
+# The stock allocators of the benchmark harness (bench/lib.sh): Wolfi's
+# jemalloc and tcmalloc-minimal (gperftools 2.18.1, no profiler hooks, the
+# fourth stock allocator since Phase 2.5 task 1); mimalloc is built from
+# source by bench/build.sh.
+RUN apk add --no-cache jemalloc tcmalloc-minimal \
+ && test -f /usr/lib/libtcmalloc_minimal.so.4
+
+# Valkey (contrib/valkey/build.sh, Phase 1 acceptance): tcl for its test
+# suite, openssl-dev for BUILD_TLS=yes (Ruby's openssl extension uses it
+# too), memtier_benchmark for the soak's second load generator
+# (bench/valkey-soak.sh).
+RUN apk add --no-cache tcl openssl-dev memtier-benchmark
+
+# Ruby (contrib/ruby/build.sh, Phase 1 acceptance): a git checkout of Ruby
+# needs autoconf and a base Ruby; the jemalloc header, yaml, zlib and libffi
+# are what Wolfi's ruby-3.4.yaml environment gives its `--with-jemalloc`
+# build (psych, zlib and fiddle extensions, and <jemalloc/jemalloc.h> as
+# RUBY_ALTERNATIVE_MALLOC_HEADER); tzdata is for `make test-all`
+# (test/ruby/test_time_tz.rb needs zone files).
+RUN apk add --no-cache autoconf ruby-3.4 jemalloc-dev yaml-dev zlib-dev libffi-dev tzdata
+
+# Python rows (bench/python-bench.sh, Phase 2.5 task 1): python-3.13 and its
+# pip (Wolfi has no free-threaded 3.13 package, checked 2026-09-18).
+RUN apk add --no-cache python-3.13 py3.13-pip \
+ && python3 --version
+
+# Node.js rows (bench/node-bench.sh, Phase 3 task 5c): nodejs-22 is the node
+# the harness measures (Wolfi's nodejs-22, the plan's version; node 22.23 at
+# the time). apache2-utils gives `ab`, the load generator of the Node.js and
+# JVM server rows (Wolfi has no wrk or oha package, checked 2026-09-20).
+RUN apk add --no-cache nodejs-22 apache2-utils \
+ && node --version && ab -V | head -1
+
+# JVM rows (bench/jvm-bench.sh, Phase 3 task 5a): openjdk-21, the JDK (javac
+# compiles bench/jvm/HttpBench.java at run time; it lives under
+# /usr/lib/jvm/java-21-openjdk and is not on PATH, the script finds it);
+# `ab` from the layer above is its load generator.
+RUN apk add --no-cache openjdk-21 \
+ && test -x /usr/lib/jvm/java-21-openjdk/bin/javac
+
+# PostgreSQL rows (bench/postgres-bench.sh, Phase 3 task 5b): postgresql-17
+# carries initdb, pg_ctl, pgbench and postgres; postgresql-17-client carries
+# psql.
+RUN apk add --no-cache postgresql-17 postgresql-17-client \
+ && pgbench --version && test -x /usr/bin/psql
 
 WORKDIR /src
 CMD ["sh"]
