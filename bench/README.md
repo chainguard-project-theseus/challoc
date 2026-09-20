@@ -370,8 +370,10 @@ Files:
   `MIMALLOC_SHOW_STATS=1`, server row only) go to `OUT` for attribution.
   The server JVM runs with `-XX:NativeMemoryTracking=summary` (`NMT`; `off`
   disables it) and `jcmd <pid> VM.native_memory summary` is taken at the
-  peak-Rss sample (whenever a sample sets a new peak, at most once per
-  `NMT_GAP` (30) s) and at the end: the results carry NMT's total committed,
+  peak-Rss sample (a sample that sets a new peak asks for a snapshot, taken
+  at the first sample at least `NMT_GAP` (30) s after the previous one, so
+  an allocator whose Rss plateaus early still gets its snapshot on the
+  plateau) and at the end: the results carry NMT's total committed,
   its malloc total and the Java Heap, Class, Thread, Code, GC, Compiler,
   Internal and Other categories, and "allocator overhead" = Rss minus NMT
   committed at the same instant, the number an operator fights (NMT's own

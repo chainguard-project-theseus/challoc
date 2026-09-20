@@ -273,19 +273,20 @@ nmt_take() {
   echo "$3" > "$2.rss"
 }
 # sampler PID DIR CSV T0: every INTERVAL s until DIR/stop; a new peak Rss
-# takes an NMT snapshot (DIR/nmt-peak.txt, at most one per NMT_GAP s), so
-# the snapshot on record is the one at the highest Rss the run reached.
+# asks for an NMT snapshot (DIR/nmt-peak.txt), taken at the first sample at
+# least NMT_GAP s after the previous one (the request waits, it is not
+# dropped: an allocator whose Rss plateaus inside the first NMT_GAP s must
+# still get its snapshot on the plateau, not the idle one), so the snapshot
+# on record is the one at or just after the highest Rss the run reached.
 sampler() {
   echo "elapsed_s,phase,rss_kb,pss_kb,anon_kb,vmrss_kb,vmhwm_kb,threads" > "$3"
-  peak=0; lastnmt=0
+  peak=0; lastnmt=0; pending=0
   while [ ! -e "$2/stop" ]; do
     l=$(sample_line "$1" "$2" "$4") || break
     echo "$l" >> "$3"
     r=$(rss_of_line "$l"); t=$(echo "$l" | cut -d, -f1)
-    if [ "$r" -gt "$peak" ]; then
-      peak=$r
-      if [ $((t - lastnmt)) -ge "$NMT_GAP" ] || [ "$lastnmt" = 0 ]; then nmt_take "$1" "$2/nmt-peak.txt" "$r"; lastnmt=$t; echo "$t" > "$2/nmt-peak.at"; fi
-    fi
+    [ "$r" -gt "$peak" ] && { peak=$r; pending=1; }
+    if [ $pending = 1 ] && [ $((t - lastnmt)) -ge "$NMT_GAP" ]; then nmt_take "$1" "$2/nmt-peak.txt" "$r"; lastnmt=$t; pending=0; echo "$t" > "$2/nmt-peak.at"; fi
     sleep "$INTERVAL"
   done
 }
@@ -547,7 +548,7 @@ nmt_note() {
   if [ $SOAK = 1 ]; then
     echo "- method: bench/jvm/HttpBench.java in \`soak\` mode (com.sun.net.httpserver on a ThreadPoolExecutor of $SOAK_CORE core and $SOAK_MAX maximum threads, idle threads retired after $SOAK_KEEPALIVE s, a SynchronousQueue; \`$JAVA_OPTS $(nmt_opts)\`, so the Java heap is constant and resident from the start and RSS differs by native memory only), served once per allocator for $SOAK_DURATION s to two \`ab -k\` processes (one on /json, a ~300-byte body built per request; one on /blob, a body of a log-uniform size between $SOAK_MIN and $SOAK_MAXB bytes drawn per request and copied out of a per-request ByteBuffer.allocateDirect of that size, i.e. one malloc(n) per request in the JVM with n spread over every size class from 256 bytes to 1 MiB, freed when the buffer's Cleaner runs after a GC) in $((SOAK_DURATION / SOAK_WINDOW)) windows of $SOAK_WINDOW s alternating $SOAK_HIGH total connections (ab -c $((SOAK_HIGH/2)) x2) and $SOAK_LOW (ab -c $((SOAK_LOW/2)) x2), so the pool grows to hundreds of threads and shrinks to $SOAK_CORE every other minute all run long; RSS sampled every $INTERVAL s from /proc/<pid>/smaps_rollup (Rss) and /proc/<pid>/status (VmHWM, Threads) into a CSV per allocator (beside this file): idle = the last sample before the load (${IDLE_SECS} s after the server answered), peak = the largest sample, final = the last sample after the load, slope = the least-squares slope of Rss over the samples of the last $SOAK_TAIL s in MiB per minute (growth after warm-up is the fragmentation signal), tail mean = the mean Rss over the same samples; req/s and p99 (ms) are ab's per endpoint per window, summarised over the high and the low windows; CPU us/req is the server's user+sys over a window divided by the requests both generators completed in it; NMT (\`jcmd VM.native_memory summary\`) at the end. Percentages are challoc against the other allocator: positive means challoc is larger, slower or serves fewer requests."
   else
-    echo "- method: startup = \`java -version\`, $ROUNDS timed rounds after one discarded warm-up, allocators interleaved per round, one process per run under bench/rt, every run's wall time listed sorted, wall time (s, lower is better) and max RSS (bench/rt's maxrss, median KiB). server = bench/jvm/HttpBench.java (com.sun.net.httpserver, a fixed $THREADS-thread executor, \`$JAVA_OPTS $(nmt_opts)\`, so the Java heap is constant and resident from the start and RSS differs by native memory only) served once per allocator for $DURATION s to two \`ab -k -c $((CONNECTIONS/2))\` processes (one on /json, a ~300-byte body built per request; one on /blob, 64 KiB copied out of a per-request ByteBuffer.allocateDirect, i.e. one malloc(65536) per request in the JVM, freed in bursts when the Cleaner runs after a GC) after $WARMUP s of discarded warm-up load; RSS sampled every $INTERVAL s from /proc/<pid>/smaps_rollup (Rss) and /proc/<pid>/status (VmHWM): idle = the last sample before the load (${IDLE_SECS} s after the server answered), peak = the largest sample, final = the last sample after the load; NMT committed and the allocator overhead (Rss minus NMT committed at the same instant) from the \`jcmd VM.native_memory summary\` taken at the peak-Rss sample (whenever a sample set a new peak, at most once per $NMT_GAP s: the snapshot on record is the one at the highest Rss the run reached) and at the end; req/s and p99 (ms) are ab's per endpoint over the measured window; GCs = pauses in -Xlog:gc over the whole process. Percentages are challoc against the other allocator: positive means challoc is slower, larger or serves fewer requests."
+    echo "- method: startup = \`java -version\`, $ROUNDS timed rounds after one discarded warm-up, allocators interleaved per round, one process per run under bench/rt, every run's wall time listed sorted, wall time (s, lower is better) and max RSS (bench/rt's maxrss, median KiB). server = bench/jvm/HttpBench.java (com.sun.net.httpserver, a fixed $THREADS-thread executor, \`$JAVA_OPTS $(nmt_opts)\`, so the Java heap is constant and resident from the start and RSS differs by native memory only) served once per allocator for $DURATION s to two \`ab -k -c $((CONNECTIONS/2))\` processes (one on /json, a ~300-byte body built per request; one on /blob, 64 KiB copied out of a per-request ByteBuffer.allocateDirect, i.e. one malloc(65536) per request in the JVM, freed in bursts when the Cleaner runs after a GC) after $WARMUP s of discarded warm-up load; RSS sampled every $INTERVAL s from /proc/<pid>/smaps_rollup (Rss) and /proc/<pid>/status (VmHWM): idle = the last sample before the load (${IDLE_SECS} s after the server answered), peak = the largest sample, final = the last sample after the load; NMT committed and the allocator overhead (Rss minus NMT committed at the same instant) from the \`jcmd VM.native_memory summary\` taken at the peak-Rss sample (a sample that sets a new peak asks for a snapshot, taken at the first sample at least $NMT_GAP s after the previous snapshot: the snapshot on record is the one at or just after the highest Rss the run reached) and at the end; req/s and p99 (ms) are ab's per endpoint over the measured window; GCs = pauses in -Xlog:gc over the whole process. Percentages are challoc against the other allocator: positive means challoc is slower, larger or serves fewer requests."
   fi
   echo "- allocators:"
   for a in $ALLOCS; do echo "  - $a: $(describe "$a")"; done
