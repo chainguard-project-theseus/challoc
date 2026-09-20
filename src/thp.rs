@@ -42,9 +42,25 @@
 //!   [`Reason::PmdTooLarge`], when none is enabled.
 //! - `never` on a host whose global THP mode is `always` (plan Phase 2.5
 //!   task 16; Chainguard OS ships `always` with the 2 MiB size on
-//!   `inherit`): every region challoc maps is `MADV_NOHUGEPAGE`d at
-//!   reservation ([`advise_reservation`], from `layout::Regions::reserve`),
-//!   as jemalloc's `never` does, so the key means the same on every host.
+//!   `inherit`): the class superblock and the metadata region are
+//!   `MADV_NOHUGEPAGE`d at reservation ([`advise_reservation`], from
+//!   `layout::Regions::reserve`), so the slab regions keep their RSS
+//!   discipline on every host (a 2 MiB page under a few touched slabs is
+//!   the RSS a small heap cannot afford, and the fork copy-on-write cost
+//!   Redis and Valkey forbid). The huge region is left alone
+//!   ([`Reservation::Huge`], the human's decision of 2026-09-20 on
+//!   `bench/results/2026-09-20-aarch64-cgos-thp-ab.md`, option (d)): a
+//!   huge run is a whole multi-page allocation the program asked for, and
+//!   it follows the host's policy as jemalloc's large allocations do
+//!   (jemalloc's `never` advises its slab extents, and its large extents
+//!   take huge pages on an `always` host); the 32 MiB of tables the
+//!   Valkey model keeps in huge runs took 2 MiB pages before task 16 and
+//!   was 10 points of `valkey1` on Chainguard OS when the advice covered
+//!   them. So `never` reads `AnonHugePages` 0 on the class and metadata
+//!   regions on every host and the host's answer on the huge region; on a
+//!   `madvise` host (the reference kernels) nothing differs from a
+//!   `never` that advised everything. `thp_process:advised` (below) is the
+//!   key for "no huge page anywhere in the process".
 //!   The advice is a VMA flag that survives the `mprotect` splits of the
 //!   commit path and is inherited by every VMA the reservation is later
 //!   split into, so one call per reservation is enough. `auto` and
@@ -61,14 +77,17 @@
 //!   and off by default. Below 6.18 (`EINVAL`) nothing is issued and the
 //!   report says `unsupported`; a process whose parent already set a THP
 //!   policy keeps it (`inherited`). Independent of `thp`: `never` covers
-//!   challoc's own regions with `MADV_NOHUGEPAGE` on every kernel and
-//!   does not need this; `auto` and `always` on an `always` host do.
+//!   challoc's slab regions with `MADV_NOHUGEPAGE` on every kernel and
+//!   does not need this for them; the huge region under `never`, and
+//!   every region under `auto` and `always`, on an `always` host do.
 //!
 //! Design 11's rule (an effective cgroup limit under 1 GiB forces `thp`
 //! to `never`) is applied by `Shared::init` to the stored key for `always`;
-//! [`force_never`] mirrors it here after init and advises the reservations
-//! already made with `MADV_NOHUGEPAGE`. `auto` is not forced: a 64 KiB
-//! folio is the slab's own granularity.
+//! [`force_never`] mirrors it here after init and advises the class and
+//! metadata reservations already made with `MADV_NOHUGEPAGE` (the huge
+//! reservation is not recorded, so a forced `never` leaves it to the host
+//! the way a configured one does). `auto` is not forced: a 64 KiB folio
+//! is the slab's own granularity.
 //!
 //! Everything here is cold: a decision at init, one `madvise` per slab
 //! group, per PMD chunk, per huge run or per metadata commit. The fast
@@ -297,15 +316,18 @@ static META_RANGES: AtomicU64 = AtomicU64::new(0);
 static FAILURES: AtomicU64 = AtomicU64::new(0);
 /// Chunk commits (ranges whose first slab was the one committing).
 static CHUNKS: AtomicU64 = AtomicU64::new(0);
-/// Reservations `MADV_NOHUGEPAGE`d under `never` (the module doc).
+/// Reservations `MADV_NOHUGEPAGE`d under `never` (the module doc): the
+/// class superblock and the metadata region, so 2 on a kernel with THP.
 static NOHUGE_RANGES: AtomicU64 = AtomicU64::new(0);
 /// The kernel has transparent huge pages at all (the sysfs `enabled` file
 /// exists): `MADV_NOHUGEPAGE` is `EINVAL` without them, so `never` then
 /// has nothing to advise.
 static KERNEL_THP: AtomicU8 = AtomicU8::new(0);
-/// The reservations made so far (`advise_reservation`): the three mappings
-/// of `layout::Regions::reserve`, so [`force_never`] can advise them after
-/// the fact. `(addr, len)`, `len` 0 when unused.
+/// The reservations `never` covers, as made so far (`advise_reservation`):
+/// the class superblock and the metadata mapping of
+/// `layout::Regions::reserve` (never the huge one, which follows the host),
+/// so [`force_never`] can advise them after the fact. `(addr, len)`, `len`
+/// 0 when unused.
 const MAX_RESERVATIONS: usize = 4;
 static RESERVATIONS: [(AtomicUsize, AtomicUsize); MAX_RESERVATIONS] = [
     (AtomicUsize::new(0), AtomicUsize::new(0)),
@@ -343,7 +365,9 @@ pub fn configure(key: Key, features: &Features) -> Decision {
 
 /// Design 11: the stored key was forced to `never` by a cgroup limit under
 /// 1 GiB; mirror it here (init, after the cgroup is read) and give the
-/// reservations already made the `never` advice (the module doc).
+/// class and metadata reservations already made the `never` advice (the
+/// module doc; the huge reservation was never recorded and stays with the
+/// host's policy, as under a configured `never`).
 pub fn force_never() {
     let d = Decision::off(Reason::Forced, LG_PMD.load(Ordering::Relaxed));
     store(&d);
@@ -355,12 +379,38 @@ pub fn force_never() {
     }
 }
 
-/// A reservation challoc made (`layout::Regions::reserve`: the class
-/// superblock, the huge region, the metadata region), before anything in
-/// it is committed. Recorded for [`force_never`]; under `thp:never` on a
-/// kernel with THP it is `MADV_NOHUGEPAGE`d here (plan Phase 2.5 task 16,
-/// the module doc). Returns whether the advice was issued.
-pub fn advise_reservation(addr: usize, len: usize) -> bool {
+/// Which of `layout::Regions::reserve`'s three mappings a reservation is,
+/// for [`advise_reservation`]: `never` covers the slab regions (the class
+/// superblock and the metadata region) and leaves the huge region to the
+/// host's policy (the module doc).
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum Reservation {
+    /// The class superblock: slabs, committed a group at a time.
+    Classes,
+    /// The huge region: whole runs of a page or more per allocation.
+    Huge,
+    /// The metadata region: descriptor tables and the bump area.
+    Metadata,
+}
+
+impl Reservation {
+    /// Whether `never` leaves the reservation to the host's THP policy
+    /// instead of `MADV_NOHUGEPAGE`ing it.
+    pub const fn follows_host(self) -> bool {
+        matches!(self, Reservation::Huge)
+    }
+}
+
+/// A reservation challoc made (`layout::Regions::reserve`), before
+/// anything in it is committed. A class or metadata reservation is
+/// recorded for [`force_never`] and, under `thp:never` on a kernel with
+/// THP, `MADV_NOHUGEPAGE`d here (plan Phase 2.5 task 16, the module doc);
+/// the huge reservation is neither (it follows the host's policy, the
+/// 2026-09-20 decision). Returns whether the advice was issued.
+pub fn advise_reservation(kind: Reservation, addr: usize, len: usize) -> bool {
+    if kind.follows_host() {
+        return false;
+    }
     for (a, l) in RESERVATIONS.iter() {
         if l.load(Ordering::Relaxed) == 0 {
             a.store(addr, Ordering::Relaxed);
@@ -368,14 +418,19 @@ pub fn advise_reservation(addr: usize, len: usize) -> bool {
             break;
         }
     }
-    // The key, not the mode: an `auto` the kernel's table made inert
-    // keeps its regions eligible for the folios the host may enable later
-    // (and `MADV_NOHUGEPAGE` would forbid them as well as the PMD).
-    let never = key() == Key::Never || Reason::from_u8(REASON.load(Ordering::Relaxed)) == Reason::Forced;
-    if !never {
+    if !is_never() {
         return false;
     }
     advise_nohugepage(addr, len)
+}
+
+/// Whether `never` is the policy in force: the key, or `always` forced to
+/// `never` by design 11. The key, not the mode: an `auto` the kernel's
+/// table made inert keeps its regions eligible for the folios the host may
+/// enable later (and `MADV_NOHUGEPAGE` would forbid them as well as the
+/// PMD).
+pub fn is_never() -> bool {
+    key() == Key::Never || Reason::from_u8(REASON.load(Ordering::Relaxed)) == Reason::Forced
 }
 
 /// `MADV_NOHUGEPAGE` on a reservation, counted; nothing on a kernel
@@ -860,6 +915,22 @@ mod tests {
         assert_eq!(meta_folio_size(), 0);
         assert_eq!(huge_min(), usize::MAX);
         store(&Decision::OFF);
+    }
+
+    /// The 2026-09-20 decision on task 16: `never` covers the class and
+    /// metadata reservations and leaves the huge one to the host, so the
+    /// huge reservation is neither advised nor recorded for `force_never`.
+    #[test]
+    fn never_leaves_the_huge_reservation_to_the_host() {
+        assert!(!Reservation::Classes.follows_host());
+        assert!(!Reservation::Metadata.follows_host());
+        assert!(Reservation::Huge.follows_host());
+        let before = stats();
+        assert!(!advise_reservation(Reservation::Huge, 1 << 40, 1 << 30));
+        assert_eq!(stats(), before);
+        assert!(RESERVATIONS
+            .iter()
+            .all(|(a, l)| l.load(Ordering::Relaxed) == 0 || a.load(Ordering::Relaxed) != 1 << 40));
     }
 
     /// `thp_process` (plan Phase 2.5 task 16): `default` issues nothing

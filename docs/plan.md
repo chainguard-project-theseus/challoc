@@ -1123,7 +1123,13 @@ Tasks, in order:
 16. THP policy on `always` hosts (`docs/research.md`, 6.18 row; found on
     Chainguard OS, which ships `always` with the 2 MiB size on `inherit`):
     `thp:never` issues `MADV_NOHUGEPAGE` on every region challoc maps
-    (jemalloc's `never` does), so the key means the same on every host;
+    (jemalloc's `never` does), so the key means the same on every host
+    (narrowed 2026-09-20 by the human's decision after the same-host A/B
+    `bench/results/2026-09-20-aarch64-cgos-thp-ab.md`, option (d): the
+    class superblock and the metadata region only; the huge region
+    follows the host's policy, as jemalloc's large extents do, so the
+    acceptance's `AnonHugePages` 0 is for the slab regions and the huge
+    runs read the host's answer);
     then `thp_process:advised` (or the value the design prefers) calls
     `prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED)` at init
     where the kernel accepts it (6.18+; probed by the call's return),

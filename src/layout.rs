@@ -894,11 +894,18 @@ mod linux {
                 name_mapping(huge_map, b"challoc:huge\0");
                 name_mapping(meta_map, b"challoc:meta\0");
             }
-            // `thp:never` means never on a host whose global mode is
-            // `always` (`thp.rs`, plan Phase 2.5 task 16): the reservations
-            // are `MADV_NOHUGEPAGE`d before anything in them is committed.
-            for m in [sb_map, huge_map, meta_map] {
-                crate::thp::advise_reservation(m.addr, m.len);
+            // `thp:never` on a host whose global mode is `always` (`thp.rs`,
+            // plan Phase 2.5 task 16): the class and metadata reservations
+            // are `MADV_NOHUGEPAGE`d before anything in them is committed;
+            // the huge region follows the host's policy (`thp::Reservation`,
+            // the 2026-09-20 decision), so `thp.rs` skips it by kind.
+            use crate::thp::Reservation;
+            for (kind, m) in [
+                (Reservation::Classes, sb_map),
+                (Reservation::Huge, huge_map),
+                (Reservation::Metadata, meta_map),
+            ] {
+                crate::thp::advise_reservation(kind, m.addr, m.len);
             }
 
             Regions::from_parts(

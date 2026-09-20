@@ -247,6 +247,12 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
     let d = crate::thp::decision();
     let s = crate::thp::stats();
     write!(out, "thp: {} -> {} ({})", crate::thp::key().name(), d.mode.name(), d.reason.text())?;
+    // Plan Phase 2.5 task 16 and the 2026-09-20 decision: `never` covers
+    // the class and metadata reservations; the huge region follows the
+    // host's global mode (named at the end of the line).
+    if crate::thp::is_never() {
+        write!(out, " nohuge {} (classes, metadata; huge follows host)", s.nohuge_ranges)?;
+    }
     if d.mode != crate::thp::Mode::Off {
         write!(out, " slab_min {}", 1usize << d.lg_slab_min)?;
         write!(out, " pmd {}", 1usize << d.lg_pmd)?;
@@ -501,7 +507,7 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
         let ts = crate::thp::stats();
         writeln!(
             out,
-            "\t\t\"thp\": {{\"key\": \"{}\", \"mode\": \"{}\", \"reason\": \"{}\", \"class_ranges\": {}, \"class_bytes\": {}, \"chunks\": {}, \"huge_ranges\": {}, \"meta_ranges\": {}, \"failures\": {}, \"host\": \"{}\", \"process\": \"{}\"}},",
+            "\t\t\"thp\": {{\"key\": \"{}\", \"mode\": \"{}\", \"reason\": \"{}\", \"class_ranges\": {}, \"class_bytes\": {}, \"chunks\": {}, \"huge_ranges\": {}, \"meta_ranges\": {}, \"failures\": {}, \"nohuge_ranges\": {}, \"host\": \"{}\", \"process\": \"{}\"}},",
             crate::thp::key().name(),
             td.mode.name(),
             td.reason.text(),
@@ -511,6 +517,7 @@ fn json_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
             ts.huge_ranges,
             ts.meta_ranges,
             ts.failures,
+            ts.nohuge_ranges,
             crate::thp::host_mode().map_or("none", crate::sys::features::ThpSetting::name),
             crate::thp::process().name()
         )?;
@@ -911,7 +918,8 @@ mod tests {
             "opt.thp: \"never\"\n",
             "opt.thp_process: \"default\"\n",
             "opt.prefault: false\n",
-            "thp: never -> off (thp:never) class_ranges 0 (0 bytes, 0 chunks) huge_ranges 0 meta_ranges 0 failures 0; host ",
+            "thp: never -> off (thp:never) nohuge ",
+            " (classes, metadata; huge follows host) class_ranges 0 (0 bytes, 0 chunks) huge_ranges 0 meta_ranges 0 failures 0; host ",
             " process default (nothing issued)\n",
             "opt.zero_on_free: false\n",
             "opt.slot_randomize: false\n",
@@ -1007,7 +1015,8 @@ mod tests {
         assert!(text.contains("\"stats\": {\"allocated\": "));
         assert!(text.contains("\"cgroup\": {\"tracked\": "));
         assert!(text.contains("\"thp\": {\"key\": \"never\", \"mode\": \"off\", "), "{text}");
-        assert!(text.contains("\"failures\": 0, \"host\": \"") && text.contains("\", \"process\": \"default\"}"), "{text}");
+        assert!(text.contains("\"failures\": 0, \"nohuge_ranges\": ") && text.contains(", \"host\": \""), "{text}");
+        assert!(text.contains("\", \"process\": \"default\"}"), "{text}");
         assert!(text.contains("\"purge_advice\": \"eager\", \"lazy_purges\": 0, \"eager_purges\": "), "{text}");
         assert!(text.contains("\"stats.arenas\": {"));
         assert!(text.contains("\"0\": {"));

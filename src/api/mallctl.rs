@@ -151,6 +151,12 @@ pub enum Leaf {
     /// nothing issued, 1 `PR_THP_DISABLE_EXCEPT_ADVISED` in force, 2 the
     /// kernel refused it, 3 an inherited policy was kept, 4 the call failed.
     StatsThpProcess,
+    /// `stats.thp.nohuge_ranges` (plan Phase 2.5 task 16, `thp.rs`): the
+    /// reservations `never` `MADV_NOHUGEPAGE`d, the class superblock and
+    /// the metadata region (2 on a kernel with THP; the huge region follows
+    /// the host's policy, the 2026-09-20 decision); 0 under `auto` and
+    /// `always`.
+    StatsThpNohugeRanges,
     /// `stats.arenas.<i>.*`; `mib[2]` is the arena.
     StatsArenaPactive,
     StatsArenaPdirty,
@@ -282,7 +288,7 @@ static STATS_CGROUP: [Node; 11] = [
     leaf("lazy_purges", Leaf::StatsCgroupLazyPurges),
     leaf("eager_purges", Leaf::StatsCgroupEagerPurges),
 ];
-static STATS_THP: [Node; 7] = [
+static STATS_THP: [Node; 8] = [
     leaf("mode", Leaf::StatsThpMode),
     leaf("class_ranges", Leaf::StatsThpClassRanges),
     leaf("class_bytes", Leaf::StatsThpClassBytes),
@@ -290,6 +296,7 @@ static STATS_THP: [Node; 7] = [
     leaf("meta_ranges", Leaf::StatsThpMetaRanges),
     leaf("failures", Leaf::StatsThpFailures),
     leaf("process", Leaf::StatsThpProcess),
+    leaf("nohuge_ranges", Leaf::StatsThpNohugeRanges),
 ];
 static STATS_PREFAULT: [Node; 9] = [
     leaf("enabled", Leaf::StatsPrefaultEnabled),
@@ -928,7 +935,8 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
         | StatsThpHugeRanges
         | StatsThpMetaRanges
         | StatsThpFailures
-        | StatsThpProcess => {
+        | StatsThpProcess
+        | StatsThpNohugeRanges => {
             io.read_only()?;
             let s = crate::thp::stats();
             io.read(match leaf {
@@ -938,6 +946,7 @@ pub fn ctl(shared: &Shared, leaf: Leaf, mib: &[usize], io: &Io) -> Result<(), c_
                 StatsThpClassBytes => s.class_bytes as usize,
                 StatsThpHugeRanges => s.huge_ranges as usize,
                 StatsThpMetaRanges => s.meta_ranges as usize,
+                StatsThpNohugeRanges => s.nohuge_ranges as usize,
                 _ => s.failures as usize,
             })
         }

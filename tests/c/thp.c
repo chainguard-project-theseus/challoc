@@ -11,10 +11,16 @@
  *                reservation) on every kernel with THP, so that on a host
  *                whose global mode is `always` (read from sysfs; Chainguard
  *                OS and Debian's kernels) the 8 MiB touched show
- *                AnonHugePages 0 kB and THPeligible 0: `never` means never
- *                on every host. On a `madvise` host the AnonHugePages
- *                check passes trivially and the program says so; the `nh`
- *                check is the both-ways part there;
+ *                AnonHugePages 0 kB and THPeligible 0. The huge region is
+ *                the other way (the 2026-09-20 decision, option (d) of
+ *                bench/results/2026-09-20-aarch64-cgos-thp-ab.md): the
+ *                8 MiB huge run carries no `nh`, stats.thp.nohuge_ranges
+ *                reads 2 (classes, metadata), the thp: line says `huge
+ *                follows host`, and on an `always` host the run shows
+ *                THPeligible 1 and AnonHugePages again, as jemalloc's
+ *                large allocations do. On a `madvise` host the
+ *                AnonHugePages checks pass trivially and the program says
+ *                so; the `nh` checks are the both-ways part there;
  *   thp always   MALLOC_CONF=thp:always: opt.thp reads "always" (or
  *                "never" when a cgroup limit under 1 GiB forced it, a pass
  *                with a note); with the PMD size enabled in sysfs (the
@@ -363,8 +369,9 @@ int main(int argc, char **argv)
      * class region, whose groups are committed a few slabs at a time, its
      * interior holds whole aligned PMD ranges in one read-write VMA, so
      * on a host whose global mode is `always` the kernel backs them with
-     * huge pages at the fault unless the reservation carries `nh`. This
-     * is the row that moves under `never` on such a host. */
+     * huge pages at the fault unless the reservation carries `nh`. Under
+     * `never` it does not (the huge region follows the host), so this is
+     * the row that shows the host's policy on such a host. */
     unsigned char *big = malloc(8u << 20);
     REQUIRE(big, "malloc(8 MiB)");
     memset(big, 0x5b, 8u << 20);
@@ -399,19 +406,28 @@ int main(int argc, char **argv)
         CHECK(class_ranges == 0 && class_bytes == 0, "ranges advised under never");
         CHECK(!hg, "VmFlags has hg under never");
         CHECK(stat_of("stats.thp.huge_ranges") == 0 && stat_of("stats.thp.meta_ranges") == 0, "advice under never");
-        /* Plan Phase 2.5 task 16: never means never on an `always` host. */
+        CHECK(strstr(thp_report, " (classes, metadata; huge follows host)") != NULL, "thp: line does not say what never covers");
+        size_t nohuge = stat_of("stats.thp.nohuge_ranges");
+        /* Plan Phase 2.5 task 16 and the 2026-09-20 decision: never means
+         * never for the class and metadata regions on every host; the huge
+         * region follows the host's policy. */
         if (strcmp(thp, "none") == 0) {
+            CHECK(nohuge == 0, "stats.thp.nohuge_ranges %zu on a kernel without THP", nohuge);
             printf("thp never: the kernel has no THP; nothing to forbid\n");
         } else {
+            CHECK(nohuge == 2, "stats.thp.nohuge_ranges %zu under never (the class and metadata reservations)", nohuge);
             CHECK(nh, "VmFlags has no nh under never (MADV_NOHUGEPAGE not issued on the class reservation)");
-            CHECK(big_nh, "VmFlags has no nh on the huge run under never (MADV_NOHUGEPAGE not issued on the huge reservation)");
-            CHECK(eligible <= 0 && big_eligible <= 0, "THPeligible %d / %d under never", eligible, big_eligible);
+            CHECK(!big_nh, "VmFlags has nh on the huge run under never (the huge region follows the host's policy)");
+            CHECK(eligible <= 0, "THPeligible %d in the class region under never", eligible);
             if (strcmp(global, "always") == 0) {
-                printf("thp never: global THP is always: AnonHugePages %ld kB (class region), %ld kB (huge run) after 8 + 8 MiB touched: the both-ways row\n",
+                printf("thp never: global THP is always: AnonHugePages %ld kB (class region), %ld kB (huge run) after 8 + 8 MiB touched: the both-ways rows\n",
                        anon_kb, big_anon_kb);
                 CHECK(anon_kb == 0, "AnonHugePages %ld kB in the class region under never on an always host", anon_kb);
-                CHECK(big_anon_kb == 0, "AnonHugePages %ld kB in the huge run under never on an always host", big_anon_kb);
+                CHECK(big_eligible != 0, "THPeligible %d on the huge run under never on an always host (the run should follow the host)", big_eligible);
+                CHECK(big_anon_kb >= 2048, "AnonHugePages %ld kB in the 8 MiB huge run under never on an always host (the run should follow the host)",
+                      big_anon_kb);
             } else {
+                CHECK(big_eligible <= 0, "THPeligible %d on the unadvised huge run on a %s host", big_eligible, global);
                 printf("thp never: global THP is %s, so AnonHugePages %ld / %ld kB is 0 with or without the advice; the nh flags are the check here\n",
                        global, anon_kb, big_anon_kb);
             }

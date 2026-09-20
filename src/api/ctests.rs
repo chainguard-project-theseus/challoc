@@ -853,9 +853,12 @@ fn c_features() {
     run_c("features", &[]);
 }
 
-/// `tests/c/thp.c never` (plan Phase 2.5 task 9): the default issues no
-/// `MADV_HUGEPAGE` anywhere (no `hg` on the VMA of a class region,
-/// `stats.thp.mode` 0, nothing advised).
+/// `tests/c/thp.c never` (plan Phase 2.5 task 9 and 16): the default issues
+/// no `MADV_HUGEPAGE` anywhere (no `hg` on the VMA of a class region,
+/// `stats.thp.mode` 0, nothing advised), `MADV_NOHUGEPAGE`s the class and
+/// metadata reservations (`nh`, `stats.thp.nohuge_ranges` 2) and leaves
+/// the huge region to the host's policy (no `nh` on the huge run; on an
+/// `always` host it shows `AnonHugePages` again).
 #[test]
 fn c_thp_never() {
     run_c("thp", &["never"]);
