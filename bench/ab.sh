@@ -98,7 +98,10 @@ echo "== $TITLE: $STAMP $ARCH nproc $PROCS load $LOAD0, HEAD $(commit_short)$(tr
 for v in $NAMES; do
   rev=$(v_rev "$v")
   case $rev in stock:*) continue;; esac
-  tdir=$ABDIR/$(rev_label "$rev")
+  tdir=$ABDIR/$(rev_dirname "$rev")
+  # The path goes into LD_PRELOAD, which splits on spaces and colons; a bad
+  # name would silently run the row on glibc (2026-09-21, lane policy-cost).
+  case $tdir in *[:\ ]*) die "build directory '$tdir' has a space or colon; LD_PRELOAD would split it";; esac
   if [ ! -e "$OUT/built.$(basename "$tdir")" ]; then
     printf '== building %s (%s) into %s ... ' "$v" "$(rev_label "$rev")" "${tdir#"$ROOT"/}"
     build_lib "$rev" "$tdir"; echo "done, $(so_hash "$tdir/release/libchalloc.so")"
@@ -177,7 +180,7 @@ describe() { # describe VARIANT
     stock:mimalloc) d="$BIN/libmimalloc.so ($(awk '/^mimalloc /{print $2}' "$BIN/versions.txt"))";;
     stock:tcmalloc) d="Wolfi's $TCMALLOC_LIB (tcmalloc-minimal $(apk_version tcmalloc-minimal), gperftools without profiler hooks)";;
     tree)           d="working tree (HEAD $(commit_short)$(tree_dirty && echo ' + uncommitted src changes')) built into target/ab/tree";;
-    dir:*)          d="source directory ${rev#dir:} (an A/B copy of the tree, HEAD $(commit_short)) built into target/ab/$(rev_label "$rev"), sha256 $(so_hash "$(v_lib "$1")")";;
+    dir:*)          d="source directory ${rev#dir:} (an A/B copy of the tree, HEAD $(commit_short)) built into target/ab/$(rev_dirname "$rev"), sha256 $(so_hash "$(v_lib "$1")")";;
     *)              d="$(echo "$rev" | cut -c1-12) built into target/ab/$(echo "$rev" | cut -c1-12)";;
   esac
   [ -n "$conf" ] && d="$d, MALLOC_CONF=$conf"

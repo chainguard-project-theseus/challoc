@@ -481,9 +481,12 @@ resolve_rev() {
        else $GIT -C "$ROOT" rev-parse --verify "$1^{commit}" 2>/dev/null || die "cannot resolve rev '$1' (in a worktree the Makefile must mount the common .git)"; fi;;
   esac
 }
-# rev_label REV: the 12-character form for tables and target directory
-# names: the hash prefix, "tree", or the directory's basename for "dir:".
-rev_label() { case $1 in tree) echo tree;; dir:*) basename "${1#dir:}";; *) echo "$1" | cut -c1-12;; esac; }
+# rev_dirname REV: the target directory name of a rev's build under
+# target/ab/ and friends: "tree", the directory's basename for "dir:PATH",
+# or the first 12 characters of a hash. Never spaces or colons: the name
+# ends up in an LD_PRELOAD path, which splits on both (the labels of
+# rev_label below are for tables, not paths).
+rev_dirname() { case $1 in tree) echo tree;; dir:*) basename "${1#dir:}";; *) echo "$1" | cut -c1-12;; esac; }
 # build_lib REV TARGETDIR: build libchalloc.so from REV ("tree" = this
 # working tree, "dir:PATH" = that source directory in place, otherwise
 # `git archive REV` into TARGETDIR/src-tree) with CARGO_TARGET_DIR=TARGETDIR.
@@ -533,7 +536,7 @@ so_hash() { sha256sum "$1" | cut -c1-16; }
 tree_label() { echo "working tree, HEAD $(commit_short)$(tree_dirty && echo ' + uncommitted src changes')"; }
 # rev_label REV: tree_label for "tree", else the rev cut to 12 characters
 # (the build line's label; the header's describe line keeps REV as spelled).
-rev_label() { if [ "$1" = tree ]; then tree_label; else echo "$1" | cut -c1-12; fi; }
+rev_label() { case $1 in tree) tree_label;; dir:*) echo "source directory ${1#dir:}";; *) echo "$1" | cut -c1-12;; esac; }
 # default_lib_of ALLOC: the LD_PRELOAD path of a harness allocator: challoc
 # is $CHALLOC_LIB (the harness's own build, set before the rounds), the
 # rest stock_lib. A harness with more variants wraps it (jvm-bench.sh).
