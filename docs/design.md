@@ -587,7 +587,7 @@ struct Heap {                                // repr(C); the header array at off
     slow_ticks:  u32,                        // counts slow-path entries for periodic work
     last_gc:     u64,                        // monotonic ns of the last cache GC
     uncached:    ThreadStats,                // bytes that never went through a cache (huge, direct)
-    others:      *mut ArenaCaches,           // one node of [CacheHeader; NCLASSES] per other arena allocated from explicitly (MALLOCX_ARENA, thread.arena); plain free never fills one
+    others:      *mut ArenaCaches,           // one node of [CacheHeader; NCLASSES] per other arena allocated from explicitly (MALLOCX_ARENA, thread.arena), plus the FOREIGN node plain frees of other arenas' slots fill (6.3 step 4)
     snapshot:    ThreadStats,                // thread.allocated/deallocated as of the last read
     tcache_enabled: bool,                    // thread.tcache.enabled
     bound:       bool,                       // counted in the home arena's load (thread heaps only)
@@ -753,20 +753,31 @@ a deployment that wants the residue back on a small-cache part.
    default: a `memset` per free is more than the 3% budget on Valkey's
    1 KiB values (review 2026-09-18 section 5.1); priced in
    `bench/results/2026-09-18-*-gce-tunables.md`.
-4. `heap = tls()`; `cache = heap.caches[c]` (the home cache, whatever the
-   slab's arena: the owner array is not read); if `len == cap`, slow path
-   (flush half). `slots[len++] = p`. The flush routes each run of slabs of
-   another arena to that arena (`release_routed`, 6.4), as the sized path's
-   flush always did. Until 2026-09-21 a slot of another arena went to a
-   cache the heap kept per `(arena, class)` (`others`), which the default
-   path never pops from, so it left only by a flush or the cache GC: a
-   16-thread Ruby process, whose GC sweep frees every thread's garbage from
-   whichever thread runs it, held ~200 MiB of dead slots in those 16 x 16
-   caches (three quarters of their capacity on average, the sawtooth
-   between a half flush and full), twice jemalloc's RSS
-   (`bench/results/2026-09-21-*-ruby-rss-attribution.md`). jemalloc keeps
-   one tcache per thread for the same reason. The `others` caches remain
-   for explicit `MALLOCX_ARENA` allocations and `thread.arena`.
+4. `heap = tls()`; with several arenas load `owner[slab / group]` and, if it
+   is not the heap's home arena, take the cold path (`free_other`, which
+   pushes onto the heap's one *foreign* cache for the class, `Heap::others`
+   keyed `FOREIGN`, creating it on first use); otherwise `cache =
+   heap.caches[c]`; if `len == cap`, slow path (flush half). `slots[len++]
+   = p`. The foreign cache is flush-only: nothing pops from it, its flush
+   routes each run of slabs to the slab's arena (`release_routed`, 6.4), and
+   there is one per thread, so a thread that frees other threads' memory
+   holds at most one cache's worth per class of it, as jemalloc's tcache
+   does. Until 2026-09-21 such a free went onto a cache per `(arena, class)`
+   (one node per arena a thread freed into), which the default path never
+   pops from, so a slot left it only by a flush or the cache GC: a 16-thread
+   Ruby process, whose GC sweep frees every thread's garbage from whichever
+   thread runs it, held ~200 MiB of dead slots in those 16 x 16 caches
+   (three quarters of their capacity on average, the sawtooth between a
+   half flush and full), twice jemalloc's RSS
+   (`bench/results/2026-09-21-*-ruby-rss-attribution.md`). Pushing every
+   foreign slot onto the home cache instead, jemalloc's exact shape, was
+   measured first (`4dc352c`): it hands a thread that inherits another
+   thread's blocks that arena's slots back for its own allocations, and
+   larson10 / larson16 on the Xeon lost 10% / 6%
+   (`2026-09-21-x86_64-ruby-rss-ab-split.md`; the Axion did not move), so
+   the arena locality of the home cache is kept and only the foreign side
+   is one cache instead of one per arena. The per-arena `others` nodes
+   remain for explicit `MALLOCX_ARENA` allocations and `thread.arena`.
 
 `sdallocx(p, n, flags)`, `free_sized(p, n)`, `free_aligned_sized(p, a, n)`
 (the sized path; Phase 1.5 task 4e):
@@ -1666,11 +1677,11 @@ new one. Slab groups record their arena (section 4). A slot belongs to the
 arena that committed its slab for good: a refill claims from the home
 arena, a flush releases each slot to its slab's arena
 (`release_routed`), so per-arena statistics (`curregs`, `active`,
-`dirty`) stay exact whichever thread's cache a slot passes through; what
-the cache holds is the thread's, not the arena's (6.3 step 4, since
-2026-09-21; jemalloc's tcache is the same). Redis's Lua arena keeps its
-accounting through `MALLOCX_ARENA` allocations, whose slabs are the Lua
-arena's whatever cache later holds their slots, as under jemalloc. When
+`dirty`) stay exact whichever cache a slot passes through. A pointer freed
+with plain `free` goes onto the home cache when its slab is the home
+arena's and onto the thread's one flush-only foreign cache otherwise (6.3
+step 4, since 2026-09-21), so a live slot never migrates between arenas
+and Redis's Lua arena keeps its accounting through `MALLOCX_ARENA`. When
 the last thread heap homed on an arena is destroyed, its `Empty` slabs are
 purged at once (jemalloc's `tcache_destroy` rule; not with the background
 thread, which decays on its own schedule, and at most once per decay

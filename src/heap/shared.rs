@@ -603,14 +603,13 @@ impl Shared {
         t.owner(slab)
     }
 
-    /// Release a cache's sorted batch of `class` slots, keyed by `arena`.
-    /// A thread frees its own arena's slots almost always, so the whole
-    /// batch is normally one [`release_owned`] call with no extra work per
-    /// pointer; the home cache takes slots of any arena (plain and sized
-    /// frees alike read the bit, or the size, but never the owner), and
-    /// each run of slabs of another arena is released through that arena
-    /// (one owner-word load per switch, a word `release_owned` reads
-    /// anyway).
+    /// Release a cache's sorted batch of `class` slots, starting with
+    /// `arena`. A home cache's batch is normally one [`release_owned`]
+    /// call with no extra work per pointer; the sized path's home cache
+    /// and the one foreign cache per class (`heap::FOREIGN`, design 6.3
+    /// step 4) hold slots of any arena, and each run of slabs of another
+    /// arena is released through that arena (one owner-word load per
+    /// switch, a word `release_owned` reads anyway).
     ///
     /// [`release_owned`]: crate::class::ClassState::release_owned
     pub fn release_routed(&self, arena: u16, class: usize, ptrs: &[*mut u8]) {
@@ -631,27 +630,23 @@ impl Shared {
         }
     }
 
-    /// The `free` fast path's check, shared by the thread-cache and the
-    /// per-CPU pushes: `Some(class)` when `p` is a slot start in a
-    /// handed-out slab whose bit is set, `None` for anything else. It
-    /// never aborts; [`classify_free`] on the slow path repeats the checks
-    /// and does. The slab's arena is not read: the home cache takes
-    /// verified slots of every arena and its flush routes them by the
-    /// owner array ([`release_routed`]), as the sized path's cache always
-    /// has (design 6.3 step 4; until 2026-09-21 the plain path kept one
-    /// cache per `(arena, class)` a thread freed into, never popped on the
-    /// default path, and a 16-thread Ruby process freeing every thread's
-    /// garbage from whichever thread ran the sweep held ~200 MiB of
-    /// slots in those 16 x 16 caches,
-    /// `bench/results/2026-09-21-*-ruby-rss-attribution.md`).
+    /// The `free` fast path's check: `Some(class)` when `p` is a slot start
+    /// in a handed-out slab whose bit is set and whose arena is `home` (the
+    /// arena load is skipped while only arena 0 exists), `None` for
+    /// anything else. It never aborts; [`classify_free`] on the slow path
+    /// repeats the checks and does. Every table read is bounds-free: the
+    /// class index comes from `slab_slot`, the bitmap word from a slot
+    /// already known to be below `nslots` in a slab below the watermark.
     ///
-    /// The one load that depends on the pointer is from a dense structure
+    /// The two loads that depend on the pointer are from dense structures
     /// (design section 4): the class bitmap word (one bit per slot, so a
-    /// 550 MiB heap of 1 KiB values is 70 KB of bitmap and stays in L2).
-    /// It never touches the slab descriptor (one 64-byte line per slab, a
-    /// cache miss per free on a large heap), and the word is a line only
-    /// the owning arena's refills and flushes write, because slabs are
-    /// handed to arenas in groups that own whole lines.
+    /// 550 MiB heap of 1 KiB values is 70 KB of bitmap and stays in L2)
+    /// and, with several arenas, the group owner word (one `u16` per
+    /// line-sized group of slabs). Neither touches the slab descriptor
+    /// (one 64-byte line per slab, a cache miss per free on a large heap),
+    /// and both are lines only the owning arena's refills and flushes
+    /// write, because slabs are handed to arenas in groups that own whole
+    /// lines.
     ///
     /// The geometry comes from [`Regions::slab_slot`] (`class_base[c]`,
     /// `lg_region`, `CLASSES[c]`), not from a copy in `tables[c]`: those
@@ -666,19 +661,47 @@ impl Shared {
     /// (`bench/results/2026-09-16-aarch64-arenas-geometry.md`).
     ///
     /// [`classify_free`]: Shared::classify_free
-    /// [`release_routed`]: Shared::release_routed
     /// [`Regions::slab_slot`]: crate::layout::Regions::slab_slot
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    #[inline(always)]
+    pub(super) fn checked_slot(&self, p: *mut u8, h: &Heap) -> Option<usize> {
+        let (class, table, slab) = self.set_slot(p)?;
+        if self.multi_arena() {
+            // The home arena is read on this branch only. A plain load is
+            // hoisted above the flag test (the heap is known valid) and
+            // then every single-arena `free` touches the heap's header
+            // line, which nothing else on the fast paths reads; a volatile
+            // read stays here.
+            // SAFETY: `h` is a live heap and `arena` a plain field.
+            let home = unsafe { ptr::read_volatile(&raw const h.arena) };
+            // SAFETY: `slab` is below the watermark.
+            if unsafe { table.owner_unchecked(slab) } != home {
+                return None;
+            }
+        }
+        Some(class)
+    }
+
+    /// [`checked_slot`] without the arena test, for the per-CPU push: a
+    /// CPU cache takes verified slots of every arena and its flush routes
+    /// them by the owner array ([`release_routed`]), as the sized path's
+    /// cache already does.
+    ///
+    /// [`checked_slot`]: Shared::checked_slot
+    /// [`release_routed`]: Shared::release_routed
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     #[inline(always)]
     pub(super) fn checked_slot_any(&self, p: *mut u8) -> Option<usize> {
         self.set_slot(p).map(|(class, _, _)| class)
     }
 
-    /// The bit test behind [`checked_slot_any`]: `Some((class, table,
-    /// slab))` when `p` is a slot start in a handed-out slab of `class`
-    /// whose bit is set, `None` for anything else; never aborts.
+    /// The bit test the two `free` fast-path checks share: `Some((class,
+    /// table, slab))` when `p` is a slot start in a handed-out slab of
+    /// `class` whose bit is set (the table and slab are what
+    /// [`checked_slot`]'s arena test then reads), `None` for anything
+    /// else; never aborts.
     ///
-    /// [`checked_slot_any`]: Shared::checked_slot_any
+    /// [`checked_slot`]: Shared::checked_slot
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     #[inline(always)]
     fn set_slot(&self, p: *mut u8) -> Option<(usize, &SlabTable, usize)> {

@@ -503,10 +503,10 @@ mod tests {
 
     /// Arenas and explicit caches against the real allocator (design 13.3):
     /// `MALLOCX_ARENA` allocations come from the named arena and plain
-    /// `free` returns them to the freeing thread's home cache, whichever
-    /// thread that is (the flush routes them home; the per-arena cache on
-    /// the `others` list sees explicit-arena allocations only, since
-    /// 2026-09-21); `MALLOCX_TCACHE_NONE` claims and
+    /// `free` puts them on the freeing thread's one foreign cache for the
+    /// class, whichever thread that is (the flush routes them home; the
+    /// per-arena cache on the `others` list sees explicit-arena
+    /// allocations only, since 2026-09-21); `MALLOCX_TCACHE_NONE` claims and
     /// releases against the slab bitmaps at once; an explicit cache holds
     /// its own slots until flushed.
     #[test]
@@ -532,25 +532,25 @@ mod tests {
         // the test thread (the default is `min(4 * ncpus, 64)` arenas).
         let home = h.arena();
         assert_ne!(home, lua);
-        // A plain `free` pushes onto the home cache (in the per-CPU mode,
-        // design 15, onto the running CPU's) whatever the slot's arena;
+        // A plain `free` of another arena's slot pushes onto the FOREIGN
+        // cache (in the per-CPU mode, design 15, onto the running CPU's);
         // the thread's per-arena caches see only explicit-arena traffic.
         let percpu = s.percpu_on();
         let cached_in = |h: &heap::Heap| h.cache_in(lua, c).map_or(0, |cc| cc.len());
-        let cached_home = |h: &heap::Heap| h.cache(c).map_or(0, |cc| cc.len());
+        let cached_foreign = |h: &heap::Heap| h.cache_in(heap::FOREIGN, c).map_or(0, |cc| cc.len());
         let before = cached_in(h);
-        let before_home = cached_home(h);
+        let before_foreign = cached_foreign(h);
         api_libc::free(p);
         assert_eq!(cached_in(h), before);
         if percpu {
-            assert_eq!(cached_home(h), before_home);
+            assert_eq!(cached_foreign(h), before_foreign);
         } else {
-            assert_eq!(cached_home(h), before_home + 1);
+            assert_eq!(cached_foreign(h), before_foreign + 1);
         }
         // realloc within the class keeps the pointer and the arena.
         let (p, _) = arena::alloc(s, c, Some(lua), Tcache::Default);
         // (Written again: this is a fresh slot of the Lua arena's cache,
-        // the one freed above went to the home cache.)
+        // the one freed above went to the FOREIGN cache.)
         unsafe { core::ptr::write_bytes(p, 0xa5, size) };
         assert_eq!(api_libc::realloc(p, size), p);
         let q = api_libc::realloc(p, size * 4);
@@ -597,21 +597,21 @@ mod tests {
         assert_eq!(s.classify_free(e), Ok((c, lua)));
         let th = s.tcaches.get(t).unwrap();
         let before = th.cache_in(lua, c).unwrap().len();
-        let before_home = th.cache(c).map_or(0, |cc| cc.len());
-        // The free through the explicit cache lands on its home array, as
-        // any plain free does (jemalloc's `MALLOCX_TCACHE(t)` bin too).
+        let before_foreign = th.cache_in(heap::FOREIGN, c).map_or(0, |cc| cc.len());
+        // The free through the explicit cache (homed on arena 0) lands on
+        // its FOREIGN cache, as any plain free of another arena's slot.
         arena::free(s, e, Tcache::Explicit(t));
         assert_eq!(th.cache_in(lua, c).unwrap().len(), before);
-        assert_eq!(th.cache(c).unwrap().len(), before_home + 1);
+        assert_eq!(th.cache_in(heap::FOREIGN, c).unwrap().len(), before_foreign + 1);
         assert!(s.tcaches.flush(s, t));
         assert_eq!(th.cache_in(lua, c).unwrap().len(), 0);
-        assert_eq!(th.cache(c).unwrap().len(), 0);
+        assert_eq!(th.cache_in(heap::FOREIGN, c).unwrap().len(), 0);
         assert!(s.tcaches.destroy(s, t));
 
         // Cross-thread: another thread allocates from the Lua arena and its
         // own home arena; this thread frees both with plain `free`, both
-        // land on this thread's home cache, and the flush routes each slot
-        // back to its own arena.
+        // land on this thread's FOREIGN cache, and the flush routes each
+        // slot back to its own arena.
         let (other, ptrs) = thread::spawn(move || {
             let s = shared();
             let mut v = Vec::new();
@@ -647,11 +647,12 @@ mod tests {
             api_libc::free(p);
         }
         assert_eq!(cached_in(h), 0, "plain frees never reach the thread's per-arena caches");
-        assert!(h.cache_in(other, c).is_none(), "a plain free creates no others node");
+        assert!(h.cache_in(other, c).is_none(), "a plain free creates no arena node");
+        assert!(h.cache(c).is_none_or(|cache| cache.len() == 0), "nothing landed in the home cache");
         if percpu {
-            assert!(h.cache(c).is_none_or(|cache| cache.len() == 0), "the CPU cache took them");
+            assert_eq!(cached_foreign(h), 0, "the CPU cache took them");
         } else {
-            assert_eq!(h.cache(c).unwrap().len(), 64, "both arenas' slots on the home cache");
+            assert_eq!(cached_foreign(h), 64, "both arenas' slots on the one FOREIGN cache");
         }
         h.flush_all(s);
         // Per-arena purge covers the Lua arena's slabs only.

@@ -1789,16 +1789,18 @@ fn default_narenas_is_resolved_at_init() {
 }
 
 /// Explicit allocations from another arena come from a cache on the
-/// `others` list; a plain `free` of any arena's slot goes onto the home
-/// cache (the fast path takes it) and the flush routes each slot to the
-/// arena its slab belongs to, so per-arena counts stay exact (design 6.3
-/// step 4, 13.3). Until 2026-09-21 the plain free pushed onto the cache of
-/// the slab's arena instead, a cache the default path never pops from:
+/// `others` list keyed by that arena; a plain `free` of another arena's
+/// slot goes onto the one `FOREIGN` cache for its class (the fast path
+/// declines it), which nothing pops from and whose flush routes each slot
+/// to the arena its slab belongs to, so per-arena counts stay exact
+/// (design 6.3 step 4, 13.3). Until 2026-09-21 the plain free pushed onto
+/// a cache per arena instead, one per arena a thread freed into:
 /// `bench/results/2026-09-21-*-ruby-rss-attribution.md`.
 #[test]
-fn home_cache_takes_every_arenas_slots_and_the_flush_routes_them() {
+fn foreign_frees_share_one_flush_only_cache_per_class() {
     let s = shared();
     let a1 = s.arenas.create(s).unwrap();
+    let a2 = s.arenas.create(s).unwrap();
     let t = TestHeap::new(s);
     let h = t.heap();
     assert_eq!(h.arena(), 0);
@@ -1806,39 +1808,58 @@ fn home_cache_takes_every_arenas_slots_and_the_flush_routes_them() {
     let p0 = t.alloc(c);
     let (p1, zero) = h.alloc_in(s, a1, c);
     assert!(!p1.is_null() && zero);
+    let (p2, _) = h.alloc_in(s, a2, c);
     assert_eq!(s.classify_free(p0), Ok((c, 0)));
     assert_eq!(s.classify_free(p1), Ok((c, a1)));
+    assert_eq!(s.classify_free(p2), Ok((c, a2)));
     assert_ne!(s.arena0.classes[c].locate(p0).0, s.arena0.classes[c].locate(p1).0);
     assert_eq!(h.cache(c).unwrap().len(), HALF - 1);
     assert_eq!(h.cache_in(a1, c).unwrap().len(), HALF - 1);
+    assert_eq!(h.cache_in(a2, c).unwrap().len(), HALF - 1);
     // One refill spans `HALF / nslots` slabs (one 1024-slot slab at 64 bytes).
     let per_refill = HALF.div_ceil(CLASSES[c].nslots());
     assert_eq!(s.arena(a1).unwrap().classes[c].stats().committed, per_refill);
     assert_eq!(s.arena0.classes[c].stats().committed, per_refill);
     // Non-existent arena: null, nothing touched.
     assert!(h.alloc_in(s, 77, c).0.is_null());
-    // The fast path takes both: the home cache holds slots of any arena.
+    // The fast path takes only the home arena's slots; the others go onto
+    // the one FOREIGN cache, whatever their arena, never onto the arena's
+    // own node.
     assert!(free_fast(s, h, p0, s.push_flags()));
-    assert!(free_fast(s, h, p1, s.push_flags()));
-    assert_eq!(h.cache(c).unwrap().len(), HALF + 1);
-    assert_eq!(h.cache_in(a1, c).unwrap().len(), HALF - 1, "a plain free never lands on an others node");
-    // The next default allocation is the LIFO top: arena 1's slot, as
-    // under jemalloc's one tcache per thread.
-    assert_eq!(t.alloc(c), p1);
+    assert!(!free_fast(s, h, p1, s.push_flags()));
+    assert!(!free_fast(s, h, p2, s.push_flags()));
+    assert_eq!(h.cache(c).unwrap().len(), HALF);
+    assert!(h.cache_in(FOREIGN, c).is_none());
     h.free(s, p1);
-    // Byte counters cover both arenas.
+    h.free(s, p2);
+    assert_eq!(h.cache_in(FOREIGN, c).unwrap().len(), 2);
+    assert_eq!(h.cache_in(a1, c).unwrap().len(), HALF - 1);
+    assert_eq!(h.cache_in(a2, c).unwrap().len(), HALF - 1);
+    assert!(!h.cache_in(FOREIGN, c).unwrap().compacting());
+    // Nothing pops from it: a default allocation is the home's LIFO top,
+    // an explicit one the arena node's.
+    assert_eq!(t.alloc(c), p0);
+    let (p3, _) = h.alloc_in(s, a1, c);
+    assert_ne!(p3, p1);
+    assert_eq!(h.cache_in(FOREIGN, c).unwrap().len(), 2);
+    // Byte counters cover every cache.
     let st = h.stats();
-    assert_eq!(st.allocated, 3 * 64);
+    assert_eq!(st.allocated, 5 * 64);
     assert_eq!(st.deallocated, 3 * 64);
-    // Flushing returns everything to the right owner: every slot of both
-    // arenas is back in its bitmap and both refills' slabs are `Empty`.
+    // Flushing returns everything to the right owner: every slot of the
+    // three arenas is back in its bitmap and the refills' slabs are Empty.
+    h.free(s, p0);
+    h.free(s, p3);
+    assert_eq!(h.cache_in(FOREIGN, c).unwrap().len(), 3);
     h.flush_all(s);
     assert_eq!(h.cache(c).unwrap().len(), 0);
+    assert_eq!(h.cache_in(FOREIGN, c).unwrap().len(), 0);
     assert_eq!(h.cache_in(a1, c).unwrap().len(), 0);
-    assert_eq!(s.arena0.classes[c].stats().empty, per_refill);
-    assert_eq!(s.arena(a1).unwrap().classes[c].stats().empty, per_refill);
-    assert_eq!(s.arena0.classes[c].curregs(), 0);
-    assert_eq!(s.arena(a1).unwrap().classes[c].curregs(), 0);
+    assert_eq!(h.cache_in(a2, c).unwrap().len(), 0);
+    for (a, cs) in [(0, &s.arena0.classes[c]), (a1, &s.arena(a1).unwrap().classes[c]), (a2, &s.arena(a2).unwrap().classes[c])] {
+        assert_eq!(cs.stats().empty, per_refill, "arena {a}");
+        assert_eq!(cs.curregs(), 0, "arena {a}");
+    }
     // Direct paths against an explicit arena.
     let a = s.arena(a1).unwrap();
     let (d, _) = s.alloc_direct(a, c);
@@ -1846,7 +1867,7 @@ fn home_cache_takes_every_arenas_slots_and_the_flush_routes_them() {
     assert_eq!(a.classes[c].desc(s.arena0.classes[c].locate(d).0).live(), 1);
     s.free_direct(a1, c, d);
     assert_eq!(a.classes[c].stats().empty, per_refill);
-    // Destroying the heap frees the other-arena caches too.
+    // Destroying the heap frees the nodes too.
     let before = s.meta.stats().allocated;
     unsafe { Heap::destroy(t.h, s) };
     assert!(s.meta.stats().allocated < before);
@@ -1983,18 +2004,21 @@ fn set_arena_swaps_cache_arrays() {
     assert_eq!(h.arena(), a1);
     assert_eq!(h.cache(c).unwrap().len(), HALF - 1);
     assert_eq!(h.cache_in(0, c).unwrap().len(), HALF - 1);
-    // Plain allocation now comes from arena 1's cache; plain frees of
-    // both arenas' slots go onto it (the home), never onto the list.
+    // Plain allocation now comes from arena 1's cache; a plain free of an
+    // arena-0 slot is foreign now and goes onto the FOREIGN cache, not
+    // onto arena 0's node.
     let q = t.alloc(c);
     assert_eq!(s.classify_free(q), Ok((c, a1)));
     assert!(free_fast(s, h, p1, s.push_flags()));
-    assert!(free_fast(s, h, p0, s.push_flags()));
+    assert!(!free_fast(s, h, p0, s.push_flags()));
+    h.free(s, p0);
     h.free(s, q);
-    assert_eq!(h.cache(c).unwrap().len(), HALF + 1);
+    assert_eq!(h.cache(c).unwrap().len(), HALF);
     assert_eq!(h.cache_in(0, c).unwrap().len(), HALF - 1);
+    assert_eq!(h.cache_in(FOREIGN, c).unwrap().len(), 1);
     h.set_arena(s, 0);
     assert_eq!(h.cache(c).unwrap().len(), HALF - 1);
-    assert_eq!(h.cache_in(a1, c).unwrap().len(), HALF + 1);
+    assert_eq!(h.cache_in(a1, c).unwrap().len(), HALF);
     h.flush_all(s);
     let per_refill = HALF.div_ceil(CLASSES[c].nslots());
     assert_eq!(s.arena0.classes[c].stats().empty, per_refill);
@@ -2355,14 +2379,19 @@ fn others_nodes_iterate_newest_first_and_survive_freeing() {
     assert!(h.cache_in(a1, c).is_some() && h.cache_in(a2, c).is_some());
     assert!(h.cache_in(7, c).is_none(), "an arena never touched has no node");
     assert_eq!(h.stats().allocated, 2 * 64, "the byte counters fold every node");
+    // The plain frees of the two arenas' slots create the FOREIGN node,
+    // the newest.
     h.free(s, p1);
     h.free(s, p2);
     assert_eq!(h.stats().deallocated, 2 * 64);
+    let arenas: Vec<u16> = Heap::nodes(h.others).map(|o| unsafe { (*o).arena }).collect();
+    assert_eq!(arenas, [FOREIGN, a2, a1]);
+    assert_eq!(h.cache_in(FOREIGN, c).unwrap().len(), 2);
     // Turning the caches off walks the list, flushes and frees every
     // node's caches (the nodes stay) and folds their counters.
     h.set_tcache_enabled(s, false);
-    assert_eq!(Heap::nodes(h.others).count(), 2);
-    assert!(h.cache_in(a1, c).is_none() && h.cache_in(a2, c).is_none());
+    assert_eq!(Heap::nodes(h.others).count(), 3);
+    assert!(h.cache_in(a1, c).is_none() && h.cache_in(a2, c).is_none() && h.cache_in(FOREIGN, c).is_none());
     assert_eq!(h.stats(), ThreadStats { allocated: 2 * 64, deallocated: 2 * 64 });
     // `destroy` frees each node as the walk hands it over.
     let before = s.meta.stats().allocated;
@@ -2470,9 +2499,10 @@ fn huge_run_pages_are_counted_from_the_descriptor() {
 }
 
 /// Item 16 of the 2026-09-18 review: an owner word naming an arena that
-/// was never built is corruption. The free's flush, which routes the slot
-/// by that word, aborts by name (`Shared::owner` does not build arenas)
-/// instead of quietly building the automatic arena and releasing into it.
+/// was never built is corruption. The cross-arena free goes onto the
+/// FOREIGN cache; its flush, which routes the slot by that word, aborts by
+/// name (`Shared::owner` does not build arenas) instead of quietly
+/// building the automatic arena and releasing into it.
 #[test]
 #[should_panic(expected = "arena 5 does not exist")]
 fn a_free_routed_to_an_unbuilt_arena_aborts() {
@@ -2548,12 +2578,12 @@ fn pop_fast_pops_the_top_with_the_zero_flag() {
     t.destroy();
 }
 
-/// `checked_slot_any`, the bit test behind both `free` fast paths, takes
-/// a live slot of any arena (the home cache holds every arena's slots
-/// and the flush routes them, design 6.3 step 4) and declines anything
-/// that is not a live slot.
+/// `checked_slot_any` is `checked_slot`'s bit test without the arena
+/// test: they agree on every pointer of the home arena and on anything
+/// that is not a live slot, and differ only for a live slot of another
+/// arena, which the per-CPU push takes and the thread push declines.
 #[test]
-fn checked_slot_any_takes_live_slots_of_every_arena() {
+fn checked_slot_any_is_checked_slot_without_the_arena_test() {
     let s = shared();
     let a1 = s.arenas.create(s).unwrap();
     let t = TestHeap::new(s);
@@ -2562,19 +2592,19 @@ fn checked_slot_any_takes_live_slots_of_every_arena() {
     let p0 = t.alloc(c);
     let (p1, _) = h.alloc_in(s, a1, c);
     assert!(s.multi_arena());
-    assert_eq!(s.checked_slot_any(p0), Some(c));
-    assert_eq!(s.checked_slot_any(p1), Some(c));
+    assert_eq!((s.checked_slot(p0, h), s.checked_slot_any(p0)), (Some(c), Some(c)));
+    assert_eq!((s.checked_slot(p1, h), s.checked_slot_any(p1)), (None, Some(c)));
     // Not a slot start, a never-claimed slot, a pointer outside every region.
     let mid = unsafe { p0.add(8) };
-    assert_eq!(s.checked_slot_any(mid), None);
+    assert_eq!((s.checked_slot(mid, h), s.checked_slot_any(mid)), (None, None));
     let unclaimed = unsafe { p0.add((HALF + 200) * 64) };
-    assert_eq!(s.checked_slot_any(unclaimed), None);
+    assert_eq!((s.checked_slot(unclaimed, h), s.checked_slot_any(unclaimed)), (None, None));
     let outside = 0x10usize as *mut u8;
-    assert_eq!(s.checked_slot_any(outside), None);
+    assert_eq!((s.checked_slot(outside, h), s.checked_slot_any(outside)), (None, None));
     // A freed slot's bit clears at the flush; until then it is cached and set.
     h.free(s, p0);
     h.free(s, p1);
     assert_eq!(s.checked_slot_any(p0), Some(c));
     h.flush_all(s);
-    assert_eq!((s.checked_slot_any(p0), s.checked_slot_any(p1)), (None, None));
+    assert_eq!((s.checked_slot(p0, h), s.checked_slot_any(p0), s.checked_slot_any(p1)), (None, None, None));
 }
