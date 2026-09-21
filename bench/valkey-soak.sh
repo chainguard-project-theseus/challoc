@@ -294,9 +294,16 @@ soak() { # alloc
   step "$alloc: $server"
   "$server" --version | tee "$D/version.txt"
   # $IO_THREADS unquoted on purpose: empty means no flag. CHALLOC_CONF
-  # reaches the challoc server only.
+  # reaches the challoc server only, and so does CHALLOC_LIB: a directory
+  # holding a libchalloc.so.0 (a quantum8 A/B build of a `.tmp-<v>` source
+  # copy) that LD_LIBRARY_PATH puts in front of the binary's RUNPATH, so
+  # the same valkey-server runs on a src/ variant; the mapped library and
+  # its sha256 are checked and recorded below.
   conf_env=
-  case $alloc in challoc) [ -n "${CHALLOC_CONF:-}" ] && conf_env="MALLOC_CONF=$CHALLOC_CONF";; esac
+  case $alloc in challoc)
+    [ -n "${CHALLOC_CONF:-}" ] && conf_env="MALLOC_CONF=$CHALLOC_CONF"
+    [ -n "${CHALLOC_LIB:-}" ] && { [ -f "$CHALLOC_LIB/libchalloc.so.0" ] || { echo "valkey-soak: CHALLOC_LIB=$CHALLOC_LIB has no libchalloc.so.0" >&2; exit 1; }; conf_env="$conf_env LD_LIBRARY_PATH=$CHALLOC_LIB"; };;
+  esac
   env $conf_env "$server" --port "$PORT" --save "" --appendonly no --daemonize no \
     --logfile "$D/server.log" --activedefrag "$DEFRAG" ${IO_THREADS:+--io-threads $IO_THREADS} >/dev/null 2>&1 9>&- &
   SERVER_PID=$!
@@ -308,6 +315,18 @@ soak() { # alloc
   got=$(info_field memory mem_allocator)
   [ "$got" = "$(expected_allocator "$alloc")" ] \
     || { echo "valkey-soak: $alloc server reports mem_allocator=$got" >&2; exit 1; }
+  # Which allocator library the server mapped, and its hash, for the header.
+  mapped=$(awk '$6 ~ /libchalloc\.so|libjemalloc/ {print $6}' "/proc/$SERVER_PID/maps" 2>/dev/null | sort -u | head -1)
+  case $alloc in
+    challoc)
+      [ -n "$mapped" ] || { echo "valkey-soak: the challoc server maps no libchalloc.so" >&2; exit 1; }
+      if [ -n "${CHALLOC_LIB:-}" ]; then
+        case $mapped in "$CHALLOC_LIB"/*) ;; *) echo "valkey-soak: CHALLOC_LIB=$CHALLOC_LIB but the server mapped $mapped" >&2; exit 1;; esac
+      fi
+      echo "$mapped $(so_hash "$mapped")" > "$D/lib.txt";;
+    *) echo "${mapped:-bundled (static)}" > "$D/lib.txt";;
+  esac
+  echo "allocator library: $(cat "$D/lib.txt")"
   "$CLI" -p "$PORT" config get activedefrag | tail -1 > "$D/activedefrag.txt"
   "$CLI" -p "$PORT" config get jemalloc-bg-thread | tail -1 > "$D/bg-thread.txt"
   "$CLI" -p "$PORT" config get io-threads | tail -1 > "$D/io-threads.txt"
@@ -440,6 +459,7 @@ ALLOCS=$SUMMARY_ALLOCS
   for alloc in $ALLOCS; do echo "- $alloc server: $(cat "$OUT/$alloc/version.txt")"; done
   echo "- clients: valkey-benchmark from the challoc tree, $(memtier_benchmark --version 2>&1 | head -1)"
   [ -n "${CHALLOC_CONF:-}" ] && echo "- challoc server MALLOC_CONF: $CHALLOC_CONF (CHALLOC_CONF; the jemalloc server runs stock)"
+  for alloc in $ALLOCS; do [ -f "$OUT/$alloc/lib.txt" ] && echo "- $alloc allocator library (path, sha256 prefix): $(cat "$OUT/$alloc/lib.txt")${CHALLOC_LIB:+$([ "$alloc" = challoc ] && echo " (CHALLOC_LIB=$CHALLOC_LIB, an A/B build put in front of the RUNPATH)")}"; done
   echo "- workload: write phase $((DURATION / 2)) s (valkey-benchmark -t set -d $SIZE -r $KEYS -n $VB_REQS -c $VB_CLIENTS -P $PIPELINE, then memtier SET-only $MT_SIZES B over $KEYS keys, $MT_THREADS x $MT_CLIENTS clients, -P $PIPELINE, $CHUNK s), delete phase $((DURATION / 2)) s (valkey-benchmark del key:__rand_int__, then memtier DEL:SET $DEL_RATIO:1), settle $SETTLE s idle; activedefrag $DEFRAG; io-threads $(cat "$OUT/$(echo $ALLOCS | cut -d' ' -f1)/io-threads.txt" 2>/dev/null || echo "${IO_THREADS:-default}"); INFO sampled every $INTERVAL s; memtier key pattern: $KEY_PATTERN$([ "$KEY_PATTERN" = uniform ] && echo " (--randomize, time-seeded random keys in both phases; NOT the acceptance protocol)" || echo " (memtier's fixed-seed key stream, the acceptance protocol)")"
   echo "- throughput is the mean requests/s over a tool's runs in a phase; p99 is the median of the per-run p99 (ms, client-side); peak RSS is the server's VmHWM; the RSS columns are used_memory_rss (MiB) at the last sample of each phase"
   echo "- $(cgroup_peak_note)"

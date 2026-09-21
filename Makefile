@@ -259,7 +259,7 @@ valkey: image ## build challoc (quantum8) and Valkey at Wolfi's tag with contrib
 	$(DOCKER_RUN) sh contrib/valkey/build.sh
 
 # CHALLOC_CONF is not in the list: DOCKER_BASE forwards it into every container.
-SOAK_VARS = ALLOCS DURATION SETTLE INTERVAL CHUNK VB_REQS KEYS SIZE MT_SIZES DEL_RATIO KEY_PATTERN DEFRAG IO_THREADS RESULT_DIR OCCUPANCY MS_INTERVAL BASELINES SAVE_BASELINE PORT COMMIT
+SOAK_VARS = ALLOCS DURATION SETTLE INTERVAL CHUNK VB_REQS KEYS SIZE MT_SIZES DEL_RATIO KEY_PATTERN DEFRAG IO_THREADS RESULT_DIR OCCUPANCY MS_INTERVAL BASELINES SAVE_BASELINE PORT COMMIT CHALLOC_LIB
 $(eval $(call bench_target,valkey-soak,bench/valkey-soak.sh,$$(SOAK_VARS))) ## Valkey soak under challoc and its bundled jemalloc (bench/valkey-soak.sh; DURATION=1200, SETTLE, ALLOCS, DEFRAG, IO_THREADS, OCCUPANCY=1); needs `make valkey STAGE=build`
 
 # Quick soak: challoc only, 10 minutes of load, occupancy sampler on, compared
@@ -289,7 +289,7 @@ ruby: image ## stage libjemalloc.so.2 (quantum16), build Ruby 3.4 --with-jemallo
 RUBY_BENCH_VARS = ALLOCS ROUNDS ROWS RESULT OUT HOST_KIND GC_ROUNDS GC_FORCED
 $(eval $(call bench_target,ruby-bench,bench/ruby-bench.sh,$$(RUBY_BENCH_VARS))) ## Ruby rows under challoc, jemalloc, glibc, mimalloc, tcmalloc (bench/ruby-bench.sh; ROUNDS=5); needs both `make ruby STAGE=build` builds
 
-RUBY_SOAK_VARS = ALLOCS DURATION INTERVAL GC_EVERY COMPACT_AT THREADS IDLE_THREADS SEED RESULT OUT HOST_KIND COMMIT
+RUBY_SOAK_VARS = ALLOCS DURATION INTERVAL GC_EVERY COMPACT_AT THREADS IDLE_THREADS SEED RESULT OUT HOST_KIND COMMIT CHALLOC_SRC
 $(eval $(call bench_target,ruby-soak,bench/ruby-soak.sh,$$(RUBY_SOAK_VARS))) ## Ruby soak, a Sidekiq-shaped process for DURATION (600) s per allocator (bench/ruby-soak.sh); needs `make ruby STAGE=build`
 
 # Python rows (bench/python-bench.sh, Phase 2.5 task 1): the stdlib workloads

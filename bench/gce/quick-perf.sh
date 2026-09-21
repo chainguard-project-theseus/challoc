@@ -53,9 +53,14 @@ mkdir -p "$OUTDIR"
 
 # Row command lines and the probes come from bench/lib.sh inside the container.
 in_lib() { drun sh -c "ROOT=/src; . /src/bench/lib.sh; $1"; }
+# A variant is old|new|jemalloc|glibc|mimalloc|tcmalloc, or LABEL@PATH for
+# any library already in the target volume (PATH as the container sees it,
+# say slab16@/src/target/ab/slab16/release/libchalloc.so after `make ab`
+# built it); either form may carry a MALLOC_CONF after a colon.
 lib_of() {
   local n=${1%%:*}
   case $n in
+    *@*) echo "${n#*@}";;
     old|new) echo "/src/target/quick/$n/release/libchalloc.so";;
     jemalloc) echo /usr/lib/libjemalloc.so.2;;
     glibc) echo "";;
@@ -64,11 +69,12 @@ lib_of() {
     *) echo "quick-perf: unknown variant $1" >&2; exit 2;;
   esac
 }
+label_of() { local n=${1%%:*}; n=${n%%@*}; case $1 in *:*) echo "$n:${1#*:}";; *) echo "$n";; esac; }
 
 in_lib "ensure_probe valkey_model; ensure_probe churn" >/dev/null
 conf_of() { case $1 in *:*) echo "${1#*:}";; esac; }
 for v in $VARIANTS; do
-  case ${v%%:*} in old|new) in_lib "test -f $(lib_of "$v")" || { echo "quick-perf: no $(lib_of "$v") in the target volume; run 'make quick QUICK_BUILD_ONLY=1' first" >&2; exit 1; };; esac
+  case ${v%%:*} in old|new|*@*) in_lib "test -f $(lib_of "$v")" || { echo "quick-perf: no $(lib_of "$v") in the target volume; run 'make quick QUICK_BUILD_ONLY=1' (or the make ab that builds it) first" >&2; exit 1; };; esac
 done
 
 echo "== quick-perf on $(hostname) ($(uname -m)), load $(cut -d' ' -f1-3 /proc/loadavg), events $EVENTS, rows: $ROWS, variants: $VARIANTS"
@@ -113,7 +119,7 @@ for b in $ROWS; do
       b ~ /^larson/ && /Throughput/ {printf "%.0f", $3*secs}
       b ~ /^xmalloc/ && /free\/sec/ {sub(",", "", $4); printf "%.0f", $4*1e6*5}
       b ~ /^valkey/ && /^ops / {for (i=2;i<=NF;i++) {split($i, p, "="); if (p[1]=="total") print p[2]}}' "$OUTDIR/$tag.out");; esac
-    awk -F, -v ops="${ops:--}" -v secs="$secs" -v row="$b" -v var="$v" -v extra="$EXTRA" '
+    awk -F, -v ops="${ops:--}" -v secs="$secs" -v row="$b" -v var="$(label_of "$v")" -v extra="$EXTRA" '
       /^#/ || NF < 3 {next}
       {c[$3]=$1}
       END {

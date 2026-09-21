@@ -184,8 +184,13 @@ scripts iterations used to rewrite. `VARIANTS` is a list of
     make ab VARIANTS='old=HEAD~1 new=HEAD narenas16=HEAD~1:narenas:16 jemalloc'
 
 Each rev is built once from `git archive` into `target/ab/<hash>` (`tree`
-means the working tree, into `target/ab/tree`); two variants sharing a rev
-share the build. `ROUNDS` (5) timed rounds plus one discarded warm-up, every
+means the working tree, into `target/ab/tree`; a `.tmp-<v>` source
+directory made by `bench/geometry-variant.sh`, or by hand from `src
+Cargo.toml Cargo.lock build.rs`, is built in place into
+`target/ab/<basename>`, so a src/ variant that is never committed can sit
+in the same run: `slab16=.tmp-slab16`, also `OLD=`/`NEW=` of `make quick`;
+`.tmp-*` is not synced to a VM, make the copy there); two variants sharing
+a rev share the build. `ROUNDS` (5) timed rounds plus one discarded warm-up, every
 variant runs every bench within a round (interleaved, so drift hits all
 alike), every run's score is listed sorted, RSS is `rt`'s median maxrss in
 KiB, and the load average at start and end is in the header. `BENCHES`
