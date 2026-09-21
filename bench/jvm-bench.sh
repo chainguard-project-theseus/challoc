@@ -84,6 +84,9 @@
 # CHALLOC_VARIANTS="hd2000=huge_dirty_decay_ms:2000" ALLOCS="challoc
 # challoc-hd2000 glibc-trim" (the huge-decay rows, 2026-09-20). The report
 # compares plain challoc against every other variant, its own included.
+# challoc-trim is challoc under the JVM's TrimNativeHeapInterval (the
+# glibc-trim flags): the JVM calls challoc's malloc_trim(0) every TRIM_MS,
+# a periodic full purge regardless of age, the economics glibc-trim runs on.
 #
 #   ROUNDS=5       timed startup rounds after one discarded warm-up
 #   DURATION=300   measured server seconds per allocator (the plan's 5 minutes)
@@ -139,7 +142,7 @@ WORK=$ROOT/target/jvm
 # conf_of ALLOC: the CHALLOC_CONF of a challoc-<label> variant from
 # CHALLOC_VARIANTS; empty for plain challoc, dies on a label with no pair.
 conf_of() {
-  case $1 in challoc-*) ;; *) return 0;; esac
+  case $1 in challoc-trim) return 0;; challoc-*) ;; *) return 0;; esac
   label=${1#challoc-}
   for pair in $CHALLOC_VARIANTS; do
     [ "${pair%%=*}" = "$label" ] && { printf '%s' "${pair#*=}"; return 0; }
@@ -166,7 +169,7 @@ LOAD0=$(loadavg)
 
 take_bench_lock
 ensure_bench_programs
-for a in $ALLOCS; do case $a in challoc|glibc-arena2|glibc-trim) ;; challoc-*) conf_of "$a" > /dev/null;; *) is_stock "$a" || die "unknown allocator '$a'";; esac; done
+for a in $ALLOCS; do case $a in challoc|glibc-arena2|glibc-trim|challoc-trim) ;; challoc-*) conf_of "$a" > /dev/null;; *) is_stock "$a" || die "unknown allocator '$a'";; esac; done
 for row in $ROWS; do case $row in startup|server|soak) ;; *) die "unknown row '$row' (startup|server|soak)";; esac; done
 rm -rf "$OUT"; mkdir -p "$OUT" "$(dirname "$RESULT")"
 
@@ -196,7 +199,7 @@ fi
 # Unlock flag is harmless where it is already a product flag). If it does
 # not, the variant is refused rather than silently measuring plain glibc.
 TRIM_OPTS="-XX:+UnlockExperimentalVMOptions -XX:TrimNativeHeapInterval=$TRIM_MS"
-case " $ALLOCS " in *" glibc-trim "*)
+case " $ALLOCS " in *" glibc-trim "*|*" challoc-trim "*)
   "$JAVA" $TRIM_OPTS -version >/dev/null 2>&1 || die "this JDK rejects '$TRIM_OPTS'; drop glibc-trim from ALLOCS (a jcmd System.trim_native_heap sidecar would be the fallback)";;
 esac
 
@@ -223,13 +226,13 @@ env_of() {
   else
     printf '%s' "${lib:+LD_PRELOAD=$lib}"
   fi
-  case $1 in glibc-arena2) printf ' MALLOC_ARENA_MAX=2';; challoc-*) printf ' CHALLOC_CONF=%s' "$(conf_of "$1")";; esac
+  case $1 in glibc-arena2) printf ' MALLOC_ARENA_MAX=2';; challoc-trim) ;; challoc-*) printf ' CHALLOC_CONF=%s' "$(conf_of "$1")";; esac
   :
 }
 # note_of ALLOC: what distinguishes a variant, for the maps line.
-note_of() { case $1 in glibc-arena2) echo ', MALLOC_ARENA_MAX=2';; glibc-trim) echo ", $TRIM_OPTS";; challoc-*) echo ", CHALLOC_CONF=$(conf_of "$1")";; esac; :; }
+note_of() { case $1 in glibc-arena2) echo ', MALLOC_ARENA_MAX=2';; glibc-trim|challoc-trim) echo ", $TRIM_OPTS";; challoc-*) echo ", CHALLOC_CONF=$(conf_of "$1")";; esac; :; }
 # opts_of ALLOC: the variant's extra JVM flags (glibc-trim's periodic trim).
-opts_of() { case $1 in glibc-trim) printf '%s' "$TRIM_OPTS";; esac; :; }
+opts_of() { case $1 in glibc-trim|challoc-trim) printf '%s' "$TRIM_OPTS";; esac; :; }
 # nmt_opts: the JVM's Native Memory Tracking flag for the server rows.
 nmt_opts() { [ "$NMT" = off ] || printf '%s' "-XX:NativeMemoryTracking=$NMT"; :; }
 STATSDUMP=$BIN/statsdump.so
@@ -528,6 +531,7 @@ pct_higher() { pct_of "$2" "$1"; }
 describe() {
   case $1 in
     challoc)  describe_challoc "$CHALLOC_LIB" "$REV";;
+    challoc-trim) echo "$(describe_challoc "$CHALLOC_LIB" "$REV") with \`$TRIM_OPTS\` (the JVM's service thread calls challoc's malloc_trim(0) every $TRIM_MS ms: every Empty slab and huge extent purged regardless of age, glibc-trim's economics on challoc)";;
     challoc-*) echo "$(describe_challoc "$CHALLOC_LIB" "$REV") with CHALLOC_CONF=$(conf_of "$1") (the same library as challoc under the key)";;
     glibc)    echo "no LD_PRELOAD ($(stock_version glibc) malloc, default arenas: up to 8 x CPUs)";;
     glibc-arena2) echo "no LD_PRELOAD, MALLOC_ARENA_MAX=2 ($(stock_version glibc) malloc; the fleet's usual mitigation for the per-thread arenas)";;
