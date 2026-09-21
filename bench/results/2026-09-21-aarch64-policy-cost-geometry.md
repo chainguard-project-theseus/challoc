@@ -171,7 +171,51 @@ the numbers land here).
 
 ## 4. Valkey soak (20 min load + 60 s settle): `default` vs `slab16`
 
-PENDING.
+`bench/valkey-soak.sh` as in the compact file (600 s write, 600 s
+DEL:SET 4:1, 60 s settle, `activedefrag yes`, `OCCUPANCY=1`); `default`
+and jemalloc are the compact file's section 5 run (the same afternoon,
+the same VM), `slab16` a third invocation with `ALLOCS=challoc
+CHALLOC_LIB=/src/target/valkey/challoc-slab16/release`: the `.tmp-slab16`
+tree built with `--features quantum8` (sha256 `593c65f724480f17`;
+the default quantum8 build is `ddfc69c202484485`) and preloaded under
+the `libchalloc.so.0` soname in front of the server binary's RUNPATH;
+the script checked that `/proc/<pid>/maps` shows the variant and
+recorded it. Raw files in `target/valkey/pc-slab16/` on the VM.
+
+| measure | default | slab16 | jemalloc | slab16 vs default |
+|---|---:|---:|---:|---:|
+| write: valkey-benchmark req/s | 920986 | 938076 | 878208 | +1.9% |
+| write: valkey-benchmark p99 ms | 1.071 | 1.047 | 1.119 | -2.2% |
+| write: memtier req/s | 964505 | 977511 | 936581 | +1.3% |
+| write: memtier p99 ms | 0.959 | 0.935 | 0.983 | -2.5% |
+| delete: valkey-benchmark req/s | 1423429 | 1422139 | 1452604 | -0.1% |
+| delete: valkey-benchmark p99 ms | 0.719 | 0.719 | 0.703 | +0.0% |
+| delete: memtier req/s | 1258879 | 1266443 | 1273913 | +0.6% |
+| delete: memtier p99 ms | 0.767 | 0.751 | 0.759 | -2.1% |
+| peak RSS MiB (VmHWM) | 579.3 | 580.8 | 573.5 | +0.3% |
+| RSS MiB at end of write phase | 579.0 | 580.6 | 573.1 | +0.3% |
+| RSS MiB at end of delete phase | 130.3 | 131.1 | 128.6 | +0.6% |
+| RSS MiB after settle | 130.3 | 131.1 | 128.5 | +0.6% |
+| allocator_frag_ratio after settle | 1.81 | 1.80 | 1.79 | |
+| active_defrag_hits | 229711 | 238419 | 240548 | +3.8% |
+| total_active_defrag_time ms | 2344 | 2241 | 2546 | -4.4% |
+| keys after settle | 105416 | 105886 | 102818 | |
+
+(Positive: `slab16` larger.) Per class after the settle: the 512..1024
+classes, untouched by the variant, end at 57.2% occupancy and 34.7 MiB
+pinned (default 57.4%, 34.3); the changed classes hold 0.9 MiB live in
+1.6 MiB of slabs (default 2.2 MiB): 1280 B at 56.5% in 98 slabs of 12
+against 45.3% in 29 slabs of 51, the other seven classes one slab each
+with 1..4 live values, 16 KiB instead of 64.
+
+Reading: the soak's values are 16..1024 bytes (memtier) and 512
+(valkey-benchmark), so the 1280..4096 classes carry 0.9 MiB of it and
+the variant has 0.6 MiB to give back, which is what it gives: RSS +0.6%
+after settle (one run's spread), peak +0.3%, every throughput and p99
+row within the soak's 1..3% run-to-run spread with `slab16` ahead in
+the write phase. The change is invisible to Valkey either way, which is
+the criterion for a geometry change aimed at another consumer: the
+Valkey criteria (write-phase p99 and RSS) do not move.
 
 ## 5. Ruby soak (600 s, 16 threads): `default`, `slab16`, `slab32`, jemalloc
 

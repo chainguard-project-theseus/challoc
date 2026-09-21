@@ -181,7 +181,94 @@ full drain does the work.
 
 ## 5. Valkey soak (20 min load + 60 s settle, `activedefrag yes`): `default`, `compact0`, jemalloc
 
-PENDING (fills in when the soaks of this lane finish).
+`bench/valkey-soak.sh` (Valkey 9.1.2 from `contrib/valkey/build.sh`,
+`quantum8`, `io-threads 1`, `activedefrag yes`, stock `active-defrag-*`;
+600 s write phase, 600 s DEL:SET 4:1, 60 s settle; `OCCUPANCY=1`, so
+`MEMORY MALLOC-STATS` every 20 s), two invocations back to back on the
+idle VM: `ALLOCS='challoc jemalloc'` (the acceptance shape; challoc
+first, then the unpatched tag on its bundled jemalloc 5.3.0), then
+`ALLOCS=challoc CHALLOC_CONF=tcache_compact_shift:0`. The challoc server
+mapped `target/valkey/challoc/release/libchalloc.so` (sha256
+`ddfc69c202484485`, the quantum8 build of the same tree) in both runs;
+the load generators are the same binaries throughout. Raw files:
+`target/valkey/pc-{default,compact0}/` on the VM (summaries, 10 s
+samples, the per-20 s stats prints, the servers' final `INFO`); the two
+summaries' tables are reproduced here.
+
+| measure | default | compact0 | jemalloc | compact0 vs default | default vs jemalloc |
+|---|---:|---:|---:|---:|---:|
+| write: valkey-benchmark req/s | 920986 | 933092 | 878208 | +1.3% | +4.9% |
+| write: valkey-benchmark p99 ms | 1.071 | 1.055 | 1.119 | -1.5% | -4.3% |
+| write: memtier req/s | 964505 | 971213 | 936581 | +0.7% | +3.0% |
+| write: memtier p99 ms | 0.959 | 0.951 | 0.983 | -0.8% | -2.4% |
+| delete: valkey-benchmark req/s | 1423429 | 1464692 | 1452604 | +2.9% | -2.0% |
+| delete: valkey-benchmark p99 ms | 0.719 | 0.687 | 0.703 | -4.5% | +2.3% |
+| delete: memtier req/s | 1258879 | 1277187 | 1273913 | +1.5% | -1.2% |
+| delete: memtier p99 ms | 0.767 | 0.751 | 0.759 | -2.1% | +1.1% |
+| peak RSS MiB (VmHWM) | 579.3 | 580.8 | 573.5 | +0.3% | +1.0% |
+| RSS MiB at end of write phase | 579.0 | 580.7 | 573.1 | +0.3% | +1.0% |
+| RSS MiB at end of delete phase | 130.3 | 153.4 | 128.6 | +17.7% | +1.3% |
+| RSS MiB after settle | 130.3 | 153.1 | 128.5 | +17.5% | +1.4% |
+| allocator_frag_ratio after settle | 1.81 | 2.18 | 1.79 | | |
+| active_defrag_hits | 229711 | 264450 | 240548 | +15.1% | -4.5% |
+| active_defrag_misses | 1034113 | 1025011 | 997207 | | |
+| total_active_defrag_time ms (INFO stats, whole run) | 2344 | 2403 | 2546 | +2.5% | -7.9% |
+| keys after settle | 105416 | 105352 | 102818 | | |
+
+(In this table's last two columns positive means the first-named
+variant is larger: faster on a req/s row, slower on a p99 row, more
+RSS on an RSS row.)
+
+Per class after the settle (`MEMORY MALLOC-STATS` at t=1281, summed by
+`bench/probes/mstats-classes.sh`; the residue lives in the 512..1024
+classes, the soak's values are 16..1024 bytes plus valkey-benchmark's
+512):
+
+| class (slab KiB / nregs) | default: occupancy, live / slab / pinned MiB, c_on | compact0: occupancy, live / slab / pinned MiB, c_on | jemalloc util (regs / pgs) |
+|---|---|---|---|
+| 512 (4 / 8) | 64.5%, 3.4 / 5.3 / 1.9, 1 | 46.2%, 3.4 / 7.3 / 3.9, 0 | 0.699 (8 / 1) |
+| 640 (16 / 25) | 45.3%, 8.2 / 18.5 / 10.4, 1 | 41.4%, 8.2 / 20.2 / 12.0, 0 | 0.465 (32 / 5) |
+| 768 (16 / 21) | 48.4%, 9.8 / 20.7 / 10.8, 2 (c_off 1) | 44.9%, 9.8 / 22.2 / 12.4, 0 | 0.555 (16 / 3) |
+| 896 (8 / 9) | 60.1%, 11.4 / 19.3 / 7.9, 1 | 45.3%, 11.4 / 25.6 / 14.2, 0 | 0.484 (32 / 7) |
+| 1024 (4 / 4) | 79.7%, 13.3 / 16.7 / 3.4, 1 | 56.7%, 13.4 / 23.6 / 10.2, 0 | 0.862 (4 / 1) |
+| total 512..1024 | 57.4%, 46.2 / 80.5 / 34.3 | 46.7%, 46.1 / 98.8 / 52.7 | |
+
+`allocator_active` after settle: 127.0 MiB (default) against 149.9
+(compact0); the 1280..4096 classes hold 0.9 MiB live in 2.2 MiB of
+slabs in both.
+
+Reading:
+
+1. The benefit. With the schedule the five residue classes end the
+   soak at 57% occupancy and 34 MiB pinned, and the server at 130.3 MiB
+   resident, 1.4% above jemalloc's 128.5 (the post-delete criterion is
+   +10%); without it they end at 47% and 53 MiB pinned, the server at
+   153.1 MiB, +17.5% over the default and +19% over jemalloc, outside
+   the criterion, with `allocator_frag_ratio` 2.18 against 1.81. The
+   896 and 1024 classes show it most (60% -> 45%, 80% -> 57%): the
+   compaction's low-address preference is what packs the churn's
+   survivors into the low slabs so the high ones empty and are purged;
+   with LIFO caches alone the delete phase's layout is frozen (the
+   churn probe of section 4, at soak scale). Valkey's own defragmenter
+   is the alternative supplier of this benefit and it did work harder
+   without the schedule (264k hits against 230k, 15% more moves, in the
+   same 2.4 s of defrag time), but its stop rule (`frag_smallbins` under
+   `active-defrag-ignore-bytes`, 100 MiB) is satisfied long before the
+   residue of a class of 4..25-slot slabs is gone: the 23 MiB difference
+   is what the defragmenter leaves and the compaction removes.
+2. The cost. In the server, the delete phase, where the schedule works,
+   ran 1.5..2.9% faster in req/s and 2..4.5% better in p99 without it
+   (1423k -> 1465k valkey-benchmark, 0.719 -> 0.687 ms); the write
+   phase, where it does not engage, is within 1.3% and 1.5% (one run
+   each; the soak's run-to-run spread on these rows has been 1..3%).
+   That is the model's -18% delete-phase allocator throughput (section
+   2) diluted by everything else a Valkey command does: the allocator
+   is a few percent of the server's cycles, so a fifth of it is 1..3% of
+   the server. The peak RSS is unchanged (+0.3%).
+3. Both runs' default-versus-jemalloc rows meet the soak's acceptance
+   shape: throughput and p99 ahead of jemalloc in the write phase and
+   within 2.3% behind in the delete phase, peak RSS +1.0%, RSS after
+   settle +1.4%.
 
 ## 6. Ruby soak (600 s, 16 threads): `default` vs `compact0`
 
