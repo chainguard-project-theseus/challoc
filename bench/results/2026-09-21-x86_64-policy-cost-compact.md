@@ -137,7 +137,41 @@ section 5).
 
 ## 6. Ruby soak (600 s, 16 threads): `default` vs `compact0`
 
-PENDING.
+`bench/ruby-soak.sh` (Ruby 3.4.10 `--with-jemalloc` on the compat
+library, `bench/ruby/soak.rb`, 16 threads, seed 4141, full GC every
+30 s, `GC.compact` at 300 s), one process per allocator in sequence on
+the idle VM (load 1.00 throughout: the GVL). `default` and jemalloc from
+one invocation (`2026-09-21-x86_64-policy-cost-ruby-soak-default.md`),
+`compact0` from a second with `CHALLOC_CONF=tcache_compact_shift:0`
+(`...-ruby-soak-compact0.md`); the same stage build `d4f7099f2b37ad12`
+under the jemalloc soname for both challoc runs.
+
+| measure (MiB) | default | compact0 | jemalloc | compact0 vs default |
+|---|---:|---:|---:|---:|
+| peak sampled VmRSS | 417.9 | 417.4 | 179.1 | -0.1% |
+| VmHWM at the end | 419.1 | 419.2 | 186.9 | +0.0% |
+| at t=60 | 309.1 | 310.0 | 73.6 | +0.3% |
+| at t=295 (before GC.compact) | 349.8 | 351.7 | 119.2 | +0.5% |
+| at t=300 (after GC.compact) | 361.9 | 363.1 | 127.0 | +0.3% |
+| at t=600 | 414.0 | 415.6 | 133.9 | +0.4% |
+| lowest right after a periodic full GC | 302.4 | 301.1 | 73.5 | -0.4% |
+| allocator: allocated / active / resident / retained, final | 106.0 / 212.9 / 417.3 / 66.3 | 106.4 / 212.1 / 418.8 / 65.2 | 94.8 / 107.3 / 123.4 / 94.7 | |
+| jobs (600 s) | 151624 | 151776 | 151262 | +0.1% |
+| GC count (major) | 16211 (1301) | 16558 (1421) | 16319 (1358) | |
+
+Per class over the 17 arenas (`bench/probes/mstats-classes.sh` on the
+`-challoc-mstats.txt` reports; 1280..4096 B, the long-lived and burst
+classes): `default` 46.2% occupancy, 153.6 MiB of slabs for 71.0 MiB
+live, `c_on` 0 in every class, `gated` 231..1501 per class; `compact0`
+46.5%, 152.9 MiB for 71.1 MiB live, `c_on` 0, `gated` 0 (no probe ever
+runs). Reading: as the 2026-09-19 soak found, the schedule never
+engages under Ruby (every probe of a fragmented class is declined by
+the refill-rate gate: the bursts refill the caches faster than
+`COMPACT_MAX_REFILL_SLABS`), so turning it off changes nothing here:
+RSS within 0.5% at every sample, allocator stats within 1.5 MiB, the
+same job count. The Ruby RSS gap to jemalloc (+209% at t=600) is the
+17-arena inventory of `2026-09-19-x86_64-ruby-soak.md`, untouched by
+either setting.
 
 ## 7. Comparison and the trade
 

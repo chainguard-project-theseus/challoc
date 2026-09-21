@@ -1,0 +1,884 @@
+=== malloc_stats_print at the end (t=600) ===
+___ Begin jemalloc statistics ___
+Version: "5.3.0-0-gchalloc"
+Build-time option settings
+  config.debug: false
+  config.stats: true
+  config.quantum: 16
+Run-time option settings
+  opt.background_thread: false
+  opt.prefault: false
+  opt.dirty_decay_ms: 10000
+  opt.muzzy_decay_ms: 0
+  opt.narenas: 64
+  opt.percpu_arena: "auto"
+  opt.tcache: true
+  opt.tcache_max: 32768
+  opt.tcache_nslots_small_max: 1024
+  opt.lg_tcache_nslots_mul: 1
+  opt.tcache_gc_interval_ms: 10000
+  opt.tcache_compact_shift: 3
+  opt.thp: "never"
+  opt.thp_process: "default"
+  opt.spin_hint: "auto"
+  opt.slice_ext: "auto"
+  opt.lazy_free: false
+  opt.lazy_band: true
+  opt.guards: true
+  opt.guard_slab_interval: 8
+  opt.huge_retain_max: 67108864
+  opt.huge_dirty_decay_ms: 10000
+  opt.zero_on_free: false
+  opt.pac_pointers: false
+  opt.slot_randomize: false
+  opt.double_free_scan: false
+  opt.abort_conf: false
+  opt.cgroup: true
+  opt.check_zero: false
+  opt.group_handoff: false
+  opt.stats_print: accepted, no effect
+Kernel and CPU features: page_size=4096 guard_install=yes mseal=no process_madvise=no process_madvise_free=no anon_name=yes populate_write=yes thp=madvise mthp=2M collapse=unprobed thp_except_advised=inherited rseq=yes rseq_size=33 mm_cid=yes slice_ext=kernel-disabled lam=no uai=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes fsrm=yes avx512f=yes cacheline=64 l1d=48K l2=2M
+Sealed ranges: 0 of 57
+Background thread: absent
+Prefault: off (prefault:false)
+Per-CPU caches: off (auto: opt in with percpu_arena:percpu) (rseq usable, size 33)
+Slice extension: off (kernel-disabled)
+Arenas: 17 (64 automatic), explicit caches: 0
+Quantum size: 16
+Page size: 4096
+Allocated: 110912912, active: 205725696, metadata: 8863744, resident: 429617152, mapped: 504320000, retained: 74702848
+Huge: 18 runs (4562 pages), 0 empty extents (0 pages), 1 purged extents (97 pages), high-water page 4659
+Metadata: reserved 68719476736, committed 8863744, writable 195289088, allocated 345744, bumped 192630272, tables 18781601792, small tables 187846656
+cgroup: /sys/fs/cgroup (mount /sys/fs/cgroup, path /) limit max high max current 432611328 events high 0 (+0) max 0 (+0) psi not armed (no background thread) pressure_events 0 cpus 16 cpu.max max/100000
+cgroup policy: defaults (no limit) decay_ms 10000 retention_cap max keep 100% empty_bytes 215027712 full_purges 0 thp as configured
+purge advice: eager MADV_DONTNEED (no headroom known) lazy_purges 0 (0 bytes) eager_purges 89635 (1474797568 bytes) purged_is_zero true lazy via madvise loop
+thp: never -> off (thp:never) nohuge 2 (classes, metadata; huge follows host) class_ranges 0 (0 bytes, 0 chunks) huge_ranges 0 meta_ranges 0 failures 0; host madvise process default (nothing issued)
+arenas[0]:
+  dirty_decay_ms: 10000
+  pactive: 7727, pdirty: 1552, pmuzzy: 0
+                            allocated       active        dirty     retained
+  small:                      2257120      3469312        65536       733184
+  large:                     20073472     28180480      6291456      5378048  (17 huge runs)
+  metadata: 8863744, resident: 46870528, mapped: 52981760, retained: 6111232
+  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped
+             16   0     4096      65536      4358         2         2         0         0       6144          0      0      0      0       0
+             32   1     2048      65536      6420         4         4         0         0      17408          0      0      0      0       0
+             48   2     1365      65536      4498         4         3         0         0      10240          0      0      0      0       0
+             64   3     1024      65536      1222         2         2         0         0       4096          0      0      0      0       0
+             80   4      819      65536       347         1         1         0         1       1536          0      0      0      0       0
+             96   5      682      65536       453         2         2         0         0       1024          0      0      0      0       0
+            112   6      585      65536       169         1         1         0         0        512          0      0      0      0       0
+            128   7      512      65536       410         3         3         0         0       1536          0      0      0      0       0
+            160   8      409      65536       425         2         2         0         0        768          0      0      0      0       0
+            192   9      341      65536       434         2         2         0         0        768          0      0      0      0       0
+            224  10      292      65536       142         1         1         0         1       1792          0      0      0      0       0
+            256  11      256      65536       317         2         2         0         0        512          0      0      0      0       0
+            320  12      204      65536       151         1         1         0         1        256          0      0      0      0       0
+            384  13      170      65536      1319         9         7         0         1       2560          0      0      0      0       0
+            448  14      146      65536        63         1         1         0         0        128          0      0      0      0       0
+            512  15        8       4096       232        30         3         0         2        256          0      0      0      0       0
+            640  16       25      16384        75        10        10         0         1        896          0      0      0      0       0
+            768  17       21      16384        67         4         3         2         0        704          0      0      0      0       0
+            896  18        9       8192        27         4         3         0         7        128          0      0      0      0       0
+           1024  19        4       4096        56        17         6         0        15        128          0      0      0      0       0
+           1280  20       25      32768        19         2         2         0         1         64          0      0      0      0       0
+           1536  21       21      32768        59         3         3         0         1        384          0      0      0      0       0
+           1792  22       18      32768        40         3         2         0         2        160          0      0      0      0       0
+           2048  23       16      32768        32         3         2         0         1         64          0      0      0      0       0
+           2560  24       12      32768         9         1         1         0         1         16          0      0      0      0       0
+           3072  25       10      32768        11         2         2         0         2         32          0      0      0      0       0
+           3584  26        9      32768         2         1         1         0         1         16          0      0      0      0       0
+           4096  27        8      32768        20         3         3         1         1        288          0      0      0      0       0
+  large classes (slab-allocated, not bins):
+           5120  28       25     131072         2         1         1         0         0          8          0      0      0      0       0
+           6144  29       21     131072         8         1         1         0         0         16          0      0      0      0       0
+           7168  30       18     131072         1         1         1         0         0          8          0      0      0      0       0
+           8192  31       16     131072        18         2         1         0         0         24          0      0      0      0       0
+          10240  32       25     262144         3         1         1         0         0          4          0      0      0      0       0
+          12288  33       21     262144         3         1         1         0         0          8          0      0      0      0       0
+          14336  34       18     262144         0         0         0         0         1          4          0      0      0      0       0
+          16384  35       16     262144         1         1         1         0         0          4          0      0      0      0       0
+          20480  36       25     524288         0         0         0         0         1          4          0      0      0      0       0
+          24576  37       21     524288         0         0         0         0         1          4          0      0      0      0       0
+          28672  38       18     524288         0         0         0         0         1          4          0      0      0      0       0
+          32768  39       16     524288         1         1         1         0         0          4          0      0      0      0       0
+          40960  40       25    1048576        16         1         1         0         0          0          0      0      0      0       0
+          49152  41       21    1048576        19         1         1         1         0          0          0      0      0      0       0
+          57344  42       18    1048576         0         0         0         2         1          0          0      0      0      0       0
+          65536  43       16    1048576         0         0         0         1         0          0          0      0      0      0       0
+          81920  44       25    2097152         0         0         0         1         0          0          0      0      0      0       0
+          98304  45       21    2097152         0         0         0         0         1          0          0      0      0      0       0
+         131072  47       16    2097152         1         1         1         0         0          0          0      0      0      0       0
+         196608  49       21    4194304         1         1         1         0         0          0          0      0      0      0       0
+  slab occupancy (non-empty slabs per eighth of nslots, last = full):
+             16   0 slabs      2  hist [1, 0, 0, 0, 0, 0, 0, 0, 1]  live!=bits 0  nonfull not in partial set 0
+             32   1 slabs      4  hist [0, 0, 1, 0, 0, 0, 1, 2, 0]  live!=bits 0  nonfull not in partial set 0
+             48   2 slabs      4  hist [0, 0, 0, 1, 0, 0, 0, 2, 1]  live!=bits 0  nonfull not in partial set 0
+             64   3 slabs      2  hist [0, 1, 0, 0, 0, 0, 0, 1, 0]  live!=bits 0  nonfull not in partial set 0
+             80   4 slabs      1  hist [0, 0, 0, 1, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+             96   5 slabs      2  hist [0, 1, 0, 1, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            112   6 slabs      1  hist [0, 0, 1, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            128   7 slabs      3  hist [0, 1, 2, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            160   8 slabs      2  hist [0, 1, 0, 0, 0, 0, 1, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            192   9 slabs      2  hist [0, 0, 1, 0, 0, 0, 0, 0, 1]  live!=bits 0  nonfull not in partial set 0
+            224  10 slabs      1  hist [0, 0, 0, 1, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            256  11 slabs      2  hist [0, 1, 0, 0, 0, 0, 0, 1, 0]  live!=bits 0  nonfull not in partial set 0
+            320  12 slabs      1  hist [0, 0, 0, 0, 0, 1, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            384  13 slabs      9  hist [0, 0, 0, 0, 1, 2, 0, 4, 2]  live!=bits 0  nonfull not in partial set 0
+            448  14 slabs      1  hist [0, 0, 0, 1, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            512  15 slabs     30  hist [0, 0, 1, 0, 0, 0, 0, 2, 27]  live!=bits 0  nonfull not in partial set 0
+            640  16 slabs     10  hist [3, 2, 3, 0, 0, 2, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            768  17 slabs      4  hist [0, 0, 0, 1, 0, 0, 2, 0, 1]  live!=bits 0  nonfull not in partial set 0
+            896  18 slabs      4  hist [0, 0, 0, 1, 0, 1, 0, 1, 1]  live!=bits 0  nonfull not in partial set 0
+           1024  19 slabs     17  hist [0, 0, 2, 0, 2, 0, 2, 0, 11]  live!=bits 0  nonfull not in partial set 0
+           1280  20 slabs      2  hist [1, 0, 0, 0, 0, 1, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           1536  21 slabs      3  hist [0, 0, 0, 0, 0, 0, 1, 1, 1]  live!=bits 0  nonfull not in partial set 0
+           1792  22 slabs      3  hist [0, 0, 1, 0, 0, 0, 0, 1, 1]  live!=bits 0  nonfull not in partial set 0
+           2048  23 slabs      3  hist [0, 1, 0, 0, 0, 0, 1, 0, 1]  live!=bits 0  nonfull not in partial set 0
+           2560  24 slabs      1  hist [0, 0, 0, 0, 0, 0, 1, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           3072  25 slabs      2  hist [0, 1, 0, 0, 0, 0, 0, 1, 0]  live!=bits 0  nonfull not in partial set 0
+           3584  26 slabs      1  hist [0, 1, 0, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           4096  27 slabs      3  hist [0, 0, 0, 0, 1, 0, 0, 0, 2]  live!=bits 0  nonfull not in partial set 0
+           5120  28 slabs      1  hist [1, 0, 0, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           6144  29 slabs      1  hist [0, 0, 0, 1, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           7168  30 slabs      1  hist [1, 0, 0, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           8192  31 slabs      2  hist [0, 1, 0, 0, 0, 0, 0, 0, 1]  live!=bits 0  nonfull not in partial set 0
+          10240  32 slabs      1  hist [1, 0, 0, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+          12288  33 slabs      1  hist [0, 1, 0, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+          16384  35 slabs      1  hist [1, 0, 0, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+          32768  39 slabs      1  hist [1, 0, 0, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+          40960  40 slabs      1  hist [0, 0, 0, 0, 0, 1, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+          49152  41 slabs      1  hist [0, 0, 0, 0, 0, 0, 0, 1, 0]  live!=bits 0  nonfull not in partial set 0
+         131072  47 slabs      1  hist [1, 0, 0, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+         196608  49 slabs      1  hist [1, 0, 0, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+arenas[1]:
+  dirty_decay_ms: 10000
+  pactive: 2610, pdirty: 3149, pmuzzy: 0
+                            allocated       active        dirty     retained
+  small:                      5487920     10690560     12898304      3022848
+  large:                            0            0            0      1572864  (0 huge runs)
+  metadata: 0, resident: 23588864, mapped: 28184576, retained: 4595712
+  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped
+             16   0     4096      65536         5         1         1         0         0        512          0      0      0      0       0
+             32   1     2048      65536        11         1         1         0         0        512          0      0      0      0       0
+             64   3     1024      65536         5         1         1         0         0        512          0      0      0      0       0
+             96   5      682      65536         2         1         1         0         0        512          0      0      0      0       0
+            160   8      409      65536         0         0         0         0         1        256          0      0      0      0       0
+            192   9      341      65536         0         0         0         0         1        256          0      0      0      0       0
+            320  12      204      65536         0         0         0         0         1        128          0      0      0      0       0
+            384  13      170      65536        82         4         4        16         1     372608          0      0      0      9       0
+            448  14      146      65536         0         0         0         0         1        128          0      0      0      0       0
+            640  16       25      16384        88         5         2         1         0       1280          0      0      0      0       0
+            768  17       21      16384       767        37         2         1         1       2240          0      0      0      0       0
+            896  18        9       8192       159        92        91        76        24      64448          0      0      0      2       0
+           1024  19        4       4096        33        10         3       317       110      79168          0      0      0      0       0
+           1280  20       25      32768       637        48        48        15         0     400288          0      0      0      7       0
+           1536  21       21      32768       635        55        55        15         4     390848          0      0      0      9       0
+           1792  22       18      32768       666        66        64        17         5     390016          0      0      0     26       0
+           2048  23       16      32768       625        70        68        26         1     391744          0      0      0     27       0
+           2560  24       12      32768        33         8         7        48        14     799968          0      0      0     37       0
+           3072  25       10      32768        28         6         5        59        17     790064          0      0      0     30       0
+           3584  26        9      32768        19         6         6        57        11     544176          0      0      0     25       0
+           4096  27        8      32768        32         6         6        65        10     469424          0      0      0     10       0
+  large classes (slab-allocated, not bins):
+           6144  29       21     131072         0         0         0         0         1          8          0      0      0      0       0
+           8192  31       16     131072         0         0         0         0         1          8          0      0      0      0       0
+          12288  33       21     262144         0         0         0         0         1          4          0      0      0      0       0
+          20480  36       25     524288         0         0         0         0         1          4          0      0      0      0       0
+          28672  38       18     524288         0         0         0         0         1          4          0      0      0      0       0
+  slab occupancy (non-empty slabs per eighth of nslots, last = full):
+             16   0 slabs      1  hist [1, 0, 0, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+             32   1 slabs      1  hist [1, 0, 0, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+             64   3 slabs      1  hist [1, 0, 0, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+             96   5 slabs      1  hist [1, 0, 0, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            384  13 slabs      4  hist [2, 1, 1, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            640  16 slabs      5  hist [1, 0, 0, 1, 0, 0, 0, 0, 3]  live!=bits 0  nonfull not in partial set 0
+            768  17 slabs     37  hist [0, 0, 0, 0, 1, 0, 0, 0, 36]  live!=bits 0  nonfull not in partial set 0
+            896  18 slabs     92  hist [53, 26, 6, 4, 1, 1, 0, 0, 1]  live!=bits 0  nonfull not in partial set 0
+           1024  19 slabs     10  hist [0, 0, 1, 0, 2, 0, 0, 0, 7]  live!=bits 0  nonfull not in partial set 0
+           1280  20 slabs     48  hist [7, 5, 4, 3, 5, 9, 12, 3, 0]  live!=bits 0  nonfull not in partial set 0
+           1536  21 slabs     55  hist [6, 8, 1, 6, 8, 7, 15, 4, 0]  live!=bits 0  nonfull not in partial set 0
+           1792  22 slabs     66  hist [6, 8, 7, 4, 10, 10, 9, 10, 2]  live!=bits 0  nonfull not in partial set 0
+           2048  23 slabs     70  hist [8, 5, 7, 5, 6, 12, 16, 9, 2]  live!=bits 0  nonfull not in partial set 0
+           2560  24 slabs      8  hist [2, 2, 1, 1, 1, 0, 0, 0, 1]  live!=bits 0  nonfull not in partial set 0
+           3072  25 slabs      6  hist [2, 1, 0, 0, 1, 0, 1, 0, 1]  live!=bits 0  nonfull not in partial set 0
+           3584  26 slabs      6  hist [1, 2, 2, 0, 0, 0, 0, 1, 0]  live!=bits 0  nonfull not in partial set 0
+           4096  27 slabs      6  hist [0, 0, 0, 1, 1, 1, 1, 2, 0]  live!=bits 0  nonfull not in partial set 0
+arenas[2]:
+  dirty_decay_ms: 10000
+  pactive: 2579, pdirty: 3279, pmuzzy: 0
+                            allocated       active        dirty     retained
+  small:                      5592704     10563584     13430784      2781184
+  large:                            0            0            0      1572864  (0 huge runs)
+  metadata: 0, resident: 23994368, mapped: 28348416, retained: 4354048
+  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped
+             32   1     2048      65536         0         0         0         0         1        512          0      0      0      0       0
+            160   8      409      65536         0         0         0         0         1        256          0      0      0      0       0
+            320  12      204      65536         0         0         0         0         1        128          0      0      0      0       0
+            384  13      170      65536       120         5         5        14         3     373632          0      0      0      9       0
+            448  14      146      65536         0         0         0         0         1        128          0      0      0      0       0
+            640  16       25      16384        92         5         2         0         2       1280          0      0      0      0       0
+            768  17       21      16384       791        38         2         3         0       2432          0      0      0      0       0
+            896  18        9       8192       163        88        86        76        37      64832          0      0      0      3       0
+           1024  19        4       4096        23         7         2       347        77      79872          0      0      0      0       0
+           1280  20       25      32768       650        46        43        16         0     400416          0      0      0     11       0
+           1536  21       21      32768       669        58        56        16         1     391136          0      0      0     17       0
+           1792  22       18      32768       613        62        61        24         1     392672          0      0      0     14       0
+           2048  23       16      32768       680        70        66        28         2     390912          0      0      0     35       0
+           2560  24       12      32768        29         6         6        52        12     800656          0      0      0     29       0
+           3072  25       10      32768        25        10        10        63        10     792336          0      0      0     26       0
+           3584  26        9      32768        24         8         8        59        10     546448          0      0      0     19       0
+           4096  27        8      32768        30         8         7        60        15     471616          0      0      0      8       0
+  large classes (slab-allocated, not bins):
+           6144  29       21     131072         0         0         0         0         1          8          0      0      0      0       0
+           8192  31       16     131072         0         0         0         0         1          8          0      0      0      0       0
+          12288  33       21     262144         0         0         0         0         1          4          0      0      0      0       0
+          20480  36       25     524288         0         0         0         0         1          4          0      0      0      0       0
+          28672  38       18     524288         0         0         0         0         1          4          0      0      0      0       0
+  slab occupancy (non-empty slabs per eighth of nslots, last = full):
+            384  13 slabs      5  hist [3, 1, 0, 1, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            640  16 slabs      5  hist [1, 0, 0, 0, 1, 0, 0, 0, 3]  live!=bits 0  nonfull not in partial set 0
+            768  17 slabs     38  hist [0, 0, 0, 0, 0, 1, 0, 0, 37]  live!=bits 0  nonfull not in partial set 0
+            896  18 slabs     88  hist [50, 22, 9, 2, 2, 1, 0, 0, 2]  live!=bits 0  nonfull not in partial set 0
+           1024  19 slabs      7  hist [0, 0, 1, 0, 1, 0, 0, 0, 5]  live!=bits 0  nonfull not in partial set 0
+           1280  20 slabs     46  hist [9, 1, 5, 3, 5, 6, 7, 7, 3]  live!=bits 0  nonfull not in partial set 0
+           1536  21 slabs     58  hist [8, 5, 6, 5, 6, 8, 12, 6, 2]  live!=bits 0  nonfull not in partial set 0
+           1792  22 slabs     62  hist [6, 7, 7, 5, 9, 7, 10, 10, 1]  live!=bits 0  nonfull not in partial set 0
+           2048  23 slabs     70  hist [7, 4, 4, 6, 10, 9, 11, 15, 4]  live!=bits 0  nonfull not in partial set 0
+           2560  24 slabs      6  hist [3, 0, 0, 0, 0, 2, 1, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           3072  25 slabs     10  hist [1, 6, 2, 0, 1, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           3584  26 slabs      8  hist [3, 1, 2, 0, 0, 1, 1, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           4096  27 slabs      8  hist [0, 2, 1, 1, 1, 1, 1, 0, 1]  live!=bits 0  nonfull not in partial set 0
+arenas[3]:
+  dirty_decay_ms: 10000
+  pactive: 2511, pdirty: 3245, pmuzzy: 0
+                            allocated       active        dirty     retained
+  small:                      5317120     10285056     13291520      2932736
+  large:                            0            0            0      1572864  (0 huge runs)
+  metadata: 0, resident: 23576576, mapped: 28082176, retained: 4505600
+  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped
+             32   1     2048      65536         0         0         0         0         1        512          0      0      0      0       0
+            160   8      409      65536         0         0         0         0         1        256          0      0      0      0       0
+            320  12      204      65536         0         0         0         0         1        128          0      0      0      0       0
+            384  13      170      65536        41         3         3        17         2     372480          0      0      0      5       0
+            448  14      146      65536         0         0         0         0         1        128          0      0      0      0       0
+            640  16       25      16384        75         4         2         2         0       1152          0      0      0      0       0
+            768  17       21      16384       779        38         2         2         0       2432          0      0      0      0       0
+            896  18        9       8192       150        86        85        94        18      64960          0      0      0      2       0
+           1024  19        4       4096         8         3         2       377        64      78400          0      0      0      0       0
+           1280  20       25      32768       659        50        49        10         4     400480          0      0      0      6       0
+           1536  21       21      32768       609        54        54        15         6     391712          0      0      0     19       0
+           1792  22       18      32768       628        65        64        18         2     391360          0      0      0     18       0
+           2048  23       16      32768       657        71        70        29         0     391360          0      0      0     23       0
+           2560  24       12      32768        18         7         7        48        12     800256          0      0      0     29       0
+           3072  25       10      32768        23         6         6        60        17     790880          0      0      0     41       0
+           3584  26        9      32768        19         5         5        62         9     544656          0      0      0     18       0
+           4096  27        8      32768        19         7         7        57        15     470560          0      0      0     16       0
+  large classes (slab-allocated, not bins):
+           6144  29       21     131072         0         0         0         0         1          8          0      0      0      0       0
+           8192  31       16     131072         0         0         0         0         1          8          0      0      0      0       0
+          12288  33       21     262144         0         0         0         0         1          4          0      0      0      0       0
+          20480  36       25     524288         0         0         0         0         1          4          0      0      0      0       0
+          28672  38       18     524288         0         0         0         0         1          4          0      0      0      0       0
+  slab occupancy (non-empty slabs per eighth of nslots, last = full):
+            384  13 slabs      3  hist [2, 1, 0, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            640  16 slabs      4  hist [1, 0, 0, 0, 0, 0, 0, 1, 2]  live!=bits 0  nonfull not in partial set 0
+            768  17 slabs     38  hist [1, 0, 0, 0, 0, 0, 0, 0, 37]  live!=bits 0  nonfull not in partial set 0
+            896  18 slabs     86  hist [50, 22, 8, 2, 3, 0, 0, 0, 1]  live!=bits 0  nonfull not in partial set 0
+           1024  19 slabs      3  hist [0, 0, 1, 0, 0, 0, 1, 0, 1]  live!=bits 0  nonfull not in partial set 0
+           1280  20 slabs     50  hist [8, 3, 5, 8, 3, 3, 13, 6, 1]  live!=bits 0  nonfull not in partial set 0
+           1536  21 slabs     54  hist [6, 6, 2, 8, 9, 5, 13, 5, 0]  live!=bits 0  nonfull not in partial set 0
+           1792  22 slabs     65  hist [12, 2, 5, 5, 11, 14, 7, 7, 2]  live!=bits 0  nonfull not in partial set 0
+           2048  23 slabs     71  hist [7, 6, 4, 3, 9, 13, 20, 7, 2]  live!=bits 0  nonfull not in partial set 0
+           2560  24 slabs      7  hist [3, 1, 1, 2, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           3072  25 slabs      6  hist [2, 1, 0, 0, 2, 1, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           3584  26 slabs      5  hist [1, 1, 1, 0, 1, 0, 0, 1, 0]  live!=bits 0  nonfull not in partial set 0
+           4096  27 slabs      7  hist [0, 2, 2, 0, 2, 1, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+arenas[4]:
+  dirty_decay_ms: 10000
+  pactive: 2680, pdirty: 3329, pmuzzy: 0
+                            allocated       active        dirty     retained
+  small:                      5445760     10977280     13635584      2043904
+  large:                            0            0            0      1572864  (0 huge runs)
+  metadata: 0, resident: 24612864, mapped: 28229632, retained: 3616768
+  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped
+             32   1     2048      65536         0         0         0         0         1        512          0      0      0      0       0
+            160   8      409      65536         0         0         0         0         1        256          0      0      0      0       0
+            320  12      204      65536         0         0         0         0         1        128          0      0      0      0       0
+            384  13      170      65536        81         5         5        15         1     370304          0      0      0      4       0
+            448  14      146      65536         0         0         0         0         1        128          0      0      0      0       0
+            640  16       25      16384       108         5         2         0         2       1280          0      0      0      0       0
+            768  17       21      16384       755        37         3         1         1       2240          0      0      0      0       0
+            896  18        9       8192       148        83        82        77        36      64448          0      0      0      2       0
+           1024  19        4       4096        17        10        10       339        95      78976          0      0      0      0       0
+           1280  20       25      32768       680        50        47        14         2     399328          0      0      0      6       0
+           1536  21       21      32768       636        61        59        16         0     389088          0      0      0     15       0
+           1792  22       18      32768       636        64        57        22         0     389760          0      0      0     20       0
+           2048  23       16      32768       632        76        73        19         4     390080          0      0      0     24       0
+           2560  24       12      32768        23         7         7        52        11     798688          0      0      0     27       0
+           3072  25       10      32768        31        10        10        69         2     788704          0      0      0     38       0
+           3584  26        9      32768        24         6         6        62         9     542912          0      0      0     27       0
+           4096  27        8      32768        23         8         8        70         2     468400          0      0      0     14       0
+  large classes (slab-allocated, not bins):
+           6144  29       21     131072         0         0         0         0         1          8          0      0      0      0       0
+           8192  31       16     131072         0         0         0         0         1          8          0      0      0      0       0
+          12288  33       21     262144         0         0         0         0         1          4          0      0      0      0       0
+          20480  36       25     524288         0         0         0         0         1          4          0      0      0      0       0
+          28672  38       18     524288         0         0         0         0         1          4          0      0      0      0       0
+  slab occupancy (non-empty slabs per eighth of nslots, last = full):
+            384  13 slabs      5  hist [3, 2, 0, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            640  16 slabs      5  hist [0, 0, 1, 0, 0, 0, 0, 0, 4]  live!=bits 0  nonfull not in partial set 0
+            768  17 slabs     37  hist [0, 1, 0, 0, 0, 1, 0, 0, 35]  live!=bits 0  nonfull not in partial set 0
+            896  18 slabs     83  hist [47, 24, 6, 3, 0, 1, 0, 1, 1]  live!=bits 0  nonfull not in partial set 0
+           1024  19 slabs     10  hist [0, 0, 5, 0, 3, 0, 2, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           1280  20 slabs     50  hist [9, 3, 6, 5, 1, 7, 9, 7, 3]  live!=bits 0  nonfull not in partial set 0
+           1536  21 slabs     61  hist [14, 6, 4, 4, 9, 5, 13, 4, 2]  live!=bits 0  nonfull not in partial set 0
+           1792  22 slabs     64  hist [10, 5, 6, 5, 8, 9, 8, 5, 8]  live!=bits 0  nonfull not in partial set 0
+           2048  23 slabs     76  hist [9, 13, 6, 3, 8, 10, 10, 14, 3]  live!=bits 0  nonfull not in partial set 0
+           2560  24 slabs      7  hist [2, 1, 2, 1, 0, 1, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           3072  25 slabs     10  hist [6, 0, 0, 1, 1, 1, 0, 1, 0]  live!=bits 0  nonfull not in partial set 0
+           3584  26 slabs      6  hist [0, 2, 0, 2, 1, 0, 1, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           4096  27 slabs      8  hist [0, 2, 0, 4, 1, 1, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+arenas[5]:
+  dirty_decay_ms: 10000
+  pactive: 2564, pdirty: 3095, pmuzzy: 0
+                            allocated       active        dirty     retained
+  small:                      5511040     10502144     12677120      3334144
+  large:                            0            0            0      1572864  (0 huge runs)
+  metadata: 0, resident: 23179264, mapped: 28086272, retained: 4907008
+  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped
+             32   1     2048      65536         0         0         0         0         1        512          0      0      0      0       0
+            160   8      409      65536         0         0         0         0         1        256          0      0      0      0       0
+            320  12      204      65536         0         0         0         0         1        128          0      0      0      0       0
+            384  13      170      65536       123         4         4        15         2     373120          0      0      0      6       0
+            448  14      146      65536         0         0         0         0         1        128          0      0      0      0       0
+            640  16       25      16384        98         5         2         0         2       1280          0      0      0      0       0
+            768  17       21      16384       728        35         2         3         0       2304          0      0      0      0       0
+            896  18        9       8192       174        88        86        90        18      64384          0      0      0      1       0
+           1024  19        4       4096        26        12         9       335        90      79488          0      0      0      0       0
+           1280  20       25      32768       646        49        44        12         1     399872          0      0      0     12       0
+           1536  21       21      32768       614        55        48        16         1     391488          0      0      0     17       0
+           1792  22       18      32768       661        67        65        18         1     389920          0      0      0     23       0
+           2048  23       16      32768       657        72        65        22         5     390112          0      0      0     28       0
+           2560  24       12      32768        27         7         7        46        19     799520          0      0      0     22       0
+           3072  25       10      32768        31         5         4        59        20     790160          0      0      0     33       0
+           3584  26        9      32768        19         5         4        58        15     545472          0      0      0     18       0
+           4096  27        8      32768        31         9         9        60        11     470064          0      0      0     14       0
+  large classes (slab-allocated, not bins):
+           6144  29       21     131072         0         0         0         0         1          8          0      0      0      0       0
+           8192  31       16     131072         0         0         0         0         1          8          0      0      0      0       0
+          12288  33       21     262144         0         0         0         0         1          4          0      0      0      0       0
+          20480  36       25     524288         0         0         0         0         1          4          0      0      0      0       0
+          28672  38       18     524288         0         0         0         0         1          4          0      0      0      0       0
+  slab occupancy (non-empty slabs per eighth of nslots, last = full):
+            384  13 slabs      4  hist [1, 2, 1, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            640  16 slabs      5  hist [0, 1, 0, 0, 0, 1, 0, 0, 3]  live!=bits 0  nonfull not in partial set 0
+            768  17 slabs     35  hist [0, 0, 0, 0, 0, 1, 0, 0, 34]  live!=bits 0  nonfull not in partial set 0
+            896  18 slabs     88  hist [46, 22, 12, 4, 1, 0, 0, 0, 3]  live!=bits 0  nonfull not in partial set 0
+           1024  19 slabs     12  hist [0, 0, 5, 0, 3, 0, 1, 0, 3]  live!=bits 0  nonfull not in partial set 0
+           1280  20 slabs     49  hist [10, 5, 3, 4, 6, 3, 7, 6, 5]  live!=bits 0  nonfull not in partial set 0
+           1536  21 slabs     55  hist [9, 8, 4, 5, 3, 5, 10, 4, 7]  live!=bits 0  nonfull not in partial set 0
+           1792  22 slabs     67  hist [11, 6, 4, 1, 13, 11, 14, 5, 2]  live!=bits 0  nonfull not in partial set 0
+           2048  23 slabs     72  hist [6, 9, 8, 4, 7, 8, 8, 15, 7]  live!=bits 0  nonfull not in partial set 0
+           2560  24 slabs      7  hist [1, 1, 2, 2, 0, 1, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           3072  25 slabs      5  hist [0, 0, 1, 1, 1, 0, 1, 0, 1]  live!=bits 0  nonfull not in partial set 0
+           3584  26 slabs      5  hist [1, 0, 3, 0, 0, 0, 0, 0, 1]  live!=bits 0  nonfull not in partial set 0
+           4096  27 slabs      9  hist [0, 2, 0, 3, 1, 2, 1, 0, 0]  live!=bits 0  nonfull not in partial set 0
+arenas[6]:
+  dirty_decay_ms: 10000
+  pactive: 2761, pdirty: 3015, pmuzzy: 0
+                            allocated       active        dirty     retained
+  small:                      5592192     11309056     12349440      2887680
+  large:                            0            0            0      1572864  (0 huge runs)
+  metadata: 0, resident: 23658496, mapped: 28119040, retained: 4460544
+  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped
+             32   1     2048      65536         0         0         0         0         1        512          0      0      0      0       0
+            160   8      409      65536         0         0         0         0         1        256          0      0      0      0       0
+            320  12      204      65536         0         0         0         0         1        128          0      0      0      0       0
+            384  13      170      65536       120         6         6        14         1     374272          0      0      0     11       0
+            448  14      146      65536         0         0         0         0         1        128          0      0      0      0       0
+            640  16       25      16384        87         5         2         1         0       1152          0      0      0      0       0
+            768  17       21      16384       774        38         2         1         1       2368          0      0      0      0       0
+            896  18        9       8192       182        95        95        77        22      65600          0      0      0      2       0
+           1024  19        4       4096        51        15         4       325       113      80256          0      0      0      0       0
+           1280  20       25      32768       657        50        49        12         2     403040          0      0      0      8       0
+           1536  21       21      32768       636        57        53        17         1     392768          0      0      0     13       0
+           1792  22       18      32768       657        73        72        14         2     391328          0      0      0     17       0
+           2048  23       16      32768       642        76        73        19         4     392832          0      0      0     22       0
+           2560  24       12      32768        32         9         9        47        12     803376          0      0      0     34       0
+           3072  25       10      32768        32         6         6        60        18     793632          0      0      0     43       0
+           3584  26        9      32768        20         8         8        56        11     545568          0      0      0     21       0
+           4096  27        8      32768        29         7         7        63         8     472432          0      0      0     15       0
+  large classes (slab-allocated, not bins):
+           6144  29       21     131072         0         0         0         0         1          8          0      0      0      0       0
+           8192  31       16     131072         0         0         0         0         1          8          0      0      0      0       0
+          12288  33       21     262144         0         0         0         0         1          4          0      0      0      0       0
+          20480  36       25     524288         0         0         0         0         1          4          0      0      0      0       0
+          28672  38       18     524288         0         0         0         0         1          4          0      0      0      0       0
+  slab occupancy (non-empty slabs per eighth of nslots, last = full):
+            384  13 slabs      6  hist [3, 3, 0, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            640  16 slabs      5  hist [1, 0, 0, 1, 0, 0, 0, 0, 3]  live!=bits 0  nonfull not in partial set 0
+            768  17 slabs     38  hist [0, 1, 0, 0, 0, 1, 0, 0, 36]  live!=bits 0  nonfull not in partial set 0
+            896  18 slabs     95  hist [54, 20, 11, 1, 5, 2, 2, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           1024  19 slabs     15  hist [0, 0, 2, 0, 1, 0, 1, 0, 11]  live!=bits 0  nonfull not in partial set 0
+           1280  20 slabs     50  hist [8, 7, 3, 3, 4, 5, 15, 4, 1]  live!=bits 0  nonfull not in partial set 0
+           1536  21 slabs     57  hist [10, 6, 5, 6, 4, 3, 10, 9, 4]  live!=bits 0  nonfull not in partial set 0
+           1792  22 slabs     73  hist [13, 8, 6, 7, 8, 10, 13, 7, 1]  live!=bits 0  nonfull not in partial set 0
+           2048  23 slabs     76  hist [6, 15, 3, 5, 10, 14, 12, 8, 3]  live!=bits 0  nonfull not in partial set 0
+           2560  24 slabs      9  hist [2, 2, 3, 1, 0, 0, 1, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           3072  25 slabs      6  hist [0, 1, 1, 0, 2, 0, 1, 1, 0]  live!=bits 0  nonfull not in partial set 0
+           3584  26 slabs      8  hist [3, 2, 2, 0, 0, 0, 1, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           4096  27 slabs      7  hist [0, 0, 0, 3, 1, 2, 1, 0, 0]  live!=bits 0  nonfull not in partial set 0
+arenas[7]:
+  dirty_decay_ms: 10000
+  pactive: 2620, pdirty: 3224, pmuzzy: 0
+                            allocated       active        dirty     retained
+  small:                      5578624     10731520     13205504      2609152
+  large:                            0            0            0      1572864  (0 huge runs)
+  metadata: 0, resident: 23937024, mapped: 28119040, retained: 4182016
+  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped
+             32   1     2048      65536         0         0         0         0         1        512          0      0      0      0       0
+            160   8      409      65536         0         0         0         0         1        256          0      0      0      0       0
+            320  12      204      65536         0         0         0         0         1        128          0      0      0      0       0
+            384  13      170      65536       121         6         6        14         1     370304          0      0      0      8       0
+            448  14      146      65536         0         0         0         0         1        128          0      0      0      0       0
+            640  16       25      16384       113         5         1         2         0       1280          0      0      0      0       0
+            768  17       21      16384       722        35         2         1         1       2240          0      0      0      0       0
+            896  18        9       8192       195        93        93        80        23      64384          0      0      0      3       0
+           1024  19        4       4096        35        18        16       340        83      79104          0      0      0      0       0
+           1280  20       25      32768       649        52        50        10         1     398080          0      0      0     11       0
+           1536  21       21      32768       621        53        52        20         0     388832          0      0      0     15       0
+           1792  22       18      32768       664        63        51        21         3     389024          0      0      0     22       0
+           2048  23       16      32768       678        74        73        23         7     389024          0      0      0     19       0
+           2560  24       12      32768        31         8         7        50        13     797936          0      0      0     26       0
+           3072  25       10      32768        20         7         7        59        15     788544          0      0      0     45       0
+           3584  26        9      32768        19         4         3        65         4     541920          0      0      0     20       0
+           4096  27        8      32768        30         9         9        63        10     469184          0      0      0     11       0
+  large classes (slab-allocated, not bins):
+           6144  29       21     131072         0         0         0         0         1          8          0      0      0      0       0
+           8192  31       16     131072         0         0         0         0         1          8          0      0      0      0       0
+          12288  33       21     262144         0         0         0         0         1          4          0      0      0      0       0
+          20480  36       25     524288         0         0         0         0         1          4          0      0      0      0       0
+          28672  38       18     524288         0         0         0         0         1          4          0      0      0      0       0
+  slab occupancy (non-empty slabs per eighth of nslots, last = full):
+            384  13 slabs      6  hist [3, 3, 0, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            640  16 slabs      5  hist [0, 0, 0, 0, 1, 0, 0, 0, 4]  live!=bits 0  nonfull not in partial set 0
+            768  17 slabs     35  hist [0, 0, 0, 1, 0, 0, 0, 0, 34]  live!=bits 0  nonfull not in partial set 0
+            896  18 slabs     93  hist [40, 25, 18, 5, 1, 3, 0, 1, 0]  live!=bits 0  nonfull not in partial set 0
+           1024  19 slabs     18  hist [0, 0, 8, 0, 5, 0, 3, 0, 2]  live!=bits 0  nonfull not in partial set 0
+           1280  20 slabs     52  hist [16, 1, 2, 6, 3, 8, 7, 7, 2]  live!=bits 0  nonfull not in partial set 0
+           1536  21 slabs     53  hist [3, 8, 3, 5, 9, 9, 13, 2, 1]  live!=bits 0  nonfull not in partial set 0
+           1792  22 slabs     63  hist [11, 4, 4, 5, 7, 7, 5, 8, 12]  live!=bits 0  nonfull not in partial set 0
+           2048  23 slabs     74  hist [10, 4, 8, 5, 2, 12, 17, 15, 1]  live!=bits 0  nonfull not in partial set 0
+           2560  24 slabs      8  hist [4, 1, 0, 0, 2, 0, 0, 0, 1]  live!=bits 0  nonfull not in partial set 0
+           3072  25 slabs      7  hist [4, 0, 1, 0, 1, 0, 1, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           3584  26 slabs      4  hist [0, 1, 0, 2, 0, 0, 0, 0, 1]  live!=bits 0  nonfull not in partial set 0
+           4096  27 slabs      9  hist [0, 2, 2, 1, 1, 1, 2, 0, 0]  live!=bits 0  nonfull not in partial set 0
+arenas[8]:
+  dirty_decay_ms: 10000
+  pactive: 2714, pdirty: 3126, pmuzzy: 0
+                            allocated       active        dirty     retained
+  small:                      5481344     11116544     12804096      2465792
+  large:                            0            0            0      1572864  (0 huge runs)
+  metadata: 0, resident: 23920640, mapped: 27959296, retained: 4038656
+  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped
+             32   1     2048      65536         0         0         0         0         1        512          0      0      0      0       0
+            160   8      409      65536         0         0         0         0         1        256          0      0      0      0       0
+            320  12      204      65536         0         0         0         0         1        128          0      0      0      0       0
+            384  13      170      65536       120         5         5        15         2     372480          0      0      0      7       0
+            448  14      146      65536         0         0         0         0         1        128          0      0      0      0       0
+            640  16       25      16384       104         5         2         0         2       1216          0      0      0      0       0
+            768  17       21      16384       772        37         1         1         2       2240          0      0      0      0       0
+            896  18        9       8192       177        89        89        87        21      64768          0      0      0      3       0
+           1024  19        4       4096        24         8         3       340        80      79488          0      0      0      0       0
+           1280  20       25      32768       597        49        49        12         0     399776          0      0      0     10       0
+           1536  21       21      32768       683        62        62        14         3     390752          0      0      0     10       0
+           1792  22       18      32768       683        69        61        18         4     389504          0      0      0     19       0
+           2048  23       16      32768       590        71        71        26         0     391296          0      0      0     25       0
+           2560  24       12      32768        25         8         8        50         8     799824          0      0      0     35       0
+           3072  25       10      32768        20         6         6        61        12     788608          0      0      0     34       0
+           3584  26        9      32768        31        11        11        53        12     542640          0      0      0     18       0
+           4096  27        8      32768        27         9         9        62         7     469632          0      0      0     16       0
+  large classes (slab-allocated, not bins):
+           6144  29       21     131072         0         0         0         0         1          8          0      0      0      0       0
+           8192  31       16     131072         0         0         0         0         1          8          0      0      0      0       0
+          12288  33       21     262144         0         0         0         0         1          4          0      0      0      0       0
+          20480  36       25     524288         0         0         0         0         1          4          0      0      0      0       0
+          28672  38       18     524288         0         0         0         0         1          4          0      0      0      0       0
+  slab occupancy (non-empty slabs per eighth of nslots, last = full):
+            384  13 slabs      5  hist [2, 2, 1, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            640  16 slabs      5  hist [0, 1, 0, 0, 0, 0, 0, 1, 3]  live!=bits 0  nonfull not in partial set 0
+            768  17 slabs     37  hist [0, 0, 0, 0, 0, 0, 1, 0, 36]  live!=bits 0  nonfull not in partial set 0
+            896  18 slabs     89  hist [44, 28, 8, 3, 1, 3, 0, 0, 2]  live!=bits 0  nonfull not in partial set 0
+           1024  19 slabs      8  hist [0, 0, 2, 0, 1, 0, 0, 0, 5]  live!=bits 0  nonfull not in partial set 0
+           1280  20 slabs     49  hist [12, 3, 4, 4, 3, 7, 11, 5, 0]  live!=bits 0  nonfull not in partial set 0
+           1536  21 slabs     62  hist [11, 5, 3, 9, 5, 9, 16, 4, 0]  live!=bits 0  nonfull not in partial set 0
+           1792  22 slabs     69  hist [12, 6, 6, 3, 12, 5, 8, 9, 8]  live!=bits 0  nonfull not in partial set 0
+           2048  23 slabs     71  hist [9, 11, 4, 3, 5, 16, 14, 9, 0]  live!=bits 0  nonfull not in partial set 0
+           2560  24 slabs      8  hist [2, 2, 2, 1, 1, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           3072  25 slabs      6  hist [1, 0, 3, 0, 2, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           3584  26 slabs     11  hist [3, 1, 2, 5, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           4096  27 slabs      9  hist [0, 2, 2, 2, 1, 1, 1, 0, 0]  live!=bits 0  nonfull not in partial set 0
+arenas[9]:
+  dirty_decay_ms: 10000
+  pactive: 2767, pdirty: 3179, pmuzzy: 0
+                            allocated       active        dirty     retained
+  small:                      5441024     11333632     13021184      2486272
+  large:                            0            0            0      1572864  (0 huge runs)
+  metadata: 0, resident: 24354816, mapped: 28413952, retained: 4059136
+  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped
+             32   1     2048      65536         0         0         0         0         1        512          0      0      0      0       0
+            160   8      409      65536         0         0         0         0         1        256          0      0      0      0       0
+            320  12      204      65536         0         0         0         0         1        128          0      0      0      0       0
+            384  13      170      65536       162         9         9        10         4     373376          0      0      0      5       0
+            448  14      146      65536         0         0         0         0         1        128          0      0      0      0       0
+            640  16       25      16384        99         5         2         0         2       1280          0      0      0      0       0
+            768  17       21      16384       745        36         2         1         1       2304          0      0      0      0       0
+            896  18        9       8192       157        83        83        81        30      65024          0      0      0      2       0
+           1024  19        4       4096        32        13         8       349        79      79680          0      0      0      0       0
+           1280  20       25      32768       637        51        51        15         0     401792          0      0      0      6       0
+           1536  21       21      32768       636        61        57        11         2     392064          0      0      0     12       0
+           1792  22       18      32768       628        61        59        25         0     391136          0      0      0     20       0
+           2048  23       16      32768       662        77        70        22         3     392768          0      0      0     23       0
+           2560  24       12      32768        22         8         8        54         8     802416          0      0      0     41       0
+           3072  25       10      32768        17         9         9        61        13     792336          0      0      0     27       0
+           3584  26        9      32768        25        10        10        58        12     546512          0      0      0     13       0
+           4096  27        8      32768        24         8         8        67         3     471104          0      0      0      9       0
+  large classes (slab-allocated, not bins):
+           6144  29       21     131072         0         0         0         0         1          8          0      0      0      0       0
+           8192  31       16     131072         0         0         0         0         1          8          0      0      0      0       0
+          12288  33       21     262144         0         0         0         0         1          4          0      0      0      0       0
+          20480  36       25     524288         0         0         0         0         1          4          0      0      0      0       0
+          28672  38       18     524288         0         0         0         0         1          4          0      0      0      0       0
+  slab occupancy (non-empty slabs per eighth of nslots, last = full):
+            384  13 slabs      9  hist [6, 2, 1, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            640  16 slabs      5  hist [0, 1, 0, 0, 0, 0, 1, 0, 3]  live!=bits 0  nonfull not in partial set 0
+            768  17 slabs     36  hist [0, 0, 0, 1, 0, 0, 0, 0, 35]  live!=bits 0  nonfull not in partial set 0
+            896  18 slabs     83  hist [43, 21, 11, 5, 2, 0, 0, 0, 1]  live!=bits 0  nonfull not in partial set 0
+           1024  19 slabs     13  hist [0, 0, 5, 0, 2, 0, 1, 0, 5]  live!=bits 0  nonfull not in partial set 0
+           1280  20 slabs     51  hist [9, 10, 0, 5, 5, 5, 10, 7, 0]  live!=bits 0  nonfull not in partial set 0
+           1536  21 slabs     61  hist [13, 5, 8, 4, 5, 7, 10, 5, 4]  live!=bits 0  nonfull not in partial set 0
+           1792  22 slabs     61  hist [6, 4, 7, 4, 11, 7, 10, 10, 2]  live!=bits 0  nonfull not in partial set 0
+           2048  23 slabs     77  hist [10, 5, 9, 6, 9, 13, 8, 10, 7]  live!=bits 0  nonfull not in partial set 0
+           2560  24 slabs      8  hist [2, 1, 4, 1, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           3072  25 slabs      9  hist [5, 2, 1, 0, 1, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           3584  26 slabs     10  hist [3, 3, 2, 0, 2, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           4096  27 slabs      8  hist [0, 1, 1, 3, 3, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+arenas[10]:
+  dirty_decay_ms: 10000
+  pactive: 2624, pdirty: 3045, pmuzzy: 0
+                            allocated       active        dirty     retained
+  small:                      5424128     10747904     12472320      3284992
+  large:                            0            0            0      1572864  (0 huge runs)
+  metadata: 0, resident: 23220224, mapped: 28078080, retained: 4857856
+  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped
+             32   1     2048      65536         0         0         0         0         1        512          0      0      0      0       0
+            160   8      409      65536         0         0         0         0         1        256          0      0      0      0       0
+            320  12      204      65536         0         0         0         0         1        128          0      0      0      0       0
+            384  13      170      65536        80         4         4        15         2     370816          0      0      0      9       0
+            448  14      146      65536         0         0         0         0         1        128          0      0      0      0       0
+            640  16       25      16384        97         5         2         0         2       1216          0      0      0      0       0
+            768  17       21      16384       771        38         2         1         1       2304          0      0      0      0       0
+            896  18        9       8192       151        84        84        87        25      64704          0      0      0      2       0
+           1024  19        4       4096         8         4         4       331       100      78528          0      0      0      0       0
+           1280  20       25      32768       620        49        49        12         1     396480          0      0      0     13       0
+           1536  21       21      32768       626        57        54        14         3     389536          0      0      0     17       0
+           1792  22       18      32768       684        70        69        20         0     389568          0      0      0     17       0
+           2048  23       16      32768       635        75        69        18         4     388768          0      0      0     32       0
+           2560  24       12      32768        19         7         7        47        15     797088          0      0      0     35       0
+           3072  25       10      32768        32         7         7        61        15     788848          0      0      0     31       0
+           3584  26        9      32768        17         6         6        57        12     543808          0      0      0     22       0
+           4096  27        8      32768        26         6         6        58        18     468768          0      0      0     19       0
+  large classes (slab-allocated, not bins):
+           6144  29       21     131072         0         0         0         0         1          8          0      0      0      0       0
+           8192  31       16     131072         0         0         0         0         1          8          0      0      0      0       0
+          12288  33       21     262144         0         0         0         0         1          4          0      0      0      0       0
+          20480  36       25     524288         0         0         0         0         1          4          0      0      0      0       0
+          28672  38       18     524288         0         0         0         0         1          4          0      0      0      0       0
+  slab occupancy (non-empty slabs per eighth of nslots, last = full):
+            384  13 slabs      4  hist [3, 0, 1, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            640  16 slabs      5  hist [1, 0, 0, 0, 0, 0, 1, 0, 3]  live!=bits 0  nonfull not in partial set 0
+            768  17 slabs     38  hist [0, 1, 0, 0, 1, 0, 0, 0, 36]  live!=bits 0  nonfull not in partial set 0
+            896  18 slabs     84  hist [42, 25, 15, 0, 1, 0, 0, 0, 1]  live!=bits 0  nonfull not in partial set 0
+           1024  19 slabs      4  hist [0, 0, 2, 0, 0, 0, 2, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           1280  20 slabs     49  hist [10, 6, 1, 3, 6, 9, 9, 5, 0]  live!=bits 0  nonfull not in partial set 0
+           1536  21 slabs     57  hist [11, 7, 2, 4, 4, 10, 13, 3, 3]  live!=bits 0  nonfull not in partial set 0
+           1792  22 slabs     70  hist [12, 5, 7, 4, 12, 3, 9, 17, 1]  live!=bits 0  nonfull not in partial set 0
+           2048  23 slabs     75  hist [11, 7, 7, 8, 5, 8, 17, 6, 6]  live!=bits 0  nonfull not in partial set 0
+           2560  24 slabs      7  hist [3, 2, 1, 0, 0, 1, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           3072  25 slabs      7  hist [2, 0, 1, 0, 3, 0, 0, 1, 0]  live!=bits 0  nonfull not in partial set 0
+           3584  26 slabs      6  hist [2, 1, 0, 2, 1, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           4096  27 slabs      6  hist [0, 1, 0, 1, 1, 1, 1, 1, 0]  live!=bits 0  nonfull not in partial set 0
+arenas[11]:
+  dirty_decay_ms: 10000
+  pactive: 2812, pdirty: 3169, pmuzzy: 0
+                            allocated       active        dirty     retained
+  small:                      5499520     10731520     12980224      2809856
+  large:                       786432       786432            0      1572864  (1 huge runs)
+  metadata: 0, resident: 24498176, mapped: 28880896, retained: 4382720
+  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped
+             32   1     2048      65536         0         0         0         0         1        512          0      0      0      0       0
+             64   3     1024      65536         0         0         0         0         1        512          0      0      0      0       0
+            160   8      409      65536         0         0         0         0         1        256          0      0      0      0       0
+            320  12      204      65536         0         0         0         0         1        128          0      0      0      0       0
+            384  13      170      65536       160         5         5        13         3     372224          0      0      0      4       0
+            448  14      146      65536         0         0         0         0         1        128          0      0      0      0       0
+            640  16       25      16384        98         5         2         0         2       1216          0      0      0      0       0
+            768  17       21      16384       769        37         1         3         0       2368          0      0      0      0       0
+            896  18        9       8192       203        99        98        73        29      64384          0      0      0      2       0
+           1024  19        4       4096        54        22        17       331        76      79040          0      0      0      0       0
+           1280  20       25      32768       667        45        44        20         0     399680          0      0      0      8       0
+           1536  21       21      32768       664        56        55        18         1     390624          0      0      0     17       0
+           1792  22       18      32768       617        69        69        16         2     391264          0      0      0     23       0
+           2048  23       16      32768       610        72        71        23         3     390720          0      0      0     27       0
+           2560  24       12      32768        30         7         7        51        10     802208          0      0      0     31       0
+           3072  25       10      32768        21         6         6        59        16     792816          0      0      0     33       0
+           3584  26        9      32768        29         8         7        59         8     544016          0      0      0     29       0
+           4096  27        8      32768        18         6         6        63        12     471008          0      0      0     13       0
+  large classes (slab-allocated, not bins):
+           6144  29       21     131072         0         0         0         0         1          8          0      0      0      0       0
+           8192  31       16     131072         0         0         0         0         1          8          0      0      0      0       0
+          12288  33       21     262144         0         0         0         0         1          4          0      0      0      0       0
+          20480  36       25     524288         0         0         0         0         1          4          0      0      0      0       0
+          28672  38       18     524288         0         0         0         0         1          4          0      0      0      0       0
+  slab occupancy (non-empty slabs per eighth of nslots, last = full):
+            384  13 slabs      5  hist [1, 3, 1, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            640  16 slabs      5  hist [0, 1, 0, 0, 0, 1, 0, 0, 3]  live!=bits 0  nonfull not in partial set 0
+            768  17 slabs     37  hist [0, 0, 0, 0, 1, 0, 0, 0, 36]  live!=bits 0  nonfull not in partial set 0
+            896  18 slabs     99  hist [45, 34, 9, 3, 4, 0, 2, 1, 1]  live!=bits 0  nonfull not in partial set 0
+           1024  19 slabs     22  hist [0, 0, 6, 0, 5, 0, 6, 0, 5]  live!=bits 0  nonfull not in partial set 0
+           1280  20 slabs     45  hist [7, 0, 2, 9, 2, 6, 9, 9, 1]  live!=bits 0  nonfull not in partial set 0
+           1536  21 slabs     56  hist [7, 5, 4, 4, 7, 8, 16, 4, 1]  live!=bits 0  nonfull not in partial set 0
+           1792  22 slabs     69  hist [13, 5, 5, 8, 10, 12, 11, 5, 0]  live!=bits 0  nonfull not in partial set 0
+           2048  23 slabs     72  hist [6, 10, 6, 7, 5, 16, 15, 6, 1]  live!=bits 0  nonfull not in partial set 0
+           2560  24 slabs      7  hist [2, 0, 2, 0, 2, 1, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           3072  25 slabs      6  hist [2, 0, 0, 2, 2, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           3584  26 slabs      8  hist [2, 2, 0, 2, 0, 1, 0, 0, 1]  live!=bits 0  nonfull not in partial set 0
+           4096  27 slabs      6  hist [0, 1, 3, 0, 1, 0, 0, 1, 0]  live!=bits 0  nonfull not in partial set 0
+arenas[12]:
+  dirty_decay_ms: 10000
+  pactive: 2644, pdirty: 3221, pmuzzy: 0
+                            allocated       active        dirty     retained
+  small:                      5475712     10829824     13193216      2801664
+  large:                            0            0            0      1572864  (0 huge runs)
+  metadata: 0, resident: 24023040, mapped: 28397568, retained: 4374528
+  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped
+             32   1     2048      65536         0         0         0         0         1        512          0      0      0      0       0
+            160   8      409      65536         0         0         0         0         1        256          0      0      0      0       0
+            320  12      204      65536         0         0         0         0         1        128          0      0      0      0       0
+            384  13      170      65536        81         5         5        15         1     373376          0      0      0      7       0
+            448  14      146      65536         0         0         0         0         1        128          0      0      0      0       0
+            640  16       25      16384       115         6         2         2         0       1344          0      0      0      0       0
+            768  17       21      16384       785        38         2         1         1       2496          0      0      0      0       0
+            896  18        9       8192       147        83        82        84        40      64960          0      0      0      3       0
+           1024  19        4       4096        24         6         0       321       104      78976          0      0      0      0       0
+           1280  20       25      32768       691        50        50        14         1     400064          0      0      0      8       0
+           1536  21       21      32768       629        59        59        14         0     391008          0      0      0     10       0
+           1792  22       18      32768       618        64        62        18         4     391072          0      0      0     14       0
+           2048  23       16      32768       622        72        71        26         7     390400          0      0      0     23       0
+           2560  24       12      32768        27         8         7        51        10     797776          0      0      0     34       0
+           3072  25       10      32768        27         9         9        61        12     789648          0      0      0     43       0
+           3584  26        9      32768        27         8         8        60         7     543328          0      0      0     22       0
+           4096  27        8      32768        32         7         7        66        11     470288          0      0      0     17       0
+  large classes (slab-allocated, not bins):
+           6144  29       21     131072         0         0         0         0         1          8          0      0      0      0       0
+           8192  31       16     131072         0         0         0         0         1          8          0      0      0      0       0
+          12288  33       21     262144         0         0         0         0         1          4          0      0      0      0       0
+          20480  36       25     524288         0         0         0         0         1          4          0      0      0      0       0
+          28672  38       18     524288         0         0         0         0         1          4          0      0      0      0       0
+  slab occupancy (non-empty slabs per eighth of nslots, last = full):
+            384  13 slabs      5  hist [4, 1, 0, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            640  16 slabs      6  hist [1, 0, 0, 0, 1, 0, 0, 0, 4]  live!=bits 0  nonfull not in partial set 0
+            768  17 slabs     38  hist [0, 0, 0, 1, 0, 0, 0, 0, 37]  live!=bits 0  nonfull not in partial set 0
+            896  18 slabs     83  hist [44, 24, 10, 4, 0, 0, 0, 0, 1]  live!=bits 0  nonfull not in partial set 0
+           1280  20 slabs     50  hist [10, 0, 8, 3, 2, 7, 10, 8, 2]  live!=bits 0  nonfull not in partial set 0
+           1536  21 slabs     59  hist [9, 5, 4, 9, 8, 5, 16, 3, 0]  live!=bits 0  nonfull not in partial set 0
+           1792  22 slabs     64  hist [8, 5, 8, 6, 7, 11, 9, 8, 2]  live!=bits 0  nonfull not in partial set 0
+           2048  23 slabs     72  hist [7, 9, 3, 8, 6, 13, 17, 7, 2]  live!=bits 0  nonfull not in partial set 0
+           2560  24 slabs      8  hist [3, 3, 0, 0, 1, 0, 0, 0, 1]  live!=bits 0  nonfull not in partial set 0
+           3072  25 slabs      9  hist [4, 1, 1, 1, 1, 0, 0, 1, 0]  live!=bits 0  nonfull not in partial set 0
+           3584  26 slabs      8  hist [3, 1, 0, 1, 2, 0, 0, 1, 0]  live!=bits 0  nonfull not in partial set 0
+           4096  27 slabs      7  hist [0, 1, 1, 0, 1, 0, 3, 1, 0]  live!=bits 0  nonfull not in partial set 0
+arenas[13]:
+  dirty_decay_ms: 10000
+  pactive: 2470, pdirty: 3200, pmuzzy: 0
+                            allocated       active        dirty     retained
+  small:                      5441792     10117120     13107200      3117056
+  large:                            0            0            0      1572864  (0 huge runs)
+  metadata: 0, resident: 23224320, mapped: 27914240, retained: 4689920
+  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped
+             32   1     2048      65536         0         0         0         0         1        512          0      0      0      0       0
+            160   8      409      65536         0         0         0         0         1        256          0      0      0      0       0
+            320  12      204      65536         0         0         0         0         1        128          0      0      0      0       0
+            384  13      170      65536        83         2         2        17         2     371328          0      0      0      5       0
+            448  14      146      65536         0         0         0         0         1        128          0      0      0      0       0
+            640  16       25      16384       102         5         2         0         2       1216          0      0      0      0       0
+            768  17       21      16384       749        36         2         3         0       2240          0      0      0      0       0
+            896  18        9       8192       131        76        75        96        21      64960          0      0      0      2       0
+           1024  19        4       4096         7         2         1       372        55      78464          0      0      0      0       0
+           1280  20       25      32768       659        47        45        13         2     398976          0      0      0      9       0
+           1536  21       21      32768       614        54        50        16         3     390016          0      0      0     11       0
+           1792  22       18      32768       647        65        63        18         4     389952          0      0      0     23       0
+           2048  23       16      32768       661        69        62        25         5     389504          0      0      0     25       0
+           2560  24       12      32768        32         8         8        50        10     797264          0      0      0     25       0
+           3072  25       10      32768        21         5         4        64        12     787984          0      0      0     34       0
+           3584  26        9      32768        20         5         4        56        18     542448          0      0      0     18       0
+           4096  27        8      32768        31        12        12        52        16     468624          0      0      0     16       0
+  large classes (slab-allocated, not bins):
+           6144  29       21     131072         0         0         0         0         1          8          0      0      0      0       0
+           8192  31       16     131072         0         0         0         0         1          8          0      0      0      0       0
+          12288  33       21     262144         0         0         0         0         1          4          0      0      0      0       0
+          20480  36       25     524288         0         0         0         0         1          4          0      0      0      0       0
+          28672  38       18     524288         0         0         0         0         1          4          0      0      0      0       0
+  slab occupancy (non-empty slabs per eighth of nslots, last = full):
+            384  13 slabs      2  hist [1, 0, 0, 1, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            640  16 slabs      5  hist [0, 1, 0, 0, 0, 0, 1, 0, 3]  live!=bits 0  nonfull not in partial set 0
+            768  17 slabs     36  hist [0, 0, 0, 0, 0, 1, 0, 0, 35]  live!=bits 0  nonfull not in partial set 0
+            896  18 slabs     76  hist [45, 19, 7, 3, 0, 1, 0, 0, 1]  live!=bits 0  nonfull not in partial set 0
+           1024  19 slabs      2  hist [0, 0, 0, 0, 0, 0, 1, 0, 1]  live!=bits 0  nonfull not in partial set 0
+           1280  20 slabs     47  hist [7, 3, 5, 2, 8, 6, 7, 7, 2]  live!=bits 0  nonfull not in partial set 0
+           1536  21 slabs     54  hist [6, 8, 2, 6, 9, 6, 9, 4, 4]  live!=bits 0  nonfull not in partial set 0
+           1792  22 slabs     65  hist [10, 6, 3, 5, 7, 13, 13, 6, 2]  live!=bits 0  nonfull not in partial set 0
+           2048  23 slabs     69  hist [5, 7, 5, 9, 5, 7, 9, 15, 7]  live!=bits 0  nonfull not in partial set 0
+           2560  24 slabs      8  hist [1, 3, 1, 2, 0, 0, 0, 1, 0]  live!=bits 0  nonfull not in partial set 0
+           3072  25 slabs      5  hist [1, 1, 1, 0, 1, 0, 0, 0, 1]  live!=bits 0  nonfull not in partial set 0
+           3584  26 slabs      5  hist [1, 1, 0, 2, 0, 0, 0, 0, 1]  live!=bits 0  nonfull not in partial set 0
+           4096  27 slabs     12  hist [0, 3, 5, 2, 0, 1, 0, 1, 0]  live!=bits 0  nonfull not in partial set 0
+arenas[14]:
+  dirty_decay_ms: 10000
+  pactive: 2706, pdirty: 3218, pmuzzy: 0
+                            allocated       active        dirty     retained
+  small:                      5516800     11083776     13180928      2154496
+  large:                            0            0            0      1572864  (0 huge runs)
+  metadata: 0, resident: 24264704, mapped: 27992064, retained: 3727360
+  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped
+             32   1     2048      65536         0         0         0         0         1        512          0      0      0      0       0
+            160   8      409      65536         0         0         0         0         1        256          0      0      0      0       0
+            320  12      204      65536         0         0         0         0         1        128          0      0      0      0       0
+            384  13      170      65536       126         6         6        15         0     372992          0      0      0      4       0
+            448  14      146      65536         0         0         0         0         1        128          0      0      0      0       0
+            640  16       25      16384        88         5         2         1         0       1280          0      0      0      0       0
+            768  17       21      16384       749        36         2         3         0       2304          0      0      0      0       0
+            896  18        9       8192       168        86        86        73        39      64512          0      0      0      2       0
+           1024  19        4       4096        35        10         3       384        32      79232          0      0      0      0       0
+           1280  20       25      32768       631        50        48        13         0     399968          0      0      0     11       0
+           1536  21       21      32768       650        60        60        15         1     390112          0      0      0     16       0
+           1792  22       18      32768       641        65        61        20         2     390464          0      0      0     21       0
+           2048  23       16      32768       665        78        73        20         4     390848          0      0      0     26       0
+           2560  24       12      32768        31        11        11        50         6     799920          0      0      0     38       0
+           3072  25       10      32768        18         5         5        64        11     790960          0      0      0     29       0
+           3584  26        9      32768        27         8         8        58         9     543680          0      0      0     16       0
+           4096  27        8      32768        25         6         5        64        11     469440          0      0      0     11       0
+  large classes (slab-allocated, not bins):
+           6144  29       21     131072         0         0         0         0         1          8          0      0      0      0       0
+           8192  31       16     131072         0         0         0         0         1          8          0      0      0      0       0
+          12288  33       21     262144         0         0         0         0         1          4          0      0      0      0       0
+          20480  36       25     524288         0         0         0         0         1          4          0      0      0      0       0
+          28672  38       18     524288         0         0         0         0         1          4          0      0      0      0       0
+  slab occupancy (non-empty slabs per eighth of nslots, last = full):
+            384  13 slabs      6  hist [4, 2, 0, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            640  16 slabs      5  hist [1, 0, 0, 1, 0, 0, 0, 0, 3]  live!=bits 0  nonfull not in partial set 0
+            768  17 slabs     36  hist [0, 0, 0, 0, 0, 1, 0, 0, 35]  live!=bits 0  nonfull not in partial set 0
+            896  18 slabs     86  hist [44, 20, 12, 6, 3, 0, 0, 0, 1]  live!=bits 0  nonfull not in partial set 0
+           1024  19 slabs     10  hist [0, 0, 0, 0, 2, 0, 1, 0, 7]  live!=bits 0  nonfull not in partial set 0
+           1280  20 slabs     50  hist [9, 4, 6, 6, 2, 9, 6, 6, 2]  live!=bits 0  nonfull not in partial set 0
+           1536  21 slabs     60  hist [10, 8, 3, 7, 2, 12, 11, 7, 0]  live!=bits 0  nonfull not in partial set 0
+           1792  22 slabs     65  hist [13, 3, 4, 6, 11, 4, 11, 9, 4]  live!=bits 0  nonfull not in partial set 0
+           2048  23 slabs     78  hist [7, 12, 5, 7, 7, 16, 11, 8, 5]  live!=bits 0  nonfull not in partial set 0
+           2560  24 slabs     11  hist [3, 2, 4, 2, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           3072  25 slabs      5  hist [0, 2, 0, 1, 2, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           3584  26 slabs      8  hist [2, 1, 1, 2, 1, 0, 1, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           4096  27 slabs      6  hist [0, 1, 0, 3, 0, 0, 0, 1, 1]  live!=bits 0  nonfull not in partial set 0
+arenas[15]:
+  dirty_decay_ms: 10000
+  pactive: 2755, pdirty: 3384, pmuzzy: 0
+                            allocated       active        dirty     retained
+  small:                      5453568     11153408     13860864      1826816
+  large:                         5120       131072            0      1572864  (0 huge runs)
+  metadata: 0, resident: 25145344, mapped: 28545024, retained: 3399680
+  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped
+             32   1     2048      65536         0         0         0         0         1        512          0      0      0      0       0
+            160   8      409      65536         0         0         0         0         1        256          0      0      0      0       0
+            320  12      204      65536         0         0         0         0         1        128          0      0      0      0       0
+            384  13      170      65536        84         6         6        13         3     371456          0      0      0      7       0
+            448  14      146      65536         0         0         0         0         1        128          0      0      0      0       0
+            640  16       25      16384        89         5         2         2         0       1216          0      0      0      0       0
+            768  17       21      16384       755        36         2         1         1       2240          0      0      0      0       0
+            896  18        9       8192       163        90        90        79        26      64384          0      0      0      3       0
+           1024  19        4       4096        29        11         8       342        78      78656          0      0      0      0       0
+           1280  20       25      32768       632        46        46        19         0     399488          0      0      0      9       0
+           1536  21       21      32768       617        58        57        18         0     390080          0      0      0     17       0
+           1792  22       18      32768       661        69        69        18         4     389472          0      0      0     26       0
+           2048  23       16      32768       655        76        70        26         0     390144          0      0      0     29       0
+           2560  24       12      32768        20         5         4        63         2     796928          0      0      0     38       0
+           3072  25       10      32768        24         7         7        69         6     787456          0      0      0     35       0
+           3584  26        9      32768        23        11        11        61         6     543264          0      0      0     21       0
+           4096  27        8      32768        29        12        12        59         7     467968          0      0      0     14       0
+  large classes (slab-allocated, not bins):
+           5120  28       25     131072         1         1         1         0         0          8          0      0      0      0       0
+           6144  29       21     131072         0         0         0         0         1          8          0      0      0      0       0
+           8192  31       16     131072         0         0         0         0         1          8          0      0      0      0       0
+          12288  33       21     262144         0         0         0         0         1          4          0      0      0      0       0
+          20480  36       25     524288         0         0         0         0         1          4          0      0      0      0       0
+          28672  38       18     524288         0         0         0         0         1          4          0      0      0      0       0
+  slab occupancy (non-empty slabs per eighth of nslots, last = full):
+            384  13 slabs      6  hist [4, 2, 0, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            640  16 slabs      5  hist [1, 0, 0, 0, 1, 0, 0, 0, 3]  live!=bits 0  nonfull not in partial set 0
+            768  17 slabs     36  hist [0, 0, 0, 0, 0, 0, 0, 1, 35]  live!=bits 0  nonfull not in partial set 0
+            896  18 slabs     90  hist [47, 29, 7, 3, 2, 0, 1, 1, 0]  live!=bits 0  nonfull not in partial set 0
+           1024  19 slabs     11  hist [0, 0, 2, 0, 3, 0, 3, 0, 3]  live!=bits 0  nonfull not in partial set 0
+           1280  20 slabs     46  hist [6, 5, 4, 2, 4, 10, 9, 5, 1]  live!=bits 0  nonfull not in partial set 0
+           1536  21 slabs     58  hist [7, 7, 7, 5, 9, 7, 11, 4, 1]  live!=bits 0  nonfull not in partial set 0
+           1792  22 slabs     69  hist [11, 6, 4, 7, 9, 8, 17, 7, 0]  live!=bits 0  nonfull not in partial set 0
+           2048  23 slabs     76  hist [6, 12, 6, 7, 9, 9, 12, 9, 6]  live!=bits 0  nonfull not in partial set 0
+           2560  24 slabs      5  hist [2, 1, 1, 0, 0, 0, 0, 0, 1]  live!=bits 0  nonfull not in partial set 0
+           3072  25 slabs      7  hist [2, 1, 1, 1, 1, 1, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           3584  26 slabs     11  hist [3, 6, 1, 0, 1, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           4096  27 slabs     12  hist [0, 5, 2, 1, 3, 1, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           5120  28 slabs      1  hist [1, 0, 0, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+arenas[16]:
+  dirty_decay_ms: 10000
+  pactive: 2682, pdirty: 3067, pmuzzy: 0
+                            allocated       active        dirty     retained
+  small:                      5531520     10985472     12562432      2867200
+  large:                            0            0            0      1572864  (0 huge runs)
+  metadata: 0, resident: 23547904, mapped: 27987968, retained: 4440064
+  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped
+             32   1     2048      65536         0         0         0         0         1        512          0      0      0      0       0
+            160   8      409      65536         0         0         0         0         1        256          0      0      0      0       0
+            320  12      204      65536         0         0         0         0         1        128          0      0      0      0       0
+            384  13      170      65536       120         6         6        13         3     371712          0      0      0      5       0
+            448  14      146      65536         0         0         0         0         1        128          0      0      0      0       0
+            640  16       25      16384        91         5         2         0         1       1216          0      0      0      0       0
+            768  17       21      16384       768        37         2         3         0       2368          0      0      0      0       0
+            896  18        9       8192       164        85        85        78        31      64256          0      0      0      3       0
+           1024  19        4       4096        30         8         2       347        74      79424          0      0      0      0       0
+           1280  20       25      32768       642        50        50        11         2     399776          0      0      0      9       0
+           1536  21       21      32768       621        53        51        19         1     390016          0      0      0      9       0
+           1792  22       18      32768       644        69        64        15         2     390400          0      0      0     18       0
+           2048  23       16      32768       670        71        67        28         3     390048          0      0      0     19       0
+           2560  24       12      32768        27         8         8        48        12     799792          0      0      0     28       0
+           3072  25       10      32768        25         8         7        60        12     790624          0      0      0     31       0
+           3584  26        9      32768        26         9         9        59        10     543744          0      0      0     15       0
+           4096  27        8      32768        29        12        12        53        14     468896          0      0      0     12       0
+  large classes (slab-allocated, not bins):
+           6144  29       21     131072         0         0         0         0         1          8          0      0      0      0       0
+           8192  31       16     131072         0         0         0         0         1          8          0      0      0      0       0
+          12288  33       21     262144         0         0         0         0         1          4          0      0      0      0       0
+          20480  36       25     524288         0         0         0         0         1          4          0      0      0      0       0
+          28672  38       18     524288         0         0         0         0         1          4          0      0      0      0       0
+  slab occupancy (non-empty slabs per eighth of nslots, last = full):
+            384  13 slabs      6  hist [4, 1, 1, 0, 0, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+            640  16 slabs      5  hist [1, 0, 0, 0, 1, 0, 0, 0, 3]  live!=bits 0  nonfull not in partial set 0
+            768  17 slabs     37  hist [0, 0, 0, 0, 1, 0, 0, 0, 36]  live!=bits 0  nonfull not in partial set 0
+            896  18 slabs     85  hist [43, 27, 9, 1, 1, 1, 1, 0, 2]  live!=bits 0  nonfull not in partial set 0
+           1024  19 slabs      8  hist [0, 0, 0, 0, 0, 0, 2, 0, 6]  live!=bits 0  nonfull not in partial set 0
+           1280  20 slabs     50  hist [9, 6, 3, 2, 5, 8, 14, 3, 0]  live!=bits 0  nonfull not in partial set 0
+           1536  21 slabs     53  hist [8, 4, 4, 4, 7, 6, 15, 3, 2]  live!=bits 0  nonfull not in partial set 0
+           1792  22 slabs     69  hist [16, 6, 4, 5, 6, 8, 10, 9, 5]  live!=bits 0  nonfull not in partial set 0
+           2048  23 slabs     71  hist [7, 7, 3, 8, 5, 8, 12, 17, 4]  live!=bits 0  nonfull not in partial set 0
+           2560  24 slabs      8  hist [3, 1, 1, 1, 2, 0, 0, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           3072  25 slabs      8  hist [4, 0, 2, 0, 1, 0, 0, 0, 1]  live!=bits 0  nonfull not in partial set 0
+           3584  26 slabs      9  hist [3, 2, 1, 1, 1, 0, 1, 0, 0]  live!=bits 0  nonfull not in partial set 0
+           4096  27 slabs     12  hist [0, 6, 2, 1, 0, 2, 1, 0, 0]  live!=bits 0  nonfull not in partial set 0
+--- End jemalloc statistics ---
