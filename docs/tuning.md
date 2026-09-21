@@ -325,7 +325,49 @@ churning megabyte buffers; a lower value was not measured on this row.
 
 ### PostgreSQL
 
-Pending: no results file exists at 483ec7c (plan Phase 3 task 5 (b)).
+`bench/results/2026-09-20-{aarch64,x86_64}-postgres.md` (Wolfi
+`postgresql-17`, pgbench scale 50, `shared_buffers` 1 GB, five allocators,
+5 rounds) and, after the metadata region's small tables moved into the
+heaps' mapping (`meta::EAGER_MAX`, design 2),
+`2026-09-20-{aarch64,x86_64}-postgres-vmas.md` with a same-VM challoc
+before/after in `-postgres-vmas-main.md`. Nothing to set. What the rows
+found:
+
+- Steady state (`select100`, `tpcb100`, `select500`): within a few percent
+  of glibc and jemalloc on both architectures, the backends spending the
+  same instructions and cache misses per transaction under either
+  allocator (the attribution in the aarch64 file).
+- Connection setup (`connect20`, a fork, a backend start-up, one TPC-B
+  transaction and an exit per client): the row where challoc is behind,
+  glibc +53% (aarch64) / +64% (x86_64) in tps on the first files, +43% /
+  +59% on the lane VMs a day later (connection 2.5-2.6 ms against glibc's
+  1.6-1.7). A fresh backend inherits every mapping of the postmaster, and
+  challoc's heap is hundreds of them (one `rw-p` slab run and one `---p`
+  tail per class region, and, before the change, one pair per metadata
+  table) where glibc's is one `[heap]`; `fork` copies the VMAs and the
+  page tables under the touched pages, the child faults its first slab of
+  every class it uses, and exit tears the sparse page tables down. Moving
+  the small tables into one mapping took a backend's metadata region from
+  251 lines to 173 (its 464 mappings to 386) and the same-VM `connect20`
+  by +2.4% tps / -2.5% connection time on aarch64, +1.5% / -1.5% on
+  x86_64; what remains is the page-table sparsity of the class regions and
+  the large tables (VmPTE 1.3 MiB per backend against glibc's 120 KiB, the
+  same at every cap the lane measured) and the child's 58 slab commits,
+  neither of which the metadata layout reaches.
+- RSS: per-backend Pss_Anon 1.6-1.8 MiB against glibc's 1.2-1.3 (x86_64)
+  or 2.5 (aarch64, where glibc's arenas retain more) and jemalloc's
+  1.3-1.5: one committed slab per size class the backend touched plus a
+  page per metadata table head, the same before and after the change. At
+  500 backends that is +15% of the Pss sum against glibc on x86_64 and
+  -19% on aarch64.
+
+Connection cost is what a pooler is for. PostgreSQL's own advice for a
+workload that opens a connection per transaction is PgBouncer (or the
+application's pool) in front of the server, whatever the allocator: even
+glibc's backend costs 1.6-1.8 ms to fork and start and a first transaction
+several times a steady-state one, and with a pool the challoc backend's
+extra fork cost is paid once per pooled connection, not per transaction.
+Under a pool the rows that matter are the steady-state ones above.
 
 ## 4. The cgroup policy
 

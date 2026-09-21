@@ -80,6 +80,45 @@ own data segment) is not sealed either: it shares its pages with locks and
 counters that are written at run time, the mapping belongs to `ld.so`, and
 `mseal` does not stop writes, only remapping.
 
+Inside the metadata region (`meta.rs`) two things grow towards each other:
+objects (heaps, cache slot stacks, node blocks, huge descriptors) from a
+bump pointer at the base, committed ahead in 64 KiB chunks, and the
+never-freed tables (a class's descriptor array, slot bitmap and owner
+array, an arena's set tables, the huge free-page bitmap, the background
+thread's stack) reserved downward from the top and committed page by page
+from each table's base as its slab numbers grow. Each committed prefix on
+the reservation side is its own VMA: its table's uncommitted tail, up to
+the next table's base, keeps the kernel from merging it, so a process that
+touched every class carried 337 `[anon:challoc:meta]` lines in
+`/proc/self/maps` (168 `rw-p`, 169 `---p`) and a forked child inherited
+all of them (the PostgreSQL `connect20` row,
+`bench/results/2026-09-20-*-postgres-vmas.md`; the probe is
+`bench/probes/fork_maps.c`). Since 2026-09-20 a table of at most
+`meta::EAGER_MAX` (8 MiB) is not reserved at the top at all: it is carved
+from the object side, page aligned and writable from the start, inside the
+chunked commit that covers the heaps and caches, so it joins the one
+mapping that grows from the base (`Meta::reserve_table`; its owner's
+`commit` calls are accounting only). At the preferred layout that takes 56
+of the 167 tables (every owner array, every table of the medium classes,
+the set tables) for 82 MiB of writable-but-untouched address space per
+process, and the region's lines fall from 337 to 225 (a PostgreSQL
+backend's from 251 to 173). The small classes'
+64..256 MiB descriptor arrays and 128 MiB..2 GiB slot bitmaps stay on the
+reservation side, committed page by page: making them writable whole would
+put gigabytes of never-touched address space into every core dump (a
+private writable mapping with one page in it is dumped whole), under
+`mlockall` and `RLIMIT_DATA`, and under PMD pages on a `thp=always` host,
+for a fork-cost gain the same probe measured at 10-15% of `fork()` on
+aarch64 and nothing on x86_64 even with the whole region as one mapping:
+what the child pays for is the page-table sparsity of the touched table
+heads (VmPTE 1.3 MiB against glibc's 120 KiB at every cap), which only a
+layout that packs the heads (a slab-major interleave of the tables, a
+fast-path address formula change) would remove. Eager carving is off
+under `vm.overcommit_memory=2` (the kernel ignores `MAP_NORESERVE` there
+and would charge every backend the tables' commit) and under any `thp` key
+but `never` (whose `MADV_NOHUGEPAGE` on the reservation keeps a table's
+first touch to one page), both read on the first table.
+
 Sizes are runtime parameters chosen by probing how much virtual address space
 the process can reserve, so the same binary works on 47-bit x86_64, 48-bit
 aarch64, and 39-bit aarch64 kernels:
@@ -222,7 +261,9 @@ Every slab has a descriptor in the metadata region. Descriptors for class `c`
 form a dense array indexed by slab number at a per-class stride of 16 to 64
 bytes (`max(16, 64 / slabs_per_line)`, so that the descriptors of the slabs
 sharing one bitmap line fill whole descriptor lines), committed on demand as
-the region grows. Descriptor layout, a fixed 16-byte header:
+the region grows (a table of at most `meta::EAGER_MAX` is carved writable
+from the metadata region's object side instead and the commits are
+accounting only, section 2). Descriptor layout, a fixed 16-byte header:
 
 ```
 struct SlabDesc {
@@ -610,7 +651,9 @@ is the test, in a forked child.
 
 Heaps and slot stacks live in the metadata region and are allocated by a
 small internal bump-and-freelist allocator that is only ever used for
-allocator metadata. Heaps are created on a thread's first allocation. The
+allocator metadata (the object side of section 2, one `rw-p` mapping
+shared with the small tables carved from it). Heaps are created on a
+thread's first allocation. The
 headers are dense inside the heap (review 2026-09-17 P3, Phase 1.5 task 5):
 `malloc` reaches `len` at `heap + 128 + 64 * c` with no cache pointer load,
 and a thread's 52 headers share one page instead of one page each. Each
