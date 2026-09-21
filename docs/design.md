@@ -1781,10 +1781,14 @@ answers, the ones above `BIN_MAX` included: the utilization queries report
 those as one region each because Valkey's bin arithmetic is calibrated to
 jemalloc's bins (13.4), but the hint carries no geometry, and a live
 16 KiB block pinning a 16-slot slab is exactly the waste a move recovers
-(measured on KeyDB's memefficiency suite,
-`bench/results/2026-09-20-phase3-task3-keydb-package.md`: the classes
+(on KeyDB's memefficiency suite,
+`bench/results/2026-09-20-phase3-task3-keydb-package.md`, the classes
 above 4 KiB held about half of the fragmentation KeyDB's defragmenter
-could not reduce with the bin-only hint). It answers 0 for everything
+could not reduce with the bin-only hint; answering for them recovered
+none of it there, because the blocks pinning those slabs, client and
+query buffers and internal structures, are not objects the defragmenter
+asks about, so the wider hint is the right rule for a slab allocator
+rather than a measured gain). It answers 0 for everything
 else, a huge run (no slab to consolidate), a full slab, a freed or foreign
 pointer, null, and never aborts: the defragmenter asks about pointers it
 owns, and a wrong answer only costs it a move. It is a cold statistics
