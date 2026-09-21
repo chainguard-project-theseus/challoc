@@ -1,0 +1,406 @@
+# t=201 phase=write
+used_memory:570630256
+used_memory_rss:589930496
+allocator_allocated:570695144
+allocator_active:572121088
+allocator_resident:583159808
+allocator_frag_ratio:1.00
+___ Begin jemalloc statistics ___
+Version: "5.3.0-0-g0"
+Build-time option settings
+  config.cache_oblivious: false
+  config.debug: false
+  config.fill: true
+  config.lazy_lock: false
+  config.malloc_conf: ""
+  config.opt_safety_checks: false
+  config.prof: false
+  config.prof_libgcc: false
+  config.prof_libunwind: false
+  config.stats: true
+  config.utrace: false
+  config.xmalloc: false
+Run-time option settings
+  opt.abort: false
+  opt.abort_conf: false
+  opt.cache_oblivious: false
+  opt.confirm_conf: false
+  opt.retain: true
+  opt.dss: "secondary"
+  opt.narenas: 64
+  opt.percpu_arena: "disabled"
+  opt.oversize_threshold: 8388608
+  opt.hpa: false
+  opt.hpa_slab_max_alloc: 65536
+  opt.hpa_hugification_threshold: 1992294
+  opt.hpa_hugify_delay_ms: 10000
+  opt.hpa_min_purge_interval_ms: 5000
+  opt.hpa_dirty_mult: "0.25"
+  opt.hpa_sec_nshards: 4
+  opt.hpa_sec_max_alloc: 32768
+  opt.hpa_sec_max_bytes: 262144
+  opt.hpa_sec_bytes_after_flush: 131072
+  opt.hpa_sec_batch_fill_extra: 0
+  opt.metadata_thp: "disabled"
+  opt.mutex_max_spin: 600
+  opt.background_thread: false (background_thread: true)
+  opt.dirty_decay_ms: 10000 (arenas.dirty_decay_ms: 10000)
+  opt.muzzy_decay_ms: 0 (arenas.muzzy_decay_ms: 0)
+  opt.lg_extent_max_active_fit: 6
+  opt.junk: "false"
+  opt.zero: false
+  opt.tcache: true
+  opt.tcache_max: 32768
+  opt.tcache_nslots_small_min: 20
+  opt.tcache_nslots_small_max: 200
+  opt.tcache_nslots_large: 20
+  opt.lg_tcache_nslots_mul: 1
+  opt.tcache_gc_incr_bytes: 65536
+  opt.tcache_gc_delay_bytes: 0
+  opt.lg_tcache_flush_small_div: 1
+  opt.lg_tcache_flush_large_div: 1
+  opt.thp: "default"
+  opt.stats_print: false
+  opt.stats_print_opts: ""
+  opt.stats_print: false
+  opt.stats_print_opts: ""
+  opt.stats_interval: -1
+  opt.stats_interval_opts: ""
+  opt.zero_realloc: "free"
+Arenas: 65
+Quantum size: 8
+Page size: 4096
+Maximum thread-cached size class: 32768
+Number of bin size classes: 39
+Number of thread-cache bin size classes: 44
+Number of large size classes: 196
+Allocated: 570779216, active: 572243968, metadata: 10551136 (n_thp 0), resident: 582701056, mapped: 586924032, retained: 45367296
+Count of realloc(non-null-ptr, 0) calls: 0
+Background threads: 1, num_runs: 29, run_interval: 6907983482 ns
+                           n_lock_ops (#/sec)       n_waiting (#/sec)      n_spin_acq (#/sec)  n_owner_switch (#/sec)   total_wait_ns   (#/sec)     max_wait_ns  max_n_thds
+background_thread               15987      79               0       0               0       0               1       0               0         0               0           0
+max_per_bg_thd                   8750      43               0       0               0       0               3       0               0         0               0           0
+ctl                           1117052    5585               0       0               0       0               1       0               0         0               0           0
+prof                                0       0               0       0               0       0               0       0               0         0               0           0
+prof_thds_data                      0       0               0       0               0       0               0       0               0         0               0           0
+prof_dump                           0       0               0       0               0       0               0       0               0         0               0           0
+prof_recent_alloc                   0       0               0       0               0       0               0       0               0         0               0           0
+prof_recent_dump                    0       0               0       0               0       0               0       0               0         0               0           0
+prof_stats                          0       0               0       0               0       0               0       0               0         0               0           0
+Merged arenas stats:
+assigned threads: 1
+uptime: 200347001442
+dss allocation precedence: "N/A"
+decaying:  time       npages       sweeps     madvises       purged
+   dirty:   N/A            0           14           24         2781
+   muzzy:   N/A            0            0            0            0
+                            allocated         nmalloc   (#/sec)         ndalloc   (#/sec)       nrequests   (#/sec)           nfill   (#/sec)          nflush   (#/sec)
+small:                      561526352         2661926     13309          907422      4537       801660733   4008303          352028      1760          327907      1639
+large:                        9252864             454         2             439         2             493         2             454         2             190         0
+total:                      570779216         2662380     13311          907861      4539       801661226   4008306          352482      1762          328097      1640
+                                     
+active:                     572243968
+mapped:                     586924032
+retained:                    45367296
+base:                        10452832
+internal:                       98304
+metadata_thp:                       0
+tcache_bytes:                   50768
+tcache_stashed_bytes:               0
+resident:                   582701056
+abandoned_vm:                       0
+extent_avail:                      43
+                           n_lock_ops (#/sec)       n_waiting (#/sec)      n_spin_acq (#/sec)  n_owner_switch (#/sec)   total_wait_ns   (#/sec)     max_wait_ns  max_n_thds
+large                           15903      79               0       0               0       0               2       0               0         0               0           0
+extent_avail                    61984     309               0       0               0       0              22       0               0         0               0           0
+extents_dirty                   82411     412               0       0               0       0              30       0               0         0               0           0
+extents_muzzy                   15903      79               0       0               0       0               2       0               0         0               0           0
+extents_retained                52683     263               0       0               0       0              30       0               0         0               0           0
+decay_dirty                     18082      90               0       0               0       0              98       0               0         0               0           0
+decay_muzzy                     15958      79               0       0               0       0              98       0               0         0               0           0
+base                            75405     377               0       0               0       0               2       0               0         0               0           0
+tcache_list                     15904      79               0       0               0       0               2       0               0         0               0           0
+hpa_shard                           0       0               0       0               0       0               0       0               0         0               0           0
+hpa_shard_grow                      0       0               0       0               0       0               0       0               0         0               0           0
+hpa_sec                             0       0               0       0               0       0               0       0               0         0               0           0
+bins:           size ind    allocated      nmalloc (#/sec)      ndalloc (#/sec)    nrequests   (#/sec)  nshards      curregs     curslabs  nonfull_slabs regs pgs   util       nfills (#/sec)     nflushes (#/sec)       nslabs     nreslabs (#/sec)      n_lock_ops (#/sec)       n_waiting (#/sec)      n_spin_acq (#/sec)  n_owner_switch (#/sec)   total_wait_ns   (#/sec)     max_wait_ns  max_n_thds
+                   8   0         1912          443       2          204       1         2048        10        1          239            1              0  512   1  0.466          103       0           79       0            1            0       0           16086      80               0       0               0       0               2       0               0         0               0           0
+                  16   1       179056        11421      57          230       1    308068855   1540344        1        11191           44              0  256   1  0.993          211       1           88       0           45            1       0           16247      81               0       0               0       0               2       0               0         0               0           0
+                  24   2        37392         1715       8          157       0    235902434   1179512        1         1558            4              0  512   3  0.760           96       0           72       0            4           16       0           16075      80               0       0               0       0               2       0               0         0               0           0
+                  32   3     10618208       472221    2361       140402     702     81817533    409087        1       331819         2595             90  128   1  0.998        19277      96        17787      88         3463        30016     150           56430     282               0       0               0       0               2       0               0         0               0           0
+                  40   4     20005080       510671    2553        10544      52      1140107      5700        1       500127          977              0  512   5  0.999         8891      44         4142      20          990           11       0           29926     149               0       0               0       0               2       0               0         0               0           0
+                  48   5       144672        20416     102        17402      87      1260375      6301        1         3014           12              4  256   3  0.981         9528      47        11449      57           32         8489      42           36912     184               0       0               0       0               2       0               0         0               0           0
+                  56   6       162624        19596      97        16692      83      1240905      6204        1         2904            6              3  512   7  0.945         9047      45        10949      54           11         6466      32           35910     179               0       0               0       0               2       0               0         0               0           0
+                  64   7      3098944       138057     690        89636     448      1340011      6700        1        48421          759             59   64   1  0.996        12701      63        14176      70         1021        10623      53           43801     219               0       0               0       0               2       0               0         0               0           0
+                  80   8       463760        28860     144        23063     115      2499078     12495        1         5797           23             10  256   5  0.984        11602      58        13624      68           41        12263      61           41170     205               0       0               0       0               2       0               0         0               0           0
+                  96   9       565344        29036     145        23147     115      2478616     12393        1         5889           47              1  128   3  0.978        11624      58        13639      68          104        13895      69           41270     206               0       0               0       0               2       0               0         0               0           0
+                 112  10       834960        33656     168        26201     131      2848596     14242        1         7455           30             17  256   7  0.970        12711      63        14621      73           53        13974      69           43288     216               0       0               0       0               2       0               0         0               0           0
+                 128  11      1500800        42341     211        30616     153      3702883     18514        1        11725          370             55   32   1  0.990        14838      74        15574      77          682        20512     102           46997     234               0       0               0       0               2       0               0         0               0           0
+                 160  12      1826400        43649     218        32234     161      2460225     12301        1        11415           90             12  128   5  0.990        14601      73        15988      79          181        19645      98           46673     233               0       0               0       0               2       0               0         0               0           0
+                 192  13      2238720        42790     213        31130     155      2496126     12480        1        11660          183             12   64   3  0.995        14767      73        15580      77          332        19851      99           46582     232               0       0               0       0               2       0               0         0               0           0
+                 224  14      2557856        43401     217        31982     159      2451017     12255        1        11419           91             18  128   7  0.980        14400      72        15986      79          167        19494      97           46456     232               0       0               0       0               2       0               0         0               0           0
+                 256  15      2932224        42490     212        31036     155      2457201     12286        1        11454          720             27   16   1  0.994        14633      73        15573      77         1376        22082     110           47485     237               0       0               0       0               2       0               0         0               0           0
+                 320  16      7194240        65921     329        43439     217      4806325     24031        1        22482          353             57   64   5  0.995        17443      87        17134      85          622        26292     131           51102     255               0       0               0       0               2       0               0         0               0           0
+                 384  17      8888832        67086     335        43938     219      4936507     24682        1        23148          728             64   32   3  0.993        17453      87        17235      86         1295        27443     137           51886     259               0       0               0       0               2       0               0         0               0           0
+                 448  18     10453632        68235     341        44901     224      4960055     24800        1        23334          368             40   64   7  0.990        17575      87        17294      86          674        26242     131           51446     257               0       0               0       0               2       0               0         0               0           0
+                 512  19     11751424        60833     304        37881     189      4917744     24588        1        22952         2896            139    8   1  0.990        18940      94        16484      82         4279        30426     152           55606     278               0       0               0       0               2       0               0         0               0           0
+                 640  20    349647360       610059    3050        63735     318     89919048    449595        1       546324        17080            148   32   5  0.999        37072     185        18837      94        18059        35657     178           89871     449               0       0               0       0               2       0               0         0               0           0
+                 768  21     35463936        97867     489        51690     258     19766610     98833        1        46177         2895             87   16   3  0.996        22116     110        17472      87         4035        37259     186           59526     297               0       0               0       0               2       0               0         0               0           0
+                 896  22     41014400       106503     532        60728     303      9830708     49153        1        45775         1438            126   32   7  0.994        20777     103        18356      91         2306        35706     178           57342     286               0       0               0       0               2       0               0         0               0           0
+                1024  23     47249408        90002     450        43860     219      9902509     49512        1        46142        11606            245    4   1  0.993        24206     121        16700      83        14257        37825     189           71066     355               0       0               0       0               2       0               0         0               0           0
+                1280  24      2652160        14363      71        12291      61       455086      2275        1         2072          137             37   16   5  0.945         7297      36         8944      44          327         8242      41           32471     162               0       0               0       0               2       0               0         0               0           0
+                1536  25         3072           10       0            8       0            2         0        1            2            1              0    8   3  0.250            1       0            2       0            2            1       0           15908      79               0       0               0       0               2       0               0         0               0           0
+                     ---
+                2048  27         2048           10       0            9       0            6         0        1            1            1              1    2   1  0.500            1       0            2       0            5            1       0           15911      79               0       0               0       0               2       0               0         0               0           0
+                     ---
+                3072  29         6144           78       0           76       0           35         0        1            2            1              0    4   3  0.500           35       0           35       0           37            1       0           16010      80               0       0               0       0               2       0               0         0               0           0
+                3584  30         7168           78       0           76       0           35         0        1            2            1              0    8   7  0.250           35       0           35       0           36            1       0           16009      80               0       0               0       0               2       0               0         0               0           0
+                4096  31         8192           54       0           52       0           27         0        1            2            2              0    1   1      1           23       0           24       0           54            0       0           16004      80               0       0               0       0               2       0               0         0               0           0
+                5120  32            0           54       0           54       0           23         0        1            0            0              0    4   5      1           23       0           24       0           25            1       0           15975      79               0       0               0       0               2       0               0         0               0           0
+                     ---
+                8192  35        16384           10       0            8       0            3         0        1            2            2              0    1   2      1            1       0            2       0           10            0       0           15916      79               0       0               0       0               2       0               0         0               0           0
+                     ---
+large:          size ind    allocated      nmalloc (#/sec)      ndalloc (#/sec)    nrequests (#/sec)  curlextents
+               16384  39        49152          407       2          404       2          446       2            3
+               20480  40        20480            1       0            0       0            1       0            1
+               24576  41       122880            5       0            0       0            5       0            5
+                     ---
+               32768  43        32768            3       0            2       0            3       0            1
+               40960  44            0            8       0            8       0            8       0            0
+                     ---
+               65536  47        65536           11       0           10       0           11       0            1
+               81920  48        81920            1       0            0       0            1       0            1
+               98304  49            0            1       0            1       0            1       0            0
+              114688  50            0            8       0            8       0            8       0            0
+              131072  51            0            1       0            1       0            1       0            0
+              163840  52       163840            1       0            0       0            1       0            1
+                     ---
+              262144  55            0            1       0            1       0            1       0            0
+              327680  56       327680            1       0            0       0            1       0            1
+                     ---
+              524288  59            0            1       0            1       0            1       0            0
+                     ---
+             1048576  63            0            1       0            1       0            1       0            0
+                     ---
+             2097152  67            0            1       0            1       0            1       0            0
+                     ---
+             4194304  71            0            1       0            1       0            1       0            0
+                     ---
+             8388608  75      8388608            1       0            0       0            1       0            1
+                     ---
+extents:        size ind       ndirty        dirty       nmuzzy        muzzy    nretained     retained       ntotal        total
+                4096   0            0            0            0            0            3        12288            3        12288
+                8192   1            0            0            0            0            1         8192            1         8192
+                     ---
+            41943040  48            0            0            0            0            1     45346816            1     45346816
+                     ---
+Bytes in small extent cache: 0
+HPA shard stats:
+  Purge passes: 0 (0 / sec)
+  Purges: 0 (0 / sec)
+  Hugeifies: 0 (0 / sec)
+  Dehugifies: 0 (0 / sec)
+
+  In full slabs:
+      npageslabs: 0 huge, 0 nonhuge
+      nactive: 0 huge, 0 nonhuge 
+      ndirty: 0 huge, 0 nonhuge 
+      nretained: 0 huge, 0 nonhuge 
+  In empty slabs:
+      npageslabs: 0 huge, 0 nonhuge
+      nactive: 0 huge, 0 nonhuge 
+      ndirty: 0 huge, 0 nonhuge 
+      nretained: 0 huge, 0 nonhuge 
+
+                size ind npageslabs_huge    nactive_huge     ndirty_huge  npageslabs_nonhuge     nactive_nonhuge      ndirty_nonhuge   nretained_nonhuge
+                     ---
+arenas[0]:
+assigned threads: 1
+uptime: 200347001442
+dss allocation precedence: "secondary"
+decaying:  time       npages       sweeps     madvises       purged
+   dirty: 10000            0           14           24         2781
+   muzzy:     0            0            0            0            0
+                            allocated         nmalloc   (#/sec)         ndalloc   (#/sec)       nrequests   (#/sec)           nfill   (#/sec)          nflush   (#/sec)
+small:                      561526352         2661926     13309          907422      4537       801660733   4008303          352028      1760          327907      1639
+large:                         864256             453         2             439         2             492         2             453         2             190         0
+total:                      562390608         2662379     13311          907861      4539       801661225   4008306          352481      1762          328097      1640
+                                     
+active:                     563855360
+mapped:                     576438272
+retained:                    45367296
+base:                        10360464
+internal:                       98304
+metadata_thp:                       0
+tcache_bytes:                   50768
+tcache_stashed_bytes:               0
+resident:                   574218240
+abandoned_vm:                       0
+extent_avail:                      43
+                           n_lock_ops (#/sec)       n_waiting (#/sec)      n_spin_acq (#/sec)  n_owner_switch (#/sec)   total_wait_ns   (#/sec)     max_wait_ns  max_n_thds
+large                            7989      39               0       0               0       0               1       0               0         0               0           0
+extent_avail                    54069     270               0       0               0       0              21       0               0         0               0           0
+extents_dirty                   74496     372               0       0               0       0              29       0               0         0               0           0
+extents_muzzy                    7989      39               0       0               0       0               1       0               0         0               0           0
+extents_retained                44768     223               0       0               0       0              29       0               0         0               0           0
+decay_dirty                     10121      50               0       0               0       0              51       0               0         0               0           0
+decay_muzzy                      8018      40               0       0               0       0              51       0               0         0               0           0
+base                            59575     297               0       0               0       0               1       0               0         0               0           0
+tcache_list                      7990      39               0       0               0       0               1       0               0         0               0           0
+hpa_shard                           0       0               0       0               0       0               0       0               0         0               0           0
+hpa_shard_grow                      0       0               0       0               0       0               0       0               0         0               0           0
+hpa_sec                             0       0               0       0               0       0               0       0               0         0               0           0
+bins:           size ind    allocated      nmalloc (#/sec)      ndalloc (#/sec)    nrequests   (#/sec)  nshards      curregs     curslabs  nonfull_slabs regs pgs   util       nfills (#/sec)     nflushes (#/sec)       nslabs     nreslabs (#/sec)      n_lock_ops (#/sec)       n_waiting (#/sec)      n_spin_acq (#/sec)  n_owner_switch (#/sec)   total_wait_ns   (#/sec)     max_wait_ns  max_n_thds
+                   8   0         1912          443       2          204       1         2048        10        1          239            1              0  512   1  0.466          103       0           79       0            1            0       0            8172      40               0       0               0       0               1       0               0         0               0           0
+                  16   1       179056        11421      57          230       1    308068855   1540344        1        11191           44              0  256   1  0.993          211       1           88       0           45            1       0            8333      41               0       0               0       0               1       0               0         0               0           0
+                  24   2        37392         1715       8          157       0    235902434   1179512        1         1558            4              0  512   3  0.760           96       0           72       0            4           16       0            8161      40               0       0               0       0               1       0               0         0               0           0
+                  32   3     10618208       472221    2361       140402     702     81817533    409087        1       331819         2595             90  128   1  0.998        19277      96        17787      88         3463        30016     150           48516     242               0       0               0       0               1       0               0         0               0           0
+                  40   4     20005080       510671    2553        10544      52      1140107      5700        1       500127          977              0  512   5  0.999         8891      44         4142      20          990           11       0           22012     110               0       0               0       0               1       0               0         0               0           0
+                  48   5       144672        20416     102        17402      87      1260375      6301        1         3014           12              4  256   3  0.981         9528      47        11449      57           32         8489      42           28998     144               0       0               0       0               1       0               0         0               0           0
+                  56   6       162624        19596      97        16692      83      1240905      6204        1         2904            6              3  512   7  0.945         9047      45        10949      54           11         6466      32           27996     139               0       0               0       0               1       0               0         0               0           0
+                  64   7      3098944       138057     690        89636     448      1340011      6700        1        48421          759             59   64   1  0.996        12701      63        14176      70         1021        10623      53           35887     179               0       0               0       0               1       0               0         0               0           0
+                  80   8       463760        28860     144        23063     115      2499078     12495        1         5797           23             10  256   5  0.984        11602      58        13624      68           41        12263      61           33256     166               0       0               0       0               1       0               0         0               0           0
+                  96   9       565344        29036     145        23147     115      2478616     12393        1         5889           47              1  128   3  0.978        11624      58        13639      68          104        13895      69           33356     166               0       0               0       0               1       0               0         0               0           0
+                 112  10       834960        33656     168        26201     131      2848596     14242        1         7455           30             17  256   7  0.970        12711      63        14621      73           53        13974      69           35374     176               0       0               0       0               1       0               0         0               0           0
+                 128  11      1500800        42341     211        30616     153      3702883     18514        1        11725          370             55   32   1  0.990        14838      74        15574      77          682        20512     102           39083     195               0       0               0       0               1       0               0         0               0           0
+                 160  12      1826400        43649     218        32234     161      2460225     12301        1        11415           90             12  128   5  0.990        14601      73        15988      79          181        19645      98           38759     193               0       0               0       0               1       0               0         0               0           0
+                 192  13      2238720        42790     213        31130     155      2496126     12480        1        11660          183             12   64   3  0.995        14767      73        15580      77          332        19851      99           38668     193               0       0               0       0               1       0               0         0               0           0
+                 224  14      2557856        43401     217        31982     159      2451017     12255        1        11419           91             18  128   7  0.980        14400      72        15986      79          167        19494      97           38542     192               0       0               0       0               1       0               0         0               0           0
+                 256  15      2932224        42490     212        31036     155      2457201     12286        1        11454          720             27   16   1  0.994        14633      73        15573      77         1376        22082     110           39571     197               0       0               0       0               1       0               0         0               0           0
+                 320  16      7194240        65921     329        43439     217      4806325     24031        1        22482          353             57   64   5  0.995        17443      87        17134      85          622        26292     131           43188     215               0       0               0       0               1       0               0         0               0           0
+                 384  17      8888832        67086     335        43938     219      4936507     24682        1        23148          728             64   32   3  0.993        17453      87        17235      86         1295        27443     137           43972     219               0       0               0       0               1       0               0         0               0           0
+                 448  18     10453632        68235     341        44901     224      4960055     24800        1        23334          368             40   64   7  0.990        17575      87        17294      86          674        26242     131           43532     217               0       0               0       0               1       0               0         0               0           0
+                 512  19     11751424        60833     304        37881     189      4917744     24588        1        22952         2896            139    8   1  0.990        18940      94        16484      82         4279        30426     152           47692     238               0       0               0       0               1       0               0         0               0           0
+                 640  20    349647360       610059    3050        63735     318     89919048    449595        1       546324        17080            148   32   5  0.999        37072     185        18837      94        18059        35657     178           81957     409               0       0               0       0               1       0               0         0               0           0
+                 768  21     35463936        97867     489        51690     258     19766610     98833        1        46177         2895             87   16   3  0.996        22116     110        17472      87         4035        37259     186           51612     258               0       0               0       0               1       0               0         0               0           0
+                 896  22     41014400       106503     532        60728     303      9830708     49153        1        45775         1438            126   32   7  0.994        20777     103        18356      91         2306        35706     178           49428     247               0       0               0       0               1       0               0         0               0           0
+                1024  23     47249408        90002     450        43860     219      9902509     49512        1        46142        11606            245    4   1  0.993        24206     121        16700      83        14257        37825     189           63152     315               0       0               0       0               1       0               0         0               0           0
+                1280  24      2652160        14363      71        12291      61       455086      2275        1         2072          137             37   16   5  0.945         7297      36         8944      44          327         8242      41           24557     122               0       0               0       0               1       0               0         0               0           0
+                1536  25         3072           10       0            8       0            2         0        1            2            1              0    8   3  0.250            1       0            2       0            2            1       0            7994      39               0       0               0       0               1       0               0         0               0           0
+                     ---
+                2048  27         2048           10       0            9       0            6         0        1            1            1              1    2   1  0.500            1       0            2       0            5            1       0            7997      39               0       0               0       0               1       0               0         0               0           0
+                     ---
+                3072  29         6144           78       0           76       0           35         0        1            2            1              0    4   3  0.500           35       0           35       0           37            1       0            8096      40               0       0               0       0               1       0               0         0               0           0
+                3584  30         7168           78       0           76       0           35         0        1            2            1              0    8   7  0.250           35       0           35       0           36            1       0            8095      40               0       0               0       0               1       0               0         0               0           0
+                4096  31         8192           54       0           52       0           27         0        1            2            2              0    1   1      1           23       0           24       0           54            0       0            8090      40               0       0               0       0               1       0               0         0               0           0
+                5120  32            0           54       0           54       0           23         0        1            0            0              0    4   5      1           23       0           24       0           25            1       0            8061      40               0       0               0       0               1       0               0         0               0           0
+                     ---
+                8192  35        16384           10       0            8       0            3         0        1            2            2              0    1   2      1            1       0            2       0           10            0       0            8002      40               0       0               0       0               1       0               0         0               0           0
+                     ---
+large:          size ind    allocated      nmalloc (#/sec)      ndalloc (#/sec)    nrequests (#/sec)  curlextents
+               16384  39        49152          407       2          404       2          446       2            3
+               20480  40        20480            1       0            0       0            1       0            1
+               24576  41       122880            5       0            0       0            5       0            5
+                     ---
+               32768  43        32768            3       0            2       0            3       0            1
+               40960  44            0            8       0            8       0            8       0            0
+                     ---
+               65536  47        65536           11       0           10       0           11       0            1
+               81920  48        81920            1       0            0       0            1       0            1
+               98304  49            0            1       0            1       0            1       0            0
+              114688  50            0            8       0            8       0            8       0            0
+              131072  51            0            1       0            1       0            1       0            0
+              163840  52       163840            1       0            0       0            1       0            1
+                     ---
+              262144  55            0            1       0            1       0            1       0            0
+              327680  56       327680            1       0            0       0            1       0            1
+                     ---
+              524288  59            0            1       0            1       0            1       0            0
+                     ---
+             1048576  63            0            1       0            1       0            1       0            0
+                     ---
+             2097152  67            0            1       0            1       0            1       0            0
+                     ---
+             4194304  71            0            1       0            1       0            1       0            0
+                     ---
+extents:        size ind       ndirty        dirty       nmuzzy        muzzy    nretained     retained       ntotal        total
+                4096   0            0            0            0            0            3        12288            3        12288
+                8192   1            0            0            0            0            1         8192            1         8192
+                     ---
+            41943040  48            0            0            0            0            1     45346816            1     45346816
+                     ---
+Bytes in small extent cache: 0
+HPA shard stats:
+  Purge passes: 0 (0 / sec)
+  Purges: 0 (0 / sec)
+  Hugeifies: 0 (0 / sec)
+  Dehugifies: 0 (0 / sec)
+
+  In full slabs:
+      npageslabs: 0 huge, 0 nonhuge
+      nactive: 0 huge, 0 nonhuge 
+      ndirty: 0 huge, 0 nonhuge 
+      nretained: 0 huge, 0 nonhuge 
+  In empty slabs:
+      npageslabs: 0 huge, 0 nonhuge
+      nactive: 0 huge, 0 nonhuge 
+      ndirty: 0 huge, 0 nonhuge 
+      nretained: 0 huge, 0 nonhuge 
+
+                size ind npageslabs_huge    nactive_huge     ndirty_huge  npageslabs_nonhuge     nactive_nonhuge      ndirty_nonhuge   nretained_nonhuge
+                     ---
+arenas[64]:
+assigned threads: 0
+uptime: 198546001436
+dss allocation precedence: "secondary"
+decaying:  time       npages       sweeps     madvises       purged
+   dirty:     0            0            0            0            0
+   muzzy:     0            0            0            0            0
+                            allocated         nmalloc   (#/sec)         ndalloc   (#/sec)       nrequests   (#/sec)           nfill   (#/sec)          nflush   (#/sec)
+small:                              0               0         0               0         0               0         0               0         0               0         0
+large:                        8388608               1         0               0         0               1         0               1         0               0         0
+total:                        8388608               1         0               0         0               1         0               1         0               0         0
+                                     
+active:                       8388608
+mapped:                      10485760
+retained:                           0
+base:                           92368
+internal:                           0
+metadata_thp:                       0
+tcache_bytes:                       0
+tcache_stashed_bytes:               0
+resident:                     8482816
+abandoned_vm:                       0
+extent_avail:                       0
+                           n_lock_ops (#/sec)       n_waiting (#/sec)      n_spin_acq (#/sec)  n_owner_switch (#/sec)   total_wait_ns   (#/sec)     max_wait_ns  max_n_thds
+large                            7914      39               0       0               0       0               1       0               0         0               0           0
+extent_avail                     7915      39               0       0               0       0               1       0               0         0               0           0
+extents_dirty                    7915      39               0       0               0       0               1       0               0         0               0           0
+extents_muzzy                    7914      39               0       0               0       0               1       0               0         0               0           0
+extents_retained                 7915      39               0       0               0       0               1       0               0         0               0           0
+decay_dirty                      7961      40               0       0               0       0              47       0               0         0               0           0
+decay_muzzy                      7940      40               0       0               0       0              47       0               0         0               0           0
+base                            15830      79               0       0               0       0               1       0               0         0               0           0
+tcache_list                      7914      39               0       0               0       0               1       0               0         0               0           0
+hpa_shard                           0       0               0       0               0       0               0       0               0         0               0           0
+hpa_shard_grow                      0       0               0       0               0       0               0       0               0         0               0           0
+hpa_sec                             0       0               0       0               0       0               0       0               0         0               0           0
+bins:           size ind    allocated      nmalloc (#/sec)      ndalloc (#/sec)    nrequests   (#/sec)  nshards      curregs     curslabs  nonfull_slabs regs pgs   util       nfills (#/sec)     nflushes (#/sec)       nslabs     nreslabs (#/sec)      n_lock_ops (#/sec)       n_waiting (#/sec)      n_spin_acq (#/sec)  n_owner_switch (#/sec)   total_wait_ns   (#/sec)     max_wait_ns  max_n_thds
+                     ---
+large:          size ind    allocated      nmalloc (#/sec)      ndalloc (#/sec)    nrequests (#/sec)  curlextents
+                     ---
+             8388608  75      8388608            1       0            0       0            1       0            1
+                     ---
+extents:        size ind       ndirty        dirty       nmuzzy        muzzy    nretained     retained       ntotal        total
+                     ---
+Bytes in small extent cache: 0
+HPA shard stats:
+  Purge passes: 0 (0 / sec)
+  Purges: 0 (0 / sec)
+  Hugeifies: 0 (0 / sec)
+  Dehugifies: 0 (0 / sec)
+
+  In full slabs:
+      npageslabs: 0 huge, 0 nonhuge
+      nactive: 0 huge, 0 nonhuge 
+      ndirty: 0 huge, 0 nonhuge 
+      nretained: 0 huge, 0 nonhuge 
+  In empty slabs:
+      npageslabs: 0 huge, 0 nonhuge
+      nactive: 0 huge, 0 nonhuge 
+      ndirty: 0 huge, 0 nonhuge 
+      nretained: 0 huge, 0 nonhuge 
+
+                size ind npageslabs_huge    nactive_huge     ndirty_huge  npageslabs_nonhuge     nactive_nonhuge      ndirty_nonhuge   nretained_nonhuge
+                     ---
+--- End jemalloc statistics ---

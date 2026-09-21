@@ -1,0 +1,243 @@
+===== early
+ts 1789966418 t=30
+-- threads (comm utime stime, ticks)
+valkey-server 1788 1187
+bio_close_file 0 0
+bio_aof 0 0
+bio_lazy_free 0 0
+bio_rdb_save 0 0
+bio_tls_reload 0 0
+challoc-bg 0 6
+-- generators
+memtier_benchma pid=127580 threads=5 586 327
+-- info stats
+total_connections_received:112
+total_commands_processed:27498136
+instantaneous_ops_per_sec:980976
+total_net_input_bytes:15288400603
+total_net_output_bytes:137527359
+rejected_connections:0
+expired_keys:0
+evicted_keys:0
+-- info commandstats
+# Commandstats
+cmdstat_ping:calls=1,usec=3,usec_per_call=3.00,rejected_calls=0,failed_calls=0
+cmdstat_config|get:calls=7,usec=24,usec_per_call=3.43,rejected_calls=0,failed_calls=0
+cmdstat_memory|malloc-stats:calls=1,usec=292,usec_per_call=292.00,rejected_calls=0,failed_calls=0
+cmdstat_info:calls=16,usec=499,usec_per_call=31.19,rejected_calls=0,failed_calls=0
+cmdstat_set:calls=27533952,usec=5263054,usec_per_call=0.19,rejected_calls=0,failed_calls=0
+-- info memory (allocator lines)
+used_memory:445375192
+used_memory_rss:465420288
+allocator_allocated:445756840
+allocator_active:464134144
+allocator_resident:467644416
+allocator_frag_ratio:1.00
+mem_allocator:jemalloc-5.3.0-challoc
+active_defrag_running:0
+-- clients
+connected_clients:41
+blocked_clients:0
+===== write-a
+ts 1789966488 t=100
+-- threads (comm utime stime, ticks)
+valkey-server 5992 3912
+bio_close_file 0 0
+bio_aof 0 0
+bio_lazy_free 0 0
+bio_rdb_save 0 0
+bio_tls_reload 0 0
+challoc-bg 0 18
+-- generators
+memtier_benchma pid=128526 threads=5 1849 1004
+-- info stats
+total_connections_received:241
+total_commands_processed:92289744
+instantaneous_ops_per_sec:938815
+total_net_input_bytes:51379145771
+total_net_output_bytes:461584335
+rejected_connections:0
+expired_keys:0
+evicted_keys:0
+-- info commandstats
+# Commandstats
+cmdstat_ping:calls=1,usec=3,usec_per_call=3.00,rejected_calls=0,failed_calls=0
+cmdstat_config|get:calls=9,usec=32,usec_per_call=3.56,rejected_calls=0,failed_calls=0
+cmdstat_memory|malloc-stats:calls=4,usec=1306,usec_per_call=326.50,rejected_calls=0,failed_calls=0
+cmdstat_info:calls=51,usec=1307,usec_per_call=25.63,rejected_calls=0,failed_calls=0
+cmdstat_set:calls=92322288,usec=17908173,usec_per_call=0.19,rejected_calls=0,failed_calls=0
+-- info memory (allocator lines)
+used_memory:581387864
+used_memory_rss:604540928
+allocator_allocated:582429504
+allocator_active:602124288
+allocator_resident:606044160
+allocator_frag_ratio:1.00
+mem_allocator:jemalloc-5.3.0-challoc
+active_defrag_running:0
+-- clients
+connected_clients:41
+blocked_clients:0
+===== write-b
+ts 1789966549 t=161
+-- threads (comm utime stime, ticks)
+valkey-server 10020 6015
+bio_close_file 0 0
+bio_aof 0 0
+bio_lazy_free 0 0
+bio_rdb_save 0 0
+bio_tls_reload 0 0
+challoc-bg 1 32
+-- generators
+memtier_benchma pid=129486 threads=5 1608 958
+-- info stats
+total_connections_received:370
+total_commands_processed:137041288
+instantaneous_ops_per_sec:853414
+total_net_input_bytes:76287609862
+total_net_output_bytes:685453702
+rejected_connections:0
+expired_keys:0
+evicted_keys:0
+-- info commandstats
+# Commandstats
+cmdstat_ping:calls=1,usec=3,usec_per_call=3.00,rejected_calls=0,failed_calls=0
+cmdstat_config|get:calls=11,usec=40,usec_per_call=3.64,rejected_calls=0,failed_calls=0
+cmdstat_memory|malloc-stats:calls=8,usec=3112,usec_per_call=389.00,rejected_calls=0,failed_calls=0
+cmdstat_info:calls=85,usec=2233,usec_per_call=26.27,rejected_calls=0,failed_calls=0
+cmdstat_set:calls=137080288,usec=28621397,usec_per_call=0.21,rejected_calls=0,failed_calls=0
+-- info memory (allocator lines)
+used_memory:581418904
+used_memory_rss:604667904
+allocator_allocated:582363776
+allocator_active:602259456
+allocator_resident:605933568
+allocator_frag_ratio:1.00
+mem_allocator:jemalloc-5.3.0-challoc
+active_defrag_running:0
+-- clients
+connected_clients:41
+blocked_clients:0
+===== delete-a
+ts 1789967088 t=700
+-- threads (comm utime stime, ticks)
+valkey-server 42627 27305
+bio_close_file 0 0
+bio_aof 0 0
+bio_lazy_free 0 0
+bio_rdb_save 0 0
+bio_tls_reload 0 0
+challoc-bg 9 167
+-- generators
+memtier_benchma pid=138173 threads=5 579 354
+-- info stats
+total_connections_received:1640
+total_commands_processed:661157723
+instantaneous_ops_per_sec:1278829
+total_net_input_bytes:327759456953
+total_net_output_bytes:3229830740
+rejected_connections:0
+expired_keys:0
+evicted_keys:0
+-- info commandstats
+# Commandstats
+cmdstat_ping:calls=1,usec=3,usec_per_call=3.00,rejected_calls=0,failed_calls=0
+cmdstat_config|get:calls=33,usec=126,usec_per_call=3.82,rejected_calls=0,failed_calls=0
+cmdstat_memory|malloc-stats:calls=34,usec=13039,usec_per_call=383.50,rejected_calls=0,failed_calls=0
+cmdstat_info:calls=328,usec=7984,usec_per_call=24.34,rejected_calls=0,failed_calls=0
+cmdstat_set:calls=584185377,usec=115573317,usec_per_call=0.20,rejected_calls=0,failed_calls=0
+cmdstat_del:calls=77017631,usec=4691511,usec_per_call=0.06,rejected_calls=0,failed_calls=0
+-- info memory (allocator lines)
+used_memory:66603464
+used_memory_rss:146300928
+allocator_allocated:68597584
+allocator_active:140877824
+allocator_resident:146731008
+allocator_frag_ratio:1.92
+mem_allocator:jemalloc-5.3.0-challoc
+active_defrag_running:0
+-- clients
+connected_clients:41
+blocked_clients:0
+===== delete-b
+ts 1789967150 t=762
+-- threads (comm utime stime, ticks)
+valkey-server 46114 29948
+bio_close_file 0 0
+bio_aof 0 0
+bio_lazy_free 0 0
+bio_rdb_save 0 0
+bio_tls_reload 0 0
+challoc-bg 10 197
+-- generators
+memtier_benchma pid=138967 threads=5 1405 960
+-- info stats
+total_connections_received:1769
+total_commands_processed:724955779
+instantaneous_ops_per_sec:1147957
+total_net_input_bytes:334397495050
+total_net_output_bytes:3493895294
+rejected_connections:0
+expired_keys:0
+evicted_keys:0
+-- info commandstats
+# Commandstats
+cmdstat_ping:calls=1,usec=3,usec_per_call=3.00,rejected_calls=0,failed_calls=0
+cmdstat_config|get:calls=35,usec=134,usec_per_call=3.83,rejected_calls=0,failed_calls=0
+cmdstat_memory|malloc-stats:calls=38,usec=14605,usec_per_call=384.34,rejected_calls=0,failed_calls=0
+cmdstat_info:calls=362,usec=8994,usec_per_call=24.85,rejected_calls=0,failed_calls=0
+cmdstat_set:calls=592944998,usec=117870037,usec_per_call=0.20,rejected_calls=0,failed_calls=0
+cmdstat_del:calls=132056202,usec=8581303,usec_per_call=0.06,rejected_calls=0,failed_calls=0
+-- info memory (allocator lines)
+used_memory:66575256
+used_memory_rss:136159232
+allocator_allocated:68671600
+allocator_active:132308992
+allocator_resident:136384512
+allocator_frag_ratio:1.79
+mem_allocator:jemalloc-5.3.0-challoc
+active_defrag_running:0
+-- clients
+connected_clients:41
+blocked_clients:0
+===== settle
+ts 1789967593 t=1205
+-- threads (comm utime stime, ticks)
+valkey-server 73167 47168
+bio_close_file 0 0
+bio_aof 0 0
+bio_lazy_free 0 0
+bio_rdb_save 0 0
+bio_tls_reload 0 0
+challoc-bg 13 290
+-- generators
+memtier_benchma pid=145883 threads=5 2030 1314
+-- info stats
+total_connections_received:2903
+total_commands_processed:1307426935
+instantaneous_ops_per_sec:1247492
+total_net_input_bytes:393280789685
+total_net_output_bytes:5900924013
+rejected_connections:0
+expired_keys:0
+evicted_keys:0
+-- info commandstats
+# Commandstats
+cmdstat_ping:calls=1,usec=3,usec_per_call=3.00,rejected_calls=0,failed_calls=0
+cmdstat_config|get:calls=55,usec=218,usec_per_call=3.96,rejected_calls=0,failed_calls=0
+cmdstat_memory|malloc-stats:calls=60,usec=22187,usec_per_call=369.78,rejected_calls=0,failed_calls=0
+cmdstat_info:calls=564,usec=13435,usec_per_call=23.82,rejected_calls=0,failed_calls=0
+cmdstat_set:calls=669438554,usec=133985859,usec_per_call=0.20,rejected_calls=0,failed_calls=0
+cmdstat_del:calls=638031190,usec=38018012,usec_per_call=0.06,rejected_calls=0,failed_calls=0
+-- info memory (allocator lines)
+used_memory:65767784
+used_memory_rss:133500928
+allocator_allocated:67631928
+allocator_active:129835008
+allocator_resident:133439488
+allocator_frag_ratio:1.78
+mem_allocator:jemalloc-5.3.0-challoc
+active_defrag_running:0
+-- clients
+connected_clients:41
+blocked_clients:0

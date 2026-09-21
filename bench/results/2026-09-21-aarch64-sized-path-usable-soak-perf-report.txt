@@ -1,0 +1,308 @@
+# perf record reports, 2026-09-21 aarch64 three-server Valkey soak (lane sized-path; bench/probes/valkey-perf-sidecar.sh, perf report --symfs over the container's binaries, --kallsyms /proc/kallsyms). Two sidecar instances: 'sp' attached to the first two servers with its default two-name loop, so its 'challoc' files are the challoc-old (old patch) server and its 'jemalloc' files the challoc (new patch) server; 'sp2' attached to the jemalloc server alone. Shares are of every sample of the server process in the 60 s record.
+===== sp-rec-delete-challoc
+# Samples: 153K of event 'cycles'
+# Event count (approx.): 117195737446
+    40.43%  [kernel.kallsyms]
+     0.01%  [vdso]           
+     5.31%  libc.so.6        
+    10.46%  libchalloc.so    
+    43.80%  valkey-server    
+-- top 25 symbols
+     6.63%  libchalloc.so      [.] je_malloc_usable_size
+     3.92%  valkey-server      [.] processInputBuffer
+     3.48%  valkey-server      [.] parseMultibulk
+     3.27%  [kernel.kallsyms]  [k] _raw_spin_unlock_irqrestore
+     2.63%  valkey-server      [.] findKeyInBucketNeon
+     2.54%  valkey-server      [.] call
+     2.51%  valkey-server      [.] ustime
+     2.32%  libc.so.6          [.] __memset_sve_zva64
+     2.05%  [kernel.kallsyms]  [k] el0_svc
+     1.90%  valkey-server      [.] moduleFireCommandResultEvent
+     1.58%  valkey-server      [.] siphash
+     1.51%  valkey-server      [.] addKeysToIncrFindBatch
+     1.49%  [kernel.kallsyms]  [k] _raw_spin_lock_bh
+     1.47%  libchalloc.so      [.] je_malloc
+     1.31%  libchalloc.so      [.] je_sdallocx
+     1.20%  [kernel.kallsyms]  [k] skb_release_data
+     1.18%  [kernel.kallsyms]  [k] skb_defer_free_flush
+     1.08%  valkey-server      [.] processCommand
+     0.91%  valkey-server      [.] findBucket.constprop.0
+     0.88%  [kernel.kallsyms]  [k] __arch_copy_to_user
+     0.86%  [kernel.kallsyms]  [k] skb_attempt_defer_free
+     0.86%  [kernel.kallsyms]  [k] mod_memcg_state
+     0.85%  [kernel.kallsyms]  [k] tcp_clean_rtx_queue
+     0.82%  [kernel.kallsyms]  [k] epi_fget.isra.0
+     0.79%  [kernel.kallsyms]  [k] tcp_rcv_established
+-- allocator symbols
+     6.63%  libchalloc.so      [.] je_malloc_usable_size
+     1.47%  libchalloc.so      [.] je_malloc
+     1.31%  libchalloc.so      [.] je_sdallocx
+     0.57%  valkey-server      [.] zmalloc_usable
+     0.15%  valkey-server      [.] zmalloc_used_memory
+     0.02%  valkey-server      [.] ztrymalloc_usable
+     0.02%  libchalloc.so      [.] <challoc::class::ClassState>::bin_stats
+     0.01%  libchalloc.so      [.] challoc::api::mallctl::arena_stats
+     0.00%  libchalloc.so      [.] je_mallctlbymib
+     0.00%  libchalloc.so      [.] je_calloc
+     0.00%  libchalloc.so      [.] challoc::stats::collect_arena_with
+===== sp-rec-delete-jemalloc
+# Samples: 153K of event 'cycles'
+# Event count (approx.): 116356838220
+    41.06%  [kernel.kallsyms]
+     0.02%  [vdso]           
+     5.89%  libc.so.6        
+     6.37%  libchalloc.so    
+    46.67%  valkey-server    
+-- top 25 symbols
+     4.48%  valkey-server      [.] parseMultibulk
+     3.89%  valkey-server      [.] processInputBuffer
+     3.21%  [kernel.kallsyms]  [k] _raw_spin_unlock_irqrestore
+     3.07%  libchalloc.so      [.] challoc_free_usable
+     2.69%  valkey-server      [.] findKeyInBucketNeon
+     2.67%  valkey-server      [.] call
+     2.48%  libc.so.6          [.] __memset_sve_zva64
+     2.44%  valkey-server      [.] ustime
+     2.02%  [kernel.kallsyms]  [k] el0_svc
+     2.00%  libchalloc.so      [.] challoc_malloc_usable
+     1.71%  valkey-server      [.] moduleFireCommandResultEvent
+     1.58%  valkey-server      [.] siphash
+     1.51%  valkey-server      [.] addKeysToIncrFindBatch
+     1.43%  [kernel.kallsyms]  [k] _raw_spin_lock_bh
+     1.31%  [kernel.kallsyms]  [k] skb_defer_free_flush
+     1.25%  [kernel.kallsyms]  [k] skb_release_data
+     1.13%  valkey-server      [.] processCommand
+     1.06%  libc.so.6          [.] __GI_memchr
+     1.02%  [kernel.kallsyms]  [k] skb_attempt_defer_free
+     0.95%  valkey-server      [.] findBucket.constprop.0
+     0.93%  [kernel.kallsyms]  [k] mod_memcg_state
+     0.92%  valkey-server      [.] createEmbeddedStringObjectWithKeyAndExpire.lto_priv.0
+     0.88%  valkey-server      [.] objectGetVal
+     0.84%  [kernel.kallsyms]  [k] tcp_rcv_established
+     0.84%  [kernel.kallsyms]  [k] epi_fget.isra.0
+-- allocator symbols
+     3.07%  libchalloc.so      [.] challoc_free_usable
+     2.00%  libchalloc.so      [.] challoc_malloc_usable
+     0.81%  valkey-server      [.] zmalloc_usable
+     0.18%  valkey-server      [.] zmalloc_used_memory
+     0.17%  libchalloc.so      [.] je_sdallocx
+     0.04%  valkey-server      [.] ztrymalloc_usable
+     0.04%  valkey-server      [.] je_nallocx@plt
+     0.03%  libchalloc.so      [.] <challoc::class::ClassState>::bin_stats
+     0.01%  libchalloc.so      [.] challoc::api::mallctl::arena_stats
+     0.00%  libchalloc.so      [.] je_malloc_usable_size
+     0.00%  libchalloc.so      [.] je_mallctlbymib
+     0.00%  libchalloc.so      [.] challoc_calloc_usable
+     0.00%  libchalloc.so      [.] challoc::stats::collect_arena_with
+===== sp-rec-write-challoc
+# Samples: 153K of event 'cycles'
+# Event count (approx.): 116947614645
+    33.92%  [kernel.kallsyms]
+     0.01%  [vdso]           
+     4.53%  libc.so.6        
+    12.61%  libchalloc.so    
+    48.93%  valkey-server    
+-- top 25 symbols
+     9.01%  libchalloc.so      [.] je_malloc_usable_size
+     6.10%  valkey-server      [.] parseMultibulk
+     5.41%  valkey-server      [.] processInputBuffer
+     3.03%  valkey-server      [.] findKeyInBucketNeon
+     2.88%  [kernel.kallsyms]  [k] _raw_spin_unlock_irqrestore
+     2.06%  [kernel.kallsyms]  [k] __arch_copy_to_user
+     1.88%  libchalloc.so      [.] je_sdallocx
+     1.72%  valkey-server      [.] ustime
+     1.68%  valkey-server      [.] call
+     1.62%  libc.so.6          [.] __memset_sve_zva64
+     1.60%  valkey-server      [.] hashtableObjectGetKey
+     1.58%  libchalloc.so      [.] je_malloc
+     1.52%  [kernel.kallsyms]  [k] el0_svc
+     1.47%  valkey-server      [.] moduleFireCommandResultEvent
+     1.44%  valkey-server      [.] findBucket.constprop.0
+     1.19%  valkey-server      [.] siphash
+     1.18%  valkey-server      [.] addKeysToIncrFindBatch
+     0.97%  valkey-server      [.] hashtableSdsKeyCompare
+     0.96%  [kernel.kallsyms]  [k] skb_release_data
+     0.96%  [kernel.kallsyms]  [k] _raw_spin_lock_bh
+     0.95%  valkey-server      [.] objectGetVal
+     0.95%  [kernel.kallsyms]  [k] skb_defer_free_flush
+     0.88%  [kernel.kallsyms]  [k] aa_file_perm
+     0.82%  valkey-server      [.] processCommand
+     0.80%  libc.so.6          [.] __memcpy_sve
+-- allocator symbols
+     9.01%  libchalloc.so      [.] je_malloc_usable_size
+     1.88%  libchalloc.so      [.] je_sdallocx
+     1.58%  libchalloc.so      [.] je_malloc
+     0.75%  valkey-server      [.] zmalloc_usable
+     0.13%  valkey-server      [.] zmalloc_used_memory
+     0.02%  valkey-server      [.] ztrymalloc_usable
+     0.02%  libchalloc.so      [.] <challoc::class::ClassState>::bin_stats
+     0.01%  libchalloc.so      [.] challoc::api::mallctl::arena_stats
+     0.00%  libchalloc.so      [.] je_mallctlbymib
+     0.00%  libchalloc.so      [.] challoc::stats::collect_arena_with
+===== sp-rec-write-jemalloc
+# Samples: 153K of event 'cycles'
+# Event count (approx.): 115972915465
+    34.96%  [kernel.kallsyms]
+     0.02%  [vdso]           
+     5.40%  libc.so.6        
+     6.49%  libchalloc.so    
+    53.13%  valkey-server    
+-- top 25 symbols
+     8.24%  valkey-server      [.] parseMultibulk
+     5.21%  valkey-server      [.] processInputBuffer
+     3.05%  [kernel.kallsyms]  [k] _raw_spin_unlock_irqrestore
+     3.02%  libchalloc.so      [.] challoc_free_usable
+     3.00%  valkey-server      [.] findKeyInBucketNeon
+     2.52%  libchalloc.so      [.] challoc_malloc_usable
+     1.95%  [kernel.kallsyms]  [k] __arch_copy_to_user
+     1.78%  valkey-server      [.] ustime
+     1.76%  valkey-server      [.] call
+     1.75%  libc.so.6          [.] __memset_sve_zva64
+     1.56%  valkey-server      [.] hashtableObjectGetKey
+     1.44%  valkey-server      [.] moduleFireCommandResultEvent
+     1.42%  [kernel.kallsyms]  [k] el0_svc
+     1.36%  valkey-server      [.] findBucket.constprop.0
+     1.18%  valkey-server      [.] siphash
+     1.14%  valkey-server      [.] objectGetVal
+     1.11%  valkey-server      [.] addKeysToIncrFindBatch
+     1.08%  libc.so.6          [.] __memcpy_sve
+     1.08%  libc.so.6          [.] __GI_memchr
+     1.06%  valkey-server      [.] zmalloc_usable
+     1.05%  [kernel.kallsyms]  [k] _raw_spin_lock_bh
+     1.00%  [kernel.kallsyms]  [k] skb_defer_free_flush
+     0.99%  [kernel.kallsyms]  [k] skb_release_data
+     0.97%  [kernel.kallsyms]  [k] aa_file_perm
+     0.94%  valkey-server      [.] hashtableSdsKeyCompare
+-- allocator symbols
+     3.02%  libchalloc.so      [.] challoc_free_usable
+     2.52%  libchalloc.so      [.] challoc_malloc_usable
+     1.06%  valkey-server      [.] zmalloc_usable
+     0.83%  libchalloc.so      [.] je_sdallocx
+     0.16%  valkey-server      [.] zmalloc_used_memory
+     0.05%  valkey-server      [.] je_nallocx@plt
+     0.04%  valkey-server      [.] ztrymalloc_usable
+     0.02%  libchalloc.so      [.] <challoc::class::ClassState>::bin_stats
+     0.01%  libchalloc.so      [.] challoc::api::mallctl::arena_stats
+     0.00%  valkey-server      [.] zmalloc_get_allocator_info
+     0.00%  libchalloc.so      [.] je_malloc_usable_size
+     0.00%  libchalloc.so      [.] je_mallctlbymib
+     0.00%  libchalloc.so      [.] je_mallctl
+     0.00%  libchalloc.so      [.] challoc::stats::collect_arena_with
+===== sp2-rec-delete-jemalloc
+# Samples: 152K of event 'cycles'
+# Event count (approx.): 115591693391
+    45.54%  [kernel.kallsyms]
+     0.01%  [vdso]           
+     6.61%  libc.so.6        
+    47.84%  valkey-server    
+-- top 25 symbols
+     3.92%  [kernel.kallsyms]  [k] _raw_spin_unlock_irqrestore
+     3.82%  valkey-server      [.] je_malloc_usable_size
+     3.80%  valkey-server      [.] processInputBuffer
+     3.66%  valkey-server      [.] parseMultibulk
+     3.42%  libc.so.6          [.] __memset_sve_zva64
+     2.36%  valkey-server      [.] ustime
+     2.30%  valkey-server      [.] call
+     2.21%  valkey-server      [.] findKeyInBucketNeon
+     2.07%  [kernel.kallsyms]  [k] el0_svc
+     1.83%  valkey-server      [.] je_sdallocx
+     1.75%  valkey-server      [.] moduleFireCommandResultEvent
+     1.48%  valkey-server      [.] siphash
+     1.46%  [kernel.kallsyms]  [k] _raw_spin_lock_bh
+     1.43%  [kernel.kallsyms]  [k] skb_defer_free_flush
+     1.42%  valkey-server      [.] addKeysToIncrFindBatch
+     1.27%  valkey-server      [.] je_malloc
+     1.27%  [kernel.kallsyms]  [k] skb_release_data
+     1.08%  valkey-server      [.] processCommand
+     1.02%  libc.so.6          [.] __GI_memchr
+     0.96%  [kernel.kallsyms]  [k] tcp_rcv_established
+     0.95%  [kernel.kallsyms]  [k] tcp_clean_rtx_queue
+     0.93%  [kernel.kallsyms]  [k] __inet_lookup_established
+     0.88%  [kernel.kallsyms]  [k] mod_memcg_state
+     0.82%  valkey-server      [.] findBucket.constprop.0
+     0.82%  [kernel.kallsyms]  [k] _raw_spin_lock
+-- allocator symbols
+     3.82%  valkey-server      [.] je_malloc_usable_size
+     1.83%  valkey-server      [.] je_sdallocx
+     1.27%  valkey-server      [.] je_malloc
+     0.49%  valkey-server      [.] zmalloc_usable
+     0.16%  valkey-server      [.] zmalloc_used_memory
+     0.03%  valkey-server      [.] je_te_event_trigger
+     0.02%  valkey-server      [.] tcache_bin_flush_edatas_lookup
+     0.02%  valkey-server      [.] je_tcache_bin_flush_stashed
+     0.02%  valkey-server      [.] je_tcache_bin_flush_small
+     0.02%  valkey-server      [.] je_sdallocx_default
+     0.02%  valkey-server      [.] je_pa_shard_stats_merge
+     0.02%  valkey-server      [.] je_edata_heap_remove_first
+     0.02%  valkey-server      [.] je_arena_stats_merge
+     0.02%  valkey-server      [.] je_arena_cache_bin_fill_small
+     0.01%  valkey-server      [.] ztrymalloc_usable
+     0.01%  valkey-server      [.] je_tcache_gc_dalloc_event_handler
+     0.01%  valkey-server      [.] je_malloc_default
+     0.01%  valkey-server      [.] je_eset_nextents_get
+     0.01%  valkey-server      [.] je_eset_nbytes_get
+     0.01%  valkey-server      [.] je_edata_heap_insert
+     0.01%  valkey-server      [.] je_arena_dalloc_bin_locked_handle_newly_nonempty
+     0.00%  valkey-server      [.] tcache_gc_small
+     0.00%  valkey-server      [.] je_tcache_gc_new_event_wait
+     0.00%  valkey-server      [.] je_tcache_gc_event_handler
+     0.00%  valkey-server      [.] je_tcache_gc_dalloc_new_event_wait
+===== sp2-rec-write-jemalloc
+# Samples: 152K of event 'cycles'
+# Event count (approx.): 115512885592
+    33.37%  [kernel.kallsyms]
+     0.02%  [vdso]           
+     6.46%  libc.so.6        
+    60.16%  valkey-server    
+-- top 25 symbols
+     9.95%  valkey-server      [.] je_malloc_usable_size
+     5.11%  valkey-server      [.] processInputBuffer
+     4.34%  valkey-server      [.] parseMultibulk
+     2.97%  libc.so.6          [.] __memset_sve_zva64
+     2.76%  valkey-server      [.] findKeyInBucketNeon
+     2.54%  [kernel.kallsyms]  [k] _raw_spin_unlock_irqrestore
+     1.98%  valkey-server      [.] parseMultibulkBuffer
+     1.97%  [kernel.kallsyms]  [k] __arch_copy_to_user
+     1.93%  valkey-server      [.] je_sdallocx
+     1.70%  valkey-server      [.] ustime
+     1.58%  valkey-server      [.] call
+     1.46%  valkey-server      [.] je_malloc
+     1.41%  valkey-server      [.] hashtableObjectGetKey
+     1.41%  [kernel.kallsyms]  [k] el0_svc
+     1.32%  valkey-server      [.] moduleFireCommandResultEvent
+     1.29%  valkey-server      [.] findBucket.constprop.0
+     1.15%  valkey-server      [.] siphash
+     1.14%  [kernel.kallsyms]  [k] aa_file_perm
+     1.03%  valkey-server      [.] addKeysToIncrFindBatch
+     1.01%  valkey-server      [.] objectGetVal
+     0.98%  libc.so.6          [.] __GI_memchr
+     0.98%  [kernel.kallsyms]  [k] _raw_spin_lock_bh
+     0.97%  libc.so.6          [.] __memcpy_sve
+     0.88%  valkey-server      [.] hashtableSdsKeyCompare
+     0.82%  valkey-server      [.] processCommand
+-- allocator symbols
+     9.95%  valkey-server      [.] je_malloc_usable_size
+     1.93%  valkey-server      [.] je_sdallocx
+     1.46%  valkey-server      [.] je_malloc
+     0.70%  valkey-server      [.] zmalloc_usable
+     0.11%  valkey-server      [.] zmalloc_used_memory
+     0.08%  valkey-server      [.] je_edata_heap_remove_first
+     0.06%  valkey-server      [.] je_te_event_trigger
+     0.04%  valkey-server      [.] tcache_bin_flush_edatas_lookup
+     0.04%  valkey-server      [.] je_tcache_bin_flush_small
+     0.03%  valkey-server      [.] je_tcache_bin_flush_stashed
+     0.03%  valkey-server      [.] je_arena_cache_bin_fill_small
+     0.02%  valkey-server      [.] ztrymalloc_usable
+     0.02%  valkey-server      [.] je_sdallocx_default
+     0.02%  valkey-server      [.] je_pa_shard_stats_merge
+     0.02%  valkey-server      [.] je_malloc_default
+     0.02%  valkey-server      [.] je_arena_stats_merge
+     0.01%  valkey-server      [.] je_tcache_gc_event_handler
+     0.01%  valkey-server      [.] je_tcache_gc_dalloc_event_handler
+     0.01%  valkey-server      [.] je_peak_dalloc_event_handler
+     0.01%  valkey-server      [.] je_peak_alloc_event_handler
+     0.01%  valkey-server      [.] je_eset_nextents_get
+     0.01%  valkey-server      [.] je_eset_nbytes_get
+     0.01%  valkey-server      [.] je_edata_heap_insert
+     0.01%  valkey-server      [.] je_arena_dalloc_bin_locked_handle_newly_nonempty
+     0.00%  valkey-server      [.] tcache_gc_small
+REPORT DONE
