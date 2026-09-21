@@ -294,24 +294,17 @@ pub unsafe fn cpu_id(area: *mut u8) -> u32 {
 }
 
 /// Status words of [`pop_raw`] and [`push_raw`], the sections' raw
-/// results the entry points decode with one test each: a pop hit has
+/// results, decoded by [`Pop::decode`] and [`Push::decode`]: a pop hit has
 /// [`POP_HIT`] set (and [`POP_ZERO`] when the slot is known zero); a push
-/// hit is [`PUSH_PUSHED`], zero. The other values are the misses the cold paths
-/// decode; [`POP_OFF_MODE`] / [`PUSH_OFF_MODE`] are the heap's own
-/// (`heap/`: a heap off the mode), never the sections'.
+/// hit is [`PUSH_PUSHED`], zero. The other values are the misses.
 pub const POP_HIT: u32 = 1;
 pub const POP_ZERO: u32 = 2;
 pub const POP_EMPTY: u32 = 0;
 pub const POP_OUT_OF_RANGE: u32 = 2;
 pub const POP_SCHEDULED: u32 = 4;
-pub const POP_OFF_MODE: u32 = 8;
 pub const PUSH_PUSHED: u32 = 0;
 pub const PUSH_FULL: u32 = 1;
 pub const PUSH_OUT_OF_RANGE: u32 = 2;
-/// The heap declined the push before the section (a pointer the checks
-/// did not verify, `zero_on_free`).
-pub const PUSH_DECLINED: u32 = 3;
-pub const PUSH_OFF_MODE: u32 = 8;
 
 /// Outcome of [`pop`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
