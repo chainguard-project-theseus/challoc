@@ -87,10 +87,32 @@ pub fn malloc(size: usize) -> *mut u8 {
     // design 15, whose heaps keep their home caches empty so the pop
     // falls through here) is one tail call away so the exported `malloc`
     // needs no stack frame.
-    match malloc_fast(size) {
+    let Some(c) = class_of(size) else { return malloc_slow(size) };
+    let shared = super::shared_ptr();
+    let Some(h) = heap::existing_heap(shared) else { return malloc_slow(size) };
+    // SAFETY: this thread's heap exists, so this thread observed `READY`
+    // (the byte was read once inside `existing_heap`; this is the same
+    // load, merged by the compiler).
+    let flags = unsafe { heap::fast_flags(shared) };
+    match h.alloc_fast(c, flags) {
         Some(p) => p,
-        None => malloc_slow(size),
+        // The class, not the size: the declined pop (an empty cache or
+        // the scheduled pop) goes straight to the slow path of its class,
+        // `heap::alloc_declined`, not through a second classification and
+        // a second fast pop.
+        None => malloc_slow_class(c),
     }
+}
+
+/// `malloc_slow` for a size whose class is known and whose fast pop has
+/// just declined: the refill or the scheduled pop through
+/// `heap::alloc_declined` (a heap in the per-CPU mode routes there too),
+/// null with `errno = ENOMEM` on failure.
+#[cold]
+#[inline(never)]
+fn malloc_slow_class(class: usize) -> *mut u8 {
+    let p = heap::alloc_declined(super::shared(), class);
+    if p.is_null() { enomem() } else { p }
 }
 
 /// The cache pop alone: `None` whenever anything is off the fast path (no
@@ -384,9 +406,6 @@ pub fn malloc_usable(size: usize, usable: *mut usize) -> *mut u8 {
     let Some(h) = heap::existing_heap(shared) else { return malloc_usable_class(c, usable) };
     // SAFETY: as in `malloc`.
     let flags = unsafe { heap::fast_flags(shared) };
-    if flags & heap::PUSH_PERCPU != 0 {
-        return malloc_usable_class(c, usable);
-    }
     match h.alloc_fast(c, flags) {
         Some(p) => {
             store_usable(usable, class_size(c));
@@ -396,13 +415,14 @@ pub fn malloc_usable(size: usize, usable: *mut usize) -> *mut u8 {
     }
 }
 
-/// `malloc_usable` off its fast path for a slab class: the refill, heap
-/// creation and the per-CPU mode (`heap::alloc` dispatches all three),
+/// `malloc_usable` off its fast path for a slab class: the refill, the
+/// scheduled pop, heap creation and the per-CPU mode
+/// (`heap::alloc_declined`, then `Heap::alloc_slow`, dispatch all four),
 /// null with `errno = ENOMEM` on failure.
 #[cold]
 #[inline(never)]
 fn malloc_usable_class(class: usize, usable: *mut usize) -> *mut u8 {
-    let p = heap::alloc(super::shared(), class);
+    let p = heap::alloc_declined(super::shared(), class);
     if p.is_null() {
         store_usable(usable, 0);
         return enomem();
@@ -526,11 +546,10 @@ pub fn free_usable(p: *mut u8) -> usize {
     if let Some(h) = heap::existing_heap(super::shared_ptr()) {
         // SAFETY: as in `free`.
         let shared = unsafe { super::shared_unchecked() };
-        let flags = shared.push_flags();
-        if flags & heap::PUSH_PERCPU == 0 {
-            if let Some(class) = heap::free_fast_class(shared, h, p, flags) {
-                return class_size(class);
-            }
+        // A heap in the per-CPU mode has `cap == 0` on every home cache,
+        // so the push declines and the slow path routes it (as in `free`).
+        if let Some(class) = heap::free_fast_class(shared, h, p, shared.push_flags()) {
+            return class_size(class);
         }
     }
     free_usable_slow(p)

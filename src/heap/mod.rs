@@ -2092,6 +2092,23 @@ pub fn alloc(shared: &Shared, class: usize) -> *mut u8 {
     }
 }
 
+/// `malloc` of a non-huge class whose fast pop declined (`Heap::alloc_fast`
+/// returned `None`: an empty cache, or the scheduled pop of design 6.4 that
+/// `pop_fast` leaves to the slow path): straight to [`Heap::alloc_slow`],
+/// without the retry of the pop that [`alloc`] makes first, so a scheduled
+/// pop costs the entry point one tail call and the dispatch in
+/// `alloc_slow`, not a second pass through its own fast path (measured:
+/// through `alloc` the mixed `valkey1` row paid 4 instructions per
+/// operation for the one pop in eight the compacting mode schedules).
+#[cfg(target_os = "linux")]
+#[inline(always)]
+pub fn alloc_declined(shared: &Shared, class: usize) -> *mut u8 {
+    match heap_for_thread(shared) {
+        Some(h) => h.alloc_slow(shared, class).0,
+        None => shared.alloc_direct(&shared.arena0, class).0,
+    }
+}
+
 /// `calloc` of a non-huge class on the calling thread; the flag says the
 /// memory is known zero.
 #[cfg(target_os = "linux")]
