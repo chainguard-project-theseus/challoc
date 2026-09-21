@@ -54,4 +54,13 @@ quick: NO-GO (new trails old by more than 5% on a row, or does not compact)
 
 ## Per-operation counters (`challoc-bench quick-perf amd64 OLD=df6d285`, v3)
 
-QUICKPERF_x86_64
+| row | variant | M ops/s | cycles/op | instr/op | L1D miss/op | dTLB miss/op |
+|---|---|---:|---:|---:|---:|---:|
+| larson1 | old | 45.07 | 72.9 | 243.9 | 1.625 | 0.002 |
+| larson1 | new | 44.80 | 73.7 | 243.8 | 1.647 | 0.002 |
+| larson1 | jemalloc | 45.00 | 72.4 | 200.9 | 2.123 | 0.001 |
+| valkey1 | old | 23.61 | 144.7 | 239.9 | 3.323 | 0.897 |
+| valkey1 | new | 23.71 | 144.5 | 240.2 | 3.342 | 0.908 |
+| valkey1 | jemalloc | 27.31 | 126.1 | 154.0 | 3.379 | 0.950 |
+
+old = df6d285, new = aeafc1e. larson1 72.9 vs 73.7 cycles per operation, valkey1 144.7 vs 144.5 (one run each; instructions and misses per operation equal to the third digit): the fast paths are the base's code, as the disassembly says.

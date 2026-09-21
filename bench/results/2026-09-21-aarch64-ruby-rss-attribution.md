@@ -204,5 +204,6 @@ both architectures it is written aarch64 / x86_64.
    (`1a45278`, rate-limited to once per decay period per arena by
    `6e25c7a` after the unlimited form cost mstress +11% through refaults
    under thread churn, `-ab-split.md` `purge` column). The numbers are in
-   `2026-09-21-<arch>-ruby-rss-v2-soak.md`, `-v2-ab.md`, `-v2-ruby.md`,
-   `-quick.md`.
+   `2026-09-21-<arch>-ruby-rss-v3-soak.md`, `-v3-ab.md`, `-v3-ruby.md`,
+   `-quick.md` (the v2 files are the form before the foreign cache was
+   halved, `c8a8e03`).

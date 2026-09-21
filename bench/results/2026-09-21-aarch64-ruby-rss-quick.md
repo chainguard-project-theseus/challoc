@@ -54,4 +54,13 @@ quick: go (new within 5% of old on every row; churn compacts)
 
 ## Per-operation counters (`challoc-bench quick-perf arm64 OLD=df6d285`, v3)
 
-QUICKPERF_aarch64
+| row | variant | M ops/s | cycles/op | instr/op | L1D miss/op | dTLB miss/op |
+|---|---|---:|---:|---:|---:|---:|
+| larson1 | old | 41.54 | 72.1 | 264.5 | 2.102 | 3.998 |
+| larson1 | new | 41.47 | 72.1 | 264.4 | 2.106 | 3.986 |
+| larson1 | jemalloc | 44.84 | 66.4 | 224.8 | 2.066 | 1.694 |
+| valkey1 | old | 12.60 | 240.8 | 248.9 | 3.104 | 2.829 |
+| valkey1 | new | 12.39 | 244.5 | 249.5 | 3.104 | 2.827 |
+| valkey1 | jemalloc | 13.66 | 221.2 | 170.8 | 2.973 | 2.723 |
+
+old = df6d285, new = aeafc1e. larson1 72.1 vs 72.1 cycles per operation, valkey1 240.8 vs 244.5 (+1.5%, one run each; instructions and misses per operation equal to the third digit): the fast paths are the base's code, as the disassembly says.
