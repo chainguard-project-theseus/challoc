@@ -185,7 +185,41 @@ does not pay today (not done; see the notes in PROGRESS.d).
 
 ## 4. Protocol tier (`challoc-bench ab arm64`, 5 rounds, same run, `2026-09-21-aarch64-percpu-dispatch-ab.md`)
 
-AB_PLACEHOLDER
+| program | unit | old | old RSS MiB | new | new RSS MiB | jemalloc | jemalloc RSS MiB | new-percpu | new-percpu RSS MiB | old-percpu | old-percpu RSS MiB | new vs old | jemalloc vs old | new-percpu vs old | old-percpu vs old |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| larson1 | M ops/s | 41.9 | 15.9 | 42.3 | 15.9 | 45.0 | 18.4 | 25.1 | 14.0 | 39.8 | 16.5 | -0.9% | -6.9% | +66.9% | +5.3% |
+| larson10 | M ops/s | 362.0 | 111.4 | 368.8 | 112.6 | 387.0 | 132.1 | 243.1 | 103.9 | 329.4 | 122.8 | -1.8% | -6.5% | +48.9% | +9.9% |
+| larson16 | M ops/s | 587.7 | 165.3 | 593.3 | 164.8 | 615.5 | 207.6 | 392.4 | 141.0 | 529.3 | 168.1 | -0.9% | -4.5% | +49.8% | +11.0% |
+| xmalloc | M frees/s | 576.684 | 53.2 | 579.657 | 53.3 | 475.220 | 80.6 | 392.689 | 61.9 | 488.729 | 82.1 | -0.5% | +21.4% | +46.9% | +18.0% |
+| alloc-test1 | s | 2.672 | 13.1 | 2.651 | 13.1 | 2.533 | 12.3 | 3.227 | 13.1 | 2.871 | 13.1 | -0.8% | -5.2% | +20.8% | +7.4% |
+| alloc-testN | s | 2.305 | 16.5 | 2.287 | 16.4 | 2.199 | 16.5 | 2.783 | 16.6 | 2.431 | 16.6 | -0.8% | -4.6% | +20.7% | +5.5% |
+| valkey1 | M ops/s | 7.069 | 584.7 | 7.122 | 584.7 | 7.053 | 585.7 | 5.551 | 584.5 | 6.630 | 584.7 | -0.7% | +0.2% | +27.3% | +6.6% |
+| valkey1-free | M ops/s | 7.015 | 584.7 | 7.040 | 584.7 | 7.020 | 585.7 | 5.723 | 584.5 | 6.377 | 584.7 | -0.4% | -0.1% | +22.6% | +10.0% |
+
+Positive percentages: the variant did worse than `old`. Tree cc547ed,
+started 2026-09-21T04:25:52Z, load 2.87 at the start, 1571 s, the five
+variants interleaved per round. Reading:
+
+- `new` against `old` (the default path): every row ahead, larson1 -0.9%,
+  larson10 -1.8%, larson16 -0.9%, xmalloc -0.5%, alloc-test1 -0.8%,
+  alloc-testN -0.8%, valkey1 -0.7%, valkey1-free -0.4%. On larson1 the
+  two sorted lists do not overlap (`old` 41.7 41.9 41.9 41.9 42.0, `new`
+  42.1 42.3 42.3 42.4 42.4 M ops/s): the -9 instructions per operation
+  are a measurable, if small, gain at the protocol tier. The
+  multi-threaded rows (larson10, larson16, xmalloc, alloc-testN) move
+  the same way. RSS unchanged on every row.
+- against jemalloc: larson1 45.0 vs 42.3, `new` 6.4% behind (the
+  drift file's pre-4864d4b band was +5.9..+6.6%, the post-4864d4b band
+  +7.5..+8.5%: back in the old band); larson10 +4.9%, larson16 +3.7%,
+  xmalloc 22% ahead, alloc-test1 +4.7%, alloc-testN +4.0%, valkey1 1.0%
+  ahead, valkey1-free 0.3% ahead.
+- the mode (`new-percpu` against `old-percpu`, both `percpu_arena:percpu`):
+  larson1 39.8 -> 25.1 M ops/s, larson10 329 -> 243, larson16 529 -> 392,
+  xmalloc 489 -> 393, alloc-test1 2.87 -> 3.23 s, alloc-testN 2.43 ->
+  2.78 s, valkey1 6.63 -> 5.55, valkey1-free 6.38 -> 5.72: the mode is
+  16..38% slower than under the tail-call dispatch, the section 2
+  mechanism at the protocol tier. Its RSS shape is unchanged (larson16
+  141 MiB against the default's 165).
 
 ## 5. Tests
 
