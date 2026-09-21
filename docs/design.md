@@ -971,6 +971,26 @@ page granularity.
 - Freed runs become `Empty` and decay like slabs. Runs whose usable size is
   above `huge_retain_max` (a `malloc_conf` key, default 64 MiB, readable as
   `opt.huge_retain_max`) are purged immediately.
+- The huge tier's decay period is arena 0's (`dirty_decay_ms`, and
+  `arena.0.dirty_decay_ms` at run time) unless `huge_dirty_decay_ms` gives
+  it one of its own (a `malloc_conf` key, `-1`..`1000000000000` like
+  `dirty_decay_ms`; unset, the default, follows arena 0, and
+  `opt.huge_dirty_decay_ms` then reads the slab period). The decay driver
+  (`purge::decay`) walks the huge extents on that period
+  (`Shared::huge_decay_ns`, scaled by the cgroup policy's band like every
+  arena's) through the huge `Decayer`; `0` purges a freed run as it is
+  freed, whatever its size (the `huge_retain_max` path, `Huge::set_purge_on_free`),
+  `-1` leaves freed runs `Empty` for `malloc_trim(0)` and `arena.<i>.purge`
+  alone. The report's `Huge:` line names the huge period when it differs
+  from arena 0's. Why a separate period: a program that churns buffers of
+  hundreds of KiB (the JVM's direct `ByteBuffer`s, freed in bursts by the
+  Cleaner) holds a load lull's worth of them in the huge tier's `Empty`
+  list for the whole slab window, and the huge extents are whole runs
+  refaulted at once on reuse, not slots of a shared slab, so a shorter
+  window costs them less than it would cost the slabs
+  (`bench/results/2026-09-20-{aarch64,x86_64}-jvm-huge-decay.md`; the
+  shipped default stays the slab period until the human decides
+  otherwise).
 - `MADV_HUGEPAGE` on runs of a PMD (2 MiB) or more when the `thp` key is
   `always` (`prepare`, after the commit; `thp.rs`, plan Phase 2.5 task 9).
   Never under `auto`: `auto` is the multi-size path for the slab regions and
@@ -1002,7 +1022,8 @@ address, with `dirty_at` per entry. Decay policy is jemalloc's in shape:
   allowance rounds up). A walk runs at most once per step (window / 200):
   the gate is one `purge::Decayer` (oldest `dirty_at`, next deadline) per
   class state and one in the huge allocator; the walks differ, the gate
-  does not. `-1` is never.
+  does not. `-1` is never. The huge allocator's window is arena 0's, or
+  `huge_dirty_decay_ms` when set (section 7).
 - `muzzy_decay_ms` is accepted and ignored. Two advices (plan Phase 2.5
   task 10, `policy::advice`): a purge is `MADV_DONTNEED` (eager: the
   pages leave RSS and the cgroup's charge at once, the next touch faults
@@ -1538,6 +1559,7 @@ jemalloc names where they exist:
 | `guards`                  | true    | guard slabs and huge runs               |
 | `guard_slab_interval`     | 8       | one guard per N x 64 KiB of slabs, N a power of two (else rounded up, reported); 0 off, 1 out of range (clamps to 2) |
 | `huge_retain_max`         | 67108864 | challoc only; bytes; freed huge runs above it are purged at once (7); `opt.huge_retain_max` reads as `size_t` |
+| `huge_dirty_decay_ms`     | follows `dirty_decay_ms` | challoc only; the huge tier's own decay window in ms, `-1`..`1000000000000` (7): unset it follows arena 0's period (`dirty_decay_ms`, `arena.0.dirty_decay_ms`), and `opt.huge_dirty_decay_ms` reads that; `0` purges a freed huge run at the free; `-1` never by decay. Measured on the JVM soak at 2000, 500 and 0 (`bench/results/2026-09-20-{aarch64,x86_64}-jvm-huge-decay.md`); the default is the human's call with those numbers |
 | `zero_on_free`            | false   | opt-in: clear a block on free (6.3 step 3); priced in `bench/results/2026-09-18-*-gce-tunables.md` |
 | `pac_pointers`            | false   | challoc only; opt-in: sign cache entries and the TLS heap pointer with `pacda` where the kernel exposes `HWCAP_PACA`/`PACG` (6.1, 6.2, 17); inert elsewhere; priced in `bench/results/2026-09-19-lane-a-pac-pointers.md` |
 | `slot_randomize`          | false   | opt-in: refills claim from a random word and shuffle the batch (4); fights 6.4's compaction |

@@ -123,6 +123,7 @@ One row per key, in `KEYS` order. "Values" is the grammar
 | `guards` | `true`, `false` | `true` | Guard slabs between slabs (kernel 6.13+, `MADV_GUARD_INSTALL`) and a guard after every huge run (a `PROT_NONE` page on older kernels). | Never. | `false` removes an overflow barrier and makes the sized-free guard test a no-op. |
 | `guard_slab_interval` | `0`, or `2`..`4194304`, a power of two | `8` | One guard slab per N x 64 KiB of slabs (every Nth slab for the 64 KiB-slab classes; the same span in bytes for the classes with smaller slabs). `0` is none; `1` is out of range and clamps to `2`; a non-power of two rounds up and is reported. | To trade address space and slab count for guard density. | A denser interval costs slabs; it never costs a fast-path instruction (the test is a mask). No guard slabs exist before kernel 6.13 whatever the value. |
 | `huge_retain_max` | `0`..`1099511627776` | `67108864` | Freed huge runs (allocations above the largest class) with more usable bytes than this (`opt.huge_retain_max` reads as a `size_t`) are purged the moment they are freed instead of waiting for decay; smaller ones are retained for reuse and decay with `dirty_decay_ms`. | A process churns large buffers and their retention shows in RSS between bursts: Node's 1 MiB `Buffer.allocUnsafe` bodies held 62 MiB of `challoc:huge` at the end of the load (`bench/results/2026-09-20-x86_64-node.md`). Not measured with a lower value. | A lower value refaults every reused large buffer. |
+| `huge_dirty_decay_ms` | `-1`..`1000000000000` | follows `dirty_decay_ms` (`opt.huge_dirty_decay_ms` reads `10000`) | The huge tier's own decay window (design 7): freed huge runs at or under `huge_retain_max` go from dirty to purged over this many milliseconds on their own curve, while the slabs keep `dirty_decay_ms`. Unset it follows arena 0's period (and `arena.0.dirty_decay_ms` moves both). `0` purges a huge run the moment it is freed, whatever its size; `-1` never purges one by decay (`malloc_trim(0)` still does). The report's `Huge:` line names the period when it differs. | A process churns buffers above the largest class (256 KiB) in bursts and holds them through its lulls: the JVM's direct `ByteBuffer`s (section 3, JVM) kept 222 MiB of empty huge extents inside the 10 s window at the end of every lull of the mixed-size soak; the measured table is in the JVM section. | A shorter window refaults every reused huge run, one `madvise` and `n` page faults per run; the slab classes are untouched, so the Valkey guard rows (same file, the soak at `0`) read unchanged on x86_64 and within one run's spread on aarch64. |
 | `zero_on_free` | `true`, `false` | `false` | Clears a freed block (a slot's class-size bytes, a huge run's usable bytes) before it is cached or released. | A hardening requirement that outweighs the cost. | A `memset` per free: the Valkey model +84% (aarch64), larson1 +145%, larson10 +237%, redis +11.2% (`bench/results/2026-09-18-aarch64-gce-tunables.md`). |
 | `pac_pointers` | `true`, `false` | `false` | On arm64 with pointer authentication (`pac=yes` in the feature line: Axion, Apple silicon; not Altra, not x86_64), signs every cached slot pointer and the TLS heap pointer with `pacda` and authenticates on pop, so a metadata write cannot make `malloc` return a chosen address. Inert elsewhere. | A hardening requirement on a host with `pac=yes`. | xmalloc-test's cross-thread frees +11.0..15.8%, larson +1.2..1.9% on Axion (`bench/results/2026-09-19-lane-a-pac-pointers.md`). |
 | `slot_randomize` | `true`, `false` | `false` | Cache refills claim from a random bitmap word and shuffle the batch, so slot order is not predictable from previous allocations. Slow paths only. | A hardening requirement. | Works against `tcache_compact_shift`'s compaction: +7..12% RSS on larson (`2026-09-18-aarch64-gce-tunables.md`, section 6). |
@@ -296,6 +297,47 @@ configuration. What the rows found:
 The JVM's own knobs (`-Xmx`, `-XX:MaxDirectMemorySize`) decide the native
 churn; `narenas` is the analogue of `MALLOC_ARENA_MAX` and was not
 needed on these rows.
+
+The mixed-size soak (`bench/results/2026-09-20-{aarch64,x86_64}-jvm-soak.md`:
+a 16..400-thread pool, direct buffers of 256 B..1 MiB, 60 s windows
+alternating 256 and 8 connections for 1200 s) is where challoc trails the
+tuned glibc variants: 13..22% above `MALLOC_ARENA_MAX=2` and
+`-XX:TrimNativeHeapInterval=5000` in the tail-mean RSS at equal req/s,
+about 222 MiB of it the huge tier's empty extents at the end of each
+lull. `huge_dirty_decay_ms` was built for that and measured at 2000, 500
+and 0 against the same two glibc variants on the same day
+(`bench/results/2026-09-20-{aarch64,x86_64}-jvm-huge-decay.md`; tail mean
+Rss over the last 600 s in MiB, CPU us per request in the high windows,
+challoc's default = the slab period, 10 s):
+
+| variant | aarch64 tail mean | aarch64 CPU us/req | x86_64 tail mean | x86_64 CPU us/req |
+|---|---:|---:|---:|---:|
+| challoc, default | 1185 | 53.2 | 1121 | 68.8 |
+| `huge_dirty_decay_ms:2000` | 1181 (-0.4%) | 54.9 (+3%) | 1105 (-1.4%) | 71.5 (+4%) |
+| `huge_dirty_decay_ms:500` | 1169 (-1.4%) | 58.1 (+9%) | 1093 (-2.5%) | 75.4 (+10%) |
+| `huge_dirty_decay_ms:0` | 1088 (-8.2%) | 67.2 (+26%) | 1050 (-6.3%) | 83.7 (+22%) |
+| glibc, `MALLOC_ARENA_MAX=2` | 981 | 49.4 | 986 | 64.2 |
+| glibc, `TrimNativeHeapInterval=5000` | 969 | 50.8 | 865 | 63.9 |
+
+The window does not buy the RSS back: the buffers are not idle in the
+lulls. At 8 connections the JVM still moves about 4 GiB/s of direct
+buffers, its direct-memory limit forces a GC every ~120 ms, the Cleaner
+frees one cycle's ~200 MiB of huge runs in a burst and the next cycle
+takes them back out of the empty list before any age-based window has a
+step to purge; the "222 MiB inside the window" was one such burst caught
+by the exit snapshot. A window shorter than the cycle (500, 0) purges
+every burst and refaults it (`huge_dirty_decay_ms:0`: 7.5 M eager purges,
+4.2 TB over 1200 s on aarch64), so the RSS bought is linear in the CPU
+spent and the low windows lose 8..16% of their blob req/s. glibc-trim gets
+its lower tail mean for less CPU because `malloc_trim(0)` every 5 s
+purges whatever is free at that instant regardless of age and then
+nothing for 5 s. Leave `huge_dirty_decay_ms` unset for a JVM; it is the
+right knob only where huge runs are freed and not re-requested for longer
+than the window (a process that keeps a large buffer for a phase and
+drops it), and the same file's Valkey guard rows show it is inert for
+Valkey (no huge frees). The periodic-trim shape is the direction the
+results file names for the human (`challoc-trim` in the companion file
+`2026-09-20-{aarch64,x86_64}-jvm-huge-decay-trim.md`).
 
 ### Node.js
 
@@ -660,6 +702,6 @@ fixes their values by measurement:
   criteria are met with it.
 
 Change `dirty_decay_ms`, `background_thread`, `narenas` (many-thread
-idle processes), `huge_retain_max` (megabyte-buffer churn), `lazy_band`
-(RSS-derived metrics under a limit) and the `thp` pair (section 5) with a
-row in hand; leave the rest.
+idle processes), `huge_retain_max` and `huge_dirty_decay_ms` (large-buffer
+churn), `lazy_band` (RSS-derived metrics under a limit) and the `thp` pair
+(section 5) with a row in hand; leave the rest.
