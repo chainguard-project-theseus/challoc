@@ -62,7 +62,14 @@ mod linux_tests {
             found.insert(key, val);
         }
         assert_eq!(found.get(&AT_PAGESZ).copied(), Some(getauxval(AT_PAGESZ)));
-        assert_eq!(found.get(&AT_HWCAP).copied(), Some(getauxval(AT_HWCAP)), "AT_HWCAP is in every Linux vector");
+        // glibc's x86 startup overwrites its `AT_HWCAP` with a word of its
+        // own (`HWCAP_X86_64`, the AVX-512 usability bits), so `getauxval`
+        // and the kernel's vector agree only on aarch64; the crate reads
+        // `AT_HWCAP` through `getauxval` on aarch64 alone (cpu.rs, pac.rs)
+        // and `cpuid` on x86_64.
+        assert!(found.contains_key(&AT_HWCAP), "AT_HWCAP is in every Linux vector");
+        #[cfg(target_arch = "aarch64")]
+        assert_eq!(found.get(&AT_HWCAP).copied(), Some(getauxval(AT_HWCAP)));
         assert_eq!(found.get(&AT_HWCAP2).copied().unwrap_or(0), getauxval(AT_HWCAP2));
     }
 }
