@@ -27,8 +27,18 @@
 #                task 8: the per-CPU caches against the default's thread caches,
 #                the RSS-by-cores against RSS-by-threads comparison; THREADS=64
 #                or 256 makes the point)
+#   <name>       any other name listed in VARIANTS (below): challoc with that
+#                MALLOC_CONF, e.g. VARIANTS="decay0=dirty_decay_ms:0 narenas4=narenas:4"
 # Every variant's /proc/self/maps is checked before its run.
 #
+#   VARIANTS="name=conf ..."  extra challoc variants by MALLOC_CONF (the name
+#                 goes in ALLOCS and the file stems; a name may not contain
+#                 spaces or '='). Every non-jemalloc variant gets a "vs
+#                 challoc" column when challoc is in ALLOCS.
+#   TRIM=1        soak.rb calls malloc_trim(0) through fiddle right before
+#                 every sample (SOAK_TRIM): what RSS reads then is Active plus
+#                 metadata, so the difference to a run without it is the dirty,
+#                 not-yet-decayed inventory at the sample instant
 #   DURATION=600  INTERVAL=5  GC_EVERY=30  COMPACT_AT=300  THREADS=16  SEED=4141
 #   IDLE_THREADS=0  extra mostly idle threads (bench/ruby/soak.rb: one burst at
 #                 start, then a tiny one every 5..10 s), plan Phase 2.5 task 8's
@@ -61,6 +71,8 @@ GC_EVERY=${GC_EVERY:-30}
 COMPACT_AT=${COMPACT_AT:-300}
 THREADS=${THREADS:-16}
 IDLE_THREADS=${IDLE_THREADS:-0}
+VARIANTS=${VARIANTS:-}
+TRIM=${TRIM:-0}
 SEED=${SEED:-4141}
 WORK=$ROOT/target/ruby
 OUT=${OUT:-$WORK/soak-out}
@@ -77,7 +89,9 @@ T_START=$(date +%s)
 LOAD0=$(loadavg)
 
 take_bench_lock
-for a in $ALLOCS; do case $a in challoc|jemalloc|challoc-bg|jemalloc-bg|challoc-1arena|challoc-percpu) ;; *) die "unknown allocator '$a'";; esac; done
+# conf_of NAME: the MALLOC_CONF of a VARIANTS entry, empty when NAME is not one.
+conf_of() { for v in $VARIANTS; do case $v in "$1="*) echo "${v#*=}"; return;; esac; done; echo ""; }
+for a in $ALLOCS; do case $a in challoc|jemalloc|challoc-bg|jemalloc-bg|challoc-1arena|challoc-percpu) ;; *) [ -n "$(conf_of "$a")" ] || die "unknown allocator '$a' (not in VARIANTS)";; esac; done
 rm -rf "$OUT"; mkdir -p "$OUT" "$(dirname "$RESULT")"
 
 # ---- build, stage, install -------------------------------------------------------
@@ -102,9 +116,10 @@ ruby_env() {
     jemalloc-bg) echo "LD_PRELOAD=$JEMALLOC_LIB MALLOC_CONF=background_thread:true LD_LIBRARY_PATH=$INST/lib";;
     challoc-1arena) echo "MALLOC_CONF=narenas:1 LD_LIBRARY_PATH=$INST/lib";;
     challoc-percpu) echo "MALLOC_CONF=percpu_arena:percpu LD_LIBRARY_PATH=$INST/lib";;
+    *)           echo "MALLOC_CONF=$(conf_of "$1") LD_LIBRARY_PATH=$INST/lib";;
   esac
 }
-run_ruby() { a=$1; shift; env $(ruby_env "$a") "$INST/bin/ruby" "$@"; }
+run_ruby() { a=$1; shift; env SOAK_TRIM=$TRIM $(ruby_env "$a") "$INST/bin/ruby" "$@"; }
 
 echo "== ruby: $(run_ruby challoc -v)"
 for a in $ALLOCS; do
@@ -117,7 +132,7 @@ fiddle=$(run_ruby challoc -e 'begin; require "fiddle"; puts "yes"; rescue LoadEr
 echo "   fiddle: $fiddle (allocator stats through mallctl$([ "$fiddle" = yes ] || echo ' skipped'))"
 
 # ---- the runs --------------------------------------------------------------------------
-echo "== $DURATION s per allocator ($ALLOCS), $THREADS threads + $IDLE_THREADS idle, sample every $INTERVAL s, full GC every $GC_EVERY s, GC.compact at $COMPACT_AT s, seed $SEED; CHALLOC_CONF=${CHALLOC_CONF:-}; load $LOAD0"
+echo "== $DURATION s per allocator ($ALLOCS), $THREADS threads + $IDLE_THREADS idle, sample every $INTERVAL s, full GC every $GC_EVERY s, GC.compact at $COMPACT_AT s, seed $SEED; CHALLOC_CONF=${CHALLOC_CONF:-}; VARIANTS=${VARIANTS:-}; TRIM=$TRIM; load $LOAD0"
 for a in $ALLOCS; do
   csv=$STEM-$a.csv
   printf '   %s: started %s ... ' "$a" "$(date -u +%T)"
@@ -175,8 +190,11 @@ describe() {
     jemalloc-bg) echo "as jemalloc, with MALLOC_CONF=background_thread:true";;
     challoc-1arena) echo "as challoc, with MALLOC_CONF=narenas:1 (one arena for all threads)";;
     challoc-percpu) echo "as challoc, with MALLOC_CONF=percpu_arena:percpu (per-CPU caches instead of thread caches)";;
+    *)           echo "as challoc, with MALLOC_CONF=$(conf_of "$1")";;
   esac
 }
+# extras: the variants that get a "vs challoc" column (everything but challoc and jemalloc).
+extras() { for a in $ALLOCS; do case $a in challoc|jemalloc) ;; *) echo "$a";; esac; done; }
 has() { case " $ALLOCS " in *" $1 "*) return 0;; *) return 1;; esac; }
 M5=$COMPACT_AT; M10=$DURATION
 {
@@ -189,6 +207,7 @@ M5=$COMPACT_AT; M10=$DURATION
   echo "- ruby: $(run_ruby challoc -v) (tag $RUBY_TAG built by contrib/ruby/build.sh, --with-jemalloc), installed under target/ruby/install-challoc; allocator stats through fiddle -> mallctl: $fiddle"
   echo "- workload: bench/ruby/soak.rb $DURATION s, $THREADS threads${IDLE_THREADS:+ + $IDLE_THREADS mostly idle threads}, seed $SEED, sample every $INTERVAL s, full GC every $GC_EVERY s, GC.compact at $COMPACT_AT s, one full GC after the workers stop (the final row)"
   [ -n "${CHALLOC_CONF:-}" ] && echo "- CHALLOC_CONF=$CHALLOC_CONF (read by challoc alone; jemalloc runs unchanged)"
+  [ "$TRIM" = 1 ] && echo "- TRIM=1: soak.rb calls malloc_trim(0) right before every sample (where the allocator exports it), so VmRSS and resident read Active plus metadata at the sample instant"
   echo "- load average at start: $LOAD0; at end: $(loadavg); $(( $(date +%s) - T_START )) s total"
   first_alloc=$(echo $ALLOCS | cut -d' ' -f1)
   case $(kv "$first_alloc" cgroup_peak) in
@@ -203,17 +222,15 @@ M5=$COMPACT_AT; M10=$DURATION
   hdr="| measure |"; sep="|---|"
   for a in $ALLOCS; do hdr="$hdr $a |"; sep="$sep---:|"; done
   if has challoc && has jemalloc; then hdr="$hdr challoc vs jemalloc |"; sep="$sep---:|"; fi
-  if has challoc && has challoc-bg; then hdr="$hdr challoc-bg vs challoc |"; sep="$sep---:|"; fi
-  if has challoc && has challoc-1arena; then hdr="$hdr challoc-1arena vs challoc |"; sep="$sep---:|"; fi
-  if has challoc && has challoc-percpu; then hdr="$hdr challoc-percpu vs challoc |"; sep="$sep---:|"; fi
+  if has challoc; then for x in $(extras); do hdr="$hdr $x vs challoc |"; sep="$sep---:|"; done; fi
+  if has jemalloc; then for x in $(extras); do hdr="$hdr $x vs jemalloc |"; sep="$sep---:|"; done; fi
   echo "$hdr"; echo "$sep"
   rowc() { # label what
     r="| $1 |"
     for a in $ALLOCS; do r="$r $(col "$a" "$2") |"; done
     if has challoc && has jemalloc; then r="$r $(pct_of "$(col challoc "$2")" "$(col jemalloc "$2")") |"; fi
-    if has challoc && has challoc-bg; then r="$r $(pct_of "$(col challoc-bg "$2")" "$(col challoc "$2")") |"; fi
-    if has challoc && has challoc-1arena; then r="$r $(pct_of "$(col challoc-1arena "$2")" "$(col challoc "$2")") |"; fi
-    if has challoc && has challoc-percpu; then r="$r $(pct_of "$(col challoc-percpu "$2")" "$(col challoc "$2")") |"; fi
+    if has challoc; then for x in $(extras); do r="$r $(pct_of "$(col "$x" "$2")" "$(col challoc "$2")") |"; done; fi
+    if has jemalloc; then for x in $(extras); do r="$r $(pct_of "$(col "$x" "$2")" "$(col jemalloc "$2")") |"; done; fi
     echo "$r"
   }
   rowc "peak sampled VmRSS" peak_rss
@@ -222,9 +239,8 @@ M5=$COMPACT_AT; M10=$DURATION
     r="| $1 |"
     for a in $ALLOCS; do r="$r $(kb_mib "$(kv "$a" "$2")") |"; done
     if has challoc && has jemalloc; then r="$r $(pct_of "$(kb_mib "$(kv challoc "$2")")" "$(kb_mib "$(kv jemalloc "$2")")") |"; fi
-    if has challoc && has challoc-bg; then r="$r $(pct_of "$(kb_mib "$(kv challoc-bg "$2")")" "$(kb_mib "$(kv challoc "$2")")") |"; fi
-    if has challoc && has challoc-1arena; then r="$r $(pct_of "$(kb_mib "$(kv challoc-1arena "$2")")" "$(kb_mib "$(kv challoc "$2")")") |"; fi
-    if has challoc && has challoc-percpu; then r="$r $(pct_of "$(kb_mib "$(kv challoc-percpu "$2")")" "$(kb_mib "$(kv challoc "$2")")") |"; fi
+    if has challoc; then for x in $(extras); do r="$r $(pct_of "$(kb_mib "$(kv "$x" "$2")")" "$(kb_mib "$(kv challoc "$2")")") |"; done; fi
+    if has jemalloc; then for x in $(extras); do r="$r $(pct_of "$(kb_mib "$(kv "$x" "$2")")" "$(kb_mib "$(kv jemalloc "$2")")") |"; done; fi
     echo "$r"
   }
   rowk "cgroup memory.peak, start..compact" cgroup_peak_before_compact_kb
@@ -250,13 +266,14 @@ M5=$COMPACT_AT; M10=$DURATION
   echo
   echo "## Work done and GC"
   echo
-  echo "| allocator | jobs | live objects | GC count | major | minor | heap pages final |"
-  echo "|---|---:|---:|---:|---:|---:|---:|"
+  echo "| allocator | jobs | live objects | GC count | major | minor | heap pages final | process CPU s | CPU ms per job | trimmed |"
+  echo "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|"
   for a in $ALLOCS; do
-    echo "| $a | $(kv "$a" jobs) | $(kv "$a" live_objects) | $(kv "$a" gc_count) | $(kv "$a" major) | $(kv "$a" minor) | $(kv "$a" heap_pages) |"
+    cpu=$(kv "$a" cpu_s); jobs=$(kv "$a" jobs)
+    echo "| $a | $jobs | $(kv "$a" live_objects) | $(kv "$a" gc_count) | $(kv "$a" major) | $(kv "$a" minor) | $(kv "$a" heap_pages) | ${cpu:--} | $(awk -v c="$cpu" -v j="$jobs" 'BEGIN {if (c==""||j==""||j==0) print "-"; else printf "%.2f", c*1000/j}') | $(kv "$a" trimmed) |"
   done
   echo
-  echo "The run is time-bounded, so the job counts differ slightly between allocators; the long-lived set grows with the jobs (one string and one array per four jobs per thread)."
+  echo "The run is time-bounded, so the job counts differ slightly between allocators; the long-lived set grows with the jobs (one string and one array per four jobs per thread). Process CPU is user+system of the whole process (soak.rb's Process.times at the end), so CPU per job is the cost column; trimmed counts the samples at which malloc_trim(0) purged something when TRIM=1."
   echo
   echo "## RSS over time (MiB; every ${GC_EVERY}th second is a forced full GC, the row at t=$COMPACT_AT is GC.compact)"
   echo

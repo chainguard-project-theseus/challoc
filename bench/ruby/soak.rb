@@ -35,6 +35,11 @@
 # gc_count, major, minor, malloc_increase, oldmalloc_increase, jobs,
 # live_objects, alloc_allocated, alloc_active, alloc_resident,
 # alloc_retained, alloc_mapped (the alloc_* columns are "-" without mallctl),
+# cpu_s (the process's user+system CPU seconds so far, Process.times: the
+# cost column of a variant), trimmed (samples so far at which malloc_trim(0)
+# purged something; SOAK_TRIM=1 calls it through fiddle right before every
+# sample, the attribution of dirty-but-unpurged memory: RSS then reads
+# Active plus metadata; 0 when not requested or not exported),
 # cgroup_peak_kb (plan Phase 2.5 task 17: the cgroup's memory.peak since
 # the last reset, read through one file description held for the run; the
 # 6.12 reset is scoped to the writer's description, so the same descriptor
@@ -122,6 +127,17 @@ begin
       [Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_VOIDP, Fiddle::TYPE_SIZE_T],
       Fiddle::TYPE_INT)
   end
+  # SOAK_TRIM=1 (ruby-soak.sh TRIM=1): malloc_trim(0) right before every
+  # sample, so the sample reads what is Active plus metadata and nothing
+  # the decay has not got to yet (the attribution of dirty inventory).
+  trim = nil
+  if ENV["SOAK_TRIM"] == "1"
+    begin
+      trim = Fiddle::Function.new(Fiddle::Handle::DEFAULT["malloc_trim"], [Fiddle::TYPE_SIZE_T], Fiddle::TYPE_INT)
+    rescue Fiddle::DLError
+      trim = nil
+    end
+  end
   stats_print = nil
   %w[malloc_stats_print je_malloc_stats_print].each do |name|
     begin
@@ -135,7 +151,9 @@ begin
 rescue LoadError
   mallctl = nil
   stats_print = nil
+  trim = nil
 end
+$stderr.puts "malloc_trim before every sample: #{trim ? 'yes' : (ENV['SOAK_TRIM'] == '1' ? 'requested, symbol missing' : 'no')}"
 # The buffers are allocated once, so the sampler itself adds nothing to the
 # allocator's churn beyond the CSV line.
 ALLOC_KEYS = %w[stats.allocated stats.active stats.resident stats.retained stats.mapped]
@@ -209,17 +227,25 @@ end
 
 # ---- sampler -----------------------------------------------------------------
 csv = File.open(csv_path, "w")
-csv.puts "t_s,event,vmrss_kb,vmhwm_kb,heap_pages,heap_live_slots,gc_count,major,minor,malloc_increase,oldmalloc_increase,jobs,live_objects,alloc_allocated,alloc_active,alloc_resident,alloc_retained,alloc_mapped,cgroup_peak_kb"
+csv.puts "t_s,event,vmrss_kb,vmhwm_kb,heap_pages,heap_live_slots,gc_count,major,minor,malloc_increase,oldmalloc_increase,jobs,live_objects,alloc_allocated,alloc_active,alloc_resident,alloc_retained,alloc_mapped,cgroup_peak_kb,cpu_s,trimmed"
 csv.sync = true
 t0 = Process.clock_gettime(Process::CLOCK_MONOTONIC)
 elapsed = -> { Process.clock_gettime(Process::CLOCK_MONOTONIC) - t0 }
+$trimmed = 0
+def cpu_s
+  t = Process.times
+  (t.utime + t.stime).round(2)
+end
 sample = lambda do |event|
+  if trim
+    $trimmed += trim.call(0)
+  end
   rss, hwm = rss_kb
   st = GC.stat
   live = live_sets.sum(&:size)
   row = [elapsed.call.round, event, rss, hwm, st[:heap_allocated_pages], st[:heap_live_slots],
          st[:count], st[:major_gc_count], st[:minor_gc_count],
-         st[:malloc_increase_bytes], st[:oldmalloc_increase_bytes], $jobs.sum, live] + alloc_stats(mallctl) + [cgroup_peak_kb]
+         st[:malloc_increase_bytes], st[:oldmalloc_increase_bytes], $jobs.sum, live] + alloc_stats(mallctl) + [cgroup_peak_kb, cpu_s, $trimmed]
   csv.puts row.join(",")
 end
 $cgpeak_before_compact = "-"
@@ -274,5 +300,6 @@ puts "jobs=#{$jobs.sum} live_objects=#{live_sets.sum(&:size)} gc_count=#{st[:cou
      "mallctl=#{mallctl ? 'yes' : 'no'} alloc_allocated=#{al[0]} alloc_active=#{al[1]} alloc_resident=#{al[2]} " \
      "alloc_retained=#{al[3]} alloc_mapped=#{al[4]} compacted=#{compacted} " \
      "threads=#{nthreads} idle_threads=#{idle_threads} idle_bursts=#{$idle_bursts} nproc=#{Etc.nprocessors} " \
+     "cpu_s=#{cpu_s} trim=#{trim ? 'yes' : 'no'} trimmed=#{$trimmed} " \
      "cgroup_peak=#{$cgpeak ? 'yes' : "no(#{$cgpeak_reason.to_s.tr(' ', '_')})"} " \
      "cgroup_peak_before_compact_kb=#{$cgpeak_before_compact} cgroup_peak_after_compact_kb=#{cgpeak_after}"
