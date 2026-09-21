@@ -1,7 +1,8 @@
 ## Done
 
-- Per-CPU dispatch (lane percpu-dispatch, 2026-09-21): in progress, code
-  landed and measured at the fast tier, protocol tier running. The
+- Per-CPU dispatch (lane percpu-dispatch, 2026-09-21) DONE, commits
+  da39e2e (the shape), dd7f9b5 (design 15, tuning row), cc547ed (the
+  mode's hit paths frameless), e088459 and 051780d (results). The
   per-CPU mode's dispatch leaves the entry points: a heap in the mode
   never installs a home cache (`Heap::ensure_cache` refuses its home
   arena), so every home header stays `CacheHeader::EMPTY` and
@@ -11,26 +12,35 @@
   `percpu_alloc`/`percpu_free` (shape (a) of the brief). `PUSH_PERCPU`,
   the entry points' `tbnz` and tail calls and the five wrappers are gone;
   `malloc`, `malloc_fast`, `free`, `free_sized_hint`, `Heap::alloc` and
-  `Heap::alloc_zeroed` are their pre-4864d4b bodies. Commits da39e2e (the
-  shape), dd7f9b5 (design 15, tuning row), cc547ed (the mode's hit paths
-  frameless). Codegen (`scripts/codegen-diff.sh` 2078f67 -> tree):
-  aarch64 `malloc` 70 -> 65, `free` 149 -> 144, `sdallocx` 192 -> 180,
-  `free_sized` 151 -> 142, `calloc` 222 -> 132, `operator new[]` 153 ->
-  66 instructions, `malloc_usable_size` 83 unchanged; x86_64 `malloc` 59
-  -> 55, `free` 141 -> 130, `sdallocx` 198 -> 180, `calloc` 195 -> 128.
-  `quick-perf`: aarch64 larson1 264.5 -> 255.5 instructions per
-  operation (the drift file's pre-4864d4b 255.4) and 72.1..72.3 -> 71.2..71.6
-  cycles (its pre-4864d4b band 70.9..71.2), valkey1 245.2 -> 241..244,
-  valkey1-free 247..249 -> 244, misses unchanged; x86_64 larson1 244.4 ->
-  236.2 instructions, valkey1 234..240 -> 228..233, cycles within the
-  runs' spread. The mode's own cost rose (opt-in, `percpu_arena:percpu`):
-  aarch64 larson1 311 -> 438 instructions and 75.5 -> 119.5 cycles per
-  operation, valkey1 326 -> 511 and 272 -> 316; x86_64 larson1 277 ->
-  388 and 76 -> 131, valkey1 293 -> 450 and 177 -> 223 (the mechanism
-  and the numbers: `bench/results/2026-09-21-{aarch64,x86_64}-percpu-dispatch.md`
-  sections 0 and 2). `make test` green on both lane VMs at dd7f9b5 and
-  cc547ed (481 + 138 + 26, churn/lazy/pagemap ok, `c_percpu_both_ways`
-  with the mode on, ids=16); host `cargo test --features std` 375.
+  `Heap::alloc_zeroed` are their pre-4864d4b bodies. Codegen
+  (`scripts/codegen-diff.sh` 2078f67 -> tree): aarch64 `malloc` 70 -> 65,
+  `free` 149 -> 144, `sdallocx` 192 -> 180, `free_sized` 151 -> 142,
+  `calloc` 222 -> 132, `operator new[]` 153 -> 66 instructions,
+  `malloc_usable_size` 83 unchanged; x86_64 `malloc` 59 -> 55, `free` 141
+  -> 130, `sdallocx` 198 -> 180, `calloc` 195 -> 128. `quick-perf`
+  (lane VMs, perf on the host): aarch64 larson1 264.5 -> 255.5
+  instructions per operation (the drift file's pre-4864d4b 255.4) and
+  72.1..72.3 -> 71.2..71.6 cycles (its pre-4864d4b band 70.9..71.2),
+  valkey1 245.2 -> 241..244, valkey1-free 247..249 -> 244, misses
+  unchanged; x86_64 larson1 244.4 -> 236.2 instructions, valkey1 234..240
+  -> 228..233, cycles within the runs' spread. `quick` GO on both.
+  `ab` (5 rounds, same run, old/new/jemalloc plus both under
+  `percpu_arena:percpu`): aarch64 `new` ahead of `old` on every row
+  (larson1 -0.9% with disjoint sorted lists, larson10 -1.8%, larson16
+  -0.9%, xmalloc -0.5%, alloc-test1/N -0.8%, valkey1 -0.7%, valkey1-free
+  -0.4%), larson1 6.4% behind jemalloc (the pre-4864d4b band +5.9..+6.6%,
+  post +7.5..+8.5%); x86_64 within noise both ways (larson1 -2.9%,
+  larson10 -0.6%, larson16 +0.2%, xmalloc -0.6%, alloc-test1 +2.4%,
+  alloc-testN -0.4%, valkey1 0.0%, valkey1-free +1.1%). The opt-in mode
+  is slower under this shape: aarch64 larson1 311 -> 438 instructions
+  and 75.5 -> 119.5 cycles per operation, `ab` 39.8 -> 25.1 M ops/s,
+  valkey1 6.63 -> 5.55; x86_64 larson1 42.6 -> 25.2, valkey1 11.6 -> 8.5
+  (`bench/results/2026-09-21-{aarch64,x86_64}-percpu-dispatch.md`,
+  `-ab.md`, sections 0, 2 and 4). `make test` green on both lane VMs at
+  dd7f9b5 and cc547ed (481 + 138 + 26, churn/lazy/pagemap ok,
+  `c_percpu_both_ways` with the mode on, ids=16); host `cargo test
+  --features std` 375. VMs `challoc-percpu-dispatch-{arm64,amd64}`
+  created, used and deleted by the lane.
 
 ## Design decisions
 
