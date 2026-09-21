@@ -471,8 +471,10 @@ fn full_cache_flushes_the_highest_half_sorted_and_slabs_empty() {
     assert_eq!(p as usize, s.regions.slab_addr(c, 0));
     assert_eq!(cs.desc(0).state(), State::Active);
     t.free(p);
+    // The heap was the arena's last: its destruction purges the `Empty`
+    // slabs it just flushed (design 13.3).
     t.destroy();
-    assert_eq!(cs.stats(), ClassStats { committed: cs.committed_slabs(), empty: cs.committed_slabs(), ..Default::default() });
+    assert_eq!(cs.stats(), ClassStats { committed: cs.committed_slabs(), purged: cs.committed_slabs(), ..Default::default() });
 }
 
 /// Fill the class-64 cache with a double free
@@ -1849,6 +1851,36 @@ fn home_cache_takes_every_arenas_slots_and_the_flush_routes_them() {
     unsafe { Heap::destroy(t.h, s) };
     assert!(s.meta.stats().allocated < before);
     core::mem::forget(t);
+}
+
+/// The last thread heap homed on an arena leaves: `Heap::destroy` purges
+/// the arena's `Empty` slabs at once (jemalloc's `tcache_destroy` rule,
+/// design 13.3), most of them the caches it just flushed; an arena that
+/// still has a heap is left to the decay.
+#[test]
+fn destroying_the_last_heap_of_an_arena_purges_it() {
+    let s = shared_with(Config { narenas: 2, ..Config::DEFAULT });
+    let a = TestHeap::new(s);
+    let b = TestHeap::new(s);
+    let b2 = TestHeap::new(s);
+    assert_eq!((a.heap().arena(), b.heap().arena(), b2.heap().arena()), (0, 1, 0));
+    let c = class_with(64);
+    let pa = a.alloc(c);
+    let pb = b.alloc(c);
+    a.heap().free(s, pa);
+    b.heap().free(s, pb);
+    let per_refill = HALF.div_ceil(CLASSES[c].nslots());
+    // Arena 1 loses its only heap: flushed and purged.
+    b.destroy();
+    let s1 = s.arena(1).unwrap().classes[c].stats();
+    assert_eq!((s1.empty, s1.purged), (0, per_refill));
+    // Arena 0 keeps `b2`: flushed, still `Empty`.
+    a.destroy();
+    let s0 = s.arena0.classes[c].stats();
+    assert_eq!((s0.empty, s0.purged), (per_refill, 0));
+    b2.destroy();
+    let s0 = s.arena0.classes[c].stats();
+    assert_eq!((s0.empty, s0.purged), (0, per_refill));
 }
 
 /// A shared class (above `tcache_max`) comes from arena 0 on the

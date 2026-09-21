@@ -691,7 +691,17 @@ impl Heap {
         }
         heap.others = ptr::null_mut();
         if heap.bound {
-            shared.arenas.unbind(heap.arena);
+            let arena = heap.arena;
+            shared.arenas.unbind(arena);
+            // jemalloc's rule (`tcache_destroy`): the last thread homed on
+            // an arena leaves, so nothing will refill its `Empty` slabs
+            // soon; purge them now instead of letting them sit for the
+            // decay window. The caches just flushed above are most of
+            // them. Not with a background thread, which decays on its own
+            // schedule (as jemalloc). Design 13.3.
+            if shared.arenas.bound(arena) == 0 && !crate::purge::background::present() {
+                crate::purge::purge_arena(shared, arena);
+            }
         }
         shared.meta.free(h as *mut u8, Layout::new::<Heap>());
     }

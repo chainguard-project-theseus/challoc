@@ -1670,7 +1670,11 @@ arena, a flush releases each slot to its slab's arena
 the cache holds is the thread's, not the arena's (6.3 step 4, since
 2026-09-21; jemalloc's tcache is the same). Redis's Lua arena keeps its
 accounting through `MALLOCX_ARENA` allocations, whose slabs are the Lua
-arena's whatever cache later holds their slots, as under jemalloc.
+arena's whatever cache later holds their slots, as under jemalloc. When
+the last thread heap homed on an arena is destroyed, its `Empty` slabs are
+purged at once (jemalloc's `tcache_destroy` rule; not with the background
+thread, which decays on its own schedule): the caches that flush just
+before are most of them, and nothing will refill that arena soon.
 An arena owns its groups. With `group_handoff:true` (an opt-in; the
 default is `false`) it lends idle ones: when an arena's current group of a
 class is used up and it has no `Empty` or `Purged` slab of that class, it
