@@ -84,9 +84,10 @@ use crate::purge;
 use crate::sys;
 use crate::sys::features::{FeatureLine, Features};
 
-/// The one challoc-specific export (design 16): the crate version as a
-/// NUL-terminated static string (`"0.1.0"`; the soname's major, design
-/// 13.6, follows its major). A program or test that wants to know whether
+/// The crate version as a NUL-terminated static string (`"0.1.0"`; the
+/// soname's major, design 13.6, follows its major); with `challoc_features`
+/// and the size-returning entry points of design 13.7 (`libc.rs`) the whole
+/// challoc-specific surface, declared in `<challoc/challoc.h>`. A program or test that wants to know whether
 /// challoc is the loaded allocator looks this symbol up with `dlsym`; it
 /// reads and writes no allocator state and does not initialise anything.
 /// `mallctl("version")` stays jemalloc-shaped (`5.3.0-0-gchalloc`) for

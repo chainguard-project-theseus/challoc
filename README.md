@@ -275,7 +275,14 @@ jemalloc symbol is also exported with the `je_` prefix, and the C++
 names. The shared library's soname is `libchalloc.so.0`; the build can
 instead produce a `libjemalloc.so.2` soname for packages that only link
 against jemalloc. `challoc_version()` returns the crate version and is the
-`dlsym` probe for whether challoc is the loaded allocator.
+`dlsym` probe for whether challoc is the loaded allocator. challoc's one
+extension of its own (`<challoc/challoc.h>`, design 13.7) is the
+size-returning pair a `used_memory`-accounting consumer needs:
+`challoc_malloc_usable`, `challoc_calloc_usable` and
+`challoc_realloc_usable` store the block's usable size, and
+`challoc_free_usable` returns it, from the classification the allocation
+or the free already made, so Valkey's `zmalloc_size` query after every
+allocation and before every unsized free disappears with no check dropped.
 
 Two things are stricter than jemalloc: the size passed to `sdallocx`,
 `free_sized`, `free_aligned_sized` or a sized `operator delete` must name

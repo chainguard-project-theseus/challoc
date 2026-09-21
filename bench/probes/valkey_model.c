@@ -16,7 +16,14 @@
 // `zmalloc_size(ptr)` = `je_malloc_usable_size` for the accounting and then
 // calls `je_sdallocx(ptr, that size, 0)`; `-u` models that: every free is
 // preceded by a `malloc_usable_size` query of the pointer (the row
-// `valkey1-usable`, plan Phase 1.5 task 14).
+// `valkey1-usable`, plan Phase 1.5 task 14); `-a` models the accounting
+// query after every allocation (`ztrymalloc_usable_internal`: `je_malloc`
+// then `zmalloc_size(ptr)`), so `-u -a` is zmalloc's whole unsized shape;
+// `-p` is the challoc pair that replaces both (design 13.7):
+// `challoc_malloc_usable` for every allocation and `challoc_free_usable`
+// for every free (weak references; refuses to run when the loaded allocator
+// lacks them). The rows `valkey1-write-zmalloc` (`-u -a`) and
+// `valkey1-write-pair` (`-p`) compare the two shapes per SET.
 //
 // Protocol, mirroring bench/valkey-soak.sh in miniature:
 //
@@ -48,6 +55,9 @@
 //   -m MIN -M MAX  value size range (default 16 1024)
 //   -f MODE     free|sdallocx|auto (default auto)
 //   -u          call malloc_usable_size(p) before every free, as zfree does
+//   -a          call malloc_usable_size(p) after every allocation, as zmalloc does
+//   -p          challoc_malloc_usable for every allocation and challoc_free_usable
+//               for every free (the design 13.7 pair; overrides -u -a -f)
 //   -S SEED     xorshift seed
 //   -s          print allocator stats through mallctl at each phase end
 //   -x K        K rounds of independent integer work (4 xorshift chains, about
@@ -73,6 +83,8 @@
 
 extern void sdallocx(void *, size_t, int) __attribute__((weak));
 extern int mallctl(const char *, void *, size_t *, void *, size_t) __attribute__((weak));
+extern void *challoc_malloc_usable(size_t, size_t *) __attribute__((weak));
+extern size_t challoc_free_usable(void *) __attribute__((weak));
 
 enum { KEY_BYTES = 24, ENTRY_BYTES = 40, OBJ_BYTES = 16, SDS_HDR = 5 };
 
@@ -85,7 +97,7 @@ static uint64_t rs = 0x9e3779b97f4a7c15ull;
 static uint64_t rnd(void) { rs ^= rs << 13; rs ^= rs >> 7; rs ^= rs << 17; return rs; }
 static double now(void) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return t.tv_sec + t.tv_nsec / 1e9; }
 
-static int use_sdallocx, query_usable;
+static int use_sdallocx, query_usable, query_after, use_pair;
 static unsigned extra_rounds;           // -x
 static uint64_t spin_sink;
 // spin: `extra_rounds` rounds of four independent xorshift steps; the four
@@ -103,12 +115,22 @@ static inline void spin(void) {
     spin_sink = a + b + c + d;
 }
 static unsigned long long usable_bytes;   // what the queries returned (zfree feeds it to used_memory)
+static unsigned long long usable_alloc_bytes; // what the after-allocation queries returned (zmalloc's used_memory add)
 static void release(void *p, size_t size) {
+    if (use_pair) { usable_bytes += challoc_free_usable(p); return; }
     if (query_usable) usable_bytes += malloc_usable_size(p);
     if (use_sdallocx) sdallocx(p, size, 0); else free(p);
 }
 static char *take(size_t size) {
-    char *p = malloc(size);
+    char *p;
+    if (use_pair) {
+        size_t u;
+        p = challoc_malloc_usable(size, &u);
+        if (p) usable_alloc_bytes += u;
+    } else {
+        p = malloc(size);
+        if (p && query_after) usable_alloc_bytes += malloc_usable_size(p);
+    }
     if (!p) { fprintf(stderr, "valkey_model: malloc(%zu) failed\n", size); exit(1); }
     p[0] = 1; p[size - 1] = 1;   // touch first and last byte, as a memcpy of the value would
     return p;
@@ -184,7 +206,7 @@ static void del(struct key *k) {   // DEL of a live key: all four freed
 }
 
 static void usage(void) {
-    fprintf(stderr, "usage: valkey_model [-n keys] [-t secs | -w write_secs -d delete_secs] [-r del:set] [-m min -M max] [-f free|sdallocx|auto] [-u] [-S seed] [-s] [-A addrfile] [-x rounds]\n");
+    fprintf(stderr, "usage: valkey_model [-n keys] [-t secs | -w write_secs -d delete_secs] [-r del:set] [-m min -M max] [-f free|sdallocx|auto] [-u] [-a] [-p] [-S seed] [-s] [-A addrfile] [-x rounds]\n");
     exit(2);
 }
 
@@ -194,7 +216,7 @@ int main(int argc, char **argv) {
     unsigned ratio = 4;
     const char *mode = "auto";
     int opt;
-    while ((opt = getopt(argc, argv, "n:t:w:d:r:m:M:f:S:suhA:x:")) != -1) {
+    while ((opt = getopt(argc, argv, "n:t:w:d:r:m:M:f:S:suhaA:px:")) != -1) {
         switch (opt) {
         case 'n': n = strtoul(optarg, 0, 0); break;
         case 't': total = atof(optarg); break;
@@ -207,6 +229,8 @@ int main(int argc, char **argv) {
         case 'S': rs = strtoull(optarg, 0, 0); if (!rs) rs = 1; break;
         case 's': want_stats = 1; break;
         case 'u': query_usable = 1; break;
+        case 'a': query_after = 1; break;
+        case 'p': use_pair = 1; break;
         case 'A': addr_file = optarg; break;
         case 'x': extra_rounds = (unsigned)strtoul(optarg, 0, 0); break;
         default: usage();
@@ -223,11 +247,17 @@ int main(int argc, char **argv) {
     } else if (!strcmp(mode, "auto")) {
         use_sdallocx = sdallocx != NULL;
     } else usage();
-    const char *freename = use_sdallocx ? "sdallocx" : "free";
+    if (use_pair) {
+        if (!challoc_malloc_usable || !challoc_free_usable) { fprintf(stderr, "valkey_model: -p but the loaded allocator does not export challoc_malloc_usable/challoc_free_usable\n"); return 2; }
+        query_usable = query_after = 0;
+    }
+    const char *freename = use_pair ? "challoc_free_usable" : use_sdallocx ? "sdallocx" : "free";
 
-    printf("valkey_model: n=%zu values %zu..%zu B (+%d B sds header; %d B object, %d B key, %d B entry per key), free=%s%s%s, seed=%#llx, write %.1f s, delete %.1f s at DEL:SET %u:1%s\n",
-           n, vmin, vmax, SDS_HDR, OBJ_BYTES, KEY_BYTES, ENTRY_BYTES, freename,
+    printf("valkey_model: n=%zu values %zu..%zu B (+%d B sds header; %d B object, %d B key, %d B entry per key), alloc=%s, free=%s%s%s%s, seed=%#llx, write %.1f s, delete %.1f s at DEL:SET %u:1%s\n",
+           n, vmin, vmax, SDS_HDR, OBJ_BYTES, KEY_BYTES, ENTRY_BYTES,
+           use_pair ? "challoc_malloc_usable" : query_after ? "malloc+malloc_usable_size" : "malloc", freename,
            query_usable ? " (malloc_usable_size before every free)" : "",
+           query_after ? " (malloc_usable_size after every allocation)" : "",
            !strcmp(mode, "auto") ? (sdallocx ? " (auto: sdallocx exported)" : " (auto: no sdallocx, plain free)") : "",
            (unsigned long long)rs, tw, td, ratio, mallctl ? ", mallctl available" : ", no mallctl");
     if (extra_rounds) printf("valkey_model: -x %u: %u rounds of independent integer work per SET, split around the frees\n", extra_rounds, extra_rounds);
@@ -289,8 +319,8 @@ int main(int argc, char **argv) {
     long r, h; rss(&r, &h);
     unsigned long ops_total = sets_w + ops_d;
     double total_mops = (dw + dd) > 0 ? ops_total / (dw + dd) / 1e6 : 0;
-    printf("ops total=%lu write_mops=%.3f delete_mops=%.3f total_mops=%.3f live=%zu rss_kb=%ld hwm_kb=%ld free=%s usable=%d usable_bytes=%llu\n",
-           ops_total, write_mops, delete_mops, total_mops, live_keys, r, h, freename, query_usable, usable_bytes);
+    printf("ops total=%lu write_mops=%.3f delete_mops=%.3f total_mops=%.3f live=%zu rss_kb=%ld hwm_kb=%ld free=%s usable=%d usable_bytes=%llu usable_after=%d usable_alloc_bytes=%llu pair=%d\n",
+           ops_total, write_mops, delete_mops, total_mops, live_keys, r, h, freename, query_usable, usable_bytes, query_after, usable_alloc_bytes, use_pair);
     // Nothing is freed on exit, as in a server that is shut down.
     return live_keys <= n ? 0 : 1;
 }

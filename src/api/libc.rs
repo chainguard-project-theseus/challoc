@@ -1,7 +1,9 @@
 //! Standard and glibc allocation entry points (design.md section 13.1):
 //! `malloc`, `free`, `calloc`, `realloc`, `aligned_alloc`, `posix_memalign`,
 //! `memalign`, `valloc`, `pvalloc`, `free_sized`, `free_aligned_sized`,
-//! `reallocarray`, `malloc_usable_size`, `malloc_trim`.
+//! `reallocarray`, `malloc_usable_size`, `malloc_trim`, and challoc's own
+//! size-returning `challoc_malloc_usable`, `challoc_calloc_usable`,
+//! `challoc_realloc_usable` and `challoc_free_usable` (section 13.7).
 //!
 //! Every export is a thin `pub extern "C"` wrapper over a Rust function in
 //! this module so that the logic is unit-testable in the `cargo test`
@@ -36,7 +38,7 @@ use core::ptr;
 
 use crate::QUANTUM;
 use crate::heap::{self, Shared};
-use crate::layout::{CLASSES, Kind, MEDIUM_MAX, class_of};
+use crate::layout::{CLASSES, Kind, MEDIUM_MAX, NCLASSES, class_of};
 use crate::sys::Errno;
 
 // The codes as `c_int`, for `errno` and `posix_memalign`'s return; the
@@ -334,6 +336,223 @@ pub fn reallocarray(p: *mut u8, n: usize, m: usize) -> *mut u8 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// challoc's size-returning entry points (design 13.7): `challoc_malloc_usable`,
+// `challoc_calloc_usable`, `challoc_realloc_usable` and `challoc_free_usable`.
+// Valkey asks `malloc_usable_size` after every allocation and before every
+// unsized `zfree` for its `used_memory` accounting; that second lookup
+// (`Regions::classify`, the bitmap-word test, the class size) was the one
+// allocator-side term above jemalloc's cost in the Valkey write phase
+// (`bench/results/2026-09-20-x86_64-valkey-write-phase-attribution.md`,
+// section 6). These entry points return the usable size from the
+// classification the allocation or the free already did, so the query
+// disappears and no check is dropped: `challoc_free_usable` keeps the exact
+// bit test of plain `free` (it is `free`, reporting the class it verified).
+// The fast paths of `malloc`, `free` and `sdallocx` are not touched.
+// ---------------------------------------------------------------------------
+
+/// Store `n` through `usable` unless it is null (`usable` is optional for
+/// the three allocating entry points; a null makes them plain
+/// `malloc`/`calloc`/`realloc`).
+#[inline(always)]
+fn store_usable(usable: *mut usize, n: usize) {
+    if !usable.is_null() {
+        // SAFETY: the caller passed a writable `size_t` or null.
+        unsafe { *usable = n };
+    }
+}
+
+/// `CLASSES[class].size()` for a class a fast path produced: below
+/// `NCLASSES` by construction (`class_of`, `checked_slot`), so no bounds
+/// check and no panic call sits in the inlined body (design 6.3).
+#[inline(always)]
+fn class_size(class: usize) -> usize {
+    debug_assert!(class < NCLASSES);
+    // SAFETY: as above.
+    unsafe { CLASSES.get_unchecked(class) }.size()
+}
+
+/// `challoc_malloc_usable(size, usable)`: `malloc(size)`, and the block's
+/// usable size, what `malloc_usable_size` would return for it, stored
+/// through `usable` (left alone when `usable` is null; 0 on a null return).
+/// The same pop as `malloc` with the class size added from the class the
+/// pop used; everything else is one tail call away, as in `malloc`.
+#[inline(always)]
+pub fn malloc_usable(size: usize, usable: *mut usize) -> *mut u8 {
+    let Some(c) = class_of(size) else { return malloc_usable_huge(size, usable) };
+    let shared = super::shared_ptr();
+    let Some(h) = heap::existing_heap(shared) else { return malloc_usable_class(c, usable) };
+    // SAFETY: as in `malloc`.
+    let flags = unsafe { heap::fast_flags(shared) };
+    if flags & heap::PUSH_PERCPU != 0 {
+        return malloc_usable_class(c, usable);
+    }
+    match h.alloc_fast(c, flags) {
+        Some(p) => {
+            store_usable(usable, class_size(c));
+            p
+        }
+        None => malloc_usable_class(c, usable),
+    }
+}
+
+/// `malloc_usable` off its fast path for a slab class: the refill, heap
+/// creation and the per-CPU mode (`heap::alloc` dispatches all three),
+/// null with `errno = ENOMEM` on failure.
+#[cold]
+#[inline(never)]
+fn malloc_usable_class(class: usize, usable: *mut usize) -> *mut u8 {
+    let p = heap::alloc(super::shared(), class);
+    if p.is_null() {
+        store_usable(usable, 0);
+        return enomem();
+    }
+    store_usable(usable, class_size(class));
+    p
+}
+
+/// `malloc_usable` of a huge size: the run's usable bytes come from the
+/// huge table, the same read `malloc_usable_size` does.
+#[cold]
+#[inline(never)]
+fn malloc_usable_huge(size: usize, usable: *mut usize) -> *mut u8 {
+    let shared = super::shared();
+    let (p, _) = alloc_huge(shared, size, 1);
+    if p.is_null() {
+        store_usable(usable, 0);
+        return enomem();
+    }
+    store_usable(usable, usable_size(shared, p));
+    p
+}
+
+/// `challoc_calloc_usable(n, m, usable)`: `calloc(n, m)` with the usable
+/// size stored as in [`malloc_usable`]. The whole usable size reads as
+/// zero, not only the `n * m` bytes asked for: the caller is told it owns
+/// the usable bytes (Valkey's `zcalloc_usable` hands them on), and that is
+/// what jemalloc's `calloc` zeroes.
+pub fn calloc_usable(n: usize, m: usize, usable: *mut usize) -> *mut u8 {
+    let Some(size) = n.checked_mul(m) else {
+        store_usable(usable, 0);
+        return enomem();
+    };
+    let shared = super::shared();
+    let (p, zeroed, u) = match class_of(size) {
+        Some(c) => {
+            let (p, zeroed) = heap::alloc_zeroed(shared, c);
+            (p, zeroed, class_size(c))
+        }
+        None => {
+            let (p, zeroed) = alloc_huge(shared, size, 1);
+            (p, zeroed, if p.is_null() { 0 } else { usable_size(shared, p) })
+        }
+    };
+    if p.is_null() {
+        store_usable(usable, 0);
+        return enomem();
+    }
+    if !zeroed {
+        // SAFETY: `p` is a fresh allocation of `u` usable bytes.
+        unsafe { ptr::write_bytes(p, 0, u) };
+    }
+    store_usable(usable, u);
+    p
+}
+
+/// `challoc_realloc_usable(p, size, usable)`: `realloc(p, size)` with the
+/// usable size of the returned block stored as in [`malloc_usable`] (0
+/// when null comes back, `realloc(p, 0)` included). The block kept in
+/// place reports its class size from the classification `realloc` does
+/// anyway; a moved block reports what the `malloc_usable` that made it
+/// reported.
+pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize) -> *mut u8 {
+    if p.is_null() {
+        return malloc_usable(size, usable);
+    }
+    if size == 0 {
+        free(p);
+        store_usable(usable, 0);
+        return ptr::null_mut();
+    }
+    let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
+    let (keep, old) = realloc_old(shared, p, size);
+    if keep {
+        store_usable(usable, old);
+        return p;
+    }
+    let q = malloc_usable(size, usable);
+    if q.is_null() {
+        return q;
+    }
+    // SAFETY: `p` has `old` readable bytes, `q` at least `size` writable
+    // ones, and they are distinct allocations.
+    unsafe { ptr::copy_nonoverlapping(p, q, old.min(size)) };
+    heap::free(shared, p);
+    q
+}
+
+/// [`old_size_or_keep`]'s decision for `realloc` (alignment 1) with the
+/// old usable size reported in both outcomes: `(keep, usable)`, `keep`
+/// when `size` maps to `p`'s class or to a huge run of the same page
+/// count. The same checks and aborts as `old_size_or_keep`, which stays as
+/// it is so `realloc` and `rallocx` are untouched.
+fn realloc_old(shared: &Shared, p: *mut u8, size: usize) -> (bool, usize) {
+    match shared.regions.classify(p as usize) {
+        Kind::Slab { class, slab, slot } => {
+            let class = class as usize;
+            shared.table(class).check_live(slab as usize, slot as usize, p as usize);
+            (class_of(size) == Some(class), CLASSES[class].size())
+        }
+        Kind::Huge { page } => {
+            let old = shared.huge.usable_size(page);
+            (class_of(size).is_none() && shared.huge.usable_for(size) == Some(old), old)
+        }
+        Kind::Invalid => crate::sys::abort_fmt(format_args!("realloc of {:#x}: not an allocation", p as usize)),
+    }
+}
+
+/// `challoc_free_usable(p)`: `free(p)`, returning the usable size the
+/// block had (0 for null). The exact fast path of `free` (design 6.3
+/// steps 1 to 4: classify, the bitmap-word test, the owner word with
+/// several arenas, the push), reporting the class it verified; every other
+/// outcome, the aborts included, goes through one cold call that takes the
+/// size from the same classification the exact `free` then repeats, so a
+/// bad pointer dies with `free`'s message.
+#[inline(always)]
+pub fn free_usable(p: *mut u8) -> usize {
+    if p.is_null() {
+        return 0;
+    }
+    if let Some(h) = heap::existing_heap(super::shared_ptr()) {
+        // SAFETY: as in `free`.
+        let shared = unsafe { super::shared_unchecked() };
+        let flags = shared.push_flags();
+        if flags & heap::PUSH_PERCPU == 0 {
+            if let Some(class) = heap::free_fast_class(shared, h, p, flags) {
+                return class_size(class);
+            }
+        }
+    }
+    free_usable_slow(p)
+}
+
+/// Everything `free_usable` does off its fast path: the size first, from
+/// the classification `free` makes (its aborts for an invalid, stale or
+/// double free, and the huge table's for a run that is not live), then the
+/// exact `free` (heap creation, a full cache, another arena, the per-CPU
+/// mode, the huge release).
+#[cold]
+#[inline(never)]
+fn free_usable_slow(p: *mut u8) -> usize {
+    let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
+    let usable = match shared.classify_free(p) {
+        Ok((class, _)) => CLASSES[class].size(),
+        Err(page) => shared.huge.usable_size(page),
+    };
+    heap::free(shared, p);
+    usable
+}
+
 /// The class that serves `size` bytes at `align` (a power of two; 1 or
 /// the quantum means the natural alignment): the smallest class at or
 /// above `size` whose slot size is a multiple of `align`. `None` when the
@@ -495,6 +714,29 @@ mod exports {
     #[unsafe(no_mangle)]
     pub extern "C" fn malloc_trim(pad: usize) -> c_int {
         super::malloc_trim(pad)
+    }
+
+    // challoc's size-returning entry points (design 13.7): challoc's own
+    // names, no `je_` twins, declared in <challoc/challoc.h>.
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn challoc_malloc_usable(size: usize, usable: *mut usize) -> *mut c_void {
+        super::malloc_usable(size, usable) as *mut c_void
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn challoc_calloc_usable(n: usize, m: usize, usable: *mut usize) -> *mut c_void {
+        super::calloc_usable(n, m, usable) as *mut c_void
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn challoc_realloc_usable(p: *mut c_void, size: usize, usable: *mut usize) -> *mut c_void {
+        super::realloc_usable(p as *mut u8, size, usable) as *mut c_void
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn challoc_free_usable(p: *mut c_void) -> usize {
+        super::free_usable(p as *mut u8)
     }
 }
 
@@ -691,6 +933,124 @@ mod tests {
         let p = pvalloc(0);
         assert!(malloc_usable_size(p) >= page);
         free(p);
+    }
+
+    /// Design 13.7: the size-returning entry points answer exactly what
+    /// `malloc_usable_size` does, on every tier, and free what they made.
+    #[test]
+    fn usable_entry_points_agree_with_malloc_usable_size_on_every_tier() {
+        for &n in &[0usize, 1, 7, 16, 17, 100, 1024, 1025, 4096, 65536, MEDIUM_MAX, MEDIUM_MAX + 1, 1 << 20, 10 << 20]
+        {
+            let mut u = usize::MAX;
+            let p = malloc_usable(n, &mut u);
+            assert!(!p.is_null(), "malloc_usable({n})");
+            assert_eq!(p as usize % QUANTUM, 0);
+            assert_eq!(u, malloc_usable_size(p), "malloc_usable({n})");
+            assert!(u >= n);
+            match class_size_of(n) {
+                Some(s) => assert_eq!(u, s),
+                None => assert_eq!(u, super::super::shared().huge.usable_for(n).unwrap()),
+            }
+            fill(p, u, 3);
+            check(p, u, 3);
+            assert_eq!(free_usable(p), u, "free_usable({n})");
+
+            // calloc_usable: the whole usable size reads as zero, even on a
+            // slot or run that was dirtied and freed a moment ago.
+            let d = malloc(n.max(1));
+            fill(d, malloc_usable_size(d), 0xAB);
+            free(d);
+            let mut u = usize::MAX;
+            let q = calloc_usable(1, n, &mut u);
+            assert!(!q.is_null(), "calloc_usable({n})");
+            assert_eq!(u, malloc_usable_size(q));
+            for i in 0..u {
+                assert_eq!(unsafe { *q.add(i) }, 0, "calloc_usable({n}) byte {i} of {u} not zero");
+            }
+            fill(q, u, 4);
+
+            // realloc_usable: in place within the class (same pointer,
+            // same size; `realloc_usable(q, 0)` would free, so 0 asks for
+            // 1, still class 0), a move across tiers keeps the content.
+            let mut u2 = usize::MAX;
+            let r = realloc_usable(q, n.max(1), &mut u2);
+            assert_eq!(r, q, "realloc_usable({n}) to the same size keeps the pointer");
+            assert_eq!(u2, u);
+            let grown = 2 * n + 4097;
+            let mut u3 = usize::MAX;
+            let g = realloc_usable(r, grown, &mut u3);
+            assert!(!g.is_null());
+            assert_eq!(u3, malloc_usable_size(g));
+            assert!(u3 >= grown);
+            check(g, u.min(grown), 4);
+            assert_eq!(free_usable(g), u3);
+        }
+    }
+
+    /// The null and failure cases of design 13.7: a null `usable` makes the
+    /// three plain `malloc`/`calloc`/`realloc`; `free_usable(NULL)` is 0;
+    /// `realloc_usable(NULL, n)` allocates and `realloc_usable(p, 0)` frees
+    /// and reports 0; a failed allocation returns null with `errno =
+    /// ENOMEM` and `*usable = 0`, and a failed `realloc_usable` leaves the
+    /// block intact.
+    #[test]
+    fn usable_entry_points_null_and_failure_cases() {
+        assert_eq!(free_usable(ptr::null_mut()), 0);
+        let p = malloc_usable(100, ptr::null_mut());
+        assert!(!p.is_null());
+        let q = calloc_usable(2, 50, ptr::null_mut());
+        assert!(!q.is_null() && is_zero(q, 100));
+        let r = realloc_usable(q, 5000, ptr::null_mut());
+        assert!(!r.is_null());
+        free(p);
+        free(r);
+
+        let mut u = usize::MAX;
+        let p = realloc_usable(ptr::null_mut(), 300, &mut u);
+        assert!(!p.is_null());
+        assert_eq!(u, malloc_usable_size(p));
+        fill(p, 300, 8);
+        set_errno(0);
+        let mut u2 = usize::MAX;
+        assert!(realloc_usable(p, usize::MAX / 2, &mut u2).is_null());
+        assert_eq!(errno(), ENOMEM);
+        assert_eq!(u2, 0);
+        check(p, 300, 8);
+        let mut u3 = usize::MAX;
+        assert!(realloc_usable(p, 0, &mut u3).is_null(), "realloc_usable(p, 0) frees and returns null");
+        assert_eq!(u3, 0);
+
+        set_errno(0);
+        let mut u = usize::MAX;
+        assert!(malloc_usable(usize::MAX / 2, &mut u).is_null());
+        assert_eq!((errno(), u), (ENOMEM, 0));
+        set_errno(0);
+        let mut u = usize::MAX;
+        assert!(calloc_usable(usize::MAX, 2, &mut u).is_null(), "overflow");
+        assert_eq!((errno(), u), (ENOMEM, 0));
+        set_errno(0);
+        let mut u = usize::MAX;
+        assert!(calloc_usable(1, usize::MAX / 2, &mut u).is_null(), "exhaustion");
+        assert_eq!((errno(), u), (ENOMEM, 0));
+
+        // Aligned blocks report their class, not the request.
+        let a = aligned_alloc(4096, 5 * 1024);
+        assert_eq!(free_usable(a), 8192);
+        // Off the fast path: a full cache and a huge run.
+        let many: Vec<*mut u8> = (0..3000).map(|_| malloc(64)).collect();
+        for p in many {
+            assert_eq!(free_usable(p), 64);
+        }
+        let h = malloc(3 << 20);
+        assert_eq!(free_usable(h), malloc_usable_size_of_huge(3 << 20));
+    }
+
+    fn malloc_usable_size_of_huge(n: usize) -> usize {
+        super::super::shared().huge.usable_for(n).unwrap()
+    }
+
+    fn is_zero(p: *mut u8, n: usize) -> bool {
+        (0..n).all(|i| unsafe { *p.add(i) } == 0)
     }
 
     #[test]

@@ -112,7 +112,7 @@ MiB heap whose slab descriptors miss cache on every free of a random key,
   `valkey1-usable` (`-u`) precedes every free with a `malloc_usable_size`
   query of the pointer, which is what Valkey's unsized `zfree(ptr)` does
   (`zmalloc_size` for the accounting, then `je_sdallocx`); it is the row
-  for the usable-size query (plan Phase 1.5 task 14), not a gate row. `valkey1-write` (`-w SECS -d 0`) is the write phase alone, so a per-operation counter from `quick-perf` is per SET (the instruction budget of plan Phase 2.5 task 4c; it is not in the `quick` set). Scored by
+  for the usable-size query (plan Phase 1.5 task 14), not a gate row. `valkey1-write` (`-w SECS -d 0`) is the write phase alone, so a per-operation counter from `quick-perf` is per SET (the instruction budget of plan Phase 2.5 task 4c; it is not in the `quick` set). `valkey1-write-zmalloc` (`-w SECS -d 0 -u -a`) is that write phase in Valkey's unsized `zmalloc` shape, a `malloc_usable_size` after every allocation and before every free, and `valkey1-write-pair` (`-p`) the same with challoc's `challoc_malloc_usable`/`challoc_free_usable` pair in place of both (design 13.7); the two are the attribution rows of the size-returning entry points, `quick-perf` only. Scored by
   the write phase's M ops/s (the phase whose gap the soak shows widest and
   the one that reproduces the large-heap free miss); the delete phase's
   rate, the RSS after it and, with a `mallctl`-exporting allocator,

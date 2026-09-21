@@ -52,6 +52,12 @@ extern "C" {
 #define CHALLOC 1
 #define JEMALLOC_CHALLOC 1
 
+/* challoc's size-returning entry points (design 13.7) exist in this library
+ * too; they are declared at the end of this header, so a consumer of the
+ * compat package needs no second header (challoc-dev ships them as
+ * <challoc/challoc.h>; the two -dev packages stay co-installable). */
+#define JEMALLOC_CHALLOC_USABLE 1
+
 /* jemalloc_defs.h flags a consumer may test. glibc has memalign and valloc,
  * so jemalloc overrides them and declares them; here <malloc.h> does. */
 #define JEMALLOC_HAVE_ATTR
@@ -176,6 +182,19 @@ int je_mallctlbymib(const size_t *mib, size_t miblen, void *oldp, size_t *oldlen
 void je_malloc_stats_print(void (*write_cb)(void *, const char *), void *cbopaque, const char *opts);
 int je_get_defrag_hint(void *ptr);
 extern void (*je_malloc_message)(void *cbopaque, const char *s);
+
+/* challoc's own entry points (design 13.7; JEMALLOC_CHALLOC_USABLE above).
+ * Each is the standard function of the same name plus the block's usable
+ * size, what malloc_usable_size(p) returns for it, from the classification
+ * the allocation or the free already made; errno, alignment, tiers and the
+ * aborts are malloc/calloc/realloc/free's, *usable is 0 on a null return,
+ * and `usable` may be NULL. challoc_calloc_usable zeroes the whole usable
+ * size; challoc_free_usable keeps free's exact check and returns 0 for NULL. */
+void *challoc_malloc_usable(size_t size, size_t *usable) JEMALLOC_ATTR(malloc);
+void *challoc_calloc_usable(size_t n, size_t size, size_t *usable) JEMALLOC_ATTR(malloc);
+void *challoc_realloc_usable(void *ptr, size_t size, size_t *usable);
+size_t challoc_free_usable(void *ptr);
+const char *challoc_version(void);
 
 #ifdef __cplusplus
 }

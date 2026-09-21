@@ -103,6 +103,12 @@ extern const char *challoc_features(void) WEAK;
 /* C23 names; glibc's headers may or may not declare them yet. */
 extern void free_sized(void *, size_t) WEAK;
 extern void free_aligned_sized(void *, size_t, size_t) WEAK;
+/* challoc's size-returning entry points (design 13.7), weak here for the
+ * negative modes; tests/c/usable_api.c includes <challoc/challoc.h>. */
+extern void *challoc_malloc_usable(size_t, size_t *) WEAK;
+extern void *challoc_calloc_usable(size_t, size_t, size_t *) WEAK;
+extern void *challoc_realloc_usable(void *, size_t, size_t *) WEAK;
+extern size_t challoc_free_usable(void *) WEAK;
 
 /* jemalloc.h's flag encodings. */
 #define MALLOCX_LG_ALIGN(la) ((int)(la))

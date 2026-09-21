@@ -180,6 +180,17 @@ forced onto the system library (`LD_PRELOAD`) dies in
 "fix" this by pointing `LD_LIBRARY_PATH` at `/usr/lib`; the rpath wins
 anyway.
 
+The contrib patch also switches Valkey's accounting onto challoc's
+size-returning entry points (`<challoc/challoc.h>`, design 13.7): under
+`USE_CHALLOC`, `zmalloc`/`zcalloc`/`zrealloc` get the usable size back
+from `challoc_malloc_usable`, `challoc_calloc_usable` and
+`challoc_realloc_usable` instead of asking `zmalloc_size` after the call,
+and the unsized `zfree(ptr)` is one `challoc_free_usable` instead of
+`zmalloc_size` plus `je_sdallocx`. Nothing to configure; `INFO memory`'s
+`used_memory` is the same figure, and `zmalloc_size` itself is still
+`je_malloc_usable_size` for the callers that only ask. Why it exists and
+what it measured: `bench/results/2026-09-21-*-sized-path-usable*.md`.
+
 What Valkey sets itself: `jemalloc-bg-thread yes` (the default) calls
 `mallctl("background_thread", true)` at startup, so the server has the
 decay thread without any key; `MEMORY PURGE` is `arena.<i>.purge`

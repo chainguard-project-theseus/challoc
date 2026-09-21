@@ -20,6 +20,17 @@ renames are needed because challoc exports the je_ names itself.
   ZMALLOC_LIB as "jemalloc-<version>-challoc": everything keyed on the
   "jemalloc" prefix (tests, INFO consumers) keeps working and
   `valkey-server --version` says which library is behind it.
+- src/zmalloc.h also includes <challoc/challoc.h>, challoc's own
+  size-returning entry points (challoc design 13.7), and src/zmalloc.c
+  uses them under USE_CHALLOC: ztrymalloc_usable_internal,
+  ztrycalloc_usable_internal and ztryrealloc_usable_internal get the
+  usable size back from challoc_malloc_usable / challoc_calloc_usable /
+  challoc_realloc_usable instead of calling zmalloc_size() on the new
+  block, and the unsized zfree() is one challoc_free_usable() instead of
+  zmalloc_size() plus je_sdallocx(). zmalloc_size() is unchanged for its
+  other callers. Why: that query was the one allocator-side term above
+  jemalloc's cost in the soak's write phase (+117 cycles per SET on the
+  C4; challoc's bench/results/2026-09-20-x86_64-valkey-write-phase-attribution.md).
 - src/allocator_defrag.h: HAVE_DEFRAG is defined for USE_CHALLOC; the
   vendored-jemalloc version check does not apply.
 - deps/Makefile is untouched: its jemalloc distclean is already guarded.
@@ -40,9 +51,10 @@ arenas.quantum == 8.
 ---
  src/Makefile                 | 14 ++++++++++++++
  src/allocator_defrag.h       |  9 +++++++--
- src/zmalloc.h                | 11 +++++++++++
+ src/zmalloc.c                | 40 +++++++++++++++++++++++++++++++++++++++-
+ src/zmalloc.h                | 17 +++++++++++++++++
  tests/unit/memefficiency.tcl | 18 ++++++++++++++++--
- 4 files changed, 48 insertions(+), 4 deletions(-)
+ 5 files changed, 93 insertions(+), 5 deletions(-)
 
 diff --git a/src/Makefile b/src/Makefile
 index 2812c4d..ff82dfe 100644
@@ -102,11 +114,104 @@ index 43d89e3..0d1c1cd 100644
  #define HAVE_DEFRAG
  #endif
  #endif
+diff --git a/src/zmalloc.c b/src/zmalloc.c
+index 453b83f..77ae364 100644
+--- a/src/zmalloc.c
++++ b/src/zmalloc.c
+@@ -169,6 +169,15 @@ void *extend_to_usable(void *ptr, size_t size) {
+ static inline void *ztrymalloc_usable_internal(size_t size, size_t *usable) {
+     /* Possible overflow, return NULL, so that the caller can panic or handle a failed allocation. */
+     if (size >= SIZE_MAX / 2) return NULL;
++#ifdef USE_CHALLOC
++    /* The allocation returns its usable size (from the class it was served
++     * from), so zmalloc_size() is not asked a second time. */
++    void *ptr = challoc_malloc_usable(MALLOC_MIN_SIZE(size), &size);
++    if (!ptr) return NULL;
++    update_zmalloc_stat_alloc(size);
++    if (usable) *usable = size;
++    return ptr;
++#else
+     void *ptr = malloc(MALLOC_MIN_SIZE(size) + PREFIX_SIZE);
+ 
+     if (!ptr) return NULL;
+@@ -184,6 +193,7 @@ static inline void *ztrymalloc_usable_internal(size_t size, size_t *usable) {
+     if (usable) *usable = size;
+     return (char *)ptr + PREFIX_SIZE;
+ #endif
++#endif
+ }
+ 
+ void *ztrymalloc_usable(size_t size, size_t *usable) {
+@@ -279,6 +289,13 @@ void *zmalloc_usable(size_t size, size_t *usable) {
+ static inline void *ztrycalloc_usable_internal(size_t size, size_t *usable) {
+     /* Possible overflow, return NULL, so that the caller can panic or handle a failed allocation. */
+     if (size >= SIZE_MAX / 2) return NULL;
++#ifdef USE_CHALLOC
++    void *ptr = challoc_calloc_usable(1, MALLOC_MIN_SIZE(size), &size);
++    if (ptr == NULL) return NULL;
++    update_zmalloc_stat_alloc(size);
++    if (usable) *usable = size;
++    return ptr;
++#else
+     void *ptr = calloc(1, MALLOC_MIN_SIZE(size) + PREFIX_SIZE);
+     if (ptr == NULL) return NULL;
+ 
+@@ -294,6 +311,7 @@ static inline void *ztrycalloc_usable_internal(size_t size, size_t *usable) {
+     if (usable) *usable = size;
+     return (char *)ptr + PREFIX_SIZE;
+ #endif
++#endif
+ }
+ 
+ void *ztrycalloc_usable(size_t size, size_t *usable) {
+@@ -371,7 +389,21 @@ static inline void *ztryrealloc_usable_internal(void *ptr, size_t size, size_t *
+         return NULL;
+     }
+ 
+-#ifdef HAVE_MALLOC_SIZE
++#ifdef USE_CHALLOC
++    /* The old size is still asked for (the accounting needs it); the new
++     * block's comes back from the reallocation. */
++    oldsize = zmalloc_size(ptr);
++    newptr = challoc_realloc_usable(ptr, size, &size);
++    if (newptr == NULL) {
++        if (usable) *usable = 0;
++        return NULL;
++    }
++
++    update_zmalloc_stat_free(oldsize);
++    update_zmalloc_stat_alloc(size);
++    if (usable) *usable = size;
++    return newptr;
++#elif defined(HAVE_MALLOC_SIZE)
+     oldsize = zmalloc_size(ptr);
+     newptr = realloc(ptr, size);
+     if (newptr == NULL) {
+@@ -473,6 +505,11 @@ static inline void zfree_internal(void *ptr, size_t size) {
+ void zfree(void *ptr) {
+     if (ptr == NULL) return;
+ 
++#ifdef USE_CHALLOC
++    /* One call: the free reports the usable size it verified, so the
++     * zmalloc_size() query before the sized free is gone. */
++    update_zmalloc_stat_free(challoc_free_usable(ptr));
++#else
+ #ifdef HAVE_MALLOC_SIZE
+     size_t size = zmalloc_size(ptr);
+ #else
+@@ -489,6 +526,7 @@ void zfree(void *ptr) {
+ #endif
+ 
+     zfree_internal(ptr, size);
++#endif
+ }
+ 
+ /* Like zfree(), but doesn't call zmalloc_size(). */
 diff --git a/src/zmalloc.h b/src/zmalloc.h
-index a35b7cb..74837cb 100644
+index a35b7cb..15472b9 100644
 --- a/src/zmalloc.h
 +++ b/src/zmalloc.h
-@@ -47,6 +47,17 @@
+@@ -47,6 +47,23 @@
  #error "Newer version of tcmalloc required"
  #endif
  
@@ -118,6 +223,12 @@ index a35b7cb..74837cb 100644
 +    ("jemalloc-" __xstr(JEMALLOC_VERSION_MAJOR) "." __xstr(JEMALLOC_VERSION_MINOR) "." __xstr(JEMALLOC_VERSION_BUGFIX) \
 +     "-challoc")
 +#include <challoc/jemalloc.h>
++/* challoc's size-returning entry points (challoc_malloc_usable,
++ * challoc_calloc_usable, challoc_realloc_usable, challoc_free_usable):
++ * zmalloc.c gets the usable size back from the allocation and the free
++ * instead of asking zmalloc_size() after every allocation and before every
++ * unsized zfree(). zmalloc_size() itself stays for the other callers. */
++#include <challoc/challoc.h>
 +#define HAVE_MALLOC_SIZE 1
 +#define zmalloc_size(p) je_malloc_usable_size(p)
 +

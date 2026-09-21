@@ -1991,6 +1991,17 @@ pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> bool {
     }
 }
 
+/// [`free_fast`] that also names the class it pushed, for
+/// `challoc_free_usable` (design 13.7): `Some(class)` when `p` was
+/// verified as a slot of `class` and pushed, `None` for anything off the
+/// fast path (the caller then takes its cold exact path). The same loads
+/// as `free_fast`, no call.
+#[inline(always)]
+pub fn free_fast_class(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> Option<usize> {
+    let class = shared.checked_slot(p, h)?;
+    if h.push_fast(class, p, flags) { Some(class) } else { None }
+}
+
 /// The sized free's fast path on an existing heap (`sdallocx`,
 /// `free_sized`): verify the size hint's class against the pointer
 /// arithmetically and push onto the home cache without loading the slab

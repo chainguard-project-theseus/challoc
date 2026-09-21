@@ -1906,8 +1906,10 @@ change the builds this repository tests (`quantum16` by default,
 `quantum8` for the Valkey tree).
 
 `challoc_version()` returns the crate version as a NUL-terminated static
-string and is the one challoc-specific export (section 16); there is no
-exported accessor for the thread heap slot.
+string (section 16); with `challoc_features()` and the size-returning
+entry points of 13.7 it is the whole of the challoc-specific surface,
+declared in `<challoc/challoc.h>`; there is no exported accessor for the
+thread heap slot.
 
 `DT_NEEDED` under `--as-needed` (plan Phase 3 prerequisite (e), measured
 2026-09-19 with `tests/as-needed.sh` on both reference architectures):
@@ -1937,6 +1939,79 @@ challoc, plus the shared library that does the allocating; the check is
 `readelf -d` only and exits 1 when the soname is missing.
 `contrib/valkey/build.sh` and `contrib/ruby/build.sh` run it, and `make
 check-needed` runs the link experiments and the built consumers.
+
+### 13.7 challoc extensions
+
+The rule of 13.5 holds for challoc's own names too: an export that no
+other allocator has exists only for a consumer's measured cost, and the
+measurement is named here. The four size-returning entry points, declared
+in `<challoc/challoc.h>` (installed by `challoc-dev` beside
+`<challoc/jemalloc.h>`, which defines `JEMALLOC_CHALLOC_USABLE` so a
+consumer can test for them at compile time; the `challoc-jemalloc-compat-dev`
+`<jemalloc/jemalloc.h>` defines the macro and declares the four itself, so
+the two `-dev` packages ship no file in common), exist for Valkey:
+
+```c
+void  *challoc_malloc_usable(size_t size, size_t *usable);
+void  *challoc_calloc_usable(size_t n, size_t size, size_t *usable);
+void  *challoc_realloc_usable(void *p, size_t size, size_t *usable);
+size_t challoc_free_usable(void *p);   /* frees p, returns its usable size */
+```
+
+Why. Valkey's `zmalloc.c` calls `zmalloc_size` (`je_malloc_usable_size`)
+after every `je_malloc`, `je_calloc` and `je_realloc`
+(`ztry*_usable_internal`, for the `used_memory` accounting) and before
+every unsized `zfree` (then `je_sdallocx`). On the C4 that query was the
+one allocator-side term above jemalloc's cost in the soak's write phase:
++117 cycles per valkey-benchmark SET and +63 per memtier SET (346 against
+229; `bench/results/2026-09-20-x86_64-valkey-write-phase-attribution.md`,
+section 6), because it classifies the pointer a second time and its exact
+liveness test loads a bitmap word that nothing has touched since the
+refill (the sized free of 4e stopped touching it, so `malloc` hands out a
+slot whose word is cold, and the query right after `malloc` is its first
+touch, an L1 miss per allocation). The note proposed dropping the
+liveness test from `malloc_usable_size`; the decision (2026-09-21) was to
+keep every check and remove the second lookup instead: the allocation
+knows its class from the pop, the free from the classification it makes
+anyway, and each hands the class size to the caller.
+
+Semantics: each is the standard function of the same name, then the
+usable size, exactly what `malloc_usable_size(p)` would return for that
+pointer at that moment, on every tier (a slab class's slot size, the
+classes above `BIN_MAX` included; a huge run's page count times the page
+size), stored through `usable` or returned. `errno`, null handling,
+alignment, the huge tier and the aborts are `malloc`/`calloc`/`realloc`/
+`free`'s: a failed allocation returns null with `errno = ENOMEM` and
+`*usable = 0`; `usable` may be null for the three allocating functions
+(then they are plain `malloc`/`calloc`/`realloc`); `challoc_free_usable(NULL)`
+is 0; `challoc_realloc_usable(p, 0)` frees and reports 0. Two points where
+a choice existed: `challoc_calloc_usable` zeroes the whole usable size
+(the bytes the caller is told it owns, which jemalloc's `calloc` zeroes
+too), where plain `calloc` clears the requested bytes; and
+`challoc_free_usable` is the exact `free` of 6.3 (the bitmap-word test,
+the owner word with several arenas) reporting the class it verified, not
+the sized path: a stale, interior or foreign pointer aborts at the call
+with `free`'s message, and a double free of a still-cached slot is caught
+at the flush, or at the call with `double_free_scan`, as for `free`.
+
+Implementation (`src/api/libc.rs`): `challoc_malloc_usable` is `malloc`'s
+pop (6.3) plus `CLASSES[c].size()` from the class the pop used, every other
+outcome one cold tail call away; `challoc_free_usable` is `free`'s check
+and push (`heap::free_fast_class`, `free_fast` naming the class) plus the
+same lookup; the cold paths take the size from the same classification the
+exact slow path then repeats; the huge tier reads the run's usable bytes
+from the huge table as `malloc_usable_size` does. The fast paths of
+`malloc`, `free`, `sdallocx` and every other existing entry point are
+byte-identical to what they were (`scripts/codegen-diff.sh`). In the
+per-CPU mode (15) the four take their cold paths (`heap::alloc`,
+`heap::free`, which dispatch the mode); the mode is opt-in and measured on
+its own. Valkey uses them under `USE_CHALLOC`
+(`contrib/valkey/0001-Add-MALLOC-challoc.patch`: `ztrymalloc_usable_internal`,
+`ztrycalloc_usable_internal` and `ztryrealloc_usable_internal` call the
+`*_usable` pair instead of the allocation plus `zmalloc_size`; the unsized
+`zfree` calls `challoc_free_usable` instead of `zmalloc_size` plus
+`je_sdallocx`; `zmalloc_size` stays `je_malloc_usable_size` for its other
+callers). Measured in `bench/results/2026-09-21-*-sized-path-usable*.md`.
 
 ## 14. Hardening summary
 

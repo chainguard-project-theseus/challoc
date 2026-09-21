@@ -292,6 +292,11 @@ bench_args() {
     # Write phase only (SET over a full heap), so a per-operation counter is
     # per SET: the instruction budget of plan Phase 2.5 task 4c.
     valkey1-write) echo "$BIN/valkey_model -n $VALKEY_MODEL_N -w $VALKEY_MODEL_SECS -d 0 -s";;
+    # The same write phase in Valkey's unsized zmalloc shape (a usable-size
+    # query after every allocation and before every free) and with the
+    # challoc pair that replaces it (design 13.7; the sized-path lane, 2026-09-21).
+    valkey1-write-zmalloc) echo "$BIN/valkey_model -n $VALKEY_MODEL_N -w $VALKEY_MODEL_SECS -d 0 -s -u -a";;
+    valkey1-write-pair) echo "$BIN/valkey_model -n $VALKEY_MODEL_N -w $VALKEY_MODEL_SECS -d 0 -s -p";;
     redis)        echo "$BIN/redis-server";;
     ruby-churn)   ruby_available || return 1
                   echo "env LD_LIBRARY_PATH=$RUBY_INST/lib $RUBY_INST/bin/ruby --disable-gems $ROOT/bench/ruby/gc_churn.rb 10 10";;

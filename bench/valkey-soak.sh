@@ -28,7 +28,11 @@
 # every allocator (same client binary, only the server changes);
 # memtier_benchmark is Wolfi's package.
 #
-#   ALLOCS="challoc jemalloc"  servers to soak, in order
+#   ALLOCS="challoc jemalloc"  servers to soak, in order; challoc-old adds the
+#                              server of CHALLOC_OLD_SRC (default target/valkey/
+#                              src-<tag>-oldpatch, a tree built with a previous
+#                              contrib patch) on the same library, with its own
+#                              "vs jemalloc" column
 #   CHALLOC_CONF=              MALLOC_CONF for the challoc server alone (plan
 #                              Phase 2.5 task 8: percpu_arena:percpu soaks the
 #                              per-CPU mode against the same jemalloc, which a
@@ -162,15 +166,24 @@ ensure_jemalloc_server() {
     || { tail -30 "$WORK/logs/build-jemalloc-$ARCH.log" >&2; exit 1; }
 }
 
+# challoc-old: a second challoc server from CHALLOC_OLD_SRC (default the
+# tree contrib/valkey/build.sh built with the previous contrib patch, kept as
+# target/valkey/src-<tag>-oldpatch), for a same-run comparison of two
+# versions of the Valkey-side patch against one library and one jemalloc
+# column (the sized-path lane, 2026-09-21). It runs the same library as the
+# challoc server (both binaries carry the rpath of the challoc build).
+CHALLOC_OLD_SRC=${CHALLOC_OLD_SRC:-$SRC-oldpatch}
 server_for() {
   case $1 in
     challoc)  echo "$SRC/src/valkey-server";;
+    challoc-old) [ -x "$CHALLOC_OLD_SRC/src/valkey-server" ] || { echo "valkey-soak: no $CHALLOC_OLD_SRC/src/valkey-server (CHALLOC_OLD_SRC)" >&2; exit 1; }
+              echo "$CHALLOC_OLD_SRC/src/valkey-server";;
     jemalloc) ensure_jemalloc_server; echo "$SRC_JE/src/valkey-server";;
     *) echo "valkey-soak: unknown allocator $1" >&2; exit 1;;
   esac
 }
 expected_allocator() {
-  case $1 in challoc) echo jemalloc-5.3.0-challoc;; jemalloc) echo jemalloc-5.3.0;; esac
+  case $1 in challoc|challoc-old) echo jemalloc-5.3.0-challoc;; jemalloc) echo jemalloc-5.3.0;; esac
 }
 
 SERVER_PID=
@@ -443,19 +456,28 @@ ALLOCS=$SUMMARY_ALLOCS
   hdr="| measure |"; sep="|---|"
   for a in $ALLOCS; do hdr="$hdr $a |"; sep="$sep---:|"; done
   [ $cmp = 1 ] && { hdr="$hdr challoc vs jemalloc |"; sep="$sep---:|"; }
+  cmp_old=0
+  case " $ALLOCS " in *" challoc-old "*) [ $cmp = 1 ] && { cmp_old=1; hdr="$hdr challoc-old vs jemalloc |"; sep="$sep---:|"; };; esac
   echo "$hdr"; echo "$sep"
   row() { # label higher_is_better (1, 0, or 2 for no comparison) values...
     label=$1; hib=$2; shift 2
-    r="| $label |"; c=; j=; i=0
+    r="| $label |"; c=; j=; o=; i=0
     for a in $ALLOCS; do
       i=$((i+1)); v=$(eval echo \$$i)
       r="$r $v |"
-      [ "$a" = challoc ] && c=$v; [ "$a" = jemalloc ] && j=$v
+      [ "$a" = challoc ] && c=$v; [ "$a" = jemalloc ] && j=$v; [ "$a" = challoc-old ] && o=$v
     done
     if [ $cmp = 1 ]; then
       case $hib in
         1) r="$r $(pct "$j" "$c") |";;
         0) r="$r $(pct "$c" "$j") |";;
+        *) r="$r - |";;
+      esac
+    fi
+    if [ $cmp_old = 1 ]; then
+      case $hib in
+        1) r="$r $(pct "$j" "$o") |";;
+        0) r="$r $(pct "$o" "$j") |";;
         *) r="$r - |";;
       esac
     fi

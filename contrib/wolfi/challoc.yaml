@@ -9,6 +9,8 @@
 #                            consumers already run on; design 13.6)
 #   challoc-dev              /usr/lib/libchalloc.so -> libchalloc.so.0,
 #                            /usr/include/challoc/jemalloc.h,
+#                            /usr/include/challoc/challoc.h (the challoc_*
+#                            entry points, design 13.7),
 #                            /usr/lib/pkgconfig/challoc.pc
 #   challoc-jemalloc-compat  /usr/lib/libjemalloc.so.2       quantum16, built
 #                            with the `jemalloc-soname` feature and staged by
@@ -103,6 +105,8 @@ pipeline:
       ln -s libchalloc.so.${{vars.soversion}} "$lib/libchalloc.so"
       install -Dm644 contrib/valkey/include/challoc/jemalloc.h \
         ${{targets.destdir}}/usr/include/challoc/jemalloc.h
+      install -Dm644 contrib/valkey/include/challoc/challoc.h \
+        ${{targets.destdir}}/usr/include/challoc/challoc.h
       mkdir -p "$lib/pkgconfig"
       # Libs scopes --no-as-needed to -lchalloc so a consumer that
       # references no allocator symbol itself still records DT_NEEDED
@@ -155,11 +159,17 @@ subpackages:
             #include <stdlib.h>
             #include <string.h>
             #include <challoc/jemalloc.h>
-            extern const char *challoc_version(void);
+            #ifndef JEMALLOC_CHALLOC_USABLE
+            #error "JEMALLOC_CHALLOC_USABLE missing"
+            #endif
+            #include <challoc/challoc.h>
             int main(void) {
                 const char *v = challoc_version();
-                char *p = je_malloc(100);
+                size_t u = 0;
+                char *p = challoc_malloc_usable(100, &u);
                 size_t n = je_malloc_usable_size(p);
+                if (n != u || challoc_free_usable(p) != u) return 3;
+                p = je_malloc(100);
                 const char *jv = NULL; size_t sz = sizeof jv;
                 if (je_mallctl("version", &jv, &sz, NULL, 0) != 0) return 2;
                 printf("challoc_version=%s usable=%zu mallctl.version=%s\n", v, n, jv);
