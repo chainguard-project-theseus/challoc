@@ -698,9 +698,15 @@ impl Heap {
             // soon; purge them now instead of letting them sit for the
             // decay window. The caches just flushed above are most of
             // them. Not with a background thread, which decays on its own
-            // schedule (as jemalloc). Design 13.3.
+            // schedule (as jemalloc), and at most once per decay period
+            // per arena (`Arena::take_exit_purge`: thread churn would
+            // purge and refault the same slabs at every exit). Design 13.3.
             if shared.arenas.bound(arena) == 0 && !crate::purge::background::present() {
-                crate::purge::purge_arena(shared, arena);
+                if let Some(a) = shared.arenas.get_existing(arena) {
+                    if a.take_exit_purge(os::now_ns()) {
+                        crate::purge::purge_arena(shared, arena);
+                    }
+                }
             }
         }
         shared.meta.free(h as *mut u8, Layout::new::<Heap>());

@@ -83,6 +83,9 @@ pub struct Arena {
     large: AtomicU64,
     /// This arena's statistics as of the last `epoch` (`stats.rs`).
     stats: Lock<ArenaStats>,
+    /// When the last exit purge ran ([`Arena::take_exit_purge`]), 0 before
+    /// the first.
+    last_exit_purge: AtomicU64,
 }
 
 // SAFETY: `sets` points at a never-freed metadata object whose only
@@ -134,6 +137,7 @@ impl Arena {
             }
             ptr::write(&raw mut (*this).large, AtomicU64::new(0));
             ptr::write(&raw mut (*this).stats, Lock::new(ArenaStats::empty(index)));
+            ptr::write(&raw mut (*this).last_exit_purge, AtomicU64::new(0));
         }
         true
     }
@@ -243,6 +247,28 @@ impl Arena {
     /// any), for the cgroup policy's retention figure.
     pub fn empty_bytes(&self) -> usize {
         self.classes.iter().filter(|cs| cs.oldest_empty() != 0).map(|cs| cs.empty_bytes()).sum()
+    }
+
+    /// The exit purge's gate (design 13.3): the last thread heap homed on
+    /// this arena is leaving at `now`; `true` when its `Empty` slabs
+    /// should be purged now, which is at most once per decay period of
+    /// the arena and never with decay off (`-1`). Thread churn (a pool
+    /// that retires and recreates its threads, larson, mstress) would
+    /// otherwise purge and refault the same slabs at every exit; a
+    /// process whose workers leave once (the Ruby soak's end) purges
+    /// once. Called under no lock; two exits racing on one arena within
+    /// a period both see the old stamp and both purge, which is harmless.
+    pub fn take_exit_purge(&self, now: u64) -> bool {
+        let period = self.decay_ns();
+        if period == crate::purge::NEVER {
+            return false;
+        }
+        let last = self.last_exit_purge.load(Ordering::Relaxed);
+        if last != 0 && now.wrapping_sub(last) < period {
+            return false;
+        }
+        self.last_exit_purge.store(now.max(1), Ordering::Relaxed);
+        true
     }
 
     /// Purge every `Empty` slab of every class whatever its age. Returns

@@ -1855,8 +1855,9 @@ fn home_cache_takes_every_arenas_slots_and_the_flush_routes_them() {
 
 /// The last thread heap homed on an arena leaves: `Heap::destroy` purges
 /// the arena's `Empty` slabs at once (jemalloc's `tcache_destroy` rule,
-/// design 13.3), most of them the caches it just flushed; an arena that
-/// still has a heap is left to the decay.
+/// design 13.3), most of them the caches it just flushed, at most once
+/// per decay period of the arena; an arena that still has a heap is left
+/// to the decay.
 #[test]
 fn destroying_the_last_heap_of_an_arena_purges_it() {
     let s = shared_with(Config { narenas: 2, ..Config::DEFAULT });
@@ -1874,6 +1875,22 @@ fn destroying_the_last_heap_of_an_arena_purges_it() {
     b.destroy();
     let s1 = s.arena(1).unwrap().classes[c].stats();
     assert_eq!((s1.empty, s1.purged), (0, per_refill));
+    // A second last-heap exit on arena 1 within the decay period does
+    // not purge again (thread churn); after the period, or with the
+    // stamp cleared, it does; with decay off, never.
+    let b3 = TestHeap::new(s);
+    assert_eq!(b3.heap().arena(), 1);
+    let pb3 = b3.alloc(c);
+    b3.heap().free(s, pb3);
+    b3.destroy();
+    let s1 = s.arena(1).unwrap().classes[c].stats();
+    assert_eq!(s1.empty, per_refill, "within the period: flushed, not purged");
+    let a1 = s.arena(1).unwrap();
+    assert!(!a1.take_exit_purge(os::now_ns()));
+    assert!(a1.take_exit_purge(os::now_ns() + a1.decay_ns()));
+    a1.set_decay_ms(-1);
+    assert!(!a1.take_exit_purge(os::now_ns() + 2 * 10_000_000_000));
+    a1.set_decay_ms(10_000);
     // Arena 0 keeps `b2`: flushed, still `Empty`.
     a.destroy();
     let s0 = s.arena0.classes[c].stats();
