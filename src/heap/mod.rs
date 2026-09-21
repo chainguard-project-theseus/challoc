@@ -6,9 +6,10 @@
 //! [`CacheHeader`] per size class inline: a LIFO stack of slot pointers that
 //! are marked in their slab bitmaps but not live in the program. The fast
 //! paths only touch the heap's header line for the class, the stack top and
-//! (for `free`) one word of the class's slot bitmap plus, once a second
-//! arena exists, one word of the group owner array; never the slab
-//! descriptor, and no atomic read-modify-write, no lock.
+//! (for `free`) one word of the class's slot bitmap; never the slab
+//! descriptor or the group owner array (a free of another arena's slot
+//! goes onto the home cache too, and the flush routes it, design 6.3), and
+//! no atomic read-modify-write, no lock.
 //!
 //! Files (design.md section 19):
 //!
@@ -19,7 +20,7 @@
 //!                      alloc/alloc_zeroed/free/free_direct and the free_fast and
 //!                      free_sized_fast paths the entry points inline
 //! heap/shared.rs       Shared: process-wide state and init, the free checks
-//!                      (checked_slot, sized_slot, classify_free, release_routed), huge
+//!                      (checked_slot_any, sized_slot, classify_free, release_routed), huge
 //!                      routing, GuardTest, the thread-exit key and the OS shims (os)
 //! heap/percpu.rs       the per-CPU mode (design 15): Percpu, PercpuState, CpuCache, the
 //!                      per-CPU impl Heap blocks (pop, scheduled pop and run, refill,
@@ -501,9 +502,12 @@ impl ThreadStats {
 
 /// A heap's caches for one arena other than its home arena (design 6.2,
 /// `caches[arena]`), allocated from the metadata region the first time the
-/// heap touches that arena and kept on a singly linked list, with the same
+/// heap touches that arena with `MALLOCX_ARENA` (or that `thread.arena`
+/// moved it away from) and kept on a singly linked list, with the same
 /// shape as the home caches (headers inline). Almost every heap has none;
-/// Valkey's main thread has one (the Lua arena).
+/// Valkey's main thread has one (the Lua arena). A plain `free` never
+/// creates one: it pushes onto the home cache whatever the slab's arena
+/// (design 6.3 step 4), so a node only ever fills from its own refills.
 #[repr(C)]
 pub struct ArenaCaches {
     arena: u16,
@@ -551,7 +555,8 @@ pub struct Heap {
     /// cannot be folded into one thread's counters). The thread caches
     /// are derived from their headers in [`Heap::stats`].
     uncached: ThreadStats,
-    /// Caches of every other arena this heap has touched.
+    /// Caches of every other arena this heap has allocated from
+    /// explicitly ([`ArenaCaches`]).
     others: *mut ArenaCaches,
     /// `thread.allocated` / `thread.deallocated` as of the last `mallctl`
     /// read of any `thread.*allocated*` key; `thread.allocatedp` and
@@ -1230,18 +1235,16 @@ impl Heap {
     }
 
     /// Fast path of `free`. Aborts unless `p` is an allocated slab slot or
-    /// a live huge run. A slot of another arena goes to this heap's cache
-    /// for that arena (design 6.3 step 4).
+    /// a live huge run. A slot of any arena goes onto the home cache; the
+    /// flush routes it to its owner (design 6.3 step 4).
     #[inline(always)]
     pub fn free(&mut self, shared: &Shared, p: *mut u8) {
         match shared.classify_free(p) {
-            Ok((class, arena)) => {
+            Ok((class, _arena)) => {
                 if self.percpu {
                     self.percpu_free_slow(shared, class, p)
-                } else if arena == self.arena {
-                    self.push(shared, class, p)
                 } else {
-                    self.free_other(shared, arena, class, p)
+                    self.push(shared, class, p)
                 }
             }
             Err(page) => self.free_huge(shared, page),
@@ -1511,27 +1514,6 @@ impl Heap {
         self.free_slow_in(shared, arena, class, p)
     }
 
-    /// Free of a slot whose slab belongs to another arena than the home
-    /// one: onto this heap's cache for that arena if the `others` list has
-    /// one with room (xmalloc-test's consumers take this path on every
-    /// free: a list walk and a push, no policy test), else the slow path,
-    /// whose `ensure_cache` creates the node and the cache only for a
-    /// class this heap caches there (`Config::cap_for`) and releases the
-    /// rest straight to the owner's bitmap.
-    #[cold]
-    #[inline(never)]
-    fn free_other(&mut self, shared: &Shared, arena: u16, class: usize, p: *mut u8) {
-        let node = self.other_caches(shared, arena, false);
-        if !node.is_null() {
-            // SAFETY: `node` is a live block owned by this heap; the cache
-            // is unused (`len == cap == 0`) or ours.
-            if unsafe { Self::push_cache_flags(Self::node_cache_ptr(node, class), p, shared.push_flags()) } {
-                return;
-            }
-        }
-        self.free_slow_in(shared, arena, class, p)
-    }
-
     /// The slow free path for any arena. With `zero_on_free` every cached
     /// free arrives here (the fast push declines, see
     /// [`Heap::push_cache_flags`]) and the slot is cleared first: the
@@ -1545,9 +1527,16 @@ impl Heap {
             unsafe { zero_slot(class, p) };
         }
         self.tick(shared);
-        let cache = self.ensure_cache(shared, arena, class);
+        // The home arena may not be built yet: a thread whose first
+        // allocator call is a `free` (a consumer thread) arrives here
+        // before any refill has materialised it (`Shared::arena` does;
+        // `ensure_cache` reads the arena's class state for the header).
+        let cache = if shared.arena(arena).is_some() { self.ensure_cache(shared, arena, class) } else { ptr::null_mut() };
         if cache.is_null() {
-            shared.free_direct(arena, class, p);
+            // No cache for this class here: straight to the slab, through
+            // the arena its slab belongs to (a plain free of a shared
+            // class arrives with the home arena, design 6.3 step 4).
+            shared.free_direct(shared.arena_of_slot(class, p), class, p);
             self.count_direct_free(class);
             return;
         }
@@ -1973,14 +1962,14 @@ impl Heap {
 }
 
 /// The `free` fast path on an existing heap: check the slot and push it
-/// onto the home cache. `false` whenever anything is off the fast path (not
-/// a verified slab slot, another arena's slab, full cache); the caller then
-/// goes through a cold [`free`], which repeats the checks and aborts when
-/// they fail. Contains no call, so the entry point that inlines it needs no
-/// frame.
+/// onto the home cache, whatever the slab's arena. `false` whenever
+/// anything is off the fast path (not a verified slab slot, full cache);
+/// the caller then goes through a cold [`free`], which repeats the checks
+/// and aborts when they fail. Contains no call, so the entry point that
+/// inlines it needs no frame.
 #[inline(always)]
 pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> bool {
-    match shared.checked_slot(p, h) {
+    match shared.checked_slot_any(p) {
         Some(class) => h.push_fast(class, p, flags),
         None => false,
     }

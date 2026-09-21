@@ -930,7 +930,7 @@ pub fn percpu_push_raw(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8, hin
 pub fn percpu_push_miss(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8, hint: Option<usize>, sized: bool, st: u32) -> bool {
     match st {
         rseq::PUSH_OFF_MODE => {
-            let class = if sized { shared.sized_slot(p, hint) } else { shared.checked_slot(p, h) };
+            let class = if sized { shared.sized_slot(p, hint) } else { shared.checked_slot_any(p) };
             match class {
                 Some(class) => h.push_fast(class, p, flags),
                 None => false,

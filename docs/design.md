@@ -587,7 +587,7 @@ struct Heap {                                // repr(C); the header array at off
     slow_ticks:  u32,                        // counts slow-path entries for periodic work
     last_gc:     u64,                        // monotonic ns of the last cache GC
     uncached:    ThreadStats,                // bytes that never went through a cache (huge, direct)
-    others:      *mut ArenaCaches,           // one node of [CacheHeader; NCLASSES] per other arena touched
+    others:      *mut ArenaCaches,           // one node of [CacheHeader; NCLASSES] per other arena allocated from explicitly (MALLOCX_ARENA, thread.arena); plain free never fills one
     snapshot:    ThreadStats,                // thread.allocated/deallocated as of the last read
     tcache_enabled: bool,                    // thread.tcache.enabled
     bound:       bool,                       // counted in the home arena's load (thread heaps only)
@@ -753,11 +753,20 @@ a deployment that wants the residue back on a small-cache part.
    default: a `memset` per free is more than the 3% budget on Valkey's
    1 KiB values (review 2026-09-18 section 5.1); priced in
    `bench/results/2026-09-18-*-gce-tunables.md`.
-4. `heap = tls()`; with several arenas load `owner[slab / group]` and, if it
-   is not the heap's home arena, take the cold path (`free_other`, which
-   pushes into the heap's cache for that arena, creating the node on first
-   use); otherwise `cache = heap.caches[c]`; if `len == cap`, slow path
-   (flush half). `slots[len++] = p`.
+4. `heap = tls()`; `cache = heap.caches[c]` (the home cache, whatever the
+   slab's arena: the owner array is not read); if `len == cap`, slow path
+   (flush half). `slots[len++] = p`. The flush routes each run of slabs of
+   another arena to that arena (`release_routed`, 6.4), as the sized path's
+   flush always did. Until 2026-09-21 a slot of another arena went to a
+   cache the heap kept per `(arena, class)` (`others`), which the default
+   path never pops from, so it left only by a flush or the cache GC: a
+   16-thread Ruby process, whose GC sweep frees every thread's garbage from
+   whichever thread runs it, held ~200 MiB of dead slots in those 16 x 16
+   caches (three quarters of their capacity on average, the sawtooth
+   between a half flush and full), twice jemalloc's RSS
+   (`bench/results/2026-09-21-*-ruby-rss-attribution.md`). jemalloc keeps
+   one tcache per thread for the same reason. The `others` caches remain
+   for explicit `MALLOCX_ARENA` allocations and `thread.arena`.
 
 `sdallocx(p, n, flags)`, `free_sized(p, n)`, `free_aligned_sized(p, a, n)`
 (the sized path; Phase 1.5 task 4e):
@@ -1653,10 +1662,15 @@ An arena is a set of `ClassState`s (one per class, over the shared per-class
 `SlabTable`s) with its `SetTable`, its decay period, per-arena counters of
 the huge runs allocated through it (the huge allocator itself is one and
 shared by every arena), plus statistics. Arena 0 exists at init. `arenas.create` allocates a
-new one. Slab groups record their arena (section 4). A pointer freed with
-plain `free` is returned to a cache keyed by its slab's arena, so a live
-slot never migrates between arenas and per-arena statistics stay exact.
-This is what lets Redis exclude its Lua heap from fragmentation accounting.
+new one. Slab groups record their arena (section 4). A slot belongs to the
+arena that committed its slab for good: a refill claims from the home
+arena, a flush releases each slot to its slab's arena
+(`release_routed`), so per-arena statistics (`curregs`, `active`,
+`dirty`) stay exact whichever thread's cache a slot passes through; what
+the cache holds is the thread's, not the arena's (6.3 step 4, since
+2026-09-21; jemalloc's tcache is the same). Redis's Lua arena keeps its
+accounting through `MALLOCX_ARENA` allocations, whose slabs are the Lua
+arena's whatever cache later holds their slots, as under jemalloc.
 An arena owns its groups. With `group_handoff:true` (an opt-in; the
 default is `false`) it lends idle ones: when an arena's current group of a
 class is used up and it has no `Empty` or `Purged` slab of that class, it
