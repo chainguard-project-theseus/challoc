@@ -106,7 +106,7 @@ One row per key, in `KEYS` order. "Values" is the grammar
 | `prefault` | `true`, `false` | `false` | With the background thread, commits and populates (`MADV_POPULATE_WRITE`, 5.14+, probed; else a touch per page) the next fresh slab of every class that refilled since the last pass, one pipeline per `(arena, class)`, only while the cgroup policy shows headroom, so the allocating thread's first write into a fresh slab takes no page fault. Inert without `background_thread:true` (the report says `Prefault: off (prefault:true without background_thread)`). | A latency-sensitive main thread fills a large heap in bursts (Valkey's shape). See section 3. | RSS: one pipeline of resident slabs per refilling `(arena, class)`: +4.2..4.6 MiB (+0.7..0.8%) at Valkey's 580 MiB peak, +4..6 MiB on a 16 MiB larson heap, +25..34 MiB over ten arenas on larson10 (`bench/results/2026-09-20-aarch64-task11-prefault-claim.md`, section 8). |
 | `dirty_decay_ms` | `-1`..`1000000000000` | `10000` | The window of the decay curve: freed slabs and huge extents go from dirty to purged over this many milliseconds along a smootherstep (about half by mid-window, all by the end). `-1` never purges. `0` purges at the next pass. | Lower it (1000..5000) when RSS after a burst matters more than refaults; raise it or set `-1` for a process that reuses everything it frees and never idles. | Purging costs `madvise` calls and refaults on reuse; never purging keeps every peak resident. Under a cgroup limit the policy scales this value down (section 4); `-1` is left alone in every band. |
 | `muzzy_decay_ms` | `-1`..`1000000000000` | `0` | Accepted for jemalloc compatibility, stored, readable as `opt.muzzy_decay_ms`; nothing reads it. There is no muzzy state: the two-advice purge (section 4) replaces it. | Never. | None. |
-| `narenas` | `0`..`4294967295` | `0` | Automatic arenas. `0` means `min(4 * ncpus, 64)` (`ncpus` is the affinity mask's width). Each heap is bound to the least-loaded automatic arena, so a program with `t` threads touches `min(t, narenas)` arenas; each arena has its own partial slabs per class. | A process that wants one shared slab set for all its threads (the lowest RSS floor: the 16-thread Ruby soak reads 170 MiB peak under `narenas:1` against 187 with the default and jemalloc's 211, `2026-09-21-aarch64-ruby-rss-soak.md`). Not the remedy it was before 2026-09-21: the 2x RSS of the default on that soak was the per-arena caches of cross-thread frees, since one cache per class (`c8a8e03`), not the arena count. | Fewer arenas means more threads share each arena's class locks on the slow path (refill and flush); the fast paths are unaffected. Not measured under contention here. |
+| `narenas` | `0`..`4294967295` | `0` | Automatic arenas. `0` means `min(4 * ncpus, 64)` (`ncpus` is the affinity mask's width). Each heap is bound to the least-loaded automatic arena, so a program with `t` threads touches `min(t, narenas)` arenas; each arena has its own partial slabs per class. | A process that wants one shared slab set for all its threads (the lowest RSS floor: the 16-thread Ruby soak reads 170 MiB peak under `narenas:1` against 189 with the default and jemalloc's 201, `2026-09-21-aarch64-ruby-rss-v3-soak.md`). Not the remedy it was before 2026-09-21: the 2x RSS of the default on that soak was the per-arena caches of cross-thread frees, since one cache per class (`c8a8e03`), not the arena count. | Fewer arenas means more threads share each arena's class locks on the slow path (refill and flush); the fast paths are unaffected. Not measured under contention here. |
 | `percpu_arena` | `auto`, `percpu`, `off` (`phycpu` = `percpu`, `disabled` = `off`) | `auto` | Per-CPU caches and arenas keyed by the rseq `mm_cid` of the running thread instead of by thread (design 15). `auto` is thread caches (`heap::PercpuState::OffAuto`, "opt in with `percpu_arena:percpu`"). `percpu` turns the mode on where the probe passes (glibc's registered `__rseq_size >= 28`, kernel 6.3+); where it fails the report notes the request and thread caches stay. `off` is thread caches whatever the probe says. `double_free_scan:true` also keeps thread caches. | A process with far more threads than CPUs whose RSS is dominated by per-thread caches, and after measuring. | Against thread caches the mode costs larson1 +5.3%, xmalloc +18.9%, valkey1 +4.7% on aarch64, xmalloc +16.1% and valkey1 +37.8% on x86_64 (`bench/results/2026-09-19-{aarch64,x86_64}-task8-percpu-fastpath-ab.md`). |
 | `tcache` | `true`, `false` | `true` | Thread caches on the `malloc`/`free` fast paths. `false` sends every operation to the slabs under the class lock. | Never in production; a diagnostic. | Every operation becomes a slow path. |
 | `tcache_max` | `0`..`262144` | `32768` | Largest class size (bytes) whose slots are cached (`opt.tcache_max` reads as a `size_t`, like jemalloc's); classes above it are served from arena 0's slabs directly (shared classes), so one partial slab per class serves every thread. | Never. | Set from the RSS acceptance probe: 8 cached 40 KiB slots per `(thread, arena)` held 70 MiB of xmalloc-test's RSS (`bench/results/2026-09-18-aarch64-gce-arena-rss.md`). |
@@ -266,14 +266,19 @@ the arenas' slabs nor the decay but the caches a plain `free` filled per
 `(arena, class)` on the freeing thread and never popped from (Ruby's GC
 sweep frees every thread's garbage from whichever thread runs it: 16 x 16
 such caches, ~200 MiB of dead slots at three quarters of their
-capacity). Since `c8a8e03` those frees share one flush-only cache per
-class on the freeing thread (its flush routes each slot to its slab's
-arena), bounded like jemalloc's tcache, and `1a45278`/`6e25c7a` purge an
-arena when its last thread leaves (jemalloc's rule, at most once per
-decay period); the same soak reads within 15% below jemalloc on aarch64
-and within about 10% of jemalloc's 4 KiB-page build on x86_64
-(`2026-09-21-{aarch64,x86_64}-ruby-rss-v2-soak.md`), at the same CPU per
-job. Nothing
+capacity). Since `c8a8e03`/`aeafc1e` those frees share one flush-only
+cache per class on the freeing thread (half the ladder, released whole,
+its flush routing each slot to its slab's arena), bounded below
+jemalloc's tcache, and `1a45278`/`6e25c7a` purge an arena when its last
+thread leaves (jemalloc's rule, at most once per decay period). The same
+soak (`2026-09-21-{aarch64,x86_64}-ruby-rss-v3-soak.md`) reads peak
+189.4 vs jemalloc's 200.8 MiB and 146.2 vs 169.2 at the end on aarch64,
+where jemalloc's slabs are 64 KiB too; on x86_64, against jemalloc's
+4 KiB-page build (4..28 KiB slabs), peak 205.6 vs 182.1 and 163.4 vs
+131.6 at the end, the gap being the holes of 64 KiB slabs across 17
+arenas (30.6 vs 12.6 MiB) and the `Empty` slabs the workers' exit leaves
+in arenas already purged; CPU per job equal (4.35 vs 4.35, 3.95 vs 4.01
+ms). Nothing
 needs setting for Ruby; `narenas:1` still reads lower at the peak (170
 MiB) at the price of one arena's class locks for every thread, and is
 the knob for an operator who wants that.

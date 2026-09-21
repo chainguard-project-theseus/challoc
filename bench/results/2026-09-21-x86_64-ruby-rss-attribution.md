@@ -190,10 +190,19 @@ both architectures it is written aarch64 / x86_64.
    gate attack terms that are not the mid-run gap; (C) an idle-heap
    release is what the cache GC already does every 10 s, and the caches
    refill within a second. The mechanism to remove is the per-arena
-   cache a plain `free` fills and never pops: one cache per (thread,
-   class) for slots of any arena, with the flush routing each slot to
-   its slab's arena, which is jemalloc's tcache and what challoc's sized
-   path (`sdallocx`) and per-CPU push already did (`release_routed`);
-   plus jemalloc's exit rule for the final row. That is the change of
-   `6b29fa9`; its numbers are in `2026-09-21-<arch>-ruby-rss-soak.md`,
-   `-ab.md`, `-ruby.md`, `-quick*.md`.
+   cache a plain `free` fills and never pops. Two forms were built and
+   measured: jemalloc's exact shape, every foreign slot onto the home
+   cache with the flush routing it (`4dc352c`), removes the residue but
+   hands a thread that inherits another thread's blocks that arena's
+   slots back for its own allocations, and larson10 / larson16 on the
+   Xeon lost 10% / 6% (`2026-09-21-x86_64-ruby-rss-ab-split.md`, `f3`
+   column; the Axion did not move); the form kept (`c8a8e03`) leaves the
+   home cache and the `free` fast path as they were (byte-identical) and
+   makes the foreign side one flush-only cache per (thread, class)
+   instead of one per (thread, arena, class), the same bound as
+   jemalloc's tcache. Plus jemalloc's exit rule for the final row
+   (`1a45278`, rate-limited to once per decay period per arena by
+   `6e25c7a` after the unlimited form cost mstress +11% through refaults
+   under thread churn, `-ab-split.md` `purge` column). The numbers are in
+   `2026-09-21-<arch>-ruby-rss-v2-soak.md`, `-v2-ab.md`, `-v2-ruby.md`,
+   `-quick.md`.
