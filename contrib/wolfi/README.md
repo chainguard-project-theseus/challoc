@@ -4,14 +4,17 @@
 docs/plan.md Phase 3 task 1 (design 13.6; three packages, plus the
 `challoc-jemalloc-compat-dev` header package task 3 added);
 `valkey/valkey-9.1.yaml` is Wolfi's Valkey 9.1 package switched to
-challoc (task 2, the "Valkey" section below); `ruby/ruby-3.4.yaml` is
-Wolfi's Ruby 3.4 switched to `challoc-jemalloc-compat` (task 3, the
-"Ruby" section). Phase 3 runs in the wolfi-dev/os repository; this
-directory tracks the drafts and the recipes that build and test them
-here. Results of the first real builds (2026-09-20):
-`bench/results/2026-09-20-phase3-task1-wolfi-package.md`,
-`bench/results/2026-09-20-phase3-task2-valkey-package.md` and
-`bench/results/2026-09-20-phase3-task3-ruby-package.md`.
+challoc (task 2, the "Valkey" section below); `ruby/ruby-3.4.yaml`,
+`keydb/keydb.yaml` and `rethinkdb/rethinkdb.yaml` are Wolfi's Ruby 3.4,
+KeyDB 6.3 and RethinkDB 2.4 switched to `challoc-jemalloc-compat` (task
+3, the "Ruby", "KeyDB" and "RethinkDB" sections). Phase 3 runs in the
+wolfi-dev/os repository; this directory tracks the drafts and the recipes
+that build and test them here. Results of the first real builds
+(2026-09-20): `bench/results/2026-09-20-phase3-task1-wolfi-package.md`,
+`bench/results/2026-09-20-phase3-task2-valkey-package.md`,
+`bench/results/2026-09-20-phase3-task3-ruby-package.md`,
+`bench/results/2026-09-20-phase3-task3-keydb-package.md` and
+`bench/results/2026-09-20-phase3-task3-rethinkdb-package.md`.
 
 ## Packages
 
@@ -422,3 +425,180 @@ test-all` is not part of the package test (Phase 1 ran it against the
 same tag and the same library under this soname,
 `bench/results/2026-09-17-ruby-test-all.md`); the results file has the
 short subset run by hand against the packaged interpreter.
+
+## KeyDB
+
+`keydb/keydb.yaml` is wolfi-dev/os's `keydb.yaml` (main at `8c473de`,
+2026-09-20; the file last changed in `276d78c`, a resources bump, `epoch:
+8`) with the allocator switched from the bundled jemalloc to challoc
+through `challoc-jemalloc-compat`. `keydb/keydb/cstdint.patch` is Wolfi's
+own RocksDB patch, unchanged; `keydb/keydb/0001-Add-MALLOC-challoc.patch`
+is new (below). `bench/results/2026-09-20-phase3-task3-keydb-package.md`
+has the diff against Wolfi's file, the build and every assertion's output.
+
+Why the compat library and not a private `quantum8` build like Valkey's:
+KeyDB 6.3.4 is Redis 6.2's shape. Its `zmalloc.cpp` reads `epoch`,
+`stats.{resident,active,allocated}`, writes `background_thread` and
+`arena.<narenas>.purge`, and allocates with `mallocx`/`dallocx` under
+`MALLOCX_TCACHE_NONE` for the defragmenter; its `defrag.cpp` has one
+allocator input, `je_get_defrag_hint(ptr)`, the extension Redis adds to
+its bundled jemalloc (and `zmalloc.h` compiles the defragmenter in,
+`HAVE_DEFRAG`, only when the jemalloc header defines
+`JEMALLOC_FRAG_HINT`). Nothing asserts the quantum or does bin-index
+arithmetic (`grep quantum src/` is empty; Valkey 9's
+`allocatorDefragInit` and `jeSize2BinIndexLgQ3` do not exist here), so
+KeyDB runs on the system `quantum16` library like every other jemalloc
+consumer. What it needed from challoc is the hint: `get_defrag_hint` /
+`je_get_defrag_hint` are exported since this task (design 13.5, from the
+data the utilization queries report, with the rule of Redis's
+`iget_defrag_hint`), and both shipped headers define `JEMALLOC_FRAG_HINT`
+and declare it.
+
+KeyDB's Makefile has no system-jemalloc mode: `MALLOC=jemalloc` (the
+Linux default) builds `deps/jemalloc` with `--with-lg-quantum=3` and links
+the static library; `MALLOC=libc` drops every `USE_JEMALLOC` path. The
+patch adds `MALLOC=challoc` the way `contrib/valkey`'s patch does for
+Valkey:
+
+| hunk | what |
+|---|---|
+| `src/Makefile` | `ifeq ($(MALLOC),challoc)`: `-DUSE_JEMALLOC -DUSE_CHALLOC`, `FINAL_LIBS := -Wl,--push-state,--no-as-needed -ljemalloc -Wl,--pop-state $(FINAL_LIBS)`; no `jemalloc` dependency target, so `deps/jemalloc` is never built. `<jemalloc/jemalloc.h>` comes from `/usr/include` (the -dev package), no `-I`. |
+| `src/zmalloc.h` | under `USE_CHALLOC`, `ZMALLOC_LIB` is `"jemalloc-5.3.0-challoc"` (`JEMALLOC_VERSION_GID` appended), so `keydb-server --version` and `INFO memory`'s `mem_allocator` say which build; everything keyed on `jemalloc` (the test suite's memefficiency gate, `MEMORY MALLOC-STATS`) still matches. |
+
+`--no-as-needed` is belt and braces: `keydb-server`, `keydb-cli` and
+`keydb-benchmark` all link `zmalloc.o`, which calls `mallctl`, so
+`--as-needed` would keep the entry anyway; the check step verifies rather
+than assumes.
+
+The changes to Wolfi's file, in file order:
+
+| where | Wolfi | here | why |
+|---|---|---|---|
+| `epoch` | 8 | 9 | the allocator switch is a rebuild of the same version |
+| `dependencies.runtime` | (derived) | `challoc-jemalloc-compat` | as Ruby's: melange derives `so:libjemalloc.so.2`, apk would resolve it to `libjemalloc2` by name preference |
+| `vars` | - | `allocator-name: jemalloc-5.3.0-challoc` | what the build reports |
+| `environment.contents.packages` | `jemalloc-dev` | `challoc-jemalloc-compat-dev`, plus `binutils` | the same file set, challoc underneath (`jemalloc-dev` was unused before: the bundled jemalloc was built); `readelf` for the check step |
+| `pipeline` | `patch` (cstdint), sed, `make -j`, `make install` | plus `patch` (the challoc patch); the header checked for `JEMALLOC_CHALLOC`, `JEMALLOC_FRAG_HINT` and the hint prototype; `make MALLOC=challoc` on both invocations; a check step | `MALLOC` on the install too: the Makefile persists its settings and an install without it rebuilds with the bundled jemalloc (the Valkey lesson) |
+| check step | - | `deps/jemalloc/lib` absent; `--version` says `malloc=jemalloc-5.3.0-challoc`; the three binaries have `NEEDED libjemalloc.so.2`; the environment's `libjemalloc.so.2` exports `challoc_version` and `je_get_defrag_hint`; the server imports `je_get_defrag_hint` (so `defrag.cpp` was compiled in) | |
+| `keydb-cli`, `keydb-benchmark` `runtime` | (derived) | `challoc-jemalloc-compat` | linked with the same `FINAL_LIBS` |
+| `test.environment` | `keydb-cli`, `wait-for-it` | plus `keydb-benchmark`, `apk-tools`, `binutils` | |
+| `test.pipeline` | `ldd-check`, the SET/GET/EXISTS run | plus the two steps below; Wolfi's commands kept inside the second | |
+
+### Package test
+
+| check | how |
+|---|---|
+| the build says challoc | `keydb-server --version` has `malloc=jemalloc-5.3.0-challoc`; `keydb-sentinel --version` runs |
+| linked against the compat library | `readelf -d` on the three binaries has `NEEDED [libjemalloc.so.2]`; `ldd` resolves it to `/usr/lib/libjemalloc.so.2`; `apk info --who-owns` names `challoc-jemalloc-compat`; `libjemalloc2` is not installed; the library exports `je_get_defrag_hint` |
+| a running server maps exactly that file | `/proc/<pid>/maps` filtered for `libjemalloc` = `/usr/lib/libjemalloc.so.2` |
+| the allocator reports itself | `INFO memory` has `mem_allocator:jemalloc-5.3.0-challoc` |
+| active defrag is available | `CONFIG SET activedefrag yes` -> `OK`, `CONFIG GET` -> `yes` (without `HAVE_DEFRAG` the error is "Active defragmentation cannot be enabled: it requires a Redis server compiled with a modified Jemalloc ...") |
+| purge, stats, the mallctl bridge | `MEMORY PURGE` -> `OK`; `MEMORY MALLOC-STATS` has `jemalloc statistics`; `DEBUG MALLCTL arenas.page` answers |
+| Wolfi's own | `SET`/`GET`/`EXISTS` |
+| traffic and a defrag-shaped churn | `keydb-benchmark -t set,get -n 20000`; 200 k random 150-byte `SET`s, 100 k random deletes through `EVAL`, a defrag cycle later `INFO stats`' `active_defrag_*` counters and `INFO memory`'s fragmentation figures are printed |
+| clean shutdown | `SHUTDOWN NOSAVE`; the log has no `challoc:` message, assertion or crash report |
+
+KeyDB's own `unit/memefficiency` (the defrag tests, gated on
+`mem_allocator` matching `*jemalloc*` and `arenas.page <= 8192`) is not
+part of the package test; the results file has its run against the
+packaged binary from a `v6.3.4` checkout with `src/keydb-server` symlinked
+to `/usr/bin/keydb-server`, the way lane P ran Valkey's (with `tclsh9.0
+tests/test_helper.tcl --single unit/memefficiency --clients 1`: KeyDB's
+`runtest` only knows Tcl 8.5/8.6, Wolfi's `tcl` is 9.0, and two Tcl 9
+spellings, `package require Tcl 8.5-` and `-translation binary`, are
+`sed`ed into the suite first). The honest result (2026-09-20, both
+architectures): the five memory-efficiency tests pass; the defragmenter
+runs and brings `allocator_frag_ratio` from 1.5-2.0 to 1.09-1.18 within
+two seconds; the defrag tests then fail `defrag didn't stop.`, because
+KeyDB's stop rule is Redis 6.2's, `stats.active - stats.allocated` over
+the whole allocator against the test's 5% / 2 MB, and under challoc that
+figure has a floor of 8-12% on these workloads (cached free slots pinning
+their slabs until the 10 s cache GC returns them; 16-slot slabs of the
+64-256 KiB classes pinned by one live client buffer each; slab tails)
+that the hint cannot move. At KeyDB's defaults (10% / 100 MB) the cycle
+stops at once. The results file attributes the floor per term and names
+what would close the gap (a KeyDB-side `frag_smallbins` stop rule as
+Redis 7's and Valkey's, a test-threshold hunk, or smaller large-class
+slabs on challoc's side); the package is not shipped with defrag compiled
+out.
+
+### Building and testing locally
+
+Same VM and container as "Building locally" above (melange with
+bubblewrap in a privileged `wolfi-base` container, Wolfi's `pipelines/`
+at `8c473de`), after `challoc.yaml` has been built into the local
+repository (the build environment takes `challoc-jemalloc-compat-dev`
+from it):
+
+```sh
+melange build /work/contrib/wolfi/keydb/keydb.yaml --arch $(uname -m) \
+  --source-dir /work/contrib/wolfi/keydb/keydb \
+  --pipeline-dir /tmp/os/pipelines $WOLFI \
+  --repository-append /out/packages --keyring-append /out/melange.rsa.pub \
+  --signing-key /out/melange.rsa --out-dir /out/packages --runner bubblewrap
+melange test /work/contrib/wolfi/keydb/keydb.yaml --arch $(uname -m) \
+  --pipeline-dirs /tmp/os/pipelines $WOLFI \
+  --repository-append /out/packages --keyring-append /out/melange.rsa.pub \
+  --test-package-append=wolfi-base --runner bubblewrap
+```
+
+`--source-dir` is the patch directory (Wolfi's Makefile passes
+`./keydb`); the KeyDB checkout, submodules included (RocksDB, unused
+without `ENABLE_FLASH`), comes from GitHub.
+
+## RethinkDB
+
+`rethinkdb/rethinkdb.yaml` is wolfi-dev/os's `rethinkdb.yaml` (main at
+`8c473de`, 2026-09-20; the file last changed in `d3dc8df`, the glibc 2.44
+transition, `epoch: 14`) with the allocator switched from Wolfi's jemalloc
+to challoc through `challoc-jemalloc-compat`.
+`bench/results/2026-09-20-phase3-task3-rethinkdb-package.md` has the diff
+against Wolfi's file, the build and every assertion's output.
+
+Ruby's shape, with one twist. RethinkDB's `configure` defaults to
+jemalloc on Linux (`--with-jemalloc`), probes `<jemalloc/jemalloc.h>` for
+`JEMALLOC_VERSION_MAJOR >= 4` and links the library; nothing in the
+server calls jemalloc's API, it is the process's `malloc`. The twist:
+`default_static="tcmalloc jemalloc"`, so configure looks for
+`libjemalloc.a` (`check_static_lib`) and links it in, which is how Wolfi's
+`rethinkdb` carries jemalloc 5.3.1 today, with no `DT_NEEDED` for it.
+The compat package ships no static library (the Phase 1 task 6 decision
+holds for the system packages), so `--dynamic jemalloc` turns the probe
+into `check_dyn_lib` (`-ljemalloc` against the compat header) and the
+binary records `libjemalloc.so.2`, which is what the swap needs anyway:
+a static link would have frozen one allocator build into the package.
+
+| where | Wolfi | here | why |
+|---|---|---|---|
+| `epoch` | 14 | 15 | the allocator switch is a rebuild of the same version |
+| `dependencies.runtime` | (none; jemalloc was static) | `challoc-jemalloc-compat` | the binary now depends on `so:libjemalloc.so.2`; named explicitly for the same reason as Ruby's |
+| `environment.contents.packages` | `jemalloc-dev` | `challoc-jemalloc-compat-dev`, plus `binutils` | the same file set, challoc underneath; `readelf` for the check step |
+| configure | `--prefix --sysconfdir --fetch protoc` | plus `--with-jemalloc --dynamic jemalloc`; `config.mk` checked for `ALLOCATOR` = jemalloc and `STATIC_MALLOC` off; the header for `JEMALLOC_CHALLOC` | see above |
+| after `autoconf/make` | - | a check step | the built `rethinkdb` has `NEEDED libjemalloc.so.2` and no statically linked jemalloc (`nm` has no `arena_init`); the environment's library exports `challoc_version`; `--version` runs |
+| `test.environment` | (none) | `apk-tools`, `binutils` | |
+| `test.pipeline` | `ldd-check`, `--version`/`--help`, `test/daemon-check-output` | plus "RethinkDB runs on challoc" | below; Wolfi's steps stay |
+
+### Package test
+
+| check | how |
+|---|---|
+| Wolfi's | `ldd-check`; `--version`, `--help`; `daemon-check-output` (`Loading data from directory`, `Listening for intracluster connections`, `Listening for client driver connections`) |
+| linked against the compat library | `readelf -d /usr/bin/rethinkdb` has `NEEDED [libjemalloc.so.2]`; `ldd` resolves it to `/usr/lib/libjemalloc.so.2`; `apk info --who-owns` names `challoc-jemalloc-compat`; `libjemalloc2` is not installed; the library exports `challoc_version` |
+| a running server maps exactly that file | started with `--daemon --pid-file --log-file`; `/proc/<pid>/maps` filtered for `libjemalloc` = `/usr/lib/libjemalloc.so.2` |
+| clean shutdown | `SIGTERM`; the process is gone within 30 s; the log says it shut down and has no `challoc:` message or crash |
+
+RethinkDB has no allocator statistics command (no `MEMORY`-style
+introspection; the `rethinkdb.stats` system table has no allocator
+figures), so the package test proves the library by the loader's maps
+and the package database, as Ruby's does. The table create / insert /
+read smoke test needs a client driver, which Wolfi does not package; the
+results file has it by hand (the PyPI `rethinkdb` driver in the clean
+container).
+
+### Building and testing locally
+
+Same as KeyDB's recipe with `contrib/wolfi/rethinkdb/rethinkdb.yaml` and
+`--source-dir /work/contrib/wolfi/rethinkdb` (no patches; any directory).
+The RethinkDB checkout comes from GitHub and configure fetches and builds
+its own `protoc` (`--fetch protoc`, Wolfi's choice); the build is the long
+one of the three (the results file has the timing).
