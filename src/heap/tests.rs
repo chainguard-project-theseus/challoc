@@ -551,6 +551,58 @@ fn double_free_scan_compares_the_top_four_entries() {
     }
 }
 
+/// The fast paths carry no call (plan Phase 2.5 task 4c's budget, the
+/// sized-path lane 2026-09-21): a `double_free_scan` hit makes
+/// `push_fast` decline (`false`, nothing stored) instead of aborting from
+/// the inlined body, and the slow path that a decline reaches
+/// (`Heap::free`) aborts by name; a due scheduled pop makes `pop_fast`
+/// decline (`None`, `allocs` not counted) and `Heap::alloc` serves it.
+#[test]
+fn fast_paths_decline_the_scan_hit_and_the_scheduled_pop() {
+    let s = shared_with(Config { narenas: 1, double_free_scan: true, ..Config::DEFAULT });
+    let t = TestHeap::new(s);
+    let c = class_with(64);
+    let flags = s.push_flags();
+    assert!(flags & PUSH_SCAN != 0);
+    let p = t.alloc(c);
+    let q = t.alloc(c);
+    t.free(p);
+    let len = t.cache(c).len();
+    // The fast push of `p` again: a hit among the top entries, declined.
+    assert!(!t.heap().push_fast(c, p, flags), "a scan hit declines the fast push");
+    assert_eq!(t.cache(c).len(), len, "nothing was stored");
+    // A slot that is not cached pushes as before.
+    assert!(t.heap().push_fast(c, q, flags));
+    assert_eq!(t.cache(c).len(), len + 1);
+    // The slow path a decline reaches aborts with the scan's message.
+    let m = panic_message(
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| t.free(p))).expect_err("the slow path let the double free through"),
+    );
+    assert!(m.contains(&std::format!("double free of {:#x}: the slot is already in the thread cache", p as usize)), "{m}");
+    assert_eq!(t.cache(c).len(), len + 1, "the abort came before any store");
+
+    // The scheduled pop: force the schedule due and pop through the fast
+    // path alone, then through `alloc`.
+    let s = shared();
+    let t = TestHeap::new(s);
+    let c = class_with(64);
+    let flags = s.push_flags();
+    let a = t.alloc(c);
+    t.free(a);
+    let k = t.heap().cache(c).unwrap() as *const CacheHeader as *mut CacheHeader;
+    // SAFETY: the test owns the heap; `allocs + 1` lands on the mask.
+    unsafe { (*k).allocs = (*k).compact_mask as u64 };
+    let allocs = unsafe { (*k).allocs };
+    let len = t.cache(c).len();
+    assert!(t.heap().pop_fast(c, flags).is_none(), "a due schedule declines the fast pop");
+    assert_eq!((unsafe { (*k).allocs }, t.cache(c).len()), (allocs, len), "nothing counted, nothing popped");
+    let b = t.alloc(c);
+    assert!(!b.is_null());
+    assert_eq!(unsafe { (*k).allocs }, allocs.wrapping_add(1), "the slow path counted the one pop");
+    assert_eq!(t.cache(c).len(), len - 1);
+    t.free(b);
+}
+
 #[test]
 fn double_free_scan_off_by_default_leaves_the_push_alone() {
     let s = shared();

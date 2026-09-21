@@ -908,6 +908,14 @@ impl Heap {
     /// [`Heap::alloc_fast`] with the zero flag: the one body of the home
     /// cache's "load `len`, zero means slow, else pop", shared by `malloc`
     /// (`alloc_fast`) and `calloc` ([`Heap::alloc_zeroed`]).
+    ///
+    /// The scheduled pop (design 6.4, every `compact_mask + 1` pops) is
+    /// declined here (`None`, `allocs` not yet counted) and served by
+    /// [`Heap::alloc_slow`], the one place every caller's `None` lands:
+    /// `pop_compact` was the one call inside the inlined pop, and a call in
+    /// the body costs `malloc` a frame it needs for nothing else (plan
+    /// Phase 2.5 task 4c's budget; the same move as the scan's
+    /// `cached_twice` in [`Heap::push_cache`]).
     #[inline(always)]
     pub(super) fn pop_fast(&mut self, class: usize, flags: u8) -> Option<(*mut u8, bool)> {
         let cache = self.cache_ptr(class);
@@ -918,7 +926,12 @@ impl Heap {
             if len == 0 {
                 return None;
             }
-            Some(self.pop(cache, class, len, flags & PUSH_PAC != 0))
+            let allocs = (*cache).allocs.wrapping_add(1);
+            if ((allocs as u32) & (*cache).compact_mask) == 0 {
+                return None;
+            }
+            (*cache).allocs = allocs;
+            Some(Self::pop_top(cache, len, flags & PUSH_PAC != 0))
         }
     }
 
@@ -1358,12 +1371,43 @@ impl Heap {
         unsafe { Self::push_cache(cache, p, flags & PUSH_SCAN != 0, flags & PUSH_PAC != 0) }
     }
 
+    /// `double_free_scan`'s compare (design 6.3 step 3): whether `e`, the
+    /// entry as it would be stored (signed under `pac`), is one of the top
+    /// four of the `len` entries in `slots`. Shared by the fast push, which
+    /// declines on a hit, and by [`Heap::free_slow_in`], which aborts on
+    /// one; no call in the body.
+    ///
+    /// # Safety
+    /// `slots` has `len` entries.
+    #[inline(always)]
+    unsafe fn cached_recently(slots: *mut *mut u8, len: u32, e: *mut u8) -> bool {
+        if len == 0 {
+            return false;
+        }
+        // SAFETY: guaranteed by the caller.
+        unsafe {
+            let top = slots.add(len as usize);
+            if len >= 4 {
+                (*top.sub(1) == e) | (*top.sub(2) == e) | (*top.sub(3) == e) | (*top.sub(4) == e)
+            } else {
+                (1..=len as usize).any(|i| *top.sub(i) == e)
+            }
+        }
+    }
+
     /// Push onto `cache` unless it is full. With `scan`, compare `p`
     /// against the top four entries first (design 6.3 step 3): a match is
     /// a double free whose first copy is still
-    /// cached, which the bit test cannot see, and it aborts before the
-    /// second copy is stored. Four unconditional compares from the line
-    /// the push writes to; a cache holding fewer than four takes the loop.
+    /// cached, which the bit test cannot see, and the push declines
+    /// (`false`) without storing the second copy; the caller's slow path
+    /// ([`Heap::free_slow_in`]) repeats the compare and aborts by name. Not
+    /// an abort from here: `cached_twice` was the one call inside the
+    /// inlined push, and a call in the body costs every `free` and
+    /// `sdallocx` a frame (the sized path's instruction budget, plan
+    /// Phase 2.5 task 4c: 7 instructions per call on x86_64, the
+    /// `stp`/`ldp` pair on aarch64). Four unconditional compares from the
+    /// line the push writes to; a cache holding fewer than four takes the
+    /// loop.
     ///
     /// With `pac` the entry is stored signed with the stack's base address
     /// as the modifier (`pacda`, [`PUSH_PAC`]); the scan compares signed
@@ -1382,16 +1426,8 @@ impl Heap {
             }
             let slots = (*cache).slots();
             let e = if pac { pac::sign(p as usize, slots as usize) as *mut u8 } else { p };
-            if scan && len != 0 {
-                let top = slots.add(len as usize);
-                let hit = if len >= 4 {
-                    (*top.sub(1) == e) | (*top.sub(2) == e) | (*top.sub(3) == e) | (*top.sub(4) == e)
-                } else {
-                    (1..=len as usize).any(|i| *top.sub(i) == e)
-                };
-                if hit {
-                    cached_twice(p);
-                }
+            if scan && Self::cached_recently(slots, len, e) {
+                return false;
             }
             *slots.add(len as usize) = e;
             (*cache).len = len + 1;
@@ -1453,6 +1489,20 @@ impl Heap {
             // first; kept so no path can install a home cache on a heap
             // in the mode.
             return self.percpu_alloc_slow(shared, class);
+        }
+        // A non-empty home cache means `pop_fast` declined the scheduled
+        // pop (design 6.4) rather than found the cache empty: count the
+        // pop it declined and serve it here, out of the fast path's body.
+        let cache = self.cache_ptr(class);
+        // SAFETY: this thread's own header, unused or with `len` entries.
+        unsafe {
+            let len = (*cache).len;
+            if len != 0 {
+                let allocs = (*cache).allocs.wrapping_add(1);
+                debug_assert!(((allocs as u32) & (*cache).compact_mask) == 0);
+                (*cache).allocs = allocs;
+                return self.pop_compact(cache, class, len);
+            }
         }
         self.alloc_slow_in(shared, self.arena, class)
     }
@@ -1544,20 +1594,35 @@ impl Heap {
             // SAFETY: `p` is a slot start of `class` (the caller's check).
             unsafe { zero_slot(class, p) };
         }
-        self.tick(shared);
         let cache = self.ensure_cache(shared, arena, class);
         if cache.is_null() {
+            self.tick(shared);
             shared.free_direct(arena, class, p);
             self.count_direct_free(class);
             return;
         }
         // SAFETY: `cache` is this heap's real cache for `(arena, class)`.
         unsafe {
+            // `double_free_scan`: the fast push declined on a hit among the
+            // top four (or the cache was full, or `zero_on_free` sent every
+            // push here); repeat the compare before anything can move an
+            // entry (the tick's GC or the flush release the highest
+            // addresses, the first copy possibly among them) and abort by
+            // name, as the push did when the call was inline.
+            if shared.double_free_scan() {
+                let slots = (*cache).slots();
+                let e = if shared.pac() { pac::sign(p as usize, slots as usize) as *mut u8 } else { p };
+                if Self::cached_recently(slots, (*cache).len, e) {
+                    cached_twice(p);
+                }
+            }
+            self.tick(shared);
             if (*cache).len == (*cache).cap {
                 let half = ((*cache).cap / 2).max(1);
                 self.flush(shared, arena, cache, class, half as usize);
             }
-            if !Self::push_cache(cache, p, shared.double_free_scan(), shared.pac()) {
+            // The scan ran above; a flush only removes entries.
+            if !Self::push_cache(cache, p, false, shared.pac()) {
                 unreachable!("heap: cache still full after a flush");
             }
         }
@@ -2102,6 +2167,9 @@ unsafe fn zero_slot(class: usize, p: *mut u8) {
 
 /// `double_free_scan`: the slot being pushed is one of the top four cache
 /// entries, so it was freed a moment ago and never handed out since.
+/// Called from the slow path only ([`Heap::free_slow_in`]): the fast push
+/// declines instead of calling, so the entry points that inline it keep no
+/// frame for this call.
 #[cold]
 #[inline(never)]
 fn cached_twice(p: *mut u8) -> ! {
