@@ -124,7 +124,7 @@ run_ruby() { a=$1; shift; env SOAK_TRIM=$TRIM $(ruby_env "$a") "$INST/bin/ruby" 
 echo "== ruby: $(run_ruby challoc -v)"
 for a in $ALLOCS; do
   mapped=$(run_ruby "$a" -e 'puts File.readlines("/proc/self/maps").grep(%r{/libjemalloc[^/ ]*\.so}).map { |l| l.split[5] }.uniq.sort.join(" ")')
-  case $a in challoc*) want=$STAGE_LIB/libjemalloc.so.2;; jemalloc*) want=$JEMALLOC_LIB;; esac
+  case $a in jemalloc*) want=$JEMALLOC_LIB;; *) want=$STAGE_LIB/libjemalloc.so.2;; esac
   [ "$mapped" = "$want" ] || die "$a: ruby maps '$mapped', expected '$want'"
   echo "   $a: maps $mapped"
 done
