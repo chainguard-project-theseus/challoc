@@ -175,4 +175,14 @@ either setting.
 
 ## 7. Comparison and the trade
 
-PENDING (the aarch64 file has the joint reading).
+The two architectures agree on every row; the joint reading and the
+recommendation (leave `tcache_compact_shift` at 3; the switch buys
+1..3% of a Valkey server's delete phase and costs 18% of its
+post-delete RSS and the criterion) are section 7 of
+`2026-09-21-aarch64-policy-cost-compact.md`. This VM's own numbers for
+it: the schedule costs nothing when not engaged (larson 244.0 / 244.1
+instructions per operation, the `ab` rows within 2%), 9% of the model's
+delete-phase allocator throughput when engaged (34.2 -> 37.6 M ops/s,
+24 instructions and 10 cycles per operation over the run) for 194 MiB
+less RSS after that phase (161 against 355 MiB), and nothing under Ruby
+(RSS within 0.5%, `c_on` 0).

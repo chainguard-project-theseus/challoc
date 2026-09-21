@@ -272,8 +272,89 @@ Reading:
 
 ## 6. Ruby soak (600 s, 16 threads): `default` vs `compact0`
 
-PENDING.
+`bench/ruby-soak.sh` (Ruby 3.4.10 `--with-jemalloc` on the compat
+library staged from the tree, sha256 of the stage checked per run;
+`bench/ruby/soak.rb`, 16 threads, seed 4141, full GC every 30 s,
+`GC.compact` at 300 s), one process per allocator in sequence on the
+idle VM (load 1.00: the GVL). `default` and jemalloc from one
+invocation (`2026-09-21-aarch64-policy-cost-ruby-soak-default.md`),
+`compact0` from one with `CHALLOC_CONF=tcache_compact_shift:0`
+(`...-ruby-soak-compact0.md`); reports beside them as
+`-challoc-mstats.txt` / `-jemalloc-mstats.txt`.
+
+| measure (MiB) | default | compact0 | jemalloc | compact0 vs default |
+|---|---:|---:|---:|---:|
+| peak sampled VmRSS | 402.1 | 402.3 | 203.3 | +0.0% |
+| VmHWM at the end | 401.9 | 403.5 | 207.8 | +0.4% |
+| at t=60 | 286.7 | 286.0 | 97.0 | -0.2% |
+| at t=295 (before GC.compact) | 313.1 | 312.1 | 130.6 | -0.3% |
+| at t=300 (after GC.compact) | 321.7 | 324.0 | 132.7 | +0.7% |
+| at t=600 | 397.2 | 389.0 | 171.6 | -2.1% |
+| lowest right after a periodic full GC | 280.8 | 280.3 | 93.5 | -0.2% |
+| allocator: allocated / active / resident / retained, final | 100.0 / 210.9 / 403.4 / 68.4 | 97.4 / 202.4 / 392.4 / 80.3 | 90.6 / 139.7 / 179.6 / 118.7 | |
+| jobs (600 s) | 137915 | 137779 | 138799 | -0.1% |
+| GC count (major) | 16624 (158) | 16418 (151) | 16665 (154) | |
+
+Per class over the 17 arenas (1280..4096 B, `mstats-classes.sh`):
+`default` 43.6% occupancy, 150.4 MiB of slabs for 65.5 MiB live, `c_on`
+0 everywhere, `gated` 208..1124 per class; `compact0` 44.1%, 146.2 MiB
+for 64.4 MiB live, `c_on` 0, `gated` 0. As on x86_64 (and as
+`2026-09-19-aarch64-ruby-soak.md` found), the schedule never engages
+under Ruby: every probe of a fragmented class is declined by the
+refill-rate gate. Turning it off changes nothing: RSS within 2% at
+every sample (the -2.1% at t=600 is inside this soak's run-to-run
+spread; `slab32` and `compact0` of the geometry file, two unrelated
+runs of the same library shape, land 391 and 389 against the default's
+397), the same job count. The Ruby gap to jemalloc (+131% at t=600) is
+the 17-arena inventory, untouched by either setting.
 
 ## 7. Comparison and the trade
 
-PENDING.
+The two architectures agree on every row, so this reads both files.
+
+What turning the compacting cache off (`tcache_compact_shift:0`) buys:
+
+- On the hot path when the schedule is not engaged: nothing. larson's
+  instruction count is identical to a tenth (264.5 / 264.5 aarch64,
+  244.0 / 244.1 x86_64), the six mimalloc-bench rows of the 5-round
+  `ab` are within 1% with interleaved lists on both VMs, the model's
+  write phase (a full heap, LIFO churn, the probe answers `Dense`) is
+  equal. The mode-word test in `pop` costs nothing measurable.
+- Where the schedule is engaged (a class with holes that refills are
+  not draining: the delete phase of the model, of the Valkey soak, of
+  the churn probe): in the model 18% of the delete-phase allocator
+  throughput on aarch64 (20.4 -> 24.8 M ops/s through `sdallocx`, 10%
+  through `free`) and 9% on x86_64 (34.2 -> 37.6), i.e. 40 / 24 fewer
+  instructions and 33 / 10 fewer cycles per operation over the whole
+  model run; in the Valkey server 1.5..2.9% of the delete-phase req/s
+  and 2..4.5% of its delete-phase p99 (one soak each, inside the
+  soak's 1..3% spread but consistent in sign across the four rows),
+  nothing in the write phase.
+- Under Ruby: nothing, because the schedule never engages there
+  (`c_on` 0, every probe gated), on either architecture.
+
+What it costs:
+
+- The churn probe stops compacting: 6801 -> 6801 slabs at 49% for the
+  whole run instead of 6801 -> 3462 at 97% in 8 s, on both VMs (the
+  quick tier's NO-GO row).
+- In the model, 220 MiB of RSS after a 5 s delete phase (187 -> 408
+  MiB aarch64, 161 -> 355 x86_64, for 98 MiB live).
+- In the Valkey soak, 23 MiB and the post-delete criterion: 130.3 MiB
+  after settle with the schedule (+1.4% over jemalloc's 128.5) against
+  153.1 without (+19% over jemalloc; the criterion is +10%),
+  `allocator_frag_ratio` 1.81 -> 2.18, the 512..1024 classes at 57% ->
+  47% occupancy (34 -> 53 MiB pinned). Valkey's own defragmenter ran
+  15% more moves without the schedule (264k against 230k hits, the
+  same 2.4 s of total defrag time) and left that residue, because its
+  stop rule is met before a class of 4..25-slot slabs is dense.
+
+The trade, as a sentence: turning the compaction off buys 1..3% of a
+Valkey server's delete-phase throughput and p99 (a fifth of the
+allocator's own time in that phase, nothing elsewhere) and costs 18% of
+its post-delete RSS, the criterion with it. Recommendation: leave
+`tcache_compact_shift` at 3. If the delete-phase price is ever the
+target, the lever is the rate, not the switch: `tcache_compact_shift:4`
+halves the scheduled pops and their rebuild claims (design 6.4's `1 /
+2^k` migration rate) and was not measured here; the per-phase table of
+section 2 is the row to measure it on.

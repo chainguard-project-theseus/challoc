@@ -219,7 +219,119 @@ Valkey criteria (write-phase p99 and RSS) do not move.
 
 ## 5. Ruby soak (600 s, 16 threads): `default`, `slab16`, `slab32`, jemalloc
 
-PENDING.
+`bench/ruby-soak.sh` (Ruby 3.4.10 `--with-jemalloc` on the compat
+library, `bench/ruby/soak.rb`, 16 threads, seed 4141, full GC every
+30 s, `GC.compact` at 300 s), one process per allocator in sequence on
+the idle VM (load 1.00: the GVL). `default` and jemalloc from one
+invocation (`2026-09-21-aarch64-policy-cost-ruby-soak-default.md`),
+`slab16` and `slab32` from one each with `CHALLOC_SRC=.tmp-slab16` /
+`.tmp-slab32` (`...-ruby-soak-slab16.md`, `...-ruby-soak-slab32.md`;
+the stage compiled from the copy each time). Reports beside them as
+`-challoc-mstats.txt`; jemalloc's as `-default-jemalloc-mstats.txt`.
+
+| measure (MiB) | default | slab16 | slab32 | jemalloc | slab16 vs default | slab32 vs default |
+|---|---:|---:|---:|---:|---:|---:|
+| peak sampled VmRSS | 402.1 | 406.3 | 403.1 | 203.3 | +1.0% | +0.2% |
+| VmHWM at the end | 401.9 | 411.3 | 405.3 | 207.8 | +2.3% | +0.8% |
+| at t=60 | 286.7 | 292.8 | 287.5 | 97.0 | +2.1% | +0.3% |
+| at t=295 (before GC.compact) | 313.1 | 314.1 | 311.4 | 130.6 | +0.3% | -0.5% |
+| at t=300 (after GC.compact) | 321.7 | 324.5 | 319.4 | 132.7 | +0.9% | -0.7% |
+| at t=600 | 397.2 | 399.7 | 391.2 | 171.6 | +0.6% | -1.5% |
+| lowest right after a periodic full GC | 280.8 | 286.6 | 282.4 | 93.5 | +2.1% | +0.6% |
+| allocator: allocated / active / resident / retained, final | 100.0 / 210.9 / 403.4 / 68.4 | 97.7 / 176.7 / 402.1 / 79.6 | 98.0 / 188.2 / 393.2 / 83.7 | 90.6 / 139.7 / 179.6 / 118.7 | active -34.2 | active -22.7 |
+| resident - active (Empty slabs + metadata), final | 192.5 | 225.4 | 205.0 | 39.9 | +32.9 | +12.5 |
+| jobs (600 s) | 137915 | 137044 | 137619 | 138799 | -0.6% | -0.2% |
+| GC count (major) | 16624 (158) | 16128 (147) | 16528 (161) | 16665 (154) | | |
+
+The soak samples no CPU time; at a fixed 600 s and load 1.00 the job
+count is the throughput, within 0.6% across the three builds.
+
+Per class over the 17 arenas (`bench/probes/mstats-classes.sh FILE`, the
+final report; `pinned` = slab bytes minus live bytes):
+
+`default` (64 KiB slabs):
+
+| class | nregs | slab KiB | curregs | curslabs | nonfull | occupancy | live MiB | slab MiB | pinned MiB | c_on | gated |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1280 | 51 | 64 | 9527 | 394 | 394 | 47.4% | 11.6 | 24.6 | 13.0 | 0 | 208 |
+| 1536 | 42 | 64 | 9337 | 472 | 468 | 47.1% | 13.7 | 29.5 | 15.8 | 0 | 313 |
+| 1792 | 36 | 64 | 9555 | 563 | 560 | 47.1% | 16.3 | 35.2 | 18.9 | 0 | 447 |
+| 2048 | 32 | 64 | 9620 | 603 | 594 | 49.9% | 18.8 | 37.7 | 18.9 | 0 | 484 |
+| 2560 | 25 | 64 | 386 | 92 | 92 | 16.8% | 0.9 | 5.8 | 4.8 | 0 | 1025 |
+| 3072 | 21 | 64 | 415 | 87 | 87 | 22.7% | 1.2 | 5.4 | 4.2 | 0 | 1124 |
+| 3584 | 18 | 64 | 362 | 89 | 89 | 22.6% | 1.2 | 5.6 | 4.3 | 0 | 650 |
+| 4096 | 16 | 64 | 434 | 106 | 106 | 25.6% | 1.7 | 6.6 | 4.9 | 0 | 537 |
+| total | | | | | | 43.6% | 65.5 | 150.4 | 84.9 | | |
+
+`slab16` (the `slab KiB` and `nregs` columns are the variant's table as
+the report prints it):
+
+| class | nregs | slab KiB | curregs | curslabs | nonfull | occupancy | live MiB | slab MiB | pinned MiB | c_on | gated |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1280 | 12 | 16 | 9424 | 1411 | 1319 | 55.7% | 11.5 | 22.0 | 10.5 | 0 | 65 |
+| 1536 | 10 | 16 | 9296 | 1668 | 1577 | 55.7% | 13.6 | 26.1 | 12.4 | 0 | 92 |
+| 1792 | 9 | 16 | 9507 | 1851 | 1702 | 57.1% | 16.2 | 28.9 | 12.7 | 0 | 129 |
+| 2048 | 8 | 16 | 9489 | 2050 | 1870 | 57.9% | 18.5 | 32.0 | 13.5 | 0 | 168 |
+| 2560 | 6 | 16 | 405 | 163 | 150 | 41.4% | 1.0 | 2.5 | 1.6 | 0 | 15 |
+| 3072 | 5 | 16 | 387 | 159 | 138 | 48.7% | 1.1 | 2.5 | 1.4 | 0 | 11 |
+| 3584 | 4 | 16 | 344 | 172 | 153 | 50.0% | 1.2 | 2.7 | 1.5 | 0 | 4 |
+| 4096 | 4 | 16 | 372 | 184 | 163 | 50.5% | 1.5 | 2.9 | 1.4 | 0 | 7 |
+| total | | | | | | 54.0% | 64.7 | 119.7 | 55.0 | | |
+
+`slab32`:
+
+| class | nregs | slab KiB | curregs | curslabs | nonfull | occupancy | live MiB | slab MiB | pinned MiB | c_on | gated |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1280 | 25 | 32 | 9519 | 733 | 721 | 51.9% | 11.6 | 22.9 | 11.3 | 0 | 132 |
+| 1536 | 21 | 32 | 9293 | 853 | 843 | 51.9% | 13.6 | 26.7 | 13.0 | 0 | 207 |
+| 1792 | 18 | 32 | 9489 | 1007 | 981 | 52.4% | 16.2 | 31.5 | 15.3 | 0 | 285 |
+| 2048 | 16 | 32 | 9507 | 1102 | 1071 | 53.9% | 18.6 | 34.4 | 15.9 | 0 | 310 |
+| 2560 | 12 | 32 | 398 | 134 | 134 | 24.8% | 1.0 | 4.2 | 3.2 | 0 | 415 |
+| 3072 | 10 | 32 | 388 | 113 | 112 | 34.3% | 1.1 | 3.5 | 2.4 | 0 | 407 |
+| 3584 | 9 | 32 | 401 | 129 | 128 | 34.5% | 1.4 | 4.0 | 2.7 | 0 | 242 |
+| 4096 | 8 | 32 | 413 | 145 | 142 | 35.6% | 1.6 | 4.5 | 2.9 | 0 | 164 |
+| total | | | | | | 49.4% | 65.1 | 131.8 | 66.6 | | |
+
+jemalloc's merged bins for the same sizes on this VM (the Wolfi aarch64
+build has `Page size: 65536`, so `pgs` are 64 KiB pages and its slabs
+for these classes are 64..448 KiB, larger than challoc's):
+
+| class | regs | slab KiB | curregs | curslabs | nonfull | util |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1280 | 256 | 320 | 8968 | 52 | 33 | 0.673 |
+| 1536 | 128 | 192 | 8829 | 97 | 71 | 0.711 |
+| 1792 | 256 | 448 | 8935 | 50 | 28 | 0.698 |
+| 2048 | 32 | 64 | 8896 | 349 | 213 | 0.796 |
+| 2560 | 128 | 320 | 203 | 7 | 0 | 0.226 |
+| 3072 | 64 | 192 | 137 | 4 | 1 | 0.535 |
+| 3584 | 128 | 448 | 150 | 5 | 2 | 0.234 |
+| 4096 | 16 | 64 | 40 | 4 | 0 | 0.625 |
+
+Reading (the same as the x86_64 file's, with this VM's numbers):
+
+1. On the slabs the geometry works: the eight classes go from 43.6%
+   occupancy to 54.0% (`slab16`) and 49.4% (`slab32`), pinned bytes
+   from 84.9 MiB to 55.0 (-29.9) and 66.6 (-18.3), `active` down by 34
+   and 23 MiB.
+2. The process gets none of it: RSS at t=600 397 -> 400 -> 391 MiB
+   (+0.6% / -1.5%, the soak's spread), `resident` 403 -> 402 -> 393.
+   The bytes that left `active` are in `resident - active`, up 33 and
+   12 MiB: a 64 KiB slab with one survivor is one pinned partial slab,
+   cut in four it is one partial and three Empty, and the Empty ones
+   sit in their arena's per-class inventory until the next burst or
+   the 10 s decay. With 17 arenas the process's RSS is that inventory
+   (`2026-09-19-aarch64-ruby-soak.md`), and this jemalloc, whose slabs
+   for the same classes are 64..448 KiB and whose util is 0.67..0.80,
+   sits at 172 MiB for the same reason it always did on this shape:
+   its extents are shared across the classes and the threads. Slab
+   size is not the term. Section 5b (the same pair under `narenas:1`)
+   asks whether it becomes one once the inventory is gone.
+3. Throughput: jobs within 0.6%, GC counts within 3%; the refill and
+   flush work of 4..12-slot slabs is invisible at this rate.
+
+### 5b. The same pair under `narenas:1`
+
+PENDING (the two soaks run last on this VM).
 
 ## 6. Comparison and the trade
 
