@@ -2083,30 +2083,44 @@ whole stack out and commits `len = 0`). Capacities follow the thread
 ladder clamped to `MAX_CAP` (the slow paths' buffers are stack arrays of
 that size).
 
-The paths. The `PUSH_PERCPU` bit of `Shared::push_flags`, the byte every
-fast path already loads, sends `malloc`, `calloc`, `free` and the sized
-free by one tail call to their per-CPU wrappers (`api::libc::percpu_malloc`,
-`percpu_free`, `percpu_free_sized`), so the thread paths keep their shape
-byte for byte. The wrapper inlines the whole hit path
-(`Heap::percpu_pop_raw`, `heap::percpu_push_raw`: the heap's `percpu`
-byte, the slot check for a free, the section, the byte count) and tests
-one bit of the section's raw status word (`rseq::pop_raw`/`push_raw`,
-the `POP_*`/`PUSH_*` constants); every miss (a heap off the mode, an
-empty or full cache, a declined pointer, the scheduled pop, an id out of
-range) is one cold tail call that finishes the operation
-(`percpu_*_miss`), so the wrapper has no frame and no call of its own.
-In the mode a pop or push is therefore the entry point's dispatch plus
-the thread-pointer load, the `mm_cid` load, the table index and the
-section; the `free` fast path skips the owner word (a CPU cache takes
-verified slots of every arena, section 6.3's sized path already does the
-same). The first form (a wrapper calling a second function that held the
-section and returned an enum) cost +65..83 instructions per larson
-operation; this one +33..47 (`bench/results/2026-09-19-*-task8-percpu-fastpath.md`). The thread heap stays: it is the init
+The paths (the zero-cost dispatch, lane percpu-dispatch, 2026-09-21).
+The entry points carry nothing for the mode: no flag bit, no test, no
+tail call. A heap in the mode (`Heap::percpu`) never installs a home
+cache (`Heap::ensure_cache` refuses its home arena; an explicit
+`MALLOCX_ARENA` request for that arena is served directly from the
+slab), so every home header stays `CacheHeader::EMPTY`, `len == cap ==
+0`, which is the state section 6.3's two fast paths already treat as
+"slow path": `malloc`'s inlined pop falls through on `len == 0`, `free`'s
+and the sized free's inlined push on `len == cap`, and each takes the
+cold tail call it has anyway (`malloc_slow`, `free_slow`,
+`free_sized_slow`), where `Heap::alloc`, `Heap::alloc_zeroed` and
+`Heap::free` test the heap's `percpu` byte and go to
+`Heap::percpu_alloc` / `Heap::percpu_free` (out of line, not cold: the
+`pop` or `push` section on the running CPU's header, the byte count, the
+refill or flush on a miss). So the thread paths are byte for byte the
+allocator without the mode (the codegen list in
+`bench/results/2026-09-21-*-percpu-dispatch*.md`), and what the mode
+pays is the entry point's wasted header load and the slow path's
+prologue (the init-state load, the second TLS read, `class_of` again or
+the exact `classify_free` in place of the inlined check) before the
+section. In the mode a pop or push is therefore that prologue plus the
+thread-pointer load, the `mm_cid` load, the table index and the section;
+the `free` path skips the owner word (a CPU cache takes verified slots
+of every arena, section 6.3's sized path already does the same). The
+earlier forms: a wrapper calling a second function that held the section
+and returned an enum cost +65..83 instructions per larson operation in
+the mode, the inlined section with cold tail-call misses +33..47
+(`bench/results/2026-09-19-*-task8-percpu-fastpath.md`), and both were
+reached through a `PUSH_PERCPU` bit of `Shared::push_flags` tested by
+the entry points with a tail call, which cost the *default* path +9
+instructions and +1.8% cycles per larson operation on the C4A (three of
+them the dispatch on the hit paths, `bench/results/2026-09-20-aarch64-larson1-drift.md`),
+the reason the dispatch moved. The thread heap stays: it is the init
 witness the fast paths load anyway, it keeps the thread's byte counters
 (every per-CPU pop and push is counted there per operation, so
-`thread.allocated` stays exact), its own caches serve explicit
-`MALLOCX_ARENA` traffic and huge runs as before, and a heap off the mode
-takes the thread paths from inside the per-CPU ones: explicit caches
+`thread.allocated` stays exact), it serves huge runs as before, and a
+heap off the mode takes the thread paths (its home caches are real):
+explicit caches
 (`tcache.create`), `thread.tcache.enabled:false` (served directly), and a
 thread `thread.arena` moved to an explicit arena (its own caches on that
 arena; moving it back to an automatic one returns it to the CPU caches;
@@ -2174,10 +2188,12 @@ bookkeeping, in a called function against an inline two-load pop); on
 the Valkey model +183 / +180 instructions and +68 / +107 cycles, the
 extra being the compact-mode scheduled pop's locked one-slot claim (one
 pop in 8 on a fragmented 500 MiB heap, where the thread run amortises one
-lock over `cap / 4`). The default's own cost (`percpu_arena:off` against
-`old`): +9 instructions and +1.3 / +0.1 cycles per larson operation, the
-`PUSH_PERCPU` test in the entry points; `quick` under the default is GO
-on both VMs. What the mode buys is memory bounded by cores, visible only
+lock over `cap / 4`). The default's own cost under the tail-call
+dispatch (`percpu_arena:off` against `old`): +9 instructions and +1.3 /
++0.1 cycles per larson operation, the `PUSH_PERCPU` test in the entry
+points; `quick` under the default was GO on both VMs, and the cost was
+then removed by the zero-cost dispatch above
+(`bench/results/2026-09-21-*-percpu-dispatch*.md`). What the mode buys is memory bounded by cores, visible only
 with more threads than CPUs (the Ruby idle-thread soak rows in the same
 files: the Sidekiq-shaped `bench/ruby/soak.rb` at 16 / 64 / 256 mostly
 idle threads peaks at 305 / 1649 / 2426 MiB with thread caches on the C4A
