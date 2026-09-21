@@ -166,8 +166,34 @@ section 6's Valkey rows are the workloads where it would.
 
 ## 3. `quick-perf`: per-operation counters (larson1, valkey1), three builds and jemalloc
 
-PENDING (the step ran with a wrong path and is rerun after the soaks;
-the numbers land here).
+`new` is the default build (`target/quick/new`, `4d04e89158b5bcc4`),
+`slab16` and `slab32` the `ab` builds under `target/ab/.tmp-slab16` and
+`.tmp-slab32` (quick-perf's `LABEL@PATH` form; the step ran after the
+soaks, on the idle VM, load 0.21); one run each, whole-run counters.
+
+| row | variant | M ops/s | cycles/op | instr/op | L1D miss/op | dTLB miss/op |
+|---|---|---:|---:|---:|---:|---:|
+| larson1 | default | 41.64 | 71.9 | 264.5 | 2.101 | 3.993 |
+| larson1 | slab16 | 41.65 | 71.9 | 264.5 | 2.102 | 4.015 |
+| larson1 | slab32 | 41.55 | 72.1 | 264.5 | 2.098 | 3.981 |
+| larson1 | jemalloc | 44.87 | 66.4 | 224.8 | 2.065 | 1.694 |
+| valkey1 | default | 12.95 | 234.2 | 247.5 | 3.096 | 2.820 |
+| valkey1 | slab16 | 13.64 | 222.3 | 244.9 | 3.082 | 2.804 |
+| valkey1 | slab32 | 13.00 | 233.3 | 246.6 | 3.094 | 2.749 |
+| valkey1 | jemalloc | 14.34 | 211.0 | 170.9 | 2.988 | 2.690 |
+
+Per phase of the model: write 7.16 / 7.48 / 7.08 M ops/s (default /
+slab16 / slab32), delete 18.74 / 19.80 / 18.92, RSS after the delete
+phase 203.9 / 196.1 / 199.5 MiB (jemalloc 7.43, 21.24, 599.6).
+
+Reading: larson's instruction count is identical to a tenth across the
+three builds (264.5), the model's within 1% (247.5 / 244.9 / 246.6, the
+spread of one run: this run's default is 3.5 instructions above the
+compact file's 244.0 for the same binary); the geometry is a table
+entry and neither program allocates in the changed classes, so the
+fast paths execute the same instructions. The cycle differences
+(222..234 on the model) are one run's noise on a row whose 5-round
+`ab` lists overlap (section 2). No per-operation cost to record.
 
 ## 4. Valkey soak (20 min load + 60 s settle): `default` vs `slab16`
 
@@ -180,7 +206,8 @@ tree built with `--features quantum8` (sha256 `593c65f724480f17`;
 the default quantum8 build is `ddfc69c202484485`) and preloaded under
 the `libchalloc.so.0` soname in front of the server binary's RUNPATH;
 the script checked that `/proc/<pid>/maps` shows the variant and
-recorded it. Raw files in `target/valkey/pc-slab16/` on the VM.
+recorded it. Files: `2026-09-21-aarch64-policy-cost-valkey-soak-slab16.md`,
+`...-valkey-soak-slab16-challoc.csv`, `...-valkey-soak-slab16-challoc-mstats-t1281.txt`.
 
 | measure | default | slab16 | jemalloc | slab16 vs default |
 |---|---:|---:|---:|---:|
@@ -329,10 +356,93 @@ Reading (the same as the x86_64 file's, with this VM's numbers):
 3. Throughput: jobs within 0.6%, GC counts within 3%; the refill and
    flush work of 4..12-slot slabs is invisible at this rate.
 
-### 5b. The same pair under `narenas:1`
+### 5b. The same pair under `narenas:1` (is geometry a lever once the arena inventory is gone?)
 
-PENDING (the two soaks run last on this VM).
+Two more soaks, `ALLOCS=challoc-1arena` (`MALLOC_CONF=narenas:1`, the
+diagnostic of `2026-09-19-aarch64-ruby-soak.md` and the lever lane
+`ruby-rss` works on), `default` build and `slab16` build
+(`...-ruby-soak-1arena.md`, `...-ruby-soak-slab16-1arena.md`). These
+two ran last, after the VM's synced `.git` had lost its pack to a
+stalled transfer; the tree was re-initialised as one local commit of
+the same files (checksums of the harness scripts checked against the
+worktree) and the headers carry `COMMIT=3b0ac63` explicitly.
+
+| measure (MiB) | default, narenas:1 | slab16, narenas:1 | slab16 vs default | (jemalloc, 17 arenas, from above) |
+|---|---:|---:|---:|---:|
+| peak sampled VmRSS | 172.0 | 175.7 | +2.2% | 203.3 |
+| at t=60 | 41.5 | 42.4 | +2.2% | 97.0 |
+| at t=300 (after GC.compact) | 87.8 | 85.3 | -2.8% | 132.7 |
+| at t=600 | 172.0 | 175.7 | +2.2% | 171.6 |
+| lowest right after a periodic full GC | 38.3 | 38.0 | -0.8% | 93.5 |
+| allocator: allocated / active / resident / retained, final | 88.9 / 112.6 / 171.6 / 18.4 | 88.4 / 109.8 / 176.3 / 18.7 | active -2.8, resident +4.7 | 90.6 / 139.7 / 179.6 / 118.7 |
+| resident - active, final | 59.0 | 66.5 | +7.5 | 39.9 |
+| 1280..4096 B: occupancy, live / slab / pinned MiB | 81.8%, 56.6 / 69.2 / 12.6 | 84.5%, 56.2 / 66.5 / 10.3 | pinned -2.3 | util 0.67..0.80 (1280..2048) |
+| jobs (600 s) | 138905 | 138094 | -0.6% | 138799 |
+
+Per class with one arena, `default`: 1280 B 81.7% (213 slabs), 1536
+83.7% (248), 1792 84.2% (293), 2048 84.4% (330), the burst classes
+under 0.5 MiB each; `slab16`: 86.7% (847 slabs of 12), 87.1% (994),
+87.7% (1119), 87.7% (1263). The x86_64 pair (`2026-09-21-x86_64-...`,
+section 5b) reads the same: 82.2% -> 84.0%, pinned 13.6 -> 11.9 MiB,
+RSS at t=600 172.8 -> 191.6.
+
+Reading: once every thread's frees refill every thread's cache from the
+same slabs, the eight classes are already at 82% in 64 KiB slabs,
+jemalloc's own range, and 16 KiB slabs add 3 points and 2.3 MiB; the
+Empty inventory grows by 7.5 MiB and RSS at t=600 by 2.2% (x86_64: +21
+MiB and +11%). With one arena challoc is at jemalloc's RSS on both
+architectures (172.0 against 171.6 here) with either geometry. On this
+shape the geometry is not a second lever beside the arena count: the
+arena count is the whole Ruby gap (397 -> 172 MiB), and on top of it
+the smaller slabs give back 2 MiB of pinned bytes and cost 5..19 MiB
+of dirty ones.
 
 ## 6. Comparison and the trade
 
-PENDING.
+Both architectures agree on every row, so this reads both files.
+
+What 16 KiB slabs for the 1280..4096-byte classes (`slab16`; `slab32`
+is the same picture at half strength) buy:
+
+- Under Ruby with the default arena policy: 10 points of occupancy in
+  those classes (43.6% -> 54.0% aarch64, 46.2% -> 55.3% x86_64), 25..30
+  MiB less pinned in partial slabs, `active` down by the same, and no
+  RSS: 397 -> 400 MiB at t=600 here, 414 -> 419 on x86_64. The bytes
+  move from partial slabs into the arenas' Empty-slab inventory
+  (`resident - active` up 29..33 MiB), because with 17 arenas the
+  process's RSS is that inventory, not the slab geometry.
+- Under Ruby with `narenas:1`, the lever that does close the gap (397
+  -> 172 MiB, jemalloc's 172): 2 MiB less pinned, 5..21 MiB more Empty,
+  RSS +2% (aarch64) and +11% (x86_64). Redundant with the arena lever
+  at best.
+- Under Valkey: nothing (RSS after settle +0.6%, peak +0.3%, the write
+  and delete rows inside the run-to-run spread); the soak's values do
+  not live in these classes.
+
+What they cost:
+
+- On the fast tier: nothing measurable. `quick` GO on both VMs for both
+  variants, the 5-round `ab` within 2% on every row with interleaved
+  lists, `larson1`/`valkey1` instructions per operation identical
+  (264.5 / 264.5 / 264.5; 247.5 / 244.9 / 246.6). Ruby's job count and
+  Valkey's throughput unchanged. The classes are a table entry and
+  these programs do not allocate there.
+- In the geometry itself: five of the eight classes waste 6.3..12.5% of
+  every 16 KiB slab (1280, 1536, 2560, 3072 at 1024 B, 3584 at 2048 B)
+  against 0.4..2.3% today, four times the descriptors, and a class of
+  4..12 slots per slab whose refill and flush batches span more slabs
+  (`2026-09-17-*-gce-slab-geometry.md` priced that at 1..2.5% of larson
+  for the 512..1024 classes, whose sizes larson does allocate; nothing
+  here allocates these).
+
+The trade, as a sentence: 16 KiB slabs for 1280..4096 B buy 25..30 MiB
+of slab occupancy that the Ruby process never sees as RSS (and 2 MiB
+once the arena count is fixed), and cost slab waste and descriptor
+bytes with no throughput price. Recommendation: do not change the
+geometry. The Ruby RSS term is the per-thread arena inventory, which
+the `ruby-rss` lane's arena policy addresses; geometry is not an
+independent second lever on this shape, and the Valkey criteria it was
+tuned for do not move either way. If the pinned bytes of these classes
+ever show again after the arena policy lands (with one arena they are
+12..14 MiB of a 172 MiB process, 7%), the row to measure is 5b's, not
+the 17-arena one.

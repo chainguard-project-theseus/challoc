@@ -190,10 +190,12 @@ first, then the unpatched tag on its bundled jemalloc 5.3.0), then
 `ALLOCS=challoc CHALLOC_CONF=tcache_compact_shift:0`. The challoc server
 mapped `target/valkey/challoc/release/libchalloc.so` (sha256
 `ddfc69c202484485`, the quantum8 build of the same tree) in both runs;
-the load generators are the same binaries throughout. Raw files:
-`target/valkey/pc-{default,compact0}/` on the VM (summaries, 10 s
-samples, the per-20 s stats prints, the servers' final `INFO`); the two
-summaries' tables are reproduced here.
+the load generators are the same binaries throughout. Files: the two
+summaries `2026-09-21-aarch64-policy-cost-valkey-soak-{default,compact0}.md`,
+the 10 s samples `...-valkey-soak-{default,compact0}-challoc.csv` and
+`...-valkey-soak-default-jemalloc.csv`, and the last stats print of
+each server, `...-challoc-mstats-t1281.txt` / `...-jemalloc-mstats-t1261.txt`
+(the per-20 s prints and the servers' final `INFO` stayed on the VM).
 
 | measure | default | compact0 | jemalloc | compact0 vs default | default vs jemalloc |
 |---|---:|---:|---:|---:|---:|

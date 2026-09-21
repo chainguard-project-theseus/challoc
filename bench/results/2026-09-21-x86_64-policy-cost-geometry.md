@@ -299,4 +299,13 @@ of dirty ones.
 
 ## 6. Comparison and the trade
 
-PENDING (the aarch64 file has the joint reading).
+Both architectures agree on every row; the joint reading and the
+recommendation (do not change the geometry: the change buys slab
+occupancy the Ruby process never sees as RSS, is redundant with the
+arena lever, and leaves Valkey untouched) are section 6 of
+`2026-09-21-aarch64-policy-cost-geometry.md`. This VM's own numbers for
+it: no cost on the fast tier (`quick` GO for both variants, `ab` within
+2%, instructions per operation identical), 10 points of occupancy and
+25.5 MiB less pinned in the eight classes under Ruby for +1.2% RSS
+(414 -> 419 MiB at t=600; `resident - active` +29 MiB), and under
+`narenas:1` 1.7 MiB less pinned for +11% RSS (173 -> 192 MiB).
