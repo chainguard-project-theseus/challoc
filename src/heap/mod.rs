@@ -511,10 +511,13 @@ impl ThreadStats {
 /// `free` of another arena's slot pushes onto (design 6.3 step 4), kept
 /// on a singly linked list with the same shape as the home caches
 /// (headers inline). The `FOREIGN` node is flush-only: nothing pops from
-/// it, its flush routes each run of slabs to the slab's arena
-/// (`Shared::release_routed`), and there is one per thread, so a thread
-/// that frees other threads' memory holds at most one cache's worth per
-/// class of it, as jemalloc's tcache does. Until 2026-09-21 such a free
+/// it, its capacity is half the ladder and it is released whole when
+/// full (the same batch as a home cache's half flush, a quarter of the
+/// ladder held on average), its flush routes each run of slabs to the
+/// slab's arena (`Shared::release_routed`), and there is one per thread,
+/// so a thread that frees other threads' memory holds at most half a
+/// cache's worth per class of it, less than jemalloc's tcache. Until
+/// 2026-09-21 such a free
 /// went onto a node per arena, one the default path never pops from, and
 /// a 16-thread Ruby process whose GC sweep frees every thread's garbage
 /// from whichever thread runs it held ~200 MiB of dead slots in 16 x 16
@@ -1595,8 +1598,10 @@ impl Heap {
         // SAFETY: `cache` is this heap's real cache for `(arena, class)`.
         unsafe {
             if (*cache).len == (*cache).cap {
-                let half = ((*cache).cap / 2).max(1);
-                self.flush(shared, arena, cache, class, half as usize);
+                // A home cache keeps its lowest half (design 6.4); the
+                // FOREIGN cache, popped by nothing, releases everything.
+                let n = if arena == FOREIGN { (*cache).cap } else { ((*cache).cap / 2).max(1) };
+                self.flush(shared, arena, cache, class, n as usize);
             }
             if !Self::push_cache(cache, p, shared.double_free_scan(), shared.pac()) {
                 unreachable!("heap: cache still full after a flush");
@@ -1695,6 +1700,12 @@ impl Heap {
         if cap == 0 || !self.tcache_enabled {
             return ptr::null_mut();
         }
+        // The FOREIGN cache is never popped, so its capacity only sets
+        // the release batch: half the ladder, released whole when full
+        // (`free_slow_in`), is the same batch as a home cache's half
+        // flush for a residue that averages a quarter of the ladder
+        // instead of three quarters (design 6.3 step 4).
+        let cap = if arena == FOREIGN { (cap / 2).max(MIN_CAP) } else { cap };
         // The arena before the node: `arena` came from an owner word on
         // the free path, and a word naming an arena that was never built
         // aborts here (`Shared::owner`) before a node is created for it.
@@ -1991,7 +2002,13 @@ impl Heap {
                     continue;
                 }
                 let lw = (*cache).low_water as usize;
-                if lw > 0 {
+                if arena == FOREIGN {
+                    // Never popped: everything it holds went unused.
+                    let len = (*cache).len as usize;
+                    if len > 0 {
+                        self.flush(shared, arena, cache, class, len);
+                    }
+                } else if lw > 0 {
                     self.flush(shared, arena, cache, class, lw - lw / 4);
                 }
                 (*cache).low_water = (*cache).len;

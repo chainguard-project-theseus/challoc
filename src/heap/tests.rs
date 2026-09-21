@@ -1833,6 +1833,7 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     h.free(s, p1);
     h.free(s, p2);
     assert_eq!(h.cache_in(FOREIGN, c).unwrap().len(), 2);
+    assert_eq!(h.cache_in(FOREIGN, c).unwrap().cap(), HALF, "half the ladder");
     assert_eq!(h.cache_in(a1, c).unwrap().len(), HALF - 1);
     assert_eq!(h.cache_in(a2, c).unwrap().len(), HALF - 1);
     assert!(!h.cache_in(FOREIGN, c).unwrap().compacting());

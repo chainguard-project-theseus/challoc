@@ -758,11 +758,15 @@ a deployment that wants the residue back on a small-cache part.
    pushes onto the heap's one *foreign* cache for the class, `Heap::others`
    keyed `FOREIGN`, creating it on first use); otherwise `cache =
    heap.caches[c]`; if `len == cap`, slow path (flush half). `slots[len++]
-   = p`. The foreign cache is flush-only: nothing pops from it, its flush
-   routes each run of slabs to the slab's arena (`release_routed`, 6.4), and
-   there is one per thread, so a thread that frees other threads' memory
-   holds at most one cache's worth per class of it, as jemalloc's tcache
-   does. Until 2026-09-21 such a free went onto a cache per `(arena, class)`
+   = p`. The foreign cache is flush-only: nothing pops from it, its
+   capacity is half the ladder's and it is released whole when full (the
+   same batch as a home cache's half flush, so the release cost per slot
+   is the home cache's, and a quarter of the ladder is held on average
+   instead of three quarters), its flush routes each run of slabs to the
+   slab's arena (`release_routed`, 6.4), and there is one per thread, so a
+   thread that frees other threads' memory holds at most half a cache's
+   worth per class of it, less than jemalloc's tcache. Until 2026-09-21
+   such a free went onto a cache per `(arena, class)`
    (one node per arena a thread freed into), which the default path never
    pops from, so a slot left it only by a flush or the cache GC: a 16-thread
    Ruby process, whose GC sweep frees every thread's garbage from whichever
