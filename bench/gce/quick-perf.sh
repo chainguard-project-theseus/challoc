@@ -95,7 +95,9 @@ for b in $ROWS; do
   cmd=$(in_lib "bench_args $b")
   secs=$(in_lib "secs_of $b")
   for v in $VARIANTS; do
-    tag=$b.$v
+    # The raw files are named by the label: a LABEL@PATH variant's path
+    # would put slashes into the file name.
+    tag=$b.$(label_of "$v")
     cid=$(docker run -d "${DRUN_ARGS[@]}" "$IMAGE" \
           sh -c "sleep 1; exec env MALLOC_CONF=$(conf_of "$v") LD_PRELOAD=$(lib_of "$v") $cmd")
     [ "$CHALLOC_THP_COUNTERS" = 1 ] && thp_snapshot "$OUTDIR/$tag.thp0"
