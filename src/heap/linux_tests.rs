@@ -496,7 +496,7 @@ fn percpu_mode_follows_the_probe_and_the_key() {
     );
     assert_eq!(s.percpu_on(), probe.mm_cid_usable() && rseq::possible_cpus().is_some());
     assert_eq!(s.percpu_on(), s.percpu.state() == PercpuState::On);
-    assert_eq!(s.percpu_on(), s.push_flags() & PUSH_PERCPU != 0);
+    assert_eq!(s.push_flags() & !PUSH_PAC, 0, "the mode has no bit in the flag byte the fast paths load");
     assert!(s.percpu.forced(), "the builder asks for percpu");
     if s.percpu_on() {
         assert_eq!(s.percpu.ids(), rseq::possible_cpus().unwrap());

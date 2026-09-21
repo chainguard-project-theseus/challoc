@@ -41,6 +41,12 @@ extern "C" {
 /* Marks this as challoc's header, for code that wants to tell. */
 #define CHALLOC 1
 
+/* challoc's size-returning entry points (challoc_malloc_usable,
+ * challoc_calloc_usable, challoc_realloc_usable, challoc_free_usable; design
+ * 13.7) exist: they are declared in <challoc/challoc.h>, which a consumer
+ * includes behind this test. */
+#define JEMALLOC_CHALLOC_USABLE 1
+
 /* mallocx() / rallocx() / xallocx() / sallocx() / dallocx() / sdallocx() /
  * nallocx() flags, bit for bit jemalloc's. */
 #define MALLOCX_LG_ALIGN(la) ((int)(la))

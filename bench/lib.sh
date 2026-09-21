@@ -292,6 +292,11 @@ bench_args() {
     # Write phase only (SET over a full heap), so a per-operation counter is
     # per SET: the instruction budget of plan Phase 2.5 task 4c.
     valkey1-write) echo "$BIN/valkey_model -n $VALKEY_MODEL_N -w $VALKEY_MODEL_SECS -d 0 -s";;
+    # The same write phase in Valkey's unsized zmalloc shape (a usable-size
+    # query after every allocation and before every free) and with the
+    # challoc pair that replaces it (design 13.7; the sized-path lane, 2026-09-21).
+    valkey1-write-zmalloc) echo "$BIN/valkey_model -n $VALKEY_MODEL_N -w $VALKEY_MODEL_SECS -d 0 -s -u -a";;
+    valkey1-write-pair) echo "$BIN/valkey_model -n $VALKEY_MODEL_N -w $VALKEY_MODEL_SECS -d 0 -s -p";;
     redis)        echo "$BIN/redis-server";;
     ruby-churn)   ruby_available || return 1
                   echo "env LD_LIBRARY_PATH=$RUBY_INST/lib $RUBY_INST/bin/ruby --disable-gems $ROOT/bench/ruby/gc_churn.rb 10 10";;
@@ -463,15 +468,31 @@ kib_to_mib() { awk -v k="$1" 'BEGIN {if (k=="-"||k=="") print "-"; else printf "
 
 # ---- variant libraries ------------------------------------------------------
 
-# resolve_rev REV: full hash of a git rev, or "tree" for the working tree.
+# resolve_rev REV: full hash of a git rev, "tree" for the working tree, or
+# "dir:PATH" for a source directory under ROOT that holds a Cargo.toml (an
+# A/B copy such as `.tmp-slab16`, made by bench/geometry-variant.sh or by
+# hand from `src Cargo.toml Cargo.lock build.rs`; `.tmp-*` is gitignored
+# and never synced to a VM, so the copy is made where it is built).
 resolve_rev() {
-  case $1 in tree|.|WORKTREE) echo tree;; *) $GIT -C "$ROOT" rev-parse --verify "$1^{commit}" 2>/dev/null || die "cannot resolve rev '$1' (in a worktree the Makefile must mount the common .git)";; esac
+  case $1 in
+    tree|.|WORKTREE) echo tree;;
+    dir:*) d=${1#dir:}; [ -f "$ROOT/$d/Cargo.toml" ] || die "source directory '$d' has no Cargo.toml under $ROOT"; echo "dir:$d";;
+    *) if [ -f "$ROOT/$1/Cargo.toml" ] && [ "$1" != "${1#.}" ]; then echo "dir:$1"
+       else $GIT -C "$ROOT" rev-parse --verify "$1^{commit}" 2>/dev/null || die "cannot resolve rev '$1' (in a worktree the Makefile must mount the common .git)"; fi;;
+  esac
 }
+# rev_dirname REV: the target directory name of a rev's build under
+# target/ab/ and friends: "tree", the directory's basename for "dir:PATH",
+# or the first 12 characters of a hash. Never spaces or colons: the name
+# ends up in an LD_PRELOAD path, which splits on both (the labels of
+# rev_label below are for tables, not paths).
+rev_dirname() { case $1 in tree) echo tree;; dir:*) basename "${1#dir:}";; *) echo "$1" | cut -c1-12;; esac; }
 # build_lib REV TARGETDIR: build libchalloc.so from REV ("tree" = this
-# working tree, otherwise `git archive REV` into TARGETDIR/src-tree) with
-# CARGO_TARGET_DIR=TARGETDIR. Paths are remapped so identical sources give an
-# identical .so and the callers can tell "no code change" from "stale build".
-# Fails unless cargo succeeded and the .so exists. Prints nothing on success.
+# working tree, "dir:PATH" = that source directory in place, otherwise
+# `git archive REV` into TARGETDIR/src-tree) with CARGO_TARGET_DIR=TARGETDIR.
+# Paths are remapped so identical sources give an identical .so and the
+# callers can tell "no code change" from "stale build". Fails unless cargo
+# succeeded and the .so exists. Prints nothing on success.
 build_lib() {
   rev=$1; tdir=$2
   mkdir -p "$tdir"
@@ -480,6 +501,10 @@ build_lib() {
     # Restored or rsynced files may carry old mtimes and cargo would skip the
     # rebuild; touching the crate root forces it (~seconds).
     touch "$ROOT/src/lib.rs"
+  elif [ "$rev" != "${rev#dir:}" ]; then
+    srcdir=$ROOT/${rev#dir:}
+    [ -f "$srcdir/Cargo.toml" ] || die "source directory $srcdir has no Cargo.toml"
+    touch "$srcdir/src/lib.rs"
   else
     srcdir=$tdir/src-tree
     rm -rf "$srcdir"; mkdir -p "$srcdir"
@@ -511,7 +536,7 @@ so_hash() { sha256sum "$1" | cut -c1-16; }
 tree_label() { echo "working tree, HEAD $(commit_short)$(tree_dirty && echo ' + uncommitted src changes')"; }
 # rev_label REV: tree_label for "tree", else the rev cut to 12 characters
 # (the build line's label; the header's describe line keeps REV as spelled).
-rev_label() { if [ "$1" = tree ]; then tree_label; else echo "$1" | cut -c1-12; fi; }
+rev_label() { case $1 in tree) tree_label;; dir:*) echo "source directory ${1#dir:}";; *) echo "$1" | cut -c1-12;; esac; }
 # default_lib_of ALLOC: the LD_PRELOAD path of a harness allocator: challoc
 # is $CHALLOC_LIB (the harness's own build, set before the rounds), the
 # rest stock_lib. A harness with more variants wraps it (jvm-bench.sh).

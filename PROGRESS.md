@@ -1475,6 +1475,81 @@ One line per task, newest at the bottom of each section. Keep it terse.
   (tail mean Rss MiB over the last 600 s / CPU us per request in the high
   windows / blob req/s in the low windows):
 - Improvement round after the maintainability pass (coordinator, 2026-09-20/21): six lanes, all merged (`tidy-class` follow-ups: the parked-waiter test bounded, the per-slab owner compare in `release_owned` landed after a five-round A/B and attribution on aarch64, `bench/results/2026-09-20-aarch64-release-owned-check.md`; `tidy-tooling` follow-ups: the `3c6602b+` dirty flag was a sync racing a commit, sync verifies HEAD now, harness lock trap, `rust-version` 1.94; `tidy-leftovers`: report line heads in one place with a needle test, `Value::Size`; `keydb`: `je_get_defrag_hint`, KeyDB and RethinkDB packaged and tested on both architectures; `fork-vmas`: metadata small tables in one writable mapping, child mappings 469 -> 357, connect +1.5..2.4%, the fork cost's remainder attributed to page-table sparsity and the class regions; `huge-decay`: `huge_dirty_decay_ms` shipped with today's default, no value closes the JVM gap without paying linearly in CPU, an age-blind periodic purge does, measured as `challoc-trim`). Coordinator's own commits: docs/testing.md and the Dockerfile comment on skips, the x86_64 `sys::auxv` test (glibc substitutes AT_HWCAP on x86). Scorecard lines for the final tree follow in their own commit.
+- Per-CPU dispatch (lane percpu-dispatch, 2026-09-21) DONE, commits
+  da39e2e (the shape), dd7f9b5 (design 15, tuning row), cc547ed (the
+  mode's hit paths frameless), e088459 and 051780d (results). The
+  per-CPU mode's dispatch leaves the entry points: a heap in the mode
+  never installs a home cache (`Heap::ensure_cache` refuses its home
+  arena), so every home header stays `CacheHeader::EMPTY` and
+  `malloc`/`free`/`sdallocx` fall through on the `len == 0` / `len ==
+  cap` test they already have to `malloc_slow`/`free_slow`, where
+  `Heap::alloc`, `alloc_zeroed` and `free` route on `Heap::percpu` to
+  `percpu_alloc`/`percpu_free` (shape (a) of the brief). `PUSH_PERCPU`,
+  the entry points' `tbnz` and tail calls and the five wrappers are gone;
+  `malloc`, `malloc_fast`, `free`, `free_sized_hint`, `Heap::alloc` and
+  `Heap::alloc_zeroed` are their pre-4864d4b bodies. Codegen
+  (`scripts/codegen-diff.sh` 2078f67 -> tree): aarch64 `malloc` 70 -> 65,
+  `free` 149 -> 144, `sdallocx` 192 -> 180, `free_sized` 151 -> 142,
+  `calloc` 222 -> 132, `operator new[]` 153 -> 66 instructions,
+  `malloc_usable_size` 83 unchanged; x86_64 `malloc` 59 -> 55, `free` 141
+  -> 130, `sdallocx` 198 -> 180, `calloc` 195 -> 128. `quick-perf`
+  (lane VMs, perf on the host): aarch64 larson1 264.5 -> 255.5
+  instructions per operation (the drift file's pre-4864d4b 255.4) and
+  72.1..72.3 -> 71.2..71.6 cycles (its pre-4864d4b band 70.9..71.2),
+  valkey1 245.2 -> 241..244, valkey1-free 247..249 -> 244, misses
+  unchanged; x86_64 larson1 244.4 -> 236.2 instructions, valkey1 234..240
+  -> 228..233, cycles within the runs' spread. `quick` GO on both.
+  `ab` (5 rounds, same run, old/new/jemalloc plus both under
+  `percpu_arena:percpu`): aarch64 `new` ahead of `old` on every row
+  (larson1 -0.9% with disjoint sorted lists, larson10 -1.8%, larson16
+  -0.9%, xmalloc -0.5%, alloc-test1/N -0.8%, valkey1 -0.7%, valkey1-free
+  -0.4%), larson1 6.4% behind jemalloc (the pre-4864d4b band +5.9..+6.6%,
+  post +7.5..+8.5%); x86_64 within noise both ways (larson1 -2.9%,
+  larson10 -0.6%, larson16 +0.2%, xmalloc -0.6%, alloc-test1 +2.4%,
+  alloc-testN -0.4%, valkey1 0.0%, valkey1-free +1.1%). The opt-in mode
+  is slower under this shape: aarch64 larson1 311 -> 438 instructions
+  and 75.5 -> 119.5 cycles per operation, `ab` 39.8 -> 25.1 M ops/s,
+  valkey1 6.63 -> 5.55; x86_64 larson1 42.6 -> 25.2, valkey1 11.6 -> 8.5
+  (`bench/results/2026-09-21-{aarch64,x86_64}-percpu-dispatch.md`,
+  `-ab.md`, sections 0, 2 and 4). `make test` green on both lane VMs at
+  dd7f9b5 and cc547ed (481 + 138 + 26, churn/lazy/pagemap ok,
+  `c_percpu_both_ways` with the mode on, ids=16); host `cargo test
+  --features std` 375. VMs `challoc-percpu-dispatch-{arm64,amd64}`
+  created, used and deleted by the lane.
+- Sized path, size-returning API for Valkey (lane sized-path, 2026-09-21): `challoc_malloc_usable`, `challoc_calloc_usable`, `challoc_realloc_usable`, `challoc_free_usable` (design 13.7; `<challoc/challoc.h>` beside `<challoc/jemalloc.h>`, which defines `JEMALLOC_CHALLOC_USABLE`; the compat header declares the four itself): each is the standard function plus the usable size from the classification the allocation or free already made, `challoc_free_usable` being `free`'s exact check reporting the class (`heap::free_fast_class`); every existing entry point byte-identical (codegen-diff at 2078f67: `malloc`, `free`, `sdallocx`, `calloc`, `realloc`, `malloc_usable_size` reloc-only, no allocation function in `changed`). The Valkey patch (both copies) puts `zmalloc.c`'s `ztry*_usable_internal` on the pair and the unsized `zfree` on `challoc_free_usable`; `contrib/valkey/build.sh` `STAGE=all` passes on both archs (memefficiency 421/436 s, full 164/164 `All tests passed`, 912/956 s). Tests: `tests/c/usable_api.c` (3 configurations), `negative.c` modes `free_usable_{interior,stale,cached,huge_twice}`, the symbol-table row, two unit tests; `make test` 481 + 145 + 26 on both lane VMs. Model rows `valkey1-write-zmalloc` / `valkey1-write-pair` (`valkey_model -a`/`-p`): per SET on the C4 407.7 -> 361.2 cycles, 709 -> 443 instructions (the bare sized path 277.4 / 423), C4A 565.6 -> 506.4 / 752 -> 489. Soak, same run, one library, old patch / new patch / jemalloc with the perf sidecar (x86_64): `je_malloc_usable_size` 7.60% -> 0.00% of the write record, allocator cycles per command 451 -> 219 (jemalloc 318), per valkey-benchmark SET 4357 -> 4229 cycles and 8355 -> 7787 instructions (jemalloc 4605 / 8208), throughput +3.1% / +3.0% (write) and +3.5% / +3.6% (delete) against the old patch, p99 -3..4%, peak RSS +0.4%, settle RSS -0.5%; against jemalloc write -8.4% / -3.7%, delete +2.0% / -0.9% (was +5.6% / +2.7%). aarch64 guard: query 9.01% -> 0.00%, three of four generator rows +1.7..2.9%, valkey-benchmark write -1.3% (inside its band), RSS peak +2.7% vs jemalloc. Results `bench/results/2026-09-21-{x86_64,aarch64}-sized-path-usable.md` (+ `-soak*`). Commits 63bd7ee (code), 9b1e26f (the sidecar's `ALLOCS`), 0f22020 (results).
+- Sized path, the frame of the sized path (lane sized-path, 2026-09-21): done. `Heap::push_cache` declines on a `double_free_scan` hit and `Heap::free_slow_in` repeats the compare (`Heap::cached_recently`) and aborts by name; `Heap::pop_fast` declines the scheduled pop and `Heap::alloc_slow` serves it, `malloc`/`challoc_malloc_usable` reaching it through `heap::alloc_declined` (no second pass through the fast path). Static shape: aarch64 `malloc` 70 -> 64, `free` 149 -> 145, `sdallocx` 192 -> 182, `challoc_malloc_usable` 84 -> 68, `challoc_free_usable` 146 -> 143, all frameless with no call in the body; x86_64 `malloc` 59 -> 52 and `challoc_malloc_usable` 87 -> 57 frameless, `sdallocx` and `free` keep three and one `push` (the registers hold `sized_slot`'s temporaries: on x86_64 the frame was register pressure, not the call; the correction to task 4c's note, the next lever the two-register `Option<usize>` hint). quick-perf (`bench/results/2026-09-21-{x86_64,aarch64}-sized-path-frame.md`): instructions per SET on `valkey1-write` C4A 450.0 -> 445.0, C4 423.0 -> 423.3 (the 330 target is not approached on x86_64 by this change alone); `larson1` -2.9 / -5.0 per op; `valkey1` +0.8 / -1.6; `quick` go on both lane VMs and on a C3 lab cell (`valkey1` there 7.973 -> 8.188 M ops/s, the write-phase rate 8.27 -> 8.34 M SET/s median, inside the spread). Negative modes `double_free_cached`/`sized_double_free` with `double_free_scan:true` still abort at the call by name, `double_free_straddle` unchanged; new test `heap::tests::fast_paths_decline_the_scan_hit_and_the_scheduled_pop`. Commits 97859aa, 9113e9c; results ac937fe.
+- Entry-point batch (coordinator, 2026-09-21): lanes `percpu-dispatch` (f6aaa80) and `sized-path` (8ea1760) merged; sized-path rebased by hand onto the dispatch change (one doc-comment overlap in `pop_fast`; `malloc` rewritten in the lane's shape without the removed `PUSH_PERCPU` branch, `malloc_slow_class` -> `heap::alloc_declined`, `alloc_slow` still routes the per-CPU mode; the `PUSH_PERCPU` tests dropped from `malloc_usable`/`free_usable`, the `EMPTY` home header declines the fast path in the mode). Merged tree `make test` in the Mac container: 481 + 138 + 26 at f6aaa80, 482 + 145 + 26 at the rebased lane head, every C step ok. One scorecard for the batch on the reference pair from 8ea1760: aarch64 larson1 +5.9% (from +7.7), larson10 +3.9, larson16 +2.5, valkey1 -0.5, valkey1-free +3.3 (from -1.7); x86_64 larson10 +3.9 (from +8.1), larson16 +10.7, valkey1 +0.1, valkey1-free -7.8; every column in its band. The aarch64 valkey1-free shift attributed as 3-round noise: `quick-perf arm64 OLD=2078f67` under one probe build reads old/new 10.63/10.63 M ops/s, 285.2/285.2 cycles, 306.0/305.9 instructions per op (valkey1 307.6 -> 301.3 instructions, larson1 264.5 -> 255.5). The x86_64 line was appended from the driver's log by hand: the fetch back to the host failed on a transient DNS error (`oslogin.googleapis.com`), the row printed in `.ralph/scorecard-amd64-8ea1760.log` is verbatim.
+- Policy cost rows (lane policy-cost, 2026-09-21): done. Two hot-path
+  policies measured off versus on in one run on the lane's VMs
+  (`challoc-policy-cost-{arm64,amd64}`, c4a/c4-standard-16, kernel
+  7.0.0-1011-gcp, both deleted at the end), no default changed, nothing
+  under `src/` changed (`src/` is byte for byte main 2078f67; the
+  geometry variants are gitignored `.tmp-slab16`/`.tmp-slab32` copies
+  made by `bench/geometry-variant.sh`). (1) The compacting cache,
+  `tcache_compact_shift:0` against the default: quick, quick-perf on
+  larson1/valkey1/valkey1-free with the model's per-phase lines, ab 5
+  rounds with the two model rows, the churn probe, the Valkey soak on
+  aarch64 (default, compact0, jemalloc), the Ruby soak on both archs.
+  (2) 16 and 32 KiB slabs for the 1280..4096-byte classes: quick (GO
+  both variants both archs), ab 5 rounds, quick-perf, the Ruby soak with
+  per-class occupancy for the three builds and jemalloc on both archs
+  plus the default/slab16 pair under `narenas:1`, the Valkey soak
+  default vs slab16 on aarch64. Results:
+  `bench/results/2026-09-21-{aarch64,x86_64}-policy-cost-compact.md`,
+  `bench/results/2026-09-21-{aarch64,x86_64}-policy-cost-geometry.md`
+  (each with the VM, kernel, commit, the builds' sha256 and a trade
+  section at the end), raw soak files beside them
+  (`...-policy-cost-ruby-soak-*`, `...-policy-cost-valkey-soak-*`).
+  Harness (committed): `bench/lib.sh` builds a `dir:.tmp-<v>` source
+  directory as a variant (quick OLD=/NEW=, ab VARIANTS=; `rev_dirname`
+  for build directories, ab.sh refuses a path LD_PRELOAD would split),
+  `bench/gce/quick-perf.sh` takes `LABEL@/path[:conf]` variants,
+  `bench/ruby-soak.sh` CHALLOC_SRC, `bench/valkey-soak.sh` CHALLOC_LIB
+  (preloaded under the soname, mapped library and sha256 recorded),
+  `bench/geometry-variant.sh`, `bench/probes/mstats-classes.sh`
+  (per-class totals over arenas from a stats report). Commits ed07b0a,
+  0c8416a, 9cce8d6, f53418d, 56efa27 (harness), fd00bf7, 5c9d083,
+  39272c3, 3b0ac63 and the final results commit.
 
 ## In progress
 
@@ -2586,6 +2661,47 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
   the pool still cycled 16 -> ~100 -> 16 every two minutes for the whole
   run, which is the thread churn the soak wanted. Kept as is and stated
   in the files; a multi-process generator would raise the ceiling.
+- Per-CPU dispatch (lane percpu-dispatch, 2026-09-21), the shape: the
+  mode rides the `EMPTY` home header rather than a flag bit, a TLS
+  sentinel or an ifunc. Reason: `len == 0` and `len == cap` are the two
+  branches the fast paths take anyway, so the default path is byte for
+  byte the allocator without the mode (measured: the pre-4864d4b
+  instruction counts and cycle band come back on the C4A); the TLS
+  sentinel would have needed a second slot for the heap the mode still
+  uses (byte counters, rseq area); an ifunc would have needed the
+  configuration and the rseq probe readable before relocation and a
+  proof on eight loading shapes, for no gain over this on the default
+  path. The invariant the shape rests on, "a heap with `percpu` set has
+  no home cache", is enforced in one place (`Heap::ensure_cache`) and
+  asserted by `percpu_caches_serve_plain_allocations` (`cache(c).is_none()`).
+- Per-CPU dispatch (lane percpu-dispatch, 2026-09-21), the mode pays the
+  slow-path prologue: in the mode `malloc`/`free` now cost the entry
+  point's wasted inlined fast path plus `malloc_slow`/`free_slow`'s
+  prologue and the exact `classify_free` before the same section
+  (aarch64 larson1 +127 instructions and +58% cycles against the
+  tail-call wrapper, valkey1 +16%). Reason: the brief ranks the default
+  path's cost first and asks that the mode keep working, which it does
+  (tests, campaign script unchanged); the mode is opt-in and was 4..38%
+  behind thread caches on every `ab` row before this; the only ways to
+  hand the mode a cheaper path are an extra argument on the default
+  path's tail calls (a register move every default `free` pays, not
+  measured) or the ifunc, both recorded under Notes.
+- Per-CPU dispatch (lane percpu-dispatch, 2026-09-21), an explicit
+  `MALLOCX_ARENA(home)` request on a heap in the mode is served directly
+  from the slab (`ensure_cache` returns null for the home arena) instead
+  of through a home cache. Reason: a home cache on such a heap would be
+  popped by the entry point's fast path and bypass the CPU caches; the
+  request is a corner of a corner (an explicit arena equal to the
+  thread's automatic home, under an opt-in mode) and direct is the honest
+  answer. `Shared::checked_slot_any` is test-only now (its one production
+  caller was the removed push wrapper); `rseq::POP_OFF_MODE` /
+  `PUSH_OFF_MODE` are gone with it.
+- Sized path, size-returning API (lane sized-path, 2026-09-21): `challoc_free_usable` is the exact `free` (the bitmap-word test kept, `heap::free_fast_class` reporting the class), not the sized path: the human's decision was to keep the check and remove the second lookup; the quick-perf rows show what that costs (about a third of the query's cycles saved on the model, the rest is the check moved into the free).
+- Sized path, size-returning API (lane sized-path, 2026-09-21): `challoc_calloc_usable` zeroes the whole usable size (the bytes it reports; jemalloc's `calloc` semantics), where plain `calloc` clears the requested bytes and is left as it is.
+- Sized path, size-returning API (lane sized-path, 2026-09-21): the header lives beside the existing one, `contrib/valkey/include/challoc/challoc.h` (the `-I` root of the Valkey build and of `challoc-dev`'s install, so the installed path is `include/challoc/challoc.h`); the compat `<jemalloc/jemalloc.h>` defines `JEMALLOC_CHALLOC_USABLE` and declares the four itself rather than shipping a second copy of the file, so `challoc-dev` and `challoc-jemalloc-compat-dev` stay co-installable.
+- Sized path, size-returning API (lane sized-path, 2026-09-21): in the per-CPU mode the four entry points take their cold paths (`heap::alloc` / `heap::free` dispatch the mode); the mode is opt-in and its own lane owns the dispatch code, so no per-CPU fast path was added for them.
+- Sized path, size-returning API (lane sized-path, 2026-09-21): `ztryrealloc_usable_internal` keeps its `zmalloc_size(ptr)` for the old size (the accounting needs it); only the query of the new block is replaced. `realloc` is not a term in Valkey's write or delete phase.
+- Sized path, the frame (lane sized-path, 2026-09-21): the scheduled pop (design 6.4) is declined by `pop_fast` and served by `Heap::alloc_slow`, the one funnel of every caller's `None`, so `malloc`'s inlined body has no call; `pop_compact` itself and the `pop` of the cold paths are unchanged. The scan's `cached_twice` moved the same way (`push_cache` declines, `free_slow_in` repeats the compare before its tick and flush and aborts by name).
 
 ## Blocked
 
@@ -3751,3 +3867,64 @@ Format: `Phase N task M: <decision>. Reason: <one line>.`
   lull gives the memory back once; lane B's files (`src/purge.rs`,
   `src/policy.rs`) own it.
 - Next improvements the round points at (coordinator, 2026-09-21): (1) JVM lull memory: an age-blind purge of the huge tier and empty slabs on a timer or at a lull's start (`purge_interval_ms`-style key from the background thread, lull trigger on huge live pages falling), measured against `challoc-trim` (-5.8% / -3.6% tail mean, -4% CPU) on the JVM soak with the Valkey soak as the guard; lane B files. (2) Fork cost: the child's 58 slab commits (`commit_slab`: commit a fresh arena's first group per class in one `mprotect`, or inherit the parent's partial slabs), `connect20` A/B with strace on the VM host; and the larger layout item (slab-major interleave of per-class tables) only if the human wants the remaining +43..59% closed, lane A, full protocol. (3) KeyDB's defrag tests: the stop rule's 8..12% floor under challoc (thread-cached slots until the 10 s cache GC, 16-slot large-class slabs pinned by client buffers, slab tails) is KeyDB-side or a test-threshold hunk as Valkey's; production defaults stop at once. (4) Release: `provides: jemalloc-dev`/`libjemalloc2` on the compat packages should go before the Wolfi PR (RethinkDB showed the -dev cannot stand in for a static-linking consumer); suppress the auto `so:libchalloc.so.0` dependency on the Valkey client tools.
+- Per-CPU dispatch (lane percpu-dispatch, 2026-09-21): the opt-in mode
+  is slower under this shape (numbers above and in the results files).
+  If the mode ever gets an adopter, the two ways to give it back its
+  +33..47-instruction hit path without touching the default: (b) of the
+  brief, ifunc-selected entry points (resolver runs before relocation:
+  needs the configuration and the rseq probe read without GOT loads, and
+  the loader-order proof on both archs), or a `class`/heap argument on
+  the entry points' cold tail calls (a register move on every default
+  `free`, to be priced with `quick-perf` before it is taken). Nothing to
+  decide for the default.
+- Per-CPU dispatch (lane percpu-dispatch, 2026-09-21): design 15 and
+  `docs/tuning.md`'s `percpu_arena` row now describe this shape; design
+  6.3 needed no change (the `EMPTY` header is already its slow-path
+  rule). No packaging change: `percpu_arena:percpu` stays selectable at
+  run time in the same binary.
+- Sized path (lane sized-path, 2026-09-21): the C3 lab (8481C, small L3) reads challoc 15..21% behind jemalloc on the Valkey model's write phase again (`2026-09-21-x86_64-sized-path-frame.md` section 3) where task 4c's (b) read +3.2% ahead on the same cell type. The C4 `quick-perf` says `valkey1-write` is 423 instructions per SET at 63bd7ee against 344.6 at (b), jemalloc 330.6 against 268.2: about 60 of the 78 are on the program side (fresh dev image: newer gcc and Wolfi jemalloc, plus two flag tests per allocation and free the model gained for the `-a`/`-p` rows), about 16..22 challoc's own since (b), which on that host is the instruction-window cliff of the 8481C file. Not this lane's change; the entry points' instruction accounting since task 8 (the per-CPU dispatch) is where to look.
+- Sized path (lane sized-path, 2026-09-21): plain `calloc` zeroes the requested bytes, not the usable size (jemalloc zeroes the whole region); `challoc_calloc_usable` zeroes the usable size. A consumer that reads past its request up to `malloc_usable_size` after `calloc` sees dirty bytes under challoc and zeros under jemalloc; left as it is (byte-identical rule), flagged.
+- Sized path (lane sized-path, 2026-09-21): the delete phase's remaining allocator term on the C4 is the exact liveness check `challoc_free_usable` keeps (74 cycles per command in the delete record, 101 in the write record; jemalloc's whole `sdallocx` 20 / 57). A sized variant (`challoc_sdallocx_usable(p, size)`, the size hint in place of the bit test, as `sdallocx`) would remove it; not built, since the decision was to keep the check. The delete-phase valkey-benchmark row reads +2.0% behind jemalloc with the new patch (was +5.6%).
+- Sized path (lane sized-path, 2026-09-21): the perf sidecar's first instance ran before its `ALLOCS` fix landed, so its files label the old-patch server `challoc` and the new-patch server `jemalloc`; a second instance covered the jemalloc server. The copies under `bench/results/2026-09-21-*-sized-path-usable-soak-*` carry the servers' real names; the perf-report text says so in its header.
+- Sized path (lane sized-path, 2026-09-21): files outside `src/api` and `src/heap` touched: `contrib/valkey/include/challoc/challoc.h` (new), both `jemalloc.h` headers, both copies of the Valkey patch, `contrib/wolfi/challoc.yaml` (the header's install line and the -dev test program), `contrib/wolfi/README.md`, `docs/design.md` (13.6, new 13.7), `docs/tuning.md`, `README.md`, `bench/probes/valkey_model.c`, `bench/lib.sh`, `bench/README.md`, `bench/valkey-soak.sh` (`challoc-old`), `bench/probes/valkey-perf-sidecar.sh` (`ALLOCS`), `tests/c/{usable_api.c,negative.c,common.h}`, `src/api/ctests.rs`, `src/api/mod.rs` (a doc comment).
+- Policy cost, trade 1 (the compacting cache, design 6.4): turning
+  `tcache_compact_shift` off buys 1..3% of a Valkey server's
+  delete-phase throughput and p99 (aarch64 soak: 1423k -> 1465k
+  valkey-benchmark req/s, p99 0.719 -> 0.687 ms; nothing in the write
+  phase, nothing on larson/xmalloc/alloc-test, nothing under Ruby where
+  the schedule never engages) and costs 18% of its post-delete RSS and
+  the criterion with it (130.3 MiB after settle, +1.4% over jemalloc,
+  against 153.1, +19%; the criterion is +10%; frag ratio 1.81 -> 2.18,
+  the 512..1024 classes 57% -> 47% occupancy; Valkey's defragmenter did
+  15% more moves and left the residue). The allocator's own price where
+  the schedule works is a fifth of the delete phase in the model (20.4
+  -> 24.8 M ops/s aarch64, 34.2 -> 37.6 x86_64; 40 / 24 fewer
+  instructions per op over the run) for 220 MiB given back in 5 s; when
+  it does not engage the mode test costs nothing (larson 264.5 / 264.5
+  instructions). Recommendation: keep the default (shift 3). If the
+  delete-phase price is ever the target, measure `tcache_compact_shift:4`
+  on the model's per-phase row, not the switch.
+- Policy cost, trade 2 (16/32 KiB slabs for 1280..4096 B): the change
+  buys 10 points of occupancy in those classes under Ruby (44% -> 54%,
+  25..30 MiB less pinned, `active` down by the same) and no RSS at all
+  (397 -> 400 MiB at t=600 aarch64, 414 -> 419 x86_64: the bytes move
+  into the arenas' Empty inventory, which is what the 17-arena RSS is
+  made of); under `narenas:1` (the ruby-rss lane's lever, 397 -> 172
+  MiB = jemalloc's 172) it gives back 2 MiB of pinned bytes and costs
+  5..21 MiB of dirty ones (RSS +2% aarch64, +11% x86_64); under Valkey
+  nothing moves (+0.6% RSS after settle, criteria unchanged). It costs
+  nothing on the fast tier (quick GO, ab within 2%, instructions per op
+  identical) and 6..12% internal waste per slab in five classes.
+  Recommendation: do not change the geometry; it is not an independent
+  lever beside the arena policy on the Ruby shape. Per-class tables for
+  every build are in the geometry files (section 5 and 5b).
+- Two incidents the coordinator should know about, both harness-side:
+  the first compact `ab` measured glibc for both variants because a
+  duplicate `rev_label` put spaces in the build directory (fixed in
+  f53418d, guard added, rerun); and local-to-VM transfers above a few
+  MB stalled from about 07:20 UTC on the Mac's network (a 6 MB pack
+  over ssh stdin timed out), which broke the arm64 VM's synced `.git`;
+  the last two aarch64 Ruby soaks ran on a tree re-initialised as one
+  local commit of the same files (checksums checked) with
+  `COMMIT=3b0ac63` in their headers. Everything else ran on synced
+  trees at f53418d.

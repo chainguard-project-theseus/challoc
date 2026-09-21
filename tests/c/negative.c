@@ -45,6 +45,16 @@
  *                                 call (the hint names no class)
  *   negative huge_double_free     free of a 1 MiB run twice
  *   negative huge_interior_free   free of the second page of a 1 MiB run
+ *   negative free_usable_interior challoc_free_usable(p + size/2): the
+ *                                 size-returning free (design 13.7) keeps
+ *                                 free's exact check and its message
+ *   negative free_usable_stale    challoc_free_usable(p) after free(p) and a
+ *                                 flush: the slot bit
+ *   negative free_usable_cached   free(p) then challoc_free_usable(p) back to
+ *                                 back: caught at the flush, or at the call
+ *                                 with double_free_scan
+ *   negative free_usable_huge_twice free of a 1 MiB run, then
+ *                                 challoc_free_usable of it
  */
 #include "common.h"
 #include <stdbool.h>
@@ -308,6 +318,38 @@ int main(int argc, char **argv)
         bad = p + page; /* page-aligned, inside the run, not its start */
         free(bad);      /* must abort: not the start of a huge allocation */
         printf("free of the interior page %p of %p returned\n", bad, (void *)p);
+    } else if (strcmp(mode, "free_usable_interior") == 0) {
+        REQUIRE(challoc_free_usable != NULL, "challoc_free_usable not exported");
+        void *p = malloc(64);
+        REQUIRE(p != NULL, "malloc failed");
+        bad = (char *)p + 32;
+        size_t u = challoc_free_usable(bad); /* must abort: not a slot start */
+        printf("free_usable of the interior %p returned %zu\n", bad, u);
+    } else if (strcmp(mode, "free_usable_stale") == 0) {
+        REQUIRE(challoc_free_usable != NULL, "challoc_free_usable not exported");
+        void *p = victim(64);
+        bad = p;
+        free(bad);
+        drain(); /* p leaves the cache and its slot bit clears */
+        size_t u = challoc_free_usable(bad); /* must abort: the slot is not allocated */
+        printf("free_usable of the freed %p returned %zu\n", bad, u);
+    } else if (strcmp(mode, "free_usable_cached") == 0) {
+        REQUIRE(challoc_free_usable != NULL, "challoc_free_usable not exported");
+        void *p = victim(64);
+        bad = p;
+        free(bad);
+        size_t u = challoc_free_usable(bad); /* with double_free_scan: aborts here */
+        printf("free_usable of the cached %p returned %zu\n", bad, u);
+        fflush(stdout);
+        drain(); /* else the flush releases the duplicates to the slab */
+    } else if (strcmp(mode, "free_usable_huge_twice") == 0) {
+        REQUIRE(challoc_free_usable != NULL, "challoc_free_usable not exported");
+        size_t size = 1u << 20;
+        bad = malloc(size);
+        REQUIRE(bad != NULL, "malloc(%zu) failed", size);
+        free(bad);
+        size_t u = challoc_free_usable(bad); /* must abort: the run is no longer live */
+        printf("free_usable of the freed huge run %p returned %zu\n", bad, u);
     } else {
         REQUIRE(0, "unknown mode %s", mode);
     }

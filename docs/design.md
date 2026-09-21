@@ -1942,8 +1942,10 @@ change the builds this repository tests (`quantum16` by default,
 `quantum8` for the Valkey tree).
 
 `challoc_version()` returns the crate version as a NUL-terminated static
-string and is the one challoc-specific export (section 16); there is no
-exported accessor for the thread heap slot.
+string (section 16); with `challoc_features()` and the size-returning
+entry points of 13.7 it is the whole of the challoc-specific surface,
+declared in `<challoc/challoc.h>`; there is no exported accessor for the
+thread heap slot.
 
 `DT_NEEDED` under `--as-needed` (plan Phase 3 prerequisite (e), measured
 2026-09-19 with `tests/as-needed.sh` on both reference architectures):
@@ -1973,6 +1975,79 @@ challoc, plus the shared library that does the allocating; the check is
 `readelf -d` only and exits 1 when the soname is missing.
 `contrib/valkey/build.sh` and `contrib/ruby/build.sh` run it, and `make
 check-needed` runs the link experiments and the built consumers.
+
+### 13.7 challoc extensions
+
+The rule of 13.5 holds for challoc's own names too: an export that no
+other allocator has exists only for a consumer's measured cost, and the
+measurement is named here. The four size-returning entry points, declared
+in `<challoc/challoc.h>` (installed by `challoc-dev` beside
+`<challoc/jemalloc.h>`, which defines `JEMALLOC_CHALLOC_USABLE` so a
+consumer can test for them at compile time; the `challoc-jemalloc-compat-dev`
+`<jemalloc/jemalloc.h>` defines the macro and declares the four itself, so
+the two `-dev` packages ship no file in common), exist for Valkey:
+
+```c
+void  *challoc_malloc_usable(size_t size, size_t *usable);
+void  *challoc_calloc_usable(size_t n, size_t size, size_t *usable);
+void  *challoc_realloc_usable(void *p, size_t size, size_t *usable);
+size_t challoc_free_usable(void *p);   /* frees p, returns its usable size */
+```
+
+Why. Valkey's `zmalloc.c` calls `zmalloc_size` (`je_malloc_usable_size`)
+after every `je_malloc`, `je_calloc` and `je_realloc`
+(`ztry*_usable_internal`, for the `used_memory` accounting) and before
+every unsized `zfree` (then `je_sdallocx`). On the C4 that query was the
+one allocator-side term above jemalloc's cost in the soak's write phase:
++117 cycles per valkey-benchmark SET and +63 per memtier SET (346 against
+229; `bench/results/2026-09-20-x86_64-valkey-write-phase-attribution.md`,
+section 6), because it classifies the pointer a second time and its exact
+liveness test loads a bitmap word that nothing has touched since the
+refill (the sized free of 4e stopped touching it, so `malloc` hands out a
+slot whose word is cold, and the query right after `malloc` is its first
+touch, an L1 miss per allocation). The note proposed dropping the
+liveness test from `malloc_usable_size`; the decision (2026-09-21) was to
+keep every check and remove the second lookup instead: the allocation
+knows its class from the pop, the free from the classification it makes
+anyway, and each hands the class size to the caller.
+
+Semantics: each is the standard function of the same name, then the
+usable size, exactly what `malloc_usable_size(p)` would return for that
+pointer at that moment, on every tier (a slab class's slot size, the
+classes above `BIN_MAX` included; a huge run's page count times the page
+size), stored through `usable` or returned. `errno`, null handling,
+alignment, the huge tier and the aborts are `malloc`/`calloc`/`realloc`/
+`free`'s: a failed allocation returns null with `errno = ENOMEM` and
+`*usable = 0`; `usable` may be null for the three allocating functions
+(then they are plain `malloc`/`calloc`/`realloc`); `challoc_free_usable(NULL)`
+is 0; `challoc_realloc_usable(p, 0)` frees and reports 0. Two points where
+a choice existed: `challoc_calloc_usable` zeroes the whole usable size
+(the bytes the caller is told it owns, which jemalloc's `calloc` zeroes
+too), where plain `calloc` clears the requested bytes; and
+`challoc_free_usable` is the exact `free` of 6.3 (the bitmap-word test,
+the owner word with several arenas) reporting the class it verified, not
+the sized path: a stale, interior or foreign pointer aborts at the call
+with `free`'s message, and a double free of a still-cached slot is caught
+at the flush, or at the call with `double_free_scan`, as for `free`.
+
+Implementation (`src/api/libc.rs`): `challoc_malloc_usable` is `malloc`'s
+pop (6.3) plus `CLASSES[c].size()` from the class the pop used, every other
+outcome one cold tail call away; `challoc_free_usable` is `free`'s check
+and push (`heap::free_fast_class`, `free_fast` naming the class) plus the
+same lookup; the cold paths take the size from the same classification the
+exact slow path then repeats; the huge tier reads the run's usable bytes
+from the huge table as `malloc_usable_size` does. The fast paths of
+`malloc`, `free`, `sdallocx` and every other existing entry point are
+byte-identical to what they were (`scripts/codegen-diff.sh`). In the
+per-CPU mode (15) the four take their cold paths (`heap::alloc`,
+`heap::free`, which dispatch the mode); the mode is opt-in and measured on
+its own. Valkey uses them under `USE_CHALLOC`
+(`contrib/valkey/0001-Add-MALLOC-challoc.patch`: `ztrymalloc_usable_internal`,
+`ztrycalloc_usable_internal` and `ztryrealloc_usable_internal` call the
+`*_usable` pair instead of the allocation plus `zmalloc_size`; the unsized
+`zfree` calls `challoc_free_usable` instead of `zmalloc_size` plus
+`je_sdallocx`; `zmalloc_size` stays `je_malloc_usable_size` for its other
+callers). Measured in `bench/results/2026-09-21-*-sized-path-usable*.md`.
 
 ## 14. Hardening summary
 
@@ -2119,30 +2194,44 @@ whole stack out and commits `len = 0`). Capacities follow the thread
 ladder clamped to `MAX_CAP` (the slow paths' buffers are stack arrays of
 that size).
 
-The paths. The `PUSH_PERCPU` bit of `Shared::push_flags`, the byte every
-fast path already loads, sends `malloc`, `calloc`, `free` and the sized
-free by one tail call to their per-CPU wrappers (`api::libc::percpu_malloc`,
-`percpu_free`, `percpu_free_sized`), so the thread paths keep their shape
-byte for byte. The wrapper inlines the whole hit path
-(`Heap::percpu_pop_raw`, `heap::percpu_push_raw`: the heap's `percpu`
-byte, the slot check for a free, the section, the byte count) and tests
-one bit of the section's raw status word (`rseq::pop_raw`/`push_raw`,
-the `POP_*`/`PUSH_*` constants); every miss (a heap off the mode, an
-empty or full cache, a declined pointer, the scheduled pop, an id out of
-range) is one cold tail call that finishes the operation
-(`percpu_*_miss`), so the wrapper has no frame and no call of its own.
-In the mode a pop or push is therefore the entry point's dispatch plus
-the thread-pointer load, the `mm_cid` load, the table index and the
-section; the `free` fast path skips the owner word (a CPU cache takes
-verified slots of every arena, section 6.3's sized path already does the
-same). The first form (a wrapper calling a second function that held the
-section and returned an enum) cost +65..83 instructions per larson
-operation; this one +33..47 (`bench/results/2026-09-19-*-task8-percpu-fastpath.md`). The thread heap stays: it is the init
+The paths (the zero-cost dispatch, lane percpu-dispatch, 2026-09-21).
+The entry points carry nothing for the mode: no flag bit, no test, no
+tail call. A heap in the mode (`Heap::percpu`) never installs a home
+cache (`Heap::ensure_cache` refuses its home arena; an explicit
+`MALLOCX_ARENA` request for that arena is served directly from the
+slab), so every home header stays `CacheHeader::EMPTY`, `len == cap ==
+0`, which is the state section 6.3's two fast paths already treat as
+"slow path": `malloc`'s inlined pop falls through on `len == 0`, `free`'s
+and the sized free's inlined push on `len == cap`, and each takes the
+cold tail call it has anyway (`malloc_slow`, `free_slow`,
+`free_sized_slow`), where `Heap::alloc`, `Heap::alloc_zeroed` and
+`Heap::free` test the heap's `percpu` byte and go to
+`Heap::percpu_alloc` / `Heap::percpu_free` (out of line, not cold: the
+`pop` or `push` section on the running CPU's header, the byte count, the
+refill or flush on a miss). So the thread paths are byte for byte the
+allocator without the mode (the codegen list in
+`bench/results/2026-09-21-*-percpu-dispatch*.md`), and what the mode
+pays is the entry point's wasted header load and the slow path's
+prologue (the init-state load, the second TLS read, `class_of` again or
+the exact `classify_free` in place of the inlined check) before the
+section. In the mode a pop or push is therefore that prologue plus the
+thread-pointer load, the `mm_cid` load, the table index and the section;
+the `free` path skips the owner word (a CPU cache takes verified slots
+of every arena, section 6.3's sized path already does the same). The
+earlier forms: a wrapper calling a second function that held the section
+and returned an enum cost +65..83 instructions per larson operation in
+the mode, the inlined section with cold tail-call misses +33..47
+(`bench/results/2026-09-19-*-task8-percpu-fastpath.md`), and both were
+reached through a `PUSH_PERCPU` bit of `Shared::push_flags` tested by
+the entry points with a tail call, which cost the *default* path +9
+instructions and +1.8% cycles per larson operation on the C4A (three of
+them the dispatch on the hit paths, `bench/results/2026-09-20-aarch64-larson1-drift.md`),
+the reason the dispatch moved. The thread heap stays: it is the init
 witness the fast paths load anyway, it keeps the thread's byte counters
 (every per-CPU pop and push is counted there per operation, so
-`thread.allocated` stays exact), its own caches serve explicit
-`MALLOCX_ARENA` traffic and huge runs as before, and a heap off the mode
-takes the thread paths from inside the per-CPU ones: explicit caches
+`thread.allocated` stays exact), it serves huge runs as before, and a
+heap off the mode takes the thread paths (its home caches are real):
+explicit caches
 (`tcache.create`), `thread.tcache.enabled:false` (served directly), and a
 thread `thread.arena` moved to an explicit arena (its own caches on that
 arena; moving it back to an automatic one returns it to the CPU caches;
@@ -2210,10 +2299,12 @@ bookkeeping, in a called function against an inline two-load pop); on
 the Valkey model +183 / +180 instructions and +68 / +107 cycles, the
 extra being the compact-mode scheduled pop's locked one-slot claim (one
 pop in 8 on a fragmented 500 MiB heap, where the thread run amortises one
-lock over `cap / 4`). The default's own cost (`percpu_arena:off` against
-`old`): +9 instructions and +1.3 / +0.1 cycles per larson operation, the
-`PUSH_PERCPU` test in the entry points; `quick` under the default is GO
-on both VMs. What the mode buys is memory bounded by cores, visible only
+lock over `cap / 4`). The default's own cost under the tail-call
+dispatch (`percpu_arena:off` against `old`): +9 instructions and +1.3 /
++0.1 cycles per larson operation, the `PUSH_PERCPU` test in the entry
+points; `quick` under the default was GO on both VMs, and the cost was
+then removed by the zero-cost dispatch above
+(`bench/results/2026-09-21-*-percpu-dispatch*.md`). What the mode buys is memory bounded by cores, visible only
 with more threads than CPUs (the Ruby idle-thread soak rows in the same
 files: the Sidekiq-shaped `bench/ruby/soak.rb` at 16 / 64 / 256 mostly
 idle threads peaks at 305 / 1649 / 2426 MiB with thread caches on the C4A

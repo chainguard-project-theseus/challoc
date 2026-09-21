@@ -96,9 +96,23 @@ rm -rf "$OUT"; mkdir -p "$OUT" "$(dirname "$RESULT")"
 
 # ---- build, stage, install -------------------------------------------------------
 [ -x "$WORK/build-challoc/ruby" ] || die "no Ruby build at target/ruby/build-challoc: run 'make ruby STAGE=build' first"
-echo "== staging challoc as libjemalloc.so.2 from the working tree ($COMMIT)"
-touch "$ROOT/src/lib.rs"
-TARGET_DIR=$COMPAT QUANTUM=16 sh "$ROOT/scripts/jemalloc-compat.sh" > "$OUT/stage.log" 2>&1 || { tail -20 "$OUT/stage.log" >&2; die "jemalloc-compat stage failed"; }
+# CHALLOC_SRC: the source tree the challoc stage is built from (default:
+# this tree). An A/B copy made by bench/geometry-variant.sh, or by hand
+# from `src Cargo.toml Cargo.lock build.rs scripts contrib`, puts a src/
+# variant under the same Ruby binary; the header names the directory and
+# the stage's sha256 either way.
+CHALLOC_SRC=${CHALLOC_SRC:-}
+if [ -n "$CHALLOC_SRC" ]; then
+  SRCDIR=$ROOT/$CHALLOC_SRC
+  [ -f "$SRCDIR/Cargo.toml" ] && [ -f "$SRCDIR/scripts/jemalloc-compat.sh" ] || die "CHALLOC_SRC=$CHALLOC_SRC: no Cargo.toml or scripts/jemalloc-compat.sh under $SRCDIR (copy src Cargo.toml Cargo.lock build.rs scripts contrib)"
+  echo "== staging challoc as libjemalloc.so.2 from $CHALLOC_SRC (an A/B copy; HEAD $COMMIT)"
+else
+  SRCDIR=$ROOT
+  echo "== staging challoc as libjemalloc.so.2 from the working tree ($COMMIT)"
+fi
+touch "$SRCDIR/src/lib.rs"
+( cd "$SRCDIR" && TARGET_DIR=$COMPAT QUANTUM=16 sh "$SRCDIR/scripts/jemalloc-compat.sh" ) > "$OUT/stage.log" 2>&1 || { tail -20 "$OUT/stage.log" >&2; die "jemalloc-compat stage failed"; }
+grep -q 'Compiling challoc' "$OUT/stage.log" || die "cargo reused a previous stage build instead of compiling ${CHALLOC_SRC:-the tree} (stale mtimes?); see $OUT/stage.log"
 STAGE_HASH=$(so_hash "$STAGE_LIB/libjemalloc.so.2")
 if [ ! -x "$INST/bin/ruby" ] || [ "$WORK/build-challoc/ruby" -nt "$INST/bin/ruby" ]; then
   printf '== installing the challoc build into %s ... ' "${INST#"$ROOT"/}"
@@ -184,7 +198,7 @@ col() {
 }
 describe() {
   case $1 in
-    challoc)     echo "the --with-jemalloc ruby, DT_NEEDED libjemalloc.so.2 bound via rpath to $STAGE_LIB/libjemalloc.so.2 (challoc, quantum16, sha256 $STAGE_HASH), default MALLOC_CONF";;
+    challoc)     echo "the --with-jemalloc ruby, DT_NEEDED libjemalloc.so.2 bound via rpath to $STAGE_LIB/libjemalloc.so.2 (challoc, quantum16, sha256 $STAGE_HASH${CHALLOC_SRC:+, built from the A/B source copy $CHALLOC_SRC}), default MALLOC_CONF${CHALLOC_CONF:+ plus CHALLOC_CONF=$CHALLOC_CONF}";;
     jemalloc)    echo "the same ruby with LD_PRELOAD=$JEMALLOC_LIB (Wolfi jemalloc $(apk_version jemalloc)); the stage is not mapped";;
     challoc-bg)  echo "as challoc, with MALLOC_CONF=background_thread:true";;
     jemalloc-bg) echo "as jemalloc, with MALLOC_CONF=background_thread:true";;

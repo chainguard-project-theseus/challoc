@@ -112,7 +112,7 @@ MiB heap whose slab descriptors miss cache on every free of a random key,
   `valkey1-usable` (`-u`) precedes every free with a `malloc_usable_size`
   query of the pointer, which is what Valkey's unsized `zfree(ptr)` does
   (`zmalloc_size` for the accounting, then `je_sdallocx`); it is the row
-  for the usable-size query (plan Phase 1.5 task 14), not a gate row. `valkey1-write` (`-w SECS -d 0`) is the write phase alone, so a per-operation counter from `quick-perf` is per SET (the instruction budget of plan Phase 2.5 task 4c; it is not in the `quick` set). Scored by
+  for the usable-size query (plan Phase 1.5 task 14), not a gate row. `valkey1-write` (`-w SECS -d 0`) is the write phase alone, so a per-operation counter from `quick-perf` is per SET (the instruction budget of plan Phase 2.5 task 4c; it is not in the `quick` set). `valkey1-write-zmalloc` (`-w SECS -d 0 -u -a`) is that write phase in Valkey's unsized `zmalloc` shape, a `malloc_usable_size` after every allocation and before every free, and `valkey1-write-pair` (`-p`) the same with challoc's `challoc_malloc_usable`/`challoc_free_usable` pair in place of both (design 13.7); the two are the attribution rows of the size-returning entry points, `quick-perf` only. Scored by
   the write phase's M ops/s (the phase whose gap the soak shows widest and
   the one that reproduces the large-heap free miss); the delete phase's
   rate, the RSS after it and, with a `mallctl`-exporting allocator,
@@ -184,8 +184,13 @@ scripts iterations used to rewrite. `VARIANTS` is a list of
     make ab VARIANTS='old=HEAD~1 new=HEAD narenas16=HEAD~1:narenas:16 jemalloc'
 
 Each rev is built once from `git archive` into `target/ab/<hash>` (`tree`
-means the working tree, into `target/ab/tree`); two variants sharing a rev
-share the build. `ROUNDS` (5) timed rounds plus one discarded warm-up, every
+means the working tree, into `target/ab/tree`; a `.tmp-<v>` source
+directory made by `bench/geometry-variant.sh`, or by hand from `src
+Cargo.toml Cargo.lock build.rs`, is built in place into
+`target/ab/<basename>`, so a src/ variant that is never committed can sit
+in the same run: `slab16=.tmp-slab16`, also `OLD=`/`NEW=` of `make quick`;
+`.tmp-*` is not synced to a VM, make the copy there); two variants sharing
+a rev share the build. `ROUNDS` (5) timed rounds plus one discarded warm-up, every
 variant runs every bench within a round (interleaved, so drift hits all
 alike), every run's score is listed sorted, RSS is `rt`'s median maxrss in
 KiB, and the load average at start and end is in the header. `BENCHES`

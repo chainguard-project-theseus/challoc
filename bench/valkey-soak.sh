@@ -28,7 +28,11 @@
 # every allocator (same client binary, only the server changes);
 # memtier_benchmark is Wolfi's package.
 #
-#   ALLOCS="challoc jemalloc"  servers to soak, in order
+#   ALLOCS="challoc jemalloc"  servers to soak, in order; challoc-old adds the
+#                              server of CHALLOC_OLD_SRC (default target/valkey/
+#                              src-<tag>-oldpatch, a tree built with a previous
+#                              contrib patch) on the same library, with its own
+#                              "vs jemalloc" column
 #   CHALLOC_CONF=              MALLOC_CONF for the challoc server alone (plan
 #                              Phase 2.5 task 8: percpu_arena:percpu soaks the
 #                              per-CPU mode against the same jemalloc, which a
@@ -162,15 +166,24 @@ ensure_jemalloc_server() {
     || { tail -30 "$WORK/logs/build-jemalloc-$ARCH.log" >&2; exit 1; }
 }
 
+# challoc-old: a second challoc server from CHALLOC_OLD_SRC (default the
+# tree contrib/valkey/build.sh built with the previous contrib patch, kept as
+# target/valkey/src-<tag>-oldpatch), for a same-run comparison of two
+# versions of the Valkey-side patch against one library and one jemalloc
+# column (the sized-path lane, 2026-09-21). It runs the same library as the
+# challoc server (both binaries carry the rpath of the challoc build).
+CHALLOC_OLD_SRC=${CHALLOC_OLD_SRC:-$SRC-oldpatch}
 server_for() {
   case $1 in
     challoc)  echo "$SRC/src/valkey-server";;
+    challoc-old) [ -x "$CHALLOC_OLD_SRC/src/valkey-server" ] || { echo "valkey-soak: no $CHALLOC_OLD_SRC/src/valkey-server (CHALLOC_OLD_SRC)" >&2; exit 1; }
+              echo "$CHALLOC_OLD_SRC/src/valkey-server";;
     jemalloc) ensure_jemalloc_server; echo "$SRC_JE/src/valkey-server";;
     *) echo "valkey-soak: unknown allocator $1" >&2; exit 1;;
   esac
 }
 expected_allocator() {
-  case $1 in challoc) echo jemalloc-5.3.0-challoc;; jemalloc) echo jemalloc-5.3.0;; esac
+  case $1 in challoc|challoc-old) echo jemalloc-5.3.0-challoc;; jemalloc) echo jemalloc-5.3.0;; esac
 }
 
 SERVER_PID=
@@ -281,9 +294,17 @@ soak() { # alloc
   step "$alloc: $server"
   "$server" --version | tee "$D/version.txt"
   # $IO_THREADS unquoted on purpose: empty means no flag. CHALLOC_CONF
-  # reaches the challoc server only.
+  # reaches the challoc server only, and so does CHALLOC_LIB: a directory
+  # holding a libchalloc.so.0 (a quantum8 A/B build of a `.tmp-<v>` source
+  # copy) that is LD_PRELOADed under its soname, so the binary's DT_NEEDED
+  # libchalloc.so.0 resolves to it whether the link left an RPATH or a
+  # RUNPATH and the same valkey-server runs on a src/ variant; the mapped
+  # library and its sha256 are checked and recorded below.
   conf_env=
-  case $alloc in challoc) [ -n "${CHALLOC_CONF:-}" ] && conf_env="MALLOC_CONF=$CHALLOC_CONF";; esac
+  case $alloc in challoc)
+    [ -n "${CHALLOC_CONF:-}" ] && conf_env="MALLOC_CONF=$CHALLOC_CONF"
+    [ -n "${CHALLOC_LIB:-}" ] && { [ -f "$CHALLOC_LIB/libchalloc.so.0" ] || { echo "valkey-soak: CHALLOC_LIB=$CHALLOC_LIB has no libchalloc.so.0" >&2; exit 1; }; conf_env="$conf_env LD_PRELOAD=$CHALLOC_LIB/libchalloc.so.0"; };;
+  esac
   env $conf_env "$server" --port "$PORT" --save "" --appendonly no --daemonize no \
     --logfile "$D/server.log" --activedefrag "$DEFRAG" ${IO_THREADS:+--io-threads $IO_THREADS} >/dev/null 2>&1 9>&- &
   SERVER_PID=$!
@@ -295,6 +316,18 @@ soak() { # alloc
   got=$(info_field memory mem_allocator)
   [ "$got" = "$(expected_allocator "$alloc")" ] \
     || { echo "valkey-soak: $alloc server reports mem_allocator=$got" >&2; exit 1; }
+  # Which allocator library the server mapped, and its hash, for the header.
+  mapped=$(awk '$6 ~ /libchalloc\.so|libjemalloc/ {print $6}' "/proc/$SERVER_PID/maps" 2>/dev/null | sort -u | head -1)
+  case $alloc in
+    challoc)
+      [ -n "$mapped" ] || { echo "valkey-soak: the challoc server maps no libchalloc.so" >&2; exit 1; }
+      if [ -n "${CHALLOC_LIB:-}" ]; then
+        case $mapped in "$CHALLOC_LIB"/*) ;; *) echo "valkey-soak: CHALLOC_LIB=$CHALLOC_LIB but the server mapped $mapped" >&2; exit 1;; esac
+      fi
+      echo "$mapped $(so_hash "$mapped")" > "$D/lib.txt";;
+    *) echo "${mapped:-bundled (static)}" > "$D/lib.txt";;
+  esac
+  echo "allocator library: $(cat "$D/lib.txt")"
   "$CLI" -p "$PORT" config get activedefrag | tail -1 > "$D/activedefrag.txt"
   "$CLI" -p "$PORT" config get jemalloc-bg-thread | tail -1 > "$D/bg-thread.txt"
   "$CLI" -p "$PORT" config get io-threads | tail -1 > "$D/io-threads.txt"
@@ -427,6 +460,7 @@ ALLOCS=$SUMMARY_ALLOCS
   for alloc in $ALLOCS; do echo "- $alloc server: $(cat "$OUT/$alloc/version.txt")"; done
   echo "- clients: valkey-benchmark from the challoc tree, $(memtier_benchmark --version 2>&1 | head -1)"
   [ -n "${CHALLOC_CONF:-}" ] && echo "- challoc server MALLOC_CONF: $CHALLOC_CONF (CHALLOC_CONF; the jemalloc server runs stock)"
+  for alloc in $ALLOCS; do [ -f "$OUT/$alloc/lib.txt" ] && echo "- $alloc allocator library (path, sha256 prefix): $(cat "$OUT/$alloc/lib.txt")${CHALLOC_LIB:+$([ "$alloc" = challoc ] && echo " (CHALLOC_LIB=$CHALLOC_LIB, an A/B build preloaded under the soname)")}"; done
   echo "- workload: write phase $((DURATION / 2)) s (valkey-benchmark -t set -d $SIZE -r $KEYS -n $VB_REQS -c $VB_CLIENTS -P $PIPELINE, then memtier SET-only $MT_SIZES B over $KEYS keys, $MT_THREADS x $MT_CLIENTS clients, -P $PIPELINE, $CHUNK s), delete phase $((DURATION / 2)) s (valkey-benchmark del key:__rand_int__, then memtier DEL:SET $DEL_RATIO:1), settle $SETTLE s idle; activedefrag $DEFRAG; io-threads $(cat "$OUT/$(echo $ALLOCS | cut -d' ' -f1)/io-threads.txt" 2>/dev/null || echo "${IO_THREADS:-default}"); INFO sampled every $INTERVAL s; memtier key pattern: $KEY_PATTERN$([ "$KEY_PATTERN" = uniform ] && echo " (--randomize, time-seeded random keys in both phases; NOT the acceptance protocol)" || echo " (memtier's fixed-seed key stream, the acceptance protocol)")"
   echo "- throughput is the mean requests/s over a tool's runs in a phase; p99 is the median of the per-run p99 (ms, client-side); peak RSS is the server's VmHWM; the RSS columns are used_memory_rss (MiB) at the last sample of each phase"
   echo "- $(cgroup_peak_note)"
@@ -443,19 +477,28 @@ ALLOCS=$SUMMARY_ALLOCS
   hdr="| measure |"; sep="|---|"
   for a in $ALLOCS; do hdr="$hdr $a |"; sep="$sep---:|"; done
   [ $cmp = 1 ] && { hdr="$hdr challoc vs jemalloc |"; sep="$sep---:|"; }
+  cmp_old=0
+  case " $ALLOCS " in *" challoc-old "*) [ $cmp = 1 ] && { cmp_old=1; hdr="$hdr challoc-old vs jemalloc |"; sep="$sep---:|"; };; esac
   echo "$hdr"; echo "$sep"
   row() { # label higher_is_better (1, 0, or 2 for no comparison) values...
     label=$1; hib=$2; shift 2
-    r="| $label |"; c=; j=; i=0
+    r="| $label |"; c=; j=; o=; i=0
     for a in $ALLOCS; do
       i=$((i+1)); v=$(eval echo \$$i)
       r="$r $v |"
-      [ "$a" = challoc ] && c=$v; [ "$a" = jemalloc ] && j=$v
+      [ "$a" = challoc ] && c=$v; [ "$a" = jemalloc ] && j=$v; [ "$a" = challoc-old ] && o=$v
     done
     if [ $cmp = 1 ]; then
       case $hib in
         1) r="$r $(pct "$j" "$c") |";;
         0) r="$r $(pct "$c" "$j") |";;
+        *) r="$r - |";;
+      esac
+    fi
+    if [ $cmp_old = 1 ]; then
+      case $hib in
+        1) r="$r $(pct "$j" "$o") |";;
+        0) r="$r $(pct "$o" "$j") |";;
         *) r="$r - |";;
       esac
     fi

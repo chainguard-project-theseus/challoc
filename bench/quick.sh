@@ -84,14 +84,22 @@ rm -rf "$OUT"; mkdir -p "$OUT"
 # ---- builds -----------------------------------------------------------------
 old_rev=$(resolve_rev "$OLD"); new_rev=$(resolve_rev "$NEW")
 echo "== quick: $STAMP $ARCH nproc $PROCS load $(loadavg)"
-echo "== old = $OLD ($(echo "$old_rev" | cut -c1-12)), new = $NEW ($(if [ "$new_rev" = tree ]; then echo "HEAD $(commit_short)$(tree_dirty && echo ' + uncommitted src changes')"; else echo "$new_rev" | cut -c1-12; fi))"
+echo "== old = $OLD ($(rev_label "$old_rev")), new = $NEW ($(if [ "$new_rev" = tree ]; then echo "HEAD $(commit_short)$(tree_dirty && echo ' + uncommitted src changes')"; else rev_label "$new_rev"; fi))"
 printf '== building old ... '; build_lib "$old_rev" "$QDIR/old"; echo done
 printf '== building new ... '; build_lib "$new_rev" "$QDIR/new"; echo done
 OLD_SO=$QDIR/old/release/libchalloc.so; NEW_SO=$QDIR/new/release/libchalloc.so
 old_h=$(so_hash "$OLD_SO"); new_h=$(so_hash "$NEW_SO")
 # Do the sources differ between the two variants?
 src_differ=0
-if [ "$new_rev" = tree ]; then
+if [ "$old_rev" != "${old_rev#dir:}" ] || [ "$new_rev" != "${new_rev#dir:}" ]; then
+  # A source directory (dir:PATH) is compared by content with the other
+  # side when that side is the tree or another directory; against a git rev
+  # the sources are taken to differ.
+  src_of() { case $1 in tree) echo "$ROOT";; dir:*) echo "$ROOT/${1#dir:}";; *) echo "";; esac; }
+  o=$(src_of "$old_rev"); n=$(src_of "$new_rev")
+  if [ -z "$o" ] || [ -z "$n" ]; then src_differ=1
+  elif ! diff -rq "$o/src" "$n/src" >/dev/null 2>&1 || ! cmp -s "$o/Cargo.toml" "$n/Cargo.toml"; then src_differ=1; fi
+elif [ "$new_rev" = tree ]; then
   if [ "$old_rev" = tree ]; then src_differ=0
   else $GIT -C "$ROOT" diff --quiet "$old_rev" -- src Cargo.toml Cargo.lock build.rs 2>/dev/null || src_differ=1; fi
 elif [ "$old_rev" = tree ]; then
