@@ -4,7 +4,7 @@
 #
 #   setsid nohup sudo bash bench/probes/valkey-perf-sidecar.sh ~/logs/4d [D0] [S0] &
 #
-# For each valkey-server the soak starts (challoc first, then jemalloc), it
+# For each valkey-server the soak starts (ALLOCS, default challoc then jemalloc), it
 # attaches `perf stat -I 1000` (task-clock plus five PMU events, no
 # multiplexing on Neoverse V2) for the server's whole life, records 60 s of
 # cycles at t=100 (write phase) and t=D0 (delete phase; default 400, use 700
@@ -19,10 +19,13 @@
 # bench/results/2026-09-18-aarch64-gce-valkey-throughput.md.
 set -u
 L=${1:?usage: valkey-perf-sidecar.sh OUTDIR [D0] [S0]}; D0=${2:-400}; S0=${3:-605}
+# The servers the soak starts, in order (bench/valkey-soak.sh ALLOCS; a
+# same-run comparison of two contrib patches passes "challoc-old challoc jemalloc").
+ALLOCS=${ALLOCS:-"challoc jemalloc"}
 EV=task-clock,cycles,instructions,L1-dcache-load-misses,dTLB-load-misses,branch-misses
 CLI=/src/target/valkey/src-9.1.2/src/valkey-cli
 last=
-for alloc in challoc jemalloc; do
+for alloc in $ALLOCS; do
   while :; do
     pid=$(pgrep -x valkey-server | head -1)
     if [ -n "$pid" ] && [ "$pid" != "$last" ] && tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q 6399; then
