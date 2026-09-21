@@ -355,21 +355,33 @@ impl Heap {
     /// ([`Heap::percpu_alloc_slow`]), an id out of range aborts. Out of
     /// line so the section is compiled once, not into every caller of
     /// `Heap::alloc` (`malloc_slow`, `calloc`, the aligned and `mallocx`
-    /// paths); not cold, it is the mode's hit path.
+    /// paths); not cold, it is the mode's hit path, which tests one bit of
+    /// the section's raw status word and has no call of its own (every
+    /// miss is one cold tail call, [`Heap::percpu_alloc_miss`], so this
+    /// function needs no frame).
     #[inline(never)]
     pub(super) fn percpu_alloc(&mut self, shared: &Shared, class: usize) -> (*mut u8, bool) {
         // SAFETY: the owning thread registered this area; the table is live.
-        match unsafe { rseq::pop(self.rseq_area, shared.percpu.table(class), shared.pac()) } {
-            rseq::Pop::Popped(p, zero) => {
-                self.count_direct_alloc(class);
-                (p, zero)
-            }
-            rseq::Pop::Scheduled => match self.percpu_scheduled(shared, class) {
+        let (p, st) = unsafe { rseq::pop_raw(self.rseq_area, shared.percpu.table(class), shared.pac()) };
+        if st & rseq::POP_HIT != 0 {
+            self.count_direct_alloc(class);
+            return (p, st & rseq::POP_ZERO != 0);
+        }
+        self.percpu_alloc_miss(shared, class, st)
+    }
+
+    /// Every outcome of [`Heap::percpu_alloc`]'s section but a hit: the
+    /// scheduled pop, an empty cache (the refill), an id out of range.
+    #[cold]
+    #[inline(never)]
+    fn percpu_alloc_miss(&mut self, shared: &Shared, class: usize, st: u32) -> (*mut u8, bool) {
+        match st {
+            rseq::POP_EMPTY => self.percpu_alloc_slow(shared, class),
+            rseq::POP_SCHEDULED => match self.percpu_scheduled(shared, class) {
                 Some(r) => r,
                 None => self.percpu_alloc_slow(shared, class),
             },
-            rseq::Pop::Empty => self.percpu_alloc_slow(shared, class),
-            rseq::Pop::OutOfRange => cid_out_of_range(),
+            _ => cid_out_of_range(),
         }
     }
 
@@ -383,7 +395,8 @@ impl Heap {
     /// counted in the thread's bytes; a full or uninstalled cache and
     /// `zero_on_free` go to [`Heap::percpu_free_slow`], a huge run to the
     /// huge allocator. Out of line for the same reason as
-    /// [`Heap::percpu_alloc`].
+    /// [`Heap::percpu_alloc`], and like it the hit path tests the raw
+    /// status word and every miss is a tail call.
     #[inline(never)]
     pub(super) fn percpu_free(&mut self, shared: &Shared, p: *mut u8) {
         match shared.classify_free(p) {
@@ -391,13 +404,13 @@ impl Heap {
                 if !shared.zero_on_free() {
                     // SAFETY: this thread's area; `p` is a verified slot
                     // start of `class`.
-                    match unsafe { rseq::push(self.rseq_area, shared.percpu.table(class), p, shared.pac()) } {
-                        rseq::Push::Pushed => {
-                            self.count_direct_free(class);
-                            return;
-                        }
-                        rseq::Push::OutOfRange => cid_out_of_range(),
-                        rseq::Push::Full => {}
+                    let st = unsafe { rseq::push_raw(self.rseq_area, shared.percpu.table(class), p, shared.pac()) };
+                    if st == rseq::PUSH_PUSHED {
+                        self.count_direct_free(class);
+                        return;
+                    }
+                    if st != rseq::PUSH_FULL {
+                        cid_out_of_range();
                     }
                 }
                 self.percpu_free_slow(shared, class, p)
