@@ -2923,7 +2923,7 @@ src/arena.rs          arenas, explicit caches; re-exports heap::mallocx
 src/config.rs         malloc_conf parsing: one key table (name, parse, read) behind set/get/KEYS
 src/stats.rs          counters and epoch merge
 src/thp.rs            THP: the `thp` key against the sysfs table, reservation advice, metadata folios, MADV_HUGEPAGE on huge runs, forced_by_limit
-src/api/mod.rs        lazy init (applies the spin hint and cldemote), Shared/Features statics, challoc_version/challoc_features, fork handlers, export_pair!
+src/api/mod.rs        lazy init (applies the spin hint), Shared/Features statics, challoc_version/challoc_features, fork handlers, export_pair!
 src/api/libc.rs       standard entry points, malloc_trim
 src/api/glibc.rs      mallopt, mallinfo, mallinfo2
 src/api/jemalloc.rs   *allocx, mallctl entry points, malloc_conf/malloc_message symbols, je_ aliases
