@@ -248,10 +248,10 @@ the CPU capture (`cpuinfo.log`: model name, the `flags`/`Features` line,
 the source of the host fixtures in `src/sys/cpu.rs`), and, instead of fuzz
 and test-cgroup, one `make scorecard ROUNDS=3` (challoc versus jemalloc, the
 fixed row set) written to `target/results/scorecard-<family>.md` on the VM
-and fetched back next to the reference files. `scorecard-aarch64.md` and
-`scorecard-x86_64.md` stay the acceptance record (C4A and C4 at 16 vCPU)
-and are not touched; the per-CPU files are 8 vCPU, so compare them with
-the reference CPU of the same architecture row by row (challoc-vs-jemalloc
+and fetched back next to the reference scorecards (`scorecard-aarch64.md`
+and `scorecard-x86_64.md`, C4A and C4 at 16 vCPU), which it does not
+touch; the per-CPU files are 8 vCPU, so compare them with the reference
+CPU of the same architecture row by row (challoc-vs-jemalloc
 percentages), never by absolute throughput.
 
 Cells name their zones (a comma-separated list, tried in order, at most

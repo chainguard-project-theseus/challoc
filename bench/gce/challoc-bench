@@ -485,8 +485,8 @@ cmd_session() {
 # the cell script's `scorecard` flag replaces fuzz and test-cgroup with one
 # `make scorecard ROUNDS=3` (challoc vs jemalloc, the fixed row set) written
 # to target/results/scorecard-<family>.md on the VM and fetched back next to
-# the two reference files (scorecard-aarch64.md, scorecard-x86_64.md, which
-# stay the acceptance record and are not touched). Families live in
+# the two reference scorecards (scorecard-aarch64.md, scorecard-x86_64.md,
+# which it does not touch). Families live in
 # different zones (T2A only in us-central1), so a cell names its zones:
 # a comma-separated list tried in order, at most two, for capacity or quota
 # errors (ZONE_RESOURCE_POOL_EXHAUSTED, QUOTA_EXCEEDED); `-` is $ZONE. The

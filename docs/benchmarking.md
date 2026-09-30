@@ -80,7 +80,7 @@ passed it. During a working session the VMs can stay warm
 runs a fixed row set (larson 1/10/16, xmalloc-test, alloc-test 1/N,
 valkey1, valkey1-free, cfrac, espresso, mstress, glibc-simple, redis)
 under challoc and jemalloc, 3 interleaved rounds, and appends one line per
-(date, commit, arch) to `bench/results/scorecard-<arch>.md`: percentages
+(date, commit, arch) to `target/results/scorecard-<arch>.md`: percentages
 against jemalloc, the RSS ratios and the commit's most recent soak.
 `bench/scorecard.sh --render` prints the trend. The scorecard is a trend,
 not an acceptance measurement; criteria are judged from same-run protocol
