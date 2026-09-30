@@ -18,18 +18,6 @@ pub(super) fn owner_mismatch(class: usize, group: usize, slab: usize, word: u16,
     )
 }
 
-/// A group the donor's sets said was idle (`next_idle_group`) holds a slab
-/// that is not: `Active`, live slots, in the donor's partial set or already
-/// in the taker's sets. The sets and the descriptors disagree, so one of
-/// them is corrupt (`transfer_group`).
-#[cold]
-#[inline(never)]
-pub(super) fn idle_group_in_use(class: usize, group: usize, slab: usize, donor: u16, taker: u16, state: State, live: usize, in_sets: bool, partial: bool) -> ! {
-    panic!(
-        "heap inconsistency: class {class} group {group}: idle by arena {donor}'s sets but slab {slab} is {state:?} with live {live}, in its owner's set {in_sets}, partial {partial} (taker arena {taker})"
-    )
-}
-
 /// A `Fresh` or `Purged` slab selected by a refill had a bit set before
 /// its slots were claimed under the lock (`claim_prefix`): `live` no longer
 /// bounds the set bits, so the bitmap or the descriptor is corrupt.

@@ -121,8 +121,8 @@ follows the same bands: under 70% of a known limit the return is
 `MADV_FREE` (the pages stay charged until the kernel wants them, and a
 reuse before that costs no page fault), everywhere else, with no limit
 included, `MADV_DONTNEED` (RSS drops at once; lazily freed pages would
-mislead a fragmentation ratio or an autoscaler); `lazy_free:true` makes
-every return lazy, `lazy_band:false` every return eager, and
+mislead a fragmentation ratio or an autoscaler); `lazy_band:false` makes
+every return eager, and
 `malloc_trim(0)` is always eager. Read `stats.cgroup.decay_ms`,
 `stats.cgroup.retention_cap`, `stats.cgroup.empty_bytes` and
 `stats.cgroup.purge_advice` to see the policy at work. Measured in a

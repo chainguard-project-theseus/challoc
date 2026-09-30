@@ -6,8 +6,7 @@ use crate::purge::{Batch, Curve, STEPS};
 use crate::slab::State;
 
 /// The older of two `dirty_at` stamps where 0 means "none yet": the fold
-/// of the purge walks and the handoff over the `Empty` slabs they keep or
-/// move, feeding the gate's `oldest_empty` (0 when no slab is `Empty`).
+/// of the purge walks over the `Empty` slabs they keep, feeding the gate's `oldest_empty` (0 when no slab is `Empty`).
 /// An `Empty` slab's stamp is never 0 (`on_live_zero` writes
 /// `now.max(1)`), so 0 is unambiguous.
 pub(super) fn min_nonzero(cur: u64, t: u64) -> u64 {

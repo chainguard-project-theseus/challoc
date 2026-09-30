@@ -18,11 +18,10 @@
 //! groups and the commit of slabs); `sets` the lazily committed set tables
 //! ([`Lazy`](sets::Lazy), [`Set`], [`SetTable`]); this file the
 //! [`ClassState`] and the protocol below (claim, plan, take, release,
-//! reopen); `handoff` the fresh-slab path and the idle-group handoff
-//! between arenas; `decay` the purge and the decay walk; `prefault` the
-//! prefault pass's commit-ahead; `verify` the `check_zero` debug mode and
-//! the test-only pointer checks; `abort` the `#[cold]` heap-inconsistency
-//! aborts; `tests` the tests.
+//! reopen); `fresh` the fresh-slab path; `decay` the purge and the
+//! decay walk; `prefault` the prefault pass's commit-ahead; `verify` the
+//! `check_zero` debug mode and the test-only pointer checks; `abort` the
+//! `#[cold]` heap-inconsistency aborts; `tests` the tests.
 //!
 //! Slabs are handed to arenas in *groups* of consecutive slabs
 //! (`SlabTable::group`: the slabs whose bits fill one 64-byte line of the
@@ -37,31 +36,10 @@
 //! `SlabDesc::arena`), and only that arena's state may claim from or
 //! release to it.
 //!
-//! An arena owns its groups until it lends an idle one (design 13.3). A
-//! group is *idle* when none of its slabs is `Active`: every committed
-//! slab of it is in its owner's `empty` or `purged` set (so `live == 0`:
-//! no slot of it is in the program or in any cache) and the rest are
-//! `Fresh`. An arena whose current group is used
-//! up and whose sets are empty looks for such a group in the other arenas'
-//! sets before it takes a fresh group from the region
-//! ([`ClassState::adopt_idle_group`]): under the donor's class lock it
-//! scans the donor's `empty` and `purged` sets group by group, and under
-//! both class locks it rewrites the owner word and every descriptor's
-//! arena, moves the slabs between the two arenas' sets and slab counts,
-//! and inherits the donor's commit cursor when the group was the donor's
-//! current one. Nothing is added to the transition paths (`take`,
-//! `on_live_zero`): the sets are the tracking. Whole groups only, so the
-//! line ownership above is untouched: at 16 arenas the `Empty` slabs one
-//! arena kept while another committed fresh ones were 40 MiB of mstress's
-//! RSS (`bench/results/2026-09-18-phase-1.5-acceptance-3.md`).
-//!
-//! Ownership can now change between a lock-free step and the lock hold
-//! that follows it, so a slab number carried across that gap is checked
-//! against the owner word under the lock before the arena touches its
-//! sets: `reopen` (a word went full to non-full before `dec_live` let the
-//! slab go `Empty`, and another arena may have taken it since) and
-//! `on_live_zero`. Live slots pin a slab (they are counted in `live`), so
-//! nothing else carries a slab across a gap.
+//! A group stays with its arena for good: the owner word is written once,
+//! when `take_group` hands the group out, so a slab's arena never changes.
+//! `reopen` and `on_live_zero` still test the owner word under the lock
+//! before they touch the arena's sets.
 //!
 //! Protocol. A refill takes the lock, picks the lowest partial slab (else
 //! the lowest empty, else the lowest purged, else commits the next slab),
@@ -93,11 +71,11 @@ use crate::lock::{Lock, PAD_ALIGN, Padded, RawLock};
 use crate::meta::Meta;
 use crate::purge::{self, Decayer};
 use crate::slab::{SlabDesc, State};
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 mod abort;
 mod decay;
-mod handoff;
+mod fresh;
 mod prefault;
 mod sets;
 mod table;
@@ -105,12 +83,10 @@ mod table;
 mod tests;
 mod verify;
 
-#[cfg(test)]
-pub(crate) use handoff::HANDOFFS;
 pub use sets::{SET_GROUPS, SETS_PER_CLASS, SetTable};
 pub(crate) use sets::Set;
 pub use table::{SlabTable, desc_stagger};
-use abort::{double_free, guard_free, owner_mismatch, release_into_fresh_slab, reservation_unmet, slab_count_underflow, wrong_arena, zero_slab_had_bits_set};
+use abort::{double_free, guard_free, owner_mismatch, release_into_fresh_slab, reservation_unmet, wrong_arena, zero_slab_had_bits_set};
 use table::os;
 use verify::{fresh_with_live, release_into_fresh};
 
@@ -203,8 +179,8 @@ pub(crate) mod protocol {
         Lock = 0,
         /// `plan_locked` under the lock, one step: the partial walk
         /// (`clear_partial` of a full slab), `next_slab` (the empty and
-        /// purged sets, the group cursor with `commit_slab`, the handoff
-        /// `adopt_idle_group`/`transfer_group`, `take_group`), and `take`
+        /// purged sets, the group cursor with `commit_slab`, `take_group`),
+        /// and `take`
         /// per slab: the `live` reservation, the `Active` transition, the
         /// partial bit, `claim_prefix` for a zero pick.
         PlanLocked = 1,
@@ -306,24 +282,6 @@ pub(crate) mod protocol {
 /// means the `live` count no longer bounds the set bits.
 const MAX_EMPTY_PASSES: u32 = 1 << 22;
 
-/// The `group_handoff` key (default off, an opt-in; design 13.3): whether
-/// an arena takes another arena's idle group before a fresh one. Set once
-/// at init, read on the fresh-commit path only (`handoff.rs`).
-///
-/// Declared here and not in `handoff.rs` on purpose: this is the module's
-/// one static, and a static's position among the crate's items fixes its
-/// slot in the AArch64 merged-globals blob. Moved into the submodule it
-/// shifted every later member by 4 bytes and flipped the `ldr`/`ldur`
-/// encoding of their loads in six cold functions (`api::init`,
-/// `fork_release`, the stats printers, `purge::background::start`), which
-/// `scripts/codegen-diff.sh` reports as changed code.
-static GROUP_HANDOFF: AtomicBool = AtomicBool::new(false);
-
-/// Apply the `group_handoff` key (init; the tests directly).
-pub fn set_group_handoff(on: bool) {
-    GROUP_HANDOFF.store(on, Ordering::Relaxed);
-}
-
 /// One slab's share of a refill: `n` slots reserved in its `live` count.
 #[derive(Copy, Clone)]
 struct Pick {
@@ -415,10 +373,6 @@ pub struct ClassState {
     /// from none to one, recomputed by every purge walk) and read without
     /// it by the decay driver, and the next walk's deadline.
     gate: Decayer,
-    /// The next state over the same table (`SlabTable::register_state`),
-    /// for the handoff's donor lookup; written once, under the commit
-    /// lock.
-    next: AtomicPtr<ClassState>,
     inner: Padded<Lock<Inner>>,
     /// Slots ever reserved by `take` for this arena (written only under
     /// the class lock). With `released` below it gives `curregs`, the
@@ -502,36 +456,37 @@ impl Inner {
         }
     }
 
-    /// `slab` into the empty set (it went `Empty`, or arrived `Empty`
-    /// with an adopted group).
+    /// `slab` into the empty set (it went `Empty`).
     fn empty_add(&mut self, slab: usize) {
         debug_assert!(!self.empty.map.is_set(slab), "empty_add: slab {slab} already in the empty set");
         self.empty.map.set(slab);
         self.stats.empty += 1;
     }
 
-    /// `slab` out of the empty set (a refill takes it, a purge moves it
-    /// to `purged`, a handoff moves it to another arena).
+    /// `slab` out of the empty set. Tests only: a refill and a purge
+    /// spell the pair out (`next_slab`, `purge_group`).
+    #[cfg(test)]
     fn empty_take(&mut self, slab: usize) {
         debug_assert!(self.empty.map.is_set(slab), "empty_take: slab {slab} not in the empty set");
         self.empty.map.clear(slab);
-        self.stats.empty = self.stats.empty.checked_sub(1).unwrap_or_else(|| slab_count_underflow("empty"));
+        self.stats.empty = self.stats.empty.checked_sub(1).unwrap_or_else(|| abort::slab_count_underflow("empty"));
     }
 
-    /// `slab` into the purged set (a purge discarded it, the prefault
-    /// pass published it, or it arrived `Purged` with an adopted group).
+    /// `slab` into the purged set (a purge discarded it, or the prefault
+    /// pass published it).
     fn purged_add(&mut self, slab: usize) {
         debug_assert!(!self.purged.map.is_set(slab), "purged_add: slab {slab} already in the purged set");
         self.purged.map.set(slab);
         self.stats.purged += 1;
     }
 
-    /// `slab` out of the purged set (a refill takes it, a handoff moves
-    /// it to another arena).
+    /// `slab` out of the purged set. Tests only: a refill spells the
+    /// pair out (`next_slab`).
+    #[cfg(test)]
     fn purged_take(&mut self, slab: usize) {
         debug_assert!(self.purged.map.is_set(slab), "purged_take: slab {slab} not in the purged set");
         self.purged.map.clear(slab);
-        self.stats.purged = self.stats.purged.checked_sub(1).unwrap_or_else(|| slab_count_underflow("purged"));
+        self.stats.purged = self.stats.purged.checked_sub(1).unwrap_or_else(|| abort::slab_count_underflow("purged"));
     }
 }
 
@@ -553,7 +508,6 @@ impl ClassState {
             arena,
             table,
             gate: Decayer::new(),
-            next: AtomicPtr::new(core::ptr::null_mut()),
             inner: Padded(Lock::new(Inner {
                 partial,
                 empty,
@@ -769,22 +723,16 @@ impl ClassState {
     /// release can race the clear.
     fn plan(&self, meta: &Meta, want: usize, picks: &mut [Pick; MAX_PICKS]) -> usize {
         let cls = self.class();
-        let mut wake = false;
         let mut taken = false;
-        let np = self.plan_locked(meta, want, picks, cls, &mut wake, &mut taken);
-        if wake {
-            purge::note_empty();
-        }
+        let np = self.plan_locked(meta, want, picks, cls, &mut taken);
         if taken {
             purge::prefault::note_taken();
         }
         np
     }
 
-    /// [`plan`] under the lock; `wake` is set when a handoff gave this
-    /// arena its first `Empty` slab, which the caller reports to the
-    /// background thread once the lock is dropped (as `on_live_zero`);
-    /// `taken` when, with the prefault pass on, a pick took an idle
+    /// [`plan`] under the lock; `taken` is set when, with the prefault
+    /// pass on, a pick took an idle
     /// (`Empty` or `Purged`) slab and the arena has none of the class left
     /// (the prefault pass's claim-side wake: the slab taken may
     /// have been the prefaulted one, and the next refill of the class
@@ -795,7 +743,7 @@ impl ClassState {
     /// per refill that reached `next_slab`, nothing on the partial path.
     ///
     /// [`plan`]: ClassState::plan
-    fn plan_locked(&self, meta: &Meta, want: usize, picks: &mut [Pick; MAX_PICKS], cls: &Class, wake: &mut bool, taken: &mut bool) -> usize {
+    fn plan_locked(&self, meta: &Meta, want: usize, picks: &mut [Pick; MAX_PICKS], cls: &Class, taken: &mut bool) -> usize {
         let mut g = self.inner.lock();
         let mut np = 0;
         let mut remaining = want;
@@ -816,7 +764,7 @@ impl ClassState {
         }
         let first_fresh = np;
         while remaining > 0 && np < MAX_PICKS {
-            let s = match self.next_slab(&mut g, meta, wake) {
+            let s = match self.next_slab(&mut g, meta) {
                 Some(s) => s,
                 None => break,
             };
@@ -868,8 +816,8 @@ impl ClassState {
         } else {
             g.set_partial(slab);
         }
-        // `Purged` memory is zero only when it was discarded with
-        // `MADV_DONTNEED` (no `lazy_free`).
+        // `Purged` memory is zero only while every discard so far was
+        // `MADV_DONTNEED` (`purge::purged_is_zero`).
         let zero = state.is_zero() && (state != State::Purged || purge::purged_is_zero());
         if zero {
             self.claim_prefix(slab, n, state, live);
@@ -917,9 +865,7 @@ impl ClassState {
             if purge::check_zero() {
                 self.check_shadow(slab, "on_live_zero");
             }
-            // The slab may have changed arena since `sub_live` (another
-            // thread of this arena emptied it, another arena adopted it and
-            // is using it): then it is no business of this arena's sets.
+            // A slab of another arena is no business of this arena's sets.
             if self.table().owner(slab) != self.arena {
                 return;
             }
@@ -1086,9 +1032,8 @@ impl ClassState {
         for &s in &reopen.slabs[..reopen.len] {
             let slab = s as usize;
             // Between the word's clear and this lock hold the slab may have
-            // gone `Empty` (in `dec_live`), been adopted by another arena
-            // and been made `Active` there: `Active` alone no longer means
-            // "ours", the owner word under the lock does.
+            // gone `Empty` (in `dec_live`); only an `Active` slab of this
+            // arena goes back into the partial set.
             if self.desc(slab).state() == State::Active && self.table().owner(slab) == self.arena {
                 g.set_partial(slab);
             }

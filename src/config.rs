@@ -54,13 +54,10 @@ pub const LG_NSLOTS_MUL_MAX: i32 = 16;
 /// Largest `guard_slab_interval`: at most one guard per class region's
 /// 2^22 slabs.
 pub const MAX_GUARD_SLAB_INTERVAL: u32 = 1 << 22;
-/// Largest decay / GC interval in milliseconds (about 31 years); jemalloc
+/// Largest decay interval in milliseconds (about 31 years); jemalloc
 /// caps decay at `NSTIME_SEC_MAX * 1000`, which is far larger, but a `u64`
 /// of nanoseconds must not overflow when the interval is converted.
 pub const MAX_INTERVAL_MS: i64 = 1_000_000_000_000;
-/// Largest `tcache_compact_shift`: one scheduled pop per 2^20 pops is
-/// already no compaction to speak of; 0 turns the schedule off.
-pub const MAX_COMPACT_SHIFT: u32 = 20;
 /// Largest `huge_retain_max`: the preferred huge region (2^40 bytes,
 /// `layout::LG_HUGE_PREFERRED`); no run can be larger, so anything above
 /// means "retain every freed run for decay".
@@ -308,11 +305,6 @@ pub struct Config {
     pub tcache_max: usize,
     pub tcache_nslots_small_max: u32,
     pub lg_tcache_nslots_mul: i32,
-    pub tcache_gc_interval_ms: i64,
-    /// Every `2^shift` pops of a class are served from the lowest-address
-    /// cached slot instead of the top of the stack (design 6.4); 0 means
-    /// never.
-    pub tcache_compact_shift: u32,
     /// Transparent huge pages for the regions (`thp.rs`, design 7, 10, 17).
     pub thp: Thp,
     /// The process-wide THP policy asked for at init ([`ThpProcess`],
@@ -332,11 +324,8 @@ pub struct Config {
     /// fails), `off` never requests. Applied at the end of `load`
     /// (`Config::apply_slice_ext`) on the init thread.
     pub slice_ext: SliceExt,
-    /// `MADV_FREE` for every purge (the override of the two-advice purge,
-    /// design 8).
-    pub lazy_free: bool,
     /// `MADV_FREE` for purges under 70% of a known cgroup limit (design 8
-    /// and 11); off makes every purge `MADV_DONTNEED` unless `lazy_free`.
+    /// and 11); off makes every purge `MADV_DONTNEED`.
     pub lazy_band: bool,
     pub guards: bool,
     /// One guard per N slabs of 64 KiB (per N * 64 KiB of slabs for the
@@ -399,16 +388,6 @@ pub struct Config {
     /// word under the class or huge lock and a non-zero word aborts with
     /// the slab's prior state and the discard backend. Slow paths only.
     pub check_zero: bool,
-    /// An arena whose slab group of a class is used up takes an idle group
-    /// of that class from another arena before it commits a fresh one
-    /// (design 13.3, `ClassState::adopt_idle_group`). `false`, the
-    /// default, keeps every group with the arena that first committed it:
-    /// the handoff moved nothing on the 16-arena mstress row it was built
-    /// for and cost that row 2.4% of RSS on aarch64
-    /// (`bench/results/2026-09-18-{aarch64,x86_64}-gce-group-handoff.md`);
-    /// it takes a fifth off xmalloc-test's RSS, so it stays as an opt-in.
-    /// Slow paths only.
-    pub group_handoff: bool,
 }
 
 impl Default for Config {
@@ -430,13 +409,10 @@ impl Config {
         tcache_max: DEFAULT_TCACHE_MAX,
         tcache_nslots_small_max: MAX_CAP,
         lg_tcache_nslots_mul: 1,
-        tcache_gc_interval_ms: 10_000,
-        tcache_compact_shift: 3,
         thp: Thp::Never,
         thp_process: ThpProcess::Default,
         spin_hint: SpinChoice::Auto,
         slice_ext: SliceExt::Auto,
-        lazy_free: false,
         lazy_band: true,
         guards: true,
         guard_slab_interval: 8,
@@ -449,7 +425,6 @@ impl Config {
         abort_conf: false,
         cgroup: true,
         check_zero: false,
-        group_handoff: false,
     };
 
     /// Apply one `key:value,key:value` string on top of `self`. Each problem
@@ -617,21 +592,6 @@ impl Config {
         self.prefault && self.background_thread
     }
 
-    /// `tcache_gc_interval_ms` in nanoseconds.
-    pub fn gc_interval_ns(&self) -> u64 {
-        (self.tcache_gc_interval_ms as u64).saturating_mul(1_000_000)
-    }
-
-    /// Mask for the scheduled pop: a pop whose count has no bit of the mask
-    /// set is served from the bottom of the sorted run. `u32::MAX` for
-    /// `tcache_compact_shift:0` (one in 2^32 pops, i.e. off).
-    pub fn compact_mask(&self) -> u32 {
-        match self.tcache_compact_shift {
-            0 => u32::MAX,
-            s => (1u32 << s.min(MAX_COMPACT_SHIFT)) - 1,
-        }
-    }
-
     /// The guard slab interval actually used: 0 when guards are off.
     pub fn effective_guard_slab_interval(&self) -> u32 {
         if self.guards { self.guard_slab_interval } else { 0 }
@@ -779,16 +739,6 @@ pub const TABLE: &[Key] = &[
         read: |c| Value::Int(c.lg_tcache_nslots_mul as i64),
     },
     Key {
-        name: "tcache_gc_interval_ms",
-        parse: |c, k, v| num(c, k, v, 0, MAX_INTERVAL_MS, |c, v| c.tcache_gc_interval_ms = v),
-        read: |c| Value::Int(c.tcache_gc_interval_ms),
-    },
-    Key {
-        name: "tcache_compact_shift",
-        parse: |c, k, v| num(c, k, v, 0, MAX_COMPACT_SHIFT as i64, |c, v| c.tcache_compact_shift = v as u32),
-        read: |c| Value::Uint(c.tcache_compact_shift as u64),
-    },
-    Key {
         // `default` is jemalloc's spelling of `never`.
         name: "thp",
         parse: |c, k, v| {
@@ -834,7 +784,6 @@ pub const TABLE: &[Key] = &[
         },
         read: |c| Value::Str(c.slice_ext.name()),
     },
-    bool_key!("lazy_free", lazy_free),
     bool_key!("lazy_band", lazy_band),
     bool_key!("guards", guards),
     Key {
@@ -880,7 +829,6 @@ pub const TABLE: &[Key] = &[
     bool_key!("abort_conf", abort_conf),
     bool_key!("cgroup", cgroup),
     bool_key!("check_zero", check_zero),
-    bool_key!("group_handoff", group_handoff),
 ];
 
 /// The names of [`TABLE`], in its order.
@@ -951,10 +899,9 @@ pub const fn ladder(class: usize, max: u32, lg_mul: i32) -> u32 {
 /// A readable configuration value (`mallctl` `opt.*`, the report's
 /// `opt.` lines). The variant is the key's C type in `mallctl`,
 /// jemalloc's for the keys jemalloc has: `Int` is `ssize_t` (the decay
-/// times and the other signed keys), `Uint` is `unsigned` (a count or a
-/// shift: `narenas`, `tcache_nslots_small_max`, `tcache_compact_shift`,
-/// `guard_slab_interval`), `Size` is `size_t` (a byte count:
-/// `tcache_max`, `huge_retain_max`).
+/// times and the other signed keys), `Uint` is `unsigned` (a count:
+/// `narenas`, `tcache_nslots_small_max`, `guard_slab_interval`), `Size`
+/// is `size_t` (a byte count: `tcache_max`, `huge_retain_max`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Value {
     Bool(bool),
@@ -1376,16 +1323,10 @@ mod tests {
         assert_eq!(d.tcache_max, 32 * 1024);
         assert_eq!(d.tcache_nslots_small_max, 1024);
         assert_eq!(d.lg_tcache_nslots_mul, 1);
-        assert_eq!(d.tcache_gc_interval_ms, 10_000);
-        assert_eq!(d.tcache_compact_shift, 3);
-        assert_eq!(d.compact_mask(), 7);
-        assert_eq!(clean("tcache_compact_shift:0").compact_mask(), u32::MAX);
-        assert_eq!(clean("tcache_compact_shift:20").compact_mask(), (1 << 20) - 1);
         assert_eq!(d.thp, Thp::Never);
         assert_eq!(d.thp_process, ThpProcess::Default, "process-wide, so opt-in");
         assert!(!d.prefault, "opt-in");
         assert!(!d.prefault_active());
-        assert!(!d.lazy_free);
         assert!(d.lazy_band);
         assert!(!clean("lazy_band:false").lazy_band);
         assert!(d.guards);
@@ -1394,9 +1335,8 @@ mod tests {
         assert_eq!(d.huge_retain_max, crate::huge::DEFAULT_RETAIN_MAX);
         assert!(!d.zero_on_free && !d.slot_randomize && !d.double_free_scan && !d.abort_conf && !d.check_zero);
         assert!(!d.pac_pointers, "signed pointers are opt-in (priced in bench/results/2026-09-19-lane-a-pac-pointers.md)");
-        assert!(d.cgroup && !d.group_handoff);
+        assert!(d.cgroup);
         assert_eq!(Config::default(), d);
-        assert_eq!(d.gc_interval_ns(), 10_000_000_000);
         assert_eq!(d.effective_guard_slab_interval(), 8);
     }
 
@@ -1412,7 +1352,6 @@ mod tests {
         let keys = [
             "background_thread",
             "tcache",
-            "lazy_free",
             "lazy_band",
             "guards",
             "zero_on_free",
@@ -1422,7 +1361,6 @@ mod tests {
             "abort_conf",
             "cgroup",
             "check_zero",
-            "group_handoff",
         ];
         for key in keys {
             for v in [true, false] {
@@ -1452,7 +1390,7 @@ mod tests {
     #[test]
     fn every_numeric_key_parses_and_clamps() {
         // (key, in-range value, below-min input, clamped min, above-max input, clamped max)
-        let cases: [(&str, i64, &str, i64, &str, i64); 11] = [
+        let cases: [(&str, i64, &str, i64, &str, i64); 9] = [
             ("dirty_decay_ms", 5000, "-2", -1, "9999999999999999", MAX_INTERVAL_MS),
             ("huge_dirty_decay_ms", 2000, "-2", -1, "9999999999999999", MAX_INTERVAL_MS),
             ("muzzy_decay_ms", 0, "-5", -1, "9999999999999999", MAX_INTERVAL_MS),
@@ -1460,15 +1398,13 @@ mod tests {
             ("tcache_max", 4096, "-1", 0, "9999999", crate::layout::MEDIUM_MAX as i64),
             ("tcache_nslots_small_max", 1000, "1", MIN_CAP as i64, "1000000", MAX_NSLOTS as i64),
             ("lg_tcache_nslots_mul", 3, "-17", -16, "17", 16),
-            ("tcache_gc_interval_ms", 250, "-1", 0, "9999999999999999", MAX_INTERVAL_MS),
-            ("tcache_compact_shift", 4, "-1", 0, "64", MAX_COMPACT_SHIFT as i64),
             ("guard_slab_interval", 2, "-1", 0, "5000000", MAX_GUARD_SLAB_INTERVAL as i64),
             ("huge_retain_max", 1 << 20, "-1", 0, "9999999999999999", MAX_HUGE_RETAIN_MAX as i64),
         ];
         for (key, ok, low, min, high, max) in cases {
             let as_value = |v: i64| match key {
                 "tcache_max" | "huge_retain_max" => Value::Size(v as usize),
-                "narenas" | "tcache_nslots_small_max" | "guard_slab_interval" | "tcache_compact_shift" => Value::Uint(v as u64),
+                "narenas" | "tcache_nslots_small_max" | "guard_slab_interval" => Value::Uint(v as u64),
                 _ => Value::Int(v),
             };
             let cfg = clean(&std::format!("{key}:{ok}"));
@@ -2094,8 +2030,6 @@ mod tests {
         // clamp does (`load` aborts on any issue).
         let (cfg, issues) = parse("guard_slab_interval:6,abort_conf:true");
         assert!(cfg.abort_conf && cfg.guard_slab_interval == 8 && issues.len() == 1);
-        assert_eq!(clean("tcache_gc_interval_ms:0").gc_interval_ns(), 0);
-        assert_eq!(clean("tcache_gc_interval_ms:1").gc_interval_ns(), 1_000_000);
     }
 
     #[test]

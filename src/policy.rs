@@ -61,8 +61,7 @@
 //! cgroup's), with the split between the eager and the lazy part decided
 //! by which walks shared a periodic tick: the container churn test failed
 //! 7 of 16 runs on a 4-vCPU 6.1 host and 5 of 16 on a 2-vCPU 5.10 host.
-//! `lazy_free:true` is the override, lazy everywhere; `lazy_band:false`
-//! turns the saving off, eager everywhere. The advice is read at each
+//! `lazy_band:false` turns the saving off, eager everywhere. The advice is read at each
 //! batch flush from `purge`'s mirror of the band, so it is at most one
 //! sample (10 ms) behind.
 //!
@@ -201,15 +200,13 @@ impl Advice {
     }
 }
 
-/// The advice for a purge (the module doc): `lazy_free` wins (lazy
-/// everywhere), then an explicit purge is eager, then `headroom` (the
+/// The advice for a purge (the module doc): an explicit purge is eager,
+/// then `headroom` (the
 /// `Low` band, under 70% of a known limit, with no eager return of the
 /// excess in progress: [`Policy::headroom`]) is lazy when `lazy_band`
 /// allows it, and everything else, no limit included, is eager.
-pub fn advice(headroom: bool, lazy_free: bool, lazy_band: bool, explicit: bool) -> Advice {
-    if lazy_free {
-        Advice::Lazy
-    } else if explicit {
+pub fn advice(headroom: bool, lazy_band: bool, explicit: bool) -> Advice {
+    if explicit {
         Advice::Eager
     } else if lazy_band && headroom {
         Advice::Lazy
@@ -642,14 +639,13 @@ mod tests {
     }
 
     /// The advice at the band edges (the headroom is the `Low` band): lazy
-    /// only under 70% of a known limit with `lazy_band` on and no override
-    /// or explicit purge in play; `lazy_free` lazy everywhere; no limit
-    /// eager.
+    /// only under 70% of a known limit with `lazy_band` on and no
+    /// explicit purge in play; no limit eager.
     #[test]
     fn advice_at_the_band_edges() {
         use Advice::{Eager, Lazy};
-        let advice = |b: Band, lazy_free, lazy_band, explicit| advice(b == Band::Low, lazy_free, lazy_band, explicit);
-        let defaults = |b| advice(b, false, true, false);
+        let advice = |b: Band, lazy_band, explicit| advice(b == Band::Low, lazy_band, explicit);
+        let defaults = |b| advice(b, true, false);
         // No limit: eager (the headroom is unknown).
         assert_eq!(defaults(Band::Unlimited), Eager);
         assert_eq!(defaults(band(UNLIMITED, 0)), Eager);
@@ -670,13 +666,10 @@ mod tests {
         assert_eq!(defaults(band((256 << 20).min(L), 100 << 20)), Lazy);
         assert_eq!(defaults(band((256 << 20).min(L), 200 << 20)), Eager);
         for b in [Band::Unlimited, Band::Low, Band::Scaled(FRAC_ONE / 2), Band::Immediate] {
-            // The override: lazy everywhere, an explicit purge included.
-            assert_eq!(advice(b, true, true, false), Lazy, "{b:?}");
-            assert_eq!(advice(b, true, false, true), Lazy, "{b:?}");
             // The band saving off: eager everywhere.
-            assert_eq!(advice(b, false, false, false), Eager, "{b:?}");
+            assert_eq!(advice(b, false, false), Eager, "{b:?}");
             // An explicit purge is eager in every band.
-            assert_eq!(advice(b, false, true, true), Eager, "{b:?}");
+            assert_eq!(advice(b, true, true), Eager, "{b:?}");
         }
     }
 

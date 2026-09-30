@@ -139,10 +139,9 @@ fn batch_fills_and_flushes() {
     assert!(purged_is_zero());
 }
 
-/// The default (no `lazy_free`, no limit) discards with `MADV_DONTNEED`,
-/// so purged memory is zero. `lazy_free:true` is exercised end to end by
-/// `tests/c/decay.c` and the headroom band by `tests/c/cgroup_lazy.c`;
-/// issuing a lazy batch here would make the flag sticky for the class
+/// The default (no limit) discards with `MADV_DONTNEED`, so purged
+/// memory is zero. The headroom band is exercised end to end by
+/// `tests/c/cgroup_lazy.c`; issuing a lazy batch here would make the flag sticky for the class
 /// and huge tests that read it.
 #[test]
 fn purged_memory_is_zero_by_default() {

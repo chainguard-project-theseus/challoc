@@ -17,6 +17,9 @@ use crate::meta::Meta;
 use super::heap_destructor;
 use super::{Heap, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, Percpu, invalid_free};
 
+/// The cache GC period (design 6.4): 10 s.
+pub const GC_INTERVAL_NS: u64 = 10_000_000_000;
+
 /// Process-wide allocator state that every heap works against: the regions,
 /// one [`SlabTable`] per class, arena 0, the metadata allocator, the huge
 /// allocator, the arena and explicit-cache registries and the thread-exit
@@ -68,7 +71,7 @@ pub struct Shared {
     pub arena0: Arena,
     pub meta: Meta,
     pub huge: Huge,
-    /// Cache GC period (`tcache_gc_interval_ms`).
+    /// Cache GC period, [`GC_INTERVAL_NS`] (the tests shorten it).
     pub gc_interval_ns: u64,
     /// The cgroup policy's outcome (design 11, `policy.rs`): the band,
     /// the keep ratio, the pending full purge. Next to `gc_interval_ns`
@@ -78,8 +81,7 @@ pub struct Shared {
     /// The parsed `malloc_conf` (design section 12) as `init` applied it
     /// (`narenas` resolved from the CPU count, `thp` forced to `never`
     /// under a small cgroup limit). Read back by `opt.*` and the report,
-    /// and on the slow paths for the cache ladder (`cache_cap`) and the
-    /// compaction mask (`compact_mask`).
+    /// and on the slow paths for the cache ladder (`cache_cap`).
     pub config: Config,
     pub(super) key: ThreadKey,
     pub arenas: Arenas,
@@ -335,7 +337,7 @@ impl Shared {
                 }
                 None => return false,
             }
-            ptr::write(&raw mut (*this).gc_interval_ns, config.gc_interval_ns());
+            ptr::write(&raw mut (*this).gc_interval_ns, GC_INTERVAL_NS);
             Arenas::init(&raw mut (*this).arenas, arena0, config.narenas);
             Tcaches::init(&raw mut (*this).tcaches);
             ptr::write(&raw mut (*this).cgroup, crate::sys::cgroup::Cgroup::discover(config.cgroup));
@@ -451,7 +453,7 @@ impl Shared {
         self.multi_arena.store(true, Ordering::Relaxed);
     }
 
-    /// The cache GC period the periodic tick uses: `tcache_gc_interval_ms`,
+    /// The cache GC period the periodic tick uses: `gc_interval_ns`,
     /// or 0 (GC every tick) while the cgroup policy is in its immediate
     /// band (design 11).
     #[inline]

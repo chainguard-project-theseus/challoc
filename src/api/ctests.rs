@@ -600,7 +600,6 @@ ctests! {
     c_decay_background_thread => [
         CTest { prog: "decay", args: &["background"], conf: Some("abort_conf:true,background_thread:true,dirty_decay_ms:200"), ..BASE },
     ];
-    c_decay_lazy_free => [ CTest { prog: "decay", args: &["lazy"], conf: Some("abort_conf:true,lazy_free:true"), ..BASE } ];
     c_align => [ CTest { prog: "align", ..BASE } ];
     c_realloc_tiers => [ CTest { prog: "realloc_tiers", ..BASE } ];
     c_calloc_zero => [ CTest { prog: "calloc_zero", ..BASE } ];

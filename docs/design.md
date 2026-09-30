@@ -300,14 +300,10 @@ records each group's arena; `free` reads it (not the descriptor) to route
 a slot back to a cache of its arena. The word and the descriptors' arena
 field are written together only when a group is handed out
 (`take_group`), which first checks that the two agree (both zero for a
-never-touched group) and aborts on a disagreement, and when an idle group
-changes arena (13.3, `adopt_idle_group`, under both arenas' class locks).
-Nothing else tracks idleness: a group is idle when every committed slab of
-it is in its owner's `empty` or `purged` set, which the taker reads under
-the owner's lock. Because ownership can change, a slab number carried from
-a lock-free step into a lock hold (`reopen`, `on_live_zero`) is checked
-against the owner word under the lock before the arena touches its sets;
-live slots pin a slab, so nothing else crosses that gap. A group spans at most 2 MiB of the
+never-touched group) and aborts on a disagreement; a group never changes
+arena after that. A slab number carried from a lock-free step into a lock
+hold (`reopen`, `on_live_zero`) is still checked against the owner word
+under the lock before the arena touches its sets. A group spans at most 2 MiB of the
 region (`LG_GROUP_SPAN`): classes with larger slabs pad each slab's bits to
 a whole line instead.
 
@@ -357,7 +353,6 @@ Each `(arena, class)` pair then has a `ClassState` over that table:
 ```
 struct SlabTable {                    // one per class, shared by every arena
     class, lg_group, base, nslabs, desc_base,
-    states,                           // every arena's ClassState over this table, a list (13.3)
     inner: Lock<{ descs, bits, owners, // metadata reservations, committed on demand
                   committed_slabs, next_group, guards }>,
 }
@@ -455,20 +450,7 @@ That is the only lock on the allocation path.
 
 When there is no partial slab, take the lowest `Empty` slab if one exists,
 else the lowest `Purged` slab, else commit the next slab of the arena's
-current group, else, with `group_handoff:true` (an opt-in, off by default,
-13.3), take over an idle group of another arena (its `Empty` and `Purged`
-slabs join this arena's sets and its uncommitted slabs become the current
-group), else take the next group from the class table.
-The handoff visits the other arenas' states in turn and `try_lock`s each
-donor's class lock while holding the taker's, never waiting (a busy donor is
-skipped, the fresh group is the fallback, so no thread blocks while holding
-a class lock and the fork handlers' order is untouched); under that lock it
-scans the donor's `empty` and `purged` sets group by group (at most
-`MAX_ADOPT_TRIES` groups per donor) for one whose every committed slab is in
-them. The slab transitions keep no extra state for
-this: a first form that counted a group's `Active` slabs and kept a
-class-wide idle set under the commit lock cost `xmalloc` 9% on the fast
-tier, one commit-lock hold and one shared-line write per slab transition.
+current group, else take the next group from the class table.
 Committing means
 `mprotect` of the slab's bytes (or of its page group, for slabs smaller than
 a page) to read-write. Fresh slabs are zero from the kernel. With the `thp`
@@ -601,7 +583,7 @@ struct CacheHeader {                         // one per (arena, class), 64 bytes
     zeroed:   u32,                           // slots[..zeroed] read as zero
     slots:    *mut *mut u8,                  // this class's stack, its own metadata object
     allocs:   u64,                           // pops served since creation
-    compact_mask: u32,                       // probe mask, (1 << tcache_compact_shift) - 1, or off
+    compact_mask: u32,                       // probe mask, COMPACT_MASK, or off
     run_end:  u32,                           // slots[..run_end] is the run of low addresses (6.4)
     moved:    u64,                           // refilled - flushed (for thread.deallocated)
     probe_refilled: u32,                     // the class's refill counter at the previous probe
@@ -907,8 +889,8 @@ to `rallocx` exactly as jemalloc's contract requires.
   A pair the split keeps together stays cached and consistent until a
   flush releases it (a pass over the kept half was measured at 5..7% of
   xmalloc-test).
-- **Scheduled pop** (the compacting cache): every `2^tcache_compact_shift`
-  pops of a class (default `k = 3`, one pop in 8) are served from the *run* of low addresses
+- **Scheduled pop** (the compacting cache): every `2^COMPACT_SHIFT`
+  pops of a class (`k = 3`, one pop in 8) are served from the *run* of low addresses
   `slots[..run_end]` (descending, lowest at `run_end - 1`) instead of the
   top: the run's lowest entry is returned and the top entry moved into its
   place. The run is a refill's batch or a *rebuild*'s block: `cap / 4`
@@ -941,9 +923,8 @@ to `rallocx` exactly as jemalloc's contract requires.
   slabs drain, empty and are purged. The gate exists because compacting a
   class costs slab traffic (claims low, releases high) and cold slots that
   larson measured at -15..-22% when paid unconditionally at `k = 3`; a
-  dense class pays one counter test per `malloc`. `tcache_compact_shift:0`
-  turns the schedule off.
-- **Cache GC**: every `tcache_gc_interval_ms` (default 10 s) flush three
+  dense class pays one counter test per `malloc`.
+- **Cache GC**: every 10 s (`GC_INTERVAL_NS`) flush three
   quarters of `low_water`, the entries that went unused since the last GC,
   then reset `low_water = len`. `cap` is fixed; it never shrinks. This is
   jemalloc's incremental tcache GC in spirit. Above 90% of the cgroup
@@ -1074,8 +1055,7 @@ address, with `dirty_at` per entry. Decay policy is jemalloc's in shape:
   MiB, failed 7 of 16 runs on a 4-vCPU 6.1 host and 5 of 16 on a 2-vCPU
   5.10 host, RSS 309 MiB at 2 s with `lazy_purges 18 eager_purges 1`;
   `bench/results/2026-09-19-lane-b-floor-fixes.md`). An excess first
-  seen under 70% is lazy throughout (the lazy container test). `lazy_free:true`
-  is the override, lazy in every band;
+  seen under 70% is lazy throughout (the lazy container test).
   `lazy_band:false` (default true) turns the saving off. The advice is read
   at each batch flush from the band as last evaluated, so it is at most
   one sample (10 ms) behind; `stats.cgroup.purge_advice`,
@@ -1174,12 +1154,7 @@ decay walks never touch the `purged` set (the pages stay resident until
 the refill). The one thing the word gets wrong is "not resident": the
 `purged` count of the bins table includes prefaulted slabs until they are
 taken, and the RSS the statistics derive from slab counts is under by
-those slabs. A slab the adoption yields as `Empty` or `Purged` goes back
-into its set untouched: the next refill takes it and nothing needs
-prefaulting. A prefaulted slab in an otherwise used-up group is an idle
-group by the handoff's definition (13.3) and may be adopted by another
-arena's refill, which is the same memory serving the same class one
-arena over.
+those slabs.
 
 As many slabs per class per pass as the class refilled since the last pass,
 at least one and at most `MAX_AHEAD` (8; `ClassState::prefault_ahead`), so a
@@ -1279,9 +1254,9 @@ Init must not call anything that allocates. Steps, in the order
    first touch through the rounded commit rather than a copy afterwards.
 3. Decide the THP mode from the key and the table (`thp::configure`,
    section 17; forced off after step 7 when the cgroup rule of section 11
-   applies), configure the purge backend from the probe and `lazy_free`,
+   applies), configure the purge backend from the probe,
    the two-advice purge from the `MADV_FREE` probe and `lazy_band`,
-   `check_zero`, apply `group_handoff`, and record a `background_thread`
+   `check_zero`, and record a `background_thread`
    request (the thread itself is created later, 8.1).
 4. Read secrets from `getrandom`, probe reservation sizes (section 2) and
    reserve the three regions in random order. Name them with
@@ -1395,8 +1370,7 @@ Usage is the last `memory.current` sample against the effective limit
 
 The advice column is the two-advice purge of section 8: lazy only where
 the headroom is known and wide, eager everywhere else and for every
-explicit purge; `lazy_free:true` makes every row lazy, `lazy_band:false`
-every row eager. The last row is the rule of section 8 for an excess
+explicit purge; `lazy_band:false` makes every row eager. The last row is the rule of section 8 for an excess
 over the cap: the band it was first seen in decides its advice for the
 whole return (`Policy::eager_excess`, set when the retention is over the
 cap at 70% or above, cleared when it is within the cap again), because
@@ -1570,15 +1544,11 @@ jemalloc names where they exist:
 | `tcache_max`              | 32768   | largest cached class size (bytes); `opt.tcache_max` reads as `size_t` |
 | `tcache_nslots_small_max` | 1024    |                                         |
 | `lg_tcache_nslots_mul`    | 1       |                                         |
-| `tcache_gc_interval_ms`   | 10000   | challoc only                            |
-| `tcache_compact_shift`    | 3       | challoc only; one pop in 2^k compacts, 0 = off (6.4) |
-| `group_handoff`           | false   | challoc only; opt-in: an arena takes another arena's idle slab group before a fresh one (5, 13.3); off because it did not move the mstress row it was built for |
 | `thp`                     | never   | `never`, `auto`, `always` (7, 17, `thp.rs`): `auto` advises slab groups of classes whose slab holds an enabled sub-PMD folio and rounds metadata commits to it, never a 2 MiB page (inert where the PMD size is `madvise`-gated or no such size is enabled); the opt-in for aarch64 hosts with `hugepages-64kB` enabled and Valkey-shaped heaps (measured neutral there, a real 1.6% loss on larson and more RSS on small heaps, so not the default); `always` commits and advises PMD chunks (at a 2 MiB PMD only: 4 KiB pages; at 16 and 64 KiB pages it is the folio path over the enabled sizes below the PMD, inert when none is), huge runs of a PMD or more and the metadata (jemalloc's `thp:always`, priced in `bench/results/2026-09-19-lane-b-mthp.md`); `always` under a cgroup limit below 1 GiB is forced to `never` (11); `never` (and a forced `never`) issues `MADV_NOHUGEPAGE` on the class superblock and the metadata region, so the slab regions get no huge page on a host whose global mode is `always`, and leaves the huge region to the host's policy, as jemalloc's `never` leaves its large extents (17, plan Phase 2.5 task 16; the 2026-09-20 decision on `bench/results/2026-09-20-aarch64-cgos-thp-ab.md`, option (d): the huge runs' 2 MiB pages were 10 points of `valkey1` on Chainguard OS) |
 | `thp_process`             | default | challoc only; `default`, `advised` (17, plan Phase 2.5 task 16, `thp.rs`): the process-wide THP policy asked for at init. `advised` calls `prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED)` where the kernel accepts it (6.18+, probed by the call's return, `EINVAL` below: the process then keeps its inherited policy and the report says so), so on an `always` host only the regions `thp:auto|always` advise get huge pages and the rest of the process does not; `default` issues nothing. Opt-in because it is process-wide: a library does not change the THP policy of the program that loaded it unasked. Independent of `thp` (the per-region advice); `thp:default` is `thp:never`, not this key |
 | `spin_hint`               | auto    | challoc only; what a contended lock spins with (5): `auto` (the CPU probe's choice: `umwait` with WAITPKG, else the baseline), `baseline` (`pause`/`isb`), `umwait` (reported and left at `auto` without WAITPKG), `wfe` (aarch64; measured slower under contention, never chosen by `auto`) |
 | `slice_ext`               | auto    | challoc only; `auto`, `on`, `off` (17, "Time slice extension"; plan Phase 2.5 task 15): whether a lock holder asks the kernel, through its rseq `slice_ctrl` bytes, to defer a preemption until the release. `auto` and `on` turn it on where the runtime probe passes (glibc's `__rseq_size >= 32`, the kernel's `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE` bit in the thread's area, the `prctl` enable confirmed by the `ENABLED` bit: kernel 7.0 with `CONFIG_RSEQ_SLICE_EXTENSION`, x86_64 only so far); `on` additionally makes the report note a refused request; `off` never requests. No kernel field but `request` is written |
-| `lazy_free`               | false   | `MADV_FREE` for every purge, the override of the two-advice purge (8) |
-| `lazy_band`               | true    | challoc only; `MADV_FREE` for purges under 70% of a known cgroup limit (8, 11); `false` makes every purge `MADV_DONTNEED` unless `lazy_free` |
+| `lazy_band`               | true    | challoc only; `MADV_FREE` for purges under 70% of a known cgroup limit (8, 11); `false` makes every purge `MADV_DONTNEED` |
 | `guards`                  | true    | guard slabs and huge runs               |
 | `guard_slab_interval`     | 8       | one guard per N x 64 KiB of slabs, N a power of two (else rounded up, reported); 0 off, 1 out of range (clamps to 2) |
 | `huge_retain_max`         | 67108864 | challoc only; bytes; freed huge runs above it are purged at once (7); `opt.huge_retain_max` reads as `size_t` |
@@ -1692,37 +1662,16 @@ period per arena, `Arena::take_exit_purge`, so a pool that retires and
 recreates its threads does not purge and refault the same slabs at every
 exit): the caches that flush just before are most of them, and nothing
 will refill that arena soon.
-An arena owns its groups. With `group_handoff:true` (an opt-in; the
-default is `false`) it lends idle ones: when an arena's current group of a
-class is used up and it has no `Empty` or `Purged` slab of that class, it
-takes over a whole group of that class from another arena provided no slab
-of the group is `Active` (every slab `Fresh`, `Empty` or `Purged`, `live ==
-0`, so no slot of it is in the program or in a cache), before it takes a
-fresh group from the region (section 5, `ClassState::adopt_idle_group`).
-Owner word, descriptors, set bits, slab counts and, for the donor's current
-group, the commit cursor move together under both arenas' class locks; the
-slabs' `dirty_at` stay and the taker's decay walk owns them from then on.
-Whole groups only, so the line ownership of section 4 holds throughout. It
-was built for the 16-arena `mstress` row, where challoc's peak RSS exceeds
-jemalloc's by 8..9% on aarch64 and 18..19% on x86_64 while `narenas:1`
-equals jemalloc (`bench/results/2026-09-18-phase-1.5-acceptance-3.md` 3.1),
-and it does not move that row: it halves the `Empty` small slabs idle at
-the peak (20 -> 10 MiB of the 55 MiB excess on x86_64) and takes some of the
-64 KiB-slab classes' idle groups, but the peak RSS over five protocol rounds
-is unchanged on x86_64 and 2.4% higher on aarch64 (against the same
-library with the key off), because the rest of the excess is `Active` at
-the peak (one partial slab per class per arena, the touched pages of the
-64 KiB-slab classes' current groups, which are never whole-group idle under
-churn, and the per-arena metadata) and every arena reaches its peak at once
-(`2026-09-18-{aarch64,x86_64}-gce-group-handoff.md`). The row is therefore
-accepted as the price of per-class regions at 16 arenas (the review's (c)):
-an `Empty` slab is reusable only by its own class (section 3) and, by
-default, its own arena, where jemalloc's one dirty pool per arena serves
-every bin and large size. What the handoff does take is the idle groups a
-producer-consumer pattern leaves in the producers' arenas: `xmalloc-test`
-RSS 56 -> 45 MiB (aarch64) and 53 -> 45 (x86_64) with every fast-tier row
-within 2.5% of the parent on both VMs; that is what `group_handoff:true`
-is for.
+An arena owns its groups for good: an `Empty` slab is reusable only by its
+own class (section 3) and its own arena, where jemalloc's one dirty pool
+per arena serves every bin and large size. At 16 arenas that costs the
+`mstress` row a peak RSS 8..9% (aarch64) and 18..19% (x86_64) above
+jemalloc's while `narenas:1` equals it
+(`bench/results/2026-09-18-phase-1.5-acceptance-3.md` 3.1), and the row is
+accepted as the price of per-class regions: most of the excess is `Active`
+at the peak (one partial slab per class per arena, the touched pages of the
+64 KiB-slab classes' current groups, the per-arena metadata), and handing
+idle groups between arenas did not move it.
 
 `narenas` shards automatic allocations across arenas by thread, jemalloc
 style. The default resolves to `min(4 * ncpus, 64)` (`ncpus` from the
@@ -1811,9 +1760,9 @@ created or torn down); writing it to an unbuilt automatic arena builds
 that arena. `opt.tcache_max` and `opt.huge_retain_max` read back as
 `size_t` (byte counts, as jemalloc's `opt.tcache_max`); the other unsigned
 keys (`opt.narenas`, `opt.tcache_nslots_small_max`,
-`opt.tcache_compact_shift`, `opt.guard_slab_interval`) as `unsigned`; the
-signed ones (`opt.dirty_decay_ms`, `opt.muzzy_decay_ms`,
-`opt.lg_tcache_nslots_mul`, `opt.tcache_gc_interval_ms`) as `ssize_t`.
+`opt.guard_slab_interval`) as `unsigned`; the signed ones
+(`opt.dirty_decay_ms`, `opt.muzzy_decay_ms`, `opt.lg_tcache_nslots_mul`)
+as `ssize_t`.
 `stats.arenas.4097.*` (`MALLCTL_ARENAS_DESTROYED`) answers all-zero
 statistics, bins included: challoc never destroys an arena, so the merged
 figures of the destroyed ones are zero; `arena.4097.*` answers `ENOENT`.
@@ -1902,7 +1851,7 @@ the cache and its defragmenter asks only about live objects), so the
 `allocator_frag_bytes` KeyDB's stop rule reads (`stats.active -
 stats.allocated`, Redis 6's rule; Valkey 9 reads the bins' figures from
 the utilization queries instead) keeps the cached slots' slabs until the
-cache GC (`tcache_gc_interval_ms`, 10 s) returns them, plus the slab tails
+cache GC (every 10 s) returns them, plus the slab tails
 (`slab_size - nregs * size`) that `active` counts and the queries do not.
 
 ### 13.6 Library name, soname and packaging
@@ -2367,7 +2316,7 @@ protocol as stated passes every scenario.
   `empty_bytes` held, the `full_purges` run and whether `thp` was forced
   to `never`; and one `purge advice:` line (section 8) with the advice the
   next purge issues and why (`under 70% of the limit`, `no headroom
-  known`, `lazy_free`, `lazy_band:false`, `explicit purge`), the batches
+  known`, `lazy_band:false`, `explicit purge`), the batches
   and bytes issued with each advice, whether `Purged` memory is still
   known zero, and whether lazy batches go through `process_madvise`; and
   one `thp:` line (section 17) with the key, the mode in force (`off`,
@@ -2449,7 +2398,7 @@ runs on every row.
 | `MADV_GUARD_INSTALL` | kernel 6.13 | guard slabs between slabs and after huge runs (section 14) | a `PROT_NONE` page after huge runs only; no guard slabs |
 | `process_madvise` on self | kernel 6.13 with a pidfd of self (the syscall exists since 5.10 but accepts `MADV_DONTNEED` only from 6.13; the matrix of Phase 2.5 task 3 found it unavailable on 5.10, 6.1 and 6.8 even without seccomp, lit on 7.0); 6.15 with `PIDFD_SELF` | batched purge, one call per decay pass (section 8) | a loop of `madvise(MADV_DONTNEED)` |
 | `process_madvise(MADV_FREE)` on self (`process_madvise_free`) | the same kernels, probed separately through the target the `MADV_DONTNEED` probe found (yes on the 7.0 reference VMs) | the lazy batches of the two-advice purge (section 8) take the batched path | lazy batches through a loop of `madvise(MADV_FREE)`; eager batches unchanged |
-| `MADV_FREE` (the advice itself) | every kernel since 4.5 | `Empty` slabs and huge extents under 70% of a known cgroup limit are returned lazily (sections 8 and 11); `lazy_free` everywhere | `MADV_DONTNEED` everywhere (no limit known, `lazy_band:false`) |
+| `MADV_FREE` (the advice itself) | every kernel since 4.5 | `Empty` slabs and huge extents under 70% of a known cgroup limit are returned lazily (sections 8 and 11) | `MADV_DONTNEED` everywhere (no limit known, `lazy_band:false`) |
 | `mseal` | kernel 6.10, not filtered by seccomp | seals the never-committed ranges of the reservations at init (section 10 step 5) | skip; `Sealed ranges: 0 of N` |
 | `PR_SET_VMA_ANON_NAME` | kernel 5.17 with `CONFIG_ANON_VMA_NAME` | named `challoc:*` mappings in `/proc/pid/maps` | skip |
 | `MADV_POPULATE_WRITE` (`populate_write`) | kernel 5.14 (probed on a scratch page: the call and `mincore` afterwards) | the prefault pass (section 8, plan Phase 2.5 task 11; `purge::prefault`, `ClassState::prefault_next`), behind `prefault:true` with `background_thread:true`: the background thread commits the slab the next refill of a class would commit and populates it with one call while it is still unpublished, then publishes it as `Purged` for the refill to take; `stats.prefault.*` and the `Prefault:` report line | the same pass with one write of zero per page; `Prefault: off (prefault:false)` by default |
@@ -2470,7 +2419,7 @@ runs on every row.
 | rseq time slice extension (`slice_ctrl`, `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE`) | kernel 7.0 with `CONFIG_RSEQ_SLICE_EXTENSION` (default N; needs `GENERIC_ENTRY` and `HAVE_GENERIC_TIF_BITS`, which x86_64 has and arm64 does not, through master) and glibc registering the v2 size (`__rseq_size >= 32`: 2.44 registers 33); Ubuntu's `7.0.0-1011-gcp` leaves the option off, so the GCE reference VMs read `kernel-disabled` and the numbers come from a 7.0.14 built with it (`bench/results/2026-09-19-x86_64-lane-c-task15-slice-ext.md`) | every lock holder's request to defer a preemption until the release (`slice.rs`, the subsection below; `slice_ext:auto`), the `prctl` enable per thread on its first hold, `rseq_slice_yield` (or `sched_yield` where seccomp hides the new syscall) after a granted release; the feature line's `slice_ext=` key (`sys::features::SliceExt`, read through `slice::probe` and `slice::verdict`, plan task 15) says `on` when lock holders request it and otherwise the kernel's answer (`available` under `slice_ext:off`, `kernel-disabled`, `no-slice_ctrl`, `no-rseq`, `prctl-failed`) | the lock without the request: one relaxed load per hold; `Slice extension: off (<why>)` in the report and the same word after `slice_ext=` in the feature line |
 | ERMS, FSRM, AVX-512F (`cpuid` 7.0 `EBX[9]`, `EDX[4]`, `EBX[16]`) | x86_64 CPU | reported only: `memcpy`/`memset` selection is glibc's; the crate's fills use the compiler baseline | none needed |
 | Cache line, L1D and L2 sizes | `CTR_EL0` (arm64), `cpuid` leaf 4 or `0x8000001D` (x86_64), else `/sys/devices/system/cpu/cpu0/cache/index*/` | reported only: the layout constants (`lock.rs` padding, the 512-byte stride rule) and the cache-capacity defaults stay fixed; an L2-derived ladder was priced on the 1 MiB parts and dropped (section 6.2, "Cache geometry") | `unknown` in the line; nothing changes |
-| Model-checked protocol (`cargo test --features std model::`, `src/model.rs`) | the host test suite, no hardware: an exhaustive interleaving model of the claim, release, `on_live_zero`, purge and group-handoff steps of `class/`, memoised on the whole state, with the invariants of section 4 and 5 checked at every state (no slot handed to two claimers, a slot reported zero reads zero, `live` equals set bits plus in-flight reservations, a slab in an arena's set is `Empty`/`Purged` with `live == 0` and owned by that arena, a `Purged` slab reads zero) | nothing at run time: it is the proof obligation for a change to the protocol. Replaying the pre-fix step orders finds the calloc race (Phase 1.5 task 7) and the ownership gap the handoff's owner check closes (task 15); the current order passes every scenario. Since 2026-09-19 (lane C, plan Phase 2.5 task 8) the `percpu_*` scenarios model the per-CPU claim protocol of section 15 (caches owned by an `mm_cid` read inside an rseq critical section with one commit store, the kernel's abort of a section whose thread was descheduled, threads that pop on one cid and push on another, the refill and the flush through the cid's arena, the zero prefix) with the further invariants that no slot is in two caches or in a cache and owned by a thread, that every set bit has exactly one holder (a lost push is a bit with none) and that a cache is mutated only by a section whose thread kept its cid to the commit; the variants without a section, or with `mm_cid` read outside it, hand a slot to two threads within 40 states, and lane A's implementation is compared against the properties listed in section 15 at merge | none needed |
+| Model-checked protocol (`cargo test --features std model::`, `src/model.rs`) | the host test suite, no hardware: an exhaustive interleaving model of the claim, release, `on_live_zero` and purge steps of `class/`, memoised on the whole state, with the invariants of section 4 and 5 checked at every state (no slot handed to two claimers, a slot reported zero reads zero, `live` equals set bits plus in-flight reservations, a slab in an arena's set is `Empty`/`Purged` with `live == 0` and owned by that arena, a `Purged` slab reads zero) | nothing at run time: it is the proof obligation for a change to the protocol. Replaying the pre-fix step order finds the calloc race (Phase 1.5 task 7); the current order passes every scenario. Since 2026-09-19 (lane C, plan Phase 2.5 task 8) the `percpu_*` scenarios model the per-CPU claim protocol of section 15 (caches owned by an `mm_cid` read inside an rseq critical section with one commit store, the kernel's abort of a section whose thread was descheduled, threads that pop on one cid and push on another, the refill and the flush through the cid's arena, the zero prefix) with the further invariants that no slot is in two caches or in a cache and owned by a thread, that every set bit has exactly one holder (a lost push is a bit with none) and that a cache is mutated only by a section whose thread kept its cid to the commit; the variants without a section, or with `mm_cid` read outside it, hand a slot to two threads within 40 states, and lane A's implementation is compared against the properties listed in section 15 at merge | none needed |
 
 The kernel keys of the feature report are `page_size guard_install mseal
 process_madvise process_madvise_free anon_name populate_write thp mthp
@@ -2946,7 +2895,7 @@ src/slab.rs           SlabDesc (the descriptor only)
 src/class/mod.rs      ClassState: claim/plan/take, release/reopen, the stats accessors; Pick, Claim, Inner (with the set/count helpers); xorshift, shuffle; the test-only `protocol` step enums the model matches
 src/class/table.rs    SlabTable: descriptors, slot bitmap, owner array, guard slabs, group hand-out (take_group) and slab commit (commit_slab, commit_page_group, install_guard)
 src/class/sets.rs     Lazy (a lazily committed metadata table), Set, SetTable (one arena's interleaved slab sets)
-src/class/handoff.rs  next_slab, next_fresh_slab, the idle-group handoff between arenas (verify_idle_group, move_group; section 13.3)
+src/class/fresh.rs    next_slab, next_fresh_slab: the fresh-slab path
 src/class/decay.rs    purge_empty, purge_curve (walk_empty), decay (section 8)
 src/class/prefault.rs the prefault pass's commit-ahead (prefault_next, prefault_ahead)
 src/class/verify.rs   the check_zero debug mode and the test-only pointer checks
@@ -2974,7 +2923,7 @@ src/arena.rs          arenas, explicit caches; re-exports heap::mallocx
 src/config.rs         malloc_conf parsing: one key table (name, parse, read) behind set/get/KEYS
 src/stats.rs          counters and epoch merge
 src/thp.rs            THP: the `thp` key against the sysfs table, reservation advice, metadata folios, MADV_HUGEPAGE on huge runs, forced_by_limit
-src/api/mod.rs        lazy init (applies the spin hint and cldemote), Shared/Features statics, challoc_version/challoc_features, fork handlers, export_pair!
+src/api/mod.rs        lazy init (applies the spin hint), Shared/Features statics, challoc_version/challoc_features, fork handlers, export_pair!
 src/api/libc.rs       standard entry points, malloc_trim
 src/api/glibc.rs      mallopt, mallinfo, mallinfo2
 src/api/jemalloc.rs   *allocx, mallctl entry points, malloc_conf/malloc_message symbols, je_ aliases

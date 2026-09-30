@@ -26,9 +26,7 @@
 //! `dec_live`, whose `sub_live` reaching zero runs `on_live_zero` under
 //! the lock, then `reopen` under the lock for the slabs whose word was
 //! full); `Purge` is `purge_empty` (every `Empty` slab of the arena to
-//! `Purged` and its memory to zero, under the lock). The group handoff
-//! (`adopt_idle_group`/`transfer_group`) is part of `Refill`'s locked
-//! step when the scenario turns `group_handoff` on, as in `next_slab`.
+//! `Purged` and its memory to zero, under the lock).
 //!
 //! Abstractions, stated: a lock hold that only reads and writes
 //! lock-protected state is one atomic step (the sets, the cursors, the
@@ -43,17 +41,14 @@
 //! page groups larger than a slab (`spp == 1`), `slot_randomize`, the
 //! thread cache above `claim`/`release` and the decay curve are not
 //! modelled: the model is the protocol of the sets, the bits, `live` and
-//! the state byte, which is what the calloc race and the ownership
-//! check were about.
+//! the state byte, which is what the calloc race was about.
 //!
-//! Two knobs replay the protocol before its fixes ([`Variant`]):
+//! One knob replays the protocol before its fix ([`Variant`]):
 //! `prefix_claim: false` is the pre-7 (c) order (the zero flag decided in
 //! `plan`, the bits claimed in `finish`), and the model finds the calloc
 //! race (a slot reported zero whose memory another thread dirtied in the
-//! window) and prints the interleaving; `owner_check: false` drops the
-//! owner test of `on_live_zero` and `reopen` (plan Phase 1.5 task 15),
-//! and with `group_handoff` on the model finds a slab of one arena in
-//! another arena's sets. With both on, every scenario passes.
+//! window) and prints the interleaving. With it on, every scenario
+//! passes.
 //!
 //! A change to the protocol in `class/` is a change to a step here.
 //!
@@ -384,7 +379,6 @@ mod tests {
                 (0, vec![Op::Refill(1), Op::Write(0), Op::Release]),
             ],
             lg_group: 1,
-            group_handoff: false,
             percpu: false,
         };
         let out = run(
@@ -410,43 +404,6 @@ mod tests {
             "{}",
             out.violation.unwrap().1.render()
         );
-    }
-
-    #[test]
-    fn the_handoff_without_the_owner_check_puts_a_foreign_slab_in_an_arenas_sets() {
-        let out = run(
-            &handoff(),
-            Variant {
-                owner_check: false,
-                ..CURRENT
-            },
-        );
-        let (msg, tr) = out
-            .violation
-            .expect("without the owner check the handoff scenario must fail");
-        assert!(
-            msg.contains("owned by arena")
-                || msg.contains("more than one set")
-                || msg.contains("held by threads"),
-            "{msg}\n{}",
-            tr.render()
-        );
-        assert!(
-            tr.0.iter().any(|s| s.3.contains("adopt: group")),
-            "{}",
-            tr.render()
-        );
-    }
-
-    #[test]
-    fn the_current_order_passes_the_handoff_scenario() {
-        let out = run(&handoff(), CURRENT);
-        assert!(
-            out.violation.is_none(),
-            "{}",
-            out.violation.unwrap().1.render()
-        );
-        assert!(out.states > 100);
     }
 
     #[test]

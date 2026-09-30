@@ -270,10 +270,8 @@ fn init() {
     // The probes are pure; what the report is acted on is installed here,
     // before the configuration is read: the lock's spin hint from the CPU
     // (design 5; `config::load`'s `apply_spin_hint` overrides it when a
-    // source set the key) and the `cldemote` verdict for
-    // `sys::cldemote::demote` (design 17; no path issues it today).
+    // source set the key).
     crate::lock::suggest_spin_hint(crate::sys::cpu::spin_hint(&features.cpu.isa));
-    crate::sys::cldemote::configure(matches!(features.cpu.isa, crate::sys::cpu::Isa::X86(x) if x.cldemote));
     // The slab geometry of the classes whose table slab is below the page
     // (design 3, page-sized slabs): written once here, before any other
     // thread can see the allocator, never again.
@@ -294,10 +292,9 @@ fn init() {
     // process-wide, so before any region exists; a refused call is
     // reported, not retried.
     crate::thp::configure_process(config.thp_process(), &features);
-    purge::configure(features.process_madvise, config.lazy_free);
+    purge::configure(features.process_madvise);
     purge::configure_advice(features.process_madvise_free, config.lazy_band);
     purge::set_check_zero(config.check_zero);
-    crate::class::set_group_handoff(config.group_handoff);
     // The prefault pass (design 8.2) runs on the background thread, so
     // `prefault_active` is the one gate (the key without the thread is
     // stored and inert).

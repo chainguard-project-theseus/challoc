@@ -3,7 +3,6 @@
 //! commit lock; groups go to arenas here (`take_group`) and slabs are
 //! committed here (`commit_slab`).
 
-use super::ClassState;
 use super::abort::{guard_free, invalid_free, invalid_pointer, never_committed, owner_mismatch};
 use super::sets::Lazy;
 use crate::bitmap::AtomicBitmap;
@@ -13,7 +12,7 @@ use crate::meta::Meta;
 use crate::purge;
 use crate::slab::{DESC_ALIGN, SlabDesc, desc_stride};
 use crate::sys::Errno;
-use core::sync::atomic::{AtomicPtr, AtomicU16, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
 struct TableInner {
     descs: Lazy,
@@ -47,18 +46,17 @@ pub const fn desc_stagger(class: usize) -> usize {
     class * 3 * PAD_ALIGN
 }
 
-/// What every arena's [`ClassState`] for one class shares (design 13.3:
-/// arenas are sets of class states over the *same* class regions): the
-/// region's geometry, the descriptor array, the class bitmap, the group
-/// owner array and the hand-out watermark. Slab groups go in address order
-/// to whichever arena needs one next, so arenas interleave in the region at
-/// group granularity; `free` reads the owner array to route a slot back to
-/// a cache of its arena.
+/// What every arena's [`ClassState`](super::ClassState) for one class
+/// shares (design 13.3: arenas are sets of class states over the *same*
+/// class regions): the region's geometry, the descriptor array, the class
+/// bitmap, the group owner array and the hand-out watermark. Slab groups
+/// go in address order to whichever arena needs one next, so arenas
+/// interleave in the region at group granularity; `free` reads the owner
+/// array to route a slot back to a cache of its arena.
 ///
 /// Layout: the fields before `inner` are written once by `new` (or, for
-/// `committed_slabs`, only when a group is handed out, and for `states`,
-/// when an arena is built) and read by every `free`, while `inner` holds
-/// the commit lock. `repr(C)` keeps the
+/// `committed_slabs`, only when a group is handed out) and read by every
+/// `free`, while `inner` holds the commit lock. `repr(C)` keeps the
 /// read-mostly fields first and [`Padded`] starts `inner` on its own line.
 /// The fields the `free` fast path reads (`bits_base`, `owners_base`,
 /// `committed_slabs`, `slab_bits`, `lg_group`) sit in the first 32 bytes:
@@ -67,7 +65,7 @@ pub const fn desc_stagger(class: usize) -> usize {
 /// `Regions::class_base` and `CLASSES` arrays (see `Shared::checked_slot`).
 ///
 /// The stride of `[SlabTable; NCLASSES]` (384 bytes) is not a multiple of
-/// 512 for the reason given on [`ClassState`].
+/// 512 for the reason given on [`ClassState`](super::ClassState).
 #[repr(C, align(128))]
 pub struct SlabTable {
     /// Start of the class bitmap: bit `slab * slab_bits + slot` is the
@@ -125,20 +123,14 @@ pub struct SlabTable {
     pub(super) nslabs: usize,
     /// Start of the descriptor array.
     desc_base: usize,
-    /// Every arena's state over this table, an intrusive list through
-    /// [`ClassState::next`] pushed by [`register_state`]: the donors a
-    /// handoff visits. States are never freed (design 13.3), so the
-    /// pointers stay valid, and the list only grows.
-    ///
-    /// [`register_state`]: SlabTable::register_state
-    pub(super) states: AtomicPtr<ClassState>,
     inner: Padded<Lock<TableInner>>,
     _tail: [u8; TABLE_TAIL],
 }
 
 /// Padding that keeps the stride of `[SlabTable; NCLASSES]` at 384 bytes,
-/// three lines, off a multiple of 512 (see [`ClassState`]), whatever the
-/// commit lock's state takes of the second and third.
+/// three lines, off a multiple of 512 (see
+/// [`ClassState`](super::ClassState)), whatever the commit lock's state
+/// takes of the second and third.
 const TABLE_TAIL: usize = 2 * PAD_ALIGN - core::mem::size_of::<Padded<Lock<TableInner>>>();
 
 const _: () = assert!(core::mem::offset_of!(SlabTable, inner) == PAD_ALIGN);
@@ -248,7 +240,6 @@ impl SlabTable {
             base: regions.class_base[class],
             nslabs,
             desc_base: descs.base + stagger,
-            states: AtomicPtr::new(core::ptr::null_mut()),
             inner: Padded(Lock::new(TableInner { descs, bits, owners, next_slab: 0, guards: 0 })),
             _tail: [0; TABLE_TAIL],
         })
@@ -755,33 +746,6 @@ impl SlabTable {
         }
         if os::decommit(addr, len).is_err() {
             panic!("class {}: cannot re-protect guard slab {s}", self.class);
-        }
-    }
-
-    /// The owner word of `group`.
-    ///
-    /// # Safety
-    /// The group must have been handed out (its owner page is committed).
-    #[inline]
-    pub(super) unsafe fn owner_word(&self, group: usize) -> &AtomicU16 {
-        // SAFETY: the caller guarantees the page is committed.
-        unsafe { &*((self.owners_base + group * 2) as *const AtomicU16) }
-    }
-
-    /// Register an arena's state over this table for the handoff's donor
-    /// walk. Called once per `(arena, class)` from `Arena::init`, after
-    /// the state has its final address; states are never freed.
-    pub fn register_state(&self, state: *const ClassState) {
-        let state = state as *mut ClassState;
-        let mut head = self.states.load(Ordering::Acquire);
-        loop {
-            // SAFETY: `state` is a live, never-freed `ClassState` that
-            // nothing else reaches until it is published below.
-            unsafe { (*state).next.store(head, Ordering::Relaxed) };
-            match self.states.compare_exchange(head, state, Ordering::Release, Ordering::Acquire) {
-                Ok(_) => return,
-                Err(h) => head = h,
-            }
         }
     }
 }

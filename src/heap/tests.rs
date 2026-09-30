@@ -1,6 +1,7 @@
 use super::*;
 use super::flush::flag_sort;
 use crate::class::ClassStats;
+use crate::config::Config;
 use crate::layout::{Kind, LG_MAX_SLAB, MAX_SLAB, Mapping, Regions, class_of};
 use crate::slab::State;
 use std::boxed::Box;
@@ -1033,7 +1034,7 @@ fn periodic_work_runs_gc_on_the_interval() {
     // default 10 s it means no GC in a test.
     let c = class_with(16);
     let d = class_with(48);
-    for interval in [0u64, Config::DEFAULT.gc_interval_ns()] {
+    for interval in [0u64, super::shared::GC_INTERVAL_NS] {
         let s = shared();
         // SAFETY: nothing else references `s` yet; the field is plain data.
         unsafe { (*(s as *const Shared as *mut Shared)).gc_interval_ns = interval };
@@ -1149,7 +1150,7 @@ fn pop_checked(t: &TestHeap, c: usize) -> *mut u8 {
         Some(k) => (t.cached_plain(c), t.run_plain(c), k.allocs(), k.compacting()),
         None => (Vec::new(), Vec::new(), 0, false),
     };
-    let scheduled = compacting && (allocs + 1) % (1 << Config::DEFAULT.tcache_compact_shift) == 0;
+    let scheduled = compacting && (allocs + 1) % (1 << COMPACT_SHIFT) == 0;
     let probe = !compacting && (allocs + 1) % (PROBE_MASK as u64 + 1) == 0;
     let p = t.alloc(c);
     if !before.is_empty() && !probe {
@@ -1484,28 +1485,6 @@ fn random_walk_churn_model_compacts_too() {
     let after = occupied(s, c);
     let bound = keep.len().div_ceil(nslots) + COMPACT_MIN_SLABS * CLASSES[c].compact_slots() / nslots + default_cap(c) as usize / nslots + 1;
     assert!(after <= bound, "{after} occupied slabs after the random walk, bound {bound}, before {before}");
-    for p in keep {
-        t.free(p);
-    }
-    t.destroy();
-}
-
-#[test]
-fn compaction_off_keeps_the_lifo_reuse_in_place() {
-    let s = shared_with(Config { tcache_compact_shift: 0, ..Config::DEFAULT });
-    let t = TestHeap::new(s);
-    let c = class_with(1024);
-    let keep = residue(&t, c, MODEL_SLOTS / CLASSES[c].nslots(), 560, 0x1234_5678);
-    let before = occupied(s, c);
-    let mut st = 0x8765_4321u64;
-    for _ in 0..50_000 {
-        let i = (xorshift(&mut st) % keep.len() as u64) as usize;
-        t.free(keep[i]);
-        let p = t.alloc(c);
-        assert_eq!(p, keep[i], "LIFO reuse in place");
-    }
-    assert_eq!(occupied(s, c), before);
-    assert!(!t.cache(c).compacting());
     for p in keep {
         t.free(p);
     }
@@ -2495,16 +2474,15 @@ fn probe_verdict_applies_the_gate_and_records_it() {
 /// per-CPU volatile store and the thread store agree for every mode.
 #[test]
 fn set_mode_volatile_derives_the_same_mask_as_set_mode() {
-    let config = Config { tcache_compact_shift: 5, ..Config::DEFAULT };
     for mode in [MODE_OFF, MODE_PROBE, MODE_COMPACT] {
         let mut a = CacheHeader::EMPTY;
         let mut b = CacheHeader::EMPTY;
-        a.set_mode(mode, &config);
-        unsafe { CacheHeader::set_mode_volatile(&mut b, mode, &config) };
+        a.set_mode(mode);
+        unsafe { CacheHeader::set_mode_volatile(&mut b, mode) };
         assert_eq!((a.mode, a.compact_mask), (b.mode, b.compact_mask));
         let want = match mode {
             MODE_PROBE => PROBE_MASK,
-            MODE_COMPACT => config.compact_mask(),
+            MODE_COMPACT => COMPACT_MASK,
             _ => u32::MAX,
         };
         assert_eq!(a.compact_mask, want, "mode {mode}");

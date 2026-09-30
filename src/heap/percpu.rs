@@ -465,7 +465,7 @@ impl Heap {
                     if !Self::fragmented(shared, arena, class) {
                         cs.note_compact_mode(false);
                         // SAFETY: as above.
-                        unsafe { CacheHeader::set_mode_volatile(h, MODE_PROBE, &shared.config) };
+                        unsafe { CacheHeader::set_mode_volatile(h, MODE_PROBE) };
                         return self.percpu_pop_plain(shared, class);
                     }
                 }
@@ -483,7 +483,7 @@ impl Heap {
                 }
                 // SAFETY: as above.
                 unsafe {
-                    CacheHeader::set_mode_volatile(h, MODE_COMPACT, &shared.config);
+                    CacheHeader::set_mode_volatile(h, MODE_COMPACT);
                     ptr::write_volatile(&raw mut (*h).run_end, 0);
                 }
             }
@@ -533,7 +533,7 @@ impl Heap {
             if !Self::fragmented(shared, arena, class) {
                 cs.note_compact_mode(false);
                 // SAFETY: a live header; racy hints (see `percpu_scheduled`).
-                unsafe { CacheHeader::set_mode_volatile(h, MODE_PROBE, &shared.config) };
+                unsafe { CacheHeader::set_mode_volatile(h, MODE_PROBE) };
                 return self.percpu_pop_plain(shared, class);
             }
             let want = (run_cap as usize).min(MAX_CAP as usize / 4);
@@ -666,12 +666,12 @@ impl Heap {
             if slots.is_null() {
                 return false;
             }
-            let mode = if run || shared.config.tcache_compact_shift == 0 { MODE_OFF } else { MODE_PROBE };
+            let mode = if run { MODE_OFF } else { MODE_PROBE };
             // SAFETY: a live header not yet published (`cap == 0`); these
             // stores are identical from every installer of this header.
             unsafe {
                 ptr::write_volatile(&raw mut (*h).arena, arena);
-                CacheHeader::set_mode_volatile(h, mode, &shared.config);
+                CacheHeader::set_mode_volatile(h, mode);
                 ptr::write_volatile(&raw mut (*h).probe_refilled, a.class(class).refilled() as u32);
             }
             let t = if run { shared.percpu.run_table(class) } else { shared.percpu.table(class) };
