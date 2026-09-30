@@ -19,7 +19,7 @@ cmp contrib/valkey/0001-Add-MALLOC-challoc.patch \
 rm -rf "$OUT"
 mkdir -p "$OUT/challoc"
 cp contrib/wolfi/valkey/valkey-9.1/*.patch "$OUT/"
-tar --exclude=./target --exclude=./.git --exclude='./.tmp-*' --exclude=./.ralph \
+tar --exclude=./target --exclude=./.git --exclude='./.tmp-*' \
     -cf - . | tar -C "$OUT/challoc" -xf -
 echo "staged $(find "$OUT" -type f | wc -l) files in $OUT ($(du -sh "$OUT" | cut -f1))"
 ls "$OUT"

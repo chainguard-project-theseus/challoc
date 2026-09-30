@@ -1,6 +1,6 @@
 # bench/
 
-Benchmark protocol for challoc (docs/plan.md, "Benchmark protocol"). Everything
+Benchmark harness for challoc (the protocol is docs/benchmarking.md). Everything
 runs inside the dev container on the native architecture; emulated x86_64 is
 never used for numbers.
 
@@ -112,7 +112,7 @@ MiB heap whose slab descriptors miss cache on every free of a random key,
   `valkey1-usable` (`-u`) precedes every free with a `malloc_usable_size`
   query of the pointer, which is what Valkey's unsized `zfree(ptr)` does
   (`zmalloc_size` for the accounting, then `je_sdallocx`); it is the row
-  for the usable-size query (plan Phase 1.5 task 14), not a gate row. `valkey1-write` (`-w SECS -d 0`) is the write phase alone, so a per-operation counter from `quick-perf` is per SET (the instruction budget of plan Phase 2.5 task 4c; it is not in the `quick` set). `valkey1-write-zmalloc` (`-w SECS -d 0 -u -a`) is that write phase in Valkey's unsized `zmalloc` shape, a `malloc_usable_size` after every allocation and before every free, and `valkey1-write-pair` (`-p`) the same with challoc's `challoc_malloc_usable`/`challoc_free_usable` pair in place of both (design 13.7); the two are the attribution rows of the size-returning entry points, `quick-perf` only. Scored by
+  for the usable-size query, not a gate row. `valkey1-write` (`-w SECS -d 0`) is the write phase alone, so a per-operation counter from `quick-perf` is per SET (it is not in the `quick` set). `valkey1-write-zmalloc` (`-w SECS -d 0 -u -a`) is that write phase in Valkey's unsized `zmalloc` shape, a `malloc_usable_size` after every allocation and before every free, and `valkey1-write-pair` (`-p`) the same with challoc's `challoc_malloc_usable`/`challoc_free_usable` pair in place of both (design 13.7); the two are the attribution rows of the size-returning entry points, `quick-perf` only. Scored by
   the write phase's M ops/s (the phase whose gap the soak shows widest and
   the one that reproduces the large-heap free miss); the delete phase's
   rate, the RSS after it and, with a `mallctl`-exporting allocator,
@@ -149,14 +149,10 @@ with the cache). `bench/scorecard.sh --render [aarch64|x86_64]` prints the
 table(s) sorted by date and works on the host. The two files were seeded
 from the GCE results files (the `(from ...)` note names the source; the
 2026-09-16 Mac numbers are not in them). After landing a change, run the
-scorecard on both VMs and commit the appended lines with the PROGRESS
-commit (`scripts/ralph-prompt.md`). Since the lanes (CLAUDE.md,
-Environment) only the coordinator does this, from `main` on the reference
-pair (`CHALLOC_GCE_PREFIX` unset), once per merge batch; a lane iteration
-judges its change with `quick`, `quick-perf` and `ab` on its own VMs
-(`CHALLOC_GCE_PREFIX=challoc-<lane>`), writes those tables to
-`bench/results/<date>-<arch>-<lane>-<task>*.md`, and never appends to the
-two scorecard files.
+scorecard on both VMs, from `main` on the reference pair
+(`CHALLOC_GCE_PREFIX` unset), and commit the appended lines; a change under
+review is judged with `quick`, `quick-perf` and `ab`, never with a
+scorecard line.
 
 **Noise.** `xmalloc-test -w 10` spreads about 20% between rounds of the
 same binary on aarch64 (`2026-09-17-aarch64-gce-slab-geometry.md` run 2).
@@ -303,8 +299,7 @@ Files:
   and `SAVE_BASELINE=1` are the quick-soak cache (above), `KEY_PATTERN=uniform`
   the time-seeded memtier key stream ("Noise", above; not the acceptance
   protocol).
-- `ruby-bench.sh`, `ruby/gc_churn.rb`: the Ruby rows (docs/plan.md Phase 1.5
-  task 4b). The `--with-jemalloc` Ruby from `contrib/ruby/build.sh` runs
+- `ruby-bench.sh`, `ruby/gc_churn.rb`: the Ruby rows. The `--with-jemalloc` Ruby from `contrib/ruby/build.sh` runs
   under challoc's `libjemalloc.so.2` stage (re-staged from the working tree)
   and, with `LD_PRELOAD=/usr/lib/libjemalloc.so.2`, under Wolfi's jemalloc
   (same soname, so the loader binds `DT_NEEDED` to the preloaded copy; the
@@ -323,8 +318,7 @@ Files:
   (`RESULT`, `ALLOCS`, `ROWS`, `HOST_KIND`). Both builds are installed into
   their `target/ruby/install-<alloc>` prefixes on first use (the build
   directory's ruby has no stdlib path).
-- `python-bench.sh`, `probes/python/*_bench.py`: the Python rows (docs/plan.md
-  Phase 2.5 task 1). Wolfi's `python-3.13` from the image runs four fixed
+- `python-bench.sh`, `probes/python/*_bench.py`: the Python rows. Wolfi's `python-3.13` from the image runs four fixed
   stdlib workloads, `json` (json.dumps/loads of a 20000-record structure),
   `dict_list` (a ring of live dicts and lists replaced 30000 times), `regex`
   (four patterns over 3.5 MB of text) and `object_graph` (a 150000-instance
@@ -341,8 +335,7 @@ Files:
   shape, so it is not used (the script's header says why). The `json`
   workload is also the scorecard's `python1` (default) and `python1-malloc`
   rows (`bench/lib.sh`).
-- `node-bench.sh`, `node/server.js`, `node/json_churn.js`: the Node.js rows
-  (docs/plan.md Phase 3 task 5 (c)). Wolfi's `nodejs-22` from the image, the
+- `node-bench.sh`, `node/server.js`, `node/json_churn.js`: the Node.js rows. Wolfi's `nodejs-22` from the image, the
   same binary under every allocator via `LD_PRELOAD` (challoc built from
   `REV`, default the working tree, into `target/node/lib`; `/proc/self/maps`
   checked once per allocator). Three rows: `startup` (`node -e 0`, wall
@@ -369,8 +362,7 @@ Files:
   `challoc:huge`, `challoc:meta`, so a gap can be placed). Written to
   `bench/results/<date>-<arch>-node.md` (`RESULT`, `ALLOCS`, `ROWS`,
   `DURATION`, `CONNS`, `HOST_KIND`).
-- `jvm-bench.sh`, `jvm/HttpBench.java`: the JVM rows (docs/plan.md Phase 3
-  task 5 (a)). Wolfi's `openjdk-21` from the image (under
+- `jvm-bench.sh`, `jvm/HttpBench.java`: the JVM rows. Wolfi's `openjdk-21` from the image (under
   `/usr/lib/jvm/java-21-openjdk`, not on PATH; the script finds the newest
   JDK there or takes `JAVA_HOME`). Two rows: `startup`, `java -version` one
   process per round under `rt` (`ROUNDS` (5) plus warm-up, six variants
@@ -435,8 +427,7 @@ Files:
   last `SOAK_TAIL` (600) s in MiB per minute (growth after warm-up is the
   fragmentation signal), NMT at the end. Written to
   `bench/results/<date>-<arch>-jvm-soak.md`.
-- `postgres-bench.sh`, `probes/pg-rss-sampler.sh`: the PostgreSQL rows
-  (docs/plan.md Phase 3 task 5 (b)). Wolfi's `postgresql-17` from the image:
+- `postgres-bench.sh`, `probes/pg-rss-sampler.sh`: the PostgreSQL rows. Wolfi's `postgresql-17` from the image:
   the script creates a non-root OS user (`pgb`; postgres refuses to run as
   the container's root), runs `initdb` into `target/postgres/data`
   (`--locale=C`, trust auth on a unix socket), loads `pgbench -i -s 50` once

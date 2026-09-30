@@ -2,8 +2,8 @@
 
 Status: draft for implementation. Where this document says "must", an
 implementation that does otherwise is wrong. Where it says "should" or gives a
-number, the value is a starting point to be validated by benchmarks in
-[plan.md](plan.md).
+number, the value is a starting point to be validated by benchmarks
+([benchmarking.md](benchmarking.md)).
 
 ## 1. Scope and constraints
 
@@ -468,8 +468,8 @@ scans the donor's `empty` and `purged` sets group by group (at most
 them. The slab transitions keep no extra state for
 this: a first form that counted a group's `Active` slabs and kept a
 class-wide idle set under the commit lock cost `xmalloc` 9% on the fast
-tier, one commit-lock hold and one shared-line write per slab transition
-(PROGRESS, task 15). Committing means
+tier, one commit-lock hold and one shared-line write per slab transition.
+Committing means
 `mprotect` of the slab's bytes (or of its page group, for slabs smaller than
 a page) to read-write. Fresh slabs are zero from the kernel. With the `thp`
 key (`thp.rs`, sections 7, 10 and 17) the commit path grows two branches,
@@ -934,8 +934,8 @@ to `rallocx` exactly as jemalloc's contract requires.
   balanced alloc/free churn (Valkey's DEL:SET steady state) the cache never
   reaches either boundary, no refill or flush runs, and the slab layout is
   frozen at whatever occupancy the delete phase left; the flush selection
-  alone cannot change that (measured on the 2026-09-17 review's churn probe
-  and soak, `docs/review-2026-09-17.md` 3.2 and 5). The scheduled pop makes
+  alone cannot change that (measured with the churn probe
+  `bench/probes/churn.c` and the Valkey soak). The scheduled pop makes
   one allocation in `2^k` land in the lowest slab with room, so the live
   set migrates downward at `1/2^k` of the allocation rate and the high
   slabs drain, empty and are purged. The gate exists because compacting a
@@ -1357,7 +1357,7 @@ need `CAP_SYS_RESOURCE`; unprivileged triggers exist since 6.4). Success is
 the only evidence: any other error (`ENOENT` without PSI, `EPERM`, `EROFS`
 under Docker's read-only cgroup mount) records `psi unavailable (<errno>)`
 and the thread sleeps on its futex as before. Two container facts, both
-measured (`PROGRESS.md`, Phase 2 task 4): Docker's default profile mounts
+measured: Docker's default profile mounts
 the container's cgroup read-only, so under it the trigger reads
 `unavailable (EROFS)` on every kernel; and on a host whose cgroup2 is
 mounted with `nsdelegate` (systemd hosts, the GCE image) the kernel refuses
@@ -1447,8 +1447,7 @@ the next decay pass; the count at init is the baseline, so a container
 that already had `high` events does not start with one. A limit that
 goes away (`docker update`) resets the outcome to the defaults. Testing
 this row needs `memory.high` below `memory.max`, which `docker run`
-cannot set; what `tests/c/cgroup_policy.c high` found (PROGRESS.md, Phase
-2 task 5): the container's own cgroup cannot enable the memory controller
+cannot set; what `tests/c/cgroup_policy.c high` found: the container's own cgroup cannot enable the memory controller
 for a child (`+memory` to its `cgroup.subtree_control` is `EBUSY` under
 the no-internal-process rule while the container's processes live there,
 `--privileged` or not), but with `--privileged --cgroupns=host` the parent
@@ -1562,11 +1561,11 @@ jemalloc names where they exist:
 | Key                       | Default | Notes                                   |
 |---------------------------|---------|-----------------------------------------|
 | `background_thread`       | false   |                                         |
-| `prefault`                | false   | challoc only; opt-in (plan Phase 2.5 task 11): the background thread commits and `MADV_POPULATE_WRITE`s (5.14+, probed; fallback: touch) the next fresh slabs of every class that refilled since its last pass (as many as it refilled, at least one and at most 8 per class per pass) within the cgroup headroom (11), so the claim path's first write into a fresh slab takes no page faults; the claim takes a prefaulted slab as any committed empty slab. Needs `background_thread:true` in the same configuration at init (`Config::prefault_active` is read once there; a background thread Valkey starts later through `mallctl` does not turn the pass on, so Valkey is given both keys, `docs/tuning.md` section 3); off by default (the human's decision of 2026-09-20 on the Valkey soak's write-phase p99 and main-thread page faults, PROGRESS.md "Phase 2.5 defaults" item 3) |
+| `prefault`                | false   | challoc only; opt-in (plan Phase 2.5 task 11): the background thread commits and `MADV_POPULATE_WRITE`s (5.14+, probed; fallback: touch) the next fresh slabs of every class that refilled since its last pass (as many as it refilled, at least one and at most 8 per class per pass) within the cgroup headroom (11), so the claim path's first write into a fresh slab takes no page faults; the claim takes a prefaulted slab as any committed empty slab. Needs `background_thread:true` in the same configuration at init (`Config::prefault_active` is read once there; a background thread Valkey starts later through `mallctl` does not turn the pass on, so Valkey is given both keys, `docs/tuning.md` section 3); off by default: it removes most of the Valkey main thread's write-phase page faults with p99 unmoved, but on by default it would mean a background thread and a few MiB of prefaulted slabs in every process (`docs/tuning.md` section 2) |
 | `dirty_decay_ms`          | 10000   |                                         |
 | `muzzy_decay_ms`          | ignored | accepted for compatibility              |
 | `narenas`                 | 0       | automatic arenas; 0 = `min(4 * ncpus, 64)`; see 13.3 |
-| `percpu_arena`            | auto    | `auto`, `percpu`, `off` (15, plan Phase 2.5 task 8): caches and arenas keyed by the running CPU's rseq `mm_cid` instead of by thread. `percpu` turns the mode on where the runtime probe passes (`rseq::probe`, checked at run time, never assumed from a version: glibc exports `__rseq_offset`, `__rseq_size` and `__rseq_flags` (2.35+) and the registered `__rseq_size >= 28`, so the area covers the `mm_cid` the kernel writes on 6.3+ with `CONFIG_SCHED_MM_CID`; glibc reports the kernel's feature size there since 2.41, `research.md`) and falls back to thread caches with a note in the report when it fails; `off` is thread caches whatever the probe says; `auto`, the default, keeps thread caches for now (`heap::PercpuState::OffAuto`): the mode measured 8..24% behind thread caches on the `quick` rows and far behind on the Valkey model on both reference VMs (section 15, PROGRESS.md), so the plan's fallback rule applies and the default is the human's call with those numbers. jemalloc's `disabled` and `phycpu` are accepted as `off` and `percpu` (the key used to be accepted with any value) |
+| `percpu_arena`            | auto    | `auto`, `percpu`, `off` (15, plan Phase 2.5 task 8): caches and arenas keyed by the running CPU's rseq `mm_cid` instead of by thread. `percpu` turns the mode on where the runtime probe passes (`rseq::probe`, checked at run time, never assumed from a version: glibc exports `__rseq_offset`, `__rseq_size` and `__rseq_flags` (2.35+) and the registered `__rseq_size >= 28`, so the area covers the `mm_cid` the kernel writes on 6.3+ with `CONFIG_SCHED_MM_CID`; glibc reports the kernel's feature size there since 2.41, `research.md`) and falls back to thread caches with a note in the report when it fails; `off` is thread caches whatever the probe says; `auto`, the default, keeps thread caches for now (`heap::PercpuState::OffAuto`): the mode measured 8..24% behind thread caches on the `quick` rows and far behind on the Valkey model on both reference VMs (section 15), so thread caches stay the default. jemalloc's `disabled` and `phycpu` are accepted as `off` and `percpu` (the key used to be accepted with any value) |
 | `tcache`                  | true    | false disables caches                   |
 | `tcache_max`              | 32768   | largest cached class size (bytes); `opt.tcache_max` reads as `size_t` |
 | `tcache_nslots_small_max` | 1024    |                                         |
@@ -2111,7 +2110,7 @@ not gated.
 Explicitly not attempted: quarantine (defeats defragmentation and costs
 throughput), canaries (needs bytes inside the block). Type-isolated
 heaps via Clang's `-fsanitize=alloc-token` are a plausible later addition
-because Wolfi controls compiler flags, tracked in [plan.md](plan.md).
+because Wolfi controls compiler flags; a roadmap item.
 
 ## 15. Optional per-CPU mode
 
@@ -2130,9 +2129,8 @@ and says so (`PercpuArena::forced`, the `Per-CPU caches:` line of
 keeps thread caches as well (`heap::PercpuState::OffAuto`, "opt in with
 percpu_arena:percpu"): the mode is implemented and measured, and the plan's
 own rule (default-on only if `quick` and `ab` are within noise on the
-reference VMs) failed by a margin (below), so the human kept thread caches
-as the default with the numbers in front of them (2026-09-20, PROGRESS.md
-"Phase 2.5 defaults, the human's decisions" item 2). `double_free_scan:true` also
+reference VMs) failed by a margin (below), so thread caches stay the
+default. `double_free_scan:true` also
 keeps thread caches (the scan of the top entries is not written into the
 critical sections; the hardening wins).
 
@@ -2325,7 +2323,7 @@ allocations through the CPU caches with exact thread counters and the
 zero prefix; the flush's high-half release and the drain; slot
 conservation under 2x-CPU threads, migrations and aborts; heaps off the
 mode), `tests/c/percpu.c` under `percpu` and `off`. Cost and the default
-decision: PROGRESS.md and `bench/results/2026-09-19-*-task8-percpu.md`.
+decision: `bench/results/2026-09-19-*-task8-percpu.md`.
 
 The feature report's `rseq=` words (`sys::features::rseq_words`, derived
 from `rseq::probe`) come from the same three symbols plus the area's
@@ -2456,7 +2454,7 @@ runs on every row.
 | `PR_SET_VMA_ANON_NAME` | kernel 5.17 with `CONFIG_ANON_VMA_NAME` | named `challoc:*` mappings in `/proc/pid/maps` | skip |
 | `MADV_POPULATE_WRITE` (`populate_write`) | kernel 5.14 (probed on a scratch page: the call and `mincore` afterwards) | the prefault pass (section 8, plan Phase 2.5 task 11; `purge::prefault`, `ClassState::prefault_next`), behind `prefault:true` with `background_thread:true`: the background thread commits the slab the next refill of a class would commit and populates it with one call while it is still unpublished, then publishes it as `Purged` for the refill to take; `stats.prefault.*` and the `Prefault:` report line | the same pass with one write of zero per page; `Prefault: off (prefault:false)` by default |
 | PSI triggers on `memory.pressure` | kernel 6.4 (unprivileged), cgroup2 mounted writable | the background thread arms a trigger and reacts to pressure at once (section 11) | sample `memory.current` on the tick |
-| rseq `mm_cid` (`rseq`, `rseq_size`, `mm_cid`) | kernel 6.3 (`CONFIG_RSEQ`, `CONFIG_SCHED_MM_CID`) reporting `AT_RSEQ_FEATURE_SIZE >= 28`, glibc 2.35+'s registered area (`__rseq_size`, `__rseq_offset`, `__rseq_flags`, read from the weak symbols at init, and the area's own `cpu_id` for the fact of registration; `rseq::probe` for both the mode and the report's `rseq=` words; `__rseq_size >= 28` is the gate) | the per-CPU mode (section 15, plan Phase 2.5 task 8): caches and arenas keyed by the running thread's concurrency id, pop and push in rseq critical sections, behind `percpu_arena:percpu` (the opt-in; `auto`, the default, is thread caches); the cost and the default decision are in PROGRESS.md; `rseq=yes rseq_size=33 mm_cid=yes` on the 7.0 GCE VMs | thread caches (`percpu_arena:off`, `double_free_scan:true`, or `rseq=yes rseq_size=20 mm_cid=no` as on the Mac's 6.10 linuxkit VM, `rseq=no rseq_size=0` without a registration: `GLIBC_TUNABLES=glibc.pthread.rseq=0`, no `CONFIG_RSEQ`, a libc without the symbols); `percpu` says so in the report |
+| rseq `mm_cid` (`rseq`, `rseq_size`, `mm_cid`) | kernel 6.3 (`CONFIG_RSEQ`, `CONFIG_SCHED_MM_CID`) reporting `AT_RSEQ_FEATURE_SIZE >= 28`, glibc 2.35+'s registered area (`__rseq_size`, `__rseq_offset`, `__rseq_flags`, read from the weak symbols at init, and the area's own `cpu_id` for the fact of registration; `rseq::probe` for both the mode and the report's `rseq=` words; `__rseq_size >= 28` is the gate) | the per-CPU mode (section 15, plan Phase 2.5 task 8): caches and arenas keyed by the running thread's concurrency id, pop and push in rseq critical sections, behind `percpu_arena:percpu` (the opt-in; `auto`, the default, is thread caches); the cost and the default decision are in section 15; `rseq=yes rseq_size=33 mm_cid=yes` on the 7.0 GCE VMs | thread caches (`percpu_arena:off`, `double_free_scan:true`, or `rseq=yes rseq_size=20 mm_cid=no` as on the Mac's 6.10 linuxkit VM, `rseq=no rseq_size=0` without a registration: `GLIBC_TUNABLES=glibc.pthread.rseq=0`, no `CONFIG_RSEQ`, a libc without the symbols); `percpu` says so in the report |
 | Transparent huge pages (`thp`, `mthp`, `collapse`) | any kernel with `CONFIG_TRANSPARENT_HUGEPAGE`; the per-size `hugepages-<n>kB` knobs since 6.8; `MADV_COLLAPSE` since 6.1 | off by default (`thp:never`: byte for byte the allocator without the key on the fast paths, plus one `MADV_NOHUGEPAGE` each on the class superblock and the metadata reservation at init (plan Phase 2.5 task 16, `thp::advise_reservation` from `layout::Regions::reserve`, and again from `force_never`), a VMA flag every later split inherits, so that on a host whose global mode is `always` (Chainguard OS ships `always` with the 2 MiB size on `inherit`; Debian's kernels boot `always`) no slab region of challoc's gets a huge page; the huge region is not advised and follows the host's policy (the 2026-09-20 decision, option (d) of `bench/results/2026-09-20-aarch64-cgos-thp-ab.md`: `never` is the slab regions' RSS discipline, and a huge run is a whole allocation the program asked for, which takes 2 MiB pages on an `always` host as jemalloc's large extents do; advising it too cost the Valkey model 10 points of `valkey1` on Chainguard OS, the 32 MiB of tables it keeps in huge runs, for no RSS gain on that heap). The both-ways test `tests/c/thp.c never` reads the global mode from sysfs, checks `nh` on the class region and no `nh` on the huge run on every kernel with THP, `stats.thp.nohuge_ranges` 2, and, on an `always` host, `AnonHugePages` 0 kB and `THPeligible` 0 on the class region after 8 MiB of small blocks and `THPeligible` 1 with `AnonHugePages` back on an 8 MiB huge run; the before/after numbers on the 7.0 VM with the global mode set to `always` are in `bench/results/2026-09-19-lane-b-floor-fixes.md`, the same-host A/B of the four settings on Chainguard OS in `2026-09-20-aarch64-cgos-thp-ab.md`. `auto` and `always` issue no `MADV_NOHUGEPAGE`: on an `always` host their unadvised regions stay eligible for the host's PMD pages unless the process-wide `prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED)` of 6.18 (`docs/research.md`; the second half of task 16) is in force: `thp_process:advised` (section 12) issues it once at init (`thp::configure_process`), where the probe `sys::features::probe_thp_disable` found the kernel takes the flag (`PR_GET_THP_DISABLE` 0, then the call and its undo, one `prctl` each: `thp_except_advised=yes`; `EINVAL` before 6.18 is `no`; a process whose parent set a THP policy is `inherited` and left alone), so huge pages land only where something was `MADV_HUGEPAGE`d, libc's and the program's mappings included, which is why it is opt-in; the `thp:` report line ends `; host <global mode> process <default (nothing issued) | advised: PR_THP_DISABLE_EXCEPT_ADVISED in force | advised: skipped, <reason>>`, `stats.thp.process` reads 0..4 (`thp::Process`), and `tests/c/thp.c process` under `thp_process:advised,thp:auto` is the both-ways test: on 6.18+ `PR_GET_THP_DISABLE` reads 3 and, on an `always` host, the unadvised class region and huge run show `AnonHugePages` 0 kB; below 6.18 the line says skipped and `PR_GET_THP_DISABLE` stays 0). `thp:auto` (plan Phase 2.5 task 9, `thp.rs`): `MADV_HUGEPAGE` on the slab groups of every class whose slab holds an enabled folio size below the PMD (64 KiB slabs and up with `hugepages-64kB` enabled), and metadata commits rounded to and advised with that folio, never a 2 MiB page (the fork copy-on-write cost that makes Redis and Valkey forbid huge pages stays absent); inert, and the report says why, where the kernel enables no such size or where the PMD size is `madvise`-gated (`hugepages-2048kB/enabled` `madvise`, or `inherit` under a `madvise` top level, Ubuntu's default), because the same advice would then make the regions eligible for 2 MiB pages at the fault and through khugepaged; the host requirement is `hugepages-64kB/enabled=madvise` (or `always`) with `hugepages-2048kB/enabled=never` (or `always`, the host's own decision), root-only knobs. `thp:always`: with the PMD size enabled and no larger than 2 MiB (`thp::LG_PMD_CHUNK_MAX`: the PMD is `page * page / 8`, 2 MiB at 4 KiB pages, 32 MiB at 16 KiB, 512 MiB at 64 KiB, and a chunk of the larger sizes committed and advised per class would be the RSS floor of the process: the 64 KiB matrix cell showed 1.7 GiB of advised chunks for an 8 MiB test heap and the kernel gave none of them a folio, `THPeligible 0`), class regions are committed and advised in PMD-sized chunks so the first touch maps a 2 MiB page (guard slabs inside a chunk stay unused but unguarded: a marker there splits the page), huge runs of a PMD or more are advised (section 7), and the metadata takes the sub-PMD folio if one is enabled; a purge of a slab inside a 2 MiB page splits it, the kernel's cost of the mode. On a PMD over 2 MiB `always` is the folio path over the enabled sizes below the PMD (2 MiB slabs and up when `hugepages-2048kB` is enabled at 64 KiB pages) and inert, reason `PmdTooLarge`, when none is. `MADV_COLLAPSE` is probed at the PMD size only (a smaller request is a silent no-op through 7.0), only when `thp` is not `never`, and reported, not used. Measured in `bench/results/2026-09-19-lane-b-mthp.md`: `auto` takes a quarter of larson1's dTLB refills on the C4A (4.0 -> 3.05 per operation, jemalloc 1.75) and puts valkey1's below jemalloc's (2.81 -> 2.44), leaves the Valkey-shaped rows flat, makes `fork()` 18% cheaper on a 500 MiB heap and the copy-on-write burst unchanged, and costs larson 1.6% with 7..19% more RSS on 16..100 MiB heaps (a folio per touched slab and table), which is why it is the documented opt-in and not the default; `always` is +10..15% on valkey1 at +10% RSS on 585 MiB and 2..4x on small heaps | small pages; `thp=none mthp=none` on a kernel without THP |
 | MTE (`HWCAP2_MTE`, `HWCAP2_MTE3`) | arm64 CPU (Armv8.5) and a kernel with `CONFIG_ARM64_MTE` that exposes it | reported only: tagged pointers (section 18, designed; plan Phase 2.5 task 6 implements) | untagged pointers |
 | PAC (`HWCAP_PACA` and `HWCAP_PACG`) | arm64 CPU (Armv8.3) and kernel | signed cache entries and TLS heap pointer (`pacda`/`autda`, sections 6.1 and 6.2) behind `pac_pointers:true`, off by default on the cost (section 14); `pac=yes` on Axion and the Mac VM, `no` on Altra; FEAT_FPAC decides whether a failure faults at the `autda` or on first use | plain pointers, the same binary, one predicted branch on a byte the fast paths load anyway |
@@ -2990,7 +2988,7 @@ bench/                benchmark drivers, GCE scripts, results, probes
 fuzz/                 randomized alloc/free driver with seeds
 contrib/              Valkey build patch, the jemalloc-compat header, the Wolfi package definitions
 scripts/              the dev scripts; codegen-diff.sh proves a refactor left the machine code unchanged
-docs/                 design, plan, research, tuning, testing, the reviews
+docs/                 design, benchmarking, research, tuning, testing
 ```
 
 Pure logic (`layout`, `bitmap`, size-class math, config parsing, and the

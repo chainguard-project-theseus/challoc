@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # challoc-bench: drive the two Compute Engine VMs that produce challoc's
 # reference benchmark numbers and hardware performance counters
-# (docs/plan.md, Phase 1.5). One VM per architecture:
+# (docs/benchmarking.md). One VM per architecture:
 #
 #   arm64  c4a-standard-16  Google Axion (Neoverse V2)   aarch64
 #   amd64  c4-standard-16   Intel Xeon Platinum 8581C (Emerald Rapids) x86_64
@@ -212,7 +212,7 @@ rsync_tree() {
 }
 rsync_pass() {
   local ssh="$1" dest="$2" common wtdir
-  local -a ex=(--exclude=/target --exclude=/.ralph --exclude='/.tmp-*' --exclude='/.ralph-*.log')
+  local -a ex=(--exclude=/target --exclude='/.tmp-*')
   if [ -f "$REPO/.git" ]; then
     common="$(git -C "$REPO" rev-parse --path-format=absolute --git-common-dir)"
     wtdir="$(git -C "$REPO" rev-parse --path-format=absolute --git-dir)"
@@ -446,7 +446,7 @@ cmd_session() {
 }
 
 # ---------------------------------------------------------------------------
-# matrix: the floor, proven (docs/plan.md Phase 2.5 task 3). For each cell
+# matrix: the floor, proven on real kernels. For each cell
 # (a kernel: image family or a kernel package installed on top of one,
 # architecture, machine type) create a throwaway VM `challoc-matrix-<cell>`,
 # provision Docker (the `provision` steps minus perf), sync the tree, run
