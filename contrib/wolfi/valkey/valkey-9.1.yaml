@@ -24,9 +24,13 @@
 # rpath. The system challoc and this package coexist (the results file
 # has the co-installation check and the both-ways check).
 #
-# Local build: contrib/wolfi/valkey/stage.sh assembles the source
-# directory (the two patches and a copy of the challoc tree), then
+# Local build, from the challoc tree: the source directory holds Wolfi's
+# patch and a copy of the tree under challoc/ (the Valkey patches come
+# from that copy):
 #
+#   mkdir -p <staged>/challoc && cp contrib/wolfi/valkey/valkey-9.1/*.patch <staged>/
+#   tar --exclude=./target --exclude=./.git --exclude='./.tmp-*' -cf - . \
+#     | tar -C <staged>/challoc -xf -
 #   melange build contrib/wolfi/valkey/valkey-9.1.yaml --arch aarch64 \
 #     --source-dir <staged> --build-option local-challoc \
 #     --pipeline-dir /path/to/wolfi-dev/os/pipelines \
@@ -69,8 +73,8 @@ vars:
 
 options:
   # `--build-option local-challoc`: the source directory melange was given
-  # already holds the challoc tree under challoc/ (contrib/wolfi/valkey/
-  # stage.sh), skip its git-checkout. For a local or CI build from the
+  # already holds the challoc tree under challoc/ (see the header), skip
+  # its git-checkout. For a local or CI build from the
   # challoc repository; the Wolfi copy never sets it.
   local-challoc: {}
 
@@ -96,19 +100,6 @@ pipeline:
       tag: ${{package.version}}
       expected-commit: 7f1dffedff6de73058b2c2a389422b6ecd56c8fb
 
-  # 0001-Add-MALLOC-challoc.patch is challoc's contrib/valkey patch for this
-  # tag: `make MALLOC=challoc` keeps every USE_JEMALLOC code path (stats,
-  # purge, background thread, active defrag) and links -lchalloc instead
-  # of building deps/jemalloc; zmalloc.h includes <challoc/jemalloc.h>
-  # and reports the allocator as jemalloc-5.3.0-challoc; the test suite's
-  # eval-scripts defrag test gets a challoc stop threshold (its Lua heap is
-  # in the allocator under challoc, in glibc under the je_-prefixed
-  # bundled jemalloc). The package build does not run the suite; the hunk
-  # is carried so the patch is the one the suite was passed with.
-  - uses: patch
-    with:
-      patches: 0000-Disable-protected-mode.patch 0001-Add-MALLOC-challoc.patch
-
   - uses: git-checkout
     if: ${{options.local-challoc.enabled}} == 'false'
     with:
@@ -118,6 +109,22 @@ pipeline:
       # was written against. The Wolfi PR sets the tag and its commit.
       expected-commit: 5a1e715bca2f11402b998a18664016a47fa5a938
       destination: challoc
+
+  # 0000 is Wolfi's own. The MALLOC=challoc patches are applied from the
+  # challoc tree checked out above, so the package and the repository use
+  # one copy: 0001 makes `make MALLOC=challoc` keep every USE_JEMALLOC code
+  # path (stats, purge, background thread, active defrag) and link
+  # -lchalloc instead of building deps/jemalloc; zmalloc.h includes
+  # <challoc/jemalloc.h> and reports the allocator as
+  # jemalloc-5.3.0-challoc; the test suite's eval-scripts defrag test gets
+  # a challoc stop threshold (its Lua heap is in the allocator under
+  # challoc, in glibc under the je_-prefixed bundled jemalloc). The
+  # package build does not run the suite; the hunk is carried so the patch
+  # is the one the suite was passed with. 0002 routes zmalloc.c through
+  # challoc's usable-size entry points.
+  - uses: patch
+    with:
+      patches: 0000-Disable-protected-mode.patch challoc/contrib/valkey/0001-Add-MALLOC-challoc.patch challoc/contrib/valkey/0002-zmalloc-use-challoc-usable-size-entry-points.patch
 
   - name: Build the private challoc (quantum8, soname libchalloc.so.0)
     working-directory: challoc

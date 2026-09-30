@@ -186,11 +186,11 @@ one configured (results file, "co-installation"):
 `valkey/valkey-9.1.yaml` is wolfi-dev/os's `valkey-9.1.yaml` (main at
 `a944f08`, 2026-09-19; the file last changed in `195f812`, the 9.1.2
 update) with the allocator switched from the bundled jemalloc to challoc.
-`valkey/valkey-9.1/` holds the patches the pipeline applies (Wolfi keeps
-them in a directory named after the package): Wolfi's own
-`0000-Disable-protected-mode.patch` and a copy of
-`contrib/valkey/0001-Add-MALLOC-challoc.patch` (`valkey/stage.sh` refuses
-to build if the two copies differ). `bench/results/2026-09-20-phase3-task2-valkey-package.md`
+`valkey/valkey-9.1/` holds Wolfi's own `0000-Disable-protected-mode.patch`
+(Wolfi keeps patches in a directory named after the package); the
+`MALLOC=challoc` patches, `contrib/valkey/0001-Add-MALLOC-challoc.patch`
+and `0002-zmalloc-use-challoc-usable-size-entry-points.patch`, are applied
+from the challoc checkout, so there is one copy of them. `bench/results/2026-09-20-phase3-task2-valkey-package.md`
 has the diff against Wolfi's file and the build.
 
 ### Two libraries, one soname
@@ -263,9 +263,10 @@ reason; a second `copyright` entry (Apache-2.0 for
 Rust version and the allocator name; the `local-challoc` build option;
 `jemalloc` dropped from the environment (it was unused: the default
 `MALLOC=jemalloc` builds `deps/jemalloc`), `binutils` and
-`rust-1.98` added; the challoc patch in the `patch` step; a `git-checkout`
-of challoc into `challoc/` (skipped under `local-challoc`, when
-`stage.sh` has already put the tree there); a `cargo build --release
+`rust-1.98` added; a `git-checkout` of challoc into `challoc/` (skipped
+under `local-challoc`, when the source directory already holds the tree)
+before the `patch` step, which applies the two challoc patches from that
+checkout after Wolfi's; a `cargo build --release
 --locked --no-default-features --features quantum8` step; the build step
 gains `-I$PWD/challoc/include` in `CFLAGS`,
 `-L<cargo output> -Wl,-rpath,/usr/lib/valkey` in `LDFLAGS` and
@@ -315,10 +316,12 @@ nothing but the package, so a local `melange test` needs
 Same VM and container as "Building locally" above (melange with
 bubblewrap in a privileged `wolfi-base` container, Wolfi's `pipelines/`
 at `a944f08`). The Valkey definition needs the challoc tree in its source
-directory, which `valkey/stage.sh` assembles:
+directory:
 
 ```sh
-sh /work/contrib/wolfi/valkey/stage.sh /tmp/stage     # the two patches + challoc/ (no target/, .git)
+mkdir -p /tmp/stage/challoc && cp /work/contrib/wolfi/valkey/valkey-9.1/*.patch /tmp/stage/
+(cd /work && tar --exclude=./target --exclude=./.git --exclude='./.tmp-*' -cf - .) \
+  | tar -C /tmp/stage/challoc -xf -
 melange build /work/contrib/wolfi/valkey/valkey-9.1.yaml --arch $(uname -m) \
   --source-dir /tmp/stage --build-option local-challoc \
   --pipeline-dir /tmp/os/pipelines $WOLFI \
