@@ -304,7 +304,8 @@ proves the floor on 5.10, 6.1, 6.8, 6.18, 7.0 and 7.2 kernels and on
 builds `challoc`, `challoc-dev` and `challoc-jemalloc-compat` with melange,
 and Wolfi's Valkey 9.1 and Ruby 3.4 are built and tested on challoc on both
 architectures (`contrib/wolfi/`). `docs/tuning.md` is the operator's guide;
-`bench/results/scorecard-{aarch64,x86_64}.md` record the benchmark trend.
+`bench/scorecard.sh` records the benchmark trend per commit
+(`target/results/scorecard-<arch>.md`).
 Zero-on-free and slot randomisation are opt-in; THP (`thp:auto|always`) is
 off by default; `mseal` of the reservations' never-committed ranges, the
 cgroup measurement layer (`stats.cgroup.*`) and the cgroup policy with its

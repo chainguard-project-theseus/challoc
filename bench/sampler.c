@@ -7,7 +7,7 @@
  *   count module offset
  * where `module` is the basename of the loaded object and `offset` is the
  * PC minus its load bias, so it matches `nm` and `objdump -d` addresses.
- * bench/profile.sh turns that into a symbol and instruction profile.
+ * Map the offsets to symbols with `nm` and to instructions with `objdump -d`.
  *
  * The handler only stores a word; nothing here allocates after startup. */
 #define _GNU_SOURCE

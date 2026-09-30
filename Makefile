@@ -14,7 +14,10 @@
 # (default `challoc-cargo-registry`) the registry volume; a lane worktree
 # (CLAUDE.md, Environment) exports `TARGET_VOLUME=challoc-target-<lane>-$(ARCH)`
 # so two worktrees never share a `target/`. `make clean-volumes` removes the
-# two volumes the variables name.
+# two volumes the variables name. The one exception is `target/results/`,
+# where the harnesses write their results files: it is the host's
+# `target/results` bind-mounted over the volume, so the files are readable
+# on the host (`make scorecard RENDER=1`, `challoc-bench fetch`).
 #
 # Variables named on the command line (`make quick OLD=HEAD~1`) reach the
 # harness scripts as environment variables: each harness target forwards the
@@ -41,7 +44,7 @@ endif
 # CHALLOC_CONF, when set on the make command line or in the environment, is
 # forwarded into every container: challoc reads it after MALLOC_CONF and the
 # stock allocators ignore it, so `make <target> CHALLOC_CONF=percpu_arena:percpu`
-# puts challoc alone under a key in any suite (bench/percpu-campaign.sh).
+# puts challoc alone under a key in any suite.
 # CGROUP_PEAK=1 (plan Phase 2.5 task 17): the container joins the host's
 # cgroup namespace and gets /sys/fs/cgroup mounted read-write, so the soak
 # harnesses can reset the cgroup's memory.peak at their phase boundaries
@@ -52,6 +55,7 @@ endif
 DOCKER_BASE = docker run --rm --platform $(PLATFORM) \
 	-v "$(CURDIR)":/src -w /src \
 	-v $(TARGET_VOLUME):/src/target \
+	$(shell mkdir -p "$(CURDIR)/target/results")-v "$(CURDIR)/target/results":/src/target/results \
 	-v $(CARGO_VOLUME):/root/.cargo/registry \
 	$(GIT_MOUNT) $(if $(CHALLOC_CONF),-e CHALLOC_CONF="$(CHALLOC_CONF)") \
 	$(if $(CGROUP_PEAK),--cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw)
@@ -82,7 +86,7 @@ endef
 # reads it (a recursively expanded variable: `make build` runs no probe).
 HOST_CPU = $(shell sysctl -n machdep.cpu.brand_string 2>/dev/null || grep -m1 'model name' /proc/cpuinfo 2>/dev/null | sed 's/.*: //' | grep . || lscpu 2>/dev/null | grep -m1 'Model name' | sed 's/.*: *//')
 
-.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare test-pagemap-guard test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench node-bench check-needed clean-volumes jvm-bench postgres-bench jvm-soak percpu-campaign help print-docker-run clean-tmp test-all
+.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare test-pagemap-guard test-host jemalloc-compat fuzz bench-build quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench node-bench check-needed clean-volumes jvm-bench postgres-bench jvm-soak help print-docker-run test-all
 
 help: ## list the targets (this text; the `##` comments in the Makefile)
 	@awk -F' ## ' '/ ## / { n = $$1; if (n ~ /^\$$\(eval/) { sub(/^[^,]*,/, "", n); sub(/,.*/, "", n) } else { sub(/:.*/, "", n) } if (n !~ /^[a-zA-Z0-9_-]+$$/) next; printf "  %-22s %s\n", n, $$2 }' $(MAKEFILE_LIST)
@@ -226,13 +230,6 @@ fuzz: image ## fuzz/fuzz.c under LD_PRELOAD for FUZZ_OPS (10M) operations on FUZ
 bench-build: image ## fetch and build the mimalloc-bench programs, redis, mimalloc and the bench/ helpers into the target volume
 	$(DOCKER_RUN) sh bench/build.sh
 
-# Legacy: the Phase 0 protocol runner (bench/run.sh with bench/profile.sh),
-# kept for reference; the tiers below (quick, ab, scorecard) are what the
-# results files are written from since Phase 1.5 (bench/README.md).
-bench: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(if $(HOST_KIND),-e HOST_KIND="$(HOST_KIND)") $(if $(RESULT),-e RESULT="$(RESULT)")
-bench: image ## legacy: bench-build, release build, then the Phase 0 protocol (bench/run.sh) into bench/results/<date>-<arch>.md; use quick/ab/scorecard
-	$(DOCKER_RUN) sh -c 'sh bench/build.sh >/dev/null && cargo build --release && sh bench/run.sh'
-
 # Two-tier harness (bench/README.md). quick: ~2 min go/no-go for an
 # iteration; ab: the protocol-tier A/B that results files are written from;
 # baseline: cache the stock allocators' protocol rows for BASELINES=cached.
@@ -247,11 +244,11 @@ $(eval $(call bench_target,baseline,bench/baseline.sh,$$(BASELINE_VARS))) ## cac
 
 # Scorecard (bench/scorecard.sh): the fixed row set under challoc (REV, default
 # the working tree) and jemalloc, 3 interleaved rounds through bench/ab.sh,
-# one line appended to bench/results/scorecard-<arch>.md; `make scorecard
+# one line appended to target/results/scorecard-<arch>.md; `make scorecard
 # RENDER=1` prints the table sorted by date.
 SCORECARD_VARS = REV ROUNDS ROWS BASELINES BASELINE_TOLERANCE HOST_KIND VALKEY_MODEL_SECS VALKEY_MODEL_N PIN SCORECARD_FILE
 scorecard: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(call env_flags,$(SCORECARD_VARS))
-scorecard: image ## the fixed row set vs jemalloc (REV=tree), one line appended to bench/results/scorecard-<arch>.md; RENDER=1 prints the trend on the host
+scorecard: image ## the fixed row set vs jemalloc (REV=tree), one line appended to target/results/scorecard-<arch>.md; RENDER=1 prints the trend on the host
 	$(if $(RENDER),sh bench/scorecard.sh --render,$(DOCKER_RUN) sh bench/scorecard.sh)
 
 valkey: DOCKER_FLAGS = $(if $(STAGE),-e STAGE=$(STAGE)) $(if $(TEST_FLAGS),-e TEST_FLAGS="$(TEST_FLAGS)")
@@ -265,7 +262,7 @@ $(eval $(call bench_target,valkey-soak,bench/valkey-soak.sh,$$(SOAK_VARS))) ## V
 # Quick soak: challoc only, 10 minutes of load, occupancy sampler on, compared
 # against the cached jemalloc soak from `make soak-baseline` (the full 1200 s
 # protocol under jemalloc, stored under target/baselines/). Results under
-# target/valkey/soak-quick, never bench/results/. Acceptance stays `make valkey-soak`.
+# target/valkey/soak-quick, not target/results/. Acceptance stays `make valkey-soak`.
 soak-quick: ALLOCS = challoc
 soak-quick: DURATION ?= 600
 soak-quick: SETTLE ?= 60
@@ -312,7 +309,7 @@ $(eval $(call bench_target,node-bench,bench/node-bench.sh,$$(NODE_BENCH_VARS))) 
 # allocators. jvm-soak is the same script with ROWS=soak (the mixed-size
 # soak: a growing and shrinking pool, log-uniform direct-buffer sizes,
 # alternating load, 20 minutes per allocator), written to
-# bench/results/<date>-<arch>-jvm-soak.md with the Rss series CSVs beside it.
+# target/results/<date>-<arch>-jvm-soak.md with the Rss series CSVs beside it.
 JVM_BENCH_VARS = ALLOCS ROUNDS ROWS DURATION WARMUP INTERVAL CONNECTIONS THREADS HEAP PORT RESULT OUT HOST_KIND REV CHALLOC_VARIANTS JAVA_OPTS IDLE_SECS NMT NMT_GAP TRIM_MS SOAK_DURATION SOAK_WINDOW SOAK_HIGH SOAK_LOW SOAK_CORE SOAK_MAX SOAK_KEEPALIVE SOAK_MIN SOAK_MAXB SOAK_TAIL
 JVM_SOAK_VARS = $(filter-out ROWS,$(JVM_BENCH_VARS))
 $(eval $(call bench_target,jvm-bench,bench/jvm-bench.sh,$$(JVM_BENCH_VARS))) ## JVM rows (bench/jvm-bench.sh): `java -version` startup and a 200-thread http server under ab for DURATION (300) s with NMT, seven variants
@@ -324,14 +321,6 @@ $(eval $(call bench_target,jvm-soak,bench/jvm-bench.sh,$$(JVM_SOAK_VARS),-e ROWS
 POSTGRES_BENCH_VARS = ALLOCS ROUNDS ROWS RESULT OUT HOST_KIND REV SCALE DURATION CONN_DURATION INTERVAL SAMPLING_RATE JOBS CLIENTS_A CLIENTS_B CONN_CLIENTS CONN_JOBS SHARED_BUFFERS MAX_CONNECTIONS REINIT REPORT_ONLY
 $(eval $(call bench_target,postgres-bench,bench/postgres-bench.sh,$$(POSTGRES_BENCH_VARS))) ## PostgreSQL 17 rows (bench/postgres-bench.sh): pgbench select-only at 100 and 500 clients, TPC-B, connection setup; RSS over every postgres process
 
-# Phase 2.5 task 8's acceptance rows (bench/percpu-campaign.sh, lane D): the
-# same suites under the default and under CHALLOC_CONF=percpu_arena:percpu,
-# on the VM host (each step is one of the make targets above). MODE=baseline
-# (default only, the half that exists before task 8 merges) or MODE=percpu.
-PERCPU_VARS = MODE STEPS DATE LANE ROUNDS SOAK_DURATION RUBY_SOAK_DURATION IDLE_THREADS VALKEY_FULL CALLOC_ROUNDS CALLOC_MAX_SECS OSC_SECS CGROUP_PEAK
-percpu-campaign: ## Phase 2.5 task 8 acceptance rows on the VM host (bench/percpu-campaign.sh; MODE=baseline|percpu, STEPS)
-	env $(foreach v,$(PERCPU_VARS),$(if $($(v)),$(v)="$($(v))")) HOST_CPU="$(HOST_CPU)" sh bench/percpu-campaign.sh
-
 # Phase 3 prerequisite (e): DT_NEEDED must name the allocator library
 # (design 13.6); Wolfi's --as-needed drops it from a consumer that
 # references no symbol of it.
@@ -340,6 +329,3 @@ check-needed: image ## Phase 3 prerequisite (e): DT_NEEDED must name the allocat
 
 clean-volumes: ## remove the target and cargo-registry volumes TARGET_VOLUME and CARGO_VOLUME name
 	docker volume rm -f $(TARGET_VOLUME) $(CARGO_VOLUME)
-
-clean-tmp: ## remove the .tmp-* scratch files and directories at the top level (iteration scripts, capture dirs)
-	rm -rf $(CURDIR)/.tmp-*

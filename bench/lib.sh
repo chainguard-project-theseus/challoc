@@ -2,12 +2,12 @@
 # benchmark tiers, bench/README.md). POSIX sh; source it after `ROOT` is set
 # and the caller has `cd`ed to the repository root inside the dev container.
 #
-# What lives here: the protocol rows as command lines (the same programs and
-# parameters bench/run.sh uses, with fixed thread counts so the rows are
+# What lives here: the protocol rows as command lines (the Phase 0 programs
+# and parameters, with fixed thread counts so the rows are
 # comparable across hosts), running one row under one library and scoring it,
 # building a variant library from a git rev or the working tree into its own
 # CARGO_TARGET_DIR, sorted-list/median arithmetic, the cached-baseline file
-# name, the bench lock every tier shares with run.sh, and the pieces the
+# name, the bench lock every tier shares, and the pieces the
 # consumer harnesses (python, node, jvm, postgres, ruby) share.
 #
 # POSIX sh has no `local`: every function here writes plain globals, and
@@ -35,7 +35,7 @@ TCMALLOC_LIB=/usr/lib/libtcmalloc_minimal.so.4
 # (T/2 write, T/2 delete). quick.sh sets VALKEY_MODEL_SECS=5 before sourcing.
 VALKEY_MODEL_N=${VALKEY_MODEL_N:-850000}
 VALKEY_MODEL_SECS=${VALKEY_MODEL_SECS:-10}
-# The redis row (run.sh's recipe): port and request count.
+# The redis row: port and request count.
 REDIS_PORT=${REDIS_PORT:-6379}
 REDIS_N=${REDIS_N:-1000000}
 # The ruby-churn row runs on the --without-jemalloc Ruby build (the same
@@ -70,7 +70,7 @@ tree_dirty() {
   esac
 }
 
-# take_bench_lock: one protocol run per target volume (see bench/run.sh).
+# take_bench_lock: one protocol run per target volume.
 # The lock is the flock on fd 9, released by the kernel when every holder of
 # the descriptor exits. A server the harness starts in the background
 # inherits fd 9 and keeps the lock for as long as it lives, so a harness
@@ -386,7 +386,7 @@ run_row() {
   echo "${s:--} $rss $ex" >> "$OUT/$tag.scores"
 }
 
-# run_redis LIB CONF LOG RT SERVER...: bench/run.sh's redis recipe. The
+# run_redis LIB CONF LOG RT SERVER...: the redis row. The
 # server runs under the allocator (RSS is the server's, from its own rt
 # line), the client is redis-benchmark -r 1000000 -n REDIS_N -P 16 lpush/lrange
 # and its wall time and exit status make the row's rt line.
@@ -450,7 +450,7 @@ median_list() { echo "$1" | tr ' ' '\n' | awk 'NF {a[++n]=$1} END {if (n) print 
 # any_failed FILE SKIP: 1 if any run from line SKIP+1 exited non-zero.
 any_failed() { awk -v s="$2" 'NR>s && $3!=0 {f=1} END {print f+0}' "$1"; }
 # worse_pct BENCH NEW REF: signed percentage, positive when NEW did worse
-# than REF on BENCH (run.sh's orientation); "-" when either is missing.
+# than REF on BENCH; "-" when either is missing.
 worse_pct() {
   if higher_is_better "$1"; then a=$3; b=$2; else a=$2; b=$3; fi
   awk -v a="$a" -v b="$b" 'BEGIN {if (a=="-"||b=="-"||a==""||b==""||b==0) print "-"; else printf "%+.1f%%", (a/b-1)*100}'
@@ -470,7 +470,7 @@ kib_to_mib() { awk -v k="$1" 'BEGIN {if (k=="-"||k=="") print "-"; else printf "
 
 # resolve_rev REV: full hash of a git rev, "tree" for the working tree, or
 # "dir:PATH" for a source directory under ROOT that holds a Cargo.toml (an
-# A/B copy such as `.tmp-slab16`, made by bench/geometry-variant.sh or by
+# A/B copy such as `.tmp-slab16`, made by
 # hand from `src Cargo.toml Cargo.lock build.rs`; `.tmp-*` is gitignored
 # and never synced to a VM, so the copy is made where it is built).
 resolve_rev() {

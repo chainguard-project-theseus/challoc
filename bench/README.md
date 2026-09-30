@@ -5,14 +5,12 @@ runs inside the dev container on the native architecture; emulated x86_64 is
 never used for numbers.
 
     make bench-build      fetch and build the benchmark programs (once per target volume)
-    make bench            LEGACY: the Phase 0 protocol runner (bench/run.sh, bench/profile.sh),
-                          kept for reference; the tiers below are what results files come from
     make quick [OLD=rev]  fast tier: ~2.5 min go/no-go for the working tree vs OLD
                           (PERF=1 adds per-op counters where perf exists)
     make ab VARIANTS=...  protocol tier A/B: the table results files are made of
     make baseline         cache jemalloc/glibc/mimalloc/tcmalloc protocol rows for this machine
     make scorecard        the fixed row set vs jemalloc, one line appended to
-                          bench/results/scorecard-<arch>.md; RENDER=1 prints the trend
+                          target/results/scorecard-<arch>.md; RENDER=1 prints the trend
     make valkey-soak      Valkey soak under challoc and its bundled jemalloc
                           (Phase 1 task 8); needs `make valkey STAGE=build`
     make soak-quick       challoc-only 600 s soak vs the cached jemalloc soak
@@ -68,7 +66,7 @@ slab size, the slab count does). A row that fails the gate on its single round i
 median, because one larson round spreads 5..9% on the reference VMs; rows
 that pass are not rerun. One round is a signal, not a measurement:
 a fail means abandon or rework, a pass means run the protocol tier. Numbers
-from `quick` are never written to `bench/results/` and never compared with
+from `quick` are never written to `target/results/` and never compared with
 a criterion. Knobs: `QUICK_BENCHES`, `CHURN_SECS`, `CHURN_CLASS`, `NEW=rev`,
 `VALKEY_MODEL_SECS`.
 
@@ -119,7 +117,7 @@ MiB heap whose slab descriptors miss cache on every free of a random key,
   allocated/active/resident at each phase end are in the log (`-s`). RSS in
   the tables is the run's peak. Run it by hand:
   `LD_PRELOAD=target/release/libchalloc.so target/bench-bin/valkey_model -n 100000 -t 3 -s`.
-- `redis`: `run.sh`'s recipe as a `lib.sh` row (server under `LD_PRELOAD`,
+- `redis`: the Phase 0 redis recipe as a `lib.sh` row (server under `LD_PRELOAD`,
   `redis-benchmark -r 1000000 -n 1000000 -P 16 lpush/lrange`, k req/s, RSS
   is the server's), so `ab` and the scorecard can run it.
 - `ruby-churn`: `bench/ruby/gc_churn.rb 10 10` on the `--without-jemalloc`
@@ -137,13 +135,13 @@ valkey1-free cfrac espresso mstress glibc-simple redis` under challoc
 timed rounds plus warm-up, interleaved; `BASELINES=cached` allowed, with
 its sanity round, when the cache covers every row: `make baseline
 BENCHES="<the rows>"`), and appends one line for (date, commit) to
-`bench/results/scorecard-<arch>.md`: every row as a signed percentage
+`target/results/scorecard-<arch>.md`: every row as a signed percentage
 against jemalloc (positive = challoc worse), the RSS ratio challoc/jemalloc
 for `larson10` and `valkey1`, and a soak column group (write and delete
 throughput, peak RSS, RSS after settle, each challoc vs jemalloc; the worse
 of the two generators' rows per phase) read from the most recent Valkey
 soak summary for the same commit on that architecture under
-`bench/results/` or `target/valkey/soak-quick/`, "-" when there is none. A
+`target/results/` or `target/valkey/soak-quick/`, "-" when there is none. A
 line for the same (date, commit) is replaced. About 8 minutes on a VM (6
 with the cache). `bench/scorecard.sh --render [aarch64|x86_64]` prints the
 table(s) sorted by date and works on the host. The two files were seeded
@@ -181,7 +179,7 @@ scripts iterations used to rewrite. `VARIANTS` is a list of
 
 Each rev is built once from `git archive` into `target/ab/<hash>` (`tree`
 means the working tree, into `target/ab/tree`; a `.tmp-<v>` source
-directory made by `bench/geometry-variant.sh`, or by hand from `src
+directory made by hand from `src
 Cargo.toml Cargo.lock build.rs`, is built in place into
 `target/ab/<basename>`, so a src/ variant that is never committed can sit
 in the same run: `slab16=.tmp-slab16`, also `OLD=`/`NEW=` of `make quick`;
@@ -226,7 +224,7 @@ full `ALLOCS=jemalloc DURATION=1200` protocol, stored as
 the jemalloc figures are cached, their date, commit and duration, and that
 with different phase lengths only the throughput, p99 and peak rows are like
 for like. Results land under `target/valkey/soak-quick`, never in
-`bench/results/`. The two-allocator 20-minute `make valkey-soak` is
+`target/results/`. The two-allocator 20-minute `make valkey-soak` is
 unchanged and remains the acceptance run.
 
 Files:
@@ -239,7 +237,7 @@ Files:
   building a variant from a rev or the working tree with its own
   `CARGO_TARGET_DIR` and remapped paths (`build_lib`), sorted lists,
   medians, overlap and percentage helpers, the baseline file name and row
-  parser, the bench lock shared with `run.sh` (`take_bench_lock` also
+  parser, the bench lock every tier shares (`take_bench_lock` also
   installs the EXIT/INT/TERM trap that kills the servers a harness
   registered in `BENCH_PIDS`, runs its `BENCH_CLEANUP` function and closes
   the lock's descriptor; every server start closes that descriptor for the
@@ -265,20 +263,6 @@ Files:
   user, sys, max RSS and exit code from `wait4`, appended to `$RT_OUT`.
 - `sampler.c`: `perf record` replacement (Wolfi has no perf): a SIGPROF PC
   sampler preloaded after the allocator; writes `count module offset` lines.
-- `run.sh` (legacy, `make bench`): the Phase 0 protocol runner, one warm-up
-  plus `RUNS` (5) timed runs per benchmark and allocator (`challoc jemalloc
-  glibc mimalloc tcmalloc`), medians and raw runs into the results file.
-  larson and xmalloc-test are fixed-duration, so they are scored by the
-  throughput they print; redis by redis-benchmark's requests/second. Kept
-  for reference and for reading the Phase 0 and Phase 1 results files it
-  wrote; since Phase 1.5 every results file comes from `ab.sh` (`make ab`),
-  `scorecard.sh` or a consumer harness, and `lib.sh` carries the same rows
-  (`bench_args`, `run_row`).
-- `profile.sh` (legacy): larson under challoc with the sampler, attributed
-  to symbols (`nm`) and instructions (`objdump`), flagging lock and atomic
-  RMW instructions. Appended to the results file by `run.sh`; the sampler
-  itself (`sampler.c`) is still used by hand for attribution
-  (`bench/results/*` "sampler" sections).
 - `valkey-soak.sh`: starts `valkey-server` from the challoc tree built by
   `contrib/valkey/build.sh` and from an unpatched clone of the same tag built
   with bundled jemalloc 5.3.0 (`target/valkey/src-<tag>-jemalloc`, built on
@@ -287,10 +271,10 @@ Files:
   (valkey-benchmark `del`, then memtier DEL:SET 4:1) of `DURATION/2` seconds
   each over a 500k-key keyspace, then `SETTLE` idle seconds. `INFO memory` and
   `INFO stats` are sampled every `INTERVAL` seconds into
-  `results/<date>-<arch>-valkey-soak-<alloc>.csv` (used_memory, used_memory_rss,
+  `target/results/<date>-<arch>-valkey-soak-<alloc>.csv` (used_memory, used_memory_rss,
   mem_fragmentation_ratio, allocator_frag_ratio, allocator_rss_ratio,
   active_defrag_hits, plus the throughput and client-side p99 of the most
-  recent generator run); `results/<date>-<arch>-valkey-soak.md` compares
+  recent generator run); `target/results/<date>-<arch>-valkey-soak.md` compares
   throughput, p99, peak RSS (VmHWM) and post-settle RSS against jemalloc.
   Defaults are the Phase 1 acceptance protocol (20 minutes of load per
   allocator); `DURATION=120 SETTLE=30 CHUNK=10 VB_REQS=1000000
@@ -314,7 +298,7 @@ Files:
   medium buffers, bursts of short-lived ones, ten forced full GCs; `GC.stat`
   counts and RSS before/after the forced GCs in their own table). `ROUNDS`
   (5) plus warm-up, allocators interleaved, sorted wall times and median
-  RSS from `rt`, written to `bench/results/<date>-<arch>-ruby.md`
+  RSS from `rt`, written to `target/results/<date>-<arch>-ruby.md`
   (`RESULT`, `ALLOCS`, `ROWS`, `HOST_KIND`). Both builds are installed into
   their `target/ruby/install-<alloc>` prefixes on first use (the build
   directory's ruby has no stdlib path).
@@ -329,7 +313,7 @@ Files:
   warm-up, allocators interleaved (challoc built from `REV`, default the
   working tree, into `target/python/lib`; jemalloc, glibc, mimalloc and
   tcmalloc via `LD_PRELOAD`; `/proc/self/maps` checked once per allocator),
-  written to `bench/results/<date>-<arch>-python.md` (`RESULT`, `ALLOCS`,
+  written to `target/results/<date>-<arch>-python.md` (`RESULT`, `ALLOCS`,
   `WORKLOADS`, `MODES`, `HOST_KIND`). pyperformance installs in the container
   but its pyperf worker protocol and hour-long standard set do not fit this
   shape, so it is not used (the script's header says why). The `json`
@@ -360,7 +344,7 @@ Files:
   `VmHWM` at the end, and the end-of-load RSS summed by mapping name from
   `/proc/PID/smaps` (challoc's regions are named `challoc:classes`,
   `challoc:huge`, `challoc:meta`, so a gap can be placed). Written to
-  `bench/results/<date>-<arch>-node.md` (`RESULT`, `ALLOCS`, `ROWS`,
+  `target/results/<date>-<arch>-node.md` (`RESULT`, `ALLOCS`, `ROWS`,
   `DURATION`, `CONNS`, `HOST_KIND`).
 - `jvm-bench.sh`, `jvm/HttpBench.java`: the JVM rows. Wolfi's `openjdk-21` from the image (under
   `/usr/lib/jvm/java-21-openjdk`, not on PATH; the script finds the newest
@@ -406,7 +390,7 @@ Files:
   what a well-tuned Java image ships today; the script checks that the JDK
   accepts the flag and refuses the variant otherwise), jemalloc, mimalloc,
   tcmalloc, every one's `/proc/self/maps` checked once. Written to
-  `bench/results/<date>-<arch>-jvm.md` (`RESULT`, `ROWS`, `HOST_KIND`).
+  `target/results/<date>-<arch>-jvm.md` (`RESULT`, `ROWS`, `HOST_KIND`).
   `make jvm-soak` (`ROWS=soak`, alone) is the shape that can separate the
   allocators where the 5-minute row with one buffer size cannot (glibc's
   arenas never fragment there and the JVM's biggest native consumers are
@@ -420,13 +404,13 @@ Files:
   run long: what makes glibc's arenas multiply), `SOAK_DURATION` (1200) s
   per allocator under challoc, glibc, glibc-arena2, glibc-trim and jemalloc
   (`ALLOCS`); Rss every `INTERVAL` s into
-  `bench/results/<date>-<arch>-jvm-soak-<allocator>.csv` beside the results
+  `target/results/<date>-<arch>-jvm-soak-<allocator>.csv` beside the results
   file (`-<allocator>-windows.csv` has ab's req/s and p99 per endpoint, the
   server's CPU per request, Rss, threads and the pool's size per window),
   summarised as peak, final, the mean and the least-squares slope over the
   last `SOAK_TAIL` (600) s in MiB per minute (growth after warm-up is the
   fragmentation signal), NMT at the end. Written to
-  `bench/results/<date>-<arch>-jvm-soak.md`.
+  `target/results/<date>-<arch>-jvm-soak.md`.
 - `postgres-bench.sh`, `probes/pg-rss-sampler.sh`: the PostgreSQL rows. Wolfi's `postgresql-17` from the image:
   the script creates a non-root OS user (`pgb`; postgres refuses to run as
   the container's root), runs `initdb` into `target/postgres/data`
@@ -455,7 +439,7 @@ Files:
   at the final sample (the 100- and 500-connection points). `ROUNDS` (5)
   plus warm-up, allocators interleaved (one server start per allocator per
   round), sorted tps and medians written to
-  `bench/results/<date>-<arch>-postgres.md` (`RESULT`, `ALLOCS`, `ROWS`,
+  `target/results/<date>-<arch>-postgres.md` (`RESULT`, `ALLOCS`, `ROWS`,
   `SCALE`, `DURATION`, `CONN_DURATION`, `CLIENTS_A`, `CLIENTS_B`,
   `HOST_KIND`; `REPORT_ONLY=1` re-renders the file from a finished run's
   raw samples and scores under `OUT`). A protocol run is about two hours
@@ -463,7 +447,7 @@ Files:
   seconds on a saturated host, so the 500-client row gets a few passes
   per run (the table says how many).
 - `four-way.sh`: assembles the comparison matrix of Phase 2.5 task 1
-  (`bench/results/<date>-<arch>-gce-four-way.md`) from one VM's same-run
+  (`target/results/<date>-<arch>-gce-four-way.md`) from one VM's same-run
   outputs: an `ab.sh` result (`AB=`, the Phase 0 set and the Valkey model rows
   under `challoc jemalloc glibc mimalloc tcmalloc`), a `ruby-bench.sh` result
   (`RUBY=`), a `python-bench.sh` result (`PYTHON=`) and the container-test
@@ -471,20 +455,22 @@ Files:
   challoc against each of the other four (time / RSS, positive = challoc
   worse), then the list of rows more than 10% behind, under which the
   attribution is written by hand. Reads only; pure sh + awk, runs on the host.
-- `probes/`: `churn.c` (the post-delete steady-state model `quick` runs;
-  `churn-run.sh` runs it by hand with the cache knobs, `CHURN_SECS`),
+- `probes/`: `churn.c` (the post-delete steady-state model `quick` runs,
+  `CHURN_SECS`),
   `valkey_model.c` (the Valkey model behind the `valkey1` rows, above),
   `binsample.c` (per-second bin row sidecar), `soak-occupancy.sh` (now a
   wrapper over `valkey-soak.sh OCCUPANCY=1`), `valkey-perf-sidecar.sh` (root, on
   the GCE VM host beside a detached soak: `perf stat -I 1000` for each
   `valkey-server`'s life, 60 s `perf record` windows in the write and delete
   phases, `INFO commandstats` and per-thread CPU snapshots; task 4d).
-- `results/`: one file per run, named `<date>-<arch>.md`, with the commit
-  hash, toolchain versions, kernel and CPU in the header; plus the two
-  scorecards `scorecard-aarch64.md` and `scorecard-x86_64.md`, one line per
-  (date, commit), appended by `scorecard.sh` (its column set grew once, on
-  2026-09-18, by `python1` and `python1-malloc`; the script pads older lines
-  with `-` there when it renders or appends).
+- `target/results/` (gitignored; in the container, the host directory
+  bind-mounted over the target volume, so the host and `challoc-bench fetch`
+  see it): where every harness writes by default, one file per run named
+  `<date>-<arch>-<suite>.md` with the commit hash, toolchain versions, kernel
+  and CPU in the header, plus the scorecards `scorecard-<arch>.md`, one line
+  per (date, commit), appended by `scorecard.sh` (the script pads older
+  lines with `-` in columns added since when it renders or appends).
+  `results/` holds the curated writeups.
 
 Benchmark programs and their parameters follow mimalloc-bench's `bench.sh`
 (`larson 5 8 1000 5000 100 4141 N`, `mstress N 50 25`, `xmalloc-test -w N -t 5
@@ -505,10 +491,7 @@ harness, none in `src/`:
   summary, "cgroup memory.peak MiB, write / delete / settle phase", beside
   the server's VmHWM; `make ruby-soak CGROUP_PEAK=1` adds "start..compact"
   and "compact..end" (the reset lives in `bench/ruby/soak.rb`, which holds
-  its own descriptor); `make percpu-campaign` records the largest
-  `memory.peak` of each step's container cgroups from the host side (fresh
-  cgroups per `docker run`, no reset needed) and passes `CGROUP_PEAK=1` to
-  its soak steps. `CGROUP_PEAK=1` gives the container `--cgroupns=host` and
+  its own descriptor). `CGROUP_PEAK=1` gives the container `--cgroupns=host` and
   a read-write `/sys/fs/cgroup`: Docker mounts the tree read-only and the
   nsdelegate boundary refuses the write from inside the namespace
   otherwise. Without it, or on a kernel before 6.12 (EINVAL), the rows read

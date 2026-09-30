@@ -62,7 +62,7 @@
 #                              and the results file name gets no suffix: pass RESULT_DIR.
 #   PORT=6399
 #   OUT=target/valkey/soak     scratch and raw logs
-#   RESULT_DIR=bench/results   <date>-<arch>-valkey-soak.md and
+#   RESULT_DIR=target/results  <date>-<arch>-valkey-soak.md and
 #                              <date>-<arch>-valkey-soak-<alloc>.csv land here
 #   OCCUPANCY=0                1: a sidecar dumps INFO memory's allocator lines and
 #                              MEMORY MALLOC-STATS (per-class slab occupancy) every
@@ -113,7 +113,7 @@ DEFRAG=${DEFRAG:-yes}
 IO_THREADS=${IO_THREADS:-}
 PORT=${PORT:-6399}
 OUT=${OUT:-$ROOT/target/valkey/soak}
-RESULT_DIR=${RESULT_DIR:-$ROOT/bench/results}
+RESULT_DIR=${RESULT_DIR:-$ROOT/target/results}
 OCCUPANCY=${OCCUPANCY:-0}
 MS_INTERVAL=${MS_INTERVAL:-20}
 BASELINES=${BASELINES:-}

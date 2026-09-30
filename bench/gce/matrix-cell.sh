@@ -28,7 +28,7 @@
 #     mseal from the library (the plan's bare-metal/nested-KVM substitute);
 #   - a CPU cell (third argument `scorecard`, task 4): one scorecard run,
 #     `make scorecard ROUNDS=3` (challoc versus jemalloc, the fixed row
-#     set) appended to bench/results/scorecard-<family>.md, where <family>
+#     set) appended to target/results/scorecard-<family>.md, where <family>
 #     is the machine type's family (c4a, t2a, c4, c3, c3d, n2d, c2, n4), a
 #     file per CPU next to the two reference files, which are not touched;
 #     the note column names the machine, CPU model, zone and vCPU count.
@@ -48,7 +48,7 @@
 #     the root mount; host.log), make test-cgroup (the churn at 512 and 256
 #     MiB, the lazy purge, the 300 s oscillation; podman sets the cgroup v2
 #     limits) and one `make scorecard ROUNDS=3` into
-#     bench/results/scorecard-<cellprefix>-<arch>.md (cgos-* -> scorecard-
+#     target/results/scorecard-<cellprefix>-<arch>.md (cgos-* -> scorecard-
 #     cgos-<arch>.md, the 7.2 cell cgos72-amd64 -> scorecard-cgos72-amd64.md;
 #     never the reference files). fuzz is skipped (the kernel matrix covers it).
 #
@@ -149,7 +149,7 @@ RC_fuzz=-; RC_test_cgroup=-; RC_test_privileged=-; RC_scorecard=-; RC_probe_nati
 case "$extra" in
   scorecard)
     scorecard_cmd() {
-      make scorecard ROUNDS=3 SCORECARD_FILE="/src/bench/results/scorecard-$family.md" \
+      make scorecard ROUNDS=3 SCORECARD_FILE="/src/target/results/scorecard-$family.md" \
         HOST_KIND="GCE $machine ($model), zone $zone, $vcpus vCPU"
     }
     step scorecard scorecard_cmd
@@ -191,7 +191,7 @@ case "$extra" in
     step test-privileged priv_cmd
     step test-cgroup make test-cgroup
     scorecard_cmd() {
-      make scorecard ROUNDS=3 SCORECARD_FILE="/src/bench/results/scorecard-${cell%-*}-$(uname -m | sed -e s/x86_64/amd64/ -e s/aarch64/arm64/).md" \
+      make scorecard ROUNDS=3 SCORECARD_FILE="/src/target/results/scorecard-${cell%-*}-$(uname -m | sed -e s/x86_64/amd64/ -e s/aarch64/arm64/).md" \
         HOST_KIND="Chainguard OS $(uname -r), GCE $machine ($model), zone $zone, $vcpus vCPU, podman --network=host"
     }
     step scorecard scorecard_cmd

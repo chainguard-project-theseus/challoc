@@ -36,7 +36,7 @@
 #   ROUNDS=5     timed rounds after one discarded warm-up, allocators
 #                interleaved within a round, every score listed sorted
 #   WORKLOADS="json dict_list regex object_graph"   MODES="default malloc"
-#   RESULT=path  markdown output (default bench/results/<date>-<arch>-python.md)
+#   RESULT=path  markdown output (default target/results/<date>-<arch>-python.md)
 #   OUT=dir      raw logs and score files (default target/python/bench-out)
 #   REV=tree     challoc rev (any git rev; "tree" = the working tree)
 #   HOST_CPU, HOST_KIND   recorded in the header (the Makefile passes HOST_CPU)
@@ -51,7 +51,7 @@ MODES=${MODES:-"default malloc"}
 REV=${REV:-tree}
 WORK=$ROOT/target/python
 OUT=${OUT:-$WORK/bench-out}
-RESULT=${RESULT:-$ROOT/bench/results/$DATE-$ARCH-python.md}
+RESULT=${RESULT:-$ROOT/target/results/$DATE-$ARCH-python.md}
 PROBES=$ROOT/bench/probes/python
 T_START=$(date +%s)
 LOAD0=$(loadavg)

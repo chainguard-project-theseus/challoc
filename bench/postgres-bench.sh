@@ -57,7 +57,7 @@
 #   DURATION=60 CONN_DURATION=30 INTERVAL=5 SAMPLING_RATE=0.05
 #   JOBS=16 CLIENTS_A=100 CLIENTS_B=500 CONN_CLIENTS=20 CONN_JOBS=4
 #   SHARED_BUFFERS=1GB MAX_CONNECTIONS=600
-#   RESULT=path   markdown output (default bench/results/<date>-<arch>-postgres.md)
+#   RESULT=path   markdown output (default target/results/<date>-<arch>-postgres.md)
 #   OUT=dir       raw logs, samples and score files (default target/postgres/bench-out)
 #   REV=tree      challoc rev (any git rev; "tree" = the working tree)
 #   REINIT=0      1: drop PGDATA and initdb + load again
@@ -96,7 +96,7 @@ PGDATA=$WORK/data
 SOCK=$WORK/run
 PGLOGS=$WORK/logs
 OUT=${OUT:-$WORK/bench-out}
-RESULT=${RESULT:-$ROOT/bench/results/$DATE-$ARCH-postgres.md}
+RESULT=${RESULT:-$ROOT/target/results/$DATE-$ARCH-postgres.md}
 SAMPLER=$ROOT/bench/probes/pg-rss-sampler.sh
 PG_OPTS="-c listen_addresses= -c unix_socket_directories=$SOCK -c max_connections=$MAX_CONNECTIONS -c shared_buffers=$SHARED_BUFFERS -c huge_pages=off -c synchronous_commit=off -c checkpoint_timeout=30min -c max_wal_size=8GB -c log_min_messages=warning"
 T_START=$(date +%s)
