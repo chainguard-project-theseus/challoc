@@ -280,7 +280,7 @@ pub fn parse_cpuset_count(contents: &[u8]) -> Option<u32> {
         if hi < lo {
             return None;
         }
-        n = n.checked_add(u32::try_from(hi - lo + 1).ok()?)?;
+        n = n.checked_add(u32::try_from((hi - lo).checked_add(1)?).ok()?)?;
     }
     Some(n)
 }
@@ -1037,6 +1037,8 @@ mod tests {
         assert_eq!(parse_cpuset_count(b"\n"), Some(0));
         assert_eq!(parse_cpuset_count(b"3-1\n"), None);
         assert_eq!(parse_cpuset_count(b"a\n"), None);
+        // A range as wide as u64 is not a CPU count: no overflow, no zero.
+        assert_eq!(parse_cpuset_count(b"0-18446744073709551615\n"), None);
     }
 
     /// A captured tree: directory -> file -> contents. Absent = `None`.
