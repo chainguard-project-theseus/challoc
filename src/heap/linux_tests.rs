@@ -618,6 +618,97 @@ fn percpu_batch_onto_a_non_empty_stack_authenticates() {
     .unwrap();
 }
 
+/// The zero prefix under the per-CPU mode: a pop reports its entry zero
+/// when `len < zeroed` after the pop, and a pop does not lower `zeroed`,
+/// so a stack that served part of a zero batch keeps `zeroed` above
+/// `len`. A batch pushed onto such a stack (a refill whose empty pop and
+/// push landed on an id another thread refilled and popped from in
+/// between, or migrated to) writes its entries at `len..` and must clip
+/// `zeroed` at that `len`: otherwise the pops that follow report a dirty
+/// batch (`zeroed == false`) zero, and `calloc` skips its `memset` over
+/// it. Driven directly on the sections with fake entries (never
+/// dereferenced): a zero batch of four, two pops, a dirty batch of two,
+/// then the pops that must not report the dirty entries zero. Skipped
+/// where the mode is off; retried when a migration splits the sequence
+/// across ids.
+#[cfg(target_os = "linux")]
+#[test]
+fn percpu_dirty_batch_onto_a_zero_prefix_is_not_zero() {
+    let s = shared_with_guards_mode(
+        Config { narenas: 4, percpu_arena: crate::config::PercpuArena::Percpu, ..Config::DEFAULT },
+        true,
+        true,
+    );
+    if !s.percpu_on() {
+        std::eprintln!("percpu: off on this host ({}), skipping", s.percpu.probe().verdict());
+        return;
+    }
+    std::thread::spawn(move || {
+        let t = TestHeap::new(s);
+        let c = class_of(64).unwrap();
+        let pac = s.pac();
+        let area = t.heap().rseq_area;
+        let tbl = s.percpu.table(c);
+        let cap = Heap::percpu_cap(s, c);
+        let p0 = t.alloc(c);
+        let pop = || loop {
+            match unsafe { rseq::pop(area, tbl, pac) } {
+                rseq::Pop::Scheduled => continue,
+                r => break r,
+            }
+        };
+        let zero: Vec<*mut u8> = (1..=4usize).map(|i| (0x0000_5a5a_0000_0000usize + i * 64) as *mut u8).collect();
+        let dirty: Vec<*mut u8> = (1..=2usize).map(|i| (0x0000_6b6b_0000_0000usize + i * 64) as *mut u8).collect();
+        let mut buf = std::vec![ptr::null_mut::<u8>(); cap as usize];
+        let mut real = Vec::new();
+        let mut reported = None;
+        for _ in 0..100 {
+            let taken = unsafe { rseq::take_all(area, tbl, &mut buf, pac) }.expect("id in range");
+            real.extend(buf[..taken].iter().copied().filter(|e| !zero.contains(e) && !dirty.contains(e)));
+            let cid = unsafe { rseq::mm_cid(area) };
+            if !t.heap().percpu_current_has(s, c, false) {
+                assert!(t.heap().percpu_ensure(s, c, cap, cid, false));
+            }
+            let mut z = zero.clone();
+            let k = unsafe { rseq::push_batch(area, tbl, &mut z, true, pac) }.expect("id in range");
+            let a = pop();
+            let b = pop();
+            let mut d = dirty.clone();
+            let j = unsafe { rseq::push_batch(area, tbl, &mut d, false, pac) }.expect("id in range");
+            let e = pop();
+            let f = pop();
+            let rest = unsafe { rseq::take_all(area, tbl, &mut buf, pac) }.expect("id in range");
+            real.extend(buf[..rest].iter().copied().filter(|e| !zero.contains(e) && !dirty.contains(e)));
+            let same = unsafe { rseq::mm_cid(area) } == cid;
+            // Only an uninterrupted run on one id says anything.
+            if !same || k != 4 || j != 2 || a != rseq::Pop::Popped(zero[3], true) || b != rseq::Pop::Popped(zero[2], true) {
+                continue;
+            }
+            reported = Some((e, f));
+            break;
+        }
+        // Put the real entries back and leave the fakes out of the heap.
+        let mut real: Vec<*mut u8> = real.into_iter().filter(|e| !e.is_null()).collect();
+        if !real.is_empty() {
+            let k = unsafe { rseq::push_batch(area, tbl, &mut real, false, pac) }.expect("id in range");
+            if k < real.len() {
+                s.release_routed(t.heap().arena, c, &real[k..]);
+            }
+        }
+        t.free(p0);
+        t.flush_all();
+        t.destroy();
+        let Some((e, f)) = reported else {
+            std::eprintln!("percpu: no uninterrupted run on one id in 100 tries, skipping");
+            return;
+        };
+        assert_eq!(e, rseq::Pop::Popped(dirty[1], false), "a dirty batch entry popped from inside the old zero prefix");
+        assert_eq!(f, rseq::Pop::Popped(dirty[0], false), "a dirty batch entry popped from inside the old zero prefix");
+    })
+    .join()
+    .unwrap();
+}
+
 /// With the mode on, a thread heap's plain allocations go through the
 /// running CPU's caches, not the heap's own: the refill installs the
 /// id's header, the thread's byte counters still move by every pop and
