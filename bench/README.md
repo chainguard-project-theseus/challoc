@@ -531,8 +531,8 @@ harness, none in `src/`:
   `anon_fault_fallback`, `split`, `swpout`, ... per size) as a section after
   the table, so task 9's dTLB column has the folio counts next to it. The
   counters are host-global: a quiet host is assumed.
-- **Guard slabs through `PAGEMAP_SCAN`.** `make test-pagemap-guard` (in
-  `make test`) runs `tests/c/pagemap_guard.c` both ways: under the default
+- **Guard slabs through `PAGEMAP_SCAN`.** The `api::` rows
+  `c_pagemap_guard_{on,off}` (in `make test`) run `tests/c/pagemap_guard.c` both ways: under the default
   it finds the guard slabs of four classes as the gaps no allocation came
   from and asks `ioctl(PAGEMAP_SCAN)` about them without touching them
   (6.16+: `PAGE_IS_GUARD` on the guard page and nowhere else; older

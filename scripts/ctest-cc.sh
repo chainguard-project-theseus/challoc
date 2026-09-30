@@ -2,8 +2,7 @@
 # scripts/ctest-cc.sh: the one compiler line for the C test programs
 # (tests/c/*.c, fuzz/fuzz.c, the vendored suites), run inside the dev
 # container. Every driver (src/api/ctests.rs, scripts/cgroup-tests.sh,
-# scripts/pagemap-guard-test.sh, tests/as-needed.sh, the Makefile's `fuzz`
-# target) compiles through this script, so the flags and the QUANTUM the
+# tests/as-needed.sh, the Makefile's `fuzz` target) compiles through this script, so the flags and the QUANTUM the
 # programs are built for live in one place.
 #
 #   sh scripts/ctest-cc.sh [--cxx] ARGS...   $CC $FLAGS ARGS... -ldl

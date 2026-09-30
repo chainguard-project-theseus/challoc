@@ -82,7 +82,7 @@ endef
 # reads it (a recursively expanded variable: `make build` runs no probe).
 HOST_CPU = $(shell sysctl -n machdep.cpu.brand_string 2>/dev/null || grep -m1 'model name' /proc/cpuinfo 2>/dev/null | sed 's/.*: //' | grep . || lscpu 2>/dev/null | grep -m1 'Model name' | sed 's/.*: *//')
 
-.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare test-pagemap-guard test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench node-bench check-needed clean-volumes jvm-bench postgres-bench jvm-soak percpu-campaign help print-docker-run clean-tmp test-all
+.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare test-host jemalloc-compat fuzz bench-build bench quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench node-bench check-needed clean-volumes jvm-bench postgres-bench jvm-soak percpu-campaign help print-docker-run clean-tmp test-all
 
 help: ## list the targets (this text; the `##` comments in the Makefile)
 	@awk -F' ## ' '/ ## / { n = $$1; if (n ~ /^\$$\(eval/) { sub(/^[^,]*,/, "", n); sub(/,.*/, "", n) } else { sub(/:.*/, "", n) } if (n !~ /^[a-zA-Z0-9_-]+$$/) next; printf "  %-22s %s\n", n, $$2 }' $(MAKEFILE_LIST)
@@ -117,7 +117,7 @@ print-docker-run: ## print the docker run line the targets use (challoc-bench pe
 # and `grep '^SKIP '` on a log lists what a run did not check.
 TEST_ALLOW_SKIP ?= 1
 test: DOCKER_FLAGS = $(if $(TEST_ALLOW_SKIP),-e CHALLOC_TEST_ALLOW_SKIP=$(TEST_ALLOW_SKIP))
-test: image ## release build, the jemalloc-compat stage, both cargo test groups, then the cgroup and pagemap-guard steps
+test: image ## release build, the jemalloc-compat stage, both cargo test groups, then the cgroup steps
 	$(DOCKER_RUN) sh -c 'cargo build --release \
 	  && sh scripts/jemalloc-compat.sh \
 	  && cargo test --features std -- --nocapture --skip api:: \
@@ -125,7 +125,6 @@ test: image ## release build, the jemalloc-compat stage, both cargo test groups,
 	$(MAKE) --no-print-directory test-cgroup-limit
 	$(MAKE) --no-print-directory test-cgroup-churn
 	$(MAKE) --no-print-directory test-cgroup-lazy
-	$(MAKE) --no-print-directory test-pagemap-guard
 
 # Phase 2 task 4: the same tests that read the cgroup, in a container with
 # a 512 MiB limit; the effective `memory.max` must read as that number.
@@ -178,20 +177,6 @@ test-cgroup-lazy: image ## Phase 2.5 task 10: the two-advice purge under --memor
 test-cgroup: test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate ## the three cgroup tests above
 
 test-all: test fuzz test-cgroup-oscillate check-needed ## everything that runs locally: test, the 10M fuzz, the oscillation soak and the DT_NEEDED check (docs/testing.md)
-
-# Phase 2.5 task 17 (a few seconds, in `make test`): tests/c/pagemap_guard.c
-# through scripts/pagemap-guard-test.sh, both ways. Under the default
-# configuration the guard slabs of four classes are located as the gaps no
-# allocation came from and checked through ioctl(PAGEMAP_SCAN) on
-# /proc/self/pagemap without touching them: PAGE_IS_GUARD on the guard page
-# and nowhere else (6.16+), or the fallback the program names (6.13..6.15:
-# not present, not swapped; before 6.13: no guard slab exists; before 6.7:
-# gap check only). Under MALLOC_CONF=guards:false no gap and no guard page.
-# A separate target rather than a src/api/ctests.rs driver because lane D
-# edits nothing under src/; the coordinator may fold it into the cargo test
-# set with one `run_c("pagemap_guard", &["on"])` driver.
-test-pagemap-guard: image ## Phase 2.5 task 17: the guard slabs seen through PAGEMAP_SCAN, both ways, never touched (in `make test`)
-	$(DOCKER_RUN) sh -c 'cargo build --release && sh scripts/pagemap-guard-test.sh'
 
 # Phase 2 task 7: the same runs under other allocators (CGROUP_ALLOCS,
 # default jemalloc, mimalloc and tcmalloc; needs `make bench-build` for mimalloc),
