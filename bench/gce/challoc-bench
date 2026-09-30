@@ -31,7 +31,7 @@
 #                                                          # sync, `make scorecard` on the VM, fetch the file back
 #   bench/gce/challoc-bench pmu-check arm64|amd64|all      # perf stat the six reference events
 #   bench/gce/challoc-bench perf-stat arm64|amd64 'DOCKER_CMD'  # perf stat -p the container's process
-#   bench/gce/challoc-bench fetch     arm64|amd64          # pull bench/results/* back from the VM
+#   bench/gce/challoc-bench fetch     arm64|amd64          # pull target/results/* back from the VM
 #                                                          # (never overwrites a newer local file)
 #   bench/gce/challoc-bench ssh       arm64|amd64 [ARGS]
 #   bench/gce/challoc-bench status    # this prefix's VMs; every challoc-* VM when CHALLOC_GCE_PREFIX is unset
@@ -298,7 +298,7 @@ cmd_quick_perf() {
 }
 
 # scorecard: sync, `make scorecard` on the VM (bench/scorecard.sh appends
-# one line to bench/results/scorecard-<arch>.md), then fetch the results
+# one line to target/results/scorecard-<arch>.md), then fetch the results
 # directory back (fetch never overwrites a newer local file).
 cmd_scorecard() {
   local t="$1"; shift
@@ -361,8 +361,9 @@ cmd_fetch() {
   local t="$1" src; src="$(ssh_target "$t")"
   # --update: a file the VM has that is older than the local copy is skipped,
   # so a results file edited locally after the run is never clobbered.
+  mkdir -p "$REPO/target/results"
   rsync -az --update -i -e "$(ssh_cmd)" \
-    "$src:$REMOTE_DIR/bench/results/" "$REPO/bench/results/" | sed 's/^/challoc-bench: fetch /'
+    "$src:$REMOTE_DIR/target/results/" "$REPO/target/results/" | sed 's/^/challoc-bench: fetch /'
 }
 
 cmd_ssh()    { local t="$1"; shift; gssh "$t" "$@"; }
@@ -452,7 +453,7 @@ cmd_session() {
 # provision Docker (the `provision` steps minus perf), sync the tree, run
 # bench/gce/matrix-cell.sh detached on it (make image, make test, the probe
 # line, make fuzz, make test-cgroup, plus the --privileged make test where
-# the cell asks for it), fetch ~/logs into bench/results/matrix/<date>-<cell>.log
+# the cell asks for it), fetch ~/logs into target/results/matrix/<date>-<cell>.log
 # and DELETE the VM, passed or failed, timed out or interrupted. Cells run
 # MATRIX_JOBS (3) at a time with MATRIX_TIMEOUT (2700 s) each; the driver's
 # exit trap deletes every challoc-matrix-* VM in the zone, and `matrix clean`
@@ -468,7 +469,7 @@ cmd_session() {
 #   challoc-bench matrix sync 64k-arm64  # rsync the tree again
 #
 # `lab` runs a cell up to the sync and keeps the VM (its log goes to
-# .tmp-matrix-lab/, not bench/results/matrix/); `ssh` and `sync` drive it;
+# .tmp-matrix-lab/, not target/results/matrix/); `ssh` and `sync` drive it;
 # `clean` deletes it like any other matrix VM. Nothing measured on a lab
 # VM is a benchmark number either. MATRIX_PMU=1 creates the VM with
 # --performance-monitoring-unit=standard (C3, C3D, C4, C4A, N4 take it;
@@ -483,7 +484,7 @@ cmd_session() {
 # and its GCE kernel on one machine type each, so only the CPU varies, and
 # the cell script's `scorecard` flag replaces fuzz and test-cgroup with one
 # `make scorecard ROUNDS=3` (challoc vs jemalloc, the fixed row set) written
-# to bench/results/scorecard-<family>.md on the VM and fetched back next to
+# to target/results/scorecard-<family>.md on the VM and fetched back next to
 # the two reference files (scorecard-aarch64.md, scorecard-x86_64.md, which
 # stay the acceptance record and are not touched). Families live in
 # different zones (T2A only in us-central1), so a cell names its zones:
@@ -531,7 +532,7 @@ cmd_session() {
 # podman with the default seccomp profile and with --privileged, the probe
 # line three ways (podman, podman --privileged, natively on the host with
 # LD_PRELOAD), the host capture (config.gz keys, THP, glibc) and one
-# scorecard run into bench/results/scorecard-cgos-<arch>.md. Login is the
+# scorecard run into target/results/scorecard-cgos-<arch>.md. Login is the
 # gcloud user through the project's ssh-keys metadata (OS Login is not
 # assumed on this image). `MATRIX_ADOPT=<vm-name>` runs a cell on a VM that
 # already exists (any zone), skipping create and never deleting it: the
@@ -544,7 +545,7 @@ fi
 MATRIX_JOBS="${MATRIX_JOBS:-3}"
 MATRIX_TIMEOUT="${MATRIX_TIMEOUT:-2700}"
 MATRIX_DATE="${MATRIX_DATE:-$(date +%F)}"
-MATRIX_OUT="${MATRIX_OUT:-$REPO/bench/results/matrix}"
+MATRIX_OUT="${MATRIX_OUT:-$REPO/target/results/matrix}"
 MATRIX_CELLS="k510-amd64 k61-amd64 k61-arm64 k68-amd64 k68-arm64 hwe-amd64 64k-arm64 gcp-amd64 gcp-arm64"
 # The CPU cells (task 4), 2026-09-19: one -standard-8 per family. Zones from
 # `gcloud compute machine-types list --filter="name~'-standard-8$'"`: every
@@ -996,7 +997,7 @@ matrix_cell() {
   # shellcheck disable=SC2046
   rsync -az -e "ssh $(matrix_ssh_opts)" "$dest:logs/" "$tmp/" >>"$log" 2>&1 || say "fetch failed (partial logs)"
   if [ "$extra" = scorecard ] || [ "$extra" = cgos ]; then
-    # The per-CPU scorecard file the VM wrote (bench/results/scorecard-<family>.md,
+    # The per-CPU scorecard file the VM wrote (target/results/scorecard-<family>.md,
     # scorecard-cgos-<arch>.md for a Chainguard OS cell), next to the
     # reference files; the VM's copy is the whole file, and a rerun of the
     # same (date, commit) replaces its line there, so the copy is the record.
@@ -1004,11 +1005,12 @@ matrix_cell() {
     # (the cell name's prefix: cgos-* -> scorecard-cgos-<arch>.md, cgos72-* ->
     # scorecard-cgos72-<arch>.md, so kernels do not share a trend file).
     [ "$extra" != cgos ] || sc="scorecard-${cell%-*}-$arch.md"
+    mkdir -p "$REPO/target/results"
     # shellcheck disable=SC2046
-    if rsync -az -e "ssh $(matrix_ssh_opts)" "$dest:$REMOTE_DIR/bench/results/$sc" "$REPO/bench/results/$sc" >>"$log" 2>&1; then
-      say "fetched bench/results/$sc"
+    if rsync -az -e "ssh $(matrix_ssh_opts)" "$dest:$REMOTE_DIR/target/results/$sc" "$REPO/target/results/$sc" >>"$log" 2>&1; then
+      say "fetched target/results/$sc"
     else
-      say "no bench/results/$sc on the VM (the scorecard step failed before appending)"
+      say "no target/results/$sc on the VM (the scorecard step failed before appending)"
     fi
   fi
   {

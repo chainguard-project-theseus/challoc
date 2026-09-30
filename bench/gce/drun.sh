@@ -18,5 +18,8 @@
 #   IMAGE          default challoc-dev:$T
 REPO=${REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 IMAGE=${IMAGE:-challoc-dev:$T}
-DRUN_ARGS=(-v "$REPO":/src -w /src -v "${TARGET_VOLUME:-challoc-target-$T}":/src/target)
+# target/results is the host directory over the volume (as in the Makefile).
+mkdir -p "$REPO/target/results"
+DRUN_ARGS=(-v "$REPO":/src -w /src -v "${TARGET_VOLUME:-challoc-target-$T}":/src/target
+  -v "$REPO/target/results":/src/target/results)
 drun() { docker run --rm "${DRUN_ARGS[@]}" "$IMAGE" "$@"; }

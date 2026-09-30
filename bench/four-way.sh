@@ -3,15 +3,15 @@
 # task 1 from one VM's same-run outputs. Pure sh + awk, runs on the host or
 # in the container; it reads, never measures.
 #
-#   AB=bench/results/<date>-<arch>-gce-four-way-ab.md      bench/ab.sh (Phase 0 set + Valkey model
+#   AB=target/results/<date>-<arch>-gce-four-way-ab.md     bench/ab.sh (Phase 0 set + Valkey model
 #                                                            rows, VARIANTS='challoc=... jemalloc glibc
 #                                                            mimalloc tcmalloc')
-#   RUBY=bench/results/<date>-<arch>-ruby.md                bench/ruby-bench.sh
-#   PYTHON=bench/results/<date>-<arch>-python.md            bench/python-bench.sh
+#   RUBY=target/results/<date>-<arch>-ruby.md               bench/ruby-bench.sh
+#   PYTHON=target/results/<date>-<arch>-python.md           bench/python-bench.sh
 #   CGROUP="logs..."                                        make test-cgroup and make
 #                                                            test-cgroup-compare output (OUTCOME
 #                                                            and RESULT lines)
-#   RESULT=bench/results/<date>-<arch>-gce-four-way.md      the file written
+#   RESULT=target/results/<date>-<arch>-gce-four-way.md     the file written
 #   ALLOCS="jemalloc glibc mimalloc tcmalloc"               the columns challoc is compared with
 #   NOTE="..."                                              extra header bullet(s)
 #
@@ -118,7 +118,7 @@ ARCH=$(head -1 "$AB" | sed 's/.*, //')
   [ -n "$PYTHON" ] && echo "- Python rows: $(awk 'index($0, "- python:") == 1 {sub(/^- python: /, ""); print; exit}' "$PYTHON")"
   [ -n "$NOTE" ] && echo "- $NOTE"
   echo "- method: every cell comes from one run per VM on an idle VM (load under 1 at the start): the Phase 0 set and the Valkey model rows from one \`bench/ab.sh\` run (5 timed rounds after a warm-up, variants interleaved per round, median of the sorted scores, median peak RSS from bench/rt); the Ruby rows from one \`bench/ruby-bench.sh\` run and the Python rows from one \`bench/python-bench.sh\` run (same protocol, wall seconds); the container rows from \`make test-cgroup\` (challoc) and \`make test-cgroup-compare CGROUP_ALLOCS='jemalloc mimalloc tcmalloc'\` (one memory-limited container per run, RSS 2 s after freeing the churn, and the 300 s oscillation's verdict). Positive percentages mean challoc did worse than that allocator (slower, lower throughput, or more peak RSS); time is the score's direction (throughput rows compare throughput). The Valkey soak (\`make valkey-soak\`) is jemalloc-only: it drives Valkey's own \`je_\` allocator API (\`MEMORY MALLOC-STATS\`, active defrag, \`jemalloc_purge\`), which no other allocator has, so it is not a row here; its latest comparison is in the scorecard's soak columns."
-  echo "- sources: \`${AB#bench/results/}\`${RUBY:+, \`${RUBY#bench/results/}\`}${PYTHON:+, \`${PYTHON#bench/results/}\`}${CGROUP:+, the container logs (OUTCOME lines quoted in section 3)}"
+  echo "- sources: \`${AB##*/}\`${RUBY:+, \`${RUBY##*/}\`}${PYTHON:+, \`${PYTHON##*/}\`}${CGROUP:+, the container logs (OUTCOME lines quoted in section 3)}"
   echo
   echo "## 1. The table"
   echo

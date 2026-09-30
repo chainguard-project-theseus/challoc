@@ -63,7 +63,7 @@
 #                and the server's CPU per request per window from ab; NMT at
 #                the end; the same smaps and stats prints as the server row.
 #                ROWS=soak runs alone and writes RESULT (default
-#                bench/results/<date>-<arch>-jvm-soak.md) with the series as
+#                target/results/<date>-<arch>-jvm-soak.md) with the series as
 #                <RESULT without .md>-<allocator>.csv.
 #
 # Allocators (ALLOCS): challoc (REV, default the working tree, built into
@@ -101,7 +101,7 @@
 #   ROWS="startup server"   or ROWS=soak (alone)
 #   SOAK_DURATION=1200 SOAK_WINDOW=60 SOAK_HIGH=256 SOAK_LOW=8 SOAK_CORE=16
 #   SOAK_MAX=400 SOAK_KEEPALIVE=2 SOAK_MIN=256 SOAK_MAXB=1048576 SOAK_TAIL=600
-#   RESULT=path    markdown output (default bench/results/<date>-<arch>-jvm[-soak].md)
+#   RESULT=path    markdown output (default target/results/<date>-<arch>-jvm[-soak].md)
 #   OUT=dir        raw logs, samples and score files (default target/jvm/bench-out,
 #                  target/jvm/soak-out for ROWS=soak: each run starts with rm -rf OUT)
 #   REV=tree       challoc rev (any git rev; "tree" = the working tree)
@@ -154,8 +154,8 @@ is_challoc() { case $1 in challoc|challoc-*) return 0;; *) return 1;; esac; }
 # with rm -rf OUT, and a server row after a soak must not erase the soak's
 # stats prints and NMT snapshots before they are read).
 if [ $SOAK = 1 ]; then OUT=${OUT:-$WORK/soak-out}; else OUT=${OUT:-$WORK/bench-out}; fi
-if [ $SOAK = 1 ]; then RESULT=${RESULT:-$ROOT/bench/results/$DATE-$ARCH-jvm-soak.md}
-else RESULT=${RESULT:-$ROOT/bench/results/$DATE-$ARCH-jvm.md}; fi
+if [ $SOAK = 1 ]; then RESULT=${RESULT:-$ROOT/target/results/$DATE-$ARCH-jvm-soak.md}
+else RESULT=${RESULT:-$ROOT/target/results/$DATE-$ARCH-jvm.md}; fi
 # -Dsun.net.httpserver.nodelay=true sets TCP_NODELAY on the server's sockets
 # (off by default in the JDK server): without it the small /json response
 # (headers and body in two writes) waits for the client's delayed ACK and

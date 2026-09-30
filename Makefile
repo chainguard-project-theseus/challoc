@@ -14,7 +14,10 @@
 # (default `challoc-cargo-registry`) the registry volume; a lane worktree
 # (CLAUDE.md, Environment) exports `TARGET_VOLUME=challoc-target-<lane>-$(ARCH)`
 # so two worktrees never share a `target/`. `make clean-volumes` removes the
-# two volumes the variables name.
+# two volumes the variables name. The one exception is `target/results/`,
+# where the harnesses write their results files: it is the host's
+# `target/results` bind-mounted over the volume, so the files are readable
+# on the host (`make scorecard RENDER=1`, `challoc-bench fetch`).
 #
 # Variables named on the command line (`make quick OLD=HEAD~1`) reach the
 # harness scripts as environment variables: each harness target forwards the
@@ -52,6 +55,7 @@ endif
 DOCKER_BASE = docker run --rm --platform $(PLATFORM) \
 	-v "$(CURDIR)":/src -w /src \
 	-v $(TARGET_VOLUME):/src/target \
+	$(shell mkdir -p "$(CURDIR)/target/results")-v "$(CURDIR)/target/results":/src/target/results \
 	-v $(CARGO_VOLUME):/root/.cargo/registry \
 	$(GIT_MOUNT) $(if $(CHALLOC_CONF),-e CHALLOC_CONF="$(CHALLOC_CONF)") \
 	$(if $(CGROUP_PEAK),--cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw)
@@ -240,11 +244,11 @@ $(eval $(call bench_target,baseline,bench/baseline.sh,$$(BASELINE_VARS))) ## cac
 
 # Scorecard (bench/scorecard.sh): the fixed row set under challoc (REV, default
 # the working tree) and jemalloc, 3 interleaved rounds through bench/ab.sh,
-# one line appended to bench/results/scorecard-<arch>.md; `make scorecard
+# one line appended to target/results/scorecard-<arch>.md; `make scorecard
 # RENDER=1` prints the table sorted by date.
 SCORECARD_VARS = REV ROUNDS ROWS BASELINES BASELINE_TOLERANCE HOST_KIND VALKEY_MODEL_SECS VALKEY_MODEL_N PIN SCORECARD_FILE
 scorecard: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(call env_flags,$(SCORECARD_VARS))
-scorecard: image ## the fixed row set vs jemalloc (REV=tree), one line appended to bench/results/scorecard-<arch>.md; RENDER=1 prints the trend on the host
+scorecard: image ## the fixed row set vs jemalloc (REV=tree), one line appended to target/results/scorecard-<arch>.md; RENDER=1 prints the trend on the host
 	$(if $(RENDER),sh bench/scorecard.sh --render,$(DOCKER_RUN) sh bench/scorecard.sh)
 
 valkey: DOCKER_FLAGS = $(if $(STAGE),-e STAGE=$(STAGE)) $(if $(TEST_FLAGS),-e TEST_FLAGS="$(TEST_FLAGS)")
@@ -258,7 +262,7 @@ $(eval $(call bench_target,valkey-soak,bench/valkey-soak.sh,$$(SOAK_VARS))) ## V
 # Quick soak: challoc only, 10 minutes of load, occupancy sampler on, compared
 # against the cached jemalloc soak from `make soak-baseline` (the full 1200 s
 # protocol under jemalloc, stored under target/baselines/). Results under
-# target/valkey/soak-quick, never bench/results/. Acceptance stays `make valkey-soak`.
+# target/valkey/soak-quick, not target/results/. Acceptance stays `make valkey-soak`.
 soak-quick: ALLOCS = challoc
 soak-quick: DURATION ?= 600
 soak-quick: SETTLE ?= 60
@@ -305,7 +309,7 @@ $(eval $(call bench_target,node-bench,bench/node-bench.sh,$$(NODE_BENCH_VARS))) 
 # allocators. jvm-soak is the same script with ROWS=soak (the mixed-size
 # soak: a growing and shrinking pool, log-uniform direct-buffer sizes,
 # alternating load, 20 minutes per allocator), written to
-# bench/results/<date>-<arch>-jvm-soak.md with the Rss series CSVs beside it.
+# target/results/<date>-<arch>-jvm-soak.md with the Rss series CSVs beside it.
 JVM_BENCH_VARS = ALLOCS ROUNDS ROWS DURATION WARMUP INTERVAL CONNECTIONS THREADS HEAP PORT RESULT OUT HOST_KIND REV CHALLOC_VARIANTS JAVA_OPTS IDLE_SECS NMT NMT_GAP TRIM_MS SOAK_DURATION SOAK_WINDOW SOAK_HIGH SOAK_LOW SOAK_CORE SOAK_MAX SOAK_KEEPALIVE SOAK_MIN SOAK_MAXB SOAK_TAIL
 JVM_SOAK_VARS = $(filter-out ROWS,$(JVM_BENCH_VARS))
 $(eval $(call bench_target,jvm-bench,bench/jvm-bench.sh,$$(JVM_BENCH_VARS))) ## JVM rows (bench/jvm-bench.sh): `java -version` startup and a 200-thread http server under ab for DURATION (300) s with NMT, seven variants

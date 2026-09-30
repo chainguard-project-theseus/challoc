@@ -46,7 +46,7 @@
 #   CHALLOC_CONF  read by challoc alone (not by jemalloc), so the same run can
 #                 put challoc under a key (`percpu_arena:percpu`) with jemalloc
 #                 untouched; the Makefile forwards it into the container
-#   RESULT=path   markdown output (default bench/results/<date>-<arch>-ruby-soak.md);
+#   RESULT=path   markdown output (default target/results/<date>-<arch>-ruby-soak.md);
 #                 the per-allocator CSVs land beside it as <result stem>-<alloc>.csv
 #                 and the allocator's malloc_stats_print as <result stem>-<alloc>-mstats.txt
 #   OUT=dir       raw logs (default target/ruby/soak-out)
@@ -76,7 +76,7 @@ TRIM=${TRIM:-0}
 SEED=${SEED:-4141}
 WORK=$ROOT/target/ruby
 OUT=${OUT:-$WORK/soak-out}
-RESULT=${RESULT:-$ROOT/bench/results/$DATE-$ARCH-ruby-soak.md}
+RESULT=${RESULT:-$ROOT/target/results/$DATE-$ARCH-ruby-soak.md}
 STEM=${RESULT%.md}
 RUBY_TAG=${RUBY_TAG:-v3_4_10}
 COMPAT=$WORK/jemalloc-compat

@@ -10,12 +10,12 @@
 # bench/ab.sh (ROUNDS timed rounds plus a warm-up, variants interleaved,
 # sorted scores, median RSS; BASELINES=cached takes jemalloc from the cached
 # baseline with ab.sh's sanity round) and appends ONE line for (date, commit)
-# to bench/results/scorecard-<arch>.md: every row as a signed percentage
+# to target/results/scorecard-<arch>.md: every row as a signed percentage
 # against jemalloc (positive = challoc worse, bench/lib.sh worse_pct), the
 # RSS ratio challoc/jemalloc for larson10 and valkey1, and a soak column
 # group (write and delete throughput, peak RSS, post-delete RSS, each as
 # challoc vs jemalloc) read from the most recent Valkey soak summary for the
-# same commit under bench/results/ or target/valkey/soak-quick/, "-" when
+# same commit under target/results/ or target/valkey/soak-quick/, "-" when
 # there is none. A line for the same (date, commit) is replaced, not
 # duplicated. Run inside the dev container: `make scorecard`, or on a VM
 # `bench/gce/challoc-bench scorecard <arm64|amd64>` (which fetches the file).
@@ -54,9 +54,9 @@ pad_old_lines() {
 # ---- --render: the tables sorted by date, header first ---------------------
 render() {
   case ${1:-} in
-    "")    set -- "$ROOT"/bench/results/scorecard-*.md;;
+    "")    set -- "$ROOT"/target/results/scorecard-*.md;;
     *.md)  ;;                                          # a file path (a SCORECARD_FILE test file)
-    *)     set -- "$ROOT/bench/results/scorecard-$1.md";;
+    *)     set -- "$ROOT/target/results/scorecard-$1.md";;
   esac
   for f in "$@"; do
     [ -f "$f" ] || { echo "scorecard: no $f" >&2; continue; }
@@ -80,9 +80,9 @@ BASELINES=${BASELINES:-}
 SCDIR=$ROOT/target/scorecard
 RESULT=$SCDIR/result.md
 OUT=$SCDIR/out
-FILE=${SCORECARD_FILE:-$ROOT/bench/results/scorecard-$ARCH.md}
+FILE=${SCORECARD_FILE:-$ROOT/target/results/scorecard-$ARCH.md}
 T_START=$(date +%s)
-mkdir -p "$SCDIR"
+mkdir -p "$SCDIR" "$(dirname "$FILE")"
 
 for b in $ROWS; do case " $COLS " in *" $b "*) ;; *) die "row $b is not a scorecard column ($COLS)";; esac; done
 rev=$(resolve_rev "$REV")
@@ -110,10 +110,11 @@ ratio() { # ratio ROW: challoc RSS / jemalloc RSS
 
 # ---- the soak column group ------------------------------------------------------
 # The newest soak summary for this commit on this architecture: the acceptance
-# soaks under bench/results/ and the quick soaks under target/valkey/soak-quick/.
+# soaks under target/results/ (and the older ones under bench/results/) and
+# the quick soaks under target/valkey/soak-quick/.
 soak_file() {
   c=${commit%+}
-  for f in $(ls -t "$ROOT"/bench/results/*-"$ARCH"-*valkey-soak*.md "$ROOT"/target/valkey/soak-quick/*-"$ARCH"-*valkey-soak*.md 2>/dev/null); do
+  for f in $(ls -t "$ROOT"/target/results/*-"$ARCH"-*valkey-soak*.md "$ROOT"/bench/results/*-"$ARCH"-*valkey-soak*.md "$ROOT"/target/valkey/soak-quick/*-"$ARCH"-*valkey-soak*.md 2>/dev/null); do
     grep -q "^- commit: $c" "$f" && { echo "$f"; return 0; }
   done
   return 1

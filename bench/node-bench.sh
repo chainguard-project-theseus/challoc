@@ -42,7 +42,7 @@
 #                score listed sorted
 #   DURATION=300 seconds of load per allocator for the server row
 #   CONNS=64     keep-alive connections in total (half per endpoint)
-#   RESULT=path  markdown output (default bench/results/<date>-<arch>-node.md)
+#   RESULT=path  markdown output (default target/results/<date>-<arch>-node.md)
 #   OUT=dir      raw logs, score files, RSS samples (default target/node/bench-out)
 #   REV=tree     challoc rev (any git rev; "tree" = the working tree)
 #   HOST_CPU, HOST_KIND   recorded in the header (the Makefile passes HOST_CPU)
@@ -66,7 +66,7 @@ NODE=${NODE:-node}
 AB=${AB:-ab}
 WORK=$ROOT/target/node
 OUT=${OUT:-$WORK/bench-out}
-RESULT=${RESULT:-$ROOT/bench/results/$DATE-$ARCH-node.md}
+RESULT=${RESULT:-$ROOT/target/results/$DATE-$ARCH-node.md}
 SCRIPTS=$ROOT/bench/node
 T_START=$(date +%s)
 LOAD0=$(loadavg)

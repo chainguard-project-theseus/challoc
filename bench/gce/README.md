@@ -31,7 +31,7 @@ bench/gce/challoc-bench make amd64 bench-build   # sync, then `make bench-build`
 bench/gce/challoc-bench quick arm64 OLD=HEAD~1   # sync, then `make quick` (fast tier)
 bench/gce/challoc-bench ab arm64 VARIANTS='old=HEAD~1 new=HEAD jemalloc' ROUNDS=5
                                            # sync, then `make ab` (protocol tier)
-bench/gce/challoc-bench fetch arm64        # pull bench/results/* back (never overwrites newer local files)
+bench/gce/challoc-bench fetch arm64        # pull target/results/* back (never overwrites newer local files)
 bench/gce/challoc-bench ssh arm64
 bench/gce/challoc-bench status
 bench/gce/challoc-bench stop all           # do this before an iteration ends (unless CHALLOC_GCE_WARM, below)
@@ -69,7 +69,7 @@ while a sync runs, or sync again afterwards.
 | `MATRIX_MACHINE` | the cell's | replaces the cell's machine type (`MATRIX_MACHINE=c4a-standard-16 matrix lab 64k-arm64` for a soak at 64 KiB pages) |
 | `MATRIX_PMU` | unset | set: create the cell VM with `--performance-monitoring-unit=standard` (C3, C3D, C4, C4A and N4 take it; T2A, C2 and N2D refuse it), so a lab cell can run `quick-perf.sh` once `linux-tools-$(uname -r)` is installed on it |
 | `MATRIX_DATE` | today (`%F`) | the date in the cells' log names and the summary; set it to rerun a cell into an earlier day's set |
-| `MATRIX_OUT` | `bench/results/matrix` | where the cell logs go (`matrix lab` uses `.tmp-matrix-lab/`) |
+| `MATRIX_OUT` | `target/results/matrix` | where the cell logs go (`matrix lab` uses `.tmp-matrix-lab/`) |
 | `MATRIX_ADOPT` | unset | `<vm>`: run a cell on that existing VM (any zone), never delete it |
 
 Login: every VM is created with `enable-oslogin=TRUE` and the OS Login
@@ -100,7 +100,7 @@ the variable is set and every `challoc-*` VM when it is not;
 `challoc-bench lanes` groups every VM by prefix with status and uptime,
 the coordinator's view. The scorecard is not a lane command: only the
 coordinator runs `scorecard` from `main` on the reference pair, once per
-merge batch, and only those runs append to `bench/results/scorecard-<arch>.md`.
+merge batch, and only those runs append to `target/results/scorecard-<arch>.md`.
 
 ## Two tiers on a VM
 
@@ -110,7 +110,7 @@ merge batch, and only those runs append to `bench/results/scorecard-<arch>.md`.
 bench/gce/challoc-bench quick arm64                 # working tree vs HEAD, ~2 min, exit 1 = no-go
 bench/gce/challoc-bench quick arm64 OLD=HEAD~1      # a committed change vs its parent
 bench/gce/challoc-bench ab arm64 VARIANTS='old=HEAD~1 new=HEAD narenas16=HEAD~1:narenas:16 jemalloc' \
-    RESULT=bench/results/2026-09-17-aarch64-gce-<topic>.md
+    RESULT=target/results/<date>-aarch64-gce-<topic>.md
 bench/gce/challoc-bench fetch arm64                 # bring the results file back
 bench/gce/challoc-bench run arm64 'make baseline'   # once per VM: cached stock-allocator rows
 bench/gce/challoc-bench quick arm64 BASELINES=cached
@@ -130,7 +130,7 @@ instructions, L1D and dTLB misses per operation (raw files in
 `~/logs/quick-perf`). Extra `ROWS=`, `VARIANTS=`, `EVENTS=` arguments go to
 that script; `OLD=`/`NEW=` to the build. `scorecard` runs `make scorecard`
 (`bench/scorecard.sh`: the fixed row set under challoc and jemalloc, 3
-rounds, one line appended to `bench/results/scorecard-<arch>.md`) and then
+rounds, one line appended to `target/results/scorecard-<arch>.md`) and then
 `fetch`, so the appended line lands in the local file without clobbering a
 newer local edit. Run it on both VMs after landing a change and commit the
 two lines with the PROGRESS commit.
@@ -179,7 +179,7 @@ detached on the VM (`make image`, `make test`, the probe line of
 `make test-cgroup`, and on the cell marked `privileged` a second `make test`
 with `DOCKER_FLAGS=--privileged`, so Docker's seccomp profile does not hide
 `process_madvise` and `mseal`), fetches `~/logs` into
-`bench/results/matrix/<date>-<cell>.log` and deletes the VM, passed, failed,
+`target/results/matrix/<date>-<cell>.log` and deletes the VM, passed, failed,
 timed out or interrupted (the cell's own exit trap, plus a sweep of every
 `challoc-matrix-*` VM in the zone when the driver exits; `matrix clean` runs
 the sweep by hand). The machines are small and measure nothing.
@@ -196,7 +196,7 @@ bench/gce/challoc-bench matrix sync 64k-arm64  # rsync the tree again
 ```
 
 `matrix lab` runs a cell up to the sync and keeps the VM for experiments
-(its log goes to `.tmp-matrix-lab/`, not `bench/results/matrix/`); `matrix
+(its log goes to `.tmp-matrix-lab/`, not `target/results/matrix/`); `matrix
 ssh` and `matrix sync` drive it, `matrix clean` (or running the cell for
 real, which recreates the VM under the same name) deletes it. A lab VM
 measures nothing either; it exists to read `memory.stat`, the allocator's
@@ -248,7 +248,7 @@ the CPU capture (`cpuinfo.log`: model name, the `flags`/`Features` line,
 `lscpu`, and the raw `cpuid`/HWCAP registers of `bench/gce/cpuid-dump.c`,
 the source of the host fixtures in `src/sys/cpu.rs`), and, instead of fuzz
 and test-cgroup, one `make scorecard ROUNDS=3` (challoc versus jemalloc, the
-fixed row set) written to `bench/results/scorecard-<family>.md` on the VM
+fixed row set) written to `target/results/scorecard-<family>.md` on the VM
 and fetched back next to the reference files. `scorecard-aarch64.md` and
 `scorecard-x86_64.md` stay the acceptance record (C4A and C4 at 16 vCPU)
 and are not touched; the per-CPU files are 8 vCPU, so compare them with
@@ -283,7 +283,7 @@ MATRIX_TIMEOUT=3600 bench/gce/challoc-bench matrix cpu-c3d cpu-t2a
 
 Results: `bench/results/<date>-cpu-matrix.md` (one line per cell, the
 feature table across CPUs, the scorecard table across CPUs) and
-`bench/results/scorecard-<family>.md`.
+`target/results/scorecard-<family>.md`.
 
 ## The Chainguard OS cells (Phase 2.5 task 14)
 
@@ -325,7 +325,7 @@ seccomp profile and again with `DOCKER_FLAGS=--privileged`, the three
 probe lines, the host capture (`host.log`: uname, `/proc/config.gz` keys,
 THP, glibc, bootc status, the root mount, podman, the NIC driver), `make
 test-cgroup` (podman sets the cgroup v2 limits) and one `make scorecard
-ROUNDS=3` into `bench/results/scorecard-<cellprefix>-<arch>.md` (`cgos-*` ->
+ROUNDS=3` into `target/results/scorecard-<cellprefix>-<arch>.md` (`cgos-*` ->
 `scorecard-cgos-<arch>.md`, `cgos72-amd64` -> `scorecard-cgos72-amd64.md`, so
 the two kernels do not share a trend file), fetched back next to the
 per-CPU files; the reference files are not touched. The summary

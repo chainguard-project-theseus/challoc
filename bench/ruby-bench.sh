@@ -46,7 +46,7 @@
 #
 #   ROUNDS=5     timed rounds after one discarded warm-up, allocators
 #                interleaved within a round, every score listed sorted
-#   RESULT=path  markdown output (default bench/results/<date>-<arch>-ruby.md)
+#   RESULT=path  markdown output (default target/results/<date>-<arch>-ruby.md)
 #   OUT=dir      raw logs and score files (default target/ruby/bench-out)
 #   HOST_CPU, HOST_KIND   recorded in the header (the Makefile passes HOST_CPU)
 set -eu
@@ -58,7 +58,7 @@ ROUNDS=${ROUNDS:-5}
 ROWS=${ROWS:-"startup so_binary_trees hash_aref_str array_sample_100k__1k array_sort_block so_nbody app_fib erb_render gem_list gc_churn"}
 WORK=$ROOT/target/ruby
 OUT=${OUT:-$WORK/bench-out}
-RESULT=${RESULT:-$ROOT/bench/results/$DATE-$ARCH-ruby.md}
+RESULT=${RESULT:-$ROOT/target/results/$DATE-$ARCH-ruby.md}
 RUBY_TAG=${RUBY_TAG:-v3_4_10}
 SRC=$WORK/src-$RUBY_TAG
 COMPAT=$WORK/jemalloc-compat
