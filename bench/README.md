@@ -5,8 +5,6 @@ runs inside the dev container on the native architecture; emulated x86_64 is
 never used for numbers.
 
     make bench-build      fetch and build the benchmark programs (once per target volume)
-    make bench            LEGACY: the Phase 0 protocol runner (bench/run.sh, bench/profile.sh),
-                          kept for reference; the tiers below are what results files come from
     make quick [OLD=rev]  fast tier: ~2.5 min go/no-go for the working tree vs OLD
                           (PERF=1 adds per-op counters where perf exists)
     make ab VARIANTS=...  protocol tier A/B: the table results files are made of
@@ -119,7 +117,7 @@ MiB heap whose slab descriptors miss cache on every free of a random key,
   allocated/active/resident at each phase end are in the log (`-s`). RSS in
   the tables is the run's peak. Run it by hand:
   `LD_PRELOAD=target/release/libchalloc.so target/bench-bin/valkey_model -n 100000 -t 3 -s`.
-- `redis`: `run.sh`'s recipe as a `lib.sh` row (server under `LD_PRELOAD`,
+- `redis`: the Phase 0 redis recipe as a `lib.sh` row (server under `LD_PRELOAD`,
   `redis-benchmark -r 1000000 -n 1000000 -P 16 lpush/lrange`, k req/s, RSS
   is the server's), so `ab` and the scorecard can run it.
 - `ruby-churn`: `bench/ruby/gc_churn.rb 10 10` on the `--without-jemalloc`
@@ -185,7 +183,7 @@ scripts iterations used to rewrite. `VARIANTS` is a list of
 
 Each rev is built once from `git archive` into `target/ab/<hash>` (`tree`
 means the working tree, into `target/ab/tree`; a `.tmp-<v>` source
-directory made by `bench/geometry-variant.sh`, or by hand from `src
+directory made by hand from `src
 Cargo.toml Cargo.lock build.rs`, is built in place into
 `target/ab/<basename>`, so a src/ variant that is never committed can sit
 in the same run: `slab16=.tmp-slab16`, also `OLD=`/`NEW=` of `make quick`;
@@ -243,7 +241,7 @@ Files:
   building a variant from a rev or the working tree with its own
   `CARGO_TARGET_DIR` and remapped paths (`build_lib`), sorted lists,
   medians, overlap and percentage helpers, the baseline file name and row
-  parser, the bench lock shared with `run.sh` (`take_bench_lock` also
+  parser, the bench lock every tier shares (`take_bench_lock` also
   installs the EXIT/INT/TERM trap that kills the servers a harness
   registered in `BENCH_PIDS`, runs its `BENCH_CLEANUP` function and closes
   the lock's descriptor; every server start closes that descriptor for the
@@ -269,20 +267,6 @@ Files:
   user, sys, max RSS and exit code from `wait4`, appended to `$RT_OUT`.
 - `sampler.c`: `perf record` replacement (Wolfi has no perf): a SIGPROF PC
   sampler preloaded after the allocator; writes `count module offset` lines.
-- `run.sh` (legacy, `make bench`): the Phase 0 protocol runner, one warm-up
-  plus `RUNS` (5) timed runs per benchmark and allocator (`challoc jemalloc
-  glibc mimalloc tcmalloc`), medians and raw runs into the results file.
-  larson and xmalloc-test are fixed-duration, so they are scored by the
-  throughput they print; redis by redis-benchmark's requests/second. Kept
-  for reference and for reading the Phase 0 and Phase 1 results files it
-  wrote; since Phase 1.5 every results file comes from `ab.sh` (`make ab`),
-  `scorecard.sh` or a consumer harness, and `lib.sh` carries the same rows
-  (`bench_args`, `run_row`).
-- `profile.sh` (legacy): larson under challoc with the sampler, attributed
-  to symbols (`nm`) and instructions (`objdump`), flagging lock and atomic
-  RMW instructions. Appended to the results file by `run.sh`; the sampler
-  itself (`sampler.c`) is still used by hand for attribution
-  (`bench/results/*` "sampler" sections).
 - `valkey-soak.sh`: starts `valkey-server` from the challoc tree built by
   `contrib/valkey/build.sh` and from an unpatched clone of the same tag built
   with bundled jemalloc 5.3.0 (`target/valkey/src-<tag>-jemalloc`, built on
@@ -480,8 +464,8 @@ Files:
   challoc against each of the other four (time / RSS, positive = challoc
   worse), then the list of rows more than 10% behind, under which the
   attribution is written by hand. Reads only; pure sh + awk, runs on the host.
-- `probes/`: `churn.c` (the post-delete steady-state model `quick` runs;
-  `churn-run.sh` runs it by hand with the cache knobs, `CHURN_SECS`),
+- `probes/`: `churn.c` (the post-delete steady-state model `quick` runs,
+  `CHURN_SECS`),
   `valkey_model.c` (the Valkey model behind the `valkey1` rows, above),
   `binsample.c` (per-second bin row sidecar), `soak-occupancy.sh` (now a
   wrapper over `valkey-soak.sh OCCUPANCY=1`), `valkey-perf-sidecar.sh` (root, on
@@ -514,10 +498,7 @@ harness, none in `src/`:
   summary, "cgroup memory.peak MiB, write / delete / settle phase", beside
   the server's VmHWM; `make ruby-soak CGROUP_PEAK=1` adds "start..compact"
   and "compact..end" (the reset lives in `bench/ruby/soak.rb`, which holds
-  its own descriptor); `make percpu-campaign` records the largest
-  `memory.peak` of each step's container cgroups from the host side (fresh
-  cgroups per `docker run`, no reset needed) and passes `CGROUP_PEAK=1` to
-  its soak steps. `CGROUP_PEAK=1` gives the container `--cgroupns=host` and
+  its own descriptor). `CGROUP_PEAK=1` gives the container `--cgroupns=host` and
   a read-write `/sys/fs/cgroup`: Docker mounts the tree read-only and the
   nsdelegate boundary refuses the write from inside the namespace
   otherwise. Without it, or on a kernel before 6.12 (EINVAL), the rows read

@@ -1,6 +1,6 @@
 # bench/gce/drun.sh: the one `docker run` line of the scripts that run on a
-# VM host beside the dev container (quick-perf.sh, perf-record.sh,
-# probes/churn-run.sh). Source it (bash) after T is set to arm64|amd64:
+# VM host beside the dev container (quick-perf.sh, perf-record.sh).
+# Source it (bash) after T is set to arm64|amd64:
 #
 #   T=arm64; . bench/gce/drun.sh
 #   drun sh -c '...'                       # docker run --rm <mounts> $IMAGE sh -c '...'
@@ -11,8 +11,7 @@
 # (`make print-docker-run`) is the container-side twin and adds --platform,
 # the cargo registry volume and, in a git worktree, the common .git mount;
 # a VM host holds a plain checkout and these scripts run no cargo step, so
-# they never needed those (churn-run.sh, which builds, adds the registry
-# volume itself).
+# they never needed those.
 #
 #   REPO           the repository (default: this file's ../..)
 #   TARGET_VOLUME  default challoc-target-$T (a lane's TARGET_VOLUME applies)

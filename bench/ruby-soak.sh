@@ -97,7 +97,7 @@ rm -rf "$OUT"; mkdir -p "$OUT" "$(dirname "$RESULT")"
 # ---- build, stage, install -------------------------------------------------------
 [ -x "$WORK/build-challoc/ruby" ] || die "no Ruby build at target/ruby/build-challoc: run 'make ruby STAGE=build' first"
 # CHALLOC_SRC: the source tree the challoc stage is built from (default:
-# this tree). An A/B copy made by bench/geometry-variant.sh, or by hand
+# this tree). An A/B copy made by hand
 # from `src Cargo.toml Cargo.lock build.rs scripts contrib`, puts a src/
 # variant under the same Ruby binary; the header names the directory and
 # the stage's sha256 either way.

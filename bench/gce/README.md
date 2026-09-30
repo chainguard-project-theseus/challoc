@@ -27,7 +27,7 @@ bench/gce/challoc-bench provision all      # Docker (MTU 1460), make, perf, rsyn
 bench/gce/challoc-bench pmu-check all      # six reference events must count non-zero
 bench/gce/challoc-bench sync all           # rsync the working tree to ~/challoc on each VM
 bench/gce/challoc-bench run arm64 'make test'
-bench/gce/challoc-bench make amd64 bench   # sync, then `make bench` on the VM
+bench/gce/challoc-bench make amd64 bench-build   # sync, then `make bench-build` on the VM
 bench/gce/challoc-bench quick arm64 OLD=HEAD~1   # sync, then `make quick` (fast tier)
 bench/gce/challoc-bench ab arm64 VARIANTS='old=HEAD~1 new=HEAD jemalloc' ROUNDS=5
                                            # sync, then `make ab` (protocol tier)
@@ -143,8 +143,7 @@ manifest), because the library the VM then measures as `tree` is not HEAD.
 Run the iteration's `quick` before any `ab`; a variant that fails `quick` is
 not taken to the protocol tier (`scripts/ralph-prompt.md` step 4).
 
-Long runs (`ab` with 5 rounds is 6 to 8 minutes, `make bench` 13, the soak
-45) survive a dropped ssh session when launched detached on the VM:
+Long runs (`ab` with 5 rounds is 6 to 8 minutes, the soak 45) survive a dropped ssh session when launched detached on the VM:
 `challoc-bench ssh arm64 --command='cd challoc && setsid nohup make ab ... >
 ~/logs/ab.log 2>&1 < /dev/null &' -- -T`, then poll `~/logs/ab.log`. Keep
 VM-side logs in `~/logs`, not under `~/challoc`: `sync` is `rsync --delete`.
@@ -442,13 +441,13 @@ and `kernel.kptr_restrict` is 0 on the VMs.
   `quick-perf.sh`: symbol shares of one row under one library, the DSOs
   copied out of the finished container for `perf report --symfs`; the
   attribution CLAUDE.md asks for before a fast-path change.
-- `drun.sh`: the one `docker run` line the two scripts above and
-  `probes/churn-run.sh` share (the repository at `/src`, the architecture's
+- `drun.sh`: the one `docker run` line the two scripts above share
+  (the repository at `/src`, the architecture's
   target volume, `IMAGE`, default `challoc-dev:<arch>`).
 - `matrix-cell.sh`: the VM side of `matrix` (the steps, the `MATRIX ...`
   summary line); `native-rows.sh`: the `ab.sh` rows run natively and in the
   container on a Chainguard OS host (the four-way tables' host-native
-  section); `thp-ab.sh prep|run`: the THP A/B on a THP=always host.
+  section).
 - `cpuid-dump.c`: the raw CPUID/HWCAP registers a CPU cell captures (the
   fixtures of `src/sys/cpu.rs`); `pmu-probe.c`: does `perf_event_open`
   count on a host without a `perf` binary (Chainguard OS).
@@ -456,10 +455,7 @@ and `kernel.kptr_restrict` is 0 on the VMs.
   `valkey-perf-sidecar.sh` (root: `perf stat -I 1000` for each server's
   life, 60 s `perf record` windows, `INFO commandstats` snapshots),
   `valkey-defrag-sidecar.sh` (no root: `loglevel verbose` so defrag's
-  decision lines land in the server log, `INFO` sampled once a second),
-  `churn-run.sh` (the churn probe under challoc and jemalloc with the cache
-  knobs), `calloc-zero-campaign.sh` (the 2026-09-18 calloc reproduction
-  campaign, inside the container, detached with the log under `~/logs/`);
+  decision lines land in the server log, `INFO` sampled once a second);
   and two `LD_PRELOAD` sidecars built from source: `statsdump.c` (an
   `atexit` `malloc_stats_print` for a program that cannot call it, the JVM
   rows) and `arenasample.c` (per-second arena RSS attribution from
