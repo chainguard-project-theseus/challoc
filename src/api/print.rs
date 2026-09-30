@@ -391,14 +391,8 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
         " class_ranges {} ({} bytes, {} chunks) huge_ranges {} meta_ranges {} failures {}",
         s.class_ranges, s.class_bytes, s.chunks, s.huge_ranges, s.meta_ranges, s.failures
     )?;
-    // Design 17: the host's global mode and whether the process-wide
-    // `prctl` is in force (`thp_process`).
-    writeln!(
-        out,
-        "; host {} process {}",
-        crate::thp::host_mode().map_or("none", crate::sys::features::ThpSetting::name),
-        crate::thp::process().text()
-    )
+    // Design 17: the host's global mode.
+    writeln!(out, "; host {}", crate::thp::host_mode().map_or("none", crate::sys::features::ThpSetting::name))
 }
 
 /// The `cgroup policy:` line (design 11): the band as last evaluated and
@@ -631,7 +625,7 @@ fn json_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot, arenas_
     let ts = crate::thp::stats();
     writeln!(
         out,
-        "\t\t\"thp\": {{\"key\": \"{}\", \"mode\": \"{}\", \"reason\": \"{}\", \"class_ranges\": {}, \"class_bytes\": {}, \"chunks\": {}, \"huge_ranges\": {}, \"meta_ranges\": {}, \"failures\": {}, \"nohuge_ranges\": {}, \"host\": \"{}\", \"process\": \"{}\"}},",
+        "\t\t\"thp\": {{\"key\": \"{}\", \"mode\": \"{}\", \"reason\": \"{}\", \"class_ranges\": {}, \"class_bytes\": {}, \"chunks\": {}, \"huge_ranges\": {}, \"meta_ranges\": {}, \"failures\": {}, \"nohuge_ranges\": {}, \"host\": \"{}\"}},",
         crate::thp::key().name(),
         td.mode.name(),
         td.reason.text(),
@@ -642,8 +636,7 @@ fn json_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot, arenas_
         ts.meta_ranges,
         ts.failures,
         ts.nohuge_ranges,
-        crate::thp::host_mode().map_or("none", crate::sys::features::ThpSetting::name),
-        crate::thp::process().name()
+        crate::thp::host_mode().map_or("none", crate::sys::features::ThpSetting::name)
     )?;
     let cg = &shared.cgroup;
     cg.sample(crate::sys::now_coarse_ns());
@@ -1052,11 +1045,9 @@ mod tests {
             head!(RUN_TIME_OPTIONS),
             "opt.dirty_decay_ms: ",
             "opt.thp: \"never\"\n",
-            "opt.thp_process: \"default\"\n",
             "opt.prefault: false\n",
             "thp: never -> off (thp:never) nohuge ",
             " (classes, metadata; huge follows host) class_ranges 0 (0 bytes, 0 chunks) huge_ranges 0 meta_ranges 0 failures 0; host ",
-            " process default (nothing issued)\n",
             "opt.zero_on_free: false\n",
             "opt.slot_randomize: false\n",
             "opt.cgroup: true\n",
@@ -1158,7 +1149,6 @@ mod tests {
         assert!(text.contains("\"cgroup\": {\"tracked\": "));
         assert!(text.contains("\"thp\": {\"key\": \"never\", \"mode\": \"off\", "), "{text}");
         assert!(text.contains("\"failures\": 0, \"nohuge_ranges\": ") && text.contains(", \"host\": \""), "{text}");
-        assert!(text.contains("\", \"process\": \"default\"}"), "{text}");
         assert!(text.contains("\"purge_advice\": \"eager\", \"lazy_purges\": 0, \"eager_purges\": "), "{text}");
         assert!(text.contains("\"stats.arenas\": {"));
         assert!(text.contains("\"0\": {"));
@@ -1238,7 +1228,7 @@ mod tests {
             "\n\t\t},\n",
             "\t\t\"arenas\": {\"narenas\": N, \"nbins\": N, \"quantum\": N, \"page\": N},\n",
             "\t\t\"background_thread\": {\"present\": B},\n",
-            "\t\t\"thp\": {\"key\": \"S\", \"mode\": \"S\", \"reason\": \"S\", \"class_ranges\": N, \"class_bytes\": N, \"chunks\": N, \"huge_ranges\": N, \"meta_ranges\": N, \"failures\": N, \"nohuge_ranges\": N, \"host\": \"S\", \"process\": \"S\"},\n",
+            "\t\t\"thp\": {\"key\": \"S\", \"mode\": \"S\", \"reason\": \"S\", \"class_ranges\": N, \"class_bytes\": N, \"chunks\": N, \"huge_ranges\": N, \"meta_ranges\": N, \"failures\": N, \"nohuge_ranges\": N, \"host\": \"S\"},\n",
             "\t\t\"cgroup\": {\"tracked\": B, \"limit\": N, \"high\": N, \"current\": N, \"pressure_events\": N, \"decay_ms\": N, \"retention_cap\": N, \"empty_bytes\": N, \"full_purges\": N, \"thp_forced\": B, \"purge_advice\": \"S\", \"lazy_purges\": N, \"eager_purges\": N, \"purged_is_zero\": B},\n",
             "\t\t\"stats\": {\"allocated\": N, \"active\": N, \"metadata\": N, \"resident\": N, \"mapped\": N, \"retained\": N},\n",
             "\t\t\"stats.arenas\": {\n",

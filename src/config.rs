@@ -22,8 +22,8 @@
 //! source; jemalloc gets the same effect with a separate first pass.
 //!
 //! Three tables name the keys. [`TABLE`] holds the tunables the allocator
-//! reads, jemalloc's and challoc's own (`thp_process`, `prefault`,
-//! `slice_ext`, ...): one [`Key`] per tunable with its name,
+//! reads, jemalloc's and challoc's own (`prefault`, `slice_ext`,
+//! ...): one [`Key`] per tunable with its name,
 //! its parser and its reader, so [`Config::set`], [`Config::get`]
 //! (`opt.<key>`) and the name list [`KEYS`] all come from the one entry;
 //! the modules named in each field's doc act on the values.
@@ -197,43 +197,6 @@ impl SliceExt {
     }
 }
 
-/// `thp_process` values (design 12 and 17, the prctl half): the
-/// process-wide THP policy challoc asks the kernel for at
-/// init, `prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED)`,
-/// so that on an `always` host (Chainguard OS) only the regions challoc
-/// `MADV_HUGEPAGE`s under `thp:auto|always` get huge pages and the rest
-/// of the process (libc's own mappings, the stack, other allocators) does
-/// not. Kernel 6.18+ accepts the flag; it is probed by the call's return
-/// (`EINVAL` below), never assumed from a header constant. Off by default
-/// because it is process-wide: a library must not change the THP policy
-/// of the program that loaded it unless asked. The call itself lives in
-/// `thp.rs`; this key only says whether to issue it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ThpProcess {
-    /// The default: no `prctl` is issued; the process keeps the policy it
-    /// inherited (byte for byte the allocator without the key).
-    Default,
-    /// Issue the `prctl` at init; where the kernel refuses it the process
-    /// keeps its inherited policy and the report says so.
-    Advised,
-}
-
-impl ThpProcess {
-    pub const fn name(self) -> &'static str {
-        match self {
-            ThpProcess::Default => "default",
-            ThpProcess::Advised => "advised",
-        }
-    }
-
-    /// Whether init issues the `prctl` at all (`advised`); `default` never
-    /// calls it, so a kernel without the flag is never even asked.
-    #[inline]
-    pub const fn requested(self) -> bool {
-        matches!(self, ThpProcess::Advised)
-    }
-}
-
 /// Every tunable of design section 12 with its compiled default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Config {
@@ -280,12 +243,6 @@ pub struct Config {
     pub tcache_compact_shift: u32,
     /// Transparent huge pages for the regions (`thp.rs`, design 7, 10, 17).
     pub thp: Thp,
-    /// The process-wide THP policy asked for at init ([`ThpProcess`],
-    /// design 17): `default` issues nothing,
-    /// `advised` issues `prctl(PR_SET_THP_DISABLE, 1,
-    /// PR_THP_DISABLE_EXCEPT_ADVISED)` where the kernel accepts it (6.18+,
-    /// probed by the return). Read at init by `thp.rs`, as `thp` is.
-    pub thp_process: ThpProcess,
     /// The rseq time slice extension for lock holders (design 17,
     /// `slice.rs`, [`SliceExt`]): `auto` follows the runtime probe, `on`
     /// forces the request (nothing, plus a report note, when the probe
@@ -393,7 +350,6 @@ impl Config {
         tcache_gc_interval_ms: 10_000,
         tcache_compact_shift: 3,
         thp: Thp::Never,
-        thp_process: ThpProcess::Default,
         slice_ext: SliceExt::Auto,
         lazy_free: false,
         lazy_band: true,
@@ -526,14 +482,6 @@ impl Config {
     /// the verdict.
     pub fn apply_slice_ext(&self) -> Result<(), crate::slice::Verdict> {
         crate::slice::configure(self.slice_ext.wanted(), self.slice_ext.forced())
-    }
-
-    /// The process-wide THP policy to ask for at init (`thp_process`,
-    /// [`ThpProcess`]); `thp.rs` issues the `prctl` when
-    /// `thp_process().requested()`.
-    #[inline]
-    pub const fn thp_process(&self) -> ThpProcess {
-        self.thp_process
     }
 
     /// The `prefault` key as set: whether prefaulted fresh slabs were asked
@@ -736,14 +684,6 @@ pub const TABLE: &[Key] = &[
             Ok(())
         },
         read: |c| Value::Str(c.thp.name()),
-    },
-    Key {
-        name: "thp_process",
-        parse: |c, k, v| {
-            c.thp_process = pick(&[("default", ThpProcess::Default), ("advised", ThpProcess::Advised)], k, v)?;
-            Ok(())
-        },
-        read: |c| Value::Str(c.thp_process.name()),
     },
     Key {
         name: "slice_ext",
@@ -1284,7 +1224,6 @@ mod tests {
         assert_eq!(clean("tcache_compact_shift:0").compact_mask(), u32::MAX);
         assert_eq!(clean("tcache_compact_shift:20").compact_mask(), (1 << 20) - 1);
         assert_eq!(d.thp, Thp::Never);
-        assert_eq!(d.thp_process, ThpProcess::Default, "process-wide, so opt-in");
         assert!(!d.prefault, "opt-in");
         assert!(!d.prefault_active());
         assert!(!d.lazy_free);
@@ -1494,37 +1433,6 @@ mod tests {
         // reports a failed probe.
         assert!(SliceExt::Auto.wanted() && SliceExt::On.wanted() && !SliceExt::Off.wanted());
         assert!(SliceExt::On.forced() && !SliceExt::Auto.forced() && !SliceExt::Off.forced());
-    }
-
-    /// `thp_process` (the prctl half): the two values, anything else
-    /// reported and left at the default,
-    /// `opt.thp_process` reads back, the accessor `thp.rs` decides the
-    /// `prctl` on, and `thp` untouched by it (they are separate keys: the
-    /// per-region advice and the process-wide policy).
-    #[test]
-    fn thp_process_values() {
-        assert!(KEYS.contains(&"thp_process"));
-        for (value, want) in [("default", ThpProcess::Default), ("advised", ThpProcess::Advised)] {
-            let cfg = clean(&std::format!("thp_process:{value},abort_conf:true"));
-            assert_eq!(cfg.thp_process, want, "{value}");
-            assert_eq!(cfg.thp_process(), want, "{value}");
-            assert_eq!(cfg.get(b"thp_process"), Some(Value::Str(want.name())), "{value}");
-            assert_eq!(want.name(), value);
-            assert!(cfg.abort_conf);
-            assert_eq!(cfg.thp, Thp::Never, "thp_process leaves thp alone");
-        }
-        rejects_bad_values("thp_process", &["true", "false", "1", "never", "always", "auto", "Default", "ADVISED", "", "advise"]);
-        assert_eq!(clean("thp_process:advised,thp_process:default").thp_process, ThpProcess::Default);
-        assert_eq!(clean("thp_process:\"advised\"").thp_process, ThpProcess::Advised);
-        // Only `advised` issues the prctl; `default` never asks.
-        assert!(ThpProcess::Advised.requested() && !ThpProcess::Default.requested());
-        assert!(!Config::DEFAULT.thp_process().requested());
-        // The two THP keys compose: the process policy with any per-region
-        // advice, and `thp:default` (an alias of `never`) is not this key.
-        let cfg = clean("thp:auto,thp_process:advised");
-        assert_eq!((cfg.thp, cfg.thp_process), (Thp::Auto, ThpProcess::Advised));
-        let cfg = clean("thp:default");
-        assert_eq!((cfg.thp, cfg.thp_process), (Thp::Never, ThpProcess::Default));
     }
 
     /// `prefault`: a bool key, off by default, readable, accepted under
@@ -1806,7 +1714,6 @@ mod tests {
                 Value::Str(s) => match key.name {
                     "percpu_arena" | "slice_ext" => "off".into(),
                     "thp" => "always".into(),
-                    "thp_process" => "advised".into(),
                     _ => panic!("{}: a string key with no test value ({s})", key.name),
                 },
             };

@@ -98,45 +98,6 @@ pub fn parse_thp_setting(bytes: &[u8]) -> Option<ThpSetting> {
     }
 }
 
-/// The kernel's answer for `prctl(PR_SET_THP_DISABLE, 1,
-/// PR_THP_DISABLE_EXCEPT_ADVISED)` (kernel 6.18; design 17), the
-/// `thp_except_advised=` key. Probed by the call itself, never by a
-/// version: on a process that carries no THP policy
-/// (`PR_GET_THP_DISABLE` reads 0) the flag is set and cleared again, one
-/// `prctl` each way; a kernel before 6.18 refuses a non-zero flags word
-/// with `EINVAL`. A process whose parent set a policy (`PR_GET_THP_DISABLE`
-/// non-zero: `PR_SET_THP_DISABLE` is inherited across `fork` and `execve`)
-/// is left as it is and the key says so; the `thp_process` key then issues
-/// nothing either (`thp.rs`).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum ThpDisable {
-    /// The kernel took the flag (6.18+); the process carried no policy.
-    Yes,
-    /// The kernel refused it (`EINVAL` before 6.18; any other error).
-    No,
-    /// `PR_GET_THP_DISABLE` read this non-zero value: a policy inherited
-    /// from the parent, not probed, not changed (`1` = THP disabled for
-    /// the process, `3` = disabled except where advised).
-    Inherited(u8),
-}
-
-impl ThpDisable {
-    /// `yes`, `no`, `inherited`.
-    pub const fn name(self) -> &'static str {
-        match self {
-            ThpDisable::Yes => "yes",
-            ThpDisable::No => "no",
-            ThpDisable::Inherited(_) => "inherited",
-        }
-    }
-}
-
-impl fmt::Display for ThpDisable {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "thp_except_advised={}", self.name())
-    }
-}
-
 /// The kernel's transparent-huge-page configuration as read at init from
 /// `/sys/kernel/mm/transparent_hugepage` with raw syscalls (design 10 step
 /// 1). Folio sizes are bit sets over `log2(size)`:
@@ -512,9 +473,6 @@ pub struct Features {
     /// The transparent-huge-page configuration: what the `thp` key can
     /// turn on.
     pub thp: Thp,
-    /// Whether the kernel takes `PR_THP_DISABLE_EXCEPT_ADVISED`: what
-    /// `thp_process:advised` can issue.
-    pub thp_disable: ThpDisable,
     /// glibc's rseq registration as `rseq::probe` read it at init: the
     /// `rseq`, `rseq_size` and `mm_cid` keys ([`rseq_words`]); the
     /// per-CPU mode reads the same probe for its gate.
@@ -533,8 +491,7 @@ impl Features {
     /// Values are `yes`/`no` except `page_size`,
     /// `process_madvise` (`no`, `pidfd_self`, or `pidfd:<fd>`), the THP
     /// keys (`thp=never|madvise|always|none`, `mthp=64K,2M|none`),
-    /// `thp_except_advised` (`yes`, `no`,
-    /// `inherited`), `rseq_size` (a byte count, `0` without a
+    /// `rseq_size` (a byte count, `0` without a
     /// registration), `slice_ext` (`on`, `available`, `prctl-failed`,
     /// `kernel-disabled`, `no-slice_ctrl`, `no-rseq`).
     /// `tests/c/features.c` lists the same keys.
@@ -550,7 +507,6 @@ impl Features {
         ]
         .into_iter()
         .chain(self.thp.words())
-        .chain([("thp_except_advised", Value::Word(self.thp_disable.name()))])
         .chain(rseq_words(&self.rseq))
         .chain([("slice_ext", Value::Word(self.slice_ext.name()))])
         .chain([("pac", Value::YesNo(self.pac))])
@@ -577,8 +533,7 @@ pub struct FeatureLine {
 impl FeatureLine {
     /// Room for the line and its NUL; the longest possible line (every
     /// probe `yes`, `pidfd:2147483647`, every THP size listed, the longest
-    /// `thp_except_advised` and `slice_ext` words) is under `CAP - 64`
-    /// bytes (`feature_line_fits`).
+    /// `slice_ext` word) is under `CAP - 64` bytes (`feature_line_fits`).
     pub const CAP: usize = 640;
 
     /// Format `features` into a fresh line. A line that did not fit is cut,
@@ -620,12 +575,11 @@ pub use linux::*;
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{AT_PAGESZ, Features, ProcessMadvise, Thp, ThpDisable, page_size_from_auxv};
+    use super::{AT_PAGESZ, Features, ProcessMadvise, Thp, page_size_from_auxv};
     use crate::sys::auxv::getauxval;
     use crate::sys::{
         self, IoVec, MADV_DONTNEED, MADV_FREE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE,
-        MADV_POPULATE_WRITE, MAP_ANONYMOUS, MAP_PRIVATE, PIDFD_SELF, PR_GET_THP_DISABLE, PR_SET_THP_DISABLE,
-        PR_THP_DISABLE_EXCEPT_ADVISED, PROT_NONE, PROT_READ, PROT_WRITE,
+        MADV_POPULATE_WRITE, MAP_ANONYMOUS, MAP_PRIVATE, PIDFD_SELF, PROT_NONE, PROT_READ, PROT_WRITE,
     };
 
     /// The system page size. `getauxval(AT_PAGESZ)` first; if that yields
@@ -792,35 +746,6 @@ mod linux {
         ok
     }
 
-    /// `prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED)` tried
-    /// and undone: the answer is the call's
-    /// return, `EINVAL` before 6.18. Nothing is tried on a process that
-    /// already carries a THP policy from its parent. Three `prctl`s at
-    /// most, no memory touched.
-    pub fn probe_thp_disable() -> ThpDisable {
-        // SAFETY: a query with no pointer arguments.
-        let before = match unsafe { sys::prctl(PR_GET_THP_DISABLE, 0, 0, 0, 0) } {
-            Ok(v) => v,
-            Err(_) => return ThpDisable::No,
-        };
-        if before != 0 {
-            return ThpDisable::Inherited(before.min(u8::MAX as usize) as u8);
-        }
-        // SAFETY: integer arguments; the flag is process-wide and cleared
-        // again below, so nothing else observes it for more than the
-        // instant between the two calls.
-        let taken = unsafe { sys::prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED, 0, 0) }.is_ok();
-        if taken {
-            // SAFETY: as above; `0` restores the state read before.
-            if unsafe { sys::prctl(PR_SET_THP_DISABLE, 0, 0, 0, 0) }.is_err() {
-                sys::abort("prctl(PR_SET_THP_DISABLE, 0) failed after the probe set it");
-            }
-            ThpDisable::Yes
-        } else {
-            ThpDisable::No
-        }
-    }
-
     /// The THP table from `/sys/kernel/mm/transparent_hugepage` (about ten
     /// sysfs reads on a 4 KiB kernel).
     pub fn probe_thp(page: usize) -> Thp {
@@ -845,7 +770,6 @@ mod linux {
                 anon_name: probe_anon_name(page_size),
                 populate_write: probe_populate_write(page_size),
                 thp: probe_thp(page_size),
-                thp_disable: probe_thp_disable(),
                 rseq: crate::rseq::probe(),
                 // The kernel's answer alone: `config::load` has not run
                 // yet, so nothing is enabled; `note_slice_ext` follows.
@@ -1052,7 +976,6 @@ mod tests {
             anon_name: false,
             populate_write: true,
             thp: Thp { enabled: Some(ThpSetting::Madvise), lg_pmd: 21, listed: (1 << 16) | (1 << 21), always: 0, madvise: (1 << 16) | (1 << 21) },
-            thp_disable: ThpDisable::Yes,
             rseq: rseq_probe(33, 192),
             slice_ext: SliceExt::KernelDisabled,
             pac: true,
@@ -1061,19 +984,12 @@ mod tests {
         assert_eq!(
             s,
             "page_size=4096 guard_install=no mseal=yes process_madvise=pidfd:7 process_madvise_free=yes anon_name=no populate_write=yes \
-             thp=madvise mthp=64K,2M thp_except_advised=yes rseq=yes rseq_size=33 mm_cid=yes slice_ext=kernel-disabled pac=yes"
+             thp=madvise mthp=64K,2M rseq=yes rseq_size=33 mm_cid=yes slice_ext=kernel-disabled pac=yes"
         );
-        // Before 6.18 the flag is refused; a parent's policy is kept.
-        let f = Features { thp_disable: ThpDisable::No, ..f };
-        assert!(std::format!("{f}").contains(" mthp=64K,2M thp_except_advised=no rseq=yes "));
-        let f = Features { thp_disable: ThpDisable::Inherited(3), ..f };
-        assert!(std::format!("{f}").contains(" mthp=64K,2M thp_except_advised=inherited rseq=yes "));
-        assert_eq!(ThpDisable::Inherited(1).name(), "inherited");
-        let f = Features { thp_disable: ThpDisable::Yes, ..f };
         // The Mac's Docker VM (linuxkit 6.10): registered, no `mm_cid`, no
         // `slice_ctrl`.
         let f = Features { rseq: rseq_probe(20, 192), slice_ext: SliceExt::NoSliceCtrl, ..f };
-        assert!(std::format!("{f}").contains(" mthp=64K,2M thp_except_advised=yes rseq=yes rseq_size=20 mm_cid=no slice_ext=no-slice_ctrl pac=yes"));
+        assert!(std::format!("{f}").contains(" mthp=64K,2M rseq=yes rseq_size=20 mm_cid=no slice_ext=no-slice_ctrl pac=yes"));
         let f = Features { rseq: Probe::NONE, slice_ext: SliceExt::NoRseq, ..f };
         assert!(std::format!("{f}").contains(" rseq=no rseq_size=0 mm_cid=no slice_ext=no-rseq "));
         // A 7.0.14 built with the option (a GCE C4): on under the
@@ -1083,9 +999,9 @@ mod tests {
         let f = Features { slice_ext: SliceExt::Available, ..f };
         assert!(std::format!("{f}").contains(" mm_cid=yes slice_ext=available "));
         let f = Features { thp: Thp::NONE, ..f };
-        assert!(std::format!("{f}").contains(" thp=none mthp=none thp_except_advised=yes "));
+        assert!(std::format!("{f}").contains(" thp=none mthp=none rseq=yes "));
         let f = Features { thp: Thp { enabled: Some(ThpSetting::Never), listed: 1 << 21, always: 0, madvise: 0, lg_pmd: 21 }, ..f };
-        assert!(std::format!("{f}").contains(" thp=never mthp=none thp_except_advised=yes "));
+        assert!(std::format!("{f}").contains(" thp=never mthp=none rseq=yes "));
         let f = Features { process_madvise: ProcessMadvise::PidfdSelf, ..f };
         assert!(std::format!("{f}").contains("process_madvise=pidfd_self process_madvise_free=yes "));
         let f = Features { process_madvise: ProcessMadvise::Unavailable, process_madvise_free: false, ..f };
@@ -1107,7 +1023,6 @@ mod tests {
             anon_name: true,
             populate_write: false,
             thp: Thp::NONE,
-            thp_disable: ThpDisable::No,
             rseq: Probe::NONE,
             slice_ext: SliceExt::NoRseq,
             pac: true,
@@ -1143,7 +1058,6 @@ mod tests {
                 madvise: 0,
             },
             // The longest words.
-            thp_disable: ThpDisable::Inherited(u8::MAX),
             rseq: Probe { present: true, size: u32::MAX, flags: u32::MAX, offset: isize::MIN, registered: true },
             slice_ext: SliceExt::KernelDisabled,
             pac: true,
@@ -1164,7 +1078,7 @@ mod tests {
     fn words_are_the_key_table() {
         let kernel = [
             "page_size", "guard_install", "mseal", "process_madvise", "process_madvise_free", "anon_name", "populate_write",
-            "thp", "mthp", "thp_except_advised", "rseq", "rseq_size", "mm_cid", "slice_ext", "pac",
+            "thp", "mthp", "rseq", "rseq_size", "mm_cid", "slice_ext", "pac",
         ];
         for pac in [true, false] {
             let f = Features {
@@ -1177,7 +1091,6 @@ mod tests {
                 anon_name: true,
                 populate_write: true,
                 thp: Thp::NONE,
-                thp_disable: ThpDisable::No,
                 rseq: rseq_probe(33, 192),
                 slice_ext: SliceExt::Available,
                 pac,
@@ -1520,54 +1433,6 @@ mod linux_tests {
             assert!(line.contains(" rseq=yes rseq_size=") && line.contains(" mm_cid=yes "), "{line}");
         } else {
             assert!(line.contains(" mm_cid=no "), "{line}");
-        }
-    }
-
-    /// `PR_THP_DISABLE_EXCEPT_ADVISED`, both ways: `yes` needs 6.18 and a
-    /// process without a THP policy; below 6.18 the flag is `EINVAL`, so
-    /// `no`; and the probe leaves the process's policy as it found it
-    /// (`PR_GET_THP_DISABLE` unchanged), which the kernel's own
-    /// `/proc/self/status` field confirms.
-    #[test]
-    fn probe_thp_disable_follows_the_kernel_and_restores_the_policy() {
-        let (kv, f, line) = probed();
-        // SAFETY: a query with no pointer arguments.
-        let get = unsafe { sys::prctl(sys::PR_GET_THP_DISABLE, 0, 0, 0, 0) }.unwrap_or(usize::MAX);
-        match f.thp_disable {
-            ThpDisable::Yes => {
-                assert!(at_least(kv, (6, 18)), "PR_THP_DISABLE_EXCEPT_ADVISED predates 6.18: {line}");
-                assert_eq!(get, 0, "the probe changed the process's policy: {line}");
-            }
-            ThpDisable::No => {
-                // A kernel from 6.18 on takes it unless something in
-                // front of `prctl` refuses (seccomp).
-                assert!(get == 0 || get == usize::MAX, "{line}");
-            }
-            ThpDisable::Inherited(v) => {
-                assert_eq!(get, v as usize, "{line}");
-            }
-        }
-        if !at_least(kv, (6, 18)) {
-            assert_ne!(f.thp_disable, ThpDisable::Yes, "{line}");
-        }
-        let status = std::fs::read_to_string("/proc/self/status").unwrap();
-        let thp_enabled = status.lines().find(|l| l.starts_with("THP_enabled:")).map(str::trim);
-        eprintln!("thp_except_advised: {} (PR_GET_THP_DISABLE {get}, {})", f.thp_disable.name(), thp_enabled.unwrap_or("no THP_enabled field"));
-        if f.thp_disable == ThpDisable::Yes {
-            // The probe: take it and undo it once more, watching the
-            // kernel's view move and come back.
-            // SAFETY: integer arguments only; the flag is process-wide and
-            // cleared again two calls below, restoring the state read
-            // above, so no other test observes a changed policy.
-            unsafe {
-                let mid = sys::prctl(sys::PR_SET_THP_DISABLE, 1, sys::PR_THP_DISABLE_EXCEPT_ADVISED, 0, 0);
-                assert_eq!(mid, Ok(0), "{line}");
-                let got = sys::prctl(sys::PR_GET_THP_DISABLE, 0, 0, 0, 0).unwrap();
-                assert_eq!(got, 1 | sys::PR_THP_DISABLE_EXCEPT_ADVISED, "{line}");
-                assert_eq!(sys::prctl(sys::PR_SET_THP_DISABLE, 0, 0, 0, 0), Ok(0));
-                assert_eq!(sys::prctl(sys::PR_GET_THP_DISABLE, 0, 0, 0, 0), Ok(0));
-            }
-            assert_eq!(probe_thp_disable(), ThpDisable::Yes);
         }
     }
 

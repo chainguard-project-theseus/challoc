@@ -276,10 +276,6 @@ fn init() {
     // extension").
     features.note_slice_ext();
     crate::thp::configure(config.thp, &features);
-    // `thp_process:advised` (design 17, `PR_THP_DISABLE_EXCEPT_ADVISED`):
-    // process-wide, so before any region exists; a refused call is
-    // reported, not retried.
-    crate::thp::configure_process(config.thp_process(), &features);
     purge::configure(features.process_madvise, config.lazy_free);
     purge::configure_advice(features.process_madvise_free, config.lazy_band);
     purge::set_check_zero(config.check_zero);

@@ -773,16 +773,6 @@ ctests! {
         CTest { prog: "prefault", args: &["off"], conf: Some("abort_conf:true"), ..BASE },
         CTest { prog: "prefault", args: &["inert"], conf: Some("abort_conf:true,prefault:true"), ..BASE },
     ];
-    /// `tests/c/thp.c process` under `thp_process:advised,thp:auto` (plan
-    /// Phase 2.5 task 16, the process-wide `prctl`), both ways by the
-    /// kernel's answer: in force on 6.18+ (`PR_GET_THP_DISABLE` reads 3,
-    /// `stats.thp.process` 1, the `thp:` line says so; an `always` host shows
-    /// 0 kB of `AnonHugePages` in the unadvised regions), a `SKIP` line with
-    /// the reason below 6.18 (`EINVAL`) or where the process inherited a
-    /// policy.
-    c_thp_process => [
-        CTest { prog: "thp", args: &["process"], conf: Some("abort_conf:true,thp_process:advised,thp:auto"), ..BASE },
-    ];
     /// `tests/c/cgroup.c plain` (plan Phase 2 task 4): `stats.cgroup.*` read
     /// from C, `ENOENT` without a cgroup2, else `max` or a number that equals
     /// `CHALLOC_EXPECT_CGROUP_LIMIT` when `make test-cgroup-limit`'s

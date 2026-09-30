@@ -14,7 +14,6 @@
  */
 #include "common.h"
 #include <sys/mman.h>
-#include <sys/prctl.h>
 
 typedef void (*stats_print_fn)(void (*cb)(void *, const char *), void *cbopaque, const char *opts);
 
@@ -69,9 +68,9 @@ int main(void)
     CHECK(strncmp(line, "page_size=", 10) == 0, "line does not start with page_size=");
 
     /* Every key once. */
-    static const char *const keys[] = {"page_size",      "guard_install",      "mseal", "process_madvise", "process_madvise_free",
-                                       "anon_name",      "populate_write",     "thp",   "mthp",            "thp_except_advised",
-                                       "rseq",           "rseq_size",          "mm_cid", "slice_ext",      "pac"};
+    static const char *const keys[] = {"page_size", "guard_install", "mseal",  "process_madvise", "process_madvise_free",
+                                       "anon_name", "populate_write", "thp",   "mthp",            "rseq",
+                                       "rseq_size", "mm_cid",         "slice_ext", "pac"};
     size_t nkeys = sizeof keys / sizeof keys[0];
     for (size_t i = 0; i < nkeys; i++)
         CHECK(has_key(line, keys[i]) == 1, "key %s appears %d times", keys[i], has_key(line, keys[i]));
@@ -106,18 +105,6 @@ int main(void)
               "thp has value `%.12s`", v);
         v = strstr(line, " mthp=") + 6;
         CHECK((v[0] >= '1' && v[0] <= '9') || strncmp(v, "none", 4) == 0, "mthp has value `%.12s`", v);
-        /* The prctl probe's answer, and the probe
-         * left the process's policy alone (PR_GET_THP_DISABLE 0 unless the
-         * parent set one, in which case the key says inherited). */
-        v = strstr(line, " thp_except_advised=") + 20;
-        CHECK(strncmp(v, "yes", 3) == 0 || strncmp(v, "no", 2) == 0 || strncmp(v, "inherited", 9) == 0,
-              "thp_except_advised has value `%.12s`", v);
-        long get = prctl(42 /* PR_GET_THP_DISABLE */, 0, 0, 0, 0);
-        if (strncmp(v, "inherited", 9) == 0)
-            CHECK(get > 0, "thp_except_advised=inherited but PR_GET_THP_DISABLE reads %ld", get);
-        else
-            CHECK(get == 0 || get == -1, "thp_except_advised=%.3s but PR_GET_THP_DISABLE reads %ld (the probe must restore 0)", v, get);
-        printf("thp_except_advised: %.*s (PR_GET_THP_DISABLE %ld)\n", (int)strcspn(v, " "), v, get);
     }
 
     /* The rseq keys: rseq and mm_cid are yes/no,

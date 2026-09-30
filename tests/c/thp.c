@@ -37,27 +37,6 @@
  *                advised (the host requirement is documented: on Ubuntu's
  *                default sysfs `auto` is inert).
  *
- *   thp process  MALLOC_CONF=thp_process:advised,thp:auto: the
- *                process-wide
- *                prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED),
- *                both ways by the kernel's own answer. The feature line's
- *                thp_except_advised= key says what the probe found; with
- *                `yes` (6.18+) stats.thp.process reads 1 (in force),
- *                prctl(PR_GET_THP_DISABLE) reads 3 (1 | EXCEPT_ADVISED),
- *                the report's thp: line says `process advised:
- *                PR_THP_DISABLE_EXCEPT_ADVISED in force` and names the
- *                host's global mode, and /proc/self/status's THP_enabled
- *                field is printed as the kernel writes it; on a host whose
- *                global mode is `always` the 8 MiB of small blocks and the
- *                8 MiB huge run (unadvised: `auto` is inert on Ubuntu's
- *                sysfs and, unlike `never`, issues no MADV_NOHUGEPAGE) show
- *                AnonHugePages 0 kB, the row that moves. With `no` (EINVAL
- *                below 6.18) stats.thp.process reads 2, PR_GET_THP_DISABLE
- *                is unchanged (0) and the line says the call was skipped
- *                with the reason; with `inherited` the parent's policy is
- *                kept (3) and said so. Every other mode checks that
- *                stats.thp.process is 0 (nothing issued by default).
- *
  * The mode challoc decided is read through stats.thp.mode; what the kernel
  * enables comes from the feature line and the PMD size from sysfs
  * (hpage_pmd_size: 2 MiB at 4 KiB pages, 512 MiB at 64 KiB), so the
@@ -65,17 +44,6 @@
  */
 #include "common.h"
 #include <fcntl.h>
-#include <sys/prctl.h>
-
-#ifndef PR_SET_THP_DISABLE
-#define PR_SET_THP_DISABLE 41
-#endif
-#ifndef PR_GET_THP_DISABLE
-#define PR_GET_THP_DISABLE 42
-#endif
-#ifndef PR_THP_DISABLE_EXCEPT_ADVISED
-#define PR_THP_DISABLE_EXCEPT_ADVISED (1 << 1)
-#endif
 
 typedef void (*stats_print_fn)(void (*cb)(void *, const char *), void *cbopaque, const char *opts);
 
@@ -90,22 +58,6 @@ static void stats_cb(void *opaque, const char *s)
         memcpy(report + report_len, s, n);
         report_len += n;
     }
-}
-
-/* The `THP_enabled:` field of /proc/self/status, -1 when the kernel does
- * not print it. */
-static long thp_enabled_status(void)
-{
-    FILE *f = fopen("/proc/self/status", "r");
-    if (!f)
-        return -1;
-    char line[256];
-    long v = -1;
-    while (fgets(line, sizeof line, f))
-        if (sscanf(line, "THP_enabled: %ld", &v) == 1)
-            break;
-    fclose(f);
-    return v;
 }
 
 extern int mallctl(const char *, void *, size_t *, void *, size_t) __attribute__((weak));
@@ -252,7 +204,7 @@ static unsigned long read_counter(const char *path)
 int main(int argc, char **argv)
 {
     require_challoc();
-    REQUIRE(argc == 2, "usage: thp never|always|auto|process");
+    REQUIRE(argc == 2, "usage: thp never|always|auto");
     REQUIRE(mallctl != NULL && challoc_features != NULL, "mallctl/challoc_features not exported");
     const char *mode = argv[1];
 
@@ -276,15 +228,7 @@ int main(int argc, char **argv)
            thp, global, mthp, pmd_kb, page, pmd_enabled, sub_kb);
     CHECK(strcmp(thp, global) == 0, "feature line thp=%s but sysfs enabled reads %s", thp, global);
 
-    /* The process-wide policy, read from the
-     * allocator (stats.thp.process, the thp: line) and from the kernel
-     * (PR_GET_THP_DISABLE, THP_enabled). */
-    int process_mode = strcmp(mode, "process") == 0;
-    size_t process = stat_of("stats.thp.process");
-    long get = prctl(PR_GET_THP_DISABLE, 0, 0, 0, 0);
-    long status_enabled = thp_enabled_status();
-    char except[16];
-    feature_value(line, "thp_except_advised", except, sizeof except);
+    /* The report's thp: line names the host's global mode. */
     stats_print_fn msp = (stats_print_fn)dlsym(RTLD_DEFAULT, "malloc_stats_print");
     REQUIRE(msp != NULL, "dlsym(malloc_stats_print)");
     msp(stats_cb, NULL, "");
@@ -294,42 +238,12 @@ int main(int argc, char **argv)
     thp_report++;
     const char *thp_report_end = strchr(thp_report, '\n');
     REQUIRE(thp_report_end != NULL, "unterminated thp: line");
-    printf("thp %s: thp_except_advised=%s stats.thp.process=%zu PR_GET_THP_DISABLE=%ld THP_enabled=%ld\n", mode, except, process, get,
-           status_enabled);
     printf("thp %s: report `%.*s`\n", mode, (int)(thp_report_end - thp_report), thp_report);
     {
         char host[48];
-        snprintf(host, sizeof host, "; host %s process ", global);
+        snprintf(host, sizeof host, "; host %s\n", global);
         CHECK(strstr(thp_report, host) != NULL && strstr(thp_report, host) < thp_report_end,
               "thp: line does not name the host's global mode `%s`", global);
-    }
-    CHECK(!strcmp(except, "yes") || !strcmp(except, "no") || !strcmp(except, "inherited"), "thp_except_advised=%s", except);
-    if (process_mode) {
-        const char *popt = NULL;
-        size_t plen = sizeof popt;
-        REQUIRE(mallctl("opt.thp_process", &popt, &plen, NULL, 0) == 0 && popt, "opt.thp_process");
-        CHECK(strcmp(popt, "advised") == 0, "opt.thp_process `%s` under thp_process:advised", popt);
-        if (!strcmp(except, "yes")) {
-            CHECK(process == 1, "stats.thp.process %zu with thp_except_advised=yes", process);
-            CHECK(get == (1 | PR_THP_DISABLE_EXCEPT_ADVISED), "PR_GET_THP_DISABLE %ld, expected 3 (1 | EXCEPT_ADVISED)", get);
-            CHECK(strstr(thp_report, "process advised: PR_THP_DISABLE_EXCEPT_ADVISED in force") != NULL, "thp: line does not say in force");
-            printf("thp process: accepted (6.18+); THP_enabled reads %ld under PR_SET_THP_DISABLE(1, EXCEPT_ADVISED)\n", status_enabled);
-        } else if (!strcmp(except, "no")) {
-            CHECK(process == 2, "stats.thp.process %zu with thp_except_advised=no", process);
-            CHECK(get == 0, "PR_GET_THP_DISABLE %ld after a refused call", get);
-            CHECK(strstr(thp_report, "process advised: skipped, the kernel refuses") != NULL, "thp: line does not say skipped");
-            skip_note("thp/process", "the kernel refuses PR_THP_DISABLE_EXCEPT_ADVISED (EINVAL before 6.18); nothing issued");
-        } else {
-            CHECK(process == 3, "stats.thp.process %zu with thp_except_advised=inherited", process);
-            CHECK(get != 0, "PR_GET_THP_DISABLE %ld but the probe said inherited", get);
-            CHECK(strstr(thp_report, "process advised: skipped, the process inherited") != NULL, "thp: line does not say inherited");
-            skip_note("thp/process", "the process inherited a THP policy (PR_GET_THP_DISABLE %ld); nothing issued", get);
-        }
-        /* The regions below run the `auto` checks: the key is thp:auto. */
-        mode = "auto";
-    } else {
-        CHECK(process == 0, "stats.thp.process %zu without thp_process:advised", process);
-        CHECK(strstr(thp_report, "process default (nothing issued)") != NULL, "thp: line does not say default");
     }
 
     if (strcmp(mode, "never") != 0 && strcmp(opt, "never") == 0) {
@@ -378,26 +292,6 @@ int main(int argc, char **argv)
     REQUIRE(smaps_of(big + (4u << 20), &big_anon_kb, &big_eligible, &big_hg, &big_nh), "no smaps entry holds the huge run");
     printf("thp %s: huge run 8 MiB: VMA hg=%d nh=%d THPeligible=%d AnonHugePages=%ld kB (global thp %s)\n", mode, big_hg, big_nh,
            big_eligible, big_anon_kb, global);
-    if (process_mode && process == 1) {
-        /* In force: nothing unadvised gets a huge page, whatever the host
-         * says. Under `auto` on Ubuntu's sysfs the regions are unadvised
-         * (no hg) and carry no nh either, so on an `always` host this is
-         * the row the prctl moves; on a `madvise` host it holds anyway. */
-        CHECK(!nh && !big_nh, "nh under thp:auto (MADV_NOHUGEPAGE is never's)");
-        if (!hg && !big_hg) {
-            CHECK(anon_kb == 0, "AnonHugePages %ld kB in an unadvised class region with the prctl in force (host %s)", anon_kb, global);
-            CHECK(big_anon_kb == 0, "AnonHugePages %ld kB in an unadvised huge run with the prctl in force (host %s)", big_anon_kb, global);
-            CHECK(eligible <= 0 && big_eligible <= 0, "THPeligible %d / %d unadvised with the prctl in force", eligible, big_eligible);
-            printf("thp process: host %s, prctl in force: AnonHugePages %ld kB (class region), %ld kB (huge run), THPeligible %d / %d: %s\n",
-                   global, anon_kb, big_anon_kb, eligible, big_eligible,
-                   strcmp(global, "always") == 0 ? "the both-ways row" : "trivially zero on this host");
-        } else {
-            printf("thp process: the regions are advised (hg) on this host, so the prctl leaves them eligible: not the row to read\n");
-        }
-    } else if (process_mode) {
-        printf("thp process: nothing in force (%s); the regions follow the host's global mode %s: AnonHugePages %ld / %ld kB\n", except, global,
-               anon_kb, big_anon_kb);
-    }
 
     if (strcmp(mode, "never") == 0) {
         CHECK(smode == 0, "mode %zu under never", smode);

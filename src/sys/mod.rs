@@ -61,13 +61,6 @@ pub const MADV_GUARD_REMOVE: i32 = 103;
 /// `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, addr, len, name)`.
 pub const PR_SET_VMA: i32 = 0x5356_4d41;
 pub const PR_SET_VMA_ANON_NAME: usize = 0;
-/// `prctl(PR_SET_THP_DISABLE, 1, flags, 0, 0)` and its query:
-/// `PR_THP_DISABLE_EXCEPT_ADVISED` (6.18) keeps huge pages where a
-/// range was `MADV_HUGEPAGE`d; the query returns
-/// `1 | flags` when disabled, `0` otherwise.
-pub const PR_SET_THP_DISABLE: i32 = 41;
-pub const PR_GET_THP_DISABLE: i32 = 42;
-pub const PR_THP_DISABLE_EXCEPT_ADVISED: usize = 1 << 1;
 
 pub const FUTEX_WAIT: i32 = 0;
 pub const FUTEX_WAKE: i32 = 1;
