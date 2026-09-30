@@ -51,7 +51,16 @@ impl fmt::Write for Stderr {
                 self.flush();
                 continue;
             }
-            let n = s.len().min(room);
+            // Cut on a character boundary: slicing `s` inside a multi-byte
+            // character would panic in the middle of an abort.
+            let mut n = s.len().min(room);
+            while !s.is_char_boundary(n) {
+                n -= 1;
+            }
+            if n == 0 {
+                self.flush();
+                continue;
+            }
             self.buf[self.len..self.len + n].copy_from_slice(&s.as_bytes()[..n]);
             self.len += n;
             s = &s[n..];
@@ -153,6 +162,12 @@ mod tests {
                 }
                 abort("while blocked")
             }
+            Ok("utf8") => {
+                // `challoc: ` (9 bytes) and 502 ASCII bytes leave one byte of
+                // the 512-byte buffer when the two-byte `\u{e9}` arrives.
+                let s = format!("{}\u{e9} tail", "x".repeat(502));
+                abort!("{s}")
+            }
             Ok("long") => {
                 // Longer than the 512-byte Stderr buffer: exercises flush.
                 let long = "x".repeat(1500);
@@ -171,6 +186,13 @@ mod tests {
             .unwrap();
         let stderr = std::string::String::from_utf8_lossy(&output.stderr).into_owned();
         (output.status.signal(), stderr)
+    }
+
+    #[test]
+    fn abort_splits_a_character_at_the_buffer_end() {
+        let (sig, err) = run_abort_child("utf8");
+        assert_eq!(sig, Some(SIGABRT), "stderr: {err}");
+        assert!(err.contains("x\u{e9} tail\n"), "stderr: {err}");
     }
 
     #[test]
