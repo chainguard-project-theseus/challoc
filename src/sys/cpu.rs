@@ -914,41 +914,13 @@ mod linux_tests {
         }
     }
 
-    /// The probe is pure: a hundred runs do not change the process-wide
-    /// `cldemote` verdict (`api::init`'s, `init_installs_cldemote`).
+    /// The probe is pure: a hundred runs give the same report.
     #[test]
-    fn probe_has_no_side_effects() {
+    fn probe_is_repeatable() {
         let page = crate::sys::features::page_size();
-        let demote = crate::sys::cldemote::enabled();
-        // The opposite verdict: if it moves back, the probe wrote it.
-        crate::sys::cldemote::configure(!demote);
         let c = Cpu::probe(page);
         for _ in 0..100 {
             assert_eq!(Cpu::probe(page), c);
-        }
-        assert_eq!(crate::sys::cldemote::enabled(), !demote && cfg!(target_arch = "x86_64"), "the probe configured cldemote");
-        crate::sys::cldemote::configure(demote);
-    }
-
-    /// The one test here that initialises the real allocator. Its module
-    /// is named `api` so the Makefile's `--skip api::` filter puts it in
-    /// the second test process with the other tests that do (`make test`;
-    /// the first process must not carry the allocator's reservations
-    /// under emulation).
-    mod api {
-        use super::super::*;
-
-        /// What `api::init` does with the report, both ways: once the
-        /// allocator is initialised the `cldemote` verdict is the CPU's bit
-        /// (on x86_64; never on elsewhere). Init runs once per process, so
-        /// this reads the installed state rather than running it again.
-        #[test]
-        fn init_installs_cldemote() {
-            let _ = crate::api::shared();
-            let c = Cpu::probe(crate::sys::features::page_size());
-            let present = matches!(c.isa, Isa::X86(x) if x.cldemote);
-            assert_eq!(crate::sys::cldemote::enabled(), present && cfg!(target_arch = "x86_64"), "init did not configure cldemote");
-            std::eprintln!("init: cldemote={}", crate::sys::cldemote::enabled());
         }
     }
 

@@ -267,10 +267,6 @@ pub fn sealed_ranges() -> u32 {
 /// yet; it reads only the weak symbols, one file and `environ`.
 fn init() {
     let mut features = Features::probe();
-    // The probes are pure; what the report is acted on is installed here,
-    // before the configuration is read: the `cldemote` verdict for
-    // `sys::cldemote::demote` (design 17; no path issues it today).
-    crate::sys::cldemote::configure(matches!(features.cpu.isa, crate::sys::cpu::Isa::X86(x) if x.cldemote));
     // The slab geometry of the classes whose table slab is below the page
     // (design 3, page-sized slabs): written once here, before any other
     // thread can see the allocator, never again.

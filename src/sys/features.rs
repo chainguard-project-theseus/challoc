@@ -899,8 +899,7 @@ mod linux {
         /// Probe everything. Called once from init (design.md section 10);
         /// calling it again is harmless but leaks a sealed page and may open
         /// another pidfd, so init stores the result. Pure apart from those
-        /// two resources: what the result is acted on (the `cldemote`
-        /// verdict) is installed by `api::init`.
+        /// two resources.
         pub fn probe() -> Features {
             let page_size = page_size();
             let (process_madvise, process_madvise_free) = probe_process_madvise(page_size);
