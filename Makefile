@@ -3,17 +3,17 @@
 # container built from Dockerfile.dev. `make help` lists the targets from the
 # `##` comments below; the benchmark harness, its two tiers and every
 # harness's variables are described in bench/README.md and in each script's
-# header, the GCE side in bench/gce/README.md, the environment (lanes, target
-# volumes) in CLAUDE.md.
+# header, the GCE side in bench/gce/README.md, the environment (target volumes)
+# in CLAUDE.md.
 #
 # `target/` inside the container is a named Docker volume, one per
 # architecture, so Linux artifacts never mix with host artifacts and builds do
 # not go through the slow macOS bind mount. The cargo registry is a named
 # volume too so crates are fetched once. `TARGET_VOLUME` (default
 # `challoc-target-$(ARCH)`) names the target volume and `CARGO_VOLUME`
-# (default `challoc-cargo-registry`) the registry volume; a lane worktree
-# (CLAUDE.md, Environment) exports `TARGET_VOLUME=challoc-target-<lane>-$(ARCH)`
-# so two worktrees never share a `target/`. `make clean-volumes` removes the
+# (default `challoc-cargo-registry`) the registry volume; a second git
+# worktree sets `TARGET_VOLUME=challoc-target-<name>-$(ARCH)` so two
+# worktrees never share a `target/`. `make clean-volumes` removes the
 # two volumes the variables name.
 #
 # Variables named on the command line (`make quick OLD=HEAD~1`) reach the
@@ -42,7 +42,7 @@ endif
 # forwarded into every container: challoc reads it after MALLOC_CONF and the
 # stock allocators ignore it, so `make <target> CHALLOC_CONF=percpu_arena:percpu`
 # puts challoc alone under a key in any suite (bench/percpu-campaign.sh).
-# CGROUP_PEAK=1 (plan Phase 2.5 task 17): the container joins the host's
+# CGROUP_PEAK=1: the container joins the host's
 # cgroup namespace and gets /sys/fs/cgroup mounted read-write, so the soak
 # harnesses can reset the cgroup's memory.peak at their phase boundaries
 # (bench/lib.sh cgroup_peak_*; 6.12+ accepts the write, older kernels
@@ -57,7 +57,7 @@ DOCKER_BASE = docker run --rm --platform $(PLATFORM) \
 	$(if $(CGROUP_PEAK),--cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw)
 DOCKER_RUN = $(DOCKER_BASE) $(DOCKER_FLAGS) $(IMAGE)
 # cgroup_run LIMIT,ARGS: one memory-limited container running
-# scripts/cgroup-tests.sh ARGS (Phase 2 tasks 6 and 7). Swap is disabled
+# scripts/cgroup-tests.sh ARGS. Swap is disabled
 # (`--memory-swap` equal to `--memory`): Docker Desktop's VM has 1 GiB of
 # swap and `--memory` alone lets a churn spill into it instead of being
 # charged against the limit.
@@ -111,9 +111,9 @@ print-docker-run: ## print the docker run line the targets use (challoc-bench pe
 # exceed what Rosetta can track under emulation.
 # CHALLOC_TEST_ALLOW_SKIP=1 lets a kernel- or privilege-gated test print its
 # `SKIP <test> <reason>` line and pass (docs/testing.md). `make test` sets it
-# everywhere, the reference VMs included (checked 2026-09-20: their
-# containers still skip mseal (Docker's seccomp), the cgroup writes, the
-# rseq slice extension and mTHP); `make test TEST_ALLOW_SKIP=` runs strict,
+# everywhere, the reference VMs included (their containers skip mseal
+# (Docker's seccomp), the cgroup writes, the rseq slice extension and
+# mTHP); `make test TEST_ALLOW_SKIP=` runs strict,
 # and `grep '^SKIP '` on a log lists what a run did not check.
 TEST_ALLOW_SKIP ?= 1
 test: DOCKER_FLAGS = $(if $(TEST_ALLOW_SKIP),-e CHALLOC_TEST_ALLOW_SKIP=$(TEST_ALLOW_SKIP))
@@ -126,15 +126,15 @@ test: image ## release build, the jemalloc-compat stage, both cargo test groups,
 	$(MAKE) --no-print-directory test-cgroup-churn
 	$(MAKE) --no-print-directory test-cgroup-lazy
 
-# Phase 2 task 4: the same tests that read the cgroup, in a container with
+# The same tests that read the cgroup, in a container with
 # a 512 MiB limit; the effective `memory.max` must read as that number.
-# Single-threaded since task 5: tests/c/cgroup_policy.c fills the cgroup to
+# Single-threaded: tests/c/cgroup_policy.c fills the cgroup to
 # 94% of the limit, which a concurrent test's 64 MiB would push over it.
 test-cgroup-limit: DOCKER_FLAGS = --memory=512m -e CHALLOC_EXPECT_CGROUP_LIMIT=536870912 $(if $(TEST_ALLOW_SKIP),-e CHALLOC_TEST_ALLOW_SKIP=$(TEST_ALLOW_SKIP))
 test-cgroup-limit: image ## the cgroup-reading tests under --memory=512m (in `make test`)
 	$(DOCKER_RUN) sh -c 'cargo build --release && cargo test --features std cgroup -- --nocapture --test-threads=1'
 
-# Phase 2 task 6: the container tests of plan Phase 2, one container per
+# The memory-limited container tests, one container per
 # run (scripts/cgroup-tests.sh; the exit status is the program's, 137 is an
 # OOM kill). test-cgroup-churn (about 40 s, in `make test`): tests/c/
 # cgroup_churn.c allocates 400 MiB, frees it and idles under --memory=512m;
@@ -147,21 +147,21 @@ test-cgroup-limit: image ## the cgroup-reading tests under --memory=512m (in `ma
 # and must not be OOM-killed. Opt-in because of its length: `make
 # test-cgroup` runs both; `make test` runs only the churn.
 OSC_SECS ?= 300
-test-cgroup-churn: image ## Phase 2 task 6 (a): the 400 MiB churn under --memory=512m and 256m, policy on and off (in `make test`)
+test-cgroup-churn: image ## the 400 MiB churn under --memory=512m and 256m, policy on and off (in `make test`)
 	$(DOCKER_RUN) cargo build --release
 	$(call cgroup_run,512m,churn challoc purge 400 100)
 	$(call cgroup_run,512m,churn challoc-off keep 400 100)
 	$(call cgroup_run,256m,churn challoc purge 200 50)
 	$(call cgroup_run,256m,churn challoc-off keep 200 50)
 
-test-cgroup-oscillate: image ## Phase 2 task 6 (b), opt-in: 200..480 MiB live in 512 MiB for OSC_SECS (300) s; CONTROL=1 adds the cgroup:false run
+test-cgroup-oscillate: image ## opt-in: 200..480 MiB live in 512 MiB for OSC_SECS (300) s; CONTROL=1 adds the cgroup:false run
 	$(DOCKER_RUN) cargo build --release
 	$(call cgroup_run,512m,oscillate challoc $(OSC_SECS))
 ifneq ($(CONTROL),)
 	-$(call cgroup_run,512m,oscillate challoc-off $(OSC_SECS))
 endif
 
-# Phase 2.5 task 10 (about 20 s, in `make test`): tests/c/cgroup_lazy.c
+# test-cgroup-lazy (about 20 s, in `make test`): tests/c/cgroup_lazy.c
 # allocates 200 MiB, frees it and idles under --memory=512m, about 50% of
 # the limit, the policy's headroom band: the purge must be MADV_FREE
 # (`stats.cgroup.lazy_purges` rises, RSS and memory.current stay,
@@ -169,7 +169,7 @@ endif
 # set of a fresh class fits, pglazyfreed rises); with MALLOC_CONF=
 # lazy_band:false (`eager`, the control) the same run purges with
 # MADV_DONTNEED and RSS falls under a quarter of the churn within 2 s.
-test-cgroup-lazy: image ## Phase 2.5 task 10: the two-advice purge under --memory=512m at ~50% usage and its lazy_band:false control (in `make test`)
+test-cgroup-lazy: image ## the two-advice purge under --memory=512m at ~50% usage and its lazy_band:false control (in `make test`)
 	$(DOCKER_RUN) cargo build --release
 	$(call cgroup_run,512m,lazy challoc lazy 200)
 	$(call cgroup_run,512m,lazy challoc-eager eager 200)
@@ -178,13 +178,13 @@ test-cgroup: test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate ## the thr
 
 test-all: test fuzz test-cgroup-oscillate check-needed ## everything that runs locally: test, the 10M fuzz, the oscillation soak and the DT_NEEDED check (docs/testing.md)
 
-# Phase 2 task 7: the same runs under other allocators (CGROUP_ALLOCS,
+# The same runs under other allocators (CGROUP_ALLOCS,
 # default jemalloc, mimalloc and tcmalloc; needs `make bench-build` for mimalloc),
 # `report` mode for the churn (no criterion) and the oscillation for
 # OSC_SECS; every outcome is printed (OUTCOME lines) and none fails the
 # target, the results file records them.
 CGROUP_ALLOCS ?= jemalloc mimalloc tcmalloc
-test-cgroup-compare: image ## Phase 2 task 7: the cgroup runs under CGROUP_ALLOCS (jemalloc mimalloc tcmalloc), recorded, no criterion
+test-cgroup-compare: image ## the cgroup runs under CGROUP_ALLOCS (jemalloc mimalloc tcmalloc), recorded, no criterion
 	@for a in $(CGROUP_ALLOCS); do \
 	  $(call cgroup_docker,512m) churn $$a report 400 100; \
 	  $(call cgroup_docker,256m) churn $$a report 200 50; \
@@ -211,15 +211,15 @@ fuzz: image ## fuzz/fuzz.c under LD_PRELOAD for FUZZ_OPS (10M) operations on FUZ
 bench-build: image ## fetch and build the mimalloc-bench programs, redis, mimalloc and the bench/ helpers into the target volume
 	$(DOCKER_RUN) sh bench/build.sh
 
-# Legacy: the Phase 0 protocol runner (bench/run.sh with bench/profile.sh),
+# Legacy: the original protocol runner (bench/run.sh with bench/profile.sh),
 # kept for reference; the tiers below (quick, ab, scorecard) are what the
-# results files are written from since Phase 1.5 (bench/README.md).
+# results files are written from (bench/README.md).
 bench: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(if $(HOST_KIND),-e HOST_KIND="$(HOST_KIND)") $(if $(RESULT),-e RESULT="$(RESULT)")
-bench: image ## legacy: bench-build, release build, then the Phase 0 protocol (bench/run.sh) into bench/results/<date>-<arch>.md; use quick/ab/scorecard
+bench: image ## legacy: bench-build, release build, then the original protocol (bench/run.sh) into bench/results/<date>-<arch>.md; use quick/ab/scorecard
 	$(DOCKER_RUN) sh -c 'sh bench/build.sh >/dev/null && cargo build --release && sh bench/run.sh'
 
-# Two-tier harness (bench/README.md). quick: ~2 min go/no-go for an
-# iteration; ab: the protocol-tier A/B that results files are written from;
+# Two-tier harness (bench/README.md). quick: ~2 min go/no-go for a
+# change; ab: the protocol-tier A/B that results files are written from;
 # baseline: cache the stock allocators' protocol rows for BASELINES=cached.
 QUICK_VARS = OLD NEW OLD_CONF NEW_CONF QUICK_TOLERANCE QUICK_BENCHES CHURN_SECS CHURN_CLASS CHURN_MAX_FRACTION BASELINES BASELINE_TOLERANCE QUICK_SANITY PERF PERF_BENCHES QUICK_BUILD_ONLY VALKEY_MODEL_SECS VALKEY_MODEL_N PIN CHALLOC_THP_COUNTERS
 $(eval $(call bench_target,quick,bench/quick.sh,$$(QUICK_VARS))) ## fast tier (bench/quick.sh, ~2.5 min): the working tree vs OLD (HEAD), one round, exit 1 past QUICK_TOLERANCE (5)%; PERF=1 adds per-op counters where perf exists
@@ -277,20 +277,20 @@ $(eval $(call bench_target,ruby-bench,bench/ruby-bench.sh,$$(RUBY_BENCH_VARS))) 
 RUBY_SOAK_VARS = ALLOCS DURATION INTERVAL GC_EVERY COMPACT_AT THREADS IDLE_THREADS SEED RESULT OUT HOST_KIND COMMIT CHALLOC_SRC VARIANTS TRIM
 $(eval $(call bench_target,ruby-soak,bench/ruby-soak.sh,$$(RUBY_SOAK_VARS))) ## Ruby soak, a Sidekiq-shaped process for DURATION (600) s per allocator (bench/ruby-soak.sh); needs `make ruby STAGE=build`
 
-# Python rows (bench/python-bench.sh, Phase 2.5 task 1): the stdlib workloads
+# Python rows (bench/python-bench.sh): the stdlib workloads
 # under bench/probes/python/ on the image's python3, each with PYTHONMALLOC
 # unset and =malloc, under challoc (the working tree) and the stock allocators.
 PYTHON_BENCH_VARS = ALLOCS ROUNDS WORKLOADS MODES RESULT OUT HOST_KIND REV
 $(eval $(call bench_target,python-bench,bench/python-bench.sh,$$(PYTHON_BENCH_VARS))) ## Python 3.13 rows (bench/python-bench.sh): four stdlib workloads, PYTHONMALLOC unset and =malloc, five allocators
 
-# Node.js rows (bench/node-bench.sh, Phase 3 task 5 (c)): node -e 0 startup,
+# Node.js rows (bench/node-bench.sh): node -e 0 startup,
 # bench/node/json_churn.js and the bench/node/server.js http server under ab
 # (both endpoints, DURATION s per allocator), under challoc (the working
 # tree) and the stock allocators via LD_PRELOAD, the image's nodejs-22.
 NODE_BENCH_VARS = ALLOCS ROUNDS ROWS RESULT OUT HOST_KIND REV DURATION CONNS PORT JSON_ITERS SAMPLE WARM_N OLD_SPACE
 $(eval $(call bench_target,node-bench,bench/node-bench.sh,$$(NODE_BENCH_VARS))) ## Node.js 22 rows (bench/node-bench.sh): startup, JSON churn and an http server under ab for DURATION (300) s per allocator
 
-# JVM rows (bench/jvm-bench.sh, Phase 3 task 5 (a)): `java -version` startup
+# JVM rows (bench/jvm-bench.sh): `java -version` startup
 # and the com.sun.net.httpserver server of bench/jvm/HttpBench.java under ab,
 # on the image's openjdk-21, under challoc (the working tree), glibc, glibc
 # with MALLOC_ARENA_MAX=2, glibc with the JVM's periodic trim and the stock
@@ -303,28 +303,27 @@ JVM_SOAK_VARS = $(filter-out ROWS,$(JVM_BENCH_VARS))
 $(eval $(call bench_target,jvm-bench,bench/jvm-bench.sh,$$(JVM_BENCH_VARS))) ## JVM rows (bench/jvm-bench.sh): `java -version` startup and a 200-thread http server under ab for DURATION (300) s with NMT, seven variants
 $(eval $(call bench_target,jvm-soak,bench/jvm-bench.sh,$$(JVM_SOAK_VARS),-e ROWS=soak)) ## the JVM mixed-size soak (bench/jvm-bench.sh ROWS=soak): 16..400 threads, 256 B..1 MiB direct buffers, SOAK_DURATION (1200) s per allocator
 
-# PostgreSQL rows (bench/postgres-bench.sh, Phase 3 task 5b): Wolfi's
+# PostgreSQL rows (bench/postgres-bench.sh): Wolfi's
 # postgresql-17 from the image, the server run as a non-root user the script
 # creates, the allocator in the postmaster's environment, pgbench rows.
 POSTGRES_BENCH_VARS = ALLOCS ROUNDS ROWS RESULT OUT HOST_KIND REV SCALE DURATION CONN_DURATION INTERVAL SAMPLING_RATE JOBS CLIENTS_A CLIENTS_B CONN_CLIENTS CONN_JOBS SHARED_BUFFERS MAX_CONNECTIONS REINIT REPORT_ONLY
 $(eval $(call bench_target,postgres-bench,bench/postgres-bench.sh,$$(POSTGRES_BENCH_VARS))) ## PostgreSQL 17 rows (bench/postgres-bench.sh): pgbench select-only at 100 and 500 clients, TPC-B, connection setup; RSS over every postgres process
 
-# Phase 2.5 task 8's acceptance rows (bench/percpu-campaign.sh, lane D): the
-# same suites under the default and under CHALLOC_CONF=percpu_arena:percpu,
-# on the VM host (each step is one of the make targets above). MODE=baseline
-# (default only, the half that exists before task 8 merges) or MODE=percpu.
+# The per-CPU mode's acceptance rows (bench/percpu-campaign.sh): the same
+# suites under the default and under CHALLOC_CONF=percpu_arena:percpu, on
+# the VM host (each step is one of the make targets above). MODE=baseline
+# (default only) or MODE=percpu.
 PERCPU_VARS = MODE STEPS DATE LANE ROUNDS SOAK_DURATION RUBY_SOAK_DURATION IDLE_THREADS VALKEY_FULL CALLOC_ROUNDS CALLOC_MAX_SECS OSC_SECS CGROUP_PEAK
-percpu-campaign: ## Phase 2.5 task 8 acceptance rows on the VM host (bench/percpu-campaign.sh; MODE=baseline|percpu, STEPS)
+percpu-campaign: ## the per-CPU mode's acceptance rows on the VM host (bench/percpu-campaign.sh; MODE=baseline|percpu, STEPS)
 	env $(foreach v,$(PERCPU_VARS),$(if $($(v)),$(v)="$($(v))")) HOST_CPU="$(HOST_CPU)" sh bench/percpu-campaign.sh
 
-# Phase 3 prerequisite (e): DT_NEEDED must name the allocator library
-# (design 13.6); Wolfi's --as-needed drops it from a consumer that
+# DT_NEEDED must name the allocator library (design 13.6); Wolfi's --as-needed drops it from a consumer that
 # references no symbol of it.
-check-needed: image ## Phase 3 prerequisite (e): DT_NEEDED must name the allocator library (tests/as-needed.sh, scripts/check-needed.sh)
+check-needed: image ## DT_NEEDED must name the allocator library (tests/as-needed.sh, scripts/check-needed.sh)
 	$(DOCKER_RUN) sh -c 'cargo build --release && sh tests/as-needed.sh'
 
 clean-volumes: ## remove the target and cargo-registry volumes TARGET_VOLUME and CARGO_VOLUME name
 	docker volume rm -f $(TARGET_VOLUME) $(CARGO_VOLUME)
 
-clean-tmp: ## remove the .tmp-* scratch files and directories at the top level (iteration scripts, capture dirs)
+clean-tmp: ## remove the .tmp-* scratch files and directories at the top level (scratch scripts, capture dirs)
 	rm -rf $(CURDIR)/.tmp-*
