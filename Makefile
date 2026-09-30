@@ -26,7 +26,11 @@
 HOST_ARCH := $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
 PLATFORM  ?= linux/$(HOST_ARCH)
 ARCH      := $(notdir $(PLATFORM))
-IMAGE     ?= challoc-dev:$(ARCH)
+# IMAGE_TARGET names a Dockerfile.dev stage to stop at (base, test,
+# consumers; empty: the last stage, bench, which has everything) and goes
+# into the default IMAGE tag, so a partial image never replaces the full one.
+IMAGE_TARGET ?=
+IMAGE     ?= challoc-dev$(if $(IMAGE_TARGET),-$(IMAGE_TARGET)):$(ARCH)
 TARGET_VOLUME ?= challoc-target-$(ARCH)
 CARGO_VOLUME  ?= challoc-cargo-registry
 # IMAGE_BUILD empty: `image` does nothing and the targets use IMAGE as it is
@@ -107,8 +111,8 @@ help: ## list the targets (this text; the `##` comments in the Makefile)
 	@echo "PLATFORM=linux/amd64 on any target runs the emulated x86_64 container (correctness only)."
 	@echo "Harness variables: bench/README.md and the *_VARS lists in the Makefile."
 
-image: ## build the dev container image (Dockerfile.dev; IMAGE, PLATFORM; IMAGE_BUILD= skips it)
-	$(if $(IMAGE_BUILD),,@true )docker build --platform $(PLATFORM) -f Dockerfile.dev -t $(IMAGE) .
+image: ## build the dev container image (Dockerfile.dev; IMAGE, IMAGE_TARGET, PLATFORM; IMAGE_BUILD= skips it)
+	$(if $(IMAGE_BUILD),,@true )docker build --platform $(PLATFORM) -f Dockerfile.dev $(if $(IMAGE_TARGET),--target $(IMAGE_TARGET)) -t $(IMAGE) .
 
 dev: DOCKER_FLAGS = -it
 dev: image ## interactive shell in the container (native arch)
