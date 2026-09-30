@@ -1,33 +1,23 @@
 # Development container for challoc. Nothing in this repository builds or
 # runs on macOS; everything happens inside this Wolfi image. See CLAUDE.md
 # and the Makefile (`make dev`). One layer per consumer group below, so a
-# package added for one harness does not rebuild the toolchain.
-FROM cgr.dev/chainguard/wolfi-base
+# package added for one harness does not rebuild the toolchain. The base
+# image is pinned by digest: bump it deliberately, then run `make test`.
+FROM cgr.dev/chainguard/wolfi-base@sha256:d59fd2d1d21e913b12a8d56064e9aaf61f818289bd18b17132a0c4fde2358cea
 
-# Toolchain. Wolfi's `rust` (via libLLVM-22) is built against the versioned
-# `glibc-2.44` stream, while wolfi-base pins the unversioned `glibc` 2.43 in
-# the apk world file. apk satisfies `so:libc.so.6` with whichever is
-# installed, so a plain `apk add rust` yields a rustc that cannot start. Move
-# the four pinned glibc packages onto the 2.44 stream first, then install the
-# toolchain. `rust-1.98` is the stream contrib/wolfi/challoc.yaml builds the
+# Toolchain. `rust-1.98` is the stream contrib/wolfi/challoc.yaml builds the
 # package with (Cargo.toml's `rust-version` is the lower, host-verified
-# floor); `rust` alone would follow Wolfi's default stream when it moves. posix-libc-utils gives `getconf` (the
-# harnesses read the page size and CLK_TCK), procps `ps`/`pgrep`.
-RUN sed -i \
-      -e 's/^glibc=.*/glibc-2.44/' \
-      -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/' \
-      -e 's/^ld-linux=.*/ld-linux-2.44/' \
-      -e 's/^libcrypt1=.*/libcrypt1-2.44/' \
-      /etc/apk/world \
- && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44 \
- && apk add --no-cache \
+# floor); `rust` alone would follow Wolfi's default stream when it moves.
+# posix-libc-utils gives `getconf` (the harnesses read the page size and
+# CLK_TCK), procps `ps`/`pgrep`.
+RUN apk add --no-cache \
       rust-1.98 \
       build-base \
       gcc \
       git \
       cmake \
       procps \
-      posix-libc-utils-2.44 \
+      posix-libc-utils \
  && rustc --version && cargo --version && getconf PAGESIZE
 
 # The stock allocators of the benchmark harness (bench/lib.sh): Wolfi's

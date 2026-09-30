@@ -328,9 +328,7 @@ make test-host                 # pure-logic unit tests on the host
 make jemalloc-compat           # libjemalloc.so.2 + jemalloc.pc in target/jemalloc-compat/stage
 ```
 
-`Dockerfile.dev` defines the container. Note that a plain `apk add rust` on
-`wolfi-base` currently yields a broken `rustc` because Wolfi's Rust is built
-against the versioned `glibc-2.44` stream; the Dockerfile handles the swap.
+`Dockerfile.dev` defines the container, on `wolfi-base` pinned by digest.
 
 Native aarch64 and x86_64 builds are both supported. Use
 `--platform linux/amd64` for an emulated x86_64 build on Apple silicon when
