@@ -4,8 +4,13 @@
 #   sh scripts/codegen-diff.sh capture [DIR]   build both quantum variants in
 #                                             release and save the .so, its
 #                                             disassembly and section sizes
-#                                             under DIR (default .tmp-codegen)
+#                                             under DIR (default
+#                                             target/codegen-baseline)
 #   sh scripts/codegen-diff.sh compare [DIR]   rebuild and compare with DIR
+#
+# The default DIR is under target/, so in the dev container it lives in the
+# per-architecture target volume next to the builds and `cargo clean`
+# removes it; capture and compare on the same architecture.
 #
 # Runs inside the dev container (needs cargo, objdump, readelf, objcopy).
 # `compare` prints, per variant:
@@ -27,7 +32,7 @@
 # functions), so statics stay in their original file. Anything else in
 # `changed` is a real code change and needs the benchmark protocol.
 set -eu
-MODE=${1:-}; DIR=${2:-.tmp-codegen}
+MODE=${1:-}; DIR=${2:-target/codegen-baseline}
 [ -n "$MODE" ] || { sed -n '2,/^set -eu/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 1; }
 mkdir -p "$DIR"
 
