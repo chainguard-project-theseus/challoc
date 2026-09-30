@@ -32,6 +32,60 @@ never used for numbers.
     make postgres-bench   PostgreSQL 17 rows (Phase 3 task 5b): pgbench select-only at 100 and
                           500 clients, TPC-B, connection setup; RSS over every postgres process
 
+## cb: the declarative runner (replacing quick.sh, ab.sh and friends)
+
+`bench/cb/` is a Python 3.11+ standard-library package that runs the rows
+of `bench/rows.toml` as the suites of `bench/suites/*.toml` say, on the
+cells of `bench/cells/*.toml`. It is being brought up beside the shell
+tiers below (milestone M1a: the local executor and the statistics); the
+shell tiers stay until their results agree.
+
+    make bench-quick [BASE=main] [HEAD=HEAD] [CB_ARGS='--blocks 4']
+    make bench-aa    BASE=<rev>             # A/A: every row should come out `same`
+    make bench-smoke [HEAD=<rev>]           # every quick row once, parse only
+    make bench-local SUITE=<suite> CB_ARGS='--variants base,head,jemalloc --rows larson1'
+    make bench-compare DIRS='target/results/cb/<run> ...'    # host side
+    make bench-unit                                          # host side
+    python3 bench/cb {run,compare,report,plan,rows,suites,cells,build,preflight,host} --help
+
+What `cb run SUITE` does, in the dev container or on any Linux host:
+builds every challoc variant from an archive of its rev into
+`target/cb/build/<tree>` (keyed by tree hash, so an A/A builds once and a
+rebuilt rev is a cache hit; paths are remapped, identical sources give an
+identical `.so`, and the manifest flags different trees with identical
+libraries), adds the stock comparators (`jemalloc`, `glibc`, `tcmalloc`,
+`mimalloc`) as asked, captures the host (`host.json`: kernel, CPU and
+microcode, THP per size and khugepaged, governor, caches, page size, glibc,
+the image id, the challoc `features:` line under the probed library, the
+PMU probe) and a comparability key, waits for a quiet host, then runs
+blocks. In each block the rows are shuffled with a recorded seed and each
+row runs every variant twice at mirror positions (ABBA for two, a Williams
+sequence and its reverse for more), one fresh process per run under
+`tools/rt` with a random 0..4 KiB environment pad; a sentinel
+(`tools/sentinel.c`) opens every block. Samples are appended to
+`samples.jsonl` as they finish. Output: `target/results/cb/<run>/`
+(`plan.json manifest.json host.json samples.jsonl blocks.jsonl
+summary.json report.md logs/`), readable on the host.
+
+The verdict (`bench/cb/stats.py`): per block the paired log contrast
+(positive = the candidate is worse), the estimate the mean over hosts, a
+bootstrap CI at the suite's per-look alpha (Pocock, 97.06% for two looks;
+the wider of it and the t interval under 10 blocks; a cluster bootstrap
+when Cochran's Q or I^2 says the effect is host-dependent), and a verdict
+against the row class's margin (1% single-thread, 2% multithread, 3%
+server, until 14 A/A results calibrate it): `worse`, `better`, `same`,
+`sub-threshold`, `inconclusive` or `broken`. The headline over the gate
+rows (Holm across them): NEUTRAL, IMPROVEMENT, REGRESSION, INCONCLUSIVE,
+BROKEN; the exit code is 0, 0, 1, 2, 1 (3 for an infrastructure failure).
+Where counters exist the report adds the instructions/op delta and flags
+`placement?` (time moved, instructions did not). Blocks whose sentinel is
+3 MAD off or whose steal is above 1% are excluded and counted.
+
+Local results are `indicative`: their comparability key names the host,
+so they are never pooled with a GCE cell, and a laptop's numbers are for
+the plumbing, not for a decision. The GCE fan-out (`cb launch`, spot VMs
+per replica) is milestone M1b.
+
 ## Two tiers
 
 An implementation-loop iteration needs a cheap answer to "is this change
@@ -259,8 +313,11 @@ Files:
   `cfrac espresso larson mstress xmalloc-test alloc-test glibc-simple`,
   `redis-server`/`redis-benchmark`/`redis-cli` (`MALLOC=libc`) and
   `libmimalloc.so` into `target/bench-bin/`, plus the two helpers below.
-- `rt.c`: `/usr/bin/time -v` replacement (Wolfi has no GNU time): wall time,
-  user, sys, max RSS and exit code from `wait4`, appended to `$RT_OUT`.
+- `tools/rt.c` (`rt.c` is a link to it for the scripts): `/usr/bin/time -v`
+  replacement (Wolfi has no GNU time): wall time, user, sys, max RSS and exit
+  code from `wait4`, appended to `$RT_OUT`. `RT_JSON=1` writes one JSON
+  object instead, with `perf_event_open` counters where the PMU is reachable
+  (see "cb" above); `rt --probe` is the old `gce/pmu-probe.c`.
 - `sampler.c`: `perf record` replacement (Wolfi has no perf): a SIGPROF PC
   sampler preloaded after the allocator; writes `count module offset` lines.
 - `valkey-soak.sh`: starts `valkey-server` from the challoc tree built by
