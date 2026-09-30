@@ -26,11 +26,13 @@ fn page_size() -> usize {
 /// 64 KiB classes have 64 slabs and the 4 MiB class has one.
 const LG_REGION: u32 = LG_MAX_SLAB;
 const LG_STRIDE: u32 = LG_REGION + 2;
-/// Test metadata: 8 MiB on a 4 KiB kernel, scaled with the page (every
-/// table reservation is rounded up to a page, and `works_for_every_class`
-/// reserves three per class).
+/// Test metadata: 256 KiB per class on a 4 KiB kernel, scaled with the
+/// page (every table reservation is rounded up to a page). The
+/// every-class tests build a slab table and a set table of all
+/// `NCLASSES` per class, up to about 180 KiB a class at the last one, so
+/// the need grows with the class count and `quantum8` has more classes.
 fn meta_len() -> usize {
-    (8 << 20) * (page_size() / 4096).max(1)
+    (NCLASSES << 18) * (page_size() / 4096).max(1)
 }
 
 /// Test environment: a metadata region and a class superblock. On Linux

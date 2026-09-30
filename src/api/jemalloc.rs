@@ -377,7 +377,9 @@ mod tests {
                 assert!(usable >= size);
                 assert_eq!(usable, nallocx(size, flags), "nallocx disagrees for size {size} lg_align {la}");
                 assert_eq!(usable, crate::api::libc::malloc_usable_size(p));
-                if la <= 4 {
+                // Every class is a multiple of the quantum, so up to it the
+                // alignment leaves the class alone.
+                if (1usize << la) <= crate::QUANTUM {
                     match class_size_of(size) {
                         Some(s) => assert_eq!(usable, s),
                         None => assert_eq!(usable, shared().huge.usable_for(size).unwrap()),
