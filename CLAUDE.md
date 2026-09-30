@@ -31,9 +31,7 @@ Environment:
 
 - Nothing builds or runs on macOS. Use the dev container from
   `Dockerfile.dev`: `make dev` for a shell, or `make run CMD='...'` for one
-  command (escape `$` as `$$` in CMD). Do not `apk add rust` by hand on
-  `wolfi-base`: Wolfi's Rust needs the `glibc-2.44` stream and the
-  Dockerfile performs that swap.
+  command (escape `$` as `$$` in CMD).
 - `target/` in the container is a named Docker volume per architecture
   (`challoc-target-arm64`, `challoc-target-amd64`; `TARGET_VOLUME=` renames
   it), so Linux artifacts are only visible inside the container.

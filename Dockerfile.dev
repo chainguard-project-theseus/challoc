@@ -1,34 +1,62 @@
-# Development container for challoc. Nothing in this repository builds or
-# runs on macOS; everything happens inside this Wolfi image. See CLAUDE.md
-# and the Makefile (`make dev`). One layer per consumer group below, so a
-# package added for one harness does not rebuild the toolchain.
-FROM cgr.dev/chainguard/wolfi-base
+# Development container for challoc. The library builds and runs on Linux
+# only; everything happens inside this Wolfi image. See CLAUDE.md and the
+# Makefile (`make dev`).
+#
+# Four stages, each built on the one before, so a package added for one
+# harness does not rebuild the toolchain:
+#
+#   base       the Rust toolchain and the C compiler
+#   test       what `make test` and scripts/codegen-diff.sh need
+#   consumers  the Valkey and Ruby builds (tests/consumers/)
+#   bench      the stock allocators and the benchmark runtimes (bench/)
+#
+# The last stage is the default, so a plain `docker build` (`make image`)
+# gives the full image; `make image IMAGE_TARGET=test` stops at `test`.
+# The base image is pinned by digest: bump it deliberately, then run
+# `make test`.
+FROM cgr.dev/chainguard/wolfi-base@sha256:d59fd2d1d21e913b12a8d56064e9aaf61f818289bd18b17132a0c4fde2358cea AS base
 
-# Toolchain. Wolfi's `rust` (via libLLVM-22) is built against the versioned
-# `glibc-2.44` stream, while wolfi-base pins the unversioned `glibc` 2.43 in
-# the apk world file. apk satisfies `so:libc.so.6` with whichever is
-# installed, so a plain `apk add rust` yields a rustc that cannot start. Move
-# the four pinned glibc packages onto the 2.44 stream first, then install the
-# toolchain. `rust-1.98` is the stream contrib/wolfi/challoc.yaml builds the
+# Toolchain. `rust-1.98` is the stream contrib/wolfi/challoc.yaml builds the
 # package with (Cargo.toml's `rust-version` is the lower, host-verified
-# floor); `rust` alone would follow Wolfi's default stream when it moves. posix-libc-utils gives `getconf` (the
-# harnesses read the page size and CLK_TCK), procps `ps`/`pgrep`.
-RUN sed -i \
-      -e 's/^glibc=.*/glibc-2.44/' \
-      -e 's/^glibc-locale-posix=.*/glibc-2.44-locale-posix/' \
-      -e 's/^ld-linux=.*/ld-linux-2.44/' \
-      -e 's/^libcrypt1=.*/libcrypt1-2.44/' \
-      /etc/apk/world \
- && apk add --no-cache glibc-2.44 glibc-2.44-locale-posix ld-linux-2.44 libcrypt1-2.44 \
- && apk add --no-cache \
+# floor); `rust` alone would follow Wolfi's default stream when it moves.
+# posix-libc-utils gives `getconf` (the harnesses read the page size and
+# CLK_TCK), procps `ps`/`pgrep`.
+RUN apk add --no-cache \
       rust-1.98 \
       build-base \
       gcc \
       git \
       cmake \
       procps \
-      posix-libc-utils-2.44 \
+      posix-libc-utils \
  && rustc --version && cargo --version && getconf PAGESIZE
+
+WORKDIR /src
+CMD ["sh"]
+
+FROM base AS test
+
+# python3 runs scripts/codegen-fncmp.py (scripts/codegen-diff.sh).
+RUN apk add --no-cache python-3.13 \
+ && python3 --version
+
+FROM test AS consumers
+
+# Valkey (tests/consumers/valkey-build.sh): tcl for its test suite,
+# openssl-dev for BUILD_TLS=yes (Ruby's openssl extension uses it too),
+# memtier_benchmark for the soak's second load generator
+# (bench/valkey-soak.sh).
+RUN apk add --no-cache tcl openssl-dev memtier-benchmark
+
+# Ruby (tests/consumers/ruby-build.sh): a git checkout of Ruby needs
+# autoconf and a base Ruby; the jemalloc header, yaml, zlib and libffi are
+# what Wolfi's ruby-3.4.yaml environment gives its `--with-jemalloc` build
+# (psych, zlib and fiddle extensions, and <jemalloc/jemalloc.h> as
+# RUBY_ALTERNATIVE_MALLOC_HEADER); tzdata is for `make test-all`
+# (test/ruby/test_time_tz.rb needs zone files).
+RUN apk add --no-cache autoconf ruby-3.4 jemalloc-dev yaml-dev zlib-dev libffi-dev tzdata
+
+FROM consumers AS bench
 
 # The stock allocators of the benchmark harness (bench/lib.sh): Wolfi's
 # jemalloc and tcmalloc-minimal (gperftools 2.18.1, no profiler hooks);
@@ -36,24 +64,9 @@ RUN sed -i \
 RUN apk add --no-cache jemalloc tcmalloc-minimal \
  && test -f /usr/lib/libtcmalloc_minimal.so.4
 
-# Valkey (tests/consumers/valkey-build.sh): tcl for its test
-# suite, openssl-dev for BUILD_TLS=yes (Ruby's openssl extension uses it
-# too), memtier_benchmark for the soak's second load generator
-# (bench/valkey-soak.sh).
-RUN apk add --no-cache tcl openssl-dev memtier-benchmark
-
-# Ruby (tests/consumers/ruby-build.sh): a git checkout of Ruby
-# needs autoconf and a base Ruby; the jemalloc header, yaml, zlib and libffi
-# are what Wolfi's ruby-3.4.yaml environment gives its `--with-jemalloc`
-# build (psych, zlib and fiddle extensions, and <jemalloc/jemalloc.h> as
-# RUBY_ALTERNATIVE_MALLOC_HEADER); tzdata is for `make test-all`
-# (test/ruby/test_time_tz.rb needs zone files).
-RUN apk add --no-cache autoconf ruby-3.4 jemalloc-dev yaml-dev zlib-dev libffi-dev tzdata
-
-# Python rows (bench/python-bench.sh): python-3.13 and its pip (Wolfi has
-# no free-threaded 3.13 package).
-RUN apk add --no-cache python-3.13 py3.13-pip \
- && python3 --version
+# Python rows (bench/python-bench.sh): python-3.13 (from the test stage)
+# and its pip (Wolfi has no free-threaded 3.13 package).
+RUN apk add --no-cache py3.13-pip
 
 # Node.js rows (bench/node-bench.sh): nodejs-22 is the node the harness
 # measures. apache2-utils gives `ab`, the load generator of the Node.js and
@@ -61,18 +74,14 @@ RUN apk add --no-cache python-3.13 py3.13-pip \
 RUN apk add --no-cache nodejs-22 apache2-utils \
  && node --version && ab -V | head -1
 
-# JVM rows (bench/jvm-bench.sh): openjdk-21, the JDK (javac
-# compiles bench/jvm/HttpBench.java at run time; it lives under
+# JVM rows (bench/jvm-bench.sh): openjdk-21, the JDK (javac compiles
+# bench/jvm/HttpBench.java at run time; it lives under
 # /usr/lib/jvm/java-21-openjdk and is not on PATH, the script finds it);
 # `ab` from the layer above is its load generator.
 RUN apk add --no-cache openjdk-21 \
  && test -x /usr/lib/jvm/java-21-openjdk/bin/javac
 
-# PostgreSQL rows (bench/postgres-bench.sh): postgresql-17
-# carries initdb, pg_ctl, pgbench and postgres; postgresql-17-client carries
-# psql.
+# PostgreSQL rows (bench/postgres-bench.sh): postgresql-17 carries initdb,
+# pg_ctl, pgbench and postgres; postgresql-17-client carries psql.
 RUN apk add --no-cache postgresql-17 postgresql-17-client \
  && pgbench --version && test -x /usr/bin/psql
-
-WORKDIR /src
-CMD ["sh"]
