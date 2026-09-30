@@ -202,10 +202,8 @@ impl SlabDesc {
         self.arena.load(Ordering::Relaxed)
     }
 
-    /// Move the slab to `arena`. Only ever called by a group handoff
-    /// (`class/`), with both arenas' class locks and the commit lock
-    /// held and `live == 0`.
-    #[inline]
+    /// Tests: overwrite the slab's arena (a corrupt descriptor).
+    #[cfg(test)]
     pub fn set_arena(&self, arena: u16) {
         self.arena.store(arena, Ordering::Relaxed);
     }

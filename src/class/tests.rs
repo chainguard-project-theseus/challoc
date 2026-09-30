@@ -81,9 +81,6 @@ impl Env {
     /// page kernel.
     #[cfg(target_os = "linux")]
     fn with_lg_page(lg_page: u32) -> Env {
-        // The handoff is an opt-in (design 13.3); the class tests
-        // exercise it, so every test environment turns it on.
-        set_group_handoff(true);
         use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
         let page = 1usize << lg_page;
         assert!(page % crate::sys::features::page_size() == 0, "fake page must be a real page multiple");
@@ -105,9 +102,6 @@ impl Env {
 
     #[cfg(not(target_os = "linux"))]
     fn with_lg_page(lg_page: u32) -> Env {
-        // The handoff is an opt-in (design 13.3); the class tests
-        // exercise it, so every test environment turns it on.
-        set_group_handoff(true);
         let page = 1usize << lg_page;
         let buf = vec![0u8; meta_len() + page];
         let mb = align_up(buf.as_ptr() as usize, page);
@@ -116,14 +110,12 @@ impl Env {
     }
 
     /// A fresh table for `c` (leaked: the state points at it) and the
-    /// arena-0 state over it, leaked and registered with the table as
-    /// `Arena::init` does, so a handoff can find it as a donor.
+    /// arena-0 state over it, leaked.
     fn class(&self, c: usize, guard_interval: u32) -> &'static ClassState {
         let table = self.table(c, guard_interval);
         let cs = std::boxed::Box::leak(std::boxed::Box::new(
             ClassState::new(&self.meta, &self.regions, table, 0, self.sets()).expect("class state"),
         ));
-        table.register_state(cs);
         cs
     }
 
@@ -138,14 +130,13 @@ impl Env {
         ))
     }
 
-    /// The state of `arena` over the same table as `cs`, leaked and
-    /// registered like [`Env::class`].
+    /// The state of `arena` over the same table as `cs`, leaked like
+    /// [`Env::class`].
     fn class_in_arena(&self, cs: &ClassState, arena: u16) -> &'static ClassState {
         let table = cs.table();
         let new = std::boxed::Box::leak(std::boxed::Box::new(
             ClassState::new(&self.meta, &self.regions, table, arena, self.sets()).expect("class state"),
         ));
-        table.register_state(new);
         new
     }
 
@@ -266,8 +257,8 @@ fn prefault_ahead_keeps_the_burst_rate_ready_and_the_last_take_wakes() {
     let cls = cs.class();
     let plan = |cs: &ClassState, want: usize| -> (Vec<*mut u8>, bool, bool) {
         let mut picks = [Pick::EMPTY; MAX_PICKS];
-        let (mut wake, mut taken) = (false, false);
-        let np = cs.plan_locked(&env.meta, want, &mut picks, cls, &mut wake, &mut taken);
+        let mut taken = false;
+        let np = cs.plan_locked(&env.meta, want, &mut picks, cls, &mut taken);
         let mut out = vec![ptr::null_mut(); want];
         let mut zeroed = true;
         let got = cs.finish(&picks[..np], &mut out, &mut zeroed, None);
@@ -302,12 +293,9 @@ fn prefault_ahead_keeps_the_burst_rate_ready_and_the_last_take_wakes() {
     assert!(!taken);
 }
 
-/// With guard slabs the pass skips the guard as `next_slab` does, and a
-/// handoff's idle group is taken over rather than prefaulted (its
-/// `Empty`/`Purged` slabs go back into the sets for the refill).
+/// With guard slabs the pass skips the guard as `next_slab` does.
 #[test]
-fn prefault_next_skips_guards_and_adopts_before_committing() {
-    set_group_handoff(true);
+fn prefault_next_skips_guards() {
     let env = Env::new();
     let c = 3;
     let cs = env.class(c, 8);
@@ -337,35 +325,9 @@ fn prefault_next_skips_guards_and_adopts_before_committing() {
     assert!(!cs.is_guard_slab(got));
     assert_eq!(cs.desc(got).state(), State::Purged);
     assert!(cs.table().guards() >= 1);
-    // The refill takes the prefaulted slab; this arena's group is then
-    // used up with nothing in its sets. (Done before the second arena
-    // appears: a `Purged` slab in an otherwise used-up group is an idle
-    // group, which the other arena's first refill would adopt instead
-    // of taking a fresh group of its own.)
+    // And a refill takes the prefaulted slab.
     let (p, _) = env.claim(&cs, n);
     assert_eq!(cs.table().locate(p[0]).0, got);
-    live.push(p);
-    {
-        let g = cs.inner.lock();
-        assert!(g.group_next >= g.group_end && g.purged.map.lowest_set().is_none() && g.empty.map.lowest_set().is_none());
-    }
-    // Another arena takes a fresh group and leaves it idle: the pass
-    // adopts it instead of committing, and its slab goes back into the
-    // `empty` set for the refill.
-    let other = env.class_in_arena(&cs, 1);
-    let (q, _) = env.claim(&other, n);
-    let donor_slab = cs.table().locate(q[0]).0;
-    assert_eq!(cs.desc(donor_slab).arena(), 1, "a fresh group of its own");
-    other.release(&q);
-    assert_eq!(other.stats().empty, 1);
-    assert_eq!(cs.prefault_next(&env.meta, |_, _| panic!("populated an adopted Empty slab")), None);
-    assert_eq!(cs.desc(donor_slab).arena(), 0, "the idle group changed hands");
-    assert_eq!(cs.desc(donor_slab).state(), State::Empty);
-    assert_eq!(cs.stats().empty, 1);
-    assert_eq!(other.stats().empty, 0);
-    // And a refill now takes that slab.
-    let (r, _) = env.claim(&cs, n);
-    assert_eq!(cs.table().locate(r[0]).0, donor_slab);
 }
 
 /// Regression: with 2^21 members the level-1 table is exactly one page,
@@ -1225,294 +1187,6 @@ fn two_arenas_share_one_region() {
     assert_eq!(cs0.committed_slabs(), 4);
 }
 
-/// What a handoff offers (plan Phase 1.5 task 15): a group is idle
-/// once its last `Active` slab goes `Empty`, not while a slot is out,
-/// and stays idle through a purge.
-#[test]
-fn a_group_is_idle_between_its_last_empty_and_its_next_take() {
-    let env = Env::new();
-    let c = small_class();
-    let cs = env.class(c, 0);
-    assert_eq!(cs.table().group(), 1, "the 64-byte class hands out one slab per group");
-    assert!(cs.idle_groups().is_empty());
-    let (p, _) = env.claim(cs, 3);
-    assert!(cs.idle_groups().is_empty());
-    cs.release(&p[..2]);
-    assert!(cs.idle_groups().is_empty(), "a slab with a live slot is not idle");
-    cs.release(&p[2..]);
-    assert_eq!(cs.desc(0).state(), State::Empty);
-    assert_eq!(cs.idle_groups(), vec![0]);
-    assert_eq!(cs.purge_empty(u64::MAX), 1);
-    assert_eq!(cs.idle_groups(), vec![0], "Empty to Purged keeps the group idle");
-    let (q, claim) = env.claim(cs, 1);
-    assert!(claim.zeroed);
-    assert!(cs.idle_groups().is_empty(), "a take withdraws the group");
-    cs.release(&q);
-    assert_eq!(cs.idle_groups(), vec![0]);
-}
-
-/// The handoff: an arena whose group is used up takes an idle group of
-/// another arena instead of a fresh one. Owner word, descriptors, sets,
-/// slab counts and the pointers' routing all move; nothing new is
-/// committed. `donor` and `taker` in both index orders.
-fn handoff_between(donor_ix: u16, taker_ix: u16) {
-    let env = Env::new();
-    let c = small_class();
-    let cs0 = env.class(c, 0);
-    let (donor, taker) = if donor_ix == 0 {
-        (cs0, env.class_in_arena(cs0, taker_ix))
-    } else {
-        (env.class_in_arena(cs0, donor_ix), cs0)
-    };
-    let t = cs0.table();
-    let nslots = donor.class().nslots();
-    // The donor fills slab 0 (its group) and lets it all go: Empty, idle.
-    let (p, _) = env.claim(donor, nslots);
-    assert_eq!(t.committed_slabs(), 1);
-    assert_eq!(t.owner(0), donor_ix);
-    donor.release(&p);
-    assert_eq!(donor.desc(0).state(), State::Empty);
-    assert_eq!(donor.stats(), ClassStats { committed: 1, guards: 0, empty: 1, purged: 0, nonfull: 0 });
-    assert_eq!(donor.idle_groups(), vec![0]);
-    let dirty_at = donor.desc(0).dirty_at();
-    assert!(dirty_at != 0);
-    // The taker's first claim needs a slab: it takes slab 0 over.
-    let (q, claim) = env.claim(taker, 5);
-    assert_eq!(claim.n, 5);
-    assert!(!claim.zeroed, "an Empty slab is dirty");
-    assert_eq!(t.committed_slabs(), 1, "no fresh group was taken");
-    assert_eq!(taker.locate(q[0]).0, 0);
-    assert_eq!(t.owner(0), taker_ix);
-    assert_eq!(taker.desc(0).arena(), taker_ix);
-    assert_eq!(taker.desc(0).state(), State::Active);
-    assert_eq!(taker.desc(0).dirty_at(), 0);
-    assert!(taker.is_partial(0) && !donor.is_partial(0));
-    assert_eq!(donor.stats(), ClassStats::default());
-    assert_eq!(taker.stats(), ClassStats { committed: 1, guards: 0, empty: 0, purged: 0, nonfull: 1 });
-    assert!(taker.idle_groups().is_empty() && donor.idle_groups().is_empty());
-    // Routing follows the group: the taker releases, the donor may not.
-    taker.check(q[0]);
-    taker.release(&q[..1]);
-    // The donor's next claim takes a fresh group; the taker's slab is
-    // not idle (4 live slots).
-    let (r, _) = env.claim(donor, 1);
-    assert_eq!(donor.locate(r[0]).0, 1);
-    assert_eq!(t.committed_slabs(), 2);
-    assert_eq!(t.owner(1), donor_ix);
-    // The taker empties slab 0 and its decay walk purges it: it owns the
-    // slab's decay now.
-    taker.release(&q[1..]);
-    assert_eq!(taker.desc(0).state(), State::Empty);
-    assert_eq!(taker.stats().empty, 1);
-    assert_eq!(taker.purge_empty(u64::MAX), 1);
-    assert_eq!(taker.stats().purged, 1);
-    assert_eq!(donor.stats().purged, 0);
-    // And the donor can take it back once its own group is used up.
-    donor.release(&r);
-    assert_eq!(taker.idle_groups(), vec![0]);
-    assert_eq!(donor.idle_groups(), vec![1]);
-    let (x, _) = env.claim(donor, nslots + 1);
-    assert_eq!(t.committed_slabs(), 2, "slab 0 came back before anything fresh");
-    assert_eq!(t.owner(0), donor_ix);
-    assert_eq!(donor.desc(0).arena(), donor_ix);
-    assert_eq!(taker.stats(), ClassStats::default());
-    assert_eq!(donor.stats(), ClassStats { committed: 2, guards: 0, empty: 0, purged: 0, nonfull: 1 });
-    assert!(x.iter().any(|&p| donor.locate(p).0 == 0) && x.iter().any(|&p| donor.locate(p).0 == 1));
-}
-
-#[test]
-fn an_idle_group_is_handed_up_to_a_higher_arena() {
-    handoff_between(0, 1);
-}
-
-#[test]
-fn an_idle_group_is_handed_down_to_a_lower_arena() {
-    handoff_between(3, 0);
-}
-
-/// A donor's `Purged` slab moves too and is still reported zero.
-#[test]
-fn a_purged_group_is_handed_over_and_stays_zero() {
-    let env = Env::new();
-    let c = small_class();
-    let donor = env.class(c, 0);
-    let taker = env.class_in_arena(donor, 1);
-    let (p, _) = env.claim(donor, 2);
-    donor.release(&p);
-    assert_eq!(donor.purge_empty(u64::MAX), 1);
-    assert_eq!(donor.stats().purged, 1);
-    let (q, claim) = env.claim(taker, 1);
-    assert!(claim.zeroed);
-    assert_eq!(taker.locate(q[0]).0, 0);
-    assert_eq!(donor.stats(), ClassStats::default());
-    assert_eq!(taker.stats().committed, 1);
-    assert_eq!(taker.stats().purged, 0);
-    assert_eq!(donor.table().committed_slabs(), 1);
-}
-
-/// A group with an `Active` slab, or a slab with a slot still out (in
-/// a cache, say), is never taken: the taker commits a fresh group.
-#[test]
-fn a_group_in_use_is_never_handed_over() {
-    let env = Env::new();
-    let c = small_class();
-    let donor = env.class(c, 0);
-    let taker = env.class_in_arena(donor, 1);
-    let t = donor.table();
-    // One slot out of three: live > 0.
-    let (p, _) = env.claim(donor, 3);
-    donor.release(&p[..2]);
-    assert_eq!(donor.desc(0).state(), State::Active);
-    assert_eq!(donor.desc(0).live(), 1);
-    assert!(donor.idle_groups().is_empty());
-    let (q, _) = env.claim(taker, 1);
-    assert_eq!(taker.locate(q[0]).0, 1);
-    assert_eq!(t.committed_slabs(), 2);
-    assert_eq!(t.owner(0), 0);
-    assert_eq!(donor.desc(0).arena(), 0);
-    assert_eq!(donor.stats().committed, 1);
-    // The last slot comes back: now it moves, on the taker's next need.
-    donor.release(&p[2..]);
-    assert_eq!(donor.idle_groups(), vec![0]);
-    let (r, _) = env.claim(taker, taker.class().nslots());
-    assert_eq!(t.committed_slabs(), 2);
-    assert!(r.iter().any(|&x| taker.locate(x).0 == 0));
-    assert_eq!(t.owner(0), 1);
-}
-
-/// A multi-slab group (the 4 KiB-slab class: 128 slabs per bitmap
-/// line) moves whole, uncommitted slabs included: the taker inherits
-/// the donor's commit cursor and commits the rest itself, and the
-/// donor's next slab comes from a new group. A group with one
-/// `Active` slab among many `Empty` ones stays where it is.
-#[test]
-fn a_multi_slab_group_moves_whole_with_its_cursor() {
-    let env = Env::new();
-    let c = min_slab_class();
-    let donor = env.class(c, 0);
-    let taker = env.class_in_arena(donor, 1);
-    let t = donor.table();
-    let group = t.group();
-    assert!(group >= 4, "group of {group}");
-    let nslots = donor.class().nslots();
-    // Two slabs committed, both emptied.
-    let (p, _) = env.claim(donor, 2 * nslots);
-    assert_eq!(t.committed_slabs(), group);
-    assert_eq!(donor.stats().committed, 2);
-    // One slab Active among Empty ones vetoes the group.
-    donor.release(&p[nslots..]);
-    assert_eq!(donor.stats().empty, 1);
-    assert!(donor.idle_groups().is_empty());
-    donor.release(&p[..nslots]);
-    assert_eq!(donor.stats().empty, 2);
-    assert_eq!(donor.idle_groups(), vec![0]);
-    // The taker takes the group: 2 Empty slabs and the cursor at 2.
-    let (q, _) = env.claim(taker, 1);
-    assert_eq!(taker.locate(q[0]).0, 0);
-    assert_eq!(t.committed_slabs(), group);
-    assert_eq!(t.owner(0), 1);
-    for s in 0..group {
-        if !t.is_guard_slab(s) {
-            assert_eq!(taker.desc(s).arena(), 1, "slab {s}");
-        }
-    }
-    assert_eq!(donor.stats(), ClassStats::default());
-    assert_eq!(taker.stats(), ClassStats { committed: 2, guards: 0, empty: 1, purged: 0, nonfull: 1 });
-    // The taker's further claims use slab 1 (Empty), then commit slab
-    // 2 of the same group: still no fresh group.
-    let (r, _) = env.claim(taker, 2 * nslots);
-    assert_eq!(taker.locate(r[r.len() - 1]).0, 2);
-    assert_eq!(t.committed_slabs(), group);
-    assert_eq!(taker.stats().committed, 3);
-    // The donor's cursor was surrendered: its next slab is a new group.
-    let (x, _) = env.claim(donor, 1);
-    assert_eq!(donor.locate(x[0]).0, group);
-    assert_eq!(t.committed_slabs(), 2 * group);
-    assert_eq!(t.owner(group), 0);
-    assert_eq!(donor.stats().committed, 1);
-}
-
-/// Four arenas, two threads each, claiming, releasing and purging at
-/// random over one table, so groups change hands under contention in
-/// both lock directions. Every purge walk asserts that the empty set
-/// and the descriptors agree; at the end every slab's descriptor must
-/// match the owner word and sit in exactly the right set of exactly
-/// its owner.
-#[test]
-fn concurrent_handoffs_keep_sets_and_descriptors_consistent() {
-    let env = Arc::new(Env::new());
-    let c = small_class();
-    let cs0 = env.class(c, 0);
-    let states: Vec<&'static ClassState> = (0..4u16).map(|a| if a == 0 { cs0 } else { env.class_in_arena(cs0, a) }).collect();
-    let threads = 8;
-    let rounds = 400;
-    let mut handles = Vec::new();
-    for t in 0..threads {
-        let env = Arc::clone(&env);
-        let cs = states[t % 4];
-        handles.push(std::thread::spawn(move || {
-            let mut rng = 0x2545_F491_4F6C_DD1Du64 ^ (t as u64 + 1);
-            let mut held: Vec<*mut u8> = Vec::new();
-            for r in 0..rounds {
-                let k = xorshift(&mut rng) as usize % 300 + 1;
-                let (p, claim) = env.claim(cs, k);
-                assert_eq!(claim.n, k);
-                for &q in &p {
-                    cs.check(q);
-                }
-                held.extend(p);
-                match xorshift(&mut rng) % 8 {
-                    0..=4 => {
-                        let keep = xorshift(&mut rng) as usize % (held.len() + 1);
-                        let mut batch = held.split_off(keep);
-                        batch.sort();
-                        cs.release(&batch);
-                    }
-                    5 => {
-                        let mut batch = core::mem::take(&mut held);
-                        batch.sort();
-                        cs.release(&batch);
-                    }
-                    6 => {
-                        cs.purge_empty(u64::MAX);
-                    }
-                    _ => {}
-                }
-                if r % 50 == 0 {
-                    cs.decay(os::now_ns(), 1);
-                }
-            }
-            held.sort();
-            cs.release(&held);
-        }));
-    }
-    for h in handles {
-        h.join().unwrap();
-    }
-    let t = cs0.table();
-    assert!(HANDOFFS.load(Ordering::Relaxed) > 0, "no group changed hands");
-    let mut committed = 0;
-    for a in &states {
-        a.purge_empty(u64::MAX);
-        committed += a.stats().committed;
-    }
-    assert_eq!(committed + t.guards(), t.committed_slabs());
-    for slab in 0..t.committed_slabs() {
-        if t.is_guard_slab(slab) {
-            continue;
-        }
-        let d = cs0.desc(slab);
-        let owner = t.owner(slab);
-        assert_eq!(d.arena(), owner, "slab {slab}");
-        assert_eq!(d.live(), 0, "slab {slab}");
-        for a in &states {
-            let (partial, empty, purged) = a.set_membership(slab);
-            assert!(!partial && !empty, "slab {slab} arena {}", a.arena());
-            assert_eq!(purged, a.arena() == owner && d.state() == State::Purged, "slab {slab} arena {}", a.arena());
-        }
-    }
-}
-
 /// `take_group` cross-checks the group's owner word against the
 /// descriptors' arena field before handing the group out: a wild write
 /// into the owner array aborts the next hand-out instead of routing
@@ -2228,24 +1902,6 @@ fn a_purge_of_an_empty_slab_the_counts_do_not_know_aborts() {
     cs.purge_empty(u64::MAX);
 }
 
-/// `transfer_group`'s cross-check: a group the donor's sets call idle
-/// whose descriptor says otherwise (here `live` bumped on an `Empty`
-/// slab) aborts instead of moving to the taker.
-#[test]
-#[should_panic(expected = "idle by arena 0's sets but slab 0 is Empty with live 1")]
-fn a_handoff_of_a_group_whose_descriptor_is_in_use_aborts() {
-    let env = Env::new();
-    let donor = env.class(small_class(), 0);
-    let taker = env.class_in_arena(donor, 1);
-    let (p, _) = env.claim(donor, 3);
-    donor.release(&p);
-    assert_eq!(donor.desc(0).state(), State::Empty);
-    assert_eq!(donor.idle_groups(), vec![0]);
-    // Corrupt the descriptor: a live slot the sets do not know about.
-    donor.desc(0).add_live(1);
-    env.claim(taker, 1);
-}
-
 /// `claim_prefix`'s cross-check: a `Fresh` slab (handed out, not yet
 /// committed) with a bit already set when a refill takes it aborts
 /// instead of reporting the pick zero.
@@ -2432,7 +2088,7 @@ fn a_purge_over_an_empty_set_slab_that_is_not_empty_aborts() {
     cs.purge_empty(u64::MAX);
 }
 
-/// `min_nonzero`: the fold of the walks and the handoff over `dirty_at`
+/// `min_nonzero`: the fold of the purge walks over `dirty_at`
 /// stamps, where 0 is "none yet" and a stamp is never 0.
 #[test]
 fn min_nonzero_treats_zero_as_none() {
@@ -2458,67 +2114,6 @@ fn group_range_is_the_groups_slabs_clipped_to_the_class() {
     let one = env.table(small_class(), 0);
     assert_eq!(one.group(), 1);
     assert_eq!(one.group_range(5), (5, 6));
-}
-
-/// `transfer_group`'s two halves at their seam: `verify_idle_group`
-/// passes an idle group, and `move_group` moves its slabs between the
-/// two arenas' sets, slab counts and descriptors and returns the oldest
-/// `dirty_at` moved; the owner word and the cursors are the caller's.
-#[test]
-fn move_group_moves_an_idle_groups_sets_counts_and_descriptors() {
-    let env = Env::new();
-    let donor = env.class(small_class(), 0);
-    let taker = env.class_in_arena(donor, 1);
-    let (p, _) = env.claim(donor, 3);
-    donor.release(&p);
-    assert_eq!(donor.desc(0).state(), State::Empty);
-    let t = donor.table();
-    let (start, end) = t.group_range(0);
-    assert_eq!((start, end), (0, 1));
-    let page = 1usize << t.lg_page;
-    let mut g = taker.inner.lock();
-    let mut dg = donor.inner.lock();
-    // The taker's set words for the group, as `transfer_group` commits
-    // them before the verification reads them.
-    g.partial.ensure(&env.meta, page, end - 1).unwrap();
-    g.empty.ensure(&env.meta, page, end - 1).unwrap();
-    g.purged.ensure(&env.meta, page, end - 1).unwrap();
-    let cursor = if dg.group_end == end { dg.group_next } else { end };
-    assert_eq!(cursor, end, "the donor moved on to its next group");
-    taker.verify_idle_group(&g, &dg, donor, 0, start, end, cursor);
-    let oldest = taker.move_group(&mut g, &mut dg, start, end, cursor);
-    assert_eq!(oldest, donor.desc(0).dirty_at());
-    assert_ne!(oldest, 0);
-    assert_eq!((dg.stats.empty, dg.stats.committed), (0, 0));
-    assert_eq!((g.stats.empty, g.stats.committed), (1, 1));
-    assert!(!dg.empty.map.is_set(0));
-    assert!(g.empty.map.is_set(0));
-    assert_eq!(donor.desc(0).arena(), 1);
-    assert_eq!(t.owner(0), 0, "the owner word is the caller's");
-}
-
-/// `verify_idle_group`'s cross-check on the taker's side: a slab of the
-/// group already in one of the taker's sets aborts.
-#[test]
-#[should_panic(expected = "idle by arena 0's sets but slab 0 is Empty with live 0, in its owner's set true, partial false (taker arena 1)")]
-fn a_handoff_of_a_group_the_taker_already_holds_aborts() {
-    let env = Env::new();
-    let donor = env.class(small_class(), 0);
-    let taker = env.class_in_arena(donor, 1);
-    let (p, _) = env.claim(donor, 3);
-    donor.release(&p);
-    let t = donor.table();
-    let (start, end) = t.group_range(0);
-    let page = 1usize << t.lg_page;
-    let mut g = taker.inner.lock();
-    let dg = donor.inner.lock();
-    g.purged.ensure(&env.meta, page, end - 1).unwrap();
-    g.partial.ensure(&env.meta, page, end - 1).unwrap();
-    g.empty.ensure(&env.meta, page, end - 1).unwrap();
-    // Corrupt the taker's sets: the slab is in its purged set too.
-    g.purged_add(0);
-    let cursor = if dg.group_end == end { dg.group_next } else { end };
-    taker.verify_idle_group(&g, &dg, donor, 0, start, end, cursor);
 }
 
 /// The protocol's step names (`class::protocol`) are numbered in the

@@ -286,8 +286,8 @@ impl Model<'_> {
             }
             Refill::PlanLocked => {
                 // plan_locked under the lock: the partial walk, then
-                // `next_slab` (empty, purged, the group cursor, the
-                // handoff, a fresh group), `take` per slab.
+                // `next_slab` (empty, purged, the group cursor, a fresh
+                // group), `take` per slab.
                 // `self.plan(meta, out.len() - got, &mut picks)`
                 let desc = self.plan_locked(sh, th, want - th.got)?;
                 th.sub = base + Refill::Unlock as u8;
@@ -499,7 +499,7 @@ impl Model<'_> {
                 let a = th.rel_arena as usize;
                 let slab = th.rel_slab;
                 let desc;
-                if self.v.owner_check && sh.owner(self.sc, slab) != th.rel_arena {
+                if sh.owner(self.sc, slab) != th.rel_arena {
                     desc = format!(
                         "on_live_zero: slab {slab} now owned by arena {}, skip",
                         sh.owner(self.sc, slab)
@@ -561,7 +561,7 @@ impl Model<'_> {
                         continue;
                     }
                     let s = &sh.slabs[slab as usize];
-                    let ours = !self.v.owner_check || sh.owner(self.sc, slab) == th.rel_arena;
+                    let ours = sh.owner(self.sc, slab) == th.rel_arena;
                     if s.state == St::Active && ours {
                         sh.partial[a] |= 1 << slab;
                         desc += &format!(" slab {slab} back in partial;");
@@ -691,170 +691,63 @@ impl Model<'_> {
     }
 
     /// `next_slab`: the lowest `Empty`, else the lowest `Purged`, else
-    /// the next slab of the current group (committing it), else a group
-    /// adopted from another arena (with `group_handoff`), else the next
+    /// the next slab of the current group (committing it), else the next
     /// fresh group of the class. `None` when the class is out of slabs.
     pub(super) fn next_slab(&self, sh: &mut Shared, th: &mut Thread) -> Result<Option<(u8, String)>, String> {
         let a = th.arena as usize;
-        let mut pre = String::new();
-        loop {
-            // `if let Some(s) = g.empty.map.lowest_set() { g.empty.map.clear(s); ... return Some(s); }`
-            if let Some(s) = lowest_set(sh.empty[a]) {
-                sh.empty[a] &= !(1 << s);
-                return Ok(Some((
-                    s,
-                    format!("{pre}next_slab: Empty slab {s} out of the empty set"),
-                )));
-            }
-            // `if let Some(s) = g.purged.map.lowest_set() { g.purged.map.clear(s); ... return Some(s); }`
-            if let Some(s) = lowest_set(sh.purged[a]) {
-                sh.purged[a] &= !(1 << s);
-                return Ok(Some((
-                    s,
-                    format!("{pre}next_slab: Purged slab {s} out of the purged set"),
-                )));
-            }
-            // `if g.group_next >= g.group_end {`
-            if sh.group_next[a] >= sh.group_end[a] {
-                // `if self.adopt_idle_group(g, meta, wake) { continue; }`
-                if self.sc.group_handoff {
-                    if let Some(d) = self.adopt_idle_group(sh, th)? {
-                        // The adopted slabs are in this arena's sets now.
-                        pre += &d;
-                        pre += "; ";
-                        continue;
-                    }
-                }
-                // `let (start, end) = table.take_group(meta, self.arena, ..)?;`
-                let group = sh.next_group as usize;
-                if group >= (NSLABS >> self.sc.lg_group) {
-                    return Ok(None);
-                }
-                let (start, end) = sh.group_range(self.sc, group);
-                // take_group: the owner word and every descriptor's arena
-                // are written together after the cross-check that both are
-                // untouched.
-                if sh.owner[group] != NARENAS as u8 {
-                    return Err(format!(
-                        "take_group: group {group} already owned by arena {}",
-                        sh.owner[group]
-                    ));
-                }
-                for s in start..end {
-                    let slab = &mut sh.slabs[s as usize];
-                    if slab.state != St::Fresh || slab.committed || slab.live != 0 || slab.bits != 0
-                    {
-                        return Err(format!(
-                            "take_group: slab {s} of a fresh group is not Fresh"
-                        ));
-                    }
-                    slab.arena = th.arena;
-                }
-                sh.owner[group] = th.arena;
-                sh.next_group += 1;
-                sh.group_next[a] = start;
-                sh.group_end[a] = end;
-            }
-            // `let s = g.group_next; let usable = table.commit_slab(s)?; g.group_next = s + 1;`
-            let s = sh.group_next[a];
-            sh.group_next[a] = s + 1;
-            sh.slabs[s as usize].committed = true;
+        // `if let Some(s) = g.empty.map.lowest_set() { g.empty.map.clear(s); ... return Some(s); }`
+        if let Some(s) = lowest_set(sh.empty[a]) {
+            sh.empty[a] &= !(1 << s);
             return Ok(Some((
                 s,
-                format!("{pre}next_slab: commit fresh slab {s} of arena {a}'s group"),
+                format!("next_slab: Empty slab {s} out of the empty set"),
             )));
         }
-    }
-
-    /// `adopt_idle_group` and `transfer_group`, with this arena's lock
-    /// held: `try_lock` each other arena (skip a held one), find its
-    /// lowest idle group, verify and move it.
-    pub(super) fn adopt_idle_group(&self, sh: &mut Shared, th: &mut Thread) -> Result<Option<String>, String> {
-        let a = th.arena as usize;
-        for d in 0..NARENAS {
-            if d == a {
-                continue;
-            }
-            // `let Some(mut dg) = donor.inner.try_lock() else { continue; };`
-            if sh.lock[d].is_some() {
-                continue;
-            }
-            // next_idle_group: walk the donor's empty and purged sets by
-            // group; a group is idle when every committed slab of it is
-            // in them (`cursor` is the donor's `group_next` for its
-            // current group, the group end otherwise).
-            let ngroups = NSLABS >> self.sc.lg_group;
-            for group in 0..ngroups {
-                let (start, end) = sh.group_range(self.sc, group);
-                if sh.owner[group] != d as u8 {
-                    continue;
-                }
-                let cursor = if sh.group_end[d] == end {
-                    sh.group_next[d]
-                } else {
-                    end
-                };
-                let in_sets = |s: u8| (sh.empty[d] | sh.purged[d]) & (1 << s) != 0;
-                if !(start..end).any(in_sets) || !(start..cursor).all(in_sets) {
-                    continue;
-                }
-                // transfer_group, under both locks. `owner_word == donor`,
-                // then per slab: arena field, state against the donor's
-                // sets, `live == 0`, no partial bit, not in the taker's
-                // sets; abort (`idle_group_in_use`) otherwise.
-                for s in start..end {
-                    let slab = &sh.slabs[s as usize];
-                    if slab.arena != d as u8 {
-                        return Err(format!(
-                            "transfer_group: slab {s} descriptor arena {} is not the donor {d}",
-                            slab.arena
-                        ));
-                    }
-                    let ok = match slab.state {
-                        St::Empty => sh.empty[d] & (1 << s) != 0,
-                        St::Purged => sh.purged[d] & (1 << s) != 0,
-                        St::Fresh => s >= cursor && !in_sets(s),
-                        St::Active => false,
-                    };
-                    let taker_has = (sh.partial[a] | sh.empty[a] | sh.purged[a]) & (1 << s) != 0;
-                    if !ok || slab.live != 0 || sh.partial[d] & (1 << s) != 0 || taker_has {
-                        return Err(format!(
-                            "idle_group_in_use: slab {s} {:?} live {} (in donor sets {ok})",
-                            slab.state, slab.live
-                        ));
-                    }
-                }
-                // The move: sets, `d.set_arena(self.arena)`, the owner
-                // word, the cursor when it was the donor's current group.
-                let mut moved = String::from("adopt: group ");
-                moved += &format!("{group} from arena {d}:");
-                for s in start..end {
-                    let bit = 1 << s;
-                    match sh.slabs[s as usize].state {
-                        St::Empty => {
-                            sh.empty[d] &= !bit;
-                            sh.empty[a] |= bit;
-                        }
-                        St::Purged => {
-                            sh.purged[d] &= !bit;
-                            sh.purged[a] |= bit;
-                        }
-                        _ => {}
-                    }
-                    sh.slabs[s as usize].arena = th.arena;
-                    moved += &format!(" slab {s} ({:?})", sh.slabs[s as usize].state);
-                }
-                sh.owner[group] = th.arena;
-                if sh.group_end[d] == end {
-                    sh.group_next[a] = sh.group_next[d];
-                    sh.group_end[a] = end;
-                    sh.group_next[d] = end;
-                    sh.group_end[d] = end;
-                }
-                return Ok(Some(moved));
-            }
+        // `if let Some(s) = g.purged.map.lowest_set() { g.purged.map.clear(s); ... return Some(s); }`
+        if let Some(s) = lowest_set(sh.purged[a]) {
+            sh.purged[a] &= !(1 << s);
+            return Ok(Some((
+                s,
+                format!("next_slab: Purged slab {s} out of the purged set"),
+            )));
         }
-        Ok(None)
+        // `if g.group_next >= g.group_end {`
+        if sh.group_next[a] >= sh.group_end[a] {
+            // `let (start, end) = table.take_group(meta, self.arena, ..)?;`
+            let group = sh.next_group as usize;
+            if group >= (NSLABS >> self.sc.lg_group) {
+                return Ok(None);
+            }
+            let (start, end) = sh.group_range(self.sc, group);
+            // take_group: the owner word and every descriptor's arena
+            // are written together after the cross-check that both are
+            // untouched.
+            if sh.owner[group] != NARENAS as u8 {
+                return Err(format!(
+                    "take_group: group {group} already owned by arena {}",
+                    sh.owner[group]
+                ));
+            }
+            for s in start..end {
+                let slab = &mut sh.slabs[s as usize];
+                if slab.state != St::Fresh || slab.committed || slab.live != 0 || slab.bits != 0 {
+                    return Err(format!("take_group: slab {s} of a fresh group is not Fresh"));
+                }
+                slab.arena = th.arena;
+            }
+            sh.owner[group] = th.arena;
+            sh.next_group += 1;
+            sh.group_next[a] = start;
+            sh.group_end[a] = end;
+        }
+        // `let s = g.group_next; let usable = table.commit_slab(s)?; g.group_next = s + 1;`
+        let s = sh.group_next[a];
+        sh.group_next[a] = s + 1;
+        sh.slabs[s as usize].committed = true;
+        Ok(Some((
+            s,
+            format!("next_slab: commit fresh slab {s} of arena {a}'s group"),
+        )))
     }
 
     /// The invariants, at every state.

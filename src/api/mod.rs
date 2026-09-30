@@ -297,7 +297,6 @@ fn init() {
     purge::configure(features.process_madvise, config.lazy_free);
     purge::configure_advice(features.process_madvise_free, config.lazy_band);
     purge::set_check_zero(config.check_zero);
-    crate::class::set_group_handoff(config.group_handoff);
     // The prefault pass (design 8.2) runs on the background thread, so
     // `prefault_active` is the one gate (the key without the thread is
     // stored and inert).

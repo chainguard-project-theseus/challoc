@@ -399,16 +399,6 @@ pub struct Config {
     /// word under the class or huge lock and a non-zero word aborts with
     /// the slab's prior state and the discard backend. Slow paths only.
     pub check_zero: bool,
-    /// An arena whose slab group of a class is used up takes an idle group
-    /// of that class from another arena before it commits a fresh one
-    /// (design 13.3, `ClassState::adopt_idle_group`). `false`, the
-    /// default, keeps every group with the arena that first committed it:
-    /// the handoff moved nothing on the 16-arena mstress row it was built
-    /// for and cost that row 2.4% of RSS on aarch64
-    /// (`bench/results/2026-09-18-{aarch64,x86_64}-gce-group-handoff.md`);
-    /// it takes a fifth off xmalloc-test's RSS, so it stays as an opt-in.
-    /// Slow paths only.
-    pub group_handoff: bool,
 }
 
 impl Default for Config {
@@ -449,7 +439,6 @@ impl Config {
         abort_conf: false,
         cgroup: true,
         check_zero: false,
-        group_handoff: false,
     };
 
     /// Apply one `key:value,key:value` string on top of `self`. Each problem
@@ -880,7 +869,6 @@ pub const TABLE: &[Key] = &[
     bool_key!("abort_conf", abort_conf),
     bool_key!("cgroup", cgroup),
     bool_key!("check_zero", check_zero),
-    bool_key!("group_handoff", group_handoff),
 ];
 
 /// The names of [`TABLE`], in its order.
@@ -1394,7 +1382,7 @@ mod tests {
         assert_eq!(d.huge_retain_max, crate::huge::DEFAULT_RETAIN_MAX);
         assert!(!d.zero_on_free && !d.slot_randomize && !d.double_free_scan && !d.abort_conf && !d.check_zero);
         assert!(!d.pac_pointers, "signed pointers are opt-in (priced in bench/results/2026-09-19-lane-a-pac-pointers.md)");
-        assert!(d.cgroup && !d.group_handoff);
+        assert!(d.cgroup);
         assert_eq!(Config::default(), d);
         assert_eq!(d.gc_interval_ns(), 10_000_000_000);
         assert_eq!(d.effective_guard_slab_interval(), 8);
@@ -1422,7 +1410,6 @@ mod tests {
             "abort_conf",
             "cgroup",
             "check_zero",
-            "group_handoff",
         ];
         for key in keys {
             for v in [true, false] {

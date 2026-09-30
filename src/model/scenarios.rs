@@ -1,5 +1,5 @@
-//! The knobs and the named scenarios (module docs in `mod.rs`, "Two
-//! knobs replay the protocol before its fixes"): [`Variant`] and
+//! The knobs and the named scenarios (module docs in `mod.rs`, "One
+//! knob replays the protocol before its fix"): [`Variant`] and
 //! [`Section`], [`CURRENT`] (the protocol as shipped), the [`Scenario`]
 //! shape, and the scenarios the tests in `mod.rs` run.
 
@@ -11,9 +11,6 @@ pub struct Variant {
     /// Plan Phase 1.5 task 7 (c): a zero pick's bits are claimed in
     /// `take` under the lock. `false` replays the pre-fix order.
     pub prefix_claim: bool,
-    /// Plan Phase 1.5 task 15: `on_live_zero` and `reopen` test the
-    /// owner word under the lock before touching the arena's sets.
-    pub owner_check: bool,
     /// Per-CPU mode: how the pop and push touch the cid's cache.
     pub section: Section,
     /// Check that every commit to a cache happened on the cid that picked
@@ -42,7 +39,6 @@ pub enum Section {
 
 pub const CURRENT: Variant = Variant {
     prefix_claim: true,
-    owner_check: true,
     section: Section::Rseq,
     strict_cid: true,
 };
@@ -54,8 +50,6 @@ pub struct Scenario {
     pub threads: Vec<(u8, Vec<Op>)>,
     /// `lg_group`: 0 for one slab per group, 1 for two.
     pub lg_group: u8,
-    /// The `group_handoff` key.
-    pub group_handoff: bool,
     /// The per-CPU mode (module docs): caches per cid, every section
     /// entry on any cid, `Pop`/`Push` in the programs. A thread's arena
     /// then follows the cid of its pop (the refill's arena); the
@@ -90,7 +84,6 @@ pub fn calloc_race() -> Scenario {
             ),
         ],
         lg_group: 1,
-        group_handoff: false,
         percpu: false,
     }
 }
@@ -123,7 +116,6 @@ pub fn churn() -> Scenario {
             ),
         ],
         lg_group: 1,
-        group_handoff: false,
         percpu: false,
     }
 }
@@ -141,25 +133,6 @@ pub fn three_way() -> Scenario {
             (0, vec![Op::Refill(3), Op::Write(1), Op::Release]),
         ],
         lg_group: 1,
-        group_handoff: false,
-        percpu: false,
-    }
-}
-
-/// The group handoff (plan Phase 1.5 task 15): arena 0's two threads use
-/// slab 0 and free it; arena 1, with nothing of its own, adopts the idle
-/// group and uses the slab while arena 0's `on_live_zero` for it may
-/// still be pending.
-pub fn handoff() -> Scenario {
-    Scenario {
-        name: "group handoff",
-        threads: vec![
-            (0, vec![Op::Refill(1), Op::Release]),
-            (0, vec![Op::Refill(1), Op::Release]),
-            (1, vec![Op::Refill(1), Op::Release]),
-        ],
-        lg_group: 0,
-        group_handoff: true,
         percpu: false,
     }
 }
@@ -182,7 +155,6 @@ pub fn percpu_share() -> Scenario {
             (0, vec![Op::Pop]),
         ],
         lg_group: 0,
-        group_handoff: false,
         percpu: true,
     }
 }
@@ -204,7 +176,6 @@ pub fn percpu_migrate() -> Scenario {
             (0, vec![Op::Pop]),
         ],
         lg_group: 0,
-        group_handoff: false,
         percpu: true,
     }
 }
@@ -224,7 +195,6 @@ pub fn percpu_purge() -> Scenario {
             (0, vec![Op::Pop, Op::Write(0), Op::Push(0)]),
         ],
         lg_group: 0,
-        group_handoff: false,
         percpu: true,
     }
 }

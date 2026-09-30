@@ -132,7 +132,6 @@ One row per key, in `KEYS` order. "Values" is the grammar
 | `abort_conf` | `true`, `false` | `false` | Abort after parsing if any source reported a problem (section 1). | Package tests and any deployment that must not run on a misspelled key. | None at run time. |
 | `cgroup` | `true`, `false` | `true` | Read the memory cgroup at init and sample it: effective limits, `memory.current`, `memory.events`, the PSI trigger; apply the policy of section 4. `false` reads nothing, applies nothing, reports `cgroup: not tracked (cgroup:false)`. | `false` only as the control in a measurement. | With `cgroup:false` the container churn test keeps 319 MiB of a freed 400 MiB at 2 s where the default is at 13 MiB within 50 ms (`bench/results/2026-09-18-aarch64-gce-cgroup-container-tests.md`). |
 | `check_zero` | `true`, `false` | `false` | Debug: every slot or page handed out as known zero is read at its first and last word under the class or huge lock; a non-zero word aborts with the slab's prior state. Slow paths only. | Diagnosing a `calloc` zero bug. | Extra reads on every refill from `Fresh` or `Purged` memory. |
-| `group_handoff` | `true`, `false` | `false` | An arena whose slab group of a class is used up takes an idle group of that class from another arena before committing a fresh one. Slow paths only. | A many-arena process whose RSS is idle groups: it takes a fifth off xmalloc-test's RSS. | It moved nothing on the 16-arena mstress row it was built for and cost that row 2.4% of RSS on aarch64 (`bench/results/2026-09-18-aarch64-gce-group-handoff.md`). |
 
 ### Why the defaults are what they are
 
@@ -162,7 +161,7 @@ side that keeps memory low and the common process unchanged:
 The rest are measured refusals: `zero_on_free`, `slot_randomize`,
 `pac_pointers`, `double_free_scan` are hardening opt-ins whose price is
 over the 3% budget for a default-on hardening (rows in the table);
-`group_handoff` did not move its target row; `spin_hint:auto` never
+`spin_hint:auto` never
 chooses `wfe`; `tcache_max` is the RSS probe's finding; `lazy_band:true`
 with no-limit eager is the two-advice purge, chosen so RSS never lies
 where nothing knows the headroom.
@@ -723,8 +722,7 @@ fixes their values by measurement:
   forcing it.
 - `lazy_free:true`: makes RSS lie everywhere, including with no limit.
 - `cgroup:false`: only as a control.
-- `group_handoff`, `check_zero`: an opt-in that did not move its row, and
-  a debug mode.
+- `check_zero`: a debug mode.
 - `narenas` for Valkey: the server is one main thread plus io-threads;
   the default gives it `min(threads, 4 * ncpus)` arenas and the soak
   criteria are met with it.
