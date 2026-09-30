@@ -46,16 +46,14 @@ Reporting: every problem is printed on stderr as `challoc: <source>:
 <issue>` (`unknown conf key "x"`, `invalid conf value "x" for k`,
 `out-of-range conf value "x" for k (clamped)`, `conf value "x" for k is
 not a power of two (rounded up to N)`, `conf key k is accepted but has no
-effect (not implemented)`, `conf value "x" for spin_hint is not available
-on this CPU; using the default`) and the offending pair is skipped
+effect (not implemented)`) and the offending pair is skipped
 (clamped or rounded for the numeric cases); parsing continues.
 
 `abort_conf:true` turns the report into an abort. It is evaluated after
 every source has been read, so it covers keys that came before it in the
 same or an earlier source, and it refuses: unknown keys, bad values,
-out-of-range and rounded numbers, inert keys (below), and a `spin_hint`
-this CPU cannot run. It does not refuse a runtime probe that fails for a
-valid key: `slice_ext:on` on a kernel without the extension,
+out-of-range and rounded numbers, and inert keys (below). It does not
+refuse a runtime probe that fails for a valid key: `slice_ext:on` on a kernel without the extension,
 `percpu_arena:percpu` without `mm_cid`, `thp_process:advised` before
 6.18, `thp:auto` on a host with no sub-PMD folio size, `thp:always` under
 a cgroup limit below 1 GiB. Those are the documented fallbacks, and the
@@ -117,7 +115,6 @@ One row per key, in `KEYS` order. "Values" is the grammar
 | `tcache_compact_shift` | `0`..`20` | `3` | Every `2^shift` pops of a class are served from the lowest-addressed cached slot instead of the top of the stack, so long-lived objects gather in low slabs and the high slabs empty (design 6.4). `0` turns the schedule off. | Never. | The compaction the defragmentation story and the `churn` row rely on. `slot_randomize:true` fights it. |
 | `thp` | `never` (`default` is `never`), `auto`, `always` | `never` | Transparent huge pages for challoc's regions. `never`: `MADV_NOHUGEPAGE` on the class superblock and the metadata region; the huge region (allocations above the largest class) follows the host's policy. `auto`: `MADV_HUGEPAGE` for sub-PMD folios (64 KiB) on slab groups and metadata, never a 2 MiB page; inert where no such size is enabled or the 2 MiB size is `madvise`-gated. `always`: 2 MiB chunks over the class regions, huge runs and metadata (jemalloc's `thp:always`); forced to `never` under a cgroup limit below 1 GiB. Section 5. | `always` on a THP=`always` host when throughput matters more than RSS and the process does not fork. `auto` on an aarch64 host with `hugepages-64kB` enabled. | `always`: valkey1 at parity with jemalloc for +9.5% peak RSS on a 585 MiB heap and +39.9% on larson16's (`bench/results/2026-09-20-aarch64-cgos-thp-decision.md`); `auto`: larson1 +1.7% and 15.9 -> 18.1 MiB RSS (`2026-09-19-lane-b-mthp.md`). |
 | `thp_process` | `default`, `advised` | `default` | `advised` issues `prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED)` once at init (kernel 6.18+, probed by the call's return), so the whole process gets huge pages only where a range was `MADV_HUGEPAGE`d; `default` issues nothing. Independent of `thp`. | "No huge page anywhere in this process" on an `always` host, including libc's and the program's own mappings, which `thp:never` does not cover. | Process-wide, hence opt-in. On the Valkey model it takes the huge runs' 2 MiB pages away too: +12.2% behind jemalloc on valkey1 against +5.1% for the default (`2026-09-20-aarch64-cgos-thp-ab.md` row (d) and `-thp-decision.md`). |
-| `spin_hint` | `auto`, `baseline`, `umwait`, `wfe` | `auto` | What a contended lock spins with. `auto` is the CPU probe's choice: `umwait` where WAITPKG is exposed, else the baseline (`pause`/`isb`). `umwait` without WAITPKG and `wfe` without the timer event stream are refused (reported, an `abort_conf` issue) and left at `auto`. `auto` never picks `wfe`. | Never in production. `wfe` for a power-saving experiment. | `wfe` lost xmalloc by 3.5..3.6% with RSS 55.7 -> 66.9 MiB on the T2A (`bench/results/2026-09-19-lane-c-spin-and-geometry.md`). No GCE guest exposes WAITPKG, so `umwait` has never run. |
 | `slice_ext` | `auto`, `on`, `off` | `auto` | A lock holder asks the kernel, through the rseq `slice_ctrl` bytes, to defer a preemption until the release (kernel 7.0 with `CONFIG_RSEQ_SLICE_EXTENSION`, x86_64 only so far, probed). `auto` and `on` follow the probe; `on` additionally makes the report note a refusal; `off` never requests. | Never; `off` to rule it out when comparing kernels. | One relaxed load per hold when off. The reference GCE kernels compile the option out (`slice_ext=kernel-disabled`). |
 | `lazy_free` | `true`, `false` | `false` | `MADV_FREE` for every purge, in every band, explicit purges included: the override of the two-advice purge (section 4). | Never in a container that watches RSS: lazily freed pages stay resident and charged until the kernel reclaims them. | RSS and `memory.current` do not fall after a free; Valkey's `allocator_frag_ratio` and autoscalers read the stale figure. |
 | `lazy_band` | `true`, `false` | `true` | `MADV_FREE` for purges made under 70% of a known cgroup limit (the headroom band); `false` makes every purge `MADV_DONTNEED` unless `lazy_free`. | `false` when the container's RSS figure must track live memory exactly even with headroom (an autoscaler, a fragmentation ratio). | Refaults on reuse: allocating 200 MiB again after a lazy purge took 5 ms against 44 ms after an eager one on the C4A (`bench/results/2026-09-19-lane-b-two-advice-purge.md`). |
@@ -162,8 +159,7 @@ side that keeps memory low and the common process unchanged:
 The rest are measured refusals: `zero_on_free`, `slot_randomize`,
 `pac_pointers`, `double_free_scan` are hardening opt-ins whose price is
 over the 3% budget for a default-on hardening (rows in the table);
-`group_handoff` did not move its target row; `spin_hint:auto` never
-chooses `wfe`; `tcache_max` is the RSS probe's finding; `lazy_band:true`
+`group_handoff` did not move its target row; `tcache_max` is the RSS probe's finding; `lazy_band:true`
 with no-limit eager is the two-advice purge, chosen so RSS never lies
 where nothing knows the headroom.
 
@@ -717,8 +713,6 @@ fixes their values by measurement:
   for a requirement, not for a hunch, and re-run the consumer's row.
 - `percpu_arena:percpu`: 4..38% behind thread caches on every `ab` row;
   no workload in the suite has shown the win it is designed for.
-- `spin_hint`: `auto` is the probe's choice; `wfe` lost; `umwait` has
-  never run on any host the project reached.
 - `slice_ext`: `auto` follows the kernel; there is nothing to gain by
   forcing it.
 - `lazy_free:true`: makes RSS lie everywhere, including with no limit.

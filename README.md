@@ -163,7 +163,7 @@ the task that will use them is named in the design.
 | LAM `lam` (reported only)    | x86_64 CPU (`cpuid` 7.1) and kernel 6.4 | Tagged pointers, designed (section 18.3), gated as MTE | Untagged pointers |
 | UAI `uai` (reported only)    | AMD CPU, Zen 4 and later (`cpuid` `0x80000021`); no kernel enables it for user space yet | Tagged pointers, a later task | Untagged pointers |
 | LA57 `la57`, `la57_enabled` (reported only) | x86_64 CPU (`cpuid` 7.0); the kernel booted with five-level paging (a hinted `mmap` above 2^47 is honoured) | Address-space budget for reservations and tag bits | 47-bit user addresses |
-| CLDEMOTE, WAITPKG, ERMS, FSRM, AVX-512F (reported only) | x86_64 CPU (`cpuid` 7.0) | Nothing: CLDEMOTE on the release path was measured on the C4 and dropped (it cost the single-threaded rows 5..17% in cycles per operation and did not move the io-threads soak, `bench/results/2026-09-19-x86_64-lane-b-task12-cldemote.md`); WAITPKG is the lock's `umwait` hint where exposed; the rest are recorded for the matrix | None needed |
+| CLDEMOTE, WAITPKG, ERMS, FSRM, AVX-512F (reported only) | x86_64 CPU (`cpuid` 7.0) | Nothing: CLDEMOTE on the release path was measured on the C4 and dropped (it cost the single-threaded rows 5..17% in cycles per operation and did not move the io-threads soak, `bench/results/2026-09-19-x86_64-lane-b-task12-cldemote.md`); the rest are recorded for the matrix | None needed |
 | Cache line, L1D, L2 sizes (reported only) | `CTR_EL0` (arm64), `cpuid` leaf 4 / `0x8000001D` (x86_64), `/sys/devices/system/cpu/cpu0/cache` as fallback | Geometry defaults, a later task | `unknown`; the layout constants stay fixed |
 
 Chainguard OS ships Linux 6.18, so every kernel row above except the per-CPU

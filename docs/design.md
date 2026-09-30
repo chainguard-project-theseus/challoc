@@ -386,38 +386,8 @@ background thread's state) is a futex mutex in the shape of Drepper's
 acquire uncontended, one swap to release, `FUTEX_WAKE` only when the word
 says a waiter may sleep. A contended locker spins 100 rounds before
 `FUTEX_WAIT`; slow-path critical sections are a few dozen instructions, so
-the holder is usually gone within them. What one round waits with is the
-*spin hint*, chosen once at init by the CPU probe (section 17) and the one
-thing that probe acts on: `pause` (x86_64) or `isb` (aarch64) everywhere;
-with WAITPKG (`cpuid` 7.0 `ECX[5]`) `umonitor` on the lock word and `umwait`
-in C0.1 until a store to its line or a 1024-tick TSC deadline, which hands
-the core to the sibling hyperthread instead of throttling issue; on aarch64
-with the timer event stream (`HWCAP_EVTSTRM`) `ldaxr` of the word, which
-arms the exclusive monitor on its line, then `wfe`, which sleeps until the
-holder's store clears the monitor (the Arm ARM guarantees the wake-up event
-for a monitor clear; Linux's `__cmpwait_case` is the same pattern), an
-interrupt, `sev`, or the event stream's tick (100 us on Linux), so a `wfe`
-that no store ends is bounded and the hint is installed only where the
-stream runs. Arming before the check closes the lost-wake window on both
-architectures: a store between the check and the wait sets the event and
-the wait returns at once. A hint changes nothing about the protocol: every
-hint polls the same word and falls through to the same futex. What the
-probe chooses (`spin_hint:auto`, section 12): `umwait` where WAITPKG is
-exposed, the baseline everywhere else, `wfe` never. GCE's hypervisor hides
-WAITPKG on every CPU of the matrix (Sapphire and Emerald Rapids have it),
-so on GCE x86_64 the lock runs the baseline and only the fallback could be
-measured: the mechanism costs nothing (C4 and C4A larson16, larson10,
-xmalloc within noise of the previous lock, both ways). The `wfe` hint was
-measured on the Altra and the Axion against the same binary at
-`spin_hint:baseline`: larson16 and larson10 within noise, xmalloc-test 3%
-slower with a quarter to a third more RSS (the freeing threads' flushes
-contend on the class locks; a `wfe` wake hands the lock over later than a
-`pause` re-poll, the allocating threads run ahead and the cached residue
-grows), so `wfe` is opt-in (`spin_hint:wfe`) and stays in the tree as the
-cost-free path it is when not selected
-(`bench/results/2026-09-19-lane-c-spin-and-geometry.md`). `lock::spin_hint()`
-says which hint is in use; the container test checks it against
-`/proc/cpuinfo`'s `waitpkg` or `evtstrm` flag.
+the holder is usually gone within them. One round is one poll of the word
+and one `pause` (x86_64) or `isb` (aarch64).
 
 There is no per-arena high-water mark: the class's commit watermark lives in
 the `SlabTable` and each arena commits the slabs of its current group as it
@@ -1575,7 +1545,6 @@ jemalloc names where they exist:
 | `group_handoff`           | false   | challoc only; opt-in: an arena takes another arena's idle slab group before a fresh one (5, 13.3); off because it did not move the mstress row it was built for |
 | `thp`                     | never   | `never`, `auto`, `always` (7, 17, `thp.rs`): `auto` advises slab groups of classes whose slab holds an enabled sub-PMD folio and rounds metadata commits to it, never a 2 MiB page (inert where the PMD size is `madvise`-gated or no such size is enabled); the opt-in for aarch64 hosts with `hugepages-64kB` enabled and Valkey-shaped heaps (measured neutral there, a real 1.6% loss on larson and more RSS on small heaps, so not the default); `always` commits and advises PMD chunks (at a 2 MiB PMD only: 4 KiB pages; at 16 and 64 KiB pages it is the folio path over the enabled sizes below the PMD, inert when none is), huge runs of a PMD or more and the metadata (jemalloc's `thp:always`, priced in `bench/results/2026-09-19-lane-b-mthp.md`); `always` under a cgroup limit below 1 GiB is forced to `never` (11); `never` (and a forced `never`) issues `MADV_NOHUGEPAGE` on the class superblock and the metadata region, so the slab regions get no huge page on a host whose global mode is `always`, and leaves the huge region to the host's policy, as jemalloc's `never` leaves its large extents (17, plan Phase 2.5 task 16; the 2026-09-20 decision on `bench/results/2026-09-20-aarch64-cgos-thp-ab.md`, option (d): the huge runs' 2 MiB pages were 10 points of `valkey1` on Chainguard OS) |
 | `thp_process`             | default | challoc only; `default`, `advised` (17, plan Phase 2.5 task 16, `thp.rs`): the process-wide THP policy asked for at init. `advised` calls `prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED)` where the kernel accepts it (6.18+, probed by the call's return, `EINVAL` below: the process then keeps its inherited policy and the report says so), so on an `always` host only the regions `thp:auto|always` advise get huge pages and the rest of the process does not; `default` issues nothing. Opt-in because it is process-wide: a library does not change the THP policy of the program that loaded it unasked. Independent of `thp` (the per-region advice); `thp:default` is `thp:never`, not this key |
-| `spin_hint`               | auto    | challoc only; what a contended lock spins with (5): `auto` (the CPU probe's choice: `umwait` with WAITPKG, else the baseline), `baseline` (`pause`/`isb`), `umwait` (reported and left at `auto` without WAITPKG), `wfe` (aarch64; measured slower under contention, never chosen by `auto`) |
 | `slice_ext`               | auto    | challoc only; `auto`, `on`, `off` (17, "Time slice extension"; plan Phase 2.5 task 15): whether a lock holder asks the kernel, through its rseq `slice_ctrl` bytes, to defer a preemption until the release. `auto` and `on` turn it on where the runtime probe passes (glibc's `__rseq_size >= 32`, the kernel's `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE` bit in the thread's area, the `prctl` enable confirmed by the `ENABLED` bit: kernel 7.0 with `CONFIG_RSEQ_SLICE_EXTENSION`, x86_64 only so far); `on` additionally makes the report note a refused request; `off` never requests. No kernel field but `request` is written |
 | `lazy_free`               | false   | `MADV_FREE` for every purge, the override of the two-advice purge (8) |
 | `lazy_band`               | true    | challoc only; `MADV_FREE` for purges under 70% of a known cgroup limit (8, 11); `false` makes every purge `MADV_DONTNEED` unless `lazy_free` |
@@ -2465,8 +2434,6 @@ runs on every row.
 | UAI (`cpuid` `0x80000021` `EAX[7]`, read only when leaf `0x80000000` reports an extended range that reaches it) | AMD CPU (Zen 4 and later: upper address ignore, the LAM analogue); no upstream kernel enables it for user space yet (no `arch_prctl`, no `/proc/cpuinfo` flag) | reported only: tagged pointers (section 18.3) once Linux has an enable path | untagged pointers |
 | LA57 (`cpuid` 7.0 `ECX[16]`), `la57_enabled` (a hinted `mmap` above 2^47 honoured) | x86_64 CPU; kernel with `CONFIG_X86_5LEVEL` booted on it | reported only: the address-space budget for reservations and tag bits (section 18.3 uses bits 62:57 on both architectures) | 47-bit user addresses |
 | CLDEMOTE (`cpuid` 7.0 `ECX[25]`) | x86_64 CPU (Sapphire Rapids and later; the C4's 8581C exposes it to the guest) | reported only, by measurement (plan Phase 2.5 task 12, lane B): the hint on the bitmap word and descriptor line a batch release writes last cost xmalloc-test +5% and the Valkey model +13..17% cycles per operation and left the `io-threads 4` soak's per-command counters flat (`bench/results/2026-09-19-x86_64-lane-b-task12-cldemote.md`), because the freeing core is usually the next claimer; the call sites were dropped. `sys::cldemote` keeps the probe's verdict (`configure` at init), `demote` and a both-ways container test, so a release path that knows the claimer is another core can be measured by adding one call | none needed |
-| WAITPKG (`cpuid` 7.0 `ECX[5]`) | x86_64 CPU (Sapphire Rapids and later); GCE's hypervisor hides it on every cell of the matrix | the lock's `umwait` spin hint (section 5; `spin_hint:auto`), so far only ever measured as its fallback | `pause` in the spin; the C4 and the Cascade Lake rows in `bench/results/2026-09-19-lane-c-spin-and-geometry.md` are within noise of the previous lock |
-| Timer event stream (`HWCAP_EVTSTRM`) | arm64 kernel (`CONFIG_ARM_ARCH_TIMER_EVTSTREAM`, on by default, 10 kHz) | nothing by default: the `wfe` spin hint it bounds is opt-in (`spin_hint:wfe`, refused without the stream) because it lost 3% and a quarter of the RSS on xmalloc-test on the Altra and the Axion (section 5, the same results file) | `isb` in the spin |
 | rseq time slice extension (`slice_ctrl`, `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE`) | kernel 7.0 with `CONFIG_RSEQ_SLICE_EXTENSION` (default N; needs `GENERIC_ENTRY` and `HAVE_GENERIC_TIF_BITS`, which x86_64 has and arm64 does not, through master) and glibc registering the v2 size (`__rseq_size >= 32`: 2.44 registers 33); Ubuntu's `7.0.0-1011-gcp` leaves the option off, so the GCE reference VMs read `kernel-disabled` and the numbers come from a 7.0.14 built with it (`bench/results/2026-09-19-x86_64-lane-c-task15-slice-ext.md`) | every lock holder's request to defer a preemption until the release (`slice.rs`, the subsection below; `slice_ext:auto`), the `prctl` enable per thread on its first hold, `rseq_slice_yield` (or `sched_yield` where seccomp hides the new syscall) after a granted release; the feature line's `slice_ext=` key (`sys::features::SliceExt`, read through `slice::probe` and `slice::verdict`, plan task 15) says `on` when lock holders request it and otherwise the kernel's answer (`available` under `slice_ext:off`, `kernel-disabled`, `no-slice_ctrl`, `no-rseq`, `prctl-failed`) | the lock without the request: one relaxed load per hold; `Slice extension: off (<why>)` in the report and the same word after `slice_ext=` in the feature line |
 | ERMS, FSRM, AVX-512F (`cpuid` 7.0 `EBX[9]`, `EDX[4]`, `EBX[16]`) | x86_64 CPU | reported only: `memcpy`/`memset` selection is glibc's; the crate's fills use the compiler baseline | none needed |
 | Cache line, L1D and L2 sizes | `CTR_EL0` (arm64), `cpuid` leaf 4 or `0x8000001D` (x86_64), else `/sys/devices/system/cpu/cpu0/cache/index*/` | reported only: the layout constants (`lock.rs` padding, the 512-byte stride rule) and the cache-capacity defaults stay fixed; an L2-derived ladder was priced on the 1 MiB parts and dropped (section 6.2, "Cache geometry") | `unknown` in the line; nothing changes |
@@ -2930,14 +2897,14 @@ src/sys/raw.rs        the asm syscall instructions (x86_64, aarch64)
 src/sys/nr.rs         syscall numbers, header-checked (tests/c/sysnr.c)
 src/sys/errno.rs      kernel error decoding
 src/sys/features.rs   kernel feature probing; the feature line as a key table (words) that Display and the tests iterate
-src/sys/cpu.rs        CPU feature report (HWCAP, cpuid, CTR_EL0, sysfs cache sizes); pure, the spin hint is applied by api::init
+src/sys/cpu.rs        CPU feature report (HWCAP, cpuid, CTR_EL0, sysfs cache sizes); pure
 src/sys/cgroup.rs     cgroup2 discovery, limit walk, sampling (memory.current, every memory.events counter), PSI trigger arming
 src/sys/cldemote.rs   the `cldemote` hint: probed and reported, issued on no path
 src/sys/pac.rs        pointer authentication of the TLS heap pointer (arm64 FEAT_PAuth)
 src/tls.rs            initial-exec TLS accessor
 src/rseq.rs           restartable sequences: the rseq probe (__rseq_offset/size/flags, mm_cid; also the feature line's rseq= words) and the per-CPU cache critical sections (asm, both architectures, one descriptor and abort-handler macro)
 src/slice.rs          the rseq time-slice extension for lock holders (`slice_ext`)
-src/lock.rs           futex lock, padded lock, spin hint
+src/lock.rs           futex lock, padded lock
 src/layout/mod.rs     size classes (Class, CLASSES, class_of), address-space parameters
 src/layout/regions.rs Regions: the reservations, pointer classification (slab_slot, slot_in_class), seal and release
 src/layout/tests.rs, src/layout/linux_tests.rs   layout tests
@@ -2974,7 +2941,7 @@ src/arena.rs          arenas, explicit caches; re-exports heap::mallocx
 src/config.rs         malloc_conf parsing: one key table (name, parse, read) behind set/get/KEYS
 src/stats.rs          counters and epoch merge
 src/thp.rs            THP: the `thp` key against the sysfs table, reservation advice, metadata folios, MADV_HUGEPAGE on huge runs, forced_by_limit
-src/api/mod.rs        lazy init (applies the spin hint and cldemote), Shared/Features statics, challoc_version/challoc_features, fork handlers, export_pair!
+src/api/mod.rs        lazy init (applies cldemote), Shared/Features statics, challoc_version/challoc_features, fork handlers, export_pair!
 src/api/libc.rs       standard entry points, malloc_trim
 src/api/glibc.rs      mallopt, mallinfo, mallinfo2
 src/api/jemalloc.rs   *allocx, mallctl entry points, malloc_conf/malloc_message symbols, je_ aliases

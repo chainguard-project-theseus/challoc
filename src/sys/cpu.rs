@@ -27,8 +27,7 @@
 //!
 //! The decoders at the top are pure and unit tested on the host against
 //! captured register and file contents; the probes run in the container.
-//! [`Cpu::probe`] is pure: the one thing the report is acted on, the
-//! lock's spin hint ([`spin_hint`]), is installed by `api::init`.
+//! [`Cpu::probe`] is pure.
 
 use core::fmt;
 
@@ -47,11 +46,6 @@ pub struct Regs {
 // arm64 `AT_HWCAP` / `AT_HWCAP2` bits, from `arch/arm64/include/uapi/asm/
 // hwcap.h`; the container test cross-checks them against the installed
 // header where one exists.
-/// The timer event stream: the kernel programs the generic timer to raise
-/// a `wfe` wake-up event every 2^n ticks (100 us on Linux), so a `wfe`
-/// that no store ends returns within that; the lock's `wfe` hint depends
-/// on it (`lock::SpinHint::Wfe`).
-pub const HWCAP_EVTSTRM: u64 = 1 << 2;
 pub const HWCAP_ATOMICS: u64 = 1 << 8;
 pub const HWCAP_SVE: u64 = 1 << 22;
 pub const HWCAP_USCAT: u64 = 1 << 25;
@@ -155,24 +149,6 @@ impl X86 {
 pub enum Isa {
     Arm(Arm),
     X86(X86),
-}
-
-/// The lock's spin hint for a CPU (`lock::SpinHint`, design 5), what
-/// `spin_hint:auto` installs: x86_64's `umwait` with WAITPKG, else the
-/// baseline `pause`/`isb`. Never `wfe`: measured on the Altra and the
-/// Axion it hands a contended lock over later than a `pause` re-poll and
-/// costs xmalloc-test 3% and a quarter of its RSS
-/// (`bench/results/2026-09-19-lane-c-spin-and-geometry.md`), so `wfe` is
-/// the explicit key's alone, gated on the event stream ([`HWCAP_EVTSTRM`],
-/// `linux::event_stream`). Not a key of the report line: `lock::spin_hint()`
-/// says what is in use. `api::init` suggests it (`lock::suggest_spin_hint`;
-/// the configuration key wins), the one thing the report is acted on.
-pub fn spin_hint(isa: &Isa) -> crate::lock::SpinHint {
-    use crate::lock::SpinHint;
-    match isa {
-        Isa::X86(x) if x.waitpkg => SpinHint::Umwait,
-        _ => SpinHint::Baseline,
-    }
 }
 
 /// Cache geometry in bytes; `0` means unknown.
@@ -362,9 +338,6 @@ impl fmt::Display for Cpu {
 }
 
 #[cfg(target_os = "linux")]
-pub use linux::event_stream;
-
-#[cfg(target_os = "linux")]
 mod linux {
     use super::{CacheSource, Caches, Cpu, SysfsCache, caches_from_sysfs};
     use crate::sys;
@@ -374,8 +347,7 @@ mod linux {
         /// whatever cache figure they did not give. Never allocates; at most
         /// six small file reads (about 35 us on the C4A, `probe_cost_is_small`)
         /// and, on x86_64 with `la57`, one `mmap`/`munmap` pair of
-        /// `page_size` bytes. Pure: nothing process-wide changes (the spin
-        /// hint is `api::init`'s to suggest from the result).
+        /// `page_size` bytes. Pure: nothing process-wide changes.
         pub fn probe(page_size: usize) -> Cpu {
             let (isa, from_regs) = arch::probe(page_size);
             let mut caches = from_regs;
@@ -472,12 +444,6 @@ mod linux {
             (Isa::Arm(arm), caches)
         }
 
-        /// Whether the kernel runs the timer event stream
-        /// (`HWCAP_EVTSTRM`), which bounds a `wfe` that no store ends;
-        /// the explicit `spin_hint:wfe` needs it.
-        pub fn event_stream() -> bool {
-            getauxval(AT_HWCAP) as u64 & super::super::HWCAP_EVTSTRM != 0
-        }
     }
 
     #[cfg(target_arch = "x86_64")]
@@ -584,17 +550,8 @@ mod linux {
             (Isa::X86(x86), caches)
         }
 
-        /// x86_64 has no event stream; `spin_hint:wfe` is never available.
-        pub fn event_stream() -> bool {
-            false
-        }
     }
 
-    /// [`arch::event_stream`]: the timer event stream on arm64, `false`
-    /// on x86_64.
-    pub fn event_stream() -> bool {
-        arch::event_stream()
-    }
 }
 
 #[cfg(test)]
@@ -653,32 +610,6 @@ mod tests {
     fn axion_hwcap_decodes_without_mte() {
         let a = Arm::from_hwcap(AXION_HWCAP.0, AXION_HWCAP.1);
         assert_eq!(a, Arm { mte: false, mte3: false, pac: true, lse: true, lse2: true, bti: true, sve: true });
-    }
-
-    /// The spin hint from the captured registers: every GCE x86 guest
-    /// hides WAITPKG (baseline), a composed Sapphire Rapids with the bit
-    /// exposed gets `umwait`, and arm64 is the baseline whatever the HWCAP
-    /// words say (`wfe` is the explicit key's; every arm64 kernel captured
-    /// runs the event stream it needs).
-    #[test]
-    fn spin_hint_follows_waitpkg_and_never_wfe() {
-        use crate::lock::SpinHint;
-        let xeon = Isa::X86(X86::from_cpuid(XEON_8581C_MAX_LEAF, XEON_8581C_LEAF7, Regs::default(), Regs::default()));
-        assert_eq!(spin_hint(&xeon), SpinHint::Baseline);
-        let genoa = Isa::X86(X86::from_cpuid(GENOA_9B14_MAX_LEAF, GENOA_9B14_LEAF7, GENOA_9B14_LEAF7_1, GENOA_9B14_EXT21));
-        assert_eq!(spin_hint(&genoa), SpinHint::Baseline);
-        let exposed = Regs { ecx: XEON_8581C_LEAF7.ecx | 1 << 5, ..XEON_8581C_LEAF7 };
-        let spr = Isa::X86(X86::from_cpuid(XEON_8581C_MAX_LEAF, exposed, Regs::default(), Regs::default()));
-        assert!(matches!(spr, Isa::X86(x) if x.waitpkg));
-        assert_eq!(spin_hint(&spr), SpinHint::Umwait);
-        for (name, (hwcap, hwcap2)) in [("axion", AXION_HWCAP), ("altra", ALTRA_HWCAP), ("mac vm", MAC_VM_HWCAP)] {
-            let arm = Isa::Arm(Arm::from_hwcap(hwcap, hwcap2));
-            assert_ne!(hwcap & HWCAP_EVTSTRM, 0, "{name}: the capture has evtstrm");
-            assert_eq!(spin_hint(&arm), SpinHint::Baseline, "{name}");
-        }
-        // What a build can run: `wfe` only on aarch64, `umwait` only on x86_64.
-        assert_eq!(SpinHint::Wfe.available(), if cfg!(target_arch = "aarch64") { SpinHint::Wfe } else { SpinHint::Baseline });
-        assert_eq!(SpinHint::Umwait.available(), if cfg!(target_arch = "x86_64") { SpinHint::Umwait } else { SpinHint::Baseline });
     }
 
     #[test]
@@ -926,19 +857,6 @@ mod linux_tests {
         }
         // The architecture we were built for is the one reported.
         assert_eq!(matches!(c.isa, Isa::Arm(_)), cfg!(target_arch = "aarch64"));
-        // The spin hint the report suggests matches the kernel's flags:
-        // `umwait` with `waitpkg` on x86_64 (hidden by GCE's hypervisor,
-        // so the baseline there), the baseline on arm64 (`wfe` is the
-        // explicit key's); the event stream the key needs is `evtstrm`.
-        // Whether it is in use is `init_installs_the_spin_hint_and_cldemote`.
-        let has = |f: &str| flags.iter().any(|g| g == f);
-        let want = match c.isa {
-            Isa::X86(_) if has("waitpkg") => crate::lock::SpinHint::Umwait,
-            _ => crate::lock::SpinHint::Baseline,
-        };
-        assert_eq!(spin_hint(&c.isa), want, "suggested spin hint against /proc/cpuinfo");
-        assert_eq!(event_stream(), has("evtstrm") && cfg!(target_arch = "aarch64"), "event stream against /proc/cpuinfo");
-        std::eprintln!("cpu: spin_hint={} event_stream={}", spin_hint(&c.isa).name(), event_stream());
         // Every CPU we run on has a 32..256-byte line and, when known, a
         // plausible L1D and L2.
         assert!(matches!(c.caches.line, 32 | 64 | 128 | 256), "{line}");
@@ -996,29 +914,20 @@ mod linux_tests {
         }
     }
 
-    /// The probe is pure: a hundred runs change neither the process-wide
-    /// spin hint nor the `cldemote` verdict (both are `api::init`'s,
-    /// `init_installs_the_spin_hint_and_cldemote`). Under the lock the
-    /// tests that install a hint hold, so a forced hint is not misread as
-    /// the probe's doing.
+    /// The probe is pure: a hundred runs do not change the process-wide
+    /// `cldemote` verdict (`api::init`'s, `init_installs_cldemote`).
     #[test]
     fn probe_has_no_side_effects() {
-        let _serial = crate::lock::SPIN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let page = crate::sys::features::page_size();
-        let hint = crate::lock::spin_hint();
         let demote = crate::sys::cldemote::enabled();
-        // A hint the probe would never suggest, and the opposite verdict:
-        // if either moves back, the probe wrote them.
-        crate::lock::set_spin_hint(crate::lock::SpinHint::Baseline);
+        // The opposite verdict: if it moves back, the probe wrote it.
         crate::sys::cldemote::configure(!demote);
         let c = Cpu::probe(page);
         for _ in 0..100 {
             assert_eq!(Cpu::probe(page), c);
         }
-        assert_eq!(crate::lock::spin_hint(), crate::lock::SpinHint::Baseline, "the probe installed a spin hint");
         assert_eq!(crate::sys::cldemote::enabled(), !demote && cfg!(target_arch = "x86_64"), "the probe configured cldemote");
         crate::sys::cldemote::configure(demote);
-        crate::lock::set_spin_hint(hint);
     }
 
     /// The one test here that initialises the real allocator. Its module
@@ -1030,22 +939,16 @@ mod linux_tests {
         use super::super::*;
 
         /// What `api::init` does with the report, both ways: once the
-        /// allocator is initialised the lock's spin hint is the one this
-        /// CPU suggests (the configuration of the test binary sets no
-        /// `spin_hint` key) and the `cldemote` verdict is the CPU's bit (on
-        /// x86_64; never on elsewhere). Init runs once per process, so this
-        /// reads the installed state rather than running it again; a test
-        /// that forced a hint holds the same lock and puts the probe's
-        /// choice back.
+        /// allocator is initialised the `cldemote` verdict is the CPU's bit
+        /// (on x86_64; never on elsewhere). Init runs once per process, so
+        /// this reads the installed state rather than running it again.
         #[test]
-        fn init_installs_the_spin_hint_and_cldemote() {
-            let _serial = crate::lock::SPIN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        fn init_installs_cldemote() {
             let _ = crate::api::shared();
             let c = Cpu::probe(crate::sys::features::page_size());
-            assert_eq!(crate::lock::spin_hint(), spin_hint(&c.isa), "init did not suggest the CPU's spin hint");
             let present = matches!(c.isa, Isa::X86(x) if x.cldemote);
             assert_eq!(crate::sys::cldemote::enabled(), present && cfg!(target_arch = "x86_64"), "init did not configure cldemote");
-            std::eprintln!("init: spin_hint={} cldemote={}", crate::lock::spin_hint().name(), crate::sys::cldemote::enabled());
+            std::eprintln!("init: cldemote={}", crate::sys::cldemote::enabled());
         }
     }
 

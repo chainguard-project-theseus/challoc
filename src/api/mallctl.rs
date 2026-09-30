@@ -766,10 +766,6 @@ fn cstr_of(s: &'static str) -> *const c_char {
         "never" => b"never\0",
         "auto" => b"auto\0",
         "always" => b"always\0",
-        // `opt.spin_hint` (config::SpinChoice::name); `auto` shares the arm above.
-        "baseline" => b"baseline\0",
-        "umwait" => b"umwait\0",
-        "wfe" => b"wfe\0",
         // `opt.percpu_arena` (config::PercpuArena::name); `auto` shares the arm above.
         "percpu" => b"percpu\0",
         "off" => b"off\0",
@@ -1437,7 +1433,7 @@ mod tests {
     /// in this test until it is added to the array (and to `cstr_of`).
     #[test]
     fn every_string_opt_variant_reads_back_through_cstr_of() {
-        use crate::config::{PercpuArena, SliceExt, SpinChoice, Thp, ThpProcess};
+        use crate::config::{PercpuArena, SliceExt, Thp, ThpProcess};
         fn check(cfg: &Config, key: &str, want: &str) {
             match cfg.get(key.as_bytes()) {
                 Some(Value::Str(s)) => {
@@ -1462,13 +1458,6 @@ mod tests {
             cfg.thp_process = v;
             check(&cfg, "thp_process", v.name());
         }
-        for v in [SpinChoice::Auto, SpinChoice::Baseline, SpinChoice::Umwait, SpinChoice::Wfe] {
-            match v {
-                SpinChoice::Auto | SpinChoice::Baseline | SpinChoice::Umwait | SpinChoice::Wfe => {}
-            }
-            cfg.spin_hint = v;
-            check(&cfg, "spin_hint", v.name());
-        }
         for v in [PercpuArena::Auto, PercpuArena::Percpu, PercpuArena::Off] {
             match v {
                 PercpuArena::Auto | PercpuArena::Percpu | PercpuArena::Off => {}
@@ -1483,11 +1472,11 @@ mod tests {
             cfg.slice_ext = v;
             check(&cfg, "slice_ext", v.name());
         }
-        // Every string-valued key of the table is one of the five above.
+        // Every string-valued key of the table is one of the four above.
         for key in KEYS {
             if let Some(Value::Str(_)) = cfg.get(key.as_bytes()) {
                 assert!(
-                    matches!(*key, "thp" | "thp_process" | "spin_hint" | "percpu_arena" | "slice_ext"),
+                    matches!(*key, "thp" | "thp_process" | "percpu_arena" | "slice_ext"),
                     "opt.{key} is a string key this test does not cover"
                 );
             }
