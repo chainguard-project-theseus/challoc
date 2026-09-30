@@ -20,9 +20,10 @@
 #           lazy | eager | report (tests/c/cgroup_lazy.c)
 #
 # Compiles the program (tests/c/cgroup_churn.c, cgroup_oscillate.c or
-# cgroup_lazy.c) with scripts/ctest-cc.sh into target/cgroup-tests/ (the
-# programs use QUANTUM only in `require_challoc`, which --any-allocator
-# skips, so a missing library is fine there), prints the kernel, the cgroup's limits and
+# cgroup_lazy.c) with scripts/ctest-cc.sh into target/cgroup-tests/q<QUANTUM>/
+# (the programs use QUANTUM only in `require_challoc`, which --any-allocator
+# skips, so a missing library is fine there; one directory per quantum, so
+# a QUANTUM=8 run never leaves a binary a QUANTUM=16 run reuses), prints the kernel, the cgroup's limits and
 # `memory.events` before and after, runs the program under the allocator
 # with a watchdog (WATCHDOG seconds, default 360: a hung oscillation is
 # killed and fails) and exits with the program's status: 0 is a pass, 137
@@ -71,8 +72,9 @@ if [ -n "$preload" ] && [ ! -f "$preload" ]; then
   echo "$preload missing (challoc: cargo build --release; mimalloc: make bench-build)" >&2; exit 2
 fi
 
-mkdir -p target/cgroup-tests
-bin=target/cgroup-tests/$prog
+quantum=$(sh scripts/ctest-cc.sh --quantum) || exit 2
+mkdir -p "target/cgroup-tests/q$quantum"
+bin=target/cgroup-tests/q$quantum/$prog
 if [ ! -x "$bin" ] || [ "tests/c/$prog.c" -nt "$bin" ] || [ tests/c/common.h -nt "$bin" ]; then
   sh scripts/ctest-cc.sh "tests/c/$prog.c" -o "$bin" || exit 2
 fi
