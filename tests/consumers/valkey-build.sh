@@ -9,7 +9,8 @@
 #      Valkey's bundled jemalloc);
 #   2. clones the Valkey tag Wolfi's valkey-9.1.yaml ships into
 #      target/valkey/src-<tag>, checks the commit, and applies
-#      0001-Add-MALLOC-challoc.patch (idempotent);
+#      contrib/valkey/0001-Add-MALLOC-challoc.patch and
+#      0002-zmalloc-use-challoc-usable-size-entry-points.patch (idempotent);
 #   3. `make MALLOC=challoc BUILD_TLS=yes` with include/ on the
 #      include path and the challoc build directory as -L and rpath, so the
 #      binaries run from the tree without LD_LIBRARY_PATH;
@@ -45,7 +46,8 @@ WORK=$ROOT/target/valkey
 SRC=$WORK/src-$VALKEY_TAG
 LOGS=$WORK/logs
 CHALLOC_TARGET=${CHALLOC_TARGET:-$WORK/challoc}
-PATCH=$ROOT/contrib/valkey/0001-Add-MALLOC-challoc.patch
+PATCH1=$ROOT/contrib/valkey/0001-Add-MALLOC-challoc.patch
+PATCH2=$ROOT/contrib/valkey/0002-zmalloc-use-challoc-usable-size-entry-points.patch
 INCLUDE=$ROOT/include
 ARCH=$(uname -m)
 mkdir -p "$WORK" "$LOGS"
@@ -74,18 +76,20 @@ if [ "$head" != "$VALKEY_COMMIT" ]; then
     echo "valkey-build.sh: tag $VALKEY_TAG is $head, expected $VALKEY_COMMIT" >&2
     exit 1
 fi
-if git apply --reverse --check "$PATCH" 2>/dev/null; then
-    echo "patch already applied"
+# The series is applied in order in one `git apply`; the stamp beside the
+# tree records which version of the series the tree carries. A tree with no
+# stamp, an older series or local edits is reset first.
+stamp=$(cat "$PATCH1" "$PATCH2" | sha256sum | cut -d' ' -f1)
+if [ "$(cat "$SRC.patches" 2>/dev/null)" = "$stamp" ]; then
+    echo "patches already applied"
 else
-    # A clone that carries an older version of the patch fails both checks:
-    # drop its working-tree changes and apply the current patch.
-    if ! git apply --check "$PATCH" 2>/dev/null; then
-        echo "stale patch in the tree, resetting it"
+    if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+        echo "stale patches in the tree, resetting it"
         git checkout -q -- .
     fi
-    git apply --check "$PATCH"
-    git apply "$PATCH"
-    echo "patch applied"
+    git apply "$PATCH1" "$PATCH2"
+    echo "$stamp" > "$SRC.patches"
+    echo "patches applied"
 fi
 git diff --stat | tail -1
 

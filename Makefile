@@ -255,7 +255,7 @@ scorecard: image ## the fixed row set vs jemalloc (REV=tree), one line appended 
 	$(if $(RENDER),sh bench/scorecard.sh --render,$(DOCKER_RUN) sh bench/scorecard.sh)
 
 valkey: DOCKER_FLAGS = $(if $(STAGE),-e STAGE=$(STAGE)) $(if $(TEST_FLAGS),-e TEST_FLAGS="$(TEST_FLAGS)")
-valkey: image ## build challoc (quantum8) and Valkey at Wolfi's tag with contrib/valkey/0001-*.patch, then its tests (STAGE=build|memefficiency|full|all, TEST_FLAGS)
+valkey: image ## build challoc (quantum8) and Valkey at Wolfi's tag with contrib/valkey/000{1,2}-*.patch, then its tests (STAGE=build|memefficiency|full|all, TEST_FLAGS)
 	$(DOCKER_RUN) sh tests/consumers/valkey-build.sh
 
 # CHALLOC_CONF is not in the list: DOCKER_BASE forwards it into every container.

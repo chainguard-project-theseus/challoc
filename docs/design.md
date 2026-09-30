@@ -2042,7 +2042,7 @@ byte-identical to what they were (`scripts/codegen-diff.sh`). In the
 per-CPU mode (15) the four take their cold paths (`heap::alloc`,
 `heap::free`, which dispatch the mode); the mode is opt-in and measured on
 its own. Valkey uses them under `USE_CHALLOC`
-(`contrib/valkey/0001-Add-MALLOC-challoc.patch`: `ztrymalloc_usable_internal`,
+(`contrib/valkey/0002-zmalloc-use-challoc-usable-size-entry-points.patch`: `ztrymalloc_usable_internal`,
 `ztrycalloc_usable_internal` and `ztryrealloc_usable_internal` call the
 `*_usable` pair instead of the allocation plus `zmalloc_size`; the unsized
 `zfree` calls `challoc_free_usable` instead of `zmalloc_size` plus
