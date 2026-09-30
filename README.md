@@ -310,8 +310,8 @@ hardware the plan gates on the human (WAITPKG; MTE, LAM and UAI). Phase 3:
 are built and tested on challoc on both architectures (`contrib/wolfi/`);
 `docs/tuning.md` is the operator's guide; the consumer benchmark rows (plan
 Phase 3 task 5) have the JVM and Node.js rows done and PostgreSQL pending.
-`PROGRESS.md` is the task log; `bench/results/scorecard-{aarch64,x86_64}.md`
-record the benchmark trend per commit. Of the features above, zero-on-free
+`PROGRESS.md` is the task log; `bench/scorecard.sh` records the benchmark
+trend per commit (`target/results/scorecard-<arch>.md`). Of the features above, zero-on-free
 and slot randomisation landed with Phase 2 (opt-in), THP with Phase 2.5 task
 9 (`thp:auto|always`, off by default), `mseal` of the reservations'
 never-committed ranges, the cgroup measurement layer (`stats.cgroup.*`) and
