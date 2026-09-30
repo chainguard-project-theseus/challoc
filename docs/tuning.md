@@ -46,18 +46,15 @@ Reporting: every problem is printed on stderr as `challoc: <source>:
 <issue>` (`unknown conf key "x"`, `invalid conf value "x" for k`,
 `out-of-range conf value "x" for k (clamped)`, `conf value "x" for k is
 not a power of two (rounded up to N)`, `conf key k is accepted but has no
-effect (not implemented)`, `conf value "x" for spin_hint is not available
-on this CPU; using the default`) and the offending pair is skipped
+effect (not implemented)`) and the offending pair is skipped
 (clamped or rounded for the numeric cases); parsing continues.
 
 `abort_conf:true` turns the report into an abort. It is evaluated after
 every source has been read, so it covers keys that came before it in the
 same or an earlier source, and it refuses: unknown keys, bad values,
-out-of-range and rounded numbers, inert keys (below), and a `spin_hint`
-this CPU cannot run. It does not refuse a runtime probe that fails for a
-valid key: `slice_ext:on` on a kernel without the extension,
-`percpu_arena:percpu` without `mm_cid`, `thp_process:advised` before
-6.18, `thp:auto` on a host with no sub-PMD folio size, `thp:always` under
+out-of-range and rounded numbers, and inert keys (below). It does not
+refuse a runtime probe that fails for a valid key: `slice_ext:on` on a kernel without the extension,
+`percpu_arena:percpu` without `mm_cid`, `thp:auto` on a host with no sub-PMD folio size, `thp:always` under
 a cgroup limit below 1 GiB. Those are the documented fallbacks, and the
 `malloc_stats_print` report says which one applies (section 6). Use
 `abort_conf:true` in a package test: `MALLOC_CONF=abort_conf:true,no_such_key:1
@@ -114,8 +111,6 @@ One row per key, in `KEYS` order. "Values" is the grammar
 | `tcache_nslots_small_max` | `8`..`65536` | `1024` | Cache capacity for classes up to 128 bytes; the capacity halves per doubling of the class size above that (the ladder), down to a floor of 8. | To trade cache RSS for refill frequency: `512` halves every cache. | More refills and flushes (slow paths) per operation. |
 | `lg_tcache_nslots_mul` | `-16`..`16` | `1` | Shifts the whole ladder by `lg_tcache_nslots_mul - 1` doublings (jemalloc's key; Redis's `je_malloc_conf` sets `3`). | As `tcache_nslots_small_max`. | As above; the result is clamped to `[8, tcache_nslots_small_max]`. |
 | `thp` | `never` (`default` is `never`), `auto`, `always` | `never` | Transparent huge pages for challoc's regions. `never`: `MADV_NOHUGEPAGE` on the class superblock and the metadata region; the huge region (allocations above the largest class) follows the host's policy. `auto`: `MADV_HUGEPAGE` for sub-PMD folios (64 KiB) on slab groups and metadata, never a 2 MiB page; inert where no such size is enabled or the 2 MiB size is `madvise`-gated. `always`: 2 MiB chunks over the class regions, huge runs and metadata (jemalloc's `thp:always`); forced to `never` under a cgroup limit below 1 GiB. Section 5. | `always` on a THP=`always` host when throughput matters more than RSS and the process does not fork. `auto` on an aarch64 host with `hugepages-64kB` enabled. | `always`: valkey1 at parity with jemalloc for +9.5% peak RSS on a 585 MiB heap and +39.9% on larson16's (`bench/results/2026-09-20-aarch64-cgos-thp-decision.md`); `auto`: larson1 +1.7% and 15.9 -> 18.1 MiB RSS (`2026-09-19-lane-b-mthp.md`). |
-| `thp_process` | `default`, `advised` | `default` | `advised` issues `prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED)` once at init (kernel 6.18+, probed by the call's return), so the whole process gets huge pages only where a range was `MADV_HUGEPAGE`d; `default` issues nothing. Independent of `thp`. | "No huge page anywhere in this process" on an `always` host, including libc's and the program's own mappings, which `thp:never` does not cover. | Process-wide, hence opt-in. On the Valkey model it takes the huge runs' 2 MiB pages away too: +12.2% behind jemalloc on valkey1 against +5.1% for the default (`2026-09-20-aarch64-cgos-thp-ab.md` row (d) and `-thp-decision.md`). |
-| `spin_hint` | `auto`, `baseline`, `umwait`, `wfe` | `auto` | What a contended lock spins with. `auto` is the CPU probe's choice: `umwait` where WAITPKG is exposed, else the baseline (`pause`/`isb`). `umwait` without WAITPKG and `wfe` without the timer event stream are refused (reported, an `abort_conf` issue) and left at `auto`. `auto` never picks `wfe`. | Never in production. `wfe` for a power-saving experiment. | `wfe` lost xmalloc by 3.5..3.6% with RSS 55.7 -> 66.9 MiB on the T2A (`bench/results/2026-09-19-lane-c-spin-and-geometry.md`). No GCE guest exposes WAITPKG, so `umwait` has never run. |
 | `slice_ext` | `auto`, `on`, `off` | `auto` | A lock holder asks the kernel, through the rseq `slice_ctrl` bytes, to defer a preemption until the release (kernel 7.0 with `CONFIG_RSEQ_SLICE_EXTENSION`, x86_64 only so far, probed). `auto` and `on` follow the probe; `on` additionally makes the report note a refusal; `off` never requests. | Never; `off` to rule it out when comparing kernels. | One relaxed load per hold when off. The reference GCE kernels compile the option out (`slice_ext=kernel-disabled`). |
 | `lazy_band` | `true`, `false` | `true` | `MADV_FREE` for purges made under 70% of a known cgroup limit (the headroom band); `false` makes every purge `MADV_DONTNEED`. | `false` when the container's RSS figure must track live memory exactly even with headroom (an autoscaler, a fragmentation ratio). | Refaults on reuse: allocating 200 MiB again after a lazy purge took 5 ms against 44 ms after an eager one on the C4A (`bench/results/2026-09-19-lane-b-two-advice-purge.md`). |
 | `guards` | `true`, `false` | `true` | Guard slabs between slabs (kernel 6.13+, `MADV_GUARD_INSTALL`) and a guard after every huge run (a `PROT_NONE` page on older kernels). | Never. | `false` removes an overflow barrier and makes the sized-free guard test a no-op. |
@@ -158,8 +153,7 @@ side that keeps memory low and the common process unchanged:
 The rest are measured refusals: `zero_on_free`, `slot_randomize`,
 `pac_pointers`, `double_free_scan` are hardening opt-ins whose price is
 over the 3% budget for a default-on hardening (rows in the table);
-`spin_hint:auto` never
-chooses `wfe`; `tcache_max` is the RSS probe's finding; `lazy_band:true`
+`tcache_max` is the RSS probe's finding; `lazy_band:true`
 with no-limit eager is the two-advice purge, chosen so RSS never lies
 where nothing knows the headroom.
 
@@ -252,8 +246,6 @@ of refaults on reuse). With no limit at all the default is already eager.
 THP: Valkey warns about THP `always` because of fork copy-on-write cost.
 challoc's `never` keeps the class and metadata regions off huge pages on
 every host; the huge runs take what the host gives (section 5).
-`thp_process:advised` (kernel 6.18+) is the key for no huge page anywhere
-in the process, at the throughput cost in the table above.
 
 ### Ruby
 
@@ -606,7 +598,7 @@ jemalloc; `2026-09-20-aarch64-cgos-thp-decision.md` section 3):
 The morning's run on the same host at the previous tree
 (`2026-09-20-aarch64-cgos-thp-ab.md`, copied into the decision file's
 table) had `never` advising the huge region too: valkey1 +16.1%,
-`AnonHugePages` 0; and `never,thp_process:advised` +12.2% at 0 kB. So
+`AnonHugePages` 0. So
 the trade on an `always` host is:
 
 - `thp:never` (default): RSS discipline on the slab regions; the huge
@@ -622,22 +614,13 @@ the trade on an `always` host is:
   deferred page splits per run (a purge inside a 2 MiB page splits it).
   Guard slabs inside a chunk are left unguarded (a guard would split the
   page). Forced to `never` under a cgroup limit below 1 GiB.
-- `thp_process:advised` on top of the default: no huge page anywhere in
-  the process, libc's and the program's mappings included; the huge runs
-  lose their pages too (+12.2% on valkey1 in the morning's row). Kernel
-  6.18+ (`thp_except_advised=yes` in the feature line); below that the
-  report says `advised: skipped, the kernel refuses ...` and nothing
-  changes. A process whose parent already set a THP policy keeps it
-  (`inherited`).
 
 Fork: `never` keeps the slab regions on small pages on every host, so the
 copy-on-write cost a `BGSAVE` child imposes is bounded to the huge runs
-under the default and to nothing under `thp_process:advised`. The fork
+under the default. The fork
 rows are in `bench/results/2026-09-19-lane-b-mthp.md`.
 
-The `thp:` line's last words name the host's global mode and the
-process policy in force, so one report tells which of the four states the
-process is in.
+The `thp:` line's last words name the host's global mode.
 
 ## 6. Reading `malloc_stats_print` and the feature report
 
@@ -655,7 +638,7 @@ The lines an operator reads first, in the order they appear:
 | line | what to look for |
 |---|---|
 | `Run-time option settings` / `opt.<key>` | the configuration in force after every source; `(accepted, no effect)` marks an inert key; `thp` carries the forced-never note when a small cgroup limit applied |
-| `Kernel and CPU features: page_size=4096 guard_install=yes mseal=yes process_madvise=pidfd_self process_madvise_free=yes anon_name=no populate_write=yes thp=always mthp=2M collapse=unprobed thp_except_advised=yes rseq=yes rseq_size=28 mm_cid=yes slice_ext=... mte=no ... cacheline=64 l1d=64K l2=2M` | `guard_install=no` means a kernel before 6.13: no guard slabs. `process_madvise=no` means purges loop over `madvise` (Docker's default seccomp hides the syscall). `anon_name=no` means `/proc/<pid>/smaps` has no `challoc:*` names (the Chainguard OS server image, `bench/results/2026-09-20-chainguard-os-cells.md`). `thp=` is the host's global mode. `populate_write=no` means the prefault pass touches pages instead. `mm_cid=no` means `percpu_arena:percpu` would fall back. The keys are only ever added, never renamed |
+| `Kernel and CPU features: page_size=4096 guard_install=yes mseal=yes process_madvise=pidfd_self process_madvise_free=yes anon_name=no populate_write=yes thp=always mthp=2M rseq=yes rseq_size=28 mm_cid=yes slice_ext=... pac=yes` | `guard_install=no` means a kernel before 6.13: no guard slabs. `process_madvise=no` means purges loop over `madvise` (Docker's default seccomp hides the syscall). `anon_name=no` means `/proc/<pid>/smaps` has no `challoc:*` names (the Chainguard OS server image, `bench/results/2026-09-20-chainguard-os-cells.md`). `thp=` is the host's global mode. `populate_write=no` means the prefault pass touches pages instead. `mm_cid=no` means `percpu_arena:percpu` would fall back. The keys are only ever added, never renamed |
 | `Sealed ranges: N of M` | `0 of M` under Docker's default seccomp (mseal filtered) or before 6.10 |
 | `Background thread: present` / `absent` | whether decay runs while idle; Valkey shows `present` |
 | `Prefault: off (prefault:false)` / `off (prefault:true without background_thread)` / `on (MADV_POPULATE_WRITE) passes N (active N) slabs N (B bytes) skipped_no_headroom N fallbacks N wakes N taken N` | the second form is the misconfiguration to catch (section 3); `skipped_no_headroom` rising means the cgroup band vetoed the pass |
@@ -670,7 +653,7 @@ The lines an operator reads first, in the order they appear:
 | `cgroup: <dir> (mount <m>, path <p>) limit L high H current C events high N (+r) max N (+r) psi <state>` or `cgroup: not tracked (<reason>)` | `limit`/`high` are the effective values up the hierarchy (`max` when unlimited); `psi armed (some ...)`, `unavailable (EROFS)` (Docker), `not armed (no background thread)` |
 | `cgroup policy: defaults (no limit)` / `under 70% (defaults, retention capped)` / `70..90% (decay scaled, N% into the band)` / `over 90% (purge at once, cache GC every tick)` `decay_ms N retention_cap N keep N% empty_bytes N full_purges N thp as configured` | the band as last evaluated and what it gave arena 0; `empty_bytes` is the retention the cap acts on |
 | `purge advice: lazy MADV_FREE (under 70% of the limit)` / `eager MADV_DONTNEED (no headroom known)` `lazy_purges N (B bytes) eager_purges N (B bytes) purged_is_zero true|false lazy via process_madvise|madvise loop` | which advice the next purge issues and why (the reasons are `explicit purge`, `lazy_band:false`, `under 70% of the limit`, `returning the excess over the cap`, `no headroom known`); `purged_is_zero false` means a lazy batch has happened and `calloc` now clears reused purged memory |
-| `thp: <key> -> off|folios|chunks (<reason>) [nohuge N (classes, metadata; huge follows host)] [slab_min S pmd P meta M huge on|off] class_ranges N (B bytes, C chunks) huge_ranges N meta_ranges N failures N; host <mode> process <text>` | section 5; the reason text says why `auto` or `always` is inert |
+| `thp: <key> -> off|folios|chunks (<reason>) [nohuge N (classes, metadata; huge follows host)] [slab_min S pmd P meta M huge on|off] class_ranges N (B bytes, C chunks) huge_ranges N meta_ranges N failures N; host <mode>` | section 5; the reason text says why `auto` or `always` is inert |
 | `arenas[N]:` blocks | `dirty_decay_ms` per arena (`arena.<i>.dirty_decay_ms`), `pactive/pdirty`, the `allocated active dirty retained` totals, the bins table (`size nregs curslabs curregs`, the compaction counters `refilled`, `compacted`) and the slab occupancy histogram (non-empty slabs per eighth of `nslots`), which shows where the live data sits after a delete phase |
 
 The heads of these lines are spelled once, in `src/api/print.rs`
@@ -710,8 +693,6 @@ fixes their values by measurement:
   for a requirement, not for a hunch, and re-run the consumer's row.
 - `percpu_arena:percpu`: 4..38% behind thread caches on every `ab` row;
   no workload in the suite has shown the win it is designed for.
-- `spin_hint`: `auto` is the probe's choice; `wfe` lost; `umwait` has
-  never run on any host the project reached.
 - `slice_ext`: `auto` follows the kernel; there is nothing to gain by
   forcing it.
 - `cgroup:false`: only as a control.

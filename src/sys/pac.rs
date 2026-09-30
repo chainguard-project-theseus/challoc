@@ -57,6 +57,12 @@ fn count_op() {
     TEST_OPS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
+// arm64 `AT_HWCAP` bits, from `arch/arm64/include/uapi/asm/hwcap.h`; the
+// container test cross-checks them against the installed header where one
+// exists.
+pub const HWCAP_PACA: u64 = 1 << 30;
+pub const HWCAP_PACG: u64 = 1 << 31;
+
 /// Whether the kernel exposes pointer authentication with the address key
 /// (`HWCAP_PACA`) and the generic key (`HWCAP_PACG`) to this process.
 /// False on x86_64 and off Linux.
@@ -65,7 +71,7 @@ pub fn available() -> bool {
     {
         use super::auxv::{AT_HWCAP, getauxval};
         let hwcap = getauxval(AT_HWCAP) as u64;
-        hwcap & super::cpu::HWCAP_PACA != 0 && hwcap & super::cpu::HWCAP_PACG != 0
+        hwcap & HWCAP_PACA != 0 && hwcap & HWCAP_PACG != 0
     }
     #[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
     {
@@ -307,5 +313,42 @@ mod tests {
             assert_eq!(sig, libc::SIGSEGV, "without FPAC the non-canonical pointer faults on use");
         }
         std::eprintln!("pac: mismatched modifier -> signal {sig} (fpac={})", fpac());
+    }
+
+    /// [`available`] against the kernel's own report: `paca` and `pacg`
+    /// both in the `Features` line of `/proc/cpuinfo` on arm64, never on
+    /// x86_64.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn available_matches_proc_cpuinfo() {
+        let text = std::fs::read_to_string("/proc/cpuinfo").unwrap();
+        let key = if cfg!(target_arch = "aarch64") { "Features" } else { "flags" };
+        let line = text.lines().find(|l| l.starts_with(key) && l.contains(':')).expect("a flags line in /proc/cpuinfo");
+        let flags: std::vec::Vec<&str> = line.split_once(':').unwrap().1.split_whitespace().collect();
+        let want = cfg!(target_arch = "aarch64") && flags.contains(&"paca") && flags.contains(&"pacg");
+        assert_eq!(available(), want, "{line}");
+    }
+
+    /// The HWCAP constants against the installed kernel header, where the
+    /// container has one for this architecture.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn hwcap_constants_match_the_header() {
+        let Ok(text) = std::fs::read_to_string("/usr/include/asm/hwcap.h") else {
+            std::eprintln!("no /usr/include/asm/hwcap.h here, skipping");
+            return;
+        };
+        let value = |name: &str| -> Option<u64> {
+            let l = text.lines().find(|l| l.starts_with("#define ") && l.split_whitespace().nth(1) == Some(name))?;
+            let inner = l.split_once('(')?.1.split_once(')')?.0;
+            let shift: u32 = inner.split("<<").nth(1)?.trim().parse().ok()?;
+            Some(1u64 << shift)
+        };
+        for (name, ours) in [("HWCAP_PACA", HWCAP_PACA), ("HWCAP_PACG", HWCAP_PACG)] {
+            match value(name) {
+                Some(v) => assert_eq!(ours, v, "{name}"),
+                None => std::eprintln!("{name} not in the header, skipping"),
+            }
+        }
     }
 }

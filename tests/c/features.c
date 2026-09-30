@@ -2,20 +2,18 @@
  * The feature report (design 16 and 17).
  *
  * challoc_features() returns a static NUL-terminated line of key=value
- * pairs: the kernel probes, then the CPU. The same bytes appear after
+ * pairs: the kernel probes, then pac. The same bytes appear after
  * "Kernel and CPU features: " in malloc_stats_print, so a program can read
  * the host's floor and ceiling either way. The program prints the line
  * (the container test shows it, and the results file records it per host)
  * and checks: the pointer is stable, the line is well formed, every key
- * this architecture reports is present exactly once, and the report's line
- * is identical.
+ * is present exactly once, and the report's line is identical.
  *
  * The symbol is reached through a weak declaration so the program links
  * against libc alone and fails bare in require_challoc.
  */
 #include "common.h"
 #include <sys/mman.h>
-#include <sys/prctl.h>
 
 typedef void (*stats_print_fn)(void (*cb)(void *, const char *), void *cbopaque, const char *opts);
 
@@ -69,25 +67,14 @@ int main(void)
     CHECK(strstr(line, "  ") == NULL, "double space in `%s`", line);
     CHECK(strncmp(line, "page_size=", 10) == 0, "line does not start with page_size=");
 
-    /* Every key once: the kernel probes, then this architecture's CPU keys. */
-    static const char *const kernel_keys[] = {"page_size",      "guard_install", "mseal",     "process_madvise", "process_madvise_free",
-                                              "anon_name",      "populate_write", "thp",      "mthp",            "collapse",
-                                              "thp_except_advised", "rseq",      "rseq_size", "mm_cid",          "slice_ext"};
-#if defined(__aarch64__)
-    static const char *const cpu_keys[] = {"mte", "mte3", "pac", "lse", "lse2", "bti", "sve", "cacheline", "l1d", "l2"};
-#elif defined(__x86_64__)
-    static const char *const cpu_keys[] = {"lam",  "uai",     "la57",      "la57_enabled", "cldemote", "waitpkg",
-                                           "erms", "fsrm",    "avx512f",   "cacheline",    "l1d",      "l2"};
-#else
-#error "unsupported architecture"
-#endif
-    size_t nkernel = sizeof kernel_keys / sizeof kernel_keys[0];
-    size_t ncpu = sizeof cpu_keys / sizeof cpu_keys[0];
-    for (size_t i = 0; i < nkernel; i++)
-        CHECK(has_key(line, kernel_keys[i]) == 1, "key %s appears %d times", kernel_keys[i], has_key(line, kernel_keys[i]));
-    for (size_t i = 0; i < ncpu; i++)
-        CHECK(has_key(line, cpu_keys[i]) == 1, "key %s appears %d times", cpu_keys[i], has_key(line, cpu_keys[i]));
-    CHECK((size_t)tokens == nkernel + ncpu, "%d tokens, expected %zu", tokens, nkernel + ncpu);
+    /* Every key once. */
+    static const char *const keys[] = {"page_size", "guard_install", "mseal",  "process_madvise", "process_madvise_free",
+                                       "anon_name", "populate_write", "thp",   "mthp",            "rseq",
+                                       "rseq_size", "mm_cid",         "slice_ext", "pac"};
+    size_t nkeys = sizeof keys / sizeof keys[0];
+    for (size_t i = 0; i < nkeys; i++)
+        CHECK(has_key(line, keys[i]) == 1, "key %s appears %d times", keys[i], has_key(line, keys[i]));
+    CHECK((size_t)tokens == nkeys, "%d tokens, expected %zu", tokens, nkeys);
 
     /* populate_write: yes/no, and usable as said:
      * a fresh private page is resident after one MADV_POPULATE_WRITE when
@@ -110,8 +97,7 @@ int main(void)
     }
 
     /* The THP keys: thp is a sysfs setting or none,
-     * mthp a comma list of sizes or none, collapse unprobed/no/a size; the
-     * default configuration never runs the collapse probe. */
+     * mthp a comma list of sizes or none. */
     {
         const char *v = strstr(line, " thp=") + 5;
         CHECK(strncmp(v, "never", 5) == 0 || strncmp(v, "madvise", 7) == 0 || strncmp(v, "always", 6) == 0 ||
@@ -119,20 +105,6 @@ int main(void)
               "thp has value `%.12s`", v);
         v = strstr(line, " mthp=") + 6;
         CHECK((v[0] >= '1' && v[0] <= '9') || strncmp(v, "none", 4) == 0, "mthp has value `%.12s`", v);
-        v = strstr(line, " collapse=") + 10;
-        CHECK(strncmp(v, "unprobed", 8) == 0, "collapse has value `%.12s` under thp:never", v);
-        /* The prctl probe's answer, and the probe
-         * left the process's policy alone (PR_GET_THP_DISABLE 0 unless the
-         * parent set one, in which case the key says inherited). */
-        v = strstr(line, " thp_except_advised=") + 20;
-        CHECK(strncmp(v, "yes", 3) == 0 || strncmp(v, "no", 2) == 0 || strncmp(v, "inherited", 9) == 0,
-              "thp_except_advised has value `%.12s`", v);
-        long get = prctl(42 /* PR_GET_THP_DISABLE */, 0, 0, 0, 0);
-        if (strncmp(v, "inherited", 9) == 0)
-            CHECK(get > 0, "thp_except_advised=inherited but PR_GET_THP_DISABLE reads %ld", get);
-        else
-            CHECK(get == 0 || get == -1, "thp_except_advised=%.3s but PR_GET_THP_DISABLE reads %ld (the probe must restore 0)", v, get);
-        printf("thp_except_advised: %.*s (PR_GET_THP_DISABLE %ld)\n", (int)strcspn(v, " "), v, get);
     }
 
     /* The rseq keys: rseq and mm_cid are yes/no,
@@ -181,18 +153,13 @@ int main(void)
         printf("slice_ext: %s\n", word);
     }
 
-    /* The yes/no keys carry yes or no; the sizes a number with K/M or unknown. */
-    for (size_t i = 0; i < ncpu; i++) {
-        char pat[64];
-        snprintf(pat, sizeof pat, "%s=", cpu_keys[i]);
-        const char *at = strstr(line, pat);
-        if (!at)
-            continue;
-        const char *v = at + strlen(pat);
-        if (strcmp(cpu_keys[i], "cacheline") == 0 || strcmp(cpu_keys[i], "l1d") == 0 || strcmp(cpu_keys[i], "l2") == 0)
-            CHECK((v[0] >= '1' && v[0] <= '9') || strncmp(v, "unknown", 7) == 0, "%s has value `%.12s`", cpu_keys[i], v);
-        else
-            CHECK(strncmp(v, "yes", 3) == 0 || strncmp(v, "no", 2) == 0, "%s has value `%.12s`", cpu_keys[i], v);
+    /* pac: yes or no, never yes off aarch64. */
+    {
+        const char *v = strstr(line, " pac=") + 5;
+        CHECK(strcmp(v, "yes") == 0 || strcmp(v, "no") == 0, "pac has value `%.12s`", v);
+#if !defined(__aarch64__)
+        CHECK(strcmp(v, "no") == 0, "pac=%s off aarch64", v);
+#endif
     }
 
     /* The report carries the same line. */

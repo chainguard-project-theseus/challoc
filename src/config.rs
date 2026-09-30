@@ -22,8 +22,8 @@
 //! source; jemalloc gets the same effect with a separate first pass.
 //!
 //! Three tables name the keys. [`TABLE`] holds the tunables the allocator
-//! reads, jemalloc's and challoc's own (`thp_process`, `prefault`,
-//! `spin_hint`, `slice_ext`, ...): one [`Key`] per tunable with its name,
+//! reads, jemalloc's and challoc's own (`prefault`, `slice_ext`,
+//! ...): one [`Key`] per tunable with its name,
 //! its parser and its reader, so [`Config::set`], [`Config::get`]
 //! (`opt.<key>`) and the name list [`KEYS`] all come from the one entry;
 //! the modules named in each field's doc act on the values.
@@ -62,41 +62,6 @@ pub const MAX_INTERVAL_MS: i64 = 1_000_000_000_000;
 /// `layout::LG_HUGE_PREFERRED`); no run can be larger, so anything above
 /// means "retain every freed run for decay".
 pub const MAX_HUGE_RETAIN_MAX: usize = 1 << crate::layout::LG_HUGE_PREFERRED;
-/// `spin_hint` values (design 5): what a contended lock waits with between
-/// two polls. `auto` is the CPU probe's choice (`sys::cpu::spin_hint`:
-/// `umwait` with WAITPKG, else the baseline; never `wfe`, which lost 3%
-/// and a quarter of the RSS on xmalloc-test on the Altra and the Axion,
-/// `bench/results/2026-09-19-lane-c-spin-and-geometry.md`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SpinChoice {
-    Auto,
-    Baseline,
-    Umwait,
-    Wfe,
-}
-
-impl SpinChoice {
-    pub const fn name(self) -> &'static str {
-        match self {
-            SpinChoice::Auto => "auto",
-            SpinChoice::Baseline => "baseline",
-            SpinChoice::Umwait => "umwait",
-            SpinChoice::Wfe => "wfe",
-        }
-    }
-
-    /// The lock's hint for an explicit choice; `None` for `auto`.
-    pub const fn hint(self) -> Option<crate::lock::SpinHint> {
-        use crate::lock::SpinHint;
-        match self {
-            SpinChoice::Auto => None,
-            SpinChoice::Baseline => Some(SpinHint::Baseline),
-            SpinChoice::Umwait => Some(SpinHint::Umwait),
-            SpinChoice::Wfe => Some(SpinHint::Wfe),
-        }
-    }
-}
-
 /// `thp` values (`default` is accepted as `never`; design 7, 10 and 17,
 /// `thp.rs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -229,43 +194,6 @@ impl SliceExt {
     }
 }
 
-/// `thp_process` values (design 12 and 17, the prctl half): the
-/// process-wide THP policy challoc asks the kernel for at
-/// init, `prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED)`,
-/// so that on an `always` host (Chainguard OS) only the regions challoc
-/// `MADV_HUGEPAGE`s under `thp:auto|always` get huge pages and the rest
-/// of the process (libc's own mappings, the stack, other allocators) does
-/// not. Kernel 6.18+ accepts the flag; it is probed by the call's return
-/// (`EINVAL` below), never assumed from a header constant. Off by default
-/// because it is process-wide: a library must not change the THP policy
-/// of the program that loaded it unless asked. The call itself lives in
-/// `thp.rs`; this key only says whether to issue it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ThpProcess {
-    /// The default: no `prctl` is issued; the process keeps the policy it
-    /// inherited (byte for byte the allocator without the key).
-    Default,
-    /// Issue the `prctl` at init; where the kernel refuses it the process
-    /// keeps its inherited policy and the report says so.
-    Advised,
-}
-
-impl ThpProcess {
-    pub const fn name(self) -> &'static str {
-        match self {
-            ThpProcess::Default => "default",
-            ThpProcess::Advised => "advised",
-        }
-    }
-
-    /// Whether init issues the `prctl` at all (`advised`); `default` never
-    /// calls it, so a kernel without the flag is never even asked.
-    #[inline]
-    pub const fn requested(self) -> bool {
-        matches!(self, ThpProcess::Advised)
-    }
-}
-
 /// Every tunable of design section 12 with its compiled default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Config {
@@ -307,17 +235,6 @@ pub struct Config {
     pub lg_tcache_nslots_mul: i32,
     /// Transparent huge pages for the regions (`thp.rs`, design 7, 10, 17).
     pub thp: Thp,
-    /// The process-wide THP policy asked for at init ([`ThpProcess`],
-    /// design 17): `default` issues nothing,
-    /// `advised` issues `prctl(PR_SET_THP_DISABLE, 1,
-    /// PR_THP_DISABLE_EXCEPT_ADVISED)` where the kernel accepts it (6.18+,
-    /// probed by the return). Read at init by `thp.rs`, as `thp` is.
-    pub thp_process: ThpProcess,
-    /// The lock's spin hint (design 5, `lock::SpinHint`): `auto` leaves the
-    /// CPU probe's choice; a name installs that hint (`umwait` only where
-    /// the CPU has WAITPKG, `wfe` only on aarch64 under the timer event
-    /// stream; else reported and left at `auto`).
-    pub spin_hint: SpinChoice,
     /// The rseq time slice extension for lock holders (design 17,
     /// `slice.rs`, [`SliceExt`]): `auto` follows the runtime probe, `on`
     /// forces the request (nothing, plus a report note, when the probe
@@ -410,8 +327,6 @@ impl Config {
         tcache_nslots_small_max: MAX_CAP,
         lg_tcache_nslots_mul: 1,
         thp: Thp::Never,
-        thp_process: ThpProcess::Default,
-        spin_hint: SpinChoice::Auto,
         slice_ext: SliceExt::Auto,
         lazy_band: true,
         guards: true,
@@ -533,29 +448,6 @@ impl Config {
         self.cap_for(0, 0, class)
     }
 
-    /// Install the configuration's spin hint (design 5): nothing for `auto`
-    /// (the probe's suggestion stands); `umwait` needs WAITPKG on this CPU
-    /// and `wfe` an aarch64 kernel with the timer event stream
-    /// (`event_stream`), else [`Issue::Unavailable`] is returned, the key
-    /// reset to `auto` and nothing installed; `baseline` always installs.
-    pub fn apply_spin_hint(&mut self, cpu: &crate::sys::cpu::Cpu, event_stream: bool) -> Result<(), Issue<'static>> {
-        use crate::lock::SpinHint;
-        use crate::sys::cpu::Isa;
-        let Some(hint) = self.spin_hint.hint() else { return Ok(()) };
-        let available = match hint {
-            SpinHint::Umwait => matches!(cpu.isa, Isa::X86(x) if x.waitpkg),
-            SpinHint::Wfe => matches!(cpu.isa, Isa::Arm(_)) && event_stream,
-            SpinHint::Baseline => true,
-        };
-        if !available {
-            let value = self.spin_hint;
-            self.spin_hint = SpinChoice::Auto;
-            return Err(Issue::Unavailable { key: b"spin_hint", value: value.name().as_bytes() });
-        }
-        crate::lock::set_spin_hint(hint);
-        Ok(())
-    }
-
     /// Install the configuration's time slice extension choice (design
     /// 17, `slice::configure`): probe, enable the calling thread, publish.
     /// `off` turns it off; `auto` and `on` follow the probe, and only `on`
@@ -565,14 +457,6 @@ impl Config {
     /// the verdict.
     pub fn apply_slice_ext(&self) -> Result<(), crate::slice::Verdict> {
         crate::slice::configure(self.slice_ext.wanted(), self.slice_ext.forced())
-    }
-
-    /// The process-wide THP policy to ask for at init (`thp_process`,
-    /// [`ThpProcess`]); `thp.rs` issues the `prctl` when
-    /// `thp_process().requested()`.
-    #[inline]
-    pub const fn thp_process(&self) -> ThpProcess {
-        self.thp_process
     }
 
     /// The `prefault` key as set: whether prefaulted fresh slabs were asked
@@ -752,31 +636,6 @@ pub const TABLE: &[Key] = &[
         read: |c| Value::Str(c.thp.name()),
     },
     Key {
-        name: "thp_process",
-        parse: |c, k, v| {
-            c.thp_process = pick(&[("default", ThpProcess::Default), ("advised", ThpProcess::Advised)], k, v)?;
-            Ok(())
-        },
-        read: |c| Value::Str(c.thp_process.name()),
-    },
-    Key {
-        name: "spin_hint",
-        parse: |c, k, v| {
-            c.spin_hint = pick(
-                &[
-                    ("auto", SpinChoice::Auto),
-                    ("baseline", SpinChoice::Baseline),
-                    ("umwait", SpinChoice::Umwait),
-                    ("wfe", SpinChoice::Wfe),
-                ],
-                k,
-                v,
-            )?;
-            Ok(())
-        },
-        read: |c| Value::Str(c.spin_hint.name()),
-    },
-    Key {
         name: "slice_ext",
         parse: |c, k, v| {
             c.slice_ext = pick(&[("auto", SliceExt::Auto), ("on", SliceExt::On), ("off", SliceExt::Off)], k, v)?;
@@ -928,9 +787,6 @@ pub enum Issue<'a> {
     /// One of [`INERT_KEYS`]: parsed, but no field stores it and nothing
     /// reads it.
     Inert(&'a [u8]),
-    /// A value this CPU cannot run (`spin_hint:umwait` without WAITPKG);
-    /// the key keeps its default.
-    Unavailable { key: &'a [u8], value: &'a [u8] },
 }
 
 impl fmt::Display for Issue<'_> {
@@ -938,9 +794,6 @@ impl fmt::Display for Issue<'_> {
         match self {
             Issue::Malformed(pair) => write!(f, "malformed conf pair \"{}\"", Bytes(pair)),
             Issue::UnknownKey(key) => write!(f, "unknown conf key \"{}\"", Bytes(key)),
-            Issue::Unavailable { key, value } => {
-                write!(f, "conf value \"{}\" for {} is not available on this CPU; using the default", Bytes(value), Bytes(key))
-            }
             Issue::BadValue { key, value } => {
                 write!(f, "invalid conf value \"{}\" for {}", Bytes(value), Bytes(key))
             }
@@ -1078,7 +931,7 @@ mod linux {
     use core::ffi::{c_char, c_void};
     use core::fmt::Write as _;
 
-    use super::{Config, Issue, SpinChoice};
+    use super::{Config, Issue};
     use crate::sys;
 
     /// Longest conf text read from any one source. Longer inputs are cut
@@ -1120,17 +973,6 @@ mod linux {
                 if let Some(text) = env_var(name.as_bytes()) {
                     issues += cfg.parse(text, |i| report(name, i));
                 }
-            }
-        }
-        // The configured spin hint (design 5) needs the CPU: the probe
-        // again (init's own result is not in reach here; a few `cpuid`s on
-        // x86_64, up to six sysfs reads on arm64, under 50 us, and it
-        // suggests the same hint twice). Only when a source set the key.
-        if cfg.spin_hint != SpinChoice::Auto {
-            let cpu = crate::sys::cpu::Cpu::probe(sys::features::page_size());
-            if let Err(issue) = cfg.apply_spin_hint(&cpu, crate::sys::cpu::event_stream()) {
-                issues += 1;
-                report("spin_hint", issue);
             }
         }
         // The time slice extension (design 17): probed and enabled here,
@@ -1324,7 +1166,6 @@ mod tests {
         assert_eq!(d.tcache_nslots_small_max, 1024);
         assert_eq!(d.lg_tcache_nslots_mul, 1);
         assert_eq!(d.thp, Thp::Never);
-        assert_eq!(d.thp_process, ThpProcess::Default, "process-wide, so opt-in");
         assert!(!d.prefault, "opt-in");
         assert!(!d.prefault_active());
         assert!(d.lazy_band);
@@ -1528,37 +1369,6 @@ mod tests {
         // reports a failed probe.
         assert!(SliceExt::Auto.wanted() && SliceExt::On.wanted() && !SliceExt::Off.wanted());
         assert!(SliceExt::On.forced() && !SliceExt::Auto.forced() && !SliceExt::Off.forced());
-    }
-
-    /// `thp_process` (the prctl half): the two values, anything else
-    /// reported and left at the default,
-    /// `opt.thp_process` reads back, the accessor `thp.rs` decides the
-    /// `prctl` on, and `thp` untouched by it (they are separate keys: the
-    /// per-region advice and the process-wide policy).
-    #[test]
-    fn thp_process_values() {
-        assert!(KEYS.contains(&"thp_process"));
-        for (value, want) in [("default", ThpProcess::Default), ("advised", ThpProcess::Advised)] {
-            let cfg = clean(&std::format!("thp_process:{value},abort_conf:true"));
-            assert_eq!(cfg.thp_process, want, "{value}");
-            assert_eq!(cfg.thp_process(), want, "{value}");
-            assert_eq!(cfg.get(b"thp_process"), Some(Value::Str(want.name())), "{value}");
-            assert_eq!(want.name(), value);
-            assert!(cfg.abort_conf);
-            assert_eq!(cfg.thp, Thp::Never, "thp_process leaves thp alone");
-        }
-        rejects_bad_values("thp_process", &["true", "false", "1", "never", "always", "auto", "Default", "ADVISED", "", "advise"]);
-        assert_eq!(clean("thp_process:advised,thp_process:default").thp_process, ThpProcess::Default);
-        assert_eq!(clean("thp_process:\"advised\"").thp_process, ThpProcess::Advised);
-        // Only `advised` issues the prctl; `default` never asks.
-        assert!(ThpProcess::Advised.requested() && !ThpProcess::Default.requested());
-        assert!(!Config::DEFAULT.thp_process().requested());
-        // The two THP keys compose: the process policy with any per-region
-        // advice, and `thp:default` (an alias of `never`) is not this key.
-        let cfg = clean("thp:auto,thp_process:advised");
-        assert_eq!((cfg.thp, cfg.thp_process), (Thp::Auto, ThpProcess::Advised));
-        let cfg = clean("thp:default");
-        assert_eq!((cfg.thp, cfg.thp_process), (Thp::Never, ThpProcess::Default));
     }
 
     /// `prefault`: a bool key, off by default, readable, accepted under
@@ -1839,9 +1649,7 @@ mod tests {
                 Value::Size(n) => std::format!("{}", if n == 0 { 2 } else { n * 2 }),
                 Value::Str(s) => match key.name {
                     "percpu_arena" | "slice_ext" => "off".into(),
-                    "spin_hint" => "baseline".into(),
                     "thp" => "always".into(),
-                    "thp_process" => "advised".into(),
                     _ => panic!("{}: a string key with no test value ({s})", key.name),
                 },
             };
@@ -1863,59 +1671,6 @@ mod tests {
         assert_eq!(clean("thp:default").thp, clean("thp:never").thp);
         assert_eq!(clean("percpu_arena:phycpu").percpu_arena, clean("percpu_arena:percpu").percpu_arena);
         assert_eq!(clean("percpu_arena:disabled").percpu_arena, clean("percpu_arena:off").percpu_arena);
-    }
-
-    /// `spin_hint`, the pure part: the four values parse and read back
-    /// through `opt.spin_hint`, anything else is refused and leaves the
-    /// default, `hint()` maps the explicit choices to the lock's hints and
-    /// `auto` to none; `apply_spin_hint` refuses the other architecture's
-    /// hint and this one's without its prerequisite (WAITPKG, the event
-    /// stream), resets the key to `auto` and installs nothing (the install
-    /// itself is `linux_tests::spin_hint_key_installs_where_available`).
-    #[test]
-    fn spin_hint_values() {
-        use crate::lock::SpinHint;
-        use crate::sys::cpu::{Arm, CacheSource, Caches, Cpu, Isa, X86};
-        assert!(KEYS.contains(&"spin_hint"));
-        assert_eq!(Config::DEFAULT.spin_hint, SpinChoice::Auto);
-        for (value, want, hint) in [
-            ("auto", SpinChoice::Auto, None),
-            ("baseline", SpinChoice::Baseline, Some(SpinHint::Baseline)),
-            ("umwait", SpinChoice::Umwait, Some(SpinHint::Umwait)),
-            ("wfe", SpinChoice::Wfe, Some(SpinHint::Wfe)),
-        ] {
-            let cfg = clean(&std::format!("spin_hint:{value},abort_conf:true"));
-            assert_eq!(cfg.spin_hint, want, "{value}");
-            assert_eq!(cfg.get(b"spin_hint"), Some(Value::Str(want.name())), "{value}");
-            assert_eq!(want.name(), value);
-            assert_eq!(want.hint(), hint, "{value}");
-            assert!(cfg.abort_conf);
-        }
-        rejects_bad_values("spin_hint", &["true", "false", "1", "pause", "Auto", "UMWAIT", "", "wfet", "yield"]);
-        assert_eq!(clean("spin_hint:wfe,spin_hint:baseline").spin_hint, SpinChoice::Baseline);
-        assert_eq!(clean("spin_hint:\"umwait\"").spin_hint, SpinChoice::Umwait);
-        // Unavailable hints: no install, the key back at `auto`, the
-        // issue names the value.
-        let x86 = Cpu { isa: Isa::X86(X86::default()), caches: Caches::UNKNOWN, cache_source: CacheSource::None };
-        let arm = Cpu { isa: Isa::Arm(Arm::default()), caches: Caches::UNKNOWN, cache_source: CacheSource::None };
-        let unavailable = |name: &str| std::format!("conf value \"{name}\" for spin_hint is not available on this CPU; using the default");
-        for (cpu, event_stream, value) in [
-            (&x86, true, "umwait"),
-            (&x86, true, "wfe"),
-            (&arm, true, "umwait"),
-            (&arm, false, "wfe"),
-        ] {
-            let mut cfg = clean(&std::format!("spin_hint:{value}"));
-            let err = cfg.apply_spin_hint(cpu, event_stream).unwrap_err();
-            assert_eq!(err, Issue::Unavailable { key: b"spin_hint", value: value.as_bytes() }, "{value}");
-            assert_eq!(std::format!("{err}"), unavailable(value));
-            assert_eq!(cfg.spin_hint, SpinChoice::Auto, "{value}: reset to auto");
-            assert_eq!(cfg.get(b"spin_hint"), Some(Value::Str("auto")));
-        }
-        // `auto` is never applied: no probe consulted, nothing installed.
-        let mut cfg = Config::DEFAULT;
-        assert_eq!(cfg.apply_spin_hint(&x86, false), Ok(()));
-        assert_eq!(cfg.spin_hint, SpinChoice::Auto);
     }
 
     #[test]
@@ -2111,59 +1866,6 @@ mod linux_tests {
             // design 6.2 ("Cache geometry") was priced and dropped.
             let got = load();
             assert_eq!(got, Config::DEFAULT);
-            assert_eq!(got.spin_hint, super::SpinChoice::Auto);
-            std::eprintln!("config: defaults (spin hint in use {})", crate::lock::spin_hint().name());
         }
-    }
-
-    /// The `spin_hint` key against this CPU: `baseline` installs; the
-    /// architecture's own hint installs where the CPU and kernel have
-    /// what it needs (`umwait`: WAITPKG; `wfe`: the event stream) and is
-    /// otherwise reported and leaves the key at `auto`; the other
-    /// architecture's hint is always unavailable; the probe's later
-    /// suggestion does not override a configured hint. Leaves the process
-    /// on the probe's choice again at the end (other tests read it).
-    #[test]
-    fn spin_hint_key_installs_where_available() {
-        use crate::lock::{SpinHint, spin_hint};
-        use crate::sys::cpu::{Cpu, Isa, event_stream};
-        let _serial = crate::lock::SPIN_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let cpu = Cpu::probe(crate::sys::features::page_size());
-        let auto = spin_hint();
-        let unavailable = |name: &str| std::format!("conf value \"{name}\" for spin_hint is not available on this CPU; using the default");
-        let mut c = Config::DEFAULT;
-        c.parse(b"spin_hint:baseline", |i| panic!("{i}"));
-        assert_eq!(c.apply_spin_hint(&cpu, event_stream()), Ok(()));
-        assert_eq!(spin_hint(), SpinHint::Baseline);
-        // The other architecture's hint.
-        let (other, own, own_hint) = if cfg!(target_arch = "aarch64") { ("umwait", "wfe", SpinHint::Wfe) } else { ("wfe", "umwait", SpinHint::Umwait) };
-        let mut c = Config::DEFAULT;
-        c.parse(std::format!("spin_hint:{other}").as_bytes(), |i| panic!("{i}"));
-        assert_eq!(std::format!("{}", c.apply_spin_hint(&cpu, event_stream()).unwrap_err()), unavailable(other));
-        assert_eq!(c.spin_hint, SpinChoice::Auto);
-        assert_eq!(spin_hint(), SpinHint::Baseline, "nothing installed");
-        // This architecture's hint.
-        let mut c = Config::DEFAULT;
-        c.parse(std::format!("spin_hint:{own}").as_bytes(), |i| panic!("{i}"));
-        let can = match cpu.isa {
-            Isa::X86(x) => x.waitpkg,
-            Isa::Arm(_) => event_stream(),
-        };
-        if can {
-            assert_eq!(c.apply_spin_hint(&cpu, event_stream()), Ok(()));
-            assert_eq!(spin_hint(), own_hint);
-        } else {
-            assert_eq!(std::format!("{}", c.apply_spin_hint(&cpu, event_stream()).unwrap_err()), unavailable(own));
-            assert_eq!(c.spin_hint, SpinChoice::Auto);
-            assert_eq!(spin_hint(), SpinHint::Baseline, "nothing installed");
-        }
-        // `wfe` without the event stream is refused too.
-        let mut c = Config::DEFAULT;
-        c.parse(b"spin_hint:wfe", |i| panic!("{i}"));
-        assert_eq!(std::format!("{}", c.apply_spin_hint(&cpu, false).unwrap_err()), unavailable("wfe"));
-        std::eprintln!("config: spin_hint auto={} own {own} available={can} event_stream={}", auto.name(), event_stream());
-        // Back to the probe's choice for the rest of the suite.
-        crate::lock::set_spin_hint(auto);
-        assert_eq!(spin_hint(), auto);
     }
 }

@@ -163,10 +163,6 @@ pub enum Leaf {
     StatsPrefaultFallbacks,
     StatsPrefaultWakes,
     StatsPrefaultActive,
-    /// `stats.thp.process` (design 17, `thp::Process`): 0
-    /// nothing issued, 1 `PR_THP_DISABLE_EXCEPT_ADVISED` in force, 2 the
-    /// kernel refused it, 3 an inherited policy was kept, 4 the call failed.
-    StatsThpProcess,
     /// `stats.thp.nohuge_ranges` (design 17, `thp.rs`): the
     /// reservations `never` `MADV_NOHUGEPAGE`d, the class superblock and
     /// the metadata region (2 on a kernel with THP; the huge region follows
@@ -388,14 +384,13 @@ static STATS_CGROUP: [Node; 11] = [
     stat("lazy_purges", StatsCgroupLazyPurges, |_| Ok(Size(purge::batches().0 as usize))),
     stat("eager_purges", StatsCgroupEagerPurges, |_| Ok(Size(purge::batches().1 as usize))),
 ];
-static STATS_THP: [Node; 8] = [
+static STATS_THP: [Node; 7] = [
     stat("mode", StatsThpMode, |_| Ok(Size(crate::thp::decision().mode as usize))),
     stat("class_ranges", StatsThpClassRanges, |_| Ok(Size(crate::thp::stats().class_ranges as usize))),
     stat("class_bytes", StatsThpClassBytes, |_| Ok(Size(crate::thp::stats().class_bytes as usize))),
     stat("huge_ranges", StatsThpHugeRanges, |_| Ok(Size(crate::thp::stats().huge_ranges as usize))),
     stat("meta_ranges", StatsThpMetaRanges, |_| Ok(Size(crate::thp::stats().meta_ranges as usize))),
     stat("failures", StatsThpFailures, |_| Ok(Size(crate::thp::stats().failures as usize))),
-    stat("process", StatsThpProcess, |_| Ok(Size(crate::thp::process() as usize))),
     stat("nohuge_ranges", StatsThpNohugeRanges, |_| Ok(Size(crate::thp::stats().nohuge_ranges as usize))),
 ];
 static STATS_PREFAULT: [Node; 9] = [
@@ -766,18 +761,11 @@ fn cstr_of(s: &'static str) -> *const c_char {
         "never" => b"never\0",
         "auto" => b"auto\0",
         "always" => b"always\0",
-        // `opt.spin_hint` (config::SpinChoice::name); `auto` shares the arm above.
-        "baseline" => b"baseline\0",
-        "umwait" => b"umwait\0",
-        "wfe" => b"wfe\0",
         // `opt.percpu_arena` (config::PercpuArena::name); `auto` shares the arm above.
         "percpu" => b"percpu\0",
         "off" => b"off\0",
         // `opt.slice_ext` (config::SliceExt::name); `auto` and `off` share the arms above.
         "on" => b"on\0",
-        // `opt.thp_process` (config::ThpProcess::name).
-        "default" => b"default\0",
-        "advised" => b"advised\0",
         _ => b"?\0",
     };
     c.as_ptr() as *const c_char
@@ -1437,7 +1425,7 @@ mod tests {
     /// in this test until it is added to the array (and to `cstr_of`).
     #[test]
     fn every_string_opt_variant_reads_back_through_cstr_of() {
-        use crate::config::{PercpuArena, SliceExt, SpinChoice, Thp, ThpProcess};
+        use crate::config::{PercpuArena, SliceExt, Thp};
         fn check(cfg: &Config, key: &str, want: &str) {
             match cfg.get(key.as_bytes()) {
                 Some(Value::Str(s)) => {
@@ -1455,20 +1443,6 @@ mod tests {
             cfg.thp = v;
             check(&cfg, "thp", v.name());
         }
-        for v in [ThpProcess::Default, ThpProcess::Advised] {
-            match v {
-                ThpProcess::Default | ThpProcess::Advised => {}
-            }
-            cfg.thp_process = v;
-            check(&cfg, "thp_process", v.name());
-        }
-        for v in [SpinChoice::Auto, SpinChoice::Baseline, SpinChoice::Umwait, SpinChoice::Wfe] {
-            match v {
-                SpinChoice::Auto | SpinChoice::Baseline | SpinChoice::Umwait | SpinChoice::Wfe => {}
-            }
-            cfg.spin_hint = v;
-            check(&cfg, "spin_hint", v.name());
-        }
         for v in [PercpuArena::Auto, PercpuArena::Percpu, PercpuArena::Off] {
             match v {
                 PercpuArena::Auto | PercpuArena::Percpu | PercpuArena::Off => {}
@@ -1483,11 +1457,11 @@ mod tests {
             cfg.slice_ext = v;
             check(&cfg, "slice_ext", v.name());
         }
-        // Every string-valued key of the table is one of the five above.
+        // Every string-valued key of the table is one of the three above.
         for key in KEYS {
             if let Some(Value::Str(_)) = cfg.get(key.as_bytes()) {
                 assert!(
-                    matches!(*key, "thp" | "thp_process" | "spin_hint" | "percpu_arena" | "slice_ext"),
+                    matches!(*key, "thp" | "percpu_arena" | "slice_ext"),
                     "opt.{key} is a string key this test does not cover"
                 );
             }

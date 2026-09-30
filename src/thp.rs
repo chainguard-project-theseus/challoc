@@ -59,27 +59,12 @@
 //!   the class and metadata
 //!   regions on every host and the host's answer on the huge region; on a
 //!   `madvise` host (the reference kernels) nothing differs from a
-//!   `never` that advised everything. `thp_process:advised` (below) is the
-//!   key for "no huge page anywhere in the process".
+//!   `never` that advised everything.
 //!   The advice is a VMA flag that survives the `mprotect` splits of the
 //!   commit path and is inherited by every VMA the reservation is later
 //!   split into, so one call per reservation is enough. `auto` and
 //!   `always` issue no `MADV_NOHUGEPAGE` (on an `always` host their
 //!   unadvised regions stay eligible for the host's PMD pages).
-//! - `thp_process:advised` (`config::ThpProcess`): init issues
-//!   `prctl(PR_SET_THP_DISABLE, 1,
-//!   PR_THP_DISABLE_EXCEPT_ADVISED)` ([`configure_process`]) where the
-//!   probe found the kernel takes it (`sys::features::ThpDisable::Yes`,
-//!   6.18+, probed by the call's return), so the process gets huge pages
-//!   only where something `MADV_HUGEPAGE`d (`auto`'s folios, `always`'s
-//!   chunks and huge runs), whatever the host's global mode; libc's and
-//!   the program's own mappings included, which is why the key is opt-in
-//!   and off by default. Below 6.18 (`EINVAL`) nothing is issued and the
-//!   report says `unsupported`; a process whose parent already set a THP
-//!   policy keeps it (`inherited`). Independent of `thp`: `never` covers
-//!   challoc's slab regions with `MADV_NOHUGEPAGE` on every kernel and
-//!   does not need this for them; the huge region under `never`, and
-//!   every region under `auto` and `always`, on an `always` host do.
 //!
 //! Design 11's rule ([`forced_by_limit`]: an effective cgroup limit under
 //! 1 GiB forces a configured `thp:always` to `never`) is applied by
@@ -96,8 +81,8 @@
 
 use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
-use crate::config::{Thp as Key, ThpProcess};
-use crate::sys::features::{Features, Thp as Table, ThpDisable, ThpSetting};
+use crate::config::Thp as Key;
+use crate::sys::features::{Features, Thp as Table, ThpSetting};
 
 /// The effective mode.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -360,6 +345,7 @@ pub fn configure(key: Key, features: &Features) -> Decision {
         Ordering::Relaxed,
     );
     KERNEL_THP.store(features.thp.enabled.is_some() as u8, Ordering::Relaxed);
+    HOST_MODE.store(features.thp.enabled.map_or(0, host_code), Ordering::Relaxed);
     let d = decide(key, &features.thp);
     store(&d);
     d
@@ -470,65 +456,6 @@ fn reset_reservations_for_test() {
     }
 }
 
-/// The process-wide THP policy after init (`thp_process`, the module
-/// doc): what was issued and, when nothing was, why.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Process {
-    /// `thp_process:default`: nothing issued, the process keeps whatever
-    /// policy it started with.
-    Default = 0,
-    /// `advised`: the `prctl` was issued and taken; huge pages only where
-    /// advised, process-wide.
-    InForce = 1,
-    /// `advised` on a kernel that refuses the flag (`EINVAL` before 6.18,
-    /// or a filter in front of `prctl`): nothing issued.
-    Unsupported = 2,
-    /// `advised` in a process that already carried a THP policy from its
-    /// parent: nothing issued, the parent's policy kept.
-    Inherited = 3,
-    /// `advised`, the probe said yes, and the call itself failed (a
-    /// filter that let the probe through and not this call): nothing in
-    /// force.
-    Failed = 4,
-}
-
-impl Process {
-    fn from_u8(v: u8) -> Process {
-        match v {
-            1 => Process::InForce,
-            2 => Process::Unsupported,
-            3 => Process::Inherited,
-            4 => Process::Failed,
-            _ => Process::Default,
-        }
-    }
-
-    /// The words of the `thp:` line and the JSON object.
-    pub const fn text(self) -> &'static str {
-        match self {
-            Process::Default => "default (nothing issued)",
-            Process::InForce => "advised: PR_THP_DISABLE_EXCEPT_ADVISED in force",
-            Process::Unsupported => "advised: skipped, the kernel refuses PR_THP_DISABLE_EXCEPT_ADVISED (EINVAL before 6.18)",
-            Process::Inherited => "advised: skipped, the process inherited a THP policy (PR_GET_THP_DISABLE non-zero)",
-            Process::Failed => "advised: prctl(PR_SET_THP_DISABLE) failed after the probe took it",
-        }
-    }
-
-    /// One word for the JSON object and `stats.thp.process` readers.
-    pub const fn name(self) -> &'static str {
-        match self {
-            Process::Default => "default",
-            Process::InForce => "in_force",
-            Process::Unsupported => "unsupported",
-            Process::Inherited => "inherited",
-            Process::Failed => "failed",
-        }
-    }
-}
-
-/// The process-wide policy outcome ([`Process`] as `u8`).
-static PROCESS: AtomicU8 = AtomicU8::new(Process::Default as u8);
 /// The host's global THP mode as read at init (0 for a kernel without
 /// THP, else [`host_code`]), for the report.
 static HOST_MODE: AtomicU8 = AtomicU8::new(0);
@@ -543,39 +470,6 @@ const fn host_code(e: ThpSetting) -> u8 {
     }
 }
 
-/// Decide the process outcome from the key and the probe. Pure.
-pub fn decide_process(key: ThpProcess, probe: ThpDisable) -> Process {
-    if !key.requested() {
-        return Process::Default;
-    }
-    match probe {
-        ThpDisable::Yes => Process::InForce,
-        ThpDisable::No => Process::Unsupported,
-        ThpDisable::Inherited(_) => Process::Inherited,
-    }
-}
-
-/// Apply `thp_process`: under `advised`, where
-/// the probe found the kernel takes the flag, issue `prctl(PR_SET_THP_
-/// DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED)` once for the process.
-/// Called once from init, after [`configure`] and before the reservations
-/// (the flag is process-wide, so the order is for reading, not effect).
-/// Records the host's global mode for the report.
-pub fn configure_process(key: ThpProcess, features: &Features) -> Process {
-    HOST_MODE.store(features.thp.enabled.map_or(0, host_code), Ordering::Relaxed);
-    let mut outcome = decide_process(key, features.thp_disable);
-    if outcome == Process::InForce && !prctl_thp_disable_except_advised() {
-        outcome = Process::Failed;
-    }
-    PROCESS.store(outcome as u8, Ordering::Relaxed);
-    outcome
-}
-
-/// The process-wide policy outcome.
-pub fn process() -> Process {
-    Process::from_u8(PROCESS.load(Ordering::Relaxed))
-}
-
 /// The host's global THP mode as read at init (`None` without THP).
 pub fn host_mode() -> Option<ThpSetting> {
     match HOST_MODE.load(Ordering::Relaxed) {
@@ -585,19 +479,6 @@ pub fn host_mode() -> Option<ThpSetting> {
         4 => Some(ThpSetting::Never),
         _ => None,
     }
-}
-
-#[cfg(target_os = "linux")]
-fn prctl_thp_disable_except_advised() -> bool {
-    // SAFETY: integer arguments; the call sets a process-wide mm flag that
-    // only changes which faults may install a huge page.
-    unsafe { crate::sys::prctl(crate::sys::PR_SET_THP_DISABLE, 1, crate::sys::PR_THP_DISABLE_EXCEPT_ADVISED, 0, 0) }
-        .is_ok()
-}
-
-#[cfg(not(target_os = "linux"))]
-fn prctl_thp_disable_except_advised() -> bool {
-    false
 }
 
 /// The decision in force.
@@ -765,7 +646,6 @@ pub fn stats() -> Stats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sys::features::Collapse;
 
     fn table(enabled: Option<ThpSetting>, always: u64, madvise: u64) -> Table {
         table_at(21, enabled, always, madvise)
@@ -779,7 +659,6 @@ mod tests {
             listed: always | madvise | (1 << lg_pmd),
             always,
             madvise,
-            collapse: Collapse::Unprobed,
         }
     }
 
@@ -957,31 +836,10 @@ mod tests {
             .all(|(a, l)| l.load(Ordering::Relaxed) == 0 || a.load(Ordering::Relaxed) != 1 << 40));
     }
 
-    /// `thp_process`: `default` issues nothing
-    /// whatever the kernel; `advised` is in force only where the probe
-    /// took the flag, skipped with its reason below 6.18 or in a process
-    /// with an inherited policy. Every outcome has distinct words.
+    /// The host mode round trip (the statics are process-wide; leave
+    /// them as found).
     #[test]
-    fn process_outcome_follows_the_key_and_the_probe() {
-        for probe in [ThpDisable::Yes, ThpDisable::No, ThpDisable::Inherited(1), ThpDisable::Inherited(3)] {
-            assert_eq!(decide_process(ThpProcess::Default, probe), Process::Default, "{probe:?}");
-        }
-        assert_eq!(decide_process(ThpProcess::Advised, ThpDisable::Yes), Process::InForce);
-        assert_eq!(decide_process(ThpProcess::Advised, ThpDisable::No), Process::Unsupported);
-        assert_eq!(decide_process(ThpProcess::Advised, ThpDisable::Inherited(1)), Process::Inherited);
-        assert_eq!(decide_process(ThpProcess::Advised, ThpDisable::Inherited(3)), Process::Inherited);
-        let all = [Process::Default, Process::InForce, Process::Unsupported, Process::Inherited, Process::Failed];
-        for (i, a) in all.iter().enumerate() {
-            assert_eq!(Process::from_u8(*a as u8), *a);
-            for b in &all[i + 1..] {
-                assert_ne!(a.text(), b.text());
-                assert_ne!(a.name(), b.name());
-            }
-        }
-        assert!(Process::Unsupported.text().contains("skipped") && Process::Unsupported.text().contains("EINVAL"));
-        assert!(Process::Inherited.text().contains("skipped"));
-        // The host mode round trip (the statics are process-wide; leave
-        // them as found).
+    fn host_mode_round_trips() {
         let saved = HOST_MODE.load(Ordering::Relaxed);
         HOST_MODE.store(0, Ordering::Relaxed);
         assert_eq!(host_mode(), None);
