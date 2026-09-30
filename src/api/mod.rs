@@ -609,7 +609,8 @@ mod tests {
 
     /// The background thread starts on request, is visible under
     /// `/proc/self/task` with its name, purges without any slow-path
-    /// tick, and is gone from the bookkeeping after a fork child handler.
+    /// tick, is gone from the bookkeeping in a fork child while the
+    /// parent's keeps running, and stops when the request is withdrawn.
     #[test]
     fn background_thread_starts_purges_and_is_absent_after_fork() {
         use std::string::ToString;
@@ -662,20 +663,53 @@ mod tests {
         assert!(purged, "background thread did not purge the freed run: {:?}", s.huge.stats());
         s.set_decay_ms((old_ns / 1_000_000) as i64);
 
-        // The child handler forgets the thread and the request. The thread
-        // itself keeps running in this (parent) process, so withdraw the
-        // request again to kick it: it exits at that wake-up. The handler
-        // dropped its record (a real child has no such thread), so this
-        // process joins it by hand to keep glibc's view of the stack
-        // consistent with the next `start`.
-        let thread = purge::background::thread().expect("a thread record");
-        fork_prepare();
-        fork_child();
-        assert!(!purge::background::present());
-        assert!(!purge::background::requested());
-        assert!(!purge::background::is_locked());
-        assert!(purge::background::thread().is_none());
+        // A real fork: the child handler forgets the thread and the
+        // request in the child, and leaves this process's thread, its
+        // eventfd and its PSI trigger alone. Running the handler in this
+        // process instead would close the eventfd the thread sleeps on in
+        // `ppoll` while PSI is armed, and the kick below could not reach
+        // it. The child checks with atomics and the state lock only and
+        // answers through its exit status.
+        assert!(purge::background::thread().is_some(), "no thread record");
+        let pid = unsafe { ::libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            let bad = [
+                purge::background::present(),
+                purge::background::requested(),
+                purge::background::is_locked(),
+                purge::background::thread().is_some(),
+            ];
+            let code = bad.iter().enumerate().fold(0, |m, (i, &b)| m | ((b as i32) << i));
+            unsafe { ::libc::_exit(code) };
+        }
+        let mut status = 0;
+        assert_eq!(unsafe { ::libc::waitpid(pid, &mut status, 0) }, pid);
+        assert!(::libc::WIFEXITED(status), "fork child did not exit: status {status:#x}");
+        assert_eq!(
+            ::libc::WEXITSTATUS(status),
+            0,
+            "fork child still sees (bit 0) present, (1) requested, (2) the state lock held, (3) a thread record"
+        );
+        assert!(purge::background::present() && purge::background::requested(), "the fork stopped the parent's thread");
+
+        // Withdraw the request: the kick wakes the thread (through the
+        // eventfd while PSI is armed) and it exits there; the exit is
+        // asynchronous, so wait for it, bounded, and join it.
+        let psi = s.cgroup.psi_armed();
         purge::background::request(false);
+        let mut stopped = false;
+        for _ in 0..400 {
+            if !purge::background::present() {
+                stopped = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(stopped, "background thread did not stop at the kick (psi_armed {psi}): {:?}", tasks());
+        assert!(purge::background::join_exited(), "no exited thread to join");
+        assert!(purge::background::thread().is_none());
+        // Joined, the task leaves /proc/self/task as the kernel reaps it.
         let mut gone = false;
         for _ in 0..400 {
             if !tasks().iter().any(|n| n == "challoc-bg") {
@@ -684,8 +718,7 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        assert!(gone, "background thread still running: {:?}", tasks());
-        assert_eq!(unsafe { ::libc::pthread_join(thread, core::ptr::null_mut()) }, 0);
+        assert!(gone, "background thread still running after the join: {:?}", tasks());
     }
 
     /// One stack for the life of the process (design 8.1): a
