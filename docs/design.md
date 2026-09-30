@@ -583,7 +583,7 @@ struct CacheHeader {                         // one per (arena, class), 64 bytes
     zeroed:   u32,                           // slots[..zeroed] read as zero
     slots:    *mut *mut u8,                  // this class's stack, its own metadata object
     allocs:   u64,                           // pops served since creation
-    compact_mask: u32,                       // probe mask, (1 << tcache_compact_shift) - 1, or off
+    compact_mask: u32,                       // probe mask, COMPACT_MASK, or off
     run_end:  u32,                           // slots[..run_end] is the run of low addresses (6.4)
     moved:    u64,                           // refilled - flushed (for thread.deallocated)
     probe_refilled: u32,                     // the class's refill counter at the previous probe
@@ -889,8 +889,8 @@ to `rallocx` exactly as jemalloc's contract requires.
   A pair the split keeps together stays cached and consistent until a
   flush releases it (a pass over the kept half was measured at 5..7% of
   xmalloc-test).
-- **Scheduled pop** (the compacting cache): every `2^tcache_compact_shift`
-  pops of a class (default `k = 3`, one pop in 8) are served from the *run* of low addresses
+- **Scheduled pop** (the compacting cache): every `2^COMPACT_SHIFT`
+  pops of a class (`k = 3`, one pop in 8) are served from the *run* of low addresses
   `slots[..run_end]` (descending, lowest at `run_end - 1`) instead of the
   top: the run's lowest entry is returned and the top entry moved into its
   place. The run is a refill's batch or a *rebuild*'s block: `cap / 4`
@@ -923,9 +923,8 @@ to `rallocx` exactly as jemalloc's contract requires.
   slabs drain, empty and are purged. The gate exists because compacting a
   class costs slab traffic (claims low, releases high) and cold slots that
   larson measured at -15..-22% when paid unconditionally at `k = 3`; a
-  dense class pays one counter test per `malloc`. `tcache_compact_shift:0`
-  turns the schedule off.
-- **Cache GC**: every `tcache_gc_interval_ms` (default 10 s) flush three
+  dense class pays one counter test per `malloc`.
+- **Cache GC**: every 10 s (`GC_INTERVAL_NS`) flush three
   quarters of `low_water`, the entries that went unused since the last GC,
   then reset `low_water = len`. `cap` is fixed; it never shrinks. This is
   jemalloc's incremental tcache GC in spirit. Above 90% of the cgroup
@@ -1545,8 +1544,6 @@ jemalloc names where they exist:
 | `tcache_max`              | 32768   | largest cached class size (bytes); `opt.tcache_max` reads as `size_t` |
 | `tcache_nslots_small_max` | 1024    |                                         |
 | `lg_tcache_nslots_mul`    | 1       |                                         |
-| `tcache_gc_interval_ms`   | 10000   | challoc only                            |
-| `tcache_compact_shift`    | 3       | challoc only; one pop in 2^k compacts, 0 = off (6.4) |
 | `thp`                     | never   | `never`, `auto`, `always` (7, 17, `thp.rs`): `auto` advises slab groups of classes whose slab holds an enabled sub-PMD folio and rounds metadata commits to it, never a 2 MiB page (inert where the PMD size is `madvise`-gated or no such size is enabled); the opt-in for aarch64 hosts with `hugepages-64kB` enabled and Valkey-shaped heaps (measured neutral there, a real 1.6% loss on larson and more RSS on small heaps, so not the default); `always` commits and advises PMD chunks (at a 2 MiB PMD only: 4 KiB pages; at 16 and 64 KiB pages it is the folio path over the enabled sizes below the PMD, inert when none is), huge runs of a PMD or more and the metadata (jemalloc's `thp:always`, priced in `bench/results/2026-09-19-lane-b-mthp.md`); `always` under a cgroup limit below 1 GiB is forced to `never` (11); `never` (and a forced `never`) issues `MADV_NOHUGEPAGE` on the class superblock and the metadata region, so the slab regions get no huge page on a host whose global mode is `always`, and leaves the huge region to the host's policy, as jemalloc's `never` leaves its large extents (17, plan Phase 2.5 task 16; the 2026-09-20 decision on `bench/results/2026-09-20-aarch64-cgos-thp-ab.md`, option (d): the huge runs' 2 MiB pages were 10 points of `valkey1` on Chainguard OS) |
 | `thp_process`             | default | challoc only; `default`, `advised` (17, plan Phase 2.5 task 16, `thp.rs`): the process-wide THP policy asked for at init. `advised` calls `prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED)` where the kernel accepts it (6.18+, probed by the call's return, `EINVAL` below: the process then keeps its inherited policy and the report says so), so on an `always` host only the regions `thp:auto|always` advise get huge pages and the rest of the process does not; `default` issues nothing. Opt-in because it is process-wide: a library does not change the THP policy of the program that loaded it unasked. Independent of `thp` (the per-region advice); `thp:default` is `thp:never`, not this key |
 | `spin_hint`               | auto    | challoc only; what a contended lock spins with (5): `auto` (the CPU probe's choice: `umwait` with WAITPKG, else the baseline), `baseline` (`pause`/`isb`), `umwait` (reported and left at `auto` without WAITPKG), `wfe` (aarch64; measured slower under contention, never chosen by `auto`) |
@@ -1763,9 +1760,9 @@ created or torn down); writing it to an unbuilt automatic arena builds
 that arena. `opt.tcache_max` and `opt.huge_retain_max` read back as
 `size_t` (byte counts, as jemalloc's `opt.tcache_max`); the other unsigned
 keys (`opt.narenas`, `opt.tcache_nslots_small_max`,
-`opt.tcache_compact_shift`, `opt.guard_slab_interval`) as `unsigned`; the
-signed ones (`opt.dirty_decay_ms`, `opt.muzzy_decay_ms`,
-`opt.lg_tcache_nslots_mul`, `opt.tcache_gc_interval_ms`) as `ssize_t`.
+`opt.guard_slab_interval`) as `unsigned`; the signed ones
+(`opt.dirty_decay_ms`, `opt.muzzy_decay_ms`, `opt.lg_tcache_nslots_mul`)
+as `ssize_t`.
 `stats.arenas.4097.*` (`MALLCTL_ARENAS_DESTROYED`) answers all-zero
 statistics, bins included: challoc never destroys an arena, so the merged
 figures of the destroyed ones are zero; `arena.4097.*` answers `ENOENT`.
@@ -1854,7 +1851,7 @@ the cache and its defragmenter asks only about live objects), so the
 `allocator_frag_bytes` KeyDB's stop rule reads (`stats.active -
 stats.allocated`, Redis 6's rule; Valkey 9 reads the bins' figures from
 the utilization queries instead) keeps the cached slots' slabs until the
-cache GC (`tcache_gc_interval_ms`, 10 s) returns them, plus the slab tails
+cache GC (every 10 s) returns them, plus the slab tails
 (`slab_size - nregs * size`) that `active` counts and the queries do not.
 
 ### 13.6 Library name, soname and packaging

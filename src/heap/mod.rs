@@ -55,7 +55,7 @@
 //! - `alloc`: pop the top of the class's cache; if it is empty, *refill* by
 //!   claiming up to `cap / 2` slots from the class's lowest partial slab
 //!   (lowest on top, so allocations walk up the slab). Every
-//!   `2^tcache_compact_shift` pops are *scheduled pops* (below).
+//!   `2^COMPACT_SHIFT` pops are *scheduled pops* (below).
 //! - `free`: classify the pointer, check its bitmap bit is set (invalid and
 //!   stale double frees abort here), push it; if the cache is full, *flush*
 //!   the `cap / 2` highest-address entries back to their slabs in one
@@ -69,7 +69,7 @@
 //! layout stays frozen at whatever occupancy the delete phase left; the
 //! flush's selection policy cannot change that (`bench/probes/churn.c`).
 //! To break it, one pop in
-//! `2^tcache_compact_shift` is a scheduled pop that is served from a
+//! `2^COMPACT_SHIFT` is a scheduled pop that is served from a
 //! *run* of low addresses kept at the bottom of the stack,
 //! `slots[..run_end]`, descending (lowest at `run_end - 1`), instead of
 //! the top: it returns the run's lowest slot and moves the top entry into
@@ -154,7 +154,6 @@ use core::alloc::Layout;
 use core::ptr;
 
 use crate::arena::Arena;
-use crate::config::Config;
 use crate::layout::{CLASSES, NCLASSES};
 #[cfg(target_os = "linux")]
 use crate::rseq;
@@ -213,8 +212,8 @@ pub struct CacheHeader {
     /// Pops served from this cache since it was created.
     allocs: u64,
     /// A pop whose `allocs` count has no bit of this mask set is a
-    /// scheduled pop: [`PROBE_MASK`], the configured compaction mask, or
-    /// `u32::MAX` when compaction is off.
+    /// scheduled pop: [`PROBE_MASK`], [`COMPACT_MASK`], or `u32::MAX`
+    /// when compaction is off.
     compact_mask: u32,
     /// `slots[..run_end]` is the run of low addresses, descending (the
     /// lowest at `run_end - 1`); `run_end <= low_water`.
@@ -235,7 +234,7 @@ pub struct CacheHeader {
     unsorted_flushes: u8,
 }
 
-/// Cache modes: off (`tcache_compact_shift:0`), probing the class for
+/// Cache modes: off (the `FOREIGN` cache), probing the class for
 /// fragmentation every [`PROBE_MASK`] + 1 pops, compacting.
 pub const MODE_OFF: u16 = 0;
 pub const MODE_PROBE: u16 = 1;
@@ -266,6 +265,13 @@ pub const PUSH_PAC: u8 = 4;
 // `Heap::percpu`; the entry points carry nothing for the mode.
 /// Pops between two fragmentation probes of a class (minus one).
 pub const PROBE_MASK: u32 = (1 << 12) - 1;
+/// A compacting cache serves every `2^COMPACT_SHIFT`th pop of a class
+/// from the lowest-address cached slot instead of the top of the stack
+/// (design 6.4).
+pub const COMPACT_SHIFT: u32 = 3;
+/// The scheduled-pop mask of a compacting cache: a pop whose count has
+/// no bit of it set is served from the bottom of the run.
+pub const COMPACT_MASK: u32 = (1 << COMPACT_SHIFT) - 1;
 /// A class is worth compacting when its slabs hold at least this many
 /// slabs' worth of holes (free slots not in any cache) and at least a
 /// [`COMPACT_MIN_RATIO`]th of their capacity. Two or three slabs of holes
@@ -436,24 +442,23 @@ impl CacheHeader {
     }
 
     /// The scheduled-pop mask `mode` implies: [`PROBE_MASK`] while
-    /// probing, the configured `tcache_compact_shift` mask while
-    /// compacting, `u32::MAX` when off (one pop in 2^32 then reaches
+    /// probing, [`COMPACT_MASK`] while compacting, `u32::MAX` when off (one pop in 2^32 then reaches
     /// `pop_compact`, which pops the top). The one home of the
     /// mode-to-mask rule; [`CacheHeader::set_mode`] and
     /// [`CacheHeader::set_mode_volatile`] apply it.
-    fn mask_for(mode: u16, config: &Config) -> u32 {
+    fn mask_for(mode: u16) -> u32 {
         match mode {
             MODE_PROBE => PROBE_MASK,
-            MODE_COMPACT => config.compact_mask(),
+            MODE_COMPACT => COMPACT_MASK,
             _ => u32::MAX,
         }
     }
 
     /// Enter `mode` and derive the scheduled-pop mask from it
     /// ([`CacheHeader::mask_for`]), so the two fields never disagree.
-    fn set_mode(&mut self, mode: u16, config: &Config) {
+    fn set_mode(&mut self, mode: u16) {
         self.mode = mode;
-        self.compact_mask = Self::mask_for(mode, config);
+        self.compact_mask = Self::mask_for(mode);
     }
 
     /// [`CacheHeader::set_mode`] for a header of the per-CPU table
@@ -464,11 +469,11 @@ impl CacheHeader {
     /// # Safety
     /// `h` is a live header of the per-CPU table.
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    unsafe fn set_mode_volatile(h: *mut CacheHeader, mode: u16, config: &Config) {
+    unsafe fn set_mode_volatile(h: *mut CacheHeader, mode: u16) {
         // SAFETY: guaranteed by the caller.
         unsafe {
             ptr::write_volatile(&raw mut (*h).mode, mode);
-            ptr::write_volatile(&raw mut (*h).compact_mask, Self::mask_for(mode, config));
+            ptr::write_volatile(&raw mut (*h).compact_mask, Self::mask_for(mode));
         }
     }
 
@@ -1100,7 +1105,7 @@ impl Heap {
                         Verdict::Refilling | Verdict::Dense => return Self::pop_top(cache, len, pac),
                         Verdict::Fragmented => {}
                     }
-                    (*cache).set_mode(MODE_COMPACT, &shared.config);
+                    (*cache).set_mode(MODE_COMPACT);
                     return self.pop_compact_run(cache, class, len);
                 }
                 _ => return Self::pop_top(cache, len, pac),
@@ -1229,7 +1234,7 @@ impl Heap {
             let arena = (*cache).arena;
             if !Self::fragmented(shared, arena, class) {
                 shared.owner(arena).class(class).note_compact_mode(false);
-                (*cache).set_mode(MODE_PROBE, &shared.config);
+                (*cache).set_mode(MODE_PROBE);
                 return;
             }
             let cap = (*cache).cap as usize;
@@ -1814,8 +1819,8 @@ impl Heap {
                 },
             );
             // The `FOREIGN` cache is never popped, so it never probes.
-            let mode = if arena == FOREIGN || shared.config.tcache_compact_shift == 0 { MODE_OFF } else { MODE_PROBE };
-            (*cache).set_mode(mode, &shared.config);
+            let mode = if arena == FOREIGN { MODE_OFF } else { MODE_PROBE };
+            (*cache).set_mode(mode);
         }
         cache
     }
