@@ -228,6 +228,37 @@ def quiet_gate(load1: float, wait_s: float, log=print) -> dict[str, Any]:
         time.sleep(5)
 
 
+def procs_running() -> int:
+    for line in (_read("/proc/stat") or "").splitlines():
+        if line.startswith("procs_running "):
+            return int(line.split()[1])
+    return 1
+
+
+def quiet_gate_running(running: float, wait_s: float, log=print) -> dict[str, Any]:
+    """The quiet gate of a freshly booted cell VM: load1 lags by minutes
+    after the image pull and the build, so wait (at most wait_s) until the
+    runnable-task count, sampled over 3 s, averages at most `running` (the
+    sampler itself is one) and steal is under 0.5%. Never fails; a host
+    that does not settle is recorded as noisy."""
+    t0 = time.monotonic()
+    while True:
+        xs = []
+        c0, s0 = cpu_times()
+        for _ in range(6):
+            xs.append(procs_running())
+            time.sleep(0.5)
+        c1, s1 = cpu_times()
+        mean = sum(xs) / len(xs)
+        steal = 100.0 * (s1 - s0) / (c1 - c0) if c1 > c0 else 0.0
+        waited = round(time.monotonic() - t0, 1)
+        if mean <= running and steal < 0.5:
+            return {"quiet": True, "running": mean, "steal_pct": round(steal, 3), "load1": loadavg()[0], "waited_s": waited}
+        if waited >= wait_s:
+            log(f"== quiet gate: {mean:.1f} runnable, steal {steal:.2f}% after {waited:.0f} s; continuing, host marked noisy")
+            return {"quiet": False, "running": mean, "steal_pct": round(steal, 3), "load1": loadavg()[0], "waited_s": waited}
+
+
 def preflight() -> list[str]:
     """Host-side checks before a local run (bench-needs-quiet-host): the
     load average and foreign containers. Returns warnings."""

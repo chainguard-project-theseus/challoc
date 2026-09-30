@@ -22,14 +22,23 @@
 
 [defaults]
 provider = "gce"
+# Where `cb launch` runs: the GCP project, the bucket for bundles and
+# results (objects expire after 30 days), and the VMs' service account
+# (object read/write on that bucket and read on the bench image repository,
+# nothing else).
 project = "dlorenc-dev"
+bucket = "dlorenc-dev-challoc-bench"
+service_account = "cb-bench-vm@dlorenc-dev.iam.gserviceaccount.com"
 zones = ["us-east4-a", "us-east4-b", "us-central1-a"]
 spot = "prefer"
 max_run = "45m"
 runtime = "docker"
 bootstrap = "startup-script"
 container = "default"
-quiet = { load1 = 0.3, wait_s = 60 }
+# The quiet gate of a fresh VM: runnable tasks (sampled over 3 s, the
+# sampler counts as one) and steal, not load1, which lags by minutes after
+# the image pull and the build.
+quiet = { running = 1.5, wait_s = 30 }
 
 # ---- the machine the command runs on ---------------------------------------
 # Dev container on a laptop, a CI runner, or a Linux box: numbers are
@@ -93,11 +102,15 @@ machine = "c4a-standard-4"
 [cell.ref-arm64]
 shape = "axion-v2"
 host = { family = "ubuntu-2404-lts-arm64", project = "ubuntu-os-cloud" }
+# CAP_PERFMON: the per-run perf_event_open counters (the second signal).
+container = "perfmon"
 tags = ["ref", "gate", "cpu-ladder"]
 
 [cell.ref-amd64]
 shape = "emr16"
 host = { family = "ubuntu-2404-lts-amd64", project = "ubuntu-os-cloud" }
+# CAP_PERFMON: the per-run perf_event_open counters (the second signal).
+container = "perfmon"
 tags = ["ref", "gate", "cpu-ladder"]
 
 [cell.cpu-n4a]

@@ -235,3 +235,28 @@ def env_pad(seed: int, block: int, row: str, pos: int) -> int:
     from the plan seed. Moves the initial stack, so a result that depends on
     one stack alignment shows up as spread instead of as an effect."""
     return random.Random(derive_seed(seed, "pad", block, row, pos)).randrange(0, 4097)
+
+
+def row_vm_seconds(rows: Rows, row: str, n_variants: int, blocks: int, warmup_blocks: int) -> float:
+    """Expected seconds one VM spends on one row: every block runs each
+    variant twice (a Williams sequence and its mirror; once with a single
+    variant)."""
+    per_block = n_variants * (2 if n_variants > 1 else 1)
+    return rows.rows[row].est_s * per_block * (blocks + warmup_blocks)
+
+
+def pack_shards(rows: Rows, row_names: list[str], n_variants: int, blocks: int, warmup_blocks: int, shard_seconds: float) -> list[list[str]]:
+    """Rows packed into shards (one shard = the rows one VM runs) of about
+    shard_seconds each: first-fit decreasing, a row longer than the budget
+    gets a shard of its own. Rows keep the suite's order inside a shard."""
+    cost = {r: row_vm_seconds(rows, r, n_variants, blocks, warmup_blocks) for r in row_names}
+    bins: list[tuple[float, list[str]]] = []
+    for r in sorted(row_names, key=lambda x: (-cost[x], row_names.index(x))):
+        for i, (used, members) in enumerate(bins):
+            if used + cost[r] <= shard_seconds:
+                bins[i] = (used + cost[r], members + [r])
+                break
+        else:
+            bins.append((cost[r], [r]))
+    shards = [sorted(m, key=row_names.index) for _, m in bins]
+    return sorted(shards, key=lambda m: row_names.index(m[0]))

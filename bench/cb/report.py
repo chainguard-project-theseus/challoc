@@ -216,7 +216,14 @@ def analyze(runs: list[dict[str, Any]], rows: Rows, *, cand: str | None = None, 
         context_pairs = [(cand, k) for k in controls if k not in (cand, ref)]
     alpha = float(plan.get("alpha", 0.0294))
     flagged, excluded = flag_blocks(blocks)
-    row_order = plan.get("rows") or sorted({s["row"] for s in samples})
+    # A launch's VMs each ran one shard (a subset of the rows): the row
+    # order is the union of their plans, in order of first appearance.
+    row_order: list[str] = []
+    for r in runs:
+        for name in r["plan"].get("rows") or []:
+            if name not in row_order:
+                row_order.append(name)
+    row_order += sorted({s["row"] for s in samples} - set(row_order))
     results = []
     for key in keys:
         ks = [s for s in samples if s["comparability"] == key]
@@ -244,6 +251,7 @@ def analyze(runs: list[dict[str, Any]], rows: Rows, *, cand: str | None = None, 
                     )
                     res["kind"] = kind
                     res["comparability"] = key
+                    res["cell"] = next((s["cell"] for s in ks if s["row"] == row), "")
                     results.append(res)
     gate = [r for r in results if r["kind"] == "gate"]
     vd = {f"{r['row']}|{r['comparability']}|{r['candidate']}": r["verdict"] for r in gate}
@@ -260,7 +268,8 @@ def analyze(runs: list[dict[str, Any]], rows: Rows, *, cand: str | None = None, 
     pmc_notes = sorted({s.get("pmc_note", "") for s in samples if not s.get("pmc") or "cycles" not in (s.get("pmc") or {})} - {""})
     return {
         "schema": "challoc.bench.summary/v1",
-        "runs": [r["manifest"].get("run") for r in runs],
+        "runs": list(dict.fromkeys(r["manifest"].get("run") for r in runs)),
+        "n_vms": len({_vm_key(s) for s in samples}),
         "suite": manifest.get("suite"),
         "cells": sorted({s["cell"] for s in samples}),
         "comparability": keys,
@@ -330,8 +339,10 @@ def render(summary: dict[str, Any]) -> str:
             continue
         out.append(f"## {title}")
         out.append("")
-        out.append(f"| row | unit | {res[0]['reference']} | candidate | cand vs ref | {lvl * 100:.1f}% CI | margin | verdict | blocks | flags |")
-        out.append("|---|---|---:|---:|---:|---|---:|---|---:|---|")
+        multi = len(summary["comparability"]) > 1
+        cellh, cellsep = ("cell | ", "---|") if multi else ("", "")
+        out.append(f"| {cellh}row | unit | {res[0]['reference']} | candidate | cand vs ref | {lvl * 100:.1f}% CI | margin | verdict | VMs | blocks | flags |")
+        out.append(f"|{cellsep}---|---|---:|---:|---:|---|---:|---|---:|---:|---|")
         for r in res:
             ref, cand = r["reference"], r["candidate"]
             v = r["verdict"]
@@ -348,8 +359,9 @@ def render(summary: dict[str, Any]) -> str:
                 ["uncalibrated"] if "uncalibrated" in r["flags"] else []
             )
             out.append(
-                f"| {r['row']} | {r['unit']} | {_fmt(r['median'][ref])} | {cand} {_fmt(r['median'][cand])} | {_pct(r['est_pct'])} | "
-                f"[{_pct(r['ci'][0])}, {_pct(r['ci'][1])}] | {r['margin_pct']:.1f}% | {v} | {r['n_blocks']} | {', '.join(flags)} |"
+                (f"| {r.get('cell', '')} " if multi else "")
+                + f"| {r['row']} | {r['unit']} | {_fmt(r['median'][ref])} | {cand} {_fmt(r['median'][cand])} | {_pct(r['est_pct'])} | "
+                f"[{_pct(r['ci'][0])}, {_pct(r['ci'][1])}] | {r['margin_pct']:.1f}% | {v} | {r['n_vm']} | {r['n_blocks']} | {', '.join(flags)} |"
             )
         out.append("")
     common = sorted({f for r in summary["results"] for f in r["flags"] if f in ("few blocks", "VM effect unestimated")})

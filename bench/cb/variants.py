@@ -28,6 +28,20 @@ class BuildError(Exception):
     pass
 
 
+# Sources shipped with a launch (cb launch, bench/cb/gce.py): a cell VM has
+# the harness tree but no git repository, so the launcher resolves every rev
+# to (commit, tree) and uploads `git archive` of each tree. `pin_sources`
+# records both; resolve_rev and build_challoc then use them instead of git.
+PINNED: dict[str, str] = {}  # commit -> tree
+SOURCE_DIR = ""  # holds <tree>.tar.gz
+
+
+def pin_sources(pins: dict[str, str], source_dir: str) -> None:
+    global SOURCE_DIR
+    PINNED.update(pins)
+    SOURCE_DIR = source_dir
+
+
 @dataclasses.dataclass
 class Variant:
     spec: VariantSpec
@@ -65,6 +79,8 @@ def git(root: str, *args: str, input: bytes | None = None) -> str:
 
 def resolve_rev(root: str, rev: str) -> tuple[str, str]:
     """(commit, tree) of a rev; the tree is what the build is keyed on."""
+    if rev in PINNED:
+        return rev, PINNED[rev]
     commit = git(root, "rev-parse", "--verify", f"{rev}^{{commit}}")
     tree = git(root, "rev-parse", f"{commit}^{{tree}}")
     return commit, tree
@@ -118,10 +134,14 @@ def build_challoc(root: str, spec: VariantSpec, work: str, log=print) -> Variant
     srcdir = os.path.join(work, "src", key)
     shutil.rmtree(srcdir, ignore_errors=True)
     os.makedirs(srcdir)
-    archive = subprocess.run(["git", "-c", "safe.directory=*", "-C", root, "archive", commit], capture_output=True)
-    if archive.returncode != 0:
-        raise BuildError(f"git archive {commit}: {archive.stderr.decode(errors='replace')}")
-    subprocess.run(["tar", "-x", "-C", srcdir], input=archive.stdout, check=True)
+    shipped = os.path.join(SOURCE_DIR, f"{tree}.tar.gz") if SOURCE_DIR else ""
+    if shipped and os.path.exists(shipped):
+        subprocess.run(["tar", "-xzf", shipped, "-C", srcdir], check=True)
+    else:
+        archive = subprocess.run(["git", "-c", "safe.directory=*", "-C", root, "archive", commit], capture_output=True)
+        if archive.returncode != 0:
+            raise BuildError(f"git archive {commit}: {archive.stderr.decode(errors='replace')}")
+        subprocess.run(["tar", "-x", "-C", srcdir], input=archive.stdout, check=True)
     if not os.path.exists(os.path.join(srcdir, "Cargo.toml")):
         raise BuildError(f"git archive {spec.source} produced no Cargo.toml")
     # git archive stamps files with the commit time; make every file newer
@@ -152,14 +172,35 @@ def stock_variant(spec: VariantSpec, values: dict[str, str]) -> Variant:
 
 
 def prepare(root: str, specs: list[VariantSpec], work: str, values: dict[str, str], log=print) -> list[Variant]:
+    """Every variant's library. Distinct challoc trees build in parallel
+    (the release profile is fat LTO with one codegen unit, so one build
+    leaves most CPUs idle); labels of one tree share the first build."""
+    for s in specs:
+        if s.kind not in ("stock", "challoc"):
+            raise SpecError(f"variant {s.label}: unknown kind {s.kind}")
+    first: dict[str, VariantSpec] = {}
+    for s in specs:
+        if s.kind == "challoc":
+            key = s.source if s.source == "tree" else resolve_rev(root, s.source)[1]
+            first.setdefault(key, s)
+    built: dict[str, Variant] = {}
+    if len(first) > 1:
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor(len(first)) as ex:
+            futs = {k: ex.submit(build_challoc, root, s, work, log) for k, s in first.items()}
+            for k, f in futs.items():
+                built[k] = f.result()
     out = []
     for s in specs:
         if s.kind == "stock":
             out.append(stock_variant(s, values))
-        elif s.kind == "challoc":
-            out.append(build_challoc(root, s, work, log))
+            continue
+        key = s.source if s.source == "tree" else resolve_rev(root, s.source)[1]
+        if key in built and built[key].spec is s:
+            out.append(built[key])
         else:
-            raise SpecError(f"variant {s.label}: unknown kind {s.kind}")
+            out.append(build_challoc(root, s, work, log))
     return out
 
 

@@ -1,6 +1,8 @@
 """The cb command line.
 
     cb run SUITE [--base REV] [--head REV] [--rows a,b] [--blocks N] ...
+    cb launch SUITE [--base REV] [--head REV] [--cells SEL] [--replicas N] ...
+    cb gc [--older-than MIN] [--run RUN] [--dry-run]
     cb compare RUN_DIR... [--cand LABEL --ref LABEL] [--json]
     cb report RUN_DIR [--json]
     cb plan SUITE [--blocks N] [--variants ...]
@@ -27,7 +29,7 @@ from .variants import BuildError
 
 
 def _add_run_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("suite", help="a suite under bench/suites (quick, aa, smoke) or a path to one")
+    p.add_argument("suite", nargs="?", help="a suite under bench/suites (quick, aa, smoke) or a path to one")
     p.add_argument("--base", default="main", help="rev of the `base` variant (default main)")
     p.add_argument("--head", default="HEAD", help="rev of the `head` variant (default HEAD)")
     p.add_argument("--variants", help="comma list overriding the suite's variants (base,head,aa=base,x=git:REV,jemalloc,glibc,...; LABEL=SRC@MALLOC_CONF)")
@@ -47,6 +49,9 @@ def _add_run_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--build-only", action="store_true", help="build the variants and stop")
     p.add_argument("--dry-run", action="store_true", help="print the plan and stop (after the builds)")
     p.add_argument("--no-bench-build", action="store_true", help="fail instead of running bench/build.sh when programs are missing")
+    p.add_argument("--launch", help="a cb launch file: run this VM's entry of it (bench/cb/boot.sh)")
+    p.add_argument("--vm", help="with --launch: this VM's name")
+    p.add_argument("--sources", help="with --launch: directory of the shipped <tree>.tar.gz sources")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -54,6 +59,15 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     _add_run_args(sub.add_parser("run", help="run a suite on this host (dev container or Linux)"))
+
+    from .gce import add_launch_args
+
+    add_launch_args(sub.add_parser("launch", help="run a suite on GCE cells: spot VMs, one per (cell, shard, replicate); verdicts pooled"))
+    p = sub.add_parser("gc", help="delete stray cb VMs (name cb-*, label purpose=challoc-bench)")
+    p.add_argument("--older-than", type=float, default=60, help="minutes (default 60; 0 for all)")
+    p.add_argument("--run", help="only this run's VMs")
+    p.add_argument("--project")
+    p.add_argument("--dry-run", action="store_true")
 
     p = sub.add_parser("compare", help="verdicts from existing run directories (pooled when their comparability keys match)")
     p.add_argument("dirs", nargs="+")
@@ -99,7 +113,17 @@ def _dispatch(a: argparse.Namespace) -> int:
     if a.cmd == "run":
         from .run import execute
 
+        if not a.suite and not a.launch:
+            raise SpecError("cb run: a suite (or --launch FILE --vm NAME)")
         return execute(a)
+    if a.cmd in ("launch", "gc"):
+        from . import gce
+
+        try:
+            return gce.launch(a) if a.cmd == "launch" else gce.gc(a)
+        except gce.InfraError as e:
+            print(f"cb: {e}", file=sys.stderr)
+            return 3
     if a.cmd in ("compare", "report"):
         rows = load_rows()
         if a.cmd == "report":

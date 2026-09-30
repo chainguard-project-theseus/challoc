@@ -34,7 +34,7 @@ from . import report
 from .plan import Plan, VariantSpec, env_pad, make_plan, parse_variant
 from .rows import parse
 from .spec import ROOT_DIR, Row, Rows, SpecError, Suite, expand, load_cells, load_rows, load_suite
-from .variants import BuildError, Variant, git, identity_notes, prepare
+from .variants import BuildError, Variant, git, identity_notes, pin_sources, prepare
 
 TOOLS = {
     "rt": "bench/tools/rt.c",
@@ -161,24 +161,42 @@ def default_run_id(suite: str, head: str) -> str:
 def execute(args) -> int:
     root = ROOT_DIR
     rows = load_rows(args.rows_file)
+    # A cell VM of `cb launch` runs its own entry of the launch file
+    # (bench/cb/gce.py): the rows of its shard, the launch's variants
+    # pinned to (commit, tree) with their sources shipped as tarballs.
+    launch = vm_entry = None
+    if getattr(args, "launch", None):
+        with open(args.launch) as f:
+            launch = json.load(f)
+        if args.vm not in launch["vms"]:
+            raise SpecError(f"{args.vm} is not a VM of launch {launch['run']}")
+        vm_entry = launch["vms"][args.vm]
+        pin_sources({v["source"]: v["tree"] for v in launch["variants"] if v["kind"] == "challoc"}, args.sources or "")
+        args.suite, args.cell, args.run_id = launch["suite"], vm_entry["cell"], launch["run"]
     suite = load_suite(args.suite, rows)
     cells = load_cells(args.cells_path or [])
     if args.cell not in cells:
         raise SpecError(f"unknown cell {args.cell!r}")
     cell = cells[args.cell]
-    if cell.provider != "local":
-        raise SpecError(f"cell {args.cell} is a {cell.provider} cell: `cb run` executes here, use --cell local (cb launch, M1b, runs GCE cells)")
+    if cell.provider != "local" and launch is None:
+        raise SpecError(f"cell {args.cell} is a {cell.provider} cell: `cb run` executes here, use --cell local (`cb launch` runs GCE cells)")
     refs = {"base": args.base, "head": args.head}
-    vitems = [v.strip() for v in args.variants.split(",")] if args.variants else suite.variants
-    citems = [c.strip() for c in args.controls.split(",") if c.strip()] if args.controls is not None else suite.controls
-    specs = [parse_variant(v, refs) for v in vitems] + [parse_variant(c, refs, role="control") for c in citems]
-    row_names = [r.strip() for r in args.rows.split(",")] if args.rows else suite.rows
+    if launch is not None:
+        specs = [VariantSpec(v["label"], v["kind"], v["source"], v.get("conf", ""), v.get("role", "variant")) for v in launch["variants"]]
+        refs = dict(launch.get("refs", refs))
+    else:
+        vitems = [v.strip() for v in args.variants.split(",")] if args.variants else suite.variants
+        citems = [c.strip() for c in args.controls.split(",") if c.strip()] if args.controls is not None else suite.controls
+        specs = [parse_variant(v, refs) for v in vitems] + [parse_variant(c, refs, role="control") for c in citems]
+    row_names = list(vm_entry["rows"]) if vm_entry else ([r.strip() for r in args.rows.split(",")] if args.rows else suite.rows)
     for r in row_names:
         if r not in rows.rows:
             raise SpecError(f"unknown row {r!r}")
     smoke = args.smoke or suite.kind == "smoke"
     if smoke:
         blocks, warmup = int(suite.local.get("blocks", 1)) if not args.smoke else 1, 0
+    elif launch is not None:
+        blocks, warmup = int(launch["blocks"]), int(launch["warmup_blocks"])
     else:
         blocks = args.blocks or int(suite.local.get("blocks", suite.blocks))
         warmup = args.warmup if args.warmup is not None else suite.warmup_blocks
@@ -193,7 +211,7 @@ def execute(args) -> int:
     # outside the image, espresso before bench/build.sh).
     head_commit = ""
     try:
-        head_commit = git(root, "rev-parse", args.head)
+        head_commit = launch["cb_commit"] if launch else git(root, "rev-parse", args.head)
     except BuildError:
         head_commit = "unknown"
     run_id = args.run_id or default_run_id(suite.name, head_commit)
@@ -235,6 +253,9 @@ def execute(args) -> int:
     h = hostmod.capture(cell.name, {"features": features_line(root, probe_v, work, tools_dir), "features_of": probe_v.label if probe_v else None})
     h["comparability"] = hostmod.comparability_key(h, cell.get("container", "default"))
     h["indicative"] = cell.provider == "local"
+    if launch is not None:
+        h["vm"] = args.vm
+        h["launch"] = {k: vm_entry.get(k) for k in ("shard", "replicate", "attempt", "look")}
     quiet = cell.get("quiet", {"load1": 4.0, "wait_s": 30})
     log(f"   {h['kernel']} {h['arch']} {h['cpu'].get('model')} nproc {h['nproc']} THP {h['thp'].get('enabled')} governor {h['governor']} load {h['loadavg'][0]:.2f}")
     if h.get("features"):
@@ -243,7 +264,7 @@ def execute(args) -> int:
     h["pmu_probe"] = probe.stdout.strip()
     log(f"   {h['pmu_probe'].split(' x=')[0]}")
 
-    seed = args.seed if args.seed is not None else random.randrange(1 << 31)
+    seed = vm_entry["seed"] if vm_entry else (args.seed if args.seed is not None else random.randrange(1 << 31))
     s2 = Suite(**{**suite.__dict__, "kind": "smoke" if smoke else suite.kind})
     plan = make_plan(s2, rows, [v.spec for v in variants], run_id=run_id, cell=cell.name, blocks=blocks, warmup_blocks=warmup, seed=seed, row_names=row_names)
     est = plan.est_seconds(rows)
@@ -269,12 +290,20 @@ def execute(args) -> int:
     _write_json(os.path.join(out, "host.json"), h)
     _write_json(os.path.join(out, "manifest.json"), manifest)
 
-    gate = hostmod.quiet_gate(float(quiet.get("load1", 4.0)), float(quiet.get("wait_s", 30)), log)
+    if "running" in quiet:
+        gate = hostmod.quiet_gate_running(float(quiet["running"]), float(quiet.get("wait_s", 30)), log)
+    else:
+        gate = hostmod.quiet_gate(float(quiet.get("load1", 4.0)), float(quiet.get("wait_s", 30)), log)
     h["quiet_gate"] = gate
     _write_json(os.path.join(out, "host.json"), h)
 
     by_label = {v.label: v for v in variants}
-    vm = {"name": f"local:{h['hostname']}", "zone": h.get("zone", ""), "spot": False, "boot_id": h.get("boot_id")}
+    if launch is not None:
+        vm = {"name": args.vm, "zone": h.get("zone", ""), "spot": h.get("spot", False), "boot_id": h.get("boot_id")}
+        shard, replicate = vm_entry["shard"], int(vm_entry["replicate"])
+    else:
+        vm = {"name": f"local:{h['hostname']}", "zone": h.get("zone", ""), "spot": False, "boot_id": h.get("boot_id")}
+        shard, replicate = "s00", 0
     t_start = time.monotonic()
     samples_path = os.path.join(out, "samples.jsonl")
     blocks_path = os.path.join(out, "blocks.jsonl")
@@ -310,8 +339,8 @@ def execute(args) -> int:
                     "cell": cell.name,
                     "comparability": h["comparability"],
                     "vm": vm,
-                    "shard": "s00",
-                    "replicate": 0,
+                    "shard": shard,
+                    "replicate": replicate,
                     "block": blk.index,
                     "pos": pos,
                     "seed": blk.seed,
@@ -355,6 +384,10 @@ def execute(args) -> int:
     if smoke:
         log(f"== smoke: {plan.runs()} runs, {failures} failed")
         return 0 if failures == 0 else 1
+    if launch is not None:
+        # The verdict needs every VM's samples: the launcher pools them.
+        log(f"== shard {shard} r{replicate} done: {plan.runs()} runs, {failures} failed, {manifest['wall_s']:.0f} s")
+        return 0
     summary = report.analyze_dirs([out], rows)
     _write_json(os.path.join(out, "summary.json"), summary)
     text = report.render(summary)
