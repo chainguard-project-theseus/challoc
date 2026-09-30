@@ -69,10 +69,9 @@ int main(void)
     CHECK(strncmp(line, "page_size=", 10) == 0, "line does not start with page_size=");
 
     /* Every key once. */
-    static const char *const keys[] = {"page_size",      "guard_install", "mseal",     "process_madvise", "process_madvise_free",
-                                       "anon_name",      "populate_write", "thp",      "mthp",            "collapse",
-                                       "thp_except_advised", "rseq",      "rseq_size", "mm_cid",          "slice_ext",
-                                       "pac"};
+    static const char *const keys[] = {"page_size",      "guard_install",      "mseal", "process_madvise", "process_madvise_free",
+                                       "anon_name",      "populate_write",     "thp",   "mthp",            "thp_except_advised",
+                                       "rseq",           "rseq_size",          "mm_cid", "slice_ext",      "pac"};
     size_t nkeys = sizeof keys / sizeof keys[0];
     for (size_t i = 0; i < nkeys; i++)
         CHECK(has_key(line, keys[i]) == 1, "key %s appears %d times", keys[i], has_key(line, keys[i]));
@@ -99,8 +98,7 @@ int main(void)
     }
 
     /* The THP keys: thp is a sysfs setting or none,
-     * mthp a comma list of sizes or none, collapse unprobed/no/a size; the
-     * default configuration never runs the collapse probe. */
+     * mthp a comma list of sizes or none. */
     {
         const char *v = strstr(line, " thp=") + 5;
         CHECK(strncmp(v, "never", 5) == 0 || strncmp(v, "madvise", 7) == 0 || strncmp(v, "always", 6) == 0 ||
@@ -108,8 +106,6 @@ int main(void)
               "thp has value `%.12s`", v);
         v = strstr(line, " mthp=") + 6;
         CHECK((v[0] >= '1' && v[0] <= '9') || strncmp(v, "none", 4) == 0, "mthp has value `%.12s`", v);
-        v = strstr(line, " collapse=") + 10;
-        CHECK(strncmp(v, "unprobed", 8) == 0, "collapse has value `%.12s` under thp:never", v);
         /* The prctl probe's answer, and the probe
          * left the process's policy alone (PR_GET_THP_DISABLE 0 unless the
          * parent set one, in which case the key says inherited). */

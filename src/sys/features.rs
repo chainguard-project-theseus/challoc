@@ -98,23 +98,6 @@ pub fn parse_thp_setting(bytes: &[u8]) -> Option<ThpSetting> {
     }
 }
 
-/// What `madvise(MADV_COLLAPSE)` did when probed (design 10 step 1).
-/// The syscall acts on whole PMD-sized ranges only
-/// (through 7.0 a request over a smaller range returns 0 having collapsed
-/// nothing), so the probe populates and collapses one PMD-sized range and
-/// costs a PMD of memory for a moment; init runs it only when the `thp`
-/// key asks for huge pages at all.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Collapse {
-    /// Not attempted (`thp:never`, the default).
-    Unprobed,
-    /// Attempted and refused (`EINVAL`, `ENOSYS`, `EPERM`, `ENOMEM`, or
-    /// `EAGAIN`) or there is no THP at all.
-    No,
-    /// Collapsed a populated range of `1 << lg` bytes.
-    Yes(u8),
-}
-
 /// The kernel's answer for `prctl(PR_SET_THP_DISABLE, 1,
 /// PR_THP_DISABLE_EXCEPT_ADVISED)` (kernel 6.18; design 17), the
 /// `thp_except_advised=` key. Probed by the call itself, never by a
@@ -177,13 +160,11 @@ pub struct Thp {
     pub always: u64,
     /// Sizes whose effective setting is `madvise`.
     pub madvise: u64,
-    /// The `MADV_COLLAPSE` probe.
-    pub collapse: Collapse,
 }
 
 impl Thp {
     /// No THP at all: nothing listed, nothing enabled.
-    pub const NONE: Thp = Thp { enabled: None, lg_pmd: 21, listed: 0, always: 0, madvise: 0, collapse: Collapse::No };
+    pub const NONE: Thp = Thp { enabled: None, lg_pmd: 21, listed: 0, always: 0, madvise: 0 };
 
     /// Compute the table from the files' contents: `read(path, buf)` fills
     /// `buf` with the file at the NUL-terminated `path` and returns the
@@ -202,7 +183,7 @@ impl Thp {
                 lg_pmd = v.trailing_zeros() as u8;
             }
         }
-        let mut t = Thp { enabled, lg_pmd, listed: 0, always: 0, madvise: 0, collapse: Collapse::Unprobed };
+        let mut t = Thp { enabled, lg_pmd, listed: 0, always: 0, madvise: 0 };
         let Some(top) = enabled else { return Thp::NONE };
         // Every candidate size from two pages to the PMD: hugepages-<n>kB/enabled.
         let mut path = [0u8; 96];
@@ -315,20 +296,11 @@ impl fmt::Display for LgSize {
 }
 
 impl Thp {
-    /// The three THP keys: `thp=<setting|none> mthp=<sizes|none>
-    /// collapse=<unprobed|no|size>`.
+    /// The two THP keys: `thp=<setting|none> mthp=<sizes|none>`.
     pub fn words(&self) -> impl Iterator<Item = (&'static str, Value)> {
         [
             ("thp", Value::Word(self.enabled.map_or("none", ThpSetting::name))),
             ("mthp", Value::Sizes(self.enabled_sizes())),
-            (
-                "collapse",
-                match self.collapse {
-                    Collapse::Unprobed => Value::Word("unprobed"),
-                    Collapse::No => Value::Word("no"),
-                    Collapse::Yes(lg) => Value::LgSize(lg),
-                },
-            ),
         ]
         .into_iter()
     }
@@ -348,14 +320,12 @@ pub enum Value {
     YesNo(bool),
     /// A plain number (`page_size`, `rseq_size`).
     Num(u64),
-    /// A fixed word (`madvise`, `unprobed`, `kernel-disabled`).
+    /// A fixed word (`madvise`, `kernel-disabled`).
     Word(&'static str),
     /// The `process_madvise` target: `no`, `pidfd_self` or `pidfd:<fd>`.
     Target(ProcessMadvise),
     /// A bit set over `log2(size)` as `64K,2M`, or `none`.
     Sizes(u64),
-    /// `1 << lg` bytes as `64K`, `2M`, `1G`.
-    LgSize(u8),
 }
 
 impl fmt::Display for Value {
@@ -368,7 +338,6 @@ impl fmt::Display for Value {
             Value::Target(ProcessMadvise::PidfdSelf) => f.write_str("pidfd_self"),
             Value::Target(ProcessMadvise::Pidfd(fd)) => write!(f, "pidfd:{fd}"),
             Value::Sizes(set) => write!(f, "{}", SizeSet(set)),
-            Value::LgSize(lg) => write!(f, "{}", LgSize(lg)),
         }
     }
 }
@@ -540,8 +509,8 @@ pub struct Features {
     /// pass populates a slab with one call, else touches it a page at a
     /// time.
     pub populate_write: bool,
-    /// The transparent-huge-page configuration and the `MADV_COLLAPSE`
-    /// probe: what the `thp` key can turn on.
+    /// The transparent-huge-page configuration: what the `thp` key can
+    /// turn on.
     pub thp: Thp,
     /// Whether the kernel takes `PR_THP_DISABLE_EXCEPT_ADVISED`: what
     /// `thp_process:advised` can issue.
@@ -563,8 +532,8 @@ impl Features {
     /// Every key of the line in order: the kernel probes, then `pac`.
     /// Values are `yes`/`no` except `page_size`,
     /// `process_madvise` (`no`, `pidfd_self`, or `pidfd:<fd>`), the THP
-    /// keys (`thp=never|madvise|always|none`, `mthp=64K,2M|none`,
-    /// `collapse=unprobed|no|2M`), `thp_except_advised` (`yes`, `no`,
+    /// keys (`thp=never|madvise|always|none`, `mthp=64K,2M|none`),
+    /// `thp_except_advised` (`yes`, `no`,
     /// `inherited`), `rseq_size` (a byte count, `0` without a
     /// registration), `slice_ext` (`on`, `available`, `prctl-failed`,
     /// `kernel-disabled`, `no-slice_ctrl`, `no-rseq`).
@@ -651,10 +620,10 @@ pub use linux::*;
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{AT_PAGESZ, Collapse, Features, ProcessMadvise, Thp, ThpDisable, page_size_from_auxv};
+    use super::{AT_PAGESZ, Features, ProcessMadvise, Thp, ThpDisable, page_size_from_auxv};
     use crate::sys::auxv::getauxval;
     use crate::sys::{
-        self, IoVec, MADV_COLLAPSE, MADV_DONTNEED, MADV_FREE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE,
+        self, IoVec, MADV_DONTNEED, MADV_FREE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE,
         MADV_POPULATE_WRITE, MAP_ANONYMOUS, MAP_PRIVATE, PIDFD_SELF, PR_GET_THP_DISABLE, PR_SET_THP_DISABLE,
         PR_THP_DISABLE_EXCEPT_ADVISED, PROT_NONE, PROT_READ, PROT_WRITE,
     };
@@ -853,38 +822,9 @@ mod linux {
     }
 
     /// The THP table from `/sys/kernel/mm/transparent_hugepage` (about ten
-    /// sysfs reads on a 4 KiB kernel). The `MADV_COLLAPSE` probe is not run
-    /// here: see [`Features::probe_collapse`].
+    /// sysfs reads on a 4 KiB kernel).
     pub fn probe_thp(page: usize) -> Thp {
         Thp::from_reader(page, |path, buf| sys::read_small_file(path, buf).unwrap_or(0))
-    }
-
-    /// `madvise(MADV_COLLAPSE)` over a populated, aligned, PMD-sized range
-    /// of a fresh private mapping. The syscall acts on whole PMD ranges
-    /// only (a smaller range returns 0 having done nothing), so the PMD is
-    /// the one size the probe can test; it populates `1 << lg_pmd` bytes
-    /// and releases them, which is why init runs it only when `thp` is not
-    /// `never`. `Yes` needs the call to return 0; the kernel answers
-    /// `EINVAL` before 6.1, `ENOMEM`/`EAGAIN` when it cannot assemble the
-    /// page, `EPERM`/`ENOSYS` under a filter.
-    pub fn probe_collapse(lg_pmd: u8, page: usize) -> Collapse {
-        let size = 1usize << lg_pmd;
-        // SAFETY: fresh anonymous private mapping, no fixed address.
-        let Ok(m) = (unsafe { sys::mmap(0, 2 * size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) })
-        else {
-            return Collapse::No;
-        };
-        let a = (m + size - 1) & !(size - 1);
-        let mut off = 0;
-        while off < size {
-            // SAFETY: inside the writable mapping just made.
-            unsafe { ((a + off) as *mut u8).write_volatile(0xA5) };
-            off += page;
-        }
-        // SAFETY: our scratch range; collapse changes backing, not contents.
-        let r = unsafe { sys::madvise(a, size, MADV_COLLAPSE) };
-        release(m, 2 * size);
-        if r.is_ok() { Collapse::Yes(lg_pmd) } else { Collapse::No }
     }
 
     impl Features {
@@ -921,19 +861,6 @@ mod linux {
         /// the extension.
         pub fn note_slice_ext(&mut self) {
             self.slice_ext = self.slice_ext.with_configured(crate::slice::verdict());
-        }
-
-        /// Run the `MADV_COLLAPSE` probe. Separate
-        /// from [`probe`](Features::probe) because it populates a PMD of
-        /// memory: init calls it only when the configuration's `thp` key is
-        /// not `never`, and the line says `collapse=unprobed` otherwise.
-        /// A kernel without THP (`thp=none`) is `No` without a call.
-        pub fn probe_collapse(&mut self) {
-            self.thp.collapse = if self.thp.enabled.is_none() {
-                Collapse::No
-            } else {
-                probe_collapse(self.thp.lg_pmd, self.page_size)
-            };
         }
 
         /// Drop any resource the probe holds (the pidfd). For the child side
@@ -1040,7 +967,7 @@ mod tests {
         assert_eq!(t.madvise, 1 << 21, "2M inherits madvise");
         assert_eq!(t.pmd_setting(), ThpSetting::Madvise);
         assert_eq!(t.sub_pmd_sizes(), 0);
-        assert_eq!(std::format!("{t}"), "thp=madvise mthp=2M collapse=unprobed");
+        assert_eq!(std::format!("{t}"), "thp=madvise mthp=2M");
     }
 
     #[test]
@@ -1055,21 +982,21 @@ mod tests {
         assert_eq!(t.pmd_setting(), ThpSetting::Never);
         assert_eq!(t.sub_pmd_sizes(), 1 << 16);
         assert_eq!(Thp::smallest(t.sub_pmd_sizes()), Some(16));
-        assert_eq!(std::format!("{t}"), "thp=madvise mthp=64K collapse=unprobed");
+        assert_eq!(std::format!("{t}"), "thp=madvise mthp=64K");
         // A per-size `madvise` counts even when the top level is `never`.
         files.retain(|(f, _)| *f != "enabled");
         files.push(("enabled", "always madvise [never]\n"));
         let t = Thp::from_reader(4096, sysfs(&files));
         assert_eq!(t.enabled, Some(ThpSetting::Never));
         assert_eq!(t.madvise, 1 << 16);
-        assert_eq!(std::format!("{t}"), "thp=never mthp=64K collapse=unprobed");
+        assert_eq!(std::format!("{t}"), "thp=never mthp=64K");
         // `always` at the top level makes every `inherit` size always.
         files.retain(|(f, _)| *f != "enabled");
         files.push(("enabled", "[always] madvise never\n"));
         let t = Thp::from_reader(4096, sysfs(&files));
         assert_eq!(t.madvise, 1 << 16);
         assert_eq!(t.always, 0, "every other size is never, not inherit");
-        assert_eq!(std::format!("{t}"), "thp=always mthp=64K collapse=unprobed");
+        assert_eq!(std::format!("{t}"), "thp=always mthp=64K");
     }
 
     #[test]
@@ -1077,18 +1004,18 @@ mod tests {
         let t = Thp::from_reader(4096, sysfs(&[("enabled", "always [madvise] never\n"), ("hpage_pmd_size", "2097152\n")]));
         assert_eq!(t.listed, 1 << 21);
         assert_eq!(t.madvise, 1 << 21);
-        assert_eq!(std::format!("{t}"), "thp=madvise mthp=2M collapse=unprobed");
+        assert_eq!(std::format!("{t}"), "thp=madvise mthp=2M");
         let t = Thp::from_reader(4096, sysfs(&[("enabled", "[always] madvise never\n")]));
         assert_eq!(t.lg_pmd, 21, "computed from the page size when hpage_pmd_size is missing");
         assert_eq!(t.always, 1 << 21);
-        assert_eq!(std::format!("{t}"), "thp=always mthp=2M collapse=unprobed");
+        assert_eq!(std::format!("{t}"), "thp=always mthp=2M");
         let t = Thp::from_reader(4096, sysfs(&[("enabled", "always madvise [never]\n")]));
         assert_eq!(t.enabled_sizes(), 0);
-        assert_eq!(std::format!("{t}"), "thp=never mthp=none collapse=unprobed");
+        assert_eq!(std::format!("{t}"), "thp=never mthp=none");
         // 64 KiB pages: the PMD is 512 MiB.
         let t = Thp::from_reader(65536, sysfs(&[("enabled", "always [madvise] never\n")]));
         assert_eq!(t.lg_pmd, 29);
-        assert_eq!(std::format!("{t}"), "thp=madvise mthp=512M collapse=unprobed");
+        assert_eq!(std::format!("{t}"), "thp=madvise mthp=512M");
     }
 
     #[test]
@@ -1098,7 +1025,7 @@ mod tests {
         assert_eq!(t.enabled, None);
         assert_eq!(t.enabled_sizes(), 0);
         assert_eq!(t.pmd_setting(), ThpSetting::Never);
-        assert_eq!(std::format!("{t}"), "thp=none mthp=none collapse=no");
+        assert_eq!(std::format!("{t}"), "thp=none mthp=none");
         // A garbled `enabled` file is treated as no THP as well.
         let t = Thp::from_reader(4096, sysfs(&[("enabled", "garbage\n")]));
         assert_eq!(t.enabled, None);
@@ -1124,7 +1051,7 @@ mod tests {
             process_madvise_free: true,
             anon_name: false,
             populate_write: true,
-            thp: Thp { enabled: Some(ThpSetting::Madvise), lg_pmd: 21, listed: (1 << 16) | (1 << 21), always: 0, madvise: (1 << 16) | (1 << 21), collapse: Collapse::Unprobed },
+            thp: Thp { enabled: Some(ThpSetting::Madvise), lg_pmd: 21, listed: (1 << 16) | (1 << 21), always: 0, madvise: (1 << 16) | (1 << 21) },
             thp_disable: ThpDisable::Yes,
             rseq: rseq_probe(33, 192),
             slice_ext: SliceExt::KernelDisabled,
@@ -1134,19 +1061,19 @@ mod tests {
         assert_eq!(
             s,
             "page_size=4096 guard_install=no mseal=yes process_madvise=pidfd:7 process_madvise_free=yes anon_name=no populate_write=yes \
-             thp=madvise mthp=64K,2M collapse=unprobed thp_except_advised=yes rseq=yes rseq_size=33 mm_cid=yes slice_ext=kernel-disabled pac=yes"
+             thp=madvise mthp=64K,2M thp_except_advised=yes rseq=yes rseq_size=33 mm_cid=yes slice_ext=kernel-disabled pac=yes"
         );
         // Before 6.18 the flag is refused; a parent's policy is kept.
         let f = Features { thp_disable: ThpDisable::No, ..f };
-        assert!(std::format!("{f}").contains(" collapse=unprobed thp_except_advised=no rseq=yes "));
+        assert!(std::format!("{f}").contains(" mthp=64K,2M thp_except_advised=no rseq=yes "));
         let f = Features { thp_disable: ThpDisable::Inherited(3), ..f };
-        assert!(std::format!("{f}").contains(" collapse=unprobed thp_except_advised=inherited rseq=yes "));
+        assert!(std::format!("{f}").contains(" mthp=64K,2M thp_except_advised=inherited rseq=yes "));
         assert_eq!(ThpDisable::Inherited(1).name(), "inherited");
         let f = Features { thp_disable: ThpDisable::Yes, ..f };
         // The Mac's Docker VM (linuxkit 6.10): registered, no `mm_cid`, no
         // `slice_ctrl`.
         let f = Features { rseq: rseq_probe(20, 192), slice_ext: SliceExt::NoSliceCtrl, ..f };
-        assert!(std::format!("{f}").contains(" collapse=unprobed thp_except_advised=yes rseq=yes rseq_size=20 mm_cid=no slice_ext=no-slice_ctrl pac=yes"));
+        assert!(std::format!("{f}").contains(" mthp=64K,2M thp_except_advised=yes rseq=yes rseq_size=20 mm_cid=no slice_ext=no-slice_ctrl pac=yes"));
         let f = Features { rseq: Probe::NONE, slice_ext: SliceExt::NoRseq, ..f };
         assert!(std::format!("{f}").contains(" rseq=no rseq_size=0 mm_cid=no slice_ext=no-rseq "));
         // A 7.0.14 built with the option (a GCE C4): on under the
@@ -1155,12 +1082,10 @@ mod tests {
         assert!(std::format!("{f}").contains(" mm_cid=yes slice_ext=on "));
         let f = Features { slice_ext: SliceExt::Available, ..f };
         assert!(std::format!("{f}").contains(" mm_cid=yes slice_ext=available "));
-        let f = Features { thp: Thp { collapse: Collapse::Yes(21), ..f.thp }, ..f };
-        assert!(std::format!("{f}").contains(" thp=madvise mthp=64K,2M collapse=2M thp_except_advised=yes "));
         let f = Features { thp: Thp::NONE, ..f };
-        assert!(std::format!("{f}").contains(" thp=none mthp=none collapse=no "));
-        let f = Features { thp: Thp { enabled: Some(ThpSetting::Never), listed: 1 << 21, always: 0, madvise: 0, collapse: Collapse::No, lg_pmd: 21 }, ..f };
-        assert!(std::format!("{f}").contains(" thp=never mthp=none collapse=no "));
+        assert!(std::format!("{f}").contains(" thp=none mthp=none thp_except_advised=yes "));
+        let f = Features { thp: Thp { enabled: Some(ThpSetting::Never), listed: 1 << 21, always: 0, madvise: 0, lg_pmd: 21 }, ..f };
+        assert!(std::format!("{f}").contains(" thp=never mthp=none thp_except_advised=yes "));
         let f = Features { process_madvise: ProcessMadvise::PidfdSelf, ..f };
         assert!(std::format!("{f}").contains("process_madvise=pidfd_self process_madvise_free=yes "));
         let f = Features { process_madvise: ProcessMadvise::Unavailable, process_madvise_free: false, ..f };
@@ -1216,7 +1141,6 @@ mod tests {
                 listed: ((1u64 << 30) - 1) & !((1u64 << 17) - 1),
                 always: ((1u64 << 30) - 1) & !((1u64 << 17) - 1),
                 madvise: 0,
-                collapse: Collapse::Yes(29),
             },
             // The longest words.
             thp_disable: ThpDisable::Inherited(u8::MAX),
@@ -1240,7 +1164,7 @@ mod tests {
     fn words_are_the_key_table() {
         let kernel = [
             "page_size", "guard_install", "mseal", "process_madvise", "process_madvise_free", "anon_name", "populate_write",
-            "thp", "mthp", "collapse", "thp_except_advised", "rseq", "rseq_size", "mm_cid", "slice_ext", "pac",
+            "thp", "mthp", "thp_except_advised", "rseq", "rseq_size", "mm_cid", "slice_ext", "pac",
         ];
         for pac in [true, false] {
             let f = Features {
@@ -1268,7 +1192,7 @@ mod tests {
             }
             let joined: std::vec::Vec<std::string::String> = f.words().map(|(k, v)| std::format!("{k}={v}")).collect();
             assert_eq!(std::format!("{f}"), joined.join(" "));
-            assert_eq!(std::format!("{}", f.thp), joined[7..10].join(" "));
+            assert_eq!(std::format!("{}", f.thp), joined[7..9].join(" "));
         }
     }
 
@@ -1702,7 +1626,6 @@ mod linux_tests {
                     assert!(at_least(kv, (6, 8)), "per-size directories predate 6.8: {line}");
                 }
                 assert_eq!(f.thp.listed, listed, "{line}");
-                assert_eq!(f.thp.collapse, Collapse::Unprobed, "probe() does not run the collapse probe: {line}");
             }
             Err(_) => assert_eq!(f.thp, Thp::NONE, "{line}"),
         }

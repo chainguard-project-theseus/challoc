@@ -275,11 +275,6 @@ fn init() {
     // line's `slice_ext=` word can now say `on` (design 17, "Time slice
     // extension").
     features.note_slice_ext();
-    // The `MADV_COLLAPSE` probe populates a PMD of memory, so only a
-    // configuration that asks for huge pages pays for it (design 10).
-    if config.thp != config::Thp::Never {
-        features.probe_collapse();
-    }
     crate::thp::configure(config.thp, &features);
     // `thp_process:advised` (design 17, `PR_THP_DISABLE_EXCEPT_ADVISED`):
     // process-wide, so before any region exists; a refused call is

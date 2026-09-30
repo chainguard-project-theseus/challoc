@@ -765,7 +765,6 @@ pub fn stats() -> Stats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sys::features::Collapse;
 
     fn table(enabled: Option<ThpSetting>, always: u64, madvise: u64) -> Table {
         table_at(21, enabled, always, madvise)
@@ -779,7 +778,6 @@ mod tests {
             listed: always | madvise | (1 << lg_pmd),
             always,
             madvise,
-            collapse: Collapse::Unprobed,
         }
     }
 
