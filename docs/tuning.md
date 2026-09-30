@@ -9,10 +9,11 @@ number, the number comes from the results file named next to it in
 `bench/results/`.
 
 Rule of thumb first: the defaults are the measured configuration. Every
-default below was either kept because the alternative lost a recorded
-row, or was decided by the human with the numbers in front of them
-(PROGRESS.md, "Phase 2.5 defaults, the human's decisions (2026-09-20)").
-Section 7 lists the keys not to touch and why.
+default below was kept because the alternative lost a recorded row, or,
+where the trade is between throughput and memory, because RSS comes
+first; "Why the defaults are what they are" in section 2 gives the
+numbers for the close calls. Section 7 lists the keys not to touch and
+why.
 
 ## 1. Setting keys
 
@@ -135,8 +136,9 @@ One row per key, in `KEYS` order. "Values" is the grammar
 
 ### Why the defaults are what they are
 
-The three decided by the human on 2026-09-20 (PROGRESS.md, "Phase 2.5
-defaults, the human's decisions"):
+Three defaults were close calls, each a trade of throughput against
+memory or against a cost every process would pay, and each went to the
+side that keeps memory low and the common process unchanged:
 
 - `thp:never`, in its current form (option (d) of
   `bench/results/2026-09-20-aarch64-cgos-thp-ab.md`). Before that day
@@ -206,8 +208,9 @@ bursts on a latency-sensitive main thread:
 MALLOC_CONF=prefault:true,background_thread:true
 ```
 
-Both keys, because the prefault gate is read at init and Valkey's own
-`mallctl` comes later (PROGRESS.md, Phase 2.5 task 11, lane A's note).
+Both keys, because the prefault gate is read at init, and Valkey's own
+`mallctl("background_thread", true)` comes after init, too late to open
+it.
 Measured on the Valkey soak (write phase 300 s, `-d 512 -r 500000 -P 16`
 and memtier SET-only, activedefrag on; `bench/results/2026-09-20-aarch64-lane-b-task11-prefault.md`
 section 4 and `2026-09-20-aarch64-task11-prefault-claim.md` sections 6
