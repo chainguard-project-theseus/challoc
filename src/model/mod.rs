@@ -343,9 +343,13 @@ mod tests {
         );
     }
 
+    /// States a scenario of the host suite may take: the 30 s budget at
+    /// the roughly 10 000 states a second of a debug build in a loaded dev
+    /// container. A count, not a clock, so a busy host cannot fail it.
+    const HOST_BUDGET_STATES: usize = 300_000;
+
     #[test]
     fn the_current_order_passes_the_three_way_scenario() {
-        let start = Instant::now();
         let out = run(&three_way(), CURRENT);
         assert!(
             out.violation.is_none(),
@@ -353,8 +357,9 @@ mod tests {
             out.violation.unwrap().1.render()
         );
         assert!(
-            start.elapsed().as_secs() < 30,
-            "the model must stay under 30 s on the host"
+            out.states <= HOST_BUDGET_STATES,
+            "{} states: the scenario must stay inside the host budget ({HOST_BUDGET_STATES})",
+            out.states
         );
     }
 
