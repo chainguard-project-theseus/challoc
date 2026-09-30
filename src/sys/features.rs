@@ -21,7 +21,6 @@
 
 use core::fmt;
 
-use super::auxv::AT_PAGESZ;
 use super::{Trailing, parse_decimal, yn};
 
 /// How batched purges (`process_madvise`, design.md section 8) can reach our
@@ -555,8 +554,8 @@ pub use linux::*;
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{AT_PAGESZ, Features, ProcessMadvise, Thp};
-    use crate::sys::auxv::getauxval;
+    use super::{Features, ProcessMadvise, Thp};
+    use crate::sys::auxv::{AT_PAGESZ, getauxval};
     use crate::sys::{
         self, IoVec, MADV_DONTNEED, MADV_FREE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE,
         MADV_POPULATE_WRITE, MAP_ANONYMOUS, MAP_PRIVATE, PIDFD_SELF, PROT_NONE, PROT_READ, PROT_WRITE,
