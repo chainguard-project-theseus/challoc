@@ -21,9 +21,9 @@ that build and test them here. Results of the first real builds
 | package | files | notes |
 |---|---|---|
 | `challoc` | `/usr/lib/libchalloc.so.0` | the runtime: `quantum16`, `DT_SONAME libchalloc.so.0`; `provides so:libchalloc.so.0` (auto). Nothing else: the link name is the -dev package's, as Wolfi's `split/dev` does for every library. |
-| `challoc-dev` | `/usr/lib/libchalloc.so -> libchalloc.so.0`, `/usr/include/challoc/jemalloc.h`, `/usr/include/challoc/challoc.h`, `/usr/lib/pkgconfig/challoc.pc` | `runtime: challoc=<version>`. The headers are `contrib/valkey/include/challoc/jemalloc.h` (the `je_` API under `<challoc/...>`, never `<jemalloc/...>`; it defines `JEMALLOC_CHALLOC_USABLE`) and `contrib/valkey/include/challoc/challoc.h` (challoc's own `challoc_*_usable` entry points, design 13.7; the compat header below declares the same four itself, so the two -dev packages ship no common file). `challoc.pc` is written by the pipeline: `Version` is the crate version, `Libs: -L${libdir} -Wl,--push-state,--no-as-needed -lchalloc -Wl,--pop-state` (see "as-needed" below). |
+| `challoc-dev` | `/usr/lib/libchalloc.so -> libchalloc.so.0`, `/usr/include/challoc/jemalloc.h`, `/usr/include/challoc/challoc.h`, `/usr/lib/pkgconfig/challoc.pc` | `runtime: challoc=<version>`. The headers are `include/challoc/jemalloc.h` (the `je_` API under `<challoc/...>`, never `<jemalloc/...>`; it defines `JEMALLOC_CHALLOC_USABLE`) and `include/challoc/challoc.h` (challoc's own `challoc_*_usable` entry points, design 13.7; the compat header below declares the same four itself, so the two -dev packages ship no common file). `challoc.pc` is written by the pipeline: `Version` is the crate version, `Libs: -L${libdir} -Wl,--push-state,--no-as-needed -lchalloc -Wl,--pop-state` (see "as-needed" below). |
 | `challoc-jemalloc-compat` | `/usr/lib/libjemalloc.so.2` | `quantum16` built with the `jemalloc-soname` feature and staged by `scripts/jemalloc-compat.sh` (`QUANTUM=16 PREFIX=/usr`). The file set of Wolfi's `libjemalloc2`, which it `provides` (plus the automatic `so:libjemalloc.so.2=2`). Task 1 had the link name and the pc file here too; task 3 moved them to the -dev package, where `jemalloc-dev` keeps its own. |
-| `challoc-jemalloc-compat-dev` | `/usr/lib/libjemalloc.so -> libjemalloc.so.2`, `/usr/lib/pkgconfig/jemalloc.pc`, `/usr/include/jemalloc/jemalloc.h` | `runtime: challoc-jemalloc-compat=<version>`; `provides: jemalloc-dev=<version>` (the file set of Wolfi's `jemalloc-dev`, so the two conflict and apk refuses to co-install them). The pc file is the stage's (`Version: 5.3.0`, upstream's `jemalloc.pc.in` fields, `Cflags: -I${includedir}/jemalloc`, `Libs: -L${libdir} -ljemalloc`); the header is `contrib/jemalloc-compat/include/jemalloc/jemalloc.h`: jemalloc 5.3's unprefixed API as challoc exports it (`malloc_conf`, `malloc_message`, the `mallocx` family, `mallctl*`, `malloc_stats_print`, the `MALLOCX_*`/`MALLCTL_ARENAS_*` and `JEMALLOC_VERSION*` macros, the `je_` spellings as prototypes) with the standard entry points left to `<stdlib.h>`/`<malloc.h>` so C++ sees one declaration of `malloc`. `scripts/jemalloc-compat.sh` stages the same header under `include/jemalloc/`, so the stage and the packages have one file set. See "Ruby" below. |
+| `challoc-jemalloc-compat-dev` | `/usr/lib/libjemalloc.so -> libjemalloc.so.2`, `/usr/lib/pkgconfig/jemalloc.pc`, `/usr/include/jemalloc/jemalloc.h` | `runtime: challoc-jemalloc-compat=<version>`; `provides: jemalloc-dev=<version>` (the file set of Wolfi's `jemalloc-dev`, so the two conflict and apk refuses to co-install them). The pc file is the stage's (`Version: 5.3.0`, upstream's `jemalloc.pc.in` fields, `Cflags: -I${includedir}/jemalloc`, `Libs: -L${libdir} -ljemalloc`); the header is `include/jemalloc-compat/jemalloc/jemalloc.h`: jemalloc 5.3's unprefixed API as challoc exports it (`malloc_conf`, `malloc_message`, the `mallocx` family, `mallctl*`, `malloc_stats_print`, the `MALLOCX_*`/`MALLCTL_ARENAS_*` and `JEMALLOC_VERSION*` macros, the `je_` spellings as prototypes) with the standard entry points left to `<stdlib.h>`/`<malloc.h>` so C++ sees one declaration of `malloc`. `scripts/jemalloc-compat.sh` stages the same header under `include/jemalloc/`, so the stage and the packages have one file set. See "Ruby" below. |
 
 Valkey's private `quantum8` build is not one of these packages: it is
 built inside `valkey/valkey-9.1.yaml` (`/usr/lib/valkey/`, design 13.6:
@@ -186,11 +186,11 @@ one configured (results file, "co-installation"):
 `valkey/valkey-9.1.yaml` is wolfi-dev/os's `valkey-9.1.yaml` (main at
 `a944f08`, 2026-09-19; the file last changed in `195f812`, the 9.1.2
 update) with the allocator switched from the bundled jemalloc to challoc.
-`valkey/valkey-9.1/` holds the patches the pipeline applies (Wolfi keeps
-them in a directory named after the package): Wolfi's own
-`0000-Disable-protected-mode.patch` and a copy of
-`contrib/valkey/0001-Add-MALLOC-challoc.patch` (`valkey/stage.sh` refuses
-to build if the two copies differ). `bench/results/2026-09-20-phase3-task2-valkey-package.md`
+`valkey/valkey-9.1/` holds Wolfi's own `0000-Disable-protected-mode.patch`
+(Wolfi keeps patches in a directory named after the package); the
+`MALLOC=challoc` patches, `contrib/valkey/0001-Add-MALLOC-challoc.patch`
+and `0002-zmalloc-use-challoc-usable-size-entry-points.patch`, are applied
+from the challoc checkout, so there is one copy of them. `bench/results/2026-09-20-phase3-task2-valkey-package.md`
 has the diff against Wolfi's file and the build.
 
 ### Two libraries, one soname
@@ -263,11 +263,12 @@ reason; a second `copyright` entry (Apache-2.0 for
 Rust version and the allocator name; the `local-challoc` build option;
 `jemalloc` dropped from the environment (it was unused: the default
 `MALLOC=jemalloc` builds `deps/jemalloc`), `binutils` and
-`rust-1.98` added; the challoc patch in the `patch` step; a `git-checkout`
-of challoc into `challoc/` (skipped under `local-challoc`, when
-`stage.sh` has already put the tree there); a `cargo build --release
+`rust-1.98` added; a `git-checkout` of challoc into `challoc/` (skipped
+under `local-challoc`, when the source directory already holds the tree)
+before the `patch` step, which applies the two challoc patches from that
+checkout after Wolfi's; a `cargo build --release
 --locked --no-default-features --features quantum8` step; the build step
-gains `-I$PWD/challoc/contrib/valkey/include` in `CFLAGS`,
+gains `-I$PWD/challoc/include` in `CFLAGS`,
 `-L<cargo output> -Wl,-rpath,/usr/lib/valkey` in `LDFLAGS` and
 `MALLOC=challoc` on both `make` invocations (Valkey's Makefile persists
 its settings; an install without it rebuilds with the bundled jemalloc),
@@ -315,10 +316,12 @@ nothing but the package, so a local `melange test` needs
 Same VM and container as "Building locally" above (melange with
 bubblewrap in a privileged `wolfi-base` container, Wolfi's `pipelines/`
 at `a944f08`). The Valkey definition needs the challoc tree in its source
-directory, which `valkey/stage.sh` assembles:
+directory:
 
 ```sh
-sh /work/contrib/wolfi/valkey/stage.sh /tmp/stage     # the two patches + challoc/ (no target/, .git)
+mkdir -p /tmp/stage/challoc && cp /work/contrib/wolfi/valkey/valkey-9.1/*.patch /tmp/stage/
+(cd /work && tar --exclude=./target --exclude=./.git --exclude='./.tmp-*' -cf - .) \
+  | tar -C /tmp/stage/challoc -xf -
 melange build /work/contrib/wolfi/valkey/valkey-9.1.yaml --arch $(uname -m) \
   --source-dir /tmp/stage --build-option local-challoc \
   --pipeline-dir /tmp/os/pipelines $WOLFI \

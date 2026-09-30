@@ -616,14 +616,14 @@ ctests! {
         CTest { prog: "libc_api", args: &["background"], conf: Some("abort_conf:true,background_thread:true"), ..BASE },
     ];
     /// challoc's size-returning entry points from C (`tests/c/usable_api.c`,
-    /// design 13.7; the header comes from contrib/valkey/include): under the
+    /// design 13.7; the header comes from include/): under the
     /// default configuration, the per-CPU mode (its slow path), and the
     /// hardening keys that change the push (`zero_on_free` declines the
     /// fast push, `double_free_scan` scans it, `pac_pointers` signs).
     c_usable_api => [
-        CTest { prog: "usable_api", cflags: &["-Icontrib/valkey/include"], ..BASE },
-        CTest { prog: "usable_api", cflags: &["-Icontrib/valkey/include"], conf: Some("percpu_arena:percpu"), ..BASE },
-        CTest { prog: "usable_api", cflags: &["-Icontrib/valkey/include"],
+        CTest { prog: "usable_api", cflags: &["-Iinclude"], ..BASE },
+        CTest { prog: "usable_api", cflags: &["-Iinclude"], conf: Some("percpu_arena:percpu"), ..BASE },
+        CTest { prog: "usable_api", cflags: &["-Iinclude"],
             conf: Some("abort_conf:true,zero_on_free:true,double_free_scan:true,pac_pointers:true"), ..BASE },
     ];
     c_random_ops_one_million_across_eight_threads => [ CTest { prog: "random_ops", args: &["1000000", "8"], ..BASE } ];

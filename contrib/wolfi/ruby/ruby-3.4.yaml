@@ -134,7 +134,7 @@ pipeline:
     runs: |
       set -eux
       # configure found the header and linked -ljemalloc (config.h, as
-      # contrib/ruby/build.sh checks): every translation unit includes
+      # tests/consumers/ruby-build.sh checks): every translation unit includes
       # <jemalloc/jemalloc.h> through ruby/missing.h.
       grep -h 'define HAVE_MALLOC_CONF\|define RUBY_ALTERNATIVE_MALLOC_HEADER' .ext/include/*/ruby/config.h
       grep -q 'define HAVE_MALLOC_CONF 1' .ext/include/*/ruby/config.h

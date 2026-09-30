@@ -2,7 +2,7 @@
 # Build Ruby 3.4 `--with-jemalloc` against challoc's libjemalloc.so.2 stage and
 # run `make test-all` (plan Phase 1 acceptance). Runs inside the dev
 # container: `make ruby` (see the Makefile for the variables it forwards) or
-# `make run CMD='sh contrib/ruby/build.sh'`.
+# `make run CMD='sh tests/consumers/ruby-build.sh'`.
 #
 # What it does:
 #   1. stages libjemalloc.so.2 (scripts/jemalloc-compat.sh, quantum16: Ruby
@@ -44,12 +44,12 @@ ROOT=$(pwd)
 STAGE=${STAGE:-all}
 case "$STAGE" in
     build|test|all) ;;
-    *) echo "ruby/build.sh: STAGE must be build, test or all, got '$STAGE'" >&2; exit 2 ;;
+    *) echo "ruby-build.sh: STAGE must be build, test or all, got '$STAGE'" >&2; exit 2 ;;
 esac
 ALLOC=${ALLOC:-challoc}
 case "$ALLOC" in
     challoc|glibc) ;;
-    *) echo "ruby/build.sh: ALLOC must be challoc or glibc, got '$ALLOC'" >&2; exit 2 ;;
+    *) echo "ruby-build.sh: ALLOC must be challoc or glibc, got '$ALLOC'" >&2; exit 2 ;;
 esac
 RUBY_TAG=${RUBY_TAG:-v3_4_10}
 RUBY_COMMIT=${RUBY_COMMIT:-2b0b7728dc7f0561c35c3d8c4489945c94b783ad}
@@ -71,7 +71,7 @@ step() { printf '\n== %s\n' "$*"; }
 if [ "$ALLOC" = challoc ]; then
     step "challoc as libjemalloc.so.2 -> $STAGE_LIB"
     TARGET_DIR=$COMPAT QUANTUM=16 sh scripts/jemalloc-compat.sh
-    [ -f "$STAGE_LIB/libjemalloc.so.2" ] || { echo "ruby/build.sh: $STAGE_LIB/libjemalloc.so.2 missing" >&2; exit 1; }
+    [ -f "$STAGE_LIB/libjemalloc.so.2" ] || { echo "ruby-build.sh: $STAGE_LIB/libjemalloc.so.2 missing" >&2; exit 1; }
 fi
 
 # 2. Ruby source at the pinned tag, with Wolfi's cherry-pick.
@@ -83,7 +83,7 @@ fi
 cd "$SRC"
 head=$(git rev-parse HEAD)
 if [ "$head" != "$RUBY_COMMIT" ]; then
-    echo "ruby/build.sh: tag $RUBY_TAG is $head, expected $RUBY_COMMIT" >&2
+    echo "ruby-build.sh: tag $RUBY_TAG is $head, expected $RUBY_COMMIT" >&2
     exit 1
 fi
 if [ -n "$RUBY_CHERRY" ]; then
@@ -91,7 +91,7 @@ if [ -n "$RUBY_CHERRY" ]; then
     if [ ! -s "$PATCH" ]; then
         git fetch -q --depth 2 origin "$RUBY_CHERRY"
         git diff "$RUBY_CHERRY~1" "$RUBY_CHERRY" > "$PATCH"
-        [ -s "$PATCH" ] || { echo "ruby/build.sh: empty diff for $RUBY_CHERRY" >&2; exit 1; }
+        [ -s "$PATCH" ] || { echo "ruby-build.sh: empty diff for $RUBY_CHERRY" >&2; exit 1; }
     fi
     if git apply --reverse --check "$PATCH" 2>/dev/null; then
         echo "cherry-pick $RUBY_CHERRY already applied"
@@ -148,21 +148,21 @@ if [ "$ALLOC" = challoc ]; then
     # runs (Phase 3 prerequisite (e)); then the rpath.
     for bin in ruby "$libruby"; do
         sh "$ROOT/scripts/check-needed.sh" "$bin" libjemalloc.so.2 \
-            || { echo "ruby/build.sh: $bin has no DT_NEEDED libjemalloc.so.2" >&2; exit 1; }
+            || { echo "ruby-build.sh: $bin has no DT_NEEDED libjemalloc.so.2" >&2; exit 1; }
         dyn=$(readelf -d "$bin")
         echo "$dyn" | grep -E 'RUNPATH|RPATH' | grep -q "$STAGE_LIB" \
-            || { echo "ruby/build.sh: $bin has no rpath to $STAGE_LIB" >&2; exit 1; }
+            || { echo "ruby-build.sh: $bin has no rpath to $STAGE_LIB" >&2; exit 1; }
     done
     grep -rh 'define HAVE_MALLOC_CONF\|define RUBY_ALTERNATIVE_MALLOC_HEADER' .ext/include/*/ruby/config.h \
-        || { echo "ruby/build.sh: config.h lacks HAVE_MALLOC_CONF" >&2; exit 1; }
+        || { echo "ruby-build.sh: config.h lacks HAVE_MALLOC_CONF" >&2; exit 1; }
     mapped=$(LD_LIBRARY_PATH=$BUILD ./ruby --disable-gems -e \
         'puts File.readlines("/proc/self/maps").grep(/libjemalloc/).map { |l| l.split[5] }.uniq')
     echo "mapped: $mapped"
     [ "$mapped" = "$STAGE_LIB/libjemalloc.so.2" ] \
-        || { echo "ruby/build.sh: ruby maps '$mapped', not the stage's libjemalloc.so.2" >&2; exit 1; }
+        || { echo "ruby-build.sh: ruby maps '$mapped', not the stage's libjemalloc.so.2" >&2; exit 1; }
 else
-    ! readelf -d ruby | grep -q 'NEEDED.*jemalloc' || { echo "ruby/build.sh: glibc build needs jemalloc" >&2; exit 1; }
-    ! readelf -d "$libruby" | grep -q 'NEEDED.*jemalloc' || { echo "ruby/build.sh: glibc libruby needs jemalloc" >&2; exit 1; }
+    ! readelf -d ruby | grep -q 'NEEDED.*jemalloc' || { echo "ruby-build.sh: glibc build needs jemalloc" >&2; exit 1; }
+    ! readelf -d "$libruby" | grep -q 'NEEDED.*jemalloc' || { echo "ruby-build.sh: glibc libruby needs jemalloc" >&2; exit 1; }
     echo "ruby and $libruby do not need libjemalloc"
 fi
 [ "$STAGE" = build ] && exit 0

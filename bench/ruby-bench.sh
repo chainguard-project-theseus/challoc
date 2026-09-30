@@ -1,6 +1,6 @@
 #!/bin/sh
 # Ruby benchmark rows (docs/plan.md Phase 1.5 task 4b): Ruby 3.4 built
-# `--with-jemalloc` by contrib/ruby/build.sh, measured under five allocators
+# `--with-jemalloc` by tests/consumers/ruby-build.sh, measured under five allocators
 # with a fixed subset of ruby/benchmark run through benchmark-driver, one
 # real command (`gem list`) and a GC-shaped script (bench/ruby/gc_churn.rb).
 # Runs inside the dev container: `make ruby-bench`, or on a VM
@@ -204,7 +204,7 @@ describe() {
 has() { case " $ALLOCS " in *" $1 "*) return 0;; *) return 1;; esac; }
 {
   result_header "Ruby 3.4 benchmark rows"
-  echo "- ruby: $($(ruby_cmd "$host") -v) (tag $RUBY_TAG built by contrib/ruby/build.sh with Wolfi's flags, --enable-yjit configured but YJIT not enabled at run time), installed under target/ruby/install-{challoc,glibc}"
+  echo "- ruby: $($(ruby_cmd "$host") -v) (tag $RUBY_TAG built by tests/consumers/ruby-build.sh with Wolfi's flags, --enable-yjit configured but YJIT not enabled at run time), installed under target/ruby/install-{challoc,glibc}"
   echo "- benchmark-driver $BD_VERSION ($BD_COMMIT), --runner time -o simple, one job per process, ruby --disable-gems for the ruby/benchmark rows"
   echo "- load average at start: $LOAD0; at end: $(loadavg); $(( $(date +%s) - T_START )) s total"
   echo "- method: $ROUNDS timed rounds after one discarded warm-up, allocators interleaved per round, every run's wall time listed sorted; wall time (s, lower is better) and max RSS (bench/rt's maxrss, median KiB) are of the measured ruby process only (benchmark-driver's host process is outside rt). gc_churn runs bench/ruby/gc_churn.rb $GC_ROUNDS $GC_FORCED. Percentages are challoc against the other allocator: positive means challoc is slower or larger."

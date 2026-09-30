@@ -96,8 +96,8 @@ if out=$("$T/malloc-as-needed" 2>&1); then echo "    FAIL: ran without the libra
 else echo "    without it: $(echo "$out" | head -1 | sed 's/.*: //') (expected: cannot open libchalloc.so.0)"; fi
 echo "== running the --as-needed none variant (no reference: glibc malloc, the silent failure):"
 "$T/none-as-needed" | sed 's/^/    /'
-# The built consumers, when present: contrib/valkey/build.sh's valkey-server
-# must need libchalloc.so.0; contrib/ruby/build.sh's ruby and libruby.so must
+# The built consumers, when present: tests/consumers/valkey-build.sh's valkey-server
+# must need libchalloc.so.0; tests/consumers/ruby-build.sh's ruby and libruby.so must
 # need libjemalloc.so.2 (both builds run the same check themselves).
 echo "== built consumers:"
 found=0
