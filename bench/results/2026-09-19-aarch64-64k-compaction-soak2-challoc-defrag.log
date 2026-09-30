@@ -1,4 +1,0 @@
-20:M 19 Sep 2026 17:50:34.008 - Starting active defrag, frag=32%, frag_bytes=145010944, cpu=6%
-20:M 19 Sep 2026 17:50:35.155 - Active defrag done in 1147ms, reallocated=145023, frag=6%, frag_bytes=16186352
-20:M 19 Sep 2026 17:50:56.274 - Starting active defrag, frag=69%, frag_bytes=105346736, cpu=16%
-20:M 19 Sep 2026 17:50:57.057 - Active defrag done in 782ms, reallocated=142487, frag=15%, frag_bytes=22466696
