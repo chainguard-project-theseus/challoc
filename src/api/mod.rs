@@ -294,7 +294,7 @@ fn init() {
     // process-wide, so before any region exists; a refused call is
     // reported, not retried.
     crate::thp::configure_process(config.thp_process(), &features);
-    purge::configure(features.process_madvise, config.lazy_free);
+    purge::configure(features.process_madvise);
     purge::configure_advice(features.process_madvise_free, config.lazy_band);
     purge::set_check_zero(config.check_zero);
     // The prefault pass (design 8.2) runs on the background thread, so

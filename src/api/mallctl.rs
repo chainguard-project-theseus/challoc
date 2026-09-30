@@ -137,8 +137,8 @@ pub enum Leaf {
     /// The two-advice purge (design 8): the advice
     /// the next purge issues (1 lazy, `MADV_FREE`; 0 eager,
     /// `MADV_DONTNEED`) and the batches issued with each so far. Readable
-    /// without a tracked cgroup too: the advice exists (eager, or lazy
-    /// under `lazy_free`) whether or not a cgroup is read.
+    /// without a tracked cgroup too: the advice exists (eager without
+    /// one) whether or not a cgroup is read.
     StatsCgroupPurgeAdvice,
     StatsCgroupLazyPurges,
     StatsCgroupEagerPurges,
@@ -352,8 +352,8 @@ static STATS_ARENAS: [Node; 1] = [num(&STATS_ARENA_I)];
 // without a limit), the `Empty` bytes held now (live, not the last
 // evaluation's figure: a reader without a limit would otherwise see 0)
 // and the full purges run on `memory.events` `high` rises. The last three
-// read with or without a cgroup: the advice exists (eager, or lazy under
-// `lazy_free`) whether or not one is read.
+// read with or without a cgroup: the advice exists (eager without one)
+// whether or not one is read.
 static STATS_CGROUP: [Node; 11] = [
     stat("limit", StatsCgroupLimit, |_| Ok(Size(tracked()?.limit() as usize))),
     stat("high", StatsCgroupHigh, |_| Ok(Size(tracked()?.high() as usize))),

@@ -1056,8 +1056,7 @@ address, with `dirty_at` per entry. Decay policy is jemalloc's in shape:
   MiB, failed 7 of 16 runs on a 4-vCPU 6.1 host and 5 of 16 on a 2-vCPU
   5.10 host, RSS 309 MiB at 2 s with `lazy_purges 18 eager_purges 1`;
   `bench/results/2026-09-19-lane-b-floor-fixes.md`). An excess first
-  seen under 70% is lazy throughout (the lazy container test). `lazy_free:true`
-  is the override, lazy in every band;
+  seen under 70% is lazy throughout (the lazy container test).
   `lazy_band:false` (default true) turns the saving off. The advice is read
   at each batch flush from the band as last evaluated, so it is at most
   one sample (10 ms) behind; `stats.cgroup.purge_advice`,
@@ -1256,7 +1255,7 @@ Init must not call anything that allocates. Steps, in the order
    first touch through the rounded commit rather than a copy afterwards.
 3. Decide the THP mode from the key and the table (`thp::configure`,
    section 17; forced off after step 7 when the cgroup rule of section 11
-   applies), configure the purge backend from the probe and `lazy_free`,
+   applies), configure the purge backend from the probe,
    the two-advice purge from the `MADV_FREE` probe and `lazy_band`,
    `check_zero`, and record a `background_thread`
    request (the thread itself is created later, 8.1).
@@ -1372,8 +1371,7 @@ Usage is the last `memory.current` sample against the effective limit
 
 The advice column is the two-advice purge of section 8: lazy only where
 the headroom is known and wide, eager everywhere else and for every
-explicit purge; `lazy_free:true` makes every row lazy, `lazy_band:false`
-every row eager. The last row is the rule of section 8 for an excess
+explicit purge; `lazy_band:false` makes every row eager. The last row is the rule of section 8 for an excess
 over the cap: the band it was first seen in decides its advice for the
 whole return (`Policy::eager_excess`, set when the retention is over the
 cap at 70% or above, cleared when it is within the cap again), because
@@ -1553,8 +1551,7 @@ jemalloc names where they exist:
 | `thp_process`             | default | challoc only; `default`, `advised` (17, plan Phase 2.5 task 16, `thp.rs`): the process-wide THP policy asked for at init. `advised` calls `prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED)` where the kernel accepts it (6.18+, probed by the call's return, `EINVAL` below: the process then keeps its inherited policy and the report says so), so on an `always` host only the regions `thp:auto|always` advise get huge pages and the rest of the process does not; `default` issues nothing. Opt-in because it is process-wide: a library does not change the THP policy of the program that loaded it unasked. Independent of `thp` (the per-region advice); `thp:default` is `thp:never`, not this key |
 | `spin_hint`               | auto    | challoc only; what a contended lock spins with (5): `auto` (the CPU probe's choice: `umwait` with WAITPKG, else the baseline), `baseline` (`pause`/`isb`), `umwait` (reported and left at `auto` without WAITPKG), `wfe` (aarch64; measured slower under contention, never chosen by `auto`) |
 | `slice_ext`               | auto    | challoc only; `auto`, `on`, `off` (17, "Time slice extension"; plan Phase 2.5 task 15): whether a lock holder asks the kernel, through its rseq `slice_ctrl` bytes, to defer a preemption until the release. `auto` and `on` turn it on where the runtime probe passes (glibc's `__rseq_size >= 32`, the kernel's `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE` bit in the thread's area, the `prctl` enable confirmed by the `ENABLED` bit: kernel 7.0 with `CONFIG_RSEQ_SLICE_EXTENSION`, x86_64 only so far); `on` additionally makes the report note a refused request; `off` never requests. No kernel field but `request` is written |
-| `lazy_free`               | false   | `MADV_FREE` for every purge, the override of the two-advice purge (8) |
-| `lazy_band`               | true    | challoc only; `MADV_FREE` for purges under 70% of a known cgroup limit (8, 11); `false` makes every purge `MADV_DONTNEED` unless `lazy_free` |
+| `lazy_band`               | true    | challoc only; `MADV_FREE` for purges under 70% of a known cgroup limit (8, 11); `false` makes every purge `MADV_DONTNEED` |
 | `guards`                  | true    | guard slabs and huge runs               |
 | `guard_slab_interval`     | 8       | one guard per N x 64 KiB of slabs, N a power of two (else rounded up, reported); 0 off, 1 out of range (clamps to 2) |
 | `huge_retain_max`         | 67108864 | challoc only; bytes; freed huge runs above it are purged at once (7); `opt.huge_retain_max` reads as `size_t` |
@@ -2322,7 +2319,7 @@ protocol as stated passes every scenario.
   `empty_bytes` held, the `full_purges` run and whether `thp` was forced
   to `never`; and one `purge advice:` line (section 8) with the advice the
   next purge issues and why (`under 70% of the limit`, `no headroom
-  known`, `lazy_free`, `lazy_band:false`, `explicit purge`), the batches
+  known`, `lazy_band:false`, `explicit purge`), the batches
   and bytes issued with each advice, whether `Purged` memory is still
   known zero, and whether lazy batches go through `process_madvise`; and
   one `thp:` line (section 17) with the key, the mode in force (`off`,
@@ -2404,7 +2401,7 @@ runs on every row.
 | `MADV_GUARD_INSTALL` | kernel 6.13 | guard slabs between slabs and after huge runs (section 14) | a `PROT_NONE` page after huge runs only; no guard slabs |
 | `process_madvise` on self | kernel 6.13 with a pidfd of self (the syscall exists since 5.10 but accepts `MADV_DONTNEED` only from 6.13; the matrix of Phase 2.5 task 3 found it unavailable on 5.10, 6.1 and 6.8 even without seccomp, lit on 7.0); 6.15 with `PIDFD_SELF` | batched purge, one call per decay pass (section 8) | a loop of `madvise(MADV_DONTNEED)` |
 | `process_madvise(MADV_FREE)` on self (`process_madvise_free`) | the same kernels, probed separately through the target the `MADV_DONTNEED` probe found (yes on the 7.0 reference VMs) | the lazy batches of the two-advice purge (section 8) take the batched path | lazy batches through a loop of `madvise(MADV_FREE)`; eager batches unchanged |
-| `MADV_FREE` (the advice itself) | every kernel since 4.5 | `Empty` slabs and huge extents under 70% of a known cgroup limit are returned lazily (sections 8 and 11); `lazy_free` everywhere | `MADV_DONTNEED` everywhere (no limit known, `lazy_band:false`) |
+| `MADV_FREE` (the advice itself) | every kernel since 4.5 | `Empty` slabs and huge extents under 70% of a known cgroup limit are returned lazily (sections 8 and 11) | `MADV_DONTNEED` everywhere (no limit known, `lazy_band:false`) |
 | `mseal` | kernel 6.10, not filtered by seccomp | seals the never-committed ranges of the reservations at init (section 10 step 5) | skip; `Sealed ranges: 0 of N` |
 | `PR_SET_VMA_ANON_NAME` | kernel 5.17 with `CONFIG_ANON_VMA_NAME` | named `challoc:*` mappings in `/proc/pid/maps` | skip |
 | `MADV_POPULATE_WRITE` (`populate_write`) | kernel 5.14 (probed on a scratch page: the call and `mincore` afterwards) | the prefault pass (section 8, plan Phase 2.5 task 11; `purge::prefault`, `ClassState::prefault_next`), behind `prefault:true` with `background_thread:true`: the background thread commits the slab the next refill of a class would commit and populates it with one call while it is still unpublished, then publishes it as `Purged` for the refill to take; `stats.prefault.*` and the `Prefault:` report line | the same pass with one write of zero per page; `Prefault: off (prefault:false)` by default |

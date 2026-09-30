@@ -13,9 +13,8 @@
 //!   and 11): `MADV_FREE` under the cgroup policy's headroom band (under
 //!   70% of a known limit and no eager return of the excess over the cap
 //!   in progress, `policy::Policy::headroom`, mirrored here by
-//!   [`set_headroom`]) or under the `lazy_free` override, `MADV_DONTNEED`
-//!   everywhere else, and always for an explicit purge ([`purge_all`],
-//!   [`purge_arena`]). A lazy batch goes
+//!   [`set_headroom`]), `MADV_DONTNEED` everywhere else, and always for
+//!   an explicit purge ([`purge_all`], [`purge_arena`]). A lazy batch goes
 //!   through `process_madvise` only where the init probe found the kernel
 //!   takes `MADV_FREE` there, else through the loop. A range that fails to
 //!   discard aborts: the heap's idea of what is resident would otherwise be
@@ -111,8 +110,6 @@ static BACKEND: AtomicI32 = AtomicI32::new(LOOP);
 /// The backend takes `MADV_FREE` (the init probe, `sys::features`); a lazy
 /// batch through a backend that does not goes through the loop.
 static BACKEND_LAZY: AtomicBool = AtomicBool::new(false);
-/// `lazy_free`: the override, discard with `MADV_FREE` everywhere.
-static LAZY: AtomicBool = AtomicBool::new(false);
 /// `lazy_band` (default true): `MADV_FREE` under the headroom band.
 static LAZY_BAND: AtomicBool = AtomicBool::new(true);
 /// The policy's last evaluation put usage under 70% of a known limit with
@@ -136,20 +133,15 @@ static EAGER_BYTES: AtomicU64 = AtomicU64::new(0);
 /// as "known zero" and aborts on a dirty word.
 static CHECK_ZERO: AtomicBool = AtomicBool::new(false);
 
-/// Choose the discard backend and the `lazy_free` override. Called once at
-/// init, before anything can be purged, and by the tests. `lazy_free`
-/// makes `Purged` memory unknown-zero from the start (the module doc).
-pub fn configure(pm: ProcessMadvise, lazy_free: bool) {
+/// Choose the discard backend. Called once at init, before anything can
+/// be purged, and by the tests.
+pub fn configure(pm: ProcessMadvise) {
     let backend = match pm {
         ProcessMadvise::Unavailable => LOOP,
         ProcessMadvise::PidfdSelf => PIDFD_SELF,
         ProcessMadvise::Pidfd(fd) => fd,
     };
     BACKEND.store(backend, Ordering::Relaxed);
-    LAZY.store(lazy_free, Ordering::Relaxed);
-    if lazy_free {
-        LAZY_EVER.store(true, Ordering::Relaxed);
-    }
 }
 
 /// The two-advice purge's settings: whether the backend takes `MADV_FREE`
@@ -175,22 +167,19 @@ pub fn set_headroom(low: bool, eager_excess: bool) {
 pub fn advice() -> Advice {
     crate::policy::advice(
         HEADROOM.load(Ordering::Relaxed),
-        LAZY.load(Ordering::Relaxed),
         LAZY_BAND.load(Ordering::Relaxed),
         EXPLICIT.load(Ordering::Relaxed) != 0,
     )
 }
 
-/// Why [`advice`] is what it is, for the report: `lazy_free`,
+/// Why [`advice`] is what it is, for the report:
 /// `under 70% of the limit`, `explicit purge`, `lazy_band:false`,
 /// `returning the excess over the cap` (an eager return in progress,
 /// `Policy::eager_excess`), or `no headroom known` (no limit, or 70% and
 /// above).
 #[cold]
 pub fn advice_reason() -> &'static str {
-    if LAZY.load(Ordering::Relaxed) {
-        "lazy_free"
-    } else if EXPLICIT.load(Ordering::Relaxed) != 0 {
+    if EXPLICIT.load(Ordering::Relaxed) != 0 {
         "explicit purge"
     } else if !LAZY_BAND.load(Ordering::Relaxed) {
         "lazy_band:false"

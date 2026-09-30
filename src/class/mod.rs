@@ -816,8 +816,8 @@ impl ClassState {
         } else {
             g.set_partial(slab);
         }
-        // `Purged` memory is zero only when it was discarded with
-        // `MADV_DONTNEED` (no `lazy_free`).
+        // `Purged` memory is zero only while every discard so far was
+        // `MADV_DONTNEED` (`purge::purged_is_zero`).
         let zero = state.is_zero() && (state != State::Purged || purge::purged_is_zero());
         if zero {
             self.claim_prefix(slab, n, state, live);

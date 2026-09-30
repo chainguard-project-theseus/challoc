@@ -810,7 +810,7 @@ impl Huge {
         } else {
             // SAFETY: `ext` is a live free extent found under this lock.
             let (a, e_end, st, dirty_at) = unsafe { ((*ext).start(), (*ext).end(), (*ext).state(), (*ext).dirty_at) };
-            // `Purged` pages are zero unless `lazy_free` discarded them
+            // `Purged` pages are zero unless a lazy purge discarded them
             // with `MADV_FREE`; pages at or past the mark are untouched.
             zeroed = (st == RunState::Purged && purge::purged_is_zero()) || s >= e_end;
             g.drop_extent(ext);

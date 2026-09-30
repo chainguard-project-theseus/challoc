@@ -19,9 +19,6 @@
  *               dirty_decay_ms:200         with nobody touching the
  *                                          allocator, and a fork child has
  *                                          no thread but can still purge
- *   lazy        lazy_free:true             malloc_trim works and calloc
- *                                          after it is zero even though
- *                                          MADV_FREE keeps old contents
  *
  * RSS comes from /proc/self/statm. The freed working set is ~48 MiB (32 MiB
  * of 1 KiB blocks, 16 MiB of huge runs) so a purge is unmistakable next to
@@ -144,7 +141,7 @@ static void report(const char *what, size_t before, size_t after)
 static const size_t DROP_MIN = 40 * MIB;
 static const size_t STAY_MAX = 8 * MIB;
 
-static void mode_trim(int lazy)
+static void mode_trim(void)
 {
     void **b = grab();
     size_t full = rss_bytes();
@@ -155,8 +152,7 @@ static void mode_trim(int lazy)
     size_t trimmed = rss_bytes();
     report("trim", full, trimmed);
     CHECK(rc == 1, "malloc_trim returned %d, expected 1", rc);
-    if (!lazy) /* MADV_FREE is lazy by definition: RSS may not move. */
-        CHECK(drop(full, trimmed) >= DROP_MIN, "malloc_trim released only %zu MiB", drop(full, trimmed) / MIB);
+    CHECK(drop(full, trimmed) >= DROP_MIN, "malloc_trim released only %zu MiB", drop(full, trimmed) / MIB);
     check_calloc_zero();
 }
 
@@ -297,14 +293,12 @@ static void mode_background(void)
 
 int main(int argc, char **argv)
 {
-    REQUIRE(argc == 2, "usage: decay <trim|decay|curve|never|background|lazy>");
+    REQUIRE(argc == 2, "usage: decay <trim|decay|curve|never|background>");
     printf("decay: start %s\n", argv[1]);
     fflush(stdout);
     require_challoc();
     if (strcmp(argv[1], "trim") == 0)
-        mode_trim(0);
-    else if (strcmp(argv[1], "lazy") == 0)
-        mode_trim(1);
+        mode_trim();
     else if (strcmp(argv[1], "decay") == 0)
         mode_decay();
     else if (strcmp(argv[1], "curve") == 0)

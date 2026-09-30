@@ -332,11 +332,8 @@ pub struct Config {
     /// fails), `off` never requests. Applied at the end of `load`
     /// (`Config::apply_slice_ext`) on the init thread.
     pub slice_ext: SliceExt,
-    /// `MADV_FREE` for every purge (the override of the two-advice purge,
-    /// design 8).
-    pub lazy_free: bool,
     /// `MADV_FREE` for purges under 70% of a known cgroup limit (design 8
-    /// and 11); off makes every purge `MADV_DONTNEED` unless `lazy_free`.
+    /// and 11); off makes every purge `MADV_DONTNEED`.
     pub lazy_band: bool,
     pub guards: bool,
     /// One guard per N slabs of 64 KiB (per N * 64 KiB of slabs for the
@@ -426,7 +423,6 @@ impl Config {
         thp_process: ThpProcess::Default,
         spin_hint: SpinChoice::Auto,
         slice_ext: SliceExt::Auto,
-        lazy_free: false,
         lazy_band: true,
         guards: true,
         guard_slab_interval: 8,
@@ -823,7 +819,6 @@ pub const TABLE: &[Key] = &[
         },
         read: |c| Value::Str(c.slice_ext.name()),
     },
-    bool_key!("lazy_free", lazy_free),
     bool_key!("lazy_band", lazy_band),
     bool_key!("guards", guards),
     Key {
@@ -1373,7 +1368,6 @@ mod tests {
         assert_eq!(d.thp_process, ThpProcess::Default, "process-wide, so opt-in");
         assert!(!d.prefault, "opt-in");
         assert!(!d.prefault_active());
-        assert!(!d.lazy_free);
         assert!(d.lazy_band);
         assert!(!clean("lazy_band:false").lazy_band);
         assert!(d.guards);
@@ -1400,7 +1394,6 @@ mod tests {
         let keys = [
             "background_thread",
             "tcache",
-            "lazy_free",
             "lazy_band",
             "guards",
             "zero_on_free",

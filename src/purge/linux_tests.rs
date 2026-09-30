@@ -25,7 +25,7 @@ fn batch_discards_through_the_probed_backend_and_the_loop() {
     let mut f = Features::probe();
     let backends = [f.process_madvise, ProcessMadvise::Unavailable];
     for (i, backend) in backends.iter().enumerate() {
-        configure(*backend, false);
+        configure(*backend);
         assert_eq!(uses_process_madvise(), *backend != ProcessMadvise::Unavailable);
         let len = 8 * page;
         let addr = unsafe { sys::mmap(0, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) }.unwrap();
@@ -45,7 +45,7 @@ fn batch_discards_through_the_probed_backend_and_the_loop() {
         }
         unsafe { sys::munmap(addr, len) }.unwrap();
     }
-    configure(ProcessMadvise::Unavailable, false);
+    configure(ProcessMadvise::Unavailable);
     f.release();
 }
 
@@ -53,15 +53,15 @@ fn batch_discards_through_the_probed_backend_and_the_loop() {
 #[test]
 fn fork_child_downgrades_a_pidfd_backend() {
     let _serial = BACKEND_TEST.lock().unwrap();
-    configure(ProcessMadvise::PidfdSelf, false);
+    configure(ProcessMadvise::PidfdSelf);
     assert_eq!(fork_child(), ProcessMadvise::PidfdSelf);
     assert!(uses_process_madvise());
     let fd = sys::open(b"/dev/null\0", sys::O_RDONLY).unwrap();
-    configure(ProcessMadvise::Pidfd(fd), false);
+    configure(ProcessMadvise::Pidfd(fd));
     assert_eq!(fork_child(), ProcessMadvise::Unavailable);
     assert!(!uses_process_madvise());
     // The fd was closed.
     assert!(sys::close(fd).is_err());
-    configure(ProcessMadvise::Unavailable, false);
+    configure(ProcessMadvise::Unavailable);
     assert_eq!(fork_child(), ProcessMadvise::Unavailable);
 }
