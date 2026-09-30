@@ -12,8 +12,8 @@
 //!
 //! The probes never allocate, take a few microseconds, and leave at most one
 //! `PROT_NONE` page mapped (the sealed page, which by definition cannot be
-//! unmapped again). The pure `auxv` parsing at the top of the module is unit
-//! tested on the host; the probes themselves run inside the Linux container.
+//! unmapped again). The pure decoders are unit tested on the host; the
+//! probes themselves run inside the Linux container.
 //!
 //! The line is a table: [`Features::words`] yields every `(key, value)`
 //! pair in order, and `Display`, [`FeatureLine`] and the tests all iterate
@@ -21,28 +21,8 @@
 
 use core::fmt;
 
-use super::auxv::{AT_NULL, AT_PAGESZ};
+use super::auxv::AT_PAGESZ;
 use super::{Trailing, parse_decimal, yn};
-
-/// Find `AT_PAGESZ` in a raw auxiliary vector (`/proc/self/auxv` contents:
-/// pairs of native-endian `usize`, terminated by `AT_NULL`). Returns `None`
-/// if the entry is absent, zero, not a power of two, or the vector is
-/// malformed. Pure logic, host tested.
-pub fn page_size_from_auxv(bytes: &[u8]) -> Option<usize> {
-    const W: usize = core::mem::size_of::<usize>();
-    let mut chunks = bytes.chunks_exact(2 * W);
-    for pair in &mut chunks {
-        let key = usize::from_ne_bytes(pair[..W].try_into().ok()?);
-        let val = usize::from_ne_bytes(pair[W..].try_into().ok()?);
-        if key == AT_NULL {
-            return None;
-        }
-        if key == AT_PAGESZ {
-            return (val != 0 && val.is_power_of_two()).then_some(val);
-        }
-    }
-    None
-}
 
 /// How batched purges (`process_madvise`, design.md section 8) can reach our
 /// own address space.
@@ -575,35 +555,21 @@ pub use linux::*;
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{AT_PAGESZ, Features, ProcessMadvise, Thp, page_size_from_auxv};
+    use super::{AT_PAGESZ, Features, ProcessMadvise, Thp};
     use crate::sys::auxv::getauxval;
     use crate::sys::{
         self, IoVec, MADV_DONTNEED, MADV_FREE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE,
         MADV_POPULATE_WRITE, MAP_ANONYMOUS, MAP_PRIVATE, PIDFD_SELF, PROT_NONE, PROT_READ, PROT_WRITE,
     };
 
-    /// The system page size. `getauxval(AT_PAGESZ)` first; if that yields
-    /// nothing (a libc without the vector, or a static binary started in an
-    /// unusual way), `/proc/self/auxv`; if that fails too, abort, because
+    /// The system page size, `getauxval(AT_PAGESZ)`. Without it, abort:
     /// guessing a page size would corrupt every mapping we make.
     pub fn page_size() -> usize {
         let v = getauxval(AT_PAGESZ);
         if v != 0 && v.is_power_of_two() {
             return v;
         }
-        if let Some(v) = page_size_from_proc() {
-            return v;
-        }
         sys::abort("cannot determine the page size (AT_PAGESZ missing)")
-    }
-
-    fn page_size_from_proc() -> Option<usize> {
-        // 64-bit auxv is around 20 pairs (320 bytes); leave generous room.
-        let mut buf = [0u8; 1024];
-        let fd = sys::open(b"/proc/self/auxv\0", sys::O_RDONLY).ok()?;
-        let n = sys::read_full(fd, &mut buf);
-        let _ = sys::close(fd);
-        page_size_from_auxv(&buf[..n.ok()?])
     }
 
     /// Map a fresh private anonymous scratch page with the given protection.
@@ -802,35 +768,6 @@ mod linux {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn auxv(pairs: &[(usize, usize)]) -> std::vec::Vec<u8> {
-        let mut v = std::vec::Vec::new();
-        for &(k, val) in pairs {
-            v.extend_from_slice(&k.to_ne_bytes());
-            v.extend_from_slice(&val.to_ne_bytes());
-        }
-        v
-    }
-
-    #[test]
-    fn auxv_parse_finds_pagesz() {
-        let v = auxv(&[(33, 0x7fff_0000), (16, 0xbfeb_fbff), (6, 16384), (0, 0)]);
-        assert_eq!(page_size_from_auxv(&v), Some(16384));
-    }
-
-    #[test]
-    fn auxv_parse_rejects_bad_input() {
-        // Absent.
-        assert_eq!(page_size_from_auxv(&auxv(&[(33, 1), (0, 0)])), None);
-        // Stops at AT_NULL even if a later entry would match.
-        assert_eq!(page_size_from_auxv(&auxv(&[(0, 0), (6, 4096)])), None);
-        // Zero or non-power-of-two.
-        assert_eq!(page_size_from_auxv(&auxv(&[(6, 0), (0, 0)])), None);
-        assert_eq!(page_size_from_auxv(&auxv(&[(6, 3000), (0, 0)])), None);
-        // Empty and truncated.
-        assert_eq!(page_size_from_auxv(&[]), None);
-        assert_eq!(page_size_from_auxv(&auxv(&[(6, 4096)])[..7]), None);
-    }
 
     /// A fake sysfs: `(path, contents)` pairs; a missing path reads 0 bytes.
     fn sysfs<'a>(files: &'a [(&'a str, &'a str)]) -> impl FnMut(&[u8], &mut [u8]) -> usize + 'a {
@@ -1221,7 +1158,7 @@ mod linux_tests {
     }
 
     #[test]
-    fn page_size_matches_libc_and_auxv() {
+    fn page_size_matches_libc() {
         let ps = page_size();
         // SAFETY: sysconf has no preconditions.
         let libc_ps = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
@@ -1231,9 +1168,6 @@ mod linux_tests {
         assert_eq!(ps, 4096);
         #[cfg(target_arch = "aarch64")]
         assert!(matches!(ps, 4096 | 16384 | 65536), "{ps}");
-        // The /proc fallback must agree with getauxval.
-        let raw = std::fs::read("/proc/self/auxv").unwrap();
-        assert_eq!(page_size_from_auxv(&raw), Some(ps));
     }
 
     /// The real probe and the running kernel's version, the line printed

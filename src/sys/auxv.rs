@@ -2,10 +2,10 @@
 //! reads (`include/uapi/linux/auxvec.h`, the same values on x86_64 and
 //! aarch64).
 //!
-//! The one libc call the allocator makes on its own behalf. glibc and musl
-//! answer from the vector the kernel put on the initial stack, saved at
-//! startup: no syscall, no allocation, safe from within `malloc`, which is
-//! how glibc's own malloc learns the page size (`GLRO(dl_pagesize)`). The
+//! The one libc call the allocator makes on its own behalf. glibc answers
+//! from the vector the kernel put on the initial stack, saved at startup:
+//! no syscall, no allocation, safe from within `malloc`, which is how
+//! glibc's own malloc learns the page size (`GLRO(dl_pagesize)`). The
 //! readers are `sys::features` (`AT_PAGESZ`) and `sys::pac` (`AT_HWCAP`);
 //! `config.rs` declares its own `getauxval` for `AT_SECURE` and keeps that
 //! constant beside it.
@@ -27,7 +27,7 @@ pub const AT_SECURE: usize = 23;
 
 #[cfg(target_os = "linux")]
 unsafe extern "C" {
-    /// glibc/musl `getauxval(3)`: the value for `kind`, 0 when absent.
+    /// glibc's `getauxval(3)`: the value for `kind`, 0 when absent.
     pub safe fn getauxval(kind: usize) -> usize;
 }
 
