@@ -8,9 +8,9 @@
 #
 # `target/` inside the container is a named Docker volume, one per
 # architecture, so Linux artifacts never mix with host artifacts and builds do
-# not go through the slow macOS bind mount. The cargo registry is a named
-# volume too so crates are fetched once. `TARGET_VOLUME` (default
-# `challoc-target-$(ARCH)`) names the target volume and `CARGO_VOLUME`
+# not go through the bind mount (slow where Docker runs in a VM). The cargo
+# registry is a named volume too so crates are fetched once. `TARGET_VOLUME`
+# (default `challoc-target-$(ARCH)`) names the target volume and `CARGO_VOLUME`
 # (default `challoc-cargo-registry`) the registry volume; a second git
 # worktree sets `TARGET_VOLUME=challoc-target-<name>-$(ARCH)` so two
 # worktrees never share a `target/`. `make clean-volumes` removes the
@@ -79,9 +79,9 @@ DOCKER_BASE = docker run --rm --platform $(PLATFORM) $(EXTRA_DOCKER_FLAGS) \
 DOCKER_RUN = $(DOCKER_BASE) $(DOCKER_FLAGS) $(IMAGE)
 # cgroup_run LIMIT,ARGS: one memory-limited container running
 # scripts/cgroup-tests.sh ARGS. Swap is disabled
-# (`--memory-swap` equal to `--memory`): Docker Desktop's VM has 1 GiB of
-# swap and `--memory` alone lets a churn spill into it instead of being
-# charged against the limit.
+# (`--memory-swap` equal to `--memory`): on a host with swap `--memory`
+# alone lets a churn spill into it instead of being charged against the
+# limit.
 cgroup_docker = $(DOCKER_BASE) --memory=$(1) --memory-swap=$(1) $(if $(CGROUP_WATCHDOG),-e WATCHDOG=$(CGROUP_WATCHDOG)) $(IMAGE) sh scripts/cgroup-tests.sh
 cgroup_run = $(call cgroup_docker,$(1)) $(2)
 
@@ -129,7 +129,7 @@ print-docker-run: ## print the docker run line the targets use (challoc-bench pe
 
 # The `api::` tests run in a second process: they initialise the real
 # allocator, whose reservations plus a second full layout (the layout tests)
-# exceed what Rosetta can track under emulation.
+# exceed what an x86_64 emulator can track (PLATFORM=linux/amd64 on arm64).
 # CHALLOC_TEST_ALLOW_SKIP=1 lets a kernel- or privilege-gated test print its
 # `SKIP <test> <reason>` line and pass (docs/testing.md). `make test` sets it
 # everywhere, the reference VMs included (their containers skip mseal

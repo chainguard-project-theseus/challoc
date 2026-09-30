@@ -13,9 +13,9 @@
  *   heap creation takes locks; the enable is per task, `rseq_fork` resets
  *   a CLONE_VM child's rseq state), a fork child inherits the forking
  *   thread's enable, and the report line says `Slice extension: on`;
- * - under `on` where the kernel lacks it (Ubuntu's 7.0 GCE kernels, the
- *   Mac's 6.10, every arm64 kernel to date): nothing is enabled, the two
- *   slice_ctrl bytes of this thread stay zero across a burst of
+ * - under `on` where the kernel lacks it (Ubuntu's 7.0 GCE kernels, any
+ *   kernel before 7.0, every arm64 kernel to date): nothing is enabled,
+ *   the two slice_ctrl bytes of this thread stay zero across a burst of
  *   allocation, the report says `off (kernel-disabled)` or
  *   `off (no-slice_ctrl)` and notes the refused request.
  *
