@@ -10,7 +10,7 @@
 #   mimalloc (pinned tag)    libmimalloc.so, for the optional third column
 #   (tcmalloc is Wolfi's tcmalloc-minimal package, installed by Dockerfile.dev;
 #   versions.txt records its version and Python's)
-#   bench/rt.c bench/sampler.c
+#   bench/tools/rt.c bench/sampler.c
 set -eu
 cd "$(dirname "$0")/.."
 ROOT=$(pwd)
@@ -63,7 +63,7 @@ if [ ! -f "$BIN/libmimalloc.so" ]; then
 fi
 
 echo "== helpers"
-cc -O2 -Wall -Wextra -Werror "$ROOT/bench/rt.c" -o "$BIN/rt"
+cc -O2 -Wall -Wextra -Werror "$ROOT/bench/tools/rt.c" -o "$BIN/rt"
 cc -O2 -Wall -Wextra -Werror "$ROOT/bench/pin.c" -o "$BIN/pin"
 cc -O2 -Wall -Wextra -Werror -fPIC -shared "$ROOT/bench/sampler.c" -o "$BIN/sampler.so" -ldl
 # The probes bench/lib.sh runs as rows (also compiled on demand there).

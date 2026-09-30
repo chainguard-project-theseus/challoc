@@ -448,8 +448,8 @@ and `kernel.kptr_restrict` is 0 on the VMs.
   container on a Chainguard OS host (the four-way tables' host-native
   section).
 - `cpuid-dump.c`: the raw CPUID/HWCAP registers a CPU cell captures (the
-  fixtures of `src/sys/cpu.rs`); `pmu-probe.c`: does `perf_event_open`
-  count on a host without a `perf` binary (Chainguard OS).
+  fixtures of `src/sys/cpu.rs`); `../tools/rt --probe` (was `pmu-probe.c`):
+  does `perf_event_open` count on a host without a `perf` binary.
 - In `bench/probes/`, used from a VM host beside a detached soak:
   `valkey-perf-sidecar.sh` (root: `perf stat -I 1000` for each server's
   life, 60 s `perf record` windows, `INFO commandstats` snapshots),
