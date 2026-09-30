@@ -741,7 +741,9 @@ fn batch_query(shared: &Shared, io: &Io) -> Result<(), c_int> {
     // SAFETY: `oldlenp` is the caller's length pointer.
     let oldlen = unsafe { *io.oldlenp };
     let n = io.newlen / psz;
-    if n == 0 || io.newlen % psz != 0 || oldlen != n * tsz {
+    // `checked_mul`: a count whose triples overflow must not wrap onto
+    // the caller's `oldlen` and send the loop past both arrays.
+    if n == 0 || io.newlen % psz != 0 || n.checked_mul(tsz) != Some(oldlen) {
         return Err(EINVAL);
     }
     let ptrs = io.newp as *const *const c_void;
@@ -1186,6 +1188,24 @@ mod tests {
         let rc = mallctlnametomib(cname.as_ptr(), mib.as_mut_ptr(), &mut len);
         assert_eq!(rc, 0, "mallctlnametomib({name}) = {rc}");
         mib[..len].to_vec()
+    }
+
+    /// A pointer count whose triples overflow `usize` must not pass the
+    /// length check: `n * 24` wrapping to the caller's 8-byte `oldlen`
+    /// would have the loop read `n` pointers and write `3 * n` words.
+    #[test]
+    fn batch_query_rejects_a_count_whose_triples_overflow() {
+        let mib = mib_of("experimental.utilization.batch_query");
+        let p = malloc(16);
+        let ptrs = [p as *const c_void];
+        let mut out = [0usize; 1];
+        let mut outlen = size_of::<usize>();
+        let n = usize::MAX / (3 * size_of::<usize>()) + 1;
+        assert_eq!(n.wrapping_mul(3 * size_of::<usize>()), outlen, "the product wraps to the out length");
+        let newlen = n * size_of::<*const c_void>();
+        let rc = mallctlbymib(mib.as_ptr(), mib.len(), out.as_mut_ptr() as *mut c_void, &mut outlen, ptrs.as_ptr() as *const c_void, newlen);
+        assert_eq!(rc, EINVAL);
+        free(p);
     }
 
     fn get_mib<T: Copy + Default>(mib: &[usize]) -> T {
