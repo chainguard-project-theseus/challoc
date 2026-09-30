@@ -16,7 +16,10 @@
  *                reads 2 (classes, metadata), the thp: line says `huge
  *                follows host`, and on an `always` host the run shows
  *                THPeligible 1 and AnonHugePages again, as jemalloc's
- *                large allocations do. On a `madvise` host the
+ *                large allocations do (every PMD range of the run a huge
+ *                page or a thp_fault_fallback in /proc/vmstat; a SKIP
+ *                when the host had no free huge page at all). On a
+ *                `madvise` host the
  *                AnonHugePages checks pass trivially and the program says
  *                so; the `nh` checks are the both-ways part there;
  *   thp always   MALLOC_CONF=thp:always: opt.thp reads "always" (or
@@ -201,6 +204,24 @@ static unsigned long read_counter(const char *path)
     return v;
 }
 
+/* The `name` counter of /proc/vmstat; 0 when absent. */
+static unsigned long vmstat_of(const char *name)
+{
+    FILE *f = fopen("/proc/vmstat", "r");
+    if (!f)
+        return 0;
+    char key[64];
+    unsigned long v, found = 0;
+    while (fscanf(f, "%63s %lu", key, &v) == 2) {
+        if (strcmp(key, name) == 0) {
+            found = v;
+            break;
+        }
+    }
+    fclose(f);
+    return found;
+}
+
 int main(int argc, char **argv)
 {
     require_challoc();
@@ -284,14 +305,16 @@ int main(int argc, char **argv)
      * huge pages at the fault unless the reservation carries `nh`. Under
      * `never` it does not (the huge region follows the host), so this is
      * the row that shows the host's policy on such a host. */
+    unsigned long fallback_before = vmstat_of("thp_fault_fallback");
     unsigned char *big = malloc(8u << 20);
     REQUIRE(big, "malloc(8 MiB)");
     memset(big, 0x5b, 8u << 20);
+    unsigned long big_fallbacks = vmstat_of("thp_fault_fallback") - fallback_before;
     long big_anon_kb;
     int big_eligible, big_hg, big_nh;
     REQUIRE(smaps_of(big + (4u << 20), &big_anon_kb, &big_eligible, &big_hg, &big_nh), "no smaps entry holds the huge run");
-    printf("thp %s: huge run 8 MiB: VMA hg=%d nh=%d THPeligible=%d AnonHugePages=%ld kB (global thp %s)\n", mode, big_hg, big_nh,
-           big_eligible, big_anon_kb, global);
+    printf("thp %s: huge run 8 MiB: VMA hg=%d nh=%d THPeligible=%d AnonHugePages=%ld kB, thp_fault_fallback +%lu (global thp %s)\n", mode,
+           big_hg, big_nh, big_eligible, big_anon_kb, big_fallbacks, global);
 
     if (strcmp(mode, "never") == 0) {
         CHECK(smode == 0, "mode %zu under never", smode);
@@ -316,8 +339,26 @@ int main(int argc, char **argv)
                        anon_kb, big_anon_kb);
                 CHECK(anon_kb == 0, "AnonHugePages %ld kB in the class region under never on an always host", anon_kb);
                 CHECK(big_eligible != 0, "THPeligible %d on the huge run under never on an always host (the run should follow the host)", big_eligible);
-                CHECK(big_anon_kb >= 2048, "AnonHugePages %ld kB in the 8 MiB huge run under never on an always host (the run should follow the host)",
-                      big_anon_kb);
+                /* A fault in a VMA without `hg` does not compact
+                 * (defrag=madvise), so on a host with no free PMD-sized
+                 * block the kernel tries the huge page and falls back to
+                 * base pages, one thp_fault_fallback per PMD range. Every
+                 * whole PMD range of the run either got its huge page or
+                 * was tried and fell back (the counter is global: other
+                 * processes can only add to it), and only a run with no
+                 * huge page at all is a SKIP. */
+                uintptr_t pmd = (uintptr_t)pmd_kb << 10;
+                uintptr_t lo = ((uintptr_t)big + pmd - 1) & ~(pmd - 1), hi = ((uintptr_t)big + (8u << 20)) & ~(pmd - 1);
+                unsigned long ranges = hi > lo ? (hi - lo) / pmd : 0;
+                CHECK((unsigned long)big_anon_kb / pmd_kb + big_fallbacks >= ranges,
+                      "%lu PMD ranges in the huge run but %ld kB AnonHugePages and %lu fallbacks (the kernel did not try them all)", ranges,
+                      big_anon_kb, big_fallbacks);
+                if (big_anon_kb < 2048 && big_fallbacks > 0)
+                    skip_note("thp/never-huge-run", "the kernel fell back to base pages %lu time(s) in the 8 MiB huge run (no free huge page); AnonHugePages %ld kB not checked",
+                              big_fallbacks, big_anon_kb);
+                else
+                    CHECK(big_anon_kb >= 2048, "AnonHugePages %ld kB in the 8 MiB huge run under never on an always host (the run should follow the host)",
+                          big_anon_kb);
             } else {
                 CHECK(big_eligible <= 0, "THPeligible %d on the unadvised huge run on a %s host", big_eligible, global);
                 printf("thp never: global THP is %s, so AnonHugePages %ld / %ld kB is 0 with or without the advice; the nh flags are the check here\n",
