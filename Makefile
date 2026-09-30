@@ -52,7 +52,11 @@ endif
 # refuse it with EINVAL and the harness says so). Docker's default mounts
 # the tree read-only and the nsdelegate boundary refuses the write from
 # inside the namespace, hence both flags. Memory limits still apply.
-DOCKER_BASE = docker run --rm --platform $(PLATFORM) \
+# EXTRA_DOCKER_FLAGS reaches every container, the memory-limited cgroup
+# ones included, on top of a target's own DOCKER_FLAGS (which replace any
+# DOCKER_FLAGS from the environment): `make test
+# EXTRA_DOCKER_FLAGS=--privileged` runs the privilege-gated tests.
+DOCKER_BASE = docker run --rm --platform $(PLATFORM) $(EXTRA_DOCKER_FLAGS) \
 	-v "$(CURDIR)":/src -w /src \
 	-v $(TARGET_VOLUME):/src/target \
 	$(shell mkdir -p "$(CURDIR)/target/results")-v "$(CURDIR)/target/results":/src/target/results \
