@@ -83,10 +83,8 @@ fn alloc_huge(shared: &Shared, size: usize, align: usize) -> (*mut u8, bool) {
 #[inline(always)]
 pub fn malloc(size: usize) -> *mut u8 {
     // The fast path is a cache pop with no calls in it; everything else
-    // (init, heap creation, refill, huge, ENOMEM, and the per-CPU mode of
-    // design 15, whose heaps keep their home caches empty so the pop
-    // falls through here) is one tail call away so the exported `malloc`
-    // needs no stack frame.
+    // (init, heap creation, refill, huge, ENOMEM) is one tail call away so
+    // the exported `malloc` needs no stack frame.
     let Some(c) = class_of(size) else { return malloc_slow(size) };
     let shared = super::shared_ptr();
     let Some(h) = heap::existing_heap(shared) else { return malloc_slow(size) };
@@ -106,8 +104,7 @@ pub fn malloc(size: usize) -> *mut u8 {
 
 /// `malloc_slow` for a size whose class is known and whose fast pop has
 /// just declined: the refill or the scheduled pop through
-/// `heap::alloc_declined` (a heap in the per-CPU mode routes there too),
-/// null with `errno = ENOMEM` on failure.
+/// `heap::alloc_declined`, null with `errno = ENOMEM` on failure.
 #[cold]
 #[inline(never)]
 fn malloc_slow_class(class: usize) -> *mut u8 {
@@ -170,9 +167,7 @@ pub fn free(p: *mut u8) {
         return;
     }
     // As in `malloc`: the check-and-push has no calls, and every other
-    // outcome, including the aborts and the per-CPU mode (a heap in the
-    // mode has `cap == 0` on every home cache, so the push declines), is
-    // reached through one tail call.
+    // outcome, including the aborts, is reached through one tail call.
     if let Some(h) = heap::existing_heap(super::shared_ptr()) {
         // SAFETY: this thread's heap exists, so this thread observed
         // `READY` when it created the heap.
@@ -416,8 +411,8 @@ pub fn malloc_usable(size: usize, usable: *mut usize) -> *mut u8 {
 }
 
 /// `malloc_usable` off its fast path for a slab class: the refill, the
-/// scheduled pop, heap creation and the per-CPU mode
-/// (`heap::alloc_declined`, then `Heap::alloc_slow`, dispatch all four),
+/// scheduled pop and heap creation (`heap::alloc_declined`, then
+/// `Heap::alloc_slow`, dispatch all three),
 /// null with `errno = ENOMEM` on failure.
 #[cold]
 #[inline(never)]
@@ -546,8 +541,6 @@ pub fn free_usable(p: *mut u8) -> usize {
     if let Some(h) = heap::existing_heap(super::shared_ptr()) {
         // SAFETY: as in `free`.
         let shared = unsafe { super::shared_unchecked() };
-        // A heap in the per-CPU mode has `cap == 0` on every home cache,
-        // so the push declines and the slow path routes it (as in `free`).
         if let Some(class) = heap::free_fast_class(shared, h, p, shared.push_flags()) {
             return class_size(class);
         }
@@ -558,8 +551,8 @@ pub fn free_usable(p: *mut u8) -> usize {
 /// Everything `free_usable` does off its fast path: the size first, from
 /// the classification `free` makes (its aborts for an invalid, stale or
 /// double free, and the huge table's for a run that is not live), then the
-/// exact `free` (heap creation, a full cache, another arena, the per-CPU
-/// mode, the huge release).
+/// exact `free` (heap creation, a full cache, another arena, the huge
+/// release).
 #[cold]
 #[inline(never)]
 fn free_usable_slow(p: *mut u8) -> usize {

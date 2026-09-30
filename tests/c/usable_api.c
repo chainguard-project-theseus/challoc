@@ -4,8 +4,8 @@
  * challoc_calloc_usable, challoc_realloc_usable and challoc_free_usable,
  * declared in <challoc/challoc.h> (include/, on the include
  * path through -I). Run under LD_PRELOAD=libchalloc.so by src/api/ctests.rs
- * (the driver runs it under the default configuration, the per-CPU mode and
- * the hardening keys, so every push and pop variant answers the same).
+ * (the driver runs it under the default configuration and the hardening
+ * keys, so every push and pop variant answers the same).
  *
  * Claims: on every tier (slab classes, the classes above the bins, huge
  * runs) the stored or returned usable size equals malloc_usable_size of the

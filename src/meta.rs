@@ -11,7 +11,7 @@
 //! - **Reservations** ([`Meta::reserve`], [`Meta::reserve_table`]) are
 //!   large, fixed-address, never freed arrays: a class's descriptor table
 //!   and slot bitmap, the huge allocator's free-page bitmap, the arenas,
-//!   the per-CPU caches, the background thread's stack. They are carved
+//!   the background thread's stack. They are carved
 //!   downward from the top of the region and handed back *uncommitted*; the
 //!   owner calls [`Meta::commit`] on the pages it starts to use, so a class
 //!   with three live slabs commits one page of descriptors, not the whole

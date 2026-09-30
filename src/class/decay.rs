@@ -76,10 +76,9 @@ impl ClassState {
             d.set_state(State::Purged);
             d.set_dirty_at(0);
             // Spelled out, not `empty_take` and `purged_add`: paired that
-            // way the two stores reorder, and the release build of the
-            // unrelated `Heap::percpu_drain` then changes shape (how it
-            // addresses two merged statics; `scripts/codegen-diff.sh`,
-            // batch three of the maintainability pass). The seam's
+            // way the two stores reorder, and the release build of
+            // unrelated code then changes shape (how it addresses two
+            // merged statics; `scripts/codegen-diff.sh`). The seam's
             // invariant holds here by inspection: bit and count move
             // together for both sets.
             g.empty.map.clear(s);

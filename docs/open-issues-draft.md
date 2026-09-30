@@ -67,16 +67,30 @@ store pattern as `zero_on_free`; record both cost rows side by side.
 
 Label: `roadmap`, `performance`
 
-The opt-in `percpu_arena:percpu` mode (design 15) keys caches and arenas by
-the running thread's `mm_cid`. Against thread caches it costs larson1
-+5.3%, larson10 +9.4%, xmalloc-test +18.9%, valkey1 +4.7% on aarch64 and
-larson10 +16.6%, xmalloc-test +16.1%, valkey1 +37.8% on x86_64 (5-round
-`ab`). Attributed: +47 (Axion) / +33 (Xeon 8581C) instructions per
-operation of rseq section cost, the design's floor. It wins RSS only when
-threads far outnumber CPUs. If the mode is removed before release, this
-issue keeps the idea and links the archive tag. Ways to give it back its
-hit path without touching the default: ifunc-selected entry points, or a
-class/heap argument on the cold tail calls (priced with `quick-perf`).
+A per-CPU cache mode was prototyped and removed before release; the code
+is at the archive tag `archive/prototype-2026-09-30` (`src/heap/percpu.rs`,
+the critical sections in `src/rseq.rs`, the model's `percpu_*` scenarios,
+`tests/c/percpu.c`, design.md section 15 at that tag). The design: behind
+`percpu_arena:percpu`, one table of `nr_cpu_ids` cache-header arrays
+indexed by the running thread's rseq `mm_cid` (kernel 6.3+, glibc's
+registered `__rseq_size >= 28`); pop, push, batch push, take-all and
+install were hand-written `asm!` rseq critical sections on both
+architectures (the `mm_cid` read inside the section, one commit store,
+restart on abort); refill and flush ran outside the section through the
+id's arena; a heap in the mode kept its home caches empty so the entry
+points routed it on the slow path.
+
+Against thread caches it cost larson1 +5.3%, larson10 +9.4%, xmalloc-test
++18.9%, valkey1 +4.7% on aarch64 and larson10 +16.6%, xmalloc-test
++16.1%, valkey1 +37.8% on x86_64 (5-round `ab`). Attributed: +47 (Axion) /
++33 (Xeon 8581C) instructions per operation of rseq section cost, the
+design's floor. It won RSS only when threads far outnumber CPUs, and in a
+quota pod `mm_cid` is bounded by the host's CPUs, not the quota. The
+Ruby-idle RSS it bought is to be regained with idle-thread cache reclaim.
+`percpu_arena` still parses (jemalloc's values) and has no effect. Ways to
+give such a mode a hit path without touching the default: ifunc-selected
+entry points, or a class/heap argument on the cold tail calls (priced with
+`quick-perf`).
 
 ### 6. PostgreSQL `select500` on aarch64 behind glibc
 
@@ -137,7 +151,8 @@ cell type read +3.2% ahead. The C4 `quick-perf` shows `valkey1-write` at
 newer Wolfi jemalloc, two flag tests the model gained), 16..22 are
 challoc's own, which on that part crosses the instruction-window cliff
 (MLP-bound: one DRAM miss per SET on the dict entry). Where to look: the
-entry points' instruction accounting since the per-CPU dispatch, and the
+entry points' instruction accounting (re-measure without the per-CPU
+dispatch, which is removed), and the
 `divl` of the guard-slab test on the sized path (test with `valkey_model -x
 K` and `guards:false`). Needs `c3-standard-192-metal` for the full PMU.
 

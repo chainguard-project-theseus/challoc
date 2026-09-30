@@ -291,7 +291,7 @@ fn init() {
     // SAFETY: the statics are written once here, before `READY` is
     // published, and `regions` are live reservations this process owns.
     unsafe {
-        let ok = Shared::init((*SHARED.0.get()).as_mut_ptr(), regions, config, features.guard_install, features.pac, true);
+        let ok = Shared::init((*SHARED.0.get()).as_mut_ptr(), regions, config, features.guard_install, features.pac);
         if !ok {
             sys::abort("metadata region too small for the allocator tables");
         }

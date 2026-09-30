@@ -581,15 +581,9 @@ ctests! {
     /// heaps through `thread.allocatedp`, allocations and frees on every
     /// thread) under `pac_pointers:true`: the shipped library's signed cache
     /// entries and signed TLS heap pointers, from C, on a PAC host; the plain
-    /// path with the key accepted elsewhere. Both cache modes under the key:
-    /// thread caches, and the per-CPU mode (plan Phase 2.5 task 8; thread
-    /// caches again where `mm_cid` is not usable). The combination faulted
-    /// on FEAT_FPAC until 2026-09-20: the per-CPU batch push signed with the
-    /// write position instead of the stack base (`rseq::push_batch`), so a
-    /// batch pushed onto a non-empty stack failed the next pop's `autda`.
+    /// path with the key accepted elsewhere.
     c_tls_threads_with_pac_pointers => [
         CTest { prog: "tls_threads", conf: Some("pac_pointers:true,abort_conf:true"), ..BASE },
-        CTest { prog: "tls_threads", conf: Some("pac_pointers:true,abort_conf:true,percpu_arena:percpu"), ..BASE },
     ];
     /// `tests/c/decay.c` (plan Phase 1 task 2), one mode per test with its
     /// `MALLOC_CONF`.
@@ -616,12 +610,10 @@ ctests! {
     ];
     /// challoc's size-returning entry points from C (`tests/c/usable_api.c`,
     /// design 13.7; the header comes from include/): under the
-    /// default configuration, the per-CPU mode (its slow path), and the
-    /// hardening keys that change the push (`zero_on_free` declines the
+    /// default configuration and the hardening keys that change the push (`zero_on_free` declines the
     /// fast push, `double_free_scan` scans it, `pac_pointers` signs).
     c_usable_api => [
         CTest { prog: "usable_api", cflags: &["-Iinclude"], ..BASE },
-        CTest { prog: "usable_api", cflags: &["-Iinclude"], conf: Some("percpu_arena:percpu"), ..BASE },
         CTest { prog: "usable_api", cflags: &["-Iinclude"],
             conf: Some("abort_conf:true,zero_on_free:true,double_free_scan:true,pac_pointers:true"), ..BASE },
     ];
@@ -684,31 +676,13 @@ ctests! {
     /// first allocations in a fresh process are a contiguous slot set in a
     /// non-monotone order; the control is ascending. `abort_conf` accepts
     /// both keys (they are no longer inert).
-    ///
-    /// The four modes run with `percpu_arena:off`: they reason about one
-    /// thread's LIFO reuse and one refill batch, which the per-CPU mode (design
-    /// 15) does not promise to a thread that migrates between two calls.
     c_tunables_zero_on_free => [
-        CTest { prog: "tunables", args: &["zero"], conf: Some("abort_conf:true,zero_on_free:true,percpu_arena:off"), ..BASE },
-        CTest { prog: "tunables", args: &["dirty"], conf: Some("abort_conf:true,percpu_arena:off"), ..BASE },
+        CTest { prog: "tunables", args: &["zero"], conf: Some("abort_conf:true,zero_on_free:true"), ..BASE },
+        CTest { prog: "tunables", args: &["dirty"], conf: Some("abort_conf:true"), ..BASE },
     ];
     c_tunables_slot_randomize => [
-        CTest { prog: "tunables", args: &["random"], conf: Some("abort_conf:true,slot_randomize:true,percpu_arena:off"), ..BASE },
-        CTest { prog: "tunables", args: &["ordered"], conf: Some("abort_conf:true,percpu_arena:off"), ..BASE },
-    ];
-    /// Plan Phase 2.5 task 8, both ways: `tests/c/percpu.c` under
-    /// `percpu_arena:percpu` (on where the kernel and glibc give `mm_cid`,
-    /// off with a `SKIP` line elsewhere; the program prints which) and under
-    /// `percpu_arena:off` (always off). 64 threads of tagged random
-    /// allocation across the small classes, calloc zeroing under churn,
-    /// exact per-thread counters, `thread.tcache.flush` and `stats.percpu.*`.
-    /// Then the mode with signed cache entries (plan Phase 2.5 task 7 with
-    /// task 8): 64 threads x 20000 operations across the per-CPU stacks, the
-    /// shape that faulted 2/2 on FEAT_FPAC before the `push_batch` fix.
-    c_percpu_both_ways => [
-        CTest { prog: "percpu", args: &["percpu"], conf: Some("abort_conf:true,percpu_arena:percpu"), ..BASE },
-        CTest { prog: "percpu", args: &["off"], conf: Some("abort_conf:true,percpu_arena:off"), ..BASE },
-        CTest { prog: "percpu", args: &["percpu"], conf: Some("abort_conf:true,percpu_arena:percpu,pac_pointers:true"), ..BASE },
+        CTest { prog: "tunables", args: &["random"], conf: Some("abort_conf:true,slot_randomize:true"), ..BASE },
+        CTest { prog: "tunables", args: &["ordered"], conf: Some("abort_conf:true"), ..BASE },
     ];
     /// Plan Phase 2.5 task 15, both ways: `tests/c/slice_ext.c` under
     /// `slice_ext:on` (the rseq time slice extension on where the kernel has

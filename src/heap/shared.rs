@@ -15,7 +15,7 @@ use crate::meta::Meta;
 
 #[cfg(target_os = "linux")]
 use super::heap_destructor;
-use super::{Heap, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, Percpu, invalid_free};
+use super::{Heap, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free};
 
 /// The cache GC period (design 6.4): 10 s.
 pub const GC_INTERVAL_NS: u64 = 10_000_000_000;
@@ -58,10 +58,6 @@ pub struct Shared {
     /// predicted branch.
     pub(super) push_flags: u8,
     pub regions: Regions,
-    /// The per-CPU mode's table and state (design 15; [`Percpu::on`]).
-    /// After `regions` so the thread paths' first line is as it was; the
-    /// per-CPU paths read `base`, `n` and the flag byte, two lines.
-    pub percpu: Percpu,
     /// The sized fast path's guard test per class: a dense array (8 bytes
     /// per class, seven lines for all 52) so `sized_slot` never touches
     /// the 384-byte class table line (it reads neither the watermark nor
@@ -289,7 +285,6 @@ impl Shared {
         config: Config,
         guard_install: bool,
         pac: bool,
-        percpu: bool,
     ) -> bool {
         let mut config = config;
         config.narenas = config.effective_narenas(os::ncpus());
@@ -303,14 +298,12 @@ impl Shared {
             ptr::write(&raw mut (*this).regions, regions);
             ptr::write(&raw mut (*this).multi_arena, AtomicBool::new(false));
             let meta = &*meta;
-            let percpu = Percpu::build(meta, &config, percpu);
             ptr::write(
                 &raw mut (*this).push_flags,
                 (if config.double_free_scan { PUSH_SCAN } else { 0 })
                     | (if config.zero_on_free { PUSH_ZERO } else { 0 })
                     | (if pac && config.pac_pointers { PUSH_PAC } else { 0 }),
             );
-            ptr::write(&raw mut (*this).percpu, percpu);
             let regions = &*(&raw const (*this).regions);
             let tables = &raw mut (*this).tables;
             for c in 0..NCLASSES {
@@ -413,8 +406,7 @@ impl Shared {
 
     /// The flag byte both fast paths load: [`PUSH_SCAN`], [`PUSH_ZERO`]
     /// and [`PUSH_PAC`]; 0 in the default configuration on a CPU without
-    /// pointer authentication. The per-CPU mode has no bit here
-    /// ([`Heap::percpu`]).
+    /// pointer authentication.
     #[inline(always)]
     pub fn push_flags(&self) -> u8 {
         self.push_flags
@@ -424,14 +416,6 @@ impl Shared {
     #[inline(always)]
     pub fn pac(&self) -> bool {
         self.push_flags & PUSH_PAC != 0
-    }
-
-    /// Whether the per-CPU mode is on (design 15). A slow-path question:
-    /// the fast paths carry no test for the mode (a heap in it keeps its
-    /// home caches `EMPTY`, [`Heap::percpu`]).
-    #[inline]
-    pub fn percpu_on(&self) -> bool {
-        self.percpu.on()
     }
 
     /// Whether pushes compare against the top four cache entries
@@ -685,13 +669,10 @@ impl Shared {
         Some(class)
     }
 
-    /// [`checked_slot`] without the arena test: the bit test alone. Test
-    /// only since the per-CPU push moved to the slow path (design 15; it
-    /// takes [`classify_free`] there): the test pins down what
-    /// [`checked_slot`]'s two halves each decide.
+    /// [`checked_slot`] without the arena test: the bit test alone, so a
+    /// test can pin down what [`checked_slot`]'s two halves each decide.
     ///
     /// [`checked_slot`]: Shared::checked_slot
-    /// [`classify_free`]: Shared::classify_free
     #[cfg(test)]
     pub(super) fn checked_slot_any(&self, p: *mut u8) -> Option<usize> {
         self.set_slot(p).map(|(class, _, _)| class)

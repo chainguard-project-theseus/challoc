@@ -175,31 +175,16 @@ pub(crate) fn shared_guarded() -> &'static Shared {
     shared_with_guards(Config { narenas: 1, pac_pointers: true, ..Config::DEFAULT }, true)
 }
 
-fn shared_with_guards(config: Config, guard_install: bool) -> &'static Shared {
-    shared_with_guards_mode(config, guard_install, false)
-}
-
-/// A `Shared` with the per-CPU mode allowed (on where the host's rseq
-/// has `mm_cid`; the tests check `percpu.on()` and skip otherwise).
-#[cfg(target_os = "linux")]
-pub(crate) fn shared_percpu() -> &'static Shared {
-    shared_with_guards_mode(
-        Config { narenas: 4, percpu_arena: crate::config::PercpuArena::Percpu, ..Config::DEFAULT },
-        true,
-        true,
-    )
-}
-
 /// [`shared_build`] with the PAC probe's real answer.
-pub(crate) fn shared_with_guards_mode(config: Config, guard_install: bool, percpu: bool) -> &'static Shared {
-    shared_build(config, guard_install, percpu, pac::available())
+pub(crate) fn shared_with_guards(config: Config, guard_install: bool) -> &'static Shared {
+    shared_build(config, guard_install, pac::available())
 }
 
 /// The builder every `Shared` of the heap tests goes through. `pac`
 /// stands in for the PAC probe: `false` on a host that has the
 /// extension builds the fallback (plain pointers) the Altra and every
 /// other Neoverse N1 take.
-pub(crate) fn shared_build(config: Config, guard_install: bool, percpu: bool, pac: bool) -> &'static Shared {
+pub(crate) fn shared_build(config: Config, guard_install: bool, pac: bool) -> &'static Shared {
     #[cfg(target_os = "linux")]
     let (sb, mb, hb) = {
         use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
@@ -224,7 +209,7 @@ pub(crate) fn shared_build(config: Config, guard_install: bool, percpu: bool, pa
         hb,
     );
     let b: &'static mut MaybeUninit<Shared> = Box::leak(Box::new(MaybeUninit::uninit()));
-    assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, config, guard_install, pac, percpu) });
+    assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, config, guard_install, pac) });
     unsafe { b.assume_init_ref() }
 }
 
@@ -2432,8 +2417,7 @@ fn others_nodes_iterate_newest_first_and_survive_freeing() {
     core::mem::forget(t);
 }
 
-/// The compaction probe's gate ([`Heap::probe_verdict`], shared by the
-/// thread and per-CPU scheduled pops): dense classes keep probing, a
+/// The compaction probe's gate ([`Heap::probe_verdict`]): dense classes keep probing, a
 /// fragmented class enters compaction (`compact_on` counted) unless
 /// ordinary refills claimed the gate's worth of slabs since the previous
 /// probe (`gate_refill` counted). The refill counter it returns is the
@@ -2470,16 +2454,13 @@ fn probe_verdict_applies_the_gate_and_records_it() {
     t.destroy();
 }
 
-/// The mode-to-mask rule has one home ([`CacheHeader::mask_for`]): the
-/// per-CPU volatile store and the thread store agree for every mode.
+/// The mode-to-mask rule has one home ([`CacheHeader::mask_for`]), and
+/// `set_mode` applies it for every mode.
 #[test]
-fn set_mode_volatile_derives_the_same_mask_as_set_mode() {
+fn set_mode_derives_the_mask() {
     for mode in [MODE_OFF, MODE_PROBE, MODE_COMPACT] {
         let mut a = CacheHeader::EMPTY;
-        let mut b = CacheHeader::EMPTY;
         a.set_mode(mode);
-        unsafe { CacheHeader::set_mode_volatile(&mut b, mode) };
-        assert_eq!((a.mode, a.compact_mask), (b.mode, b.compact_mask));
         let want = match mode {
             MODE_PROBE => PROBE_MASK,
             MODE_COMPACT => COMPACT_MASK,
@@ -2579,8 +2560,8 @@ fn a_huge_allocation_in_an_arena_that_does_not_exist_aborts() {
     shared().alloc_huge(300 * 1024, 16, 77);
 }
 
-/// `pop_fast` is the one body behind `alloc_fast`, `alloc_zeroed` and
-/// the per-CPU off-mode arm: same slot, same zero flag as the cache
+/// `pop_fast` is the one body behind `alloc_fast` and `alloc_zeroed`:
+/// same slot, same zero flag as the cache
 /// header says, `None` from an empty cache.
 #[test]
 fn pop_fast_pops_the_top_with_the_zero_flag() {
@@ -2612,7 +2593,7 @@ fn pop_fast_pops_the_top_with_the_zero_flag() {
 /// `checked_slot_any` is `checked_slot`'s bit test without the arena
 /// test: they agree on every pointer of the home arena and on anything
 /// that is not a live slot, and differ only for a live slot of another
-/// arena, which the per-CPU push takes and the thread push declines.
+/// arena, which the thread push declines.
 #[test]
 fn checked_slot_any_is_checked_slot_without_the_arena_test() {
     let s = shared();

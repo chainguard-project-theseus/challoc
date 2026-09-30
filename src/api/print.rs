@@ -24,7 +24,7 @@ use super::jemalloc::malloc_write;
 use super::mallctl::VERSION_STR;
 use crate::QUANTUM;
 use crate::arena::Arena;
-use crate::config::{INERT_KEYS, KEYS, Value};
+use crate::config::{INERT_KEYS, KEYS, PercpuArena, Value};
 use crate::heap::Shared;
 use crate::layout::{CLASSES, NBINS};
 use crate::purge;
@@ -178,7 +178,6 @@ macro_rules! head {
     (PREFAULT) => { "Prefault: " };
     (PREFAULT_FALSE) => { "prefault:false" };
     (PREFAULT_NO_THREAD) => { "prefault:true without background_thread" };
-    (PERCPU) => { "Per-CPU caches: " };
     (SLICE) => { "Slice extension: " };
     (ON) => { "on (" };
     (OFF) => { "off (" };
@@ -236,7 +235,6 @@ pub(crate) const LINES: &[Line] = &[
         forms: &[concat!(head!(OFF), head!(PREFAULT_FALSE), ")"), concat!(head!(OFF), head!(PREFAULT_NO_THREAD), ")"), head!(ON)],
         conditional: false,
     },
-    Line { prefix: head!(PERCPU), forms: &[head!(ON)], conditional: false },
     Line { prefix: head!(SLICE), forms: &[head!(ON), head!(OFF)], conditional: false },
     Line { prefix: head!(ARENAS), forms: &[], conditional: false },
     Line { prefix: head!(QUANTUM), forms: &[], conditional: false },
@@ -280,6 +278,8 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     for key in KEYS {
         let note = if key == &"thp" && shared.policy.thp_forced() {
             concat!(" (", head!(INERT), "; forced to never by a cgroup limit under 1 GiB)")
+        } else if key == &"percpu_arena" && shared.config.percpu_arena != PercpuArena::Disabled {
+            concat!(" (", head!(INERT), "; caches are per thread)")
         } else {
             ""
         };
@@ -302,7 +302,6 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     writeln!(out, concat!(head!(SEALED), "{} of {}"), super::sealed_ranges(), shared.regions.never_committed().1)?;
     writeln!(out, concat!(head!(BACKGROUND), "{}"), if purge::background::present() { head!(PRESENT) } else { head!(ABSENT) })?;
     prefault_line(out, shared)?;
-    percpu_line(out, shared)?;
     slice_line(out)?;
     writeln!(
         out,
@@ -885,36 +884,6 @@ mod exports {
     }
 }
 
-/// `Per-CPU caches:` (design 15): the mode's state, the id table, what is
-/// installed and cached, the rseq probe behind the decision, and a note
-/// when `percpu_arena:percpu` was asked for and the probe said no.
-fn percpu_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
-    let pc = &shared.percpu;
-    let probe = pc.probe();
-    if pc.on() {
-        let (headers, cached) = pc.snapshot();
-        writeln!(
-            out,
-            concat!(head!(PERCPU), head!(ON), "{} ids, {} headers installed, {} slots cached, {} sections aborted; rseq size {} offset {})"),
-            pc.ids(),
-            headers,
-            cached,
-            crate::rseq::aborts(),
-            probe.size,
-            probe.offset
-        )
-    } else {
-        writeln!(
-            out,
-            concat!(head!(PERCPU), "{} (rseq {}, size {}){}"),
-            pc.state().name(),
-            probe.verdict(),
-            probe.size,
-            if pc.forced() { "; percpu_arena:percpu requested, thread caches in use" } else { "" }
-        )
-    }
-}
-
 /// `Prefault:` (design 8.2, `purge::prefault`): off
 /// with the reason (the key, or the key without its thread), or on with
 /// the populate in use and the counters.
@@ -1058,7 +1027,6 @@ mod tests {
             head!(SEALED),
             head!(BACKGROUND),
             concat!(head!(PREFAULT), head!(OFF), head!(PREFAULT_FALSE), ")\n"),
-            concat!("\n", head!(PERCPU)),
             concat!("\n", head!(SLICE)),
             head!(ARENAS),
             concat!("\n", head!(QUANTUM)),

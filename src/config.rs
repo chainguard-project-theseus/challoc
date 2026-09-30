@@ -92,61 +92,26 @@ impl Thp {
     }
 }
 
-/// `percpu_arena` values (design 15): whether the
-/// caches and arenas are keyed by the running CPU's rseq `mm_cid` instead
-/// of by thread. The mode needs the runtime probe to pass (`rseq::probe`,
-/// checked at run time, never assumed from a header constant or a library
-/// version): glibc exports `__rseq_offset`, `__rseq_size` and
-/// `__rseq_flags` (2.35+) and the registered `__rseq_size` is at least 28,
-/// so the area covers the `mm_cid` field the kernel writes on 6.3+ with
-/// `CONFIG_SCHED_MM_CID` (glibc reports the kernel's feature size there
-/// since 2.41, docs/research.md). jemalloc's spellings are accepted as
-/// aliases (`disabled` is `off`, `phycpu` is `percpu`: the nearest mode, a
-/// concurrency id is not a physical CPU) so a conf string written against
-/// jemalloc, which this key used to accept with any value, still parses
-/// clean under `abort_conf`.
+/// `percpu_arena` values: jemalloc's key, accepted with jemalloc's three
+/// values so a conf string written against jemalloc parses clean under
+/// `abort_conf`, and read back through `opt.percpu_arena`. Nothing else
+/// reads it: caches are per thread whatever the value, and the report notes
+/// that when `percpu` or `phycpu` was asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PercpuArena {
-    /// The default: thread caches (`heap::PercpuState::OffAuto`, design 12
-    /// and 15). The per-CPU mode is the opt-in below; nothing is reported.
-    Auto,
-    /// The request is forced: on when the probe passes; when it fails the
-    /// allocator still falls back to thread caches and the feature report
-    /// notes that `percpu_arena:percpu` was asked for and not available.
+    /// jemalloc's default.
+    Disabled,
     Percpu,
-    /// Thread caches whatever the probe says, no dispatch: byte for byte
-    /// the allocator without the key.
-    Off,
+    Phycpu,
 }
 
 impl PercpuArena {
     pub const fn name(self) -> &'static str {
         match self {
-            PercpuArena::Auto => "auto",
+            PercpuArena::Disabled => "disabled",
             PercpuArena::Percpu => "percpu",
-            PercpuArena::Off => "off",
+            PercpuArena::Phycpu => "phycpu",
         }
-    }
-
-    /// Whether the per-CPU mode runs, given the probe's verdict
-    /// (`mm_cid_usable`: the registered `__rseq_size` covers `mm_cid`).
-    /// `percpu` follows the probe (a forced request cannot read a field
-    /// the kernel does not write); `off` never runs. `auto` answers as
-    /// `percpu` here, but `heap::Percpu::build` returns thread caches for
-    /// `auto` before asking, so that arm is reached by the unit tests only.
-    #[inline]
-    pub const fn enabled(self, mm_cid_usable: bool) -> bool {
-        match self {
-            PercpuArena::Auto | PercpuArena::Percpu => mm_cid_usable,
-            PercpuArena::Off => false,
-        }
-    }
-
-    /// Whether a failed probe is worth a note in the report: only for the
-    /// explicit request, `auto` falls back silently.
-    #[inline]
-    pub const fn forced(self) -> bool {
-        matches!(self, PercpuArena::Percpu)
     }
 }
 
@@ -219,12 +184,8 @@ pub struct Config {
     /// to the least-loaded automatic arena (`arena.rs`), so a program with
     /// `t` live threads ever touches `min(t, narenas)` of them.
     pub narenas: u32,
-    /// Per-CPU caches and arenas keyed by rseq `mm_cid` (design 15,
-    /// [`PercpuArena`]): `auto`, the default, is thread caches; `percpu`
-    /// turns the mode on where the runtime probe allows and otherwise keeps
-    /// thread caches with a note in the report; `off` is thread caches with
-    /// no dispatch. Read at init through this field, as `thp`
-    /// and `pac_pointers` are; the probe itself lives with the heap.
+    /// jemalloc's `percpu_arena` ([`PercpuArena`]): accepted for
+    /// compatibility; caches are per thread whatever the value.
     pub percpu_arena: PercpuArena,
     pub tcache: bool,
     /// Largest class size whose slots go through thread caches; larger
@@ -321,7 +282,7 @@ impl Config {
         dirty_decay_ms: 10_000,
         muzzy_decay_ms: 0,
         narenas: 0,
-        percpu_arena: PercpuArena::Auto,
+        percpu_arena: PercpuArena::Disabled,
         tcache: true,
         tcache_max: DEFAULT_TCACHE_MAX,
         tcache_nslots_small_max: MAX_CAP,
@@ -586,16 +547,13 @@ pub const TABLE: &[Key] = &[
         read: |c| Value::Uint(c.narenas as u64),
     },
     Key {
-        // jemalloc's `phycpu` and `disabled` spellings are aliases.
         name: "percpu_arena",
         parse: |c, k, v| {
             c.percpu_arena = pick(
                 &[
-                    ("auto", PercpuArena::Auto),
+                    ("disabled", PercpuArena::Disabled),
                     ("percpu", PercpuArena::Percpu),
-                    ("phycpu", PercpuArena::Percpu),
-                    ("off", PercpuArena::Off),
-                    ("disabled", PercpuArena::Off),
+                    ("phycpu", PercpuArena::Phycpu),
                 ],
                 k,
                 v,
@@ -1159,7 +1117,7 @@ mod tests {
         assert!(!d.background_thread);
         assert_eq!(d.dirty_decay_ms, 10_000);
         assert_eq!(d.narenas, 0);
-        assert_eq!(d.percpu_arena, PercpuArena::Auto, "thread caches; `percpu` is the opt-in");
+        assert_eq!(d.percpu_arena, PercpuArena::Disabled, "jemalloc's default");
         assert_eq!(d.slice_ext, SliceExt::Auto, "on where the slice extension probe passes");
         assert!(d.tcache);
         assert_eq!(d.tcache_max, 32 * 1024);
@@ -1309,44 +1267,27 @@ mod tests {
         assert_eq!(clean("thp:auto,abort_conf:true").thp, Thp::Auto);
     }
 
-    /// `percpu_arena`: the three values, jemalloc's spellings as aliases,
-    /// anything else reported and left at the default, and the helpers
-    /// the heap's init reads.
+
+    /// `percpu_arena`: jemalloc's three values, anything else reported and
+    /// left at the default.
     #[test]
     fn percpu_arena_values() {
-        assert!(KEYS.contains(&"percpu_arena"), "a real key, not an ignored jemalloc one");
+        assert!(KEYS.contains(&"percpu_arena"), "a real key, readable through opt.percpu_arena");
         for (value, want) in [
-            ("auto", PercpuArena::Auto),
+            ("disabled", PercpuArena::Disabled),
             ("percpu", PercpuArena::Percpu),
-            ("off", PercpuArena::Off),
-            ("phycpu", PercpuArena::Percpu),
-            ("disabled", PercpuArena::Off),
+            ("phycpu", PercpuArena::Phycpu),
         ] {
             let cfg = clean(&std::format!("percpu_arena:{value},abort_conf:true"));
             assert_eq!(cfg.percpu_arena, want, "{value}");
             assert_eq!(cfg.get(b"percpu_arena"), Some(Value::Str(want.name())), "{value}");
+            assert_eq!(want.name(), value);
             assert!(cfg.abort_conf);
         }
-        rejects_bad_values("percpu_arena", &["true", "false", "1", "on", "Auto", "PERCPU", "", "percpux"]);
+        rejects_bad_values("percpu_arena", &["true", "false", "1", "on", "auto", "off", "PERCPU", "", "percpux"]);
         // The last pair wins, as for every key.
-        assert_eq!(clean("percpu_arena:percpu,percpu_arena:off").percpu_arena, PercpuArena::Off);
+        assert_eq!(clean("percpu_arena:percpu,percpu_arena:disabled").percpu_arena, PercpuArena::Disabled);
         assert_eq!(clean("percpu_arena:\"percpu\"").percpu_arena, PercpuArena::Percpu);
-        // The helpers: `auto` and `percpu` follow the probe, `off` never
-        // runs; only `percpu` reports a failed probe.
-        for (mode, probe_ok, on) in [
-            (PercpuArena::Auto, true, true),
-            (PercpuArena::Auto, false, false),
-            (PercpuArena::Percpu, true, true),
-            (PercpuArena::Percpu, false, false),
-            (PercpuArena::Off, true, false),
-            (PercpuArena::Off, false, false),
-        ] {
-            assert_eq!(mode.enabled(probe_ok), on, "{}.enabled({probe_ok})", mode.name());
-        }
-        assert!(PercpuArena::Percpu.forced() && !PercpuArena::Auto.forced() && !PercpuArena::Off.forced());
-        for mode in [PercpuArena::Auto, PercpuArena::Percpu, PercpuArena::Off] {
-            assert_eq!(clean(&std::format!("percpu_arena:{}", mode.name())).percpu_arena, mode);
-        }
     }
 
     /// `slice_ext`: the three values, anything else reported and left at
@@ -1554,11 +1495,10 @@ mod tests {
         assert!(cfg.background_thread && cfg.abort_conf);
         assert_eq!(cfg.dirty_decay_ms, 0);
         assert_eq!(cfg.narenas, 2);
-        // jemalloc's own `percpu_arena` spellings (the key used to be
-        // accepted with any value) still parse clean under `abort_conf`.
+        // jemalloc's own `percpu_arena` values parse clean under `abort_conf`.
         let cfg = clean("percpu_arena:disabled,abort_conf:true");
-        assert_eq!(cfg.percpu_arena, PercpuArena::Off);
-        assert_eq!(clean("percpu_arena:phycpu,narenas:4").percpu_arena, PercpuArena::Percpu);
+        assert_eq!(cfg.percpu_arena, PercpuArena::Disabled);
+        assert_eq!(clean("percpu_arena:phycpu,narenas:4").percpu_arena, PercpuArena::Phycpu);
     }
 
     #[test]
@@ -1648,7 +1588,8 @@ mod tests {
                 Value::Uint(u) => std::format!("{}", if u == 0 { 2 } else { u * 2 }),
                 Value::Size(n) => std::format!("{}", if n == 0 { 2 } else { n * 2 }),
                 Value::Str(s) => match key.name {
-                    "percpu_arena" | "slice_ext" => "off".into(),
+                    "percpu_arena" => "percpu".into(),
+                    "slice_ext" => "off".into(),
                     "thp" => "always".into(),
                     _ => panic!("{}: a string key with no test value ({s})", key.name),
                 },
@@ -1669,8 +1610,6 @@ mod tests {
         }
         // The aliases of the named-value keys: one entry, several spellings.
         assert_eq!(clean("thp:default").thp, clean("thp:never").thp);
-        assert_eq!(clean("percpu_arena:phycpu").percpu_arena, clean("percpu_arena:percpu").percpu_arena);
-        assert_eq!(clean("percpu_arena:disabled").percpu_arena, clean("percpu_arena:off").percpu_arena);
     }
 
     #[test]
