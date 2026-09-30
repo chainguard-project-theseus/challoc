@@ -6,9 +6,9 @@
 //! answer from the vector the kernel put on the initial stack, saved at
 //! startup: no syscall, no allocation, safe from within `malloc`, which is
 //! how glibc's own malloc learns the page size (`GLRO(dl_pagesize)`). The
-//! readers are `sys::features` (`AT_PAGESZ`), `sys::cpu` and `sys::pac`
-//! (`AT_HWCAP`, `AT_HWCAP2`); `config.rs` declares its own `getauxval` for
-//! `AT_SECURE` and keeps that constant beside it.
+//! readers are `sys::features` (`AT_PAGESZ`) and `sys::pac` (`AT_HWCAP`);
+//! `config.rs` declares its own `getauxval` for `AT_SECURE` and keeps that
+//! constant beside it.
 
 /// `AT_NULL`: end of the vector.
 pub const AT_NULL: usize = 0;
@@ -16,8 +16,6 @@ pub const AT_NULL: usize = 0;
 pub const AT_PAGESZ: usize = 6;
 /// `AT_HWCAP`: the first arm64 hardware-capability word (`HWCAP_*`).
 pub const AT_HWCAP: usize = 16;
-/// `AT_HWCAP2`: the second arm64 hardware-capability word (`HWCAP2_*`).
-pub const AT_HWCAP2: usize = 26;
 /// `AT_RSEQ_FEATURE_SIZE`: the bytes of `struct rseq` the kernel writes
 /// (6.3+); read by the tests, glibc uses it to size its registration.
 #[cfg(all(test, target_os = "linux"))]
@@ -45,7 +43,6 @@ mod linux_tests {
         assert_eq!(AT_NULL as u64, libc::AT_NULL);
         assert_eq!(AT_PAGESZ as u64, libc::AT_PAGESZ);
         assert_eq!(AT_HWCAP as u64, libc::AT_HWCAP);
-        assert_eq!(AT_HWCAP2 as u64, libc::AT_HWCAP2);
         // SAFETY: `getauxval` has no preconditions.
         assert_eq!(getauxval(AT_PAGESZ), unsafe { libc::getauxval(libc::AT_PAGESZ) } as usize);
         assert_eq!(getauxval(AT_HWCAP), unsafe { libc::getauxval(libc::AT_HWCAP) } as usize);
@@ -65,11 +62,9 @@ mod linux_tests {
         // glibc's x86 startup overwrites its `AT_HWCAP` with a word of its
         // own (`HWCAP_X86_64`, the AVX-512 usability bits), so `getauxval`
         // and the kernel's vector agree only on aarch64; the crate reads
-        // `AT_HWCAP` through `getauxval` on aarch64 alone (cpu.rs, pac.rs)
-        // and `cpuid` on x86_64.
+        // `AT_HWCAP` through `getauxval` on aarch64 alone (pac.rs).
         assert!(found.contains_key(&AT_HWCAP), "AT_HWCAP is in every Linux vector");
         #[cfg(target_arch = "aarch64")]
         assert_eq!(found.get(&AT_HWCAP).copied(), Some(getauxval(AT_HWCAP)));
-        assert_eq!(found.get(&AT_HWCAP2).copied().unwrap_or(0), getauxval(AT_HWCAP2));
     }
 }

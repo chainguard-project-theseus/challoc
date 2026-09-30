@@ -1,5 +1,5 @@
 //! Kernel feature probing (design.md section 10, step 1) and the feature
-//! line that reports it together with the CPU report of `sys::cpu`.
+//! line that reports it.
 //!
 //! Every kernel feature the allocator can use is tried once, at init, on a
 //! scratch page, and the outcome is recorded in a [`Features`] value. Nothing
@@ -22,7 +22,6 @@
 use core::fmt;
 
 use super::auxv::{AT_NULL, AT_PAGESZ};
-use super::cpu::Cpu;
 use super::{Trailing, parse_decimal, yn};
 
 /// Find `AT_PAGESZ` in a raw auxiliary vector (`/proc/self/auxv` contents:
@@ -357,8 +356,6 @@ pub enum Value {
     Sizes(u64),
     /// `1 << lg` bytes as `64K`, `2M`, `1G`.
     LgSize(u8),
-    /// A cache size in bytes as `<n>M`, `<n>K` or `<n>`, `unknown` for 0.
-    Cache(u32),
 }
 
 impl fmt::Display for Value {
@@ -372,16 +369,12 @@ impl fmt::Display for Value {
             Value::Target(ProcessMadvise::Pidfd(fd)) => write!(f, "pidfd:{fd}"),
             Value::Sizes(set) => write!(f, "{}", SizeSet(set)),
             Value::LgSize(lg) => write!(f, "{}", LgSize(lg)),
-            Value::Cache(0) => f.write_str("unknown"),
-            Value::Cache(n) if n % (1 << 20) == 0 => write!(f, "{}M", n >> 20),
-            Value::Cache(n) if n % (1 << 10) == 0 => write!(f, "{}K", n >> 10),
-            Value::Cache(n) => write!(f, "{n}"),
         }
     }
 }
 
 /// `key=value` pairs separated by single spaces: the shape of the whole
-/// line and of each part that prints on its own (`Thp`, `Cpu`).
+/// line and of each part that prints on its own (`Thp`).
 pub fn write_words(f: &mut fmt::Formatter<'_>, words: impl Iterator<Item = (&'static str, Value)>) -> fmt::Result {
     for (i, (key, value)) in words.enumerate() {
         if i > 0 {
@@ -561,20 +554,21 @@ pub struct Features {
     /// the process uses it (`slice.rs` decides,
     /// this is the report of it).
     pub slice_ext: SliceExt,
-    /// The CPU report (design.md section 17): reported, not acted on.
-    pub cpu: Cpu,
+    /// Pointer authentication (`sys::pac::available`, `HWCAP_PACA` and
+    /// `HWCAP_PACG`): what `pac_pointers` can turn on.
+    pub pac: bool,
 }
 
 impl Features {
-    /// Every key of the line in order: the kernel probes, then the CPU
-    /// report (`Cpu::words`). Values are `yes`/`no` except `page_size`,
+    /// Every key of the line in order: the kernel probes, then `pac`.
+    /// Values are `yes`/`no` except `page_size`,
     /// `process_madvise` (`no`, `pidfd_self`, or `pidfd:<fd>`), the THP
     /// keys (`thp=never|madvise|always|none`, `mthp=64K,2M|none`,
     /// `collapse=unprobed|no|2M`), `thp_except_advised` (`yes`, `no`,
     /// `inherited`), `rseq_size` (a byte count, `0` without a
     /// registration), `slice_ext` (`on`, `available`, `prctl-failed`,
-    /// `kernel-disabled`, `no-slice_ctrl`, `no-rseq`) and the cache sizes
-    /// (`64K`, `2M`, `unknown`). `tests/c/features.c` lists the same keys.
+    /// `kernel-disabled`, `no-slice_ctrl`, `no-rseq`).
+    /// `tests/c/features.c` lists the same keys.
     pub fn words(&self) -> impl Iterator<Item = (&'static str, Value)> + '_ {
         [
             ("page_size", Value::Num(self.page_size as u64)),
@@ -590,7 +584,7 @@ impl Features {
         .chain([("thp_except_advised", Value::Word(self.thp_disable.name()))])
         .chain(rseq_words(&self.rseq))
         .chain([("slice_ext", Value::Word(self.slice_ext.name()))])
-        .chain(self.cpu.words())
+        .chain([("pac", Value::YesNo(self.pac))])
     }
 }
 
@@ -613,11 +607,9 @@ pub struct FeatureLine {
 
 impl FeatureLine {
     /// Room for the line and its NUL; the longest possible line (every
-    /// probe `yes`, `pidfd:2147483647`, byte-exact cache sizes, every THP
-    /// size listed, the longest `thp_except_advised` and `slice_ext`
-    /// words) is under `CAP - 64` bytes (`feature_line_fits`: 462 with the
-    /// `populate_write`, `slice_ext` and `thp_except_advised` keys; 512
-    /// held 414 before them).
+    /// probe `yes`, `pidfd:2147483647`, every THP size listed, the longest
+    /// `thp_except_advised` and `slice_ext` words) is under `CAP - 64`
+    /// bytes (`feature_line_fits`).
     pub const CAP: usize = 640;
 
     /// Format `features` into a fresh line. A line that did not fit is cut,
@@ -659,7 +651,7 @@ pub use linux::*;
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{AT_PAGESZ, Collapse, Cpu, Features, ProcessMadvise, Thp, ThpDisable, page_size_from_auxv};
+    use super::{AT_PAGESZ, Collapse, Features, ProcessMadvise, Thp, ThpDisable, page_size_from_auxv};
     use crate::sys::auxv::getauxval;
     use crate::sys::{
         self, IoVec, MADV_COLLAPSE, MADV_DONTNEED, MADV_FREE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE,
@@ -903,7 +895,6 @@ mod linux {
         pub fn probe() -> Features {
             let page_size = page_size();
             let (process_madvise, process_madvise_free) = probe_process_madvise(page_size);
-            let cpu = Cpu::probe(page_size);
             Features {
                 page_size,
                 page_shift: page_size.trailing_zeros(),
@@ -919,7 +910,7 @@ mod linux {
                 // The kernel's answer alone: `config::load` has not run
                 // yet, so nothing is enabled; `note_slice_ext` follows.
                 slice_ext: super::SliceExt::from_probe(crate::slice::probe().verdict()),
-                cpu,
+                pac: crate::sys::pac::available(),
             }
         }
 
@@ -1115,20 +1106,11 @@ mod tests {
     }
 
     use crate::rseq::Probe;
-    use crate::sys::cpu::{Arm, CacheSource, Caches, Cpu, Isa, X86};
 
     /// What `rseq::probe` reads on a host whose glibc registered `size`
     /// bytes at `offset` (registered when the size is not 0).
     fn rseq_probe(size: u32, offset: isize) -> Probe {
         Probe { present: true, size, flags: 0, offset, registered: size != 0 }
-    }
-
-    fn axion_cpu() -> Cpu {
-        Cpu {
-            isa: Isa::Arm(Arm { mte: false, mte3: false, pac: true, lse: true, lse2: true, bti: true, sve: true }),
-            caches: Caches { line: 64, l1d: 64 * 1024, l2: 2 * 1024 * 1024 },
-            cache_source: CacheSource::Sysfs,
-        }
     }
 
     #[test]
@@ -1146,14 +1128,13 @@ mod tests {
             thp_disable: ThpDisable::Yes,
             rseq: rseq_probe(33, 192),
             slice_ext: SliceExt::KernelDisabled,
-            cpu: axion_cpu(),
+            pac: true,
         };
         let s = std::format!("{f}");
         assert_eq!(
             s,
             "page_size=4096 guard_install=no mseal=yes process_madvise=pidfd:7 process_madvise_free=yes anon_name=no populate_write=yes \
-             thp=madvise mthp=64K,2M collapse=unprobed thp_except_advised=yes rseq=yes rseq_size=33 mm_cid=yes slice_ext=kernel-disabled \
-             mte=no mte3=no pac=yes lse=yes lse2=yes bti=yes sve=yes cacheline=64 l1d=64K l2=2M"
+             thp=madvise mthp=64K,2M collapse=unprobed thp_except_advised=yes rseq=yes rseq_size=33 mm_cid=yes slice_ext=kernel-disabled pac=yes"
         );
         // Before 6.18 the flag is refused; a parent's policy is kept.
         let f = Features { thp_disable: ThpDisable::No, ..f };
@@ -1165,7 +1146,7 @@ mod tests {
         // The Mac's Docker VM (linuxkit 6.10): registered, no `mm_cid`, no
         // `slice_ctrl`.
         let f = Features { rseq: rseq_probe(20, 192), slice_ext: SliceExt::NoSliceCtrl, ..f };
-        assert!(std::format!("{f}").contains(" collapse=unprobed thp_except_advised=yes rseq=yes rseq_size=20 mm_cid=no slice_ext=no-slice_ctrl mte="));
+        assert!(std::format!("{f}").contains(" collapse=unprobed thp_except_advised=yes rseq=yes rseq_size=20 mm_cid=no slice_ext=no-slice_ctrl pac=yes"));
         let f = Features { rseq: Probe::NONE, slice_ext: SliceExt::NoRseq, ..f };
         assert!(std::format!("{f}").contains(" rseq=no rseq_size=0 mm_cid=no slice_ext=no-rseq "));
         // A 7.0.14 built with the option (a GCE C4): on under the
@@ -1204,7 +1185,7 @@ mod tests {
             thp_disable: ThpDisable::No,
             rseq: Probe::NONE,
             slice_ext: SliceExt::NoRseq,
-            cpu: axion_cpu(),
+            pac: true,
         };
         let line = FeatureLine::build(&f);
         assert_eq!(line.as_str(), std::format!("{f}"));
@@ -1218,71 +1199,50 @@ mod tests {
 
     #[test]
     fn feature_line_fits() {
-        // The longest line either architecture can produce.
-        let x86 = Cpu {
-            isa: Isa::X86(X86 {
-                lam: true,
-                uai: true,
-                la57: true,
-                la57_enabled: true,
-                cldemote: true,
-                waitpkg: true,
-                erms: true,
-                fsrm: true,
-                avx512f: true,
-            }),
-            caches: Caches { line: 4_000_000_001, l1d: 4_000_000_001, l2: 4_000_000_001 },
-            cache_source: CacheSource::Cpuid,
+        // The longest line: `pac=yes` is the longer word.
+        let f = Features {
+            page_size: 65536,
+            page_shift: 16,
+            guard_install: true,
+            mseal: true,
+            process_madvise: ProcessMadvise::Pidfd(i32::MAX),
+            process_madvise_free: true,
+            anon_name: true,
+            populate_write: true,
+            // A 64 KiB-page kernel listing every size from 128K to 512M.
+            thp: Thp {
+                enabled: Some(ThpSetting::Madvise),
+                lg_pmd: 29,
+                listed: ((1u64 << 30) - 1) & !((1u64 << 17) - 1),
+                always: ((1u64 << 30) - 1) & !((1u64 << 17) - 1),
+                madvise: 0,
+                collapse: Collapse::Yes(29),
+            },
+            // The longest words.
+            thp_disable: ThpDisable::Inherited(u8::MAX),
+            rseq: Probe { present: true, size: u32::MAX, flags: u32::MAX, offset: isize::MIN, registered: true },
+            slice_ext: SliceExt::KernelDisabled,
+            pac: true,
         };
-        for cpu in [x86, axion_cpu()] {
-            let f = Features {
-                page_size: 65536,
-                page_shift: 16,
-                guard_install: true,
-                mseal: true,
-                process_madvise: ProcessMadvise::Pidfd(i32::MAX),
-                process_madvise_free: true,
-                anon_name: true,
-                populate_write: true,
-                // A 64 KiB-page kernel listing every size from 128K to 512M.
-                thp: Thp {
-                    enabled: Some(ThpSetting::Madvise),
-                    lg_pmd: 29,
-                    listed: ((1u64 << 30) - 1) & !((1u64 << 17) - 1),
-                    always: ((1u64 << 30) - 1) & !((1u64 << 17) - 1),
-                    madvise: 0,
-                    collapse: Collapse::Yes(29),
-                },
-                // The longest words.
-                thp_disable: ThpDisable::Inherited(u8::MAX),
-                rseq: Probe { present: true, size: u32::MAX, flags: u32::MAX, offset: isize::MIN, registered: true },
-                slice_ext: SliceExt::KernelDisabled,
-                cpu,
-            };
-            let s = std::format!("{f}");
-            assert!(s.len() < FeatureLine::CAP - 64, "{} bytes: {s}", s.len());
-            assert_eq!(FeatureLine::build(&f).as_str(), s);
-            // The table is what the line is made of: the same bytes, word
-            // by word.
-            let by_words: usize = f.words().map(|(k, v)| k.len() + 1 + std::format!("{v}").len() + 1).sum::<usize>() - 1;
-            assert_eq!(by_words, s.len());
-        }
+        let s = std::format!("{f}");
+        assert!(s.len() < FeatureLine::CAP - 64, "{} bytes: {s}", s.len());
+        assert_eq!(FeatureLine::build(&f).as_str(), s);
+        // The table is what the line is made of: the same bytes, word
+        // by word.
+        let by_words: usize = f.words().map(|(k, v)| k.len() + 1 + std::format!("{v}").len() + 1).sum::<usize>() - 1;
+        assert_eq!(by_words, s.len());
     }
 
-    /// The key table: every key of `tests/c/features.c`, once, in order,
-    /// the kernel probes first and this architecture's CPU keys after;
+    /// The key table: every key of `tests/c/features.c`, once, in order;
     /// every value one token. Adding a feature means one row here, one
     /// in `features.c`, and the probe.
     #[test]
     fn words_are_the_key_table() {
         let kernel = [
             "page_size", "guard_install", "mseal", "process_madvise", "process_madvise_free", "anon_name", "populate_write",
-            "thp", "mthp", "collapse", "thp_except_advised", "rseq", "rseq_size", "mm_cid", "slice_ext",
+            "thp", "mthp", "collapse", "thp_except_advised", "rseq", "rseq_size", "mm_cid", "slice_ext", "pac",
         ];
-        let arm = ["mte", "mte3", "pac", "lse", "lse2", "bti", "sve", "cacheline", "l1d", "l2"];
-        let x86 = ["lam", "uai", "la57", "la57_enabled", "cldemote", "waitpkg", "erms", "fsrm", "avx512f", "cacheline", "l1d", "l2"];
-        let x86_cpu = Cpu { isa: Isa::X86(X86::default()), caches: Caches::UNKNOWN, cache_source: CacheSource::None };
-        for (cpu, cpu_keys) in [(axion_cpu(), &arm[..]), (x86_cpu, &x86[..])] {
+        for pac in [true, false] {
             let f = Features {
                 page_size: 4096,
                 page_shift: 12,
@@ -1296,11 +1256,10 @@ mod tests {
                 thp_disable: ThpDisable::No,
                 rseq: rseq_probe(33, 192),
                 slice_ext: SliceExt::Available,
-                cpu,
+                pac,
             };
             let keys: std::vec::Vec<&str> = f.words().map(|(k, _)| k).collect();
-            let want: std::vec::Vec<&str> = kernel.iter().chain(cpu_keys).copied().collect();
-            assert_eq!(keys, want);
+            assert_eq!(keys, kernel);
             let mut seen = std::collections::BTreeSet::new();
             for (k, v) in f.words() {
                 assert!(seen.insert(k), "{k} twice");
@@ -1309,7 +1268,6 @@ mod tests {
             }
             let joined: std::vec::Vec<std::string::String> = f.words().map(|(k, v)| std::format!("{k}={v}")).collect();
             assert_eq!(std::format!("{f}"), joined.join(" "));
-            assert_eq!(std::format!("{}", f.cpu), joined[kernel.len()..].join(" "));
             assert_eq!(std::format!("{}", f.thp), joined[7..10].join(" "));
         }
     }

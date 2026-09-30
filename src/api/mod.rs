@@ -204,10 +204,8 @@ pub fn feature_line() -> &'static str {
 
 /// `challoc_features()`: the feature report as one NUL-terminated line of
 /// `key=value` pairs (design.md sections 16 and 17): the kernel probes
-/// (`page_size`, `guard_install`, `mseal`, `process_madvise`, `anon_name`)
-/// then the CPU (`mte`, `pac`, `lse`, `lse2`, `bti`, `sve` on arm64; `lam`,
-/// `uai`, `la57`, `la57_enabled`, `cldemote`, `waitpkg`, `erms`, `fsrm`, `avx512f`
-/// on x86_64; `cacheline`, `l1d`, `l2` on both). The string is static, built
+/// (`page_size`, `guard_install`, `mseal`, `process_madvise`, `anon_name`,
+/// ...) then `pac`. The string is static, built
 /// once at init without allocating, and identical to the `Kernel and CPU
 /// features:` line of `malloc_stats_print`. Initialises the allocator if
 /// needed.
@@ -303,8 +301,7 @@ fn init() {
     // SAFETY: the statics are written once here, before `READY` is
     // published, and `regions` are live reservations this process owns.
     unsafe {
-        let pac = matches!(features.cpu.isa, crate::sys::cpu::Isa::Arm(a) if a.pac) && crate::sys::pac::available();
-        let ok = Shared::init((*SHARED.0.get()).as_mut_ptr(), regions, config, features.guard_install, pac, true);
+        let ok = Shared::init((*SHARED.0.get()).as_mut_ptr(), regions, config, features.guard_install, features.pac, true);
         if !ok {
             sys::abort("metadata region too small for the allocator tables");
         }
@@ -455,7 +452,7 @@ mod tests {
         assert_eq!(s, std::format!("{}", features()));
         assert_eq!(s, feature_line());
         assert!(s.starts_with("page_size="), "{s}");
-        assert!(s.contains(" cacheline="), "{s}");
+        assert!(s.ends_with(" pac=yes") || s.ends_with(" pac=no"), "{s}");
         assert!(!s.contains('\n'));
         for kv in s.split(' ') {
             let (k, v) = kv.split_once('=').unwrap_or_else(|| panic!("`{kv}` in {s}"));

@@ -12,7 +12,6 @@
 
 pub mod auxv;
 pub mod cgroup;
-pub mod cpu;
 pub mod errno;
 pub mod features;
 pub mod pac;

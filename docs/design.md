@@ -1230,10 +1230,8 @@ Init must not call anything that allocates. Steps, in the order
    `hugepages-8kB` on 7.0, or not at all, is absent; a kernel before 6.8
    lists the PMD size alone under the top-level setting), `inherit`
    resolved through the top level, about ten sysfs reads (`sys::features`,
-   plan Phase 2.5 task 9). Then the CPU report
-   (`sys::cpu`, section 17): `AT_HWCAP`/`AT_HWCAP2` and `CTR_EL0` on arm64,
-   `cpuid` and a hinted `mmap` above 2^47 on x86_64, the sysfs cache files
-   where the registers do not give the sizes. The whole probe is formatted
+   plan Phase 2.5 task 9). Then pointer authentication (`AT_HWCAP`,
+   `sys::pac`, section 17). The whole probe is formatted
    once into the static feature line that `challoc_features()` returns.
 2. Parse configuration (section 12). This happens before anything is
    reserved so that `abort_conf` aborts with nothing mapped; it reads only
@@ -2391,16 +2389,13 @@ protocol as stated passes every scenario.
   `MADV_COLLAPSE` probe, `unprobed` under `thp:never`, whether the kernel
   takes `PR_THP_DISABLE_EXCEPT_ADVISED` (6.18, section 17), glibc's rseq
   registration with whether it covers `mm_cid`, section 15, and the
-  kernel's answer for the time slice extension, section 17) then the CPU (section 17;
-  `mte=no mte3=no pac=yes lse=yes lse2=yes bti=yes sve=yes` on arm64,
-  `lam=no uai=no la57=yes la57_enabled=yes cldemote=yes waitpkg=no erms=yes
-  fsrm=yes avx512f=yes` on x86_64, then `cacheline=64 l1d=64K l2=2M` on
-  both, `unknown` where no source had a figure). The string is static,
+  kernel's answer for the time slice extension, section 17) then `pac=yes`
+  or `pac=no` (pointer authentication, section 17). The string is static,
   built once at init without allocating (rebuilt in a fork child, whose
   purge backend is re-probed), and byte-identical to the `Kernel and CPU
   features:` line of `malloc_stats_print`. Calling it initialises the
   allocator. Values are `yes`/`no` for bits, so a script can `grep -q
-  'mte=yes'`; keys are only ever added, never renamed.
+  'pac=yes'`; keys are only ever added, never renamed.
 
 ## 17. Floor and ceiling
 
@@ -2425,17 +2420,8 @@ runs on every row.
 | PSI triggers on `memory.pressure` | kernel 6.4 (unprivileged), cgroup2 mounted writable | the background thread arms a trigger and reacts to pressure at once (section 11) | sample `memory.current` on the tick |
 | rseq `mm_cid` (`rseq`, `rseq_size`, `mm_cid`) | kernel 6.3 (`CONFIG_RSEQ`, `CONFIG_SCHED_MM_CID`) reporting `AT_RSEQ_FEATURE_SIZE >= 28`, glibc 2.35+'s registered area (`__rseq_size`, `__rseq_offset`, `__rseq_flags`, read from the weak symbols at init, and the area's own `cpu_id` for the fact of registration; `rseq::probe` for both the mode and the report's `rseq=` words; `__rseq_size >= 28` is the gate) | the per-CPU mode (section 15, plan Phase 2.5 task 8): caches and arenas keyed by the running thread's concurrency id, pop and push in rseq critical sections, behind `percpu_arena:percpu` (the opt-in; `auto`, the default, is thread caches); the cost and the default decision are in section 15; `rseq=yes rseq_size=33 mm_cid=yes` on the 7.0 GCE VMs | thread caches (`percpu_arena:off`, `double_free_scan:true`, or `rseq=yes rseq_size=20 mm_cid=no` as on the Mac's 6.10 linuxkit VM, `rseq=no rseq_size=0` without a registration: `GLIBC_TUNABLES=glibc.pthread.rseq=0`, no `CONFIG_RSEQ`, a libc without the symbols); `percpu` says so in the report |
 | Transparent huge pages (`thp`, `mthp`, `collapse`) | any kernel with `CONFIG_TRANSPARENT_HUGEPAGE`; the per-size `hugepages-<n>kB` knobs since 6.8; `MADV_COLLAPSE` since 6.1 | off by default (`thp:never`: byte for byte the allocator without the key on the fast paths, plus one `MADV_NOHUGEPAGE` each on the class superblock and the metadata reservation at init (plan Phase 2.5 task 16, `thp::advise_reservation` from `layout::Regions::reserve`, and again from `force_never`), a VMA flag every later split inherits, so that on a host whose global mode is `always` (Chainguard OS ships `always` with the 2 MiB size on `inherit`; Debian's kernels boot `always`) no slab region of challoc's gets a huge page; the huge region is not advised and follows the host's policy (the 2026-09-20 decision, option (d) of `bench/results/2026-09-20-aarch64-cgos-thp-ab.md`: `never` is the slab regions' RSS discipline, and a huge run is a whole allocation the program asked for, which takes 2 MiB pages on an `always` host as jemalloc's large extents do; advising it too cost the Valkey model 10 points of `valkey1` on Chainguard OS, the 32 MiB of tables it keeps in huge runs, for no RSS gain on that heap). The both-ways test `tests/c/thp.c never` reads the global mode from sysfs, checks `nh` on the class region and no `nh` on the huge run on every kernel with THP, `stats.thp.nohuge_ranges` 2, and, on an `always` host, `AnonHugePages` 0 kB and `THPeligible` 0 on the class region after 8 MiB of small blocks and `THPeligible` 1 with `AnonHugePages` back on an 8 MiB huge run; the before/after numbers on the 7.0 VM with the global mode set to `always` are in `bench/results/2026-09-19-lane-b-floor-fixes.md`, the same-host A/B of the four settings on Chainguard OS in `2026-09-20-aarch64-cgos-thp-ab.md`. `auto` and `always` issue no `MADV_NOHUGEPAGE`: on an `always` host their unadvised regions stay eligible for the host's PMD pages unless the process-wide `prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED)` of 6.18 (`docs/research.md`; the second half of task 16) is in force: `thp_process:advised` (section 12) issues it once at init (`thp::configure_process`), where the probe `sys::features::probe_thp_disable` found the kernel takes the flag (`PR_GET_THP_DISABLE` 0, then the call and its undo, one `prctl` each: `thp_except_advised=yes`; `EINVAL` before 6.18 is `no`; a process whose parent set a THP policy is `inherited` and left alone), so huge pages land only where something was `MADV_HUGEPAGE`d, libc's and the program's mappings included, which is why it is opt-in; the `thp:` report line ends `; host <global mode> process <default (nothing issued) | advised: PR_THP_DISABLE_EXCEPT_ADVISED in force | advised: skipped, <reason>>`, `stats.thp.process` reads 0..4 (`thp::Process`), and `tests/c/thp.c process` under `thp_process:advised,thp:auto` is the both-ways test: on 6.18+ `PR_GET_THP_DISABLE` reads 3 and, on an `always` host, the unadvised class region and huge run show `AnonHugePages` 0 kB; below 6.18 the line says skipped and `PR_GET_THP_DISABLE` stays 0). `thp:auto` (plan Phase 2.5 task 9, `thp.rs`): `MADV_HUGEPAGE` on the slab groups of every class whose slab holds an enabled folio size below the PMD (64 KiB slabs and up with `hugepages-64kB` enabled), and metadata commits rounded to and advised with that folio, never a 2 MiB page (the fork copy-on-write cost that makes Redis and Valkey forbid huge pages stays absent); inert, and the report says why, where the kernel enables no such size or where the PMD size is `madvise`-gated (`hugepages-2048kB/enabled` `madvise`, or `inherit` under a `madvise` top level, Ubuntu's default), because the same advice would then make the regions eligible for 2 MiB pages at the fault and through khugepaged; the host requirement is `hugepages-64kB/enabled=madvise` (or `always`) with `hugepages-2048kB/enabled=never` (or `always`, the host's own decision), root-only knobs. `thp:always`: with the PMD size enabled and no larger than 2 MiB (`thp::LG_PMD_CHUNK_MAX`: the PMD is `page * page / 8`, 2 MiB at 4 KiB pages, 32 MiB at 16 KiB, 512 MiB at 64 KiB, and a chunk of the larger sizes committed and advised per class would be the RSS floor of the process: the 64 KiB matrix cell showed 1.7 GiB of advised chunks for an 8 MiB test heap and the kernel gave none of them a folio, `THPeligible 0`), class regions are committed and advised in PMD-sized chunks so the first touch maps a 2 MiB page (guard slabs inside a chunk stay unused but unguarded: a marker there splits the page), huge runs of a PMD or more are advised (section 7), and the metadata takes the sub-PMD folio if one is enabled; a purge of a slab inside a 2 MiB page splits it, the kernel's cost of the mode. On a PMD over 2 MiB `always` is the folio path over the enabled sizes below the PMD (2 MiB slabs and up when `hugepages-2048kB` is enabled at 64 KiB pages) and inert, reason `PmdTooLarge`, when none is. `MADV_COLLAPSE` is probed at the PMD size only (a smaller request is a silent no-op through 7.0), only when `thp` is not `never`, and reported, not used. Measured in `bench/results/2026-09-19-lane-b-mthp.md`: `auto` takes a quarter of larson1's dTLB refills on the C4A (4.0 -> 3.05 per operation, jemalloc 1.75) and puts valkey1's below jemalloc's (2.81 -> 2.44), leaves the Valkey-shaped rows flat, makes `fork()` 18% cheaper on a 500 MiB heap and the copy-on-write burst unchanged, and costs larson 1.6% with 7..19% more RSS on 16..100 MiB heaps (a folio per touched slab and table), which is why it is the documented opt-in and not the default; `always` is +10..15% on valkey1 at +10% RSS on 585 MiB and 2..4x on small heaps | small pages; `thp=none mthp=none` on a kernel without THP |
-| MTE (`HWCAP2_MTE`, `HWCAP2_MTE3`) | arm64 CPU (Armv8.5) and a kernel with `CONFIG_ARM64_MTE` that exposes it | reported only: tagged pointers (section 18, designed; plan Phase 2.5 task 6 implements) | untagged pointers |
 | PAC (`HWCAP_PACA` and `HWCAP_PACG`) | arm64 CPU (Armv8.3) and kernel | signed cache entries and TLS heap pointer (`pacda`/`autda`, sections 6.1 and 6.2) behind `pac_pointers:true`, off by default on the cost (section 14); `pac=yes` on Axion and the Mac VM, `no` on Altra; FEAT_FPAC decides whether a failure faults at the `autda` or on first use | plain pointers, the same binary, one predicted branch on a byte the fast paths load anyway |
-| LSE (`HWCAP_ATOMICS`) | arm64 CPU (Armv8.1) | reported only; the atomics the crate emits follow the compiler baseline (Rust's outlined `__aarch64_*` helpers already pick LSE at run time) | LL/SC loops in the same helpers |
-| LSE2 (`HWCAP_USCAT`) | arm64 CPU (Armv8.4) | reported only: single-copy 16-byte descriptor atomics (later task) | 64-bit atomics |
-| BTI (`HWCAP2_BTI`), SVE (`HWCAP_SVE`) | arm64 CPU and kernel | reported only (BTI landing pads are the compiler baseline's decision) | none needed |
-| LAM (`cpuid` 7.1 `EAX[26]`) | x86_64 CPU and kernel 6.4 (`arch_prctl(ARCH_ENABLE_TAGGED_ADDR)`) | reported only: tagged pointers (section 18.3, designed; task 6 implements) | untagged pointers |
-| UAI (`cpuid` `0x80000021` `EAX[7]`, read only when leaf `0x80000000` reports an extended range that reaches it) | AMD CPU (Zen 4 and later: upper address ignore, the LAM analogue); no upstream kernel enables it for user space yet (no `arch_prctl`, no `/proc/cpuinfo` flag) | reported only: tagged pointers (section 18.3) once Linux has an enable path | untagged pointers |
-| LA57 (`cpuid` 7.0 `ECX[16]`), `la57_enabled` (a hinted `mmap` above 2^47 honoured) | x86_64 CPU; kernel with `CONFIG_X86_5LEVEL` booted on it | reported only: the address-space budget for reservations and tag bits (section 18.3 uses bits 62:57 on both architectures) | 47-bit user addresses |
 | rseq time slice extension (`slice_ctrl`, `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE`) | kernel 7.0 with `CONFIG_RSEQ_SLICE_EXTENSION` (default N; needs `GENERIC_ENTRY` and `HAVE_GENERIC_TIF_BITS`, which x86_64 has and arm64 does not, through master) and glibc registering the v2 size (`__rseq_size >= 32`: 2.44 registers 33); Ubuntu's `7.0.0-1011-gcp` leaves the option off, so the GCE reference VMs read `kernel-disabled` and the numbers come from a 7.0.14 built with it (`bench/results/2026-09-19-x86_64-lane-c-task15-slice-ext.md`) | every lock holder's request to defer a preemption until the release (`slice.rs`, the subsection below; `slice_ext:auto`), the `prctl` enable per thread on its first hold, `rseq_slice_yield` (or `sched_yield` where seccomp hides the new syscall) after a granted release; the feature line's `slice_ext=` key (`sys::features::SliceExt`, read through `slice::probe` and `slice::verdict`, plan task 15) says `on` when lock holders request it and otherwise the kernel's answer (`available` under `slice_ext:off`, `kernel-disabled`, `no-slice_ctrl`, `no-rseq`, `prctl-failed`) | the lock without the request: one relaxed load per hold; `Slice extension: off (<why>)` in the report and the same word after `slice_ext=` in the feature line |
-| ERMS, FSRM, AVX-512F (`cpuid` 7.0 `EBX[9]`, `EDX[4]`, `EBX[16]`) | x86_64 CPU | reported only: `memcpy`/`memset` selection is glibc's; the crate's fills use the compiler baseline | none needed |
-| Cache line, L1D and L2 sizes | `CTR_EL0` (arm64), `cpuid` leaf 4 or `0x8000001D` (x86_64), else `/sys/devices/system/cpu/cpu0/cache/index*/` | reported only: the layout constants (`lock.rs` padding, the 512-byte stride rule) and the cache-capacity defaults stay fixed; an L2-derived ladder was priced on the 1 MiB parts and dropped (section 6.2, "Cache geometry") | `unknown` in the line; nothing changes |
 | Model-checked protocol (`cargo test --features std model::`, `src/model.rs`) | the host test suite, no hardware: an exhaustive interleaving model of the claim, release, `on_live_zero`, purge and group-handoff steps of `class/`, memoised on the whole state, with the invariants of section 4 and 5 checked at every state (no slot handed to two claimers, a slot reported zero reads zero, `live` equals set bits plus in-flight reservations, a slab in an arena's set is `Empty`/`Purged` with `live == 0` and owned by that arena, a `Purged` slab reads zero) | nothing at run time: it is the proof obligation for a change to the protocol. Replaying the pre-fix step orders finds the calloc race (Phase 1.5 task 7) and the ownership gap the handoff's owner check closes (task 15); the current order passes every scenario. Since 2026-09-19 (lane C, plan Phase 2.5 task 8) the `percpu_*` scenarios model the per-CPU claim protocol of section 15 (caches owned by an `mm_cid` read inside an rseq critical section with one commit store, the kernel's abort of a section whose thread was descheduled, threads that pop on one cid and push on another, the refill and the flush through the cid's arena, the zero prefix) with the further invariants that no slot is in two caches or in a cache and owned by a thread, that every set bit has exactly one holder (a lost push is a bit with none) and that a cache is mutated only by a section whose thread kept its cid to the commit; the variants without a section, or with `mm_cid` read outside it, hand a slot to two threads within 40 states, and lane A's implementation is compared against the properties listed in section 15 at merge | none needed |
 
 The kernel keys of the feature report are `page_size guard_install mseal
@@ -2448,13 +2434,9 @@ Phase 2.5 task 8, lane B: the glibc registration is probed like a kernel
 feature and printed with them; `slice_ext` since task 15: the kernel's
 answer for the time slice extension, `kernel-disabled` on the 7.0 GCE
 kernels, `on` where the module is in force);
-the arm64 keys are `mte mte3 pac lse lse2 bti sve`, the
-x86_64 keys `lam uai la57 la57_enabled cldemote waitpkg erms fsrm avx512f`, and
-`cacheline l1d l2` on both, after the kernel keys of section 10. The
-container test checks each CPU bit against `/proc/cpuinfo` (`Features` or
-`flags`) on the host it runs on; the host tests decode captured HWCAP words
-and `cpuid` registers from the reference machines. The reference hosts'
-lines are recorded in `bench/results/2026-09-19-feature-report.md`; the
+`pac` follows them, the one CPU key (`HWCAP_PACA` and `HWCAP_PACG`; the
+container test checks it against `/proc/cpuinfo`'s `paca` and `pacg`).
+The reference hosts' lines are recorded in `bench/results/2026-09-19-feature-report.md`; the
 matrix of plan tasks 3 and 4 adds one line per kernel and CPU.
 
 ### Time slice extension
@@ -2548,8 +2530,8 @@ suites pass with it on.
 
 ### 18.1 What the hardware we can reach offers
 
-The probes exist (`src/sys/cpu.rs`, section 17) and ran on every CPU GCE
-sells (`bench/results/2026-09-19-cpu-matrix.md` section 1,
+A `cpuid` and HWCAP probe ran on every CPU GCE sells
+(`bench/results/2026-09-19-cpu-matrix.md` section 1,
 `2026-09-19-feature-report.md`):
 
 | Feature | Probe | Result on GCE | Hardware that does expose it to a Linux guest or host | Confidence |
@@ -2891,12 +2873,11 @@ What part 2 waits for, cheapest path first:
 src/lib.rs            crate root, quantum feature selection, panic handler
 src/sys/mod.rs        the kernel constants; typed syscall wrappers (mmap, mprotect, madvise, process_madvise, mseal, prctl, getrandom, futex, clock_gettime, open/read/close, write, ppoll, eventfd, signals, sched_yield, rseq_slice_yield); read_small_file, parse_decimal, yn
 src/sys/abort.rs      abort (`challoc: <msg>` on stderr, SIGABRT the way glibc delivers it), the stderr sink, the `abort!` macro
-src/sys/auxv.rs       getauxval and the AT_* keys (AT_PAGESZ, AT_HWCAP, AT_HWCAP2, AT_SECURE)
+src/sys/auxv.rs       getauxval and the AT_* keys (AT_PAGESZ, AT_HWCAP, AT_SECURE)
 src/sys/raw.rs        the asm syscall instructions (x86_64, aarch64)
 src/sys/nr.rs         syscall numbers, header-checked (tests/c/sysnr.c)
 src/sys/errno.rs      kernel error decoding
 src/sys/features.rs   kernel feature probing; the feature line as a key table (words) that Display and the tests iterate
-src/sys/cpu.rs        CPU feature report (HWCAP, cpuid, CTR_EL0, sysfs cache sizes); pure
 src/sys/cgroup.rs     cgroup2 discovery, limit walk, sampling (memory.current, every memory.events counter), PSI trigger arming
 src/sys/pac.rs        pointer authentication of the TLS heap pointer (arm64 FEAT_PAuth)
 src/tls.rs            initial-exec TLS accessor
