@@ -29,17 +29,18 @@ impl Model<'_> {
         }
         let sh = &n.shared;
         let a = th.arena as usize;
-        match micro(self.program(t)[th.pc as usize], th.sub) {
+        let s = th.sub;
+        match self.program(t)[th.pc as usize] {
             // Lock acquisitions: `self.inner.lock()` blocks while held.
-            Micro::Refill(_, s) if Refill::at(s) == Refill::Lock => sh.lock[a].is_none(),
-            Micro::Purge(s) if Purge::at(s) == Purge::Lock => sh.lock[self.purge_arena(th, t)].is_none(),
-            Micro::Release(s) if matches!(Release::at(s), Release::LockLiveZero | Release::LockReopen) => {
+            Op::Refill(_) if Refill::at(s) == Refill::Lock => sh.lock[a].is_none(),
+            Op::Purge if Purge::at(s) == Purge::Lock => sh.lock[a].is_none(),
+            Op::Release if matches!(Release::at(s), Release::LockLiveZero | Release::LockReopen) => {
                 sh.lock[th.rel_arena as usize].is_none()
             }
             // `finish`'s bit loop: `claim_from` finds nothing while every
             // word is full and rescans (`MAX_EMPTY_PASSES`); the model
             // waits for a clear bit instead of spinning.
-            Micro::Refill(_, s) if Refill::at(s) == Refill::Finish => {
+            Op::Refill(_) if Refill::at(s) == Refill::Finish => {
                 let p = th.picks[th.cur as usize];
                 p.zero && self.v.prefix_claim || sh.slabs[p.slab as usize].bits != FULL
             }
@@ -47,182 +48,42 @@ impl Model<'_> {
         }
     }
 
-    /// How many ways thread `t`'s next step can go: [`NCACHES`] at a
-    /// section entry in the per-CPU mode (the cid the kernel put the
-    /// thread on), one otherwise.
-    pub(super) fn choices(&self, n: &Node, t: usize) -> u8 {
-        let th = &n.threads[t];
-        if !self.sc.percpu {
-            return 1;
-        }
-        match micro(self.program(t)[th.pc as usize], th.sub) {
-            Micro::Pop(0) | Micro::PushBack(0) | Micro::Push(_, 0) | Micro::Flush(0) => {
-                NCACHES as u8
-            }
-            _ => 1,
-        }
-    }
-
-    /// Run thread `t`'s next step, the `choice`th way. `Ok(description)`.
-    pub(super) fn step(&self, n: &mut Node, t: usize, choice: u8) -> Result<String, String> {
+    /// Run thread `t`'s next step. `Ok(description)`.
+    pub(super) fn step(&self, n: &mut Node, t: usize) -> Result<String, String> {
         let op = self.program(t)[n.threads[t].pc as usize];
         let sub = n.threads[t].sub;
-        let (sh, ths) = (&mut n.shared, &mut n.threads);
-        let th = &mut ths[t];
+        let sh = &mut n.shared;
+        let th = &mut n.threads[t];
         let tid = t as u8;
-        match micro(op, sub) {
-            Micro::Refill(want, sub) => self.step_refill(sh, th, tid, op, want, sub),
-            Micro::Write(i) => {
+        match op {
+            Op::Refill(want) => self.step_refill(sh, th, tid, want, sub),
+            Op::Write(i) => {
                 // The program writes a slot it was given; a refill that
                 // came up short (the class exhausted by the other
                 // threads) gave fewer, and then there is nothing to write.
                 th.done();
-                let percpu = self.sc.percpu;
-                let n = if percpu { th.nowned } else { th.nheld };
+                let n = th.nheld;
                 if i >= n {
                     return Ok(format!(
                         "write: the program has {n} slots, none at index {i}"
                     ));
                 }
-                let list = if percpu {
-                    &mut th.owned[..]
-                } else {
-                    &mut th.held[..]
-                };
-                let h = list[i as usize];
+                let h = th.held[i as usize];
                 sh.slabs[h.slab as usize].mem |= 1 << h.slot;
-                list[i as usize].zero = false;
+                th.held[i as usize].zero = false;
                 Ok(format!("write slot {} of slab {}", h.slot, h.slab))
             }
-            Micro::Release(sub) => self.step_release(sh, th, tid, op, sub),
-            Micro::Purge(sub) => self.step_purge(sh, th, tid, t, sub),
-            Micro::Pop(0) => {
-                // design 6.3 `malloc` steps 2 and 3 in the per-CPU mode:
-                // the section opens, `mm_cid` is read, the cache picked.
-                Ok(self.enter_section(ths, t, choice, "pop"))
-            }
-            Micro::Pop(1) => {
-                self.speculate(th);
-                let c = &sh.caches[th.sec_cid as usize];
-                if c.len == 0 {
-                    // `if len == 0`, slow path: leave the section and
-                    // refill from the cid's arena (design 15: arenas per
-                    // CPU) through `ClassState::claim`.
-                    th.in_section = false;
-                    th.arena = th.sec_cid;
-                    th.sub = POP_REFILL;
-                    return Ok(format!(
-                        "pop: cache {} empty, leave the section, refill from arena {}",
-                        th.sec_cid, th.arena
-                    ));
-                }
-                // The speculative reads: `len` and `slots[len - 1]`, and
-                // the zero flag from the prefix (`len < zeroed`).
-                th.spec_len = c.len;
-                let top = c.slots[(c.len - 1) as usize];
-                th.spec_ent = Held {
-                    zero: c.len - 1 < c.zeroed,
-                    ..top
-                };
-                let d = format!(
-                    "pop: cache {} len {}, top slab {} slot {}{} (speculative)",
-                    th.sec_cid,
-                    c.len,
-                    top.slab,
-                    top.slot,
-                    if th.spec_ent.zero {
-                        " in the zero prefix"
-                    } else {
-                        ""
-                    }
-                );
-                self.after_reads(sh, th, t, d, Self::pop_commit)
-            }
-            Micro::Pop(_) => self.pop_commit(sh, th, t),
-            Micro::PushBack(0) => {
-                // The refill's batch: one slot is the pop's result, the
-                // rest goes into the cache of the cid the thread is on
-                // now, through a section.
-                if th.nheld == 0 {
-                    th.done();
-                    return Ok(String::from(
-                        "refill push-back: the class is out of slabs, the pop returns null",
-                    ));
-                }
-                Ok(self.enter_section(ths, t, choice, "refill push-back"))
-            }
-            Micro::PushBack(1) => {
-                self.speculate(th);
-                th.spec_len = sh.caches[th.sec_cid as usize].len;
-                let d = format!(
-                    "refill push-back: cache {} len {} (speculative)",
-                    th.sec_cid, th.spec_len
-                );
-                self.after_reads(sh, th, t, d, Self::pushback_commit)
-            }
-            Micro::PushBack(_) => self.pushback_commit(sh, th, t),
-            Micro::Push(i, 0) => {
-                // design 6.3 `free` step 4 in the per-CPU mode.
-                if i >= th.nowned {
-                    th.done();
-                    return Ok(format!(
-                        "push: the program owns {} slots, none at index {i}",
-                        th.nowned
-                    ));
-                }
-                Ok(self.enter_section(ths, t, choice, "push"))
-            }
-            Micro::Push(_, 1) => {
-                self.speculate(th);
-                let c = &sh.caches[th.sec_cid as usize];
-                if c.len == CACHE_CAP {
-                    // `if len == cap`, slow path (flush half): leave the
-                    // section.
-                    th.in_section = false;
-                    th.sub = PUSH_FLUSH;
-                    return Ok(format!(
-                        "push: cache {} full, leave the section, flush",
-                        th.sec_cid
-                    ));
-                }
-                th.spec_len = c.len;
-                let d = format!("push: cache {} len {} (speculative)", th.sec_cid, c.len);
-                self.after_reads(sh, th, t, d, Self::push_commit)
-            }
-            Micro::Push(_, _) => self.push_commit(sh, th, t),
-            Micro::Flush(0) => {
-                // `Heap::flush` in the per-CPU mode: half the cache leaves
-                // it through a section, then `release_routed`.
-                Ok(self.enter_section(ths, t, choice, "flush"))
-            }
-            Micro::Flush(1) => {
-                self.speculate(th);
-                let c = &sh.caches[th.sec_cid as usize];
-                if c.len == 0 {
-                    // Migrated onto an empty cache since the push saw a
-                    // full one: nothing to flush, the push retries.
-                    th.in_section = false;
-                    th.sub = 0;
-                    return Ok(format!(
-                        "flush: cache {} is empty now, retry the push",
-                        th.sec_cid
-                    ));
-                }
-                th.spec_len = c.len;
-                let d = format!("flush: cache {} len {} (speculative)", th.sec_cid, c.len);
-                self.after_reads(sh, th, t, d, Self::flush_commit)
-            }
-            Micro::Flush(_) => self.flush_commit(sh, th, t),
+            Op::Release => self.step_release(sh, th, tid, sub),
+            Op::Purge => self.step_purge(sh, th, tid, sub),
         }
     }
 
     /// `ClassState::purge_empty`: the steps of `Purge`.
-    pub(super) fn step_purge(&self, sh: &mut Shared, th: &mut Thread, tid: u8, t: usize, sub: u8) -> Result<String, String> {
+    pub(super) fn step_purge(&self, sh: &mut Shared, th: &mut Thread, tid: u8, sub: u8) -> Result<String, String> {
         match Purge::at(sub) {
             Purge::Lock => {
                 // purge_empty: `let mut g = self.inner.lock();`
-                let a = self.purge_arena(th, t);
-                th.arena = a as u8;
+                let a = th.arena as usize;
                 sh.lock[a] = Some(tid);
                 th.sub = Purge::PurgeLocked as u8;
                 Ok(format!("purge: lock arena {a}"))
@@ -263,25 +124,21 @@ impl Model<'_> {
         }
     }
 
-    /// `ClassState::claim`: the steps of `Refill`, at sub-step base
-    /// `micro_base(th.sub)` (0 for `Op::Refill`, `POP_REFILL` inside a
-    /// `Pop`).
+    /// `ClassState::claim`: the steps of `Refill`.
     pub(super) fn step_refill(
         &self,
         sh: &mut Shared,
         th: &mut Thread,
         tid: u8,
-        op: Op,
         want: u8,
         sub: u8,
     ) -> Result<String, String> {
-        let base = micro_base(th.sub);
         let a = th.arena as usize;
         match Refill::at(sub) {
             Refill::Lock => {
                 // plan_locked: `let mut g = self.inner.lock();`
                 sh.lock[a] = Some(tid);
-                th.sub = base + Refill::PlanLocked as u8;
+                th.sub = Refill::PlanLocked as u8;
                 Ok(format!("lock arena {a}"))
             }
             Refill::PlanLocked => {
@@ -290,7 +147,7 @@ impl Model<'_> {
                 // group), `take` per slab.
                 // `self.plan(meta, out.len() - got, &mut picks)`
                 let desc = self.plan_locked(sh, th, want - th.got)?;
-                th.sub = base + Refill::Unlock as u8;
+                th.sub = Refill::Unlock as u8;
                 Ok(desc)
             }
             Refill::Unlock => {
@@ -298,10 +155,10 @@ impl Model<'_> {
                 sh.lock[a] = None;
                 th.cur = 0;
                 if th.np == 0 {
-                    self.micro_done(th, op);
+                    th.done();
                     return Ok(String::from("unlock; nothing to commit, claim returns 0"));
                 }
-                th.sub = base + Refill::Finish as u8;
+                th.sub = Refill::Finish as u8;
                 Ok(String::from("unlock"))
             }
             Refill::Finish => {
@@ -361,10 +218,10 @@ impl Model<'_> {
                         // self.finish(..); }`: short, so plan again.
                         th.np = 0;
                         if th.got < want {
-                            th.sub = base + Refill::Lock as u8;
+                            th.sub = Refill::Lock as u8;
                             return Ok(desc + "; short, plan again");
                         }
-                        self.micro_done(th, op);
+                        th.done();
                     }
                 }
                 Ok(desc)
@@ -373,9 +230,7 @@ impl Model<'_> {
     }
 
     /// `ClassState::release` through `Heap::release_routed`: the steps of
-    /// `Release`, at sub-step base `micro_base(th.sub)` (0 for
-    /// `Op::Release`, `POP_RELEASE` for a refill's overflow,
-    /// `PUSH_RELEASE` for a flush). Each slab is released through the
+    /// `Release`. Each slab is released through the
     /// arena its owner word names; a run of one owner ends with that
     /// arena's `reopen`.
     pub(super) fn step_release(
@@ -383,34 +238,23 @@ impl Model<'_> {
         sh: &mut Shared,
         th: &mut Thread,
         tid: u8,
-        op: Op,
         sub: u8,
     ) -> Result<String, String> {
-        let base = micro_base(th.sub);
         match Release::at(sub) {
             Release::Group => {
-                // In the per-CPU mode a program's `Release` is the direct
-                // free (`MALLOCX_TCACHE_NONE`): its owned slots are the
-                // batch. Then release_owned: the batch grouped by slab,
-                // lowest slab first (`Heap::flush`'s bucket pass).
-                if self.sc.percpu && op == Op::Release {
-                    for k in 0..th.nowned as usize {
-                        th.hold(th.owned[k]);
-                    }
-                    th.owned = [Held::default(); MAX_OWNED];
-                    th.nowned = 0;
-                }
+                // release_owned: the batch grouped by slab, lowest slab
+                // first (`Heap::flush`'s bucket pass).
                 let mut todo = 0u8;
                 for h in &th.held[..th.nheld as usize] {
                     todo |= 1 << h.slab;
                 }
                 if todo == 0 {
-                    self.micro_done(th, op);
+                    th.done();
                     return Ok(String::from("release: nothing held"));
                 }
                 th.rel_todo = todo;
                 th.was_full = 0;
-                th.sub = base + Release::FetchAnd as u8;
+                th.sub = Release::FetchAnd as u8;
                 Ok(format!("release: slabs {todo:#04b}"))
             }
             Release::FetchAnd => {
@@ -454,7 +298,7 @@ impl Model<'_> {
                 th.rel_slab = slab;
                 th.rel_count = count;
                 th.dec_pending = true;
-                th.sub = base + Release::SubLive as u8;
+                th.sub = Release::SubLive as u8;
                 Ok(format!(
                     "release: fetch_and !{mask:#06b} on slab {slab} of arena {owner} (bits {prev:#06b} -> {:#06b}){}",
                     s.bits,
@@ -474,7 +318,7 @@ impl Model<'_> {
                 s.live -= th.rel_count;
                 th.dec_pending = false;
                 th.rel_zero = prev == th.rel_count;
-                th.sub = base + if th.rel_zero { Release::LockLiveZero } else { Release::NextSlab } as u8;
+                th.sub = if th.rel_zero { Release::LockLiveZero } else { Release::NextSlab } as u8;
                 Ok(format!(
                     "release: sub_live({}) on slab {} ({prev} -> {}){}",
                     th.rel_count,
@@ -487,7 +331,7 @@ impl Model<'_> {
                 // on_live_zero: `let mut g = self.inner.lock();`
                 let a = th.rel_arena as usize;
                 sh.lock[a] = Some(tid);
-                th.sub = base + Release::OnLiveZero as u8;
+                th.sub = Release::OnLiveZero as u8;
                 Ok(format!("on_live_zero: lock arena {a}"))
             }
             Release::OnLiveZero => {
@@ -521,7 +365,7 @@ impl Model<'_> {
                     }
                 }
                 sh.lock[a] = None;
-                th.sub = base + Release::NextSlab as u8;
+                th.sub = Release::NextSlab as u8;
                 Ok(desc + "; unlock")
             }
             Release::NextSlab => {
@@ -531,24 +375,24 @@ impl Model<'_> {
                 // the next owner.
                 let next_owner = lowest_set(th.rel_todo).map(|s| sh.owner(self.sc, s));
                 if th.was_full != 0 && next_owner != Some(th.rel_arena) {
-                    th.sub = base + Release::LockReopen as u8;
+                    th.sub = Release::LockReopen as u8;
                     return Ok(format!(
                         "release: run of arena {} done, reopen pending",
                         th.rel_arena
                     ));
                 }
                 if th.rel_todo != 0 {
-                    th.sub = base + Release::FetchAnd as u8;
+                    th.sub = Release::FetchAnd as u8;
                     return Ok(String::from("release: next slab"));
                 }
-                self.micro_done(th, op);
+                th.done();
                 Ok(String::from("release: batch done"))
             }
             Release::LockReopen => {
                 // reopen: `let mut g = self.inner.lock();`
                 let a = th.rel_arena as usize;
                 sh.lock[a] = Some(tid);
-                th.sub = base + Release::Reopen as u8;
+                th.sub = Release::Reopen as u8;
                 Ok(format!("reopen: lock arena {a}"))
             }
             Release::Reopen => {
@@ -576,10 +420,10 @@ impl Model<'_> {
                 th.was_full = 0;
                 sh.lock[a] = None;
                 if th.rel_todo != 0 {
-                    th.sub = base + Release::FetchAnd as u8;
+                    th.sub = Release::FetchAnd as u8;
                     return Ok(desc + " unlock; next owner's slabs");
                 }
-                self.micro_done(th, op);
+                th.done();
                 Ok(desc + " unlock")
             }
         }
@@ -753,34 +597,23 @@ impl Model<'_> {
     /// The invariants, at every state.
     pub(super) fn check(&self, n: &Node) -> Result<(), String> {
         let sh = &n.shared;
-        // Slots handed to two holders at once (a thread's staged or owned
-        // slots, a cache's entries); a held slot's bit is set; a slot
-        // reported zero and not yet written reads zero (the calloc race,
-        // through a refill or through a cache's zero prefix).
-        const CACHE_TAG: u8 = 100;
-        fn who(h: u8) -> String {
-            if h >= CACHE_TAG {
-                format!("cache {}", h - CACHE_TAG)
-            } else {
-                format!("thread {h}")
-            }
-        }
+        // Slots handed to two holders at once; a held slot's bit is set; a
+        // slot reported zero and not yet written reads zero (the calloc
+        // race).
         let mut holders = [[u8::MAX; NSLOTS as usize]; NSLABS];
         let mut place = |slab: u8, slot: u8, h: u8| -> Result<(), String> {
             let cell = &mut holders[slab as usize][slot as usize];
             if *cell != u8::MAX {
                 return Err(format!(
-                    "slot {slot} of slab {slab} is held by {} and {} at once",
-                    who(*cell),
-                    who(h)
+                    "slot {slot} of slab {slab} is held by thread {} and thread {h} at once",
+                    *cell
                 ));
             }
             *cell = h;
             Ok(())
         };
         for (t, th) in n.threads.iter().enumerate() {
-            let owned = &th.owned[..th.nowned as usize];
-            for h in th.held[..th.nheld as usize].iter().chain(owned) {
+            for h in &th.held[..th.nheld as usize] {
                 place(h.slab, h.slot, t as u8)?;
                 let s = &sh.slabs[h.slab as usize];
                 if s.bits & (1 << h.slot) == 0 {
@@ -797,51 +630,10 @@ impl Model<'_> {
                 }
             }
         }
-        for (c, cache) in sh.caches.iter().enumerate() {
-            assert!(
-                cache.len <= CACHE_CAP && cache.zeroed <= cache.len,
-                "model: cache {c} len {} zeroed {}",
-                cache.len,
-                cache.zeroed
-            );
-            for (j, e) in cache.slots[..cache.len as usize].iter().enumerate() {
-                place(e.slab, e.slot, CACHE_TAG + c as u8)?;
-                let s = &sh.slabs[e.slab as usize];
-                if s.bits & (1 << e.slot) == 0 {
-                    return Err(format!(
-                        "cache {c} holds slot {} of slab {} whose bit is clear",
-                        e.slot, e.slab
-                    ));
-                }
-                if (j as u8) < cache.zeroed && s.mem & (1 << e.slot) != 0 {
-                    return Err(format!(
-                        "cache {c} entry {j} (slot {} of slab {}) is in the zero prefix and its memory is dirty (the calloc race through the cache)",
-                        e.slot, e.slab
-                    ));
-                }
-            }
-        }
-        if self.sc.percpu {
-            // The model's own bookkeeping: a section entry on a cid aborts
-            // the section already on it, so at most one thread is inside
-            // an unaborted section per cid.
-            for (t, th) in n.threads.iter().enumerate() {
-                if th.in_section {
-                    assert!(
-                        !n.threads[..t]
-                            .iter()
-                            .any(|o| o.in_section && o.sec_cid == th.sec_cid),
-                        "model: two threads inside sections on cid {}",
-                        th.sec_cid
-                    );
-                }
-            }
-        }
         for (i, s) in sh.slabs.iter().enumerate() {
             // Every set bit has exactly one holder, once the prefix bits a
             // zero pick claimed under the lock reach their thread in
-            // `finish`: a bit with no holder is a slot lost (a push
-            // overwritten by a stale store, or leaked).
+            // `finish`: a bit with no holder is a slot leaked.
             let held = holders[i].iter().filter(|&&h| h != u8::MAX).count() as u8;
             let mut prefix = 0u8;
             for th in &n.threads {
@@ -853,7 +645,7 @@ impl Model<'_> {
             }
             if popcount(s.bits) != held + prefix {
                 return Err(format!(
-                    "slab {i}: bits {:#06b} set but {held} holders + {prefix} prefix bits in flight (a slot lost, or claimed by nobody)",
+                    "slab {i}: bits {:#06b} set but {held} holders + {prefix} prefix bits in flight (a slot leaked, or claimed by nobody)",
                     s.bits
                 ));
             }
@@ -963,16 +755,6 @@ impl Model<'_> {
                 ));
             }
         }
-        // A cache is only ever mutated by a section whose cid matched at
-        // commit (last, so that a corruption in the same state is named
-        // first).
-        if self.v.strict_cid {
-            if let Some((t, c)) = sh.stale_commit {
-                return Err(format!(
-                    "cache {c} was mutated by thread {t}'s section after the thread lost cid {c} (the index came from a stale mm_cid read)"
-                ));
-            }
-        }
         Ok(())
     }
 
@@ -994,52 +776,24 @@ impl Model<'_> {
                 continue;
             }
             any = true;
-            for choice in 0..self.choices(&n, t) {
-                let mut next = n.clone();
-                let op = self.program(t)[next.threads[t].pc as usize];
-                let sub = next.threads[t].sub;
-                let desc = match self.step(&mut next, t, choice) {
-                    Ok(d) => d,
-                    Err(abort) => {
-                        self.trace
-                            .push((t as u8, op, sub, format!("ABORT {abort}")));
-                        return Err((
-                            format!("the protocol aborted: {abort}"),
-                            Trace(self.trace.clone()),
-                        ));
-                    }
-                };
-                self.trace.push((t as u8, op, sub, desc));
-                let r = self.explore(next);
-                self.trace.pop();
-                r?;
-            }
-        }
-        // Per-CPU mode: a thread inside a section may be preempted at any
-        // instruction (a signal, a migration, a time slice) whether or
-        // not another thread then runs on its cid; the kernel finds the
-        // IP in `[start_ip, post_commit_ip)` and returns to user space at
-        // `abort_ip`, the section's start. (A thread outside a section
-        // loses nothing by a preemption the caches can observe, except its
-        // cid to another thread's section, which `enter_section` models.)
-        if self.sc.percpu {
-            for t in 0..n.threads.len() {
-                if !n.threads[t].in_section {
-                    continue;
+            let mut next = n.clone();
+            let op = self.program(t)[next.threads[t].pc as usize];
+            let sub = next.threads[t].sub;
+            let desc = match self.step(&mut next, t) {
+                Ok(d) => d,
+                Err(abort) => {
+                    self.trace
+                        .push((t as u8, op, sub, format!("ABORT {abort}")));
+                    return Err((
+                        format!("the protocol aborted: {abort}"),
+                        Trace(self.trace.clone()),
+                    ));
                 }
-                let mut next = n.clone();
-                let nt = &mut next.threads[t];
-                let at = self.section_start(nt.sub);
-                let desc = format!(
-                    "scheduler: T{t} preempted inside its section on cid {}: rseq abort, retry at [{at}]",
-                    nt.sec_cid
-                );
-                self.abort(nt, at);
-                self.trace.push((t as u8, Op::Sched, 0, desc));
-                let r = self.explore(next);
-                self.trace.pop();
-                r?;
-            }
+            };
+            self.trace.push((t as u8, op, sub, desc));
+            let r = self.explore(next);
+            self.trace.pop();
+            r?;
         }
         if !any {
             let unfinished: Vec<usize> = (0..n.threads.len())

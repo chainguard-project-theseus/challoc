@@ -878,10 +878,7 @@ to `rallocx` exactly as jemalloc's contract requires.
   so a class they are draining has only transient holes; direct
   `MALLOCX_TCACHE_NONE` claims such as Valkey's defragmenter's do not
   count); a rebuild re-checks the holes and drops back to probing once
-  the class is dense. Under the per-CPU mode (section 15) the run is a
-  header of its own per (id, class) rather than the bottom of the stack,
-  rebuilt by the same block claim and served one entry per scheduled pop
-  through the `pop` section. Why:
+  the class is dense. Why:
   a LIFO cache hands every allocation the slot just freed, so under a
   balanced alloc/free churn (Valkey's DEL:SET steady state) the cache never
   reaches either boundary, no refill or flush runs, and the slab layout is
@@ -1268,8 +1265,8 @@ Discovery, once at init (section 10 step 7):
   (`u64::MAX`). `memory.max.effective` does not exist in mainline kernels.
   The walk is repeated at most once per second, from the sampler, so a
   `docker update --memory` is seen.
-- `cpu.max` and `cpuset.cpus.effective` are parsed at init and kept for the
-  per-CPU mode (section 15), which is the only consumer.
+- `cpu.max` and `cpuset.cpus.effective` are parsed at init for the
+  `cgroup:` line's CPU figures; the allocator does not act on them.
 
 All reads use raw `open`/`read`/`close` on fixed-size stack buffers through
 `src/sys`, never libc stdio, and nothing allocates.
@@ -1495,7 +1492,7 @@ jemalloc names where they exist:
 | `dirty_decay_ms`          | 10000   |                                         |
 | `muzzy_decay_ms`          | ignored | accepted for compatibility              |
 | `narenas`                 | 0       | automatic arenas; 0 = `min(4 * ncpus, 64)`; see 13.3 |
-| `percpu_arena`            | auto    | `auto`, `percpu`, `off` (15, plan Phase 2.5 task 8): caches and arenas keyed by the running CPU's rseq `mm_cid` instead of by thread. `percpu` turns the mode on where the runtime probe passes (`rseq::probe`, checked at run time, never assumed from a version: glibc exports `__rseq_offset`, `__rseq_size` and `__rseq_flags` (2.35+) and the registered `__rseq_size >= 28`, so the area covers the `mm_cid` the kernel writes on 6.3+ with `CONFIG_SCHED_MM_CID`; glibc reports the kernel's feature size there since 2.41, `research.md`) and falls back to thread caches with a note in the report when it fails; `off` is thread caches whatever the probe says; `auto`, the default, keeps thread caches for now (`heap::PercpuState::OffAuto`): the mode measured 8..24% behind thread caches on the `quick` rows and far behind on the Valkey model on both reference VMs (section 15), so thread caches stay the default. jemalloc's `disabled` and `phycpu` are accepted as `off` and `percpu` (the key used to be accepted with any value) |
+| `percpu_arena`            | disabled | jemalloc's `disabled`, `percpu`, `phycpu`, accepted and read back through `opt.percpu_arena`; caches are per thread whatever the value, and the report's `opt.percpu_arena` line notes it for `percpu` and `phycpu` (section 15) |
 | `tcache`                  | true    | false disables caches                   |
 | `tcache_max`              | 32768   | largest cached class size (bytes); `opt.tcache_max` reads as `size_t` |
 | `tcache_nslots_small_max` | 1024    |                                         |
@@ -1702,7 +1699,6 @@ stats.thp.meta_ranges, stats.thp.nohuge_ranges, stats.thp.failures (section 10)
 stats.prefault.enabled, stats.prefault.populate_write, stats.prefault.passes, stats.prefault.slabs,
 stats.prefault.bytes, stats.prefault.skipped, stats.prefault.fallbacks, stats.prefault.wakes,
 stats.prefault.active (section 8.2)
-stats.percpu.enabled, stats.percpu.ids, stats.percpu.headers, stats.percpu.cached, stats.percpu.aborts (section 15)
 ```
 
 Semantics that differ from jemalloc's, deliberately: `arena.<i>.destroy`
@@ -1940,10 +1936,7 @@ same lookup; the cold paths take the size from the same classification the
 exact slow path then repeats; the huge tier reads the run's usable bytes
 from the huge table as `malloc_usable_size` does. The fast paths of
 `malloc`, `free`, `sdallocx` and every other existing entry point are
-byte-identical to what they were (`scripts/codegen-diff.sh`). In the
-per-CPU mode (15) the four take their cold paths (`heap::alloc`,
-`heap::free`, which dispatch the mode); the mode is opt-in and measured on
-its own. Valkey uses them under `USE_CHALLOC`
+byte-identical to what they were (`scripts/codegen-diff.sh`). Valkey uses them under `USE_CHALLOC`
 (`contrib/valkey/0002-zmalloc-use-challoc-usable-size-entry-points.patch`: `ztrymalloc_usable_internal`,
 `ztrycalloc_usable_internal` and `ztryrealloc_usable_internal` call the
 `*_usable` pair instead of the allocation plus `zmalloc_size`; the unsized
@@ -2015,245 +2008,11 @@ throughput), canaries (needs bytes inside the block). Type-isolated
 heaps via Clang's `-fsanitize=alloc-token` are a plausible later addition
 because Wolfi controls compiler flags; a roadmap item.
 
-## 15. Optional per-CPU mode
+## 15. Per-CPU mode
 
-Behind the `percpu_arena` key (section 12: `auto`, the default, `percpu`,
-`off`; `config::PercpuArena`, plan Phase 2.5 task 8). With `percpu`, where
-glibc's registered rseq area covers the `mm_cid` field (`rseq::probe`,
-checked at run time and never assumed from a version: glibc exports
-`__rseq_offset`, `__rseq_size` and `__rseq_flags` (2.35+) and the
-registered `__rseq_size >= 28`, so the area covers the field the kernel
-writes on 6.3+ with `CONFIG_SCHED_MM_CID`; glibc reports the kernel's
-feature size there since 2.41, `research.md`; `PercpuArena::enabled`), the
-plain `malloc`/`free` caches are keyed by the running thread's *concurrency
-id* instead of by thread. When the probe fails `percpu` keeps thread caches
-and says so (`PercpuArena::forced`, the `Per-CPU caches:` line of
-`malloc_stats_print`, `stats.percpu.enabled`). `auto`, the key's default,
-keeps thread caches as well (`heap::PercpuState::OffAuto`, "opt in with
-percpu_arena:percpu"): the mode is implemented and measured, and the plan's
-own rule (default-on only if `quick` and `ab` are within noise on the
-reference VMs) failed by a margin (below), so thread caches stay the
-default. `double_free_scan:true` also
-keeps thread caches (the scan of the top entries is not written into the
-critical sections; the hardening wins).
-
-What the kernel provides (`src/rseq.rs`). `mm_cid` is a small integer,
-unique among the threads of the process that are running at any instant
-and bounded by the number of possible CPUs (`nr_cpu_ids`, read from
-`/sys/devices/system/cpu/possible`), so a process with 200 mostly idle
-threads on 4 CPUs uses ids 0..3: cache memory is bounded by cores, not
-threads. Two implementations exist and the design relies only on what
-they share (docs/research.md, the 6.19 row): before 6.19 (Chainguard OS
-6.18) ids are `< min(threads, cpus)`, a thread gives its id up when it is
-switched out and may come back with another, and the kernel hands ids
-over through fully ordered atomics on the process's id mask; since 6.19
-(the reference VMs' 7.0) a process with no more threads than possible
-CPUs runs in *per-task* mode, every thread keeping its own id across
-migrations (the per-CPU caches then behave like thread caches and no
-header is ever shared), and the shared per-CPU ids are used only above
-that count, switched at fork or exit. In both, an id has one running
-holder at any instant and stays below `nr_cpu_ids`; the sections need
-nothing else, and the aborted-section counter (`stats.percpu.aborts`)
-shows the abort path running once threads outnumber CPUs. The area is at `thread pointer + __rseq_offset`
-(`%fs:0` or `tpidr_el0`; the offset moves with the static TLS layout and
-is read from the symbol, never assumed: on the reference VMs 192 (arm64)
-and -192 (x86_64) bare, 320 and -384 inside the test binaries), the field
-at byte 24, readable only when `__rseq_size >= 28` (33 on the 7.0 VMs, 20
-on the Mac's Docker kernel, where the mode is off). The allocator writes
-exactly one field of the area, `rseq_cs` (byte 8), the address of a
-critical-section descriptor; `cpu_id`, `mm_cid`, `node_id` and `flags` are
-the kernel's and are never stored to (writing them is what broke tcmalloc
-on Linux 6.19). A critical section is a straight run of instructions
-ending in one commit store; a thread preempted, migrated or signalled
-inside it is moved to the abort handler (the kernel checks the signature
-before it, `0x53053053` as a `ud1` on x86_64, `0xd428bc00` on aarch64) and
-runs the section again, re-reading `mm_cid`. Every section here is
-written in `asm!` on both architectures with its descriptor in the
-`__rseq_cs` section beside it, and any store before the commit leaves the
-header consistent if the section is aborted after it (a slot written into
-the dead part of a stack, a lower bound shrunk); the kernel clears
-`rseq_cs` when it finds the thread outside the section, so a completed
-section is one store plus the work.
-
-The caches (`heap/`, `Percpu`, `CpuCache`). One table of `nr_cpu_ids`
-`[CacheHeader; NCLASSES]` arrays, the same headers and slot stacks as a
-heap's home caches, reserved zeroed from the metadata region at init
-(3.3 KiB per id, touched only as ids are used) and indexed
-`base + mm_cid * CPU_CACHE_SIZE + class * 64` inside the section. A zeroed
-header is `len == cap == 0`, which both fast paths treat as "slow path";
-the first slow path on it installs its stack (`rseq::install`: the
-idempotent fields with plain stores, then `slots` and the commit of `cap`
-in a section that refuses to publish a header the thread did not prepare).
-The sections: `pop` (count `allocs`, honour the compaction schedule, clip
-`low_water`, load the entry, authenticate it when `pac_pointers` is on,
-commit `len - 1`), `push` (store the entry above `len`, signed when
-`pac_pointers` is on, clip the zero prefix, commit `len + 1`),
-`push_batch` (a refill's batch or a flush's kept half, copied in a loop
-inside the section; when the stack was empty the zero prefix and
-`low_water` restart at the batch), `take_all` (a flush or drain copies the
-whole stack out and commits `len = 0`). Capacities follow the thread
-ladder clamped to `MAX_CAP` (the slow paths' buffers are stack arrays of
-that size).
-
-The paths (the zero-cost dispatch, lane percpu-dispatch, 2026-09-21).
-The entry points carry nothing for the mode: no flag bit, no test, no
-tail call. A heap in the mode (`Heap::percpu`) never installs a home
-cache (`Heap::ensure_cache` refuses its home arena; an explicit
-`MALLOCX_ARENA` request for that arena is served directly from the
-slab), so every home header stays `CacheHeader::EMPTY`, `len == cap ==
-0`, which is the state section 6.3's two fast paths already treat as
-"slow path": `malloc`'s inlined pop falls through on `len == 0`, `free`'s
-and the sized free's inlined push on `len == cap`, and each takes the
-cold tail call it has anyway (`malloc_slow`, `free_slow`,
-`free_sized_slow`), where `Heap::alloc`, `Heap::alloc_zeroed` and
-`Heap::free` test the heap's `percpu` byte and go to
-`Heap::percpu_alloc` / `Heap::percpu_free` (out of line, not cold: the
-`pop` or `push` section on the running CPU's header, the byte count, the
-refill or flush on a miss). So the thread paths are byte for byte the
-allocator without the mode (the codegen list in
-`bench/results/2026-09-21-*-percpu-dispatch*.md`), and what the mode
-pays is the entry point's wasted header load and the slow path's
-prologue (the init-state load, the second TLS read, `class_of` again or
-the exact `classify_free` in place of the inlined check) before the
-section. In the mode a pop or push is therefore that prologue plus the
-thread-pointer load, the `mm_cid` load, the table index and the section;
-the `free` path skips the owner word (a CPU cache takes verified slots
-of every arena, section 6.3's sized path already does the same). The
-earlier forms: a wrapper calling a second function that held the section
-and returned an enum cost +65..83 instructions per larson operation in
-the mode, the inlined section with cold tail-call misses +33..47
-(`bench/results/2026-09-19-*-task8-percpu-fastpath.md`), and both were
-reached through a `PUSH_PERCPU` bit of `Shared::push_flags` tested by
-the entry points with a tail call, which cost the *default* path +9
-instructions and +1.8% cycles per larson operation on the C4A (three of
-them the dispatch on the hit paths, `bench/results/2026-09-20-aarch64-larson1-drift.md`),
-the reason the dispatch moved. The thread heap stays: it is the init
-witness the fast paths load anyway, it keeps the thread's byte counters
-(every per-CPU pop and push is counted there per operation, so
-`thread.allocated` stays exact), it serves huge runs as before, and a
-heap off the mode takes the thread paths (its home caches are real):
-explicit caches
-(`tcache.create`), `thread.tcache.enabled:false` (served directly), and a
-thread `thread.arena` moved to an explicit arena (its own caches on that
-arena; moving it back to an automatic one returns it to the CPU caches;
-jemalloc refuses the automatic range with `EPERM` under `percpu_arena`,
-nothing here needs refusing). *Arenas are per id*: the header of
-`(id, class)` binds to arena `id % narenas` at install and its refills
-claim there, so with the default `narenas` (`4 * ncpus`, at most 64) every
-CPU has its own arena; a slot freed on another CPU is pushed onto that
-CPU's cache and the flush routes it back through the owner array
-(`release_routed`). Slow paths: a refill claims up to `cap / 2` slots from
-the id's arena onto the stack, hands the lowest to the caller and
-`push_batch`es the rest, lowest on top; a flush (`take_all`, the address
-selection and straddle compare of 6.4 over the taken array, release the
-highest half, `push_batch` the kept half back, lowest on top when the
-stack was in order); if the thread migrated between the two sections the
-batch lands on the new CPU's cache and what does not fit is released to
-its slabs. Compaction keeps its gate per header (probe every 4096 pops,
-compact while the class is fragmented and refills are not draining it)
-and its run as a header of its own: the thread run sits at the bottom of
-the cache's stack and a run pop moves the top entry into the hole, a
-two-word update no single commit can make consistent under an abort, so
-under the mode the run is a second table of `nr_cpu_ids`
-`[CacheHeader; NCLASSES]` (`Percpu::runs`), the header of `(id, class)`
-holding up to `cap / 4` slots (`compact_mask == u32::MAX`, so it never
-schedules), served by the same `pop` section a cache is. A scheduled pop
-in compact mode pops the id's run (`Heap::percpu_run_pop`); an exhausted
-or uninstalled run is *rebuilt* as the thread run is: the class
-re-checked (dense: back to probing), else a block of `cap / 4` claimed
-from the arena's lowest partial slab under the class lock, one hold per
-block instead of one per scheduled pop, and pushed onto the run with
-`push_batch`, lowest on top, the zero prefix travelling with it; what
-does not fit after a migration goes back to its slab. (The first form
-claimed one slot under the lock per scheduled pop, one pop in 8 on a
-fragmented class: on the Valkey model that was most of the mode's cost,
-+148 instructions per operation on the C4 against +58 with the run;
-`bench/results/2026-09-19-*-task8-percpu-fastpath.md`.) The cache GC and
-`thread.tcache.flush`, `malloc_trim` and the purges' caller flush act on
-the caches of the CPU the thread is running on (the drain takes the run
-as well; the GC returns a run whose class stopped compacting and leaves a
-compacting one, which is being consumed); an idle CPU's caches are
-drained the next time a thread runs there and ticks, and that residue,
-at most `cap + cap / 4` slots per (id, class), is what the mode bounds by
-cores. `stats.percpu.headers` and `.cached` count both tables. Thread exit leaves the CPU
-caches alone (they are not the thread's); fork needs nothing (no lock, and
-every section's pre-commit stores leave a consistent header; a child's
-ids start over on the same table). Memory ordering across CPUs comes from
-the kernel: an id changes hands only through the scheduler's fully ordered
-atomics on the process's id mask (or, in the 6.19+ per-task mode, never
-while threads fit the CPUs), so the stores of an id's previous holder are
-visible to its next.
-
-Measured (plan task 8, `bench/results/2026-09-19-{aarch64,x86_64}-task8-percpu.md`,
-the `ab` files beside them; `old` main before the task, positive worse).
-The mode on, protocol tier, C4A / C4: larson1 +13.3% / +9.0%, larson16
-+18.1% / +28.0%, xmalloc +19.9% / +20.5%, alloc-test1 +10.2% / +10.6%,
-cfrac +11.5% / +12.8%, glibc-simple (aarch64) and the Valkey model
-(`valkey1` +38% / +58%, `valkey1-free` +49.8% on x86_64), mstress +3.5% /
-+2.4% wall with 328 / 318 MiB against 330 / 342 (jemalloc 299 / 288: the
-x86_64 row moves from +18.8% to +10.6% against jemalloc, 0.6 points
-outside the Phase 1.5 band, at one arena per CPU). Per operation
-(`quick-perf`): +83 / +65 instructions and +9.7 / +6.3 cycles on larson1
-with L1D misses flat, so the price is instructions (the thread pointer,
-the `mm_cid` load, the table index, the descriptor store, the section's
-bookkeeping, in a called function against an inline two-load pop); on
-the Valkey model +183 / +180 instructions and +68 / +107 cycles, the
-extra being the compact-mode scheduled pop's locked one-slot claim (one
-pop in 8 on a fragmented 500 MiB heap, where the thread run amortises one
-lock over `cap / 4`). The default's own cost under the tail-call
-dispatch (`percpu_arena:off` against `old`): +9 instructions and +1.3 /
-+0.1 cycles per larson operation, the `PUSH_PERCPU` test in the entry
-points; `quick` under the default was GO on both VMs, and the cost was
-then removed by the zero-cost dispatch above
-(`bench/results/2026-09-21-*-percpu-dispatch*.md`). What the mode buys is memory bounded by cores, visible only
-with more threads than CPUs (the Ruby idle-thread soak rows in the same
-files: the Sidekiq-shaped `bench/ruby/soak.rb` at 16 / 64 / 256 mostly
-idle threads peaks at 305 / 1649 / 2426 MiB with thread caches on the C4A
-and 90 / 106 / 115 MiB under the mode, 326 / 2073 / 3570 against 107 /
-150 / 231 on the C4, the live set about 21 MiB in every run; a 64-thread
-larson on 16 vCPUs runs at -31% / -34% throughput and -30% / -22% RSS).
-
-Observability: `stats.percpu.enabled`, `stats.percpu.ids` (table
-entries), `stats.percpu.headers` (installed), `stats.percpu.cached`
-(slots, a racy snapshot) and `stats.percpu.aborts` (sections the kernel
-restarted), the `Per-CPU caches:` line of
-`malloc_stats_print` (state, the same counts, the probe's `__rseq_size`
-and offset, and the note when `percpu_arena:percpu` fell back), and lane
-B's `rseq`/`mm_cid` keys of the feature report. Tests: `rseq.rs` (the
-both-ways probe, `mm_cid` distinct across busy threads), `heap/`
-`linux_tests::percpu_*` (the mode follows the probe and the key; plain
-allocations through the CPU caches with exact thread counters and the
-zero prefix; the flush's high-half release and the drain; slot
-conservation under 2x-CPU threads, migrations and aborts; heaps off the
-mode), `tests/c/percpu.c` under `percpu` and `off`. Cost and the default
-decision: `bench/results/2026-09-19-*-task8-percpu.md`.
-
-The feature report's `rseq=` words (`sys::features::rseq_words`, derived
-from `rseq::probe`) come from the same three symbols plus the area's
-kernel-written `cpu_id` (the fact of registration) and print `rseq=yes rseq_size=33 mm_cid=yes` (the
-7.0 GCE kernels under glibc 2.44), `rseq=yes rseq_size=20 mm_cid=no` (a
-kernel that reports no `AT_RSEQ_FEATURE_SIZE`, the Mac's 6.10 linuxkit VM)
-or `rseq=no` (no registration, or a libc without the symbols). It is the
-report's verdict; the mode reads `mm_cid` itself through `rseq.rs`.
-
-The protocol is model-checked before it is implemented (section 17, the
-model row; `src/model.rs`, the `percpu_*` scenarios, 2026-09-19, lane C),
-and an implementation is to be read against these properties at merge:
-`mm_cid` is read inside the critical section and the cache index is
-derived from that read only; the section ends with a single commit store
-(the `len` write; a push's entry store before it is dead until that
-write); the abort handler restarts at the section's start and re-reads
-`mm_cid`; no kernel-owned field of the rseq area is ever written; the
-refill and the flush run outside the section, the batch is pushed back
-through a second section on whatever cid the thread is on then (a thread
-that popped on one cid may push on another, and a cache then holds slots
-of another cid's arena), and a flushed batch is released slab by slab
-through the owner word's arena (`release_routed`); the cache's zero prefix
-follows design 6.3 (a zero batch extends it, a push below it clips it, a
-flush drops it). The model shows that a pop or push done as plain loads
-and stores under the cid last read, or with `mm_cid` read before the
-section, hands one slot to two threads within 40 states, and that the
-protocol as stated passes every scenario.
+Not implemented; see the archive tag `archive/prototype-2026-09-30`.
+`percpu_arena` is accepted for jemalloc compatibility and has no effect
+(section 12).
 
 ## 16. Observability
 
@@ -2318,11 +2077,10 @@ protocol as stated passes every scenario.
   kernel probes first (`page_size=4096 guard_install=yes mseal=yes
   process_madvise=pidfd_self process_madvise_free=yes anon_name=yes
   populate_write=yes thp=madvise mthp=2M rseq=yes rseq_size=33
-  mm_cid=yes slice_ext=kernel-disabled`: whether `MADV_POPULATE_WRITE` works (5.14,
+  slice_ext=kernel-disabled`: whether `MADV_POPULATE_WRITE` works (5.14,
   section 8), the THP setting or `none`, the
   folio sizes a `MADV_HUGEPAGE`d range can get or `none`, glibc's rseq
-  registration with whether it covers `mm_cid`, section 15, and the
-  kernel's answer for the time slice extension, section 17) then `pac=yes`
+  registration and its size, and the kernel's answer for the time slice extension, section 17) then `pac=yes`
   or `pac=no` (pointer authentication, section 17). The string is static,
   built once at init without allocating (rebuilt in a fork child, whose
   purge backend is re-probed), and byte-identical to the `Kernel and CPU
@@ -2349,17 +2107,17 @@ runs on every row.
 | `PR_SET_VMA_ANON_NAME` | kernel 5.17 with `CONFIG_ANON_VMA_NAME` | named `challoc:*` mappings in `/proc/pid/maps` | skip |
 | `MADV_POPULATE_WRITE` (`populate_write`) | kernel 5.14 (probed on a scratch page: the call and `mincore` afterwards) | the prefault pass (section 8, plan Phase 2.5 task 11; `purge::prefault`, `ClassState::prefault_next`), behind `prefault:true` with `background_thread:true`: the background thread commits the slab the next refill of a class would commit and populates it with one call while it is still unpublished, then publishes it as `Purged` for the refill to take; `stats.prefault.*` and the `Prefault:` report line | the same pass with one write of zero per page; `Prefault: off (prefault:false)` by default |
 | PSI triggers on `memory.pressure` | kernel 6.4 (unprivileged), cgroup2 mounted writable | the background thread arms a trigger and reacts to pressure at once (section 11) | sample `memory.current` on the tick |
-| rseq `mm_cid` (`rseq`, `rseq_size`, `mm_cid`) | kernel 6.3 (`CONFIG_RSEQ`, `CONFIG_SCHED_MM_CID`) reporting `AT_RSEQ_FEATURE_SIZE >= 28`, glibc 2.35+'s registered area (`__rseq_size`, `__rseq_offset`, `__rseq_flags`, read from the weak symbols at init, and the area's own `cpu_id` for the fact of registration; `rseq::probe` for both the mode and the report's `rseq=` words; `__rseq_size >= 28` is the gate) | the per-CPU mode (section 15, plan Phase 2.5 task 8): caches and arenas keyed by the running thread's concurrency id, pop and push in rseq critical sections, behind `percpu_arena:percpu` (the opt-in; `auto`, the default, is thread caches); the cost and the default decision are in section 15; `rseq=yes rseq_size=33 mm_cid=yes` on the 7.0 GCE VMs | thread caches (`percpu_arena:off`, `double_free_scan:true`, or `rseq=yes rseq_size=20 mm_cid=no` as on the Mac's 6.10 linuxkit VM, `rseq=no rseq_size=0` without a registration: `GLIBC_TUNABLES=glibc.pthread.rseq=0`, no `CONFIG_RSEQ`, a libc without the symbols); `percpu` says so in the report |
+| rseq registration (`rseq`, `rseq_size`) | glibc 2.44's registered area (`__rseq_size`, `__rseq_offset`, `__rseq_flags`, read from the weak symbols at init, and the area's own `cpu_id` for the fact of registration; `rseq::probe`) | the time slice extension's size gate and area (below); `rseq=yes rseq_size=33` on the 7.0 GCE VMs | `rseq=no rseq_size=0` without a registration (`glibc.pthread.rseq=0`, a kernel without `CONFIG_RSEQ`); `rseq_size=20` on a kernel that reports no `AT_RSEQ_FEATURE_SIZE` |
 | Transparent huge pages (`thp`, `mthp`) | any kernel with `CONFIG_TRANSPARENT_HUGEPAGE`; the per-size `hugepages-<n>kB` knobs since 6.8 | off by default (`thp:never`: byte for byte the allocator without the key on the fast paths, plus one `MADV_NOHUGEPAGE` each on the class superblock and the metadata reservation at init (plan Phase 2.5 task 16, `thp::advise_reservation` from `layout::Regions::reserve`, and again from `force_never`), a VMA flag every later split inherits, so that on a host whose global mode is `always` (Chainguard OS ships `always` with the 2 MiB size on `inherit`; Debian's kernels boot `always`) no slab region of challoc's gets a huge page; the huge region is not advised and follows the host's policy (the 2026-09-20 decision, option (d) of `bench/results/2026-09-20-aarch64-cgos-thp-ab.md`: `never` is the slab regions' RSS discipline, and a huge run is a whole allocation the program asked for, which takes 2 MiB pages on an `always` host as jemalloc's large extents do; advising it too cost the Valkey model 10 points of `valkey1` on Chainguard OS, the 32 MiB of tables it keeps in huge runs, for no RSS gain on that heap). The both-ways test `tests/c/thp.c never` reads the global mode from sysfs, checks `nh` on the class region and no `nh` on the huge run on every kernel with THP, `stats.thp.nohuge_ranges` 2, and, on an `always` host, `AnonHugePages` 0 kB and `THPeligible` 0 on the class region after 8 MiB of small blocks and `THPeligible` 1 with `AnonHugePages` back on an 8 MiB huge run; the before/after numbers on the 7.0 VM with the global mode set to `always` are in `bench/results/2026-09-19-lane-b-floor-fixes.md`, the same-host A/B of the four settings on Chainguard OS in `2026-09-20-aarch64-cgos-thp-ab.md`. `auto` and `always` issue no `MADV_NOHUGEPAGE`: on an `always` host their unadvised regions stay eligible for the host's PMD pages. `thp:auto` (plan Phase 2.5 task 9, `thp.rs`): `MADV_HUGEPAGE` on the slab groups of every class whose slab holds an enabled folio size below the PMD (64 KiB slabs and up with `hugepages-64kB` enabled), and metadata commits rounded to and advised with that folio, never a 2 MiB page (the fork copy-on-write cost that makes Redis and Valkey forbid huge pages stays absent); inert, and the report says why, where the kernel enables no such size or where the PMD size is `madvise`-gated (`hugepages-2048kB/enabled` `madvise`, or `inherit` under a `madvise` top level, Ubuntu's default), because the same advice would then make the regions eligible for 2 MiB pages at the fault and through khugepaged; the host requirement is `hugepages-64kB/enabled=madvise` (or `always`) with `hugepages-2048kB/enabled=never` (or `always`, the host's own decision), root-only knobs. `thp:always`: with the PMD size enabled and no larger than 2 MiB (`thp::LG_PMD_CHUNK_MAX`: the PMD is `page * page / 8`, 2 MiB at 4 KiB pages, 32 MiB at 16 KiB, 512 MiB at 64 KiB, and a chunk of the larger sizes committed and advised per class would be the RSS floor of the process: the 64 KiB matrix cell showed 1.7 GiB of advised chunks for an 8 MiB test heap and the kernel gave none of them a folio, `THPeligible 0`), class regions are committed and advised in PMD-sized chunks so the first touch maps a 2 MiB page (guard slabs inside a chunk stay unused but unguarded: a marker there splits the page), huge runs of a PMD or more are advised (section 7), and the metadata takes the sub-PMD folio if one is enabled; a purge of a slab inside a 2 MiB page splits it, the kernel's cost of the mode. On a PMD over 2 MiB `always` is the folio path over the enabled sizes below the PMD (2 MiB slabs and up when `hugepages-2048kB` is enabled at 64 KiB pages) and inert, reason `PmdTooLarge`, when none is. Measured in `bench/results/2026-09-19-lane-b-mthp.md`: `auto` takes a quarter of larson1's dTLB refills on the C4A (4.0 -> 3.05 per operation, jemalloc 1.75) and puts valkey1's below jemalloc's (2.81 -> 2.44), leaves the Valkey-shaped rows flat, makes `fork()` 18% cheaper on a 500 MiB heap and the copy-on-write burst unchanged, and costs larson 1.6% with 7..19% more RSS on 16..100 MiB heaps (a folio per touched slab and table), which is why it is the documented opt-in and not the default; `always` is +10..15% on valkey1 at +10% RSS on 585 MiB and 2..4x on small heaps | small pages; `thp=none mthp=none` on a kernel without THP |
 | PAC (`HWCAP_PACA` and `HWCAP_PACG`) | arm64 CPU (Armv8.3) and kernel | signed cache entries and TLS heap pointer (`pacda`/`autda`, sections 6.1 and 6.2) behind `pac_pointers:true`, off by default on the cost (section 14); `pac=yes` on Axion and the Mac VM, `no` on Altra; FEAT_FPAC decides whether a failure faults at the `autda` or on first use | plain pointers, the same binary, one predicted branch on a byte the fast paths load anyway |
 | rseq time slice extension (`slice_ctrl`, `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE`) | kernel 7.0 with `CONFIG_RSEQ_SLICE_EXTENSION` (default N; needs `GENERIC_ENTRY` and `HAVE_GENERIC_TIF_BITS`, which x86_64 has and arm64 does not, through master) and glibc registering the v2 size (`__rseq_size >= 32`: 2.44 registers 33); Ubuntu's `7.0.0-1011-gcp` leaves the option off, so the GCE reference VMs read `kernel-disabled` and the numbers come from a 7.0.14 built with it (`bench/results/2026-09-19-x86_64-lane-c-task15-slice-ext.md`) | every lock holder's request to defer a preemption until the release (`slice.rs`, the subsection below; `slice_ext:auto`), the `prctl` enable per thread on its first hold, `rseq_slice_yield` (or `sched_yield` where seccomp hides the new syscall) after a granted release; the feature line's `slice_ext=` key (`sys::features::SliceExt`, read through `slice::probe` and `slice::verdict`, plan task 15) says `on` when lock holders request it and otherwise the kernel's answer (`available` under `slice_ext:off`, `kernel-disabled`, `no-slice_ctrl`, `no-rseq`, `prctl-failed`) | the lock without the request: one relaxed load per hold; `Slice extension: off (<why>)` in the report and the same word after `slice_ext=` in the feature line |
-| Model-checked protocol (`cargo test --features std model::`, `src/model.rs`) | the host test suite, no hardware: an exhaustive interleaving model of the claim, release, `on_live_zero` and purge steps of `class/`, memoised on the whole state, with the invariants of section 4 and 5 checked at every state (no slot handed to two claimers, a slot reported zero reads zero, `live` equals set bits plus in-flight reservations, a slab in an arena's set is `Empty`/`Purged` with `live == 0` and owned by that arena, a `Purged` slab reads zero) | nothing at run time: it is the proof obligation for a change to the protocol. Replaying the pre-fix step order finds the calloc race (Phase 1.5 task 7); the current order passes every scenario. Since 2026-09-19 (lane C, plan Phase 2.5 task 8) the `percpu_*` scenarios model the per-CPU claim protocol of section 15 (caches owned by an `mm_cid` read inside an rseq critical section with one commit store, the kernel's abort of a section whose thread was descheduled, threads that pop on one cid and push on another, the refill and the flush through the cid's arena, the zero prefix) with the further invariants that no slot is in two caches or in a cache and owned by a thread, that every set bit has exactly one holder (a lost push is a bit with none) and that a cache is mutated only by a section whose thread kept its cid to the commit; the variants without a section, or with `mm_cid` read outside it, hand a slot to two threads within 40 states, and lane A's implementation is compared against the properties listed in section 15 at merge | none needed |
+| Model-checked protocol (`cargo test --features std model::`, `src/model.rs`) | the host test suite, no hardware: an exhaustive interleaving model of the claim, release, `on_live_zero` and purge steps of `class/`, memoised on the whole state, with the invariants of section 4 and 5 checked at every state (no slot handed to two claimers, a slot reported zero reads zero, `live` equals set bits plus in-flight reservations, a slab in an arena's set is `Empty`/`Purged` with `live == 0` and owned by that arena, a `Purged` slab reads zero) | nothing at run time: it is the proof obligation for a change to the protocol. Replaying the pre-fix step order finds the calloc race (Phase 1.5 task 7); the current order passes every scenario. | none needed |
 
 The kernel keys of the feature report are `page_size guard_install mseal
 process_madvise process_madvise_free anon_name populate_write thp mthp
-rseq rseq_size mm_cid slice_ext`
+rseq rseq_size slice_ext`
 (`populate_write` since plan Phase 2.5 task 11: the prefault pass's
-populate; `rseq`, `rseq_size` and `mm_cid` since plan
+populate; `rseq` and `rseq_size` since plan
 Phase 2.5 task 8, lane B: the glibc registration is probed like a kernel
 feature and printed with them; `slice_ext` since task 15: the kernel's
 answer for the time slice extension, `kernel-disabled` on the 7.0 GCE
@@ -2811,7 +2569,7 @@ src/sys/features.rs   kernel feature probing; the feature line as a key table (w
 src/sys/cgroup.rs     cgroup2 discovery, limit walk, sampling (memory.current, every memory.events counter), PSI trigger arming
 src/sys/pac.rs        pointer authentication of the TLS heap pointer (arm64 FEAT_PAuth)
 src/tls.rs            initial-exec TLS accessor
-src/rseq.rs           restartable sequences: the rseq probe (__rseq_offset/size/flags, mm_cid; also the feature line's rseq= words) and the per-CPU cache critical sections (asm, both architectures, one descriptor and abort-handler macro)
+src/rseq.rs           glibc's rseq registration: the probe (__rseq_offset/size/flags, the area's cpu_id) the slice extension and the feature line's rseq= words read
 src/slice.rs          the rseq time-slice extension for lock holders (`slice_ext`)
 src/lock.rs           futex lock, padded lock
 src/layout/mod.rs     size classes (Class, CLASSES, class_of), address-space parameters
@@ -2830,7 +2588,6 @@ src/class/abort.rs    the #[cold] heap-inconsistency aborts of the class protoco
 src/class/tests.rs    the class tests over a synthetic region (Env)
 src/heap/mod.rs       CacheHeader, Heap: thread-cache fast and slow paths, refill, flush, compaction, cache GC; the crate-facing alloc/free entry functions
 src/heap/shared.rs    Shared: process-wide state, init, the free checks and routing (owner lookup never materialises an arena), GuardTest, the thread-exit key
-src/heap/percpu.rs    the per-CPU mode (section 15): Percpu, CpuCache, the per-CPU Heap paths and push wrappers
 src/heap/thread.rs    thread lifecycle (6.5): TLS sentinels, heap_for_thread/existing_heap, the exit destructor
 src/heap/flush.rs     the flush's grouping pass (group_by_slab, flag_sort) and the straddling double-free abort
 src/heap/mallocx.rs   MALLOCX_* flag decoding, explicit tcache ids, the mallocx/dallocx routing (re-exported by arena.rs)
@@ -2839,7 +2596,7 @@ src/huge/mod.rs       huge allocator: extents (add_extent/drop_extent/retire), g
 src/huge/table.rs     the open-addressing descriptor table (page number to HugeDesc); never fills its last slot
 src/huge/tests.rs, src/huge/linux_tests.rs  huge tests: host, and the ones that need a kernel
 src/meta.rs           metadata region allocator
-src/model/            test-only: the exhaustive interleaving model of the slab protocol (mod, state, steps, percpu, scenarios; section 17's row); steps.rs matches class::protocol exhaustively
+src/model/            test-only: the exhaustive interleaving model of the slab protocol (mod, state, steps, scenarios; section 17's row); steps.rs matches class::protocol exhaustively
 src/purge.rs          decay driver, batching and advice, Decayer; root of purge/
 src/purge/curve.rs    the decay period and curve (NEVER, STEPS, WEIGHTS, Curve)
 src/purge/background.rs, src/purge/background_host.rs   the background thread (section 8.1) and the host stub with the same names, selected by cfg + #[path]

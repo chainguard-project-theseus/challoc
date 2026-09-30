@@ -56,7 +56,7 @@ endif
 
 # CHALLOC_CONF, when set on the make command line or in the environment, is
 # forwarded into every container: challoc reads it after MALLOC_CONF and the
-# stock allocators ignore it, so `make <target> CHALLOC_CONF=percpu_arena:percpu`
+# stock allocators ignore it, so `make <target> CHALLOC_CONF=zero_on_free:true`
 # puts challoc alone under a key in any suite.
 # CGROUP_PEAK=1: the container joins the host's
 # cgroup namespace and gets /sys/fs/cgroup mounted read-write, so the soak

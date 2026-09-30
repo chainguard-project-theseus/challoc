@@ -182,14 +182,6 @@ pub enum Leaf {
     StatsArenaBinCurregs,
     StatsArenaBinCurslabs,
     StatsArenaBinNonfullSlabs,
-    /// `stats.percpu.*` (design 15): whether the per-CPU mode is on, the
-    /// table's id count, installed headers and cached slots.
-    StatsPercpuEnabled,
-    StatsPercpuIds,
-    StatsPercpuHeaders,
-    StatsPercpuCached,
-    /// `stats.percpu.aborts`: critical sections the kernel restarted.
-    StatsPercpuAborts,
     ThreadTcacheFlush,
     ThreadTcacheEnabled,
     ThreadAllocated,
@@ -404,14 +396,7 @@ static STATS_PREFAULT: [Node; 9] = [
     stat("wakes", StatsPrefaultWakes, |_| Ok(Size(purge::prefault::stats().wakes as usize))),
     stat("active", StatsPrefaultActive, |_| Ok(Size(purge::prefault::stats().active as usize))),
 ];
-static STATS_PERCPU: [Node; 5] = [
-    stat("enabled", StatsPercpuEnabled, |_| Ok(Bool(shared().percpu_on()))),
-    stat("ids", StatsPercpuIds, |_| Ok(Size(shared().percpu.ids() as usize))),
-    stat("headers", StatsPercpuHeaders, |_| Ok(Size(percpu_snapshot().0))),
-    stat("cached", StatsPercpuCached, |_| Ok(Size(percpu_snapshot().1))),
-    stat("aborts", StatsPercpuAborts, |_| Ok(Size(crate::rseq::aborts() as usize))),
-];
-static STATS: [Node; 11] = [
+static STATS: [Node; 10] = [
     stat("allocated", StatsAllocated, |_| Ok(Size(stats::snapshot(shared()).totals.allocated))),
     stat("active", StatsActive, |_| Ok(Size(stats::snapshot(shared()).totals.active))),
     stat("metadata", StatsMetadata, |_| Ok(Size(stats::snapshot(shared()).totals.metadata))),
@@ -422,7 +407,6 @@ static STATS: [Node; 11] = [
     dir("cgroup", &STATS_CGROUP),
     dir("thp", &STATS_THP),
     dir("prefault", &STATS_PREFAULT),
-    dir("percpu", &STATS_PERCPU),
 ];
 static THREAD_TCACHE: [Node; 2] = [leaf("flush", ThreadTcacheFlush), leaf("enabled", ThreadTcacheEnabled)];
 static THREAD: [Node; 6] = [
@@ -761,8 +745,10 @@ fn cstr_of(s: &'static str) -> *const c_char {
         "never" => b"never\0",
         "auto" => b"auto\0",
         "always" => b"always\0",
-        // `opt.percpu_arena` (config::PercpuArena::name); `auto` shares the arm above.
+        // `opt.percpu_arena` (config::PercpuArena::name).
+        "disabled" => b"disabled\0",
         "percpu" => b"percpu\0",
+        "phycpu" => b"phycpu\0",
         "off" => b"off\0",
         // `opt.slice_ext` (config::SliceExt::name); `auto` and `off` share the arms above.
         "on" => b"on\0",
@@ -808,12 +794,6 @@ fn bin_stats(mib: &[usize]) -> Result<BinStats, c_int> {
 fn tracked() -> Result<&'static crate::sys::cgroup::Cgroup, c_int> {
     let s = shared();
     if s.cgroup.tracked() { Ok(&s.cgroup) } else { Err(ENOENT) }
-}
-
-/// `(headers installed, slots cached)` of the per-CPU mode; zeros off it.
-fn percpu_snapshot() -> (usize, usize) {
-    let s = shared();
-    if s.percpu.on() { s.percpu.snapshot() } else { (0, 0) }
 }
 
 /// `arena.<i>.purge` and `arena.<i>.decay` address every arena when `i` is
@@ -990,12 +970,6 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                 if a as usize >= MAX_ARENAS || shared.arena(a as u16).is_none() {
                     return Err(EFAULT);
                 }
-                // Under the per-CPU mode an explicit arena (`arenas.create`)
-                // takes the thread off the per-CPU paths and onto its own
-                // caches there; an automatic one puts it back (its home
-                // arena then serves huge runs and `MALLOCX_ARENA` calls
-                // only). jemalloc refuses the automatic range with EPERM
-                // under `percpu_arena`; here nothing needs refusing.
                 h.set_arena(shared, a as u16);
             }
             io.read(h.arena() as c_uint)
@@ -1443,9 +1417,9 @@ mod tests {
             cfg.thp = v;
             check(&cfg, "thp", v.name());
         }
-        for v in [PercpuArena::Auto, PercpuArena::Percpu, PercpuArena::Off] {
+        for v in [PercpuArena::Disabled, PercpuArena::Percpu, PercpuArena::Phycpu] {
             match v {
-                PercpuArena::Auto | PercpuArena::Percpu | PercpuArena::Off => {}
+                PercpuArena::Disabled | PercpuArena::Percpu | PercpuArena::Phycpu => {}
             }
             cfg.percpu_arena = v;
             check(&cfg, "percpu_arena", v.name());
@@ -1715,19 +1689,7 @@ mod tests {
         }
         let c = crate::layout::class_of(48).unwrap();
         let h = heap::heap_for_thread(s).unwrap();
-        // In the per-CPU mode (design 15) the frees went to the running
-        // CPU's cache, which `thread.tcache.flush` drains as well.
-        let percpu = s.percpu_on();
-        if percpu {
-            assert!(h.cache(c).is_none(), "the thread's own cache is untouched in the per-CPU mode");
-            assert!(get::<bool>("stats.percpu.enabled"));
-            assert!(get::<usize>("stats.percpu.cached") >= 64);
-        } else {
-            assert!(!get::<bool>("stats.percpu.enabled"));
-            assert_eq!(get::<usize>("stats.percpu.cached"), 0);
-            assert!(h.cache(c).map_or(0, |cc| cc.len()) >= 64);
-        }
-        assert_eq!(get::<usize>("stats.percpu.ids") > 0, percpu);
+        assert!(h.cache(c).map_or(0, |cc| cc.len()) >= 64);
         assert_eq!(call("thread.tcache.flush"), 0);
         assert_eq!(h.cache(c).map_or(0, |cc| cc.len()), 0);
         // thread.tcache.enabled: off frees the caches and serves directly;
@@ -1738,7 +1700,6 @@ mod tests {
         assert!(!get::<bool>("thread.tcache.enabled"));
         let h = heap::heap_for_thread(s).unwrap();
         assert!(h.cache(c).is_none(), "caches were freed");
-        assert!(!h.percpu(), "off the per-CPU paths while disabled");
         assert_eq!(get::<u64>("thread.allocated"), a_before);
         let q = malloc(48);
         assert!(h.cache(c).is_none(), "no cache is created while disabled");
@@ -1746,13 +1707,8 @@ mod tests {
         free(q);
         assert!(h.cache(c).is_none());
         assert_eq!(set("thread.tcache.enabled", true), 0);
-        assert_eq!(h.percpu(), percpu);
         let q = malloc(48);
-        if percpu {
-            assert!(h.cache(c).is_none(), "the per-CPU caches serve again");
-        } else {
-            assert!(h.cache(c).is_some(), "caches come back");
-        }
+        assert!(h.cache(c).is_some(), "caches come back");
         free(q);
         // thread.arena moves the home arena.
         let home: c_uint = get("thread.arena");
@@ -1760,9 +1716,7 @@ mod tests {
         let a: c_uint = get("arenas.create");
         assert_eq!(set("thread.arena", a), 0);
         assert_eq!(get::<c_uint>("thread.arena"), a);
-        // An explicit arena takes the thread off the per-CPU paths: plain
-        // malloc comes from that arena through the thread's own caches.
-        assert!(!h.percpu());
+        // Plain malloc comes from that arena through the thread's own caches.
         let q = malloc(200);
         assert_eq!(s.classify_free(q).map(|x| x.1), Ok(a as u16));
         free(q);
@@ -1770,7 +1724,6 @@ mod tests {
         assert_eq!(set("thread.arena", 5000 as c_uint), EFAULT);
         assert_eq!(set("thread.arena", home), 0);
         assert_eq!(get::<c_uint>("thread.arena"), home);
-        assert_eq!(h.percpu(), percpu, "back on an automatic arena, back on the per-CPU paths");
         // Explicit caches.
         let t: c_uint = get("tcache.create");
         let flags = mallocx_tcache(t as u16) as c_int;
@@ -1859,13 +1812,7 @@ mod tests {
         let home = crate::heap::existing_heap(s).unwrap().arena();
         let mid = mallocx(8 << 10, 0);
         assert!(crate::layout::class_of(8 << 10).unwrap() >= NBINS);
-        if s.percpu_on() {
-            // The per-CPU mode (design 15): the running CPU's arena, an
-            // automatic one.
-            assert!(owner_of(s, mid as *const c_void).is_some_and(|a| (a as u32) < s.arenas.auto()));
-        } else {
-            assert_eq!(owner_of(s, mid as *const c_void), Some(home));
-        }
+        assert_eq!(owner_of(s, mid as *const c_void), Some(home));
         dallocx(mid, 0);
         dallocx(m, 0);
         dallocx(h, 0);

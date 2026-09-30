@@ -1,8 +1,8 @@
-//! The modelled state (module docs in `mod.rs`): the slab, the per-cid
-//! cache, the shared class and arena state, the operations, and the
-//! per-thread machine with its locals; plus the bit helpers. Everything
-//! is `pub(super)`: the steps in `steps.rs` and `percpu.rs` read and
-//! write these fields directly, as the real code does its own.
+//! The modelled state (module docs in `mod.rs`): the slab, the shared
+//! class and arena state, the operations, and the per-thread machine with
+//! its locals; plus the bit helpers. Everything is `pub(super)`: the steps
+//! in `steps.rs` read and write these fields directly, as the real code
+//! does its own.
 
 use super::*;
 
@@ -37,30 +37,12 @@ pub(super) struct Slab {
     pub(super) committed: bool,
 }
 
-/// One per-cid cache (`CacheHeader`, design 6.2): the stack, `len`, and
-/// the zero prefix `slots[..zeroed]`. Entries above `len` are kept
-/// blank so equal caches hash equal.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
-pub(super) struct Cache {
-    pub(super) slots: [Held; CACHE_CAP as usize],
-    pub(super) len: u8,
-    pub(super) zeroed: u8,
-}
-
 /// The shared state: what every thread's steps read and write.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(super) struct Shared {
     /// The class lock of each arena: the thread holding it, or none.
     pub(super) lock: [Option<u8>; NARENAS],
     pub(super) slabs: [Slab; NSLABS],
-    /// The per-cid caches (per-CPU mode; blank otherwise).
-    pub(super) caches: [Cache; NCACHES],
-    /// A section committed to a cache after its thread had lost the cid
-    /// that picked it (another thread's section ran on that cid between
-    /// the `mm_cid` read and the commit): (thread, cache). The kernel's
-    /// abort makes this impossible under `Section::Rseq`; the buggy
-    /// variants set it.
-    pub(super) stale_commit: Option<(u8, u8)>,
     /// Slab bitmasks: `Inner::partial`, `empty`, `purged` per arena.
     pub(super) partial: [u8; NARENAS],
     pub(super) empty: [u8; NARENAS],
@@ -86,24 +68,12 @@ pub enum Op {
     /// `ClassState::release` of every held slot, grouped by slab in
     /// address order (`Heap::flush`'s bucket pass).
     Release,
-    /// `ClassState::purge_empty(u64::MAX)` on the thread's arena (the
-    /// cid's arena in the per-CPU mode).
+    /// `ClassState::purge_empty(u64::MAX)` on the thread's arena.
     Purge,
-    /// Per-CPU mode: `malloc` through the cid's cache (design 6.3 step 3
-    /// and 4 inside an rseq section), the refill when it is empty. The
-    /// slot goes to the thread's owned slots.
-    Pop,
-    /// Per-CPU mode: `free` of the `i`th owned slot through the cid's
-    /// cache (design 6.3 step 4 inside an rseq section), the flush of half
-    /// the cache when it is full.
-    Push(u8),
-    /// Never in a program: the scheduler's step in a trace (a thread taken
-    /// off its cid, or put on one).
-    Sched,
 }
 
-/// A slot a thread holds: slab, slot, and whether the refill (or the
-/// cache's zero prefix) reported it zero (cleared by a write).
+/// A slot a thread holds: slab, slot, and whether the refill reported it
+/// zero (cleared by a write).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub(super) struct Held {
     pub(super) slab: u8,
@@ -153,22 +123,6 @@ pub(super) struct Thread {
     /// (`release_routed`: the owner word's arena), whose lock
     /// `on_live_zero` and `reopen` take.
     pub(super) rel_arena: u8,
-    /// Per-CPU mode: the thread lost the cid it read at the section's
-    /// start (another thread's section ran on it, so this thread was
-    /// descheduled in between) and was not aborted: its commit is stale.
-    pub(super) stale: bool,
-    /// Per-CPU mode: the slots the program owns (a `Pop`'s result until
-    /// its `Push`); `held` is then the staging of a refill's batch or a
-    /// flush's slots on their way to `Release`.
-    pub(super) owned: [Held; MAX_OWNED],
-    pub(super) nowned: u8,
-    /// The section in flight: the cid read at its start (the cache
-    /// index), whether the thread is inside it (a reschedule aborts it),
-    /// and the speculative reads (`len` and the top entry).
-    pub(super) sec_cid: u8,
-    pub(super) in_section: bool,
-    pub(super) spec_len: u8,
-    pub(super) spec_ent: Held,
 }
 
 /// The whole model state: the memoisation key.
@@ -238,43 +192,7 @@ impl Thread {
             was_full: 0,
             dec_pending: false,
             rel_arena: arena,
-            stale: false,
-            owned: [Held::default(); MAX_OWNED],
-            nowned: 0,
-            sec_cid: 0,
-            in_section: false,
-            spec_len: 0,
-            spec_ent: Held::default(),
         }
-    }
-
-    /// Per-CPU mode: the program takes ownership of a popped slot.
-    pub(super) fn own(&mut self, h: Held) {
-        assert!(
-            (self.nowned as usize) < MAX_OWNED,
-            "model: a program owns more than MAX_OWNED slots"
-        );
-        self.owned[self.nowned as usize] = h;
-        self.nowned += 1;
-    }
-
-    /// Per-CPU mode: the program gives up its `i`th owned slot.
-    pub(super) fn take_owned(&mut self, i: u8) -> Held {
-        let h = self.owned[i as usize];
-        for k in (i as usize + 1)..self.nowned as usize {
-            self.owned[k - 1] = self.owned[k];
-        }
-        self.nowned -= 1;
-        self.owned[self.nowned as usize] = Held::default();
-        h
-    }
-
-    /// Drop every staged slot (`held`), returning them in order.
-    pub(super) fn drain_held(&mut self) -> Vec<Held> {
-        let out = self.held[..self.nheld as usize].to_vec();
-        self.held = [Held::default(); MAX_HELD];
-        self.nheld = 0;
-        out
     }
 
     pub(super) fn hold(&mut self, h: Held) {
@@ -326,16 +244,5 @@ impl Thread {
         self.was_full = 0;
         self.dec_pending = false;
         self.rel_arena = 0;
-        self.clear_section();
-        self.sec_cid = 0;
-        self.stale = false;
-    }
-
-    /// The speculative reads of a section are dead once it committed or
-    /// aborted.
-    pub(super) fn clear_section(&mut self) {
-        self.in_section = false;
-        self.spec_len = 0;
-        self.spec_ent = Held::default();
     }
 }

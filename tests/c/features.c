@@ -68,9 +68,9 @@ int main(void)
     CHECK(strncmp(line, "page_size=", 10) == 0, "line does not start with page_size=");
 
     /* Every key once. */
-    static const char *const keys[] = {"page_size", "guard_install", "mseal",  "process_madvise", "process_madvise_free",
-                                       "anon_name", "populate_write", "thp",   "mthp",            "rseq",
-                                       "rseq_size", "mm_cid",         "slice_ext", "pac"};
+    static const char *const keys[] = {"page_size", "guard_install", "mseal",     "process_madvise", "process_madvise_free",
+                                       "anon_name", "populate_write", "thp",      "mthp",            "rseq",
+                                       "rseq_size", "slice_ext",      "pac"};
     size_t nkeys = sizeof keys / sizeof keys[0];
     for (size_t i = 0; i < nkeys; i++)
         CHECK(has_key(line, keys[i]) == 1, "key %s appears %d times", keys[i], has_key(line, keys[i]));
@@ -107,23 +107,17 @@ int main(void)
         CHECK((v[0] >= '1' && v[0] <= '9') || strncmp(v, "none", 4) == 0, "mthp has value `%.12s`", v);
     }
 
-    /* The rseq keys: rseq and mm_cid are yes/no,
-     * rseq_size a byte count; mm_cid=yes needs rseq=yes and a size of at
-     * least 28 (the field is at 24); a registration always reports at
-     * least the original 20 bytes. */
+    /* The rseq keys: rseq is yes/no, rseq_size a byte count; a
+     * registration always reports at least the original 20 bytes. */
     {
         const char *r = strstr(line, " rseq=") + 6;
         const char *sz = strstr(line, " rseq_size=") + 11;
-        const char *mc = strstr(line, " mm_cid=") + 8;
         CHECK(strncmp(r, "yes", 3) == 0 || strncmp(r, "no", 2) == 0, "rseq has value `%.8s`", r);
         CHECK(sz[0] >= '0' && sz[0] <= '9', "rseq_size has value `%.8s`", sz);
-        CHECK(strncmp(mc, "yes", 3) == 0 || strncmp(mc, "no", 2) == 0, "mm_cid has value `%.8s`", mc);
         long size = strtol(sz, NULL, 10);
-        if (strncmp(mc, "yes", 3) == 0)
-            CHECK(strncmp(r, "yes", 3) == 0 && size >= 28, "mm_cid=yes with rseq=%.3s rseq_size=%ld", r, size);
         if (strncmp(r, "yes", 3) == 0)
             CHECK(size >= 20, "rseq=yes with rseq_size=%ld", size);
-        printf("rseq: rseq=%.3s rseq_size=%ld mm_cid=%.3s\n", r, size, mc);
+        printf("rseq: rseq=%.3s rseq_size=%ld\n", r, size);
     }
 
     /* The slice extension key: one of the probe's

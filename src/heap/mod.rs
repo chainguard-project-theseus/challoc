@@ -21,9 +21,6 @@
 //! heap/shared.rs       Shared: process-wide state and init, the free checks
 //!                      (checked_slot, sized_slot, classify_free, release_routed), huge
 //!                      routing, GuardTest, the thread-exit key and the OS shims (os)
-//! heap/percpu.rs       the per-CPU mode (design 15): Percpu, PercpuState, CpuCache, the
-//!                      per-CPU impl Heap blocks (percpu_alloc/percpu_free, the
-//!                      scheduled pop and run, refill, flush, GC, drain)
 //! heap/mallocx.rs      MALLOCX_* flag decoding (Flags, Tcache) and the routing of
 //!                      mallocx/dallocx/sdallocx onto heaps, explicit caches and the
 //!                      direct paths (design 13.2); arena.rs re-exports it for api/
@@ -133,7 +130,6 @@
 
 mod flush;
 pub mod mallocx;
-mod percpu;
 mod shared;
 mod thread;
 
@@ -142,7 +138,6 @@ pub(crate) mod tests;
 #[cfg(all(test, target_os = "linux"))]
 mod linux_tests;
 
-pub use percpu::{CPU_CACHE_SIZE, CpuCache, Percpu, PercpuState};
 pub use shared::{GuardTest, Shared};
 #[cfg(test)]
 use shared::guard_interval_for;
@@ -155,8 +150,6 @@ use core::ptr;
 
 use crate::arena::Arena;
 use crate::layout::{CLASSES, NCLASSES};
-#[cfg(target_os = "linux")]
-use crate::rseq;
 use crate::sys::pac;
 
 use flush::{group_by_slab, straddling_double_free};
@@ -259,10 +252,6 @@ pub const PUSH_ZERO: u8 = 2;
 /// when the kernel exposes `HWCAP_PACA`/`PACG` and `pac_pointers` is not
 /// `false`; never set on x86_64.
 pub const PUSH_PAC: u8 = 4;
-// The per-CPU mode (design 15) has no bit here: a heap in the mode keeps
-// every home cache header `EMPTY` (`len == cap == 0`), which both fast
-// paths already treat as "slow path", and the slow paths route on
-// `Heap::percpu`; the entry points carry nothing for the mode.
 /// Pops between two fragmentation probes of a class (minus one).
 pub const PROBE_MASK: u32 = (1 << 12) - 1;
 /// A compacting cache serves every `2^COMPACT_SHIFT`th pop of a class
@@ -316,15 +305,6 @@ pub const CACHE_HEADER: usize = core::mem::size_of::<CacheHeader>();
 const _: () = assert!(CACHE_HEADER == 64);
 const _: () = assert!(core::mem::offset_of!(CacheHeader, slots) < 64 - 8);
 
-/// Field offsets of [`CacheHeader`] for the rseq critical sections
-/// (`rseq.rs`), which address the fields from `asm!`.
-pub const OFF_LEN: usize = core::mem::offset_of!(CacheHeader, len);
-pub const OFF_CAP: usize = core::mem::offset_of!(CacheHeader, cap);
-pub const OFF_LOW_WATER: usize = core::mem::offset_of!(CacheHeader, low_water);
-pub const OFF_ZEROED: usize = core::mem::offset_of!(CacheHeader, zeroed);
-pub const OFF_SLOTS: usize = core::mem::offset_of!(CacheHeader, slots);
-pub const OFF_ALLOCS: usize = core::mem::offset_of!(CacheHeader, allocs);
-pub const OFF_COMPACT_MASK: usize = core::mem::offset_of!(CacheHeader, compact_mask);
 impl CacheHeader {
     /// A header that has never been used: both fast paths fall through to
     /// the slow path, which gives it a capacity and a stack.
@@ -444,8 +424,7 @@ impl CacheHeader {
     /// The scheduled-pop mask `mode` implies: [`PROBE_MASK`] while
     /// probing, [`COMPACT_MASK`] while compacting, `u32::MAX` when off (one pop in 2^32 then reaches
     /// `pop_compact`, which pops the top). The one home of the
-    /// mode-to-mask rule; [`CacheHeader::set_mode`] and
-    /// [`CacheHeader::set_mode_volatile`] apply it.
+    /// mode-to-mask rule; [`CacheHeader::set_mode`] applies it.
     fn mask_for(mode: u16) -> u32 {
         match mode {
             MODE_PROBE => PROBE_MASK,
@@ -459,22 +438,6 @@ impl CacheHeader {
     fn set_mode(&mut self, mode: u16) {
         self.mode = mode;
         self.compact_mask = Self::mask_for(mode);
-    }
-
-    /// [`CacheHeader::set_mode`] for a header of the per-CPU table
-    /// (`percpu.rs`), whose mode fields are hints written with volatile
-    /// stores: another thread may own the id by the time they land, and
-    /// a stale mode changes only which pops are scheduled, never a stack.
-    ///
-    /// # Safety
-    /// `h` is a live header of the per-CPU table.
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
-    unsafe fn set_mode_volatile(h: *mut CacheHeader, mode: u16) {
-        // SAFETY: guaranteed by the caller.
-        unsafe {
-            ptr::write_volatile(&raw mut (*h).mode, mode);
-            ptr::write_volatile(&raw mut (*h).compact_mask, Self::mask_for(mode));
-        }
     }
 
     /// Cached pointers, bottom of the stack first (the top is popped next).
@@ -564,10 +527,8 @@ pub struct Heap {
     last_gc: u64,
     /// Bytes counted per operation rather than derived from a cache
     /// header: huge runs, slots served directly from a slab (no cache, or
-    /// `MALLOCX_TCACHE_NONE`) and, in the per-CPU mode, every pop from and
-    /// push onto a CPU cache (a cache shared by the threads of a CPU
-    /// cannot be folded into one thread's counters). The thread caches
-    /// are derived from their headers in [`Heap::stats`].
+    /// `MALLOCX_TCACHE_NONE`). The thread caches are derived from their
+    /// headers in [`Heap::stats`].
     uncached: ThreadStats,
     /// Caches of every other arena this heap has allocated from
     /// explicitly, and the [`FOREIGN`] node ([`ArenaCaches`]).
@@ -582,23 +543,6 @@ pub struct Heap {
     /// Counted in `Arenas::bound` for its home arena: thread heaps are,
     /// explicit caches (`create_detached`) are not.
     bound: bool,
-    /// This heap's plain paths use the per-CPU caches (design 15): the
-    /// mode is on ([`Shared::percpu`]), this is a thread heap (`bound`),
-    /// its caches are enabled and its home arena is an automatic one
-    /// (`Arenas::auto`; a thread moved to an explicit arena by
-    /// `thread.arena` allocates from that arena through its own caches, as
-    /// under jemalloc's `percpu_arena`). Recomputed by [`Heap::set_arena`]
-    /// and [`Heap::set_tcache_enabled`]. Read on the slow paths only: a
-    /// heap with it set never installs a home cache ([`Heap::ensure_cache`]
-    /// refuses the home arena), so its home headers stay `EMPTY` and the
-    /// entry points' pop and push fall through to the slow paths, which
-    /// route here ([`Heap::alloc`], [`Heap::alloc_zeroed`], [`Heap::free`],
-    /// [`Heap::alloc_slow`]); the fast paths carry no test for the mode.
-    percpu: bool,
-    /// The owning thread's rseq area (`rseq::area` at creation; the heap is
-    /// created on its thread), read by the per-CPU paths; null when the
-    /// mode is off.
-    rseq_area: *mut u8,
     /// `slot_randomize`'s xorshift state: 0 until the heap's first
     /// randomised claim seeds it from `getrandom`, so the
     /// default configuration makes no syscall per heap creation.
@@ -621,34 +565,10 @@ impl Heap {
         if h.is_null() {
             shared.arenas.unbind(arena);
         } else {
-            // SAFETY: fresh, exclusively owned; created on the owning
-            // thread, whose rseq area this is.
-            unsafe {
-                (*h).bound = true;
-                (*h).rseq_area = Self::rseq_area_for(shared);
-                (*h).percpu = Self::percpu_for(shared, true, true, arena);
-            }
+            // SAFETY: fresh, exclusively owned.
+            unsafe { (*h).bound = true };
         }
         h
-    }
-
-    /// Whether a heap with these properties takes the per-CPU paths
-    /// ([`Heap::percpu`]).
-    fn percpu_for(shared: &Shared, bound: bool, tcache_enabled: bool, arena: u16) -> bool {
-        shared.percpu_on() && bound && tcache_enabled && (arena as u32) < shared.arenas.auto()
-    }
-
-    /// The calling thread's rseq area when the mode is on, else null.
-    fn rseq_area_for(shared: &Shared) -> *mut u8 {
-        #[cfg(target_os = "linux")]
-        {
-            if shared.percpu_on() { rseq::area(shared.percpu.offset) } else { ptr::null_mut() }
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let _ = shared;
-            ptr::null_mut()
-        }
     }
 
     /// Create a heap homed on `arena` (an explicit cache, or a thread heap
@@ -676,8 +596,6 @@ impl Heap {
             ptr::write(&raw mut (*h).snapshot, ThreadStats::default());
             ptr::write(&raw mut (*h).tcache_enabled, true);
             ptr::write(&raw mut (*h).bound, false);
-            ptr::write(&raw mut (*h).percpu, false);
-            ptr::write(&raw mut (*h).rseq_area, ptr::null_mut());
             ptr::write(&raw mut (*h).rng, 0);
             let caches = (&raw mut (*h).caches).cast::<CacheHeader>();
             for c in 0..NCLASSES {
@@ -696,7 +614,7 @@ impl Heap {
     pub unsafe fn destroy(h: *mut Heap, shared: &Shared) {
         // SAFETY: the caller gives us exclusive ownership of the heap.
         let heap = unsafe { &mut *h };
-        heap.flush_thread_caches(shared);
+        heap.flush_all(shared);
         Self::free_caches(shared, &mut heap.caches);
         for o in Self::nodes(heap.others) {
             // SAFETY: `others` is a list of live metadata blocks owned by
@@ -787,14 +705,6 @@ impl Heap {
             shared.arenas.unbind(old);
             shared.arenas.bind(arena);
         }
-        self.percpu = Self::percpu_for(shared, self.bound, self.tcache_enabled, arena);
-    }
-
-    /// Whether this heap's plain paths use the per-CPU caches (see the
-    /// field).
-    #[inline]
-    pub fn percpu(&self) -> bool {
-        self.percpu
     }
 
     /// Flush the home caches, fold their byte counters into `uncached` and
@@ -859,11 +769,10 @@ impl Heap {
     /// next slow path create caches again.
     pub fn set_tcache_enabled(&mut self, shared: &Shared, on: bool) {
         self.tcache_enabled = on;
-        self.percpu = Self::percpu_for(shared, self.bound, on, self.arena);
         if on {
             return;
         }
-        self.flush_thread_caches(shared);
+        self.flush_all(shared);
         Self::fold_counters(&mut self.uncached, &self.caches);
         Self::free_caches(shared, &mut self.caches);
         for o in Self::nodes(self.others) {
@@ -923,15 +832,9 @@ impl Heap {
     }
 
     /// `malloc` of a non-huge class in the home arena: the cache pop, then
-    /// the slow path. A heap in the per-CPU mode (design 15) goes to the
-    /// running CPU's cache instead ([`Heap::percpu_alloc`]); its home
-    /// caches are never installed, so the entry point's inlined pop has
-    /// already fallen through by the time this runs.
+    /// the slow path.
     #[inline(always)]
     pub fn alloc(&mut self, shared: &Shared, class: usize) -> *mut u8 {
-        if self.percpu {
-            return self.percpu_alloc(shared, class).0;
-        }
         match self.alloc_fast(class, shared.push_flags()) {
             Some(p) => p,
             None => self.alloc_slow(shared, class).0,
@@ -977,13 +880,9 @@ impl Heap {
     }
 
     /// Fast path of `calloc`: the flag is true when the memory is known to
-    /// read as zero, so the caller can skip its `memset`. The per-CPU
-    /// mode as in [`Heap::alloc`].
+    /// read as zero, so the caller can skip its `memset`.
     #[inline(always)]
     pub fn alloc_zeroed(&mut self, shared: &Shared, class: usize) -> (*mut u8, bool) {
-        if self.percpu {
-            return self.percpu_alloc(shared, class);
-        }
         match self.pop_fast(class, shared.push_flags()) {
             Some(r) => r,
             None => self.alloc_slow(shared, class),
@@ -1185,9 +1084,8 @@ impl Heap {
         holes >= COMPACT_MIN_SLABS * CLASSES[class].compact_slots() && holes * COMPACT_MIN_RATIO >= capacity
     }
 
-    /// The compaction probe's gate (module doc), shared by the thread
-    /// ([`Heap::pop_compact`]) and per-CPU (`percpu_scheduled`) scheduled
-    /// pops: the class's refill counter now (the caller stores it as the
+    /// The compaction probe's gate (module doc) for the scheduled pops
+    /// ([`Heap::pop_compact`]): the class's refill counter now (the caller stores it as the
     /// header's `probe_refilled`) and the verdict, given the counter at
     /// the previous probe. Records the class's `note_gate_refill` and
     /// `note_compact_mode(true)` statistics as it decides.
@@ -1284,9 +1182,6 @@ impl Heap {
     /// [`FOREIGN`] cache for the class (design 6.3 step 4).
     #[inline(always)]
     pub fn free(&mut self, shared: &Shared, p: *mut u8) {
-        if self.percpu {
-            return self.percpu_free(shared, p);
-        }
         match shared.classify_free(p) {
             Ok((class, arena)) => {
                 if arena == self.arena {
@@ -1343,15 +1238,14 @@ impl Heap {
         self.uncached.deallocated += bytes as u64;
     }
 
-    /// A slot of `class` was claimed directly (`MALLOCX_TCACHE_NONE`) or
-    /// popped from a per-CPU cache on this thread: count it.
+    /// A slot of `class` was claimed directly (`MALLOCX_TCACHE_NONE`) on
+    /// this thread: count it.
     #[inline(always)]
     pub fn count_direct_alloc(&mut self, class: usize) {
         self.count_uncached_alloc(class_size(class));
     }
 
-    /// A slot of `class` was released directly or pushed onto a per-CPU
-    /// cache on this thread: count it.
+    /// A slot of `class` was released directly on this thread: count it.
     #[inline(always)]
     pub fn count_direct_free(&mut self, class: usize) {
         self.count_uncached_free(class_size(class));
@@ -1524,12 +1418,6 @@ impl Heap {
         // allocations (`alloc_in`) keep theirs.
         if shared.config.shared_class(class) {
             return self.alloc_slow_in(shared, 0, class);
-        }
-        if self.percpu {
-            // Not reached through `alloc`/`alloc_zeroed`, which route
-            // first; kept so no path can install a home cache on a heap
-            // in the mode.
-            return self.percpu_alloc_slow(shared, class);
         }
         // A non-empty home cache means `pop_fast` declined the scheduled
         // pop (design 6.4) rather than found the cache empty: count the
@@ -1761,18 +1649,13 @@ impl Heap {
 
     /// The usable cache for `(arena, class)`, giving the header its
     /// capacity and stack on first use. Null if the metadata region is
-    /// exhausted, caches are off (`tcache:false`), or `arena` is the home
-    /// arena of a heap in the per-CPU mode: its home headers stay `EMPTY`
-    /// so the entry points' inlined pop and push fall through to the slow
-    /// paths, which serve the running CPU's cache (design 15); an explicit
-    /// `MALLOCX_ARENA` request for such a heap's own home arena is served
-    /// directly from the slab instead.
+    /// exhausted or caches are off (`tcache:false`).
     fn ensure_cache(&mut self, shared: &Shared, arena: u16, class: usize) -> *mut CacheHeader {
         // The capacity first: a class that is never cached for this arena
         // must not create an `others` node. This is the one place the
         // placement rule is consulted on the allocation and free paths.
         let cap = shared.config.cap_for(self.arena, arena, class);
-        if cap == 0 || !self.tcache_enabled || (self.percpu && arena == self.arena) {
+        if cap == 0 || !self.tcache_enabled {
             return ptr::null_mut();
         }
         // The FOREIGN cache is never popped, so its capacity only sets
@@ -2028,19 +1911,9 @@ impl Heap {
         }
     }
 
-    /// Return every cached slot to its slab: this heap's caches and, in the
-    /// per-CPU mode, the caches of the CPU the thread is running on.
-    /// Caches stay allocated.
+    /// Return every cached slot of this heap to its slab. Caches stay
+    /// allocated.
     pub fn flush_all(&mut self, shared: &Shared) {
-        if self.percpu {
-            self.percpu_drain(shared);
-        }
-        self.flush_thread_caches(shared);
-    }
-
-    /// [`Heap::flush_all`] for this heap's own caches alone (thread exit,
-    /// `thread.tcache.enabled:false`: the CPU caches are not the thread's).
-    pub fn flush_thread_caches(&mut self, shared: &Shared) {
         let home = self.arena;
         self.flush_arena(shared, home, ptr::null_mut());
         for o in Self::nodes(self.others) {
@@ -2055,13 +1928,10 @@ impl Heap {
     /// the entries that went unused since the last GC, then restart the
     /// low-water tracking from the current length.
     pub fn gc(&mut self, shared: &Shared) {
-        if self.percpu {
-            self.percpu_gc(shared);
-        }
         let home = self.arena;
         self.gc_arena(shared, home, ptr::null_mut());
         for o in Self::nodes(self.others) {
-            // SAFETY: as in `flush_thread_caches`.
+            // SAFETY: as in `flush_all`.
             let arena = unsafe { (*o).arena };
             self.gc_arena(shared, arena, o);
         }
@@ -2262,8 +2132,7 @@ fn cached_twice(p: *mut u8) -> ! {
 
 /// `CLASSES[class].size()` without the bounds check: every `class` on the
 /// fast paths came from `class_of` or a slab descriptor, so it is below
-/// `NCLASSES`, and the check was two instructions and a panic call in the
-/// per-CPU wrappers.
+/// `NCLASSES`.
 #[inline(always)]
 fn class_size(class: usize) -> usize {
     debug_assert!(class < NCLASSES);

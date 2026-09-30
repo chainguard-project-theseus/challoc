@@ -312,31 +312,20 @@ fn write_decimal(out: &mut [u8], mut v: u64) -> usize {
     n
 }
 
-/// The `rseq=`, `rseq_size=` and `mm_cid=` words from `rseq::probe`
-/// (design 15 and 17; the same three weak symbols the per-CPU mode reads,
-/// read once at init, and this thread's `cpu_id`). `rseq=yes` when glibc
-/// registered an area (`__rseq_size` covers the original 20-byte struct,
-/// [`rseq::BASE_SIZE`]) and the kernel has written this thread's `cpu_id`;
-/// `rseq_size` is the symbol's value even when the registration did not
-/// take (`0` without one: `GLIBC_TUNABLES=glibc.pthread.rseq=0`, a kernel
-/// without `CONFIG_RSEQ`, a libc without the symbols); `mm_cid=yes` when
-/// the registered area covers the field (`__rseq_size >= 28`,
-/// [`rseq::MM_CID_END`]; 33 on the 7.0 GCE kernels, 20 on a 6.10 linuxkit
-/// kernel that reports no feature size). The mode's own gate is
-/// [`rseq::Probe::mm_cid_usable`], which also wants `flags == 0`: the line
-/// reports what exists, the mode what it acts on.
+/// The `rseq=` and `rseq_size=` words from `rseq::probe` (design 17; the
+/// three weak symbols the slice extension reads, read once at init, and
+/// this thread's `cpu_id`). `rseq=yes` when glibc registered an area
+/// (`__rseq_size` covers the original 20-byte struct, [`rseq::BASE_SIZE`])
+/// and the kernel has written this thread's `cpu_id`; `rseq_size` is the
+/// symbol's value even when the registration did not take (`0` without
+/// one: `GLIBC_TUNABLES=glibc.pthread.rseq=0` or a kernel without
+/// `CONFIG_RSEQ`; 33 on the 7.0 GCE kernels, 20 on a kernel that reports
+/// no feature size).
 ///
 /// [`rseq::BASE_SIZE`]: crate::rseq::BASE_SIZE
-/// [`rseq::MM_CID_END`]: crate::rseq::MM_CID_END
-/// [`rseq::Probe::mm_cid_usable`]: crate::rseq::Probe::mm_cid_usable
 pub fn rseq_words(p: &crate::rseq::Probe) -> impl Iterator<Item = (&'static str, Value)> {
     let registered = p.present && p.registered && p.size >= crate::rseq::BASE_SIZE;
-    [
-        ("rseq", Value::YesNo(registered)),
-        ("rseq_size", Value::Num(u64::from(p.size))),
-        ("mm_cid", Value::YesNo(registered && p.size >= crate::rseq::MM_CID_END)),
-    ]
-    .into_iter()
+    [("rseq", Value::YesNo(registered)), ("rseq_size", Value::Num(u64::from(p.size)))].into_iter()
 }
 
 /// The kernel's answer for the rseq time slice extension (design 17, "Time
@@ -453,8 +442,7 @@ pub struct Features {
     /// turn on.
     pub thp: Thp,
     /// glibc's rseq registration as `rseq::probe` read it at init: the
-    /// `rseq`, `rseq_size` and `mm_cid` keys ([`rseq_words`]); the
-    /// per-CPU mode reads the same probe for its gate.
+    /// `rseq` and `rseq_size` keys ([`rseq_words`]).
     pub rseq: crate::rseq::Probe,
     /// The kernel's answer for the rseq time slice extension and whether
     /// the process uses it (`slice.rs` decides,
@@ -920,20 +908,20 @@ mod tests {
         assert_eq!(
             s,
             "page_size=4096 guard_install=no mseal=yes process_madvise=pidfd:7 process_madvise_free=yes anon_name=no populate_write=yes \
-             thp=madvise mthp=64K,2M rseq=yes rseq_size=33 mm_cid=yes slice_ext=kernel-disabled pac=yes"
+             thp=madvise mthp=64K,2M rseq=yes rseq_size=33 slice_ext=kernel-disabled pac=yes"
         );
-        // The Mac's Docker VM (linuxkit 6.10): registered, no `mm_cid`, no
+        // A kernel that reports no feature size (6.10): registered, no
         // `slice_ctrl`.
         let f = Features { rseq: rseq_probe(20, 192), slice_ext: SliceExt::NoSliceCtrl, ..f };
-        assert!(std::format!("{f}").contains(" mthp=64K,2M rseq=yes rseq_size=20 mm_cid=no slice_ext=no-slice_ctrl pac=yes"));
+        assert!(std::format!("{f}").contains(" mthp=64K,2M rseq=yes rseq_size=20 slice_ext=no-slice_ctrl pac=yes"));
         let f = Features { rseq: Probe::NONE, slice_ext: SliceExt::NoRseq, ..f };
-        assert!(std::format!("{f}").contains(" rseq=no rseq_size=0 mm_cid=no slice_ext=no-rseq "));
+        assert!(std::format!("{f}").contains(" rseq=no rseq_size=0 slice_ext=no-rseq "));
         // A 7.0.14 built with the option (a GCE C4): on under the
         // default key, available under `slice_ext:off`.
         let f = Features { rseq: rseq_probe(33, -192), slice_ext: SliceExt::On, ..f };
-        assert!(std::format!("{f}").contains(" mm_cid=yes slice_ext=on "));
+        assert!(std::format!("{f}").contains(" rseq_size=33 slice_ext=on "));
         let f = Features { slice_ext: SliceExt::Available, ..f };
-        assert!(std::format!("{f}").contains(" mm_cid=yes slice_ext=available "));
+        assert!(std::format!("{f}").contains(" rseq_size=33 slice_ext=available "));
         let f = Features { thp: Thp::NONE, ..f };
         assert!(std::format!("{f}").contains(" thp=none mthp=none rseq=yes "));
         let f = Features { thp: Thp { enabled: Some(ThpSetting::Never), listed: 1 << 21, always: 0, madvise: 0, lg_pmd: 21 }, ..f };
@@ -1014,7 +1002,7 @@ mod tests {
     fn words_are_the_key_table() {
         let kernel = [
             "page_size", "guard_install", "mseal", "process_madvise", "process_madvise_free", "anon_name", "populate_write",
-            "thp", "mthp", "rseq", "rseq_size", "mm_cid", "slice_ext", "pac",
+            "thp", "mthp", "rseq", "rseq_size", "slice_ext", "pac",
         ];
         for pac in [true, false] {
             let f = Features {
@@ -1045,11 +1033,11 @@ mod tests {
         }
     }
 
-    /// The three rseq words on the values the prerequisites note recorded:
-    /// the GCE VMs (glibc 2.44 on 7.0, `__rseq_size=33`, offset 192 on
-    /// aarch64 and -192/-256 on x86_64), the Mac's Docker VM (6.10,
-    /// `__rseq_size=20`), a libc without the symbols, a registration the
-    /// kernel never wrote, and the sizes around the `mm_cid` boundary.
+    /// The rseq words on the values the prerequisites note recorded: the
+    /// GCE VMs (glibc 2.44 on 7.0, `__rseq_size=33`, offset 192 on aarch64
+    /// and -192/-256 on x86_64), a 6.10 kernel (`__rseq_size=20`), no
+    /// symbols, a registration the kernel never wrote, and a size below the
+    /// original struct.
     #[test]
     fn rseq_words_follow_size_and_registration() {
         let line = |p: &Probe| -> std::string::String {
@@ -1057,31 +1045,19 @@ mod tests {
             v.join(" ")
         };
         for off in [192isize, -192, -256] {
-            let p = rseq_probe(33, off);
-            assert!(p.mm_cid_usable(), "{p:?}");
-            assert_eq!(line(&p), "rseq=yes rseq_size=33 mm_cid=yes");
+            assert_eq!(line(&rseq_probe(33, off)), "rseq=yes rseq_size=33");
         }
-        let p = rseq_probe(20, 192);
-        assert!(!p.mm_cid_usable());
-        assert_eq!(line(&p), "rseq=yes rseq_size=20 mm_cid=no");
-        assert_eq!(line(&Probe::NONE), "rseq=no rseq_size=0 mm_cid=no");
-        assert_eq!(line(&rseq_probe(0, 0)), "rseq=no rseq_size=0 mm_cid=no", "symbols present, nothing registered");
+        assert_eq!(line(&rseq_probe(20, 192)), "rseq=yes rseq_size=20");
+        assert_eq!(line(&Probe::NONE), "rseq=no rseq_size=0");
+        assert_eq!(line(&rseq_probe(0, 0)), "rseq=no rseq_size=0", "symbols present, nothing registered");
         // The kernel did not write the area: no registration, whatever the size says.
         let p = Probe { registered: false, ..rseq_probe(33, -192) };
-        assert_eq!(line(&p), "rseq=no rseq_size=33 mm_cid=no");
-        // Flags the mode does not know keep the mode off; the line still
-        // says what exists.
+        assert_eq!(line(&p), "rseq=no rseq_size=33");
+        // Unknown flags do not change what the line says exists.
         let p = Probe { flags: 1, ..rseq_probe(33, 192) };
-        assert!(!p.mm_cid_usable());
-        assert_eq!(line(&p), "rseq=yes rseq_size=33 mm_cid=yes");
-        // The boundary: 27 bytes do not hold a 4-byte `mm_cid` at 24; 28
-        // do; 32 (a glibc that rounds to the alignment) does.
-        assert!(line(&rseq_probe(27, 192)).ends_with(" mm_cid=no"));
-        assert!(line(&rseq_probe(28, 192)).ends_with(" mm_cid=yes"));
-        assert!(line(&rseq_probe(32, 192)).ends_with(" mm_cid=yes"));
+        assert_eq!(line(&p), "rseq=yes rseq_size=33");
         // Below the original struct nothing is registered.
-        assert_eq!(line(&rseq_probe(19, 192)), "rseq=no rseq_size=19 mm_cid=no");
-        assert_eq!(crate::rseq::MM_CID_END, 28);
+        assert_eq!(line(&rseq_probe(19, 192)), "rseq=no rseq_size=19");
         assert_eq!(crate::rseq::BASE_SIZE, 20);
     }
 
@@ -1321,15 +1297,14 @@ mod linux_tests {
 
     /// The rseq words against glibc's own symbols through `dlsym` and the
     /// kernel's `AT_RSEQ_FEATURE_SIZE`: the values must be the symbols',
-    /// the probe the line is built from must be `rseq::probe`'s, and
-    /// `mm_cid` is `yes` exactly when glibc registered an area whose size
-    /// reaches 28, which the kernel allows from 6.3 (the GCE 7.0 VMs: 33;
-    /// the Mac's 6.10 linuxkit VM reports no feature size and glibc
-    /// registers 20). Both ways: it runs on hosts of each kind.
+    /// the probe the line is built from must be `rseq::probe`'s, and a
+    /// registration covers every field the kernel offers (the GCE 7.0 VMs:
+    /// 33; a 6.10 kernel reports no feature size and glibc registers 20).
+    /// Both ways: it runs on hosts of each kind.
     #[test]
     fn rseq_words_match_glibc_symbols_and_the_feature_size() {
-        let (kv, f, line) = probed();
-        assert_eq!(f.rseq, crate::rseq::probe(), "the line's probe is the mode's");
+        let (_, f, line) = probed();
+        assert_eq!(f.rseq, crate::rseq::probe(), "the line's probe is the slice extension's");
         let sym = |name: &[u8]| -> *const u8 {
             // SAFETY: `dlsym` on a NUL-terminated name in the test.
             unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr().cast()) }.cast()
@@ -1337,7 +1312,7 @@ mod linux_tests {
         let (ps, po, pf) = (sym(b"__rseq_size\0"), sym(b"__rseq_offset\0"), sym(b"__rseq_flags\0"));
         if ps.is_null() {
             assert_eq!(f.rseq, crate::rseq::Probe::NONE, "no __rseq_size symbol: {line}");
-            assert!(line.contains(" rseq=no rseq_size=0 mm_cid=no "), "{line}");
+            assert!(line.contains(" rseq=no rseq_size=0 "), "{line}");
             return;
         }
         // SAFETY: glibc's exported objects of these types.
@@ -1346,7 +1321,7 @@ mod linux_tests {
         assert_eq!((f.rseq.size, f.rseq.offset, f.rseq.flags), (size, offset, flags), "{line}");
         let registered = size >= crate::rseq::BASE_SIZE && f.rseq.registered;
         eprintln!("rseq: __rseq_size={size} __rseq_offset={offset} __rseq_flags={flags} registered={}", f.rseq.registered);
-        assert!(line.contains(&format!(" rseq={} rseq_size={size} mm_cid=", sys::yn(registered))), "{line}");
+        assert!(line.contains(&format!(" rseq={} rseq_size={size} ", sys::yn(registered))), "{line}");
         if size >= crate::rseq::BASE_SIZE {
             // glibc registered: the kernel wrote a CPU number.
             assert!(f.rseq.registered, "{line}");
@@ -1360,12 +1335,8 @@ mod linux_tests {
         }
         // AT_RSEQ_FEATURE_SIZE: the fields the kernel offers.
         let feat = sys::auxv::getauxval(sys::auxv::AT_RSEQ_FEATURE_SIZE) as u32;
-        if feat >= crate::rseq::MM_CID_END && size >= crate::rseq::BASE_SIZE {
-            assert!(at_least(kv, (6, 3)), "mm_cid predates 6.3: {line}");
-            assert!(size >= crate::rseq::MM_CID_END, "kernel offers {feat} bytes, glibc registered {size}: {line}");
-            assert!(line.contains(" rseq=yes rseq_size=") && line.contains(" mm_cid=yes "), "{line}");
-        } else {
-            assert!(line.contains(" mm_cid=no "), "{line}");
+        if feat > crate::rseq::BASE_SIZE && size >= crate::rseq::BASE_SIZE {
+            assert!(size >= feat, "kernel offers {feat} bytes, glibc registered {size}: {line}");
         }
     }
 
