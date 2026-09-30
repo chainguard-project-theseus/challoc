@@ -6,7 +6,7 @@
  * allocating throughout, including from other threads that are mid-malloc
  * at the moment of the fork.
  *
- * `fork_alloc mallctl` (plan Phase 1.5 task 10a) forks while other threads
+ * `fork_alloc mallctl` forks while other threads
  * loop on `mallctl("epoch")` and `tcache.create`/`tcache.destroy`, the
  * calls that take the statistics and explicit-cache locks the fork handler
  * used to skip. Each child allocates, calls `epoch` and creates and

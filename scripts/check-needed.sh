@@ -1,7 +1,7 @@
 #!/bin/sh
 # check-needed.sh BINARY SONAME...: print BINARY's DT_NEEDED list (and its
-# RUNPATH/RPATH) and exit 1 unless every SONAME given is in it (plan Phase 3
-# prerequisite (e), design 13.6). For the melange pipeline: Wolfi links with
+# RUNPATH/RPATH) and exit 1 unless every SONAME given is in it (design
+# 13.6). For the melange pipeline: Wolfi links with
 # `-Wl,--as-needed`, so a consumer that references no symbol of the
 # allocator library drops its DT_NEEDED entry and silently runs on glibc
 # malloc; a package test runs this on every installed binary that must

@@ -1,4 +1,4 @@
-/* Per-CPU caches (docs/design.md section 15, plan Phase 2.5 task 8), both
+/* Per-CPU caches (docs/design.md section 15), both
  * ways. Run as LD_PRELOAD=target/release/libchalloc.so ./percpu MODE with
  * MALLOC_CONF=percpu_arena:MODE (percpu or off; the driver in
  * src/api/ctests.rs sets it). Under `off` the mode must be off whatever

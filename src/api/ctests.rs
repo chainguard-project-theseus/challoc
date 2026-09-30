@@ -842,6 +842,17 @@ ctests! {
     /// read-write range do not split it. Runs on every kernel; without guard
     /// regions it checks that no slab was skipped and the bound still holds.
     c_guard_slab_vmas => [ CTest { prog: "guard_slab", args: &["vmas"], ..BASE } ];
+    /// `tests/c/pagemap_guard.c on`: under the default configuration the
+    /// guard slabs of the 16-, 64-, 256- and 1024-byte classes are found as
+    /// the gaps no allocation came from and checked through
+    /// `ioctl(PAGEMAP_SCAN)` without touching them: `PAGE_IS_GUARD` on the
+    /// guard page and nowhere else (6.16+), or the fallback the program
+    /// names (6.13..6.15: not present, swap-type; before 6.13: no guard slab
+    /// exists; before 6.7: the gap check alone). Runs on every kernel.
+    c_pagemap_guard_on => [ CTest { prog: "pagemap_guard", args: &["on"], ..BASE } ];
+    /// `tests/c/pagemap_guard.c off`: the control, under `guards:false` no
+    /// span has a gap and no page reads `PAGE_IS_GUARD`.
+    c_pagemap_guard_off => [ CTest { prog: "pagemap_guard", args: &["off"], conf: Some("abort_conf:true,guards:false"), ..BASE } ];
     /// `tests/c/huge_hole.c`: the alignment holes the huge allocator leaves
     /// below an aligned run are committed memory. Once in the probed guard mode
     /// (guard-install on kernels with `MADV_GUARD_INSTALL`, where the Phase 0

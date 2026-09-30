@@ -1,6 +1,5 @@
 /*
- * Shared scaffolding for the C test programs in tests/c/ (plan Phase 0
- * task 12 and everything since). Each program is compiled by
+ * Shared scaffolding for the C test programs in tests/c/. Each program is compiled by
  * scripts/ctest-cc.sh (from the Rust driver in src/api/ctests.rs or one of
  * the shell drivers) with -DQUANTUM=16 or 8, read from the built library,
  * and run under LD_PRELOAD=libchalloc.so. Every program checks its own

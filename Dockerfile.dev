@@ -31,19 +31,18 @@ RUN sed -i \
  && rustc --version && cargo --version && getconf PAGESIZE
 
 # The stock allocators of the benchmark harness (bench/lib.sh): Wolfi's
-# jemalloc and tcmalloc-minimal (gperftools 2.18.1, no profiler hooks, the
-# fourth stock allocator since Phase 2.5 task 1); mimalloc is built from
-# source by bench/build.sh.
+# jemalloc and tcmalloc-minimal (gperftools 2.18.1, no profiler hooks);
+# mimalloc is built from source by bench/build.sh.
 RUN apk add --no-cache jemalloc tcmalloc-minimal \
  && test -f /usr/lib/libtcmalloc_minimal.so.4
 
-# Valkey (tests/consumers/valkey-build.sh, Phase 1 acceptance): tcl for its test
+# Valkey (tests/consumers/valkey-build.sh): tcl for its test
 # suite, openssl-dev for BUILD_TLS=yes (Ruby's openssl extension uses it
 # too), memtier_benchmark for the soak's second load generator
 # (bench/valkey-soak.sh).
 RUN apk add --no-cache tcl openssl-dev memtier-benchmark
 
-# Ruby (tests/consumers/ruby-build.sh, Phase 1 acceptance): a git checkout of Ruby
+# Ruby (tests/consumers/ruby-build.sh): a git checkout of Ruby
 # needs autoconf and a base Ruby; the jemalloc header, yaml, zlib and libffi
 # are what Wolfi's ruby-3.4.yaml environment gives its `--with-jemalloc`
 # build (psych, zlib and fiddle extensions, and <jemalloc/jemalloc.h> as
@@ -51,26 +50,25 @@ RUN apk add --no-cache tcl openssl-dev memtier-benchmark
 # (test/ruby/test_time_tz.rb needs zone files).
 RUN apk add --no-cache autoconf ruby-3.4 jemalloc-dev yaml-dev zlib-dev libffi-dev tzdata
 
-# Python rows (bench/python-bench.sh, Phase 2.5 task 1): python-3.13 and its
-# pip (Wolfi has no free-threaded 3.13 package, checked 2026-09-18).
+# Python rows (bench/python-bench.sh): python-3.13 and its pip (Wolfi has
+# no free-threaded 3.13 package).
 RUN apk add --no-cache python-3.13 py3.13-pip \
  && python3 --version
 
-# Node.js rows (bench/node-bench.sh, Phase 3 task 5c): nodejs-22 is the node
-# the harness measures (Wolfi's nodejs-22, the plan's version; node 22.23 at
-# the time). apache2-utils gives `ab`, the load generator of the Node.js and
-# JVM server rows (Wolfi has no wrk or oha package, checked 2026-09-20).
+# Node.js rows (bench/node-bench.sh): nodejs-22 is the node the harness
+# measures. apache2-utils gives `ab`, the load generator of the Node.js and
+# JVM server rows (Wolfi has no wrk or oha package).
 RUN apk add --no-cache nodejs-22 apache2-utils \
  && node --version && ab -V | head -1
 
-# JVM rows (bench/jvm-bench.sh, Phase 3 task 5a): openjdk-21, the JDK (javac
+# JVM rows (bench/jvm-bench.sh): openjdk-21, the JDK (javac
 # compiles bench/jvm/HttpBench.java at run time; it lives under
 # /usr/lib/jvm/java-21-openjdk and is not on PATH, the script finds it);
 # `ab` from the layer above is its load generator.
 RUN apk add --no-cache openjdk-21 \
  && test -x /usr/lib/jvm/java-21-openjdk/bin/javac
 
-# PostgreSQL rows (bench/postgres-bench.sh, Phase 3 task 5b): postgresql-17
+# PostgreSQL rows (bench/postgres-bench.sh): postgresql-17
 # carries initdb, pg_ctl, pgbench and postgres; postgresql-17-client carries
 # psql.
 RUN apk add --no-cache postgresql-17 postgresql-17-client \

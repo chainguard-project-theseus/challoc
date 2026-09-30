@@ -1,7 +1,7 @@
 /*
  * Alignment holes in the huge region are usable memory.
  *
- * Phase 0 regression found on the GCE VMs (kernel 7.0, MADV_GUARD_INSTALL
+ * A regression found on real hardware (kernel 7.0, MADV_GUARD_INSTALL
  * present): in guard-install mode the huge allocator committed only the
  * pages of an aligned run itself, so the hole it left between the old
  * high-water mark and the aligned start, recorded as a free extent, stayed

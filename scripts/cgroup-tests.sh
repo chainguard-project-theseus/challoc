@@ -1,13 +1,12 @@
 #!/bin/sh
-# scripts/cgroup-tests.sh: the Phase 2 container tests (plan Phase 2 tasks
-# 6 and 7), run INSIDE one memory-limited dev container; the Makefile's
+# scripts/cgroup-tests.sh: the memory-limited container tests, run INSIDE one memory-limited dev container; the Makefile's
 # `cgroup_run` starts one container per run (`--memory=L --memory-swap=L`,
 # swap off) so each run has its own cgroup, its own `memory.events` and
 # nothing else charged to it.
 #
 #   sh scripts/cgroup-tests.sh churn     ALLOC MODE MIB THRESHOLD_MIB
 #   sh scripts/cgroup-tests.sh oscillate ALLOC SECONDS [LOW_MIB HIGH_MIB [HOLD_MS]]
-#   sh scripts/cgroup-tests.sh lazy      ALLOC MODE [MIB]        (Phase 2.5 task 10)
+#   sh scripts/cgroup-tests.sh lazy      ALLOC MODE [MIB]
 #
 #   ALLOC   challoc       target/release/libchalloc.so, defaults (policy on)
 #           challoc-off   the same with MALLOC_CONF=cgroup:false (the control)

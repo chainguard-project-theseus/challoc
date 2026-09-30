@@ -1,19 +1,17 @@
 /*
- * Transparent huge pages behind the `thp` key (plan Phase 2.5 task 9,
- * design 7, 10 and 17): the advice is issued where the key and the kernel
+ * Transparent huge pages behind the `thp` key (design 7, 10
+ * and 17): the advice is issued where the key and the kernel
  * say so, and nowhere under the default. One mode per process:
  *
  *   thp never    no key: after 8 MiB of 64-byte blocks the VMA holding
  *                them has no `hg` in its VmFlags, stats.thp.mode is 0 and
  *                no range was advised (byte for byte the allocator before
- *                the key had a mechanism); and, since plan Phase 2.5 task
- *                16, the VMA has `nh` (MADV_NOHUGEPAGE issued on the
+ *                the key had a mechanism); and the VMA has `nh` (MADV_NOHUGEPAGE issued on the
  *                reservation) on every kernel with THP, so that on a host
  *                whose global mode is `always` (read from sysfs; Chainguard
  *                OS and Debian's kernels) the 8 MiB touched show
  *                AnonHugePages 0 kB and THPeligible 0. The huge region is
- *                the other way (the 2026-09-20 decision, option (d) of
- *                bench/results/2026-09-20-aarch64-cgos-thp-ab.md): the
+ *                the other way (by design, measured on Chainguard OS): the
  *                8 MiB huge run carries no `nh`, stats.thp.nohuge_ranges
  *                reads 2 (classes, metadata), the thp: line says `huge
  *                follows host`, and on an `always` host the run shows
@@ -39,8 +37,8 @@
  *                advised (the host requirement is documented: on Ubuntu's
  *                default sysfs `auto` is inert).
  *
- *   thp process  MALLOC_CONF=thp_process:advised,thp:auto (plan Phase 2.5
- *                task 16, the second half): the process-wide
+ *   thp process  MALLOC_CONF=thp_process:advised,thp:auto: the
+ *                process-wide
  *                prctl(PR_SET_THP_DISABLE, 1, PR_THP_DISABLE_EXCEPT_ADVISED),
  *                both ways by the kernel's own answer. The feature line's
  *                thp_except_advised= key says what the probe found; with
@@ -278,7 +276,7 @@ int main(int argc, char **argv)
            thp, global, mthp, pmd_kb, page, pmd_enabled, sub_kb);
     CHECK(strcmp(thp, global) == 0, "feature line thp=%s but sysfs enabled reads %s", thp, global);
 
-    /* Plan Phase 2.5 task 16: the process-wide policy, read from the
+    /* The process-wide policy, read from the
      * allocator (stats.thp.process, the thp: line) and from the kernel
      * (PR_GET_THP_DISABLE, THP_enabled). */
     int process_mode = strcmp(mode, "process") == 0;
@@ -408,7 +406,7 @@ int main(int argc, char **argv)
         CHECK(stat_of("stats.thp.huge_ranges") == 0 && stat_of("stats.thp.meta_ranges") == 0, "advice under never");
         CHECK(strstr(thp_report, " (classes, metadata; huge follows host)") != NULL, "thp: line does not say what never covers");
         size_t nohuge = stat_of("stats.thp.nohuge_ranges");
-        /* Plan Phase 2.5 task 16 and the 2026-09-20 decision: never means
+        /* Never means
          * never for the class and metadata regions on every host; the huge
          * region follows the host's policy. */
         if (strcmp(thp, "none") == 0) {

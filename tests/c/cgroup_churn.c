@@ -1,5 +1,5 @@
 /*
- * Phase 2 task 6 (a): the churn test of plan Phase 2. Allocate a working
+ * The cgroup churn test. Allocate a working
  * set (400 MiB by default) in a mix of 1 KiB slab objects, 32 KiB medium
  * objects and 1 MiB huge runs, touch it, free all of it and idle. In a
  * `docker run --memory=512m` container with the design 11 policy on
@@ -18,7 +18,8 @@
  *                 (the control: challoc with cgroup:false)
  *         report  no criterion; print and exit 0 (jemalloc, mimalloc)
  *
- *   --any-allocator  skip `require_challoc` (task 7's comparison runs).
+ *   --any-allocator  skip `require_challoc` (the runs under other
+ *                    allocators).
  *
  * `report` and `--any-allocator` are bench probes, not tests: they print
  * the RSS curve for the results file (`make test-cgroup-compare`) and pass
@@ -154,7 +155,7 @@ static void challoc_policy_line(void)
     len = sizeof v;
     if (mallctl("stats.cgroup.full_purges", &v, &len, NULL, 0) == 0)
         full = v;
-    /* The two-advice purge (Phase 2.5 task 10): which advice the next
+    /* The two-advice purge: which advice the next
      * batch takes and how many batches each has issued. A failing run
      * shows here whether the freed memory was returned lazily (resident
      * until the kernel reclaims it) rather than not purged at all. */

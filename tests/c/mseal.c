@@ -1,6 +1,6 @@
 /*
- * mseal of the reservations' never-committed ranges (plan Phase 2 task 2,
- * design 10 step 5 and 14).
+ * mseal of the reservations' never-committed ranges (design 10 step 5
+ * and 14).
  *
  * After init, on a kernel with mseal (6.10+, not filtered by seccomp), the
  * gaps between the class regions and the alignment slack around the huge
@@ -257,7 +257,7 @@ int main(void)
     CHECK(after - before <= 2 * stats_total + 32, "init grew the VMA count by %d", after - before);
     REQUIRE(biggest != NULL, "no sealed VMA");
 
-    /* The plan's criterion: munmap of a reserved range fails with EPERM. */
+    /* The criterion: munmap of a reserved range fails with EPERM. */
     void *lo = (void *)biggest->lo;
     size_t len = biggest->hi - biggest->lo;
     errno = 0;

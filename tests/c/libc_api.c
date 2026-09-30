@@ -1,12 +1,12 @@
 /*
- * Smoke test for challoc's libc entry points (Phase 0 task 11), run under
+ * Smoke test for challoc's libc entry points, run under
  * LD_PRELOAD=libchalloc.so by the Rust test in src/api/libc.rs (which
  * compiles it without -Itests/c: common.h is found next to this file).
  * Fails fast when it is not actually running on challoc so a broken
  * preload cannot pass by accident. QUANTUM is passed by the build
  * (-DQUANTUM=16 or 8).
  *
- * The thorough per-feature programs are Phase 0 task 12; this one touches
+ * The thorough per-feature programs are the rest of tests/c; this one touches
  * every entry point once, checks errno semantics, and forks while another
  * thread is allocating so the atfork handlers get exercised.
  */

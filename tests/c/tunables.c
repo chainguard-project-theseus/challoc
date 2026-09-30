@@ -1,5 +1,5 @@
 /*
- * Phase 2 task 3: the opt-in hardening tunables under LD_PRELOAD. The
+ * The opt-in hardening tunables under LD_PRELOAD. The
  * driver in src/api/ctests.rs runs one mode per process, with MALLOC_CONF
  * set for the "on" modes and unset for their controls, which prove the
  * default paths do not do the same thing by accident.

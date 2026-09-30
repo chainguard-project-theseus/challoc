@@ -1,5 +1,4 @@
-/* Per-thread heap test (docs/plan.md, Phase 0 task 4; Phase 1.5 task 13;
- * Phase 2.5 task 7 runs it under pac_pointers).
+/* Per-thread heap test (also run under pac_pointers).
  *
  * Run as LD_PRELOAD=target/release/libchalloc.so ./tls_threads. The
  * binary has no link-time dependency on the library: `mallctl` is looked

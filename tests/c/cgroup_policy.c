@@ -1,5 +1,5 @@
 /*
- * Phase 2 task 5: the cgroup policy of design 11 end to end under
+ * The cgroup policy of design 11 end to end under
  * LD_PRELOAD, from C, through the public keys only (`stats.cgroup.*`,
  * `opt.dirty_decay_ms`) and /proc/self/statm. Modes:
  *
@@ -246,7 +246,7 @@ static void mode_bands(void)
     size_t before = kernel_current();
     printf("limit %zu MiB, memory.current %zu MiB before, rss %zu MiB\n", l / MIB, before / MIB, base_rss / MIB);
 
-    /* Phase 1: 80%, the scaled band. */
+    /* Step 1: 80%, the scaled band. */
     size_t mine = fill_to(l * 80 / 100, l * 88 / 100);
     sleep_ms(15);
     tick();
@@ -300,7 +300,7 @@ static void mode_bands(void)
     if (current < l * 70 / 100)
         CHECK(decay_ms == (size_t)base, "decay_ms %zu under 70%% (base %ld)", decay_ms, base);
 
-    /* Phase 2: 94%, the immediate band. */
+    /* Step 2: 94%, the immediate band. */
     mine = fill_to(l * 94 / 100, l * 96 / 100);
     sleep_ms(15);
     tick();

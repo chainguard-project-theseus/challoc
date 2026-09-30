@@ -1,5 +1,5 @@
 /*
- * Phase 0 task 14: negative tests. Each mode performs one invalid operation
+ * Negative tests. Each mode performs one invalid operation
  * that challoc must refuse by aborting (or that the guard page must turn
  * into a fault). The driver in src/api/ctests.rs runs one mode per process
  * and checks the signal and the `challoc: ...` line on stderr. Reaching the
@@ -18,7 +18,6 @@
  *   negative free_sized_mismatch  C23 free_sized(p, wrong size), the same
  *   negative usable_size_freed    malloc_usable_size(p) after free(p) and a
  *                                 flush: the query keeps the exact bit test
- *                                 (plan Phase 1.5 task 14)
  *   negative interior_free        free(p + size/2)
  *   negative stack_free           free of a stack address
  *   negative huge_overflow        write one byte past a huge allocation
@@ -27,16 +26,15 @@
  *                                 copy at the split point and the other just
  *                                 below it: without the boundary compare one
  *                                 copy is released and the other stays cached
- *                                 (plan Phase 1.5 task 9a)
  *   negative sized_guard          sdallocx of a slot start inside a guard
  *                                 slab, then malloc: the sized path must
  *                                 reject the guard slab, not cache it and hand
- *                                 the guard memory out (task 9b)
+ *                                 the guard memory out
  *   negative guard_free           plain free of the same guard-slab slot: the
  *                                 exact bit test finds the slot clear and the
- *                                 slab a guard (review 2026-09-18 item 43)
+ *                                 slab a guard
  *   negative realloc_stale        realloc(p, n) after free(p) and a flush: the
- *                                 bit test of realloc's check_live (item 43)
+ *                                 bit test of realloc's check_live
  *   negative sallocx_stale        sallocx(p, 0) after free(p) and a flush
  *   negative dallocx_none_twice   dallocx(p, MALLOCX_TCACHE_NONE) twice: the
  *                                 uncached release checks the bit at once

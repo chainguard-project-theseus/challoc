@@ -1,5 +1,5 @@
 /*
- * Phase 1 task 5: the jemalloc and glibc extras under LD_PRELOAD, from C.
+ * The jemalloc and glibc extras under LD_PRELOAD, from C.
  * Every non-standard symbol is declared weak so this program links against
  * nothing but libc: bare, `require_challoc` fails first; under the preload
  * the weak references resolve to libchalloc.so. Exercised here:

@@ -1,5 +1,5 @@
 /*
- * Phase 1 task 6: a link-only jemalloc consumer. Unlike jemalloc_api.c this
+ * A link-only jemalloc consumer. Unlike jemalloc_api.c this
  * program declares the jemalloc entry points strongly and is linked with
  * `$(pkg-config --cflags --libs jemalloc)` against the libjemalloc.so.2 that
  * scripts/jemalloc-compat.sh stages, never through LD_PRELOAD, the way Ruby

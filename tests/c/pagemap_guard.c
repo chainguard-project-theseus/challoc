@@ -1,5 +1,5 @@
 /*
- * Phase 2.5 task 17: the guard slabs seen through PAGEMAP_SCAN, never touched.
+ * The guard slabs seen through PAGEMAP_SCAN, never touched.
  *
  * guard_slab.c proves a guard by faulting on it. This program proves it
  * without a fault: `ioctl(PAGEMAP_SCAN)` on /proc/self/pagemap (kernel 6.7)

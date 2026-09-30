@@ -1,5 +1,5 @@
 /*
- * Phase 3 prerequisite (e): what `-Wl,--as-needed` does to a consumer of
+ * What `-Wl,--as-needed` does to a consumer of
  * libchalloc (tests/as-needed.sh links this file three ways and reads the
  * DT_NEEDED list of each). The program reports which object serves malloc
  * and, when built with -DREF_VERSION, calls challoc_version(); built with

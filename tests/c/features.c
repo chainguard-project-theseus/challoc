@@ -1,5 +1,5 @@
 /*
- * The feature report (plan Phase 2.5 task 2, design 16 and 17).
+ * The feature report (design 16 and 17).
  *
  * challoc_features() returns a static NUL-terminated line of key=value
  * pairs: the kernel probes, then the CPU. The same bytes appear after
@@ -89,7 +89,7 @@ int main(void)
         CHECK(has_key(line, cpu_keys[i]) == 1, "key %s appears %d times", cpu_keys[i], has_key(line, cpu_keys[i]));
     CHECK((size_t)tokens == nkernel + ncpu, "%d tokens, expected %zu", tokens, nkernel + ncpu);
 
-    /* populate_write (plan Phase 2.5 task 11): yes/no, and usable as said:
+    /* populate_write: yes/no, and usable as said:
      * a fresh private page is resident after one MADV_POPULATE_WRITE when
      * yes, and the advice is EINVAL when no. */
     {
@@ -109,7 +109,7 @@ int main(void)
         printf("populate_write: %.*s (madvise rc %d)\n", (int)strcspn(v, " "), v, rc);
     }
 
-    /* The THP keys (plan Phase 2.5 task 9): thp is a sysfs setting or none,
+    /* The THP keys: thp is a sysfs setting or none,
      * mthp a comma list of sizes or none, collapse unprobed/no/a size; the
      * default configuration never runs the collapse probe. */
     {
@@ -121,7 +121,7 @@ int main(void)
         CHECK((v[0] >= '1' && v[0] <= '9') || strncmp(v, "none", 4) == 0, "mthp has value `%.12s`", v);
         v = strstr(line, " collapse=") + 10;
         CHECK(strncmp(v, "unprobed", 8) == 0, "collapse has value `%.12s` under thp:never", v);
-        /* Plan Phase 2.5 task 16: the prctl probe's answer, and the probe
+        /* The prctl probe's answer, and the probe
          * left the process's policy alone (PR_GET_THP_DISABLE 0 unless the
          * parent set one, in which case the key says inherited). */
         v = strstr(line, " thp_except_advised=") + 20;
@@ -135,7 +135,7 @@ int main(void)
         printf("thp_except_advised: %.*s (PR_GET_THP_DISABLE %ld)\n", (int)strcspn(v, " "), v, get);
     }
 
-    /* The rseq keys (plan Phase 2.5 task 8): rseq and mm_cid are yes/no,
+    /* The rseq keys: rseq and mm_cid are yes/no,
      * rseq_size a byte count; mm_cid=yes needs rseq=yes and a size of at
      * least 28 (the field is at 24); a registration always reports at
      * least the original 20 bytes. */
@@ -154,7 +154,7 @@ int main(void)
         printf("rseq: rseq=%.3s rseq_size=%ld mm_cid=%.3s\n", r, size, mc);
     }
 
-    /* The slice extension key (plan Phase 2.5 task 15): one of the probe's
+    /* The slice extension key: one of the probe's
      * words. `on` needs rseq=yes with a v2 registration (slice_ctrl ends at
      * 32); `no-rseq` needs rseq=no; `no-slice_ctrl` a size under 32;
      * `kernel-disabled` (the 7.0 GCE kernels: the option is compiled out)
