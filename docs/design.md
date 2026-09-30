@@ -1914,7 +1914,7 @@ version is 0.x), so a program linked with `-lchalloc` records
 `libchalloc.so.0` in `DT_NEEDED` and a package installs the file under that
 name with a `libchalloc.so` link for the linker. Cargo cannot name the
 output file after the soname, so a build directory used as a link and run
-path (`contrib/valkey/build.sh`) puts the `libchalloc.so.0` link beside
+path (`tests/consumers/valkey-build.sh`) puts the `libchalloc.so.0` link beside
 the file. With the `jemalloc-soname` feature the soname is
 `libjemalloc.so.2` instead (13.2), staged by `scripts/jemalloc-compat.sh`.
 
@@ -1973,7 +1973,7 @@ the executable itself references the allocator, and (b) runs
 in its package test on every installed executable that must run on
 challoc, plus the shared library that does the allocating; the check is
 `readelf -d` only and exits 1 when the soname is missing.
-`contrib/valkey/build.sh` and `contrib/ruby/build.sh` run it, and `make
+`tests/consumers/valkey-build.sh` and `tests/consumers/ruby-build.sh` run it, and `make
 check-needed` runs the link experiments and the built consumers.
 
 ### 13.7 challoc extensions

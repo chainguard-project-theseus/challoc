@@ -9,7 +9,7 @@
 #   lib/libjemalloc.so         link name, so `-ljemalloc` finds it
 #   lib/pkgconfig/jemalloc.pc  pkg-config file; `Libs: -L${libdir} -ljemalloc`
 #   include/jemalloc/jemalloc.h
-#                              contrib/jemalloc-compat/include/jemalloc/jemalloc.h:
+#                              include/jemalloc-compat/jemalloc/jemalloc.h:
 #                              jemalloc 5.3's unprefixed API as challoc exports
 #                              it, for a consumer that includes
 #                              <jemalloc/jemalloc.h> (Ruby's --with-jemalloc;
@@ -56,7 +56,7 @@ readelf -d "$so" | grep -q 'Library soname: \[libjemalloc.so.2\]' \
 
 rm -rf "$OUT/lib" "$OUT/include"
 mkdir -p "$OUT/lib/pkgconfig" "$OUT/include/jemalloc"
-cp contrib/jemalloc-compat/include/jemalloc/jemalloc.h "$OUT/include/jemalloc/jemalloc.h"
+cp include/jemalloc-compat/jemalloc/jemalloc.h "$OUT/include/jemalloc/jemalloc.h"
 cp "$so" "$OUT/lib/libjemalloc.so.2"
 ln -s libjemalloc.so.2 "$OUT/lib/libjemalloc.so"
 cat > "$OUT/lib/pkgconfig/jemalloc.pc" <<PC

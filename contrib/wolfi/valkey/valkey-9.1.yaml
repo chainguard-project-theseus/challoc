@@ -138,7 +138,7 @@ pipeline:
       # valkey-server calls je_mallctl and friends itself, so --as-needed
       # keeps the entry (design 13.6); the next step checks it anyway.
       lib="$PWD/challoc/target/release"
-      export CFLAGS="$CFLAGS -DUSE_MALLOC_USABLE_SIZE -I$PWD/challoc/contrib/valkey/include"
+      export CFLAGS="$CFLAGS -DUSE_MALLOC_USABLE_SIZE -I$PWD/challoc/include"
       export LDFLAGS="$LDFLAGS -L$lib -Wl,-rpath,/usr/lib/valkey"
       # MALLOC on every invocation: Valkey's Makefile persists its settings
       # and a `make install` without it would rebuild with the bundled

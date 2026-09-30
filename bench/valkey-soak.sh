@@ -3,7 +3,7 @@
 # `make valkey-soak` or `make run CMD='sh bench/valkey-soak.sh'`.
 #
 # For each allocator in ALLOCS a valkey-server is started from the matching
-# Valkey build (challoc: the patched tree from contrib/valkey/build.sh;
+# Valkey build (challoc: the patched tree from tests/consumers/valkey-build.sh;
 # jemalloc: an unpatched clone of the same tag built with its bundled jemalloc
 # 5.3.0, created here on first use) and driven through two load phases of
 # DURATION/2 seconds each, then left idle for SETTLE seconds:
@@ -167,7 +167,7 @@ ensure_jemalloc_server() {
 }
 
 # challoc-old: a second challoc server from CHALLOC_OLD_SRC (default the
-# tree contrib/valkey/build.sh built with the previous contrib patch, kept as
+# tree tests/consumers/valkey-build.sh built with the previous contrib patch, kept as
 # target/valkey/src-<tag>-oldpatch), for a same-run comparison of two
 # versions of the Valkey-side patch against one library and one jemalloc
 # column (the sized-path lane, 2026-09-21). It runs the same library as the

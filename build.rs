@@ -6,7 +6,7 @@
 //! consumers (Ruby, KeyDB, ...) and a `challoc-jemalloc-compat` package
 //! need. Cargo cannot rename the output file itself, so the file is always
 //! `libchalloc.so`; `scripts/jemalloc-compat.sh` (`make jemalloc-compat`)
-//! and `contrib/valkey/build.sh` put the soname-named link beside it.
+//! and `tests/consumers/valkey-build.sh` put the soname-named link beside it.
 //! Nothing else happens here: no code generation, no probing, and the flag
 //! only applies to the cdylib, never the staticlib.
 

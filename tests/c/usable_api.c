@@ -2,7 +2,7 @@
  * challoc's size-returning entry points from C (docs/design.md section
  * 13.7; plan: the sized-path lane, 2026-09-21): challoc_malloc_usable,
  * challoc_calloc_usable, challoc_realloc_usable and challoc_free_usable,
- * declared in <challoc/challoc.h> (contrib/valkey/include, on the include
+ * declared in <challoc/challoc.h> (include/, on the include
  * path through -I). Run under LD_PRELOAD=libchalloc.so by src/api/ctests.rs
  * (the driver runs it under the default configuration, the per-CPU mode and
  * the hardening keys, so every push and pop variant answers the same).

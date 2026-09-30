@@ -284,7 +284,7 @@ Files:
   itself (`sampler.c`) is still used by hand for attribution
   (`bench/results/*` "sampler" sections).
 - `valkey-soak.sh`: starts `valkey-server` from the challoc tree built by
-  `contrib/valkey/build.sh` and from an unpatched clone of the same tag built
+  `tests/consumers/valkey-build.sh` and from an unpatched clone of the same tag built
   with bundled jemalloc 5.3.0 (`target/valkey/src-<tag>-jemalloc`, built on
   first use), runs a write-heavy phase (valkey-benchmark `-t set`, then
   memtier_benchmark SET-only with 16-1024 byte values) and a delete-heavy phase
@@ -304,7 +304,7 @@ Files:
   the time-seeded memtier key stream ("Noise", above; not the acceptance
   protocol).
 - `ruby-bench.sh`, `ruby/gc_churn.rb`: the Ruby rows (docs/plan.md Phase 1.5
-  task 4b). The `--with-jemalloc` Ruby from `contrib/ruby/build.sh` runs
+  task 4b). The `--with-jemalloc` Ruby from `tests/consumers/ruby-build.sh` runs
   under challoc's `libjemalloc.so.2` stage (re-staged from the working tree)
   and, with `LD_PRELOAD=/usr/lib/libjemalloc.so.2`, under Wolfi's jemalloc
   (same soname, so the loader binds `DT_NEEDED` to the preloaded copy; the

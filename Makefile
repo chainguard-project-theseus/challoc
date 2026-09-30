@@ -256,7 +256,7 @@ scorecard: image ## the fixed row set vs jemalloc (REV=tree), one line appended 
 
 valkey: DOCKER_FLAGS = $(if $(STAGE),-e STAGE=$(STAGE)) $(if $(TEST_FLAGS),-e TEST_FLAGS="$(TEST_FLAGS)")
 valkey: image ## build challoc (quantum8) and Valkey at Wolfi's tag with contrib/valkey/0001-*.patch, then its tests (STAGE=build|memefficiency|full|all, TEST_FLAGS)
-	$(DOCKER_RUN) sh contrib/valkey/build.sh
+	$(DOCKER_RUN) sh tests/consumers/valkey-build.sh
 
 # CHALLOC_CONF is not in the list: DOCKER_BASE forwards it into every container.
 SOAK_VARS = ALLOCS DURATION SETTLE INTERVAL CHUNK VB_REQS KEYS SIZE MT_SIZES DEL_RATIO KEY_PATTERN DEFRAG IO_THREADS RESULT_DIR OCCUPANCY MS_INTERVAL BASELINES SAVE_BASELINE PORT COMMIT CHALLOC_LIB
@@ -283,8 +283,8 @@ soak-baseline: valkey-soak ## the 1200 s jemalloc soak that soak-quick compares 
 
 RUBY_VARS = STAGE ALLOC TESTS TESTOPTS JOBS RUBY_TAG RUBY_COMMIT RUBY_CHERRY
 ruby: DOCKER_FLAGS = $(call env_flags,$(RUBY_VARS))
-ruby: image ## stage libjemalloc.so.2 (quantum16), build Ruby 3.4 --with-jemalloc against it and run test-all (contrib/ruby/build.sh; STAGE=build|test|all, ALLOC=glibc for the baseline build, TESTS, JOBS)
-	$(DOCKER_RUN) sh contrib/ruby/build.sh
+ruby: image ## stage libjemalloc.so.2 (quantum16), build Ruby 3.4 --with-jemalloc against it and run test-all (tests/consumers/ruby-build.sh; STAGE=build|test|all, ALLOC=glibc for the baseline build, TESTS, JOBS)
+	$(DOCKER_RUN) sh tests/consumers/ruby-build.sh
 
 RUBY_BENCH_VARS = ALLOCS ROUNDS ROWS RESULT OUT HOST_KIND GC_ROUNDS GC_FORCED
 $(eval $(call bench_target,ruby-bench,bench/ruby-bench.sh,$$(RUBY_BENCH_VARS))) ## Ruby rows under challoc, jemalloc, glibc, mimalloc, tcmalloc (bench/ruby-bench.sh; ROUNDS=5); needs both `make ruby STAGE=build` builds

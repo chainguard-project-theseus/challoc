@@ -103,9 +103,9 @@ pipeline:
       lib=${{targets.destdir}}/usr/lib
       install -Dm755 target/release/libchalloc.so "$lib/libchalloc.so.${{vars.soversion}}"
       ln -s libchalloc.so.${{vars.soversion}} "$lib/libchalloc.so"
-      install -Dm644 contrib/valkey/include/challoc/jemalloc.h \
+      install -Dm644 include/challoc/jemalloc.h \
         ${{targets.destdir}}/usr/include/challoc/jemalloc.h
-      install -Dm644 contrib/valkey/include/challoc/challoc.h \
+      install -Dm644 include/challoc/challoc.h \
         ${{targets.destdir}}/usr/include/challoc/challoc.h
       mkdir -p "$lib/pkgconfig"
       # Libs scopes --no-as-needed to -lchalloc so a consumer that

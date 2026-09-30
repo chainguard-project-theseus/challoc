@@ -132,7 +132,7 @@ Tasks:
 7. Valkey integration: a patch in `contrib/valkey/` modelled on Debian's
    `USE_SYSTEM_JEMALLOC` patch that links `-lchalloc`, keeps
    `USE_JEMALLOC` and `HAVE_DEFRAG` defined, and maps `je_*` to our exports.
-   A script `contrib/valkey/build.sh` clones the tag Wolfi ships, applies the
+   A script `tests/consumers/valkey-build.sh` clones the tag Wolfi ships, applies the
    patch, builds with `quantum8`, and runs `./runtest --single unit/memefficiency`
    and the full `./runtest` suite.
 8. A soak script `bench/valkey-soak.sh` that runs `valkey-benchmark` and
@@ -277,7 +277,7 @@ Tasks:
       xmalloc-test 32% (still ahead of jemalloc) and the larson10/16 RSS
       rows read +48% / +37% against jemalloc before the assignment fix.
 4b. Ruby benchmark rows (after task 4, before task 5): a
-   `bench/ruby-bench.sh` and `make ruby-bench` over the `contrib/ruby/build.sh`
+   `bench/ruby-bench.sh` and `make ruby-bench` over the `tests/consumers/ruby-build.sh`
    stage: a fixed subset of ruby/benchmark run with `benchmark-driver`
    (`so_binary_trees`, `hash_aref_str`, `array_*`, `nbody`, `fib` as controls)
    plus one real script (`gem list`, or ERB rendering), the same `ruby` binary

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Ruby soak (docs/plan.md Phase 3 prerequisite (c)): the contrib/ruby/build.sh
+# Ruby soak (docs/plan.md Phase 3 prerequisite (c)): the tests/consumers/ruby-build.sh
 # Ruby (`--with-jemalloc` against the compat libjemalloc.so.2) running
 # bench/ruby/soak.rb, a Sidekiq-shaped process (16 mostly idle threads,
 # bursts of short-lived strings and arrays, a slowly growing long-lived set,
@@ -218,7 +218,7 @@ M5=$COMPACT_AT; M10=$DURATION
   echo "- date: $STAMP"
   echo "- host: ${HOST_CPU:-unknown CPU}, $PROCS CPUs visible to the container${HOST_KIND:+; $HOST_KIND}"
   echo "- kernel: $(uname -r), container: Wolfi"
-  echo "- ruby: $(run_ruby challoc -v) (tag $RUBY_TAG built by contrib/ruby/build.sh, --with-jemalloc), installed under target/ruby/install-challoc; allocator stats through fiddle -> mallctl: $fiddle"
+  echo "- ruby: $(run_ruby challoc -v) (tag $RUBY_TAG built by tests/consumers/ruby-build.sh, --with-jemalloc), installed under target/ruby/install-challoc; allocator stats through fiddle -> mallctl: $fiddle"
   echo "- workload: bench/ruby/soak.rb $DURATION s, $THREADS threads${IDLE_THREADS:+ + $IDLE_THREADS mostly idle threads}, seed $SEED, sample every $INTERVAL s, full GC every $GC_EVERY s, GC.compact at $COMPACT_AT s, one full GC after the workers stop (the final row)"
   [ -n "${CHALLOC_CONF:-}" ] && echo "- CHALLOC_CONF=$CHALLOC_CONF (read by challoc alone; jemalloc runs unchanged)"
   [ "$TRIM" = 1 ] && echo "- TRIM=1: soak.rb calls malloc_trim(0) right before every sample (where the allocator exports it), so VmRSS and resident read Active plus metadata at the sample instant"

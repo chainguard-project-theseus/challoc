@@ -1,7 +1,7 @@
 #!/bin/sh
 # Build Valkey against challoc and run its test suite (plan Phase 1 task 7).
 # Runs inside the dev container: `make valkey` (see the Makefile for the
-# variables it forwards) or `make run CMD='sh contrib/valkey/build.sh'`.
+# variables it forwards) or `make run CMD='sh tests/consumers/valkey-build.sh'`.
 #
 # What it does:
 #   1. builds libchalloc.so with the quantum8 feature into $CHALLOC_TARGET
@@ -10,7 +10,7 @@
 #   2. clones the Valkey tag Wolfi's valkey-9.1.yaml ships into
 #      target/valkey/src-<tag>, checks the commit, and applies
 #      0001-Add-MALLOC-challoc.patch (idempotent);
-#   3. `make MALLOC=challoc BUILD_TLS=yes` with contrib/valkey/include on the
+#   3. `make MALLOC=challoc BUILD_TLS=yes` with include/ on the
 #      include path and the challoc build directory as -L and rpath, so the
 #      binaries run from the tree without LD_LIBRARY_PATH;
 #   4. checks that valkey-server reports malloc=jemalloc-<v>-challoc and is
@@ -36,7 +36,7 @@ ROOT=$(pwd)
 STAGE=${STAGE:-all}
 case "$STAGE" in
     build|memefficiency|full|all) ;;
-    *) echo "valkey/build.sh: STAGE must be build, memefficiency, full or all, got '$STAGE'" >&2; exit 2 ;;
+    *) echo "valkey-build.sh: STAGE must be build, memefficiency, full or all, got '$STAGE'" >&2; exit 2 ;;
 esac
 VALKEY_TAG=${VALKEY_TAG:-9.1.2}
 VALKEY_COMMIT=${VALKEY_COMMIT:-7f1dffedff6de73058b2c2a389422b6ecd56c8fb}
@@ -46,7 +46,7 @@ SRC=$WORK/src-$VALKEY_TAG
 LOGS=$WORK/logs
 CHALLOC_TARGET=${CHALLOC_TARGET:-$WORK/challoc}
 PATCH=$ROOT/contrib/valkey/0001-Add-MALLOC-challoc.patch
-INCLUDE=$ROOT/contrib/valkey/include
+INCLUDE=$ROOT/include
 ARCH=$(uname -m)
 mkdir -p "$WORK" "$LOGS"
 
@@ -56,9 +56,9 @@ step() { printf '\n== %s\n' "$*"; }
 step "challoc (quantum8) -> $CHALLOC_TARGET"
 cargo build --release --target-dir "$CHALLOC_TARGET" --no-default-features --features quantum8
 LIB=$CHALLOC_TARGET/release
-[ -f "$LIB/libchalloc.so" ] || { echo "valkey/build.sh: $LIB/libchalloc.so missing" >&2; exit 1; }
+[ -f "$LIB/libchalloc.so" ] || { echo "valkey-build.sh: $LIB/libchalloc.so missing" >&2; exit 1; }
 readelf -d "$LIB/libchalloc.so" | grep -q 'Library soname: \[libchalloc.so.0\]' \
-    || { echo "valkey/build.sh: $LIB/libchalloc.so has no libchalloc.so.0 soname" >&2; exit 1; }
+    || { echo "valkey-build.sh: $LIB/libchalloc.so has no libchalloc.so.0 soname" >&2; exit 1; }
 # `-lchalloc` resolves the file; the loader then wants the soname next to it.
 ln -sf libchalloc.so "$LIB/libchalloc.so.0"
 
@@ -71,7 +71,7 @@ fi
 cd "$SRC"
 head=$(git rev-parse HEAD)
 if [ "$head" != "$VALKEY_COMMIT" ]; then
-    echo "valkey/build.sh: tag $VALKEY_TAG is $head, expected $VALKEY_COMMIT" >&2
+    echo "valkey-build.sh: tag $VALKEY_TAG is $head, expected $VALKEY_COMMIT" >&2
     exit 1
 fi
 if git apply --reverse --check "$PATCH" 2>/dev/null; then
@@ -107,23 +107,23 @@ version=$(./src/valkey-server --version)
 echo "$version"
 case "$version" in
     *"malloc=jemalloc-5.3.0-challoc"*) ;;
-    *) echo "valkey/build.sh: valkey-server does not report malloc=jemalloc-5.3.0-challoc" >&2; exit 1 ;;
+    *) echo "valkey-build.sh: valkey-server does not report malloc=jemalloc-5.3.0-challoc" >&2; exit 1 ;;
 esac
 # No ldd in the image; read the dynamic section instead. The DT_NEEDED
 # check is scripts/check-needed.sh, the same one a package test runs
 # (Phase 3 prerequisite (e): --as-needed drops the entry from a binary
 # that references no symbol of the library).
 sh "$ROOT/scripts/check-needed.sh" ./src/valkey-server libchalloc.so.0 \
-    || { echo "valkey/build.sh: valkey-server has no DT_NEEDED libchalloc.so.0" >&2; exit 1; }
+    || { echo "valkey-build.sh: valkey-server has no DT_NEEDED libchalloc.so.0" >&2; exit 1; }
 dyn=$(readelf -d ./src/valkey-server)
 echo "$dyn" | grep -E 'RUNPATH|RPATH' | grep -q "$LIB" \
-    || { echo "valkey/build.sh: valkey-server has no rpath to $LIB" >&2; exit 1; }
-[ -d deps/jemalloc/lib ] && { echo "valkey/build.sh: deps/jemalloc was built" >&2; exit 1; }
+    || { echo "valkey-build.sh: valkey-server has no rpath to $LIB" >&2; exit 1; }
+[ -d deps/jemalloc/lib ] && { echo "valkey-build.sh: deps/jemalloc was built" >&2; exit 1; }
 [ "$STAGE" = build ] && exit 0
 
 # 5. Tests.
 TCLSH=$(command -v tclsh8.6 || command -v tclsh9.0 || command -v tclsh8.5) \
-    || { echo "valkey/build.sh: no tclsh8.5/8.6/9.0 for ./runtest" >&2; exit 1; }
+    || { echo "valkey-build.sh: no tclsh8.5/8.6/9.0 for ./runtest" >&2; exit 1; }
 echo "tclsh: $TCLSH ($(echo 'puts [info patchlevel]' | "$TCLSH"))"
 run_tests() { # name, flags...
     name=$1; shift
