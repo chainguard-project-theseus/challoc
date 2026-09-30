@@ -1,0 +1,283 @@
+# bench/rows.toml: every row bench/cb can run (bench/README.md, "cb").
+#
+# A row is one program run as a fresh process under bench/tools/rt with the
+# variant's library in LD_PRELOAD (nothing for glibc) and its MALLOC_CONF.
+# Ported from bench/lib.sh (bench_args, ops_of, unit_of, higher_is_better,
+# secs_of); the shell harnesses keep their own copy until they are retired.
+#
+# Fields:
+#   cmd        argv; {name} is replaced from [vars], the command line's
+#              --var name=value, and the built-ins {bin} (the mimalloc-bench
+#              programs, target/bench-bin), {tools} (cb's own helpers,
+#              target/cb/tools), {root} (the repository) and {nproc},
+#              {nproc16} (nproc capped at 16)
+#   env        extra environment for the program
+#   parser     how the score is read (bench/cb/rows.py PARSERS): larson,
+#              xmalloc, valkey_model.write, churn.occ, wall
+#   unit, better ("higher" | "lower"), threads
+#   class      st | mt | server | soak: picks the practical threshold delta
+#              from [class] (the verdict margin until A/A calibration exists)
+#   fixed_work true when the program does a fixed amount of work (its
+#              instruction count is comparable run to run)
+#   secs       the fixed duration of a throughput row (for ops)
+#   ops        a fixed operation count (wall-time rows), for per-op counters
+#   requires   variant properties the row needs: "mallctl" (challoc or
+#              jemalloc), "challoc" (challoc builds only); other variants
+#              skip the row
+#   check      a hard floor on the score for challoc variants (a failed
+#              check makes the row "broken"), e.g. { min = 90 }
+#   est_s      expected seconds per run (planning, timeouts)
+#   needs      files that must exist ({...} expanded) or the row is skipped
+
+[vars]
+valkey_n = "850000"
+valkey_secs = "5"
+churn_class = "1024"
+churn_secs = "8"
+
+# Practical thresholds delta (owner decision O9), in percent.
+[class]
+st = { delta_pct = 1.0 }
+mt = { delta_pct = 2.0 }
+server = { delta_pct = 3.0 }
+soak = { delta_pct = 3.0, rss_delta_pct = 2.0, rss_delta_mib = 1.0 }
+
+# ---- mimalloc-bench programs (bench/build.sh) ----------------------------
+
+[row.larson1]
+cmd = ["{bin}/larson", "5", "8", "1000", "5000", "100", "4141", "1"]
+parser = "larson"
+unit = "M ops/s"
+better = "higher"
+threads = 1
+class = "st"
+secs = 5
+est_s = 6
+
+[row.larson10]
+cmd = ["{bin}/larson", "5", "8", "1000", "5000", "100", "4141", "10"]
+parser = "larson"
+unit = "M ops/s"
+better = "higher"
+threads = 10
+class = "mt"
+secs = 5
+est_s = 6
+
+[row.larson16]
+cmd = ["{bin}/larson", "5", "8", "1000", "5000", "100", "4141", "16"]
+parser = "larson"
+unit = "M ops/s"
+better = "higher"
+threads = 16
+class = "mt"
+secs = 5
+est_s = 6
+
+# More threads than most cells have CPUs.
+[row.larson64]
+cmd = ["{bin}/larson", "5", "8", "1000", "5000", "100", "4141", "64"]
+parser = "larson"
+unit = "M ops/s"
+better = "higher"
+threads = 64
+class = "mt"
+secs = 5
+est_s = 7
+
+[row.larsonN]
+cmd = ["{bin}/larson", "5", "8", "1000", "5000", "100", "4141", "{nproc}"]
+parser = "larson"
+unit = "M ops/s"
+better = "higher"
+threads = 0
+class = "mt"
+secs = 5
+est_s = 7
+
+[row.xmalloc]
+cmd = ["{bin}/xmalloc-test", "-w", "10", "-t", "5", "-s", "64"]
+parser = "xmalloc"
+unit = "M frees/s"
+better = "higher"
+threads = 10
+class = "mt"
+secs = 5
+est_s = 6
+
+[row.xmallocN]
+cmd = ["{bin}/xmalloc-test", "-w", "{nproc}", "-t", "5", "-s", "64"]
+parser = "xmalloc"
+unit = "M frees/s"
+better = "higher"
+threads = 0
+class = "mt"
+secs = 5
+est_s = 6
+
+[row.alloc-test1]
+cmd = ["{bin}/alloc-test", "1"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+est_s = 4
+
+[row.alloc-testN]
+cmd = ["{bin}/alloc-test", "{nproc16}"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 0
+class = "mt"
+fixed_work = true
+est_s = 5
+
+[row.cfrac]
+cmd = ["{bin}/cfrac", "17545186520507317056371138836327483792789528"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+est_s = 4
+
+[row.espresso]
+cmd = ["{bin}/espresso", "{root}/target/bench-src/mimalloc-bench/bench/espresso/largest.espresso"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+est_s = 4
+needs = ["{root}/target/bench-src/mimalloc-bench/bench/espresso/largest.espresso"]
+
+[row.mstress]
+cmd = ["{bin}/mstress", "{nproc}", "50", "25"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 0
+class = "mt"
+fixed_work = true
+est_s = 6
+
+# 16 do_benchmark passes (4 warm-up + 3 scenarios x 4 counts) of 2M
+# malloc+free pairs.
+[row.glibc-simple]
+cmd = ["{bin}/glibc-simple"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+ops = 64000000
+est_s = 5
+
+# ---- the Valkey model (bench/probes/valkey_model.c) ----------------------
+# valkey_n keys (about 500 MiB live), valkey_secs seconds: half write
+# (SET over a full heap), half delete; scored by the write phase. Frees go
+# through sdallocx where the allocator exports it.
+
+[row.valkey1]
+cmd = ["{tools}/valkey_model", "-n", "{valkey_n}", "-t", "{valkey_secs}", "-s"]
+parser = "valkey_model.write"
+unit = "M ops/s"
+better = "higher"
+threads = 1
+class = "mt"
+est_s = 9
+
+[row.valkey1-free]
+cmd = ["{tools}/valkey_model", "-n", "{valkey_n}", "-t", "{valkey_secs}", "-s", "-f", "free"]
+parser = "valkey_model.write"
+unit = "M ops/s"
+better = "higher"
+threads = 1
+class = "mt"
+est_s = 9
+
+[row.valkey1-usable]
+cmd = ["{tools}/valkey_model", "-n", "{valkey_n}", "-t", "{valkey_secs}", "-s", "-u"]
+parser = "valkey_model.write"
+unit = "M ops/s"
+better = "higher"
+threads = 1
+class = "mt"
+est_s = 9
+
+# Write phase only, so a per-operation counter is per SET.
+[row.valkey1-write]
+cmd = ["{tools}/valkey_model", "-n", "{valkey_n}", "-w", "{valkey_secs}", "-d", "0", "-s"]
+parser = "valkey_model.write"
+unit = "M ops/s"
+better = "higher"
+threads = 1
+class = "mt"
+est_s = 9
+
+# Valkey's unsized zmalloc shape (a usable-size query after every
+# allocation and before every free) ...
+[row.valkey1-write-zmalloc]
+cmd = ["{tools}/valkey_model", "-n", "{valkey_n}", "-w", "{valkey_secs}", "-d", "0", "-s", "-u", "-a"]
+parser = "valkey_model.write"
+unit = "M ops/s"
+better = "higher"
+threads = 1
+class = "mt"
+est_s = 9
+
+# ... and the challoc pair that replaces it (challoc builds only).
+[row.valkey1-write-pair]
+cmd = ["{tools}/valkey_model", "-n", "{valkey_n}", "-w", "{valkey_secs}", "-d", "0", "-s", "-p"]
+parser = "valkey_model.write"
+unit = "M ops/s"
+better = "higher"
+threads = 1
+class = "mt"
+requires = ["challoc"]
+est_s = 9
+
+# ---- the churn probe (bench/probes/churn.c) -------------------------------
+# One size class at 44% occupancy under balanced random churn; the score
+# is the class's end occupancy (compaction). Needs mallctl.
+[row.churn1024]
+cmd = ["{tools}/churn", "{churn_class}", "30000", "{churn_secs}", "0.56"]
+parser = "churn.occ"
+unit = "% occupancy"
+better = "higher"
+threads = 1
+class = "st"
+requires = ["mallctl"]
+check = { min = 90.0 }
+est_s = 9
+
+# ---- Python (bench/probes/python/json_bench.py) ---------------------------
+
+[row.python1]
+cmd = ["python3", "{root}/bench/probes/python/json_bench.py"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+est_s = 5
+needs = ["{root}/bench/probes/python/json_bench.py"]
+
+[row.python1-malloc]
+cmd = ["python3", "{root}/bench/probes/python/json_bench.py"]
+env = { PYTHONMALLOC = "malloc" }
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+est_s = 5
+needs = ["{root}/bench/probes/python/json_bench.py"]
