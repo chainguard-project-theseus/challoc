@@ -9,8 +9,7 @@ features a hypervisor hides.
 
 ## Why challoc cares
 
-- The kernel matrix (`bench/gce/challoc-bench matrix`, plan Phase 2.5
-  task 3) runs Debian and Ubuntu kernels and tests challoc inside the
+- The kernel matrix (`bench/gce/challoc-bench matrix`) runs Debian and Ubuntu kernels and tests challoc inside the
   Wolfi dev container. Chainguard OS is the kernel and glibc the product
   ships; a Chainguard OS host is the first "floor as shipped" cell, and
   the only one without Docker's default seccomp hiding `mseal` and
@@ -19,7 +18,7 @@ features a hypervisor hides.
   see the memory note "PMU on GCE means bare metal") and no hypervisor to
   hide CPU features: the arm64 metal shape measures as Neoverse **N3**
   (Armv9.2), so `grep mte /proc/cpuinfo` there is the cheapest test of
-  whether tagged pointers part 2 (design section 18, plan task 6) has a
+  whether the tagged-pointer implementation (design section 18) has a
   host.
 - Our VMs live in the active gcloud project (`dlorenc-dev`); the images
   live in `wolfi-vm`. Pass `--image-project=wolfi-vm` and keep

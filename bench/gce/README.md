@@ -2,7 +2,7 @@
 
 Two Compute Engine VMs give challoc a quiet, dedicated Linux host per
 architecture with real hardware performance counters. They are the reference
-environment for benchmark numbers (docs/plan.md, Phase 1.5); the Docker VM on
+environment for benchmark numbers (docs/benchmarking.md); the Docker VM on
 the Mac stays the development environment, and a Mac number is never compared
 with a GCE number.
 
@@ -88,7 +88,7 @@ works. `matrix_oslogin` in `challoc-bench` is the one place that decides
 Every subcommand names its VMs `$CHALLOC_GCE_PREFIX-<arch>` (default
 `challoc-bench`, the reference pair above) and its matrix cells
 `$CHALLOC_GCE_PREFIX-matrix-<cell>` (`challoc-matrix-<cell>` for the
-default prefix). A parallel lane (CLAUDE.md, Environment) exports
+default prefix). A parallel worktree ("lane") exports
 `CHALLOC_GCE_PREFIX=challoc-<lane>` and gets a fully independent pair
 (`create all`, `provision all` once; `stop`/`delete` before its turn ends)
 that `sync`, `run`, `quick`, `quick-perf`, `ab`, `fetch` and `matrix` then
@@ -98,9 +98,8 @@ and `index`, so the VM holds a plain checkout of the lane's branch and
 `git archive` of a rev works there. `status` lists the prefix's VMs when
 the variable is set and every `challoc-*` VM when it is not;
 `challoc-bench lanes` groups every VM by prefix with status and uptime,
-the coordinator's view. The scorecard is not a lane command: only the
-coordinator runs `scorecard` from `main` on the reference pair, once per
-merge batch, and only those runs append to `bench/results/scorecard-<arch>.md`.
+the whole picture. The scorecard is not a lane command: only runs from
+`main` on the reference pair append to `bench/results/scorecard-<arch>.md`.
 
 ## Two tiers on a VM
 
@@ -133,15 +132,15 @@ that script; `OLD=`/`NEW=` to the build. `scorecard` runs `make scorecard`
 rounds, one line appended to `bench/results/scorecard-<arch>.md`) and then
 `fetch`, so the appended line lands in the local file without clobbering a
 newer local edit. Run it on both VMs after landing a change and commit the
-two lines with the PROGRESS commit.
+two lines.
 
 Every extra argument is a `VAR=value` for `make` and is quoted for the
 remote shell, so spaces inside `VARIANTS` survive. Both subcommands `sync`
 first; `sync` mirrors the working tree including uncommitted changes and
 prints a warning listing any uncommitted change under `src/` (or the crate
 manifest), because the library the VM then measures as `tree` is not HEAD.
-Run the iteration's `quick` before any `ab`; a variant that fails `quick` is
-not taken to the protocol tier (`scripts/ralph-prompt.md` step 4).
+Run `quick` before any `ab`; a variant that fails `quick` is not taken to
+the protocol tier.
 
 Long runs (`ab` with 5 rounds is 6 to 8 minutes, `make bench` 13, the soak
 45) survive a dropped ssh session when launched detached on the VM:

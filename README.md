@@ -215,10 +215,9 @@ its slab: at most a cache's worth of frees later (at once when the cache is
 full or with `MALLOCX_TCACHE_NONE`). Between the call and that flush the
 slot can be handed out twice, which is jemalloc's behaviour for every free;
 if a `malloc` takes one copy before the flush the duplicate is not
-detected. This trade is the jemalloc-parity decision of
-`docs/plan.md` Phase 1.5 task 4e: the exact check costs one slab-descriptor
-cache miss per free, 200 of the 273 cycles per SET that separated challoc
-from jemalloc on Valkey's write path.
+detected. This trade is made for jemalloc parity: the exact check costs
+one slab-descriptor cache miss per free, 200 of the 273 cycles per SET that
+separated challoc from jemalloc on Valkey's write path.
 
 (3) On an arm64 host whose kernel exposes pointer authentication
 (`HWCAP_PACA`/`PACG`: Google Axion, Apple silicon; not Ampere Altra, not
@@ -251,8 +250,7 @@ is why it is not the default. The price of each on `larson`, `redis` and
 the Valkey model is in `bench/results/2026-09-18-*-gce-tunables.md`.
 ## Compatibility
 
-(4) Designed, not implemented (`docs/design.md` section 18, plan Phase 2.5
-tasks 5 and 6): `tag_pointers:mte` gives every block a random 4-bit MTE tag
+(4) Designed, not implemented (`docs/design.md` section 18): `tag_pointers:mte` gives every block a random 4-bit MTE tag
 retagged on free, so a read through a freed pointer faults in hardware;
 `tag_pointers:lam` carries a six-bit class-and-generation tag in the
 ignored top bits (LAM on x86_64, TBI on aarch64) that `free`, `realloc`,
@@ -292,31 +290,27 @@ behaviour is undefined. A program that leaned on that leniency dies with
 `SIGABRT` and a `challoc:` message instead of corrupting the heap.
 
 See [docs/design.md](docs/design.md) for the full design and
-[docs/plan.md](docs/plan.md) for the implementation plan.
+[docs/benchmarking.md](docs/benchmarking.md) for how it is measured.
 
 ## Status
 
-Implemented, tested and packaged for Wolfi; the consumer rows of Phase 3
-are in progress. Phases 0, 1, 1.5, 2 and 2.5 of [docs/plan.md](docs/plan.md)
-are done: the allocator builds as a `cdylib`, its unit tests and C programs
-run under `LD_PRELOAD` in the dev container (`make test`, plus the glibc and
-mimalloc suites and the fuzz driver), and the Valkey soak, Valkey test suite
-and Ruby suites run against it (`make valkey-soak`, `make ruby-bench`).
-Phase 2.5 was accepted on 2026-09-20 on every row reachable from GCE
-(`bench/results/2026-09-20-phase-2.5-acceptance.md`); two rows stay open on
-hardware the plan gates on the human (WAITPKG; MTE, LAM and UAI). Phase 3:
-`contrib/wolfi/challoc.yaml` builds `challoc`, `challoc-dev` and
-`challoc-jemalloc-compat` with melange, and Wolfi's Valkey 9.1 and Ruby 3.4
-are built and tested on challoc on both architectures (`contrib/wolfi/`);
-`docs/tuning.md` is the operator's guide; the consumer benchmark rows (plan
-Phase 3 task 5) have the JVM and Node.js rows done and PostgreSQL pending.
-`PROGRESS.md` is the task log; `bench/results/scorecard-{aarch64,x86_64}.md`
-record the benchmark trend per commit. Of the features above, zero-on-free
-and slot randomisation landed with Phase 2 (opt-in), THP with Phase 2.5 task
-9 (`thp:auto|always`, off by default), `mseal` of the reservations'
-never-committed ranges, the cgroup measurement layer (`stats.cgroup.*`) and
-the cgroup policy with its container tests (`make test-cgroup`) have landed;
-tagged pointers (`tag_pointers`) are designed and wait for hardware.
+Implemented, tested and packaged for Wolfi. The allocator builds as a
+`cdylib`; its unit tests and C programs run under `LD_PRELOAD` in the dev
+container (`make test`, plus the glibc and mimalloc suites and the fuzz
+driver), and the Valkey soak, the Valkey test suite and the Ruby suites run
+against it (`make valkey-soak`, `make ruby-bench`). The kernel matrix
+proves the floor on 5.10, 6.1, 6.8, 6.18, 7.0 and 7.2 kernels and on
+64 KiB-page aarch64 (`bench/gce/README.md`). `contrib/wolfi/challoc.yaml`
+builds `challoc`, `challoc-dev` and `challoc-jemalloc-compat` with melange,
+and Wolfi's Valkey 9.1 and Ruby 3.4 are built and tested on challoc on both
+architectures (`contrib/wolfi/`). `docs/tuning.md` is the operator's guide;
+`bench/results/scorecard-{aarch64,x86_64}.md` record the benchmark trend.
+Zero-on-free and slot randomisation are opt-in; THP (`thp:auto|always`) is
+off by default; `mseal` of the reservations' never-committed ranges, the
+cgroup measurement layer (`stats.cgroup.*`) and the cgroup policy with its
+container tests (`make test-cgroup`) are in. Tagged pointers
+(`tag_pointers`) are designed (design section 18) and wait for hardware
+that exposes MTE or LAM.
 
 ## Building
 
