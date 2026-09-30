@@ -1,5 +1,5 @@
 /*
- * Phase 1 task 2: decay, purge and the background thread end to end under
+ * Decay, purge and the background thread end to end under
  * LD_PRELOAD. The driver in src/api/ctests.rs runs one mode per process
  * with MALLOC_CONF set for it:
  *
@@ -10,8 +10,8 @@
  *                                          and not at once
  *   curve       dirty_decay_ms:2000        the same over a 2 s window: part
  *                                          of the freed set is back by
- *                                          mid-window (Phase 1.5: the
- *                                          smoothstep curve), all of it by
+ *                                          mid-window (the smoothstep
+ *                                          curve), all of it by
  *                                          the end
  *   never       dirty_decay_ms:-1          RSS never drops on its own;
  *                                          malloc_trim still purges

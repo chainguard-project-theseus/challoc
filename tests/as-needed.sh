@@ -1,6 +1,6 @@
 #!/bin/sh
 # tests/as-needed.sh: the `-Wl,--as-needed` truth for challoc consumers
-# (plan Phase 3 prerequisite (e), design 13.6), run in the dev container by
+# (design 13.6), run in the dev container by
 # `make check-needed` after `cargo build --release`. Links tests/c/as_needed.c
 # against target/release/libchalloc.so three ways, each with and without
 # `-Wl,--as-needed`, and checks the DT_NEEDED list with

@@ -1,5 +1,5 @@
 /*
- * Phase 3 prerequisite (e), the two-level shape (Ruby: the `ruby` binary
+ * The `-Wl,--as-needed` check's two-level shape (Ruby: the `ruby` binary
  * calls no allocator function itself, libruby.so does): a shared library
  * linked -lchalloc that allocates and reports which object serves malloc.
  */

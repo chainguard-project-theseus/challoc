@@ -1,5 +1,5 @@
 /*
- * Phase 1 task 1: malloc_conf sources end to end under LD_PRELOAD. The
+ * The malloc_conf sources end to end under LD_PRELOAD. The
  * driver in src/api/ctests.rs builds this program once per case:
  *
  *   -DCONF='"..."'  defines `je_malloc_conf` with that string, statically

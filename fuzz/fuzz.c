@@ -1,5 +1,5 @@
 /*
- * challoc fuzz driver (plan Phase 0 task 13).
+ * challoc fuzz driver.
  *
  * A seeded, weighted random exerciser for the libc entry points. Every
  * thread keeps a table of live blocks; each block is filled over its whole

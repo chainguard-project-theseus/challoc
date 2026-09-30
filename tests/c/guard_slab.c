@@ -1,5 +1,5 @@
 /*
- * Phase 2 task 1: guard slabs end to end, under LD_PRELOAD (design 5 and 14).
+ * Guard slabs end to end, under LD_PRELOAD (design 5 and 14).
  *
  * Every `guard_slab_interval`-th 64 KiB of a class's slabs is a guard slab
  * that is never handed out. It is committed read-write like its neighbours,

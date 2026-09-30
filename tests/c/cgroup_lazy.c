@@ -1,5 +1,5 @@
 /*
- * Phase 2.5 task 10: the two-advice purge under the cgroup policy's
+ * The two-advice purge under the cgroup policy's
  * headroom band, end to end in a `docker run --memory=512m` container
  * (scripts/cgroup-tests.sh `lazy`, `make test-cgroup-lazy`). The program
  * allocates a working set (200 MiB by default: half 1 MiB runs, a quarter
@@ -8,7 +8,7 @@
  * allocations, so the periodic tick runs the decay walks). With 200 MiB
  * freed in a 512 MiB cgroup usage is about 50% of the limit: the policy's
  * `Low` band, where retention over the 5% cap is purged at the first walk
- * and, since task 10, with `MADV_FREE`:
+ * and with `MADV_FREE`:
  *
  *   cgroup_lazy MODE [MiB] [--any-allocator]
  *

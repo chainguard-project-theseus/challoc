@@ -1,5 +1,5 @@
 /*
- * Phase 2 task 4: the cgroup figures a program can read through mallctl
+ * The cgroup figures a program can read through mallctl
  * (`stats.cgroup.limit`, `.high`, `.current`, `.pressure_events`, design
  * 11 and 13.4) and the `cgroup:` line of malloc_stats_print, from C under
  * LD_PRELOAD. Modes:

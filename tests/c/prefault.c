@@ -1,5 +1,5 @@
 /*
- * Prefaulted fresh slabs (plan Phase 2.5 task 11, design 8; purge.rs
+ * Prefaulted fresh slabs (design 8; purge.rs
  * `prefault`, class.rs `prefault_next`), both ways. Run as
  * LD_PRELOAD=target/release/libchalloc.so ./prefault MODE with
  *
@@ -248,8 +248,8 @@ int main(int argc, char **argv)
         CHECK(wakes >= 1, "the commit path issued no wake");
         CHECK(res_next == full, "next fresh slab %#lx: %ld of %ld pages resident before any allocation touched it", (unsigned long)next,
               res_next, full);
-        /* The pipeline is bounded by MAX_AHEAD slabs (the plan's one per
-         * class is the floor; the burst rate raises it). */
+        /* The pipeline is bounded by MAX_AHEAD slabs (one per class is
+         * the floor; the burst rate raises it). */
         CHECK(pipeline >= 1 && pipeline <= 8, "%ld consecutive prefaulted slabs from the next fresh one (bound 8)", pipeline);
         /* Its memory reads zero and the next allocations of the class,
          * once the slab in service is used up, come from it. (Read only

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Build libchalloc with the `jemalloc-soname` feature and stage it under
-# jemalloc's name for link-only consumers (plan Phase 1 task 6, design 13.2).
+# jemalloc's name for link-only consumers (design 13.2).
 # Runs inside the dev container (`make jemalloc-compat`; `make test` runs it
 # after the release build so the tests in src/api/ctests.rs can check it).
 #
@@ -12,8 +12,8 @@
 #                              contrib/jemalloc-compat/include/jemalloc/jemalloc.h:
 #                              jemalloc 5.3's unprefixed API as challoc exports
 #                              it, for a consumer that includes
-#                              <jemalloc/jemalloc.h> (Ruby's --with-jemalloc;
-#                              plan Phase 3 task 3). The pc file's Cflags point
+#                              <jemalloc/jemalloc.h> (Ruby's
+#                              --with-jemalloc). The pc file's Cflags point
 #                              at it. The Wolfi package puts it in
 #                              challoc-jemalloc-compat-dev.
 #

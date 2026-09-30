@@ -1,4 +1,4 @@
-/* challoc driver for mimalloc's test/test-stress.c (plan Phase 0 task 16).
+/* challoc driver for mimalloc's test/test-stress.c.
  *
  * The mimalloc source is included verbatim with USE_STD_MALLOC so every
  * custom_calloc/realloc/free is the libc entry point that LD_PRELOAD

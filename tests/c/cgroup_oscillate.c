@@ -1,5 +1,5 @@
 /*
- * Phase 2 task 6 (b): the oscillation test of plan Phase 2. The live set
+ * The cgroup oscillation test. The live set
  * swings between LOW (200 MiB) and HIGH (480 MiB) of requested bytes in a
  * `docker run --memory=512m` container for SECONDS (300) and the process
  * must still be alive at the end: with the design 11 policy the memory
@@ -29,7 +29,7 @@
  * iff the run completed; the driver's watchdog kills a hung run at 6
  * minutes and an OOM kill shows as exit 137.
  *
- * The composition of the charge (Phase 2.5 task 3, the 64 KiB-page cell):
+ * The composition of the charge (for the 64 KiB-page kernels):
  * `memory.stat`'s anon, file, kernel, slab and pagetables, plus challoc's
  * `stats.allocated/active/resident/metadata/retained` and
  * `stats.cgroup.empty_bytes` (after an `epoch`) when preloaded, printed as
@@ -45,9 +45,8 @@
 #define KIB 1024UL
 enum { MAX_OBJECTS = 1500000, SAMPLE_EVERY = 8 * MIB, TRICKLE_MS = 10 };
 /*
- * The page-rounding envelope of a kernel with pages larger than 4 KiB
- * (Phase 2.5 task 3, bench/results/2026-09-19-matrix.md F1). Measured on
- * 6.8.0-139-generic-64k against 4 KiB kernels with the same object
+ * The page-rounding envelope of a kernel with pages larger than 4 KiB.
+ * Measured on 6.8.0-139-generic-64k against 4 KiB kernels with the same object
  * sequence: at the top of the swing `memory.stat` anon is 5 MiB higher
  * (the allocator's page-rounded metadata tables +1, its Empty 4 KiB slabs
  * scattered through 64 KiB page groups that are never all idle +2, which
