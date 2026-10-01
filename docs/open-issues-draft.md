@@ -454,6 +454,43 @@ design.md section 19 (source layout) misses `sys/cldemote.rs` and
 `layout/`, `purge/`, `model/`); `src/sys/mod.rs` cites "design.md section
 18" for the layout where it is 19. Fix in the design rewrite.
 
+### 35. Prefaulted fresh slabs: idea and measurements
+
+Label: `roadmap`, `performance`
+
+An opt-in prefault pass was prototyped and removed before release; the
+code is at the archive tag `archive/prototype-2026-09-30`
+(`src/purge/prefault.rs`, `src/class/prefault.rs`, the
+`populate_write` probe in `src/sys/features.rs`, `tests/c/prefault.c`,
+design.md section 8.2 and tuning.md section 3 at that tag). The design:
+behind `prefault:true` with `background_thread:true` (both at init), the
+background thread visited every `(arena, class)` whose refill counter
+moved since its last pass and, where the arena had fewer idle (`Empty`
+or `Purged`) slabs than the class had refilled since then (at least one,
+at most eight), committed the slabs the next refills would commit
+through the refill's own selection, populated each under the class lock
+with one `madvise(MADV_POPULATE_WRITE)` (5.14+, probed; else a write per
+page) and published it `Purged`, which the refill takes first and
+reports zero. The commit path and a refill that took the arena's last
+idle slab woke the thread; a pass that found a class refilling re-armed
+a 1 ms poll; nothing ran unless the cgroup policy showed headroom.
+Counters under `stats.prefault.*` and a `Prefault:` report line.
+
+On the Valkey soak (write phase 300 s, `-d 512 -r 500000 -P 16` and
+memtier SET-only, activedefrag on) it cut the main thread's page faults
+in the write phase by 83% on both architectures (157538 to 27047; process
+fault exceptions -86%), the same pages installed by the background
+thread instead (the two threads' sum within 1.5% of the default's). The
+write p99 (1.063 ms both ways) and throughput (925268 against 924518
+req/s, -0.1%) did not move at the tools' resolution: 130 k faults of a
+few microseconds over 300 s are tens of microseconds per second of CPU.
+The cost was a pipeline of resident slabs per refilling `(arena, class)`:
++4.2..4.6 MiB at Valkey's 580 MiB peak, +4..6 MiB on a 16 MiB larson
+heap, +25..34 MiB over ten arenas on larson10. The pass never touched
+huge runs (Valkey's dict tables and client buffers), where the remaining
+main-thread faults are. Worth revisiting only with a workload whose tail
+latency is fault-bound; the huge runs would be the first target.
+
 ---
 
 ## Already resolved in the tree (do not file)

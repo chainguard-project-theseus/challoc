@@ -1086,80 +1086,6 @@ parent's thread (it does not exist there) and reuses the stack directly.
 Creating the thread from a `free` slow path saves and restores `errno`
 around the pthread calls, since `free` must leave it alone (section 1).
 
-### 8.2 Prefaulted fresh slabs (plan Phase 2.5 task 11)
-
-Behind `prefault:true` (section 12), and only with the background thread
-(`Config::prefault_active`: the pass runs on it, so the key without
-`background_thread:true` is stored, readable and inert, and the report
-says so; both keys must be in the configuration at init, since the gate is
-read once there and a thread started later through
-`mallctl("background_thread", true)`, as Valkey's is, does not turn the
-pass on: `docs/tuning.md` section 3), the thread runs one pass after each
-decay pass
-(`purge::prefault::pass`): every `(arena, class)` whose `refilled`
-counter (`ClassState::refilled`, one add per cache refill, already kept
-for the compaction gate) moved since the pass last looked
-(`prefault_due`, a snapshot the thread alone writes, in the state's tail
-line) is asked for its next fresh slab (`ClassState::prefault_next`).
-Under the class lock: if the arena has an `Empty` or `Purged` slab of the
-class, nothing is done, since the next refill takes that; otherwise
-`next_slab`, the refill's own selection (the current group's next slab,
-else an idle group adopted from another arena, else a fresh group from
-the region, guard slabs committed as guards and skipped), yields the slab
-the refill would have committed, `commit_slab` and all. If it is `Fresh`
-it is populated with the lock still held, before anything can see it:
-one `madvise(MADV_POPULATE_WRITE)` over the slab where the init probe
-found the kernel takes it (5.14+, `populate_write=yes` in the feature
-line), else one write of zero per page (a zero over the kernel's zero,
-this thread's alone); then it is published as `Purged` in the `purged`
-set. That state is chosen because it is the one `next_slab` already
-prefers right after `Empty` (so the next refill takes the prefaulted slab
-first, at the lowest address), because its memory reads zero (the
-populate leaves the fresh pages as they are, so `take` still reports the
-claim zero for `calloc` wherever `purged_is_zero` holds) and because the
-decay walks never touch the `purged` set (the pages stay resident until
-the refill). The one thing the word gets wrong is "not resident": the
-`purged` count of the bins table includes prefaulted slabs until they are
-taken, and the RSS the statistics derive from slab counts is under by
-those slabs.
-
-As many slabs per class per pass as the class refilled since the last pass,
-at least one and at most `MAX_AHEAD` (8; `ClassState::prefault_ahead`), so a
-bounded number of prefaulted slabs per `(arena, class)` waits at any time;
-nothing at all unless the cgroup policy shows
-headroom (`Policy::prefault_allowed`: no limit, or under 70% of it with
-no eager return of the excess over the cap in progress, section 11), since
-resident memory nobody asked for yet is the first thing the scaled and
-immediate bands exist to take back. The commit path (`SlabTable::
-commit_slab`, on a usable slab) wakes the thread once per fresh slab it
-puts into service (`prefault::note_commit`, one relaxed load when the key
-is off), so the pass runs right after the refill that consumed the
-previous prefaulted slab, and a thread sleeping with no decay deadline
-still runs it; the pass's own commits wake nobody. A wake per fresh
-commit alone would leave every other slab of a steady stream unprefaulted
-(the refill that takes a prefaulted slab commits nothing), so a pass that
-found any class refilling re-arms the thread's sleep to at most
-`prefault::POLL_NS` (1 ms: a hot Valkey class takes a 64 KiB slab about
-that often, a pass is a few microseconds) and a quiet pass lets the sleep
-fall back to the decay deadline and the wakes. The fast paths are
-untouched: the pop and push never see the pass, and the refill's
-selection is unchanged (it finds a `Purged` slab where it would have
-committed a fresh one). Report: `Prefault: on (MADV_POPULATE_WRITE |
-touch per page) passes N (active N) slabs N (B bytes) skipped_no_headroom
-N fallbacks N wakes N taken N` or `off (<why>)`; `stats.prefault.{enabled,
-populate_write, passes, slabs, bytes, skipped, fallbacks, wakes, active}`.
-Tests: `class::tests::prefault_next_*` (the selection, the veto by the
-arena's own `Empty`/`Purged` slabs, the guard skip, the adoption),
-`policy::tests::prefault_allowed_only_with_headroom`,
-`purge::tests::prefault_populate_and_wakes_are_counted`, and
-`tests/c/prefault.c` both ways (under the key the next fresh slab of the
-64-byte class is fully resident per `mincore` before any allocation
-touched it, exactly one, zero, and the next refills come from it; under
-the default nothing past the slabs in service is resident and the
-counters stay zero). The acceptance measure is the Valkey soak's
-write-phase p99 and the main thread's page faults, the first reading in
-`bench/results/2026-09-20-aarch64-lane-b-task11-prefault.md`.
-
 ## 9. Fork
 
 `pthread_atfork` handlers registered at init: the prepare handler blocks every
@@ -1488,7 +1414,6 @@ jemalloc names where they exist:
 | Key                       | Default | Notes                                   |
 |---------------------------|---------|-----------------------------------------|
 | `background_thread`       | false   |                                         |
-| `prefault`                | false   | challoc only; opt-in (plan Phase 2.5 task 11): the background thread commits and `MADV_POPULATE_WRITE`s (5.14+, probed; fallback: touch) the next fresh slabs of every class that refilled since its last pass (as many as it refilled, at least one and at most 8 per class per pass) within the cgroup headroom (11), so the claim path's first write into a fresh slab takes no page faults; the claim takes a prefaulted slab as any committed empty slab. Needs `background_thread:true` in the same configuration at init (`Config::prefault_active` is read once there; a background thread Valkey starts later through `mallctl` does not turn the pass on, so Valkey is given both keys, `docs/tuning.md` section 3); off by default: it removes most of the Valkey main thread's write-phase page faults with p99 unmoved, but on by default it would mean a background thread and a few MiB of prefaulted slabs in every process (`docs/tuning.md` section 2) |
 | `dirty_decay_ms`          | 10000   |                                         |
 | `muzzy_decay_ms`          | ignored | accepted for compatibility              |
 | `narenas`                 | 0       | automatic arenas; 0 = `min(4 * ncpus, 64)`; see 13.3 |
@@ -1696,9 +1621,6 @@ stats.cgroup.purge_advice, stats.cgroup.lazy_purges, stats.cgroup.eager_purges
   (section 11; readable without a tracked cgroup)
 stats.thp.mode, stats.thp.class_ranges, stats.thp.class_bytes, stats.thp.huge_ranges,
 stats.thp.meta_ranges, stats.thp.nohuge_ranges, stats.thp.failures (section 10)
-stats.prefault.enabled, stats.prefault.populate_write, stats.prefault.passes, stats.prefault.slabs,
-stats.prefault.bytes, stats.prefault.skipped, stats.prefault.fallbacks, stats.prefault.wakes,
-stats.prefault.active (section 8.2)
 ```
 
 Semantics that differ from jemalloc's, deliberately: `arena.<i>.destroy`
@@ -2052,7 +1974,7 @@ Not implemented; see the archive tag `archive/prototype-2026-09-30`.
   (slabs per eighth of `nslots`), so a soak's `MEMORY MALLOC-STATS` shows
   where the live data sits and whether the schedule is running.
 - The heads of the text report's lines (`Kernel and CPU features: `,
-  `Prefault: `, `cgroup policy: `, ...) and the fixed words a line can
+  `Background thread: `, `cgroup policy: `, ...) and the fixed words a line can
   continue with are spelled once, in `src/api/print.rs` (`head!`, listed
   in `LINES`); the writers build their format strings from them. The test
   `print::tests::quoted_needles_match_the_report` reads `tests/c/*.c`,
@@ -2076,9 +1998,8 @@ Not implemented; see the archive tag `archive/prototype-2026-09-30`.
   NUL-terminated line of `key=value` pairs separated by single spaces, the
   kernel probes first (`page_size=4096 guard_install=yes mseal=yes
   process_madvise=pidfd_self process_madvise_free=yes anon_name=yes
-  populate_write=yes thp=madvise mthp=2M rseq=yes rseq_size=33
-  slice_ext=kernel-disabled`: whether `MADV_POPULATE_WRITE` works (5.14,
-  section 8), the THP setting or `none`, the
+  thp=madvise mthp=2M rseq=yes rseq_size=33 slice_ext=kernel-disabled`:
+  the THP setting or `none`, the
   folio sizes a `MADV_HUGEPAGE`d range can get or `none`, glibc's rseq
   registration and its size, and the kernel's answer for the time slice extension, section 17) then `pac=yes`
   or `pac=no` (pointer authentication, section 17). The string is static,
@@ -2105,7 +2026,6 @@ runs on every row.
 | `MADV_FREE` (the advice itself) | every kernel since 4.5 | `Empty` slabs and huge extents under 70% of a known cgroup limit are returned lazily (sections 8 and 11) | `MADV_DONTNEED` everywhere (no limit known, `lazy_band:false`) |
 | `mseal` | kernel 6.10, not filtered by seccomp | seals the never-committed ranges of the reservations at init (section 10 step 5) | skip; `Sealed ranges: 0 of N` |
 | `PR_SET_VMA_ANON_NAME` | kernel 5.17 with `CONFIG_ANON_VMA_NAME` | named `challoc:*` mappings in `/proc/pid/maps` | skip |
-| `MADV_POPULATE_WRITE` (`populate_write`) | kernel 5.14 (probed on a scratch page: the call and `mincore` afterwards) | the prefault pass (section 8, plan Phase 2.5 task 11; `purge::prefault`, `ClassState::prefault_next`), behind `prefault:true` with `background_thread:true`: the background thread commits the slab the next refill of a class would commit and populates it with one call while it is still unpublished, then publishes it as `Purged` for the refill to take; `stats.prefault.*` and the `Prefault:` report line | the same pass with one write of zero per page; `Prefault: off (prefault:false)` by default |
 | PSI triggers on `memory.pressure` | kernel 6.4 (unprivileged), cgroup2 mounted writable | the background thread arms a trigger and reacts to pressure at once (section 11) | sample `memory.current` on the tick |
 | rseq registration (`rseq`, `rseq_size`) | glibc 2.44's registered area (`__rseq_size`, `__rseq_offset`, `__rseq_flags`, read from the weak symbols at init, and the area's own `cpu_id` for the fact of registration; `rseq::probe`) | the time slice extension's size gate and area (below); `rseq=yes rseq_size=33` on the 7.0 GCE VMs | `rseq=no rseq_size=0` without a registration (`glibc.pthread.rseq=0`, a kernel without `CONFIG_RSEQ`); `rseq_size=20` on a kernel that reports no `AT_RSEQ_FEATURE_SIZE` |
 | Transparent huge pages (`thp`, `mthp`) | any kernel with `CONFIG_TRANSPARENT_HUGEPAGE`; the per-size `hugepages-<n>kB` knobs since 6.8 | off by default (`thp:never`: byte for byte the allocator without the key on the fast paths, plus one `MADV_NOHUGEPAGE` each on the class superblock and the metadata reservation at init (plan Phase 2.5 task 16, `thp::advise_reservation` from `layout::Regions::reserve`, and again from `force_never`), a VMA flag every later split inherits, so that on a host whose global mode is `always` (Chainguard OS ships `always` with the 2 MiB size on `inherit`; Debian's kernels boot `always`) no slab region of challoc's gets a huge page; the huge region is not advised and follows the host's policy (the 2026-09-20 decision, option (d) of `bench/results/2026-09-20-aarch64-cgos-thp-ab.md`: `never` is the slab regions' RSS discipline, and a huge run is a whole allocation the program asked for, which takes 2 MiB pages on an `always` host as jemalloc's large extents do; advising it too cost the Valkey model 10 points of `valkey1` on Chainguard OS, the 32 MiB of tables it keeps in huge runs, for no RSS gain on that heap). The both-ways test `tests/c/thp.c never` reads the global mode from sysfs, checks `nh` on the class region and no `nh` on the huge run on every kernel with THP, `stats.thp.nohuge_ranges` 2, and, on an `always` host, `AnonHugePages` 0 kB and `THPeligible` 0 on the class region after 8 MiB of small blocks and `THPeligible` 1 with `AnonHugePages` back on an 8 MiB huge run; the before/after numbers on the 7.0 VM with the global mode set to `always` are in `bench/results/2026-09-19-lane-b-floor-fixes.md`, the same-host A/B of the four settings on Chainguard OS in `2026-09-20-aarch64-cgos-thp-ab.md`. `auto` and `always` issue no `MADV_NOHUGEPAGE`: on an `always` host their unadvised regions stay eligible for the host's PMD pages. `thp:auto` (plan Phase 2.5 task 9, `thp.rs`): `MADV_HUGEPAGE` on the slab groups of every class whose slab holds an enabled folio size below the PMD (64 KiB slabs and up with `hugepages-64kB` enabled), and metadata commits rounded to and advised with that folio, never a 2 MiB page (the fork copy-on-write cost that makes Redis and Valkey forbid huge pages stays absent); inert, and the report says why, where the kernel enables no such size or where the PMD size is `madvise`-gated (`hugepages-2048kB/enabled` `madvise`, or `inherit` under a `madvise` top level, Ubuntu's default), because the same advice would then make the regions eligible for 2 MiB pages at the fault and through khugepaged; the host requirement is `hugepages-64kB/enabled=madvise` (or `always`) with `hugepages-2048kB/enabled=never` (or `always`, the host's own decision), root-only knobs. `thp:always`: with the PMD size enabled and no larger than 2 MiB (`thp::LG_PMD_CHUNK_MAX`: the PMD is `page * page / 8`, 2 MiB at 4 KiB pages, 32 MiB at 16 KiB, 512 MiB at 64 KiB, and a chunk of the larger sizes committed and advised per class would be the RSS floor of the process: the 64 KiB matrix cell showed 1.7 GiB of advised chunks for an 8 MiB test heap and the kernel gave none of them a folio, `THPeligible 0`), class regions are committed and advised in PMD-sized chunks so the first touch maps a 2 MiB page (guard slabs inside a chunk stay unused but unguarded: a marker there splits the page), huge runs of a PMD or more are advised (section 7), and the metadata takes the sub-PMD folio if one is enabled; a purge of a slab inside a 2 MiB page splits it, the kernel's cost of the mode. On a PMD over 2 MiB `always` is the folio path over the enabled sizes below the PMD (2 MiB slabs and up when `hugepages-2048kB` is enabled at 64 KiB pages) and inert, reason `PmdTooLarge`, when none is. Measured in `bench/results/2026-09-19-lane-b-mthp.md`: `auto` takes a quarter of larson1's dTLB refills on the C4A (4.0 -> 3.05 per operation, jemalloc 1.75) and puts valkey1's below jemalloc's (2.81 -> 2.44), leaves the Valkey-shaped rows flat, makes `fork()` 18% cheaper on a 500 MiB heap and the copy-on-write burst unchanged, and costs larson 1.6% with 7..19% more RSS on 16..100 MiB heaps (a folio per touched slab and table), which is why it is the documented opt-in and not the default; `always` is +10..15% on valkey1 at +10% RSS on 585 MiB and 2..4x on small heaps | small pages; `thp=none mthp=none` on a kernel without THP |
@@ -2114,10 +2034,9 @@ runs on every row.
 | Model-checked protocol (`cargo test model::`, `src/model/`) | the unit test suite, no special hardware: an exhaustive interleaving model of the claim, release, `on_live_zero` and purge steps of `class/`, memoised on the whole state, with the invariants of section 4 and 5 checked at every state (no slot handed to two claimers, a slot reported zero reads zero, `live` equals set bits plus in-flight reservations, a slab in an arena's set is `Empty`/`Purged` with `live == 0` and owned by that arena, a `Purged` slab reads zero) | nothing at run time: it is the proof obligation for a change to the protocol. Replaying the pre-fix step order finds the calloc race (Phase 1.5 task 7); the current order passes every scenario. | none needed |
 
 The kernel keys of the feature report are `page_size guard_install mseal
-process_madvise process_madvise_free anon_name populate_write thp mthp
-rseq rseq_size slice_ext`
-(`populate_write` since plan Phase 2.5 task 11: the prefault pass's
-populate; `rseq` and `rseq_size` since plan
+process_madvise process_madvise_free anon_name thp mthp rseq rseq_size
+slice_ext`
+(`rseq` and `rseq_size` since plan
 Phase 2.5 task 8, lane B: the glibc registration is probed like a kernel
 feature and printed with them; `slice_ext` since task 15: the kernel's
 answer for the time slice extension, `kernel-disabled` on the 7.0 GCE
@@ -2582,7 +2501,6 @@ src/class/table.rs    SlabTable: descriptors, slot bitmap, owner array, guard sl
 src/class/sets.rs     Lazy (a lazily committed metadata table), Set, SetTable (one arena's interleaved slab sets)
 src/class/fresh.rs    next_slab, next_fresh_slab: the fresh-slab path
 src/class/decay.rs    purge_empty, purge_curve (walk_empty), decay (section 8)
-src/class/prefault.rs the prefault pass's commit-ahead (prefault_next, prefault_ahead)
 src/class/verify.rs   the check_zero debug mode and the test-only pointer checks
 src/class/abort.rs    the #[cold] heap-inconsistency aborts of the class protocol
 src/class/tests.rs    the class tests over a synthetic region (Env)
@@ -2600,7 +2518,6 @@ src/model/            test-only: the exhaustive interleaving model of the slab p
 src/purge.rs          decay driver, batching and advice, Decayer; root of purge/
 src/purge/curve.rs    the decay period and curve (NEVER, STEPS, WEIGHTS, Curve)
 src/purge/background.rs   the background thread (section 8.1)
-src/purge/prefault.rs the prefault pass (section 8.2)
 src/purge/tests.rs, src/purge/linux_tests.rs   purge tests; purge::tests::serial
 src/policy.rs         the cgroup policy table (section 11): bands, retention cap, full purge, Advice (name, madv)
 src/arena.rs          arenas, explicit caches; re-exports heap::mallocx

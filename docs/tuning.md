@@ -87,10 +87,7 @@ At run time, through `mallctl`: `background_thread` (a write of `true`
 creates the thread synchronously; Valkey does this at startup),
 `arena.<i>.dirty_decay_ms`, `arena.<i>.purge` and `arena.<i>.decay`,
 `thread.tcache.enabled`, `thread.tcache.flush`, and `malloc_trim(0)`
-(every arena purged, eagerly). One gate is read only at init:
-`prefault` is active only if `background_thread:true` was in the
-configuration; a thread started later through `mallctl` does not turn
-the prefault pass on (section 3, Valkey).
+(every arena purged, eagerly).
 
 ## 2. The keys
 
@@ -100,8 +97,7 @@ One row per key, in `KEYS` order. "Values" is the grammar
 
 | key | values | default | what it does | change it when | cost or risk |
 |---|---|---|---|---|---|
-| `background_thread` | `true`, `false` | `false` | Runs decay (and the PSI trigger, and the prefault pass) on a background thread instead of only from allocation slow paths. Created on the first periodic tick after the request, or synchronously by `mallctl("background_thread")`. | The process goes idle for long stretches with freed memory still dirty: without the thread an idle process never purges (as jemalloc). Valkey turns it on itself. | One thread, one futex or `ppoll` sleep; its stack is one metadata reservation. On the Ruby soak it changed nothing (-0.7..+0.3% RSS on every row, `bench/results/2026-09-19-aarch64-ruby-soak.md`). |
-| `prefault` | `true`, `false` | `false` | With the background thread, commits and populates (`MADV_POPULATE_WRITE`, 5.14+, probed; else a touch per page) the next fresh slab of every class that refilled since the last pass, one pipeline per `(arena, class)`, only while the cgroup policy shows headroom, so the allocating thread's first write into a fresh slab takes no page fault. Inert without `background_thread:true` (the report says `Prefault: off (prefault:true without background_thread)`). | A latency-sensitive main thread fills a large heap in bursts (Valkey's shape). See section 3. | RSS: one pipeline of resident slabs per refilling `(arena, class)`: +4.2..4.6 MiB (+0.7..0.8%) at Valkey's 580 MiB peak, +4..6 MiB on a 16 MiB larson heap, +25..34 MiB over ten arenas on larson10 (`bench/results/2026-09-20-aarch64-task11-prefault-claim.md`, section 8). |
+| `background_thread` | `true`, `false` | `false` | Runs decay (and the PSI trigger) on a background thread instead of only from allocation slow paths. Created on the first periodic tick after the request, or synchronously by `mallctl("background_thread")`. | The process goes idle for long stretches with freed memory still dirty: without the thread an idle process never purges (as jemalloc). Valkey turns it on itself. | One thread, one futex or `ppoll` sleep; its stack is one metadata reservation. On the Ruby soak it changed nothing (-0.7..+0.3% RSS on every row, `bench/results/2026-09-19-aarch64-ruby-soak.md`). |
 | `dirty_decay_ms` | `-1`..`1000000000000` | `10000` | The window of the decay curve: freed slabs and huge extents go from dirty to purged over this many milliseconds along a smootherstep (about half by mid-window, all by the end). `-1` never purges. `0` purges at the next pass. | Lower it (1000..5000) when RSS after a burst matters more than refaults; raise it or set `-1` for a process that reuses everything it frees and never idles. | Purging costs `madvise` calls and refaults on reuse; never purging keeps every peak resident. Under a cgroup limit the policy scales this value down (section 4); `-1` is left alone in every band. |
 | `muzzy_decay_ms` | `-1`..`1000000000000` | `0` | Accepted for jemalloc compatibility, stored, readable as `opt.muzzy_decay_ms`; nothing reads it. There is no muzzy state: the two-advice purge (section 4) replaces it. | Never. | None. |
 | `narenas` | `0`..`4294967295` | `0` | Automatic arenas. `0` means `min(4 * ncpus, 64)` (`ncpus` is the affinity mask's width). Each heap is bound to the least-loaded automatic arena, so a program with `t` threads touches `min(t, narenas)` arenas; each arena has its own partial slabs per class. | A process that wants one shared slab set for all its threads (the lowest RSS floor: the 16-thread Ruby soak reads 170 MiB peak under `narenas:1` against 189 with the default and jemalloc's 201, `2026-09-21-aarch64-ruby-rss-v3-soak.md`). Not the remedy it was before 2026-09-21: the 2x RSS of the default on that soak was the per-arena caches of cross-thread frees, since one cache per class (`c8a8e03`), not the arena count. | Fewer arenas means more threads share each arena's class locks on the slow path (refill and flush); the fast paths are unaffected. Not measured under contention here. |
@@ -127,9 +123,9 @@ One row per key, in `KEYS` order. "Values" is the grammar
 
 ### Why the defaults are what they are
 
-Three defaults were close calls, each a trade of throughput against
-memory or against a cost every process would pay, and each went to the
-side that keeps memory low and the common process unchanged:
+One default was a close call, a trade of throughput against memory,
+and it went to the side that keeps memory low and the common process
+unchanged:
 
 - `thp:never`, in its current form (option (d) of
   `bench/results/2026-09-20-aarch64-cgos-thp-ab.md`). Before that day
@@ -140,12 +136,6 @@ side that keeps memory low and the common process unchanged:
   `2026-09-20-aarch64-cgos-thp-decision.md`). `thp:always` would buy
   parity (-0.2%) for +9.5% RSS on that heap and +39.9% on larson16's. RSS
   first is the Valkey soak's criterion, so `never` stays. Section 5.
-- `prefault:false`. The mechanism works (main-thread page faults on the
-  Valkey soak's write phase -83% on both architectures, p99 unmoved at
-  the tools' resolution) but a default `prefault:true` is also a default
-  background thread for every process and +4..6 MiB on a 16 MiB heap, so
-  it is documented as the Valkey opt-in instead (section 3;
-  `bench/results/2026-09-20-aarch64-task11-prefault-claim.md`, section 8).
 
 The rest are measured refusals: `zero_on_free`, `slot_randomize`,
 `pac_pointers`, `double_free_scan` are hardening opt-ins whose price is
@@ -187,39 +177,6 @@ decay thread without any key; `MEMORY PURGE` is `arena.<i>.purge`
 (section 6). Redis defines `je_malloc_conf` with
 `lg_tcache_nslots_mul:3,tcache_nslots_small_max:1000`, which challoc
 reads as a source (section 1); `MALLOC_CONF` overrides it.
-
-The documented opt-in, for a server that fills a large keyspace in
-bursts on a latency-sensitive main thread:
-
-```
-MALLOC_CONF=prefault:true,background_thread:true
-```
-
-Both keys, because the prefault gate is read at init, and Valkey's own
-`mallctl("background_thread", true)` comes after init, too late to open
-it.
-Measured on the Valkey soak (write phase 300 s, `-d 512 -r 500000 -P 16`
-and memtier SET-only, activedefrag on; `bench/results/2026-09-20-aarch64-lane-b-task11-prefault.md`
-section 4 and `2026-09-20-aarch64-task11-prefault-claim.md` sections 6
-and 8):
-
-| measure | default | `prefault:true,background_thread:true` |
-|---|---:|---:|
-| main thread page faults, write phase (both architectures, DURATION 1200) | 157538 | 27047 (-83%) |
-| process fault exceptions (`perf page-faults`), write phase | 66172 | 9540 (-86%) |
-| valkey-benchmark write req/s (lane B's DURATION 600 run) | 925268 | 924518 (-0.1%) |
-| valkey-benchmark write p99 ms | 1.063 | 1.063 |
-| peak RSS (VmHWM) | 578.4 MiB | 582.3 MiB (+0.7%) |
-| RSS after the settle | 129.3 MiB | 131.4 MiB (+1.6%) |
-
-The faults are the same pages installed by `challoc-bg` ahead of the
-refill (the two threads' `minflt` sum within 1.5% of the default's). The
-p99 does not move at the tools' resolution because 130 k faults of a few
-microseconds spread over 300 s of a 920 k req/s stream are tens of
-microseconds per second of CPU. What it costs is the RSS above and the
-background thread, which Valkey already runs. The pass does not touch
-the huge runs (Valkey's dict tables and client buffers), which is where
-the remaining main-thread faults are.
 
 Active defragmentation: `CONFIG SET activedefrag yes` works on the
 `quantum8` build (the package test asserts it). challoc answers
@@ -544,7 +501,6 @@ The knobs that move the policy:
 | `background_thread:true` | the PSI trigger exists, and decay runs while the process idles |
 | `huge_retain_max` | how much freed huge memory waits for decay rather than going at once (retention the cap then counts) |
 | `thp:always` | forced to `never` when the effective limit at init is under 1 GiB; `auto` is not forced |
-| `prefault` | the pass runs only with headroom (no limit, or under 70% with no eager return in progress) |
 
 Observability: `stats.cgroup.limit`, `.high` (`SIZE_MAX` when unlimited),
 `.current`, `.pressure_events`, `.decay_ms` (arena 0's effective period),
@@ -635,10 +591,9 @@ The lines an operator reads first, in the order they appear:
 | line | what to look for |
 |---|---|
 | `Run-time option settings` / `opt.<key>` | the configuration in force after every source; `(accepted, no effect)` marks an inert key; `thp` carries the forced-never note when a small cgroup limit applied |
-| `Kernel and CPU features: page_size=4096 guard_install=yes mseal=yes process_madvise=pidfd_self process_madvise_free=yes anon_name=no populate_write=yes thp=always mthp=2M rseq=yes rseq_size=28 slice_ext=... pac=yes` | `guard_install=no` means a kernel before 6.13: no guard slabs. `process_madvise=no` means purges loop over `madvise` (Docker's default seccomp hides the syscall). `anon_name=no` means `/proc/<pid>/smaps` has no `challoc:*` names (the Chainguard OS server image, `bench/results/2026-09-20-chainguard-os-cells.md`). `thp=` is the host's global mode. `populate_write=no` means the prefault pass touches pages instead. The keys are never renamed |
+| `Kernel and CPU features: page_size=4096 guard_install=yes mseal=yes process_madvise=pidfd_self process_madvise_free=yes anon_name=no thp=always mthp=2M rseq=yes rseq_size=28 slice_ext=... pac=yes` | `guard_install=no` means a kernel before 6.13: no guard slabs. `process_madvise=no` means purges loop over `madvise` (Docker's default seccomp hides the syscall). `anon_name=no` means `/proc/<pid>/smaps` has no `challoc:*` names (the Chainguard OS server image, `bench/results/2026-09-20-chainguard-os-cells.md`). `thp=` is the host's global mode. The keys are never renamed |
 | `Sealed ranges: N of M` | `0 of M` under Docker's default seccomp (mseal filtered) or before 6.10 |
 | `Background thread: present` / `absent` | whether decay runs while idle; Valkey shows `present` |
-| `Prefault: off (prefault:false)` / `off (prefault:true without background_thread)` / `on (MADV_POPULATE_WRITE) passes N (active N) slabs N (B bytes) skipped_no_headroom N fallbacks N wakes N taken N` | the second form is the misconfiguration to catch (section 3); `skipped_no_headroom` rising means the cgroup band vetoed the pass |
 | `Slice extension: off (kernel-disabled)` / `on (N threads enabled, N grants yielded via ...)` | the kernel's answer for the time slice extension |
 | `Arenas: N (M automatic), explicit caches: K` | `N` is the arenas built so far (one per live thread up to the cap): 17 on the 16-thread Ruby soak, 64 on the 200-thread JVM server. This is the figure `narenas` moves |
 | `Quantum size: 8` / `16` | `8` is Valkey's private build, `16` the system library |

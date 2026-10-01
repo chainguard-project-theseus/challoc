@@ -331,17 +331,6 @@ impl Policy {
         self.band() == Band::Low && !self.eager_excess.load(Ordering::Relaxed)
     }
 
-    /// The prefault pass's bound (`purge::prefault`):
-    /// a slab may be committed and populated ahead of its refill only
-    /// while there is headroom, that is with no limit known, or under 70%
-    /// of it with no eager return of the excess over the cap in progress;
-    /// in the scaled and immediate bands the pass does nothing, since
-    /// resident memory nobody asked for yet is the first thing those bands
-    /// exist to take back.
-    pub fn prefault_allowed(&self) -> bool {
-        matches!(self.band(), Band::Unlimited | Band::Low) && !self.eager_excess.load(Ordering::Relaxed)
-    }
-
     /// An eager return of the excess over the cap is in progress (for the
     /// report's reason line).
     pub fn eager_excess(&self) -> bool {
@@ -755,40 +744,5 @@ mod tests {
             assert!(!forced_by_limit(key, L), "{key:?} is never forced");
             assert!(!forced_by_limit(key, 0), "{key:?} is never forced");
         }
-    }
-
-    /// The prefault bound: allowed with no limit
-    /// and in the `Low` band, never in the scaled or immediate bands, and
-    /// not while the excess over the cap is being returned eagerly.
-    #[test]
-    fn prefault_allowed_only_with_headroom() {
-        let p = Policy::new(0, false);
-        assert_eq!(p.band(), Band::Unlimited);
-        assert!(p.prefault_allowed());
-        let limit = 1u64 << 30;
-        // Under 70%: allowed, whether or not the retention is capped.
-        p.apply(band(limit, limit / 2), limit, 0, 0);
-        assert_eq!(p.band(), Band::Low);
-        assert!(p.prefault_allowed());
-        // Scaled and immediate: not allowed.
-        p.apply(band(limit, limit * 8 / 10), limit, 0, 0);
-        assert!(matches!(p.band(), Band::Scaled(_)));
-        assert!(!p.prefault_allowed());
-        p.apply(band(limit, limit * 95 / 100), limit, 0, 0);
-        assert_eq!(p.band(), Band::Immediate);
-        assert!(!p.prefault_allowed());
-        // Back under 70% with the retention over the cap: the eager return
-        // is in progress until the retention is back within it.
-        p.apply(band(limit, limit * 8 / 10), limit, limit / 4, 0);
-        p.apply(band(limit, limit / 2), limit, limit / 4, 0);
-        assert_eq!(p.band(), Band::Low);
-        assert!(p.eager_excess(), "the excess over the cap is still out");
-        assert!(!p.prefault_allowed());
-        p.apply(band(limit, limit / 2), limit, 0, 0);
-        assert!(!p.eager_excess());
-        assert!(p.prefault_allowed());
-        // The limit goes away: allowed again.
-        p.apply(band(crate::sys::cgroup::UNLIMITED, 0), crate::sys::cgroup::UNLIMITED, 0, 0);
-        assert!(p.prefault_allowed());
     }
 }

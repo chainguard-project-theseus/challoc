@@ -22,7 +22,7 @@
 //! source; jemalloc gets the same effect with a separate first pass.
 //!
 //! Three tables name the keys. [`TABLE`] holds the tunables the allocator
-//! reads, jemalloc's and challoc's own (`prefault`, `slice_ext`,
+//! reads, jemalloc's and challoc's own (`slice_ext`, `lazy_band`,
 //! ...): one [`Key`] per tunable with its name,
 //! its parser and its reader, so [`Config::set`], [`Config::get`]
 //! (`opt.<key>`) and the name list [`KEYS`] all come from the one entry;
@@ -163,18 +163,6 @@ impl SliceExt {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Config {
     pub background_thread: bool,
-    /// Prefaulted fresh slabs: the background thread commits and
-    /// `MADV_POPULATE_WRITE`s (5.14+, probed; fallback: touch) the next
-    /// fresh slabs of every class that refilled since its last pass, as
-    /// many as it refilled in slabs (at most `purge::prefault::MAX_AHEAD`)
-    /// and within the cgroup headroom, so the claim path's first write
-    /// into a fresh slab does not take the page faults. Needs the
-    /// background thread (`background_thread:true`): without it the key
-    /// changes nothing ([`Config::prefault_active`]). Off by default (the
-    /// decision on the Valkey soak's write-phase p99 and main-thread page
-    /// faults, design 12). Read at init by the thread (`purge.rs`) and the
-    /// commit path (`class/`).
-    pub prefault: bool,
     /// `-1` means never purge.
     pub dirty_decay_ms: i64,
     /// Accepted for compatibility; nothing reads it.
@@ -278,7 +266,6 @@ impl Config {
     /// The compiled defaults (design section 12).
     pub const DEFAULT: Config = Config {
         background_thread: false,
-        prefault: false,
         dirty_decay_ms: 10_000,
         muzzy_decay_ms: 0,
         narenas: 0,
@@ -420,23 +407,6 @@ impl Config {
         crate::slice::configure(self.slice_ext.wanted(), self.slice_ext.forced())
     }
 
-    /// The `prefault` key as set: whether prefaulted fresh slabs were asked
-    /// for. See [`Config::prefault_active`] for whether a pass can run.
-    #[inline]
-    pub const fn prefault(&self) -> bool {
-        self.prefault
-    }
-
-    /// Whether the prefault pass runs: `prefault:true` and the background
-    /// thread that runs it (`background_thread:true`). `prefault` without
-    /// the thread is stored and readable (`opt.prefault`) but does nothing,
-    /// as `tcache_max` does nothing without `tcache`; the report can say
-    /// so from this method.
-    #[inline]
-    pub const fn prefault_active(&self) -> bool {
-        self.prefault && self.background_thread
-    }
-
     /// The guard slab interval actually used: 0 when guards are off.
     pub fn effective_guard_slab_interval(&self) -> u32 {
         if self.guards { self.guard_slab_interval } else { 0 }
@@ -530,7 +500,6 @@ macro_rules! bool_key {
 /// and is in no other table.
 pub const TABLE: &[Key] = &[
     bool_key!("background_thread", background_thread),
-    bool_key!("prefault", prefault),
     Key {
         name: "dirty_decay_ms",
         parse: |c, k, v| num(c, k, v, -1, MAX_INTERVAL_MS, |c, v| c.dirty_decay_ms = v),
@@ -1122,8 +1091,6 @@ mod tests {
         assert_eq!(d.tcache_nslots_small_max, 1024);
         assert_eq!(d.lg_tcache_nslots_mul, 1);
         assert_eq!(d.thp, Thp::Never);
-        assert!(!d.prefault, "opt-in");
-        assert!(!d.prefault_active());
         assert!(d.lazy_band);
         assert!(!clean("lazy_band:false").lazy_band);
         assert!(d.guards);
@@ -1308,30 +1275,6 @@ mod tests {
         // reports a failed probe.
         assert!(SliceExt::Auto.wanted() && SliceExt::On.wanted() && !SliceExt::Off.wanted());
         assert!(SliceExt::On.forced() && !SliceExt::Auto.forced() && !SliceExt::Off.forced());
-    }
-
-    /// `prefault`: a bool key, off by default, readable, accepted under
-    /// `abort_conf`; `prefault_active` is the
-    /// key and the background thread that runs the pass.
-    #[test]
-    fn prefault_values() {
-        assert!(KEYS.contains(&"prefault"));
-        for (value, want) in [("true", true), ("false", false)] {
-            let cfg = clean(&std::format!("prefault:{value},abort_conf:true"));
-            assert_eq!(cfg.prefault, want, "{value}");
-            assert_eq!(cfg.prefault(), want, "{value}");
-            assert_eq!(cfg.get(b"prefault"), Some(Value::Bool(want)), "{value}");
-            assert!(cfg.abort_conf);
-            assert!(!cfg.prefault_active(), "no background thread, no pass");
-        }
-        rejects_bad_values("prefault", &["1", "0", "yes", "on", "True", "", "advised"]);
-        assert!(!clean("prefault:true,prefault:false").prefault);
-        assert!(clean("prefault:\"true\"").prefault);
-        // The pass needs the thread, in either key order.
-        assert!(clean("prefault:true,background_thread:true").prefault_active());
-        assert!(clean("background_thread:true,prefault:true").prefault_active());
-        assert!(!clean("background_thread:true").prefault_active());
-        assert!(!clean("background_thread:true,prefault:true,background_thread:false").prefault_active());
     }
 
     /// The one inert key: a bool by value, no field, unreadable, one

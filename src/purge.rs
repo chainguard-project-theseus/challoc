@@ -1,7 +1,7 @@
 //! Decay and purge (design.md section 8) and the background thread (8.1).
 //!
-//! Four things live here; the curve and the prefault pass each have a file
-//! under `purge/`, the rest is this file:
+//! Three things live here; the curve and the background thread each have
+//! a file under `purge/`, the rest is this file:
 //!
 //! - [`Batch`], the discard primitive (this file, with the advice statics,
 //!   `os::discard`, the decay driver and [`Decayer`]). Callers collect up
@@ -37,7 +37,7 @@
 //!   [`on_tick`] is the hook the slow path calls every `PERIODIC_EVERY`
 //!   slow paths (design 6.4); [`purge_all`] is `malloc_trim(0)` and
 //!   `arena.<i>.purge`.
-//! - The background thread ([`background`], this file). Created on the
+//! - The background thread ([`background`], `purge/background.rs`). Created on the
 //!   first periodic tick after it was requested (never from init), on a
 //!   stack carved from the metadata region
 //!   with a `PROT_NONE` guard page below it, with every signal blocked. It
@@ -46,22 +46,6 @@
 //!   sleeping with no deadline wakes up. While it exists the slow path does
 //!   no purging of its own. After `fork` the child marks it absent and does
 //!   not recreate it until asked again.
-//!
-//! - The prefault pass ([`prefault`], `purge/prefault.rs`, behind the
-//!   `prefault` key and the background thread): after each decay pass the
-//!   thread visits every `(arena, class)` whose `refilled` counter moved
-//!   since its last visit
-//!   and, where the arena has fewer idle (`Empty` or `Purged`) slabs of
-//!   that class than the class refilled since the last pass, in slabs (at
-//!   least one, at most [`prefault::MAX_AHEAD`]), commits the missing
-//!   slabs through the refill's own selection
-//!   (`ClassState::prefault_ahead`), populates each with one
-//!   `madvise(MADV_POPULATE_WRITE)` (5.14+, probed at init; else a touch
-//!   per page) while it is still unpublished, and publishes it as
-//!   `Purged`, which the refill takes first; nothing at all unless the
-//!   cgroup policy shows headroom (`Policy::prefault_allowed`). The commit
-//!   path wakes the thread once per fresh slab it puts into service, so
-//!   the pass runs right after the refill that consumed the previous one.
 //!
 //! `pthread_create` allocates (glibc's `allocate_dtv` calls `calloc`), so
 //! the creating thread parks its TLS slot on the `TLS_CREATING` sentinel for
@@ -578,8 +562,6 @@ mod os {
 
 /// The background thread (design 8.1).
 pub mod background;
-/// The prefault pass (design 8.2), the background thread's second job.
-pub mod prefault;
 
 /// The fork child's view of the discard backend: a pidfd inherited from the
 /// parent names the parent, so it is closed and purges fall back to the

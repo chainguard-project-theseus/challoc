@@ -279,10 +279,6 @@ fn init() {
     purge::configure(features.process_madvise);
     purge::configure_advice(features.process_madvise_free, config.lazy_band);
     purge::set_check_zero(config.check_zero);
-    // The prefault pass (design 8.2) runs on the background thread, so
-    // `prefault_active` is the one gate (the key without the thread is
-    // stored and inert).
-    purge::prefault::configure(config.prefault_active(), features.populate_write);
     purge::background::request(config.background_thread);
     let regions = Regions::reserve(features.page_size, features.anon_name);
     if features.mseal {
