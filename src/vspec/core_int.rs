@@ -58,6 +58,22 @@ pub assume_specification[ usize::div_ceil ](x: usize, d: usize) -> (r: usize)
     ensures r as int == (x as int + d as int - 1) / d as int,
 ;
 
+/// `x` rotated right by `n` bits (`u32::rotate_right`).
+pub open spec fn rotr32(x: u32, n: u32) -> u32 {
+    if n % 32 == 0 {
+        x
+    } else {
+        (x >> (n % 32)) | (x << ((32 - n % 32) as u32))
+    }
+}
+
+/// `u32::rotate_right`: the bits shifted out at the bottom come back in at
+/// the top.
+pub assume_specification[ u32::rotate_right ](x: u32, n: u32) -> (r: u32)
+    ensures
+        r == rotr32(x, n),
+;
+
 } // verus!
 
 verus! {

@@ -225,6 +225,18 @@ impl Class {
             && self.nslots <= self.slab_bits
             && self.slab_bits <= 64 * MAX_SLAB_WORDS
             && (self.slab_bits >= 64 ==> self.slab_bits % 64 == 0)
+            && self.inv_ok()
+    }
+
+    /// The constants of the slot-start test ([`Class::slot_of_offset`]):
+    /// `size` is `d << tz` with `d` odd, and `inv_odd` is the inverse of `d`
+    /// modulo `2^32`. Closed: only the test needs it.
+    pub closed spec fn inv_ok(self) -> bool {
+        let d = self.size >> (self.tz as u32);
+        &&& self.tz < 32
+        &&& d << (self.tz as u32) == self.size
+        &&& d & 1 == 1
+        &&& d.wrapping_mul(self.inv_odd) == 1
     }
 
     #[inline]
@@ -358,8 +370,6 @@ impl Class {
     /// `valid` holds exactly when `offset` is the start of one of the slab's
     /// slots, and `slot` is then that slot.
     #[inline]
-    // PORT-RESTORE: the divisibility test (inv_odd, tz) replaced the reciprocal; trusts that inv_odd/tz are what classes_for_page computes (add an inv_ok conjunct to Class::wf and prove Newton's iteration and the rotate test).
-    #[verifier::external_body]
     pub const fn slot_of_offset(&self, offset: usize) -> (r: (usize, bool))
         requires self.wf(), offset < (1usize << self.lg_slab),
         ensures
@@ -373,6 +383,9 @@ impl Class {
         let q = (offset as u32)
             .wrapping_mul(self.inv_odd)
             .rotate_right(self.tz as u32);
+        proof {
+            lemma_slot_test(*self, offset, q);
+        }
         (q as usize, q < self.nslots)
     }
 
@@ -382,6 +395,155 @@ impl Class {
         ensures r == self.slab_mask,
     {
         self.slab_mask as usize
+    }
+}
+
+/// `a * 1 == a` modulo `2^32`.
+proof fn lemma_wmul_one(a: u32)
+    ensures
+        a.wrapping_mul(1u32) == a,
+{
+    vstd::arithmetic::div_mod::lemma_small_mod(a as nat, 0x1_0000_0000);
+}
+
+/// Multiplication modulo `2^32` is associative.
+proof fn lemma_wmul_assoc(a: u32, b: u32, c: u32)
+    ensures
+        a.wrapping_mul(b).wrapping_mul(c) == a.wrapping_mul(b.wrapping_mul(c)),
+{
+    let m = 0x1_0000_0000int;
+    vstd::arithmetic::div_mod::lemma_mul_mod_noop_right(a as int, (b as int) * (c as int), m);
+    vstd::arithmetic::div_mod::lemma_mul_mod_noop_left((a as int) * (b as int), c as int, m);
+    vstd::arithmetic::mul::lemma_mul_is_associative(a as int, b as int, c as int);
+}
+
+/// The rotate of the slot-start test: `q`, `y` rotated right by `t`, is
+/// below a bound of `2^22 >> t` or less only if the low `t` bits of `y`
+/// are clear (they would rotate into the top of `q`), so `y` is `q << t`;
+/// and it is `y >> t` when they are clear.
+proof fn lemma_rotate(y: u32, t: u32, q: u32, bound: u32)
+    requires
+        t < 32,
+        q == crate::vspec::core_int::rotr32(y, t),
+        bound <= 0x40_0000u32 >> t,
+    ensures
+        q < bound ==> y == q << t,
+        (y >> t) << t == y && y >> t < bound ==> q == y >> t,
+{
+    assert(q < bound ==> y == q << t) by (bit_vector)
+        requires
+            t < 32,
+            t == 0 ==> q == y,
+            t != 0 ==> q == (y >> t) | (y << ((32 - t) as u32)),
+            bound <= 0x40_0000u32 >> t,
+    ;
+    assert((y >> t) << t == y && y >> t < bound ==> q == y >> t) by (bit_vector)
+        requires
+            t < 32,
+            t == 0 ==> q == y,
+            t != 0 ==> q == (y >> t) | (y << ((32 - t) as u32)),
+            bound <= 0x40_0000u32 >> t,
+    ;
+}
+
+/// [`Class::slot_of_offset`]'s divisibility test (Granlund and
+/// Montgomery): with `size = d << tz`, `d` odd and `inv_odd` its inverse,
+/// `q` is below `nslots` exactly for the slot starts, and is then the
+/// slot. A slot start `j * size` multiplies to `j << tz`, which rotates
+/// back to `j`; conversely a `q` below `nslots` (at most `2^22 >> tz`)
+/// means the product was `q << tz`, and multiplying it back by `d` gives
+/// the offset as `q * size`, both below `2^22`.
+proof fn lemma_slot_test(c: Class, offset: usize, q: u32)
+    requires
+        c.wf(),
+        offset < (1usize << c.lg_slab),
+        q == crate::vspec::core_int::rotr32((offset as u32).wrapping_mul(c.inv_odd), c.tz as u32),
+    ensures
+        q < c.nslots ==> q * c.size == offset,
+        offset % (c.size as usize) == 0 && offset / (c.size as usize) < c.nslots ==> q < c.nslots,
+{
+    let s = c.size;
+    let t = c.tz as u32;
+    let d = s >> t;
+    let inv = c.inv_odd;
+    let n = c.nslots;
+    let lg = c.lg_slab as usize;
+    assert(MEDIUM_MAX == 0x4_0000);
+    assert(MAX_SLAB == 0x40_0000) by (bit_vector);
+    assert(offset < 0x40_0000) by (bit_vector)
+        requires
+            offset < (1usize << lg),
+            12 <= lg <= 22,
+    ;
+    let o = offset as u32;
+    let y = o.wrapping_mul(inv);
+    // The slot count is at most `2^22 >> t`: `n << t <= n * s <= 2^22`.
+    assert(t <= 18 && (1u32 << t) <= s) by (bit_vector)
+        requires
+            d << t == s,
+            d & 1 == 1,
+            t < 32,
+            s <= 0x4_0000u32,
+            d == s >> t,
+    ;
+    vstd::bits::lemma_u32_pow2_no_overflow(t as nat);
+    vstd::bits::lemma_u32_shl_is_mul(1, t);
+    vstd::bits::lemma_u32_shr_is_div(0x40_0000u32, t);
+    vstd::arithmetic::power2::lemma_pow2_pos(t as nat);
+    let p = vstd::arithmetic::power2::pow2(t as nat) as int;
+    assert(n as int * p <= 0x40_0000) by (nonlinear_arith)
+        requires
+            n as int * s as int <= 0x40_0000,
+            p <= s as int,
+            n >= 1,
+            p > 0,
+    ;
+    vstd::arithmetic::div_mod::lemma_div_is_ordered(n as int * p, 0x40_0000, p);
+    vstd::arithmetic::div_mod::lemma_div_multiples_vanish(n as int, p);
+    assert(n <= 0x40_0000u32 >> t);
+    lemma_rotate(y, t, q, n);
+    if q < n {
+        // `y` is `q << t`; times `d` it is `o` (`inv * d` is 1) and `q * s`.
+        assert(q.wrapping_mul(s) == (q << t).wrapping_mul(d)) by (bit_vector)
+            requires
+                s == d << t,
+                t < 32,
+        ;
+        lemma_wmul_assoc(o, inv, d);
+        assert(inv.wrapping_mul(d) == d.wrapping_mul(inv)) by (bit_vector);
+        lemma_wmul_one(o);
+        assert(q as int * s as int <= 0x40_0000) by (nonlinear_arith)
+            requires
+                q < n,
+                n as int * s as int <= 0x40_0000,
+                s > 0,
+        ;
+        vstd::arithmetic::div_mod::lemma_small_mod((q as int * s as int) as nat, 0x1_0000_0000);
+    }
+    if offset % (s as usize) == 0 && offset / (s as usize) < n {
+        // `o` is `j * s`, so `y` is `(j << t) * (d * inv)`, `j << t`.
+        let j = (offset / (s as usize)) as u32;
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(offset as int, s as int);
+        assert(j as int == offset as int / s as int);
+        vstd::arithmetic::mul::lemma_mul_is_commutative(j as int, s as int);
+        assert(j as int * s as int == offset as int);
+        vstd::arithmetic::div_mod::lemma_small_mod((j as int * s as int) as nat, 0x1_0000_0000);
+        assert(j.wrapping_mul(s) == (j << t).wrapping_mul(d)) by (bit_vector)
+            requires
+                s == d << t,
+                t < 32,
+        ;
+        lemma_wmul_assoc(j << t, d, inv);
+        let u = j << t;
+        lemma_wmul_one(u);
+        assert(y == u);
+        assert(u >> t == j && (u >> t) << t == u) by (bit_vector)
+            requires
+                u == j << t,
+                j < n,
+                n <= 0x40_0000u32 >> t,
+                t < 32,
+        ;
     }
 }
 
@@ -626,27 +788,82 @@ verus! {
 /// The inverse of the odd part of `size` modulo `2^32` (the `inv_odd`
 /// field): Newton's iteration `x = x * (2 - d * x)` doubles the correct
 /// low bits from the 3 that `x = d` has for odd `d`.
-const fn inverse_of_odd_part(size: usize) -> u32
+const fn inverse_of_odd_part(size: usize) -> (r: u32)
     requires 1 <= size <= MEDIUM_MAX,
+    ensures
+        ({
+            let t = vstd::std_specs::bits::u64_trailing_zeros(size as u64);
+            let d = (size as u32) >> t;
+            &&& t < 32
+            &&& d << t == size as u32
+            &&& d & 1 == 1
+            &&& d.wrapping_mul(r) == 1
+        }),
 {
+    let ghost t32 = vstd::std_specs::bits::u64_trailing_zeros(size as u64);
     proof {
         let w = size as u64;
         vstd::std_specs::bits::axiom_u64_trailing_zeros(w);
         let t = vstd::std_specs::bits::u64_trailing_zeros(w) as u64;
         assert(t < 32) by (bit_vector)
             requires 1 <= w <= 0x4_0000u64, t <= 64, t < 64 ==> (w >> t) & 1u64 == 1u64, w == 0 <==> t == 64;
+        let s = size as u32;
+        let tt = t32;
+        assert(MEDIUM_MAX == 0x4_0000);
+        assert((s >> tt) & 1 == 1 && (s >> tt) << tt == s) by (bit_vector)
+            requires
+                1 <= w <= 0x4_0000u64,
+                s == w as u32,
+                tt as u64 == t,
+                t < 32,
+                (w >> t) & 1u64 == 1u64,
+                w << sub(64, t) == 0,
+        ;
     }
     let d = (size as u32) >> size.trailing_zeros();
     let mut x = d;
     let mut i = 0;
+    proof {
+        assert(d & 1 == 1 ==> d.wrapping_mul(d) & 7 == 1) by (bit_vector);
+    }
     while i < 4
-        invariant i <= 4,
+        invariant
+            0 <= i <= 4,
+            d == (size as u32) >> t32,
+            d & 1 == 1,
+            i == 0 ==> d.wrapping_mul(x) & 7 == 1,
+            i == 1 ==> d.wrapping_mul(x) & 0x3f == 1,
+            i == 2 ==> d.wrapping_mul(x) & 0xfff == 1,
+            i == 3 ==> d.wrapping_mul(x) & 0xff_ffff == 1,
+            i == 4 ==> d.wrapping_mul(x) == 1,
         decreases 4 - i,
     {
+        let ghost x0 = x;
+        let ghost e = d.wrapping_mul(x);
         x = x.wrapping_mul(2u32.wrapping_sub(d.wrapping_mul(x)));
+        proof {
+            lemma_wmul_assoc(d, x0, 2u32.wrapping_sub(e));
+            lemma_newton(e);
+        }
         i += 1;
     }
     x
+}
+
+/// One step of Newton's iteration for the inverse modulo `2^32`: if
+/// `e = d * x` is 1 in its low `k` bits, `d * x * (2 - e) = e * (2 - e)`
+/// is 1 in its low `2k`.
+proof fn lemma_newton(e: u32)
+    ensures
+        e & 7 == 1 ==> e.wrapping_mul(2u32.wrapping_sub(e)) & 0x3f == 1,
+        e & 0x3f == 1 ==> e.wrapping_mul(2u32.wrapping_sub(e)) & 0xfff == 1,
+        e & 0xfff == 1 ==> e.wrapping_mul(2u32.wrapping_sub(e)) & 0xff_ffff == 1,
+        e & 0xff_ffff == 1 ==> e.wrapping_mul(2u32.wrapping_sub(e)) == 1,
+{
+    assert(e & 7 == 1 ==> e.wrapping_mul(2u32.wrapping_sub(e)) & 0x3f == 1) by (bit_vector);
+    assert(e & 0x3f == 1 ==> e.wrapping_mul(2u32.wrapping_sub(e)) & 0xfff == 1) by (bit_vector);
+    assert(e & 0xfff == 1 ==> e.wrapping_mul(2u32.wrapping_sub(e)) & 0xff_ffff == 1) by (bit_vector);
+    assert(e & 0xff_ffff == 1 ==> e.wrapping_mul(2u32.wrapping_sub(e)) == 1) by (bit_vector);
 }
 
 /// See [`Class::slab_bits`].
@@ -891,8 +1108,8 @@ impl ClassTable {
     /// or, after [`adopt_page_geometry`], the geometry fields of
     /// [`classes_for_page`], both of which have every entry well formed
     /// and sized [`spec_class_size`] (`classes_for_page`'s postcondition;
-    /// `adopt_page_geometry` never writes `size`), and it is written only
-    /// before the allocator is published.
+    /// `adopt_page_geometry` never writes `size`, `inv_odd` or `tz`), and it
+    /// is written only before the allocator is published.
     #[verifier::external_body]
     #[inline(always)]
     pub fn table(&self) -> (r: &[Class; NCLASSES])
