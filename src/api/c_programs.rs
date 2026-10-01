@@ -611,6 +611,22 @@ ctests! {
     /// The `curve` mode with the window off explicitly (today's decay) and
     /// on (one burst never recurs, so the curve alone decides): both pass
     /// the curve's criteria.
+    /// `tests/c/decay.c demand-arena`, `demand-bg` and `demand-fork`
+    /// (issue #25): `arena.<i>.decay` alone keeps the driver's floor and
+    /// releases it after the window; the background thread keeps the
+    /// bursts, sleeps until the hold's deadline while idle (a few
+    /// wake-ups a second) and releases them; a child forked before any
+    /// tracker exists carves its own, one forked after inherits them.
+    c_decay_demand_paths => [
+        CTest { prog: "decay", args: &["demand-arena"], conf: Some("abort_conf:true,dirty_decay_ms:200,hpa_peak_demand_window_ms:4000"), ..BASE },
+        CTest {
+            prog: "decay",
+            args: &["demand-bg"],
+            conf: Some("abort_conf:true,background_thread:true,dirty_decay_ms:200,hpa_peak_demand_window_ms:4000"),
+            ..BASE
+        },
+        CTest { prog: "decay", args: &["demand-fork"], conf: Some("abort_conf:true,dirty_decay_ms:200,hpa_peak_demand_window_ms:4000"), ..BASE },
+    ];
     c_decay_demand_off => [
         CTest { prog: "decay", args: &["curve"], conf: Some("abort_conf:true,dirty_decay_ms:2000,hpa_peak_demand_window_ms:0"), ..BASE },
         CTest { prog: "decay", args: &["curve"], conf: Some("abort_conf:true,dirty_decay_ms:2000,hpa_peak_demand_window_ms:4000"), ..BASE },

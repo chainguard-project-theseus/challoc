@@ -39,6 +39,24 @@
  *                                          run is purged at free
  *   hugedemand-off (defaults)              every iteration is purged at
  *                                          free and faults again
+ *   demand-arena as demand                 the bursts, then idle with only
+ *                                          arena.<i>.decay of the thread's
+ *                                          arena every 100 ms: the same
+ *                                          floor as the driver's pass, so
+ *                                          kept past the curve's window and
+ *                                          released after the demand window
+ *   demand-bg   as demand, plus            the bursts with the background
+ *               background_thread:true     thread doing the walks; idle, it
+ *                                          keeps them and sleeps until the
+ *                                          hold's deadline (a few wake-ups a
+ *                                          second, not one per 1 ms step),
+ *                                          then releases them
+ *   demand-fork as demand                  a child forked before any tracker
+ *                                          exists carves its own and keeps
+ *                                          its bursts; a child forked after
+ *                                          the parent's bursts inherits the
+ *                                          trackers, reports the floor and
+ *                                          releases it when the window passes
  *
  * RSS comes from /proc/self/statm. The freed working set is ~48 MiB (32 MiB
  * of 1 KiB blocks, 16 MiB of huge runs) so a purge is unmistakable next to
@@ -349,6 +367,8 @@ static long burst(void)
 /* The demand floor for slabs (design 8): recurring bursts are kept between
  * bursts once the second has shown the level recurs; without the window
  * the curve purges each burst before the next. */
+static void idle_release(const char *what, void (*poke)(void), int kept_1s);
+
 static void mode_demand(int on)
 {
     long f[BURSTS];
@@ -374,14 +394,21 @@ static void mode_demand(int on)
         CHECK(retained == 0, "demand_retained %zu bytes without a window", retained);
     if (!on)
         return;
-    /* Idle with the slow path ticking: kept well past the curve's 200 ms,
-     * released within the 4 s window, an epoch and a hold. */
+    idle_release("demand idle", tick, 1);
+}
+
+/* Idle, calling `poke` every 100 ms (or nothing, NULL): the floor keeps
+ * the bursts well past the curve's 200 ms (checked at 1 s when
+ * `kept_1s`), and they go within the 4 s window, an epoch and a hold. */
+static void idle_release(const char *what, void (*poke)(void), int kept_1s)
+{
     size_t kept = rss_bytes();
     long t0 = now_ms(), released = -1;
     size_t at1s = 0;
     while (now_ms() - t0 < 7000) {
         sleep_ms(100);
-        tick();
+        if (poke)
+            poke();
         size_t r = rss_bytes();
         if (!at1s && now_ms() - t0 >= 1000)
             at1s = r;
@@ -390,9 +417,164 @@ static void mode_demand(int on)
             break;
         }
     }
-    printf("demand idle: rss %zu MiB kept, %zu MiB at 1 s, released after %ld ms\n", kept / MIB, at1s / MIB, released);
-    CHECK(at1s != 0 && drop(kept, at1s) < 2 * MIB, "the floor released %zu MiB within 1 s", drop(kept, at1s) / MIB);
-    CHECK(released >= 0, "not released within 7 s of idle");
+    printf("%s: rss %zu MiB kept, %zu MiB at 1 s, released after %ld ms\n", what, kept / MIB, at1s / MIB, released);
+    CHECK(!kept_1s || (at1s != 0 && drop(kept, at1s) < 2 * MIB), "%s: the floor released %zu MiB within 1 s", what, drop(kept, at1s) / MIB);
+    CHECK(released >= 0, "%s: not released within 7 s of idle", what);
+}
+
+/* `n` bursts BURST_GAP_MS apart; checks the ones from the third on were
+ * kept (an eighth of the first's faults at most). */
+static void kept_bursts(const char *what, int n)
+{
+    long f[BURSTS];
+    REQUIRE(n >= 3 && n <= BURSTS, "kept_bursts(%d)", n);
+    for (int i = 0; i < n; i++) {
+        if (i > 0)
+            sleep_ms(BURST_GAP_MS);
+        f[i] = burst();
+        printf("%s burst %d: %ld minor faults\n", what, i, f[i]);
+    }
+    CHECK(f[0] >= 256, "%s: the first burst took only %ld faults", what, f[0]);
+    for (int i = 2; i < n; i++)
+        CHECK(f[i] * 8 <= f[0], "%s: burst %d took %ld faults (first %ld): not kept", what, i, f[i], f[0]);
+}
+
+static size_t demand_retained(void)
+{
+    size_t retained = 0, len = sizeof retained;
+    REQUIRE(mallctl("stats.arenas.4096.demand_retained", &retained, &len, NULL, 0) == 0, "stats.arenas.4096.demand_retained");
+    return retained;
+}
+
+static char arena_decay_name[64];
+
+static void arena_decay(void)
+{
+    REQUIRE(mallctl(arena_decay_name, NULL, NULL, NULL, 0) == 0, "%s: %s", arena_decay_name, strerror(errno));
+}
+
+/* arena.<i>.decay with the window on walks with the driver's floor: with
+ * nothing else touching the allocator it keeps the bursts as the ticks
+ * do, and lets them go once the window has passed. */
+static void mode_demand_arena(void)
+{
+    kept_bursts("demand-arena", 5);
+    unsigned a = 0;
+    size_t len = sizeof a;
+    REQUIRE(mallctl("thread.arena", &a, &len, NULL, 0) == 0, "thread.arena");
+    snprintf(arena_decay_name, sizeof arena_decay_name, "arena.%u.decay", a);
+    CHECK(demand_retained() >= 4 * MIB, "demand_retained %zu bytes after the bursts", demand_retained());
+    idle_release("demand-arena idle (arena decay only)", arena_decay, 1);
+}
+
+/* The background thread's context switches so far (voluntary and not):
+ * one per futex wake-up, about. */
+static long bg_switches(void)
+{
+    DIR *d = opendir("/proc/self/task");
+    REQUIRE(d != NULL, "opendir /proc/self/task: %s", strerror(errno));
+    long n = -1;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.')
+            continue;
+        char path[sizeof "/proc/self/task/" + NAME_MAX + sizeof "/status"], line[128];
+        snprintf(path, sizeof path, "/proc/self/task/%s/comm", e->d_name);
+        FILE *f = fopen(path, "r");
+        if (!f)
+            continue;
+        int bg = fgets(line, sizeof line, f) && strncmp(line, "challoc-bg", 10) == 0;
+        fclose(f);
+        if (!bg)
+            continue;
+        snprintf(path, sizeof path, "/proc/self/task/%s/status", e->d_name);
+        f = fopen(path, "r");
+        REQUIRE(f != NULL, "%s: %s", path, strerror(errno));
+        n = 0;
+        while (fgets(line, sizeof line, f)) {
+            long v;
+            if (sscanf(line, "voluntary_ctxt_switches: %ld", &v) == 1 || sscanf(line, "nonvoluntary_ctxt_switches: %ld", &v) == 1)
+                n += v;
+        }
+        fclose(f);
+    }
+    closedir(d);
+    return n;
+}
+
+/* background_thread:true with the window on: the thread's walks keep the
+ * bursts, and idle it sleeps until the hold's deadline (the next epoch
+ * boundary, 500 ms here, or 1 s), not one curve step (1 ms) at a time;
+ * the floor still goes once the window passes. */
+static void mode_demand_bg(void)
+{
+    int bg = 0;
+    tick();
+    for (int i = 0; i < 100 && (count_tasks(&bg), !bg); i++)
+        sleep_ms(10);
+    REQUIRE(bg, "no background thread after a tick");
+    kept_bursts("demand-bg", 6);
+    /* Let the walks after the last burst settle into the hold. */
+    sleep_ms(300);
+    long s0 = bg_switches();
+    sleep_ms(2000);
+    long s1 = bg_switches();
+    printf("demand-bg: %ld background wake-ups in 2 s of idle\n", s1 - s0);
+    REQUIRE(s0 >= 0 && s1 >= 0, "background thread status");
+    CHECK(s1 - s0 <= 40, "the background thread woke %ld times in 2 s held (one per step would be ~2000)", s1 - s0);
+    CHECK(demand_retained() >= 4 * MIB, "demand_retained %zu bytes while held", demand_retained());
+    /* No allocator activity: only the thread can release them. */
+    size_t kept = rss_bytes();
+    long t0 = now_ms(), released = -1;
+    while (now_ms() - t0 < 7000) {
+        sleep_ms(100);
+        if (drop(kept, rss_bytes()) >= 6 * MIB) {
+            released = now_ms() - t0;
+            break;
+        }
+    }
+    printf("demand-bg idle: released after %ld ms more\n", released);
+    CHECK(released >= 0, "the background thread did not release the floor within 7 s");
+}
+
+/* fork with the window on, before the trackers exist and after. */
+static void mode_demand_fork(void)
+{
+    fflush(stdout);
+    pid_t pid = fork();
+    REQUIRE(pid >= 0, "fork: %s", strerror(errno));
+    if (pid == 0) {
+        /* Nothing carved before the fork: the child carves its own. */
+        kept_bursts("demand-fork early child", 4);
+        CHECK(demand_retained() >= 4 * MIB, "early child: demand_retained %zu bytes", demand_retained());
+        fflush(stdout);
+        _exit(finish("decay demand-fork early child"));
+    }
+    int status;
+    REQUIRE(waitpid(pid, &status, 0) == pid, "waitpid: %s", strerror(errno));
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "early child failed: status %#x", status);
+
+    kept_bursts("demand-fork parent", 4);
+    size_t parent = demand_retained();
+    CHECK(parent >= 4 * MIB, "parent: demand_retained %zu bytes", parent);
+    fflush(stdout);
+    pid = fork();
+    REQUIRE(pid >= 0, "fork: %s", strerror(errno));
+    if (pid == 0) {
+        /* The trackers came across with the slabs: the same floor, the
+         * walks still work, and it goes when the window passes. */
+        size_t child = demand_retained();
+        CHECK(child >= 4 * MIB, "late child: demand_retained %zu bytes (parent %zu)", child, parent);
+        REQUIRE(mallctl("arena.4096.decay", NULL, NULL, NULL, 0) == 0, "arena.4096.decay");
+        idle_release("demand-fork late child idle", tick, 1);
+        fflush(stdout);
+        _exit(finish("decay demand-fork late child"));
+    }
+    REQUIRE(waitpid(pid, &status, 0) == pid, "waitpid: %s", strerror(errno));
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0, "late child failed: status %#x", status);
+    /* The parent's own floor, untouched by the child's walks, goes too
+     * (at once if the window passed its last burst while it waited). */
+    idle_release("demand-fork parent idle", tick, 0);
 }
 
 /* The huge tier's recurrence test (design 7): a run above huge_retain_max
@@ -438,7 +620,7 @@ static void mode_hugedemand(int on)
 
 int main(int argc, char **argv)
 {
-    REQUIRE(argc == 2, "usage: decay <trim|decay|curve|never|background|demand|demand-off|hugedemand|hugedemand-off>");
+    REQUIRE(argc == 2, "usage: decay <trim|decay|curve|never|background|demand|demand-off|hugedemand|hugedemand-off|demand-arena|demand-bg|demand-fork>");
     printf("decay: start %s\n", argv[1]);
     fflush(stdout);
     require_challoc();
@@ -460,6 +642,12 @@ int main(int argc, char **argv)
         mode_hugedemand(1);
     else if (strcmp(argv[1], "hugedemand-off") == 0)
         mode_hugedemand(0);
+    else if (strcmp(argv[1], "demand-arena") == 0)
+        mode_demand_arena();
+    else if (strcmp(argv[1], "demand-bg") == 0)
+        mode_demand_bg();
+    else if (strcmp(argv[1], "demand-fork") == 0)
+        mode_demand_fork();
     else
         REQUIRE(0, "unknown mode %s", argv[1]);
     return finish("decay");
