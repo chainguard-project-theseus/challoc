@@ -21,7 +21,7 @@ Suites (`python3 bench/cb suites`):
     aa          base vs an identical base: calibration and the false-positive rate
     smoke       every quick row once, parse only (CI's bench-smoke)
     soak        Valkey, Ruby and JVM soaks, head vs jemalloc, one variant per VM
-    exp-slice   audit D9: slice_ext:auto vs slice_ext:off on one build (MEASURE-FIRST)
+    exp-slice   audit D9: slice_ext:auto vs slice_ext:off (revisions before the slice cut, #17)
 
 Everything builds and runs inside the Wolfi bench image on the native
 architecture; emulated x86_64 is never used for numbers.
@@ -299,7 +299,10 @@ on one build), a container profile, rows. `exp-slice` (audit D9) runs
 the features line) and a 6.18 cell (which cannot, `slice_ext=no-slice_ctrl`:
 the negative control, where every row must come out `same`), container
 pinned to 4 CPUs, rows larson16, larson64, xmalloc, valkey1, valkey1-free.
-The verdict decides keep or cut; the suite file does not change `src/`.
+The verdict was cut (#17): `slice_ext` is no longer a config key, so the
+suite only measures revisions that still have it, such as
+`archive/prototype-2026-09-30`; on a later head both variants are the same
+build with an unknown key.
 
 Measured 2026-10-01 (`cb-exp-slice-2`, 4 VMs per cell, 5 blocks, cpuset
 0-3, default seccomp): on the 7.2 cell every row is `same` (larson16

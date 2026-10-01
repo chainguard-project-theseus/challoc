@@ -1,11 +1,9 @@
 # Expected skips of the privileged `make test` on a GitHub-hosted runner
 # (6.17-azure; the same list on x86_64 and aarch64): with seccomp off and the
 # host's cgroup namespace, mseal, the PSI trigger and the child cgroups run;
-# what is left is `test` having no memory limit for the bands, no rseq slice
-# extension, THP inert or advice-gated. Keys: ci/skip-summary.sh.
+# what is left is `test` having no memory limit for the bands, THP inert or
+# advice-gated. Keys: ci/skip-summary.sh.
 c_cgroup_policy_bands
-c_slice_ext_both_ways
 c_thp_auto
 cgroup_policy/bands
-slice_ext/on
 thp/auto

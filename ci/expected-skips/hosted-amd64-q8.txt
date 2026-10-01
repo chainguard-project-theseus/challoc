@@ -1,14 +1,12 @@
 # Expected skips of the unprivileged `make test` on a GitHub-hosted runner
 # (6.17-azure; the same list on x86_64 and aarch64, quantum 16 and 8):
 # Docker's seccomp hides mseal, the container's cgroup namespace refuses the
-# PSI trigger and child cgroups and `test` has no limit for the bands, the
-# kernel has no rseq slice extension, THP is inert or advice-gated. Keys: ci/skip-summary.sh.
+# PSI trigger and child cgroups and `test` has no limit for the bands, and
+# THP is inert or advice-gated. Keys: ci/skip-summary.sh.
 c_cgroup_background_thread
 c_cgroup_policy_bands
 c_cgroup_policy_high
 c_mseal
-c_slice_ext_both_ways
 c_thp_auto
 cgroup_policy/bands
-slice_ext/on
 thp/auto
