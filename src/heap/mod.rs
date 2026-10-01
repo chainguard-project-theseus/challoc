@@ -101,13 +101,6 @@ pub const fn default_cap(class: usize) -> u32 {
     crate::config::ladder(class, MAX_CAP, 1)
 }
 
-/// The smallest capacity a GC shrink leaves a cache of `class` whose
-/// stack holds `ceil` slots.
-#[inline]
-fn cap_floor(_shared: &Shared, _class: usize, ceil: u32) -> u32 {
-    MIN_CAP.min(ceil)
-}
-
 /// The `others` key of the one flush-only cache per class that plain
 /// frees of another arena's slots go onto ([`ArenaCaches`]); never an
 /// arena index (`arena::MAX_ARENAS` is 4096).
@@ -495,10 +488,11 @@ impl Heap {
     /// [`Heap::gc`] for one cache array (the home array when `node` is
     /// null). The capacity rule (design 6.4): a cache that took no miss
     /// since the last GC and whose low-water mark stayed above zero halves
-    /// `cap`, down to its floor, and flushes the highest addresses that no
-    /// longer fit; a busy cache keeps its capacity, and the misses of the
-    /// next interval grow it back ([`CacheHeader::note_miss`]). The
-    /// `FOREIGN` cache is flushed whole and keeps its fixed capacity.
+    /// `cap`, down to its floor (`Config::cap_floor`), and flushes the
+    /// highest addresses that no longer fit; a busy cache keeps its
+    /// capacity, and the misses of the next interval grow it back
+    /// ([`CacheHeader::note_miss`]). The `FOREIGN` cache is flushed whole
+    /// and keeps its fixed capacity.
     fn gc_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches) {
         for class in 0..NCLASSES {
             // SAFETY: `node` is null or a live node owned by this heap; an
@@ -524,7 +518,7 @@ impl Heap {
                     // compacting cache keeps its capacity: its run
                     // rebuilds are its only slow path and migrate the
                     // class's live set.
-                    let floor = cap_floor(shared, class, (*cache).ceil);
+                    let floor = shared.config.cap_floor(class, (*cache).ceil);
                     if (*cache).misses == 0 && lw > 0 && (*cache).mode != MODE_COMPACT && (*cache).cap > floor {
                         let cap = ((*cache).cap / 2).max(floor);
                         let len = (*cache).len;

@@ -16,6 +16,10 @@
  *                     monotone, cover a contiguous set of slots, and every
  *                     block is distinct and writable
  *   tunables ordered  no key: the same sequence is ascending
+ *   tunables nslots_min N
+ *                     opt.tcache_nslots_small_min reads back as N (the
+ *                     driver sets MALLOC_CONF, or leaves the default 8),
+ *                     and a churn over the cached classes runs clean
  */
 #include "common.h"
 
@@ -166,6 +170,36 @@ static void mode_random(int on)
     printf("slot_randomize=%d: %d steps up, %d down\n", on, up, down);
 }
 
+static unsigned opt_uint(const char *key)
+{
+    REQUIRE(mallctl != NULL, "mallctl not exported");
+    unsigned v = 0;
+    size_t len = sizeof v;
+    char name[64];
+    snprintf(name, sizeof name, "opt.%s", key);
+    REQUIRE(mallctl(name, &v, &len, NULL, 0) == 0, "mallctl(%s)", name);
+    REQUIRE(len == sizeof v, "%s is an unsigned", name);
+    return v;
+}
+
+static void mode_nslots_min(unsigned want)
+{
+    unsigned min = opt_uint("tcache_nslots_small_min");
+    CHECK(min == want, "opt.tcache_nslots_small_min is %u, expected %u", min, want);
+    enum { NBLOCKS = 3000 };
+    static void *ps[NBLOCKS];
+    for (int round = 0; round < 4; round++) {
+        for (int i = 0; i < NBLOCKS; i++) {
+            ps[i] = malloc((size_t)(i % 40 + 1) * 16);
+            REQUIRE(ps[i] != NULL, "malloc");
+            memset(ps[i], i, 16);
+        }
+        for (int i = 0; i < NBLOCKS; i++)
+            free(ps[(i * 7) % NBLOCKS]);
+    }
+    printf("tcache_nslots_small_min=%u\n", min);
+}
+
 int main(int argc, char **argv)
 {
     require_challoc();
@@ -174,6 +208,7 @@ int main(int argc, char **argv)
     else if (!strcmp(mode, "dirty")) mode_zero(0);
     else if (!strcmp(mode, "random")) mode_random(1);
     else if (!strcmp(mode, "ordered")) mode_random(0);
+    else if (!strcmp(mode, "nslots_min") && argc > 2) mode_nslots_min((unsigned)strtoul(argv[2], NULL, 0));
     else REQUIRE(0, "unknown mode %s", mode);
     return finish("tunables");
 }

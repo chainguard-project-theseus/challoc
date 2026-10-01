@@ -3030,3 +3030,77 @@ fn boundary_demand_bounded_thrash() {
         t.destroy();
     }
 }
+
+/// `tcache_nslots_small_min` sets the floor a quiet cache shrinks to, on
+/// the ladder: 20 slots up to 128 bytes, 10 for 256-byte slots, `MIN_CAP`
+/// past that.
+#[test]
+fn shrink_stops_at_the_configured_floor() {
+    let s = TestShared::with(Config { narenas: 1, pac_pointers: true, tcache_nslots_small_min: 20, ..Config::DEFAULT }).build();
+    let t = TestHeap::new(s);
+    for (size, floor) in [(16usize, 20usize), (256, 10), (1024, MIN_CAP as usize)] {
+        let c = class_with(size);
+        assert_eq!(s.config.cap_floor(c, default_cap(c)) as usize, floor);
+        let mut pool: Vec<*mut u8> = (0..2 * default_cap(c) as usize).map(|_| t.alloc(c)).collect();
+        for _ in 0..12 {
+            for _ in 0..2 {
+                t.free(pool.pop().unwrap());
+            }
+            t.gc();
+            assert!(t.cache(c).cap() >= floor);
+        }
+        assert_eq!(t.cache(c).cap(), floor, "size {size}");
+        for p in pool {
+            t.free(p);
+        }
+    }
+    t.destroy();
+}
+
+/// `tcache_nslots_small_min` at or above `tcache_nslots_small_max` fixes
+/// every capacity at the ladder: quiet intervals shrink nothing and the
+/// GC and flush behave as with fixed caps (three quarters of the low
+/// water, half-capacity refills and flushes).
+#[test]
+fn min_equal_max_is_fixed_capacity() {
+    let s = TestShared::with(Config { narenas: 1, pac_pointers: true, tcache_nslots_small_min: 65536, ..Config::DEFAULT }).build();
+    let t = TestHeap::new(s);
+    let c = class_with(48);
+    t.alloc(c);
+    assert_eq!((t.cache(c).cap(), t.len(c)), (CAP, HALF - 1));
+    for _ in 0..27 {
+        t.alloc(c);
+    }
+    let len = HALF - 28;
+    t.gc();
+    let lw = len;
+    assert_eq!(t.len(c), len - (lw - lw / 4));
+    for _ in 0..5 {
+        let len = t.len(c);
+        t.gc();
+        assert_eq!(t.len(c), len - (len - len / 4));
+        assert_eq!(t.cache(c).cap(), CAP, "quiet, and fixed");
+    }
+    while t.len(c) > 0 {
+        t.alloc(c);
+    }
+    t.alloc(c);
+    assert_eq!(t.cache(c).low_water(), HALF - 1, "a refill of half the ladder");
+    // A full cache flushes the highest half.
+    let d = class_with(64);
+    let ps: Vec<*mut u8> = (0..2 * CAP).map(|_| t.alloc(d)).collect();
+    for &p in &ps[..CAP] {
+        t.free(p);
+    }
+    assert_eq!(t.len(d), CAP);
+    t.free(ps[CAP]);
+    assert_eq!((t.cache(d).cap(), t.len(d)), (CAP, HALF + 1));
+    for &p in &ps[CAP + 1..] {
+        t.free(p);
+    }
+    for _ in 0..4 {
+        t.gc();
+        assert_eq!(t.cache(d).cap(), CAP);
+    }
+    t.destroy();
+}

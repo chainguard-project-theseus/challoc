@@ -20,9 +20,10 @@ use super::{MODE_OFF, MODE_PROBE};
 /// used (`slots` is null and never dereferenced, because `len == cap == 0`
 /// sends both fast paths to the slow path).
 ///
-/// `cap` is the current capacity, at most `ceil`, the ladder value the
-/// stack was sized for (design 6.4): only the slow paths write it, the
-/// fast paths compare `len` against it. `len <= cap <= ceil` always holds
+/// `cap` is the current capacity, between the class's floor
+/// (`Config::cap_floor`) and `ceil`, the ladder value the stack was sized
+/// for (design 6.4): only the slow paths write it, the fast paths compare
+/// `len` against it. `len <= cap <= ceil` always holds
 /// ([`CacheHeader::check_cap`]).
 ///
 /// The byte counters `thread.allocated` and `thread.deallocated` are not

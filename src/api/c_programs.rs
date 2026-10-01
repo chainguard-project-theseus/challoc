@@ -682,6 +682,23 @@ ctests! {
         CTest { prog: "tunables", args: &["random"], conf: Some("abort_conf:true,slot_randomize:true"), ..BASE },
         CTest { prog: "tunables", args: &["ordered"], conf: Some("abort_conf:true"), ..BASE },
     ];
+    /// `tcache_nslots_small_min` (design 6.4's capacity floor): parsed,
+    /// read back through `opt.`, the default 8 when unset, and the fixed
+    /// capacities of `65536` run the same churn.
+    c_tunables_nslots_min => [
+        CTest { prog: "tunables", args: &["nslots_min", "8"], conf: Some("abort_conf:true"), ..BASE },
+        CTest { prog: "tunables", args: &["nslots_min", "20"], conf: Some("abort_conf:true,tcache_nslots_small_min:20"), ..BASE },
+        CTest { prog: "tunables", args: &["nslots_min", "65536"], conf: Some("abort_conf:true,tcache_nslots_small_min:65536"), ..BASE },
+    ];
+    /// The multi-threaded drivers again with fixed capacities
+    /// (`tcache_nslots_small_min:65536`, the off switch of design 6.4's
+    /// adaptive capacity); the rows above run them adaptive.
+    c_fixed_capacity => [
+        CTest { prog: "random_ops", args: &["1000000", "8"], conf: Some("abort_conf:true,tcache_nslots_small_min:65536"), ..BASE },
+        CTest { prog: "producer_consumer", conf: Some("abort_conf:true,tcache_nslots_small_min:65536"), ..BASE },
+        CTest { prog: "thread_exit", conf: Some("abort_conf:true,tcache_nslots_small_min:65536"), ..BASE },
+        CTest { prog: "fork_alloc", conf: Some("abort_conf:true,tcache_nslots_small_min:65536"), ..BASE },
+    ];
     /// The fuzz driver (`c_fuzz_short`) once under each key, and both.
     c_fuzz_short_under_zero_on_free => [
         CTest { dir: "fuzz", prog: "fuzz", args: &["400000", "4"], conf: Some("abort_conf:true,zero_on_free:true"), ..BASE },
@@ -906,6 +923,18 @@ fn c_conf_inert_key_aborts_under_abort_conf() {
     );
     run_conf("huge_retain_max", None, &[("MALLOC_CONF", "abort_conf:true,huge_retain_max:1048576")], None);
     run_conf("thp", None, &[("MALLOC_CONF", "abort_conf:true,thp:auto")], None);
+}
+
+#[test]
+fn c_conf_tcache_nslots_small_min() {
+    run_conf("nslots_min", None, &[("MALLOC_CONF", "abort_conf:true,tcache_nslots_small_min:20")], None);
+    run_conf("nslots_min_fixed", Some("abort_conf:true,tcache_nslots_small_min:65536"), &[], None);
+    run_conf(
+        "nslots_min_range",
+        None,
+        &[("MALLOC_CONF", "abort_conf:true,tcache_nslots_small_min:7")],
+        Some("challoc: MALLOC_CONF: out-of-range conf value \"7\" for tcache_nslots_small_min"),
+    );
 }
 
 #[test]

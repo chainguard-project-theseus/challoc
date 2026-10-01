@@ -137,6 +137,8 @@ pub struct Config {
     pub tcache_max: usize,
     /// Cache capacity of the classes up to 128 bytes, the top of [`ladder`].
     pub tcache_nslots_small_max: u32,
+    /// The floor a quiet cache of a class up to 128 bytes shrinks to ([`Config::cap_floor`]).
+    pub tcache_nslots_small_min: u32,
     /// Shifts [`ladder`] by `lg_tcache_nslots_mul - 1` doublings.
     pub lg_tcache_nslots_mul: i32,
     /// Transparent huge pages for the regions ([`Thp`], `thp.rs`).
@@ -178,6 +180,7 @@ impl Config {
         tcache: true,
         tcache_max: DEFAULT_TCACHE_MAX,
         tcache_nslots_small_max: MAX_CAP,
+        tcache_nslots_small_min: MIN_CAP,
         lg_tcache_nslots_mul: 1,
         thp: Thp::Never,
         lazy_band: true,
@@ -291,6 +294,16 @@ impl Config {
             return 0;
         }
         ladder(class, self.tcache_nslots_small_max, self.lg_tcache_nslots_mul)
+    }
+
+    /// The floor of the capacity of a cache of `class` whose stack holds
+    /// `ceil` slots (`cap_for` when it was created): the ladder of
+    /// `tcache_nslots_small_min`, shifted by `lg_tcache_nslots_mul` as the
+    /// ceiling's is, never above `ceil`. A GC shrink stops there (design
+    /// 6.4); a floor equal to the ceiling fixes the capacity.
+    pub fn cap_floor(&self, class: usize, ceil: u32) -> u32 {
+        let floor = ladder(class, self.tcache_nslots_small_min, self.lg_tcache_nslots_mul);
+        if floor < ceil { floor } else { ceil }
     }
 
     /// The guard slab interval actually used: 0 when guards are off.
@@ -427,6 +440,11 @@ pub const TABLE: &[Key] = &[
         name: "tcache_nslots_small_max",
         parse: |c, k, v| num(c, k, v, MIN_CAP as i64, MAX_NSLOTS as i64, |c, v| c.tcache_nslots_small_max = v as u32),
         read: |c| Value::Uint(c.tcache_nslots_small_max as u64),
+    },
+    Key {
+        name: "tcache_nslots_small_min",
+        parse: |c, k, v| num(c, k, v, MIN_CAP as i64, MAX_NSLOTS as i64, |c, v| c.tcache_nslots_small_min = v as u32),
+        read: |c| Value::Uint(c.tcache_nslots_small_min as u64),
     },
     Key {
         name: "lg_tcache_nslots_mul",
@@ -1452,6 +1470,48 @@ mod tests {
         // Extreme shifts do not overflow.
         assert_eq!(ladder(0, MAX_NSLOTS, -16), MIN_CAP);
         assert_eq!(ladder(NCLASSES - 1, MAX_NSLOTS, 16), MAX_NSLOTS);
+    }
+
+    /// `tcache_nslots_small_min`: parsed and clamped to `[MIN_CAP,
+    /// MAX_NSLOTS]`, read back as a count, and the floor `cap_floor`
+    /// derives from it follows the ladder, never above the ceiling: 8 for
+    /// every class by default, the ceiling itself at `65536`.
+    #[test]
+    fn tcache_nslots_small_min_sets_the_floor() {
+        let d = Config::DEFAULT;
+        assert_eq!(d.tcache_nslots_small_min, MIN_CAP);
+        assert_eq!(d.get(b"tcache_nslots_small_min"), Some(Value::Uint(MIN_CAP as u64)));
+        assert_eq!(clean("tcache_nslots_small_min:20").get(b"tcache_nslots_small_min"), Some(Value::Uint(20)));
+        for (text, want) in [("1", MIN_CAP), ("1000000", MAX_NSLOTS)] {
+            let (cfg, issues) = parse(&std::format!("tcache_nslots_small_min:{text}"));
+            assert_eq!(cfg.tcache_nslots_small_min, want);
+            assert_eq!(issues.len(), 1);
+            assert!(issues[0].contains("out-of-range conf value"), "{}", issues[0]);
+        }
+        for c in (0..NCLASSES).filter(|&c| d.cap_for(0, 0, c) != 0) {
+            let ceil = d.cap_for(0, 0, c);
+            assert_eq!(d.cap_floor(c, ceil), MIN_CAP, "class {c}");
+            let fixed = clean("tcache_nslots_small_min:65536");
+            assert_eq!(fixed.cap_floor(c, ceil), ceil, "class {c}: fixed capacity");
+            let min = clean("tcache_nslots_small_min:20");
+            let size = CLASSES[c].size();
+            let want = match size {
+                0..=128 => 20,
+                129..=256 => 10,
+                _ => MIN_CAP,
+            };
+            assert_eq!(min.cap_floor(c, ceil), want.min(ceil), "class {c} ({size} bytes)");
+            assert!(min.cap_floor(c, ceil) >= MIN_CAP);
+            // The same shift as the ceiling: Redis's x4 ladder raises both.
+            let redis = clean("lg_tcache_nslots_mul:3,tcache_nslots_small_max:1000,tcache_nslots_small_min:20");
+            let rceil = redis.cap_for(0, 0, c);
+            assert_eq!(redis.cap_floor(c, rceil), ladder(c, 20, 3).min(rceil));
+            // A floor above the ceiling is the ceiling.
+            let both = clean("tcache_nslots_small_max:16,tcache_nslots_small_min:64");
+            assert_eq!(both.cap_floor(c, both.cap_for(0, 0, c)), both.cap_for(0, 0, c));
+        }
+        // The foreign cache's half-ladder ceiling is clamped too.
+        assert_eq!(clean("tcache_nslots_small_min:65536").cap_floor(0, 512), 512);
     }
 
     /// `cap_for` is the one rule for which classes are cached where: the
