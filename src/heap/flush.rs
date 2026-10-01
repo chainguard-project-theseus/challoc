@@ -82,6 +82,9 @@ impl Heap {
             let want = ((*cache).cap / 2).max(1).min(align - phase) as usize;
             let out = core::slice::from_raw_parts_mut((*cache).slots(), want);
             let claim = self.claim(shared, arena.class(class), out);
+            super::capstat::bump(&super::capstat::REFILL, 1);
+            super::capstat::bump(&super::capstat::REFILL_SHORT, (claim.n < want) as u64);
+            super::capstat::bump(&super::capstat::REFILL_PHASED, (phase != 0 && (*cache).cap == (*cache).ceil) as u64);
             arena.class(class).note_refill(claim.n);
             (*cache).phase = ((phase + claim.n as u32) % align) as u16;
             out[..claim.n].reverse();

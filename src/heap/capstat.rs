@@ -12,6 +12,10 @@ pub static CREATE: AtomicU64 = AtomicU64::new(0);
 pub static CREATE_LOW: AtomicU64 = AtomicU64::new(0);
 pub static VISIT: AtomicU64 = AtomicU64::new(0);
 pub static VISIT_LOW: AtomicU64 = AtomicU64::new(0);
+pub static REFILL: AtomicU64 = AtomicU64::new(0);
+pub static REFILL_SHORT: AtomicU64 = AtomicU64::new(0);
+pub static REFILL_PHASED: AtomicU64 = AtomicU64::new(0);
+pub static REFILL_SLABS: AtomicU64 = AtomicU64::new(0);
 
 #[inline]
 pub fn bump(c: &AtomicU64, n: u64) {
@@ -44,7 +48,7 @@ fn num(buf: &mut [u8; 512], at: &mut usize, mut v: u64) {
 extern "C" fn fini() {
     let mut buf = [0u8; 512];
     let mut at = 0;
-    let items: [(&[u8], &AtomicU64); 10] = [
+    let items: [(&[u8], &AtomicU64); 13] = [
         (b"challoc-capstat grow=", &GROW),
         (b" shrink=", &SHRINK),
         (b" shrink_flush=", &SHRINK_FLUSH),
@@ -55,6 +59,9 @@ extern "C" fn fini() {
         (b" create_low=", &CREATE_LOW),
         (b" visit=", &VISIT),
         (b" visit_low=", &VISIT_LOW),
+        (b" refill=", &REFILL),
+        (b" refill_short=", &REFILL_SHORT),
+        (b" refill_phased=", &REFILL_PHASED),
     ];
     for (k, c) in items {
         put(&mut buf, &mut at, k);
