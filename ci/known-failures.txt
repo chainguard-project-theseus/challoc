@@ -1,0 +1,15 @@
+# Failures a CI cell may see without failing the job (ci/known-failures.sh).
+# Every entry is a TODO with its reason and is deleted when the failure is
+# fixed; a failure not listed here fails the job. One per line: a unit
+# test by its full name (api::tests::some_test) or a cgroup program as
+# `cgroup-tests KIND ALLOC`, optionally scoped with ` @CELL-GLOB`.
+
+# Where process_madvise is allowed (seccomp off: the privileged cells),
+# the process_madvise_free init probe (sys/features.rs) MADV_FREEs one
+# dirtied scratch page, and tests/c/cgroup_lazy.c's eager control sees
+# pglazyfree rise by that 1 page ("pglazyfree rose by 1 pages under an
+# eager purge", cgroup_lazy.c:503) with lazy_purges 0. Intermittent (3 of
+# the first 4 privileged runs after 2789309 removed prefault and
+# populate_write; none before). Either the probe page or the test's
+# baseline needs to move.
+cgroup-tests lazy challoc-eager @hosted-*-privileged
