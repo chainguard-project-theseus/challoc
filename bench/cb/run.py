@@ -44,7 +44,10 @@ TOOLS = {
     "sentinel": "bench/tools/sentinel.c",
     "valkey_model": "bench/probes/valkey_model.c",
     "churn": "bench/probes/churn.c",
+    "tcache_residue": "bench/probes/tcache_residue.c",
 }
+# Shared objects preloaded after the variant's library (rows with settle).
+PRELOADS = {"settle.so": "bench/tools/settle.c"}
 
 
 def log(msg: str) -> None:
@@ -58,7 +61,15 @@ def compile_tools(root: str, tools_dir: str) -> None:
         out = os.path.join(tools_dir, name)
         if os.path.exists(out) and os.path.getmtime(out) >= os.path.getmtime(s):
             continue
-        r = subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-o", out, s], capture_output=True, text=True)
+        r = subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-pthread", "-o", out, s], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise BuildError(f"{src} did not compile:\n{r.stderr}")
+    for name, src in PRELOADS.items():
+        s = os.path.join(root, src)
+        out = os.path.join(tools_dir, name)
+        if os.path.exists(out) and os.path.getmtime(out) >= os.path.getmtime(s):
+            continue
+        r = subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC", "-o", out, s], capture_output=True, text=True)
         if r.returncode != 0:
             raise BuildError(f"{src} did not compile:\n{r.stderr}")
 
@@ -214,8 +225,9 @@ def run_one(
     for k, v in row.env.items():
         inner.append(f"{k}={v}")
     lib, _ = variant.lib_for(row.features)
-    if lib:
-        inner.append(f"LD_PRELOAD={lib}")
+    pre = [x for x in (lib, os.path.join(tools_dir, "settle.so") if row.settle else "") if x]
+    if pre:
+        inner.append(f"LD_PRELOAD={':'.join(pre)}")
     if variant.spec.conf:
         inner.append(f"MALLOC_CONF={variant.spec.conf}")
     cmd = [os.path.join(tools_dir, "rt"), *inner, *argv]
@@ -230,6 +242,20 @@ def run_one(
     rt = _read_rt(rt_file, p.returncode, timeout)
     text = open(out_file, encoding="utf-8", errors="replace").read()
     return rt, text
+
+
+def add_settle(parsed: Parsed, text: str) -> None:
+    """settle.so's exit line (rows with settle) into the extra metrics:
+    settle_mib after a forced purge; the last line wins (child processes
+    print theirs first)."""
+    for line in text.splitlines():
+        if line.startswith("cb-settle "):
+            kv = dict(p.split("=", 1) for p in line.split()[1:] if "=" in p)
+            try:
+                if float(kv.get("rss_kb", -1)) > 0:
+                    parsed.extra["settle_mib"] = float(kv["rss_kb"]) / 1024
+            except ValueError:
+                pass
 
 
 def default_run_id(suite: str, head: str) -> str:
@@ -458,6 +484,8 @@ def execute(args) -> int:
                     else:
                         rt, text = run_one(row, v, argv, tools_dir, logs, tag, pad)
                         parsed = parse(row, text, rt) if rt.get("exit") == 0 else None
+                        if parsed is not None:
+                            add_settle(parsed, text)
                     score = parsed.score if parsed else None
                     err = "" if score is not None else (parsed.error if parsed else f"exit {rt.get('exit')}")
                     check_fail = ""

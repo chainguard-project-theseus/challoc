@@ -1,0 +1,24 @@
+# exp-27: issue #27, demand-driven per-class cache capacity. One head
+# build under two MALLOC_CONFs plus the shrink-only tip and the base:
+#   fixed  head@tcache_nslots_small_min:65536 (today's fixed capacities, the paired control)
+#   adapt  shrink only (START_LG = 0, the tip before slow start)
+#   slow   head (slow start, the default)
+#   base   the branch's base
+# Variants are given on the command line (git shas). Positive percentages
+# mean the candidate did worse than `fixed`.
+description = "#27: adaptive tcache capacity (fixed/adapt/slow/base) on the reference cells"
+cells = "tag:ref"
+variants = ["fixed=head@tcache_nslots_small_min:65536", "adapt=head", "slow=head", "base"]
+controls = ["jemalloc"]
+rows = ["larson1", "larson10", "larson16", "larson64", "xmalloc", "xmallocN", "alloc-test1", "alloc-testN",
+        "mstress", "cfrac", "espresso", "valkey1", "valkey1-free", "valkey1-write", "churn1024",
+        "python1", "python1-malloc", "cc-hello", "residue64", "residue256", "burst-idle"]
+replicas = 3
+blocks = 3
+warmup_blocks = 1
+shard_seconds = 500
+looks = 1
+budget_usd = 25
+
+[local]
+blocks = 1
