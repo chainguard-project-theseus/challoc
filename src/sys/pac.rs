@@ -60,7 +60,9 @@ fn count_op() {
 // arm64 `AT_HWCAP` bits, from `arch/arm64/include/uapi/asm/hwcap.h`; the
 // container test cross-checks them against the installed header where one
 // exists.
+#[cfg(any(test, target_arch = "aarch64"))]
 pub const HWCAP_PACA: u64 = 1 << 30;
+#[cfg(any(test, target_arch = "aarch64"))]
 pub const HWCAP_PACG: u64 = 1 << 31;
 
 /// Whether the kernel exposes pointer authentication with the address key
@@ -86,6 +88,7 @@ pub fn available() -> bool {
 /// for user space; a field value of 4 or 5 means FPAC. Diagnostic only
 /// (the report and the tests); the allocator's behaviour does not depend
 /// on it. False where `available` is false.
+#[cfg(test)]
 pub fn fpac() -> bool {
     #[cfg(target_arch = "aarch64")]
     {

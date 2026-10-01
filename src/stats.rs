@@ -229,6 +229,7 @@ impl Totals {
 
     /// The accounting identities every snapshot satisfies:
     /// `resident >= active >= allocated` and `mapped == resident + retained`.
+    #[cfg(test)]
     pub fn identities_hold(&self) -> bool {
         self.resident >= self.active && self.active >= self.allocated && self.mapped == self.resident + self.retained
     }

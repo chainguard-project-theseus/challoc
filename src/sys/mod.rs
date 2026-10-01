@@ -16,7 +16,7 @@ pub mod features;
 pub mod pac;
 pub mod thp_host;
 pub mod tls;
-pub use errno::{Errno, decode};
+pub use errno::Errno;
 
 mod abort;
 mod nr;
@@ -36,6 +36,7 @@ pub const PROT_WRITE: i32 = 2;
 #[cfg(test)]
 pub const MAP_SHARED: i32 = 0x01;
 pub const MAP_PRIVATE: i32 = 0x02;
+#[cfg(test)]
 pub const MAP_FIXED: i32 = 0x10;
 pub const MAP_ANONYMOUS: i32 = 0x20;
 pub const MAP_NORESERVE: i32 = 0x4000;

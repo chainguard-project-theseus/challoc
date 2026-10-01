@@ -57,6 +57,7 @@ impl RawLock {
 
     /// Acquire without blocking. `true` on success.
     #[inline]
+    #[cfg(test)]
     pub fn try_lock(&self) -> bool {
         self.try_acquire()
     }
@@ -96,6 +97,7 @@ impl RawLock {
 
     /// Whether some thread currently holds the lock. Diagnostic only.
     #[inline]
+    #[cfg(test)]
     pub fn is_locked(&self) -> bool {
         self.state.load(Ordering::Relaxed) != UNLOCKED
     }
@@ -167,6 +169,7 @@ impl<T> Lock<T> {
 
     /// Acquire without blocking.
     #[inline]
+    #[cfg(test)]
     pub fn try_lock(&self) -> Option<LockGuard<'_, T>> {
         if self.raw.try_lock() { Some(LockGuard { lock: self }) } else { None }
     }

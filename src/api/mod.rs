@@ -62,9 +62,13 @@ macro_rules! export_pair {
     };
 }
 
+// The C++ and libc exports are compiled out of the test binary, which
+// leaves the helpers only they call unused there.
+#[cfg_attr(test, allow(dead_code))]
 pub mod cxx;
 pub mod glibc;
 pub mod jemalloc;
+#[cfg_attr(test, allow(dead_code))]
 pub mod libc;
 pub mod mallctl;
 pub mod print;
@@ -187,6 +191,7 @@ pub unsafe fn shared_unchecked() -> &'static Shared {
 }
 
 /// The probed kernel features. Initialises the allocator if needed.
+#[cfg(test)]
 pub fn features() -> &'static Features {
     let _ = shared();
     // SAFETY: `shared()` returned, so `READY` has been observed.

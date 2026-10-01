@@ -157,6 +157,7 @@ pub fn area(offset: isize) -> *mut u8 {
 /// # Safety
 /// `area` is this thread's registered area.
 #[inline]
+#[cfg(test)]
 pub unsafe fn cpu_id(area: *mut u8) -> u32 {
     // SAFETY: guaranteed by the caller.
     unsafe { area.add(CPU_ID_OFFSET).cast::<u32>().read_volatile() }

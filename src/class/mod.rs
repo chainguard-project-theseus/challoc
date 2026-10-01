@@ -74,17 +74,23 @@ use crate::slab::{SlabDesc, State};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 mod abort;
+// Dead outside the tests: `ClassState::decay` (part 2 of #10).
+#[allow(dead_code)]
 mod decay;
 mod fresh;
 mod sets;
+// Dead outside the tests: `SlabTable::nslabs` (part 2 of #10).
+#[allow(dead_code)]
 mod table;
 #[cfg(test)]
 mod tests;
 mod verify;
 
-pub use sets::{SET_GROUPS, SETS_PER_CLASS, SetTable};
+#[cfg(test)]
+pub use sets::SET_GROUPS;
+pub use sets::SetTable;
 pub(crate) use sets::Set;
-pub use table::{SlabTable, desc_stagger};
+pub use table::SlabTable;
 use abort::{double_free, guard_free, owner_mismatch, release_into_fresh_slab, reservation_unmet, wrong_arena, zero_slab_had_bits_set};
 use verify::{fresh_with_live, release_into_fresh};
 
@@ -532,11 +538,13 @@ impl ClassState {
     }
 
     #[inline]
+    #[cfg(test)]
     pub fn arena(&self) -> u16 {
         self.arena
     }
 
     #[inline]
+    #[cfg(test)]
     pub fn nslabs(&self) -> usize {
         self.table().nslabs
     }
@@ -1015,6 +1023,7 @@ impl ClassState {
 
     /// This arena's slab counts; `guards` is the class-wide count from the
     /// table, since guard slabs belong to no arena.
+    #[cfg(test)]
     pub fn stats(&self) -> ClassStats {
         self.bin_stats().0
     }
@@ -1055,12 +1064,14 @@ impl ClassState {
     }
 
     /// Slots out of this arena's bitmaps (see [`ClassState::bin_stats`]).
+    #[cfg(test)]
     pub fn curregs(&self) -> usize {
         self.bin_stats().1
     }
 
     /// Slots ever claimed from this arena's slabs of the class (wrapping).
     #[inline]
+    #[cfg(test)]
     pub fn claimed(&self) -> u64 {
         self.claimed.load(Ordering::Relaxed)
     }

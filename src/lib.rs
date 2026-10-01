@@ -23,31 +23,43 @@ compile_error!("exactly one of the `quantum8` or `quantum16` features must be en
 /// Quantum (minimum size-class granularity and alignment) in bytes, selected
 /// at build time by the `quantum8` / `quantum16` features.
 #[cfg(feature = "quantum16")]
-pub const QUANTUM: usize = 16;
+pub(crate) const QUANTUM: usize = 16;
 #[cfg(feature = "quantum8")]
-pub const QUANTUM: usize = 8;
+pub(crate) const QUANTUM: usize = 8;
 
-pub mod api;
-pub mod arena;
-pub mod bitmap;
-pub mod class;
-pub mod config;
-pub mod heap;
-pub mod huge;
-pub mod layout;
-pub mod lock;
-pub mod meta;
+pub(crate) mod api;
+pub(crate) mod arena;
+pub(crate) mod bitmap;
+pub(crate) mod class;
+// Dead code left in this module for part 2 of #10.
+#[allow(unused_imports)]
+pub(crate) mod config;
+// Dead code left in this module for part 2 of #10.
+#[allow(dead_code, unused_imports)]
+pub(crate) mod heap;
+// Dead code left in this module for part 2 of #10.
+#[allow(dead_code)]
+pub(crate) mod huge;
+// Dead code left in this module for part 2 of #10.
+#[allow(dead_code, unused_imports)]
+pub(crate) mod layout;
+pub(crate) mod lock;
+pub(crate) mod meta;
 #[cfg(test)]
 mod model;
-pub mod policy;
-pub mod purge;
-pub mod rseq;
-pub mod slab;
-pub mod stats;
-pub mod sys;
+// Dead code left in this module for part 2 of #10.
+#[allow(dead_code)]
+pub(crate) mod policy;
+// Dead code left in this module for part 2 of #10.
+#[allow(dead_code)]
+pub(crate) mod purge;
+pub(crate) mod rseq;
+pub(crate) mod slab;
+pub(crate) mod stats;
+pub(crate) mod sys;
 #[cfg(test)]
 mod testutil;
-pub mod thp;
+pub(crate) mod thp;
 
 /// Panic handler for the `no_std` library. The crate is built with
 /// `panic = "abort"`, so this is only reached by an explicit `panic!` or a
