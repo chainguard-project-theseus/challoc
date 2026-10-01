@@ -1124,12 +1124,14 @@ fn a_scheduled_pop_whose_gc_empties_the_cache_refills_instead_of_wrapping() {
     let h = t.heap();
     h.slow_ticks = PERIODIC_EVERY - 1;
     h.last_gc = now_ns().wrapping_sub(s.gc_interval_ns);
+    h.misses_since = h.last_gc;
     let k = h.cache_ptr(c);
     unsafe { (*k).allocs = (*k).compact_mask as u64 };
     let ticks = t.ticks();
     let p = t.alloc(c);
     assert_eq!(t.ticks(), ticks + 1);
     assert!(!p.is_null());
+    assert_eq!(t.cache(c).misses, 1, "the GC restarted the count; the refill is a miss");
     let (cls, arena) = s.classify_free(p).ok().expect("a slot of the class");
     assert_eq!((cls, arena), (c, 0));
     // The GC flushed `p0`, the rebuild dropped back to probing, and the
@@ -3264,6 +3266,84 @@ fn refill_phase_realigns_the_ramp_on_the_half_ladder() {
     for p in out {
         t.free(p);
     }
+    t.destroy();
+    assert_eq!(live(s, c), 0);
+}
+
+/// A compacting cache works at its ceiling. One created at its start
+/// capacity goes to `ceil` as it enters compact mode, and a swing-1 churn
+/// (one allocation, one free: nothing but the scheduled pops and the run
+/// rebuilds takes a slow path, so no miss would grow it) keeps it there
+/// through quiet GCs.
+#[test]
+fn compacting_cache_under_swing_one_churn_reaches_its_ceiling() {
+    let s = shared();
+    let t = TestHeap::new(s);
+    let c = class_with(224);
+    let ceil = default_cap(c);
+    let start = cache::start_cap(ceil, MIN_CAP);
+    assert!(start < ceil);
+    let mut live_ps = residue(&t, c, 30, 560, 0x0c0f_fee5);
+    assert!(Heap::fragmented(s, 0, c));
+    t.gc();
+    force_cap(&t, c, start);
+    live_ps.push(t.alloc(c));
+    assert_eq!(t.cache(c).cap(), start as usize);
+    for _ in 0..4 {
+        if t.cache(c).compacting() {
+            break;
+        }
+        let k = t.heap().cache_ptr(c);
+        unsafe { (*k).allocs = (*k).compact_mask as u64 };
+        live_ps.push(t.alloc(c));
+    }
+    assert!(t.cache(c).compacting());
+    assert_eq!(t.cache(c).cap(), ceil as usize, "at the ceiling from the switch");
+    let mut rebuilds = 0;
+    for i in 0..20_000 {
+        let before = t.cache(c).run().len();
+        let p = t.alloc(c);
+        if t.cache(c).run().len() > before {
+            rebuilds += 1;
+        }
+        t.free(p);
+        if i % 5000 == 4999 {
+            t.gc();
+        }
+        assert_eq!(t.cache(c).cap(), ceil as usize, "pop {i}");
+    }
+    assert!(rebuilds > 0, "no run rebuild");
+    for p in live_ps {
+        t.free(p);
+    }
+    t.destroy();
+    assert_eq!(live(s, c), 0);
+}
+
+/// The scheduled pop's refills count a miss: a probe whose tick ran the
+/// GC, which emptied the cache, refills it as `alloc_slow_in` would.
+#[test]
+fn a_probe_refill_counts_a_miss() {
+    let s = shared();
+    let t = TestHeap::new(s);
+    let c = class_with(64);
+    let p = t.alloc(c);
+    t.flush_all();
+    t.free(p);
+    t.gc();
+    assert_eq!((t.len(c), t.cache(c).low_water(), t.cache(c).misses), (1, 1, 0));
+    assert!(!t.cache(c).compacting());
+    let h = t.heap();
+    h.slow_ticks = PERIODIC_EVERY - 1;
+    h.last_gc = now_ns().wrapping_sub(s.gc_interval_ns);
+    h.misses_since = h.last_gc;
+    let k = h.cache_ptr(c);
+    unsafe { (*k).allocs = (*k).compact_mask as u64 };
+    let q = t.alloc(c);
+    assert!(!q.is_null());
+    assert_eq!(t.cache(c).misses, 1, "the probe's refill is a miss");
+    assert_eq!(t.len(c), t.cache(c).cap() / 2 - 1);
+    t.free(q);
     t.destroy();
     assert_eq!(live(s, c), 0);
 }

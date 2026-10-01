@@ -139,6 +139,7 @@ impl Heap {
                     if len == 0 {
                         // The GC emptied the cache.
                         let Some(a) = shared.arena((*cache).arena) else { return (ptr::null_mut(), false) };
+                        (*cache).note_miss();
                         len = self.refill(shared, a, cache, class);
                         if len == 0 {
                             return (ptr::null_mut(), false);
@@ -150,6 +151,13 @@ impl Heap {
                         Verdict::Refilling | Verdict::Dense => return Self::pop_top(cache, len, pac),
                         Verdict::Fragmented => {}
                     }
+                    // A compacting cache works at its ceiling: its run
+                    // rebuilds, `cap / 4` blocks, are the class's
+                    // migration and its only slow path, so no miss would
+                    // ever grow it, and the GC never shrinks it (design
+                    // 6.4).
+                    (*cache).cap = (*cache).ceil;
+                    (*cache).check_cap();
                     (*cache).set_mode(MODE_COMPACT);
                     return self.pop_compact_run(cache, class, len);
                 }
@@ -186,6 +194,7 @@ impl Heap {
                         // branch does; popping here would wrap `len - 1`.
                         let shared: &Shared = &*self.shared;
                         let Some(a) = shared.arena((*cache).arena) else { return (ptr::null_mut(), false) };
+                        (*cache).note_miss();
                         len = self.refill(shared, a, cache, class);
                         if len == 0 {
                             return (ptr::null_mut(), false);
