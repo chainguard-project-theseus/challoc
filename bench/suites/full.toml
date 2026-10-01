@@ -1,0 +1,44 @@
+# full: every paired row (bench/rows.toml) against the stock allocators,
+# the general-purpose baseline. challoc (`head`) against jemalloc 5.4.0
+# (the release tarball, bench/build.sh) is the gate pair; glibc is
+# context. Rows a variant cannot run are skipped for it (the Ruby and
+# fluent-bit rows have no glibc column: those programs link
+# libjemalloc.so.2).
+#
+# Not here: the soaks (one variant per VM, 20 minutes each: suite soak),
+# the kernel floor (exp-floor), mstress-quota (the cpusN cells) and the
+# challoc-only attribution row valkey1-write-pair. `cb launch full
+# --variants ...` compares any other pair; `--controls jemalloc` adds
+# Wolfi's jemalloc 5.3.1.
+description = "everything paired: challoc vs jemalloc 5.4.0 (gate) and glibc (context)"
+cells = "tag:ref"
+variants = ["jemalloc54", "challoc=head"]
+controls = ["glibc"]
+rows = [
+  # the allocator benchmarks (mimalloc-bench and the probes)
+  "larson1", "larson10", "larson16", "larsonN", "larsonN-sized", "xmalloc", "xmallocN",
+  "alloc-test1", "alloc-testN", "cfrac", "espresso", "mstress", "glibc-simple", "glibc-thread",
+  "cache-scratch1", "cache-scratchN", "cache-thrash1", "cache-thrashN", "malloc-large",
+  "rptestN", "sh6benchN", "sh8benchN", "barnes", "gs", "z3", "lua", "rbstress1", "rbstressN",
+  "mleak10", "mleak100",
+  "valkey1", "valkey1-free", "valkey1-usable", "churn1024",
+  # startup and the idle sidecar
+  "startup-true", "startup-cc", "startup-py", "startup-ruby", "startup-node", "startup-java",
+  "sidecar-fluentbit",
+  # applications and runtimes (suite apps)
+  "rocksdb", "nginx-proxy", "compile-sqlite", "ort-mlp", "fleetbench-proto",
+  "ruby-binary-trees", "ruby-hash-aref-str", "ruby-array-sample", "ruby-sort-block", "ruby-gc-churn",
+  "node-json-churn", "node-server",
+  "python1", "python1-malloc", "python-dict-list", "python-dict-list-malloc", "python-regex",
+  "python-regex-malloc", "python-object-graph", "python-object-graph-malloc",
+  "pg-select100", "pg-tpcb100", "pg-select500", "pg-connect20",
+]
+replicas = 3
+blocks = 2
+warmup_blocks = 0
+shard_seconds = 1200
+looks = 1
+budget_usd = 25
+
+[local]
+blocks = 1

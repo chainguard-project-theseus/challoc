@@ -1,0 +1,11 @@
+# The ort-mlp row's Python packages (bench/build.sh: pip --only-binary
+# --no-deps --require-hashes --target pylib-ort): the cp313 manylinux wheels
+# for aarch64 and x86_64. Inference needs only these two; onnxruntime's
+# other dependencies (coloredlogs, flatbuffers, protobuf, sympy) serve its
+# tools.
+onnxruntime==1.30.0 \
+    --hash=sha256:5327cf6aa15a02bad805fac8bd6882a62571e8b72f6f2938a8f37e6bd1966ce9 \
+    --hash=sha256:86f940afc801ea9681a4da8af84fbe95e1d9ea7d80903952cc1bfad54faad38f
+numpy==2.5.3 \
+    --hash=sha256:c76d5dde9f445058f83d0c02af00557a4db91de9a9a57c0df87d1535001d654b \
+    --hash=sha256:a5fa86b80fd24bcd1aff83ad23be44ea323de3f787be8f8b15d4a65621e25321

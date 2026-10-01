@@ -1,0 +1,351 @@
+# bench/cells/public.toml: where bench/cb runs (bench/README.md, "cb").
+#
+# A cell is a host shape plus a host image plus how the container runs on
+# it. `cb run` executes on the machine it is started on (the `local` cell:
+# the dev container or any Linux host); the GCE cells are what `cb launch`
+# (M1b) creates, one spot VM per replica, in the project and zones of
+# [defaults]. Every `*.toml` in this directory is loaded; a later file may
+# add cells or override fields of a cell by name. Only public images belong
+# in this file.
+#
+# Fields: shape (a [shape.*] name), host = { family, project } or "@cell"
+# (the same host image as that cell), runtime (docker | podman |
+# sudo-podman | none), bootstrap (startup-script, the only one cb launch
+# runs; cloud-init marks the COS cells it cannot boot yet), container
+# (default | privileged | perfmon | cpusN), prep (host
+# preparation steps), expect (facts the booted host must show), quiet
+# (the quiet gate: load1 below this, waiting at most wait_s), tags.
+#
+# The kernel that booted is always recorded from `uname -r`; the family is
+# only a request. Kernel floor: 5.14 (RHEL 9 / AlmaLinux 9); the Debian 11
+# 5.10 cell is a tripwire (tag `tripwire`): it runs the floor suite so a
+# break below the floor is noticed, and a failure there is informational.
+
+[defaults]
+provider = "gce"
+# Where `cb launch` runs (project, bucket, service_account) is not here:
+# an internal overlay (bench/cells/internal-project.toml), the CB_PROJECT,
+# CB_BUCKET and CB_SERVICE_ACCOUNT environment variables, or --project,
+# --bucket and --service-account.
+zones = ["us-east4-a", "us-east4-b", "us-central1-a"]
+spot = "prefer"
+max_run = "45m"
+runtime = "docker"
+bootstrap = "startup-script"
+container = "default"
+# The quiet gate of a fresh VM: runnable tasks (sampled over 3 s, the
+# sampler counts as one) and steal, not load1, which lags by minutes after
+# the image pull and the build.
+quiet = { running = 1.5, wait_s = 30 }
+
+# ---- the machine the command runs on ---------------------------------------
+# Dev container on a laptop, a CI runner, or a Linux box: numbers are
+# `indicative` (their comparability key names this host) and never pooled
+# with a GCE cell's.
+[cell.local]
+provider = "local"
+runtime = "none"
+container = "default"
+quiet = { load1 = 4.0, wait_s = 30 }
+tags = ["local"]
+
+# ---- shapes -------------------------------------------------------------------
+[shape.axion-v2]
+arch = "arm64"
+machine = "c4a-standard-16"
+pmu = "standard"
+
+[shape.emr16]
+arch = "amd64"
+machine = "c4-standard-16"
+pmu = "standard"
+
+[shape.axion-n4a]
+arch = "arm64"
+machine = "n4a-standard-16"
+
+[shape.turin16]
+arch = "amd64"
+machine = "c4d-standard-16"
+
+# multi-LLC (8-core CCDs)
+[shape.turin64]
+arch = "amd64"
+machine = "c4d-standard-64"
+
+# small L3: the instruction-window cell. C3 has no 16-vCPU size (4, 8,
+# 22, 44, ...); 22 is the nearest.
+[shape.spr16]
+arch = "amd64"
+machine = "c3-standard-22"
+
+[shape.genoa16]
+arch = "amd64"
+machine = "c3d-standard-16"
+
+[shape.altra16]
+arch = "arm64"
+machine = "t2a-standard-16"
+zones = ["us-central1-a", "us-central1-b"]
+disk = "pd-balanced"
+
+[shape.small]
+arch = "amd64"
+machine = "e2-standard-4"
+
+[shape.small-arm]
+arch = "arm64"
+machine = "c4a-standard-4"
+
+# ---- gate and CPU ladder --------------------------------------------------------
+[cell.ref-arm64]
+shape = "axion-v2"
+host = { family = "ubuntu-2404-lts-arm64", project = "ubuntu-os-cloud" }
+# CAP_PERFMON: the per-run perf_event_open counters (the second signal).
+container = "perfmon"
+tags = ["ref", "gate", "cpu-ladder"]
+
+[cell.ref-amd64]
+shape = "emr16"
+host = { family = "ubuntu-2404-lts-amd64", project = "ubuntu-os-cloud" }
+# CAP_PERFMON: the per-run perf_event_open counters (the second signal).
+container = "perfmon"
+tags = ["ref", "gate", "cpu-ladder"]
+
+[cell.cpu-n4a]
+shape = "axion-n4a"
+host = "@ref-arm64"
+tags = ["cpu-ladder", "ceiling"]
+
+[cell.cpu-turin]
+shape = "turin16"
+host = "@ref-amd64"
+tags = ["cpu-ladder", "ceiling"]
+
+[cell.cpu-spr]
+shape = "spr16"
+host = "@ref-amd64"
+tags = ["cpu-ladder"]
+
+[cell.cpu-genoa]
+shape = "genoa16"
+host = "@ref-amd64"
+tags = ["cpu-ladder"]
+
+[cell.cpu-altra]
+shape = "altra16"
+host = "@ref-arm64"
+tags = ["cpu-ladder", "floor-cpu"]
+
+# ---- kernel floor ladder ----------------------------------------------------------
+# Correctness in the container on each host kernel, default and privileged
+# container passes; timing optional.
+[cell.k514-alma9-amd64]
+shape = "small"
+host = { family = "almalinux-9", project = "almalinux-cloud" }
+runtime = "podman"
+tags = ["floor", "k-ladder"]
+
+[cell.k514-alma9-arm64]
+shape = "small-arm"
+host = { family = "almalinux-9-arm64", project = "almalinux-cloud" }
+runtime = "podman"
+tags = ["floor"]
+
+# Below the floor: a tripwire, not a promise.
+[cell.k510-deb11-amd64]
+shape = "small"
+host = { family = "debian-11", project = "debian-cloud" }
+tags = ["tripwire", "k-ladder"]
+
+[cell.k61-deb12-arm64]
+shape = "small-arm"
+host = { family = "debian-12-arm64", project = "debian-cloud" }
+tags = ["floor", "k-ladder"]
+
+[cell.k61-cos-amd64]
+shape = "small"
+host = { family = "cos-117-lts", project = "cos-cloud" }
+bootstrap = "cloud-init"
+tags = ["floor"]
+
+[cell.k612-deb13-arm64]
+shape = "small-arm"
+host = { family = "debian-13-arm64", project = "debian-cloud" }
+tags = ["floor", "k-ladder"]
+
+[cell.k612-cos-amd64]
+shape = "small"
+host = { family = "cos-125-lts", project = "cos-cloud" }
+bootstrap = "cloud-init"
+tags = ["floor"]
+
+[cell.k68-ga-amd64]
+shape = "small"
+host = "@ref-amd64"
+prep = ["kernel:linux-generic"]
+tags = ["floor"]
+
+[cell.k70-gcp]
+alias = "ref-amd64"
+tags = ["k-ladder"]
+
+[cell.k-64k-arm64]
+shape = "small-arm"
+host = "@ref-arm64"
+prep = ["kernel:linux-generic-64k"]
+expect = { page_size = 65536 }
+tags = ["floor"]
+
+# ---- experiments: E-narenas (#21) ------------------------------------------------
+# A CPU quota without a cpuset (container profile cpusN: --cpus=N), so the
+# affinity mask, and with it challoc's default narenas, is the host's 16
+# CPUs while the cgroup's cpu.max allows N.
+[cell.na-c4-cpus2]
+shape = "emr16"
+host = "@ref-amd64"
+container = "cpus2"
+tags = ["exp-narenas", "exp-narenas-2"]
+
+[cell.na-c4-cpus4]
+shape = "emr16"
+host = "@ref-amd64"
+container = "cpus4"
+tags = ["exp-narenas", "exp-narenas-4"]
+
+[cell.na-c4d-cpus2]
+shape = "turin16"
+host = "@ref-amd64"
+container = "cpus2"
+tags = ["exp-narenas", "exp-narenas-2"]
+
+[cell.na-c4d-cpus4]
+shape = "turin16"
+host = "@ref-amd64"
+container = "cpus4"
+tags = ["exp-narenas", "exp-narenas-4"]
+
+# ---- experiments: the public kernel floor (#22) ---------------------------------
+# The floor-test row (bench/cb/floor-test.sh) under the default container
+# profile and under --privileged (the `-p` cells), one VM each. N2 on
+# amd64 (pd-balanced boots every image here), C4A on arm64. The Ubuntu
+# rungs other than the image's own gcp kernel install a kernel flavour and
+# reboot into it (boot.sh `prep`).
+[shape.floor-amd64]
+arch = "amd64"
+machine = "n2-standard-8"
+disk = "pd-balanced"
+
+[shape.floor-arm64]
+arch = "arm64"
+machine = "c4a-standard-8"
+
+[cell.fl-alma9-x86]
+shape = "floor-amd64"
+host = { family = "almalinux-9", project = "almalinux-cloud" }
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-alma9-x86-p]
+shape = "floor-amd64"
+host = { family = "almalinux-9", project = "almalinux-cloud" }
+container = "privileged"
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-alma9-arm]
+shape = "floor-arm64"
+host = { family = "almalinux-9-arm64", project = "almalinux-cloud" }
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-alma9-arm-p]
+shape = "floor-arm64"
+host = { family = "almalinux-9-arm64", project = "almalinux-cloud" }
+container = "privileged"
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-deb12-x86]
+shape = "floor-amd64"
+host = { family = "debian-12", project = "debian-cloud" }
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-deb12-x86-p]
+shape = "floor-amd64"
+host = { family = "debian-12", project = "debian-cloud" }
+container = "privileged"
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-deb12-arm]
+shape = "floor-arm64"
+host = { family = "debian-12-arm64", project = "debian-cloud" }
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-deb12-arm-p]
+shape = "floor-arm64"
+host = { family = "debian-12-arm64", project = "debian-cloud" }
+container = "privileged"
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-u2404-ga-x86]
+shape = "floor-amd64"
+host = { family = "ubuntu-2404-lts-amd64", project = "ubuntu-os-cloud" }
+prep = ["kernel:linux-generic"]
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-u2404-ga-x86-p]
+shape = "floor-amd64"
+host = { family = "ubuntu-2404-lts-amd64", project = "ubuntu-os-cloud" }
+prep = ["kernel:linux-generic"]
+container = "privileged"
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-u2404-gcp-x86]
+shape = "floor-amd64"
+host = { family = "ubuntu-2404-lts-amd64", project = "ubuntu-os-cloud" }
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-u2404-gcp-x86-p]
+shape = "floor-amd64"
+host = { family = "ubuntu-2404-lts-amd64", project = "ubuntu-os-cloud" }
+container = "privileged"
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-u2404-gcp-arm]
+shape = "floor-arm64"
+host = { family = "ubuntu-2404-lts-arm64", project = "ubuntu-os-cloud" }
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-u2404-gcp-arm-p]
+shape = "floor-arm64"
+host = { family = "ubuntu-2404-lts-arm64", project = "ubuntu-os-cloud" }
+container = "privileged"
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-u2404-64k-arm]
+shape = "floor-arm64"
+host = { family = "ubuntu-2404-lts-arm64", project = "ubuntu-os-cloud" }
+prep = ["kernel:linux-generic-64k"]
+expect = { page_size = 65536 }
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-u2404-64k-arm-p]
+shape = "floor-arm64"
+host = { family = "ubuntu-2404-lts-arm64", project = "ubuntu-os-cloud" }
+prep = ["kernel:linux-generic-64k"]
+expect = { page_size = 65536 }
+container = "privileged"
+max_run = "90m"
+tags = ["exp-floor"]

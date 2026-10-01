@@ -1,0 +1,17 @@
+# exp-narenas (#21, E-narenas): the default narenas (from the affinity
+# mask) against narenas set to the container's CPU quota, on the cpusN
+# cells. Pass the pair per quota, e.g. for --cpus=2:
+#   cb launch exp-narenas --cells tag:exp-narenas-2 \
+#     --variants 'challoc=git:REV,quota=git:REV@narenas:2'
+# MALLOC_CONF narenas:N stands in for wiring cpu.max into effective_narenas.
+description = "E-narenas: default narenas vs narenas = CPU quota, throughput and RSS"
+cells = "tag:exp-narenas"
+variants = ["challoc=head", "quota=head@narenas:2"]
+controls = []
+rows = ["larson16", "larson32", "xmalloc", "mstress-quota", "valkey1"]
+replicas = 3
+blocks = 5
+warmup_blocks = 1
+shard_seconds = 600
+looks = 1
+budget_usd = 10

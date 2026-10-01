@@ -1,0 +1,35 @@
+# exp-slice: the rseq time slice extension (audit D9). The `slice_ext`
+# key was cut after this experiment (#17) and exists only in the
+# revisions of the archive tag, so pass one of those as `--head`; on a
+# later head both variants are the same build with an unknown key.
+# One build, two MALLOC_CONFs: `auto` (challoc asked the kernel for the
+# extension where it had it) against `off`. A grant defers
+# the preemption of a thread inside an allocator critical section by
+# another runnable thread on the same CPU, so the rows are the contended,
+# oversubscribed ones: the container is pinned to 4 CPUs (`cpuset`, not a
+# `cpus` quota: a CFS quota throttles the whole container instead of
+# preempting one thread for another) and larson runs 16 and 64 threads
+# on them. `--container default,cpus=4` gives the quota variant.
+#
+# Cells: every cell tagged `exp-slice` (the kernel 7.2 cell, which has the
+# extension, and a 6.18 cell, which does not: there auto and off must come
+# out `same`, the experiment's negative control). The features line in the
+# report says what the kernel granted (`slice_ext=on` vs `no-slice_ctrl`).
+#
+# Positive percentages mean `auto` did worse than `off`. `cb launch
+# exp-slice --head <rev>`.
+description = "D9: slice_ext:auto vs slice_ext:off on one build, container pinned to 4 CPUs"
+cells = "tag:exp-slice"
+variants = ["off=head@slice_ext:off", "auto=head@slice_ext:auto"]
+controls = []
+rows = ["larson16", "larson64", "xmalloc", "valkey1", "valkey1-free"]
+container = { profile = "default", cpuset = "0-3" }
+replicas = 4
+blocks = 5
+warmup_blocks = 1
+shard_seconds = 400
+looks = 1
+budget_usd = 6
+
+[local]
+blocks = 3

@@ -1,0 +1,9 @@
+# aa: base against itself (two labels, one library). Measures the harness:
+# within-host spread, the host x variant interaction across VMs and the
+# false-positive rate of the quick verdicts. Every row should come out
+# `same` (or `inconclusive` when the margin is too tight for the noise);
+# a `worse` or `better` here is a false positive. `cb run aa --base REF`.
+description = "A/A calibration: base vs an identical copy of base"
+extends = "quick"
+variants = ["base", "aa=base"]
+replicas = 16
