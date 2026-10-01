@@ -702,13 +702,15 @@ a deployment that wants the residue back on a small-cache part.
    multiply, rotate, compare against `nslots`); load the class bitmap
    word; verify bit set. Otherwise abort.
 3. The opt-in hardening, one byte (`Shared::push_flags`) on the line step
-   2's `superblock`/`lg_stride` come from, zero by default on a CPU
-   without pointer authentication, so the default push tests it once and
-   branches past both; with `pac_pointers:true` on an arm64 host with PAC
-   the byte is `PUSH_PAC` alone, which arm64 compares first, and the push
-   stores `pacda p, slots` (6.2). Off arm64 `PUSH_PAC` is never set and
-   its compare is compiled out, so the dispatch is the one test of the
-   byte against zero. With `double_free_scan`:
+   2's `superblock`/`lg_stride` come from, zero by default on every host
+   (`pac_pointers` defaults to false, so a CPU with pointer
+   authentication is no exception), so the default push tests it against
+   zero and branches past the hardening. With `pac_pointers:true` on an
+   arm64 host with PAC the byte is `PUSH_PAC` alone, which arm64
+   compares first (one compare ahead of the default's zero test), and
+   the push stores `pacda p, slots` (6.2). Off arm64 `PUSH_PAC` is never
+   set and its compare is compiled out, so the dispatch is the one test
+   of the byte against zero. With `double_free_scan`:
    compare `p` against the top 4 cache entries; a
    match is a double free whose first copy is still cached (the bit test
    cannot see it) and aborts before the push. The same compare guards the
