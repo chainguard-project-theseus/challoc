@@ -509,6 +509,23 @@ metrics = [
   { name = "burst_mops", unit = "M ops/s", better = "higher", class = "server" },
 ]
 
+# burst-idle with a 35 s idle (three and a half cache GC intervals) after
+# each burst: what a longer idle releases.
+[row.burst-idle-long]
+cmd = ["{tools}/tcache_residue", "burst", "16", "3", "2000", "35000"]
+parser = "kv"
+metric = "rss_end_kb"
+unit = "KiB"
+better = "lower"
+threads = 16
+class = "rss"
+est_s = 114
+metrics = [
+  { name = "rss_idle_mib", unit = "MiB", better = "lower", class = "rss" },
+  { name = "maxrss_mib", unit = "MiB", better = "lower", class = "rss" },
+  { name = "burst_mops", unit = "M ops/s", better = "higher", class = "server" },
+]
+
 # Build-tool shape: short-lived processes (cc1, as, ld) under the
 # allocator, eight compiles of one probe.
 [row.cc-hello]

@@ -1,0 +1,21 @@
+# exp-27c: issue #27 decision rule 2, the burst-idle tier with the
+# standard 12 s idle and a 35 s idle. Variants as exp-27b:
+#   fixed  head@tcache_nslots_small_min:65536 (fixed capacities, the paired control)
+#   slow   head (slow start, the default)
+#   base   the branch's base
+# Positive percentages mean the candidate did worse than `fixed`. The JVM
+# tier is `soak --rows jvm-soak` with the same variants.
+description = "#27 burst-idle with a longer idle: fixed/slow/base on the reference cells"
+cells = "tag:ref"
+variants = ["fixed=head@tcache_nslots_small_min:65536", "slow=head", "base"]
+controls = ["jemalloc"]
+rows = ["burst-idle", "burst-idle-long"]
+replicas = 4
+blocks = 3
+warmup_blocks = 1
+shard_seconds = 900
+looks = 1
+budget_usd = 6
+
+[local]
+blocks = 1
