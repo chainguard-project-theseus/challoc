@@ -1,0 +1,25 @@
+# exp-27-cg: issue #27 near a cgroup limit. The container has a 3 GiB
+# memory limit and every row runs under bench/tools/ballast at 92% of it,
+# so challoc's cgroup policy is in its immediate band (the cache GC on
+# every periodic tick, design 11), where a cache's growth from its start
+# capacity depends on misses surviving those GCs. Variants:
+#   fixed  head@tcache_nslots_small_min:65536 (fixed capacities, the paired control)
+#   slow   head (slow start, the default)
+#   base   the branch's base
+# plus, on the command line, the pre-fix tip for contrast.
+# Positive percentages mean the candidate did worse than `fixed`.
+description = "#27 near a cgroup limit: fixed/slow/base at 92% of a 3 GiB container"
+cells = "tag:ref"
+variants = ["fixed=head@tcache_nslots_small_min:65536", "slow=head", "base"]
+controls = ["jemalloc"]
+rows = ["xmalloc-cg", "xmallocN-cg", "larson10-cg", "residue64-cg"]
+container = { profile = "perfmon", memory = "3g" }
+replicas = 3
+blocks = 3
+warmup_blocks = 1
+shard_seconds = 500
+looks = 1
+budget_usd = 8
+
+[local]
+blocks = 1

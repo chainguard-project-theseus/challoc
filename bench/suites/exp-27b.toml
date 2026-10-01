@@ -1,0 +1,26 @@
+# exp-27b: issue #27 re-evaluation after the review fixes (refill batches
+# kept on the half ladder while the capacity ramps, compaction at the
+# ceiling, misses kept across the immediate band's GCs). One head build
+# under two MALLOC_CONFs plus the base:
+#   fixed  head@tcache_nslots_small_min:65536 (today's fixed capacities, the paired control)
+#   slow   head (slow start, the default)
+#   base   the branch's base
+# Positive percentages mean the candidate did worse than `fixed`.
+# `cb launch exp-27b --head <opt-27 tip> --base <its base>`; the cgroup
+# rows are exp-27-cg, the Ruby soak is `soak --rows ruby-soak`.
+description = "#27 rerun: adaptive tcache capacity (fixed/slow/base) on the reference cells"
+cells = "tag:ref"
+variants = ["fixed=head@tcache_nslots_small_min:65536", "slow=head", "base"]
+controls = ["jemalloc"]
+rows = ["larson1", "larson10", "larson16", "larson64", "xmalloc", "xmallocN", "alloc-test1", "alloc-testN",
+        "mstress", "cfrac", "espresso", "valkey1", "valkey1-free", "valkey1-write", "churn1024",
+        "python1", "python1-malloc", "cc-hello", "residue64", "residue256", "burst-idle"]
+replicas = 4
+blocks = 3
+warmup_blocks = 1
+shard_seconds = 500
+looks = 1
+budget_usd = 25
+
+[local]
+blocks = 1
