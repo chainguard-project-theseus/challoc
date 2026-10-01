@@ -1,0 +1,46 @@
+[package]
+name = "challoc"
+version = "0.1.0"
+edition = "2024"
+description = "A memory-safe, jemalloc-compatible malloc replacement for Wolfi and Chainguard OS"
+license = "Apache-2.0"
+publish = false
+# The verified floor, not the true minimum: rustc 1.94.1 builds the crate
+# and runs its unit tests, and nothing older has been tried. Dockerfile.dev
+# and the Wolfi package (contrib/wolfi/challoc.yaml) pin 1.98; that is what
+# ships.
+rust-version = "1.94"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[features]
+default = ["quantum16"]
+# Size-class quantum. Exactly one must be enabled (design.md section 3).
+quantum16 = []
+quantum8 = []
+# Gives the cdylib jemalloc's soname, `libjemalloc.so.2`, for link-only
+# jemalloc consumers (design.md section 13.2). Exports are unchanged;
+# `make jemalloc-compat` stages the result under that name with a
+# `jemalloc.pc`. See build.rs.
+jemalloc-soname = []
+
+[dependencies]
+# Type definitions only (c_int, size_t, ...). No std, no allocation.
+libc = { version = "0.2", default-features = false }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = "line-tables-only"
+# `overflow-checks = true` was priced on both reference VMs: xmalloc
+# +15..18%, larson1 +6..8%, larson10 +4..5% behind the same code without
+# it, so the shipped library keeps the default (off). The counters
+# that could wrap are guarded by explicit release assertions instead
+# (`ClassState`, `HugeStats`, `Table`), and the unit tests run with the
+# checks on (the dev profile).

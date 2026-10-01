@@ -1,0 +1,90 @@
+challoc
+Copyright (c) Chainguard, Inc.
+
+This product is licensed under the Apache License, Version 2.0 (LICENSE).
+It contains or is derived in part from the third-party material listed
+below, each under its own licence. None of the test-only material is
+compiled into libchalloc.
+
+--------------------------------------------------------------------------
+jemalloc public API layout (BSD-2-Clause)
+
+  include/jemalloc-compat/jemalloc/jemalloc.h
+  include/challoc/jemalloc.h
+
+These headers are written for challoc, but the jemalloc entry-point
+declarations, the MALLOCX_* flag macros and their bit encoding
+(MALLOCX_LG_ALIGN, MALLOCX_ALIGN, MALLOCX_ZERO, MALLOCX_TCACHE,
+MALLOCX_TCACHE_NONE, MALLOCX_ARENA), the JEMALLOC_* attribute and version
+macros follow jemalloc 5.3's public headers (jemalloc_macros.h,
+jemalloc_protos.h, jemalloc_defs.h) so that programs built against
+jemalloc build and run unchanged. jemalloc is distributed under the
+following licence:
+
+  Copyright (C) 2002-present Jason Evans <jasone@canonware.com>.
+  All rights reserved.
+  Copyright (C) 2007-2012 Mozilla Foundation.  All rights reserved.
+  Copyright (C) 2009-present Facebook, Inc.  All rights reserved.
+
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions are
+  met:
+  1. Redistributions of source code must retain the above copyright
+     notice(s), this list of conditions and the following disclaimer.
+  2. Redistributions in binary form must reproduce the above copyright
+     notice(s), this list of conditions and the following disclaimer in
+     the documentation and/or other materials provided with the
+     distribution.
+
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDER(S) ``AS IS'' AND ANY
+  EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+  WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+  DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT HOLDER(S) BE LIABLE FOR ANY
+  DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+  DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+  OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+  HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+  STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+  ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+  POSSIBILITY OF SUCH DAMAGE.
+
+--------------------------------------------------------------------------
+GNU C Library malloc tests (LGPL-2.1-or-later; test-only)
+
+  tests/glibc/malloc/tst-malloc.c
+  tests/glibc/malloc/tst-calloc.c
+  tests/glibc/malloc/tst-mallocfork.c
+  tests/glibc/malloc/tst-posix_memalign.c
+  tests/glibc/malloc/tst-realloc.c
+  tests/glibc/malloc/tst-malloc-aux.h
+
+Copied unmodified from the GNU C Library, tag glibc-2.44.
+Copyright (C) 1999-2026 Free Software Foundation, Inc. They are licensed
+under the GNU Lesser General Public License, version 2.1 or (at your
+option) any later version; the licence text is tests/glibc/COPYING.LIB.
+tst-mallocfork.c carries no header of its own and is covered by glibc's
+top-level licence. They are compiled only into test programs that the
+test suite runs; they are not part of the library. The rest of
+tests/glibc/ (test-skeleton.c, include/) is challoc's own, under the
+Apache License 2.0. tests/glibc/README.md records the upstream commit.
+
+--------------------------------------------------------------------------
+mimalloc stress test (MIT; test-only)
+
+  tests/mimalloc/test-stress.c
+
+Copied unmodified from mimalloc, tag v3.5.2.
+Copyright (c) 2018-2026 Microsoft Research, Daan Leijen. MIT licence;
+the licence text is tests/mimalloc/LICENSE. It is compiled only into a
+test program; it is not part of the library. The rest of tests/mimalloc/
+(stress.c, include/) is challoc's own, under the Apache License 2.0.
+tests/mimalloc/README.md records the upstream commit.
+
+--------------------------------------------------------------------------
+Valkey patches (BSD-3-Clause context)
+
+  contrib/valkey/*.patch
+
+Patches against Valkey's source tree. Their context and removed lines are
+Valkey source, Copyright (c) Valkey contributors and Redis Ltd., under
+Valkey's BSD-3-Clause licence; they are not built into libchalloc.
