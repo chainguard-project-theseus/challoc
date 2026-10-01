@@ -12,7 +12,7 @@ use super::{FOREIGN, Heap, MIN_CAP, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, Shared};
 use super::{MODE_OFF, MODE_PROBE};
 
 /// One thread's cache header for one size class: exactly one cache line,
-/// inline in the heap ([`Heap::caches`]) or in an [`ArenaCaches`] node,
+/// inline in the heap ([`Heap::caches`]) or in an [`ArenaCaches`](super::ArenaCaches) node,
 /// pointing at its stack of `cap` slot pointers, a metadata object of its
 /// own. The fields the fast paths read (`len`, `cap`, `zeroed`, `slots`,
 /// `allocs`, `compact_mask`, `low_water`) come first; a header whose `cap`
@@ -39,8 +39,9 @@ pub struct CacheHeader {
     /// Pops served from this cache since it was created.
     pub(super) allocs: u64,
     /// A pop whose `allocs` count has no bit of this mask set is a
-    /// scheduled pop: [`PROBE_MASK`], [`COMPACT_MASK`], or `u32::MAX`
-    /// when compaction is off.
+    /// scheduled pop: [`PROBE_MASK`](super::PROBE_MASK),
+    /// [`COMPACT_MASK`](super::COMPACT_MASK), or `u32::MAX` when
+    /// compaction is off.
     pub(super) compact_mask: u32,
     /// `slots[..run_end]` is the run of low addresses, descending (the
     /// lowest at `run_end - 1`); `run_end <= low_water`.
@@ -53,7 +54,7 @@ pub struct CacheHeader {
     pub(super) probe_refilled: u32,
     /// The arena this cache belongs to (a rebuild's claim needs it).
     pub(super) arena: u16,
-    /// [`MODE_OFF`], [`MODE_PROBE`] or [`MODE_COMPACT`].
+    /// [`MODE_OFF`], [`MODE_PROBE`] or [`MODE_COMPACT`](super::MODE_COMPACT).
     pub(super) mode: u16,
     /// Consecutive flushes whose slot array was not already in address
     /// order (wrapping); zeroed by a flush that found it sorted. Drives the
