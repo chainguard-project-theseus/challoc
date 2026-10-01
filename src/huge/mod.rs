@@ -1063,8 +1063,9 @@ impl Huge {
     /// [`decay`](Huge::decay) with the cgroup policy's keep ratio (design
     /// 11), as `ClassState::decay_with`.
     pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> Option<u64> {
-        self.gate.decay(now, decay_ns, |now, curve| {
+        self.gate.decay(now, decay_ns, keep16, |now, curve| {
             self.purge_curve(now, curve, keep16);
+            None
         })
     }
 

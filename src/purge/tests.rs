@@ -1,4 +1,5 @@
 use super::*;
+use crate::policy::KEEP_ALL;
 
 /// The step gate: nothing `Empty` is `None` and no walk; the oldest
 /// member's first step is the deadline until it passes, then one walk
@@ -12,9 +13,10 @@ fn decayer_walks_once_per_step_and_follows_a_shortened_period() {
     // the calls can read it.
     let walks = std::cell::RefCell::new(std::vec::Vec::new());
     let walk_to = |d: &Decayer, now: u64, decay_ns: u64, leave: u64| {
-        d.decay(now, decay_ns, |at, curve| {
+        d.decay(now, decay_ns, KEEP_ALL, |at, curve| {
             walks.borrow_mut().push((at, *curve));
             d.set_oldest_empty(leave);
+            None
         })
     };
     let walks = || walks.borrow().clone();
@@ -62,6 +64,57 @@ fn decayer_walks_once_per_step_and_follows_a_shortened_period() {
     assert_eq!(walk_to(&d, 10_060, 0, 10_000), Some(10_060));
     assert_eq!(walks().len(), 5);
     assert_eq!(walks()[4], (10_060, Curve::new(0)));
+}
+
+/// The demand hold: a walk that returns a deadline past the next step
+/// defers the walks to it; the hold is void under another period or a
+/// retention cap, and a deadline no later than the next step is no hold.
+/// `last_walk` is the previous walk's time while the walk runs.
+#[test]
+fn decayer_holds_after_a_floor_walk() {
+    let d = Decayer::new();
+    let walks = std::cell::Cell::new(0);
+    let walk_hold = |now: u64, decay_ns: u64, keep16: u32, hold: Option<u64>, last: u64| {
+        d.decay(now, decay_ns, keep16, |_, _| {
+            walks.set(walks.get() + 1);
+            assert_eq!(d.last_walk(), last, "the walk sees the previous walk's time");
+            hold
+        })
+    };
+    assert!(d.note_first_empty(1_000));
+    // Steps of 1000 ns; the walk at 2000 holds until 50_000.
+    assert_eq!(walk_hold(2_000, 200_000, KEEP_ALL, Some(50_000), 0), Some(50_000));
+    assert_eq!(walks.get(), 1);
+    assert_eq!(d.last_walk(), 2_000);
+    // Steps pass, no walk: the deadline is the hold.
+    assert_eq!(walk_hold(3_000, 200_000, KEEP_ALL, None, 2_000), Some(50_000));
+    assert_eq!(walk_hold(49_999, 200_000, KEEP_ALL, None, 2_000), Some(50_000));
+    assert_eq!(walks.get(), 1);
+    // A retention cap ignores the hold: walks at step cadence.
+    assert_eq!(walk_hold(10_000, 200_000, KEEP_ALL / 2, None, 2_000), Some(11_000));
+    assert_eq!(walks.get(), 2);
+    // A capped walk's hold is not recorded either.
+    assert_eq!(walk_hold(11_000, 200_000, KEEP_ALL / 2, Some(60_000), 10_000), Some(12_000));
+    assert_eq!(walks.get(), 3);
+    assert_eq!(walk_hold(12_000, 200_000, KEEP_ALL, None, 11_000), Some(13_000));
+    assert_eq!(walks.get(), 4);
+    // A new hold, then the period changes: the hold is void and the
+    // shortened-period rule walks at once.
+    assert_eq!(walk_hold(13_000, 200_000, KEEP_ALL, Some(40_000), 12_000), Some(40_000));
+    assert_eq!(walk_hold(14_000, 200_000, KEEP_ALL, None, 13_000), Some(40_000));
+    assert_eq!(walks.get(), 5);
+    assert_eq!(walk_hold(14_000, 20_000, KEEP_ALL, None, 13_000), Some(14_100));
+    assert_eq!(walks.get(), 6);
+    // A hold no later than the next step is no hold.
+    assert_eq!(walk_hold(14_100, 20_000, KEEP_ALL, Some(14_150), 14_000), Some(14_200));
+    assert_eq!(walks.get(), 7);
+    // At the hold's deadline the walk runs again; nothing left `Empty`
+    // ends the deadlines whatever the walk returned.
+    assert_eq!(walk_hold(15_000, 200_000, KEEP_ALL, Some(90_000), 14_100), Some(90_000));
+    assert_eq!(walk_hold(90_000, 200_000, KEEP_ALL, None, 15_000), Some(91_000));
+    d.set_oldest_empty(0);
+    assert_eq!(walk_hold(95_000, 200_000, KEEP_ALL, Some(99_000), 90_000), None);
+    assert_eq!(walks.get(), 9);
 }
 
 /// Pages the bookkeeping test may point a batch at: a real mapping, since

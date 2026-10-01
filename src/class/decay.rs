@@ -203,8 +203,9 @@ impl ClassState {
     /// (design 11): the walk keeps at most `keep16 / 65536` of its `Empty`
     /// slabs on top of the curve's allowance.
     pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> Option<u64> {
-        self.gate.decay(now, decay_ns, |now, curve| {
+        self.gate.decay(now, decay_ns, keep16, |now, curve| {
             self.purge_curve(now, curve, keep16);
+            None
         })
     }
 

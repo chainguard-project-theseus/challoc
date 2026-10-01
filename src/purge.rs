@@ -284,11 +284,33 @@ pub struct Decayer {
     oldest_empty: AtomicU64,
     /// When the next walk is due; 0 before the first.
     next_walk: AtomicU64,
+    /// When the last walk ran; 0 before the first. The demand sample
+    /// counts what went `Empty` since.
+    last_walk: AtomicU64,
+    /// A walk that found everything within the demand floor defers the
+    /// next one to this deadline (`demand::Window::hold`); 0 for none.
+    hold_until: AtomicU64,
+    /// The period the hold was set under: a hold is void under any
+    /// other (`arena.<i>.dirty_decay_ms`, a cgroup band change).
+    hold_decay_ns: AtomicU64,
 }
 
 impl Decayer {
     pub const fn new() -> Decayer {
-        Decayer { oldest_empty: AtomicU64::new(0), next_walk: AtomicU64::new(0) }
+        Decayer {
+            oldest_empty: AtomicU64::new(0),
+            next_walk: AtomicU64::new(0),
+            last_walk: AtomicU64::new(0),
+            hold_until: AtomicU64::new(0),
+            hold_decay_ns: AtomicU64::new(0),
+        }
+    }
+
+    /// When the last walk ran (0 before the first), read by the walk
+    /// itself before the gate records the new one.
+    #[inline]
+    pub fn last_walk(&self) -> u64 {
+        self.last_walk.load(Ordering::Relaxed)
     }
 
     /// `dirty_at` of the oldest `Empty` member as the driver sees it (0
@@ -326,7 +348,19 @@ impl Decayer {
     /// the owner's next deadline (the end of the oldest member's first
     /// step, or of the current step), `None` when nothing is `Empty`.
     /// Lock-free unless a walk is due.
-    pub fn decay(&self, now: u64, decay_ns: u64, walk: impl FnOnce(u64, &Curve)) -> Option<u64> {
+    ///
+    /// The walk returns a hold deadline when it found everything within
+    /// the demand floor (`purge::demand`): the next walk waits for it
+    /// rather than one step, unless the period changes or the cgroup
+    /// policy caps retention (`keep16 < KEEP_ALL`), whose cap must act
+    /// at step cadence.
+    pub fn decay(
+        &self,
+        now: u64,
+        decay_ns: u64,
+        keep16: u32,
+        walk: impl FnOnce(u64, &Curve) -> Option<u64>,
+    ) -> Option<u64> {
         let oldest = self.oldest_empty();
         if oldest == 0 {
             return None;
@@ -337,16 +371,34 @@ impl Decayer {
         if now < first {
             return Some(first);
         }
+        let uncapped = keep16 >= crate::policy::KEEP_ALL;
+        let hold = self.hold_until.load(Ordering::Relaxed);
+        if now < hold && uncapped && self.hold_decay_ns.load(Ordering::Relaxed) == decay_ns {
+            return Some(hold);
+        }
         // A deadline further away than one step was set under a longer
         // period since shortened: walk now.
         let next = self.next_walk.load(Ordering::Relaxed);
         if now < next && next - now <= step {
             return Some(next);
         }
-        walk(now, &curve);
+        let hold = walk(now, &curve);
+        self.last_walk.store(now, Ordering::Relaxed);
         let next = now.saturating_add(step);
         self.next_walk.store(next, Ordering::Relaxed);
-        if self.oldest_empty() == 0 { None } else { Some(next) }
+        let hold = match hold {
+            Some(h) if h > next && uncapped => h,
+            _ => 0,
+        };
+        self.hold_until.store(hold, Ordering::Relaxed);
+        self.hold_decay_ns.store(decay_ns, Ordering::Relaxed);
+        if self.oldest_empty() == 0 {
+            None
+        } else if hold != 0 {
+            Some(hold)
+        } else {
+            Some(next)
+        }
     }
 }
 
