@@ -1970,6 +1970,10 @@ mod demand {
     /// Bursts every half curve window with a walk every eighth of one;
     /// the slabs purged in each gap, and the last burst's time.
     pub(super) fn bursts(env: &Env, cs: &ClassState, tracker: Option<&Demand>, keep16: u32, cycles: usize) -> (Vec<usize>, u64) {
+        bursts_gated(env, cs, tracker.map(gate), keep16, cycles)
+    }
+
+    pub(super) fn bursts_gated(env: &Env, cs: &ClassState, g: Option<DemandGate<'_>>, keep16: u32, cycles: usize) -> (Vec<usize>, u64) {
         let t0 = base();
         let mut out = Vec::new();
         let mut t = t0;
@@ -1977,9 +1981,9 @@ mod demand {
             t = t0 + k * W / 2;
             burst(env, cs, t);
             for j in 1..4 {
-                cs.decay_demand(t + j * W / 8, W, keep16, tracker.map(gate));
+                cs.decay_demand(t + j * W / 8, W, keep16, g);
             }
-            cs.decay_demand(t + W / 2 - 1, W, keep16, tracker.map(gate));
+            cs.decay_demand(t + W / 2 - 1, W, keep16, g);
             out.push(purged(cs));
         }
         (out, t)
@@ -2064,6 +2068,24 @@ mod demand {
         let tracker = Demand::new();
         let (kept, _) = bursts(&env, cs, Some(&tracker), KEEP_ALL / 4, 6);
         assert!(kept.iter().all(|&p| p >= N - N / 4), "capped: {kept:?}");
+    }
+
+    /// The cgroup policy saying no (`Policy::demand_ok` false: the
+    /// scaled or immediate band, an eager return, a pressure event): the
+    /// tracker still samples, and the walk purges as without a window.
+    #[test]
+    fn no_floor_when_the_policy_says_no() {
+        let _serial = crate::purge::tests::serial();
+        let env = Env::new();
+        let cs = env.class(small_class(), 0);
+        let (control, _) = bursts(&env, cs, None, KEEP_ALL, 6);
+        let env = Env::new();
+        let cs = env.class(small_class(), 0);
+        let tracker = Demand::new();
+        let off = DemandGate { apply: false, ..gate(&tracker) };
+        let (kept, last) = bursts_gated(&env, cs, Some(off), KEEP_ALL, 6);
+        assert_eq!(kept, control);
+        assert!(tracker.level(Window::from_ms(L_MS).unwrap().epoch(last)) > 0, "sampled all the same");
     }
 
     /// The walk's cross-check of the empty set against its count: a

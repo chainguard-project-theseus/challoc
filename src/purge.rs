@@ -415,9 +415,11 @@ pub fn decay(shared: &Shared, now: u64) -> Option<u64> {
     }
     let keep16 = policy.keep16();
     // The demand window (`demand`): off at 0, and for an arena whose
-    // period is 0 (purge at once was asked for).
+    // period is 0 (purge at once was asked for). The trackers sample in
+    // every band; the policy decides whether the floor keeps anything.
     let window = Window::from_ms(shared.config.hpa_peak_demand_window_ms as u64);
-    let apply = true;
+    let apply = policy.demand_ok();
+    shared.huge.set_demand_ok(apply);
     let mut next: Option<u64> = None;
     let mut fold = |d: Option<u64>| {
         if let Some(d) = d {
