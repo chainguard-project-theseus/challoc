@@ -3267,3 +3267,48 @@ fn refill_phase_realigns_the_ramp_on_the_half_ladder() {
     t.destroy();
     assert_eq!(live(s, c), 0);
 }
+
+/// Above 90% of a cgroup limit the GC runs at every periodic tick, but
+/// the miss counts span the configured interval: a cache that takes one
+/// miss per GC (its misses spread over a tick's 64 slow paths with other
+/// classes') still doubles from its second miss on and reaches its
+/// ceiling, where a GC that restarted the counts would hold it at its
+/// start capacity for good; a quiet cache still shrinks one step per
+/// tick.
+#[test]
+fn immediate_band_gcs_keep_the_miss_counts() {
+    use crate::policy::Band;
+    let s = shared();
+    let t = TestHeap::new(s);
+    let c = class_with(64);
+    let d = class_with(512);
+    let mut out = std::vec![t.alloc(c)];
+    let quiet: Vec<*mut u8> = (0..4).map(|_| t.alloc(d)).collect();
+    for p in quiet {
+        t.free(p);
+    }
+    let d_cap = t.cache(d).cap();
+    assert!(d_cap > MIN_CAP as usize);
+    // An interval GC: both counts restart, `d`'s bottom stays unused.
+    t.gc();
+    let h = t.heap();
+    let mut caps = Vec::new();
+    for _ in 0..6 {
+        // Re-applied every round: the tick's cgroup sample may evaluate
+        // the policy again.
+        s.policy.apply(Band::Immediate, 1 << 30, 0, 0);
+        assert_eq!(s.gc_interval(), 0);
+        // The refill's tick is a periodic one: a GC before every miss.
+        h.slow_ticks = PERIODIC_EVERY - 1;
+        drain_and_refill(&t, c, &mut out);
+        caps.push(t.cache(c).cap());
+    }
+    assert_eq!(caps, [128, 256, 512, CAP, CAP, CAP], "one doubling per miss from the second on");
+    assert!(t.cache(d).cap() < d_cap, "the quiet cache shrank");
+    s.policy.apply(Band::Unlimited, 0, 0, 0);
+    for p in out {
+        t.free(p);
+    }
+    t.destroy();
+    assert_eq!(live(s, c), 0);
+}

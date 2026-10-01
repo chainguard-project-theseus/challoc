@@ -177,6 +177,9 @@ pub struct Heap {
     /// randomised claim seeds it from `getrandom`, so the
     /// default configuration makes no syscall per heap creation.
     rng: u64,
+    /// When the caches' miss counts last restarted: at an interval GC, not
+    /// at the every-tick GCs of the cgroup's immediate band ([`Heap::tick`]).
+    misses_since: u64,
     /// Caches of the home arena, one line per class; last, so the small
     /// fields above share two lines and `caches[c]` is `heap + 128 + 64 * c`.
     caches: [CacheHeader; NCLASSES],
@@ -221,6 +224,7 @@ impl Heap {
             ptr::write(&raw mut (*h).arena, arena);
             ptr::write(&raw mut (*h).slow_ticks, 0);
             ptr::write(&raw mut (*h).last_gc, now_ns());
+            ptr::write(&raw mut (*h).misses_since, now_ns());
             ptr::write(&raw mut (*h).uncached, ThreadStats::default());
             ptr::write(&raw mut (*h).others, ptr::null_mut());
             ptr::write(&raw mut (*h).snapshot, ThreadStats::default());
@@ -480,12 +484,21 @@ impl Heap {
     /// low-water tracking from the current length and the miss count from
     /// zero.
     pub fn gc(&mut self, shared: &Shared) {
+        self.gc_with(shared, true);
+    }
+
+    /// [`Heap::gc`], restarting the miss counts or not: the every-tick GCs
+    /// of the cgroup's immediate band keep them, so that a cache whose
+    /// misses arrive fewer than [`GROW_MISSES`] per 64 slow paths (spread
+    /// over many classes) still grows, and only a cache with no miss since
+    /// the last interval GC counts as quiet and shrinks.
+    fn gc_with(&mut self, shared: &Shared, restart_misses: bool) {
         let home = self.arena;
-        self.gc_arena(shared, home, ptr::null_mut());
+        self.gc_arena(shared, home, ptr::null_mut(), restart_misses);
         for o in Self::nodes(self.others) {
             // SAFETY: as in `flush_all`.
             let arena = unsafe { (*o).arena };
-            self.gc_arena(shared, arena, o);
+            self.gc_arena(shared, arena, o, restart_misses);
         }
     }
 
@@ -497,7 +510,7 @@ impl Heap {
     /// capacity, and the misses of the next interval grow it back
     /// ([`CacheHeader::note_miss`]). The `FOREIGN` cache is flushed whole
     /// and keeps its fixed capacity.
-    fn gc_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches) {
+    fn gc_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches, restart_misses: bool) {
         for class in 0..NCLASSES {
             // SAFETY: `node` is null or a live node owned by this heap; an
             // unused header (`cap == 0`) is skipped.
@@ -532,7 +545,9 @@ impl Heap {
                         (*cache).cap = cap;
                     }
                 }
-                (*cache).misses = 0;
+                if restart_misses {
+                    (*cache).misses = 0;
+                }
                 (*cache).low_water = (*cache).len;
                 (*cache).check_cap();
             }
@@ -550,7 +565,14 @@ impl Heap {
             let now = now_ns();
             if now.wrapping_sub(self.last_gc) >= shared.gc_interval() {
                 self.last_gc = now;
-                self.gc(shared);
+                // In the immediate band the interval is 0 and the GC runs
+                // at every periodic tick; the miss counts still span the
+                // configured interval.
+                let restart = now.wrapping_sub(self.misses_since) >= shared.gc_interval_ns;
+                if restart {
+                    self.misses_since = now;
+                }
+                self.gc_with(shared, restart);
             }
             crate::purge::on_tick(shared, now);
         }
