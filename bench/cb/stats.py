@@ -12,12 +12,15 @@ means the candidate did worse. For a 2-variant ABBA block this is exactly
 1/2 [(ln B1 - ln A1) + (ln B2 - ln A2)] with the sign of "worse".
 
 Estimate: the mean over hosts of each host's mean d, reported as a
-percentage 100 (e^d - 1). CI: a percentile bootstrap over blocks, resampled
-within each host (the pairing removed the host offset); with at least 3
-hosts, when Cochran's Q (alpha 0.10, pooled within-host variance) or I^2 > 50% says the effect depends on
-the host, a cluster bootstrap (hosts, then blocks) instead. With fewer than
-10 blocks the percentile bootstrap is too narrow, so the reported CI is the
-wider of it and the Student-t interval on the same d's.
+percentage 100 (e^d - 1). CI: the Student-t interval on the k per-host
+means, df = k - 1. A host's mean carries both the within-host block noise
+and the host x variant interaction, so the interval covers both whatever
+the number of blocks per host, with no pre-test choosing between models.
+With one host there is no host-to-host spread to measure: the interval is
+the t-interval on that host's blocks (df = n - 1), flagged "VM effect
+unestimated" (a local run; indicative only). Cochran's Q and I^2 (pooled
+within-host variance) still flag a host-dependent effect and name the
+outlying hosts; they do not change the interval.
 
 Verdicts against the margin m (percent), CI at level 1 - alpha:
     broken         any run of the row failed (nonzero exit, no score, a check)
@@ -33,7 +36,6 @@ Headline over the gate rows (Holm across them for worse/better):
 from __future__ import annotations
 
 import math
-import random
 import statistics
 from typing import Iterable, Sequence
 
@@ -181,34 +183,14 @@ def _quantile(sorted_xs: Sequence[float], q: float) -> float:
     return sorted_xs[i] + (sorted_xs[j] - sorted_xs[i]) * (pos - i)
 
 
-def bootstrap(groups: Groups, *, resamples: int = 10000, seed: int = 0, cluster: bool = False) -> list[float]:
-    """Bootstrap distribution of estimate(). Stratified by host (blocks
-    resampled within each host), or, with cluster=True, hosts resampled
-    first and then blocks within each drawn host."""
-    rng = random.Random(seed)
-    hosts = [h for h, v in groups.items() if v]
-    out = []
-    for _ in range(resamples):
-        drawn = [rng.choice(hosts) for _ in hosts] if cluster else hosts
-        total = 0.0
-        for h in drawn:
-            v = groups[h]
-            total += sum(rng.choices(v, k=len(v))) / len(v)
-        out.append(total / len(drawn))
-    out.sort()
-    return out
-
-
-def t_interval(groups: Groups, level: float) -> tuple[float, float, float]:
-    """Student-t interval on the pooled block contrasts, centred on the
-    estimate. Returns (lo, hi, two-sided p for d = 0)."""
-    xs = [x for v in groups.values() for x in v]
+def t_interval(xs: Sequence[float], level: float) -> tuple[float, float, float]:
+    """Student-t interval on the mean of xs (df = n - 1). Returns (lo, hi,
+    two-sided p for a mean of 0)."""
     n = len(xs)
-    est = estimate(groups)
     if n < 2:
         return (-math.inf, math.inf, 1.0)
-    sd = statistics.stdev(xs)
-    se = sd / math.sqrt(n)
+    est = statistics.fmean(xs)
+    se = statistics.stdev(xs) / math.sqrt(n)
     if se == 0:
         return (est, est, 0.0 if est != 0 else 1.0)
     tq = t_ppf(1.0 - (1.0 - level) / 2.0, n - 1)
@@ -264,7 +246,7 @@ def outlying_hosts(groups: Groups, z: float = 2.0) -> list[str]:
 class Comparison:
     """The paired comparison of one row: candidate vs reference."""
 
-    def __init__(self, groups: Groups, *, level: float, resamples: int = 10000, seed: int = 0):
+    def __init__(self, groups: Groups, *, level: float):
         self.groups = {h: v for h, v in groups.items() if v}
         self.n_hosts = len(self.groups)
         self.n_blocks = sum(len(v) for v in self.groups.values())
@@ -278,23 +260,14 @@ class Comparison:
             return
         self.est = estimate(self.groups)
         self.host_dependent = self.n_hosts >= 3 and (self.q_p < 0.10 or self.i2 > 0.5)
-        if self.n_hosts < 3:
-            self.flags.append("VM effect unestimated")
         if self.host_dependent:
             self.flags.append("host-dependent")
             self.outliers = outlying_hosts(self.groups)
-        boot = bootstrap(self.groups, resamples=resamples, seed=seed, cluster=self.host_dependent)
-        a = (1.0 - level) / 2.0
-        lo, hi = _quantile(boot, a), _quantile(boot, 1.0 - a)
-        # Two-sided bootstrap p for d = 0, floored at 1/B.
-        below = sum(1 for x in boot if x <= 0.0) / len(boot)
-        above = sum(1 for x in boot if x >= 0.0) / len(boot)
-        p = max(1.0 / len(boot), min(1.0, 2.0 * min(below, above)))
-        if self.n_blocks < 10:
-            tlo, thi, tp = t_interval(self.groups, level)
-            lo, hi, p = min(lo, tlo), max(hi, thi), max(p, tp)
-            self.flags.append("few blocks")
-        self.lo, self.hi, self.p = lo, hi, p
+        if self.n_hosts >= 2:
+            self.lo, self.hi, self.p = t_interval([statistics.fmean(v) for v in self.groups.values()], level)
+        else:
+            self.flags.append("VM effect unestimated")
+            self.lo, self.hi, self.p = t_interval(next(iter(self.groups.values())), level)
 
     @property
     def est_pct(self) -> float:
@@ -353,7 +326,10 @@ MIN_CALIBRATION = 14
 
 def margin(delta_pct: float, aa_estimates_pct: Iterable[float] = ()) -> tuple[float, bool]:
     """m = max(delta, q99 of |A/A estimates|) once MIN_CALIBRATION A/A
-    results exist; delta and uncalibrated before that."""
+    results exist; delta and uncalibrated before that. The estimates are
+    one row's on one cell (report.py keys the history by cell and row): a
+    pooled list would let the noisiest row set every row's margin. Below
+    100 estimates the q99 is close to their maximum."""
     aa = sorted(abs(x) for x in aa_estimates_pct)
     if len(aa) < MIN_CALIBRATION:
         return (delta_pct, False)
@@ -403,7 +379,7 @@ def bh(pvals: dict[str, float]) -> dict[str, float]:
     return q
 
 
-HEADLINE_EXIT = {"NEUTRAL": 0, "IMPROVEMENT": 0, "REGRESSION": 1, "BROKEN": 1, "INCONCLUSIVE": 2, "INFRA": 3}
+HEADLINE_EXIT = {"NEUTRAL": 0, "PASS": 0, "IMPROVEMENT": 0, "REGRESSION": 1, "BROKEN": 1, "INCONCLUSIVE": 2, "INFRA": 3}
 
 
 def headline(verdicts: dict[str, str], pvals: dict[str, float], alpha: float) -> str:

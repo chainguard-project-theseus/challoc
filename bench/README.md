@@ -61,12 +61,14 @@ sequence and its reverse for more), one fresh process per run under
 summary.json report.md logs/`), readable on the host.
 
 The verdict (`bench/cb/stats.py`): per block the paired log contrast
-(positive = the candidate is worse), the estimate the mean over hosts, a
-bootstrap CI at the suite's per-look alpha (Pocock, 97.06% for two looks;
-the wider of it and the t interval under 10 blocks; a cluster bootstrap
-when Cochran's Q or I^2 says the effect is host-dependent), and a verdict
-against the row class's margin (1% single-thread, 2% multithread, 3%
-server, until 14 A/A results calibrate it): `worse`, `better`, `same`,
+(positive = the candidate is worse), the estimate the mean over hosts of
+each host's mean contrast, the Student-t CI on those k host means (df =
+k - 1, so the host x variant interaction is in it however many blocks a
+host ran; one host: the t interval on its blocks, flagged) at the suite's
+per-look alpha (Pocock, 97.06% for two looks), and a verdict against the
+row class's margin (1% single-thread, 2% multithread, 3% server, until 14
+A/A estimates of that row on that cell calibrate it: `cb compare
+--aa-history` takes one JSONL line per (run, cell, row)): `worse`, `better`, `same`,
 `sub-threshold`, `inconclusive` or `broken`. The headline over the gate
 rows (Holm across them): NEUTRAL, IMPROVEMENT, REGRESSION, INCONCLUSIVE,
 BROKEN; the exit code is 0, 0, 1, 2, 1 (3 for an infrastructure failure).
@@ -83,7 +85,7 @@ the plumbing, not for a decision. Verdicts of record come from `cb launch`.
     make quick [BASE=main] [HEAD=HEAD] [CB_ARGS=...]     # cb launch quick on the gate cells
     make bench-launch SUITE=aa BASE=<rev> CB_ARGS='--replicas 8 --looks 1'
     make bench-image                                      # rebuild + push the bench image, pin bench/image.lock
-    make bench-gc [CB_ARGS='--older-than 0']              # delete stray cb- VMs
+    make bench-gc CB_ARGS='--run <run>'                   # delete one run's VMs
     python3 bench/cb launch quick --cells ref-amd64 --variants 'old=git:REV1@CONF,new=git:REV2@CONF'
     python3 bench/cb fp target/results/cb/<aa-run>/res/* --k 3   # FP rate of a 3-replicate run
 
@@ -94,14 +96,19 @@ shards of about `shard_seconds` of runs (from each row's `est_s`), creates
 one spot VM per (cell, shard, replicate) with `gcloud compute instances
 bulk create` (`--max-run-duration` with DELETE, labels
 `purpose=challoc-bench,cb-run=<run>`, at most `--max-vms`/`CB_MAX_VMS`
-(32) alive at once; the rest wait for a slot), and polls. The quick suite
-on the two gate cells is 5 shards x 3 replicates x 2 cells = 30 VMs.
+(32) of this launch alive at once and at most `CB_PROJECT_MAX_VCPUS`
+(2000) vCPUs of cb VMs in the project, every launch's counted; the rest
+wait for room, and are given up after 30 minutes without a create), and
+polls. The quick suite on the two gate cells is 5 shards x 3 replicates x
+2 cells = 30 VMs.
 
 - **Bundle.** Each variant rev is resolved to (commit, tree) on the host;
-  `git archive` of every tree, and of this checkout as it is on disk
-  (the harness: uncommitted and untracked files included), goes to
-  `gs://<bucket>/src/<tree>.tar.gz` once (content-addressed), and the table
-  of VMs to `runs/<run>/launch.json`.
+  `git archive` of every tree, and of this checkout's tracked files as
+  they are on disk (the harness: uncommitted changes included, untracked
+  files not), goes to `gs://<bucket>/src/<tree>.<sha256>.tar.gz` once,
+  and the table of VMs to `runs/<run>/launch.<sha256>.json`. A VM's
+  metadata carries every object's sha256 and boot.sh refuses bytes that
+  do not match.
 - **The VM** (`bench/cb/boot.sh`, the startup script, on stock
   `ubuntu-2404-lts-{arm64,amd64}` or any cell image) reads its work from
   its instance metadata (harness and source objects, image, runtime,
@@ -116,25 +123,41 @@ on the two gate cells is 5 shards x 3 replicates x 2 cells = 30 VMs.
   `CAP_PERFMON`, so the per-run counters work, and the cells request the
   PMU), PUTs the result files to `runs/<run>/res/<vm>/` whenever a block
   ends, then `done.json` and the marker `runs/<run>/done/<vm>.json`, and
-  powers off. The launcher deletes a VM as soon as its marker lands.
+  idles. The launcher deletes a VM as soon as its marker lands; a VM never
+  powers off (a stopped VM would outlive its max-run-duration), so when
+  the launcher is gone max-run-duration deletes it.
 - **Failures.** A VM that vanishes (spot preemption deletes it) or stops
   without a marker is rescheduled under a new name, on demand after two
-  spot failures; a create that fails in one zone tries the cell's next.
+  spot failures; a create that fails in one zone tries the cell's next. A
+  VM still running past its own max-run-duration (counted from its own
+  creation, so later waves get their full time) is given up; a shard is
+  lost only when no attempt of it finished.
 - **Verdict.** The launcher downloads every VM's results to
   `target/results/cb/<run>/res/<vm>/`, pools them (one VM is one host in
   the statistics; comparability keys keep cells apart) and, when the
   headline is INCONCLUSIVE and the suite has two looks, adds
-  `extend_replicas` VMs per cell for the inconclusive rows only and pools
-  again. `summary.json`, `report.md` and `launch-summary.json` (wall clock
+  `extend_replicas` VMs per cell for the unresolved gate rows only
+  (inconclusive, or worse or better without surviving Holm) and pools
+  again. Each VM's `logs.tgz` is fetched and unpacked into its `logs/`. A
+  smoke suite has no comparison: its headline is PASS (exit 0) when every
+  shard finished and every run scored, BROKEN (exit 1) otherwise. `summary.json`, `report.md` and `launch-summary.json` (wall clock
   by phase, VM-side medians, VM-minutes and a cost estimate) land in
   `target/results/cb/<run>/`. Exit codes as `cb run`; 3 when nothing came
   back or gcloud failed. Anything still labelled with the run is deleted
-  before `cb launch` exits; `cb gc` deletes the strays of a launcher that
-  died.
-- **Credentials.** The VMs run as a service account that can read and
-  write objects in the bench bucket and pull from the bench Artifact
-  Registry repository, nothing else (the design's per-object signed URLs
-  are not used yet). The bucket deletes objects after 30 days.
+  before `cb launch` exits. `cb gc --run <run>` deletes one run's VMs;
+  without `--run`, `cb gc` deletes only cb VMs no live launch can want
+  (stopped ones, and running ones past their max-run-duration plus 10
+  minutes), never another session's running launch.
+- **Credentials.** The VMs run with the `storage-rw` scope only, as a
+  service account that can read and write objects in the bench bucket and
+  pull from the bench Artifact Registry repository. Under the docker
+  runtime the benchmarked container cannot reach the metadata server
+  (boot.sh adds a DOCKER-USER reject rule; `host.json` records
+  `metadata_server`), so code under test never holds the VM's token; under
+  podman (`--network=host`) it can. Inputs are hash-checked (above);
+  results under `runs/` are still writable by every cb VM (per-object
+  signed URLs or a write-restricted account would close that). The bucket
+  deletes objects after 30 days.
 - **The image.** `bench/Dockerfile.cb` is Dockerfile.dev's `test` stage
   plus jemalloc, tcmalloc-minimal, the prebuilt `bench/build.sh` programs
   (`/opt/cb/bench-bin`), the crate's dependencies and, last, the consumer
@@ -166,26 +189,27 @@ how the bench container runs there:
   or `podman` / `sudo-podman` (root podman with `--network=host`, for
   bootc hosts that ship podman, no docker and no nft).
 - `bootstrap`: `startup-script` (boot.sh as the startup-script metadata;
-  the guest agent runs it as root) or `ssh-systemd-run` (boot.sh in the
-  `cb-boot` metadata key, started over ssh as a transient system unit, for
-  an image whose agent runs no scripts; a job started from a plain ssh
-  session can die with the session's scope).
+  the guest agent runs it as root), the only one `cb launch` runs.
 - `container`: the profile, `default` (the runtime's default seccomp),
   `privileged` (also mounts debugfs, for knobs) or `perfmon` (CAP_PERFMON,
   per-run counters), optionally as a table with `cpus` (a CFS quota),
   `cpuset` (pinned CPUs: more threads than CPUs) and `memory` (with swap
-  off). A suite's `container`, or `cb launch --container
+  off); `cpusN` is short for `perfmon` with `cpus = N`. A suite's `container`, or `cb launch --container
   default,cpuset=0-3`, overrides the cells'. The profile and its limits are
   part of the comparability key, so runs under different profiles are
   never pooled.
 - `prep`: host steps boot.sh runs before the container starts: `grow-var`
   (grow /var's filesystem online, for images that ship it small),
   `thp:<file>=<value>` (`thp:enabled=always`, `thp:64kB=madvise`),
-  `sysctl:<key>=<value>`. A suite's `prep` is added to every cell's.
+  `sysctl:<key>=<value>`, `kernel:<package>` (Ubuntu: install a kernel
+  flavour with its initramfs, make it the GRUB default and reboot into it
+  once). A suite's `prep` is added to every cell's.
 - `expect`: facts the booted host must show, checked in the VM before any
   run: `kernel` (a regex on `uname -r`), `page_size`. A mismatch fails the
   VM as infrastructure, never as a measurement.
-- `boot_disk_gb`, `spot` (`never` for metal), `max_run`, `zones`, `pmu`.
+- `disk` (default `hyperdisk-balanced`, `pd-balanced` on the families
+  without Hyperdisk: E2, N1, N2, ...), `boot_disk_gb`, `spot` (`never` for
+  metal), `max_run`, `zones`, `pmu`.
 
 The image family is only a request. `cb launch` resolves every family to
 the image it points at when the launch starts (`gcloud compute images

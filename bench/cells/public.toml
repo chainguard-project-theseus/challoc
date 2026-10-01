@@ -10,8 +10,9 @@
 #
 # Fields: shape (a [shape.*] name), host = { family, project } or "@cell"
 # (the same host image as that cell), runtime (docker | podman |
-# sudo-podman | none), bootstrap (startup-script | cloud-init |
-# ssh-systemd-run), container (default | privileged | perfmon), prep (host
+# sudo-podman | none), bootstrap (startup-script, the only one cb launch
+# runs; cloud-init marks the COS cells it cannot boot yet), container
+# (default | privileged | perfmon | cpusN), prep (host
 # preparation steps), expect (facts the booted host must show), quiet
 # (the quiet gate: load1 below this, waiting at most wait_s), tags.
 #

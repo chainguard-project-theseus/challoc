@@ -162,6 +162,19 @@ def in_container() -> str | None:
     return None
 
 
+def metadata_server() -> str:
+    """Whether this process can open a connection to the cloud metadata
+    server (a cb launch VM blocks it from the container): reachable,
+    blocked or absent."""
+    try:
+        with socket.create_connection(("169.254.169.254", 80), timeout=1):
+            return "reachable"
+    except ConnectionRefusedError:
+        return "blocked"
+    except OSError:
+        return "absent"
+
+
 def capture(cell: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     cpu = cpu_model()
     flags = cpu.pop("flags", "")
@@ -198,6 +211,8 @@ def capture(cell: str, extra: dict[str, Any] | None = None) -> dict[str, Any]:
         "kernel_config": kernel_config(),
         "loadavg": loadavg(),
     }
+    if os.environ.get("CB_ZONE"):
+        host["metadata_server"] = metadata_server()
     if extra:
         host.update(extra)
     return host

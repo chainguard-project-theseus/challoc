@@ -96,8 +96,8 @@ def compare_row(
     flagged: set[tuple[str, int]],
     excluded: dict[str, str],
     fixed_work: bool,
+    placement: str = "paired",
     aa_history: list[float] | None = None,
-    seed: int = 0,
 ) -> dict[str, Any]:
     rs = [s for s in samples if s["row"] == row and s["variant"] in (cand, ref) and not s.get("warmup")]
     broken = [s for s in rs if s.get("score") is None or s.get("error")]
@@ -138,9 +138,9 @@ def compare_row(
             if all(x for x in pc + pr):
                 g[vm].append(statistics.fmean(math.log(x) for x in pc) - statistics.fmean(math.log(x) for x in pr))
     level = 1.0 - alpha
-    if not groups and not broken:
-        # No (vm, block) ran both variants: a one-variant-per-vm row. Each
-        # VM's mean oriented log score per variant, compared unpaired.
+    if placement == "one-variant-per-vm":
+        # Each VM ran one variant: each VM's mean oriented log score per
+        # variant, compared unpaired.
         per_vm: dict[str, dict[str, list[float]]] = collections.defaultdict(lambda: collections.defaultdict(list))
         for (vm, _blk), by in cells.items():
             for lab, ss in by.items():
@@ -151,7 +151,11 @@ def compare_row(
             level=level,
         )
     else:
-        cmp_ = stats.Comparison(dict(groups), level=level, seed=seed)
+        # A paired row is only ever compared paired: with no (vm, block)
+        # that ran both variants it has no estimate (inconclusive).
+        cmp_ = stats.Comparison(dict(groups), level=level)
+        if not groups and not broken:
+            cmp_.flags.append("no paired blocks")
     m, calibrated = stats.margin(delta_pct, aa_history or [])
     lo, hi = cmp_.ci_pct
     v = stats.verdict(cmp_.est_pct, lo, hi, m, broken=bool(broken))
@@ -174,7 +178,7 @@ def compare_row(
     for ev, g in pmc_groups.items():
         g2 = {k: val for k, val in g.items() if val}
         if g2 and sum(len(x) for x in g2.values()) >= 2:
-            c2 = stats.Comparison(g2, level=level, seed=seed + 1, resamples=2000)
+            c2 = stats.Comparison(g2, level=level)
             pmc_delta[ev] = {"est_pct": c2.est_pct, "ci": list(c2.ci_pct)}
     if "instructions" in pmc_delta:
         ins = pmc_delta["instructions"]["est_pct"]
@@ -232,7 +236,27 @@ def expand_metrics(samples: list[dict[str, Any]], rows: Rows) -> list[dict[str, 
     return out
 
 
-def analyze(runs: list[dict[str, Any]], rows: Rows, *, cand: str | None = None, ref: str | None = None, aa_history: list[float] | None = None) -> dict[str, Any]:
+def aa_key(cell: str, row: str) -> str:
+    return f"{cell}/{row}"
+
+
+def load_aa_history(path: str) -> dict[str, list[float]]:
+    """A/A estimates by cell and row (aa_key) from a JSONL file, one line
+    per (A/A run, cell, row): {"cell": ..., "row": ..., "est_pct": ...}.
+    A line without its cell and row cannot calibrate a row's margin."""
+    out: dict[str, list[float]] = collections.defaultdict(list)
+    with open(path) as f:
+        for i, ln in enumerate(f, 1):
+            if not ln.strip():
+                continue
+            d = json.loads(ln)
+            if not d.get("cell") or not d.get("row") or d.get("est_pct") is None:
+                raise ValueError(f"{path}:{i}: an A/A history line needs cell, row and est_pct")
+            out[aa_key(d["cell"], d["row"])].append(float(d["est_pct"]))
+    return dict(out)
+
+
+def analyze(runs: list[dict[str, Any]], rows: Rows, *, cand: str | None = None, ref: str | None = None, aa_history: dict[str, list[float]] | None = None) -> dict[str, Any]:
     samples = expand_metrics([s for r in runs for s in r["samples"]], rows)
     blocks = [b for r in runs for b in r["blocks"]]
     keys = sorted({s["comparability"] for s in samples})
@@ -283,12 +307,13 @@ def analyze(runs: list[dict[str, Any]], rows: Rows, *, cand: str | None = None, 
         present = {s["row"] for s in ks}
         for kind, pairs in (("gate", gate_pairs), ("context", context_pairs)):
             for c, r in pairs:
-                for i, row in enumerate(row_order):
+                for row in row_order:
                     if row not in present or row not in rows.rows:
                         continue
                     vs = {s["variant"] for s in ks if s["row"] == row}
                     if c not in vs or r not in vs:
                         continue
+                    cell = next((s["cell"] for s in ks if s["row"] == row), "")
                     res = compare_row(
                         ks,
                         row,
@@ -299,12 +324,12 @@ def analyze(runs: list[dict[str, Any]], rows: Rows, *, cand: str | None = None, 
                         flagged=flagged,
                         excluded=excluded,
                         fixed_work=rows.rows[row].fixed_work,
-                        aa_history=aa_history,
-                        seed=i,
+                        placement=rows.rows[row].placement,
+                        aa_history=(aa_history or {}).get(aa_key(cell, row)),
                     )
                     res["kind"] = kind
                     res["comparability"] = key
-                    res["cell"] = next((s["cell"] for s in ks if s["row"] == row), "")
+                    res["cell"] = cell
                     results.append(res)
     gate = [r for r in results if r["kind"] == "gate"]
     vd = {f"{r['row']}|{r['comparability']}|{r['candidate']}": r["verdict"] for r in gate}

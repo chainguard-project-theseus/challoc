@@ -16,7 +16,7 @@
 #   make quick        [BASE=main] [HEAD=HEAD] [CB_ARGS=...]  cb launch quick on the gate cells
 #   make bench-launch SUITE=<suite> [BASE=] [HEAD=] [CB_ARGS=...]
 #   make bench-image  [ARCHES='arm64 amd64']   build, push, pin bench/image.lock
-#   make bench-gc     [CB_ARGS='--older-than 0']  delete stray cb- VMs
+#   make bench-gc     [CB_ARGS='--run <run>']   delete one run's VMs, or stale cb- VMs
 #
 # `make quick-legacy` is the old bench/quick.sh tier, kept until cb has
 # matched it on the historical pairs.
@@ -71,5 +71,5 @@ ARCHES ?= arm64 amd64
 bench-image: ## build the cb bench image (bench/Dockerfile.cb) for ARCHES, push it, pin the digests in bench/image.lock
 	sh bench/cb/image.sh $(ARCHES)
 
-bench-gc: ## delete stray cb VMs (name cb-*, label purpose=challoc-bench) older than an hour; CB_ARGS='--older-than 0' for all
+bench-gc: ## delete cb VMs: CB_ARGS='--run <run>' for one run's; without it only stopped ones and ones past their max-run-duration
 	$(CB) gc $(CB_ARGS)

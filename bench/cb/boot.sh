@@ -1,16 +1,23 @@
 #!/bin/bash
 # bench/cb/boot.sh: the boot script of a `cb launch` cell VM
 # (bench/README.md, "cb launch"; bench/cb/gce.py creates the VM with this
-# file as its startup-script metadata, or as `cb-boot` started over ssh as
-# a transient system unit for the ssh-systemd-run bootstrap).
+# file as its startup-script metadata).
 #
 # Everything the VM needs is in its own instance metadata (gce.py,
 # Launch.metadata), so the host needs bash, curl, tar, awk and sed and
-# nothing else (a Chainguard OS host has no python3, no apt, no docker):
-#   cb-bucket, cb-run     gs://<bucket>/runs/<run>/launch.json, this VM's
-#                         entry in it is keyed by its instance name
-#   cb-harness            the harness tree tarball (bench/cb and friends)
-#   cb-sources            the variant source tarballs, space-separated
+# sha256sum and nothing else (a Chainguard OS host has no python3, no apt,
+# no docker):
+#   cb-bucket, cb-run     the bench bucket and the run id
+#   cb-launch             the launch file (runs/<run>/launch.<sha>.json);
+#                         this VM's entry in it is keyed by its instance
+#                         name; cb-launch-sha256 its hash
+#   cb-harness            the harness tree tarball (bench/cb and friends);
+#                         cb-harness-sha256 its hash
+#   cb-sources            the variant source tarballs, <object>=<sha256>,
+#                         space-separated
+# Every object fetched from the bucket is checked against its hash from
+# the metadata before it is used (the bucket is writable by every cb VM;
+# the instance metadata is not).
 #   cb-image              the bench image for this architecture, by digest
 #   cb-runtime            docker | podman | sudo-podman (root podman with
 #                         --network=host: netavark needs nft, which a
@@ -39,20 +46,26 @@
 #   4. after every block, PUT the result files to runs/<run>/res/<name>/, so
 #      a preemption loses at most one block
 #   5. done.json to res/<name>/ and the marker runs/<run>/done/<name>.json,
-#      then power off (the launcher deletes the VM; max-run-duration
-#      deletes it if the launcher is gone)
+#      then idle: the launcher deletes the VM, and max-run-duration deletes
+#      it if the launcher is gone. A VM never powers off: a stopped VM
+#      outlives its max-run-duration (the timer stops with it).
 #
-# Credentials: the VM's service account can read and write objects in the
-# bench bucket and pull from the bench Artifact Registry repository, and
-# nothing else. Output goes to the serial console (startup-script output)
-# or the journal (the cb-boot unit), and /var/log/cb-boot.log.
+# Credentials: the VM runs with the storage read/write scope only, as a
+# service account that can read and write objects in the bench bucket and
+# pull from the bench Artifact Registry repository. Under the docker
+# runtime the benchmarked container cannot reach the metadata server (a
+# DOCKER-USER reject rule), so code under test never holds that token;
+# under podman (--network=host) it can. Output goes to the serial console
+# (startup-script output) and /var/log/cb-boot.log.
 set -u
 exec > >(tee -a /var/log/cb-boot.log) 2>&1
 
+# Wait for the launcher's delete, or max-run-duration's.
+idle() { echo "cb-boot: idle until deleted"; while :; do sleep 3600; done; }
+
 if [ -e /var/lib/cb-boot.done ]; then
-  echo "cb-boot: already ran on this disk; powering off"
-  poweroff
-  exit 0
+  echo "cb-boot: already ran on this disk"
+  idle
 fi
 
 T0=$(date +%s.%N)
@@ -66,7 +79,10 @@ ZONE=$(md instance/zone); ZONE=${ZONE##*/}
 MACHINE=$(md instance/machine-type); MACHINE=${MACHINE##*/}
 BUCKET=$(attr cb-bucket)
 RUN=$(attr cb-run)
+LAUNCH=$(attr cb-launch)
+LAUNCH_SHA=$(attr cb-launch-sha256)
 HARNESS=$(attr cb-harness)
+HARNESS_SHA=$(attr cb-harness-sha256)
 SOURCES=$(attr cb-sources)
 IMAGE=$(attr cb-image)
 RUNTIME=$(attr cb-runtime); RUNTIME=${RUNTIME:-docker}
@@ -88,6 +104,14 @@ echo "cb-boot: $NAME ($MACHINE, $ZONE, $PROVISIONING) run $RUN, uptime $BOOT_S s
 
 tok() { md instance/service-accounts/default/token | sed -n 's/.*"access_token" *: *"\([^"]*\)".*/\1/p'; }
 get() { curl -sf --retry 3 -H "Authorization: Bearer $(tok)" -o "$2" "https://storage.googleapis.com/$BUCKET/$1"; }
+# getv OBJECT FILE SHA256: get, then refuse bytes that are not the ones
+# the launcher meant.
+getv() {
+  get "$1" "$2" || return 1
+  local got
+  got=$(sha256sum "$2" | cut -d' ' -f1)
+  [ -n "$3" ] && [ "$got" = "$3" ] || { echo "cb-boot: $1: sha256 $got, want $3"; rm -f "$2"; return 1; }
+}
 put() { curl -sf --retry 3 -X PUT -H "Authorization: Bearer $(tok)" --upload-file "$1" "https://storage.googleapis.com/$BUCKET/$2" >/dev/null; }
 
 # Docker comes from apt; a RHEL-family host (AlmaLinux, Rocky) has dnf and
@@ -126,11 +150,10 @@ finish() { # status exit-code reason
   put "$OUT/done.json" "$PREFIX/done/$NAME.json"
   touch /var/lib/cb-boot.done
   sync
-  poweroff
-  exit 0
+  idle
 }
 
-[ -n "$BUCKET" ] && [ -n "$RUN" ] && [ -n "$HARNESS" ] || { echo "cb-boot: no cb-bucket/cb-run/cb-harness metadata"; poweroff; exit 1; }
+[ -n "$BUCKET" ] && [ -n "$RUN" ] && [ -n "$LAUNCH" ] && [ -n "$HARNESS" ] || { echo "cb-boot: no cb-bucket/cb-run/cb-launch/cb-harness metadata"; idle; }
 
 # ---- 1. host prep, runtime, sources --------------------------------------------
 systemctl stop apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.service snapd.service snapd.socket 2>/dev/null
@@ -154,14 +177,22 @@ sysctl -qw 'kernel.core_pattern=|/bin/false' 2>/dev/null
 ) > /var/log/cb-runtime.log 2>&1 &
 RUNTIME_PID=$!
 
-get "$PREFIX/launch.json" "$OUT/launch.json" || finish infra 3 "cannot fetch $PREFIX/launch.json"
-get "$HARNESS" "$W/harness.tar.gz" && tar -xzf "$W/harness.tar.gz" -C "$W/src" || finish infra 3 "cannot fetch the harness $HARNESS"
-for o in $SOURCES; do
-  get "$o" "$W/sources/${o##*/}" || finish infra 3 "cannot fetch source $o"
+getv "$LAUNCH" "$OUT/launch.json" "$LAUNCH_SHA" || finish infra 3 "cannot fetch $LAUNCH"
+getv "$HARNESS" "$W/harness.tar.gz" "$HARNESS_SHA" && tar -xzf "$W/harness.tar.gz" -C "$W/src" || finish infra 3 "cannot fetch the harness $HARNESS"
+for os in $SOURCES; do
+  o=${os%%=*}
+  # cb run finds a source by its tree: src/<tree>.<sha16>.tar.gz -> <tree>.tar.gz
+  t=${o##*/}; t=${t%%.*}
+  getv "$o" "$W/sources/$t.tar.gz" "${os#*=}" || finish infra 3 "cannot fetch source $o"
 done
 stamp fetched
 wait $RUNTIME_PID || { cat /var/log/cb-runtime.log; finish infra 3 "container runtime $RUNTIME not usable"; }
 echo "cb-boot: $RT $(tail -1 /var/log/cb-runtime.log)"
+# The metadata server (the VM's token) is the host's, not the container's.
+if [ "$RT" = docker ]; then
+  iptables -I DOCKER-USER -d 169.254.169.254/32 -j REJECT \
+    || finish infra 3 "cannot block the metadata server from containers (iptables DOCKER-USER)"
+fi
 stamp runtime
 
 # prep `kernel:<package>` (Ubuntu): install the kernel flavour, make it the

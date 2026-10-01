@@ -35,11 +35,7 @@
 # 14 s) all working. So these cells use bootstrap = "startup-script", the
 # same boot.sh as the Ubuntu cells, and need no ssh login at all (the
 # server images take no OS Login and create no user from ssh-keys
-# metadata). The ssh + `sudo systemd-run` fallback (bootstrap =
-# "ssh-systemd-run": boot.sh goes into the cb-boot metadata key and is
-# started as a transient system unit over ssh) stays in gce.py for an
-# image whose agent runs no scripts; a job started from a plain ssh session
-# dies with the session scope on these hosts.
+# metadata).
 #
 # What the spike saw per image (uname -r; THP; debugfs):
 #   6.18 server, arm64     6.18.49-r2-gcp-6.18; THP always; no rseq/ in debugfs

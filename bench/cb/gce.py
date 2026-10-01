@@ -7,19 +7,27 @@
   2. pack the rows into shards of about `shard_seconds` of runs each; one
      VM per (cell, shard, replicate)
   3. bundle: `git archive` of every variant tree and of the harness (this
-     checkout, uncommitted and untracked files included) to
-     gs://<bucket>/src/<tree>.tar.gz, content-addressed, uploaded once;
-     then runs/<run>/launch.json, the table every VM reads its work from
+     checkout's tracked files as they are on disk) to
+     gs://<bucket>/src/<tree>.<sha256>.tar.gz, content-addressed by tree
+     and bytes, uploaded once; then runs/<run>/launch.<sha256>.json, the
+     table every VM reads its work from. Each VM's metadata carries the
+     sha256 of every object it fetches, and boot.sh refuses a mismatch, so
+     an object rewritten in the bucket is never run.
   4. bulk-create spot VMs (one call per cell and zone) with bench/cb/boot.sh
      as the startup script, `max-run-duration` with DELETE, labels
-     purpose=challoc-bench and cb-run=<run>, at most --max-vms at once
-     (the rest wait for a slot)
+     purpose=challoc-bench and cb-run=<run>, at most --max-vms of this
+     launch at once and at most CB_PROJECT_MAX_VCPUS vCPUs of cb VMs in the
+     project (every launch's), the rest waiting for room
   5. poll: a VM that finished (runs/<run>/done/<vm>.json) is deleted; one
      that vanished or stopped without finishing (preempted, stocked out)
-     is rescheduled under a new name, on demand after two spot failures
+     is rescheduled under a new name, on demand after two spot failures; one
+     past its own max-run-duration is given up. A finished VM idles until
+     it is deleted (never powers off), so max-run-duration deletes it when
+     the launcher is gone.
   6. download runs/<run>/res/, pool every VM's samples (report.py) and, when
-     the suite allows a second look, extend the rows that came out
-     inconclusive with `extend_replicas` more VMs per cell
+     the suite allows a second look, extend the gate rows that came out
+     inconclusive, or worse or better without surviving Holm, with
+     `extend_replicas` more VMs per cell
   7. summary.json, report.md and launch-summary.json (wall clock, VM
      minutes, cost estimate) under target/results/cb/<run>/
 
@@ -63,8 +71,15 @@ PRICES = {
     "c4-standard-4": (0.21, 0.08),
 }
 PER_VCPU = (0.05, 0.02)
+# The project-wide cap: vCPUs of live cb VMs (label purpose=challoc-bench,
+# every launch's) a launch may bring the project to.
+PROJECT_MAX_VCPUS = 2000
+# Machine families without Hyperdisk; their default boot disk is pd-balanced.
+PD_ONLY_FAMILIES = ("e2", "n1", "n2", "n2d", "t2a", "t2d", "c2", "c2d", "m1", "m2", "a2", "g2")
+# A launch gives up on VMs that could not be created for this long.
+CREATE_STARVED_S = 1800
 # Seconds a VM spends before its first run (boot, Docker, pull, build) and
-# after (upload, poweroff): the planner's cost estimate and deadlines.
+# after (upload): the planner's cost estimate.
 VM_OVERHEAD_S = 240
 POLL_S = 10
 
@@ -171,7 +186,7 @@ class Api:
 
         out, tok = [], ""
         while True:
-            q = {"filter": flt, "fields": "items/*/instances(name,status,zone,creationTimestamp,labels),nextPageToken"}
+            q = {"filter": flt, "fields": "items/*/instances(name,status,zone,creationTimestamp,labels,machineType),nextPageToken"}
             if tok:
                 q["pageToken"] = tok
             d = json.loads(self.call("GET", f"https://compute.googleapis.com/compute/v1/projects/{self.project}/aggregated/instances?{urllib.parse.urlencode(q)}") or b"{}")
@@ -196,6 +211,58 @@ def price(machine: str, spot: bool) -> float:
     except (IndexError, ValueError):
         vcpus = 16
     return vcpus * PER_VCPU[1 if spot else 0]
+
+
+def vcpus(machine: str) -> int:
+    """vCPUs of a predefined machine type: c4-standard-16 -> 16,
+    c3-standard-192-metal -> 192; 16 when the name says nothing."""
+    for part in reversed(machine.rsplit("/", 1)[-1].split("-")):
+        if part.isdigit():
+            return int(part)
+    return 16
+
+
+def default_disk(machine: str) -> str:
+    """The boot disk type a machine family takes: Hyperdisk Balanced on the
+    families that have it (C4, C4A, C4D, N4, C3, ...), pd-balanced on the
+    ones that do not (E2, N1, N2, ...)."""
+    return "pd-balanced" if machine.split("-", 1)[0] in PD_ONLY_FAMILIES else "hyperdisk-balanced"
+
+
+def cell_slug(cell: str) -> str:
+    """The cell's part of a VM name: lower case, [a-z0-9-], at most 20
+    characters; a longer name keeps 15 and a hash of the whole, so two
+    cells never share a slug."""
+    import hashlib
+
+    s = "".join(ch if ch.isalnum() or ch == "-" else "-" for ch in cell.lower())
+    if len(s) <= 20:
+        return s
+    return f"{s[:15].rstrip('-')}-{hashlib.sha1(cell.encode()).hexdigest()[:4]}"
+
+
+def lost_shards(state: dict[str, dict[str, Any]]) -> list[str]:
+    """The shards (VM base names) no attempt of which finished, though one
+    was given up: a shard rescheduled twice and done on its third attempt
+    is not lost."""
+    done = {st["base"] for st in state.values() if st["status"] == "done"}
+    gave_up = {st["base"] for st in state.values() if st["status"] in ("failed", "timeout")}
+    return sorted(gave_up - done)
+
+
+def look2_rows(summary: dict[str, Any], paired_rows: list[str]) -> dict[str, list[str]]:
+    """comparability key -> the gate rows a second look extends: those
+    inconclusive, and those worse or better that Holm did not reject (the
+    headline is INCONCLUSIVE for them too, and only more VMs can change
+    it)."""
+    out: dict[str, list[str]] = collections.defaultdict(list)
+    for r in summary["results"]:
+        if r["kind"] != "gate" or r["row"] not in paired_rows:
+            continue
+        unresolved = r["verdict"] == "inconclusive" or (r["verdict"] in ("worse", "better") and not r.get("holm"))
+        if unresolved and r["row"] not in out[r["comparability"]]:
+            out[r["comparability"]].append(r["row"])
+    return dict(out)
 
 
 def read_image_lock(path: str = IMAGE_LOCK) -> dict[str, str]:
@@ -239,8 +306,9 @@ def parse_container_arg(s: str) -> dict[str, Any]:
 
 
 def harness_tree(root: str) -> str:
-    """The tree of this checkout as it is on disk: tracked changes and
-    untracked (not ignored) files included, via a scratch index."""
+    """The tree of this checkout's tracked files as they are on disk
+    (uncommitted changes included, untracked files not), via a scratch
+    index."""
     idx = git(root, "rev-parse", "--git-path", "index")
     idx = idx if os.path.isabs(idx) else os.path.join(root, idx)
     with tempfile.TemporaryDirectory() as td:
@@ -248,27 +316,32 @@ def harness_tree(root: str) -> str:
         if os.path.exists(idx):
             shutil.copy(idx, tmp)
         env = dict(os.environ, GIT_INDEX_FILE=tmp)
-        for cmd in (["add", "-A", "."], ["write-tree"]):
+        for cmd in (["add", "-u", "."], ["write-tree"]):
             r = subprocess.run(["git", "-C", root, *cmd], capture_output=True, text=True, env=env)
             if r.returncode != 0:
                 raise BuildError(f"git {' '.join(cmd)}: {r.stderr.strip()}")
         return r.stdout.strip()
 
 
-def upload_trees(api: Api, root: str, bucket: str, trees: list[str]) -> dict[str, str]:
-    """`git archive` of each tree to gs://bucket/src/<tree>.tar.gz unless it
-    is there already. Returns tree -> object name."""
+def upload_trees(api: Api, root: str, bucket: str, trees: list[str]) -> dict[str, dict[str, str]]:
+    """`git archive` of each tree to gs://bucket/src/<tree>.<sha256>.tar.gz
+    unless it is there already. The name carries the archive's own hash
+    (git versions may compress differently), and the VM checks the bytes
+    it fetched against it (boot.sh), so an object someone rewrote is
+    refused, never run. Returns tree -> {object, sha256}."""
+    import hashlib
+
     have = set(api.ls(bucket, "src/"))
     out = {}
     for t in trees:
-        obj = f"src/{t}.tar.gz"
-        out[t] = obj
-        if obj in have:
-            continue
         a = subprocess.run(["git", "-C", root, "archive", "--format=tar.gz", t], capture_output=True)
         if a.returncode != 0:
             raise BuildError(f"git archive {t}: {a.stderr.decode(errors='replace')}")
-        api.put(bucket, obj, a.stdout, "application/gzip")
+        sha = hashlib.sha256(a.stdout).hexdigest()
+        obj = f"src/{t}.{sha[:16]}.tar.gz"
+        out[t] = {"object": obj, "sha256": sha}
+        if obj not in have:
+            api.put(bucket, obj, a.stdout, "application/gzip")
     return out
 
 
@@ -295,6 +368,9 @@ class Launch:
             if self.cells[n].provider != "gce":
                 raise SpecError(f"cell {n} is a {self.cells[n].provider} cell; cb launch runs gce cells")
         self.max_vms = int(args.max_vms or os.environ.get("CB_MAX_VMS", 32))
+        self.project_max_vcpus = int(os.environ.get("CB_PROJECT_MAX_VCPUS", PROJECT_MAX_VCPUS))
+        self.last_create = time.time()
+        self.cap_logged = 0.0
         self.api = Api(self.project)
         self.lock = threading.Lock()
         self.vms: dict[str, dict[str, Any]] = {}  # the launch file's table
@@ -352,6 +428,8 @@ class Launch:
             if not isinstance(host, dict) or "family" not in host:
                 raise SpecError(f"cell {n}: no host image family")
             container = override or parse_container(c.get("container", "default"), f"cell {n}")
+            if c.get("bootstrap", "startup-script") != "startup-script":
+                raise SpecError(f"cell {n}: bootstrap {c.get('bootstrap')!r}: cb launch boots VMs with the startup script only")
             if knobbed and container["profile"] != "privileged":
                 raise SpecError(f"variants {', '.join(knobbed)} set host knobs: they need the privileged container profile (suite `container`, or --container privileged); cell {n} runs {container['profile']}")
             self.cell_info[n] = {
@@ -362,13 +440,12 @@ class Launch:
                 "zones": list(c.get("zones") or []),
                 "container": container,
                 "runtime": c.get("runtime", "docker"),
-                "bootstrap": c.get("bootstrap", "startup-script"),
                 "prep": list(c.get("prep") or []) + list(s.prep),
                 "expect": dict(c.get("expect") or {}),
                 "pmu": c.get("pmu"),
                 "spot": c.get("spot", "prefer"),
                 "max_run": c.get("max_run", "45m"),
-                "disk": c.get("disk", "hyperdisk-balanced"),
+                "disk": c.get("disk") or default_disk(str(c.get("machine", ""))),
                 "boot_disk_gb": int(c.get("boot_disk_gb", 30)),
                 "quiet": c.get("quiet"),
                 "internal": os.path.basename(c.source).startswith("internal"),
@@ -411,12 +488,10 @@ class Launch:
             ci["image"] = img["name"]
             ci["image_created"] = img.get("creationTimestamp")
 
-    def _cellslug(self, cell: str) -> str:
-        return cell.replace("_", "-")[:20]
 
     def _add_vm(self, cell: str, k: int, r: int, rows: list[str], look: int, attempt: int = 0, spot: bool = True, variant: str | None = None) -> str:
         vslug = f"-v{[v['label'] for v in self.variants].index(variant)}" if variant else ""
-        base = f"cb-{self.rid}-{self._cellslug(cell)}-s{k:02d}{vslug}-r{r:02d}" + (f"-l{look}" if look > 1 else "")
+        base = f"cb-{self.rid}-{cell_slug(cell)}-s{k:02d}{vslug}-r{r:02d}" + (f"-l{look}" if look > 1 else "")
         name = base + (f"-a{attempt}" if attempt else "")
         self.vms[name] = {
             "cell": cell,
@@ -464,7 +539,8 @@ class Launch:
         trees = sorted({v["tree"] for v in self.variants if v["kind"] == "challoc"})
         self.harness = harness_tree(ROOT_DIR)
         objs = upload_trees(self.api, ROOT_DIR, self.bucket, trees + [self.harness])
-        self.sources = {t: {"object": objs[t]} for t in trees}
+        self.harness_obj = objs[self.harness]
+        self.sources = {t: objs[t] for t in trees}
         lockd = read_image_lock()
         self.image = {k: v for k, v in lockd.items() if k in ("arm64", "amd64")}
         if self.args.no_image:
@@ -482,7 +558,7 @@ class Launch:
             "run": self.run,
             "suite": self.suite.name,
             "bucket": self.bucket,
-            "harness": {"tree": self.harness, "object": f"src/{self.harness}.tar.gz"},
+            "harness": {"tree": self.harness, **self.harness_obj},
             "sources": self.sources,
             "variants": self.variants,
             "refs": self.refs,
@@ -503,9 +579,18 @@ class Launch:
         }
 
     def upload_launch(self) -> None:
+        """runs/<run>/launch.<sha256>.json: every version of the table is
+        its own object, and a VM is created with the name and hash of the
+        version that lists it."""
+        import hashlib
+
         with self.lock:
-            doc = json.dumps(self.launch_doc(), indent=1)
-        self.api.put(self.bucket, f"runs/{self.run}/launch.json", doc.encode(), "application/json")
+            doc = json.dumps(self.launch_doc(), indent=1).encode()
+        sha = hashlib.sha256(doc).hexdigest()
+        obj = f"runs/{self.run}/launch.{sha[:16]}.json"
+        self.api.put(self.bucket, obj, doc, "application/json")
+        self.api.put(self.bucket, f"runs/{self.run}/launch.json", doc, "application/json")
+        self.launch_obj = {"object": obj, "sha256": sha}
 
     # -- VMs -------------------------------------------------------------------
 
@@ -518,8 +603,12 @@ class Launch:
         md = {
             "cb-bucket": self.bucket,
             "cb-run": self.run,
-            "cb-harness": f"src/{self.harness}.tar.gz",
-            "cb-sources": " ".join(x["object"] for x in self.sources.values()),
+            "cb-launch": self.launch_obj["object"],
+            "cb-launch-sha256": self.launch_obj["sha256"],
+            "cb-harness": self.harness_obj["object"],
+            "cb-harness-sha256": self.harness_obj["sha256"],
+            # <object>=<sha256> pairs, space-separated.
+            "cb-sources": " ".join(f"{x['object']}={x['sha256']}" for x in self.sources.values()),
             "cb-image": self.image.get(ci["arch"], ""),
             "cb-runtime": ci["runtime"],
             "cb-container": c["profile"],
@@ -536,12 +625,6 @@ class Launch:
         ci = self.cell_info[cell]
         left = list(names)
         errors = []
-        # bootstrap: startup-script (boot.sh as the startup script; the
-        # guest agent runs it as root at boot: Ubuntu, Debian and the
-        # Chainguard OS images alike) or ssh-systemd-run (boot.sh in the
-        # cb-boot metadata key, started over ssh as a transient system unit
-        # once ssh answers, for images whose agent runs no scripts).
-        boot_key = "startup-script" if ci["bootstrap"] == "startup-script" else "cb-boot"
         for zone in ci["zones"]:
             if not left:
                 break
@@ -558,9 +641,11 @@ class Launch:
                 f"--max-run-duration={max_run}",
                 "--instance-termination-action=DELETE",
                 f"--service-account={self.sa}",
-                "--scopes=cloud-platform",
+                # Storage read/write (the bucket, and the Artifact Registry
+                # pull) and nothing else, whatever roles the account has.
+                "--scopes=storage-rw,storage-ro",
                 f"--metadata={self.metadata(cell)}",
-                f"--metadata-from-file={boot_key}={BOOT_SH}",
+                f"--metadata-from-file=startup-script={BOOT_SH}",
                 f"--labels={LABEL},cb-run={self.run},cb-cell={cell}",
             ]
             if spot:
@@ -581,30 +666,7 @@ class Launch:
                 log(f"   create in {zone}: {len(created)} created, {len(left)} not: {errors[-1][:300]}")
             else:
                 log(f"   created {len(created)} {ci['machine']} {'spot' if spot else 'on-demand'} VMs in {zone} ({now - t:.0f} s, image {ci['image']})")
-            if created and ci["bootstrap"] == "ssh-systemd-run":
-                for n in created:
-                    threading.Thread(target=self._ssh_start, args=(n, zone), daemon=True).start()
         return left
-
-    def _ssh_start(self, name: str, zone: str) -> None:
-        """The ssh-systemd-run bootstrap: once ssh answers, fetch boot.sh
-        from the cb-boot metadata key and start it as a transient system
-        unit (a job started from an ssh session dies with the session's
-        scope on a Chainguard OS host; a system unit outlives it)."""
-        cmd = (
-            "curl -sf -H Metadata-Flavor:Google http://metadata.google.internal/computeMetadata/v1/instance/attributes/cb-boot -o /tmp/cb-boot.sh"
-            " && sudo systemd-run --collect --quiet --unit=cb-boot bash /tmp/cb-boot.sh && echo cb-boot-started"
-        )
-        deadline = time.time() + 600
-        while time.time() < deadline:
-            r = gcloud("compute", "ssh", name, f"--zone={zone}", f"--command={cmd}", "--ssh-flag=-oConnectTimeout=10", "--ssh-flag=-oStrictHostKeyChecking=no", project=self.project, check=False, timeout=120)
-            if "cb-boot-started" in (r.stdout or ""):
-                log(f"   {name}: boot.sh started over ssh")
-                return
-            if self.state.get(name, {}).get("status") != "created":
-                return
-            time.sleep(15)
-        log(f"   {name}: ssh never answered; the VM will time out")
 
     def _existing(self, names: set[str]) -> set[str]:
         try:
@@ -613,15 +675,43 @@ class Launch:
             got = []
         return {i["name"] for i in got} & names
 
+    def project_vcpus(self) -> int | None:
+        """vCPUs of the project's live cb VMs (every launch's), None when
+        the listing failed."""
+        try:
+            got = self.api.instances(f"labels.{LABEL}")
+        except InfraError as e:
+            log(f"   project VM count: {e}")
+            return None
+        return sum(vcpus(i.get("machineType", "")) for i in got if i.get("status") not in ("TERMINATED", "STOPPED", "SUSPENDED"))
+
     def create_pending(self) -> None:
+        if not self.pending:
+            return
+        used = self.project_vcpus()
+        if used is None:
+            return
         with self.lock:
             active = sum(1 for s in self.state.values() if s["status"] in ("created", "creating"))
             room = max(0, self.max_vms - active)
-            take, self.pending = self.pending[:room], self.pending[room:]
+            budget = self.project_max_vcpus - used
+            take, left = [], []
+            for n in self.pending:
+                need = vcpus(self.cell_info[self.vms[n]["cell"]]["machine"])
+                if len(take) < room and need <= budget:
+                    take.append(n)
+                    budget -= need
+                else:
+                    left.append(n)
+            self.pending = left
             for n in take:
                 self.state[n]["status"] = "creating"
+        if left and len(take) < room and time.time() - self.cap_logged > 60:
+            self.cap_logged = time.time()
+            log(f"   project cap: {used} of {self.project_max_vcpus} cb vCPUs in use; {len(left)} VMs wait")
         if not take:
             return
+        self.last_create = time.time()
         groups: dict[tuple[str, bool, str], list[str]] = collections.defaultdict(list)
         for n in take:
             groups[(self.vms[n]["cell"], self.state[n]["spot"], self.vm_max_run(n))].append(n)
@@ -659,8 +749,17 @@ class Launch:
                 except InfraError as e:
                     log(f"   delete {n}: {e} (cb gc will retry)")
 
-    def poll(self, deadline: float) -> None:
-        """Until every VM of the table is done or given up, or the deadline."""
+    def vm_deadline(self, name: str) -> float:
+        """When a created VM is given up: its own max-run-duration (GCE
+        deletes it then) from its creation, plus two minutes."""
+        st = self.state[name]
+        return st.get("created", time.time()) + _dur_s(self.vm_max_run(name)) + 120
+
+    def poll(self) -> None:
+        """Until every VM of the table is done or given up. A created VM
+        is given up at its own deadline (vm_deadline); VMs that could not
+        be created for CREATE_STARVED_S (the project cap held by other
+        launches, stock-outs) are given up together."""
         seen: set[str] = set()
         while True:
             self.create_pending()
@@ -683,6 +782,12 @@ class Launch:
                     st["done"] = time.time()
                     newly.append(n)
                     continue
+                if time.time() > self.vm_deadline(n):
+                    log(f"   {n}: past its max-run-duration without finishing; giving up")
+                    st["status"] = "timeout"
+                    st["why"] = "timeout"
+                    self.delete([n])
+                    continue
                 if live is None:
                     continue
                 if n in live:
@@ -704,11 +809,12 @@ class Launch:
             active = [n for n, s in self.state.items() if s["status"] in ("created", "creating")]
             if not active and not self.pending:
                 return
-            if time.time() > deadline:
-                log(f"== deadline: {len(active)} VMs still running; deleting them")
-                self.delete([n for n in active if self.state[n]["status"] == "created"])
-                for n in active:
-                    self.state[n]["status"] = "timeout"
+            if self.pending and not any(self.state[n]["status"] == "created" for n in active) and time.time() - self.last_create > CREATE_STARVED_S:
+                log(f"== no VM could be created for {CREATE_STARVED_S // 60} min; giving up {len(self.pending)} VMs")
+                with self.lock:
+                    for n in self.pending:
+                        self.state[n].update(status="timeout", why="never created (project cap or stock-out)")
+                    self.pending = []
                 return
             time.sleep(POLL_S)
 
@@ -718,15 +824,26 @@ class Launch:
         res = os.path.join(out, "res")
         os.makedirs(res, exist_ok=True)
         prefix = f"runs/{self.run}/res/"
-        names = [n for n in self.api.ls(self.bucket, prefix) if not n.endswith(".tgz")]
+        names = self.api.ls(self.bucket, prefix)
 
         def fetch(n: str) -> None:
             p = os.path.join(res, n[len(prefix):])
             os.makedirs(os.path.dirname(p), exist_ok=True)
             data = self.api.get(self.bucket, n)
-            if data is not None:
-                with open(p, "wb") as f:
-                    f.write(data)
+            if data is None:
+                return
+            with open(p, "wb") as f:
+                f.write(data)
+            if p.endswith("/logs.tgz"):
+                # The per-run logs (res/<vm>/logs/); a member that would
+                # land outside the VM's directory is skipped.
+                import tarfile
+
+                try:
+                    with tarfile.open(p) as tf:
+                        tf.extractall(os.path.dirname(p), filter="data")
+                except (tarfile.TarError, OSError) as e:
+                    log(f"   {n}: {e}")
 
         with concurrent.futures.ThreadPoolExecutor(16) as ex:
             list(ex.map(fetch, names))
@@ -742,7 +859,7 @@ class Launch:
 
     def extend(self, summary: dict[str, Any], dirs: list[str]) -> bool:
         """The second look: `extend_replicas` more VMs per cell for the
-        gate rows that came out inconclusive there."""
+        gate rows that came out unresolved there (look2_rows)."""
         n_ext = self.args.extend_replicas if self.args.extend_replicas is not None else self.suite.extend_replicas
         if self.looks < 2 or n_ext <= 0:
             return False
@@ -752,17 +869,16 @@ class Launch:
             if h.get("comparability"):
                 key_cell[h["comparability"]] = h.get("cell")
         todo: dict[str, list[str]] = collections.defaultdict(list)
-        for r in summary["results"]:
-            if r["kind"] == "gate" and r["verdict"] == "inconclusive" and r["row"] in self.paired_rows:
-                c = key_cell.get(r["comparability"])
-                if c in self.cell_info and r["row"] not in todo[c]:
-                    todo[c].append(r["row"])
+        for key, rows in look2_rows(summary, self.paired_rows).items():
+            c = key_cell.get(key)
+            if c in self.cell_info:
+                todo[c] += [r for r in rows if r not in todo[c]]
         if not todo:
             return False
         for c, rows in todo.items():
             rows = [r for r in self.row_names if r in rows]
             shards = pack_shards(self.rows, rows, len(self.variants), self.blocks, self.warmup, self.shard_seconds)
-            log(f"== look 2 on {c}: {', '.join(rows)} inconclusive; {n_ext} x {len(shards)} more VMs")
+            log(f"== look 2 on {c}: {', '.join(rows)} unresolved; {n_ext} x {len(shards)} more VMs")
             for r in range(n_ext):
                 for k, srows in enumerate(shards):
                     self._add_vm(c, k, self.replicas + r, srows, look=2, spot=self.cell_info[c]["spot"] != "never")
@@ -808,7 +924,7 @@ def launch(args: Any) -> int:
     for n, ci in L.cell_info.items():
         if n not in L.pending_cells:
             c = ci["container"]
-            log(f"   {n}: {ci['machine']} {ci.get('image')} ({ci['image_project']}), {ci['runtime']}, bootstrap {ci['bootstrap']}, container {c['profile']}{', cpus ' + c['cpus'] if c.get('cpus') else ''}{', cpuset ' + c['cpuset'] if c.get('cpuset') else ''}{', memory ' + c['memory'] if c.get('memory') else ''}{', prep ' + ' '.join(ci['prep']) if ci['prep'] else ''}")
+            log(f"   {n}: {ci['machine']} {ci.get('image')} ({ci['image_project']}), {ci['runtime']}, container {c['profile']}{', cpus ' + c['cpus'] if c.get('cpus') else ''}{', cpuset ' + c['cpuset'] if c.get('cpuset') else ''}{', memory ' + c['memory'] if c.get('memory') else ''}{', prep ' + ' '.join(ci['prep']) if ci['prep'] else ''}")
     for v in L.variants:
         log(f"   {v['label']:<8} {v.get('rev', v['source'])} {v['source'][:12] if v['kind'] == 'challoc' else ''}")
     log(f"   estimate {mins:.0f} VM-minutes, ${usd:.2f} spot (budget ${L.suite.budget_usd:.0f})")
@@ -830,19 +946,19 @@ def launch(args: Any) -> int:
         L.times["bundled"] = time.time() - L.t0
         log(f"   harness {L.harness[:12]}, {len(L.sources)} variant trees, image {', '.join(f'{k}={v[-12:]}' for k, v in L.image.items()) or 'none (VMs build it)'} ({L.times['bundled']:.0f} s)")
         log("== create")
-        max_run_s = max([_dur_s(L.vm_max_run(n)) for n in L.vms] or [0])
-        deadline = time.time() + max_run_s + 120
         L.create_pending()
         L.times["created"] = time.time() - L.t0
         log("== poll")
-        L.poll(deadline)
+        L.poll()
         L.times["look1_done"] = time.time() - L.t0
         dirs = L.download(out)
         summary = L.analyze(dirs) if dirs else None
         look = 1
-        if summary and summary["headline"] == "INCONCLUSIVE" and L.extend(summary, dirs):
+        if summary and L.suite.kind == "smoke":
+            smoke_headline(summary, L.state, dirs)
+        elif summary and summary["headline"] == "INCONCLUSIVE" and L.extend(summary, dirs):
             look = 2
-            L.poll(time.time() + max_run_s + 120)
+            L.poll()
             L.times["look2_done"] = time.time() - L.t0
             dirs = L.download(out)
             summary = L.analyze(dirs)
@@ -860,8 +976,7 @@ def launch(args: Any) -> int:
         L.times["verdict"] = time.time() - L.t0
         cleanup(L)
     failed = {n: s.get("why") for n, s in L.state.items() if s["status"] in ("failed", "timeout")}
-    lost = [n for n, s in L.state.items() if s["status"] in ("failed", "timeout") and not any(
-        o.get("rescheduled_from") == n and o["status"] == "done" for o in L.state.values())]
+    lost = lost_shards(L.state)
     ls = {
         "schema": "challoc.bench.launch-summary/v1",
         "run": L.run,
@@ -902,6 +1017,33 @@ def launch(args: Any) -> int:
     return summary["exit"]
 
 
+def smoke_headline(summary: dict[str, Any], state: dict[str, dict[str, Any]], dirs: list[str]) -> None:
+    """A smoke suite has no comparison: PASS when every shard finished and
+    every run produced a score, BROKEN otherwise (in place)."""
+    bad = []
+    for d in dirs:
+        r = report.load_dir(d)
+        for s in r["samples"]:
+            if s.get("score") is None or s.get("error"):
+                bad.append(f"{os.path.basename(d)} {s['row']} {s['variant']}: {s.get('error') or 'no score'}")
+        p = os.path.join(d, "done.json")
+        if os.path.exists(p):
+            dj = json.load(open(p))
+            if dj.get("status") not in (None, "ok"):
+                bad.append(f"{os.path.basename(d)}: {dj.get('status')} ({dj.get('reason')})")
+    lost = lost_shards(state)
+    bad += [f"{b}: lost" for b in lost]
+    summary["smoke"] = {"problems": bad[:50]}
+    summary["headline"] = "BROKEN" if bad else "PASS"
+    summary["exit"] = stats_exit(summary["headline"])
+
+
+def stats_exit(headline: str) -> int:
+    from .stats import HEADLINE_EXIT
+
+    return HEADLINE_EXIT.get(headline, 3)
+
+
 def cleanup(L: Launch) -> None:
     """Delete anything still labelled with this run, whatever happened, and
     wait (up to 3 min) until GCE lists none of them."""
@@ -915,7 +1057,7 @@ def cleanup(L: Launch) -> None:
         if not rest:
             return
         if time.time() - t > 180:
-            log(f"cleanup: {len(rest)} VMs of {L.run} still listed after 3 min; run `cb gc --run {L.run} --older-than 0`")
+            log(f"cleanup: {len(rest)} VMs of {L.run} still listed after 3 min; run `cb gc --run {L.run}`")
             return
         for i in rest:
             if i["status"] not in ("STOPPING",) and not i.get("_asked"):
@@ -941,21 +1083,45 @@ def _write(path: str, obj: Any) -> None:
     os.replace(path + ".tmp", path)
 
 
+def gc_select(items: list[dict[str, Any]], now: datetime.datetime, *, run: str | None, older_than_min: float) -> list[tuple[dict[str, Any], str]]:
+    """The cb VMs `cb gc` deletes, with the reason. With --run, that run's
+    VMs older than --older-than (default 0: all of them). Without it, only
+    VMs no live launch can still want: stopped ones (a finished VM idles,
+    it never powers off) older than --older-than, and running ones past
+    their own max-run-duration plus 10 minutes (GCE should have deleted
+    them). A running VM of another session's launch is never touched."""
+    out = []
+    for i in items:
+        age_s = (now - datetime.datetime.fromisoformat(i["creationTimestamp"])).total_seconds()
+        if run is not None:
+            if (i.get("labels") or {}).get("cb-run") == run and age_s >= older_than_min * 60:
+                out.append((i, f"run {run}"))
+            continue
+        status = i.get("status", "")
+        if status in ("TERMINATED", "STOPPED", "SUSPENDED"):
+            if age_s >= older_than_min * 60:
+                out.append((i, f"{status.lower()}, {age_s / 60:.0f} min old"))
+            continue
+        mrd = ((i.get("scheduling") or {}).get("maxRunDuration") or {}).get("seconds")
+        if mrd is not None and age_s > float(mrd) + 600:
+            out.append((i, f"{status.lower()} {age_s / 60:.0f} min, past its max-run-duration {float(mrd) / 60:.0f} min"))
+    return out
+
+
 def gc(args: Any) -> int:
-    """Delete stray cb VMs: name cb-*, label purpose=challoc-bench, older
-    than --older-than minutes (and of --run, when given)."""
+    """Delete stray cb VMs (name cb-*, label purpose=challoc-bench):
+    gc_select says which."""
     cells = load_cells([])
     project = args.project or cells[next(iter(cells))].get("project")
     flt = f"name~^cb- AND labels.purpose=challoc-bench" + (f" AND labels.cb-run={args.run}" if args.run else "")
-    got = gcloud("compute", "instances", "list", f"--filter={flt}", "--format=json(name,zone,creationTimestamp,status,labels)", project=project, check=True)
+    got = gcloud("compute", "instances", "list", f"--filter={flt}", "--format=json(name,zone,creationTimestamp,status,labels,scheduling.maxRunDuration)", project=project, check=True)
     items = json.loads(got.stdout or "[]")
     now = datetime.datetime.now(datetime.timezone.utc)
+    older = args.older_than if args.older_than is not None else (0 if args.run else 60)
     doomed = collections.defaultdict(list)
-    for i in items:
-        age = (now - datetime.datetime.fromisoformat(i["creationTimestamp"])).total_seconds() / 60
-        if age >= args.older_than:
-            doomed[i["zone"].rsplit("/", 1)[-1]].append(i["name"])
-            print(f"{'would delete' if args.dry_run else 'deleting'} {i['name']} ({i['status']}, {age:.0f} min, run {i.get('labels', {}).get('cb-run')})")
+    for i, why in gc_select(items, now, run=args.run, older_than_min=older):
+        doomed[i["zone"].rsplit("/", 1)[-1]].append(i["name"])
+        print(f"{'would delete' if args.dry_run else 'deleting'} {i['name']} ({why}, run {i.get('labels', {}).get('cb-run')})")
     if not args.dry_run:
         for z, ns in doomed.items():
             gcloud("compute", "instances", "delete", *ns, f"--zone={z}", project=project, check=False)

@@ -2,7 +2,7 @@
 
     cb run SUITE [--base REV] [--head REV] [--rows a,b] [--blocks N] ...
     cb launch SUITE [--base REV] [--head REV] [--cells SEL] [--replicas N] ...
-    cb gc [--older-than MIN] [--run RUN] [--dry-run]
+    cb gc [--run RUN] [--older-than MIN] [--dry-run]
     cb compare RUN_DIR... [--cand LABEL --ref LABEL] [--json]
     cb report RUN_DIR [--json]
     cb plan SUITE [--blocks N] [--variants ...]
@@ -63,9 +63,9 @@ def main(argv: list[str] | None = None) -> int:
     from .gce import add_launch_args
 
     add_launch_args(sub.add_parser("launch", help="run a suite on GCE cells: spot VMs, one per (cell, shard, replicate); verdicts pooled"))
-    p = sub.add_parser("gc", help="delete stray cb VMs (name cb-*, label purpose=challoc-bench)")
-    p.add_argument("--older-than", type=float, default=60, help="minutes (default 60; 0 for all)")
-    p.add_argument("--run", help="only this run's VMs")
+    p = sub.add_parser("gc", help="delete stray cb VMs: one run's (--run), or, without --run, only stopped ones and ones past their max-run-duration")
+    p.add_argument("--run", help="this run's VMs, running or not")
+    p.add_argument("--older-than", type=float, help="minutes (default 0 with --run, 60 without; never deletes another launch's running VMs)")
     p.add_argument("--project")
     p.add_argument("--dry-run", action="store_true")
 
@@ -73,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("dirs", nargs="+")
     p.add_argument("--cand", help="candidate label (default: every gate variant)")
     p.add_argument("--ref", help="reference label (default: the run's first variant)")
-    p.add_argument("--aa-history", help="JSONL of past A/A summaries: margin calibration")
+    p.add_argument("--aa-history", help="JSONL of past A/A estimates, one line per (run, cell, row) with cell, row, est_pct: per-row margin calibration")
     p.add_argument("--json", action="store_true")
 
     p = sub.add_parser("fp", help="false-positive rate of a K-replicate run, resampled from an A/A launch with more replicates")
@@ -136,10 +136,12 @@ def _dispatch(a: argparse.Namespace) -> int:
         if a.cmd == "report":
             s = report.analyze_dirs([a.dir], rows)
         else:
-            hist = []
+            hist = None
             if a.aa_history:
-                with open(a.aa_history) as f:
-                    hist = [json.loads(ln)["est_pct"] for ln in f if ln.strip()]
+                try:
+                    hist = report.load_aa_history(a.aa_history)
+                except (OSError, ValueError, KeyError) as e:
+                    raise SpecError(f"--aa-history: {e}") from None
             s = report.analyze_dirs(a.dirs, rows, cand=a.cand, ref=a.ref or (None if not a.cand else _first_label(a.dirs[0])), aa_history=hist)
         print(json.dumps(s, indent=1, default=str) if a.json else report.render(s), end="" if not a.json else "\n")
         return s["exit"]

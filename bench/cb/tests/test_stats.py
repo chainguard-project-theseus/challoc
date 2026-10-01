@@ -1,5 +1,6 @@
 import math
 import random
+import statistics
 import unittest
 
 from cb import stats
@@ -93,26 +94,69 @@ def synth(effect_pct, hosts, blocks, sigma=0.01, host_sd=0.0, seed=0):
 
 class Comparisons(unittest.TestCase):
     def test_detects_regression(self):
-        c = stats.Comparison(synth(5.0, 4, 3, sigma=0.01), level=0.97, resamples=2000)
+        c = stats.Comparison(synth(5.0, 4, 3, sigma=0.01), level=0.97)
         lo, hi = c.ci_pct
         self.assertGreater(lo, 0)
         self.assertAlmostEqual(c.est_pct, 5.0, delta=1.0)
         self.assertEqual(stats.verdict(c.est_pct, lo, hi, 2.0), "worse")
 
     def test_null_is_same(self):
-        c = stats.Comparison(synth(0.0, 4, 3, sigma=0.003), level=0.97, resamples=2000)
+        c = stats.Comparison(synth(0.0, 4, 3, sigma=0.003), level=0.97)
         lo, hi = c.ci_pct
         self.assertEqual(stats.verdict(c.est_pct, lo, hi, 1.0), "same")
 
     def test_single_host_flag(self):
-        c = stats.Comparison(synth(0.0, 1, 6), level=0.95, resamples=500)
+        c = stats.Comparison(synth(0.0, 1, 6), level=0.95)
         self.assertIn("VM effect unestimated", c.flags)
-        self.assertIn("few blocks", c.flags)
+        # One host: the t-interval on its blocks, df = n - 1.
+        lo, hi, _ = stats.t_interval(synth(0.0, 1, 6)["vm0"], 0.95)
+        self.assertAlmostEqual(c.lo, lo)
+        self.assertAlmostEqual(c.hi, hi)
+
+    def test_ci_from_vm_means(self):
+        # The interval is the t-interval on the per-VM means, df = k - 1,
+        # however many blocks each VM ran.
+        g = {"a": [0.010, 0.011, 0.009], "b": [0.020, 0.021, 0.019, 0.020, 0.020], "c": [0.000, 0.001, -0.001]}
+        c = stats.Comparison(g, level=0.95)
+        means = [0.010, 0.020, 0.0]
+        half = stats.t_ppf(0.975, 2) * statistics.stdev(means) / math.sqrt(3)
+        self.assertAlmostEqual(c.est, 0.010, places=9)
+        self.assertAlmostEqual(c.lo, 0.010 - half, places=9)
+        self.assertAlmostEqual(c.hi, 0.010 + half, places=9)
+        self.assertNotIn("VM effect unestimated", c.flags)
+
+    def test_coverage_with_few_blocks_per_vm(self):
+        # 4 VMs x 3 blocks (12 in all), no VM effect: the stratified
+        # bootstrap this replaces was too narrow here (3 points per VM).
+        # A 95% interval must exclude 0 about 5% of the time.
+        trials = 600
+        hits = 0
+        for t in range(trials):
+            c = stats.Comparison(synth(0.0, 4, 3, sigma=0.02, seed=1000 + t), level=0.95)
+            hits += c.lo > 0 or c.hi < 0
+        self.assertLess(hits / trials, 0.08)
+        self.assertGreater(hits / trials, 0.02)
+
+    def test_coverage_with_vm_interaction(self):
+        # A VM x variant interaction (each VM's effect differs) larger than
+        # the block noise: pooling blocks as independent would reject far
+        # more often than alpha; the VM-means interval does not.
+        trials = 600
+        hits = 0
+        pooled_hits = 0
+        for t in range(trials):
+            g = synth(0.0, 4, 5, sigma=0.005, host_sd=0.02, seed=5000 + t)
+            c = stats.Comparison(g, level=0.95)
+            hits += c.lo > 0 or c.hi < 0
+            lo, hi, _ = stats.t_interval([x for v in g.values() for x in v], 0.95)
+            pooled_hits += lo > 0 or hi < 0
+        self.assertLess(hits / trials, 0.08)
+        self.assertGreater(pooled_hits / trials, 0.2)
 
     def test_host_dependence(self):
         g = synth(0.0, 6, 5, sigma=0.002)
         g["vm0"] = [x + 0.05 for x in g["vm0"]]
-        c = stats.Comparison(g, level=0.95, resamples=500)
+        c = stats.Comparison(g, level=0.95)
         self.assertIn("host-dependent", c.flags)
         self.assertIn("vm0", c.outliers)
         q, p, i2 = stats.cochran_q(g)
@@ -130,11 +174,11 @@ class Comparisons(unittest.TestCase):
 
     def test_false_positive_rate(self):
         # A/A at alpha 0.05: the fraction of CIs that exclude 0 stays near
-        # alpha even with only a handful of blocks (the t fallback).
+        # alpha even with only a handful of blocks.
         rejections = 0
         trials = 200
         for t in range(trials):
-            c = stats.Comparison(synth(0.0, 1, 6, sigma=0.02, seed=100 + t), level=0.95, resamples=400, seed=t)
+            c = stats.Comparison(synth(0.0, 1, 6, sigma=0.02, seed=100 + t), level=0.95)
             if c.lo > 0 or c.hi < 0:
                 rejections += 1
         self.assertLess(rejections / trials, 0.10)
