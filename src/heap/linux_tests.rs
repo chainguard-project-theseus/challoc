@@ -454,3 +454,100 @@ fn eight_threads_hammer_disjoint_pointers() {
     }
 }
 
+const CHANGED_ARENA_ENV: &str = "CHALLOC_HEAP_TEST_CHANGED_ARENA";
+
+/// What the `SIGSEGV` handler of `changed_arena_child` needs: the
+/// write-protected range, the table and group whose owner word it
+/// rewrites, and whether it has run.
+static FLIP_LO: AtomicUsize = AtomicUsize::new(0);
+static FLIP_HI: AtomicUsize = AtomicUsize::new(0);
+static FLIP_SHARED: AtomicUsize = AtomicUsize::new(0);
+static FLIP_CLASS: AtomicUsize = AtomicUsize::new(0);
+static FLIP_GROUP: AtomicUsize = AtomicUsize::new(0);
+static FLIP_DONE: AtomicUsize = AtomicUsize::new(0);
+
+/// `[base, base + len)`: the pages covering `[lo, hi)`.
+fn page_span(lo: usize, hi: usize) -> (usize, usize) {
+    let page = crate::testutil::page_size();
+    let base = lo & !(page - 1);
+    (base, crate::testutil::align_up(hi, page) - base)
+}
+
+/// The owner word rewritten between `release_owned`'s load and
+/// `arena_of_slot`'s. `release_owned` of arena 1 releases the arena-1
+/// slot, stops at the arena-0 slot, and its one write to the
+/// `ClassState` after the stop is the `released` add. With the state's
+/// pages read-only that add faults; the handler writes arena 1 into the
+/// stopped slab's owner word, restores the pages and returns, the add
+/// is retried, and `release_routed` then reads arena 1 for the slab
+/// arena 1 just refused. Runs only in the fresh process
+/// `changed_arena_during_a_flush_aborts` starts, because the handler is
+/// process-wide.
+#[test]
+fn changed_arena_child() {
+    if std::env::var(CHANGED_ARENA_ENV).is_err() {
+        return;
+    }
+    extern "C" fn on_segv(_: i32, info: *mut libc::siginfo_t, _: *mut c_void) {
+        let addr = unsafe { (*info).si_addr() } as usize;
+        let (lo, hi) = (FLIP_LO.load(Ordering::Relaxed), FLIP_HI.load(Ordering::Relaxed));
+        if FLIP_DONE.swap(1, Ordering::Relaxed) != 0 || addr < lo || addr >= hi {
+            unsafe { libc::_exit(3) };
+        }
+        let s = unsafe { &*(FLIP_SHARED.load(Ordering::Relaxed) as *const Shared) };
+        let class = FLIP_CLASS.load(Ordering::Relaxed);
+        s.table(class).corrupt_owner_word(&s.meta, FLIP_GROUP.load(Ordering::Relaxed), 1);
+        let (base, len) = page_span(lo, hi);
+        if unsafe { libc::mprotect(base as *mut c_void, len, libc::PROT_READ | libc::PROT_WRITE) } != 0 {
+            unsafe { libc::_exit(4) };
+        }
+    }
+    let s = TestShared::with(Config { narenas: 1, ..Config::DEFAULT }).build();
+    assert_eq!(s.arenas.create(s), Some(1));
+    let c = class_of(64).unwrap();
+    let (a0, a1) = (s.arena(0).unwrap(), s.arena(1).unwrap());
+    // Two slots per slab: neither release empties its slab or reopens
+    // it, so the only `ClassState` write is the `released` add.
+    let (p1, _) = s.alloc_direct(a1, c);
+    let (q1, _) = s.alloc_direct(a1, c);
+    let (p0, _) = s.alloc_direct(a0, c);
+    let (q0, _) = s.alloc_direct(a0, c);
+    assert!(!p0.is_null() && !q0.is_null() && !p1.is_null() && !q1.is_null());
+    let t = s.table(c);
+    let (slab0, _) = t.locate(p0);
+    assert_eq!((t.owner(t.locate(p1).0), t.owner(slab0)), (1, 0));
+    let cs = a1.class(c) as *const crate::class::ClassState as usize;
+    let hi = cs + core::mem::size_of::<crate::class::ClassState>();
+    FLIP_LO.store(cs, Ordering::Relaxed);
+    FLIP_HI.store(hi, Ordering::Relaxed);
+    FLIP_SHARED.store(s as *const Shared as usize, Ordering::Relaxed);
+    FLIP_CLASS.store(c, Ordering::Relaxed);
+    FLIP_GROUP.store(slab0 / t.group(), Ordering::Relaxed);
+    let (base, len) = page_span(cs, hi);
+    unsafe {
+        let mut sa: libc::sigaction = core::mem::zeroed();
+        sa.sa_sigaction = on_segv as *const () as usize;
+        sa.sa_flags = libc::SA_SIGINFO;
+        assert_eq!(libc::sigaction(libc::SIGSEGV, &sa, ptr::null_mut()), 0);
+        assert_eq!(libc::mprotect(base as *mut c_void, len, libc::PROT_READ), 0);
+    }
+    s.release_routed(1, c, &[p1, p0]);
+    std::eprintln!("release_routed returned (handler ran: {})", FLIP_DONE.load(Ordering::Relaxed));
+    unsafe { libc::_exit(5) };
+}
+
+/// `Shared::release_routed` aborts when `release_owned` stops at a slab
+/// whose owner word, read again, names the arena that just refused it:
+/// the word changed under the flush.
+#[test]
+fn changed_arena_during_a_flush_aborts() {
+    let out = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "heap::linux_tests::changed_arena_child", "--nocapture", "--test-threads=1"])
+        .env(CHANGED_ARENA_ENV, "1")
+        .output()
+        .unwrap();
+    let err = std::string::String::from_utf8_lossy(&out.stderr);
+    let msg = std::format!("heap: slab of class {} changed arena 1 during a flush", class_of(64).unwrap());
+    assert!(!out.status.success() && err.contains(&msg), "status {:?}, stderr: {err}", out.status);
+}
+
