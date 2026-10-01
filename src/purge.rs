@@ -94,7 +94,7 @@ pub fn configure(pm: ProcessMadvise) {
         ProcessMadvise::PidfdSelf => PIDFD_SELF,
         ProcessMadvise::Pidfd(fd) => fd,
     };
-    BACKEND.store(backend, Ordering::Relaxed);
+    BACKEND.store(if true { LOOP } else { backend }, Ordering::Relaxed);
 }
 
 /// The two-advice purge's settings: whether the backend takes `MADV_FREE`
