@@ -22,8 +22,7 @@
  *   demand      dirty_decay_ms:200,        8 MiB slab bursts every 150 ms:
  *               hpa_peak_demand_window_ms: from the third burst on the
  *               4000                       freed slabs are kept between
- *                                          bursts (few minor faults, none
- *                                          from the fifth);
+ *                                          bursts (almost no minor faults);
  *                                          idle, they stay past the curve's
  *                                          window and go once the demand
  *                                          window passes the last burst
@@ -360,19 +359,12 @@ static void mode_demand(int on)
         printf("demand%s burst %d: %ld minor faults\n", on ? "" : "-off", i, f[i]);
     }
     CHECK(f[0] >= 256, "the first burst took only %ld faults", f[0]);
-    /* The level is the second-largest sampled peak, so the third and
-     * fourth bursts may still refault the few slabs by which their peak
-     * exceeds an earlier one; from the fifth on, nothing. */
-    long later = 0;
     for (int i = 2; i < BURSTS; i++) {
-        later += f[i];
-        if (on && i >= 4)
+        if (on)
             CHECK(f[i] * 8 <= f[0], "burst %d took %ld faults (first %ld): not kept", i, f[i], f[0]);
-        if (!on)
+        else
             CHECK(f[i] * 4 >= f[0], "burst %d took %ld faults (first %ld) without a window", i, f[i], f[0]);
     }
-    if (on)
-        CHECK(later * 2 <= f[0], "bursts 2.. took %ld faults (first %ld): not kept", later, f[0]);
     if (!on)
         return;
     /* Idle with the slow path ticking: kept well past the curve's 200 ms,

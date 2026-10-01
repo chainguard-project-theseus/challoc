@@ -119,7 +119,12 @@ impl ClassState {
             let step = curve.step(now, dirty_at);
             counts[step] += 1;
             total += 1;
-            fresh += (dirty_at > since) as usize;
+            // At or after: the stamps and the walk times are the coarse
+            // clock, so a slab that went `Empty` in the tick of the last
+            // walk but after it has its stamp; one that went `Empty` in
+            // that tick before it is counted twice, which errs high by at
+            // most a tick of frees.
+            fresh += (dirty_at >= since) as usize;
             weighted += Curve::weight(step);
             oldest = min_nonzero(oldest, dirty_at);
         });
