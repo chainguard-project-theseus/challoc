@@ -7,7 +7,7 @@ and the cells of `bench/cells/*.toml`, with paired, CI-backed verdicts.
 The shell scripts further down are the previous harness; they still run
 and are listed under "Legacy scripts" with what replaces each.
 
-    make quick [BASE=main] [HEAD=HEAD]            cb launch quick: the PR go/no-go on the gate cells (GCE)
+    make bench-launch-quick [BASE=main] [HEAD=HEAD]  cb launch quick: the PR go/no-go on the gate cells (GCE)
     make bench-launch SUITE=<suite> CB_ARGS=...   any suite on GCE: aa, soak, exp-slice, ...
     make bench-quick | bench-aa | bench-smoke     the same suites on this machine (indicative only)
     make bench-local SUITE=<suite> CB_ARGS=...
@@ -82,9 +82,9 @@ the plumbing, not for a decision. Verdicts of record come from `cb launch`.
 
 ### cb launch: the GCE fan-out
 
-    make quick [BASE=main] [HEAD=HEAD] [CB_ARGS=...]     # cb launch quick on the gate cells
+    make bench-launch-quick [BASE=main] [HEAD=HEAD] [CB_ARGS=...]  # cb launch quick on the gate cells
     make bench-launch SUITE=aa BASE=<rev> CB_ARGS='--replicas 8 --looks 1'
-    make bench-image                                      # rebuild + push the bench image, pin bench/image.lock
+    make bench-image                                      # rebuild + push the bench image, pin bench/internal-image.lock
     make bench-gc CB_ARGS='--run <run>'                   # delete one run's VMs
     python3 bench/cb launch quick --cells ref-amd64 --variants 'old=git:REV1@CONF,new=git:REV2@CONF'
     python3 bench/cb fp target/results/cb/<aa-run>/res/* --k 3   # FP rate of a 3-replicate run
@@ -117,7 +117,7 @@ polls. The quick suite on the two gate cells is 5 shards x 3 replicates x
   the apt timers and snapd, runs the cell's prep steps, installs
   `docker.io` where the runtime is docker and it is missing while it
   fetches the sources, pulls the bench image by digest
-  (`bench/image.lock`; it builds `Dockerfile.dev`'s test stage and
+  (`bench/internal-image.lock`; it builds `Dockerfile.dev`'s test stage and
   `bench/Dockerfile.cb` itself when the pull fails), runs `cb run --launch
   launch.json --vm <name>` in it (container profile `perfmon`:
   `CAP_PERFMON`, so the per-run counters work, and the cells request the
@@ -163,10 +163,10 @@ polls. The quick suite on the two gate cells is 5 shards x 3 replicates x
   (`/opt/cb/bench-bin`), the crate's dependencies and, last, the consumer
   layers the driver rows need (Valkey's openssl-dev and memtier, Ruby's
   build dependencies, openjdk-21 and `ab`); `bench/cb/image.sh`
-  builds it per architecture, pushes it and rewrites `bench/image.lock`.
+  builds it per architecture, pushes it and rewrites `bench/internal-image.lock`.
   Rebuild it when `bench/build.sh`, the stock allocators or Dockerfile.dev
   change; the digest is in every sample's comparability key.
-- **Measured (2026-09-30, dlorenc-dev, us-east4-a).** A VM is ready to
+- **Measured (2026-09-30, us-east4-a).** A VM is ready to
   run about 34 s after its startup script starts (boot 10-20 s before
   that) and builds both variants in about 20 s. Quick from cold: first
   look 4.6-7.5 min (median 5.6 over four launches), 8.5-12.7 min when
@@ -321,7 +321,7 @@ has matched them; nothing new should be built on them.
 
 | Script / target | Replaced by |
 |---|---|
-| `quick.sh`, `make quick-legacy` | `cb launch quick` (`make quick`), `cb run quick` |
+| `quick.sh`, `make quick` | `cb launch quick` (`make bench-launch-quick`), `cb run quick` |
 | `ab.sh`, `make ab`, `baseline.sh`, `make baseline` | `cb launch` with a suite (`--variants`, `--controls jemalloc,glibc`) |
 | `scorecard.sh`, `make scorecard` | the nightly suite (not built yet: M3) |
 | `four-way.sh` | a suite with four variants (Williams order) |
@@ -335,7 +335,7 @@ has matched them; nothing new should be built on them.
 The old target list, for reference:
 
     make bench-build      fetch and build the benchmark programs (once per target volume)
-    make quick-legacy [OLD=rev]  old fast tier: ~2.5 min, the working tree vs OLD
+    make quick [OLD=rev]         old fast tier: ~2.5 min, the working tree vs OLD
     make ab VARIANTS=...  protocol tier A/B: the table results files are made of
     make baseline         cache jemalloc/glibc/mimalloc/tcmalloc protocol rows for this machine
     make scorecard        the fixed row set vs jemalloc, one line appended to
@@ -357,7 +357,7 @@ worth measuring properly?" long before it needs a number that can go into a
 results file. The harness therefore has two tiers, and the rule is: always
 the fast tier first, the protocol tier only for a variant that passed it.
 
-**Fast tier: `bench/quick.sh`, `make quick-legacy`, `challoc-bench quick <vm>`.**
+**Fast tier: `bench/quick.sh`, `make quick`, `challoc-bench quick <vm>`.**
 About two minutes on a reference VM. It builds the working tree into
 `target/quick/new` and `OLD` (default `HEAD`, so an uncommitted change is
 measured against its own base; any git rev works, `OLD=HEAD~1` for a

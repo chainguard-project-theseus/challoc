@@ -13,13 +13,13 @@
 # The GCE fan-out (`cb launch`, on the host: python3 >= 3.11 and gcloud
 # authenticated for the project in bench/cells [defaults]):
 #
-#   make quick        [BASE=main] [HEAD=HEAD] [CB_ARGS=...]  cb launch quick on the gate cells
+#   make bench-launch-quick [BASE=main] [HEAD=HEAD] [CB_ARGS=...]  cb launch quick on the gate cells
 #   make bench-launch SUITE=<suite> [BASE=] [HEAD=] [CB_ARGS=...]
-#   make bench-image  [ARCHES='arm64 amd64']   build, push, pin bench/image.lock
+#   make bench-image  [ARCHES='arm64 amd64']   build, push, pin bench/internal-image.lock
 #   make bench-gc     [CB_ARGS='--run <run>']   delete one run's VMs, or stale cb- VMs
 #
-# `make quick-legacy` is the old bench/quick.sh tier, kept until cb has
-# matched it on the historical pairs.
+# `make quick` stays the bench/quick.sh tier (the Makefile) until cb has
+# matched it on the historical pairs and the docs move over.
 #
 # Results land in target/results/cb/<run>/ (readable on the host). Local
 # numbers are `indicative`: plumbing and a first look, never a verdict of
@@ -37,7 +37,7 @@ cb_preflight = @$(CB) preflight 2>/dev/null || true
 cb_run = $(DOCKER_RUN) $(CB) run $(1) --base "$(BASE)" --head "$(HEAD)" $(CB_ARGS)
 bench-quick bench-aa bench-smoke bench-local: DOCKER_FLAGS = -e CB_IMAGE="$$(docker image inspect -f '{{.Id}}' $(IMAGE) 2>/dev/null | cut -c1-19)" -e HOST_CPU="$(HOST_CPU)" -e CB_HOST="$(shell hostname -s)"
 
-.PHONY: bench-quick bench-aa bench-smoke bench-local bench-compare bench-unit quick bench-launch bench-image bench-gc
+.PHONY: bench-quick bench-aa bench-smoke bench-local bench-compare bench-unit bench-launch-quick bench-launch bench-image bench-gc
 
 bench-quick: image ## cb quick suite in the container: HEAD vs BASE (main), ABBA blocks, CI-backed verdicts (bench/README.md, "cb")
 	$(cb_preflight)
@@ -61,14 +61,14 @@ bench-compare: ## cb compare DIRS on the host: verdicts from existing run direct
 bench-unit: ## the bench/cb unit tests (stats, planner, parsers) on the host
 	cd bench && python3 -m unittest discover -s cb/tests -t .
 
-quick: ## cb launch quick: HEAD vs BASE (main) on the gate cells (spot VMs, one per shard and replicate), about 5-7 min from cold
+bench-launch-quick: ## cb launch quick: HEAD vs BASE (main) on the gate cells (spot VMs, one per shard and replicate), about 5-7 min from cold
 	$(CB) launch quick --base "$(BASE)" --head "$(HEAD)" $(CB_ARGS)
 
 bench-launch: ## cb launch SUITE on GCE with CB_ARGS (e.g. SUITE=aa CB_ARGS='--replicas 8')
 	$(CB) launch $(SUITE) --base "$(BASE)" --head "$(HEAD)" $(CB_ARGS)
 
 ARCHES ?= arm64 amd64
-bench-image: ## build the cb bench image (bench/Dockerfile.cb) for ARCHES, push it, pin the digests in bench/image.lock
+bench-image: ## build the cb bench image (bench/Dockerfile.cb) for ARCHES, push it, pin the digests in bench/internal-image.lock
 	sh bench/cb/image.sh $(ARCHES)
 
 bench-gc: ## delete cb VMs: CB_ARGS='--run <run>' for one run's; without it only stopped ones and ones past their max-run-duration

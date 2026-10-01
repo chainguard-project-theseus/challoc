@@ -7,7 +7,7 @@
 #
 # Needs a bench image with the consumer layers (Valkey's openssl-dev and
 # memtier, Ruby's build dependencies, openjdk-21): bench/Dockerfile.cb.
-# The digests pinned in bench/image.lock (2026-09-30) predate them: until
+# The digests pinned in bench/internal-image.lock (2026-09-30) predate them: until
 # `make bench-image` repins, launch with --no-image (every VM builds the
 # image itself, about 10 more minutes). Shorter soaks for a check:
 # --var valkey_soak_secs=300 --var ruby_soak_secs=300 --var jvm_soak_secs=300.

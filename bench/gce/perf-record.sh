@@ -5,7 +5,7 @@
 # gives the per-operation counters; this script says which functions the
 # cycles went to, which is what CLAUDE.md's attribution rule asks for before
 # a fast-path change (the change names the mechanism it attacks). Run on the
-# VM from ~/challoc after `make quick-legacy QUICK_BUILD_ONLY=1`:
+# VM from ~/challoc after `make quick QUICK_BUILD_ONLY=1`:
 #
 #   bash bench/gce/perf-record.sh arm64|amd64 ROW VARIANT [FREQ=4000] [TOP=30]
 #        [MATCH='sort|median3|partition|pivot'] [OUTDIR=~/logs/perf-record]
@@ -52,7 +52,7 @@ lib_of() {
 conf_of() { case $1 in *:*) echo "${1#*:}";; esac; }
 
 in_lib "ensure_probe valkey_model; ensure_probe churn" >/dev/null
-case ${V%%:*} in old|new) in_lib "test -f $(lib_of "$V")" || { echo "perf-record: no $(lib_of "$V") in the target volume; run 'make quick-legacy QUICK_BUILD_ONLY=1' first" >&2; exit 1; };; esac
+case ${V%%:*} in old|new) in_lib "test -f $(lib_of "$V")" || { echo "perf-record: no $(lib_of "$V") in the target volume; run 'make quick QUICK_BUILD_ONLY=1' first" >&2; exit 1; };; esac
 cmd=$(in_lib "bench_args $ROW")
 
 cid=$(docker run -d "${DRUN_ARGS[@]}" "$IMAGE" \

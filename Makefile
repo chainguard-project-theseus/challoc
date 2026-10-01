@@ -248,7 +248,7 @@ bench-build: image ## fetch and build the mimalloc-bench programs, redis, mimall
 # change; ab: the protocol-tier A/B that results files are written from;
 # baseline: cache the stock allocators' protocol rows for BASELINES=cached.
 QUICK_VARS = OLD NEW OLD_CONF NEW_CONF QUICK_TOLERANCE QUICK_BENCHES CHURN_SECS CHURN_CLASS CHURN_MAX_FRACTION BASELINES BASELINE_TOLERANCE QUICK_SANITY PERF PERF_BENCHES QUICK_BUILD_ONLY VALKEY_MODEL_SECS VALKEY_MODEL_N PIN CHALLOC_THP_COUNTERS
-$(eval $(call bench_target,quick-legacy,bench/quick.sh,$$(QUICK_VARS))) ## the old fast tier (bench/quick.sh, ~2.5 min; `make quick` is now cb launch quick): the working tree vs OLD (HEAD), one round, exit 1 past QUICK_TOLERANCE (5)%; PERF=1 adds per-op counters where perf exists
+$(eval $(call bench_target,quick,bench/quick.sh,$$(QUICK_VARS))) ## fast tier (bench/quick.sh, ~2.5 min): the working tree vs OLD (HEAD), one round, exit 1 past QUICK_TOLERANCE (5)%; PERF=1 adds per-op counters where perf exists
 
 AB_VARS = VARIANTS ROUNDS BENCHES ADAPTIVE BASELINES BASELINE_TOLERANCE RESULT HOST_KIND TITLE VALKEY_MODEL_SECS VALKEY_MODEL_N PIN CHALLOC_THP_COUNTERS
 $(eval $(call bench_target,ab,bench/ab.sh,$$(AB_VARS))) ## protocol tier A/B (bench/ab.sh): VARIANTS='old=HEAD~1 new=HEAD jemalloc' ROUNDS=5 plus warm-up, interleaved; RESULT=path, ADAPTIVE=1, BASELINES=cached

@@ -550,7 +550,9 @@ def lint_public(paths: list[str] | None = None) -> list[str]:
             if isinstance(host, dict) and host.get("project") and host["project"] not in PUBLIC_IMAGE_PROJECTS:
                 problems.append(f"{os.path.relpath(p, ROOT_DIR)}: cell {name}: image project {host['project']!r} is not public (move the cell to an internal overlay)")
     files = public_cells + glob.glob(os.path.join(BENCH_DIR, "cb", "*.py")) + glob.glob(os.path.join(BENCH_DIR, "cb", "*.sh"))
-    files += [os.path.join(BENCH_DIR, "rows.toml")] + glob.glob(os.path.join(BENCH_DIR, "suites", "*.toml"))
+    files += glob.glob(os.path.join(BENCH_DIR, "cb", "tests", "*.py"))
+    files += [os.path.join(BENCH_DIR, f) for f in ("rows.toml", "README.md", "bench.mk", "Dockerfile.cb")]
+    files += glob.glob(os.path.join(BENCH_DIR, "suites", "*.toml"))
     for f in paths or files:
         with open(f, encoding="utf-8") as fh:
             for i, line in enumerate(fh, 1):

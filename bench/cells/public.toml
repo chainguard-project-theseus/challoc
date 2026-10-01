@@ -23,13 +23,10 @@
 
 [defaults]
 provider = "gce"
-# Where `cb launch` runs: the GCP project, the bucket for bundles and
-# results (objects expire after 30 days), and the VMs' service account
-# (object read/write on that bucket and read on the bench image repository,
-# nothing else).
-project = "dlorenc-dev"
-bucket = "dlorenc-dev-challoc-bench"
-service_account = "cb-bench-vm@dlorenc-dev.iam.gserviceaccount.com"
+# Where `cb launch` runs (project, bucket, service_account) is not here:
+# an internal overlay (bench/cells/internal-project.toml), the CB_PROJECT,
+# CB_BUCKET and CB_SERVICE_ACCOUNT environment variables, or --project,
+# --bucket and --service-account.
 zones = ["us-east4-a", "us-east4-b", "us-central1-a"]
 spot = "prefer"
 max_run = "45m"

@@ -1,6 +1,6 @@
 # ============================================================================
 # INTERNAL. Chainguard OS cells: the product's own kernel and glibc as the
-# host. Not for publication: delete this file (and nothing else) before the
+# host. Not for publication: delete the internal-* files before the
 # repository goes public. Every name that identifies the internal images is
 # in this file and only here; `cb cells --lint` fails when one of the
 # [lint] markers below appears in a public file (public cell files, bench/cb,

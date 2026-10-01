@@ -145,14 +145,18 @@ class TestUnpaired(unittest.TestCase):
 
 class TestInternalCells(unittest.TestCase):
     def test_cells_and_lint(self):
+        # The internal overlay's cells, by where they come from (this
+        # public file names none of them).
         cells = spec.load_cells()
-        if "cgos72-amd64" not in cells:
+        internal = {n: c for n, c in cells.items() if os.path.basename(c.source).startswith("internal") and c.provider == "gce"}
+        if not internal:
             self.skipTest("internal overlay not present (public tree)")
-        c = cells["cgos72-amd64"]
-        self.assertEqual(c.get("runtime"), "sudo-podman")
-        self.assertEqual(c.get("machine"), "c4-standard-16")
-        self.assertTrue(c.get("expect")["kernel"].startswith("^7"))
-        self.assertIn("cgos72-amd64", spec.select_cells("tag:exp-slice", cells))
+        sliced = spec.select_cells("tag:exp-slice", cells)
+        self.assertTrue(sliced)
+        for n in sliced:
+            self.assertIn(n, internal)
+            self.assertEqual(cells[n].get("runtime"), "sudo-podman")
+            self.assertTrue(cells[n].get("expect", {}).get("kernel"))
         self.assertEqual(spec.lint_public(), [])
 
 

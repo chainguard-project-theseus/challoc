@@ -60,7 +60,9 @@ from .spec import BENCH_DIR, ROOT_DIR, Cell, SpecError, load_cells, load_rows, l
 from .variants import BuildError, git, resolve_rev
 
 BOOT_SH = os.path.join(BENCH_DIR, "cb", "boot.sh")
-IMAGE_LOCK = os.path.join(BENCH_DIR, "image.lock")
+# The pinned bench image per architecture (bench/cb/image.sh). Internal:
+# it names the registry; without it every VM builds the image.
+IMAGE_LOCK = os.environ.get("CB_IMAGE_LOCK") or os.path.join(BENCH_DIR, "internal-image.lock")
 LABEL = "purpose=challoc-bench"
 # Price estimates, $/h (us-east4, 2026-09; verify in billing): on demand,
 # spot. Unknown machines fall back to per-vCPU rates.
@@ -357,11 +359,11 @@ class Launch:
         self.suite = load_suite(args.suite, self.rows)
         self.cells = load_cells(args.cells_path or [])
         d = self.cells[next(iter(self.cells))].fields  # [defaults] are in every cell
-        self.project = args.project or d.get("project")
-        self.bucket = args.bucket or d.get("bucket")
-        self.sa = args.service_account or d.get("service_account")
+        self.project = args.project or os.environ.get("CB_PROJECT") or d.get("project")
+        self.bucket = args.bucket or os.environ.get("CB_BUCKET") or d.get("bucket")
+        self.sa = args.service_account or os.environ.get("CB_SERVICE_ACCOUNT") or d.get("service_account")
         if not (self.project and self.bucket and self.sa):
-            raise SpecError("cb launch needs project, bucket and service_account in bench/cells [defaults] (or --project/--bucket/--service-account)")
+            raise SpecError("cb launch needs a project, bucket and service account: --project/--bucket/--service-account, CB_PROJECT/CB_BUCKET/CB_SERVICE_ACCOUNT, or [defaults] in a bench/cells overlay")
         sel = args.cells or self.suite.cells
         self.cell_names = select_cells(sel, self.cells)
         for n in self.cell_names:
@@ -1112,7 +1114,9 @@ def gc(args: Any) -> int:
     """Delete stray cb VMs (name cb-*, label purpose=challoc-bench):
     gc_select says which."""
     cells = load_cells([])
-    project = args.project or cells[next(iter(cells))].get("project")
+    project = args.project or os.environ.get("CB_PROJECT") or cells[next(iter(cells))].get("project")
+    if not project:
+        raise SpecError("cb gc needs a project: --project, CB_PROJECT, or [defaults] in a bench/cells overlay")
     flt = f"name~^cb- AND labels.purpose=challoc-bench" + (f" AND labels.cb-run={args.run}" if args.run else "")
     got = gcloud("compute", "instances", "list", f"--filter={flt}", "--format=json(name,zone,creationTimestamp,status,labels,scheduling.maxRunDuration)", project=project, check=True)
     items = json.loads(got.stdout or "[]")
@@ -1154,7 +1158,7 @@ def add_launch_args(p: Any) -> None:
     p.add_argument("--run-id")
     p.add_argument("--out")
     p.add_argument("--no-pmu", action="store_true", help="do not request the PMU on the VMs")
-    p.add_argument("--no-image", action="store_true", help="ignore bench/image.lock: every VM builds the image (slow)")
+    p.add_argument("--no-image", action="store_true", help="ignore the image lock: every VM builds the image (slow)")
     p.add_argument("--no-reschedule", action="store_true")
     p.add_argument("--allow-cost", action="store_true")
     p.add_argument("--dry-run", action="store_true")

@@ -8,7 +8,7 @@
 #
 # Built and pushed by bench/cb/image.sh (`make bench-image`), which builds
 # the `test` stage first and passes it as DEV_IMAGE; the pushed digest per
-# architecture goes into bench/image.lock. A VM whose pull fails builds
+# architecture goes into bench/internal-image.lock. A VM whose pull fails builds
 # this same file from the bundled tree (bench/cb/boot.sh).
 ARG DEV_IMAGE=cb-dev-test:local
 FROM ${DEV_IMAGE}

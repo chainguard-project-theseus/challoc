@@ -1,19 +1,20 @@
 #!/bin/sh
 # Build the cb bench image for one or more architectures, push it to
-# Artifact Registry and record the digests in bench/image.lock
+# Artifact Registry and record the digests in bench/internal-image.lock
 # (bench/README.md, "cb launch"). Runs on the host (docker + gcloud).
 #
 #   sh bench/cb/image.sh [arm64] [amd64]      (default: both)
 #
-# Environment: CB_IMAGE_REPO (default from bench/image.lock's `repo`),
+# Environment: CB_IMAGE_REPO (default the lock's `repo`), CB_IMAGE_LOCK
+# (default bench/internal-image.lock),
 # NO_PUSH=1 builds only. amd64 on an Apple-silicon host is emulated: it
 # takes a while (bench/build.sh compiles mimalloc-bench and redis), which
 # is why the result is pushed and pinned instead of rebuilt per run.
 set -eu
 cd "$(dirname "$0")/../.."
-LOCK=bench/image.lock
+LOCK=${CB_IMAGE_LOCK:-bench/internal-image.lock}
 REPO=${CB_IMAGE_REPO:-$(sed -n 's/^repo *= *"\(.*\)"/\1/p' "$LOCK" 2>/dev/null || true)}
-REPO=${REPO:-us-east4-docker.pkg.dev/dlorenc-dev/challoc-bench/cb}
+[ -n "$REPO" ] || { echo "image.sh: no repository: set CB_IMAGE_REPO (or a repo line in $LOCK)" >&2; exit 2; }
 ARCHES=${*:-arm64 amd64}
 REV=$(git rev-parse --short=12 HEAD)
 REGISTRY=${REPO%%/*}
@@ -35,7 +36,7 @@ for arch in $ARCHES; do
   echo "== $arch: $digest"
   # Rewrite this architecture's line of the lock, keep the others.
   tmp=$(mktemp)
-  { [ -f "$LOCK" ] && grep -v "^$arch *=" "$LOCK" || printf '# bench/image.lock: the cb bench image per architecture, by digest (bench/cb/image.sh).\nrepo = "%s"\n' "$REPO"; } > "$tmp"
+  { [ -f "$LOCK" ] && grep -v "^$arch *=" "$LOCK" || printf '# The cb bench image per architecture, by digest (bench/cb/image.sh).\nrepo = "%s"\n' "$REPO"; } > "$tmp"
   printf '%s = "%s"  # %s %s\n' "$arch" "$digest" "$REV" "$(date -u +%Y-%m-%d)" >> "$tmp"
   mv "$tmp" "$LOCK"
 done
