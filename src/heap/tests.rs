@@ -1,9 +1,12 @@
 use super::*;
-use super::flush::flag_sort;
+use super::compact::Verdict;
+use super::flush::{flag_sort, group_by_slab};
+use crate::arena::Arena;
 use crate::class::ClassStats;
 use crate::config::Config;
 use crate::layout::{Kind, LG_MAX_SLAB, MAX_SLAB, Mapping, Regions, class_of};
 use crate::slab::State;
+use crate::sys::pac;
 use std::boxed::Box;
 use std::collections::HashSet;
 use std::mem::MaybeUninit;
