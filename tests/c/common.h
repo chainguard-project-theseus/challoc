@@ -1,11 +1,12 @@
 /*
- * Shared scaffolding for the C test programs in tests/c/. Each program is compiled by
- * scripts/ctest-cc.sh (from the Rust driver in src/api/c_programs.rs or one of
- * the shell drivers) with -DQUANTUM=16 or 8, read from the built library,
- * and run under LD_PRELOAD=libchalloc.so. Every program checks its own
- * invariants, prints "ok <name>" on success (`finish`) and exits non-zero
- * on failure. `require_challoc` makes a program fail fast when the preload
- * did not take effect so a broken preload cannot pass by accident.
+ * Shared scaffolding for the C test programs in tests/c/. Each program is
+ * compiled by scripts/ctest-cc.sh (from the Rust driver in
+ * src/api/c_programs.rs or one of the shell drivers) with -DQUANTUM=16 or
+ * 8, read from the built library, and run under LD_PRELOAD=libchalloc.so.
+ * Every program checks its own invariants, prints "ok <name>" on success
+ * (`finish`) and exits non-zero on failure. `require_challoc` makes a
+ * program fail fast when the preload did not take effect so a broken
+ * preload cannot pass by accident.
  *
  * A program that cannot check its main claim on this host (a kernel
  * without the feature, a container without the cgroup mount) still passes

@@ -3,8 +3,7 @@
 //! defines and jemalloc replaces. A C++ program that is only preloaded with
 //! `malloc`/`free` still routes `new` through libstdc++'s `operator new`,
 //! which is a second PLT hop plus a null-check loop on every allocation.
-//! On larson, which allocates with `new char[]`, that cost 13% of the run
-//! (`bench/results/2026-09-16-aarch64-cxx-operators.md`).
+//! On larson, which allocates with `new char[]`, that cost 13% of the run.
 //!
 //! `operator new` never returns null: on failure it runs the standard
 //! `new_handler` loop and, with no handler installed, throws

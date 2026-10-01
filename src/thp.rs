@@ -685,7 +685,7 @@ mod tests {
         assert_eq!((d.mode, d.reason), (Mode::Off, Reason::NoThp));
     }
 
-    /// The 64 KiB matrix cell (Ubuntu's `linux-generic-64k`, 6.8): the PMD
+    /// A 64 KiB-page kernel (Ubuntu's `linux-generic-64k`, 6.8): the PMD
     /// is 512 MiB, `hugepages-524288kB` inherits `madvise`, every smaller
     /// size is `never`. `always` must not commit 512 MiB chunks.
     #[test]

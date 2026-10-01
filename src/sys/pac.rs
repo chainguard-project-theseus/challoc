@@ -32,8 +32,7 @@
 /// child, drives a heap built with the probe forced off and asserts the
 /// count did not move: the proof, on a host that has the extension, that
 /// the fallback path executes no PAC instruction (a host without it,
-/// Neoverse N1, would take `SIGILL`, as the Altra's `make test` did
-/// before this gate). Compiled out of the library.
+/// Neoverse N1, would take `SIGILL`). Compiled out of the library.
 #[cfg(all(test, target_arch = "aarch64"))]
 static TEST_OPS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 

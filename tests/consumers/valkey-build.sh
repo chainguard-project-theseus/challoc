@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build Valkey against challoc and run its test suite (plan Phase 1 task 7).
+# Build Valkey against challoc and run its test suite.
 # Runs inside the dev container: `make valkey` (see the Makefile for the
 # variables it forwards) or `make run CMD='sh tests/consumers/valkey-build.sh'`.
 #
@@ -115,8 +115,8 @@ case "$version" in
 esac
 # No ldd in the image; read the dynamic section instead. The DT_NEEDED
 # check is scripts/check-needed.sh, the same one a package test runs
-# (Phase 3 prerequisite (e): --as-needed drops the entry from a binary
-# that references no symbol of the library).
+# (--as-needed drops the entry from a binary that references no symbol of
+# the library).
 sh "$ROOT/scripts/check-needed.sh" ./src/valkey-server libchalloc.so.0 \
     || { echo "valkey-build.sh: valkey-server has no DT_NEEDED libchalloc.so.0" >&2; exit 1; }
 dyn=$(readelf -d ./src/valkey-server)

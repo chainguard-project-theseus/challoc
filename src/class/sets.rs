@@ -113,9 +113,9 @@ pub const SET_GROUPS: usize = (LG_MAX_SLAB - LG_MIN_SLAB + 1) as usize;
 /// stride + slot)`, `stride = SETS_PER_CLASS * count`). Rows are committed
 /// as a prefix while slab numbers grow, and a small heap touches only row 0
 /// (level-1 word 0) and row 1 (level-0 word 0) of the groups it uses, one
-/// page per (arena, slab size), where one page-aligned table per set cost
-/// one or two pages per (arena, class) and, at 16 arenas, put alloc-testN's
-/// RSS 28% above jemalloc's (`bench/results/2026-09-18-*-gce-arena-rss.md`).
+/// page per (arena, slab size). One page-aligned table per set would cost
+/// one or two pages per (arena, class), which at 16 arenas puts a small
+/// multi-threaded heap's RSS well above jemalloc's.
 pub struct SetTable {
     groups: [Group; SET_GROUPS],
     /// Slab count of each group's classes.

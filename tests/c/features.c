@@ -5,8 +5,8 @@
  * pairs: the kernel probes, then pac. The same bytes appear after
  * "Kernel and CPU features: " in malloc_stats_print, so a program can read
  * the host's floor and ceiling either way. The program prints the line
- * (the container test shows it, and the results file records it per host)
- * and checks: the pointer is stable, the line is well formed, every key
+ * (so a test log shows what each host offers) and checks: the pointer is
+ * stable, the line is well formed, every key
  * is present exactly once, and the report's line is identical.
  *
  * The symbol is reached through a weak declaration so the program links

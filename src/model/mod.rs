@@ -1,5 +1,5 @@
 //! An exhaustive interleaving model of the slab protocol (design.md
-//! section 17, the "model-checked protocol" row; plan Phase 2.5 task 13).
+//! section 17, the "model-checked protocol" row).
 //! Test-only: `cargo test model::`.
 //!
 //! What is modelled. One class, [`NSLABS`] slabs of [`NSLOTS`] slots each
@@ -18,9 +18,9 @@
 //! interleaving that reached it.
 //!
 //! Operations: `Refill(n)` is `ClassState::claim` (`plan` under the lock:
-//! the slab selection, `take`, the zero flag and, with the fix of plan
-//! Phase 1.5 task 7 (c), `claim_prefix`; then `finish` outside the lock:
-//! the `fetch_or` bit loop of an `Active` pick, one atomic per word);
+//! the slab selection, `take`, the zero flag and `claim_prefix`; then
+//! `finish` outside the lock: the `fetch_or` bit loop of an `Active`
+//! pick, one atomic per word);
 //! `Write(i)` dirties the `i`th slot the thread holds; `Release` gives
 //! every held slot back (`release_owned`: `fetch_and` per slab, then
 //! `dec_live`, whose `sub_live` reaching zero runs `on_live_zero` under
@@ -44,11 +44,11 @@
 //! the state byte, which is what the calloc race was about.
 //!
 //! One knob replays the protocol before its fix ([`Variant`]):
-//! `prefix_claim: false` is the pre-7 (c) order (the zero flag decided in
-//! `plan`, the bits claimed in `finish`), and the model finds the calloc
-//! race (a slot reported zero whose memory another thread dirtied in the
-//! window) and prints the interleaving. With it on, every scenario
-//! passes.
+//! `prefix_claim: false` is the order without `claim_prefix` (the zero
+//! flag decided in `plan`, the bits claimed in `finish`), and the model
+//! finds the calloc race (a slot reported zero whose memory another
+//! thread dirtied in the window) and prints the interleaving. With it on,
+//! every scenario passes.
 //!
 //! A change to the protocol in `class/` is a change to a step here.
 //!
@@ -209,7 +209,7 @@ mod tests {
             msg.contains("reported zero") && msg.contains("dirty"),
             "{msg}"
         );
-        // The interleaving is the campaign's mechanism: A's plan flags a
+        // The interleaving is the race's mechanism: A's plan flags a
         // zero pick and drops the lock; B claims the slot, writes it and
         // releases it; A's bit loop then takes the same slot.
         let steps: Vec<&(u8, Op, u8, String)> = tr.0.iter().collect();

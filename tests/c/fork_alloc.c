@@ -6,10 +6,10 @@
  * allocating throughout, including from other threads that are mid-malloc
  * at the moment of the fork.
  *
- * `fork_alloc mallctl` forks while other threads
- * loop on `mallctl("epoch")` and `tcache.create`/`tcache.destroy`, the
- * calls that take the statistics and explicit-cache locks the fork handler
- * used to skip. Each child allocates, calls `epoch` and creates and
+ * `fork_alloc mallctl` forks while other threads loop on
+ * `mallctl("epoch")` and `tcache.create`/`tcache.destroy`, the calls that
+ * take the statistics and explicit-cache locks, which the fork handlers
+ * must take too. Each child allocates, calls `epoch` and creates and
  * destroys a cache itself; a child that inherits one of those locks held
  * by a thread that no longer exists hangs, so it runs under an alarm and
  * the parent kills anything the alarm missed, and both count as failures

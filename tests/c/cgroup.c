@@ -1,7 +1,7 @@
 /*
  * The cgroup figures a program can read through mallctl
- * (`stats.cgroup.limit`, `.high`, `.current`, design 11 and 13.4) and the `cgroup:` line of malloc_stats_print, from C under
- * LD_PRELOAD. Modes:
+ * (`stats.cgroup.limit`, `.high`, `.current`, design 11 and 13.4) and the
+ * `cgroup:` line of malloc_stats_print, from C under LD_PRELOAD. Modes:
  *
  *   plain  the default configuration: the keys read when the process has a
  *          cgroup2 (found here the same way the library finds it, from
@@ -13,7 +13,7 @@
  *          program touches, after the 10 ms sampling window has passed.
  *   off    run with MALLOC_CONF=cgroup:false,abort_conf:true: nothing is
  *          tracked, the keys are ENOENT, the report says why, and
- *          abort_conf accepts the key (it is no longer inert).
+ *          abort_conf accepts the key.
  *   bg     run with MALLOC_CONF=background_thread:true: once the thread
  *          exists the cgroup is still tracked, the report prints the
  *          tracked `cgroup:` line and `current` follows the kernel's

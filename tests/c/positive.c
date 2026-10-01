@@ -1,5 +1,6 @@
 /*
- * Positive paths of the API that no other program reached from C. One mode per process, driven by src/api/c_programs.rs:
+ * Positive paths of the API that no other program reaches from C. One
+ * mode per process, driven by src/api/c_programs.rs:
  *
  *   positive free_sized       C23 free_sized / free_aligned_sized over
  *                             every tier (malloc, calloc, realloc and

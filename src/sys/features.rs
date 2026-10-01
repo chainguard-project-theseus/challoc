@@ -476,8 +476,7 @@ mod linux_tests {
     // mseal and CONFIG_ANON_VMA_NAME is optional, but
     // madvise itself is never filtered.
 
-    /// The line prints and the page geometry is consistent. The name is
-    /// the filter `bench/probes/calloc-zero-campaign.sh` runs.
+    /// The line prints and the page geometry is consistent.
     #[test]
     fn probe_prints_and_matches_kernel_version() {
         let (_, f, _) = probed();

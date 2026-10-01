@@ -180,8 +180,8 @@ struct FreeNode {
 /// doc): decided on the first table from the kernel's overcommit mode and
 /// the THP policy in force, never assumed. A `u8` with three values, not
 /// an enum: an enum's niche makes rustc regroup every field of `Inner`
-/// and the offsets the inlined object paths use would move (measured:
-/// `Meta::free` and `claim_with` changed with an enum here).
+/// and the offsets the inlined object paths use would move (an enum here
+/// changes the machine code of `Meta::free` and `claim_with`).
 const EAGER_UNPROBED: u8 = 0;
 const EAGER_ON: u8 = 1;
 const EAGER_OFF: u8 = 2;
@@ -199,9 +199,10 @@ struct Inner {
     top: usize,
     free: [*mut FreeNode; NBINS],
     stats: MetaStats,
-    // The fields below were added after the fields the inlined object
-    // paths (`Meta::alloc` in `claim_with`, `Meta::free`) address, so
-    // those offsets, and their machine code, did not move.
+    // The fields below sit after the fields the inlined object paths
+    // (`Meta::alloc` in `claim_with`, `Meta::free`) address, so those
+    // offsets, and their machine code, do not depend on them. New fields
+    // go here too.
     /// Bytes committed on the reservation side (`commit` above `top`).
     top_committed: usize,
     /// One of `EAGER_UNPROBED`, `EAGER_ON`, `EAGER_OFF`.
@@ -574,9 +575,9 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    /// The page size the backing is built with: the kernel's (the
-    /// reservations are real; the 64 KiB-page matrix cell found the 4 KiB
-    /// constant).
+    /// The page size the tests compute with: the kernel's, not a 4 KiB
+    /// constant (the reservations are real, so the commit arithmetic
+    /// follows the kernel's page, 64 KiB on some aarch64 kernels).
     fn page_size() -> usize {
         crate::sys::features::page_size()
     }
@@ -965,7 +966,7 @@ mod tests {
     }
 
     /// The host policy: eager carving is on under the default `thp:never`
-    /// on a kernel that honours `MAP_NORESERVE` (the reference VMs), off
+    /// on a kernel that honours `MAP_NORESERVE`, off
     /// under `vm.overcommit_memory=2`; the probe reads the sysctl.
     #[test]
     fn eager_policy_follows_overcommit_mode() {

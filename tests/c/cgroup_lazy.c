@@ -1,7 +1,7 @@
 /*
- * The two-advice purge under the cgroup policy's
- * headroom band, end to end in a `docker run --memory=512m` container
- * (scripts/cgroup-tests.sh `lazy`, `make test-cgroup-lazy`). The program
+ * The two-advice purge under the cgroup policy's headroom band, end to end
+ * in a `docker run --memory=512m` container (scripts/cgroup-tests.sh
+ * `lazy`, `make test-cgroup-lazy`). The program
  * allocates a working set (200 MiB by default: half 1 MiB runs, a quarter
  * 32 KiB objects, a quarter 1 KiB objects, every byte written), frees all
  * of it and idles with the churn test's trickle (an event loop's transient
@@ -39,7 +39,7 @@
  *   --any-allocator  skip `require_challoc` (no criterion then: `report`).
  *
  * `report` and `--any-allocator` are bench probes, not tests: they print
- * the curve for a results file and pass whatever it shows. The tests are
+ * the curve for comparison and pass whatever it shows. The tests are
  * `lazy` and `eager` under challoc.
  *
  * Single-threaded, no `malloc_trim`, no background thread: the periodic

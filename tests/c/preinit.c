@@ -11,9 +11,9 @@
  * `free_sized(NULL, 0)`, `malloc_usable_size(NULL)`), then allocates
  * and builds a locale the way glibc's static initialisers do. A
  * priority-101 constructor (the executable's first, run after every
- * shared object's) repeats the NULL calls. The results are recorded and checked in
- * `main`, after `require_challoc`: stdio is not used before libc's
- * initialisers have run.
+ * shared object's) repeats the NULL calls. The results are recorded and
+ * checked in `main`, after `require_challoc`: stdio is not used before
+ * libc's initialisers have run.
  */
 #include "common.h"
 

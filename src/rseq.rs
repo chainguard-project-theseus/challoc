@@ -5,8 +5,8 @@
 //! thread with the kernel and exports three symbols from the dynamic
 //! loader: `__rseq_offset`, the signed distance from the thread pointer to
 //! that thread's area (it moves with the static TLS layout, so it is read
-//! from the symbol, never assumed: 192 on the aarch64 reference VM, -192
-//! bare and -256 under a preload on the x86_64 one), `__rseq_size`, the
+//! from the symbol, never assumed: 192 on aarch64, -192 bare and -256
+//! under a preload on x86_64, for example), `__rseq_size`, the
 //! number of bytes of the area the kernel writes (the auxiliary vector's
 //! `AT_RSEQ_FEATURE_SIZE` rounded up; 20 on a kernel without the extended
 //! fields), and `__rseq_flags`, the registration flags (0). The symbols

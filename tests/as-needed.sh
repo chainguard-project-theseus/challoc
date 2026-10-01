@@ -1,7 +1,7 @@
 #!/bin/sh
 # tests/as-needed.sh: the `-Wl,--as-needed` truth for challoc consumers
-# (design 13.6), run in the dev container by
-# `make check-needed` after `cargo build --release`. Links tests/c/as_needed.c
+# (design 13.6), run in the dev container by `make check-needed` after
+# `cargo build --release`. Links tests/c/as_needed.c
 # against target/release/libchalloc.so three ways, each with and without
 # `-Wl,--as-needed`, and checks the DT_NEEDED list with
 # scripts/check-needed.sh:
@@ -96,9 +96,10 @@ if out=$("$T/malloc-as-needed" 2>&1); then echo "    FAIL: ran without the libra
 else echo "    without it: $(echo "$out" | head -1 | sed 's/.*: //') (expected: cannot open libchalloc.so.0)"; fi
 echo "== running the --as-needed none variant (no reference: glibc malloc, the silent failure):"
 "$T/none-as-needed" | sed 's/^/    /'
-# The built consumers, when present: tests/consumers/valkey-build.sh's valkey-server
-# must need libchalloc.so.0; tests/consumers/ruby-build.sh's ruby and libruby.so must
-# need libjemalloc.so.2 (both builds run the same check themselves).
+# The built consumers, when present: tests/consumers/valkey-build.sh's
+# valkey-server must need libchalloc.so.0; tests/consumers/ruby-build.sh's
+# ruby and libruby.so must need libjemalloc.so.2 (both builds run the same
+# check themselves).
 echo "== built consumers:"
 found=0
 consumer() { # BINARY SONAME: run the check, keep its exit status (not sed's)

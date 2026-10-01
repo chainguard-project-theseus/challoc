@@ -1,7 +1,7 @@
 #!/bin/sh
-# Build Ruby 3.4 `--with-jemalloc` against challoc's libjemalloc.so.2 stage and
-# run `make test-all` (plan Phase 1 acceptance). Runs inside the dev
-# container: `make ruby` (see the Makefile for the variables it forwards) or
+# Build Ruby 3.4 `--with-jemalloc` against challoc's libjemalloc.so.2 stage
+# and run `make test-all`. Runs inside the dev container: `make ruby` (see
+# the Makefile for the variables it forwards) or
 # `make run CMD='sh tests/consumers/ruby-build.sh'`.
 #
 # What it does:
@@ -145,7 +145,8 @@ step "check ($ALLOC)"
 libruby=$(ls libruby.so.3.4* | head -1)
 if [ "$ALLOC" = challoc ]; then
     # DT_NEEDED through scripts/check-needed.sh, the check a package test
-    # runs (Phase 3 prerequisite (e)); then the rpath.
+    # runs (--as-needed drops the entry from a binary that references no
+    # symbol of the library); then the rpath.
     for bin in ruby "$libruby"; do
         sh "$ROOT/scripts/check-needed.sh" "$bin" libjemalloc.so.2 \
             || { echo "ruby-build.sh: $bin has no DT_NEEDED libjemalloc.so.2" >&2; exit 1; }

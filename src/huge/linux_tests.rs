@@ -185,10 +185,10 @@ fn aligned_runs_are_usable_end_to_end() {
     assert_eq!(h.stats().runs, 0);
 }
 
-/// The alignment-hole regression: in guard-install mode
-/// `prepare` committed only `[max(s, mark), end)`, so the alignment
-/// hole `[mark, s)` that `take` records as a free extent stayed
-/// `PROT_NONE` and the first run refilled into it faulted. Both hole
+/// Alignment holes: in guard-install mode `prepare` must commit the
+/// alignment hole `[mark, s)` that `take` records as a free extent, not
+/// only `[max(s, mark), end)`, or the hole stays `PROT_NONE` and the
+/// first run refilled into it faults. Both hole
 /// shapes: a hole between the mark and an aligned run on fresh pages
 /// (`ext` null in `take`), and a hole folded into an `Empty` extent that
 /// touched the mark (`s > e_end`). Every filler is written end to end.
