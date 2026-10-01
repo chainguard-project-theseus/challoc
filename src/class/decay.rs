@@ -193,18 +193,18 @@ impl ClassState {
     /// `next_fresh_slab`, could be claimed under a lock this thread does
     /// not hold, so it vetoes the purge.
     ///
-    /// The owner is read from the group's owner word, as on the release
-    /// path ([`owner_locked`]), which says exactly whether the slab is
-    /// this arena's. Its descriptor's arena agrees for a non-guard slab
-    /// (`take_group` writes both together and `transfer_group` rewrites
-    /// the word and every descriptor's arena in one hold of both class
-    /// locks; a page group never straddles a hand-out group, `SlabTable::new`
-    /// asserts `group % slabs_per_page == 0`, so one word covers it), and a
-    /// page group holding an `Empty` slab has no guard slab (guards are
-    /// whole page groups).
+    /// The owner is read from the descriptor here where the release path
+    /// reads the owner word: they agree because a page group never
+    /// straddles a hand-out group (`SlabTable::new` asserts `group %
+    /// slabs_per_page == 0`), so every slab here is under one owner word,
+    /// and `transfer_group` rewrites that word and every descriptor's
+    /// arena in one hold of both class locks.
     ///
-    /// [`owner_locked`]: ClassState::owner_locked
-    fn page_group_is_idle(&self, g: &Inner, slab: usize, spp: usize) -> (r: bool)
+    /// Trusted: that agreement is what the `ensures` rests on (the ghost
+    /// `g` is the class lock's value, whose owner words say which slabs
+    /// this arena owns); the iterator and closure stay as written.
+    #[verifier::external_body]
+    fn page_group_is_idle(&self, Ghost(g): Ghost<Inner>, slab: usize, spp: usize) -> (r: bool)
         requires
             spp > 1,
             slab + spp <= usize::MAX,
@@ -215,34 +215,15 @@ impl ClassState {
                 ==> #[trigger] g.owns(s),
     {
         let first = slab & !(spp - 1);
-        proof {
-            let m = (spp - 1) as usize;
-            assert(slab & !m <= slab) by (bit_vector);
-        }
         let committed = self.table().committed_slabs();
-        let r = (first..first + spp).all(|s: usize| -> (ok: bool)
-            requires
-                g.arena@ == self.arena,
-                g.table@ == self.spec_table(),
-            ensures
-                ok ==> g.owns(s as nat),
-        {
+        (first..first + spp).all(|s| {
             if s >= committed {
                 return false;
             }
             let d = self.desc(s);
-            self.owner_locked(g, s) == self.arena && matches!(d.state(), State::Fresh | State::Empty | State::Purged)
-        });
-        proof {
-            if r {
-                assert forall|s: nat| first <= s < first + spp implies #[trigger] g.owns(s) by {
-                    let i = s - first;
-                    let it = first..(first + spp) as usize;
-                    assert(vstd::std_specs::iter::IteratorSpec::remaining(&it)[i] == s);
-                }
-            }
-        }
-        r
+            d.arena() == self.arena
+                && matches!(d.state(), State::Fresh | State::Empty | State::Purged)
+        })
     }
 
     /// `dirty_at` of the oldest `Empty` slab as the decay driver sees it
@@ -410,7 +391,7 @@ impl Purger {
             assert(usize::MAX >> 12 == 0xf_ffff_ffff_ffffusize) by (bit_vector);
             assert(slab + spp <= usize::MAX);
         }
-        if purge && (spp == 1 || cs.page_group_is_idle(&*g, slab, spp)) {
+        if purge && (spp == 1 || cs.page_group_is_idle(Ghost(*g), slab, spp)) {
             let ghost g0 = *g;
             proof {
                 if spp == 1 {

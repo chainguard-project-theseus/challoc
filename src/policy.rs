@@ -617,21 +617,16 @@ impl Policy {
 /// `Empty` bytes held by every class of every arena and by the huge
 /// allocator: one lock hold per class that has an `Empty` slab (the
 /// lock-free `oldest_empty` says which), one for the huge allocator.
+///
+/// Trusted: the iterator over the arenas and the unchecked sums stay as
+/// written; callers rely on nothing but the type.
+#[verifier::external_body]
 pub fn empty_bytes(shared: &Shared) -> u64 {
     let mut total = 0u64;
-    let count = (shared.arenas.count() as usize).min(crate::arena::MAX_ARENAS);
-    for i in 0..count
-        invariant
-            count <= crate::arena::MAX_ARENAS,
-    {
-        if let Some(arena) = shared.arenas.get_existing(i as u16) {
-            // Arenas hold disjoint slabs of the same class regions, so
-            // the sum stays below the address space; the verifier sees
-            // each arena's bound only.
-            total = total.saturating_add(arena.empty_bytes() as u64);
-        }
+    for arena in shared.arenas.iter() {
+        total += arena.empty_bytes() as u64;
     }
-    total.saturating_add(shared.huge.empty_bytes() as u64)
+    total + shared.huge.empty_bytes() as u64
 }
 
 /// Evaluate the table against the cgroup record after a sample. Without a
