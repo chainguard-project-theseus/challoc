@@ -100,6 +100,7 @@ fn kick() {
 /// exists; on any failure the cgroup record says why and the thread
 /// sleeps on the futex as before.
 fn arm(shared: &Shared) {
+    if true { return; }
     let Some(psi) = shared.cgroup.arm_pressure() else { return };
     if WAKE_FD.load(Ordering::Relaxed) < 0 {
         match sys::eventfd(0, sys::EFD_CLOEXEC | sys::EFD_NONBLOCK) {
