@@ -151,6 +151,8 @@ pub struct Config {
     pub huge_retain_max: usize,
     /// The huge tier's own decay window; `None` follows arena 0's ([`Config::huge_decay_ms`]).
     pub huge_dirty_decay_ms: Option<i64>,
+    /// The demand window in ms (`purge::demand`); 0, the default, is off.
+    pub hpa_peak_demand_window_ms: u32,
     /// Clear a freed block before it is cached or released (`Shared::push_flags`).
     pub zero_on_free: bool,
     /// Sign cached slot pointers and the TLS heap pointer with PAC (`sys::pac`).
@@ -185,6 +187,7 @@ impl Config {
         guard_slab_interval: 8,
         huge_retain_max: crate::huge::DEFAULT_RETAIN_MAX,
         huge_dirty_decay_ms: None,
+        hpa_peak_demand_window_ms: 0,
         zero_on_free: false,
         pac_pointers: false,
         slot_randomize: false,
@@ -485,6 +488,13 @@ pub const TABLE: &[Key] = &[
         name: "huge_dirty_decay_ms",
         parse: |c, k, v| num(c, k, v, -1, MAX_INTERVAL_MS, |c, v| c.huge_dirty_decay_ms = Some(v)),
         read: |c| Value::Int(c.huge_decay_ms()),
+    },
+    Key {
+        name: "hpa_peak_demand_window_ms",
+        parse: |c, k, v| {
+            num(c, k, v, 0, crate::purge::demand::MAX_WINDOW_MS, |c, v| c.hpa_peak_demand_window_ms = v as u32)
+        },
+        read: |c| Value::Int(c.hpa_peak_demand_window_ms as i64),
     },
     bool_key!("zero_on_free", zero_on_free),
     bool_key!("pac_pointers", pac_pointers),
@@ -1022,7 +1032,7 @@ mod tests {
     #[test]
     fn every_numeric_key_parses_and_clamps() {
         // (key, in-range value, below-min input, clamped min, above-max input, clamped max)
-        let cases: [(&str, i64, &str, i64, &str, i64); 9] = [
+        let cases: [(&str, i64, &str, i64, &str, i64); 10] = [
             ("dirty_decay_ms", 5000, "-2", -1, "9999999999999999", MAX_INTERVAL_MS),
             ("huge_dirty_decay_ms", 2000, "-2", -1, "9999999999999999", MAX_INTERVAL_MS),
             ("muzzy_decay_ms", 0, "-5", -1, "9999999999999999", MAX_INTERVAL_MS),
@@ -1032,6 +1042,7 @@ mod tests {
             ("lg_tcache_nslots_mul", 3, "-17", -16, "17", 16),
             ("guard_slab_interval", 2, "-1", 0, "5000000", MAX_GUARD_SLAB_INTERVAL as i64),
             ("huge_retain_max", 1 << 20, "-1", 0, "9999999999999999", MAX_HUGE_RETAIN_MAX as i64),
+            ("hpa_peak_demand_window_ms", 120_000, "-1", 0, "9999999999999999", crate::purge::demand::MAX_WINDOW_MS),
         ];
         for (key, ok, low, min, high, max) in cases {
             let as_value = |v: i64| match key {
