@@ -76,6 +76,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--aa-history", help="JSONL of past A/A summaries: margin calibration")
     p.add_argument("--json", action="store_true")
 
+    p = sub.add_parser("fp", help="false-positive rate of a K-replicate run, resampled from an A/A launch with more replicates")
+    p.add_argument("dirs", nargs="+", help="the VM result directories (target/results/cb/<run>/res/*)")
+    p.add_argument("--k", type=int, default=3, help="replicates per cell in the simulated run (default 3, quick's)")
+    p.add_argument("--draws", type=int, default=100)
+    p.add_argument("--json", action="store_true")
+
     p = sub.add_parser("report", help="re-render one run's summary")
     p.add_argument("dir")
     p.add_argument("--json", action="store_true")
@@ -136,6 +142,19 @@ def _dispatch(a: argparse.Namespace) -> int:
             s = report.analyze_dirs(a.dirs, rows, cand=a.cand, ref=a.ref or (None if not a.cand else _first_label(a.dirs[0])), aa_history=hist)
         print(json.dumps(s, indent=1, default=str) if a.json else report.render(s), end="" if not a.json else "\n")
         return s["exit"]
+    if a.cmd == "fp":
+        s = report.simulate_runs(a.dirs, load_rows(), k=a.k, draws=a.draws)
+        if a.json:
+            print(json.dumps(s, indent=1))
+            return 0
+        print(f"{a.draws} simulated {a.k}-replicate runs from replicates {s['replicates']}")
+        print("| cell/row | same | sub-threshold | inconclusive | worse | better | FP rate | q99 abs est |")
+        print("|---|---:|---:|---:|---:|---:|---:|---:|")
+        for key, r in s["rows"].items():
+            v = r["verdicts"]
+            print(f"| {key} | {v.get('same', 0)} | {v.get('sub-threshold', 0)} | {v.get('inconclusive', 0)} | {v.get('worse', 0)} | {v.get('better', 0)} | {r['fp_rate']:.1%} | {r['q99_abs_est_pct']:.2f}% |")
+        print(f"headlines: {s['headline']}; headline FP rate {s['headline_fp_rate']:.1%}; per-row FP rate {s['row_fp_rate']:.2%}")
+        return 0
     if a.cmd == "plan":
         rows = load_rows()
         suite = load_suite(a.suite, rows)

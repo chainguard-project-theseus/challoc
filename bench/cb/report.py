@@ -373,3 +373,65 @@ def render(summary: dict[str, Any]) -> str:
     out.append("")
     out.append(f"**{summary['headline']}** (exit {summary['exit']}), {summary['n_samples']} runs, {summary.get('wall_s', 0) / 60:.1f} min")
     return "\n".join(out) + "\n"
+
+
+def simulate_runs(dirs: list[str], rows: Rows, *, k: int, draws: int, seed: int = 1) -> dict[str, Any]:
+    """The false-positive rate of a k-replicate launch, from an A/A fan-out
+    with more replicates (`cb fp`): every draw picks k replicates per cell
+    (a replicate is one VM per shard, as in a real launch), analyzes only
+    their samples, and counts each gate row's verdict and the headline.
+    In an A/A every `worse` or `better` is a false positive."""
+    import itertools
+    import random as _random
+
+    loaded = [load_dir(d) for d in dirs]
+    by_cell: dict[str, dict[int, list[dict[str, Any]]]] = collections.defaultdict(lambda: collections.defaultdict(list))
+    for r in loaded:
+        h = r["host"]
+        rep = (h.get("launch") or {}).get("replicate")
+        if rep is None or not r["samples"]:
+            continue
+        by_cell[h.get("cell", "?")][int(rep)].append(r)
+    rng = _random.Random(seed)
+    combos = {c: list(itertools.combinations(sorted(reps), k)) for c, reps in by_cell.items()}
+    for c, cs in combos.items():
+        if not cs:
+            raise ValueError(f"cell {c}: fewer than {k} replicates")
+    counts: dict[str, collections.Counter[str]] = collections.defaultdict(collections.Counter)
+    heads: collections.Counter[str] = collections.Counter()
+    ests: dict[str, list[float]] = collections.defaultdict(list)
+    for _ in range(draws):
+        pick = []
+        for c, cs in combos.items():
+            for rep in rng.choice(cs):
+                pick += by_cell[c][rep]
+        s = analyze(pick, rows)
+        heads[s["headline"]] += 1
+        for res in s["results"]:
+            if res["kind"] != "gate":
+                continue
+            key = f"{res.get('cell')}/{res['row']}"
+            counts[key][res["verdict"]] += 1
+            if res.get("est_pct") is not None:
+                ests[key].append(res["est_pct"])
+    per_row = {}
+    for key, cnt in sorted(counts.items()):
+        n = sum(cnt.values())
+        xs = sorted(abs(x) for x in ests[key])
+        per_row[key] = {
+            "draws": n,
+            "verdicts": dict(cnt),
+            "fp_rate": (cnt["worse"] + cnt["better"]) / n if n else None,
+            "resolved_rate": (cnt["same"] + cnt["sub-threshold"]) / n if n else None,
+            "q99_abs_est_pct": xs[min(len(xs) - 1, int(0.99 * len(xs)))] if xs else None,
+        }
+    total = sum(heads.values())
+    return {
+        "k": k,
+        "draws": draws,
+        "replicates": {c: sorted(r) for c, r in by_cell.items()},
+        "rows": per_row,
+        "headline": dict(heads),
+        "headline_fp_rate": (heads["REGRESSION"] + heads["IMPROVEMENT"]) / total if total else None,
+        "row_fp_rate": sum(c["worse"] + c["better"] for c in counts.values()) / max(1, sum(sum(c.values()) for c in counts.values())),
+    }

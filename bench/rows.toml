@@ -26,7 +26,9 @@
 #              skip the row
 #   check      a hard floor on the score for challoc variants (a failed
 #              check makes the row "broken"), e.g. { min = 90 }
-#   est_s      expected seconds per run (planning, timeouts)
+#   est_s      expected seconds per run (planning, shard packing, timeouts);
+#              the quick rows are the median wall time on the C4/C4A cells
+#              (cb launch, 2026-09-30) plus process start
 #   needs      files that must exist ({...} expanded) or the row is skipped
 
 [vars]
@@ -52,7 +54,7 @@ better = "higher"
 threads = 1
 class = "st"
 secs = 5
-est_s = 6
+est_s = 7.5
 
 [row.larson10]
 cmd = ["{bin}/larson", "5", "8", "1000", "5000", "100", "4141", "10"]
@@ -62,7 +64,7 @@ better = "higher"
 threads = 10
 class = "mt"
 secs = 5
-est_s = 6
+est_s = 7.5
 
 [row.larson16]
 cmd = ["{bin}/larson", "5", "8", "1000", "5000", "100", "4141", "16"]
@@ -103,7 +105,7 @@ better = "higher"
 threads = 10
 class = "mt"
 secs = 5
-est_s = 6
+est_s = 5.5
 
 [row.xmallocN]
 cmd = ["{bin}/xmalloc-test", "-w", "{nproc}", "-t", "5", "-s", "64"]
@@ -123,7 +125,7 @@ better = "lower"
 threads = 1
 class = "st"
 fixed_work = true
-est_s = 4
+est_s = 3.5
 
 [row.alloc-testN]
 cmd = ["{bin}/alloc-test", "{nproc16}"]
@@ -191,7 +193,7 @@ unit = "M ops/s"
 better = "higher"
 threads = 1
 class = "mt"
-est_s = 9
+est_s = 5.5
 
 [row.valkey1-free]
 cmd = ["{tools}/valkey_model", "-n", "{valkey_n}", "-t", "{valkey_secs}", "-s", "-f", "free"]
@@ -200,7 +202,7 @@ unit = "M ops/s"
 better = "higher"
 threads = 1
 class = "mt"
-est_s = 9
+est_s = 5.5
 
 [row.valkey1-usable]
 cmd = ["{tools}/valkey_model", "-n", "{valkey_n}", "-t", "{valkey_secs}", "-s", "-u"]
@@ -255,7 +257,7 @@ threads = 1
 class = "st"
 requires = ["mallctl"]
 check = { min = 90.0 }
-est_s = 9
+est_s = 10.5
 
 # ---- Python (bench/probes/python/json_bench.py) ---------------------------
 
