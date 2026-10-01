@@ -8,6 +8,9 @@ behind design decisions (consult it before re-researching anything).
 
 Environment facts:
 
+- Builds and tests go through `scripts/devvm.sh` (remote Linux VMs, native
+  arm64 and amd64), never local Docker: `scripts/devvm.sh run arm64 <name>
+  -- make test`. The `make` targets below run unchanged inside it.
 - Nothing builds or runs on macOS or any non-Linux host. Use the dev
   container from `Dockerfile.dev`: `make dev` for a shell, or
   `make run CMD='...'` for one command (escape `$` as `$$` in CMD).

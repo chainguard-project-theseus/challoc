@@ -50,10 +50,13 @@ disasm() { objdump -d --no-show-raw-insn "$1"; }
 # instruction text, then by text with immediates masked, and prints a
 # unified diff for anything left.
 FNCMP="$(dirname "$0")/codegen-fncmp.py"
+# The container runs as root over a tree a Linux host user owns, which
+# git refuses as "dubious ownership" without safe.directory.
+GIT="git -c safe.directory=*"
 
 case "$MODE" in
   capture)
-    git rev-parse HEAD > "$DIR/commit.txt"
+    $GIT rev-parse HEAD > "$DIR/commit.txt"
     for v in q16 q8; do
       so=$(build $v); cp "$so" "$DIR/lib-$v.so"
       disasm "$so" > "$DIR/disasm-$v.txt"
@@ -61,7 +64,7 @@ case "$MODE" in
     done
     echo "captured at $(cat "$DIR/commit.txt")";;
   compare)
-    echo "baseline $(cat "$DIR/commit.txt"), tree $(git rev-parse HEAD)$(git diff --quiet HEAD -- src Cargo.toml build.rs || echo ' + uncommitted src changes')"
+    echo "baseline $(cat "$DIR/commit.txt"), tree $($GIT rev-parse HEAD)$($GIT diff --quiet HEAD -- src Cargo.toml build.rs || echo ' + uncommitted src changes')"
     rc=0
     for v in q16 q8; do
       so=$(build $v)

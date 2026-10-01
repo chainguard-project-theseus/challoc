@@ -48,6 +48,27 @@ visible only inside the container and never mix with host artifacts. The
 one exception is `target/results/`, bind-mounted from the host.
 `make clean-volumes` removes the two volumes the variables name.
 
+### Remote dev hosts
+
+The dev container does not need a local Docker: any Linux host with
+Docker that you can reach over ssh works, and is the usual setup on a
+Mac. Sync the tree to the host, keeping it a git checkout (bench/quick.sh,
+bench/ab.sh and scripts/codegen-diff.sh read revisions with git), and run
+the same `make` targets there; a native x86_64 host replaces the emulated
+`PLATFORM=linux/amd64`. Give every tree on a shared host its own
+`TARGET_VOLUME`.
+
+`scripts/devvm.sh` is one way to do this on GCE: `devvm.sh up` creates
+(or starts) an aarch64 and an x86_64 VM, installs Docker and builds the
+dev image; `devvm.sh run ARCH NAME -- make test` pushes the current
+commit to a mirror on the VM, syncs uncommitted changes on top into
+`~/w/NAME`, runs the command there with
+`TARGET_VOLUME=challoc-target-NAME-ARCH` and returns its exit status.
+The job runs detached on the VM, so `devvm.sh attach ARCH NAME` picks
+its output up again after an ssh drop; `--base REF` also checks out REF
+for baselines, `fetch` copies results back, `down` stops the VMs.
+`scripts/devvm.sh help` has the details.
+
 ## Hard rules
 
 - challoc is a C-ABI `malloc` replacement written in Rust for C programs
