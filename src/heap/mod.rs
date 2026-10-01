@@ -5,10 +5,11 @@
 //! reached through the one TLS slot in `sys/tls.rs`. A heap holds one
 //! [`CacheHeader`] per size class inline, one 64-byte line each at
 //! `heap + 128 + 64 * class`, so `malloc` reaches the header without
-//! loading a pointer first. A header points at its stack of `cap` slot
+//! loading a pointer first. A header points at its stack of slot
 //! pointers: slots marked allocated in their slab bitmaps but not live in
 //! the program. The stack is a metadata object of its own, allocated on
-//! the class's first slow path.
+//! the class's first slow path and sized for the class's ladder capacity
+//! (`ceil`), of which the cache currently uses `cap`.
 //!
 //! - `malloc` pops the top of the class's stack. An empty stack is
 //!   *refilled* with up to `cap / 2` slots claimed from the class's lowest
@@ -17,6 +18,9 @@
 //!   (invalid and stale double frees abort there) and pushes it. A full
 //!   stack is *flushed*: its `cap / 2` highest addresses go back to their
 //!   slabs in one batch grouped by slab.
+//! - `cap` follows demand between a floor and `ceil` (design 6.4): a
+//!   cache's second miss (refill or full flush) in a GC interval doubles
+//!   it, and a GC that finds the cache quiet halves it.
 //!
 //! Neither fast path touches a slab descriptor, takes a lock or does an
 //! atomic read-modify-write. Every header starts with `len == cap == 0`,
@@ -95,6 +99,13 @@ pub const GROW_MISSES: u8 = 2;
 /// below [`MIN_CAP`].
 pub const fn default_cap(class: usize) -> u32 {
     crate::config::ladder(class, MAX_CAP, 1)
+}
+
+/// The smallest capacity a GC shrink leaves a cache of `class` whose
+/// stack holds `ceil` slots.
+#[inline]
+fn cap_floor(_shared: &Shared, _class: usize, ceil: u32) -> u32 {
+    MIN_CAP.min(ceil)
 }
 
 /// The `others` key of the one flush-only cache per class that plain
@@ -466,7 +477,9 @@ impl Heap {
     }
 
     /// Cache GC (design 6.4): for every cache, release three quarters of
-    /// the entries that went unused since the last GC, then restart the
+    /// the entries that went unused since the last GC; halve the capacity
+    /// of a quiet cache (no miss and an unused bottom since the last GC,
+    /// [`Heap::gc_arena`]), releasing what no longer fits; then restart the
     /// low-water tracking from the current length and the miss count from
     /// zero.
     pub fn gc(&mut self, shared: &Shared) {
@@ -479,6 +492,13 @@ impl Heap {
         }
     }
 
+    /// [`Heap::gc`] for one cache array (the home array when `node` is
+    /// null). The capacity rule (design 6.4): a cache that took no miss
+    /// since the last GC and whose low-water mark stayed above zero halves
+    /// `cap`, down to its floor, and flushes the highest addresses that no
+    /// longer fit; a busy cache keeps its capacity, and the misses of the
+    /// next interval grow it back ([`CacheHeader::note_miss`]). The
+    /// `FOREIGN` cache is flushed whole and keeps its fixed capacity.
     fn gc_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches) {
         for class in 0..NCLASSES {
             // SAFETY: `node` is null or a live node owned by this heap; an
@@ -495,11 +515,28 @@ impl Heap {
                     if len > 0 {
                         self.flush(shared, arena, cache, class, len);
                     }
-                } else if lw > 0 {
-                    self.flush(shared, arena, cache, class, lw - lw / 4);
+                } else {
+                    if lw > 0 {
+                        self.flush(shared, arena, cache, class, lw - lw / 4);
+                    }
+                    // Quiet: neither refilled nor flushed from full, and
+                    // its bottom went unused, for a whole interval. A
+                    // compacting cache keeps its capacity: its run
+                    // rebuilds are its only slow path and migrate the
+                    // class's live set.
+                    let floor = cap_floor(shared, class, (*cache).ceil);
+                    if (*cache).misses == 0 && lw > 0 && (*cache).mode != MODE_COMPACT && (*cache).cap > floor {
+                        let cap = ((*cache).cap / 2).max(floor);
+                        let len = (*cache).len;
+                        if len > cap {
+                            self.flush(shared, arena, cache, class, (len - cap) as usize);
+                        }
+                        (*cache).cap = cap;
+                    }
                 }
                 (*cache).misses = 0;
                 (*cache).low_water = (*cache).len;
+                (*cache).check_cap();
             }
         }
     }

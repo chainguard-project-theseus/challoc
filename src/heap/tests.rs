@@ -879,17 +879,21 @@ fn gc_releases_unused_entries_by_low_water() {
     assert_eq!(t.len(c), len - flushed);
     assert_eq!(live(s, c), live_before - flushed);
     assert_eq!(t.cache(c).low_water(), len - flushed);
-    // Untouched since, so the next GC shrinks it again.
+    // Untouched since, so the next GC shrinks it again; the first GC saw
+    // the refill's miss, this one finds the cache quiet and halves its
+    // capacity too.
+    assert_eq!(t.cache(c).cap(), CAP);
     let len = t.len(c);
     t.gc();
     assert_eq!(t.len(c), len - (len - len / 4));
+    assert_eq!(t.cache(c).cap(), CAP / 2);
     // A cache that was drained and refilled and then left untouched
     // gives three quarters of the batch back at the next GC.
     while t.len(c) > 0 {
         t.alloc(c);
     }
     t.alloc(c);
-    assert_eq!(t.cache(c).low_water(), HALF - 1);
+    assert_eq!(t.cache(c).low_water(), CAP / 4 - 1, "half of the halved capacity");
     let len = t.len(c);
     t.gc();
     assert_eq!(t.len(c), len - (len - len / 4));
@@ -2704,4 +2708,325 @@ fn full_cache_grows_instead_of_flushing() {
     assert_eq!(t.cache(c).cap(), 512);
     t.destroy();
     assert_eq!(live(s, c), 0);
+}
+
+/// A quiet interval (no miss, the bottom unused) halves the capacity at
+/// the GC, after the low-water release, and the highest addresses that no
+/// longer fit go back to their slabs; a busy interval keeps it.
+#[test]
+fn quiet_cache_halves_at_gc_and_trims() {
+    let s = shared();
+    let t = TestHeap::new(s);
+    let c = class_with(64);
+    // Two refills: 1024 claimed, 8 left cached; 1000 back in the cache.
+    let mut ps: Vec<*mut u8> = (0..CAP - 8).map(|_| t.alloc(c)).collect();
+    let kept: Vec<*mut u8> = ps.drain(1000..).collect();
+    for &p in &ps {
+        t.free(p);
+    }
+    assert_eq!(t.len(c), 1008);
+    // The interval saw two misses: the GC releases three quarters of the
+    // low water (8) and keeps the capacity.
+    t.gc();
+    assert_eq!((t.cache(c).cap(), t.len(c)), (CAP, 1002));
+    // Pop down to 8 and push back: no miss, low water 8.
+    let swing: Vec<*mut u8> = (0..994).map(|_| t.alloc(c)).collect();
+    for &p in &swing {
+        t.free(p);
+    }
+    assert_eq!((t.len(c), t.cache(c).low_water(), t.cache(c).misses), (1002, 8, 0));
+    let before = t.cached_plain(c);
+    t.gc();
+    // 6 released by the low water, then halved to 512 with 484 more
+    // released from the top of the address range.
+    assert_eq!((t.cache(c).cap(), t.len(c)), (HALF, HALF));
+    assert_eq!(live(s, c), kept.len() + HALF, "the trimmed slots are back in their slabs");
+    let after: HashSet<*mut u8> = t.cached_plain(c).into_iter().collect();
+    for p in before {
+        let cached = after.contains(&p);
+        assert_eq!(s.checked_slot_any(p).is_some(), cached, "{p:?}: bitmap bit agrees with the cache");
+    }
+    let max_kept = after.iter().max().copied().unwrap();
+    assert!(swing.iter().filter(|p| !after.contains(p)).all(|&p| p > max_kept), "the highest addresses went");
+    // Untouched since: the next GC releases three quarters and halves again.
+    t.gc();
+    assert_eq!((t.cache(c).cap(), t.len(c)), (HALF / 2, HALF / 4));
+    // Back to work: misses grow it back, one doubling per miss from the second on.
+    let mut out = Vec::new();
+    for _ in 0..2 {
+        drain_and_refill(&t, c, &mut out);
+    }
+    assert_eq!(t.cache(c).cap(), HALF);
+    for p in out.into_iter().chain(kept) {
+        t.free(p);
+    }
+    t.destroy();
+    assert_eq!(live(s, c), 0);
+}
+
+/// Shrinking stops at the floor, `MIN_CAP` slots for every class, and a
+/// class whose ladder value is the floor never shrinks.
+#[test]
+fn shrink_stops_at_floor() {
+    let s = shared();
+    let t = TestHeap::new(s);
+    for size in [16usize, 1024, 32 * 1024] {
+        let c = class_with(size);
+        let ceil = default_cap(c) as usize;
+        let mut pool: Vec<*mut u8> = (0..(2 * ceil).max(32)).map(|_| t.alloc(c)).collect();
+        let mut caps = Vec::new();
+        for _ in 0..12 {
+            // Two pushes per interval keep the bottom in use (low water
+            // above zero) without filling the cache.
+            for _ in 0..2 {
+                t.free(pool.pop().unwrap());
+            }
+            t.gc();
+            caps.push(t.cache(c).cap());
+        }
+        assert_eq!(*caps.last().unwrap(), MIN_CAP as usize, "size {size}: {caps:?}");
+        assert!(caps.windows(2).all(|w| w[1] == w[0] || w[1] == w[0] / 2), "size {size}: {caps:?}");
+        assert!(caps.iter().all(|&k| k >= MIN_CAP as usize && k <= ceil));
+        for p in pool {
+            t.free(p);
+        }
+    }
+    t.destroy();
+}
+
+/// A producer that refills and a consumer that flushes from full take
+/// misses every interval and keep their ceilings.
+#[test]
+fn busy_consumer_never_shrinks() {
+    let s = shared();
+    let a = TestHeap::new(s);
+    let b = TestHeap::new(s);
+    let c = class_with(64);
+    for _ in 0..10 {
+        let ps: Vec<*mut u8> = (0..3 * CAP).map(|_| a.alloc(c)).collect();
+        for &p in &ps {
+            b.free(p);
+        }
+        a.gc();
+        b.gc();
+        assert_eq!(a.cache(c).cap(), CAP);
+        assert_eq!(b.cache(c).cap(), CAP);
+    }
+    a.destroy();
+    b.destroy();
+    assert_eq!(live(s, c), 0);
+}
+
+/// A compacting cache keeps its capacity through quiet intervals: its
+/// run rebuilds are the class's migration.
+#[test]
+fn compact_mode_cache_never_shrinks() {
+    let s = shared();
+    let t = TestHeap::new(s);
+    let c = class_with(224);
+    let mut live_ps = residue(&t, c, 30, 560, 0x0c0f_fee5);
+    assert!(Heap::fragmented(s, 0, c));
+    live_ps.push(t.alloc(c));
+    for _ in 0..4 {
+        if t.cache(c).compacting() {
+            break;
+        }
+        let k = t.heap().cache_ptr(c);
+        unsafe { (*k).allocs = (*k).compact_mask as u64 };
+        live_ps.push(t.alloc(c));
+    }
+    assert!(t.cache(c).compacting());
+    let cap = t.cache(c).cap();
+    t.gc();
+    // Quiet intervals: two pushes each keep the bottom in use.
+    for _ in 0..4 {
+        t.free(live_ps.pop().unwrap());
+        t.free(live_ps.pop().unwrap());
+        assert!(t.cache(c).low_water() > 0 && t.cache(c).misses == 0);
+        t.gc();
+        assert!(t.cache(c).compacting());
+        assert_eq!(t.cache(c).cap(), cap);
+    }
+    // The same cache probing again shrinks at its next quiet GC.
+    t.heap().caches[c].set_mode(MODE_PROBE);
+    t.free(live_ps.pop().unwrap());
+    assert!(t.cache(c).low_water() > 0);
+    t.gc();
+    assert_eq!(t.cache(c).cap(), cap / 2);
+    for p in live_ps {
+        t.free(p);
+    }
+    t.destroy();
+    assert_eq!(live(s, c), 0);
+}
+
+/// `thread.allocated` and `thread.deallocated` are derived from the
+/// header arithmetic (`moved`); they stay exact across grows, shrinks
+/// and trims.
+#[test]
+fn thread_counters_survive_trim() {
+    let s = shared();
+    let t = TestHeap::new(s);
+    let c = class_with(64);
+    let (mut na, mut nf) = (0u64, 0u64);
+    let check = |na: u64, nf: u64| assert_eq!(t.stats(), ThreadStats { allocated: 64 * na, deallocated: 64 * nf });
+    let mut ps: Vec<*mut u8> = (0..CAP - 8).map(|_| t.alloc(c)).collect();
+    na += ps.len() as u64;
+    check(na, nf);
+    let kept: Vec<*mut u8> = ps.drain(1000..).collect();
+    for &p in &ps {
+        t.free(p);
+    }
+    nf += ps.len() as u64;
+    t.gc();
+    check(na, nf);
+    let swing: Vec<*mut u8> = (0..994).map(|_| t.alloc(c)).collect();
+    for &p in &swing {
+        t.free(p);
+    }
+    na += 994;
+    nf += 994;
+    t.gc();
+    assert_eq!(t.cache(c).cap(), HALF, "a shrink with a trim");
+    check(na, nf);
+    t.gc();
+    t.gc();
+    check(na, nf);
+    let mut out = Vec::new();
+    for _ in 0..4 {
+        drain_and_refill(&t, c, &mut out);
+    }
+    na += out.len() as u64;
+    assert!(t.cache(c).cap() > HALF / 4, "grown");
+    check(na, nf);
+    for p in out.into_iter().chain(kept) {
+        t.free(p);
+        nf += 1;
+    }
+    check(na, nf);
+    t.destroy();
+}
+
+/// Random alloc, free, GC and flush over three classes and two heaps:
+/// after every step every cache keeps `len <= cap <= ceil` with `cap` at
+/// least its floor, and the slab bitmaps hold exactly the program's live
+/// slots plus the cached ones. Run with the default configuration
+/// (`pac_pointers` on where the CPU has it) and with `slot_randomize`.
+#[test]
+fn adaptive_random_ops_invariants() {
+    let cfgs = [
+        Config { narenas: 1, pac_pointers: true, ..Config::DEFAULT },
+        Config { narenas: 1, pac_pointers: true, slot_randomize: true, ..Config::DEFAULT },
+    ];
+    for cfg in cfgs {
+        let s = TestShared::with(cfg).build();
+        let heaps = [TestHeap::new(s), TestHeap::new(s)];
+        // The synthetic layout has 4 MiB per class: 4096 slots of 1 KiB.
+        let classes = [class_with(16), class_with(256), class_with(1024)];
+        let mut held: [Vec<*mut u8>; 3] = [Vec::new(), Vec::new(), Vec::new()];
+        let mut st = 0x5eed_1234_abcd_0001u64;
+        let (mut grows, mut shrinks) = (0usize, 0usize);
+        let caps = |heaps: &[TestHeap; 2]| -> Vec<usize> {
+            heaps.iter().flat_map(|t| classes.iter().map(move |&c| t.heap().cache(c).map_or(0, |k| k.cap()))).collect()
+        };
+        for step in 0..30_000 {
+            let before = caps(&heaps);
+            let r = xorshift(&mut st);
+            let h = &heaps[(r >> 8) as usize % 2];
+            let k = (r >> 16) as usize % 3;
+            let c = classes[k];
+            let burst = if r % 7 == 0 { 1 + (r >> 32) as usize % 600 } else { 1 };
+            match r % 1000 {
+                // Bursts of allocation or of frees move a cache to its edges.
+                0..=479 => {
+                    for _ in 0..burst.min(2500 - held[k].len().min(2500)) {
+                        held[k].push(h.alloc(c));
+                    }
+                }
+                480..=989 => {
+                    for _ in 0..burst.min(held[k].len()) {
+                        let i = (xorshift(&mut st) % held[k].len() as u64) as usize;
+                        h.free(held[k].swap_remove(i));
+                    }
+                }
+                990..=998 => h.gc(),
+                _ => h.flush_all(),
+            }
+            let after = caps(&heaps);
+            for (b, a) in before.iter().zip(&after) {
+                if *b != 0 && a > b {
+                    grows += 1;
+                }
+                if a < b {
+                    shrinks += 1;
+                }
+            }
+            let mut cached = [0usize; 3];
+            for t in &heaps {
+                for (j, &c) in classes.iter().enumerate() {
+                    if let Some(kh) = t.heap().cache(c) {
+                        kh.check_cap();
+                        assert!(kh.cap() >= MIN_CAP as usize && kh.ceil() == default_cap(c) as usize, "step {step}");
+                        cached[j] += kh.len();
+                    }
+                }
+            }
+            for (j, &c) in classes.iter().enumerate() {
+                assert_eq!(live(s, c), held[j].len() + cached[j], "step {step} class {c}");
+            }
+        }
+        assert!(grows > 0 && shrinks > 0, "grows {grows} shrinks {shrinks}");
+        for (j, v) in held.iter_mut().enumerate() {
+            for p in v.drain(..) {
+                heaps[j % 2].free(p);
+            }
+        }
+        let [a, b] = heaps;
+        a.destroy();
+        b.destroy();
+        for &c in &classes {
+            assert_eq!(live(s, c), 0);
+        }
+    }
+}
+
+/// Demand that sits at the capacity boundary does not thrash: once warm,
+/// a fixed swing per interval moves the capacity at most twice per
+/// interval (a shrink at the GC, a grow at the misses that follow).
+#[test]
+fn boundary_demand_bounded_thrash() {
+    for swing in [64usize, 100, 128, 129, 500] {
+        let s = shared();
+        let t = TestHeap::new(s);
+        let c = class_with(64);
+        let mut pool: Vec<*mut u8> = (0..swing).map(|_| t.alloc(c)).collect();
+        let mut events = Vec::new();
+        for _ in 0..20 {
+            let mut n = 0;
+            let mut cap = t.cache(c).cap();
+            let step = |n: &mut usize, cap: &mut usize| {
+                let k = t.cache(c).cap();
+                if k != *cap {
+                    *n += 1;
+                    *cap = k;
+                }
+            };
+            for p in pool.drain(..) {
+                t.free(p);
+                step(&mut n, &mut cap);
+            }
+            for _ in 0..swing {
+                pool.push(t.alloc(c));
+                step(&mut n, &mut cap);
+            }
+            t.gc();
+            step(&mut n, &mut cap);
+            events.push(n);
+        }
+        assert!(events[3..].iter().all(|&n| n <= 2), "swing {swing}: {events:?}");
+        for p in pool {
+            t.free(p);
+        }
+        t.destroy();
+    }
 }
