@@ -942,7 +942,18 @@ page granularity.
   nothing to give back). An alignment beyond the region is refused.
 - Freed runs become `Empty` and decay like slabs. Runs whose usable size is
   above `huge_retain_max` (a `malloc_conf` key, default 64 MiB, readable as
-  `opt.huge_retain_max`) are purged immediately.
+  `opt.huge_retain_max`) are purged immediately, unless the demand window
+  (`hpa_peak_demand_window_ms`, section 8) is on and shows that the huge
+  tier's demand has reached this height before: its recurring level, plus
+  an eighth, is at least the tier's live pages just before the free. Such a
+  run is kept `Empty` like a smaller one, so a 100 MiB buffer freed and
+  allocated again every step is purged at its first free and kept from
+  its second on, while a one-off run of that size still goes at once.
+  With the window at 0 (the default) the rule is exactly the hard purge
+  above, and `huge_dirty_decay_ms:0` still purges every run at free. The
+  tier samples its live pages under the huge lock in `alloc_run` and
+  `free_run`, next to the table lookup and the syscalls. The window is off
+  for a tier that never decays (`-1`), where a kept run would stay.
 - The huge tier's decay period is arena 0's (`dirty_decay_ms`, and
   `arena.0.dirty_decay_ms` at run time) unless `huge_dirty_decay_ms` gives
   it one of its own (a `malloc_conf` key, `-1`..`1000000000000` like
@@ -975,7 +986,8 @@ page granularity.
 ## 8. Decay and purge
 
 Each `(arena, class)` and the huge allocator keep an `empty` set ordered by
-address, with `dirty_at` per entry. Decay policy is jemalloc's in shape:
+address, with `dirty_at` per entry. Decay policy is jemalloc's in shape,
+plus a demand floor:
 
 - `dirty_decay_ms` (default 10000) is the window of jemalloc's decay curve:
   the time for memory to go from dirty to purged, with the amount still
@@ -991,11 +1003,52 @@ address, with `dirty_at` per entry. Decay policy is jemalloc's in shape:
   in pages over its `Empty` extents, oldest first, whole extents only and
   never below the allowance, so a lone extent lasts the whole window. A
   lone slab is likewise never purged before its weight reaches zero (the
-  allowance rounds up). A walk runs at most once per step (window / 200):
-  the gate is one `purge::Decayer` (oldest `dirty_at`, next deadline) per
-  class state and one in the huge allocator; the walks differ, the gate
-  does not. `-1` is never. The huge allocator's window is arena 0's, or
-  `huge_dirty_decay_ms` when set (section 7).
+  allowance rounds up). A walk runs at most once per step (window / 200),
+  and not during a demand hold unless the retention cap is active: the
+  gate is one `purge::Decayer` (oldest `dirty_at`, next deadline, last
+  walk, hold) per class state and one in the huge allocator; the walks
+  differ, the gate does not. `-1` is never. The huge allocator's window is
+  arena 0's, or `huge_dirty_decay_ms` when set (section 7).
+- The demand floor (`hpa_peak_demand_window_ms`, issue #25, `purge::demand`;
+  0, the default, turns it off and is today's decay exactly). Each pool,
+  an `(arena, class)` in slabs or the huge tier in pages, keeps a ring of 8
+  epochs over the window, each holding the two largest *committed* peaks of
+  the pool's demand. A peak is committed when demand falls more than an
+  eighth below its running maximum; after that the tracker follows the
+  trough and only a rise of more than an eighth above it starts the next
+  peak, so a gradual fall over many walks commits once. The *recurring
+  level* is the second-largest of the committed peaks in the window and the
+  running value: the level demand has reached at least twice. A walk keeps
+  `max(curve allowance, level - in use)` and then applies the retention
+  cap, so the cap always wins (`purge::allowance`). The curve still orders
+  what goes (oldest step first, highest addresses first) and still governs
+  everything above the level; demand only adds retention, so "a lone slab
+  or extent lasts the whole window" holds as a lower bound, and a one-off
+  burst decays exactly as without a window. A class walk samples demand
+  twice under the class lock it already holds: its slabs in use plus those
+  that went `Empty` since the last walk (stamps at or after the last
+  walk's coarse time), then its slabs in use, so a fall between two walks
+  commits its peak even when the walks are a hold apart; it also aborts
+  when the `Empty` set and its count disagree. When the floor alone keeps
+  every `Empty` member, the walk returns a hold: the next walk waits until
+  `min(now + 1 s, the next epoch boundary)` instead of one step, so a pool
+  whose demand recurs is walked less, not more. The class trackers (80 B
+  per class, about 4 KiB per arena) are carved from the metadata region
+  the first time the decay driver visits an arena with the window on,
+  under the arena creation lock, and never freed; a failed carve leaves
+  that arena on today's decay and is counted. Arenas whose period is 0 or
+  `-1` get none. The cgroup policy decides whether the floor keeps
+  anything (`Policy::demand_ok`, section 11); the trackers sample either
+  way. Explicit and pressure-driven purges (`malloc_trim(0)`,
+  `arena.<i>.purge`, the exit purge, the full purge on a `high` rise)
+  ignore it. Nothing runs on malloc, free, the refill, the flush or the
+  tcache paths. Why the second-largest peak and not the windowed maximum
+  of tcmalloc's skip-subrelease and jemalloc's HPA: challoc has no
+  background releaser by default and its curve already keeps a burst for
+  `dirty_decay_ms`; a plain maximum would hold every one-off peak for the
+  whole window. `stats.arenas.<i>.demand_retained`,
+  `stats.huge.demand_level` and the report's `demand window:` line show
+  it.
 - `muzzy_decay_ms` is accepted and ignored. Two advices (plan Phase 2.5
   task 10, `policy::advice`): a purge is `MADV_DONTNEED` (eager: the
   pages leave RSS and the cgroup's charge at once, the next touch faults
@@ -1071,7 +1124,8 @@ Created only when `background_thread:true` is set via `malloc_conf` or
 written through `mallctl`. It is a plain `clone`-based thread created through
 `pthread_create` on the first periodic tick (6.4) after the request, never
 from init (`mallctl("background_thread", true)` creates it synchronously).
-It sleeps on a futex with a timeout equal to the next decay deadline, is woken
+It sleeps on a futex with a timeout equal to the next decay deadline (a
+demand hold's deadline included, section 8), is woken
 when a class's first slab goes `Empty`, and after `fork` is not recreated in
 the child until the child asks for it again. Each wake-up samples the
 cgroup (section 11) before the decay pass. Its stack is one reservation in the
@@ -1223,6 +1277,14 @@ Usage is the last `memory.current` sample against the effective limit
 | >= 90%                            | Period 0: purge at the next pass; cache GC every tick      | `MADV_DONTNEED`           |
 | `memory.events` `high` increased  | Full purge once, at the next decay pass                    | `MADV_DONTNEED`           |
 | < 70% while an excess over the cap first seen at 70%+ is still being returned | as the `< 70%` row | `MADV_DONTNEED` until the retention is within the cap |
+
+The demand floor of section 8 (`hpa_peak_demand_window_ms`) applies only
+with no limit and in the `< 70%` row with no excess being returned
+(`Policy::demand_ok`); in the scaled and immediate bands and during an
+eager return of an excess, the walks and the huge free keep nothing for demand, exactly as with the
+window off. Demand-kept memory is `Empty`, so it counts in the retention
+the cap is computed from, and the cap is applied after the floor: the cap
+always wins.
 
 The advice column is the two-advice purge of section 8: lazy only where
 the headroom is known and wide, eager everywhere else and for every
@@ -1400,8 +1462,9 @@ jemalloc names where they exist:
 | `lazy_band`               | true    | challoc only; `MADV_FREE` for purges under 70% of a known cgroup limit (8, 11); `false` makes every purge `MADV_DONTNEED` |
 | `guards`                  | true    | guard slabs and huge runs               |
 | `guard_slab_interval`     | 8       | one guard per N x 64 KiB of slabs, N a power of two (else rounded up, reported); 0 off, 1 out of range (clamps to 2) |
-| `huge_retain_max`         | 67108864 | challoc only; bytes; freed huge runs above it are purged at once (7); `opt.huge_retain_max` reads as `size_t` |
+| `huge_retain_max`         | 67108864 | challoc only; bytes; freed huge runs above it are purged at once (7), unless the demand window is on and the tier's demand recurs at that height; `opt.huge_retain_max` reads as `size_t` |
 | `huge_dirty_decay_ms`     | follows `dirty_decay_ms` | challoc only; the huge tier's own decay window in ms, `-1`..`1000000000000` (7): unset it follows arena 0's period (`dirty_decay_ms`, `arena.0.dirty_decay_ms`), and `opt.huge_dirty_decay_ms` reads that; `0` purges a freed huge run at the free; `-1` never by decay. Measured on the JVM soak at 2000, 500 and 0 (`bench/results/2026-09-20-{aarch64,x86_64}-jvm-huge-decay.md`); the default is the human's call with those numbers |
+| `hpa_peak_demand_window_ms` | 0     | jemalloc 5.4's spelling (there for HPA shards only; here every slab pool and the huge tier); `0`..`86400000` ms, clamped with a conf issue; the demand floor of section 8: walks keep the recurring level of demand in the window less what is in use, and a recurring run above `huge_retain_max` is kept (7). `0` is today's decay exactly. Lands off; the cb experiment of issue #25 decides whether a later commit sets a default (30000 or 120000) |
 | `zero_on_free`            | false   | opt-in: clear a block on free (6.3 step 3); priced in `bench/results/2026-09-18-*-gce-tunables.md` |
 | `pac_pointers`            | false   | challoc only; opt-in: sign cache entries and the TLS heap pointer with `pacda` where the kernel exposes `HWCAP_PACA`/`PACG` (6.1, 6.2, 17); inert elsewhere; priced in `bench/results/2026-09-19-lane-a-pac-pointers.md` |
 | `slot_randomize`          | false   | opt-in: refills claim from a random word and shuffle the batch (4); fights 6.4's compaction |
@@ -1592,6 +1655,8 @@ stats.cgroup.decay_ms, stats.cgroup.retention_cap, stats.cgroup.empty_bytes, sta
   (section 11; ENOENT when no cgroup2 is tracked or cgroup:false)
 stats.cgroup.purge_advice, stats.cgroup.lazy_purges, stats.cgroup.eager_purges
   (section 11; readable without a tracked cgroup)
+stats.arenas.<i>.demand_retained, stats.huge.demand_level
+  (section 8, the demand window; 0 with it off)
 stats.thp.mode, stats.thp.class_ranges, stats.thp.class_bytes, stats.thp.huge_ranges,
 stats.thp.meta_ranges, stats.thp.nohuge_ranges, stats.thp.failures (section 10)
 ```
