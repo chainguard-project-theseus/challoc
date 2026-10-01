@@ -1,6 +1,6 @@
 //! Arenas and explicit caches (design.md section 13.3). The decoding of
 //! `MALLOCX_*` flags and their routing onto heaps, caches and the direct
-//! paths (13.2) is `heap/mallocx.rs`, re-exported here.
+//! paths (13.2) is `heap/mallocx.rs`.
 //!
 //! An [`Arena`] is one [`ClassState`] per size class over the shared class
 //! regions (every arena's states for class `c` point at the same
@@ -54,9 +54,6 @@ pub const MAX_ARENAS: usize = 4096;
 pub const MAX_TCACHES: usize = 1024;
 /// `MALLCTL_ARENAS_ALL`.
 pub const ARENAS_ALL: u32 = 4096;
-
-pub use crate::heap::mallocx::{Flags, MALLOCX_TCACHE_NONE, MALLOCX_ZERO, Tcache, mallocx_arena, mallocx_lg_align, mallocx_tcache};
-pub use crate::heap::mallocx::{alloc, alloc_huge, free};
 
 /// One arena (design 13.3): a class state per size class and a decay
 /// period. Built in place because the states borrow the tables.
