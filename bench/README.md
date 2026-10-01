@@ -360,7 +360,7 @@ and command. The families:
 | sidecar | sidecar-fluentbit | resident memory after a burst and an idle minute |
 | runtimes | python1(-malloc), python-dict-list/-regex/-object-graph(-malloc), ruby-binary-trees, ruby-hash-aref-str, ruby-array-sample, ruby-sort-block, ruby-gc-churn, node-json-churn, node-server, pg-select100, pg-tpcb100, pg-select500, pg-connect20, jvm-server | the interpreters and servers challoc ships under |
 | soaks | valkey-soak, ruby-soak, jvm-soak | 10..20-minute consumer soaks, one variant per VM |
-| Fleetbench (`Dockerfile.cb` stage) | fleetbench-proto, fleetbench-tcmalloc | the protobuf arena benchmark and the TCMalloc empirical driver (fleet-shaped allocation traces), geometric mean of real time |
+| Fleetbench (`Dockerfile.cb` stage) | fleetbench-proto | the protobuf arena benchmark, geometric mean of real time (the TCMalloc empirical driver needs TCMalloc's MallocExtension) |
 | floor | floor-test | the in-container `make test` (pass/fail, smoke suites only) |
 
 Every timed run records the run's peak RSS (`maxrss_mib`); a row whose

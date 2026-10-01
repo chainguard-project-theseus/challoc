@@ -4,14 +4,14 @@
 # Google Benchmark's JSON output, scored by the geometric mean of the
 # selected benchmarks' real time per iteration.
 #
-#   PROGRAM    proto_benchmark | empirical_driver
+#   PROGRAM    proto_benchmark (the binaries in bench-bin/fleetbench)
 #   FILTER     --benchmark_filter (default: all of the program's defaults)
 #   MIN_TIME   --benchmark_min_time per benchmark (default 0.5s)
 #
 # Metrics: geomean_ns (the score, lower is better), benchmarks (how many
 # ran), maxrss_mib.
 . "$(dirname "$0")/cb.sh"
-PROGRAM=${PROGRAM:?PROGRAM=proto_benchmark|empirical_driver}
+PROGRAM=${PROGRAM:?PROGRAM=proto_benchmark}
 FILTER=${FILTER:-}
 MIN_TIME=${MIN_TIME:-0.5s}
 B=$CB_BIN/fleetbench/$PROGRAM

@@ -226,8 +226,11 @@ if [ ! -x "$BIN/wrk2" ]; then
     ( cd "$W" || exit 1
       luajit -b src/wrk.lua obj/bytecode.o || exit 1
       # hdr_histogram.c includes <x86intrin.h> for nothing but a builtin;
-      # LuaJIT 2.1 spells luaL_reg luaL_Reg.
+      # LuaJIT 2.1 spells luaL_reg luaL_Reg; wrk.c keeps getopt_long's
+      # result in a char, which is unsigned on aarch64 (-1 never matches).
       sed -i '/#include <x86intrin.h>/d' src/hdr_histogram.c || exit 1
+      sed -i 's/^    char c, \*\*header = headers;/    int c; char **header = headers;/' src/wrk.c || exit 1
+      grep -q '^    int c; char \*\*header = headers;' src/wrk.c || exit 1
       for f in wrk net ssl aprintf stats script units ae zmalloc http_parser tinymt64 hdr_histogram; do
         cc -std=gnu99 -O2 -D_REENTRANT -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -DluaL_reg=luaL_Reg -w \
           -I/usr/include/luajit-2.1 -c "src/$f.c" -o "obj/$f.o" || exit 1

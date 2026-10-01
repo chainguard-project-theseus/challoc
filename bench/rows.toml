@@ -1044,10 +1044,10 @@ metrics = [{ name = "conn_ms", unit = "ms", better = "lower", class = "server" }
 est_s = 40
 
 # ---- Fleetbench (bench/Dockerfile.cb's fleetbench stage, system malloc) --
-# Google's fleet-representative suite: the protobuf arena benchmark and the
-# TCMalloc empirical driver (allocation traces drawn from fleet size and
-# lifetime distributions). Scored by the geometric mean of the benchmarks'
-# real time per iteration (bench/drivers/fleetbench.sh).
+# Google's fleet-representative suite: the protobuf arena benchmark (the
+# TCMalloc empirical driver requires TCMalloc itself). Scored by the
+# geometric mean of the benchmarks' real time per iteration
+# (bench/drivers/fleetbench.sh).
 [row.fleetbench-proto]
 kind = "driver"
 driver = "drivers/fleetbench.sh"
@@ -1057,14 +1057,3 @@ better = "lower"
 class = "st"
 env = { PROGRAM = "proto_benchmark", MIN_TIME = "3s" }
 est_s = 8
-
-[row.fleetbench-tcmalloc]
-kind = "driver"
-driver = "drivers/fleetbench.sh"
-metric = "geomean_ns"
-unit = "ns"
-better = "lower"
-class = "st"
-env = { PROGRAM = "empirical_driver", MIN_TIME = "3s" }
-metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "soak-rss" }]
-est_s = 10

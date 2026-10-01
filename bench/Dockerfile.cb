@@ -13,10 +13,11 @@
 # this same file from the bundled tree (bench/cb/boot.sh).
 ARG DEV_IMAGE=cb-dev-test:local
 
-# Fleetbench (google/fleetbench, pinned): its proto benchmark and the
-# TCMalloc empirical driver (fleet-shaped allocation traces), built with
-# bazel and clang against the system malloc (--custom_malloc), so the
-# allocator under test comes in through LD_PRELOAD like everywhere else.
+# Fleetbench (google/fleetbench, pinned): its protobuf arena benchmark,
+# built with bazel and clang against the system malloc (--custom_malloc),
+# so the allocator under test comes in through LD_PRELOAD like everywhere
+# else. (The TCMalloc empirical driver needs TCMalloc's MallocExtension
+# properties and aborts under any other allocator, so it is not built.)
 # Its own stage: the bazel toolchain stays out of the bench image.
 FROM cgr.dev/chainguard/wolfi-base@sha256:d59fd2d1d21e913b12a8d56064e9aaf61f818289bd18b17132a0c4fde2358cea AS fleetbench
 RUN apk add --no-cache bazel-8 clang build-base git python-3.13 openjdk-21 libstdc++-dev \
@@ -25,12 +26,10 @@ ARG FLEETBENCH_REV=baed3f9ba8febf9ccc1c581ce9e1cc0ef50a8fb7
 RUN git clone -q https://github.com/google/fleetbench /fb && cd /fb && git checkout -q "$FLEETBENCH_REV" \
  && JAVA_HOME=/usr/lib/jvm/java-21-openjdk bazel build --config=clang --config=opt \
       --custom_malloc=@bazel_tools//tools/cpp:malloc --copt=-Wno-error --copt=-Wno-deprecated-attributes \
-      fleetbench/proto:proto_benchmark fleetbench/tcmalloc:empirical_driver \
- && mkdir -p /out/tcmalloc && cp bazel-bin/fleetbench/proto/proto_benchmark bazel-bin/fleetbench/tcmalloc/empirical_driver /out/ \
- && cp -r fleetbench/tcmalloc/distributions /out/tcmalloc/ \
+      fleetbench/proto:proto_benchmark \
+ && mkdir -p /out && cp bazel-bin/fleetbench/proto/proto_benchmark /out/ \
  && echo "fleetbench $FLEETBENCH_REV" > /out/version.txt \
- && /out/proto_benchmark --benchmark_list_tests > /out/proto.tests \
- && /out/empirical_driver --benchmark_list_tests > /out/empirical.tests
+ && /out/proto_benchmark --benchmark_list_tests > /out/proto.tests
 
 FROM ${DEV_IMAGE}
 
