@@ -1,0 +1,18 @@
+# exp-25-cg: issue #25 in a 512 MiB container (design 8, the cgroup
+# bands). Variants as exp-25.
+description = "#25 in a 512m container: base/off/dw30/dw120 on the reference cells"
+cells = "tag:ref"
+variants = ["base", "off=head@hpa_peak_demand_window_ms:0", "dw30=head@hpa_peak_demand_window_ms:30000",
+            "dw120=head@hpa_peak_demand_window_ms:120000"]
+controls = ["jemalloc"]
+rows = ["bigbuf-churn", "bigbuf-oneoff", "burst-lull", "larson10", "xmalloc"]
+container = { profile = "perfmon", memory = "512m" }
+replicas = 3
+blocks = 3
+warmup_blocks = 0
+shard_seconds = 900
+looks = 1
+budget_usd = 20
+
+[local]
+blocks = 1

@@ -1,0 +1,23 @@
+# exp-25: issue #25, the peak-demand window (design 8). One head build
+# under three MALLOC_CONFs against the branch's merge-base:
+#   base   the merge-base
+#   off    head@hpa_peak_demand_window_ms:0 (the A/A control: must match base)
+#   dw30   head@hpa_peak_demand_window_ms:30000
+#   dw120  head@hpa_peak_demand_window_ms:120000
+# plus jemalloc. `cb launch exp-25 --base <merge-base> --head <tip>`;
+# the 512 MiB container is exp-25-cg.
+description = "#25: demand window (base/off/dw30/dw120) on the reference cells"
+cells = "tag:ref"
+variants = ["base", "off=head@hpa_peak_demand_window_ms:0", "dw30=head@hpa_peak_demand_window_ms:30000",
+            "dw120=head@hpa_peak_demand_window_ms:120000"]
+controls = ["jemalloc"]
+rows = ["bigbuf-churn", "bigbuf-oneoff", "burst-lull", "larson1", "larson10", "xmalloc", "valkey1", "alloc-test1"]
+replicas = 3
+blocks = 3
+warmup_blocks = 0
+shard_seconds = 900
+looks = 1
+budget_usd = 40
+
+[local]
+blocks = 1

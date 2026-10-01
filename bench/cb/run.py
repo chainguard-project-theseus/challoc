@@ -44,6 +44,7 @@ TOOLS = {
     "sentinel": "bench/tools/sentinel.c",
     "valkey_model": "bench/probes/valkey_model.c",
     "churn": "bench/probes/churn.c",
+    "demand": "bench/probes/demand.c",
 }
 
 
@@ -58,7 +59,7 @@ def compile_tools(root: str, tools_dir: str) -> None:
         out = os.path.join(tools_dir, name)
         if os.path.exists(out) and os.path.getmtime(out) >= os.path.getmtime(s):
             continue
-        r = subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-o", out, s], capture_output=True, text=True)
+        r = subprocess.run(["cc", "-O2", "-Wall", "-Wextra", "-Werror", "-pthread", "-o", out, s], capture_output=True, text=True)
         if r.returncode != 0:
             raise BuildError(f"{src} did not compile:\n{r.stderr}")
 

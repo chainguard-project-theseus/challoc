@@ -72,6 +72,8 @@ soak = { delta_pct = 3.0, rss_delta_pct = 2.0, rss_delta_mib = 1.0 }
 # Resident-memory figures of the soaks (peak, after settle): nearly
 # deterministic, so a tighter margin.
 soak-rss = { delta_pct = 2.0 }
+# Resident-memory figures of the timed rows (bench/probes/demand.c).
+rss = { delta_pct = 2.0 }
 
 # ---- mimalloc-bench programs (bench/build.sh) ----------------------------
 
@@ -429,3 +431,62 @@ threads = 0
 class = "st"
 requires = ["challoc"]
 est_s = 600
+
+# ---- the demand window (bench/probes/demand.c, issue #25, design 8) -------
+# The background thread on (mallctl, where the allocator has it). busy_s
+# is the time spent allocating, writing and freeing (idle excluded);
+# minflt1_per_op is minor faults per step (per buffer, per burst) plus
+# one; rss_mean is time-weighted over the whole run; rss_settle is read
+# after the row's settle idle without a forced purge.
+# bigbuf-churn: 8 buffers log-uniform 256 KiB..128 MiB (at most 320 MiB),
+# the same sizes every 0.5 s for 20 steps.
+[row.bigbuf-churn]
+cmd = ["{tools}/demand", "churn", "20", "500", "8", "320", "0"]
+parser = "kv"
+metric = "busy_s"
+unit = "s"
+better = "lower"
+threads = 1
+class = "mt"
+est_s = 11
+metrics = [
+  { name = "minflt1_per_op", unit = "faults", better = "lower", class = "rss" },
+  { name = "rss_mean_mib", unit = "MiB", better = "lower", class = "rss" },
+  { name = "hwm_mib", unit = "MiB", better = "lower", class = "rss" },
+]
+
+# bigbuf-oneoff: six buffers of distinct sizes 64..256 MiB, 1 s apart,
+# then 20 s (2 x dirty_decay_ms) idle; scored by the RSS after it.
+[row.bigbuf-oneoff]
+cmd = ["{tools}/demand", "oneoff", "6", "1000", "20000"]
+parser = "kv"
+metric = "rss_settle_kb"
+unit = "KiB"
+better = "lower"
+threads = 1
+class = "rss"
+est_s = 28
+metrics = [
+  { name = "rss_mean_mib", unit = "MiB", better = "lower", class = "rss" },
+  { name = "busy_s", unit = "s", better = "lower", class = "mt" },
+  { name = "minflt1_per_op", unit = "faults", better = "lower", class = "rss" },
+]
+
+# burst-lull: the sidecar, 8 threads, three 2 s bursts of mixed small
+# allocations each followed by 20 s idle; scored by the time-weighted RSS,
+# rss_settle is the RSS at the end of the last idle.
+[row.burst-lull]
+cmd = ["{tools}/demand", "lull", "8", "3", "2000", "20000"]
+parser = "kv"
+metric = "rss_mean_kb"
+unit = "KiB"
+better = "lower"
+threads = 8
+class = "rss"
+est_s = 67
+metrics = [
+  { name = "rss_settle_mib", unit = "MiB", better = "lower", class = "rss" },
+  { name = "hwm_mib", unit = "MiB", better = "lower", class = "rss" },
+  { name = "mops", unit = "M ops/s", better = "higher", class = "server" },
+  { name = "minflt1_per_op", unit = "faults", better = "lower", class = "rss" },
+]
