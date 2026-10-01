@@ -87,7 +87,7 @@ const MAX_PICKS: usize = 2;
 const _: () = assert!(MAX_PICKS <= crate::class::MAX_PICKS);
 const MAX_OPS: usize = 6;
 /// States one exploration may visit before it gives up: a scenario past
-/// this is too large for the 30 s budget of the host suite and must be
+/// this is too large for the 30 s budget of the unit suite and must be
 /// cut, not waited for.
 const MAX_STATES: usize = 5_000_000;
 
@@ -257,7 +257,7 @@ mod tests {
         );
     }
 
-    /// States a scenario of the host suite may take: the 30 s budget at
+    /// States a scenario of the unit suite may take: the 30 s budget at
     /// the roughly 10 000 states a second of a debug build in a loaded dev
     /// container. A count, not a clock, so a busy host cannot fail it.
     const HOST_BUDGET_STATES: usize = 300_000;

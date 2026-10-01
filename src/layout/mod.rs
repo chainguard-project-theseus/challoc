@@ -5,12 +5,12 @@
 //! over a class table fixed at init ([`CLASSES`]: the compile-time
 //! [`BASE_CLASSES`] geometry, with the slabs of the classes below the
 //! kernel page raised to the page by [`adopt_page_geometry`]) and a
-//! handful of runtime bases, and is unit tested exhaustively on the host. `reserve` is the Linux-only piece
-//! that probes how much address space the process can get and lays the
-//! regions out.
+//! handful of runtime bases, and is unit tested exhaustively. `reserve` is
+//! the piece that probes how much address space the process can get and
+//! lays the regions out.
 //!
 //! Submodules: [`regions`] holds the address-space parameters, [`Regions`]
-//! and the Linux reservation; `tests` the host tests and `linux_tests` the
+//! and the reservation; `tests` the pure tests and `linux_tests` the
 //! ones that need a kernel. The size-class math and its two statics stay
 //! here.
 //!
@@ -511,5 +511,5 @@ pub use regions::{
 #[cfg(test)]
 mod tests;
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod linux_tests;

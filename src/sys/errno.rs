@@ -1,4 +1,4 @@
-//! Kernel error mapping. Pure logic, testable on the host.
+//! Kernel error mapping. Pure logic.
 //!
 //! Raw Linux syscalls return a single machine word. Values in
 //! `-4095..=-1` are negated `errno` codes; everything else is a success

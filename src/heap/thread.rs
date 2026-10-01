@@ -2,13 +2,11 @@
 //! on first use, the thread-exit destructor and the slot readers the entry
 //! points inline.
 
-#[cfg(target_os = "linux")]
 use core::ffi::c_void;
 use core::ptr;
 
 use crate::sys::pac;
 
-#[cfg(target_os = "linux")]
 use super::PUSH_PAC;
 use super::{Heap, Shared};
 
@@ -30,7 +28,6 @@ pub const TLS_EXITED: usize = 2;
 /// returns the heap is freed and the TLS slot holds `TLS_EXITED`, so it
 /// must not be reached through TLS again (the sentinel is what stops
 /// `existing_heap` from handing it out).
-#[cfg(target_os = "linux")]
 pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
     let h = p as *mut Heap;
     crate::tls::set(TLS_EXITED as *mut c_void);
@@ -53,7 +50,6 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
 /// `heap_for_thread` or [`existing_heap`]). The reference is not really
 /// `'static` either: the thread-exit destructor frees the heap, so it must
 /// not be stored beyond the call.
-#[cfg(target_os = "linux")]
 #[inline(always)]
 pub fn heap_for_thread(shared: &Shared) -> Option<&mut Heap> {
     let (t, tp) = crate::tls::get_tp();
@@ -71,7 +67,6 @@ pub fn heap_for_thread(shared: &Shared) -> Option<&mut Heap> {
 
 /// The slot value for heap `h` on the calling thread: `h` signed with the
 /// thread pointer when `shared.pac()`, else `h` itself.
-#[cfg(target_os = "linux")]
 fn tls_value_for(shared: &Shared, h: *mut Heap) -> *mut c_void {
     if shared.pac() {
         let (_, tp) = crate::tls::get_tp();
@@ -81,7 +76,6 @@ fn tls_value_for(shared: &Shared, h: *mut Heap) -> *mut c_void {
     }
 }
 
-#[cfg(target_os = "linux")]
 #[cold]
 #[inline(never)]
 fn create_heap_for_thread(shared: &Shared, slot: usize) -> Option<&mut Heap> {
@@ -113,7 +107,6 @@ fn create_heap_for_thread(shared: &Shared, slot: usize) -> Option<&mut Heap> {
 /// `push_flags` byte says whether the slot value is signed
 /// ([`PUSH_PAC`]), and a thread that created a heap did so under
 /// `shared()`, after init wrote that byte.
-#[cfg(target_os = "linux")]
 #[inline(always)]
 pub fn existing_heap(shared: *const Shared) -> Option<&'static mut Heap> {
     let (t, tp) = tls_heap_slot()?;
@@ -130,7 +123,6 @@ pub fn existing_heap(shared: *const Shared) -> Option<&'static mut Heap> {
 /// LLVM merged the copies' tails back together and gave `malloc` a stack
 /// frame it did not have, so the entry points take [`existing_heap`] and
 /// the `autda`s sit behind their own predicted `tbz`s.)
-#[cfg(target_os = "linux")]
 #[inline(always)]
 pub fn tls_heap_slot() -> Option<(usize, usize)> {
     let (t, tp) = crate::tls::get_tp();

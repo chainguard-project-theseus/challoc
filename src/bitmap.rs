@@ -1,6 +1,6 @@
 //! Bitmaps (design.md sections 4, 5 and 7).
 //!
-//! Two structures live here and both are pure logic, unit tested on the host.
+//! Two structures live here and both are pure logic.
 //!
 //! [`AtomicBitmap`] is one slab's view of its class's slot bitmap, a
 //! contiguous `[AtomicU64]` array in the metadata region (`class/`). It

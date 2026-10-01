@@ -13,9 +13,6 @@
 //! (`pause` on x86_64, `isb` on aarch64); after [`SPINS`] rounds the waiter
 //! falls through to the futex (design 5).
 //!
-//! Off Linux (host unit tests) the sleep degrades to a yield so the modules
-//! built on it can still be tested with `cargo test --features std`.
-//!
 //! Nothing on the `malloc`/`free` fast path takes a lock.
 
 use crate::slice;
@@ -126,7 +123,6 @@ impl RawLock {
     }
 }
 
-#[cfg(target_os = "linux")]
 #[inline]
 fn wait(state: &AtomicU32, val: u32) {
     // SAFETY: `state` is a live, aligned `u32` for the duration of the call.
@@ -134,24 +130,11 @@ fn wait(state: &AtomicU32, val: u32) {
     let _ = unsafe { crate::sys::futex_wait(state.as_ptr(), val, None) };
 }
 
-#[cfg(target_os = "linux")]
 #[inline]
 fn wake(state: &AtomicU32) {
     // SAFETY: `state` is a live, aligned `u32`.
     let _ = unsafe { crate::sys::futex_wake(state.as_ptr(), 1) };
 }
-
-#[cfg(not(target_os = "linux"))]
-#[inline]
-fn wait(_state: &AtomicU32, _val: u32) {
-    #[cfg(feature = "std")]
-    std::thread::yield_now();
-    core::hint::spin_loop();
-}
-
-#[cfg(not(target_os = "linux"))]
-#[inline]
-fn wake(_state: &AtomicU32) {}
 
 /// A [`RawLock`] guarding a value.
 pub struct Lock<T> {

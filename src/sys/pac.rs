@@ -65,15 +65,15 @@ pub const HWCAP_PACG: u64 = 1 << 31;
 
 /// Whether the kernel exposes pointer authentication with the address key
 /// (`HWCAP_PACA`) and the generic key (`HWCAP_PACG`) to this process.
-/// False on x86_64 and off Linux.
+/// False on x86_64.
 pub fn available() -> bool {
-    #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+    #[cfg(target_arch = "aarch64")]
     {
         use super::auxv::{AT_HWCAP, getauxval};
         let hwcap = getauxval(AT_HWCAP) as u64;
         hwcap & HWCAP_PACA != 0 && hwcap & HWCAP_PACG != 0
     }
-    #[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
+    #[cfg(not(target_arch = "aarch64"))]
     {
         false
     }
@@ -87,7 +87,7 @@ pub fn available() -> bool {
 /// (the report and the tests); the allocator's behaviour does not depend
 /// on it. False where `available` is false.
 pub fn fpac() -> bool {
-    #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+    #[cfg(target_arch = "aarch64")]
     {
         if !available() {
             return false;
@@ -109,7 +109,7 @@ pub fn fpac() -> bool {
         let apa3 = (isar2 >> 12) & 0xf;
         apa >= 4 || api >= 4 || apa3 >= 4
     }
-    #[cfg(not(all(target_arch = "aarch64", target_os = "linux")))]
+    #[cfg(not(target_arch = "aarch64"))]
     {
         false
     }
@@ -273,7 +273,6 @@ mod tests {
     /// (`SIGILL`); on the original PAuth the result is non-canonical and its
     /// dereference faults (`SIGSEGV`). Run in a forked child so the test
     /// process survives; skipped where the extension is absent.
-    #[cfg(target_os = "linux")]
     #[test]
     fn mismatched_modifier_faults() {
         if !available() {
@@ -318,7 +317,6 @@ mod tests {
     /// [`available`] against the kernel's own report: `paca` and `pacg`
     /// both in the `Features` line of `/proc/cpuinfo` on arm64, never on
     /// x86_64.
-    #[cfg(target_os = "linux")]
     #[test]
     fn available_matches_proc_cpuinfo() {
         let text = std::fs::read_to_string("/proc/cpuinfo").unwrap();
@@ -331,7 +329,6 @@ mod tests {
 
     /// The HWCAP constants against the installed kernel header, where the
     /// container has one for this architecture.
-    #[cfg(target_os = "linux")]
     #[test]
     fn hwcap_constants_match_the_header() {
         let Ok(text) = std::fs::read_to_string("/usr/include/asm/hwcap.h") else {

@@ -6,9 +6,8 @@
 //! `malloc` calls free of libc re-entrancy, and makes the set of kernel
 //! interfaces the crate depends on explicit.
 //!
-//! The pure error mapping lives in `errno.rs` and is unit tested on the host.
-//! Everything else is Linux-only and is exercised by `cargo test --features
-//! std` inside the dev container.
+//! The pure error mapping lives in `errno.rs`; everything else talks to
+//! the kernel and is exercised by `cargo test` inside the dev container.
 
 pub mod auxv;
 pub mod cgroup;
@@ -17,16 +16,11 @@ pub mod features;
 pub mod pac;
 pub use errno::{Errno, decode};
 
-#[cfg(target_os = "linux")]
 mod abort;
-#[cfg(target_os = "linux")]
 mod nr;
-#[cfg(target_os = "linux")]
 mod raw;
 
-#[cfg(target_os = "linux")]
 pub use abort::*;
-#[cfg(target_os = "linux")]
 pub use linux::*;
 
 // ---- constants -------------------------------------------------------
@@ -96,13 +90,9 @@ pub const AT_FDCWD: i32 = -100;
 pub const PIDFD_SELF: i32 = -10000;
 
 pub const SIGABRT: i32 = 6;
-#[cfg(target_os = "linux")]
 const SIG_BLOCK: i32 = 0;
-#[cfg(target_os = "linux")]
 const SIG_UNBLOCK: i32 = 1;
-#[cfg(target_os = "linux")]
 const SIG_SETMASK: i32 = 2;
-#[cfg(target_os = "linux")]
 const SIGSET_WORDS_BYTES: usize = 8;
 
 pub const STDERR_FILENO: i32 = 2;
@@ -136,7 +126,6 @@ pub fn parse_decimal(bytes: &[u8], trailing: Trailing) -> Option<u64> {
     bytes[..digits].iter().try_fold(0u64, |acc, &b| acc.checked_mul(10)?.checked_add(u64::from(b - b'0')))
 }
 
-#[cfg(target_os = "linux")]
 mod linux {
     use super::errno::{Errno, decode};
     use super::{nr, raw};
@@ -710,7 +699,7 @@ mod pure_tests {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::process::Command;

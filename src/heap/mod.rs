@@ -29,7 +29,7 @@
 //!                      heap_from_slot, the exit destructor
 //! heap/flush.rs        the flush's grouping pass: group_by_slab, flag_sort, the
 //!                      straddling double-free abort
-//! heap/tests.rs        host tests and the builders (shared, shared_with, TestHeap, live,
+//! heap/tests.rs        heap tests and the builders (shared, shared_with, TestHeap, live,
 //!                      xorshift, ...) that stats.rs and api/ctests.rs reuse as
 //!                      heap::tests::*
 //! heap/linux_tests.rs  tests that need real reservations, TLS and threads
@@ -135,13 +135,12 @@ mod thread;
 
 #[cfg(test)]
 pub(crate) mod tests;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod linux_tests;
 
 pub use shared::{GuardTest, Shared};
 #[cfg(test)]
 use shared::guard_interval_for;
-#[cfg(target_os = "linux")]
 pub use thread::{existing_heap, heap_destructor, heap_for_thread, tls_heap_slot};
 pub use thread::{TLS_CREATING, TLS_EXITED, fast_flags, heap_from_slot};
 
@@ -153,7 +152,9 @@ use crate::layout::{CLASSES, NCLASSES};
 use crate::sys::pac;
 
 use flush::{group_by_slab, straddling_double_free};
-use shared::os;
+#[cfg(test)]
+use shared::ncpus;
+use shared::{now_ns, seed, tid};
 
 
 /// Largest default cache capacity (classes up to 128 bytes). 1024 rather
@@ -587,10 +588,10 @@ impl Heap {
         // `bench/results/2026-09-18-aarch64-gce-dense-headers.md`).
         unsafe {
             ptr::write(&raw mut (*h).shared, shared);
-            ptr::write(&raw mut (*h).tid, os::tid());
+            ptr::write(&raw mut (*h).tid, tid());
             ptr::write(&raw mut (*h).arena, arena);
             ptr::write(&raw mut (*h).slow_ticks, 0);
-            ptr::write(&raw mut (*h).last_gc, os::now_ns());
+            ptr::write(&raw mut (*h).last_gc, now_ns());
             ptr::write(&raw mut (*h).uncached, ThreadStats::default());
             ptr::write(&raw mut (*h).others, ptr::null_mut());
             ptr::write(&raw mut (*h).snapshot, ThreadStats::default());
@@ -640,7 +641,7 @@ impl Heap {
             // purge and refault the same slabs at every exit). Design 13.3.
             if shared.arenas.bound(arena) == 0 && !crate::purge::background::present() {
                 if let Some(a) = shared.arenas.get_existing(arena) {
-                    if a.take_exit_purge(os::now_ns()) {
+                    if a.take_exit_purge(now_ns()) {
                         crate::purge::purge_arena(shared, arena);
                     }
                 }
@@ -1396,7 +1397,7 @@ impl Heap {
     #[inline(never)]
     fn rng(&mut self) -> &mut u64 {
         if self.rng == 0 {
-            let mut seed = os::seed();
+            let mut seed = seed();
             seed ^= (self as *const Heap as u64).rotate_left(17) ^ ((self.tid as u64) << 32);
             if seed == 0 {
                 seed = 0x9E37_79B9_7F4A_7C15;
@@ -1969,7 +1970,7 @@ impl Heap {
     fn tick(&mut self, shared: &Shared) {
         self.slow_ticks = self.slow_ticks.wrapping_add(1);
         if self.slow_ticks % PERIODIC_EVERY == 0 {
-            let now = os::now_ns();
+            let now = now_ns();
             if now.wrapping_sub(self.last_gc) >= shared.gc_interval() {
                 self.last_gc = now;
                 self.gc(shared);
@@ -2020,7 +2021,6 @@ pub fn free_sized_fast(shared: &Shared, h: &mut Heap, p: *mut u8, hint: Option<u
 }
 
 /// `malloc` of a non-huge class on the calling thread.
-#[cfg(target_os = "linux")]
 #[inline(always)]
 pub fn alloc(shared: &Shared, class: usize) -> *mut u8 {
     match heap_for_thread(shared) {
@@ -2037,7 +2037,6 @@ pub fn alloc(shared: &Shared, class: usize) -> *mut u8 {
 /// `alloc_slow`, not a second pass through its own fast path (measured:
 /// through `alloc` the mixed `valkey1` row paid 4 instructions per
 /// operation for the one pop in eight the compacting mode schedules).
-#[cfg(target_os = "linux")]
 #[inline(always)]
 pub fn alloc_declined(shared: &Shared, class: usize) -> *mut u8 {
     match heap_for_thread(shared) {
@@ -2048,7 +2047,6 @@ pub fn alloc_declined(shared: &Shared, class: usize) -> *mut u8 {
 
 /// `calloc` of a non-huge class on the calling thread; the flag says the
 /// memory is known zero.
-#[cfg(target_os = "linux")]
 #[inline(always)]
 pub fn alloc_zeroed(shared: &Shared, class: usize) -> (*mut u8, bool) {
     match heap_for_thread(shared) {
@@ -2059,7 +2057,6 @@ pub fn alloc_zeroed(shared: &Shared, class: usize) -> (*mut u8, bool) {
 
 /// `free` of a non-null pointer on the calling thread. Aborts unless `p`
 /// is an allocated slab slot or a live huge run.
-#[cfg(target_os = "linux")]
 #[inline(always)]
 pub fn free(shared: &Shared, p: *mut u8) {
     match heap_for_thread(shared) {
@@ -2071,7 +2068,6 @@ pub fn free(shared: &Shared, p: *mut u8) {
 /// `free` of a non-null pointer straight to its slab bitmap or the huge
 /// allocator, through no cache (`MALLOCX_TCACHE_NONE`, or a thread without
 /// a heap). Counted in the thread's statistics when it has a heap.
-#[cfg(target_os = "linux")]
 pub fn free_direct(shared: &Shared, p: *mut u8) {
     match shared.classify_free(p) {
         Ok((class, arena)) => {

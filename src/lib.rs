@@ -29,7 +29,6 @@ pub const QUANTUM: usize = 16;
 #[cfg(feature = "quantum8")]
 pub const QUANTUM: usize = 8;
 
-#[cfg(target_os = "linux")]
 pub mod api;
 pub mod arena;
 pub mod bitmap;
@@ -50,7 +49,6 @@ pub mod slice;
 pub mod stats;
 pub mod sys;
 pub mod thp;
-#[cfg(target_os = "linux")]
 pub mod tls;
 
 /// Panic handler for the `no_std` library. The crate is built with
@@ -59,26 +57,12 @@ pub mod tls;
 /// to stderr with `write(2)` and raises `SIGABRT`, never unwinding. The
 /// line reads `challoc: <message> [<file>:<line>]`: the message first, since
 /// it is what a user sees when their program frees a pointer twice.
-#[cfg(all(not(feature = "std"), target_os = "linux"))]
+#[cfg(not(feature = "std"))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     match info.location() {
         Some(loc) => sys::abort_fmt(format_args!("{} [{}:{}]", info.message(), loc.file(), loc.line())),
         None => sys::abort_fmt(format_args!("{}", info.message())),
-    }
-}
-
-/// Non-Linux `no_std` builds have no syscall layer; trap so the crate still
-/// type-checks there. Nothing ships from such a build.
-#[cfg(all(not(feature = "std"), not(target_os = "linux")))]
-#[panic_handler]
-fn panic(_info: &core::panic::PanicInfo<'_>) -> ! {
-    // SAFETY: both instructions raise a fatal signal and have no other effect.
-    unsafe {
-        #[cfg(target_arch = "x86_64")]
-        core::arch::asm!("ud2", options(noreturn, nostack));
-        #[cfg(target_arch = "aarch64")]
-        core::arch::asm!("brk #0x1", options(noreturn, nostack));
     }
 }
 

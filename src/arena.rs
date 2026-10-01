@@ -56,7 +56,6 @@ pub const MAX_TCACHES: usize = 1024;
 pub const ARENAS_ALL: u32 = 4096;
 
 pub use crate::heap::mallocx::{Flags, MALLOCX_TCACHE_NONE, MALLOCX_ZERO, Tcache, mallocx_arena, mallocx_lg_align, mallocx_tcache};
-#[cfg(target_os = "linux")]
 pub use crate::heap::mallocx::{alloc, alloc_huge, free};
 
 /// One arena (design 13.3): a class state per size class and a decay

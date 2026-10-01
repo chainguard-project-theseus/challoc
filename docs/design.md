@@ -2599,7 +2599,7 @@ src/meta.rs           metadata region allocator
 src/model/            test-only: the exhaustive interleaving model of the slab protocol (mod, state, steps, scenarios; section 17's row); steps.rs matches class::protocol exhaustively
 src/purge.rs          decay driver, batching and advice, Decayer; root of purge/
 src/purge/curve.rs    the decay period and curve (NEVER, STEPS, WEIGHTS, Curve)
-src/purge/background.rs, src/purge/background_host.rs   the background thread (section 8.1) and the host stub with the same names, selected by cfg + #[path]
+src/purge/background.rs   the background thread (section 8.1)
 src/purge/prefault.rs the prefault pass (section 8.2)
 src/purge/tests.rs, src/purge/linux_tests.rs   purge tests; purge::tests::serial
 src/policy.rs         the cgroup policy table (section 11): bands, retention cap, full purge, Advice (name, madv)

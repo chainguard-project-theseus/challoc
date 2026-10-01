@@ -81,7 +81,7 @@
 //! bounded to `calloc` on `Purged` reuse.
 //!
 //! The curve's tests sit in `purge/curve.rs`; `purge/tests.rs` holds the
-//! rest of the host tests and the `serial` lock the class tests share
+//! rest of the pure tests and the `serial` lock the class tests share
 //! (`purge::tests::serial`), `purge/linux_tests.rs` the two that need a
 //! kernel.
 
@@ -95,7 +95,7 @@ use crate::sys::features::ProcessMadvise;
 mod curve;
 #[cfg(test)]
 pub(crate) mod tests;
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod linux_tests;
 
 pub use curve::{decay_ns_from_ms, Curve, NEVER, STEPS, WEIGHTS, WEIGHT_ONE};
@@ -533,7 +533,6 @@ pub fn note_decay_changed() {
     background::wake();
 }
 
-#[cfg(target_os = "linux")]
 mod os {
     use super::{Advice, BACKEND, BACKEND_LAZY, LOOP, MAX_BATCH};
     use crate::sys::{self, IoVec};
@@ -577,18 +576,7 @@ mod os {
     }
 }
 
-/// Off Linux nothing is mapped; host tests only exercise the bookkeeping.
-#[cfg(not(target_os = "linux"))]
-mod os {
-    pub fn discard(_ranges: &[(usize, usize)], _advice: super::Advice) {}
-}
-
-/// The background thread (design 8.1); the host build gets the stub.
-#[cfg(target_os = "linux")]
-#[path = "purge/background.rs"]
-pub mod background;
-#[cfg(not(target_os = "linux"))]
-#[path = "purge/background_host.rs"]
+/// The background thread (design 8.1).
 pub mod background;
 /// The prefault pass (design 8.2), the background thread's second job.
 pub mod prefault;
@@ -600,7 +588,6 @@ pub mod prefault;
 pub fn fork_child() -> ProcessMadvise {
     let b = BACKEND.load(Ordering::Relaxed);
     if b >= 0 {
-        #[cfg(target_os = "linux")]
         let _ = crate::sys::close(b);
         BACKEND.store(LOOP, Ordering::Relaxed);
         return ProcessMadvise::Unavailable;

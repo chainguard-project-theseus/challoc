@@ -12,8 +12,8 @@
 //!
 //! The probes never allocate, take a few microseconds, and leave at most one
 //! `PROT_NONE` page mapped (the sealed page, which by definition cannot be
-//! unmapped again). The pure decoders are unit tested on the host; the
-//! probes themselves run inside the Linux container.
+//! unmapped again). The pure decoders are unit tested against captured
+//! inputs; the probes themselves run against the kernel the tests run on.
 //!
 //! The line is a table: [`Features::words`] yields every `(key, value)`
 //! pair in order, and `Display`, [`FeatureLine`] and the tests all iterate
@@ -108,7 +108,7 @@ impl Thp {
 
     /// Compute the table from the files' contents: `read(path, buf)` fills
     /// `buf` with the file at the NUL-terminated `path` and returns the
-    /// byte count, 0 when it is missing. Pure over the reader, so the host
+    /// byte count, 0 when it is missing. Pure over the reader, so the
     /// tests feed it fixtures.
     pub fn from_reader(page: usize, mut read: impl FnMut(&[u8], &mut [u8]) -> usize) -> Thp {
         const DIR: &[u8] = b"/sys/kernel/mm/transparent_hugepage/";
@@ -392,7 +392,7 @@ impl SliceExt {
     /// Fold the configured outcome into the kernel's answer: `Enabled`
     /// makes it `on`, a failed `prctl` says so, a key that turned it off
     /// (or a kernel answer that never reached the `prctl`) leaves the
-    /// kernel's word. Pure, host tested.
+    /// kernel's word. Pure.
     pub const fn with_configured(self, v: crate::slice::Verdict) -> SliceExt {
         use crate::slice::Verdict;
         match v {
@@ -537,10 +537,8 @@ impl fmt::Write for FeatureLine {
     }
 }
 
-#[cfg(target_os = "linux")]
 pub use linux::*;
 
-#[cfg(target_os = "linux")]
 mod linux {
     use super::{Features, ProcessMadvise, Thp};
     use crate::sys::auxv::{AT_PAGESZ, getauxval};
@@ -1113,7 +1111,7 @@ mod tests {
 /// Linux-only tests: run the real probe inside the dev container and check
 /// it against what the running kernel version can possibly offer. Prints the
 /// probe line so `cargo test -- --nocapture` shows what the kernel gave us.
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod linux_tests {
     use super::*;
     use crate::sys;

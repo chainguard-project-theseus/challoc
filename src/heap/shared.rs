@@ -1,7 +1,9 @@
 //! [`Shared`], the process-wide allocator state every heap works against,
 //! and the checks it performs for the fast and slow paths; the thread-exit
-//! key and the OS shims (`os`), and the sized fast path's [`GuardTest`].
+//! key and the thread id, clock and seed a heap reads, and the sized fast
+//! path's [`GuardTest`].
 
+use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -13,7 +15,6 @@ use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
 use crate::lock::Lock;
 use crate::meta::Meta;
 
-#[cfg(target_os = "linux")]
 use super::heap_destructor;
 use super::{Heap, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free};
 
@@ -130,115 +131,64 @@ const _: () = assert!(
         == (core::mem::offset_of!(Shared, regions) + core::mem::offset_of!(Regions, lg_stride)) / 128
 );
 
-#[cfg(target_os = "linux")]
-pub(super) mod os {
-    use super::Heap;
-    use core::ffi::c_void;
+/// The `pthread_key` whose destructor tears down a thread's heap.
+pub(super) struct ThreadKey {
+    key: libc::pthread_key_t,
+    valid: bool,
+}
 
-    /// The `pthread_key` whose destructor tears down a thread's heap.
-    pub struct ThreadKey {
-        key: libc::pthread_key_t,
-        valid: bool,
+impl ThreadKey {
+    pub fn create() -> ThreadKey {
+        let mut key: libc::pthread_key_t = 0;
+        // SAFETY: `key` is a valid out-pointer; the destructor is a plain
+        // `extern "C"` function that only touches allocator state.
+        let rc = unsafe { libc::pthread_key_create(&mut key, Some(heap_destructor)) };
+        ThreadKey { key, valid: rc == 0 }
     }
 
-    impl ThreadKey {
-        pub fn create() -> ThreadKey {
-            let mut key: libc::pthread_key_t = 0;
-            // SAFETY: `key` is a valid out-pointer; the destructor is a plain
-            // `extern "C"` function that only touches allocator state.
-            let rc = unsafe { libc::pthread_key_create(&mut key, Some(super::heap_destructor)) };
-            ThreadKey { key, valid: rc == 0 }
+    pub fn valid(&self) -> bool {
+        self.valid
+    }
+
+    pub fn key(&self) -> Option<libc::pthread_key_t> {
+        if self.valid { Some(self.key) } else { None }
+    }
+
+    /// Register `heap` for destruction when the calling thread exits.
+    pub fn set(&self, heap: *mut Heap) {
+        if !self.valid {
+            return;
         }
-
-        pub fn valid(&self) -> bool {
-            self.valid
-        }
-
-        pub fn key(&self) -> Option<libc::pthread_key_t> {
-            if self.valid { Some(self.key) } else { None }
-        }
-
-        /// Register `heap` for destruction when the calling thread exits.
-        pub fn set(&self, heap: *mut Heap) {
-            if !self.valid {
-                return;
-            }
-            // SAFETY: the key was created by `create`; glibc stores the
-            // pointer without dereferencing it.
-            if unsafe { libc::pthread_setspecific(self.key, heap as *const c_void) } != 0 {
-                panic!("heap: pthread_setspecific failed");
-            }
-        }
-    }
-
-    pub fn tid() -> u32 {
-        crate::sys::gettid() as u32
-    }
-
-    pub fn ncpus() -> u32 {
-        crate::sys::ncpus()
-    }
-
-    pub fn now_ns() -> u64 {
-        crate::sys::now_coarse_ns()
-    }
-
-    /// Eight random bytes from `getrandom(2)` for `slot_randomize`; on a
-    /// kernel that refuses (not seen on any supported one) the clock, so
-    /// the heap is still seeded with something that varies.
-    pub fn seed() -> u64 {
-        let mut b = [0u8; 8];
-        match crate::sys::getrandom_exact(&mut b) {
-            Ok(()) => u64::from_ne_bytes(b),
-            Err(_) => crate::sys::now_coarse_ns(),
+        // SAFETY: the key was created by `create`; glibc stores the
+        // pointer without dereferencing it.
+        if unsafe { libc::pthread_setspecific(self.key, heap as *const c_void) } != 0 {
+            panic!("heap: pthread_setspecific failed");
         }
     }
 }
 
-/// Off Linux there is no TLS accessor and no thread-exit key; host tests
-/// drive heaps by hand.
-#[cfg(not(target_os = "linux"))]
-pub(super) mod os {
-    use super::Heap;
-    use core::sync::atomic::{AtomicU64, Ordering};
-
-    pub struct ThreadKey;
-
-    impl ThreadKey {
-        pub fn create() -> ThreadKey {
-            ThreadKey
-        }
-
-        pub fn valid(&self) -> bool {
-            false
-        }
-
-        #[allow(dead_code)]
-        pub fn set(&self, _heap: *mut Heap) {}
-    }
-
-    pub fn tid() -> u32 {
-        0
-    }
-
-    /// Host tests: one CPU, so the default `narenas` resolves to 4.
-    pub fn ncpus() -> u32 {
-        1
-    }
-
-    static TICK: AtomicU64 = AtomicU64::new(0);
-
-    pub fn now_ns() -> u64 {
-        TICK.fetch_add(1, Ordering::Relaxed) + 1
-    }
-
-    /// Host tests: a fixed seed, so a randomised test is repeatable.
-    pub fn seed() -> u64 {
-        0xC4A1_10C5_EED0_0001
-    }
+pub(super) fn tid() -> u32 {
+    crate::sys::gettid() as u32
 }
 
-use os::ThreadKey;
+pub(super) fn ncpus() -> u32 {
+    crate::sys::ncpus()
+}
+
+pub(super) fn now_ns() -> u64 {
+    crate::sys::now_coarse_ns()
+}
+
+/// Eight random bytes from `getrandom(2)` for `slot_randomize`; on a
+/// kernel that refuses (not seen on any supported one) the clock, so
+/// the heap is still seeded with something that varies.
+pub(super) fn seed() -> u64 {
+    let mut b = [0u8; 8];
+    match crate::sys::getrandom_exact(&mut b) {
+        Ok(()) => u64::from_ne_bytes(b),
+        Err(_) => crate::sys::now_coarse_ns(),
+    }
+}
 
 /// Guard slabs are placed once per `interval` slabs of 64 KiB, so a class
 /// with smaller slabs (`layout::LG_MIN_SLAB`) gets one guard per
@@ -267,7 +217,7 @@ impl Shared {
     /// # Safety
     /// `this` must point to writable storage for a `Shared` that nothing
     /// else reads until this returns `true`, and the regions must be
-    /// reserved (on Linux, `PROT_NONE` mappings that this process owns).
+    /// reserved (`PROT_NONE` mappings that this process owns).
     /// The `Shared` must never move afterwards: arena 0's class states
     /// point at the tables and the registry points at arena 0.
     ///
@@ -287,7 +237,7 @@ impl Shared {
         pac: bool,
     ) -> bool {
         let mut config = config;
-        config.narenas = config.effective_narenas(os::ncpus());
+        config.narenas = config.effective_narenas(ncpus());
         let guard_interval = if guard_install { config.effective_guard_slab_interval() } else { 0 };
         let guard_install = guard_install && config.guards;
         let decay_ns = crate::purge::decay_ns_from_ms(config.dirty_decay_ms);
@@ -487,7 +437,6 @@ impl Shared {
     }
 
     /// The thread-exit key, for diagnostics and tests.
-    #[cfg(target_os = "linux")]
     pub fn thread_key(&self) -> Option<libc::pthread_key_t> {
         self.key.key()
     }
@@ -549,7 +498,6 @@ impl Shared {
     /// [`check_size_hint`]: Shared::check_size_hint
     /// [`classify_free`]: Shared::classify_free
     /// [`release_routed`]: Shared::release_routed
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     #[inline(always)]
     pub(super) fn sized_slot(&self, p: *mut u8, hint: Option<usize>) -> Option<usize> {
         let class = hint?;
@@ -649,7 +597,6 @@ impl Shared {
     ///
     /// [`classify_free`]: Shared::classify_free
     /// [`Regions::slab_slot`]: crate::layout::Regions::slab_slot
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     #[inline(always)]
     pub(super) fn checked_slot(&self, p: *mut u8, h: &Heap) -> Option<usize> {
         let (class, table, slab) = self.set_slot(p)?;
@@ -685,7 +632,6 @@ impl Shared {
     /// else; never aborts.
     ///
     /// [`checked_slot`]: Shared::checked_slot
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     #[inline(always)]
     fn set_slot(&self, p: *mut u8) -> Option<(usize, &SlabTable, usize)> {
         let (class, slab, slot) = self.regions.slab_slot(p as usize)?;

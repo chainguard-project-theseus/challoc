@@ -1,6 +1,5 @@
 //! Tests of the class protocol over a synthetic region and metadata area
-//! (`Env`): real `PROT_NONE` reservations on Linux, never-dereferenced
-//! addresses elsewhere.
+//! (`Env`): real `PROT_NONE` reservations.
 
 use super::*;
 use crate::layout::{Kind, LG_MAX_SLAB, LG_MIN_SLAB, MAX_SLAB, MIN_SLAB, Mapping, NCLASSES};
@@ -10,18 +9,13 @@ use std::sync::Arc;
 use std::vec;
 use std::vec::Vec;
 
-/// The page size the environment is built with: the kernel's on Linux
-/// (the reservations are real; the 64 KiB-page matrix cell found the
-/// 4 KiB constant), 4 KiB in the synthetic host environment.
-#[cfg(target_os = "linux")]
+/// The page size the environment is built with: the kernel's (the
+/// reservations are real; the 64 KiB-page matrix cell found the 4 KiB
+/// constant).
 fn page_size() -> usize {
     crate::sys::features::page_size()
 }
 
-#[cfg(not(target_os = "linux"))]
-fn page_size() -> usize {
-    4096
-}
 /// Smallest layout `from_parts` accepts: 4 MiB class regions, so the
 /// 64 KiB classes have 64 slabs and the 4 MiB class has one.
 const LG_REGION: u32 = LG_MAX_SLAB;
@@ -35,17 +29,13 @@ fn meta_len() -> usize {
     (NCLASSES << 18) * (page_size() / 4096).max(1)
 }
 
-/// Test environment: a metadata region and a class superblock. On Linux
-/// both are real `PROT_NONE` reservations so commits and purges go
-/// through the kernel and slot memory can be touched; elsewhere the
-/// metadata is a `Vec` and slot addresses are never dereferenced.
+/// Test environment: a metadata region and a class superblock, both real
+/// `PROT_NONE` reservations so commits and purges go through the kernel
+/// and slot memory can be touched.
 struct Env {
     meta: Meta,
     regions: Regions,
-    #[cfg(target_os = "linux")]
     maps: [(usize, usize); 2],
-    #[cfg(not(target_os = "linux"))]
-    _buf: Vec<u8>,
 }
 
 fn align_up(x: usize, a: usize) -> usize {
@@ -77,11 +67,10 @@ impl Env {
     }
 
     /// An environment whose layout believes the page is `1 << lg_page`
-    /// bytes. On Linux that must be a multiple of the real page (the
-    /// commits and purges are real syscalls over a real reservation);
+    /// bytes. That must be a multiple of the real page (the commits and
+    /// purges are real syscalls over a real reservation);
     /// larger than the real page it stands in for a 16 KiB or 64 KiB
     /// page kernel.
-    #[cfg(target_os = "linux")]
     fn with_lg_page(lg_page: u32) -> Env {
         use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
         let page = 1usize << lg_page;
@@ -100,15 +89,6 @@ impl Env {
         let superblock = align_up(sb, MAX_SLAB);
         let regions = regions_at(superblock, (mb, meta_len()), lg_page);
         Env { meta: Meta::new(mb, meta_len(), page), regions, maps: [(sb, sb_len), (mb_raw, mb_len)] }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    fn with_lg_page(lg_page: u32) -> Env {
-        let page = 1usize << lg_page;
-        let buf = vec![0u8; meta_len() + page];
-        let mb = align_up(buf.as_ptr() as usize, page);
-        let regions = regions_at(0x1000_0000_0000, (mb, meta_len()), lg_page);
-        Env { meta: Meta::new(mb, meta_len(), page), regions, _buf: buf }
     }
 
     /// A fresh table for `c` (leaked: the state points at it) and the
@@ -336,7 +316,6 @@ fn prefault_next_skips_guards() {
 /// so level 0 starts on a page that `Set::new` leaves uncommitted (the
 /// real huge region has the same shape at 2^28 pages). Scans of an
 /// empty or sparsely populated set must never touch those pages.
-#[cfg(target_os = "linux")]
 #[test]
 fn set_scans_never_read_uncommitted_words() {
     let env = Env::new();
@@ -357,7 +336,6 @@ fn set_scans_never_read_uncommitted_words() {
     assert_eq!(set.map.lowest_set_from(0), None);
 }
 
-#[cfg(target_os = "linux")]
 impl Drop for Env {
     fn drop(&mut self) {
         for (addr, len) in self.maps {
@@ -408,7 +386,7 @@ fn page_groups_when_the_page_is_larger_than_the_slab() {
     }
     // Fill the first group and the first slab of the second; the
     // second group's page is committed with slab 4, so every slot of
-    // slabs 4..8 is writable already (Linux touches them in `claim`).
+    // slabs 4..8 is writable already (the test touches them in `claim`).
     let (p, _) = env.claim(&cs, 5 * n);
     assert_eq!(p.len(), 5 * n);
     assert_eq!(cs.stats(), ClassStats { committed: 5, ..Default::default() });
@@ -1065,13 +1043,6 @@ fn metadata_exhaustion_is_reported_not_fatal() {
     // A metadata region too small for the smallest class's descriptor
     // array: 64 slabs * stride is small, so shrink the region to a
     // couple of pages instead.
-    #[cfg(not(target_os = "linux"))]
-    let (meta, _buf) = {
-        let buf = vec![0u8; 3 * page_size()];
-        let mb = align_up(buf.as_ptr() as usize, page_size());
-        (Meta::new(mb, 2 * page_size(), page_size()), buf)
-    };
-    #[cfg(target_os = "linux")]
     let meta = {
         use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
         let mb = unsafe {
@@ -1581,7 +1552,6 @@ fn concurrent_claims_are_disjoint() {
 /// immediately releases, the other purges whenever it can. The
 /// reservation-first protocol must keep every claimed slot readable and
 /// writable and never let a purge race a claim.
-#[cfg(target_os = "linux")]
 #[test]
 fn purge_never_races_a_claim() {
     let env = Arc::new(Env::new());
@@ -1643,7 +1613,6 @@ fn purge_never_races_a_claim() {
 
 /// Purged memory reads zero and the claim reports it; committed slabs
 /// show up read-write in `/proc/self/maps`.
-#[cfg(target_os = "linux")]
 #[test]
 fn purge_zeroes_memory_and_commit_is_visible() {
     let env = Env::new();
@@ -1692,7 +1661,6 @@ fn purge_zeroes_memory_and_commit_is_visible() {
 /// `check_zero` (plan Phase 1.5 task 7b) on a healthy heap: every
 /// `Fresh` and `Purged` claim reads zero, so the mode changes nothing,
 /// and the flag stays on for every later claim of this test process.
-#[cfg(target_os = "linux")]
 #[test]
 fn check_zero_passes_fresh_and_purged_slabs() {
     purge::set_check_zero(true);
@@ -1714,7 +1682,6 @@ fn check_zero_passes_fresh_and_purged_slabs() {
 /// `check_zero` fires: a slab purged (so reported zero) whose memory
 /// is dirtied behind the allocator's back aborts at the next claim,
 /// naming the `Purged` state and the discard backend.
-#[cfg(target_os = "linux")]
 #[test]
 #[should_panic(expected = "was handed out as zero from a Purged slab but its word at offset")]
 fn check_zero_aborts_on_a_dirty_purged_slab() {
@@ -1761,7 +1728,6 @@ fn a_zero_pick_never_receives_a_slot_another_claim_used_in_between() {
         let (b, claim) = env.claim(&cs, 1);
         assert_eq!(claim, Claim { n: 1, zeroed: false });
         assert_eq!(cs.locate(b[0]).0, 0, "B refills from the slab A reserved in");
-        #[cfg(target_os = "linux")]
         unsafe {
             ptr::write_volatile(b[0], 0xAB);
         }
@@ -1775,7 +1741,6 @@ fn a_zero_pick_never_receives_a_slot_another_claim_used_in_between() {
         assert_ne!(out[0], b[0], "round {round}: a slot reported zero was allocated, written and freed by another claim in between");
         assert_eq!(cs.locate(out[0]), (0, 0), "A's slot was decided under the lock: the lowest");
         assert_eq!(cs.locate(b[0]), (0, 1), "B saw A's bit and took the next slot");
-        #[cfg(target_os = "linux")]
         assert_eq!(unsafe { ptr::read_volatile(out[0]) }, 0, "round {round}: A's slot reads zero");
         cs.release(&out);
         assert_eq!(cs.desc(0).live(), 0);
@@ -1795,7 +1760,6 @@ fn a_zero_pick_never_receives_a_slot_another_claim_used_in_between() {
 
 /// Guard slabs only when the kernel has `MADV_GUARD_INSTALL`: touching
 /// the guard page must fault. Run in a child so the fault is observable.
-#[cfg(target_os = "linux")]
 #[test]
 fn guard_slab_faults_when_supported() {
     use crate::sys::features::Features;

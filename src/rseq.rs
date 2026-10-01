@@ -24,7 +24,6 @@
 //! stores to none of them: writing `cpu_id`, `mm_cid` or `flags` is what
 //! broke tcmalloc on Linux 6.19.
 
-#[cfg(target_os = "linux")]
 use core::arch::asm;
 
 /// Byte offset of `cpu_id` (kernel-owned; `-1` before registration).
@@ -61,36 +60,27 @@ impl Probe {
 }
 
 /// Read the three weak symbols and the calling thread's `cpu_id` field.
-/// Off Linux everything is absent.
 pub fn probe() -> Probe {
-    #[cfg(target_os = "linux")]
-    {
-        let (so, ss, sf) = symbols();
-        if so.is_null() || ss.is_null() {
-            return Probe::NONE;
-        }
-        // SAFETY: non-null addresses of the loader's `__rseq_offset`
-        // (`ptrdiff_t`) and `__rseq_size` (`unsigned int`) globals, read
-        // once; `__rseq_flags` likewise when present.
-        let (offset, size) = unsafe { (so.read(), ss.read()) };
-        let flags = if sf.is_null() { 0 } else { unsafe { sf.read() } };
-        let registered = size >= (CPU_ID_OFFSET as u32 + 4) && {
-            // SAFETY: the area is `size` bytes at the thread pointer plus
-            // the offset for every thread, and `cpu_id` is inside it.
-            unsafe { area(offset).add(CPU_ID_OFFSET).cast::<u32>().read_volatile() != CPU_ID_UNINITIALIZED }
-        };
-        Probe { present: true, size, flags, offset, registered }
+    let (so, ss, sf) = symbols();
+    if so.is_null() || ss.is_null() {
+        return Probe::NONE;
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        Probe::NONE
-    }
+    // SAFETY: non-null addresses of the loader's `__rseq_offset`
+    // (`ptrdiff_t`) and `__rseq_size` (`unsigned int`) globals, read
+    // once; `__rseq_flags` likewise when present.
+    let (offset, size) = unsafe { (so.read(), ss.read()) };
+    let flags = if sf.is_null() { 0 } else { unsafe { sf.read() } };
+    let registered = size >= (CPU_ID_OFFSET as u32 + 4) && {
+        // SAFETY: the area is `size` bytes at the thread pointer plus
+        // the offset for every thread, and `cpu_id` is inside it.
+        unsafe { area(offset).add(CPU_ID_OFFSET).cast::<u32>().read_volatile() != CPU_ID_UNINITIALIZED }
+    };
+    Probe { present: true, size, flags, offset, registered }
 }
 
 /// Addresses of the weak `__rseq_offset`, `__rseq_size` and `__rseq_flags`
 /// (null when they do not resolve). The same `.weak` + GOT form as
 /// `config.rs` uses for `malloc_conf`: stable Rust has no weak statics.
-#[cfg(target_os = "linux")]
 #[inline(never)]
 fn symbols() -> (*const isize, *const u32, *const u32) {
     let (so, ss, sf): (*const isize, *const u32, *const u32);
@@ -132,7 +122,6 @@ fn symbols() -> (*const isize, *const u32, *const u32) {
 /// The calling thread's thread pointer: `%fs:0` (the TCB's self pointer)
 /// on x86_64, `tpidr_el0` on aarch64. The rseq area is at
 /// `thread_pointer() + __rseq_offset`.
-#[cfg(target_os = "linux")]
 #[inline(always)]
 pub fn thread_pointer() -> usize {
     let tp: usize;
@@ -148,7 +137,6 @@ pub fn thread_pointer() -> usize {
 
 /// The calling thread's rseq area for the probed `offset`
 /// (`Probe::offset`).
-#[cfg(target_os = "linux")]
 #[inline(always)]
 pub fn area(offset: isize) -> *mut u8 {
     thread_pointer().wrapping_add_signed(offset) as *mut u8
@@ -171,7 +159,6 @@ mod tests {
     /// The both-ways probe test: what glibc registered on this host is
     /// printed, and where it registered an area, `cpu_id` reads through
     /// the probed offset (and is left unread where it did not).
-    #[cfg(target_os = "linux")]
     #[test]
     fn probe_reads_the_registered_area() {
         let p = probe();
@@ -198,7 +185,6 @@ mod tests {
 
     /// The calling thread's allowed CPUs (`sched_getaffinity`: the cpuset
     /// or container mask, not the machine's), lowest first.
-    #[cfg(target_os = "linux")]
     fn allowed_cpus() -> Option<std::vec::Vec<usize>> {
         // SAFETY: a zeroed `cpu_set_t` is a valid empty set; the call
         // writes at most `size_of::<cpu_set_t>()` bytes into it.
@@ -214,7 +200,6 @@ mod tests {
 
     /// Pin the calling thread to `cpu` alone; `false` when the kernel
     /// refuses (the CPU left the allowed set meanwhile).
-    #[cfg(target_os = "linux")]
     fn pin_to(cpu: usize) -> bool {
         // SAFETY: as above; `CPU_SET` writes one bit of the set (`cpu` came
         // from `allowed_cpus`, so it is below `CPU_SETSIZE`), and
@@ -225,10 +210,8 @@ mod tests {
     }
 
     /// Threads pinned to distinct allowed CPUs, at most this many.
-    #[cfg(target_os = "linux")]
     const MAX_PINNED: usize = 64;
     /// Loads of `cpu_id` per pinned thread.
-    #[cfg(target_os = "linux")]
     const PIN_READS: u32 = 10_000;
 
     /// The live half of the probe test: one thread pinned per allowed CPU
@@ -236,7 +219,6 @@ mod tests {
     /// through the probed offset, so the area [`area`] computes is the
     /// registered one. Where the check cannot be made (one CPU allowed, a
     /// pin refused) the test says so and skips it, never passes it.
-    #[cfg(target_os = "linux")]
     fn pinned_threads_read_their_cpu(p: Probe) {
         let Some(allowed) = allowed_cpus() else {
             std::eprintln!("rseq: skip the pinned check: sched_getaffinity failed");
