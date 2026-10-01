@@ -31,7 +31,7 @@
 use core::fmt;
 use core::sync::atomic::{AtomicI32, AtomicU64, AtomicU8, Ordering};
 
-use super::{Trailing, parse_decimal};
+use super::parse_decimal;
 
 /// Longest cgroup directory (mount point plus path) that is tracked. Real
 /// paths are a few hundred bytes (Kubernetes' pod and container scopes);
@@ -75,7 +75,7 @@ fn lines(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
 /// Leading decimal number of `bytes`, ignoring what follows the digits.
 /// `None` without a digit or on overflow (`sys::parse_decimal`).
 fn parse_u64_prefix(bytes: &[u8]) -> Option<u64> {
-    parse_decimal(bytes, Trailing::Ignore)
+    parse_decimal(bytes)
 }
 
 /// Strip leading and trailing ASCII whitespace.

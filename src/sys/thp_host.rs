@@ -6,7 +6,7 @@
 use core::fmt;
 
 use super::features::{Value, write_words};
-use super::{Trailing, parse_decimal};
+use super::parse_decimal;
 
 /// One transparent-huge-page sysfs setting, the bracketed word of
 /// `/sys/kernel/mm/transparent_hugepage/enabled` (`always [madvise] never`)
@@ -88,7 +88,7 @@ impl Thp {
         let lg_page = page.trailing_zeros() as u8;
         let mut lg_pmd = (2 * lg_page).saturating_sub(3);
         let n = read(b"/sys/kernel/mm/transparent_hugepage/hpage_pmd_size\0", &mut buf);
-        if let Some(v) = parse_decimal(&buf[..n], Trailing::Ignore) {
+        if let Some(v) = parse_decimal(&buf[..n]) {
             if v.is_power_of_two() && v.trailing_zeros() as u8 > lg_page {
                 lg_pmd = v.trailing_zeros() as u8;
             }
@@ -239,8 +239,8 @@ mod tests {
         assert_eq!(parse_thp_setting(b"always madvise never\n"), None);
         assert_eq!(parse_thp_setting(b"[defer]\n"), None);
         assert_eq!(parse_thp_setting(b""), None);
-        assert_eq!(parse_decimal(b"2097152\n", Trailing::Ignore), Some(2097152));
-        assert_eq!(parse_decimal(b"\n", Trailing::Ignore), None);
+        assert_eq!(parse_decimal(b"2097152\n"), Some(2097152));
+        assert_eq!(parse_decimal(b"\n"), None);
         let mut b = [0u8; 8];
         assert_eq!(write_decimal(&mut b, 2048), 4);
         assert_eq!(&b[..4], b"2048");
