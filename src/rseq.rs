@@ -544,10 +544,15 @@ pub unsafe fn pop_raw(area: *mut u8, t: Table, pac: bool) -> (*mut u8, u32) {
             "jae 12f",
             "mov dword ptr [{h} + {o_lw}], {l:e}",
             "12:",
+            // `zeroed` is read before the commit, inside the section: after
+            // label 3 another thread on this id can refill the emptied stack
+            // with a zero batch and raise it, and this pop would report its
+            // slot zero. `t` is free once the entry is loaded.
+            "mov {t:e}, dword ptr [{h} + {o_zeroed}]",
             "mov dword ptr [{h} + {o_len}], {l:e}",
             "3:",
             "mov {st:e}, 1",
-            "cmp {l:e}, dword ptr [{h} + {o_zeroed}]",
+            "cmp {l:e}, {t:e}",
             "jae 13f",
             "mov {st:e}, 3",
             "jmp 13f",
@@ -1473,5 +1478,152 @@ mod tests {
             // to assert about, and said so rather than passed.
             std::eprintln!("rseq: skip the distinctness check: every pinned thread read one mm_cid over {:?} (a host too loaded to run two of them at once)", PIN_WINDOW);
         }
+    }
+
+    /// What the race test's signal handler needs: the table and the area
+    /// of the one thread the timer interrupts, and whether a pop is in
+    /// flight.
+    #[cfg(target_os = "linux")]
+    mod race {
+        use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize};
+        pub static ARMED: AtomicBool = AtomicBool::new(false);
+        pub static AREA: AtomicUsize = AtomicUsize::new(0);
+        pub static BASE: AtomicUsize = AtomicUsize::new(0);
+        pub static N: AtomicU32 = AtomicU32::new(0);
+        pub static REFILLS: AtomicU64 = AtomicU64::new(0);
+    }
+
+    /// The fake slots the race test moves through its headers (never
+    /// dereferenced): one dirty entry and a zero batch of four.
+    #[cfg(target_os = "linux")]
+    const RACE_DIRTY: usize = 0x0000_6b6b_0000_0040;
+    #[cfg(target_os = "linux")]
+    const RACE_ZERO: [usize; 4] = [0x0000_5a5a_0000_0040, 0x0000_5a5a_0000_0080, 0x0000_5a5a_0000_00c0, 0x0000_5a5a_0000_0100];
+
+    /// The timer signal: while a pop is in flight, do what another thread
+    /// on this id does when it finds the stack empty, take what is left and
+    /// push a zero batch (`push_batch` with `zeroed` on an empty stack sets
+    /// `zeroed` to the batch length). A signal handler runs on the
+    /// interrupted thread, so it holds the same `mm_cid`, and the kernel
+    /// aborts a section it interrupts, exactly as for a preemption.
+    #[cfg(target_os = "linux")]
+    extern "C" fn race_tick(_sig: ::libc::c_int) {
+        use core::sync::atomic::Ordering::SeqCst;
+        if !race::ARMED.load(SeqCst) {
+            return;
+        }
+        race::ARMED.store(false, SeqCst);
+        let area = race::AREA.load(SeqCst) as *mut u8;
+        let t = Table { base: race::BASE.load(SeqCst) as *mut u8, n: race::N.load(SeqCst) };
+        let mut buf = [core::ptr::null_mut::<u8>(); 8];
+        let batch = RACE_ZERO.map(|a| a as *mut u8);
+        // SAFETY: this thread's area and the test's table (see the test).
+        unsafe {
+            let _ = take_all(area, t, &mut buf, false);
+            let _ = push_batch(area, t, &batch, true, false);
+        }
+        race::REFILLS.fetch_add(1, SeqCst);
+    }
+
+    /// A pop's zero report against a refill that lands between the pop's
+    /// commit and its compare with `zeroed`. The stack holds one dirty
+    /// entry (`zeroed == 0`); a thread pops it, and a timer signal handler
+    /// on the same thread (so the same `mm_cid`) empties the stack and
+    /// pushes a zero batch, as another thread on the id would after the
+    /// pop's commit: the pop must still report its entry dirty, so the pop
+    /// must read `zeroed` before its commit, inside the critical section.
+    /// A compare after label 3 would read the batch's `zeroed`, report the
+    /// dirty entry zero, and let `calloc` skip its `memset`. Skipped where
+    /// the mode is unusable. The table is the test's own, one class-0
+    /// header of capacity 8 per id, never scheduling (`compact_mask` all
+    /// ones).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pop_zero_report_survives_a_refill_after_the_commit() {
+        use core::sync::atomic::Ordering::SeqCst;
+        let p = probe();
+        if !p.mm_cid_usable() {
+            std::eprintln!("rseq: mm_cid unusable here ({}), skipping", p.verdict());
+            return;
+        }
+        let ncpus = possible_cpus().expect("/sys/devices/system/cpu/possible");
+        let r = std::thread::spawn(move || {
+            // One CPU keeps the id stable between the pop and the handler.
+            if let Some(&cpu) = allowed_cpus().and_then(|c| c.first().copied()).as_ref() {
+                pin_to(cpu);
+            }
+            #[repr(C, align(64))]
+            #[derive(Clone, Copy)]
+            struct Line([u8; 64]);
+            let mut lines = std::vec![Line([0; 64]); ncpus as usize * crate::layout::NCLASSES];
+            let mut stacks = std::vec![[core::ptr::null_mut::<u8>(); 8]; ncpus as usize];
+            let base = lines.as_mut_ptr().cast::<u8>();
+            for (id, stack) in stacks.iter_mut().enumerate() {
+                // SAFETY: header `id` of class 0 is line `id * NCLASSES`.
+                unsafe {
+                    let h = base.add(id * STRIDE);
+                    h.add(crate::heap::OFF_CAP).cast::<u32>().write(8);
+                    h.add(crate::heap::OFF_SLOTS).cast::<*mut *mut u8>().write(stack.as_mut_ptr());
+                    h.add(crate::heap::OFF_COMPACT_MASK).cast::<u32>().write(u32::MAX);
+                }
+            }
+            let area = area(p.offset);
+            let t = Table { base, n: ncpus };
+            race::AREA.store(area as usize, SeqCst);
+            race::BASE.store(base as usize, SeqCst);
+            race::N.store(ncpus, SeqCst);
+            // SAFETY: a handler that only runs the sections on this
+            // thread's area and the table above, and a per-thread timer
+            // (`SIGEV_THREAD_ID`) that targets this thread alone.
+            let timer = unsafe {
+                let sig = ::libc::SIGRTMIN() + 5;
+                let mut sa: ::libc::sigaction = core::mem::zeroed();
+                sa.sa_sigaction = race_tick as *const () as usize;
+                sa.sa_flags = ::libc::SA_RESTART;
+                assert_eq!(::libc::sigaction(sig, &sa, core::ptr::null_mut()), 0);
+                let mut sev: ::libc::sigevent = core::mem::zeroed();
+                sev.sigev_notify = ::libc::SIGEV_THREAD_ID;
+                sev.sigev_signo = sig;
+                sev.sigev_notify_thread_id = ::libc::gettid();
+                let mut timer: ::libc::timer_t = core::mem::zeroed();
+                assert_eq!(::libc::timer_create(::libc::CLOCK_MONOTONIC, &mut sev, &mut timer), 0);
+                let every = ::libc::timespec { tv_sec: 0, tv_nsec: 20_000 };
+                let spec = ::libc::itimerspec { it_interval: every, it_value: every };
+                assert_eq!(::libc::timer_settime(timer, 0, &spec, core::ptr::null_mut()), 0);
+                timer
+            };
+            let mut buf = [core::ptr::null_mut::<u8>(); 8];
+            let (mut pops, mut bad) = (0u64, 0u64);
+            let t0 = std::time::Instant::now();
+            while t0.elapsed() < std::time::Duration::from_secs(3) && bad == 0 {
+                // SAFETY: as above.
+                unsafe {
+                    let _ = take_all(area, t, &mut buf, false);
+                    // A push onto the empty stack clips `zeroed` to 0.
+                    assert!(matches!(push(area, t, RACE_DIRTY as *mut u8, false), Push::Pushed));
+                    race::ARMED.store(true, SeqCst);
+                    let (q, st) = pop_raw(area, t, false);
+                    race::ARMED.store(false, SeqCst);
+                    pops += 1;
+                    if st & POP_HIT != 0 && q as usize == RACE_DIRTY && st & POP_ZERO != 0 {
+                        bad += 1;
+                    }
+                }
+            }
+            // SAFETY: the timer this thread created; then ignore the
+            // signal (its default action would kill the process).
+            unsafe {
+                ::libc::timer_delete(timer);
+                ::libc::signal(::libc::SIGRTMIN() + 5, ::libc::SIG_IGN);
+            }
+            drop(stacks);
+            drop(lines);
+            (pops, bad, race::REFILLS.load(SeqCst))
+        })
+        .join()
+        .unwrap();
+        let (pops, bad, refills) = r;
+        std::eprintln!("rseq: {pops} pops, {refills} refills from the handler, {bad} dirty entries reported zero");
+        assert_eq!(bad, 0, "a pop reported its dirty entry zero after a refill landed between its commit and its zeroed compare");
     }
 }
