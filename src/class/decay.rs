@@ -1,8 +1,8 @@
 //! Purge and the decay walk over the `empty` set (design section 8).
 
-use super::abort::slab_count_underflow;
+use super::abort::{empty_count_mismatch, slab_count_underflow};
 use super::{ClassState, Inner};
-use crate::purge::{Batch, Curve, STEPS};
+use crate::purge::{Batch, Curve, DemandGate, STEPS};
 use crate::slab::State;
 
 /// The older of two `dirty_at` stamps where 0 means "none yet": the fold
@@ -96,32 +96,60 @@ impl ClassState {
     /// are purged oldest step first; within the cut-off step the highest
     /// addresses go, so the lowest, which a claim takes first, stay. The
     /// discards go out in batches under the class lock, as `purge_empty`.
-    /// Recomputes `oldest_empty` from the survivors. Returns the number
-    /// purged.
-    fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32) -> usize {
+    /// Recomputes `oldest_empty` from the survivors.
+    ///
+    /// With a demand tracker (`purge::demand`) the walk samples the
+    /// class's demand, its slabs in use plus those that went `Empty` since
+    /// the last walk and then the slabs in use, and keeps at least the
+    /// recurring level less the
+    /// slabs in use (`purge::allowance`; the retention cap still wins).
+    /// Returns the number purged and, when that floor alone keeps every
+    /// `Empty` slab, the hold deadline for the gate.
+    fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32, demand: Option<DemandGate<'_>>) -> (usize, Option<u64>) {
         let spp = self.table().slabs_per_page();
+        let since = self.gate.last_walk();
         let mut g = self.inner.lock();
         // First pass: the age histogram of the empty set and its allowance.
         let mut counts = [0u32; STEPS];
         let mut total = 0usize;
+        let mut fresh = 0usize;
         let mut weighted = 0u64;
         let mut oldest = 0u64;
         self.walk_empty(&mut g, |_, _, dirty_at| {
             let step = curve.step(now, dirty_at);
             counts[step] += 1;
             total += 1;
+            fresh += (dirty_at > since) as usize;
             weighted += Curve::weight(step);
             oldest = min_nonzero(oldest, dirty_at);
         });
-        // The cgroup policy's retention cap (design 11): this walk's share
-        // of the process-wide cap, on top of the curve.
-        let mut allow = Curve::allowance(weighted);
-        if keep16 < crate::policy::KEEP_ALL {
-            allow = allow.min(crate::policy::mul16(total as u64, keep16) as usize);
+        if total != g.stats.empty {
+            empty_count_mismatch(self.class, self.arena, total, g.stats.empty);
         }
+        // The demand floor, then the cgroup policy's retention cap (design
+        // 11): this walk's share of the process-wide cap, on top of both.
+        let mut keep_demand = 0;
+        let mut hold = None;
+        if let Some(dm) = demand {
+            // Since the last walk demand reached at least the slabs in
+            // use plus those that went `Empty` meanwhile, and is now the
+            // slabs in use: both samples, so a fall between two walks
+            // commits its peak even when the walks are a hold apart.
+            let active = g.stats.curslabs();
+            let e = dm.window.epoch(now);
+            dm.tracker.sample(e, active + fresh);
+            dm.tracker.sample(e, active);
+            if dm.apply {
+                keep_demand = dm.tracker.level(e).saturating_sub(active);
+            }
+            if total > 0 && keep_demand >= total {
+                hold = Some(dm.window.hold(now));
+            }
+        }
+        let allow = crate::purge::allowance(Curve::allowance(weighted), keep_demand, total, keep16);
         if total <= allow {
             self.gate.set_oldest_empty(oldest);
-            return 0;
+            return (0, hold);
         }
         // The cut-off step: every slab in an older step goes and all but
         // the first `keep` of this one.
@@ -156,7 +184,7 @@ impl ClassState {
         });
         batch.flush();
         self.gate.set_oldest_empty(oldest);
-        n
+        (n, None)
     }
 
     /// Whether the page group of `slab` (`spp` slabs, `spp > 1`) can be
@@ -203,10 +231,14 @@ impl ClassState {
     /// (design 11): the walk keeps at most `keep16 / 65536` of its `Empty`
     /// slabs on top of the curve's allowance.
     pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> Option<u64> {
-        self.gate.decay(now, decay_ns, keep16, |now, curve| {
-            self.purge_curve(now, curve, keep16);
-            None
-        })
+        self.decay_demand(now, decay_ns, keep16, None)
+    }
+
+    /// [`decay_with`](ClassState::decay_with) with the class's demand
+    /// tracker (`purge::demand`): the walk keeps the demand floor too,
+    /// and holds the next walk while the floor covers everything.
+    pub fn decay_demand(&self, now: u64, decay_ns: u64, keep16: u32, demand: Option<DemandGate<'_>>) -> Option<u64> {
+        self.gate.decay(now, decay_ns, keep16, |now, curve| self.purge_curve(now, curve, keep16, demand).1)
     }
 
     /// Bytes of this arena's `Empty` slabs of the class (one lock hold).

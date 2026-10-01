@@ -39,6 +39,7 @@ use crate::heap::Shared;
 use crate::layout::{NCLASSES, Regions};
 use crate::lock::Lock;
 use crate::meta::Meta;
+use crate::purge::{ArenaDemand, DemandGate, Window};
 use crate::stats::ArenaStats;
 
 /// Arena indices are the 12-bit `MALLOCX_ARENA` field; 4096 itself is
@@ -216,12 +217,26 @@ impl Arena {
     /// this arena and its keep ratio for the retention cap (design 11);
     /// `NEVER` does nothing.
     pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> Option<u64> {
+        self.decay_demand(now, decay_ns, keep16, None)
+    }
+
+    /// [`decay_with`](Arena::decay_with) with the arena's demand trackers
+    /// (`purge::demand`), the window, and whether the cgroup policy lets
+    /// the floor retain anything.
+    pub fn decay_demand(
+        &self,
+        now: u64,
+        decay_ns: u64,
+        keep16: u32,
+        demand: Option<(&ArenaDemand, Window, bool)>,
+    ) -> Option<u64> {
         if decay_ns == crate::purge::NEVER {
             return None;
         }
         let mut next: Option<u64> = None;
-        for cs in self.classes.iter() {
-            if let Some(d) = cs.decay_with(now, decay_ns, keep16) {
+        for (c, cs) in self.classes.iter().enumerate() {
+            let gate = demand.map(|(t, window, apply)| DemandGate { tracker: &t.classes[c], window, apply });
+            if let Some(d) = cs.decay_demand(now, decay_ns, keep16, gate) {
                 next = Some(next.map_or(d, |n| n.min(d)));
             }
         }
@@ -449,6 +464,12 @@ impl Arenas {
     /// The creation lock, for fork handlers (taken before every class lock).
     pub fn raw_lock(&self) -> &crate::lock::RawLock {
         self.lock.raw()
+    }
+
+    /// Hold the creation lock (the demand trackers are carved under it,
+    /// `purge::arena_demand`).
+    pub fn creation_lock(&self) -> crate::lock::LockGuard<'_, u32> {
+        self.lock.lock()
     }
 
     /// Every arena that exists, in index order (for decay, purge, stats

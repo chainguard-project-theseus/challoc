@@ -87,3 +87,11 @@ pub(super) fn double_free(p: usize, class: usize, slab: usize, slot: usize) -> !
 pub(super) fn slab_count_underflow(which: &str) -> ! {
     panic!("class: {which} slab count underflow")
 }
+
+/// A decay walk found `walked` slabs in the empty set while the class
+/// counts say `counted`: the set and its count disagree.
+#[cold]
+#[inline(never)]
+pub(super) fn empty_count_mismatch(class: u16, arena: u16, walked: usize, counted: usize) -> ! {
+    panic!("heap inconsistency: class {class} (arena {arena}): the empty set holds {walked} slabs, the count says {counted}")
+}

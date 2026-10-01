@@ -1929,3 +1929,154 @@ fn the_protocol_steps_are_numbered_in_order() {
         assert_eq!(Purge::at(i as u8), s);
     }
 }
+
+/// The demand tests' clock: a 2 ms curve (10 us steps) under a 40 ms
+/// demand window (20 curve windows, 5 ms epochs), from a synthetic base
+/// well ahead of the real clock so the stamps `release` writes are older.
+mod demand {
+    use super::*;
+    use crate::policy::KEEP_ALL;
+    use crate::purge::{Demand, DemandGate, Window};
+
+    pub(super) const W: u64 = 2_000_000;
+    pub(super) const L_MS: u64 = 40;
+    pub(super) const L: u64 = L_MS * 1_000_000;
+    pub(super) const N: usize = 16;
+
+    pub(super) fn base() -> u64 {
+        crate::sys::now_coarse_ns() + 1_000_000_000_000
+    }
+
+    pub(super) fn gate(t: &Demand) -> DemandGate<'_> {
+        DemandGate { tracker: t, window: Window::from_ms(L_MS).unwrap(), apply: true }
+    }
+
+    /// `N` slabs claimed and released at `t`: every one `Empty` with
+    /// stamp `t`.
+    pub(super) fn burst(env: &Env, cs: &ClassState, t: u64) {
+        let nslots = CLASSES[small_class()].nslots();
+        let (p, _) = env.claim(cs, nslots * N);
+        cs.release(&p);
+        for s in 0..N {
+            assert_eq!(cs.desc(s).state(), State::Empty, "slab {s}");
+            cs.desc(s).set_dirty_at(t);
+        }
+    }
+
+    pub(super) fn purged(cs: &ClassState) -> usize {
+        (0..N).filter(|&s| cs.desc(s).state() == State::Purged).count()
+    }
+
+    /// Bursts every half curve window with a walk every eighth of one;
+    /// the slabs purged in each gap, and the last burst's time.
+    pub(super) fn bursts(env: &Env, cs: &ClassState, tracker: Option<&Demand>, keep16: u32, cycles: usize) -> (Vec<usize>, u64) {
+        let t0 = base();
+        let mut out = Vec::new();
+        let mut t = t0;
+        for k in 0..cycles as u64 {
+            t = t0 + k * W / 2;
+            burst(env, cs, t);
+            for j in 1..4 {
+                cs.decay_demand(t + j * W / 8, W, keep16, tracker.map(gate));
+            }
+            cs.decay_demand(t + W / 2 - 1, W, keep16, tracker.map(gate));
+            out.push(purged(cs));
+        }
+        (out, t)
+    }
+
+    /// A recurring burst (design 8's demand floor): with the window on,
+    /// nothing is purged between bursts from the second on, while the
+    /// curve alone purges about half of each; once the bursts stop the
+    /// floor lasts past the curve's window and everything goes within the
+    /// demand window and a step.
+    #[test]
+    fn a_recurring_burst_is_kept_between_bursts_and_released_after_the_window() {
+        // Many flushes: kept out of the advice test's lazy window.
+        let _serial = crate::purge::tests::serial();
+        let env = Env::new();
+        let cs = env.class(small_class(), 0);
+        let (control, _) = bursts(&env, cs, None, KEEP_ALL, 6);
+        assert!(control[2..].iter().all(|&p| p >= N / 4), "the curve alone purges between bursts: {control:?}");
+        let env = Env::new();
+        let cs = env.class(small_class(), 0);
+        let tracker = Demand::new();
+        let (kept, last) = bursts(&env, cs, Some(&tracker), KEEP_ALL, 6);
+        assert_eq!(kept[0], control[0], "the first burst is the curve's: {kept:?} {control:?}");
+        assert!(kept[1..].iter().all(|&p| p == 0), "the floor keeps recurring bursts: {kept:?}");
+        // Idle: past the curve's window the floor still holds them ...
+        let mut t = last + W / 2;
+        while t < last + L / 2 {
+            cs.decay_demand(t, W, KEEP_ALL, Some(gate(&tracker)));
+            t += W / 2;
+        }
+        assert_eq!(purged(cs), 0, "kept past the curve's window");
+        // ... and lets them go once the window passes over the last peak.
+        let mut released = None;
+        while t <= last + 2 * L {
+            cs.decay_demand(t, W, KEEP_ALL, Some(gate(&tracker)));
+            if purged(cs) == N {
+                released = Some(t);
+                break;
+            }
+            t += W / 200;
+        }
+        let at = released.expect("released within twice the window");
+        assert!(at <= last + L + W, "released at +{} ns", at - last);
+        assert_eq!(cs.oldest_empty(), 0);
+    }
+
+    /// A one-off burst purges exactly as without a window: the same
+    /// counts at the same steps.
+    #[test]
+    fn a_one_off_burst_decays_exactly_as_without_a_window() {
+        // Many flushes: kept out of the advice test's lazy window.
+        let _serial = crate::purge::tests::serial();
+        let trace = |tracker: Option<&Demand>| {
+            let env = Env::new();
+            let cs = env.class(small_class(), 0);
+            let t0 = base();
+            burst(&env, cs, t0);
+            let mut out = Vec::new();
+            let mut t = t0 + W / 200;
+            while t <= t0 + W + W / 200 {
+                let next = cs.decay_demand(t, W, KEEP_ALL, tracker.map(gate));
+                out.push((t - t0, purged(cs), next.map(|n| n - t0)));
+                t += W / 200;
+            }
+            out
+        };
+        let tracker = Demand::new();
+        let with = trace(Some(&tracker));
+        let without = trace(None);
+        assert_eq!(with, without);
+        assert_eq!(with.last().unwrap().1, N, "all purged at the end of the window");
+    }
+
+    /// The retention cap (design 11) caps the floor like anything else:
+    /// at a quarter, at most a quarter of each burst stays.
+    #[test]
+    fn the_retention_cap_wins_over_the_floor() {
+        // Many flushes: kept out of the advice test's lazy window.
+        let _serial = crate::purge::tests::serial();
+        let env = Env::new();
+        let cs = env.class(small_class(), 0);
+        let tracker = Demand::new();
+        let (kept, _) = bursts(&env, cs, Some(&tracker), KEEP_ALL / 4, 6);
+        assert!(kept.iter().all(|&p| p >= N - N / 4), "capped: {kept:?}");
+    }
+
+    /// The walk's cross-check of the empty set against its count: a
+    /// count that disagrees is a heap inconsistency.
+    #[test]
+    #[should_panic(expected = "the empty set holds 16 slabs, the count says 15")]
+    fn a_walk_over_an_empty_count_that_disagrees_aborts() {
+        let env = Env::new();
+        let cs = env.class(small_class(), 0);
+        let t0 = base();
+        burst(&env, cs, t0);
+        cs.inner.lock().stats.empty -= 1;
+        let tracker = Demand::new();
+        cs.decay_demand(t0 + W / 8, W, KEEP_ALL, Some(gate(&tracker)));
+    }
+}

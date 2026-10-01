@@ -91,6 +91,11 @@ pub struct Shared {
     /// by `stats.cgroup.*` and the reports. Last, well away from the lines
     /// the fast paths read.
     pub cgroup: crate::sys::cgroup::Cgroup,
+    /// The arenas' demand trackers (`purge::demand`), carved from the
+    /// metadata region by the decay driver the first time it runs with
+    /// the window on (`purge::arena_demand`); null until then. Last, so
+    /// nothing else moves.
+    pub(crate) demand: core::sync::atomic::AtomicPtr<crate::purge::demand::DemandTable>,
 }
 
 /// [`SlabTable::is_guard_slab`] folded into one add and one mask on the
@@ -309,6 +314,7 @@ impl Shared {
             ptr::write(&raw mut (*this).config, config);
             ptr::write(&raw mut (*this).key, ThreadKey::create());
             ptr::write(&raw mut (*this).stats, Lock::new(crate::stats::Snapshot::EMPTY));
+            ptr::write(&raw mut (*this).demand, core::sync::atomic::AtomicPtr::new(ptr::null_mut()));
         }
         true
     }

@@ -23,8 +23,9 @@
 //! lock (the class lock, the huge lock). The fields are relaxed atomics
 //! only so that the trackers are `Sync`; there are no read-modify-writes.
 
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
+use crate::arena::MAX_ARENAS;
 use crate::layout::NCLASSES;
 
 /// Epochs in the window.
@@ -190,6 +191,17 @@ impl ArenaDemand {
         ArenaDemand { classes: [const { Demand::new() }; NCLASSES] }
     }
 }
+
+/// `Shared::demand`: one tracker set per arena index, carved together
+/// with the first set and never freed. A slot is null until its arena is
+/// first visited, or [`CARVE_FAILED`] when the metadata region could not
+/// hold its trackers (that arena then decays without a floor).
+pub struct DemandTable {
+    pub arenas: [AtomicPtr<ArenaDemand>; MAX_ARENAS],
+}
+
+/// The sentinel of a slot (or of `Shared::demand`) whose carve failed.
+pub const CARVE_FAILED: *mut ArenaDemand = 1 as *mut ArenaDemand;
 
 /// What a class walk needs to apply the demand floor: the class's
 /// tracker, the window, and whether the cgroup policy lets the floor

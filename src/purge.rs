@@ -414,6 +414,10 @@ pub fn decay(shared: &Shared, now: u64) -> Option<u64> {
         purge_all(shared);
     }
     let keep16 = policy.keep16();
+    // The demand window (`demand`): off at 0, and for an arena whose
+    // period is 0 (purge at once was asked for).
+    let window = Window::from_ms(shared.config.hpa_peak_demand_window_ms as u64);
+    let apply = true;
     let mut next: Option<u64> = None;
     let mut fold = |d: Option<u64>| {
         if let Some(d) = d {
@@ -422,7 +426,12 @@ pub fn decay(shared: &Shared, now: u64) -> Option<u64> {
     };
     for arena in shared.arenas.iter() {
         // Each arena's own period, scaled by the policy's band.
-        fold(arena.decay_with(now, policy.effective_decay_ns(arena.decay_ns()), keep16));
+        let decay_ns = policy.effective_decay_ns(arena.decay_ns());
+        let demand = match window {
+            Some(w) if decay_ns != 0 && decay_ns != NEVER => arena_demand(shared, arena.index()).map(|t| (t, w, apply)),
+            _ => None,
+        };
+        fold(arena.decay_demand(now, decay_ns, keep16, demand));
     }
     // The huge allocator is shared by every arena: its own period when
     // `huge_dirty_decay_ms` is set, else arena 0's (design 7).
@@ -431,6 +440,91 @@ pub fn decay(shared: &Shared, now: u64) -> Option<u64> {
         fold(shared.huge.decay_with(now, decay_ns, keep16));
     }
     next
+}
+
+/// Demand-tracker carves that failed (the metadata region was full):
+/// the arena concerned decays without a floor.
+static DEMAND_CARVE_FAILURES: AtomicU64 = AtomicU64::new(0);
+
+/// The sentinel of `Shared::demand` when the table itself could not be
+/// carved.
+const TABLE_FAILED: *mut demand::DemandTable = 1 as *mut demand::DemandTable;
+
+/// Failed demand-tracker carves so far (the report).
+pub fn demand_carve_failures() -> u64 {
+    DEMAND_CARVE_FAILURES.load(Ordering::Relaxed)
+}
+
+/// Arena `index`'s demand trackers, carved from the metadata region the
+/// first time they are asked for; `None` when a carve failed.
+fn arena_demand(shared: &Shared, index: u16) -> Option<&ArenaDemand> {
+    let t = shared.demand.load(Ordering::Acquire);
+    if t == TABLE_FAILED {
+        return None;
+    }
+    if !t.is_null() {
+        // SAFETY: published with a release store once initialised, never
+        // freed.
+        let p = unsafe { (*t).arenas[index as usize].load(Ordering::Acquire) };
+        if p == demand::CARVE_FAILED {
+            return None;
+        }
+        if !p.is_null() {
+            // SAFETY: as the table.
+            return Some(unsafe { &*p });
+        }
+    }
+    carve_arena_demand(shared, index)
+}
+
+/// [`arena_demand`]'s carve, under the arena creation lock (which the
+/// fork handlers hold, so a child never sees a half-built table).
+#[cold]
+#[inline(never)]
+fn carve_arena_demand(shared: &Shared, index: u16) -> Option<&ArenaDemand> {
+    use core::alloc::Layout;
+    use core::ptr;
+    use core::sync::atomic::AtomicPtr;
+    let _g = shared.arenas.creation_lock();
+    let mut t = shared.demand.load(Ordering::Acquire);
+    if t.is_null() {
+        let p = shared.meta.alloc(Layout::new::<demand::DemandTable>()) as *mut demand::DemandTable;
+        t = if p.is_null() {
+            DEMAND_CARVE_FAILURES.fetch_add(1, Ordering::Relaxed);
+            TABLE_FAILED
+        } else {
+            for i in 0..crate::arena::MAX_ARENAS {
+                // SAFETY: a fresh metadata object of the table's layout,
+                // not yet published.
+                unsafe { ptr::write(&raw mut (*p).arenas[i], AtomicPtr::new(ptr::null_mut())) };
+            }
+            p
+        };
+        shared.demand.store(t, Ordering::Release);
+    }
+    if t == TABLE_FAILED {
+        return None;
+    }
+    // SAFETY: published above or earlier, never freed.
+    let slot = unsafe { &(*t).arenas[index as usize] };
+    let mut p = slot.load(Ordering::Acquire);
+    if p.is_null() {
+        let a = shared.meta.alloc(Layout::new::<ArenaDemand>()) as *mut ArenaDemand;
+        p = if a.is_null() {
+            DEMAND_CARVE_FAILURES.fetch_add(1, Ordering::Relaxed);
+            demand::CARVE_FAILED
+        } else {
+            for c in 0..crate::layout::NCLASSES {
+                // SAFETY: a fresh metadata object of the trackers' layout,
+                // not yet published.
+                unsafe { ptr::write(&raw mut (*a).classes[c], Demand::new()) };
+            }
+            a
+        };
+        slot.store(p, Ordering::Release);
+    }
+    // SAFETY: as above.
+    if p == demand::CARVE_FAILED { None } else { Some(unsafe { &*p }) }
 }
 
 /// Purge every `Empty` slab of every arena and every huge extent
