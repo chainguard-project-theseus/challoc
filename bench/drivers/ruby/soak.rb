@@ -26,9 +26,8 @@
 # burst, so each owns a thread cache and, under per-thread arenas, an arena)
 # and then sleep, waking every 5..10 s for one tiny burst (20 strings, 10
 # arrays): the shape of a Sidekiq process whose concurrency is far above
-# its offered load. Under per-thread arenas the process's resident set
-# grows with the thread count; under per-CPU arenas (`percpu_arena:percpu`)
-# it should be bounded by the CPU count. The workers and the sampler are
+# its offered load: with an arena per thread the process's resident set
+# grows with the thread count. The workers and the sampler are
 # unchanged; the summary line gains `idle_threads=`.
 #
 # CSV columns: t_s, event, vmrss_kb, vmhwm_kb, heap_pages, heap_live_slots,

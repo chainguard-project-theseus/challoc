@@ -7,7 +7,7 @@
 #
 #   CPU <model name (lscpu / cpuinfo)>
 #   PROBE <the features: line of tests/c/features.c>
-#   PROBE_PRIVILEGED <the same under DOCKER_FLAGS=--privileged>
+#   PROBE_PRIVILEGED <the same under EXTRA_DOCKER_FLAGS=--privileged>
 #   SCORECARD <the line make scorecard appended> (scorecard cells only)
 #   MATRIX cell=<cell> image=<name> kernel=<uname -r> page=<bytes> machine=<type>
 #          zone=<zone> vcpus=<nproc> tests=<passed>/<failed> fuzz=PASS|FAIL|-
@@ -23,7 +23,7 @@
 #
 #   - a kernel cell (third argument empty or `privileged`): make fuzz, make
 #     test-cgroup (the churn again and the 300 s oscillation) and, with
-#     `privileged`, `make test` once more with DOCKER_FLAGS=--privileged so
+#     `privileged`, `make test` once more with EXTRA_DOCKER_FLAGS=--privileged so
 #     Docker's default seccomp profile does not hide process_madvise and
 #     mseal from the library (the plan's bare-metal/nested-KVM substitute);
 #   - a CPU cell (third argument `scorecard`, task 4): one scorecard run,
@@ -124,7 +124,7 @@ step probe probe_cmd
 # The same line with Docker's seccomp profile out of the way: what the
 # library sees on this kernel when nothing hides process_madvise or mseal.
 probe_priv_cmd() {
-  DOCKER_FLAGS='--privileged' make run CMD='cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c tests/c/features.c -o target/matrix-features -ldl && LD_PRELOAD=/src/target/release/libchalloc.so ./target/matrix-features'
+  EXTRA_DOCKER_FLAGS='--privileged' make run CMD='cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c tests/c/features.c -o target/matrix-features -ldl && LD_PRELOAD=/src/target/release/libchalloc.so ./target/matrix-features'
 }
 step probe-privileged probe_priv_cmd
 
@@ -187,7 +187,7 @@ case "$extra" in
       LD_PRELOAD="$HOME/native/libchalloc.so" "$HOME/native/matrix-features"
     }
     step probe-native probe_native_cmd
-    priv_cmd() { DOCKER_FLAGS='--privileged' make test; }
+    priv_cmd() { EXTRA_DOCKER_FLAGS='--privileged' make test; }
     step test-privileged priv_cmd
     step test-cgroup make test-cgroup
     scorecard_cmd() {
@@ -200,7 +200,7 @@ case "$extra" in
     step fuzz make fuzz
     step test-cgroup make test-cgroup
     if [ "$extra" = privileged ]; then
-      priv_cmd() { DOCKER_FLAGS='--privileged' make test; }
+      priv_cmd() { EXTRA_DOCKER_FLAGS='--privileged' make test; }
       step test-privileged priv_cmd
     fi
     ;;

@@ -33,10 +33,6 @@
 #   challoc-1arena  challoc with MALLOC_CONF=narenas:1 (optional diagnostic: the
 #                default gives every thread its own arena, so 16 workers build 16
 #                arenas whose slabs are never shared)
-#   challoc-percpu  challoc with MALLOC_CONF=percpu_arena:percpu (plan Phase 2.5
-#                task 8: the per-CPU caches against the default's thread caches,
-#                the RSS-by-cores against RSS-by-threads comparison; THREADS=64
-#                or 256 makes the point)
 #   <name>       any other name listed in VARIANTS (below): challoc with that
 #                MALLOC_CONF, e.g. VARIANTS="decay0=dirty_decay_ms:0 narenas4=narenas:4"
 # Every variant's /proc/self/maps is checked before its run.
@@ -51,10 +47,10 @@
 #                 not-yet-decayed inventory at the sample instant
 #   DURATION=600  INTERVAL=5  GC_EVERY=30  COMPACT_AT=300  THREADS=16  SEED=4141
 #   IDLE_THREADS=0  extra mostly idle threads (bench/ruby/soak.rb: one burst at
-#                 start, then a tiny one every 5..10 s), plan Phase 2.5 task 8's
-#                 "RSS bounded by cores, not threads" shape; recorded in the header
+#                 start, then a tiny one every 5..10 s): the many-idle-threads
+#                 shape; recorded in the header
 #   CHALLOC_CONF  read by challoc alone (not by jemalloc), so the same run can
-#                 put challoc under a key (`percpu_arena:percpu`) with jemalloc
+#                 put challoc under a key (`narenas:4`) with jemalloc
 #                 untouched; the Makefile forwards it into the container
 #   RESULT=path   markdown output (default target/results/<date>-<arch>-ruby-soak.md);
 #                 the per-allocator CSVs land beside it as <result stem>-<alloc>.csv
@@ -114,7 +110,7 @@ LOAD0=$(loadavg)
 take_bench_lock
 # conf_of NAME: the MALLOC_CONF of a VARIANTS entry, empty when NAME is not one.
 conf_of() { for v in $VARIANTS; do case $v in "$1="*) echo "${v#*=}"; return;; esac; done; echo ""; }
-for a in $ALLOCS; do case $a in challoc|jemalloc|challoc-bg|jemalloc-bg|challoc-1arena|challoc-percpu) ;; *) [ -n "$(conf_of "$a")" ] || die "unknown allocator '$a' (not in VARIANTS)";; esac; done
+for a in $ALLOCS; do case $a in challoc|jemalloc|challoc-bg|jemalloc-bg|challoc-1arena) ;; *) [ -n "$(conf_of "$a")" ] || die "unknown allocator '$a' (not in VARIANTS)";; esac; done
 rm -rf "$OUT"; mkdir -p "$OUT" "$(dirname "$RESULT")"
 
 # ---- build, stage, install -------------------------------------------------------
@@ -163,7 +159,6 @@ ruby_env() {
     challoc-bg)  echo "MALLOC_CONF=background_thread:true LD_LIBRARY_PATH=$INST/lib";;
     jemalloc-bg) echo "LD_PRELOAD=$JEMALLOC_LIB MALLOC_CONF=background_thread:true LD_LIBRARY_PATH=$INST/lib";;
     challoc-1arena) echo "MALLOC_CONF=narenas:1 LD_LIBRARY_PATH=$INST/lib";;
-    challoc-percpu) echo "MALLOC_CONF=percpu_arena:percpu LD_LIBRARY_PATH=$INST/lib";;
     *)           echo "MALLOC_CONF=$(conf_of "$1") LD_LIBRARY_PATH=$INST/lib";;
   esac
 }
@@ -239,7 +234,6 @@ describe() {
     challoc-bg)  echo "as challoc, with MALLOC_CONF=background_thread:true";;
     jemalloc-bg) echo "as jemalloc, with MALLOC_CONF=background_thread:true";;
     challoc-1arena) echo "as challoc, with MALLOC_CONF=narenas:1 (one arena for all threads)";;
-    challoc-percpu) echo "as challoc, with MALLOC_CONF=percpu_arena:percpu (per-CPU caches instead of thread caches)";;
     *)           echo "as challoc, with MALLOC_CONF=$(conf_of "$1")";;
   esac
 }

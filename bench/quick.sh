@@ -30,7 +30,7 @@
 #   OLD=HEAD                 rev of the base library (any git rev; "tree" = working tree)
 #   NEW=tree                 rev of the candidate (default: the working tree)
 #   NEW_CONF= OLD_CONF=      MALLOC_CONF for the new / old library's rows (e.g.
-#                            NEW_CONF=percpu_arena:percpu judges an opt-in mode
+#                            NEW_CONF=narenas:4 judges an opt-in setting
 #                            against the base's default; both default empty)
 #   QUICK_TOLERANCE=5        percent new may trail old before the exit status says no
 #   QUICK_CONFIRM_ROUNDS=2   extra rounds of old and new for a row that failed the gate once

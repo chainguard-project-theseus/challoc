@@ -46,10 +46,9 @@
 #                              src-<tag>-oldpatch, a tree built with a previous
 #                              contrib patch) on the same library, with its own
 #                              "vs jemalloc" column
-#   CHALLOC_CONF=              MALLOC_CONF for the challoc server alone (plan
-#                              Phase 2.5 task 8: percpu_arena:percpu soaks the
-#                              per-CPU mode against the same jemalloc, which a
-#                              MALLOC_CONF in the environment would reach too)
+#   CHALLOC_CONF=              MALLOC_CONF for the challoc server alone (a
+#                              MALLOC_CONF in the environment would reach the
+#                              jemalloc server too)
 #   DURATION=1200              load seconds per allocator (write + delete)
 #   SETTLE=60                  idle seconds after the delete phase
 #   INTERVAL=10                sampling period in seconds
