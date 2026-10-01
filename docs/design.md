@@ -949,11 +949,14 @@ to `rallocx` exactly as jemalloc's contract requires.
   would grow it, and its `cap / 4` block is the migration rate) and never
   shrinks while compacting (a probing one may); the `FOREIGN` cache keeps
   its fixed half-ladder capacity. In the cgroup's immediate band the GC
-  runs at every periodic tick but the miss counts restart only every
-  `GC_INTERVAL_NS`: a GC every 64 slow paths that also cleared them would
-  keep any cache whose misses are spread over many classes (fewer than
-  two per 64 slow paths) from ever growing, while only a cache with no
-  miss since the last interval GC is quiet there and shrinks. Every
+  runs at every periodic tick, but only the tick that closes a
+  `GC_INTERVAL_NS` interval restarts the miss counts and halves a quiet
+  cache; the others only release unused entries. A GC every 64 slow paths
+  that cleared the counts would keep any cache whose misses are spread
+  over many classes (fewer than two per 64 slow paths) from ever growing,
+  and one that halved quiet caches would take each to its floor within a
+  few ticks; so a quiet cache halves at most once per interval in every
+  band. Every
   capacity write is followed by the abort check `len <= cap <= ceil`,
   `cap >= 1`, and the stack is freed with `ceil`'s layout. All of it is on the slow paths;
   the fast paths read `len` and `cap` at the offsets they always did.

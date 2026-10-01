@@ -177,8 +177,9 @@ pub struct Heap {
     /// randomised claim seeds it from `getrandom`, so the
     /// default configuration makes no syscall per heap creation.
     rng: u64,
-    /// When the caches' miss counts last restarted: at an interval GC, not
-    /// at the every-tick GCs of the cgroup's immediate band ([`Heap::tick`]).
+    /// When the last interval GC ran: the one that restarts the caches'
+    /// miss counts and may shrink a quiet cache, which the every-tick GCs
+    /// of the cgroup's immediate band do not ([`Heap::tick`]).
     misses_since: u64,
     /// Caches of the home arena, one line per class; last, so the small
     /// fields above share two lines and `caches[c]` is `heap + 128 + 64 * c`.
@@ -487,18 +488,20 @@ impl Heap {
         self.gc_with(shared, true);
     }
 
-    /// [`Heap::gc`], restarting the miss counts or not: the every-tick GCs
-    /// of the cgroup's immediate band keep them, so that a cache whose
-    /// misses arrive fewer than [`GROW_MISSES`] per 64 slow paths (spread
-    /// over many classes) still grows, and only a cache with no miss since
-    /// the last interval GC counts as quiet and shrinks.
-    fn gc_with(&mut self, shared: &Shared, restart_misses: bool) {
+    /// [`Heap::gc`] as an interval GC or not. Only an interval GC, at most
+    /// one per `gc_interval_ns`, restarts the miss counts and halves a
+    /// quiet cache; the every-tick GCs of the cgroup's immediate band only
+    /// release unused entries. Keeping the counts lets a cache whose misses
+    /// arrive fewer than [`GROW_MISSES`] per 64 slow paths (spread over
+    /// many classes) still grow, and holding the capacity keeps a quiet
+    /// cache from halving at every tick down to its floor.
+    fn gc_with(&mut self, shared: &Shared, interval: bool) {
         let home = self.arena;
-        self.gc_arena(shared, home, ptr::null_mut(), restart_misses);
+        self.gc_arena(shared, home, ptr::null_mut(), interval);
         for o in Self::nodes(self.others) {
             // SAFETY: as in `flush_all`.
             let arena = unsafe { (*o).arena };
-            self.gc_arena(shared, arena, o, restart_misses);
+            self.gc_arena(shared, arena, o, interval);
         }
     }
 
@@ -508,9 +511,10 @@ impl Heap {
     /// `cap`, down to its floor (`Config::cap_floor`), and flushes the
     /// highest addresses that no longer fit; a busy cache keeps its
     /// capacity, and the misses of the next interval grow it back
-    /// ([`CacheHeader::note_miss`]). The `FOREIGN` cache is flushed whole
-    /// and keeps its fixed capacity.
-    fn gc_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches, restart_misses: bool) {
+    /// ([`CacheHeader::note_miss`]). Capacity and miss counts change only
+    /// at an interval GC (`interval`, [`Heap::gc_with`]). The `FOREIGN`
+    /// cache is flushed whole and keeps its fixed capacity.
+    fn gc_arena(&mut self, shared: &Shared, arena: u16, node: *mut ArenaCaches, interval: bool) {
         for class in 0..NCLASSES {
             // SAFETY: `node` is null or a live node owned by this heap; an
             // unused header (`cap == 0`) is skipped.
@@ -530,13 +534,13 @@ impl Heap {
                     if lw > 0 {
                         self.flush(shared, arena, cache, class, lw - lw / 4);
                     }
-                    // Quiet: neither refilled nor flushed from full, and
-                    // its bottom went unused, for a whole interval. A
+                    // Quiet: neither refilled nor flushed from full for a
+                    // whole interval, and its bottom went unused. A
                     // compacting cache keeps its capacity: its run
                     // rebuilds are its only slow path and migrate the
                     // class's live set.
                     let floor = shared.config.cap_floor(class, (*cache).ceil);
-                    if (*cache).misses == 0 && lw > 0 && (*cache).mode != MODE_COMPACT && (*cache).cap > floor {
+                    if interval && (*cache).misses == 0 && lw > 0 && (*cache).mode != MODE_COMPACT && (*cache).cap > floor {
                         let cap = ((*cache).cap / 2).max(floor);
                         let len = (*cache).len;
                         if len > cap {
@@ -545,7 +549,7 @@ impl Heap {
                         (*cache).cap = cap;
                     }
                 }
-                if restart_misses {
+                if interval {
                     (*cache).misses = 0;
                 }
                 (*cache).low_water = (*cache).len;
@@ -566,13 +570,13 @@ impl Heap {
             if now.wrapping_sub(self.last_gc) >= shared.gc_interval() {
                 self.last_gc = now;
                 // In the immediate band the interval is 0 and the GC runs
-                // at every periodic tick; the miss counts still span the
-                // configured interval.
-                let restart = now.wrapping_sub(self.misses_since) >= shared.gc_interval_ns;
-                if restart {
+                // at every periodic tick; the miss counts and the capacity
+                // still change once per configured interval.
+                let interval = now.wrapping_sub(self.misses_since) >= shared.gc_interval_ns;
+                if interval {
                     self.misses_since = now;
                 }
-                self.gc_with(shared, restart);
+                self.gc_with(shared, interval);
             }
             crate::purge::on_tick(shared, now);
         }

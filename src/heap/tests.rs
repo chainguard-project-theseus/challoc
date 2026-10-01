@@ -3353,8 +3353,8 @@ fn a_probe_refill_counts_a_miss() {
 /// miss per GC (its misses spread over a tick's 64 slow paths with other
 /// classes') still doubles from its second miss on and reaches its
 /// ceiling, where a GC that restarted the counts would hold it at its
-/// start capacity for good; a quiet cache still shrinks one step per
-/// tick.
+/// start capacity for good; a quiet cache keeps its capacity until the
+/// next interval GC.
 #[test]
 fn immediate_band_gcs_keep_the_miss_counts() {
     use crate::policy::Band;
@@ -3384,9 +3384,64 @@ fn immediate_band_gcs_keep_the_miss_counts() {
         caps.push(t.cache(c).cap());
     }
     assert_eq!(caps, [128, 256, 512, CAP, CAP, CAP], "one doubling per miss from the second on");
-    assert!(t.cache(d).cap() < d_cap, "the quiet cache shrank");
+    assert_eq!(t.cache(d).cap(), d_cap, "no interval GC: the quiet cache keeps its capacity");
     s.policy.apply(Band::Unlimited, 0, 0, 0);
     for p in out {
+        t.free(p);
+    }
+    t.destroy();
+    assert_eq!(live(s, c), 0);
+}
+
+/// In the immediate band a quiet cache halves at most once per
+/// `gc_interval_ns`: the every-tick GCs release its unused entries but
+/// leave its capacity, and only the tick that closes an interval halves
+/// it.
+#[test]
+fn immediate_band_quiet_cache_halves_once_per_interval() {
+    use crate::policy::Band;
+    let s = shared();
+    let t = TestHeap::new(s);
+    let c = class_with(64);
+    let ps: Vec<*mut u8> = (0..200).map(|_| t.alloc(c)).collect();
+    t.flush_all();
+    force_cap(&t, c, 128);
+    for &p in &ps[..100] {
+        t.free(p);
+    }
+    assert_eq!(t.len(c), 100);
+    // An interval GC: the miss count restarts, the low-water mark is the
+    // full length.
+    t.gc();
+    assert_eq!((t.cache(c).cap(), t.cache(c).misses), (128, 0));
+    let h = t.heap();
+    h.misses_since = now_ns();
+    let band_tick = |h: &mut Heap| {
+        // Re-applied every tick: the tick's cgroup sample may evaluate
+        // the policy again.
+        s.policy.apply(Band::Immediate, 1 << 30, 0, 0);
+        assert_eq!(s.gc_interval(), 0);
+        h.slow_ticks = PERIODIC_EVERY - 1;
+        h.tick(s);
+    };
+    let mut caps = Vec::new();
+    for round in 0..7 {
+        if round == 2 || round == 5 {
+            h.misses_since = now_ns().wrapping_sub(s.gc_interval_ns);
+        }
+        band_tick(h);
+        caps.push(t.cache(c).cap());
+        if round == 3 {
+            // A fresh unused bottom for the second interval GC.
+            for &p in &ps[100..150] {
+                t.free(p);
+            }
+        }
+    }
+    assert!(t.len(c) < 50, "the band's GCs released unused entries");
+    assert_eq!(caps, [128, 128, 64, 64, 64, 32, 32], "one halving per interval, none between");
+    s.policy.apply(Band::Unlimited, 0, 0, 0);
+    for &p in &ps[150..] {
         t.free(p);
     }
     t.destroy();
