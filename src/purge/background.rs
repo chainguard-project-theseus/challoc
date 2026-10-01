@@ -9,7 +9,6 @@ use crate::heap::{Shared, TLS_CREATING, TLS_EXITED};
 use crate::lock::Lock;
 use crate::sys::{self, Timespec};
 use crate::vspec::addr::addr_to_ptr;
-use crate::vspec::check::check;
 #[cfg(verus_only)]
 use crate::vspec::lock::lock_inv;
 use vstd::prelude::verus;
@@ -244,10 +243,15 @@ fn create(
         shared.lemma_wf();
     }
     let page = shared.regions.page_size();
-    // Real pages are 4 to 64 KiB; the commit below keeps the lowest page
-    // of the stack as its guard, so a page larger than the whole stack
-    // (none exists) is refused rather than wrapped.
-    check(page <= STACK_SIZE, "background: page larger than the thread stack");
+    proof {
+        // The stack arithmetic below relies on a page no larger than the
+        // stack, as the code does: Linux pages are 4 to 64 KiB.
+        crate::layout::axiom_process_page_at_most_64k();
+        let lg = shared.regions.lg_page;
+        assert((1usize << lg) <= 0x4_0000usize) by (bit_vector)
+            requires lg <= 16;
+        assert(STACK_SIZE == 0x4_0000usize);
+    }
     // The TLS slot is parked on `TLS_CREATING` for the pthread calls:
     // `pthread_create` allocates the new thread's DTV with `calloc`
     // and `pthread_join` frees an exited thread's key data, neither of

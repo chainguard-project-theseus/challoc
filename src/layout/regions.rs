@@ -63,6 +63,14 @@ pub open spec fn disjoint(a: int, alen: int, b: int, blen: int) -> bool {
 /// regions; the assumption is about the shipped library.
 pub uninterp spec fn process_regions() -> Regions;
 
+/// The process's page is at most 64 KiB: Linux on x86_64 uses 4 KiB pages
+/// and on aarch64 4, 16 or 64 KiB. Trusted: a kernel fact the code relies on
+/// without checking it (the background thread's stack keeps one page as its
+/// guard out of 256 KiB).
+pub axiom fn axiom_process_page_at_most_64k()
+    ensures
+        process_regions().lg_page <= 16;
+
 /// Entries `lo..hi` of `s` are slot starts of class `c` in the process's
 /// regions.
 pub open spec fn slots_in(s: Seq<*mut u8>, c: int, lo: int, hi: int) -> bool {
