@@ -1827,20 +1827,39 @@ impl<'a> AtomicBitmap<'a> {
     }
 
     /// Set slot bits, padding excluded: the slab's allocated (or cached)
-    /// slots for a class with `nslots` real slots.
-    #[verifier::external_body]
+    /// slots for a class with `nslots` real slots. The loads are relaxed and
+    /// other threads change the words, so the count is a snapshot.
     pub fn allocated(&self, nslots: usize) -> usize
         requires
             nslots <= self.spec_nbits(),
     {
-        let set: usize = (0..self.words.len()).map(|w| self.load(w).count_ones() as usize).sum();
+        proof {
+            use_type_invariant(self);
+        }
+        // `(0..words).map(|w| self.load(w).count_ones() as usize).sum()`,
+        // spelled out: each word adds at most 64, and the view has at most
+        // `usize::MAX / 64` words.
+        let mut set: usize = 0;
+        let mut w = 0;
+        while w < self.words.len()
+            invariant
+                w <= self.words@.len(),
+                self.words@.len() * 64 <= usize::MAX,
+                set <= w * 64,
+            decreases self.words@.len() - w,
+        {
+            let x = self.load(w);
+            proof {
+                lemma_popcount(x);
+                lemma_count_bound(x, 64);
+            }
+            set += x.count_ones() as usize;
+            w += 1;
+        }
         let padding = self.nbits() - nslots;
         // Fewer set bits than padding bits means a padding bit was cleared:
         // a release outside the slab's real slots.
-        assert!(
-            set >= padding,
-            "bitmap: a padding bit of the slab was cleared"
-        );
+        crate::vspec::check::check(set >= padding, "bitmap: a padding bit of the slab was cleared");
         set - padding
     }
 
