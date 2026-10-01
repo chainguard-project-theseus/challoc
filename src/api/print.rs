@@ -254,7 +254,30 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     writeln!(out, "{}", shared.cgroup)?;
     policy_line(out, shared)?;
     advice_line(out)?;
+    demand_line(out, shared)?;
     thp_line(out)
+}
+
+/// The `demand window:` line (issue #25, `purge::demand`): the window,
+/// whether the cgroup policy lets the floor keep anything, the bytes it
+/// keeps in slabs and the huge tier's recurring level, and the tracker
+/// carves that failed.
+fn demand_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
+    let ms = shared.config.hpa_peak_demand_window_ms;
+    if ms == 0 {
+        return writeln!(out, "demand window: off (hpa_peak_demand_window_ms:0)");
+    }
+    let retained: usize = shared.arenas.iter().map(|a| purge::demand_retained(shared, a)).sum();
+    let level = shared.huge.demand_level(crate::sys::now_coarse_ns()) * shared.regions.page_size();
+    writeln!(
+        out,
+        "demand window: {} ms, floor {} retained {} bytes huge_level {} bytes carve_failures {}",
+        ms,
+        if shared.policy.demand_ok() { "on" } else { "off (cgroup policy)" },
+        retained,
+        level,
+        purge::demand_carve_failures()
+    )
 }
 
 /// The `thp:` line (design 7, 10 and 17): the key,
@@ -872,6 +895,7 @@ mod tests {
             "\ncgroup: ",
             "\ncgroup policy: ",
             "\npurge advice: eager MADV_DONTNEED (no headroom known) lazy_purges 0 (0 bytes) eager_purges ",
+            "\ndemand window: off (hpa_peak_demand_window_ms:0)\n",
             "\nthp: ",
             "arenas[0]:",
             "  dirty_decay_ms: ",

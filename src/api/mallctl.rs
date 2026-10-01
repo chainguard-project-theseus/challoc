@@ -255,7 +255,7 @@ static STATS_SMALL: [Node; 2] = [
     }),
 ];
 static STATS_LARGE: [Node; 1] = [stat("allocated", |m| Ok(Size(arena_stats(shared(), at(m, 2))?.large_allocated)))];
-static STATS_ARENA_I: [Node; 9] = [
+static STATS_ARENA_I: [Node; 10] = [
     stat("pactive", |m| Ok(Size(arena_stats(shared(), at(m, 2))?.pactive))),
     stat("pdirty", |m| Ok(Size(arena_stats(shared(), at(m, 2))?.pdirty))),
     stat("pmuzzy", |m| Ok(Size(arena_stats(shared(), at(m, 2))?.pmuzzy))),
@@ -265,6 +265,15 @@ static STATS_ARENA_I: [Node; 9] = [
     stat("mapped", |m| Ok(Size(arena_stats(shared(), at(m, 2))?.mapped))),
     stat("retained", |m| Ok(Size(arena_stats(shared(), at(m, 2))?.retained))),
     dir("bins", &STATS_BINS),
+    // After `bins`, so the positional MIBs of the keys before it stay.
+    stat("demand_retained", |m| {
+        let s = shared();
+        Ok(Size(match at(m, 2) {
+            i if i == ARENAS_ALL as usize => s.arenas.iter().map(|a| purge::demand_retained(s, a)).sum(),
+            ARENAS_DESTROYED => 0,
+            i => purge::demand_retained(s, s.arenas.get_existing(arena_index(i)?).ok_or(ENOENT)?),
+        }))
+    }),
 ];
 static STATS_ARENAS: [Node; 1] = [num(&STATS_ARENA_I)];
 // `stats.cgroup.*` (design 11): the first seven need a tracked cgroup
@@ -323,7 +332,11 @@ static STATS_THP: [Node; 7] = [
     stat("failures", |_| Ok(Size(crate::thp::stats().failures as usize))),
     stat("nohuge_ranges", |_| Ok(Size(crate::thp::stats().nohuge_ranges as usize))),
 ];
-static STATS: [Node; 9] = [
+static STATS_HUGE: [Node; 1] = [stat("demand_level", |_| {
+    let s = shared();
+    Ok(Size(s.huge.demand_level(sys::now_coarse_ns()) * s.regions.page_size()))
+})];
+static STATS: [Node; 10] = [
     stat("allocated", |_| Ok(Size(stats::snapshot(shared()).totals.allocated))),
     stat("active", |_| Ok(Size(stats::snapshot(shared()).totals.active))),
     stat("metadata", |_| Ok(Size(stats::snapshot(shared()).totals.metadata))),
@@ -333,6 +346,7 @@ static STATS: [Node; 9] = [
     dir("arenas", &STATS_ARENAS),
     dir("cgroup", &STATS_CGROUP),
     dir("thp", &STATS_THP),
+    dir("huge", &STATS_HUGE),
 ];
 static THREAD_TCACHE: [Node; 2] = [op("flush", ThreadTcacheFlush), op("enabled", ThreadTcacheEnabled)];
 static THREAD: [Node; 6] = [
@@ -1406,6 +1420,18 @@ mod tests {
         for p in live {
             free(p);
         }
+    }
+
+    /// The demand window's statistics (issue #25): read-only, 0 with the
+    /// window off (the default), for one arena, all and the destroyed;
+    /// an index past the table is nothing.
+    #[test]
+    fn demand_stats_read_zero_with_the_window_off() {
+        for name in ["stats.arenas.0.demand_retained", "stats.arenas.4096.demand_retained", "stats.arenas.4097.demand_retained", "stats.huge.demand_level"] {
+            assert_eq!(get::<usize>(name), 0, "{name}");
+            assert_eq!(set(name, 1usize), EPERM, "{name} is read-only");
+        }
+        assert_eq!(call("stats.arenas.4098.demand_retained"), ENOENT);
     }
 
     /// `MALLCTL_ARENAS_DESTROYED` (4097, `ARENAS_DESTROYED`): the

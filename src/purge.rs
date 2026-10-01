@@ -460,23 +460,49 @@ pub fn demand_carve_failures() -> u64 {
 /// Arena `index`'s demand trackers, carved from the metadata region the
 /// first time they are asked for; `None` when a carve failed.
 fn arena_demand(shared: &Shared, index: u16) -> Option<&ArenaDemand> {
+    match existing_arena_demand(shared, index) {
+        Ok(t) => Some(t),
+        Err(true) => carve_arena_demand(shared, index),
+        Err(false) => None,
+    }
+}
+
+/// Arena `index`'s demand trackers if they were carved; `Err(true)` when
+/// they have not been yet, `Err(false)` when a carve failed.
+fn existing_arena_demand(shared: &Shared, index: u16) -> Result<&ArenaDemand, bool> {
     let t = shared.demand.load(Ordering::Acquire);
     if t == TABLE_FAILED {
-        return None;
+        return Err(false);
     }
-    if !t.is_null() {
-        // SAFETY: published with a release store once initialised, never
-        // freed.
-        let p = unsafe { (*t).arenas[index as usize].load(Ordering::Acquire) };
-        if p == demand::CARVE_FAILED {
-            return None;
-        }
-        if !p.is_null() {
-            // SAFETY: as the table.
-            return Some(unsafe { &*p });
-        }
+    if t.is_null() {
+        return Err(true);
     }
-    carve_arena_demand(shared, index)
+    // SAFETY: published with a release store once initialised, never
+    // freed.
+    let p = unsafe { (*t).arenas[index as usize].load(Ordering::Acquire) };
+    if p == demand::CARVE_FAILED {
+        return Err(false);
+    }
+    if p.is_null() {
+        return Err(true);
+    }
+    // SAFETY: as the table.
+    Ok(unsafe { &*p })
+}
+
+/// Bytes of `arena`'s `Empty` slabs the demand floor keeps now: 0 with
+/// the window off, the policy saying no, or no trackers carved (one lock
+/// hold per class), for `stats.arenas.<i>.demand_retained`.
+pub fn demand_retained(shared: &Shared, arena: &crate::arena::Arena) -> usize {
+    let Some(window) = Window::from_ms(shared.config.hpa_peak_demand_window_ms as u64) else {
+        return 0;
+    };
+    let Ok(t) = existing_arena_demand(shared, arena.index()) else {
+        return 0;
+    };
+    let gate = |c: usize| DemandGate { tracker: &t.classes[c], window, apply: shared.policy.demand_ok() };
+    let now = crate::sys::now_coarse_ns();
+    arena.classes.iter().enumerate().map(|(c, cs)| cs.demand_retained(now, gate(c))).sum()
 }
 
 /// [`arena_demand`]'s carve, under the arena creation lock (which the

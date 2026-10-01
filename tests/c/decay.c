@@ -365,6 +365,13 @@ static void mode_demand(int on)
         else
             CHECK(f[i] * 4 >= f[0], "burst %d took %ld faults (first %ld) without a window", i, f[i], f[0]);
     }
+    size_t retained = 0, len = sizeof retained;
+    REQUIRE(mallctl("stats.arenas.4096.demand_retained", &retained, &len, NULL, 0) == 0, "stats.arenas.4096.demand_retained");
+    printf("demand%s: stats.arenas.4096.demand_retained %zu MiB\n", on ? "" : "-off", retained / MIB);
+    if (on)
+        CHECK(retained >= 4 * MIB, "demand_retained %zu bytes after the bursts", retained);
+    else
+        CHECK(retained == 0, "demand_retained %zu bytes without a window", retained);
     if (!on)
         return;
     /* Idle with the slow path ticking: kept well past the curve's 200 ms,
@@ -412,6 +419,13 @@ static void mode_hugedemand(int on)
         else
             CHECK(f[i] * 2 >= f[0], "iteration %d took %ld faults (first %ld) without a window", i, f[i], f[0]);
     }
+    size_t level = 0, len = sizeof level;
+    REQUIRE(mallctl("stats.huge.demand_level", &level, &len, NULL, 0) == 0, "stats.huge.demand_level");
+    printf("hugedemand%s: stats.huge.demand_level %zu MiB\n", on ? "" : "-off", level / MIB);
+    if (on)
+        CHECK(level >= big, "demand_level %zu bytes after the loop", level);
+    else
+        CHECK(level == 0, "demand_level %zu bytes without a window", level);
     unsigned char *q = malloc(oneoff);
     REQUIRE(q != NULL, "malloc(192 MiB)");
     touch(q, oneoff);

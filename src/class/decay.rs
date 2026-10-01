@@ -246,6 +246,19 @@ impl ClassState {
         self.gate.decay(now, decay_ns, keep16, |now, curve| self.purge_curve(now, curve, keep16, demand).1)
     }
 
+    /// Bytes of this arena's `Empty` slabs of the class that the demand
+    /// floor keeps at `now` (`purge::demand`): the recurring level less
+    /// the slabs in use, at most the `Empty` slabs; 0 when the policy says
+    /// no. One lock hold, for `stats.arenas.<i>.demand_retained`.
+    pub fn demand_retained(&self, now: u64, demand: DemandGate<'_>) -> usize {
+        if !demand.apply {
+            return 0;
+        }
+        let g = self.inner.lock();
+        let level = demand.tracker.level(demand.window.epoch(now));
+        level.saturating_sub(g.stats.curslabs()).min(g.stats.empty) * self.class().slab_size()
+    }
+
     /// Bytes of this arena's `Empty` slabs of the class (one lock hold).
     pub fn empty_bytes(&self) -> usize {
         self.inner.lock().stats.empty * self.class().slab_size()
