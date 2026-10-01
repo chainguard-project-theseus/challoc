@@ -794,10 +794,13 @@ pub unsafe fn push_raw(area: *mut u8, t: Table, p: *mut u8, pac: bool) -> u32 {
 /// Push as many of `ptrs` (in order, so `ptrs[k-1]` ends on top) as the
 /// running CPU's header has room for, and return how many. When the stack
 /// was empty the zero prefix becomes the batch if `zeroed` (else 0) and
-/// `low_water` restarts at the batch length; a batch on top of existing
-/// entries leaves both alone. `Err(())` is out of range. A header never
-/// installed has `cap == 0` and takes nothing; the caller checks `cap` and
-/// installs.
+/// `low_water` restarts at the batch length. A batch on top of existing
+/// entries leaves `low_water` alone and clips the zero prefix at the old
+/// `len`, as [`push`] does: the batch lands above it, and a prefix left
+/// longer (another refill on this CPU between this one's empty pop and
+/// its push) would report the batch's dirty slots as zero. `Err(())` is
+/// out of range. A header never installed has `cap == 0` and takes
+/// nothing; the caller checks `cap` and installs.
 ///
 /// With `pac` the entries are signed under the stack's base as the
 /// modifier, the one every pop and `take_all` authenticate with. An
@@ -848,7 +851,7 @@ pub unsafe fn push_batch(area: *mut u8, t: Table, ptrs: &[*mut u8], zeroed: bool
             "jmp 14b",
             "15:",
             "test {l:e}, {l:e}",
-            "jnz 16f",
+            "jnz 18f",
             "mov {e:e}, {r:e}",
             "test {zf:e}, {zf:e}",
             "jnz 17f",
@@ -856,6 +859,11 @@ pub unsafe fn push_batch(area: *mut u8, t: Table, ptrs: &[*mut u8], zeroed: bool
             "17:",
             "mov dword ptr [{h} + {o_zeroed}], {e:e}",
             "mov dword ptr [{h} + {o_lw}], {r:e}",
+            "jmp 16f",
+            "18:",
+            "cmp {l:e}, dword ptr [{h} + {o_zeroed}]",
+            "jae 16f",
+            "mov dword ptr [{h} + {o_zeroed}], {l:e}",
             "16:",
             "add {l:e}, {r:e}",
             "mov dword ptr [{h} + {o_len}], {l:e}",
@@ -921,11 +929,17 @@ pub unsafe fn push_batch(area: *mut u8, t: Table, ptrs: &[*mut u8], zeroed: bool
             "add {i}, {i}, #1",
             "b 14b",
             "15:",
-            "cbnz {l:w}, 16f",
+            "cbnz {l:w}, 18f",
             "cmp {zf:w}, #0",
             "csel {e:w}, {r:w}, wzr, ne",
             "str {e:w}, [{h}, #{o_zeroed}]",
             "str {r:w}, [{h}, #{o_lw}]",
+            "b 16f",
+            "18:",
+            "ldr {e:w}, [{h}, #{o_zeroed}]",
+            "cmp {l:w}, {e:w}",
+            "b.hs 16f",
+            "str {l:w}, [{h}, #{o_zeroed}]",
             "16:",
             "add {l:w}, {l:w}, {r:w}",
             "str {l:w}, [{h}, #{o_len}]",
