@@ -194,7 +194,10 @@ fixed_work = true
 est_s = 4
 
 [row.espresso]
-cmd = ["{bin}/espresso", "{root}/target/bench-src/mimalloc-bench/bench/espresso/largest.espresso"]
+# The input is mimalloc-bench's bench/espresso/largest.espresso at the
+# rev bench/build.sh pins, carried in the harness (the bench image keeps
+# only the programs, not target/bench-src).
+cmd = ["{bin}/espresso", "{root}/bench/probes/data/largest.espresso"]
 parser = "wall"
 unit = "s"
 better = "lower"
@@ -202,7 +205,7 @@ threads = 1
 class = "st"
 fixed_work = true
 est_s = 4
-needs = ["{root}/target/bench-src/mimalloc-bench/bench/espresso/largest.espresso"]
+needs = ["{root}/bench/probes/data/largest.espresso"]
 
 [row.mstress]
 cmd = ["{bin}/mstress", "{nproc}", "50", "25"]
@@ -481,3 +484,52 @@ class = "st"
 fixed_work = true
 est_s = 6
 needs = ["{root}/bench/probes/valkey_model.c"]
+
+# ---- near a cgroup limit (bench/tools/ballast.c, issue #27) ---------------
+# The row's program with the container's cgroup filled to 92% of its
+# memory limit by a ballast child: challoc's cgroup policy is in its
+# immediate band (design 11: purge at once, the cache GC on every periodic
+# tick). Only under a container with a memory limit (suite exp-27-cg,
+# 3 GiB); without one ballast exits 2 and the row fails. The ballast is a
+# child of the measured process tree, so maxrss and the counters are not
+# the program's: the rows are scored by the program's own rate only.
+[row.xmalloc-cg]
+cmd = ["{tools}/ballast", "92", "{bin}/xmalloc-test", "-w", "10", "-t", "5", "-s", "64"]
+parser = "xmalloc"
+unit = "M frees/s"
+better = "higher"
+threads = 10
+class = "mt"
+secs = 5
+est_s = 7
+
+[row.xmallocN-cg]
+cmd = ["{tools}/ballast", "92", "{bin}/xmalloc-test", "-w", "{nproc}", "-t", "5", "-s", "64"]
+parser = "xmalloc"
+unit = "M frees/s"
+better = "higher"
+threads = 0
+class = "mt"
+secs = 5
+est_s = 7.5
+
+[row.larson10-cg]
+cmd = ["{tools}/ballast", "92", "{bin}/larson", "5", "8", "1000", "5000", "100", "4141", "10"]
+parser = "larson"
+unit = "M ops/s"
+better = "higher"
+threads = 10
+class = "mt"
+secs = 5
+est_s = 9
+
+[row.residue64-cg]
+cmd = ["{tools}/ballast", "92", "{tools}/tcache_residue", "residue", "64", "32"]
+parser = "kv"
+metric = "hot_mops"
+unit = "M ops/s"
+better = "higher"
+threads = 64
+class = "mt"
+est_s = 38
+metrics = [{ name = "rss_settle_mib", unit = "MiB", better = "lower", class = "rss" }]

@@ -45,6 +45,7 @@ TOOLS = {
     "valkey_model": "bench/probes/valkey_model.c",
     "churn": "bench/probes/churn.c",
     "tcache_residue": "bench/probes/tcache_residue.c",
+    "ballast": "bench/tools/ballast.c",
 }
 # Shared objects preloaded after the variant's library (rows with settle).
 PRELOADS = {"settle.so": "bench/tools/settle.c"}
