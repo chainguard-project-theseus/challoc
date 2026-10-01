@@ -126,7 +126,10 @@ const _: () = assert!(
     "pointer classification assumes at most 64 classes"
 );
 const _: () = assert!(MEDIUM_MAX * 16 == MAX_SLAB);
-const _: () = assert!(LG_MAX_SLAB < 32, "slot_of_offset works on 32-bit in-slab offsets");
+const _: () = assert!(
+    LG_MAX_SLAB < 32,
+    "slot_of_offset works on 32-bit in-slab offsets"
+);
 
 /// Allocation tier of a class (design section 3 table); the tests check
 /// the geometry per tier, nothing else distinguishes them.
@@ -257,8 +260,13 @@ impl Class {
     /// 2^22`). So `q < nslots` accepts exactly the slot starts.
     #[inline]
     pub const fn slot_of_offset(&self, offset: usize) -> (usize, bool) {
-        debug_assert!(offset < self.slab_size(), "slot_of_offset: offset outside the slab");
-        let q = (offset as u32).wrapping_mul(self.inv_odd).rotate_right(self.tz as u32);
+        debug_assert!(
+            offset < self.slab_size(),
+            "slot_of_offset: offset outside the slab"
+        );
+        let q = (offset as u32)
+            .wrapping_mul(self.inv_odd)
+            .rotate_right(self.tz as u32);
         (q as usize, q < self.nslots)
     }
 
@@ -367,7 +375,15 @@ pub const fn lg_slab_at(size: usize, lg_page: u32) -> u32 {
 /// The class table for a kernel with `1 << lg_page` pages: sizes and
 /// their inverses are fixed, the slab geometry follows [`lg_slab_at`].
 pub const fn classes_for_page(lg_page: u32) -> [Class; NCLASSES] {
-    let mut out = [Class { size: 0, lg_slab: 0, nslots: 0, slab_mask: 0, inv_odd: 0, tz: 0, slab_bits: 0 }; NCLASSES];
+    let mut out = [Class {
+        size: 0,
+        lg_slab: 0,
+        nslots: 0,
+        slab_mask: 0,
+        inv_odd: 0,
+        tz: 0,
+        slab_bits: 0,
+    }; NCLASSES];
     let mut i = 0;
     while i < NCLASSES {
         let size = class_size_at(i);

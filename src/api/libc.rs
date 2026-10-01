@@ -195,7 +195,9 @@ pub fn free(p: *mut u8) {
 pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>) {
     // A huge size (no hint) has no fast path: straight to the slow one,
     // so the fast path carries a plain class and no test of the hint.
-    let Some(c) = hint else { return free_sized_unhinted(p, size) };
+    let Some(c) = hint else {
+        return free_sized_unhinted(p, size);
+    };
     if p.is_null() {
         return;
     }

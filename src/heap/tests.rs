@@ -1055,7 +1055,10 @@ fn zeroed_prefix_stays_below_low_water() {
         if live.is_empty() || x % 5 < 3 {
             let (p, z) = t.alloc_zeroed(c);
             if z {
-                assert!((0..64).all(|k| unsafe { *p.add(k) } == 0), "op {i}: a dirty slot reported zero");
+                assert!(
+                    (0..64).all(|k| unsafe { *p.add(k) } == 0),
+                    "op {i}: a dirty slot reported zero"
+                );
                 zeros += 1;
             }
             unsafe { core::ptr::write_bytes(p, 0xa5, 64) };
@@ -1076,7 +1079,10 @@ fn zeroed_prefix_stays_below_low_water() {
             h.len()
         );
     }
-    assert!(zeros > 20, "fresh refills were exercised ({zeros} zero pops)");
+    assert!(
+        zeros > 20,
+        "fresh refills were exercised ({zeros} zero pops)"
+    );
     for p in live {
         t.free(p);
     }
@@ -1100,7 +1106,10 @@ fn compacting_cache_with_run(t: &TestHeap, c: usize, seed: u64) -> Vec<*mut u8> 
         unsafe { (*k).allocs = (*k).compact_mask as u64 };
         live_ps.push(t.alloc(c));
     }
-    assert!(t.cache(c).compacting() && !t.cache(c).run().is_empty(), "no compacting cache with a run");
+    assert!(
+        t.cache(c).compacting() && !t.cache(c).run().is_empty(),
+        "no compacting cache with a run"
+    );
     // An entry above the run, so the scheduled pop moves a different top
     // into the run's slot.
     if t.len(c) == t.cache(c).run().len() {
@@ -1149,20 +1158,30 @@ fn compacting_pop_zero_flag_matches_memory() {
             (*k).allocs = (*k).compact_mask as u64;
         }
         let (p, z) = t.alloc_zeroed(c);
-        assert_eq!(p, entries[at as usize], "case {case}: the scheduled pop serves the run's last entry");
+        assert_eq!(
+            p, entries[at as usize],
+            "case {case}: the scheduled pop serves the run's last entry"
+        );
         assert_eq!(z, case < 2, "case {case}: zero flag of the run entry");
         let want = match case {
             0 => len - 1,
             1 => at,
             _ => at,
         };
-        assert_eq!(t.cache(c).zeroed(), want as usize, "case {case}: the prefix after the pop");
+        assert_eq!(
+            t.cache(c).zeroed(),
+            want as usize,
+            "case {case}: the prefix after the pop"
+        );
         let mut out = std::vec![p];
         let mut zeros = z as usize;
         while t.len(c) > 0 {
             let (q, zq) = t.alloc_zeroed(c);
             let clean = (0..size).all(|b| unsafe { *q.add(b) } == 0);
-            assert!(!zq || clean, "case {case}: a dirty slot {q:?} reported zero");
+            assert!(
+                !zq || clean,
+                "case {case}: a dirty slot {q:?} reported zero"
+            );
             if zq {
                 zeros += 1;
             }
@@ -1181,7 +1200,9 @@ fn compacting_pop_zero_flag_matches_memory() {
 /// checks: a zero prefix reaching above the low-water mark is a heap
 /// inconsistency and aborts (a panic under test) before any entry moves.
 #[test]
-#[should_panic(expected = "heap: cache run invariant violated (run_end or zeroed > low_water, or low_water > len)")]
+#[should_panic(
+    expected = "heap: cache run invariant violated (run_end or zeroed > low_water, or low_water > len)"
+)]
 fn compacting_pop_aborts_on_a_zeroed_prefix_above_low_water() {
     let s = shared();
     let t = TestHeap::new(s);

@@ -533,7 +533,9 @@ unsafe fn class_entry(c: usize) -> &'static super::Class {
     let p = {
         let mut p = p;
         // SAFETY: an empty instruction sequence; `p` comes out unchanged.
-        unsafe { core::arch::asm!("/* {0} */", inout(reg) p, options(pure, nomem, nostack, preserves_flags)) };
+        unsafe {
+            core::arch::asm!("/* {0} */", inout(reg) p, options(pure, nomem, nostack, preserves_flags))
+        };
         p
     };
     // SAFETY: `p` points into the table, which is never written after init.

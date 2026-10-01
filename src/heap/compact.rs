@@ -217,7 +217,9 @@ impl Heap {
             // inside the stack; a violation is a heap inconsistency and
             // aborts in release.
             assert!(
-                (*cache).run_end <= (*cache).low_water && (*cache).low_water <= len && (*cache).zeroed <= (*cache).low_water,
+                (*cache).run_end <= (*cache).low_water
+                    && (*cache).low_water <= len
+                    && (*cache).zeroed <= (*cache).low_water,
                 "heap: cache run invariant violated (run_end or zeroed > low_water, or low_water > len)"
             );
             let top = len - 1;

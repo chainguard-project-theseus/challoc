@@ -267,7 +267,11 @@ impl Heap {
             }
             let slots = (*cache).slots();
             let p = *slots.add(len as usize);
-            let p = if pac { pac::auth(p as usize, slots as usize) as *mut u8 } else { p };
+            let p = if pac {
+                pac::auth(p as usize, slots as usize) as *mut u8
+            } else {
+                p
+            };
             (p, zero)
         }
     }

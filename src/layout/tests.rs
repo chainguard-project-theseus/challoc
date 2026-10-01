@@ -222,7 +222,11 @@ fn slab_geometry() {
         // The slot-start test's constants.
         assert_eq!(c.slab_mask(), slab - 1, "class {i}");
         assert_eq!(c.tz as u32, c.size().trailing_zeros(), "class {i}");
-        assert_eq!(((c.size() >> c.tz) as u32).wrapping_mul(c.inv_odd), 1, "class {i}");
+        assert_eq!(
+            ((c.size() >> c.tz) as u32).wrapping_mul(c.inv_odd),
+            1,
+            "class {i}"
+        );
     }
 }
 
@@ -258,10 +262,17 @@ fn slot_of_offset_is_exactly_the_reciprocal_check() {
                 let (slot, valid) = cls.slot_of_offset(off);
                 let (rslot, rvalid) = reciprocal_slot_of_offset(cls, off);
                 if valid != rvalid || valid != (off % size == 0 && off / size < cls.nslots()) {
-                    panic!("class {c} ({size} B, slab 2^{}) offset {off}: new {valid}, reciprocal {rvalid}", cls.lg_slab);
+                    panic!(
+                        "class {c} ({size} B, slab 2^{}) offset {off}: new {valid}, reciprocal {rvalid}",
+                        cls.lg_slab
+                    );
                 }
                 if valid {
-                    assert_eq!((slot, rslot), (off / size, off / size), "class {c} offset {off}");
+                    assert_eq!(
+                        (slot, rslot),
+                        (off / size, off / size),
+                        "class {c} offset {off}"
+                    );
                     accepted += 1;
                 }
             }
@@ -306,9 +317,17 @@ fn page_sized_geometry_for_large_pages() {
         let t = classes_for_page(lg_page);
         let mut changed = 0;
         for (c, (cls, base)) in t.iter().zip(BASE_CLASSES.iter()).enumerate() {
-            assert_eq!((cls.size, cls.inv_odd, cls.tz), (base.size, base.inv_odd, base.tz), "class {c}");
+            assert_eq!(
+                (cls.size, cls.inv_odd, cls.tz),
+                (base.size, base.inv_odd, base.tz),
+                "class {c}"
+            );
             assert_eq!(cls.slab_mask(), cls.slab_size() - 1, "class {c}");
-            assert_eq!(cls.lg_slab as u32, (base.lg_slab as u32).max(lg_page), "class {c} at 2^{lg_page}");
+            assert_eq!(
+                cls.lg_slab as u32,
+                (base.lg_slab as u32).max(lg_page),
+                "class {c} at 2^{lg_page}"
+            );
             assert_eq!(cls.lg_slab as u32, lg_slab_at(cls.size(), lg_page));
             assert!(
                 cls.slab_size() >= 1 << lg_page,
