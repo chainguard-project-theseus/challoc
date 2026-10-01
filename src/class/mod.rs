@@ -175,7 +175,8 @@ pub(crate) fn shuffle(out: &mut [*mut u8], rng: &mut u64)
         forall|i: int| 0 <= i < old(out)@.len() ==> #[trigger] from_seq(final(out)@, old(out)@, i),
 {
     let tracked mut z = Map::tracked_empty();
-    shuffle_zero(out, rng, Ghost(false), Ghost(0), Tracked(&mut z));
+    let tracked mut t = Map::tracked_empty();
+    shuffle_zero(out, rng, Ghost(false), Ghost(0), Tracked(&mut z), Ghost(None), Tracked(&mut t));
 }
 
 /// `z[i]` is a zero token covering `size` bytes of `s[i]`, for every entry.
@@ -184,14 +185,27 @@ pub open spec fn tokens_cover(z: Map<int, Zeroed>, s: Seq<*mut u8>, size: int) -
 }
 
 /// [`shuffle`], moving the zero token of each entry (`z[i]` for `out[i]`,
-/// when `zeroed`) along with it.
-pub(crate) fn shuffle_zero(out: &mut [*mut u8], rng: &mut u64, Ghost(zeroed): Ghost<bool>, Ghost(size): Ghost<int>, Tracked(z): Tracked<&mut Map<int, Zeroed>>)
+/// when `zeroed`) along with it, and its slot token (`t[i]`, when `loc`
+/// names their authority).
+#[verifier::spinoff_prover]
+pub(crate) fn shuffle_zero(
+    out: &mut [*mut u8],
+    rng: &mut u64,
+    Ghost(zeroed): Ghost<bool>,
+    Ghost(size): Ghost<int>,
+    Tracked(z): Tracked<&mut Map<int, Zeroed>>,
+    Ghost(loc): Ghost<Option<vstd::resource::Loc>>,
+    Tracked(t): Tracked<&mut Map<int, GhostSingleton<int>>>,
+)
     requires
         zeroed ==> tokens_cover(*old(z), old(out)@, size),
+        loc matches Some(l) ==> keyed(*old(t), ptr_addrs(old(out)@), l, 0, old(out)@.len() as int),
     ensures
         final(out)@.len() == old(out)@.len(),
         forall|i: int| 0 <= i < old(out)@.len() ==> #[trigger] from_seq(final(out)@, old(out)@, i),
         zeroed ==> tokens_cover(*final(z), final(out)@, size),
+        loc matches Some(l) ==> keyed(*final(t), ptr_addrs(final(out)@), l, 0, final(out)@.len() as int),
+        keyed_frame(*final(t), *old(t), 0, old(out)@.len() as int),
 {
     proof {
         lemma_from_seq_refl(out@);
@@ -200,6 +214,8 @@ pub(crate) fn shuffle_zero(out: &mut [*mut u8], rng: &mut u64, Ghost(zeroed): Gh
         invariant
             out@.len() == old(out)@.len(),
             forall|k: int| 0 <= k < old(out)@.len() ==> #[trigger] from_seq(out@, old(out)@, k),
+            loc matches Some(l) ==> keyed(*t, ptr_addrs(out@), l, 0, out@.len() as int),
+            keyed_frame(*t, *old(t), 0, old(out)@.len() as int),
             zeroed ==> tokens_cover(*z, out@, size),
     {
         let j = (xorshift(rng) % (i as u64 + 1)) as usize;
@@ -219,6 +235,47 @@ pub(crate) fn shuffle_zero(out: &mut [*mut u8], rng: &mut u64, Ghost(zeroed): Gh
                 z.tracked_insert(i as int, b);
                 z.tracked_insert(j as int, a);
             }
+            let t0 = *t;
+            if loc is Some && i != j {
+                let tracked a = t.tracked_remove(i as int);
+                let tracked b = t.tracked_remove(j as int);
+                t.tracked_insert(i as int, b);
+                t.tracked_insert(j as int, a);
+            }
+            assert forall|k: int| !(0 <= k < old(out)@.len()) implies {
+                &&& #[trigger] t.contains_key(k) == old(t).contains_key(k)
+                &&& old(t).contains_key(k) ==> t[k] == old(t)[k]
+            } by {
+                assert(t0.contains_key(k) == old(t).contains_key(k));
+                if old(t).contains_key(k) {
+                    assert(t0[k] == old(t)[k]);
+                }
+            }
+            if loc is Some {
+                let l = loc.unwrap();
+                assert forall|k: int| 0 <= k < out@.len() implies {
+                    &&& #[trigger] t.contains_key(k)
+                    &&& t[k].id() == l
+                    &&& t[k]@ == ptr_addrs(out@)[k]
+                } by {
+                    assert(t0.contains_key(k) && t0.contains_key(i as int) && t0.contains_key(j as int));
+                    assert(ptr_addrs(cur)[i as int] == cur[i as int]@.addr as int);
+                    assert(ptr_addrs(cur)[j as int] == cur[j as int]@.addr as int);
+                    assert(ptr_addrs(cur)[k] == cur[k]@.addr as int);
+                    assert(ptr_addrs(out@)[k] == out@[k]@.addr as int);
+                    if k == i as int {
+                        assert(out@[k] == cur[j as int]);
+                    } else if k == j as int {
+                        assert(out@[k] == cur[i as int]);
+                    } else {
+                        assert(out@[k] == cur[k]);
+                    }
+                }
+            }
+            assert(keyed_frame(*t, *old(t), 0, old(out)@.len() as int));
+            if loc is Some {
+                assert(keyed(*t, ptr_addrs(out@), loc.unwrap(), 0, out@.len() as int));
+            }
             if zeroed {
                 assert forall|k: int| 0 <= k < out@.len() implies #[trigger] z.contains_key(k) && z[k].covers(out@[k], size) by {
                     assert(z0.contains_key(k) && z0.contains_key(i as int) && z0.contains_key(j as int));
@@ -230,6 +287,7 @@ pub(crate) fn shuffle_zero(out: &mut [*mut u8], rng: &mut u64, Ghost(zeroed): Gh
                         assert(out@[k] == cur[k]);
                     }
                 }
+                assert(tokens_cover(*z, out@, size));
             }
         }
     }
@@ -2409,8 +2467,7 @@ impl ClassState {
     /// instead of by ascending address. Shuffling changes the order of
     /// `out[..n]`, not the set of slots, so [`Claim::zeroed`] means what it
     /// always means: every slot came from a slab nothing else could touch.
-    /// The tokens are not carried through the shuffle (its contract keeps
-    /// the elements, not their count).
+    /// [`claim_random_zero`] carries the slot tokens through the shuffle.
     ///
     /// [`claim`]: ClassState::claim
     pub fn claim_random(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64) -> (r: Claim)
@@ -2419,23 +2476,27 @@ impl ClassState {
             final(out)@.len() == old(out)@.len(),
             slots_in(final(out)@, self.spec_class() as int, 0, r.n as int),
     {
-        self.claim_random_zero(meta, out, rng).0
+        let tracked mut toks = SlotToks::empty();
+        self.claim_random_zero(meta, out, rng, Tracked(&mut toks)).0
     }
 
     /// [`claim_random`] with the zero tokens of the slots it wrote
-    /// ([`claim_zero_ok`]), shuffled along with them (the slot tokens are
-    /// not, as for [`claim_random`]).
+    /// ([`claim_zero_ok`]) and their slot tokens, as for [`claim_tokens`],
+    /// both shuffled along with the slots.
     ///
     /// [`claim_random`]: ClassState::claim_random
-    pub fn claim_random_zero(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
+    /// [`claim_tokens`]: ClassState::claim_tokens
+    #[verifier::spinoff_prover]
+    pub fn claim_random_zero(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64, Tracked(toks): Tracked<&mut SlotToks>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
         ensures
             r.0.n <= old(out)@.len(),
             final(out)@.len() == old(out)@.len(),
             slots_in(final(out)@, self.spec_class() as int, 0, r.0.n as int),
+            final(toks).owns(self.spec_table(), final(out)@, 0, 0, r.0.n as int),
+            final(toks).frame(*old(toks), 0, r.0.n as int),
             claim_zero_ok(r.0, final(out)@, r.1@, self.spec_class() as int),
     {
-        let tracked mut toks = SlotToks::empty();
-        let (c, Tracked(z)) = self.claim_with(meta, out, Some(rng), Tracked(&mut toks));
+        let (c, Tracked(z)) = self.claim_with(meta, out, Some(rng), Tracked(toks));
         let tracked mut z = z;
         let ghost mid = out@;
         let ghost size = class_table()[self.spec_class() as int].size as int;
@@ -2445,10 +2506,27 @@ impl ClassState {
                     assert(mid.subrange(0, c.n as int)[i] == mid[i]);
                     assert(claim_zero_ok(c, mid, z, self.spec_class() as int));
                 }
+                assert(tokens_cover(z, mid.subrange(0, c.n as int), size));
             }
         }
-        shuffle_zero(&mut out[..c.n], rng, Ghost(c.zeroed), Ghost(size), Tracked(&mut z));
         proof {
+            toks.lemma_owns_keyed(self.spec_table(), mid, c.n as int);
+        }
+        let ghost t0 = *toks;
+        let ghost o0 = *old(toks);
+        shuffle_zero(&mut out[..c.n], rng, Ghost(c.zeroed), Ghost(size), Tracked(&mut z), Ghost(Some(self.spec_table().spec_slots().loc)), Tracked(&mut toks.toks));
+        proof {
+            assert(out@.subrange(0, c.n as int) == out@[..c.n as int]);
+            toks.lemma_owns_keyed(self.spec_table(), out@, c.n as int);
+            assert(toks.bits == t0.bits);
+            assert forall|j: int| !(0 <= j < c.n) implies (#[trigger] toks.toks.contains_key(j)) == o0.toks.contains_key(j) by {
+                assert(t0.toks.contains_key(j) == o0.toks.contains_key(j));
+            }
+            assert forall|j: int| !(0 <= j < c.n) && o0.toks.contains_key(j) implies #[trigger] toks.toks[j] == o0.toks[j] by {
+                assert(t0.toks.contains_key(j));
+                assert(toks.toks.contains_key(j));
+                assert(t0.toks[j] == o0.toks[j]);
+            }
             assert forall|i: int| 0 <= i < c.n implies process_regions().is_slot(self.spec_class() as int, (#[trigger] out@[i])@.addr) by {
                 assert(from_seq(out@.subrange(0, c.n as int), mid.subrange(0, c.n as int), i));
                 let w = choose|w: int| 0 <= w < c.n && out@.subrange(0, c.n as int)[i] == mid.subrange(0, c.n as int)[w];
@@ -3085,6 +3163,42 @@ impl SlotToks {
         }
     }
 
+
+    /// [`SlotToks::owns`] of `out[..n]` from key 0 is [`keyed`] of their
+    /// addresses.
+    pub proof fn lemma_owns_keyed(self, t: SlabTable, out: Seq<*mut u8>, n: int)
+        requires
+            0 <= n <= out.len(),
+        ensures
+            self.owns(t, out, 0, 0, n) <==> keyed(self.toks, ptr_addrs(out.subrange(0, n)), t.spec_slots().loc, 0, n),
+    {
+        reveal(SlotToks::owns);
+        let a = ptr_addrs(out.subrange(0, n));
+        assert forall|i: int| 0 <= i < n implies a[i] == (#[trigger] out[i])@.addr as int by {
+            assert(out.subrange(0, n)[i] == out[i]);
+        }
+        if self.owns(t, out, 0, 0, n) {
+            assert forall|i: int| 0 <= i < n implies {
+                &&& #[trigger] self.toks.contains_key(i)
+                &&& self.toks[i].id() == t.spec_slots().loc
+                &&& self.toks[i]@ == a[i]
+            } by {
+                assert(a[i] == out[i]@.addr as int);
+                assert(self.toks.contains_key(0 + i));
+            }
+        }
+        if keyed(self.toks, a, t.spec_slots().loc, 0, n) {
+            assert forall|i: int| 0 <= i < n implies {
+                &&& self.toks.contains_key(0 + i)
+                &&& self.toks[0 + i].id() == t.spec_slots().loc
+                &&& self.toks[0 + i]@ == (#[trigger] out[i])@.addr as int
+            } by {
+                assert(self.toks.contains_key(i));
+                assert(a[i] == out[i]@.addr as int);
+            }
+        }
+    }
+
     /// No slots.
     pub proof fn empty() -> (tracked r: SlotToks)
         ensures
@@ -3282,28 +3396,489 @@ proof fn lemma_word_pop(s: Slots, f: int, w: int, m0: u64, b: u64)
     assert(mask_bits(s, f, w, m0) =~= rhs);
 }
 
-/// Trusted: the `free` contract, where the release paths meet it. Its four
-/// call sites are `ClassState::release_owned` and `heap::free_fast`,
-/// `free_fast_class` and `free_sized_fast`; each call stands for one free
-/// of one slot. Whoever frees a slot owns it (a block `malloc` returned and
-/// not freed since), so it holds the slot's token; for C callers this is
-/// the documented contract of `free`. The axiom is only as sound as that
-/// contract: two calls for one slot while its token exists elsewhere give
-/// two tokens of one slot, from which a proof can derive `false`. Under the
-/// contract the double-free aborts of the release paths are unreachable.
-///
-/// In `release_owned` it also stands in for the tokens of the slots a
-/// flush returns from a cache. The flush does not hand them over, so their
-/// copies stay in `heap::CachePerms::toks`, keyed by stack entry, until a
-/// push or refill of the entry overwrites them; after a flush
-/// `CachePerms::tokened` is no longer known to hold, and no verified
-/// function combines those copies with the contract's (`verus/TODO.md`, "Uniqueness: slot tokens").
+/// Trusted: the `free` contract, where a slot the program frees enters
+/// the allocator. Its call sites are the program's free paths:
+/// `heap::Heap::free`, `heap::free_fast`, `free_fast_class`,
+/// `free_sized_fast` and `heap::free_direct`; each call stands for one
+/// free of one slot, and at most one of its tokens is live at a time (a
+/// declined fast path drops its token before the slow path, entered from
+/// unverified code, conjures it again). Whoever frees a slot owns it (a
+/// block `malloc` returned and not freed since), so it holds the slot's token; for C
+/// callers this is the documented contract of `free`. The axiom is only as
+/// sound as that contract: two calls for one slot while its token exists
+/// elsewhere give two tokens of one slot, from which a proof can derive
+/// `false`. Under the contract the double-free aborts of the release paths
+/// are unreachable. The cache paths (flush, run rebuild, GC) do not call
+/// it: a flushed slot's token comes from `heap::CachePerms::toks`.
 pub axiom fn axiom_free_token(c: int, p: *mut u8) -> (tracked r: GhostSingleton<int>)
     requires
         process_regions().is_slot(c, p@.addr),
     ensures
         r.id() == slot_loc(c),
         r@ == p@.addr as int;
+
+/// The addresses of a batch of slot pointers, as the tokens name them.
+pub open spec fn ptr_addrs(s: Seq<*mut u8>) -> Seq<int> {
+    Seq::new(s.len(), |i: int| s[i]@.addr as int)
+}
+
+/// The addresses `a[lo..hi]`, as a set ([`lemma_aset`]).
+pub closed spec fn aset(a: Seq<int>, lo: int, hi: int) -> VSet<int> {
+    vstd::set_lib::set_int_range(lo, hi).map(|i: int| a[i])
+}
+
+/// What [`aset`] contains.
+pub broadcast proof fn lemma_aset(a: Seq<int>, lo: int, hi: int, x: int)
+    ensures
+        #[trigger] aset(a, lo, hi).contains(x) <==> exists|i: int| lo <= i < hi && a[i] == x,
+{
+    broadcast use {vstd::set_lib::range_set_properties, VSet::lemma_map_contains};
+    if aset(a, lo, hi).contains(x) {
+        let i = choose|i: int| vstd::set_lib::set_int_range(lo, hi).contains(i) && x == a[i];
+        assert(lo <= i < hi);
+    }
+    if exists|i: int| lo <= i < hi && a[i] == x {
+        let i = choose|i: int| lo <= i < hi && a[i] == x;
+        assert(vstd::set_lib::set_int_range(lo, hi).contains(i));
+    }
+}
+
+/// No address repeats in `a[lo..hi]`.
+pub open spec fn distinct(a: Seq<int>, lo: int, hi: int) -> bool {
+    forall|i: int, j: int| lo <= i < j < hi ==> a[i] != a[j]
+}
+
+/// `a[i]` is in `aset(a, lo, hi)` for `lo <= i < hi`, and, with `a`
+/// distinct there, not in `aset(a, lo, i)`, which it extends to
+/// `aset(a, lo, i + 1)`.
+#[verifier::spinoff_prover]
+pub proof fn lemma_aset_step(a: Seq<int>, lo: int, i: int, hi: int)
+    requires
+        lo <= i < hi,
+    ensures
+        aset(a, lo, hi).contains(a[i]),
+        distinct(a, lo, hi) ==> !aset(a, lo, i).contains(a[i]),
+        aset(a, lo, i + 1) == aset(a, lo, i).insert(a[i]),
+{
+    broadcast use lemma_aset;
+    assert(aset(a, lo, hi).contains(a[i]));
+    if distinct(a, lo, hi) && aset(a, lo, i).contains(a[i]) {
+        let k = choose|k: int| lo <= k < i && a[k] == a[i];
+        assert(a[k] != a[i]);
+    }
+    assert forall|x: int| aset(a, lo, i + 1).contains(x) <==> aset(a, lo, i).insert(a[i]).contains(x) by {
+        if aset(a, lo, i + 1).contains(x) {
+            let k = choose|k: int| lo <= k < i + 1 && a[k] == x;
+            if k < i {
+                assert(aset(a, lo, i).contains(x));
+            }
+        }
+        if aset(a, lo, i).contains(x) {
+            let k = choose|k: int| lo <= k < i && a[k] == x;
+            assert(lo <= k < i + 1);
+        }
+    }
+    assert(aset(a, lo, i + 1) =~= aset(a, lo, i).insert(a[i]));
+}
+
+/// `aset(a, lo, hi)` is `a[lo]` and `aset(a, lo + 1, hi)`, for `lo < hi`.
+#[verifier::spinoff_prover]
+pub proof fn lemma_aset_front(a: Seq<int>, lo: int, hi: int)
+    requires
+        lo < hi,
+    ensures
+        aset(a, lo, hi) == aset(a, lo + 1, hi).insert(a[lo]),
+        aset(a, lo, lo) == VSet::<int>::empty(),
+{
+    broadcast use lemma_aset;
+    assert forall|x: int| aset(a, lo, hi).contains(x) <==> aset(a, lo + 1, hi).insert(a[lo]).contains(x) by {
+        if aset(a, lo, hi).contains(x) {
+            let k = choose|k: int| lo <= k < hi && a[k] == x;
+            if k > lo {
+                assert(aset(a, lo + 1, hi).contains(x));
+            }
+        }
+        if aset(a, lo + 1, hi).contains(x) {
+            let k = choose|k: int| lo + 1 <= k < hi && a[k] == x;
+            assert(lo <= k < hi);
+        }
+        if x == a[lo] {
+            assert(aset(a, lo, hi).contains(x));
+        }
+    }
+    assert(aset(a, lo, hi) =~= aset(a, lo + 1, hi).insert(a[lo]));
+    assert(aset(a, lo, lo) =~= VSet::<int>::empty());
+}
+
+/// `b[lo..hi]` is `a[off + lo..off + hi]`: the same addresses, as
+/// distinct.
+#[verifier::spinoff_prover]
+pub proof fn lemma_aset_shift(a: Seq<int>, b: Seq<int>, off: int, lo: int, hi: int)
+    requires
+        lo <= hi,
+        forall|i: int| lo <= i < hi ==> b[i] == a[off + i],
+    ensures
+        aset(b, lo, hi) == aset(a, off + lo, off + hi),
+        distinct(a, off + lo, off + hi) ==> distinct(b, lo, hi),
+{
+    broadcast use lemma_aset;
+    assert forall|x: int| aset(b, lo, hi).contains(x) <==> aset(a, off + lo, off + hi).contains(x) by {
+        if aset(b, lo, hi).contains(x) {
+            let i = choose|i: int| lo <= i < hi && b[i] == x;
+            assert(a[off + i] == x);
+        }
+        if aset(a, off + lo, off + hi).contains(x) {
+            let k = choose|k: int| off + lo <= k < off + hi && a[k] == x;
+            assert(b[k - off] == x);
+        }
+    }
+    assert(aset(b, lo, hi) =~= aset(a, off + lo, off + hi));
+    if distinct(a, off + lo, off + hi) {
+        assert forall|i: int, j: int| lo <= i < j < hi implies b[i] != b[j] by {
+            assert(a[off + i] != a[off + j]);
+        }
+    }
+}
+
+/// `aset(a, lo, hi)` is the union of its two halves at `mid`, disjoint
+/// when `a` is distinct there.
+#[verifier::spinoff_prover]
+pub proof fn lemma_aset_split(a: Seq<int>, lo: int, mid: int, hi: int)
+    requires
+        lo <= mid <= hi,
+    ensures
+        aset(a, lo, hi) == aset(a, lo, mid).union(aset(a, mid, hi)),
+        distinct(a, lo, hi) ==> aset(a, lo, mid).disjoint(aset(a, mid, hi)),
+        distinct(a, lo, hi) ==> distinct(a, lo, mid) && distinct(a, mid, hi),
+{
+    broadcast use lemma_aset;
+    assert forall|x: int| aset(a, lo, hi).contains(x) <==> aset(a, lo, mid).union(aset(a, mid, hi)).contains(x) by {
+        if aset(a, lo, hi).contains(x) {
+            let k = choose|k: int| lo <= k < hi && a[k] == x;
+            if k < mid {
+                assert(aset(a, lo, mid).contains(x));
+            } else {
+                assert(aset(a, mid, hi).contains(x));
+            }
+        }
+        if aset(a, lo, mid).contains(x) {
+            let k = choose|k: int| lo <= k < mid && a[k] == x;
+            assert(aset(a, lo, hi).contains(x));
+        }
+        if aset(a, mid, hi).contains(x) {
+            let k = choose|k: int| mid <= k < hi && a[k] == x;
+            assert(aset(a, lo, hi).contains(x));
+        }
+    }
+    assert(aset(a, lo, hi) =~= aset(a, lo, mid).union(aset(a, mid, hi)));
+    if distinct(a, lo, hi) {
+        assert forall|x: int| !(aset(a, lo, mid).contains(x) && aset(a, mid, hi).contains(x)) by {
+            if aset(a, lo, mid).contains(x) && aset(a, mid, hi).contains(x) {
+                let k = choose|k: int| lo <= k < mid && a[k] == x;
+                let l = choose|l: int| mid <= l < hi && a[l] == x;
+                assert(a[k] != a[l]);
+            }
+        }
+    }
+}
+
+/// An empty range has no addresses.
+pub proof fn lemma_aset_empty(a: Seq<int>, lo: int, hi: int)
+    requires
+        hi <= lo,
+    ensures
+        aset(a, lo, hi) == VSet::<int>::empty(),
+{
+    broadcast use lemma_aset;
+    assert(aset(a, lo, hi) =~= VSet::<int>::empty());
+}
+
+/// `m` holds the token of `a[i]` under key `i`, of authority `loc`, for
+/// every `lo <= i < hi`.
+pub open spec fn keyed(m: Map<int, GhostSingleton<int>>, a: Seq<int>, loc: vstd::resource::Loc, lo: int, hi: int) -> bool {
+    forall|i: int| lo <= i < hi ==> {
+        &&& #[trigger] m.contains_key(i)
+        &&& m[i].id() == loc
+        &&& m[i]@ == a[i]
+    }
+}
+
+/// Every key of `new` outside `lo..hi` is as in `old`.
+pub open spec fn keyed_frame(new: Map<int, GhostSingleton<int>>, old: Map<int, GhostSingleton<int>>, lo: int, hi: int) -> bool {
+    forall|k: int| !(lo <= k < hi) ==> {
+        &&& #[trigger] new.contains_key(k) == old.contains_key(k)
+        &&& old.contains_key(k) ==> new[k] == old[k]
+    }
+}
+
+/// Move the tokens of `a[lo..hi]` (keys `lo..hi` of `m`) into `bag`; they
+/// are distinct because tokens of one authority are disjoint.
+#[verifier::spinoff_prover]
+pub proof fn gather(tracked bag: &mut GhostSubset<int>, tracked m: &mut Map<int, GhostSingleton<int>>, a: Seq<int>, lo: int, hi: int)
+    requires
+        lo <= hi,
+        keyed(*old(m), a, old(bag).id(), lo, hi),
+    ensures
+        final(bag).id() == old(bag).id(),
+        final(bag)@ == old(bag)@.union(aset(a, lo, hi)),
+        old(bag)@.disjoint(aset(a, lo, hi)),
+        distinct(a, lo, hi),
+        keyed_frame(*final(m), *old(m), lo, hi),
+    decreases hi - lo,
+{
+    broadcast use lemma_aset;
+    if lo < hi {
+        let ghost b0 = bag@;
+        let ghost m0 = *m;
+        assert(m0.contains_key(lo) && m0[lo].id() == bag.id() && m0[lo]@ == a[lo]);
+        let tracked t = m.tracked_remove(lo);
+        bag.combine_singleton(t);
+        let ghost b1 = bag@;
+        assert forall|i: int| lo + 1 <= i < hi implies {
+            &&& #[trigger] m.contains_key(i)
+            &&& m[i].id() == bag.id()
+            &&& m[i]@ == a[i]
+        } by {
+            assert(m0.contains_key(i));
+        }
+        gather(bag, m, a, lo + 1, hi);
+        lemma_aset_front(a, lo, hi);
+        assert(bag@ =~= b0.union(aset(a, lo, hi)));
+        assert forall|i: int, j: int| lo <= i < j < hi implies a[i] != a[j] by {
+            if i == lo {
+                assert(aset(a, lo + 1, hi).contains(a[j]));
+                assert(b1.contains(a[lo]));
+            }
+        }
+        assert forall|k: int| !(lo <= k < hi) implies {
+            &&& #[trigger] m.contains_key(k) == m0.contains_key(k)
+            &&& m0.contains_key(k) ==> m[k] == m0[k]
+        } by {
+        }
+    } else {
+        assert(aset(a, lo, hi) =~= VSet::empty());
+        assert(bag@ =~= bag@.union(aset(a, lo, hi)));
+    }
+}
+
+/// Move the tokens of `a[lo..hi]` out of `bag` into keys `lo..hi` of `m`.
+#[verifier::spinoff_prover]
+pub proof fn scatter(tracked bag: &mut GhostSubset<int>, tracked m: &mut Map<int, GhostSingleton<int>>, a: Seq<int>, lo: int, hi: int)
+    requires
+        lo <= hi,
+        distinct(a, lo, hi),
+        aset(a, lo, hi) <= old(bag)@,
+    ensures
+        final(bag).id() == old(bag).id(),
+        final(bag)@ == old(bag)@ - aset(a, lo, hi),
+        keyed(*final(m), a, old(bag).id(), lo, hi),
+        keyed_frame(*final(m), *old(m), lo, hi),
+    decreases hi - lo,
+{
+    broadcast use lemma_aset;
+    if lo < hi {
+        let ghost b0 = bag@;
+        let ghost id = bag.id();
+        assert(aset(a, lo, hi).contains(a[lo]));
+        let tracked t = bag.split_singleton(a[lo]);
+        m.tracked_insert(lo, t);
+        assert forall|x: int| aset(a, lo + 1, hi).contains(x) implies bag@.contains(x) by {
+            let i = choose|i: int| lo + 1 <= i < hi && a[i] == x;
+            assert(aset(a, lo, hi).contains(x));
+        }
+        scatter(bag, m, a, lo + 1, hi);
+        lemma_aset_front(a, lo, hi);
+        assert(bag@ =~= b0 - aset(a, lo, hi));
+        assert forall|i: int| lo <= i < hi implies {
+            &&& #[trigger] m.contains_key(i)
+            &&& m[i].id() == id
+            &&& m[i]@ == a[i]
+        } by {
+        }
+    } else {
+        assert(aset(a, lo, hi) =~= VSet::empty());
+        assert(bag@ =~= bag@ - aset(a, lo, hi));
+    }
+}
+
+/// `y`, a permutation of `x` (the same multiset), is injective under `f`
+/// where `x` was, and each of its entries is one of `x`'s.
+#[verifier::spinoff_prover]
+pub proof fn lemma_perm_distinct(x: Seq<*mut u8>, y: Seq<*mut u8>, f: spec_fn(*mut u8) -> int)
+    requires
+        x.to_multiset() == y.to_multiset(),
+        forall|i: int, j: int| 0 <= i < j < x.len() ==> f(x[i]) != f(x[j]),
+    ensures
+        y.len() == x.len(),
+        forall|i: int, j: int| 0 <= i < j < y.len() ==> f(y[i]) != f(y[j]),
+        forall|i: int| 0 <= i < y.len() ==> x.contains(#[trigger] y[i]),
+{
+    broadcast use {vstd::seq_lib::group_to_multiset_ensures, vstd::multiset::group_multiset_axioms};
+    assert(x.len() == x.to_multiset().len());
+    assert(y.len() == y.to_multiset().len());
+    assert forall|i: int| 0 <= i < y.len() implies x.contains(#[trigger] y[i]) by {
+        assert(y.contains(y[i]));
+        assert(y.to_multiset().count(y[i]) > 0);
+    }
+    assert forall|i: int, j: int| 0 <= i < j < y.len() implies f(y[i]) != f(y[j]) by {
+        if f(y[i]) == f(y[j]) {
+            assert(x.contains(y[i]));
+            assert(x.contains(y[j]));
+            let k = choose|k: int| 0 <= k < x.len() && x[k] == y[i];
+            if y[i] == y[j] {
+                let r = y.remove(i);
+                assert(r[j - 1] == y[j]);
+                assert(r.contains(y[j]));
+                assert(r.to_multiset().count(y[i]) > 0);
+                assert(r.to_multiset() == y.to_multiset().remove(y[i]));
+                let rx = x.remove(k);
+                assert(rx.to_multiset() == x.to_multiset().remove(x[k]));
+                assert(rx.to_multiset().count(y[i]) > 0);
+                assert(rx.contains(y[i]));
+                let l = choose|l: int| 0 <= l < rx.len() && rx[l] == y[i];
+                let l2 = if l < k { l } else { l + 1 };
+                assert(x[l2] == rx[l]);
+                if k < l2 {
+                    assert(f(x[k]) != f(x[l2]));
+                } else {
+                    assert(f(x[l2]) != f(x[k]));
+                }
+            } else {
+                let l = choose|l: int| 0 <= l < x.len() && x[l] == y[j];
+                if k < l {
+                    assert(f(x[k]) != f(x[l]));
+                } else {
+                    assert(f(x[l]) != f(x[k]));
+                }
+            }
+        }
+    }
+}
+
+/// `c` is `a[off..off + n]` reversed: the same addresses, as distinct.
+#[verifier::spinoff_prover]
+pub proof fn lemma_aset_rev(a: Seq<int>, c: Seq<int>, off: int, n: int)
+    requires
+        0 <= n,
+        forall|k: int| 0 <= k < n ==> #[trigger] c[k] == a[off + n - 1 - k],
+    ensures
+        aset(c, 0, n) == aset(a, off, off + n),
+        distinct(c, 0, n) ==> distinct(a, off, off + n),
+{
+    broadcast use lemma_aset;
+    assert forall|x: int| aset(c, 0, n).contains(x) <==> aset(a, off, off + n).contains(x) by {
+        if aset(c, 0, n).contains(x) {
+            let k = choose|k: int| 0 <= k < n && c[k] == x;
+            assert(a[off + n - 1 - k] == x);
+        }
+        if aset(a, off, off + n).contains(x) {
+            let i = choose|i: int| off <= i < off + n && a[i] == x;
+            assert(c[off + n - 1 - i] == x);
+        }
+    }
+    assert(aset(c, 0, n) =~= aset(a, off, off + n));
+    if distinct(c, 0, n) {
+        assert forall|i: int, j: int| off <= i < j < off + n implies a[i] != a[j] by {
+            assert(c[off + n - 1 - i] == a[i]);
+            assert(c[off + n - 1 - j] == a[j]);
+        }
+    }
+}
+
+/// Two distinct halves with disjoint addresses make a distinct whole.
+#[verifier::spinoff_prover]
+pub proof fn lemma_distinct_join(a: Seq<int>, lo: int, mid: int, hi: int)
+    requires
+        lo <= mid <= hi,
+        distinct(a, lo, mid),
+        distinct(a, mid, hi),
+        aset(a, lo, mid).disjoint(aset(a, mid, hi)),
+    ensures
+        distinct(a, lo, hi),
+{
+    broadcast use lemma_aset;
+    assert forall|i: int, j: int| lo <= i < j < hi implies a[i] != a[j] by {
+        if i < mid && mid <= j {
+            assert(aset(a, lo, mid).contains(a[i]));
+            assert(aset(a, mid, hi).contains(a[j]));
+        }
+    }
+}
+
+/// [`gather`] of keys `0..hi`, `hi > 0`, into a bag of their own.
+#[verifier::spinoff_prover]
+pub proof fn gather_all(tracked m: &mut Map<int, GhostSingleton<int>>, a: Seq<int>, loc: vstd::resource::Loc, hi: int) -> (tracked bag: GhostSubset<int>)
+    requires
+        0 < hi,
+        keyed(*old(m), a, loc, 0, hi),
+    ensures
+        bag.id() == loc,
+        bag@ == aset(a, 0, hi),
+        distinct(a, 0, hi),
+        keyed_frame(*final(m), *old(m), 0, hi),
+{
+    broadcast use lemma_aset;
+    let ghost m0 = *m;
+    assert(m0.contains_key(0) && m0[0].id() == loc && m0[0]@ == a[0]);
+    let tracked t = m.tracked_remove(0);
+    let tracked mut bag = t.subset();
+    let ghost m1 = *m;
+    let ghost b1 = bag@;
+    assert(bag.id() == loc);
+    assert(keyed(m1, a, loc, 1, hi)) by {
+        reveal_with_fuel(keyed, 1);
+        assert forall|i: int| 1 <= i < hi implies m1.contains_key(i) && m1[i].id() == loc && m1[i]@ == a[i] by {
+            assert(m0.contains_key(i));
+            assert(m0[i] == m1[i]);
+        }
+    }
+    gather(&mut bag, m, a, 1, hi);
+    lemma_aset_front(a, 0, hi);
+    assert(bag@ =~= aset(a, 0, hi));
+    assert forall|i: int, j: int| 0 <= i < j < hi implies a[i] != a[j] by {
+        if i == 0 {
+            lemma_aset_step(a, 1, j, hi);
+            assert(b1.contains(a[0]));
+        }
+    }
+    assert forall|k: int| !(0 <= k < hi) implies {
+        &&& #[trigger] m.contains_key(k) == m0.contains_key(k)
+        &&& m0.contains_key(k) ==> m[k] == m0[k]
+    } by {
+        assert(m.contains_key(k) == m1.contains_key(k));
+    }
+    assert(keyed_frame(*m, m0, 0, hi));
+    bag
+}
+
+/// [`lemma_perm_distinct`] for the addresses: `aset` of the addresses of
+/// `y` is that of `x`.
+#[verifier::spinoff_prover]
+pub proof fn lemma_perm_addrs(x: Seq<*mut u8>, y: Seq<*mut u8>)
+    requires
+        x.to_multiset() == y.to_multiset(),
+        distinct(ptr_addrs(x), 0, x.len() as int),
+    ensures
+        y.len() == x.len(),
+        distinct(ptr_addrs(y), 0, y.len() as int),
+        aset(ptr_addrs(y), 0, y.len() as int) <= aset(ptr_addrs(x), 0, x.len() as int),
+{
+    broadcast use lemma_aset;
+    let f = |p: *mut u8| p@.addr as int;
+    assert forall|i: int, j: int| 0 <= i < j < x.len() implies f(x[i]) != f(x[j]) by {
+        assert(ptr_addrs(x)[i] != ptr_addrs(x)[j]);
+    }
+    lemma_perm_distinct(x, y, f);
+    assert forall|i: int, j: int| 0 <= i < j < y.len() implies ptr_addrs(y)[i] != ptr_addrs(y)[j] by {
+        assert(f(y[i]) != f(y[j]));
+    }
+    assert forall|v: int| aset(ptr_addrs(y), 0, y.len() as int).contains(v) implies aset(ptr_addrs(x), 0, x.len() as int).contains(v) by {
+        let i = choose|i: int| 0 <= i < y.len() && ptr_addrs(y)[i] == v;
+        assert(x.contains(y[i]));
+        let k = choose|k: int| 0 <= k < x.len() && x[k] == y[i];
+        assert(ptr_addrs(x)[k] == v);
+    }
+}
 
 /// Slot `slot` of a slab of `slab_bits <= 64 * MAX_SLAB_WORDS` bits sits in
 /// scratch word `slot / 64`, inside the slab's view of the bitmap, at a bit
@@ -3339,8 +3914,21 @@ impl ClassState {
     /// per word. Aborts on a pointer that is not an allocated slot of this
     /// class, or one whose slab belongs to another arena (the caller routes
     /// by the descriptor's arena; a miss here means a cache was mis-keyed).
-    pub fn release(&self, ptrs: &[*mut u8]) {
-        let n = self.release_owned(ptrs);
+    ///
+    /// `bag` holds the slot tokens of the batch, whose addresses are
+    /// distinct ([`release_owned`]); the released ones go back to their
+    /// bitmap words.
+    ///
+    /// [`release_owned`]: ClassState::release_owned
+    pub fn release_with(&self, ptrs: &[*mut u8], Tracked(bag): Tracked<GhostSubset<int>>)
+        requires
+            bag.id() == slot_loc(self.spec_class() as int),
+            aset(ptr_addrs(ptrs@), 0, ptrs@.len() as int) <= bag@,
+            distinct(ptr_addrs(ptrs@), 0, ptrs@.len() as int),
+    {
+        broadcast use lemma_aset;
+        let tracked mut bag = bag;
+        let n = self.release_owned(ptrs, Tracked(&mut bag));
         if n != ptrs.len() {
             let p = ptrs[n];
             let (slab, _) = self.locate(p);
@@ -3348,7 +3936,7 @@ impl ClassState {
         }
     }
 
-    /// [`release`] of the longest prefix of `ptrs` whose slabs this arena
+    /// [`release_with`] of the longest prefix of `ptrs` whose slabs this arena
     /// owns, returning its length (`ptrs.len()` when every slab is ours).
     /// The batch is grouped by slab (`Heap::flush`'s bucket pass; a sorted
     /// batch is one such grouping), so a slab's pointers are contiguous and
@@ -3370,13 +3958,30 @@ impl ClassState {
     /// Modelled at `model::Model::step_release`, `protocol::Release::FetchAnd`
     /// (the `fetch_and` and the double-free check) and `SubLive`.
     ///
-    /// [`release`]: ClassState::release
+    /// The tokens: `bag` holds the token of every pointer of the batch,
+    /// whose addresses are distinct, and gives up those of the released
+    /// prefix, which go back to their bitmap words (`release_slab`). A batch
+    /// with one slot twice cannot be given its tokens, and a slot whose bit
+    /// is clear has its token in the word, so under the `free` contract both
+    /// double-free aborts (the scratch bit and the class bit) are
+    /// unreachable.
+    ///
+    /// [`release_with`]: ClassState::release_with
     // The counter carries a Verus invariant.
     #[allow(clippy::explicit_counter_loop)]
-    pub fn release_owned(&self, ptrs: &[*mut u8]) -> (r: usize)
+    pub fn release_owned(&self, ptrs: &[*mut u8], Tracked(bag): Tracked<&mut GhostSubset<int>>) -> (r: usize)
+        requires
+            old(bag).id() == slot_loc(self.spec_class() as int),
+            aset(ptr_addrs(ptrs@), 0, ptrs@.len() as int) <= old(bag)@,
+            distinct(ptr_addrs(ptrs@), 0, ptrs@.len() as int),
         ensures
             r <= ptrs@.len(),
+            final(bag).id() == old(bag).id(),
+            final(bag)@ == old(bag)@ - aset(ptr_addrs(ptrs@), 0, r as int),
     {
+        broadcast use lemma_aset;
+        let ghost bag0 = *bag;
+        let ghost pa = ptr_addrs(ptrs@);
         let mut local = [0u64; MAX_SLAB_WORDS];
         let mut cur_slab = usize::MAX;
         let (mut lo_w, mut hi_w) = (usize::MAX, 0usize);
@@ -3405,6 +4010,8 @@ impl ClassState {
                     assert((0u64 >> k) & 1u64 != 1u64) by (bit_vector);
                 }
             }
+            assert(aset(pa, 0, 0) =~= VSet::<int>::empty());
+            assert(bag@ =~= bag0@ - aset(pa, 0, 0));
         }
         let mut i = 0usize;
         for &p in it: ptrs.iter()
@@ -3412,6 +4019,7 @@ impl ClassState {
                 i == it.index(),
                 end == ptrs@.len(),
             invariant
+                end == ptrs@.len() || end == i,
                 i <= ptrs@.len(),
                 end <= ptrs@.len(),
                 it.seq().len() == ptrs@.len(),
@@ -3435,7 +4043,16 @@ impl ClassState {
                 s.wf(),
                 ltoks.id() == s.loc,
                 count == 0 ==> ltoks@ == VSet::<int>::empty(),
+                bag.id() == slot_loc(self.spec_class() as int),
+                bag0.id() == slot_loc(self.spec_class() as int),
+                pa == ptr_addrs(ptrs@),
+                aset(pa, 0, ptrs@.len() as int) <= bag0@,
+                distinct(pa, 0, ptrs@.len() as int),
+                bag@ == bag0@ - aset(pa, 0, i as int),
                 count != 0 ==> ltoks@ == addrs(s, scratch_bits(s, cur_slab * s.sb, local@, lo_w as int, hi_w as int)),
+            ensures
+                bag@ == bag0@ - aset(pa, 0, end as int),
+                end <= ptrs@.len(),
         {
             let (slab, slot) = self.locate(p);
             if slab != cur_slab {
@@ -3513,8 +4130,17 @@ impl ClassState {
                 assert(process_regions().slot_at(self.spec_class() as int, slab as int, slot as int) == p@.addr);
                 assert(process_regions().is_slot(self.spec_class() as int, p@.addr));
             }
-            // The slot's token: the `free` contract.
-            let tracked tok = axiom_free_token(self.spec_class() as int, p);
+            // The slot's token, from the batch's.
+            proof {
+                assert(i < ptrs@.len());
+                assert(p == ptrs@[i as int]);
+                assert(pa[i as int] == p@.addr as int);
+                lemma_aset_step(pa, 0, i as int, ptrs@.len() as int);
+            }
+            let tracked tok = bag.split_singleton(p@.addr as int);
+            proof {
+                assert(bag@ =~= bag0@ - aset(pa, 0, i + 1));
+            }
             let w = &mut local[word];
             if *w & bit != 0 {
                 double_free(p as usize, self.class as usize, slab, slot);
@@ -3575,6 +4201,14 @@ impl ClassState {
 }
 
 } // verus!
+
+impl ClassState {
+    /// Tests: [`ClassState::release_with`] without the slot tokens.
+    #[cfg(test)]
+    pub(crate) fn release(&self, ptrs: &[*mut u8]) {
+        self.release_with(ptrs, Tracked::assume_new())
+    }
+}
 
 impl ClassState {
     /// Tests: whether `slab` is in this arena's partial, empty and purged

@@ -519,7 +519,9 @@ impl Shared {
     /// Release one slot straight to its slab bitmap through its owning
     /// arena. Aborts unless `p` is an allocated slot of `class` in `arena`.
     pub fn free_direct(&self, arena: u16, class: usize, p: *mut u8) {
-        self.owner(arena).class(class).release(&[p]);
+        self.owner(arena)
+            .class(class)
+            .release_with(&[p], vstd::prelude::Tracked::assume_new());
     }
 
     /// Classify `p` for `free`: `Ok((class, arena))` for an allocated slab
@@ -619,7 +621,10 @@ impl Shared {
         let mut done = 0;
         let mut a = arena;
         loop {
-            done += self.owner(a).class(class).release_owned(&ptrs[done..]);
+            done += self
+                .owner(a)
+                .class(class)
+                .release_owned(&ptrs[done..], vstd::prelude::Tracked::assume_new());
             if done == ptrs.len() {
                 return;
             }
