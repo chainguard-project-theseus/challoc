@@ -43,12 +43,14 @@ pub use crate::policy::Advice;
 use crate::sys;
 
 mod curve;
+pub mod demand;
 #[cfg(test)]
 pub(crate) mod tests;
 #[cfg(test)]
 mod linux_tests;
 
-pub use curve::{decay_ns_from_ms, Curve, NEVER, STEPS};
+pub use curve::{decay_ns_from_ms, Curve, NEVER, STEPS, WEIGHTS, WEIGHT_ONE};
+pub use demand::{allowance, ArenaDemand, Demand, DemandGate, Window};
 
 /// Ranges per batch (design section 8).
 pub const MAX_BATCH: usize = 64;
