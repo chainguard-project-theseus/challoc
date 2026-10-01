@@ -5,17 +5,11 @@ use std::sync::Arc;
 use std::vec;
 use std::vec::Vec;
 
-/// The page size the environment is built with: the kernel's on Linux
-/// (the reservations are real, so a 64 KiB-page kernel needs 64 KiB
-/// runs and guards), 4 KiB in the synthetic host environment.
-#[cfg(target_os = "linux")]
+/// The page size the environment is built with: the kernel's (the
+/// reservations are real, so a 64 KiB-page kernel needs 64 KiB runs and
+/// guards).
 pub(super) fn page_size() -> usize {
     crate::sys::features::page_size()
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(super) fn page_size() -> usize {
-    4096
 }
 
 const LG_REGION: u32 = LG_MAX_SLAB;
@@ -32,22 +26,13 @@ fn huge_pages() -> usize {
     HUGE_PAGES_N
 }
 
-/// Test environment: a metadata region and a huge region. On Linux both
-/// are real `PROT_NONE` reservations so commits, guards and purges go
-/// through the kernel and run memory can be touched; elsewhere the
-/// metadata is a `Vec` and run addresses are never dereferenced.
+/// Test environment: a metadata region and a huge region, both real
+/// `PROT_NONE` reservations so commits, guards and purges go through the
+/// kernel and run memory can be touched.
 pub(super) struct Env {
     pub meta: Meta,
     pub regions: Regions,
-    #[cfg(target_os = "linux")]
     maps: [(usize, usize); 2],
-    #[cfg(not(target_os = "linux"))]
-    _buf: Vec<u8>,
-}
-
-#[cfg(not(target_os = "linux"))]
-fn align_up(x: usize, a: usize) -> usize {
-    (x + a - 1) & !(a - 1)
 }
 
 fn regions_at(huge: (usize, usize), meta: (usize, usize)) -> Regions {
@@ -70,12 +55,10 @@ fn regions_at(huge: (usize, usize), meta: (usize, usize)) -> Regions {
 }
 
 impl Env {
-    #[cfg(target_os = "linux")]
     pub fn new() -> Env {
         Env::with_meta_len(META_LEN)
     }
 
-    #[cfg(target_os = "linux")]
     pub fn with_meta_len(meta_len: usize) -> Env {
         use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
         let reserve = |len: usize| -> usize {
@@ -97,48 +80,19 @@ impl Env {
         }
     }
 
-    #[cfg(not(target_os = "linux"))]
-    pub fn new() -> Env {
-        Env::with_meta_len(META_LEN)
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    pub fn with_meta_len(meta_len: usize) -> Env {
-        let buf = vec![0u8; meta_len + page_size()];
-        let mb = align_up(buf.as_ptr() as usize, page_size());
-        // A deliberately non-4 MiB-aligned base, like a real slid one,
-        // and distinct per `Env` so the `os` commit log shared by the
-        // parallel tests never credits one environment's commits to
-        // another's runs.
-        static NEXT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-        let n = NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        let hb = 0x2000_0000_1000 + n * (huge_len() + 4 * crate::layout::MAX_SLAB);
-        let regions = regions_at((hb, huge_len()), (mb, meta_len));
-        Env { meta: Meta::new(mb, meta_len, page_size()), regions, _buf: buf }
-    }
-
     pub fn huge(&self) -> Huge {
         Huge::new(&self.meta, &self.regions, guard_mode()).expect("huge allocator")
     }
 
     /// [`Huge::alloc`] plus an audit and a check that the run's pages
-    /// are committed: against the `os` commit log on the host, by
-    /// reading the first and last usable byte on Linux (a `PROT_NONE`
-    /// page would fault). The guard page is never touched.
+    /// are committed, by reading the first and last usable byte (a
+    /// `PROT_NONE` page would fault). The guard page is never touched.
     pub fn alloc(&self, h: &Huge, size: usize, align: usize) -> (*mut u8, bool) {
         let r = h.alloc(&self.meta, size, align, 0);
         h.audit();
         if !r.0.is_null() {
             let info = h.lookup(self.page_of(r.0)).expect("run descriptor");
             assert!(info.usable >= size.max(1));
-            #[cfg(not(target_os = "linux"))]
-            assert!(
-                os::is_committed(r.0 as usize, info.usable, page_size()),
-                "run {:#x} ({} usable bytes) lies in uncommitted pages",
-                r.0 as usize,
-                info.usable
-            );
-            #[cfg(target_os = "linux")]
             unsafe {
                 core::ptr::read_volatile(r.0);
                 core::ptr::read_volatile(r.0.add(info.usable - 1));
@@ -165,7 +119,6 @@ impl Env {
     }
 }
 
-#[cfg(target_os = "linux")]
 impl Drop for Env {
     fn drop(&mut self) {
         for (addr, len) in self.maps {
@@ -174,16 +127,9 @@ impl Drop for Env {
     }
 }
 
-/// Guard mode under test: the probed kernel support on Linux, the
-/// install path off Linux (nothing maps memory there anyway).
-#[cfg(target_os = "linux")]
+/// Guard mode under test: the probed kernel support.
 pub(super) fn guard_mode() -> bool {
     crate::sys::features::probe_guard_install(page_size())
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(super) fn guard_mode() -> bool {
-    true
 }
 
 fn xorshift(state: &mut u64) -> u64 {
@@ -541,8 +487,7 @@ fn purge_respects_the_cutoff_in_fifo_order() {
     // with increasing dirty_at.
     let mut times = Vec::new();
     for &p in ps.iter().step_by(2) {
-        // The coarse clock ticks every few milliseconds on Linux; off
-        // Linux it is a counter and the sleep is just short.
+        // The coarse clock ticks every few milliseconds.
         std::thread::sleep(core::time::Duration::from_millis(30));
         env.free(&h, p);
         times.push(h.lookup(env.page_of(p)).unwrap().dirty_at);
@@ -739,7 +684,7 @@ fn randomised_model_check() {
                 h.audit();
             }
             9 => {
-                let cutoff = if xorshift(&mut rng) % 2 == 0 { u64::MAX } else { os::now_ns().saturating_sub(5) };
+                let cutoff = if xorshift(&mut rng) % 2 == 0 { u64::MAX } else { now_ns().saturating_sub(5) };
                 h.purge_empty(cutoff);
                 h.audit();
             }

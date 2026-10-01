@@ -7,15 +7,14 @@ How the test suite is layered, what each layer can and cannot see, what
 
 | Layer | Command | Time | Sees | Cannot see | Needs |
 |---|---|---|---|---|---|
-| Host unit tests | `cargo test --features std` (or `make test-host`) | ~30 s | Pure logic: size classes, bitmaps, config parsing, the slab-protocol model (`model::`, exhaustive interleavings of `class.rs`'s steps) | Anything Linux: `src/api`, `src/sys`, the real heap; the compiled `.so` | Rust on the host (macOS is fine) |
-| Container unit tests | `cargo test --features std -- --skip api::` in the dev container | ~1 min | The allocator in-process on real `mmap`/`madvise`/`rseq`: `heap`, `huge`, `class`, `purge`, `sys` (kernel features probed, syscall numbers cross-checked against the C headers, `tests/c/sysnr.c`) | The exported C ABI, `LD_PRELOAD`, another process's view | Docker (`Dockerfile.dev`) |
-| API tests under the preload | `cargo test --features std api::` in the container, after `cargo build --release` and `scripts/jemalloc-compat.sh` | ~3 min | The shipped `libchalloc.so` from C: every entry point (`tests/c/libc_api.c`, `jemalloc_api.c`, `cxx_new.cpp`), the per-feature programs (among them the guard slabs seen through `ioctl(PAGEMAP_SCAN)`, `c_pagemap_guard_{on,off}`) and the negative tests (`src/api/ctests.rs`, one table row each), the symbol tables (`readelf`), the vendored glibc and mimalloc suites, a short fuzz, the `jemalloc-soname` stage | Memory limits (the cgroup policy's bands), five-minute runs | Docker; some rows need a 6.13+ kernel (guard slabs), 6.16+ (`PAGE_IS_GUARD`), a writable cgroup mount (PSI, `memory.high`), `mseal` outside Docker's seccomp profile; elsewhere they print `SKIP` |
+| Unit tests | `cargo test -- --skip api::` in the dev container | ~1 min | Pure logic: size classes, bitmaps, config parsing, the slab-protocol model (`model::`, exhaustive interleavings of `class.rs`'s steps); and the allocator in-process on real `mmap`/`madvise`/`rseq`: `heap`, `huge`, `class`, `purge`, `sys` (kernel features probed, syscall numbers cross-checked against the C headers, `tests/c/sysnr.c`) | The exported C ABI, `LD_PRELOAD`, another process's view | Docker (`Dockerfile.dev`) |
+| API tests under the preload | `cargo test api::` in the container, after `cargo build --release` and `scripts/jemalloc-compat.sh` | ~3 min | The shipped `libchalloc.so` from C: every entry point (`tests/c/libc_api.c`, `jemalloc_api.c`, `cxx_new.cpp`), the per-feature programs (among them the guard slabs seen through `ioctl(PAGEMAP_SCAN)`, `c_pagemap_guard_{on,off}`) and the negative tests (`src/api/ctests.rs`, one table row each), the symbol tables (`readelf`), the vendored glibc and mimalloc suites, a short fuzz, the `jemalloc-soname` stage | Memory limits (the cgroup policy's bands), five-minute runs | Docker; some rows need a 6.13+ kernel (guard slabs), 6.16+ (`PAGE_IS_GUARD`), a writable cgroup mount (PSI, `memory.high`), `mseal` outside Docker's seccomp profile; elsewhere they print `SKIP` |
 | cgroup container tests | `make test-cgroup-limit`, `make test-cgroup-churn`, `make test-cgroup-lazy` | ~1.5 min | The design 11 policy under a real `--memory` limit: the bands through `mallctl`, RSS falling after a 400 MiB churn with the policy on and not with `cgroup:false`, the `MADV_FREE` purge in the headroom band and its `lazy_band:false` control | The same without a limit is the `api::` layer's `cgroup_*` rows | Docker with cgroup2 memory limits (`scripts/cgroup-tests.sh`, one container per run, swap off) |
 | Fuzz, long soaks, comparisons (opt-in) | `make fuzz` (10M ops), `make test-cgroup-oscillate` (5 min), `make check-needed` (`tests/as-needed.sh`), `make test-cgroup-compare` (other allocators, no criterion) | minutes | Long random workloads; the `-Wl,--as-needed` truth for consumers; the RSS curves of jemalloc, mimalloc and tcmalloc under the same limits | | Docker; `make bench-build` for mimalloc |
-| Benchmarks and hardware counters | `make quick`, `make ab`, `challoc-bench` (`bench/README.md`) | 2 min to hours | Performance | Correctness | The GCE VMs; never a Mac number |
+| Benchmarks and hardware counters | `make quick`, `make ab`, `challoc-bench` (`bench/README.md`) | 2 min to hours | Performance | Correctness | The GCE VMs; never a dev-container number |
 
 `make test` runs, in order: `cargo build --release`, `scripts/jemalloc-compat.sh`,
-the container unit tests, the `api::` tests, then `test-cgroup-limit`,
+the unit tests, the `api::` tests, then `test-cgroup-limit`,
 `test-cgroup-churn` and `test-cgroup-lazy`. It does
 not run `make fuzz` (the `api::` layer runs a 400k-operation slice of the
 same driver, `c_fuzz_short`), `make test-cgroup-oscillate`, `make check-needed`
@@ -79,7 +78,7 @@ matrix cells).
    for modes of `negative.c`); `stdout_has`/`stdout_lacks` pin the program's
    own output; `gate` names the host feature it needs. Several rows under
    one name run in order and share the compiled binary.
-3. Run it: `make run CMD='cargo build --release && CHALLOC_TEST_ALLOW_SKIP=1 cargo test --features std api::ctests::c_<prog> -- --nocapture'`.
+3. Run it: `make run CMD='cargo build --release && CHALLOC_TEST_ALLOW_SKIP=1 cargo test api::ctests::c_<prog> -- --nocapture'`.
 
 A test that needs a memory limit is a mode of `scripts/cgroup-tests.sh`
 and a Makefile target instead (`test-cgroup-lazy` is the pattern).

@@ -1,9 +1,9 @@
 //! `malloc_conf` parsing (design.md section 12).
 //!
-//! The parser is pure logic over byte slices so it can be unit tested on
-//! the host; the source readers (weak `malloc_conf` symbol, `/etc/challoc.conf`,
-//! environment) are Linux-only and never allocate: the file is read into a
-//! stack buffer with raw syscalls and the environment is walked through
+//! The parser is pure logic over byte slices so it can be unit tested
+//! against fixtures; the source readers (weak `malloc_conf` symbol,
+//! `/etc/challoc.conf`, environment) never allocate: the file is read into
+//! a stack buffer with raw syscalls and the environment is walked through
 //! `environ` without `getenv`.
 //!
 //! Sources apply in increasing priority: compiled defaults, the weak
@@ -881,10 +881,8 @@ fn clamped<'a>(key: &'a [u8], value: &'a [u8], min: i64, max: i64) -> Result<(i6
     }
 }
 
-#[cfg(target_os = "linux")]
 pub use linux::{env_var, first_line_of, load, malloc_conf_symbol, MAX_TEXT};
 
-#[cfg(target_os = "linux")]
 mod linux {
     use core::ffi::{c_char, c_void};
     use core::fmt::Write as _;
@@ -1737,7 +1735,7 @@ mod tests {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod linux_tests {
     use super::*;
 

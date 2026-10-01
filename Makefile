@@ -1,6 +1,6 @@
 # challoc build entry points. The library is Linux-only; every target except
-# `test-host`, `help` and the `clean-*` targets runs inside the Wolfi dev
-# container built from Dockerfile.dev. `make help` lists the targets from the
+# `help` and the `clean-*` targets runs inside the Wolfi dev container built
+# from Dockerfile.dev. `make help` lists the targets from the
 # `##` comments below; the benchmark harness, its two tiers and every
 # harness's variables are described in bench/README.md and in each script's
 # header, the GCE side in bench/gce/README.md, the environment (target volumes)
@@ -41,7 +41,6 @@ IMAGE_BUILD   ?= 1
 # build and test below and of the jemalloc-compat stage.
 QUANTUM       ?= 16
 FEATURES       = --no-default-features --features quantum$(QUANTUM)
-TEST_FEATURES  = $(FEATURES),std
 
 # In a git worktree `.git` is a file pointing at the main repository's
 # `.git/worktrees/<name>`; mount that common dir at the same path so `git
@@ -103,7 +102,7 @@ endef
 # reads it (a recursively expanded variable: `make build` runs no probe).
 HOST_CPU = $(shell sysctl -n machdep.cpu.brand_string 2>/dev/null || grep -m1 'model name' /proc/cpuinfo 2>/dev/null | sed 's/.*: //' | grep . || lscpu 2>/dev/null | grep -m1 'Model name' | sed 's/.*: *//')
 
-.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare test-host jemalloc-compat fuzz bench-build quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench node-bench check-needed clean-volumes jvm-bench postgres-bench jvm-soak help print-docker-run test-all
+.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare jemalloc-compat fuzz bench-build quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench node-bench check-needed clean-volumes jvm-bench postgres-bench jvm-soak help print-docker-run test-all
 
 help: ## list the targets (this text; the `##` comments in the Makefile)
 	@awk -F' ## ' '/ ## / { n = $$1; if (n ~ /^\$$\(eval/) { sub(/^[^,]*,/, "", n); sub(/,.*/, "", n) } else { sub(/:.*/, "", n) } if (n !~ /^[a-zA-Z0-9_-]+$$/) next; printf "  %-22s %s\n", n, $$2 }' $(MAKEFILE_LIST)
@@ -141,8 +140,8 @@ test: DOCKER_FLAGS = -e QUANTUM=$(QUANTUM) $(if $(TEST_ALLOW_SKIP),-e CHALLOC_TE
 test: image ## release build, the jemalloc-compat stage, both cargo test groups, then the cgroup steps
 	$(DOCKER_RUN) sh -c 'cargo build --release $(FEATURES) \
 	  && sh scripts/jemalloc-compat.sh \
-	  && cargo test $(TEST_FEATURES) -- --nocapture --skip api:: \
-	  && cargo test $(TEST_FEATURES) api:: -- --nocapture'
+	  && cargo test $(FEATURES) -- --nocapture --skip api:: \
+	  && cargo test $(FEATURES) api:: -- --nocapture'
 	$(MAKE) --no-print-directory test-cgroup-limit
 	$(MAKE) --no-print-directory test-cgroup-churn
 	$(MAKE) --no-print-directory test-cgroup-lazy
@@ -153,7 +152,7 @@ test: image ## release build, the jemalloc-compat stage, both cargo test groups,
 # 94% of the limit, which a concurrent test's 64 MiB would push over it.
 test-cgroup-limit: DOCKER_FLAGS = --memory=512m -e CHALLOC_EXPECT_CGROUP_LIMIT=536870912 $(if $(TEST_ALLOW_SKIP),-e CHALLOC_TEST_ALLOW_SKIP=$(TEST_ALLOW_SKIP))
 test-cgroup-limit: image ## the cgroup-reading tests under --memory=512m (in `make test`)
-	$(DOCKER_RUN) sh -c 'cargo build --release $(FEATURES) && cargo test $(TEST_FEATURES) cgroup -- --nocapture --test-threads=1'
+	$(DOCKER_RUN) sh -c 'cargo build --release $(FEATURES) && cargo test $(FEATURES) cgroup -- --nocapture --test-threads=1'
 
 # The memory-limited container tests, one container per
 # run (scripts/cgroup-tests.sh; the exit status is the program's, 137 is an
@@ -211,9 +210,6 @@ test-cgroup-compare: image ## the cgroup runs under CGROUP_ALLOCS (jemalloc mima
 	  $(call cgroup_docker,256m) churn $$a report 200 50; \
 	  $(call cgroup_docker,512m) oscillate $$a $(OSC_SECS); \
 	done; true
-
-test-host: ## pure-logic unit tests on the host (cargo test --features std; QUANTUM)
-	cargo test $(TEST_FEATURES)
 
 jemalloc-compat: DOCKER_FLAGS = -e QUANTUM=$(QUANTUM) $(if $(PREFIX),-e PREFIX=$(PREFIX))
 jemalloc-compat: image ## build with the jemalloc-soname feature and stage libjemalloc.so.2 under target/jemalloc-compat/stage (QUANTUM=8|16, PREFIX=<dir>)

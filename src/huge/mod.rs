@@ -44,8 +44,8 @@
 //! slab operations and each already costs at least one syscall.
 //!
 //! Submodules: [`table`] is the open-addressing descriptor table
-//! (`Table`), `tests` the host tests and `linux_tests` the ones that
-//! need a kernel.
+//! (`Table`), `tests` the allocator's tests and `linux_tests` the ones
+//! that need the process's own regions.
 
 use core::alloc::Layout;
 use core::ptr;
@@ -56,7 +56,7 @@ use crate::layout::Regions;
 use crate::lock::{Lock, RawLock};
 use crate::meta::Meta;
 use crate::purge::{self, Batch, Curve, Decayer};
-use crate::sys::Errno;
+use crate::sys::{self, Errno, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE, PROT_NONE, PROT_READ, PROT_WRITE};
 
 mod table;
 
@@ -296,89 +296,29 @@ pub struct Huge {
     inner: Lock<Inner>,
 }
 
-#[cfg(target_os = "linux")]
-mod os {
-    use crate::sys::{
-        self, Errno, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE, PROT_NONE, PROT_READ, PROT_WRITE,
-    };
-
-    pub fn commit(addr: usize, len: usize) -> Result<(), Errno> {
-        // SAFETY: inside our own reservation; adding permissions to pages
-        // nobody holds cannot break anything.
-        unsafe { sys::mprotect(addr, len, PROT_READ | PROT_WRITE) }
-    }
-
-    pub fn protect_none(addr: usize, len: usize) -> Result<(), Errno> {
-        // SAFETY: the page is a guard that no caller may touch.
-        unsafe { sys::mprotect(addr, len, PROT_NONE) }
-    }
-
-    pub fn guard_install(addr: usize, len: usize) -> Result<(), Errno> {
-        // SAFETY: as `protect_none`.
-        unsafe { sys::madvise(addr, len, MADV_GUARD_INSTALL) }
-    }
-
-    pub fn guard_remove(addr: usize, len: usize) -> Result<(), Errno> {
-        // SAFETY: the run is being freed; the guard protects nothing now.
-        unsafe { sys::madvise(addr, len, MADV_GUARD_REMOVE) }
-    }
-
-    pub fn now_ns() -> u64 {
-        sys::now_coarse_ns()
-    }
+fn commit(addr: usize, len: usize) -> Result<(), Errno> {
+    // SAFETY: inside our own reservation; adding permissions to pages
+    // nobody holds cannot break anything.
+    unsafe { sys::mprotect(addr, len, PROT_READ | PROT_WRITE) }
 }
 
-/// Off Linux nothing maps memory; host tests exercise the extent logic
-/// over addresses that are never dereferenced. The stub does keep a log of
-/// every committed range so the tests can check that each run handed out
-/// lies in committed pages, which is how the alignment-hole bug fixed in
-/// `prepare` shows up on the host (the host runs in guard-install mode).
-#[cfg(not(target_os = "linux"))]
-mod os {
-    use crate::sys::Errno;
-    use core::sync::atomic::{AtomicU64, Ordering};
+fn protect_none(addr: usize, len: usize) -> Result<(), Errno> {
+    // SAFETY: the page is a guard that no caller may touch.
+    unsafe { sys::mprotect(addr, len, PROT_NONE) }
+}
 
-    #[cfg(test)]
-    static COMMITTED: std::sync::Mutex<std::vec::Vec<(usize, usize)>> = std::sync::Mutex::new(std::vec::Vec::new());
+fn guard_install(addr: usize, len: usize) -> Result<(), Errno> {
+    // SAFETY: as `protect_none`.
+    unsafe { sys::madvise(addr, len, MADV_GUARD_INSTALL) }
+}
 
-    pub fn commit(addr: usize, len: usize) -> Result<(), Errno> {
-        #[cfg(test)]
-        COMMITTED.lock().unwrap().push((addr, len));
-        let _ = (addr, len);
-        Ok(())
-    }
+fn guard_remove(addr: usize, len: usize) -> Result<(), Errno> {
+    // SAFETY: the run is being freed; the guard protects nothing now.
+    unsafe { sys::madvise(addr, len, MADV_GUARD_REMOVE) }
+}
 
-    /// Whether every page of `[addr, addr + len)` was passed to `commit`.
-    #[cfg(test)]
-    pub fn is_committed(addr: usize, len: usize, page: usize) -> bool {
-        let log = COMMITTED.lock().unwrap();
-        let mut p = addr;
-        while p < addr + len {
-            if !log.iter().any(|&(a, l)| a <= p && p < a + l) {
-                return false;
-            }
-            p += page;
-        }
-        true
-    }
-
-    pub fn protect_none(_addr: usize, _len: usize) -> Result<(), Errno> {
-        Ok(())
-    }
-
-    pub fn guard_install(_addr: usize, _len: usize) -> Result<(), Errno> {
-        Ok(())
-    }
-
-    pub fn guard_remove(_addr: usize, _len: usize) -> Result<(), Errno> {
-        Ok(())
-    }
-
-    static TICK: AtomicU64 = AtomicU64::new(0);
-
-    pub fn now_ns() -> u64 {
-        TICK.fetch_add(1, Ordering::Relaxed) + 1
-    }
+fn now_ns() -> u64 {
+    sys::now_coarse_ns()
 }
 
 impl Inner {
@@ -771,13 +711,13 @@ impl Huge {
         let end = guard + GUARD_PAGES;
         let r = if self.guard_install {
             if watermark < end {
-                os::commit(self.addr(watermark), (end - watermark) * page)?;
+                commit(self.addr(watermark), (end - watermark) * page)?;
             }
-            os::guard_install(self.addr(guard), GUARD_PAGES * page)
+            guard_install(self.addr(guard), GUARD_PAGES * page)
         } else {
-            os::commit(self.addr(s), usable * page)?;
+            commit(self.addr(s), usable * page)?;
             if guard < watermark {
-                os::protect_none(self.addr(guard), GUARD_PAGES * page)?;
+                protect_none(self.addr(guard), GUARD_PAGES * page)?;
             }
             Ok(())
         };
@@ -899,11 +839,11 @@ impl Huge {
         }
         let addr = self.addr(page);
         if self.guard_install {
-            if let Err(e) = os::guard_remove(addr + (n - GUARD_PAGES) * page_size, GUARD_PAGES * page_size) {
+            if let Err(e) = guard_remove(addr + (n - GUARD_PAGES) * page_size, GUARD_PAGES * page_size) {
                 panic!("huge: madvise(MADV_GUARD_REMOVE) of {addr:#x} failed: {e}");
             }
         }
-        let now = os::now_ns().max(1);
+        let now = now_ns().max(1);
         // Purged at once: above `huge_retain_max`, or under a zero huge
         // decay period (`huge_dirty_decay_ms:0`).
         let st = if usable > self.retain_max() || self.purge_on_free() {
@@ -1271,5 +1211,5 @@ fn dirty_zero_run(run: usize, pages: usize, page: usize, prior: &str, arena: u16
 #[cfg(test)]
 mod tests;
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod linux_tests;

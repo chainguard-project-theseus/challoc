@@ -87,7 +87,6 @@ pub use sets::{SET_GROUPS, SETS_PER_CLASS, SetTable};
 pub(crate) use sets::Set;
 pub use table::{SlabTable, desc_stagger};
 use abort::{double_free, guard_free, owner_mismatch, release_into_fresh_slab, reservation_unmet, wrong_arena, zero_slab_had_bits_set};
-use table::os;
 use verify::{fresh_with_live, release_into_fresh};
 
 /// Counters kept under the class lock. Slab counts only; `curregs` and
@@ -871,7 +870,7 @@ impl ClassState {
             }
             let desc = self.desc(slab);
             if desc.live() == 0 && desc.state() == State::Active {
-                let now = os::now_ns().max(1);
+                let now = crate::sys::now_coarse_ns().max(1);
                 desc.set_state(State::Empty);
                 desc.set_dirty_at(now);
                 g.clear_partial(slab);

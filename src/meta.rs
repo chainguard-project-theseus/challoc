@@ -254,18 +254,11 @@ const fn align_up(x: usize, a: usize) -> usize {
     (x + a - 1) & !(a - 1)
 }
 
-#[cfg(target_os = "linux")]
 fn commit_range(addr: usize, len: usize) -> Result<(), Errno> {
     use crate::sys::{PROT_READ, PROT_WRITE};
     // SAFETY: the range is inside our own PROT_NONE reservation and nothing
     // is mapped over it; adding permissions cannot invalidate anything.
     unsafe { crate::sys::mprotect(addr, len, PROT_READ | PROT_WRITE) }
-}
-
-/// Host unit tests back the region with ordinary writable memory.
-#[cfg(not(target_os = "linux"))]
-fn commit_range(_addr: usize, _len: usize) -> Result<(), Errno> {
-    Ok(())
 }
 
 impl Inner {
@@ -458,7 +451,6 @@ impl Inner {
 /// kernel honours `MAP_NORESERVE` (`vm.overcommit_memory` 0 or 1; under 2
 /// every writable page is charged to the commit limit and a forked child
 /// is charged again). Read once, on the first table.
-#[cfg(target_os = "linux")]
 fn eager_policy() -> bool {
     if !crate::thp::is_never() {
         return false;
@@ -470,12 +462,6 @@ fn eager_policy() -> bool {
         // so take the safe side.
         _ => false,
     }
-}
-
-/// Host unit tests: the backing is ordinary memory, nothing to probe.
-#[cfg(not(target_os = "linux"))]
-fn eager_policy() -> bool {
-    true
 }
 
 impl Meta {
@@ -619,30 +605,21 @@ mod tests {
     use std::vec;
     use std::vec::Vec;
 
-    /// The page size the backing is built with: the kernel's on Linux (the
+    /// The page size the backing is built with: the kernel's (the
     /// reservations are real; the 64 KiB-page matrix cell found the 4 KiB
-    /// constant), 4 KiB in the synthetic host environment.
-    #[cfg(target_os = "linux")]
+    /// constant).
     fn page_size() -> usize {
         crate::sys::features::page_size()
     }
 
-    #[cfg(not(target_os = "linux"))]
-    fn page_size() -> usize {
-        4096
-    }
-
-    /// A region for tests: a real `PROT_NONE` reservation on Linux so that
-    /// commit goes through `mprotect`; plain zeroed memory elsewhere.
+    /// A region for tests: a real `PROT_NONE` reservation, so that commit
+    /// goes through `mprotect`.
     struct Backing {
         base: usize,
         len: usize,
-        #[cfg(not(target_os = "linux"))]
-        _buf: Vec<u8>,
     }
 
     impl Backing {
-        #[cfg(target_os = "linux")]
         fn new(len: usize) -> Backing {
             use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
             let base = unsafe {
@@ -653,19 +630,11 @@ mod tests {
             Backing { base, len }
         }
 
-        #[cfg(not(target_os = "linux"))]
-        fn new(len: usize) -> Backing {
-            let buf = vec![0u8; len + page_size()];
-            let base = align_up(buf.as_ptr() as usize, page_size());
-            Backing { base, len, _buf: buf }
-        }
-
         fn meta(&self) -> Meta {
             Meta::new(self.base, self.len, page_size())
         }
     }
 
-    #[cfg(target_os = "linux")]
     impl Drop for Backing {
         fn drop(&mut self) {
             unsafe { crate::sys::munmap(self.base, self.len) }.unwrap();
@@ -1018,7 +987,6 @@ mod tests {
     /// The host policy: eager carving is on under the default `thp:never`
     /// on a kernel that honours `MAP_NORESERVE` (the reference VMs), off
     /// under `vm.overcommit_memory=2`; the probe reads the sysctl.
-    #[cfg(target_os = "linux")]
     #[test]
     fn eager_policy_follows_overcommit_mode() {
         let mode = std::fs::read_to_string("/proc/sys/vm/overcommit_memory").unwrap();
@@ -1200,7 +1168,6 @@ mod tests {
     /// clipped to it (a committed range at either end merges with an
     /// adjacent `rw-p` anonymous mapping of another test); everything else
     /// in the region must be `---p`.
-    #[cfg(target_os = "linux")]
     fn writable_ranges(base: usize, len: usize) -> Vec<(usize, usize)> {
         let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
         let mut rw: Vec<(usize, usize)> = Vec::new();
@@ -1228,7 +1195,6 @@ mod tests {
     /// `rw-p` mapping per committed range, and nothing else in the region
     /// may be writable: the object side with a small table inside it is one
     /// range, a page committed in a large reservation another.
-    #[cfg(target_os = "linux")]
     #[test]
     fn maps_show_commits() {
         let b = Backing::new(64 << 20);
@@ -1294,7 +1260,6 @@ mod tests {
     /// Many small tables with objects between them are one `rw-p` mapping
     /// from the base to the chunk frontier, and a forked child sees the same
     /// one mapping: what a PostgreSQL backend inherits (the module doc).
-    #[cfg(target_os = "linux")]
     #[test]
     fn eager_tables_are_one_mapping_in_parent_and_child() {
         let b = Backing::new(64 << 20);

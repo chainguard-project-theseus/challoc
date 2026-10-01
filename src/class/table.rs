@@ -11,7 +11,7 @@ use crate::lock::{Lock, PAD_ALIGN, Padded, RawLock};
 use crate::meta::Meta;
 use crate::purge;
 use crate::slab::{DESC_ALIGN, SlabDesc, desc_stride};
-use crate::sys::Errno;
+use crate::sys::{self, Errno, MADV_GUARD_INSTALL, PROT_NONE, PROT_READ, PROT_WRITE};
 use core::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
 struct TableInner {
@@ -143,55 +143,20 @@ const _: () = assert!(core::mem::size_of::<SlabTable>() % 512 != 0);
 // ever used under the lock.
 unsafe impl Send for TableInner {}
 
-#[cfg(target_os = "linux")]
-pub(super) mod os {
-    use crate::sys::{self, Errno, MADV_GUARD_INSTALL, PROT_NONE, PROT_READ, PROT_WRITE};
-
-    // SAFETY (all three): `addr..addr + len` is inside a class region this
-    // allocator reserved (the callers pass slab or page-group ranges below
-    // the region's end), so changing its protection or installing a guard
-    // affects only pages nothing else in the process maps.
-    pub fn commit(addr: usize, len: usize) -> Result<(), Errno> {
-        unsafe { sys::mprotect(addr, len, PROT_READ | PROT_WRITE) }
-    }
-
-    pub fn decommit(addr: usize, len: usize) -> Result<(), Errno> {
-        unsafe { sys::mprotect(addr, len, PROT_NONE) }
-    }
-
-    pub fn guard(addr: usize, len: usize) -> Result<(), Errno> {
-        unsafe { sys::madvise(addr, len, MADV_GUARD_INSTALL) }
-    }
-
-    pub fn now_ns() -> u64 {
-        sys::now_coarse_ns()
-    }
+// SAFETY (all three): `addr..addr + len` is inside a class region this
+// allocator reserved (the callers pass slab or page-group ranges below
+// the region's end), so changing its protection or installing a guard
+// affects only pages nothing else in the process maps.
+fn commit(addr: usize, len: usize) -> Result<(), Errno> {
+    unsafe { sys::mprotect(addr, len, PROT_READ | PROT_WRITE) }
 }
 
-/// Off Linux nothing maps memory; host tests exercise the state machine
-/// over addresses that are never dereferenced.
-#[cfg(not(target_os = "linux"))]
-pub(super) mod os {
-    use crate::sys::Errno;
-    use core::sync::atomic::{AtomicU64, Ordering};
+fn decommit(addr: usize, len: usize) -> Result<(), Errno> {
+    unsafe { sys::mprotect(addr, len, PROT_NONE) }
+}
 
-    pub fn commit(_addr: usize, _len: usize) -> Result<(), Errno> {
-        Ok(())
-    }
-
-    pub fn decommit(_addr: usize, _len: usize) -> Result<(), Errno> {
-        Ok(())
-    }
-
-    pub fn guard(_addr: usize, _len: usize) -> Result<(), Errno> {
-        Ok(())
-    }
-
-    static TICK: AtomicU64 = AtomicU64::new(0);
-
-    pub fn now_ns() -> u64 {
-        TICK.fetch_add(1, Ordering::Relaxed) + 1
-    }
+fn guard(addr: usize, len: usize) -> Result<(), Errno> {
+    unsafe { sys::madvise(addr, len, MADV_GUARD_INSTALL) }
 }
 
 impl SlabTable {
@@ -726,12 +691,12 @@ impl SlabTable {
             // calls (no-ops in the kernel once the first has run, a
             // microsecond each per 64 KiB committed), and the counters
             // take the one that starts the chunk.
-            if os::commit(lo, hi - lo).is_ok() {
+            if commit(lo, hi - lo).is_ok() {
                 crate::thp::advise_class(lo, hi - lo, addr == lo);
                 return Some(());
             }
         }
-        os::commit(addr, len).ok()
+        commit(addr, len).ok()
     }
 
     /// Guard slab `s`, just committed read-write at `addr` (so the VMA
@@ -741,10 +706,10 @@ impl SlabTable {
     /// `PROT_NONE`: a hard guard at the cost of a VMA split. A slab that
     /// can be neither guarded nor re-protected aborts.
     fn install_guard(&self, s: usize, addr: usize, page: usize, len: usize) {
-        if os::guard(addr, page).is_ok() {
+        if guard(addr, page).is_ok() {
             return;
         }
-        if os::decommit(addr, len).is_err() {
+        if decommit(addr, len).is_err() {
             panic!("class {}: cannot re-protect guard slab {s}", self.class);
         }
     }

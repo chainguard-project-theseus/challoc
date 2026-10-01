@@ -43,10 +43,8 @@ const FILE_ROOM: usize = 32;
 /// Buffer for one cgroup file. `memory.events` is a handful of lines,
 /// `memory.pressure` two; `/proc/self/cgroup` can carry a dozen v1 lines
 /// on a hybrid host and still fits.
-#[cfg(target_os = "linux")]
 const FILE_BUF: usize = 1024;
 /// Chunk size for the `/proc/self/mountinfo` line scan.
-#[cfg(target_os = "linux")]
 const SCAN_BUF: usize = 2048;
 
 /// Minimum interval between two samples of `memory.current` and
@@ -66,7 +64,7 @@ pub const PSI_TRIGGER: &[u8] = b"some 150000 1000000";
 pub const PSI_TRIGGER_UNPRIVILEGED: &[u8] = b"some 300000 2000000";
 
 // ---------------------------------------------------------------------------
-// Pure parsing (host tested).
+// Pure parsing (unit tested against captured contents).
 // ---------------------------------------------------------------------------
 
 /// Split `bytes` into lines; a final line without a newline counts.
@@ -289,7 +287,7 @@ pub fn parse_cpuset_count(contents: &[u8]) -> Option<u32> {
 /// `mount_len` bytes of `dir`, inclusive) and return the minimum of what
 /// `read` yields per level; `read` gets the directory of the level and
 /// answers `None` where the file is absent. [`UNLIMITED`] when no level
-/// has a limit. Pure: the reader is a closure so the host tests feed it
+/// has a limit. Pure: the reader is a closure so the tests feed it
 /// captured contents.
 pub fn walk_min<F: FnMut(&[u8]) -> Option<u64>>(dir: &[u8], mount_len: usize, mut read: F) -> u64 {
     let mut min = UNLIMITED;
@@ -427,7 +425,6 @@ pub struct Cgroup {
     current: AtomicU64,
     /// Coarse-clock time of the last sample and of the last limit walk.
     sampled_at: AtomicU64,
-    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     limits_at: AtomicU64,
     /// Last `memory.events` counters read (all five, [`Events`]), and how
     /// many samples saw `high` and `max` rise (what the policy acts on: a
@@ -452,8 +449,7 @@ pub struct Cgroup {
 }
 
 impl Cgroup {
-    /// Nothing tracked, for `cgroup:false`, hosts without cgroup2, and
-    /// the non-Linux host tests.
+    /// Nothing tracked, for `cgroup:false` and hosts without cgroup2.
     pub const fn untracked(state: State) -> Cgroup {
         Cgroup {
             dir: [0; PATH_CAP],
@@ -539,7 +535,7 @@ impl Cgroup {
 
     /// Record one read of `memory.events`: store all five counters and
     /// count a sample that saw `high` or `max` rise. The sampler's store,
-    /// split out so the host tests can drive it with fixtures.
+    /// split out so the tests can drive it with fixtures.
     fn note_events(&self, e: Events) {
         self.events_low.store(e.low, Ordering::Relaxed);
         self.events_oom.store(e.oom, Ordering::Relaxed);
@@ -688,19 +684,6 @@ impl fmt::Display for Cgroup {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
-impl Cgroup {
-    /// Host tests have no cgroup filesystem.
-    pub fn discover(enabled: bool) -> Cgroup {
-        Cgroup::untracked(if enabled { State::NoMount } else { State::Disabled })
-    }
-
-    pub fn sample(&self, _now: u64) -> bool {
-        false
-    }
-}
-
-#[cfg(target_os = "linux")]
 mod linux {
     use super::*;
     use crate::sys::{self, Errno, O_RDONLY, O_RDWR, read_small_file};
@@ -1255,7 +1238,7 @@ mod tests {
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod linux_tests {
     use super::*;
     use crate::sys;

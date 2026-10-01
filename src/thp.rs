@@ -554,28 +554,16 @@ pub fn chunk(addr: usize, len: usize, lo: usize, hi: usize, pmd: usize) -> (usiz
     (start, end.min(hi))
 }
 
-#[cfg(target_os = "linux")]
 fn madvise_hugepage(addr: usize, len: usize) -> bool {
     // SAFETY: the callers pass ranges inside the allocator's own
     // reservations; `MADV_HUGEPAGE` changes a VMA flag, never contents.
     unsafe { crate::sys::madvise(addr, len, crate::sys::MADV_HUGEPAGE) }.is_ok()
 }
 
-#[cfg(not(target_os = "linux"))]
-fn madvise_hugepage(_addr: usize, _len: usize) -> bool {
-    true
-}
-
-#[cfg(target_os = "linux")]
 fn madvise_nohugepage(addr: usize, len: usize) -> bool {
     // SAFETY: a reservation this process owns; `MADV_NOHUGEPAGE` sets a
     // VMA flag, never contents.
     unsafe { crate::sys::madvise(addr, len, crate::sys::MADV_NOHUGEPAGE) }.is_ok()
-}
-
-#[cfg(not(target_os = "linux"))]
-fn madvise_nohugepage(_addr: usize, _len: usize) -> bool {
-    true
 }
 
 fn advise(addr: usize, len: usize, ranges: &AtomicU64, count: bool) -> bool {
@@ -869,26 +857,15 @@ mod tests {
     }
 
     /// A range the advice can really be issued on: an anonymous mapping
-    /// on Linux (the `madvise` is real there), a made-up address elsewhere
-    /// (the stub succeeds).
-    #[cfg(target_os = "linux")]
+    /// (the `madvise` is real).
     fn region(len: usize) -> usize {
         use crate::sys::{self, MAP_ANONYMOUS, MAP_PRIVATE, PROT_NONE};
         unsafe { sys::mmap(0, len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) }.unwrap()
     }
 
-    #[cfg(target_os = "linux")]
     fn release(addr: usize, len: usize) {
         unsafe { crate::sys::munmap(addr, len) }.unwrap();
     }
-
-    #[cfg(not(target_os = "linux"))]
-    fn region(len: usize) -> usize {
-        0x7000_0000 + len
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    fn release(_addr: usize, _len: usize) {}
 
     /// `advise_reservation` records the class and metadata reservations
     /// in the first free slots, in order, up to `MAX_RESERVATIONS` (a

@@ -6,10 +6,8 @@
 //! ([`Tcache::None`], straight against the slab bitmaps). Re-exported by
 //! `arena.rs`, which the entry points in `api/` import it from.
 
-#[cfg(target_os = "linux")]
 use core::ptr;
 
-#[cfg(target_os = "linux")]
 use super::Shared;
 
 /// `MALLOCX_ZERO`.
@@ -85,7 +83,6 @@ impl Flags {
     }
 }
 
-#[cfg(target_os = "linux")]
 #[cold]
 #[inline(never)]
 fn invalid_tcache(id: u16) -> ! {
@@ -95,7 +92,6 @@ fn invalid_tcache(id: u16) -> ! {
 /// Routing of a `MALLOCX` allocation of a non-huge class on the calling
 /// thread. `None` from the arena lookup (an index `arenas.create` never
 /// handed out) gives null. The flag says the memory is known zero.
-#[cfg(target_os = "linux")]
 pub fn alloc(shared: &Shared, class: usize, arena: Option<u16>, tcache: Tcache) -> (*mut u8, bool) {
     match tcache {
         Tcache::Default => match crate::heap::heap_for_thread(shared) {
@@ -128,7 +124,6 @@ pub fn alloc(shared: &Shared, class: usize, arena: Option<u16>, tcache: Tcache) 
 }
 
 /// One slot of `class` straight from `arena`'s slab bitmaps.
-#[cfg(target_os = "linux")]
 fn alloc_direct(shared: &Shared, class: usize, arena: u16) -> (*mut u8, bool) {
     match shared.arena(arena) {
         Some(a) => shared.alloc_direct(a, class),
@@ -138,7 +133,6 @@ fn alloc_direct(shared: &Shared, class: usize, arena: u16) -> (*mut u8, bool) {
 
 /// Routing of a `MALLOCX` huge allocation on the calling thread (caches
 /// play no part; the arena is recorded in the run's descriptor).
-#[cfg(target_os = "linux")]
 pub fn alloc_huge(shared: &Shared, size: usize, align: usize, arena: Option<u16>, tcache: Tcache) -> (*mut u8, bool) {
     let a = match (arena, tcache) {
         (Some(a), _) => a,
@@ -159,7 +153,6 @@ pub fn alloc_huge(shared: &Shared, size: usize, align: usize, arena: Option<u16>
 
 /// Routing of a `MALLOCX` free (`dallocx`, `sdallocx`) on the calling
 /// thread. Aborts unless `p` is a live allocation.
-#[cfg(target_os = "linux")]
 pub fn free(shared: &Shared, p: *mut u8, tcache: Tcache) {
     match tcache {
         Tcache::Default => crate::heap::free(shared, p),

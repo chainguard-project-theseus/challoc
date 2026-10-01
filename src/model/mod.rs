@@ -1,6 +1,6 @@
 //! An exhaustive interleaving model of the slab protocol (design.md
 //! section 17, the "model-checked protocol" row; plan Phase 2.5 task 13).
-//! Test-only: `cargo test --features std model::`.
+//! Test-only: `cargo test model::`.
 //!
 //! What is modelled. One class, [`NSLABS`] slabs of [`NSLOTS`] slots each
 //! (the bits of a slab fit one word, as every real slab's do), one or two
@@ -87,7 +87,7 @@ const MAX_PICKS: usize = 2;
 const _: () = assert!(MAX_PICKS <= crate::class::MAX_PICKS);
 const MAX_OPS: usize = 6;
 /// States one exploration may visit before it gives up: a scenario past
-/// this is too large for the 30 s budget of the host suite and must be
+/// this is too large for the 30 s budget of the unit suite and must be
 /// cut, not waited for.
 const MAX_STATES: usize = 5_000_000;
 
@@ -257,7 +257,7 @@ mod tests {
         );
     }
 
-    /// States a scenario of the host suite may take: the 30 s budget at
+    /// States a scenario of the unit suite may take: the 30 s budget at
     /// the roughly 10 000 states a second of a debug build in a loaded dev
     /// container. A count, not a clock, so a busy host cannot fail it.
     const HOST_BUDGET_STATES: usize = 300_000;

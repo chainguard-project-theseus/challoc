@@ -1,8 +1,6 @@
 //! The background thread (design 8.1): one thread per process that runs
 //! the decay passes, the cgroup sampling and the prefault pass on its own
 //! stack, started by configuration or `mallctl("background_thread")`.
-//! `purge.rs` selects this file on Linux and `background_host.rs`, the
-//! stub with the same names, elsewhere.
 
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};

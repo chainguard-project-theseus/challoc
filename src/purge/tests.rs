@@ -64,30 +64,17 @@ fn decayer_walks_once_per_step_and_follows_a_shortened_period() {
     assert_eq!(walks()[4], (10_060, Curve::new(0)));
 }
 
-/// Pages the bookkeeping test may point a batch at: a real mapping on
-/// Linux (the flush really discards), made-up addresses elsewhere.
-#[cfg(target_os = "linux")]
+/// Pages the bookkeeping test may point a batch at: a real mapping, since
+/// the flush really discards.
 fn scratch(pages: usize, page: usize) -> usize {
     use crate::sys::{self, MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
     unsafe { sys::mmap(0, pages * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) }.unwrap()
 }
 
-#[cfg(not(target_os = "linux"))]
-fn scratch(_pages: usize, _page: usize) -> usize {
-    0x1000_0000
-}
-
-/// The page the batch tests work in: the kernel's on Linux (the flush
-/// really discards, so the ranges must be page-aligned there), 4 KiB
-/// elsewhere.
-#[cfg(target_os = "linux")]
+/// The page the batch tests work in: the kernel's (the flush really
+/// discards, so the ranges must be page-aligned).
 fn page_size() -> usize {
     crate::sys::features::page_size()
-}
-
-#[cfg(not(target_os = "linux"))]
-fn page_size() -> usize {
-    4096
 }
 
 #[test]
@@ -150,30 +137,21 @@ fn purged_memory_is_zero_by_default() {
     assert_eq!(advice_reason(), "no headroom known");
 }
 
-/// The page size and the `MADV_POPULATE_WRITE` probe of the
-/// environment, as `api::init` reads them: the kernel's on Linux (the
-/// 5.10 and 64 KiB-page matrix cells found a 4 KiB constant and a
-/// forced populate word), 4 KiB and "unusable" in the synthetic host
-/// environment, where `os::populate_write` always fails.
-#[cfg(target_os = "linux")]
+/// The page size and the `MADV_POPULATE_WRITE` probe of the kernel, as
+/// `api::init` reads them (the 5.10 and 64 KiB-page matrix cells found a
+/// 4 KiB constant and a forced populate word).
 fn prefault_env() -> (usize, bool) {
     let page = crate::sys::features::page_size();
     (page, crate::sys::features::probe_populate_write(page))
 }
 
-#[cfg(not(target_os = "linux"))]
-fn prefault_env() -> (usize, bool) {
-    (4096, false)
-}
-
-/// The prefault pass's plumbing, host side,
-/// at the kernel's page size and in the populate direction the real
-/// probe reports: `populate` counts the bytes; configured as the probe
-/// says it never falls back (the advice works, or the touch is the
-/// populate); told the advice works where the probe says it does not
-/// (before 5.14, off Linux always), one fallback, the bytes still
-/// counted and the touch done, so a zero buffer stays zero either
-/// way; `note_commit` counts a wake only while the pass is enabled;
+/// The prefault pass's plumbing, at the kernel's page size and in the
+/// populate direction the real probe reports: `populate` counts the
+/// bytes; configured as the probe says it never falls back (the advice
+/// works, or the touch is the populate); told the advice works where the
+/// probe says it does not (before 5.14), one fallback, the bytes still
+/// counted and the touch done, so a zero buffer stays zero either way;
+/// `note_commit` counts a wake only while the pass is enabled;
 /// `configure` is what `enabled` and the populate word report.
 #[test]
 fn prefault_populate_and_wakes_are_counted() {
@@ -266,7 +244,7 @@ fn advice_follows_headroom_band_key_and_explicit_purges() {
     assert_eq!(batches(), (0, EAGER_BATCHES.load(Ordering::Relaxed)));
 }
 
-/// The batch tests flush (on Linux, for real); the advice test flips
+/// The batch tests flush (for real); the advice test flips
 /// the headroom mirror; one at a time.
 pub(super) static ADVICE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

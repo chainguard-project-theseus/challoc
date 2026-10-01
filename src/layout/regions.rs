@@ -1,7 +1,6 @@
 //! Address-space parameters (design section 2 table), [`Regions`] (the
 //! reserved regions of one process and pointer classification over them)
-//! and, on Linux, [`Regions::reserve`], the one piece that talks to the
-//! kernel.
+//! and [`Regions::reserve`], the one piece that talks to the kernel.
 
 use super::{CLASSES, LG_MAX_SLAB, MAX_SLAB, NCLASSES};
 
@@ -281,7 +280,6 @@ impl Regions {
     }
 }
 
-#[cfg(target_os = "linux")]
 mod linux {
     use super::{
         LG_HUGE_MIN, LG_HUGE_PREFERRED, LG_MAX_SLAB, LG_META_MIN, LG_META_PREFERRED,

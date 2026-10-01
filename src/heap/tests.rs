@@ -9,16 +9,10 @@ use std::collections::HashSet;
 use std::mem::MaybeUninit;
 use std::vec::Vec;
 
-/// The page size the synthetic layout is built with: the kernel's on
-/// Linux (the reservations are real), 4 KiB on the host.
-#[cfg(target_os = "linux")]
+/// The page size the synthetic layout is built with: the kernel's (the
+/// reservations are real).
 pub(crate) fn page_size() -> usize {
     crate::sys::features::page_size()
-}
-
-#[cfg(not(target_os = "linux"))]
-pub(crate) fn page_size() -> usize {
-    4096
 }
 
 /// Default capacity of a cache for a class up to 128 bytes, and the
@@ -33,7 +27,7 @@ fn align_up(x: usize, a: usize) -> usize {
     (x + a - 1) & !(a - 1)
 }
 
-/// 64 MiB huge region; on Linux `shared()` reserves it for real.
+/// 64 MiB huge region; `shared()` reserves it for real.
 const HUGE_LEN: usize = 64 << 20;
 
 fn regions_at(superblock: usize, meta: (usize, usize), huge_base: usize) -> Regions {
@@ -56,11 +50,9 @@ fn regions_at(superblock: usize, meta: (usize, usize), huge_base: usize) -> Regi
 }
 
 /// A `Shared` over a synthetic 4 MiB-per-class layout. Leaked on
-/// purpose: on Linux the test thread's own heap is torn down by the
-/// key destructor after the test body has returned. On Linux the
-/// regions are real `PROT_NONE` reservations so slot memory can be
-/// touched; elsewhere the metadata is a `Vec` and slot addresses are
-/// never dereferenced.
+/// purpose: the test thread's own heap is torn down by the key
+/// destructor after the test body has returned. The regions are real
+/// `PROT_NONE` reservations so slot memory can be touched.
 /// One automatic arena, so every heap of a test shares arena 0 (the
 /// default would spread concurrently live heaps over `4 * ncpus`).
 /// `pac_pointers` on: the signed path runs in every heap test on a
@@ -168,9 +160,7 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
 }
 
 /// `shared()` with guard slabs at the default interval (`guard_install`
-/// as on a kernel with guard regions; a real reservation is needed, so
-/// Linux only).
-#[cfg(target_os = "linux")]
+/// as on a kernel with guard regions).
 pub(crate) fn shared_guarded() -> &'static Shared {
     shared_with_guards(Config { narenas: 1, pac_pointers: true, ..Config::DEFAULT }, true)
 }
@@ -185,7 +175,6 @@ pub(crate) fn shared_with_guards(config: Config, guard_install: bool) -> &'stati
 /// extension builds the fallback (plain pointers) the Altra and every
 /// other Neoverse N1 take.
 pub(crate) fn shared_build(config: Config, guard_install: bool, pac: bool) -> &'static Shared {
-    #[cfg(target_os = "linux")]
     let (sb, mb, hb) = {
         use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
         let reserve = |len: usize| -> usize {
@@ -195,13 +184,6 @@ pub(crate) fn shared_build(config: Config, guard_install: bool, pac: bool) -> &'
             .expect("reserve")
         };
         (reserve((NCLASSES << LG_STRIDE) + MAX_SLAB), reserve(META_LEN), reserve(HUGE_LEN))
-    };
-    #[cfg(not(target_os = "linux"))]
-    let (sb, mb, hb) = {
-        let mut v: Vec<u8> = Vec::new();
-        v.resize(META_LEN + page_size(), 0);
-        let buf: &'static mut [u8] = Box::leak(v.into_boxed_slice());
-        (0x1000_0000_0000usize, buf.as_ptr() as usize, 0x2000_0000_1000usize)
     };
     let regions = regions_at(
         align_up(sb, MAX_SLAB),
@@ -663,7 +645,6 @@ fn a_whole_cache_flush_keeps_nothing_and_takes_the_unsorted_branch() {
 /// The dense [`GuardTest`] the sized fast path reads agrees with
 /// [`SlabTable::is_guard_slab`] for every class over the first slabs of
 /// the region and around its end, with guards on and off.
-#[cfg(target_os = "linux")]
 #[test]
 fn guard_test_agrees_with_the_tables() {
     for s in [shared_guarded(), shared()] {
@@ -718,7 +699,6 @@ fn guard_interval_for_places_one_guard_per_unit_of_address_space() {
 /// the exact slow path aborts instead of the guard memory being cached.
 /// It does not read the watermark: a slot start in a slab past it
 /// passes here and aborts at the flush (the next test).
-#[cfg(target_os = "linux")]
 #[test]
 fn sized_slot_rejects_guard_slabs() {
     let s = shared_guarded();
@@ -749,7 +729,6 @@ fn sized_slot_rejects_guard_slabs() {
 /// flush's: a sized free of a slot start in a slab no
 /// arena has been handed is cached and aborts by name when the cache
 /// flushes it.
-#[cfg(target_os = "linux")]
 #[test]
 #[should_panic(expected = "was never allocated")]
 fn sized_free_past_the_watermark_aborts_at_the_flush() {
@@ -1214,11 +1193,11 @@ fn a_scheduled_pop_whose_gc_empties_the_cache_refills_instead_of_wrapping() {
     assert!(!Heap::fragmented(s, 0, c));
     assert_eq!(live(s, c), 1);
     // The next pop is scheduled, its tick is the periodic one and the
-    // GC interval has elapsed (on the host `now_ns` is a counter, so the
-    // interval is subtracted rather than assumed).
+    // GC interval has elapsed (the interval is subtracted from the
+    // clock rather than assumed).
     let h = t.heap();
     h.slow_ticks = PERIODIC_EVERY - 1;
-    h.last_gc = os::now_ns().wrapping_sub(s.gc_interval_ns);
+    h.last_gc = now_ns().wrapping_sub(s.gc_interval_ns);
     let k = h.cache_ptr(c);
     unsafe { (*k).allocs = (*k).compact_mask as u64 };
     let ticks = t.ticks();
@@ -1621,8 +1600,8 @@ fn huge_runs_go_through_the_heap_without_caches() {
 /// Design 11: the periodic tick's GC interval is the configured one
 /// until the policy's immediate band, where it is 0; the effective
 /// decay period follows the band for arena 0 and the huge allocator;
-/// `-1` stays never. The host has no cgroup, so the policy is driven
-/// through `apply` here.
+/// `-1` stays never. A test cannot choose its cgroup's limit, so the
+/// policy is driven through `apply` here.
 #[test]
 fn cgroup_policy_drives_gc_interval_and_decay_period() {
     use crate::policy::{Band, KEEP_ALL, band, effective_decay_ns};
@@ -1647,7 +1626,7 @@ fn cgroup_policy_drives_gc_interval_and_decay_period() {
     // A decay pass with a pending full purge consumes it.
     s.policy.apply(band(l, l * 8 / 10), l, 0, 1);
     assert!(s.policy.full_purge_pending());
-    let _ = crate::purge::decay(s, os::now_ns());
+    let _ = crate::purge::decay(s, now_ns());
     assert!(!s.policy.full_purge_pending());
     assert_eq!(s.policy.full_purges(), 1);
     s.policy.apply(Band::Unlimited, crate::sys::cgroup::UNLIMITED, 0, 1);
@@ -1795,7 +1774,7 @@ fn heap_churn_reuses_the_vacated_arena() {
 #[test]
 fn default_narenas_is_resolved_at_init() {
     let s = shared_with(Config::DEFAULT);
-    let expect = Config::DEFAULT.effective_narenas(os::ncpus());
+    let expect = Config::DEFAULT.effective_narenas(ncpus());
     assert!((4..=crate::config::MAX_AUTO_ARENAS).contains(&expect));
     assert_eq!(s.config.narenas, expect);
     assert_eq!(s.arenas.auto(), expect);
@@ -1924,10 +1903,10 @@ fn destroying_the_last_heap_of_an_arena_purges_it() {
     let s1 = s.arena(1).unwrap().classes[c].stats();
     assert_eq!(s1.empty, per_refill, "within the period: flushed, not purged");
     let a1 = s.arena(1).unwrap();
-    assert!(!a1.take_exit_purge(os::now_ns()));
-    assert!(a1.take_exit_purge(os::now_ns() + a1.decay_ns()));
+    assert!(!a1.take_exit_purge(now_ns()));
+    assert!(a1.take_exit_purge(now_ns() + a1.decay_ns()));
     a1.set_decay_ms(-1);
-    assert!(!a1.take_exit_purge(os::now_ns() + 2 * 10_000_000_000));
+    assert!(!a1.take_exit_purge(now_ns() + 2 * 10_000_000_000));
     a1.set_decay_ms(10_000);
     // Arena 0 keeps `b2`: flushed, still `Empty`.
     a.destroy();
@@ -2091,8 +2070,7 @@ fn push_flags_encode_zero_on_free_and_double_free_scan() {
     assert_eq!(core::mem::offset_of!(Shared, push_flags) / 128, core::mem::offset_of!(Shared, multi_arena) / 128);
 }
 
-/// Slot memory is real on Linux only (`shared_with_guards`).
-#[cfg(target_os = "linux")]
+/// Slot memory is real (`shared_with_guards`).
 fn bytes_of(p: *mut u8, n: usize) -> Vec<u8> {
     (0..n).map(|i| unsafe { core::ptr::read_volatile(p.add(i)) }).collect()
 }
@@ -2101,7 +2079,6 @@ fn bytes_of(p: *mut u8, n: usize) -> Vec<u8> {
 /// through the plain path (cached), the sized path and the direct
 /// release; without it the slot keeps its bytes (the default path does
 /// not clear).
-#[cfg(target_os = "linux")]
 #[test]
 fn zero_on_free_clears_the_slot_on_the_plain_sized_and_direct_paths() {
     let c = class_with(64);
@@ -2161,7 +2138,6 @@ fn zero_on_free_clears_the_slot_on_the_plain_sized_and_direct_paths() {
 /// A huge run's usable bytes are cleared before the release, on the
 /// thread path and the direct path; the run is retained (`Empty`) so
 /// the memory is still there to read.
-#[cfg(target_os = "linux")]
 #[test]
 fn zero_on_free_clears_a_huge_run() {
     let s = shared_with(Config { narenas: 1, zero_on_free: true, ..Config::DEFAULT });
