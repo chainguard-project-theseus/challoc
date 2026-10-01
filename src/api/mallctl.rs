@@ -151,18 +151,6 @@ pub enum Leaf {
     StatsThpHugeRanges,
     StatsThpMetaRanges,
     StatsThpFailures,
-    /// `stats.prefault.*` (design 8.2, `purge::prefault`):
-    /// whether the pass runs, whether `MADV_POPULATE_WRITE` is the populate,
-    /// and its counters. Read-only, `size_t`.
-    StatsPrefaultEnabled,
-    StatsPrefaultPopulateWrite,
-    StatsPrefaultPasses,
-    StatsPrefaultSlabs,
-    StatsPrefaultBytes,
-    StatsPrefaultSkipped,
-    StatsPrefaultFallbacks,
-    StatsPrefaultWakes,
-    StatsPrefaultActive,
     /// `stats.thp.nohuge_ranges` (design 17, `thp.rs`): the
     /// reservations `never` `MADV_NOHUGEPAGE`d, the class superblock and
     /// the metadata region (2 on a kernel with THP; the huge region follows
@@ -385,18 +373,7 @@ static STATS_THP: [Node; 7] = [
     stat("failures", StatsThpFailures, |_| Ok(Size(crate::thp::stats().failures as usize))),
     stat("nohuge_ranges", StatsThpNohugeRanges, |_| Ok(Size(crate::thp::stats().nohuge_ranges as usize))),
 ];
-static STATS_PREFAULT: [Node; 9] = [
-    stat("enabled", StatsPrefaultEnabled, |_| Ok(Size(purge::prefault::enabled() as usize))),
-    stat("populate_write", StatsPrefaultPopulateWrite, |_| Ok(Size(purge::prefault::uses_populate_write() as usize))),
-    stat("passes", StatsPrefaultPasses, |_| Ok(Size(purge::prefault::stats().passes as usize))),
-    stat("slabs", StatsPrefaultSlabs, |_| Ok(Size(purge::prefault::stats().slabs as usize))),
-    stat("bytes", StatsPrefaultBytes, |_| Ok(Size(purge::prefault::stats().bytes as usize))),
-    stat("skipped", StatsPrefaultSkipped, |_| Ok(Size(purge::prefault::stats().skipped as usize))),
-    stat("fallbacks", StatsPrefaultFallbacks, |_| Ok(Size(purge::prefault::stats().fallbacks as usize))),
-    stat("wakes", StatsPrefaultWakes, |_| Ok(Size(purge::prefault::stats().wakes as usize))),
-    stat("active", StatsPrefaultActive, |_| Ok(Size(purge::prefault::stats().active as usize))),
-];
-static STATS: [Node; 10] = [
+static STATS: [Node; 9] = [
     stat("allocated", StatsAllocated, |_| Ok(Size(stats::snapshot(shared()).totals.allocated))),
     stat("active", StatsActive, |_| Ok(Size(stats::snapshot(shared()).totals.active))),
     stat("metadata", StatsMetadata, |_| Ok(Size(stats::snapshot(shared()).totals.metadata))),
@@ -406,7 +383,6 @@ static STATS: [Node; 10] = [
     dir("arenas", &STATS_ARENAS),
     dir("cgroup", &STATS_CGROUP),
     dir("thp", &STATS_THP),
-    dir("prefault", &STATS_PREFAULT),
 ];
 static THREAD_TCACHE: [Node; 2] = [leaf("flush", ThreadTcacheFlush), leaf("enabled", ThreadTcacheEnabled)];
 static THREAD: [Node; 6] = [

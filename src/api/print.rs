@@ -175,9 +175,6 @@ macro_rules! head {
     (BACKGROUND) => { "Background thread: " };
     (PRESENT) => { "present" };
     (ABSENT) => { "absent" };
-    (PREFAULT) => { "Prefault: " };
-    (PREFAULT_FALSE) => { "prefault:false" };
-    (PREFAULT_NO_THREAD) => { "prefault:true without background_thread" };
     (SLICE) => { "Slice extension: " };
     (ON) => { "on (" };
     (OFF) => { "off (" };
@@ -230,11 +227,6 @@ pub(crate) const LINES: &[Line] = &[
     Line { prefix: head!(FEATURES), forms: &[], conditional: false },
     Line { prefix: head!(SEALED), forms: &[], conditional: false },
     Line { prefix: head!(BACKGROUND), forms: &[head!(PRESENT), head!(ABSENT)], conditional: false },
-    Line {
-        prefix: head!(PREFAULT),
-        forms: &[concat!(head!(OFF), head!(PREFAULT_FALSE), ")"), concat!(head!(OFF), head!(PREFAULT_NO_THREAD), ")"), head!(ON)],
-        conditional: false,
-    },
     Line { prefix: head!(SLICE), forms: &[head!(ON), head!(OFF)], conditional: false },
     Line { prefix: head!(ARENAS), forms: &[], conditional: false },
     Line { prefix: head!(QUANTUM), forms: &[], conditional: false },
@@ -301,7 +293,6 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     writeln!(out, concat!(head!(FEATURES), "{}"), super::feature_line())?;
     writeln!(out, concat!(head!(SEALED), "{} of {}"), super::sealed_ranges(), shared.regions.never_committed().1)?;
     writeln!(out, concat!(head!(BACKGROUND), "{}"), if purge::background::present() { head!(PRESENT) } else { head!(ABSENT) })?;
-    prefault_line(out, shared)?;
     slice_line(out)?;
     writeln!(
         out,
@@ -884,34 +875,6 @@ mod exports {
     }
 }
 
-/// `Prefault:` (design 8.2, `purge::prefault`): off
-/// with the reason (the key, or the key without its thread), or on with
-/// the populate in use and the counters.
-fn prefault_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
-    use crate::purge::prefault;
-    if !prefault::enabled() {
-        return writeln!(
-            out,
-            concat!(head!(PREFAULT), head!(OFF), "{})"),
-            if shared.config.prefault() { head!(PREFAULT_NO_THREAD) } else { head!(PREFAULT_FALSE) }
-        );
-    }
-    let s = prefault::stats();
-    writeln!(
-        out,
-        concat!(head!(PREFAULT), head!(ON), "{}) passes {} (active {}) slabs {} ({} bytes) skipped_no_headroom {} fallbacks {} wakes {} taken {}"),
-        if prefault::uses_populate_write() { "MADV_POPULATE_WRITE" } else { "touch per page" },
-        s.passes,
-        s.active,
-        s.slabs,
-        s.bytes,
-        s.skipped,
-        s.fallbacks,
-        s.wakes,
-        s.taken
-    )
-}
-
 /// `Slice extension:` (design 17, `slice.rs`): whether lock holders request
 /// the rseq time slice extension, the probe's verdict when not, how many
 /// threads the `prctl` enabled and how many grants were yielded, and a
@@ -1014,7 +977,6 @@ mod tests {
             head!(RUN_TIME_OPTIONS),
             "opt.dirty_decay_ms: ",
             "opt.thp: \"never\"\n",
-            "opt.prefault: false\n",
             "thp: never -> off (thp:never) nohuge ",
             " (classes, metadata; huge follows host) class_ranges 0 (0 bytes, 0 chunks) huge_ranges 0 meta_ranges 0 failures 0; host ",
             "opt.zero_on_free: false\n",
@@ -1026,7 +988,6 @@ mod tests {
             concat!(head!(FEATURES), "page_size="),
             head!(SEALED),
             head!(BACKGROUND),
-            concat!(head!(PREFAULT), head!(OFF), head!(PREFAULT_FALSE), ")\n"),
             concat!("\n", head!(SLICE)),
             head!(ARENAS),
             concat!("\n", head!(QUANTUM)),
@@ -1494,11 +1455,11 @@ mod tests {
         assert!(stale.is_empty(), "quotes with no matching report line:\n{}\nreport:\n{text}", stale.join("\n"));
         // The recogniser and the checker on known cases.
         assert!(recognise("\ncgroup: ").is_some() && recognise("cgroup:").is_some() && recognise("cgroup:false").is_none());
-        assert!(recognise("no Prefault: line").is_none() && recognise("thp:always").is_none());
-        let (prefault, _) = recognise("Prefault: ").unwrap();
-        assert!(needle_ok(prefault, "Prefault: on (MADV_POPULATE_WRITE) passes N", &lines));
-        assert!(needle_ok(prefault, "Prefault: off (prefault:true without background_thread)", &lines));
-        assert!(!needle_ok(prefault, "Prefault: disabled", &lines));
+        assert!(recognise("no Background thread: line").is_none() && recognise("thp:always").is_none());
+        let (background, _) = recognise("Background thread: ").unwrap();
+        assert!(needle_ok(background, "Background thread: present", &lines));
+        assert!(needle_ok(background, "Background thread: absent", &lines));
+        assert!(!needle_ok(background, "Background thread: disabled", &lines));
         let (features, _) = recognise("Kernel and CPU features: ").unwrap();
         assert!(needle_ok(features, "Kernel and CPU features: page_size=4096 mseal=maybe", &lines));
         assert!(!needle_ok(features, "Kernel and CPU features: kernel=", &lines));

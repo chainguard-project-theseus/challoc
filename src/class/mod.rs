@@ -19,7 +19,7 @@
 //! ([`Lazy`](sets::Lazy), [`Set`], [`SetTable`]); this file the
 //! [`ClassState`] and the protocol below (claim, plan, take, release,
 //! reopen); `fresh` the fresh-slab path; `decay` the purge and the
-//! decay walk; `prefault` the prefault pass's commit-ahead; `verify` the
+//! decay walk; `verify` the
 //! `check_zero` debug mode and the test-only pointer checks; `abort` the
 //! `#[cold]` heap-inconsistency aborts; `tests` the tests.
 //!
@@ -76,7 +76,6 @@ use core::sync::atomic::{AtomicU64, Ordering};
 mod abort;
 mod decay;
 mod fresh;
-mod prefault;
 mod sets;
 mod table;
 #[cfg(test)]
@@ -174,9 +173,9 @@ pub(crate) mod protocol {
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
     #[repr(u8)]
     pub(crate) enum Refill {
-        /// `plan_locked`: `self.inner.lock()`.
+        /// `plan`: `self.inner.lock()`.
         Lock = 0,
-        /// `plan_locked` under the lock, one step: the partial walk
+        /// `plan` under the lock, one step: the partial walk
         /// (`clear_partial` of a full slab), `next_slab` (the empty and
         /// purged sets, the group cursor with `commit_slab`, `take_group`),
         /// and `take`
@@ -405,15 +404,7 @@ pub struct ClassState {
     /// includes its slots); a count that keeps growing while nothing is
     /// freed is a bookkeeping bug. Printed in the bins table.
     clamped: AtomicU64,
-    /// The prefault pass's snapshot of `refilled` (`purge::prefault`): the
-    /// pass prefaults a class only when the
-    /// counter moved since its last visit. Written by the background
-    /// thread alone, on its own line (the tail), never by a refill.
-    prefault_seen: AtomicU64,
-    /// Slabs the pass committed and populated ahead of a refill for this
-    /// arena and class (the bins table and `stats.prefault.slabs`).
-    prefaulted: AtomicU64,
-    _tail: [u8; PAD_ALIGN - 80],
+    _tail: [u8; PAD_ALIGN - 64],
 }
 
 const _: () = assert!(core::mem::offset_of!(ClassState, inner) == PAD_ALIGN);
@@ -471,8 +462,9 @@ impl Inner {
         self.stats.empty = self.stats.empty.checked_sub(1).unwrap_or_else(|| abort::slab_count_underflow("empty"));
     }
 
-    /// `slab` into the purged set (a purge discarded it, or the prefault
-    /// pass published it).
+    /// `slab` into the purged set. Tests only: a purge spells the pair
+    /// out (`purge_group`).
+    #[cfg(test)]
     fn purged_add(&mut self, slab: usize) {
         debug_assert!(!self.purged.map.is_set(slab), "purged_add: slab {slab} already in the purged set");
         self.purged.map.set(slab);
@@ -523,9 +515,7 @@ impl ClassState {
             compact_off: AtomicU64::new(0),
             gate_refill: AtomicU64::new(0),
             clamped: AtomicU64::new(0),
-            prefault_seen: AtomicU64::new(0),
-            prefaulted: AtomicU64::new(0),
-            _tail: [0; PAD_ALIGN - 80],
+            _tail: [0; PAD_ALIGN - 64],
         })
     }
 
@@ -722,27 +712,6 @@ impl ClassState {
     /// release can race the clear.
     fn plan(&self, meta: &Meta, want: usize, picks: &mut [Pick; MAX_PICKS]) -> usize {
         let cls = self.class();
-        let mut taken = false;
-        let np = self.plan_locked(meta, want, picks, cls, &mut taken);
-        if taken {
-            purge::prefault::note_taken();
-        }
-        np
-    }
-
-    /// [`plan`] under the lock; `taken` is set when, with the prefault
-    /// pass on, a pick took an idle
-    /// (`Empty` or `Purged`) slab and the arena has none of the class left
-    /// (the prefault pass's claim-side wake: the slab taken may
-    /// have been the prefaulted one, and the next refill of the class
-    /// would commit and fault a fresh slab itself unless the pass runs
-    /// before it; an idle slab with others behind it wakes nobody, the
-    /// next refill takes one of those; a fresh commit woke the thread
-    /// itself, `SlabTable::commit_slab`). Off the key: one relaxed load
-    /// per refill that reached `next_slab`, nothing on the partial path.
-    ///
-    /// [`plan`]: ClassState::plan
-    fn plan_locked(&self, meta: &Meta, want: usize, picks: &mut [Pick; MAX_PICKS], cls: &Class, taken: &mut bool) -> usize {
         let mut g = self.inner.lock();
         let mut np = 0;
         let mut remaining = want;
@@ -761,20 +730,12 @@ impl ClassState {
             }
             next = g.partial.map.lowest_set_from(s + 1);
         }
-        let first_fresh = np;
         while remaining > 0 && np < MAX_PICKS {
             let s = match self.next_slab(&mut g, meta) {
                 Some(s) => s,
                 None => break,
             };
             self.take(&mut g, s, &mut remaining, picks, &mut np);
-        }
-        if np > first_fresh
-            && purge::prefault::enabled()
-            && g.stats.empty + g.stats.purged == 0
-            && picks[first_fresh..np].iter().any(|p| matches!(p.state, State::Empty | State::Purged))
-        {
-            *taken = true;
         }
         np
     }

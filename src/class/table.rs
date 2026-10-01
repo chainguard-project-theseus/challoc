@@ -663,11 +663,6 @@ impl SlabTable {
             g.guards += 1;
             return Some(false);
         }
-        // A fresh slab went into service: the
-        // prefault pass, when on, gets one wake per commit so it can
-        // commit and populate this class's next slab before the refill
-        // that will need it. Off: one relaxed load.
-        purge::prefault::note_commit();
         Some(true)
     }
 

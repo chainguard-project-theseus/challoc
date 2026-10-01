@@ -1,6 +1,6 @@
 //! The background thread (design 8.1): one thread per process that runs
-//! the decay passes, the cgroup sampling and the prefault pass on its own
-//! stack, started by configuration or `mallctl("background_thread")`.
+//! the decay passes and the cgroup sampling on its own stack, started by
+//! configuration or `mallctl("background_thread")`.
 
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -316,17 +316,7 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
         }
         let now = sys::now_coarse_ns();
         super::sample(shared, now);
-        let mut deadline = super::decay(shared, now);
-        // After the walks, so a class whose
-        // `Empty` slabs were just purged is not prefaulted on top of
-        // them (they veto the pass while they exist). While a pass
-        // finds classes refilling, the thread polls (`POLL_NS`) so the
-        // next slab is ready before the refill that needs it; a quiet
-        // pass leaves the sleep to the decay deadline and the wakes.
-        if super::prefault::pass(shared) {
-            let poll = now.saturating_add(super::prefault::POLL_NS);
-            deadline = Some(deadline.map_or(poll, |d| d.min(poll)));
-        }
+        let deadline = super::decay(shared, now);
         let timeout = deadline.map(|deadline| {
             let ns = deadline.saturating_sub(now).max(MIN_SLEEP_NS);
             Timespec { sec: (ns / 1_000_000_000) as i64, nsec: (ns % 1_000_000_000) as i64 }

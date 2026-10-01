@@ -13,7 +13,6 @@
  * against libc alone and fails bare in require_challoc.
  */
 #include "common.h"
-#include <sys/mman.h>
 
 typedef void (*stats_print_fn)(void (*cb)(void *, const char *), void *cbopaque, const char *opts);
 
@@ -69,32 +68,12 @@ int main(void)
 
     /* Every key once. */
     static const char *const keys[] = {"page_size", "guard_install", "mseal",     "process_madvise", "process_madvise_free",
-                                       "anon_name", "populate_write", "thp",      "mthp",            "rseq",
-                                       "rseq_size", "slice_ext",      "pac"};
+                                       "anon_name", "thp",           "mthp",      "rseq",            "rseq_size",
+                                       "slice_ext", "pac"};
     size_t nkeys = sizeof keys / sizeof keys[0];
     for (size_t i = 0; i < nkeys; i++)
         CHECK(has_key(line, keys[i]) == 1, "key %s appears %d times", keys[i], has_key(line, keys[i]));
     CHECK((size_t)tokens == nkeys, "%d tokens, expected %zu", tokens, nkeys);
-
-    /* populate_write: yes/no, and usable as said:
-     * a fresh private page is resident after one MADV_POPULATE_WRITE when
-     * yes, and the advice is EINVAL when no. */
-    {
-        const char *v = strstr(line, " populate_write=") + 16;
-        CHECK(strncmp(v, "yes", 3) == 0 || strncmp(v, "no", 2) == 0, "populate_write has value `%.8s`", v);
-        long page = sysconf(_SC_PAGESIZE);
-        void *p = mmap(NULL, page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        REQUIRE(p != MAP_FAILED, "mmap");
-        int rc = madvise(p, page, 23 /* MADV_POPULATE_WRITE */);
-        unsigned char vec = 0;
-        REQUIRE(mincore(p, page, &vec) == 0, "mincore");
-        if (strncmp(v, "yes", 3) == 0)
-            CHECK(rc == 0 && (vec & 1), "populate_write=yes but madvise rc %d (errno %d), resident %d", rc, errno, vec & 1);
-        else
-            CHECK(rc != 0, "populate_write=no but MADV_POPULATE_WRITE succeeded");
-        munmap(p, page);
-        printf("populate_write: %.*s (madvise rc %d)\n", (int)strcspn(v, " "), v, rc);
-    }
 
     /* The THP keys: thp is a sysfs setting or none,
      * mthp a comma list of sizes or none. */

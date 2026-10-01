@@ -734,18 +734,6 @@ ctests! {
     /// never` from root; Ubuntu's default makes it inert, which the program
     /// checks as well, with a `SKIP` line).
     c_thp_auto => [ CTest { prog: "thp", args: &["auto"], conf: Some("thp:auto"), ..BASE } ];
-    /// `tests/c/prefault.c` (plan Phase 2.5 task 11), both ways: under
-    /// `prefault:true,background_thread:true` the pass commits and populates
-    /// the next fresh slab of a class that refilled (resident per `mincore`
-    /// before any allocation touched it, one slab only, zero, and the next
-    /// refills take it); under the default nothing is prefaulted and the
-    /// counters stay zero; `prefault:true` without the thread is inert and
-    /// the report says why.
-    c_prefault_both_ways => [
-        CTest { prog: "prefault", args: &["on"], conf: Some("abort_conf:true,prefault:true,background_thread:true"), ..BASE },
-        CTest { prog: "prefault", args: &["off"], conf: Some("abort_conf:true"), ..BASE },
-        CTest { prog: "prefault", args: &["inert"], conf: Some("abort_conf:true,prefault:true"), ..BASE },
-    ];
     /// `tests/c/cgroup.c plain` (plan Phase 2 task 4): `stats.cgroup.*` read
     /// from C, `ENOENT` without a cgroup2, else `max` or a number that equals
     /// `CHALLOC_EXPECT_CGROUP_LIMIT` when `make test-cgroup-limit`'s

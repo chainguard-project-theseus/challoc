@@ -136,13 +136,13 @@ impl Model<'_> {
         let a = th.arena as usize;
         match Refill::at(sub) {
             Refill::Lock => {
-                // plan_locked: `let mut g = self.inner.lock();`
+                // plan: `let mut g = self.inner.lock();`
                 sh.lock[a] = Some(tid);
                 th.sub = Refill::PlanLocked as u8;
                 Ok(format!("lock arena {a}"))
             }
             Refill::PlanLocked => {
-                // plan_locked under the lock: the partial walk, then
+                // plan under the lock: the partial walk, then
                 // `next_slab` (empty, purged, the group cursor, a fresh
                 // group), `take` per slab.
                 // `self.plan(meta, out.len() - got, &mut picks)`
@@ -429,7 +429,7 @@ impl Model<'_> {
         }
     }
 
-    /// `plan_locked` and `take`, one lock hold. Up to `MAX_PICKS` picks.
+    /// `plan` and `take`, one lock hold. Up to `MAX_PICKS` picks.
     pub(super) fn plan_locked(&self, sh: &mut Shared, th: &mut Thread, want: u8) -> Result<String, String> {
         let a = th.arena as usize;
         let mut remaining = want;

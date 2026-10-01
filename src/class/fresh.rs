@@ -16,7 +16,7 @@ impl ClassState {
     /// the metadata region or a commit is exhausted.
     pub(super) fn next_slab(&self, g: &mut Inner, meta: &Meta) -> Option<usize> {
         // Spelled out, not `empty_take` and `purged_take`: this runs
-        // inlined in `claim_with` (through `plan_locked`), whose machine
+        // inlined in `claim_with` (through `plan`), whose machine
         // code the helpers reorder (`scripts/codegen-diff.sh`); the
         // per-allocation path stays as measured.
         if let Some(s) = g.empty.map.lowest_set() {
@@ -32,14 +32,16 @@ impl ClassState {
         self.next_fresh_slab(g, meta)
     }
 
-    /// The fresh half of [`next_slab`], for an arena whose sets are empty
-    /// (or, the prefault pass, one that wants a slab beyond them): the
-    /// next slab of this arena's current group, committed, else the next
+    /// The fresh half of [`next_slab`], for an arena whose sets are empty:
+    /// the next slab of this arena's current group, committed, else the next
     /// fresh group of the class region, committed. Guard slabs are
     /// committed as guards and skipped. `None` when the region, the
-    /// metadata region or a commit is exhausted.
+    /// metadata region or a commit is exhausted. Out of line: it runs once
+    /// per slab, not once per refill, and inlined it would double the size
+    /// of `claim_with`.
     ///
     /// [`next_slab`]: ClassState::next_slab
+    #[inline(never)]
     pub(super) fn next_fresh_slab(&self, g: &mut Inner, meta: &Meta) -> Option<usize> {
         let table = self.table();
         let page = 1usize << table.lg_page;

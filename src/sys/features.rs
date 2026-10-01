@@ -434,10 +434,6 @@ pub struct Features {
     /// `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME)` works
     /// (kernel 5.17+ with `CONFIG_ANON_VMA_NAME`).
     pub anon_name: bool,
-    /// `madvise(MADV_POPULATE_WRITE)` works (kernel 5.14+): the prefault
-    /// pass populates a slab with one call, else touches it a page at a
-    /// time.
-    pub populate_write: bool,
     /// The transparent-huge-page configuration: what the `thp` key can
     /// turn on.
     pub thp: Thp,
@@ -470,7 +466,6 @@ impl Features {
             ("process_madvise", Value::Target(self.process_madvise)),
             ("process_madvise_free", Value::YesNo(self.process_madvise_free)),
             ("anon_name", Value::YesNo(self.anon_name)),
-            ("populate_write", Value::YesNo(self.populate_write)),
         ]
         .into_iter()
         .chain(self.thp.words())
@@ -543,8 +538,8 @@ mod linux {
     use super::{Features, ProcessMadvise, Thp};
     use crate::sys::auxv::{AT_PAGESZ, getauxval};
     use crate::sys::{
-        self, IoVec, MADV_DONTNEED, MADV_FREE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE,
-        MADV_POPULATE_WRITE, MAP_ANONYMOUS, MAP_PRIVATE, PIDFD_SELF, PROT_NONE, PROT_READ, PROT_WRITE,
+        self, IoVec, MADV_DONTNEED, MADV_FREE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE, MAP_ANONYMOUS,
+        MAP_PRIVATE, PIDFD_SELF, PROT_NONE, PROT_READ, PROT_WRITE,
     };
 
     /// The system page size, `getauxval(AT_PAGESZ)`. Without it, abort:
@@ -678,25 +673,6 @@ mod linux {
         ok
     }
 
-    /// `madvise(MADV_POPULATE_WRITE)` on a fresh scratch page: the call
-    /// must succeed and the page must be resident
-    /// afterwards (`mincore`), so a kernel that takes the advice and does
-    /// nothing would not count. `EINVAL` before 5.14.
-    pub fn probe_populate_write(page: usize) -> bool {
-        let Some(addr) = scratch(page, PROT_READ | PROT_WRITE) else {
-            return false;
-        };
-        // SAFETY: our scratch page; populating changes residency, not
-        // contents.
-        let ok = unsafe { sys::madvise(addr, page, MADV_POPULATE_WRITE) }.is_ok() && {
-            let mut vec = [0u8; 1];
-            // SAFETY: one page, one byte of output.
-            sys::mincore(addr, page, &mut vec).is_ok() && vec[0] & 1 != 0
-        };
-        release(addr, page);
-        ok
-    }
-
     /// The THP table from `/sys/kernel/mm/transparent_hugepage` (about ten
     /// sysfs reads on a 4 KiB kernel).
     pub fn probe_thp(page: usize) -> Thp {
@@ -719,7 +695,6 @@ mod linux {
                 process_madvise,
                 process_madvise_free,
                 anon_name: probe_anon_name(page_size),
-                populate_write: probe_populate_write(page_size),
                 thp: probe_thp(page_size),
                 rseq: crate::rseq::probe(),
                 // The kernel's answer alone: `config::load` has not run
@@ -896,7 +871,6 @@ mod tests {
             process_madvise: ProcessMadvise::Pidfd(7),
             process_madvise_free: true,
             anon_name: false,
-            populate_write: true,
             thp: Thp { enabled: Some(ThpSetting::Madvise), lg_pmd: 21, listed: (1 << 16) | (1 << 21), always: 0, madvise: (1 << 16) | (1 << 21) },
             rseq: rseq_probe(33, 192),
             slice_ext: SliceExt::KernelDisabled,
@@ -905,8 +879,8 @@ mod tests {
         let s = std::format!("{f}");
         assert_eq!(
             s,
-            "page_size=4096 guard_install=no mseal=yes process_madvise=pidfd:7 process_madvise_free=yes anon_name=no populate_write=yes \
-             thp=madvise mthp=64K,2M rseq=yes rseq_size=33 slice_ext=kernel-disabled pac=yes"
+            "page_size=4096 guard_install=no mseal=yes process_madvise=pidfd:7 process_madvise_free=yes anon_name=no thp=madvise \
+             mthp=64K,2M rseq=yes rseq_size=33 slice_ext=kernel-disabled pac=yes"
         );
         // A kernel that reports no feature size (6.10): registered, no
         // `slice_ctrl`.
@@ -928,9 +902,6 @@ mod tests {
         assert!(std::format!("{f}").contains("process_madvise=pidfd_self process_madvise_free=yes "));
         let f = Features { process_madvise: ProcessMadvise::Unavailable, process_madvise_free: false, ..f };
         assert!(std::format!("{f}").contains("process_madvise=no process_madvise_free=no "));
-        // Before 5.14.
-        let f = Features { populate_write: false, ..f };
-        assert!(std::format!("{f}").contains(" anon_name=no populate_write=no thp="));
     }
 
     #[test]
@@ -943,7 +914,6 @@ mod tests {
             process_madvise: ProcessMadvise::PidfdSelf,
             process_madvise_free: true,
             anon_name: true,
-            populate_write: false,
             thp: Thp::NONE,
             rseq: Probe::NONE,
             slice_ext: SliceExt::NoRseq,
@@ -970,7 +940,6 @@ mod tests {
             process_madvise: ProcessMadvise::Pidfd(i32::MAX),
             process_madvise_free: true,
             anon_name: true,
-            populate_write: true,
             // A 64 KiB-page kernel listing every size from 128K to 512M.
             thp: Thp {
                 enabled: Some(ThpSetting::Madvise),
@@ -999,7 +968,7 @@ mod tests {
     #[test]
     fn words_are_the_key_table() {
         let kernel = [
-            "page_size", "guard_install", "mseal", "process_madvise", "process_madvise_free", "anon_name", "populate_write",
+            "page_size", "guard_install", "mseal", "process_madvise", "process_madvise_free", "anon_name",
             "thp", "mthp", "rseq", "rseq_size", "slice_ext", "pac",
         ];
         for pac in [true, false] {
@@ -1011,7 +980,6 @@ mod tests {
                 process_madvise: ProcessMadvise::PidfdSelf,
                 process_madvise_free: true,
                 anon_name: true,
-                populate_write: true,
                 thp: Thp::NONE,
                 rseq: rseq_probe(33, 192),
                 slice_ext: SliceExt::Available,
@@ -1027,7 +995,7 @@ mod tests {
             }
             let joined: std::vec::Vec<std::string::String> = f.words().map(|(k, v)| std::format!("{k}={v}")).collect();
             assert_eq!(std::format!("{f}"), joined.join(" "));
-            assert_eq!(std::format!("{}", f.thp), joined[7..9].join(" "));
+            assert_eq!(std::format!("{}", f.thp), joined[6..8].join(" "));
         }
     }
 
@@ -1262,35 +1230,6 @@ mod linux_tests {
         // releases the page whether or not the prctl worked.
         let maps: String = std::fs::read_to_string("/proc/self/maps").unwrap();
         assert!(!maps.contains("[anon:challoc:probe]"), "probe page leaked: {maps}");
-    }
-
-    /// `MADV_POPULATE_WRITE`: 5.14, and never filtered (plain `madvise`),
-    /// so both directions hold. Usable as reported: a fresh page is not
-    /// resident, one call makes it so, and its contents stay zero.
-    #[test]
-    fn probe_populate_write_follows_the_kernel_both_ways() {
-        let (kv, f, line) = probed();
-        if !at_least(kv, (5, 14)) {
-            assert!(!f.populate_write, "MADV_POPULATE_WRITE predates 5.14: {line}");
-        } else {
-            assert!(f.populate_write, "MADV_POPULATE_WRITE should work on 5.14+: {line}");
-        }
-        if f.populate_write {
-            let page = f.page_size;
-            let fresh = sys::tests::map_anon(page);
-            let mut vec = [0u8; 1];
-            sys::mincore(fresh, page, &mut vec).unwrap();
-            assert_eq!(vec[0] & 1, 0, "fresh scratch page resident before the populate");
-            // SAFETY: our page.
-            unsafe { sys::madvise(fresh, page, sys::MADV_POPULATE_WRITE).unwrap() };
-            sys::mincore(fresh, page, &mut vec).unwrap();
-            assert_eq!(vec[0] & 1, 1, "page not resident after MADV_POPULATE_WRITE");
-            // SAFETY: our page, mapped above and unmapped here.
-            unsafe {
-                assert_eq!((fresh as *mut u8).read_volatile(), 0);
-                sys::munmap(fresh, page).unwrap();
-            }
-        }
     }
 
     /// The rseq words against glibc's own symbols through `dlsym` and the

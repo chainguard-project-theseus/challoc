@@ -46,9 +46,6 @@ pub const MADV_HUGEPAGE: i32 = 14;
 pub const MADV_NOHUGEPAGE: i32 = 15;
 #[cfg(test)]
 pub const MADV_COLD: i32 = 20;
-/// Populate (prefault) page tables writable (kernel 5.14): the pages
-/// fault in as if written, contents untouched.
-pub const MADV_POPULATE_WRITE: i32 = 23;
 pub const MADV_GUARD_INSTALL: i32 = 102;
 pub const MADV_GUARD_REMOVE: i32 = 103;
 
