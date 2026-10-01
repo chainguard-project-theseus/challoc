@@ -8,8 +8,8 @@
 # lost coverage. Each skip is keyed by its first word: the test (`SKIP
 # c_mseal ...`) or a program's claim name (`SKIP thp/auto ...`). Only the
 # first word: parallel tests write to the same stream and another test's
-# output can land inside a line after it (a lone `test` key, from a libtest
-# line cut in two the same way, is dropped). Then
+# output can land inside a line after it (a lone `test` or `ok` key, from a
+# libtest line cut in two the same way, is dropped). Then
 #
 #   - a key not in the manifest fails (exit 1): coverage was lost;
 #   - a manifest key that did not appear is only reported: coverage was
@@ -26,7 +26,7 @@ out=${GITHUB_STEP_SUMMARY:-/dev/stdout}
 
 seen=$(mktemp); want=$(mktemp)
 trap 'rm -f "$seen" "$want"' EXIT
-{ grep -a '^SKIP ' "$log" || true; } | awk '$2 != "" && $2 != "test" { print $2 }' | sort -u >"$seen"
+{ grep -a '^SKIP ' "$log" || true; } | awk '$2 != "" && $2 != "test" && $2 != "ok" { print $2 }' | sort -u >"$seen"
 if [ -f "$manifest" ]; then
   sed -e 's/#.*//' -e 's/[[:space:]]*$//' "$manifest" | { grep -v '^$' || true; } | sort -u >"$want"
 fi
