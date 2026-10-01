@@ -173,7 +173,7 @@ pub struct Probe {
 }
 
 impl Probe {
-    /// Nothing available (off Linux, or no registration).
+    /// Nothing available (no registration).
     pub const NONE: Probe = Probe { size: 0, offset: 0, available: false, enabled: false, yield_syscall: false };
 
     /// The verdict [`configure`] would reach without the `prctl`.
@@ -191,38 +191,30 @@ impl Probe {
 }
 
 /// Read the registration, this thread's `flags` bits and the syscall.
-/// Writes nothing. Off Linux everything is absent.
+/// Writes nothing.
 pub fn probe() -> Probe {
-    #[cfg(target_os = "linux")]
-    {
-        let r = crate::rseq::probe();
-        if !r.present || r.size == 0 {
-            return Probe::NONE;
-        }
-        let (mut available, mut enabled) = (false, false);
-        if r.size >= SLICE_CTRL_END {
-            // SAFETY: the area is `size >= 32` bytes at the thread pointer
-            // plus the offset for every thread, and `flags` is inside it.
-            let f = unsafe { flags(crate::rseq::area(r.offset)) };
-            available = f & FLAG_AVAILABLE != 0;
-            enabled = f & FLAG_ENABLED != 0;
-        }
-        // The syscall with no grant outstanding returns 0 and does nothing
-        // else; `ENOSYS` is the kernel without it.
-        let yield_syscall = available && matches!(crate::sys::rseq_slice_yield(), Ok(_));
-        Probe { size: r.size, offset: r.offset, available, enabled, yield_syscall }
+    let r = crate::rseq::probe();
+    if !r.present || r.size == 0 {
+        return Probe::NONE;
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        Probe::NONE
+    let (mut available, mut enabled) = (false, false);
+    if r.size >= SLICE_CTRL_END {
+        // SAFETY: the area is `size >= 32` bytes at the thread pointer
+        // plus the offset for every thread, and `flags` is inside it.
+        let f = unsafe { flags(crate::rseq::area(r.offset)) };
+        available = f & FLAG_AVAILABLE != 0;
+        enabled = f & FLAG_ENABLED != 0;
     }
+    // The syscall with no grant outstanding returns 0 and does nothing
+    // else; `ENOSYS` is the kernel without it.
+    let yield_syscall = available && matches!(crate::sys::rseq_slice_yield(), Ok(_));
+    Probe { size: r.size, offset: r.offset, available, enabled, yield_syscall }
 }
 
 /// This thread's `flags` field.
 ///
 /// # Safety
 /// `area` is this thread's registered area of at least 20 bytes.
-#[cfg(target_os = "linux")]
 #[inline(always)]
 unsafe fn flags(area: *mut u8) -> u32 {
     // SAFETY: guaranteed by the caller.
@@ -257,17 +249,10 @@ fn try_enable() -> Verdict {
     OFFSET.store(p.offset, Ordering::Relaxed);
     YIELD_SCHED.store(!p.yield_syscall, Ordering::Relaxed);
     PROBED.store(true, Ordering::Release);
-    #[cfg(target_os = "linux")]
-    {
-        // SAFETY: `size >= 32`, so the area covers `flags` and `slice_ctrl`.
-        if p.enabled || unsafe { enable_thread(crate::rseq::area(p.offset)) } {
-            Verdict::Enabled
-        } else {
-            Verdict::PrctlFailed
-        }
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
+    // SAFETY: `size >= 32`, so the area covers `flags` and `slice_ctrl`.
+    if p.enabled || unsafe { enable_thread(crate::rseq::area(p.offset)) } {
+        Verdict::Enabled
+    } else {
         Verdict::PrctlFailed
     }
 }
@@ -277,7 +262,6 @@ fn try_enable() -> Verdict {
 ///
 /// # Safety
 /// `area` is this thread's registered area of at least 32 bytes.
-#[cfg(target_os = "linux")]
 unsafe fn enable_thread(area: *mut u8) -> bool {
     // SAFETY: a `prctl` with integer arguments; option-specific contract
     // is "the calling thread has an rseq area registered with the v2
@@ -298,7 +282,7 @@ unsafe fn enable_thread(area: *mut u8) -> bool {
 /// enabled (`Ok(1)`), not (`Ok(0)`), or the kernel has no such option
 /// (`Err(ENOTSUPP)`, `Err(EINVAL)`). The tests' view of the per-thread
 /// enable; the module itself reads bit 5 of the area.
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 pub fn thread_enabled() -> Result<usize, crate::sys::Errno> {
     // SAFETY: a query with integer arguments and no pointer.
     unsafe { crate::sys::prctl(PR_RSEQ_SLICE_EXTENSION, PR_RSEQ_SLICE_EXTENSION_GET, 0, 0, 0) }
@@ -357,38 +341,31 @@ pub fn acquired() -> *mut u8 {
     if !on() {
         return core::ptr::null_mut();
     }
-    #[cfg(target_os = "linux")]
-    {
-        let area = crate::rseq::area(OFFSET.load(Ordering::Relaxed));
-        // SAFETY: `STATE == ON` means the probe found this process's areas
-        // registered with `size >= 32`; every thread's area has the same
-        // layout at the same offset from its thread pointer.
-        let f = unsafe { flags(area) };
-        if f & FLAG_ENABLED == 0 {
-            // A thread created after init starts without the enable
-            // (`rseq_fork` resets a `CLONE_VM` child's rseq state).
-            // SAFETY: as above.
-            if f & FLAG_AVAILABLE == 0 || !unsafe { enable_thread(area) } {
-                // Should not happen once the probe passed (bit 4 is per
-                // registration, the `prctl` fails only on a kernel that
-                // lied); switch the process off rather than retry a
-                // syscall per hold.
-                VERDICT.store(Verdict::PrctlFailed as u8, Ordering::Relaxed);
-                STATE.store(OFF, Ordering::Release);
-                return core::ptr::null_mut();
-            }
+    let area = crate::rseq::area(OFFSET.load(Ordering::Relaxed));
+    // SAFETY: `STATE == ON` means the probe found this process's areas
+    // registered with `size >= 32`; every thread's area has the same
+    // layout at the same offset from its thread pointer.
+    let f = unsafe { flags(area) };
+    if f & FLAG_ENABLED == 0 {
+        // A thread created after init starts without the enable
+        // (`rseq_fork` resets a `CLONE_VM` child's rseq state).
+        // SAFETY: as above.
+        if f & FLAG_AVAILABLE == 0 || !unsafe { enable_thread(area) } {
+            // Should not happen once the probe passed (bit 4 is per
+            // registration, the `prctl` fails only on a kernel that
+            // lied); switch the process off rather than retry a
+            // syscall per hold.
+            VERDICT.store(Verdict::PrctlFailed as u8, Ordering::Relaxed);
+            STATE.store(OFF, Ordering::Release);
+            return core::ptr::null_mut();
         }
-        // SAFETY: `request` is the one byte user space may write, and it is
-        // this thread's own.
-        unsafe { area.add(REQUEST_OFFSET).write_volatile(1) };
-        #[cfg(test)]
-        REQUESTS.fetch_add(1, Ordering::Relaxed);
-        area
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        core::ptr::null_mut()
-    }
+    // SAFETY: `request` is the one byte user space may write, and it is
+    // this thread's own.
+    unsafe { area.add(REQUEST_OFFSET).write_volatile(1) };
+    #[cfg(test)]
+    REQUESTS.fetch_add(1, Ordering::Relaxed);
+    area
 }
 
 /// The area [`acquired`] requested through, for a release that did not
@@ -403,14 +380,7 @@ pub fn acquired_area() -> *mut u8 {
     if !PROBED.load(Ordering::Acquire) {
         return core::ptr::null_mut();
     }
-    #[cfg(target_os = "linux")]
-    {
-        crate::rseq::area(OFFSET.load(Ordering::Relaxed))
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        core::ptr::null_mut()
-    }
+    crate::rseq::area(OFFSET.load(Ordering::Relaxed))
 }
 
 /// The holder is about to release: withdraw the request. `area` is what
@@ -450,7 +420,6 @@ pub fn released(area: *mut u8) {
 #[inline(never)]
 fn yield_now() {
     YIELDS.fetch_add(1, Ordering::Relaxed);
-    #[cfg(target_os = "linux")]
     if YIELD_SCHED.load(Ordering::Relaxed) {
         let _ = crate::sys::sched_yield();
     } else {
@@ -458,7 +427,7 @@ fn yield_now() {
     }
 }
 
-/// The pure parts, on every host.
+/// The pure parts.
 #[cfg(test)]
 mod pure_tests {
     use super::*;
@@ -511,22 +480,9 @@ mod pure_tests {
         let r = Probe { enabled: true, yield_syscall: true, ..p(SLICE_CTRL_END, false) };
         assert_eq!(r.verdict(), Verdict::KernelDisabled);
     }
-
-    /// Off Linux nothing is registered: the probe is empty, a hold
-    /// requests nothing and the release paths accept the null area.
-    #[cfg(not(target_os = "linux"))]
-    #[test]
-    fn off_linux_the_module_is_inert() {
-        assert_eq!(probe(), Probe::NONE);
-        assert_eq!(acquired(), core::ptr::null_mut());
-        assert_eq!(acquired_area(), core::ptr::null_mut());
-        releasing(core::ptr::null_mut());
-        released(core::ptr::null_mut());
-        assert_eq!(yields(), 0);
-    }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::lock::RawLock;

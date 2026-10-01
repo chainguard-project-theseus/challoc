@@ -160,7 +160,7 @@ pub fn pass(shared: &Shared) -> bool {
 /// this thread's alone). Counted.
 pub fn populate(addr: usize, len: usize, page: usize) {
     BYTES.fetch_add(len as u64, Ordering::Relaxed);
-    if POPULATE.load(Ordering::Relaxed) && os::populate_write(addr, len) {
+    if POPULATE.load(Ordering::Relaxed) && madvise_populate_write(addr, len) {
         return;
     }
     if POPULATE.load(Ordering::Relaxed) {
@@ -176,20 +176,10 @@ pub fn populate(addr: usize, len: usize, page: usize) {
     }
 }
 
-#[cfg(target_os = "linux")]
-mod os {
-    pub fn populate_write(addr: usize, len: usize) -> bool {
-        // SAFETY: a committed range of a class region this process
-        // owns; populating changes residency, never contents.
-        unsafe { crate::sys::madvise(addr, len, crate::sys::MADV_POPULATE_WRITE) }.is_ok()
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-mod os {
-    pub fn populate_write(_addr: usize, _len: usize) -> bool {
-        false
-    }
+fn madvise_populate_write(addr: usize, len: usize) -> bool {
+    // SAFETY: a committed range of a class region this process owns;
+    // populating changes residency, never contents.
+    unsafe { crate::sys::madvise(addr, len, crate::sys::MADV_POPULATE_WRITE) }.is_ok()
 }
 
 #[cfg(test)]
