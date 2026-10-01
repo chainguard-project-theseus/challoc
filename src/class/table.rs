@@ -55,8 +55,9 @@ pub(crate) struct TableInner {
     pub(super) nslabs: Ghost<usize>,
     /// Ghost: the class's bits per slab and the bitmap markers' authority
     /// (`bitmap.rs`, "Slot tokens"), fixed at `new`, and the init markers
-    /// of every bit of the slabs not yet handed out, which
-    /// `AtomicBitmap::init` takes one slab at a time (`take_group`).
+    /// of every bit of the slabs not yet handed out, which `take_group`
+    /// takes one slab at a time (for `AtomicBitmap::init`, or as they are
+    /// for a guard slab).
     #[allow(dead_code)]
     pub(super) sb: Ghost<usize>,
     #[allow(dead_code)]
@@ -119,9 +120,9 @@ impl TableInner {
 /// `next_slab` only because every slab below `next_slab` is committed
 /// once, by the arena its group went to (`next_fresh_slab`): assumed,
 /// not proved. The init markers it holds cover the slabs from
-/// `next_slab` on: `take_group` gives `AtomicBitmap::init` the markers of
-/// the group it hands out, below the `next_slab` it publishes, and
-/// nothing else moves them. `guards` only reads; the test
+/// `next_slab` on: `take_group` takes the markers of the group it hands
+/// out, below the `next_slab` it publishes (for `AtomicBitmap::init`, or
+/// for the arena to keep for a guard slab), and nothing else moves them. `guards` only reads; the test
 /// helper `corrupt_owner_word` (unverified) only commits through
 /// `Lazy::ensure`.
 pub(super) broadcast axiom fn axiom_table_lock_inv(v: TableInner)
@@ -284,18 +285,14 @@ verus! {
 // allocator reserved (the callers pass slab or page-group ranges below
 // the region's end), so changing its protection or installing a guard
 // affects only pages nothing else in the process maps.
-// Trusted: system calls (and `sys`' constants, outside `verus!`).
-#[verifier::external_body]
 fn commit(addr: usize, len: usize) -> Result<(), Errno> {
     unsafe { sys::mprotect(addr, len, PROT_READ | PROT_WRITE) }
 }
 
-#[verifier::external_body]
 fn decommit(addr: usize, len: usize) -> Result<(), Errno> {
     unsafe { sys::mprotect(addr, len, PROT_NONE) }
 }
 
-#[verifier::external_body]
 fn guard(addr: usize, len: usize) -> Result<(), Errno> {
     unsafe { sys::madvise(addr, len, MADV_GUARD_INSTALL) }
 }
@@ -2134,18 +2131,22 @@ impl SlabTable {
 
 /// `take_group`'s debug check that the watermark is group-aligned, which
 /// the precondition (proved from [`TableInner::inv`]) says it is.
-/// Inlined and `track_caller`, as [`guard_unprotectable`].
-/// Trusted: Verus does not support `debug_assert_eq!` (its failure path
-/// is `core::panicking::assert_failed`).
+/// Inlined and `track_caller`, as [`guard_unprotectable`]. A
+/// `debug_assert!` of the equality: Verus does not support
+/// `debug_assert_eq!` (its failure path is
+/// `core::panicking::assert_failed`).
 #[inline(always)]
 #[track_caller]
-#[verifier::external_body]
 fn watermark_aligned(s: usize, lg_group: u8)
     requires
         lg_group < 64,
         s & sub(1usize << lg_group, 1) == 0,
 {
-    debug_assert_eq!(s & ((1 << lg_group) - 1), 0, "take_group: the watermark is group-aligned");
+    proof {
+        assert(1usize << lg_group >= 1) by (bit_vector)
+            requires lg_group < 64;
+    }
+    debug_assert!(s & ((1 << lg_group) - 1) == 0, "take_group: the watermark is group-aligned");
 }
 
 /// `take_group`'s `check_zero` abort: the watermark the table publishes

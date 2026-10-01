@@ -612,7 +612,8 @@ struct Inner {
     /// Ghost: the fresh markers of every slab this arena owns but its
     /// guards, which `AtomicBitmap::init` returned when `take_group`
     /// handed the slab's group out: what a claim from the slab needs
-    /// (`AtomicBitmap::inited_by`).
+    /// (`AtomicBitmap::inited_by`); and the init markers of its guard
+    /// slabs, which `take_group` took as they were (`guard_marked`).
     #[allow(dead_code)]
     inited: Tracked<GhostPersistentSubset<int>>,
 }

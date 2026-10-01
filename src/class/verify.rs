@@ -114,11 +114,10 @@ impl ClassState {
     /// [`check_zero`](ClassState::check_zero)'s abort, inlined into it:
     /// gathers the slab's state for [`dirty_zero_slot`].
     #[inline(always)]
-    #[verifier::external_body]
     fn dirty_word(&self, pick: &Pick, size: usize, p: *mut u8, off: usize, word: u64) -> ! {
         let d = self.desc(pick.slab as usize);
         let bm = self.table().bits(pick.slab as usize);
-        let now = (d.state(), d.live(), d.arena(), bm.allocated(self.class().nslots()), self.class().nslots(), d as *const SlabDesc as usize);
+        let now = (d.state(), d.live(), d.arena(), bm.allocated(self.class().nslots()), self.class().nslots(), desc_ptr_addr(d));
         dirty_zero_slot(self.class as usize, size, pick, self.arena, p as usize, off, word, now)
     }
 
@@ -155,6 +154,14 @@ impl ClassState {
             d.dirty_at()
         )
     }
+}
+
+/// The address of `d`, for an abort message. Trusted: Verus has no
+/// reference-to-pointer cast; nothing is claimed about the address.
+#[inline(always)]
+#[verifier::external_body]
+fn desc_ptr_addr(d: &SlabDesc) -> usize {
+    d as *const SlabDesc as usize
 }
 
 /// The word at `p + off`, read once (trusted: nothing is claimed about the

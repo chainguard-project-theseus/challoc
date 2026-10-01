@@ -640,6 +640,7 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
 /// bitmap's set bits, and the non-full slabs missing from the partial set.
 /// One class lock hold per non-full slab; only classes with non-full slabs
 /// are listed.
+#[allow(clippy::while_let_loop)]
 fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::Result {
     let mut header = false;
     // `for (j, b) in s.bins.iter().enumerate()` and `for i in
