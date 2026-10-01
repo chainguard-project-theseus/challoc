@@ -557,6 +557,31 @@ the trade on an `always` host is:
   Guard slabs inside a chunk are left unguarded (a guard would split the
   page). Forced to `never` under a cgroup limit below 1 GiB.
 
+The RSS cost of opting into `thp:always`, measured against the default
+on five cells (Chainguard OS 6.18 on arm64 and amd64, host `always`;
+Chainguard OS 7.2 and Ubuntu 7.0 on amd64 and Ubuntu 7.0 on arm64, host
+`madvise`; issue #20):
+
+- What it buys: valkey1 runs 5..10% faster on arm64 and 12..18% on
+  amd64, for +9.5% maxrss. No other row gains: larson10, xmalloc and
+  mstress are flat, and the Valkey soak itself shows no throughput gain
+  on any cell.
+- Microbenchmark RSS: mstress maxrss +56..62% (about +190 MiB) on every
+  cell, larson10 +53..66%, xmalloc +30..39%.
+- Valkey soak: RSS after the settle phase up to +400% on the `madvise`
+  hosts (133 -> 664..683 MiB on Chainguard OS 7.2 and Ubuntu 7.0; +13..23%
+  on the 6.18 `always` hosts), VmHWM +14..16% on the `madvise` hosts. About three quarters of the
+  2 MiB folios `always` faults in are queued for deferred split by the
+  end of a run: the partial purges split them, and the split folios stay
+  charged, so the purges do not return the memory.
+- Under a 1 GiB cgroup (`memory=1g`, not small enough for the forced
+  `never`) it is worse: mstress is 2.6..7.2% slower on four of the five
+  cells, where without a limit one cell was slower (+2.9%).
+
+So `thp:always` is an opt-in for a single-tenant, cache-shaped heap
+like valkey1's hot `SET` loop that has the RSS to spare; it does not
+meet the RSS budget a shared or memory-limited host needs.
+
 Fork: `never` keeps the slab regions on small pages on every host, so the
 copy-on-write cost a `BGSAVE` child imposes is bounded to the huge runs
 under the default. The fork
