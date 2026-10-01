@@ -528,7 +528,7 @@ class Launch:
                 log(f"   poll: {e}")
                 live = None
             newly = []
-            for n, st in self.state.items():
+            for n, st in list(self.state.items()):
                 if st["status"] != "created":
                     continue
                 if n in done:
@@ -689,7 +689,11 @@ def launch(args: Any) -> int:
             L.times["look2_done"] = time.time() - L.t0
             dirs = L.download(out)
             summary = L.analyze(dirs)
-    except (InfraError, BuildError) as e:
+    except (InfraError, BuildError, Exception) as e:
+        if not isinstance(e, (InfraError, BuildError)):
+            import traceback
+
+            traceback.print_exc()
         log(f"cb launch: {e}")
         created = [n for n, s in L.state.items() if s["status"] in ("created", "creating")]
         L.delete([n for n in created if L.state[n].get("zone")])

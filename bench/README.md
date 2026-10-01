@@ -144,6 +144,19 @@ on the two gate cells is 5 shards x 3 replicates x 2 cells = 30 VMs.
   builds it per architecture, pushes it and rewrites `bench/image.lock`.
   Rebuild it when `bench/build.sh`, the stock allocators or Dockerfile.dev
   change; the digest is in every sample's comparability key.
+- **Measured (2026-09-30, dlorenc-dev, us-east4-a).** A VM is ready to
+  run about 34 s after its startup script starts (boot 10-20 s before
+  that) and builds both variants in about 20 s. Quick from cold: first
+  look 4.6-7.5 min (median 5.6 over four launches), 8.5-12.7 min when
+  the second look runs; about $0.9 per two-cell launch. The per-CPU
+  dispatch pair (2078f67 vs cc547ed under `percpu_arena:percpu`, ref-amd64)
+  comes out REGRESSION in 5.0 min, larson1 54.7 -> 31.5 M ops/s. An
+  8-replicate A/A (80 VMs): no false `worse` or `better` at the class
+  margins; resampled 3-replicate runs show 0.19% false rows per row and
+  0/300 false headlines, but never NEUTRAL: on the C4, larson10 (within-VM
+  sigma 3.0%) and valkey1-free (7.8%) do not resolve inside a 2% margin
+  at 3 VMs x 3 blocks, so the A/A headline is INCONCLUSIVE and the second
+  look runs. `cb fp` prints these numbers for any A/A run.
 
 ## Two tiers
 
