@@ -233,7 +233,10 @@ impl SlabDesc {
     /// sees the smaller count also sees the cleared bits. `class/` relies
     /// on that to treat `nslots - live` as a lower bound on claimable slots.
     #[inline]
-    pub fn live(&self) -> usize {
+    pub fn live(&self) -> (r: usize)
+        ensures
+            r <= u32::MAX,
+    {
         self.live.load(Ordering::Acquire) as usize
     }
 

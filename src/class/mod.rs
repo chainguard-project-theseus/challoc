@@ -1521,7 +1521,10 @@ impl ClassState {
 
     /// [`SlabTable::committed_slabs`]: slabs of every arena.
     #[inline]
-    pub fn committed_slabs(&self) -> usize {
+    pub fn committed_slabs(&self) -> (r: usize)
+        ensures
+            r <= self.spec_nslabs(),
+    {
         self.table().committed_slabs()
     }
 

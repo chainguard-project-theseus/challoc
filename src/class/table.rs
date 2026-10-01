@@ -1174,8 +1174,18 @@ impl SlabTable {
 
     /// Number of slabs (including guard slabs) handed to an arena: their
     /// descriptors, bits and owner words exist (see the field).
+    ///
+    /// Trusted: the watermark is at most the slab count. Its one atomic is
+    /// written only by `new` (0) and by `take_group`, which stores the end
+    /// of the group it hands out, at most `nslabs` (proved there); vstd
+    /// specifies the load as returning any value, and nothing ties the
+    /// atomic to those writes.
     #[inline]
-    pub fn committed_slabs(&self) -> usize {
+    #[verifier::external_body]
+    pub fn committed_slabs(&self) -> (r: usize)
+        ensures
+            r <= self.spec_nslabs(),
+    {
         self.committed_slabs.load(Ordering::Acquire)
     }
 

@@ -25,6 +25,8 @@ use crate::QUANTUM;
 use crate::arena::Arena;
 use crate::config::{INERT_KEYS, KEYS, PercpuArena, Value};
 use crate::heap::Shared;
+#[cfg(verus_only)]
+use crate::layout::class_table;
 use crate::layout::{CLASSES, NBINS, NCLASSES};
 use crate::purge;
 use crate::stats::{self, ArenaStats, Snapshot, fig_add, fig_mul};
@@ -638,15 +640,22 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
 /// bitmap's set bits, and the non-full slabs missing from the partial set.
 /// One class lock hold per non-full slab; only classes with non-full slabs
 /// are listed.
-///
-/// Trusted: `is_partial(i)` needs `i` below the class's slab count, and
-/// nothing bounds `committed_slabs` (an atomic load) by it; `live * 8`
-/// has no bound (`SlabDesc::live` states none); and `{:?}` of an array is
-/// outside what vstd's formatting specifies.
-#[verifier::external_body]
 fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::Result {
     let mut header = false;
-    for (j, b) in s.bins.iter().enumerate() {
+    // `for (j, b) in s.bins.iter().enumerate()` and `for i in
+    // 0..cs.committed_slabs()`, with their `continue`s, spelled out: Verus
+    // specifies neither `Enumerate` nor `continue` in a `for`.
+    let mut classes = 0..NCLASSES;
+    loop
+        invariant
+            classes.start <= classes.end == NCLASSES,
+        decreases classes.end - classes.start,
+    {
+        let j = match classes.next() {
+            Some(j) => j,
+            None => break,
+        };
+        let b = &s.bins[j];
         if b.nonfull_slabs == 0 {
             continue;
         }
@@ -655,7 +664,23 @@ fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::
         let nslots = cls.nslots();
         let mut hist = [0usize; 9];
         let (mut mismatched, mut unlisted, mut slabs) = (0usize, 0usize, 0usize);
-        for i in 0..cs.committed_slabs() {
+        let mut committed = 0..cs.committed_slabs();
+        loop
+            invariant
+                committed.start <= committed.end <= cs.spec_nslabs(),
+                slabs <= committed.start,
+                mismatched <= committed.start,
+                unlisted <= committed.start,
+                forall|k: int| 0 <= k < 9 ==> hist[k] <= committed.start,
+                *cls == class_table()[cs.spec_class() as int],
+                cls.wf(),
+                nslots == cls.nslots,
+            decreases committed.end - committed.start,
+        {
+            let i = match committed.next() {
+                Some(i) => i,
+                None => break,
+            };
             if cs.is_guard_slab(i) {
                 continue;
             }
@@ -683,13 +708,29 @@ fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::
                 "  slab occupancy (non-empty slabs per eighth of nslots, last = full):"
             )?;
         }
-        writeln!(
-            out,
-            "  {:>13} {:>3} slabs {:>6}  hist {:?}  live!=bits {}  nonfull not in partial set {}",
-            b.size, j, slabs, hist, mismatched, unlisted
-        )?;
+        hist_line(out, b.size, j, slabs, hist, mismatched, unlisted)?;
     }
     Ok(())
+}
+
+/// One class's line of [`slab_histogram`]. Trusted: `{:?}` of an array is
+/// outside what vstd's formatting specifies; a write has no other effect
+/// the proofs track.
+#[verifier::external_body]
+fn hist_line<W: Write>(
+    out: &mut W,
+    size: usize,
+    j: usize,
+    slabs: usize,
+    hist: [usize; 9],
+    mismatched: usize,
+    unlisted: usize,
+) -> fmt::Result {
+    writeln!(
+        out,
+        "  {:>13} {:>3} slabs {:>6}  hist {:?}  live!=bits {}  nonfull not in partial set {}",
+        size, j, slabs, hist, mismatched, unlisted
+    )
 }
 
 fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result
