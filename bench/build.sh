@@ -26,7 +26,7 @@
 #   onnxruntime              pip --target pylib-ort, hash-pinned
 #                            (bench/probes/ort/requirements.txt), and the
 #                            ort-mlp model it runs
-#   bench/tools/rt.c bench/sampler.c bench/pin.c, the probes
+#   bench/tools/rt.c bench/sampler.c, the probes
 #
 # BENCH_BUILD="core apps" (default) picks the sections: core is everything
 # mimalloc-bench, redis, mimalloc, jemalloc and the helpers; apps is z3,
@@ -163,7 +163,6 @@ done
 
 echo "== helpers"
 cc -O2 -Wall -Wextra -Werror "$ROOT/bench/tools/rt.c" -o "$BIN/rt"
-cc -O2 -Wall -Wextra -Werror "$ROOT/bench/pin.c" -o "$BIN/pin"
 cc -O2 -Wall -Wextra -Werror -fPIC -shared "$ROOT/bench/sampler.c" -o "$BIN/sampler.so" -ldl
 cc -O2 -Wall -Wextra -Werror "$ROOT/bench/probes/churn.c" -o "$BIN/churn"
 cc -O2 -Wall -Wextra -Werror "$ROOT/bench/probes/valkey_model.c" -o "$BIN/valkey_model"
@@ -206,7 +205,7 @@ if [ ! -x "$BIN/db_bench" ]; then
     ( cd "$SRC/rocksdb-$ROCKSDB_VER" && DISABLE_WARNING_AS_ERROR=1 DISABLE_JEMALLOC=1 ROCKSDB_DISABLE_TCMALLOC=1 \
         PORTABLE=1 DEBUG_LEVEL=0 USE_RTTI=1 make -j "$PROCS" db_bench >"$SRC/rocksdb-build.log" 2>&1 ) \
       || { tail -40 "$SRC/rocksdb-build.log"; exit 1; }
-    "$SRC/rocksdb-$ROCKSDB_VER/db_bench" --benchmarks=fillseq --num=1000 --db="$SRC/rocksdb-check" >/dev/null \
+    "$SRC/rocksdb-$ROCKSDB_VER/db_bench" --benchmarks=fillseq --num=1000 --compression_type=none --db="$SRC/rocksdb-check" >/dev/null \
       || { echo "db_bench does not run" >&2; exit 1; }
     cp "$SRC/rocksdb-$ROCKSDB_VER/db_bench" "$BIN/db_bench"
     rm -rf "$SRC/rocksdb-$ROCKSDB_VER" "$SRC/rocksdb-check"

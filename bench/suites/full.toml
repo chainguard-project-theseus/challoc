@@ -26,7 +26,7 @@ rows = [
   "startup-true", "startup-cc", "startup-py", "startup-ruby", "startup-node", "startup-java",
   "sidecar-fluentbit",
   # applications and runtimes (suite apps)
-  "rocksdb", "nginx-proxy", "compile-sqlite", "ort-mlp",
+  "rocksdb", "nginx-proxy", "compile-sqlite", "ort-mlp", "fleetbench-proto", "fleetbench-tcmalloc",
   "ruby-binary-trees", "ruby-hash-aref-str", "ruby-array-sample", "ruby-sort-block", "ruby-gc-churn",
   "node-json-churn", "node-server",
   "python1", "python1-malloc", "python-dict-list", "python-dict-list-malloc", "python-regex",
