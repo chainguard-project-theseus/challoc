@@ -14,18 +14,37 @@
 #[cfg(test)]
 extern crate std;
 
+// Verus needs its prelude imported at the crate root (`verus/README.md`).
+#[allow(unused_imports)]
+use vstd::prelude::*;
+
 #[cfg(all(feature = "quantum8", feature = "quantum16"))]
 compile_error!("features `quantum8` and `quantum16` are mutually exclusive");
 
 #[cfg(not(any(feature = "quantum8", feature = "quantum16")))]
 compile_error!("exactly one of the `quantum8` or `quantum16` features must be enabled");
 
+// The proofs take `usize` as 8 bytes (`global size_of usize == 8` in
+// `vspec`) and every user address as below 2^57 (the slab-table and huge
+// region bounds): x86_64 (five-level paging tops out at 57 bits) and
+// aarch64 (52 bits) are the targets those hold for, and the only ones with
+// the asm the crate needs (TLS, rseq, syscalls).
+#[cfg(not(target_pointer_width = "64"))]
+compile_error!("challoc needs a 64-bit target");
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+compile_error!("challoc supports only x86_64 and aarch64");
+
+verus! {
+
 /// Quantum (minimum size-class granularity and alignment) in bytes, selected
 /// at build time by the `quantum8` / `quantum16` features.
 #[cfg(feature = "quantum16")]
-pub(crate) const QUANTUM: usize = 16;
+pub const QUANTUM: usize = 16;
 #[cfg(feature = "quantum8")]
-pub(crate) const QUANTUM: usize = 8;
+pub const QUANTUM: usize = 8;
+
+} // verus!
 
 pub(crate) mod api;
 pub(crate) mod arena;
@@ -48,6 +67,8 @@ pub(crate) mod sys;
 #[cfg(test)]
 mod testutil;
 pub(crate) mod thp;
+#[allow(dead_code)]
+mod vspec;
 
 /// Panic handler for the `no_std` library. The crate is built with
 /// `panic = "abort"`, so this is only reached by an explicit `panic!` or a

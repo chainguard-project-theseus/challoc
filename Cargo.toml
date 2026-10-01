@@ -28,6 +28,9 @@ jemalloc-soname = []
 [dependencies]
 # Type definitions only (c_int, size_t, ...). No std, no allocation.
 libc = { version = "0.2", default-features = false }
+# Verus specs and proofs (`verus/README.md`). Ghost code is erased from
+# ordinary builds; without default features vstd needs neither std nor alloc.
+vstd = { version = "=0.0.0-2026-09-20-0158", default-features = false }
 
 [profile.dev]
 panic = "abort"
@@ -44,3 +47,11 @@ debug = "line-tables-only"
 # that could wrap are guarded by explicit release assertions instead
 # (`ClassState`, `HugeStats`, `Table`), and the unit tests run with the
 # checks on (the dev profile).
+
+[package.metadata.verus]
+verify = true
+
+[lints.rust]
+# `cfg(verus_only)` guards imports of ghost items, which ordinary builds
+# erase; Verus sets it during verification.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(verus_only)', 'cfg(verus_keep_ghost)'] }

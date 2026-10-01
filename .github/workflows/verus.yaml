@@ -1,0 +1,59 @@
+# Re-check the Verus proofs (verus/README.md) on every pull request and on
+# pushes to the integration branches.
+name: verus
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main, "oss/**"]
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: verus-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: always
+  # The Verus release must match the vstd version pinned in Cargo.toml.
+  VERUS_RELEASE: 0.2026.09.20.aef82ed
+  VERUS_RUST: 1.98.1
+
+jobs:
+  verify:
+    name: verify (${{ matrix.name }})
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: quantum16
+            args: ""
+          - name: quantum8
+            args: --no-default-features --features quantum8
+          - name: aarch64
+            args: --target aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: ${{ env.VERUS_RUST }}
+          targets: aarch64-unknown-linux-gnu
+      - name: install Verus
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "release/$VERUS_RELEASE" -R verus-lang/verus \
+            -p "verus-$VERUS_RELEASE-x86-linux.zip" -D "$RUNNER_TEMP"
+          unzip -q "$RUNNER_TEMP/verus-$VERUS_RELEASE-x86-linux.zip" -d "$RUNNER_TEMP/verus"
+          echo "$RUNNER_TEMP/verus/verus-x86-linux" >> "$GITHUB_PATH"
+      - name: cargo verus verify
+        env:
+          ARGS: ${{ matrix.args }}
+        run: |
+          # ARGS is a list of flags: word splitting is intended.
+          # shellcheck disable=SC2086
+          cargo verus verify $ARGS
