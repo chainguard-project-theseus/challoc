@@ -503,10 +503,8 @@ cmd_session() {
 # image itself boots the 7.0 linux-gcp kernel since 2026; hwe:
 # linux-generic-hwe-24.04, the 6.13+ non-GCE kernel, 7.0.0-31-generic in
 # 2026-09; 64k: linux-generic-64k, the 6.8 GA kernel with 64 KiB pages);
-# `extra` adds the privileged run: on k68-amd64 for a 6.8 host (where
-# process_madvise with MADV_DONTNEED does not exist yet, whatever seccomp
-# says) and on hwe-amd64, where the batch purge path and mseal light for
-# real on a non-GCE kernel. The gcp-* cells run the image's own
+# `extra` adds the privileged run: on k68-amd64 for a 6.8 host and on
+# hwe-amd64, where mseal lights for real on a non-GCE kernel. The gcp-* cells run the image's own
 # kernel, 7.0.0-1011-gcp, the reference VMs' kernel, on the small machines.
 # Matrix VMs follow the lane prefix (challoc-lane-b-matrix-<cell>), so one
 # lane's `matrix clean` cannot delete another's cells; the default prefix

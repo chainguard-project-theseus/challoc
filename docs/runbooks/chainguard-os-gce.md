@@ -12,8 +12,7 @@ features a hypervisor hides.
 - The kernel matrix (`bench/gce/challoc-bench matrix`) runs Debian and Ubuntu kernels and tests challoc inside the
   Wolfi dev container. Chainguard OS is the kernel and glibc the product
   ships; a Chainguard OS host is the first "floor as shipped" cell, and
-  the only one without Docker's default seccomp hiding `mseal` and
-  `process_madvise`.
+  the only one without Docker's default seccomp hiding `mseal`.
 - Metal shapes have the full PMU (`c3-standard-192-metal` was used once,
   see the memory note "PMU on GCE means bare metal") and no hypervisor to
   hide CPU features: the arm64 metal shape measures as Neoverse **N3**

@@ -58,7 +58,7 @@ long fuzz on the same table.
 ## Privileged runs
 
 The default container hides some features from the tests: Docker's
-seccomp profile filters `mseal` and `process_madvise`, and the container's
+seccomp profile filters `mseal`, and the container's
 cgroup tree is mounted read-only (no PSI trigger, no `memory.high`
 write). `EXTRA_DOCKER_FLAGS` reaches every container, the memory-limited
 ones included, so one invocation runs the whole suite with them visible:

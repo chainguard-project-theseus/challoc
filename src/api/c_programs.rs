@@ -656,7 +656,7 @@ ctests! {
     /// every `Fresh` or `Purged` slot and page behind its `calloc`s is read by
     /// the allocator before it is handed out, so a dirty "zero" allocation
     /// aborts inside the allocator with the slab's prior state and the
-    /// discard backend instead of in the C assertion. Stays in `make test` so a
+    /// purge advice instead of in the C assertion. Stays in `make test` so a
     /// recurrence of the 2026-09-18 failure is diagnosable.
     mimalloc_test_stress_check_zero => [
         CTest { conf: Some("abort_conf:true,check_zero:true"), ..MIMALLOC_STRESS },

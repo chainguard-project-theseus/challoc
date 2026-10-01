@@ -324,14 +324,14 @@ fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
 
 /// The `purge advice:` line (design 8, the two-advice purge): the advice
 /// the next purge issues and why, the batches and bytes issued with each,
-/// whether `Purged` memory is still known zero, and whether lazy batches go
-/// through `process_madvise`. Printed whether or not a cgroup is tracked.
+/// and whether `Purged` memory is still known zero. Printed whether or not
+/// a cgroup is tracked.
 fn advice_line<W: Write>(out: &mut W) -> fmt::Result {
     let (lazy, eager) = purge::batches();
     let (lazy_bytes, eager_bytes) = purge::discarded_bytes();
     writeln!(
         out,
-        "purge advice: {} {} ({}) lazy_purges {} ({} bytes) eager_purges {} ({} bytes) purged_is_zero {} lazy via {}",
+        "purge advice: {} {} ({}) lazy_purges {} ({} bytes) eager_purges {} ({} bytes) purged_is_zero {}",
         purge::advice().name(),
         purge::advice().madv_name(),
         purge::advice_reason(),
@@ -340,7 +340,6 @@ fn advice_line<W: Write>(out: &mut W) -> fmt::Result {
         eager,
         eager_bytes,
         purge::purged_is_zero(),
-        if purge::lazy_uses_process_madvise() { "process_madvise" } else { "madvise loop" }
     )
 }
 

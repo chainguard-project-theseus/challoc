@@ -159,8 +159,6 @@ features:` (`docs/design.md` section 17).
 | Feature                      | Provided by | Used for                                   | Fallback                          |
 |------------------------------|--------|--------------------------------------------|-----------------------------------|
 | `MADV_GUARD_INSTALL`         | kernel 6.13   | Guard slabs and guards after huge runs     | `PROT_NONE` page after huge runs; no guard slabs |
-| `process_madvise` on self    | kernel 6.13 (`MADV_DONTNEED` through it, with a pidfd of self; 5.10..6.12 refuse the advice), 6.15 (`PIDFD_SELF`); hidden by Docker's default seccomp | Batched purge                              | Loop over `madvise`               |
-| `process_madvise(MADV_FREE)` on self | the same, probed separately (`process_madvise_free`) | Batched lazy purge under 70% of a cgroup limit | Lazy batches loop over `madvise(MADV_FREE)` |
 | `PR_SET_VMA_ANON_NAME`       | kernel 5.17   | Named heap mappings in `/proc/pid/maps`    | Skip                              |
 | `mseal`                      | kernel 6.10   | Seals the never-committed parts of the reservations (the gaps between class regions, the slack around the huge and metadata regions) at init; not the regions or the region table | Skip (also when seccomp filters it, as Docker's default profile does) |
 | PSI triggers                 | kernel 6.4 (unprivileged) | Background thread arms `some 150000 1000000` on the cgroup's `memory.pressure` (or the unprivileged `some 300000 2000000`); a fire takes a sample, re-evaluates the policy and runs a decay pass at once | Sample `memory.current` on the tick; also when the write is refused (Docker's default profile mounts the cgroup read-only: `EROFS`; with `nsdelegate` on the host a container's root cgroup refuses the write: `EPERM`) |
@@ -171,7 +169,7 @@ Chainguard OS ships Linux 6.18, so every kernel row above is available
 there. Containers run on whatever
 kernel the host has; note that a kernel before 6.13 (Docker Desktop's
 6.10, for one) has no guard slabs, and that Docker's default seccomp
-profile hides `mseal` and `process_madvise`.
+profile hides `mseal`.
 
 ## Documentation
 

@@ -67,9 +67,8 @@ int main(void)
     CHECK(strncmp(line, "page_size=", 10) == 0, "line does not start with page_size=");
 
     /* Every key once. */
-    static const char *const keys[] = {"page_size", "guard_install", "mseal",     "process_madvise", "process_madvise_free",
-                                       "anon_name", "thp",           "mthp",      "rseq",            "rseq_size",
-                                       "pac"};
+    static const char *const keys[] = {"page_size", "guard_install", "mseal", "anon_name", "thp",
+                                       "mthp",      "rseq",          "rseq_size", "pac"};
     size_t nkeys = sizeof keys / sizeof keys[0];
     for (size_t i = 0; i < nkeys; i++)
         CHECK(has_key(line, keys[i]) == 1, "key %s appears %d times", keys[i], has_key(line, keys[i]));

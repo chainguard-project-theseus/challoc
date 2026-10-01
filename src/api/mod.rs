@@ -29,9 +29,8 @@
 //! the statistics locks and the background state lock are leaves, only
 //! ever held alone), so a thread that is mid-operation when another thread
 //! forks can always finish and release. Parent and child release in reverse. The
-//! child also marks the background thread absent and drops a `process_madvise`
-//! pidfd that now names the parent. Other threads' heaps are left alone in
-//! the child, as in every other allocator.
+//! child also marks the background thread absent. Other threads' heaps are
+//! left alone in the child, as in every other allocator.
 //!
 //! The prepare handler also blocks every signal on the forking thread and the
 //! parent and child handlers restore the mask after their unlocks. glibc's
@@ -204,7 +203,7 @@ pub fn feature_line() -> &'static str {
 
 /// `challoc_features()`: the feature report as one NUL-terminated line of
 /// `key=value` pairs (design.md sections 16 and 17): the kernel probes
-/// (`page_size`, `guard_install`, `mseal`, `process_madvise`, `anon_name`,
+/// (`page_size`, `guard_install`, `mseal`, `anon_name`,
 /// ...) then `pac`. The string is static, built
 /// once at init without allocating, and identical to the `Kernel and CPU
 /// features:` line of `malloc_stats_print`. Initialises the allocator if
@@ -272,8 +271,7 @@ fn init() {
     unsafe { layout::adopt_page_geometry(features.page_size.trailing_zeros()) };
     let config = config::load();
     crate::thp::configure(config.thp, &features);
-    purge::configure(features.process_madvise);
-    purge::configure_advice(features.process_madvise_free, config.lazy_band);
+    purge::configure_advice(config.lazy_band);
     purge::set_check_zero(config.check_zero);
     purge::background::request(config.background_thread);
     let regions = Regions::reserve(features.page_size, features.anon_name);
@@ -381,22 +379,12 @@ extern "C" fn fork_parent() {
 
 /// The child has one thread; the locks were held by the forking thread, so
 /// releasing them is exactly right. Before that, with everything still
-/// locked, the background thread is marked absent (design 8.1) and the
-/// discard backend drops a pidfd that names the parent, which the feature
-/// record reflects.
+/// locked, the background thread is marked absent (design 8.1).
 extern "C" fn fork_child() {
     purge::background::fork_child();
     // The parent's PSI trigger descriptor was closed by `fork_child` above;
     // the child's cgroup record says so until a thread of its own arms one.
     shared().cgroup.set_psi_unavailable(0);
-    let backend = purge::fork_child();
-    // SAFETY: the child is single threaded and every lock is held, so
-    // nothing reads the features while they change.
-    unsafe {
-        let features = (*FEATURES.0.get()).assume_init_mut();
-        features.process_madvise = backend;
-        (*FEATURE_LINE.0.get()).write(FeatureLine::build(features));
-    }
     fork_release();
 }
 

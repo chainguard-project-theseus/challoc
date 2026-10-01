@@ -150,10 +150,10 @@ fn dirty_zero_slot(
     word: u64,
     now: (State, usize, u16, usize, usize, usize),
 ) -> ! {
-    let (backend, advice) = purge::backend_name();
+    let advice = purge::advice_name();
     let (state, live, owner, set, nslots, _) = now;
     panic!(
-        "check_zero: slot {p:#x} (class {class}, size {size}, slab {}, arena {arena}) was handed out as zero from a {:?} slab but its word at offset {off} reads {word:#x} (discard backend {backend}, {advice}; descriptor at {:#x} now {state:?} live {live} owner {owner}, {set} of {nslots} bits set, pick of {} slots)",
+        "check_zero: slot {p:#x} (class {class}, size {size}, slab {}, arena {arena}) was handed out as zero from a {:?} slab but its word at offset {off} reads {word:#x} (purge advice {advice}; descriptor at {:#x} now {state:?} live {live} owner {owner}, {set} of {nslots} bits set, pick of {} slots)",
         pick.slab, pick.state, now.5, pick.n
     )
 }

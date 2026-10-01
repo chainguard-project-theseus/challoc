@@ -1499,7 +1499,7 @@ fn check_zero_passes_fresh_and_purged_slabs() {
 
 /// `check_zero` fires: a slab purged (so reported zero) whose memory
 /// is dirtied behind the allocator's back aborts at the next claim,
-/// naming the `Purged` state and the discard backend.
+/// naming the `Purged` state and the purge advice.
 #[test]
 #[should_panic(expected = "was handed out as zero from a Purged slab but its word at offset")]
 fn check_zero_aborts_on_a_dirty_purged_slab() {
@@ -1523,7 +1523,7 @@ fn check_zero_aborts_on_a_dirty_purged_slab() {
 /// `finish` runs. Before the fix A's bit loop won the slot B had just
 /// released and reported it zero. Now A's slots are claimed in `take`,
 /// under the lock, so B gets the next slot and A's reads zero. The
-/// same for a `Purged` slab when the discard backend zeroes.
+/// same for a `Purged` slab when the purge advice zeroes.
 #[test]
 fn a_zero_pick_never_receives_a_slot_another_claim_used_in_between() {
     let env = Env::new();

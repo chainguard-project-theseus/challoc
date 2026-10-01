@@ -106,7 +106,7 @@ huge region with page granularity, address-ordered, with a guard region after
 each run. Freed runs are retained and decay like slabs.
 
 **Memory return.** Empty slabs and runs are dirty and are returned in
-batches through `process_madvise` along jemalloc's decay curve: about half
+batches of `madvise` along jemalloc's decay curve: about half
 of what went empty at once within half of `dirty_decay_ms`, all of it by
 the end of the window. Decay
 runs from the allocating thread's slow path and, when enabled through the

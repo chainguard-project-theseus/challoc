@@ -1047,12 +1047,10 @@ address, with `dirty_at` per entry. Decay policy is jemalloc's in shape:
   advice per slab or extent would take a state bit in the descriptors and
   a read of it in the claim paths for a saving bounded to `calloc` on
   `Purged` reuse; the sticky flag is the smallest correct form.
-- Purges are batched: collect up to 64 ranges and issue one `process_madvise`
-  with `PIDFD_SELF` (kernel 6.15) or a pidfd of self (5.10), falling back to
-  a loop of `madvise`. Init probes `MADV_FREE` through the same target
-  separately (a kernel may take `MADV_DONTNEED` from a self-targeting
-  `process_madvise` and refuse `MADV_FREE`); where it does not, lazy
-  batches alone take the loop.
+- Purges are batched: a walk collects up to 64 ranges under its lock,
+  merging adjacent ones, and flushes them with a loop of `madvise`.
+  Batched `process_madvise`: removed, measured no effect; see #18 and tag
+  `archive/prototype-2026-09-30`.
 - The period a walk uses is the arena's configured one scaled by the
   cgroup policy (section 11): unchanged without a limit or under 70% of
   it, shrinking linearly to 1000 ms between 70% and 90%, 0 above; `-1`
@@ -1119,9 +1117,7 @@ Init must not call anything that allocates. Steps, in the order
 
 1. Read `AT_PAGESZ` from `getauxval` and probe features by attempting them
    on a scratch page and recording the error: `MADV_GUARD_INSTALL`, `mseal`,
-   `process_madvise` (with `PIDFD_SELF`, then with a pidfd of self, which is
-   kept; then `MADV_FREE` through whichever worked, for the lazy batches
-   of section 8), `PR_SET_VMA_ANON_NAME`, and the transparent-huge-page
+   `PR_SET_VMA_ANON_NAME`, and the transparent-huge-page
    table: `/sys/kernel/mm/transparent_hugepage/enabled`, `hpage_pmd_size`
    and every `hugepages-<n>kB/enabled` from two pages to the PMD looked up
    by path (a size the kernel lists without an `enabled` file, as
@@ -1136,8 +1132,7 @@ Init must not call anything that allocates. Steps, in the order
    the weak symbols, one file and `environ`.
 3. Decide the THP mode from the key and the table (`thp::configure`,
    section 17; forced off after step 7 when the cgroup rule of section 11
-   applies), configure the purge backend from the probe,
-   the two-advice purge from the `MADV_FREE` probe and `lazy_band`,
+   applies), configure the two-advice purge from `lazy_band`,
    `check_zero`, and record a `background_thread`
    request (the thread itself is created later, 8.1).
 4. Read secrets from `getrandom`, probe reservation sizes (section 2) and
@@ -1951,8 +1946,8 @@ Not implemented; see the archive tag `archive/prototype-2026-09-30`.
   to `never`; and one `purge advice:` line (section 8) with the advice the
   next purge issues and why (`under 70% of the limit`, `no headroom
   known`, `lazy_band:false`, `explicit purge`), the batches
-  and bytes issued with each advice, whether `Purged` memory is still
-  known zero, and whether lazy batches go through `process_madvise`; and
+  and bytes issued with each advice, and whether `Purged` memory is still
+  known zero; and
   one `thp:` line (section 17) with the key, the mode in force (`off`,
   `folios`, `chunks`) and why, the slab-size threshold, the PMD size, the
   metadata folio, whether huge runs are advised, and the ranges advised so
@@ -1992,17 +1987,16 @@ Not implemented; see the archive tag `archive/prototype-2026-09-30`.
 - `challoc_features()` (`const char *`) is the feature report: one
   NUL-terminated line of `key=value` pairs separated by single spaces, the
   kernel probes first (`page_size=4096 guard_install=yes mseal=yes
-  process_madvise=pidfd_self process_madvise_free=yes anon_name=yes
-  thp=madvise mthp=2M rseq=yes rseq_size=33`:
+  anon_name=yes thp=madvise mthp=2M rseq=yes rseq_size=33`:
   the THP setting or `none`, the
   folio sizes a `MADV_HUGEPAGE`d range can get or `none`, glibc's rseq
   registration and its size) then `pac=yes`
   or `pac=no` (pointer authentication, section 17). The string is static,
-  built once at init without allocating (rebuilt in a fork child, whose
-  purge backend is re-probed), and byte-identical to the `Kernel and CPU
+  built once at init without allocating, and byte-identical to the `Kernel and CPU
   features:` line of `malloc_stats_print`. Calling it initialises the
   allocator. Values are `yes`/`no` for bits, so a script can `grep -q
-  'pac=yes'`; keys are only ever added, never renamed.
+  'pac=yes'`; keys are never renamed, and a key goes only with the
+  feature it reports.
 
 ## 17. Floor and ceiling
 
@@ -2016,8 +2010,6 @@ runs on every row.
 |---|---|---|---|
 | Page size (`AT_PAGESZ`) | kernel, the auxiliary vector | the granularity of every mapping, slab and purge (4, 16 or 64 KiB) | none: init aborts without it |
 | `MADV_GUARD_INSTALL` | kernel 6.13 | guard slabs between slabs and after huge runs (section 14) | a `PROT_NONE` page after huge runs only; no guard slabs |
-| `process_madvise` on self | kernel 6.13 with a pidfd of self (the syscall exists since 5.10 but accepts `MADV_DONTNEED` only from 6.13; the matrix of Phase 2.5 task 3 found it unavailable on 5.10, 6.1 and 6.8 even without seccomp, lit on 7.0); 6.15 with `PIDFD_SELF` | batched purge, one call per decay pass (section 8) | a loop of `madvise(MADV_DONTNEED)` |
-| `process_madvise(MADV_FREE)` on self (`process_madvise_free`) | the same kernels, probed separately through the target the `MADV_DONTNEED` probe found (yes on the 7.0 reference VMs) | the lazy batches of the two-advice purge (section 8) take the batched path | lazy batches through a loop of `madvise(MADV_FREE)`; eager batches unchanged |
 | `MADV_FREE` (the advice itself) | every kernel since 4.5 | `Empty` slabs and huge extents under 70% of a known cgroup limit are returned lazily (sections 8 and 11) | `MADV_DONTNEED` everywhere (no limit known, `lazy_band:false`) |
 | `mseal` | kernel 6.10, not filtered by seccomp | seals the never-committed ranges of the reservations at init (section 10 step 5) | skip; `Sealed ranges: 0 of N` |
 | `PR_SET_VMA_ANON_NAME` | kernel 5.17 with `CONFIG_ANON_VMA_NAME` | named `challoc:*` mappings in `/proc/pid/maps` | skip |
@@ -2028,7 +2020,7 @@ runs on every row.
 | Model-checked protocol (`cargo test model::`, `src/model/`) | the unit test suite, no special hardware: an exhaustive interleaving model of the claim, release, `on_live_zero` and purge steps of `class/`, memoised on the whole state, with the invariants of section 4 and 5 checked at every state (no slot handed to two claimers, a slot reported zero reads zero, `live` equals set bits plus in-flight reservations, a slab in an arena's set is `Empty`/`Purged` with `live == 0` and owned by that arena, a `Purged` slab reads zero) | nothing at run time: it is the proof obligation for a change to the protocol. Replaying the pre-fix step order finds the calloc race (Phase 1.5 task 7); the current order passes every scenario. | none needed |
 
 The kernel keys of the feature report are `page_size guard_install mseal
-process_madvise process_madvise_free anon_name thp mthp rseq rseq_size`
+anon_name thp mthp rseq rseq_size`
 (`rseq` and `rseq_size`: the glibc registration is probed like a kernel
 feature and printed with them);
 `pac` follows them, the one CPU key (`HWCAP_PACA` and `HWCAP_PACG`; the
@@ -2396,7 +2388,7 @@ What part 2 waits for, cheapest path first:
 
 ```
 src/lib.rs            crate root, quantum feature selection, panic handler
-src/sys/mod.rs        the kernel constants; typed syscall wrappers (mmap, mprotect, madvise, process_madvise, mseal, prctl, getrandom, futex, clock_gettime, open/read/close, write, ppoll, eventfd, signals); read_small_file, parse_decimal, yn
+src/sys/mod.rs        the kernel constants; typed syscall wrappers (mmap, mprotect, madvise, mseal, prctl, getrandom, futex, clock_gettime, open/read/close, write, ppoll, eventfd, signals); read_small_file, parse_decimal, yn
 src/sys/abort.rs      abort (`challoc: <msg>` on stderr, SIGABRT the way glibc delivers it), the stderr sink, the `abort!` macro
 src/sys/auxv.rs       getauxval and the AT_* keys (AT_PAGESZ, AT_HWCAP, AT_SECURE)
 src/sys/raw.rs        the asm syscall instructions (x86_64, aarch64)

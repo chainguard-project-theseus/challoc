@@ -641,7 +641,7 @@ impl Huge {
     /// The `check_zero` debug mode: the first and
     /// last word of every usable page of a run reported zero must read
     /// zero. Aborts with the run, the pages' prior state, the arena and the
-    /// discard backend. Faults every page in, so debug only.
+    /// purge advice. Faults every page in, so debug only.
     #[cold]
     #[inline(never)]
     fn check_zero(&self, s: usize, usable_pages: usize, prior: &'static str, arena: u16) {
@@ -1202,9 +1202,9 @@ fn already_free(p: usize) -> ! {
 #[cold]
 #[inline(never)]
 fn dirty_zero_run(run: usize, pages: usize, page: usize, prior: &str, arena: u16, at: usize, word: u64) -> ! {
-    let (backend, advice) = purge::backend_name();
+    let advice = purge::advice_name();
     panic!(
-        "check_zero: huge run {run:#x} ({pages} pages from page {page}, arena {arena}) was handed out as zero from {prior} pages but the word at {at:#x} reads {word:#x} (discard backend {backend}, {advice})"
+        "check_zero: huge run {run:#x} ({pages} pages from page {page}, arena {arena}) was handed out as zero from {prior} pages but the word at {at:#x} reads {word:#x} (purge advice {advice})"
     )
 }
 

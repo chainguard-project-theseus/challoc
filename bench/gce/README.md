@@ -177,7 +177,7 @@ detached on the VM (`make image`, `make test`, the probe line of
 `tests/c/features.c` under `LD_PRELOAD` in the container, `make fuzz`,
 `make test-cgroup`, and on the cell marked `privileged` a second `make test`
 with `EXTRA_DOCKER_FLAGS=--privileged`, so Docker's seccomp profile does not hide
-`process_madvise` and `mseal`), fetches `~/logs` into
+`mseal`), fetches `~/logs` into
 `target/results/matrix/<date>-<cell>.log` and deletes the VM, passed, failed,
 timed out or interrupted (the cell's own exit trap, plus a sweep of every
 `challoc-matrix-*` VM in the zone when the driver exits; `matrix clean` runs

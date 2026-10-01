@@ -29,8 +29,6 @@ pub const TABLE: &[(&str, usize)] = &[
     ("tgkill", TGKILL),
     ("openat", OPENAT),
     ("getrandom", GETRANDOM),
-    ("pidfd_open", PIDFD_OPEN),
-    ("process_madvise", PROCESS_MADVISE),
     ("mseal", MSEAL),
     ("sched_getaffinity", SCHED_GETAFFINITY),
     ("ppoll", PPOLL),
@@ -90,8 +88,6 @@ mod arch {
 pub use arch::*;
 
 // Numbers from the unified table (>= 424) are the same on every architecture.
-pub const PIDFD_OPEN: usize = 434;
-pub const PROCESS_MADVISE: usize = 440;
 pub const MSEAL: usize = 462;
 
 #[cfg(test)]
