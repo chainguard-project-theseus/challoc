@@ -816,6 +816,11 @@ ctests! {
     /// One thread and a 64-entry table: high churn per slot, no cross-thread
     /// traffic, so slots are reused quickly through the thread cache.
     c_fuzz_single_thread_small_table => [ CTest { dir: "fuzz", prog: "fuzz", args: &["200000", "1", "0x7", "64"], ..BASE } ];
+    /// `free(NULL)`, `free_sized(NULL, 0)`, `malloc_usable_size(NULL)`,
+    /// `realloc(NULL, 0)`, allocations and `newlocale`/`setlocale` from a
+    /// `.preinit_array` entry, before any shared object's initialiser
+    /// (glibc 2.44's `__newlocale` frees NULL from a static initialiser).
+    c_preinit => [ CTest { prog: "preinit", ..BASE } ];
 }
 
 // ---------------------------------------------------------------------------
