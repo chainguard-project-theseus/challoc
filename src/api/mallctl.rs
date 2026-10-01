@@ -838,7 +838,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                 purge::decay(shared, now);
             } else {
                 let arena = shared.arenas.get_existing(arena_index(i)?).ok_or(ENOENT)?;
-                arena.decay(now);
+                purge::decay_arena(shared, arena, now);
                 if i == 0 {
                     let d = shared.decay_ns();
                     if d != purge::NEVER {

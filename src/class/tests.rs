@@ -2127,6 +2127,37 @@ mod demand {
         assert!(tracker.level(Window::from_ms(L_MS).unwrap().epoch(last)) > 0, "sampled all the same");
     }
 
+    /// A hold does not outlive the policy's verdict: a class the floor
+    /// holds, then the policy turning the floor off (`Policy::demand_ok`
+    /// false after a band change or an eager return), walks at the next
+    /// step rather than at the hold's deadline and purges down to the
+    /// curve, which past its window keeps nothing.
+    #[test]
+    fn a_hold_is_ignored_once_the_policy_turns_the_floor_off() {
+        let _serial = crate::purge::tests::serial();
+        let env = Env::new();
+        let cs = env.class(small_class(), 0);
+        let tracker = Demand::new();
+        let (kept, last) = bursts(&env, cs, Some(&tracker), KEEP_ALL, 6);
+        assert!(kept[1..].iter().all(|&p| p == 0), "{kept:?}");
+        // Past the curve's window, mid-epoch (a hold ends at the next
+        // epoch boundary): the floor alone keeps every slab and the walk
+        // holds for longer than a step.
+        let e = Window::from_ms(L_MS).unwrap().epoch_ns();
+        let at = ((last + W + W / 8) / e + 1) * e + e / 2;
+        let hold = cs.decay_demand(at, W, KEEP_ALL, Some(gate(&tracker))).expect("still Empty");
+        assert_eq!(purged(cs), 0, "kept by the floor");
+        assert!(hold > at + W / 200, "a hold: +{} ns", hold - at);
+        // Within the hold, the verdict unchanged: no walk.
+        assert_eq!(cs.decay_demand(at + W / 100, W, KEEP_ALL, Some(gate(&tracker))), Some(hold));
+        assert_eq!(purged(cs), 0);
+        // The verdict turns no, still within the hold: the walk runs.
+        let off = DemandGate { apply: false, ..gate(&tracker) };
+        assert_eq!(cs.decay_demand(at + W / 50, W, KEEP_ALL, Some(off)), None);
+        assert_eq!(purged(cs), N, "purged down to the curve");
+        assert_eq!(cs.oldest_empty(), 0);
+    }
+
     /// The walk's cross-check of the empty set against its count: a
     /// count that disagrees is a heap inconsistency.
     #[test]

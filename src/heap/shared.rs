@@ -284,8 +284,9 @@ impl Shared {
                     h.set_purge_on_free(config.huge_dirty_decay_ms == Some(0));
                     // The demand window (`purge::demand`); off for a tier
                     // that never decays (`-1`), where a run it kept would
-                    // never be purged.
-                    if config.huge_decay_ms() >= 0 {
+                    // never be purged, and for one that purges at once
+                    // (`0`), as for an arena at period 0.
+                    if config.huge_decay_ms() > 0 {
                         h.set_demand_window(config.hpa_peak_demand_window_ms as u64);
                     }
                     ptr::write(&raw mut (*this).huge, h)
@@ -311,6 +312,9 @@ impl Shared {
             // is `Empty` yet: retention 0).
             let limit = cgroup.limit().min(cgroup.high());
             (*this).policy.apply(crate::policy::band(limit, cgroup.current()), limit, 0, cgroup.rises().0);
+            // The huge free's demand verdict from that first evaluation,
+            // not a default: above 70% of a limit at init it is no.
+            (*this).huge.set_demand_ok((*this).policy.demand_ok());
             ptr::write(&raw mut (*this).config, config);
             ptr::write(&raw mut (*this).key, ThreadKey::create());
             ptr::write(&raw mut (*this).stats, Lock::new(crate::stats::Snapshot::EMPTY));

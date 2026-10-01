@@ -263,12 +263,6 @@ pub struct Policy {
     /// has not come back within it since. Keeps the advice eager through
     /// the `Low` band until then (the module doc).
     eager_excess: AtomicBool,
-    /// `pressure_events` of the cgroup record as last seen by
-    /// [`note_pressure`](Policy::note_pressure).
-    pressure_seen: AtomicU64,
-    /// The last evaluation saw a pressure-stall trigger fire: the decay
-    /// pass after it keeps no demand floor ([`demand_ok`](Policy::demand_ok)).
-    pressure: AtomicBool,
     /// `thp` was forced to `never` at init by a limit under
     /// [`THP_MIN_LIMIT`] (`thp::forced_by_limit`, decided by
     /// `Shared::init`).
@@ -291,8 +285,6 @@ impl Policy {
             full_purges: AtomicU64::new(0),
             limited: AtomicBool::new(false),
             eager_excess: AtomicBool::new(false),
-            pressure_seen: AtomicU64::new(0),
-            pressure: AtomicBool::new(false),
             thp_forced,
         }
     }
@@ -320,19 +312,12 @@ impl Policy {
 
     /// Whether the decay walks may keep the demand floor
     /// (`purge::demand`): with no limit, or under 70% of one with no eager
-    /// return of the excess in progress ([`headroom`](Policy::headroom)),
-    /// and not right after a pressure-stall trigger fired. In the scaled
-    /// and immediate bands the walks purge as without a window.
+    /// return of the excess in progress ([`headroom`](Policy::headroom)).
+    /// In the scaled and immediate bands and during an eager return the
+    /// walks purge as without a window, and a hold an earlier walk set
+    /// is ignored (`purge::Decayer::decay`).
     pub fn demand_ok(&self) -> bool {
-        (self.band() == Band::Unlimited || self.headroom()) && !self.pressure.load(Ordering::Relaxed)
-    }
-
-    /// Record the cgroup's pressure-event count at an evaluation: a
-    /// count that rose since the last one turns the demand floor off
-    /// until the next evaluation that sees none.
-    pub fn note_pressure(&self, events: u64) {
-        let seen = self.pressure_seen.swap(events, Ordering::Relaxed);
-        self.pressure.store(events > seen, Ordering::Relaxed);
+        self.band() == Band::Unlimited || self.headroom()
     }
 
     /// An eager return of the excess over the cap is in progress (for the
@@ -447,7 +432,6 @@ pub fn evaluate(shared: &Shared) {
     let p = &shared.policy;
     let limit = cg.limit().min(cg.high());
     let b = band(limit, cg.current());
-    p.note_pressure(cg.pressure_events());
     if b == Band::Unlimited {
         // A limit that went away (`docker update`) resets the outcome once;
         // otherwise nothing to do and nothing to read.
@@ -455,6 +439,7 @@ pub fn evaluate(shared: &Shared) {
         if p.limited.load(Ordering::Relaxed) && p.apply(b, UNLIMITED, 0, cg.rises().0) {
             crate::purge::note_decay_changed();
         }
+        shared.huge.set_demand_ok(p.demand_ok());
         return;
     }
     let retention = empty_bytes(shared);
@@ -463,6 +448,9 @@ pub fn evaluate(shared: &Shared) {
     // each batch flush for the advice (the module doc): the band as just
     // applied, less an eager return of the excess in progress.
     crate::purge::set_headroom(p.headroom(), p.eager_excess());
+    // The huge free's recurrence test reads the verdict without the
+    // driver; it follows every evaluation, not only the next decay pass.
+    shared.huge.set_demand_ok(p.demand_ok());
     if changed {
         crate::purge::note_decay_changed();
     }
@@ -669,10 +657,9 @@ mod tests {
 
     /// The demand floor (`purge::demand`) is allowed with no limit and
     /// under 70% with no eager return in progress; not in the scaled or
-    /// immediate bands, during an eager return, or at the evaluation
-    /// after a pressure-stall trigger fired.
+    /// immediate bands, or during an eager return.
     #[test]
-    fn demand_floor_follows_the_band_the_excess_and_pressure() {
+    fn demand_floor_follows_the_band_and_the_excess() {
         let p = Policy::new(0, false);
         let cap = retention_cap(L);
         assert!(p.demand_ok(), "no limit");
@@ -689,18 +676,8 @@ mod tests {
         assert!(!p.demand_ok(), "eager return in progress");
         p.apply(band(L, L * 59 / 100), L, cap, 0);
         assert!(p.demand_ok(), "back within the cap");
-        // A trigger that fired: off for that evaluation only.
-        p.note_pressure(0);
-        assert!(p.demand_ok());
-        p.note_pressure(1);
-        assert!(!p.demand_ok(), "a pressure event");
-        p.note_pressure(1);
-        assert!(p.demand_ok(), "no new event");
         p.apply(band(UNLIMITED, 0), UNLIMITED, 0, 0);
-        p.note_pressure(3);
-        assert!(!p.demand_ok(), "a pressure event without a limit");
-        p.note_pressure(3);
-        assert!(p.demand_ok());
+        assert!(p.demand_ok(), "the limit went away");
     }
 
     /// The floor fix (the module doc): an excess over the

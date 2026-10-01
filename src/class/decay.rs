@@ -243,7 +243,8 @@ impl ClassState {
     /// tracker (`purge::demand`): the walk keeps the demand floor too,
     /// and holds the next walk while the floor covers everything.
     pub fn decay_demand(&self, now: u64, decay_ns: u64, keep16: u32, demand: Option<DemandGate<'_>>) -> Option<u64> {
-        self.gate.decay(now, decay_ns, keep16, |now, curve| self.purge_curve(now, curve, keep16, demand).1)
+        let hold_ok = keep16 >= crate::policy::KEEP_ALL && demand.is_some_and(|d| d.apply);
+        self.gate.decay(now, decay_ns, hold_ok, |now, curve| self.purge_curve(now, curve, keep16, demand).1)
     }
 
     /// Bytes of this arena's `Empty` slabs of the class that the demand

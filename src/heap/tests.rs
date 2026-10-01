@@ -42,6 +42,69 @@ fn the_demand_window_key_reaches_the_huge_allocator() {
     })
     .build();
     assert_eq!(s.huge.demand_window(), None);
+    // Nor for one that purges at free, as for an arena at period 0.
+    let s = TestShared::with(Config {
+        hpa_peak_demand_window_ms: 120_000,
+        huge_dirty_decay_ms: Some(0),
+        ..Config::DEFAULT
+    })
+    .build();
+    assert_eq!(s.huge.demand_window(), None);
+    // The free's verdict is the policy's first evaluation at init.
+    assert_eq!(s.huge.demand_ok(), s.policy.demand_ok());
+}
+
+/// A band change voids the huge tier's demand hold: a recurring run
+/// kept by the floor with the gate holding, then the cgroup policy in the
+/// scaled band with the retention within the cap (no cap, and at
+/// `dirty_decay_ms:1000` the same period, so neither voids the hold): the
+/// policy's verdict is no and the next `purge::decay`, still within the
+/// hold, walks and purges down to the curve. The policy's evaluation
+/// mirrors the verdict for the huge free as well.
+#[test]
+fn a_policy_band_change_voids_the_huge_demand_hold() {
+    use crate::policy::{Band, KEEP_ALL, band};
+    use crate::sys::cgroup::UNLIMITED;
+    let _serial = crate::purge::tests::serial();
+    const S: u64 = 1_000_000_000;
+    let s = TestShared::with(Config {
+        narenas: 1,
+        dirty_decay_ms: 1000,
+        huge_retain_max: 8 * page_size(),
+        hpa_peak_demand_window_ms: 60_000,
+        ..Config::DEFAULT
+    })
+    .build();
+    let rises = s.cgroup.rises().0;
+    s.policy.apply(Band::Unlimited, UNLIMITED, 0, rises);
+    s.huge.set_demand_ok(s.policy.demand_ok());
+    let page_of = |p: *mut u8| match s.regions.classify(p as usize) {
+        Kind::Huge { page } => page,
+        other => panic!("{other:?}"),
+    };
+    for _ in 0..3 {
+        let p = s.alloc_huge(64 * page_size(), 16, 0).0;
+        assert!(!p.is_null());
+        s.free_huge(page_of(p));
+    }
+    assert_eq!(s.huge.stats().empty, 1, "the recurring run is kept at free");
+    let t = s.huge.oldest_empty();
+    // Past the 1 s curve, mid-epoch (7.5 s epochs): the floor keeps it
+    // and the gate holds for longer than a step (5 ms).
+    let e = crate::purge::Window::from_ms(60_000).unwrap().epoch_ns();
+    let at = ((t + 2 * S) / e + 1) * e + e / 2;
+    let hold = crate::purge::decay(s, at).expect("held");
+    assert!(hold > at + S / 200, "a hold: +{} ns", hold - at);
+    assert_eq!(crate::purge::decay(s, at + S / 100), Some(hold));
+    assert_eq!((s.huge.stats().empty, s.huge.stats().purged), (1, 0));
+    let l = 512u64 << 20;
+    s.policy.apply(band(l, l * 8 / 10), l, 0, rises);
+    assert!(!s.policy.demand_ok());
+    assert_eq!(s.policy.keep16(), KEEP_ALL);
+    assert_eq!(s.policy.effective_decay_ns(s.huge_decay_ns()), s.huge_decay_ns());
+    assert_eq!(crate::purge::decay(s, at + S / 50), None, "walked within the hold");
+    assert_eq!((s.huge.stats().empty, s.huge.stats().purged), (0, 1));
+    assert!(!s.huge.demand_ok());
 }
 
 /// `huge_dirty_decay_ms` (design 7): unset, the huge tier decays on

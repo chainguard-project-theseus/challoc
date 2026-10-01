@@ -567,6 +567,13 @@ impl Huge {
         }
     }
 
+    /// The verdict the huge free reads (`Policy::demand_ok` as last
+    /// mirrored).
+    #[inline]
+    pub fn demand_ok(&self) -> bool {
+        self.demand_ok.load(Ordering::Relaxed)
+    }
+
     /// The tier's recurring demand level in pages at `now` (0 with the
     /// window off), for the report and the tests.
     pub fn demand_level(&self, now: u64) -> usize {
@@ -1146,7 +1153,8 @@ impl Huge {
     /// [`decay`](Huge::decay) with the cgroup policy's keep ratio (design
     /// 11), as `ClassState::decay_with`.
     pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> Option<u64> {
-        self.gate.decay(now, decay_ns, keep16, |now, curve| self.purge_curve(now, curve, keep16).1)
+        let hold_ok = keep16 >= crate::policy::KEEP_ALL && self.demand_ok.load(Ordering::Relaxed);
+        self.gate.decay(now, decay_ns, hold_ok, |now, curve| self.purge_curve(now, curve, keep16).1)
     }
 
     /// Bytes in `Empty` extents (one lock hold), for the cgroup policy's

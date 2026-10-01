@@ -1,7 +1,11 @@
 //! Demand-window retention (design.md section 8, "demand floor"): a
 //! per-pool record of recent demand peaks that lets a decay walk keep
 //! the `Empty` memory that demand has come back for, and the huge tier
-//! keep a freed run above `huge_retain_max` whose size recurs.
+//! keep a freed run above `huge_retain_max` when the tier's demand
+//! recurs at the height the run brings it to: the tier's live pages just
+//! before the free, this run included, are within an eighth of the
+//! tier's recurring level (`Huge::free_run`). The test is on the tier's
+//! total, not on the run's own size.
 //!
 //! A pool is one `(arena, class)` (units: slabs) or the huge tier
 //! (units: pages, guards included). Its [`Demand`] is a ring of

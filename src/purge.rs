@@ -351,14 +351,17 @@ impl Decayer {
     ///
     /// The walk returns a hold deadline when it found everything within
     /// the demand floor (`purge::demand`): the next walk waits for it
-    /// rather than one step, unless the period changes or the cgroup
-    /// policy caps retention (`keep16 < KEEP_ALL`), whose cap must act
-    /// at step cadence.
+    /// rather than one step. `hold_ok` is the caller's say on holds at
+    /// all: false when the cgroup policy caps retention (its cap must act
+    /// at step cadence) or turns the floor off (`Policy::demand_ok`; the
+    /// next walk must purge down to the curve), and then a hold set
+    /// earlier is ignored and none is recorded. A hold is void under
+    /// another period too.
     pub fn decay(
         &self,
         now: u64,
         decay_ns: u64,
-        keep16: u32,
+        hold_ok: bool,
         walk: impl FnOnce(u64, &Curve) -> Option<u64>,
     ) -> Option<u64> {
         let oldest = self.oldest_empty();
@@ -371,9 +374,8 @@ impl Decayer {
         if now < first {
             return Some(first);
         }
-        let uncapped = keep16 >= crate::policy::KEEP_ALL;
         let hold = self.hold_until.load(Ordering::Relaxed);
-        if now < hold && uncapped && self.hold_decay_ns.load(Ordering::Relaxed) == decay_ns {
+        if now < hold && hold_ok && self.hold_decay_ns.load(Ordering::Relaxed) == decay_ns {
             return Some(hold);
         }
         // A deadline further away than one step was set under a longer
@@ -387,7 +389,7 @@ impl Decayer {
         let next = now.saturating_add(step);
         self.next_walk.store(next, Ordering::Relaxed);
         let hold = match hold {
-            Some(h) if h > next && uncapped => h,
+            Some(h) if h > next && hold_ok => h,
             _ => 0,
         };
         self.hold_until.store(hold, Ordering::Relaxed);
@@ -414,9 +416,8 @@ pub fn decay(shared: &Shared, now: u64) -> Option<u64> {
         purge_all(shared);
     }
     let keep16 = policy.keep16();
-    // The demand window (`demand`): off at 0, and for an arena whose
-    // period is 0 (purge at once was asked for). The trackers sample in
-    // every band; the policy decides whether the floor keeps anything.
+    // The trackers sample in every band; the policy decides whether the
+    // floor keeps anything.
     let window = Window::from_ms(shared.config.hpa_peak_demand_window_ms as u64);
     let apply = policy.demand_ok();
     shared.huge.set_demand_ok(apply);
@@ -429,11 +430,7 @@ pub fn decay(shared: &Shared, now: u64) -> Option<u64> {
     for arena in shared.arenas.iter() {
         // Each arena's own period, scaled by the policy's band.
         let decay_ns = policy.effective_decay_ns(arena.decay_ns());
-        let demand = match window {
-            Some(w) if decay_ns != 0 && decay_ns != NEVER => arena_demand(shared, arena.index()).map(|t| (t, w, apply)),
-            _ => None,
-        };
-        fold(arena.decay_demand(now, decay_ns, keep16, demand));
+        fold(arena.decay_demand(now, decay_ns, keep16, arena_gate(shared, arena, decay_ns, window, apply)));
     }
     // The huge allocator is shared by every arena: its own period when
     // `huge_dirty_decay_ms` is set, else arena 0's (design 7).
@@ -442,6 +439,37 @@ pub fn decay(shared: &Shared, now: u64) -> Option<u64> {
         fold(shared.huge.decay_with(now, decay_ns, keep16));
     }
     next
+}
+
+/// What `arena`'s walks at period `decay_ns` get of the demand window
+/// (`demand`): nothing with the window off, at a period of 0 (purge at
+/// once was asked for) or [`NEVER`], or when its trackers could not be
+/// carved; else its trackers, the window and the policy's verdict.
+fn arena_gate<'a>(
+    shared: &'a Shared,
+    arena: &crate::arena::Arena,
+    decay_ns: u64,
+    window: Option<Window>,
+    apply: bool,
+) -> Option<(&'a ArenaDemand, Window, bool)> {
+    match window {
+        Some(w) if decay_ns != 0 && decay_ns != NEVER => arena_demand(shared, arena.index()).map(|t| (t, w, apply)),
+        _ => None,
+    }
+}
+
+/// `arena.<i>.decay` for one arena: a decay step on the arena's own
+/// period with no retention cap, as without the window. With the window
+/// on its walks keep the same demand floor as [`decay`]'s pass over the
+/// arena: the same trackers, the policy's verdict
+/// (`Policy::demand_ok`), and a hold a floor walk set (ignored once the
+/// verdict is no). An explicit decay is a pass of the driver, not a
+/// purge: `arena.<i>.purge` releases everything.
+pub fn decay_arena(shared: &Shared, arena: &crate::arena::Arena, now: u64) -> Option<u64> {
+    let window = Window::from_ms(shared.config.hpa_peak_demand_window_ms as u64);
+    let decay_ns = arena.decay_ns();
+    let gate = arena_gate(shared, arena, decay_ns, window, shared.policy.demand_ok());
+    arena.decay_demand(now, decay_ns, crate::policy::KEEP_ALL, gate)
 }
 
 /// Demand-tracker carves that failed (the metadata region was full):
