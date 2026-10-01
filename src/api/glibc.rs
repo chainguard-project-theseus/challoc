@@ -30,7 +30,11 @@
 
 use core::ffi::c_int;
 
-use crate::stats;
+use crate::layout::NCLASSES;
+use crate::stats::{self, fig_add, fig_mul};
+use vstd::prelude::*;
+
+verus! {
 
 /// glibc's `struct mallinfo` (ten `int`s).
 #[repr(C)]
@@ -65,22 +69,34 @@ pub struct MallInfo2 {
 }
 
 /// `mallopt(param, value)`: accepted and ignored.
-pub fn mallopt(_param: c_int, _value: c_int) -> c_int {
+pub fn mallopt(_param: c_int, _value: c_int) -> (r: c_int)
+    ensures
+        r == 1,
+{
     1
 }
 
-/// `mallinfo2()`.
-pub fn mallinfo2() -> MallInfo2 {
+/// `mallinfo2()`. The figures are summed and multiplied as the build
+/// computes them (`stats::fig_add`, `fig_mul`): no verified invariant
+/// bounds the counters.
+pub fn mallinfo2() -> (r: MallInfo2)
+    ensures
+        r.fordblks <= r.arena,
+        r.smblks == 0 && r.usmblks == 0 && r.fsmblks == 0,
+{
     let shared = super::shared();
+    proof {
+        shared.lemma_wf();
+    }
     let all = stats::collect_all(shared);
     let page = shared.regions.page_size();
     let arena = all.resident.saturating_sub(all.large_allocated);
     let uordblks = all.small_allocated;
-    let free_slots: usize = all
-        .bins
-        .iter()
-        .map(|b| (b.curslabs * b.nregs).saturating_sub(b.curregs))
-        .sum();
+    let mut free_slots: usize = 0;
+    for j in 0..NCLASSES {
+        let b = &all.bins[j];
+        free_slots = fig_add(free_slots, fig_mul(b.curslabs, b.nregs).saturating_sub(b.curregs));
+    }
     MallInfo2 {
         arena,
         ordblks: free_slots,
@@ -91,7 +107,7 @@ pub fn mallinfo2() -> MallInfo2 {
         fsmblks: 0,
         uordblks,
         fordblks: arena.saturating_sub(uordblks),
-        keepcost: all.pdirty * page,
+        keepcost: fig_mul(all.pdirty, page),
     }
 }
 
@@ -113,6 +129,8 @@ pub fn mallinfo() -> MallInfo {
     }
 }
 
+} // verus!
+
 // ---------------------------------------------------------------------------
 // C ABI. Compiled out of the test binary (see `libc.rs`).
 // ---------------------------------------------------------------------------
@@ -120,6 +138,9 @@ pub fn mallinfo() -> MallInfo {
 #[cfg(not(test))]
 mod exports {
     use core::ffi::c_int;
+    use vstd::prelude::verus;
+
+    verus! {
 
     #[unsafe(no_mangle)]
     pub extern "C" fn mallopt(param: c_int, value: c_int) -> c_int {
@@ -135,6 +156,8 @@ mod exports {
     pub extern "C" fn mallinfo2() -> super::MallInfo2 {
         super::mallinfo2()
     }
+
+    } // verus!
 }
 
 #[cfg(test)]

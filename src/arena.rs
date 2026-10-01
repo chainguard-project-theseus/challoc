@@ -46,6 +46,9 @@ use crate::vspec::addr::addr_to_ptr;
 #[cfg(verus_only)]
 use crate::vspec::arena::axiom_arena_stats_lock_inv;
 use vstd::prelude::*;
+#[cfg(verus_only)]
+use vstd::raw_ptr::PointsToRaw;
+use vstd::raw_ptr::{PointsTo, ptr_mut_write, ptr_ref};
 
 verus! {
 
@@ -67,6 +70,9 @@ pub struct Arena {
     /// (`class/`), a separate metadata object so that `Arena` keeps its
     /// size and the offsets of everything allocated after it.
     sets: *const SetTable,
+    /// Ghost: the permission to the table at `sets`.
+    #[allow(dead_code)]
+    sets_perm: Tracked<PointsTo<SetTable>>,
     pub classes: [ClassState; NCLASSES],
     /// Live huge runs allocated through this arena and their pages (guard
     /// included), kept by `Shared::alloc_huge` / `free_huge` since the huge
@@ -96,6 +102,24 @@ unsafe impl Send for Arena {}
 
 verus! {
 
+/// The slab set table's permission of a block of `raw` at `p`, when there
+/// is a block (as `huge::desc_perm` for descriptors).
+proof fn table_perm(tracked raw: PointsToRaw, p: *mut SetTable) -> (tracked r: Option<PointsTo<SetTable>>)
+    ensures
+        p@.addr != 0 && raw.is_range(p@.addr as int, vstd::layout::size_of::<SetTable>() as int)
+            && raw.provenance() == p@.provenance && p@.addr as int % vstd::layout::align_of::<SetTable>() as int == 0
+            ==> r is Some && r->0.ptr() == p && r->0.is_uninit(),
+{
+    if p@.addr != 0 && raw.is_range(p@.addr as int, vstd::layout::size_of::<SetTable>() as int)
+        && raw.provenance() == p@.provenance && p@.addr as int % vstd::layout::align_of::<SetTable>() as int == 0 {
+        let tracked perm = raw.into_typed::<SetTable>(p@.addr);
+        assert(perm.ptr()@ == p@);
+        Some(perm)
+    } else {
+        None
+    }
+}
+
 /// The in-place writes of [`Arena::init`], each trusted: Verus has no
 /// raw-pointer field projection. Each writes the fields it names and
 /// nothing else; `this` must be the storage `init` was handed.
@@ -111,32 +135,41 @@ impl Arena {
         }
     }
 
-    /// Storage for the slab set table from `meta`, null when it is full.
-    /// The table fits an object (the check is on constants, so the build
-    /// folds it away).
+    /// Storage for the slab set table from `meta`, null when it is full,
+    /// with the permission to it. The table fits an object (the check is
+    /// on constants, so the build folds it away).
     #[inline(always)]
-    fn alloc_sets(meta: &Meta) -> *mut SetTable {
+    fn alloc_sets(meta: &Meta) -> (r: (*mut SetTable, Tracked<Option<PointsTo<SetTable>>>))
+        ensures
+            r.0@.addr != 0 ==> r.1@ is Some && r.1@->0.ptr() == r.0 && r.1@->0.is_uninit(),
+    {
         let layout = core::alloc::Layout::new::<SetTable>();
         crate::vspec::check::check(
             layout.size() <= crate::meta::MAX_BINNED && layout.align() <= crate::meta::MAX_ALIGN,
             "arena: slab set table larger than an object",
         );
-        meta.alloc(layout) as *mut SetTable
+        let (p, Tracked(raw)) = meta.alloc_raw(layout);
+        let p = p as *mut SetTable;
+        let tracked perm = table_perm(raw, p);
+        (p, Tracked(perm))
     }
 
-    /// `sets` into the storage [`Arena::alloc_sets`] returned (non-null),
-    /// and `sets_ptr` into the field; the table, where it now lives.
+    /// `sets_ptr` into the field and its permission `perm` into
+    /// `sets_perm`; the table, where it lives.
     #[verifier::external_body]
     #[inline(always)]
-    unsafe fn put_sets<'a>(this: *mut Arena, sets_ptr: *mut SetTable, sets: SetTable) -> (r: &'a SetTable)
+    unsafe fn put_sets<'a>(this: *mut Arena, sets_ptr: *mut SetTable, perm: Tracked<PointsTo<SetTable>>) -> (r: &'a SetTable)
+        requires
+            perm@.ptr() == sets_ptr,
+            perm@.is_init(),
         ensures
-            *r == sets,
+            *r == perm@.value(),
     {
-        // SAFETY: `sets_ptr` is a fresh metadata object of the right
-        // layout; `this` as in `put_head`.
+        // SAFETY: `sets_ptr` is the metadata object the table was just
+        // written to; `this` as in `put_head`.
         unsafe {
-            ptr::write(sets_ptr, sets);
             ptr::write(&raw mut (*this).sets, sets_ptr as *const SetTable);
+            ptr::write(&raw mut (*this).sets_perm, perm);
             &*sets_ptr
         }
     }
@@ -194,12 +227,16 @@ impl Arena {
         // SAFETY: the caller guarantees `this` is writable and unaliased.
         unsafe {
             Arena::put_head(this, index, decay_ns);
-            let sets_ptr = Arena::alloc_sets(meta);
+            let (sets_ptr, Tracked(perm)) = Arena::alloc_sets(meta);
             if sets_ptr.is_null() {
                 return false;
             }
             let sets = match SetTable::new(meta, regions) {
-                Some(sets) => Arena::put_sets(this, sets_ptr, sets),
+                Some(sets) => {
+                    let tracked mut perm = perm.tracked_unwrap();
+                    ptr_mut_write(sets_ptr, Tracked(&mut perm), sets);
+                    Arena::put_sets(this, sets_ptr, Tracked(perm))
+                },
                 None => return false,
             };
             for c in 0..NCLASSES
@@ -216,18 +253,19 @@ impl Arena {
         }
         true
     }
-}
 
-} // verus!
-
-impl Arena {
     /// The arena's slab set table (fork handlers, tests).
     #[inline]
     pub fn sets(&self) -> &SetTable {
-        // SAFETY: written by `init` to a live, never-freed metadata object.
-        unsafe { &*self.sets }
+        proof {
+            use_type_invariant(self);
+        }
+        // Written by `init` to a live, never-freed metadata object.
+        ptr_ref(self.sets, Tracked(self.sets_perm.borrow()))
     }
 }
+
+} // verus!
 
 verus! {
 
@@ -238,11 +276,15 @@ impl Arena {
     /// precondition of `Arena::put_class`, from `ClassState::new`'s
     /// postcondition over `tables[c]`, whose class is `c` by `init`'s
     /// precondition) before it returns `true`; its callers, `Shared::init`
-    /// and `Arenas::build`, meet those preconditions. Trusted: the in-place
-    /// writers write what they are handed and nothing else.
+    /// and `Arenas::build`, meet those preconditions. `sets_perm` is the
+    /// initialised table at `sets` (the precondition of `Arena::put_sets`).
+    /// Trusted: the in-place writers write what they are handed and
+    /// nothing else.
     #[verifier::type_invariant]
     spec fn inv(self) -> bool {
-        forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.classes[c].spec_class() == c
+        &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.classes[c].spec_class() == c
+        &&& self.sets_perm@.ptr() == self.sets
+        &&& self.sets_perm@.is_init()
     }
 
     /// `Empty` bytes over every class (one lock hold per class that has

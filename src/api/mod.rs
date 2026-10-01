@@ -474,7 +474,7 @@ extern "C" fn fork_prepare() {
             for c in 0..NCLASSES {
                 a.class(c).raw_lock().lock();
             }
-            sets_of(a).raw_lock().lock();
+            a.sets().raw_lock().lock();
         }
     }
     for c in 0..NCLASSES {
@@ -520,17 +520,9 @@ unsafe fn saved_sigmask() -> u64 {
     unsafe { (*FORK_SIGMASK.0.get()).assume_init() }
 }
 
-// The fork handlers' accessors outside `verus!`: `Arena::sets` (a
-// raw-pointer dereference) and the explicit-cache table (`heap/tcaches.rs`).
-// Each is a trusted wrapper that claims nothing; delete each when its
-// callee enters `verus!`.
-
-/// `a.sets()`, the arena's slab set table (a raw-pointer dereference).
-#[verifier::external_body]
-#[inline(always)]
-fn sets_of(a: &crate::arena::Arena) -> &crate::class::SetTable {
-    a.sets()
-}
+// The fork handlers' accessor outside `verus!`: the explicit-cache table
+// (`heap/tcaches.rs`). A trusted wrapper that claims nothing; delete it
+// when its callee enters `verus!`.
 
 /// `s.tcaches.raw_lock()`, the explicit-cache table's lock.
 #[verifier::external_body]
@@ -581,7 +573,7 @@ fn fork_release() {
     {
         i -= 1;
         if let Some(a) = s.arenas.get_existing(i as u16) {
-            sets_of(a).raw_lock().unlock();
+            a.sets().raw_lock().unlock();
             let mut c = NCLASSES;
             while c > 0
                 invariant
