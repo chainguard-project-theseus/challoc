@@ -105,6 +105,16 @@ class = "mt"
 secs = 5
 est_s = 6
 
+[row.larson32]
+cmd = ["{bin}/larson", "5", "8", "1000", "5000", "100", "4141", "32"]
+parser = "larson"
+unit = "M ops/s"
+better = "higher"
+threads = 32
+class = "mt"
+secs = 5
+est_s = 6.5
+
 # More threads than most cells have CPUs.
 [row.larson64]
 cmd = ["{bin}/larson", "5", "8", "1000", "5000", "100", "4141", "64"]
@@ -196,6 +206,18 @@ threads = 0
 class = "mt"
 fixed_work = true
 est_s = 6
+
+# mstress under a CPU quota (the cpusN cells): {nproc} threads still,
+# so a 2-CPU quota stretches the fixed work; a longer timeout.
+[row.mstress-quota]
+cmd = ["{bin}/mstress", "{nproc}", "50", "25"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 0
+class = "mt"
+fixed_work = true
+est_s = 30
 
 # 16 do_benchmark passes (4 warm-up + 3 scenarios x 4 counts) of 2M
 # malloc+free pairs.
@@ -392,3 +414,18 @@ metrics = [
   { name = "server_peak_mib", unit = "MiB", better = "lower", class = "soak-rss" },
 ]
 est_s = 360
+
+# ---- the kernel floor (bench/cb/floor-test.sh) ----------------------------
+# The in-container part of `make test` on the variant's source tree: the
+# release build, the jemalloc-compat stage, the unit and api:: tests, with
+# CHALLOC_TEST_ALLOW_SKIP=1. Pass/fail (and the SKIP lines in the log), not
+# a timing: run it in a smoke suite (bench/suites/exp-floor.toml).
+[row.floor-test]
+cmd = ["sh", "{root}/bench/cb/floor-test.sh"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 0
+class = "st"
+requires = ["challoc"]
+est_s = 600

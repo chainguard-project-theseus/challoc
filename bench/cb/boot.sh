@@ -25,6 +25,9 @@
 #                           thp:<f>=<v>     THP sysfs: thp:enabled=always,
 #                                           thp:64kB=madvise (mTHP sizes)
 #                           sysctl:<k>=<v>  one sysctl
+#                           kernel:<pkg>    (Ubuntu) install a kernel
+#                                           flavour, make it the GRUB
+#                                           default and reboot into it once
 #
 #   1. host prep: stop the apt timers and snapd (they wake up mid-run),
 #      perf_event_paranoid 1, the cb-prep steps; in parallel install Docker
@@ -87,6 +90,11 @@ tok() { md instance/service-accounts/default/token | sed -n 's/.*"access_token" 
 get() { curl -sf --retry 3 -H "Authorization: Bearer $(tok)" -o "$2" "https://storage.googleapis.com/$BUCKET/$1"; }
 put() { curl -sf --retry 3 -X PUT -H "Authorization: Bearer $(tok)" --upload-file "$1" "https://storage.googleapis.com/$BUCKET/$2" >/dev/null; }
 
+# Docker comes from apt; a RHEL-family host (AlmaLinux, Rocky) has dnf and
+# no apt, so it runs podman whatever the cell asked for.
+if [ "$RUNTIME" = docker ] && ! command -v docker >/dev/null && ! command -v apt-get >/dev/null && command -v dnf >/dev/null; then
+  RUNTIME=podman
+fi
 case $RUNTIME in
   docker) RT=docker; NET=() ;;
   podman|sudo-podman) RT=podman; NET=(--network=host) ;;
@@ -140,7 +148,8 @@ sysctl -qw 'kernel.core_pattern=|/bin/false' 2>/dev/null
   if [ "$RT" = docker ]; then
     systemctl start docker && docker version --format '{{.Server.Version}}'
   else
-    command -v podman >/dev/null && podman version --format '{{.Client.Version}}'
+    command -v podman >/dev/null || { command -v dnf >/dev/null && dnf -y -q install podman; }
+    podman version --format '{{.Client.Version}}'
   fi
 ) > /var/log/cb-runtime.log 2>&1 &
 RUNTIME_PID=$!
@@ -154,6 +163,38 @@ stamp fetched
 wait $RUNTIME_PID || { cat /var/log/cb-runtime.log; finish infra 3 "container runtime $RUNTIME not usable"; }
 echo "cb-boot: $RT $(tail -1 /var/log/cb-runtime.log)"
 stamp runtime
+
+# prep `kernel:<package>` (Ubuntu): install the kernel flavour, make it the
+# GRUB default by its menu entry id and reboot once; this script runs again
+# at the next boot and goes on from here.
+PREP_KERNEL=
+for step in $PREP; do case $step in kernel:*) PREP_KERNEL=${step#kernel:} ;; esac; done
+if [ -n "$PREP_KERNEL" ] && [ ! -e /var/lib/cb-prep.done ]; then
+  echo "cb-boot: prep: installing $PREP_KERNEL (running $(uname -r))"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get -o DPkg::Lock::Timeout=120 update -qq && apt-get -o DPkg::Lock::Timeout=120 install -y -qq "$PREP_KERNEL" \
+    || finish infra 3 "prep: apt-get install $PREP_KERNEL failed"
+  FLAVOUR=${PREP_KERNEL#linux-}
+  KV=$(ls /boot/vmlinuz-*-"$FLAVOUR" 2>/dev/null | sed 's|/boot/vmlinuz-||' | sort -V | tail -1)
+  [ -n "$KV" ] || finish infra 3 "prep: no /boot/vmlinuz-*-$FLAVOUR after installing $PREP_KERNEL"
+  # Ubuntu cloud images boot initramfs-less first (GRUB_FORCE_PARTUUID);
+  # a generic kernel has its disk driver (NVMe on C4A) as a module, so it
+  # needs its initramfs.
+  [ -e "/boot/initrd.img-$KV" ] || update-initramfs -c -k "$KV" >/dev/null 2>&1
+  update-grub >/dev/null 2>&1
+  SUB=$(grep -oP "submenu '[^']*'.*?\\\$menuentry_id_option '\K[^']+" /boot/grub/grub.cfg | head -1)
+  ENT=$(grep -oP "menuentry '[^']*with Linux $KV'.*?\\\$menuentry_id_option '\K[^']+" /boot/grub/grub.cfg | head -1)
+  [ -n "$ENT" ] || finish infra 3 "prep: no GRUB entry for $KV"
+  printf 'GRUB_DEFAULT="%s"\nGRUB_FORCE_PARTUUID=\n' "${SUB:+$SUB>}$ENT" > /etc/default/grub.d/99-cb-kernel.cfg
+  update-grub >/dev/null 2>&1 || finish infra 3 "prep: update-grub failed"
+  echo "$KV" > /var/lib/cb-prep.done
+  echo "cb-boot: prep: rebooting into $KV (GRUB_DEFAULT ${SUB:+$SUB>}$ENT)"
+  put /var/log/cb-boot.log "$RES/boot-prep.log"
+  sync
+  reboot
+  exit 0
+fi
+[ -e /var/lib/cb-prep.done ] && echo "cb-boot: prep: wanted $(cat /var/lib/cb-prep.done), running $(uname -r)"
 
 thp_write() { # file value
   local f=/sys/kernel/mm/transparent_hugepage/$1
@@ -178,6 +219,7 @@ for step in $PREP; do
         echo "cb-boot: prep grow-var: $(df -h --output=size,avail /var | tail -1)"
       fi ;;
     thp:*=*) kv=${step#thp:}; thp_write "${kv%%=*}" "${kv#*=}" || finish infra 3 "prep $step failed" ;;
+    kernel:*) ;;
     sysctl:*=*) kv=${step#sysctl:}; sysctl -w "${kv%%=*}=${kv#*=}" || finish infra 3 "prep $step failed" ;;
     *) finish infra 3 "unknown prep step $step" ;;
   esac
@@ -222,6 +264,8 @@ case "$CONTAINER" in
   perfmon) PROFILE=(--cap-add PERFMON) ;;
   *) PROFILE=() ;;
 esac
+# SELinux (the RHEL family) would deny the bind mounts their labels.
+[ "$RT" = podman ] && PROFILE+=(--security-opt label=disable)
 [ -n "$CPUS" ] && PROFILE+=(--cpus "$CPUS")
 [ -n "$CPUSET" ] && PROFILE+=(--cpuset-cpus "$CPUSET")
 [ -n "$MEMORY" ] && PROFILE+=(--memory "$MEMORY" --memory-swap "$MEMORY")

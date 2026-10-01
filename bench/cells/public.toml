@@ -75,10 +75,11 @@ machine = "c4d-standard-16"
 arch = "amd64"
 machine = "c4d-standard-64"
 
-# small L3: the instruction-window cell
+# small L3: the instruction-window cell. C3 has no 16-vCPU size (4, 8,
+# 22, 44, ...); 22 is the nearest.
 [shape.spr16]
 arch = "amd64"
-machine = "c3-standard-16"
+machine = "c3-standard-22"
 
 [shape.genoa16]
 arch = "amd64"
@@ -184,7 +185,7 @@ tags = ["floor"]
 [cell.k68-ga-amd64]
 shape = "small"
 host = "@ref-amd64"
-prep = ["kernel:linux-generic", "grub-by-title"]
+prep = ["kernel:linux-generic"]
 tags = ["floor"]
 
 [cell.k70-gcp]
@@ -194,6 +195,159 @@ tags = ["k-ladder"]
 [cell.k-64k-arm64]
 shape = "small-arm"
 host = "@ref-arm64"
-prep = ["kernel:linux-generic-64k", "grub-by-title"]
+prep = ["kernel:linux-generic-64k"]
 expect = { page_size = 65536 }
 tags = ["floor"]
+
+# ---- experiments: E-narenas (#21) ------------------------------------------------
+# A CPU quota without a cpuset (container profile cpusN: --cpus=N), so the
+# affinity mask, and with it challoc's default narenas, is the host's 16
+# CPUs while the cgroup's cpu.max allows N.
+[cell.na-c4-cpus2]
+shape = "emr16"
+host = "@ref-amd64"
+container = "cpus2"
+tags = ["exp-narenas", "exp-narenas-2"]
+
+[cell.na-c4-cpus4]
+shape = "emr16"
+host = "@ref-amd64"
+container = "cpus4"
+tags = ["exp-narenas", "exp-narenas-4"]
+
+[cell.na-c4d-cpus2]
+shape = "turin16"
+host = "@ref-amd64"
+container = "cpus2"
+tags = ["exp-narenas", "exp-narenas-2"]
+
+[cell.na-c4d-cpus4]
+shape = "turin16"
+host = "@ref-amd64"
+container = "cpus4"
+tags = ["exp-narenas", "exp-narenas-4"]
+
+# ---- experiments: the public kernel floor (#22) ---------------------------------
+# The floor-test row (bench/cb/floor-test.sh) under the default container
+# profile and under --privileged (the `-p` cells), one VM each. N2 on
+# amd64 (pd-balanced boots every image here), C4A on arm64. The Ubuntu
+# rungs other than the image's own gcp kernel install a kernel flavour and
+# reboot into it (boot.sh `prep`).
+[shape.floor-amd64]
+arch = "amd64"
+machine = "n2-standard-8"
+disk = "pd-balanced"
+
+[shape.floor-arm64]
+arch = "arm64"
+machine = "c4a-standard-8"
+
+[cell.fl-alma9-x86]
+shape = "floor-amd64"
+host = { family = "almalinux-9", project = "almalinux-cloud" }
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-alma9-x86-p]
+shape = "floor-amd64"
+host = { family = "almalinux-9", project = "almalinux-cloud" }
+container = "privileged"
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-alma9-arm]
+shape = "floor-arm64"
+host = { family = "almalinux-9-arm64", project = "almalinux-cloud" }
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-alma9-arm-p]
+shape = "floor-arm64"
+host = { family = "almalinux-9-arm64", project = "almalinux-cloud" }
+container = "privileged"
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-deb12-x86]
+shape = "floor-amd64"
+host = { family = "debian-12", project = "debian-cloud" }
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-deb12-x86-p]
+shape = "floor-amd64"
+host = { family = "debian-12", project = "debian-cloud" }
+container = "privileged"
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-deb12-arm]
+shape = "floor-arm64"
+host = { family = "debian-12-arm64", project = "debian-cloud" }
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-deb12-arm-p]
+shape = "floor-arm64"
+host = { family = "debian-12-arm64", project = "debian-cloud" }
+container = "privileged"
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-u2404-ga-x86]
+shape = "floor-amd64"
+host = { family = "ubuntu-2404-lts-amd64", project = "ubuntu-os-cloud" }
+prep = ["kernel:linux-generic"]
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-u2404-ga-x86-p]
+shape = "floor-amd64"
+host = { family = "ubuntu-2404-lts-amd64", project = "ubuntu-os-cloud" }
+prep = ["kernel:linux-generic"]
+container = "privileged"
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-u2404-gcp-x86]
+shape = "floor-amd64"
+host = { family = "ubuntu-2404-lts-amd64", project = "ubuntu-os-cloud" }
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-u2404-gcp-x86-p]
+shape = "floor-amd64"
+host = { family = "ubuntu-2404-lts-amd64", project = "ubuntu-os-cloud" }
+container = "privileged"
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-u2404-gcp-arm]
+shape = "floor-arm64"
+host = { family = "ubuntu-2404-lts-arm64", project = "ubuntu-os-cloud" }
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-u2404-gcp-arm-p]
+shape = "floor-arm64"
+host = { family = "ubuntu-2404-lts-arm64", project = "ubuntu-os-cloud" }
+container = "privileged"
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-u2404-64k-arm]
+shape = "floor-arm64"
+host = { family = "ubuntu-2404-lts-arm64", project = "ubuntu-os-cloud" }
+prep = ["kernel:linux-generic-64k"]
+expect = { page_size = 65536 }
+max_run = "90m"
+tags = ["exp-floor"]
+
+[cell.fl-u2404-64k-arm-p]
+shape = "floor-arm64"
+host = { family = "ubuntu-2404-lts-arm64", project = "ubuntu-os-cloud" }
+prep = ["kernel:linux-generic-64k"]
+expect = { page_size = 65536 }
+container = "privileged"
+max_run = "90m"
+tags = ["exp-floor"]

@@ -373,7 +373,10 @@ def parse_container(c: Any, where: str = "container") -> dict[str, Any]:
     more threads than CPUs, preempted by each other). Returns the table
     form."""
     if isinstance(c, str):
-        c = {"profile": c}
+        # cpusN: a CPU quota of N CPUs without a cpuset (the affinity mask
+        # stays the host's), with CAP_PERFMON.
+        m = re.fullmatch(r"cpus(\d+(?:\.\d+)?)", c)
+        c = {"profile": "perfmon", "cpus": m.group(1)} if m else {"profile": c}
     if not isinstance(c, dict):
         raise SpecError(f"{where}: container must be a profile name or a table")
     out = {"profile": str(c.get("profile", "default"))}
