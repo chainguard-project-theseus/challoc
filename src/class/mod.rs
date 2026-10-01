@@ -1162,8 +1162,6 @@ impl ClassState {
     /// The class table's slot tokens are of the class's authority
     /// (`table::slot_loc`). No code: a proof step for callers that hold
     /// the state by reference.
-    // The heap's proofs call it (verus/TODO.md, "To restore").
-    #[allow(dead_code)]
     #[inline(always)]
     pub fn slot_tokens_are_the_class_s(&self)
         ensures
@@ -2447,6 +2445,7 @@ impl ClassState {
     /// plan ran out of picks before the request was met.
     ///
     /// [`plan`]: ClassState::plan
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn claim(&self, meta: &Meta, out: &mut [*mut u8]) -> (r: Claim)
         ensures
             r.n <= old(out)@.len(),
@@ -2461,8 +2460,6 @@ impl ClassState {
     /// when the claim is zeroed ([`claim_zero_ok`]).
     ///
     /// [`claim`]: ClassState::claim
-    // The heap's proofs call it (verus/TODO.md, "To restore").
-    #[allow(dead_code)]
     pub fn claim_zero(&self, meta: &Meta, out: &mut [*mut u8]) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
         ensures
             r.0.n <= old(out)@.len(),
@@ -2480,8 +2477,6 @@ impl ClassState {
     /// claim is zeroed ([`claim_zero_ok`]).
     ///
     /// [`claim`]: ClassState::claim
-    // The heap's proofs call it (verus/TODO.md, "To restore").
-    #[allow(dead_code)]
     pub fn claim_tokens(&self, meta: &Meta, out: &mut [*mut u8], Tracked(toks): Tracked<&mut SlotToks>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
         ensures
             r.0.n <= old(out)@.len(),
@@ -2508,6 +2503,7 @@ impl ClassState {
     ///
     /// [`claim`]: ClassState::claim
     /// [`claim_random_zero`]: ClassState::claim_random_zero
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn claim_random(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64) -> (r: Claim)
         ensures
             r.n <= old(out)@.len(),

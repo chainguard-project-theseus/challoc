@@ -9,6 +9,20 @@ use core::ptr;
 use crate::layout::NCLASSES;
 
 use super::{CacheHeader, FOREIGN, Heap, Shared};
+#[cfg(verus_only)]
+use super::{lemma_handed_ok, node_hdr};
+#[cfg(verus_only)]
+use crate::class::slot_loc;
+#[cfg(verus_only)]
+use crate::layout::process_regions;
+#[cfg(verus_only)]
+use vstd::map::Map;
+#[cfg(verus_only)]
+use vstd::prelude::*;
+use vstd::prelude::{Tracked, int, verus};
+use vstd::resource::set::GhostSingleton;
+
+verus! {
 
 /// A heap's caches for one arena other than its home arena (design 6.2,
 /// `caches[arena]`), allocated from the metadata region the first time the
@@ -48,8 +62,17 @@ pub struct ArenaCaches {
 /// foreign stack is not allocated between them.
 const NODE_STAGGER_LINES: usize = 16;
 
+// Verus checks the sizes `node_block_layout` and the node offsets use.
+#[cfg(feature = "quantum16")]
+global layout ArenaCaches is size == 3392, align == 64;
+#[cfg(feature = "quantum8")]
+global layout ArenaCaches is size == 3648, align == 64;
+
 /// Layout of the block an `others` node is carved from.
 pub(super) fn node_block_layout() -> Layout {
+    proof {
+        assert(64usize & sub(64usize, 1) == 0) by (bit_vector);
+    }
     Layout::from_size_align(
         core::mem::size_of::<ArenaCaches>() + 64 * (NODE_STAGGER_LINES - 1),
         64,
@@ -60,10 +83,18 @@ pub(super) fn node_block_layout() -> Layout {
 impl Heap {
     /// The header for `class` in an `others` node.
     ///
+    /// Trusted: `&raw mut` through the raw node pointer.
+    ///
     /// # Safety
     /// `node` is a live node owned by this heap.
     #[inline]
-    pub(super) unsafe fn node_cache_ptr(node: *mut ArenaCaches, class: usize) -> *mut CacheHeader {
+    #[verifier::external_body]
+    pub(super) unsafe fn node_cache_ptr(node: *mut ArenaCaches, class: usize) -> (r: *mut CacheHeader)
+        requires
+            class < NCLASSES,
+        ensures
+            r == node_hdr(node, class as int),
+    {
         debug_assert!(class < NCLASSES);
         // SAFETY: guaranteed by the caller; `class < NCLASSES`.
         unsafe { (&raw mut (*node).caches).cast::<CacheHeader>().add(class) }
@@ -81,13 +112,30 @@ impl Heap {
         shared: &Shared,
         arena: u16,
         class: usize,
-    ) -> (*mut u8, bool) {
+    ) -> (r: (*mut u8, bool))
+        requires
+            shared.wf(),
+            class < NCLASSES,
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+            r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
+            r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
+    {
+        broadcast use lemma_handed_ok;
+        proof {
+            shared.lemma_wf();
+        }
         let node = self.other_caches(shared, arena, false);
         if !node.is_null() {
             // SAFETY: `node` is a live block owned by this heap.
             let cache = unsafe { Self::node_cache_ptr(node, class) };
-            // SAFETY: unused (`len == 0`) or this heap's cache.
-            let len = unsafe { (*cache).len };
+            proof {
+                assert(self.owns(node_hdr(node, class as int)));
+                assert(self.hdr_class(node_hdr(node, class as int)) == class);
+            }
+            // Unused (`len == 0`) or this heap's cache.
+            let len = self.hdr_ref(cache).len;
             if len != 0 {
                 // SAFETY: a real cache with `len` entries.
                 return unsafe { self.pop(cache, class, len, shared.pac()) };
@@ -106,20 +154,43 @@ impl Heap {
     /// its flush routes every slot to its slab's arena.
     #[cold]
     #[inline(never)]
-    pub(super) fn free_other(&mut self, shared: &Shared, class: usize, p: *mut u8) {
+    pub(super) fn free_other(&mut self, shared: &Shared, class: usize, p: *mut u8, Tracked(tok): Tracked<GhostSingleton<int>>)
+        requires
+            process_regions().is_slot(class as int, p@.addr),
+            tok.id() == slot_loc(class as int),
+            tok@ == p@.addr as int,
+            shared.wf(),
+            class < NCLASSES,
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+    {
+        let tracked mut tk = Map::<int, GhostSingleton<int>>::tracked_empty();
+        proof {
+            tk.tracked_insert(0, tok);
+            shared.lemma_wf();
+        }
         let node = self.other_caches(shared, FOREIGN, false);
         if !node.is_null() {
+            proof {
+                assert(self.owns(node_hdr(node, class as int)));
+            }
             // SAFETY: `node` is a live block owned by this heap; the cache
             // is unused (`len == cap == 0`) or ours.
             if unsafe {
-                Self::push_cache_flags(Self::node_cache_ptr(node, class), p, shared.push_flags())
+                Self::push_cache_flags(Self::node_cache_ptr(node, class), p, shared.push_flags(), Tracked(self.perms.borrow_mut()), Tracked(&mut tk))
             } {
                 return;
             }
         }
-        self.free_slow_in(shared, FOREIGN, class, p)
+        let tracked t = tk.tracked_remove(0);
+        self.free_slow_in(shared, FOREIGN, class, p, Tracked(t))
     }
+}
 
+} // verus!
+
+impl Heap {
     /// The nodes of an `others` list headed by `head`, in list order, for
     /// the cold walks (statistics, flush, GC, `cache_in`, destruction).
     /// Each node's `next` is read before the node is yielded, so a caller
@@ -138,19 +209,34 @@ impl Heap {
             Some(cur)
         })
     }
+}
 
+verus! {
+
+impl Heap {
     /// The `others` node for `arena`, created (if `create`) on first use.
     /// Null when there is none (and none could be allocated). Never called
     /// with the home arena: creating a node for it would split the home
     /// caches in two, which the creation branch aborts on (the lookup walk
     /// is xmalloc's per-free path and cannot find a node that was never
     /// created).
+    ///
+    /// Trusted: the list walk dereferences raw node pointers, and a created
+    /// node's `EMPTY` headers join the heap's permissions ([`Heap::wf`]),
+    /// the one at index `c` caching class `c` ([`Heap::owns_node`]).
+    #[verifier::external_body]
     pub(super) fn other_caches(
         &mut self,
         shared: &Shared,
         arena: u16,
         create: bool,
-    ) -> *mut ArenaCaches {
+    ) -> (r: *mut ArenaCaches)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+            r@.addr != 0 ==> final(self).owns_node(r),
+    {
         let mut o = self.others;
         let mut n = 0usize;
         while !o.is_null() {
@@ -201,8 +287,18 @@ impl Heap {
         shared: &Shared,
         arena: u16,
         class: usize,
-    ) -> *mut CacheHeader {
+    ) -> (r: *mut CacheHeader)
+        requires
+            class < NCLASSES,
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+            r@.addr != 0 ==> final(self).owns(r) && final(self).hdr_class(r) == class,
+    {
         if arena == self.arena {
+            proof {
+                Heap::lemma_keeps_refl(*self);
+            }
             return self.cache_ptr(class);
         }
         let node = self.other_caches(shared, arena, true);
@@ -222,7 +318,15 @@ impl Heap {
         &mut self,
         node: *mut ArenaCaches,
         class: usize,
-    ) -> *mut CacheHeader {
+    ) -> (r: *mut CacheHeader)
+        requires
+            class < NCLASSES,
+            node@.addr == 0 || old(self).owns_node(node),
+        ensures
+            *final(self) == *old(self),
+            old(self).owns(r),
+            old(self).hdr_class(r) == class,
+    {
         // SAFETY: guaranteed by the caller.
         if node.is_null() {
             self.cache_ptr(class)
@@ -231,3 +335,5 @@ impl Heap {
         }
     }
 }
+
+} // verus!

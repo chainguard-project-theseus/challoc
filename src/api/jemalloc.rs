@@ -142,11 +142,11 @@ fn alloc_with(shared: &Shared, size: usize, f: &Flags) -> *mut u8 {
     let align = f.align();
     let (p, usable, zeroed) = match class_for(size, align) {
         Some(c) => {
-            let (p, z) = mallocx::alloc(shared, c, f.arena, f.tcache);
+            let (p, z, _) = mallocx::alloc(shared, c, f.arena, f.tcache);
             (p, CLASSES[c].size(), z)
         }
         None => {
-            let (p, z) = mallocx::alloc_huge(shared, size, align, f.arena, f.tcache);
+            let (p, z, _) = mallocx::alloc_huge(shared, size, align, f.arena, f.tcache);
             (p, shared.huge.usable_for(size).unwrap_or(0), z)
         }
     };
@@ -606,7 +606,7 @@ mod tests {
         assert_eq!((f.arena, f.tcache), (Some(lua), Tcache::Default));
 
         // Default cache, explicit arena: through this thread's heap.
-        let (p, _) = mallocx::alloc(s, c, f.arena, f.tcache);
+        let (p, _, _) = mallocx::alloc(s, c, f.arena, f.tcache);
         assert!(!p.is_null());
         unsafe { core::ptr::write_bytes(p, 0xa5, size) };
         assert_eq!(s.classify_free(p), Ok((c, lua)));
@@ -626,7 +626,7 @@ mod tests {
         assert_eq!(cached_in(h), before);
         assert_eq!(cached_foreign(h), before_foreign + 1);
         // realloc within the class keeps the pointer and the arena.
-        let (p, _) = mallocx::alloc(s, c, Some(lua), Tcache::Default);
+        let (p, _, _) = mallocx::alloc(s, c, Some(lua), Tcache::Default);
         // (Written again: this is a fresh slot of the Lua arena's cache,
         // the one freed above went to the FOREIGN cache.)
         unsafe { core::ptr::write_bytes(p, 0xa5, size) };
@@ -641,7 +641,7 @@ mod tests {
         // Direct path: live count moves at once, no cache involved.
         let f = Flags::decode(mallocx_arena(lua) | MALLOCX_TCACHE_NONE);
         assert_eq!(f.tcache, Tcache::None);
-        let (d, _) = mallocx::alloc(s, c, f.arena, f.tcache);
+        let (d, _, _) = mallocx::alloc(s, c, f.arena, f.tcache);
         let (slab, _) = s.table(c).locate(d);
         let desc = s.table(c).desc(slab);
         assert_eq!(desc.arena(), lua);
@@ -664,7 +664,7 @@ mod tests {
         );
 
         // Huge runs record the arena too.
-        let (hp, _) = mallocx::alloc_huge(s, 3 << 20, 1, Some(lua), Tcache::Default);
+        let (hp, _, _) = mallocx::alloc_huge(s, 3 << 20, 1, Some(lua), Tcache::Default);
         assert!(!hp.is_null());
         let Err(page) = s.classify_free(hp) else {
             panic!("not huge")
@@ -676,7 +676,7 @@ mod tests {
         let t = s.tcaches.create(s, 0).expect("tcache.create");
         let f = Flags::decode(mallocx_tcache(t) | mallocx_arena(lua));
         assert_eq!(f.tcache, Tcache::Explicit(t));
-        let (e, _) = mallocx::alloc(s, c, f.arena, f.tcache);
+        let (e, _, _) = mallocx::alloc(s, c, f.arena, f.tcache);
         assert_eq!(s.classify_free(e), Ok((c, lua)));
         let th = s.tcaches.get(t).unwrap();
         let before = th.cache_in(lua, c).unwrap().len();
@@ -703,7 +703,7 @@ mod tests {
             let mut v = Vec::new();
             for i in 0..64 {
                 let a = if i % 2 == 0 { Some(lua) } else { None };
-                let (p, _) = mallocx::alloc(s, c, a, Tcache::Default);
+                let (p, _, _) = mallocx::alloc(s, c, a, Tcache::Default);
                 assert!(!p.is_null());
                 unsafe { *p = i as u8 };
                 v.push(p as usize);

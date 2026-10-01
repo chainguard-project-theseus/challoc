@@ -9,8 +9,11 @@ use crate::sys::pac;
 
 use super::PUSH_PAC;
 use super::{Heap, Shared};
+use vstd::prelude::verus;
+#[cfg(verus_only)]
+use vstd::prelude::*;
 
-vstd::prelude::verus! {
+verus! {
 
 /// TLS slot value while this thread's heap is being created and
 /// `pthread_setspecific` may re-enter the allocator.
@@ -42,6 +45,8 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
     }
 }
 
+verus! {
+
 /// The calling thread's heap, created on first use. `None` when the thread
 /// must be served without a cache: heap creation is in progress on it
 /// (`pthread_setspecific` re-entered the allocator), its destructor has run,
@@ -55,7 +60,10 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
 /// `'static` either: the thread-exit destructor frees the heap, so it must
 /// not be stored beyond the call.
 #[inline(always)]
-pub fn heap_for_thread(shared: &Shared) -> Option<&mut Heap> {
+pub fn heap_for_thread(shared: &Shared) -> (r: Option<&mut Heap>)
+    ensures
+        r matches Some(h) ==> h.wf(),
+{
     let (t, tp) = crate::sys::tls::get_tp();
     let t = t as usize;
     if t > TLS_EXITED {
@@ -69,6 +77,8 @@ pub fn heap_for_thread(shared: &Shared) -> Option<&mut Heap> {
     create_heap_for_thread(shared, t)
 }
 
+} // verus!
+
 /// The slot value for heap `h` on the calling thread: `h` signed with the
 /// thread pointer when `shared.pac()`, else `h` itself.
 fn tls_value_for(shared: &Shared, h: *mut Heap) -> *mut c_void {
@@ -80,9 +90,23 @@ fn tls_value_for(shared: &Shared, h: *mut Heap) -> *mut c_void {
     }
 }
 
+verus! {
+
+/// Create, register and publish the calling thread's heap (`slot` is its
+/// TLS value, 0 when it has none yet); `None` while a creation is in
+/// progress, after the exit destructor ran, or when the metadata region is
+/// exhausted.
+///
+/// Trusted: `Heap::create` (raw writes of a fresh metadata block, outside
+/// `verus!`) and the TLS writes. The new heap is well formed
+/// ([`Heap::wf`]): every header is `EMPTY`, so its caches hold nothing.
 #[cold]
 #[inline(never)]
-fn create_heap_for_thread(shared: &Shared, slot: usize) -> Option<&mut Heap> {
+#[verifier::external_body]
+fn create_heap_for_thread(shared: &Shared, slot: usize) -> (r: Option<&mut Heap>)
+    ensures
+        r matches Some(h) ==> h.wf(),
+{
     if slot != 0 {
         return None;
     }
@@ -112,7 +136,10 @@ fn create_heap_for_thread(shared: &Shared, slot: usize) -> Option<&mut Heap> {
 /// ([`PUSH_PAC`]), and a thread that created a heap did so under
 /// `shared()`, after init wrote that byte.
 #[inline(always)]
-pub fn existing_heap(shared: *const Shared) -> Option<&'static mut Heap> {
+pub fn existing_heap(shared: *const Shared) -> (r: Option<&'static mut Heap>)
+    ensures
+        r matches Some(h) ==> h.wf(),
+{
     let (t, tp) = tls_heap_slot()?;
     // SAFETY: a real slot value proves this thread observed `READY`, so
     // `push_flags` was written before.
@@ -128,7 +155,10 @@ pub fn existing_heap(shared: *const Shared) -> Option<&'static mut Heap> {
 /// frame it did not have, so the entry points take [`existing_heap`] and
 /// the `autda`s sit behind their own predicted `tbz`s.)
 #[inline(always)]
-pub fn tls_heap_slot() -> Option<(usize, usize)> {
+pub fn tls_heap_slot() -> (r: Option<(usize, usize)>)
+    ensures
+        r matches Some((t, _)) ==> t > TLS_EXITED,
+{
     let (t, tp) = crate::sys::tls::get_tp();
     let t = t as usize;
     if t > TLS_EXITED { Some((t, tp)) } else { None }
@@ -140,8 +170,16 @@ pub fn tls_heap_slot() -> Option<(usize, usize)> {
 /// The caller must have observed `READY` (a heap pointer in its TLS slot
 /// is the witness: heaps are created under `shared()`, after init wrote
 /// the byte).
+///
+/// Trusted: a field read through a raw pointer. The pointer is the
+/// process's `Shared` (every caller passes `api::shared_ptr` or the
+/// published reference), whose `PUSH_PAC` bit is [`super::pac_mode`].
 #[inline(always)]
-pub unsafe fn fast_flags(shared: *const Shared) -> u8 {
+#[verifier::external_body]
+pub unsafe fn fast_flags(shared: *const Shared) -> (r: u8)
+    ensures
+        (r & PUSH_PAC != 0) == super::pac_mode(),
+{
     // SAFETY: guaranteed by the caller.
     unsafe { ptr::read(&raw const (*shared).push_flags) }
 }
@@ -152,8 +190,17 @@ pub unsafe fn fast_flags(shared: *const Shared) -> u8 {
 /// # Safety
 /// `(t, tp)` from [`tls_heap_slot`] on this thread, and `pac` is the
 /// process's `PUSH_PAC`.
+///
+/// Trusted: the integer-to-reference cast. A slot value above the
+/// sentinels is a heap `create_heap_for_thread` published for this
+/// thread, and every heap a verified path is handed is well formed
+/// ([`Heap::wf`]).
 #[inline(always)]
-pub unsafe fn heap_from_slot(t: usize, tp: usize, pac: bool) -> &'static mut Heap {
+#[verifier::external_body]
+pub unsafe fn heap_from_slot(t: usize, tp: usize, pac: bool) -> (r: &'static mut Heap)
+    ensures
+        r.wf(),
+{
     let h = if pac { pac::auth(t, tp) } else { t };
     // SAFETY: guaranteed by the caller; the hint spares the null test the
     // compiler would otherwise add for the `Option` niche, `t` being above
@@ -163,3 +210,5 @@ pub unsafe fn heap_from_slot(t: usize, tp: usize, pac: bool) -> &'static mut Hea
         &mut *(h as *mut Heap)
     }
 }
+
+} // verus!

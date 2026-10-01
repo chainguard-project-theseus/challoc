@@ -58,13 +58,14 @@ pub assume_specification<T>[ <[T]>::reverse ](s: &mut [T])
 
 verus! {
 
-// The ordering operations of the cache flush (`heap::Heap::flush`,
-// `Heap::percpu_flush`). Only what callers rely on is stated: the length
-// (a permutation keeps it), the panics' conditions and, for the plain
-// and keyed selections and sorts, that every element they leave was there
-// before (a permutation moves elements and makes none; the flush's kept
-// entries rely on it). The key closures are called on elements, so they
-// must accept any. The keyed forms' element preservation assumes the key
+// The ordering operations of the cache flush (`heap::Heap::flush`).
+// Only what callers rely on is stated: the length,
+// the panics' conditions and, for the plain and keyed selections and
+// sorts, that they permute the elements (the multiset is unchanged, so
+// the flush's slot tokens can follow their entries; that every element
+// left was there before is stated too, for the kept entries). The key
+// closures are called on elements, so they must accept any. The keyed
+// forms' permutation assumes the key
 // closure changes no element (no interior mutability in `T`); the one
 // instantiation is `*mut u8`.
 // Since Rust 1.81 the sorts and selections may panic when `Ord` is not a
@@ -87,6 +88,7 @@ pub assume_specification<T: Ord>[ <[T]>::select_nth_unstable ](s: &mut [T], inde
         index < old(s)@.len(),
     ensures
         final(s)@.len() == old(s)@.len(),
+        final(s)@.to_multiset() == old(s)@.to_multiset(),
         forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] final(s)@[i]),
 ;
 
@@ -97,6 +99,7 @@ pub assume_specification<T, K: Ord, F: FnMut(&T) -> K>[ <[T]>::select_nth_unstab
         forall|x: &T| #[trigger] f.requires((x,)),
     ensures
         final(s)@.len() == old(s)@.len(),
+        final(s)@.to_multiset() == old(s)@.to_multiset(),
         forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] final(s)@[i]),
 ;
 
@@ -104,6 +107,7 @@ pub assume_specification<T, K: Ord, F: FnMut(&T) -> K>[ <[T]>::select_nth_unstab
 pub assume_specification<T: Ord>[ <[T]>::sort_unstable ](s: &mut [T])
     ensures
         final(s)@.len() == old(s)@.len(),
+        final(s)@.to_multiset() == old(s)@.to_multiset(),
         forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] final(s)@[i]),
 ;
 
@@ -113,6 +117,7 @@ pub assume_specification<T, K: Ord, F: FnMut(&T) -> K>[ <[T]>::sort_unstable_by_
         forall|x: &T| #[trigger] f.requires((x,)),
     ensures
         final(s)@.len() == old(s)@.len(),
+        final(s)@.to_multiset() == old(s)@.to_multiset(),
         forall|i: int| 0 <= i < old(s)@.len() ==> old(s)@.contains(#[trigger] final(s)@[i]),
 ;
 

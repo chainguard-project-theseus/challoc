@@ -7,11 +7,29 @@ use core::ptr;
 
 use crate::layout::NCLASSES;
 use crate::sys::pac;
+use crate::vspec::addr::addr_to_ptr;
 
-use super::{FOREIGN, Heap, MIN_CAP, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, Shared};
+use super::{CachePerms, FOREIGN, Heap, MIN_CAP, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, Shared};
 use super::{MODE_OFF, MODE_PROBE};
+#[cfg(verus_only)]
+use super::{
+    axiom_fresh_stack, cell_ok, lemma_handed_ok, lemma_plain_stored, lemma_stack_push,
+    lemma_stack_shrink, pac_mode, popped, regions_ok, slot_in, slot_ptr, slot_start, slot_token,
+    stack_ok,
+};
+#[cfg(verus_only)]
+use crate::class::slot_loc;
+#[cfg(verus_only)]
+use crate::layout::process_regions;
+use vstd::map::Map;
+#[cfg(verus_only)]
+use vstd::prelude::*;
+use vstd::prelude::{Tracked, int, verus};
+use vstd::raw_ptr::{PointsTo, ptr_mut_ref, ptr_mut_write, ptr_ref};
+use vstd::resource::set::GhostSingleton;
 
-/// One thread's cache header for one size class: exactly one cache line,
+verus! {
+
 /// inline in the heap ([`Heap::caches`]) or in an [`ArenaCaches`](super::ArenaCaches) node,
 /// pointing at its stack of `cap` slot pointers, a metadata object of its
 /// own. The fields the fast paths read (`len`, `cap`, `zeroed`, `slots`,
@@ -67,7 +85,30 @@ pub struct CacheHeader {
 
 /// Size of a [`CacheHeader`]: one line, so a class's header never shares
 /// a line with another class's.
-pub const CACHE_HEADER: usize = core::mem::size_of::<CacheHeader>();
+pub exec const CACHE_HEADER: usize
+    ensures
+        CACHE_HEADER == 64,
+{
+    core::mem::size_of::<CacheHeader>()
+}
+
+// Verus checks the size and alignment `CACHE_HEADER` names.
+global layout CacheHeader is size == 64, align == 64;
+
+impl CacheHeader {
+    /// The header invariant: the run lies inside the entries not popped
+    /// since the last GC, which lie inside the stack, which lies inside
+    /// its capacity (`run_end <= low_water <= len <= cap`), and the zero
+    /// prefix lies inside the entries not popped since the last GC
+    /// (`zeroed <= low_water`, see [`CacheHeader::zeroed`]).
+    pub(super) open spec fn inv(&self) -> bool {
+        &&& self.run_end <= self.low_water <= self.len <= self.cap
+        &&& self.zeroed <= self.low_water
+    }
+}
+
+} // verus!
+
 const _: () = assert!(CACHE_HEADER == 64);
 const _: () = assert!(core::mem::offset_of!(CacheHeader, slots) < 64 - 8);
 
@@ -89,15 +130,82 @@ impl CacheHeader {
         mode: MODE_OFF,
         unsorted_flushes: 0,
     };
+}
 
+verus! {
+
+impl CacheHeader {
     /// Metadata layout of a stack of `cap` slots.
-    pub const fn slots_layout(cap: u32) -> Layout {
+    pub const fn slots_layout(cap: u32) -> (r: Layout)
+        ensures
+            crate::vspec::layout::layout_size(r) == 8 * cap,
+            crate::vspec::layout::layout_align(r) == 16,
+    {
+        proof {
+            assert(16usize & sub(16usize, 1) == 0) by (bit_vector);
+        }
         match Layout::from_size_align(8 * cap as usize, 16) {
             Ok(l) => l,
             Err(_) => unreachable!(),
         }
     }
 
+    #[inline(always)]
+    pub(super) fn slots(&mut self) -> (r: *mut *mut u8)
+        ensures
+            r == old(self).slots,
+            *final(self) == *old(self),
+    {
+        self.slots
+    }
+
+    /// Sign every entry of `entries` (plain pointers) in place with the
+    /// stack base `slots` as the modifier ([`PUSH_PAC`]).
+    #[inline]
+    pub(super) fn sign_all(slots: *mut *mut u8, entries: &mut [*mut u8])
+        ensures
+            final(entries)@.len() == old(entries)@.len(),
+            forall|i: int| 0 <= i < old(entries)@.len() ==>
+                (#[trigger] final(entries)@[i])@.addr == pac::spec_sign(old(entries)@[i]@.addr, slots@.addr),
+    {
+        let m = slots as usize;
+        let ghost e0 = entries@;
+        for e in it: entries
+            invariant
+                m == slots@.addr,
+                it.seq().len() == e0.len(),
+                forall|i: int| 0 <= i < it.seq().len() ==> *(#[trigger] it.seq()[i]) == e0[i],
+                forall|i: int| 0 <= i < it.index() ==> (*final(#[trigger] it.seq()[i]))@.addr == pac::spec_sign(e0[i]@.addr, m),
+        {
+            *e = addr_to_ptr(pac::sign(*e as usize, m));
+        }
+    }
+
+    /// Authenticate every entry of `entries` (signed) in place.
+    #[inline]
+    pub(super) fn auth_all(slots: *mut *mut u8, entries: &mut [*mut u8])
+        ensures
+            final(entries)@.len() == old(entries)@.len(),
+            forall|i: int| 0 <= i < old(entries)@.len() ==>
+                (#[trigger] final(entries)@[i])@.addr == pac::spec_auth(old(entries)@[i]@.addr, slots@.addr),
+    {
+        let m = slots as usize;
+        let ghost e0 = entries@;
+        for e in it: entries
+            invariant
+                m == slots@.addr,
+                it.seq().len() == e0.len(),
+                forall|i: int| 0 <= i < it.seq().len() ==> *(#[trigger] it.seq()[i]) == e0[i],
+                forall|i: int| 0 <= i < it.index() ==> (*final(#[trigger] it.seq()[i]))@.addr == pac::spec_auth(e0[i]@.addr, m),
+        {
+            *e = addr_to_ptr(pac::auth(*e as usize, m));
+        }
+    }
+}
+
+} // verus!
+
+impl CacheHeader {
     #[inline]
     #[cfg(test)]
     pub fn len(&self) -> usize {
@@ -152,30 +260,6 @@ impl CacheHeader {
         self.allocs
     }
 
-    #[inline(always)]
-    pub(super) fn slots(&mut self) -> *mut *mut u8 {
-        self.slots
-    }
-
-    /// Sign every entry of `entries` (plain pointers) in place with the
-    /// stack base `slots` as the modifier ([`PUSH_PAC`]).
-    #[inline]
-    pub(super) fn sign_all(slots: *mut *mut u8, entries: &mut [*mut u8]) {
-        let m = slots as usize;
-        for e in entries {
-            *e = pac::sign(*e as usize, m) as *mut u8;
-        }
-    }
-
-    /// Authenticate every entry of `entries` (signed) in place.
-    #[inline]
-    pub(super) fn auth_all(slots: *mut *mut u8, entries: &mut [*mut u8]) {
-        let m = slots as usize;
-        for e in entries {
-            *e = pac::auth(*e as usize, m) as *mut u8;
-        }
-    }
-
     /// The plain pointer a stored entry names: authenticated when `pac`
     /// (`Shared::pac()`), the entry itself otherwise. For tests reading
     /// [`CacheHeader::cached`] or [`CacheHeader::run`], which return the
@@ -188,21 +272,25 @@ impl CacheHeader {
             e
         }
     }
-
-    /// Cached pointers, bottom of the stack first (the top is popped next).
-    /// Only for a cache with a stack (`cap != 0`).
-    #[inline]
-    pub(super) fn entries(&mut self) -> &mut [*mut u8] {
-        debug_assert!(self.cap != 0);
-        // SAFETY: `len <= cap` pointers exist at `slots`.
-        unsafe { core::slice::from_raw_parts_mut(self.slots, self.len as usize) }
-    }
 }
+
+verus! {
 
 impl Heap {
     /// The home header for `class`: `heap + 128 + 64 * class`, no load.
+    /// Trusted: `&raw mut` and the array-to-element cast; the home headers
+    /// are owned by every heap (`create_detached` makes them), and the one
+    /// for `class` caches class `class`.
     #[inline(always)]
-    pub(super) fn cache_ptr(&mut self, class: usize) -> *mut CacheHeader {
+    #[verifier::external_body]
+    pub(super) fn cache_ptr(&mut self, class: usize) -> (r: *mut CacheHeader)
+        requires
+            class < NCLASSES,
+        ensures
+            *final(self) == *old(self),
+            old(self).owns(r),
+            old(self).hdr_class(r) == class,
+    {
         debug_assert!(class < NCLASSES);
         // SAFETY: `class_of` only yields indices below `NCLASSES`.
         unsafe { (&raw mut self.caches).cast::<CacheHeader>().add(class) }
@@ -220,22 +308,46 @@ impl Heap {
     /// runs `tick`, whose GC may flush this cache, and reloads it. `pac`
     /// is `Shared::pac()`: whether the entry is stored signed.
     #[inline(always)]
-    pub(super) unsafe fn pop(
-        &mut self,
-        cache: *mut CacheHeader,
-        class: usize,
-        len: u32,
-        pac: bool,
-    ) -> (*mut u8, bool) {
-        // SAFETY: guaranteed by the caller.
-        unsafe {
-            let allocs = (*cache).allocs.wrapping_add(1);
-            (*cache).allocs = allocs;
-            if ((allocs as u32) & (*cache).compact_mask) == 0 {
-                return self.pop_compact(cache, class, len);
-            }
-            Self::pop_top(cache, len, pac)
+    pub(super) unsafe fn pop(&mut self, cache: *mut CacheHeader, class: usize, len: u32, pac: bool) -> (r: (*mut u8, bool))
+        requires
+            class < NCLASSES,
+            old(self).wf(),
+            old(self).owns(cache),
+            old(self).hdr_class(cache) == class,
+            len == old(self).hdr(cache).len,
+            len > 0,
+        ensures
+            final(self).keeps(*old(self)),
+            r.0@.addr != 0 && pac == pac_mode() ==> process_regions().is_slot(class as int, r.0@.addr),
+            r.0@.addr != 0 && r.1 && pac == pac_mode() ==> final(self).handed_ok(r.0, class as int),
+    {
+        broadcast use lemma_handed_ok;
+        let ghost old_perms = self.perms@;
+        let tracked mut spare = Map::<int, GhostSingleton<int>>::tracked_empty();
+        proof {
+            assert(cell_ok(cache, old_perms.hdrs[cache], old_perms.slots));
         }
+        let h = ptr_mut_ref(cache, Tracked(self.perms.borrow_mut().hdrs.tracked_borrow_mut(cache)));
+        let allocs = h.allocs.wrapping_add(1);
+        h.allocs = allocs;
+        if ((allocs as u32) & h.compact_mask) == 0 {
+            proof {
+                CachePerms::lemma_update(old_perms, self.perms@, cache);
+                CachePerms::lemma_tracks_hdr(old_perms, self.perms@, cache);
+                CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
+                CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
+            }
+            // SAFETY: guaranteed by the caller.
+            return unsafe { self.pop_compact(cache, class, len) };
+        }
+        proof {
+            CachePerms::lemma_update(old_perms, self.perms@, cache);
+            CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
+            CachePerms::lemma_tracks_hdr(old_perms, self.perms@, cache);
+            CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
+        }
+        // SAFETY: guaranteed by the caller.
+        unsafe { Self::pop_top(cache, len, pac, Tracked(self.perms.borrow_mut()), Tracked(&mut spare)) }
     }
 
     /// The ordinary pop of the top entry, `allocs` already counted. With
@@ -249,52 +361,147 @@ impl Heap {
     /// # Safety
     /// As for [`Heap::pop`].
     #[inline(always)]
-    pub(super) unsafe fn pop_top(cache: *mut CacheHeader, len: u32, pac: bool) -> (*mut u8, bool) {
+    pub(super) unsafe fn pop_top(
+        cache: *mut CacheHeader,
+        len: u32,
+        pac: bool,
+        Tracked(perms): Tracked<&mut CachePerms>,
+        Tracked(out): Tracked<&mut Map<int, GhostSingleton<int>>>,
+    ) -> (r: (*mut u8, bool))
+        requires
+            old(perms).wf(),
+            old(perms).tracks(),
+            old(perms).zero_ok(),
+            old(perms).hdrs.contains_key(cache),
+            len == old(perms).hdr(cache).len,
+            len > 0,
+        ensures
+            final(perms).keeps(*old(perms)),
+            final(perms).follows(*old(perms)),
+            final(perms).zero_ok(),
+            r.1 && pac == pac_mode() ==> CachePerms::handed_ok(final(perms).handed, r.0, old(perms).cls[cache]),
+            pac == pac_mode() ==> process_regions().is_slot(old(perms).cls[cache], r.0@.addr),
+            old(perms).tokened() ==> popped(*old(perms), *final(perms), *final(out), cache, pac == pac_mode(), r.0),
+    {
+        broadcast use vstd::layout::layout_of_references_and_pointers_for_sized_types;
+
+        let ghost old_perms = *perms;
+        proof {
+            assert(cell_ok(cache, old_perms.hdrs[cache], old_perms.slots));
+        }
         // SAFETY: guaranteed by the caller.
         unsafe {
+            let h = ptr_mut_ref(cache, Tracked(perms.hdrs.tracked_borrow_mut(cache)));
             let len = len - 1;
-            (*cache).len = len;
+            h.len = len;
             let mut zero = false;
-            if len < (*cache).low_water {
-                (*cache).low_water = len;
-                if len < (*cache).run_end {
-                    (*cache).run_end = len;
+            if len < h.low_water {
+                h.low_water = len;
+                if len < h.run_end {
+                    h.run_end = len;
                 }
-                if len < (*cache).zeroed {
-                    (*cache).zeroed = len;
+                if len < h.zeroed {
+                    h.zeroed = len;
                     zero = true;
                 }
             }
-            let slots = (*cache).slots();
-            let p = *slots.add(len as usize);
-            let p = if pac {
-                pac::auth(p as usize, slots as usize) as *mut u8
-            } else {
-                p
-            };
+            let slots = h.slots();
+            proof {
+                assert(zero == (len < old_perms.hdr(cache).zeroed));
+                assert(slot_ptr(slots, len as int) == crate::vspec::ptr::ptr_add(slots, len as usize));
+                assert(slots == old_perms.hdr(cache).slots);
+                assert(slot_in(slots, len as int));
+                assert(vstd::layout::size_of::<*mut u8>() == 8);
+                let sz = vstd::layout::size_of::<*mut u8>() as int;
+                assert((len as usize) as int * sz <= isize::MAX) by (nonlinear_arith)
+                    requires
+                        sz == 8,
+                        len <= u32::MAX;
+            }
+            let p = *ptr_ref(slots.add(len as usize), Tracked(perms.slots.tracked_borrow(slot_ptr(slots, len as int))));
+            let p = if pac { addr_to_ptr(pac::auth(p as usize, slots as usize)) } else { p };
+            proof {
+                lemma_stack_shrink(old_perms.hdr(cache), *h, perms.slots);
+                CachePerms::lemma_update(old_perms, *perms, cache);
+                CachePerms::lemma_tracks_hdr(old_perms, *perms, cache);
+                assert(old_perms.ent(cache, len as int) == slot_ptr(slots, len as int));
+            }
+            proof {
+                if old_perms.tokened() {
+                    let before = *perms;
+                    let tracked t = perms.toks.tracked_remove(slot_ptr(slots, len as int));
+                    out.tracked_insert(0, t);
+                    CachePerms::lemma_toks_only(before, *perms, old_perms);
+                    CachePerms::lemma_tokened_pop(old_perms, *perms, cache);
+                }
+                let ghost mid = *perms;
+                if zero {
+                    old_perms.lemma_zero_get(cache, len as int);
+                    let tracked t = perms.zero.tracked_remove(slot_ptr(slots, len as int));
+                    perms.handed = Some(t);
+                }
+                assert forall|i: int| #[trigger] CachePerms::in_prefix(perms.hdr(cache), i) implies perms.zero_at(cache, i) by {
+                    old_perms.lemma_zero_get(cache, i);
+                    assert(old_perms.owner[old_perms.ent(cache, i)] == (cache, i));
+                    assert(old_perms.owner[old_perms.ent(cache, len as int)] == (cache, len as int));
+                }
+                CachePerms::lemma_zero_update(old_perms, *perms, cache);
+                CachePerms::lemma_same_but_tokens(mid, *perms, old_perms);
+            }
             (p, zero)
         }
     }
 
+
     /// Push a checked slot of `class` (home arena) onto its cache.
     #[inline(always)]
-    pub(super) fn push(&mut self, shared: &Shared, class: usize, p: *mut u8) {
-        if !self.push_fast(class, p, shared.push_flags()) {
-            self.free_slow(shared, class, p);
+    pub(super) fn push(&mut self, shared: &Shared, class: usize, p: *mut u8, Tracked(tok): Tracked<GhostSingleton<int>>)
+        requires
+            process_regions().is_slot(class as int, p@.addr),
+            tok.id() == slot_loc(class as int),
+            tok@ == p@.addr as int,
+            shared.wf(),
+            class < NCLASSES,
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+    {
+        let tracked mut tk = Map::<int, GhostSingleton<int>>::tracked_empty();
+        proof {
+            tk.tracked_insert(0, tok);
+        }
+        if !self.push_fast(class, p, shared.push_flags(), Tracked(&mut tk)) {
+            let tracked t = tk.tracked_remove(0);
+            self.free_slow(shared, class, p, Tracked(t));
         }
     }
 
     /// The cache push alone: `false` when the cache is full (or still the
     /// sentinel) and the caller must take a slow path. No counter moves:
-    /// the push count is implied by `len`, `allocs` and `moved`, and
-    /// `zeroed` is never above the pushed position (see
-    /// [`CacheHeader::zeroed`]). `flags` is `Shared::push_flags`.
+    /// the push count is implied by `len`, `allocs` and `moved`. `zeroed` is
+    /// never above the pushed position (see [`CacheHeader::zeroed`]).
+    /// `flags` is `Shared::push_flags`.
+    ///
+    /// `tk[0]` is the pushed slot's token: it goes onto the stack with the
+    /// slot ([`Heap::tokened`]; `verus/TODO.md`, "Uniqueness: slot tokens"),
+    /// or stays in `tk` for the slow path when the push declines.
     #[inline(always)]
-    pub fn push_fast(&mut self, class: usize, p: *mut u8, flags: u8) -> bool {
+    pub fn push_fast(&mut self, class: usize, p: *mut u8, flags: u8, Tracked(tk): Tracked<&mut Map<int, GhostSingleton<int>>>) -> (r: bool)
+        requires
+            (flags & PUSH_PAC != 0) == pac_mode(),
+            process_regions().is_slot(class as int, p@.addr),
+            class < NCLASSES,
+            old(self).wf(),
+            slot_token(*old(tk), class as int, true, p),
+        ensures
+            flags & PUSH_ZERO != 0 ==> !r,
+            final(self).keeps(*old(self)),
+            !r ==> *final(tk) == *old(tk),
+    {
         let cache = self.cache_ptr(class);
         // SAFETY: this thread's own header, unused (`len == cap == 0`, so
         // nothing is written) or with a stack of `cap` slots.
-        unsafe { Self::push_cache_flags(cache, p, flags) }
+        unsafe { Self::push_cache_flags(cache, p, flags, Tracked(self.perms.borrow_mut()), Tracked(tk)) }
     }
 
     /// [`Heap::push_cache`] behind the opt-in hardening: with `flags` zero
@@ -317,24 +524,57 @@ impl Heap {
     /// # Safety
     /// As for [`Heap::push_cache`].
     #[inline(always)]
-    pub(super) unsafe fn push_cache_flags(cache: *mut CacheHeader, p: *mut u8, flags: u8) -> bool {
+    pub(super) unsafe fn push_cache_flags(
+        cache: *mut CacheHeader,
+        p: *mut u8,
+        flags: u8,
+        Tracked(perms): Tracked<&mut CachePerms>,
+        Tracked(tk): Tracked<&mut Map<int, GhostSingleton<int>>>,
+    ) -> (r: bool)
+        requires
+            old(perms).wf(),
+            old(perms).tracks(),
+            old(perms).zero_ok(),
+            old(perms).hdrs.contains_key(cache),
+            (flags & PUSH_PAC != 0) == pac_mode(),
+            regions_ok(),
+            process_regions().is_slot(old(perms).cls[cache], p@.addr),
+            slot_start(p),
+            old(tk).contains_key(0) ==> slot_token(*old(tk), old(perms).cls[cache], true, p),
+        ensures
+            flags & PUSH_ZERO != 0 ==> !r,
+            final(perms).keeps(*old(perms)),
+            final(perms).follows(*old(perms)),
+            !r ==> *final(tk) == *old(tk),
+            old(perms).tokened() && old(tk).contains_key(0) ==> final(perms).tokened(),
+            final(perms).zero_ok(),
+    {
+        proof {
+            assert((flags == 0 || flags == 4) ==> flags & 2 == 0) by (bit_vector);
+            assert(flags == 4 ==> flags & 4 != 0) by (bit_vector);
+            assert(flags == 0 ==> flags & 4 == 0) by (bit_vector);
+        }
         // One byte compare each for the two common configurations: signed
         // pointers alone (opt-in `pac_pointers:true` on an arm64 host with
         // PAC; never set elsewhere, so the compare is compiled out) and no
         // hardening (the default on every host, PAC or not).
         if cfg!(target_arch = "aarch64") && flags == PUSH_PAC {
             // SAFETY: guaranteed by the caller.
-            return unsafe { Self::push_cache(cache, p, false, true) };
+            return unsafe { Self::push_cache(cache, p, false, true, Tracked(perms), Tracked(tk)) };
         }
         if flags == 0 {
             // SAFETY: guaranteed by the caller.
-            return unsafe { Self::push_cache(cache, p, false, false) };
+            return unsafe { Self::push_cache(cache, p, false, false, Tracked(perms), Tracked(tk)) };
         }
         if flags & PUSH_ZERO != 0 {
+            proof {
+                CachePerms::lemma_keeps_refl(*perms);
+                CachePerms::lemma_tracks_same(*perms);
+            }
             return false;
         }
         // SAFETY: guaranteed by the caller.
-        unsafe { Self::push_cache(cache, p, flags & PUSH_SCAN != 0, flags & PUSH_PAC != 0) }
+        unsafe { Self::push_cache(cache, p, flags & PUSH_SCAN != 0, flags & PUSH_PAC != 0, Tracked(perms), Tracked(tk)) }
     }
 
     /// `double_free_scan`'s compare (design 6.3 step 3): whether `e`, the
@@ -344,9 +584,18 @@ impl Heap {
     /// one; no call in the body.
     ///
     /// # Safety
-    /// `slots` has `len` entries.
+    /// `slots` has `len` entries (`perms` owns them, written).
+    ///
+    /// Trusted: the short-cache case is an iterator.
     #[inline(always)]
-    pub(super) unsafe fn cached_recently(slots: *mut *mut u8, len: u32, e: *mut u8) -> bool {
+    #[verifier::external_body]
+    pub(super) unsafe fn cached_recently(slots: *mut *mut u8, len: u32, e: *mut u8, Tracked(perms): Tracked<&Map<*mut *mut u8, PointsTo<*mut u8>>>) -> bool
+        requires
+            forall|i: int| 0 <= i < len ==> {
+                let q = #[trigger] slot_ptr(slots, i);
+                perms.contains_key(q) && perms[q].ptr() == q && perms[q].is_init()
+            },
+    {
         if len == 0 {
             return false;
         }
@@ -387,24 +636,102 @@ impl Heap {
         p: *mut u8,
         scan: bool,
         pac: bool,
-    ) -> bool {
+        Tracked(perms): Tracked<&mut CachePerms>,
+        Tracked(tk): Tracked<&mut Map<int, GhostSingleton<int>>>,
+    ) -> (r: bool)
+        requires
+            old(perms).wf(),
+            old(perms).tracks(),
+            old(perms).zero_ok(),
+            old(perms).hdrs.contains_key(cache),
+            pac == pac_mode(),
+            regions_ok(),
+            process_regions().is_slot(old(perms).cls[cache], p@.addr),
+            slot_start(p),
+            old(tk).contains_key(0) ==> slot_token(*old(tk), old(perms).cls[cache], true, p),
+        ensures
+            final(perms).keeps(*old(perms)),
+            final(perms).follows(*old(perms)),
+            !scan && old(perms).hdr(cache).len < old(perms).hdr(cache).cap ==> r,
+            r ==> final(perms).hdr(cache).len == old(perms).hdr(cache).len + 1,
+            old(perms).tokened() && old(tk).contains_key(0) ==> final(perms).tokened(),
+            !r ==> *final(tk) == *old(tk),
+            final(perms).zero_ok(),
+    {
+        broadcast use vstd::layout::layout_of_references_and_pointers_for_sized_types;
+
+        let ghost old_perms = *perms;
+        proof {
+            assert(cell_ok(cache, old_perms.hdrs[cache], old_perms.slots));
+        }
         // SAFETY: guaranteed by the caller.
         unsafe {
-            let len = (*cache).len;
-            if len == (*cache).cap {
+            let h = ptr_mut_ref(cache, Tracked(perms.hdrs.tracked_borrow_mut(cache)));
+            let len = h.len;
+            if len == h.cap {
+                proof {
+                    CachePerms::lemma_update(old_perms, *perms, cache);
+                    CachePerms::lemma_tracks_hdr(old_perms, *perms, cache);
+                    if old_perms.tokened() {
+                        CachePerms::lemma_tokened_hdr(old_perms, *perms, cache);
+                    }
+                    CachePerms::lemma_zero_hdr(old_perms, *perms, cache);
+                }
                 return false;
             }
-            let slots = (*cache).slots();
-            let e = if pac {
-                pac::sign(p as usize, slots as usize) as *mut u8
-            } else {
-                p
-            };
-            if scan && Self::cached_recently(slots, len, e) {
+            let slots = h.slots();
+            let e = if pac { addr_to_ptr(pac::sign(p as usize, slots as usize)) } else { p };
+            if scan && Self::cached_recently(slots, len, e, Tracked(&perms.slots)) {
+                proof {
+                    CachePerms::lemma_update(old_perms, *perms, cache);
+                    CachePerms::lemma_tracks_hdr(old_perms, *perms, cache);
+                    if old_perms.tokened() {
+                        CachePerms::lemma_tokened_hdr(old_perms, *perms, cache);
+                    }
+                    CachePerms::lemma_zero_hdr(old_perms, *perms, cache);
+                }
                 return false;
             }
-            *slots.add(len as usize) = e;
-            (*cache).len = len + 1;
+            proof {
+                assert(slot_ptr(slots, len as int) == crate::vspec::ptr::ptr_add(slots, len as usize));
+                assert(perms.slots.contains_key(slot_ptr(slots, len as int)));
+                assert(vstd::layout::size_of::<*mut u8>() == 8);
+                assert(slot_in(slots, len as int));
+                let sz = vstd::layout::size_of::<*mut u8>() as int;
+                assert((len as usize) as int * sz <= isize::MAX) by (nonlinear_arith)
+                    requires
+                        sz == 8,
+                        len <= u32::MAX;
+            }
+            let ghost q = slot_ptr(slots, len as int);
+            let ghost s0 = perms.slots;
+            ptr_mut_write(slots.add(len as usize), Tracked(perms.slots.tracked_borrow_mut(q)), e);
+            proof {
+                CachePerms::lemma_write_grows(s0, perms.slots, q);
+            }
+            h.len = len + 1;
+            proof {
+                lemma_stack_push(old_perms.hdr(cache), *h, s0, perms.slots);
+                lemma_plain_stored(e, p, old_perms.cls[cache], slots);
+                CachePerms::lemma_update(old_perms, *perms, cache);
+                assert(old_perms.ent(cache, len as int) == q);
+                assert(perms.slots == s0.insert(q, perms.slots[q]));
+                CachePerms::lemma_tracks_put(old_perms, *perms, cache, len as int);
+                assert forall|i: int| #[trigger] CachePerms::in_prefix(perms.hdr(cache), i) implies perms.zero_at(cache, i) by {
+                    old_perms.lemma_zero_get(cache, i);
+                    assert(old_perms.owner[old_perms.ent(cache, i)] == (cache, i));
+                }
+                CachePerms::lemma_zero_update(old_perms, *perms, cache);
+            }
+            proof {
+                if old_perms.tokened() && tk.contains_key(0) {
+                    let before = *perms;
+                    let tracked t = tk.tracked_remove(0);
+                    perms.toks.tracked_insert(q, t);
+                    CachePerms::lemma_toks_only(before, *perms, old_perms);
+                    CachePerms::lemma_tokened_push(old_perms, *perms, cache, t);
+                }
+            }
         }
         true
     }
@@ -417,7 +744,20 @@ impl Heap {
         shared: &Shared,
         arena: u16,
         class: usize,
-    ) -> *mut CacheHeader {
+    ) -> (r: *mut CacheHeader)
+        requires
+            class < NCLASSES,
+            shared.wf(),
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+            r@.addr != 0 ==> final(self).owns(r) && final(self).hdr(r).cap != 0 && final(self).hdr_class(r) == class,
+    {
+        proof {
+            shared.lemma_wf();
+            shared.lemma_meta();
+            CachePerms::lemma_keeps_refl(self.perms@);
+        }
         // The capacity first: a class that is never cached for this arena
         // must not create an `others` node. This is the one place the
         // placement rule is consulted on the allocation and free paths.
@@ -435,6 +775,10 @@ impl Heap {
         } else {
             cap
         };
+        proof {
+            assert(0 < cap <= 65536);
+            assert(crate::meta::MAX_BINNED == 0x10_0000usize) by (compute_only);
+        }
         // The arena before the node: `arena` came from an owner word on
         // the free path, and a word naming an arena that was never built
         // aborts here (`Shared::owner`) before a node is created for it.
@@ -447,43 +791,73 @@ impl Heap {
         if cache.is_null() {
             return ptr::null_mut();
         }
-        // SAFETY: `cache` points into this heap's own header array.
-        if unsafe { (*cache).cap } != 0 {
+        if self.hdr_ref(cache).cap != 0 {
             return cache;
         }
         let slots = shared.meta.alloc(CacheHeader::slots_layout(cap));
         if slots.is_null() {
             return ptr::null_mut();
         }
-        // SAFETY: `cache` is this heap's own header (still `EMPTY`) and
-        // `slots` has room for `cap` pointers, exclusively ours.
-        unsafe {
-            ptr::write(
-                cache,
-                CacheHeader {
-                    len: 0,
-                    cap,
-                    low_water: 0,
-                    zeroed: 0,
-                    slots: slots as *mut *mut u8,
-                    allocs: 0,
-                    compact_mask: u32::MAX,
-                    run_end: 0,
-                    moved: 0,
-                    probe_refilled: refilled,
-                    arena,
-                    mode: MODE_OFF,
-                    unsorted_flushes: 0,
-                },
-            );
-            // The `FOREIGN` cache is never popped, so it never probes.
-            let mode = if arena == FOREIGN {
-                MODE_OFF
-            } else {
-                MODE_PROBE
-            };
-            (*cache).set_mode(mode);
+        let ghost h0 = *self;
+        proof {
+            axiom_fresh_stack(self.perms.borrow_mut(), cache, slots as *mut *mut u8, cap);
+        }
+        // `cache` is this heap's own header (still `EMPTY`) and `slots`
+        // has room for `cap` pointers, exclusively ours.
+        ptr_mut_write(
+            cache,
+            Tracked(self.perms.borrow_mut().hdrs.tracked_borrow_mut(cache)),
+            CacheHeader {
+                len: 0,
+                cap,
+                low_water: 0,
+                zeroed: 0,
+                slots: slots as *mut *mut u8,
+                allocs: 0,
+                compact_mask: u32::MAX,
+                run_end: 0,
+                moved: 0,
+                probe_refilled: refilled,
+                arena,
+                mode: MODE_OFF,
+                unsorted_flushes: 0,
+            },
+        );
+        // The `FOREIGN` cache is never popped, so it never probes.
+        let mode = if arena == FOREIGN {
+            MODE_OFF
+        } else {
+            MODE_PROBE
+        };
+        let ghost h1 = *self;
+        proof {
+            let hp = self.perms@.hdrs[cache];
+            assert(stack_ok(hp.value(), self.perms@.slots));
+            CachePerms::lemma_update(h0.perms@, self.perms@, cache);
+            CachePerms::lemma_tracks_frame(h0.perms@, self.perms@, cache);
+            CachePerms::lemma_zero_update(h0.perms@, self.perms@, cache);
+            // The fresh header caches nothing yet; every other entry keeps
+            // its value and token.
+            assert forall|p2: *mut CacheHeader, j: int|
+                h0.perms@.hdrs.contains_key(p2) && p2 != cache && 0 <= j < h0.perms@.hdr(p2).cap implies {
+                    let q = #[trigger] h0.perms@.ent(p2, j);
+                    &&& self.perms@.slots[q] == h0.perms@.slots[q]
+                    &&& (h0.perms@.toks.contains_key(q) ==> self.perms@.toks.contains_key(q) && self.perms@.toks[q] == h0.perms@.toks[q])
+                } by {
+                assert(cell_ok(p2, h0.perms@.hdrs[p2], h0.perms@.slots));
+                assert(h0.perms@.slots.contains_key(h0.perms@.ent(p2, j)));
+            }
+            CachePerms::lemma_tok_update(h0.perms@, self.perms@, cache);
+        }
+        let h = self.hdr_mut(cache);
+        h.set_mode(mode);
+        proof {
+            Heap::lemma_set(h1, *self, cache, *h);
+            Heap::lemma_keeps_trans(*old(self), h0, h1);
+            Heap::lemma_keeps_trans(*old(self), h1, *self);
         }
         cache
     }
 }
+
+} // verus!

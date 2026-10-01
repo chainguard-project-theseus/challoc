@@ -11,16 +11,25 @@ use crate::arena::{Arena, Arenas};
 use crate::class::SlabTable;
 use crate::config::Config;
 use crate::huge::Huge;
+#[cfg(verus_only)]
+use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
 use crate::lock::Lock;
 use crate::meta::Meta;
+use crate::vspec::zero::Zeroed;
 
 use super::heap_destructor;
 use super::tcaches::Tcaches;
 use super::{Heap, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free};
+#[cfg(verus_only)]
+use crate::class::slot_loc;
+#[cfg(verus_only)]
+use crate::class::{aset, distinct, ptr_addrs};
 use vstd::prelude::verus;
 #[cfg(verus_only)]
 use vstd::prelude::*;
+use vstd::prelude::{Tracked, int};
+use vstd::resource::set::{GhostSingleton, GhostSubset};
 
 /// The cache GC period (design 6.4): 10 s.
 pub const GC_INTERVAL_NS: u64 = 10_000_000_000;
@@ -118,6 +127,18 @@ pub struct GuardTest {
 
 } // verus!
 
+verus! {
+
+impl GuardTest {
+    /// Whether `slab` is a guard slab of the class this pair describes.
+    #[inline(always)]
+    pub(super) fn is_guard(self, slab: usize) -> bool {
+        (slab as u32).wrapping_add(self.add) & self.mask == 0
+    }
+}
+
+} // verus!
+
 impl GuardTest {
     pub(super) fn of(table: &SlabTable) -> GuardTest {
         let lg_spp = table.slabs_per_page().trailing_zeros();
@@ -125,12 +146,6 @@ impl GuardTest {
             add: table.slabs_per_page() as u32,
             mask: table.guard_mask().wrapping_shl(lg_spp),
         }
-    }
-
-    /// Whether `slab` is a guard slab of the class this pair describes.
-    #[inline(always)]
-    pub(super) fn is_guard(self, slab: usize) -> bool {
-        (slab as u32).wrapping_add(self.add) & self.mask == 0
     }
 }
 
@@ -145,11 +160,15 @@ const _: () = assert!(
             / 128
 );
 
+verus! {
+
 /// The `pthread_key` whose destructor tears down a thread's heap.
 pub(crate) struct ThreadKey {
     key: libc::pthread_key_t,
     valid: bool,
 }
+
+} // verus!
 
 impl ThreadKey {
     pub fn create() -> ThreadKey {
@@ -186,16 +205,20 @@ impl ThreadKey {
     }
 }
 
+verus! {
+
+pub(super) fn now_ns() -> u64 {
+    crate::sys::now_coarse_ns()
+}
+
+} // verus!
+
 pub(super) fn tid() -> u32 {
     crate::sys::gettid() as u32
 }
 
 pub(super) fn ncpus() -> u32 {
     crate::sys::ncpus()
-}
-
-pub(super) fn now_ns() -> u64 {
-    crate::sys::now_coarse_ns()
 }
 
 /// Eight random bytes from `getrandom(2)` for `slot_randomize`; on a
@@ -362,6 +385,162 @@ impl Shared {
         }
         true
     }
+}
+
+verus! {
+
+impl Shared {
+    /// What `Shared::init` establishes of the value it builds, and nothing
+    /// changes afterwards (every field is written once, before the
+    /// `Shared` is published): the address-space layout is well formed and
+    /// separated and is the process's ([`crate::layout::process_regions`]);
+    /// `tables[c]` is class `c`'s table; `huge` covers exactly the huge
+    /// region's pages, starting at the huge base with the regions' page;
+    /// the [`PUSH_PAC`] bit is [`super::pac_mode`]; `meta` allocates from
+    /// the metadata region, which holds every class table's descriptors,
+    /// bitmap and owner words.
+    ///
+    /// Assumed by every verified function that takes a `&Shared`: the
+    /// accessor that hands the published `Shared` out (`api::shared_ref`)
+    /// claims it; `init` is outside `verus!`, so nothing proves it of the
+    /// value `init` builds. The configuration is well formed
+    /// (`Config::wf`, which `config::load` ensures).
+    pub closed spec fn wf(&self) -> bool {
+        &&& self.regions.wf()
+        &&& self.regions == crate::layout::process_regions()
+        &&& self.regions.separated()
+        &&& self.huge.spec_base() == self.regions.huge_base
+        &&& self.huge.spec_page() == (1usize << self.regions.lg_page) as int
+        &&& (self.push_flags & PUSH_PAC != 0) == super::pac_mode()
+        &&& self.config.wf()
+        &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].spec_class() == c
+        &&& self.huge.spec_npages() == self.huge_pages()
+        &&& self.meta.spec_base() == self.regions.meta_base
+        &&& self.meta.spec_len() == self.regions.meta_len
+        &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].meta_ok()
+    }
+
+    /// `meta` is the process's metadata allocator ([`Shared::wf`]).
+    pub(crate) proof fn lemma_meta(&self)
+        requires
+            self.wf(),
+        ensures
+            self.meta.is_process(),
+            forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].meta_ok(),
+    {
+    }
+
+    /// Pages in the huge region: the bound on a huge page
+    /// [`Shared::classify_free`] returns.
+    pub closed spec fn huge_pages(&self) -> usize {
+        self.regions.huge_len >> self.regions.lg_page
+    }
+
+    /// [`Shared::huge_pages`] unfolded.
+    pub(crate) proof fn lemma_huge_pages(&self)
+        ensures
+            self.huge_pages() == self.regions.huge_len >> self.regions.lg_page,
+    {
+    }
+
+    /// The process's regions are this `Shared`'s, well formed and separated.
+    pub proof fn lemma_regions_ok(&self)
+        requires
+            self.wf(),
+        ensures
+            super::regions_ok(),
+    {
+    }
+
+    /// The huge allocator's base is a page start: the huge base is
+    /// `MAX_SLAB`-aligned and the page is at most `MAX_SLAB`
+    /// (`Regions::separated`).
+    pub(crate) proof fn lemma_huge_aligned(&self)
+        requires
+            self.wf(),
+        ensures
+            self.huge.spec_base_aligned(),
+    {
+        let lg = self.regions.lg_page;
+        vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+        vstd::bits::lemma_usize_shl_is_mul(1, lg as usize);
+        let page = 1usize << lg;
+        vstd::arithmetic::power2::lemma2_to64();
+        if lg < 22 {
+            vstd::arithmetic::power2::lemma_pow2_strictly_increases(lg as nat, 22);
+        }
+        assert(crate::layout::MAX_SLAB == 0x40_0000) by (bit_vector);
+        crate::meta::lemma_is_pow2_shl(lg as usize);
+        vstd::arithmetic::div_mod::lemma_mod_self_0(page as int);
+        crate::layout::lemma_pow2_divides_pow2(page, page as int, 22);
+        crate::layout::lemma_aligned_down(self.regions.huge_base as int, crate::layout::MAX_SLAB as int, page as int);
+    }
+
+    /// A run [`Huge::alloc_run`] placed for `size` bytes at `align` is a
+    /// [`huge_block`](crate::layout::huge_block).
+    proof fn lemma_run_is_block(&self, a: usize, size: usize, align: usize)
+        requires
+            self.wf(),
+            self.huge.spec_run_at(a, size, align),
+        ensures
+            crate::layout::huge_block(a, size, align),
+    {
+        let (len, lg32) = (self.regions.huge_len, self.regions.lg_page);
+        let lg = lg32 as usize;
+        let np = len >> lg32;
+        vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+        vstd::bits::lemma_usize_shl_is_mul(1, lg);
+        assert(np == len >> lg) by (bit_vector)
+            requires
+                np == len >> lg32,
+                lg == lg32 as usize,
+        ;
+        vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(np, lg, len);
+    }
+
+    /// The usable bytes of a huge run for `size` ([`Huge::spec_usable`]).
+    pub closed spec fn huge_usable(&self, size: usize) -> int {
+        self.huge.spec_usable(size)
+    }
+
+    /// A huge run for `size` can be described: `size` rounded up to a page
+    /// does not overflow.
+    pub closed spec fn huge_ok(&self, size: usize) -> bool {
+        size + self.huge.spec_page() - 1 <= usize::MAX
+    }
+
+    /// [`Shared::huge_usable`] unfolded.
+    pub(crate) proof fn lemma_huge_usable(&self, size: usize)
+        ensures
+            self.huge_usable(size) == self.huge.spec_usable(size),
+            self.huge_ok(size) == (size + self.huge.spec_page() - 1 <= usize::MAX),
+    {
+    }
+
+    /// The flag byte [`Shared::push_flags`] returns.
+    pub closed spec fn flags(&self) -> u8 {
+        self.push_flags
+    }
+
+    /// [`Shared::wf`] unfolded, for the rest of the crate.
+    pub(crate) proof fn lemma_wf(&self)
+        requires
+            self.wf(),
+        ensures
+            self.regions.wf(),
+            self.regions == crate::layout::process_regions(),
+            self.regions.separated(),
+            self.huge.spec_base() == self.regions.huge_base,
+            self.huge.spec_page() == (1usize << self.regions.lg_page) as int,
+            (self.flags() & PUSH_PAC != 0) == super::pac_mode(),
+            forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].spec_class() == c,
+            self.huge.spec_npages() == self.huge_pages(),
+            self.config.wf(),
+            self.huge_pages() == self.regions.huge_len >> self.regions.lg_page,
+            self.meta.is_process(),
+            forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].meta_ok(),
+    {
+    }
 
     /// The per-class slab tables (shared by every arena).
     #[inline(always)]
@@ -372,13 +551,77 @@ impl Shared {
     /// Slab table for `class`, without the bounds check the fast paths do
     /// not need (`class` comes from `class_of`).
     #[inline(always)]
-    pub fn table(&self, class: usize) -> &SlabTable {
+    pub fn table(&self, class: usize) -> (r: &SlabTable)
+        requires
+            class < NCLASSES,
+        ensures
+            self.wf() ==> r.spec_class() == class,
+    {
         debug_assert!(class < NCLASSES);
         // SAFETY: `class_of` only yields indices below `NCLASSES`.
         unsafe { self.tables.get_unchecked(class) }
     }
 
-    /// Arena `index` if it exists (automatic arenas are built on first
+    /// Whether more than one arena exists (see the field).
+    #[inline(always)]
+    pub fn multi_arena(&self) -> bool {
+        self.multi_arena.load(Ordering::Relaxed)
+    }
+
+    /// The flag byte both fast paths load: [`PUSH_SCAN`], [`PUSH_ZERO`]
+    /// and [`PUSH_PAC`]; 0 in the default configuration on a CPU without
+    /// pointer authentication.
+    #[inline(always)]
+    pub fn push_flags(&self) -> (r: u8)
+        ensures
+            r == self.flags(),
+            self.wf() ==> ((r & PUSH_PAC != 0) == super::pac_mode()),
+    {
+        self.push_flags
+    }
+
+    /// Whether cache and heap pointers are signed ([`PUSH_PAC`]).
+    #[inline(always)]
+    pub fn pac(&self) -> (r: bool)
+        ensures
+            r == (self.flags() & PUSH_PAC != 0),
+            self.wf() ==> r == super::pac_mode(),
+    {
+        self.push_flags & PUSH_PAC != 0
+    }
+
+    /// Whether pushes compare against the top four cache entries
+    /// (`double_free_scan`).
+    #[inline(always)]
+    pub fn double_free_scan(&self) -> (r: bool)
+        ensures
+            r == (self.flags() & PUSH_SCAN != 0),
+    {
+        self.push_flags & PUSH_SCAN != 0
+    }
+
+    /// Whether a freed block is cleared before it is cached or released
+    /// (`zero_on_free`).
+    #[inline(always)]
+    pub fn zero_on_free(&self) -> (r: bool)
+        ensures
+            r == (self.flags() & PUSH_ZERO != 0),
+    {
+        self.push_flags & PUSH_ZERO != 0
+    }
+
+    /// A second arena is being built (`Arenas::build`).
+    pub fn set_multi_arena(&self) {
+        self.multi_arena.store(true, Ordering::Relaxed);
+    }
+
+    /// The cache GC period the periodic tick uses: `tcache_gc_interval_ms`,
+    /// or 0 (GC every tick) while the cgroup policy is in its immediate
+    /// band (design 11).
+    #[inline]
+    pub fn gc_interval(&self) -> u64 {
+        if self.policy.immediate() { 0 } else { self.gc_interval_ns }
+    }
     /// touch; see `Arenas::get`).
     #[inline]
     pub fn arena(&self, index: u16) -> Option<&Arena> {
@@ -405,61 +648,6 @@ impl Shared {
         }
     }
 
-    /// Whether more than one arena exists (see the field).
-    #[inline(always)]
-    pub fn multi_arena(&self) -> bool {
-        self.multi_arena.load(Ordering::Relaxed)
-    }
-
-    /// The flag byte both fast paths load: [`PUSH_SCAN`], [`PUSH_ZERO`]
-    /// and [`PUSH_PAC`]; 0 in the default configuration, PAC host or not.
-    #[inline(always)]
-    pub fn push_flags(&self) -> u8 {
-        self.push_flags
-    }
-
-    /// Whether cache and heap pointers are signed ([`PUSH_PAC`]).
-    #[inline(always)]
-    pub fn pac(&self) -> bool {
-        self.push_flags & PUSH_PAC != 0
-    }
-
-    /// Whether pushes compare against the top four cache entries
-    /// (`double_free_scan`).
-    #[inline(always)]
-    pub fn double_free_scan(&self) -> bool {
-        self.push_flags & PUSH_SCAN != 0
-    }
-
-    /// Whether a freed block is cleared before it is cached or released
-    /// (`zero_on_free`).
-    #[inline(always)]
-    pub fn zero_on_free(&self) -> bool {
-        self.push_flags & PUSH_ZERO != 0
-    }
-
-    /// A second arena is being built (`Arenas::build`).
-    pub fn set_multi_arena(&self) {
-        self.multi_arena.store(true, Ordering::Relaxed);
-    }
-
-    /// The cache GC period the periodic tick uses: `gc_interval_ns`,
-    /// or 0 (GC every tick) while the cgroup policy is in its immediate
-    /// band (design 11).
-    #[inline]
-    pub fn gc_interval(&self) -> u64 {
-        if self.policy.immediate() {
-            0
-        } else {
-            self.gc_interval_ns
-        }
-    }
-
-    /// The decay period new arenas start with (`dirty_decay_ms`).
-    pub fn default_decay_ns(&self) -> u64 {
-        crate::purge::decay_ns_from_ms(self.config.dirty_decay_ms)
-    }
-
     /// Arena 0's decay period in nanoseconds (`purge::NEVER` when purging
     /// is off), which the huge allocator shares unless
     /// `huge_dirty_decay_ms` gives it its own ([`Shared::huge_decay_ns`]).
@@ -473,6 +661,10 @@ impl Shared {
     /// `purge::NEVER`), else arena 0's live period ([`Shared::decay_ns`],
     /// which `arena.0.dirty_decay_ms` moves). The cgroup policy scales
     /// whichever it is (`purge::decay`).
+    ///
+    /// Trusted: it reads a field of `Config`, which is outside `verus!`;
+    /// claims only that it returns.
+    #[verifier::external_body]
     pub fn huge_decay_ns(&self) -> u64 {
         match self.config.huge_dirty_decay_ms {
             Some(ms) => crate::purge::decay_ns_from_ms(ms),
@@ -480,48 +672,46 @@ impl Shared {
         }
     }
 
-    /// Change the decay period of every existing arena; `-1` turns purging
-    /// off. Takes effect at the next periodic tick, or at once for a
-    /// background thread (each arena setter wakes it).
-    /// `arena.<i>.dirty_decay_ms` goes through `Arena::set_decay_ms` instead.
-    pub fn set_decay_ms(&self, ms: i64) {
-        for a in self.arenas.iter() {
-            a.set_decay_ms(ms);
-        }
-    }
-
-    /// Whether the thread-exit key exists (heaps of exiting threads are
-    /// reclaimed). False only if `pthread_key_create` failed at init.
-    #[cfg(test)]
-    pub fn has_thread_key(&self) -> bool {
-        self.key.valid()
-    }
-
-    /// The thread-exit key, for diagnostics and tests.
-    #[cfg(test)]
-    pub fn thread_key(&self) -> Option<libc::pthread_key_t> {
-        self.key.key()
-    }
-
     /// Claim one slot of `class` in `arena` straight from the slab bitmaps,
     /// bypassing every cache. Null when the region is exhausted. The flag
     /// says the memory is known zero.
-    pub fn alloc_direct(&self, arena: &Arena, class: usize) -> (*mut u8, bool) {
+    pub fn alloc_direct(&self, arena: &Arena, class: usize) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+        requires
+            class < NCLASSES,
+        ensures
+            r.0@.addr != 0 ==> crate::layout::process_regions().is_slot(class as int, r.0@.addr),
+            r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, class_table()[class as int].size as int),
+    {
         let mut out = [ptr::null_mut()];
-        let c = arena.class(class).claim(&self.meta, &mut out);
+        let (c, Tracked(mut z)) = arena.class(class).claim_zero(&self.meta, &mut out);
         if c.n == 0 {
-            (ptr::null_mut(), false)
+            (ptr::null_mut(), false, Tracked(Zeroed::empty(0)))
         } else {
-            (out[0], c.zeroed)
+            let tracked t = if c.zeroed { z.tracked_remove(0) } else { Zeroed::empty(0) };
+            (out[0], c.zeroed, Tracked(t))
         }
     }
 
     /// Release one slot straight to its slab bitmap through its owning
     /// arena. Aborts unless `p` is an allocated slot of `class` in `arena`.
-    pub fn free_direct(&self, arena: u16, class: usize, p: *mut u8) {
-        self.owner(arena)
-            .class(class)
-            .release_with(&[p], vstd::prelude::Tracked::assume_new());
+    /// `tok` is the slot's token; it goes back to the slot's bitmap word.
+    pub fn free_direct(&self, arena: u16, class: usize, p: *mut u8, Tracked(tok): Tracked<GhostSingleton<int>>)
+        requires
+            class < NCLASSES,
+            crate::layout::process_regions().is_slot(class as int, p@.addr),
+            tok.id() == slot_loc(class as int),
+            tok@ == p@.addr as int,
+    {
+        broadcast use crate::class::lemma_aset;
+        let tracked bag = tok.subset();
+        proof {
+            let a = ptr_addrs(seq![p]);
+            assert(a[0] == p@.addr as int);
+            crate::class::lemma_aset_front(a, 0, 1);
+            crate::class::lemma_aset_step(a, 0, 0, 1);
+            assert(aset(a, 0, 1) =~= set![p@.addr as int]);
+        }
+        self.owner(arena).class(class).release_with(&[p], Tracked(bag));
     }
 
     /// Classify `p` for `free`: `Ok((class, arena))` for an allocated slab
@@ -529,13 +719,20 @@ impl Shared {
     /// pointer into the huge region (the huge allocator checks it). Aborts
     /// on anything else.
     #[inline(always)]
-    pub fn classify_free(&self, p: *mut u8) -> Result<(usize, u16), usize> {
+    pub fn classify_free(&self, p: *mut u8) -> (r: Result<(usize, u16), usize>)
+        requires
+            self.wf(),
+        ensures
+            r matches Ok((c, _)) ==> c < NCLASSES && crate::layout::process_regions().is_slot(c as int, p@.addr),
+            r matches Err(page) ==> page <= self.huge_pages(),
+            // Exact: a page start of the huge region, `page` its index.
+            r matches Err(page) ==> crate::layout::process_regions().is_huge_block(p@.addr, 1)
+                && page == ((p@.addr - crate::layout::process_regions().huge_base) as usize) >> crate::layout::process_regions().lg_page,
+    {
         match self.regions.classify(p as usize) {
             Kind::Slab { class, slab, slot } => {
                 let class = class as usize;
-                let arena =
-                    self.table(class)
-                        .check_located(slab as usize, slot as usize, p as usize);
+                let arena = self.table(class).check_located(slab as usize, slot as usize, p as usize);
                 Ok((class, arena))
             }
             Kind::Huge { page } => Err(page),
@@ -569,7 +766,13 @@ impl Shared {
     /// [`classify_free`]: Shared::classify_free
     /// [`release_routed`]: Shared::release_routed
     #[inline(always)]
-    pub(super) fn sized_slot(&self, p: *mut u8, hint: Option<usize>) -> Option<usize> {
+    pub(super) fn sized_slot(&self, p: *mut u8, hint: Option<usize>) -> (r: Option<usize>)
+        requires
+            self.wf(),
+            hint matches Some(c) ==> c < NCLASSES,
+        ensures
+            r matches Some(c) ==> hint == Some(c) && crate::layout::process_regions().is_slot(c as int, p@.addr),
+    {
         let class = hint?;
         let (slab, _slot) = self.regions.slot_in_class(class, p as usize)?;
         // SAFETY: `class_of`/`class_for` only produce `class < NCLASSES`
@@ -578,64 +781,6 @@ impl Shared {
             return None;
         }
         Some(class)
-    }
-
-    /// The sized free's abort: a slab pointer whose class is not the one
-    /// the size hint names (`sdallocx`'s contract is `nallocx(size, flags)
-    /// == sallocx(p)`). Huge runs and pointers that are not allocations pass
-    /// here and are judged by the exact free that follows.
-    #[cold]
-    #[inline(never)]
-    pub fn check_size_hint(&self, p: *mut u8, size: usize, hint: Option<usize>) {
-        if let Kind::Slab { class, .. } = self.regions.classify(p as usize) {
-            if hint != Some(class as usize) {
-                panic!(
-                    "sized free of {:#x}: size hint {} does not match the allocation (class {}, {} bytes)",
-                    p as usize,
-                    size,
-                    class,
-                    CLASSES[class as usize].size()
-                );
-            }
-        }
-    }
-
-    /// Owning arena of the handed-out slab holding the slot `p` of `class`.
-    /// Aborts for anything that is not a slot start in such a slab.
-    pub(super) fn arena_of_slot(&self, class: usize, p: *mut u8) -> u16 {
-        let t = self.table(class);
-        let (slab, _) = t.locate(p);
-        t.owner(slab)
-    }
-
-    /// Release a cache's sorted batch of `class` slots, starting with
-    /// `arena`. A home cache's batch is normally one [`release_owned`]
-    /// call with no extra work per pointer; the sized path's home cache
-    /// and the one foreign cache per class (`heap::FOREIGN`, design 6.3
-    /// step 4) hold slots of any arena, and each run of slabs of another
-    /// arena is released through that arena (one owner-word load per
-    /// switch, a word `release_owned` reads anyway).
-    ///
-    /// [`release_owned`]: crate::class::ClassState::release_owned
-    pub fn release_routed(&self, arena: u16, class: usize, ptrs: &[*mut u8]) {
-        let mut done = 0;
-        let mut a = arena;
-        loop {
-            done += self
-                .owner(a)
-                .class(class)
-                .release_owned(&ptrs[done..], vstd::prelude::Tracked::assume_new());
-            if done == ptrs.len() {
-                return;
-            }
-            let next = self.arena_of_slot(class, ptrs[done]);
-            if next == a {
-                // `release_owned` stopped at a slab it says is not ours while
-                // the descriptor says it is: the descriptor changed under us.
-                panic!("heap: slab of class {class} changed arena {a} during a flush");
-            }
-            a = next;
-        }
     }
 
     /// The `free` fast path's check: `Some(class)` when `p` is a slot start
@@ -670,7 +815,12 @@ impl Shared {
     /// [`classify_free`]: Shared::classify_free
     /// [`Regions::slab_slot`]: crate::layout::Regions::slab_slot
     #[inline(always)]
-    pub(super) fn checked_slot(&self, p: *mut u8, h: &Heap) -> Option<usize> {
+    pub(super) fn checked_slot(&self, p: *mut u8, h: &Heap) -> (r: Option<usize>)
+        requires
+            self.wf(),
+        ensures
+            r matches Some(c) ==> c < NCLASSES && crate::layout::process_regions().is_slot(c as int, p@.addr),
+    {
         let (class, table, slab) = self.set_slot(p)?;
         if self.multi_arena() {
             // The home arena is read on this branch only. A plain load is
@@ -678,8 +828,7 @@ impl Shared {
             // then every single-arena `free` touches the heap's header
             // line, which nothing else on the fast paths reads; a volatile
             // read stays here.
-            // SAFETY: `h` is a live heap and `arena` a plain field.
-            let home = unsafe { ptr::read_volatile(&raw const h.arena) };
+            let home = h.arena_volatile();
             // SAFETY: `slab` is below the watermark.
             if unsafe { table.owner_unchecked(slab) } != home {
                 return None;
@@ -688,13 +837,104 @@ impl Shared {
         Some(class)
     }
 
-    /// [`checked_slot`] without the arena test: the bit test alone, so a
-    /// test can pin down what [`checked_slot`]'s two halves each decide.
+    /// Allocate a huge run of `size` bytes aligned to `align` in `arena`:
+    /// an automatic arena not built yet (a thread whose first allocation
+    /// is huge) is built here, an index that does not exist aborts. Null
+    /// on exhaustion; the flag says the memory is known zero.
+    pub fn alloc_huge(&self, size: usize, align: usize, arena: u16) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+        requires
+            self.wf(),
+            crate::meta::is_pow2(align),
+        ensures
+            r.0@.addr != 0 ==> crate::layout::huge_block(r.0@.addr, size, align),
+            r.0@.addr != 0 ==> size <= self.huge_usable(size),
+            r.0@.addr != 0 ==> self.huge_ok(size),
+            r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, self.huge_usable(size)),
+    {
+        proof {
+            self.lemma_huge_aligned();
+        }
+        let Some(a) = self.arena(arena) else { no_such_arena(arena) };
+        let (r, z) = self.huge.alloc_run(&self.meta, size, align, arena);
+        proof {
+            if r.ptr@.addr != 0 {
+                self.lemma_run_is_block(r.ptr@.addr, size, align);
+            }
+        }
+        if !r.ptr.is_null() {
+            // The pages the run's descriptor records, which is what
+            // `free_huge` will subtract.
+            a.note_huge_alloc(r.pages);
+        }
+        (r.ptr, r.zeroed, z)
+    }
+
+    /// `zero_on_free` for a huge run: clear the usable bytes of the live
+    /// run starting at `page` (aborts unless it is one) before its release.
+    /// Out of line: it takes the huge lock for the size and then writes
+    /// the whole run.
+    #[cold]
+    #[inline(never)]
+    pub fn zero_huge(&self, page: usize)
+        requires
+            self.wf(),
+            page <= self.huge_pages(),
+    {
+        let n = self.huge.usable_size(page);
+        proof {
+            broadcast use vstd::layout::align_of_u8;
+            crate::vspec::addr::axiom_huge_writable(self.regions, page, n);
+        }
+        // SAFETY: a live run's usable bytes are committed, writable memory
+        // this allocator handed out and the caller is freeing.
+        unsafe { ptr::write_bytes(crate::vspec::addr::addr_to_ptr(self.regions.huge_addr(page)), 0, n) };
+    }
+
+    /// Free the huge run starting at `page`. Aborts unless it is a live
+    /// run start. Returns the usable bytes released.
+    pub fn free_huge(&self, page: usize) -> usize
+        requires
+            self.wf(),
+            page <= self.huge_pages(),
+    {
+        let run = self.huge.free_run(&self.meta, page);
+        self.owner(run.arena).note_huge_free(run.pages);
+        run.usable
+    }
+
+    /// The sized free's abort: a slab pointer whose class is not the one
+    /// the size hint names (`sdallocx`'s contract is `nallocx(size, flags)
+    /// == sallocx(p)`). Huge runs and pointers that are not allocations pass
+    /// here and are judged by the exact free that follows.
     ///
-    /// [`checked_slot`]: Shared::checked_slot
-    #[cfg(test)]
-    pub(super) fn checked_slot_any(&self, p: *mut u8) -> Option<usize> {
-        self.set_slot(p).map(|(class, _, _)| class)
+    /// Trusted: the abort formats its message; claims nothing (it may
+    /// abort).
+    #[cold]
+    #[inline(never)]
+    #[verifier::external_body]
+    pub fn check_size_hint(&self, p: *mut u8, size: usize, hint: Option<usize>) {
+        if let Kind::Slab { class, .. } = self.regions.classify(p as usize) {
+            if hint != Some(class as usize) {
+                panic!(
+                    "sized free of {:#x}: size hint {} does not match the allocation (class {}, {} bytes)",
+                    p as usize,
+                    size,
+                    class,
+                    CLASSES[class as usize].size()
+                );
+            }
+        }
+    }
+
+    /// Owning arena of the handed-out slab holding the slot `p` of `class`.
+    /// Aborts for anything that is not a slot start in such a slab.
+    pub(super) fn arena_of_slot(&self, class: usize, p: *mut u8) -> u16
+        requires
+            class < NCLASSES,
+    {
+        let t = self.table(class);
+        let (slab, _) = t.locate(p);
+        t.owner(slab)
     }
 
     /// The bit test the two `free` fast-path checks share: `Some((class,
@@ -705,7 +945,12 @@ impl Shared {
     ///
     /// [`checked_slot`]: Shared::checked_slot
     #[inline(always)]
-    fn set_slot(&self, p: *mut u8) -> Option<(usize, &SlabTable, usize)> {
+    fn set_slot(&self, p: *mut u8) -> (r: Option<(usize, &SlabTable, usize)>)
+        requires
+            self.wf(),
+        ensures
+            r matches Some((c, _, _)) ==> c < NCLASSES && crate::layout::process_regions().is_slot(c as int, p@.addr),
+    {
         let (class, slab, slot) = self.regions.slab_slot(p as usize)?;
         // SAFETY: `slab_slot` only returns `class < NCLASSES`.
         let table = unsafe { self.tables.get_unchecked(class) };
@@ -720,124 +965,160 @@ impl Shared {
         Some((class, table, slab))
     }
 
-    /// Allocate a huge run of `size` bytes aligned to `align` in `arena`:
-    /// an automatic arena not built yet (a thread whose first allocation
-    /// is huge) is built here, an index that does not exist aborts. Null
-    /// on exhaustion; the flag says the memory is known zero.
-    pub fn alloc_huge(&self, size: usize, align: usize, arena: u16) -> (*mut u8, bool) {
-        let Some(a) = self.arena(arena) else {
-            no_such_arena(arena)
-        };
-        let (r, _) = self.huge.alloc_run(&self.meta, size, align, arena);
-        if !r.ptr.is_null() {
-            // The pages the run's descriptor records, which is what
-            // `free_huge` will subtract.
-            a.note_huge_alloc(r.pages);
+    /// Release a cache's sorted batch of `class` slots, starting with
+    /// `arena`. A home cache's batch is normally one [`release_owned`]
+    /// call with no extra work per pointer; the sized path's home cache
+    /// and the one foreign cache per class (`heap::FOREIGN`, design 6.3
+    /// step 4) hold slots of any arena, and each run of slabs of another
+    /// arena is released through that arena (one owner-word load per
+    /// switch, a word `release_owned` reads anyway).
+    ///
+    /// `bag` holds the batch's slot tokens (distinct addresses), which
+    /// belong back with the bitmap words each run releases.
+    ///
+    /// The loop ends because each pass releases at least one pointer or
+    /// moves to the arena the next pointer's owner word names, which
+    /// `release_owned` then owns; that rests on the owner words of slabs
+    /// with allocated slots not changing, which Verus does not see
+    /// (`exec_allows_no_decreases_clause`).
+    ///
+    /// [`release_owned`]: crate::class::ClassState::release_owned
+    #[verifier::exec_allows_no_decreases_clause]
+    pub fn release_routed(&self, arena: u16, class: usize, ptrs: &[*mut u8], Tracked(bag): Tracked<GhostSubset<int>>)
+        requires
+            class < NCLASSES,
+            bag.id() == slot_loc(class as int),
+            aset(ptr_addrs(ptrs@), 0, ptrs@.len() as int) <= bag@,
+            distinct(ptr_addrs(ptrs@), 0, ptrs@.len() as int),
+    {
+        broadcast use crate::class::lemma_aset;
+        let tracked mut bag = bag;
+        let ghost pa = ptr_addrs(ptrs@);
+        let mut done = 0;
+        let mut a = arena;
+        loop
+            invariant
+                class < NCLASSES,
+                done <= ptrs@.len(),
+                pa == ptr_addrs(ptrs@),
+                bag.id() == slot_loc(class as int),
+                aset(pa, done as int, ptrs@.len() as int) <= bag@,
+                distinct(pa, 0, ptrs@.len() as int),
+        {
+            let ghost d0 = done as int;
+            let ghost b0 = bag@;
+            let ghost rest = ptrs@.subrange(d0, ptrs@.len() as int);
+            let ghost ra = ptr_addrs(rest);
+            proof {
+                assert(ptrs@.len() == ptrs.len());
+                assert forall|i: int| 0 <= i < rest.len() implies ra[i] == pa[d0 + i] by {
+                    assert(rest[i] == ptrs@[d0 + i]);
+                }
+                crate::class::lemma_aset_shift(pa, ra, d0, 0, rest.len() as int);
+                crate::class::lemma_aset_split(pa, 0, d0, ptrs@.len() as int);
+            }
+            done += self.owner(a).class(class).release_owned(&ptrs[done..], Tracked(&mut bag));
+            proof {
+                let r = done - d0;
+                crate::class::lemma_aset_split(pa, d0, done as int, ptrs@.len() as int);
+                crate::class::lemma_aset_split(pa, 0, d0, ptrs@.len() as int);
+                crate::class::lemma_aset_shift(pa, ra, d0, 0, r);
+                assert(aset(pa, done as int, ptrs@.len() as int) <= bag@);
+            }
+            if done == ptrs.len() {
+                return;
+            }
+            let next = self.arena_of_slot(class, ptrs[done]);
+            if next == a {
+                // `release_owned` stopped at a slab it says is not ours while
+                // the descriptor says it is: the descriptor changed under us.
+                #[cfg(verus_only)]
+                arena_changed(class, a);
+                #[cfg(not(verus_only))]
+                panic!("heap: slab of class {class} changed arena {a} during a flush");
+            }
+            a = next;
         }
-        (r.ptr, r.zeroed)
     }
 
-    /// `zero_on_free` for a huge run: clear the usable bytes of the live
-    /// run starting at `page` (aborts unless it is one) before its release.
-    /// Out of line: it takes the huge lock for the size and then writes
-    /// the whole run.
-    #[cold]
-    #[inline(never)]
-    pub fn zero_huge(&self, page: usize) {
-        let n = self.huge.usable_size(page);
-        // SAFETY: a live run's usable bytes are committed, writable memory
-        // this allocator handed out and the caller is freeing.
-        unsafe { ptr::write_bytes(self.regions.huge_addr(page) as *mut u8, 0, n) };
-    }
-
-    /// Free the huge run starting at `page`. Aborts unless it is a live
-    /// run start. Returns the usable bytes released.
-    pub fn free_huge(&self, page: usize) -> usize {
-        let run = self.huge.free_run(&self.meta, page);
-        self.owner(run.arena).note_huge_free(run.pages);
-        run.usable
-    }
 }
 
-#[cold]
-#[inline(never)]
-fn no_such_arena(index: u16) -> ! {
-    panic!("arena {index} does not exist")
+} // verus!
+
+impl Shared {
+    /// The decay period new arenas start with (`dirty_decay_ms`).
+    pub fn default_decay_ns(&self) -> u64 {
+        crate::purge::decay_ns_from_ms(self.config.dirty_decay_ms)
+    }
+
+    /// Change the decay period of every existing arena; `-1` turns purging
+    /// off. Takes effect at the next periodic tick, or at once for a
+    /// background thread (each arena setter wakes it).
+    /// `arena.<i>.dirty_decay_ms` goes through `Arena::set_decay_ms` instead.
+    pub fn set_decay_ms(&self, ms: i64) {
+        for a in self.arenas.iter() {
+            a.set_decay_ms(ms);
+        }
+    }
+
+    /// Whether the thread-exit key exists (heaps of exiting threads are
+    /// reclaimed). False only if `pthread_key_create` failed at init.
+    #[cfg(test)]
+    pub fn has_thread_key(&self) -> bool {
+        self.key.valid()
+    }
+
+    /// The thread-exit key, for diagnostics and tests.
+    #[cfg(test)]
+    pub fn thread_key(&self) -> Option<libc::pthread_key_t> {
+        self.key.key()
+    }
+
+    /// [`checked_slot`] without the arena test: the bit test alone, so a
+    /// test can pin down what [`checked_slot`]'s two halves each decide.
+    ///
+    /// [`checked_slot`]: Shared::checked_slot
+    #[cfg(test)]
+    pub(super) fn checked_slot_any(&self, p: *mut u8) -> Option<usize> {
+        self.set_slot(p).map(|(class, _, _)| class)
+    }
 }
 
 verus! {
 
-// Phase A of the Verus port (verus/TODO.md): `Shared`'s methods and
-// construction are outside `verus!`; the verified modules that take a
-// `&Shared` see its fields and this invariant, which nothing proves yet.
-
-// A Verus specification, never constructed.
-#[allow(dead_code)]
-#[verifier::external_type_specification]
+/// Trusted: aborts.
+#[cold]
+#[inline(never)]
 #[verifier::external_body]
-pub struct ExThreadKey(ThreadKey);
-
-impl Shared {
-    /// What `Shared::init` establishes of the value it builds, and nothing
-    /// changes afterwards (every field is written once, before the
-    /// `Shared` is published): the address-space layout is well formed and
-    /// separated and is the process's ([`crate::layout::process_regions`]);
-    /// `tables[c]` is class `c`'s table; `huge` covers exactly the huge
-    /// region's pages, starting at the huge base with the regions' page;
-    /// `meta` allocates from the metadata region, which holds every class
-    /// table's descriptors, bitmap and owner words. Trusted: assumed by
-    /// every verified function that takes a `&Shared`.
-    pub closed spec fn wf(&self) -> bool {
-        &&& self.regions.wf()
-        &&& self.regions == crate::layout::process_regions()
-        &&& self.regions.separated()
-        &&& self.huge.spec_base() == self.regions.huge_base
-        &&& self.huge.spec_page() == (1usize << self.regions.lg_page) as int
-        &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].spec_class() == c
-        &&& self.huge.spec_npages() == self.huge_pages()
-        &&& self.meta.spec_base() == self.regions.meta_base
-        &&& self.meta.spec_len() == self.regions.meta_len
-        &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].meta_ok()
-    }
-
-    /// Pages in the huge region.
-    pub closed spec fn huge_pages(&self) -> usize {
-        self.regions.huge_len >> self.regions.lg_page
-    }
-
-    /// [`Shared::wf`] unfolded, for the rest of the crate.
-    pub(crate) proof fn lemma_wf(&self)
-        requires
-            self.wf(),
-        ensures
-            self.regions.wf(),
-            self.regions == crate::layout::process_regions(),
-            self.regions.separated(),
-            self.huge.spec_base() == self.regions.huge_base,
-            self.huge.spec_page() == (1usize << self.regions.lg_page) as int,
-            forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].spec_class() == c,
-            self.huge.spec_npages() == self.huge_pages(),
-            self.huge_pages() == self.regions.huge_len >> self.regions.lg_page,
-            self.meta.is_process(),
-            forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].meta_ok(),
-    {
-    }
+fn no_such_arena(index: u16) -> ! {
+    panic!("arena {index} does not exist")
 }
 
 } // verus!
 
 verus! {
 
-// A Verus specification, never constructed.
+// The explicit-cache table (`tcaches.rs`) is outside `verus!`: its
+// `AtomicPtr<Heap>` table makes `Heap` reach itself through `Shared`,
+// which Verus rejects. A Verus specification, never constructed.
 #[allow(dead_code)]
 #[verifier::external_type_specification]
 #[verifier::external_body]
 pub struct ExTcaches(Tcaches);
 
-// A Verus specification, never constructed.
-#[allow(dead_code)]
-#[verifier::external_type_specification]
+} // verus!
+
+verus! {
+
+/// What Verus sees for [`Shared::release_routed`]'s `panic!` on a slab
+/// whose arena changed during a flush; the build keeps the `panic!`
+/// inline, so `release_routed` keeps its code. Trusted: the `-> !` is the
+/// whole specification, and the `panic!` it stands for never returns; the
+/// two copies of the message must be kept in step.
+#[cfg(verus_only)]
 #[verifier::external_body]
-pub struct ExHeap(Heap);
+fn arena_changed(class: usize, a: u16) -> ! {
+    panic!("heap: slab of class {class} changed arena {a} during a flush")
+}
 
 } // verus!

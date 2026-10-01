@@ -12,6 +12,9 @@ use core::sync::atomic::{AtomicPtr, Ordering};
 use crate::lock::Lock;
 
 use super::{Heap, Shared};
+use vstd::prelude::verus;
+#[cfg(verus_only)]
+use vstd::prelude::*;
 
 /// Explicit caches; ids are the 12-bit `MALLOCX_TCACHE` field minus 2.
 pub const MAX_TCACHES: usize = 1024;
@@ -130,3 +133,17 @@ impl Tcaches {
         self.len() == 0
     }
 }
+
+verus! {
+
+/// Explicit cache `id` ([`Tcaches::get`], outside `verus!`: its table is
+/// `AtomicPtr<Heap>`, through which `Heap` would reach itself, which
+/// Verus rejects). Trusted: the heap `Tcaches::create` published under
+/// `id` is well formed, as every heap a verified path is handed
+/// ([`Heap::wf`]).
+pub assume_specification[ Tcaches::get ](tcaches: &Tcaches, id: u16) -> (r: Option<&mut Heap>)
+    ensures
+        r matches Some(h) ==> h.wf(),
+;
+
+} // verus!

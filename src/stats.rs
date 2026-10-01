@@ -1089,7 +1089,7 @@ mod tests {
         let (p1, _) = t.heap().alloc_in(s, a1, c32);
         assert!(!p1.is_null());
         let size = 400 * 1024;
-        let (h1, _) = t.heap().alloc_huge_in(s, size, 16, a1);
+        let (h1, _, _) = t.heap().alloc_huge_in(s, size, 16, a1);
         assert!(!h1.is_null());
         let usable = s.huge.usable_for(size).unwrap();
 

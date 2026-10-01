@@ -883,7 +883,7 @@ mod tests {
         // with nobody else touching the allocator.
         let old_ns = s.decay_ns();
         s.set_decay_ms(1);
-        let (p, _) = s.alloc_huge(8 << 20, 4096, 0);
+        let (p, _, _) = s.alloc_huge(8 << 20, 4096, 0);
         assert!(!p.is_null());
         unsafe { core::ptr::write_bytes(p, 1, 8 << 20) };
         let page = (p as usize - s.regions.huge_base) >> s.regions.lg_page;
@@ -995,7 +995,7 @@ mod tests {
         assert!(!purge::background::present());
         let old_ns = s.decay_ns();
         s.set_decay_ms(1);
-        let (p, _) = s.alloc_huge(8 << 20, 4096, 0);
+        let (p, _, _) = s.alloc_huge(8 << 20, 4096, 0);
         assert!(!p.is_null());
         unsafe { core::ptr::write_bytes(p, 1, 8 << 20) };
         let page = (p as usize - s.regions.huge_base) >> s.regions.lg_page;

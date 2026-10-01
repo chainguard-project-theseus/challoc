@@ -79,11 +79,11 @@ fn calloc_flag_is_honest_about_memory() {
     std::thread::spawn(move || {
         let c = class_of(200).unwrap();
         let size = CLASSES[c].size();
-        let (p, zero) = alloc_zeroed(s, c);
+        let (p, zero, _) = alloc_zeroed(s, c);
         assert!(zero && is_zero(p, size));
         fill(p, size, 0xff);
         free(s, p);
-        let (q, zero) = alloc_zeroed(s, c);
+        let (q, zero, _) = alloc_zeroed(s, c);
         assert_eq!(p, q);
         assert!(!zero && !is_zero(q, size));
         // Everything the flag calls zero really is. The flag is
@@ -94,7 +94,7 @@ fn calloc_flag_is_honest_about_memory() {
         // next fresh slab is mixed).
         let mut zeros = 0;
         for _ in 0..3000 {
-            let (r, zero) = alloc_zeroed(s, c);
+            let (r, zero, _) = alloc_zeroed(s, c);
             assert!(!r.is_null());
             if zero {
                 assert!(
@@ -202,7 +202,7 @@ fn creating_and_exited_sentinels_are_served_directly() {
         assert_eq!(live(s, c), 0);
         // The slab went `Empty` when everything was released, so its
         // memory is dirty and the flag must say so.
-        let (q, zero) = alloc_zeroed(s, c);
+        let (q, zero, _) = alloc_zeroed(s, c);
         assert!(!q.is_null());
         assert!(!zero || is_zero(q, 32));
         assert_eq!(tls::get() as usize, TLS_EXITED);
@@ -590,10 +590,10 @@ fn changed_arena_child() {
     let (a0, a1) = (s.arena(0).unwrap(), s.arena(1).unwrap());
     // Two slots per slab: neither release empties its slab or reopens
     // it, so the only `ClassState` write is the `released` add.
-    let (p1, _) = s.alloc_direct(a1, c);
-    let (q1, _) = s.alloc_direct(a1, c);
-    let (p0, _) = s.alloc_direct(a0, c);
-    let (q0, _) = s.alloc_direct(a0, c);
+    let (p1, _, _) = s.alloc_direct(a1, c);
+    let (q1, _, _) = s.alloc_direct(a1, c);
+    let (p0, _, _) = s.alloc_direct(a0, c);
+    let (q0, _, _) = s.alloc_direct(a0, c);
     assert!(!p0.is_null() && !q0.is_null() && !p1.is_null() && !q1.is_null());
     let t = s.table(c);
     let (slab0, _) = t.locate(p0);
@@ -613,7 +613,7 @@ fn changed_arena_child() {
         assert_eq!(libc::sigaction(libc::SIGSEGV, &sa, ptr::null_mut()), 0);
         assert_eq!(libc::mprotect(base as *mut c_void, len, libc::PROT_READ), 0);
     }
-    s.release_routed(1, c, &[p1, p0]);
+    s.release_routed(1, c, &[p1, p0], Tracked::assume_new());
     std::eprintln!(
         "release_routed returned (handler ran: {})",
         FLIP_DONE.load(Ordering::Relaxed)

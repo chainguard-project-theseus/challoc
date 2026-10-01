@@ -74,8 +74,14 @@ fn einval() -> *mut u8 {
 #[inline(never)]
 fn alloc_huge(shared: &Shared, size: usize, align: usize) -> (*mut u8, bool) {
     match heap::heap_for_thread(shared) {
-        Some(h) => h.alloc_huge(shared, size, align),
-        None => shared.alloc_huge(size, align, 0),
+        Some(h) => {
+            let (p, zero, _) = h.alloc_huge(shared, size, align);
+            (p, zero)
+        }
+        None => {
+            let (p, zero, _) = shared.alloc_huge(size, align, 0);
+            (p, zero)
+        }
     }
 }
 
@@ -153,7 +159,10 @@ pub fn calloc(n: usize, m: usize) -> *mut u8 {
     };
     let shared = super::shared();
     let (p, zeroed) = match class_of(size) {
-        Some(c) => heap::alloc_zeroed(shared, c),
+        Some(c) => {
+            let (p, zeroed, _) = heap::alloc_zeroed(shared, c);
+            (p, zeroed)
+        }
         None => alloc_huge(shared, size, 1),
     };
     if p.is_null() {
@@ -502,7 +511,7 @@ pub fn calloc_usable(n: usize, m: usize, usable: *mut usize) -> *mut u8 {
     let shared = super::shared();
     let (p, zeroed, u) = match class_of(size) {
         Some(c) => {
-            let (p, zeroed) = heap::alloc_zeroed(shared, c);
+            let (p, zeroed, _) = heap::alloc_zeroed(shared, c);
             (p, zeroed, class_size(c))
         }
         None => {

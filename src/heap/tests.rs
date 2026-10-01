@@ -216,7 +216,8 @@ impl TestHeap {
     }
 
     pub(crate) fn alloc_huge(&self, size: usize, align: usize) -> (*mut u8, bool) {
-        self.heap().alloc_huge(self.s, size, align)
+        let (p, zero, _) = self.heap().alloc_huge(self.s, size, align);
+        (p, zero)
     }
 
     pub(crate) fn stats(&self) -> ThreadStats {
@@ -551,12 +552,12 @@ fn fast_paths_decline_the_scan_hit_and_the_scheduled_pop() {
     let len = t.cache(c).len();
     // The fast push of `p` again: a hit among the top entries, declined.
     assert!(
-        !t.heap().push_fast(c, p, flags),
+        !t.heap().push_fast(c, p, flags, Tracked::assume_new()),
         "a scan hit declines the fast push"
     );
     assert_eq!(t.cache(c).len(), len, "nothing was stored");
     // A slot that is not cached pushes as before.
-    assert!(t.heap().push_fast(c, q, flags));
+    assert!(t.heap().push_fast(c, q, flags, Tracked::assume_new()));
     assert_eq!(t.cache(c).len(), len + 1);
     // The slow path a decline reaches aborts with the scan's message.
     let m = panic_message(
@@ -586,7 +587,7 @@ fn fast_paths_decline_the_scan_hit_and_the_scheduled_pop() {
     let allocs = unsafe { (*k).allocs };
     let len = t.cache(c).len();
     assert!(
-        t.heap().pop_fast(c, flags).is_none(),
+        t.heap().pop_fast(c, flags, Tracked::assume_new()).is_none(),
         "a due schedule declines the fast pop"
     );
     assert_eq!(
@@ -1358,16 +1359,16 @@ fn periodic_work_runs_gc_on_the_interval() {
 fn direct_paths_bypass_the_cache() {
     let s = shared();
     let c = class_with(256);
-    let (p, zero) = s.alloc_direct(&s.arena0, c);
+    let (p, zero, _) = s.alloc_direct(&s.arena0, c);
     assert!(!p.is_null() && zero);
     assert_eq!(p as usize, s.regions.slab_addr(c, 0));
     assert_eq!(live(s, c), 1);
-    let (q, zero) = s.alloc_direct(&s.arena0, c);
+    let (q, zero, _) = s.alloc_direct(&s.arena0, c);
     assert_eq!(q as usize, p as usize + 256);
     assert!(!zero);
-    s.free_direct(0, c, p);
+    s.free_direct(0, c, p, Tracked::assume_new());
     assert_eq!(live(s, c), 1);
-    s.free_direct(0, c, q);
+    s.free_direct(0, c, q, Tracked::assume_new());
     assert_eq!(live(s, c), 0);
     assert_eq!(s.arena0.classes[c].desc(0).state(), State::Empty);
 }
@@ -1742,9 +1743,9 @@ fn direct_claims_do_not_block_compaction_but_cache_refills_do() {
         if step % 32 == 0 {
             // Like the defragmenter: a direct copy, the old one freed.
             if !direct.is_null() {
-                s.free_direct(0, c, direct);
+                s.free_direct(0, c, direct, Tracked::assume_new());
             }
-            let (p, _) = s.alloc_direct(&s.arena0, c);
+            let (p, _, _) = s.alloc_direct(&s.arena0, c);
             assert!(!p.is_null());
             direct = p;
         }
@@ -1765,7 +1766,7 @@ fn direct_claims_do_not_block_compaction_but_cache_refills_do() {
         "little compacted: {} of {before} slabs still occupied, bound {bound}",
         occupied(s, c)
     );
-    s.free_direct(0, c, direct);
+    s.free_direct(0, c, direct, Tracked::assume_new());
     for p in keep {
         t.free(p);
     }
@@ -2318,10 +2319,10 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
     }
     // Direct paths against an explicit arena.
     let a = s.arena(a1).unwrap();
-    let (d, _) = s.alloc_direct(a, c);
+    let (d, _, _) = s.alloc_direct(a, c);
     assert_eq!(s.classify_free(d), Ok((c, a1)));
     assert_eq!(a.classes[c].desc(s.arena0.classes[c].locate(d).0).live(), 1);
-    s.free_direct(a1, c, d);
+    s.free_direct(a1, c, d, Tracked::assume_new());
     assert_eq!(a.classes[c].stats().empty, per_refill);
     // Destroying the heap frees the nodes too.
     let before = s.meta.stats().allocated;
@@ -3145,7 +3146,7 @@ fn a_huge_first_allocation_builds_the_home_arena() {
     assert!(!hp.is_null());
     let h = unsafe { &mut *hp };
     assert!(s.arenas.get_existing(2).is_none());
-    let (p, _) = h.alloc_huge(s, 300 * 1024, 16);
+    let (p, _, _) = h.alloc_huge(s, 300 * 1024, 16);
     assert!(!p.is_null());
     let a2 = s
         .arenas
@@ -3174,27 +3175,37 @@ fn pop_fast_pops_the_top_with_the_zero_flag() {
     let c = class_with(64);
     let flags = s.push_flags();
     let h = t.heap();
-    assert_eq!(h.pop_fast(c, flags), None, "no cache yet");
+    assert_eq!(
+        h.pop_fast(c, flags, Tracked::assume_new()),
+        None,
+        "no cache yet"
+    );
     assert_eq!(h.alloc_fast(c, flags), None);
     let first = t.alloc(c);
     // The refill batch is a fresh slab: the zero prefix covers it all.
     let len = t.len(c);
     let top = t.cached_plain(c)[len - 1];
-    assert_eq!(h.pop_fast(c, flags), Some((top, true)));
+    assert_eq!(
+        h.pop_fast(c, flags, Tracked::assume_new()),
+        Some((top, true))
+    );
     assert_eq!(t.len(c), len - 1);
     let top = t.cached_plain(c)[len - 2];
     assert_eq!(h.alloc_fast(c, flags), Some(top));
     // A slot pushed back is no longer known zero (the push clips the
     // prefix), and the flag says so.
     t.free(first);
-    assert_eq!(h.pop_fast(c, flags), Some((first, false)));
+    assert_eq!(
+        h.pop_fast(c, flags, Tracked::assume_new()),
+        Some((first, false))
+    );
     assert_eq!(
         t.alloc_zeroed(c).1,
         true,
         "below the pushed entry the prefix still holds"
     );
     t.flush_all();
-    assert_eq!(h.pop_fast(c, flags), None, "flushed");
+    assert_eq!(h.pop_fast(c, flags, Tracked::assume_new()), None, "flushed");
     t.destroy();
 }
 

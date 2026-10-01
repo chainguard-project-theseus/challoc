@@ -21,9 +21,26 @@
 use core::ptr;
 
 use crate::layout::CLASSES;
+#[cfg(verus_only)]
+use crate::layout::NCLASSES;
 use crate::sys::pac;
 
-use super::{CacheHeader, Heap, Shared};
+#[cfg(verus_only)]
+use super::lemma_handed_ok;
+use super::{CacheHeader, Heap, Shared, shared_of};
+#[cfg(verus_only)]
+use crate::layout::process_regions;
+#[cfg(verus_only)]
+use vstd::map::Map;
+#[cfg(verus_only)]
+use vstd::prelude::int;
+#[cfg(verus_only)]
+use vstd::prelude::*;
+use vstd::prelude::{Tracked, verus};
+#[cfg(verus_only)]
+use vstd::resource::set::GhostSingleton;
+
+verus! {
 
 /// Cache modes: off (the `FOREIGN` cache), probing the class for
 /// fragmentation every [`PROBE_MASK`] + 1 pops, compacting.
@@ -32,14 +49,30 @@ pub const MODE_PROBE: u16 = 1;
 pub const MODE_COMPACT: u16 = 2;
 
 /// Pops between two fragmentation probes of a class (minus one).
-pub const PROBE_MASK: u32 = (1 << 12) - 1;
+pub exec const PROBE_MASK: u32
+    ensures
+        PROBE_MASK == 0xfff,
+{
+    proof {
+        assert((1u32 << 12u32) == 0x1000) by (bit_vector);
+    }
+    (1 << 12) - 1
+}
 /// A compacting cache serves every `2^COMPACT_SHIFT`th pop of a class
 /// from the lowest-address cached slot instead of the top of the stack
 /// (design 6.4).
 pub const COMPACT_SHIFT: u32 = 3;
 /// The scheduled-pop mask of a compacting cache: a pop whose count has
 /// no bit of it set is served from the bottom of the run.
-pub const COMPACT_MASK: u32 = (1 << COMPACT_SHIFT) - 1;
+pub exec const COMPACT_MASK: u32
+    ensures
+        COMPACT_MASK == 7,
+{
+    proof {
+        assert((1u32 << 3u32) == 8) by (bit_vector);
+    }
+    (1 << COMPACT_SHIFT) - 1
+}
 /// A class is worth compacting when its slabs hold at least this many
 /// slabs' worth of holes (free slots not in any cache) and at least a
 /// [`COMPACT_MIN_RATIO`]th of their capacity. Two or three slabs of holes
@@ -78,6 +111,7 @@ pub(super) enum Verdict {
     Fragmented,
 }
 
+
 impl CacheHeader {
     /// Whether the cache is currently compacting its class.
     #[cfg(test)]
@@ -86,10 +120,15 @@ impl CacheHeader {
     }
 
     /// The scheduled-pop mask `mode` implies: [`PROBE_MASK`] while
-    /// probing, [`COMPACT_MASK`] while compacting, `u32::MAX` when off (one pop in 2^32 then reaches
-    /// `pop_compact`, which pops the top). The one home of the
-    /// mode-to-mask rule; [`CacheHeader::set_mode`] applies it.
-    pub(super) fn mask_for(mode: u16) -> u32 {
+    /// probing, [`COMPACT_MASK`] while compacting, `u32::MAX` when off
+    /// (one pop in 2^32 then reaches `pop_compact`, which pops the top).
+    /// The one home of the mode-to-mask rule; [`CacheHeader::set_mode`]
+    /// applies it.
+    pub(super) fn mask_for(mode: u16) -> (r: u32)
+        ensures
+            mode == MODE_PROBE ==> r == 0xfff,
+            mode != MODE_PROBE && mode != MODE_COMPACT ==> r == u32::MAX,
+    {
         match mode {
             MODE_PROBE => PROBE_MASK,
             MODE_COMPACT => COMPACT_MASK,
@@ -99,7 +138,12 @@ impl CacheHeader {
 
     /// Enter `mode` and derive the scheduled-pop mask from it
     /// ([`CacheHeader::mask_for`]), so the two fields never disagree.
-    pub(super) fn set_mode(&mut self, mode: u16) {
+    pub(super) fn set_mode(&mut self, mode: u16)
+        ensures
+            *final(self) == (CacheHeader { mode, compact_mask: final(self).compact_mask, ..*old(self) }),
+            mode == MODE_PROBE ==> final(self).compact_mask == 0xfff,
+            mode != MODE_PROBE && mode != MODE_COMPACT ==> final(self).compact_mask == u32::MAX,
+    {
         self.mode = mode;
         self.compact_mask = Self::mask_for(mode);
     }
@@ -127,23 +171,37 @@ impl Heap {
         cache: *mut CacheHeader,
         class: usize,
         len: u32,
-    ) -> (*mut u8, bool) {
+    ) -> (r: (*mut u8, bool))
+        requires
+            class < NCLASSES,
+            old(self).wf(),
+            old(self).owns(cache),
+            old(self).hdr_class(cache) == class,
+            len == old(self).hdr(cache).len,
+            len > 0,
+        ensures
+            final(self).keeps(*old(self)),
+            r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
+            r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
+    {
+        broadcast use lemma_handed_ok;
+        let tracked mut spare = Map::<int, GhostSingleton<int>>::tracked_empty();
         // SAFETY: guaranteed by the caller.
         unsafe {
-            let pac = (*self.shared).pac();
-            match (*cache).mode {
+            let pac = shared_of(self.shared).pac();
+            match self.hdr_ref(cache).mode {
                 MODE_COMPACT => {}
                 MODE_PROBE => {
-                    let shared: &Shared = &*self.shared;
+                    let shared: &Shared = shared_of(self.shared);
                     // The probe is also a heartbeat for the periodic work: a
                     // balanced churn on a dense class takes no other slow
                     // path, and without it no GC or decay would ever run on
                     // a thread without a background thread.
                     self.tick(shared);
-                    let mut len = (*cache).len;
+                    let mut len = self.hdr_ref(cache).len;
                     if len == 0 {
                         // The GC emptied the cache.
-                        let Some(a) = shared.arena((*cache).arena) else {
+                        let Some(a) = shared.arena(self.hdr_ref(cache).arena) else {
                             return (ptr::null_mut(), false);
                         };
                         len = self.refill(shared, a, cache, class);
@@ -152,18 +210,28 @@ impl Heap {
                         }
                     }
                     let (refilled, verdict) =
-                        Self::probe_verdict(shared, (*cache).arena, class, (*cache).probe_refilled);
-                    (*cache).probe_refilled = refilled;
+                        Self::probe_verdict(shared, self.hdr_ref(cache).arena, class, self.hdr_ref(cache).probe_refilled);
+                    let ghost h0 = *self;
+                    let h = self.hdr_mut(cache);
+                    h.probe_refilled = refilled;
+                    proof {
+                        Heap::lemma_set(h0, *self, cache, *h);
+                    }
                     match verdict {
                         Verdict::Refilling | Verdict::Dense => {
-                            return Self::pop_top(cache, len, pac);
+                            return Self::pop_top(cache, len, pac, Tracked(self.perms.borrow_mut()), Tracked(&mut spare));
                         }
                         Verdict::Fragmented => {}
                     }
-                    (*cache).set_mode(MODE_COMPACT);
+                    let ghost h1 = *self;
+                    let h = self.hdr_mut(cache);
+                    h.set_mode(MODE_COMPACT);
+                    proof {
+                        Heap::lemma_set(h1, *self, cache, *h);
+                    }
                     return self.pop_compact_run(cache, class, len);
                 }
-                _ => return Self::pop_top(cache, len, pac),
+                _ => return Self::pop_top(cache, len, pac, Tracked(self.perms.borrow_mut()), Tracked(&mut spare)),
             }
             self.pop_compact_run(cache, class, len)
         }
@@ -174,18 +242,35 @@ impl Heap {
     ///
     /// # Safety
     /// As for [`Heap::pop`].
+    ///
+    /// Trusted: its proof over the `zeroed <= low_water` prefix (the token
+    /// moves of the compacting pop) is not written.
+    #[verifier::external_body]
     pub(super) unsafe fn pop_compact_run(
         &mut self,
         cache: *mut CacheHeader,
         class: usize,
         len: u32,
-    ) -> (*mut u8, bool) {
+    ) -> (r: (*mut u8, bool))
+        requires
+            class < NCLASSES,
+            old(self).wf(),
+            old(self).owns(cache),
+            old(self).hdr_class(cache) == class,
+            len == old(self).hdr(cache).len,
+            len > 0,
+        ensures
+            final(self).keeps(*old(self)),
+            r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
+            r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
+    {
+        let tracked mut spare = Map::<int, GhostSingleton<int>>::tracked_empty();
         // SAFETY: guaranteed by the caller.
         unsafe {
             let pac = (*self.shared).pac();
             match (*cache).mode {
                 MODE_COMPACT => {}
-                _ => return Self::pop_top(cache, len, pac),
+                _ => return Self::pop_top(cache, len, pac, Tracked(self.perms.borrow_mut()), Tracked(&mut spare)),
             }
             let mut len = len;
             if (*cache).run_end == 0 {
@@ -208,7 +293,7 @@ impl Heap {
                             return (ptr::null_mut(), false);
                         }
                     }
-                    return Self::pop_top(cache, len, pac);
+                    return Self::pop_top(cache, len, pac, Tracked(self.perms.borrow_mut()), Tracked(&mut spare));
                 }
             }
             // The run invariant `run_end <= low_water <= len` is what keeps
@@ -251,11 +336,15 @@ impl Heap {
         }
     }
 
+
     /// Whether `class` in `arena` is worth compacting (design 6.4).
-    pub(super) fn fragmented(shared: &Shared, arena: u16, class: usize) -> bool {
+    pub(super) fn fragmented(shared: &Shared, arena: u16, class: usize) -> bool
+        requires
+            class < NCLASSES,
+    {
         let cs = shared.owner(arena).class(class);
         let (holes, capacity) = cs.holes();
-        holes >= COMPACT_MIN_SLABS * CLASSES[class].compact_slots()
+        holes >= COMPACT_MIN_SLABS * CLASSES.table()[class].compact_slots()
             && holes * COMPACT_MIN_RATIO >= capacity
     }
 
@@ -269,11 +358,14 @@ impl Heap {
         arena: u16,
         class: usize,
         prev_refilled: u32,
-    ) -> (u32, Verdict) {
+    ) -> (u32, Verdict)
+        requires
+            class < NCLASSES,
+    {
         let cs = shared.owner(arena).class(class);
         let refilled = cs.refilled() as u32;
         let delta = refilled.wrapping_sub(prev_refilled) as usize;
-        let verdict = if delta >= COMPACT_MAX_REFILL_SLABS * CLASSES[class].compact_slots() {
+        let verdict = if delta >= COMPACT_MAX_REFILL_SLABS * CLASSES.table()[class].compact_slots() {
             if Self::fragmented(shared, arena, class) {
                 cs.note_gate_refill();
             }
@@ -299,9 +391,21 @@ impl Heap {
     ///
     /// # Safety
     /// `cache` is this heap's real cache for `class`, in compact mode.
+    ///
+    /// Trusted: its proof over the `zeroed <= low_water` prefix (the slice
+    /// moves over the stack and their tokens) is not written.
     #[cold]
     #[inline(never)]
-    pub(super) unsafe fn rebuild_run(&mut self, cache: *mut CacheHeader, class: usize) {
+    #[verifier::external_body]
+    pub(super) unsafe fn rebuild_run(&mut self, cache: *mut CacheHeader, class: usize)
+        requires
+            class < NCLASSES,
+            old(self).wf(),
+            old(self).owns(cache),
+            old(self).hdr_class(cache) == class,
+        ensures
+            final(self).keeps(*old(self)),
+    {
         // SAFETY: a heap never outlives the `Shared` it was created on; the
         // unbounded lifetime lets `self` be borrowed mutably below.
         let shared: &Shared = unsafe { &*self.shared };
@@ -329,7 +433,8 @@ impl Heap {
             }
             let slots = (*cache).slots();
             let out = core::slice::from_raw_parts_mut(slots.add(len), want);
-            let claim = self.claim(shared, shared.owner(arena).class(class), out);
+            let tracked mut toks = crate::class::SlotToks::empty();
+            let (claim, _) = self.claim(shared, shared.owner(arena).class(class), out, Tracked(&mut toks));
             let n = claim.n;
             if n == 0 {
                 return;
@@ -357,3 +462,5 @@ impl Heap {
         }
     }
 }
+
+} // verus!

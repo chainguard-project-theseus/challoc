@@ -6,14 +6,41 @@ use core::ptr;
 
 use crate::layout::{CLASSES, NCLASSES};
 use crate::sys::pac;
+use crate::vspec::addr::addr_to_ptr;
+use crate::vspec::zero::Zeroed;
 
+#[cfg(verus_only)]
+use super::{CachePerms, PUSH_ZERO, cell_ok, free_target, lemma_handed_ok, pac_mode, slot_token};
 use super::{FOREIGN, Heap, PUSH_PAC, Shared, existing_heap, heap_for_thread};
+#[cfg(verus_only)]
+use crate::class::slot_loc;
+#[cfg(verus_only)]
+use crate::layout::{class_table, process_regions};
+use vstd::map::Map;
+#[cfg(verus_only)]
+use vstd::prelude::*;
+use vstd::prelude::{Ghost, Tracked, int, verus};
+use vstd::raw_ptr::ptr_mut_ref;
+use vstd::resource::set::GhostSingleton;
+
+verus! {
 
 impl Heap {
     /// `malloc` of a non-huge class in the home arena: the cache pop, then
     /// the slow path.
     #[inline(always)]
-    pub fn alloc(&mut self, shared: &Shared, class: usize) -> *mut u8 {
+    pub fn alloc(&mut self, shared: &Shared, class: usize) -> (r: *mut u8)
+        requires
+            class < NCLASSES,
+            shared.wf(),
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+            r@.addr != 0 ==> process_regions().is_slot(class as int, r@.addr),
+    {
+        proof {
+            shared.lemma_wf();
+        }
         match self.alloc_fast(class, shared.push_flags()) {
             Some(p) => p,
             None => self.alloc_slow(shared, class).0,
@@ -24,8 +51,16 @@ impl Heap {
     /// sentinel) and the caller must take a slow path. `flags` is
     /// `Shared::push_flags` (only [`PUSH_PAC`] matters to a pop).
     #[inline(always)]
-    pub fn alloc_fast(&mut self, class: usize, flags: u8) -> Option<*mut u8> {
-        self.pop_fast(class, flags).map(|r| r.0)
+    pub fn alloc_fast(&mut self, class: usize, flags: u8) -> (r: Option<*mut u8>)
+        requires
+            class < NCLASSES,
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+            r matches Some(p) ==> ((flags & PUSH_PAC != 0) == pac_mode() ==> process_regions().is_slot(class as int, p@.addr)),
+    {
+        let tracked mut out = Map::<int, GhostSingleton<int>>::tracked_empty();
+        self.pop_fast(class, flags, Tracked(&mut out)).map(|r: (*mut u8, bool)| -> (p: *mut u8) ensures p == r.0 { r.0 })
     }
 
     /// [`Heap::alloc_fast`] with the zero flag: the one body of the home
@@ -38,31 +73,85 @@ impl Heap {
     /// `pop_compact` would be the one call inside the inlined pop, and a
     /// call in the body costs `malloc` a frame it needs for nothing else
     /// (the same move as the scan's `cached_twice` in
-    /// [`Heap::push_cache`]).
+    /// [`Heap::push_cache`]). With the cached slots
+    /// holding their tokens, `out[0]` is the popped slot's.
     #[inline(always)]
-    pub(super) fn pop_fast(&mut self, class: usize, flags: u8) -> Option<(*mut u8, bool)> {
+    pub(super) fn pop_fast(&mut self, class: usize, flags: u8, Tracked(out): Tracked<&mut Map<int, GhostSingleton<int>>>) -> (r: Option<(*mut u8, bool)>)
+        requires
+            class < NCLASSES,
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+            r matches Some((p, _)) ==> ((flags & PUSH_PAC != 0) == pac_mode() ==> process_regions().is_slot(class as int, p@.addr)),
+            old(self).tokened() ==> final(self).tokened(),
+            old(self).tokened() ==> (r matches Some((p, _)) ==> slot_token(*final(out), class as int, (flags & PUSH_PAC != 0) == pac_mode(), p)),
+            r matches Some((p, true)) ==> ((flags & PUSH_PAC != 0) == pac_mode() ==> final(self).handed_ok(p, class as int)),
+    {
+        broadcast use lemma_handed_ok;
         let cache = self.cache_ptr(class);
-        // SAFETY: this thread's own header, unused (`len == 0`) or with a
-        // stack of `len` entries.
-        unsafe {
-            let len = (*cache).len;
-            if len == 0 {
-                return None;
-            }
-            let allocs = (*cache).allocs.wrapping_add(1);
-            if ((allocs as u32) & (*cache).compact_mask) == 0 {
-                return None;
-            }
-            (*cache).allocs = allocs;
-            Some(Self::pop_top(cache, len, flags & PUSH_PAC != 0))
+        let ghost old_perms = self.perms@;
+        proof {
+            assert(cell_ok(cache, old_perms.hdrs[cache], old_perms.slots));
         }
+        // This thread's own header, unused (`len == 0`) or with a stack of
+        // `len` entries.
+        let h = ptr_mut_ref(cache, Tracked(self.perms.borrow_mut().hdrs.tracked_borrow_mut(cache)));
+        let len = h.len;
+        if len == 0 {
+            proof {
+                CachePerms::lemma_update(old_perms, self.perms@, cache);
+                CachePerms::lemma_tracks_hdr(old_perms, self.perms@, cache);
+                if old_perms.tokened() {
+                    CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
+                }
+                CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
+            }
+            return None;
+        }
+        let allocs = h.allocs.wrapping_add(1);
+        if ((allocs as u32) & h.compact_mask) == 0 {
+            proof {
+                CachePerms::lemma_update(old_perms, self.perms@, cache);
+                CachePerms::lemma_tracks_hdr(old_perms, self.perms@, cache);
+                if old_perms.tokened() {
+                    CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
+                }
+                CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
+            }
+            return None;
+        }
+        h.allocs = allocs;
+        proof {
+            CachePerms::lemma_update(old_perms, self.perms@, cache);
+            CachePerms::lemma_tracks_hdr(old_perms, self.perms@, cache);
+            if old_perms.tokened() {
+                CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
+            }
+            CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
+        }
+        // SAFETY: `len` is the non-empty stack's length.
+        Some(unsafe { Self::pop_top(cache, len, flags & PUSH_PAC != 0, Tracked(self.perms.borrow_mut()), Tracked(out)) })
     }
 
     /// Fast path of `calloc`: the flag is true when the memory is known to
     /// read as zero, so the caller can skip its `memset`.
     #[inline(always)]
-    pub fn alloc_zeroed(&mut self, shared: &Shared, class: usize) -> (*mut u8, bool) {
-        match self.pop_fast(class, shared.push_flags()) {
+    pub fn alloc_zeroed(&mut self, shared: &Shared, class: usize) -> (r: (*mut u8, bool))
+        requires
+            class < NCLASSES,
+            shared.wf(),
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+            r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
+            r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
+    {
+        broadcast use lemma_handed_ok;
+        proof {
+            shared.lemma_wf();
+        }
+        let tracked mut out = Map::<int, GhostSingleton<int>>::tracked_empty();
+        match self.pop_fast(class, shared.push_flags(), Tracked(&mut out)) {
             Some(r) => r,
             None => self.alloc_slow(shared, class),
         }
@@ -71,17 +160,29 @@ impl Heap {
     /// Allocation of `class` from `arena` through this heap's cache for
     /// that arena (`MALLOCX_ARENA`, or the home arena of an explicit
     /// cache). Null when `arena` does not exist or is exhausted.
-    pub fn alloc_in(&mut self, shared: &Shared, arena: u16, class: usize) -> (*mut u8, bool) {
+    pub fn alloc_in(&mut self, shared: &Shared, arena: u16, class: usize) -> (r: (*mut u8, bool))
+        requires
+            shared.wf(),
+            class < NCLASSES,
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+            r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
+            r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
+    {
+        broadcast use lemma_handed_ok;
+        proof {
+            shared.lemma_wf();
+        }
         if arena != self.arena {
             return self.alloc_other(shared, arena, class);
         }
         let cache = self.cache_ptr(class);
-        // SAFETY: as in `alloc`.
-        unsafe {
-            let len = (*cache).len;
-            if len != 0 {
-                return self.pop(cache, class, len, shared.pac());
-            }
+        // As in `alloc`.
+        let len = self.hdr_ref(cache).len;
+        if len != 0 {
+            // SAFETY: a real cache with `len` entries.
+            return unsafe { self.pop(cache, class, len, shared.pac()) };
         }
         // Not `alloc_slow`: an explicit arena is kept even for a shared
         // class (design 13.3).
@@ -92,13 +193,22 @@ impl Heap {
     /// a live huge run. A slot of another arena goes onto this heap's
     /// [`FOREIGN`] cache for the class (design 6.3 step 4).
     #[inline(always)]
-    pub fn free(&mut self, shared: &Shared, p: *mut u8) {
+    pub fn free(&mut self, shared: &Shared, p: *mut u8)
+        requires
+            shared.wf(),
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+            free_target(p),
+    {
         match shared.classify_free(p) {
             Ok((class, arena)) => {
+                // The freed slot's token: the `free` contract.
+                let tracked tok = crate::class::axiom_free_token(class as int, p);
                 if arena == self.arena {
-                    self.push(shared, class, p)
+                    self.push(shared, class, p, Tracked(tok))
                 } else {
-                    self.free_other(shared, class, p)
+                    self.free_other(shared, class, p, Tracked(tok))
                 }
             }
             Err(page) => self.free_huge(shared, page),
@@ -109,30 +219,53 @@ impl Heap {
     /// lock, counted in the thread's statistics.
     #[cold]
     #[inline(never)]
-    pub fn alloc_huge(&mut self, shared: &Shared, size: usize, align: usize) -> (*mut u8, bool) {
+    pub fn alloc_huge(&mut self, shared: &Shared, size: usize, align: usize) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+        requires
+            old(self).wf(),
+            shared.wf(),
+            crate::meta::is_pow2(align),
+        ensures
+            final(self).keeps(*old(self)),
+            r.0@.addr != 0 ==> crate::layout::huge_block(r.0@.addr, size, align),
+            r.0@.addr != 0 ==> size <= shared.huge_usable(size),
+            r.0@.addr != 0 ==> shared.huge_ok(size),
+            r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, shared.huge_usable(size)),
+    {
         let arena = self.arena;
         self.alloc_huge_in(shared, size, align, arena)
     }
 
     /// Huge allocation on this thread in `arena` (which must exist).
-    pub fn alloc_huge_in(
-        &mut self,
-        shared: &Shared,
-        size: usize,
-        align: usize,
-        arena: u16,
-    ) -> (*mut u8, bool) {
-        let (p, zero) = shared.alloc_huge(size, align, arena);
+    pub fn alloc_huge_in(&mut self, shared: &Shared, size: usize, align: usize, arena: u16) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+        requires
+            old(self).wf(),
+            shared.wf(),
+            crate::meta::is_pow2(align),
+        ensures
+            final(self).keeps(*old(self)),
+            r.0@.addr != 0 ==> crate::layout::huge_block(r.0@.addr, size, align),
+            r.0@.addr != 0 ==> size <= shared.huge_usable(size),
+            r.0@.addr != 0 ==> shared.huge_ok(size),
+            r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, shared.huge_usable(size)),
+    {
+        let (p, zero, z) = shared.alloc_huge(size, align, arena);
         if !p.is_null() {
             self.count_uncached_alloc(shared.huge.usable_for(size).unwrap_or(0));
         }
-        (p, zero)
+        (p, zero, z)
     }
 
     /// Free of a huge run on this thread.
     #[cold]
     #[inline(never)]
-    pub(super) fn free_huge(&mut self, shared: &Shared, page: usize) {
+    pub(super) fn free_huge(&mut self, shared: &Shared, page: usize)
+        requires
+            old(self).wf(),
+            shared.wf(),
+            page <= shared.huge_pages(),
+        ensures
+            final(self).keeps(*old(self)),
+    {
         if shared.zero_on_free() {
             shared.zero_huge(page);
         }
@@ -142,38 +275,79 @@ impl Heap {
 
     /// `bytes` were allocated on this thread without passing through a
     /// cache (a huge run, or a slot served straight from a slab): count
-    /// them in `thread.allocated`. The one way `uncached` grows.
+    /// them in `thread.allocated` (wrapping, as every counter here). The
+    /// one way `uncached` grows.
     #[inline]
-    pub(super) fn count_uncached_alloc(&mut self, bytes: usize) {
-        self.uncached.allocated += bytes as u64;
+    pub(super) fn count_uncached_alloc(&mut self, bytes: usize)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+    {
+        self.uncached.allocated = self.uncached.allocated.wrapping_add(bytes as u64);
     }
 
     /// `bytes` were freed on this thread without passing through a cache:
-    /// count them in `thread.deallocated`.
+    /// count them in `thread.deallocated` (wrapping).
     #[inline]
-    pub(super) fn count_uncached_free(&mut self, bytes: usize) {
-        self.uncached.deallocated += bytes as u64;
+    pub(super) fn count_uncached_free(&mut self, bytes: usize)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+    {
+        self.uncached.deallocated = self.uncached.deallocated.wrapping_add(bytes as u64);
     }
 
     /// A slot of `class` was claimed directly (`MALLOCX_TCACHE_NONE`) on
     /// this thread: count it.
     #[inline(always)]
-    pub fn count_direct_alloc(&mut self, class: usize) {
+    pub fn count_direct_alloc(&mut self, class: usize)
+        requires
+            class < NCLASSES,
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+    {
         self.count_uncached_alloc(class_size(class));
     }
 
     /// A slot of `class` was released directly on this thread: count it.
     #[inline(always)]
-    pub fn count_direct_free(&mut self, class: usize) {
+    pub fn count_direct_free(&mut self, class: usize)
+        requires
+            class < NCLASSES,
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+    {
         self.count_uncached_free(class_size(class));
     }
 
     /// Refill the home cache and pop, allocating the cache first if this
     /// is the class's first use. Serves directly from the slab when there
     /// is no cache to be had.
+    ///
+    /// Trusted: the header is read and written through the raw pointer, and
+    /// the `debug_assert!` on the schedule is not provable here. The
+    /// result's slot fact is that of the verified paths it takes
+    /// ([`Heap::alloc_slow_in`], [`Heap::pop_compact`]), and the counted pop keeps
+    /// the header's stack as [`Heap::lemma_set`] does.
+    /// Its zero result's token in [`CachePerms::handed`] is likewise that of
+    /// those paths (`pop_compact`, `alloc_slow_in`), assumed here.
     #[cold]
     #[inline(never)]
-    pub(super) fn alloc_slow(&mut self, shared: &Shared, class: usize) -> (*mut u8, bool) {
+    #[verifier::external_body]
+    pub(super) fn alloc_slow(&mut self, shared: &Shared, class: usize) -> (r: (*mut u8, bool))
+        requires
+            shared.wf(),
+            class < NCLASSES,
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+            r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
+            r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
+    {
         // The default path's one routing decision: a shared class (above
         // `tcache_max`, uncached everywhere) comes from arena 0 whatever
         // the home arena (`Config::shared_class`); explicit `MALLOCX_ARENA`
@@ -199,22 +373,30 @@ impl Heap {
     }
 
     /// The slow allocation path for any arena.
-    pub(super) fn alloc_slow_in(
-        &mut self,
-        shared: &Shared,
-        arena: u16,
-        class: usize,
-    ) -> (*mut u8, bool) {
+    pub(super) fn alloc_slow_in(&mut self, shared: &Shared, arena: u16, class: usize) -> (r: (*mut u8, bool))
+        requires
+            class < NCLASSES,
+            shared.wf(),
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+            r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
+            r.0@.addr != 0 && r.1 ==> final(self).handed_ok(r.0, class as int),
+    {
+        broadcast use lemma_handed_ok;
+        proof {
+            shared.lemma_wf();
+        }
         self.tick(shared);
-        let Some(a) = shared.arena(arena) else {
-            return (ptr::null_mut(), false);
-        };
+        let Some(a) = shared.arena(arena) else { return (ptr::null_mut(), false) };
         let cache = self.ensure_cache(shared, arena, class);
         if cache.is_null() {
-            let (p, zero) = shared.alloc_direct(a, class);
+            let (p, zero, t) = shared.alloc_direct(a, class);
             if !p.is_null() {
                 self.count_direct_alloc(class);
             }
+            let ghost put = p@.addr != 0 && zero;
+            self.put_handed(t, Ghost(put), Ghost(p), Ghost(class as int));
             return (p, zero);
         }
         // SAFETY: `cache` is this heap's real cache for `(arena, class)`.
@@ -232,9 +414,19 @@ impl Heap {
     /// Releases directly to the slab when there is no cache to be had.
     #[cold]
     #[inline(never)]
-    pub(super) fn free_slow(&mut self, shared: &Shared, class: usize, p: *mut u8) {
+    pub(super) fn free_slow(&mut self, shared: &Shared, class: usize, p: *mut u8, Tracked(tok): Tracked<GhostSingleton<int>>)
+        requires
+            process_regions().is_slot(class as int, p@.addr),
+            tok.id() == slot_loc(class as int),
+            tok@ == p@.addr as int,
+            shared.wf(),
+            class < NCLASSES,
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+    {
         let arena = self.arena;
-        self.free_slow_in(shared, arena, class, p)
+        self.free_slow_in(shared, arena, class, p, Tracked(tok))
     }
 
     /// The slow free path for any arena. With `zero_on_free` every cached
@@ -244,7 +436,17 @@ impl Heap {
     /// on the plain path; the size hint on the sized path, as the push
     /// trusts it, so a stale pointer of the right shape is cleared as it
     /// is cached, exactly as it would be handed out; design 6.3).
-    pub(super) fn free_slow_in(&mut self, shared: &Shared, arena: u16, class: usize, p: *mut u8) {
+    pub(super) fn free_slow_in(&mut self, shared: &Shared, arena: u16, class: usize, p: *mut u8, Tracked(tok): Tracked<GhostSingleton<int>>)
+        requires
+            process_regions().is_slot(class as int, p@.addr),
+            tok.id() == slot_loc(class as int),
+            tok@ == p@.addr as int,
+            class < NCLASSES,
+            shared.wf(),
+            old(self).wf(),
+        ensures
+            final(self).keeps(*old(self)),
+    {
         if shared.zero_on_free() {
             // SAFETY: `p` is a slot start of `class` (the caller's check).
             unsafe { zero_slot(class, p) };
@@ -254,16 +456,12 @@ impl Heap {
         // `ensure_cache` reads its class state for the header (a heap
         // whose first allocation is huge, or whose home moved, may not
         // have built it).
-        let cache = if arena == FOREIGN || shared.arena(arena).is_some() {
-            self.ensure_cache(shared, arena, class)
-        } else {
-            ptr::null_mut()
-        };
+        let cache = if arena == FOREIGN || shared.arena(arena).is_some() { self.ensure_cache(shared, arena, class) } else { ptr::null_mut() };
         if cache.is_null() {
             self.tick(shared);
             // No cache for this class here: straight to the slab, through
             // the arena its slab belongs to.
-            shared.free_direct(shared.arena_of_slot(class, p), class, p);
+            shared.free_direct(shared.arena_of_slot(class, p), class, p, Tracked(tok));
             self.count_direct_free(class);
             return;
         }
@@ -276,33 +474,30 @@ impl Heap {
             // addresses, the first copy possibly among them) and abort by
             // name, as the push did when the call was inline.
             if shared.double_free_scan() {
-                let slots = (*cache).slots();
-                let e = if shared.pac() {
-                    pac::sign(p as usize, slots as usize) as *mut u8
-                } else {
-                    p
-                };
-                if Self::cached_recently(slots, (*cache).len, e) {
+                let slots = self.hdr_ref(cache).slots;
+                let e = if shared.pac() { addr_to_ptr(pac::sign(p as usize, slots as usize)) } else { p };
+                if Self::cached_recently(slots, self.hdr_ref(cache).len, e, Tracked(&self.perms.borrow().slots)) {
                     cached_twice(p);
                 }
             }
             self.tick(shared);
-            if (*cache).len == (*cache).cap {
+            if self.hdr_ref(cache).len == self.hdr_ref(cache).cap {
                 // A home cache keeps its lowest half (design 6.4); the
                 // FOREIGN cache, popped by nothing, releases everything.
-                let n = if arena == FOREIGN {
-                    (*cache).cap
-                } else {
-                    ((*cache).cap / 2).max(1)
-                };
+                let n = if arena == FOREIGN { self.hdr_ref(cache).cap } else { (self.hdr_ref(cache).cap / 2).max(1) };
                 self.flush(shared, arena, cache, class, n as usize);
             }
             // The scan ran above; a flush only removes entries.
-            if !Self::push_cache(cache, p, false, shared.pac()) {
+            let tracked mut tk = Map::<int, GhostSingleton<int>>::tracked_empty();
+            proof {
+                tk.tracked_insert(0, tok);
+            }
+            if !Self::push_cache(cache, p, false, shared.pac(), Tracked(self.perms.borrow_mut()), Tracked(&mut tk)) {
                 unreachable!("heap: cache still full after a flush");
             }
         }
     }
+
 }
 
 /// The `free` fast path on an existing heap: check the slot and push it
@@ -312,9 +507,26 @@ impl Heap {
 /// they fail. Contains no call, so the entry point that inlines it needs no
 /// frame.
 #[inline(always)]
-pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> bool {
+pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> (r: bool)
+    requires
+        shared.wf(),
+        (flags & PUSH_PAC != 0) == pac_mode(),
+        old(h).wf(),
+    ensures
+        final(h).keeps(*old(h)),
+        flags & PUSH_ZERO != 0 ==> !r,
+        r ==> free_target(p),
+{
     match shared.checked_slot(p, h) {
-        Some(class) => h.push_fast(class, p, flags),
+        Some(class) => {
+            // The freed slot's token: the `free` contract.
+            let tracked mut tk = Map::<int, GhostSingleton<int>>::tracked_empty();
+            proof {
+                let tracked t = crate::class::axiom_free_token(class as int, p);
+                tk.tracked_insert(0, t);
+            }
+            h.push_fast(class, p, flags, Tracked(&mut tk))
+        },
         None => false,
     }
 }
@@ -325,13 +537,25 @@ pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> bool {
 /// fast path (the caller then takes its cold exact path). The same loads
 /// as `free_fast`, no call.
 #[inline(always)]
-pub fn free_fast_class(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> Option<usize> {
+pub fn free_fast_class(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> (r: Option<usize>)
+    requires
+        shared.wf(),
+        (flags & PUSH_PAC != 0) == pac_mode(),
+        old(h).wf(),
+    ensures
+        final(h).keeps(*old(h)),
+        r matches Some(c) ==> c < NCLASSES,
+        flags & PUSH_ZERO != 0 ==> r is None,
+        r is Some ==> free_target(p),
+{
     let class = shared.checked_slot(p, h)?;
-    if h.push_fast(class, p, flags) {
-        Some(class)
-    } else {
-        None
+    // The freed slot's token: the `free` contract.
+    let tracked mut tk = Map::<int, GhostSingleton<int>>::tracked_empty();
+    proof {
+        let tracked t = crate::class::axiom_free_token(class as int, p);
+        tk.tracked_insert(0, t);
     }
+    if h.push_fast(class, p, flags, Tracked(&mut tk)) { Some(class) } else { None }
 }
 
 /// The sized free's fast path on an existing heap (`sdallocx`,
@@ -342,22 +566,40 @@ pub fn free_fast_class(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> 
 /// full cache); the caller then goes through [`Shared::check_size_hint`]
 /// and the exact [`free`]. Contains no call.
 #[inline(always)]
-pub fn free_sized_fast(
-    shared: &Shared,
-    h: &mut Heap,
-    p: *mut u8,
-    hint: Option<usize>,
-    flags: u8,
-) -> bool {
+pub fn free_sized_fast(shared: &Shared, h: &mut Heap, p: *mut u8, hint: Option<usize>, flags: u8) -> (r: bool)
+    requires
+        shared.wf(),
+        (flags & PUSH_PAC != 0) == pac_mode(),
+        hint matches Some(c) ==> c < NCLASSES,
+        old(h).wf(),
+    ensures
+        final(h).keeps(*old(h)),
+        flags & PUSH_ZERO != 0 ==> !r,
+        r ==> free_target(p),
+{
     match shared.sized_slot(p, hint) {
-        Some(class) => h.push_fast(class, p, flags),
+        Some(class) => {
+            // The freed slot's token: the `free` contract.
+            let tracked mut tk = Map::<int, GhostSingleton<int>>::tracked_empty();
+            proof {
+                let tracked t = crate::class::axiom_free_token(class as int, p);
+                tk.tracked_insert(0, t);
+            }
+            h.push_fast(class, p, flags, Tracked(&mut tk))
+        },
         None => false,
     }
 }
 
 /// `malloc` of a non-huge class on the calling thread.
 #[inline(always)]
-pub fn alloc(shared: &Shared, class: usize) -> *mut u8 {
+pub fn alloc(shared: &Shared, class: usize) -> (r: *mut u8)
+    requires
+        class < NCLASSES,
+        shared.wf(),
+    ensures
+        r@.addr != 0 ==> process_regions().is_slot(class as int, r@.addr),
+{
     match heap_for_thread(shared) {
         Some(h) => h.alloc(shared, class),
         None => shared.alloc_direct(&shared.arena0, class).0,
@@ -373,7 +615,13 @@ pub fn alloc(shared: &Shared, class: usize) -> *mut u8 {
 /// through `alloc` the mixed `valkey1` row paid 4 instructions per
 /// operation for the one pop in eight the compacting mode schedules).
 #[inline(always)]
-pub fn alloc_declined(shared: &Shared, class: usize) -> *mut u8 {
+pub fn alloc_declined(shared: &Shared, class: usize) -> (r: *mut u8)
+    requires
+        shared.wf(),
+        class < NCLASSES,
+    ensures
+        r@.addr != 0 ==> process_regions().is_slot(class as int, r@.addr),
+{
     match heap_for_thread(shared) {
         Some(h) => h.alloc_slow(shared, class).0,
         None => shared.alloc_direct(&shared.arena0, class).0,
@@ -383,9 +631,24 @@ pub fn alloc_declined(shared: &Shared, class: usize) -> *mut u8 {
 /// `calloc` of a non-huge class on the calling thread; the flag says the
 /// memory is known zero.
 #[inline(always)]
-pub fn alloc_zeroed(shared: &Shared, class: usize) -> (*mut u8, bool) {
+pub fn alloc_zeroed(shared: &Shared, class: usize) -> (r: (*mut u8, bool, Tracked<Zeroed>))
+    requires
+        class < NCLASSES,
+        shared.wf(),
+    ensures
+        r.0@.addr != 0 ==> process_regions().is_slot(class as int, r.0@.addr),
+        r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, class_table()[class as int].size as int),
+{
     match heap_for_thread(shared) {
-        Some(h) => h.alloc_zeroed(shared, class),
+        Some(h) => {
+            proof {
+                h.lemma_wf_regions();
+            }
+            let (p, zero) = h.alloc_zeroed(shared, class);
+            let ghost take = p@.addr != 0 && zero;
+            let z = h.take_handed(Ghost(take), Ghost(p), Ghost(class as int));
+            (p, zero, z)
+        },
         None => shared.alloc_direct(&shared.arena0, class),
     }
 }
@@ -393,7 +656,12 @@ pub fn alloc_zeroed(shared: &Shared, class: usize) -> (*mut u8, bool) {
 /// `free` of a non-null pointer on the calling thread. Aborts unless `p`
 /// is an allocated slab slot or a live huge run.
 #[inline(always)]
-pub fn free(shared: &Shared, p: *mut u8) {
+pub fn free(shared: &Shared, p: *mut u8)
+    requires
+        shared.wf(),
+    ensures
+        free_target(p),
+{
     match heap_for_thread(shared) {
         Some(h) => h.free(shared, p),
         None => free_direct(shared, p),
@@ -403,7 +671,12 @@ pub fn free(shared: &Shared, p: *mut u8) {
 /// `free` of a non-null pointer straight to its slab bitmap or the huge
 /// allocator, through no cache (`MALLOCX_TCACHE_NONE`, or a thread without
 /// a heap). Counted in the thread's statistics when it has a heap.
-pub fn free_direct(shared: &Shared, p: *mut u8) {
+pub fn free_direct(shared: &Shared, p: *mut u8)
+    requires
+        shared.wf(),
+    ensures
+        free_target(p),
+{
     match shared.classify_free(p) {
         Ok((class, arena)) => {
             if shared.zero_on_free() {
@@ -411,8 +684,10 @@ pub fn free_direct(shared: &Shared, p: *mut u8) {
                 // of `class`.
                 unsafe { zero_slot(class, p) };
             }
-            shared.free_direct(arena, class, p);
-            if let Some(h) = existing_heap(shared) {
+            // The freed slot's token: the `free` contract.
+            let tracked tok = crate::class::axiom_free_token(class as int, p);
+            shared.free_direct(arena, class, p, Tracked(tok));
+            if let Some(h) = existing_heap(shared_ptr(shared)) {
                 h.count_direct_free(class);
             }
         }
@@ -421,15 +696,25 @@ pub fn free_direct(shared: &Shared, p: *mut u8) {
                 shared.zero_huge(page);
             }
             let n = shared.free_huge(page);
-            if let Some(h) = existing_heap(shared) {
+            if let Some(h) = existing_heap(shared_ptr(shared)) {
                 h.count_uncached_free(n);
             }
         }
     }
 }
 
+/// `shared` as the raw pointer [`existing_heap`] takes. Trusted: Verus has no
+/// reference-to-pointer cast; nothing is claimed about the pointer.
+#[inline(always)]
+#[verifier::external_body]
+pub(crate) fn shared_ptr(shared: &Shared) -> *const Shared {
+    shared
+}
+
+/// Trusted: aborts.
 #[cold]
 #[inline(never)]
+#[verifier::external_body]
 pub(super) fn invalid_free(p: usize) -> ! {
     panic!("invalid free of {p:#x}: not an allocation")
 }
@@ -444,9 +729,17 @@ pub(super) fn invalid_free(p: usize) -> ! {
 /// `p` is a slot start of `class` in a committed slab.
 #[cold]
 #[inline(never)]
-pub(super) unsafe fn zero_slot(class: usize, p: *mut u8) {
+pub(super) unsafe fn zero_slot(class: usize, p: *mut u8)
+    requires
+        class < NCLASSES,
+        process_regions().is_slot(class as int, p@.addr),
+{
+    proof {
+        broadcast use vstd::layout::align_of_u8;
+        crate::vspec::addr::axiom_slot_writable(class, p);
+    }
     // SAFETY: guaranteed by the caller; the slot is `size` writable bytes.
-    unsafe { ptr::write_bytes(p, 0, CLASSES[class].size()) };
+    unsafe { ptr::write_bytes(p, 0, CLASSES.table()[class].size()) };
 }
 
 /// `double_free_scan`: the slot being pushed is one of the top four cache
@@ -456,19 +749,36 @@ pub(super) unsafe fn zero_slot(class: usize, p: *mut u8) {
 /// frame for this call.
 #[cold]
 #[inline(never)]
+#[verifier::external_body]
 pub(super) fn cached_twice(p: *mut u8) -> ! {
-    panic!(
-        "double free of {:#x}: the slot is already in the thread cache",
-        p as usize
-    )
+    panic!("double free of {:#x}: the slot is already in the thread cache", p as usize)
+}
+
+/// The `Shared` a heap was created on, with a lifetime free of the heap's
+/// borrow (so the heap can be borrowed mutably while it is used).
+/// Trusted: a raw-pointer dereference; a heap never outlives its `Shared`,
+/// which `init` made well formed.
+#[inline(always)]
+#[verifier::external_body]
+pub(super) fn shared_of<'a>(p: *const Shared) -> (r: &'a Shared)
+    ensures
+        r.wf(),
+{
+    // SAFETY: as above.
+    unsafe { &*p }
 }
 
 /// `CLASSES[class].size()` without the bounds check: every `class` on the
 /// fast paths came from `class_of` or a slab descriptor, so it is below
-/// `NCLASSES`.
+/// `NCLASSES`, and the check was two instructions and a panic call.
 #[inline(always)]
-pub(super) fn class_size(class: usize) -> usize {
+pub(super) fn class_size(class: usize) -> usize
+    requires
+        class < NCLASSES,
+{
     debug_assert!(class < NCLASSES);
     // SAFETY: as above.
-    unsafe { CLASSES.get_unchecked(class) }.size()
+    unsafe { CLASSES.table().get_unchecked(class) }.size()
 }
+
+} // verus!
