@@ -1,0 +1,6 @@
+# zizmor (the lint job). self-repository wants `uses: $/...` for local
+# actions; actionlint does not know that syntax yet, so the local
+# composite action keeps `./.github/actions/...`.
+rules:
+  self-repository:
+    disable: true

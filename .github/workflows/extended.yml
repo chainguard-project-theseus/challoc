@@ -1,0 +1,106 @@
+# Nightly and on-demand checks too long for a PR (the CI design's section
+# 4): the long fuzz runs, the 600 s cgroup oscillation, the DT_NEEDED check
+# and the consumer builds (Valkey and Ruby with their suites). Each task is
+# ci/extended.sh TASK in the dev container.
+#
+# Not here yet (CI-M2): the checked-release .so, Miri on the pure-logic
+# modules, valgrind. The GCE kernel cells and the benchmark hook have no
+# workflow until the CI identity exists (kernels.yml, bench.yml: see
+# ci/README.md).
+name: extended
+on:
+  schedule:
+    - cron: "41 2 * * *"
+  workflow_dispatch:
+    inputs:
+      tasks:
+        description: Space-separated tasks (fuzz fuzz-hardened fuzz-q8 oscillate check-needed), or all
+        default: all
+      consumers:
+        description: Run the Valkey and Ruby builds
+        type: boolean
+        default: true
+permissions: {}
+concurrency:
+  group: extended-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  stress:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+        task: [fuzz, fuzz-hardened, fuzz-q8, oscillate, check-needed]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    # Measured on the private repo's 2-vCPU runners: the 50M fuzz takes
+    # 25 min on aarch64 and 35-45 min on x86_64, the oscillation 21 min.
+    timeout-minutes: 90
+    steps:
+      - name: selected
+        id: sel
+        env:
+          TASKS: ${{ inputs.tasks || 'all' }}
+          TASK: ${{ matrix.task }}
+        run: |
+          case " $TASKS " in *" all "*|*" $TASK "*) echo run=true ;; *) echo run=false ;; esac >>"$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.sel.outputs.run == 'true'
+        with:
+          persist-credentials: false
+      - id: image
+        if: steps.sel.outputs.run == 'true'
+        uses: ./.github/actions/ci-image
+        with:
+          stage: test
+      - name: ${{ matrix.task }}
+        if: steps.sel.outputs.run == 'true'
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          TASK: ${{ matrix.task }}
+        run: bash ci/extended.sh "$TASK"
+      - name: seed
+        if: failure() && startsWith(matrix.task, 'fuzz')
+        env:
+          TASK: ${{ matrix.task }}
+        run: |
+          grep -a -i 'seed' ".ci/$TASK.log" | head -n 3 | sed 's/^/    /' >>"$GITHUB_STEP_SUMMARY" || true
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always() && steps.sel.outputs.run == 'true'
+        with:
+          name: extended-${{ matrix.task }}-${{ steps.image.outputs.arch }}
+          path: .ci/${{ matrix.task }}.log
+          if-no-files-found: ignore
+
+  consumers:
+    if: github.event_name == 'schedule' || inputs.consumers
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+        consumer: [valkey, ruby]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: image
+        uses: ./.github/actions/ci-image
+        with:
+          stage: consumers
+      - name: make ${{ matrix.consumer }} STAGE=all
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          TASK: ${{ matrix.consumer }}
+        run: bash ci/extended.sh "$TASK"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: extended-${{ matrix.consumer }}-${{ steps.image.outputs.arch }}
+          path: .ci/${{ matrix.consumer }}.log
+          if-no-files-found: ignore

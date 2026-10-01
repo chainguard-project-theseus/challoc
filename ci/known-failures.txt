@@ -1,0 +1,5 @@
+# Failures a CI cell may see without failing the job (ci/known-failures.sh).
+# Every entry is a TODO with its reason and is deleted when the failure is
+# fixed; a failure not listed here fails the job. One per line: a unit
+# test by its full name (api::tests::some_test) or a cgroup program as
+# `cgroup-tests KIND ALLOC`, optionally scoped with ` @CELL-GLOB`.
