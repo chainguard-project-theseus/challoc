@@ -79,18 +79,17 @@ impl Heap {
     /// from `getrandom` (mixed with the heap's address and thread id so two
     /// heaps seeded in the same instant differ even if the kernel returned
     /// the same bytes, and never zero, which xorshift cannot leave).
-    /// Trusted: the reference-to-integer cast of `self` and `seed` (a
-    /// syscall) are outside `verus!`; only `rng` changes.
+    /// Only `rng` changes; the address mix ([`addr_mix`]) and `seed` (a
+    /// syscall) are trusted and may return anything.
     #[cold]
     #[inline(never)]
-    #[verifier::external_body]
     pub(super) fn rng(&mut self) -> (r: &mut u64)
         ensures
             *final(self) == (Heap { rng: *final(r), ..*old(self) }),
     {
         if self.rng == 0 {
             let mut seed = seed();
-            seed ^= (self as *const Heap as u64).rotate_left(17) ^ ((self.tid as u64) << 32);
+            seed ^= addr_mix(self) ^ ((self.tid as u64) << 32);
             if seed == 0 {
                 seed = 0x9E37_79B9_7F4A_7C15;
             }
@@ -1332,12 +1331,25 @@ pub(super) fn straddling_double_free(p: *mut u8, class: usize) -> ! {
 verus! {
 
 /// `Config::slot_randomize` (design section 4), read on the slow path.
-/// Trusted: a field read of `Config`, which is outside `verus!`; claims
-/// nothing about the value.
 #[inline(always)]
-#[verifier::external_body]
 fn slot_randomize(shared: &Shared) -> bool {
     shared.config.slot_randomize
 }
+
+/// `rng`'s mix of the heap's address into its seed: the address of `h`,
+/// rotated left by 17 bits.
+///
+/// Trusted: Verus rejects the reference-to-integer cast; claims nothing
+/// about the value.
+#[inline(always)]
+#[verifier::external_body]
+fn addr_mix(h: &Heap) -> u64 {
+    (h as *const Heap as u64).rotate_left(17)
+}
+
+/// `seed` reads `getrandom(2)` (or the clock).
+///
+/// Trusted: `seed` is outside `verus!`; claims nothing about the value.
+pub assume_specification[ seed ]() -> u64;
 
 } // verus!
