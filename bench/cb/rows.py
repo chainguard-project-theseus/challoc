@@ -110,12 +110,33 @@ def parse_wall(out: str, rt: dict[str, Any], row: Row) -> Parsed:
     return Parsed(round(float(w), 6), ops=float(row.ops) if row.ops else None)
 
 
+def parse_kv(out: str, rt: dict[str, Any], row: Row) -> Parsed:
+    # "result k=v k=v ..." (bench/probes/tcache_residue.c): the row's
+    # `metric` is the score, every figure goes into extra (*_kb also as
+    # *_mib).
+    for line in out.splitlines():
+        if line.startswith("result "):
+            extra: dict[str, float] = {}
+            for p in line.split()[1:]:
+                if "=" in p and (v := _num(p.split("=", 1)[1])) is not None:
+                    k = p.split("=", 1)[0]
+                    extra[k] = v
+                    if k.endswith("_kb"):
+                        extra[k[:-3] + "_mib"] = v / 1024
+            score = extra.get(row.metric)
+            if score is None:
+                return Parsed(None, extra=extra, error=f"no {row.metric} in the result line")
+            return Parsed(score, extra=extra)
+    return Parsed(None, error="no 'result ' line")
+
+
 PARSERS: dict[str, Callable[[str, dict[str, Any], Row], Parsed]] = {
     "larson": parse_larson,
     "xmalloc": parse_xmalloc,
     "valkey_model.write": parse_valkey_write,
     "churn.occ": parse_churn,
     "wall": parse_wall,
+    "kv": parse_kv,
 }
 
 
