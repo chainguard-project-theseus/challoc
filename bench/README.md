@@ -1,44 +1,37 @@
 # bench/
 
-Benchmark harness for challoc (the protocol is docs/benchmarking.md). Everything
-runs inside the dev container on the native architecture; emulated x86_64 is
-never used for numbers.
+Benchmark harness for challoc. **`bench/cb` is the harness**: one
+declarative runner (`cb run` on this machine, `cb launch` on GCE cells)
+over the rows of `bench/rows.toml`, the suites of `bench/suites/*.toml`
+and the cells of `bench/cells/*.toml`, with paired, CI-backed verdicts.
+The shell scripts further down are the previous harness; they still run
+and are listed under "Legacy scripts" with what replaces each.
 
-    make bench-build      fetch and build the benchmark programs (once per target volume)
-    make quick-legacy [OLD=rev]  old fast tier: ~2.5 min, the working tree vs OLD (`make quick` is now cb launch quick)
-                          (PERF=1 adds per-op counters where perf exists)
-    make ab VARIANTS=...  protocol tier A/B: the table results files are made of
-    make baseline         cache jemalloc/glibc/mimalloc/tcmalloc protocol rows for this machine
-    make scorecard        the fixed row set vs jemalloc, one line appended to
-                          target/results/scorecard-<arch>.md; RENDER=1 prints the trend
-    make valkey-soak      Valkey soak under challoc and its bundled jemalloc
-                          (Phase 1 task 8); needs `make valkey STAGE=build`
-    make soak-quick       challoc-only 600 s soak vs the cached jemalloc soak
-    make soak-baseline    the 1200 s jemalloc soak that soak-quick compares against
-    make ruby-bench       Ruby 3.4 rows under challoc, jemalloc, glibc, mimalloc and
-                          tcmalloc (Phase 1.5 task 4b); needs both `make ruby STAGE=build` builds
-    make python-bench     Python 3.13 rows (Phase 2.5 task 1): four stdlib workloads, each
-                          with PYTHONMALLOC unset and =malloc, under the same five allocators
-    make node-bench       Node.js 22 rows (Phase 3 task 5 (c)): node -e 0 startup, a JSON
-                          churn process and an http server under ab for DURATION s per allocator
-    make jvm-bench        JVM rows (Phase 3 task 5 (a)): `java -version` startup and a
-                          200-thread com.sun.net.httpserver server under ab for 5 minutes per
-                          allocator with NMT (allocator overhead = Rss - NMT committed), plus
-                          glibc with MALLOC_ARENA_MAX=2 and glibc with the JVM's periodic
-                          malloc_trim (-XX:TrimNativeHeapInterval) as the sixth and seventh variant
-    make jvm-soak         the JVM soak that can separate the allocators: a 16..400-thread pool,
-                          log-uniform 256 B..1 MiB direct buffers, 60 s windows alternating 256
-                          and 8 connections, 20 minutes per allocator, Rss series and slope
-    make postgres-bench   PostgreSQL 17 rows (Phase 3 task 5b): pgbench select-only at 100 and
-                          500 clients, TPC-B, connection setup; RSS over every postgres process
+    make quick [BASE=main] [HEAD=HEAD]            cb launch quick: the PR go/no-go on the gate cells (GCE)
+    make bench-launch SUITE=<suite> CB_ARGS=...   any suite on GCE: aa, soak, exp-slice, ...
+    make bench-quick | bench-aa | bench-smoke     the same suites on this machine (indicative only)
+    make bench-local SUITE=<suite> CB_ARGS=...
+    make bench-compare DIRS=... | bench-unit      host side: re-pool runs, unit tests
+    make bench-image | bench-gc                   the bench image; delete stray cb- VMs
+    python3 bench/cb {run,launch,gc,compare,report,fp,plan,rows,suites,cells,build,preflight,host} --help
+
+Suites (`python3 bench/cb suites`):
+
+    quick       head vs base on the gate cells: larson1/10, xmalloc, alloc-test1, valkey1(-free), churn1024
+    aa          base vs an identical base: calibration and the false-positive rate
+    smoke       every quick row once, parse only (CI's bench-smoke)
+    soak        Valkey, Ruby and JVM soaks, head vs jemalloc, one variant per VM
+    exp-slice   audit D9: slice_ext:auto vs slice_ext:off on one build (MEASURE-FIRST)
+
+Everything builds and runs inside the Wolfi bench image on the native
+architecture; emulated x86_64 is never used for numbers.
 
 ## cb: the declarative runner (replacing quick.sh, ab.sh and friends)
 
 `bench/cb/` is a Python 3.11+ standard-library package that runs the rows
 of `bench/rows.toml` as the suites of `bench/suites/*.toml` say, on the
-cells of `bench/cells/*.toml`. It is being brought up beside the shell
-tiers below (milestone M1a: the local executor and the statistics); the
-shell tiers stay until their results agree.
+cells of `bench/cells/*.toml`. The shell tiers below stay until their
+results agree with it.
 
     make bench-quick [BASE=main] [HEAD=HEAD] [CB_ARGS='--blocks 4']
     make bench-aa    BASE=<rev>             # A/A: every row should come out `same`
@@ -110,8 +103,12 @@ on the two gate cells is 5 shards x 3 replicates x 2 cells = 30 VMs.
   `gs://<bucket>/src/<tree>.tar.gz` once (content-addressed), and the table
   of VMs to `runs/<run>/launch.json`.
 - **The VM** (`bench/cb/boot.sh`, the startup script, on stock
-  `ubuntu-2404-lts-{arm64,amd64}`) reads its entry of `launch.json` by its
-  own name, stops the apt timers and snapd, installs `docker.io` while it
+  `ubuntu-2404-lts-{arm64,amd64}` or any cell image) reads its work from
+  its instance metadata (harness and source objects, image, runtime,
+  container profile, prep; no JSON parser needed on the host) and its
+  entry of `launch.json` by its own name, works under `/var/cb`, stops
+  the apt timers and snapd, runs the cell's prep steps, installs
+  `docker.io` where the runtime is docker and it is missing while it
   fetches the sources, pulls the bench image by digest
   (`bench/image.lock`; it builds `Dockerfile.dev`'s test stage and
   `bench/Dockerfile.cb` itself when the pull fails), runs `cb run --launch
@@ -140,7 +137,9 @@ on the two gate cells is 5 shards x 3 replicates x 2 cells = 30 VMs.
   are not used yet). The bucket deletes objects after 30 days.
 - **The image.** `bench/Dockerfile.cb` is Dockerfile.dev's `test` stage
   plus jemalloc, tcmalloc-minimal, the prebuilt `bench/build.sh` programs
-  (`/opt/cb/bench-bin`) and the crate's dependencies; `bench/cb/image.sh`
+  (`/opt/cb/bench-bin`), the crate's dependencies and, last, the consumer
+  layers the driver rows need (Valkey's openssl-dev and memtier, Ruby's
+  build dependencies, openjdk-21 and `ab`); `bench/cb/image.sh`
   builds it per architecture, pushes it and rewrites `bench/image.lock`.
   Rebuild it when `bench/build.sh`, the stock allocators or Dockerfile.dev
   change; the digest is in every sample's comparability key.
@@ -157,6 +156,175 @@ on the two gate cells is 5 shards x 3 replicates x 2 cells = 30 VMs.
   sigma 3.0%) and valkey1-free (7.8%) do not resolve inside a 2% margin
   at 3 VMs x 3 blocks, so the A/A headline is INCONCLUSIVE and the second
   look runs. `cb fp` prints these numbers for any A/A run.
+
+### Cells, container profiles, host prep
+
+A cell (`bench/cells/*.toml`) is a machine shape, a host image family and
+how the bench container runs there:
+
+- `runtime`: `docker` (installed at boot where missing: the Ubuntu cells)
+  or `podman` / `sudo-podman` (root podman with `--network=host`, for
+  bootc hosts that ship podman, no docker and no nft).
+- `bootstrap`: `startup-script` (boot.sh as the startup-script metadata;
+  the guest agent runs it as root) or `ssh-systemd-run` (boot.sh in the
+  `cb-boot` metadata key, started over ssh as a transient system unit, for
+  an image whose agent runs no scripts; a job started from a plain ssh
+  session can die with the session's scope).
+- `container`: the profile, `default` (the runtime's default seccomp),
+  `privileged` (also mounts debugfs, for knobs) or `perfmon` (CAP_PERFMON,
+  per-run counters), optionally as a table with `cpus` (a CFS quota),
+  `cpuset` (pinned CPUs: more threads than CPUs) and `memory` (with swap
+  off). A suite's `container`, or `cb launch --container
+  default,cpuset=0-3`, overrides the cells'. The profile and its limits are
+  part of the comparability key, so runs under different profiles are
+  never pooled.
+- `prep`: host steps boot.sh runs before the container starts: `grow-var`
+  (grow /var's filesystem online, for images that ship it small),
+  `thp:<file>=<value>` (`thp:enabled=always`, `thp:64kB=madvise`),
+  `sysctl:<key>=<value>`. A suite's `prep` is added to every cell's.
+- `expect`: facts the booted host must show, checked in the VM before any
+  run: `kernel` (a regex on `uname -r`), `page_size`. A mismatch fails the
+  VM as infrastructure, never as a measurement.
+- `boot_disk_gb`, `spot` (`never` for metal), `max_run`, `zones`, `pmu`.
+
+The image family is only a request. `cb launch` resolves every family to
+the image it points at when the launch starts (`gcloud compute images
+describe-from-family`), boots every VM of the launch from that one image
+and records family, image and the booted `uname -r` in `host.json` and the
+report; a family that does not resolve makes its cell **PENDING** (listed
+in the report and `launch-summary.json`, nothing created, not a failure;
+when every cell is pending the exit code is 2).
+
+**Internal overlay.** Cells on non-public images live in
+`bench/cells/internal-*.toml`: loaded like any cell file, deleted before
+publication, and `cb cells --lint` fails when one of an overlay's
+`[lint] markers` appears in a public file. Suites name such cells only
+through tags (`exp-slice` selects `tag:exp-slice`), so a public tree
+without the overlay still parses. The overlay records its own host facts
+and the bootstrap spike (startup scripts run on those images, 2026-10-01).
+
+### Variants and host knobs
+
+A variant is (library, `MALLOC_CONF`, host knobs):
+
+    base | head | aa=base | x=git:REV | tree        challoc builds (tree: local only)
+    jemalloc | glibc | tcmalloc | mimalloc          stock allocators
+    LABEL=SRC@CONF                                  one build, another MALLOC_CONF
+    LABEL=SRC[@CONF]+knob:NAME=VALUE[+knob:...]     plus host knobs
+
+Knobs (`bench/cb/knobs.py`): `thp`, `thp.defrag`, `thp.<N>kB` (mTHP
+sizes), `khugepaged.<file>`, `sched.llc_balancing` and `sched.<file>`
+(debugfs), `rseq.<file>` (debugfs, e.g. `slice_ext_nsec`),
+`sysctl.<a.b.c>`. The executor writes a variant's knobs right before each
+of its runs and puts back the host's value before a variant without them,
+so knobs get the same ABBA pairing as libraries; the host's values are
+restored at the end. Knobs need the `privileged` profile (`cb launch`
+refuses otherwise). Example: `chl-llc=head+knob:sched.llc_balancing=1,
+chl-nollc=head+knob:sched.llc_balancing=0`.
+
+A row's `features` (`quantum8` for Valkey, `jemalloc-soname` for the
+--with-jemalloc Ruby) builds every challoc variant a second time with
+those cargo features; the run uses that build for the row.
+
+### Drivers
+
+Rows with `kind = "soak"` or `"driver"` run a script under
+`bench/drivers/` once per run instead of one program:
+
+    valkey-soak.sh   Valkey 9.1 under valkey-benchmark + memtier: write, delete, settle
+    ruby-soak.sh     the Sidekiq-shaped Ruby process (drivers/ruby/soak.rb)
+    jvm-bench.sh     JVM startup, http server and the mixed-size soak (drivers/jvm/HttpBench.java)
+
+The contract: cb passes the variant as `CB_ALLOC` (`challoc`, `jemalloc`,
+`glibc`, ...), `CB_LIB` (its library, the row's `features` build),
+`CB_LIB_SHA256`, `CB_CONF` (its MALLOC_CONF) and `CB_VARIANT`, a scratch
+directory `CB_OUT`, `RESULT_JSONL`, plus the row's `env` (`{var}`
+expanded; `--var valkey_soak_secs=60` shortens a soak). The driver runs
+that one allocator and appends `{"schema": "challoc.bench.driver/v1",
+"metrics": {"name": number, ...}}` to `RESULT_JSONL`. The row's `metric`
+is its score; each entry of its `metrics` is compared as a row of its own
+(`valkey-soak.rss_settle_mib`, class `soak-rss`, 2% margin). The drivers
+check that the process maps exactly the variant's library.
+
+- **Valkey, fixed runpath.** One Valkey build serves every challoc
+  variant: the patched tree is linked with `-Wl,-rpath,/opt/challoc/lib
+  -Wl,--enable-new-dtags` (a RUNPATH) and `/opt/challoc/lib/libchalloc.so.0`
+  is pointed at the variant's quantum8 library before the server starts;
+  the jemalloc variant is the same tag with its bundled jemalloc 5.3.0,
+  whose clients (`valkey-cli`, `valkey-benchmark`) every variant uses.
+  Trees are cloned at `VALKEY_TAG` (commit-checked) on first use.
+- **Ruby.** A challoc variant built with `jemalloc-soname` is preloaded;
+  its soname satisfies the binary's `DT_NEEDED libjemalloc.so.2`, so the
+  staged library is never mapped. A missing Ruby build is made first
+  (minutes).
+- **Placement.** `placement = "one-variant-per-vm"` (the soaks): `cb
+  launch` gives every (row, variant, replicate) a VM of its own, one
+  block, no warm-up, a `max-run-duration` of twice the estimate; the
+  comparison is unpaired (each VM's mean log score, Welch's t interval on
+  the log scale, flagged `unpaired`). On one host (`cb run`) the variants
+  run in ABBA order as usual.
+- The scripts keep their old interfaces (`make valkey-soak`, `ALLOCS=...`,
+  markdown results files); cb mode is selected by `CB_ALLOC`.
+
+### Experiment suites
+
+An experiment is a suite: cells (by tag), variants (MALLOC_CONF and knobs
+on one build), a container profile, rows. `exp-slice` (audit D9) runs
+`off=head@slice_ext:off` against `auto=head@slice_ext:auto` on the kernel
+7.2 cell (which grants the rseq time slice extension, `slice_ext=on` in
+the features line) and a 6.18 cell (which cannot, `slice_ext=no-slice_ctrl`:
+the negative control, where every row must come out `same`), container
+pinned to 4 CPUs, rows larson16, larson64, xmalloc, valkey1, valkey1-free.
+The verdict decides keep or cut; the suite file does not change `src/`.
+
+Measured 2026-10-01 (`cb-exp-slice-2`, 4 VMs per cell, 5 blocks, cpuset
+0-3, default seccomp): on the 7.2 cell every row is `same` (larson16
++0.0% [-0.5, +0.5], larson64 -0.5% [-1.0, +0.0], xmalloc +0.0%, valkey1
+-0.1%, valkey1-free -0.4%; margin 2%); the 6.18 control is `same` on
+three rows and inconclusive on the two valkey rows (bimodal, -1.0% and
+-1.5%). A direct check on the 7.2 host with the allocator's stats print:
+the extension is on, but a 5 s larson16 run sees 5 grants, larson64 8,
+xmalloc 29, against about 10^9 operations, so the mechanism almost never
+fires on these rows; and under the default seccomp profile the grants are
+handed back through `sched_yield` (the `rseq_slice_yield` syscall is not
+in the profile). A first run with a `cpus = 4` quota instead of a cpuset
+(`cb-exp-slice-1`) also came out `same` on four of five 7.2 rows.
+
+## Legacy scripts (still present) and what replaces them
+
+These run as before (Makefile targets, `bench/gce/challoc-bench`) until cb
+has matched them; nothing new should be built on them.
+
+| Script / target | Replaced by |
+|---|---|
+| `quick.sh`, `make quick-legacy` | `cb launch quick` (`make quick`), `cb run quick` |
+| `ab.sh`, `make ab`, `baseline.sh`, `make baseline` | `cb launch` with a suite (`--variants`, `--controls jemalloc,glibc`) |
+| `scorecard.sh`, `make scorecard` | the nightly suite (not built yet: M3) |
+| `four-way.sh` | a suite with four variants (Williams order) |
+| `valkey-soak.sh`, `ruby-soak.sh`, `jvm-bench.sh` (now forwarding stubs) | `bench/drivers/*.sh`, rows `valkey-soak`, `ruby-soak`, `jvm-soak`, `jvm-server`; suite `soak` |
+| `ruby-bench.sh`, `python-bench.sh` | driver rows (not ported yet); `python1` rows exist |
+| `node-bench.sh`, `postgres-bench.sh` | none (dropped, D6) |
+| `lib.sh` row tables and `run_row` | `rows.toml`, `cb/rows.py` (the drivers still source `lib.sh`) |
+| `gce/challoc-bench`, `gce/drun.sh`, `gce/matrix-cell.sh`, `gce/native-rows.sh`, `gce/quick-perf.sh` | `cb launch`, `boot.sh`, cells; the floor suite (M4) |
+| `make valkey-soak`, `soak-quick`, `soak-baseline`, `ruby-soak`, `jvm-bench`, `jvm-soak` | `make bench-launch SUITE=soak` |
+
+The old target list, for reference:
+
+    make bench-build      fetch and build the benchmark programs (once per target volume)
+    make quick-legacy [OLD=rev]  old fast tier: ~2.5 min, the working tree vs OLD
+    make ab VARIANTS=...  protocol tier A/B: the table results files are made of
+    make baseline         cache jemalloc/glibc/mimalloc/tcmalloc protocol rows for this machine
+    make scorecard        the fixed row set vs jemalloc, one line appended to
+                          target/results/scorecard-<arch>.md; RENDER=1 prints the trend
+    make valkey-soak      Valkey soak under challoc and its bundled jemalloc; needs `make valkey STAGE=build`
+    make soak-quick       challoc-only 600 s soak vs the cached jemalloc soak
+    make soak-baseline    the 1200 s jemalloc soak that soak-quick compares against
+    make ruby-bench       Ruby 3.4 rows under five allocators; needs both `make ruby STAGE=build` builds
+    make python-bench     Python 3.13 rows: four stdlib workloads, PYTHONMALLOC unset and =malloc
+    make node-bench       Node.js 22 rows
+    make jvm-bench        JVM rows: `java -version` startup and a 200-thread http server under ab
+    make jvm-soak         the JVM mixed-size soak, 20 minutes per allocator
+    make postgres-bench   PostgreSQL 17 rows
 
 ## Two tiers
 
