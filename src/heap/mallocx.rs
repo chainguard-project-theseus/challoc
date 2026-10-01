@@ -214,6 +214,7 @@ pub fn alloc(shared: &Shared, class: usize, arena: Option<u16>, tcache: Tcache) 
 /// One slot of `class` straight from `arena`'s slab bitmaps.
 fn alloc_direct(shared: &Shared, class: usize, arena: u16) -> (r: (*mut u8, bool, Tracked<Zeroed>))
     requires
+        shared.wf(),
         class < crate::layout::NCLASSES,
     ensures
         r.0@.addr != 0 ==> crate::layout::process_regions().is_slot(class as int, r.0@.addr),

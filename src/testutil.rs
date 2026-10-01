@@ -131,7 +131,16 @@ impl TestShared {
         // One raw pointer for `init` and the returned `&Shared`, as in
         // `api::init`: `init` keeps pointers derived from it.
         let p = Box::into_raw(Box::new(MaybeUninit::<Shared>::uninit())).cast::<Shared>();
-        assert!(unsafe { Shared::init(p, regions, self.config, self.guards, self.pac) });
+        assert!(unsafe {
+            Shared::init(
+                p,
+                regions,
+                vstd::prelude::Tracked::assume_new(),
+                self.config,
+                self.guards,
+                self.pac,
+            )
+        });
         unsafe { &*p }
     }
 }

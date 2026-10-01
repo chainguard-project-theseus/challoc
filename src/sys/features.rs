@@ -311,6 +311,7 @@ pub fn page_size() -> (r: usize)
     ensures
         r != 0,
         crate::meta::is_pow2(r),
+        r <= 0x1_0000,
 {
     let v = getauxval(AT_PAGESZ);
     if v != 0 && v.is_power_of_two() {
@@ -395,6 +396,7 @@ impl Features {
             r.page_size != 0,
             crate::meta::is_pow2(r.page_size),
             r.page_size <= 1usize << 33 ==> r.thp.lg_pmd < 64,
+            r.page_size <= 0x1_0000,
     {
         let page_size = page_size();
         Features {

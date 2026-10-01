@@ -22,9 +22,9 @@ verus! {
 ///
 /// The writers of the locked value: `Meta::owning` builds it (verified:
 /// `Lock::new` requires `wf`, and its caller must hand it the region's
-/// `Unbacked` token, which only `Regions::reserve_owning` makes; the
-/// unverified `Meta::new` assumes one, for `Shared::init`, outside
-/// `verus!`, and the tests); `Meta::alloc_raw` (and `alloc`),
+/// `Unbacked` token, which only `Regions::reserve_owning` makes, through
+/// `api::init` and `Shared::init`; the test-only `Meta::new` assumes
+/// one); `Meta::alloc_raw` (and `alloc`),
 /// `alloc_zeroed`, `free_claimed`, `commit_claimed`, `reserve`,
 /// `reserve_committed_raw` (and `reserve_committed`, including its
 /// rollback), `reserve_table` and `stats` are verified to keep it.

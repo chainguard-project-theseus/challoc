@@ -188,13 +188,16 @@ verus! {
 /// below makes.
 ///
 /// Trusted: the `UnsafeCell` read, and that the published `Shared`
-/// satisfies [`Shared::wf`]. That rests on unverified code: `init` (trusted)
-/// builds the value with `Shared::init` (outside `verus!`, no contract) and
-/// aborts unless it returned `true`; `init_slow` runs `init` once, before
-/// it publishes `READY` with a release store; and what `wf` reads (the
-/// regions, the huge and metadata bounds, the slab tables' classes and
-/// placement) is written only inside `Shared::init`. The rest of the value
-/// (locks, atomics) changes, but `wf` does not read it.
+/// satisfies [`Shared::wf`]. `init` (verified) builds the value with
+/// `Shared::init`, whose contract gives `wf` of the value built in the
+/// static's storage ([`Shared::built_at`]`(`[`Shared::storage`]`)`), and
+/// aborts unless it returned `true`. What stays assumed: that this reads
+/// that value, that is, `init_slow` runs `init` once, before it publishes
+/// `READY` with a release store, and nothing writes what `wf` reads
+/// afterwards (the regions, the push flags, the configuration, the huge
+/// and metadata bounds and the slab tables are written only inside
+/// `Shared::init`; the rest of the value, locks and atomics, changes, but
+/// `wf` does not read it).
 ///
 /// # Safety
 /// The value must have been initialised and `READY` observed with an
@@ -350,17 +353,58 @@ pub fn sealed_ranges() -> u32 {
     SEALED.load(Ordering::Relaxed)
 }
 
+/// The storage of [`SHARED`], the process's [`Shared::storage`]. Trusted:
+/// a raw-pointer projection of a static.
+#[verifier::external_body]
+#[inline(always)]
+fn shared_storage_ptr() -> (p: *mut Shared)
+    ensures
+        p == Shared::storage(),
+{
+    // The cell's own pointer, not `as_mut_ptr` through a `&mut`:
+    // `init` keeps pointers derived from it, and writes through the
+    // readers' `&Shared` would invalidate ones derived from a `&mut`.
+    SHARED.0.get().cast::<Shared>()
+}
+
+/// The published feature report: `FEATURE_LINE` from `features`, then
+/// `FEATURES`. Trusted: writes of the `UnsafeCell`s behind the statics.
+///
+/// # Safety
+/// Called once, by `init`, before `READY` is published.
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn publish_features(features: Features) {
+    // SAFETY: written once here, before `READY` is published.
+    unsafe {
+        (*FEATURE_LINE.0.get()).write(FeatureLine::build(&features));
+        (*FEATURES.0.get()).write(features);
+    }
+}
+
+/// Register the fork handlers, aborting if glibc refuses. Trusted: passes
+/// function pointers, which Verus does not support, and formats the abort.
+#[verifier::external_body]
+#[inline(always)]
+fn register_fork_handlers() {
+    // SAFETY: the three handlers are plain `extern "C"` functions that only
+    // touch allocator locks.
+    let rc =
+        unsafe { ::libc::pthread_atfork(Some(fork_prepare), Some(fork_parent), Some(fork_child)) };
+    if rc != 0 {
+        sys::abort_fmt(format_args!("pthread_atfork failed: {}", sys::Errno(rc)));
+    }
+}
+
 /// Design section 10 steps 1 to 8 (step 7, the cgroup discovery, happens
 /// inside `Shared::init`). Configuration (step 2) is read before the
 /// regions are reserved so that nothing it may abort on has been mapped
-/// yet; it reads only the weak symbols, one file and `environ`.
-///
-/// Trusted: it calls `Shared::init` and writes the statics' `UnsafeCell`s
-/// (outside `verus!`), passes the fork handlers as function pointers, and
-/// relies on the kernel's page (4 KiB to 64 KiB) for `Regions::reserve`'s
-/// and `thp::configure`'s preconditions, which `Features::probe` does not
-/// bound.
-#[verifier::external_body]
+/// yet; it reads only the weak symbols, one file and `environ`. The
+/// `Shared` it builds satisfies [`Shared::wf`] (`Shared::init`'s
+/// contract, from `Regions::reserve_owning` and `config::load`), and the
+/// metadata allocator owns the metadata region's address space, which
+/// `reserve_owning` hands over; `init_slow` runs it once, before it
+/// publishes `READY`.
 fn init() {
     let features = Features::probe();
     // The slab geometry of the classes whose table slab is below the page
@@ -369,11 +413,14 @@ fn init() {
     // SAFETY: `init` runs once, under `INITIALISING`, before `READY`.
     unsafe { layout::adopt_page_geometry(features.page_size.trailing_zeros()) };
     let config = config::load();
+    proof {
+        assert(0x1_0000usize <= (1usize << 33)) by (bit_vector);
+    }
     crate::thp::configure(config.thp, &features);
     purge::configure_advice(config.lazy_band);
     purge::set_check_zero(config.check_zero);
     purge::background::request(config.background_thread);
-    let regions = Regions::reserve(features.page_size, features.anon_name);
+    let (regions, space) = Regions::reserve_owning(features.page_size, features.anon_name);
     if features.mseal {
         SEALED.store(regions.seal(), Ordering::Relaxed);
     }
@@ -381,12 +428,9 @@ fn init() {
     // published, and `regions` are live reservations this process owns.
     unsafe {
         let ok = Shared::init(
-            // The cell's own pointer, not `as_mut_ptr` through a `&mut`:
-            // `init` keeps pointers derived from it, and writes through
-            // the readers' `&Shared` would invalidate ones derived from a
-            // `&mut`.
-            SHARED.0.get().cast::<Shared>(),
+            shared_storage_ptr(),
             regions,
+            space,
             config,
             features.guard_install,
             features.pac,
@@ -396,19 +440,12 @@ fn init() {
         }
         // Design 11: `Shared::init` forced the stored `thp` to `never`
         // under a cgroup limit below 1 GiB; the advice follows.
-        if (*SHARED.0.get()).assume_init_ref().policy.thp_forced() {
+        if SHARED.get().policy.thp_forced() {
             crate::thp::force_never();
         }
-        (*FEATURE_LINE.0.get()).write(FeatureLine::build(&features));
-        (*FEATURES.0.get()).write(features);
+        publish_features(features);
     }
-    // SAFETY: the three handlers are plain `extern "C"` functions that only
-    // touch allocator locks.
-    let rc =
-        unsafe { ::libc::pthread_atfork(Some(fork_prepare), Some(fork_parent), Some(fork_child)) };
-    if rc != 0 {
-        sys::abort_fmt(format_args!("pthread_atfork failed: {}", sys::Errno(rc)));
-    }
+    register_fork_handlers();
 }
 
 /// Block signals, then take every allocator lock so the child inherits a

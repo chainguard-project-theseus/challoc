@@ -6,6 +6,7 @@ use core::ffi::c_void;
 use core::ptr;
 
 use crate::sys::pac;
+use crate::vspec::addr::addr_to_ptr;
 
 use super::PUSH_PAC;
 use super::{Heap, Shared};
@@ -77,20 +78,16 @@ pub fn heap_for_thread(shared: &Shared) -> (r: Option<&mut Heap>)
     create_heap_for_thread(shared, t)
 }
 
-} // verus!
-
 /// The slot value for heap `h` on the calling thread: `h` signed with the
 /// thread pointer when `shared.pac()`, else `h` itself.
 fn tls_value_for(shared: &Shared, h: *mut Heap) -> *mut c_void {
     if shared.pac() {
         let (_, tp) = crate::sys::tls::get_tp();
-        pac::sign(h as usize, tp) as *mut c_void
+        addr_to_ptr(pac::sign(h as usize, tp)) as *mut c_void
     } else {
         h as *mut c_void
     }
 }
-
-verus! {
 
 /// Create, register and publish the calling thread's heap (`slot` is its
 /// TLS value, 0 when it has none yet); `None` while a creation is in

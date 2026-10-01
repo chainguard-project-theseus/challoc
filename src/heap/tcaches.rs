@@ -16,6 +16,8 @@ use vstd::prelude::verus;
 #[cfg(verus_only)]
 use vstd::prelude::*;
 
+verus! {
+
 /// Explicit caches; ids are the 12-bit `MALLOCX_TCACHE` field minus 2.
 pub const MAX_TCACHES: usize = 1024;
 
@@ -23,8 +25,14 @@ pub const MAX_TCACHES: usize = 1024;
 /// heaps owned by no thread, looked up by id.
 pub struct Tcaches {
     lock: Lock<()>,
-    table: [AtomicPtr<Heap>; MAX_TCACHES],
+    /// The heaps, as `*mut Heap` cast to bytes: `Heap` reaches `Shared`,
+    /// which holds this table, and Verus rejects a type that contains
+    /// itself through a pointer's type parameter. The casts at the load
+    /// and store sites are no-ops.
+    table: [AtomicPtr<u8>; MAX_TCACHES],
 }
+
+} // verus!
 
 impl Tcaches {
     /// Initialise `this` in place, empty.
@@ -43,14 +51,6 @@ impl Tcaches {
         }
     }
 
-    /// The table lock, for the fork handlers. It is the outermost
-    /// allocator lock: `create` and `destroy` hold it across
-    /// `Heap::create_detached` / `Heap::destroy`, which take the arena
-    /// creation, class and metadata locks.
-    pub fn raw_lock(&self) -> &crate::lock::RawLock {
-        self.lock.raw()
-    }
-
     /// `tcache.create`: a new explicit cache, home arena `arena`. `None`
     /// when the table or the metadata region is full.
     pub fn create(&self, shared: &Shared, arena: u16) -> Option<u16> {
@@ -63,8 +63,38 @@ impl Tcaches {
         if h.is_null() {
             return None;
         }
-        self.table[slot].store(h, Ordering::Release);
+        self.table[slot].store(h as *mut u8, Ordering::Release);
         Some(slot as u16)
+    }
+}
+
+verus! {
+
+/// The explicit cache a non-null table entry points at. Trusted: Verus
+/// has no raw-pointer dereference, and the heap `Tcaches::create`
+/// published is well formed ([`Heap::wf`]), as every heap a verified path
+/// is handed.
+///
+/// # Safety
+/// `p` is a non-null entry of `Tcaches::table`, and nothing else uses the
+/// heap while the reference lives (see [`Tcaches::get`]).
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn heap_at<'a>(p: *mut Heap) -> (r: &'a mut Heap)
+    ensures
+        r.wf(),
+{
+    // SAFETY: guaranteed by the caller.
+    unsafe { &mut *p }
+}
+
+impl Tcaches {
+    /// The table lock, for the fork handlers. It is the outermost
+    /// allocator lock: `create` and `destroy` hold it across
+    /// `Heap::create_detached` / `Heap::destroy`, which take the arena
+    /// creation, class and metadata locks.
+    pub fn raw_lock(&self) -> &crate::lock::RawLock {
+        self.lock.raw()
     }
 
     /// The explicit cache `id`, if it exists. Not thread safe: two threads
@@ -75,24 +105,30 @@ impl Tcaches {
     /// `dallocx`, `sdallocx`) inherits that rule.
     #[inline]
     #[allow(clippy::mut_from_ref)]
-    pub fn get(&self, id: u16) -> Option<&mut Heap> {
+    pub fn get(&self, id: u16) -> (r: Option<&mut Heap>)
+        ensures
+            r matches Some(h) ==> h.wf(),
+    {
         let i = id as usize;
         if i >= MAX_TCACHES {
             return None;
         }
-        let p = self.table[i].load(Ordering::Acquire);
+        let p = self.table[i].load(Ordering::Acquire) as *mut Heap;
         // SAFETY: published after `Heap::create_detached`; only `destroy`
         // frees it, and using a destroyed id is the caller's bug.
         if p.is_null() {
             None
         } else {
-            Some(unsafe { &mut *p })
+            Some(unsafe { heap_at(p) })
         }
     }
 
     /// `tcache.flush`: return every cached slot of `id` to its slabs.
     /// `false` if there is no such cache.
-    pub fn flush(&self, shared: &Shared, id: u16) -> bool {
+    pub fn flush(&self, shared: &Shared, id: u16) -> bool
+        requires
+            shared.wf(),
+    {
         match self.get(id) {
             Some(h) => {
                 h.flush_all(shared);
@@ -101,7 +137,11 @@ impl Tcaches {
             None => false,
         }
     }
+}
 
+} // verus!
+
+impl Tcaches {
     /// `tcache.destroy`: flush and free `id`. `false` if there is no such
     /// cache.
     pub fn destroy(&self, shared: &Shared, id: u16) -> bool {
@@ -110,7 +150,7 @@ impl Tcaches {
         if i >= MAX_TCACHES {
             return false;
         }
-        let p = self.table[i].swap(ptr::null_mut(), Ordering::AcqRel);
+        let p = self.table[i].swap(ptr::null_mut(), Ordering::AcqRel) as *mut Heap;
         if p.is_null() {
             return false;
         }
@@ -133,17 +173,3 @@ impl Tcaches {
         self.len() == 0
     }
 }
-
-verus! {
-
-/// Explicit cache `id` ([`Tcaches::get`], outside `verus!`: its table is
-/// `AtomicPtr<Heap>`, through which `Heap` would reach itself, which
-/// Verus rejects). Trusted: the heap `Tcaches::create` published under
-/// `id` is well formed, as every heap a verified path is handed
-/// ([`Heap::wf`]).
-pub assume_specification[ Tcaches::get ](tcaches: &Tcaches, id: u16) -> (r: Option<&mut Heap>)
-    ensures
-        r matches Some(h) ==> h.wf(),
-;
-
-} // verus!

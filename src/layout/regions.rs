@@ -1,6 +1,6 @@
 //! Address-space parameters (design section 2 table), [`Regions`] (the
 //! reserved regions of one process and pointer classification over them)
-//! and [`Regions::reserve`], the one piece that talks to the kernel.
+//! and [`Regions::reserve_owning`], the one piece that talks to the kernel.
 
 #[cfg(verus_only)]
 use super::class_table;
@@ -167,7 +167,7 @@ impl Regions {
     /// multiples, non-empty, at a non-zero address below the metadata
     /// limit, a page of at least `MIN_ALIGN`) and a huge region `Huge::new`
     /// accepts (1 to `u32::MAX` pages, below the limit).
-    /// [`Regions::reserve`] proves it.
+    /// [`Regions::reserve_owning`] proves it.
     ///
     /// [`wf`]: Regions::wf
     /// [`separated`]: Regions::separated
@@ -1110,7 +1110,7 @@ mod linux {
         /// is this process's alone. The token is consumed, so the range is
         /// handed out once. Verified code has no other source of an
         /// `Unbacked` token (`vspec::unbacked` keeps its fields private;
-        /// the unverified `Meta::new` assumes one).
+        /// the test-only `Meta::new` assumes one).
         #[verifier::external_body]
         pub proof fn into_unbacked(tracked self) -> (tracked u: Unbacked)
             ensures
@@ -1327,7 +1327,7 @@ mod linux {
         u64::from_ne_bytes(b)
     }
 
-    /// The abort of [`Regions::reserve`] when `getrandom` fails.
+    /// The abort of [`Regions::reserve_owning`] when `getrandom` fails.
     /// Trusted: aborts (formatting is outside what Verus checks).
     #[verifier::external_body]
     #[cold]
@@ -1348,7 +1348,7 @@ mod linux {
         advise_reservation(Reservation::Metadata, meta_map.addr, meta_map.len);
     }
 
-    /// The abort of [`Regions::reserve`] for a page size that is not a
+    /// The abort of [`Regions::reserve_owning`] for a page size that is not a
     /// power of two from 4 KiB to `MAX_SLAB`, standing for the `assert!` the
     /// build keeps.
     /// Trusted: aborts.
@@ -1385,15 +1385,9 @@ mod linux {
     }
 
     impl Regions {
-        /// Probe and reserve every region (design section 10 step 2). Never
-        /// allocates. Aborts if even the minimum layout cannot be reserved.
-        /// `anon_name` should be the probed `PR_SET_VMA_ANON_NAME` support.
-        /// The result is well formed and separated ([`Regions::wf`],
-        /// [`Regions::separated`]), from the kernel's `mmap` contract
-        /// ([`try_reserve`]), and ready for `Shared::init` ([`Regions::ready`]).
-        /// The page size must be the kernel's (`init` passes the probed one):
-        /// a power of two from 4 KiB, the smallest page of any Linux target,
-        /// to `MAX_SLAB`; anything else aborts.
+        /// [`Regions::reserve_owning`] without the metadata region's address
+        /// space, for the tests.
+        #[cfg(test)]
         #[inline(always)]
         pub fn reserve(page_size: usize, anon_name: bool) -> (r: Regions)
             ensures
@@ -1404,9 +1398,17 @@ mod linux {
             Regions::reserve_owning(page_size, anon_name).0
         }
 
-        /// [`Regions::reserve`], with the metadata region's uncommitted
-        /// address space, for `Meta::owning`, which commits it as it hands
-        /// it out.
+        /// Probe and reserve every region (design section 10 step 2). Never
+        /// allocates. Aborts if even the minimum layout cannot be reserved.
+        /// `anon_name` should be the probed `PR_SET_VMA_ANON_NAME` support.
+        /// The result is well formed and separated ([`Regions::wf`],
+        /// [`Regions::separated`]), from the kernel's `mmap` contract
+        /// ([`try_reserve`]), and ready for `Shared::init` ([`Regions::ready`]),
+        /// with the metadata region's uncommitted address space, for
+        /// `Meta::owning`, which commits it as it hands it out.
+        /// The page size must be the kernel's (`api::init` passes the probed
+        /// one): a power of two from 4 KiB, the smallest page of any Linux
+        /// target, to `MAX_SLAB`; anything else aborts.
         // The index carries a Verus invariant.
         #[allow(clippy::needless_range_loop)]
         pub fn reserve_owning(page_size: usize, anon_name: bool) -> (res: (Regions, Tracked<Unbacked>))

@@ -2643,12 +2643,11 @@ proof fn lemma_align_in_bin(p: usize, layout: Layout, bin: usize)
 unsafe impl Send for Inner {}
 
 impl Meta {
-    /// [`Meta::owning`] for callers that hold no `Unbacked` token for the
-    /// region (`Shared::init`, outside `verus!`, and the tests). Trusted: it
-    /// assumes the token, so the region must be a metadata reservation this
-    /// process owns, uncommitted, and given to one `Meta` only (the
-    /// metadata region of a fresh `Regions::reserve`, or a test's own
-    /// `PROT_NONE` mapping).
+    /// [`Meta::owning`] for the tests, which hold no `Unbacked` token for
+    /// their region. It assumes the token, so the region must be a
+    /// `PROT_NONE` mapping the test owns, uncommitted, and given to one
+    /// `Meta` only.
+    #[cfg(test)]
     pub fn new(base: usize, len: usize, page: usize) -> Meta {
         Meta::owning(base, len, page, Tracked::assume_new())
     }

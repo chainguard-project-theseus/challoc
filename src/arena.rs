@@ -42,6 +42,7 @@ use crate::layout::{NCLASSES, Regions};
 use crate::lock::Lock;
 use crate::meta::Meta;
 use crate::stats::ArenaStats;
+use crate::vspec::addr::addr_to_ptr;
 #[cfg(verus_only)]
 use crate::vspec::arena::axiom_arena_stats_lock_inv;
 use vstd::prelude::*;
@@ -236,9 +237,9 @@ impl Arena {
     /// writes every `classes[c]` with a state of class `c` (the
     /// precondition of `Arena::put_class`, from `ClassState::new`'s
     /// postcondition over `tables[c]`, whose class is `c` by `init`'s
-    /// precondition) before it returns `true`. Trusted: the in-place writers
-    /// write what they are handed and nothing else, and `Arenas::build`
-    /// (unverified) meets `init`'s preconditions from its `Shared`.
+    /// precondition) before it returns `true`; its callers, `Shared::init`
+    /// and `Arenas::build`, meet those preconditions. Trusted: the in-place
+    /// writers write what they are handed and nothing else.
     #[verifier::type_invariant]
     spec fn inv(self) -> bool {
         forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.classes[c].spec_class() == c
@@ -541,7 +542,10 @@ impl Arenas {
     /// been built yet is built here (cold); an explicit index that
     /// `create` has not handed out, or one beyond the table, is `None`.
     #[inline]
-    pub fn get<'a>(&'a self, shared: &'a Shared, index: u16) -> Option<&'a Arena> {
+    pub fn get<'a>(&'a self, shared: &'a Shared, index: u16) -> Option<&'a Arena>
+        requires
+            shared.wf(),
+    {
         let i = index as usize;
         if i >= MAX_ARENAS {
             return None;
@@ -560,6 +564,7 @@ impl Arenas {
     fn materialise<'a>(&'a self, shared: &'a Shared, index: u16) -> Option<&'a Arena>
         requires
             (index as usize) < MAX_ARENAS,
+            shared.wf(),
     {
         if index as u32 >= self.auto {
             return None;
@@ -575,23 +580,30 @@ impl Arenas {
 
     /// Build arena `index` in the metadata region and publish it. Called
     /// with the creation lock held and the slot known to be empty.
-    ///
-    /// Trusted: the storage is a cast of `Meta::reserve_committed`'s
-    /// address, and `shared` is the published `Shared`, whose `wf` gives
+    /// `shared` is the published `Shared`, whose `wf` gives
     /// `Arena::init`'s preconditions (the process's well-formed regions and
-    /// the tables in class order); `build` does not state that it needs it.
-    #[verifier::external_body]
+    /// the tables in class order).
     fn build<'a>(&'a self, shared: &'a Shared, index: u16) -> Option<&'a Arena>
         requires
             (index as usize) < MAX_ARENAS,
+            shared.wf(),
     {
         let layout = core::alloc::Layout::new::<Arena>();
+        proof {
+            shared.lemma_wf();
+            let lg = shared.regions.lg_page;
+            assert((1usize << lg) == (1usize << (lg as usize))) by (bit_vector)
+                requires
+                    lg < 64,
+            ;
+            crate::meta::lemma_is_pow2_shl(lg as usize);
+        }
         // Never freed, so a reservation (page aligned, which covers the
         // 128-byte class state alignment) rather than an object.
-        let p = shared.meta.reserve_committed(
+        let p = addr_to_ptr(shared.meta.reserve_committed(
             layout.size(),
             layout.align().max(shared.regions.page_size()),
-        )? as *mut Arena;
+        )?) as *mut Arena;
         // SAFETY: fresh, zeroed, exclusively owned storage of the right
         // size and alignment; the tables live in `Shared` for the process.
         let ok = unsafe {
@@ -612,12 +624,15 @@ impl Arenas {
         shared.set_multi_arena();
         self.table[index as usize].store(p, Ordering::Release);
         // SAFETY: just built and published.
-        Some(unsafe { &*p })
+        Some(unsafe { arena_at(p) })
     }
 
     /// `arenas.create`: a new explicit arena. `None` when the table or the
     /// metadata region is full.
-    pub fn create(&self, shared: &Shared) -> Option<u16> {
+    pub fn create(&self, shared: &Shared) -> Option<u16>
+        requires
+            shared.wf(),
+    {
         let mut g = self.lock.lock();
         let index = *g;
         if index as usize >= MAX_ARENAS {

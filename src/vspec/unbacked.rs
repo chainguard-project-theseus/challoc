@@ -14,8 +14,8 @@ verus! {
 /// Ghost token: this process owns the `len` reserved, uncommitted bytes
 /// at `addr`, and nothing else does. Verified code gets one only from the
 /// trusted `layout::Reserved::into_unbacked` (consuming the reservation's
-/// token, so each range is handed out once); the unverified `Meta::new`
-/// assumes one for the metadata region. The fields are private, and
+/// token, so each range is handed out once); the test-only `Meta::new`
+/// assumes one for a test's own mapping. The fields are private, and
 /// splitting and joining tokens keeps them apart.
 pub tracked struct Unbacked {
     ghost addr: int,

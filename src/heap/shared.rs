@@ -16,6 +16,7 @@ use crate::layout::class_table;
 use crate::layout::{CLASSES, Kind, NCLASSES, Regions};
 use crate::lock::Lock;
 use crate::meta::Meta;
+use crate::vspec::unbacked::Unbacked;
 use crate::vspec::zero::Zeroed;
 
 use super::heap_destructor;
@@ -31,10 +32,10 @@ use vstd::prelude::*;
 use vstd::prelude::{Tracked, int};
 use vstd::resource::set::{GhostSingleton, GhostSubset};
 
+verus! {
+
 /// The cache GC period (design 6.4): 10 s.
 pub const GC_INTERVAL_NS: u64 = 10_000_000_000;
-
-verus! {
 
 /// Process-wide allocator state that every heap works against: the regions,
 /// one [`SlabTable`] per class, arena 0, the metadata allocator, the huge
@@ -135,11 +136,7 @@ impl GuardTest {
     pub(super) fn is_guard(self, slab: usize) -> bool {
         (slab as u32).wrapping_add(self.add) & self.mask == 0
     }
-}
 
-} // verus!
-
-impl GuardTest {
     pub(super) fn of(table: &SlabTable) -> GuardTest {
         let lg_spp = table.slabs_per_page().trailing_zeros();
         GuardTest {
@@ -148,6 +145,8 @@ impl GuardTest {
         }
     }
 }
+
+} // verus!
 
 const _: () = assert!(
     core::mem::offset_of!(Shared, multi_arena) / 128
@@ -211,8 +210,6 @@ pub(super) fn now_ns() -> u64 {
     crate::sys::now_coarse_ns()
 }
 
-} // verus!
-
 pub(super) fn tid() -> u32 {
     crate::sys::gettid() as u32
 }
@@ -220,6 +217,8 @@ pub(super) fn tid() -> u32 {
 pub(super) fn ncpus() -> u32 {
     crate::sys::ncpus()
 }
+
+} // verus!
 
 /// Eight random bytes from `getrandom(2)` for `slot_randomize`; on a
 /// kernel that refuses (not seen on any supported one) the clock, so
@@ -232,6 +231,14 @@ pub(super) fn seed() -> u64 {
     }
 }
 
+verus! {
+
+/// A guard slab interval [`SlabTable::new`] accepts: 0, or a power of two
+/// from 2 (1 leaves no slabs to allocate).
+pub open spec fn table_interval_ok(i: u32) -> bool {
+    i == 0 || (i != 1 && exists|k: nat| k < 32 && i as nat == #[trigger] vstd::arithmetic::power2::pow2(k))
+}
+
 /// Guard slabs are placed once per `interval` slabs of 64 KiB, so a class
 /// with smaller slabs (`layout::LG_MIN_SLAB`) gets one guard per
 /// `interval * (64 KiB / slab)` slabs (in page groups when the page is
@@ -239,33 +246,384 @@ pub(super) fn seed() -> u64 {
 /// guard page per `interval * 64 KiB` of address space and the same
 /// `madvise` count per byte committed for every class. 0 stays 0. The
 /// ratio is a power of two (slab sizes and pages are), so a power-of-two
-/// `interval` (what `config.rs` guarantees) stays one, as the mask test
-/// needs.
-pub(crate) fn guard_interval_for(class: usize, page: usize, interval: u32) -> u32 {
+/// `interval` (what `config.rs` guarantees, `Config::wf`) stays one, as
+/// the mask test needs, and a 4 KiB to 4 MiB page and an interval of at
+/// most `2^22` keep it at most `2^26`, clear of the saturation.
+pub(crate) fn guard_interval_for(class: usize, page: usize, interval: u32) -> (r: u32)
+    requires
+        class < NCLASSES,
+    ensures
+        (exists|lg: u32| 12 <= lg <= 22 && page == 1usize << lg) && (interval == 0 || (2 <= interval <= 0x40_0000
+            && crate::meta::is_pow2(interval as usize))) ==> table_interval_ok(r),
+{
+    broadcast use crate::vspec::class::axiom_class_table_wf;
+
     let unit = (1usize << crate::layout::LG_GUARD_UNIT).max(page);
-    let group = CLASSES[class].slab_size().max(page);
+    let group = CLASSES.table()[class].slab_size().max(page);
+    proof {
+        assert((1usize << crate::layout::LG_GUARD_UNIT) == 0x1_0000usize) by (compute);
+    }
     if group >= unit {
+        proof {
+            lemma_guard_interval_pow2(interval);
+        }
         interval
     } else {
-        interval.saturating_mul((unit / group) as u32)
+        let r = interval.saturating_mul((unit / group) as u32);
+        proof {
+            lemma_guard_interval_scaled(class, page, interval, unit, group, r);
+        }
+        r
     }
 }
 
+/// A configured guard interval ([`Config::wf`]) is a power of two from 2
+/// to `2^22`: `2^k` with `1 <= k <= 22`.
+proof fn lemma_guard_interval_pow2(interval: u32)
+    ensures
+        2 <= interval <= 0x40_0000 && crate::meta::is_pow2(interval as usize) ==> exists|k: nat|
+            1 <= k <= 22 && interval as nat == #[trigger] vstd::arithmetic::power2::pow2(k),
+        2 <= interval <= 0x40_0000 && crate::meta::is_pow2(interval as usize) ==> table_interval_ok(interval),
+{
+    if 2 <= interval <= 0x40_0000 && crate::meta::is_pow2(interval as usize) {
+        vstd::arithmetic::power2::lemma2_to64();
+        let k = choose|k: nat| k < 64 && interval as usize as nat == #[trigger] vstd::arithmetic::power2::pow2(k);
+        if k >= 23 {
+            vstd::arithmetic::power2::lemma_pow2_strictly_increases(22, k);
+        }
+        assert(1 <= k <= 22);
+    }
+}
+
+/// [`guard_interval_for`]'s scaled branch keeps a power of two below
+/// `2^32`: `unit / group` is 2 to 16 and the interval at most `2^22`.
+proof fn lemma_guard_interval_scaled(class: usize, page: usize, interval: u32, unit: usize, group: usize, r: u32)
+    requires
+        class < NCLASSES,
+        unit >= 0x1_0000,
+        unit >= page,
+        unit == 0x1_0000 || unit == page,
+        group >= (1usize << class_table()[class as int].lg_slab),
+        group >= page,
+        group == (1usize << class_table()[class as int].lg_slab) || group == page,
+        group < unit,
+        r as int == vstd::math::min(interval as int * ((unit / group) as u32) as int, u32::MAX as int),
+    ensures
+        (exists|lg: u32| 12 <= lg <= 22 && page == 1usize << lg) && (interval == 0 || (2 <= interval <= 0x40_0000
+            && crate::meta::is_pow2(interval as usize))) ==> table_interval_ok(r),
+{
+    broadcast use crate::vspec::class::axiom_class_table_wf;
+
+    if (exists|lg: u32| 12 <= lg <= 22 && page == 1usize << lg) && interval != 0 && 2 <= interval <= 0x40_0000
+        && crate::meta::is_pow2(interval as usize) {
+        let lg = choose|lg: u32| 12 <= lg <= 22 && page == 1usize << lg;
+        let ls = class_table()[class as int].lg_slab;
+        assert(class_table()[class as int].wf());
+        let slab = 1usize << ls;
+        lemma_guard_interval_pow2(interval);
+        let k = choose|k: nat| 1 <= k <= 22 && interval as nat == #[trigger] vstd::arithmetic::power2::pow2(k);
+        assert(unit == 0x1_0000 && (group == 0x1000 || group == 0x2000 || group == 0x4000 || group == 0x8000))
+            by (bit_vector)
+            requires
+                page == 1usize << lg, 12 <= lg <= 22, 12 <= ls <= 22, slab == 1usize << ls,
+                unit >= 0x1_0000, unit >= page, unit == 0x1_0000 || unit == page,
+                group >= slab, group >= page, group == slab || group == page,
+                group < unit;
+        let q = unit / group;
+        let j: nat = if group == 0x1000 { 4 } else if group == 0x2000 { 3 } else if group == 0x4000 { 2 } else { 1 };
+        vstd::arithmetic::power2::lemma2_to64();
+        if group == 0x1000 {
+            assert(q == 16);
+        } else if group == 0x2000 {
+            assert(q == 8);
+        } else if group == 0x4000 {
+            assert(q == 4);
+        } else {
+            assert(q == 2);
+        }
+        assert(q as nat == vstd::arithmetic::power2::pow2(j));
+        vstd::arithmetic::power2::lemma_pow2_adds(k, j);
+        vstd::arithmetic::power2::lemma_pow2_strictly_increases(k + j, 32);
+        assert(interval as int * q as int == vstd::arithmetic::power2::pow2(k + j)) by (nonlinear_arith)
+            requires
+                interval as nat == vstd::arithmetic::power2::pow2(k),
+                q as nat == vstd::arithmetic::power2::pow2(j),
+                vstd::arithmetic::power2::pow2(k) * vstd::arithmetic::power2::pow2(j) == vstd::arithmetic::power2::pow2(k + j);
+        assert(r as nat == vstd::arithmetic::power2::pow2(k + j));
+    }
+}
+
+/// The address of the process's `Shared` storage (`api`'s `SHARED`).
+pub uninterp spec fn shared_storage() -> *mut Shared;
+
+/// The `Shared` built in place at `p`: [`Shared::init`] writes each field
+/// once, before anything reads it, and nothing writes the fields
+/// [`Shared::wf`] reads afterwards, so the value is one value.
+/// Uninterpreted; the in-place writers below fix the fields `wf` names.
+pub uninterp spec fn shared_at(p: *mut Shared) -> Shared;
+
+/// Assumption: one `Shared` per process. The process's regions and its
+/// pointer-signing mode ([`process_regions`], [`super::pac_mode`]) are
+/// those of the `Shared` in its storage, which `api::init` builds once,
+/// before it publishes `READY`. Both are uninterpreted and no other axiom
+/// relates them to a value, so this defines them; trusted accessors
+/// (`fast_flags`, the slot readers) state their results in terms of them.
+/// The unit tests build further `Shared`s elsewhere; the assumption is
+/// about the shipped library.
+///
+/// [`process_regions`]: crate::layout::process_regions
+pub(crate) axiom fn axiom_process_shared()
+    ensures
+        crate::layout::process_regions() == shared_at(shared_storage()).regions,
+        super::pac_mode() == (shared_at(shared_storage()).push_flags & PUSH_PAC != 0),
+;
+
+/// Ghost record of an in-place build of the `Shared` at [`Build::at`]: the
+/// fields [`Shared::wf`] names that have been written ([`F_REGIONS`] for
+/// `regions` and `meta`, and the rest; table `c` is `F_TABLE + c`), so
+/// each is written once.
+/// Trusted: only [`Shared::begin`] makes one, and it must be called once
+/// per storage (its one caller, `Shared::init`, builds each storage once);
+/// two tokens for one storage could write a field twice.
+#[verifier::external_body]
+pub tracked struct Build {
+    _p: (),
+}
+
+pub spec const F_REGIONS: int = 0;
+pub spec const F_FLAGS: int = 1;
+pub spec const F_HUGE: int = 2;
+pub spec const F_CONFIG: int = 3;
+pub spec const F_TABLE: int = 100;
+
 impl Shared {
+    /// [`shared_storage`], for modules outside `heap`.
+    pub open spec fn storage() -> *mut Shared {
+        shared_storage()
+    }
+
+    /// [`shared_at`], for modules outside `heap`.
+    pub open spec fn built_at(p: *mut Shared) -> Shared {
+        shared_at(p)
+    }
+}
+
+impl Build {
+    pub uninterp spec fn at(&self) -> *mut Shared;
+
+    pub uninterp spec fn done(&self) -> vstd::set::Set<int>;
+
+    /// Every table is written.
+    pub open spec fn tables_done(&self) -> bool {
+        forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.done().contains(F_TABLE + c)
+    }
+}
+
+/// The in-place writes and reads of [`Shared::init`], each trusted: Verus
+/// has no raw-pointer field projection. Each writes or reads the fields it
+/// names and nothing else, in `init`'s order, and `this` must be the
+/// storage `init` was handed; a writer's postcondition is the field of
+/// [`shared_at`] it fixes.
+impl Shared {
+    /// A build of fresh storage at `this`: nothing written yet.
+    #[allow(unused_variables)]
+    #[verifier::external_body]
+    #[inline(always)]
+    fn begin(this: *mut Shared) -> (b: Tracked<Build>)
+        ensures
+            b@.at() == this,
+            b@.done() == vstd::set::Set::<int>::empty(),
+    {
+        Tracked::assume_new()
+    }
+
+    /// `meta`, `regions` and `multi_arena` (false); the written metadata
+    /// allocator.
+    #[verifier::external_body]
+    #[inline(always)]
+    unsafe fn put_head<'a>(this: *mut Shared, meta: Meta, regions: Regions, Tracked(b): Tracked<&mut Build>) -> (r: &'a Meta)
+        requires
+            old(b).at() == this,
+            !old(b).done().contains(F_REGIONS),
+        ensures
+            final(b).at() == this,
+            final(b).done() == old(b).done().insert(F_REGIONS),
+            shared_at(this).regions == regions,
+            shared_at(this).meta == meta,
+            *r == meta,
+    {
+        // SAFETY: `init`'s caller guarantees `this` is writable and
+        // unaliased; the fields are never moved.
+        unsafe {
+            let meta_ptr = &raw mut (*this).meta;
+            ptr::write(meta_ptr, meta);
+            ptr::write(&raw mut (*this).regions, regions);
+            ptr::write(&raw mut (*this).multi_arena, AtomicBool::new(false));
+            &*meta_ptr
+        }
+    }
+
+    /// `push_flags`; the written regions.
+    #[verifier::external_body]
+    #[inline(always)]
+    unsafe fn put_flags<'a>(this: *mut Shared, flags: u8, Tracked(b): Tracked<&mut Build>) -> (r: &'a Regions)
+        requires
+            old(b).at() == this,
+            old(b).done().contains(F_REGIONS),
+            !old(b).done().contains(F_FLAGS),
+        ensures
+            final(b).at() == this,
+            final(b).done() == old(b).done().insert(F_FLAGS),
+            shared_at(this).push_flags == flags,
+            *r == shared_at(this).regions,
+    {
+        // SAFETY: as in `put_head`; `regions` was written by `put_head`.
+        unsafe {
+            ptr::write(&raw mut (*this).push_flags, flags);
+            &(*this).regions
+        }
+    }
+
+    /// `tables[c]`.
+    #[verifier::external_body]
+    #[inline(always)]
+    unsafe fn put_table(this: *mut Shared, c: usize, t: SlabTable, Tracked(b): Tracked<&mut Build>)
+        requires
+            old(b).at() == this,
+            c < NCLASSES,
+            !old(b).done().contains(F_TABLE + c),
+        ensures
+            final(b).at() == this,
+            final(b).done() == old(b).done().insert(F_TABLE + c),
+            shared_at(this).tables[c as int] == t,
+    {
+        // SAFETY: as in `put_head`.
+        unsafe { ptr::write(&raw mut (*this).tables[c], t) }
+    }
+
+    /// Every table, written by [`Shared::put_table`].
+    #[verifier::external_body]
+    #[inline(always)]
+    unsafe fn tables_of<'a>(this: *mut Shared, Tracked(b): Tracked<&Build>) -> (r: &'a [SlabTable; NCLASSES])
+        requires
+            b.at() == this,
+            b.tables_done(),
+        ensures
+            *r == shared_at(this).tables,
+    {
+        // SAFETY: written by `put_table`; never moved.
+        unsafe { &(*this).tables }
+    }
+
+    /// `guard_test[c]`.
+    #[verifier::external_body]
+    #[inline(always)]
+    unsafe fn put_guard_test(this: *mut Shared, c: usize, g: GuardTest) {
+        // SAFETY: as in `put_head`.
+        unsafe { ptr::write(&raw mut (*this).guard_test[c], g) }
+    }
+
+    /// The storage of arena 0.
+    #[verifier::external_body]
+    #[inline(always)]
+    unsafe fn arena0_ptr(this: *mut Shared) -> *mut Arena {
+        // SAFETY: a projection inside `init`'s storage; nothing is read.
+        unsafe { &raw mut (*this).arena0 }
+    }
+
+    /// `huge`.
+    #[verifier::external_body]
+    #[inline(always)]
+    unsafe fn put_huge(this: *mut Shared, h: Huge, Tracked(b): Tracked<&mut Build>)
+        requires
+            old(b).at() == this,
+            !old(b).done().contains(F_HUGE),
+        ensures
+            final(b).at() == this,
+            final(b).done() == old(b).done().insert(F_HUGE),
+            shared_at(this).huge == h,
+    {
+        // SAFETY: as in `put_head`.
+        unsafe { ptr::write(&raw mut (*this).huge, h) }
+    }
+
+    /// `gc_interval_ns` and the two registries (`Arenas::init` with
+    /// `arena0`, `Tcaches::init`).
+    #[verifier::external_body]
+    #[inline(always)]
+    unsafe fn put_registries(this: *mut Shared, gc_interval_ns: u64, arena0: *mut Arena, narenas: u32) {
+        // SAFETY: as in `put_head`; `arena0` is inside the same `Shared`.
+        unsafe {
+            ptr::write(&raw mut (*this).gc_interval_ns, gc_interval_ns);
+            Arenas::init(&raw mut (*this).arenas, arena0, narenas);
+            Tcaches::init(&raw mut (*this).tcaches);
+        }
+    }
+
+    /// `cgroup`; the written record.
+    #[verifier::external_body]
+    #[inline(always)]
+    unsafe fn put_cgroup<'a>(this: *mut Shared, cgroup: crate::sys::cgroup::Cgroup) -> &'a crate::sys::cgroup::Cgroup {
+        // SAFETY: as in `put_head`; never moved.
+        unsafe {
+            ptr::write(&raw mut (*this).cgroup, cgroup);
+            &(*this).cgroup
+        }
+    }
+
+    /// `policy`; the written policy.
+    #[verifier::external_body]
+    #[inline(always)]
+    unsafe fn put_policy<'a>(this: *mut Shared, policy: crate::policy::Policy) -> &'a crate::policy::Policy {
+        // SAFETY: as in `put_head`; never moved.
+        unsafe {
+            ptr::write(&raw mut (*this).policy, policy);
+            &(*this).policy
+        }
+    }
+
+    /// `config`, then the thread-exit key (`ThreadKey::create`) and the
+    /// empty statistics.
+    #[verifier::external_body]
+    #[inline(always)]
+    unsafe fn put_tail(this: *mut Shared, config: Config, Tracked(b): Tracked<&mut Build>)
+        requires
+            old(b).at() == this,
+            !old(b).done().contains(F_CONFIG),
+        ensures
+            final(b).at() == this,
+            final(b).done() == old(b).done().insert(F_CONFIG),
+            shared_at(this).config == config,
+    {
+        // SAFETY: as in `put_head`.
+        unsafe {
+            ptr::write(&raw mut (*this).config, config);
+            ptr::write(&raw mut (*this).key, ThreadKey::create());
+            ptr::write(
+                &raw mut (*this).stats,
+                Lock::new(crate::stats::Snapshot::EMPTY),
+            );
+        }
+    }
+
     /// Initialise `this` in place for already reserved `regions`: the
-    /// metadata allocator over the metadata reservation, one slab table
-    /// per class with `guard_interval` (0 when the kernel has no guard
-    /// regions), arena 0, the huge allocator (`guard_install` is the probed
+    /// metadata allocator over the metadata reservation (`space`, its
+    /// uncommitted address space), one slab table per class with
+    /// `guard_interval` (0 when the kernel has no guard regions), arena 0,
+    /// the huge allocator (`guard_install` is the probed
     /// `MADV_GUARD_INSTALL` support), the registries and the thread-exit
     /// key. Returns `false` if the metadata region cannot hold the tables,
-    /// leaving `this` unusable.
+    /// leaving `this` unusable. On `true` the built value satisfies
+    /// [`Shared::wf`]; verified apart from the in-place writes above.
     ///
     /// # Safety
     /// `this` must point to writable storage for a `Shared` that nothing
     /// else reads until this returns `true`, and the regions must be
     /// reserved (`PROT_NONE` mappings that this process owns).
     /// The `Shared` must never move afterwards: arena 0's class states
-    /// point at the tables and the registry points at arena 0.
+    /// point at the tables and the registry points at arena 0. The
+    /// contract takes `this` to be the process's storage
+    /// ([`shared_storage`]); the unit tests build others.
     ///
     /// `config` supplies the guard slab interval, the huge-run guards, the
     /// cache GC period, the cache capacities, the decay period and the
@@ -275,13 +633,27 @@ impl Shared {
     /// has `MADV_GUARD_INSTALL`, without which no guard is placed at all
     /// (the `PROT_NONE` fallback would split every class region into one
     /// VMA per guard, see `class/`).
+    // The second loop writes `guard_test[c]` of the storage from `tables[c]`.
+    #[allow(clippy::needless_range_loop)]
     pub unsafe fn init(
         this: *mut Shared,
         regions: Regions,
+        space: Tracked<Unbacked>,
         config: Config,
         guard_install: bool,
         pac: bool,
-    ) -> bool {
+    ) -> (r: bool)
+        requires
+            this == shared_storage(),
+            regions.wf(),
+            regions.separated(),
+            regions.ready(),
+            space@.addr() == regions.meta_base,
+            space@.len() == regions.meta_len,
+            config.wf(),
+        ensures
+            r ==> shared_at(this).wf(),
+    {
         let mut config = config;
         config.narenas = config.effective_narenas(ncpus());
         let guard_interval = if guard_install {
@@ -291,18 +663,27 @@ impl Shared {
         };
         let guard_install = guard_install && config.guards;
         let decay_ns = crate::purge::decay_ns_from_ms(config.dirty_decay_ms);
+        let Tracked(mut b) = Shared::begin(this);
+        proof {
+            assert(crate::config::MAX_GUARD_SLAB_INTERVAL == 0x40_0000) by (compute);
+            axiom_process_shared();
+            let lg = regions.lg_page;
+            assert((1usize << lg) == (1usize << (lg as usize))) by (bit_vector)
+                requires
+                    lg < 64,
+            ;
+            crate::meta::lemma_is_pow2_shl(lg as usize);
+        }
         // SAFETY: the caller guarantees `this` is writable and unaliased.
         unsafe {
-            let meta = &raw mut (*this).meta;
-            ptr::write(
-                meta,
-                Meta::new(regions.meta_base, regions.meta_len, regions.page_size()),
+            let meta = Shared::put_head(
+                this,
+                Meta::owning(regions.meta_base, regions.meta_len, regions.page_size(), space),
+                regions,
+                Tracked(&mut b),
             );
-            ptr::write(&raw mut (*this).regions, regions);
-            ptr::write(&raw mut (*this).multi_arena, AtomicBool::new(false));
-            let meta = &*meta;
-            ptr::write(
-                &raw mut (*this).push_flags,
+            let regions = Shared::put_flags(
+                this,
                 (if config.double_free_scan {
                     PUSH_SCAN
                 } else {
@@ -313,26 +694,44 @@ impl Shared {
                     } else {
                         0
                     }),
+                Tracked(&mut b),
             );
-            let regions = &*(&raw const (*this).regions);
-            let tables = &raw mut (*this).tables;
-            for c in 0..NCLASSES {
+            for c in 0..NCLASSES
+                invariant
+                    b.at() == this,
+                    *regions == shared_at(this).regions,
+                    regions.wf(),
+                    regions.separated(),
+                    regions.ready(),
+                    *regions == crate::layout::process_regions(),
+                    guard_interval == 0 || (2 <= guard_interval <= 0x40_0000 && crate::meta::is_pow2(
+                        guard_interval as usize,
+                    )),
+                    b.done().contains(F_REGIONS),
+                    b.done().contains(F_FLAGS),
+                    !b.done().contains(F_HUGE),
+                    !b.done().contains(F_CONFIG),
+                    forall|d: int| 0 <= d < NCLASSES ==> (#[trigger] b.done().contains(F_TABLE + d)) == (d < c),
+                    forall|d: int| 0 <= d < c ==> (#[trigger] shared_at(this).tables[d]).spec_class() == d,
+                    meta.is_process(),
+                    forall|d: int| 0 <= d < c ==> (#[trigger] shared_at(this).tables[d]).meta_ok(),
+            {
                 match SlabTable::new(
                     meta,
                     regions,
                     c,
                     guard_interval_for(c, regions.page_size(), guard_interval),
                 ) {
-                    Some(t) => ptr::write(&raw mut (*tables)[c], t),
+                    Some(t) => Shared::put_table(this, c, t, Tracked(&mut b)),
                     None => return false,
                 }
             }
-            let guard_test = &raw mut (*this).guard_test;
+            let tables = Shared::tables_of(this, Tracked(&b));
             for c in 0..NCLASSES {
-                ptr::write(&raw mut (*guard_test)[c], GuardTest::of(&(*tables)[c]));
+                Shared::put_guard_test(this, c, GuardTest::of(&tables[c]));
             }
-            let arena0 = &raw mut (*this).arena0;
-            if !Arena::init(arena0, meta, regions, &*tables, 0, decay_ns) {
+            let arena0 = Shared::arena0_ptr(this);
+            if !Arena::init(arena0, meta, regions, tables, 0, decay_ns) {
                 return false;
             }
             match Huge::new(meta, regions, guard_install) {
@@ -341,51 +740,46 @@ impl Shared {
                     // `huge_dirty_decay_ms:0`: a freed run is purged at
                     // once rather than at the next decay pass (design 7).
                     h.set_purge_on_free(config.huge_dirty_decay_ms == Some(0));
-                    ptr::write(&raw mut (*this).huge, h)
+                    Shared::put_huge(this, h, Tracked(&mut b))
                 }
                 None => return false,
             }
-            ptr::write(&raw mut (*this).gc_interval_ns, GC_INTERVAL_NS);
-            Arenas::init(&raw mut (*this).arenas, arena0, config.narenas);
-            Tcaches::init(&raw mut (*this).tcaches);
-            ptr::write(
-                &raw mut (*this).cgroup,
-                crate::sys::cgroup::Cgroup::discover(config.cgroup),
-            );
+            Shared::put_registries(this, GC_INTERVAL_NS, arena0, config.narenas);
+            let cgroup = Shared::put_cgroup(this, crate::sys::cgroup::Cgroup::discover(config.cgroup));
             // Design 11: under an effective limit below 1 GiB a configured
             // `thp:always` is forced to `never` in the stored configuration
             // (`auto` is left alone; the report says so); the policy's
             // `high` baseline is the count at init.
-            let cgroup = &*(&raw const (*this).cgroup);
             let thp_forced =
                 crate::thp::forced_by_limit(config.thp, cgroup.limit().min(cgroup.high()));
             if thp_forced {
                 config.thp = crate::config::Thp::Never;
             }
-            ptr::write(
-                &raw mut (*this).policy,
+            let policy = Shared::put_policy(
+                this,
                 crate::policy::Policy::new(cgroup.rises().0, thp_forced),
             );
             // Applied once on the discovery sample, so the band and the cap
             // are published before the first 10 ms window closes (nothing
             // is `Empty` yet: retention 0).
             let limit = cgroup.limit().min(cgroup.high());
-            (*this).policy.apply(
+            policy.apply(
                 crate::policy::band(limit, cgroup.current()),
                 limit,
                 0,
                 cgroup.rises().0,
             );
-            ptr::write(&raw mut (*this).config, config);
-            ptr::write(&raw mut (*this).key, ThreadKey::create());
-            ptr::write(
-                &raw mut (*this).stats,
-                Lock::new(crate::stats::Snapshot::EMPTY),
-            );
+            Shared::put_tail(this, config, Tracked(&mut b));
+        }
+        proof {
+            let s = shared_at(this);
+            assert(s.huge_pages() == s.regions.huge_len >> s.regions.lg_page);
         }
         true
     }
 }
+
+} // verus!
 
 verus! {
 
@@ -402,9 +796,10 @@ impl Shared {
     ///
     /// Assumed by every verified function that takes a `&Shared`: the
     /// accessor that hands the published `Shared` out (`api::shared_ref`)
-    /// claims it; `init` is outside `verus!`, so nothing proves it of the
-    /// value `init` builds. The configuration is well formed
-    /// (`Config::wf`, which `config::load` ensures).
+    /// claims it. [`Shared::init`] proves it of the value it builds (the
+    /// configuration is well formed: `Config::wf`, which `config::load`
+    /// ensures); what `shared_ref` adds is that the published value is that
+    /// one, unchanged.
     pub closed spec fn wf(&self) -> bool {
         &&& self.regions.wf()
         &&& self.regions == crate::layout::process_regions()
@@ -544,7 +939,10 @@ impl Shared {
 
     /// The per-class slab tables (shared by every arena).
     #[inline(always)]
-    pub fn tables(&self) -> &[SlabTable; NCLASSES] {
+    pub fn tables(&self) -> (r: &[SlabTable; NCLASSES])
+        ensures
+            self.wf() ==> forall|c: int| 0 <= c < NCLASSES ==> #[trigger] r[c].spec_class() == c,
+    {
         &self.tables
     }
 
@@ -624,7 +1022,10 @@ impl Shared {
     }
     /// touch; see `Arenas::get`).
     #[inline]
-    pub fn arena(&self, index: u16) -> Option<&Arena> {
+    pub fn arena(&self, index: u16) -> Option<&Arena>
+        requires
+            self.wf(),
+    {
         if index == 0 {
             return Some(&self.arena0);
         }
@@ -1041,16 +1442,15 @@ impl Shared {
         }
     }
 
+    /// The decay period new arenas start with (`dirty_decay_ms`).
+    pub fn default_decay_ns(&self) -> u64 {
+        crate::purge::decay_ns_from_ms(self.config.dirty_decay_ms)
+    }
 }
 
 } // verus!
 
 impl Shared {
-    /// The decay period new arenas start with (`dirty_decay_ms`).
-    pub fn default_decay_ns(&self) -> u64 {
-        crate::purge::decay_ns_from_ms(self.config.dirty_decay_ms)
-    }
-
     /// Change the decay period of every existing arena; `-1` turns purging
     /// off. Takes effect at the next periodic tick, or at once for a
     /// background thread (each arena setter wakes it).
@@ -1093,18 +1493,6 @@ verus! {
 fn no_such_arena(index: u16) -> ! {
     panic!("arena {index} does not exist")
 }
-
-} // verus!
-
-verus! {
-
-// The explicit-cache table (`tcaches.rs`) is outside `verus!`: its
-// `AtomicPtr<Heap>` table makes `Heap` reach itself through `Shared`,
-// which Verus rejects. A Verus specification, never constructed.
-#[allow(dead_code)]
-#[verifier::external_type_specification]
-#[verifier::external_body]
-pub struct ExTcaches(Tcaches);
 
 } // verus!
 
