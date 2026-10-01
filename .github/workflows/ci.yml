@@ -1,0 +1,229 @@
+# Per-PR CI (design: the CI design's section 1, with the owner decisions of
+# 2026-09-30: no macOS job, kernel floor 5.14 with a 5.10 tripwire).
+#
+#   lint        rustfmt and clippy (advisory until the one-time fmt commit
+#               and a clippy baseline; flip vars.FMT_ENFORCED /
+#               vars.CLIPPY_ENFORCED), shellcheck on ci/, actionlint, zizmor
+#   msrv-build  the shipped cdylib with the rust-version toolchain (1.94)
+#   linux       `make test` in the Wolfi dev container, {x86_64, aarch64} x
+#               quantum {16, 8}, plus the GLIBC <= 2.44 readelf assertion
+#   privileged  `make test` privileged (seccomp off, host cgroupns, rw
+#               cgroupfs) per arch; the features line must show mseal=yes
+#   floor       kernel.org 5.10.y (the tripwire below the 5.14 floor) and
+#               5.14.y under virtme-ng with KVM on the x86_64 runner
+#
+# Every test job compares its SKIP lines with ci/expected-skips/<cell>.txt
+# (ci/skip-summary.sh): a new skip fails the job. A failing unit test fails
+# it too unless ci/known-failures.txt lists it (each entry a TODO).
+name: ci
+on:
+  pull_request:
+  merge_group:
+  push:
+    branches: [main, "oss/**"]
+  workflow_dispatch:
+permissions: {}
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: "1.98"
+          components: rustfmt, clippy
+      - name: rustfmt
+        run: cargo fmt --check
+        # Advisory until the one-time `cargo fmt` commit (plan phase d).
+        continue-on-error: ${{ vars.FMT_ENFORCED != 'true' }}
+      - name: clippy (shipped library, no_std)
+        run: cargo clippy --release -- -D warnings
+        continue-on-error: ${{ vars.CLIPPY_ENFORCED != 'true' }}
+      - name: clippy (tests)
+        run: cargo clippy --all-targets -- -D warnings
+        continue-on-error: ${{ vars.CLIPPY_ENFORCED != 'true' }}
+      - name: shellcheck ci/
+        run: shellcheck ci/*.sh
+      - name: actionlint
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "$(go env GOPATH)/bin/actionlint" -color
+      - name: zizmor
+        uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          advanced-security: false
+          online-audits: false
+
+  msrv-build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
+        with:
+          toolchain: "1.94"
+      - run: cargo build --release
+
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+        quantum: [16, 8]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: image
+        uses: ./.github/actions/ci-image
+        with:
+          stage: test
+      - name: make test
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          QUANTUM: ${{ matrix.quantum }}
+          CI_CELL: hosted-${{ steps.image.outputs.arch }}-q${{ matrix.quantum }}
+        run: bash ci/test-cell.sh .ci/test.log QUANTUM="$QUANTUM"
+      - name: quantum and GLIBC versions of the library
+        env:
+          QUANTUM: ${{ matrix.quantum }}
+        run: |
+          bash ci/glibc-max.sh .ci/target/release/libchalloc.so 2.44
+          bash ci/features-assert.sh .ci/test.log
+          # scripts/ctest-cc.sh caches the library's `arenas.quantum` here.
+          got=$(cat .ci/target/release/ctest-quantum)
+          echo "arenas.quantum $got"
+          [ "$got" = "$QUANTUM" ] || { echo "::error::built quantum $got, wanted $QUANTUM"; exit 1; }
+      - name: skip summary
+        if: always()
+        env:
+          CELL: hosted-${{ steps.image.outputs.arch }}-q${{ matrix.quantum }}
+        run: bash ci/skip-summary.sh .ci/test.log "ci/expected-skips/$CELL.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: test-log-${{ steps.image.outputs.arch }}-q${{ matrix.quantum }}
+          path: .ci/test.log
+          if-no-files-found: ignore
+
+  privileged:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: image
+        uses: ./.github/actions/ci-image
+        with:
+          stage: test
+      - name: make test (privileged)
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          FLAGS: --privileged --security-opt seccomp=unconfined --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw
+          CI_CELL: hosted-${{ steps.image.outputs.arch }}-privileged
+        run: bash ci/test-cell.sh .ci/test.log EXTRA_DOCKER_FLAGS="$FLAGS"
+      - name: the run was privileged (mseal=yes)
+        if: always()
+        run: bash ci/features-assert.sh .ci/test.log mseal=yes
+      - name: skip summary
+        if: always()
+        env:
+          CELL: hosted-${{ steps.image.outputs.arch }}-privileged
+        run: bash ci/skip-summary.sh .ci/test.log "ci/expected-skips/$CELL.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: test-log-${{ steps.image.outputs.arch }}-privileged
+          path: .ci/test.log
+          if-no-files-found: ignore
+
+  floor:
+    strategy:
+      fail-fast: false
+      matrix:
+        # 5.10: the tripwire below the supported floor; 5.14: the floor
+        # (RHEL 9 / Alma 9 era). Both are kernel.org builds, cached.
+        series: ["5.10", "5.14"]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+      - name: install virtme-ng and qemu
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends virtme-ng qemu-system-x86 \
+            gcc-11 flex bison bc libelf-dev libssl-dev dwarves
+          vng --version
+      - id: kver
+        env:
+          SERIES: ${{ matrix.series }}
+        run: bash ci/vng-cell.sh resolve "$SERIES" >>"$GITHUB_OUTPUT"
+      - id: kcache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .ci/kernel/${{ steps.kver.outputs.version }}
+          # Bump kbuild-N when ci/vng-cell.sh changes how a kernel is built.
+          key: vng-kernel-kbuild-1-${{ steps.kver.outputs.version }}-${{ hashFiles('ci/vng-kernel.config') }}
+      - name: build the kernel
+        if: steps.kcache.outputs.cache-hit != 'true'
+        env:
+          VERSION: ${{ steps.kver.outputs.version }}
+        run: bash ci/vng-cell.sh kernel "$VERSION"
+      - id: image
+        uses: ./.github/actions/ci-image
+        with:
+          stage: test
+      - name: boot and test
+        env:
+          IMAGE: ${{ steps.image.outputs.image }}
+          VERSION: ${{ steps.kver.outputs.version }}
+          CI_CELL: floor-${{ matrix.series }}-amd64
+        run: bash ci/vng-cell.sh run "$VERSION"
+      - name: skip summary
+        if: always()
+        env:
+          VERSION: ${{ steps.kver.outputs.version }}
+          CELL: floor-${{ matrix.series }}-amd64
+        run: bash ci/skip-summary.sh ".ci/vng-$VERSION.log" "ci/expected-skips/$CELL.txt"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: floor-${{ matrix.series }}-log
+          path: .ci/vng-*.log
+          if-no-files-found: ignore
