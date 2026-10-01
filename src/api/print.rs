@@ -29,9 +29,7 @@ use crate::layout::{CLASSES, NBINS, NCLASSES};
 use crate::purge;
 use crate::stats::{self, ArenaStats, Snapshot, fig_add, fig_mul};
 use crate::sys::bytes_is;
-use crate::vspec::print::{
-    base_slab_sizes, stats_allocated, tcaches_len, thp_name, writeln_display,
-};
+use crate::vspec::print::{base_slab_sizes, stats_allocated, tcaches_len, thp_name};
 use vstd::prelude::verus;
 #[cfg(verus_only)]
 use vstd::prelude::*;
@@ -412,7 +410,7 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     // Design 11: the figures as last sampled (a sample is taken here if the
     // 10 ms window allows), or why nothing is tracked.
     shared.cgroup.sample(crate::sys::now_coarse_ns());
-    writeln_display(out, &shared.cgroup)?;
+    writeln!(out, "{}", shared.cgroup)?;
     policy_line(out, shared)?;
     advice_line(out)?;
     thp_line(out)

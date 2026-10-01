@@ -1,8 +1,9 @@
 //! Calls the report writers of `api/print.rs` make into code outside
-//! `verus!`, and the formatting of a value whose `Display` is outside
-//! `verus!`. Each wrapper claims only that the call returns (and its
-//! result type); the report prints what it gives. Delete a wrapper when
-//! its callee enters `verus!` and call the callee directly.
+//! `verus!`, and the ghost `std_specs` impls those writers need
+//! (`Cgroup`'s `Display`, `PercpuArena`'s `PartialEq`). Each wrapper
+//! claims only that the call returns (and its result type); the report
+//! prints what it gives. Delete a wrapper when its callee enters `verus!`
+//! and call the callee directly.
 
 use vstd::prelude::*;
 
@@ -29,15 +30,6 @@ pub(crate) fn tcaches_len(shared: &crate::heap::Shared) -> usize {
     shared.tcaches.len()
 }
 
-/// `writeln!(out, "{}", v)`, for a value whose `Display` is outside
-/// `verus!` (the verifier cannot show its `fmt` precondition holds).
-/// Trusted: the format call alone.
-#[verifier::external_body]
-#[inline(always)]
-pub(crate) fn writeln_display<W: core::fmt::Write, T: core::fmt::Display>(out: &mut W, v: &T) -> core::fmt::Result {
-    writeln!(out, "{}", v)
-}
-
 /// The smallest and largest [`crate::layout::BASE_CLASSES`] slab size of
 /// the classes `lo..=hi` (0 for an empty range), the table geometry the
 /// report compares a page-raised range with. Trusted: the iterator chain
@@ -54,6 +46,17 @@ pub(crate) fn base_slab_sizes(lo: usize, hi: usize) -> (usize, usize) {
             .unwrap_or(0)
     };
     (base(usize::min), base(usize::max))
+}
+
+// `sys::cgroup::Cgroup` formats under any formatter, for the report's
+// `cgroup:` line. Trusted: its `Display` is outside `verus!`; it writes
+// `str`s and integers only, and its byte escape indexes its 95-byte table
+// only for `' '..='~'`. Ghost only: ordinary builds have no `std_specs`.
+#[cfg(verus_only)]
+impl vstd::std_specs::fmt::DisplaySpecImpl for crate::sys::cgroup::Cgroup {
+    open spec fn fmt_req(&self, f: &core::fmt::Formatter<'_>) -> bool {
+        true
+    }
 }
 
 // The derived `PartialEq` of `config::PercpuArena` compares variants

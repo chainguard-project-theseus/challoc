@@ -1748,8 +1748,13 @@ pub fn mallctlbymib(
 #[cfg(not(test))]
 mod exports {
     use core::ffi::{c_char, c_int, c_void};
+    use vstd::prelude::verus;
 
-    export_pair! {
+    // `verified_export_pair!` expands inside its own `verus!`; this outer
+    // block holds it (Verus passes the invocation through).
+    verus! {
+
+    verified_export_pair! {
         fn mallctl / je_mallctl(
             name: *const c_char,
             oldp: *mut c_void,
@@ -1773,6 +1778,8 @@ mod exports {
             super::mallctlbymib(mib, miblen, oldp, oldlenp, newp, newlen)
         }
     }
+
+    } // verus!
 }
 
 #[cfg(test)]
