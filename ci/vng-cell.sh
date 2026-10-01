@@ -5,8 +5,10 @@
 # test binaries and the cgroup programs directly on that kernel, with no
 # Docker in between.
 #
-#   ci/vng-cell.sh resolve SERIES   print version=<latest SERIES.y> (5.10 -> 5.10.N)
-#   ci/vng-cell.sh kernel VERSION   download and build .ci/kernel/VERSION/bzImage
+#   ci/vng-cell.sh resolve SERIES   print version=<the pinned SERIES.y> (ci/floor-kernels.txt)
+#   ci/vng-cell.sh latest SERIES    print the newest SERIES.y on kernel.org (to bump the pin)
+#   ci/vng-cell.sh kernel VERSION   download (sha256-checked against the pin) and
+#                                   build .ci/kernel/VERSION/bzImage
 #   ci/vng-cell.sh run VERSION      build the tests in $IMAGE, export the rootfs, boot
 #
 # The kernel config is virtme-ng's (`vng --kconfig`) with the options the
@@ -19,11 +21,20 @@ set -euo pipefail
 cmd=${1:?usage: ci/vng-cell.sh resolve|kernel|run ARG}; arg=${2:?missing argument}
 root=$PWD
 cdn=https://cdn.kernel.org/pub/linux/kernel
+pins=$root/ci/floor-kernels.txt
 
 major() { echo "v${1%%.*}.x"; }
+# pin FIELD KEY: field 2 (version) of SERIES KEY, or field 3 (sha256) of VERSION KEY.
+pin() { sed 's/#.*//' "$pins" | awk -v f="$1" -v k="$2" '($1 == k && f == 2) || ($2 == k && f == 3) { print $f; exit }'; }
 
 case $cmd in
 resolve)
+  ver=$(pin 2 "$arg")
+  [ -n "$ver" ] || { echo "::error::no pinned $arg.y release in $pins" >&2; exit 1; }
+  echo "version=$ver"
+  ;;
+
+latest)
   latest=$(curl -fsSL "$cdn/$(major "$arg")/" \
     | { grep -oE "linux-${arg//./\\.}\\.[0-9]+\\.tar\\.xz" || true; } \
     | sed -e 's/^linux-//' -e 's/\.tar\.xz$//' | sort -uV | tail -n 1)
@@ -36,7 +47,13 @@ kernel)
   mkdir -p "$out" .ci/src
   src=$root/.ci/src/linux-$ver
   if [ ! -d "$src" ]; then
-    curl -fsSL "$cdn/$(major "$ver")/linux-$ver.tar.xz" | tar -xJ -C .ci/src
+    want=$(pin 3 "$ver")
+    [ -n "$want" ] || { echo "::error::linux-$ver is not pinned in $pins" >&2; exit 1; }
+    curl -fsSL -o ".ci/src/linux-$ver.tar.xz" "$cdn/$(major "$ver")/linux-$ver.tar.xz"
+    got=$(sha256sum ".ci/src/linux-$ver.tar.xz" | cut -d' ' -f1)
+    [ "$got" = "$want" ] || { echo "::error::linux-$ver.tar.xz: sha256 $got, pinned $want" >&2; exit 1; }
+    tar -xJf ".ci/src/linux-$ver.tar.xz" -C .ci/src
+    rm -f ".ci/src/linux-$ver.tar.xz"
   fi
   cd "$src"
   # virtme-ng's config (its --configitem is newer than Ubuntu's 1.22),

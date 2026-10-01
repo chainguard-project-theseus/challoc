@@ -6,13 +6,13 @@ on a Linux host with Docker (the floor cells need KVM and virtme-ng).
 | script | what |
 |---|---|
 | `make.sh LOG TARGET [VAR=v...]` | one Makefile target the CI way: `IMAGE` prebuilt (`IMAGE_BUILD=`, `make -o image`), `target/` bound to `.ci/target` |
-| `test-cell.sh LOG [VAR=v...]` | `make test` for a hosted cell; a failure passes only if every failed test is in `known-failures.txt`, and then the cgroup steps `make test` skipped run too |
+| `test-cell.sh LOG [VAR=v...]` | `make test` for a hosted cell; a failure passes only if every failed test is in `known-failures.txt`, and then every step of `make test` after the unit tests (read from its recipe) runs on its own, each failing the cell unless its failures are known |
 | `known-failures.sh LOG` | every failed unit test and cgroup program of LOG is listed in `known-failures.txt` (each entry a TODO, optionally scoped to cells by `@glob`) |
-| `image-plan.sh STAGE` | tag, target and cache scope for `.github/actions/ci-image` (a Dockerfile.dev without the stage builds the full image) |
+| `image-plan.sh STAGE` | tag, target and cache scope for `.github/actions/ci-image` |
 | `skip-summary.sh LOG MANIFEST` | the `SKIP` lines of a run against `expected-skips/<cell>.txt`: a new skip fails, a vanished one is a notice |
 | `features-assert.sh LOG KEY=V...` | the `features:` line of a run must carry each KEY=V (the privileged job: `mseal=yes`) |
 | `glibc-max.sh SO MAX` | SO needs no `GLIBC_` version above MAX (2.44) |
-| `vng-cell.sh resolve\|kernel\|run` | the floor cells: a kernel.org stable kernel built with virtme-ng's config plus `vng-kernel.config`, booted under KVM with the Wolfi test image as root |
+| `vng-cell.sh resolve\|latest\|kernel\|run` | the floor cells: the kernel.org release pinned in `floor-kernels.txt` (version and tarball sha256; `latest` shows what a bump would be), built with virtme-ng's config plus `vng-kernel.config`, booted under KVM with the Wolfi test image as root |
 | `vng-guest.sh` | inside that guest: both unit-test groups, the cgroup-limit tests and the churn/lazy programs, each in its own child cgroup |
 | `extended.sh TASK` | one task of the nightly workflow |
 
