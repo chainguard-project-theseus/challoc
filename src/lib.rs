@@ -4,16 +4,14 @@
 //! Consumers are C programs; every entry point is a top-level
 //! `pub extern "C"` function. The crate never allocates through anything but
 //! its own machinery and never unwinds: `panic = "abort"` in every profile.
-//!
-//! The `std` feature exists only so that pure-logic modules can be unit
-//! tested on the host with `cargo test --features std`. It is never enabled
-//! for the shipped library.
+//! The unit tests (`cfg(test)`) link `std` for the test harness; the
+//! library itself never does.
 
 #![no_std]
 #![deny(warnings)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
-#[cfg(feature = "std")]
+#[cfg(test)]
 extern crate std;
 
 #[cfg(all(feature = "quantum8", feature = "quantum16"))]
@@ -57,7 +55,7 @@ pub mod tls;
 /// to stderr with `write(2)` and raises `SIGABRT`, never unwinding. The
 /// line reads `challoc: <message> [<file>:<line>]`: the message first, since
 /// it is what a user sees when their program frees a pointer twice.
-#[cfg(not(feature = "std"))]
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     match info.location() {

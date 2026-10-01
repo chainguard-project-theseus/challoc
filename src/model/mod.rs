@@ -1,6 +1,6 @@
 //! An exhaustive interleaving model of the slab protocol (design.md
 //! section 17, the "model-checked protocol" row; plan Phase 2.5 task 13).
-//! Test-only: `cargo test --features std model::`.
+//! Test-only: `cargo test model::`.
 //!
 //! What is modelled. One class, [`NSLABS`] slabs of [`NSLOTS`] slots each
 //! (the bits of a slab fit one word, as every real slab's do), one or two
