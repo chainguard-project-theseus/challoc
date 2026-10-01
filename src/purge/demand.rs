@@ -8,8 +8,10 @@
 //! [`EPOCHS`] epochs over the window `hpa_peak_demand_window_ms`, each
 //! holding the two largest *committed* peaks seen in it, plus the
 //! running maximum since the last commit. A peak is committed when
-//! demand falls more than an eighth below the running maximum, so a
-//! gradual fall commits once and small dips never do. [`Demand::level`]
+//! demand falls more than an eighth below the running maximum; from then
+//! on the tracker follows the trough, and only a rise of more than an
+//! eighth above it starts a new peak. So small dips never commit and a
+//! gradual fall commits once, however many samples it spans. [`Demand::level`]
 //! is the second-largest of the committed peaks in the window and the
 //! running maximum: the level demand has reached at least twice in the
 //! window. A one-off peak therefore never raises it, and a recurring one
@@ -23,7 +25,7 @@
 //! lock (the class lock, the huge lock). The fields are relaxed atomics
 //! only so that the trackers are `Sync`; there are no read-modify-writes.
 
-use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 use crate::arena::MAX_ARENAS;
 use crate::layout::NCLASSES;
@@ -90,8 +92,12 @@ pub struct Demand {
     /// Per epoch slot (`epoch % EPOCHS`): the two largest committed peaks,
     /// `[0] >= [1]`.
     top: [[AtomicU32; 2]; EPOCHS],
-    /// Running maximum since the last commit.
+    /// Running maximum since the last commit, or while `falling` the
+    /// trough since it.
     run: AtomicU32,
+    /// A peak was committed and demand has not risen more than an eighth
+    /// above the trough since.
+    falling: AtomicBool,
 }
 
 #[inline]
@@ -110,6 +116,7 @@ impl Demand {
             epoch: AtomicU64::new(0),
             top: [const { [AtomicU32::new(0), AtomicU32::new(0)] }; EPOCHS],
             run: AtomicU32::new(0),
+            falling: AtomicBool::new(false),
         }
     }
 
@@ -133,11 +140,22 @@ impl Demand {
 
     /// Record demand `d` at epoch `e`: a new running maximum, or a fall of
     /// more than an eighth below it, which commits the maximum into the
-    /// epoch's top two and restarts the running maximum at `d`.
+    /// epoch's top two. After a commit the tracker follows the trough
+    /// until demand rises more than an eighth above it, which starts the
+    /// next peak.
     pub fn sample(&self, e: u64, d: usize) {
         self.advance(e);
         let d = d.min(u32::MAX as usize) as u32;
         let run = ld(&self.run);
+        if self.falling.load(Ordering::Relaxed) {
+            if d < run {
+                st(&self.run, d);
+            } else if d as u64 > run as u64 + (run >> HYST_SHIFT) as u64 {
+                self.falling.store(false, Ordering::Relaxed);
+                st(&self.run, d);
+            }
+            return;
+        }
         if d >= run {
             st(&self.run, d);
         } else if d < run - (run >> HYST_SHIFT) {
@@ -150,11 +168,13 @@ impl Demand {
                 st(&self.top[s][1], run);
             }
             st(&self.run, d);
+            self.falling.store(true, Ordering::Relaxed);
         }
     }
 
     /// The recurring level at epoch `e`: the second-largest of the
-    /// committed peaks in the window and the running maximum.
+    /// committed peaks in the window and the running maximum (or the
+    /// trough, after a commit).
     pub fn level(&self, e: u64) -> usize {
         self.advance(e);
         let (mut m1, mut m2) = (ld(&self.run), 0u32);
@@ -242,9 +262,9 @@ mod tests {
         // It falls: the committed peak and the running level 40.
         d.sample(10, 40);
         assert_eq!(d.level(10), 40, "one peak: the running level");
-        // Falling on to 0 commits 40 too: demand sat there.
+        // Falling on to 0 is the same fall: nothing more is committed.
         d.sample(10, 0);
-        assert_eq!(d.level(10), 40);
+        assert_eq!(d.level(10), 0);
         // A second, smaller peak: the level is the smaller.
         d.sample(11, 80);
         d.sample(11, 0);
@@ -277,9 +297,9 @@ mod tests {
             d.sample(1, v);
         }
         assert_eq!(d.level(1), 0, "no commit yet");
-        // A gradual fall from 800 to 0: one commit of 800 when it passes
-        // 700, then the running maximum restarts low and each further
-        // eighth commits a smaller value.
+        // A gradual fall from 800 to 0, one sample per step of 10 (as a
+        // pool freed over many walks): one commit of 800 when it passes
+        // 700 and nothing after it, so a one-off peak leaves no level.
         let d = Demand::new();
         d.sample(1, 800);
         let mut v = 800;
@@ -287,12 +307,26 @@ mod tests {
             v -= 10;
             d.sample(1, v);
         }
-        // The slot holds 800 and the next largest committed value (690,
-        // the running maximum after the first commit): exactly one 800.
         let s = 1 % EPOCHS;
         assert_eq!(ld(&d.top[s][0]), 800);
-        assert!(ld(&d.top[s][1]) < 700, "{}", ld(&d.top[s][1]));
-        assert_eq!(d.level(1), ld(&d.top[s][1]) as usize);
+        assert_eq!(ld(&d.top[s][1]), 0);
+        assert_eq!(d.level(1), 0);
+        // A rise past an eighth over the trough starts a peak, and its
+        // fall commits the second one.
+        d.sample(1, 400);
+        d.sample(1, 380);
+        d.sample(1, 420);
+        for v in [360, 300, 200, 0] {
+            d.sample(1, v);
+        }
+        assert_eq!(d.level(1), 420);
+        // A rise within an eighth of the trough is the same fall: 670
+        // over a trough of 600 starts no peak, so 500 commits nothing.
+        let d = Demand::new();
+        for v in [800, 600, 670, 500] {
+            d.sample(1, v);
+        }
+        assert_eq!(d.level(1), 500, "800 committed, the trough running");
     }
 
     #[test]

@@ -2057,6 +2057,45 @@ mod demand {
         assert_eq!(with.last().unwrap().1, N, "all purged at the end of the window");
     }
 
+    /// A one-off burst freed a quarter at a time, with walks between the
+    /// quarters, decays as without a window too: the gradual fall commits
+    /// one peak, which never recurs.
+    #[test]
+    fn a_one_off_burst_freed_gradually_decays_as_without_a_window() {
+        let _serial = crate::purge::tests::serial();
+        let trace = |tracker: Option<&Demand>| {
+            let env = Env::new();
+            let cs = env.class(small_class(), 0);
+            let nslots = CLASSES[small_class()].nslots();
+            let (p, _) = env.claim(cs, nslots * N);
+            let t0 = base();
+            let mut out = Vec::new();
+            for q in 0..4 {
+                let t = t0 + q as u64 * W / 20;
+                let per = nslots * N / 4;
+                cs.release(&p[q * per..(q + 1) * per]);
+                for s in q * N / 4..(q + 1) * N / 4 {
+                    assert_eq!(cs.desc(s).state(), State::Empty, "slab {s}");
+                    cs.desc(s).set_dirty_at(t);
+                }
+                let next = cs.decay_demand(t + W / 200, W, KEEP_ALL, tracker.map(gate));
+                out.push((q, purged(cs), next.map(|n| n - t0)));
+            }
+            let mut t = t0 + W / 5;
+            while t <= t0 + 2 * W {
+                let next = cs.decay_demand(t, W, KEEP_ALL, tracker.map(gate));
+                out.push((usize::MAX, purged(cs), next.map(|n| n - t0)));
+                t += W / 200;
+            }
+            out
+        };
+        let tracker = Demand::new();
+        let with = trace(Some(&tracker));
+        let without = trace(None);
+        assert_eq!(with, without);
+        assert_eq!(with.last().unwrap().1, N, "all purged");
+    }
+
     /// The retention cap (design 11) caps the floor like anything else:
     /// at a quarter, at most a quarter of each burst stays.
     #[test]
