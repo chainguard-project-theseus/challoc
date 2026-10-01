@@ -688,14 +688,12 @@ pub fn chunk(addr: usize, len: usize, lo: usize, hi: usize, pmd: usize) -> (r: (
     (start, end.min(hi))
 }
 
-#[verifier::external_body]
 fn madvise_hugepage(addr: usize, len: usize) -> bool {
     // SAFETY: the callers pass ranges inside the allocator's own
     // reservations; `MADV_HUGEPAGE` changes a VMA flag, never contents.
     unsafe { crate::sys::madvise(addr, len, crate::sys::MADV_HUGEPAGE) }.is_ok()
 }
 
-#[verifier::external_body]
 fn madvise_nohugepage(addr: usize, len: usize) -> bool {
     // SAFETY: a reservation this process owns; `MADV_NOHUGEPAGE` sets a
     // VMA flag, never contents.

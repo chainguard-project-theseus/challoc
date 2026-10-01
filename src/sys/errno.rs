@@ -55,8 +55,6 @@ impl Errno {
     }
 }
 
-} // verus!
-
 impl core::fmt::Display for Errno {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let name = self.name();
@@ -67,8 +65,6 @@ impl core::fmt::Display for Errno {
         }
     }
 }
-
-verus! {
 
 /// Largest `errno` the kernel will ever return, per `include/linux/err.h`.
 pub const MAX_ERRNO: usize = 4095;

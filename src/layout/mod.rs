@@ -1104,12 +1104,12 @@ impl ClassTable {
         ClassTable(UnsafeCell::new(table))
     }
 
-    /// The table, for verified code. Trusted: the table is [`BASE_CLASSES`]
-    /// or, after [`adopt_page_geometry`], the geometry fields of
-    /// [`classes_for_page`], both of which have every entry well formed
-    /// and sized [`spec_class_size`] (`classes_for_page`'s postcondition;
-    /// `adopt_page_geometry` never writes `size`, `inv_odd` or `tz`), and it
-    /// is written only before the allocator is published.
+    /// The table, for verified code. Trusted: the table is [`BASE_CLASSES`],
+    /// whose entries are well formed and sized [`spec_class_size`]
+    /// (`build_classes`'s postcondition), or that table after
+    /// [`adopt_page_geometry`], which keeps both (`apply_page_geometry`'s
+    /// postcondition), and it is written only before the allocator is
+    /// published.
     #[verifier::external_body]
     #[inline(always)]
     pub fn table(&self) -> (r: &[Class; NCLASSES])
@@ -1126,10 +1126,12 @@ impl ClassTable {
 } // verus!
 
 // SAFETY: the table is written only by `adopt_page_geometry`, once, by the
-// initialising thread before the allocator is published (`api::init`), and
-// only the geometry fields are written, which nothing reads before init
-// (`size`, the one field pre-init callers such as `nallocx` read, is never
-// written). After that it is read-only for the life of the process.
+// initialising thread before the allocator is published (`api::init`),
+// through a `&mut` to the whole table, so nothing may read it during that
+// call (`nallocx`, for one, gets the initialised `Shared` before it
+// reads a class size). Only the geometry fields change: `size`,
+// `inv_odd` and `tz` keep their compile-time values. After that it is
+// read-only for the life of the process.
 unsafe impl Sync for ClassTable {}
 
 impl Deref for ClassTable {
@@ -1158,35 +1160,70 @@ pub exec static CLASSES: ClassTable = ClassTable::new(BASE_CLASSES);
 /// # Safety
 /// Must be called once, before the allocator is published to any other
 /// thread (`api::init` does, right after the page-size probe), and never
-/// again: nothing may read a geometry field concurrently.
+/// again: nothing may access the table concurrently.
 pub unsafe fn adopt_page_geometry(lg_page: u32) -> usize {
     // SAFETY: the caller guarantees exclusive access during the call.
-    unsafe { apply_page_geometry(CLASSES.0.get(), lg_page) }
+    apply_page_geometry(unsafe { &mut *CLASSES.0.get() }, lg_page)
 }
 
+verus! {
+
 /// [`adopt_page_geometry`] over any table (the tests run it on a copy).
-///
-/// # Safety
-/// `table` must be valid for writes and unaliased for the call.
-pub(crate) unsafe fn apply_page_geometry(table: *mut [Class; NCLASSES], lg_page: u32) -> usize {
+/// It writes the geometry fields only, so a table whose entries are well
+/// formed and sized [`spec_class_size`] stays so (what
+/// [`ClassTable::table`] trusts of [`CLASSES`] after init).
+pub(crate) fn apply_page_geometry(table: &mut [Class; NCLASSES], lg_page: u32) -> (changed: usize)
+    ensures
+        changed <= NCLASSES,
+        forall|i: int| 0 <= i < NCLASSES ==> {
+            &&& #[trigger] final(table)[i].size == old(table)[i].size
+            &&& final(table)[i].inv_odd == old(table)[i].inv_odd
+            &&& final(table)[i].tz == old(table)[i].tz
+        },
+        (forall|i: int| 0 <= i < NCLASSES ==> #[trigger] old(table)[i].wf() && old(table)[i].size == spec_class_size(i))
+            ==> forall|i: int| 0 <= i < NCLASSES ==> #[trigger] final(table)[i].wf() && final(table)[i].size == spec_class_size(i),
+{
     let want = classes_for_page(lg_page);
     let mut changed = 0;
-    for (c, w) in want.iter().enumerate() {
-        // SAFETY: `c < NCLASSES`; the caller guarantees the table is
-        // writable and unaliased.
-        let cur = unsafe { &raw mut (*table)[c] };
-        if unsafe { (*cur).lg_slab } != w.lg_slab {
-            unsafe {
-                (*cur).lg_slab = w.lg_slab;
-                (*cur).nslots = w.nslots;
-                (*cur).slab_mask = w.slab_mask;
-                (*cur).slab_bits = w.slab_bits;
-            }
+    for c in 0..NCLASSES
+        invariant
+            changed <= c,
+            forall|i: int| 0 <= i < NCLASSES ==> {
+                &&& #[trigger] table[i].size == old(table)[i].size
+                &&& table[i].inv_odd == old(table)[i].inv_odd
+                &&& table[i].tz == old(table)[i].tz
+            },
+            forall|i: int| c <= i < NCLASSES ==> #[trigger] table[i] == old(table)[i],
+            forall|i: int| 0 <= i < c ==> #[trigger] table[i] == old(table)[i] || {
+                &&& table[i].lg_slab == want[i].lg_slab
+                &&& table[i].nslots == want[i].nslots
+                &&& table[i].slab_mask == want[i].slab_mask
+                &&& table[i].slab_bits == want[i].slab_bits
+            },
+    {
+        let w = &want[c];
+        if table[c].lg_slab != w.lg_slab {
+            table[c].lg_slab = w.lg_slab;
+            table[c].nslots = w.nslots;
+            table[c].slab_mask = w.slab_mask;
+            table[c].slab_bits = w.slab_bits;
             changed += 1;
+        }
+    }
+    proof {
+        assert forall|i: int| 0 <= i < NCLASSES && old(table)[i].wf() && old(table)[i].size == spec_class_size(i)
+            implies #[trigger] table[i].wf() by {
+            if table[i] != old(table)[i] {
+                assert(want[i].wf() && want[i].size == spec_class_size(i));
+                assert(table[i].size == old(table)[i].size && table[i].tz == old(table)[i].tz && table[i].inv_odd == old(table)[i].inv_odd);
+                assert(table[i].inv_ok() == old(table)[i].inv_ok());
+            }
         }
     }
     changed
 }
+
+} // verus!
 
 verus! {
 

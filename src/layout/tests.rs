@@ -448,14 +448,14 @@ fn page_sized_geometry_for_large_pages() {
 #[test]
 fn apply_page_geometry_writes_only_the_raised_classes() {
     let mut t = BASE_CLASSES;
-    assert_eq!(unsafe { apply_page_geometry(&mut t, LG_MIN_SLAB) }, 0);
+    assert_eq!(apply_page_geometry(&mut t, LG_MIN_SLAB), 0);
     assert_eq!(t, BASE_CLASSES);
-    let n = unsafe { apply_page_geometry(&mut t, LG_SMALL_SLAB) };
+    let n = apply_page_geometry(&mut t, LG_SMALL_SLAB);
     assert_eq!(t, classes_for_page(LG_SMALL_SLAB));
     assert_eq!(n, 5, "512, 640, 768, 896 and 1024");
     let mut t = BASE_CLASSES;
     assert_eq!(
-        unsafe { apply_page_geometry(&mut t, 14) },
+        apply_page_geometry(&mut t, 14),
         3,
         "512, 896 and 1024; 640 and 768 already have 16 KiB slabs"
     );
