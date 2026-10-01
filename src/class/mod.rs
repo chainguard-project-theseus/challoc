@@ -2972,6 +2972,7 @@ impl ClassState {
                 got += want;
                 proof {
                     assert(picks_toks(*_t0, picks@, i, picks@.len() as int, ptoks));
+                    lemma_zero_frame_widen(*zt, *old(zt), base, base + got, base + got);
                 }
                 continue;
             }
@@ -3115,7 +3116,11 @@ impl ClassState {
                 }
                 word = if w + 1 == words { 0 } else { w + 1 };
             }
+            let ghost g1 = got as int;
             got += want;
+            proof {
+                lemma_zero_frame_widen(*zt, *old(zt), base, base + g1, base + got);
+            }
         }
         got
     }
@@ -3492,6 +3497,22 @@ pub open spec fn zero_keys(z: Map<int, Zeroed>, out: Seq<*mut u8>, base: int, lo
     forall|i: int| lo <= i < hi ==> #[trigger] z.contains_key(base + i) && z[base + i].covers(out[i], size)
 }
 
+/// [`zero_frame`] over `lo..hi` holds over any wider `lo..hi2`.
+proof fn lemma_zero_frame_widen(new: Map<int, Zeroed>, old: Map<int, Zeroed>, lo: int, hi: int, hi2: int)
+    requires
+        zero_frame(new, old, lo, hi),
+        hi <= hi2,
+    ensures
+        zero_frame(new, old, lo, hi2),
+{
+    assert forall|k: int| #![trigger new.contains_key(k)] #![trigger old.contains_key(k)] !(lo <= k < hi2) implies {
+        &&& new.contains_key(k) == old.contains_key(k)
+        &&& old.contains_key(k) ==> new[k] == old[k]
+    } by {
+        assert(!(lo <= k < hi));
+    }
+}
+
 /// One entry of [`zero_keys`], for callers whose `base` is a literal
 /// (the quantifier's trigger, `base + i`, does not match there).
 proof fn lemma_zero_keys_at(z: Map<int, Zeroed>, out: Seq<*mut u8>, base: int, lo: int, hi: int, size: int, i: int)
@@ -3507,8 +3528,8 @@ proof fn lemma_zero_keys_at(z: Map<int, Zeroed>, out: Seq<*mut u8>, base: int, l
 
 /// Every key of `new` outside `lo..hi` is as in `old`.
 pub open spec fn zero_frame(new: Map<int, Zeroed>, old: Map<int, Zeroed>, lo: int, hi: int) -> bool {
-    forall|k: int| !(lo <= k < hi) ==> {
-        &&& #[trigger] new.contains_key(k) == old.contains_key(k)
+    forall|k: int| #![trigger new.contains_key(k)] #![trigger old.contains_key(k)] !(lo <= k < hi) ==> {
+        &&& new.contains_key(k) == old.contains_key(k)
         &&& old.contains_key(k) ==> new[k] == old[k]
     }
 }
