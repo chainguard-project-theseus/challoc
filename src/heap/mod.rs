@@ -1,132 +1,38 @@
-//! Thread heaps and class caches: the fast and slow allocation paths
+//! Thread heaps: the per-thread caches in front of the slab bitmaps
 //! (design.md section 6).
 //!
 //! Every thread that allocates gets a [`Heap`] in the metadata region,
 //! reached through the one TLS slot in `tls.rs`. A heap holds one
-//! [`CacheHeader`] per size class inline: a LIFO stack of slot pointers that
-//! are marked in their slab bitmaps but not live in the program. The fast
-//! paths only touch the heap's header line for the class, the stack top and
-//! (for `free`) one word of the class's slot bitmap plus, once a second
-//! arena exists, one word of the group owner array; never the slab
-//! descriptor, and no atomic read-modify-write, no lock.
+//! [`CacheHeader`] per size class inline, one 64-byte line each at
+//! `heap + 128 + 64 * class`, so `malloc` reaches the header without
+//! loading a pointer first. A header points at its stack of `cap` slot
+//! pointers: slots marked allocated in their slab bitmaps but not live in
+//! the program. The stack is a metadata object of its own, allocated on
+//! the class's first slow path.
 //!
-//! Files (design.md section 19):
+//! - `malloc` pops the top of the class's stack. An empty stack is
+//!   *refilled* with up to `cap / 2` slots claimed from the class's lowest
+//!   partial slab, lowest address on top.
+//! - `free` classifies the pointer, checks that its bitmap bit is set
+//!   (invalid and stale double frees abort there) and pushes it. A full
+//!   stack is *flushed*: its `cap / 2` highest addresses go back to their
+//!   slabs in one batch grouped by slab.
 //!
-//! ```text
-//! heap/mod.rs          CacheHeader, ArenaCaches, Heap: create/destroy, the thread-cache
-//!                      fast and slow paths (pop, push, refill, flush), compaction, cache
-//!                      GC and the periodic tick, thread statistics; the crate-facing
-//!                      alloc/alloc_zeroed/free/free_direct and the free_fast and
-//!                      free_sized_fast paths the entry points inline
-//! heap/shared.rs       Shared: process-wide state and init, the free checks
-//!                      (checked_slot, sized_slot, classify_free, release_routed), huge
-//!                      routing, GuardTest, the thread-exit key, tid/now_ns/seed
-//! heap/mallocx.rs      MALLOCX_* flag decoding (Flags, Tcache) and the routing of
-//!                      mallocx/dallocx/sdallocx onto heaps, explicit caches and the
-//!                      direct paths (design 13.2); arena.rs re-exports it for api/
-//! heap/thread.rs       thread lifecycle (design 6.5): TLS_CREATING/TLS_EXITED,
-//!                      heap_for_thread, existing_heap, tls_heap_slot, fast_flags,
-//!                      heap_from_slot, the exit destructor
-//! heap/flush.rs        the flush's grouping pass: group_by_slab, flag_sort, the
-//!                      straddling double-free abort
-//! heap/tests.rs        heap tests and the builders (shared, shared_with, TestHeap, live,
-//!                      xorshift, ...) that stats.rs and api/ctests.rs reuse as
-//!                      heap::tests::*
-//! heap/linux_tests.rs  tests that need real reservations, TLS and threads
-//! ```
+//! Neither fast path touches a slab descriptor, takes a lock or does an
+//! atomic read-modify-write. Every header starts with `len == cap == 0`,
+//! so an unused cache is simply both empty and full and the slow path
+//! gives it a capacity and a stack. A thread without a heap (metadata
+//! exhausted, inside heap creation, or past its exit destructor) is served
+//! straight from the slab bitmaps; huge requests bypass the caches.
 //!
-//! Layout. The headers are a
-//! dense `[CacheHeader; NCLASSES]` inside the heap, one 64-byte line each,
-//! so `malloc` reaches `len` at `heap + 128 + c * 64` without first loading
-//! a cache pointer, and a thread's 52 headers share one page instead of 52.
-//! Each header keeps a pointer to its stack of `cap` slot pointers, on the
-//! same line as `len`; the stack is its own metadata object, allocated on
-//! the class's first slow path, so a thread that only uses five classes
-//! pays for five stacks. The stacks are not carved from one contiguous
-//! slot block per heap: a stack inside a 128 KiB metadata object costs
-//! xmalloc-test's freeing threads three to four times the L1D fills of a
-//! stack in an 8 KiB object (the same lines, the same page geometry),
-//! whatever the offset inside the object
-//! (`bench/results/2026-09-18-*-gce-dense-headers.md`).
-//!
-//! - `alloc`: pop the top of the class's cache; if it is empty, *refill* by
-//!   claiming up to `cap / 2` slots from the class's lowest partial slab
-//!   (lowest on top, so allocations walk up the slab). Every
-//!   `2^COMPACT_SHIFT` pops are *scheduled pops* (below).
-//! - `free`: classify the pointer, check its bitmap bit is set (invalid and
-//!   stale double frees abort here), push it; if the cache is full, *flush*
-//!   the `cap / 2` highest-address entries back to their slabs in one
-//!   batch grouped by slab (a selection and a counting pass, no sort) and
-//!   keep the lowest.
-//!
-//! Compaction (design 6.4). A LIFO cache hands
-//! every allocation the slot that was just freed, so under a balanced
-//! alloc/free churn (Valkey's DEL:SET steady state) the cache never
-//! reaches either boundary, no refill and no flush ever run, and the slab
-//! layout stays frozen at whatever occupancy the delete phase left; the
-//! flush's selection policy cannot change that (`bench/probes/churn.c`).
-//! To break it, one pop in
-//! `2^COMPACT_SHIFT` is a scheduled pop that is served from a
-//! *run* of low addresses kept at the bottom of the stack,
-//! `slots[..run_end]`, descending (lowest at `run_end - 1`), instead of
-//! the top: it returns the run's lowest slot and moves the top entry into
-//! its place. A refill's batch is such a run; a rebuild claims a block of
-//! `cap / 4` slots from the class's lowest partial slab and swaps it into
-//! the bottom of the stack (no sort). The displaced frees sit above the run
-//! until the next flush returns them, highest addresses first, so the live
-//! set migrates downward at `1 / 2^k` of the allocation rate and the high
-//! slabs empty and are purged. The schedule is gated: a cache *probes* the
-//! class every 4096 pops and only *compacts* while the class has holes
-//! worth `COMPACT_MIN_SLABS` slabs and a `COMPACT_MIN_RATIO`th of its
-//! capacity (`ClassState::holes`) that ordinary refills are not consuming
-//! (`COMPACT_MAX_REFILL_SLABS`), so a dense or a steadily refilled working
-//! set pays one counter test per `malloc` and nothing else. The run stays intact because `run_end <=
-//! low_water <= len`: a pop that dips below it clips both, a push never
-//! writes below `len`.
-//!
-//! Every header starts with `len == cap == 0`, so the fast paths need no
-//! null check: an empty cache is the slow path, a full one too, and the slow
-//! path gives the header its capacity and stack on first use
-//! (`ensure_cache`). A heap that cannot be created (metadata
-//! region exhausted, or the thread is inside heap creation or has already
-//! run its exit destructor) is served without a cache, straight from the
-//! slab bitmaps.
-//!
-//! Huge requests (above the largest medium class) bypass the caches: they
-//! go straight to the [`Huge`] allocator under its lock, and `free` of a
-//! pointer in the huge region is routed there by `Regions::classify`.
-//!
-//! Zeroed memory is tracked per cache as a prefix: `slots[..zeroed]` came
-//! from a `Fresh` or `Purged` slab in the last refill and nothing has been
-//! pushed below that index since, so `calloc` can skip its `memset` when it
-//! pops from inside the prefix.
-//!
-//! Signed pointers (`sys::pac`). On an arm64 host
-//! whose kernel exposes pointer authentication (`HWCAP_PACA`/`PACG`;
-//! `Shared::pac()`, the [`PUSH_PAC`] bit of the byte every `free` already
-//! reads), every pointer stored in a cache's stack is signed with `pacda`,
-//! the stack's base address as the modifier, and authenticated with
-//! `autda` when it leaves (pop, scheduled pop, flush); the heap pointer in
-//! the TLS slot is signed with the thread pointer. Entries move within a
-//! stack signed (the modifier is the stack, not the position), a flush
-//! orders them by their address bits (the PAC field masked off, no
-//! authentication) and authenticates only the half it releases, and the
-//! sentinels in the TLS slot are never signed (the compare against them
-//! comes first). A corrupted entry faults
-//! at the `autda` (FEAT_FPAC) or comes out non-canonical and faults on
-//! first use, so a write into the metadata region cannot make `malloc`
-//! return a chosen address. The stack base as the modifier survives
-//! `set_arena`'s swap of whole header arrays (the stacks stay put) and
-//! costs nothing: the pop and the push load it anyway.
-//!
-//! Thread exit (design 6.5): [`Shared::init`] creates a `pthread_key` whose
-//! destructor flushes every cache and returns the heap to the metadata
-//! allocator. `pthread_setspecific` is called once per heap, while the TLS
-//! slot holds the [`TLS_CREATING`] sentinel; an allocation made in that
-//! window is served from the slab bitmaps directly. After the destructor the
-//! slot holds [`TLS_EXITED`] and the thread is served the same way, so late
-//! destructors of other keys never create a second heap.
-
+//! On top of that: a compacting cache serves one pop in `2^COMPACT_SHIFT`
+//! from a run of low addresses so a fragmented class drains its high slabs
+//! (design 6.4); a heap keeps separate caches for other arenas and one
+//! flush-only cache for frees of other arenas' slots (design 6.2, 6.3);
+//! with pointer authentication every stack entry is stored signed with
+//! the stack's base address as the modifier (`sys::pac`); and a
+//! `pthread_key` destructor flushes and frees the heap at thread exit
+//! (design 6.5).
 
 mod flush;
 pub mod mallocx;
@@ -181,7 +87,7 @@ pub const fn default_cap(class: usize) -> u32 {
 /// One thread's cache header for one size class: exactly one cache line,
 /// inline in the heap ([`Heap::caches`]) or in an [`ArenaCaches`] node,
 /// pointing at its stack of `cap` slot pointers, a metadata object of its
-/// own (module doc, Layout). The fields the fast paths read (`len`, `cap`, `zeroed`, `slots`,
+/// own. The fields the fast paths read (`len`, `cap`, `zeroed`, `slots`,
 /// `allocs`, `compact_mask`, `low_water`) come first; a header whose `cap`
 /// is zero has never been used (`slots` is null and never dereferenced,
 /// because `len == cap == 0` sends both fast paths to the slow path).
@@ -1078,14 +984,14 @@ impl Heap {
         }
     }
 
-    /// Whether `class` in `arena` is worth compacting (module doc).
+    /// Whether `class` in `arena` is worth compacting (design 6.4).
     fn fragmented(shared: &Shared, arena: u16, class: usize) -> bool {
         let cs = shared.owner(arena).class(class);
         let (holes, capacity) = cs.holes();
         holes >= COMPACT_MIN_SLABS * CLASSES[class].compact_slots() && holes * COMPACT_MIN_RATIO >= capacity
     }
 
-    /// The compaction probe's gate (module doc) for the scheduled pops
+    /// The compaction probe's gate (design 6.4) for the scheduled pops
     /// ([`Heap::pop_compact`]): the class's refill counter now (the caller stores it as the
     /// header's `probe_refilled`) and the verdict, given the counter at
     /// the previous probe. Records the class's `note_gate_refill` and
@@ -1748,7 +1654,7 @@ impl Heap {
     /// Release the `n` highest-address entries of a cache to their slabs
     /// (in `arena`, which owns them) in one batch grouped by slab and keep
     /// the rest. Selecting by address sends the holes to the high slabs,
-    /// which is what lets them drain (module doc). One `sort_unstable` of
+    /// which is what lets them drain (design 6.4). One `sort_unstable` of
     /// the whole slot array per flush would be 8..9% of glibc-simple and
     /// 5% of the Python json row under tiny-object churn on both VMs, the
     /// largest single term wherever challoc trailed mimalloc or tcmalloc
