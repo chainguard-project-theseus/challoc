@@ -148,11 +148,15 @@ if [ -n "$PREP_KERNEL" ] && [ ! -e /var/lib/cb-prep.done ]; then
   FLAVOUR=${PREP_KERNEL#linux-}
   KV=$(ls /boot/vmlinuz-*-"$FLAVOUR" 2>/dev/null | sed 's|/boot/vmlinuz-||' | sort -V | tail -1)
   [ -n "$KV" ] || finish infra 3 "prep: no /boot/vmlinuz-*-$FLAVOUR after installing $PREP_KERNEL"
+  # Ubuntu cloud images boot initramfs-less first (GRUB_FORCE_PARTUUID);
+  # a generic kernel has its disk driver (NVMe on C4A) as a module, so it
+  # needs its initramfs.
+  [ -e "/boot/initrd.img-$KV" ] || update-initramfs -c -k "$KV" >/dev/null 2>&1
   update-grub >/dev/null 2>&1
   SUB=$(grep -oP "submenu '[^']*'.*?\\\$menuentry_id_option '\K[^']+" /boot/grub/grub.cfg | head -1)
   ENT=$(grep -oP "menuentry '[^']*with Linux $KV'.*?\\\$menuentry_id_option '\K[^']+" /boot/grub/grub.cfg | head -1)
   [ -n "$ENT" ] || finish infra 3 "prep: no GRUB entry for $KV"
-  echo "GRUB_DEFAULT=\"${SUB:+$SUB>}$ENT\"" > /etc/default/grub.d/99-cb-kernel.cfg
+  printf 'GRUB_DEFAULT="%s"\nGRUB_FORCE_PARTUUID=\n' "${SUB:+$SUB>}$ENT" > /etc/default/grub.d/99-cb-kernel.cfg
   update-grub >/dev/null 2>&1 || finish infra 3 "prep: update-grub failed"
   echo "$KV" > /var/lib/cb-prep.done
   echo "cb-boot: prep: rebooting into $KV (GRUB_DEFAULT ${SUB:+$SUB>}$ENT)"
