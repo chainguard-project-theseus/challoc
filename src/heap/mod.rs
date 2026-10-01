@@ -20,7 +20,7 @@
 //!                      free_sized_fast paths the entry points inline
 //! heap/shared.rs       Shared: process-wide state and init, the free checks
 //!                      (checked_slot, sized_slot, classify_free, release_routed), huge
-//!                      routing, GuardTest, the thread-exit key and the OS shims (os)
+//!                      routing, GuardTest, the thread-exit key, tid/now_ns/seed
 //! heap/mallocx.rs      MALLOCX_* flag decoding (Flags, Tcache) and the routing of
 //!                      mallocx/dallocx/sdallocx onto heaps, explicit caches and the
 //!                      direct paths (design 13.2); arena.rs re-exports it for api/
