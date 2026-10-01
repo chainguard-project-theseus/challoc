@@ -222,6 +222,8 @@ def expand_metrics(samples: list[dict[str, Any]], rows: Rows) -> list[dict[str, 
         for m in r.metrics:
             d = rows.rows[f"{r.name}.{m['name']}"]
             v = (s.get("extra") or {}).get(m["name"])
+            if v is None and m["name"] == "maxrss_mib" and (s.get("rt") or {}).get("maxrss_kib"):
+                v = s["rt"]["maxrss_kib"] / 1024
             parent_ok = s.get("score") is not None and not s.get("error")
             ok = parent_ok and isinstance(v, (int, float)) and v > 0
             if parent_ok and not ok:

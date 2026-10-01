@@ -38,7 +38,7 @@ PUBLIC_IMAGE_PROJECTS = (
     "opensuse-cloud",
 )
 
-PARSERS = ("larson", "xmalloc", "valkey_model.write", "churn.occ", "wall", "driver")
+PARSERS = ("larson", "xmalloc", "valkey_model.write", "churn.occ", "wall", "kv", "driver")
 # Row kinds: `timed` (one program per run, scored by a parser), `soak` and
 # `driver` (a script under bench/drivers/ that writes its metrics to
 # RESULT_JSONL, scored by one of them), `metric` (a derived row: one extra
@@ -96,6 +96,9 @@ class Row:
     # or a stock allocator name); empty: all.
     allocs: list[str] = dataclasses.field(default_factory=list)
     timeout_s: float | None = None
+    # Preload bench/tools/settle.so after the variant's library: the RSS
+    # after a forced purge at exit becomes the extra metric settle_mib.
+    settle: bool = False
 
     @property
     def higher_is_better(self) -> bool:
@@ -231,6 +234,7 @@ def parse_rows(doc: dict[str, Any], source: str = "rows.toml") -> Rows:
             placement=str(r.get("placement", "paired")),
             allocs=[str(a) for a in r.get("allocs", [])],
             timeout_s=float(r["timeout_s"]) if "timeout_s" in r else None,
+            settle=bool(r.get("settle", False)),
         )
         for m in r.get("metrics", []):
             if "name" not in m:
