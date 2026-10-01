@@ -14,6 +14,7 @@ pub mod cgroup;
 pub mod errno;
 pub mod features;
 pub mod pac;
+pub mod thp_host;
 pub use errno::{Errno, decode};
 
 mod abort;

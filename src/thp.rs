@@ -1,7 +1,7 @@
 //! Transparent huge pages for the regions (design 7, 10 and 17).
 //!
 //! The `thp` key (`config::Thp`) names what the program wants; the kernel's
-//! sysfs table (`sys::features::Thp`, read at init) says what a
+//! sysfs table (`sys::thp_host::Thp`, read at init) says what a
 //! `MADV_HUGEPAGE`d range can get; [`decide`] turns the two into the
 //! effective [`Mode`] and the thresholds the commit paths read:
 //!
@@ -82,7 +82,8 @@
 use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 use crate::config::Thp as Key;
-use crate::sys::features::{Features, Thp as Table, ThpSetting};
+use crate::sys::features::Features;
+use crate::sys::thp_host::{Thp as Table, ThpSetting};
 
 /// The effective mode.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
