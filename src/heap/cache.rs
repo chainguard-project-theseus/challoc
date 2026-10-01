@@ -71,6 +71,11 @@ pub struct CacheHeader {
     /// Refills and flushes of a full cache since the last GC, saturating
     /// ([`CacheHeader::note_miss`]); unused by the `FOREIGN` cache.
     pub(super) misses: u8,
+    /// Slots this cache's refills have claimed, modulo half its ceiling
+    /// ([`Heap::refill`]): a refill never crosses a multiple of `ceil / 2`,
+    /// so the ladder-sized batches of a busy cache stay on the boundaries
+    /// they would have had at a fixed capacity while `cap` ramps up.
+    pub(super) phase: u16,
     /// Size of the stack in slots, fixed when the cache is created (the
     /// ladder value, `ensure_cache`); the stack is freed with this layout.
     pub(super) ceil: u32,
@@ -82,6 +87,8 @@ pub const CACHE_HEADER: usize = core::mem::size_of::<CacheHeader>();
 const _: () = assert!(CACHE_HEADER == 64);
 const _: () = assert!(core::mem::offset_of!(CacheHeader, slots) < 64 - 8);
 const _: () = assert!(core::mem::offset_of!(CacheHeader, ceil) == 60);
+// `phase < ceil / 2 <= MAX_NSLOTS / 2` fits.
+const _: () = assert!(crate::config::MAX_NSLOTS / 2 <= u16::MAX as u32 + 1);
 
 impl CacheHeader {
     /// A header that has never been used: both fast paths fall through to
@@ -101,6 +108,7 @@ impl CacheHeader {
         mode: MODE_OFF,
         unsorted_flushes: 0,
         misses: 0,
+        phase: 0,
         ceil: 0,
     };
 
@@ -475,6 +483,7 @@ impl Heap {
                     mode: MODE_OFF,
                     unsorted_flushes: 0,
                     misses: 0,
+                    phase: 0,
                     ceil,
                 },
             );

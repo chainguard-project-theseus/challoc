@@ -307,12 +307,22 @@ fn allocations_are_address_ordered_and_lifo_after_free() {
     assert_eq!(live(s, c), n);
 }
 
+/// The batch geometry of a busy cache, with fixed capacities and with
+/// the default adaptive ones once the cache is warm (at its ceiling).
 #[test]
 fn full_cache_flushes_the_highest_half_sorted_and_slabs_empty() {
-    let s = fixed();
+    full_cache_flushes(fixed(), false);
+    full_cache_flushes(shared(), true);
+}
+
+fn full_cache_flushes(s: &'static Shared, adaptive: bool) {
     let t = TestHeap::new(s);
     let c = class_with(64);
     let cs = &s.arena0.classes[c];
+    if adaptive {
+        warm(&t, c);
+        assert_eq!(live(s, c), 0);
+    }
     let n = 3000;
     let ps: Vec<*mut u8> = (0..n).map(|_| t.alloc(c)).collect();
     assert_eq!(live(s, c), align_up(n, HALF));
@@ -2630,13 +2640,21 @@ fn capacity_past_the_ceiling_aborts() {
 }
 
 /// Bring `c`'s home cache to its ceiling and empty it, as a busy
-/// interval's misses leave it: one allocation creates it at its start
-/// capacity, the grow is forced, and the slot and the cache go back.
-fn warm(t: &TestHeap, c: usize) {
-    let p = t.alloc(c);
-    force_cap(t, c, t.cache(c).ceil() as u32);
-    t.free(p);
+/// interval's misses leave it: refills until the capacity is the ceiling
+/// and the refill phase is back on a half-ladder boundary, then every
+/// slot and the cache go back. Returns the number of allocations (and
+/// frees) it made.
+fn warm(t: &TestHeap, c: usize) -> u64 {
+    let mut out = std::vec![t.alloc(c)];
+    while t.cache(c).cap() < t.cache(c).ceil() || t.cache(c).phase != 0 {
+        drain_and_refill(t, c, &mut out);
+    }
+    let n = out.len() as u64;
+    for p in out {
+        t.free(p);
+    }
     t.flush_all();
+    n
 }
 
 /// Drain `c`'s home cache with pops, then pop once more (a refill).
@@ -2884,8 +2902,8 @@ fn thread_counters_survive_trim() {
     let s = shared();
     let t = TestHeap::new(s);
     let c = class_with(64);
-    warm(&t, c);
-    let (mut na, mut nf) = (1u64, 1u64);
+    let w = warm(&t, c);
+    let (mut na, mut nf) = (w, w);
     let check = |na: u64, nf: u64| assert_eq!(t.stats(), ThreadStats { allocated: 64 * na, deallocated: 64 * nf });
     let mut ps: Vec<*mut u8> = (0..CAP - 8).map(|_| t.alloc(c)).collect();
     na += ps.len() as u64;
@@ -3152,4 +3170,100 @@ fn new_cache_starts_at_an_eighth_of_the_ceiling() {
         }
         t.destroy();
     }
+}
+
+/// xmalloc-test's shape: a producer in one arena allocates, a consumer in
+/// another frees every slot in the order it was handed out, through its
+/// `FOREIGN` cache. Once warm, every producer refill claims half the
+/// ladder from one slab and every `FOREIGN` flush releases one slab's
+/// worth, with the default adaptive capacities as with fixed ones: the
+/// slow start's smaller batches do not knock the later ones off the slab
+/// boundaries (`Heap::refill`'s phase).
+#[test]
+fn producer_consumer_batches_stay_on_slab_boundaries() {
+    let c = class_with(64);
+    let nslots = CLASSES[c].nslots();
+    assert!(nslots % HALF == 0 || HALF % nslots == 0, "{nslots} slots per slab");
+    let one = (HALF / nslots).max(1);
+    for s in [shared(), fixed()] {
+        let a1 = s.arenas.create(s).unwrap();
+        let producer = TestHeap::new(s);
+        producer.heap().set_arena(s, a1);
+        let consumer = TestHeap::new(s);
+        let base = s.regions.class_base[c];
+        let lg = CLASSES[c].lg_slab as u32;
+        let slabs = |ps: &[*mut u8]| ps.iter().map(|&p| (p as usize - base) >> lg).collect::<HashSet<_>>().len();
+        let (mut refills, mut flushes) = (Vec::new(), Vec::new());
+        // The consumer's `FOREIGN` cache, mirrored: the frees since its
+        // last flush.
+        let mut pending: Vec<*mut u8> = Vec::new();
+        let mut st = 0x7e57_ab1e_u64;
+        for _ in 0..200 {
+            let n = 1 + (xorshift(&mut st) % 1500) as usize;
+            let mut handed = Vec::with_capacity(n);
+            for _ in 0..n {
+                let refill = producer.heap().cache(c).is_none_or(|k| k.len() == 0);
+                let p = producer.alloc(c);
+                if refill {
+                    let mut batch = producer.cached_plain(c);
+                    batch.push(p);
+                    refills.push((batch.len(), slabs(&batch)));
+                }
+                handed.push(p);
+            }
+            for p in handed {
+                if consumer.heap().cache_in(FOREIGN, c).is_some_and(|f| f.len() == f.cap()) {
+                    assert_eq!(pending.len(), HALF);
+                    flushes.push(slabs(&pending));
+                    pending.clear();
+                }
+                consumer.free(p);
+                pending.push(p);
+                assert_eq!(consumer.heap().cache_in(FOREIGN, c).unwrap().len(), pending.len());
+            }
+        }
+        // The slow start's refills: 64, 128, 256 and the 64 that complete
+        // the half ladder.
+        let ramp = if s.config.cap_floor(c, CAP as u32) == CAP as u32 { 0 } else { START_LG as usize + 1 };
+        let warm = &refills[ramp..];
+        assert!(warm.len() > 100 && flushes.len() > 100, "{} refills, {} flushes", warm.len(), flushes.len());
+        assert!(warm.iter().all(|&(n, k)| n == HALF && k == one), "refills (slots, slabs): {refills:?}");
+        assert!(flushes.iter().all(|&k| k == one), "slabs per FOREIGN flush: {flushes:?}");
+        let k = producer.heap().cache(c).unwrap();
+        assert_eq!((k.cap(), k.phase), (CAP, 0), "warm: at the ceiling, on a boundary");
+        producer.destroy();
+        consumer.destroy();
+    }
+}
+
+/// A refill never crosses a multiple of `ceil / 2` of the slots the
+/// cache's refills claimed: the slow start's batches, 64, 128 and 256,
+/// are followed by the 64 that complete the half ladder, then by
+/// half-ladder batches, and a cache brought back to its ceiling after a
+/// shrink realigns the same way.
+#[test]
+fn refill_phase_realigns_the_ramp_on_the_half_ladder() {
+    let s = shared();
+    let t = TestHeap::new(s);
+    let c = class_with(64);
+    let mut out = std::vec![t.alloc(c)];
+    let mut sizes = std::vec![t.len(c) + 1];
+    for _ in 0..5 {
+        drain_and_refill(&t, c, &mut out);
+        sizes.push(t.len(c) + 1);
+    }
+    assert_eq!(sizes, [64, 128, 256, 64, HALF, HALF]);
+    assert_eq!((t.cache(c).cap(), t.cache(c).phase), (CAP, 0));
+    // A short claim leaves the phase off a boundary; the next refill
+    // completes it.
+    t.heap().caches[c].phase = 100;
+    drain_and_refill(&t, c, &mut out);
+    assert_eq!((t.len(c) + 1, t.cache(c).phase), (HALF - 100, 0));
+    drain_and_refill(&t, c, &mut out);
+    assert_eq!((t.len(c) + 1, t.cache(c).phase), (HALF, 0));
+    for p in out {
+        t.free(p);
+    }
+    t.destroy();
+    assert_eq!(live(s, c), 0);
 }

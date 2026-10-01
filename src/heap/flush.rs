@@ -50,6 +50,18 @@ impl Heap {
     /// cache, lowest address on top so allocations stay address-ordered;
     /// the batch is the cache's run. Returns the new length.
     ///
+    /// The claim stops at the next multiple of `ceil / 2` of the slots
+    /// this cache's refills have claimed (`phase`). At the ceiling every
+    /// refill claims exactly `ceil / 2` and the phase stays 0, as at a
+    /// fixed capacity. While `cap` ramps up from its start (design 6.4)
+    /// the batches do not sum to one: at a ceiling of 1024, 64, 128 and
+    /// 256 leave the phase at 448, and the first refill at the ceiling
+    /// claims the 64 that complete it rather than a 512-slot batch that
+    /// straddles the boundary. A producer whose batches are freed
+    /// elsewhere (xmalloc-test) otherwise has every later refill, and
+    /// every `FOREIGN` flush of its slots on the consumer, spanning two
+    /// slabs instead of one, for good.
+    ///
     /// `low_water` restarts at the batch length rather than zero: the run
     /// needs `run_end <= low_water`, and a GC that then finds the batch
     /// untouched releases three quarters of it, which is what the GC is
@@ -65,10 +77,13 @@ impl Heap {
         // SAFETY: the cache is empty and has `cap` slots of storage.
         unsafe {
             assert_eq!((*cache).len, 0, "heap: refill of a cache that is not empty");
-            let want = ((*cache).cap / 2).max(1) as usize;
+            let align = ((*cache).ceil / 2).max(1);
+            let phase = (*cache).phase as u32;
+            let want = ((*cache).cap / 2).max(1).min(align - phase) as usize;
             let out = core::slice::from_raw_parts_mut((*cache).slots(), want);
             let claim = self.claim(shared, arena.class(class), out);
             arena.class(class).note_refill(claim.n);
+            (*cache).phase = ((phase + claim.n as u32) % align) as u16;
             out[..claim.n].reverse();
             if shared.pac() {
                 CacheHeader::sign_all((*cache).slots(), &mut out[..claim.n]);
