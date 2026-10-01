@@ -913,6 +913,19 @@ impl Shared {
         self.huge.spec_usable(size)
     }
 
+    /// `r` is the usable size of a huge run at the page start `p`
+    /// ([`Huge::spec_run_usable`] of its page), for specs outside `heap`.
+    pub closed spec fn huge_run_usable(&self, p: usize, r: usize) -> bool {
+        self.huge.spec_run_usable(((p - self.regions.huge_base) as usize) >> self.regions.lg_page, r)
+    }
+
+    /// [`Shared::huge_run_usable`] unfolded.
+    pub(crate) proof fn lemma_huge_run_usable(&self, p: usize, r: usize)
+        ensures
+            self.huge_run_usable(p, r) == self.huge.spec_run_usable(((p - self.regions.huge_base) as usize) >> self.regions.lg_page, r),
+    {
+    }
+
     /// A huge run for `size` can be described: `size` rounded up to a page
     /// does not overflow.
     pub closed spec fn huge_ok(&self, size: usize) -> bool {
@@ -1266,6 +1279,7 @@ impl Shared {
             r.0@.addr != 0 ==> crate::layout::huge_block(r.0@.addr, size, align),
             r.0@.addr != 0 ==> size <= self.huge_usable(size),
             r.0@.addr != 0 ==> self.huge_ok(size),
+            r.0@.addr != 0 ==> crate::huge::allocated(r.0@.addr, size),
             r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, self.huge_usable(size)),
     {
         proof {

@@ -229,6 +229,7 @@ impl Heap {
             r.0@.addr != 0 ==> crate::layout::huge_block(r.0@.addr, size, align),
             r.0@.addr != 0 ==> size <= shared.huge_usable(size),
             r.0@.addr != 0 ==> shared.huge_ok(size),
+            r.0@.addr != 0 ==> crate::huge::allocated(r.0@.addr, size),
             r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, shared.huge_usable(size)),
     {
         let arena = self.arena;
@@ -246,6 +247,7 @@ impl Heap {
             r.0@.addr != 0 ==> crate::layout::huge_block(r.0@.addr, size, align),
             r.0@.addr != 0 ==> size <= shared.huge_usable(size),
             r.0@.addr != 0 ==> shared.huge_ok(size),
+            r.0@.addr != 0 ==> crate::huge::allocated(r.0@.addr, size),
             r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, shared.huge_usable(size)),
     {
         let (p, zero, z) = shared.alloc_huge(size, align, arena);

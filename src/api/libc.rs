@@ -165,6 +165,27 @@ proof fn lemma_huge_result(p: *mut u8, size: usize, align: usize)
     }
 }
 
+/// A slot of class `c` is no page of the huge region: it lies in its
+/// class region, which `separated` keeps apart from the huge region.
+proof fn lemma_slot_not_huge(r: crate::layout::Regions, c: int, p: usize)
+    requires
+        r.wf(),
+        r.separated(),
+        r.is_slot(c, p),
+    ensures
+        !r.is_huge_block(p, 1),
+{
+    let stride = (1usize << r.lg_stride) as int;
+    r.lemma_slot_in_region(c, p);
+    crate::vspec::class::axiom_class_table_wf(c);
+    assert(r.superblock + c * stride <= r.class_base[c]);
+    assert((c + 1) * stride <= NCLASSES * stride) by (nonlinear_arith)
+        requires
+            c < NCLASSES,
+            stride >= 0,
+    ;
+}
+
 /// Huge allocation on the calling thread, counted in its heap when it has
 /// one. `align` is a power of two; `1` means none.
 #[cold]
@@ -177,6 +198,7 @@ fn alloc_huge(shared: &Shared, size: usize, align: usize) -> (r: (*mut u8, bool,
         r.0@.addr != 0 ==> crate::layout::huge_block(r.0@.addr, size, align),
         r.0@.addr != 0 ==> size <= shared.huge_usable(size),
         r.0@.addr != 0 ==> shared.huge_ok(size),
+        r.0@.addr != 0 ==> crate::huge::allocated(r.0@.addr, size),
         r.0@.addr != 0 && r.1 ==> r.2@.covers(r.0, shared.huge_usable(size)),
 {
     match heap::heap_for_thread(shared) {
@@ -494,13 +516,15 @@ fn free_before_init(p: *mut u8) -> ! {
 /// slab slot or huge run start. A slab pointer takes the `free` fast
 /// path's route (design 6.3): `Regions::classify` finds class, slab and
 /// slot from the dense arrays, `check_live` tests the bit, and the size is
-/// the class's.
+/// the class's. A huge run's is what its descriptor records
+/// ([`crate::huge::Huge::usable_size`]).
 #[inline(always)]
 pub fn usable_size(shared: &Shared, p: *mut u8) -> (r: usize)
     requires
         shared.wf(),
     ensures
         heap::free_target(p),
+        crate::layout::process_regions().is_huge_block(p as usize, 1) ==> shared.huge_run_usable(p as usize, r),
 {
     proof {
         shared.lemma_wf();
@@ -510,9 +534,20 @@ pub fn usable_size(shared: &Shared, p: *mut u8) -> (r: usize)
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
             shared.table(class).check_live(slab as usize, slot as usize, p as usize);
+            proof {
+                // A slot lies in its class region, which is apart from
+                // the huge region.
+                lemma_slot_not_huge(crate::layout::process_regions(), class as int, p as usize);
+            }
             class_size(class)
         }
-        Kind::Huge { page } => shared.huge.usable_size(page),
+        Kind::Huge { page } => {
+            let r = shared.huge.usable_size(page);
+            proof {
+                shared.lemma_huge_run_usable(p as usize, r);
+            }
+            r
+        },
         Kind::Invalid => not_an_allocation(p),
     }
 }
@@ -843,18 +878,18 @@ pub fn calloc_usable(n: usize, m: usize, usable: *mut usize) -> (r: *mut u8)
     calloc_usable_zeroed(n, m, usable).0
 }
 
-/// [`calloc_usable`] with the proof that its memory reads as zero, for
-/// requests of a slab class: a non-null result comes with a [`Zeroed`]
-/// token for its `n * m` bytes. For a huge request the zero report of the run
-/// is proved as for [`calloc_zeroed`], but the `memset` length is the
-/// run's usable size read back from its descriptor ([`usable_size`]),
-/// which the proof does not relate to the request.
+/// [`calloc_usable`] with the proof that its memory reads as zero: a
+/// non-null result comes with a [`Zeroed`] token for its `n * m` bytes.
+/// For a huge request the `memset` length is the run's usable size read
+/// back from its descriptor ([`usable_size`]), which covers the request
+/// while the block is this caller's
+/// ([`crate::vspec::huge::axiom_owned_run`]).
 #[inline(always)]
 pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize) -> (r: (*mut u8, Tracked<Zeroed>))
     ensures
         n * m > usize::MAX ==> r.0@.addr == 0,
         heap::fits(r.0, n * m, QUANTUM as int),
-        r.0@.addr != 0 && n * m <= MEDIUM_MAX ==> r.1@.covers(r.0, n * m),
+        r.0@.addr != 0 ==> r.1@.covers(r.0, n * m),
 {
     let Some(size) = n.checked_mul(m) else {
         store_usable(usable, 0);
@@ -878,7 +913,16 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize) -> (r: (*mut
             proof {
                 lemma_huge_result(p, size, 1);
             }
-            (p, zeroed, if p.is_null() { 0 } else { usable_size(shared, p) }, z)
+            let u = if p.is_null() { 0 } else { usable_size(shared, p) };
+            proof {
+                if p@.addr != 0 {
+                    // The run `alloc_huge` just returned, still this
+                    // caller's.
+                    shared.lemma_wf();
+                    crate::vspec::huge::axiom_owned_run(shared, p as usize, size, u);
+                }
+            }
+            (p, zeroed, u, z)
         }
     };
     if p.is_null() {

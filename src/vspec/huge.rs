@@ -46,12 +46,41 @@ pub(crate) broadcast axiom fn axiom_huge_lock_inv(v: crate::huge::Inner)
         #[trigger] lock_inv(v) == v.wf(),
 ;
 
-/// Assumption: the huge state's ghost page count never changes after
-/// `Huge::new` sets it. Verified code never assigns it (it is a ghost
-/// field, set only in `Huge::new`) and unverified code cannot.
+/// Assumption: the huge state's ghost page count and page shift never
+/// change after `Huge::new` sets them. Verified code never assigns them
+/// (they are ghost fields, set only in `Huge::new`) and unverified code
+/// cannot.
 pub(crate) broadcast axiom fn axiom_huge_lock_frame(a: crate::huge::Inner, b: crate::huge::Inner)
     ensures
-        #[trigger] lock_frame(a, b) ==> a.spec_np() == b.spec_np(),
+        #[trigger] lock_frame(a, b) ==> a.spec_np() == b.spec_np() && a.spec_lg() == b.spec_lg(),
 ;
+
+/// Assumption: the C contract of `free`, `realloc` and the sized frees,
+/// that only a block's owner frees or reallocates it. A run
+/// [`Huge::alloc_run`] returned at `p` for `size` bytes ([`allocated`])
+/// keeps the descriptor `Huge::take` wrote for it, with the usable bytes
+/// of its committed pages ([`Huge::spec_usable`]`(size)`, at least
+/// `size`), until its owner frees it: nothing else writes an `Active`
+/// descriptor. So while the caller that allocated the block at `p` still
+/// holds it, the usable size [`Huge::usable_size`] reads for its page
+/// (`r`, a [`Huge::spec_run_usable`]) covers the request. The premise
+/// that the block has not been freed since is the caller's, as for
+/// `vspec::addr::axiom_fresh_block`; the one call site is
+/// `libc::calloc_usable_zeroed`, right after its `alloc_huge`.
+///
+/// [`Huge::alloc_run`]: crate::huge::Huge::alloc_run
+/// [`allocated`]: crate::huge::allocated
+/// [`Huge::spec_usable`]: crate::huge::Huge::spec_usable
+/// [`Huge::usable_size`]: crate::huge::Huge::usable_size
+/// [`Huge::spec_run_usable`]: crate::huge::Huge::spec_run_usable
+#[verifier::external_body]
+pub proof fn axiom_owned_run(shared: &crate::heap::Shared, p: usize, size: usize, r: usize)
+    requires
+        crate::huge::allocated(p, size),
+        shared.huge_run_usable(p, r),
+    ensures
+        size <= r,
+{
+}
 
 } // verus!

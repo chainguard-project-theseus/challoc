@@ -437,6 +437,9 @@ pub(crate) struct Inner {
     /// Ghost: the region's page count (`Huge::npages`), fixed at creation.
     #[allow(dead_code)]
     np: Ghost<usize>,
+    /// Ghost: the region's page shift (`Huge::lg_page`), fixed at creation.
+    #[allow(dead_code)]
+    lg: Ghost<u32>,
 }
 
 /// Pages of the descriptors in `l`.
@@ -586,6 +589,13 @@ spec fn desc_ok(v: HugeDesc, next_page: usize) -> bool {
     &&& v.start + v.pages <= next_page
 }
 
+/// An `Active` descriptor is a run: its pages are the usable pages and
+/// the guard after them, and `usable` is the usable pages' bytes, for
+/// pages of `2^lg` bytes ([`Huge::take`] writes it so).
+spec fn run_ok(v: HugeDesc, lg: u32) -> bool {
+    v.state == RunState::Active as u8 ==> v.pages > GUARD_PAGES && v.usable == (v.pages - GUARD_PAGES) * pow2(lg as nat)
+}
+
 /// Every permission in `descs` is for its key, initialised and non-null,
 /// and the descriptor lies in the metadata region ([`alloc_desc`]).
 spec fn perms_ok(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>) -> bool {
@@ -601,6 +611,24 @@ spec fn perms_ok(descs: Map<*mut HugeDesc, PointsTo<HugeDesc>>) -> bool {
 /// ([`Regions::in_meta`]).
 pub open spec fn desc_in_meta(d: *mut HugeDesc) -> bool {
     crate::layout::process_regions().in_meta(d@.addr as int, vstd::layout::size_of::<HugeDesc>() as int)
+}
+
+/// [`Huge::alloc_run`] returned the run at address `a` for a request of
+/// `size` bytes, at some point. Uninterpreted: only `alloc_run`'s
+/// postcondition states it, through [`mint_allocated`], so a proof holds
+/// it only for an address and size an allocation produced.
+/// `vspec::huge::axiom_owned_run` takes it as the premise that ties a
+/// block to its request.
+pub uninterp spec fn allocated(a: usize, size: usize) -> bool;
+
+/// [`allocated`] for the run [`Huge::alloc_run`] is returning. Trusted
+/// only as the definition of `allocated`; private to this module, and
+/// called once, at `alloc_aligned`'s return.
+#[verifier::external_body]
+proof fn mint_allocated(a: usize, size: usize)
+    ensures
+        allocated(a, size),
+{
 }
 
 /// Two live descriptors are at different addresses: their permissions
@@ -876,6 +904,7 @@ impl Inner {
         &&& self.table.wf()
         &&& perms_ok(self.descs@)
         &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) ==> desc_ok(self.descs@[d].value(), self.next_page)
+        &&& forall|d: *mut HugeDesc| #[trigger] self.descs@.contains_key(d) ==> run_ok(self.descs@[d].value(), self.lg@)
         &&& forall|k: usize| #[trigger] self.table.lookup(k) matches Some(d) ==> self.descs@.contains_key(d)
         &&& elist_ok(self.empty_head, self.empty_tail, self.elist@, self.descs@)
         &&& self.next_page <= self.np@ <= u32::MAX
@@ -959,6 +988,11 @@ impl Inner {
         self.np@
     }
 
+    /// The ghost page shift.
+    pub(crate) closed spec fn spec_lg(&self) -> u32 {
+        self.lg@
+    }
+
     /// The `Empty` list's entries are live, with a page or more each,
     /// no more pages than `next_page` in all.
     proof fn lemma_elist(&self)
@@ -985,6 +1019,7 @@ impl Inner {
         &&& self.next_page == o.next_page
         &&& self.stats == o.stats
         &&& self.np == o.np
+        &&& self.lg == o.lg
         &&& self.all == o.all
         &&& links_only(o.descs@, self.descs@)
     }
@@ -1362,6 +1397,7 @@ impl Huge {
         &&& 0 < self.npages <= u32::MAX
         &&& self.base + self.npages * pow2(self.lg_page as nat) <= crate::meta::va_limit()
         &&& lock_init(self.inner).spec_np() == self.npages
+        &&& lock_init(self.inner).spec_lg() == self.lg_page
     }
 }
 
@@ -1688,6 +1724,7 @@ impl Take {
         &&& self.has_ext && self.used ==> self.vs.state == self.ve.state
         &&& self.head ==> self.vh.state == self.ve.state && self.vh.start == self.ve.start
         &&& self.piece(self.vr) && self.vr.state == RunState::Active as u8
+        &&& run_ok(self.vr, g0.lg@)
         &&& self.used ==> self.piece(self.vs) && self.vs.state != RunState::Active as u8 && apart(self.vs, self.vr)
         &&& self.head ==> self.piece(self.vh) && apart(self.vh, self.vr)
         &&& self.head && self.used ==> apart(self.vh, self.vs)
@@ -1720,6 +1757,7 @@ impl Inner {
         &&& forall|k: int| 0 <= k < 6 ==> #[trigger] stat(self.stats, k) == stat(g0.stats, k) + t.delta(k)
         &&& self.next_page == t.nm
         &&& self.np == g0.np
+        &&& self.lg == g0.lg
         &&& self.free.map.wf()
         &&& self.free.map.in_meta()
         &&& self.free.map.spec_nbits() == self.np@
@@ -2096,6 +2134,10 @@ proof fn lemma_took_wf(g0: Inner, g1: Inner, t: Take)
     assert(stat(g1.stats, 0) + stat(g1.stats, 1) + stat(g1.stats, 2) <= g1.next_page);
     assert forall|d: *mut HugeDesc| #[trigger] g1.descs@.contains_key(d) && g1.descs@[d].value().state == RunState::Empty as u8
         implies g1.elist@.contains(d) by {}
+    // The run is the one new `Active` descriptor; the rest keep theirs.
+    assert forall|d: *mut HugeDesc| #[trigger] g1.descs@.contains_key(d) implies run_ok(g1.descs@[d].value(), g1.lg@) by {
+        assert(same_but_links(t.model(g0.descs@, d).unwrap(), d1[d].value()));
+    }
 }
 
 impl Inner {
@@ -2128,6 +2170,7 @@ impl Inner {
             final(self).next_page == old(self).next_page,
             final(self).stats == old(self).stats,
             final(self).np == old(self).np,
+            final(self).lg == old(self).lg,
     {
         let ghost d0 = self.descs@;
         let ghost l0 = self.elist@;
@@ -2322,6 +2365,7 @@ impl Huge {
                 elist: Ghost(Seq::empty()),
                 all: Ghost(Seq::empty()),
                 np: Ghost(npages),
+                lg: Ghost(regions.lg_page),
             }),
         })
     }
@@ -2738,17 +2782,29 @@ impl Huge {
         self.gate.set_oldest_empty(new)
     }
 
+    /// `r` is the usable size of a run starting at `page`: whole pages, at
+    /// least one, with the run's guard after them inside the region.
+    pub open spec fn spec_run_usable(&self, page: usize, r: usize) -> bool {
+        &&& r >= self.spec_page()
+        &&& (r as int) % self.spec_page() == 0
+        &&& page * self.spec_page() + r + GUARD_PAGES * self.spec_page() <= self.spec_npages() * self.spec_page()
+    }
+
     /// Usable bytes of the live run starting at `page`. Aborts otherwise.
+    /// The result is the bytes of the run's usable pages, as its descriptor
+    /// counts them (`Huge::take` writes `usable` from the pages it commits).
     pub fn usable_size(&self, page: usize) -> (r: usize)
         requires
             page <= self.spec_npages(),
         ensures
             page < self.spec_npages(),
+            self.spec_run_usable(page, r),
     {
         broadcast use {axiom_huge_lock_inv, axiom_huge_lock_frame};
 
         proof {
             use_type_invariant(self);
+            self.lemma_page();
         }
         let g = self.inner.lock();
         let d = g.table.get(page);
@@ -2762,7 +2818,26 @@ impl Huge {
         proof {
             // A live descriptor's pages lie below the mark.
             assert(g@.descs@.contains_key(d));
-            assert(desc_ok(g@.descs@[d].value(), g@.next_page));
+            let v = g@.descs@[d].value();
+            assert(desc_ok(v, g@.next_page));
+            assert(v.start == page && g@.next_page <= g@.np@);
+            // An `Active` descriptor's usable pages and guard are its pages.
+            assert(run_ok(v, g@.lg@));
+            let p = self.spec_page();
+            assert(v.usable >= p && (v.usable as int) % p == 0) by {
+                vstd::arithmetic::div_mod::lemma_mod_multiples_basic(v.pages - GUARD_PAGES, p);
+                assert((v.pages - GUARD_PAGES) * p >= 1 * p) by (nonlinear_arith)
+                    requires
+                        v.pages - GUARD_PAGES >= 1,
+                        p > 0,
+                ;
+            }
+            assert(page * p + v.usable + GUARD_PAGES * p <= self.npages * p) by (nonlinear_arith)
+                requires
+                    v.usable == (v.pages - GUARD_PAGES) * p,
+                    page + v.pages <= self.npages,
+                    p > 0,
+            ;
         }
         g.desc(d).usable
     }
@@ -2824,6 +2899,7 @@ impl Huge {
             invariant
                 g@.wf(),
                 g@.spec_np() == self.npages,
+                g@.spec_lg() == self.lg_page,
                 batch.wf(),
                 batch.total() + epages(g@.elist@, g@.descs@) * self.spec_page() <= self.npages * self.spec_page(),
                 n as int + g@.elist@.len() <= g@.next_page,
@@ -2900,12 +2976,14 @@ impl Huge {
         requires
             old(g).wf(),
             old(g).spec_np() == self.npages,
+            old(g).spec_lg() == self.lg_page,
             old(g).elist@.contains(d),
             old(batch).wf(),
             old(batch).total() + old(g).descs@[d].value().pages * self.spec_page() <= self.npages * self.spec_page(),
         ensures
             final(g).wf(),
             final(g).spec_np() == old(g).spec_np(),
+            final(g).spec_lg() == old(g).spec_lg(),
             final(g).next_page == old(g).next_page,
             final(batch).wf(),
             r == old(g).descs@[d].value().pages,
@@ -3139,6 +3217,7 @@ impl Huge {
                 invariant
                     g@.wf(),
                     g@.spec_np() == self.npages,
+                    g@.spec_lg() == self.lg_page,
                     batch.wf(),
                     0 <= k <= g@.elist@.len(),
                     d == (if k < g@.elist@.len() { g@.elist@[k] } else { ptr::null_mut::<HugeDesc>() }),
@@ -3243,6 +3322,7 @@ impl Huge {
             (self.base as int) % (pow2(self.lg_page as nat) as int) == 0,
             g.wf(),
             g.spec_np() == self.npages,
+            g.spec_lg() == self.lg_page,
             1 <= need <= self.npages,
             align > 0,
             align & sub(align, 1) == 0,
@@ -3265,6 +3345,7 @@ impl Huge {
                 g.wf(),
                 (self.base as int) % (pow2(self.lg_page as nat) as int) == 0,
                 g.spec_np() == self.npages,
+                g.spec_lg() == self.lg_page,
                 1 <= need <= self.npages,
                 align > 0,
                 align & sub(align, 1) == 0,
@@ -3323,6 +3404,7 @@ impl Huge {
         requires
             old(g).wf(),
             old(g).spec_np() == self.npages,
+            old(g).spec_lg() == self.lg_page,
             run@.addr != 0,
             spare@.addr != 0,
             run_perm.ptr() == run,
@@ -3336,6 +3418,7 @@ impl Huge {
         ensures
             final(g).wf(),
             final(g).spec_np() == old(g).spec_np(),
+            final(g).spec_lg() == old(g).spec_lg(),
             final(g).descs@.contains_key(run),
             final(g).descs@[run].value().pages == p.pages,
             r.0 ==> r.1@.addr() == self.base + p.start * self.spec_page()
@@ -3580,6 +3663,8 @@ impl Huge {
                 rp.is_disjoint(g.descs.borrow().tracked_borrow(run));
             }
             vr = rp.value();
+            self.lemma_pages((need - GUARD_PAGES) as usize);
+            assert(run_ok(vr, g.lg@));
             g.descs.borrow_mut().tracked_insert(run, rp);
             g.all@ = g.all@.push(run);
             assert(forall|i: int| 0 <= i < g.elist@.len() ==> #[trigger] enode(g.elist@, g.descs@, i) == enode(g.elist@, dr, i));
@@ -3693,6 +3778,7 @@ impl Huge {
             r.0.ptr@.addr != 0 && r.0.zeroed ==> r.1@.covers(r.0.ptr, self.spec_usable(size)),
             r.0.ptr@.addr != 0 ==> size <= self.spec_usable(size),
             r.0.ptr@.addr != 0 ==> size + self.spec_page() - 1 <= usize::MAX,
+            r.0.ptr@.addr != 0 ==> allocated(r.0.ptr@.addr, size),
     {
         assert!(align.is_power_of_two(), "huge: alignment not a power of two");
         self.alloc_aligned(meta, size, align, arena)
@@ -3712,6 +3798,7 @@ impl Huge {
             r.0.ptr@.addr != 0 && r.0.zeroed ==> r.1@.covers(r.0.ptr, self.spec_usable(size)),
             r.0.ptr@.addr != 0 ==> size <= self.spec_usable(size),
             r.0.ptr@.addr != 0 ==> size + self.spec_page() - 1 <= usize::MAX,
+            r.0.ptr@.addr != 0 ==> allocated(r.0.ptr@.addr, size),
     {
         broadcast use {axiom_huge_lock_inv, axiom_huge_lock_frame};
         proof {
@@ -3781,6 +3868,8 @@ impl Huge {
         }
         proof {
             self.lemma_run_at(s, usable_pages, size, align);
+            // The run this call hands out, for `vspec::huge::axiom_owned_run`.
+            mint_allocated((self.base + s * pow2(self.lg_page as nat)) as usize, size);
         }
         (Placed { ptr: crate::vspec::addr::addr_to_ptr(self.addr(s)), zeroed, pages }, z)
     }
@@ -4106,6 +4195,7 @@ impl Inner {
         &&& forall|j: int| 0 <= j < 6 ==> #[trigger] stat(self.stats, j) == stat(g0.stats, j) - m.parts(j) + weight(m.vm, j)
         &&& self.next_page == g0.next_page
         &&& self.np == g0.np
+        &&& self.lg == g0.lg
         &&& self.free.map.wf()
         &&& self.free.map.in_meta()
         &&& self.free.map.spec_nbits() == self.np@
@@ -4470,12 +4560,14 @@ proof fn lemma_free_end(g0: Inner, gr: Inner, gl: Inner, g1: Inner, m: Merge)
         epages(gr.elist@, g0.descs@) == epages(g0.elist@, g0.descs@) - m.gone_w(3, 4),
         gr.next_page == g0.next_page,
         gr.np == g0.np,
+        gr.lg == g0.lg,
         // `gl`: the survivor rewritten.
         gl.table == gr.table,
         gl.stats == gr.stats,
         gl.all == gr.all,
         gl.next_page == gr.next_page,
         gl.np == gr.np,
+        gl.lg == gr.lg,
         perms_ok(gl.descs@),
         gl.descs@.dom() == gr.descs@.dom(),
         forall|x: *mut HugeDesc| #[trigger] gl.descs@.contains_key(x) && x != m.surv ==> same_but_links(
@@ -4888,6 +4980,7 @@ impl Huge {
                 g@.next_page == ge.next_page,
                 g@.stats == ge.stats,
                 g@.np == ge.np,
+                g@.lg == ge.lg,
             decreases 3 - k2,
         {
             let x = match iter.next() {
