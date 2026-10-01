@@ -461,8 +461,9 @@ pub fn collect_all(shared: &Shared) -> ArenaStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::heap::tests::{TestHeap, class_with, live, page_size, shared};
+    use crate::heap::tests::{TestHeap, class_with, live};
     use crate::layout::CLASSES;
+    use crate::testutil::{page_size, shared};
     use std::vec::Vec;
 
 

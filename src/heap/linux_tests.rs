@@ -1,25 +1,15 @@
 use super::*;
 use crate::config::Config;
 use crate::layout::class_of;
+use crate::sys::pac;
 use crate::tls;
 use core::ffi::c_void;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::vec::Vec;
 
-use super::tests::{live, shared_build};
-
-/// One automatic arena (the tests below reason about `arena0`), no
-/// guard slabs, the thread-cache mode, the PAC probe's real answer.
-fn shared() -> &'static Shared {
-    shared_pac(pac::available())
-}
-
-/// `shared()` with the PAC probe's answer given by the caller
-/// (`shared_build`'s `pac`).
-fn shared_pac(pac: bool) -> &'static Shared {
-    shared_build(Config { narenas: 1, pac_pointers: true, ..Config::DEFAULT }, false, pac)
-}
+use super::tests::live;
+use crate::testutil::{TestShared, shared, xorshift};
 
 fn fill(p: *mut u8, n: usize, v: u8) {
     unsafe { core::ptr::write_bytes(p, v, n) }
@@ -211,7 +201,7 @@ fn pac_flag_follows_the_probe_and_the_key() {
     assert_eq!(s.pac(), pac::available(), "pac_pointers:true is the probe's answer");
     assert_eq!(s.push_flags() & PUSH_PAC != 0, s.pac());
     assert!(!Config::DEFAULT.pac_pointers, "opt-in");
-    let off = crate::heap::tests::shared_with(Config { narenas: 1, ..Config::DEFAULT });
+    let off = TestShared::with(Config { narenas: 1, ..Config::DEFAULT }).build();
     assert!(!off.pac(), "the default configuration signs nothing");
     assert_eq!(off.push_flags(), 0);
     #[cfg(target_arch = "x86_64")]
@@ -233,7 +223,7 @@ fn pac_flag_follows_the_probe_and_the_key() {
 /// lacks it.
 #[test]
 fn heap_off_pac_executes_no_pac_instruction() {
-    for (forced_off, s) in [(true, shared_pac(false)), (false, shared())] {
+    for (forced_off, s) in [(true, TestShared::new().pac(false).build()), (false, shared())] {
         assert_eq!(s.pac(), !forced_off && pac::available());
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0);
@@ -431,9 +421,7 @@ fn eight_threads_hammer_disjoint_pointers() {
             let mut st = 0x1234_5678_9abc_def0u64 ^ (t + 1);
             let mut held: Vec<(*mut u8, usize)> = Vec::new();
             for _ in 0..50_000 {
-                st ^= st << 13;
-                st ^= st >> 7;
-                st ^= st << 17;
+                xorshift(&mut st);
                 if held.len() < 400 && (st & 3 != 0 || held.is_empty()) {
                     let c = classes[(st >> 8) as usize % classes.len()];
                     let p = alloc(s, c);

@@ -1083,7 +1083,7 @@ mod tests {
     use super::*;
     use crate::api::jemalloc::{dallocx, mallocx};
     use crate::api::libc::{free, malloc};
-    use crate::arena::{MALLOCX_TCACHE_NONE, mallocx_arena, mallocx_tcache};
+    use crate::heap::mallocx::{MALLOCX_TCACHE_NONE, mallocx_arena, mallocx_tcache};
     use crate::config::Config;
     use std::ffi::CString;
     use std::vec::Vec;
@@ -1723,7 +1723,7 @@ mod tests {
         let cls = &CLASSES[c];
         let ptrs: Vec<*mut u8> = (0..500).map(|_| mallocx(100, MALLOCX_TCACHE_NONE as c_int)).collect();
         // Direct allocations on a thread that has no heap yet come from
-        // arena 0 (`arena::alloc`, `Tcache::None`); once the thread has a
+        // arena 0 (`heap::mallocx::alloc`, `Tcache::None`); once the thread has a
         // heap they come from its home arena. Either way one arena owns
         // all 500.
         let first = owner_of(s, ptrs[0] as *const c_void).expect("owned");
