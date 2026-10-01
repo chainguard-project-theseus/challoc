@@ -65,6 +65,24 @@ class CoverageRows(unittest.TestCase):
             self.assertEqual(planmod.STOCK[name]["lib"], "{bin}/jemalloc-" + ver + "/libjemalloc.so.2")
 
 
+class BenchPrograms(unittest.TestCase):
+    def test_nested_paths_under_bin(self):
+        # {bin}/inputs/ort-mlp.onnx is present when bin/inputs/ort-mlp.onnx
+        # is, not bin/ort-mlp.onnx (a launch VM must not run build.sh).
+        import tempfile
+
+        from cb import run as runmod
+
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "inputs"))
+            open(os.path.join(d, "inputs", "ort-mlp.onnx"), "w").close()
+            rows = [spec.load_rows().rows["ort-mlp"]]
+            runmod.ensure_bench_programs("/nonexistent", d, rows, allow_build=False)
+            os.unlink(os.path.join(d, "inputs", "ort-mlp.onnx"))
+            with self.assertRaises(runmod.BuildError):
+                runmod.ensure_bench_programs("/nonexistent", d, rows, allow_build=False)
+
+
 class RegexParser(unittest.TestCase):
     def setUp(self):
         self.rows = spec.load_rows().rows

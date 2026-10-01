@@ -65,7 +65,7 @@ def compile_tools(root: str, tools_dir: str) -> None:
 
 
 def ensure_bench_programs(root: str, bin_dir: str, rows: list[Row], allow_build: bool) -> None:
-    missing = sorted({a.split("/")[-1] for r in rows for a in r.cmd if a.startswith("{bin}/") and not os.path.exists(os.path.join(bin_dir, a.split("/")[-1]))})
+    missing = sorted({a[len("{bin}/") :] for r in rows for a in r.cmd if a.startswith("{bin}/") and not os.path.exists(os.path.join(bin_dir, a[len("{bin}/") :]))})
     if not missing:
         return
     if not allow_build:
