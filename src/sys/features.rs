@@ -117,22 +117,6 @@ pub fn write_words(f: &mut fmt::Formatter<'_>, words: impl Iterator<Item = (&'st
     Ok(())
 }
 
-/// The `rseq=` and `rseq_size=` words from `rseq::probe` (design 17; the
-/// three weak symbols the slice extension reads, read once at init, and
-/// this thread's `cpu_id`). `rseq=yes` when glibc registered an area
-/// (`__rseq_size` covers the original 20-byte struct, [`rseq::BASE_SIZE`])
-/// and the kernel has written this thread's `cpu_id`; `rseq_size` is the
-/// symbol's value even when the registration did not take (`0` without
-/// one: `GLIBC_TUNABLES=glibc.pthread.rseq=0` or a kernel without
-/// `CONFIG_RSEQ`; 33 on the 7.0 GCE kernels, 20 on a kernel that reports
-/// no feature size).
-///
-/// [`rseq::BASE_SIZE`]: crate::rseq::BASE_SIZE
-pub fn rseq_words(p: &crate::rseq::Probe) -> impl Iterator<Item = (&'static str, Value)> {
-    let registered = p.present && p.registered && p.size >= crate::rseq::BASE_SIZE;
-    [("rseq", Value::YesNo(registered)), ("rseq_size", Value::Num(u64::from(p.size)))].into_iter()
-}
-
 /// The kernel's answer for the rseq time slice extension (design 17, "Time
 /// slice extension"), the `slice_ext=` key of the
 /// feature line. The probe itself is `slice::probe` (`slice.rs`, read
@@ -243,7 +227,7 @@ pub struct Features {
     /// turn on.
     pub thp: Thp,
     /// glibc's rseq registration as `rseq::probe` read it at init: the
-    /// `rseq` and `rseq_size` keys ([`rseq_words`]).
+    /// `rseq` and `rseq_size` keys (`rseq::Probe::words`).
     pub rseq: crate::rseq::Probe,
     /// The kernel's answer for the rseq time slice extension and whether
     /// the process uses it (`slice.rs` decides,
@@ -274,7 +258,7 @@ impl Features {
         ]
         .into_iter()
         .chain(self.thp.words())
-        .chain(rseq_words(&self.rseq))
+        .chain(self.rseq.words())
         .chain([("slice_ext", Value::Word(self.slice_ext.name()))])
         .chain([("pac", Value::YesNo(self.pac))])
     }
@@ -672,34 +656,6 @@ mod tests {
             assert_eq!(std::format!("{f}"), joined.join(" "));
             assert_eq!(std::format!("{}", f.thp), joined[6..8].join(" "));
         }
-    }
-
-    /// The rseq words on the values the prerequisites note recorded: the
-    /// GCE VMs (glibc 2.44 on 7.0, `__rseq_size=33`, offset 192 on aarch64
-    /// and -192/-256 on x86_64), a 6.10 kernel (`__rseq_size=20`), no
-    /// symbols, a registration the kernel never wrote, and a size below the
-    /// original struct.
-    #[test]
-    fn rseq_words_follow_size_and_registration() {
-        let line = |p: &Probe| -> std::string::String {
-            let v: std::vec::Vec<std::string::String> = rseq_words(p).map(|(k, v)| std::format!("{k}={v}")).collect();
-            v.join(" ")
-        };
-        for off in [192isize, -192, -256] {
-            assert_eq!(line(&rseq_probe(33, off)), "rseq=yes rseq_size=33");
-        }
-        assert_eq!(line(&rseq_probe(20, 192)), "rseq=yes rseq_size=20");
-        assert_eq!(line(&Probe::NONE), "rseq=no rseq_size=0");
-        assert_eq!(line(&rseq_probe(0, 0)), "rseq=no rseq_size=0", "symbols present, nothing registered");
-        // The kernel did not write the area: no registration, whatever the size says.
-        let p = Probe { registered: false, ..rseq_probe(33, -192) };
-        assert_eq!(line(&p), "rseq=no rseq_size=33");
-        // Unknown flags do not change what the line says exists.
-        let p = Probe { flags: 1, ..rseq_probe(33, 192) };
-        assert_eq!(line(&p), "rseq=yes rseq_size=33");
-        // Below the original struct nothing is registered.
-        assert_eq!(line(&rseq_probe(19, 192)), "rseq=no rseq_size=19");
-        assert_eq!(crate::rseq::BASE_SIZE, 20);
     }
 
     /// The `slice_ext=` word from the probe's

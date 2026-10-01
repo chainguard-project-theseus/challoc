@@ -26,6 +26,8 @@
 
 use core::arch::asm;
 
+use crate::sys::features::Value;
+
 /// Byte offset of `cpu_id` (kernel-owned; `-1` before registration).
 pub const CPU_ID_OFFSET: usize = 4;
 /// Byte offset of `mm_cid` (kernel-owned, u32); `slice_ctrl` follows it.
@@ -57,6 +59,18 @@ pub struct Probe {
 impl Probe {
     /// Nothing registered (the fallback when the symbols do not resolve).
     pub const NONE: Probe = Probe { present: false, size: 0, flags: 0, offset: 0, registered: false };
+
+    /// The feature line's `rseq=` and `rseq_size=` words. `rseq=yes` when
+    /// glibc registered an area (`__rseq_size` covers the original struct,
+    /// [`BASE_SIZE`]) and the kernel has written this thread's `cpu_id`;
+    /// `rseq_size` is the symbol's value even when the registration did not
+    /// take (`0` without one: `GLIBC_TUNABLES=glibc.pthread.rseq=0` or a
+    /// kernel without `CONFIG_RSEQ`; 20 on a kernel that reports no feature
+    /// size).
+    pub fn words(&self) -> impl Iterator<Item = (&'static str, Value)> {
+        let registered = self.present && self.registered && self.size >= BASE_SIZE;
+        [("rseq", Value::YesNo(registered)), ("rseq_size", Value::Num(u64::from(self.size)))].into_iter()
+    }
 }
 
 /// Read the three weak symbols and the calling thread's `cpu_id` field.
@@ -155,6 +169,39 @@ pub unsafe fn cpu_id(area: *mut u8) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What `probe` reads on a host whose glibc registered `size` bytes at
+    /// `offset` (registered when the size is not 0).
+    fn registered(size: u32, offset: isize) -> Probe {
+        Probe { present: true, size, flags: 0, offset, registered: size != 0 }
+    }
+
+    /// The rseq words: a kernel with extended fields (`__rseq_size=33`,
+    /// positive and negative offsets), one without (`__rseq_size=20`), no
+    /// symbols, a registration the kernel never wrote, and a size below the
+    /// original struct.
+    #[test]
+    fn rseq_words_follow_size_and_registration() {
+        let line = |p: &Probe| -> std::string::String {
+            let v: std::vec::Vec<std::string::String> = p.words().map(|(k, v)| std::format!("{k}={v}")).collect();
+            v.join(" ")
+        };
+        for off in [192isize, -192, -256] {
+            assert_eq!(line(&registered(33, off)), "rseq=yes rseq_size=33");
+        }
+        assert_eq!(line(&registered(20, 192)), "rseq=yes rseq_size=20");
+        assert_eq!(line(&Probe::NONE), "rseq=no rseq_size=0");
+        assert_eq!(line(&registered(0, 0)), "rseq=no rseq_size=0", "symbols present, nothing registered");
+        // The kernel did not write the area: no registration, whatever the size says.
+        let p = Probe { registered: false, ..registered(33, -192) };
+        assert_eq!(line(&p), "rseq=no rseq_size=33");
+        // Unknown flags do not change what the line says exists.
+        let p = Probe { flags: 1, ..registered(33, 192) };
+        assert_eq!(line(&p), "rseq=yes rseq_size=33");
+        // Below the original struct nothing is registered.
+        assert_eq!(line(&registered(19, 192)), "rseq=no rseq_size=19");
+        assert_eq!(BASE_SIZE, 20);
+    }
 
     /// The both-ways probe test: what glibc registered on this host is
     /// printed, and where it registered an area, `cpu_id` reads through
