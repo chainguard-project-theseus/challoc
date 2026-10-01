@@ -607,11 +607,9 @@ The lines an operator reads first, in the order they appear:
 | `thp: <key> -> off|folios|chunks (<reason>) [nohuge N (classes, metadata; huge follows host)] [slab_min S pmd P meta M huge on|off] class_ranges N (B bytes, C chunks) huge_ranges N meta_ranges N failures N; host <mode>` | section 5; the reason text says why `auto` or `always` is inert |
 | `arenas[N]:` blocks | `dirty_decay_ms` per arena (`arena.<i>.dirty_decay_ms`), `pactive/pdirty`, the `allocated active dirty retained` totals, the bins table (`size nregs curslabs curregs`, the compaction counters `refilled`, `compacted`) and the slab occupancy histogram (non-empty slabs per eighth of `nslots`), which shows where the live data sits after a delete phase |
 
-The heads of these lines are spelled once, in `src/api/print.rs`
-(`head!`), and a test (`print::tests::quoted_needles_match_the_report`)
-checks that every line quoted in this section, in design 16 and in the C
-tests is still one the report writes, so quote them exactly; `N` and
-`<...>` stand for figures and variable text.
+A test (`print::tests::text_report_line_set_is_pinned`) pins the heads
+of the report's lines, so a renamed or dropped line fails the suite;
+quote them exactly. `N` and `<...>` stand for figures and variable text.
 
 RSS by region, outside the report: with `anon_name=yes` the mappings are
 named `[anon:challoc:classes]`, `[anon:challoc:huge]` and

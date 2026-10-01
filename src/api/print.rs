@@ -156,107 +156,6 @@ fn decay_ms(ns: u64) -> i64 {
 }
 
 // ---------------------------------------------------------------------------
-// Line heads.
-// ---------------------------------------------------------------------------
-
-/// The fixed text the text report's lines start with, and the fixed words
-/// a line can continue with: what an operator, a C test (`tests/c/*.c`),
-/// `docs/tuning.md` section 6, design 16 or a harness greps for. Every
-/// such literal is spelled once here; the writers below build their
-/// format strings from these pieces with `concat!` (so the machine code
-/// is that of the plain literal), and [`LINES`] lists them for the test
-/// that checks every quoted needle against a report. A macro rather than
-/// `const`s because `concat!` and `format_args!` take literals only.
-/// Renaming a head here renames it in the report: grep the consumers.
-macro_rules! head {
-    (BEGIN) => { "___ Begin jemalloc statistics ___" };
-    (END) => { "--- End jemalloc statistics ---" };
-    (VERSION) => { "Version: " };
-    (RUN_TIME_OPTIONS) => { "Run-time option settings" };
-    (OPT) => { "opt." };
-    (INERT) => { "accepted, no effect" };
-    (FEATURES) => { "Kernel and CPU features: " };
-    (SEALED) => { "Sealed ranges: " };
-    (BACKGROUND) => { "Background thread: " };
-    (PRESENT) => { "present" };
-    (ABSENT) => { "absent" };
-    (SLICE) => { "Slice extension: " };
-    (ON) => { "on (" };
-    (OFF) => { "off (" };
-    (ARENAS) => { "Arenas: " };
-    (QUANTUM) => { "Quantum size: " };
-    (PAGE_SIZE) => { "Page size: " };
-    (PAGE_SIZED_SLABS) => { "Page-sized slabs: " };
-    (ALLOCATED) => { "Allocated: " };
-    (HUGE) => { "Huge: " };
-    (METADATA) => { "Metadata: reserved " };
-    (CGROUP) => { "cgroup: " };
-    (POLICY) => { "cgroup policy: " };
-    (POLICY_OFF) => { "off (not tracked)" };
-    (POLICY_UNLIMITED) => { "defaults (no limit)" };
-    (POLICY_LOW) => { "under 70% (defaults, retention capped)" };
-    (POLICY_SCALED) => { "70..90% (decay scaled, " };
-    (POLICY_IMMEDIATE) => { "over 90% (purge at once, cache GC every tick)" };
-    (ADVICE) => { "purge advice: " };
-    (THP) => { "thp: " };
-    (ARENA) => { "arenas[" };
-    (DIRTY_DECAY) => { "dirty_decay_ms: " };
-    (SMALL) => { "small:" };
-    (LARGE) => { "large:" };
-    (BINS) => { "bins:" };
-}
-
-/// One line of the text report as a consumer greps it.
-#[cfg(test)]
-pub(crate) struct Line {
-    /// How the line starts, without its indentation.
-    pub prefix: &'static str,
-    /// The fixed texts the line can continue with when it has alternative
-    /// forms; a quote that starts with one of them is one of the forms.
-    pub forms: &'static [&'static str],
-    /// The line is not in every report.
-    pub conditional: bool,
-}
-
-/// Every line head of the text report, for the consumer-quote test
-/// (`quoted_needles_match_the_report`). The `cgroup:` line is written by
-/// `sys::cgroup`'s `Display` and the `purge advice:` words by
-/// `purge::Advice`; their forms here are the documented alternatives, not
-/// literals those writers share.
-#[cfg(test)]
-pub(crate) const LINES: &[Line] = &[
-    Line { prefix: head!(BEGIN), forms: &[], conditional: false },
-    Line { prefix: head!(VERSION), forms: &[], conditional: false },
-    Line { prefix: head!(RUN_TIME_OPTIONS), forms: &[], conditional: false },
-    Line { prefix: head!(OPT), forms: &[], conditional: false },
-    Line { prefix: head!(FEATURES), forms: &[], conditional: false },
-    Line { prefix: head!(SEALED), forms: &[], conditional: false },
-    Line { prefix: head!(BACKGROUND), forms: &[head!(PRESENT), head!(ABSENT)], conditional: false },
-    Line { prefix: head!(SLICE), forms: &[head!(ON), head!(OFF)], conditional: false },
-    Line { prefix: head!(ARENAS), forms: &[], conditional: false },
-    Line { prefix: head!(QUANTUM), forms: &[], conditional: false },
-    Line { prefix: head!(PAGE_SIZE), forms: &[], conditional: false },
-    Line { prefix: head!(PAGE_SIZED_SLABS), forms: &[], conditional: true },
-    Line { prefix: head!(ALLOCATED), forms: &[], conditional: false },
-    Line { prefix: head!(HUGE), forms: &[], conditional: false },
-    Line { prefix: head!(METADATA), forms: &[], conditional: false },
-    Line { prefix: head!(CGROUP), forms: &["not tracked (", "/"], conditional: false },
-    Line {
-        prefix: head!(POLICY),
-        forms: &[head!(POLICY_OFF), head!(POLICY_UNLIMITED), head!(POLICY_LOW), head!(POLICY_SCALED), head!(POLICY_IMMEDIATE)],
-        conditional: false,
-    },
-    Line { prefix: head!(ADVICE), forms: &["lazy MADV_FREE (", "eager MADV_DONTNEED ("], conditional: false },
-    Line { prefix: head!(THP), forms: &[], conditional: false },
-    Line { prefix: head!(ARENA), forms: &[], conditional: false },
-    Line { prefix: head!(DIRTY_DECAY), forms: &[], conditional: false },
-    Line { prefix: head!(SMALL), forms: &[], conditional: false },
-    Line { prefix: head!(LARGE), forms: &[], conditional: false },
-    Line { prefix: head!(BINS), forms: &[], conditional: false },
-    Line { prefix: head!(END), forms: &[], conditional: false },
-];
-
-// ---------------------------------------------------------------------------
 // Text report.
 // ---------------------------------------------------------------------------
 
@@ -265,27 +164,27 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     // `MEMORY MALLOC-STATS` coverage test asserts `*jemalloc*`), just as the
     // JSON form keeps its top-level "jemalloc" object. The `Version:` line
     // that follows says which library produced the report.
-    writeln!(out, head!(BEGIN))?;
-    writeln!(out, concat!(head!(VERSION), "\"{}\""), VERSION_STR)?;
+    writeln!(out, "___ Begin jemalloc statistics ___")?;
+    writeln!(out, "Version: \"{}\"", VERSION_STR)?;
     writeln!(out, "Build-time option settings")?;
     writeln!(out, "  config.debug: false")?;
     writeln!(out, "  config.stats: true")?;
     writeln!(out, "  config.quantum: {QUANTUM}")?;
-    writeln!(out, head!(RUN_TIME_OPTIONS))?;
+    writeln!(out, "Run-time option settings")?;
     for key in KEYS {
         let note = if key == &"thp" && shared.policy.thp_forced() {
-            concat!(" (", head!(INERT), "; forced to never by a cgroup limit under 1 GiB)")
+            " (accepted, no effect; forced to never by a cgroup limit under 1 GiB)"
         } else if key == &"percpu_arena" && shared.config.percpu_arena != PercpuArena::Disabled {
-            concat!(" (", head!(INERT), "; caches are per thread)")
+            " (accepted, no effect; caches are per thread)"
         } else {
             ""
         };
         match shared.config.get(key.as_bytes()) {
-            Some(Value::Bool(b)) => writeln!(out, concat!("  ", head!(OPT), "{}: {}{}"), key, b, note)?,
-            Some(Value::Int(i)) => writeln!(out, concat!("  ", head!(OPT), "{}: {}{}"), key, i, note)?,
-            Some(Value::Uint(u)) => writeln!(out, concat!("  ", head!(OPT), "{}: {}{}"), key, u, note)?,
-            Some(Value::Size(n)) => writeln!(out, concat!("  ", head!(OPT), "{}: {}{}"), key, n, note)?,
-            Some(Value::Str(s)) => writeln!(out, concat!("  ", head!(OPT), "{}: \"{}\"{}"), key, word(s), note)?,
+            Some(Value::Bool(b)) => writeln!(out, "  opt.{}: {}{}", key, b, note)?,
+            Some(Value::Int(i)) => writeln!(out, "  opt.{}: {}{}", key, i, note)?,
+            Some(Value::Uint(u)) => writeln!(out, "  opt.{}: {}{}", key, u, note)?,
+            Some(Value::Size(n)) => writeln!(out, "  opt.{}: {}{}", key, n, note)?,
+            Some(Value::Str(s)) => writeln!(out, "  opt.{}: \"{}\"{}", key, word(s), note)?,
             None => {}
         }
     }
@@ -293,21 +192,21 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     // no field and is read by nothing; say so, so a report never suggests
     // the feature is on.
     for key in INERT_KEYS {
-        writeln!(out, concat!("  ", head!(OPT), "{}: ", head!(INERT)), key)?;
+        writeln!(out, "  opt.{}: accepted, no effect", key)?;
     }
-    writeln!(out, concat!(head!(FEATURES), "{}"), super::feature_line())?;
-    writeln!(out, concat!(head!(SEALED), "{} of {}"), super::sealed_ranges(), shared.regions.never_committed().1)?;
-    writeln!(out, concat!(head!(BACKGROUND), "{}"), if purge::background::present() { head!(PRESENT) } else { head!(ABSENT) })?;
+    writeln!(out, "Kernel and CPU features: {}", super::feature_line())?;
+    writeln!(out, "Sealed ranges: {} of {}", super::sealed_ranges(), shared.regions.never_committed().1)?;
+    writeln!(out, "Background thread: {}", if purge::background::present() { "present" } else { "absent" })?;
     slice_line(out)?;
     writeln!(
         out,
-        concat!(head!(ARENAS), "{} ({} automatic), explicit caches: {}"),
+        "Arenas: {} ({} automatic), explicit caches: {}",
         snap.narenas,
         shared.arenas.auto(),
         shared.tcaches.len()
     )?;
-    writeln!(out, concat!(head!(QUANTUM), "{}"), QUANTUM)?;
-    writeln!(out, concat!(head!(PAGE_SIZE), "{}"), shared.regions.page_size())?;
+    writeln!(out, "Quantum size: {}", QUANTUM)?;
+    writeln!(out, "Page size: {}", shared.regions.page_size())?;
     if let Some((lo, hi)) = crate::layout::page_sized_classes() {
         // Design 3: on a kernel whose page is larger than a class's table
         // slab, the class's slab is the page.
@@ -316,7 +215,7 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
         };
         writeln!(
             out,
-            concat!(head!(PAGE_SIZED_SLABS), "classes {}..{} ({}..{} bytes) at {} bytes ({}..{} in the table)"),
+            "Page-sized slabs: classes {}..{} ({}..{} bytes) at {} bytes ({}..{} in the table)",
             lo,
             hi,
             CLASSES[lo].size(),
@@ -329,13 +228,13 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     let t = &snap.totals;
     writeln!(
         out,
-        concat!(head!(ALLOCATED), "{}, active: {}, metadata: {}, resident: {}, mapped: {}, retained: {}"),
+        "Allocated: {}, active: {}, metadata: {}, resident: {}, mapped: {}, retained: {}",
         t.allocated, t.active, t.metadata, t.resident, t.mapped, t.retained
     )?;
     let h = &snap.huge;
     write!(
         out,
-        concat!(head!(HUGE), "{} runs ({} pages), {} empty extents ({} pages), {} purged extents ({} pages), high-water page {}"),
+        "Huge: {} runs ({} pages), {} empty extents ({} pages), {} purged extents ({} pages), high-water page {}",
         h.runs, h.run_pages, h.empty, h.empty_pages, h.purged, h.purged_pages, h.next_page
     )?;
     // The huge tier's own decay period (`huge_dirty_decay_ms`, design 7),
@@ -347,7 +246,7 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     let m = &snap.meta;
     writeln!(
         out,
-        concat!(head!(METADATA), "{}, committed {}, writable {}, allocated {}, bumped {}, tables {}, small tables {}"),
+        "Metadata: reserved {}, committed {}, writable {}, allocated {}, bumped {}, tables {}, small tables {}",
         m.len, m.committed, m.writable, m.allocated, m.bumped, m.reserved, m.eager
     )?;
     // Design 11: the figures as last sampled (a sample is taken here if the
@@ -365,7 +264,7 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
 fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
     let d = crate::thp::decision();
     let s = crate::thp::stats();
-    write!(out, concat!(head!(THP), "{} -> {} ({})"), word(crate::thp::key().name()), d.mode.name(), d.reason.text())?;
+    write!(out, "thp: {} -> {} ({})", word(crate::thp::key().name()), d.mode.name(), d.reason.text())?;
     // Design 17 (`MADV_NOHUGEPAGE` under `never`): `never` covers the
     // class and metadata reservations; the huge region follows the host's
     // global mode (named at the end of the line).
@@ -396,14 +295,14 @@ fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
     use crate::policy::{Band, FRAC_ONE};
     let p = &shared.policy;
     if !shared.cgroup.tracked() {
-        return writeln!(out, concat!(head!(POLICY), head!(POLICY_OFF)));
+        return writeln!(out, "cgroup policy: off (not tracked)");
     }
-    write!(out, head!(POLICY))?;
+    write!(out, "cgroup policy: ")?;
     match p.band() {
-        Band::Unlimited => write!(out, head!(POLICY_UNLIMITED))?,
-        Band::Low => write!(out, head!(POLICY_LOW))?,
-        Band::Scaled(f) => write!(out, concat!(head!(POLICY_SCALED), "{}% into the band)"), f as u64 * 100 / FRAC_ONE as u64)?,
-        Band::Immediate => write!(out, head!(POLICY_IMMEDIATE))?,
+        Band::Unlimited => write!(out, "defaults (no limit)")?,
+        Band::Low => write!(out, "under 70% (defaults, retention capped)")?,
+        Band::Scaled(f) => write!(out, "70..90% (decay scaled, {}% into the band)", f as u64 * 100 / FRAC_ONE as u64)?,
+        Band::Immediate => write!(out, "over 90% (purge at once, cache GC every tick)")?,
     }
     write!(out, " decay_ms {}", decay_ms(p.effective_decay_ns(shared.decay_ns())))?;
     if shared.huge_decay_ns() != shared.decay_ns() {
@@ -433,7 +332,7 @@ fn advice_line<W: Write>(out: &mut W) -> fmt::Result {
     let (lazy_bytes, eager_bytes) = purge::discarded_bytes();
     writeln!(
         out,
-        concat!(head!(ADVICE), "{} {} ({}) lazy_purges {} ({} bytes) eager_purges {} ({} bytes) purged_is_zero {} lazy via {}"),
+        "purge advice: {} {} ({}) lazy_purges {} ({} bytes) eager_purges {} ({} bytes) purged_is_zero {} lazy via {}",
         purge::advice().name(),
         purge::advice().madv_name(),
         purge::advice_reason(),
@@ -447,18 +346,18 @@ fn advice_line<W: Write>(out: &mut W) -> fmt::Result {
 }
 
 fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) -> fmt::Result {
-    writeln!(out, concat!(head!(ARENA), "{}]:"), arena.index())?;
-    writeln!(out, concat!("  ", head!(DIRTY_DECAY), "{}"), decay_ms(arena.decay_ns()))?;
+    writeln!(out, "arenas[{}]:", arena.index())?;
+    writeln!(out, "  dirty_decay_ms: {}", decay_ms(arena.decay_ns()))?;
     writeln!(out, "  pactive: {}, pdirty: {}, pmuzzy: {}", s.pactive, s.pdirty, s.pmuzzy)?;
     writeln!(out, "                            allocated       active        dirty     retained")?;
     writeln!(
         out,
-        concat!("  ", head!(SMALL), "               {:>14} {:>12} {:>12} {:>12}"),
+        "  small:               {:>14} {:>12} {:>12} {:>12}",
         s.small_allocated, s.small_active, s.small_dirty, s.small_retained
     )?;
     writeln!(
         out,
-        concat!("  ", head!(LARGE), "               {:>14} {:>12} {:>12} {:>12}  ({} huge runs)"),
+        "  large:               {:>14} {:>12} {:>12} {:>12}  ({} huge runs)",
         s.large_allocated,
         s.large_active,
         s.large_dirty + s.huge_dirty,
@@ -478,7 +377,7 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
     // to the bin's capacity (`ClassState::bin_stats`).
     writeln!(
         out,
-        concat!("  ", head!(BINS), "        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped")
+        "  bins:        size ind    nregs  slab_size   curregs  curslabs   nonfull     empty    purged   refilled  compacted   c_on  c_off  gated clamped"
     )?;
     let mut large_header = false;
     for (j, b) in s.bins.iter().enumerate() {
@@ -578,7 +477,7 @@ fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
         });
         r?;
     }
-    writeln!(out, head!(END))
+    writeln!(out, "--- End jemalloc statistics ---")
 }
 
 // ---------------------------------------------------------------------------
@@ -892,7 +791,7 @@ fn slice_line<W: Write>(out: &mut W) -> fmt::Result {
     if slice::on() {
         writeln!(
             out,
-            concat!(head!(SLICE), head!(ON), "{} threads enabled, {} grants yielded via {})"),
+            "Slice extension: on ({} threads enabled, {} grants yielded via {})",
             slice::enabled_threads(),
             slice::yields(),
             slice::yield_name()
@@ -900,7 +799,7 @@ fn slice_line<W: Write>(out: &mut W) -> fmt::Result {
     } else {
         writeln!(
             out,
-            concat!(head!(SLICE), head!(OFF), "{}){}"),
+            "Slice extension: off ({}){}",
             slice::verdict().name(),
             if slice::forced_off() { "; slice_ext:on requested, unavailable" } else { "" }
         )
@@ -974,12 +873,12 @@ mod tests {
     fn text_report_has_every_section_and_live_figures() {
         let live: Vec<*mut u8> = (0..100).map(|_| malloc(700)).collect();
         let text = report("");
-        assert!(text.starts_with(concat!(head!(BEGIN), "\n")), "{text}");
-        assert!(text.ends_with(concat!(head!(END), "\n")), "{text}");
+        assert!(text.starts_with("___ Begin jemalloc statistics ___\n"), "{text}");
+        assert!(text.ends_with("--- End jemalloc statistics ---\n"), "{text}");
         for needle in [
-            concat!(head!(VERSION), "\"5.3.0-0-gchalloc\""),
+            "Version: \"5.3.0-0-gchalloc\"",
             "config.quantum:",
-            head!(RUN_TIME_OPTIONS),
+            "Run-time option settings",
             "opt.dirty_decay_ms: ",
             "opt.thp: \"never\"\n",
             "thp: never -> off (thp:never) nohuge ",
@@ -987,29 +886,29 @@ mod tests {
             "opt.zero_on_free: false\n",
             "opt.slot_randomize: false\n",
             "opt.cgroup: true\n",
-            concat!(head!(OPT), "stats_print: ", head!(INERT)),
+            "opt.stats_print: accepted, no effect",
             "opt.double_free_scan: false\n",
             "opt.huge_retain_max: 67108864\n",
-            concat!(head!(FEATURES), "page_size="),
-            head!(SEALED),
-            head!(BACKGROUND),
-            concat!("\n", head!(SLICE)),
-            head!(ARENAS),
-            concat!("\n", head!(QUANTUM)),
-            concat!("\n", head!(PAGE_SIZE)),
-            head!(ALLOCATED),
-            head!(HUGE),
-            head!(METADATA),
+            "Kernel and CPU features: page_size=",
+            "Sealed ranges: ",
+            "Background thread: ",
+            "\nSlice extension: ",
+            "Arenas: ",
+            "\nQuantum size: ",
+            "\nPage size: ",
+            "Allocated: ",
+            "Huge: ",
+            "Metadata: reserved ",
             "  gated clamped\n",
-            concat!("\n", head!(CGROUP)),
-            concat!("\n", head!(POLICY)),
-            concat!("\n", head!(ADVICE), "eager MADV_DONTNEED (no headroom known) lazy_purges 0 (0 bytes) eager_purges "),
-            concat!("\n", head!(THP)),
-            concat!(head!(ARENA), "0]:"),
-            concat!("  ", head!(DIRTY_DECAY)),
-            concat!("  ", head!(SMALL)),
-            concat!("  ", head!(LARGE)),
-            concat!("  ", head!(BINS), "        size ind"),
+            "\ncgroup: ",
+            "\ncgroup policy: ",
+            "\npurge advice: eager MADV_DONTNEED (no headroom known) lazy_purges 0 (0 bytes) eager_purges ",
+            "\nthp: ",
+            "arenas[0]:",
+            "  dirty_decay_ms: ",
+            "  small:",
+            "  large:",
+            "  bins:        size ind",
         ] {
             assert!(text.contains(needle), "missing `{needle}` in:\n{text}");
         }
@@ -1042,7 +941,7 @@ mod tests {
         let b = report("b");
         assert!(b.contains("arenas[0]:") && !b.contains("  bins:"), "{b}");
         let ga = report("gab");
-        assert_eq!(ga, concat!(head!(END), "\n"));
+        assert_eq!(ga, "--- End jemalloc statistics ---\n");
     }
 
     /// The feature line's `slice_ext=` key (design 17) agrees
@@ -1052,17 +951,17 @@ mod tests {
     #[test]
     fn feature_line_slice_ext_agrees_with_the_slice_line() {
         let text = report("");
-        let features = text.lines().find(|l| l.starts_with(head!(FEATURES))).unwrap();
+        let features = text.lines().find(|l| l.starts_with("Kernel and CPU features: ")).unwrap();
         let word = features
             .split(' ')
             .find_map(|kv| kv.strip_prefix("slice_ext="))
             .unwrap_or_else(|| panic!("no slice_ext= in {features}"));
-        let slice = text.lines().find(|l| l.starts_with(head!(SLICE))).unwrap();
+        let slice = text.lines().find(|l| l.starts_with("Slice extension: ")).unwrap();
         if word == "on" {
-            assert!(slice.starts_with(concat!(head!(SLICE), head!(ON))), "{slice} vs {features}");
+            assert!(slice.starts_with("Slice extension: on ("), "{slice} vs {features}");
         } else {
-            assert!(slice.starts_with(concat!(head!(SLICE), head!(OFF))), "{slice} vs {features}");
-            let why = slice.trim_start_matches(concat!(head!(SLICE), head!(OFF))).split(')').next().unwrap();
+            assert!(slice.starts_with("Slice extension: off ("), "{slice} vs {features}");
+            let why = slice.trim_start_matches("Slice extension: off (").split(')').next().unwrap();
             if why == "slice_ext:off" {
                 assert!(matches!(word, "available" | "kernel-disabled" | "no-slice_ctrl" | "no-rseq"), "{slice} vs {features}");
             } else {
@@ -1200,6 +1099,85 @@ mod tests {
         assert!(g.starts_with("{\n\t\"jemalloc\": {\n\t\t\"version\": \"S\",\n\t\t\"implementation\": \"S\",\n\t\t\"stats.arenas\": {\n"), "{g}");
     }
 
+    /// The text report's line set, pinned by each line's head: its text up
+    /// to the first `:` with the figures masked (`masked`), the whole line
+    /// when it has no `:`, and `<row>` for a run of table rows. The general
+    /// section is pinned line for line; every arena block is the fixed
+    /// lines down to the bins header, then the bins rows, the slab-allocated
+    /// large classes and the occupancy histogram, each present only when it
+    /// has rows. A refactor of the writers keeps this; a renamed, added or
+    /// dropped line has to change it.
+    #[test]
+    fn text_report_line_set_is_pinned() {
+        fn head(line: &str) -> String {
+            let m = masked(line);
+            if m.trim_start().starts_with('N') {
+                return "<row>".into();
+            }
+            match m.find(':') {
+                Some(i) => m[..=i].into(),
+                None => m,
+            }
+        }
+        let text = report("");
+        let mut heads: Vec<String> = Vec::new();
+        for line in text.lines() {
+            let h = head(line);
+            if h != "<row>" || heads.last().is_none_or(|p| p != "<row>") {
+                heads.push(h);
+            }
+        }
+        let mut want: Vec<String> = std::vec![
+            "___ Begin jemalloc statistics ___".into(),
+            "Version:".into(),
+            "Build-time option settings".into(),
+            "  config.debug:".into(),
+            "  config.stats:".into(),
+            "  config.quantum:".into(),
+            "Run-time option settings".into(),
+        ];
+        want.extend(KEYS.iter().chain(INERT_KEYS).map(|key| std::format!("  opt.{key}:")));
+        want.extend(
+            ["Kernel and CPU features:", "Sealed ranges:", "Background thread:", "Slice extension:", "Arenas:", "Quantum size:", "Page size:"]
+                .map(String::from),
+        );
+        if crate::layout::page_sized_classes().is_some() {
+            want.push("Page-sized slabs:".into());
+        }
+        want.extend(["Allocated:", "Huge:", "Metadata:", "cgroup:", "cgroup policy:", "purge advice:", "thp:"].map(String::from));
+        let general = heads.iter().position(|h| h == "arenas[N]:").unwrap_or_else(|| panic!("no arena block in:\n{text}"));
+        assert_eq!(heads[..general], want[..], "general section of:\n{text}");
+        assert_eq!(heads.last().map(String::as_str), Some("--- End jemalloc statistics ---"));
+        let fixed = [
+            "arenas[N]:",
+            "  dirty_decay_ms:",
+            "  pactive:",
+            "                            allocated       active        dirty     retained",
+            "  small:",
+            "  large:",
+            "  metadata:",
+            "  bins:",
+        ];
+        let tables = ["", "  large classes (slab-allocated, not bins):", "  slab occupancy (non-empty slabs per eighth of nslots, last = full):"];
+        let arenas = &heads[general..heads.len() - 1];
+        let starts: Vec<usize> = (0..arenas.len()).filter(|&i| arenas[i] == "arenas[N]:").collect();
+        for (k, &start) in starts.iter().enumerate() {
+            let block = &arenas[start..starts.get(k + 1).copied().unwrap_or(arenas.len())];
+            assert!(block.len() >= fixed.len() && block[..fixed.len()] == fixed, "arena block {block:?} in:\n{text}");
+            let mut rest = &block[fixed.len()..];
+            for table in tables {
+                if !table.is_empty() && rest.first().is_some_and(|h| h == table) {
+                    rest = &rest[1..];
+                    assert!(rest.first().is_some_and(|h| h == "<row>"), "`{table}` without rows in {block:?}");
+                }
+                if rest.first().is_some_and(|h| h == "<row>") {
+                    rest = &rest[1..];
+                }
+            }
+            assert!(rest.is_empty(), "unexpected lines {rest:?} in arena block {block:?} of:\n{text}");
+        }
+    }
+
     /// The module docs promise that nothing in a report allocates: the
     /// calling thread's `thread.allocated` and `thread.deallocated` do not
     /// move across a text and a JSON report written to a sink callback
@@ -1235,8 +1213,8 @@ mod tests {
         malloc_stats_print(None, core::ptr::null_mut(), core::ptr::null());
         set_message_hook_for_tests(None);
         let got = String::from_utf8(HOOKED.lock().unwrap().clone()).unwrap();
-        assert!(got.starts_with(concat!(head!(BEGIN), "\n")), "{got}");
-        assert!(got.ends_with(concat!(head!(END), "\n")));
+        assert!(got.starts_with("___ Begin jemalloc statistics ___\n"), "{got}");
+        assert!(got.ends_with("--- End jemalloc statistics ---\n"));
     }
 
     #[test]
@@ -1267,208 +1245,5 @@ mod tests {
         }
         // glibc's malloc_stats just has to run and stay on stderr.
         malloc_stats();
-    }
-
-    /// The `LINES` entry a quote is about: the quote, less a leading
-    /// newline and indentation, starts with the entry's prefix, or is a
-    /// colon-terminated start of it (`cgroup:` for `cgroup: `).
-    fn recognise(quote: &str) -> Option<(&'static Line, &str)> {
-        let q = quote.trim_start_matches('\n').trim_start_matches(' ');
-        LINES.iter().find(|l| q.starts_with(l.prefix) || (q.ends_with(':') && l.prefix.starts_with(q))).map(|l| (l, q))
-    }
-
-    /// A quote's fixed head: cut at the first `<`, `*`, `...` or `|` (a
-    /// documented wildcard or alternative), kept through the first `=`
-    /// (the feature line's values vary by host), a trailing newline
-    /// dropped, one-letter placeholders (`N`, `M`, `i`) made `N`, then
-    /// `masked`.
-    fn quote_head(q: &str) -> String {
-        let mut h = q;
-        for stop in ["<", "*", "...", "|"] {
-            if let Some(i) = h.find(stop) {
-                h = &h[..i];
-            }
-        }
-        if let Some(i) = h.find('=') {
-            h = &h[..=i];
-        }
-        let h = h.trim_end_matches('\n');
-        let bytes = h.as_bytes();
-        let mut out = String::new();
-        for (i, c) in h.char_indices() {
-            let word = |j: usize| j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_');
-            let placeholder = c.is_ascii_alphabetic() && (i == 0 || !word(i - 1)) && !word(i + 1);
-            out.push(if placeholder { 'N' } else { c });
-        }
-        masked(&out)
-    }
-
-    /// Whether `quote`, recognised as `line`, is in a report whose lines
-    /// are `lines` (masked, indentation dropped): a prefix of one of them,
-    /// or a start of (or started by) `prefix + form` for one of the line's
-    /// forms; failing that, the same for the quote cut at its first `(`;
-    /// failing that, a conditional line absent from this report.
-    fn needle_ok(line: &Line, quote: &str, lines: &[String]) -> bool {
-        let head = quote_head(quote);
-        let check = |h: &str| {
-            let h = h.trim_end();
-            lines.iter().any(|l| l.starts_with(h))
-                || line.forms.iter().any(|f| {
-                    let pf = masked(&std::format!("{}{}", line.prefix, f));
-                    pf.starts_with(h) || h.starts_with(&pf)
-                })
-        };
-        check(&head)
-            || head.find('(').is_some_and(|i| check(&head[..i]))
-            || (line.conditional && !lines.iter().any(|l| l.starts_with(line.prefix)))
-    }
-
-    /// The report quotes of one C source: every string literal without a
-    /// `%` (a printf format is not a needle) whose innermost enclosing call
-    /// is a `str*`/`mem*` function or one named after lines or the report
-    /// (`report_line`), when `recognise` knows its head. Comments and
-    /// character literals are skipped; parentheses are tracked across
-    /// lines.
-    fn c_quotes(path: &std::path::Path, out: &mut Vec<(String, &'static Line, String)>) {
-        let src = std::fs::read_to_string(path).unwrap();
-        let b = src.as_bytes();
-        let name = path.file_name().unwrap().to_string_lossy();
-        let mut calls: Vec<&str> = Vec::new();
-        let (mut i, mut lineno) = (0, 1);
-        while i < b.len() {
-            match b[i] {
-                b'\n' => lineno += 1,
-                b'/' if b.get(i + 1) == Some(&b'/') => {
-                    while i < b.len() && b[i] != b'\n' {
-                        i += 1;
-                    }
-                    continue;
-                }
-                b'/' if b.get(i + 1) == Some(&b'*') => {
-                    let end = src[i + 2..].find("*/").map_or(b.len(), |e| i + 2 + e + 2);
-                    lineno += src[i..end].matches('\n').count();
-                    i = end;
-                    continue;
-                }
-                b'\'' => {
-                    i += if b.get(i + 1) == Some(&b'\\') { 4 } else { 3 };
-                    continue;
-                }
-                b'(' => {
-                    let start = src[..i].trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '_').len();
-                    calls.push(&src[start..i]);
-                }
-                b')' => {
-                    calls.pop();
-                }
-                b'"' => {
-                    let mut lit = String::new();
-                    i += 1;
-                    while i < b.len() && b[i] != b'"' {
-                        if b[i] == b'\\' {
-                            lit.push(match b[i + 1] {
-                                b'n' => '\n',
-                                b't' => '\t',
-                                other => other as char,
-                            });
-                            i += 2;
-                        } else {
-                            lit.push(b[i] as char);
-                            i += 1;
-                        }
-                    }
-                    let call = calls.last().copied().unwrap_or("");
-                    let grep = call.starts_with("str") || call.starts_with("mem") || call.contains("line") || call.contains("report");
-                    if grep && !lit.contains('%') {
-                        if let Some((line, q)) = recognise(&lit) {
-                            out.push((std::format!("{name}:{lineno}"), line, q.into()));
-                        }
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
-        }
-    }
-
-    /// The report quotes of one Markdown file up to the heading `stop`:
-    /// every backtick span outside a fenced block (a span may wrap a line;
-    /// its whitespace is collapsed) that `recognise` knows, and every span
-    /// that follows a recognised span after ` / ` (an alternative form of
-    /// the same line, which inherits its prefix).
-    fn md_quotes(path: &std::path::Path, stop: Option<&str>, out: &mut Vec<(String, &'static Line, String)>) {
-        let src = std::fs::read_to_string(path).unwrap();
-        let name = path.file_name().unwrap().to_string_lossy();
-        let mut fenced = false;
-        let text: String = src
-            .lines()
-            .take_while(|l| stop.is_none_or(|h| !l.starts_with(h)))
-            .map(|l| {
-                if l.starts_with("```") {
-                    fenced = !fenced;
-                }
-                if fenced || l.starts_with("```") { "\n" } else { l }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let (mut rest, mut consumed) = (text.as_str(), 0usize);
-        let mut previous: Option<&'static Line> = None;
-        while let Some(open) = rest.find('`') {
-            let Some(len) = rest[open + 1..].find('`') else { break };
-            let sep = &rest[..open];
-            let span = rest[open + 1..open + 1 + len].split_whitespace().collect::<Vec<_>>().join(" ");
-            let at = std::format!("{name}:{}", 1 + text[..consumed + open].matches('\n').count());
-            previous = if let Some((line, q)) = recognise(&span) {
-                out.push((at, line, q.into()));
-                Some(line)
-            } else if let (Some(line), "/") = (previous, sep.trim()) {
-                out.push((at, line, std::format!("{}{span}", line.prefix)));
-                Some(line)
-            } else {
-                None
-            };
-            consumed += open + 1 + len + 1;
-            rest = &rest[open + 1 + len + 1..];
-        }
-    }
-
-    /// Every needle a consumer greps out of the text report is still in
-    /// it: the quotes `c_quotes` finds in `tests/c/*` and `md_quotes` in
-    /// `docs/tuning.md` and `docs/design.md` (sections 1..16; 17 on is
-    /// the plan for what is not built), each checked by `needle_ok`
-    /// against this process's report with the figures masked. Loose by
-    /// design (a quote passes on its line's first fixed words): it catches
-    /// a renamed or reshaped line head or a dropped line, not a changed
-    /// figure; a failure names the file and line of the stale quote.
-    #[test]
-    fn quoted_needles_match_the_report() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let mut quotes = Vec::new();
-        let mut sources: Vec<_> = std::fs::read_dir(root.join("tests/c")).unwrap().map(|e| e.unwrap().path()).collect();
-        sources.sort();
-        for path in sources.iter().filter(|p| p.extension().is_some_and(|e| e == "c" || e == "cpp" || e == "h")) {
-            c_quotes(path, &mut quotes);
-        }
-        let from_c = quotes.len();
-        md_quotes(&root.join("docs/tuning.md"), None, &mut quotes);
-        md_quotes(&root.join("docs/design.md"), Some("## 17. "), &mut quotes);
-        assert!(from_c >= 20 && quotes.len() - from_c >= 20, "too few quotes recognised: {from_c} from C, {} from the docs", quotes.len() - from_c);
-        let text = report("");
-        let lines: Vec<String> = text.lines().map(|l| masked(l.trim_start())).collect();
-        let stale: Vec<String> =
-            quotes.iter().filter(|(_, line, q)| !needle_ok(line, q, &lines)).map(|(at, _, q)| std::format!("{at}: `{}`", q.escape_debug())).collect();
-        assert!(stale.is_empty(), "quotes with no matching report line:\n{}\nreport:\n{text}", stale.join("\n"));
-        // The recogniser and the checker on known cases.
-        assert!(recognise("\ncgroup: ").is_some() && recognise("cgroup:").is_some() && recognise("cgroup:false").is_none());
-        assert!(recognise("no Background thread: line").is_none() && recognise("thp:always").is_none());
-        let (background, _) = recognise("Background thread: ").unwrap();
-        assert!(needle_ok(background, "Background thread: present", &lines));
-        assert!(needle_ok(background, "Background thread: absent", &lines));
-        assert!(!needle_ok(background, "Background thread: disabled", &lines));
-        let (features, _) = recognise("Kernel and CPU features: ").unwrap();
-        assert!(needle_ok(features, "Kernel and CPU features: page_size=4096 mseal=maybe", &lines));
-        assert!(!needle_ok(features, "Kernel and CPU features: kernel=", &lines));
-        assert_eq!(quote_head("Sealed ranges: N of M\n"), "Sealed ranges: N of N");
-        assert_eq!(quote_head("thp: <key> -> off|folios"), "thp: ");
     }
 }
