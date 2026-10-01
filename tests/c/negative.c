@@ -1,7 +1,7 @@
 /*
  * Negative tests. Each mode performs one invalid operation
  * that challoc must refuse by aborting (or that the guard page must turn
- * into a fault). The driver in src/api/ctests.rs runs one mode per process
+ * into a fault). The driver in src/api/c_programs.rs runs one mode per process
  * and checks the signal and the `challoc: ...` line on stderr. Reaching the
  * end of a mode means the allocator let the bug through; the program then
  * exits 0, which the driver treats as a failure.

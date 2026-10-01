@@ -3,7 +3,7 @@
 # jemalloc's name for link-only consumers (design 13.2). The file set is
 # scripts/install.sh's jemalloc-compat flavour.
 # Runs inside the dev container (`make jemalloc-compat`; `make test` runs it
-# after the release build so the tests in src/api/ctests.rs can check it).
+# after the release build so the tests in src/api/c_programs.rs can check it).
 #
 # Output, under $OUT (default target/jemalloc-compat/stage):
 #   lib/libjemalloc.so.2       the library; DT_SONAME libjemalloc.so.2

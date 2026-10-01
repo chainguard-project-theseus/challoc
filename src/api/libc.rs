@@ -1127,7 +1127,7 @@ mod tests {
 
     #[test]
     fn shared_object_exports_every_libc_entry_point() {
-        let so = crate::api::ctests::release_so();
+        let so = crate::api::c_programs::release_so();
         let out = Command::new("readelf").args(["--dyn-syms", "-W", &so]).output().expect("readelf");
         assert!(out.status.success());
         let syms = String::from_utf8(out.stdout).unwrap();

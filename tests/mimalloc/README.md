@@ -18,7 +18,7 @@ Everything else here is challoc's:
   mimalloc's headers unconditionally; under `USE_STD_MALLOC` the only thing
   it needs from them is the `mi_subproc_id_t` type.
 
-`src/api/ctests.rs` (the `MIMALLOC_STRESS` row and its two `check_zero`
+`src/api/c_programs.rs` (the `MIMALLOC_STRESS` row and its two `check_zero`
 variants) compiles `stress.c` through `scripts/ctest-cc.sh` (the shared
 flag line) plus `-Wno-unused-parameter -Itests/mimalloc/include` and runs it
 bare (must fail) and under `LD_PRELOAD=libchalloc.so` with `8 50 10`

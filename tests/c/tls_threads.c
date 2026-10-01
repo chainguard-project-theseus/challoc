@@ -12,10 +12,10 @@
  * every thread. A barrier keeps every heap alive until all have been
  * observed (an exited thread's heap may be reused). Prints `ok 64 threads
  * ...` (what `tls::tests::c_program_with_64_threads_sees_distinct_slots`
- * greps) and `ok tls_threads` (what src/api/ctests.rs greps), and exits 0
+ * greps) and `ok tls_threads` (what src/api/c_programs.rs greps), and exits 0
  * iff every check held.
  *
- * Two drivers compile this file: src/api/ctests.rs through
+ * Two drivers compile this file: src/api/c_programs.rs through
  * scripts/ctest-cc.sh (-DQUANTUM from the library) and src/tls.rs with a
  * bare `cc` line and no QUANTUM, so the constant is defaulted here and the
  * "running under challoc" probe is `challoc_version`, not `require_challoc`

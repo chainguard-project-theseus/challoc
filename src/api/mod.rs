@@ -71,7 +71,7 @@ pub mod mallctl;
 pub mod print;
 
 #[cfg(test)]
-mod ctests;
+mod c_programs;
 
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
@@ -453,62 +453,90 @@ mod tests {
     /// Every `Lock<..>` (or bare `RawLock`) field and static in `src/`, as
     /// `file:Owner.field` (`file:static.NAME` for statics), read from the
     /// source tree so the fork handlers cannot miss a lock added later.
-    /// `lock.rs` defines the types and is skipped; so is each file's
-    /// `mod tests`.
+    /// `lock.rs` defines the types and is skipped; so are the modules
+    /// declared under `#[cfg(test)]` and each file's `mod tests`.
     fn lock_inventory() -> Vec<String> {
         use std::string::ToString;
-        fn walk(dir: &std::path::Path, rel: &str, out: &mut Vec<String>) {
+        /// Every `.rs` file under `dir` as (path relative to `src/`, text).
+        fn sources(dir: &std::path::Path, rel: &str, out: &mut Vec<(String, String)>) {
             let mut entries: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
             entries.sort();
             for path in entries {
                 let name = path.file_name().unwrap().to_str().unwrap().to_string();
-                let rel = if rel.is_empty() { name.clone() } else { std::format!("{rel}/{name}") };
+                let rel = if rel.is_empty() { name } else { std::format!("{rel}/{name}") };
                 if path.is_dir() {
-                    walk(&path, &rel, out);
+                    sources(&path, &rel, out);
+                } else if rel.ends_with(".rs") {
+                    out.push((rel, std::fs::read_to_string(&path).unwrap()));
+                }
+            }
+        }
+        /// The module paths (relative to `src/`, without `.rs`) that `rel`
+        /// declares as `#[cfg(test)] mod name;`.
+        fn test_modules(rel: &str, text: &str, out: &mut Vec<String>) {
+            let stem = rel.strip_suffix(".rs").unwrap();
+            let dir = match stem.rsplit_once('/') {
+                Some((d, "mod")) => d.to_string(),
+                None if stem == "lib" || stem == "mod" => String::new(),
+                _ => stem.to_string(),
+            };
+            let mut cfg_test = false;
+            for line in text.lines() {
+                let t = line.trim();
+                let decl = t.strip_prefix("pub(crate) ").or_else(|| t.strip_prefix("pub ")).unwrap_or(t);
+                if let (true, Some(name)) = (cfg_test, decl.strip_prefix("mod ").and_then(|m| m.strip_suffix(';'))) {
+                    out.push(if dir.is_empty() { name.to_string() } else { std::format!("{dir}/{name}") });
+                }
+                cfg_test = t == "#[cfg(test)]";
+            }
+        }
+        let mut files = Vec::new();
+        sources(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), "", &mut files);
+        let mut test_only = Vec::new();
+        for (rel, text) in &files {
+            test_modules(rel, text, &mut test_only);
+        }
+        let mut out = Vec::new();
+        for (rel, text) in &files {
+            let stem = rel.strip_suffix(".rs").unwrap();
+            if rel == "lock.rs" || test_only.iter().any(|m| stem == m || rel.starts_with(&std::format!("{m}/"))) {
+                continue;
+            }
+            let mut owner = String::new();
+            for line in text.lines() {
+                let t = line.trim();
+                if t == "mod tests {" {
+                    break;
+                }
+                if t.starts_with("//") || t.starts_with("use ") || t.contains(" fn ") || t.starts_with("fn ") {
                     continue;
                 }
-                if !name.ends_with(".rs") || rel == "lock.rs" {
+                let decl = t.strip_prefix("pub(crate) ").or_else(|| t.strip_prefix("pub ")).unwrap_or(t);
+                if let Some(rest) = decl.strip_prefix("struct ") {
+                    owner = rest.split(['<', '{', '(', ' ', ';']).next().unwrap().to_string();
                     continue;
                 }
-                let text = std::fs::read_to_string(&path).unwrap();
-                let mut owner = String::new();
-                for line in text.lines() {
-                    let t = line.trim();
-                    if t == "mod tests {" {
-                        break;
-                    }
-                    if t.starts_with("//") || t.starts_with("use ") || t.contains(" fn ") || t.starts_with("fn ") {
-                        continue;
-                    }
-                    let decl = t.strip_prefix("pub(crate) ").or_else(|| t.strip_prefix("pub ")).unwrap_or(t);
-                    if let Some(rest) = decl.strip_prefix("struct ") {
-                        owner = rest.split(['<', '{', '(', ' ', ';']).next().unwrap().to_string();
-                        continue;
-                    }
-                    let is_lock = |ty: &str| ty.contains("Lock<") || ty.contains("RawLock");
-                    if let Some(rest) = decl.strip_prefix("static ") {
-                        if let Some((name, ty)) = rest.split_once(':') {
-                            if is_lock(ty) {
-                                out.push(std::format!("{rel}:static.{}", name.trim()));
-                            }
+                let is_lock = |ty: &str| ty.contains("Lock<") || ty.contains("RawLock");
+                if let Some(rest) = decl.strip_prefix("static ") {
+                    if let Some((name, ty)) = rest.split_once(':') {
+                        if is_lock(ty) {
+                            out.push(std::format!("{rel}:static.{}", name.trim()));
                         }
-                        continue;
                     }
-                    if let Some((name, ty)) = decl.split_once(':') {
-                        let name = name.trim();
-                        if !name.is_empty()
-                            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-                            && is_lock(ty)
-                            && !ty.contains("->")
-                        {
-                            out.push(std::format!("{rel}:{owner}.{name}"));
-                        }
+                    continue;
+                }
+                if let Some((name, ty)) = decl.split_once(':') {
+                    let name = name.trim();
+                    if !name.is_empty()
+                        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+                        && is_lock(ty)
+                        && !ty.contains("->")
+                    {
+                        out.push(std::format!("{rel}:{owner}.{name}"));
                     }
                 }
             }
         }
-        let mut out = Vec::new();
-        walk(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), "", &mut out);
         out.sort();
         out
     }

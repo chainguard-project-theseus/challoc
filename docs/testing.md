@@ -23,7 +23,7 @@ exceed what the x86_64 emulator can track in one process.
 | Layer | Command | Time | Sees | Cannot see | Needs |
 |---|---|---|---|---|---|
 | Unit tests | `cargo test -- --skip api::` | ~1 min | Pure logic: size classes, bitmaps, config parsing, the slab-protocol model (`model::`, exhaustive interleavings of the claim, release and purge steps of `src/class/`); and the allocator in-process on real `mmap`/`madvise`/`rseq`: `heap`, `huge`, `class`, `purge`, `sys` (kernel features probed, syscall numbers cross-checked against the C headers through `tests/c/sysnr.c`) | The exported C ABI, `LD_PRELOAD`, another process's view | The dev container |
-| API tests under the preload | `cargo test api::`, after `cargo build --release` and `scripts/jemalloc-compat.sh` | ~3 min | The shipped `libchalloc.so` from C: every entry point, the per-feature programs, the negative tests (`src/api/ctests.rs`, one table row each), the symbol tables (`readelf`), the vendored glibc and mimalloc suites, a short fuzz, the `jemalloc-soname` stage | Memory limits (the cgroup policy's bands), five-minute runs | The dev container; some rows need a 6.13+ kernel (guard slabs), 6.16+ (`PAGE_IS_GUARD`), a writable cgroup mount (PSI, `memory.high`), `mseal` outside Docker's seccomp profile; elsewhere they print `SKIP` |
+| API tests under the preload | `cargo test api::`, after `cargo build --release` and `scripts/jemalloc-compat.sh` | ~3 min | The shipped `libchalloc.so` from C: every entry point, the per-feature programs, the negative tests (`src/api/c_programs.rs`, one table row each), the symbol tables (`readelf`), the vendored glibc and mimalloc suites, a short fuzz, the `jemalloc-soname` stage | Memory limits (the cgroup policy's bands), five-minute runs | The dev container; some rows need a 6.13+ kernel (guard slabs), 6.16+ (`PAGE_IS_GUARD`), a writable cgroup mount (PSI, `memory.high`), `mseal` outside Docker's seccomp profile; elsewhere they print `SKIP` |
 | cgroup container tests | `make test-cgroup-limit`, `make test-cgroup-churn`, `make test-cgroup-lazy` | ~1.5 min | The design 11 policy under a real `--memory` limit: the bands through `mallctl`, RSS falling after a 400 MiB churn with the policy on and not with `cgroup:false`, the `MADV_FREE` purge in the headroom band and its `lazy_band:false` control | The same without a limit is the `api::` layer's `cgroup_*` rows | Docker with cgroup2 memory limits (`scripts/cgroup-tests.sh`, one container per run, swap off) |
 | Fuzz, long soaks, comparisons (opt-in) | `make fuzz` (10M ops), `make test-cgroup-oscillate` (5 min), `make check-needed` (`tests/as-needed.sh`), `make test-cgroup-compare` (other allocators, no criterion) | minutes | Long random workloads; the `-Wl,--as-needed` truth for consumers; the RSS curves of jemalloc, mimalloc and tcmalloc under the same limits | | `make bench-build` for mimalloc |
 | Consumer suites | `make valkey`, `make ruby` (`tests/consumers/`) | tens of minutes | Valkey's and Ruby's own test suites built on challoc (Valkey with `contrib/valkey/*.patch`, Ruby `--with-jemalloc` against the jemalloc-compat stage) | | The `consumers` image stage |
@@ -41,7 +41,7 @@ runs the three cgroup targets including the oscillation, and
 
 To run one test: `make run CMD='cargo test <filter> -- --nocapture'`, or,
 for an `api::` row, build the library first:
-`make run CMD='cargo build --release && CHALLOC_TEST_ALLOW_SKIP=1 cargo test api::ctests::c_<prog> -- --nocapture'`.
+`make run CMD='cargo build --release && CHALLOC_TEST_ALLOW_SKIP=1 cargo test api::c_programs::c_<prog> -- --nocapture'`.
 
 ## Both quanta
 
@@ -102,7 +102,7 @@ writes and `mseal` needs the privileged invocation above.
 
 `tests/c/` holds the programs the `api::` layer runs under
 `LD_PRELOAD=target/release/libchalloc.so`, each from a row in
-`src/api/ctests.rs`; every one refuses to run bare (`require_challoc()`),
+`src/api/c_programs.rs`; every one refuses to run bare (`require_challoc()`),
 so a broken preload cannot pass.
 
 | Group | Programs |
@@ -125,7 +125,7 @@ the source, `-o`, and `-ldl` last. `QUANTUM` is read from the built library
 (a probe reads `arenas.quantum` through `mallctl`, cached next to the `.so`),
 so a `quantum8` build compiles its programs for 8 without anyone editing a
 flag; `QUANTUM=8` in the environment overrides the probe, `CHALLOC_LIB`
-names another library. `src/api/ctests.rs`, `scripts/cgroup-tests.sh`,
+names another library. `src/api/c_programs.rs`, `scripts/cgroup-tests.sh`,
 `tests/as-needed.sh` and the Makefile's `fuzz` target all go through it.
 The Rust driver compiles each distinct (directory, program, flags) once
 per `cargo test` process into `target/ctests/`.
@@ -140,14 +140,14 @@ per `cargo test` process into `target/ctests/`.
    `expect_signal`, `mallctl_dl`, and every non-standard entry point
    declared weak (`mallctl`, `mallocx`, `sdallocx`, `free_sized`, ...) plus
    the `MALLOCX_*` flags.
-2. Add one entry to a `ctests!` block in `src/api/ctests.rs`:
+2. Add one entry to a `ctests!` block in `src/api/c_programs.rs`:
    `c_<prog> => [ CTest { prog: "<prog>", args: &["mode"], conf: Some("key:value"), ..BASE } ];`
    with a doc comment saying what the row proves. A row that must abort
    uses `Expect::Abort { signal, stderr_contains }` (the `negative!` macro
    for modes of `negative.c`); `stdout_has`/`stdout_lacks` pin the program's
    own output; `gate` names the host feature it needs. Several rows under
    one name run in order and share the compiled binary.
-3. Run it: `make run CMD='cargo build --release && CHALLOC_TEST_ALLOW_SKIP=1 cargo test api::ctests::c_<prog> -- --nocapture'`.
+3. Run it: `make run CMD='cargo build --release && CHALLOC_TEST_ALLOW_SKIP=1 cargo test api::c_programs::c_<prog> -- --nocapture'`.
 
 A probed kernel or CPU feature gets a row on a host that has it and a row
 (or the same row's other branch) on a host that lacks it. A test that

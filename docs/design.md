@@ -2509,7 +2509,7 @@ src/heap/shared.rs    Shared: process-wide state, init, the free checks and rout
 src/heap/thread.rs    thread lifecycle (6.5): TLS sentinels, heap_for_thread/existing_heap, the exit destructor
 src/heap/flush.rs     the flush's grouping pass (group_by_slab, flag_sort) and the straddling double-free abort
 src/heap/mallocx.rs   MALLOCX_* flag decoding, explicit tcache ids, the mallocx/dallocx routing (re-exported by arena.rs)
-src/heap/tests.rs, src/heap/linux_tests.rs   heap tests; tests.rs holds the Shared/TestHeap builders stats.rs and api/ctests.rs reuse
+src/heap/tests.rs, src/heap/linux_tests.rs   heap tests; tests.rs holds the Shared/TestHeap builders stats.rs and api/c_programs.rs reuse
 src/huge/mod.rs       huge allocator: extents (add_extent/drop_extent/retire), guards, first fit, decay, the audit
 src/huge/table.rs     the open-addressing descriptor table (page number to HugeDesc); never fills its last slot
 src/huge/tests.rs, src/huge/linux_tests.rs  huge tests: the allocator's, and the ones that need the process's own regions
@@ -2531,7 +2531,7 @@ src/api/jemalloc.rs   *allocx, mallctl entry points, malloc_conf/malloc_message 
 src/api/cxx.rs        operator new / delete
 src/api/mallctl.rs    control namespace: the name tree carries each read-only key's reader; ctl() keeps the keys that do something
 src/api/print.rs      malloc_stats_print, malloc_stats, malloc_info
-src/api/ctests.rs     the C-test table and its driver: tests/c, fuzz/, tests/glibc, tests/mimalloc (test builds only)
+src/api/c_programs.rs the C-test table and its driver: tests/c, fuzz/, tests/glibc, tests/mimalloc (test builds only)
 tests/c/              C programs run under LD_PRELOAD against the cdylib (common.h is the shared harness; scripts/ctest-cc.sh the one compiler line)
 tests/glibc/, tests/mimalloc/  vendored suites
 bench/                benchmark drivers, GCE scripts, results, probes
