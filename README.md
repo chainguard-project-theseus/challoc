@@ -27,17 +27,16 @@ a few pages on how it works; `docs/design.md` is the full design.
 challoc 0.1.0 is not released. On the reference machines (Google Axion
 and Intel Xeon VMs) it is at parity with jemalloc 5.3 on throughput and
 returns memory better under cgroup limits: in a `docker run
---memory=512m` container, 400 MiB allocated and freed at 90% of the limit
-is back to 13 MiB of RSS within 50 ms (jemalloc 5.3.1 still holds 190 MiB
+--memory=512m` container, 400 MiB allocated and freed at about 80% of the
+limit is back to 13 MiB of RSS within 50 ms (jemalloc 5.3.1 still holds 190 MiB
 2 s later), and a live
 set swinging between 200 and 480 MiB runs for 5 minutes where jemalloc and
 mimalloc are OOM-killed within 12 s (`docs/tuning.md` section 4).
 
-Known regression: on the 16-thread Ruby soak on x86_64, challoc's peak RSS
-is 12.9% above jemalloc's and its final RSS is 163 MiB against 132 MiB
-(`bench/results/2026-09-21-x86_64-ruby-rss-v3-soak.md`; aarch64 is 5.7%
-below jemalloc at the peak). `narenas:1` brings the x86_64 peak to within
-1% of jemalloc's, at a higher final RSS.
+Known limitations are listed in `docs/tuning.md` section 8, each with
+its issue. The largest: on a 16-thread Ruby soak on x86_64, challoc's
+peak RSS is about 13% above jemalloc's (on aarch64 it is 6% below), and
+`narenas:1` brings the x86_64 peak close to jemalloc's (#43).
 
 The test suite (unit tests, C programs under `LD_PRELOAD`, the vendored
 glibc and mimalloc suites, cgroup container tests, a fuzz driver) runs in
@@ -45,8 +44,8 @@ the dev container (`docs/testing.md`), and Wolfi's Valkey 9.1 and Ruby 3.4
 are built and tested on challoc on both architectures (`make valkey`,
 `make ruby`, `contrib/wolfi/`).
 
-Tagged pointers (`tag_pointers`, MTE or LAM) are designed (design section
-18) and wait for hardware that exposes them.
+Tagged pointers (MTE, or a software tag in the ignored top bits) are
+designed but not implemented (design section 18, #50).
 
 ## Support
 
@@ -156,19 +155,20 @@ Every feature is probed at init and reported as one line by
 `challoc_features()` and by `malloc_stats_print`'s `Kernel and CPU
 features:` (`docs/design.md` section 17).
 
-| Feature                      | Provided by | Used for                                   | Fallback                          |
-|------------------------------|--------|--------------------------------------------|-----------------------------------|
-| `MADV_GUARD_INSTALL`         | kernel 6.13   | Guard slabs and guards after huge runs     | `PROT_NONE` page after huge runs; no guard slabs |
-| `PR_SET_VMA_ANON_NAME`       | kernel 5.17   | Named heap mappings in `/proc/pid/maps`    | Skip                              |
-| `mseal`                      | kernel 6.10   | Seals the never-committed parts of the reservations (the gaps between class regions, the slack around the huge and metadata regions) at init; not the regions or the region table | Skip (also when seccomp filters it, as Docker's default profile does) |
-| Transparent huge pages       | any kernel with THP; per-size knobs since 6.8 | Opt-in: `thp:auto` advises 64 KiB folios on the slab groups and metadata where the host enables `hugepages-64kB` without `madvise`-gating 2 MiB pages (never a 2 MiB page, so fork stays cheap); `thp:always` commits and advises 2 MiB chunks (at 4 KiB pages; the folio path at 16 and 64 KiB, whose PMD is 32 and 512 MiB), huge runs and metadata; `thp:never` issues `MADV_NOHUGEPAGE` on the class superblock and the metadata region, so the slab regions get no huge page on a host whose global mode is `always`, and leaves the huge region (allocations of a page or more) to the host's policy, as jemalloc's `never` leaves its large allocations (the `thp:` report line says `nohuge 2 (classes, metadata; huge follows host)`); the report's `thp:` line names the host's global mode | Off (`thp:never`, the default) |
-| PAC `pac`                    | arm64 CPU (Armv8.3) and kernel, `AT_HWCAP` | Opt-in signed cache pointers (`pac_pointers`) | Plain pointers |
+| Feature (report key)         | Provided by | Used for                                   | Fallback                          |
+|------------------------------|-------------|--------------------------------------------|-----------------------------------|
+| `AT_PAGESZ` (`page_size`)    | kernel      | Slab, mapping and purge granularity; 16 and 64 KiB pages give the 512..1024-byte classes page-sized slabs | None needed |
+| `MADV_GUARD_INSTALL` (`guard_install`) | kernel 6.13 | Guard slabs and guards after huge runs | `PROT_NONE` page after huge runs; no guard slabs |
+| `mseal` (`mseal`)            | kernel 6.10 | Seals the never-committed parts of the reservations (the gaps around class regions, the slack around the huge and metadata regions) at init | Skip (also when seccomp filters it, as Docker's default profile does) |
+| `PR_SET_VMA_ANON_NAME` (`anon_name`) | kernel 5.17 | Named heap mappings in `/proc/pid/maps` | Skip |
+| Transparent huge pages (`thp`, `mthp`) | any kernel with THP; per-size knobs since 6.8 | Opt-in through the `thp` key: `auto` advises 64 KiB folios (never a 2 MiB page), `always` 2 MiB chunks; the default `never` keeps the slab and metadata regions off huge pages even on a THP-`always` host and leaves the huge region to the host | Small pages |
+| rseq registration (`rseq`, `rseq_size`) | glibc 2.44 | Reported only | `rseq=no` |
+| Pointer authentication (`pac`) | arm64 CPU (Armv8.3) and kernel, `AT_HWCAP` | Opt-in signed cache pointers (`pac_pointers`) | Plain pointers |
 
 Chainguard OS ships Linux 6.18, so every kernel row above is available
-there. Containers run on whatever
-kernel the host has; note that a kernel before 6.13 (Docker Desktop's
-6.10, for one) has no guard slabs, and that Docker's default seccomp
-profile hides `mseal`.
+there. Containers run on whatever kernel the host has: a kernel before
+6.13 (RHEL 9's 5.14, for one) has no guard slabs, and Docker's default
+seccomp profile hides `mseal`.
 
 ## Documentation
 
