@@ -8,7 +8,7 @@ use super::abort::{guard_free, invalid_free, invalid_pointer, never_committed, o
 use super::sets::Lazy;
 use crate::bitmap::{AtomicBitmap, WordInv};
 #[cfg(verus_only)]
-use crate::bitmap::{Slots, fresh_marks, init_marks, words_wf};
+use crate::bitmap::{Slots, fresh_mark, fresh_marks, init_mark, init_marks, words_wf};
 #[cfg(verus_only)]
 use crate::bitmap::{has_bit, subset};
 use crate::layout::{CLASSES, Class, Regions};
@@ -680,6 +680,28 @@ pub proof fn lemma_slab_marked_mono(t: SlabTable, slab: int, a: Set<int>, b: Set
         slab_marked(t, slab, b),
 {
     let f = fresh_marks(slab * t.spec_slots().sb, slab * t.spec_slots().sb + t.spec_slots().sb);
+    assert forall|y: int| #[trigger] f.contains(y) implies b.contains(y) by {
+        assert(a.contains(y));
+    }
+}
+
+/// `p` holds the init markers of guard slab `slab`'s bits in `t`'s
+/// bitmap: `take_group` took them out of the commit lock's value
+/// ([`TableInner::inv`]) when it handed the slab's group out, as it hands
+/// every other slab's to `init` (which never runs on a guard slab).
+pub open spec fn guard_marked(t: SlabTable, slab: int, p: Set<int>) -> bool {
+    init_marks(slab * t.spec_slots().sb, slab * t.spec_slots().sb + t.spec_slots().sb).subset_of(p)
+}
+
+/// More markers keep a guard slab marked.
+pub proof fn lemma_guard_marked_mono(t: SlabTable, slab: int, a: Set<int>, b: Set<int>)
+    requires
+        guard_marked(t, slab, a),
+        a.subset_of(b),
+    ensures
+        guard_marked(t, slab, b),
+{
+    let f = init_marks(slab * t.spec_slots().sb, slab * t.spec_slots().sb + t.spec_slots().sb);
     assert forall|y: int| #[trigger] f.contains(y) implies b.contains(y) by {
         assert(a.contains(y));
     }
@@ -1705,11 +1727,12 @@ impl SlabTable {
     ///
     /// The group is above every slab `sets` owns and its current group's
     /// end ([`next_slab_locked`]), which is how
-    /// [`ClassState::next_fresh_slab`](super::ClassState::next_fresh_slab) adds its slabs to the ghost; that no
-    /// other arena's ghost holds it rests on the same bridge's assumption
-    /// for their lock values. `init` takes each non-guard slab's init
+    /// [`ClassState::next_fresh_slab`](super::ClassState::next_fresh_slab) adds its slabs to the ghost; the
+    /// same marker argument holds for every other arena's lock value, but
+    /// no proof here sees them. `init` takes each non-guard slab's init
     /// markers from the commit lock's value and returns its fresh markers,
-    /// which join `inited` for `next_fresh_slab` to keep with the slabs.
+    /// and a guard slab's init markers are taken as they are; both join
+    /// `inited` for `next_fresh_slab` to keep with the slabs.
     ///
     /// [`commit_slab`]: SlabTable::commit_slab
     /// [`next_slab_locked`]: SlabTable::next_slab_locked
@@ -1726,6 +1749,8 @@ impl SlabTable {
         requires
             old(sets).table@ == *self,
             old(sets).arena@ == arena,
+            old(sets).base(),
+            old(sets).nbits() == self.spec_nslabs(),
             old(inited).id() == self.spec_slots().mloc,
         ensures
             final(sets).same_sets(*old(sets)),
@@ -1735,7 +1760,8 @@ impl SlabTable {
                 && self.spec_group_range(s >> self.lg_group) == (s, e)
                 && (forall|x: nat| #[trigger] old(sets).owns(x) ==> x < s)
                 && old(sets).group_end <= s
-                && (forall|x: int| s <= x < e && !self.spec_is_guard(x as usize) ==> #[trigger] slab_marked(*self, x, final(inited)@)),
+                && (forall|x: int| s <= x < e && !self.spec_is_guard(x as usize) ==> #[trigger] slab_marked(*self, x, final(inited)@))
+                && (forall|x: int| s <= x < e && self.spec_is_guard(x as usize) ==> #[trigger] guard_marked(*self, x, final(inited)@)),
     {
         broadcast use {axiom_table_lock_inv, axiom_table_lock_frame};
         proof {
@@ -1747,7 +1773,7 @@ impl SlabTable {
         let class = self.class as usize;
         let stagger = desc_stagger(class);
         let mut g = self.inner.lock();
-        let s = self.next_slab_locked(&*g, Ghost(*sets));
+        let s = self.next_slab_locked(&*g, &*sets);
         if s >= self.nslabs {
             return None;
         }
@@ -1846,6 +1872,8 @@ impl SlabTable {
                 old(inited)@.subset_of(inited@),
                 forall|x: int| s <= x < slabs.start && !self.spec_is_guard(x as usize)
                     ==> #[trigger] slab_marked(*self, x, inited@),
+                forall|x: int| s <= x < slabs.start && self.spec_is_guard(x as usize)
+                    ==> #[trigger] guard_marked(*self, x, inited@),
                 *cls == class_table()[self.spec_class() as int],
                 cls.wf(),
             ensures
@@ -1856,6 +1884,8 @@ impl SlabTable {
                 old(inited)@.subset_of(inited@),
                 forall|x: int| s <= x < end && !self.spec_is_guard(x as usize)
                     ==> #[trigger] slab_marked(*self, x, inited@),
+                forall|x: int| s <= x < end && self.spec_is_guard(x as usize)
+                    ==> #[trigger] guard_marked(*self, x, inited@),
             decreases slabs.end - slabs.start,
         {
             proof {
@@ -1869,6 +1899,28 @@ impl SlabTable {
                 None => break,
                 Some(slab) => {
                     if self.is_guard_slab(slab) {
+                        // A guard slab's init markers leave the value too,
+                        // for the arena to keep (`next_slab_locked`).
+                        proof {
+                            let f = slab * sl.sb;
+                            assert(f + sl.sb <= sl.nbits) by (nonlinear_arith)
+                                requires slab < self.spec_nslabs(), sl.nbits == self.spec_nslabs() * sl.sb, f == slab * sl.sb, sl.sb > 0;
+                            crate::bitmap::lemma_marks_sub(f, f + sl.sb, f, self.spec_nslabs() * sl.sb);
+                            crate::bitmap::lemma_marks_split(f, f + sl.sb, self.spec_nslabs() * sl.sb);
+                            let tracked gm = gi.fresh.borrow_mut().split(init_marks(f, f + sl.sb));
+                            let before = inited@;
+                            inited.combine(gm.persist());
+                            assert forall|x: int| s <= x < slabs.start && !self.spec_is_guard(x as usize)
+                                implies #[trigger] slab_marked(*self, x, inited@) by {
+                                lemma_slab_marked_mono(*self, x, before, inited@);
+                            }
+                            assert forall|x: int| s <= x < slabs.start && self.spec_is_guard(x as usize)
+                                implies #[trigger] guard_marked(*self, x, inited@) by {
+                                if x != slab {
+                                    lemma_guard_marked_mono(*self, x, before, inited@);
+                                }
+                            }
+                        }
                         continue;
                     }
                     // SAFETY: the descriptor and bitmap pages for `slab` were
@@ -1917,6 +1969,10 @@ impl SlabTable {
                                     }
                                 }
                             }
+                            assert forall|x: int| s <= x < slabs.start && self.spec_is_guard(x as usize)
+                                implies #[trigger] guard_marked(*self, x, inited@) by {
+                                lemma_guard_marked_mono(*self, x, before, inited@);
+                            }
                         }
                     }
                 }
@@ -1948,32 +2004,106 @@ impl SlabTable {
         Some((s, end))
     }
 
-    /// Bridge (trusted): under the commit lock (`t`, its value), with a
-    /// class lock over this table held by the caller (`v`, its value),
-    /// every slab `v`'s ghost owns is below the next slab to hand out, and
-    /// so is `v`'s current group's end. The field read it compiles to is
-    /// `next_slab`'s. Assumes that ownership exists only below the
-    /// watermark, a fact about every arena of the table at once that the
-    /// verified writers keep but no single lock invariant can state:
-    /// `next_slab` only grows (`take_group` moves it to the end of the
-    /// group it hands out), a group's slabs join an arena's ghost only in
-    /// `next_fresh_slab`, right after `take_group` handed them out, with
-    /// that group as its current group, and nothing else adds owned slabs
-    /// or current groups (`ClassState::new` starts with nothing owned and
-    /// an empty group).
-    /// Any other write of a ghost `states` key would break it.
+    /// The next slab to hand out, read under the commit lock (`t`, its
+    /// value) with a class lock over this table held by the caller (`v`,
+    /// its value): every slab `v`'s ghost owns is below it, and so is
+    /// `v`'s current group's end (the slab before it is owned). The proof
+    /// is by markers ([`lemma_marked_below`]): an owned slab's markers are
+    /// held by `v` (a guard slab's init markers, the fresh markers `init`
+    /// returned for any other), while the commit lock's value holds the
+    /// init markers of every slab from the watermark on, and a slab there
+    /// would have its markers in two places at once.
+    ///
+    /// [`lemma_marked_below`]: SlabTable::lemma_marked_below
     #[allow(unused_variables)]
     #[inline(always)]
-    #[verifier::external_body]
-    fn next_slab_locked(&self, t: &TableInner, Ghost(v): Ghost<Inner>) -> (r: usize)
+    fn next_slab_locked(&self, t: &TableInner, v: &Inner) -> (r: usize)
         requires
             v.table@ == *self,
+            v.base(),
+            v.nbits() == self.spec_nslabs(),
+            t.inv(),
+            t.nslabs@ == self.spec_nslabs(),
+            t.sb@ == self.spec_slots().sb,
+            t.mloc@ == self.spec_slots().mloc,
         ensures
             r == t.next_slab,
             forall|x: nat| #[trigger] v.owns(x) ==> x < r,
             v.group_end <= r,
     {
+        let credit = vstd::invariant::create_open_invariant_credit();
+        proof {
+            use_type_invariant(self);
+            if exists|x: nat| v.owns(x) && x >= t.next_slab {
+                let x = choose|x: nat| v.owns(x) && x >= t.next_slab;
+                self.lemma_marked_below(t.fresh.borrow(), v.inited.borrow(), credit.get(), x as int, t.next_slab as int);
+            }
+            if v.group_end > 0 {
+                assert(v.owns((v.group_end - 1) as nat));
+            }
+        }
         t.next_slab
+    }
+
+    /// No slab at or above `lo` has its markers held by `inited` while
+    /// `fresh` holds the init markers of every bit from slab `lo` on: a
+    /// guard slab's init markers would be in `fresh` and `inited` at once,
+    /// and any other slab's first bit has, in its word's invariant
+    /// ([`marks_ok`](crate::bitmap::marks_ok)), either its fresh marker,
+    /// which `inited` holds, or its init marker, which `fresh` holds.
+    proof fn lemma_marked_below(
+        tracked &self,
+        tracked fresh: &GhostSubset<int>,
+        tracked inited: &GhostPersistentSubset<int>,
+        tracked credit: vstd::invariant::OpenInvariantCredit,
+        x: int,
+        lo: int,
+    )
+        requires
+            self.inv(),
+            fresh.id() == self.spec_slots().mloc,
+            inited.id() == self.spec_slots().mloc,
+            0 <= lo <= x < self.spec_nslabs(),
+            init_marks(lo * self.spec_slots().sb, self.spec_nslabs() * self.spec_slots().sb).subset_of(fresh@),
+            self.spec_is_guard(x as usize) ==> guard_marked(*self, x, inited@),
+            !self.spec_is_guard(x as usize) ==> slab_marked(*self, x, inited@),
+        ensures
+            false,
+        opens_invariants any
+    {
+        broadcast use crate::bitmap::lemma_marks;
+        self.lemma_slots_wf();
+        let sl = self.spec_slots();
+        let b = x * sl.sb;
+        assert(lo * sl.sb <= b && b + sl.sb <= sl.nbits) by (nonlinear_arith)
+            requires lo <= x < self.nslabs, b == x * sl.sb, sl.nbits == self.nslabs * sl.sb, sl.sb > 0;
+        assert(fresh@.contains(init_mark(b)));
+        if self.spec_is_guard(x as usize) {
+            assert(inited@.contains(init_mark(b)));
+            let tracked mut c = inited.duplicate();
+            c.disjoint(fresh);
+        } else {
+            assert(inited@.contains(fresh_mark(b)));
+            let j = b / 64;
+            assert(0 <= j < self.spec_nwords());
+            assert(self.word_invs@.contains_key(j));
+            let tracked inv = self.word_invs.borrow().tracked_borrow(j);
+            assert(inv.constant().slots == sl);
+            vstd::open_atomic_invariant_in_proof!(credit => inv => pair => {
+                let tracked (perm, toks, mut u, mut d) = pair;
+                assert(64 * j <= b < 64 * j + 64);
+                assert(u.id() == sl.mloc && d.id() == sl.mloc);
+                assert(crate::bitmap::marks_ok(sl, j, perm.value(), u@, d@));
+                assert(u@.contains(fresh_mark(b)) || d@.contains(init_mark(b)));
+                if u@.contains(fresh_mark(b)) {
+                    u.disjoint_persistent(inited);
+                } else {
+                    assert(d@.contains(init_mark(b)));
+                    d.disjoint(fresh);
+                }
+                pair = (perm, toks, u, d);
+            });
+        }
     }
 
     /// The owner word of `group`.

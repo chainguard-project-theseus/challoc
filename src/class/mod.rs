@@ -89,7 +89,8 @@ use crate::vspec::zero::Zeroed;
 use core::sync::atomic::{AtomicU64, Ordering};
 #[cfg(verus_only)]
 use table::{
-    bits_ghost, bits_shape, desc_at, lemma_bit_in_slab, slab_marked, slab_mask_of, words_of,
+    bits_ghost, bits_shape, desc_at, guard_marked, lemma_bit_in_slab, slab_marked, slab_mask_of,
+    words_of,
 };
 use vstd::prelude::*;
 use vstd::resource::set::GhostPersistentSubset;
@@ -774,7 +775,10 @@ impl Inner {
     /// count the size of the committed set, the owned and committed slabs
     /// among the class's, and the current group's cursor inside the class
     /// and, while slabs are left in it, inside one hand-out group, whose
-    /// end is the current group's end.
+    /// end is the current group's end; the slab before the current
+    /// group's end is owned, and each owned slab's markers are held
+    /// (fresh ones from `init`, a guard slab's init markers), which puts
+    /// both below the watermark (`SlabTable::next_slab_locked`).
     spec fn base(&self) -> bool {
         &&& set_wf(self.partial, self.nbits())
         &&& set_wf(self.empty, self.nbits())
@@ -792,6 +796,9 @@ impl Inner {
         &&& self.inited@.id() == self.table@.spec_slots().mloc
         &&& forall|s: nat| #[trigger] self.states@.contains_key(s) && !self.table@.spec_is_guard(s as usize)
             ==> slab_marked(self.table@, s as int, self.inited@@)
+        &&& forall|s: nat| #[trigger] self.states@.contains_key(s) && self.table@.spec_is_guard(s as usize)
+            ==> guard_marked(self.table@, s as int, self.inited@@)
+        &&& self.group_end > 0 ==> self.owns((self.group_end - 1) as nat)
     }
 
     /// The ghost link at slab `s`, apart from the current group: a
@@ -1324,7 +1331,9 @@ impl ClassState {
     /// ownership, a whole group at a time: `take_group` writes a new
     /// group's word, once, under the taking arena's lock and the commit
     /// lock, where no arena's ghost holds the group (ownership exists only
-    /// below the watermark, `SlabTable::next_slab_locked`'s assumption),
+    /// below the watermark: `SlabTable::next_slab_locked` proves it for the
+    /// taking arena's value from the markers, and the same argument holds
+    /// for every other arena's, whose values no proof sees),
     /// and `next_fresh_slab` then adds its slabs (verified).
     #[allow(unused_variables)]
     #[inline(always)]
