@@ -511,7 +511,13 @@ remain for explicit `MALLOCX_ARENA` allocations and `thread.arena`.
 `sdallocx(p, n, flags)`, `free_sized(p, n)`, `free_aligned_sized(p, a, n)`
 (the sized path):
 1. If `p` is null return. `c_hint = class_for(n, align)` (huge: slow
-   path). The hint names the region: `rel = p - class_base[c_hint]`; if
+   path). `sdallocx` with `flags == 0` (what Valkey passes on every free)
+   tests that first and takes `free_sized`'s path, `c_hint = class_of(n)`,
+   without decoding the flags (alignment shift, tcache bits), as
+   jemalloc's `sdallocx` does; any other flags take a call
+   (`sdallocx_flags`), so the compiler cannot merge the two inlined sized
+   paths behind a test of the hint, and a huge size leaves for the slow
+   path before the heap lookup. The hint names the region: `rel = p - class_base[c_hint]`; if
    `rel` is past the region or not a slot start, slow path. A guard slab
    goes to the slow path too, tested with one 8-byte load from a dense
    per-class pair (`Shared::guard_test[c]`, `GuardTest`: `(slab +
