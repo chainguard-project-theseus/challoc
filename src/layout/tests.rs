@@ -273,6 +273,17 @@ fn slot_of_offset_is_exactly_the_reciprocal_check() {
     assert!(offsets > 1 << 24);
 }
 
+/// `slot_of_offset`'s contract: an offset at or past the slab size is a
+/// caller bug (the 32-bit test would accept `2^32` as slot 0), caught in
+/// debug builds.
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "slot_of_offset: offset outside the slab")]
+fn slot_of_offset_rejects_an_offset_past_the_slab() {
+    let cls = BASE_CLASSES[class_of(64).unwrap()];
+    cls.slot_of_offset(cls.slab_size());
+}
+
 /// Design 3: the geometry a kernel with pages
 /// above 4 KiB adopts. Every class's slab is at least the page (up to
 /// 64 KiB), only the 512..1024-byte classes change, and for those the

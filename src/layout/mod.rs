@@ -240,9 +240,12 @@ impl Class {
         self.slab_bits().div_ceil(64)
     }
 
-    /// Slot index for an in-slab offset (below the slab size), plus
-    /// whether the offset is exactly a slot start. The index is only
-    /// meaningful when `valid` is true.
+    /// Slot index for an in-slab offset, plus whether the offset is
+    /// exactly a slot start. The index is only meaningful when `valid` is
+    /// true. `offset` must be below the slab size (`rel & slab_mask()`,
+    /// as every caller passes): the test works on its low 32 bits, so a
+    /// larger offset would be truncated and could alias a slot start of
+    /// the wrong slab. Debug builds assert it.
     ///
     /// One multiply, one rotate and one compare (the divisibility test of
     /// Granlund and Montgomery, design section 3): with `size = d << tz`,
@@ -254,6 +257,7 @@ impl Class {
     /// 2^22`). So `q < nslots` accepts exactly the slot starts.
     #[inline]
     pub const fn slot_of_offset(&self, offset: usize) -> (usize, bool) {
+        debug_assert!(offset < self.slab_size(), "slot_of_offset: offset outside the slab");
         let q = (offset as u32).wrapping_mul(self.inv_odd).rotate_right(self.tz as u32);
         (q as usize, q < self.nslots)
     }
