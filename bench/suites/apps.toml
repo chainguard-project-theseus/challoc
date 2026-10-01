@@ -1,0 +1,26 @@
+# apps: the application rows (real programs under the allocator, not
+# allocator benchmarks): storage engine, proxy, compiler, inference,
+# interpreters and runtimes, a database, an idle sidecar. challoc
+# against jemalloc 5.4.0, glibc as context, as in `full`, of which this is
+# the subset.
+description = "application rows: challoc vs jemalloc 5.4.0 (gate) and glibc (context)"
+cells = "tag:ref"
+variants = ["jemalloc54", "challoc=head"]
+controls = ["glibc"]
+rows = [
+  "rocksdb", "nginx-proxy", "compile-sqlite", "lua", "ort-mlp", "gs", "z3",
+  "valkey1", "sidecar-fluentbit",
+  "ruby-binary-trees", "ruby-hash-aref-str", "ruby-array-sample", "ruby-sort-block", "ruby-gc-churn",
+  "node-json-churn", "node-server",
+  "python1", "python1-malloc", "python-dict-list-malloc", "python-object-graph-malloc",
+  "pg-select100", "pg-tpcb100", "pg-select500", "pg-connect20",
+]
+replicas = 3
+blocks = 2
+warmup_blocks = 0
+shard_seconds = 900
+looks = 1
+budget_usd = 20
+
+[local]
+blocks = 1

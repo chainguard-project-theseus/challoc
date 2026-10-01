@@ -1,0 +1,13 @@
+# smoke: one block of every quick row under head only (no warm-up, no
+# verdict): the harness cannot rot. `cb run smoke` exits 0 when every row
+# ran and parsed, 1 otherwise (CI's bench-smoke).
+description = "harness smoke test: every quick row once, parse only"
+extends = "quick"
+kind = "smoke"
+variants = ["head"]
+blocks = 1
+warmup_blocks = 0
+replicas = 1
+
+[local]
+blocks = 1

@@ -1,0 +1,25 @@
+# quick: the PR go/no-go (bench/README.md, "cb"). head against base, paired
+# on every host in ABBA blocks; the verdict per row is better / worse /
+# same / sub-threshold / inconclusive / broken against the row class's
+# margin, the headline NEUTRAL / IMPROVEMENT / REGRESSION / INCONCLUSIVE.
+#
+# On GCE (cb launch, M1b) every gate cell gets `replicas` VMs of `blocks`
+# blocks each after `warmup_blocks` discarded ones; a local run (cb run on
+# one host) has one "VM" and runs [local].blocks blocks instead.
+description = "PR go/no-go: head vs base on the gate cells"
+cells = "tag:gate"
+variants = ["base", "head"]
+controls = []
+rows = ["larson1", "larson10", "xmalloc", "alloc-test1", "valkey1", "valkey1-free", "churn1024"]
+# 3 replicas x 5 shards x 2 cells = 30 VMs: under the 32-VM cap of one
+# launch, so the whole suite runs in one wave.
+replicas = 3
+blocks = 3
+warmup_blocks = 1
+shard_seconds = 200
+looks = 2
+extend_replicas = 3
+budget_usd = 5
+
+[local]
+blocks = 6
