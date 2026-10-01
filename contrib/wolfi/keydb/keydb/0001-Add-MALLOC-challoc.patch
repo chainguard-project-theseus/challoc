@@ -1,0 +1,68 @@
+From: challoc <noreply@chainguard.dev>
+Subject: [PATCH] Add MALLOC=challoc: link the system challoc (jemalloc-compat) instead of the bundled jemalloc
+
+challoc (https://github.com/chainguard-dev/challoc) is a malloc replacement
+that exports jemalloc's non-standard API (mallocx family, mallctl, the
+stats.* keys zmalloc.cpp reads) and Redis's get_defrag_hint, the extension
+of the bundled jemalloc that zmalloc.h's HAVE_DEFRAG requires: its
+<jemalloc/jemalloc.h> defines JEMALLOC_FRAG_HINT and declares
+je_get_defrag_hint, so defrag.cpp compiles unchanged and active defrag
+works. `make MALLOC=challoc` keeps every USE_JEMALLOC code path and links
+the system libjemalloc.so.2 (the challoc-jemalloc-compat package) instead
+of building deps/jemalloc; no header or symbol renames are needed because
+KeyDB calls the unprefixed names and challoc exports both spellings.
+
+- src/Makefile: MALLOC=challoc adds -DUSE_JEMALLOC -DUSE_CHALLOC and links
+  -ljemalloc inside --push-state,--no-as-needed; no jemalloc dependency
+  target, so deps/jemalloc is never built.
+- src/zmalloc.h: under USE_CHALLOC report ZMALLOC_LIB as
+  "jemalloc-<version>-challoc" (challoc's JEMALLOC_VERSION_GID), so
+  `keydb-server --version` and INFO's mem_allocator say which allocator
+  the build has; everything keyed on "jemalloc" (the test suite's
+  memefficiency gate, MEMORY MALLOC-STATS) still matches.
+
+Build: make MALLOC=challoc all; make MALLOC=challoc install (the Makefile
+persists its settings, so MALLOC goes on every invocation). Default
+behaviour without MALLOC=challoc is unchanged.
+---
+--- a/src/Makefile
++++ b/src/Makefile
+@@ -322,6 +322,20 @@
+ 	FINAL_CFLAGS+= -DUSE_MEMKIND -I../deps/memkind/src/include
+ 	FINAL_CXXFLAGS+= -DUSE_MEMKIND -I../deps/memkind/src/include
+ 	FINAL_LIBS := ../deps/memkind/src/.libs/libmemkind.a -lnuma $(FINAL_LIBS)
++endif
++
++# challoc (https://github.com/chainguard-dev/challoc) is a system allocator
++# with jemalloc's non-standard API, including the get_defrag_hint of the
++# bundled jemalloc that HAVE_DEFRAG needs. MALLOC=challoc keeps every
++# USE_JEMALLOC code path (stats, purge, background thread, active defrag)
++# and links the system libjemalloc.so.2 that challoc's jemalloc-compat
++# package installs, with its <jemalloc/jemalloc.h>, instead of building
++# deps/jemalloc. -Wl,--no-as-needed keeps the DT_NEEDED entry even where a
++# binary references no allocator symbol itself.
++ifeq ($(MALLOC),challoc)
++	FINAL_CFLAGS+= -DUSE_JEMALLOC -DUSE_CHALLOC
++	FINAL_CXXFLAGS+= -DUSE_JEMALLOC -DUSE_CHALLOC
++	FINAL_LIBS := -Wl,--push-state,--no-as-needed -ljemalloc -Wl,--pop-state $(FINAL_LIBS)
+ endif
+ 
+ ifeq ($(BUILD_TLS),yes)
+--- a/src/zmalloc.h
++++ b/src/zmalloc.h
+@@ -51,8 +51,14 @@
+ #endif
+ 
+ #elif defined(USE_JEMALLOC)
+-#define ZMALLOC_LIB ("jemalloc-" __xstr(JEMALLOC_VERSION_MAJOR) "." __xstr(JEMALLOC_VERSION_MINOR) "." __xstr(JEMALLOC_VERSION_BUGFIX))
+ #include <jemalloc/jemalloc.h>
++#if defined(USE_CHALLOC) && defined(JEMALLOC_VERSION_GID)
++/* challoc: "jemalloc-5.3.0-challoc", so INFO memory and --version tell it
++ * from a jemalloc build (everything keyed on "jemalloc" still matches). */
++#define ZMALLOC_LIB ("jemalloc-" __xstr(JEMALLOC_VERSION_MAJOR) "." __xstr(JEMALLOC_VERSION_MINOR) "." __xstr(JEMALLOC_VERSION_BUGFIX) "-" JEMALLOC_VERSION_GID)
++#else
++#define ZMALLOC_LIB ("jemalloc-" __xstr(JEMALLOC_VERSION_MAJOR) "." __xstr(JEMALLOC_VERSION_MINOR) "." __xstr(JEMALLOC_VERSION_BUGFIX))
++#endif
+ #if (JEMALLOC_VERSION_MAJOR == 2 && JEMALLOC_VERSION_MINOR >= 1) || (JEMALLOC_VERSION_MAJOR > 2)
+ #define HAVE_MALLOC_SIZE 1
+ #define zmalloc_size(p) malloc_usable_size(p)
