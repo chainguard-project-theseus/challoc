@@ -176,7 +176,9 @@ T_START=$(date +%s)
 LOAD0=$(loadavg)
 
 take_bench_lock
-ensure_bench_programs
+# Under cb the bench programs are not built: rt is cb's (CB_TOOLS), and
+# statsdump.so is built into the run's scratch directory.
+if [ $CB_MODE = 1 ]; then BIN=$CB_OUT/bin; mkdir -p "$BIN"; ln -sf "${CB_TOOLS:?}/rt" "$BIN/rt"; else ensure_bench_programs; fi
 for a in $ALLOCS; do case $a in challoc|glibc-arena2|glibc-trim|challoc-trim) ;; challoc-*) conf_of "$a" > /dev/null;; *) is_stock "$a" || die "unknown allocator '$a'";; esac; done
 for row in $ROWS; do case $row in startup|server|soak) ;; *) die "unknown row '$row' (startup|server|soak)";; esac; done
 rm -rf "$OUT"; mkdir -p "$OUT" "$(dirname "$RESULT")"
