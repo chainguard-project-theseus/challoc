@@ -2503,3 +2503,119 @@ fn checked_slot_any_is_checked_slot_without_the_arena_test() {
     h.flush_all(s);
     assert_eq!((s.checked_slot(p0, h), s.checked_slot_any(p0), s.checked_slot_any(p1)), (None, None, None));
 }
+
+/// Shrink `c`'s home cache to `cap` by hand, as a GC shrink leaves it:
+/// the stack keeps its `ceil` slots, `len <= cap`.
+fn force_cap(t: &TestHeap, c: usize, cap: u32) {
+    let h = t.heap();
+    let arena = h.arena;
+    let k = h.cache_ptr(c);
+    unsafe {
+        let len = (*k).len as usize;
+        if len > cap as usize {
+            h.flush(t.s, arena, k, c, len - cap as usize);
+        }
+        (*k).cap = cap;
+        (*k).check_cap();
+    }
+}
+
+/// The `FOREIGN` cache's capacity is half the ladder and fixed: its
+/// stack is sized for it (`ceil == cap`), a flush from full does not
+/// count as a miss and neither the GC nor a flush moves it.
+#[test]
+fn foreign_cache_capacity_fixed() {
+    let s = shared();
+    let a1 = s.arenas.create(s).unwrap();
+    let t = TestHeap::new(s);
+    let h = t.heap();
+    let c = class_with(64);
+    let n = 3 * HALF;
+    let ps: Vec<*mut u8> = (0..n).map(|_| h.alloc_in(s, a1, c).0).collect();
+    for &p in &ps {
+        h.free(s, p);
+    }
+    let f = h.cache_in(FOREIGN, c).unwrap();
+    assert_eq!((f.cap(), f.ceil()), (HALF, HALF));
+    assert_eq!(f.misses, 0);
+    for _ in 0..3 {
+        t.gc();
+        let f = h.cache_in(FOREIGN, c).unwrap();
+        assert_eq!((f.cap(), f.ceil(), f.len()), (HALF, HALF, 0));
+    }
+    t.flush_all();
+    assert_eq!(h.cache_in(FOREIGN, c).unwrap().cap(), HALF);
+    t.destroy();
+}
+
+/// A cache whose capacity is below its ceiling frees its stack with the
+/// ceiling's layout, on every path that frees stacks: heap destruction,
+/// `thread.tcache.enabled:false`, and `thread.arena` (the stacks travel
+/// with their headers), with the metadata allocator back to baseline.
+#[test]
+fn shrunk_cache_freed_with_ceil_layout() {
+    let s = shared();
+    let a1 = s.arenas.create(s).unwrap();
+    let c = class_with(64);
+    let d = class_with(1024);
+    let before = s.meta.stats().allocated;
+    // Destruction.
+    let t = TestHeap::new(s);
+    let ps: Vec<*mut u8> = (0..40).map(|_| t.alloc(c)).chain((0..40).map(|_| t.alloc(d))).collect();
+    force_cap(&t, c, MIN_CAP);
+    force_cap(&t, d, default_cap(d) / 4);
+    assert_eq!(t.cache(c).ceil(), CAP);
+    for &p in &ps {
+        t.free(p);
+    }
+    t.destroy();
+    assert_eq!(s.meta.stats().allocated, before, "destroy");
+    // `thread.tcache.enabled:false`, then on again.
+    let t = TestHeap::new(s);
+    let heap_only = s.meta.stats().allocated;
+    let p = t.alloc(c);
+    force_cap(&t, c, 16);
+    t.free(p);
+    t.heap().set_tcache_enabled(s, false);
+    assert!(t.heap().cache(c).is_none());
+    assert_eq!(s.meta.stats().allocated, heap_only, "tcache.enabled:false");
+    t.heap().set_tcache_enabled(s, true);
+    // `thread.arena` there and back, each home cache shrunk first.
+    let p = t.alloc(c);
+    force_cap(&t, c, 32);
+    t.heap().set_arena(s, a1);
+    let q = t.alloc(c);
+    force_cap(&t, c, 64);
+    t.heap().set_arena(s, 0);
+    assert_eq!(t.cache(c).cap(), 32);
+    assert_eq!(t.heap().cache_in(a1, c).unwrap().cap(), 64);
+    t.free(p);
+    t.free(q);
+    t.destroy();
+    assert_eq!(s.meta.stats().allocated, before, "thread.arena");
+}
+
+/// Every capacity write is checked: a `cap` past the stack's `ceil`, or
+/// below `len`, aborts.
+#[test]
+fn capacity_past_the_ceiling_aborts() {
+    let s = shared();
+    let t = TestHeap::new(s);
+    let c = class_with(64);
+    t.alloc(c);
+    let k = t.heap().cache_ptr(c);
+    let e = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        (*k).cap = (*k).ceil + 1;
+        (*k).check_cap();
+    }))
+    .unwrap_err();
+    assert_eq!(panic_message(e), "heap: cache capacity invariant violated");
+    let e = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+        (*k).cap = (*k).len - 1;
+        (*k).check_cap();
+    }))
+    .unwrap_err();
+    assert_eq!(panic_message(e), "heap: cache capacity invariant violated");
+    unsafe { (*k).cap = (*k).ceil };
+    t.destroy();
+}

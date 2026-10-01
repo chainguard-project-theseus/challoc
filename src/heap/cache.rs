@@ -13,11 +13,17 @@ use super::{MODE_OFF, MODE_PROBE};
 
 /// One thread's cache header for one size class: exactly one cache line,
 /// inline in the heap ([`Heap::caches`]) or in an [`ArenaCaches`](super::ArenaCaches) node,
-/// pointing at its stack of `cap` slot pointers, a metadata object of its
-/// own. The fields the fast paths read (`len`, `cap`, `zeroed`, `slots`,
-/// `allocs`, `compact_mask`, `low_water`) come first; a header whose `cap`
-/// is zero has never been used (`slots` is null and never dereferenced,
-/// because `len == cap == 0` sends both fast paths to the slow path).
+/// pointing at its stack of `ceil` slot pointers, a metadata object of its
+/// own, of which the first `cap` are in use. The fields the fast paths read
+/// (`len`, `cap`, `zeroed`, `slots`, `allocs`, `compact_mask`,
+/// `low_water`) come first; a header whose `cap` is zero has never been
+/// used (`slots` is null and never dereferenced, because `len == cap == 0`
+/// sends both fast paths to the slow path).
+///
+/// `cap` is the current capacity, at most `ceil`, the ladder value the
+/// stack was sized for (design 6.4): only the slow paths write it, the
+/// fast paths compare `len` against it. `len <= cap <= ceil` always holds
+/// ([`CacheHeader::check_cap`]).
 ///
 /// The byte counters `thread.allocated` and `thread.deallocated` are not
 /// kept per operation. Every pop bumps `allocs` on the header line the pop
@@ -28,12 +34,13 @@ use super::{MODE_OFF, MODE_PROBE};
 #[repr(C, align(64))]
 pub struct CacheHeader {
     pub(super) len: u32,
+    /// Current capacity: a push onto `len == cap` takes the slow path.
     pub(super) cap: u32,
     /// Smallest `len` since the last GC (design 6.4).
     pub(super) low_water: u32,
     /// `slots[..zeroed]` are known to read as zero.
     pub(super) zeroed: u32,
-    /// The stack: a metadata object of `cap` slot pointers
+    /// The stack: a metadata object of `ceil` slot pointers
     /// ([`CacheHeader::slots_layout`]; null while `cap == 0`).
     pub(super) slots: *mut *mut u8,
     /// Pops served from this cache since it was created.
@@ -60,6 +67,12 @@ pub struct CacheHeader {
     /// order (wrapping); zeroed by a flush that found it sorted. Drives the
     /// kept half's sort in [`Heap::flush`].
     pub(super) unsorted_flushes: u8,
+    /// Refills and flushes of a full cache since the last GC, saturating;
+    /// unused by the `FOREIGN` cache.
+    pub(super) misses: u8,
+    /// Size of the stack in slots, fixed when the cache is created (the
+    /// ladder value, `ensure_cache`); the stack is freed with this layout.
+    pub(super) ceil: u32,
 }
 
 /// Size of a [`CacheHeader`]: one line, so a class's header never shares
@@ -67,6 +80,7 @@ pub struct CacheHeader {
 pub const CACHE_HEADER: usize = core::mem::size_of::<CacheHeader>();
 const _: () = assert!(CACHE_HEADER == 64);
 const _: () = assert!(core::mem::offset_of!(CacheHeader, slots) < 64 - 8);
+const _: () = assert!(core::mem::offset_of!(CacheHeader, ceil) == 60);
 
 impl CacheHeader {
     /// A header that has never been used: both fast paths fall through to
@@ -85,6 +99,8 @@ impl CacheHeader {
         arena: 0,
         mode: MODE_OFF,
         unsorted_flushes: 0,
+        misses: 0,
+        ceil: 0,
     };
 
     /// Metadata layout of a stack of `cap` slots.
@@ -103,6 +119,23 @@ impl CacheHeader {
     #[inline]
     pub fn cap(&self) -> usize {
         self.cap as usize
+    }
+
+    /// Size of the stack in slots, the most `cap` can grow to.
+    #[inline]
+    pub fn ceil(&self) -> usize {
+        self.ceil as usize
+    }
+
+    /// The capacity invariant every capacity write is followed by: a push
+    /// with `len > cap` or a `cap` past `ceil` would write past the stack,
+    /// so a violation aborts.
+    #[inline]
+    pub(super) fn check_cap(&self) {
+        assert!(
+            self.len <= self.cap && self.cap <= self.ceil && self.cap >= 1,
+            "heap: cache capacity invariant violated"
+        );
     }
 
     #[inline]
@@ -386,7 +419,7 @@ impl Heap {
         // (`free_slow_in`), is the same batch as a home cache's half
         // flush for a residue that averages a quarter of the ladder
         // instead of three quarters (design 6.3 step 4).
-        let cap = if arena == FOREIGN { (cap / 2).max(MIN_CAP) } else { cap };
+        let ceil = if arena == FOREIGN { (cap / 2).max(MIN_CAP) } else { cap };
         // The arena before the node: `arena` came from an owner word on
         // the free path, and a word naming an arena that was never built
         // aborts here (`Shared::owner`) before a node is created for it.
@@ -399,12 +432,15 @@ impl Heap {
         if unsafe { (*cache).cap } != 0 {
             return cache;
         }
-        let slots = shared.meta.alloc(CacheHeader::slots_layout(cap));
+        let slots = shared.meta.alloc(CacheHeader::slots_layout(ceil));
         if slots.is_null() {
             return ptr::null_mut();
         }
+        // The stack is sized for the ceiling, so a capacity change never
+        // reallocates it; the `FOREIGN` cache's capacity is fixed.
+        let cap = if arena == FOREIGN { ceil } else { start_cap(ceil) };
         // SAFETY: `cache` is this heap's own header (still `EMPTY`) and
-        // `slots` has room for `cap` pointers, exclusively ours.
+        // `slots` has room for `ceil` pointers, exclusively ours.
         unsafe {
             ptr::write(
                 cache,
@@ -422,12 +458,21 @@ impl Heap {
                     arena,
                     mode: MODE_OFF,
                     unsorted_flushes: 0,
+                    misses: 0,
+                    ceil,
                 },
             );
+            (*cache).check_cap();
             // The `FOREIGN` cache is never popped, so it never probes.
             let mode = if arena == FOREIGN { MODE_OFF } else { MODE_PROBE };
             (*cache).set_mode(mode);
         }
         cache
     }
+}
+
+/// The capacity a new cache whose stack holds `ceil` slots starts at.
+#[inline]
+fn start_cap(ceil: u32) -> u32 {
+    ceil
 }

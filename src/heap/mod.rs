@@ -272,7 +272,9 @@ impl Heap {
         for cache in caches.iter_mut() {
             if cache.cap != 0 {
                 assert_eq!(cache.len, 0, "heap: freeing a cache that was not flushed");
-                shared.meta.free(cache.slots as *mut u8, CacheHeader::slots_layout(cache.cap));
+                // The stack was allocated at `ceil`, whatever `cap` is now.
+                assert!(cache.ceil != 0 && cache.cap <= cache.ceil, "heap: cache capacity invariant violated");
+                shared.meta.free(cache.slots as *mut u8, CacheHeader::slots_layout(cache.ceil));
             }
             *cache = CacheHeader::EMPTY;
         }

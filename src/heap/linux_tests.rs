@@ -551,3 +551,34 @@ fn changed_arena_during_a_flush_aborts() {
     assert!(!out.status.success() && err.contains(&msg), "status {:?}, stderr: {err}", out.status);
 }
 
+/// A thread that exits with caches below their ceiling frees every stack
+/// with the ceiling's layout: the metadata allocator is back to baseline.
+#[test]
+fn thread_exit_frees_shrunk_caches_with_the_ceiling_layout() {
+    let s = shared();
+    let meta_before = s.meta.stats().allocated;
+    std::thread::spawn(move || {
+        for size in [16usize, 64, 512, 4096] {
+            let c = class_of(size).unwrap();
+            let ps: Vec<*mut u8> = (0..20).map(|_| alloc(s, c)).collect();
+            let h = existing_heap(s).expect("a heap");
+            let k = h.cache_ptr(c);
+            let home = h.arena();
+            unsafe {
+                let len = (*k).len as usize;
+                if len > MIN_CAP as usize {
+                    h.flush(s, home, k, c, len - MIN_CAP as usize);
+                }
+                (*k).cap = MIN_CAP;
+                (*k).check_cap();
+                assert!((*k).ceil > MIN_CAP);
+            }
+            for p in ps {
+                free(s, p);
+            }
+        }
+    })
+    .join()
+    .unwrap();
+    assert_eq!(s.meta.stats().allocated, meta_before);
+}
