@@ -156,6 +156,9 @@ impl Heap {
                     // migration and its only slow path, so no miss would
                     // ever grow it, and the GC never shrinks it (design
                     // 6.4).
+                    if (*cache).cap != (*cache).ceil {
+                        super::capstat::bump(&super::capstat::COMPACT_CEIL, 1);
+                    }
                     (*cache).cap = (*cache).ceil;
                     (*cache).check_cap();
                     (*cache).set_mode(MODE_COMPACT);

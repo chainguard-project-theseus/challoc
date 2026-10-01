@@ -159,6 +159,7 @@ impl CacheHeader {
         }
         self.cap = (self.cap * 2).min(self.ceil);
         self.check_cap();
+        super::capstat::bump(&super::capstat::GROW, 1);
         true
     }
 
