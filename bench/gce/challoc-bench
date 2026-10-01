@@ -21,7 +21,7 @@
 #   bench/gce/challoc-bench run       arm64|amd64 CMD...   # run CMD in ~/challoc on the VM
 #   bench/gce/challoc-bench make      arm64|amd64 ARGS...  # sync, then `make ARGS` on the VM
 #   bench/gce/challoc-bench quick     arm64|amd64 [OLD=rev] [VAR=val...]
-#                                                          # sync, then `make quick` (fast tier, ~2 min)
+#                                                          # sync, then `make quick-legacy` (fast tier, ~2 min)
 #   bench/gce/challoc-bench ab        arm64|amd64 VARIANTS='old=HEAD~1 new=HEAD jemalloc' [VAR=val...]
 #                                                          # sync, then `make ab` (protocol tier)
 #   bench/gce/challoc-bench quick-perf arm64|amd64 [OLD=rev] [ROWS='larson1 valkey1'] [VARIANTS='old new jemalloc']
@@ -275,7 +275,7 @@ quoted() { local a out=; for a in "$@"; do out="$out $(printf '%q' "$a")"; done;
 cmd_quick() {
   local t="$1"; shift
   cmd_sync "$t"
-  cmd_run "$t" "make quick $(quoted "$@")"
+  cmd_run "$t" "make quick-legacy $(quoted "$@")"
 }
 cmd_ab() {
   local t="$1"; shift
@@ -284,7 +284,7 @@ cmd_ab() {
 }
 
 # quick-perf: the PERF=1 half of quick.sh with perf on the VM host. Sync,
-# build old and new in the container (`make quick QUICK_BUILD_ONLY=1`, with
+# build old and new in the container (`make quick-legacy QUICK_BUILD_ONLY=1`, with
 # OLD=/NEW= if given), then bench/gce/quick-perf.sh runs the rows detached
 # and attaches `sudo perf stat --inherit -p` from the host; remaining
 # arguments (ROWS=, VARIANTS=, EVENTS=, OUTDIR=) go to that script.
@@ -293,7 +293,7 @@ cmd_quick_perf() {
   local a mk=() qp=()
   for a in "$@"; do case "$a" in OLD=*|NEW=*) mk+=("$a");; *) qp+=("$a");; esac; done
   cmd_sync "$t"
-  cmd_run "$t" "make quick QUICK_BUILD_ONLY=1 $(quoted ${mk[@]+"${mk[@]}"})"
+  cmd_run "$t" "make quick-legacy QUICK_BUILD_ONLY=1 $(quoted ${mk[@]+"${mk[@]}"})"
   cmd_run "$t" "bash bench/gce/quick-perf.sh $t $(quoted ${qp[@]+"${qp[@]}"})"
 }
 

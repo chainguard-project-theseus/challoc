@@ -1,7 +1,7 @@
 #!/bin/sh
 # Fast tier of the benchmark harness (bench/README.md): a go/no-go signal for
 # one implementation-loop iteration in about two minutes on a reference VM.
-# Run inside the dev container: `make quick [OLD=rev]` or, on a VM,
+# Run inside the dev container: `make quick-legacy [OLD=rev]` or, on a VM,
 # `bench/gce/challoc-bench quick arm64 [OLD=rev]`.
 #
 # Builds the working tree into target/quick/new and OLD (default HEAD, so an

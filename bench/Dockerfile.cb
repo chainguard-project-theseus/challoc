@@ -1,0 +1,49 @@
+# The cb bench image (bench/README.md, "cb launch"): what a cell VM runs
+# `cb run --shard` in, so a VM pulls one image instead of building a
+# toolchain. It is Dockerfile.dev's `test` stage (the Rust toolchain, the C
+# compiler, python3) plus the stock allocators the quick suite compares
+# against and the prebuilt bench/build.sh programs (mimalloc-bench, redis,
+# libmimalloc), with the challoc crate's dependencies fetched so a variant
+# builds without the network.
+#
+# Built and pushed by bench/cb/image.sh (`make bench-image`), which builds
+# the `test` stage first and passes it as DEV_IMAGE; the pushed digest per
+# architecture goes into bench/image.lock. A VM whose pull fails builds
+# this same file from the bundled tree (bench/cb/boot.sh).
+ARG DEV_IMAGE=cb-dev-test:local
+FROM ${DEV_IMAGE}
+
+RUN apk add --no-cache jemalloc tcmalloc-minimal \
+ && test -f /usr/lib/libjemalloc.so.2 && test -f /usr/lib/libtcmalloc_minimal.so.4
+
+# bench/build.sh writes under target/; only what it reads is copied, so an
+# unrelated change to the tree does not rebuild this layer.
+COPY bench/build.sh /src/bench/build.sh
+COPY bench/tools /src/bench/tools
+COPY bench/probes /src/bench/probes
+COPY bench/pin.c bench/sampler.c /src/bench/
+RUN cd /src && sh bench/build.sh \
+ && mkdir -p /opt/cb \
+ && mv target/bench-bin /opt/cb/bench-bin \
+ && rm -rf target bench
+
+# The crate's dependencies (libc), so `cargo build` in a VM needs no
+# crates.io round trip. A variant with a different lock still builds: the
+# VM has egress and cargo fetches what is missing.
+COPY Cargo.toml Cargo.lock /tmp/cb-fetch/
+RUN cd /tmp/cb-fetch && mkdir src && : > src/lib.rs && cargo fetch && cd / && rm -rf /tmp/cb-fetch
+
+# The driver rows (bench/drivers/, bench/rows.toml): Valkey's build and
+# load generators (openssl-dev for BUILD_TLS, memtier), Ruby's build
+# dependencies (tests/consumers/ruby-build.sh) and the JDK with `ab` for the
+# JVM rows. Last, so the layers above stay cached when this list changes.
+RUN apk add --no-cache tcl openssl-dev memtier-benchmark \
+      autoconf ruby-3.4 jemalloc-dev yaml-dev zlib-dev libffi-dev tzdata \
+      openjdk-21 apache2-utils \
+ && test -x /usr/lib/jvm/java-21-openjdk/bin/javac && command -v memtier_benchmark ab >/dev/null
+# The fixed runpath the Valkey driver links against (one Valkey build;
+# each challoc variant is swapped in by a symlink).
+RUN mkdir -p /opt/challoc/lib
+
+ENV CB_BENCH_BIN=/opt/cb/bench-bin
+WORKDIR /src
