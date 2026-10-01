@@ -2,7 +2,7 @@
 //! ([`Flags::decode`], [`Tcache`], the `mallocx_*` builders) and the
 //! routing of a `mallocx` / `dallocx` / `sdallocx` call onto the calling
 //! thread's heap, an explicit cache ([`Tcache::Explicit`], a `Heap` owned
-//! by no thread, `arena::Tcaches`) or the direct paths
+//! by no thread, `heap/tcaches.rs`) or the direct paths
 //! ([`Tcache::None`], straight against the slab bitmaps).
 
 use core::ptr;

@@ -34,14 +34,15 @@
 //! `pthread_key` destructor flushes and frees the heap at thread exit
 //! (design 6.5).
 
-mod flush;
-pub mod mallocx;
-mod shared;
-mod thread;
 mod cache;
 mod compact;
-mod paths;
+mod flush;
+pub mod mallocx;
 mod others;
+mod paths;
+mod shared;
+mod tcaches;
+mod thread;
 
 #[cfg(test)]
 pub(crate) mod tests;

@@ -7,7 +7,7 @@ use core::ffi::c_void;
 use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use crate::arena::{Arena, Arenas, Tcaches};
+use crate::arena::{Arena, Arenas};
 use crate::class::SlabTable;
 use crate::config::Config;
 use crate::huge::Huge;
@@ -16,6 +16,7 @@ use crate::lock::Lock;
 use crate::meta::Meta;
 
 use super::heap_destructor;
+use super::tcaches::Tcaches;
 use super::{Heap, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free};
 
 /// The cache GC period (design 6.4): 10 s.

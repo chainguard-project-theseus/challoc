@@ -523,7 +523,7 @@ mod tests {
     const FORK_LOCKS: &[&str] = &[
         "arena.rs:Arena.stats",
         "arena.rs:Arenas.lock",
-        "arena.rs:Tcaches.lock",
+        "heap/tcaches.rs:Tcaches.lock",
         "class/mod.rs:ClassState.inner",
         "class/sets.rs:SetTable.tables",
         "class/table.rs:SlabTable.inner",
@@ -547,7 +547,7 @@ mod tests {
                     }
                 }
                 "arena.rs:Arenas.lock" => state(s.arenas.raw_lock().is_locked(), "arena registry"),
-                "arena.rs:Tcaches.lock" => state(s.tcaches.raw_lock().is_locked(), "tcache table"),
+                "heap/tcaches.rs:Tcaches.lock" => state(s.tcaches.raw_lock().is_locked(), "tcache table"),
                 "class/mod.rs:ClassState.inner" => {
                     for &a in arenas {
                         for c in 0..NCLASSES {
