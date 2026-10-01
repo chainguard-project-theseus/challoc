@@ -1073,9 +1073,8 @@ written through `mallctl`. It is a plain `clone`-based thread created through
 from init (`mallctl("background_thread", true)` creates it synchronously).
 It sleeps on a futex with a timeout equal to the next decay deadline, is woken
 when a class's first slab goes `Empty`, and after `fork` is not recreated in
-the child until the child asks for it again. Where it holds a PSI trigger
-it sleeps in `ppoll` instead and a fired trigger runs a decay pass at once
-(section 11). Its stack is one reservation in the
+the child until the child asks for it again. Each wake-up samples the
+cgroup (section 11) before the decay pass. Its stack is one reservation in the
 metadata region, made by the first start and never freed: a thread that was
 stopped (`background_thread:false`) exits at its next wake-up, and the next
 start joins it before creating the new thread on the same stack, so nothing
@@ -1177,8 +1176,8 @@ Discovery, once at init (section 10 step 7):
   through a 2 KiB buffer, so a container with hundreds of mounts costs no
   more stack.
 - The directory is `mount + path` (`/sys/fs/cgroup` itself for `/`), capped
-  at 2 KiB; the leaf's `memory.max`, `memory.current`, `memory.events` and
-  `memory.pressure` are probed for existence (a root cgroup has no
+  at 2 KiB; the leaf's `memory.max`, `memory.current` and `memory.events`
+  are probed for existence (a root cgroup has no
   `memory.current`; a v1 memory controller has none of them).
 - Effective limits: walk from the leaf up to the mount, inclusive, reading
   `memory.max` and `memory.high` at each level and keeping the minimum of
@@ -1201,35 +1200,13 @@ entries of a heap), from the background thread's loop, from a
 `stats.cgroup.current` read and from `malloc_stats_print`; the fast paths
 never see it.
 
-PSI: when the background thread exists it, and only it, opens
-`memory.pressure` read-write and writes the trigger `some 150000 1000000`
-(a `some` stall of 150 ms in a 1 s window). If the kernel answers `EINVAL`
-the unprivileged form `some 300000 2000000` is tried (windows under 2 s
-need `CAP_SYS_RESOURCE`; unprivileged triggers exist since 6.4). Success is
-the only evidence: any other error (`ENOENT` without PSI, `EPERM`, `EROFS`
-under Docker's read-only cgroup mount) records `psi unavailable (<errno>)`
-and the thread sleeps on its futex as before. Two container facts, both
-measured: Docker's default profile mounts
-the container's cgroup read-only, so under it the trigger reads
-`unavailable (EROFS)` on every kernel; and on a host whose cgroup2 is
-mounted with `nsdelegate` (systemd hosts, the GCE image) the kernel refuses
-writes to non-delegatable files at the root of a cgroup namespace
-(`cgroup_file_write`, `EPERM`), so even a `--privileged` container cannot
-arm a trigger on its own root `memory.pressure`; a process in a child
-cgroup of the container (systemd or a runtime that makes one) can. Docker
-Desktop's linuxkit kernel mounts without `nsdelegate` and a `--privileged`
-container there arms the 1 s trigger. The fallback is the same in every
-case: the tick's `memory.current` sample. Armed, the thread sleeps in
-`ppoll` on the trigger (`POLLPRI`) and an eventfd that `wake` writes; a
-fired trigger counts one `pressure_events`, takes an out-of-window sample,
-re-evaluates the policy on it and runs the thread's decay pass at once; `POLLERR`/`POLLHUP` (the cgroup
-removed) disarms. The trigger descriptor is closed when the thread exits
-and in a fork child (whose copy would otherwise wake the parent's thread
-through the shared eventfd).
+PSI trigger on `memory.pressure`: removed, measured no effect; see #19
+and tag `archive/prototype-2026-09-30`. The background thread samples
+`memory.current` on its tick.
 
 Policy (`src/policy.rs`). It is evaluated where a sample was actually
-taken (the periodic tick, the background thread's loop, a fired PSI
-trigger), so at most once per 10 ms process-wide and never on a fast
+taken (the periodic tick, the background thread's loop), so at most once
+per 10 ms process-wide and never on a fast
 path; the outcome is a few atomics on `Shared` (the band, a keep ratio, a
 pending full purge) that the decay driver and the periodic tick read.
 Usage is the last `memory.current` sample against the effective limit
@@ -1242,7 +1219,6 @@ Usage is the last `memory.current` sample against the effective limit
 | 70% .. 90%                        | `dirty_decay_ms` scaled down linearly to 1000; the cap     | `MADV_DONTNEED`           |
 | >= 90%                            | Period 0: purge at the next pass; cache GC every tick      | `MADV_DONTNEED`           |
 | `memory.events` `high` increased  | Full purge once, at the next decay pass                    | `MADV_DONTNEED`           |
-| PSI trigger fired                 | Sample and decay pass at once (the background thread)      | as the band               |
 | < 70% while an excess over the cap first seen at 70%+ is still being returned | as the `< 70%` row | `MADV_DONTNEED` until the retention is within the cap |
 
 The advice column is the two-advice purge of section 8: lazy only where
@@ -1371,8 +1347,8 @@ it, as jemalloc's large extents do).
 
 Statistics through `mallctl` (13.4): `stats.cgroup.limit`,
 `stats.cgroup.high` (both `SIZE_MAX` for unlimited), `stats.cgroup.current`
-(the last sample, refreshed by the read if the window allows),
-`stats.cgroup.pressure_events`, and the policy's `stats.cgroup.decay_ms`
+(the last sample, refreshed by the read if the window allows), and the
+policy's `stats.cgroup.decay_ms`
 (arena 0's effective period, `SIZE_MAX` for never),
 `stats.cgroup.retention_cap` (bytes, `SIZE_MAX` without a limit),
 `stats.cgroup.empty_bytes` (the retention, summed by the read) and
@@ -1428,7 +1404,7 @@ jemalloc names where they exist:
 | `slot_randomize`          | false   | opt-in: refills claim from a random word and shuffle the batch (4); fights 6.4's compaction |
 | `double_free_scan`        | false   | compare against the top 4 cache entries |
 | `abort_conf`              | false   | abort on unknown keys, bad values and inert keys |
-| `cgroup`                  | true    | read the memory cgroup (11) and apply its policy: limits, `memory.current`, events, PSI; `false` reads and applies nothing |
+| `cgroup`                  | true    | read the memory cgroup (11) and apply its policy: limits, `memory.current`, events; `false` reads and applies nothing |
 | `check_zero`              | false   | challoc only; debug: read every slot/page handed out as zero, abort on a dirty word |
 | `stats_print`             | accepted | inert: nothing prints at exit; no `opt.` value |
 | `junk`, `zero`, `retain`, `oversize_threshold`, `metadata_thp`, `confirm_conf` | accepted | jemalloc keys, ignored with any value (`metadata_thp` because the metadata follows `thp`, section 17) |
@@ -1608,7 +1584,7 @@ tcache.create, tcache.flush, tcache.destroy
 experimental.utilization.query, experimental.utilization.batch_query
 config.malloc_conf, config.debug, config.stats
 prof.* -> ENOENT
-stats.cgroup.limit, stats.cgroup.high, stats.cgroup.current, stats.cgroup.pressure_events,
+stats.cgroup.limit, stats.cgroup.high, stats.cgroup.current,
 stats.cgroup.decay_ms, stats.cgroup.retention_cap, stats.cgroup.empty_bytes, stats.cgroup.full_purges
   (section 11; ENOENT when no cgroup2 is tracked or cgroup:false)
 stats.cgroup.purge_advice, stats.cgroup.lazy_purges, stats.cgroup.eager_purges
@@ -1937,9 +1913,7 @@ Not implemented; see the archive tag `archive/prototype-2026-09-30`.
   and one `cgroup:` line (section 11): the directory, mount and path, the
   effective `limit` and `high` (`max` for unlimited), the last `current`
   sample, the `memory.events` `high`/`max` counters with the number of
-  rises seen, the PSI state (`not armed (no background thread)`, `armed
-  (some ...)`, `unavailable (EROFS)`, `disarmed (background thread gone)`)
-  with `pressure_events`, and the CPU figures; or `cgroup: not tracked
+  rises seen, and the CPU figures; or `cgroup: not tracked
   (<reason>)`; and one `cgroup policy:` line with the band as last
   evaluated, arena 0's effective `decay_ms`, the `retention_cap`, the
   `empty_bytes` held, the `full_purges` run and whether `thp` was forced
@@ -2013,7 +1987,6 @@ runs on every row.
 | `MADV_FREE` (the advice itself) | every kernel since 4.5 | `Empty` slabs and huge extents under 70% of a known cgroup limit are returned lazily (sections 8 and 11) | `MADV_DONTNEED` everywhere (no limit known, `lazy_band:false`) |
 | `mseal` | kernel 6.10, not filtered by seccomp | seals the never-committed ranges of the reservations at init (section 10 step 5) | skip; `Sealed ranges: 0 of N` |
 | `PR_SET_VMA_ANON_NAME` | kernel 5.17 with `CONFIG_ANON_VMA_NAME` | named `challoc:*` mappings in `/proc/pid/maps` | skip |
-| PSI triggers on `memory.pressure` | kernel 6.4 (unprivileged), cgroup2 mounted writable | the background thread arms a trigger and reacts to pressure at once (section 11) | sample `memory.current` on the tick |
 | rseq registration (`rseq`, `rseq_size`) | glibc 2.44's registered area (`__rseq_size`, `__rseq_offset`, `__rseq_flags`, read from the weak symbols at init, and the area's own `cpu_id` for the fact of registration; `rseq::probe`) | the feature line's `rseq` and `rseq_size` words; `rseq=yes rseq_size=33` on the 7.0 GCE VMs | `rseq=no rseq_size=0` without a registration (`glibc.pthread.rseq=0`, a kernel without `CONFIG_RSEQ`); `rseq_size=20` on a kernel that reports no `AT_RSEQ_FEATURE_SIZE` |
 | Transparent huge pages (`thp`, `mthp`) | any kernel with `CONFIG_TRANSPARENT_HUGEPAGE`; the per-size `hugepages-<n>kB` knobs since 6.8 | off by default (`thp:never`: byte for byte the allocator without the key on the fast paths, plus one `MADV_NOHUGEPAGE` each on the class superblock and the metadata reservation at init (plan Phase 2.5 task 16, `thp::advise_reservation` from `layout::Regions::reserve`, and again from `force_never`), a VMA flag every later split inherits, so that on a host whose global mode is `always` (Chainguard OS ships `always` with the 2 MiB size on `inherit`; Debian's kernels boot `always`) no slab region of challoc's gets a huge page; the huge region is not advised and follows the host's policy (the 2026-09-20 decision, option (d) of `bench/results/2026-09-20-aarch64-cgos-thp-ab.md`: `never` is the slab regions' RSS discipline, and a huge run is a whole allocation the program asked for, which takes 2 MiB pages on an `always` host as jemalloc's large extents do; advising it too cost the Valkey model 10 points of `valkey1` on Chainguard OS, the 32 MiB of tables it keeps in huge runs, for no RSS gain on that heap). The both-ways test `tests/c/thp.c never` reads the global mode from sysfs, checks `nh` on the class region and no `nh` on the huge run on every kernel with THP, `stats.thp.nohuge_ranges` 2, and, on an `always` host, `AnonHugePages` 0 kB and `THPeligible` 0 on the class region after 8 MiB of small blocks and `THPeligible` 1 with `AnonHugePages` back on an 8 MiB huge run; the before/after numbers on the 7.0 VM with the global mode set to `always` are in `bench/results/2026-09-19-lane-b-floor-fixes.md`, the same-host A/B of the four settings on Chainguard OS in `2026-09-20-aarch64-cgos-thp-ab.md`. `auto` and `always` issue no `MADV_NOHUGEPAGE`: on an `always` host their unadvised regions stay eligible for the host's PMD pages. `thp:auto` (plan Phase 2.5 task 9, `thp.rs`): `MADV_HUGEPAGE` on the slab groups of every class whose slab holds an enabled folio size below the PMD (64 KiB slabs and up with `hugepages-64kB` enabled), and metadata commits rounded to and advised with that folio, never a 2 MiB page (the fork copy-on-write cost that makes Redis and Valkey forbid huge pages stays absent); inert, and the report says why, where the kernel enables no such size or where the PMD size is `madvise`-gated (`hugepages-2048kB/enabled` `madvise`, or `inherit` under a `madvise` top level, Ubuntu's default), because the same advice would then make the regions eligible for 2 MiB pages at the fault and through khugepaged; the host requirement is `hugepages-64kB/enabled=madvise` (or `always`) with `hugepages-2048kB/enabled=never` (or `always`, the host's own decision), root-only knobs. `thp:always`: with the PMD size enabled and no larger than 2 MiB (`thp::LG_PMD_CHUNK_MAX`: the PMD is `page * page / 8`, 2 MiB at 4 KiB pages, 32 MiB at 16 KiB, 512 MiB at 64 KiB, and a chunk of the larger sizes committed and advised per class would be the RSS floor of the process: the 64 KiB matrix cell showed 1.7 GiB of advised chunks for an 8 MiB test heap and the kernel gave none of them a folio, `THPeligible 0`), class regions are committed and advised in PMD-sized chunks so the first touch maps a 2 MiB page (guard slabs inside a chunk stay unused but unguarded: a marker there splits the page), huge runs of a PMD or more are advised (section 7), and the metadata takes the sub-PMD folio if one is enabled; a purge of a slab inside a 2 MiB page splits it, the kernel's cost of the mode. On a PMD over 2 MiB `always` is the folio path over the enabled sizes below the PMD (2 MiB slabs and up when `hugepages-2048kB` is enabled at 64 KiB pages) and inert, reason `PmdTooLarge`, when none is. Measured in `bench/results/2026-09-19-lane-b-mthp.md`: `auto` takes a quarter of larson1's dTLB refills on the C4A (4.0 -> 3.05 per operation, jemalloc 1.75) and puts valkey1's below jemalloc's (2.81 -> 2.44), leaves the Valkey-shaped rows flat, makes `fork()` 18% cheaper on a 500 MiB heap and the copy-on-write burst unchanged, and costs larson 1.6% with 7..19% more RSS on 16..100 MiB heaps (a folio per touched slab and table), which is why it is the documented opt-in and not the default; `always` is +10..15% on valkey1 at +10% RSS on 585 MiB and 2..4x on small heaps | small pages; `thp=none mthp=none` on a kernel without THP |
 | PAC (`HWCAP_PACA` and `HWCAP_PACG`) | arm64 CPU (Armv8.3) and kernel | signed cache entries and TLS heap pointer (`pacda`/`autda`, sections 6.1 and 6.2) behind `pac_pointers:true`, off by default on the cost (section 14); `pac=yes` on Axion and on an Apple M-series CPU under a Linux VM, `no` on Altra; FEAT_FPAC decides whether a failure faults at the `autda` or on first use | plain pointers, the same binary, one predicted branch on a byte the fast paths load anyway |
@@ -2388,7 +2361,7 @@ What part 2 waits for, cheapest path first:
 
 ```
 src/lib.rs            crate root, quantum feature selection, panic handler
-src/sys/mod.rs        the kernel constants; typed syscall wrappers (mmap, mprotect, madvise, mseal, prctl, getrandom, futex, clock_gettime, open/read/close, write, ppoll, eventfd, signals); read_small_file, parse_decimal, yn
+src/sys/mod.rs        the kernel constants; typed syscall wrappers (mmap, mprotect, madvise, mseal, prctl, getrandom, futex, clock_gettime, open/read/close, write, signals); read_small_file, parse_decimal, yn
 src/sys/abort.rs      abort (`challoc: <msg>` on stderr, SIGABRT the way glibc delivers it), the stderr sink, the `abort!` macro
 src/sys/auxv.rs       getauxval and the AT_* keys (AT_PAGESZ, AT_HWCAP, AT_SECURE)
 src/sys/raw.rs        the asm syscall instructions (x86_64, aarch64)
@@ -2396,7 +2369,7 @@ src/sys/nr.rs         syscall numbers, header-checked (tests/c/sysnr.c)
 src/sys/errno.rs      kernel error decoding
 src/sys/features.rs   kernel feature probing; the feature line as a key table (words) that Display and the tests iterate
 src/sys/thp_host.rs   the THP sysfs table (enabled, hpage_pmd_size, hugepages-<n>kB) and its thp=/mthp= words
-src/sys/cgroup.rs     cgroup2 discovery, limit walk, sampling (memory.current, every memory.events counter), PSI trigger arming
+src/sys/cgroup.rs     cgroup2 discovery, limit walk, sampling (memory.current, every memory.events counter)
 src/sys/pac.rs        pointer authentication of the TLS heap pointer (arm64 FEAT_PAuth)
 src/sys/tls.rs        initial-exec TLS accessor
 src/rseq.rs           glibc's rseq registration: the probe (__rseq_offset/size/flags, the area's cpu_id) the feature line's rseq= words read

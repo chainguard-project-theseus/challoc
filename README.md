@@ -14,7 +14,7 @@ instead of jemalloc. Three things set it apart:
   separate randomised address ranges, and guard slabs and sealed gaps are
   used where the kernel has them (`docs/hardening.md`).
 - **cgroup awareness.** challoc reads its memory cgroup's effective limit
-  and pressure, and returns freed memory faster and with the right advice
+  and usage, and returns freed memory faster and with the right advice
   as usage nears the limit (`docs/tuning.md` section 4).
 - **Runtime feature probing.** One binary runs on the floor below and uses
   whatever newer kernels and CPUs offer, found at init, never at build time.
@@ -161,7 +161,6 @@ features:` (`docs/design.md` section 17).
 | `MADV_GUARD_INSTALL`         | kernel 6.13   | Guard slabs and guards after huge runs     | `PROT_NONE` page after huge runs; no guard slabs |
 | `PR_SET_VMA_ANON_NAME`       | kernel 5.17   | Named heap mappings in `/proc/pid/maps`    | Skip                              |
 | `mseal`                      | kernel 6.10   | Seals the never-committed parts of the reservations (the gaps between class regions, the slack around the huge and metadata regions) at init; not the regions or the region table | Skip (also when seccomp filters it, as Docker's default profile does) |
-| PSI triggers                 | kernel 6.4 (unprivileged) | Background thread arms `some 150000 1000000` on the cgroup's `memory.pressure` (or the unprivileged `some 300000 2000000`); a fire takes a sample, re-evaluates the policy and runs a decay pass at once | Sample `memory.current` on the tick; also when the write is refused (Docker's default profile mounts the cgroup read-only: `EROFS`; with `nsdelegate` on the host a container's root cgroup refuses the write: `EPERM`) |
 | Transparent huge pages       | any kernel with THP; per-size knobs since 6.8 | Opt-in: `thp:auto` advises 64 KiB folios on the slab groups and metadata where the host enables `hugepages-64kB` without `madvise`-gating 2 MiB pages (never a 2 MiB page, so fork stays cheap); `thp:always` commits and advises 2 MiB chunks (at 4 KiB pages; the folio path at 16 and 64 KiB, whose PMD is 32 and 512 MiB), huge runs and metadata; `thp:never` issues `MADV_NOHUGEPAGE` on the class superblock and the metadata region, so the slab regions get no huge page on a host whose global mode is `always`, and leaves the huge region (allocations of a page or more) to the host's policy, as jemalloc's `never` leaves its large allocations (the `thp:` report line says `nohuge 2 (classes, metadata; huge follows host)`); the report's `thp:` line names the host's global mode | Off (`thp:never`, the default) |
 | PAC `pac`                    | arm64 CPU (Armv8.3) and kernel, `AT_HWCAP` | Opt-in signed cache pointers (`pac_pointers`) | Plain pointers |
 

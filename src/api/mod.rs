@@ -382,9 +382,6 @@ extern "C" fn fork_parent() {
 /// locked, the background thread is marked absent (design 8.1).
 extern "C" fn fork_child() {
     purge::background::fork_child();
-    // The parent's PSI trigger descriptor was closed by `fork_child` above;
-    // the child's cgroup record says so until a thread of its own arms one.
-    shared().cgroup.set_psi_unavailable(0);
     fork_release();
 }
 
@@ -672,11 +669,8 @@ mod tests {
         s.set_decay_ms((old_ns / 1_000_000) as i64);
 
         // A real fork: the child handler forgets the thread and the
-        // request in the child, and leaves this process's thread, its
-        // eventfd and its PSI trigger alone. Running the handler in this
-        // process instead would close the eventfd the thread sleeps on in
-        // `ppoll` while PSI is armed, and the kick below could not reach
-        // it. The child checks with atomics and the state lock only and
+        // request in the child, and leaves this process's thread alone.
+        // The child checks with atomics and the state lock only and
         // answers through its exit status.
         assert!(purge::background::thread().is_some(), "no thread record");
         let pid = unsafe { ::libc::fork() };
@@ -701,10 +695,9 @@ mod tests {
         );
         assert!(purge::background::present() && purge::background::requested(), "the fork stopped the parent's thread");
 
-        // Withdraw the request: the kick wakes the thread (through the
-        // eventfd while PSI is armed) and it exits there; the exit is
-        // asynchronous, so wait for it, bounded, and join it.
-        let psi = s.cgroup.psi_armed();
+        // Withdraw the request: the kick wakes the thread and it exits
+        // there; the exit is asynchronous, so wait for it, bounded, and
+        // join it.
         purge::background::request(false);
         let mut stopped = false;
         for _ in 0..400 {
@@ -714,7 +707,7 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        assert!(stopped, "background thread did not stop at the kick (psi_armed {psi}): {:?}", tasks());
+        assert!(stopped, "background thread did not stop at the kick: {:?}", tasks());
         assert!(purge::background::join_exited(), "no exited thread to join");
         assert!(purge::background::thread().is_none());
         // Joined, the task leaves /proc/self/task as the kernel reaps it.

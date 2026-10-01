@@ -2,22 +2,20 @@
 //!
 //! This is the measurement layer only: where the process's cgroup is, what
 //! its effective memory limits are, how much it is charged right now, and
-//! whether the kernel has raised the `high`/`max` event counters or a
-//! pressure-stall trigger. The policy that acts on the figures is
+//! whether the kernel has raised the `high`/`max` event counters. The policy that acts on the figures is
 //! `policy.rs` (design 11): the headroom band over
 //! the effective limit (the retention cap, the decay window, cache GC at
 //! every tick and the immediate purge above 90%), the lazy-or-eager purge
 //! advice (`MADV_FREE` under 70% of a known limit, `MADV_DONTNEED` above),
-//! the full purge on a `high` event, the `thp:always` force to `never`
-//! under 1 GiB, and the decay pass the PSI trigger requests from the
-//! background thread; `stats.cgroup.*` and `malloc_stats_print` expose the
-//! same figures.
+//! the full purge on a `high` event and the `thp:always` force to `never`
+//! under 1 GiB; `stats.cgroup.*` and `malloc_stats_print` expose the same
+//! figures.
 //!
 //! Everything is read with raw `open`/`read`/`close` on fixed-size stack
 //! buffers through `sys`, never libc stdio, and nothing here allocates. The
 //! parsers at the top of the module are pure functions over byte slices and
 //! are unit tested on the host with captured file contents; the runtime
-//! half (`discover`, `sample`, the PSI trigger) is Linux-only and exercised
+//! half (`discover`, `sample`) is Linux-only and exercised
 //! in the container.
 //!
 //! Costs: discovery is one read of `/proc/self/cgroup`, one line scan of
@@ -25,11 +23,10 @@
 //! once at init. Sampling is two small reads at most once per
 //! [`SAMPLE_INTERVAL_NS`] (10 ms on `CLOCK_MONOTONIC_COARSE`), from slow
 //! paths only; the limit walk is repeated at most once per
-//! [`LIMIT_INTERVAL_NS`] so a `docker update --memory` is seen. The PSI
-//! trigger lives in the background thread and costs nothing elsewhere.
+//! [`LIMIT_INTERVAL_NS`] so a `docker update --memory` is seen.
 
 use core::fmt;
-use core::sync::atomic::{AtomicI32, AtomicU64, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::parse_decimal;
 
@@ -40,9 +37,9 @@ pub const PATH_CAP: usize = 2048;
 /// Room after the directory for `/` plus the longest file name read here
 /// (`cpuset.cpus.effective`, 21 bytes) plus the NUL.
 const FILE_ROOM: usize = 32;
-/// Buffer for one cgroup file. `memory.events` is a handful of lines,
-/// `memory.pressure` two; `/proc/self/cgroup` can carry a dozen v1 lines
-/// on a hybrid host and still fits.
+/// Buffer for one cgroup file. `memory.events` is a handful of lines;
+/// `/proc/self/cgroup` can carry a dozen v1 lines on a hybrid host and
+/// still fits.
 const FILE_BUF: usize = 1024;
 /// Chunk size for the `/proc/self/mountinfo` line scan.
 const SCAN_BUF: usize = 2048;
@@ -54,14 +51,6 @@ pub const SAMPLE_INTERVAL_NS: u64 = 10_000_000;
 pub const LIMIT_INTERVAL_NS: u64 = 1_000_000_000;
 /// `max` in a limit file: no limit at this level.
 pub const UNLIMITED: u64 = u64::MAX;
-
-/// The PSI trigger of design 11: `some` stall of 150 ms in a 1 s window.
-/// Windows under 2 s need `CAP_SYS_RESOURCE`, so an unprivileged process
-/// falls back to [`PSI_TRIGGER_UNPRIVILEGED`].
-pub const PSI_TRIGGER: &[u8] = b"some 150000 1000000";
-/// The same 15% ratio with the smallest window an unprivileged process may
-/// ask for (kernel 6.4+: windows that are a multiple of 2 s).
-pub const PSI_TRIGGER_UNPRIVILEGED: &[u8] = b"some 300000 2000000";
 
 // ---------------------------------------------------------------------------
 // Pure parsing (unit tested against captured contents).
@@ -181,66 +170,6 @@ pub fn parse_events(contents: &[u8]) -> Events {
         }
     }
     e
-}
-
-/// The `some` and `full` lines of `memory.pressure`:
-/// `some avg10=0.00 avg60=0.00 avg300=0.00 total=0`. `total` is
-/// microseconds of stall since the cgroup was created; `avg10` is kept in
-/// hundredths of a percent.
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub struct Pressure {
-    pub some_avg10_centi: u32,
-    pub some_total_us: u64,
-    pub full_avg10_centi: u32,
-    pub full_total_us: u64,
-}
-
-/// `12.34` as 1234; `0.5` as 50; `7` as 700.
-fn parse_centi(bytes: &[u8]) -> Option<u32> {
-    let mut it = bytes.splitn(2, |&b| b == b'.');
-    let whole = parse_u64_prefix(it.next()?)?;
-    let frac = match it.next() {
-        None => 0,
-        Some(f) => {
-            let mut v = 0u64;
-            let mut digits = 0;
-            for &b in f.iter().take(2) {
-                if !b.is_ascii_digit() {
-                    return None;
-                }
-                v = v * 10 + (b - b'0') as u64;
-                digits += 1;
-            }
-            if digits == 1 {
-                v *= 10;
-            }
-            v
-        }
-    };
-    u32::try_from(whole.checked_mul(100)?.checked_add(frac)?).ok()
-}
-
-pub fn parse_pressure(contents: &[u8]) -> Option<Pressure> {
-    let mut p = Pressure::default();
-    let mut seen_some = false;
-    for line in lines(contents) {
-        let mut fields = line.split(|&b| b == b' ').filter(|f| !f.is_empty());
-        let kind = fields.next()?;
-        let (avg10, total) = match kind {
-            b"some" => (&mut p.some_avg10_centi, &mut p.some_total_us),
-            b"full" => (&mut p.full_avg10_centi, &mut p.full_total_us),
-            _ => continue,
-        };
-        for f in fields {
-            if let Some(v) = f.strip_prefix(b"avg10=") {
-                *avg10 = parse_centi(v)?;
-            } else if let Some(v) = f.strip_prefix(b"total=") {
-                *total = parse_u64_prefix(v)?;
-            }
-        }
-        seen_some |= kind == b"some";
-    }
-    seen_some.then_some(p)
 }
 
 /// `cpu.max`: `$QUOTA $PERIOD` in microseconds, or `max $PERIOD`. Only
@@ -386,21 +315,6 @@ pub enum State {
     Tracked = 4,
 }
 
-/// Outcome of arming the PSI trigger.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-#[repr(u8)]
-pub enum Psi {
-    /// No background thread has tried yet.
-    Unprobed = 0,
-    /// [`PSI_TRIGGER`] accepted.
-    Armed = 1,
-    /// [`PSI_TRIGGER_UNPRIVILEGED`] accepted (the 1 s window was refused).
-    ArmedUnprivileged = 2,
-    /// The kernel refused both, the file is missing, or the thread that
-    /// held the trigger has exited (`psi_errno` says which).
-    Unavailable = 3,
-}
-
 /// The process's memory cgroup as last read (design 11). One per process,
 /// inside `heap::Shared`; written by `discover` at init and by the
 /// samplers afterwards, so every mutable field is an atomic.
@@ -416,7 +330,6 @@ pub struct Cgroup {
     has_limit_files: bool,
     has_current: bool,
     has_events: bool,
-    has_pressure: bool,
     /// Effective `memory.max`: the minimum over the walk; [`UNLIMITED`].
     limit: AtomicU64,
     /// Effective `memory.high`, likewise.
@@ -437,10 +350,6 @@ pub struct Cgroup {
     events_oom_kill: AtomicU64,
     high_rises: AtomicU64,
     max_rises: AtomicU64,
-    /// PSI trigger fires seen by the background thread.
-    pressure_events: AtomicU64,
-    psi: AtomicU8,
-    psi_errno: AtomicI32,
     /// `cpu.max` and `cpuset.cpus.effective` at init (design 15; 0 CPUs
     /// and `UNLIMITED` quota when absent).
     cpu_quota_us: u64,
@@ -459,7 +368,6 @@ impl Cgroup {
             has_limit_files: false,
             has_current: false,
             has_events: false,
-            has_pressure: false,
             limit: AtomicU64::new(UNLIMITED),
             high: AtomicU64::new(UNLIMITED),
             current: AtomicU64::new(0),
@@ -472,9 +380,6 @@ impl Cgroup {
             events_oom_kill: AtomicU64::new(0),
             high_rises: AtomicU64::new(0),
             max_rises: AtomicU64::new(0),
-            pressure_events: AtomicU64::new(0),
-            psi: AtomicU8::new(Psi::Unprobed as u8),
-            psi_errno: AtomicI32::new(0),
             cpu_quota_us: UNLIMITED,
             cpu_period_us: 0,
             cpus_effective: 0,
@@ -553,23 +458,6 @@ impl Cgroup {
         (self.high_rises.load(Ordering::Relaxed), self.max_rises.load(Ordering::Relaxed))
     }
 
-    pub fn pressure_events(&self) -> u64 {
-        self.pressure_events.load(Ordering::Relaxed)
-    }
-
-    pub fn psi(&self) -> Psi {
-        match self.psi.load(Ordering::Relaxed) {
-            1 => Psi::Armed,
-            2 => Psi::ArmedUnprivileged,
-            3 => Psi::Unavailable,
-            _ => Psi::Unprobed,
-        }
-    }
-
-    pub fn psi_armed(&self) -> bool {
-        matches!(self.psi(), Psi::Armed | Psi::ArmedUnprivileged)
-    }
-
     pub fn has_limit_files(&self) -> bool {
         self.has_limit_files
     }
@@ -580,10 +468,6 @@ impl Cgroup {
 
     pub fn has_events(&self) -> bool {
         self.has_events
-    }
-
-    pub fn has_pressure(&self) -> bool {
-        self.has_pressure
     }
 
     pub fn cpu_max(&self) -> CpuMax {
@@ -597,18 +481,6 @@ impl Cgroup {
     /// Coarse time of the last `memory.current` sample (0 before the first).
     pub fn sampled_at(&self) -> u64 {
         self.sampled_at.load(Ordering::Relaxed)
-    }
-
-    /// The background thread's trigger is gone (thread exit, fork child,
-    /// the cgroup removed under it).
-    pub fn set_psi_unavailable(&self, errno: i32) {
-        self.psi.store(Psi::Unavailable as u8, Ordering::Relaxed);
-        self.psi_errno.store(errno, Ordering::Relaxed);
-    }
-
-    /// Errno of the failed trigger write, 0 if none.
-    pub fn psi_errno(&self) -> i32 {
-        self.psi_errno.load(Ordering::Relaxed)
     }
 }
 
@@ -648,7 +520,7 @@ impl fmt::Display for Cgroup {
         let (hr, mr) = self.rises();
         write!(
             f,
-            "cgroup: {} (mount {}, path {}) limit {} high {} current {} events high {} (+{}) max {} (+{}) psi ",
+            "cgroup: {} (mount {}, path {}) limit {} high {} current {} events high {} (+{}) max {} (+{})",
             Bytes(self.dir()),
             Bytes(self.mount()),
             Bytes(self.path()),
@@ -660,23 +532,9 @@ impl fmt::Display for Cgroup {
             self.events().max,
             mr,
         )?;
-        match self.psi() {
-            Psi::Unprobed => {
-                if self.has_pressure {
-                    f.write_str("not armed (no background thread)")?
-                } else {
-                    f.write_str("no memory.pressure")?
-                }
-            }
-            Psi::Armed => write!(f, "armed ({})", Bytes(PSI_TRIGGER))?,
-            Psi::ArmedUnprivileged => write!(f, "armed ({})", Bytes(PSI_TRIGGER_UNPRIVILEGED))?,
-            Psi::Unavailable if self.psi_errno() == 0 => f.write_str("disarmed (background thread gone)")?,
-            Psi::Unavailable => write!(f, "unavailable ({})", crate::sys::Errno(self.psi_errno()))?,
-        }
         write!(
             f,
-            " pressure_events {} cpus {} cpu.max {}/{}",
-            self.pressure_events(),
+            " cpus {} cpu.max {}/{}",
             self.cpus_effective,
             Limit(self.cpu_quota_us),
             self.cpu_period_us
@@ -686,7 +544,7 @@ impl fmt::Display for Cgroup {
 
 mod linux {
     use super::*;
-    use crate::sys::{self, Errno, O_RDONLY, O_RDWR, read_small_file};
+    use crate::sys::{self, O_RDONLY, read_small_file};
 
     /// `dir/name`, NUL-terminated, in `out`.
     fn file_path<'a>(out: &'a mut [u8; PATH_CAP + FILE_ROOM], dir: &[u8], name: &[u8]) -> &'a [u8] {
@@ -759,7 +617,6 @@ mod linux {
             cg.has_limit_files = read_in(dir, b"memory.max", &mut buf).is_some();
             cg.has_current = read_in(dir, b"memory.current", &mut buf).is_some();
             cg.has_events = read_in(dir, b"memory.events", &mut buf).is_some();
-            cg.has_pressure = read_in(dir, b"memory.pressure", &mut buf).is_some_and(|n| parse_pressure(&buf[..n]).is_some());
             if let Some(n) = read_in(dir, b"cpu.max", &mut buf) {
                 if let Some(c) = parse_cpu_max(&buf[..n]) {
                     cg.cpu_quota_us = c.quota_us;
@@ -819,61 +676,6 @@ mod linux {
             }
             self.sample_now(now);
             true
-        }
-
-        /// Open `memory.pressure` and write the trigger (design 11): the
-        /// 1 s window first, then the unprivileged 2 s form if the kernel
-        /// refuses it with `EINVAL`. Returns the descriptor to `ppoll`
-        /// for `POLLPRI`; closing it disarms the trigger. Any failure is
-        /// recorded as [`Psi::Unavailable`] with its errno; nothing is
-        /// inferred from the kernel version. Called by the background
-        /// thread only.
-        pub fn arm_pressure(&self) -> Option<i32> {
-            if !self.tracked() || !self.has_pressure {
-                self.set_psi_unavailable(if self.tracked() { Errno::ENOENT.0 } else { 0 });
-                return None;
-            }
-            let mut p = [0u8; PATH_CAP + FILE_ROOM];
-            let path = file_path(&mut p, self.dir(), b"memory.pressure");
-            let fd = match sys::open(path, O_RDWR) {
-                Ok(fd) => fd,
-                Err(e) => {
-                    self.set_psi_unavailable(e.0);
-                    return None;
-                }
-            };
-            let mut outcome = match sys::write(fd, PSI_TRIGGER) {
-                Ok(n) if n == PSI_TRIGGER.len() => Ok(Psi::Armed),
-                Ok(_) => Err(Errno::EINVAL),
-                Err(e) => Err(e),
-            };
-            if outcome == Err(Errno::EINVAL) {
-                outcome = match sys::write(fd, PSI_TRIGGER_UNPRIVILEGED) {
-                    Ok(n) if n == PSI_TRIGGER_UNPRIVILEGED.len() => Ok(Psi::ArmedUnprivileged),
-                    Ok(_) => Err(Errno::EINVAL),
-                    Err(e) => Err(e),
-                };
-            }
-            match outcome {
-                Ok(p) => {
-                    self.psi.store(p as u8, Ordering::Relaxed);
-                    self.psi_errno.store(0, Ordering::Relaxed);
-                    Some(fd)
-                }
-                Err(e) => {
-                    let _ = sys::close(fd);
-                    self.set_psi_unavailable(e.0);
-                    None
-                }
-            }
-        }
-
-        /// The trigger fired: count it and take a sample outside the rate
-        /// limit, so the figures the next decay pass reads are current.
-        pub fn note_pressure_event(&self, now: u64) {
-            self.pressure_events.fetch_add(1, Ordering::Relaxed);
-            self.sampled_at.store(now, Ordering::Relaxed);
-            self.sample_now(now);
         }
     }
 }
@@ -980,31 +782,6 @@ mod tests {
         assert_eq!(cg.rises(), (2, 2));
         let s = std::format!("{cg}");
         assert!(s.contains(" events high 5 (+2) max 2 (+2) "), "{s}");
-    }
-
-    #[test]
-    fn pressure_files() {
-        let p = parse_pressure(
-            b"some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
-        )
-        .unwrap();
-        assert_eq!(p, Pressure::default());
-        let p = parse_pressure(
-            b"some avg10=12.34 avg60=1.50 avg300=0.07 total=123456\nfull avg10=0.5 avg60=0.00 avg300=0.00 total=789\n",
-        )
-        .unwrap();
-        assert_eq!(p.some_avg10_centi, 1234);
-        assert_eq!(p.some_total_us, 123_456);
-        assert_eq!(p.full_avg10_centi, 50);
-        assert_eq!(p.full_total_us, 789);
-        // The root's /proc/pressure/memory has the same shape; a file with
-        // no `some` line is not a pressure file.
-        assert_eq!(parse_pressure(b""), None);
-        assert_eq!(parse_pressure(b"full avg10=0.00 total=0\n"), None);
-        assert_eq!(parse_pressure(b"some avg10=x total=0\n"), None);
-        assert_eq!(parse_centi(b"7"), Some(700));
-        assert_eq!(parse_centi(b"0.5"), Some(50));
-        assert_eq!(parse_centi(b"100.00"), Some(10000));
     }
 
     #[test]
@@ -1215,26 +992,12 @@ mod tests {
             assert_eq!(cg.limit(), UNLIMITED);
             assert_eq!(cg.high(), UNLIMITED);
             assert_eq!(cg.current(), 0);
-            assert_eq!(cg.psi(), Psi::Unprobed);
             let s = std::format!("{cg}");
             assert!(s.starts_with(needle), "{s}");
         }
         let cg = Cgroup::discover(false);
         assert_eq!(cg.state(), State::Disabled);
         assert!(!cg.sample(u64::MAX));
-        // The trigger strings print with their spaces, which is what the
-        // C test greps for in the report.
-        let cg = Cgroup::untracked(State::Tracked);
-        cg.psi.store(Psi::Armed as u8, Ordering::Relaxed);
-        let s = std::format!("{cg}");
-        assert!(s.contains("psi armed (some 150000 1000000) pressure_events 0"), "{s}");
-        cg.psi.store(Psi::ArmedUnprivileged as u8, Ordering::Relaxed);
-        let s = std::format!("{cg}");
-        assert!(s.contains("psi armed (some 300000 2000000)"), "{s}");
-        cg.set_psi_unavailable(30);
-        assert!(std::format!("{cg}").contains("psi unavailable (EROFS)"));
-        cg.set_psi_unavailable(0);
-        assert!(std::format!("{cg}").contains("psi disarmed (background thread gone)"));
     }
 }
 
@@ -1317,11 +1080,10 @@ mod linux_tests {
                     }
                 }
                 eprintln!(
-                    "cgroup: memory.max={} memory.high={} memory.current={} memory.pressure={}",
+                    "cgroup: memory.max={} memory.high={} memory.current={}",
                     read_opt(&format!("{dir}/memory.max")).unwrap_or_else(|| "(absent)".into()).trim(),
                     read_opt(&format!("{dir}/memory.high")).unwrap_or_else(|| "(absent)".into()).trim(),
                     read_opt(&format!("{dir}/memory.current")).unwrap_or_else(|| "(absent)".into()).trim(),
-                    read_opt(&format!("{dir}/memory.pressure")).unwrap_or_else(|| "(absent)\n".into()).lines().next().unwrap_or(""),
                 );
                 if cg.has_current() {
                     // This process is charged to its own cgroup, so the
@@ -1396,67 +1158,5 @@ mod linux_tests {
         eprintln!("cgroup: memory.current {before} -> {after} after 64 MiB (kernel says {kernel})");
         assert!(after.abs_diff(kernel) <= 32 << 20, "sample {after} vs file {kernel}");
         drop(v);
-    }
-
-    #[test]
-    fn pressure_trigger_probe() {
-        let cg = Cgroup::discover(true);
-        let root_psi = std::path::Path::new("/proc/pressure/memory").exists();
-        let file_psi = cg.tracked() && cg.has_pressure();
-        eprintln!("cgroup: /proc/pressure/memory {}; memory.pressure {}", root_psi, if file_psi { "present" } else { "absent" });
-        let fd = cg.arm_pressure();
-        eprintln!("cgroup: PSI trigger: {:?} errno {} fd {:?}", cg.psi(), cg.psi_errno(), fd);
-        match fd {
-            Some(fd) => {
-                assert!(cg.psi_armed());
-                assert!(file_psi);
-                // Nothing is stalling: a zero-timeout poll reports nothing.
-                let mut fds = [sys::PollFd { fd, events: sys::POLLPRI, revents: 0 }];
-                let zero = sys::Timespec::default();
-                let n = sys::ppoll(&mut fds, Some(&zero)).unwrap();
-                assert_eq!(n, 0, "{:?}", fds[0]);
-                sys::close(fd).unwrap();
-            }
-            None => {
-                assert_eq!(cg.psi(), Psi::Unavailable);
-                if file_psi {
-                    // The file exists but the write was refused (a read-only
-                    // cgroup mount, or a kernel that wants a capability):
-                    // the errno says which, and it must be one of those.
-                    let e = sys::Errno(cg.psi_errno());
-                    assert!(
-                        matches!(e, sys::Errno::EINVAL | sys::Errno::EPERM | sys::Errno::EACCES | sys::Errno::EROFS | sys::Errno::ENOENT),
-                        "{e}"
-                    );
-                }
-            }
-        }
-        // A pressure event bumps the counter and samples at once.
-        if cg.tracked() {
-            let before = cg.pressure_events();
-            cg.note_pressure_event(sys::now_coarse_ns());
-            assert_eq!(cg.pressure_events(), before + 1);
-        }
-    }
-
-    #[test]
-    fn eventfd_and_ppoll_work() {
-        let fd = sys::eventfd(0, sys::EFD_CLOEXEC | sys::EFD_NONBLOCK).unwrap();
-        let mut fds = [sys::PollFd { fd, events: sys::POLLIN, revents: 0 }];
-        let zero = sys::Timespec::default();
-        assert_eq!(sys::ppoll(&mut fds, Some(&zero)), Ok(0));
-        // A short timed wait returns 0 too and comes back.
-        let short = sys::Timespec { sec: 0, nsec: 5_000_000 };
-        assert_eq!(sys::ppoll(&mut fds, Some(&short)), Ok(0));
-        assert_eq!(sys::write(fd, &1u64.to_ne_bytes()), Ok(8));
-        assert_eq!(sys::ppoll(&mut fds, Some(&zero)), Ok(1));
-        assert_ne!(fds[0].revents & sys::POLLIN, 0);
-        let mut b = [0u8; 8];
-        assert_eq!(sys::read(fd, &mut b), Ok(8));
-        assert_eq!(u64::from_ne_bytes(b), 1);
-        assert_eq!(sys::read(fd, &mut b), Err(sys::Errno::EAGAIN));
-        sys::close(fd).unwrap();
-        assert_eq!(sys::ppoll(&mut fds, Some(&zero)), Ok(1));
-        assert_ne!(fds[0].revents & sys::POLLNVAL, 0);
     }
 }

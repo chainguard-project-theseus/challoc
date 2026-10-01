@@ -731,10 +731,9 @@ ctests! {
     /// `ENOENT`, the report says `not tracked (cgroup:false)`) and the key is
     /// accepted by `abort_conf`, since it is no longer inert.
     c_cgroup_off => [ CTest { prog: "cgroup", args: &["off"], conf: Some("cgroup:false,abort_conf:true"), ..BASE } ];
-    /// `tests/c/cgroup.c bg`: with a background thread the report says whether
-    /// the PSI trigger on `memory.pressure` was armed (Docker's default profile
-    /// mounts the cgroup read-only, so "unavailable (EROFS)" is a pass with a
-    /// `SKIP` line), and `pressure_events` is 0 under no pressure.
+    /// `tests/c/cgroup.c bg`: with a background thread the cgroup is still
+    /// tracked and sampled: the report prints the tracked `cgroup:` line and
+    /// `stats.cgroup.current` follows the kernel's `memory.current`.
     c_cgroup_background_thread => [
         CTest { prog: "cgroup", args: &["bg"], conf: Some("background_thread:true,abort_conf:true"), ..BASE },
     ];
