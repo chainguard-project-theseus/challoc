@@ -23,8 +23,9 @@ use core::fmt;
 
 use super::auxv::{AT_PAGESZ, getauxval};
 use super::thp_host::Thp;
+use crate::sys;
 use super::{
-    self as sys, IoVec, MADV_DONTNEED, MADV_FREE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE, MAP_ANONYMOUS,
+    IoVec, MADV_DONTNEED, MADV_FREE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE, MAP_ANONYMOUS,
     MAP_PRIVATE, PIDFD_SELF, PROT_NONE, PROT_READ, PROT_WRITE, yn,
 };
 
