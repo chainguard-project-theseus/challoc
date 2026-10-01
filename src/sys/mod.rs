@@ -14,6 +14,8 @@ pub mod cgroup;
 pub mod errno;
 pub mod features;
 pub mod pac;
+pub mod thp_host;
+pub mod tls;
 pub use errno::{Errno, decode};
 
 mod abort;
@@ -96,28 +98,18 @@ pub const STDERR_FILENO: i32 = 2;
 
 // ---- pure helpers shared by the probes and the cgroup parsers ----------
 
-/// `yes` or `no`: the value of every boolean key of the feature line and
-/// the CPU report.
+/// `yes` or `no`: the value of every boolean key of the feature line.
 pub const fn yn(b: bool) -> &'static str {
     if b { "yes" } else { "no" }
 }
 
-/// What [`parse_decimal`] accepts after the digits.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum Trailing {
-    /// Anything: `42 x` and `2097152\n` both read 42 and 2097152 (a
-    /// `memory.events` value, a sysfs number with its newline).
-    Ignore,
-    /// Newlines only: `1\n` reads 1, `1x` is `None` (the cache `level`
-    /// files, where a stray byte means the file is not what was expected).
-    Newlines,
-}
-
-/// The leading decimal digits of `bytes` as a `u64`; `None` without a
-/// digit, on overflow, or when `trailing` refuses what follows them.
-pub fn parse_decimal(bytes: &[u8], trailing: Trailing) -> Option<u64> {
+/// The leading decimal digits of `bytes` as a `u64`, whatever follows
+/// them: `42 x` and `2097152\n` read 42 and 2097152 (a `memory.events`
+/// value, a sysfs number with its newline). `None` without a digit or on
+/// overflow.
+pub fn parse_decimal(bytes: &[u8]) -> Option<u64> {
     let digits = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
-    if digits == 0 || (trailing == Trailing::Newlines && !bytes[digits..].iter().all(|&b| b == b'\n')) {
+    if digits == 0 {
         return None;
     }
     bytes[..digits].iter().try_fold(0u64, |acc, &b| acc.checked_mul(10)?.checked_add(u64::from(b - b'0')))
@@ -225,14 +217,6 @@ mod linux {
         // SAFETY: forwarded to the caller's contract.
         decode(unsafe { raw::syscall3(nr::MADVISE, addr, len, advice as isize as usize) })
             .map(|_| ())
-    }
-
-    /// `mincore(2)`: one byte per page of `[addr, addr + len)` into `vec`
-    /// (bit 0 set when resident). `vec` must hold `len / page` bytes.
-    pub fn mincore(addr: usize, len: usize, vec: &mut [u8]) -> Result<(), Errno> {
-        // SAFETY: the kernel writes at most `len / page` bytes, which the
-        // caller sized `vec` for; nothing else is read or written.
-        decode(unsafe { raw::syscall3(nr::MINCORE, addr, len, vec.as_mut_ptr() as usize) }).map(|_| ())
     }
 
     /// `process_madvise(2)`. Returns the number of bytes advised.
@@ -665,7 +649,7 @@ mod linux {
 
 #[cfg(test)]
 mod pure_tests {
-    use super::{Trailing, parse_decimal, yn};
+    use super::{parse_decimal, yn};
 
     #[test]
     fn yes_no() {
@@ -678,21 +662,17 @@ mod pure_tests {
     /// refuses anything else, both refuse an empty prefix and overflow.
     #[test]
     fn decimal_prefixes_and_trailing_bytes() {
-        for t in [Trailing::Ignore, Trailing::Newlines] {
-            assert_eq!(parse_decimal(b"2097152\n", t), Some(2097152), "{t:?}");
-            assert_eq!(parse_decimal(b"0", t), Some(0), "{t:?}");
-            assert_eq!(parse_decimal(b"18446744073709551615\n", t), Some(u64::MAX), "{t:?}");
-            assert_eq!(parse_decimal(b"18446744073709551616\n", t), None, "{t:?}: overflow");
-            assert_eq!(parse_decimal(b"", t), None, "{t:?}");
-            assert_eq!(parse_decimal(b"\n", t), None, "{t:?}");
-            assert_eq!(parse_decimal(b"-1\n", t), None, "{t:?}");
-            assert_eq!(parse_decimal(b"x", t), None, "{t:?}");
-        }
-        assert_eq!(parse_decimal(b"42 x", Trailing::Ignore), Some(42));
-        assert_eq!(parse_decimal(b"64K\n", Trailing::Ignore), Some(64));
-        assert_eq!(parse_decimal(b"42 x", Trailing::Newlines), None);
-        assert_eq!(parse_decimal(b"64K\n", Trailing::Newlines), None);
-        assert_eq!(parse_decimal(b"1\n\n", Trailing::Newlines), Some(1));
+        assert_eq!(parse_decimal(b"2097152\n"), Some(2097152));
+        assert_eq!(parse_decimal(b"0"), Some(0));
+        assert_eq!(parse_decimal(b"18446744073709551615\n"), Some(u64::MAX));
+        assert_eq!(parse_decimal(b"18446744073709551616\n"), None, "overflow");
+        assert_eq!(parse_decimal(b""), None);
+        assert_eq!(parse_decimal(b"\n"), None);
+        assert_eq!(parse_decimal(b"-1\n"), None);
+        assert_eq!(parse_decimal(b"x"), None);
+        assert_eq!(parse_decimal(b"42 x"), Some(42));
+        assert_eq!(parse_decimal(b"64K\n"), Some(64));
+        assert_eq!(parse_decimal(b"1\n\n"), Some(1));
     }
 }
 

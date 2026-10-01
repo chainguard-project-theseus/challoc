@@ -30,7 +30,7 @@ pub const TLS_EXITED: usize = 2;
 /// `existing_heap` from handing it out).
 pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
     let h = p as *mut Heap;
-    crate::tls::set(TLS_EXITED as *mut c_void);
+    crate::sys::tls::set(TLS_EXITED as *mut c_void);
     // SAFETY: the pointer was registered by `heap_for_thread` for this thread.
     unsafe {
         let shared = &*(*h).shared;
@@ -52,7 +52,7 @@ pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
 /// not be stored beyond the call.
 #[inline(always)]
 pub fn heap_for_thread(shared: &Shared) -> Option<&mut Heap> {
-    let (t, tp) = crate::tls::get_tp();
+    let (t, tp) = crate::sys::tls::get_tp();
     let t = t as usize;
     if t > TLS_EXITED {
         // Anything above the sentinels is this thread's heap pointer,
@@ -69,7 +69,7 @@ pub fn heap_for_thread(shared: &Shared) -> Option<&mut Heap> {
 /// thread pointer when `shared.pac()`, else `h` itself.
 fn tls_value_for(shared: &Shared, h: *mut Heap) -> *mut c_void {
     if shared.pac() {
-        let (_, tp) = crate::tls::get_tp();
+        let (_, tp) = crate::sys::tls::get_tp();
         pac::sign(h as usize, tp) as *mut c_void
     } else {
         h as *mut c_void
@@ -86,9 +86,9 @@ fn create_heap_for_thread(shared: &Shared, slot: usize) -> Option<&mut Heap> {
     if h.is_null() {
         return None;
     }
-    crate::tls::set(TLS_CREATING as *mut c_void);
+    crate::sys::tls::set(TLS_CREATING as *mut c_void);
     shared.key.set(h);
-    crate::tls::set(tls_value_for(shared, h));
+    crate::sys::tls::set(tls_value_for(shared, h));
     // SAFETY: freshly created and owned by this thread.
     Some(unsafe { &mut *h })
 }
@@ -125,7 +125,7 @@ pub fn existing_heap(shared: *const Shared) -> Option<&'static mut Heap> {
 /// the `autda`s sit behind their own predicted `tbz`s.)
 #[inline(always)]
 pub fn tls_heap_slot() -> Option<(usize, usize)> {
-    let (t, tp) = crate::tls::get_tp();
+    let (t, tp) = crate::sys::tls::get_tp();
     let t = t as usize;
     if t > TLS_EXITED { Some((t, tp)) } else { None }
 }

@@ -12,8 +12,8 @@
 //!
 //! The probes never allocate, take a few microseconds, and leave at most one
 //! `PROT_NONE` page mapped (the sealed page, which by definition cannot be
-//! unmapped again). The pure decoders are unit tested against captured
-//! inputs; the probes themselves run against the kernel the tests run on.
+//! unmapped again). The THP table is read by `sys::thp_host` and the rseq
+//! registration by `rseq::probe`; this module records both.
 //!
 //! The line is a table: [`Features::words`] yields every `(key, value)`
 //! pair in order, and `Display`, [`FeatureLine`] and the tests all iterate
@@ -21,7 +21,12 @@
 
 use core::fmt;
 
-use super::{Trailing, parse_decimal, yn};
+use super::auxv::{AT_PAGESZ, getauxval};
+pub use super::thp_host::{Thp, ThpSetting};
+use super::{
+    self as sys, IoVec, MADV_DONTNEED, MADV_FREE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE, MAP_ANONYMOUS,
+    MAP_PRIVATE, PIDFD_SELF, PROT_NONE, PROT_READ, PROT_WRITE, yn,
+};
 
 /// How batched purges (`process_madvise`, design.md section 8) can reach our
 /// own address space.
@@ -36,167 +41,6 @@ pub enum ProcessMadvise {
     /// and is `O_CLOEXEC`. After `fork` it names the parent, so the child
     /// must re-probe (design.md section 9) before purging through it.
     Pidfd(i32),
-}
-
-/// One transparent-huge-page sysfs setting, the bracketed word of
-/// `/sys/kernel/mm/transparent_hugepage/enabled` (`always [madvise] never`)
-/// or of a per-size `hugepages-<n>kB/enabled` (`always inherit madvise
-/// [never]`, kernel 6.8+).
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum ThpSetting {
-    Always,
-    /// Per-size files only: follow the top-level `enabled`.
-    Inherit,
-    Madvise,
-    Never,
-}
-
-impl ThpSetting {
-    pub const fn name(self) -> &'static str {
-        match self {
-            ThpSetting::Always => "always",
-            ThpSetting::Inherit => "inherit",
-            ThpSetting::Madvise => "madvise",
-            ThpSetting::Never => "never",
-        }
-    }
-}
-
-/// The bracketed word of a THP `enabled` file. `None` for anything that is
-/// not one of the four words in brackets (an empty or foreign file).
-pub fn parse_thp_setting(bytes: &[u8]) -> Option<ThpSetting> {
-    let open = bytes.iter().position(|&b| b == b'[')?;
-    let rest = &bytes[open + 1..];
-    let close = rest.iter().position(|&b| b == b']')?;
-    match &rest[..close] {
-        b"always" => Some(ThpSetting::Always),
-        b"inherit" => Some(ThpSetting::Inherit),
-        b"madvise" => Some(ThpSetting::Madvise),
-        b"never" => Some(ThpSetting::Never),
-        _ => None,
-    }
-}
-
-/// The kernel's transparent-huge-page configuration as read at init from
-/// `/sys/kernel/mm/transparent_hugepage` with raw syscalls (design 10 step
-/// 1). Folio sizes are bit sets over `log2(size)`:
-/// bit `k` set means the `1 << k`-byte size. Every candidate size from four
-/// pages up to the PMD is looked up by path, so a size the kernel does not
-/// list (a directory without an `enabled` file, as `hugepages-8kB` on 7.0,
-/// counts as unlisted) is simply absent, and a kernel before 6.8 with no
-/// per-size directories lists the PMD size alone under the top-level
-/// setting.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct Thp {
-    /// The top-level `enabled`; `None` when the file is missing (a kernel
-    /// without `CONFIG_TRANSPARENT_HUGEPAGE`).
-    pub enabled: Option<ThpSetting>,
-    /// `log2` of the PMD size (`hpage_pmd_size`, else `page * page / 8`).
-    pub lg_pmd: u8,
-    /// Sizes the kernel lists (has an `enabled` file for).
-    pub listed: u64,
-    /// Sizes whose effective setting is `always` (`inherit` resolved
-    /// through the top-level setting).
-    pub always: u64,
-    /// Sizes whose effective setting is `madvise`.
-    pub madvise: u64,
-}
-
-impl Thp {
-    /// No THP at all: nothing listed, nothing enabled.
-    pub const NONE: Thp = Thp { enabled: None, lg_pmd: 21, listed: 0, always: 0, madvise: 0 };
-
-    /// Compute the table from the files' contents: `read(path, buf)` fills
-    /// `buf` with the file at the NUL-terminated `path` and returns the
-    /// byte count, 0 when it is missing. Pure over the reader, so the
-    /// tests feed it fixtures.
-    pub fn from_reader(page: usize, mut read: impl FnMut(&[u8], &mut [u8]) -> usize) -> Thp {
-        const DIR: &[u8] = b"/sys/kernel/mm/transparent_hugepage/";
-        let mut buf = [0u8; 128];
-        let n = read(b"/sys/kernel/mm/transparent_hugepage/enabled\0", &mut buf);
-        let enabled = if n == 0 { None } else { parse_thp_setting(&buf[..n]) };
-        let lg_page = page.trailing_zeros() as u8;
-        let mut lg_pmd = (2 * lg_page).saturating_sub(3);
-        let n = read(b"/sys/kernel/mm/transparent_hugepage/hpage_pmd_size\0", &mut buf);
-        if let Some(v) = parse_decimal(&buf[..n], Trailing::Ignore) {
-            if v.is_power_of_two() && v.trailing_zeros() as u8 > lg_page {
-                lg_pmd = v.trailing_zeros() as u8;
-            }
-        }
-        let mut t = Thp { enabled, lg_pmd, listed: 0, always: 0, madvise: 0 };
-        let Some(top) = enabled else { return Thp::NONE };
-        // Every candidate size from two pages to the PMD: hugepages-<n>kB/enabled.
-        let mut path = [0u8; 96];
-        for lg in (lg_page + 1)..=lg_pmd {
-            let mut len = 0;
-            for &b in DIR.iter().chain(b"hugepages-") {
-                path[len] = b;
-                len += 1;
-            }
-            len += write_decimal(&mut path[len..], (1u64 << lg) >> 10);
-            for &b in b"kB/enabled\0" {
-                path[len] = b;
-                len += 1;
-            }
-            let n = read(&path[..len], &mut buf);
-            if n == 0 {
-                continue;
-            }
-            let Some(setting) = parse_thp_setting(&buf[..n]) else { continue };
-            t.listed |= 1 << lg;
-            match setting {
-                ThpSetting::Always => t.always |= 1 << lg,
-                ThpSetting::Madvise => t.madvise |= 1 << lg,
-                ThpSetting::Inherit => match top {
-                    ThpSetting::Always => t.always |= 1 << lg,
-                    ThpSetting::Madvise => t.madvise |= 1 << lg,
-                    _ => {}
-                },
-                ThpSetting::Never => {}
-            }
-        }
-        if t.listed == 0 {
-            // Before 6.8: the PMD size alone, under the top-level setting.
-            t.listed = 1 << lg_pmd;
-            match top {
-                ThpSetting::Always => t.always = 1 << lg_pmd,
-                ThpSetting::Madvise => t.madvise = 1 << lg_pmd,
-                _ => {}
-            }
-        }
-        t
-    }
-
-    /// Sizes a `MADV_HUGEPAGE`d range can be backed with: effective
-    /// `always` or `madvise`.
-    #[inline]
-    pub fn enabled_sizes(&self) -> u64 {
-        self.always | self.madvise
-    }
-
-    /// The enabled sizes below the PMD (the multi-size THP path).
-    #[inline]
-    pub fn sub_pmd_sizes(&self) -> u64 {
-        self.enabled_sizes() & ((1u64 << self.lg_pmd) - 1)
-    }
-
-    /// The effective setting of the PMD size: what `MADV_HUGEPAGE` would
-    /// change for 2 MiB pages. `Never` when nothing is listed.
-    pub fn pmd_setting(&self) -> ThpSetting {
-        let bit = 1u64 << self.lg_pmd;
-        if self.always & bit != 0 {
-            ThpSetting::Always
-        } else if self.madvise & bit != 0 {
-            ThpSetting::Madvise
-        } else {
-            ThpSetting::Never
-        }
-    }
-
-    /// `log2` of the smallest size in `set`, if any.
-    pub fn smallest(set: u64) -> Option<u8> {
-        (set != 0).then(|| set.trailing_zeros() as u8)
-    }
 }
 
 /// Bit sets of sizes as `64K,2M`, or `none`.
@@ -232,23 +76,6 @@ impl fmt::Display for LgSize {
             lg if lg >= 10 => write!(f, "{}K", 1u64 << (lg - 10)),
             lg => write!(f, "{}", 1u64 << lg),
         }
-    }
-}
-
-impl Thp {
-    /// The two THP keys: `thp=<setting|none> mthp=<sizes|none>`.
-    pub fn words(&self) -> impl Iterator<Item = (&'static str, Value)> {
-        [
-            ("thp", Value::Word(self.enabled.map_or("none", ThpSetting::name))),
-            ("mthp", Value::Sizes(self.enabled_sizes())),
-        ]
-        .into_iter()
-    }
-}
-
-impl fmt::Display for Thp {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_words(f, self.words())
     }
 }
 
@@ -294,49 +121,11 @@ pub fn write_words(f: &mut fmt::Formatter<'_>, words: impl Iterator<Item = (&'st
     Ok(())
 }
 
-/// `v` in decimal into `out`; returns the digit count.
-fn write_decimal(out: &mut [u8], mut v: u64) -> usize {
-    let mut tmp = [0u8; 20];
-    let mut n = 0;
-    loop {
-        tmp[n] = b'0' + (v % 10) as u8;
-        n += 1;
-        v /= 10;
-        if v == 0 {
-            break;
-        }
-    }
-    for i in 0..n {
-        out[i] = tmp[n - 1 - i];
-    }
-    n
-}
-
-/// The `rseq=` and `rseq_size=` words from `rseq::probe` (design 17; the
-/// three weak symbols the slice extension reads, read once at init, and
-/// this thread's `cpu_id`). `rseq=yes` when glibc registered an area
-/// (`__rseq_size` covers the original 20-byte struct, [`rseq::BASE_SIZE`])
-/// and the kernel has written this thread's `cpu_id`; `rseq_size` is the
-/// symbol's value even when the registration did not take (`0` without
-/// one: `GLIBC_TUNABLES=glibc.pthread.rseq=0` or a kernel without
-/// `CONFIG_RSEQ`; 33 on the 7.0 GCE kernels, 20 on a kernel that reports
-/// no feature size).
-///
-/// [`rseq::BASE_SIZE`]: crate::rseq::BASE_SIZE
-pub fn rseq_words(p: &crate::rseq::Probe) -> impl Iterator<Item = (&'static str, Value)> {
-    let registered = p.present && p.registered && p.size >= crate::rseq::BASE_SIZE;
-    [("rseq", Value::YesNo(registered)), ("rseq_size", Value::Num(u64::from(p.size)))].into_iter()
-}
-
-/// The kernel's answer for the rseq time slice extension (design 17, "Time
-/// slice extension"), the `slice_ext=` key of the
-/// feature line. The probe itself is `slice::probe` (`slice.rs`, read
-/// here through its public API, never duplicated): glibc's
-/// registration, its size against `slice_ctrl`, and bit 4 of the thread's
-/// `flags`. `Features::probe` records what the kernel offers before the
-/// configuration is read; `Features::note_slice_ext` folds in the
-/// configured outcome (`slice::configure`'s verdict) once `config::load`
-/// has run, so the word says what is in force, not only what could be.
+/// The `slice_ext=` key: the kernel's answer for the rseq time slice
+/// extension (design 17), from `slice::probe`. `Features::probe` records
+/// what the kernel offers; `Features::note_slice_ext` folds in
+/// `slice::configure`'s verdict once `config::load` has run, so the word
+/// says what is in force.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum SliceExt {
     /// The extension is requested by every lock holder of this process
@@ -348,8 +137,7 @@ pub enum SliceExt {
     /// The kernel offers it, the `prctl` enable failed on the init thread.
     PrctlFailed,
     /// `__rseq_size >= 32` but bit 4 clear: the kernel has the option
-    /// compiled out or disabled (`rseq_slice_ext=0`); Ubuntu's
-    /// `7.0.0-1011-gcp` on the GCE VMs.
+    /// compiled out or disabled (`rseq_slice_ext=0`).
     KernelDisabled,
     /// `__rseq_size < 32`: the kernel does not write `slice_ctrl` (6.18
     /// and earlier).
@@ -373,8 +161,7 @@ impl SliceExt {
     }
 
     /// What the kernel offers, from the probe's verdict alone (`Enabled`
-    /// there means "available": the probe does not enable). Pure, host
-    /// tested.
+    /// there means "available": the probe does not enable).
     pub const fn from_probe(v: crate::slice::Verdict) -> SliceExt {
         use crate::slice::Verdict;
         match v {
@@ -424,11 +211,9 @@ pub struct Features {
     pub mseal: bool,
     /// How `process_madvise` can target this process, if at all.
     pub process_madvise: ProcessMadvise,
-    /// `process_madvise(MADV_FREE)` through the same target works (probed
-    /// separately: the two-advice purge of design 8 issues `MADV_FREE`
-    /// under the cgroup headroom band, and a kernel may take
-    /// `MADV_DONTNEED` from a self-targeting `process_madvise` but refuse
-    /// `MADV_FREE`; lazy batches then go through the `madvise` loop).
+    /// `process_madvise(MADV_FREE)` through the same target works. Probed
+    /// separately because a kernel may take `MADV_DONTNEED` this way but
+    /// refuse `MADV_FREE`; lazy batches then use the `madvise` loop.
     /// Always `false` when `process_madvise` is unavailable.
     pub process_madvise_free: bool,
     /// `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME)` works
@@ -438,11 +223,10 @@ pub struct Features {
     /// turn on.
     pub thp: Thp,
     /// glibc's rseq registration as `rseq::probe` read it at init: the
-    /// `rseq` and `rseq_size` keys ([`rseq_words`]).
+    /// `rseq` and `rseq_size` keys (`rseq::Probe::words`).
     pub rseq: crate::rseq::Probe,
-    /// The kernel's answer for the rseq time slice extension and whether
-    /// the process uses it (`slice.rs` decides,
-    /// this is the report of it).
+    /// The rseq time slice extension: what the kernel offers and whether
+    /// the process uses it.
     pub slice_ext: SliceExt,
     /// Pointer authentication (`sys::pac::available`, `HWCAP_PACA` and
     /// `HWCAP_PACG`): what `pac_pointers` can turn on.
@@ -451,12 +235,10 @@ pub struct Features {
 
 impl Features {
     /// Every key of the line in order: the kernel probes, then `pac`.
-    /// Values are `yes`/`no` except `page_size`,
-    /// `process_madvise` (`no`, `pidfd_self`, or `pidfd:<fd>`), the THP
-    /// keys (`thp=never|madvise|always|none`, `mthp=64K,2M|none`),
-    /// `rseq_size` (a byte count, `0` without a
-    /// registration), `slice_ext` (`on`, `available`, `prctl-failed`,
-    /// `kernel-disabled`, `no-slice_ctrl`, `no-rseq`).
+    /// Values are `yes`/`no` except `page_size`, `process_madvise` (`no`,
+    /// `pidfd_self`, or `pidfd:<fd>`), the THP keys
+    /// (`thp=never|madvise|always|none`, `mthp=64K,2M|none`), `rseq_size`
+    /// (a byte count) and `slice_ext` ([`SliceExt::name`]).
     /// `tests/c/features.c` lists the same keys.
     pub fn words(&self) -> impl Iterator<Item = (&'static str, Value)> + '_ {
         [
@@ -469,7 +251,7 @@ impl Features {
         ]
         .into_iter()
         .chain(self.thp.words())
-        .chain(rseq_words(&self.rseq))
+        .chain(self.rseq.words())
         .chain([("slice_ext", Value::Word(self.slice_ext.name()))])
         .chain([("pac", Value::YesNo(self.pac))])
     }
@@ -532,326 +314,173 @@ impl fmt::Write for FeatureLine {
     }
 }
 
-pub use linux::*;
 
-mod linux {
-    use super::{Features, ProcessMadvise, Thp};
-    use crate::sys::auxv::{AT_PAGESZ, getauxval};
-    use crate::sys::{
-        self, IoVec, MADV_DONTNEED, MADV_FREE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE, MAP_ANONYMOUS,
-        MAP_PRIVATE, PIDFD_SELF, PROT_NONE, PROT_READ, PROT_WRITE,
+/// The system page size, `getauxval(AT_PAGESZ)`. Without it, abort:
+/// guessing a page size would corrupt every mapping we make.
+pub fn page_size() -> usize {
+    let v = getauxval(AT_PAGESZ);
+    if v != 0 && v.is_power_of_two() {
+        return v;
+    }
+    sys::abort("cannot determine the page size (AT_PAGESZ missing)")
+}
+
+/// Map a fresh private anonymous scratch page with the given protection.
+fn scratch(page: usize, prot: i32) -> Option<usize> {
+    // SAFETY: fresh anonymous private mapping, no fixed address.
+    unsafe { sys::mmap(0, page, prot, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) }.ok()
+}
+
+/// Release a scratch page. Failure is a heap inconsistency: we just
+/// mapped it, so it is unmapped only if something is very wrong.
+fn release(addr: usize, page: usize) {
+    // SAFETY: `addr` is a scratch page nothing else references.
+    if let Err(e) = unsafe { sys::munmap(addr, page) } {
+        sys::abort_fmt(format_args!("munmap of probe page failed: {e}"));
+    }
+}
+
+/// `MADV_GUARD_INSTALL` then `MADV_GUARD_REMOVE` on a scratch page. Both
+/// must succeed for the feature to count: a kernel that installs guards
+/// it cannot remove would break slab reuse.
+pub fn probe_guard_install(page: usize) -> bool {
+    let Some(addr) = scratch(page, PROT_READ | PROT_WRITE) else {
+        return false;
     };
+    // SAFETY: `addr` is our scratch page; guards on it affect nothing else.
+    let ok = unsafe {
+        sys::madvise(addr, page, MADV_GUARD_INSTALL).is_ok()
+            && sys::madvise(addr, page, MADV_GUARD_REMOVE).is_ok()
+    };
+    release(addr, page);
+    ok
+}
 
-    /// The system page size, `getauxval(AT_PAGESZ)`. Without it, abort:
-    /// guessing a page size would corrupt every mapping we make.
-    pub fn page_size() -> usize {
-        let v = getauxval(AT_PAGESZ);
-        if v != 0 && v.is_power_of_two() {
-            return v;
-        }
-        sys::abort("cannot determine the page size (AT_PAGESZ missing)")
-    }
-
-    /// Map a fresh private anonymous scratch page with the given protection.
-    fn scratch(page: usize, prot: i32) -> Option<usize> {
-        // SAFETY: fresh anonymous private mapping, no fixed address.
-        unsafe { sys::mmap(0, page, prot, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) }.ok()
-    }
-
-    /// Release a scratch page. Failure is a heap inconsistency: we just
-    /// mapped it, so it is unmapped only if something is very wrong.
-    fn release(addr: usize, page: usize) {
-        // SAFETY: `addr` is a scratch page nothing else references.
-        if let Err(e) = unsafe { sys::munmap(addr, page) } {
-            sys::abort_fmt(format_args!("munmap of probe page failed: {e}"));
-        }
-    }
-
-    /// `MADV_GUARD_INSTALL` then `MADV_GUARD_REMOVE` on a scratch page. Both
-    /// must succeed for the feature to count: a kernel that installs guards
-    /// it cannot remove would break slab reuse.
-    pub fn probe_guard_install(page: usize) -> bool {
-        let Some(addr) = scratch(page, PROT_READ | PROT_WRITE) else {
-            return false;
-        };
-        // SAFETY: `addr` is our scratch page; guards on it affect nothing else.
-        let ok = unsafe {
-            sys::madvise(addr, page, MADV_GUARD_INSTALL).is_ok()
-                && sys::madvise(addr, page, MADV_GUARD_REMOVE).is_ok()
-        };
-        release(addr, page);
-        ok
-    }
-
-    /// `mseal` a `PROT_NONE` scratch page. On success the page can never be
-    /// unmapped again, so it is left in place: one VMA, zero resident bytes.
-    /// On failure the page is released.
-    pub fn probe_mseal(page: usize) -> bool {
-        let Some(addr) = scratch(page, PROT_NONE) else {
-            return false;
-        };
-        // SAFETY: sealing a page nothing else will ever touch is harmless.
-        match unsafe { sys::mseal(addr, page, 0) } {
-            Ok(()) => true,
-            Err(_) => {
-                release(addr, page);
-                false
-            }
+/// `mseal` a `PROT_NONE` scratch page. On success the page can never be
+/// unmapped again, so it is left in place: one VMA, zero resident bytes.
+/// On failure the page is released.
+pub fn probe_mseal(page: usize) -> bool {
+    let Some(addr) = scratch(page, PROT_NONE) else {
+        return false;
+    };
+    // SAFETY: sealing a page nothing else will ever touch is harmless.
+    match unsafe { sys::mseal(addr, page, 0) } {
+        Ok(()) => true,
+        Err(_) => {
+            release(addr, page);
+            false
         }
     }
+}
 
-    /// `process_madvise(pidfd, MADV_DONTNEED)` on a dirtied scratch page,
-    /// checked for effect: the call must report the whole page and the page
-    /// must read back as zero. `MADV_DONTNEED` is what purge actually issues
-    /// (design.md section 8), and older kernels accept other advice through
-    /// `process_madvise` but not this one, so probing anything else would
-    /// overstate what we can use.
-    fn process_madvise_works(pidfd: i32, addr: usize, page: usize) -> bool {
-        let p = addr as *mut u8;
-        // SAFETY: `addr` is our writable scratch page.
-        unsafe { p.write_volatile(0xA5) };
-        let iov = IoVec { base: p, len: page };
-        // SAFETY: `iov` is live for the call; DONTNEED on our scratch page.
-        let r = unsafe { sys::process_madvise(pidfd, &iov, 1, MADV_DONTNEED, 0) };
-        // SAFETY: page still mapped; anonymous memory reads zero after discard.
-        r == Ok(page) && unsafe { p.read_volatile() } == 0
-    }
+/// `process_madvise(pidfd, MADV_DONTNEED)` on a dirtied scratch page,
+/// checked for effect: the call must report the whole page and the page
+/// must read back as zero. `MADV_DONTNEED` is what purge actually issues
+/// (design.md section 8), and older kernels accept other advice through
+/// `process_madvise` but not this one, so probing anything else would
+/// overstate what we can use.
+fn process_madvise_works(pidfd: i32, addr: usize, page: usize) -> bool {
+    let p = addr as *mut u8;
+    // SAFETY: `addr` is our writable scratch page.
+    unsafe { p.write_volatile(0xA5) };
+    let iov = IoVec { base: p, len: page };
+    // SAFETY: `iov` is live for the call; DONTNEED on our scratch page.
+    let r = unsafe { sys::process_madvise(pidfd, &iov, 1, MADV_DONTNEED, 0) };
+    // SAFETY: page still mapped; anonymous memory reads zero after discard.
+    r == Ok(page) && unsafe { p.read_volatile() } == 0
+}
 
-    /// `process_madvise(pidfd, MADV_FREE)` on a dirtied scratch page must
-    /// report the whole page. The contents cannot be checked (`MADV_FREE`
-    /// leaves them in place until reclaim), so the return value is the
-    /// only evidence; a kernel that refuses the advice through
-    /// `process_madvise` answers `EINVAL`.
-    fn process_madvise_free_works(pidfd: i32, addr: usize, page: usize) -> bool {
-        let p = addr as *mut u8;
-        // SAFETY: `addr` is our writable scratch page.
-        unsafe { p.write_volatile(0xA5) };
-        let iov = IoVec { base: p, len: page };
-        // SAFETY: `iov` is live for the call; FREE on our scratch page.
-        let r = unsafe { sys::process_madvise(pidfd, &iov, 1, MADV_FREE, 0) };
-        r == Ok(page)
-    }
+/// `process_madvise(pidfd, MADV_FREE)` on a dirtied scratch page must
+/// report the whole page. The contents cannot be checked (`MADV_FREE`
+/// leaves them in place until reclaim), so the return value is the
+/// only evidence; a kernel that refuses the advice through
+/// `process_madvise` answers `EINVAL`.
+fn process_madvise_free_works(pidfd: i32, addr: usize, page: usize) -> bool {
+    let p = addr as *mut u8;
+    // SAFETY: `addr` is our writable scratch page.
+    unsafe { p.write_volatile(0xA5) };
+    let iov = IoVec { base: p, len: page };
+    // SAFETY: `iov` is live for the call; FREE on our scratch page.
+    let r = unsafe { sys::process_madvise(pidfd, &iov, 1, MADV_FREE, 0) };
+    r == Ok(page)
+}
 
-    /// `PIDFD_SELF` first (kernel 6.15, no fd); then a real pidfd for the
-    /// calling process (kernel 5.10, needs the self-target exemption or
-    /// `CAP_SYS_NICE`); otherwise unavailable. The second value is whether
-    /// `MADV_FREE` goes through the same target.
-    pub fn probe_process_madvise(page: usize) -> (ProcessMadvise, bool) {
-        let Some(addr) = scratch(page, PROT_READ | PROT_WRITE) else {
-            return (ProcessMadvise::Unavailable, false);
-        };
-        let result = if process_madvise_works(PIDFD_SELF, addr, page) {
-            ProcessMadvise::PidfdSelf
-        } else {
-            match sys::pidfd_open(sys::getpid(), 0) {
-                Ok(fd) if process_madvise_works(fd, addr, page) => ProcessMadvise::Pidfd(fd),
-                Ok(fd) => {
-                    let _ = sys::close(fd);
-                    ProcessMadvise::Unavailable
-                }
-                Err(_) => ProcessMadvise::Unavailable,
-            }
-        };
-        let lazy = match result {
-            ProcessMadvise::Unavailable => false,
-            ProcessMadvise::PidfdSelf => process_madvise_free_works(PIDFD_SELF, addr, page),
-            ProcessMadvise::Pidfd(fd) => process_madvise_free_works(fd, addr, page),
-        };
-        release(addr, page);
-        (result, lazy)
-    }
-
-    /// `PR_SET_VMA_ANON_NAME` on a scratch page.
-    pub fn probe_anon_name(page: usize) -> bool {
-        let Some(addr) = scratch(page, PROT_NONE) else {
-            return false;
-        };
-        // SAFETY: `addr` is our scratch page; the name is static and
-        // NUL-terminated.
-        let ok = unsafe { sys::set_vma_anon_name(addr, page, b"challoc:probe\0") }.is_ok();
-        release(addr, page);
-        ok
-    }
-
-    /// The THP table from `/sys/kernel/mm/transparent_hugepage` (about ten
-    /// sysfs reads on a 4 KiB kernel).
-    pub fn probe_thp(page: usize) -> Thp {
-        Thp::from_reader(page, |path, buf| sys::read_small_file(path, buf).unwrap_or(0))
-    }
-
-    impl Features {
-        /// Probe everything. Called once from init (design.md section 10);
-        /// calling it again is harmless but leaks a sealed page and may open
-        /// another pidfd, so init stores the result. Pure apart from those
-        /// two resources.
-        pub fn probe() -> Features {
-            let page_size = page_size();
-            let (process_madvise, process_madvise_free) = probe_process_madvise(page_size);
-            Features {
-                page_size,
-                page_shift: page_size.trailing_zeros(),
-                guard_install: probe_guard_install(page_size),
-                mseal: probe_mseal(page_size),
-                process_madvise,
-                process_madvise_free,
-                anon_name: probe_anon_name(page_size),
-                thp: probe_thp(page_size),
-                rseq: crate::rseq::probe(),
-                // The kernel's answer alone: `config::load` has not run
-                // yet, so nothing is enabled; `note_slice_ext` follows.
-                slice_ext: super::SliceExt::from_probe(crate::slice::probe().verdict()),
-                pac: crate::sys::pac::available(),
-            }
-        }
-
-        /// Fold `slice::configure`'s verdict into the `slice_ext=` word.
-        /// Init calls it after `config::load`
-        /// (which runs `configure` on the init thread) and before the
-        /// line is built, so the line says `on` when lock holders request
-        /// the extension.
-        pub fn note_slice_ext(&mut self) {
-            self.slice_ext = self.slice_ext.with_configured(crate::slice::verdict());
-        }
-
-        /// Drop any resource the probe holds (the pidfd). For the child side
-        /// of `fork`, where the inherited pidfd names the parent.
-        pub fn release(&mut self) {
-            if let ProcessMadvise::Pidfd(fd) = self.process_madvise {
+/// `PIDFD_SELF` first (kernel 6.15, no fd); then a real pidfd for the
+/// calling process (kernel 5.10, needs the self-target exemption or
+/// `CAP_SYS_NICE`); otherwise unavailable. The second value is whether
+/// `MADV_FREE` goes through the same target.
+pub fn probe_process_madvise(page: usize) -> (ProcessMadvise, bool) {
+    let Some(addr) = scratch(page, PROT_READ | PROT_WRITE) else {
+        return (ProcessMadvise::Unavailable, false);
+    };
+    let result = if process_madvise_works(PIDFD_SELF, addr, page) {
+        ProcessMadvise::PidfdSelf
+    } else {
+        match sys::pidfd_open(sys::getpid(), 0) {
+            Ok(fd) if process_madvise_works(fd, addr, page) => ProcessMadvise::Pidfd(fd),
+            Ok(fd) => {
                 let _ = sys::close(fd);
-                self.process_madvise = ProcessMadvise::Unavailable;
-                self.process_madvise_free = false;
+                ProcessMadvise::Unavailable
             }
+            Err(_) => ProcessMadvise::Unavailable,
         }
+    };
+    let lazy = match result {
+        ProcessMadvise::Unavailable => false,
+        ProcessMadvise::PidfdSelf => process_madvise_free_works(PIDFD_SELF, addr, page),
+        ProcessMadvise::Pidfd(fd) => process_madvise_free_works(fd, addr, page),
+    };
+    release(addr, page);
+    (result, lazy)
+}
+
+/// `PR_SET_VMA_ANON_NAME` on a scratch page.
+pub fn probe_anon_name(page: usize) -> bool {
+    let Some(addr) = scratch(page, PROT_NONE) else {
+        return false;
+    };
+    // SAFETY: `addr` is our scratch page; the name is static and
+    // NUL-terminated.
+    let ok = unsafe { sys::set_vma_anon_name(addr, page, b"challoc:probe\0") }.is_ok();
+    release(addr, page);
+    ok
+}
+
+impl Features {
+    /// Probe everything. Called once from init (design.md section 10);
+    /// calling it again is harmless but leaks a sealed page and may open
+    /// another pidfd, so init stores the result. Pure apart from those
+    /// two resources.
+    pub fn probe() -> Features {
+        let page_size = page_size();
+        let (process_madvise, process_madvise_free) = probe_process_madvise(page_size);
+        Features {
+            page_size,
+            page_shift: page_size.trailing_zeros(),
+            guard_install: probe_guard_install(page_size),
+            mseal: probe_mseal(page_size),
+            process_madvise,
+            process_madvise_free,
+            anon_name: probe_anon_name(page_size),
+            thp: crate::sys::thp_host::probe(page_size),
+            rseq: crate::rseq::probe(),
+            // The kernel's answer alone: `config::load` has not run
+            // yet, so nothing is enabled; `note_slice_ext` follows.
+            slice_ext: SliceExt::from_probe(crate::slice::probe().verdict()),
+            pac: crate::sys::pac::available(),
+        }
+    }
+
+    /// Fold `slice::configure`'s verdict into the `slice_ext=` word. Init
+    /// calls it after `config::load` and before the line is built.
+    pub fn note_slice_ext(&mut self) {
+        self.slice_ext = self.slice_ext.with_configured(crate::slice::verdict());
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A fake sysfs: `(path, contents)` pairs; a missing path reads 0 bytes.
-    fn sysfs<'a>(files: &'a [(&'a str, &'a str)]) -> impl FnMut(&[u8], &mut [u8]) -> usize + 'a {
-        move |path: &[u8], buf: &mut [u8]| {
-            let p = core::str::from_utf8(&path[..path.len() - 1]).unwrap();
-            assert!(path.last() == Some(&0), "path not NUL-terminated");
-            let p = p.strip_prefix("/sys/kernel/mm/transparent_hugepage/").unwrap_or_else(|| panic!("{p}"));
-            match files.iter().find(|(f, _)| *f == p) {
-                Some((_, c)) => {
-                    buf[..c.len()].copy_from_slice(c.as_bytes());
-                    c.len()
-                }
-                None => 0,
-            }
-        }
-    }
-
-    #[test]
-    fn thp_setting_parses_the_bracketed_word() {
-        assert_eq!(parse_thp_setting(b"always [madvise] never\n"), Some(ThpSetting::Madvise));
-        assert_eq!(parse_thp_setting(b"[always] madvise never\n"), Some(ThpSetting::Always));
-        assert_eq!(parse_thp_setting(b"always madvise [never]\n"), Some(ThpSetting::Never));
-        assert_eq!(parse_thp_setting(b"always [inherit] madvise never\n"), Some(ThpSetting::Inherit));
-        assert_eq!(parse_thp_setting(b"always madvise never\n"), None);
-        assert_eq!(parse_thp_setting(b"[defer]\n"), None);
-        assert_eq!(parse_thp_setting(b""), None);
-        assert_eq!(parse_decimal(b"2097152\n", Trailing::Ignore), Some(2097152));
-        assert_eq!(parse_decimal(b"\n", Trailing::Ignore), None);
-        let mut b = [0u8; 8];
-        assert_eq!(write_decimal(&mut b, 2048), 4);
-        assert_eq!(&b[..4], b"2048");
-        assert_eq!(write_decimal(&mut b, 0), 1);
-        assert_eq!(&b[..1], b"0");
-    }
-
-    /// The reference VMs' layout (7.0, 4 KiB pages): `hugepages-8kB` exists
-    /// without an `enabled` file, 16K..2M have one, 2M inherits.
-    const GCE_70: &[(&str, &str)] = &[
-        ("enabled", "always [madvise] never\n"),
-        ("hpage_pmd_size", "2097152\n"),
-        ("hugepages-16kB/enabled", "always inherit madvise [never]\n"),
-        ("hugepages-32kB/enabled", "always inherit madvise [never]\n"),
-        ("hugepages-64kB/enabled", "always inherit madvise [never]\n"),
-        ("hugepages-128kB/enabled", "always inherit madvise [never]\n"),
-        ("hugepages-256kB/enabled", "always inherit madvise [never]\n"),
-        ("hugepages-512kB/enabled", "always inherit madvise [never]\n"),
-        ("hugepages-1024kB/enabled", "always inherit madvise [never]\n"),
-        ("hugepages-2048kB/enabled", "always [inherit] madvise never\n"),
-    ];
-
-    #[test]
-    fn thp_table_gce_default_lists_eight_sizes_and_enables_the_pmd_alone() {
-        let t = Thp::from_reader(4096, sysfs(GCE_70));
-        assert_eq!(t.enabled, Some(ThpSetting::Madvise));
-        assert_eq!(t.lg_pmd, 21);
-        assert_eq!(t.listed, ((1u64 << 22) - 1) & !((1u64 << 14) - 1), "16K..2M");
-        assert_eq!(t.always, 0);
-        assert_eq!(t.madvise, 1 << 21, "2M inherits madvise");
-        assert_eq!(t.pmd_setting(), ThpSetting::Madvise);
-        assert_eq!(t.sub_pmd_sizes(), 0);
-        assert_eq!(std::format!("{t}"), "thp=madvise mthp=2M");
-    }
-
-    #[test]
-    fn thp_table_with_64k_madvise_and_pmd_never() {
-        let mut files = GCE_70.to_vec();
-        files.retain(|(f, _)| !f.starts_with("hugepages-64kB") && !f.starts_with("hugepages-2048kB"));
-        files.push(("hugepages-64kB/enabled", "always inherit [madvise] never\n"));
-        files.push(("hugepages-2048kB/enabled", "always inherit madvise [never]\n"));
-        let t = Thp::from_reader(4096, sysfs(&files));
-        assert_eq!(t.madvise, 1 << 16);
-        assert_eq!(t.always, 0);
-        assert_eq!(t.pmd_setting(), ThpSetting::Never);
-        assert_eq!(t.sub_pmd_sizes(), 1 << 16);
-        assert_eq!(Thp::smallest(t.sub_pmd_sizes()), Some(16));
-        assert_eq!(std::format!("{t}"), "thp=madvise mthp=64K");
-        // A per-size `madvise` counts even when the top level is `never`.
-        files.retain(|(f, _)| *f != "enabled");
-        files.push(("enabled", "always madvise [never]\n"));
-        let t = Thp::from_reader(4096, sysfs(&files));
-        assert_eq!(t.enabled, Some(ThpSetting::Never));
-        assert_eq!(t.madvise, 1 << 16);
-        assert_eq!(std::format!("{t}"), "thp=never mthp=64K");
-        // `always` at the top level makes every `inherit` size always.
-        files.retain(|(f, _)| *f != "enabled");
-        files.push(("enabled", "[always] madvise never\n"));
-        let t = Thp::from_reader(4096, sysfs(&files));
-        assert_eq!(t.madvise, 1 << 16);
-        assert_eq!(t.always, 0, "every other size is never, not inherit");
-        assert_eq!(std::format!("{t}"), "thp=always mthp=64K");
-    }
-
-    #[test]
-    fn thp_table_before_6_8_has_the_pmd_alone() {
-        let t = Thp::from_reader(4096, sysfs(&[("enabled", "always [madvise] never\n"), ("hpage_pmd_size", "2097152\n")]));
-        assert_eq!(t.listed, 1 << 21);
-        assert_eq!(t.madvise, 1 << 21);
-        assert_eq!(std::format!("{t}"), "thp=madvise mthp=2M");
-        let t = Thp::from_reader(4096, sysfs(&[("enabled", "[always] madvise never\n")]));
-        assert_eq!(t.lg_pmd, 21, "computed from the page size when hpage_pmd_size is missing");
-        assert_eq!(t.always, 1 << 21);
-        assert_eq!(std::format!("{t}"), "thp=always mthp=2M");
-        let t = Thp::from_reader(4096, sysfs(&[("enabled", "always madvise [never]\n")]));
-        assert_eq!(t.enabled_sizes(), 0);
-        assert_eq!(std::format!("{t}"), "thp=never mthp=none");
-        // 64 KiB pages: the PMD is 512 MiB.
-        let t = Thp::from_reader(65536, sysfs(&[("enabled", "always [madvise] never\n")]));
-        assert_eq!(t.lg_pmd, 29);
-        assert_eq!(std::format!("{t}"), "thp=madvise mthp=512M");
-    }
-
-    #[test]
-    fn thp_table_missing_directory_is_none() {
-        let t = Thp::from_reader(4096, sysfs(&[]));
-        assert_eq!(t, Thp::NONE);
-        assert_eq!(t.enabled, None);
-        assert_eq!(t.enabled_sizes(), 0);
-        assert_eq!(t.pmd_setting(), ThpSetting::Never);
-        assert_eq!(std::format!("{t}"), "thp=none mthp=none");
-        // A garbled `enabled` file is treated as no THP as well.
-        let t = Thp::from_reader(4096, sysfs(&[("enabled", "garbage\n")]));
-        assert_eq!(t.enabled, None);
-        assert_eq!(t, Thp::NONE);
-    }
 
     use crate::rseq::Probe;
 
@@ -888,8 +517,8 @@ mod tests {
         assert!(std::format!("{f}").contains(" mthp=64K,2M rseq=yes rseq_size=20 slice_ext=no-slice_ctrl pac=yes"));
         let f = Features { rseq: Probe::NONE, slice_ext: SliceExt::NoRseq, ..f };
         assert!(std::format!("{f}").contains(" rseq=no rseq_size=0 slice_ext=no-rseq "));
-        // A 7.0.14 built with the option (a GCE C4): on under the
-        // default key, available under `slice_ext:off`.
+        // A kernel built with the option: on under the default key,
+        // available under `slice_ext:off`.
         let f = Features { rseq: rseq_probe(33, -192), slice_ext: SliceExt::On, ..f };
         assert!(std::format!("{f}").contains(" rseq_size=33 slice_ext=on "));
         let f = Features { slice_ext: SliceExt::Available, ..f };
@@ -999,38 +628,10 @@ mod tests {
         }
     }
 
-    /// The rseq words on the values the prerequisites note recorded: the
-    /// GCE VMs (glibc 2.44 on 7.0, `__rseq_size=33`, offset 192 on aarch64
-    /// and -192/-256 on x86_64), a 6.10 kernel (`__rseq_size=20`), no
-    /// symbols, a registration the kernel never wrote, and a size below the
-    /// original struct.
-    #[test]
-    fn rseq_words_follow_size_and_registration() {
-        let line = |p: &Probe| -> std::string::String {
-            let v: std::vec::Vec<std::string::String> = rseq_words(p).map(|(k, v)| std::format!("{k}={v}")).collect();
-            v.join(" ")
-        };
-        for off in [192isize, -192, -256] {
-            assert_eq!(line(&rseq_probe(33, off)), "rseq=yes rseq_size=33");
-        }
-        assert_eq!(line(&rseq_probe(20, 192)), "rseq=yes rseq_size=20");
-        assert_eq!(line(&Probe::NONE), "rseq=no rseq_size=0");
-        assert_eq!(line(&rseq_probe(0, 0)), "rseq=no rseq_size=0", "symbols present, nothing registered");
-        // The kernel did not write the area: no registration, whatever the size says.
-        let p = Probe { registered: false, ..rseq_probe(33, -192) };
-        assert_eq!(line(&p), "rseq=no rseq_size=33");
-        // Unknown flags do not change what the line says exists.
-        let p = Probe { flags: 1, ..rseq_probe(33, 192) };
-        assert_eq!(line(&p), "rseq=yes rseq_size=33");
-        // Below the original struct nothing is registered.
-        assert_eq!(line(&rseq_probe(19, 192)), "rseq=no rseq_size=19");
-        assert_eq!(crate::rseq::BASE_SIZE, 20);
-    }
-
-    /// The `slice_ext=` word from the probe's
-    /// verdict and the configured one: the 7.0 GCE kernels (`33` bytes,
-    /// bit 4 clear) read `kernel-disabled` whatever the key; a 6.18 or
-    /// 6.10 kernel `no-slice_ctrl`; no registration `no-rseq`; a kernel
+    /// The `slice_ext=` word from the probe's verdict and the configured
+    /// one: a kernel with the option disabled (`33` bytes, bit 4 clear)
+    /// reads `kernel-disabled` whatever the key; a kernel without
+    /// `slice_ctrl` `no-slice_ctrl`; no registration `no-rseq`; a kernel
     /// with the option reads `on` once `configure` enabled the init thread,
     /// `available` under `slice_ext:off` (or before `configure`), and
     /// `prctl-failed` when the enable was refused. Every word is a single
@@ -1038,10 +639,10 @@ mod tests {
     #[test]
     fn slice_ext_words_follow_the_verdicts() {
         use crate::slice::Verdict;
-        let gce = SliceExt::from_probe(Verdict::KernelDisabled);
-        assert_eq!(gce, SliceExt::KernelDisabled);
+        let disabled = SliceExt::from_probe(Verdict::KernelDisabled);
+        assert_eq!(disabled, SliceExt::KernelDisabled);
         for v in [Verdict::Unprobed, Verdict::Key, Verdict::KernelDisabled, Verdict::NoRseq] {
-            assert_eq!(gce.with_configured(v), SliceExt::KernelDisabled, "{v:?}");
+            assert_eq!(disabled.with_configured(v), SliceExt::KernelDisabled, "{v:?}");
         }
         assert_eq!(SliceExt::from_probe(Verdict::NoSliceCtrl), SliceExt::NoSliceCtrl);
         assert_eq!(SliceExt::from_probe(Verdict::NoSliceCtrl).with_configured(Verdict::Key), SliceExt::NoSliceCtrl);
@@ -1235,8 +836,8 @@ mod linux_tests {
     /// The rseq words against glibc's own symbols through `dlsym` and the
     /// kernel's `AT_RSEQ_FEATURE_SIZE`: the values must be the symbols',
     /// the probe the line is built from must be `rseq::probe`'s, and a
-    /// registration covers every field the kernel offers (the GCE 7.0 VMs:
-    /// 33; a 6.10 kernel reports no feature size and glibc registers 20).
+    /// registration covers every field the kernel offers (a kernel without
+    /// a feature size gets the 20-byte original struct).
     /// Both ways: it runs on hosts of each kind.
     #[test]
     fn rseq_words_match_glibc_symbols_and_the_feature_size() {
@@ -1279,9 +880,8 @@ mod linux_tests {
 
     /// The `slice_ext=` word against `slice::probe`: the probe, not
     /// enabled by `Features::probe` (`configure` has not run for this
-    /// value), must read what the module's own probe says; the 7.0 GCE
-    /// kernels read `kernel-disabled`, the Mac's 6.10 `no-slice_ctrl`.
-    /// Both ways: a kernel with the option reads `available` here (the
+    /// value), must read what the module's own probe says. Both ways: a
+    /// kernel with the option reads `available` here (the
     /// line of the shipped library says `on`).
     #[test]
     fn probe_slice_ext_matches_the_slice_module() {
@@ -1315,7 +915,7 @@ mod linux_tests {
         let dir = std::path::Path::new("/sys/kernel/mm/transparent_hugepage");
         match std::fs::read_to_string(dir.join("enabled")) {
             Ok(e) => {
-                assert_eq!(f.thp.enabled, parse_thp_setting(e.as_bytes()), "{line}");
+                assert_eq!(f.thp.enabled, crate::sys::thp_host::parse_thp_setting(e.as_bytes()), "{line}");
                 let mut listed = 0u64;
                 for entry in std::fs::read_dir(dir).unwrap() {
                     let name = entry.unwrap().file_name();
@@ -1336,21 +936,5 @@ mod linux_tests {
             Err(_) => assert_eq!(f.thp, Thp::NONE, "{line}"),
         }
         assert!(f.thp.lg_pmd as usize > f.page_shift as usize, "{line}");
-    }
-
-    #[test]
-    fn release_closes_pidfd() {
-        let mut f = Features::probe();
-        if let ProcessMadvise::Pidfd(fd) = f.process_madvise {
-            f.release();
-            assert_eq!(sys::close(fd), Err(sys::Errno::EBADF));
-            assert!(!f.process_madvise_free);
-        } else {
-            f.release();
-        }
-        assert!(matches!(
-            f.process_madvise,
-            ProcessMadvise::Unavailable | ProcessMadvise::PidfdSelf
-        ));
     }
 }

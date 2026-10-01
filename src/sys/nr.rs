@@ -20,7 +20,6 @@ pub const TABLE: &[(&str, usize)] = &[
     ("rt_sigaction", RT_SIGACTION),
     ("rt_sigprocmask", RT_SIGPROCMASK),
     ("madvise", MADVISE),
-    ("mincore", MINCORE),
     ("getpid", GETPID),
     ("prctl", PRCTL),
     ("gettid", GETTID),
@@ -52,7 +51,6 @@ mod arch {
     pub const RT_SIGPROCMASK: usize = 14;
     pub const SCHED_YIELD: usize = 24;
     pub const MADVISE: usize = 28;
-    pub const MINCORE: usize = 27;
     pub const GETPID: usize = 39;
     pub const PRCTL: usize = 157;
     pub const GETTID: usize = 186;
@@ -90,7 +88,6 @@ mod arch {
     pub const MMAP: usize = 222;
     pub const MPROTECT: usize = 226;
     pub const MADVISE: usize = 233;
-    pub const MINCORE: usize = 232;
     pub const GETRANDOM: usize = 278;
 }
 

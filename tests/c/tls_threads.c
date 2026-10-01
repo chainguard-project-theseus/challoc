@@ -2,24 +2,21 @@
  *
  * Run as LD_PRELOAD=target/release/libchalloc.so ./tls_threads. The
  * binary has no link-time dependency on the library: `mallctl` is looked
- * up with dlsym (`mallctl_dl`), and `require_challoc` refuses to run on
- * another allocator. 64 threads start; each reads `thread.allocatedp`,
- * the address of its heap's allocation counter, allocates one block and
- * checks that its own `thread.allocated` moved by the block's usable size
- * (the counter behind the pointer is materialised by that read); the
- * main thread verifies the 64 counter addresses are distinct from each
- * other and from its own, so the TLS slot resolved to a different heap in
- * every thread. A barrier keeps every heap alive until all have been
- * observed (an exited thread's heap may be reused). Prints `ok 64 threads
- * ...` (what `tls::tests::c_program_with_64_threads_sees_distinct_slots`
- * greps) and `ok tls_threads` (what src/api/ctests.rs greps), and exits 0
- * iff every check held.
+ * up with dlsym (`mallctl_dl`), and a `challoc_version` lookup refuses
+ * to run on another allocator. 64 threads start; each reads
+ * `thread.allocatedp`, the address of its heap's allocation counter,
+ * allocates one block and checks that its own `thread.allocated` moved by
+ * the block's usable size (the counter behind the pointer is materialised
+ * by that read); the main thread verifies the 64 counter addresses are
+ * distinct from each other and from its own, so the TLS slot resolved to
+ * a different heap in every thread. A barrier keeps every heap alive
+ * until all have been observed (an exited thread's heap may be reused).
+ * Prints `ok 64 threads ...` and `ok tls_threads` (what src/api/ctests.rs
+ * greps), and exits 0 iff every check held.
  *
- * Two drivers compile this file: src/api/ctests.rs through
- * scripts/ctest-cc.sh (-DQUANTUM from the library) and src/tls.rs with a
- * bare `cc` line and no QUANTUM, so the constant is defaulted here and the
- * "running under challoc" probe is `challoc_version`, not `require_challoc`
- * (which compares usable sizes against QUANTUM). */
+ * The "running under challoc" probe is `challoc_version`, not
+ * `require_challoc` (which compares usable sizes against QUANTUM), so the
+ * file needs no QUANTUM and the constant is defaulted here. */
 #ifndef QUANTUM
 #define QUANTUM 0 /* unused here, see above */
 #endif

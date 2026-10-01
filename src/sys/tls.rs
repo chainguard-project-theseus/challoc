@@ -147,10 +147,9 @@ pub fn set(value: *mut c_void) {
 }
 
 // The slot has no exported accessor: a `challoc_tls_set` export would be
-// a write primitive to the heap pointer in a hardened allocator, and the C
-// tests that once drove it (`tests/c/tls_threads.c`) observe per-thread
-// heaps through `mallctl("thread.allocatedp")` instead. The one
-// challoc-specific export is `challoc_version` (`src/api/mod.rs`).
+// a write primitive to the heap pointer in a hardened allocator. The C
+// test `tests/c/tls_threads.c` observes per-thread heaps through
+// `mallctl("thread.allocatedp")`.
 
 #[cfg(test)]
 mod tests {

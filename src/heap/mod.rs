@@ -2,7 +2,7 @@
 //! (design.md section 6).
 //!
 //! Every thread that allocates gets a [`Heap`] in the metadata region,
-//! reached through the one TLS slot in `tls.rs`. A heap holds one
+//! reached through the one TLS slot in `sys/tls.rs`. A heap holds one
 //! [`CacheHeader`] per size class inline, one 64-byte line each at
 //! `heap + 128 + 64 * class`, so `malloc` reaches the header without
 //! loading a pointer first. A header points at its stack of `cap` slot
