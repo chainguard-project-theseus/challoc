@@ -1346,6 +1346,10 @@ mod tests {
         let mut live: Vec<*mut u8> = Vec::new();
         let mut a1 = 0usize;
         for attempt in 0..20 {
+            // Slots in this thread's cache (a previous attempt's frees)
+            // still count as allocated; the blocks must come from the
+            // slabs or `allocated` cannot grow.
+            assert_eq!(call("thread.tcache.flush"), 0);
             let e0 = epoch();
             let a0: usize = get("stats.allocated");
             live = (0..300).map(|_| malloc(200)).collect();
