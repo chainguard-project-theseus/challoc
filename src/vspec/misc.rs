@@ -79,13 +79,3 @@ verus! {
 pub assume_specification<T: core::ops::DerefMut>[ Option::<T>::as_deref_mut ](o: &mut Option<T>) -> Option<&mut <T as core::ops::Deref>::Target>;
 
 } // verus!
-
-verus! {
-
-/// glibc's rseq registration (`rseq.rs`, outside `verus!`), a field of
-/// `sys::features::Features` that verified code never reads.
-#[verifier::external_type_specification]
-#[verifier::external_body]
-pub struct ExProbe(crate::rseq::Probe);
-
-} // verus!

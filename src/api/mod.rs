@@ -86,6 +86,11 @@ use crate::layout::{self, NCLASSES, Regions};
 use crate::purge;
 use crate::sys;
 use crate::sys::features::{FeatureLine, Features};
+use vstd::prelude::verus;
+#[cfg(verus_only)]
+use vstd::prelude::*;
+
+verus! {
 
 /// The crate version as a NUL-terminated static string (`"0.1.0"`; the
 /// soname's major, design 13.6, follows its major); with `challoc_features`
@@ -105,27 +110,27 @@ const UNINIT: u32 = 0;
 const INITIALISING: u32 = 1;
 const READY: u32 = 2;
 
-static STATE: AtomicU32 = AtomicU32::new(UNINIT);
+exec static STATE: AtomicU32 = AtomicU32::new(UNINIT);
 /// Thread id of the initialising thread while the state is `INITIALISING`,
 /// so a re-entrant call from it can be told apart from a concurrent one.
-static INIT_TID: AtomicU32 = AtomicU32::new(0);
+exec static INIT_TID: AtomicU32 = AtomicU32::new(0);
 
 /// Storage for a value built in place at init and immutable afterwards.
+/// Verus does not model the contents of the `UnsafeCell`.
+#[verifier::reject_recursive_types(T)]
 struct Global<T>(UnsafeCell<MaybeUninit<T>>);
-
-// SAFETY: written exactly once, by the initialising thread before it
-// publishes `READY` with a release store; every reader loads the state with
-// acquire first and then only takes shared references.
-unsafe impl<T> Sync for Global<T> {}
 
 impl<T> Global<T> {
     const fn new() -> Self {
         Global(UnsafeCell::new(MaybeUninit::uninit()))
     }
 
+    /// Trusted: reads the storage (the `# Safety` contract).
+    ///
     /// # Safety
     /// The value must have been initialised and `READY` observed with an
     /// acquire load on this thread.
+    #[verifier::external_body]
     #[inline(always)]
     unsafe fn get(&self) -> &T {
         // SAFETY: guaranteed by the caller.
@@ -133,10 +138,22 @@ impl<T> Global<T> {
     }
 }
 
-static SHARED: Global<Shared> = Global::new();
-static FEATURES: Global<Features> = Global::new();
+} // verus!
+
+// SAFETY: written exactly once, by the initialising thread before it
+// publishes `READY` with a release store; every reader loads the state with
+// acquire first and then only takes shared references.
+unsafe impl<T> Sync for Global<T> {}
+
+verus! {
+
+exec static SHARED: Global<Shared> = Global::new();
+exec static FEATURES: Global<Features> = Global::new();
 /// The feature line for `challoc_features()` and `malloc_stats_print`.
-static FEATURE_LINE: Global<FeatureLine> = Global::new();
+exec static FEATURE_LINE: Global<FeatureLine> = Global::new();
+
+} // verus!
+
 /// Signal mask of the forking thread, saved by `fork_prepare` and restored by
 /// `fork_release`. One slot suffices because it is only written and read
 /// while the writer holds every allocator lock: a second thread in
@@ -147,12 +164,42 @@ static FEATURE_LINE: Global<FeatureLine> = Global::new();
 /// duration.
 static FORK_SIGMASK: Global<u64> = Global::new();
 
+verus! {
+
+/// `SHARED` as a reference, the one read of the static every accessor
+/// below makes.
+///
+/// Trusted: the `UnsafeCell` read, and that the published `Shared`
+/// satisfies [`Shared::wf`]. That rests on unverified code: `init` (trusted)
+/// builds the value with `Shared::init` (outside `verus!`, no contract) and
+/// aborts unless it returned `true`; `init_slow` runs `init` once, before
+/// it publishes `READY` with a release store; and what `wf` reads (the
+/// regions, the huge and metadata bounds, the slab tables' classes and
+/// placement) is written only inside `Shared::init`. The rest of the value
+/// (locks, atomics) changes, but `wf` does not read it.
+///
+/// # Safety
+/// The value must have been initialised and `READY` observed with an
+/// acquire load on this thread.
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn shared_ref() -> (r: &'static Shared)
+    ensures
+        r.wf(),
+{
+    // SAFETY: guaranteed by the caller.
+    unsafe { SHARED.get() }
+}
+
 /// The process's allocator state, initialising it on first use.
 #[inline(always)]
-pub fn shared() -> &'static Shared {
+pub fn shared() -> (r: &'static Shared)
+    ensures
+        r.wf(),
+{
     if STATE.load(Ordering::Acquire) == READY {
         // SAFETY: `READY` was published after init with a release store.
-        return unsafe { SHARED.get() };
+        return unsafe { shared_ref() };
     }
     init_slow()
 }
@@ -161,10 +208,13 @@ pub fn shared() -> &'static Shared {
 /// `free` uses this: a pointer arriving before any allocation cannot be
 /// ours and must not trigger init.
 #[inline(always)]
-pub fn shared_if_ready() -> Option<&'static Shared> {
+pub fn shared_if_ready() -> (r: Option<&'static Shared>)
+    ensures
+        r matches Some(s) ==> s.wf(),
+{
     if STATE.load(Ordering::Acquire) == READY {
         // SAFETY: as in `shared`.
-        Some(unsafe { SHARED.get() })
+        Some(unsafe { shared_ref() })
     } else {
         None
     }
@@ -173,7 +223,8 @@ pub fn shared_if_ready() -> Option<&'static Shared> {
 /// The allocator state's address, with no readiness check and no
 /// reference formed: what the fast paths hand `heap::existing_heap`, which
 /// reads one byte through it only after the thread's TLS slot has proved
-/// init complete.
+/// init complete. Trusted: a raw-pointer projection of a static.
+#[verifier::external_body]
 #[inline(always)]
 pub fn shared_ptr() -> *const Shared {
     (&raw const SHARED.0).cast::<Shared>()
@@ -186,10 +237,15 @@ pub fn shared_ptr() -> *const Shared {
 /// [`shared`] or [`shared_if_ready`]). The fast paths use the thread's heap
 /// pointer as that witness: a heap is only created under `shared()`.
 #[inline(always)]
-pub unsafe fn shared_unchecked() -> &'static Shared {
+pub unsafe fn shared_unchecked() -> (r: &'static Shared)
+    ensures
+        r.wf(),
+{
     // SAFETY: guaranteed by the caller.
-    unsafe { SHARED.get() }
+    unsafe { shared_ref() }
 }
+
+} // verus!
 
 /// The probed kernel features. Initialises the allocator if needed.
 #[cfg(test)]
@@ -198,6 +254,8 @@ pub fn features() -> &'static Features {
     // SAFETY: `shared()` returned, so `READY` has been observed.
     unsafe { FEATURES.get() }
 }
+
+verus! {
 
 /// The feature line (`Features`'s `Display`, built at init). Initialises
 /// the allocator if needed.
@@ -220,6 +278,8 @@ pub extern "C" fn challoc_features() -> *const core::ffi::c_char {
     unsafe { FEATURE_LINE.get() }.as_ptr()
 }
 
+} // verus!
+
 /// Whether init has completed (for the tests; the entry points use
 /// [`shared_if_ready`]).
 #[cfg(test)]
@@ -227,9 +287,18 @@ pub fn is_ready() -> bool {
     STATE.load(Ordering::Acquire) == READY
 }
 
+verus! {
+
+/// The first caller runs `init` and publishes `READY`; a concurrent one
+/// waits for it (termination is not claimed: the wait ends when the other
+/// thread's `init` does); the initialising thread re-entering aborts.
 #[cold]
 #[inline(never)]
-fn init_slow() -> &'static Shared {
+#[verifier::exec_allows_no_decreases_clause]
+fn init_slow() -> (r: &'static Shared)
+    ensures
+        r.wf(),
+{
     match STATE.compare_exchange(UNINIT, INITIALISING, Ordering::Acquire, Ordering::Acquire) {
         Ok(_) => {
             INIT_TID.store(sys::gettid() as u32, Ordering::Relaxed);
@@ -249,12 +318,12 @@ fn init_slow() -> &'static Shared {
         }
     }
     // SAFETY: `READY` observed (or published by this thread).
-    unsafe { SHARED.get() }
+    unsafe { shared_ref() }
 }
 
 /// Never-committed ranges of the reservations sealed at init (design 10
 /// step 5); 0 when the kernel has no `mseal` or seccomp filters it.
-static SEALED: AtomicU32 = AtomicU32::new(0);
+exec static SEALED: AtomicU32 = AtomicU32::new(0);
 
 /// How many ranges init sealed with `mseal` (for `malloc_stats_print` and
 /// tests). Initialises the allocator if needed.
@@ -267,6 +336,13 @@ pub fn sealed_ranges() -> u32 {
 /// inside `Shared::init`). Configuration (step 2) is read before the
 /// regions are reserved so that nothing it may abort on has been mapped
 /// yet; it reads only the weak symbols, one file and `environ`.
+///
+/// Trusted: it calls `Shared::init` and writes the statics' `UnsafeCell`s
+/// (outside `verus!`), passes the fork handlers as function pointers, and
+/// relies on the kernel's page (4 KiB to 64 KiB) for `Regions::reserve`'s
+/// and `thp::configure`'s preconditions, which `Features::probe` does not
+/// bound.
+#[verifier::external_body]
 fn init() {
     let features = Features::probe();
     // The slab geometry of the classes whose table slab is below the page
@@ -317,6 +393,8 @@ fn init() {
     }
 }
 
+} // verus!
+
 /// Block signals, then take every allocator lock so the child inherits a
 /// consistent heap and no signal handler on this thread can re-enter the
 /// allocator (or fork again) while the locks are held.
@@ -354,18 +432,66 @@ extern "C" fn fork_prepare() {
     unsafe { (*FORK_SIGMASK.0.get()).write(mask) };
 }
 
+verus! {
+
+/// The signal mask `fork_prepare` saved. Trusted: a read of the
+/// `UnsafeCell` behind [`FORK_SIGMASK`].
+///
+/// # Safety
+/// Written by the `fork_prepare` that paired with this release, and still
+/// the caller's because every lock is held.
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn saved_sigmask() -> u64 {
+    // SAFETY: guaranteed by the caller.
+    unsafe { (*FORK_SIGMASK.0.get()).assume_init() }
+}
+
+// The fork handlers' accessors of the heap and arena modules, outside
+// `verus!` until those modules' ports. Each is a trusted wrapper that
+// claims nothing; delete each when its callee enters `verus!`.
+
+/// `s.tables()`, the slab tables.
+#[verifier::external_body]
+#[inline(always)]
+fn tables_of(s: &Shared) -> &[crate::class::SlabTable; NCLASSES] {
+    s.tables()
+}
+
+/// `a.sets()`, the arena's slab set table (a raw-pointer dereference).
+#[verifier::external_body]
+#[inline(always)]
+fn sets_of(a: &crate::arena::Arena) -> &crate::class::SetTable {
+    a.sets()
+}
+
+/// `s.tcaches.raw_lock()`, the explicit-cache table's lock.
+#[verifier::external_body]
+#[inline(always)]
+fn tcaches_lock(s: &Shared) -> &crate::lock::RawLock {
+    s.tcaches.raw_lock()
+}
+
 /// Release the locks taken by `fork_prepare`, in reverse order, then let
 /// signals through again.
 fn fork_release() {
     let s = shared();
     // SAFETY: written by the `fork_prepare` that paired with this release,
     // and still ours because every lock is held until the unlocks below.
-    let mask = unsafe { (*FORK_SIGMASK.0.get()).assume_init() };
+    let mask = unsafe { saved_sigmask() };
     purge::background::fork_unlock();
     // Arenas cannot appear while the creation lock is held, so this is the
-    // same set `fork_prepare` locked, in reverse.
+    // same set `fork_prepare` locked, in reverse. Each `for i in
+    // (0..n).rev()` is spelled as a countdown: Verus does not specify
+    // `Rev`.
+    // The class states are read through `Arena::class`, the verified
+    // accessor of `a.classes[c]`.
     let n = s.arenas.count() as usize;
-    for i in (0..n).rev() {
+    let mut i = n;
+    while i > 0
+        decreases i,
+    {
+        i -= 1;
         if let Some(a) = s.arenas.get_existing(i as u16) {
             a.stats_raw_lock().unlock();
         }
@@ -373,19 +499,35 @@ fn fork_release() {
     s.stats.raw().unlock();
     s.meta.raw_lock().unlock();
     s.huge.raw_lock().unlock();
-    for c in (0..NCLASSES).rev() {
-        s.tables()[c].raw_lock().unlock();
+    let mut c = NCLASSES;
+    while c > 0
+        invariant
+            c <= NCLASSES,
+        decreases c,
+    {
+        c -= 1;
+        tables_of(s)[c].raw_lock().unlock();
     }
-    for i in (0..n).rev() {
+    let mut i = n;
+    while i > 0
+        decreases i,
+    {
+        i -= 1;
         if let Some(a) = s.arenas.get_existing(i as u16) {
-            a.sets().raw_lock().unlock();
-            for c in (0..NCLASSES).rev() {
-                a.classes[c].raw_lock().unlock();
+            sets_of(a).raw_lock().unlock();
+            let mut c = NCLASSES;
+            while c > 0
+                invariant
+                    c <= NCLASSES,
+                decreases c,
+            {
+                c -= 1;
+                a.class(c).raw_lock().unlock();
             }
         }
     }
     s.arenas.raw_lock().unlock();
-    s.tcaches.raw_lock().unlock();
+    tcaches_lock(s).unlock();
     sys::set_signal_mask(mask);
 }
 
@@ -400,6 +542,8 @@ extern "C" fn fork_child() {
     purge::background::fork_child();
     fork_release();
 }
+
+} // verus!
 
 #[cfg(test)]
 mod tests {
@@ -552,7 +696,11 @@ mod tests {
                     continue;
                 }
                 let is_lock = |ty: &str| ty.contains("Lock<") || ty.contains("RawLock");
-                if let Some(rest) = decl.strip_prefix("static ") {
+                // `exec static` is how `verus!` spells a static.
+                if let Some(rest) = decl
+                    .strip_prefix("static ")
+                    .or_else(|| decl.strip_prefix("exec static "))
+                {
                     if let Some((name, ty)) = rest.split_once(':') {
                         if is_lock(ty) {
                             out.push(std::format!("{rel}:static.{}", name.trim()));

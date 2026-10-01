@@ -32,8 +32,18 @@ use vstd::prelude::verus;
 #[cfg(verus_only)]
 use vstd::prelude::*;
 
+verus! {
+
 /// Bit sets of sizes as `64K,2M`, or `none`.
 struct SizeSet(u64);
+
+// Every set formats (ghost only: ordinary builds have no `std_specs`).
+#[cfg(verus_only)]
+impl vstd::std_specs::fmt::DisplaySpecImpl for SizeSet {
+    open spec fn fmt_req(&self, f: &fmt::Formatter<'_>) -> bool {
+        true
+    }
+}
 
 impl fmt::Display for SizeSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -41,7 +51,10 @@ impl fmt::Display for SizeSet {
             return f.write_str("none");
         }
         let mut first = true;
-        for lg in 0..64u8 {
+        for lg in 0..64u8
+            invariant
+                lg <= 64,
+        {
             if self.0 & (1u64 << lg) != 0 {
                 if !first {
                     f.write_str(",")?;
@@ -56,6 +69,16 @@ impl fmt::Display for SizeSet {
 
 /// `1 << lg` bytes as `64K`, `2M`, `1G`.
 struct LgSize(u8);
+
+// A size formats when `1 << lg` is a `u64`: the one caller passes a bit
+// index of a `u64` set (ghost only; closed because the field is private
+// to this module).
+#[cfg(verus_only)]
+impl vstd::std_specs::fmt::DisplaySpecImpl for LgSize {
+    closed spec fn fmt_req(&self, f: &fmt::Formatter<'_>) -> bool {
+        self.0 < 64
+    }
+}
 
 impl fmt::Display for LgSize {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -82,6 +105,14 @@ pub enum Value {
     Sizes(u64),
 }
 
+// Every value formats (ghost only).
+#[cfg(verus_only)]
+impl vstd::std_specs::fmt::DisplaySpecImpl for Value {
+    open spec fn fmt_req(&self, f: &fmt::Formatter<'_>) -> bool {
+        true
+    }
+}
+
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
@@ -92,6 +123,8 @@ impl fmt::Display for Value {
         }
     }
 }
+
+} // verus!
 
 /// `key=value` pairs separated by single spaces: the shape of the whole
 /// line and of each part that prints on its own (`Thp`).
@@ -137,6 +170,21 @@ pub struct Features {
     pub pac: bool,
 }
 
+impl Features {
+    /// The kernel-probe pairs that open [`Features::words`] (the chain
+    /// is outside `verus!`: an array's `IntoIter` and `Chain` have no
+    /// specification).
+    #[inline(always)]
+    fn probe_pairs(&self) -> [(&'static str, Value); 4] {
+        [
+            ("page_size", Value::Num(self.page_size as u64)),
+            ("guard_install", Value::YesNo(self.guard_install)),
+            ("mseal", Value::YesNo(self.mseal)),
+            ("anon_name", Value::YesNo(self.anon_name)),
+        ]
+    }
+}
+
 } // verus!
 
 impl Features {
@@ -146,22 +194,31 @@ impl Features {
     /// (a byte count).
     /// `tests/c/features.c` lists the same keys.
     pub fn words(&self) -> impl Iterator<Item = (&'static str, Value)> + '_ {
-        [
-            ("page_size", Value::Num(self.page_size as u64)),
-            ("guard_install", Value::YesNo(self.guard_install)),
-            ("mseal", Value::YesNo(self.mseal)),
-            ("anon_name", Value::YesNo(self.anon_name)),
-        ]
-        .into_iter()
-        .chain(self.thp.words())
-        .chain(self.rseq.words())
-        .chain([("pac", Value::YesNo(self.pac))])
+        self.probe_pairs()
+            .into_iter()
+            .chain(self.thp.words())
+            .chain(self.rseq.words())
+            .chain([("pac", Value::YesNo(self.pac))])
     }
 }
 
+verus! {
+
+// Every line formats (ghost only: ordinary builds have no `std_specs`).
+#[cfg(verus_only)]
+impl vstd::std_specs::fmt::DisplaySpecImpl for Features {
+    open spec fn fmt_req(&self, f: &fmt::Formatter<'_>) -> bool {
+        true
+    }
+}
+
+// Trusted: [`Features::words`] is an iterator chain, and `write_words`
+// takes it as an `impl Iterator`, both outside what Verus checks. Nothing
+// is claimed about what it writes or returns.
 impl fmt::Display for Features {
     /// One line, `key=value` separated by spaces, for `challoc_features()`,
     /// `malloc_stats_print` and abort messages: [`Features::words`].
+    #[verifier::external_body]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write_words(f, self.words())
     }
@@ -176,6 +233,12 @@ pub struct FeatureLine {
 }
 
 impl FeatureLine {
+    /// Room for the NUL after the line.
+    #[verifier::type_invariant]
+    spec fn wf(&self) -> bool {
+        self.len < Self::CAP
+    }
+
     /// Room for the line and its NUL; the longest possible line (every
     /// probe `yes`, every THP size listed) is under `CAP - 64` bytes (`feature_line_fits`).
     pub const CAP: usize = 640;
@@ -188,13 +251,19 @@ impl FeatureLine {
             buf: [0; Self::CAP],
             len: 0,
         };
-        let _ = write!(line, "{features}");
+        let _ = write!(line, "{}", *features);
+        proof {
+            use_type_invariant(&line);
+        }
         line.buf[line.len] = 0;
         line
     }
 
     /// The line without its NUL.
     pub fn as_str(&self) -> &str {
+        proof {
+            use_type_invariant(self);
+        }
         // Only `str` fragments were copied, cut at a fragment boundary.
         core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
     }
@@ -206,20 +275,43 @@ impl FeatureLine {
 }
 
 impl fmt::Write for FeatureLine {
+    // `fmt::Error::default()` below: Verus cannot name the constructor of
+    // an external unit struct.
+    #[allow(clippy::default_constructed_unit_structs)]
     fn write_str(&mut self, s: &str) -> fmt::Result {
-        let room = Self::CAP - 1 - self.len;
-        if s.len() > room {
-            return Err(fmt::Error);
+        proof {
+            use_type_invariant(&*self);
         }
-        self.buf[self.len..self.len + s.len()].copy_from_slice(s.as_bytes());
-        self.len += s.len();
+        let b = s.as_bytes();
+        let room = Self::CAP - 1 - self.len;
+        if b.len() > room {
+            return Err(fmt::Error::default());
+        }
+        // `self.buf[self.len..self.len + s.len()].copy_from_slice(..)`,
+        // spelled out: Verus does not take a `&mut` through a field of a
+        // type with an invariant in a call that may unwind.
+        let mut i = 0;
+        while i < b.len()
+            invariant
+                self.len + b@.len() < Self::CAP,
+                i <= b@.len(),
+            decreases b@.len() - i,
+        {
+            self.buf[self.len + i] = b[i];
+            i += 1;
+        }
+        self.len += b.len();
         Ok(())
     }
 }
 
 /// The system page size, `getauxval(AT_PAGESZ)`. Without it, abort:
 /// guessing a page size would corrupt every mapping we make.
-pub fn page_size() -> usize {
+pub fn page_size() -> (r: usize)
+    ensures
+        r != 0,
+        crate::meta::is_pow2(r),
+{
     let v = getauxval(AT_PAGESZ);
     if v != 0 && v.is_power_of_two() {
         return v;
@@ -236,6 +328,7 @@ fn scratch(page: usize, prot: i32) -> Option<usize> {
 /// Release a scratch page. Failure is a heap inconsistency: we just
 /// mapped it, so it is unmapped only if something is very wrong.
 fn release(addr: usize, page: usize) {
+    broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
     // SAFETY: `addr` is a scratch page nothing else references.
     if let Err(e) = unsafe { sys::munmap(addr, page) } {
         sys::abort_fmt(format_args!("munmap of probe page failed: {e}"));
@@ -275,6 +368,12 @@ pub fn probe_mseal(page: usize) -> bool {
     }
 }
 
+/// The VMA name the anonymous-name probe sets, NUL-terminated (spelled
+/// as bytes so the verifier sees the NUL `set_vma_anon_name` requires).
+const PROBE_NAME: [u8; 14] = [
+    b'c', b'h', b'a', b'l', b'l', b'o', b'c', b':', b'p', b'r', b'o', b'b', b'e', 0,
+];
+
 /// `PR_SET_VMA_ANON_NAME` on a scratch page.
 pub fn probe_anon_name(page: usize) -> bool {
     let Some(addr) = scratch(page, PROT_NONE) else {
@@ -282,7 +381,7 @@ pub fn probe_anon_name(page: usize) -> bool {
     };
     // SAFETY: `addr` is our scratch page; the name is static and
     // NUL-terminated.
-    let ok = unsafe { sys::set_vma_anon_name(addr, page, b"challoc:probe\0") }.is_ok();
+    let ok = unsafe { sys::set_vma_anon_name(addr, page, &PROBE_NAME) }.is_ok();
     release(addr, page);
     ok
 }
@@ -291,7 +390,12 @@ impl Features {
     /// Probe everything. Called once from init (design.md section 10);
     /// calling it again is harmless but leaks a sealed page, so init
     /// stores the result. Pure apart from that page.
-    pub fn probe() -> Features {
+    pub fn probe() -> (r: Features)
+        ensures
+            r.page_size != 0,
+            crate::meta::is_pow2(r.page_size),
+            r.page_size <= 1usize << 33 ==> r.thp.lg_pmd < 64,
+    {
         let page_size = page_size();
         Features {
             page_size,
@@ -305,6 +409,8 @@ impl Features {
         }
     }
 }
+
+} // verus!
 
 #[cfg(test)]
 mod tests {

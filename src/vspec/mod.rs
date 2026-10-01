@@ -15,7 +15,7 @@ pub(crate) mod check;
 pub(crate) mod class;
 mod config;
 pub(crate) mod core_int;
-mod fmt;
+pub(crate) mod fmt;
 mod heap;
 pub(crate) mod huge;
 pub(crate) mod layout;

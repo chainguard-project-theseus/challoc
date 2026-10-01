@@ -66,27 +66,11 @@ pub assume_specification<T, F: FnOnce() -> Option<T>>[ Option::<T>::or_else ](op
 
 verus! {
 
-// Phase A of the port (verus/TODO.md, "To restore"): the configuration,
-// the background thread and `Shared`'s accessors are outside `verus!`.
+// Phase A of the port (verus/TODO.md, "To restore"): `Shared`'s
+// accessors are outside `verus!`.
 // Each specification claims only that the call returns.
-
-#[verifier::external_type_specification]
-#[verifier::external_body]
-pub struct ExConfig(crate::config::Config);
 
 /// The decay period of the huge allocator's empty runs, nanoseconds.
 pub assume_specification[ crate::heap::Shared::huge_decay_ns ](shared: &crate::heap::Shared) -> u64;
-
-/// Whether the background purge thread runs.
-pub assume_specification[ crate::purge::background::present ]() -> bool;
-
-/// Whether `background_thread` asks for the thread.
-pub assume_specification[ crate::purge::background::requested ]() -> bool;
-
-/// Wake the background thread, if any.
-pub assume_specification[ crate::purge::background::wake ]();
-
-/// Start the background thread; whether it runs.
-pub assume_specification[ crate::purge::background::start ](shared: &crate::heap::Shared) -> bool;
 
 } // verus!

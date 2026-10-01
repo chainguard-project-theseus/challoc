@@ -25,6 +25,7 @@
 
 use core::arch::{asm, global_asm};
 use core::ffi::c_void;
+use vstd::prelude::verus;
 
 // One zeroed, pointer-aligned, pointer-sized slot in `.tbss`. Fresh threads
 // therefore start with a null slot, which the allocator treats as "no heap
@@ -55,9 +56,16 @@ global_asm!(
     ".text",
 );
 
+verus! {
+
+// The accessors are inline assembly, trusted: none claims anything about
+// the value it reads, and `set` claims nothing about what it wrote. The
+// x86_64 `get_tp` is verified: it only pairs `get` with 0.
+
 /// Read the calling thread's slot. Null until [`set`] has been called on
 /// this thread.
 #[inline(always)]
+#[verifier::external_body]
 pub fn get() -> *mut c_void {
     let out: *mut c_void;
     // SAFETY: reads the calling thread's own `.tbss` slot through the thread
@@ -92,35 +100,43 @@ pub fn get() -> *mut c_void {
 /// authentication is on (`sys::pac`, design 6.1): the accessor already
 /// loads it to reach the slot, so the caller's `autda` costs no extra
 /// register move.
+#[cfg(target_arch = "x86_64")]
 #[inline(always)]
 pub fn get_tp() -> (*mut c_void, usize) {
-    #[cfg(target_arch = "x86_64")]
-    {
-        (get(), 0)
+    (get(), 0)
+}
+
+/// Read the calling thread's slot together with the thread pointer
+/// (`tpidr_el0`), the modifier the heap pointer is signed with when pointer
+/// authentication is on (`sys::pac`, design 6.1): one asm sequence that
+/// keeps the thread pointer it loads to reach the slot, so the caller's
+/// `autda` costs no extra register move. Trusted; nothing is claimed about
+/// either value.
+#[cfg(target_arch = "aarch64")]
+#[inline(always)]
+#[verifier::external_body]
+pub fn get_tp() -> (*mut c_void, usize) {
+    let out: *mut c_void;
+    let tp: usize;
+    // SAFETY: as in `get`.
+    unsafe {
+        asm!(
+            "adrp {off}, :gottprel:challoc_tls",
+            "ldr {off}, [{off}, :gottprel_lo12:challoc_tls]",
+            "mrs {tp}, tpidr_el0",
+            "ldr {out}, [{tp}, {off}]",
+            off = out(reg) _,
+            tp = out(reg) tp,
+            out = out(reg) out,
+            options(nostack, readonly, preserves_flags),
+        );
     }
-    #[cfg(target_arch = "aarch64")]
-    {
-        let out: *mut c_void;
-        let tp: usize;
-        // SAFETY: as in `get`.
-        unsafe {
-            asm!(
-                "adrp {off}, :gottprel:challoc_tls",
-                "ldr {off}, [{off}, :gottprel_lo12:challoc_tls]",
-                "mrs {tp}, tpidr_el0",
-                "ldr {out}, [{tp}, {off}]",
-                off = out(reg) _,
-                tp = out(reg) tp,
-                out = out(reg) out,
-                options(nostack, readonly, preserves_flags),
-            );
-        }
-        (out, tp)
-    }
+    (out, tp)
 }
 
 /// Write the calling thread's slot.
 #[inline(always)]
+#[verifier::external_body]
 pub fn set(value: *mut c_void) {
     // SAFETY: writes the calling thread's own `.tbss` slot; see `get`.
     unsafe {
@@ -145,6 +161,8 @@ pub fn set(value: *mut c_void) {
         );
     }
 }
+
+} // verus!
 
 // The slot has no exported accessor: a `challoc_tls_set` export would be
 // a write primitive to the heap pointer in a hardened allocator. The C

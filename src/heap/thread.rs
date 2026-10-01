@@ -10,11 +10,15 @@ use crate::sys::pac;
 use super::PUSH_PAC;
 use super::{Heap, Shared};
 
+vstd::prelude::verus! {
+
 /// TLS slot value while this thread's heap is being created and
 /// `pthread_setspecific` may re-enter the allocator.
 pub const TLS_CREATING: usize = 1;
 /// TLS slot value after this thread's heap destructor has run.
 pub const TLS_EXITED: usize = 2;
+
+} // verus!
 
 /// Destructor of the thread-exit key: mark the thread as exited, then flush
 /// and free its heap. The sentinel goes first so that anything allocating

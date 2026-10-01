@@ -25,6 +25,11 @@
 use core::arch::asm;
 
 use crate::sys::features::Value;
+use vstd::prelude::verus;
+#[cfg(verus_only)]
+use vstd::prelude::*;
+
+verus! {
 
 /// Byte offset of `cpu_id` (kernel-owned; `-1` before registration).
 pub const CPU_ID_OFFSET: usize = 4;
@@ -62,25 +67,41 @@ impl Probe {
         registered: false,
     };
 
+    /// The pairs [`Probe::words`] yields.
+    #[inline(always)]
+    fn word_pairs(&self) -> [(&'static str, Value); 2] {
+        let registered = self.present && self.registered && self.size >= BASE_SIZE;
+        [
+            ("rseq", Value::YesNo(registered)),
+            ("rseq_size", Value::Num(u64::from(self.size))),
+        ]
+    }
+}
+
+} // verus!
+
+impl Probe {
     /// The feature line's `rseq=` and `rseq_size=` words. `rseq=yes` when
     /// glibc registered an area (`__rseq_size` covers the original struct,
     /// [`BASE_SIZE`]) and the kernel has written this thread's `cpu_id`;
     /// `rseq_size` is the symbol's value even when the registration did not
     /// take (`0` without one: `GLIBC_TUNABLES=glibc.pthread.rseq=0` or a
     /// kernel without `CONFIG_RSEQ`; 20 on a kernel that reports no feature
-    /// size).
+    /// size). Outside `verus!`: an array's `IntoIter` has no
+    /// specification; [`Probe::word_pairs`] builds them.
     pub fn words(&self) -> impl Iterator<Item = (&'static str, Value)> {
-        let registered = self.present && self.registered && self.size >= BASE_SIZE;
-        [
-            ("rseq", Value::YesNo(registered)),
-            ("rseq_size", Value::Num(u64::from(self.size))),
-        ]
-        .into_iter()
+        self.word_pairs().into_iter()
     }
 }
 
+verus! {
+
 /// Read the three weak symbols and the calling thread's `cpu_id` field.
-pub fn probe() -> Probe {
+pub fn probe() -> (r: Probe)
+    ensures
+        !r.present ==> r == Probe::NONE,
+        r.registered ==> r.present && r.size as int >= CPU_ID_OFFSET + 4,
+{
     let (so, ss, sf) = symbols();
     if so.is_null() || ss.is_null() {
         return Probe::NONE;
@@ -88,22 +109,16 @@ pub fn probe() -> Probe {
     // SAFETY: non-null addresses of the loader's `__rseq_offset`
     // (`ptrdiff_t`) and `__rseq_size` (`unsigned int`) globals, read
     // once; `__rseq_flags` likewise when present.
-    let (offset, size) = unsafe { (so.read(), ss.read()) };
+    let (offset, size) = unsafe { (read_global(so), read_global(ss)) };
     let flags = if sf.is_null() {
         0
     } else {
-        unsafe { sf.read() }
+        unsafe { read_global(sf) }
     };
     let registered = size >= (CPU_ID_OFFSET as u32 + 4) && {
         // SAFETY: the area is `size` bytes at the thread pointer plus
         // the offset for every thread, and `cpu_id` is inside it.
-        unsafe {
-            area(offset)
-                .add(CPU_ID_OFFSET)
-                .cast::<u32>()
-                .read_volatile()
-                != CPU_ID_UNINITIALIZED
-        }
+        unsafe { read_cpu_id(area(offset)) != CPU_ID_UNINITIALIZED }
     };
     Probe {
         present: true,
@@ -114,9 +129,35 @@ pub fn probe() -> Probe {
     }
 }
 
+/// One read of a loader global [`symbols`] found. Trusted: a raw read;
+/// nothing is claimed about the value.
+///
+/// # Safety
+/// `p` is the non-null address of a live, aligned `T`.
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn read_global<T: Copy>(p: *const T) -> T {
+    // SAFETY: guaranteed by the caller.
+    unsafe { p.read() }
+}
+
+/// A volatile read of the `cpu_id` field of the rseq area at `area`.
+/// Trusted: a raw read; nothing is claimed about the value.
+///
+/// # Safety
+/// `area` is this thread's rseq area, at least `CPU_ID_OFFSET + 4` bytes.
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn read_cpu_id(area: *mut u8) -> u32 {
+    // SAFETY: guaranteed by the caller.
+    unsafe { area.add(CPU_ID_OFFSET).cast::<u32>().read_volatile() }
+}
+
 /// Addresses of the weak `__rseq_offset`, `__rseq_size` and `__rseq_flags`
 /// (null when they do not resolve). The same `.weak` + GOT form as
 /// `config.rs` uses for `malloc_conf`: stable Rust has no weak statics.
+/// Trusted: inline assembly; nothing is claimed about the addresses.
+#[verifier::external_body]
 #[inline(never)]
 fn symbols() -> (*const isize, *const u32, *const u32) {
     let (so, ss, sf): (*const isize, *const u32, *const u32);
@@ -158,6 +199,8 @@ fn symbols() -> (*const isize, *const u32, *const u32) {
 /// The calling thread's thread pointer: `%fs:0` (the TCB's self pointer)
 /// on x86_64, `tpidr_el0` on aarch64. The rseq area is at
 /// `thread_pointer() + __rseq_offset`.
+/// Trusted: inline assembly; nothing is claimed about the value.
+#[verifier::external_body]
 #[inline(always)]
 pub fn thread_pointer() -> usize {
     let tp: usize;
@@ -175,8 +218,10 @@ pub fn thread_pointer() -> usize {
 /// (`Probe::offset`).
 #[inline(always)]
 pub fn area(offset: isize) -> *mut u8 {
-    thread_pointer().wrapping_add_signed(offset) as *mut u8
+    crate::vspec::addr::addr_to_ptr(thread_pointer().wrapping_add_signed(offset))
 }
+
+} // verus!
 
 /// The calling thread's `cpu_id` field (diagnostics and tests).
 ///
