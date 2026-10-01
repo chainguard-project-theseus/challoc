@@ -25,7 +25,7 @@
 //! its shape. `dirty_decay_ms:-1` (never) is left alone in every band.
 //!
 //! The policy is evaluated where a sample was taken ([`evaluate`], from
-//! `purge::on_tick`, the background thread's loop and a fired PSI trigger),
+//! `purge::on_tick` and the background thread's loop),
 //! so at most once per 10 ms process-wide and never on a fast path. Without
 //! a limit it is two loads and a return; with one it also sums the `Empty`
 //! bytes of every class that has any (one lock hold per such class). The

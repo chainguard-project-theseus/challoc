@@ -1,7 +1,6 @@
 /*
  * The cgroup figures a program can read through mallctl
- * (`stats.cgroup.limit`, `.high`, `.current`, `.pressure_events`, design
- * 11 and 13.4) and the `cgroup:` line of malloc_stats_print, from C under
+ * (`stats.cgroup.limit`, `.high`, `.current`, design 11 and 13.4) and the `cgroup:` line of malloc_stats_print, from C under
  * LD_PRELOAD. Modes:
  *
  *   plain  the default configuration: the keys read when the process has a
@@ -16,8 +15,9 @@
  *          tracked, the keys are ENOENT, the report says why, and
  *          abort_conf accepts the key (it is no longer inert).
  *   bg     run with MALLOC_CONF=background_thread:true: once the thread
- *          exists the report says whether the PSI trigger was armed, and
- *          `pressure_events` reads 0 in a process under no pressure.
+ *          exists the cgroup is still tracked, the report prints the
+ *          tracked `cgroup:` line and `current` follows the kernel's
+ *          `memory.current`.
  */
 #include "common.h"
 #include <stdbool.h>
@@ -113,26 +113,22 @@ static size_t kernel_current(void)
 static void mode_plain(void)
 {
     int tracked = has_cgroup2();
-    size_t limit = 0, high = 0, current = 0, events = 0;
+    size_t limit = 0, high = 0, current = 0;
     int rl = read_size("stats.cgroup.limit", &limit);
     int rh = read_size("stats.cgroup.high", &high);
     int rc = read_size("stats.cgroup.current", &current);
-    int re = read_size("stats.cgroup.pressure_events", &events);
     const char *line = cgroup_line();
     fprintf(stderr, "%s\n", line);
     if (!tracked) {
-        CHECK(rl == ENOENT && rh == ENOENT && rc == ENOENT && re == ENOENT, "untracked keys: %d %d %d %d", rl, rh, rc, re);
+        CHECK(rl == ENOENT && rh == ENOENT && rc == ENOENT, "untracked keys: %d %d %d", rl, rh, rc);
         CHECK(strncmp(line, "cgroup: not tracked", 19) == 0, "%s", line);
         return;
     }
-    REQUIRE(rl == 0 && rh == 0 && rc == 0 && re == 0, "tracked keys: %d %d %d %d", rl, rh, rc, re);
-    fprintf(stderr, "stats.cgroup: limit %zu high %zu current %zu pressure_events %zu\n", limit, high, current, events);
+    REQUIRE(rl == 0 && rh == 0 && rc == 0, "tracked keys: %d %d %d", rl, rh, rc);
+    fprintf(stderr, "stats.cgroup: limit %zu high %zu current %zu\n", limit, high, current);
     CHECK(limit == SIZE_MAX || limit > 0, "limit %zu", limit);
     CHECK(high == SIZE_MAX || high > 0, "high %zu", high);
-    CHECK(events == 0, "pressure_events %zu without a background thread", events);
     CHECK(strncmp(line, "cgroup: /", 9) == 0, "%s", line);
-    CHECK(strstr(line, "psi not armed (no background thread)") != NULL || strstr(line, "psi no memory.pressure") != NULL,
-          "psi state without a thread: %s", line);
     const char *want = getenv("CHALLOC_EXPECT_CGROUP_LIMIT");
     if (want) {
         size_t w = strtoull(want, NULL, 10);
@@ -203,16 +199,15 @@ static void mode_bg(void)
         CHECK(strncmp(line, "cgroup: not tracked", 19) == 0, "%s", line);
         return;
     }
-    int armed = strstr(line, "psi armed (some ") != NULL;
-    int unavailable = strstr(line, "psi unavailable (") != NULL || strstr(line, "psi no memory.pressure") != NULL;
-    CHECK(armed || unavailable, "psi state with a thread: %s", line);
-    fprintf(stderr, "cgroup: PSI trigger %s\n", armed ? "armed" : "unavailable");
-    size_t events = 1;
-    REQUIRE(read_size("stats.cgroup.pressure_events", &events) == 0, "pressure_events");
-    CHECK(events == 0, "pressure_events %zu with no pressure", events);
-    if (!armed)
-        skip_note("cgroup/bg", "PSI trigger unavailable (memory.pressure not writable here), pressure_events checked only");
-    printf("psi %s\n", armed ? "armed" : "unavailable");
+    CHECK(strncmp(line, "cgroup: /", 9) == 0, "%s", line);
+    size_t current = 0;
+    REQUIRE(read_size("stats.cgroup.current", &current) == 0, "current");
+    size_t kernel = kernel_current();
+    if (kernel > 0) {
+        size_t diff = current > kernel ? current - kernel : kernel - current;
+        CHECK(diff <= (32u << 20), "stats.cgroup.current %zu vs memory.current %zu", current, kernel);
+    }
+    fprintf(stderr, "cgroup: background thread present, stats.cgroup.current %zu (kernel says %zu)\n", current, kernel);
 }
 
 int main(int argc, char **argv)

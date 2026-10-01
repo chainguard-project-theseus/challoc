@@ -1,15 +1,13 @@
 //! Decay and purge (design.md section 8) and the background thread (8.1).
 //!
 //! - [`Batch`], the discard primitive. Callers collect up to [`MAX_BATCH`]
-//!   ranges and flush them with one `process_madvise` (through `PIDFD_SELF`
-//!   or a pidfd of this process, whichever the init probe found) or, when
-//!   neither works, a loop of `madvise`. The advice is decided at each flush
-//!   ([`advice`], design 8 and 11): `MADV_FREE` under the cgroup policy's
-//!   headroom band ([`set_headroom`]), `MADV_DONTNEED` everywhere else and
-//!   always for an explicit purge ([`purge_all`], [`purge_arena`]). A lazy
-//!   batch goes through `process_madvise` only where the probe found the
-//!   kernel takes `MADV_FREE` there. A range that fails to discard aborts:
-//!   the heap's idea of what is resident would otherwise be wrong.
+//!   ranges, merging adjacent ones, and flush them with a loop of
+//!   `madvise`. The advice is decided at each flush ([`advice`], design 8
+//!   and 11): `MADV_FREE` under the cgroup policy's headroom band
+//!   ([`set_headroom`]), `MADV_DONTNEED` everywhere else and always for an
+//!   explicit purge ([`purge_all`], [`purge_arena`]). A range that fails to
+//!   discard aborts: the heap's idea of what is resident would otherwise be
+//!   wrong.
 //! - The decay curve ([`Curve`], `purge/curve.rs`) and its driver
 //!   ([`decay`]): jemalloc's decay shape, a smootherstep from one to zero
 //!   over the `dirty_decay_ms` window. Each `(arena, class)` and the huge
@@ -35,15 +33,14 @@
 //! and `Fresh` memory stays known zero.
 //!
 //! The curve's tests sit in `purge/curve.rs`, the other pure tests and the
-//! `serial` lock the class tests share in `purge/tests.rs`, and the two that
-//! need a kernel in `purge/linux_tests.rs`.
+//! `serial` lock the class tests share in `purge/tests.rs`, and the one that
+//! needs a kernel in `purge/linux_tests.rs`.
 
-use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use crate::heap::Shared;
 pub use crate::policy::Advice;
-use crate::sys::{self, IoVec, PIDFD_SELF};
-use crate::sys::features::ProcessMadvise;
+use crate::sys;
 
 mod curve;
 #[cfg(test)]
@@ -53,16 +50,9 @@ mod linux_tests;
 
 pub use curve::{decay_ns_from_ms, Curve, NEVER, STEPS};
 
-/// Ranges per `process_madvise` (design section 8).
+/// Ranges per batch (design section 8).
 pub const MAX_BATCH: usize = 64;
 
-/// `BACKEND` value for "loop over `madvise`".
-const LOOP: i32 = i32::MIN;
-/// `process_madvise` target: [`LOOP`], `PIDFD_SELF`, or a pidfd.
-static BACKEND: AtomicI32 = AtomicI32::new(LOOP);
-/// The backend takes `MADV_FREE` (the init probe, `sys::features`); a lazy
-/// batch through a backend that does not goes through the loop.
-static BACKEND_LAZY: AtomicBool = AtomicBool::new(false);
 /// `lazy_band` (default true): `MADV_FREE` under the headroom band.
 static LAZY_BAND: AtomicBool = AtomicBool::new(true);
 /// The policy's last evaluation put usage under 70% of a known limit with
@@ -86,22 +76,9 @@ static EAGER_BYTES: AtomicU64 = AtomicU64::new(0);
 /// as "known zero" and aborts on a dirty word.
 static CHECK_ZERO: AtomicBool = AtomicBool::new(false);
 
-/// Choose the discard backend. Called once at init, before anything can
-/// be purged, and by the tests.
-pub fn configure(pm: ProcessMadvise) {
-    let backend = match pm {
-        ProcessMadvise::Unavailable => LOOP,
-        ProcessMadvise::PidfdSelf => PIDFD_SELF,
-        ProcessMadvise::Pidfd(fd) => fd,
-    };
-    BACKEND.store(backend, Ordering::Relaxed);
-}
-
-/// The two-advice purge's settings: whether the backend takes `MADV_FREE`
-/// (the probe) and the `lazy_band` key. Called
-/// once at init after [`configure`].
-pub fn configure_advice(backend_lazy: bool, lazy_band: bool) {
-    BACKEND_LAZY.store(backend_lazy, Ordering::Relaxed);
+/// The `lazy_band` key of the two-advice purge. Called once at init,
+/// before anything can be purged, and by the tests.
+pub fn configure_advice(lazy_band: bool) {
     LAZY_BAND.store(lazy_band, Ordering::Relaxed);
 }
 
@@ -145,12 +122,6 @@ pub fn advice_reason() -> &'static str {
     }
 }
 
-/// Whether a lazy batch goes through `process_madvise` (the probe found
-/// the backend takes `MADV_FREE`); false with the loop backend too.
-pub fn lazy_uses_process_madvise() -> bool {
-    uses_process_madvise() && BACKEND_LAZY.load(Ordering::Relaxed)
-}
-
 /// `(lazy batches, eager batches)` flushed so far.
 pub fn batches() -> (u64, u64) {
     (LAZY_BATCHES.load(Ordering::Relaxed), EAGER_BATCHES.load(Ordering::Relaxed))
@@ -179,8 +150,7 @@ impl Drop for Explicit {
 }
 
 /// Turn the `check_zero` debug mode on or off (init, from the config key;
-/// the tests, directly). Separate from [`configure`] so a re-probe of the
-/// backend never resets it.
+/// the tests, directly).
 pub fn set_check_zero(on: bool) {
     CHECK_ZERO.store(on, Ordering::Relaxed);
 }
@@ -195,22 +165,15 @@ pub fn check_zero() -> bool {
     CHECK_ZERO.load(Ordering::Relaxed)
 }
 
-/// The discard backend and the advice in force for diagnostics, e.g.
-/// `process_madvise(PIDFD_SELF) MADV_DONTNEED`; the advice reads
-/// `MADV_FREE (some lazy batches issued)` once any lazy batch went out,
-/// since that is what makes `Purged` memory unknown-zero.
+/// The advice in force for diagnostics, e.g. `MADV_DONTNEED`; it reads
+/// `MADV_DONTNEED (some lazy batches issued)` once any lazy batch went
+/// out, since that is what makes `Purged` memory unknown-zero.
 #[cold]
-pub fn backend_name() -> (&'static str, &'static str) {
-    let backend = match BACKEND.load(Ordering::Relaxed) {
-        LOOP => "madvise loop",
-        PIDFD_SELF => "process_madvise(PIDFD_SELF)",
-        _ => "process_madvise(pidfd)",
-    };
-    let advice = match (advice(), purged_is_zero()) {
+pub fn advice_name() -> &'static str {
+    match (advice(), purged_is_zero()) {
         (Advice::Eager, false) => "MADV_DONTNEED (some lazy batches issued)",
         (a, _) => a.madv_name(),
-    };
-    (backend, advice)
+    }
 }
 
 /// Whether memory in the `Purged` state is known to read as zero: until
@@ -220,11 +183,6 @@ pub fn backend_name() -> (&'static str, &'static str) {
 #[inline]
 pub fn purged_is_zero() -> bool {
     !LAZY_EVER.load(Ordering::Relaxed)
-}
-
-/// Whether batches go through `process_madvise` (false: `madvise` loop).
-pub fn uses_process_madvise() -> bool {
-    BACKEND.load(Ordering::Relaxed) != LOOP
 }
 
 /// Up to [`MAX_BATCH`] page ranges to discard together.
@@ -282,8 +240,7 @@ impl Batch {
         self.n += 1;
     }
 
-    /// Discard every range with one syscall when the kernel allows it and a
-    /// loop of `madvise` otherwise, then empty the batch. The advice is
+    /// Discard every range with `madvise`, then empty the batch. The advice is
     /// [`advice`] at this moment, counted per batch and per byte; a lazy
     /// flush makes `Purged` memory unknown-zero for the rest of the process
     /// (the module doc), which is published before the discard so a claim
@@ -490,31 +447,10 @@ pub fn note_decay_changed() {
 /// invariant; this is the one place the batch's ranges reach the
 /// kernel).
 fn discard(ranges: &[(usize, usize)], advice: Advice) {
-    let lazy = advice == Advice::Lazy;
     let advice = advice.madv();
-    let backend = BACKEND.load(Ordering::Relaxed);
-    // A lazy batch takes the batched path only where the probe found
-    // the kernel accepts `MADV_FREE` through `process_madvise`.
-    if backend != LOOP && (!lazy || BACKEND_LAZY.load(Ordering::Relaxed)) {
-        let mut iov = [IoVec { base: core::ptr::null(), len: 0 }; MAX_BATCH];
-        let mut total = 0usize;
-        for (i, &(addr, len)) in ranges.iter().enumerate() {
-            iov[i] = IoVec { base: addr as *const u8, len };
-            total += len;
-        }
-        // SAFETY: the ranges are page-aligned parts of our own mappings
-        // that the caller holds free (the `Batch` invariant); `iov`
-        // outlives the call.
-        let done = unsafe { sys::process_madvise(backend, iov.as_ptr(), ranges.len(), advice, 0) };
-        if done == Ok(total) {
-            return;
-        }
-        // A short or failed batch (a range the kernel refused, a pidfd
-        // that went stale) falls back to the loop: both advices are
-        // idempotent, so redoing the whole batch is harmless.
-    }
     for &(addr, len) in ranges {
-        // SAFETY: as above.
+        // SAFETY: the ranges are page-aligned parts of our own mappings
+        // that the caller holds free (the `Batch` invariant).
         if let Err(e) = unsafe { sys::madvise(addr, len, advice) } {
             panic!("purge: madvise({advice}) of {addr:#x}+{len:#x} failed: {e}");
         }
@@ -523,17 +459,3 @@ fn discard(ranges: &[(usize, usize)], advice: Advice) {
 
 /// The background thread (design 8.1).
 pub mod background;
-
-/// The fork child's view of the discard backend: a pidfd inherited from the
-/// parent names the parent, so it is closed and purges fall back to the
-/// `madvise` loop (`PIDFD_SELF` needs no fd and stays). Returns the
-/// backend the child ended up with, for the feature record.
-pub fn fork_child() -> ProcessMadvise {
-    let b = BACKEND.load(Ordering::Relaxed);
-    if b >= 0 {
-        let _ = crate::sys::close(b);
-        BACKEND.store(LOOP, Ordering::Relaxed);
-        return ProcessMadvise::Unavailable;
-    }
-    if b == LOOP { ProcessMadvise::Unavailable } else { ProcessMadvise::PidfdSelf }
-}

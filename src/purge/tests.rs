@@ -149,7 +149,7 @@ fn advice_follows_headroom_band_key_and_explicit_purges() {
     assert_eq!(advice(), Advice::Lazy);
     assert_eq!(advice_reason(), "under 70% of the limit");
     // The diagnostics name the flag the next flush would issue.
-    assert_eq!(backend_name().1, "MADV_FREE");
+    assert_eq!(advice_name(), "MADV_FREE");
     {
         let _e = Explicit::enter();
         assert_eq!(advice(), Advice::Eager);
@@ -161,11 +161,10 @@ fn advice_follows_headroom_band_key_and_explicit_purges() {
         assert_eq!(advice(), Advice::Eager);
     }
     assert_eq!(advice(), Advice::Lazy);
-    configure_advice(false, false);
+    configure_advice(false);
     assert_eq!(advice(), Advice::Eager);
     assert_eq!(advice_reason(), "lazy_band:false");
-    assert!(!lazy_uses_process_madvise());
-    configure_advice(false, true);
+    configure_advice(true);
     assert_eq!(advice(), Advice::Lazy);
     set_headroom(false, true);
     assert_eq!(advice(), Advice::Eager);
@@ -176,7 +175,7 @@ fn advice_follows_headroom_band_key_and_explicit_purges() {
     // Nothing was flushed: the sticky flag is untouched, so the eager
     // advice reads plain (no "some lazy batches issued").
     assert!(purged_is_zero());
-    assert_eq!(backend_name().1, "MADV_DONTNEED");
+    assert_eq!(advice_name(), "MADV_DONTNEED");
     assert_eq!(batches(), (0, EAGER_BATCHES.load(Ordering::Relaxed)));
 }
 

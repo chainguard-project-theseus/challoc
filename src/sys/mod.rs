@@ -46,8 +46,6 @@ pub const MADV_DONTNEED: i32 = 4;
 pub const MADV_FREE: i32 = 8;
 pub const MADV_HUGEPAGE: i32 = 14;
 pub const MADV_NOHUGEPAGE: i32 = 15;
-#[cfg(test)]
-pub const MADV_COLD: i32 = 20;
 pub const MADV_GUARD_INSTALL: i32 = 102;
 pub const MADV_GUARD_REMOVE: i32 = 103;
 
@@ -65,28 +63,9 @@ pub const CLOCK_MONOTONIC_COARSE: i32 = 6;
 pub const O_RDONLY: i32 = 0;
 #[cfg(test)]
 pub const O_WRONLY: i32 = 1;
-pub const O_RDWR: i32 = 2;
-pub const O_NONBLOCK: i32 = 0o4000;
 pub const O_CLOEXEC: i32 = 0o2_000_000;
 
-/// `eventfd2` flags (the same bits as the `O_*` flags they mirror).
-pub const EFD_NONBLOCK: i32 = O_NONBLOCK;
-pub const EFD_CLOEXEC: i32 = O_CLOEXEC;
-
-pub const POLLIN: i16 = 0x001;
-pub const POLLPRI: i16 = 0x002;
-pub const POLLERR: i16 = 0x008;
-pub const POLLHUP: i16 = 0x010;
-pub const POLLNVAL: i16 = 0x020;
 pub const AT_FDCWD: i32 = -100;
-
-/// Sentinel pidfd meaning "the calling thread" (`PIDFD_SELF_THREAD` of
-/// `include/uapi/linux/pidfd.h`), accepted by `process_madvise` on
-/// kernels that have it: 6.15, the first release whose header defines
-/// it and whose `pidfd_get_task` honours it (6.14 has neither).
-/// Probed at runtime by `sys::features`;
-/// older kernels return `EBADF`.
-pub const PIDFD_SELF: i32 = -10000;
 
 pub const SIGABRT: i32 = 6;
 const SIG_BLOCK: i32 = 0;
@@ -125,23 +104,6 @@ mod linux {
     };
 
     // ---- structs ---------------------------------------------------------
-
-    /// `struct iovec`.
-    #[repr(C)]
-    #[derive(Copy, Clone, Debug)]
-    pub struct IoVec {
-        pub base: *const u8,
-        pub len: usize,
-    }
-
-    /// `struct pollfd`.
-    #[repr(C)]
-    #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-    pub struct PollFd {
-        pub fd: i32,
-        pub events: i16,
-        pub revents: i16,
-    }
 
     /// `struct timespec` (64-bit `time_t` on both architectures).
     #[repr(C)]
@@ -219,31 +181,6 @@ mod linux {
             .map(|_| ())
     }
 
-    /// `process_madvise(2)`. Returns the number of bytes advised.
-    ///
-    /// # Safety
-    /// `iov` must point to `iovcnt` valid entries for the duration of the call.
-    #[inline]
-    pub unsafe fn process_madvise(
-        pidfd: i32,
-        iov: *const IoVec,
-        iovcnt: usize,
-        advice: i32,
-        flags: u32,
-    ) -> Result<usize, Errno> {
-        // SAFETY: forwarded to the caller's contract.
-        decode(unsafe {
-            raw::syscall5(
-                nr::PROCESS_MADVISE,
-                pidfd as isize as usize,
-                iov as usize,
-                iovcnt,
-                advice as isize as usize,
-                flags as usize,
-            )
-        })
-    }
-
     /// `mseal(2)`. Forbids `munmap`, `mremap`, `mprotect` and `madvise`
     /// discards on the range for the life of the process.
     ///
@@ -253,15 +190,6 @@ mod linux {
     pub unsafe fn mseal(addr: usize, len: usize, flags: usize) -> Result<(), Errno> {
         // SAFETY: forwarded to the caller's contract.
         decode(unsafe { raw::syscall3(nr::MSEAL, addr, len, flags) }).map(|_| ())
-    }
-
-    /// `pidfd_open(2)`. Fallback source of a pidfd for `process_madvise` on
-    /// kernels without `PIDFD_SELF`.
-    #[inline]
-    pub fn pidfd_open(pid: i32, flags: u32) -> Result<i32, Errno> {
-        // SAFETY: no pointers; the kernel validates both arguments.
-        decode(unsafe { raw::syscall2(nr::PIDFD_OPEN, pid as isize as usize, flags as usize) })
-            .map(|fd| fd as i32)
     }
 
     /// `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, addr, len, name)`.
@@ -497,27 +425,6 @@ mod linux {
                 Err(_) => return,
             }
         }
-    }
-
-    /// `ppoll(2)` with no signal mask change. `timeout` of `None` waits
-    /// indefinitely. Returns the number of descriptors with events (0 on
-    /// timeout). The kernel may write the remaining time back, so it gets
-    /// a copy.
-    pub fn ppoll(fds: &mut [PollFd], timeout: Option<&Timespec>) -> Result<usize, Errno> {
-        let mut ts = timeout.copied();
-        let tsp = ts.as_mut().map_or(0, |t| t as *mut Timespec as usize);
-        // SAFETY: `fds` is a live, writable slice of the kernel's `pollfd`
-        // layout; `ts` outlives the call; a null sigmask changes nothing.
-        decode(unsafe {
-            raw::syscall5(nr::PPOLL, fds.as_mut_ptr() as usize, fds.len(), tsp, 0, SIGSET_WORDS_BYTES)
-        })
-    }
-
-    /// `eventfd2(initval, flags)`: a counter descriptor a sleeping thread
-    /// can `ppoll` and another can bump with an 8-byte `write`.
-    pub fn eventfd(initval: u32, flags: i32) -> Result<i32, Errno> {
-        // SAFETY: no pointers.
-        decode(unsafe { raw::syscall2(nr::EVENTFD2, initval as usize, flags as isize as usize) }).map(|fd| fd as i32)
     }
 
     /// `close(2)`.
@@ -757,46 +664,6 @@ mod tests {
             }
             Err(e) => panic!("mseal: unexpected {e}"),
         }
-    }
-
-    #[test]
-    fn process_madvise_via_pidfd() {
-        let addr = map_page();
-        // SAFETY: fresh writable page.
-        unsafe { (addr as *mut u8).write(1) };
-        let iov = IoVec { base: addr as *const u8, len: PAGE };
-        let fd = pidfd_open(getpid(), 0);
-        match fd {
-            Ok(fd) => {
-                // SAFETY: `iov` is live for the call; MADV_COLD is non-destructive.
-                let r = unsafe { process_madvise(fd, &iov, 1, MADV_COLD, 0) };
-                match r {
-                    Ok(n) => assert_eq!(n, PAGE),
-                    Err(Errno::ENOSYS) => std::eprintln!("process_madvise: ENOSYS, skipping"),
-                    // Before the self-process exemption (6.13-era kernels),
-                    // process_madvise needs CAP_SYS_NICE even on oneself.
-                    // Containers usually lack it. The feature probe must
-                    // treat this as "unavailable".
-                    Err(Errno::EPERM) => std::eprintln!("process_madvise: EPERM (no CAP_SYS_NICE), skipping"),
-                    Err(e) => panic!("process_madvise: unexpected {e}"),
-                }
-                close(fd).unwrap();
-            }
-            Err(Errno::ENOSYS) => std::eprintln!("pidfd_open: ENOSYS, skipping"),
-            Err(e) => panic!("pidfd_open: unexpected {e}"),
-        }
-        // Bad pidfd must decode cleanly whatever the kernel. EPERM appears
-        // when a seccomp profile (Docker's default) filters the syscall.
-        // SAFETY: as above.
-        let r = unsafe { process_madvise(-1, &iov, 1, MADV_COLD, 0) };
-        assert!(
-            matches!(r, Err(Errno::EBADF) | Err(Errno::ENOSYS) | Err(Errno::EPERM)),
-            "{r:?}"
-        );
-        // SAFETY: page still valid.
-        assert_eq!(unsafe { (addr as *const u8).read() }, 1);
-        // SAFETY: we own `addr`.
-        unsafe { munmap(addr, PAGE).unwrap() };
     }
 
     #[test]

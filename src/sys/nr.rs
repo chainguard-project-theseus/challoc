@@ -29,12 +29,8 @@ pub const TABLE: &[(&str, usize)] = &[
     ("tgkill", TGKILL),
     ("openat", OPENAT),
     ("getrandom", GETRANDOM),
-    ("pidfd_open", PIDFD_OPEN),
-    ("process_madvise", PROCESS_MADVISE),
     ("mseal", MSEAL),
     ("sched_getaffinity", SCHED_GETAFFINITY),
-    ("ppoll", PPOLL),
-    ("eventfd2", EVENTFD2),
 ];
 
 #[cfg(target_arch = "x86_64")]
@@ -57,19 +53,15 @@ mod arch {
     pub const EXIT_GROUP: usize = 231;
     pub const TGKILL: usize = 234;
     pub const OPENAT: usize = 257;
-    pub const PPOLL: usize = 271;
-    pub const EVENTFD2: usize = 290;
     pub const GETRANDOM: usize = 318;
 }
 
 #[cfg(target_arch = "aarch64")]
 mod arch {
-    pub const EVENTFD2: usize = 19;
     pub const OPENAT: usize = 56;
     pub const CLOSE: usize = 57;
     pub const READ: usize = 63;
     pub const WRITE: usize = 64;
-    pub const PPOLL: usize = 73;
     pub const EXIT_GROUP: usize = 94;
     pub const FUTEX: usize = 98;
     pub const CLOCK_GETTIME: usize = 113;
@@ -90,8 +82,6 @@ mod arch {
 pub use arch::*;
 
 // Numbers from the unified table (>= 424) are the same on every architecture.
-pub const PIDFD_OPEN: usize = 434;
-pub const PROCESS_MADVISE: usize = 440;
 pub const MSEAL: usize = 462;
 
 #[cfg(test)]

@@ -251,8 +251,7 @@ static void mode_background(void)
     check_calloc_zero();
 
     /* The child has no background thread and does not get one back on its
-     * own; it can still allocate, free and purge (through madvise if the
-     * parent's pidfd backend is unusable in the child). */
+     * own; it can still allocate, free and purge. */
     fflush(stdout);
     pid_t pid = fork();
     REQUIRE(pid >= 0, "fork: %s", strerror(errno));

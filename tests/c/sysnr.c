@@ -101,16 +101,6 @@
 #else
 #define PV_getrandom printf("-")
 #endif
-#ifdef __NR_pidfd_open
-#define PV_pidfd_open printf("%d", __NR_pidfd_open)
-#else
-#define PV_pidfd_open printf("-")
-#endif
-#ifdef __NR_process_madvise
-#define PV_process_madvise printf("%d", __NR_process_madvise)
-#else
-#define PV_process_madvise printf("-")
-#endif
 #ifdef __NR_mseal
 #define PV_mseal printf("%d", __NR_mseal)
 #else
@@ -121,22 +111,12 @@
 #else
 #define PV_sched_getaffinity printf("-")
 #endif
-#ifdef __NR_ppoll
-#define PV_ppoll printf("%d", __NR_ppoll)
-#else
-#define PV_ppoll printf("-")
-#endif
-#ifdef __NR_eventfd2
-#define PV_eventfd2 printf("%d", __NR_eventfd2)
-#else
-#define PV_eventfd2 printf("-")
-#endif
 
 int main(void) {
     P(read); P(write); P(close); P(mmap); P(mprotect); P(munmap);
     P(rt_sigaction); P(rt_sigprocmask); P(madvise); P(getpid); P(prctl);
     P(gettid); P(futex); P(clock_gettime); P(exit_group); P(tgkill);
-    P(openat); P(getrandom); P(pidfd_open); P(process_madvise); P(mseal);
-    P(sched_getaffinity); P(ppoll); P(eventfd2);
+    P(openat); P(getrandom); P(mseal);
+    P(sched_getaffinity);
     return 0;
 }

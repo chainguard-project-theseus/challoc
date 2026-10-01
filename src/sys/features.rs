@@ -8,7 +8,7 @@
 //! do. Any error at all counts as "unavailable", because in practice the
 //! reasons vary (`ENOSYS` from an old kernel or a seccomp filter, `EINVAL`
 //! from a kernel built without the option, `EPERM` from a missing capability
-//! or a seccomp profile, `EBADF` from a kernel without `PIDFD_SELF`).
+//! or a seccomp profile).
 //!
 //! The probes never allocate, take a few microseconds, and leave at most one
 //! `PROT_NONE` page mapped (the sealed page, which by definition cannot be
@@ -25,24 +25,9 @@ use super::auxv::{AT_PAGESZ, getauxval};
 use super::thp_host::Thp;
 use crate::sys;
 use super::{
-    IoVec, MADV_DONTNEED, MADV_FREE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE, MAP_ANONYMOUS,
-    MAP_PRIVATE, PIDFD_SELF, PROT_NONE, PROT_READ, PROT_WRITE, yn,
+    MADV_GUARD_INSTALL, MADV_GUARD_REMOVE, MAP_ANONYMOUS, MAP_PRIVATE, PROT_NONE, PROT_READ,
+    PROT_WRITE, yn,
 };
-
-/// How batched purges (`process_madvise`, design.md section 8) can reach our
-/// own address space.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum ProcessMadvise {
-    /// `process_madvise` is unusable on ourselves; purge with a loop of
-    /// `madvise` calls.
-    Unavailable,
-    /// The kernel accepts the `PIDFD_SELF` sentinel; no fd is held.
-    PidfdSelf,
-    /// The kernel needs a real pidfd; this one refers to the probing process
-    /// and is `O_CLOEXEC`. After `fork` it names the parent, so the child
-    /// must re-probe (design.md section 9) before purging through it.
-    Pidfd(i32),
-}
 
 /// Bit sets of sizes as `64K,2M`, or `none`.
 struct SizeSet(u64);
@@ -90,8 +75,6 @@ pub enum Value {
     Num(u64),
     /// A fixed word (`madvise`, `kernel-disabled`).
     Word(&'static str),
-    /// The `process_madvise` target: `no`, `pidfd_self` or `pidfd:<fd>`.
-    Target(ProcessMadvise),
     /// A bit set over `log2(size)` as `64K,2M`, or `none`.
     Sizes(u64),
 }
@@ -102,9 +85,6 @@ impl fmt::Display for Value {
             Value::YesNo(b) => f.write_str(yn(b)),
             Value::Num(n) => write!(f, "{n}"),
             Value::Word(w) => f.write_str(w),
-            Value::Target(ProcessMadvise::Unavailable) => f.write_str("no"),
-            Value::Target(ProcessMadvise::PidfdSelf) => f.write_str("pidfd_self"),
-            Value::Target(ProcessMadvise::Pidfd(fd)) => write!(f, "pidfd:{fd}"),
             Value::Sizes(set) => write!(f, "{}", SizeSet(set)),
         }
     }
@@ -135,13 +115,6 @@ pub struct Features {
     pub guard_install: bool,
     /// `mseal(2)` works (kernel 6.10+, not filtered by seccomp).
     pub mseal: bool,
-    /// How `process_madvise` can target this process, if at all.
-    pub process_madvise: ProcessMadvise,
-    /// `process_madvise(MADV_FREE)` through the same target works. Probed
-    /// separately because a kernel may take `MADV_DONTNEED` this way but
-    /// refuse `MADV_FREE`; lazy batches then use the `madvise` loop.
-    /// Always `false` when `process_madvise` is unavailable.
-    pub process_madvise_free: bool,
     /// `prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME)` works
     /// (kernel 5.17+ with `CONFIG_ANON_VMA_NAME`).
     pub anon_name: bool,
@@ -158,8 +131,7 @@ pub struct Features {
 
 impl Features {
     /// Every key of the line in order: the kernel probes, then `pac`.
-    /// Values are `yes`/`no` except `page_size`, `process_madvise` (`no`,
-    /// `pidfd_self`, or `pidfd:<fd>`), the THP keys
+    /// Values are `yes`/`no` except `page_size`, the THP keys
     /// (`thp=never|madvise|always|none`, `mthp=64K,2M|none`), `rseq_size`
     /// (a byte count).
     /// `tests/c/features.c` lists the same keys.
@@ -168,8 +140,6 @@ impl Features {
             ("page_size", Value::Num(self.page_size as u64)),
             ("guard_install", Value::YesNo(self.guard_install)),
             ("mseal", Value::YesNo(self.mseal)),
-            ("process_madvise", Value::Target(self.process_madvise)),
-            ("process_madvise_free", Value::YesNo(self.process_madvise_free)),
             ("anon_name", Value::YesNo(self.anon_name)),
         ]
         .into_iter()
@@ -189,8 +159,7 @@ impl fmt::Display for Features {
 
 /// The feature line as a NUL-terminated string, built once at init for
 /// `challoc_features()` (design.md section 16) and reused by
-/// `malloc_stats_print`, so the two report the same bytes. Rebuilt in a
-/// fork child, where the purge backend is re-probed.
+/// `malloc_stats_print`, so the two report the same bytes.
 pub struct FeatureLine {
     buf: [u8; FeatureLine::CAP],
     len: usize,
@@ -198,7 +167,7 @@ pub struct FeatureLine {
 
 impl FeatureLine {
     /// Room for the line and its NUL; the longest possible line (every
-    /// probe `yes`, `pidfd:2147483647`, every THP size listed) is under `CAP - 64` bytes (`feature_line_fits`).
+    /// probe `yes`, every THP size listed) is under `CAP - 64` bytes (`feature_line_fits`).
     pub const CAP: usize = 640;
 
     /// Format `features` into a fresh line. A line that did not fit is cut,
@@ -294,67 +263,6 @@ pub fn probe_mseal(page: usize) -> bool {
     }
 }
 
-/// `process_madvise(pidfd, MADV_DONTNEED)` on a dirtied scratch page,
-/// checked for effect: the call must report the whole page and the page
-/// must read back as zero. `MADV_DONTNEED` is what purge actually issues
-/// (design.md section 8), and older kernels accept other advice through
-/// `process_madvise` but not this one, so probing anything else would
-/// overstate what we can use.
-fn process_madvise_works(pidfd: i32, addr: usize, page: usize) -> bool {
-    let p = addr as *mut u8;
-    // SAFETY: `addr` is our writable scratch page.
-    unsafe { p.write_volatile(0xA5) };
-    let iov = IoVec { base: p, len: page };
-    // SAFETY: `iov` is live for the call; DONTNEED on our scratch page.
-    let r = unsafe { sys::process_madvise(pidfd, &iov, 1, MADV_DONTNEED, 0) };
-    // SAFETY: page still mapped; anonymous memory reads zero after discard.
-    r == Ok(page) && unsafe { p.read_volatile() } == 0
-}
-
-/// `process_madvise(pidfd, MADV_FREE)` on a dirtied scratch page must
-/// report the whole page. The contents cannot be checked (`MADV_FREE`
-/// leaves them in place until reclaim), so the return value is the
-/// only evidence; a kernel that refuses the advice through
-/// `process_madvise` answers `EINVAL`.
-fn process_madvise_free_works(pidfd: i32, addr: usize, page: usize) -> bool {
-    let p = addr as *mut u8;
-    // SAFETY: `addr` is our writable scratch page.
-    unsafe { p.write_volatile(0xA5) };
-    let iov = IoVec { base: p, len: page };
-    // SAFETY: `iov` is live for the call; FREE on our scratch page.
-    let r = unsafe { sys::process_madvise(pidfd, &iov, 1, MADV_FREE, 0) };
-    r == Ok(page)
-}
-
-/// `PIDFD_SELF` first (kernel 6.15, no fd); then a real pidfd for the
-/// calling process (kernel 5.10, needs the self-target exemption or
-/// `CAP_SYS_NICE`); otherwise unavailable. The second value is whether
-/// `MADV_FREE` goes through the same target.
-pub fn probe_process_madvise(page: usize) -> (ProcessMadvise, bool) {
-    let Some(addr) = scratch(page, PROT_READ | PROT_WRITE) else {
-        return (ProcessMadvise::Unavailable, false);
-    };
-    let result = if process_madvise_works(PIDFD_SELF, addr, page) {
-        ProcessMadvise::PidfdSelf
-    } else {
-        match sys::pidfd_open(sys::getpid(), 0) {
-            Ok(fd) if process_madvise_works(fd, addr, page) => ProcessMadvise::Pidfd(fd),
-            Ok(fd) => {
-                let _ = sys::close(fd);
-                ProcessMadvise::Unavailable
-            }
-            Err(_) => ProcessMadvise::Unavailable,
-        }
-    };
-    let lazy = match result {
-        ProcessMadvise::Unavailable => false,
-        ProcessMadvise::PidfdSelf => process_madvise_free_works(PIDFD_SELF, addr, page),
-        ProcessMadvise::Pidfd(fd) => process_madvise_free_works(fd, addr, page),
-    };
-    release(addr, page);
-    (result, lazy)
-}
-
 /// `PR_SET_VMA_ANON_NAME` on a scratch page.
 pub fn probe_anon_name(page: usize) -> bool {
     let Some(addr) = scratch(page, PROT_NONE) else {
@@ -369,19 +277,15 @@ pub fn probe_anon_name(page: usize) -> bool {
 
 impl Features {
     /// Probe everything. Called once from init (design.md section 10);
-    /// calling it again is harmless but leaks a sealed page and may open
-    /// another pidfd, so init stores the result. Pure apart from those
-    /// two resources.
+    /// calling it again is harmless but leaks a sealed page, so init
+    /// stores the result. Pure apart from that page.
     pub fn probe() -> Features {
         let page_size = page_size();
-        let (process_madvise, process_madvise_free) = probe_process_madvise(page_size);
         Features {
             page_size,
             page_shift: page_size.trailing_zeros(),
             guard_install: probe_guard_install(page_size),
             mseal: probe_mseal(page_size),
-            process_madvise,
-            process_madvise_free,
             anon_name: probe_anon_name(page_size),
             thp: crate::sys::thp_host::probe(page_size),
             rseq: crate::rseq::probe(),
@@ -410,8 +314,6 @@ mod tests {
             page_shift: 12,
             guard_install: false,
             mseal: true,
-            process_madvise: ProcessMadvise::Pidfd(7),
-            process_madvise_free: true,
             anon_name: false,
             thp: Thp { enabled: Some(ThpSetting::Madvise), lg_pmd: 21, listed: (1 << 16) | (1 << 21), always: 0, madvise: (1 << 16) | (1 << 21) },
             rseq: rseq_probe(33, 192),
@@ -420,7 +322,7 @@ mod tests {
         let s = std::format!("{f}");
         assert_eq!(
             s,
-            "page_size=4096 guard_install=no mseal=yes process_madvise=pidfd:7 process_madvise_free=yes anon_name=no thp=madvise \
+            "page_size=4096 guard_install=no mseal=yes anon_name=no thp=madvise \
              mthp=64K,2M rseq=yes rseq_size=33 pac=yes"
         );
         // A kernel that reports no feature size (6.10): registered at 20.
@@ -433,10 +335,6 @@ mod tests {
         assert!(std::format!("{f}").contains(" thp=none mthp=none rseq=yes "));
         let f = Features { thp: Thp { enabled: Some(ThpSetting::Never), listed: 1 << 21, always: 0, madvise: 0, lg_pmd: 21 }, ..f };
         assert!(std::format!("{f}").contains(" thp=never mthp=none rseq=yes "));
-        let f = Features { process_madvise: ProcessMadvise::PidfdSelf, ..f };
-        assert!(std::format!("{f}").contains("process_madvise=pidfd_self process_madvise_free=yes "));
-        let f = Features { process_madvise: ProcessMadvise::Unavailable, process_madvise_free: false, ..f };
-        assert!(std::format!("{f}").contains("process_madvise=no process_madvise_free=no "));
     }
 
     #[test]
@@ -446,8 +344,6 @@ mod tests {
             page_shift: 14,
             guard_install: true,
             mseal: true,
-            process_madvise: ProcessMadvise::PidfdSelf,
-            process_madvise_free: true,
             anon_name: true,
             thp: Thp::NONE,
             rseq: Probe::NONE,
@@ -471,8 +367,6 @@ mod tests {
             page_shift: 16,
             guard_install: true,
             mseal: true,
-            process_madvise: ProcessMadvise::Pidfd(i32::MAX),
-            process_madvise_free: true,
             anon_name: true,
             // A 64 KiB-page kernel listing every size from 128K to 512M.
             thp: Thp {
@@ -501,7 +395,7 @@ mod tests {
     #[test]
     fn words_are_the_key_table() {
         let kernel = [
-            "page_size", "guard_install", "mseal", "process_madvise", "process_madvise_free", "anon_name",
+            "page_size", "guard_install", "mseal", "anon_name",
             "thp", "mthp", "rseq", "rseq_size", "pac",
         ];
         for pac in [true, false] {
@@ -510,8 +404,6 @@ mod tests {
                 page_shift: 12,
                 guard_install: true,
                 mseal: false,
-                process_madvise: ProcessMadvise::PidfdSelf,
-                process_madvise_free: true,
                 anon_name: true,
                 thp: Thp::NONE,
                 rseq: rseq_probe(33, 192),
@@ -527,7 +419,7 @@ mod tests {
             }
             let joined: std::vec::Vec<std::string::String> = f.words().map(|(k, v)| std::format!("{k}={v}")).collect();
             assert_eq!(std::format!("{f}"), joined.join(" "));
-            assert_eq!(std::format!("{}", f.thp), joined[6..8].join(" "));
+            assert_eq!(std::format!("{}", f.thp), joined[4..6].join(" "));
         }
     }
 
@@ -570,7 +462,7 @@ mod linux_tests {
 
     /// The real probe and the running kernel's version, the line printed
     /// so `--nocapture` shows what the kernel gave us. Each test probes
-    /// afresh (harmless: one more sealed page, perhaps one more pidfd).
+    /// afresh (harmless: one more sealed page).
     fn probed() -> ((u32, u32), Features, String) {
         let kv = kernel_version();
         let f = Features::probe();
@@ -581,7 +473,7 @@ mod linux_tests {
 
     // A feature newer than the kernel must probe absent. The converse is
     // only asserted where nothing but the kernel decides: seccomp filters
-    // mseal/process_madvise and CONFIG_ANON_VMA_NAME is optional, but
+    // mseal and CONFIG_ANON_VMA_NAME is optional, but
     // madvise itself is never filtered.
 
     /// The line prints and the page geometry is consistent. The name is
@@ -626,44 +518,6 @@ mod linux_tests {
             let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
             assert!(maps.lines().any(|l| l.split_whitespace().nth(1) == Some("---p")), "{maps}");
         }
-    }
-
-    /// `PIDFD_SELF` is 6.15 (`sys::PIDFD_SELF`), `process_madvise` 5.10;
-    /// whatever target was reported must work exactly as reported, and the
-    /// `MADV_FREE` verdict must agree with a second call through it.
-    #[test]
-    fn probe_process_madvise_follows_the_kernel_and_is_usable() {
-        let (kv, f, line) = probed();
-        if !at_least(kv, (6, 15)) {
-            assert_ne!(f.process_madvise, ProcessMadvise::PidfdSelf, "PIDFD_SELF predates 6.15: {line}");
-        }
-        if !at_least(kv, (5, 10)) {
-            assert_eq!(f.process_madvise, ProcessMadvise::Unavailable, "{line}");
-        }
-        let page = f.page_size;
-        let addr = sys::tests::map_anon(page);
-        let p = addr as *mut u8;
-        match f.process_madvise {
-            ProcessMadvise::Unavailable => assert!(!f.process_madvise_free, "{line}"),
-            ProcessMadvise::PidfdSelf | ProcessMadvise::Pidfd(_) => {
-                let fd = match f.process_madvise {
-                    ProcessMadvise::Pidfd(fd) => fd,
-                    _ => sys::PIDFD_SELF,
-                };
-                // SAFETY: our page, live iov.
-                unsafe {
-                    p.write_volatile(7);
-                    let iov = sys::IoVec { base: p, len: page };
-                    assert_eq!(sys::process_madvise(fd, &iov, 1, sys::MADV_DONTNEED, 0), Ok(page));
-                    assert_eq!(p.read_volatile(), 0);
-                    p.write_volatile(9);
-                    let r = sys::process_madvise(fd, &iov, 1, sys::MADV_FREE, 0);
-                    assert_eq!(r == Ok(page), f.process_madvise_free, "{line}: {r:?}");
-                }
-            }
-        }
-        // SAFETY: our page.
-        unsafe { sys::munmap(addr, page).unwrap() };
     }
 
     #[test]

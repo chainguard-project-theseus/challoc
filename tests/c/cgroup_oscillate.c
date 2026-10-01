@@ -346,7 +346,7 @@ static void challoc_policy_line(void)
     if (r != 0)
         return;
     const char *keys[] = { "stats.cgroup.current", "stats.cgroup.decay_ms", "stats.cgroup.retention_cap", "stats.cgroup.empty_bytes",
-                           "stats.cgroup.full_purges", "stats.cgroup.pressure_events" };
+                           "stats.cgroup.full_purges" };
     printf("challoc: stats.cgroup.limit %zu MiB", v == SIZE_MAX ? 0 : v / MIB);
     for (size_t i = 0; i < sizeof keys / sizeof keys[0]; i++) {
         len = sizeof v;

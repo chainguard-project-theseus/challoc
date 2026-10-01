@@ -581,6 +581,12 @@ mod tests {
         crate::sys::features::page_size()
     }
 
+    /// The object side's commit step: [`COMMIT_CHUNK`] rounded up to the
+    /// page, so 16 pages under 4 KiB pages and one under 64 KiB pages.
+    fn chunk() -> usize {
+        align_up(COMMIT_CHUNK, page_size())
+    }
+
     /// A region for tests: a real `PROT_NONE` reservation, so that commit
     /// goes through `mprotect`.
     struct Backing {
@@ -697,7 +703,7 @@ mod tests {
         assert_eq!(p as usize, b.base, "first object sits at the base");
         assert_eq!(p as usize % CACHE_LINE, 0);
         let s = m.stats();
-        assert_eq!(s.committed, COMMIT_CHUNK, "one chunk committed");
+        assert_eq!(s.committed, chunk(), "one chunk committed");
         assert_eq!(s.allocated, 256, "200 rounds up to the 256 bin");
         assert_eq!(s.bumped, 256);
         // Writable and zero.
@@ -709,11 +715,11 @@ mod tests {
         let r = m.alloc(layout(16, 16));
         assert_eq!(q as usize, b.base + 256);
         assert_eq!(r as usize, b.base + 272);
-        assert_eq!(m.stats().committed, COMMIT_CHUNK);
+        assert_eq!(m.stats().committed, chunk());
         // Crossing the chunk boundary commits the next one.
         let big = m.alloc(layout(MAX_BINNED, 64));
         assert!(!big.is_null());
-        assert_eq!(m.stats().committed, align_up(MAX_BINNED + 512, COMMIT_CHUNK));
+        assert_eq!(m.stats().committed, align_up(MAX_BINNED + 512, chunk()));
         unsafe { core::slice::from_raw_parts_mut(big, MAX_BINNED) }.fill(1);
     }
 
@@ -825,7 +831,11 @@ mod tests {
         assert!(sl.iter().all(|&x| x == 0));
         sl.fill(9);
         let s = m.stats();
-        assert_eq!(s.committed, COMMIT_CHUNK + page_size(), "r1's page, r3's two and the chunk's slack around r3");
+        assert_eq!(
+            s.committed,
+            page_size() + align_up(2 * page_size(), chunk()),
+            "r1's page, r3's two and the chunk's slack around r3"
+        );
         assert_eq!(s.eager, 2 * page_size());
         assert_eq!(s.bumped, 2 * page_size());
         // Objects and reservations never overlap: fill the rest with
@@ -929,10 +939,11 @@ mod tests {
         let top = m.reserve(4 * page_size(), page_size()).unwrap();
         assert_eq!(top, b.base + 12 * page_size());
         // 10 pages fit on the object side (12 free); the chunk commit
-        // stops at the reservations.
+        // stops at the reservations (under 4 KiB pages; a 64 KiB-page
+        // chunk is one page, so the frontier stops at the table's end).
         let t1 = m.reserve_table(10 * page_size(), page_size()).unwrap();
         assert_eq!(t1, b.base);
-        assert_eq!(m.stats().writable, 12 * page_size());
+        assert_eq!(m.stats().writable, align_up(10 * page_size(), chunk()).min(12 * page_size()));
         // 3 more do not: not eagerly (past `top`), not as a reservation
         // (the frontier is at `top`).
         assert_eq!(m.reserve_table(3 * page_size(), page_size()), None);
@@ -1176,12 +1187,15 @@ mod tests {
         assert_eq!(small, b.base + align_up(10 * 1024, page_size()), "page aligned, after the ten 1 KiB objects");
         let big = m.reserve_table(EAGER_MAX + page_size(), page_size()).unwrap();
         m.commit(big + page_size(), page_size()).unwrap();
+        // The object side's frontier: the chunks through the small table's
+        // end (one chunk under 4 KiB pages, four pages under 64 KiB pages).
+        let front = align_up(small + 3 * page_size() - b.base, chunk());
         let st = m.stats();
-        assert_eq!(st.committed, COMMIT_CHUNK + page_size(), "the objects' chunk with the table in it, plus big's page");
-        assert_eq!(st.writable, COMMIT_CHUNK + page_size());
+        assert_eq!(st.committed, front + page_size(), "the objects' chunks with the table in them, plus big's page");
+        assert_eq!(st.writable, front + page_size());
         assert_eq!(
             writable_ranges(b.base, b.len),
-            vec![(b.base, b.base + COMMIT_CHUNK), (big + page_size(), big + 2 * page_size())],
+            vec![(b.base, b.base + front), (big + page_size(), big + 2 * page_size())],
             "writable ranges in the region"
         );
         // The small table's pages are writable, the large table's

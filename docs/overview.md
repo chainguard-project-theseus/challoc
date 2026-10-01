@@ -24,14 +24,12 @@ In priority order:
    and Lua arena isolation all keep working.
 4. **cgroup aware.** challoc finds its cgroup2 at init, reads the
    effective `memory.max` and `memory.high` (the minimum up the hierarchy), samples `memory.current`
-   and `memory.events` at most every 10 ms from slow paths, and its
-   background thread arms a PSI trigger on `memory.pressure` where the
-   kernel allows it; `stats.cgroup.*` and `malloc_stats_print` expose the
+   and `memory.events` at most every 10 ms from slow paths and the
+   background thread; `stats.cgroup.*` and `malloc_stats_print` expose the
    figures, and the policy acts on them: retention capped at 5% of the
    limit, the decay window shrinking towards 1 s between 70% and 90% of
    it, everything freed purged at once above 90%, a full purge when the
-   kernel starts reclaiming (`memory.events` `high`), a decay pass when a
-   pressure trigger fires, thread caches collected at every periodic tick
+   kernel starts reclaiming (`memory.events` `high`), thread caches collected at every periodic tick
    above 90%, `MADV_FREE` below 70% of a known limit and `MADV_DONTNEED`
    above, and `thp:always` forced to `never` under a 1 GiB limit. The
    policy is `docs/design.md` section 11 (`src/policy.rs`), exercised by
@@ -106,7 +104,7 @@ huge region with page granularity, address-ordered, with a guard region after
 each run. Freed runs are retained and decay like slabs.
 
 **Memory return.** Empty slabs and runs are dirty and are returned in
-batches through `process_madvise` along jemalloc's decay curve: about half
+batches of `madvise` along jemalloc's decay curve: about half
 of what went empty at once within half of `dirty_decay_ms`, all of it by
 the end of the window. Decay
 runs from the allocating thread's slow path and, when enabled through the

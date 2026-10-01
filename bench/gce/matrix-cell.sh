@@ -24,8 +24,8 @@
 #   - a kernel cell (third argument empty or `privileged`): make fuzz, make
 #     test-cgroup (the churn again and the 300 s oscillation) and, with
 #     `privileged`, `make test` once more with EXTRA_DOCKER_FLAGS=--privileged so
-#     Docker's default seccomp profile does not hide process_madvise and
-#     mseal from the library (the plan's bare-metal/nested-KVM substitute);
+#     Docker's default seccomp profile does not hide mseal from the
+#     library (the plan's bare-metal/nested-KVM substitute);
 #   - a CPU cell (third argument `scorecard`, task 4): one scorecard run,
 #     `make scorecard ROUNDS=3` (challoc versus jemalloc, the fixed row
 #     set) appended to target/results/scorecard-<family>.md, where <family>
@@ -122,7 +122,7 @@ probe_cmd() {
 }
 step probe probe_cmd
 # The same line with Docker's seccomp profile out of the way: what the
-# library sees on this kernel when nothing hides process_madvise or mseal.
+# library sees on this kernel when nothing hides mseal.
 probe_priv_cmd() {
   EXTRA_DOCKER_FLAGS='--privileged' make run CMD='cc -O2 -g -Wall -Wextra -Werror -pthread -DQUANTUM=16 -Itests/c tests/c/features.c -o target/matrix-features -ldl && LD_PRELOAD=/src/target/release/libchalloc.so ./target/matrix-features'
 }
@@ -177,7 +177,7 @@ case "$extra" in
     # The probe line natively: the library and the test binary out of the
     # container (the bind-mounted tree, .tmp-native is excluded from sync),
     # LD_PRELOAD on the host's own glibc. The first report line from
-    # outside Docker/podman: mseal, process_madvise, anon_name, rseq are the
+    # outside Docker/podman: mseal, anon_name, rseq are the
     # kernel's answers, not a seccomp profile's.
     probe_native_cmd() {
       rm -rf "$HOME/challoc/.tmp-native"; mkdir -p "$HOME/challoc/.tmp-native"

@@ -96,7 +96,7 @@ One row per key, in `KEYS` order. "Values" is the grammar
 
 | key | values | default | what it does | change it when | cost or risk |
 |---|---|---|---|---|---|
-| `background_thread` | `true`, `false` | `false` | Runs decay (and the PSI trigger) on a background thread instead of only from allocation slow paths. Created on the first periodic tick after the request, or synchronously by `mallctl("background_thread")`. | The process goes idle for long stretches with freed memory still dirty: without the thread an idle process never purges (as jemalloc). Valkey turns it on itself. | One thread, one futex or `ppoll` sleep; its stack is one metadata reservation. On the Ruby soak it changed nothing (-0.7..+0.3% RSS on every row, `bench/results/2026-09-19-aarch64-ruby-soak.md`). |
+| `background_thread` | `true`, `false` | `false` | Runs decay (and the cgroup sampling) on a background thread instead of only from allocation slow paths. Created on the first periodic tick after the request, or synchronously by `mallctl("background_thread")`. | The process goes idle for long stretches with freed memory still dirty: without the thread an idle process never purges (as jemalloc). Valkey turns it on itself. | One thread, one futex sleep; its stack is one metadata reservation. On the Ruby soak it changed nothing (-0.7..+0.3% RSS on every row, `bench/results/2026-09-19-aarch64-ruby-soak.md`). |
 | `dirty_decay_ms` | `-1`..`1000000000000` | `10000` | The window of the decay curve: freed slabs and huge extents go from dirty to purged over this many milliseconds along a smootherstep (about half by mid-window, all by the end). `-1` never purges. `0` purges at the next pass. | Lower it (1000..5000) when RSS after a burst matters more than refaults; raise it or set `-1` for a process that reuses everything it frees and never idles. | Purging costs `madvise` calls and refaults on reuse; never purging keeps every peak resident. Under a cgroup limit the policy scales this value down (section 4); `-1` is left alone in every band. |
 | `muzzy_decay_ms` | `-1`..`1000000000000` | `0` | Accepted for jemalloc compatibility, stored, readable as `opt.muzzy_decay_ms`; nothing reads it. There is no muzzy state: the two-advice purge (section 4) replaces it. | Never. | None. |
 | `narenas` | `0`..`4294967295` | `0` | Automatic arenas. `0` means `min(4 * ncpus, 64)` (`ncpus` is the affinity mask's width). Each heap is bound to the least-loaded automatic arena, so a program with `t` threads touches `min(t, narenas)` arenas; each arena has its own partial slabs per class. | A process that wants one shared slab set for all its threads (the lowest RSS floor: the 16-thread Ruby soak reads 170 MiB peak under `narenas:1` against 189 with the default and jemalloc's 201, `2026-09-21-aarch64-ruby-rss-v3-soak.md`). Not the remedy it was before 2026-09-21: the 2x RSS of the default on that soak was the per-arena caches of cross-thread frees, since one cache per class (`c8a8e03`), not the arena count. | Fewer arenas means more threads share each arena's class locks on the slow path (refill and flush); the fast paths are unaffected. Not measured under contention here. |
@@ -116,7 +116,7 @@ One row per key, in `KEYS` order. "Values" is the grammar
 | `slot_randomize` | `true`, `false` | `false` | Cache refills claim from a random bitmap word and shuffle the batch, so slot order is not predictable from previous allocations. Slow paths only. | A hardening requirement. | Works against the compacting cache (design 6.4): +7..12% RSS on larson (`2026-09-18-aarch64-gce-tunables.md`, section 6). |
 | `double_free_scan` | `true`, `false` | `false` | Every free compares the slot against the four most recently cached entries and aborts on a match, catching the one double-free window the default leaves (a second free while the slot is still cached, popped before a flush). | Debugging a suspected double free. | valkey1 14.828 -> 13.004 M ops/s on x86_64 (`bench/results/2026-09-18-x86_64-gce-detection-gaps.md`). |
 | `abort_conf` | `true`, `false` | `false` | Abort after parsing if any source reported a problem (section 1). | Package tests and any deployment that must not run on a misspelled key. | None at run time. |
-| `cgroup` | `true`, `false` | `true` | Read the memory cgroup at init and sample it: effective limits, `memory.current`, `memory.events`, the PSI trigger; apply the policy of section 4. `false` reads nothing, applies nothing, reports `cgroup: not tracked (cgroup:false)`. | `false` only as the control in a measurement. | With `cgroup:false` the container churn test keeps 319 MiB of a freed 400 MiB at 2 s where the default is at 13 MiB within 50 ms (`bench/results/2026-09-18-aarch64-gce-cgroup-container-tests.md`). |
+| `cgroup` | `true`, `false` | `true` | Read the memory cgroup at init and sample it: effective limits, `memory.current`, `memory.events`; apply the policy of section 4. `false` reads nothing, applies nothing, reports `cgroup: not tracked (cgroup:false)`. | `false` only as the control in a measurement. | With `cgroup:false` the container churn test keeps 319 MiB of a freed 400 MiB at 2 s where the default is at 13 MiB within 50 ms (`bench/results/2026-09-18-aarch64-gce-cgroup-container-tests.md`). |
 | `check_zero` | `true`, `false` | `false` | Debug: every slot or page handed out as known zero is read at its first and last word under the class or huge lock; a non-zero word aborts with the slab's prior state. Slow paths only. | Diagnosing a `calloc` zero bug. | Extra reads on every refill from `Fresh` or `Purged` memory. |
 
 ### Why the defaults are what they are
@@ -398,17 +398,9 @@ allocation slow paths (every 64 slow-path entries of a heap), from the
 background thread, from a `stats.cgroup.current` read and from
 `malloc_stats_print`. The fast paths never see any of this.
 
-The PSI trigger: only the background thread arms one. It writes
-`some 150000 1000000` (a `some` stall of 150 ms in 1 s) to
-`memory.pressure`; if the kernel answers `EINVAL` it tries the
-unprivileged `some 300000 2000000` (windows under 2 s need
-`CAP_SYS_RESOURCE`; unprivileged triggers exist since 6.4). A fired
-trigger takes a sample, re-evaluates the policy and runs a decay pass at
-once. Two container facts: Docker's default profile mounts the container's
-cgroup read-only, so the trigger reads `psi unavailable (EROFS)` there on
-every kernel; and on a host whose cgroup2 is mounted `nsdelegate`
-(systemd hosts) a container's root cgroup refuses the write (`EPERM`)
-even under `--privileged`. The fallback is the same: the tick's sample.
+The PSI trigger on `memory.pressure` was removed: it measured no effect
+(#19, tag `archive/prototype-2026-09-30`). The background thread samples
+`memory.current` on its tick.
 
 The policy. Usage is the last `memory.current` sample against the
 effective limit `min(memory.high, memory.max)`:
@@ -420,7 +412,6 @@ effective limit `min(memory.high, memory.max)`:
 | 70% to 90% | `dirty_decay_ms` scaled linearly down to 1000 ms at 90% | capped at 5% | as configured | eager |
 | 90% and above | 0: everything `Empty` purged at the next pass | (everything goes) | every periodic tick | eager |
 | `memory.events` `high` rose | one full purge at the next decay pass | | | eager |
-| PSI trigger fired | a sample and a decay pass at once | | | as the band |
 
 *Retention* is the memory the allocator holds that costs RSS without
 serving anything: freed slabs and huge extents not yet purged (`Empty`).
@@ -496,12 +487,12 @@ The knobs that move the policy:
 | `cgroup:false` | nothing is read or applied; every row is "no limit" |
 | `dirty_decay_ms` | the configured period the scaled band starts from; `-1` is never touched by any band |
 | `lazy_band:false` | every band eager |
-| `background_thread:true` | the PSI trigger exists, and decay runs while the process idles |
+| `background_thread:true` | sampling and decay run while the process idles |
 | `huge_retain_max` | how much freed huge memory waits for decay rather than going at once (retention the cap then counts) |
 | `thp:always` | forced to `never` when the effective limit at init is under 1 GiB; `auto` is not forced |
 
 Observability: `stats.cgroup.limit`, `.high` (`SIZE_MAX` when unlimited),
-`.current`, `.pressure_events`, `.decay_ms` (arena 0's effective period),
+`.current`, `.decay_ms` (arena 0's effective period),
 `.retention_cap`, `.empty_bytes`, `.full_purges` (`ENOENT` when nothing is
 tracked), and, readable whether or not a cgroup is tracked,
 `stats.cgroup.purge_advice` (1 lazy, 0 eager), `.lazy_purges`,
@@ -566,6 +557,31 @@ the trade on an `always` host is:
   Guard slabs inside a chunk are left unguarded (a guard would split the
   page). Forced to `never` under a cgroup limit below 1 GiB.
 
+The RSS cost of opting into `thp:always`, measured against the default
+on five cells (Chainguard OS 6.18 on arm64 and amd64, host `always`;
+Chainguard OS 7.2 and Ubuntu 7.0 on amd64 and Ubuntu 7.0 on arm64, host
+`madvise`; issue #20):
+
+- What it buys: valkey1 runs 5..10% faster on arm64 and 12..18% on
+  amd64, for +9.5% maxrss. No other row gains: larson10, xmalloc and
+  mstress are flat, and the Valkey soak itself shows no throughput gain
+  on any cell.
+- Microbenchmark RSS: mstress maxrss +56..62% (about +190 MiB) on every
+  cell, larson10 +53..66%, xmalloc +30..39%.
+- Valkey soak: RSS after the settle phase up to +400% on the `madvise`
+  hosts (133 -> 664..683 MiB on Chainguard OS 7.2 and Ubuntu 7.0; +13..23%
+  on the 6.18 `always` hosts), VmHWM +14..16% on the `madvise` hosts. About three quarters of the
+  2 MiB folios `always` faults in are queued for deferred split by the
+  end of a run: the partial purges split them, and the split folios stay
+  charged, so the purges do not return the memory.
+- Under a 1 GiB cgroup (`memory=1g`, not small enough for the forced
+  `never`) it is worse: mstress is 2.6..7.2% slower on four of the five
+  cells, where without a limit one cell was slower (+2.9%).
+
+So `thp:always` is an opt-in for a single-tenant, cache-shaped heap
+like valkey1's hot `SET` loop that has the RSS to spare; it does not
+meet the RSS budget a shared or memory-limited host needs.
+
 Fork: `never` keeps the slab regions on small pages on every host, so the
 copy-on-write cost a `BGSAVE` child imposes is bounded to the huge runs
 under the default. The fork
@@ -589,7 +605,7 @@ The lines an operator reads first, in the order they appear:
 | line | what to look for |
 |---|---|
 | `Run-time option settings` / `opt.<key>` | the configuration in force after every source; `(accepted, no effect)` marks an inert key; `thp` carries the forced-never note when a small cgroup limit applied |
-| `Kernel and CPU features: page_size=4096 guard_install=yes mseal=yes process_madvise=pidfd_self process_madvise_free=yes anon_name=no thp=always mthp=2M rseq=yes rseq_size=28 pac=yes` | `guard_install=no` means a kernel before 6.13: no guard slabs. `process_madvise=no` means purges loop over `madvise` (Docker's default seccomp hides the syscall). `anon_name=no` means `/proc/<pid>/smaps` has no `challoc:*` names (the Chainguard OS server image, `bench/results/2026-09-20-chainguard-os-cells.md`). `thp=` is the host's global mode. The keys are never renamed |
+| `Kernel and CPU features: page_size=4096 guard_install=yes mseal=yes anon_name=no thp=always mthp=2M rseq=yes rseq_size=28 pac=yes` | `guard_install=no` means a kernel before 6.13: no guard slabs. `anon_name=no` means `/proc/<pid>/smaps` has no `challoc:*` names (the Chainguard OS server image, `bench/results/2026-09-20-chainguard-os-cells.md`). `thp=` is the host's global mode. The keys are never renamed |
 | `Sealed ranges: N of M` | `0 of M` under Docker's default seccomp (mseal filtered) or before 6.10 |
 | `Background thread: present` / `absent` | whether decay runs while idle; Valkey shows `present` |
 | `Arenas: N (M automatic), explicit caches: K` | `N` is the arenas built so far (one per live thread up to the cap): 17 on the 16-thread Ruby soak, 64 on the 200-thread JVM server. This is the figure `narenas` moves |
@@ -598,9 +614,9 @@ The lines an operator reads first, in the order they appear:
 | `Allocated: A, active: B, metadata: C, resident: D, mapped: E, retained: F` | `A` live bytes; `B` committed slabs and runs in use (`B/A` is the slack of partially used slabs, 1.94 on the JVM's 64 KiB direct buffers); `D - B` is dirty retention waiting for decay (what the cgroup cap bounds); `F` is purged address space, not RSS |
 | `Huge: N runs (P pages), N empty extents (P pages), N purged extents (P pages), high-water page H` | the huge tier: `empty` is retained freed runs (`huge_retain_max`) |
 | `Metadata: reserved N, committed N, writable N, allocated N, bumped N, tables N, small tables N` | descriptor tables, bitmaps and heaps; `writable` is the one mapping the small tables share, `small tables` how many of `tables` live in it (design 2) |
-| `cgroup: <dir> (mount <m>, path <p>) limit L high H current C events high N (+r) max N (+r) psi <state>` or `cgroup: not tracked (<reason>)` | `limit`/`high` are the effective values up the hierarchy (`max` when unlimited); `psi armed (some ...)`, `unavailable (EROFS)` (Docker), `not armed (no background thread)` |
+| `cgroup: <dir> (mount <m>, path <p>) limit L high H current C events high N (+r) max N (+r)` or `cgroup: not tracked (<reason>)` | `limit`/`high` are the effective values up the hierarchy (`max` when unlimited) |
 | `cgroup policy: defaults (no limit)` / `under 70% (defaults, retention capped)` / `70..90% (decay scaled, N% into the band)` / `over 90% (purge at once, cache GC every tick)` `decay_ms N retention_cap N keep N% empty_bytes N full_purges N thp as configured` | the band as last evaluated and what it gave arena 0; `empty_bytes` is the retention the cap acts on |
-| `purge advice: lazy MADV_FREE (under 70% of the limit)` / `eager MADV_DONTNEED (no headroom known)` `lazy_purges N (B bytes) eager_purges N (B bytes) purged_is_zero true|false lazy via process_madvise|madvise loop` | which advice the next purge issues and why (the reasons are `explicit purge`, `lazy_band:false`, `under 70% of the limit`, `returning the excess over the cap`, `no headroom known`); `purged_is_zero false` means a lazy batch has happened and `calloc` now clears reused purged memory |
+| `purge advice: lazy MADV_FREE (under 70% of the limit)` / `eager MADV_DONTNEED (no headroom known)` `lazy_purges N (B bytes) eager_purges N (B bytes) purged_is_zero true|false` | which advice the next purge issues and why (the reasons are `explicit purge`, `lazy_band:false`, `under 70% of the limit`, `returning the excess over the cap`, `no headroom known`); `purged_is_zero false` means a lazy batch has happened and `calloc` now clears reused purged memory |
 | `thp: <key> -> off|folios|chunks (<reason>) [nohuge N (classes, metadata; huge follows host)] [slab_min S pmd P meta M huge on|off] class_ranges N (B bytes, C chunks) huge_ranges N meta_ranges N failures N; host <mode>` | section 5; the reason text says why `auto` or `always` is inert |
 | `arenas[N]:` blocks | `dirty_decay_ms` per arena (`arena.<i>.dirty_decay_ms`), `pactive/pdirty`, the `allocated active dirty retained` totals, the bins table (`size nregs curslabs curregs`, the compaction counters `refilled`, `compacted`) and the slab occupancy histogram (non-empty slabs per eighth of `nslots`), which shows where the live data sits after a delete phase |
 

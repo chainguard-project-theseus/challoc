@@ -5,11 +5,9 @@
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
-use core::sync::atomic::AtomicI32;
-
 use crate::heap::{Shared, TLS_CREATING, TLS_EXITED};
 use crate::lock::Lock;
-use crate::sys::{self, Errno, PollFd, Timespec};
+use crate::sys::{self, Timespec};
 
 /// Stack size including the guard page below it.
 pub const STACK_SIZE: usize = 256 * 1024;
@@ -38,18 +36,6 @@ static PRESENT: AtomicBool = AtomicBool::new(false);
 static REQUESTED: AtomicBool = AtomicBool::new(false);
 /// Futex word the thread sleeps on; bumped by [`wake`].
 static SEQ: AtomicU32 = AtomicU32::new(0);
-/// The PSI trigger descriptor (design 11) while the thread is armed,
-/// else -1. Owned by the thread: only it (and a fork child, which is
-/// single threaded) opens or closes it.
-static PSI_FD: AtomicI32 = AtomicI32::new(-1);
-/// The eventfd [`kick`] writes to while the thread sleeps in `ppoll`
-/// rather than on the futex. Created once, never closed in the process
-/// that created it (a kicker that loaded the number must not find it
-/// reused by another file); a fork child closes its copy.
-static WAKE_FD: AtomicI32 = AtomicI32::new(-1);
-/// `PSI_FD` is valid and the thread sleeps in `ppoll`: kicks must also
-/// write the eventfd.
-static PSI_ARMED: AtomicBool = AtomicBool::new(false);
 
 #[inline]
 pub fn present() -> bool {
@@ -85,74 +71,6 @@ fn kick() {
     SEQ.fetch_add(1, Ordering::SeqCst);
     // SAFETY: `SEQ` is a live, aligned `u32`.
     let _ = unsafe { sys::futex_wake(SEQ.as_ptr(), 1) };
-    if PSI_ARMED.load(Ordering::Acquire) {
-        let fd = WAKE_FD.load(Ordering::Relaxed);
-        if fd >= 0 {
-            // Level-triggered until the thread drains it, so a kick that
-            // lands before the `ppoll` is not lost. Raw syscall: `errno`
-            // stays as the caller left it.
-            let _ = sys::write(fd, &1u64.to_ne_bytes());
-        }
-    }
-}
-
-/// Arm the PSI trigger (design 11) and make sure the wake eventfd
-/// exists; on any failure the cgroup record says why and the thread
-/// sleeps on the futex as before.
-fn arm(shared: &Shared) {
-    let Some(psi) = shared.cgroup.arm_pressure() else { return };
-    if WAKE_FD.load(Ordering::Relaxed) < 0 {
-        match sys::eventfd(0, sys::EFD_CLOEXEC | sys::EFD_NONBLOCK) {
-            Ok(fd) => WAKE_FD.store(fd, Ordering::Relaxed),
-            Err(e) => {
-                let _ = sys::close(psi);
-                shared.cgroup.set_psi_unavailable(e.0);
-                return;
-            }
-        }
-    }
-    PSI_FD.store(psi, Ordering::Relaxed);
-    PSI_ARMED.store(true, Ordering::Release);
-}
-
-/// Drop the trigger: on thread exit (`errno` 0, "no thread"), or when
-/// the poll reported the cgroup gone from under it.
-fn disarm(shared: &Shared, errno: i32) {
-    PSI_ARMED.store(false, Ordering::Release);
-    let fd = PSI_FD.swap(-1, Ordering::Relaxed);
-    if fd >= 0 {
-        let _ = sys::close(fd);
-    }
-    shared.cgroup.set_psi_unavailable(errno);
-}
-
-/// Sleep in `ppoll` on the trigger (`POLLPRI`) and the wake eventfd
-/// until `timeout`; account a fired trigger, drain a kick, and disarm
-/// if the trigger's file went bad.
-fn wait_poll(shared: &Shared, psi: i32, timeout: Option<&Timespec>) {
-    let wake = WAKE_FD.load(Ordering::Relaxed);
-    let mut fds = [
-        PollFd { fd: psi, events: sys::POLLPRI, revents: 0 },
-        PollFd { fd: wake, events: sys::POLLIN, revents: 0 },
-    ];
-    if let Ok(n) = sys::ppoll(&mut fds, timeout) {
-        if n == 0 {
-            return;
-        }
-        if fds[1].revents & sys::POLLIN != 0 {
-            let mut b = [0u8; 8];
-            let _ = sys::read(wake, &mut b);
-        }
-        if fds[0].revents & sys::POLLPRI != 0 {
-            // A stall: sample outside the window and evaluate the
-            // policy on it; the loop's decay pass follows at once.
-            shared.cgroup.note_pressure_event(sys::now_coarse_ns());
-            crate::policy::evaluate(shared);
-        }
-        if fds[0].revents & (sys::POLLERR | sys::POLLHUP | sys::POLLNVAL) != 0 {
-            disarm(shared, Errno::ENOENT.0);
-        }
-    }
 }
 
 /// Create the thread if it does not exist. `true` if one exists on
@@ -300,15 +218,11 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
     // the rest of the process; the name is NUL-terminated.
     let shared = unsafe { &*(arg as *const Shared) };
     let _ = unsafe { sys::prctl(PR_SET_NAME, b"challoc-bg\0".as_ptr() as usize, 0, 0, 0) };
-    // Design 11: the trigger is armed only by this thread, once it
-    // exists, and only if the kernel takes the write.
-    arm(shared);
     loop {
         // Read the sequence before scanning, so a bump that lands
         // between the scan and the wait makes the wait return at once.
         let seq = SEQ.load(Ordering::SeqCst);
         if !requested() {
-            disarm(shared, 0);
             let mut g = STATE.lock();
             g.present = false;
             PRESENT.store(false, Ordering::Relaxed);
@@ -321,17 +235,10 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
             let ns = deadline.saturating_sub(now).max(MIN_SLEEP_NS);
             Timespec { sec: (ns / 1_000_000_000) as i64, nsec: (ns % 1_000_000_000) as i64 }
         });
-        let psi = PSI_FD.load(Ordering::Relaxed);
-        if psi >= 0 {
-            // A kick that landed since the `SEQ` load above left the
-            // eventfd readable, so this returns at once in that case.
-            wait_poll(shared, psi, timeout.as_ref());
-        } else {
-            // SAFETY: `SEQ` is a live, aligned `u32`; `timeout` outlives
-            // the call. Every outcome (wake, EAGAIN, ETIMEDOUT, EINTR)
-            // just means "look again".
-            let _ = unsafe { sys::futex_wait(SEQ.as_ptr(), seq, timeout.as_ref()) };
-        }
+        // SAFETY: `SEQ` is a live, aligned `u32`; `timeout` outlives
+        // the call. Every outcome (wake, EAGAIN, ETIMEDOUT, EINTR) just
+        // means "look again".
+        let _ = unsafe { sys::futex_wait(SEQ.as_ptr(), seq, timeout.as_ref()) };
     }
 }
 
@@ -366,15 +273,4 @@ pub fn fork_child() {
     st.thread = None;
     PRESENT.store(false, Ordering::Relaxed);
     REQUESTED.store(false, Ordering::Relaxed);
-    // The child's copies of the parent thread's descriptors: closing
-    // them here is safe (one thread, nothing can be mid-`kick`), and
-    // necessary, since a kick through the shared eventfd would wake the
-    // parent's thread.
-    PSI_ARMED.store(false, Ordering::Relaxed);
-    for fd in [&PSI_FD, &WAKE_FD] {
-        let fd = fd.swap(-1, Ordering::Relaxed);
-        if fd >= 0 {
-            let _ = sys::close(fd);
-        }
-    }
 }

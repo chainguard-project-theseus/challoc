@@ -267,7 +267,7 @@ static STATS_ARENA_I: [Node; 9] = [
     dir("bins", &STATS_BINS),
 ];
 static STATS_ARENAS: [Node; 1] = [num(&STATS_ARENA_I)];
-// `stats.cgroup.*` (design 11): the first eight need a tracked cgroup
+// `stats.cgroup.*` (design 11): the first seven need a tracked cgroup
 // (`tracked`); the policy's figures are arena 0's effective decay period
 // in ms (`SIZE_MAX` for never), the retention cap in bytes (`SIZE_MAX`
 // without a limit), the `Empty` bytes held now (live, not the last
@@ -277,7 +277,7 @@ static STATS_ARENAS: [Node; 1] = [num(&STATS_ARENA_I)];
 // (1 lazy, `MADV_FREE`; 0 eager, `MADV_DONTNEED`) and the batches issued
 // with each so far; they read with or without a cgroup: the advice exists
 // (eager without one) whether or not one is read.
-static STATS_CGROUP: [Node; 11] = [
+static STATS_CGROUP: [Node; 10] = [
     stat("limit", |_| Ok(Size(tracked()?.limit() as usize))),
     stat("high", |_| Ok(Size(tracked()?.high() as usize))),
     stat("current", |_| {
@@ -287,7 +287,6 @@ static STATS_CGROUP: [Node; 11] = [
         cg.sample(sys::now_coarse_ns());
         Ok(Size(cg.current() as usize))
     }),
-    stat("pressure_events", |_| Ok(Size(tracked()?.pressure_events() as usize))),
     stat("decay_ms", |_| {
         tracked()?;
         Ok(Size(match shared().policy.effective_decay_ns(shared().decay_ns()) {
@@ -1162,20 +1161,19 @@ mod tests {
         // `stats.cgroup.*` (design 11): the names resolve; a read is
         // `ENOENT` only where no cgroup2 is tracked.
         assert_eq!(mib_of("stats.cgroup.limit"), [7, 7, 0]);
-        assert_eq!(mib_of("stats.cgroup.pressure_events"), [7, 7, 3]);
         assert_eq!(mib_to_key(&[7, 7, 2]), Ok("current"));
         // The policy's keys (design 11, `policy.rs`) follow, in table order.
-        assert_eq!(mib_of("stats.cgroup.decay_ms"), [7, 7, 4]);
-        assert_eq!(mib_of("stats.cgroup.full_purges"), [7, 7, 7]);
-        assert_eq!(mib_to_key(&[7, 7, 5]), Ok("retention_cap"));
-        assert_eq!(mib_to_key(&[7, 7, 6]), Ok("empty_bytes"));
+        assert_eq!(mib_of("stats.cgroup.decay_ms"), [7, 7, 3]);
+        assert_eq!(mib_of("stats.cgroup.full_purges"), [7, 7, 6]);
+        assert_eq!(mib_to_key(&[7, 7, 4]), Ok("retention_cap"));
+        assert_eq!(mib_to_key(&[7, 7, 5]), Ok("empty_bytes"));
         // The two-advice purge's keys (design 8) follow and read
         // with or without a tracked cgroup: eager by default (no limit on
         // the host, none in the default container), nothing lazy issued.
-        assert_eq!(mib_of("stats.cgroup.purge_advice"), [7, 7, 8]);
-        assert_eq!(mib_of("stats.cgroup.lazy_purges"), [7, 7, 9]);
-        assert_eq!(mib_of("stats.cgroup.eager_purges"), [7, 7, 10]);
-        assert_eq!(mib_to_key(&[7, 7, 11]), Err(ENOENT));
+        assert_eq!(mib_of("stats.cgroup.purge_advice"), [7, 7, 7]);
+        assert_eq!(mib_of("stats.cgroup.lazy_purges"), [7, 7, 8]);
+        assert_eq!(mib_of("stats.cgroup.eager_purges"), [7, 7, 9]);
+        assert_eq!(mib_to_key(&[7, 7, 10]), Err(ENOENT));
         let advice: usize = get("stats.cgroup.purge_advice");
         assert_eq!(advice, 0, "eager without a limit");
         let lazy: usize = get("stats.cgroup.lazy_purges");
@@ -1187,7 +1185,6 @@ mod tests {
             "stats.cgroup.limit",
             "stats.cgroup.high",
             "stats.cgroup.current",
-            "stats.cgroup.pressure_events",
             "stats.cgroup.decay_ms",
             "stats.cgroup.retention_cap",
             "stats.cgroup.empty_bytes",
@@ -1200,12 +1197,10 @@ mod tests {
             let limit: usize = get("stats.cgroup.limit");
             let high: usize = get("stats.cgroup.high");
             let current: usize = get("stats.cgroup.current");
-            let events: usize = get("stats.cgroup.pressure_events");
-            std::eprintln!("stats.cgroup: limit {limit} high {high} current {current} pressure_events {events}");
+            std::eprintln!("stats.cgroup: limit {limit} high {high} current {current}");
             assert_eq!(limit, shared().cgroup.limit() as usize);
             assert_eq!(high, shared().cgroup.high() as usize);
             assert!(limit == usize::MAX || limit > 0);
-            assert_eq!(events, 0, "no background thread has armed a trigger in this process");
             // The policy's keys: the defaults without a limit (the period
             // as configured, no cap), the cap arithmetic with one.
             let decay_ms: usize = get("stats.cgroup.decay_ms");
