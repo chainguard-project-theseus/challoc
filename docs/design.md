@@ -220,7 +220,8 @@ compaction unit, the guard interval (unchanged, the group is already 64 KiB),
 `arenas.bin.<j>.slab_size` and `nregs`, the utilization queries; `BIN_MAX`
 and the cache-capacity ladder do not move. The form is the table itself,
 rewritten in place at init (only `lg_slab`, `nslots` and `slab_bits` of the
-raised classes; sizes and reciprocals are constant), not a pointer to one of
+raised classes, plus `slab_mask`; sizes and the slot-test constants are
+constant), not a pointer to one of
 two tables on `Shared` and not a shift applied where `lg_slab` is read: the
 `free` and `sdallocx` fast paths load the class line from a link-time
 constant address exactly as they did from the compile-time table (the sized
@@ -246,10 +247,25 @@ are:
 
 ```
 slab   = (p - base_c) >> lg_slab_c
-offset = p & (slab_size_c - 1)
-slot   = offset * reciprocal_c >> 32       // precomputed fixed-point divide
-valid  = slot * size_c == offset && slot < nslots_c
+offset = p & slab_mask_c                   // slab_size_c - 1
+slot   = (offset * inv_odd_c).rotate_right(tz_c)   // 32-bit
+valid  = slot < nslots_c
 ```
+
+The slot-start test is one multiply, one rotate and one compare
+(Granlund and Montgomery's divisibility test,
+`Class::slot_of_offset` in `layout/`). With `size_c = d << tz_c`, `d` odd,
+`inv_odd_c` is `d`'s inverse modulo `2^32`: when `size_c` divides `offset`,
+the product is `(offset / size_c) << tz_c` and the rotate gives the slot.
+Any other offset either has a set bit below `tz_c`, which the rotate moves
+into the top bits, or is a multiple of `2^tz_c` but not of `d`, whose
+product lands above `(2^(32 - tz_c) - 1) / d`; both are at least `nslots_c`
+because `nslots_c * size_c` is at most the slab, `2^22`. The test accepts
+exactly the slot starts, with the same slot as a division would give,
+which `slot_of_offset_is_exactly_the_reciprocal_check` checks for every
+byte offset of every class's slab at every supported page size. Each table
+entry is 32 bytes (20 of fields), so the entry's address is one shifted
+add.
 
 Size class of a request uses the same lookup shape as jemalloc and mimalloc:
 a small table for requests up to 1024 and a leading-zero-count computation
@@ -682,8 +698,9 @@ a deployment that wants the residue back on a small-cache part.
 `free(p)`:
 1. If `p` is null return. Classify `p` (section 2). Huge: slow path. Invalid:
    abort.
-2. Compute slab and slot; verify `slot * size == offset`; load the class
-   bitmap word; verify bit set. Otherwise abort.
+2. Compute slab and slot; verify the offset is a slot start (section 3:
+   multiply, rotate, compare against `nslots`); load the class bitmap
+   word; verify bit set. Otherwise abort.
 3. The opt-in hardening, one byte (`Shared::push_flags`) on the line step
    2's `superblock`/`lg_stride` come from, zero by default on a CPU
    without pointer authentication, so the default push tests it once and
@@ -742,8 +759,8 @@ a deployment that wants the residue back on a small-cache part.
    derived from the pointer a second time: `rel = p - class_base[c_hint]`;
    if `rel` is not below the region length (which covers every other
    class's region, the gaps and the other reservations), or `rel`'s offset
-   in its slab is not a slot start (the reciprocal multiply of `free` step
-   2), slow path. If the slab is a guard slab, slow path: one 8-byte load
+   in its slab is not a slot start (the multiply-and-rotate test of `free`
+   step 2), slow path. If the slab is a guard slab, slow path: one 8-byte load
    from a dense per-class pair (`Shared::guard_test[c]`: `(slab +
    slabs_per_page) & mask == 0`, `is_guard_slab`'s shift, add and mask
    folded into an add and a mask, the interval being a power of two). The

@@ -85,8 +85,6 @@ pub const LG_GUARD_UNIT: u32 = 16;
 /// offsets are aligned to this so that in-slab offsets are a plain mask.
 pub const LG_MAX_SLAB: u32 = 22;
 pub const MAX_SLAB: usize = 1 << LG_MAX_SLAB;
-/// Fixed-point shift of the per-class reciprocal (design section 3).
-pub const RECIP_SHIFT: u32 = 32;
 
 /// Number of classes spaced one quantum apart before the four-per-doubling
 /// pattern starts: `Q, 2Q, .., 8Q`.
@@ -128,6 +126,7 @@ const _: () = assert!(BIN_MAX >= SMALL_MAX && lg_slab_for(BIN_MAX) >= LG_MIN_SLA
 
 const _: () = assert!(NCLASSES <= 64, "pointer classification assumes at most 64 classes");
 const _: () = assert!(MEDIUM_MAX * 16 == MAX_SLAB);
+const _: () = assert!(LG_MAX_SLAB < 32, "slot_of_offset works on 32-bit in-slab offsets");
 
 /// Allocation tier of a class (design section 3 table); the tests check
 /// the geometry per tier, nothing else distinguishes them.
@@ -138,11 +137,16 @@ pub enum Tier {
     Medium,
 }
 
-/// One size class. `size` and `recip` are compile-time constants; the slab
-/// geometry (`lg_slab`, `nslots`, `slab_bits`) is the compile-time
-/// [`BASE_CLASSES`] value unless [`adopt_page_geometry`] raised the slab
-/// to the kernel page at init.
+/// One size class. `size`, `inv_odd` and `tz` are compile-time constants;
+/// the slab geometry (`lg_slab`, `slab_mask`, `nslots`, `slab_bits`) is the
+/// compile-time [`BASE_CLASSES`] value unless [`adopt_page_geometry`]
+/// raised the slab to the kernel page at init.
+///
+/// Aligned to 32 bytes (20 bytes of fields): an entry never straddles a
+/// cache line, and the `free` path's table address is one shifted add
+/// (`c << 5`), where a 20-byte stride costs a multiply.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(align(32))]
 pub struct Class {
     /// Slot size in bytes; also the usable size of every allocation in it.
     pub size: u32,
@@ -150,11 +154,13 @@ pub struct Class {
     pub lg_slab: u8,
     /// Slots per slab, `slab_size / size` rounded down.
     pub nslots: u32,
-    /// `ceil(2^32 / size)`. `(offset * recip) >> 32` equals `offset / size`
-    /// whenever `offset` is a multiple of `size` below the slab size, which
-    /// is all the `free` path needs (a misaligned offset can never satisfy
-    /// `slot * size == offset` for any `slot`).
-    pub recip: u32,
+    /// `slab_size - 1`: the in-slab offset is `rel & slab_mask`.
+    pub slab_mask: u32,
+    /// The inverse modulo `2^32` of the odd part of `size` (`size >> tz`):
+    /// the multiplier of the slot-start test in [`Class::slot_of_offset`].
+    pub inv_odd: u32,
+    /// `size.trailing_zeros()`.
+    pub tz: u8,
     /// Bits one slab occupies in the class's slot bitmap (design section
     /// 4): `nslots` padded so that a slab's bits are either whole words or
     /// one range inside a word, and so that a bitmap cache line is shared
@@ -230,13 +236,28 @@ impl Class {
         self.slab_bits().div_ceil(64)
     }
 
-    /// Slot index for an in-slab offset, plus whether the offset is exactly a
-    /// slot start. The index is only meaningful when `valid` is true.
+    /// Slot index for an in-slab offset (below the slab size), plus
+    /// whether the offset is exactly a slot start. The index is only
+    /// meaningful when `valid` is true.
+    ///
+    /// One multiply, one rotate and one compare (the divisibility test of
+    /// Granlund and Montgomery, design section 3): with `size = d << tz`,
+    /// `d` odd, `q = (offset * d^-1 mod 2^32).rotate_right(tz)` is
+    /// `offset / size` when `size` divides `offset`; otherwise a low bit
+    /// of `offset` below `tz` rotates into the top bits of `q`, or the
+    /// multiply of a non-multiple of `d` lands above `(2^(32 - tz) - 1) /
+    /// d`, and either way `q >= nslots` (`nslots * size <= slab size <=
+    /// 2^22`). So `q < nslots` accepts exactly the slot starts.
     #[inline]
     pub const fn slot_of_offset(&self, offset: usize) -> (usize, bool) {
-        let slot = ((offset as u64 * self.recip as u64) >> RECIP_SHIFT) as usize;
-        let valid = slot < self.nslots as usize && slot * self.size as usize == offset;
-        (slot, valid)
+        let q = (offset as u32).wrapping_mul(self.inv_odd).rotate_right(self.tz as u32);
+        (q as usize, q < self.nslots)
+    }
+
+    /// `slab_size - 1` (the `slab_mask` field).
+    #[inline]
+    pub const fn slab_mask(&self) -> usize {
+        self.slab_mask as usize
     }
 }
 
@@ -281,8 +302,18 @@ const _: () = assert!(LG_MEDIUM_MIN_SLAB >= LG_MIN_SLAB && LG_MEDIUM_MIN_SLAB <=
 const _: () = assert!(SMALL_SLAB_BELOW <= SMALL_MAX && MIN_SLAB >= 4 * SMALL_MAX, "a small-slab class has at least four slots");
 const _: () = assert!(LG_COMPACT_UNIT >= LG_MIN_SLAB && LG_COMPACT_UNIT <= LG_MAX_SLAB);
 
-const fn reciprocal(size: usize) -> u32 {
-    (((1u64 << RECIP_SHIFT) + size as u64 - 1) / size as u64) as u32
+/// The inverse of the odd part of `size` modulo `2^32` (the `inv_odd`
+/// field): Newton's iteration `x = x * (2 - d * x)` doubles the correct
+/// low bits from the 3 that `x = d` has for odd `d`.
+const fn inverse_of_odd_part(size: usize) -> u32 {
+    let d = (size as u32) >> size.trailing_zeros();
+    let mut x = d;
+    let mut i = 0;
+    while i < 4 {
+        x = x.wrapping_mul(2u32.wrapping_sub(d.wrapping_mul(x)));
+        i += 1;
+    }
+    x
 }
 
 /// See [`Class::slab_bits`].
@@ -307,9 +338,9 @@ pub const fn lg_slab_at(size: usize, lg_page: u32) -> u32 {
 }
 
 /// The class table for a kernel with `1 << lg_page` pages: sizes and
-/// reciprocals are fixed, the slab geometry follows [`lg_slab_at`].
+/// their inverses are fixed, the slab geometry follows [`lg_slab_at`].
 pub const fn classes_for_page(lg_page: u32) -> [Class; NCLASSES] {
-    let mut out = [Class { size: 0, lg_slab: 0, nslots: 0, recip: 0, slab_bits: 0 }; NCLASSES];
+    let mut out = [Class { size: 0, lg_slab: 0, nslots: 0, slab_mask: 0, inv_odd: 0, tz: 0, slab_bits: 0 }; NCLASSES];
     let mut i = 0;
     while i < NCLASSES {
         let size = class_size_at(i);
@@ -319,7 +350,9 @@ pub const fn classes_for_page(lg_page: u32) -> [Class; NCLASSES] {
             size: size as u32,
             lg_slab: lg_slab as u8,
             nslots: nslots as u32,
-            recip: reciprocal(size),
+            slab_mask: ((1usize << lg_slab) - 1) as u32,
+            inv_odd: inverse_of_odd_part(size),
+            tz: size.trailing_zeros() as u8,
             slab_bits: slab_bits_for(nslots, lg_slab) as u16,
         };
         i += 1;
@@ -371,8 +404,9 @@ impl Deref for ClassTable {
 pub static CLASSES: ClassTable = ClassTable(UnsafeCell::new(BASE_CLASSES));
 
 /// Raise the slab of every class whose table slab is smaller than the
-/// kernel page to the page ([`lg_slab_at`]), writing `lg_slab`, `nslots`
-/// and `slab_bits` of those classes in [`CLASSES`]. Returns how many
+/// kernel page to the page ([`lg_slab_at`]), writing `lg_slab`,
+/// `slab_mask`, `nslots` and `slab_bits` of those classes in [`CLASSES`].
+/// Returns how many
 /// classes changed (0 on a 4 KiB kernel, where the table is untouched).
 ///
 /// # Safety
@@ -399,6 +433,7 @@ pub(crate) unsafe fn apply_page_geometry(table: *mut [Class; NCLASSES], lg_page:
             unsafe {
                 (*cur).lg_slab = w.lg_slab;
                 (*cur).nslots = w.nslots;
+                (*cur).slab_mask = w.slab_mask;
                 (*cur).slab_bits = w.slab_bits;
             }
             changed += 1;
