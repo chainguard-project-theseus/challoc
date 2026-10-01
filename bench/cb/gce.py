@@ -831,7 +831,10 @@ def launch(args: Any) -> int:
         log(f"   harness {L.harness[:12]}, {len(L.sources)} variant trees, image {', '.join(f'{k}={v[-12:]}' for k, v in L.image.items()) or 'none (VMs build it)'} ({L.times['bundled']:.0f} s)")
         log("== create")
         max_run_s = max([_dur_s(L.vm_max_run(n)) for n in L.vms] or [0])
-        deadline = time.time() + max_run_s + 120
+        # VMs over the at-once cap start in later waves; each wave gets the
+        # longest max-run.
+        waves = max(1, -(-len(L.vms) // max(1, L.max_vms)))
+        deadline = time.time() + max_run_s * waves + 120
         L.create_pending()
         L.times["created"] = time.time() - L.t0
         log("== poll")

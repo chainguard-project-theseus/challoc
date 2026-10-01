@@ -1,0 +1,19 @@
+# exp-llc (informational, issue #24): the 7.2 scheduler's cache-aware load
+# balancing (debugfs sched/llc_balancing) on a multi-LLC host (C4D 64
+# vCPUs, 8-core CCDs), off and on, for challoc and jemalloc. No code
+# change follows; it feeds the LLC-keyed arena roadmap item.
+description = "#24: sched llc_balancing 0/1 x challoc/jemalloc on multi-LLC"
+cells = "cgos72-turin64"
+variants = ["chl-llc1=head+knob:sched.llc_balancing=1", "chl-llc0=head+knob:sched.llc_balancing=0", "je-llc1=jemalloc+knob:sched.llc_balancing=1", "je-llc0=jemalloc+knob:sched.llc_balancing=0"]
+controls = []
+rows = ["larson16", "larson32", "xmalloc", "valkey1"]
+container = { profile = "privileged" }
+replicas = 3
+blocks = 5
+warmup_blocks = 1
+shard_seconds = 900
+looks = 1
+budget_usd = 15
+
+[local]
+blocks = 3

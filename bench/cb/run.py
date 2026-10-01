@@ -45,6 +45,7 @@ TOOLS = {
     "valkey_model": "bench/probes/valkey_model.c",
     "churn": "bench/probes/churn.c",
     "tcache_residue": "bench/probes/tcache_residue.c",
+    "psi_return": "bench/probes/psi_return.c",
 }
 # Shared objects preloaded after the variant's library (rows with settle).
 PRELOADS = {"settle.so": "bench/tools/settle.c"}
@@ -256,6 +257,38 @@ def add_settle(parsed: Parsed, text: str) -> None:
                     parsed.extra["settle_mib"] = float(kv["rss_kb"]) / 1024
             except ValueError:
                 pass
+
+
+def thp_counters() -> dict[str, int]:
+    """The host's THP event counters: /proc/vmstat thp_* and the per-size
+    mTHP stats (hugepages-<N>kB/stats/*, kernel 6.9+), host-wide."""
+    out: dict[str, int] = {}
+    try:
+        with open("/proc/vmstat") as f:
+            for line in f:
+                k, _, v = line.partition(" ")
+                if k.startswith("thp_"):
+                    out[k] = int(v)
+    except (OSError, ValueError):
+        pass
+    base = "/sys/kernel/mm/transparent_hugepage"
+    try:
+        sizes = [d for d in os.listdir(base) if d.startswith("hugepages-")]
+    except OSError:
+        sizes = []
+    for d in sizes:
+        sd = os.path.join(base, d, "stats")
+        try:
+            names = os.listdir(sd)
+        except OSError:
+            continue
+        for n in names:
+            try:
+                with open(os.path.join(sd, n)) as f:
+                    out[f"{d[len('hugepages-'):]}.{n}"] = int(f.read().strip())
+            except (OSError, ValueError):
+                pass
+    return out
 
 
 def default_run_id(suite: str, head: str) -> str:
@@ -479,6 +512,7 @@ def execute(args) -> int:
                             applied = knobs.apply(v.spec.knobs)
                         except KnobError as e:
                             raise SpecError(str(e)) from None
+                    thp0 = thp_counters()
                     if row.is_driver:
                         rt, parsed = run_driver(row, v, values, tools_dir, logs, tag, pad)
                     else:
@@ -486,6 +520,8 @@ def execute(args) -> int:
                         parsed = parse(row, text, rt) if rt.get("exit") == 0 else None
                         if parsed is not None:
                             add_settle(parsed, text)
+                    thp1 = thp_counters()
+                    thp_delta = {k: thp1[k] - thp0.get(k, 0) for k in thp1 if thp1[k] != thp0.get(k, 0)}
                     score = parsed.score if parsed else None
                     err = "" if score is not None else (parsed.error if parsed else f"exit {rt.get('exit')}")
                     check_fail = ""
@@ -515,6 +551,7 @@ def execute(args) -> int:
                         "rt": {k: rt.get(k) for k in ("wall_s", "user_s", "sys_s", "maxrss_kib", "exit", "signal", "vcsw", "ivcsw")},
                         "ops": parsed.ops if parsed else None,
                         "pmc": rt.get("pmc"),
+                        "thp": thp_delta,
                         "pmc_note": rt.get("pmc_note", rt.get("error", "")),
                         "health": {"sentinel_ms": sentinel.get("total_ms"), "load1": load_start},
                         "env": {"pad": pad, "pin": None},

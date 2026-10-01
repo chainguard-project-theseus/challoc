@@ -113,6 +113,17 @@ est_s = 6
 settle = true
 metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "rss" }, { name = "settle_mib", unit = "MiB", better = "lower", class = "rss" }]
 
+[row.larson32]
+cmd = ["{bin}/larson", "5", "8", "1000", "5000", "100", "4141", "32"]
+parser = "larson"
+unit = "M ops/s"
+better = "higher"
+threads = 32
+class = "mt"
+secs = 5
+est_s = 7
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "rss" }]
+
 # More threads than most cells have CPUs.
 [row.larson64]
 cmd = ["{bin}/larson", "5", "8", "1000", "5000", "100", "4141", "64"]
@@ -243,6 +254,28 @@ threads = 1
 class = "mt"
 est_s = 5.5
 metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "rss" }]
+
+# The delete phase of the same run (DEL:SET over a full heap, where the
+# frees and the purges are); -d0 purges every empty slab at once
+# (dirty_decay_ms:0 for variants without a MALLOC_CONF of their own).
+[row.valkey1-delete]
+cmd = ["{tools}/valkey_model", "-n", "{valkey_n}", "-t", "{valkey_secs}", "-s"]
+parser = "valkey_model.delete"
+unit = "M ops/s"
+better = "higher"
+threads = 1
+class = "mt"
+est_s = 5.5
+
+[row.valkey1-delete-d0]
+cmd = ["{tools}/valkey_model", "-n", "{valkey_n}", "-t", "{valkey_secs}", "-s"]
+env = { MALLOC_CONF = "dirty_decay_ms:0" }
+parser = "valkey_model.delete"
+unit = "M ops/s"
+better = "higher"
+threads = 1
+class = "mt"
+est_s = 5.5
 
 [row.valkey1-free]
 cmd = ["{tools}/valkey_model", "-n", "{valkey_n}", "-t", "{valkey_secs}", "-s", "-f", "free"]
@@ -481,3 +514,27 @@ class = "st"
 fixed_work = true
 est_s = 6
 needs = ["{root}/bench/probes/valkey_model.c"]
+
+# ---- the cgroup return probe (bench/probes/psi_return.c) ------------------
+# A neighbour in the same cgroup (memory.high 640 MiB, a child cgroup the
+# probe makes in a privileged container) waits for the 256 MiB the
+# allocator freed: return_ms is its time to touch 384 MiB (base_ms with
+# nothing retained). The background thread is on (the PSI trigger lives
+# there) for variants without a MALLOC_CONF of their own.
+[row.psi-return]
+cmd = ["{tools}/psi_return", "30", "448", "192", "384", "640"]
+env = { MALLOC_CONF = "background_thread:true" }
+parser = "kv"
+metric = "return_ms_p99"
+unit = "ms"
+better = "lower"
+threads = 1
+class = "server"
+requires = ["challoc"]
+est_s = 45
+metrics = [
+  { name = "return_ms_p50", unit = "ms", better = "lower", class = "server" },
+  { name = "return_ms_mean", unit = "ms", better = "lower", class = "server" },
+  { name = "cg_peak_mib", unit = "MiB", better = "lower", class = "rss" },
+  { name = "rss_peak_mib", unit = "MiB", better = "lower", class = "rss" },
+]

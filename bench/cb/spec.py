@@ -38,7 +38,7 @@ PUBLIC_IMAGE_PROJECTS = (
     "opensuse-cloud",
 )
 
-PARSERS = ("larson", "xmalloc", "valkey_model.write", "churn.occ", "wall", "kv", "driver")
+PARSERS = ("larson", "xmalloc", "valkey_model.write", "valkey_model.delete", "churn.occ", "wall", "kv", "driver")
 # Row kinds: `timed` (one program per run, scored by a parser), `soak` and
 # `driver` (a script under bench/drivers/ that writes its metrics to
 # RESULT_JSONL, scored by one of them), `metric` (a derived row: one extra

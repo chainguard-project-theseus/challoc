@@ -1,0 +1,17 @@
+# exp-thp-soak: the soak half of exp-thp (issue #20): Valkey and the
+# Ruby soak under thp:never/auto/always and jemalloc, one variant per VM.
+# Launch with --no-image until bench/image.lock carries the consumer
+# layers (bench/suites/soak.toml).
+description = "#20: soaks under thp:never vs auto vs always, jemalloc control"
+cells = "cgos618-arm64,cgos618-amd64,cgos72-amd64,ref-arm64,ref-amd64"
+variants = ["never=head@thp:never", "auto=head@thp:auto", "always=head@thp:always"]
+controls = ["jemalloc"]
+rows = ["valkey-soak", "ruby-soak"]
+replicas = 2
+blocks = 1
+warmup_blocks = 0
+looks = 1
+budget_usd = 40
+
+[local]
+blocks = 1

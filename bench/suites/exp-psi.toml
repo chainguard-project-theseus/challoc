@@ -1,0 +1,22 @@
+# exp-psi: the PSI trigger (issue #19) against the throwaway branch
+# exp/no-psi (background::arm returns at once), in a privileged 1 GiB
+# container. psi-return makes a child cgroup (memory.high 640 MiB) so the
+# trigger can be armed at all: at the root of a container's cgroup
+# namespace an nsdelegate host refuses it (EPERM), and an unprivileged
+# container's cgroup is read-only (EROFS). Cut unless return time improves
+# materially (>= 20% at p99, or >= 5 ms).
+description = "#19: PSI trigger armed (default) vs never armed"
+cells = "cgos72-amd64,ref-amd64"
+variants = ["psi=head", "nopsi=git:exp/no-psi"]
+controls = []
+rows = ["psi-return"]
+container = { profile = "privileged", memory = "1g" }
+replicas = 4
+blocks = 5
+warmup_blocks = 1
+shard_seconds = 900
+looks = 1
+budget_usd = 6
+
+[local]
+blocks = 3

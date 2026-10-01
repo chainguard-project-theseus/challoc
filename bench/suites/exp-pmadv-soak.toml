@@ -1,0 +1,16 @@
+# exp-pmadv-soak: the Valkey soak (delete phase: valkey-soak.delete_mt_rps)
+# under process_madvise and the forced madvise loop (issue #18), privileged.
+description = "#18: Valkey soak, process_madvise vs forced madvise loop"
+cells = "cgos72-amd64,ref-amd64"
+variants = ["pmadv=head", "loop=git:exp/force-madvise"]
+controls = []
+rows = ["valkey-soak"]
+container = { profile = "privileged" }
+replicas = 3
+blocks = 1
+warmup_blocks = 0
+looks = 1
+budget_usd = 12
+
+[local]
+blocks = 1

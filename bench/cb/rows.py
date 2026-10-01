@@ -73,6 +73,14 @@ def parse_valkey_write(out: str, rt: dict[str, Any], row: Row) -> Parsed:
     return Parsed(None, error="no 'ops ' line")
 
 
+def parse_valkey_delete(out: str, rt: dict[str, Any], row: Row) -> Parsed:
+    p = parse_valkey_write(out, rt, row)
+    d = p.extra.get("delete_mops")
+    if d is None:
+        return Parsed(None, extra=p.extra, error=p.error or "no delete_mops")
+    return Parsed(d, ops=p.ops, extra=p.extra)
+
+
 _CHURN = re.compile(r"^\s*[\d.]+\s+(\S+)\s+curslabs\s+(\d+).*?occ\s+([\d.]+)%")
 
 
@@ -134,6 +142,7 @@ PARSERS: dict[str, Callable[[str, dict[str, Any], Row], Parsed]] = {
     "larson": parse_larson,
     "xmalloc": parse_xmalloc,
     "valkey_model.write": parse_valkey_write,
+    "valkey_model.delete": parse_valkey_delete,
     "churn.occ": parse_churn,
     "wall": parse_wall,
     "kv": parse_kv,

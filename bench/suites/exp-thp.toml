@@ -1,0 +1,26 @@
+# exp-thp: the THP default (issue #20, owner rule O7). One build, three
+# MALLOC_CONFs, jemalloc as the control: `never` (the default, the
+# reference), `auto` (multi-size THP below the PMD only) and `always`
+# (every enabled size, the PMD included). The host's own THP settings stay
+# as the image ships them (Chainguard OS 6.18: enabled=always; 7.2 minimal
+# and Ubuntu: madvise). Every sample records the host's THP counter deltas
+# (/proc/vmstat thp_*, per-size hugepages-<N>kB/stats) under "thp".
+#
+# The default changes only if throughput gains at least 5% on both arches,
+# confirmed, with RSS (the .maxrss_mib rows, the soaks' RSS rows) within
+# +10% or 64 MiB, and no loss under a 1 GiB cgroup (the same suite with
+# --container default,memory=1g). The soaks: exp-thp-soak.
+description = "#20: thp:never vs auto vs always on one build, jemalloc control"
+cells = "cgos618-arm64,cgos618-amd64,cgos72-amd64,ref-arm64,ref-amd64"
+variants = ["never=head@thp:never", "auto=head@thp:auto", "always=head@thp:always"]
+controls = ["jemalloc"]
+rows = ["valkey1", "larson10", "xmalloc", "mstress"]
+replicas = 3
+blocks = 5
+warmup_blocks = 1
+shard_seconds = 1800
+looks = 1
+budget_usd = 15
+
+[local]
+blocks = 3
