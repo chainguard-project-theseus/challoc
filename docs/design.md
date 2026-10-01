@@ -548,7 +548,7 @@ struct Heap {                                // repr(C); the header array at off
 
 struct CacheHeader {                         // one per (arena, class), 64 bytes, line aligned
     len:      u32,
-    cap:      u32,                           // 0 until first use; then the configured capacity
+    cap:      u32,                           // 0 until first use; then the current capacity, floor..=ceil (6.4)
     low_water: u32,                          // for GC
     zeroed:   u32,                           // slots[..zeroed] read as zero
     slots:    *mut *mut u8,                  // this class's stack, its own metadata object
@@ -559,6 +559,9 @@ struct CacheHeader {                         // one per (arena, class), 64 bytes
     probe_refilled: u32,                     // the class's refill counter at the previous probe
     arena:    u16,
     mode:     u16,                           // off, probe, compact (6.4)
+    unsorted_flushes: u8,                    // drives the flush's kept sort (6.4)
+    misses:   u8,                            // refills + full flushes since the last GC, saturating (6.4)
+    ceil:     u32,                           // stack size in slots, fixed at creation (the ladder value)
 }
 ```
 
@@ -616,11 +619,15 @@ measured and rejected: a stack inside a 128 KiB metadata object costs
 xmalloc-test's freeing threads three to four times the L1D fills
 (`bench/results/2026-09-18-*-gce-dense-headers.md`).
 
-Default cache capacity: 1024 slots for classes up to 128 bytes, then halving
+Cache capacity ceiling: 1024 slots for classes up to 128 bytes, then halving
 every doubling of class size, minimum 8; classes above `tcache_max` (32 KiB,
 jemalloc's default) are not cached and go straight to the slab bitmaps.
 `tcache_nslots_small_max` and `lg_tcache_nslots_mul` from `malloc_conf`
-override the ladder, because Redis sets them. A cache for another arena
+override the ladder, because Redis sets them. The ladder is each cache's
+*ceiling*: its stack is allocated at that size (`ceil`) and never
+reallocated, and the capacity in use, `cap`, moves between a floor and the
+ceiling with the class's demand (6.4, "Capacity"); a busy cache sits at
+the ceiling, so what follows about the ladder is about busy caches. A cache for another arena
 (`others`) keeps the ladder for bin classes (up to 4 KiB) and holds nothing
 above. One function, `Config::cap_for(home, arena, class)`, is the whole
 rule (zero means "never cached here", and a heap creates no `others` node
@@ -667,7 +674,10 @@ inside its noise, valkey1 +0.7%, redis and alloc-testN flat; 256 slots:
 larson1 +6.2%), and what it buys is RSS (larson10 80 to 69 MiB, the
 smaller residue of caches), which the ladder was never sized for. The
 constants stand on every CPU; `tcache_nslots_small_max:512` is the knob for
-a deployment that wants the residue back on a small-cache part.
+a deployment that wants the residue back on a small-cache part. The
+rejected rule was a static, per-CPU reduction of every cache; the adaptive
+capacity of 6.4 is a dynamic, per-cache one that leaves the ceiling, and
+so the busy caches this paragraph priced, alone.
 
 ### 6.3 Fast paths
 
@@ -813,8 +823,9 @@ to `rallocx` exactly as jemalloc's contract requires.
 
 ### 6.4 Slow paths
 
-- **Refill**: claim up to `cap / 2` slots from the current or next partial
-  slab (section 5), lowest address on top; the batch is the cache's *run*
+- **Refill**: count the miss (below, "Capacity"), then claim up to
+  `cap / 2` slots, `cap` as the miss left it, from the current or next
+  partial slab (section 5), lowest address on top; the batch is the cache's *run*
   (below) and `low_water` restarts at its length. Count slow paths in
   `slow_ticks` and run periodic work every 64 of them: cache GC if the
   interval has elapsed, then decay if a class's deadline has passed (or the
@@ -822,7 +833,9 @@ to `rallocx` exactly as jemalloc's contract requires.
   merged by `epoch`, not here; the periodic work also takes the rate-limited
   cgroup sample (section 11), which is two small file reads at most once
   per 10 ms process-wide.
-- **Flush**: release the `cap / 2` highest-address entries grouped by slab
+- **Flush**: a free that finds the cache full counts a miss; if the miss
+  grew the capacity the free just pushes, otherwise release the `cap / 2`
+  highest-address entries grouped by slab
   and keep the lowest (the run is dropped and rebuilt on demand). Update
   `live`; slabs reaching zero become `Empty`. The selection is by address,
   not by age, so that every flush sends holes to the high slabs while
@@ -893,11 +906,53 @@ to `rallocx` exactly as jemalloc's contract requires.
   dense class pays one counter test per `malloc`.
 - **Cache GC**: every 10 s (`GC_INTERVAL_NS`) flush three
   quarters of `low_water`, the entries that went unused since the last GC,
-  then reset `low_water = len`. `cap` is fixed; it never shrinks. This is
-  jemalloc's incremental tcache GC in spirit. Above 90% of the cgroup
-  limit the interval is 0 (section 11): the GC runs at every periodic
-  tick, which under a flush-driven workload is every 64 flushes or
-  refills; the flush itself is not touched.
+  then shrink a quiet cache (below), then reset `low_water = len` and the
+  miss count. This is jemalloc's incremental tcache GC in spirit. Above
+  90% of the cgroup limit the interval is 0 (section 11): the GC runs at
+  every periodic tick, which under a flush-driven workload is every 64
+  flushes or refills, and quiet caches shrink one step per tick; the
+  flush itself is not touched.
+- **Capacity** (issue #27): `cap` moves between a floor and the ladder
+  value, the ceiling `ceil` the stack was allocated at (6.2), so a change
+  never reallocates. A *miss* is a refill or a free that finds the cache
+  full; `misses` counts them since the last GC (saturating). From the
+  second miss of an interval (`GROW_MISSES`) on, every miss doubles `cap`
+  up to `ceil`: the refill then claims half of the doubled capacity, and a
+  full free pushes instead of flushing, which ends a refill-then-flush
+  oscillation by giving the cache the room. A GC that finds a cache
+  *quiet*, no miss for the whole interval and `low_water > 0` (its bottom
+  went unused), halves `cap` down to the floor and flushes, through the
+  ordinary flush (address selection, grouping, the straddle check, PAC,
+  `moved`), the highest addresses that no longer fit. A new cache starts
+  at `ceil >> START_LG` (an eighth, `START_LG = 3`), at least the floor,
+  so a class a thread touches once pulls a sixteenth of the ladder
+  instead of half of it, and a busy one reaches the ceiling at its fifth
+  miss. The floor is `tcache_nslots_small_min` (default 8 = `MIN_CAP`) on
+  the ceiling's ladder (`Config::cap_floor`); at or above
+  `tcache_nslots_small_max` the floor is the ceiling and the capacities are
+  fixed, the old behaviour. Not misses: the flushes of a run rebuild, of
+  the GC and of `tcache.flush`/`thread.tcache.flush`. Exempt: a compacting
+  cache never shrinks (its rebuilds are its only slow path and its `cap /
+  4` block migrates the live set; a probing one may), and the `FOREIGN`
+  cache keeps its fixed half-ladder capacity. Every capacity write is
+  followed by the abort check `len <= cap <= ceil`, `cap >= 1`, and the
+  stack is freed with `ceil`'s layout. All of it is on the slow paths;
+  the fast paths read `len` and `cap` at the offsets they always did.
+  Busy caches, a producer that refills and a consumer that flushes from
+  full, take misses every interval and stay at the ceiling, which is what
+  6.2's reason for 1024 is about; the residue that shrinks is that of
+  quiet classes: the first-use pull of every (thread, class) pair touched
+  once, and the top of a sawtooth the GC's low-water trim never reached.
+  Comparison: jemalloc 5.3 halves a bin's *fill* (`lg_fill_div`) at a GC
+  that finds its low water above zero and doubles it when the bin runs
+  empty, and 5.4.0 adapts per-bin fill and retention targets to demand
+  between GC events; tcmalloc sizes per-CPU caches by misses under a
+  fixed per-CPU budget (heterogeneous sizing, -1.94% fleet RAM, ASPLOS
+  '24). challoc adapts the push limit as well as the fill (the one value
+  the fast path reads), grows at the miss rather than at the next GC, has
+  no zero-sum budget (the ceilings bound a thread cache) and, like
+  jemalloc, reclaims nothing from a thread that takes no slow path (an
+  idle thread's caches keep what they held, issue #48).
 
 ### 6.5 Thread exit
 
@@ -1245,7 +1300,7 @@ Usage is the last `memory.current` sample against the effective limit
 | No limit                          | Defaults; nothing beyond the sample is done                | `MADV_DONTNEED`           |
 | < 70% of `min(high, max)`         | Defaults, retention capped at 5% of the limit              | `MADV_FREE` (`lazy_band`) |
 | 70% .. 90%                        | `dirty_decay_ms` scaled down linearly to 1000; the cap     | `MADV_DONTNEED`           |
-| >= 90%                            | Period 0: purge at the next pass; cache GC every tick      | `MADV_DONTNEED`           |
+| >= 90%                            | Period 0: purge at the next pass; cache GC every tick (quiet caches shrink one step per tick) | `MADV_DONTNEED`           |
 | `memory.events` `high` increased  | Full purge once, at the next decay pass                    | `MADV_DONTNEED`           |
 | PSI trigger fired                 | Sample and decay pass at once (the background thread)      | as the band               |
 | < 70% while an excess over the cap first seen at 70%+ is still being returned | as the `< 70%` row | `MADV_DONTNEED` until the retention is within the cap |
@@ -1420,7 +1475,8 @@ jemalloc names where they exist:
 | `percpu_arena`            | disabled | jemalloc's `disabled`, `percpu`, `phycpu`, accepted and read back through `opt.percpu_arena`; caches are per thread whatever the value, and the report's `opt.percpu_arena` line notes it for `percpu` and `phycpu` (section 15) |
 | `tcache`                  | true    | false disables caches                   |
 | `tcache_max`              | 32768   | largest cached class size (bytes); `opt.tcache_max` reads as `size_t` |
-| `tcache_nslots_small_max` | 1024    |                                         |
+| `tcache_nslots_small_max` | 1024    | the ladder's top: each cache's capacity ceiling (6.2, 6.4) |
+| `tcache_nslots_small_min` | 8       | the capacity floor of an adaptive cache, on the same ladder (6.4); at or above `tcache_nslots_small_max` the capacities are fixed. jemalloc 5.3's key (its default 20), among the knobs 5.4.0 accepts and ignores; challoc honours it |
 | `lg_tcache_nslots_mul`    | 1       |                                         |
 | `thp`                     | never   | `never`, `auto`, `always` (7, 17, `thp.rs`): `auto` advises slab groups of classes whose slab holds an enabled sub-PMD folio and rounds metadata commits to it, never a 2 MiB page (inert where the PMD size is `madvise`-gated or no such size is enabled); the opt-in for aarch64 hosts with `hugepages-64kB` enabled and Valkey-shaped heaps (measured neutral there, a real 1.6% loss on larson and more RSS on small heaps, so not the default); `always` commits and advises PMD chunks (at a 2 MiB PMD only: 4 KiB pages; at 16 and 64 KiB pages it is the folio path over the enabled sizes below the PMD, inert when none is), huge runs of a PMD or more and the metadata (jemalloc's `thp:always`, priced in `bench/results/2026-09-19-lane-b-mthp.md`); `always` under a cgroup limit below 1 GiB is forced to `never` (11); `never` (and a forced `never`) issues `MADV_NOHUGEPAGE` on the class superblock and the metadata region, so the slab regions get no huge page on a host whose global mode is `always`, and leaves the huge region to the host's policy, as jemalloc's `never` leaves its large extents (17, plan Phase 2.5 task 16; the 2026-09-20 decision on `bench/results/2026-09-20-aarch64-cgos-thp-ab.md`, option (d): the huge runs' 2 MiB pages were 10 points of `valkey1` on Chainguard OS) |
 | `lazy_band`               | true    | challoc only; `MADV_FREE` for purges under 70% of a known cgroup limit (8, 11); `false` makes every purge `MADV_DONTNEED` |
