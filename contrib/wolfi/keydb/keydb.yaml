@@ -1,0 +1,249 @@
+# keydb on challoc: the Wolfi package definition with the allocator switched
+# from the bundled jemalloc to challoc through challoc-jemalloc-compat
+# (docs/plan.md Phase 3 task 3, docs/design.md sections 13.5 and 13.6).
+# Based on wolfi-dev/os keydb.yaml at 8c473de (2026-09-20; the file itself
+# last changed in 276d78c, a resources bump); contrib/wolfi/README.md
+# ("KeyDB") lists every change from it.
+#
+# KeyDB's defragmenter (src/defrag.cpp) calls je_get_defrag_hint, the
+# extension Redis adds to its bundled jemalloc, and zmalloc.h compiles it
+# in (HAVE_DEFRAG) only when the jemalloc header defines
+# JEMALLOC_FRAG_HINT; challoc exports the hint and its header defines the
+# macro (design 13.5). Unlike Valkey, KeyDB 6.3 asserts nothing about the
+# allocator's quantum or bin geometry (its zmalloc.cpp reads epoch,
+# stats.*, background_thread, arenas.narenas and arena.<n>.purge, and
+# defrag.cpp only the hint), so it runs on the system quantum16 library
+# like Ruby does: the build environment takes challoc-jemalloc-compat-dev
+# in place of jemalloc-dev (the same file set: <jemalloc/jemalloc.h>,
+# libjemalloc.so, jemalloc.pc) and the package names
+# challoc-jemalloc-compat at run time. KeyDB's Makefile has no
+# system-jemalloc mode (MALLOC=jemalloc builds deps/jemalloc statically),
+# so keydb/0001-Add-MALLOC-challoc.patch adds MALLOC=challoc: the
+# USE_JEMALLOC code paths, -ljemalloc, and a ZMALLOC_LIB of
+# "jemalloc-5.3.0-challoc" so --version and INFO memory say which build.
+#
+# Local build (contrib/wolfi/README.md, "KeyDB"): after challoc.yaml has
+# been built into the local repository,
+#
+#   melange build contrib/wolfi/keydb/keydb.yaml --arch aarch64 \
+#     --source-dir contrib/wolfi/keydb/keydb \
+#     --pipeline-dir /path/to/wolfi-dev/os/pipelines \
+#     --repository-append <local repo> --keyring-append <its key> \
+#     --signing-key melange.rsa --out-dir packages
+package:
+  name: keydb
+  version: 6.3.4
+  epoch: 9 # allocator: bundled jemalloc -> challoc (challoc-jemalloc-compat); 8 was go/wolfi-rsc/keydb
+  description: A Multithreaded Fork of Redis
+  copyright:
+    - license: BSD-3-Clause
+  dependencies:
+    runtime:
+      # melange derives so:libjemalloc.so.2 from the binaries; apk resolves
+      # a bare so: name to the package that carries it (libjemalloc2) over
+      # a provider, so the package names what it was built and tested
+      # against.
+      - challoc-jemalloc-compat
+  resources:
+    cpu: "2"
+    memory: 5Gi
+  test-resources:
+    cpu: "1"
+    memory: 1Gi
+
+vars:
+  # What keydb-server --version and INFO memory's mem_allocator report:
+  # "jemalloc-" JEMALLOC_VERSION_{MAJOR,MINOR,BUGFIX} "-" JEMALLOC_VERSION_GID
+  # from challoc's <jemalloc/jemalloc.h> (the patch's zmalloc.h hunk).
+  allocator-name: jemalloc-5.3.0-challoc
+
+environment:
+  contents:
+    packages:
+      - autoconf
+      - automake
+      - bash
+      - binutils # readelf for the DT_NEEDED check of the built binaries
+      - build-base
+      - busybox
+      - bzip2-dev
+      - challoc-jemalloc-compat-dev # in place of jemalloc-dev: the same file set, challoc underneath
+      - curl-dev
+      - glibc-2.44-dev
+      - libbz2-1
+      - libcurl-openssl4
+      - lz4-dev
+      - nasm
+      - openssl-dev
+      - posix-libc-utils
+      - snappy-dev
+      - tcl
+      - tcl-dev
+      - util-linux-dev
+      - zlib-dev
+      - zstd-dev
+
+pipeline:
+  - uses: git-checkout
+    with:
+      repository: https://github.com/Snapchat/KeyDB
+      tag: v${{package.version}}
+      expected-commit: 7e7e5e57d25fe246a8201f0acf5e7363c0bf1e14
+      recurse-submodules: true
+
+  - uses: patch
+    working-directory: ./deps/rocksdb
+    with:
+      patches: ../../cstdint.patch
+
+  # MALLOC=challoc (src/Makefile) and the "-challoc" allocator name
+  # (src/zmalloc.h); see the header comment.
+  - uses: patch
+    with:
+      patches: 0001-Add-MALLOC-challoc.patch
+
+  - runs: |
+      # From here: https://github.com/Snapchat/KeyDB/blob/main/pkg/docker/Dockerfile#L52C9-L55C92
+      # disable protected mode as it relates to docker
+      grep -E '^ *createBoolConfig[(]"protected-mode",.*, *1 *,.*[)],$' ./src/config.cpp; \
+      sed -ri 's!^( *createBoolConfig[(]"protected-mode",.*, *)1( *,.*[)],)$!\10\2!' ./src/config.cpp; \
+      grep -E '^ *createBoolConfig[(]"protected-mode",.*, *0 *,.*[)],$' ./src/config.cpp;
+
+  - runs: |
+      # The header the build sees is challoc's, with the defragmenter hint.
+      grep -q '^#define JEMALLOC_CHALLOC 1' /usr/include/jemalloc/jemalloc.h
+      grep -q '^#define JEMALLOC_FRAG_HINT' /usr/include/jemalloc/jemalloc.h
+      grep -q 'je_get_defrag_hint' /usr/include/jemalloc/jemalloc.h
+      # MALLOC on every invocation: the Makefile persists its settings and
+      # an install without it would rebuild with the bundled jemalloc.
+      make MALLOC=challoc -j$(nproc)
+
+  - runs: make MALLOC=challoc install
+
+  - runs: |
+      # The make install doesn't respect PREFIX
+      mkdir -p ${{targets.destdir}}/usr/bin
+      mv /usr/local/bin/* ${{targets.destdir}}/usr/bin
+
+  - name: Check the built binaries name the allocator and the compat library
+    runs: |
+      set -eux
+      [ ! -d deps/jemalloc/lib ] || { echo "deps/jemalloc was built"; exit 1; }
+      bin="${{targets.destdir}}/usr/bin/keydb-server"
+      "$bin" --version
+      "$bin" --version | grep 'malloc=${{vars.allocator-name}}' > /dev/null
+      for b in keydb-server keydb-cli keydb-benchmark; do
+        readelf -d "${{targets.destdir}}/usr/bin/$b" | grep NEEDED
+        readelf -d "${{targets.destdir}}/usr/bin/$b" | grep 'NEEDED.*\[libjemalloc.so.2\]' > /dev/null
+      done
+      # The environment's libjemalloc.so.2 is challoc's (a build environment
+      # has no apk, so the file is asked): it exports the hint the
+      # defragmenter is linked against.
+      readelf -d /usr/lib/libjemalloc.so.2 | grep 'Library soname: \[libjemalloc.so.2\]' > /dev/null
+      readelf --dyn-syms /usr/lib/libjemalloc.so.2 | grep ' challoc_version$' > /dev/null
+      readelf --dyn-syms /usr/lib/libjemalloc.so.2 | grep ' je_get_defrag_hint$' > /dev/null
+      # defrag.cpp was compiled in: HAVE_DEFRAG makes activedefrag settable.
+      readelf --dyn-syms --wide "$bin" | grep 'je_get_defrag_hint' || nm -D "$bin" | grep -q je_get_defrag_hint > /dev/null
+
+  - uses: strip
+
+subpackages:
+  - name: keydb-cli
+    dependencies:
+      runtime:
+        - challoc-jemalloc-compat # linked with the same FINAL_LIBS as the server
+    pipeline:
+      - runs: |
+          mkdir -p ${{targets.subpkgdir}}/usr/bin
+          mv ${{targets.destdir}}/usr/bin/keydb-cli ${{targets.subpkgdir}}/usr/bin
+    test:
+      pipeline:
+        - runs: |
+            keydb-cli --version
+
+  - name: keydb-benchmark
+    dependencies:
+      runtime:
+        - challoc-jemalloc-compat
+    pipeline:
+      - runs: |
+          mkdir -p ${{targets.subpkgdir}}/usr/bin
+          mv ${{targets.destdir}}/usr/bin/keydb-benchmark ${{targets.subpkgdir}}/usr/bin
+    test:
+      pipeline:
+        - runs: |
+            keydb-benchmark --version
+            keydb-benchmark --help
+
+update:
+  enabled: true
+  github:
+    identifier: Snapchat/KeyDB
+    strip-prefix: v
+
+test:
+  environment:
+    contents:
+      packages:
+        - apk-tools
+        - binutils
+        - keydb-benchmark
+        - keydb-cli
+        - wait-for-it
+  pipeline:
+    - uses: test/tw/ldd-check
+    - name: The server is linked against the compat library and says so
+      runs: |
+        set -eux
+        keydb-server --version
+        keydb-server --version | grep 'malloc=${{vars.allocator-name}}' > /dev/null
+        for b in keydb-server keydb-cli keydb-benchmark; do
+          readelf -d /usr/bin/$b | grep 'NEEDED.*\[libjemalloc.so.2\]' > /dev/null
+        done
+        ldd /usr/bin/keydb-server | grep -E 'libjemalloc.so.2 => /(usr/)?lib/libjemalloc.so.2' > /dev/null
+        apk info --who-owns /usr/lib/libjemalloc.so.2
+        apk info --who-owns /usr/lib/libjemalloc.so.2 | grep challoc-jemalloc-compat > /dev/null
+        # (`apk info -e libjemalloc2` would say yes: the compat package provides the name.)
+        if apk info -vv | grep '^libjemalloc2-'; then echo "Wolfi's libjemalloc2 is installed"; exit 1; fi
+        readelf --dyn-syms /usr/lib/libjemalloc.so.2 | grep ' je_get_defrag_hint$' > /dev/null
+        keydb-sentinel --version
+    - name: A running server uses the compat library, defragments and purges
+      runs: |
+        set -eux
+        keydb-server --save "" --dir /tmp > /tmp/keydb.log 2>&1 &
+        pid=$!
+        wait-for-it localhost:6379 -t 30
+        keydb-cli PING | grep PONG > /dev/null
+        # The one libjemalloc mapped in the server is the compat package's.
+        awk '$6 ~ /libjemalloc/ {print $6}' /proc/$pid/maps | sort -u
+        [ "$(awk '$6 ~ /libjemalloc/ {print $6}' /proc/$pid/maps | sort -u)" = /usr/lib/libjemalloc.so.2 ]
+        keydb-cli INFO memory | tr -d '\r' | grep -E '^(mem_allocator|allocator_frag_ratio|allocator_allocated):'
+        keydb-cli INFO memory | tr -d '\r' | grep -x 'mem_allocator:${{vars.allocator-name}}' > /dev/null
+        # Active defrag needs HAVE_DEFRAG (JEMALLOC_FRAG_HINT from the
+        # header); without it the error is "Active defragmentation cannot
+        # be enabled: it requires a Redis server compiled with a modified
+        # Jemalloc ...".
+        keydb-cli CONFIG SET activedefrag yes | grep -x OK > /dev/null
+        keydb-cli CONFIG GET activedefrag | grep -x yes > /dev/null
+        keydb-cli MEMORY PURGE | grep -x OK > /dev/null
+        keydb-cli MEMORY MALLOC-STATS | head -3
+        keydb-cli MEMORY MALLOC-STATS | grep 'jemalloc statistics' > /dev/null
+        keydb-cli DEBUG MALLCTL arenas.page
+        # Wolfi's checks.
+        keydb-cli SET bike:1 "Process 134" || exit 1
+        keydb-cli GET bike:1 | grep 'Process 134' || exit 1
+        keydb-cli exists bike:1 | grep 1 || exit 1
+        keydb-cli exists bike:2 | grep 0 || exit 1
+        # Some traffic through the allocator and a defrag-shaped churn
+        # (populate, delete half, wait a cycle), then the server is still up.
+        keydb-benchmark -t set,get -n 20000 -q
+        keydb-benchmark -t set -n 200000 -r 200000 -d 150 -q -P 16
+        keydb-cli DBSIZE
+        keydb-cli EVAL 'for i=1,100000 do redis.call("del", redis.call("randomkey")) end return 1' 0
+        sleep 2
+        keydb-cli INFO stats | tr -d '\r' | grep -E '^active_defrag_(hits|misses|key_hits|key_misses):'
+        keydb-cli INFO memory | tr -d '\r' | grep -E '^(used_memory|allocator_active|allocator_resident|allocator_frag_ratio):'
+        keydb-cli CONFIG SET activedefrag no | grep -x OK > /dev/null
+        keydb-cli SHUTDOWN NOSAVE || true
+        wait $pid || true
+        if grep -iE 'challoc:|assert|crash' /tmp/keydb.log; then exit 1; fi
