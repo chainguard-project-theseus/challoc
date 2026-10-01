@@ -39,6 +39,7 @@
 //! (design 6.5).
 
 mod cache;
+pub mod capstat;
 mod compact;
 mod flush;
 pub mod mallocx;
@@ -540,9 +541,11 @@ impl Heap {
                         let cap = ((*cache).cap / 2).max(floor);
                         let len = (*cache).len;
                         if len > cap {
+                            capstat::bump(&capstat::SHRINK_FLUSH, 1);
                             self.flush(shared, arena, cache, class, (len - cap) as usize);
                         }
                         (*cache).cap = cap;
+                        capstat::bump(&capstat::SHRINK, 1);
                     }
                 }
                 if restart_misses {
@@ -572,6 +575,8 @@ impl Heap {
                 if restart {
                     self.misses_since = now;
                 }
+                capstat::bump(&capstat::GC, 1);
+                capstat::bump(&capstat::GC_INTERVAL, restart as u64);
                 self.gc_with(shared, restart);
             }
             crate::purge::on_tick(shared, now);
