@@ -264,17 +264,13 @@ pub fn sealed_ranges() -> u32 {
 /// regions are reserved so that nothing it may abort on has been mapped
 /// yet; it reads only the weak symbols, one file and `environ`.
 fn init() {
-    let mut features = Features::probe();
+    let features = Features::probe();
     // The slab geometry of the classes whose table slab is below the page
     // (design 3, page-sized slabs): written once here, before any other
     // thread can see the allocator, never again.
     // SAFETY: `init` runs once, under `INITIALISING`, before `READY`.
     unsafe { layout::adopt_page_geometry(features.page_size.trailing_zeros()) };
     let config = config::load();
-    // `config::load` ran `slice::configure` on this thread: the feature
-    // line's `slice_ext=` word can now say `on` (design 17, "Time slice
-    // extension").
-    features.note_slice_ext();
     crate::thp::configure(config.thp, &features);
     purge::configure(features.process_madvise);
     purge::configure_advice(features.process_madvise_free, config.lazy_band);

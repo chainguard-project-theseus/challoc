@@ -197,7 +197,6 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     writeln!(out, "Kernel and CPU features: {}", super::feature_line())?;
     writeln!(out, "Sealed ranges: {} of {}", super::sealed_ranges(), shared.regions.never_committed().1)?;
     writeln!(out, "Background thread: {}", if purge::background::present() { "present" } else { "absent" })?;
-    slice_line(out)?;
     writeln!(
         out,
         "Arenas: {} ({} automatic), explicit caches: {}",
@@ -779,33 +778,6 @@ mod exports {
     }
 }
 
-/// `Slice extension:` (design 17, `slice.rs`): whether lock holders request
-/// the rseq time slice extension, the probe's verdict when not, how many
-/// threads the `prctl` enabled and how many grants were yielded, and a
-/// note when `slice_ext:on` was asked for and the probe said no. The
-/// `slice_ext=` key of the feature line (`sys::features::SliceExt`) carries
-/// the same verdict word (`on` here is `on` there; `off (<word>)` here is
-/// `<word>` there, or `available` when the key turned it off).
-fn slice_line<W: Write>(out: &mut W) -> fmt::Result {
-    use crate::slice;
-    if slice::on() {
-        writeln!(
-            out,
-            "Slice extension: on ({} threads enabled, {} grants yielded via {})",
-            slice::enabled_threads(),
-            slice::yields(),
-            slice::yield_name()
-        )
-    } else {
-        writeln!(
-            out,
-            "Slice extension: off ({}){}",
-            slice::verdict().name(),
-            if slice::forced_off() { "; slice_ext:on requested, unavailable" } else { "" }
-        )
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -892,7 +864,6 @@ mod tests {
             "Kernel and CPU features: page_size=",
             "Sealed ranges: ",
             "Background thread: ",
-            "\nSlice extension: ",
             "Arenas: ",
             "\nQuantum size: ",
             "\nPage size: ",
@@ -942,33 +913,6 @@ mod tests {
         assert!(b.contains("arenas[0]:") && !b.contains("  bins:"), "{b}");
         let ga = report("gab");
         assert_eq!(ga, "--- End jemalloc statistics ---\n");
-    }
-
-    /// The feature line's `slice_ext=` key (design 17) agrees
-    /// with the `Slice extension:` line of the same report: `on` with
-    /// `on (`, else the line's `off (<word>)` word (or `available` when
-    /// the key turned it off with the kernel offering it).
-    #[test]
-    fn feature_line_slice_ext_agrees_with_the_slice_line() {
-        let text = report("");
-        let features = text.lines().find(|l| l.starts_with("Kernel and CPU features: ")).unwrap();
-        let word = features
-            .split(' ')
-            .find_map(|kv| kv.strip_prefix("slice_ext="))
-            .unwrap_or_else(|| panic!("no slice_ext= in {features}"));
-        let slice = text.lines().find(|l| l.starts_with("Slice extension: ")).unwrap();
-        if word == "on" {
-            assert!(slice.starts_with("Slice extension: on ("), "{slice} vs {features}");
-        } else {
-            assert!(slice.starts_with("Slice extension: off ("), "{slice} vs {features}");
-            let why = slice.trim_start_matches("Slice extension: off (").split(')').next().unwrap();
-            if why == "slice_ext:off" {
-                assert!(matches!(word, "available" | "kernel-disabled" | "no-slice_ctrl" | "no-rseq"), "{slice} vs {features}");
-            } else {
-                assert_eq!(word, why, "{slice} vs {features}");
-            }
-        }
-        assert_eq!(crate::api::features().slice_ext.name(), word);
     }
 
     #[test]
@@ -1138,7 +1082,7 @@ mod tests {
         ];
         want.extend(KEYS.iter().chain(INERT_KEYS).map(|key| std::format!("  opt.{key}:")));
         want.extend(
-            ["Kernel and CPU features:", "Sealed ranges:", "Background thread:", "Slice extension:", "Arenas:", "Quantum size:", "Page size:"]
+            ["Kernel and CPU features:", "Sealed ranges:", "Background thread:", "Arenas:", "Quantum size:", "Page size:"]
                 .map(String::from),
         );
         if crate::layout::page_sized_classes().is_some() {

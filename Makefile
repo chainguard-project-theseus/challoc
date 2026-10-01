@@ -132,8 +132,7 @@ print-docker-run: ## print the docker run line the targets use (challoc-bench pe
 # CHALLOC_TEST_ALLOW_SKIP=1 lets a kernel- or privilege-gated test print its
 # `SKIP <test> <reason>` line and pass (docs/testing.md). `make test` sets it
 # everywhere, the reference VMs included (their containers skip mseal
-# (Docker's seccomp), the cgroup writes, the rseq slice extension and
-# mTHP); `make test TEST_ALLOW_SKIP=` runs strict,
+# (Docker's seccomp), the cgroup writes and mTHP); `make test TEST_ALLOW_SKIP=` runs strict,
 # and `grep '^SKIP '` on a log lists what a run did not check.
 TEST_ALLOW_SKIP ?= 1
 test: DOCKER_FLAGS = -e QUANTUM=$(QUANTUM) $(if $(TEST_ALLOW_SKIP),-e CHALLOC_TEST_ALLOW_SKIP=$(TEST_ALLOW_SKIP))

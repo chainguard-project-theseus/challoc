@@ -42,8 +42,7 @@ features a hypervisor hides.
   and `kirkland-workstation-7dot2-metal-amd64` for `*-metal` shapes, both
   in `wolfi-vm`, x86_64 only. These are the first hosts newer than GCE's
   Ubuntu 7.0: use them for the 7.2 items in `docs/research.md` (khugepaged
-  anon mTHP collapse, cache-aware scheduling) and to see whether
-  `CONFIG_RSEQ_SLICE_EXTENSION` is on (`slice_ext=` in the report). A
+  anon mTHP collapse, cache-aware scheduling). A
   `cgos72-amd64` cell should be a copy of `cgos-amd64` with the family
   swapped (`bench/gce/challoc-bench`, the cell table).
 

@@ -22,7 +22,7 @@
 //! source; jemalloc gets the same effect with a separate first pass.
 //!
 //! Three tables name the keys. [`TABLE`] holds the tunables the allocator
-//! reads, jemalloc's and challoc's own (`slice_ext`, `lazy_band`,
+//! reads, jemalloc's and challoc's own (`lazy_band`, `guards`,
 //! ...): one [`Key`] per tunable with its name,
 //! its parser and its reader, so [`Config::set`], [`Config::get`]
 //! (`opt.<key>`) and the name list [`KEYS`] all come from the one entry;
@@ -116,50 +116,6 @@ impl PercpuArena {
     }
 }
 
-/// `slice_ext` values (design 17, "Time slice extension"): whether a lock
-/// holder asks the kernel, through the rseq
-/// `slice_ctrl` bytes, to defer a preemption until the release
-/// (`slice.rs`). The runtime probe must pass: glibc's registered
-/// `__rseq_size >= 32`, the kernel's `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE`
-/// bit in the area (kernel 7.0 with `CONFIG_RSEQ_SLICE_EXTENSION`), the
-/// `prctl` enable and the `rseq_slice_yield` syscall; nothing is assumed
-/// from a header constant.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SliceExt {
-    /// The default: on when the probe passes, nothing otherwise, nothing
-    /// reported either way.
-    Auto,
-    /// The request is forced: on when the probe passes; when it fails
-    /// nothing is requested (a field the kernel does not read cannot be
-    /// forced) and the report notes that `slice_ext:on` was refused.
-    On,
-    /// Never requested, whatever the kernel: byte for byte the lock
-    /// without the key but for one relaxed load per hold.
-    Off,
-}
-
-impl SliceExt {
-    pub const fn name(self) -> &'static CStr {
-        match self {
-            SliceExt::Auto => c"auto",
-            SliceExt::On => c"on",
-            SliceExt::Off => c"off",
-        }
-    }
-
-    /// Whether the probe is consulted at all.
-    #[inline]
-    pub const fn wanted(self) -> bool {
-        !matches!(self, SliceExt::Off)
-    }
-
-    /// Whether a failed probe is worth a note in the report.
-    #[inline]
-    pub const fn forced(self) -> bool {
-        matches!(self, SliceExt::On)
-    }
-}
-
 /// Every tunable of design section 12; [`Config::DEFAULT`] holds the
 /// compiled defaults. `docs/tuning.md` section 2 documents each key: its
 /// values, what it does, when to change it and what that costs.
@@ -185,8 +141,6 @@ pub struct Config {
     pub lg_tcache_nslots_mul: i32,
     /// Transparent huge pages for the regions ([`Thp`], `thp.rs`).
     pub thp: Thp,
-    /// The rseq time slice extension for lock holders ([`SliceExt`], `slice.rs`).
-    pub slice_ext: SliceExt,
     /// `MADV_FREE` for purges under 70% of a known cgroup limit (`purge`).
     pub lazy_band: bool,
     /// Guard slabs and guards after huge runs.
@@ -226,7 +180,6 @@ impl Config {
         tcache_nslots_small_max: MAX_CAP,
         lg_tcache_nslots_mul: 1,
         thp: Thp::Never,
-        slice_ext: SliceExt::Auto,
         lazy_band: true,
         guards: true,
         guard_slab_interval: 8,
@@ -338,17 +291,6 @@ impl Config {
             return 0;
         }
         ladder(class, self.tcache_nslots_small_max, self.lg_tcache_nslots_mul)
-    }
-
-    /// Install the configuration's time slice extension choice (design
-    /// 17, `slice::configure`): probe, enable the calling thread, publish.
-    /// `off` turns it off; `auto` and `on` follow the probe, and only `on`
-    /// makes a failed probe visible (in the report, not as an issue: a
-    /// kernel without the option is the documented fallback, not a
-    /// configuration error, so `abort_conf` does not refuse it). Returns
-    /// the verdict.
-    pub fn apply_slice_ext(&self) -> Result<(), crate::slice::Verdict> {
-        crate::slice::configure(self.slice_ext.wanted(), self.slice_ext.forced())
     }
 
     /// The guard slab interval actually used: 0 when guards are off.
@@ -505,14 +447,6 @@ pub const TABLE: &[Key] = &[
             Ok(())
         },
         read: |c| Value::Str(c.thp.name()),
-    },
-    Key {
-        name: "slice_ext",
-        parse: |c, k, v| {
-            c.slice_ext = pick(&[("auto", SliceExt::Auto), ("on", SliceExt::On), ("off", SliceExt::Off)], k, v)?;
-            Ok(())
-        },
-        read: |c| Value::Str(c.slice_ext.name()),
     },
     bool_key!("lazy_band", lazy_band),
     bool_key!("guards", guards),
@@ -840,10 +774,6 @@ mod linux {
                 }
             }
         }
-        // The time slice extension (design 17): probed and enabled here,
-        // on the init thread, whatever the key (`off` publishes "off").
-        // Not an issue when refused: the report says why.
-        let _ = cfg.apply_slice_ext();
         out.flush();
         if cfg.abort_conf && issues > 0 {
             sys::abort_fmt(format_args!("abort_conf: {issues} configuration problem(s), see above"));
@@ -1025,7 +955,6 @@ mod tests {
         assert_eq!(d.dirty_decay_ms, 10_000);
         assert_eq!(d.narenas, 0);
         assert_eq!(d.percpu_arena, PercpuArena::Disabled, "jemalloc's default");
-        assert_eq!(d.slice_ext, SliceExt::Auto, "on where the slice extension probe passes");
         assert!(d.tcache);
         assert_eq!(d.tcache_max, 32 * 1024);
         assert_eq!(d.tcache_nslots_small_max, 1024);
@@ -1192,28 +1121,6 @@ mod tests {
         // The last pair wins, as for every key.
         assert_eq!(clean("percpu_arena:percpu,percpu_arena:disabled").percpu_arena, PercpuArena::Disabled);
         assert_eq!(clean("percpu_arena:\"percpu\"").percpu_arena, PercpuArena::Percpu);
-    }
-
-    /// `slice_ext`: the three values, anything else reported and left at
-    /// the default, `opt.slice_ext` reads back,
-    /// and the helpers `slice::configure` is called with.
-    #[test]
-    fn slice_ext_values() {
-        assert!(KEYS.contains(&"slice_ext"));
-        for (value, want) in [("auto", SliceExt::Auto), ("on", SliceExt::On), ("off", SliceExt::Off)] {
-            let cfg = clean(&std::format!("slice_ext:{value},abort_conf:true"));
-            assert_eq!(cfg.slice_ext, want, "{value}");
-            assert_eq!(cfg.get(b"slice_ext"), Some(Value::Str(want.name())), "{value}");
-            assert_eq!(want.name().to_str(), Ok(value));
-            assert!(cfg.abort_conf);
-        }
-        rejects_bad_values("slice_ext", &["true", "false", "1", "yes", "Auto", "ON", "", "onn", "percpu"]);
-        assert_eq!(clean("slice_ext:on,slice_ext:off").slice_ext, SliceExt::Off);
-        assert_eq!(clean("slice_ext:\"on\"").slice_ext, SliceExt::On);
-        // `auto` and `on` consult the probe, `off` never; only `on`
-        // reports a failed probe.
-        assert!(SliceExt::Auto.wanted() && SliceExt::On.wanted() && !SliceExt::Off.wanted());
-        assert!(SliceExt::On.forced() && !SliceExt::Auto.forced() && !SliceExt::Off.forced());
     }
 
     /// The one inert key: a bool by value, no field, unreadable, one
@@ -1466,7 +1373,6 @@ mod tests {
                 Value::Size(n) => std::format!("{}", if n == 0 { 2 } else { n * 2 }),
                 Value::Str(s) => match key.name {
                     "percpu_arena" => "percpu".into(),
-                    "slice_ext" => "off".into(),
                     "thp" => "always".into(),
                     _ => panic!("{}: a string key with no test value ({s:?})", key.name),
                 },

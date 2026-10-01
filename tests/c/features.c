@@ -69,7 +69,7 @@ int main(void)
     /* Every key once. */
     static const char *const keys[] = {"page_size", "guard_install", "mseal",     "process_madvise", "process_madvise_free",
                                        "anon_name", "thp",           "mthp",      "rseq",            "rseq_size",
-                                       "slice_ext", "pac"};
+                                       "pac"};
     size_t nkeys = sizeof keys / sizeof keys[0];
     for (size_t i = 0; i < nkeys; i++)
         CHECK(has_key(line, keys[i]) == 1, "key %s appears %d times", keys[i], has_key(line, keys[i]));
@@ -99,33 +99,6 @@ int main(void)
         printf("rseq: rseq=%.3s rseq_size=%ld\n", r, size);
     }
 
-    /* The slice extension key: one of the probe's
-     * words. `on` needs rseq=yes with a v2 registration (slice_ctrl ends at
-     * 32); `no-rseq` needs rseq=no; `no-slice_ctrl` a size under 32;
-     * `kernel-disabled` (the 7.0 GCE kernels: the option is compiled out)
-     * a size of at least 32. The report's `Slice extension:` line agrees. */
-    {
-        const char *se = strstr(line, " slice_ext=") + 11;
-        char word[24];
-        size_t k = strcspn(se, " ");
-        if (k >= sizeof word)
-            k = sizeof word - 1;
-        memcpy(word, se, k);
-        word[k] = 0;
-        const char *r = strstr(line, " rseq=") + 6;
-        long size = strtol(strstr(line, " rseq_size=") + 11, NULL, 10);
-        int known = !strcmp(word, "on") || !strcmp(word, "available") || !strcmp(word, "prctl-failed") ||
-                    !strcmp(word, "kernel-disabled") || !strcmp(word, "no-slice_ctrl") || !strcmp(word, "no-rseq");
-        CHECK(known, "slice_ext has value `%s`", word);
-        if (!strcmp(word, "no-rseq"))
-            CHECK(strncmp(r, "no", 2) == 0 || size == 0, "slice_ext=no-rseq with rseq=%.3s rseq_size=%ld", r, size);
-        else if (!strcmp(word, "no-slice_ctrl"))
-            CHECK(size > 0 && size < 32, "slice_ext=no-slice_ctrl with rseq_size=%ld", size);
-        else
-            CHECK(size >= 32, "slice_ext=%s with rseq_size=%ld", word, size);
-        printf("slice_ext: %s\n", word);
-    }
-
     /* pac: yes or no, never yes off aarch64. */
     {
         const char *v = strstr(line, " pac=") + 5;
@@ -147,18 +120,5 @@ int main(void)
     REQUIRE(end != NULL, "unterminated features line in the report");
     CHECK((size_t)(end - at) == len && memcmp(at, line, len) == 0, "report line `%.*s` != challoc_features() `%s`",
           (int)(end - at), at, line);
-    /* The `Slice extension:` line and the `slice_ext=` key tell one story:
-     * `on` <-> `on (`; any other word <-> `off (`. */
-    {
-        const char *sl = strstr(report, "Slice extension: ");
-        REQUIRE(sl != NULL, "no `Slice extension:` line in malloc_stats_print");
-        const char *se = strstr(line, " slice_ext=") + 11;
-        int on = strncmp(se, "on ", 3) == 0 || strncmp(se, "on\0", 3) == 0;
-        if (on)
-            CHECK(strncmp(sl + 17, "on (", 4) == 0, "slice_ext=on but `%.40s`", sl);
-        else
-            CHECK(strncmp(sl + 17, "off (", 5) == 0, "slice_ext=%.16s but `%.40s`", se, sl);
-    }
-
     return finish("features");
 }

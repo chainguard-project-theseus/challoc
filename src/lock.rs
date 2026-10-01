@@ -15,7 +15,6 @@
 //!
 //! Nothing on the `malloc`/`free` fast path takes a lock.
 
-use crate::slice;
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -59,26 +58,15 @@ impl RawLock {
     /// Acquire without blocking. `true` on success.
     #[inline]
     pub fn try_lock(&self) -> bool {
-        let ok = self.try_acquire();
-        if ok {
-            slice::acquired();
-        }
-        ok
+        self.try_acquire()
     }
 
-    /// Acquire, blocking as needed. Once held, the holder asks the kernel
-    /// to defer a preemption until the release (`slice::acquired`, the
-    /// rseq time slice extension, design 17): one relaxed load when the
-    /// extension is off, two byte-sized accesses to this thread's rseq
-    /// area when on. The request is made after the acquire, never during
-    /// the wait: a waiter spinning while the holder is extended is what
-    /// the extension exists for.
+    /// Acquire, blocking as needed.
     #[inline]
     pub fn lock(&self) {
         if !self.try_acquire() {
             self.lock_slow();
         }
-        slice::acquired();
     }
 
     #[cold]
@@ -99,21 +87,11 @@ impl RawLock {
     }
 
     /// Release. Must be called by the holder exactly once per acquire.
-    /// The extension request is withdrawn before the word is released and,
-    /// if the kernel granted one during the hold, the CPU is handed back
-    /// right after (`slice::released`; a `FUTEX_WAKE` issued here already
-    /// ended the grant, so the two never both run). Nested holds (the fork
-    /// handlers, heap creation under the cache-table lock) request per
-    /// lock: the inner release withdraws the request while the outer hold
-    /// goes on unextended, which costs nothing but the extension.
     #[inline]
     pub fn unlock(&self) {
-        let area = slice::acquired_area();
-        slice::releasing(area);
         if self.state.swap(UNLOCKED, Ordering::Release) == CONTENDED {
             wake(&self.state);
         }
-        slice::released(area);
     }
 
     /// Whether some thread currently holds the lock. Diagnostic only.

@@ -35,8 +35,6 @@ pub const TABLE: &[(&str, usize)] = &[
     ("sched_getaffinity", SCHED_GETAFFINITY),
     ("ppoll", PPOLL),
     ("eventfd2", EVENTFD2),
-    ("sched_yield", SCHED_YIELD),
-    ("rseq_slice_yield", RSEQ_SLICE_YIELD),
 ];
 
 #[cfg(target_arch = "x86_64")]
@@ -49,7 +47,6 @@ mod arch {
     pub const MUNMAP: usize = 11;
     pub const RT_SIGACTION: usize = 13;
     pub const RT_SIGPROCMASK: usize = 14;
-    pub const SCHED_YIELD: usize = 24;
     pub const MADVISE: usize = 28;
     pub const GETPID: usize = 39;
     pub const PRCTL: usize = 157;
@@ -77,7 +74,6 @@ mod arch {
     pub const FUTEX: usize = 98;
     pub const CLOCK_GETTIME: usize = 113;
     pub const SCHED_GETAFFINITY: usize = 123;
-    pub const SCHED_YIELD: usize = 124;
     pub const TGKILL: usize = 131;
     pub const RT_SIGACTION: usize = 134;
     pub const RT_SIGPROCMASK: usize = 135;
@@ -97,12 +93,6 @@ pub use arch::*;
 pub const PIDFD_OPEN: usize = 434;
 pub const PROCESS_MADVISE: usize = 440;
 pub const MSEAL: usize = 462;
-/// 7.0 (`arch/x86/entry/syscalls/syscall_64.tbl` and
-/// `include/uapi/asm-generic/unistd.h` at v7.0 both say 471). Probed with
-/// `ENOSYS` by `slice::probe`, never assumed; the container's headers may
-/// predate it, in which case `sysnr.c` prints `-` and the number stands
-/// on the two tables alone.
-pub const RSEQ_SLICE_YIELD: usize = 471;
 
 #[cfg(test)]
 mod tests {

@@ -131,22 +131,12 @@
 #else
 #define PV_eventfd2 printf("-")
 #endif
-#ifdef __NR_sched_yield
-#define PV_sched_yield printf("%d", __NR_sched_yield)
-#else
-#define PV_sched_yield printf("-")
-#endif
-#ifdef __NR_rseq_slice_yield
-#define PV_rseq_slice_yield printf("%d", __NR_rseq_slice_yield)
-#else
-#define PV_rseq_slice_yield printf("-")
-#endif
 
 int main(void) {
     P(read); P(write); P(close); P(mmap); P(mprotect); P(munmap);
     P(rt_sigaction); P(rt_sigprocmask); P(madvise); P(getpid); P(prctl);
     P(gettid); P(futex); P(clock_gettime); P(exit_group); P(tgkill);
     P(openat); P(getrandom); P(pidfd_open); P(process_madvise); P(mseal);
-    P(sched_getaffinity); P(ppoll); P(eventfd2); P(sched_yield); P(rseq_slice_yield);
+    P(sched_getaffinity); P(ppoll); P(eventfd2);
     return 0;
 }

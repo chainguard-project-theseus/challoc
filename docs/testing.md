@@ -82,7 +82,6 @@ pass. There are two sources:
 - A program's own `skip_note(name, reason)` (`tests/c/common.h`), which
   prints `SKIP <program>[/<mode>] <reason>` on stdout; the driver echoes it
   as `SKIP <test> <program>/<mode> <reason>`. Today: `mseal` under seccomp,
-  `slice_ext/on` on kernels without the feature,
   `thp/{always,auto}` where the sysfs knobs are missing,
   `thp/never-huge-run` when the kernel had no free huge page,
   `cgroup_policy/{bands,high}` and `cgroup/bg` without a limit or a
@@ -93,8 +92,7 @@ pass. There are two sources:
 `CHALLOC_TEST_ALLOW_SKIP` set a skip passes with the note; unset, it fails
 the test. `make test` sets it everywhere (`TEST_ALLOW_SKIP ?= 1`): in an
 unprivileged container most skips are container or host facts (a
-read-only cgroup tree, Docker's seccomp hiding `mseal`, no rseq slice
-extension, no mTHP size below the PMD), not missing coverage.
+read-only cgroup tree, Docker's seccomp hiding `mseal`, no mTHP size below the PMD), not missing coverage.
 `make test TEST_ALLOW_SKIP=` runs strict; real coverage of the cgroup
 writes and `mseal` needs the privileged invocation above.
 
@@ -112,7 +110,7 @@ so a broken preload cannot pass.
 | Fork | `fork_alloc.c` (allocation in parent, child and grandchild), `fork_signal.c` (fork from a signal handler while the fork handlers hold every lock) |
 | Abort conditions | `negative.c`: one invalid operation per mode (invalid, double and mis-sized frees, guard faults); the driver checks the signal and the `challoc:` line on stderr |
 | Configuration and report | `conf.c` (every `malloc_conf` source), `tunables.c` (the hardening opt-ins and their controls), `features.c` (`challoc_features()` against the report) |
-| Kernel features, both ways | `guard_slab.c`, `pagemap_guard.c` (guard slabs, by fault and through `PAGEMAP_SCAN`), `mseal.c`, `thp.c`, `slice_ext.c`, `decay.c` (decay, purge, the background thread) |
+| Kernel features, both ways | `guard_slab.c`, `pagemap_guard.c` (guard slabs, by fault and through `PAGEMAP_SCAN`), `mseal.c`, `thp.c`, `decay.c` (decay, purge, the background thread) |
 | cgroup | `cgroup.c`, `cgroup_policy.c` (the `api::` rows and `test-cgroup-limit`); `cgroup_churn.c`, `cgroup_lazy.c`, `cgroup_oscillate.c` (the memory-limited container runs, `scripts/cgroup-tests.sh`) |
 | Linking | `as_needed.c`, `as_needed_lib.c` (`tests/as-needed.sh`, `make check-needed`) |
 | Unit-test helper | `sysnr.c` (prints the C headers' syscall numbers for the `sys::nr` test) |

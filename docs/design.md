@@ -1423,7 +1423,6 @@ jemalloc names where they exist:
 | `tcache_nslots_small_max` | 1024    |                                         |
 | `lg_tcache_nslots_mul`    | 1       |                                         |
 | `thp`                     | never   | `never`, `auto`, `always` (7, 17, `thp.rs`): `auto` advises slab groups of classes whose slab holds an enabled sub-PMD folio and rounds metadata commits to it, never a 2 MiB page (inert where the PMD size is `madvise`-gated or no such size is enabled); the opt-in for aarch64 hosts with `hugepages-64kB` enabled and Valkey-shaped heaps (measured neutral there, a real 1.6% loss on larson and more RSS on small heaps, so not the default); `always` commits and advises PMD chunks (at a 2 MiB PMD only: 4 KiB pages; at 16 and 64 KiB pages it is the folio path over the enabled sizes below the PMD, inert when none is), huge runs of a PMD or more and the metadata (jemalloc's `thp:always`, priced in `bench/results/2026-09-19-lane-b-mthp.md`); `always` under a cgroup limit below 1 GiB is forced to `never` (11); `never` (and a forced `never`) issues `MADV_NOHUGEPAGE` on the class superblock and the metadata region, so the slab regions get no huge page on a host whose global mode is `always`, and leaves the huge region to the host's policy, as jemalloc's `never` leaves its large extents (17, plan Phase 2.5 task 16; the 2026-09-20 decision on `bench/results/2026-09-20-aarch64-cgos-thp-ab.md`, option (d): the huge runs' 2 MiB pages were 10 points of `valkey1` on Chainguard OS) |
-| `slice_ext`               | auto    | challoc only; `auto`, `on`, `off` (17, "Time slice extension"; plan Phase 2.5 task 15): whether a lock holder asks the kernel, through its rseq `slice_ctrl` bytes, to defer a preemption until the release. `auto` and `on` turn it on where the runtime probe passes (glibc's `__rseq_size >= 32`, the kernel's `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE` bit in the thread's area, the `prctl` enable confirmed by the `ENABLED` bit: kernel 7.0 with `CONFIG_RSEQ_SLICE_EXTENSION`, x86_64 only so far); `on` additionally makes the report note a refused request; `off` never requests. No kernel field but `request` is written |
 | `lazy_band`               | true    | challoc only; `MADV_FREE` for purges under 70% of a known cgroup limit (8, 11); `false` makes every purge `MADV_DONTNEED` |
 | `guards`                  | true    | guard slabs and huge runs               |
 | `guard_slab_interval`     | 8       | one guard per N x 64 KiB of slabs, N a power of two (else rounded up, reported); 0 off, 1 out of range (clamps to 2) |
@@ -1994,10 +1993,10 @@ Not implemented; see the archive tag `archive/prototype-2026-09-30`.
   NUL-terminated line of `key=value` pairs separated by single spaces, the
   kernel probes first (`page_size=4096 guard_install=yes mseal=yes
   process_madvise=pidfd_self process_madvise_free=yes anon_name=yes
-  thp=madvise mthp=2M rseq=yes rseq_size=33 slice_ext=kernel-disabled`:
+  thp=madvise mthp=2M rseq=yes rseq_size=33`:
   the THP setting or `none`, the
   folio sizes a `MADV_HUGEPAGE`d range can get or `none`, glibc's rseq
-  registration and its size, and the kernel's answer for the time slice extension, section 17) then `pac=yes`
+  registration and its size) then `pac=yes`
   or `pac=no` (pointer authentication, section 17). The string is static,
   built once at init without allocating (rebuilt in a fork child, whose
   purge backend is re-probed), and byte-identical to the `Kernel and CPU
@@ -2023,20 +2022,15 @@ runs on every row.
 | `mseal` | kernel 6.10, not filtered by seccomp | seals the never-committed ranges of the reservations at init (section 10 step 5) | skip; `Sealed ranges: 0 of N` |
 | `PR_SET_VMA_ANON_NAME` | kernel 5.17 with `CONFIG_ANON_VMA_NAME` | named `challoc:*` mappings in `/proc/pid/maps` | skip |
 | PSI triggers on `memory.pressure` | kernel 6.4 (unprivileged), cgroup2 mounted writable | the background thread arms a trigger and reacts to pressure at once (section 11) | sample `memory.current` on the tick |
-| rseq registration (`rseq`, `rseq_size`) | glibc 2.44's registered area (`__rseq_size`, `__rseq_offset`, `__rseq_flags`, read from the weak symbols at init, and the area's own `cpu_id` for the fact of registration; `rseq::probe`) | the time slice extension's size gate and area (below); `rseq=yes rseq_size=33` on the 7.0 GCE VMs | `rseq=no rseq_size=0` without a registration (`glibc.pthread.rseq=0`, a kernel without `CONFIG_RSEQ`); `rseq_size=20` on a kernel that reports no `AT_RSEQ_FEATURE_SIZE` |
+| rseq registration (`rseq`, `rseq_size`) | glibc 2.44's registered area (`__rseq_size`, `__rseq_offset`, `__rseq_flags`, read from the weak symbols at init, and the area's own `cpu_id` for the fact of registration; `rseq::probe`) | the feature line's `rseq` and `rseq_size` words; `rseq=yes rseq_size=33` on the 7.0 GCE VMs | `rseq=no rseq_size=0` without a registration (`glibc.pthread.rseq=0`, a kernel without `CONFIG_RSEQ`); `rseq_size=20` on a kernel that reports no `AT_RSEQ_FEATURE_SIZE` |
 | Transparent huge pages (`thp`, `mthp`) | any kernel with `CONFIG_TRANSPARENT_HUGEPAGE`; the per-size `hugepages-<n>kB` knobs since 6.8 | off by default (`thp:never`: byte for byte the allocator without the key on the fast paths, plus one `MADV_NOHUGEPAGE` each on the class superblock and the metadata reservation at init (plan Phase 2.5 task 16, `thp::advise_reservation` from `layout::Regions::reserve`, and again from `force_never`), a VMA flag every later split inherits, so that on a host whose global mode is `always` (Chainguard OS ships `always` with the 2 MiB size on `inherit`; Debian's kernels boot `always`) no slab region of challoc's gets a huge page; the huge region is not advised and follows the host's policy (the 2026-09-20 decision, option (d) of `bench/results/2026-09-20-aarch64-cgos-thp-ab.md`: `never` is the slab regions' RSS discipline, and a huge run is a whole allocation the program asked for, which takes 2 MiB pages on an `always` host as jemalloc's large extents do; advising it too cost the Valkey model 10 points of `valkey1` on Chainguard OS, the 32 MiB of tables it keeps in huge runs, for no RSS gain on that heap). The both-ways test `tests/c/thp.c never` reads the global mode from sysfs, checks `nh` on the class region and no `nh` on the huge run on every kernel with THP, `stats.thp.nohuge_ranges` 2, and, on an `always` host, `AnonHugePages` 0 kB and `THPeligible` 0 on the class region after 8 MiB of small blocks and `THPeligible` 1 with `AnonHugePages` back on an 8 MiB huge run; the before/after numbers on the 7.0 VM with the global mode set to `always` are in `bench/results/2026-09-19-lane-b-floor-fixes.md`, the same-host A/B of the four settings on Chainguard OS in `2026-09-20-aarch64-cgos-thp-ab.md`. `auto` and `always` issue no `MADV_NOHUGEPAGE`: on an `always` host their unadvised regions stay eligible for the host's PMD pages. `thp:auto` (plan Phase 2.5 task 9, `thp.rs`): `MADV_HUGEPAGE` on the slab groups of every class whose slab holds an enabled folio size below the PMD (64 KiB slabs and up with `hugepages-64kB` enabled), and metadata commits rounded to and advised with that folio, never a 2 MiB page (the fork copy-on-write cost that makes Redis and Valkey forbid huge pages stays absent); inert, and the report says why, where the kernel enables no such size or where the PMD size is `madvise`-gated (`hugepages-2048kB/enabled` `madvise`, or `inherit` under a `madvise` top level, Ubuntu's default), because the same advice would then make the regions eligible for 2 MiB pages at the fault and through khugepaged; the host requirement is `hugepages-64kB/enabled=madvise` (or `always`) with `hugepages-2048kB/enabled=never` (or `always`, the host's own decision), root-only knobs. `thp:always`: with the PMD size enabled and no larger than 2 MiB (`thp::LG_PMD_CHUNK_MAX`: the PMD is `page * page / 8`, 2 MiB at 4 KiB pages, 32 MiB at 16 KiB, 512 MiB at 64 KiB, and a chunk of the larger sizes committed and advised per class would be the RSS floor of the process: the 64 KiB matrix cell showed 1.7 GiB of advised chunks for an 8 MiB test heap and the kernel gave none of them a folio, `THPeligible 0`), class regions are committed and advised in PMD-sized chunks so the first touch maps a 2 MiB page (guard slabs inside a chunk stay unused but unguarded: a marker there splits the page), huge runs of a PMD or more are advised (section 7), and the metadata takes the sub-PMD folio if one is enabled; a purge of a slab inside a 2 MiB page splits it, the kernel's cost of the mode. On a PMD over 2 MiB `always` is the folio path over the enabled sizes below the PMD (2 MiB slabs and up when `hugepages-2048kB` is enabled at 64 KiB pages) and inert, reason `PmdTooLarge`, when none is. Measured in `bench/results/2026-09-19-lane-b-mthp.md`: `auto` takes a quarter of larson1's dTLB refills on the C4A (4.0 -> 3.05 per operation, jemalloc 1.75) and puts valkey1's below jemalloc's (2.81 -> 2.44), leaves the Valkey-shaped rows flat, makes `fork()` 18% cheaper on a 500 MiB heap and the copy-on-write burst unchanged, and costs larson 1.6% with 7..19% more RSS on 16..100 MiB heaps (a folio per touched slab and table), which is why it is the documented opt-in and not the default; `always` is +10..15% on valkey1 at +10% RSS on 585 MiB and 2..4x on small heaps | small pages; `thp=none mthp=none` on a kernel without THP |
 | PAC (`HWCAP_PACA` and `HWCAP_PACG`) | arm64 CPU (Armv8.3) and kernel | signed cache entries and TLS heap pointer (`pacda`/`autda`, sections 6.1 and 6.2) behind `pac_pointers:true`, off by default on the cost (section 14); `pac=yes` on Axion and on an Apple M-series CPU under a Linux VM, `no` on Altra; FEAT_FPAC decides whether a failure faults at the `autda` or on first use | plain pointers, the same binary, one predicted branch on a byte the fast paths load anyway |
-| rseq time slice extension (`slice_ctrl`, `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE`) | kernel 7.0 with `CONFIG_RSEQ_SLICE_EXTENSION` (default N; needs `GENERIC_ENTRY` and `HAVE_GENERIC_TIF_BITS`, which x86_64 has and arm64 does not, through master) and glibc registering the v2 size (`__rseq_size >= 32`: 2.44 registers 33); Ubuntu's `7.0.0-1011-gcp` leaves the option off, so the GCE reference VMs read `kernel-disabled` and the numbers come from a 7.0.14 built with it (`bench/results/2026-09-19-x86_64-lane-c-task15-slice-ext.md`) | every lock holder's request to defer a preemption until the release (`slice.rs`, the subsection below; `slice_ext:auto`), the `prctl` enable per thread on its first hold, `rseq_slice_yield` (or `sched_yield` where seccomp hides the new syscall) after a granted release; the feature line's `slice_ext=` key (`sys::features::SliceExt`, read through `slice::probe` and `slice::verdict`, plan task 15) says `on` when lock holders request it and otherwise the kernel's answer (`available` under `slice_ext:off`, `kernel-disabled`, `no-slice_ctrl`, `no-rseq`, `prctl-failed`) | the lock without the request: one relaxed load per hold; `Slice extension: off (<why>)` in the report and the same word after `slice_ext=` in the feature line |
 | Model-checked protocol (`cargo test model::`, `src/model/`) | the unit test suite, no special hardware: an exhaustive interleaving model of the claim, release, `on_live_zero` and purge steps of `class/`, memoised on the whole state, with the invariants of section 4 and 5 checked at every state (no slot handed to two claimers, a slot reported zero reads zero, `live` equals set bits plus in-flight reservations, a slab in an arena's set is `Empty`/`Purged` with `live == 0` and owned by that arena, a `Purged` slab reads zero) | nothing at run time: it is the proof obligation for a change to the protocol. Replaying the pre-fix step order finds the calloc race (Phase 1.5 task 7); the current order passes every scenario. | none needed |
 
 The kernel keys of the feature report are `page_size guard_install mseal
-process_madvise process_madvise_free anon_name thp mthp rseq rseq_size
-slice_ext`
-(`rseq` and `rseq_size` since plan
-Phase 2.5 task 8, lane B: the glibc registration is probed like a kernel
-feature and printed with them; `slice_ext` since task 15: the kernel's
-answer for the time slice extension, `kernel-disabled` on the 7.0 GCE
-kernels, `on` where the module is in force);
+process_madvise process_madvise_free anon_name thp mthp rseq rseq_size`
+(`rseq` and `rseq_size`: the glibc registration is probed like a kernel
+feature and printed with them);
 `pac` follows them, the one CPU key (`HWCAP_PACA` and `HWCAP_PACG`; the
 container test checks it against `/proc/cpuinfo`'s `paca` and `pacg`).
 The reference hosts' lines are recorded in `bench/results/2026-09-19-feature-report.md`; the
@@ -2044,83 +2038,11 @@ matrix of plan tasks 3 and 4 adds one line per kernel and CPU.
 
 ### Time slice extension
 
-Kernel 7.0's rseq time slice extension (`CONFIG_RSEQ_SLICE_EXTENSION`,
-`Documentation/userspace-api/rseq.rst`) lets a thread ask the scheduler
-to defer a preemption that would land inside a short critical section:
-`struct rseq` gained `slice_ctrl` at byte 28 (`request` u8 at 28,
-`granted` u8 at 29), the kernel advertises the feature per registered area
-with `RSEQ_CS_FLAG_SLICE_EXT_AVAILABLE` (bit 4 of the area's `flags`,
-byte 16) once the area is registered with the v2 size (`__rseq_size >=
-32`; glibc 2.44 registers 33), and `prctl(PR_RSEQ_SLICE_EXTENSION = 79,
-SET = 2, ENABLE = 1)` turns it on for the calling thread, confirmed by
-`RSEQ_CS_FLAG_SLICE_EXT_ENABLED` (bit 5). A thread that stores `request =
-1` and is hit by a tick that wants to reschedule it is granted up to 5 us
-more (50 at most, `debugfs rseq/slice_ext_nsec`): the kernel clears
-`request`, sets `granted`, arms a timer and returns to user space; the
-thread finishes its section, clears `request`, and if `granted` reads 1
-calls `rseq_slice_yield` (471 on both architectures, the unified table),
-which hands the CPU back at once. Any other syscall inside a grant also
-ends it (the kernel revokes and zeroes both bytes at syscall entry); a
-grant nobody yields expires with the timer. User space may write nothing
-but `request`; the kernel's debug mode kills a process whose `slice_ctrl`
-disagrees with its own state at a syscall entry.
-
-challoc's use (`slice.rs`, plan Phase 2.5 task 15): every `lock::RawLock`
-hold, that is the class, table, huge, metadata, statistics and background
-locks, none of which is on the `malloc`/`free` fast path. `RawLock::lock`
-and `try_lock` call `slice::acquired` after the CAS (the request is made
-once held, never while waiting: a waiter that spins while the holder is
-extended is what the extension exists for), `RawLock::unlock` calls
-`slice::releasing` before the release swap and `slice::released` after
-it. Per hold, when on: one load of the thread's `flags` (the same cache
-line as `slice_ctrl`), one byte store of `request = 1`, one byte store of
-`0`, one byte load of `granted`; when off (the key, or a failed probe):
-one relaxed load of a process-wide byte. The enable is per task, not per
-process: `rseq_fork` resets a `CLONE_VM` child's rseq state and glibc
-registers the new thread's area without the enable, while a plain `fork`
-child inherits the forking thread's state (confirmed by
-`tests/c/slice_ext.c` through `prctl(GET)` on 32 new threads and a fork
-child). So init enables the init thread from `config::load`
-(`Config::apply_slice_ext`) and every other thread is enabled on its first
-lock hold, when `flags` shows bit 4 without bit 5: one `prctl` per thread
-lifetime, and a `prctl` that fails switches the process off rather than
-retry a syscall per hold. Nested holds (the fork handlers, heap creation
-under the cache-table lock) request per lock; the inner release withdraws
-the request and the outer hold goes on unextended, which costs nothing
-but the extension. A `FUTEX_WAKE` issued by the release ends a grant
-itself, so the yield after it reads `granted == 0` and does nothing. Where
-a seccomp filter returns `ENOSYS` for the new syscall (Docker's default
-profile does, for every syscall past its table, while letting the `prctl`
-through) the grant is ended with `sched_yield` instead and the report
-says so; the probe calls the dedicated syscall once at init to find out.
-
-The probe (`slice::probe`): `rseq::probe` for the symbols and the size,
-then bit 4 of this thread's `flags`, then the `prctl` and bit 5, then the
-syscall; each failure is a word in `Slice extension: off (<word>)`:
-`no-rseq`, `no-slice_ctrl` (6.18 and earlier), `kernel-disabled` (the
-option compiled out or `rseq_slice_ext=0`; Ubuntu's `7.0.0-1011-gcp` on
-the GCE reference VMs, whose config has no `CONFIG_RSEQ_SLICE_EXTENSION`
-line), `prctl-failed`. The feature line carries the same word after
-`slice_ext=` (`sys::features::SliceExt`, plan task 15, lane B): `Features::
-probe` reads `slice::probe().verdict()` before the configuration is read,
-which gives the kernel's answer (`available` when it has the option), and
-init folds `slice::verdict()` in after `config::load` has run `configure`,
-so the line says `on` exactly when lock holders request the extension,
-`available` when the key turned it off on a kernel that has it, and the
-probe's own word otherwise; `tests/c/features.c` checks the word against
-`rseq_size` and against the `Slice extension:` line of the same report,
-and `sys::features::linux_tests` against `slice::probe` on the running
-kernel. On aarch64 the probe fails on every kernel to
-date: the option depends on `GENERIC_ENTRY` and `HAVE_GENERIC_TIF_BITS`,
-which arm64 selects neither of through 7.2 and master, so the aarch64 rows
-measure the fallback's one load. The `on` way was measured on the lane's
-C4 under a 7.0.14 kernel built with the option
-(`bench/results/2026-09-19-x86_64-lane-c-task15-slice-ext.md`): what a
-grant costs, how many holds are granted on the contended rows (the count
-of holder preemptions the kernel deferred, `Slice extension: on (N
-threads enabled, M grants yielded via ...)`), and the `quick` and `ab`
-verdicts that decide the default; the aarch64 fallback rows are in the
-`-aarch64-` file next to it.
+Not implemented. The rseq time slice extension (kernel 7.0,
+`CONFIG_RSEQ_SLICE_EXTENSION`) was prototyped for lock holders and
+measured on Chainguard OS 7.2 amd64, the one reference kernel that has it:
+no row moved beyond the 2% margin, so it was removed. See issue #17 and the
+tag `archive/prototype-2026-09-30`.
 
 ## 18. Tagged pointers
 
@@ -2474,7 +2396,7 @@ What part 2 waits for, cheapest path first:
 
 ```
 src/lib.rs            crate root, quantum feature selection, panic handler
-src/sys/mod.rs        the kernel constants; typed syscall wrappers (mmap, mprotect, madvise, process_madvise, mseal, prctl, getrandom, futex, clock_gettime, open/read/close, write, ppoll, eventfd, signals, sched_yield, rseq_slice_yield); read_small_file, parse_decimal, yn
+src/sys/mod.rs        the kernel constants; typed syscall wrappers (mmap, mprotect, madvise, process_madvise, mseal, prctl, getrandom, futex, clock_gettime, open/read/close, write, ppoll, eventfd, signals); read_small_file, parse_decimal, yn
 src/sys/abort.rs      abort (`challoc: <msg>` on stderr, SIGABRT the way glibc delivers it), the stderr sink, the `abort!` macro
 src/sys/auxv.rs       getauxval and the AT_* keys (AT_PAGESZ, AT_HWCAP, AT_SECURE)
 src/sys/raw.rs        the asm syscall instructions (x86_64, aarch64)
@@ -2485,8 +2407,7 @@ src/sys/thp_host.rs   the THP sysfs table (enabled, hpage_pmd_size, hugepages-<n
 src/sys/cgroup.rs     cgroup2 discovery, limit walk, sampling (memory.current, every memory.events counter), PSI trigger arming
 src/sys/pac.rs        pointer authentication of the TLS heap pointer (arm64 FEAT_PAuth)
 src/sys/tls.rs        initial-exec TLS accessor
-src/rseq.rs           glibc's rseq registration: the probe (__rseq_offset/size/flags, the area's cpu_id) the slice extension and the feature line's rseq= words read
-src/slice.rs          the rseq time-slice extension for lock holders (`slice_ext`)
+src/rseq.rs           glibc's rseq registration: the probe (__rseq_offset/size/flags, the area's cpu_id) the feature line's rseq= words read
 src/lock.rs           futex lock, padded lock
 src/layout/mod.rs     size classes (Class, CLASSES, class_of), address-space parameters
 src/layout/regions.rs Regions: the reservations, pointer classification (slab_slot, slot_in_class), seal and release
