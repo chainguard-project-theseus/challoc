@@ -192,6 +192,12 @@ echo "cb-boot: $RT $(tail -1 /var/log/cb-runtime.log)"
 if [ "$RT" = docker ]; then
   iptables -I DOCKER-USER -d 169.254.169.254/32 -j REJECT \
     || finish infra 3 "cannot block the metadata server from containers (iptables DOCKER-USER)"
+  # The same address is the VPC's DNS resolver: containers keep port 53
+  # (the soak drivers clone and fetch), only the metadata API is refused.
+  for p in udp tcp; do
+    iptables -I DOCKER-USER -d 169.254.169.254/32 -p $p --dport 53 -j ACCEPT \
+      || finish infra 3 "cannot allow DNS from containers (iptables DOCKER-USER)"
+  done
 fi
 stamp runtime
 
