@@ -391,6 +391,7 @@ def execute(args) -> int:
         "variants": [v.to_json() for v in variants],
         "notes": notes,
         "cb_commit": head_commit,
+        "launch_variants": [v["label"] for v in launch["variants"]] if launch else None,
         "refs": refs,
         "argv": sys.argv,
         "values": values,

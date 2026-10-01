@@ -238,7 +238,16 @@ def analyze(runs: list[dict[str, Any]], rows: Rows, *, cand: str | None = None, 
     keys = sorted({s["comparability"] for s in samples})
     manifest = runs[0]["manifest"] if runs else {}
     plan = runs[0]["plan"] if runs else {}
-    variants = manifest.get("variants") or plan.get("variants") or []
+    # Every run's variants (a one-variant-per-vm VM lists only its own), in
+    # the launch's order where the manifests carry it.
+    variants = []
+    for r in runs:
+        for v in r["manifest"].get("variants") or r["plan"].get("variants") or []:
+            if v.get("label") not in [x.get("label") for x in variants]:
+                variants.append(v)
+    order = next((r["manifest"]["launch_variants"] for r in runs if r["manifest"].get("launch_variants")), None)
+    if order:
+        variants.sort(key=lambda v: order.index(v["label"]) if v["label"] in order else len(order))
     labels = [v.get("label") for v in variants]
     controls = [v.get("label") for v in variants if v.get("role") == "control"]
     gate_labels = [lab for lab in labels if lab not in controls]

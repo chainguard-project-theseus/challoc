@@ -199,7 +199,10 @@ if [ -z "$IMG_ID" ]; then
       && $RT build "${NET[@]}" -q -f bench/Dockerfile.cb --build-arg DEV_IMAGE=cb-dev-test:local -t cb-bench:local . ) \
     > /var/log/cb-image-build.log 2>&1 || { tail -40 /var/log/cb-image-build.log; finish infra 3 "image build failed"; }
   IMG_ID=cb-bench:local
-  IMAGE="built:$($RT image inspect -f '{{.Id}}' cb-bench:local | cut -c1-19)"
+  # Image ids of local builds differ VM to VM; the harness tree they were
+  # built from does not, and it is what the comparability key needs.
+  HT=${HARNESS##*/}; HT=${HT%.tar.gz}
+  IMAGE="built@harness:${HT:0:12}"
 fi
 stamp image
 
