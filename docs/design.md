@@ -755,7 +755,14 @@ a deployment that wants the residue back on a small-cache part.
 `sdallocx(p, n, flags)`, `free_sized(p, n)`, `free_aligned_sized(p, a, n)`
 (the sized path; Phase 1.5 task 4e):
 1. If `p` is null return. `c_hint = class_for(n, align)` (`None` for a huge
-   size: slow path). The hint names the region, so the class is not
+   size: slow path). `sdallocx` with `flags == 0` (what Valkey passes on
+   every free) tests that first and takes `free_sized`'s path,
+   `c_hint = class_of(n)`, without decoding the flags (alignment shift,
+   tcache bits), as jemalloc's `sdallocx` does; any other flags take a
+   call (`sdallocx_flags`), so the compiler cannot merge the two inlined
+   sized paths behind a test of the hint, and a huge size leaves for the
+   slow path before the heap lookup. The hint names the
+   region, so the class is not
    derived from the pointer a second time: `rel = p - class_base[c_hint]`;
    if `rel` is not below the region length (which covers every other
    class's region, the gaps and the other reservations), or `rel`'s offset

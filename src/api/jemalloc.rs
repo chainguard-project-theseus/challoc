@@ -218,8 +218,24 @@ pub fn dallocx(p: *mut u8, flags: c_int) {
 /// path touches no per-slab metadata (design 6.3; the check lands at the
 /// cache flush). A mismatch aborts. With `MALLOCX_TCACHE_NONE` the release
 /// itself checks the bit at once.
+///
+/// `flags == 0` (every Valkey free) goes straight to `free_sized`'s path
+/// before any decoding: no alignment shift, no tcache-bits test, and the
+/// hint is the plain `class_of(size)` (design 6.3). Other flags take
+/// [`sdallocx_flags`], a call, so that the compiler cannot merge the two
+/// sized fast paths behind a test of the hint.
 #[inline(always)]
 pub fn sdallocx(p: *mut u8, size: usize, flags: c_int) {
+    if flags == 0 {
+        return super::libc::free_sized(p, size);
+    }
+    sdallocx_flags(p, size, flags)
+}
+
+/// `sdallocx` with non-zero flags: the decoded alignment's class as the
+/// hint through the default cache, or an explicit cache or none.
+#[inline(never)]
+fn sdallocx_flags(p: *mut u8, size: usize, flags: c_int) {
     let f = Flags::decode(flags as u32);
     match f.tcache {
         Tcache::Default => super::libc::free_sized_hint(p, size, class_for(size, f.align())),

@@ -187,17 +187,30 @@ pub fn free(p: *mut u8) {
 /// flushes it, not at the call; a hint that does not match aborts.
 #[inline(always)]
 pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>) {
+    // A huge size (no hint) has no fast path: straight to the slow one,
+    // so the fast path carries a plain class and no test of the hint.
+    let Some(c) = hint else { return free_sized_unhinted(p, size) };
     if p.is_null() {
         return;
     }
     if let Some(h) = heap::existing_heap(super::shared_ptr()) {
         // SAFETY: as in `free`.
         let shared = unsafe { super::shared_unchecked() };
-        if heap::free_sized_fast(shared, h, p, hint, shared.push_flags()) {
+        if heap::free_sized_fast(shared, h, p, Some(c), shared.push_flags()) {
             return;
         }
     }
     free_sized_slow(p, size, hint)
+}
+
+/// The sized free of a size no class holds (a huge run, or nothing): the
+/// exact `free` behind the null test.
+#[cold]
+#[inline(never)]
+fn free_sized_unhinted(p: *mut u8, size: usize) {
+    if !p.is_null() {
+        free_sized_slow(p, size, None)
+    }
 }
 
 /// Off the sized fast path: the hint mismatch abort, then everything the
