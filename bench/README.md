@@ -5,7 +5,7 @@ runs inside the dev container on the native architecture; emulated x86_64 is
 never used for numbers.
 
     make bench-build      fetch and build the benchmark programs (once per target volume)
-    make quick [OLD=rev]  fast tier: ~2.5 min go/no-go for the working tree vs OLD
+    make quick-legacy [OLD=rev]  old fast tier: ~2.5 min, the working tree vs OLD (`make quick` is now cb launch quick)
                           (PERF=1 adds per-op counters where perf exists)
     make ab VARIANTS=...  protocol tier A/B: the table results files are made of
     make baseline         cache jemalloc/glibc/mimalloc/tcmalloc protocol rows for this machine
@@ -83,8 +83,67 @@ Where counters exist the report adds the instructions/op delta and flags
 
 Local results are `indicative`: their comparability key names the host,
 so they are never pooled with a GCE cell, and a laptop's numbers are for
-the plumbing, not for a decision. The GCE fan-out (`cb launch`, spot VMs
-per replica) is milestone M1b.
+the plumbing, not for a decision. Verdicts of record come from `cb launch`.
+
+### cb launch: the GCE fan-out
+
+    make quick [BASE=main] [HEAD=HEAD] [CB_ARGS=...]     # cb launch quick on the gate cells
+    make bench-launch SUITE=aa BASE=<rev> CB_ARGS='--replicas 8 --looks 1'
+    make bench-image                                      # rebuild + push the bench image, pin bench/image.lock
+    make bench-gc [CB_ARGS='--older-than 0']              # delete stray cb- VMs
+    python3 bench/cb launch quick --cells ref-amd64 --variants 'old=git:REV1@CONF,new=git:REV2@CONF'
+    python3 bench/cb fp target/results/cb/<aa-run>/res/* --k 3   # FP rate of a 3-replicate run
+
+`cb launch SUITE` runs on the host (Python 3.11+ and an authenticated
+`gcloud`; the project, bucket and VM service account are in
+`bench/cells/public.toml` `[defaults]`). It packs the suite's rows into
+shards of about `shard_seconds` of runs (from each row's `est_s`), creates
+one spot VM per (cell, shard, replicate) with `gcloud compute instances
+bulk create` (`--max-run-duration` with DELETE, labels
+`purpose=challoc-bench,cb-run=<run>`, at most `--max-vms`/`CB_MAX_VMS`
+(32) alive at once; the rest wait for a slot), and polls. The quick suite
+on the two gate cells is 5 shards x 3 replicates x 2 cells = 30 VMs.
+
+- **Bundle.** Each variant rev is resolved to (commit, tree) on the host;
+  `git archive` of every tree, and of this checkout as it is on disk
+  (the harness: uncommitted and untracked files included), goes to
+  `gs://<bucket>/src/<tree>.tar.gz` once (content-addressed), and the table
+  of VMs to `runs/<run>/launch.json`.
+- **The VM** (`bench/cb/boot.sh`, the startup script, on stock
+  `ubuntu-2404-lts-{arm64,amd64}`) reads its entry of `launch.json` by its
+  own name, stops the apt timers and snapd, installs `docker.io` while it
+  fetches the sources, pulls the bench image by digest
+  (`bench/image.lock`; it builds `Dockerfile.dev`'s test stage and
+  `bench/Dockerfile.cb` itself when the pull fails), runs `cb run --launch
+  launch.json --vm <name>` in it (container profile `perfmon`:
+  `CAP_PERFMON`, so the per-run counters work, and the cells request the
+  PMU), PUTs the result files to `runs/<run>/res/<vm>/` whenever a block
+  ends, then `done.json` and the marker `runs/<run>/done/<vm>.json`, and
+  powers off. The launcher deletes a VM as soon as its marker lands.
+- **Failures.** A VM that vanishes (spot preemption deletes it) or stops
+  without a marker is rescheduled under a new name, on demand after two
+  spot failures; a create that fails in one zone tries the cell's next.
+- **Verdict.** The launcher downloads every VM's results to
+  `target/results/cb/<run>/res/<vm>/`, pools them (one VM is one host in
+  the statistics; comparability keys keep cells apart) and, when the
+  headline is INCONCLUSIVE and the suite has two looks, adds
+  `extend_replicas` VMs per cell for the inconclusive rows only and pools
+  again. `summary.json`, `report.md` and `launch-summary.json` (wall clock
+  by phase, VM-side medians, VM-minutes and a cost estimate) land in
+  `target/results/cb/<run>/`. Exit codes as `cb run`; 3 when nothing came
+  back or gcloud failed. Anything still labelled with the run is deleted
+  before `cb launch` exits; `cb gc` deletes the strays of a launcher that
+  died.
+- **Credentials.** The VMs run as a service account that can read and
+  write objects in the bench bucket and pull from the bench Artifact
+  Registry repository, nothing else (the design's per-object signed URLs
+  are not used yet). The bucket deletes objects after 30 days.
+- **The image.** `bench/Dockerfile.cb` is Dockerfile.dev's `test` stage
+  plus jemalloc, tcmalloc-minimal, the prebuilt `bench/build.sh` programs
+  (`/opt/cb/bench-bin`) and the crate's dependencies; `bench/cb/image.sh`
+  builds it per architecture, pushes it and rewrites `bench/image.lock`.
+  Rebuild it when `bench/build.sh`, the stock allocators or Dockerfile.dev
+  change; the digest is in every sample's comparability key.
 
 ## Two tiers
 
@@ -93,7 +152,7 @@ worth measuring properly?" long before it needs a number that can go into a
 results file. The harness therefore has two tiers, and the rule is: always
 the fast tier first, the protocol tier only for a variant that passed it.
 
-**Fast tier: `bench/quick.sh`, `make quick`, `challoc-bench quick <vm>`.**
+**Fast tier: `bench/quick.sh`, `make quick-legacy`, `challoc-bench quick <vm>`.**
 About two minutes on a reference VM. It builds the working tree into
 `target/quick/new` and `OLD` (default `HEAD`, so an uncommitted change is
 measured against its own base; any git rev works, `OLD=HEAD~1` for a

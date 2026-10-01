@@ -18,10 +18,25 @@ from typing import Any
 BENCH_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT_DIR = os.path.dirname(BENCH_DIR)
 
-# Names that must never appear in a public cell file or in cb's code: the
-# Chainguard OS images live in an internal overlay (bench/cells/internal-*.toml,
-# deleted before publication).
-INTERNAL_MARKERS = ("wolfi-vm", "kirkland", "chainguard-server")
+# Public cell files may only name images from these projects; anything
+# else (a private image project) belongs in an internal overlay,
+# bench/cells/internal-*.toml, which is deleted before publication. An
+# overlay may list `[lint] markers = [...]`: strings that must then appear
+# in no public file (cell files, cb's code, rows, suites). The markers live
+# only in the overlay, so the public tree never names them.
+PUBLIC_IMAGE_PROJECTS = (
+    "ubuntu-os-cloud",
+    "debian-cloud",
+    "almalinux-cloud",
+    "rocky-linux-cloud",
+    "centos-cloud",
+    "rhel-cloud",
+    "cos-cloud",
+    "fedora-coreos-cloud",
+    "fedora-cloud",
+    "suse-cloud",
+    "opensuse-cloud",
+)
 
 PARSERS = ("larson", "xmalloc", "valkey_model.write", "churn.occ", "wall")
 CLASSES_DEFAULT = {
@@ -391,19 +406,29 @@ def select_cells(selector: str | list[str], cells: dict[str, Cell]) -> list[str]
 
 
 def lint_public(paths: list[str] | None = None) -> list[str]:
-    """Internal names in any file that is not an internal overlay: the
-    public cell files and bench/cb itself. Returns the offending lines."""
+    """Problems in the public tree: a public cell whose host image project
+    is not a public one, and any internal overlay marker in a public file
+    (cell files, bench/cb itself, rows, suites). Returns the offending
+    lines."""
     problems = []
     cells_dir = os.path.join(BENCH_DIR, "cells")
-    files = [p for p in glob.glob(os.path.join(cells_dir, "*.toml")) if not os.path.basename(p).startswith("internal")]
-    files += glob.glob(os.path.join(BENCH_DIR, "cb", "*.py"))
+    overlays = [p for p in glob.glob(os.path.join(cells_dir, "*.toml")) if os.path.basename(p).startswith("internal")]
+    public_cells = [p for p in glob.glob(os.path.join(cells_dir, "*.toml")) if p not in overlays]
+    markers: list[str] = []
+    for p in overlays:
+        markers += [str(m).lower() for m in _load_toml(p).get("lint", {}).get("markers", [])]
+    for p in public_cells:
+        doc = _load_toml(p)
+        for name, c in doc.get("cell", {}).items():
+            host = c.get("host")
+            if isinstance(host, dict) and host.get("project") and host["project"] not in PUBLIC_IMAGE_PROJECTS:
+                problems.append(f"{os.path.relpath(p, ROOT_DIR)}: cell {name}: image project {host['project']!r} is not public (move the cell to an internal overlay)")
+    files = public_cells + glob.glob(os.path.join(BENCH_DIR, "cb", "*.py")) + glob.glob(os.path.join(BENCH_DIR, "cb", "*.sh"))
     files += [os.path.join(BENCH_DIR, "rows.toml")] + glob.glob(os.path.join(BENCH_DIR, "suites", "*.toml"))
     for f in paths or files:
         with open(f, encoding="utf-8") as fh:
             for i, line in enumerate(fh, 1):
-                if "INTERNAL_MARKERS" in line:
-                    continue
-                for m in INTERNAL_MARKERS:
-                    if m in line.lower():
-                        problems.append(f"{os.path.relpath(f, ROOT_DIR)}:{i}: {m}")
+                for m in markers:
+                    if m and m in line.lower():
+                        problems.append(f"{os.path.relpath(f, ROOT_DIR)}:{i}: internal marker")
     return problems

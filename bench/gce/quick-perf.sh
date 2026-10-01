@@ -2,7 +2,7 @@
 # quick-perf.sh: the PERF=1 half of bench/quick.sh for the GCE VMs, where
 # perf lives on the host and the rows run in the dev container. Run on the
 # VM from ~/challoc (bench/gce/challoc-bench quick-perf <vm> does this after
-# `make quick QUICK_BUILD_ONLY=1`, which leaves the old and new libraries in
+# `make quick-legacy QUICK_BUILD_ONLY=1`, which leaves the old and new libraries in
 # target/quick/{old,new}/release/):
 #
 #   bash bench/gce/quick-perf.sh arm64|amd64 [ROWS="larson1 valkey1"] [VARIANTS="old new jemalloc"]
@@ -74,7 +74,7 @@ label_of() { local n=${1%%:*}; n=${n%%@*}; case $1 in *:*) echo "$n:${1#*:}";; *
 in_lib "ensure_probe valkey_model; ensure_probe churn" >/dev/null
 conf_of() { case $1 in *:*) echo "${1#*:}";; esac; }
 for v in $VARIANTS; do
-  case ${v%%:*} in old|new|*@*) in_lib "test -f $(lib_of "$v")" || { echo "quick-perf: no $(lib_of "$v") in the target volume; run 'make quick QUICK_BUILD_ONLY=1' (or the make ab that builds it) first" >&2; exit 1; };; esac
+  case ${v%%:*} in old|new|*@*) in_lib "test -f $(lib_of "$v")" || { echo "quick-perf: no $(lib_of "$v") in the target volume; run 'make quick-legacy QUICK_BUILD_ONLY=1' (or the make ab that builds it) first" >&2; exit 1; };; esac
 done
 
 echo "== quick-perf on $(hostname) ($(uname -m)), load $(cut -d' ' -f1-3 /proc/loadavg), events $EVENTS, rows: $ROWS, variants: $VARIANTS"

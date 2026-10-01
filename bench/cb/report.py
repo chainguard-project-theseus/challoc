@@ -435,3 +435,44 @@ def simulate_runs(dirs: list[str], rows: Rows, *, k: int, draws: int, seed: int 
         "headline_fp_rate": (heads["REGRESSION"] + heads["IMPROVEMENT"]) / total if total else None,
         "row_fp_rate": sum(c["worse"] + c["better"] for c in counts.values()) / max(1, sum(sum(c.values()) for c in counts.values())),
     }
+
+
+def variance_components(dirs: list[str], cand: str | None = None, ref: str | None = None) -> dict[str, Any]:
+    """Per (cell, row) of an A/A (or any paired) launch: the within-VM
+    spread of the per-block contrast (sigma_w, percent) and the spread of
+    the VM means beyond it (sigma_vm: the VM x variant interaction), and
+    the CI half-width they predict for R VMs of B blocks,
+    2 * sqrt(sigma_vm^2 / R + sigma_w^2 / (R * B)), which is what `replicas`
+    and `blocks` trade."""
+    loaded = [load_dir(d) for d in dirs]
+    samples = [s for r in loaded for s in r["samples"] if not s.get("warmup") and s.get("score") is not None]
+    labels = []
+    for r in loaded:
+        for v in r["manifest"].get("variants", []):
+            if v.get("role") != "control" and v["label"] not in labels:
+                labels.append(v["label"])
+    ref = ref or labels[0]
+    cand = cand or labels[1]
+    cells: dict[tuple[str, str], dict[str, dict[int, dict[str, list[float]]]]] = collections.defaultdict(
+        lambda: collections.defaultdict(lambda: collections.defaultdict(lambda: collections.defaultdict(list)))
+    )
+    for s in samples:
+        if s["variant"] in (cand, ref):
+            cells[(s["cell"], s["row"])][_vm_key(s)][s["block"]][s["variant"]].append(stats.orient(s["score"], s["better"] == "higher"))
+    out = {}
+    for (cell, row), vms in sorted(cells.items()):
+        means, within, nb = [], [], []
+        for blocks in vms.values():
+            ds = [statistics.fmean(b[cand]) - statistics.fmean(b[ref]) for b in blocks.values() if b.get(cand) and b.get(ref)]
+            if len(ds) >= 2:
+                means.append(statistics.fmean(ds))
+                within.append(statistics.variance(ds))
+                nb.append(len(ds))
+        if len(means) < 3:
+            continue
+        sw2 = statistics.fmean(within)
+        b = statistics.fmean(nb)
+        svm2 = max(0.0, statistics.variance(means) - sw2 / b)
+        pred = {f"{R}x{B}": round(200 * math.sqrt(svm2 / R + sw2 / (R * B)), 2) for R in (3, 4, 6, 8) for B in (3, 5)}
+        out[f"{cell}/{row}"] = {"n_vm": len(means), "sigma_w_pct": round(100 * math.sqrt(sw2), 3), "sigma_vm_pct": round(100 * math.sqrt(svm2), 3), "halfwidth_pct": pred}
+    return out

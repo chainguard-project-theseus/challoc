@@ -154,6 +154,14 @@ def _dispatch(a: argparse.Namespace) -> int:
             v = r["verdicts"]
             print(f"| {key} | {v.get('same', 0)} | {v.get('sub-threshold', 0)} | {v.get('inconclusive', 0)} | {v.get('worse', 0)} | {v.get('better', 0)} | {r['fp_rate']:.1%} | {r['q99_abs_est_pct']:.2f}% |")
         print(f"headlines: {s['headline']}; headline FP rate {s['headline_fp_rate']:.1%}; per-row FP rate {s['row_fp_rate']:.2%}")
+        vc = report.variance_components(a.dirs)
+        grid = list(next(iter(vc.values()))["halfwidth_pct"]) if vc else []
+        print()
+        print("variance components (percent; predicted 95% CI half-width for VMs x blocks):")
+        print("| cell/row | VMs | sigma_w | sigma_vm | " + " | ".join(grid) + " |")
+        print("|---|---:|---:|---:|" + "---:|" * len(grid))
+        for key, r in vc.items():
+            print(f"| {key} | {r['n_vm']} | {r['sigma_w_pct']} | {r['sigma_vm_pct']} | " + " | ".join(str(r["halfwidth_pct"][g]) for g in grid) + " |")
         return 0
     if a.cmd == "plan":
         rows = load_rows()
