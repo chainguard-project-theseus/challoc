@@ -780,14 +780,14 @@ fn zeroed_prefix_tracks_fresh_memory() {
     // same, by then Active, slab.
     let c = class_with(16);
     // First refill comes from a Fresh slab: the whole batch is zero.
-    // Pops do not shrink the prefix (the popped index is above `len`).
+    // A pop of a zero entry shrinks the prefix to `len`.
     let (p1, z1) = t.alloc_zeroed(c);
     assert!(z1);
     assert_eq!(t.len(c), HALF - 1);
-    assert_eq!(t.cache(c).zeroed(), HALF);
+    assert_eq!(t.cache(c).zeroed(), HALF - 1);
     let (p2, z2) = t.alloc_zeroed(c);
     assert!(z2);
-    // A free pushes dirty memory on top: the prefix ends below it.
+    // A free pushes dirty memory on top, just above the prefix.
     // Popping it is not zero, the entry below it still is.
     t.free(p2);
     assert_eq!(t.cache(c).zeroed(), HALF - 2);
@@ -796,7 +796,7 @@ fn zeroed_prefix_tracks_fresh_memory() {
     assert!(!z3);
     let (_, z4) = t.alloc_zeroed(c);
     assert!(z4);
-    // Pushing below the prefix cuts it there.
+    // Pops lower the prefix with `len`, so a push lands just above it.
     for _ in 0..50 {
         t.alloc(c);
     }
@@ -810,6 +810,52 @@ fn zeroed_prefix_tracks_fresh_memory() {
     let (_, z5) = t.alloc_zeroed(c);
     assert!(!z5);
     assert_eq!(t.cache(c).zeroed(), 0);
+    t.destroy();
+}
+
+/// Through a random mix of pops, pushes, cache GCs and the flushes and
+/// refills they cause, the zero flag is never wrong (every slot handed
+/// out is written, so a dirty slot reported zero would show) and the zero
+/// prefix stays at or below `low_water`, which is what lets a push leave
+/// `zeroed` alone.
+#[test]
+fn zeroed_prefix_stays_below_low_water() {
+    let s = shared();
+    let t = TestHeap::new(s);
+    let c = class_with(64);
+    let mut live: Vec<*mut u8> = Vec::new();
+    let mut r = 0x2545_F491_4F6C_DD1Du64;
+    let mut zeros = 0;
+    for i in 0..20_000 {
+        let x = xorshift(&mut r);
+        if live.is_empty() || x % 5 < 3 {
+            let (p, z) = t.alloc_zeroed(c);
+            if z {
+                assert!((0..64).all(|k| unsafe { *p.add(k) } == 0), "op {i}: a dirty slot reported zero");
+                zeros += 1;
+            }
+            unsafe { core::ptr::write_bytes(p, 0xa5, 64) };
+            live.push(p);
+        } else {
+            let k = (x >> 8) as usize % live.len();
+            t.free(live.swap_remove(k));
+        }
+        if x % 97 == 0 {
+            t.gc();
+        }
+        let h = t.cache(c);
+        assert!(
+            h.zeroed() <= h.low_water() && h.low_water() <= h.len(),
+            "op {i}: zeroed {} low_water {} len {}",
+            h.zeroed(),
+            h.low_water(),
+            h.len()
+        );
+    }
+    assert!(zeros > 20, "fresh refills were exercised ({zeros} zero pops)");
+    for p in live {
+        t.free(p);
+    }
     t.destroy();
 }
 

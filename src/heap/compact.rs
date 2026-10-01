@@ -196,10 +196,12 @@ impl Heap {
             }
             // The run invariant `run_end <= low_water <= len` is what keeps
             // this pop from serving a stale pointer out of `slots[run_end -
-            // 1]`; a violation is a heap inconsistency and aborts in release.
+            // 1]`, and `zeroed <= low_water` what keeps the zero prefix
+            // inside the stack; a violation is a heap inconsistency and
+            // aborts in release.
             assert!(
-                (*cache).run_end <= (*cache).low_water && (*cache).low_water <= len,
-                "heap: cache run invariant violated (run_end > low_water or low_water > len)"
+                (*cache).run_end <= (*cache).low_water && (*cache).low_water <= len && (*cache).zeroed <= (*cache).low_water,
+                "heap: cache run invariant violated (run_end or zeroed > low_water, or low_water > len)"
             );
             let top = len - 1;
             let at = (*cache).run_end - 1;
@@ -215,9 +217,12 @@ impl Heap {
             if top < (*cache).low_water {
                 (*cache).low_water = top;
             }
-            let zero = at < (*cache).zeroed;
-            if zero && top >= (*cache).zeroed {
-                (*cache).zeroed = at;
+            // `at` now holds the old top entry: the prefix keeps `at` only
+            // when that entry was in it too, and never reaches past `top`.
+            let zeroed = (*cache).zeroed;
+            let zero = at < zeroed;
+            if zero {
+                (*cache).zeroed = if top < zeroed { top } else { at };
             }
             (p, zero)
         }

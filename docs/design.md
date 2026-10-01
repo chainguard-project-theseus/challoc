@@ -705,8 +705,10 @@ a deployment that wants the residue back on a small-cache part.
    2's `superblock`/`lg_stride` come from, zero by default on a CPU
    without pointer authentication, so the default push tests it once and
    branches past both; with `pac_pointers:true` on an arm64 host with PAC
-   the byte is `PUSH_PAC` alone, the second compare, and the push stores
-   `pacda p, slots` (6.2). With `double_free_scan`:
+   the byte is `PUSH_PAC` alone, which arm64 compares first, and the push
+   stores `pacda p, slots` (6.2). Off arm64 `PUSH_PAC` is never set and
+   its compare is compiled out, so the dispatch is the one test of the
+   byte against zero. With `double_free_scan`:
    compare `p` against the top 4 cache entries; a
    match is a double free whose first copy is still cached (the bit test
    cannot see it) and aborts before the push. The same compare guards the
@@ -817,7 +819,11 @@ with the exact check.
 `calloc` clears with `memset` unless the slots came fresh from the kernel,
 which is tracked as a per-cache zero prefix: `slots[..zeroed]` are known
 zero, set by a refill whose batch came from a `Fresh` or `Purged` slab,
-clipped by a push that lands below it and dropped by a flush.
+lowered with `len` by a pop that takes a zero entry and dropped by a
+flush. `zeroed <= low_water` holds throughout, so only a pop that
+lowers `low_water` can take a zero entry: the zero test and the shrink
+sit in that pop's cold branch, and the push, which stores at `len >=
+zeroed`, never touches `zeroed`.
 
 `malloc_usable_size(p)` (and `sallocx`, and the size read of `realloc` and
 `rallocx`): classify `p` as `free` step 1 does; for a slab slot test the bit
