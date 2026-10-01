@@ -35,7 +35,7 @@ use super::parse_decimal;
 /// anything longer is reported as untracked rather than truncated.
 pub const PATH_CAP: usize = 2048;
 /// Room after the directory for `/` plus the longest file name read here
-/// (`cpuset.cpus.effective`, 21 bytes) plus the NUL.
+/// (`memory.current`, 14 bytes) plus the NUL, rounded up.
 const FILE_ROOM: usize = 32;
 /// Buffer for one cgroup file. `memory.events` is a handful of lines;
 /// `/proc/self/cgroup` can carry a dozen v1 lines on a hybrid host and
@@ -170,46 +170,6 @@ pub fn parse_events(contents: &[u8]) -> Events {
         }
     }
     e
-}
-
-/// `cpu.max`: `$QUOTA $PERIOD` in microseconds, or `max $PERIOD`. Only
-/// the per-CPU mode (design 15) needs it; parsed because it is cheap.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub struct CpuMax {
-    /// Microseconds of CPU per period; [`UNLIMITED`] for `max`.
-    pub quota_us: u64,
-    pub period_us: u64,
-}
-
-pub fn parse_cpu_max(contents: &[u8]) -> Option<CpuMax> {
-    let mut it = trim(contents).split(|&b| b == b' ').filter(|f| !f.is_empty());
-    let quota = it.next()?;
-    let quota_us = if quota == b"max" { UNLIMITED } else { parse_u64_prefix(quota)? };
-    let period_us = parse_u64_prefix(it.next()?)?;
-    (period_us > 0).then_some(CpuMax { quota_us, period_us })
-}
-
-/// Number of CPUs in a `cpuset.cpus.effective` list (`0-3,8-11`, `0`,
-/// or empty for none). `None` when malformed.
-pub fn parse_cpuset_count(contents: &[u8]) -> Option<u32> {
-    let t = trim(contents);
-    if t.is_empty() {
-        return Some(0);
-    }
-    let mut n: u32 = 0;
-    for range in t.split(|&b| b == b',') {
-        let mut ends = range.splitn(2, |&b| b == b'-');
-        let lo = parse_u64_prefix(ends.next()?)?;
-        let hi = match ends.next() {
-            Some(h) => parse_u64_prefix(h)?,
-            None => lo,
-        };
-        if hi < lo {
-            return None;
-        }
-        n = n.checked_add(u32::try_from((hi - lo).checked_add(1)?).ok()?)?;
-    }
-    Some(n)
 }
 
 /// Walk from the leaf directory `dir` up to the cgroup2 mount (the first
@@ -350,11 +310,6 @@ pub struct Cgroup {
     events_oom_kill: AtomicU64,
     high_rises: AtomicU64,
     max_rises: AtomicU64,
-    /// `cpu.max` and `cpuset.cpus.effective` at init (design 15; 0 CPUs
-    /// and `UNLIMITED` quota when absent).
-    cpu_quota_us: u64,
-    cpu_period_us: u64,
-    cpus_effective: u32,
 }
 
 impl Cgroup {
@@ -380,9 +335,6 @@ impl Cgroup {
             events_oom_kill: AtomicU64::new(0),
             high_rises: AtomicU64::new(0),
             max_rises: AtomicU64::new(0),
-            cpu_quota_us: UNLIMITED,
-            cpu_period_us: 0,
-            cpus_effective: 0,
         }
     }
 
@@ -470,14 +422,6 @@ impl Cgroup {
         self.has_events
     }
 
-    pub fn cpu_max(&self) -> CpuMax {
-        CpuMax { quota_us: self.cpu_quota_us, period_us: self.cpu_period_us }
-    }
-
-    pub fn cpus_effective(&self) -> u32 {
-        self.cpus_effective
-    }
-
     /// Coarse time of the last `memory.current` sample (0 before the first).
     pub fn sampled_at(&self) -> u64 {
         self.sampled_at.load(Ordering::Relaxed)
@@ -531,13 +475,6 @@ impl fmt::Display for Cgroup {
             hr,
             self.events().max,
             mr,
-        )?;
-        write!(
-            f,
-            " cpus {} cpu.max {}/{}",
-            self.cpus_effective,
-            Limit(self.cpu_quota_us),
-            self.cpu_period_us
         )
     }
 }
@@ -617,15 +554,6 @@ mod linux {
             cg.has_limit_files = read_in(dir, b"memory.max", &mut buf).is_some();
             cg.has_current = read_in(dir, b"memory.current", &mut buf).is_some();
             cg.has_events = read_in(dir, b"memory.events", &mut buf).is_some();
-            if let Some(n) = read_in(dir, b"cpu.max", &mut buf) {
-                if let Some(c) = parse_cpu_max(&buf[..n]) {
-                    cg.cpu_quota_us = c.quota_us;
-                    cg.cpu_period_us = c.period_us;
-                }
-            }
-            if let Some(n) = read_in(dir, b"cpuset.cpus.effective", &mut buf) {
-                cg.cpus_effective = parse_cpuset_count(&buf[..n]).unwrap_or(0);
-            }
             let now = sys::now_coarse_ns();
             cg.walk_limits(now);
             cg.sample_now(now);
@@ -781,24 +709,7 @@ mod tests {
         assert_eq!(cg.events(), Events { low: 8, high: 5, max: 2, oom: 2, oom_kill: 0 });
         assert_eq!(cg.rises(), (2, 2));
         let s = std::format!("{cg}");
-        assert!(s.contains(" events high 5 (+2) max 2 (+2) "), "{s}");
-    }
-
-    #[test]
-    fn cpu_files() {
-        assert_eq!(parse_cpu_max(b"max 100000\n"), Some(CpuMax { quota_us: UNLIMITED, period_us: 100_000 }));
-        assert_eq!(parse_cpu_max(b"200000 100000\n"), Some(CpuMax { quota_us: 200_000, period_us: 100_000 }));
-        assert_eq!(parse_cpu_max(b"max\n"), None);
-        assert_eq!(parse_cpu_max(b"1 0\n"), None);
-        assert_eq!(parse_cpuset_count(b"0-15\n"), Some(16));
-        assert_eq!(parse_cpuset_count(b"0-3,8-11\n"), Some(8));
-        assert_eq!(parse_cpuset_count(b"0\n"), Some(1));
-        assert_eq!(parse_cpuset_count(b"5,7\n"), Some(2));
-        assert_eq!(parse_cpuset_count(b"\n"), Some(0));
-        assert_eq!(parse_cpuset_count(b"3-1\n"), None);
-        assert_eq!(parse_cpuset_count(b"a\n"), None);
-        // A range as wide as u64 is not a CPU count: no overflow, no zero.
-        assert_eq!(parse_cpuset_count(b"0-18446744073709551615\n"), None);
+        assert!(s.ends_with(" events high 5 (+2) max 2 (+2)"), "{s}");
     }
 
     /// A captured tree: directory -> file -> contents. Absent = `None`.

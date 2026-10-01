@@ -1185,8 +1185,11 @@ Discovery, once at init (section 10 step 7):
   (`u64::MAX`). `memory.max.effective` does not exist in mainline kernels.
   The walk is repeated at most once per second, from the sampler, so a
   `docker update --memory` is seen.
-- `cpu.max` and `cpuset.cpus.effective` are parsed at init for the
-  `cgroup:` line's CPU figures; the allocator does not act on them.
+- `cpu.max` and `cpuset.cpus.effective`: removed, measured no effect; see
+  #21, #26 and tag `archive/prototype-2026-09-30`. Neither `narenas` =
+  quota nor 4 x quota passed (larson loses throughput under both), so
+  the arena count stays the affinity default and `narenas:N` is the
+  per-process override.
 
 All reads use raw `open`/`read`/`close` on fixed-size stack buffers through
 `src/sys`, never libc stdio, and nothing allocates.
@@ -1912,8 +1915,8 @@ Not implemented; see the archive tag `archive/prototype-2026-09-30`.
   shape: totals, per-arena, per-class table with `size nregs curslabs curregs`,
   and one `cgroup:` line (section 11): the directory, mount and path, the
   effective `limit` and `high` (`max` for unlimited), the last `current`
-  sample, the `memory.events` `high`/`max` counters with the number of
-  rises seen, and the CPU figures; or `cgroup: not tracked
+  sample, and the `memory.events` `high`/`max` counters with the number
+  of rises seen; or `cgroup: not tracked
   (<reason>)`; and one `cgroup policy:` line with the band as last
   evaluated, arena 0's effective `decay_ms`, the `retention_cap`, the
   `empty_bytes` held, the `full_purges` run and whether `thp` was forced
