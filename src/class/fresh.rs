@@ -7,7 +7,7 @@ use crate::meta::Meta;
 use vstd::prelude::*;
 
 #[cfg(verus_only)]
-use super::table::{lemma_spec_class, lemma_spec_nslabs};
+use super::table::{lemma_slab_marked_mono, lemma_spec_class, lemma_spec_nslabs, slab_marked};
 #[cfg(verus_only)]
 use super::{SlabTable, lemma_same_sets_inv};
 #[cfg(verus_only)]
@@ -153,11 +153,15 @@ impl ClassState {
             broadcast use lemma_same_sets_inv;
             if g.group_next >= g.group_end {
                 let ghost ga = *g;
-                let (start, end) = table.take_group(meta, self.arena, g, page)?;
+                // The fresh markers of the group's slabs join the ghost
+                // with them.
+                let tracked mut im = g.inited.borrow().duplicate();
+                let (start, end) = table.take_group(meta, self.arena, g, page, Tracked(&mut im))?;
                 let ghost g0 = *g;
                 proof {
                     assert(g0.same_sets(ga));
                     assert(ga.inv());
+                    g.inited.borrow_mut().combine(im);
                     assert forall|x: nat| #[trigger] g0.owns(x) implies x < start by {
                         assert(ga.owns(x));
                     }
@@ -173,6 +177,10 @@ impl ClassState {
                     assert forall|x: nat| #[trigger] g.owns(x) == (g0.owns(x) || start <= x < end) by {}
                     assert forall|x: nat| start <= x < end implies #[trigger] g.st(x) == State::Fresh by {}
                     assert forall|x: nat| #[trigger] g0.owns(x) implies g.st(x) == g0.st(x) && g.dirty@[x] == g0.dirty@[x] by {}
+                    assert forall|x: int| start <= x < end && !table.spec_is_guard(x as usize)
+                        implies #[trigger] slab_marked(g0.table@, x, g.inited@@) by {
+                        lemma_slab_marked_mono(g0.table@, x, im@, g.inited@@);
+                    }
                     lemma_fresh_group(g0, *g, start, end);
                 }
             }
@@ -279,6 +287,10 @@ proof fn lemma_fresh_group(g0: Inner, g1: Inner, start: usize, end: usize)
         g1.stats == g0.stats,
         g1.committed == g0.committed,
         g1.table == g0.table,
+        g1.inited@.id() == g0.inited@.id(),
+        g0.inited@@.subset_of(g1.inited@@),
+        forall|x: int| start <= x < end && !g0.table@.spec_is_guard(x as usize)
+            ==> #[trigger] slab_marked(g0.table@, x, g1.inited@@),
     ensures
         g1.inv(),
 {
@@ -287,6 +299,14 @@ proof fn lemma_fresh_group(g0: Inner, g1: Inner, start: usize, end: usize)
         assert(g1.owns(x));
         if !(start <= x < end) {
             assert(g0.owns(x));
+        }
+    }
+    assert forall|x: nat| #[trigger] g1.states@.contains_key(x) && !g1.table@.spec_is_guard(x as usize)
+        implies slab_marked(g1.table@, x as int, g1.inited@@) by {
+        assert(g1.owns(x));
+        if !(start <= x < end) {
+            assert(g0.owns(x));
+            lemma_slab_marked_mono(g0.table@, x as int, g0.inited@@, g1.inited@@);
         }
     }
     assert(g1.base());

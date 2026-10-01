@@ -31,11 +31,13 @@ use crate::vspec::word::word_addr;
 use vstd::invariant::{AtomicInvariant, InvariantPredicate};
 use vstd::raw_ptr::{PointsTo, ptr_mut_ref, ptr_ref};
 use vstd::resource::Loc;
-use vstd::resource::set::GhostSubset;
+use vstd::resource::set::{GhostPersistentSubset, GhostSubset};
 #[cfg(verus_only)]
 use vstd::std_specs::bits::{
     axiom_u64_leading_zeros, axiom_u64_trailing_zeros, u64_leading_zeros, u64_trailing_zeros,
 };
+#[cfg(verus_only)]
+use vstd::std_specs::iter::IteratorSpec;
 
 verus! {
 
@@ -109,7 +111,7 @@ pub proof fn lemma_bit_ops(x: u64, y: u64, b: u64)
 }
 
 /// `subset` bit by bit.
-proof fn lemma_subset_bits(x: u64, y: u64)
+pub proof fn lemma_subset_bits(x: u64, y: u64)
     ensures
         subset(x, y) <==> forall|b: u64| b < 64 ==> #[trigger] has_bit(x, b) ==> has_bit(y, b),
 {
@@ -438,6 +440,19 @@ proof fn lemma_count_le(x: u64, y: u64)
 // The word-level proofs work on bit numbers `slab * slab_bits + slot` of
 // the class bitmap; [`Slots::addr`] maps them to addresses, one to one on
 // slots ([`lemma_addr_inj`]).
+//
+// Padding bits (a slab's bits from `nslots` up) have no tokens, so the
+// tokens alone do not stop a claim from winning one. Two markers per bit,
+// from a second authority (`Slots::mloc`), record that its slab was
+// initialised ([`AtomicBitmap::init`], which sets the padding bits):
+// while it was not, the word invariant holds the bit's fresh marker
+// ([`fresh_mark`]) and the bit is clear; afterwards it holds the bit's
+// init marker ([`init_mark`]) and a padding bit is set. The init markers
+// start with the table (`SlabTable::new`), which hands a slab's to `init`
+// once, when the slab's group is handed out; `init` returns the fresh
+// markers, persistent, and a claim holds them for its slab, which rules the
+// fresh state out (a persistent marker is in no exclusive token), so the
+// padding bits it can see are set.
 
 /// Namespace of the bitmap word invariants.
 pub open spec fn word_ns() -> int {
@@ -445,13 +460,15 @@ pub open spec fn word_ns() -> int {
 }
 
 /// What one class bitmap's slot tokens are about: the authority, the
-/// bits per slab (`Class::slab_bits`), the slots per slab, the bits of the
-/// whole region (`nslabs * slab_bits`), and the slot geometry (the class
-/// region's base, the slab size and the slot size).
+/// markers' authority (see "Slot tokens" above), the bits per slab
+/// (`Class::slab_bits`), the slots per slab, the bits of the whole region
+/// (`nslabs * slab_bits`), and the slot geometry (the class region's base,
+/// the slab size and the slot size).
 // Ghost: ordinary builds keep the type but erase the code that reads it.
 #[allow(dead_code)]
 pub ghost struct Slots {
     pub loc: Loc,
+    pub mloc: Loc,
     pub sb: int,
     pub nslots: int,
     pub nbits: int,
@@ -593,20 +610,98 @@ pub open spec fn set_bits(s: Slots, j: int, x: u64) -> Set<int> {
     Set::<int>::range(64 * j, 64 * j + 64).filter(|b: int| has_bit(x, (b - 64 * j) as u64) && s.real(b))
 }
 
-/// A bitmap word's invariant: the word's permission, and the tokens of
-/// exactly the slots whose bits are clear.
+/// The marker of class bitmap bit `b` while its slab has not been
+/// initialised.
+pub open spec fn fresh_mark(b: int) -> int {
+    2 * b
+}
+
+/// The marker of class bitmap bit `b`'s initialisation.
+pub open spec fn init_mark(b: int) -> int {
+    2 * b + 1
+}
+
+/// The fresh markers of bits `lo..hi`.
+pub open spec fn fresh_marks(lo: int, hi: int) -> Set<int> {
+    Set::<int>::range(2 * lo, 2 * hi).filter(|m: int| m % 2 == 0)
+}
+
+/// The init markers of bits `lo..hi`.
+pub open spec fn init_marks(lo: int, hi: int) -> Set<int> {
+    Set::<int>::range(2 * lo, 2 * hi).filter(|m: int| m % 2 == 1)
+}
+
+/// Which markers the sets of bits hold.
+pub broadcast proof fn lemma_marks(lo: int, hi: int, b: int)
+    ensures
+        #![trigger fresh_marks(lo, hi).contains(fresh_mark(b))]
+        #![trigger fresh_marks(lo, hi).contains(init_mark(b))]
+        #![trigger init_marks(lo, hi).contains(init_mark(b))]
+        #![trigger init_marks(lo, hi).contains(fresh_mark(b))]
+        fresh_marks(lo, hi).contains(fresh_mark(b)) == (lo <= b < hi),
+        !fresh_marks(lo, hi).contains(init_mark(b)),
+        init_marks(lo, hi).contains(init_mark(b)) == (lo <= b < hi),
+        !init_marks(lo, hi).contains(fresh_mark(b)),
+{
+    broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+}
+
+/// The markers of bit-range sets nest with their ranges.
+pub proof fn lemma_marks_sub(lo: int, hi: int, lo2: int, hi2: int)
+    requires
+        lo2 <= lo,
+        hi <= hi2,
+    ensures
+        fresh_marks(lo, hi).subset_of(fresh_marks(lo2, hi2)),
+        init_marks(lo, hi).subset_of(init_marks(lo2, hi2)),
+{
+    broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+}
+
+/// Every element of a set of fresh (init) markers is the marker of a bit.
+pub proof fn lemma_marks_elems(lo: int, hi: int, m: int)
+    ensures
+        fresh_marks(lo, hi).contains(m) ==> m == fresh_mark(m / 2) && lo <= m / 2 < hi,
+        init_marks(lo, hi).contains(m) ==> m == init_mark(m / 2) && lo <= m / 2 < hi,
+{
+    broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+}
+
+/// The markers of word `j` of class bitmap `s`, whose value is `x`, given
+/// the fresh markers `u` and the init markers `d` its invariant holds:
+/// each bit's slab is either not initialised (its fresh marker held, the
+/// bit clear) or initialised (its init marker held, the bit set if it is
+/// padding).
+pub open spec fn marks_ok(s: Slots, j: int, x: u64, u: Set<int>, d: Set<int>) -> bool {
+    forall|b: int| #![trigger u.contains(fresh_mark(b))] #![trigger d.contains(init_mark(b))]
+        64 * j <= b < 64 * j + 64 ==> {
+            &&& u.contains(fresh_mark(b)) ==> !has_bit(x, (b - 64 * j) as u64)
+            &&& d.contains(init_mark(b)) && !s.real(b) ==> has_bit(x, (b - 64 * j) as u64)
+            &&& u.contains(fresh_mark(b)) || d.contains(init_mark(b))
+        }
+}
+
+/// A bitmap word's invariant: the word's permission, the tokens of
+/// exactly the slots whose bits are clear, and the markers of its bits'
+/// initialisation ([`marks_ok`]).
 pub struct WordPred;
 
-impl InvariantPredicate<WordKey, (WordPerm, GhostSubset<int>)> for WordPred {
-    open spec fn inv(k: WordKey, v: (WordPerm, GhostSubset<int>)) -> bool {
+impl InvariantPredicate<WordKey, (WordPerm, GhostSubset<int>, GhostSubset<int>, GhostSubset<int>)> for WordPred {
+    open spec fn inv(k: WordKey, v: (WordPerm, GhostSubset<int>, GhostSubset<int>, GhostSubset<int>)) -> bool {
         &&& v.0.addr() == k.addr
         &&& v.1.id() == k.slots.loc
         &&& v.1@ == addrs(k.slots, free_bits(k.slots, k.j, v.0.value()))
+        &&& v.2.id() == k.slots.mloc
+        &&& v.3.id() == k.slots.mloc
+        &&& marks_ok(k.slots, k.j, v.0.value(), v.2@, v.3@)
     }
 }
 
+/// What a bitmap word's invariant holds.
+pub type WordVal = (WordPerm, GhostSubset<int>, GhostSubset<int>, GhostSubset<int>);
+
 /// The invariant of one bitmap word.
-pub type WordInv = AtomicInvariant<WordKey, (WordPerm, GhostSubset<int>), WordPred>;
+pub type WordInv = AtomicInvariant<WordKey, WordVal, WordPred>;
 
 /// `invs` holds the invariant of each of the `nwords` words of the class
 /// bitmap `s` at `base`.
@@ -625,10 +720,12 @@ pub open spec fn slot_set(s: Slots) -> Set<int> {
 
 /// The word invariants of a fresh class bitmap of `n` words at `base`:
 /// every word zero, so each holds the tokens of all its slots, split off
-/// `toks`, which holds at least those.
+/// `toks`, which holds at least those, and the fresh markers of all its
+/// bits, split off `marks`, which holds at least those.
 pub proof fn fresh_word_invs(
     tracked perms: Map<int, WordPerm>,
     tracked toks: GhostSubset<int>,
+    tracked marks: GhostSubset<int>,
     s: Slots,
     base: usize,
     n: nat,
@@ -638,18 +735,31 @@ pub proof fn fresh_word_invs(
         s.wf(),
         toks.id() == s.loc,
         forall|b: int| 0 <= b < 64 * n && s.real(b) ==> toks@.contains(#[trigger] s.addr(b)),
+        marks.id() == s.mloc,
+        fresh_marks(0, 64 * n as int).subset_of(marks@),
     ensures
         words_wf(r, s, base, n as int),
     decreases n,
 {
-    broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, Set::lemma_map_contains};
+    broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, Set::lemma_map_contains, lemma_marks};
     if n == 0 {
         Map::tracked_empty()
     } else {
         let j = n - 1;
+        assert(0 <= j < n);
+        assert(perms.contains_key(j));
+        assert(perms[j].addr() == base + 8 * j);
         let tracked mut perms = perms;
         let tracked mut toks = toks;
+        let tracked mut marks = marks;
         let tracked p = perms.tracked_remove(j);
+        lemma_marks_sub(64 * j, 64 * j + 64, 0, 64 * n as int);
+        let tracked u = marks.split(fresh_marks(64 * j, 64 * j + 64));
+        let tracked d = marks.empty();
+        assert forall|m: int| #[trigger] fresh_marks(0, 64 * j).contains(m) implies marks@.contains(m) by {
+            lemma_marks_elems(0, 64 * j, m);
+            lemma_marks_sub(0, 64 * j, 0, 64 * n as int);
+        }
         assert forall|k: u64| k < 64 implies !#[trigger] has_bit(0u64, k) by {
             assert((0u64 >> k) & 1u64 != 1u64) by (bit_vector);
         }
@@ -668,8 +778,9 @@ pub proof fn fresh_word_invs(
         assert(p.addr() == k.addr);
         assert(t.id() == s.loc);
         assert(t@ == addrs(s, free_bits(s, j, p.value())));
-        let tracked inv = AtomicInvariant::<WordKey, (WordPerm, GhostSubset<int>), WordPred>::new(k, (p, t), word_ns());
-        let tracked mut r = fresh_word_invs(perms, toks, s, base, (n - 1) as nat);
+        assert(marks_ok(s, j, p.value(), u@, d@));
+        let tracked inv = AtomicInvariant::<WordKey, WordVal, WordPred>::new(k, (p, t, u, d), word_ns());
+        let tracked mut r = fresh_word_invs(perms, toks, marks, s, base, (n - 1) as nat);
         r.tracked_insert(j, inv);
         r
     }
@@ -708,6 +819,113 @@ proof fn lemma_shl_bit(x: u64, s: u64, k: u64)
     } else {
         assert(((x << s) >> k) & 1u64 == 0u64) by (bit_vector)
             requires s < 64, k < 64, k < s;
+    }
+}
+
+/// Bits `lo..mid` and `mid..hi` of a range.
+pub proof fn lemma_marks_split(lo: int, mid: int, hi: int)
+    requires
+        lo <= mid <= hi,
+    ensures
+        init_marks(lo, hi).difference(init_marks(lo, mid)) == init_marks(mid, hi),
+        init_marks(lo, mid).subset_of(init_marks(lo, hi)),
+        fresh_marks(lo, mid).union(fresh_marks(mid, hi)) == fresh_marks(lo, hi),
+{
+    broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+    assert(init_marks(lo, hi).difference(init_marks(lo, mid)) =~= init_marks(mid, hi));
+    assert(fresh_marks(lo, mid).union(fresh_marks(mid, hi)) =~= fresh_marks(lo, hi));
+}
+
+/// Initialising bits `a..b` of word `j`, whose init markers (disjoint from
+/// the invariant's `d0`) the writer holds: they were fresh, so clear, and
+/// the write `x0` to `x1` sets exactly the padding ones and keeps the
+/// word's other bits. Their fresh markers leave the invariant and their
+/// init markers join it; the slots' bits, and so their tokens, are
+/// unchanged.
+proof fn lemma_marks_move(s: Slots, j: int, x0: u64, x1: u64, u0: Set<int>, d0: Set<int>, a: int, b: int)
+    requires
+        marks_ok(s, j, x0, u0, d0),
+        64 * j <= a <= b <= 64 * j + 64,
+        init_marks(a, b).disjoint(d0),
+        forall|c: int| a <= c < b ==> #[trigger] has_bit(x1, (c - 64 * j) as u64) == !s.real(c),
+        forall|c: int| 64 * j <= c < 64 * j + 64 && !(a <= c < b)
+            ==> #[trigger] has_bit(x1, (c - 64 * j) as u64) == has_bit(x0, (c - 64 * j) as u64),
+    ensures
+        fresh_marks(a, b).subset_of(u0),
+        marks_ok(s, j, x1, u0.difference(fresh_marks(a, b)), d0.union(init_marks(a, b))),
+        free_bits(s, j, x1) == free_bits(s, j, x0),
+{
+    broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, lemma_marks};
+    assert forall|c: int| a <= c < b implies u0.contains(fresh_mark(c)) && !has_bit(x0, (c - 64 * j) as u64) by {
+        assert(init_marks(a, b).contains(init_mark(c)));
+        assert(!d0.contains(init_mark(c)));
+    }
+    assert forall|m: int| #[trigger] fresh_marks(a, b).contains(m) implies u0.contains(m) by {
+        lemma_marks_elems(a, b, m);
+    }
+    let u1 = u0.difference(fresh_marks(a, b));
+    let d1 = d0.union(init_marks(a, b));
+    assert forall|c: int| 64 * j <= c < 64 * j + 64 implies {
+        &&& (#[trigger] u1.contains(fresh_mark(c))) ==> !has_bit(x1, (c - 64 * j) as u64)
+        &&& d1.contains(init_mark(c)) && !s.real(c) ==> has_bit(x1, (c - 64 * j) as u64)
+        &&& u1.contains(fresh_mark(c)) || d1.contains(init_mark(c))
+    } by {
+        if !(a <= c < b) {
+            assert(u0.contains(fresh_mark(c)) ==> !has_bit(x0, (c - 64 * j) as u64));
+        }
+    }
+    assert forall|c: int| #[trigger] free_bits(s, j, x1).contains(c) == free_bits(s, j, x0).contains(c) by {
+        if 64 * j <= c < 64 * j + 64 && a <= c < b {
+            assert(u0.contains(fresh_mark(c)));
+        }
+    }
+    assert(free_bits(s, j, x1) =~= free_bits(s, j, x0));
+}
+
+/// The padding word `init` stores at word `lo / 64` of a whole-word view
+/// of `nbits` slots: bit `k` set exactly when `lo + k` is not a slot.
+proof fn lemma_pad_bits(pad: u64, nbits: usize, lo: usize)
+    requires
+        lo + 64 <= usize::MAX,
+        pad == if nbits >= lo + 64 {
+            0u64
+        } else if nbits <= lo {
+            !0u64
+        } else {
+            !0u64 << ((nbits - lo) as usize)
+        },
+    ensures
+        forall|k: u64| k < 64 ==> #[trigger] has_bit(pad, k) == (lo + k >= nbits),
+{
+    assert forall|k: u64| k < 64 implies #[trigger] has_bit(pad, k) == (lo + k >= nbits) by {
+        if nbits >= lo + 64 {
+            assert((0u64 >> k) & 1u64 != 1u64) by (bit_vector);
+        } else if nbits <= lo {
+            assert(((!0u64) >> k) & 1u64 == 1u64) by (bit_vector) requires k < 64;
+        } else {
+            let sh = (nbits - lo) as usize;
+            assert((((!0u64) << sh) >> k) & 1u64 == 1u64 <==> k as usize >= sh) by (bit_vector)
+                requires 0 < sh < 64, k < 64;
+        }
+    }
+}
+
+/// The padding `init` sets in a sub-word view (`mask`, `width` bits from
+/// `sh`) of `n` slots: bits `sh + n .. sh + width`.
+proof fn lemma_sub_pad_bits(mask: u64, pad: u64, n: usize, width: u64, sh: u64)
+    requires
+        0 < n <= width < 64,
+        sh + width <= 64,
+        mask == range_mask(width, sh),
+        pad == mask & !((((1u64 << n) - 1) as u64) << sh),
+    ensures
+        forall|k: u64| k < 64 ==> #[trigger] has_bit(pad, k) == (sh + n <= k < sh + width),
+{
+    assert forall|k: u64| k < 64 implies #[trigger] has_bit(pad, k) == (sh + n <= k < sh + width) by {
+        let n64 = n as u64;
+        assert(((((((1u64 << width) - 1) as u64) << sh) & !((((1u64 << n) - 1) as u64) << sh)) >> k) & 1u64 == 1u64
+            <==> (sh + n64 <= k && k < sh + width)) by (bit_vector)
+            requires 0 < n64 <= width < 64, sh + width <= 64, k < 64, n as u64 == n64;
     }
 }
 
@@ -797,6 +1015,14 @@ impl<'a> AtomicBitmap<'a> {
     /// Every set bit of mask `x` of word `i` is a slot.
     pub open spec fn all_real(&self, i: int, x: u64) -> bool {
         forall|b: u64| b < 64 && #[trigger] has_bit(x, b) ==> self.spec_slots().real(self.spec_first() + 64 * i + b)
+    }
+
+    /// `p` holds the fresh markers of every bit of the view: the slab was
+    /// initialised ([`init`](AtomicBitmap::init)), so a claim cannot win
+    /// a padding bit.
+    pub open spec fn inited_by(&self, p: GhostPersistentSubset<int>) -> bool {
+        &&& p.id() == self.spec_slots().mloc
+        &&& fresh_marks(self.spec_first(), self.spec_first() + self.spec_nbits()).subset_of(p@)
     }
 
     /// Number of words in the view.
@@ -937,24 +1163,96 @@ impl<'a> AtomicBitmap<'a> {
     /// `nbits` must be non-zero and fit the view. Atomic on a shared word,
     /// so a neighbouring slab that is already active is not disturbed.
     ///
-    /// Trusted, and the one writer of bitmap words outside the
-    /// [`WordInv`] wrappers (`vspec::word`): it keeps every word invariant
-    /// because it runs once per slab, when `SlabTable::take_group` hands the
-    /// slab's group out for the first time (`SlabTable::next_slab_locked`),
-    /// and a slab's bits are all clear until then (the table is fresh
-    /// memory, `table::axiom_fresh_words`). So it clears no set slot
-    /// bit, and the padding bits it sets have no tokens. Its writes do
-    /// not go through the words' permissions, which then disagree with
-    /// the words on the padding bits; the word invariants read slot bits
-    /// only (`vspec::word`).
-    #[verifier::external_body]
-    pub fn init(&self, nbits: usize)
+    /// It runs once per slab (`slab`, the view's), when
+    /// `SlabTable::take_group` hands the slab's group out, with the init
+    /// markers of the slab's bits (`f`, which the table holds until then):
+    /// holding them rules out a slab already initialised, so every bit
+    /// it writes was clear (a fresh slab's bits are, and their slot tokens
+    /// are in the word invariants), and only padding bits, which have no
+    /// tokens, become set. It returns the slab's fresh markers, persistent,
+    /// which every claim from the slab needs ([`inited_by`]).
+    ///
+    /// [`inited_by`]: AtomicBitmap::inited_by
+    pub fn init(&self, nbits: usize, Ghost(slab): Ghost<int>, Tracked(f): Tracked<GhostSubset<int>>) -> (r: Tracked<GhostPersistentSubset<int>>)
         requires
             nbits > 0 && nbits <= self.spec_nbits(),
+            nbits == self.spec_slots().nslots,
+            self.spec_nbits() == self.spec_slots().sb,
+            0 <= slab,
+            self.spec_first() == slab * self.spec_slots().sb,
+            self.spec_first() + self.spec_nbits() <= self.spec_slots().nbits,
+            f.id() == self.spec_slots().mloc,
+            f@ == init_marks(self.spec_first(), self.spec_first() + self.spec_nbits()),
+        ensures
+            self.inited_by(r@),
     {
+        proof {
+            use_type_invariant(self);
+        }
+        let ghost first = self.first@;
+        let ghost sl = self.slots@;
+        let ghost end = first + self.spec_nbits();
+        let ghost mut width: u64 = 0;
+        proof {
+            width = self.lemma_shape();
+        }
         assert!(nbits > 0 && nbits <= self.nbits(), "bitmap: nbits does not match the view");
+        let tracked mut f = f;
+        let tracked mut p = f.empty().persist();
+        proof {
+            broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, lemma_marks};
+            assert(fresh_marks(first, first) =~= Set::<int>::empty());
+        }
         if self.mask == !0 {
-            for (i, w) in self.words.iter().enumerate() {
+            // `for (i, w) in self.words.iter().enumerate()`, spelled out
+            // (Verus has no `Enumerate`); the count is taken and bumped as
+            // `Enumerate::next` does.
+            let mut iter = self.words.iter();
+            let mut count: usize = 0;
+            loop
+                invariant
+                    self.inv(),
+                    self.mask == !0u64,
+                    self.shift == 0,
+                    first == self.first@,
+                    sl == self.slots@,
+                    end == first + self.words@.len() * 64,
+                    first % 64 == 0,
+                    count <= self.words@.len(),
+                    iter.remaining() == self.words@.skip(count as int).as_ref(),
+                    nbits == sl.nslots,
+                    nbits <= self.words@.len() * 64,
+                    self.spec_nbits() == sl.sb,
+                    0 <= slab,
+                    first == slab * sl.sb,
+                    end <= sl.nbits,
+                    sl.wf(),
+                    f.id() == sl.mloc,
+                    f@ == init_marks(first + 64 * count, end),
+                    p.id() == sl.mloc,
+                    fresh_marks(first, first + 64 * count).subset_of(p@),
+                ensures
+                    count == self.words@.len(),
+                    end == first + self.words@.len() * 64,
+                    p.id() == sl.mloc,
+                    fresh_marks(first, first + 64 * count).subset_of(p@),
+                decreases self.words@.len() - count,
+            {
+                let w = match iter.next() {
+                    Some(w) => w,
+                    None => {
+                        proof {
+                            assert(self.words@.skip(count as int).len() == 0);
+                        }
+                        break;
+                    },
+                };
+                let i = count;
+                count += 1;
+                proof {
+                    assert(self.words@.skip(i as int).as_ref()[0] == w);
+                    assert(*w == self.words@[i as int]);
+                }
                 let lo = i * 64;
                 let pad = if nbits >= lo + 64 {
                     0
@@ -963,15 +1261,147 @@ impl<'a> AtomicBitmap<'a> {
                 } else {
                     !0u64 << (nbits - lo)
                 };
-                w.store(pad, Ordering::Relaxed);
+                let ghost j = first / 64 + i;
+                proof {
+                    assert(word_ok(self.words@[i as int], j, sl, *self.invs@));
+                    assert(64 * j == first + lo);
+                    lemma_pad_bits(pad, nbits, lo);
+                    lemma_marks_split(first + 64 * i, first + 64 * i + 64, end);
+                }
+                let tracked inv = self.invs.borrow().tracked_borrow(j);
+                vstd::open_atomic_invariant!(inv => pair => {
+                    let tracked (mut perm, g, mut u, mut d) = pair;
+                    let tracked mut fw = f.split(init_marks(64 * j, 64 * j + 64));
+                    let ghost x0 = perm.value();
+                    proof {
+                        fw.disjoint(&d);
+                    }
+                    crate::vspec::word::store(w, pad, Ordering::Relaxed, Tracked(&mut perm));
+                    proof {
+                        // Bit `k` of the word is slot `lo + k` of the slab:
+                        // set exactly when it is padding.
+                        assert forall|c: int| 64 * j <= c < 64 * j + 64 implies
+                            #[trigger] has_bit(pad, (c - 64 * j) as u64) == !sl.real(c) by {
+                            lemma_slab_bit(sl, slab, c - first);
+                        }
+                        lemma_marks_move(sl, j, x0, pad, u@, d@, 64 * j, 64 * j + 64);
+                        let tracked uw = u.split(fresh_marks(64 * j, 64 * j + 64));
+                        p.combine(uw.persist());
+                        d.combine(fw);
+                        pair = (perm, g, u, d);
+                    }
+                });
+                proof {
+                    lemma_marks_split(first, first + 64 * i, first + 64 * i + 64);
+                }
             }
         } else {
+            let w = &self.words[0];
+            proof {
+                lemma_one_shl(nbits);
+            }
             let pad = self.mask & !(((1u64 << nbits) - 1) << self.shift);
-            self.words[0].fetch_and(!self.mask, Ordering::Relaxed);
+            // `first / 64 + z`, not `first / 64`: the type invariant's
+            // trigger for word 0.
+            let ghost z: int = 0;
+            let ghost j = first / 64 + z;
+            let ghost sh = self.shift as int;
+            let ghost mid = first + nbits;
+            proof {
+                assert(word_ok(self.words@[z], j, sl, *self.invs@));
+                vstd::arithmetic::div_mod::lemma_fundamental_div_mod(first, 64);
+                assert(64 * j == first - sh);
+                lemma_range_mask(width, self.shift as u64);
+                lemma_sub_pad_bits(self.mask, pad, nbits, width, self.shift as u64);
+                lemma_marks_split(first, mid, end);
+                // Bit `k` of the word is slot `k - shift` of the slab for
+                // `shift <= k < shift + width`.
+                assert forall|c: int| first <= c < end implies #[trigger] sl.real(c) == (c < mid) by {
+                    lemma_slab_bit(sl, slab, c - first);
+                }
+            }
+            let tracked inv = self.invs.borrow().tracked_borrow(j);
+            // Clear the slab's bits (all clear already) and initialise its
+            // slots.
+            vstd::open_atomic_invariant!(inv => pair => {
+                let tracked (mut perm, g, mut u, mut d) = pair;
+                let ghost x0 = perm.value();
+                proof {
+                    f.disjoint(&d);
+                    assert forall|k: u64| k < 64 && #[trigger] has_bit(self.mask, k) implies !has_bit(x0, k) by {
+                        let c = 64 * j + k;
+                        assert(init_marks(first, end).contains(init_mark(c)));
+                        assert(!d@.contains(init_mark(c)));
+                        assert((c - 64 * j) as u64 == k);
+                    }
+                    assert forall|k: u64| k < 64 implies !#[trigger] has_bit(x0 & self.mask, k) by {
+                        lemma_bit_ops(x0, self.mask, k);
+                    }
+                    lemma_zero_of_no_bits(x0 & self.mask);
+                    let m = self.mask;
+                    assert(x0 & m == 0u64 ==> x0 & !m == x0) by (bit_vector);
+                }
+                let tracked mut fr = f.split(init_marks(first, mid));
+                crate::vspec::word::fetch_and(w, !self.mask, Ordering::Relaxed, Tracked(&mut perm));
+                proof {
+                    assert forall|c: int| first <= c < mid implies
+                        #[trigger] has_bit(x0, (c - 64 * j) as u64) == !sl.real(c) by {
+                        let k = (c - 64 * j) as u64;
+                        assert(has_bit(self.mask, k));
+                    }
+                    lemma_marks_move(sl, j, x0, x0, u@, d@, first, mid);
+                    let tracked ur = u.split(fresh_marks(first, mid));
+                    p.combine(ur.persist());
+                    d.combine(fr);
+                    pair = (perm, g, u, d);
+                }
+            });
+            proof {
+                lemma_marks_split(first, first, mid);
+                assert(fresh_marks(first, first).union(fresh_marks(first, mid)) == fresh_marks(first, mid));
+            }
             if pad != 0 {
-                self.words[0].fetch_or(pad, Ordering::Relaxed);
+                // Set its padding bits.
+                vstd::open_atomic_invariant!(inv => pair => {
+                    let tracked (mut perm, g, mut u, mut d) = pair;
+                    let ghost x0 = perm.value();
+                    proof {
+                        f.disjoint(&d);
+                    }
+                    crate::vspec::word::fetch_or(w, pad, Ordering::Relaxed, Tracked(&mut perm));
+                    proof {
+                        assert forall|c: int| mid <= c < end implies
+                            #[trigger] has_bit(x0 | pad, (c - 64 * j) as u64) == !sl.real(c) by {
+                            lemma_bit_ops(x0, pad, (c - 64 * j) as u64);
+                        }
+                        assert forall|c: int| 64 * j <= c < 64 * j + 64 && !(mid <= c < end) implies
+                            #[trigger] has_bit(x0 | pad, (c - 64 * j) as u64) == has_bit(x0, (c - 64 * j) as u64) by {
+                            lemma_bit_ops(x0, pad, (c - 64 * j) as u64);
+                        }
+                        lemma_marks_move(sl, j, x0, x0 | pad, u@, d@, mid, end);
+                        let tracked up = u.split(fresh_marks(mid, end));
+                        p.combine(up.persist());
+                        let tracked fp = f.take();
+                        d.combine(fp);
+                        pair = (perm, g, u, d);
+                    }
+                });
+                proof {
+                    lemma_marks_split(first, mid, end);
+                }
+            } else {
+                proof {
+                    // No padding bit: the slots are the whole view.
+                    if nbits < width {
+                        let k = (self.shift + nbits) as u64;
+                        assert(has_bit(pad, k));
+                        assert((pad >> k) & 1u64 == 1u64 ==> pad != 0u64) by (bit_vector);
+                    }
+                    assert(mid == end);
+                }
             }
         }
+        Tracked(p)
     }
 
     /// The tokens of a mask of word `i` in slab coordinates are the slots of
@@ -1008,6 +1438,27 @@ impl<'a> AtomicBitmap<'a> {
         assert(self.tokens(i, x >> s) =~= set_bits(self.slots@, j, x));
     }
 
+    /// A bit `k` of word `i` inside the view's mask is class bitmap bit
+    /// `64 * (first / 64 + i) + k`, one of the view's bits.
+    proof fn lemma_view_bit(&self, i: int, k: u64)
+        requires
+            self.inv(),
+            0 <= i < self.spec_words(),
+            k < 64,
+            has_bit(self.mask, k),
+        ensures
+            self.first@ <= 64 * (self.first@ / 64 + i) + k < self.first@ + self.spec_nbits(),
+            64 * (self.first@ / 64 + i) + k == self.first@ + 64 * i + k - self.shift,
+            k >= self.shift,
+    {
+        let width = self.lemma_shape();
+        let f = self.first@;
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(f, 64);
+        if self.mask != !0u64 {
+            lemma_range_mask(width, self.shift as u64);
+        }
+    }
+
     /// No bit of zero is set, so a zero mask has no tokens.
     proof fn lemma_tokens_zero(&self, i: int)
         ensures
@@ -1025,14 +1476,25 @@ impl<'a> AtomicBitmap<'a> {
     /// this call actually claimed (slab coordinates), which may be zero if
     /// the word was full or a concurrent claimer won every bit we wanted.
     /// The tokens of the slots it claimed join `toks`: no other claim can
-    /// have them.
+    /// have them. `inited` holds the slab's fresh markers ([`inited_by`]),
+    /// so its padding bits are set and every bit it wins is a slot.
+    ///
+    /// [`inited_by`]: AtomicBitmap::inited_by
     #[inline]
-    pub fn claim_word(&self, i: usize, n: usize, Tracked(toks): Tracked<&mut GhostSubset<int>>) -> (r: u64)
+    pub fn claim_word(
+        &self,
+        i: usize,
+        n: usize,
+        Tracked(toks): Tracked<&mut GhostSubset<int>>,
+        Tracked(inited): Tracked<&GhostPersistentSubset<int>>,
+    ) -> (r: u64)
         requires
             i < self.spec_words(),
             old(toks).id() == self.spec_slots().loc,
+            self.inited_by(*inited),
         ensures
             subset(r, self.slab_mask()),
+            self.all_real(i as int, r),
             popcount(r) <= n,
             final(toks).id() == old(toks).id(),
             final(toks)@ == old(toks)@.union(self.slot_addrs(i as int, r)),
@@ -1060,9 +1522,22 @@ impl<'a> AtomicBitmap<'a> {
             }
             self.lemma_tokens_zero(i as int);
             assert(old(toks)@.union(Set::<int>::empty()) =~= old(toks)@);
+            assert forall|b: u64| b < 64 implies !#[trigger] has_bit(0u64, b) by {
+                assert((0u64 >> b) & 1u64 != 1u64) by (bit_vector);
+            }
         }
         if want == 0 {
             return 0;
+        }
+        proof {
+            // The bits it wants are the view's, whose fresh markers the
+            // claim holds.
+            assert forall|k: u64| k < 64 && #[trigger] has_bit(want, k)
+                implies inited@.contains(fresh_mark(64 * (self.first@ / 64 + i) + k)) by {
+                lemma_subset_bits(want, self.mask);
+                self.lemma_view_bit(i as int, k);
+                lemma_marks(self.first@, self.first@ + self.spec_nbits(), 64 * (self.first@ / 64 + i) + k);
+            }
         }
         let ghost j = self.first@ / 64 + i;
         assert(word_ok(self.words@[i as int], j, self.slots@, *self.invs@));
@@ -1071,11 +1546,38 @@ impl<'a> AtomicBitmap<'a> {
         // Acquire pairs with the Release in `release`: the new owner's
         // accesses to the slot happen after the previous owner's.
         vstd::open_atomic_invariant!(inv => pair => {
-            let tracked (mut perm, mut g) = pair;
+            let tracked (mut perm, mut g, mut u, d) = pair;
+            let ghost x0 = perm.value();
             prev = crate::vspec::word::fetch_or(w, want, Ordering::Acquire, Tracked(&mut perm));
             proof {
                 broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, Set::lemma_map_contains};
                 let slots = self.slots@;
+                // The slab was initialised, so its padding bits are set
+                // and only its slots can be won; the bits it sets are not
+                // fresh.
+                u.disjoint_persistent(inited);
+                assert forall|k: u64| k < 64 && #[trigger] has_bit(want, k) implies
+                    !u@.contains(fresh_mark(64 * j + k)) && d@.contains(init_mark(64 * j + k)) by {
+                    assert(inited@.contains(fresh_mark(64 * (self.first@ / 64 + i) + k)));
+                    assert(64 * j <= 64 * j + k < 64 * j + 64);
+                }
+                assert forall|k: u64| k < 64 && #[trigger] has_bit(want, k) && !slots.real(64 * j + k)
+                    implies has_bit(prev, k) by {
+                    assert(d@.contains(init_mark(64 * j + k)));
+                    assert(64 * j <= 64 * j + k < 64 * j + 64);
+                    assert((64 * j + k - 64 * j) as u64 == k);
+                }
+                assert(marks_ok(slots, j, prev | want, u@, d@)) by {
+                    assert forall|b: int| 64 * j <= b < 64 * j + 64 implies {
+                        &&& (#[trigger] u@.contains(fresh_mark(b))) ==> !has_bit(prev | want, (b - 64 * j) as u64)
+                        &&& d@.contains(init_mark(b)) && !slots.real(b) ==> has_bit(prev | want, (b - 64 * j) as u64)
+                        &&& u@.contains(fresh_mark(b)) || d@.contains(init_mark(b))
+                    } by {
+                        let k = (b - 64 * j) as u64;
+                        lemma_bit_ops(prev, want, k);
+                        assert(b == 64 * j + k);
+                    }
+                }
                 let won = want & !prev;
                 let won_bits = set_bits(slots, j, won);
                 let before = free_bits(slots, j, prev);
@@ -1098,7 +1600,7 @@ impl<'a> AtomicBitmap<'a> {
                 }
                 let tracked got = g.split(addrs(slots, won_bits));
                 toks.combine(got);
-                pair = (perm, g);
+                pair = (perm, g, u, d);
             }
         });
         proof {
@@ -1116,6 +1618,18 @@ impl<'a> AtomicBitmap<'a> {
             assert(subset(won, mask)) by (bit_vector)
                 requires won == want & !prev, want & !mask == 0u64;
             self.lemma_tokens(i as int, won);
+            // A won bit was clear: a padding bit of an initialised slab is
+            // set, so the bit is a slot.
+            assert forall|t: u64| t < 64 && #[trigger] has_bit(won >> s, t)
+                implies self.slots@.real(self.first@ + 64 * i + t) by {
+                lemma_shr_bit(won, s as u64, t);
+                let k = (t + s) as u64;
+                lemma_bit_ops(want, prev, k);
+                assert(has_bit(want, k) && !has_bit(prev, k));
+                lemma_subset_bits(want, mask);
+                self.lemma_view_bit(i as int, k);
+                assert(self.first@ + 64 * i + t == 64 * j + k);
+            }
         }
         (want & !prev) >> self.shift
     }
@@ -1126,14 +1640,22 @@ impl<'a> AtomicBitmap<'a> {
     /// index and the claimed mask, or `None` if every word was full at the
     /// time it was inspected. A single call never spans words; callers loop
     /// until they have enough or get `None`. The claimed slots' tokens join
-    /// `toks`.
-    pub fn claim_from(&self, start: usize, n: usize, Tracked(toks): Tracked<&mut GhostSubset<int>>) -> (r: Option<(usize, u64)>)
+    /// `toks`; as for [`claim_word`](AtomicBitmap::claim_word), the bits
+    /// are slots.
+    pub fn claim_from(
+        &self,
+        start: usize,
+        n: usize,
+        Tracked(toks): Tracked<&mut GhostSubset<int>>,
+        Tracked(inited): Tracked<&GhostPersistentSubset<int>>,
+    ) -> (r: Option<(usize, u64)>)
         requires
             start < self.spec_words(),
             old(toks).id() == self.spec_slots().loc,
+            self.inited_by(*inited),
         ensures
             r matches Some((i, m)) ==> i < self.spec_words() && m != 0 && subset(m, self.slab_mask())
-                && popcount(m) <= n,
+                && self.all_real(i as int, m) && popcount(m) <= n,
             final(toks).id() == old(toks).id(),
             r matches Some((i, m)) ==> final(toks)@ == old(toks)@.union(self.slot_addrs(i as int, m))
                 && old(toks)@.disjoint(self.slot_addrs(i as int, m)),
@@ -1149,8 +1671,9 @@ impl<'a> AtomicBitmap<'a> {
                 toks.id() == old(toks).id(),
                 toks@ == old(toks)@,
                 old(toks).id() == self.spec_slots().loc,
+                self.inited_by(*inited),
         {
-            let got = self.claim_word(i, n, Tracked(&mut *toks));
+            let got = self.claim_word(i, n, Tracked(&mut *toks), Tracked(inited));
             if got != 0 {
                 return Some((i, got));
             }
@@ -1206,7 +1729,7 @@ impl<'a> AtomicBitmap<'a> {
         let prev;
         let tracked mut toks = toks;
         vstd::open_atomic_invariant!(inv => pair => {
-            let tracked (mut perm, mut g) = pair;
+            let tracked (mut perm, mut g, u, d) = pair;
             prev = crate::vspec::word::fetch_and(w, !m, Ordering::Release, Tracked(&mut perm));
             proof {
                 broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, Set::lemma_map_contains};
@@ -1240,8 +1763,25 @@ impl<'a> AtomicBitmap<'a> {
                 }
                 assert(free_bits(slots, j, prev & !m) =~= before.union(rel));
                 lemma_addrs_union(slots, before, rel);
+                // It clears slot bits only, so the padding bits stay set.
+                assert(marks_ok(slots, j, prev & !m, u@, d@)) by {
+                    assert forall|b: int| 64 * j <= b < 64 * j + 64 implies {
+                        &&& (#[trigger] u@.contains(fresh_mark(b))) ==> !has_bit(prev & !m, (b - 64 * j) as u64)
+                        &&& d@.contains(init_mark(b)) && !slots.real(b) ==> has_bit(prev & !m, (b - 64 * j) as u64)
+                        &&& u@.contains(fresh_mark(b)) || d@.contains(init_mark(b))
+                    } by {
+                        let k = (b - 64 * j) as u64;
+                        lemma_bit_ops(prev, m, k);
+                        if has_bit(m, k) {
+                            lemma_shl_bit(mask, s, k);
+                            let t = (k - s) as u64;
+                            assert(slots.real(self.first@ + 64 * i + t));
+                            assert(b == self.first@ + 64 * i + t);
+                        }
+                    }
+                }
                 g.combine(toks);
-                pair = (perm, g);
+                pair = (perm, g, u, d);
             }
         });
         proof {
@@ -2937,7 +3477,11 @@ impl<'a> AtomicBitmap<'a> {
     }
 
     pub fn claim_from_t(&self, start: usize, n: usize) -> Option<(usize, u64)> {
-        self.claim_from(start, n, Tracked::assume_new())
+        self.claim_from(start, n, Tracked::assume_new(), Tracked::assume_new())
+    }
+
+    pub fn init_t(&self, nbits: usize) {
+        let _ = self.init(nbits, Ghost::assume_new(), Tracked::assume_new());
     }
 
     pub fn release_t(&self, i: usize, mask: u64) -> (u64, bool) {
@@ -2995,7 +3539,7 @@ mod tests {
         for nbits in [1usize, 5, 63, 64, 65, 127, 128, 129, 4096, 4097] {
             let words = atomic_words(nbits.div_ceil(64));
             let bm = AtomicBitmap::from_words_t(&words);
-            bm.init(nbits);
+            bm.init_t(nbits);
             for b in 0..nbits {
                 assert!(!bm.is_set(b), "nbits={nbits} bit {b} should be clear");
             }
@@ -3010,14 +3554,14 @@ mod tests {
     #[should_panic(expected = "nbits does not match the view")]
     fn init_with_more_bits_than_the_view_aborts() {
         let words = atomic_words(1);
-        AtomicBitmap::from_words_t(&words).init(65);
+        AtomicBitmap::from_words_t(&words).init_t(65);
     }
 
     #[test]
     #[should_panic(expected = "nbits does not match the view")]
     fn init_of_a_sub_word_view_past_its_share_aborts() {
         let word = AtomicU64::new(0);
-        AtomicBitmap::sub_word_t(&word, 8, 4).init(5);
+        AtomicBitmap::sub_word_t(&word, 8, 4).init_t(5);
     }
 
     #[test]
@@ -3025,7 +3569,7 @@ mod tests {
         let nbits = 130;
         let words = atomic_words(3);
         let bm = AtomicBitmap::from_words_t(&words);
-        bm.init(nbits);
+        bm.init_t(nbits);
         let (w, m) = bm.claim(10).unwrap();
         assert_eq!((w, m), (0, (1 << 10) - 1));
         let (w, m) = bm.claim(64).unwrap();
@@ -3049,7 +3593,7 @@ mod tests {
     fn claim_from_wraps() {
         let words = atomic_words(4);
         let bm = AtomicBitmap::from_words_t(&words);
-        bm.init(256);
+        bm.init_t(256);
         assert_eq!(bm.claim_from_t(2, 1), Some((2, 1)));
         assert_eq!(bm.claim_from_t(3, 64), Some((3, !0)));
         assert_eq!(bm.claim_from_t(3, 64), Some((0, !0)));
@@ -3062,7 +3606,7 @@ mod tests {
     fn release_reports_double_release() {
         let words = atomic_words(1);
         let bm = AtomicBitmap::from_words_t(&words);
-        bm.init(64);
+        bm.init_t(64);
         bm.claim(3);
         let (prev, _) = bm.release_t(0, 0b101);
         assert_eq!(prev & 0b101, 0b101);
@@ -3079,7 +3623,7 @@ mod tests {
         for &nbits in &[1usize, 64, 65, 100, 1000, 4096, 4099] {
             let words = atomic_words(nbits.div_ceil(64));
             let bm = AtomicBitmap::from_words_t(&words);
-            bm.init(nbits);
+            bm.init_t(nbits);
             let mut model = vec![false; nbits];
             let mut owned: Vec<usize> = Vec::new();
             for _ in 0..20_000 {
@@ -3153,7 +3697,7 @@ mod tests {
                 .map(|k| AtomicBitmap::sub_word_t(&word, (k * nbits) as u32, nbits))
                 .collect();
             for v in &views {
-                v.init(nslots);
+                v.init_t(nslots);
                 assert_eq!(v.words(), 1);
                 assert_eq!(v.nbits(), nbits);
                 assert_eq!(v.allocated(nslots), 0);
@@ -3194,7 +3738,7 @@ mod tests {
             );
             // Re-init of slab 1 leaves the others alone and clears it.
             views[0].claim(3);
-            v.init(nslots);
+            v.init_t(nslots);
             assert_eq!(v.allocated(nslots), 0);
             assert_eq!(views[0].allocated(nslots), 3);
             let whole = word.load(Ordering::Relaxed);
@@ -3218,11 +3762,11 @@ mod tests {
             let shift = (xorshift(&mut s) as u32 % (64 / nbits as u32)) * nbits as u32;
             let bm = AtomicBitmap::sub_word_t(&word, shift, nbits);
             let nslots = nbits - 1;
-            bm.init(nslots);
+            bm.init_t(nslots);
             // A neighbour claims some bits of the same word.
             let other_shift = (shift + nbits as u32) % 64;
             let other = AtomicBitmap::sub_word_t(&word, other_shift, nbits);
-            other.init(nslots);
+            other.init_t(nslots);
             other.claim(2);
             let before = word.load(Ordering::Relaxed) & !bm.mask;
             let mut model = vec![false; nslots];
@@ -3281,7 +3825,7 @@ mod tests {
         const THREADS: usize = 8;
         const ROUNDS: usize = 4000;
         let words: Arc<Vec<AtomicU64>> = Arc::new(atomic_words(NBITS.div_ceil(64)));
-        AtomicBitmap::from_words_t(&words).init(NBITS);
+        AtomicBitmap::from_words_t(&words).init_t(NBITS);
         let stamps: Arc<Vec<AtomicU8>> = Arc::new((0..NBITS).map(|_| AtomicU8::new(0)).collect());
         let total = Arc::new(AtomicU64::new(0));
 
@@ -3620,7 +4164,7 @@ mod tests {
     fn a_release_outside_the_sub_word_view_aborts() {
         let word = AtomicU64::new(0);
         let v = AtomicBitmap::sub_word_t(&word, 8, 8);
-        v.init(6);
+        v.init_t(6);
         // Slab coordinates: bit 8 of an 8-bit view is the next slab's.
         v.release_t(0, 1 << 8);
     }
@@ -3630,7 +4174,7 @@ mod tests {
     fn a_cleared_padding_bit_aborts_the_allocated_count() {
         let word = AtomicU64::new(0);
         let v = AtomicBitmap::sub_word_t(&word, 0, 8);
-        v.init(6);
+        v.init_t(6);
         assert_eq!(v.allocated(6), 0);
         // Bits 6 and 7 are padding and set by `init`; clearing one is a
         // release outside the real slots.

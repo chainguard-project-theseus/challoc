@@ -8,7 +8,7 @@ use super::abort::{guard_free, invalid_free, invalid_pointer, never_committed, o
 use super::sets::Lazy;
 use crate::bitmap::{AtomicBitmap, WordInv};
 #[cfg(verus_only)]
-use crate::bitmap::{Slots, words_wf};
+use crate::bitmap::{Slots, fresh_marks, init_marks, words_wf};
 #[cfg(verus_only)]
 use crate::bitmap::{has_bit, subset};
 use crate::layout::{CLASSES, Class, Regions};
@@ -27,11 +27,8 @@ use core::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
 #[cfg(verus_only)]
 use vstd::arithmetic::power2::pow2;
 use vstd::prelude::*;
-#[cfg(verus_only)]
 use vstd::resource::Loc;
-use vstd::resource::set::GhostSetAuth;
-#[cfg(verus_only)]
-use vstd::resource::set::GhostSubset;
+use vstd::resource::set::{GhostPersistentSubset, GhostSetAuth, GhostSubset};
 #[cfg(verus_only)]
 use vstd::std_specs::bits::u64_trailing_zeros;
 
@@ -56,6 +53,16 @@ pub(crate) struct TableInner {
     pub(super) group: Ghost<usize>,
     #[allow(dead_code)]
     pub(super) nslabs: Ghost<usize>,
+    /// Ghost: the class's bits per slab and the bitmap markers' authority
+    /// (`bitmap.rs`, "Slot tokens"), fixed at `new`, and the init markers
+    /// of every bit of the slabs not yet handed out, which
+    /// `AtomicBitmap::init` takes one slab at a time (`take_group`).
+    #[allow(dead_code)]
+    pub(super) sb: Ghost<usize>,
+    #[allow(dead_code)]
+    pub(super) mloc: Ghost<Loc>,
+    #[allow(dead_code)]
+    pub(super) fresh: Tracked<GhostSubset<int>>,
 }
 
 /// The facts [`Lazy::ensure`] needs of a table committed in `page` units,
@@ -67,6 +74,20 @@ pub(super) open spec fn lazy_ok(l: Lazy, page: usize) -> bool {
 }
 
 impl TableInner {
+    /// `self` is `o` but for the init markers.
+    pub(super) open spec fn same_but_fresh(self, o: TableInner) -> bool {
+        &&& self.descs == o.descs
+        &&& self.bits == o.bits
+        &&& self.owners == o.owners
+        &&& self.next_slab == o.next_slab
+        &&& self.guards == o.guards
+        &&& self.page == o.page
+        &&& self.group == o.group
+        &&& self.nslabs == o.nslabs
+        &&& self.sb == o.sb
+        &&& self.mloc == o.mloc
+    }
+
     /// The guard count stays below the slabs handed out, which stay below
     /// the largest slab count a region can have and are whole hand-out
     /// groups until the region's end; the three tables are committed in
@@ -80,6 +101,8 @@ impl TableInner {
         &&& lazy_ok(self.descs, self.page@)
         &&& lazy_ok(self.bits, self.page@)
         &&& lazy_ok(self.owners, self.page@)
+        &&& self.fresh@.id() == self.mloc@
+        &&& init_marks(self.next_slab * self.sb@, self.nslabs@ * self.sb@).subset_of(self.fresh@@)
     }
 }
 
@@ -95,7 +118,10 @@ impl TableInner {
 /// one guard per guard slab it commits, which keeps the count at most
 /// `next_slab` only because every slab below `next_slab` is committed
 /// once, by the arena its group went to (`next_fresh_slab`): assumed,
-/// not proved. `guards` only reads; the test
+/// not proved. The init markers it holds cover the slabs from
+/// `next_slab` on: `take_group` gives `AtomicBitmap::init` the markers of
+/// the group it hands out, below the `next_slab` it publishes, and
+/// nothing else moves them. `guards` only reads; the test
 /// helper `corrupt_owner_word` (unverified) only commits through
 /// `Lazy::ensure`.
 pub(super) broadcast axiom fn axiom_table_lock_inv(v: TableInner)
@@ -103,10 +129,12 @@ pub(super) broadcast axiom fn axiom_table_lock_inv(v: TableInner)
         #[trigger] lock_inv(v) == v.inv(),
 ;
 
-/// The commit lock's ghost geometry never changes: nothing writes it.
+/// The commit lock's ghost geometry and marker authority never change:
+/// nothing writes them.
 pub(super) broadcast axiom fn axiom_table_lock_frame(init: TableInner, v: TableInner)
     ensures
-        #[trigger] lock_frame(init, v) == (v.page == init.page && v.group == init.group && v.nslabs == init.nslabs),
+        #[trigger] lock_frame(init, v) == (v.page == init.page && v.group == init.group && v.nslabs == init.nslabs
+            && v.sb == init.sb && v.mloc == init.mloc),
 ;
 
 /// The descriptor of `slab` in `t`'s descriptor array: what
@@ -226,6 +254,10 @@ pub struct SlabTable {
     /// its clear slots.
     pub(super) slot_auth: Tracked<GhostSetAuth<int>>,
     pub(super) word_invs: Tracked<Map<int, WordInv>>,
+    /// Ghost (no bytes): the authority of the bitmap words' markers
+    /// (`bitmap.rs`, "Slot tokens"), which record which slabs `init` has
+    /// run on.
+    pub(super) mark_auth: Tracked<GhostSetAuth<int>>,
 }
 
 } // verus!
@@ -401,6 +433,7 @@ impl SlabTable {
         // of all its slots.
         let ghost geo = Slots {
             loc: vstd::pervasive::arbitrary(),
+            mloc: vstd::pervasive::arbitrary(),
             sb: cls.slab_bits as int,
             nslots: cls.nslots as int,
             nbits: nslabs * cls.slab_bits,
@@ -412,8 +445,15 @@ impl SlabTable {
         proof {
             axiom_slot_loc(class as int, slot_auth.id());
         }
+        let ghost nwords = (geo.nbits + 63) / 64;
+        // The markers: the fresh ones of every bit for the word
+        // invariants, the init ones for the commit lock.
+        let tracked (mark_auth, mut marks) = GhostSetAuth::<int>::new(
+            fresh_marks(0, 64 * nwords).union(init_marks(0, 64 * nwords)));
+        let tracked imarks = marks.split(init_marks(0, 64 * nwords));
         let ghost slots = Slots {
             loc: slot_auth.id(),
+            mloc: mark_auth.id(),
             sb: geo.sb,
             nslots: geo.nslots,
             nbits: geo.nbits,
@@ -421,7 +461,6 @@ impl SlabTable {
             slab_size: geo.slab_size,
             size: geo.size,
         };
-        let ghost nwords = (geo.nbits + 63) / 64;
         let ghost bits_base = (bits.spec_base() + stagger) as usize;
         proof {
             broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, Set::lemma_map_contains};
@@ -429,9 +468,15 @@ impl SlabTable {
                 assert(Set::<int>::range(0, geo.nbits).filter(|b: int| geo.real(b)).contains(b));
                 assert(geo.addr(b) == slots.addr(b));
             }
+            assert forall|m: int| #[trigger] fresh_marks(0, 64 * nwords).contains(m) implies marks@.contains(m) by {
+                crate::bitmap::lemma_marks_elems(0, 64 * nwords, m);
+                crate::bitmap::lemma_marks(0, 64 * nwords, m / 2);
+            }
+            assert(nslabs * cls.slab_bits <= 64 * nwords);
+            crate::bitmap::lemma_marks_sub(0, nslabs * cls.slab_bits, 0, 64 * nwords);
         }
         let tracked perms = axiom_fresh_words(bits_base, nwords as nat);
-        let tracked word_invs = crate::bitmap::fresh_word_invs(perms, all, slots, bits_base, nwords as nat);
+        let tracked word_invs = crate::bitmap::fresh_word_invs(perms, all, marks, slots, bits_base, nwords as nat);
         Some(SlabTable {
             bits_base: bits.start() + stagger,
             owners_base: owners.start() + stagger,
@@ -458,10 +503,14 @@ impl SlabTable {
                 page: Ghost(page),
                 group: Ghost(group),
                 nslabs: Ghost(nslabs),
+                sb: Ghost(cls.slab_bits as usize),
+                mloc: Ghost(mark_auth.id()),
+                fresh: Tracked(imarks),
             })),
             _tail: [0; TABLE_TAIL],
             slot_auth: Tracked(slot_auth),
             word_invs: Tracked(word_invs),
+            mark_auth: Tracked(mark_auth),
         })
     }
 }
@@ -616,6 +665,26 @@ pub open spec fn bits_ghost<'a>(bm: AtomicBitmap<'a>, t: SlabTable, slab: usize)
     &&& bm.spec_invs() == t.spec_word_invs()
 }
 
+/// `p` holds the fresh markers of `slab`'s bits in `t`'s bitmap: `init`
+/// has run on the slab (`AtomicBitmap::inited_by`).
+pub open spec fn slab_marked(t: SlabTable, slab: int, p: Set<int>) -> bool {
+    fresh_marks(slab * t.spec_slots().sb, slab * t.spec_slots().sb + t.spec_slots().sb).subset_of(p)
+}
+
+/// More markers keep a slab marked.
+pub proof fn lemma_slab_marked_mono(t: SlabTable, slab: int, a: Set<int>, b: Set<int>)
+    requires
+        slab_marked(t, slab, a),
+        a.subset_of(b),
+    ensures
+        slab_marked(t, slab, b),
+{
+    let f = fresh_marks(slab * t.spec_slots().sb, slab * t.spec_slots().sb + t.spec_slots().sb);
+    assert forall|y: int| #[trigger] f.contains(y) implies b.contains(y) by {
+        assert(a.contains(y));
+    }
+}
+
 /// Bitmap words of a slab of `slab_bits` bits.
 pub open spec fn words_of(slab_bits: usize) -> nat {
     if slab_bits >= 64 { (slab_bits / 64) as nat } else { 1 }
@@ -711,6 +780,8 @@ impl SlabTable {
         &&& lock_init(self.inner.0).page@ == 1usize << self.lg_page
         &&& lock_init(self.inner.0).group@ == self.group as usize
         &&& lock_init(self.inner.0).nslabs@ == self.nslabs
+        &&& lock_init(self.inner.0).sb@ == self.slab_bits as usize
+        &&& lock_init(self.inner.0).mloc@ == self.mark_auth@.id()
         &&& self.base == process_regions().class_base[self.class as int]
         &&& self.nslabs as int == process_regions().spec_nslabs(self.class as int)
         &&& words_wf(self.word_invs@, self.spec_slots(), self.bits_base, self.spec_nwords())
@@ -865,6 +936,7 @@ impl SlabTable {
     pub closed spec fn spec_slots(&self) -> Slots {
         Slots {
             loc: self.slot_auth@.id(),
+            mloc: self.mark_auth@.id(),
             sb: self.slab_bits as int,
             nslots: class_table()[self.class as int].nslots as int,
             nbits: self.nslabs * self.slab_bits,
@@ -892,6 +964,16 @@ impl SlabTable {
             r@ == Set::<int>::empty(),
     {
         self.slot_auth.borrow().empty()
+    }
+
+    /// No markers of the class bitmap's authority: where a claim's proof
+    /// of its slabs' initialisation starts.
+    pub proof fn empty_marks(tracked &self) -> (tracked r: GhostPersistentSubset<int>)
+        ensures
+            r.id() == self.spec_slots().mloc,
+            r@ == Set::<int>::empty(),
+    {
+        self.mark_auth.borrow().empty().persist()
     }
 
     /// The slot tokens' geometry is the class's (`Class::wf`), and slot
@@ -1281,9 +1363,8 @@ impl SlabTable {
     }
 
     /// The address of slot `slot` of slab `slab`. A slot below `nslots` is
-    /// a slot start of the class region; a bit index up to `slab_bits`
-    /// reaches here from a claim, whose padding bits above `nslots` are
-    /// never claimable (`class::axiom_no_padding_won` names the assumption).
+    /// a slot start of the class region; a claim passes bit indices below
+    /// `slab_bits`, and proves them slots (`AtomicBitmap::claim_word`).
     #[inline]
     pub(super) fn slot_ptr(&self, slab: usize, slot: usize) -> (r: *mut u8)
         requires
@@ -1626,22 +1707,35 @@ impl SlabTable {
     /// end ([`next_slab_locked`]), which is how
     /// [`ClassState::next_fresh_slab`](super::ClassState::next_fresh_slab) adds its slabs to the ghost; that no
     /// other arena's ghost holds it rests on the same bridge's assumption
-    /// for their lock values.
+    /// for their lock values. `init` takes each non-guard slab's init
+    /// markers from the commit lock's value and returns its fresh markers,
+    /// which join `inited` for `next_fresh_slab` to keep with the slabs.
     ///
     /// [`commit_slab`]: SlabTable::commit_slab
     /// [`next_slab_locked`]: SlabTable::next_slab_locked
     // Verus needs the explicit reborrow and a loop with an invariant.
     #[allow(clippy::explicit_auto_deref, clippy::while_let_loop)]
-    pub(super) fn take_group(&self, meta: &Meta, arena: u16, sets: &mut Inner, sets_page: usize) -> (r: Option<(usize, usize)>)
+    pub(super) fn take_group(
+        &self,
+        meta: &Meta,
+        arena: u16,
+        sets: &mut Inner,
+        sets_page: usize,
+        Tracked(inited): Tracked<&mut GhostPersistentSubset<int>>,
+    ) -> (r: Option<(usize, usize)>)
         requires
             old(sets).table@ == *self,
             old(sets).arena@ == arena,
+            old(inited).id() == self.spec_slots().mloc,
         ensures
             final(sets).same_sets(*old(sets)),
+            final(inited).id() == old(inited).id(),
+            old(inited)@.subset_of(final(inited)@),
             r matches Some((s, e)) ==> s < e <= self.spec_nslabs()
                 && self.spec_group_range(s >> self.lg_group) == (s, e)
                 && (forall|x: nat| #[trigger] old(sets).owns(x) ==> x < s)
-                && old(sets).group_end <= s,
+                && old(sets).group_end <= s
+                && (forall|x: int| s <= x < e && !self.spec_is_guard(x as usize) ==> #[trigger] slab_marked(*self, x, final(inited)@)),
     {
         broadcast use {axiom_table_lock_inv, axiom_table_lock_frame};
         proof {
@@ -1723,17 +1817,54 @@ impl SlabTable {
                 owner_mismatch(class, s >> self.lg_group, slab, previous, recorded);
             }
         }
+        // The init markers of each slab `init` runs on come out of the
+        // value's (the `&mut` is the guard's, as for every write below).
+        let gi = &mut *g;
+        let ghost sl = self.spec_slots();
+        proof {
+            self.lemma_slots_wf();
+            assert(s * sl.sb <= sl.nbits) by (nonlinear_arith)
+                requires s < self.nslabs, sl.nbits == self.nslabs * sl.sb, sl.sb > 0;
+        }
         let mut slabs = s..end;
         loop
             invariant
                 slabs.start <= slabs.end == end,
+                s <= slabs.start,
                 end <= self.spec_nslabs(),
                 self.lg_group < 64,
-                g@ == g0,
+                gi.same_but_fresh(g0),
+                self.inv(),
+                sl == self.spec_slots(),
+                sl.wf(),
+                sl.sb == cls.slab_bits,
+                sl.nslots == cls.nslots,
+                sl.nbits == self.spec_nslabs() * sl.sb,
+                gi.fresh@.id() == sl.mloc,
+                init_marks(slabs.start * sl.sb, self.spec_nslabs() * sl.sb).subset_of(gi.fresh@@),
+                inited.id() == sl.mloc,
+                old(inited)@.subset_of(inited@),
+                forall|x: int| s <= x < slabs.start && !self.spec_is_guard(x as usize)
+                    ==> #[trigger] slab_marked(*self, x, inited@),
                 *cls == class_table()[self.spec_class() as int],
                 cls.wf(),
+            ensures
+                gi.same_but_fresh(g0),
+                gi.fresh@.id() == sl.mloc,
+                init_marks(end * sl.sb, self.spec_nslabs() * sl.sb).subset_of(gi.fresh@@),
+                inited.id() == sl.mloc,
+                old(inited)@.subset_of(inited@),
+                forall|x: int| s <= x < end && !self.spec_is_guard(x as usize)
+                    ==> #[trigger] slab_marked(*self, x, inited@),
             decreases slabs.end - slabs.start,
         {
+            proof {
+                assert(slabs.start * sl.sb <= sl.nbits) by (nonlinear_arith)
+                    requires slabs.start <= self.spec_nslabs(), sl.nbits == self.spec_nslabs() * sl.sb, sl.sb > 0;
+                assert((slabs.start + 1) * sl.sb == slabs.start * sl.sb + sl.sb) by (nonlinear_arith);
+                crate::bitmap::lemma_marks_sub((slabs.start + 1) * sl.sb, self.spec_nslabs() * sl.sb,
+                    slabs.start * sl.sb, self.spec_nslabs() * sl.sb);
+            }
             match slabs.next() {
                 None => break,
                 Some(slab) => {
@@ -1760,13 +1891,45 @@ impl SlabTable {
                             }
                         }
                         SlabDesc::at(self.desc_base, class, slab).init(arena);
-                        self.bits_unchecked(slab).init(cls.nslots());
+                        let ghost f = slab * sl.sb;
+                        proof {
+                            assert(f + sl.sb <= sl.nbits) by (nonlinear_arith)
+                                requires slab < self.spec_nslabs(), sl.nbits == self.spec_nslabs() * sl.sb, f == slab * sl.sb, sl.sb > 0;
+                            crate::bitmap::lemma_marks_sub(f, f + sl.sb, f, self.spec_nslabs() * sl.sb);
+                            crate::bitmap::lemma_marks_split(f, f + sl.sb, self.spec_nslabs() * sl.sb);
+                        }
+                        let tracked fs = gi.fresh.borrow_mut().split(init_marks(f, f + sl.sb));
+                        let Tracked(m) = self.bits_unchecked(slab).init(cls.nslots(), Ghost(slab as int), Tracked(fs));
+                        proof {
+                            let before = inited@;
+                            inited.combine(m);
+                            assert forall|x: int| s <= x < slabs.start && !self.spec_is_guard(x as usize)
+                                implies #[trigger] slab_marked(*self, x, inited@) by {
+                                let fx = fresh_marks(x * sl.sb, x * sl.sb + sl.sb);
+                                if x != slab {
+                                    assert(slab_marked(*self, x, before));
+                                    assert forall|y: int| #[trigger] fx.contains(y) implies inited@.contains(y) by {
+                                        assert(before.contains(y));
+                                    }
+                                } else {
+                                    assert forall|y: int| #[trigger] fx.contains(y) implies inited@.contains(y) by {
+                                        assert(m@.contains(y));
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
         owner_word.store(arena, Ordering::Relaxed);
-        g.next_slab = end;
+        gi.next_slab = end;
+        proof {
+            let gr = gi.group@;
+            vstd::arithmetic::div_mod::lemma_mod_adds(s as int, gr as int, gr as int);
+            vstd::arithmetic::div_mod::lemma_mod_self_0(gr as int);
+            assert(gi.inv());
+        }
         self.committed_slabs.store(end, Ordering::Release);
         // `thp:auto` (design 7, 17; `thp.rs`): the group's range, still
         // reserved `PROT_NONE`, is advised once here, so the slabs the

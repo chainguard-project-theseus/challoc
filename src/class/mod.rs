@@ -70,7 +70,8 @@
 use crate::bitmap::subset;
 #[cfg(verus_only)]
 use crate::bitmap::{
-    Slots, addrs, has_bit, lemma_addrs_difference, lemma_addrs_union, lemma_bit_ops, mask_bits,
+    Slots, addrs, has_bit, lemma_addrs_difference, lemma_addrs_union, lemma_bit_ops,
+    lemma_subset_bits, mask_bits,
 };
 use crate::layout::{CLASSES, Class, MAX_SLAB_WORDS, Regions};
 #[cfg(verus_only)]
@@ -87,8 +88,11 @@ use crate::vspec::lock::{lock_frame, lock_init, lock_inv};
 use crate::vspec::zero::Zeroed;
 use core::sync::atomic::{AtomicU64, Ordering};
 #[cfg(verus_only)]
-use table::{bits_ghost, bits_shape, desc_at, lemma_bit_in_slab, slab_mask_of, words_of};
+use table::{
+    bits_ghost, bits_shape, desc_at, lemma_bit_in_slab, slab_marked, slab_mask_of, words_of,
+};
 use vstd::prelude::*;
+use vstd::resource::set::GhostPersistentSubset;
 use vstd::resource::set::GhostSingleton;
 use vstd::resource::set::GhostSubset;
 #[cfg(verus_only)]
@@ -604,6 +608,12 @@ struct Inner {
     arena: Ghost<u16>,
     #[allow(dead_code)]
     table: Ghost<SlabTable>,
+    /// Ghost: the fresh markers of every slab this arena owns but its
+    /// guards, which `AtomicBitmap::init` returned when `take_group`
+    /// handed the slab's group out: what a claim from the slab needs
+    /// (`AtomicBitmap::inited_by`).
+    #[allow(dead_code)]
+    inited: Tracked<GhostPersistentSubset<int>>,
 }
 
 } // verus!
@@ -779,6 +789,9 @@ impl Inner {
         &&& self.nbits() <= usize::MAX >> 12
         &&& forall|s: nat| #[trigger] self.committed@.contains(s) ==> s < self.nbits()
         &&& forall|s: nat| #[trigger] self.states@.contains_key(s) ==> s < self.nbits()
+        &&& self.inited@.id() == self.table@.spec_slots().mloc
+        &&& forall|s: nat| #[trigger] self.states@.contains_key(s) && !self.table@.spec_is_guard(s as usize)
+            ==> slab_marked(self.table@, s as int, self.inited@@)
     }
 
     /// The ghost link at slab `s`, apart from the current group: a
@@ -857,6 +870,7 @@ impl Inner {
         &&& self.dirty == o.dirty
         &&& self.arena == o.arena
         &&& self.table == o.table
+        &&& self.inited == o.inited
     }
 
     /// Values that differ only in the sets' stores agree on the invariant.
@@ -908,6 +922,7 @@ impl Inner {
         &&& self.dirty == o.dirty
         &&& self.arena == o.arena
         &&& self.table == o.table
+        &&& self.inited == o.inited
     }
 
     /// The exempt slab back in the link closes the invariant.
@@ -1379,6 +1394,7 @@ impl ClassState {
             final(g).dirty == old(g).dirty,
             final(g).arena == old(g).arena,
             final(g).table == old(g).table,
+            final(g).inited == old(g).inited,
     {
         d.set_state(s)
     }
@@ -1431,6 +1447,7 @@ impl ClassState {
             final(g).committed == old(g).committed,
             final(g).arena == old(g).arena,
             final(g).table == old(g).table,
+            final(g).inited == old(g).inited,
     {
         d.set_dirty_at(ns)
     }
@@ -1562,11 +1579,21 @@ impl ClassState {
     /// bits `0..n` means `live` no longer bounds the set bits: abort.
     ///
     /// [`finish`]: ClassState::finish
-    fn claim_prefix(&self, slab: usize, n: usize, state: State, live: usize, Tracked(toks): Tracked<&mut GhostSubset<int>>)
+    fn claim_prefix(
+        &self,
+        slab: usize,
+        n: usize,
+        state: State,
+        live: usize,
+        Tracked(toks): Tracked<&mut GhostSubset<int>>,
+        Tracked(inited): Tracked<&GhostPersistentSubset<int>>,
+    )
         requires
             n <= class_table()[self.spec_class() as int].nslots,
             slab < self.spec_nslabs(),
             old(toks).id() == self.spec_table().spec_slots().loc,
+            inited.id() == self.spec_table().spec_slots().mloc,
+            slab_marked(self.spec_table(), slab as int, inited@),
         ensures
             final(toks).id() == old(toks).id(),
             final(toks)@ == old(toks)@.union(prefix_addrs(self.spec_table(), slab as int, n as int)),
@@ -1591,6 +1618,7 @@ impl ClassState {
             invariant
                 bits_shape(bm, sb),
                 bits_ghost(bm, self.spec_table(), slab),
+                bm.inited_by(*inited),
                 self.spec_table().inv(),
                 self.spec_table().spec_class() == self.spec_class(),
                 self.spec_table().spec_nslabs() == self.spec_nslabs(),
@@ -1622,7 +1650,7 @@ impl ClassState {
                 assert(want < 64 ==> (1u64 << want) >= 1u64) by (bit_vector);
             }
             let expect = if want == 64 { !0 } else { (1u64 << want) - 1 };
-            let got = bm.claim_word(w, want, Tracked(&mut *toks));
+            let got = bm.claim_word(w, want, Tracked(&mut *toks), Tracked(inited));
             if got != expect {
                 zero_slab_had_bits_set(self.class as usize, slab, self.arena, state, live, w, got, expect);
             }
@@ -1927,9 +1955,20 @@ impl ClassState {
     /// every slot is reserved here leaves the partial set at once: nothing
     /// in it can be released before this claim hands slots out, so no
     /// release can race the clear.
-    fn plan(&self, meta: &Meta, want: usize, picks: &mut [Pick; MAX_PICKS], Tracked(ptoks): Tracked<&mut Map<int, GhostSubset<int>>>, Tracked(pz): Tracked<&mut Map<int, Zeroed>>) -> (np: usize)
+    // The last three arguments are tracked state.
+    #[allow(clippy::too_many_arguments)]
+    fn plan(
+        &self,
+        meta: &Meta,
+        want: usize,
+        picks: &mut [Pick; MAX_PICKS],
+        Tracked(ptoks): Tracked<&mut Map<int, GhostSubset<int>>>,
+        Tracked(pz): Tracked<&mut Map<int, Zeroed>>,
+        Tracked(pm): Tracked<&mut Map<int, GhostPersistentSubset<int>>>,
+    ) -> (np: usize)
         ensures
             picks_zero(self.spec_table(), final(picks)@, 0, np as int, *final(pz)),
+            picks_marks(self.spec_table(), final(picks)@, 0, np as int, *final(pm)),
             picks_toks(self.spec_table(), final(picks)@, 0, np as int, *final(ptoks)),
             np <= MAX_PICKS,
             picks_ok(final(picks)@, np as int, self.spec_nslabs(), class_table()[self.spec_class() as int].nslots as nat),
@@ -1956,6 +1995,7 @@ impl ClassState {
                 picks_sum(picks@, np as int) + remaining == want,
                 picks_toks(self.spec_table(), picks@, 0, np as int, *ptoks),
                 picks_zero(self.spec_table(), picks@, 0, np as int, *pz),
+                picks_marks(self.spec_table(), picks@, 0, np as int, *pm),
                 next matches Some(x) ==> x < self.spec_nslabs() && g@.partial.map@.contains(x as nat),
             decreases
                 match next {
@@ -1979,11 +2019,13 @@ impl ClassState {
                 }
                 let ghost z0 = *pz;
                 let ghost t0 = *ptoks;
-                self.take(&mut g, s, &mut remaining, picks, &mut np, Tracked(&mut *ptoks), Tracked(&mut *pz));
+                let ghost m0 = *pm;
+                self.take(&mut g, s, &mut remaining, picks, &mut np, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm));
                 proof {
                     lemma_picks_zero_step(self.spec_table(), before, picks@, k as int, z0, *pz);
                     lemma_picks_sum(before, picks@, k as int);
                     lemma_picks_toks_step(self.spec_table(), before, picks@, k as int, t0, *ptoks);
+                    lemma_picks_marks_step(self.spec_table(), before, picks@, k as int, m0, *pm);
                 }
             }
             next = g.partial.map.lowest_set_from(s + 1);
@@ -2000,6 +2042,7 @@ impl ClassState {
                 picks_sum(picks@, np as int) + remaining == want,
                 picks_toks(self.spec_table(), picks@, 0, np as int, *ptoks),
                 picks_zero(self.spec_table(), picks@, 0, np as int, *pz),
+                picks_marks(self.spec_table(), picks@, 0, np as int, *pm),
             decreases MAX_PICKS - np,
         {
             let s = match self.next_slab(&mut g, meta) {
@@ -2010,11 +2053,13 @@ impl ClassState {
             let ghost k = np;
             let ghost z0 = *pz;
             let ghost t0 = *ptoks;
-            self.take(&mut g, s, &mut remaining, picks, &mut np, Tracked(&mut *ptoks), Tracked(&mut *pz));
+            let ghost m0 = *pm;
+            self.take(&mut g, s, &mut remaining, picks, &mut np, Tracked(&mut *ptoks), Tracked(&mut *pz), Tracked(&mut *pm));
             proof {
                 lemma_picks_zero_step(self.spec_table(), before, picks@, k as int, z0, *pz);
                 lemma_picks_sum(before, picks@, k as int);
                 lemma_picks_toks_step(self.spec_table(), before, picks@, k as int, t0, *ptoks);
+                lemma_picks_marks_step(self.spec_table(), before, picks@, k as int, m0, *pm);
             }
         }
         proof {
@@ -2033,7 +2078,7 @@ impl ClassState {
     /// ([`live_above_slots`]; the release profile would wrap without it).
     /// The state and stamp writes go through the bridges, and `ready` is
     /// what makes the invariant true afterwards.
-    // The negated test is the form the proof states; the last two
+    // The negated test is the form the proof states; the last three
     // arguments are tracked state.
     #[allow(clippy::nonminimal_bool, clippy::too_many_arguments)]
     fn take(
@@ -2045,6 +2090,7 @@ impl ClassState {
         np: &mut usize,
         Tracked(ptoks): Tracked<&mut Map<int, GhostSubset<int>>>,
         Tracked(pz): Tracked<&mut Map<int, Zeroed>>,
+        Tracked(pm): Tracked<&mut Map<int, GhostPersistentSubset<int>>>,
     )
         requires
             old(g).ready(slab as nat),
@@ -2073,11 +2119,16 @@ impl ClassState {
             final(ptoks)[*old(np) as int]@ == pick_addrs(self.spec_table(), final(picks)[*old(np) as int]),
             *final(pz) == old(pz).insert(*old(np) as int, final(pz)[*old(np) as int]),
             pick_zero(self.spec_table(), final(picks)[*old(np) as int], final(pz)[*old(np) as int]),
+            *final(pm) == old(pm).insert(*old(np) as int, final(pm)[*old(np) as int]),
+            final(pm)[*old(np) as int].id() == self.spec_table().spec_slots().mloc,
+            slab_marked(self.spec_table(), final(picks)[*old(np) as int].slab as int, final(pm)[*old(np) as int]@),
     {
         proof {
             use_type_invariant(self);
             broadcast use crate::vspec::class::axiom_class_table_wf;
             assert(class_table()[self.spec_class() as int].wf());
+            // An owned slab that is not a guard was initialised.
+            assert(g.states@.contains_key(slab as nat));
         }
         let desc = self.desc(slab);
         let live = desc.live();
@@ -2130,7 +2181,7 @@ impl ClassState {
         let _t = self.table();
         let tracked mut pt = _t.empty_tokens();
         if zero {
-            self.claim_prefix(slab, n, state, live, Tracked(&mut pt));
+            self.claim_prefix(slab, n, state, live, Tracked(&mut pt), Tracked(g.inited.borrow()));
         }
         // The zero pick's bytes, slots `0..n` of the slab: a `Fresh` slab
         // was never handed out since its pages were mapped, so they are
@@ -2168,6 +2219,7 @@ impl ClassState {
                 =~= prefix_addrs(self.spec_table(), slab as int, n as int));
             ptoks.tracked_insert(*np as int, pt);
             pz.tracked_insert(*np as int, zt);
+            pm.tracked_insert(*np as int, g.inited.borrow().duplicate());
         }
         *np += 1;
         *remaining -= n;
@@ -2405,6 +2457,7 @@ impl ClassState {
         let partial = Set::in_table(sets, class, 0);
         let empty = Set::in_table(sets, class, 1);
         let purged = Set::in_table(sets, class, 2);
+        let tracked im = table.empty_marks();
         let inner = Inner {
             partial,
             empty,
@@ -2418,6 +2471,7 @@ impl ClassState {
             dirty: Ghost(Map::empty()),
             arena: Ghost(arena),
             table: Ghost(*table),
+            inited: Tracked(im),
         };
         proof {
             let n = inner.nbits();
@@ -2598,10 +2652,12 @@ impl ClassState {
     /// loop condition and `finish`'s count.
     ///
     /// The slots and their tokens: each `finish` writes the bit addresses
-    /// of the bits it won and hands `toks` the token of each whose bit is
-    /// a slot (`SlotToks::holds`), under the pointer's index in `out`.
-    /// Those are slot starts (`Regions::is_slot`) with tokens because a
-    /// claim never wins a padding bit ([`axiom_no_padding_won`]).
+    /// of the bits it won and hands `toks` the token of each
+    /// (`SlotToks::holds`), under the pointer's index in `out`. They are
+    /// slot starts (`Regions::is_slot`) because a claim never wins a
+    /// padding bit: `plan` hands `finish` the fresh markers of each pick's
+    /// slab, which show `AtomicBitmap::init` set its padding bits
+    /// (`AtomicBitmap::claim_word`).
     ///
     /// The zero tokens ([`claim_zero_ok`]): a claim is zeroed only when
     /// every pick of every plan was a zero pick (`finish` clears the flag
@@ -2649,7 +2705,8 @@ impl ClassState {
         {
             let tracked mut ptoks: Map<int, GhostSubset<int>> = Map::tracked_empty();
             let tracked mut pz: Map<int, Zeroed> = Map::tracked_empty();
-            let np = self.plan(meta, out.len() - got, &mut picks, Tracked(&mut ptoks), Tracked(&mut pz));
+            let tracked mut pm: Map<int, GhostPersistentSubset<int>> = Map::tracked_empty();
+            let np = self.plan(meta, out.len() - got, &mut picks, Tracked(&mut ptoks), Tracked(&mut pz), Tracked(&mut pm));
             if np == 0 {
                 break;
             }
@@ -2663,7 +2720,7 @@ impl ClassState {
                 assert forall|i: int| 0 <= i < np implies picks@.subrange(0, np as int)[i] == #[trigger] picks@[i] by {}
                 lemma_picks_sum(picks@.subrange(0, np as int), picks@, np as int);
             }
-            got += self.finish(&picks[..np], &mut out[got..], &mut zeroed, rng.as_deref_mut(), Tracked(ptoks), Tracked(pz), Tracked(&mut *toks), Tracked(&mut z), Ghost(got as int));
+            got += self.finish(&picks[..np], &mut out[got..], &mut zeroed, rng.as_deref_mut(), Tracked(ptoks), Tracked(pz), Tracked(pm), Tracked(&mut *toks), Tracked(&mut z), Ghost(got as int));
             proof {
                 assert forall|i: int| 0 <= i < g0 implies #[trigger] out@[i] == o0[i] by {}
                 assert forall|i: int| 0 <= i < got implies toks.entry(t, #[trigger] out@[i], 0 + i) by {
@@ -2689,7 +2746,6 @@ impl ClassState {
             }
         }
         proof {
-            axiom_no_padding_won(t, *toks, out@, 0, got as int);
             lemma_holds_real(t, *toks, out@, 0, got as int);
             if got > 0 && zeroed {
                 assert forall|i: int| 0 <= i < got implies #[trigger] z.contains_key(i) && z[i].covers(out@[i], class_table()[self.spec_class() as int].size as int) by {
@@ -2767,6 +2823,7 @@ impl ClassState {
         mut rng: Option<&mut u64>,
         Tracked(ptoks): Tracked<Map<int, GhostSubset<int>>>,
         Tracked(pz): Tracked<Map<int, Zeroed>>,
+        Tracked(pm): Tracked<Map<int, GhostPersistentSubset<int>>>,
         Tracked(otoks): Tracked<&mut SlotToks>,
         Tracked(zt): Tracked<&mut Map<int, Zeroed>>,
         Ghost(base): Ghost<int>,
@@ -2776,6 +2833,7 @@ impl ClassState {
             picks_sum(picks@, picks@.len() as int) <= old(out)@.len(),
             picks_zero(self.spec_table(), picks@, 0, picks@.len() as int, pz),
             picks_toks(self.spec_table(), picks@, 0, picks@.len() as int, ptoks),
+            picks_marks(self.spec_table(), picks@, 0, picks@.len() as int, pm),
         ensures
             r == picks_sum(picks@, picks@.len() as int),
             *final(zeroed) ==> *old(zeroed),
@@ -2793,6 +2851,7 @@ impl ClassState {
         let ghost s = _t0.spec_slots();
         let tracked mut ptoks = ptoks;
         let tracked mut pz = pz;
+        let tracked mut pm = pm;
         proof {
             use_type_invariant(self);
             broadcast use crate::vspec::class::axiom_class_table_wf;
@@ -2836,6 +2895,7 @@ impl ClassState {
                 *zeroed ==> zero_keys(*zt, out@, base, 0, got as int, s.size),
                 zero_frame(*zt, *old(zt), base, base + got),
                 picks_toks(*_t0, picks@, i, picks@.len() as int, ptoks),
+                picks_marks(*_t0, picks@, i, picks@.len() as int, pm),
                 otoks.holds(*_t0, out@, base, 0, got as int),
                 otoks.frame(*old(otoks), base, base + got),
             ensures
@@ -2879,7 +2939,22 @@ impl ClassState {
             }
             let tracked mut zc = pz.tracked_remove(pi);
             let tracked mut cur = ptoks.tracked_remove(pi);
+            let ghost pm0 = pm;
             proof {
+                assert(pm.contains_key(pi));
+            }
+            let tracked cm = pm.tracked_remove(pi);
+            proof {
+                assert forall|j: int| i <= j < picks@.len() implies {
+                    &&& #[trigger] pm.contains_key(j)
+                    &&& pm[j].id() == s.mloc
+                    &&& slab_marked(*_t0, picks@[j].slab as int, pm[j]@)
+                } by {
+                    assert(pm0.contains_key(j));
+                }
+                assert(picks_marks(*_t0, picks@, i, picks@.len() as int, pm));
+                assert(cm.id() == s.mloc);
+                assert(slab_marked(*_t0, picks@[pi].slab as int, cm@));
                 lemma_picks_toks_rest(*_t0, picks@, pi, picks@.len() as int, pt0, ptoks);
                 assert forall|j: int| i <= j < picks@.len() implies #[trigger] pz.contains_key(j) && pick_zero(*_t0, picks@[j], pz[j]) by {
                     assert(pz0.contains_key(j));
@@ -2920,6 +2995,7 @@ impl ClassState {
                         *zeroed ==> zero_keys(*zt, out@, base, 0, (got + k) as int, s.size),
                         zero_frame(*zt, *old(zt), base, base + got + k),
                         picks_zero(*_t0, picks@, i, picks@.len() as int, pz),
+                        picks_marks(*_t0, picks@, i, picks@.len() as int, pm),
                         cur@ == addrs(s, VSet::<int>::range(f + k, f + want)),
                         otoks.holds(*_t0, out@, base, 0, (got + k) as int),
                         otoks.frame(*old(otoks), base, base + got + k),
@@ -2960,12 +3036,8 @@ impl ClassState {
                         zt.tracked_insert(base + got + k, zk);
                         assert(zt.contains_key(base + (got + k)) && zt[base + (got + k)].covers(out@[got + k], s.size));
                         if *zeroed {
-                            assert forall|j: int| 0 <= j < got + k + 1 implies #[trigger] zt.contains_key(base + j) && zt[base + j].covers(out@[j], s.size) by {
-                                if j < got + k {
-                                    assert(out@[j] == o1[j]);
-                                    assert(z1.contains_key(base + j));
-                                }
-                            }
+                            assert(out@ =~= o1.update(got + k, out@[got + k]));
+                            lemma_zero_keys_push(z1, *zt, o1, out@, base, (got + k) as int, s.size);
                         }
                         assert forall|kk: int| !(base <= kk < base + got + k + 1) implies {
                             &&& #[trigger] zt.contains_key(kk) == old(zt).contains_key(kk)
@@ -2981,6 +3053,7 @@ impl ClassState {
                 got += want;
                 proof {
                     assert(picks_toks(*_t0, picks@, i, picks@.len() as int, ptoks));
+                    assert(picks_marks(*_t0, picks@, i, picks@.len() as int, pm));
                     lemma_zero_frame_widen(*zt, *old(zt), base, base + got, base + got);
                 }
                 continue;
@@ -2995,6 +3068,9 @@ impl ClassState {
                 None => 0,
             };
             let mut empty_passes = 0u32;
+            proof {
+                assert(picks_marks(*_t0, picks@, i, picks@.len() as int, pm));
+            }
             while k < want
                 invariant
                     k <= want,
@@ -3031,10 +3107,12 @@ impl ClassState {
                     !*zeroed,
                     zero_frame(*zt, *old(zt), base, base + got),
                     picks_zero(*_t0, picks@, i, picks@.len() as int, pz),
+                    picks_marks(*_t0, picks@, i, picks@.len() as int, pm),
+                    bm.inited_by(cm),
                 decreases want - k, MAX_EMPTY_PASSES - empty_passes,
             {
                 let tracked mut wt = t.empty_tokens();
-                let Some((w, bits)) = bm.claim_from(word, want - k, Tracked(&mut wt)) else {
+                let Some((w, bits)) = bm.claim_from(word, want - k, Tracked(&mut wt), Tracked(&cm)) else {
                     // Every word was full when inspected. `plan` reserved
                     // no more than `nslots - live` and set bits never
                     // exceed `live`, so the slots exist: a concurrent
@@ -3053,6 +3131,7 @@ impl ClassState {
                 proof {
                     lemma_popcount_clear_lowest(m);
                     assert(VSet::<int>::empty().union(bm.slot_addrs(w as int, bits)) =~= bm.slot_addrs(w as int, bits));
+                    assert(subset(bits, bits)) by (bit_vector);
                 }
                 while m != 0
                     invariant
@@ -3079,6 +3158,8 @@ impl ClassState {
                         f == slab * s.sb,
                         wt.id() == s.loc,
                         wt@ == word_addrs(*_t0, slab as int, w as int, m),
+                        subset(m, bits),
+                        bm.all_real(w as int, bits),
                         otoks.holds(*_t0, out@, base, 0, (got + k) as int),
                         otoks.frame(*old(otoks), base, base + got + k),
                         !*zeroed,
@@ -3096,6 +3177,8 @@ impl ClassState {
                         let x = m & sub(m, 1);
                         assert(subset(x, sm) && x < m) by (bit_vector)
                             requires m != 0, x == m & sub(m, 1), m & !sm == 0u64;
+                        assert(subset(x, bits)) by (bit_vector)
+                            requires x == m & sub(m, 1), m & !bits == 0u64;
                     }
                     let ghost m0 = m;
                     let b = m.trailing_zeros() as usize;
@@ -3110,15 +3193,16 @@ impl ClassState {
                         lemma_word_pop(s, f, w as int, m0, b as u64);
                         let rest = mask_bits(s, f, w as int, m);
                         let old_t = *otoks;
-                        if s.real(bit) {
-                            lemma_addrs_insert(s, rest, bit);
-                            lemma_addrs_remove(s, rest, bit);
-                            assert(wt@.contains(s.addr(bit)));
-                            let tracked one = wt.split_singleton(s.addr(bit));
-                            otoks.put(base + got + k, bit, one);
-                        } else {
-                            otoks.put_bit(base + got + k, bit);
-                        }
+                        // A claimed bit is a slot (`claim_from`).
+                        lemma_subset_bits(m0, bits);
+                        assert(has_bit(m0, b as u64));
+                        assert(has_bit(bits, b as u64));
+                        assert(s.real(bit));
+                        lemma_addrs_insert(s, rest, bit);
+                        lemma_addrs_remove(s, rest, bit);
+                        assert(wt@.contains(s.addr(bit)));
+                        let tracked one = wt.split_singleton(s.addr(bit));
+                        otoks.put(base + got + k, bit, one);
                         SlotToks::lemma_extend(old_t, *otoks, *old(otoks), *_t0, o1, out@, base, (got + k) as int, bit);
                     }
                     k += 1;
@@ -3289,8 +3373,7 @@ pub proof fn lemma_addrs_insert(s: Slots, a: VSet<int>, b: int)
 
 /// Ghost: the slot tokens of a batch of claimed slot pointers, by key
 /// (the pointer's index, from a base): the class bitmap bit behind each
-/// pointer (`bits`), and the token of each pointer whose bit is a slot
-/// (`toks`, one address each).
+/// pointer (`bits`), and each pointer's token (`toks`, one address each).
 // Ghost: ordinary builds keep the type but erase the code that reads it.
 #[allow(dead_code)]
 pub tracked struct SlotToks {
@@ -3300,24 +3383,22 @@ pub tracked struct SlotToks {
 
 impl SlotToks {
     /// Entries `lo..hi` of `out` are claimed bits of table `t` (keys
-    /// `base + i`), each at its bit's address, with the bit's token when
-    /// the bit is a slot.
+    /// `base + i`), slots, each at its bit's address, with its token.
     pub open spec fn holds(self, t: SlabTable, out: Seq<*mut u8>, base: int, lo: int, hi: int) -> bool {
         forall|i: int| lo <= i < hi ==> self.entry(t, #[trigger] out[i], base + i)
     }
 
-    /// Key `key` holds the bit behind `p` (in the region, at `p`), and
-    /// `p`'s token if the bit is a slot.
+    /// Key `key` holds the bit behind `p` (in the region, at `p`), which
+    /// is a slot, and `p`'s token.
     pub open spec fn entry(self, t: SlabTable, p: *mut u8, key: int) -> bool {
         let s = t.spec_slots();
         &&& self.bits.contains_key(key)
         &&& 0 <= self.bits[key] < s.nbits
         &&& p@.addr as int == s.addr(self.bits[key])
-        &&& s.real(self.bits[key]) ==> {
-            &&& self.toks.contains_key(key)
-            &&& self.toks[key].id() == s.loc
-            &&& self.toks[key]@ == p@.addr as int
-        }
+        &&& s.real(self.bits[key])
+        &&& self.toks.contains_key(key)
+        &&& self.toks[key].id() == s.loc
+        &&& self.toks[key]@ == p@.addr as int
     }
 
     /// `toks` holds the token of each of `out[lo..hi]` (keys `base + i`).
@@ -3366,11 +3447,10 @@ impl SlotToks {
         }
     }
 
-    /// [`SlotToks::owns`] of claimed bits that are all slots.
+    /// [`SlotToks::owns`] of claimed bits.
     pub proof fn lemma_owns_of_real(self, t: SlabTable, out: Seq<*mut u8>, base: int, n: int)
         requires
             self.holds(t, out, base, 0, n),
-            forall|i: int| 0 <= i < n ==> t.spec_slots().real(#[trigger] self.bits[base + i]),
         ensures
             self.owns(t, out, base, 0, n),
     {
@@ -3425,11 +3505,10 @@ impl SlotToks {
             forall|j: int| j != base + n && old.toks.contains_key(j) ==> #[trigger] new.toks[j] == old.toks[j],
             0 <= bit < t.spec_slots().nbits,
             o2[n]@.addr as int == t.spec_slots().addr(bit),
-            t.spec_slots().real(bit) ==> {
-                &&& new.toks.contains_key(base + n)
-                &&& new.toks[base + n].id() == t.spec_slots().loc
-                &&& new.toks[base + n]@ == o2[n]@.addr as int
-            },
+            t.spec_slots().real(bit),
+            new.toks.contains_key(base + n),
+            new.toks[base + n].id() == t.spec_slots().loc,
+            new.toks[base + n]@ == o2[n]@.addr as int,
         ensures
             new.holds(t, o2, base, 0, n + 1),
             new.frame(orig, base, base + n + 1),
@@ -3452,14 +3531,6 @@ impl SlotToks {
         self.toks.tracked_insert(key, tok);
     }
 
-    /// Record `bit`, which has no token (a padding bit), under `key`.
-    pub proof fn put_bit(tracked &mut self, key: int, bit: int)
-        ensures
-            final(self).bits == old(self).bits.insert(key, bit),
-            final(self).toks == old(self).toks,
-    {
-        self.bits = self.bits.insert(key, bit);
-    }
 }
 
 /// The tokens a pick holds: the prefix a zero pick claimed under the lock.
@@ -3519,6 +3590,26 @@ proof fn lemma_zero_frame_widen(new: Map<int, Zeroed>, old: Map<int, Zeroed>, lo
         &&& old.contains_key(k) ==> new[k] == old[k]
     } by {
         assert(!(lo <= k < hi));
+    }
+}
+
+/// [`zero_keys`] of one more slot, `out[n]`, whose token `z1` holds under
+/// key `base + n`, after `out[..n]`, which `out` keeps from `o1`.
+proof fn lemma_zero_keys_push(z0: Map<int, Zeroed>, z1: Map<int, Zeroed>, o1: Seq<*mut u8>, out: Seq<*mut u8>, base: int, n: int, size: int)
+    requires
+        0 <= n < o1.len(),
+        zero_keys(z0, o1, base, 0, n, size),
+        out == o1.update(n, out[n]),
+        z1 == z0.insert(base + n, z1[base + n]),
+        z1[base + n].covers(out[n], size),
+    ensures
+        zero_keys(z1, out, base, 0, n + 1, size),
+{
+    assert forall|j: int| 0 <= j < n + 1 implies #[trigger] z1.contains_key(base + j) && z1[base + j].covers(out[j], size) by {
+        if j < n {
+            assert(out[j] == o1[j]);
+            assert(z0.contains_key(base + j));
+        }
     }
 }
 
@@ -3584,24 +3675,7 @@ proof fn lemma_real_is_slot(t: SlabTable, b: int, p: usize)
     assert(p as int == process_regions().slot_at(t.spec_class() as int, slab, slot));
 }
 
-/// Trusted: no claim wins a padding bit, one of the bits from `nslots` up
-/// to `slab_bits` of a slab. `AtomicBitmap::init` sets them when it hands
-/// the slab out and nothing clears them (every release checks its slot
-/// against `nslots` first, `SlabTable::locate` and `Regions::slab_slot`),
-/// so a claim's `fetch_or` never wins one; the bitmap word invariants
-/// (`bitmap::WordPred`) do not track padding bits, so this is assumed.
-/// Private to `class` (a `SlotToks` can record any bit, so a call on
-/// bits nothing claimed would prove a padding bit a slot):
-/// `ClassState::claim_with` is its one call, on the bits its `finish`
-/// calls recorded.
-axiom fn axiom_no_padding_won(t: SlabTable, toks: SlotToks, out: Seq<*mut u8>, base: int, n: int)
-    requires
-        toks.holds(t, out, base, 0, n),
-    ensures
-        forall|i: int| 0 <= i < n ==> t.spec_slots().real(#[trigger] toks.bits[base + i]),
-;
-
-/// Claimed bits that are all slots: the entries are slot starts
+/// Claimed bits, which are all slots: the entries are slot starts
 /// (`Regions::is_slot`) and `toks` holds the token of each.
 #[verifier::spinoff_prover]
 proof fn lemma_holds_real(t: SlabTable, toks: SlotToks, out: Seq<*mut u8>, base: int, n: int)
@@ -3609,7 +3683,6 @@ proof fn lemma_holds_real(t: SlabTable, toks: SlotToks, out: Seq<*mut u8>, base:
         t.inv(),
         0 <= n <= out.len(),
         toks.holds(t, out, base, 0, n),
-        forall|i: int| 0 <= i < n ==> t.spec_slots().real(#[trigger] toks.bits[base + i]),
     ensures
         toks.owns(t, out, base, 0, n),
         slots_in(out, t.spec_class() as int, 0, n),
@@ -3672,6 +3745,48 @@ proof fn lemma_picks_toks_step(
     } by {
         if j < k {
             assert(t0.contains_key(j));
+            assert(p1[j] == p0[j]);
+        }
+    }
+}
+
+/// `pm` holds, by pick index, the fresh markers of the slab of each of
+/// picks `lo..hi`: `init` ran on it (`AtomicBitmap::inited_by`).
+spec fn picks_marks(t: SlabTable, p: Seq<Pick>, lo: int, hi: int, pm: Map<int, GhostPersistentSubset<int>>) -> bool {
+    forall|j: int| lo <= j < hi ==> {
+        &&& #[trigger] pm.contains_key(j)
+        &&& pm[j].id() == t.spec_slots().mloc
+        &&& slab_marked(t, p[j].slab as int, pm[j]@)
+    }
+}
+
+/// [`picks_marks`] of one more pick, `k`, after picks `0..k` that keep
+/// theirs.
+proof fn lemma_picks_marks_step(
+    t: SlabTable,
+    p0: Seq<Pick>,
+    p1: Seq<Pick>,
+    k: int,
+    m0: Map<int, GhostPersistentSubset<int>>,
+    m1: Map<int, GhostPersistentSubset<int>>,
+)
+    requires
+        0 <= k,
+        picks_marks(t, p0, 0, k, m0),
+        forall|i: int| 0 <= i < k ==> p1[i] == p0[i],
+        m1 == m0.insert(k, m1[k]),
+        m1[k].id() == t.spec_slots().mloc,
+        slab_marked(t, p1[k].slab as int, m1[k]@),
+    ensures
+        picks_marks(t, p1, 0, k + 1, m1),
+{
+    assert forall|j: int| 0 <= j < k + 1 implies {
+        &&& #[trigger] m1.contains_key(j)
+        &&& m1[j].id() == t.spec_slots().mloc
+        &&& slab_marked(t, p1[j].slab as int, m1[j]@)
+    } by {
+        if j < k {
+            assert(m0.contains_key(j));
             assert(p1[j] == p0[j]);
         }
     }

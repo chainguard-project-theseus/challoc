@@ -1849,6 +1849,7 @@ fn a_zero_pick_never_receives_a_slot_another_claim_used_in_between() {
             &mut picks,
             Tracked::assume_new(),
             Tracked::assume_new(),
+            Tracked::assume_new(),
         );
         assert_eq!(np, 1);
         assert_eq!((picks[0].slab, picks[0].n, picks[0].state), (0, 1, prior));
@@ -1891,6 +1892,7 @@ fn a_zero_pick_never_receives_a_slot_another_claim_used_in_between() {
                 &mut out,
                 &mut zeroed,
                 None,
+                Tracked::assume_new(),
                 Tracked::assume_new(),
                 Tracked::assume_new(),
                 Tracked::assume_new(),
@@ -2021,6 +2023,7 @@ fn a_plan_over_a_slab_with_live_above_nslots_aborts() {
         &mut picks,
         Tracked::assume_new(),
         Tracked::assume_new(),
+        Tracked::assume_new(),
     );
 }
 
@@ -2040,6 +2043,7 @@ fn a_plan_that_takes_an_empty_slab_the_counts_do_not_know_aborts() {
         &env.meta,
         1,
         &mut picks,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
     );
@@ -2076,7 +2080,9 @@ fn a_fresh_slab_with_a_bit_set_before_its_first_take_aborts() {
     assert_eq!(p.len(), n);
     assert_eq!(cs.desc(1).state(), State::Fresh);
     assert_eq!(
-        cs.table().bits(1).claim_word(0, 1, Tracked::assume_new()),
+        cs.table()
+            .bits(1)
+            .claim_word(0, 1, Tracked::assume_new(), Tracked::assume_new()),
         0b1,
         "bit 0 of slab 1 set behind the protocol's back"
     );
@@ -2227,6 +2233,7 @@ fn a_plan_that_takes_a_purged_slab_the_counts_do_not_know_aborts() {
         &env.meta,
         1,
         &mut picks,
+        Tracked::assume_new(),
         Tracked::assume_new(),
         Tracked::assume_new(),
     );

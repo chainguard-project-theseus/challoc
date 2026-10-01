@@ -3,8 +3,9 @@
 //! tokens").
 //!
 //! vstd's permission atomics (`vstd::atomic`, and `atomic_ghost` over
-//! them) compile every operation as `SeqCst`; the bitmap's `fetch_or` is
-//! `Acquire` and its `fetch_and` `Release`. These wrappers follow vstd's
+//! them) compile every operation as `SeqCst`; a claim's `fetch_or` is
+//! `Acquire`, a release's `fetch_and` `Release`, and `AtomicBitmap::init`'s
+//! writes `Relaxed`. These wrappers follow vstd's
 //! `PAtomicU64` pattern over a plain `core` `AtomicU64` instead: a
 //! [`WordPerm`] names the word's address and value, each operation is an
 //! `#[verifier::atomic]` function (so it can run inside an
@@ -14,8 +15,8 @@
 //! specifies their result as any value, which transfers no tokens.
 //!
 //! Trusted, all of it:
-//! - each wrapped `core` operation is one atomic read-modify-write of the
-//!   word, as `core` documents;
+//! - each wrapped `core` operation is one atomic operation on the word (a
+//!   read-modify-write, or a store), as `core` documents;
 //! - the proof model is sequentially consistent: the specifications ignore
 //!   `ordering`, so nothing here proves that `Relaxed`, `Acquire` and
 //!   `Release` are strong enough (`verus/TODO.md`, Tier 4);
@@ -24,11 +25,9 @@
 //!   uninterpreted identity). The permissions are minted once per class
 //!   bitmap, by `SlabTable::new` (`table::axiom_fresh_words`).
 //!
-//! A permission's value agrees with its word on the slot bits, which are
-//! all the word invariant (`bitmap::WordPred`) reads. `AtomicBitmap::init`
-//! sets padding bits with plain `core` writes that the permission does not
-//! see, so on padding bits the value can differ from the word; no proof
-//! reads them. `init` is the only bitmap writer outside these wrappers.
+//! A permission's value is its word's: every write of a class bitmap word
+//! goes through these wrappers (`AtomicBitmap::init`, `claim_word` and
+//! `release`), each inside the word's invariant (`bitmap::WordPred`).
 
 use core::sync::atomic::{AtomicU64, Ordering};
 use vstd::prelude::*;
@@ -39,8 +38,7 @@ verus! {
 pub uninterp spec fn word_addr(w: &AtomicU64) -> usize;
 
 /// Ghost permission to the word at [`addr`](WordPerm::addr): its current
-/// [`value`](WordPerm::value) (on the slot bits; see the module doc). It
-/// is not `Copy`.
+/// [`value`](WordPerm::value). It is not `Copy`.
 #[verifier::external_body]
 pub tracked struct WordPerm {
     _no_copy: (),
@@ -69,6 +67,22 @@ pub fn fetch_or(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Tracke
     no_unwind
 {
     w.fetch_or(v, ordering)
+}
+
+/// `w.store(v, ordering)`.
+#[inline(always)]
+#[verifier::external_body]
+#[verifier::atomic]
+pub fn store(w: &AtomicU64, v: u64, ordering: Ordering, Tracked(perm): Tracked<&mut WordPerm>)
+    requires
+        old(perm).addr() == word_addr(w),
+    ensures
+        final(perm).addr() == old(perm).addr(),
+        final(perm).value() == v,
+    opens_invariants none
+    no_unwind
+{
+    w.store(v, ordering)
 }
 
 /// `w.fetch_and(v, ordering)`.
