@@ -29,5 +29,4 @@ Environment facts:
   quick <vm>`) is the ~2-minute go/no-go and comes first; `make ab` /
   `challoc-bench ab` is the protocol tier and the only source of numbers
   for pull requests, issues and acceptance.
-- Never run `cargo fmt` over files you did not edit; format only the
-  lines you touched.
+- Run `cargo fmt` before committing; CI requires `cargo fmt --check`.

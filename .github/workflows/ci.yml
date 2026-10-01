@@ -1,9 +1,9 @@
 # Per-PR CI (design: the CI design's section 1, with the owner decisions of
 # 2026-09-30: no macOS job, kernel floor 5.14 with a 5.10 tripwire).
 #
-#   lint        rustfmt and clippy (advisory until the one-time fmt commit
-#               and a clippy baseline; flip vars.FMT_ENFORCED /
-#               vars.CLIPPY_ENFORCED), shellcheck on ci/, actionlint, zizmor
+#   lint        rustfmt (required), clippy (advisory until a clippy
+#               baseline; flip vars.CLIPPY_ENFORCED), shellcheck on ci/,
+#               actionlint, zizmor
 #   msrv-build  the shipped cdylib with the rust-version toolchain (1.94)
 #   linux       `make test` in the Wolfi dev container, {x86_64, aarch64} x
 #               quantum {16, 8}, plus the GLIBC <= 2.44 readelf assertion
@@ -45,8 +45,6 @@ jobs:
           components: rustfmt, clippy
       - name: rustfmt
         run: cargo fmt --check
-        # Advisory until the one-time `cargo fmt` commit (plan phase d).
-        continue-on-error: ${{ vars.FMT_ENFORCED != 'true' }}
       - name: clippy (shipped library, no_std)
         run: cargo clippy --release -- -D warnings
         continue-on-error: ${{ vars.CLIPPY_ENFORCED != 'true' }}

@@ -88,9 +88,8 @@ for baselines, `fetch` copies results back, `down` stops the VMs.
 
 ## Code style
 
-- The repository is not `rustfmt`-clean. Do not run `cargo fmt` over
-  files you did not change: it rewrites unrelated code and makes every
-  branch conflict. Format the lines you touch, by hand if need be.
+- Run `cargo fmt` before committing. CI runs `cargo fmt --check` and
+  fails on any difference.
 - Comments describe the code as it is. History belongs in commit
   messages, not in comments.
 - `unsafe` stays confined to the syscall layer, the thread-local accessor
