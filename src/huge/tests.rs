@@ -917,6 +917,8 @@ fn cycle(env: &Env, h: &Huge, size: usize) -> RunState {
 /// cycle is purged, as before the window existed.
 #[test]
 fn a_recurring_run_above_retain_max_is_kept_from_its_second_cycle() {
+    // Flushes: kept out of the advice test's lazy window.
+    let _serial = crate::purge::tests::serial();
     let size = 64 * page_size();
     for window_ms in [0u64, 60_000] {
         let env = Env::new();
@@ -943,6 +945,8 @@ fn a_recurring_run_above_retain_max_is_kept_from_its_second_cycle() {
 /// `huge_dirty_decay_ms:0` purges every run at free, recurring or not.
 #[test]
 fn purge_on_free_wins_over_the_demand_window() {
+    // Flushes: kept out of the advice test's lazy window.
+    let _serial = crate::purge::tests::serial();
     let env = Env::new();
     let h = env.huge();
     h.set_retain_max(8 * page_size());
@@ -958,6 +962,8 @@ fn purge_on_free_wins_over_the_demand_window() {
 /// test is off, as with the window off.
 #[test]
 fn no_demand_retention_when_the_policy_says_no() {
+    // Flushes: kept out of the advice test's lazy window.
+    let _serial = crate::purge::tests::serial();
     let env = Env::new();
     let h = env.huge();
     h.set_retain_max(8 * page_size());
@@ -974,6 +980,8 @@ fn no_demand_retention_when_the_policy_says_no() {
 /// passed over the last peak.
 #[test]
 fn the_huge_walk_keeps_a_recurring_level_until_the_window_passes() {
+    // Flushes: kept out of the advice test's lazy window.
+    let _serial = crate::purge::tests::serial();
     use crate::policy::KEEP_ALL;
     const WINDOW_MS: u64 = 60_000;
     // A 1 ms curve: past its window the curve keeps nothing.
