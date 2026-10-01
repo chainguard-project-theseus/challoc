@@ -22,7 +22,7 @@
 use core::fmt;
 
 use super::auxv::{AT_PAGESZ, getauxval};
-pub use super::thp_host::{Thp, ThpSetting};
+use super::thp_host::Thp;
 use super::{
     self as sys, IoVec, MADV_DONTNEED, MADV_FREE, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE, MAP_ANONYMOUS,
     MAP_PRIVATE, PIDFD_SELF, PROT_NONE, PROT_READ, PROT_WRITE, yn,
@@ -483,6 +483,7 @@ mod tests {
     use super::*;
 
     use crate::rseq::Probe;
+    use crate::sys::thp_host::ThpSetting;
 
     /// What `rseq::probe` reads on a host whose glibc registered `size`
     /// bytes at `offset` (registered when the size is not 0).

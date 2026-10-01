@@ -286,7 +286,7 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
         s.class_ranges, s.class_bytes, s.chunks, s.huge_ranges, s.meta_ranges, s.failures
     )?;
     // Design 17: the host's global mode.
-    writeln!(out, "; host {}", crate::thp::host_mode().map_or("none", crate::sys::features::ThpSetting::name))
+    writeln!(out, "; host {}", crate::thp::host_mode().map_or("none", crate::sys::thp_host::ThpSetting::name))
 }
 
 /// The `cgroup policy:` line (design 11): the band as last evaluated and
@@ -530,7 +530,7 @@ fn json_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot, arenas_
         ts.meta_ranges,
         ts.failures,
         ts.nohuge_ranges,
-        crate::thp::host_mode().map_or("none", crate::sys::features::ThpSetting::name)
+        crate::thp::host_mode().map_or("none", crate::sys::thp_host::ThpSetting::name)
     )?;
     let cg = &shared.cgroup;
     cg.sample(crate::sys::now_coarse_ns());
