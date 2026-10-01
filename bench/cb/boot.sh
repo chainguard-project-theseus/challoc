@@ -94,15 +94,26 @@ systemctl stop apt-daily.timer apt-daily-upgrade.timer unattended-upgrades.servi
 systemctl kill --kill-whom=all apt-daily.service apt-daily-upgrade.service 2>/dev/null
 sysctl -qw kernel.perf_event_paranoid=1 2>/dev/null
 
+# The container runtime: Docker from apt on Debian and Ubuntu; podman from
+# dnf on the RHEL family (AlmaLinux, Rocky), driven through the same
+# `docker` command line.
+RUNTIME=docker
+if ! command -v apt-get >/dev/null && command -v dnf >/dev/null; then RUNTIME=podman; fi
 (
   export DEBIAN_FRONTEND=noninteractive
-  if ! command -v docker >/dev/null; then
-    apt-get -o DPkg::Lock::Timeout=120 install -y -qq --no-install-recommends docker.io >/dev/null 2>&1 \
-      || { apt-get -o DPkg::Lock::Timeout=120 update -qq && apt-get -o DPkg::Lock::Timeout=120 install -y -qq --no-install-recommends docker.io; }
+  if [ "$RUNTIME" = podman ]; then
+    command -v podman >/dev/null || dnf -y -q install podman
+    podman version --format '{{.Client.Version}}'
+  else
+    if ! command -v docker >/dev/null; then
+      apt-get -o DPkg::Lock::Timeout=120 install -y -qq --no-install-recommends docker.io >/dev/null 2>&1 \
+        || { apt-get -o DPkg::Lock::Timeout=120 update -qq && apt-get -o DPkg::Lock::Timeout=120 install -y -qq --no-install-recommends docker.io; }
+    fi
+    systemctl start docker && docker version --format '{{.Server.Version}}'
   fi
-  systemctl start docker && docker version --format '{{.Server.Version}}'
 ) > /var/log/cb-docker.log 2>&1 &
 DOCKER_PID=$!
+docker() { if [ "$RUNTIME" = podman ]; then podman "$@"; else command docker "$@"; fi; }
 
 get "$PREFIX/launch.json" "$OUT/launch.json" || finish infra 3 "cannot fetch $PREFIX/launch.json"
 eval "$(python3 - "$OUT/launch.json" "$NAME" "$(uname -m)" <<'EOF'
@@ -119,9 +130,38 @@ print("HARNESS=" + shlex.quote(l["harness"]["object"]))
 print("SOURCES=" + shlex.quote(" ".join(s["object"] for s in l["sources"].values())))
 print("IMAGE=" + shlex.quote(l.get("image", {}).get(arch, "")))
 print("CONTAINER=" + shlex.quote(cell.get("container", "default")))
+kern = [p.split(":", 1)[1] for p in cell.get("prep") or [] if p.startswith("kernel:")]
+print("PREP_KERNEL=" + shlex.quote(kern[0] if kern else ""))
 EOF
 )"
 [ "$VM_OK" = 1 ] || finish infra 3 "$NAME is not in the launch file"
+
+# prep `kernel:<package>` (Ubuntu): install the kernel flavour, make it the
+# GRUB default by its menu entry id and reboot once; this script runs again
+# at the next boot and goes on from here.
+if [ -n "$PREP_KERNEL" ] && [ ! -e /var/lib/cb-prep.done ]; then
+  wait $DOCKER_PID
+  echo "cb-boot: prep: installing $PREP_KERNEL (running $(uname -r))"
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get -o DPkg::Lock::Timeout=120 update -qq && apt-get -o DPkg::Lock::Timeout=120 install -y -qq "$PREP_KERNEL" \
+    || finish infra 3 "prep: apt-get install $PREP_KERNEL failed"
+  FLAVOUR=${PREP_KERNEL#linux-}
+  KV=$(ls /boot/vmlinuz-*-"$FLAVOUR" 2>/dev/null | sed 's|/boot/vmlinuz-||' | sort -V | tail -1)
+  [ -n "$KV" ] || finish infra 3 "prep: no /boot/vmlinuz-*-$FLAVOUR after installing $PREP_KERNEL"
+  update-grub >/dev/null 2>&1
+  SUB=$(grep -oP "submenu '[^']*'.*?\\\$menuentry_id_option '\K[^']+" /boot/grub/grub.cfg | head -1)
+  ENT=$(grep -oP "menuentry '[^']*with Linux $KV'.*?\\\$menuentry_id_option '\K[^']+" /boot/grub/grub.cfg | head -1)
+  [ -n "$ENT" ] || finish infra 3 "prep: no GRUB entry for $KV"
+  echo "GRUB_DEFAULT=\"${SUB:+$SUB>}$ENT\"" > /etc/default/grub.d/99-cb-kernel.cfg
+  update-grub >/dev/null 2>&1 || finish infra 3 "prep: update-grub failed"
+  echo "$KV" > /var/lib/cb-prep.done
+  echo "cb-boot: prep: rebooting into $KV (GRUB_DEFAULT ${SUB:+$SUB>}$ENT)"
+  put /var/log/cb-boot.log "$RES/boot-prep.log"
+  sync
+  reboot
+  exit 0
+fi
+[ -e /var/lib/cb-prep.done ] && echo "cb-boot: prep: wanted $(cat /var/lib/cb-prep.done), running $(uname -r)"
 get "$HARNESS" "$W/harness.tar.gz" && tar -xzf "$W/harness.tar.gz" -C "$W/src" || finish infra 3 "cannot fetch the harness $HARNESS"
 for o in $SOURCES; do
   get "$o" "$W/sources/${o##*/}" || finish infra 3 "cannot fetch source $o"
@@ -133,7 +173,7 @@ stamp docker
 # ---- 2. the bench image ----------------------------------------------------------
 IMG_ID=
 if [ -n "$IMAGE" ]; then
-  tok | docker login -u oauth2accesstoken --password-stdin "https://${IMAGE%%/*}" >/dev/null 2>&1
+  tok | docker login -u oauth2accesstoken --password-stdin "${IMAGE%%/*}" >/dev/null 2>&1
   if docker pull -q "$IMAGE" >/dev/null; then
     IMG_ID=$IMAGE
   else
@@ -159,11 +199,17 @@ stamp image
 ) &
 echo $! > /tmp/cb-uploader.pid
 
+# Profiles: default, privileged, perfmon (CAP_PERFMON), and cpusN: a CPU
+# quota of N CPUs (cgroup cpu.max, no cpuset: the affinity mask stays the
+# host's) plus CAP_PERFMON.
 case "$CONTAINER" in
   privileged) PROFILE=(--privileged) ;;
   perfmon) PROFILE=(--cap-add PERFMON) ;;
+  cpus[0-9]*) PROFILE=(--cpus="${CONTAINER#cpus}" --cap-add PERFMON) ;;
   *) PROFILE=() ;;
 esac
+# SELinux (the RHEL family) would deny the bind mounts their labels.
+[ "$RUNTIME" = podman ] && PROFILE+=(--security-opt label=disable)
 DIGEST=${IMAGE##*@}
 docker run --rm --name cb "${PROFILE[@]}" \
   -v "$W/src:/src" -v "$OUT:/out" -v "$W/sources:/cb/sources:ro" \

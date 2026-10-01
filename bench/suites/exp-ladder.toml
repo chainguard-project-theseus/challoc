@@ -1,0 +1,15 @@
+# exp-ladder (#23): the CPU ladder baseline. challoc (the `head` rev; pass
+# --head REV) against jemalloc as the gate pair and glibc as context, on
+# every cpu-ladder cell; run one `cb launch` per cell (--cells NAME) so the
+# cells run side by side instead of in waves under the 32-VM cap.
+description = "CPU ladder: challoc vs jemalloc (gate) and glibc (context) per CPU"
+cells = "tag:cpu-ladder"
+variants = ["jemalloc", "challoc=head"]
+controls = ["glibc"]
+rows = ["larson1", "larson10", "larsonN", "xmalloc", "xmallocN", "alloc-test1", "alloc-testN", "mstress", "cfrac", "glibc-simple", "valkey1", "valkey1-free", "churn1024"]
+replicas = 3
+blocks = 3
+warmup_blocks = 1
+shard_seconds = 600
+looks = 1
+budget_usd = 10

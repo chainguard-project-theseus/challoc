@@ -329,6 +329,8 @@ class Launch:
                 "max_run": c.get("max_run", "45m"),
                 "disk": c.get("disk", "hyperdisk-balanced"),
                 "quiet": c.get("quiet"),
+                # Host preparation boot.sh performs (`kernel:<package>`).
+                "prep": list(c.get("prep") or []),
             }
         for n in self.cell_names:
             for r in range(self.replicas):
