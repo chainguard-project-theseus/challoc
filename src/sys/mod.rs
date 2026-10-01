@@ -893,12 +893,12 @@ mod linux {
         }
     }
 
-    /// Abort on a failed `rt_sigprocmask(how)`: formatting is outside what
-    /// Verus checks.
-    #[verifier::external_body]
+    /// Abort on a failed `rt_sigprocmask(how)`.
     #[cold]
     #[inline(never)]
     fn sigprocmask_failed(how: &str, e: Errno) -> ! {
+        broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
+
         abort_fmt(format_args!("rt_sigprocmask({how}) failed: {e}"))
     }
 

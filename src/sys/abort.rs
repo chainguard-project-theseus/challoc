@@ -123,8 +123,6 @@ impl fmt::Write for Stderr {
 }
 
 /// Write `challoc: <msg>` to stderr and terminate with `SIGABRT`.
-/// Formatting is outside what Verus checks.
-#[verifier::external_body]
 #[cold]
 #[inline(never)]
 pub fn abort(msg: &str) -> ! {
@@ -132,7 +130,6 @@ pub fn abort(msg: &str) -> ! {
 }
 
 /// Formatting variant of [`abort`]. Use through the `abort!` macro.
-#[verifier::external_body]
 #[cold]
 #[inline(never)]
 pub fn abort_fmt(args: fmt::Arguments<'_>) -> ! {

@@ -1154,11 +1154,11 @@ mod linux {
 
     /// The abort of [`reserve_shrinking`] when even `2^lg_min` bytes
     /// cannot be reserved.
-    /// Trusted: aborts (formatting is outside what Verus checks).
-    #[verifier::external_body]
     #[cold]
     #[inline(never)]
     fn cannot_reserve(what: &str, lg: u32, e: Errno) -> ! {
+        broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
+
         sys::abort_fmt(format_args!("cannot reserve {what} region of 2^{lg} bytes: {e}"))
     }
 
@@ -1198,11 +1198,11 @@ mod linux {
 
     /// The abort of [`reserve_superblock`] when even the smallest layout
     /// cannot be reserved.
-    /// Trusted: aborts (formatting is outside what Verus checks).
-    #[verifier::external_body]
     #[cold]
     #[inline(never)]
     fn cannot_reserve_superblock(lg_stride: u32, e: Errno) -> ! {
+        broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
+
         sys::abort_fmt(format_args!(
             "cannot reserve class superblock of {NCLASSES} x 2^{lg_stride} bytes: {e}"
         ))
@@ -1328,11 +1328,11 @@ mod linux {
     }
 
     /// The abort of [`Regions::reserve_owning`] when `getrandom` fails.
-    /// Trusted: aborts (formatting is outside what Verus checks).
-    #[verifier::external_body]
     #[cold]
     #[inline(never)]
     fn getrandom_failed(e: Errno) -> ! {
+        broadcast use crate::vspec::fmt::lemma_errno_fmt_req;
+
         sys::abort_fmt(format_args!("getrandom failed: {e}"))
     }
 
