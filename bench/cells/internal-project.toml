@@ -1,0 +1,18 @@
+# ============================================================================
+# INTERNAL. Where `cb launch` runs in the maintainers' GCP project: the
+# project, the bucket for bundles and results (objects expire after 30
+# days) and the VMs' service account (object read/write on that bucket and
+# read on the bench image repository, nothing else). Not for publication:
+# delete the bench/cells/internal-*.toml files and bench/internal-image.lock
+# before the repository goes public; without this file `cb launch` takes
+# them from --project/--bucket/--service-account or CB_PROJECT, CB_BUCKET
+# and CB_SERVICE_ACCOUNT.
+# ============================================================================
+
+[defaults]
+project = "dlorenc-dev"
+bucket = "dlorenc-dev-challoc-bench"
+service_account = "cb-bench-vm@dlorenc-dev.iam.gserviceaccount.com"
+
+[lint]
+markers = ["dlorenc"]

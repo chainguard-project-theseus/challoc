@@ -1,0 +1,40 @@
+# Build one stage of Dockerfile.dev into the local docker daemon as
+# challoc-ci-<stage>:<arch>, with the layers cached in the GitHub Actions
+# cache (one scope per stage and architecture). The jobs then run the
+# Makefile targets with IMAGE=<that tag> and IMAGE_BUILD= (make -o image), so
+# `make` never rebuilds the image itself.
+#
+# A Dockerfile.dev without the requested stage (the single-stage file before
+# the multi-stage split) builds its last stage instead: the full image has
+# everything every stage has.
+name: ci-image
+description: Build a Dockerfile.dev stage with a GHA layer cache
+inputs:
+  stage:
+    description: Dockerfile.dev stage (base, test, consumers, bench)
+    default: test
+outputs:
+  image:
+    description: The local tag of the built image
+    value: ${{ steps.plan.outputs.image }}
+  arch:
+    description: amd64 or arm64
+    value: ${{ steps.plan.outputs.arch }}
+runs:
+  using: composite
+  steps:
+    - id: plan
+      shell: bash
+      env:
+        STAGE: ${{ inputs.stage }}
+      run: bash ci/image-plan.sh "$STAGE" >> "$GITHUB_OUTPUT"
+    - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+    - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+      with:
+        context: .
+        file: Dockerfile.dev
+        target: ${{ steps.plan.outputs.target }}
+        tags: ${{ steps.plan.outputs.image }}
+        load: true
+        cache-from: type=gha,scope=ci-${{ steps.plan.outputs.scope }}
+        cache-to: type=gha,mode=max,scope=ci-${{ steps.plan.outputs.scope }}

@@ -1,0 +1,26 @@
+# soak: the long-running consumers (bench/README.md, "Drivers"): Valkey,
+# the Sidekiq-shaped Ruby process and the JVM mixed-size soak, head
+# against jemalloc. One variant per VM (rows.toml placement): every
+# (row, variant, replicate) is a VM of its own for the whole soak, the
+# replicas compared unpaired (Welch's t on the log scale); RSS figures
+# are rows of their own (`valkey-soak.rss_settle_mib` ...).
+#
+# Needs a bench image with the consumer layers (Valkey's openssl-dev and
+# memtier, Ruby's build dependencies, openjdk-21): bench/Dockerfile.cb.
+# The digests pinned in bench/internal-image.lock (2026-09-30) predate them: until
+# `make bench-image` repins, launch with --no-image (every VM builds the
+# image itself, about 10 more minutes). Shorter soaks for a check:
+# --var valkey_soak_secs=300 --var ruby_soak_secs=300 --var jvm_soak_secs=300.
+description = "soaks: Valkey, Ruby, JVM; head vs jemalloc, one variant per VM"
+cells = "tag:gate"
+variants = ["jemalloc", "head"]
+controls = []
+rows = ["valkey-soak", "ruby-soak", "jvm-soak"]
+replicas = 3
+blocks = 1
+warmup_blocks = 0
+looks = 1
+budget_usd = 12
+
+[local]
+blocks = 1

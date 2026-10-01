@@ -1,0 +1,4 @@
+# bench/internal-image.lock (INTERNAL: names the registry; delete before publication): the cb bench image per architecture, by digest (bench/cb/image.sh).
+repo = "us-east4-docker.pkg.dev/dlorenc-dev/challoc-bench/cb"
+arm64 = "us-east4-docker.pkg.dev/dlorenc-dev/challoc-bench/cb@sha256:7155ffebb0c7a31ce8ea61d1c12e6fe4895570c97a0b2bdf561c494f1f0bd987"  # c30253d89caf 2026-09-30
+amd64 = "us-east4-docker.pkg.dev/dlorenc-dev/challoc-bench/cb@sha256:0f1a7c36dd4142f5cf2f747c0081046a319d2bf37409ac3069a8f1440e12cd81"  # c30253d89caf 2026-09-30

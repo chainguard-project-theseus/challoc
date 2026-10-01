@@ -1,0 +1,28 @@
+# Dependabot keeps the SHA-pinned actions (workflows and the composite
+# action under .github/actions/) and the one crate dependency current; it
+# bumps a `uses: owner/repo@<sha> # vX.Y.Z` pin to the new release's SHA
+# and comment. Weekly, grouped, so a bump is one PR per ecosystem.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/ci-image
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+    cooldown:
+      default-days: 7
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+  # The wolfi-base digest pin of Dockerfile.dev.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly

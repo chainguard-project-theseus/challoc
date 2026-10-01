@@ -341,3 +341,5 @@ check-needed: image ## DT_NEEDED must name the allocator library (tests/as-neede
 
 clean-volumes: ## remove the target and cargo-registry volumes TARGET_VOLUME and CARGO_VOLUME name
 	docker volume rm -f $(TARGET_VOLUME) $(CARGO_VOLUME)
+
+include bench/bench.mk

@@ -176,7 +176,7 @@ creates a throwaway VM `challoc-matrix-<cell>` (labels
 detached on the VM (`make image`, `make test`, the probe line of
 `tests/c/features.c` under `LD_PRELOAD` in the container, `make fuzz`,
 `make test-cgroup`, and on the cell marked `privileged` a second `make test`
-with `DOCKER_FLAGS=--privileged`, so Docker's seccomp profile does not hide
+with `EXTRA_DOCKER_FLAGS=--privileged`, so Docker's seccomp profile does not hide
 `process_madvise` and `mseal`), fetches `~/logs` into
 `target/results/matrix/<date>-<cell>.log` and deletes the VM, passed, failed,
 timed out or interrupted (the cell's own exit trap, plus a sweep of every
@@ -320,7 +320,7 @@ metadata (no OS Login), and the cell runs as a transient systemd unit
 (`sudo systemd-run --uid=...`): this image ends the session scope with the
 ssh login, which killed a `setsid nohup` job. The cell script's `cgos`
 mode (`matrix-cell.sh`) runs `make image`, `make test` under the default
-seccomp profile and again with `DOCKER_FLAGS=--privileged`, the three
+seccomp profile and again with `EXTRA_DOCKER_FLAGS=--privileged`, the three
 probe lines, the host capture (`host.log`: uname, `/proc/config.gz` keys,
 THP, glibc, bootc status, the root mount, podman, the NIC driver), `make
 test-cgroup` (podman sets the cgroup v2 limits) and one `make scorecard
@@ -448,8 +448,8 @@ and `kernel.kptr_restrict` is 0 on the VMs.
   container on a Chainguard OS host (the four-way tables' host-native
   section).
 - `cpuid-dump.c`: the raw CPUID/HWCAP registers a CPU cell captures (the
-  fixtures of `src/sys/cpu.rs`); `pmu-probe.c`: does `perf_event_open`
-  count on a host without a `perf` binary (Chainguard OS).
+  fixtures of `src/sys/cpu.rs`); `../tools/rt --probe` (was `pmu-probe.c`):
+  does `perf_event_open` count on a host without a `perf` binary.
 - In `bench/probes/`, used from a VM host beside a detached soak:
   `valkey-perf-sidecar.sh` (root: `perf stat -I 1000` for each server's
   life, 60 s `perf record` windows, `INFO commandstats` snapshots),

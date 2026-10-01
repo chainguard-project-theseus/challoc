@@ -1,0 +1,16 @@
+# exp-floor (#22, the public-kernel half): the floor-test row (the
+# in-container `make test`) once per exp-floor cell, default and
+# privileged container profiles. A smoke suite: pass/fail per cell, the
+# SKIP lines in the row's log (res/<vm>/logs.tgz) and the features: line in
+# host.json; no verdict (cb launch reports INFRA for a smoke suite).
+description = "kernel floor: make test (in-container part) per public kernel image"
+kind = "smoke"
+cells = "tag:exp-floor"
+variants = ["head"]
+rows = ["floor-test"]
+replicas = 1
+blocks = 1
+warmup_blocks = 0
+shard_seconds = 600
+looks = 1
+budget_usd = 10
