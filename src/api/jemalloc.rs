@@ -126,8 +126,8 @@ pub fn malloc_write(s: &[u8]) {
 }
 verus! {
 
-/// Trusted: aborts (formatting is outside what Verus checks).
-#[verifier::external_body]
+/// The abort for a pointer that is not a live allocation, naming the
+/// entry point.
 #[cold]
 #[inline(never)]
 fn not_an_allocation(what: &str, p: *mut u8) -> ! {
@@ -298,12 +298,18 @@ pub fn rallocx_zeroed(p: *mut u8, size: usize, flags: c_int) -> (r: (*mut u8, Gh
 /// `xallocx(p, size, extra, flags)`: resize in place only. challoc never
 /// changes a block's class or run in place, so the result is always the
 /// current usable size; a caller that needs more must `rallocx`.
-pub fn xallocx(p: *mut u8, _size: usize, _extra: usize, _flags: c_int) -> usize {
+pub fn xallocx(p: *mut u8, _size: usize, _extra: usize, _flags: c_int) -> (r: usize)
+    ensures
+        crate::heap::free_target(p),
+{
     sallocx(p, 0)
 }
 
 /// `sallocx(p, flags)`: usable size of the live allocation `p`.
-pub fn sallocx(p: *mut u8, _flags: c_int) -> usize {
+pub fn sallocx(p: *mut u8, _flags: c_int) -> (r: usize)
+    ensures
+        crate::heap::free_target(p),
+{
     if p.is_null() {
         not_an_allocation("sallocx", p);
     }
@@ -425,7 +431,10 @@ pub fn nallocx(size: usize, flags: c_int) -> (r: usize)
 #[allow(non_shorthand_field_patterns)] // `verus!`'s expansion of the `let`-`else`
 #[cold]
 #[inline(never)]
-pub fn get_defrag_hint(p: *const u8) -> c_int {
+pub fn get_defrag_hint(p: *const u8) -> (r: c_int)
+    ensures
+        r == 0 || r == 1,
+{
     let Some(shared) = super::shared_if_ready() else { return 0 };
     proof {
         shared.lemma_wf();
@@ -478,8 +487,13 @@ pub fn get_defrag_hint(p: *const u8) -> c_int {
 #[cfg(not(test))]
 mod exports {
     use core::ffi::{c_int, c_void};
+    use vstd::prelude::verus;
 
-    export_pair! {
+    // `verified_export_pair!` expands inside its own `verus!`; this outer
+    // block holds it (Verus passes the invocation through).
+    verus! {
+
+    verified_export_pair! {
         fn mallocx / je_mallocx(size: usize, flags: c_int) -> *mut c_void {
             super::mallocx(size, flags) as *mut c_void
         }
@@ -505,6 +519,8 @@ mod exports {
             super::get_defrag_hint(p as *const u8)
         }
     }
+
+    } // verus!
 }
 
 #[cfg(test)]

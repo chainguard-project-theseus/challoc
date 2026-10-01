@@ -67,7 +67,7 @@ pub open spec fn is_pow2(x: usize) -> bool {
 }
 
 /// A power of two is at least 1.
-proof fn lemma_pow2_pos(x: usize)
+pub(super) proof fn lemma_pow2_pos(x: usize)
     requires
         is_pow2(x),
     ensures
@@ -480,8 +480,7 @@ fn free_slow(p: *mut u8)
     }
 }
 
-/// Trusted: aborts (formatting is outside what Verus checks).
-#[verifier::external_body]
+/// The abort for a pointer freed (or queried) before any allocation.
 #[cold]
 #[inline(never)]
 fn free_before_init(p: *mut u8) -> ! {
@@ -497,9 +496,11 @@ fn free_before_init(p: *mut u8) -> ! {
 /// slot from the dense arrays, `check_live` tests the bit, and the size is
 /// the class's.
 #[inline(always)]
-pub fn usable_size(shared: &Shared, p: *mut u8) -> usize
+pub fn usable_size(shared: &Shared, p: *mut u8) -> (r: usize)
     requires
         shared.wf(),
+    ensures
+        heap::free_target(p),
 {
     proof {
         shared.lemma_wf();
@@ -518,8 +519,6 @@ pub fn usable_size(shared: &Shared, p: *mut u8) -> usize
 
 /// The abort of [`usable_size`] for a pointer outside every allocation,
 /// out of line so the query needs no frame for the message.
-/// Trusted: aborts (formatting is outside what Verus checks).
-#[verifier::external_body]
 #[cold]
 #[inline(never)]
 fn not_an_allocation(p: *mut u8) -> ! {
@@ -531,6 +530,7 @@ fn not_an_allocation(p: *mut u8) -> ! {
 pub fn malloc_usable_size(p: *mut u8) -> (r: usize)
     ensures
         p@.addr == 0 ==> r == 0,
+        p@.addr != 0 ==> heap::free_target(p),
 {
     if p.is_null() {
         return 0;
@@ -587,16 +587,6 @@ pub open spec fn kept(p: *mut u8, size: int, align: int) -> bool {
         || crate::layout::process_regions().is_huge_block(p@.addr, 1)
 }
 
-/// The abort of [`old_size_or_keep`] for a pointer that is not an
-/// allocation, standing for the `abort_fmt` the build keeps inline (moved
-/// into a helper, the abort changes `old_size_or_keep`'s code).
-/// Trusted: aborts (formatting is outside what Verus checks).
-#[cfg(verus_only)]
-#[verifier::external_body]
-fn realloc_not_an_allocation(what: &str, p: *mut u8) -> ! {
-    crate::sys::abort_fmt(format_args!("{what} of {:#x}: not an allocation", p as usize))
-}
-
 /// The reallocation decision shared by `realloc` and `rallocx`: `None`
 /// when the live allocation `p` already serves `size` bytes at `align`
 /// (a power of two; 1 or the quantum means the natural alignment) and
@@ -606,10 +596,6 @@ fn realloc_not_an_allocation(what: &str, p: *mut u8) -> ! {
 /// otherwise `Some(old)`, the usable bytes of `p`, the most a move has to
 /// copy. Aborts, naming `what`, unless `p` is a live slab slot or huge
 /// run start; so it returns only for a free target.
-///
-/// The abort for a pointer that is no allocation formats inline in the
-/// build; the verifier sees [`realloc_not_an_allocation`], the same abort
-/// out of line.
 pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: usize, align: usize) -> (r: Option<usize>)
     requires
         shared.wf(),
@@ -649,12 +635,7 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
             }
             Some(old)
         }
-        Kind::Invalid => {
-            #[cfg(verus_only)]
-            realloc_not_an_allocation(what, p);
-            #[cfg(not(verus_only))]
-            crate::sys::abort_fmt(format_args!("{what} of {:#x}: not an allocation", p as usize))
-        }
+        Kind::Invalid => crate::sys::abort_fmt(format_args!("{what} of {:#x}: not an allocation", p as usize)),
     }
 }
 
@@ -762,18 +743,39 @@ fn class_size(class: usize) -> (r: usize)
 /// The same pop as `malloc` with the class size added from the class the
 /// pop used; everything else is one tail call away, as in `malloc`.
 #[inline(always)]
-pub fn malloc_usable(size: usize, usable: *mut usize) -> *mut u8 {
+pub fn malloc_usable(size: usize, usable: *mut usize) -> (r: *mut u8)
+    ensures
+        heap::fits(r, size as int, QUANTUM as int),
+{
     let Some(c) = class_index(size) else { return malloc_usable_huge(size, usable) };
     let shared = super::shared_ptr();
-    let Some(h) = heap::existing_heap(shared) else { return malloc_usable_class(c, usable) };
+    let Some(h) = heap::existing_heap(shared) else {
+        let p = malloc_usable_class(c, usable);
+        proof {
+            lemma_class_fits(p, c as int, size);
+        }
+        return p;
+    };
     // SAFETY: as in `malloc`.
     let flags = unsafe { heap::fast_flags(shared) };
+    proof {
+        h.lemma_wf_regions();
+    }
     match h.alloc_fast(c, flags) {
         Some(p) => {
             store_usable(usable, class_size(c));
+            proof {
+                lemma_class_fits(p, c as int, size);
+            }
             p
         }
-        None => malloc_usable_class(c, usable),
+        None => {
+            let p = malloc_usable_class(c, usable);
+            proof {
+                lemma_class_fits(p, c as int, size);
+            }
+            p
+        },
     }
 }
 
@@ -783,11 +785,18 @@ pub fn malloc_usable(size: usize, usable: *mut usize) -> *mut u8 {
 /// null with `errno = ENOMEM` on failure.
 #[cold]
 #[inline(never)]
-fn malloc_usable_class(class: usize, usable: *mut usize) -> *mut u8
+fn malloc_usable_class(class: usize, usable: *mut usize) -> (r: *mut u8)
     requires
         class < NCLASSES,
+    ensures
+        heap::regions_ok(),
+        r@.addr != 0 ==> crate::layout::process_regions().is_slot(class as int, r@.addr),
 {
-    let p = heap::alloc_declined(super::shared(), class);
+    let shared = super::shared();
+    proof {
+        shared.lemma_regions_ok();
+    }
+    let p = heap::alloc_declined(shared, class);
     if p.is_null() {
         store_usable(usable, 0);
         return enomem();
@@ -800,12 +809,19 @@ fn malloc_usable_class(class: usize, usable: *mut usize) -> *mut u8
 /// huge table, the same read `malloc_usable_size` does.
 #[cold]
 #[inline(never)]
-fn malloc_usable_huge(size: usize, usable: *mut usize) -> *mut u8 {
+fn malloc_usable_huge(size: usize, usable: *mut usize) -> (r: *mut u8)
+    ensures
+        heap::fits(r, size as int, QUANTUM as int),
+{
     let shared = super::shared();
     proof {
         crate::meta::lemma_is_pow2_one();
+        shared.lemma_regions_ok();
     }
     let (p, _, _) = alloc_huge(shared, size, 1);
+    proof {
+        lemma_huge_result(p, size, 1);
+    }
     if p.is_null() {
         store_usable(usable, 0);
         return enomem();
@@ -822,6 +838,7 @@ fn malloc_usable_huge(size: usize, usable: *mut usize) -> *mut u8 {
 pub fn calloc_usable(n: usize, m: usize, usable: *mut usize) -> (r: *mut u8)
     ensures
         n * m > usize::MAX ==> r@.addr == 0,
+        heap::fits(r, n * m, QUANTUM as int),
 {
     calloc_usable_zeroed(n, m, usable).0
 }
@@ -836,6 +853,7 @@ pub fn calloc_usable(n: usize, m: usize, usable: *mut usize) -> (r: *mut u8)
 pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize) -> (r: (*mut u8, Tracked<Zeroed>))
     ensures
         n * m > usize::MAX ==> r.0@.addr == 0,
+        heap::fits(r.0, n * m, QUANTUM as int),
         r.0@.addr != 0 && n * m <= MEDIUM_MAX ==> r.1@.covers(r.0, n * m),
 {
     let Some(size) = n.checked_mul(m) else {
@@ -845,14 +863,21 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize) -> (r: (*mut
     let shared = super::shared();
     proof {
         crate::meta::lemma_is_pow2_one();
+        shared.lemma_regions_ok();
     }
     let (p, zeroed, u, z) = match class_index(size) {
         Some(c) => {
             let (p, zeroed, z) = heap::alloc_zeroed(shared, c);
+            proof {
+                lemma_class_fits(p, c as int, size);
+            }
             (p, zeroed, class_size(c), z)
         }
         None => {
             let (p, zeroed, z) = alloc_huge(shared, size, 1);
+            proof {
+                lemma_huge_result(p, size, 1);
+            }
             (p, zeroed, if p.is_null() { 0 } else { usable_size(shared, p) }, z)
         }
     };
@@ -883,6 +908,8 @@ pub fn calloc_usable_zeroed(n: usize, m: usize, usable: *mut usize) -> (r: (*mut
 pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize) -> (r: *mut u8)
     ensures
         p@.addr != 0 && size == 0 ==> r@.addr == 0,
+        r != p ==> heap::fits(r, size as int, QUANTUM as int),
+        heap::fits(r, size as int, QUANTUM as int) || kept(r, size as int, 1),
         p@.addr != 0 ==> heap::free_target(p),
 {
     if p.is_null() {
@@ -919,10 +946,6 @@ pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize) -> (r: *mut u
 /// when `size` maps to `p`'s class or to a huge run of the same page
 /// count ([`kept`]). The same checks and aborts as `old_size_or_keep`, in
 /// a function of its own so that `realloc` and `rallocx` keep their code.
-///
-/// The abort for a pointer that is no allocation formats inline in the
-/// build; the verifier sees [`realloc_not_an_allocation`], the same abort
-/// out of line.
 fn realloc_old(shared: &Shared, p: *mut u8, size: usize) -> (r: (bool, usize))
     requires
         shared.wf(),
@@ -956,12 +979,7 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize) -> (r: (bool, usize))
             }
             (class_of(size).is_none() && shared.huge.usable_for(size) == Some(old), old)
         }
-        Kind::Invalid => {
-            #[cfg(verus_only)]
-            realloc_not_an_allocation("realloc", p);
-            #[cfg(not(verus_only))]
-            crate::sys::abort_fmt(format_args!("realloc of {:#x}: not an allocation", p as usize))
-        }
+        Kind::Invalid => crate::sys::abort_fmt(format_args!("realloc of {:#x}: not an allocation", p as usize)),
     }
 }
 
@@ -1268,7 +1286,10 @@ proof fn lemma_user_block_shrink(p: usize, big: int, small: int)
 /// then purge every `Empty` slab and huge extent whatever its age (design
 /// section 8). Returns 1 if anything was purged, 0 otherwise or before
 /// init. `pad` is glibc's top-of-heap allowance and has no meaning here.
-pub fn malloc_trim(_pad: usize) -> c_int {
+pub fn malloc_trim(_pad: usize) -> (r: c_int)
+    ensures
+        r == 0 || r == 1,
+{
     let Some(shared) = super::shared_if_ready() else { return 0 };
     if let Some(h) = heap::existing_heap(heap::shared_ptr(shared)) {
         h.flush_all(shared);
@@ -1286,6 +1307,8 @@ pub fn malloc_trim(_pad: usize) -> c_int {
 mod exports {
     use super::*;
     use core::ffi::c_void;
+
+    verus! {
 
     // `malloc` and `free` each sit alone in a 64-byte-aligned section on
     // x86_64 (the `global_asm!` below); their `je_` twins stay in `.text`.
@@ -1312,6 +1335,8 @@ mod exports {
         super::free(p as *mut u8)
     }
 
+    } // verus!
+
     // The alignment of the sections `malloc` and `free` are placed in on
     // x86_64: a cache line. Stable Rust has no per-function alignment
     // (`#[align]` and `-C min-function-alignment` are unstable), but a
@@ -1335,7 +1360,12 @@ mod exports {
         ".popsection",
     );
 
-    export_pair! {
+    // `verified_export_pair!` expands inside its own `verus!`; this outer
+    // block holds it (Verus passes the invocation through) and the single
+    // exports below.
+    verus! {
+
+    verified_export_pair! {
         fn calloc / je_calloc(n: usize, m: usize) -> *mut c_void {
             super::calloc(n, m) as *mut c_void
         }
@@ -1413,6 +1443,8 @@ mod exports {
     pub extern "C" fn challoc_free_usable(p: *mut c_void) -> usize {
         super::free_usable(p as *mut u8)
     }
+
+    } // verus!
 }
 
 #[cfg(test)]

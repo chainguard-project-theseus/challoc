@@ -33,6 +33,9 @@ use core::ffi::c_void;
 use core::ptr;
 
 use super::libc;
+use vstd::prelude::verus;
+#[cfg(verus_only)]
+use vstd::prelude::*;
 
 /// `std::new_handler`: `void (*)()`, null when none is installed.
 type NewHandler = Option<unsafe extern "C" fn()>;
@@ -63,7 +66,11 @@ fn get_new_handler_addr() -> *const c_void {
     out
 }
 
+verus! {
+
 /// Address of libstdc++'s `std::__throw_bad_alloc()`, or null.
+/// Trusted: inline assembly.
+#[verifier::external_body]
 #[inline(never)]
 fn throw_bad_alloc_addr() -> *const c_void {
     let out: *const c_void;
@@ -88,6 +95,8 @@ fn throw_bad_alloc_addr() -> *const c_void {
     out
 }
 
+} // verus!
+
 /// The installed `new_handler`, if libstdc++ is present and one is set.
 fn new_handler() -> NewHandler {
     let get = get_new_handler_addr();
@@ -100,6 +109,22 @@ fn new_handler() -> NewHandler {
     unsafe { get() }
 }
 
+verus! {
+
+/// Call `std::__throw_bad_alloc` at `t`, its non-null address.
+/// Trusted: calls a function pointer (Verus has no function pointer
+/// types).
+#[verifier::external_body]
+#[inline(always)]
+fn call_throw_bad_alloc(t: *const c_void) -> !
+    requires
+        t@.addr != 0,
+{
+    // SAFETY: `std::__throw_bad_alloc` takes no arguments and never returns.
+    let t: unsafe extern "C" fn() -> ! = unsafe { core::mem::transmute(t) };
+    unsafe { t() }
+}
+
 /// Throw `std::bad_alloc` from libstdc++, or abort when it is not loaded.
 #[cold]
 #[inline(never)]
@@ -110,9 +135,31 @@ fn throw_bad_alloc() -> ! {
             "operator new failed and std::__throw_bad_alloc is not available"
         ));
     }
-    // SAFETY: `std::__throw_bad_alloc` takes no arguments and never returns.
-    let t: unsafe extern "C" fn() -> ! = unsafe { core::mem::transmute(t) };
-    unsafe { t() }
+    call_throw_bad_alloc(t)
+}
+
+/// The installed `new_handler`, opaque to Verus (which has no function
+/// pointer types).
+#[verifier::external_body]
+struct Handler(unsafe extern "C" fn());
+
+/// [`new_handler`] as a [`Handler`].
+/// Trusted: reads a function pointer from libstdc++.
+#[verifier::external_body]
+#[inline(always)]
+fn installed_handler() -> Option<Handler> {
+    new_handler().map(Handler)
+}
+
+/// Call the program's `new_handler`.
+/// Trusted: calls a function pointer; it may throw, which unwinds through
+/// here.
+#[verifier::external_body]
+#[inline(always)]
+fn call_handler(handler: Handler) {
+    // SAFETY: a `void (*)()` installed by the program through
+    // `std::set_new_handler`; it may throw, which unwinds through here.
+    unsafe { (handler.0)() }
 }
 
 /// The `operator new` failure protocol: call the `new_handler` and retry
@@ -121,17 +168,20 @@ fn throw_bad_alloc() -> ! {
 /// 0 for the unaligned operators.
 #[cold]
 #[inline(never)]
-fn oom(size: usize, align: usize, nothrow: bool) -> *mut u8 {
+#[verifier::exec_allows_no_decreases_clause] // ends only when the program's handler frees memory, is removed or throws
+fn oom(size: usize, align: usize, nothrow: bool) -> (r: *mut u8)
+    ensures
+        align == 0 ==> crate::heap::fits(r, size as int, crate::QUANTUM as int),
+        align != 0 && libc::is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
+{
     loop {
-        let Some(handler) = new_handler() else {
+        let Some(handler) = installed_handler() else {
             if nothrow {
                 return ptr::null_mut();
             }
             throw_bad_alloc()
         };
-        // SAFETY: a `void (*)()` installed by the program through
-        // `std::set_new_handler`; it may throw, which unwinds through here.
-        unsafe { handler() };
+        call_handler(handler);
         let p = if align == 0 {
             libc::malloc(size)
         } else {
@@ -146,7 +196,10 @@ fn oom(size: usize, align: usize, nothrow: bool) -> *mut u8 {
 /// `malloc`'s slow path with the `new` failure protocol on top.
 #[cold]
 #[inline(never)]
-fn new_slow(size: usize, nothrow: bool) -> *mut u8 {
+fn new_slow(size: usize, nothrow: bool) -> (r: *mut u8)
+    ensures
+        crate::heap::fits(r, size as int, crate::QUANTUM as int),
+{
     let p = libc::malloc_slow(size);
     if p.is_null() {
         oom(size, 0, nothrow)
@@ -158,7 +211,10 @@ fn new_slow(size: usize, nothrow: bool) -> *mut u8 {
 /// `operator new(size)` and `operator new[](size)`: `malloc`'s fast path
 /// inline, everything else one tail call away.
 #[inline(always)]
-pub fn new(size: usize) -> *mut u8 {
+pub fn new(size: usize) -> (r: *mut u8)
+    ensures
+        crate::heap::fits(r, size as int, crate::QUANTUM as int),
+{
     match libc::malloc_fast(size) {
         Some(p) => p,
         None => new_slow(size, false),
@@ -167,7 +223,10 @@ pub fn new(size: usize) -> *mut u8 {
 
 /// The `nothrow_t` forms: null on failure after the handler loop.
 #[inline(always)]
-pub fn new_nothrow(size: usize) -> *mut u8 {
+pub fn new_nothrow(size: usize) -> (r: *mut u8)
+    ensures
+        crate::heap::fits(r, size as int, crate::QUANTUM as int),
+{
     match libc::malloc_fast(size) {
         Some(p) => p,
         None => new_slow(size, true),
@@ -175,7 +234,15 @@ pub fn new_nothrow(size: usize) -> *mut u8 {
 }
 
 /// The `align_val_t` forms.
-pub fn new_aligned(size: usize, align: usize, nothrow: bool) -> *mut u8 {
+pub fn new_aligned(size: usize, align: usize, nothrow: bool) -> (r: *mut u8)
+    ensures
+        libc::is_pow2(align) ==> crate::heap::fits(r, size as int, align as int),
+{
+    proof {
+        if libc::is_pow2(align) {
+            libc::lemma_pow2_pos(align);
+        }
+    }
     let p = libc::aligned_alloc(align, size);
     if p.is_null() {
         oom(size, align, nothrow)
@@ -186,7 +253,10 @@ pub fn new_aligned(size: usize, align: usize, nothrow: bool) -> *mut u8 {
 
 /// The unsized `operator delete` forms: `free`, with any alignment ignored.
 #[inline(always)]
-pub fn delete(p: *mut u8) {
+pub fn delete(p: *mut u8)
+    ensures
+        p@.addr != 0 ==> crate::heap::free_target(p),
+{
     libc::free(p)
 }
 
@@ -194,7 +264,10 @@ pub fn delete(p: *mut u8) {
 /// size is the one the matching `operator new(size)` was called with, so
 /// `class_of(size)` is the slot's class.
 #[inline(always)]
-pub fn delete_sized(p: *mut u8, size: usize) {
+pub fn delete_sized(p: *mut u8, size: usize)
+    ensures
+        p@.addr != 0 ==> crate::heap::free_target(p),
+{
     libc::free_sized(p, size)
 }
 
@@ -202,9 +275,14 @@ pub fn delete_sized(p: *mut u8, size: usize) {
 /// `free_aligned_sized` with the arguments the matching aligned `new`
 /// passed to `aligned_alloc`.
 #[inline(always)]
-pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize) {
+pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize)
+    ensures
+        p@.addr != 0 ==> crate::heap::free_target(p),
+{
     libc::free_aligned_sized(p, align, size)
 }
+
+} // verus!
 
 // ---------------------------------------------------------------------------
 // Itanium C++ ABI symbols (identical on x86_64 and aarch64: `m` is
@@ -214,6 +292,9 @@ pub fn delete_sized_aligned(p: *mut u8, size: usize, align: usize) {
 #[cfg(not(test))]
 mod exports {
     use core::ffi::c_void;
+    use vstd::prelude::verus;
+
+    verus! {
 
     /// `operator new(size_t)`
     #[unsafe(export_name = "_Znwm")]
@@ -346,6 +427,8 @@ mod exports {
     pub extern "C" fn delete_array_sized_aligned(p: *mut c_void, size: usize, align: usize) {
         super::delete_sized_aligned(p as *mut u8, size, align)
     }
+
+    } // verus!
 }
 
 #[cfg(test)]
