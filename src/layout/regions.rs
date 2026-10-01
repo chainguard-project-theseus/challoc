@@ -200,7 +200,8 @@ impl Regions {
     /// exactly a slot start inside a class region, `None` for anything else
     /// (a gap, a mid-slot address, the huge or metadata region, or outside
     /// every reservation). Two subtractions and a shift find the class; a
-    /// multiply and compare validate the slot. Never aborts: the caller's
+    /// multiply, a rotate and a compare validate the slot
+    /// ([`super::Class::slot_of_offset`]). Never aborts: the caller's
     /// slow path decides what `None` means.
     #[inline(always)]
     pub fn slab_slot(&self, p: usize) -> Option<(usize, usize, usize)> {
@@ -210,13 +211,13 @@ impl Regions {
         }
         // SAFETY: `c < NCLASSES` was just checked; both arrays have
         // `NCLASSES` entries.
-        let cls = unsafe { CLASSES.get_unchecked(c) };
+        let cls = unsafe { class_entry(c) };
         let rel = p.wrapping_sub(unsafe { *self.class_base.get_unchecked(c) });
         if rel >= self.region_len() {
             return None;
         }
         let slab = rel >> cls.lg_slab;
-        let offset = rel & (cls.slab_size() - 1);
+        let offset = rel & cls.slab_mask();
         let (slot, valid) = cls.slot_of_offset(offset);
         if !valid {
             return None;
@@ -239,13 +240,13 @@ impl Regions {
     pub fn slot_in_class(&self, class: usize, p: usize) -> Option<(usize, usize)> {
         debug_assert!(class < NCLASSES);
         // SAFETY: the caller's `class` is an index `class_of` produced.
-        let cls = unsafe { CLASSES.get_unchecked(class) };
+        let cls = unsafe { class_entry(class) };
         let rel = p.wrapping_sub(unsafe { *self.class_base.get_unchecked(class) });
         if rel >= self.region_len() {
             return None;
         }
         let slab = rel >> cls.lg_slab;
-        let (slot, valid) = cls.slot_of_offset(rel & (cls.slab_size() - 1));
+        let (slot, valid) = cls.slot_of_offset(rel & cls.slab_mask());
         if !valid {
             return None;
         }
@@ -509,4 +510,34 @@ mod linux {
             }
         }
     }
+}
+
+/// `&CLASSES[c]` for the fast paths' classification, `c < NCLASSES`.
+///
+/// On x86_64 the entry's address goes through an empty `asm!` so that it
+/// is one register: left alone, LLVM keeps the table base and the scaled
+/// index in two registers for the slot test's loads (`(idx, base, 1)`
+/// addressing; the table is RIP-relative, so it cannot be a displacement)
+/// and adds them again for `lg_slab`, and the extra register costs `free`
+/// and `sdallocx` a callee-saved push and pop (2 instructions each per
+/// call, measured). aarch64 folds the address into one shifted add on its
+/// own, and the barrier there costs `free` an instruction.
+///
+/// # Safety
+/// `c < NCLASSES`.
+#[inline(always)]
+unsafe fn class_entry(c: usize) -> &'static super::Class {
+    // SAFETY: `c < NCLASSES` (the caller's contract).
+    let p = unsafe { CLASSES.as_ptr().add(c) };
+    #[cfg(target_arch = "x86_64")]
+    let p = {
+        let mut p = p;
+        // SAFETY: an empty instruction sequence; `p` comes out unchanged.
+        unsafe {
+            core::arch::asm!("/* {0} */", inout(reg) p, options(pure, nomem, nostack, preserves_flags))
+        };
+        p
+    };
+    // SAFETY: `p` points into the table, which is never written after init.
+    unsafe { &*p }
 }

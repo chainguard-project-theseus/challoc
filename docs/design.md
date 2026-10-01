@@ -157,7 +157,8 @@ unit; sub-page slabs would be purged in page groups, only when every slab
 in the group is idle, and a workload that frees at random leaves `Empty`
 slabs in groups that never are. Page groups remain only for a faked page
 in the tests. The geometry is the class table itself, rewritten in place
-at init (`lg_slab`, `nslots`, `slab_bits` of the raised classes), so the
+at init (`lg_slab`, `nslots`, `slab_bits` and `slab_mask` of the raised
+classes), so the
 `free` and `sdallocx` fast paths still load the class line from a
 link-time constant address and their machine code is unchanged on 4 KiB
 hosts; the table lives in writable memory as a result, like the
@@ -168,10 +169,25 @@ Slab number and slot index are:
 
 ```
 slab   = (p - base_c) >> lg_slab_c
-offset = p & (slab_size_c - 1)
-slot   = offset * reciprocal_c >> 32       // precomputed fixed-point divide
-valid  = slot * size_c == offset && slot < nslots_c
+offset = p & slab_mask_c                   // slab_size_c - 1
+slot   = (offset * inv_odd_c).rotate_right(tz_c)   // 32-bit
+valid  = slot < nslots_c
 ```
+
+The slot-start test is one multiply, one rotate and one compare
+(Granlund and Montgomery's divisibility test,
+`Class::slot_of_offset` in `layout/`). With `size_c = d << tz_c`, `d` odd,
+`inv_odd_c` is `d`'s inverse modulo `2^32`: when `size_c` divides `offset`,
+the product is `(offset / size_c) << tz_c` and the rotate gives the slot.
+Any other offset either has a set bit below `tz_c`, which the rotate moves
+into the top bits, or is a multiple of `2^tz_c` but not of `d`, whose
+product lands above `(2^(32 - tz_c) - 1) / d`; both are at least `nslots_c`
+because `nslots_c * size_c` is at most the slab, `2^22`. The test accepts
+exactly the slot starts, with the same slot as a division would give,
+which `slot_of_offset_is_exactly_the_reciprocal_check` checks for every
+byte offset of every class's slab at every supported page size. Each table
+entry is 32 bytes (20 of fields), so the entry's address is one shifted
+add.
 
 The size class of a request uses the same lookup shape as jemalloc and
 mimalloc: a small table for requests up to 1024 bytes and a
@@ -462,15 +478,21 @@ entry points in `api/` are built from them.
 `free(p)`:
 1. If `p` is null return. Classify `p` (section 2). Huge: slow path.
    Invalid: abort.
-2. Compute slab and slot; verify `slot * size == offset`; load the class
-   bitmap word; verify the bit is set. Otherwise abort.
+2. Compute slab and slot; verify the offset is a slot start (section 3:
+   multiply, rotate, compare against `nslots`); load the class bitmap
+   word; verify the bit is set. Otherwise abort.
 3. The opt-in hardening: one byte (`Shared::push_flags`, on a line step 2
-   already loaded), zero by default, tested once. `PUSH_SCAN`
+   already loaded), zero by default on every host (`pac_pointers` defaults
+   to false, so a CPU with pointer authentication is no exception), tested
+   once. `PUSH_SCAN`
    (`double_free_scan`): compare `p` against the top four cache entries
    and abort on a match, a double free whose first copy is still cached
    (the sized push does the same). `PUSH_ZERO` (`zero_on_free`): `memset`
    the slot's class-size bytes (a huge free clears the run's usable
-   bytes). `PUSH_PAC`: sign the entry (6.2). `double_free_scan` costs
+   bytes). `PUSH_PAC` (`pac_pointers:true` on an arm64 host with PAC):
+   sign the entry (6.2); arm64 compares the byte against `PUSH_PAC` alone
+   first, and off arm64 that compare is compiled out, so the dispatch is
+   the one test against zero. `double_free_scan` costs
    about 3..4% on `larson1` and up to 14% on the Valkey model;
    `zero_on_free`'s `memset` per free is far over a 3% budget on Valkey's
    1 KiB values.
@@ -494,7 +516,13 @@ remain for explicit `MALLOCX_ARENA` allocations and `thread.arena`.
 `sdallocx(p, n, flags)`, `free_sized(p, n)`, `free_aligned_sized(p, a, n)`
 (the sized path):
 1. If `p` is null return. `c_hint = class_for(n, align)` (huge: slow
-   path). The hint names the region: `rel = p - class_base[c_hint]`; if
+   path). `sdallocx` with `flags == 0` (what Valkey passes on every free)
+   tests that first and takes `free_sized`'s path, `c_hint = class_of(n)`,
+   without decoding the flags (alignment shift, tcache bits), as
+   jemalloc's `sdallocx` does; any other flags take a call
+   (`sdallocx_flags`), so the compiler cannot merge the two inlined sized
+   paths behind a test of the hint, and a huge size leaves for the slow
+   path before the heap lookup. The hint names the region: `rel = p - class_base[c_hint]`; if
    `rel` is past the region or not a slot start, slow path. A guard slab
    goes to the slow path too, tested with one 8-byte load from a dense
    per-class pair (`Shared::guard_test[c]`, `GuardTest`: `(slab +
@@ -527,8 +555,12 @@ cache pops whatever the cache holds, as jemalloc's does;
 `calloc` clears with `memset` unless the slots came fresh from the
 kernel, which is tracked as a per-cache zero prefix: `slots[..zeroed]`
 are known zero, set by a refill whose batch came from a `Fresh` or
-`Purged` slab (while `purge::purged_is_zero` holds, section 8), clipped
-by a push that lands below it and dropped by a flush. `calloc` zeroes the
+`Purged` slab (while `purge::purged_is_zero` holds, section 8), lowered
+with `len` by a pop that takes a zero entry and dropped by a flush.
+`zeroed <= low_water` holds throughout, so only a pop that lowers
+`low_water` can take a zero entry: the zero test and the shrink sit in
+that pop's cold branch, and the push, which stores at `len >= zeroed`,
+never touches `zeroed`. `calloc` zeroes the
 requested bytes, not the whole usable size (#54).
 
 `malloc_usable_size(p)` (and `sallocx`, and the size read of `realloc`

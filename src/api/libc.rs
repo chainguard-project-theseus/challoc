@@ -193,17 +193,32 @@ pub fn free(p: *mut u8) {
 /// flushes it, not at the call; a hint that does not match aborts.
 #[inline(always)]
 pub fn free_sized_hint(p: *mut u8, size: usize, hint: Option<usize>) {
+    // A huge size (no hint) has no fast path: straight to the slow one,
+    // so the fast path carries a plain class and no test of the hint.
+    let Some(c) = hint else {
+        return free_sized_unhinted(p, size);
+    };
     if p.is_null() {
         return;
     }
     if let Some(h) = heap::existing_heap(super::shared_ptr()) {
         // SAFETY: as in `free`.
         let shared = unsafe { super::shared_unchecked() };
-        if heap::free_sized_fast(shared, h, p, hint, shared.push_flags()) {
+        if heap::free_sized_fast(shared, h, p, Some(c), shared.push_flags()) {
             return;
         }
     }
     free_sized_slow(p, size, hint)
+}
+
+/// The sized free of a size no class holds (a huge run, or nothing): the
+/// exact `free` behind the null test.
+#[cold]
+#[inline(never)]
+fn free_sized_unhinted(p: *mut u8, size: usize) {
+    if !p.is_null() {
+        free_sized_slow(p, size, None)
+    }
 }
 
 /// Off the sized fast path: the hint mismatch abort, then everything the
@@ -727,13 +742,55 @@ mod exports {
     use super::*;
     use core::ffi::c_void;
 
+    // `malloc` and `free` each sit alone in a 64-byte-aligned section on
+    // x86_64 (the `global_asm!` below); their `je_` twins stay in `.text`.
+
+    #[unsafe(no_mangle)]
+    #[cfg_attr(target_arch = "x86_64", unsafe(link_section = ".text.challoc.malloc"))]
+    pub extern "C" fn malloc(size: usize) -> *mut c_void {
+        super::malloc(size) as *mut c_void
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn je_malloc(size: usize) -> *mut c_void {
+        super::malloc(size) as *mut c_void
+    }
+
+    #[unsafe(no_mangle)]
+    #[cfg_attr(target_arch = "x86_64", unsafe(link_section = ".text.challoc.free"))]
+    pub extern "C" fn free(p: *mut c_void) {
+        super::free(p as *mut u8)
+    }
+
+    #[unsafe(no_mangle)]
+    pub extern "C" fn je_free(p: *mut c_void) {
+        super::free(p as *mut u8)
+    }
+
+    // The alignment of the sections `malloc` and `free` are placed in on
+    // x86_64: a cache line. Stable Rust has no per-function alignment
+    // (`#[align]` and `-C min-function-alignment` are unstable), but a
+    // section's alignment is the largest `.p2align` in it and a function
+    // alone in its section starts at the section's start, so this pins
+    // the entry at offset 0 mod 64 whatever the code before it, and
+    // the linker puts both sections ahead of the rest of `.text`, so the
+    // pair's placement no longer moves with unrelated code. Without it
+    // LLVM's 16-byte default let #68's push change (same instructions,
+    // fewer of them) move `free` from 32 to 16 mod 64 and `malloc` from
+    // 48 to 32, which cost glibc-simple 36% on Zen 5 (c4d). Pinning
+    // either entry alone removed it there, so it is the pair's layout,
+    // not one offset; both are pinned. The cost is 768 bytes of `.text`.
+    #[cfg(target_arch = "x86_64")]
+    core::arch::global_asm!(
+        ".pushsection .text.challoc.malloc,\"ax\",@progbits",
+        ".p2align 6",
+        ".popsection",
+        ".pushsection .text.challoc.free,\"ax\",@progbits",
+        ".p2align 6",
+        ".popsection",
+    );
+
     export_pair! {
-        fn malloc / je_malloc(size: usize) -> *mut c_void {
-            super::malloc(size) as *mut c_void
-        }
-        fn free / je_free(p: *mut c_void) {
-            super::free(p as *mut u8)
-        }
         fn calloc / je_calloc(n: usize, m: usize) -> *mut c_void {
             super::calloc(n, m) as *mut c_void
         }

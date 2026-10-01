@@ -53,11 +53,12 @@ pub struct Shared {
     /// slot against the top four cache entries and aborts on a match) and
     /// [`PUSH_ZERO`] (`zero_on_free`: the slot's class-size bytes are
     /// cleared before the push, and a huge run's usable bytes before its
-    /// release), [`PUSH_PAC`] (signed cache and heap pointers where the
-    /// CPU has pointer authentication; read by the pop too). Written once by `init`; kept on
-    /// the line every `free` reads, and zero in the default configuration
-    /// on a CPU without PAC, so the fast path tests one byte and takes one
-    /// predicted branch.
+    /// release), [`PUSH_PAC`] (`pac_pointers`: signed cache and heap
+    /// pointers where the CPU has pointer authentication; read by the pop
+    /// too). Written once by `init`; kept on the line every `free` reads,
+    /// and zero in the default configuration on every host (all three
+    /// options default to off), so the fast path tests one byte and takes
+    /// one predicted branch.
     pub(super) push_flags: u8,
     pub regions: Regions,
     /// The sized fast path's guard test per class: a dense array (8 bytes
@@ -404,8 +405,7 @@ impl Shared {
     }
 
     /// The flag byte both fast paths load: [`PUSH_SCAN`], [`PUSH_ZERO`]
-    /// and [`PUSH_PAC`]; 0 in the default configuration on a CPU without
-    /// pointer authentication.
+    /// and [`PUSH_PAC`]; 0 in the default configuration, PAC host or not.
     #[inline(always)]
     pub fn push_flags(&self) -> u8 {
         self.push_flags
