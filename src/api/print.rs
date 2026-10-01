@@ -1110,7 +1110,7 @@ mod tests {
         if crate::layout::page_sized_classes().is_some() {
             want.push("Page-sized slabs:".into());
         }
-        want.extend(["Allocated:", "Huge:", "Metadata:", "cgroup:", "cgroup policy:", "purge advice:", "thp:"].map(String::from));
+        want.extend(["Allocated:", "Huge:", "Metadata:", "cgroup:", "cgroup policy:", "purge advice:", "demand window:", "thp:"].map(String::from));
         let general = heads.iter().position(|h| h == "arenas[N]:").unwrap_or_else(|| panic!("no arena block in:\n{text}"));
         assert_eq!(heads[..general], want[..], "general section of:\n{text}");
         assert_eq!(heads.last().map(String::as_str), Some("--- End jemalloc statistics ---"));
