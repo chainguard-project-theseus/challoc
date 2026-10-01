@@ -180,6 +180,7 @@ impl<'a> AtomicBitmap<'a> {
     /// Whether slot `bit` is set. This is the `free` check: a clear bit
     /// means an invalid or double free. Never writes.
     #[inline]
+    #[cfg(test)]
     pub fn is_set(&self, bit: usize) -> bool {
         let b = bit + self.shift as usize;
         (self.words[b / 64].load(Ordering::Relaxed) >> (b % 64)) & 1 == 1

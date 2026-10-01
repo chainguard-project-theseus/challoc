@@ -11,10 +11,12 @@
 //! constant beside it.
 
 /// `AT_NULL`: end of the vector.
+#[cfg(test)]
 pub const AT_NULL: usize = 0;
 /// `AT_PAGESZ`: the system page size.
 pub const AT_PAGESZ: usize = 6;
 /// `AT_HWCAP`: the first arm64 hardware-capability word (`HWCAP_*`).
+#[cfg(any(test, target_arch = "aarch64"))]
 pub const AT_HWCAP: usize = 16;
 /// `AT_RSEQ_FEATURE_SIZE`: the bytes of `struct rseq` the kernel writes
 /// (6.3+); read by the tests, glibc uses it to size its registration.

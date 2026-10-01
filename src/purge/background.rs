@@ -185,6 +185,7 @@ fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t> 
 /// no thread to join or it is still present. Used by the tests that
 /// drive `fork_child` in-process: dropping the record of a thread that
 /// exists in *this* process would leave it unjoined for good.
+#[cfg(test)]
 pub fn join_exited() -> bool {
     let t = {
         let mut g = STATE.lock();
@@ -204,11 +205,13 @@ pub fn join_exited() -> bool {
 }
 
 /// The stack reservation (0 before the first start), for tests.
+#[cfg(test)]
 pub fn stack() -> usize {
     STATE.lock().stack
 }
 
 /// The last thread created and not yet joined, for tests.
+#[cfg(test)]
 pub fn thread() -> Option<::libc::pthread_t> {
     STATE.lock().thread
 }
@@ -253,6 +256,7 @@ pub fn fork_unlock() {
 }
 
 /// Whether the state lock is held (for the fork handler tests).
+#[cfg(test)]
 pub fn is_locked() -> bool {
     STATE.raw().is_locked()
 }

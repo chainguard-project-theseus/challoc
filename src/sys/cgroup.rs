@@ -118,6 +118,7 @@ pub fn cgroup2_mount_from_line(line: &[u8]) -> Option<&[u8]> {
 
 /// The first cgroup2 mount point in `/proc/self/mountinfo` contents, or
 /// `None` when there is none (no unified hierarchy mounted).
+#[cfg(test)]
 pub fn cgroup2_mount(contents: &[u8]) -> Option<&[u8]> {
     lines(contents).find_map(cgroup2_mount_from_line)
 }
@@ -338,6 +339,7 @@ impl Cgroup {
         }
     }
 
+    #[cfg(test)]
     pub fn state(&self) -> State {
         self.state
     }
@@ -410,19 +412,23 @@ impl Cgroup {
         (self.high_rises.load(Ordering::Relaxed), self.max_rises.load(Ordering::Relaxed))
     }
 
+    #[cfg(test)]
     pub fn has_limit_files(&self) -> bool {
         self.has_limit_files
     }
 
+    #[cfg(test)]
     pub fn has_current(&self) -> bool {
         self.has_current
     }
 
+    #[cfg(test)]
     pub fn has_events(&self) -> bool {
         self.has_events
     }
 
     /// Coarse time of the last `memory.current` sample (0 before the first).
+    #[cfg(test)]
     pub fn sampled_at(&self) -> u64 {
         self.sampled_at.load(Ordering::Relaxed)
     }
