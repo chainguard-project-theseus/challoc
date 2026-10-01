@@ -29,7 +29,7 @@ use crate::layout::{CLASSES, NBINS, NCLASSES};
 use crate::purge;
 use crate::stats::{self, ArenaStats, Snapshot, fig_add, fig_mul};
 use crate::sys::bytes_is;
-use crate::vspec::print::{base_slab_sizes, stats_allocated, tcaches_len, thp_name};
+use crate::vspec::print::{base_slab_sizes, stats_allocated, thp_name};
 use vstd::prelude::verus;
 #[cfg(verus_only)]
 use vstd::prelude::*;
@@ -359,7 +359,7 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
         "Arenas: {} ({} automatic), explicit caches: {}",
         snap.narenas,
         shared.arenas.auto(),
-        tcaches_len(shared)
+        shared.tcaches.len()
     )?;
     writeln!(out, "Quantum size: {}", QUANTUM)?;
     writeln!(out, "Page size: {}", shared.regions.page_size())?;

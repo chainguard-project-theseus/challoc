@@ -50,37 +50,24 @@ impl Tcaches {
             }
         }
     }
-
-    /// `tcache.create`: a new explicit cache, home arena `arena`. `None`
-    /// when the table or the metadata region is full.
-    pub fn create(&self, shared: &Shared, arena: u16) -> Option<u16> {
-        let _g = self.lock.lock();
-        let slot = self
-            .table
-            .iter()
-            .position(|p| p.load(Ordering::Relaxed).is_null())?;
-        let h = Heap::create_detached(shared, arena);
-        if h.is_null() {
-            return None;
-        }
-        self.table[slot].store(h as *mut u8, Ordering::Release);
-        Some(slot as u16)
-    }
 }
 
 verus! {
 
-/// The explicit cache a non-null table entry points at. Trusted: Verus
-/// has no raw-pointer dereference, and the heap `Tcaches::create`
-/// published is well formed ([`Heap::wf`]), as every heap a verified path
-/// is handed.
+/// A heap [`Heap::create`] or [`Heap::create_detached`] returned and
+/// nothing has destroyed: an explicit cache's non-null table entry, or
+/// the calling thread's heap, new or at exit. Trusted: Verus has no
+/// raw-pointer dereference, and such a heap is well formed
+/// ([`Heap::wf`]), as every heap a verified path is handed: it starts
+/// with every header `EMPTY`, and every writer keeps `wf` (the trusted
+/// ones [`Heap::wf`] lists by assumption).
 ///
 /// # Safety
-/// `p` is a non-null entry of `Tcaches::table`, and nothing else uses the
-/// heap while the reference lives (see [`Tcaches::get`]).
+/// `p` is such a heap, and nothing else uses it while the reference
+/// lives (see [`Tcaches::get`]).
 #[verifier::external_body]
 #[inline(always)]
-unsafe fn heap_at<'a>(p: *mut Heap) -> (r: &'a mut Heap)
+pub(super) unsafe fn heap_at<'a>(p: *mut Heap) -> (r: &'a mut Heap)
     ensures
         r.wf(),
 {
@@ -89,6 +76,30 @@ unsafe fn heap_at<'a>(p: *mut Heap) -> (r: &'a mut Heap)
 }
 
 impl Tcaches {
+    /// `tcache.create`: a new explicit cache, home arena `arena`. `None`
+    /// when the table or the metadata region is full.
+    pub fn create(&self, shared: &Shared, arena: u16) -> Option<u16> {
+        let _g = self.lock.lock();
+        // The first null entry, lowest index first.
+        let mut slot = 0;
+        while !self.table[slot].load(Ordering::Relaxed).is_null()
+            invariant
+                slot < MAX_TCACHES,
+            decreases MAX_TCACHES - slot,
+        {
+            slot += 1;
+            if slot == MAX_TCACHES {
+                return None;
+            }
+        }
+        let h = Heap::create_detached(shared, arena);
+        if h.is_null() {
+            return None;
+        }
+        self.table[slot].store(h as *mut u8, Ordering::Release);
+        Some(slot as u16)
+    }
+
     /// The table lock, for the fork handlers. It is the outermost
     /// allocator lock: `create` and `destroy` hold it across
     /// `Heap::create_detached` / `Heap::destroy`, which take the arena
@@ -137,11 +148,7 @@ impl Tcaches {
             None => false,
         }
     }
-}
 
-} // verus!
-
-impl Tcaches {
     /// `tcache.destroy`: flush and free `id`. `false` if there is no such
     /// cache.
     pub fn destroy(&self, shared: &Shared, id: u16) -> bool {
@@ -162,12 +169,23 @@ impl Tcaches {
 
     /// Number of live explicit caches (for tests and stats).
     pub fn len(&self) -> usize {
-        self.table
-            .iter()
-            .filter(|p| !p.load(Ordering::Relaxed).is_null())
-            .count()
+        // The non-null entries.
+        let mut n = 0;
+        for i in 0..MAX_TCACHES
+            invariant
+                n <= i,
+        {
+            if !self.table[i].load(Ordering::Relaxed).is_null() {
+                n += 1;
+            }
+        }
+        n
     }
+}
 
+} // verus!
+
+impl Tcaches {
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0

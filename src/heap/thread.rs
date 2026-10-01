@@ -9,6 +9,8 @@ use crate::sys::pac;
 use crate::vspec::addr::addr_to_ptr;
 
 use super::PUSH_PAC;
+use super::paths::shared_of;
+use super::tcaches::heap_at;
 use super::{Heap, Shared};
 use vstd::prelude::verus;
 #[cfg(verus_only)]
@@ -21,8 +23,6 @@ verus! {
 pub const TLS_CREATING: usize = 1;
 /// TLS slot value after this thread's heap destructor has run.
 pub const TLS_EXITED: usize = 2;
-
-} // verus!
 
 /// Destructor of the thread-exit key: mark the thread as exited, then flush
 /// and free its heap. The sentinel goes first so that anything allocating
@@ -38,15 +38,13 @@ pub const TLS_EXITED: usize = 2;
 /// `existing_heap` from handing it out).
 pub unsafe extern "C" fn heap_destructor(p: *mut c_void) {
     let h = p as *mut Heap;
-    crate::sys::tls::set(TLS_EXITED as *mut c_void);
+    crate::sys::tls::set(addr_to_ptr(TLS_EXITED) as *mut c_void);
     // SAFETY: the pointer was registered by `heap_for_thread` for this thread.
     unsafe {
-        let shared = &*(*h).shared;
+        let shared = shared_of(heap_at(h).shared);
         Heap::destroy(h, shared);
     }
 }
-
-verus! {
 
 /// The calling thread's heap, created on first use. `None` when the thread
 /// must be served without a cache: heap creation is in progress on it
@@ -92,14 +90,10 @@ fn tls_value_for(shared: &Shared, h: *mut Heap) -> *mut c_void {
 /// Create, register and publish the calling thread's heap (`slot` is its
 /// TLS value, 0 when it has none yet); `None` while a creation is in
 /// progress, after the exit destructor ran, or when the metadata region is
-/// exhausted.
-///
-/// Trusted: `Heap::create` (raw writes of a fresh metadata block, outside
-/// `verus!`) and the TLS writes. The new heap is well formed
-/// ([`Heap::wf`]): every header is `EMPTY`, so its caches hold nothing.
+/// exhausted. The new heap is well formed ([`Heap::wf`]), as
+/// [`heap_at`] assumes of every heap `Heap::create` returns.
 #[cold]
 #[inline(never)]
-#[verifier::external_body]
 fn create_heap_for_thread(shared: &Shared, slot: usize) -> (r: Option<&mut Heap>)
     ensures
         r matches Some(h) ==> h.wf(),
@@ -111,11 +105,11 @@ fn create_heap_for_thread(shared: &Shared, slot: usize) -> (r: Option<&mut Heap>
     if h.is_null() {
         return None;
     }
-    crate::sys::tls::set(TLS_CREATING as *mut c_void);
+    crate::sys::tls::set(addr_to_ptr(TLS_CREATING) as *mut c_void);
     shared.key.set(h);
     crate::sys::tls::set(tls_value_for(shared, h));
     // SAFETY: freshly created and owned by this thread.
-    Some(unsafe { &mut *h })
+    Some(unsafe { heap_at(h) })
 }
 
 /// The calling thread's heap if it already exists, with no attempt to

@@ -190,7 +190,11 @@ impl ThreadKey {
     pub fn key(&self) -> Option<libc::pthread_key_t> {
         if self.valid { Some(self.key) } else { None }
     }
+}
 
+verus! {
+
+impl ThreadKey {
     /// Register `heap` for destruction when the calling thread exits.
     pub fn set(&self, heap: *mut Heap) {
         if !self.valid {
@@ -199,12 +203,23 @@ impl ThreadKey {
         // SAFETY: the key was created by `create`; glibc stores the
         // pointer without dereferencing it.
         if unsafe { libc::pthread_setspecific(self.key, heap as *const c_void) } != 0 {
+            #[cfg(verus_only)]
+            setspecific_failed();
+            #[cfg(not(verus_only))]
             panic!("heap: pthread_setspecific failed");
         }
     }
 }
 
-verus! {
+/// What Verus sees for [`ThreadKey::set`]'s `panic!`; the build keeps the
+/// `panic!` inline, so `set` keeps its code. Trusted: the `-> !` is the
+/// whole specification, and the `panic!` it stands for never returns; the
+/// two copies of the message must be kept in step.
+#[cfg(verus_only)]
+#[verifier::external_body]
+fn setspecific_failed() -> ! {
+    panic!("heap: pthread_setspecific failed")
+}
 
 pub(super) fn now_ns() -> u64 {
     crate::sys::now_coarse_ns()
@@ -1438,21 +1453,26 @@ impl Shared {
             a = next;
         }
     }
-}
 
-} // verus!
-
-impl Shared {
     /// Change the decay period of every existing arena; `-1` turns purging
     /// off. Takes effect at the next periodic tick, or at once for a
     /// background thread (each arena setter wakes it).
     /// `arena.<i>.dirty_decay_ms` goes through `Arena::set_decay_ms` instead.
     pub fn set_decay_ms(&self, ms: i64) {
-        for a in self.arenas.iter() {
-            a.set_decay_ms(ms);
+        // The arenas `Arenas::iter` walks: every built index below the
+        // count, in order.
+        let n = self.arenas.count() as usize;
+        for i in 0..n {
+            if let Some(a) = self.arenas.get_existing(i as u16) {
+                a.set_decay_ms(ms);
+            }
         }
     }
+}
 
+} // verus!
+
+impl Shared {
     /// Whether the thread-exit key exists (heaps of exiting threads are
     /// reclaimed). False only if `pthread_key_create` failed at init.
     #[cfg(test)]

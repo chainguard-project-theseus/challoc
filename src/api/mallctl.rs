@@ -1026,21 +1026,10 @@ impl Utilization {
     };
 }
 
-// The heap module's calls the keys make that are outside `verus!`:
-// `Shared::set_decay_ms` (an iterator over the arenas), `Heap::set_arena`
-// (a raw-pointer dereference of a cache node), `Heap::set_tcache_enabled`
-// (a walk of raw node pointers), and the explicit-cache table
-// (`heap/tcaches.rs`: its `AtomicPtr<Heap>` table makes `Heap` reach
-// itself through `Shared`). Each is a trusted wrapper that claims nothing;
-// delete each when its callee enters `verus!`.
-
-/// `shared.set_decay_ms(ms)`: every arena's decay period. Nothing is
-/// claimed.
-#[verifier::external_body]
-#[inline(always)]
-fn shared_set_decay_ms(shared: &Shared, ms: i64) {
-    shared.set_decay_ms(ms)
-}
+// Trusted wrappers, each claiming nothing, for three heap calls the keys
+// make: `Heap::set_arena`, `Heap::set_tcache_enabled` and
+// `Tcaches::flush`. Their callees are in `verus!` now; delete each wrapper
+// once its call site is checked against the callee's preconditions.
 
 /// `h.set_arena(shared, arena)`. Nothing is claimed.
 #[verifier::external_body]
@@ -1056,28 +1045,12 @@ fn heap_set_tcache_enabled(h: &mut Heap, shared: &Shared, on: bool) {
     h.set_tcache_enabled(shared, on)
 }
 
-/// `shared.tcaches.create(shared, home)`: a fresh explicit cache's id.
-/// Nothing is claimed.
-#[verifier::external_body]
-#[inline(always)]
-fn tcaches_create(shared: &Shared, home: u16) -> Option<u16> {
-    shared.tcaches.create(shared, home)
-}
-
 /// `shared.tcaches.flush(shared, t)`: whether `t` was a live cache.
 /// Nothing is claimed.
 #[verifier::external_body]
 #[inline(always)]
 fn tcaches_flush(shared: &Shared, t: u16) -> bool {
     shared.tcaches.flush(shared, t)
-}
-
-/// `shared.tcaches.destroy(shared, t)`: whether `t` was a live cache.
-/// Nothing is claimed.
-#[verifier::external_body]
-#[inline(always)]
-fn tcaches_destroy(shared: &Shared, t: u16) -> bool {
-    shared.tcaches.destroy(shared, t)
 }
 
 /// The utilisation figures of `p` (see the module docs). `verbose` adds
@@ -1528,7 +1501,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
             }
             if i == ARENAS_ALL as usize {
                 if let Some(ms) = new {
-                    shared_set_decay_ms(shared, ms as i64);
+                    shared.set_decay_ms(ms as i64);
                 }
                 return io.read(ms_of(shared.decay_ns()));
             }
@@ -1568,7 +1541,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
                 Some(h) => h.arena(),
                 None => 0,
             };
-            let t = tcaches_create(shared, home).ok_or(EFAULT)?;
+            let t = shared.tcaches.create(shared, home).ok_or(EFAULT)?;
             io.read(t as c_uint)
         },
         TcacheFlush | TcacheDestroy => {
@@ -1579,7 +1552,7 @@ fn ctl(shared: &Shared, node: &Node, mib: &[usize], io: &Io) -> Result<(), c_int
             }
             let ok = match op {
                 TcacheFlush => tcaches_flush(shared, t as u16),
-                _ => tcaches_destroy(shared, t as u16),
+                _ => shared.tcaches.destroy(shared, t as u16),
             };
             if ok {
                 Ok(())

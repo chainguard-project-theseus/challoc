@@ -3275,11 +3275,25 @@ impl Heap {
 
 } // verus!
 
+verus! {
+
+/// Heap creation and teardown, trusted: field-by-field writes and reads
+/// through a raw `*mut Heap` (Verus has no raw borrows), and `destroy`
+/// walks `others` with the `nodes` iterator. A heap `create` or
+/// `create_detached` returns is well formed ([`Heap::wf`]): every header
+/// is `EMPTY` and the `others` list is empty, so its caches hold nothing.
+/// The trusted conversions that hand a heap to verified code
+/// (`tcaches::heap_at`, `thread::heap_from_slot`) assume `wf` of every
+/// heap they return, which creation establishes and every writer keeps
+/// (see [`Heap::wf`]). `destroy` stays trusted: verifying it changes
+/// LTO's inlining of `Meta::free` and `meta::Inner::alloc` elsewhere in
+/// the library.
 impl Heap {
     /// Create a heap in the metadata region for the calling thread, homed
     /// on the least-loaded automatic arena and counted there
     /// (`Arenas::assign`; `destroy` releases the binding). Null if the
     /// region is exhausted. Does not touch TLS or the thread key.
+    #[verifier::external_body]
     pub fn create(shared: &Shared) -> *mut Heap {
         let arena = shared.arenas.assign();
         let h = Self::create_detached(shared, arena);
@@ -3294,6 +3308,7 @@ impl Heap {
 
     /// Create a heap homed on `arena` (an explicit cache, or a thread heap
     /// before it is registered). Null if the region is exhausted.
+    #[verifier::external_body]
     pub fn create_detached(shared: &Shared, arena: u16) -> *mut Heap {
         let h = shared.meta.alloc(Layout::new::<Heap>()) as *mut Heap;
         if h.is_null() {
@@ -3331,6 +3346,7 @@ impl Heap {
     /// # Safety
     /// `h` must come from [`Heap::create`] on `shared` and no longer be in
     /// use by any thread.
+    #[verifier::external_body]
     pub unsafe fn destroy(h: *mut Heap, shared: &Shared) {
         // SAFETY: the caller gives us exclusive ownership of the heap.
         let heap = unsafe { &mut *h };
@@ -3368,7 +3384,11 @@ impl Heap {
         }
         shared.meta.free(h as *mut u8, Layout::new::<Heap>());
     }
+}
 
+} // verus!
+
+impl Heap {
     /// The `Shared` this heap was created on.
     #[cfg(test)]
     pub fn shared(&self) -> &Shared {

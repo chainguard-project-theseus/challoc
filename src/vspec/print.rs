@@ -22,14 +22,6 @@ pub(crate) fn thp_name(k: crate::config::Thp) -> &'static core::ffi::CStr {
     k.name()
 }
 
-/// `shared.tcaches.len()`, the explicit caches handed out
-/// (`heap/tcaches.rs`, outside `verus!`).
-#[verifier::external_body]
-#[inline(always)]
-pub(crate) fn tcaches_len(shared: &crate::heap::Shared) -> usize {
-    shared.tcaches.len()
-}
-
 /// The smallest and largest [`crate::layout::BASE_CLASSES`] slab size of
 /// the classes `lo..=hi` (0 for an empty range), the table geometry the
 /// report compares a page-raised range with. Trusted: the iterator chain

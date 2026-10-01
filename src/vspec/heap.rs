@@ -25,3 +25,12 @@ pub assume_specification<T, F: FnOnce() -> Option<T>>[ Option::<T>::or_else ](op
 ;
 
 } // verus!
+
+verus! {
+
+/// `pthread_setspecific(3)`: stores `value` for the calling thread under
+/// `key` without dereferencing it; 0 on success, an error number
+/// otherwise. Nothing is claimed about the result.
+pub assume_specification[ libc::pthread_setspecific ](key: libc::pthread_key_t, value: *const core::ffi::c_void) -> i32;
+
+} // verus!
