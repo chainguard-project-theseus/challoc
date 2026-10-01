@@ -3,7 +3,7 @@ use super::compact::Verdict;
 use super::flush::{flag_sort, group_by_slab};
 use crate::arena::Arena;
 use crate::class::ClassStats;
-use crate::config::Config;
+use crate::config::{Config, MAX_NSLOTS};
 use crate::layout::{Kind, class_of};
 use crate::slab::State;
 use crate::sys::pac;
@@ -124,6 +124,15 @@ pub(crate) fn class_with(size: usize) -> usize {
     CLASSES.iter().position(|c| c.size() == size).unwrap()
 }
 
+/// The heap tests' configuration with fixed capacities
+/// (`tcache_nslots_small_min` at its maximum: every cache at its ladder
+/// value from first use, never shrunk), for the tests of the batch
+/// geometry (a refill claims half the ladder, a full cache flushes half)
+/// and of the low-water GC on its own.
+pub(crate) fn fixed() -> &'static Shared {
+    TestShared::with(Config { narenas: 1, pac_pointers: true, tcache_nslots_small_min: MAX_NSLOTS, ..Config::DEFAULT }).build()
+}
+
 pub(crate) struct TestHeap {
     h: *mut Heap,
     s: &'static Shared,
@@ -241,7 +250,7 @@ fn default_caps_follow_the_design_table() {
 
 #[test]
 fn heap_starts_with_the_sentinel_and_allocates_caches_lazily() {
-    let s = shared();
+    let s = fixed();
     let before = s.meta.stats().allocated;
     let t = TestHeap::new(s);
     for c in 0..NCLASSES {
@@ -272,7 +281,7 @@ fn heap_starts_with_the_sentinel_and_allocates_caches_lazily() {
 
 #[test]
 fn allocations_are_address_ordered_and_lifo_after_free() {
-    let s = shared();
+    let s = fixed();
     let t = TestHeap::new(s);
     let c = class_with(16);
     let size = 16;
@@ -300,7 +309,7 @@ fn allocations_are_address_ordered_and_lifo_after_free() {
 
 #[test]
 fn full_cache_flushes_the_highest_half_sorted_and_slabs_empty() {
-    let s = shared();
+    let s = fixed();
     let t = TestHeap::new(s);
     let c = class_with(64);
     let cs = &s.arena0.classes[c];
@@ -509,7 +518,7 @@ fn a_cached_pair_kept_by_the_split_is_caught_when_released() {
 /// reset. `flush_all` is such a flush of every class.
 #[test]
 fn a_whole_cache_flush_keeps_nothing_and_takes_the_unsorted_branch() {
-    let s = shared();
+    let s = fixed();
     let t = TestHeap::new(s);
     let c = class_with(64);
     // Drain the first refill so the cache is empty, then push ten
@@ -652,7 +661,7 @@ fn sized_free_past_the_watermark_aborts_at_the_flush() {
 
 #[test]
 fn flush_releases_the_highest_addresses_and_keeps_the_lowest() {
-    let s = shared();
+    let s = fixed();
     let t = TestHeap::new(s);
     let c = class_with(64);
     // Slots spread over several slabs, freed in a scrambled order so
@@ -774,7 +783,7 @@ fn flag_sort_permutes_into_ascending_buckets() {
 
 #[test]
 fn zeroed_prefix_tracks_fresh_memory() {
-    let s = shared();
+    let s = fixed();
     let t = TestHeap::new(s);
     // 4096 slots per slab, so refills after the first come from the
     // same, by then Active, slab.
@@ -815,7 +824,7 @@ fn zeroed_prefix_tracks_fresh_memory() {
 
 #[test]
 fn flush_drops_the_zeroed_prefix() {
-    let s = shared();
+    let s = fixed();
     let t = TestHeap::new(s);
     let u = TestHeap::new(s);
     let c = class_with(32);
@@ -849,7 +858,7 @@ fn flush_drops_the_zeroed_prefix() {
 
 #[test]
 fn gc_releases_unused_entries_by_low_water() {
-    let s = shared();
+    let s = fixed();
     let t = TestHeap::new(s);
     let c = class_with(48);
     // A refill starts low water at the batch length (the run needs
@@ -879,21 +888,17 @@ fn gc_releases_unused_entries_by_low_water() {
     assert_eq!(t.len(c), len - flushed);
     assert_eq!(live(s, c), live_before - flushed);
     assert_eq!(t.cache(c).low_water(), len - flushed);
-    // Untouched since, so the next GC shrinks it again; the first GC saw
-    // the refill's miss, this one finds the cache quiet and halves its
-    // capacity too.
-    assert_eq!(t.cache(c).cap(), CAP);
+    // Untouched since, so the next GC shrinks it again.
     let len = t.len(c);
     t.gc();
     assert_eq!(t.len(c), len - (len - len / 4));
-    assert_eq!(t.cache(c).cap(), CAP / 2);
     // A cache that was drained and refilled and then left untouched
     // gives three quarters of the batch back at the next GC.
     while t.len(c) > 0 {
         t.alloc(c);
     }
     t.alloc(c);
-    assert_eq!(t.cache(c).low_water(), CAP / 4 - 1, "half of the halved capacity");
+    assert_eq!(t.cache(c).low_water(), HALF - 1);
     let len = t.len(c);
     t.gc();
     assert_eq!(t.len(c), len - (len - len / 4));
@@ -910,7 +915,7 @@ fn periodic_work_runs_gc_on_the_interval() {
     let c = class_with(16);
     let d = class_with(48);
     for interval in [0u64, super::shared::GC_INTERVAL_NS] {
-        let s = shared();
+        let s = fixed();
         // SAFETY: nothing else references `s` yet; the field is plain data.
         unsafe { (*(s as *const Shared as *mut Shared)).gc_interval_ns = interval };
         let t = TestHeap::new(s);
@@ -968,7 +973,7 @@ fn direct_paths_bypass_the_cache() {
 
 #[test]
 fn cross_thread_frees_land_in_the_freeing_heap() {
-    let s = shared();
+    let s = fixed();
     let a = TestHeap::new(s);
     let b = TestHeap::new(s);
     let c = class_with(64);
@@ -1591,7 +1596,7 @@ fn arena_registry_creates_and_looks_up() {
 /// `destroy` releases the binding, and arenas are built on first touch.
 #[test]
 fn automatic_arenas_are_assigned_least_loaded_and_built_lazily() {
-    let s = TestShared::with(Config { narenas: 3, ..Config::DEFAULT }).build();
+    let s = TestShared::with(Config { narenas: 3, tcache_nslots_small_min: MAX_NSLOTS, ..Config::DEFAULT }).build();
     assert_eq!(s.arenas.count(), 3);
     assert_eq!(s.arenas.auto(), 3);
     assert!(s.arenas.get_existing(1).is_none());
@@ -1704,7 +1709,7 @@ fn default_narenas_is_resolved_at_init() {
 /// `bench/results/2026-09-21-*-ruby-rss-attribution.md`.
 #[test]
 fn foreign_frees_share_one_flush_only_cache_per_class() {
-    let s = shared();
+    let s = fixed();
     let a1 = s.arenas.create(s).unwrap();
     let a2 = s.arenas.create(s).unwrap();
     let t = TestHeap::new(s);
@@ -1900,7 +1905,7 @@ fn dropping_the_home_caches_keeps_the_thread_counters() {
 /// home's caches move to the list and back.
 #[test]
 fn set_arena_swaps_cache_arrays() {
-    let s = shared();
+    let s = fixed();
     let a1 = s.arenas.create(s).unwrap();
     let t = TestHeap::new(s);
     let h = t.heap();
@@ -1935,7 +1940,7 @@ fn set_arena_swaps_cache_arrays() {
 /// Explicit caches are heaps owned by no thread with their own ids.
 #[test]
 fn explicit_caches_create_flush_destroy() {
-    let s = shared();
+    let s = fixed();
     assert!(s.tcaches.is_empty());
     let t0 = s.tcaches.create(s, 0).unwrap();
     let t1 = s.tcaches.create(s, 0).unwrap();
@@ -2122,7 +2127,7 @@ fn slot_randomize_shuffles_the_batch_and_keeps_the_slot_set() {
     };
     let ascending = |ps: &[*mut u8]| ps.windows(2).all(|w| w[0] < w[1]);
 
-    let s = shared();
+    let s = fixed();
     let t = TestHeap::new(s);
     let first: Vec<*mut u8> = (0..batch).map(|_| t.alloc(c)).collect();
     assert!(ascending(&first), "the default order is not ascending");
@@ -2133,7 +2138,7 @@ fn slot_randomize_shuffles_the_batch_and_keeps_the_slot_set() {
     t.flush_all();
     t.destroy();
 
-    let s = TestShared::with(Config { narenas: 1, slot_randomize: true, ..Config::DEFAULT }).build();
+    let s = TestShared::with(Config { narenas: 1, slot_randomize: true, tcache_nslots_small_min: MAX_NSLOTS, ..Config::DEFAULT }).build();
     let t = TestHeap::new(s);
     let cs = &s.arena0.classes[c];
     let (first_z, zeroed): (Vec<*mut u8>, Vec<bool>) = (0..batch).map(|_| t.heap().alloc_zeroed(s, c)).unzip();
@@ -2624,6 +2629,16 @@ fn capacity_past_the_ceiling_aborts() {
     t.destroy();
 }
 
+/// Bring `c`'s home cache to its ceiling and empty it, as a busy
+/// interval's misses leave it: one allocation creates it at its start
+/// capacity, the grow is forced, and the slot and the cache go back.
+fn warm(t: &TestHeap, c: usize) {
+    let p = t.alloc(c);
+    force_cap(t, c, t.cache(c).ceil() as u32);
+    t.free(p);
+    t.flush_all();
+}
+
 /// Drain `c`'s home cache with pops, then pop once more (a refill).
 fn drain_and_refill(t: &TestHeap, c: usize, out: &mut Vec<*mut u8>) {
     while t.len(c) > 0 {
@@ -2642,7 +2657,7 @@ fn cap_starts_at_start_and_doubles_after_two_misses() {
     let t = TestHeap::new(s);
     let c = class_with(64);
     let mut ps = std::vec![t.alloc(c)];
-    assert_eq!(t.cache(c).cap(), cache::start_cap(CAP as u32) as usize);
+    assert_eq!(t.cache(c).cap(), cache::start_cap(CAP as u32, MIN_CAP) as usize);
     assert_eq!(t.cache(c).misses, 1, "the first refill is a miss");
     force_cap(&t, c, 64);
     drain_and_refill(&t, c, &mut ps);
@@ -2718,6 +2733,7 @@ fn quiet_cache_halves_at_gc_and_trims() {
     let s = shared();
     let t = TestHeap::new(s);
     let c = class_with(64);
+    warm(&t, c);
     // Two refills: 1024 claimed, 8 left cached; 1000 back in the cache.
     let mut ps: Vec<*mut u8> = (0..CAP - 8).map(|_| t.alloc(c)).collect();
     let kept: Vec<*mut u8> = ps.drain(1000..).collect();
@@ -2868,7 +2884,8 @@ fn thread_counters_survive_trim() {
     let s = shared();
     let t = TestHeap::new(s);
     let c = class_with(64);
-    let (mut na, mut nf) = (0u64, 0u64);
+    warm(&t, c);
+    let (mut na, mut nf) = (1u64, 1u64);
     let check = |na: u64, nf: u64| assert_eq!(t.stats(), ThreadStats { allocated: 64 * na, deallocated: 64 * nf });
     let mut ps: Vec<*mut u8> = (0..CAP - 8).map(|_| t.alloc(c)).collect();
     na += ps.len() as u64;
@@ -3103,4 +3120,36 @@ fn min_equal_max_is_fixed_capacity() {
         assert_eq!(t.cache(d).cap(), CAP);
     }
     t.destroy();
+}
+
+/// Slow start: a class's first use creates its cache at an eighth of the
+/// ceiling, never below the floor, so the first refill claims a
+/// sixteenth of the ladder; with fixed capacities it starts at the
+/// ceiling. A busy cache reaches the ceiling `START_LG` misses after its
+/// second.
+#[test]
+fn new_cache_starts_at_an_eighth_of_the_ceiling() {
+    for (s, fixed_caps) in [(shared(), false), (fixed(), true)] {
+        let t = TestHeap::new(s);
+        for c in (0..NCLASSES).filter(|&c| s.config.cap_for(0, 0, c) != 0) {
+            let ceil = default_cap(c);
+            let p = t.alloc(c);
+            let k = t.cache(c);
+            let want = if fixed_caps { ceil } else { (ceil >> START_LG).max(MIN_CAP) };
+            assert_eq!((k.cap(), k.ceil()), (want as usize, ceil as usize), "class {c}");
+            assert_eq!(k.len(), (want / 2) as usize - 1, "class {c}");
+            t.free(p);
+        }
+        let c = class_with(64);
+        t.flush_all();
+        let mut out = Vec::new();
+        for _ in 0..=START_LG {
+            drain_and_refill(&t, c, &mut out);
+        }
+        assert_eq!(t.cache(c).cap(), CAP);
+        for p in out {
+            t.free(p);
+        }
+        t.destroy();
+    }
 }

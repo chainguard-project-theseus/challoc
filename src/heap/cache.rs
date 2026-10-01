@@ -8,7 +8,7 @@ use core::ptr;
 use crate::layout::NCLASSES;
 use crate::sys::pac;
 
-use super::{FOREIGN, GROW_MISSES, Heap, MIN_CAP, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, Shared};
+use super::{FOREIGN, GROW_MISSES, Heap, MIN_CAP, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, START_LG, Shared};
 use super::{MODE_OFF, MODE_PROBE};
 
 /// One thread's cache header for one size class: exactly one cache line,
@@ -454,7 +454,7 @@ impl Heap {
         }
         // The stack is sized for the ceiling, so a capacity change never
         // reallocates it; the `FOREIGN` cache's capacity is fixed.
-        let cap = if arena == FOREIGN { ceil } else { start_cap(ceil) };
+        let cap = if arena == FOREIGN { ceil } else { start_cap(ceil, shared.config.cap_floor(class, ceil)) };
         // SAFETY: `cache` is this heap's own header (still `EMPTY`) and
         // `slots` has room for `ceil` pointers, exclusively ours.
         unsafe {
@@ -487,8 +487,13 @@ impl Heap {
     }
 }
 
-/// The capacity a new cache whose stack holds `ceil` slots starts at.
+/// The capacity a new cache whose stack holds `ceil` slots and whose
+/// floor is `floor` starts at: an eighth of the ceiling ([`START_LG`]),
+/// never below the floor. A class that a thread touches once holds a
+/// sixteenth of the ladder after its first refill instead of half; one
+/// that stays busy reaches the ceiling after `START_LG` doublings, its
+/// second to fifth miss.
 #[inline]
-pub(super) fn start_cap(ceil: u32) -> u32 {
-    ceil
+pub(super) fn start_cap(ceil: u32, floor: u32) -> u32 {
+    (ceil >> START_LG).max(floor).min(ceil)
 }

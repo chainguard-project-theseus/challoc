@@ -93,7 +93,7 @@ fn calloc_flag_is_honest_about_memory() {
             }
             fill(r, size, 0x11);
         }
-        let refill = default_cap(c) as usize / 2;
+        let refill = super::cache::start_cap(default_cap(c), MIN_CAP) as usize / 2;
         assert!(zeros >= refill - 1 && zeros < 3000, "{zeros} zero-flagged of 3000");
     })
     .join()

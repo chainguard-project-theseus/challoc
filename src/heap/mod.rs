@@ -93,6 +93,10 @@ pub const PERIODIC_EVERY: u32 = 64;
 /// ceiling (design 6.4). A class that one refill or one flush per interval
 /// serves keeps its capacity.
 pub const GROW_MISSES: u8 = 2;
+/// A new cache starts at `ceil >> START_LG`, at least its floor (slow
+/// start, design 6.4): the first refill of a class claims a sixteenth of
+/// the ladder rather than half of it.
+pub const START_LG: u32 = 3;
 
 /// Default cache capacity for a class: [`MAX_CAP`] (1024) slots for classes
 /// up to 128 bytes, halved for every doubling of the class size, never
