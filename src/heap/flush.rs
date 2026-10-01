@@ -89,8 +89,7 @@ impl Heap {
     /// the whole slot array per flush would be 8..9% of glibc-simple and
     /// 5% of the Python json row under tiny-object churn on both VMs, the
     /// largest single term wherever challoc trailed mimalloc or tcmalloc
-    /// by more than 10% (`bench/results/2026-09-19-*-gce-flush-sort.md`),
-    /// so the ordering work is the least that keeps the release grouped:
+    /// by more than 10%, so the ordering work is the least that keeps the release grouped:
     ///
     /// - A slot array already in address order (a cache pushed in the order
     ///   a producer's refill batch was handed out, xmalloc-test's consumer
@@ -137,8 +136,7 @@ impl Heap {
     /// pass's first sweep, or `slots[rest_len]` on the sorted path) is
     /// compared with it. One compare, the same strength as the sorted
     /// form's neighbour compare at the split; a pass over the kept half was
-    /// measured at 4.9% / 7.3% of xmalloc-test and is not done
-    /// (`bench/results/2026-09-18-*-gce-detection-gaps.md`).
+    /// measured at 4.9% / 7.3% of xmalloc-test and is not done.
     ///
     /// # Safety
     /// `cache` is this heap's real cache for `(arena, class)` and `n <= len`.
@@ -158,7 +156,7 @@ impl Heap {
             // stack and re-signing the kept half was measured first:
             // xmalloc-test -15.8% on the C4A (the consumer's flushes are
             // the sorted path, 1.25k cycles each, and the two passes
-            // doubled them; `bench/results/2026-09-19-lane-a-pac-pointers.md`).
+            // doubled them).
             // The keyed forms only when signed: `sort_unstable_by_key` and
             // friends take a comparator closure and lose the primitive
             // pointer sort's specialisations, which costs every flush even

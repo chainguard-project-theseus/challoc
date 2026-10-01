@@ -1,5 +1,5 @@
-// bench/node/server.js: the HTTP server of the node-bench `server` row
-// (docs/plan.md Phase 3 task 5 (c)). Plain `http`, no dependencies. Two
+// bench/node/server.js: the HTTP server of the node-bench `server` row.
+// Plain `http`, no dependencies. Two
 // endpoints, so the load generator exercises two allocation shapes:
 //
 //   GET /json   a small JSON body built per request (an object with a

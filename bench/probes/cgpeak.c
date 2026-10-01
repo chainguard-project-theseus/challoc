@@ -1,6 +1,6 @@
 /*
- * cgpeak: the cgroup's memory.peak per harness phase (plan Phase 2.5 task
- * 17, docs/research.md kernel table, 6.12 "memory.peak write resets").
+ * cgpeak: the cgroup's memory.peak per harness phase (docs/research.md
+ * kernel table, 6.12 "memory.peak write resets").
  *
  * From 6.12 a write to memory.peak resets the high-water mark, but the reset
  * is scoped to the open file description that wrote it: a later read through

@@ -74,13 +74,9 @@ use crate::slab::{SlabDesc, State};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 mod abort;
-// Dead outside the tests: `ClassState::decay` (part 2 of #10).
-#[allow(dead_code)]
 mod decay;
 mod fresh;
 mod sets;
-// Dead outside the tests: `SlabTable::nslabs` (part 2 of #10).
-#[allow(dead_code)]
 mod table;
 #[cfg(test)]
 mod tests;

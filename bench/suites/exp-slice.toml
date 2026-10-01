@@ -1,6 +1,9 @@
-# exp-slice: the rseq time slice extension (audit D9, MEASURE-FIRST).
-# One build, two MALLOC_CONFs: `auto` (challoc asks the kernel for the
-# extension where it has it, the default) against `off`. A grant defers
+# exp-slice: the rseq time slice extension (audit D9). The `slice_ext`
+# key was cut after this experiment (#17) and exists only in the
+# revisions of the archive tag, so pass one of those as `--head`; on a
+# later head both variants are the same build with an unknown key.
+# One build, two MALLOC_CONFs: `auto` (challoc asked the kernel for the
+# extension where it had it) against `off`. A grant defers
 # the preemption of a thread inside an allocator critical section by
 # another runnable thread on the same CPU, so the rows are the contended,
 # oversubscribed ones: the container is pinned to 4 CPUs (`cpuset`, not a
@@ -14,7 +17,7 @@
 # report says what the kernel granted (`slice_ext=on` vs `no-slice_ctrl`).
 #
 # Positive percentages mean `auto` did worse than `off`. `cb launch
-# exp-slice --head <rev>`; the verdict decides keep or cut, not this file.
+# exp-slice --head <rev>`.
 description = "D9: slice_ext:auto vs slice_ext:off on one build, container pinned to 4 CPUs"
 cells = "tag:exp-slice"
 variants = ["off=head@slice_ext:off", "auto=head@slice_ext:auto"]

@@ -159,7 +159,7 @@ fn seal_child(page: usize) -> i32 {
     // Each sealed range splits its VMA into at most two more pieces.
     check(after - before <= 2 * n + 2, "VMA count grew by more than 2 per sealed range");
 
-    // The plan's criterion: munmap of a reserved range fails with EPERM.
+    // The criterion: munmap of a reserved range fails with EPERM.
     // Likewise mprotect (a commit landing in a gap) and MAP_FIXED over
     // it (a foreign mapping placed in the gap).
     for m in &ranges[..n] {

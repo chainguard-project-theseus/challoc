@@ -1,5 +1,5 @@
-// HttpBench: the JVM server row of bench/drivers/jvm-bench.sh (docs/plan.md Phase 3
-// task 5 (a)). A plain JDK program, no build tool: bench/drivers/jvm-bench.sh runs
+// HttpBench: the JVM server row of bench/drivers/jvm-bench.sh. A plain JDK
+// program, no build tool: bench/drivers/jvm-bench.sh runs
 // `javac -d target/jvm bench/drivers/jvm/HttpBench.java` once and starts
 //
 //   java -Xms512m -Xmx512m -XX:+AlwaysPreTouch -cp target/jvm HttpBench serve PORT THREADS
@@ -23,9 +23,9 @@
 //   /quit   answers, then System.exit(0) so the allocator's atexit stats print
 //           (MALLOC_CONF=stats_print:true, MIMALLOC_SHOW_STATS=1) runs
 //
-// The soak mode (bench/drivers/jvm-bench.sh ROWS=soak, second iteration of the task,
-// 2026-09-20: a shape that can separate the allocators, where a 5-minute run
-// with one buffer size never lets glibc's arenas fragment)
+// The soak mode (bench/drivers/jvm-bench.sh ROWS=soak: a shape that can
+// separate the allocators, where a 5-minute run with one buffer size never
+// lets glibc's arenas fragment)
 //
 //   java ... HttpBench soak PORT CORE MAX KEEPALIVE_S MIN_BYTES MAX_BYTES
 //

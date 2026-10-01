@@ -1,20 +1,14 @@
 # contrib/wolfi: the Wolfi package definitions
 
-`challoc.yaml` is the melange definition for the Wolfi packages of
-docs/plan.md Phase 3 task 1 (design 13.6; three packages, plus the
-`challoc-jemalloc-compat-dev` header package task 3 added);
-`valkey/valkey-9.1.yaml` is Wolfi's Valkey 9.1 package switched to
-challoc (task 2, the "Valkey" section below); `ruby/ruby-3.4.yaml`,
+`challoc.yaml` is the melange definition for the Wolfi packages (design
+13.6; three packages, plus the `challoc-jemalloc-compat-dev` header
+package); `valkey/valkey-9.1.yaml` is Wolfi's Valkey 9.1 package switched
+to challoc (the "Valkey" section below); `ruby/ruby-3.4.yaml`,
 `keydb/keydb.yaml` and `rethinkdb/rethinkdb.yaml` are Wolfi's Ruby 3.4,
-KeyDB 6.3 and RethinkDB 2.4 switched to `challoc-jemalloc-compat` (task
-3, the "Ruby", "KeyDB" and "RethinkDB" sections). Phase 3 runs in the
+KeyDB 6.3 and RethinkDB 2.4 switched to `challoc-jemalloc-compat` (the
+"Ruby", "KeyDB" and "RethinkDB" sections). The packages live in the
 wolfi-dev/os repository; this directory tracks the drafts and the recipes
-that build and test them here. Results of the first real builds
-(2026-09-20): `bench/results/2026-09-20-phase3-task1-wolfi-package.md`,
-`bench/results/2026-09-20-phase3-task2-valkey-package.md`,
-`bench/results/2026-09-20-phase3-task3-ruby-package.md`,
-`bench/results/2026-09-20-phase3-task3-keydb-package.md` and
-`bench/results/2026-09-20-phase3-task3-rethinkdb-package.md`.
+that build and test them here.
 
 ## Packages
 
@@ -190,8 +184,7 @@ update) with the allocator switched from the bundled jemalloc to challoc.
 (Wolfi keeps patches in a directory named after the package); the
 `MALLOC=challoc` patches, `contrib/valkey/0001-Add-MALLOC-challoc.patch`
 and `0002-zmalloc-use-challoc-usable-size-entry-points.patch`, are applied
-from the challoc checkout, so there is one copy of them. `bench/results/2026-09-20-phase3-task2-valkey-package.md`
-has the diff against Wolfi's file and the build.
+from the challoc checkout, so there is one copy of them.
 
 ### Two libraries, one soname
 
@@ -365,8 +358,6 @@ jemalloc to challoc through `challoc-jemalloc-compat`.
 `ruby/ruby-3.4/remove-already-provided-gems-from-gems_bundled_gems.patch`
 is Wolfi's own patch, unchanged (Wolfi keeps it in a directory named after
 the package, and melange resolves `patches:` against `--source-dir`).
-`bench/results/2026-09-20-phase3-task3-ruby-package.md` has the diff
-against Wolfi's file, the build and every assertion's output.
 
 The changes, in file order:
 
@@ -424,10 +415,8 @@ melange test /work/contrib/wolfi/ruby/ruby-3.4.yaml --arch $(uname -m) \
 
 `--source-dir` is the patch directory (Wolfi's Makefile passes
 `./ruby-3.4`); the Ruby checkout comes from GitHub. The full `make
-test-all` is not part of the package test (Phase 1 ran it against the
-same tag and the same library under this soname,
-`bench/results/2026-09-17-ruby-test-all.md`); the results file has the
-short subset run by hand against the packaged interpreter.
+test-all` is not part of the package test (it passes against the same
+tag and the same library under this soname).
 
 ## KeyDB
 
@@ -436,8 +425,7 @@ short subset run by hand against the packaged interpreter.
 8`) with the allocator switched from the bundled jemalloc to challoc
 through `challoc-jemalloc-compat`. `keydb/keydb/cstdint.patch` is Wolfi's
 own RocksDB patch, unchanged; `keydb/keydb/0001-Add-MALLOC-challoc.patch`
-is new (below). `bench/results/2026-09-20-phase3-task3-keydb-package.md`
-has the diff against Wolfi's file, the build and every assertion's output.
+is new (below).
 
 Why the compat library and not a private `quantum8` build like Valkey's:
 KeyDB 6.3.4 is Redis 6.2's shape. Its `zmalloc.cpp` reads `epoch`,
@@ -555,8 +543,6 @@ without `ENABLE_FLASH`), comes from GitHub.
 `8c473de`, 2026-09-20; the file last changed in `d3dc8df`, the glibc 2.44
 transition, `epoch: 14`) with the allocator switched from Wolfi's jemalloc
 to challoc through `challoc-jemalloc-compat`.
-`bench/results/2026-09-20-phase3-task3-rethinkdb-package.md` has the diff
-against Wolfi's file, the build and every assertion's output.
 
 Ruby's shape, with one twist. RethinkDB's `configure` defaults to
 jemalloc on Linux (`--with-jemalloc`), probes `<jemalloc/jemalloc.h>` for

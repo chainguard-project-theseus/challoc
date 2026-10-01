@@ -275,8 +275,7 @@ pub fn nallocx(size: usize, flags: c_int) -> usize {
 /// report those as one region each because Valkey's bin arithmetic is
 /// calibrated to jemalloc's bins (13.4), but the hint has no geometry
 /// contract, and one live 16 KiB block pinning a 16-slot slab is exactly
-/// the waste a move recovers (measured on KeyDB's memefficiency suite,
-/// `bench/results/2026-09-20-phase3-task3-keydb-package.md`). 0 for
+/// the waste a move recovers (measured on KeyDB's memefficiency suite). 0 for
 /// everything else: a huge run (no slab to consolidate), a full slab, a
 /// freed or foreign pointer, null, and before the allocator is
 /// initialised. Never aborts: a defragmenter asks about pointers it owns,
@@ -508,7 +507,7 @@ mod tests {
     /// `free` puts them on the freeing thread's one foreign cache for the
     /// class, whichever thread that is (the flush routes them home; the
     /// per-arena cache on the `others` list sees explicit-arena
-    /// allocations only, since 2026-09-21); `MALLOCX_TCACHE_NONE` claims and
+    /// allocations only); `MALLOCX_TCACHE_NONE` claims and
     /// releases against the slab bitmaps at once; an explicit cache holds
     /// its own slots until flushed.
     #[test]

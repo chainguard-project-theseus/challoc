@@ -96,22 +96,26 @@ impl CacheHeader {
     }
 
     #[inline]
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.len as usize
     }
 
     #[inline]
+    #[cfg(test)]
     pub fn cap(&self) -> usize {
         self.cap as usize
     }
 
     #[inline]
+    #[cfg(test)]
     pub fn low_water(&self) -> usize {
         self.low_water as usize
     }
 
     /// Number of entries at the bottom of the stack known to be zero.
     #[inline]
+    #[cfg(test)]
     pub fn zeroed(&self) -> usize {
         self.zeroed as usize
     }
@@ -333,10 +337,9 @@ impl Heap {
     /// cached, which the bit test cannot see, and the push declines
     /// (`false`) without storing the second copy; the caller's slow path
     /// ([`Heap::free_slow_in`]) repeats the compare and aborts by name. Not
-    /// an abort from here: `cached_twice` was the one call inside the
+    /// an abort from here: `cached_twice` would be the one call inside the
     /// inlined push, and a call in the body costs every `free` and
-    /// `sdallocx` a frame (the sized path's instruction budget, plan
-    /// Phase 2.5 task 4c: 7 instructions per call on x86_64, the
+    /// `sdallocx` a frame (7 instructions per call on x86_64, the
     /// `stp`/`ldp` pair on aarch64). Four unconditional compares from the
     /// line the push writes to; a cache holding fewer than four takes the
     /// loop.

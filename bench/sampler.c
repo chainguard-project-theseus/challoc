@@ -1,6 +1,6 @@
 /* sampler: a SIGPROF PC sampler loaded with LD_PRELOAD next to the allocator
  * under test. Wolfi does not package `perf`, so this stands in for
- * `perf record` in the Phase 0 acceptance check (docs/plan.md). It arms a
+ * `perf record` in the cycle attribution of a row. It arms a
  * process-wide ITIMER_PROF at SAMPLER_HZ (default 1000) samples per CPU
  * second; the handler records the interrupted PC. At exit the samples are
  * sorted and written to $SAMPLER_OUT as lines

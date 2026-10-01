@@ -35,7 +35,7 @@
 # generator run that finished most recently. Every generator run also lands
 # in a per-run CSV. A markdown summary compares challoc with jemalloc on
 # throughput, p99, peak RSS (the server's VmHWM) and post-settle RSS, the
-# four Phase 1 acceptance measures.
+# four acceptance measures.
 #
 # The valkey-benchmark and valkey-cli binaries come from the challoc tree for
 # every allocator (same client binary, only the server changes);
@@ -61,14 +61,14 @@
 #   KEY_PATTERN=stock          stock: memtier's default fixed-seed random key stream
 #                              (the acceptance protocol; it replays the same keys every
 #                              run and pins ~2200 values per class through the delete
-#                              phase, see bench/results/2026-09-17-aarch64-gce-compacting-cache-soak3.md);
+#                              phase);
 #                              uniform: `--randomize` (time-seeded) with random key
 #                              patterns (`--key-pattern=R:R`, `--command-key-pattern=R`)
 #                              in both phases, so no key is structurally pinned
 #   VB_CLIENTS=50 MT_THREADS=4 MT_CLIENTS=10 PIPELINE=16
 #   DEFRAG=yes                 --activedefrag on the server
-#   IO_THREADS=                --io-threads N on the server (Phase 3 prerequisite (d):
-#                              with 4, the frees of one thread's allocations land in
+#   IO_THREADS=                --io-threads N on the server
+#                              (with 4, the frees of one thread's allocations land in
 #                              other threads' caches); empty = Valkey's default (1),
 #                              the acceptance protocol. Recorded in the summary header
 #                              and the results file name gets no suffix: pass RESULT_DIR.
@@ -89,7 +89,7 @@
 #                              CSV, VmHWM, dbsize, version and a .meta line under
 #                              target/baselines/ for BASELINES=cached
 #
-# Per-phase cgroup peak (plan Phase 2.5 task 17): beside the server's VmHWM
+# Per-phase cgroup peak: beside the server's VmHWM
 # the summary carries the cgroup's memory.peak for the write, delete and
 # settle phases, reset at each boundary through bench/probes/cgpeak.c (the
 # 6.12 reset is scoped to the writer's file description, so a sidecar holds
@@ -208,8 +208,7 @@ clone_valkey() {
 ensure_jemalloc_server() {
   [ -x "$SRC_JE/src/valkey-server" ] && return
   # To stderr: server_for runs this inside $(...), and a line on stdout
-  # would become part of the server path (the 64 KiB-page soak of Phase
-  # 2.5 task 4d hit this on its first jemalloc build).
+  # would become part of the server path.
   step "building the jemalloc baseline in $SRC_JE" >&2
   clone_valkey "$SRC_JE"
   ( cd "$SRC_JE" && make -j"$(nproc)" MALLOC=jemalloc BUILD_TLS=yes all ) \
@@ -247,7 +246,7 @@ ensure_runpath_server() {
 # tree tests/consumers/valkey-build.sh built with the previous contrib patch, kept as
 # target/valkey/src-<tag>-oldpatch), for a same-run comparison of two
 # versions of the Valkey-side patch against one library and one jemalloc
-# column (the sized-path lane, 2026-09-21). It runs the same library as the
+# column. It runs the same library as the
 # challoc server (both binaries carry the rpath of the challoc build).
 CHALLOC_OLD_SRC=${CHALLOC_OLD_SRC:-$SRC-oldpatch}
 server_for() {
@@ -493,9 +492,9 @@ pct() { awk -v a="$1" -v b="$2" 'BEGIN {if(a=="-"||b=="-"||a==""||b==""||b==0)pr
 
 # The jemalloc server is built before any soak runs: a build inside the
 # container leaves hundreds of MiB of page cache charged to the cgroup, and
-# the per-phase cgroup peak (task 17) would carry it for whichever soak
-# came after the build (the first run of the column showed jemalloc's
-# write-phase peak 311 MiB above challoc's at equal VmHWM for that reason).
+# the per-phase cgroup peak would carry it for whichever soak came after
+# the build (jemalloc's write-phase peak 311 MiB above challoc's at equal
+# VmHWM).
 case " $ALLOCS " in *" jemalloc "*) ensure_jemalloc_server;; *) [ $CB_MODE = 0 ] || ensure_jemalloc_server;; esac
 [ $CB_MODE = 0 ] || [ "$CB_ALLOC" != challoc ] || ensure_runpath_server
 for alloc in $ALLOCS; do soak "$alloc"; done
@@ -631,7 +630,7 @@ ALLOCS=$SUMMARY_ALLOCS
   set --; for a in $ALLOCS; do set -- "$@" "$(sample_stat "$a" defrag_hits)"; done; row "active_defrag_hits" 1 "$@"
   set --; for a in $ALLOCS; do set -- "$@" "$(cat "$OUT/$a/dbsize.txt")"; done;   row "keys after settle" 2 "$@"
   echo
-  echo "Positive percentages mean challoc did worse than jemalloc (lower throughput, higher p99, more RSS). Acceptance (docs/plan.md Phase 1): throughput and p99 at least equal, peak RSS at most +5%, RSS after settle within 10%.$([ -n "$CACHE_NOTE" ] && echo " The jemalloc figures here are cached ($(echo "$meta" | tr ' ' '\n' | sed -n 's/^date=//p')), so this table is a signal, not an acceptance result.")"
+  echo "Positive percentages mean challoc did worse than jemalloc (lower throughput, higher p99, more RSS). Acceptance: throughput and p99 at least equal, peak RSS at most +5%, RSS after settle within 10%.$([ -n "$CACHE_NOTE" ] && echo " The jemalloc figures here are cached ($(echo "$meta" | tr ' ' '\n' | sed -n 's/^date=//p')), so this table is a signal, not an acceptance result.")"
   echo
   echo "## Samples"
   echo

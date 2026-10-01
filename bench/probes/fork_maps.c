@@ -1,6 +1,6 @@
 /*
- * The mapping shape a forked child inherits (plan Phase 3 task 5 (b),
- * the `connect20` mechanism): what a PostgreSQL backend, or any forked
+ * The mapping shape a forked child inherits (the `connect20`
+ * mechanism): what a PostgreSQL backend, or any forked
  * child of a challoc process, carries in its address space before it has
  * done anything, and what it costs to fork it and let it exit.
  *

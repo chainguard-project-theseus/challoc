@@ -1,8 +1,8 @@
 # Runbook: boot Chainguard OS on GCE (VMs and bare metal, x86_64 and arm64)
 
-Received from the human on 2026-09-19 (their runbook, verified against the
-live `wolfi-vm` project that day; where something is reported rather than
-re-checked, it says so), with a challoc-specific preamble. It exists so
+The Chainguard OS team's runbook (verified against the live `wolfi-vm`
+project; where something is reported rather than re-checked, it says so),
+with a challoc-specific preamble. It exists so
 that any session can put challoc on the product's own kernel and glibc,
 outside Docker, on a VM for cents or on metal for the PMU and for CPU
 features a hypervisor hides.
@@ -23,20 +23,20 @@ features a hypervisor hides.
   live in `wolfi-vm`. Pass `--image-project=wolfi-vm` and keep
   `CHALLOC_GCE_PROJECT` unset; `gcloud compute images describe-from-family
   kirkland-server-hypervisor-amd64 --project=wolfi-vm` works from this
-  account (checked 2026-09-19).
+  account.
 - Chainguard OS is a bootc/composefs system with a read-only, fs-verity
   root. Expect `apk add` on `/usr` to fail until `bootc usroverlay` (a
   transient writable `/usr` for the session) is run; `/var` and `$HOME`
   are writable. Wolfi's glibc 2.44 is the host glibc, so binaries built
   in the dev container on a reference VM run natively on this host.
-- Shapes seen in `us-east4-a` on 2026-09-19: `c3-standard-192-metal`,
+- Metal shapes seen in `us-east4-a`: `c3-standard-192-metal`,
   `c4-standard-288-metal`, `c4-highmem-288-metal` (and `-lssd-` variants);
   `c4a-highmem-96-metal` is in `us-central1-a/b/c`, `us-east4-c`,
   `us-east5-b`, `us-west4-a/c`, not `us-east4-a`.
-- Every VM this repo starts is stopped or deleted before the iteration
-  ends; metal is about $10/h, so delete it within the hour.
-- Kernel 7.2 images (the human, 2026-09-20; verified with `gcloud compute
-  images describe-from-family`): `kirkland-workstation-7dot2-amd64` for
+- Stop or delete every VM you start when you are done; metal is about
+  $10/h, so delete it within the hour.
+- Kernel 7.2 images (verified with `gcloud compute images
+  describe-from-family`): `kirkland-workstation-7dot2-amd64` for
   VMs (guest features UEFI/GVNIC/IDPF, no `BARE_METAL_LINUX_COMPATIBLE`)
   and `kirkland-workstation-7dot2-metal-amd64` for `*-metal` shapes, both
   in `wolfi-vm`, x86_64 only. These are the first hosts newer than GCE's
@@ -45,12 +45,11 @@ features a hypervisor hides.
   `cgos72-amd64` cell should be a copy of `cgos-amd64` with the family
   swapped (the internal cell overlay, `bench/cells/internal-*.toml`).
 
-What the first cells found (2026-09-19,
-`bench/results/2026-09-19-chainguard-os-cells.md`), where
-it adds to or corrects the runbook below:
+What the first cells found, where it adds to or corrects the runbook
+below:
 
 - The 50 GB boot disk does not give you 50 GB: OS-3363 is live in the
-  2026-09-16 images. `/var` and `/home` are one ext4 of 4.9 GiB on a 49 GiB
+  `20260916` images. `/var` and `/home` are one ext4 of 4.9 GiB on a 49 GiB
   partition (`lsblk` shows the partition grown, `df` does not). The fix
   needs no reboot and no image change: `sudo podman run --rm --privileged
   --network=host -v /dev:/dev -v /var:/mnt/var cgr.dev/chainguard/wolfi-base
@@ -90,7 +89,7 @@ it adds to or corrects the runbook below:
 - `/dev/kvm` is absent on the C4A and C4 VMs (no nested virtualization on
   these shapes), so nothing here exercised Firecracker; the runbook's
   x86 pre-flight uses N2 with `--enable-nested-virtualization` for that.
-- The kernel is `6.18.49-r2-gcp-6.18` on both architectures (2026-09-16
+- The kernel is `6.18.49-r2-gcp-6.18` on both architectures (`20260916`
   images): `CONFIG_RSEQ`, `SCHED_MM_CID`, `PSI`, `MEMCG`, `PERF_EVENTS`,
   HZ 250; arm64 `ARM64_MTE`, `ARM64_PTR_AUTH`, `ARM64_BTI`, 52 VA bits, 4K
   pages; x86 without `X86_5LEVEL` and without `ADDRESS_MASKING` (LAM), so
@@ -98,8 +97,7 @@ it adds to or corrects the runbook below:
   `always` (2 MiB `inherit`, every mTHP size present and `never`).
   `perf_event_paranoid` is 2.
 - The kernel 7.2 workstation image (`kirkland-workstation-7dot2-amd64-
-  20260920-0028`, measured 2026-09-20 by the `cgos72-amd64` cell,
-  `bench/results/2026-09-20-chainguard-os-cells.md`): kernel
+  20260920-0028`, measured by the `cgos72-amd64` cell): kernel
   `7.2.3-r0-desktop-7.2 #Chainguard SMP PREEMPT_DYNAMIC` (`sched/preempt`
   `(full) lazy`), glibc 2.44-r6, THP **`madvise`** (2 MiB `inherit`,
   16kB..1024kB `never`), `khugepaged` defaults (`max_ptes_none 511`,
@@ -123,7 +121,7 @@ it adds to or corrects the runbook below:
 
 ---
 
-The human's runbook follows, verbatim apart from formatting.
+The Chainguard OS team's runbook follows, verbatim apart from formatting.
 
 **Read the "Things that will mislead you" section before you debug
 anything.** Three of the four blockers this cell hit cost hours because
@@ -145,8 +143,8 @@ Both arches are published and ready **today**:
 |--|--|--|
 | x86_64 | `kirkland-server-hypervisor-amd64` | `kirkland-server-hypervisor-amd64-20260916-1603` |
 | arm64 | `kirkland-server-hypervisor-arm64` | `kirkland-server-hypervisor-arm64-20260916-1358` |
-| x86_64, kernel 7.2 (VM; added 2026-09-20, lane E) | `kirkland-workstation-7dot2-amd64` | `kirkland-workstation-7dot2-amd64-20260920-0028` (created 2026-09-20 00:50 UTC; UEFI/GVNIC/IDPF, **no** `BARE_METAL_LINUX_COMPATIBLE`, so VMs only; the `cgos72-amd64` cell) |
-| x86_64, kernel 7.2 (metal; added 2026-09-20, lane E) | `kirkland-workstation-7dot2-metal-amd64` | `kirkland-workstation-7dot2-metal-amd64-20260919-2048` (created 2026-09-20 02:11 UTC; carries `BARE_METAL_LINUX_COMPATIBLE`) |
+| x86_64, kernel 7.2 (VM) | `kirkland-workstation-7dot2-amd64` | `kirkland-workstation-7dot2-amd64-20260920-0028` (UEFI/GVNIC/IDPF, **no** `BARE_METAL_LINUX_COMPATIBLE`, so VMs only; the `cgos72-amd64` cell) |
+| x86_64, kernel 7.2 (metal) | `kirkland-workstation-7dot2-metal-amd64` | `kirkland-workstation-7dot2-metal-amd64-20260919-2048` (carries `BARE_METAL_LINUX_COMPATIBLE`) |
 
 Both carry the guest OS features metal requires, confirmed with `gcloud
 compute images describe`:
@@ -332,7 +330,7 @@ its `nvme_card-pd` model, which you can see it doing in the log.
 
 | Issue | Impact |
 |--|--|
-| OS-3363, root ext4 never grows | You ask for a 200 GB boot disk and the root filesystem stays small. Probable cause found 2026-09-19: `resize2fs` lives in `e2fsprogs-extra`, not `e2fsprogs`, so it was missing from the image and first-boot growfs could not run. Fix in flight in stereo#336983. Images published before that merges still have it. |
+| OS-3363, root ext4 never grows | You ask for a 200 GB boot disk and the root filesystem stays small. Probable cause: `resize2fs` lives in `e2fsprogs-extra`, not `e2fsprogs`, so it was missing from the image and first-boot growfs could not run. Fix in flight in stereo#336983. Images published before that merges still have it. |
 | OS-3347, `8250.nr_uarts=0` | A workaround, not a fix. Costs the serial console on metal, which is the channel you need when SSH is down. |
 | OS-3016, no verified boot on x86 metal | C3 metal reports `Secure Boot: disabled (unsupported)`. The enrolled certs are inert there. The same image enforces Secure Boot correctly on a VM. |
 | OS-3313, C4A accepts and ignores Secure Boot | The API takes `--shielded-secure-boot`, the firmware does nothing with it. Do not read a successful launch as verified boot. |

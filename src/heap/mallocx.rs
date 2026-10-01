@@ -12,6 +12,7 @@ use super::Shared;
 /// `MALLOCX_ZERO`.
 pub const MALLOCX_ZERO: u32 = 0x40;
 /// `MALLOCX_TCACHE_NONE` = `MALLOCX_TCACHE(-1)`.
+#[cfg(test)]
 pub const MALLOCX_TCACHE_NONE: u32 = 1 << 8;
 const LG_ALIGN_MASK: u32 = 0x3f;
 const TCACHE_SHIFT: u32 = 8;
@@ -20,16 +21,19 @@ const ARENA_SHIFT: u32 = 20;
 const ARENA_MASK: u32 = 0xfff;
 
 /// `MALLOCX_LG_ALIGN(la)`.
+#[cfg(test)]
 pub const fn mallocx_lg_align(la: u32) -> u32 {
     la & LG_ALIGN_MASK
 }
 
 /// `MALLOCX_TCACHE(t)` for an explicit cache id.
+#[cfg(test)]
 pub const fn mallocx_tcache(t: u16) -> u32 {
     ((t as u32 + 2) & TCACHE_MASK) << TCACHE_SHIFT
 }
 
 /// `MALLOCX_ARENA(a)`.
+#[cfg(test)]
 pub const fn mallocx_arena(a: u16) -> u32 {
     ((a as u32 + 1) & ARENA_MASK) << ARENA_SHIFT
 }

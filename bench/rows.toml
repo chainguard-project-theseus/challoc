@@ -26,7 +26,7 @@
 #              check makes the row "broken"), e.g. { min = 90 }
 #   est_s      expected seconds per run (planning, shard packing, timeouts);
 #              the quick rows are the median wall time on the C4/C4A cells
-#              (cb launch, 2026-09-30) plus process start
+#              (cb launch) plus process start
 #   needs      files that must exist ({...} expanded) or the row is skipped
 #   pattern    parser "regex": a regular expression with one group; the
 #              last match in the output is the score

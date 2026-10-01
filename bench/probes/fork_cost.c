@@ -1,5 +1,5 @@
 /*
- * The fork cost of a Valkey-shaped heap (plan Phase 2.5 task 9): what a
+ * The fork cost of a Valkey-shaped heap: what a
  * BGSAVE pays for the allocator's page geometry. The program allocates
  * `MiB` (default 64; the measurements use 500) of values drawn uniformly
  * from 16..1024 bytes, each behind a 16-byte object as Valkey's are,
@@ -20,11 +20,10 @@
  * what the measurement records. The program passes when the child exits
  * cleanly and the burst faulted at least a quarter of the pages it wrote
  * (proof that the copy-on-write happened while the child was alive).
- * Everything else is printed for the results file; nothing here is a
- * criterion, the criterion (fork time within 5% of `never`) is applied
- * to the printed numbers. A bench probe, not a test (it left `make test`
- * with the 2026-09-20 maintainability pass: its only check, that the
- * burst faulted, is the kernel's copy-on-write, not the allocator's;
+ * Everything else is printed; nothing here is a criterion, the
+ * criterion (fork time within 5% of `never`) is applied to the printed
+ * numbers. A bench probe, not a test (its only check would be that the
+ * burst faulted, which is the kernel's copy-on-write, not the allocator's;
  * fork correctness is tests/c/fork_alloc.c and fork_signal.c). Build and
  * run in the dev container:
  *

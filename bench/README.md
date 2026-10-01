@@ -177,7 +177,7 @@ polls. The quick suite on the two gate cells is 5 shards x 3 replicates x
   builds it per architecture, pushes it and rewrites `bench/internal-image.lock`.
   Rebuild it when `bench/build.sh`, the stock allocators or Dockerfile.dev
   change; the digest is in every sample's comparability key.
-- **Measured (2026-09-30, us-east4-a).** A VM is ready to
+- **Measured (us-east4-a).** A VM is ready to
   run about 34 s after its startup script starts (boot 10-20 s before
   that) and builds both variants in about 20 s. Quick from cold: first
   look 4.6-7.5 min (median 5.6 over four launches), 8.5-12.7 min when
@@ -332,7 +332,7 @@ suite only measures revisions that still have it, such as
 `archive/prototype-2026-09-30`; on a later head both variants are the same
 build with an unknown key.
 
-Measured 2026-10-01 (`cb-exp-slice-2`, 4 VMs per cell, 5 blocks, cpuset
+Measured (`cb-exp-slice-2`, 4 VMs per cell, 5 blocks, cpuset
 0-3, default seccomp): on the 7.2 cell every row is `same` (larson16
 +0.0% [-0.5, +0.5], larson64 -0.5% [-1.0, +0.0], xmalloc +0.0%, valkey1
 -0.1%, valkey1-free -0.4%; margin 2%); the 6.18 control is `same` on
@@ -479,8 +479,8 @@ workload it is meant to help (CONTRIBUTING.md, "Performance rules"):
   `ort/mlp.py`, `python/*.py`, `startup/hello200.c`) and the sidecars
   above; `ruby/gc_churn.rb`, `node/*.js`: the runtime rows' scripts.
 - `sampler.c`: the PC sampler (above).
-- `results/`: curated write-ups of past measurements; a run's own
-  output is `target/results/cb/<run>/`.
+- A run's own output is `target/results/cb/<run>/`; numbers of record
+  go in the pull request or the issue, with the run id.
 
 ## Measurement hygiene
 

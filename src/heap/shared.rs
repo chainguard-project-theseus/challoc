@@ -44,9 +44,9 @@ pub struct Shared {
     ///
     /// First, so it shares a cache line with the `Regions` fields that
     /// `slab_slot` reads on every `free` (`superblock`, `lg_stride`, the
-    /// low `class_base` entries): after `Regions` it sat on its own line,
-    /// and larson's working set turns every extra line into an L2 hit
-    /// (`bench/results/2026-09-16-aarch64-arenas-lines.md`).
+    /// low `class_base` entries): after `Regions` it would sit on its own
+    /// line, and larson's working set turns every extra line into an L2
+    /// hit.
     pub(super) multi_arena: AtomicBool,
     /// The opt-in hardening a push applies, as [`PUSH_SCAN`]
     /// (`double_free_scan`, design 6.3 step 3: every push compares the
@@ -147,10 +147,12 @@ impl ThreadKey {
         ThreadKey { key, valid: rc == 0 }
     }
 
+    #[cfg(test)]
     pub fn valid(&self) -> bool {
         self.valid
     }
 
+    #[cfg(test)]
     pub fn key(&self) -> Option<libc::pthread_key_t> {
         if self.valid { Some(self.key) } else { None }
     }
@@ -433,11 +435,13 @@ impl Shared {
 
     /// Whether the thread-exit key exists (heaps of exiting threads are
     /// reclaimed). False only if `pthread_key_create` failed at init.
+    #[cfg(test)]
     pub fn has_thread_key(&self) -> bool {
         self.key.valid()
     }
 
     /// The thread-exit key, for diagnostics and tests.
+    #[cfg(test)]
     pub fn thread_key(&self) -> Option<libc::pthread_key_t> {
         self.key.key()
     }
@@ -593,8 +597,7 @@ impl Shared {
     /// class -> `madd` -> table load -> slab -> bitmap word would be the
     /// whole of `free`'s critical path; here the table's `bits_base`,
     /// `slab_bits` and `committed_slabs` loads run alongside the slot
-    /// arithmetic and are needed only for the word address
-    /// (`bench/results/2026-09-16-aarch64-arenas-geometry.md`).
+    /// arithmetic and are needed only for the word address.
     ///
     /// [`classify_free`]: Shared::classify_free
     /// [`Regions::slab_slot`]: crate::layout::Regions::slab_slot

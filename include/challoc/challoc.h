@@ -40,9 +40,8 @@ const char *challoc_features(void);
  *
  * Valkey's zmalloc calls malloc_usable_size after every allocation and
  * before every unsized zfree for its used_memory accounting; that query was
- * the one allocator-side cost above jemalloc's in its write phase
- * (bench/results/2026-09-20-x86_64-valkey-write-phase-attribution.md).
- * Defining CHALLOC_USABLE is how this header announces the four. */
+ * the one allocator-side cost above jemalloc's in its write phase on
+ * x86_64. Defining CHALLOC_USABLE is how this header announces the four. */
 #define CHALLOC_USABLE 1
 
 /* malloc(size); *usable = the block's usable size. */

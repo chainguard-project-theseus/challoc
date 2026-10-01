@@ -195,6 +195,7 @@ impl ClassState {
     /// the empty set at most once per step of the curve and returns the
     /// class's next deadline, `None` when nothing is `Empty`. Takes the
     /// lock only when a walk is due.
+    #[cfg(test)]
     pub fn decay(&self, now: u64, decay_ns: u64) -> Option<u64> {
         self.decay_with(now, decay_ns, crate::policy::KEEP_ALL)
     }

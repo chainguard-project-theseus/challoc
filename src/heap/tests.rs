@@ -231,7 +231,7 @@ fn default_caps_follow_the_design_table() {
         assert_eq!(l.align(), 16);
     }
     // One line per header, headers dense in the heap, the small fields
-    // on the two lines before them (review P3).
+    // on the two lines before them.
     assert_eq!(core::mem::size_of::<CacheHeader>(), 64);
     assert_eq!(core::mem::align_of::<CacheHeader>(), 64);
     assert_eq!(core::mem::offset_of!(Heap, caches), 128);
@@ -428,8 +428,7 @@ fn double_free_scan_compares_the_top_four_entries() {
     }
 }
 
-/// The fast paths carry no call (plan Phase 2.5 task 4c's budget, the
-/// sized-path lane 2026-09-21): a `double_free_scan` hit makes
+/// The fast paths carry no call: a `double_free_scan` hit makes
 /// `push_fast` decline (`false`, nothing stored) instead of aborting from
 /// the inlined body, and the slow path that a decline reaches
 /// (`Heap::free`) aborts by name; a due scheduled pop makes `pop_fast`
@@ -1695,9 +1694,8 @@ fn default_narenas_is_resolved_at_init() {
 /// slot goes onto the one `FOREIGN` cache for its class (the fast path
 /// declines it), which nothing pops from and whose flush routes each slot
 /// to the arena its slab belongs to, so per-arena counts stay exact
-/// (design 6.3 step 4, 13.3). Until 2026-09-21 the plain free pushed onto
-/// a cache per arena instead, one per arena a thread freed into:
-/// `bench/results/2026-09-21-*-ruby-rss-attribution.md`.
+/// (design 6.3 step 4, 13.3), rather than one cache per arena a thread
+/// frees into.
 #[test]
 fn foreign_frees_share_one_flush_only_cache_per_class() {
     let s = shared();
@@ -2353,7 +2351,7 @@ fn set_mode_derives_the_mask() {
     }
 }
 
-/// Item 30 of the 2026-09-18 review: the pages `Shared::alloc_huge` adds
+/// The pages `Shared::alloc_huge` adds
 /// to the arena are the ones the run's descriptor records
 /// (`Huge::alloc_run`), which is what `free_huge` subtracts, so the
 /// arena's `(runs, pages)` returns to zero and `stats.rs` subtracts the
@@ -2393,7 +2391,7 @@ fn huge_run_pages_are_counted_from_the_descriptor() {
     t.destroy();
 }
 
-/// Item 16 of the 2026-09-18 review: an owner word naming an arena that
+/// An owner word naming an arena that
 /// was never built is corruption. The cross-arena free goes onto the
 /// FOREIGN cache; its flush, which routes the slot by that word, aborts by
 /// name (`Shared::owner` does not build arenas) instead of quietly

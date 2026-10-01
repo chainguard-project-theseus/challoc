@@ -35,10 +35,10 @@ impl Heap {
     /// The scheduled pop (design 6.4, every `compact_mask + 1` pops) is
     /// declined here (`None`, `allocs` not yet counted) and served by
     /// [`Heap::alloc_slow`], the one place every caller's `None` lands:
-    /// `pop_compact` was the one call inside the inlined pop, and a call in
-    /// the body costs `malloc` a frame it needs for nothing else (plan
-    /// Phase 2.5 task 4c's budget; the same move as the scan's
-    /// `cached_twice` in [`Heap::push_cache`]).
+    /// `pop_compact` would be the one call inside the inlined pop, and a
+    /// call in the body costs `malloc` a frame it needs for nothing else
+    /// (the same move as the scan's `cached_twice` in
+    /// [`Heap::push_cache`]).
     #[inline(always)]
     pub(super) fn pop_fast(&mut self, class: usize, flags: u8) -> Option<(*mut u8, bool)> {
         let cache = self.cache_ptr(class);
@@ -403,8 +403,7 @@ pub(super) fn invalid_free(p: usize) -> ! {
 /// slow paths only (`Heap::free_slow_in`, `free_direct`), so the default
 /// `free` carries nothing of it but the flag test; a `memset` of the class
 /// size, so a 1 KiB value costs a 1 KiB store (and the slow-path call) per
-/// free, which is why the key is off by default (priced in
-/// `bench/results/2026-09-18-*-gce-tunables.md`).
+/// free, which is why the key is off by default.
 ///
 /// # Safety
 /// `p` is a slot start of `class` in a committed slab.

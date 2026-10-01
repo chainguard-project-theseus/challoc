@@ -27,7 +27,7 @@ STAMP=$(date -u +%FT%TZ)
 GIT="git -c safe.directory=*"
 JEMALLOC_LIB=/usr/lib/libjemalloc.so.2
 # Wolfi's tcmalloc-minimal (gperftools, no profiler hooks): the fourth stock
-# allocator since Phase 2.5 task 1.
+# allocator.
 TCMALLOC_LIB=/usr/lib/libtcmalloc_minimal.so.4
 
 die() { echo "${0##*/}: $*" >&2; exit 1; }
@@ -51,8 +51,8 @@ tree_dirty() {
 # The lock is the flock on fd 9, released by the kernel when every holder of
 # the descriptor exits. A server the harness starts in the background
 # inherits fd 9 and keeps the lock for as long as it lives, so a harness
-# that dies with its server up blocks the next harness in the container
-# (2026-09-20). Two defences: every server start closes the descriptor for
+# that dies with its server up blocks the next harness in the container.
+# Two defences: every server start closes the descriptor for
 # the child (`... 9>&- &`, so the child never holds the lock), and the trap
 # installed here kills the children the harness registered in BENCH_PIDS
 # (space-separated; each one's own children first, `rt` and `env` wrappers
@@ -96,7 +96,7 @@ ensure_probe() {
   [ "$BIN/$1" -nt "$src" ] || cc -O2 -Wall -Wextra -Werror -o "$BIN/$1" "$src" || die "$1.c did not compile"
 }
 
-# ---- cgroup memory.peak per phase (plan Phase 2.5 task 17) ------------------
+# ---- cgroup memory.peak per phase ---------------------------------------------
 # The kernel's `memory.peak` is a high-water mark since the cgroup's birth;
 # from 6.12 a write resets it, but only for the open file description that
 # wrote (a later `cat` still shows the birth peak), so the reset and the

@@ -1,5 +1,5 @@
 // valkey_model.c: Valkey's allocator-visible shape without Valkey, single
-// thread (docs/plan.md Phase 1.5 task 5c; the rows `valkey1`,
+// thread (the rows `valkey1`,
 // `valkey1-free` and `valkey1-usable` of bench/rows.toml).
 //
 // What the soak's server does to the allocator, per key (Valkey 9.1.2,
@@ -16,7 +16,7 @@
 // `zmalloc_size(ptr)` = `je_malloc_usable_size` for the accounting and then
 // calls `je_sdallocx(ptr, that size, 0)`; `-u` models that: every free is
 // preceded by a `malloc_usable_size` query of the pointer (the row
-// `valkey1-usable`, plan Phase 1.5 task 14); `-a` models the accounting
+// `valkey1-usable`); `-a` models the accounting
 // query after every allocation (`ztrymalloc_usable_internal`: `je_malloc`
 // then `zmalloc_size(ptr)`), so `-u -a` is zmalloc's whole unsized shape;
 // `-p` is the challoc pair that replaces both (design 13.7):
@@ -32,7 +32,7 @@
 //             default N = 850000 the live heap is about 500 MiB, the soak's
 //             write-phase heap, so the descriptor of a randomly chosen
 //             key's value is not in cache when it is freed (the mechanism
-//             of bench/results/2026-09-18-aarch64-gce-valkey-throughput.md)
+//             behind the Valkey write-phase throughput gap)
 //   write     W seconds of SET over random keys (overwrite: allocate new
 //             value and object, free the old pair); the heap stays full
 //   delete    D seconds of DEL:SET at RATIO:1 over random keys (DEL of a
@@ -64,14 +64,14 @@
 //               4 instructions each) inside every SET, half after the two
 //               mallocs and half after the two frees: a stand-in for a longer
 //               allocator instruction stream at the same miss count, for the
-//               instruction-window experiment of plan Phase 2.5 task 4b
+//               instruction-window experiment
 //   -A FILE     append a sample of the live pointers to FILE after the fill
 //               and after the write phase: one line per pointer,
 //               `<phase> <kind> <hex address> <requested bytes>` for 4096
 //               evenly spaced live keys and each of their four objects
 //               (ent, key, obj, val), plus `<phase> table <hex> <bytes>` for
-//               the key table; the placement analysis of plan Phase 2.5
-//               task 4b histograms these modulo the cache way sizes
+//               the key table; a placement analysis histograms these
+//               modulo the cache way sizes
 #define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>

@@ -1,5 +1,5 @@
 # bench/ruby/soak.rb: a Sidekiq-shaped Ruby process for the Ruby soak
-# (docs/plan.md Phase 3 prerequisite (c); bench/drivers/ruby-soak.sh runs it).
+# (bench/drivers/ruby-soak.sh runs it).
 #
 # THREADS worker threads (the GVL serialises them, which is the point: many
 # mostly idle threads, each with its own allocation history in the C
@@ -21,7 +21,7 @@
 #
 #   ruby soak.rb DURATION CSV [SEED] [THREADS] [INTERVAL] [GC_EVERY] [COMPACT_AT] [IDLE_THREADS]
 #
-# IDLE_THREADS (default 0; plan Phase 2.5 task 8's "many idle threads")
+# IDLE_THREADS (default 0; the "many idle threads" shape)
 # adds that many threads that touch the allocator once at start (one small
 # burst, so each owns a thread cache and, under per-thread arenas, an arena)
 # and then sleep, waking every 5..10 s for one tiny burst (20 strings, 10
@@ -39,7 +39,7 @@
 # purged something; SOAK_TRIM=1 calls it through fiddle right before every
 # sample, the attribution of dirty-but-unpurged memory: RSS then reads
 # Active plus metadata; 0 when not requested or not exported),
-# cgroup_peak_kb (plan Phase 2.5 task 17: the cgroup's memory.peak since
+# cgroup_peak_kb (the cgroup's memory.peak since
 # the last reset, read through one file description held for the run; the
 # 6.12 reset is scoped to the writer's description, so the same descriptor
 # writes the reset at start and right after the GC.compact sample and reads
@@ -64,7 +64,7 @@ def rss_kb
   [st[/^VmRSS:\s+(\d+)/, 1].to_i, st[/^VmHWM:\s+(\d+)/, 1].to_i]
 end
 
-# ---- the cgroup's memory.peak, reset per phase (plan Phase 2.5 task 17) ----
+# ---- the cgroup's memory.peak, reset per phase ----
 # One descriptor for the run: the reset (a write) is scoped to it, the
 # reads go through it (pread at 0). The walk is scripts/cgroup-tests.sh's.
 def cgroup_peak_path

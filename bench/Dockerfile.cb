@@ -34,7 +34,7 @@ RUN git clone -q https://github.com/google/fleetbench /fb && cd /fb && git check
 FROM ${DEV_IMAGE}
 
 # The stock allocators. Wolfi's jemalloc is pinned to the 5.3.1 build the
-# `jemalloc` variant has measured since 2026-09-21, so a rebuilt image does
+# `jemalloc` variant measures, so a rebuilt image does
 # not move it; jemalloc 5.3.0 and 5.4.0 from the release tarballs are the
 # jemalloc53 and jemalloc54 variants (bench/build.sh).
 RUN apk add --no-cache jemalloc=5.3.1-r3 tcmalloc-minimal \

@@ -31,27 +31,15 @@ pub(crate) mod api;
 pub(crate) mod arena;
 pub(crate) mod bitmap;
 pub(crate) mod class;
-// Dead code left in this module for part 2 of #10.
-#[allow(unused_imports)]
 pub(crate) mod config;
-// Dead code left in this module for part 2 of #10.
-#[allow(dead_code, unused_imports)]
 pub(crate) mod heap;
-// Dead code left in this module for part 2 of #10.
-#[allow(dead_code)]
 pub(crate) mod huge;
-// Dead code left in this module for part 2 of #10.
-#[allow(dead_code, unused_imports)]
 pub(crate) mod layout;
 pub(crate) mod lock;
 pub(crate) mod meta;
 #[cfg(test)]
 mod model;
-// Dead code left in this module for part 2 of #10.
-#[allow(dead_code)]
 pub(crate) mod policy;
-// Dead code left in this module for part 2 of #10.
-#[allow(dead_code)]
 pub(crate) mod purge;
 pub(crate) mod rseq;
 pub(crate) mod slab;

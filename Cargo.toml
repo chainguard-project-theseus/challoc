@@ -38,10 +38,9 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 debug = "line-tables-only"
-# `overflow-checks = true` was priced on both reference VMs (Phase 1.5 task
-# 8, `bench/results/2026-09-18-{aarch64,x86_64}-gce-release-asserts.md`):
-# xmalloc +15..18%, larson1 +6..8%, larson10 +4..5% behind the same code
-# without it, so the shipped library keeps the default (off). The counters
+# `overflow-checks = true` was priced on both reference VMs: xmalloc
+# +15..18%, larson1 +6..8%, larson10 +4..5% behind the same code without
+# it, so the shipped library keeps the default (off). The counters
 # that could wrap are guarded by explicit release assertions instead
 # (`ClassState`, `HugeStats`, `Table`), and the unit tests run with the
 # checks on (the dev profile).

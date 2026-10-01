@@ -1,5 +1,5 @@
 #!/bin/bash
-# Perf sidecar for the Valkey soak (docs/plan.md Phase 1.5 task 4d), run as
+# Perf sidecar for the Valkey soak, run as
 # root on the GCE VM host beside a detached `make valkey-soak`:
 #
 #   setsid nohup sudo bash bench/probes/valkey-perf-sidecar.sh ~/logs/4d [D0] [S0] &
@@ -15,8 +15,7 @@
 # t0 is the server's process start time, so a late attach still aligns with
 # the soak's T0. Read the records with `perf report` while the pid is alive
 # (the container's mount namespace resolves symbols) or afterwards with
-# `--symfs` over copies of the container's binaries; method and reading in
-# bench/results/2026-09-18-aarch64-gce-valkey-throughput.md.
+# `--symfs` over copies of the container's binaries.
 set -u
 L=${1:?usage: valkey-perf-sidecar.sh OUTDIR [D0] [S0]}; D0=${2:-400}; S0=${3:-605}
 # The servers the soak starts, in order (bench/drivers/valkey-soak.sh ALLOCS; a
