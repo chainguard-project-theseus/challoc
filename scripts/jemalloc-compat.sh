@@ -1,6 +1,7 @@
 #!/bin/sh
 # Build libchalloc with the `jemalloc-soname` feature and stage it under
-# jemalloc's name for link-only consumers (design 13.2).
+# jemalloc's name for link-only consumers (design 13.2). The file set is
+# scripts/install.sh's jemalloc-compat flavour.
 # Runs inside the dev container (`make jemalloc-compat`; `make test` runs it
 # after the release build so the tests in src/api/ctests.rs can check it).
 #
@@ -41,38 +42,18 @@ mkdir -p "$OUT"
 OUT=$(cd "$OUT" && pwd)
 PREFIX=${PREFIX:-$OUT}
 
-# The version jemalloc consumers compare against (`pkg-config
-# --atleast-version`) is the one `mallctl("version")` reports, minus the
-# `-<nrev>-g<sha>` tail that pkg-config would not parse.
-VERSION=$(sed -n 's/^pub const VERSION_STR: &str = "\([0-9][0-9.]*\)-.*/\1/p' src/api/mallctl.rs)
-[ -n "$VERSION" ] || { echo "jemalloc-compat: cannot read VERSION_STR from src/api/mallctl.rs" >&2; exit 1; }
-
 cargo build --release --target-dir "$TARGET_DIR" \
     --no-default-features --features "quantum$QUANTUM,jemalloc-soname"
 
-so="$TARGET_DIR/release/libchalloc.so"
-readelf -d "$so" | grep -q 'Library soname: \[libjemalloc.so.2\]' \
-    || { echo "jemalloc-compat: $so has no libjemalloc.so.2 soname" >&2; exit 1; }
+# scripts/install.sh writes the file set; the stage keeps lib/ and include/
+# directly under $OUT whatever PREFIX the pc file names, so install under a
+# scratch DESTDIR and move the two directories up.
+scratch=$OUT/.install
+rm -rf "$scratch" "$OUT/lib" "$OUT/include"
+DESTDIR=$scratch PREFIX=$PREFIX LIBDIR=$PREFIX/lib INCLUDEDIR=$PREFIX/include \
+    LIB=$TARGET_DIR/release/libchalloc.so sh scripts/install.sh jemalloc-compat
+mv "$scratch$PREFIX/lib" "$OUT/lib"
+mv "$scratch$PREFIX/include" "$OUT/include"
+rm -rf "$scratch"
 
-rm -rf "$OUT/lib" "$OUT/include"
-mkdir -p "$OUT/lib/pkgconfig" "$OUT/include/jemalloc"
-cp include/jemalloc-compat/jemalloc/jemalloc.h "$OUT/include/jemalloc/jemalloc.h"
-cp "$so" "$OUT/lib/libjemalloc.so.2"
-ln -s libjemalloc.so.2 "$OUT/lib/libjemalloc.so"
-cat > "$OUT/lib/pkgconfig/jemalloc.pc" <<PC
-prefix=$PREFIX
-exec_prefix=\${prefix}
-libdir=\${exec_prefix}/lib
-includedir=\${prefix}/include
-install_suffix=
-
-Name: jemalloc
-Description: challoc, a jemalloc-compatible malloc replacement, under jemalloc's soname (libjemalloc.so.2)
-URL: https://github.com/chainguard-dev/challoc
-Version: $VERSION
-Cflags: -I\${includedir}/jemalloc\${install_suffix}
-Libs: -L\${libdir} -ljemalloc\${install_suffix}
-PC
-
-echo "jemalloc-compat: quantum$QUANTUM, version $VERSION, prefix $PREFIX"
-ls -l "$OUT/lib" "$OUT/lib/pkgconfig" "$OUT/include/jemalloc"
+echo "jemalloc-compat: quantum$QUANTUM, prefix $PREFIX, staged under $OUT"
