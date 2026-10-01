@@ -1,5 +1,5 @@
 #!/bin/bash
-# Defrag sidecar for the Valkey soak (docs/plan.md Phase 2.5 task 4f), run
+# Defrag sidecar for the Valkey soak, run
 # on the VM host beside a detached `make valkey-soak`, no root needed (the
 # server is root inside the container, so liveness is `/proc/<pid>`, not
 # `kill -0`, which EPERMs and had the first attempt wait forever):
@@ -21,11 +21,11 @@
 # sampler at INTERVAL=1 gives the same fields except frag_bytes and the
 # key counts; this one exists for the log switch and the two extra columns.
 # A third argument is a `CONFIG SET` applied at attach, for diagnostics only
-# (task 4f ran `"active-defrag-ignore-bytes 83886080"` under challoc to see
-# what a third cycle does; never a product setting).
+# (e.g. `"active-defrag-ignore-bytes 83886080"` under challoc to see what a
+# third cycle does; never a product setting).
 # server.log itself is in the target volume
 # (/src/target/valkey/soak/<alloc>/server.log): copy it out with `make run`
-# after the soak. Reading: bench/results/2026-09-19-aarch64-64k-defrag-attribution.md.
+# after the soak.
 set -u
 L=${1:?usage: valkey-defrag-sidecar.sh OUTDIR [ALLOCS] [CONFIG-SET]}; ALLOCS=${2:-"challoc jemalloc"}; SETCONF=${3:-}
 mkdir -p "$L"

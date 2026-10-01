@@ -2,8 +2,7 @@
 # switched from the bundled jemalloc to challoc (docs/plan.md Phase 3 task
 # 2, docs/design.md section 13.6). Based on wolfi-dev/os valkey-9.1.yaml at
 # a944f08 (2026-09-19; the file itself last changed in 195f812, the 9.1.2
-# update); contrib/wolfi/README.md ("Valkey") lists every change from it,
-# and bench/results/2026-09-20-phase3-task2-valkey-package.md the build.
+# update); contrib/wolfi/README.md ("Valkey") lists every change from it.
 #
 # Two libraries, one soname (design 13.6): the system libchalloc.so.0 in
 # /usr/lib is a quantum16 build (the class table Wolfi's jemalloc

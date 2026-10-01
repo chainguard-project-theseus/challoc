@@ -79,7 +79,7 @@ use shared::{now_ns, tid};
 /// load misses in proportion to the flush rate. Doubling the capacity from
 /// 256 to 512 and again to 1024 took larson from 225 to 243 to 252 M ops/s
 /// and xmalloc-test from 201 to 390 to 590 M frees/s at 10 threads for
-/// 8 MiB of larson RSS (`bench/results/2026-09-16-aarch64-fast-path.md`).
+/// 8 MiB of larson RSS.
 pub const MAX_CAP: u32 = 1024;
 /// Smallest cache capacity.
 pub const MIN_CAP: u32 = 8;
@@ -202,8 +202,7 @@ impl Heap {
         // temporary (3.4 KiB with the headers inline) would deepen the
         // stack of every thread's first allocation by one page, which
         // larson's thread churn turns into +1.7 MiB of RSS per 437
-        // threads (thread stacks stay mapped; measured on the arm64 VM,
-        // `bench/results/2026-09-18-aarch64-gce-dense-headers.md`).
+        // threads (thread stacks stay mapped; measured on arm64).
         unsafe {
             ptr::write(&raw mut (*h).shared, shared);
             ptr::write(&raw mut (*h).tid, tid());

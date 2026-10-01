@@ -1,5 +1,4 @@
-// arenasample.c: LD_PRELOAD sidecar for the arena RSS attribution (Phase 1.5
-// acceptance remediation). A thread calls malloc_stats_print every
+// arenasample.c: LD_PRELOAD sidecar for the arena RSS attribution. A thread calls malloc_stats_print every
 // ARENASAMPLE_MS (default 1000) and prints one line per sample: the process
 // VmRSS, how many arenas hold active slabs, and the sums over arenas of the
 // "small:" line (allocated = curregs * size, i.e. live plus thread-cached

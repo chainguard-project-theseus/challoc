@@ -22,12 +22,11 @@ use super::{CacheHeader, FOREIGN, Heap, Shared};
 /// ladder held on average), its flush routes each run of slabs to the
 /// slab's arena (`Shared::release_routed`), and there is one per thread,
 /// so a thread that frees other threads' memory holds at most half a
-/// cache's worth per class of it, less than jemalloc's tcache. Until
-/// 2026-09-21 such a free
-/// went onto a node per arena, one the default path never pops from, and
+/// cache's worth per class of it, less than jemalloc's tcache. A node
+/// per arena instead, one the default path never pops from, would leave
 /// a 16-thread Ruby process whose GC sweep frees every thread's garbage
-/// from whichever thread runs it held ~200 MiB of dead slots in 16 x 16
-/// of them (`bench/results/2026-09-21-*-ruby-rss-attribution.md`).
+/// from whichever thread runs it holding ~200 MiB of dead slots in 16 x
+/// 16 of them.
 /// Valkey's main thread has one arena node (the Lua arena).
 #[repr(C)]
 pub struct ArenaCaches {
@@ -46,8 +45,7 @@ pub struct ArenaCaches {
 /// is a multiple of the L1D way size on both reference CPUs (4 KiB on the
 /// Xeon, 16 KiB / 4 ways on Neoverse V2), and 15 aliasing node heads cost
 /// xmalloc-test -w 16 12..25% of its throughput when the 40 KiB class's
-/// foreign stack stopped being allocated between them
-/// (`bench/results/2026-09-18-aarch64-gce-xmalloc-isolation.md`).
+/// foreign stack is not allocated between them.
 const NODE_STAGGER_LINES: usize = 16;
 
 /// Layout of the block an `others` node is carved from.

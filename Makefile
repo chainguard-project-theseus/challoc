@@ -188,7 +188,7 @@ test-all: test fuzz test-cgroup-oscillate check-needed ## everything that runs l
 # default jemalloc, mimalloc and tcmalloc; needs `make bench-build` for mimalloc),
 # `report` mode for the churn (no criterion) and the oscillation for
 # OSC_SECS; every outcome is printed (OUTCOME lines) and none fails the
-# target, the results file records them.
+# target; the log is the record.
 CGROUP_ALLOCS ?= jemalloc mimalloc tcmalloc
 test-cgroup-compare: image ## the cgroup runs under CGROUP_ALLOCS (jemalloc mimalloc tcmalloc), recorded, no criterion
 	@for a in $(CGROUP_ALLOCS); do \

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Ruby soak (docs/plan.md Phase 3 prerequisite (c)): the tests/consumers/ruby-build.sh
+# Ruby soak: the tests/consumers/ruby-build.sh
 # Ruby (`--with-jemalloc` against the compat libjemalloc.so.2) running
 # bench/drivers/ruby/soak.rb, a Sidekiq-shaped process (16 mostly idle threads,
 # bursts of short-lived strings and arrays, a slowly growing long-lived set,
@@ -60,7 +60,7 @@
 #                 synced tree has no usable .git, as on a VM)
 #   HOST_CPU, HOST_KIND   recorded in the header (the Makefile passes HOST_CPU)
 #
-# Per-phase cgroup peak (plan Phase 2.5 task 17): soak.rb holds one
+# Per-phase cgroup peak: soak.rb holds one
 # descriptor on the cgroup's memory.peak, resets it at start and right after
 # the GC.compact sample, and the table carries the cgroup's peak for
 # start..compact and compact..end beside VmHWM (the process's high-water

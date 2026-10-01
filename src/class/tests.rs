@@ -997,8 +997,7 @@ fn a_corrupt_owner_word_aborts_the_next_take_group() {
 }
 
 /// `release_owned` cross-checks the owner word it routes by against the
-/// slab descriptor's arena at every slab switch (the 2026-09-18 review's
-/// item 16, the release half): a descriptor that disagrees with the word
+/// slab descriptor's arena at every slab switch: a descriptor that disagrees with the word
 /// means one of them is corrupt, and the batch aborts before a bit is
 /// cleared.
 #[test]
@@ -1048,7 +1047,7 @@ fn double_release_aborts() {
     cs.release(&p[..1]);
 }
 
-/// Plan Phase 2.5 task 1b: a release batch is grouped by slab, not
+/// A release batch is grouped by slab, not
 /// sorted. Slabs in any order, and a slab's slots in any order, clear
 /// exactly their bits with the right live counts.
 #[test]
@@ -1125,7 +1124,7 @@ fn check_above_the_watermark_aborts() {
     cs.check(env.regions.slab_addr(c, 5) as *mut u8);
 }
 
-/// Plan Phase 1.5 task 9b: a slot start in a guard slab is named as
+/// A slot start in a guard slab is named as
 /// such by the exact check (the sized fast path rejects it
 /// arithmetically and lands here).
 #[test]
@@ -1142,7 +1141,7 @@ fn check_of_a_guard_slab_slot_aborts() {
     cs.check(env.regions.slab_addr(c, guard) as *mut u8);
 }
 
-/// Plan Phase 1.5 task 9b: a release into a slab of the arena's group
+/// A release into a slab of the arena's group
 /// that the arena has not committed (`Fresh`, below the hand-out
 /// watermark) is where a sized free of such a slot lands at the flush.
 #[test]
@@ -1378,9 +1377,8 @@ fn purge_never_races_a_claim() {
     let stop = Arc::new(core::sync::atomic::AtomicBool::new(false));
     // The purger publishes its count as it goes: on a small VM (four
     // vCPUs, four test threads) it can be off the CPU for the whole
-    // 20 000-iteration window (Phase 2.5 task 3, the Debian 12 arm64
-    // cell), so the loop runs past the window until the purger has
-    // purged once, bounded by time. The assertion at the end is about
+    // 20 000-iteration window, so the loop runs past the window until
+    // the purger has purged once, bounded by time. The assertion at the end is about
     // the protocol, not the scheduler.
     let purged = Arc::new(core::sync::atomic::AtomicUsize::new(0));
     let purger = {
@@ -1476,7 +1474,7 @@ fn purge_zeroes_memory_and_commit_is_visible() {
     assert!(env.meta.stats().committed >= page_size());
 }
 
-/// `check_zero` (plan Phase 1.5 task 7b) on a healthy heap: every
+/// `check_zero` on a healthy heap: every
 /// `Fresh` and `Purged` claim reads zero, so the mode changes nothing,
 /// and the flag stays on for every later claim of this test process.
 #[test]
@@ -1515,8 +1513,7 @@ fn check_zero_aborts_on_a_dirty_purged_slab() {
     let _ = env.claim(&cs, 2);
 }
 
-/// The calloc race (plan Phase 1.5 task 7c, the interleaving named in
-/// `bench/results/2026-09-18-calloc-zero-campaign.md`): thread A's
+/// The calloc race: thread A's
 /// `plan` selects a `Fresh` slab, flags its pick zero and drops the
 /// class lock; thread B refills from the same, now partial, slab, hands
 /// the slot to the program, which writes to it and frees it; then A's

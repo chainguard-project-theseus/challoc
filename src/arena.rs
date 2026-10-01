@@ -17,8 +17,8 @@
 //! single-threaded program never leaves arena 0, and thread churn reuses
 //! the arena an exited thread left instead of walking on to a fresh one
 //! (round robin materialised every arena under churn and left a partial
-//! slab per class in each: larson1 67 MiB against 13.6,
-//! `bench/results/2026-09-17-aarch64-gce-thread-affinity.md`). Indices from
+//! slab per class in each: larson1 67 MiB against 13.6).
+//! Indices from
 //! `narenas` up are created explicitly by `arenas.create`. Arenas are
 //! never destroyed (`arena.<i>.destroy` purges and retires one); they live
 //! in the metadata region.

@@ -360,8 +360,7 @@ pub fn reallocarray(p: *mut u8, n: usize, m: usize) -> *mut u8 {
 // unsized `zfree` for its `used_memory` accounting; that second lookup
 // (`Regions::classify`, the bitmap-word test, the class size) was the one
 // allocator-side term above jemalloc's cost in the Valkey write phase
-// (`bench/results/2026-09-20-x86_64-valkey-write-phase-attribution.md`,
-// section 6). These entry points return the usable size from the
+// on x86_64. These entry points return the usable size from the
 // classification the allocation or the free already did, so the query
 // disappears and no check is dropped: `challoc_free_usable` keeps the exact
 // bit test of plain `free` (it is `free`, reporting the class it verified).

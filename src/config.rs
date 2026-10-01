@@ -45,9 +45,9 @@ use crate::heap::{MAX_CAP, MIN_CAP};
 /// up to 1 MiB; 65536 slots is 512 KiB plus the header, well inside that.
 pub const MAX_NSLOTS: u32 = 65_536;
 /// Default `tcache_max`: jemalloc's. Slots of classes above it are never
-/// cached; the acceptance probe (`bench/results/2026-09-18-*-gce-arena-rss.md`)
-/// found 8 cached 40 KiB slots per (thread, arena) pair holding 70 MiB of
-/// xmalloc-test's RSS and most of mstress's excess at 16 arenas.
+/// cached; at 16 arenas,
+/// 8 cached 40 KiB slots per (thread, arena) pair holding 70 MiB of
+/// xmalloc-test's RSS and most of mstress's excess.
 pub const DEFAULT_TCACHE_MAX: usize = 32 * 1024;
 /// Range of `lg_tcache_nslots_mul`, as in jemalloc.
 pub const LG_NSLOTS_MUL_MIN: i32 = -16;
@@ -262,8 +262,7 @@ impl Config {
     /// heap caches it and the default path (`Heap::alloc_slow`) allocates
     /// it from arena 0 whatever the thread's arena (design 13.3): its slabs
     /// are 1..4 MiB and one partial slab per class per arena, times 16
-    /// arenas, was 60 MiB of mstress's RSS
-    /// (`bench/results/2026-09-18-aarch64-gce-arena-rss.md`). Explicit
+    /// arenas, is 60 MiB of mstress's RSS. Explicit
     /// `MALLOCX_ARENA` allocations keep their arena.
     #[inline]
     pub fn shared_class(&self, class: usize) -> bool {
@@ -305,7 +304,7 @@ impl Config {
     /// table walk `Arenas::assign` does per heap creation and the number
     /// of partial slab sets a thread-heavy program can hold; with the
     /// least-loaded assignment only `min(live threads, narenas)` arenas
-    /// are ever built (`bench/results/2026-09-17-*-gce-thread-affinity.md`).
+    /// are ever built.
     pub fn effective_narenas(&self, ncpus: u32) -> u32 {
         if self.narenas != 0 {
             return self.narenas;
@@ -969,7 +968,7 @@ mod tests {
         assert_eq!(d.huge_retain_max, 64 << 20);
         assert_eq!(d.huge_retain_max, crate::huge::DEFAULT_RETAIN_MAX);
         assert!(!d.zero_on_free && !d.slot_randomize && !d.double_free_scan && !d.abort_conf && !d.check_zero);
-        assert!(!d.pac_pointers, "signed pointers are opt-in (priced in bench/results/2026-09-19-lane-a-pac-pointers.md)");
+        assert!(!d.pac_pointers, "signed pointers are opt-in");
         assert!(d.cgroup);
         assert_eq!(d.effective_guard_slab_interval(), 8);
     }

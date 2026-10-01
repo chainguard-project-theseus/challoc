@@ -1,10 +1,9 @@
-// bench/node/json_churn.js: the node-bench `json_churn` row (docs/plan.md
-// Phase 3 task 5 (c)): JSON.parse(JSON.stringify(obj)) over a 177 KiB
+// bench/node/json_churn.js: the node-bench `json_churn` row:
+// JSON.parse(JSON.stringify(obj)) over a 177 KiB
 // object N times (default 2000) in one process, the shape of the Python
 // rows' json_bench.py. The object is 400 records of mixed strings, numbers,
-// arrays and nested objects; JSON.stringify gives 180906 bytes (the plan
-// said about 100 KiB; the 2026-09-20 rows were measured at this size and
-// the harness prints the byte count in the results header); the stringify result is a fresh string of that size per iteration
+// arrays and nested objects; JSON.stringify gives 180906 bytes (the
+// harness prints the byte count in the results header); the stringify result is a fresh string of that size per iteration
 // (V8 keeps strings this large off the young generation's fast path and
 // the external string/backing store path exercises the allocator), and
 // the parse rebuilds the object graph in the V8 heap. Prints

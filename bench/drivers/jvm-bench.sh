@@ -1,5 +1,5 @@
 #!/bin/sh
-# JVM benchmark rows (docs/plan.md Phase 3 task 5 (a)): Wolfi's openjdk-21
+# JVM benchmark rows: Wolfi's openjdk-21
 # from the image, measured under seven allocator variants via LD_PRELOAD (and
 # two glibc tunings). The jvm-server and jvm-soak rows of bench/cb run it
 # (cb mode below); by hand, inside the dev container: `make run CMD='sh
@@ -15,7 +15,7 @@
 #                from the start under every allocator, so RSS differs by native
 #                memory only), served for DURATION seconds per allocator, once,
 #                to two `ab` processes (Wolfi's apache2-utils; wrk and oha are
-#                not in Wolfi, checked 2026-09-20) of CONNECTIONS/2 keep-alive
+#                not in Wolfi) of CONNECTIONS/2 keep-alive
 #                connections each, one on /json (a ~300-byte body built per
 #                request) and one on /blob (64 KiB copied out of a per-request
 #                ByteBuffer.allocateDirect, one malloc(65536) per request in
@@ -44,11 +44,10 @@
 #                overhead" in its report), the same bytes for every allocator;
 #                the header does move a malloc(65536) to 65552 bytes, across a
 #                power-of-two class boundary in every size-class allocator, so
-#                the NMT'd server row's peaks are compared with the NMT-less
-#                first iteration in the results file's reading.
-#   soak         the shape that can separate the allocators (second iteration
-#                of the task, 2026-09-20: a 5-minute run with one buffer size
-#                never lets glibc's arenas fragment): HttpBench in `soak` mode,
+#                the NMT'd server row's peaks are compared with an NMT-less
+#                server run.
+#   soak         the shape that can separate the allocators (a 5-minute run
+#                with one buffer size never lets glibc's arenas fragment): HttpBench in `soak` mode,
 #                a ThreadPoolExecutor of SOAK_CORE core / SOAK_MAX maximum
 #                threads retired after SOAK_KEEPALIVE s idle, /blob's body drawn
 #                per request log-uniform between SOAK_MIN and SOAK_MAXB bytes
@@ -82,7 +81,7 @@
 # grammar) and the variant runs with CHALLOC_CONF=<conf> in its environment
 # (read after MALLOC_CONF, so it wins over the harness's stats_print), e.g.
 # CHALLOC_VARIANTS="hd2000=huge_dirty_decay_ms:2000" ALLOCS="challoc
-# challoc-hd2000 glibc-trim" (the huge-decay rows, 2026-09-20). The report
+# challoc-hd2000 glibc-trim" (the huge-decay rows). The report
 # compares plain challoc against every other variant, its own included.
 # challoc-trim is challoc under the JVM's TrimNativeHeapInterval (the
 # glibc-trim flags): the JVM calls challoc's malloc_trim(0) every TRIM_MS,
@@ -168,8 +167,7 @@ else RESULT=${RESULT:-$ROOT/target/results/$DATE-$ARCH-jvm.md}; fi
 # (off by default in the JDK server): without it the small /json response
 # (headers and body in two writes) waits for the client's delayed ACK and
 # every request takes 40 ms, measuring the ACK timer instead of the
-# allocator (775 req/s at p99 44 ms against 76k req/s on /blob, Mac
-# container, 2026-09-20).
+# allocator (775 req/s at p99 44 ms against 76k req/s on /blob).
 JAVA_OPTS=${JAVA_OPTS:-"-Xms$HEAP -Xmx$HEAP -XX:+AlwaysPreTouch -Dsun.net.httpserver.nodelay=true"}
 IDLE_SECS=${IDLE_SECS:-10}
 T_START=$(date +%s)

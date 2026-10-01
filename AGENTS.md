@@ -28,6 +28,6 @@ Environment facts:
 - Two benchmark tiers (`bench/README.md`): `make quick` (or `challoc-bench
   quick <vm>`) is the ~2-minute go/no-go and comes first; `make ab` /
   `challoc-bench ab` is the protocol tier and the only source of numbers
-  for `bench/results/` and acceptance.
+  for pull requests, issues and acceptance.
 - Never run `cargo fmt` over files you did not edit; format only the
   lines you touched.

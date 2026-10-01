@@ -38,9 +38,7 @@ struct TableInner {
 /// word (and one owner word) per call, so that is a 52-way conflict on the
 /// hottest lines it has. Three lines per class, and `gcd(3, 128) == 1`, so
 /// all 52 classes land in distinct sets of both caches; a multiple of
-/// [`DESC_ALIGN`] keeps the descriptors aligned. The pre-arena tree got a
-/// similar spread by accident, from the set bitmaps reserved between one
-/// class's table and the next (`bench/results/2026-09-16-aarch64-arenas-geometry.md`).
+/// [`DESC_ALIGN`] keeps the descriptors aligned.
 #[inline]
 pub const fn desc_stagger(class: usize) -> usize {
     class * 3 * PAD_ALIGN
@@ -231,9 +229,9 @@ impl SlabTable {
     /// page groups (see [`slabs_per_page`]): every `guard_interval`-th group
     /// is a guard group, and with one slab per page (the usual case) that is
     /// every `guard_interval`-th slab. Arithmetic on the table line (a
-    /// shift, an add and a mask: the interval is a power of two, and the
-    /// runtime `%` this used to be was a 32-bit `divl` twice per Valkey SET
-    /// on the `sdallocx` path, the largest single term of the sized path's
+    /// shift, an add and a mask: the interval is a power of two; a
+    /// runtime `%` would be a 32-bit `divl` twice per Valkey SET on the
+    /// `sdallocx` path, the largest single term of the sized path's
     /// instruction window on small-L3 hosts), so
     /// the sized fast path can reject a slot start in a guard slab without
     /// a memory access: a guard slab's body past its first page is
@@ -488,9 +486,8 @@ impl SlabTable {
     /// (`Shared::checked_slot`): the watermark, `bits_base` and
     /// `slab_bits` from this table line, then the class bitmap word; the
     /// slab and slot come from the caller's dense-array arithmetic and are
-    /// not derived again from `base` and `CLASSES[class]` here (that was
-    /// `locate`, a second dependent chain in front of the word load,
-    /// `bench/results/2026-09-18-aarch64-gce-usable-size-chain.md`). The
+    /// not derived again from `base` and `CLASSES[class]` here (that would
+    /// be a second dependent chain in front of the word load). The
     /// watermark is loaded `Relaxed` for the reason [`desc_if_committed`]
     /// gives: for a live slot the program's own ordering makes the group's
     /// words visible, and for anything else every observable value aborts.

@@ -39,17 +39,15 @@ pub const MEDIUM_MAX: usize = 256 * 1024;
 /// class keeps a 64 KiB slab or larger ([`LG_SMALL_SLAB`],
 /// [`LG_MEDIUM_MIN_SLAB`]).
 ///
-/// Why these classes and this size (measured in
-/// `bench/results/2026-09-17-aarch64-gce-compacting-cache-soak3.md` and
-/// `2026-09-17-*-gce-slab-geometry.md`): the post-delete residue of the
+/// Why these classes and this size (measured on the Valkey soak): the
+/// post-delete residue of the
 /// Valkey soak is live values the load never touches again, one to fifteen
 /// per slab, each pinning its whole slab, and it sits entirely in the
 /// 512..1024-byte classes; at 64 KiB a pinned 1 KiB value kept 64 KiB
 /// resident where jemalloc's 4-region slab keeps 4 KiB. The classes below
 /// 512 bytes keep 64 KiB slabs: a 16 KiB slab for every class halved
 /// `xmalloc-test` (64-byte objects, cross-thread frees) through per-slab
-/// refill and flush work (`bench/results/2026-09-16-aarch64-gce-min-slab.md`),
-/// and a class with 64 or more regions per slab never empties by chance
+/// refill and flush work, and a class with 64 or more regions per slab never empties by chance
 /// after a random deletion either way (0.89^64 = 0.06%). A slab smaller
 /// than the kernel page never exists on a supported kernel: at init the
 /// classes whose table slab is below the page take the page as their slab
@@ -58,8 +56,7 @@ pub const MEDIUM_MAX: usize = 256 * 1024;
 /// kernel, 16 KiB slabs on a 16 KiB one), so that every
 /// `Empty` slab is one purge unit; with sub-page slabs the Valkey soak's
 /// post-delete RSS at 64 KiB pages was 79.5 MiB of `Empty` 4..16 KiB slabs
-/// in mixed page groups that never became idle
-/// (`bench/results/2026-09-19-aarch64-64k-valkey-soak.md`). A slab smaller
+/// in mixed page groups that never became idle. A slab smaller
 /// than the page (a faked page in the tests, or a page above 64 KiB) is
 /// committed, guarded and purged with its whole page of slabs by `class/`
 /// (see `SlabTable::slabs_per_page`).

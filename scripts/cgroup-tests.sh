@@ -29,8 +29,7 @@
 # killed and fails) and exits with the program's status: 0 is a pass, 137
 # is SIGKILL, which in a limited container means the OOM killer (the
 # `oom_kill` count after the run says so). The RESULT line printed by the
-# program and the `OUTCOME` line printed here are what the results file
-# records.
+# program and the `OUTCOME` line printed here are the record of a run.
 set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT" || exit 2

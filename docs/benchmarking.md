@@ -66,8 +66,8 @@ knobs are in `bench/README.md`.
   request cites.
 - **Suites of record** (`cb launch full`, `apps`, `soak`, an experiment
   suite): the general-purpose baseline against jemalloc 5.4.0 and glibc,
-  the application rows, the 20-minute consumer soaks. A results file in
-  `bench/results/` is written from one of these runs and cites its run id.
+  the application rows, the 20-minute consumer soaks. A number of record (in a pull request
+  or an issue) comes from one of these runs and cites its run id.
 - **Calibration** (`cb launch aa`): base against itself; it measures the
   false-positive rate (`cb fp`) and calibrates the row margins.
 
@@ -83,7 +83,7 @@ per-operation cycle attribution on that workload (the per-run counters
 cb records on the gate cells, instructions and cycles per operation in
 the report, the soak's perf sidecar `bench/probes/valkey-perf-sidecar.sh`,
 or `bench/sampler.so`),
-recorded in the results file, and the change names the mechanism it
+recorded in the pull request, and the change names the mechanism it
 attacks. larson counters do not stand in for Valkey or Ruby: their working
 sets are a few MiB, Valkey's is about 550 MiB.
 
@@ -114,10 +114,10 @@ than with a benchmark.
   bar; a row outside it is attributed (the mechanism named) or recorded as
   an open issue.
 
-## Results files
+## Recording results
 
-A results file in `bench/results/` cites the cb run id and the command
-that produced it (`target/results/cb/<run>/report.md` has the hosts, the
+A number in a pull request or an issue cites the cb run id and the
+command that produced it (`target/results/cb/<run>/report.md` has the hosts, the
 image, the variants and every row's estimate and interval), the commit or
 release tag measured, and, for an attributed gap, the counters or samples
 behind the attribution.

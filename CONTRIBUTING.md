@@ -117,7 +117,7 @@ code on or near the hot paths is justified with evidence.
   workload's cb report, the soak's perf sidecar, or the sampler). The
   change names the mechanism it attacks. larson counters do not stand in
   for Valkey or Ruby.
-- Cite the cb run id (or the results file) for every number in a pull
+- Cite the cb run id for every number in a pull
   request. Reference numbers come only from the reference cells described
   in `docs/benchmarking.md`. A laptop or emulated number is
   never compared with a reference number.

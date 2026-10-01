@@ -8,9 +8,9 @@
 //
 //   churn S N T FRAC PIN     (defaults 1024 30000 20 0.56 0)
 //
-// PIN (Phase 2.5 task 4g) is the fraction of the survivors that the churn
+// PIN is the fraction of the survivors that the churn
 // never frees: values whose keys the soak's load generators never select
-// again (bench/results/2026-09-17-aarch64-gce-compacting-cache-soak3.md).
+// again.
 // They are picked at random over the survivors, so they are scattered over
 // the address range like the soak's; the probe prints how many distinct
 // 64 KiB slabs hold one (the floor no cache policy can go below: a slab

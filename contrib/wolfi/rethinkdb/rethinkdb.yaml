@@ -3,8 +3,7 @@
 # (docs/plan.md Phase 3 task 3, docs/design.md section 13.6). Based on
 # wolfi-dev/os rethinkdb.yaml at 8c473de (2026-09-20; the file itself last
 # changed in d3dc8df, the glibc 2.44 transition); contrib/wolfi/README.md
-# ("RethinkDB") lists every change from it, and
-# bench/results/2026-09-20-phase3-task3-rethinkdb-package.md the build.
+# ("RethinkDB") lists every change from it.
 #
 # Ruby's shape: RethinkDB's configure defaults to jemalloc on Linux
 # (--with-jemalloc), probes <jemalloc/jemalloc.h> for JEMALLOC_VERSION_MAJOR

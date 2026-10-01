@@ -3,8 +3,7 @@
 # (docs/plan.md Phase 3 task 3, docs/design.md sections 13.5 and 13.6).
 # Based on wolfi-dev/os keydb.yaml at 8c473de (2026-09-20; the file itself
 # last changed in 276d78c, a resources bump); contrib/wolfi/README.md
-# ("KeyDB") lists every change from it, and
-# bench/results/2026-09-20-phase3-task3-keydb-package.md the build.
+# ("KeyDB") lists every change from it.
 #
 # KeyDB's defragmenter (src/defrag.cpp) calls je_get_defrag_hint, the
 # extension Redis adds to its bundled jemalloc, and zmalloc.h compiles it
