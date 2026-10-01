@@ -17,7 +17,7 @@
 //! ignored. The cgroup line and object are the sampled figures of
 //! `sys::cgroup` (design 11).
 
-use core::ffi::{c_char, c_int, c_void};
+use core::ffi::{CStr, c_char, c_int, c_void};
 use core::fmt::{self, Write};
 
 use super::jemalloc::malloc_write;
@@ -144,6 +144,11 @@ fn for_each_arena(shared: &Shared, mut f: impl FnMut(&Arena, &ArenaStats)) {
         let s = stats::collect_arena(shared, arena);
         f(arena, &s);
     }
+}
+
+/// A configuration value's name (`config::Value::Str`, the `thp` key).
+fn word(s: &CStr) -> &str {
+    s.to_str().unwrap_or("?")
 }
 
 fn decay_ms(ns: u64) -> i64 {
@@ -280,7 +285,7 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
             Some(Value::Int(i)) => writeln!(out, concat!("  ", head!(OPT), "{}: {}{}"), key, i, note)?,
             Some(Value::Uint(u)) => writeln!(out, concat!("  ", head!(OPT), "{}: {}{}"), key, u, note)?,
             Some(Value::Size(n)) => writeln!(out, concat!("  ", head!(OPT), "{}: {}{}"), key, n, note)?,
-            Some(Value::Str(s)) => writeln!(out, concat!("  ", head!(OPT), "{}: \"{}\"{}"), key, s, note)?,
+            Some(Value::Str(s)) => writeln!(out, concat!("  ", head!(OPT), "{}: \"{}\"{}"), key, word(s), note)?,
             None => {}
         }
     }
@@ -360,7 +365,7 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
 fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
     let d = crate::thp::decision();
     let s = crate::thp::stats();
-    write!(out, concat!(head!(THP), "{} -> {} ({})"), crate::thp::key().name(), d.mode.name(), d.reason.text())?;
+    write!(out, concat!(head!(THP), "{} -> {} ({})"), word(crate::thp::key().name()), d.mode.name(), d.reason.text())?;
     // Design 17 (`MADV_NOHUGEPAGE` under `never`): `never` covers the
     // class and metadata reservations; the huge region follows the host's
     // global mode (named at the end of the line).
@@ -599,7 +604,7 @@ fn json_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot, arenas_
             Value::Int(i) => write!(out, "\t\t\t\"{key}\": {i}")?,
             Value::Uint(u) => write!(out, "\t\t\t\"{key}\": {u}")?,
             Value::Size(n) => write!(out, "\t\t\t\"{key}\": {n}")?,
-            Value::Str(s) => write!(out, "\t\t\t\"{key}\": \"{s}\"")?,
+            Value::Str(s) => write!(out, "\t\t\t\"{key}\": \"{}\"", word(s))?,
         }
     }
     writeln!(out)?;
@@ -616,7 +621,7 @@ fn json_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot, arenas_
     writeln!(
         out,
         "\t\t\"thp\": {{\"key\": \"{}\", \"mode\": \"{}\", \"reason\": \"{}\", \"class_ranges\": {}, \"class_bytes\": {}, \"chunks\": {}, \"huge_ranges\": {}, \"meta_ranges\": {}, \"failures\": {}, \"nohuge_ranges\": {}, \"host\": \"{}\"}},",
-        crate::thp::key().name(),
+        word(crate::thp::key().name()),
         td.mode.name(),
         td.reason.text(),
         ts.class_ranges,

@@ -35,6 +35,7 @@
 //! program cannot believe it turned something on, and
 //! `malloc_stats_print` lists it as "accepted, no effect".
 
+use core::ffi::CStr;
 use core::fmt::{self, Write as _};
 
 use crate::heap::{MAX_CAP, MIN_CAP};
@@ -83,11 +84,11 @@ pub enum Thp {
 }
 
 impl Thp {
-    pub const fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static CStr {
         match self {
-            Thp::Never => "never",
-            Thp::Auto => "auto",
-            Thp::Always => "always",
+            Thp::Never => c"never",
+            Thp::Auto => c"auto",
+            Thp::Always => c"always",
         }
     }
 }
@@ -106,11 +107,11 @@ pub enum PercpuArena {
 }
 
 impl PercpuArena {
-    pub const fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static CStr {
         match self {
-            PercpuArena::Disabled => "disabled",
-            PercpuArena::Percpu => "percpu",
-            PercpuArena::Phycpu => "phycpu",
+            PercpuArena::Disabled => c"disabled",
+            PercpuArena::Percpu => c"percpu",
+            PercpuArena::Phycpu => c"phycpu",
         }
     }
 }
@@ -138,11 +139,11 @@ pub enum SliceExt {
 }
 
 impl SliceExt {
-    pub const fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static CStr {
         match self {
-            SliceExt::Auto => "auto",
-            SliceExt::On => "on",
-            SliceExt::Off => "off",
+            SliceExt::Auto => c"auto",
+            SliceExt::On => c"on",
+            SliceExt::Off => c"off",
         }
     }
 
@@ -687,14 +688,15 @@ pub const fn ladder(class: usize, max: u32, lg_mul: i32) -> u32 {
 /// jemalloc's for the keys jemalloc has: `Int` is `ssize_t` (the decay
 /// times and the other signed keys), `Uint` is `unsigned` (a count:
 /// `narenas`, `tcache_nslots_small_max`, `guard_slab_interval`), `Size`
-/// is `size_t` (a byte count: `tcache_max`, `huge_retain_max`).
+/// is `size_t` (a byte count: `tcache_max`, `huge_retain_max`), `Str`
+/// is `const char *` (a static name, handed out as is).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Value {
     Bool(bool),
     Int(i64),
     Uint(u64),
     Size(usize),
-    Str(&'static str),
+    Str(&'static CStr),
 }
 
 /// One problem found while parsing; the offending bytes borrow the input.
@@ -1221,8 +1223,8 @@ mod tests {
         assert_eq!(clean("thp:auto").thp, Thp::Auto);
         assert_eq!(clean("thp:never").thp, Thp::Never);
         assert_eq!(clean("thp:default").thp, Thp::Never);
-        assert_eq!(clean("thp:always").get(b"thp"), Some(Value::Str("always")));
-        assert_eq!(clean("thp:auto").get(b"thp"), Some(Value::Str("auto")));
+        assert_eq!(clean("thp:always").get(b"thp"), Some(Value::Str(c"always")));
+        assert_eq!(clean("thp:auto").get(b"thp"), Some(Value::Str(c"auto")));
         assert_eq!(Config::DEFAULT.thp, Thp::Never);
         let (cfg, issues) = parse("thp:madvise");
         assert_eq!(cfg.thp, Thp::Never);
@@ -1246,7 +1248,7 @@ mod tests {
             let cfg = clean(&std::format!("percpu_arena:{value},abort_conf:true"));
             assert_eq!(cfg.percpu_arena, want, "{value}");
             assert_eq!(cfg.get(b"percpu_arena"), Some(Value::Str(want.name())), "{value}");
-            assert_eq!(want.name(), value);
+            assert_eq!(want.name().to_str(), Ok(value));
             assert!(cfg.abort_conf);
         }
         rejects_bad_values("percpu_arena", &["true", "false", "1", "on", "auto", "off", "PERCPU", "", "percpux"]);
@@ -1265,7 +1267,7 @@ mod tests {
             let cfg = clean(&std::format!("slice_ext:{value},abort_conf:true"));
             assert_eq!(cfg.slice_ext, want, "{value}");
             assert_eq!(cfg.get(b"slice_ext"), Some(Value::Str(want.name())), "{value}");
-            assert_eq!(want.name(), value);
+            assert_eq!(want.name().to_str(), Ok(value));
             assert!(cfg.abort_conf);
         }
         rejects_bad_values("slice_ext", &["true", "false", "1", "yes", "Auto", "ON", "", "onn", "percpu"]);
@@ -1453,7 +1455,7 @@ mod tests {
                 Value::Int(i) => std::format!("{i}"),
                 Value::Uint(u) => std::format!("{u}"),
                 Value::Size(n) => std::format!("{n}"),
-                Value::Str(s) => s.into(),
+                Value::Str(s) => s.to_str().unwrap().into(),
             };
             let text = std::format!("{key}:{value}");
             let parsed = clean(&text);
@@ -1532,7 +1534,7 @@ mod tests {
                     "percpu_arena" => "percpu".into(),
                     "slice_ext" => "off".into(),
                     "thp" => "always".into(),
-                    _ => panic!("{}: a string key with no test value ({s})", key.name),
+                    _ => panic!("{}: a string key with no test value ({s:?})", key.name),
                 },
             };
             let mut cfg = d;
