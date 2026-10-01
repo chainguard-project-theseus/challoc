@@ -72,6 +72,9 @@ soak = { delta_pct = 3.0, rss_delta_pct = 2.0, rss_delta_mib = 1.0 }
 # Resident-memory figures of the soaks (peak, after settle): nearly
 # deterministic, so a tighter margin.
 soak-rss = { delta_pct = 2.0 }
+# Resident-memory figures of the timed rows (maxrss_mib from rt, settle_mib
+# from settle.so, the residue probe's readings).
+rss = { delta_pct = 2.0 }
 
 # ---- mimalloc-bench programs (bench/build.sh) ----------------------------
 
@@ -84,6 +87,7 @@ threads = 1
 class = "st"
 secs = 5
 est_s = 7.5
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "rss" }]
 
 [row.larson10]
 cmd = ["{bin}/larson", "5", "8", "1000", "5000", "100", "4141", "10"]
@@ -94,6 +98,8 @@ threads = 10
 class = "mt"
 secs = 5
 est_s = 7.5
+settle = true
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "rss" }, { name = "settle_mib", unit = "MiB", better = "lower", class = "rss" }]
 
 [row.larson16]
 cmd = ["{bin}/larson", "5", "8", "1000", "5000", "100", "4141", "16"]
@@ -104,6 +110,8 @@ threads = 16
 class = "mt"
 secs = 5
 est_s = 6
+settle = true
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "rss" }, { name = "settle_mib", unit = "MiB", better = "lower", class = "rss" }]
 
 [row.larson32]
 cmd = ["{bin}/larson", "5", "8", "1000", "5000", "100", "4141", "32"]
@@ -125,6 +133,8 @@ threads = 64
 class = "mt"
 secs = 5
 est_s = 7
+settle = true
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "rss" }, { name = "settle_mib", unit = "MiB", better = "lower", class = "rss" }]
 
 [row.larsonN]
 cmd = ["{bin}/larson", "5", "8", "1000", "5000", "100", "4141", "{nproc}"]
@@ -145,6 +155,8 @@ threads = 10
 class = "mt"
 secs = 5
 est_s = 5.5
+settle = true
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "rss" }, { name = "settle_mib", unit = "MiB", better = "lower", class = "rss" }]
 
 [row.xmallocN]
 cmd = ["{bin}/xmalloc-test", "-w", "{nproc}", "-t", "5", "-s", "64"]
@@ -155,6 +167,8 @@ threads = 0
 class = "mt"
 secs = 5
 est_s = 6
+settle = true
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "rss" }, { name = "settle_mib", unit = "MiB", better = "lower", class = "rss" }]
 
 [row.alloc-test1]
 cmd = ["{bin}/alloc-test", "1"]
@@ -165,6 +179,7 @@ threads = 1
 class = "st"
 fixed_work = true
 est_s = 3.5
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "rss" }]
 
 [row.alloc-testN]
 cmd = ["{bin}/alloc-test", "{nproc16}"]
@@ -175,6 +190,8 @@ threads = 0
 class = "mt"
 fixed_work = true
 est_s = 5
+settle = true
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "rss" }, { name = "settle_mib", unit = "MiB", better = "lower", class = "rss" }]
 
 [row.cfrac]
 cmd = ["{bin}/cfrac", "17545186520507317056371138836327483792789528"]
@@ -206,6 +223,8 @@ threads = 0
 class = "mt"
 fixed_work = true
 est_s = 6
+settle = true
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "rss" }, { name = "settle_mib", unit = "MiB", better = "lower", class = "rss" }]
 
 # mstress under a CPU quota (the cpusN cells): {nproc} threads still,
 # so a 2-CPU quota stretches the fixed work; a longer timeout.
@@ -245,6 +264,7 @@ better = "higher"
 threads = 1
 class = "mt"
 est_s = 5.5
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "rss" }]
 
 [row.valkey1-free]
 cmd = ["{tools}/valkey_model", "-n", "{valkey_n}", "-t", "{valkey_secs}", "-s", "-f", "free"]
@@ -254,6 +274,7 @@ better = "higher"
 threads = 1
 class = "mt"
 est_s = 5.5
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "rss" }]
 
 [row.valkey1-usable]
 cmd = ["{tools}/valkey_model", "-n", "{valkey_n}", "-t", "{valkey_secs}", "-s", "-u"]
@@ -309,6 +330,8 @@ class = "st"
 requires = ["mallctl"]
 check = { min = 90.0 }
 est_s = 10.5
+settle = true
+metrics = [{ name = "maxrss_mib", unit = "MiB", better = "lower", class = "rss" }, { name = "settle_mib", unit = "MiB", better = "lower", class = "rss" }]
 
 # ---- Python (bench/probes/python/json_bench.py) ---------------------------
 
@@ -429,3 +452,69 @@ threads = 0
 class = "st"
 requires = ["challoc"]
 est_s = 600
+
+# ---- thread-cache residue (bench/probes/tcache_residue.c, issue #27) ------
+# residue: T threads touch 24 classes once, then run 32 s (three cache GC
+# intervals) on one class each and park; scored by the RSS after a forced
+# purge with the threads alive. burst-idle: 16 threads, three 2 s bursts
+# over 8 classes each followed by a 12 s idle; scored by the RSS at the
+# end of the last idle.
+[row.residue64]
+cmd = ["{tools}/tcache_residue", "residue", "64", "32"]
+parser = "kv"
+metric = "rss_settle_kb"
+unit = "KiB"
+better = "lower"
+threads = 64
+class = "rss"
+est_s = 36
+metrics = [
+  { name = "rss_first_mib", unit = "MiB", better = "lower", class = "rss" },
+  { name = "rss_join_mib", unit = "MiB", better = "lower", class = "rss" },
+  { name = "maxrss_mib", unit = "MiB", better = "lower", class = "rss" },
+  { name = "hot_mops", unit = "M ops/s", better = "higher", class = "mt" },
+]
+
+[row.residue256]
+cmd = ["{tools}/tcache_residue", "residue", "256", "32"]
+parser = "kv"
+metric = "rss_settle_kb"
+unit = "KiB"
+better = "lower"
+threads = 256
+class = "rss"
+est_s = 38
+metrics = [
+  { name = "rss_first_mib", unit = "MiB", better = "lower", class = "rss" },
+  { name = "rss_join_mib", unit = "MiB", better = "lower", class = "rss" },
+  { name = "maxrss_mib", unit = "MiB", better = "lower", class = "rss" },
+  { name = "hot_mops", unit = "M ops/s", better = "higher", class = "mt" },
+]
+
+[row.burst-idle]
+cmd = ["{tools}/tcache_residue", "burst", "16", "3", "2000", "12000"]
+parser = "kv"
+metric = "rss_end_kb"
+unit = "KiB"
+better = "lower"
+threads = 16
+class = "rss"
+est_s = 44
+metrics = [
+  { name = "rss_idle_mib", unit = "MiB", better = "lower", class = "rss" },
+  { name = "maxrss_mib", unit = "MiB", better = "lower", class = "rss" },
+  { name = "burst_mops", unit = "M ops/s", better = "higher", class = "server" },
+]
+
+# Build-tool shape: short-lived processes (cc1, as, ld) under the
+# allocator, eight compiles of one probe.
+[row.cc-hello]
+cmd = ["sh", "-c", "for i in 1 2 3 4 5 6 7 8; do cc -O2 -c -o /dev/null {root}/bench/probes/valkey_model.c || exit 1; done"]
+parser = "wall"
+unit = "s"
+better = "lower"
+threads = 1
+class = "st"
+fixed_work = true
+est_s = 6
+needs = ["{root}/bench/probes/valkey_model.c"]
