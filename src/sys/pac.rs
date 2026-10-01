@@ -56,6 +56,10 @@ fn count_op() {
     TEST_OPS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
 }
 
+use vstd::prelude::*;
+
+verus! {
+
 // arm64 `AT_HWCAP` bits, from `arch/arm64/include/uapi/asm/hwcap.h`; the
 // container test cross-checks them against the installed header where one
 // exists.
@@ -87,7 +91,9 @@ pub fn available() -> bool {
 /// for user space; a field value of 4 or 5 means FPAC. Diagnostic only
 /// (the report and the tests); the allocator's behaviour does not depend
 /// on it. False where `available` is false.
+/// The register reads are inline assembly, outside what Verus checks.
 #[cfg(test)]
+#[verifier::external_body]
 pub fn fpac() -> bool {
     #[cfg(target_arch = "aarch64")]
     {
@@ -117,11 +123,54 @@ pub fn fpac() -> bool {
     }
 }
 
+/// What [`sign`] returns for `p` and `modifier`: one value per pair,
+/// because every thread signs with the data key A it got at `exec` and
+/// inherited through `clone`. Trusted: the program never resets that key
+/// (`prctl(PR_PAC_RESET_KEYS)` resets the calling thread's alone, after
+/// which entries signed before fail to authenticate).
+pub uninterp spec fn spec_sign(p: usize, modifier: usize) -> usize;
+
+/// What [`auth`] returns for `p` and `modifier`.
+pub uninterp spec fn spec_auth(p: usize, modifier: usize) -> usize;
+
+/// The end of the user addresses the kernel hands out to a process that
+/// asks for no more (an `mmap` hint above them): `2^VA_BITS` of the
+/// kernel, capped by its default map window. Left abstract, because
+/// VA_BITS is a kernel build option (39, 42, 47, 48 or 52 on arm64); the
+/// PAC field lies above it.
+pub uninterp spec fn user_va_limit() -> int;
+
+/// Trusted (Linux's default map window): the limit is at most `2^48`.
+/// x86_64 hands out addresses below `2^47` with 4- or 5-level paging, and
+/// arm64 keeps a 48-bit window on 52-bit kernels, except with the debug
+/// option `CONFIG_ARM64_FORCE_52BIT`.
+pub axiom fn axiom_user_va_limit()
+    ensures
+        user_va_limit() <= 0x1_0000_0000_0000,
+;
+
+/// Trusted (Armv8.3 PAuth, and the identity on x86_64): authenticating
+/// what signing a plain user address returned, with the same modifier,
+/// gives the address back. `pacda` puts the PAC in the bits above VA_BITS
+/// and `autda` checks it and restores them from bit 55, which is clear
+/// below [`user_va_limit`].
+pub broadcast axiom fn axiom_auth_sign(p: usize, modifier: usize)
+    requires
+        p < user_va_limit(),
+    ensures
+        #[trigger] spec_auth(spec_sign(p, modifier), modifier) == p,
+;
+
 /// Sign `p` with data key A and `modifier` (`pacda`). Only when
 /// [`available`] is true; `p` must be a plain (unsigned) pointer, since
 /// signing a signed pointer corrupts its PAC.
+/// Inline assembly on aarch64, outside what Verus checks.
+#[verifier::external_body]
 #[inline(always)]
-pub fn sign(p: usize, modifier: usize) -> usize {
+pub fn sign(p: usize, modifier: usize) -> (r: usize)
+    ensures
+        r == spec_sign(p, modifier),
+{
     #[cfg(target_arch = "aarch64")]
     {
         #[cfg(test)]
@@ -150,8 +199,13 @@ pub fn sign(p: usize, modifier: usize) -> usize {
 /// Authenticate `p`, signed by [`sign`] with the same `modifier`
 /// (`autda`): the plain pointer, or a fault / a non-canonical pointer
 /// (module doc) when the two disagree.
+/// Inline assembly on aarch64, outside what Verus checks.
+#[verifier::external_body]
 #[inline(always)]
-pub fn auth(p: usize, modifier: usize) -> usize {
+pub fn auth(p: usize, modifier: usize) -> (r: usize)
+    ensures
+        r == spec_auth(p, modifier),
+{
     #[cfg(target_arch = "aarch64")]
     {
         #[cfg(test)]
@@ -180,6 +234,8 @@ pub fn auth(p: usize, modifier: usize) -> usize {
 /// Strip the PAC from `p` without authenticating it (`xpacd`): the address
 /// a signed or corrupted entry names, for abort messages and tests. Only
 /// when [`available`] is true.
+/// Inline assembly on aarch64, outside what Verus checks.
+#[verifier::external_body]
 #[inline]
 pub fn strip(p: usize) -> usize {
     #[cfg(target_arch = "aarch64")]
@@ -216,6 +272,8 @@ pub fn mask() -> usize {
     let probe = 0x007f_ffff_ffff_ffffusize;
     probe & !strip(probe)
 }
+
+} // verus!
 
 #[cfg(test)]
 mod tests {

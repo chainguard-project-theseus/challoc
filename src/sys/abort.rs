@@ -5,6 +5,9 @@
 use super::{SIG_UNBLOCK, SIGABRT, SIGSET_WORDS_BYTES, STDERR_FILENO};
 use super::{exit_group, getpid, gettid, nr, raw, write_all};
 use core::fmt;
+use vstd::prelude::*;
+
+verus! {
 
 /// The kernel's `struct sigaction` for `rt_sigaction`. Both x86_64 and
 /// aarch64 define `SA_RESTORER`, so the layout is the same.
@@ -25,6 +28,12 @@ pub struct Stderr {
 }
 
 impl Stderr {
+    /// At most the buffer is pending.
+    #[verifier::type_invariant]
+    spec fn wf(&self) -> bool {
+        self.len <= 512
+    }
+
     pub const fn new() -> Self {
         Stderr {
             buf: [0; 512],
@@ -32,7 +41,18 @@ impl Stderr {
         }
     }
 
-    pub fn flush(&mut self) {
+    /// The bytes waiting in the buffer.
+    pub closed spec fn pending(&self) -> nat {
+        self.len as nat
+    }
+
+    pub fn flush(&mut self)
+        ensures
+            final(self).pending() == 0,
+    {
+        proof {
+            use_type_invariant(&*self);
+        }
         if self.len > 0 {
             write_all(STDERR_FILENO, &self.buf[..self.len]);
             self.len = 0;
@@ -47,32 +67,64 @@ impl Default for Stderr {
 }
 
 impl fmt::Write for Stderr {
-    fn write_str(&mut self, mut s: &str) -> fmt::Result {
-        while !s.is_empty() {
+    /// Copies whole characters: a chunk ends on a character boundary, and a
+    /// character that does not fit in what is left of the buffer goes out
+    /// after a flush, so the abort path never slices inside one.
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        let mut b = s.as_bytes();
+        while !b.is_empty()
+            decreases 2 * b@.len() + (if self.len > 0 { 1int } else { 0int }),
+        {
+            proof {
+                use_type_invariant(&*self);
+            }
             let room = self.buf.len() - self.len;
             if room == 0 {
                 self.flush();
                 continue;
             }
-            // Cut on a character boundary: slicing `s` inside a multi-byte
-            // character would panic in the middle of an abort.
-            let mut n = s.len().min(room);
-            while !s.is_char_boundary(n) {
+            // Cut on a character boundary: a UTF-8 continuation byte
+            // (`0b10xx_xxxx`) is never the first byte of a character.
+            let mut n = b.len().min(room);
+            while n > 0 && n < b.len() && (b[n] & 0xC0) == 0x80
+                invariant
+                    n <= b@.len(),
+                    n <= room,
+                    room == 512 - self.len,
+                decreases n,
+            {
                 n -= 1;
             }
             if n == 0 {
-                self.flush();
-                continue;
+                if self.len > 0 {
+                    self.flush();
+                    continue;
+                }
+                // An empty buffer that cannot hold the first character: only
+                // bytes that are not UTF-8 get here, which a `str` never is.
+                n = b.len().min(room);
             }
-            self.buf[self.len..self.len + n].copy_from_slice(&s.as_bytes()[..n]);
+            let mut i = 0;
+            while i < n
+                invariant
+                    self.len + n <= 512,
+                    n <= b@.len(),
+                    i <= n,
+                decreases n - i,
+            {
+                self.buf[self.len + i] = b[i];
+                i += 1;
+            }
             self.len += n;
-            s = &s[n..];
+            b = &b[n..];
         }
         Ok(())
     }
 }
 
 /// Write `challoc: <msg>` to stderr and terminate with `SIGABRT`.
+/// Formatting is outside what Verus checks.
+#[verifier::external_body]
 #[cold]
 #[inline(never)]
 pub fn abort(msg: &str) -> ! {
@@ -80,6 +132,7 @@ pub fn abort(msg: &str) -> ! {
 }
 
 /// Formatting variant of [`abort`]. Use through the `abort!` macro.
+#[verifier::external_body]
 #[cold]
 #[inline(never)]
 pub fn abort_fmt(args: fmt::Arguments<'_>) -> ! {
@@ -107,7 +160,7 @@ fn die() -> ! {
         raw::syscall4(
             nr::RT_SIGPROCMASK,
             SIG_UNBLOCK as usize,
-            &set as *const u64 as usize,
+            core::ptr::from_ref(&set) as usize,
             0,
             SIGSET_WORDS_BYTES,
         );
@@ -122,7 +175,7 @@ fn die() -> ! {
         raw::syscall4(
             nr::RT_SIGACTION,
             SIGABRT as usize,
-            &dfl as *const KernelSigaction as usize,
+            core::ptr::from_ref(&dfl) as usize,
             0,
             SIGSET_WORDS_BYTES,
         );
@@ -131,6 +184,8 @@ fn die() -> ! {
     // 128 + SIGABRT, the shell convention for death by signal 6.
     exit_group(134)
 }
+
+} // verus!
 
 /// Abort the process with a formatted `challoc: ...` message on stderr.
 #[macro_export]

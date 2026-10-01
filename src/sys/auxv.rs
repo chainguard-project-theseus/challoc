@@ -10,6 +10,10 @@
 //! `config.rs` declares its own `getauxval` for `AT_SECURE` and keeps that
 //! constant beside it.
 
+use vstd::prelude::*;
+
+verus! {
+
 /// `AT_NULL`: end of the vector.
 #[cfg(test)]
 pub const AT_NULL: usize = 0;
@@ -26,6 +30,8 @@ pub const AT_RSEQ_FEATURE_SIZE: usize = 27;
 /// environment is untrusted (glibc's `secure_getenv` rule; `config::load`
 /// skips the environment sources when it is set).
 pub const AT_SECURE: usize = 23;
+
+} // verus!
 
 unsafe extern "C" {
     /// glibc's `getauxval(3)`: the value for `kind`, 0 when absent.

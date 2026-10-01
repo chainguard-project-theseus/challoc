@@ -13,10 +13,13 @@ pub(crate) mod check;
 mod config;
 pub(crate) mod core_int;
 mod fmt;
+pub(crate) mod lock;
+mod misc;
 mod misc_extra;
 mod policy;
 pub(crate) mod ptr;
 pub(crate) mod slice;
+pub(crate) mod sys;
 pub(crate) mod word;
 pub(crate) mod zero;
 

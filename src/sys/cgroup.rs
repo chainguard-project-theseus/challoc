@@ -28,7 +28,12 @@
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use super::parse_decimal;
+#[cfg(verus_only)]
+use super::{after_line, find_byte, lemma_line_step, line_len, opt_view, parse_decimal_spec};
+use super::{bytes_is, find_from, parse_decimal};
+use vstd::prelude::*;
+
+verus! {
 
 /// Longest cgroup directory (mount point plus path) that is tracked. Real
 /// paths are a few hundred bytes (Kubernetes' pod and container scopes);
@@ -36,7 +41,7 @@ use super::parse_decimal;
 pub const PATH_CAP: usize = 2048;
 /// Room after the directory for `/` plus the longest file name read here
 /// (`memory.current`, 14 bytes) plus the NUL, rounded up.
-const FILE_ROOM: usize = 32;
+pub const FILE_ROOM: usize = 32;
 /// Buffer for one cgroup file. `memory.events` is a handful of lines;
 /// `/proc/self/cgroup` can carry a dozen v1 lines on a hybrid host and
 /// still fits.
@@ -49,54 +54,301 @@ const SCAN_BUF: usize = 2048;
 pub const SAMPLE_INTERVAL_NS: u64 = 10_000_000;
 /// Minimum interval between two walks of `memory.max`/`memory.high`.
 pub const LIMIT_INTERVAL_NS: u64 = 1_000_000_000;
+
 /// `max` in a limit file: no limit at this level.
 pub const UNLIMITED: u64 = u64::MAX;
+
+} // verus!
 
 // ---------------------------------------------------------------------------
 // Pure parsing (unit tested against captured contents).
 // ---------------------------------------------------------------------------
 
-/// Split `bytes` into lines; a final line without a newline counts.
-fn lines(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
-    bytes.split(|&b| b == b'\n').filter(|l| !l.is_empty())
-}
+verus! {
 
 /// Leading decimal number of `bytes`, ignoring what follows the digits.
 /// `None` without a digit or on overflow (`sys::parse_decimal`).
-fn parse_u64_prefix(bytes: &[u8]) -> Option<u64> {
+fn parse_u64_prefix(bytes: &[u8]) -> (r: Option<u64>)
+    ensures
+        r == parse_decimal_spec(bytes@),
+{
     parse_decimal(bytes)
 }
 
+/// An ASCII whitespace byte (`u8::is_ascii_whitespace`).
+pub open spec fn is_ws(b: u8) -> bool {
+    b == 32 || b == 9 || b == 10 || b == 12 || b == 13
+}
+
+/// The number of leading whitespace bytes of `s`.
+pub open spec fn ws_lead(s: Seq<u8>) -> nat
+    decreases s.len(),
+{
+    if s.len() > 0 && is_ws(s[0]) {
+        1 + ws_lead(s.drop_first())
+    } else {
+        0
+    }
+}
+
+/// The number of trailing whitespace bytes of `s`.
+pub open spec fn ws_trail(s: Seq<u8>) -> nat
+    decreases s.len(),
+{
+    if s.len() > 0 && is_ws(s.last()) {
+        1 + ws_trail(s.drop_last())
+    } else {
+        0
+    }
+}
+
+/// `s` without its leading and trailing whitespace.
+pub open spec fn trim_spec(s: Seq<u8>) -> Seq<u8> {
+    let a = s.skip(ws_lead(s) as int);
+    a.take(a.len() - ws_trail(a))
+}
+
+proof fn lemma_ws_lead(s: Seq<u8>, k: int)
+    requires
+        0 <= k <= s.len(),
+        forall|j: int| 0 <= j < k ==> is_ws(#[trigger] s[j]),
+        k == s.len() || !is_ws(s[k]),
+    ensures
+        ws_lead(s) == k,
+    decreases k,
+{
+    if k > 0 {
+        lemma_ws_lead(s.drop_first(), k - 1);
+    }
+}
+
+proof fn lemma_ws_trail(s: Seq<u8>, e: int)
+    requires
+        0 <= e <= s.len(),
+        forall|j: int| e <= j < s.len() ==> is_ws(#[trigger] s[j]),
+        e == 0 || !is_ws(s[e - 1]),
+    ensures
+        ws_trail(s) == s.len() - e,
+    decreases s.len() - e,
+{
+    if e < s.len() {
+        lemma_ws_trail(s.drop_last(), e);
+    }
+}
+
 /// Strip leading and trailing ASCII whitespace.
-fn trim(mut b: &[u8]) -> &[u8] {
-    while let [first, rest @ ..] = b {
-        if !first.is_ascii_whitespace() {
-            break;
-        }
-        b = rest;
+fn trim(b: &[u8]) -> (r: &[u8])
+    ensures
+        r@.len() <= b@.len(),
+        r@ == trim_spec(b@),
+{
+    let mut start = 0;
+    while start < b.len() && b[start].is_ascii_whitespace()
+        invariant
+            start <= b@.len(),
+            forall|j: int| 0 <= j < start ==> is_ws(#[trigger] b@[j]),
+        decreases b@.len() - start,
+    {
+        start += 1;
     }
-    while let [rest @ .., last] = b {
-        if !last.is_ascii_whitespace() {
-            break;
-        }
-        b = rest;
+    let mut end = b.len();
+    while end > start && b[end - 1].is_ascii_whitespace()
+        invariant
+            start <= end <= b@.len(),
+            forall|j: int| end <= j < b@.len() ==> is_ws(#[trigger] b@[j]),
+        decreases end,
+    {
+        end -= 1;
     }
-    b
+    proof {
+        lemma_ws_lead(b@, start as int);
+        let a = b@.skip(start as int);
+        assert forall|j: int| end - start <= j < a.len() implies is_ws(#[trigger] a[j]) by {
+            assert(a[j] == b@[start + j]);
+        }
+        if end > start {
+            assert(a[end - start - 1] == b@[end - 1]);
+        }
+        lemma_ws_trail(a, end - start);
+        assert(b@.subrange(start as int, end as int) =~= a.take(end - start));
+    }
+    &b[start..end]
+}
+
+/// What [`cgroup_path_from_line`] returns: the trimmed rest of a `0::`
+/// line when it starts with `/`.
+pub open spec fn cgroup_path_line_spec(l: Seq<u8>) -> Option<Seq<u8>> {
+    if l.len() >= 3 && l[0] == 48 && l[1] == 58 && l[2] == 58 {
+        let r = trim_spec(l.skip(3));
+        if r.len() > 0 && r[0] == 47 {
+            Some(r)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
 }
 
 /// The unified-hierarchy path of one `/proc/self/cgroup` line: `0::/a/b`
 /// gives `/a/b`; inside a cgroup namespace the line is `0::/`. `None` for
 /// any other line (a v1 controller's `N:name:/path`).
-pub fn cgroup_path_from_line(line: &[u8]) -> Option<&[u8]> {
-    let rest = line.strip_prefix(b"0::")?;
-    let rest = trim(rest);
-    (rest.first() == Some(&b'/')).then_some(rest)
+pub fn cgroup_path_from_line(line: &[u8]) -> (r: Option<&[u8]>)
+    ensures
+        r matches Some(p) ==> p@.len() <= line@.len(),
+        opt_view(r) == cgroup_path_line_spec(line@),
+{
+    if line.len() < 3 || line[0] != b'0' || line[1] != b':' || line[2] != b':' {
+        return None;
+    }
+    let rest = trim(&line[3..]);
+    if !rest.is_empty() && rest[0] == b'/' {
+        Some(rest)
+    } else {
+        None
+    }
+}
+
+/// What [`cgroup_path`] returns: the path of the first line that has one.
+pub open spec fn cgroup_path_spec(s: Seq<u8>) -> Option<Seq<u8>>
+    decreases s.len(),
+{
+    if s.len() == 0 {
+        None
+    } else {
+        let l = s.take(line_len(s) as int);
+        if l.len() > 0 && cgroup_path_line_spec(l) is Some {
+            cgroup_path_line_spec(l)
+        } else {
+            cgroup_path_spec(after_line(s))
+        }
+    }
 }
 
 /// The unified-hierarchy path from the whole of `/proc/self/cgroup`, or
 /// `None` when there is no `0::` line (a cgroup v1 only system).
-pub fn cgroup_path(contents: &[u8]) -> Option<&[u8]> {
-    lines(contents).find_map(cgroup_path_from_line)
+// The nested `if` keeps the loop body in the form the proof states.
+#[allow(clippy::collapsible_if)]
+pub fn cgroup_path(contents: &[u8]) -> (r: Option<&[u8]>)
+    ensures
+        r matches Some(p) ==> p@.len() <= contents@.len(),
+        opt_view(r) == cgroup_path_spec(contents@),
+{
+    proof {
+        assert(contents@.skip(0) =~= contents@);
+    }
+    let mut start = 0;
+    while start < contents.len()
+        invariant
+            start <= contents@.len(),
+            cgroup_path_spec(contents@) == cgroup_path_spec(contents@.skip(start as int)),
+        decreases contents@.len() - start,
+    {
+        let end = find_from(contents, start, b'\n');
+        proof {
+            lemma_line_step(contents@, start as int, end as int);
+        }
+        let line = &contents[start..end];
+        if !line.is_empty() {
+            if let Some(p) = cgroup_path_from_line(line) {
+                return Some(p);
+            }
+        }
+        if end == contents.len() {
+            proof {
+                assert(cgroup_path_spec(Seq::<u8>::empty()) is None);
+            }
+            return None;
+        }
+        start = end + 1;
+    }
+    proof {
+        assert(contents@.skip(start as int) =~= Seq::<u8>::empty());
+    }
+    None
+}
+
+/// ` - ` starts at `j` in `s`.
+pub open spec fn sep_at(s: Seq<u8>, j: int) -> bool {
+    0 <= j && j + 3 <= s.len() && s[j] == 32 && s[j + 1] == 45 && s[j + 2] == 32
+}
+
+/// The index of the first ` - ` in `s`.
+pub open spec fn find_sep(s: Seq<u8>) -> Option<nat>
+    decreases s.len(),
+{
+    if s.len() < 3 {
+        None
+    } else if sep_at(s, 0) {
+        Some(0)
+    } else {
+        match find_sep(s.drop_first()) {
+            Some(i) => Some(i + 1),
+            None => None,
+        }
+    }
+}
+
+proof fn lemma_find_sep(s: Seq<u8>, k: int)
+    requires
+        0 <= k <= s.len(),
+        forall|j: int| 0 <= j < k ==> !#[trigger] sep_at(s, j),
+        k + 3 > s.len() || sep_at(s, k),
+    ensures
+        find_sep(s) == (if k + 3 > s.len() { None } else { Some(k as nat) }),
+    decreases k,
+{
+    if k > 0 && s.len() >= 3 {
+        assert forall|j: int| 0 <= j < k - 1 implies !#[trigger] sep_at(s.drop_first(), j) by {
+            assert(!sep_at(s, j + 1));
+        }
+        assert(!sep_at(s, 0));
+        lemma_find_sep(s.drop_first(), k - 1);
+    }
+}
+
+/// Field `n` (from 0) of `s` split at every space, empty fields counted
+/// (`split(' ').nth(n)`).
+pub open spec fn field(s: Seq<u8>, n: nat) -> Option<Seq<u8>>
+    decreases n,
+{
+    let k = find_byte(s, 32);
+    if n == 0 {
+        Some(s.take(k as int))
+    } else if k < s.len() {
+        field(s.skip(k as int + 1), (n - 1) as nat)
+    } else {
+        None
+    }
+}
+
+/// A mount point field: kept when it starts with `/`.
+pub open spec fn mount_field(f: Option<Seq<u8>>) -> Option<Seq<u8>> {
+    match f {
+        Some(m) => if m.len() > 0 && m[0] == 47 {
+            Some(m)
+        } else {
+            None
+        },
+        None => None,
+    }
+}
+
+/// What [`cgroup2_mount_from_line`] returns: field 5 of a line whose
+/// filesystem type is `cgroup2`, when it starts with `/`.
+pub open spec fn cgroup2_mount_line_spec(l: Seq<u8>) -> Option<Seq<u8>> {
+    match find_sep(l) {
+        None => None,
+        Some(sep) => {
+            let post = l.skip(sep as int + 3);
+            // `cgroup2`
+            if post.take(find_byte(post, 32) as int) != seq![99u8, 103, 114, 111, 117, 112, 50] {
+                None
+            } else {
+                mount_field(field(l.take(sep as int), 4))
+            }
+        },
+    }
 }
 
 /// The mount point of one `/proc/self/mountinfo` line if it mounts a
@@ -105,30 +357,161 @@ pub fn cgroup_path(contents: &[u8]) -> Option<&[u8]> {
 /// the optional fields vary in number, which is what the ` - ` separator is
 /// for. Octal escapes in the mount point (`\040` for a space) are left as
 /// they are: no cgroup2 mount has one.
-pub fn cgroup2_mount_from_line(line: &[u8]) -> Option<&[u8]> {
-    let sep = line.windows(3).position(|w| w == b" - ")?;
-    let (pre, post) = (&line[..sep], &line[sep + 3..]);
-    let fstype = post.split(|&b| b == b' ').next()?;
-    if fstype != b"cgroup2" {
+// Verus rejects byte-string literals.
+#[allow(clippy::byte_char_slices)]
+pub fn cgroup2_mount_from_line(line: &[u8]) -> (r: Option<&[u8]>)
+    ensures
+        opt_view(r) == cgroup2_mount_line_spec(line@),
+{
+    let mut sep = 0;
+    while line.len() - sep >= 3 && !(line[sep] == b' ' && line[sep + 1] == b'-' && line[sep + 2] == b' ')
+        invariant
+            sep <= line@.len(),
+            forall|j: int| 0 <= j < sep ==> !#[trigger] sep_at(line@, j),
+        decreases line@.len() - sep,
+    {
+        sep += 1;
+    }
+    proof {
+        lemma_find_sep(line@, sep as int);
+    }
+    if line.len() - sep < 3 {
         return None;
     }
-    let mount = pre.split(|&b| b == b' ').nth(4)?;
-    (mount.first() == Some(&b'/')).then_some(mount)
+    let pre = &line[..sep];
+    let post = &line[sep + 3..];
+    let fend = find_from(post, 0, b' ');
+    proof {
+        assert(post@.skip(0) =~= post@);
+    }
+    if !bytes_is(&post[..fend], &[b'c', b'g', b'r', b'o', b'u', b'p', b'2']) {
+        return None;
+    }
+    proof {
+        assert(pre@.skip(0) =~= pre@);
+        assert(cgroup2_mount_line_spec(line@) == mount_field(field(pre@, 4)));
+    }
+    let mut start = 0;
+    let mut n = 0;
+    while n < 4
+        invariant
+            start <= pre@.len(),
+            n <= 4,
+            field(pre@, 4) == field(pre@.skip(start as int), (4 - n) as nat),
+            cgroup2_mount_line_spec(line@) == mount_field(field(pre@, 4)),
+        decreases 4 - n,
+    {
+        let k = find_from(pre, start, b' ');
+        if k == pre.len() {
+            return None;
+        }
+        proof {
+            assert(pre@.skip(start as int).skip(k - start + 1) =~= pre@.skip(k + 1));
+        }
+        start = k + 1;
+        n += 1;
+    }
+    let end = find_from(pre, start, b' ');
+    proof {
+        assert(pre@.skip(start as int).take(end - start) =~= pre@.subrange(start as int, end as int));
+    }
+    let mount = &pre[start..end];
+    if !mount.is_empty() && mount[0] == b'/' {
+        Some(mount)
+    } else {
+        None
+    }
+}
+
+/// What [`cgroup2_mount`] returns: the mount point of the first line that
+/// has one.
+pub open spec fn cgroup2_mount_spec(s: Seq<u8>) -> Option<Seq<u8>>
+    decreases s.len(),
+{
+    if s.len() == 0 {
+        None
+    } else {
+        let l = s.take(line_len(s) as int);
+        if l.len() > 0 && cgroup2_mount_line_spec(l) is Some {
+            cgroup2_mount_line_spec(l)
+        } else {
+            cgroup2_mount_spec(after_line(s))
+        }
+    }
 }
 
 /// The first cgroup2 mount point in `/proc/self/mountinfo` contents, or
 /// `None` when there is none (no unified hierarchy mounted).
 #[cfg(test)]
-pub fn cgroup2_mount(contents: &[u8]) -> Option<&[u8]> {
-    lines(contents).find_map(cgroup2_mount_from_line)
+// The nested `if` keeps the loop body in the form the proof states.
+#[allow(clippy::collapsible_if)]
+pub fn cgroup2_mount(contents: &[u8]) -> (r: Option<&[u8]>)
+    ensures
+        opt_view(r) == cgroup2_mount_spec(contents@),
+{
+    proof {
+        assert(contents@.skip(0) =~= contents@);
+    }
+    let mut start = 0;
+    while start < contents.len()
+        invariant
+            start <= contents@.len(),
+            cgroup2_mount_spec(contents@) == cgroup2_mount_spec(contents@.skip(start as int)),
+        decreases contents@.len() - start,
+    {
+        let end = find_from(contents, start, b'\n');
+        proof {
+            lemma_line_step(contents@, start as int, end as int);
+        }
+        let line = &contents[start..end];
+        if !line.is_empty() {
+            if let Some(m) = cgroup2_mount_from_line(line) {
+                return Some(m);
+            }
+        }
+        if end == contents.len() {
+            proof {
+                assert(cgroup2_mount_spec(Seq::<u8>::empty()) is None);
+            }
+            return None;
+        }
+        start = end + 1;
+    }
+    proof {
+        assert(contents@.skip(start as int) =~= Seq::<u8>::empty());
+    }
+    None
+}
+
+/// `max`.
+pub open spec fn max_word() -> Seq<u8> {
+    seq![109u8, 97, 120]
+}
+
+/// What [`parse_limit`] returns.
+pub open spec fn parse_limit_spec(s: Seq<u8>) -> Option<u64> {
+    let t = trim_spec(s);
+    if t == max_word() {
+        Some(UNLIMITED)
+    } else {
+        parse_decimal_spec(t)
+    }
 }
 
 /// `memory.max`, `memory.high` or `memory.current`: a decimal byte count,
 /// or `max` meaning [`UNLIMITED`]. `None` for anything else (an absent
 /// file is the caller's `None` before this is reached).
-pub fn parse_limit(contents: &[u8]) -> Option<u64> {
+// Verus rejects byte-string literals.
+#[allow(clippy::byte_char_slices)]
+pub fn parse_limit(contents: &[u8]) -> (r: Option<u64>)
+    ensures
+        r == parse_limit_spec(contents@),
+{
     let t = trim(contents);
-    if t == b"max" {
+    proof {
+        assert(seq![b'm', b'a', b'x'] =~= max_word());
+    }
+    if bytes_is(t, &[b'm', b'a', b'x']) {
         return Some(UNLIMITED);
     }
     parse_u64_prefix(t)
@@ -155,27 +538,130 @@ pub struct Events {
     pub oom_kill: u64,
 }
 
-pub fn parse_events(contents: &[u8]) -> Events {
-    let mut e = Events::default();
-    for line in lines(contents) {
-        let mut it = line.splitn(2, |&b| b == b' ');
-        let (Some(key), Some(val)) = (it.next(), it.next()) else {
-            continue;
-        };
-        let Some(v) = parse_u64_prefix(trim(val)) else {
-            continue;
-        };
-        match key {
-            b"low" => e.low = v,
-            b"high" => e.high = v,
-            b"max" => e.max = v,
-            b"oom" => e.oom = v,
-            b"oom_kill" => e.oom_kill = v,
-            _ => {}
+/// Every counter zero.
+pub open spec fn events_zero() -> Events {
+    Events { low: 0, high: 0, max: 0, oom: 0, oom_kill: 0 }
+}
+
+/// One `key value` line of `memory.events` applied to `e`: a known key
+/// with a number takes it; anything else leaves `e` as it is.
+pub open spec fn events_line(e: Events, l: Seq<u8>) -> Events {
+    let k = find_byte(l, 32);
+    if k >= l.len() {
+        e
+    } else {
+        let key = l.take(k as int);
+        match parse_decimal_spec(trim_spec(l.skip(k as int + 1))) {
+            None => e,
+            Some(v) => if key == seq![108u8, 111, 119] {
+                Events { low: v, ..e }
+            } else if key == seq![104u8, 105, 103, 104] {
+                Events { high: v, ..e }
+            } else if key == max_word() {
+                Events { max: v, ..e }
+            } else if key == seq![111u8, 111, 109] {
+                Events { oom: v, ..e }
+            } else if key == seq![111u8, 111, 109, 95, 107, 105, 108, 108] {
+                Events { oom_kill: v, ..e }
+            } else {
+                e
+            },
+        }
+    }
+}
+
+/// Every non-empty line of `s` applied to `e` in order.
+pub open spec fn events_fold(e: Events, s: Seq<u8>) -> Events
+    decreases s.len(),
+{
+    if s.len() == 0 {
+        e
+    } else {
+        let l = s.take(line_len(s) as int);
+        events_fold(if l.len() > 0 { events_line(e, l) } else { e }, after_line(s))
+    }
+}
+
+/// One line of `memory.events` applied to `e` ([`events_line`]).
+// Verus rejects byte-string literals.
+#[allow(clippy::byte_char_slices)]
+fn events_note_line(e: Events, line: &[u8]) -> (r: Events)
+    ensures
+        r == events_line(e, line@),
+{
+    let mut e = e;
+    let k = find_from(line, 0, b' ');
+    proof {
+        assert(line@.skip(0) =~= line@);
+    }
+    if k < line.len() {
+        let key = &line[..k];
+        if let Some(v) = parse_u64_prefix(trim(&line[k + 1..])) {
+            proof {
+                assert(seq![b'l', b'o', b'w'] =~= seq![108u8, 111, 119]);
+                assert(seq![b'h', b'i', b'g', b'h'] =~= seq![104u8, 105, 103, 104]);
+                assert(seq![b'm', b'a', b'x'] =~= max_word());
+                assert(seq![b'o', b'o', b'm'] =~= seq![111u8, 111, 109]);
+                assert(seq![b'o', b'o', b'm', b'_', b'k', b'i', b'l', b'l'] =~= seq![111u8, 111, 109, 95, 107, 105, 108, 108]);
+            }
+            if bytes_is(key, &[b'l', b'o', b'w']) {
+                e.low = v;
+            } else if bytes_is(key, &[b'h', b'i', b'g', b'h']) {
+                e.high = v;
+            } else if bytes_is(key, &[b'm', b'a', b'x']) {
+                e.max = v;
+            } else if bytes_is(key, &[b'o', b'o', b'm']) {
+                e.oom = v;
+            } else if bytes_is(key, &[b'o', b'o', b'm', b'_', b'k', b'i', b'l', b'l']) {
+                e.oom_kill = v;
+            }
         }
     }
     e
 }
+
+/// `memory.events` read into [`Events`]: every non-empty line applied in
+/// order ([`events_fold`]), so a key seen twice keeps its last value.
+pub fn parse_events(contents: &[u8]) -> (r: Events)
+    ensures
+        r == events_fold(events_zero(), contents@),
+{
+    let mut e = Events { low: 0, high: 0, max: 0, oom: 0, oom_kill: 0 };
+    proof {
+        assert(contents@.skip(0) =~= contents@);
+    }
+    let mut start = 0;
+    while start < contents.len()
+        invariant
+            start <= contents@.len(),
+            events_fold(events_zero(), contents@) == events_fold(e, contents@.skip(start as int)),
+        decreases contents@.len() - start,
+    {
+        let end = find_from(contents, start, b'\n');
+        proof {
+            lemma_line_step(contents@, start as int, end as int);
+        }
+        let line = &contents[start..end];
+        if !line.is_empty() {
+            e = events_note_line(e, line);
+        }
+        if end == contents.len() {
+            proof {
+                assert(events_fold(e, Seq::<u8>::empty()) == e);
+            }
+            return e;
+        }
+        start = end + 1;
+    }
+    proof {
+        assert(contents@.skip(start as int) =~= Seq::<u8>::empty());
+    }
+    e
+}
+
+} // verus!
+
+verus! {
 
 /// Walk from the leaf directory `dir` up to the cgroup2 mount (the first
 /// `mount_len` bytes of `dir`, inclusive) and return the minimum of what
@@ -183,22 +669,59 @@ pub fn parse_events(contents: &[u8]) -> Events {
 /// answers `None` where the file is absent. [`UNLIMITED`] when no level
 /// has a limit. Pure: the reader is a closure so the tests feed it
 /// captured contents.
-pub fn walk_min<F: FnMut(&[u8]) -> Option<u64>>(dir: &[u8], mount_len: usize, mut read: F) -> u64 {
+pub fn walk_min<F: FnMut(&[u8]) -> Option<u64>>(dir: &[u8], mount_len: usize, mut read: F) -> u64
+    requires
+        forall|d: &[u8]| d@.len() <= dir@.len() ==> #[trigger] call_requires(read, (d,)),
+{
     let mut min = UNLIMITED;
     let mut end = dir.len();
-    loop {
+    loop
+        invariant
+            end <= dir@.len(),
+            forall|d: &[u8]| d@.len() <= dir@.len() ==> #[trigger] call_requires(read, (d,)),
+        decreases end,
+    {
         if let Some(v) = read(&dir[..end]) {
             min = min.min(v);
         }
         if end <= mount_len {
             break;
         }
-        match dir[mount_len..end].iter().rposition(|&b| b == b'/') {
-            Some(i) => end = mount_len + i,
-            None => break,
+        // The last `/` of `dir[mount_len..end]`, which ends the parent.
+        let mut i = end;
+        while i > mount_len && dir[i - 1] != b'/'
+            invariant
+                mount_len <= i <= end,
+                end <= dir@.len(),
+            decreases i,
+        {
+            i -= 1;
         }
+        if i == mount_len {
+            break;
+        }
+        end = i - 1;
     }
     min
+}
+
+/// `s` without one trailing `/`.
+pub open spec fn strip_slash(s: Seq<u8>) -> Seq<u8> {
+    if s.len() > 0 && s.last() == 47 {
+        s.drop_last()
+    } else {
+        s
+    }
+}
+
+/// The path part [`join_dir`] appends: nothing for `/`, else the path
+/// without a trailing `/`.
+pub open spec fn join_path_part(p: Seq<u8>) -> Seq<u8> {
+    if p == seq![47u8] {
+        Seq::empty()
+    } else {
+        strip_slash(p)
+    }
 }
 
 /// Join `mount` and `path` into `out` as the cgroup directory without a
@@ -206,48 +729,124 @@ pub fn walk_min<F: FnMut(&[u8]) -> Option<u64>>(dir: &[u8], mount_len: usize, mu
 /// (`/sys/fs/cgroup`, `/`) is `/sys/fs/cgroup`. Returns the directory
 /// length and the mount's length within it, or `None` when it would not
 /// fit in `out` less [`FILE_ROOM`].
-pub fn join_dir(out: &mut [u8], mount: &[u8], path: &[u8]) -> Option<(usize, usize)> {
-    let mount = mount.strip_suffix(b"/").unwrap_or(mount);
-    let path = if path == b"/" {
-        &b""[..]
+pub fn join_dir(out: &mut [u8], mount: &[u8], path: &[u8]) -> (r: Option<(usize, usize)>)
+    requires
+        mount@.len() + path@.len() + FILE_ROOM <= usize::MAX,
+    ensures
+        final(out)@.len() == old(out)@.len(),
+        ({
+            let m = strip_slash(mount@);
+            let p = join_path_part(path@);
+            if m.len() + p.len() + FILE_ROOM > old(out)@.len() {
+                r is None && final(out)@ == old(out)@
+            } else {
+                r == Some(((m.len() + p.len()) as usize, m.len() as usize))
+                    && final(out)@.take((m.len() + p.len()) as int) == m + p
+            }
+        }),
+{
+    let ghost mount0 = mount@;
+    let ghost path0 = path@;
+    let mount = if !mount.is_empty() && mount[mount.len() - 1] == b'/' { &mount[..mount.len() - 1] } else { mount };
+    let path = if path.len() == 1 && path[0] == b'/' {
+        &path[..0]
+    } else if !path.is_empty() && path[path.len() - 1] == b'/' {
+        &path[..path.len() - 1]
     } else {
-        path.strip_suffix(b"/").unwrap_or(path)
+        path
     };
+    proof {
+        assert(mount@ =~= strip_slash(mount0)) by {
+            if mount0.len() > 0 && mount0.last() == 47 {
+                assert(mount@ =~= mount0.drop_last());
+            }
+        }
+        assert(path@ =~= join_path_part(path0)) by {
+            if path0 == seq![47u8] {
+                assert(path@ =~= Seq::<u8>::empty());
+            } else if path0.len() == 1 && path0[0] == 47 {
+                assert(path0 =~= seq![47u8]);
+            } else if path0.len() > 0 && path0.last() == 47 {
+                assert(path@ =~= path0.drop_last());
+            }
+        }
+    }
     let len = mount.len() + path.len();
     if len + FILE_ROOM > out.len() {
         return None;
     }
     out[..mount.len()].copy_from_slice(mount);
     out[mount.len()..len].copy_from_slice(path);
+    proof {
+        assert(out@.take(len as int) =~= mount@ + path@);
+    }
     Some((len, mount.len()))
 }
 
+} // verus!
+
+verus! {
+
 /// Feed `buf`-sized chunks from `read` to `on_line` one complete line at a
 /// time (without the newline), carrying a partial line across chunks;
-/// stops early when `on_line` returns `true`. A line longer than `buf` is
-/// dropped. `read` returns the bytes it filled, 0 at end of file, or
-/// `None` on error (which ends the scan).
-pub fn scan_lines<R, F>(buf: &mut [u8], mut read: R, mut on_line: F)
-where
-    R: FnMut(&mut [u8]) -> Option<usize>,
-    F: FnMut(&[u8]) -> bool,
+/// stops early when `on_line` returns `true`, and returns where that line
+/// is in `buf` (`None` when no line was taken). A line longer than `buf`
+/// is dropped. `read` returns the bytes it filled, 0 at end of file, or
+/// `None` on error (which ends the scan). Runs until `read` reports the
+/// end or an error, so a reader that never does keeps it going.
+#[verifier::exec_allows_no_decreases_clause]
+pub fn scan_lines<R, F>(buf: &mut [u8], mut read: R, mut on_line: F) -> (found: Option<(usize, usize)>)
+    where
+        R: FnMut(&mut [u8]) -> Option<usize>,
+        F: FnMut(&[u8]) -> bool,
+    requires
+        forall|b: &mut [u8]| call_requires(read, (b,)),
+        forall|b: &mut [u8], r: Option<usize>|
+            call_ensures(read, (b,), r) ==> (r matches Some(n) ==> n <= b@.len()) && final(b)@.len() == b@.len(),
+        forall|l: &[u8]| call_requires(on_line, (l,)),
+    ensures
+        final(buf)@.len() == old(buf)@.len(),
+        found matches Some((lo, hi)) ==> lo <= hi <= final(buf)@.len(),
 {
     let mut len = 0;
     let mut dropping = false;
-    loop {
+    loop
+        invariant
+            len <= buf@.len(),
+            buf@.len() == old(buf)@.len(),
+            forall|b: &mut [u8]| call_requires(read, (b,)),
+            forall|b: &mut [u8], r: Option<usize>|
+                call_ensures(read, (b,), r) ==> (r matches Some(n) ==> n <= b@.len()) && final(b)@.len() == b@.len(),
+            forall|l: &[u8]| call_requires(on_line, (l,)),
+    {
         let n = match read(&mut buf[len..]) {
             Some(0) | None => break,
             Some(n) => n,
         };
+        proof {
+            assert(buf.len() == buf@.len());
+            assert(n <= buf@.len() - len);
+        }
         len += n;
         let mut start = 0;
-        while let Some(i) = buf[start..len].iter().position(|&b| b == b'\n') {
-            let line = &buf[start..start + i];
-            start += i + 1;
+        loop
+            invariant
+                start <= len <= buf@.len(),
+                buf@.len() == old(buf)@.len(),
+                forall|l: &[u8]| call_requires(on_line, (l,)),
+            decreases len - start,
+        {
+            let i = find_from(&buf[..len], start, b'\n');
+            if i == len {
+                break;
+            }
+            let line = &buf[start..i];
+            let lo = start;
+            start = i + 1;
             if dropping {
                 dropping = false;
             } else if on_line(line) {
-                return;
+                return Some((lo, i));
             }
         }
         if start == 0 && len == buf.len() {
@@ -259,14 +858,19 @@ where
             len -= start;
         }
     }
-    if len > 0 && !dropping {
-        on_line(&buf[..len]);
+    if len > 0 && !dropping && on_line(&buf[..len]) {
+        return Some((0, len));
     }
+    None
 }
+
+} // verus!
 
 // ---------------------------------------------------------------------------
 // Runtime state.
 // ---------------------------------------------------------------------------
+
+verus! {
 
 /// Why the cgroup is not tracked, or that it is.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -322,8 +926,23 @@ pub struct Cgroup {
 }
 
 impl Cgroup {
+    /// The directory leaves room for `/`, a file name and the NUL, and
+    /// the mount is a prefix of it.
+    #[verifier::type_invariant]
+    spec fn wf(&self) -> bool {
+        self.dir_len as int + FILE_ROOM <= PATH_CAP && self.mount_len <= self.dir_len
+    }
+
+    /// The lengths of the directory and of the mount within it.
+    pub closed spec fn layout(&self) -> (nat, nat) {
+        (self.dir_len as nat, self.mount_len as nat)
+    }
+
     /// Nothing tracked, for `cgroup:false` and hosts without cgroup2.
-    pub const fn untracked(state: State) -> Cgroup {
+    pub const fn untracked(state: State) -> (r: Cgroup)
+        ensures
+            r.layout() == (0nat, 0nat),
+    {
         Cgroup {
             dir: [0; PATH_CAP],
             dir_len: 0,
@@ -359,18 +978,31 @@ impl Cgroup {
     }
 
     /// The cgroup directory (empty when untracked).
-    pub fn dir(&self) -> &[u8] {
+    pub fn dir(&self) -> (r: &[u8])
+        ensures
+            r@.len() == self.layout().0,
+            r@.len() + FILE_ROOM <= PATH_CAP,
+    {
+        proof {
+            use_type_invariant(self);
+        }
         &self.dir[..self.dir_len as usize]
     }
 
     /// The cgroup2 mount point (empty when untracked).
     pub fn mount(&self) -> &[u8] {
+        proof {
+            use_type_invariant(self);
+        }
         &self.dir[..self.mount_len as usize]
     }
 
     /// The path relative to the mount, as `/proc/self/cgroup` gave it
     /// (`/` at the mount itself).
     pub fn path(&self) -> &[u8] {
+        proof {
+            use_type_invariant(self);
+        }
         let p = &self.dir[self.mount_len as usize..self.dir_len as usize];
         if p.is_empty() { b"/" } else { p }
     }
@@ -445,6 +1077,8 @@ impl Cgroup {
     }
 }
 
+} // verus!
+
 impl fmt::Display for Cgroup {
     /// The `cgroup:` line of `malloc_stats_print`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -511,8 +1145,27 @@ mod linux {
     use super::*;
     use crate::sys::{self, O_RDONLY, read_small_file};
 
+    verus! {
+
+    /// `/proc/self/cgroup`, NUL-terminated (spelled as bytes so the
+    /// verifier sees the NUL `sys::open` requires).
+    const PROC_SELF_CGROUP: [u8; 18] = [
+        b'/', b'p', b'r', b'o', b'c', b'/', b's', b'e', b'l', b'f', b'/', b'c', b'g', b'r', b'o', b'u', b'p', 0,
+    ];
+
+    /// `/proc/self/mountinfo`, NUL-terminated.
+    const PROC_SELF_MOUNTINFO: [u8; 21] = [
+        b'/', b'p', b'r', b'o', b'c', b'/', b's', b'e', b'l', b'f', b'/', b'm', b'o', b'u', b'n', b't', b'i', b'n', b'f', b'o', 0,
+    ];
+
     /// `dir/name`, NUL-terminated, in `out`.
-    fn file_path<'a>(out: &'a mut [u8; PATH_CAP + FILE_ROOM], dir: &[u8], name: &[u8]) -> &'a [u8] {
+    fn file_path<'a>(out: &'a mut [u8; PATH_CAP + FILE_ROOM], dir: &[u8], name: &[u8]) -> (r: &'a [u8])
+        requires
+            dir@.len() + name@.len() + 2 <= PATH_CAP + FILE_ROOM,
+        ensures
+            r@.len() == dir@.len() + name@.len() + 2,
+            r@.last() == 0,
+    {
         let n = dir.len();
         out[..n].copy_from_slice(dir);
         out[n] = b'/';
@@ -522,17 +1175,64 @@ mod linux {
     }
 
     /// Read `dir/name` into `buf`; `None` when absent.
-    fn read_in(dir: &[u8], name: &[u8], buf: &mut [u8]) -> Option<usize> {
+    fn read_in(dir: &[u8], name: &[u8], buf: &mut [u8]) -> (r: Option<usize>)
+        requires
+            dir@.len() + FILE_ROOM <= PATH_CAP,
+            name@.len() + 2 <= FILE_ROOM,
+        ensures
+            r matches Some(n) ==> n <= old(buf)@.len(),
+            final(buf)@.len() == old(buf)@.len(),
+    {
         let mut p = [0u8; PATH_CAP + FILE_ROOM];
         let path = file_path(&mut p, dir, name);
         read_small_file(path, buf)
     }
 
     /// `dir/name` parsed as a limit file; `None` when absent or malformed.
-    fn read_limit(dir: &[u8], name: &[u8]) -> Option<u64> {
+    fn read_limit(dir: &[u8], name: &[u8]) -> Option<u64>
+        requires
+            dir@.len() + FILE_ROOM <= PATH_CAP,
+            name@.len() + 2 <= FILE_ROOM,
+    {
         let mut buf = [0u8; 64];
         let n = read_in(dir, name, &mut buf)?;
         parse_limit(&buf[..n])
+    }
+
+    /// The first cgroup2 mount point in `/proc/self/mountinfo`, copied into
+    /// `mount`, and its length: 0 when there is none or it is longer than
+    /// [`PATH_CAP`]. The scan stops at the first line whose mount fits
+    /// and leaves it in the scan buffer, where it is parsed again for the
+    /// copy.
+    fn mountinfo_cgroup2(mount: &mut [u8; PATH_CAP]) -> (r: usize)
+        ensures
+            r <= PATH_CAP,
+    {
+        let mut scan = [0u8; SCAN_BUF];
+        let Ok(fd) = sys::open(&PROC_SELF_MOUNTINFO, O_RDONLY) else { return 0 };
+        let found = scan_lines(
+            &mut scan,
+            |b: &mut [u8]| -> (r: Option<usize>)
+                ensures
+                    r matches Some(n) ==> n <= old(b)@.len(),
+                    final(b)@.len() == old(b)@.len(),
+                { sys::read_full(fd, b).ok() },
+            |line: &[u8]| -> bool {
+                match cgroup2_mount_from_line(line) {
+                    Some(m) => m.len() <= PATH_CAP,
+                    None => false,
+                }
+            },
+        );
+        let _ = sys::close(fd);
+        let Some((lo, hi)) = found else { return 0 };
+        match cgroup2_mount_from_line(&scan[lo..hi]) {
+            Some(m) if m.len() <= PATH_CAP => {
+                mount[..m.len()].copy_from_slice(m);
+                m.len()
+            }
+            _ => 0,
+        }
     }
 
     impl Cgroup {
@@ -543,35 +1243,21 @@ mod linux {
                 return Cgroup::untracked(State::Disabled);
             }
             let mut cg = Cgroup::untracked(State::NoUnifiedPath);
+            proof {
+                use_type_invariant(&cg);
+            }
             let mut pathbuf = [0u8; FILE_BUF];
-            let Some(n) = read_small_file(b"/proc/self/cgroup\0", &mut pathbuf) else {
-                return cg;
-            };
-            let Some(path) = cgroup_path(&pathbuf[..n]) else {
-                return cg;
-            };
+            let Some(n) = read_small_file(&PROC_SELF_CGROUP, &mut pathbuf) else { return cg };
+            let Some(path) = cgroup_path(&pathbuf[..n]) else { return cg };
 
             let mut mount = [0u8; PATH_CAP];
-            let mut mount_len = 0usize;
-            let mut scan = [0u8; SCAN_BUF];
-            if let Ok(fd) = sys::open(b"/proc/self/mountinfo\0", O_RDONLY) {
-                scan_lines(
-                    &mut scan,
-                    |b| sys::read_full(fd, b).ok(),
-                    |line| match cgroup2_mount_from_line(line) {
-                        Some(m) if m.len() <= PATH_CAP => {
-                            mount[..m.len()].copy_from_slice(m);
-                            mount_len = m.len();
-                            true
-                        }
-                        _ => false,
-                    },
-                );
-                let _ = sys::close(fd);
-            }
+            let mount_len = mountinfo_cgroup2(&mut mount);
             if mount_len == 0 {
                 cg.state = State::NoMount;
                 return cg;
+            }
+            proof {
+                use_type_invariant(&cg);
             }
             let Some((dir_len, mlen)) = join_dir(&mut cg.dir, &mount[..mount_len], path) else {
                 cg.state = State::PathTooLong;
@@ -598,11 +1284,25 @@ mod linux {
             self.limits_at.store(now, Ordering::Relaxed);
             let (dir, mlen) = (self.dir(), self.mount_len as usize);
             self.limit.store(
-                walk_min(dir, mlen, |d| read_limit(d, b"memory.max")),
+                walk_min(
+                    dir,
+                    mlen,
+                    |d: &[u8]| -> (r: Option<u64>)
+                        requires
+                            d@.len() + FILE_ROOM <= PATH_CAP,
+                        { read_limit(d, b"memory.max") },
+                ),
                 Ordering::Relaxed,
             );
             self.high.store(
-                walk_min(dir, mlen, |d| read_limit(d, b"memory.high")),
+                walk_min(
+                    dir,
+                    mlen,
+                    |d: &[u8]| -> (r: Option<u64>)
+                        requires
+                            d@.len() + FILE_ROOM <= PATH_CAP,
+                        { read_limit(d, b"memory.high") },
+                ),
                 Ordering::Relaxed,
             );
         }
@@ -648,6 +1348,8 @@ mod linux {
             true
         }
     }
+
+    } // verus!
 }
 
 #[cfg(test)]

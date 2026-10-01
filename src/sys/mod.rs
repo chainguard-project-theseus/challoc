@@ -17,6 +17,7 @@ pub mod pac;
 pub mod thp_host;
 pub mod tls;
 pub use errno::Errno;
+use vstd::prelude::*;
 
 mod abort;
 mod nr;
@@ -28,6 +29,8 @@ pub use linux::*;
 // ---- constants -------------------------------------------------------
 // Values are identical on x86_64 and aarch64 (both use the asm-generic
 // definitions for everything below).
+
+verus! {
 
 pub const PROT_NONE: i32 = 0;
 pub const PROT_READ: i32 = 1;
@@ -45,6 +48,7 @@ pub const MAP_FIXED_NOREPLACE: i32 = 0x10_0000;
 
 pub const MADV_DONTNEED: i32 = 4;
 pub const MADV_FREE: i32 = 8;
+
 pub const MADV_HUGEPAGE: i32 = 14;
 pub const MADV_NOHUGEPAGE: i32 = 15;
 pub const MADV_GUARD_INSTALL: i32 = 102;
@@ -76,26 +80,272 @@ const SIGSET_WORDS_BYTES: usize = 8;
 
 pub const STDERR_FILENO: i32 = 2;
 
+} // verus!
+
 // ---- pure helpers shared by the probes and the cgroup parsers ----------
+
+verus! {
 
 /// `yes` or `no`: the value of every boolean key of the feature line.
 pub const fn yn(b: bool) -> &'static str {
     if b { "yes" } else { "no" }
 }
 
+/// An ASCII decimal digit.
+pub open spec fn is_digit(b: u8) -> bool {
+    48 <= b <= 57
+}
+
+/// The number of leading decimal digits of `s`.
+pub open spec fn digit_run(s: Seq<u8>) -> nat
+    decreases s.len(),
+{
+    if s.len() > 0 && is_digit(s[0]) {
+        1 + digit_run(s.drop_first())
+    } else {
+        0
+    }
+}
+
+/// The value of the decimal digits `s`, most significant first.
+pub open spec fn decimal_value(s: Seq<u8>) -> int
+    decreases s.len(),
+{
+    if s.len() == 0 {
+        0
+    } else {
+        decimal_value(s.drop_last()) * 10 + (s.last() - 48)
+    }
+}
+
+/// What [`parse_decimal`] returns: the value of the leading digits of `s`
+/// when there is at least one and it fits a `u64`.
+pub open spec fn parse_decimal_spec(s: Seq<u8>) -> Option<u64> {
+    let k = digit_run(s);
+    if k == 0 {
+        None
+    } else if decimal_value(s.take(k as int)) <= u64::MAX {
+        Some(decimal_value(s.take(k as int)) as u64)
+    } else {
+        None
+    }
+}
+
+/// `k` digits followed by a non-digit or the end: `k` is the digit run.
+pub proof fn lemma_digit_run(s: Seq<u8>, k: int)
+    requires
+        0 <= k <= s.len(),
+        forall|j: int| 0 <= j < k ==> is_digit(#[trigger] s[j]),
+        k == s.len() || !is_digit(s[k]),
+    ensures
+        digit_run(s) == k,
+    decreases k,
+{
+    if k > 0 {
+        lemma_digit_run(s.drop_first(), k - 1);
+    }
+}
+
+/// The value of digits never shrinks as digits are appended.
+pub proof fn lemma_decimal_value_prefix(s: Seq<u8>, i: int, k: int)
+    requires
+        0 <= i <= k <= s.len(),
+        forall|j: int| 0 <= j < s.len() ==> is_digit(#[trigger] s[j]),
+    ensures
+        0 <= decimal_value(s.take(i)) <= decimal_value(s.take(k)),
+    decreases k - i,
+{
+    lemma_decimal_value_nonneg(s.take(i));
+    if i < k {
+        lemma_decimal_value_prefix(s, i + 1, k);
+        assert(s.take(i + 1).drop_last() =~= s.take(i));
+    }
+}
+
+pub proof fn lemma_decimal_value_nonneg(s: Seq<u8>)
+    requires
+        forall|j: int| 0 <= j < s.len() ==> is_digit(#[trigger] s[j]),
+    ensures
+        decimal_value(s) >= 0,
+    decreases s.len(),
+{
+    if s.len() > 0 {
+        lemma_decimal_value_nonneg(s.drop_last());
+    }
+}
+
 /// The leading decimal digits of `bytes` as a `u64`, whatever follows
 /// them: `42 x` and `2097152\n` read 42 and 2097152 (a `memory.events`
 /// value, a sysfs number with its newline). `None` without a digit or on
 /// overflow.
-pub fn parse_decimal(bytes: &[u8]) -> Option<u64> {
-    let digits = bytes.iter().take_while(|b| b.is_ascii_digit()).count();
+// Verus does not support `?` on `Option` here.
+#[allow(clippy::question_mark)]
+pub fn parse_decimal(bytes: &[u8]) -> (r: Option<u64>)
+    ensures
+        r == parse_decimal_spec(bytes@),
+{
+    let mut digits = 0;
+    while digits < bytes.len() && bytes[digits].is_ascii_digit()
+        invariant
+            digits <= bytes@.len(),
+            forall|j: int| 0 <= j < digits ==> is_digit(#[trigger] bytes@[j]),
+        decreases bytes@.len() - digits,
+    {
+        digits += 1;
+    }
+    proof {
+        lemma_digit_run(bytes@, digits as int);
+    }
     if digits == 0 {
         return None;
     }
-    bytes[..digits].iter().try_fold(0u64, |acc, &b| {
-        acc.checked_mul(10)?.checked_add(u64::from(b - b'0'))
-    })
+    let ghost s = bytes@.take(digits as int);
+    let mut acc: u64 = 0;
+    let mut i = 0;
+    while i < digits
+        invariant
+            i <= digits <= bytes@.len(),
+            digits > 0,
+            digit_run(bytes@) == digits,
+            s == bytes@.take(digits as int),
+            forall|j: int| 0 <= j < digits ==> is_digit(#[trigger] bytes@[j]),
+            decimal_value(s.take(i as int)) == acc as int,
+        decreases digits - i,
+    {
+        proof {
+            assert(s.take(i + 1).drop_last() =~= s.take(i as int));
+            assert(s.take(i + 1).last() == bytes@[i as int]);
+            lemma_decimal_value_prefix(s, i + 1, digits as int);
+            assert(s.take(digits as int) =~= s);
+        }
+        let d = (bytes[i] - b'0') as u64;
+        proof {
+            assert(decimal_value(s.take(i + 1)) == acc * 10 + d);
+            assert(decimal_value(s.take(i + 1)) <= decimal_value(s));
+        }
+        acc = match acc.checked_mul(10) {
+            Some(m) => match m.checked_add(d) {
+                Some(v) => v,
+                None => return None,
+            },
+            None => return None,
+        };
+        i += 1;
+    }
+    proof {
+        assert(s.take(digits as int) =~= s);
+    }
+    Some(acc)
 }
+
+/// `a == b` for byte slices.
+pub fn bytes_is(a: &[u8], b: &[u8]) -> (r: bool)
+    ensures
+        r <==> a@ == b@,
+{
+    let r = a == b;
+    proof {
+        if r {
+            assert(a@ =~= b@);
+        }
+    }
+    r
+}
+
+/// The index of the first `b` in `s`, or `s.len()` when there is none.
+pub open spec fn find_byte(s: Seq<u8>, b: u8) -> nat
+    decreases s.len(),
+{
+    if s.len() == 0 || s[0] == b {
+        0
+    } else {
+        1 + find_byte(s.drop_first(), b)
+    }
+}
+
+/// `k` bytes other than `b`, then `b` or the end: `k` is where `b` is.
+pub proof fn lemma_find_byte(s: Seq<u8>, b: u8, k: int)
+    requires
+        0 <= k <= s.len(),
+        forall|j: int| 0 <= j < k ==> #[trigger] s[j] != b,
+        k == s.len() || s[k] == b,
+    ensures
+        find_byte(s, b) == k,
+    decreases k,
+{
+    if k > 0 {
+        lemma_find_byte(s.drop_first(), b, k - 1);
+    }
+}
+
+/// The index of the first `b` in `s` at or after `start`, or `s.len()`.
+pub fn find_from(s: &[u8], start: usize, b: u8) -> (r: usize)
+    requires
+        start <= s@.len(),
+    ensures
+        start <= r <= s@.len(),
+        r - start == find_byte(s@.skip(start as int), b),
+{
+    let mut i = start;
+    while i < s.len() && s[i] != b
+        invariant
+            start <= i <= s@.len(),
+            forall|j: int| start <= j < i ==> #[trigger] s@[j] != b,
+        decreases s@.len() - i,
+    {
+        i += 1;
+    }
+    proof {
+        let t = s@.skip(start as int);
+        assert forall|j: int| 0 <= j < i - start implies #[trigger] t[j] != b by {
+            assert(t[j] == s@[start + j]);
+        }
+        lemma_find_byte(t, b, i - start);
+    }
+    i
+}
+
+/// The length of the first line of `s`, without its newline.
+pub open spec fn line_len(s: Seq<u8>) -> nat {
+    find_byte(s, 10)
+}
+
+/// What follows the first line of `s` and its newline.
+pub open spec fn after_line(s: Seq<u8>) -> Seq<u8> {
+    if line_len(s) < s.len() {
+        s.skip(line_len(s) as int + 1)
+    } else {
+        Seq::empty()
+    }
+}
+
+/// One step of a line scan: the line of `s` that starts at `start` ends at
+/// `end`, and the scan resumes after it.
+pub proof fn lemma_line_step(s: Seq<u8>, start: int, end: int)
+    requires
+        0 <= start < s.len(),
+        start <= end <= s.len(),
+        end - start == line_len(s.skip(start)),
+    ensures
+        s.skip(start).take(end - start) == s.subrange(start, end),
+        end < s.len() ==> after_line(s.skip(start)) == s.skip(end + 1),
+        end == s.len() ==> after_line(s.skip(start)) == Seq::<u8>::empty(),
+{
+    assert(s.skip(start).take(end - start) =~= s.subrange(start, end));
+    if end < s.len() {
+        assert(s.skip(start).skip(end - start + 1) =~= s.skip(end + 1));
+    }
+}
+
+/// A borrowed byte string's contents, if any.
+pub open spec fn opt_view(r: Option<&[u8]>) -> Option<Seq<u8>> {
+    match r {
+        Some(q) => Some(q@),
+        None => None,
+    }
+}
+
+} // verus!
 
 mod linux {
     use super::errno::{Errno, decode};
@@ -105,6 +355,11 @@ mod linux {
         SIGSET_WORDS_BYTES, abort_fmt,
     };
     use super::{nr, raw};
+    #[cfg(verus_only)]
+    use crate::vspec::core_int::popcount;
+    use vstd::prelude::*;
+
+    verus! {
 
     // ---- structs ---------------------------------------------------------
 
@@ -118,10 +373,12 @@ mod linux {
 
     impl Timespec {
         /// Whole nanoseconds since the clock's epoch. Wraps after ~292 years.
-        pub const fn as_nanos(self) -> u64 {
-            (self.sec as u64)
-                .wrapping_mul(1_000_000_000)
-                .wrapping_add(self.nsec as u64)
+        pub const fn as_nanos(self) -> (r: u64)
+            ensures
+                self.sec >= 0 && self.nsec >= 0 && self.sec * 1_000_000_000 + self.nsec <= u64::MAX
+                    ==> r == self.sec * 1_000_000_000 + self.nsec,
+        {
+            (self.sec as u64).wrapping_mul(1_000_000_000).wrapping_add(self.nsec as u64)
         }
     }
 
@@ -207,8 +464,12 @@ mod linux {
         addr: usize,
         len: usize,
         name: &'static [u8],
-    ) -> Result<(), Errno> {
-        debug_assert!(name.last() == Some(&0));
+    ) -> Result<(), Errno>
+        requires
+            name@.len() > 0,
+            name@.last() == 0,
+    {
+        debug_assert!(!name.is_empty() && name[name.len() - 1] == 0);
         // SAFETY: forwarded to the caller's contract.
         decode(unsafe {
             raw::syscall5(
@@ -245,8 +506,15 @@ mod linux {
 
     /// `getrandom(2)`. Returns the number of bytes written, which may be
     /// short; callers that need the full buffer should loop.
+    ///
+    /// Trusted: the kernel writes at most `buf.len()` bytes and says so.
+    #[verifier::external_body]
     #[inline]
-    pub fn getrandom(buf: &mut [u8], flags: u32) -> Result<usize, Errno> {
+    pub fn getrandom(buf: &mut [u8], flags: u32) -> (r: Result<usize, Errno>)
+        ensures
+            r matches Ok(n) ==> n <= old(buf)@.len(),
+            final(buf)@.len() == old(buf)@.len(),
+    {
         // SAFETY: the pointer/length pair describes a live, writable slice.
         decode(unsafe {
             raw::syscall3(
@@ -259,12 +527,19 @@ mod linux {
     }
 
     /// Fill `buf` completely from `getrandom`, retrying short reads and
-    /// `EINTR`. Fails only if the kernel refuses outright.
-    pub fn getrandom_exact(mut buf: &mut [u8]) -> Result<(), Errno> {
-        while !buf.is_empty() {
-            match getrandom(buf, 0) {
+    /// `EINTR`. Fails only if the kernel refuses outright. May spin as long
+    /// as the kernel keeps answering `EINTR`.
+    #[verifier::exec_allows_no_decreases_clause]
+    pub fn getrandom_exact(buf: &mut [u8]) -> Result<(), Errno> {
+        let mut filled = 0;
+        while filled < buf.len()
+            invariant
+                filled <= buf@.len(),
+                buf@.len() == old(buf)@.len(),
+        {
+            match getrandom(&mut buf[filled..], 0) {
                 Ok(0) => return Err(Errno::EIO),
-                Ok(n) => buf = &mut buf[n..],
+                Ok(n) => filled += n,
                 Err(Errno::EINTR) => {}
                 Err(e) => return Err(e),
             }
@@ -306,12 +581,14 @@ mod linux {
     /// # Safety
     /// `uaddr` must be a live, 4-byte-aligned `u32`.
     #[inline]
+    // The closure carries a Verus contract.
+    #[allow(clippy::redundant_closure)]
     pub unsafe fn futex_wait(
         uaddr: *const u32,
         val: u32,
         timeout: Option<&Timespec>,
     ) -> Result<(), Errno> {
-        let ts = timeout.map_or(core::ptr::null(), |t| t as *const Timespec);
+        let ts = timeout.map_or(core::ptr::null(), |t| core::ptr::from_ref(t));
         // SAFETY: forwarded to the caller's contract.
         unsafe {
             futex(
@@ -349,14 +626,10 @@ mod linux {
     /// `clock_gettime(2)`.
     #[inline]
     pub fn clock_gettime(clock: i32) -> Result<Timespec, Errno> {
-        let mut ts = Timespec::default();
+        let mut ts = Timespec { sec: 0, nsec: 0 };
         // SAFETY: `ts` is a live, writable `Timespec` matching the kernel ABI.
         decode(unsafe {
-            raw::syscall2(
-                nr::CLOCK_GETTIME,
-                clock as isize as usize,
-                &mut ts as *mut _ as usize,
-            )
+            raw::syscall2(nr::CLOCK_GETTIME, clock as isize as usize, core::ptr::from_mut(&mut ts) as usize)
         })
         .map(|_| ts)
     }
@@ -377,8 +650,12 @@ mod linux {
 
     /// `openat(AT_FDCWD, path, flags | O_CLOEXEC, 0)`. `path` must be
     /// NUL-terminated.
-    pub fn open(path: &[u8], flags: i32) -> Result<i32, Errno> {
-        debug_assert!(path.last() == Some(&0));
+    pub fn open(path: &[u8], flags: i32) -> Result<i32, Errno>
+        requires
+            path@.len() > 0,
+            path@.last() == 0,
+    {
+        debug_assert!(!path.is_empty() && path[path.len() - 1] == 0);
         // SAFETY: `path` is a live NUL-terminated byte string.
         decode(unsafe {
             raw::syscall4(
@@ -393,8 +670,15 @@ mod linux {
     }
 
     /// `read(2)`.
+    ///
+    /// Trusted: the kernel reads at most `buf.len()` bytes and says so.
+    #[verifier::external_body]
     #[inline]
-    pub fn read(fd: i32, buf: &mut [u8]) -> Result<usize, Errno> {
+    pub fn read(fd: i32, buf: &mut [u8]) -> (r: Result<usize, Errno>)
+        ensures
+            r matches Ok(n) ==> n <= old(buf)@.len(),
+            final(buf)@.len() == old(buf)@.len(),
+    {
         // SAFETY: the pointer/length pair describes a live, writable slice.
         decode(unsafe {
             raw::syscall3(
@@ -407,10 +691,20 @@ mod linux {
     }
 
     /// Read as much of `buf` as the file yields, retrying `EINTR`. Returns
-    /// the number of bytes read; stops at EOF or a full buffer.
-    pub fn read_full(fd: i32, buf: &mut [u8]) -> Result<usize, Errno> {
+    /// the number of bytes read; stops at EOF or a full buffer. May spin as
+    /// long as the kernel keeps answering `EINTR`.
+    #[verifier::exec_allows_no_decreases_clause]
+    pub fn read_full(fd: i32, buf: &mut [u8]) -> (r: Result<usize, Errno>)
+        ensures
+            r matches Ok(n) ==> n <= old(buf)@.len(),
+            final(buf)@.len() == old(buf)@.len(),
+    {
         let mut filled = 0;
-        while filled < buf.len() {
+        while filled < buf.len()
+            invariant
+                filled <= buf@.len(),
+                buf@.len() == old(buf)@.len(),
+        {
             match read(fd, &mut buf[filled..]) {
                 Ok(0) => break,
                 Ok(n) => filled += n,
@@ -425,7 +719,14 @@ mod linux {
     /// `open`, [`read_full`], `close`. The byte count, or `None` when the
     /// file cannot be opened (absent, or the controller is not here) or
     /// read. A file longer than `buf` is cut at `buf.len()`.
-    pub fn read_small_file(path: &[u8], buf: &mut [u8]) -> Option<usize> {
+    pub fn read_small_file(path: &[u8], buf: &mut [u8]) -> (r: Option<usize>)
+        requires
+            path@.len() > 0,
+            path@.last() == 0,
+        ensures
+            r matches Some(n) ==> n <= old(buf)@.len(),
+            final(buf)@.len() == old(buf)@.len(),
+    {
         let fd = open(path, super::O_RDONLY).ok()?;
         let r = read_full(fd, buf).ok();
         let _ = close(fd);
@@ -433,8 +734,14 @@ mod linux {
     }
 
     /// `write(2)`.
+    ///
+    /// Trusted: the kernel writes at most `buf.len()` bytes and says so.
+    #[verifier::external_body]
     #[inline]
-    pub fn write(fd: i32, buf: &[u8]) -> Result<usize, Errno> {
+    pub fn write(fd: i32, buf: &[u8]) -> (r: Result<usize, Errno>)
+        ensures
+            r matches Ok(n) ==> n <= buf@.len(),
+    {
         // SAFETY: the pointer/length pair describes a live slice.
         decode(unsafe {
             raw::syscall3(
@@ -448,12 +755,17 @@ mod linux {
 
     /// Write all of `buf`, retrying short writes and `EINTR`. Any other error
     /// is swallowed: this is used on the abort path, where there is nothing
-    /// better to do.
-    pub fn write_all(fd: i32, mut buf: &[u8]) {
-        while !buf.is_empty() {
-            match write(fd, buf) {
+    /// better to do. May spin as long as the kernel keeps answering `EINTR`.
+    #[verifier::exec_allows_no_decreases_clause]
+    pub fn write_all(fd: i32, buf: &[u8]) {
+        let mut done = 0;
+        while done < buf.len()
+            invariant
+                done <= buf@.len(),
+        {
+            match write(fd, &buf[done..]) {
                 Ok(0) => return,
-                Ok(n) => buf = &buf[n..],
+                Ok(n) => done += n,
                 Err(Errno::EINTR) => {}
                 Err(_) => return,
             }
@@ -481,21 +793,60 @@ mod linux {
         unsafe { raw::syscall0(nr::GETTID) as i32 }
     }
 
+    /// Every word of `s` has at most 64 bits set.
+    proof fn lemma_popcount_bound(x: u64, k: nat)
+        requires
+            x < vstd::arithmetic::power2::pow2(k),
+        ensures
+            popcount(x) <= k,
+        decreases k,
+    {
+        vstd::arithmetic::power2::lemma_pow2_pos(k);
+        if x != 0 {
+            assert(k > 0) by {
+                if k == 0 {
+                    vstd::arithmetic::power2::lemma2_to64();
+                }
+            }
+            vstd::arithmetic::power2::lemma_pow2_unfold(k);
+            lemma_popcount_bound(x / 2, (k - 1) as nat);
+        }
+    }
+
     /// CPUs the calling thread may run on: the bits set in the affinity
     /// mask `sched_getaffinity(0)` returns, so `taskset` and cgroup
     /// cpusets count, not the machine (jemalloc's `malloc_ncpus`). The
     /// kernel writes its own mask width and refuses a buffer narrower than
     /// it with `EINVAL`; 8192 CPUs covers every supported kernel. 1 when
     /// the call fails (a seccomp filter, or a wider mask), never 0.
-    pub fn ncpus() -> u32 {
+    pub fn ncpus() -> (r: u32)
+        ensures
+            1 <= r <= 8192,
+    {
         let mut mask = [0u64; 128];
-        let len = core::mem::size_of_val(&mask);
+        let len = 128 * 8;
         // SAFETY: `mask` is writable for `len` bytes and outlives the call.
         let r = unsafe { raw::syscall3(nr::SCHED_GETAFFINITY, 0, len, mask.as_mut_ptr() as usize) };
         match decode(r) {
             Ok(written) => {
                 let words = written.min(len).div_ceil(8);
-                let bits: u32 = mask[..words].iter().map(|w| w.count_ones()).sum();
+                let mut bits: u32 = 0;
+                let mut i = 0;
+                while i < words
+                    invariant
+                        words <= 128,
+                        i <= words,
+                        bits <= 64 * i,
+                    decreases words - i,
+                {
+                    proof {
+                        vstd::arithmetic::power2::lemma2_to64();
+                        vstd::arithmetic::power2::lemma2_to64_rest();
+                        lemma_popcount_bound(mask[i as int], 64);
+                    }
+                    bits += mask[i].count_ones();
+                    i += 1;
+                }
                 bits.max(1)
             }
             Err(_) => 1,
@@ -513,13 +864,13 @@ mod linux {
             raw::syscall4(
                 nr::RT_SIGPROCMASK,
                 SIG_BLOCK as usize,
-                &all as *const u64 as usize,
-                &mut old as *mut u64 as usize,
+                core::ptr::from_ref(&all) as usize,
+                core::ptr::from_mut(&mut old) as usize,
                 SIGSET_WORDS_BYTES,
             )
         };
         if let Err(e) = decode(r) {
-            abort_fmt(format_args!("rt_sigprocmask(SIG_BLOCK) failed: {}", e));
+            sigprocmask_failed("SIG_BLOCK", e);
         }
         old
     }
@@ -532,14 +883,23 @@ mod linux {
             raw::syscall4(
                 nr::RT_SIGPROCMASK,
                 SIG_SETMASK as usize,
-                &mask as *const u64 as usize,
+                core::ptr::from_ref(&mask) as usize,
                 0,
                 SIGSET_WORDS_BYTES,
             )
         };
         if let Err(e) = decode(r) {
-            abort_fmt(format_args!("rt_sigprocmask(SIG_SETMASK) failed: {}", e));
+            sigprocmask_failed("SIG_SETMASK", e);
         }
+    }
+
+    /// Abort on a failed `rt_sigprocmask(how)`: formatting is outside what
+    /// Verus checks.
+    #[verifier::external_body]
+    #[cold]
+    #[inline(never)]
+    fn sigprocmask_failed(how: &str, e: Errno) -> ! {
+        abort_fmt(format_args!("rt_sigprocmask({how}) failed: {e}"))
     }
 
     /// `exit_group(2)`: terminate every thread in the process.
@@ -554,6 +914,7 @@ mod linux {
 
     /// Architecture trap instruction, for the impossible case where the
     /// kernel returns from a terminating syscall.
+    #[verifier::external_body]
     #[inline(always)]
     pub fn trap() -> ! {
         // SAFETY: both instructions raise a fatal signal and nothing else.
@@ -564,6 +925,8 @@ mod linux {
             core::arch::asm!("brk #0x1", options(noreturn, nostack));
         }
     }
+
+    } // verus!
 }
 
 #[cfg(test)]

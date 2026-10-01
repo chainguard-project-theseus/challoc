@@ -18,6 +18,9 @@
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU32, Ordering};
+use vstd::prelude::*;
+
+verus! {
 
 const UNLOCKED: u32 = 0;
 const LOCKED: u32 = 1;
@@ -44,9 +47,7 @@ impl Default for RawLock {
 
 impl RawLock {
     pub const fn new() -> RawLock {
-        RawLock {
-            state: AtomicU32::new(UNLOCKED),
-        }
+        RawLock { state: AtomicU32::new(UNLOCKED) }
     }
 
     /// The bare CAS from `UNLOCKED` to `LOCKED`.
@@ -72,7 +73,10 @@ impl RawLock {
         }
     }
 
+    /// Termination is not claimed: the wait ends when another thread
+    /// releases the lock.
     #[cold]
+    #[verifier::exec_allows_no_decreases_clause]
     fn lock_slow(&self) {
         for _ in 0..SPINS {
             if self.state.load(Ordering::Relaxed) == UNLOCKED && self.try_acquire() {
@@ -105,6 +109,7 @@ impl RawLock {
     }
 }
 
+// The futex calls; neither returns anything the callers use.
 #[inline]
 fn wait(state: &AtomicU32, val: u32) {
     // SAFETY: `state` is a live, aligned `u32` for the duration of the call.
@@ -118,11 +123,68 @@ fn wake(state: &AtomicU32) {
     let _ = unsafe { crate::sys::futex_wake(state.as_ptr(), 1) };
 }
 
+} // verus!
+
+verus! {
+
 /// A [`RawLock`] guarding a value.
+#[verifier::reject_recursive_types(T)]
 pub struct Lock<T> {
     raw: RawLock,
     value: UnsafeCell<T>,
+    /// Ghost: the value the lock was created with ([`lock_init`]).
+    #[allow(dead_code)]
+    init: Ghost<T>,
 }
+
+/// The invariant the value behind every `Lock<T>` keeps while unlocked.
+///
+/// Verified code that takes a lock relies on it: [`Lock::new`] requires it
+/// of the initial value, and [`Lock::lock`] hands the value out with it.
+/// Nothing checks that a guard is dropped with the invariant restored, so
+/// this is an assumption about every holder of the lock: a verified holder
+/// ends with the value satisfying it, through the postcondition of the
+/// last call that changes the value or an explicit `assert` before the
+/// guard goes out of scope; an unverified one is trusted. A verified
+/// holder must not move a tracked permission out of the value and keep it
+/// past the guard: the next `lock` would hand out the invariant's
+/// permission again. `lock_inv` is uninterpreted; the owner of each locked
+/// type states what it means for that type, and lists its unverified
+/// holders (`vspec/meta.rs`, `vspec/huge.rs`, `class/mod.rs`). The
+/// assumption enters at [`axiom_acquired`], and at [`Lock::get_unlocked`]
+/// for a holder of the raw lock.
+pub uninterp spec fn lock_inv<T>(v: T) -> bool;
+
+/// The value a lock was created with.
+pub closed spec fn lock_init<T>(l: Lock<T>) -> T {
+    l.init@
+}
+
+/// What every value a lock holds keeps from the value it was created
+/// with (its ghost constants, say); uninterpreted like [`lock_inv`], and
+/// stated per type by the type's owner.
+pub uninterp spec fn lock_frame<T>(init: T, v: T) -> bool;
+
+/// The lock invariant's assumption where it enters for a guard (the other
+/// entry is [`Lock::get_unlocked`], for a holder of the raw lock): the
+/// guard of a lock this thread has just acquired holds a value that
+/// satisfies [`lock_inv`] (every earlier holder restored it) and keeps
+/// [`lock_frame`] of the value the lock was created with. Private, and
+/// used only by [`Lock::lock`] and [`Lock::try_lock`] right after the
+/// acquire, on the guard they just built: of a guard whose value has
+/// since been changed it would be false, and nothing but that discipline
+/// stops such a call.
+axiom fn axiom_acquired<T>(l: Lock<T>, g: LockGuard<'_, T>)
+    requires
+        *g.lock == l,
+    ensures
+        lock_inv(g@),
+        lock_frame(lock_init(l), g@),
+;
+
+} // verus!
+
+verus! {
 
 /// Alignment that keeps a lock (or any hot atomic) off the cache line of
 /// read-mostly data next to it. 128 bytes covers Apple silicon's 128-byte
@@ -135,49 +197,74 @@ pub const PAD_ALIGN: usize = 128;
 #[repr(align(128))]
 pub struct Padded<T>(pub T);
 
-const _: () = assert!(core::mem::align_of::<Padded<u8>>() == PAD_ALIGN);
-
 impl<T> Deref for Padded<T> {
     type Target = T;
     #[inline(always)]
-    fn deref(&self) -> &T {
+    fn deref(&self) -> (r: &T)
+        ensures *r == self.0,
+    {
         &self.0
     }
 }
 
 impl<T> DerefMut for Padded<T> {
     #[inline(always)]
-    fn deref_mut(&mut self) -> &mut T {
+    fn deref_mut(&mut self) -> (r: &mut T)
+        ensures *r == old(self).0, final(self).0 == *final(r),
+    {
         &mut self.0
     }
 }
+
+} // verus!
+
+const _: () = assert!(core::mem::align_of::<Padded<u8>>() == PAD_ALIGN);
 
 // SAFETY: access to `value` is serialised by `raw`, so sharing the lock
 // across threads is sound whenever the value could be moved between them.
 unsafe impl<T: Send> Sync for Lock<T> {}
 unsafe impl<T: Send> Send for Lock<T> {}
 
+verus! {
+
 impl<T> Lock<T> {
-    pub const fn new(value: T) -> Lock<T> {
-        Lock {
-            raw: RawLock::new(),
-            value: UnsafeCell::new(value),
-        }
+    pub const fn new(value: T) -> (l: Lock<T>)
+        requires
+            lock_inv(value),
+        ensures
+            lock_init(l) == value,
+    {
+        Lock { raw: RawLock::new(), value: UnsafeCell::new(value), init: Ghost(value) }
     }
 
     /// Acquire and return a guard that releases on drop.
     #[inline]
-    pub fn lock(&self) -> LockGuard<'_, T> {
+    pub fn lock(&self) -> (g: LockGuard<'_, T>)
+        ensures
+            lock_inv(g@),
+            lock_frame(lock_init(*self), g@),
+    {
         self.raw.lock();
-        LockGuard { lock: self }
+        let g = LockGuard { lock: self };
+        proof {
+            axiom_acquired(*self, g);
+        }
+        g
     }
 
     /// Acquire without blocking.
     #[inline]
     #[cfg(test)]
-    pub fn try_lock(&self) -> Option<LockGuard<'_, T>> {
+    pub fn try_lock(&self) -> (r: Option<LockGuard<'_, T>>)
+        ensures
+            r matches Some(g) ==> lock_inv(g@) && lock_frame(lock_init(*self), g@),
+    {
         if self.raw.try_lock() {
-            Some(LockGuard { lock: self })
+            let g = LockGuard { lock: self };
+            proof {
+                axiom_acquired(*self, g);
+            }
+            Some(g)
         } else {
             None
         }
@@ -193,24 +280,52 @@ impl<T> Lock<T> {
     /// Access the value without locking.
     ///
     /// # Safety
-    /// The caller must guarantee no other thread can touch the value: it
-    /// holds the raw lock, or the process is single-threaded (a fork child).
+    /// The caller must hold the raw lock, taken through [`Lock::raw`],
+    /// with no guard alive, so no other thread can touch the value. In a
+    /// fork child that holds when the forking thread took the raw lock in
+    /// the prepare handler; a fork child alone is not enough, since the
+    /// parent's holder may have been mid-update.
+    ///
+    /// Trusted, as [`axiom_acquired`] is for [`Lock::lock`]: under that
+    /// contract the value is one a holder left, so it satisfies
+    /// [`lock_inv`] and keeps [`lock_frame`]. The caller is a holder like
+    /// any other and must leave the invariant true; a verified caller ends
+    /// with an explicit `assert(lock_inv(*r))`.
     #[inline]
-    pub unsafe fn get_unlocked(&self) -> &mut T {
+    #[verifier::external_body]
+    pub unsafe fn get_unlocked(&self) -> (r: &mut T)
+        ensures
+            lock_inv(*r),
+            lock_frame(lock_init(*self), *r),
+    {
         // SAFETY: exclusivity is the caller's promise.
         unsafe { &mut *self.value.get() }
     }
 }
 
 /// Exclusive access to a [`Lock`]'s value; unlocks on drop.
+#[verifier::reject_recursive_types(T)]
 pub struct LockGuard<'a, T> {
     lock: &'a Lock<T>,
 }
 
+impl<'a, T> View for LockGuard<'a, T> {
+    type V = T;
+
+    /// The guarded value.
+    uninterp spec fn view(&self) -> T;
+}
+
+// The value is behind the `UnsafeCell`, which Verus does not model, so
+// the two accessors are trusted to return the guarded value.
 impl<T> Deref for LockGuard<'_, T> {
     type Target = T;
     #[inline]
-    fn deref(&self) -> &T {
+    #[verifier::external_body]
+    fn deref(&self) -> (r: &T)
+        ensures
+            *r == self@,
+    {
         // SAFETY: the guard exists only while the raw lock is held.
         unsafe { &*self.lock.value.get() }
     }
@@ -218,19 +333,34 @@ impl<T> Deref for LockGuard<'_, T> {
 
 impl<T> DerefMut for LockGuard<'_, T> {
     #[inline]
-    fn deref_mut(&mut self) -> &mut T {
+    #[verifier::external_body]
+    fn deref_mut(&mut self) -> (r: &mut T)
+        ensures
+            *r == old(self)@,
+            *final(r) == final(self)@,
+    {
         // SAFETY: the guard exists only while the raw lock is held, and
         // `&mut self` makes this the only reference derived from it.
         unsafe { &mut *self.lock.value.get() }
     }
 }
 
+// Trusted: Verus wants a destructor that opens no invariant and cannot
+// unwind, and `RawLock::unlock` is not marked either way. The body is the
+// release, and claims nothing; its `no_unwind` rests on the
+// `panic = "abort"` profiles (test builds unwind).
 impl<T> Drop for LockGuard<'_, T> {
     #[inline]
-    fn drop(&mut self) {
+    #[verifier::external_body]
+    fn drop(&mut self)
+        opens_invariants none
+        no_unwind
+    {
         self.lock.raw.unlock();
     }
 }
+
+} // verus!
 
 #[cfg(test)]
 mod tests {

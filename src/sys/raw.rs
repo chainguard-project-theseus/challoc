@@ -4,11 +4,18 @@
 //! These never touch libc, so they cannot disturb `errno`, which matters for
 //! `free`. The `asm!` blocks deliberately omit `nomem`/`readonly`: a syscall
 //! may read or write any memory the arguments point at.
+//!
+//! These are the trusted base of the verified wrappers in `sys`: each is
+//! `external_body` and specified as returning some word, nothing more.
 
 #[cfg(target_arch = "x86_64")]
 mod imp {
     use core::arch::asm;
+    use vstd::prelude::*;
 
+    verus! {
+
+    #[verifier::external_body]
     #[inline(always)]
     pub unsafe fn syscall0(nr: usize) -> usize {
         let ret: usize;
@@ -20,6 +27,7 @@ mod imp {
         ret
     }
 
+    #[verifier::external_body]
     #[inline(always)]
     pub unsafe fn syscall1(nr: usize, a0: usize) -> usize {
         let ret: usize;
@@ -31,6 +39,7 @@ mod imp {
         ret
     }
 
+    #[verifier::external_body]
     #[inline(always)]
     pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize {
         let ret: usize;
@@ -42,6 +51,7 @@ mod imp {
         ret
     }
 
+    #[verifier::external_body]
     #[inline(always)]
     pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize {
         let ret: usize;
@@ -53,6 +63,7 @@ mod imp {
         ret
     }
 
+    #[verifier::external_body]
     #[inline(always)]
     pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> usize {
         let ret: usize;
@@ -65,6 +76,7 @@ mod imp {
         ret
     }
 
+    #[verifier::external_body]
     #[inline(always)]
     pub unsafe fn syscall5(
         nr: usize,
@@ -84,6 +96,7 @@ mod imp {
         ret
     }
 
+    #[verifier::external_body]
     #[inline(always)]
     pub unsafe fn syscall6(
         nr: usize,
@@ -103,12 +116,18 @@ mod imp {
         }
         ret
     }
+
+    } // verus!
 }
 
 #[cfg(target_arch = "aarch64")]
 mod imp {
     use core::arch::asm;
+    use vstd::prelude::*;
 
+    verus! {
+
+    #[verifier::external_body]
     #[inline(always)]
     pub unsafe fn syscall0(nr: usize) -> usize {
         let ret: usize;
@@ -119,6 +138,7 @@ mod imp {
         ret
     }
 
+    #[verifier::external_body]
     #[inline(always)]
     pub unsafe fn syscall1(nr: usize, a0: usize) -> usize {
         let ret: usize;
@@ -129,6 +149,7 @@ mod imp {
         ret
     }
 
+    #[verifier::external_body]
     #[inline(always)]
     pub unsafe fn syscall2(nr: usize, a0: usize, a1: usize) -> usize {
         let ret: usize;
@@ -140,6 +161,7 @@ mod imp {
         ret
     }
 
+    #[verifier::external_body]
     #[inline(always)]
     pub unsafe fn syscall3(nr: usize, a0: usize, a1: usize, a2: usize) -> usize {
         let ret: usize;
@@ -151,6 +173,7 @@ mod imp {
         ret
     }
 
+    #[verifier::external_body]
     #[inline(always)]
     pub unsafe fn syscall4(nr: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> usize {
         let ret: usize;
@@ -162,6 +185,7 @@ mod imp {
         ret
     }
 
+    #[verifier::external_body]
     #[inline(always)]
     pub unsafe fn syscall5(
         nr: usize,
@@ -180,6 +204,7 @@ mod imp {
         ret
     }
 
+    #[verifier::external_body]
     #[inline(always)]
     pub unsafe fn syscall6(
         nr: usize,
@@ -198,6 +223,8 @@ mod imp {
         }
         ret
     }
+
+    } // verus!
 }
 
 pub use imp::*;
