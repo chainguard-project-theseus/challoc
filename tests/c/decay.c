@@ -19,6 +19,27 @@
  *               dirty_decay_ms:200         with nobody touching the
  *                                          allocator, and a fork child has
  *                                          no thread but can still purge
+ *   demand      dirty_decay_ms:200,        8 MiB slab bursts every 150 ms:
+ *               hpa_peak_demand_window_ms: from the third burst on the
+ *               4000                       freed slabs are kept between
+ *                                          bursts (few minor faults, none
+ *                                          from the fifth);
+ *                                          idle, they stay past the curve's
+ *                                          window and go once the demand
+ *                                          window passes the last burst
+ *   demand-off  dirty_decay_ms:200         the same bursts without the
+ *                                          window: the curve purges most of
+ *                                          each burst before the next, which
+ *                                          faults it back in
+ *   hugedemand  hpa_peak_demand_window_ms: a 100 MiB run (above
+ *               4000                       huge_retain_max) freed and
+ *                                          allocated again: purged at its
+ *                                          first free, kept from the second,
+ *                                          so no faults from the third
+ *                                          iteration on; a one-off 192 MiB
+ *                                          run is purged at free
+ *   hugedemand-off (defaults)              every iteration is purged at
+ *                                          free and faults again
  *
  * RSS comes from /proc/self/statm. The freed working set is ~48 MiB (32 MiB
  * of 1 KiB blocks, 16 MiB of huge runs) so a purge is unmistakable next to
@@ -28,6 +49,7 @@
 
 #include <dirent.h>
 #include <limits.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <time.h>
 
@@ -290,9 +312,127 @@ static void mode_background(void)
     CHECK(tasks2 == 2 && bg, "parent lost its background thread: %d tasks (bg %d)", tasks2, bg);
 }
 
+static long minflt(void)
+{
+    struct rusage r;
+    REQUIRE(getrusage(RUSAGE_SELF, &r) == 0, "getrusage: %s", strerror(errno));
+    return r.ru_minflt;
+}
+
+/* Write every 4 KiB of [p, p + n) through a volatile pointer: a memset
+ * right before free is a dead store the compiler may drop. */
+static void touch(void *p, size_t n)
+{
+    volatile unsigned char *c = p;
+    for (size_t i = 0; i < n; i += 4096)
+        c[i] = 0x5a;
+}
+
+enum { BURSTS = 8, BURST_N = 8192, BURST_SIZE = 1024, BURST_GAP_MS = 150 };
+
+/* One 8 MiB burst of 1 KiB blocks, touched and freed, then a tick so the
+ * walks see the fall. Returns the minor faults it took. */
+static long burst(void)
+{
+    static void *blocks[BURST_N];
+    long f0 = minflt();
+    for (int i = 0; i < BURST_N; i++) {
+        blocks[i] = malloc(BURST_SIZE);
+        REQUIRE(blocks[i] != NULL, "malloc(%d) #%d", BURST_SIZE, i);
+        touch(blocks[i], BURST_SIZE);
+    }
+    for (int i = 0; i < BURST_N; i++)
+        free(blocks[i]);
+    tick();
+    return minflt() - f0;
+}
+
+/* The demand floor for slabs (design 8): recurring bursts are kept between
+ * bursts once the second has shown the level recurs; without the window
+ * the curve purges each burst before the next. */
+static void mode_demand(int on)
+{
+    long f[BURSTS];
+    for (int i = 0; i < BURSTS; i++) {
+        if (i > 0)
+            sleep_ms(BURST_GAP_MS);
+        f[i] = burst();
+        printf("demand%s burst %d: %ld minor faults\n", on ? "" : "-off", i, f[i]);
+    }
+    CHECK(f[0] >= 256, "the first burst took only %ld faults", f[0]);
+    /* The level is the second-largest sampled peak, so the third and
+     * fourth bursts may still refault the few slabs by which their peak
+     * exceeds an earlier one; from the fifth on, nothing. */
+    long later = 0;
+    for (int i = 2; i < BURSTS; i++) {
+        later += f[i];
+        if (on && i >= 4)
+            CHECK(f[i] * 8 <= f[0], "burst %d took %ld faults (first %ld): not kept", i, f[i], f[0]);
+        if (!on)
+            CHECK(f[i] * 4 >= f[0], "burst %d took %ld faults (first %ld) without a window", i, f[i], f[0]);
+    }
+    if (on)
+        CHECK(later * 2 <= f[0], "bursts 2.. took %ld faults (first %ld): not kept", later, f[0]);
+    if (!on)
+        return;
+    /* Idle with the slow path ticking: kept well past the curve's 200 ms,
+     * released within the 4 s window, an epoch and a hold. */
+    size_t kept = rss_bytes();
+    long t0 = now_ms(), released = -1;
+    size_t at1s = 0;
+    while (now_ms() - t0 < 7000) {
+        sleep_ms(100);
+        tick();
+        size_t r = rss_bytes();
+        if (!at1s && now_ms() - t0 >= 1000)
+            at1s = r;
+        if (drop(kept, r) >= 6 * MIB) {
+            released = now_ms() - t0;
+            break;
+        }
+    }
+    printf("demand idle: rss %zu MiB kept, %zu MiB at 1 s, released after %ld ms\n", kept / MIB, at1s / MIB, released);
+    CHECK(at1s != 0 && drop(kept, at1s) < 2 * MIB, "the floor released %zu MiB within 1 s", drop(kept, at1s) / MIB);
+    CHECK(released >= 0, "not released within 7 s of idle");
+}
+
+/* The huge tier's recurrence test (design 7): a run above huge_retain_max
+ * (64 MiB) reallocated every iteration stays resident from its second
+ * free on; a one-off larger run is still purged at free. */
+static void mode_hugedemand(int on)
+{
+    enum { ITERS = 5 };
+    const size_t big = 100 * MIB, oneoff = 192 * MIB;
+    long f[ITERS];
+    for (int i = 0; i < ITERS; i++) {
+        long f0 = minflt();
+        unsigned char *p = malloc(big);
+        REQUIRE(p != NULL, "malloc(100 MiB) #%d", i);
+        touch(p, big);
+        free(p);
+        f[i] = minflt() - f0;
+        printf("hugedemand%s iteration %d: %ld minor faults\n", on ? "" : "-off", i, f[i]);
+    }
+    CHECK(f[0] >= 40, "the first iteration took only %ld faults", f[0]);
+    for (int i = 2; i < ITERS; i++) {
+        if (on)
+            CHECK(f[i] * 10 <= f[0], "iteration %d took %ld faults (first %ld): not kept", i, f[i], f[0]);
+        else
+            CHECK(f[i] * 2 >= f[0], "iteration %d took %ld faults (first %ld) without a window", i, f[i], f[0]);
+    }
+    unsigned char *q = malloc(oneoff);
+    REQUIRE(q != NULL, "malloc(192 MiB)");
+    touch(q, oneoff);
+    size_t full = rss_bytes();
+    free(q);
+    size_t after = rss_bytes();
+    report("hugedemand one-off", full, after);
+    CHECK(drop(full, after) >= oneoff - 16 * MIB, "the one-off run released only %zu MiB at free", drop(full, after) / MIB);
+}
+
 int main(int argc, char **argv)
 {
-    REQUIRE(argc == 2, "usage: decay <trim|decay|curve|never|background>");
+    REQUIRE(argc == 2, "usage: decay <trim|decay|curve|never|background|demand|demand-off|hugedemand|hugedemand-off>");
     printf("decay: start %s\n", argv[1]);
     fflush(stdout);
     require_challoc();
@@ -306,6 +446,14 @@ int main(int argc, char **argv)
         mode_never();
     else if (strcmp(argv[1], "background") == 0)
         mode_background();
+    else if (strcmp(argv[1], "demand") == 0)
+        mode_demand(1);
+    else if (strcmp(argv[1], "demand-off") == 0)
+        mode_demand(0);
+    else if (strcmp(argv[1], "hugedemand") == 0)
+        mode_hugedemand(1);
+    else if (strcmp(argv[1], "hugedemand-off") == 0)
+        mode_hugedemand(0);
     else
         REQUIRE(0, "unknown mode %s", argv[1]);
     return finish("decay");

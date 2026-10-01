@@ -159,7 +159,8 @@ test-cgroup-limit: image ## the cgroup-reading tests under --memory=512m (in `ma
 # cgroup_churn.c allocates 400 MiB, frees it and idles under --memory=512m;
 # RSS must be under 100 MiB within 2 s with the policy on (`purge`) and
 # must not be with MALLOC_CONF=cgroup:false (`keep`, the control); the same
-# at --memory=256m with the sizes scaled to the limit (200 MiB, 50 MiB).
+# at --memory=256m with the sizes scaled to the limit (200 MiB, 50 MiB);
+# and the 512m purge again with the demand window on (`challoc-demand`).
 # test-cgroup-oscillate (OSC_SECS, default 300 s, plus 300 s more with
 # CONTROL=1: the same run under cgroup:false, recorded, not a criterion):
 # tests/c/cgroup_oscillate.c swings between 200 and 480 MiB live in 512 MiB
@@ -172,6 +173,7 @@ test-cgroup-churn: image ## the 400 MiB churn under --memory=512m and 256m, poli
 	$(call cgroup_run,512m,churn challoc-off keep 400 100)
 	$(call cgroup_run,256m,churn challoc purge 200 50)
 	$(call cgroup_run,256m,churn challoc-off keep 200 50)
+	$(call cgroup_run,512m,churn challoc-demand purge 400 100)
 
 test-cgroup-oscillate: image ## opt-in: 200..480 MiB live in 512 MiB for OSC_SECS (300) s; CONTROL=1 adds the cgroup:false run
 	$(DOCKER_RUN) cargo build --release $(FEATURES)
@@ -187,11 +189,13 @@ endif
 # memory.stat pglazyfree grows) and the pages must be reclaimable (a 380 MiB
 # set of a fresh class fits, pglazyfreed rises); with MALLOC_CONF=
 # lazy_band:false (`eager`, the control) the same run purges with
-# MADV_DONTNEED and RSS falls under a quarter of the churn within 2 s.
+# MADV_DONTNEED and RSS falls under a quarter of the churn within 2 s; the
+# lazy run again with the demand window on (`challoc-demand`).
 test-cgroup-lazy: image ## the two-advice purge under --memory=512m at ~50% usage and its lazy_band:false control (in `make test`)
 	$(DOCKER_RUN) cargo build --release $(FEATURES)
 	$(call cgroup_run,512m,lazy challoc lazy 200)
 	$(call cgroup_run,512m,lazy challoc-eager eager 200)
+	$(call cgroup_run,512m,lazy challoc-demand lazy 200)
 
 test-cgroup: test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate ## the three cgroup tests above
 

@@ -12,6 +12,9 @@
 #           challoc-off   the same with MALLOC_CONF=cgroup:false (the control)
 #           challoc-eager the same with MALLOC_CONF=lazy_band:false (the two-advice
 #                         purge's control: MADV_DONTNEED in every band)
+#           challoc-demand the same with the demand window on
+#                         (MALLOC_CONF=hpa_peak_demand_window_ms:120000): the
+#                         policy's criteria must hold with it
 #           jemalloc      Wolfi's /usr/lib/libjemalloc.so.2 (5.3.1)
 #           mimalloc      target/bench-bin/libmimalloc.so (bench/build.sh)
 #           tcmalloc      Wolfi's /usr/lib/libtcmalloc_minimal.so.4 (gperftools)
@@ -62,6 +65,7 @@ case $alloc in
   challoc)     preload=$ROOT/target/release/libchalloc.so ;;
   challoc-off) preload=$ROOT/target/release/libchalloc.so; conf=cgroup:false,abort_conf:true ;;
   challoc-eager) preload=$ROOT/target/release/libchalloc.so; conf=lazy_band:false,abort_conf:true ;;
+  challoc-demand) preload=$ROOT/target/release/libchalloc.so; conf=hpa_peak_demand_window_ms:120000,abort_conf:true ;;
   jemalloc)    preload=/usr/lib/libjemalloc.so.2; extra=--any-allocator ;;
   mimalloc)    preload=$ROOT/target/bench-bin/libmimalloc.so; extra=--any-allocator ;;
   tcmalloc)    preload=/usr/lib/libtcmalloc_minimal.so.4; extra=--any-allocator ;;

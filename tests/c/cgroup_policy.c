@@ -26,7 +26,17 @@
  *               cgroup has processes) is a pass with a "skip:" line.
  *   high-child  Inside that cgroup: allocate past `memory.high`, tick, and
  *               see `stats.cgroup.full_purges` become 1.
+ *   demand      The demand window (`hpa_peak_demand_window_ms`, issue
+ *               #25) in the scaled band: under a limit L the program fills
+ *               the cgroup so that a 100 MiB run brings it to 80% of L,
+ *               then frees and reallocates that run; above 70% the policy
+ *               turns the demand floor off, so every free purges the run
+ *               (RSS drops by about 100 MiB at once) and every iteration
+ *               faults it back in, as with the window off. Without a
+ *               limit it is a pass with a "skip:" line (the unlimited
+ *               case is tests/c/decay.c hugedemand).
  */
+#include <sys/resource.h>
 #include "common.h"
 #include <fcntl.h>
 #include <stdbool.h>
@@ -452,6 +462,61 @@ static void mode_high_child(void)
     release_all();
 }
 
+static long minflt(void)
+{
+    struct rusage r;
+    REQUIRE(getrusage(RUSAGE_SELF, &r) == 0, "getrusage: %s", strerror(errno));
+    return r.ru_minflt;
+}
+
+static void mode_demand(void)
+{
+    if (!has_cgroup2()) {
+        skip_note("cgroup_policy/demand", "no cgroup2");
+        return;
+    }
+    size_t limit = get_size("stats.cgroup.limit");
+    size_t high = get_size("stats.cgroup.high");
+    size_t l = limit < high ? limit : high;
+    if (l == SIZE_MAX) {
+        skip_note("cgroup_policy/demand", "no cgroup limit, the scaled band not exercised");
+        return;
+    }
+    const size_t big = 100 * MIB;
+    long base = base_decay_ms();
+    size_t mine = fill_to(l * 80 / 100 - big, l * 70 / 100);
+    printf("demand: filled %zu MiB, memory.current %zu MiB of %zu MiB\n", mine / MIB, kernel_current() / MIB, l / MIB);
+    enum { ITERS = 4 };
+    long f[ITERS];
+    for (int i = 0; i < ITERS; i++) {
+        long f0 = minflt();
+        volatile unsigned char *p = malloc(big);
+        REQUIRE(p != NULL, "malloc(100 MiB) #%d", i);
+        for (size_t o = 0; o < big; o += 4096)
+            p[o] = 0x5a;
+        f[i] = minflt() - f0;
+        /* Let the policy see the usage with the run live. */
+        sleep_ms(15);
+        tick();
+        size_t decay_ms = get_size("stats.cgroup.decay_ms");
+        size_t before = rss_bytes();
+        free((void *)p);
+        size_t after = rss_bytes();
+        printf("demand iteration %d: %ld minor faults, decay_ms %zu, rss %zu -> %zu MiB at free\n", i, f[i], decay_ms,
+                before / MIB, after / MIB);
+        if (base <= 1000 || decay_ms >= (size_t)base) {
+            skip_note("cgroup_policy/demand", "usage %zu MiB of %zu MiB is not in the scaled band", kernel_current() / MIB, l / MIB);
+            release_all();
+            return;
+        }
+        CHECK(before > after && before - after >= big - 8 * MIB, "iteration %d: the free released only %zu MiB in the scaled band", i,
+                before > after ? (before - after) / MIB : 0);
+    }
+    for (int i = 1; i < ITERS; i++)
+        CHECK(f[i] * 2 >= f[0], "iteration %d took %ld faults (first %ld): kept in the scaled band", i, f[i], f[0]);
+    release_all();
+}
+
 int main(int argc, char **argv)
 {
     require_challoc();
@@ -461,6 +526,8 @@ int main(int argc, char **argv)
         mode_bands();
     else if (strcmp(mode, "high") == 0)
         mode_high(argv[0]);
+    else if (strcmp(mode, "demand") == 0)
+        mode_demand();
     else if (strcmp(mode, "high-child") == 0) {
         mode_high_child();
         return finish("cgroup_policy child");

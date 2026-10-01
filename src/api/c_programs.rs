@@ -592,6 +592,29 @@ ctests! {
     c_decay_background_thread => [
         CTest { prog: "decay", args: &["background"], conf: Some("abort_conf:true,background_thread:true,dirty_decay_ms:200"), ..BASE },
     ];
+    /// `tests/c/decay.c demand` (issue #25): recurring 8 MiB slab bursts are
+    /// kept between bursts from the third on under the demand window and
+    /// released once it passes; `demand-off` is the control, the same
+    /// bursts refaulting under the curve alone.
+    c_decay_demand => [
+        CTest { prog: "decay", args: &["demand"], conf: Some("abort_conf:true,dirty_decay_ms:200,hpa_peak_demand_window_ms:4000"), ..BASE },
+        CTest { prog: "decay", args: &["demand-off"], conf: Some("abort_conf:true,dirty_decay_ms:200"), ..BASE },
+    ];
+    /// `tests/c/decay.c hugedemand`: a 100 MiB run reallocated every
+    /// iteration is kept from its second free under the window, a one-off
+    /// 192 MiB run is purged at free; without the window every iteration
+    /// is purged at free (`huge_retain_max`, today's rule).
+    c_decay_huge_demand => [
+        CTest { prog: "decay", args: &["hugedemand"], conf: Some("abort_conf:true,hpa_peak_demand_window_ms:4000"), ..BASE },
+        CTest { prog: "decay", args: &["hugedemand-off"], conf: Some("abort_conf:true"), ..BASE },
+    ];
+    /// The `curve` mode with the window off explicitly (today's decay) and
+    /// on (one burst never recurs, so the curve alone decides): both pass
+    /// the curve's criteria.
+    c_decay_demand_off => [
+        CTest { prog: "decay", args: &["curve"], conf: Some("abort_conf:true,dirty_decay_ms:2000,hpa_peak_demand_window_ms:0"), ..BASE },
+        CTest { prog: "decay", args: &["curve"], conf: Some("abort_conf:true,dirty_decay_ms:2000,hpa_peak_demand_window_ms:4000"), ..BASE },
+    ];
     c_align => [ CTest { prog: "align", ..BASE } ];
     c_realloc_tiers => [ CTest { prog: "realloc_tiers", ..BASE } ];
     c_calloc_zero => [ CTest { prog: "calloc_zero", ..BASE } ];
@@ -751,6 +774,13 @@ ctests! {
     /// `--privileged` container on a host without `nsdelegate` at the
     /// container's root); each refusal is a pass with a `SKIP` line.
     c_cgroup_policy_high => [ CTest { prog: "cgroup_policy", args: &["high"], ..BASE } ];
+    /// `tests/c/cgroup_policy.c demand` (issue #25): under `make
+    /// test-cgroup-limit`'s 512 MiB, a 100 MiB run reallocated at 80% of the
+    /// limit is purged at every free with the demand window on (the policy
+    /// turns the floor off above 70%); without a limit, a `SKIP` line.
+    c_cgroup_policy_demand => [
+        CTest { prog: "cgroup_policy", args: &["demand"], conf: Some("abort_conf:true,hpa_peak_demand_window_ms:60000"), ..BASE },
+    ];
     /// `tests/c/cgroup_churn.c` (plan Phase 2 task 6 (a)): the churn program
     /// builds and runs under the preload at a small size in `report` mode (no
     /// criterion: the row proves the program runs). The criteria (RSS under
