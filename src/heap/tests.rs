@@ -3145,8 +3145,8 @@ fn min_equal_max_is_fixed_capacity() {
 /// Slow start: a class's first use creates its cache at an eighth of the
 /// ceiling, never below the floor, so the first refill claims a
 /// sixteenth of the ladder; with fixed capacities it starts at the
-/// ceiling. A busy cache reaches the ceiling `START_LG` misses after its
-/// second.
+/// ceiling. A busy cache reaches the ceiling at its fourth miss,
+/// `START_LG` doublings from its second.
 #[test]
 fn new_cache_starts_at_an_eighth_of_the_ceiling() {
     for (s, fixed_caps) in [(shared(), false), (fixed(), true)] {

@@ -543,6 +543,7 @@ struct Heap {                                // repr(C); the header array at off
     snapshot:    ThreadStats,                // thread.allocated/deallocated as of the last read
     tcache_enabled: bool,                    // thread.tcache.enabled
     bound:       bool,                       // counted in the home arena's load (thread heaps only)
+    misses_since: u64,                       // monotonic ns the caches' miss counts last restarted (6.4)
     caches:      [CacheHeader; NCLASSES],    // home arena, inline, one 64-byte line per class
 }
 
@@ -561,6 +562,7 @@ struct CacheHeader {                         // one per (arena, class), 64 bytes
     mode:     u16,                           // off, probe, compact (6.4)
     unsorted_flushes: u8,                    // drives the flush's kept sort (6.4)
     misses:   u8,                            // refills + full flushes since the last GC, saturating (6.4)
+    phase:    u16,                           // slots refills claimed, mod ceil / 2 (6.4)
     ceil:     u32,                           // stack size in slots, fixed at creation (the ladder value)
 }
 ```
@@ -910,8 +912,9 @@ to `rallocx` exactly as jemalloc's contract requires.
   miss count. This is jemalloc's incremental tcache GC in spirit. Above
   90% of the cgroup limit the interval is 0 (section 11): the GC runs at
   every periodic tick, which under a flush-driven workload is every 64
-  flushes or refills, and quiet caches shrink one step per tick; the
-  flush itself is not touched.
+  flushes or refills, and quiet caches (no miss since the last 10 s
+  restart of the counts) shrink one step per tick; the flush itself is
+  not touched.
 - **Capacity** (issue #27): `cap` moves between a floor and the ladder
   value, the ceiling `ceil` the stack was allocated at (6.2), so a change
   never reallocates. A *miss* is a refill or a free that finds the cache
@@ -926,17 +929,33 @@ to `rallocx` exactly as jemalloc's contract requires.
   `moved`), the highest addresses that no longer fit. A new cache starts
   at `ceil >> START_LG` (an eighth, `START_LG = 3`), at least the floor,
   so a class a thread touches once pulls a sixteenth of the ladder
-  instead of half of it, and a busy one reaches the ceiling at its fifth
-  miss. The floor is `tcache_nslots_small_min` (default 8 = `MIN_CAP`) on
-  the ceiling's ladder (`Config::cap_floor`); at or above
-  `tcache_nslots_small_max` the floor is the ceiling and the capacities are
-  fixed, the old behaviour. Not misses: the flushes of a run rebuild, of
-  the GC and of `tcache.flush`/`thread.tcache.flush`. Exempt: a compacting
-  cache never shrinks (its rebuilds are its only slow path and its `cap /
-  4` block migrates the live set; a probing one may), and the `FOREIGN`
-  cache keeps its fixed half-ladder capacity. Every capacity write is
-  followed by the abort check `len <= cap <= ceil`, `cap >= 1`, and the
-  stack is freed with `ceil`'s layout. All of it is on the slow paths;
+  instead of half of it, and a busy one reaches the ceiling at its fourth
+  miss (`START_LG` doublings, from the second). A refill never crosses a
+  multiple of `ceil / 2` of the slots the cache's refills have claimed
+  (`phase`): the ramp's batches (64, 128, 256 at a ceiling of 1024) sum
+  to 448, so the fourth miss claims the 64 that complete the half ladder
+  and every refill from the fifth on is the half-ladder batch a fixed
+  capacity takes, on the same boundaries. Without it a producer whose
+  slots are freed on another thread (xmalloc-test) had every later
+  refill, and every `FOREIGN` flush of its slots, straddling two slabs
+  (691 to 556 M frees/s). The floor is `tcache_nslots_small_min`
+  (default 8 = `MIN_CAP`) on the ceiling's ladder (`Config::cap_floor`);
+  at or above `tcache_nslots_small_max` the floor is the ceiling and the
+  capacities are fixed, the old behaviour. Misses also: the refills of the scheduled pop
+  (a probe or a run rebuild that found the cache empty). Not misses: the
+  flushes of a run rebuild, of the GC and of
+  `tcache.flush`/`thread.tcache.flush`. A cache entering compact mode
+  goes to its ceiling (its rebuilds are its only slow path, so no miss
+  would grow it, and its `cap / 4` block is the migration rate) and never
+  shrinks while compacting (a probing one may); the `FOREIGN` cache keeps
+  its fixed half-ladder capacity. In the cgroup's immediate band the GC
+  runs at every periodic tick but the miss counts restart only every
+  `GC_INTERVAL_NS`: a GC every 64 slow paths that also cleared them would
+  keep any cache whose misses are spread over many classes (fewer than
+  two per 64 slow paths) from ever growing, while only a cache with no
+  miss since the last interval GC is quiet there and shrinks. Every
+  capacity write is followed by the abort check `len <= cap <= ceil`,
+  `cap >= 1`, and the stack is freed with `ceil`'s layout. All of it is on the slow paths;
   the fast paths read `len` and `cap` at the offsets they always did.
   Busy caches, a producer that refills and a consumer that flushes from
   full, take misses every interval and stay at the ceiling, which is what
@@ -1300,7 +1319,7 @@ Usage is the last `memory.current` sample against the effective limit
 | No limit                          | Defaults; nothing beyond the sample is done                | `MADV_DONTNEED`           |
 | < 70% of `min(high, max)`         | Defaults, retention capped at 5% of the limit              | `MADV_FREE` (`lazy_band`) |
 | 70% .. 90%                        | `dirty_decay_ms` scaled down linearly to 1000; the cap     | `MADV_DONTNEED`           |
-| >= 90%                            | Period 0: purge at the next pass; cache GC every tick (quiet caches shrink one step per tick) | `MADV_DONTNEED`           |
+| >= 90%                            | Period 0: purge at the next pass; cache GC every tick (quiet caches shrink one step per tick; miss counts kept for 10 s) | `MADV_DONTNEED`           |
 | `memory.events` `high` increased  | Full purge once, at the next decay pass                    | `MADV_DONTNEED`           |
 | PSI trigger fired                 | Sample and decay pass at once (the background thread)      | as the band               |
 | < 70% while an excess over the cap first seen at 70%+ is still being returned | as the `< 70%` row | `MADV_DONTNEED` until the retention is within the cap |

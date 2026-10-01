@@ -500,8 +500,8 @@ impl Heap {
 /// floor is `floor` starts at: an eighth of the ceiling ([`START_LG`]),
 /// never below the floor. A class that a thread touches once holds a
 /// sixteenth of the ladder after its first refill instead of half; one
-/// that stays busy reaches the ceiling after `START_LG` doublings, its
-/// second to fifth miss.
+/// that stays busy reaches the ceiling after `START_LG` doublings, at its
+/// second to fourth miss.
 #[inline]
 pub(super) fn start_cap(ceil: u32, floor: u32) -> u32 {
     (ceil >> START_LG).max(floor).min(ceil)
