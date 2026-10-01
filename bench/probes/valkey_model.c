@@ -1,6 +1,6 @@
 // valkey_model.c: Valkey's allocator-visible shape without Valkey, single
 // thread (docs/plan.md Phase 1.5 task 5c; the rows `valkey1`,
-// `valkey1-free` and `valkey1-usable` of bench/lib.sh).
+// `valkey1-free` and `valkey1-usable` of bench/rows.toml).
 //
 // What the soak's server does to the allocator, per key (Valkey 9.1.2,
 // src/zmalloc.c, src/db.c): every key holds a dict entry (40 B), a key sds
@@ -25,7 +25,7 @@
 // lacks them). The rows `valkey1-write-zmalloc` (`-u -a`) and
 // `valkey1-write-pair` (`-p`) compare the two shapes per SET.
 //
-// Protocol, mirroring bench/valkey-soak.sh in miniature:
+// Protocol, mirroring bench/drivers/valkey-soak.sh in miniature:
 //
 //   fill      N keys with values drawn uniformly from MIN..MAX bytes
 //             (default 16..1024, memtier's --data-size-range); with the
@@ -44,7 +44,7 @@
 // stats.allocated/active/resident after an epoch bump; the last line is
 // machine-readable:
 //   ops total=<n> write_mops=<x> delete_mops=<y> total_mops=<z> live=<k> rss_kb=<r> hwm_kb=<h> free=<mode>
-// bench/lib.sh scores the row by write_mops (the phase whose gap the soak
+// The rows are scored by write_mops (the phase whose gap the soak
 // shows widest and the one that reproduces the large-heap free miss); the
 // delete phase's rate and the RSS after it are in the log for attribution.
 //

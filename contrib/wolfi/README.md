@@ -70,7 +70,7 @@ uses Wolfi's own `melange` and `bubblewrap` apks in a privileged
 melange.
 
 ```sh
-# on the VM: ~/challoc is the synced tree (challoc-bench sync), ~/melange-out the output
+# on the VM: ~/challoc is the synced tree (rsync or scripts/devvm.sh), ~/melange-out the output
 sudo docker run --rm --privileged -v ~/challoc:/work -v ~/melange-out:/out -w /work \
   cgr.dev/chainguard/wolfi-base sh -c '
 set -eu

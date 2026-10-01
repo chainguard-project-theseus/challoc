@@ -1,7 +1,7 @@
 #!/bin/sh
-# Valkey soak (docs/plan.md, Phase 1 task 8), run inside the dev container:
-# `make valkey-soak` or `make run CMD='sh bench/valkey-soak.sh'`; and the
-# `valkey-soak` driver row of bench/cb (bench/rows.toml, cb mode below).
+# Valkey soak: the `valkey-soak` driver row of bench/cb (bench/rows.toml,
+# cb mode below), or by hand inside the dev container: `make run CMD='sh
+# bench/drivers/valkey-soak.sh'` (needs `make valkey STAGE=build`).
 #
 # cb mode (CB_ALLOC set; bench/README.md, "Drivers"): one allocator per
 # invocation, the variant cb hands over, and the metrics as one JSON line
@@ -93,14 +93,14 @@
 # the summary carries the cgroup's memory.peak for the write, delete and
 # settle phases, reset at each boundary through bench/probes/cgpeak.c (the
 # 6.12 reset is scoped to the writer's file description, so a sidecar holds
-# it; bench/lib.sh cgroup_peak_*). The peak is the whole container's
+# it; bench/drivers/lib.sh cgroup_peak_*). The peak is the whole container's
 # (server, valkey-benchmark, memtier and this script). The write needs a
 # writable cgroup tree, `make valkey-soak CGROUP_PEAK=1`, and a 6.12+
 # kernel; otherwise the rows read "-" and the header says why.
 set -eu
 cd "$(dirname "$0")/../.."
 ROOT=$(pwd)
-. "$ROOT/bench/lib.sh"
+. "$ROOT/bench/drivers/lib.sh"
 ALLOCS=${ALLOCS:-"challoc jemalloc"}
 DURATION=${DURATION:-1200}
 SETTLE=${SETTLE:-60}
@@ -136,7 +136,7 @@ SRC=$WORK/src-$VALKEY_TAG
 SRC_JE=$WORK/src-$VALKEY_TAG-jemalloc
 CLI=$SRC/src/valkey-cli
 VB=$SRC/src/valkey-benchmark
-# ARCH, DATE and BASELINE_DIR come from bench/lib.sh. COMMIT overrides git's
+# ARCH, DATE and BASELINE_DIR come from bench/drivers/lib.sh. COMMIT overrides git's
 # answer (a tree synced to a VM from a git worktree has no usable .git).
 COMMIT=${COMMIT:-$(commit_short)}
 RESULT=$RESULT_DIR/$DATE-$ARCH-valkey-soak.md
@@ -184,7 +184,7 @@ if [ $CB_MODE = 0 ]; then
 fi
 command -v memtier_benchmark >/dev/null || { echo "valkey-soak: memtier_benchmark not installed" >&2; exit 1; }
 
-take_bench_lock   # one protocol run at a time (bench/lib.sh)
+take_bench_lock   # one protocol run at a time (bench/drivers/lib.sh)
 rm -rf "$OUT"
 mkdir -p "$OUT" "$RESULT_DIR"
 
@@ -271,7 +271,7 @@ cleanup() {
   [ -n "${OCC_PID:-}" ] && kill "$OCC_PID" 2>/dev/null
   :
 }
-BENCH_CLEANUP=cleanup   # run by the bench lock's EXIT/INT/TERM trap (bench/lib.sh take_bench_lock)
+BENCH_CLEANUP=cleanup   # run by the bench lock's EXIT/INT/TERM trap (bench/drivers/lib.sh take_bench_lock)
 
 # info_field SECTION FIELD: one INFO value, CRLF stripped.
 info_field() { "$CLI" -p "$PORT" info "$1" | tr -d '\r' | awk -F: -v k="$2" '$1==k {print $2}'; }
@@ -301,7 +301,7 @@ sampler() { # DIR START_TS CSV
     sleep "$INTERVAL"
   done
 }
-# The occupancy sidecar (OCCUPANCY=1, formerly bench/probes/soak-occupancy.sh):
+# The occupancy sidecar (OCCUPANCY=1):
 # every MS_INTERVAL seconds one file with the phase, the allocator lines of
 # INFO memory and the full MEMORY MALLOC-STATS print, so per-class curslabs /
 # curregs can be read along the soak.

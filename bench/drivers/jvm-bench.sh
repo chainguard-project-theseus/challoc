@@ -1,9 +1,9 @@
 #!/bin/sh
 # JVM benchmark rows (docs/plan.md Phase 3 task 5 (a)): Wolfi's openjdk-21
 # from the image, measured under seven allocator variants via LD_PRELOAD (and
-# two glibc tunings), in Ruby's protocol shape (bench/ruby-bench.sh). Runs
-# inside the dev container: `make jvm-bench` / `make jvm-soak`, or on a VM
-# `bench/gce/challoc-bench make arm64 jvm-bench HOST_KIND=...`.
+# two glibc tunings). The jvm-server and jvm-soak rows of bench/cb run it
+# (cb mode below); by hand, inside the dev container: `make run CMD='sh
+# bench/drivers/jvm-bench.sh'` (ROWS=soak for the soak).
 #
 # Rows:
 #   startup      `java -version`, one process per round under bench/rt: wall
@@ -116,7 +116,7 @@
 set -eu
 cd "$(dirname "$0")/../.."
 ROOT=$(pwd)
-. "$ROOT/bench/lib.sh"
+. "$ROOT/bench/drivers/lib.sh"
 ROWS=${ROWS:-"startup server"}
 CB_MODE=0
 [ -z "${CB_ALLOC:-}" ] || { CB_MODE=1; ALLOCS=$CB_ALLOC; OUT=${CB_OUT:?}/out; RESULT=$CB_OUT/jvm.md; }

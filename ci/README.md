@@ -34,11 +34,11 @@ the diff: a key that appears is coverage lost.
 - **kernels.yml** (the GCE kernel cells: 5.15, 6.1, COS, 6.8, 64k arm64,
   6.12, 7.0 and the Chainguard OS cells). Needs a CI identity in GCP
   (workload identity federation, a launcher service account); the owner
-  deferred that. The cells run by hand through `bench/gce/challoc-bench
-  matrix` in the dev project until then. The Chainguard OS cells stay out
-  of this public tree.
-- **bench.yml** (`bench:quick` / `bench:ab` labels, the nightly
-  scorecard). The same identity, plus the `cb` launcher of the benchmark
-  system; CI treats it as one command (`ci/bench-submit`) once it exists.
+  deferred that. The cells run by hand as `cb launch exp-floor` in the dev
+  project until then. The Chainguard OS cells stay out of this public
+  tree.
+- **bench.yml** (`bench:quick` / `bench:full` labels, a nightly `full`).
+  The same identity for `cb launch`; CI treats it as one command
+  (`ci/bench-submit`) once it exists.
 - **release.yml**, SBOM, cosign, Pages: nothing is published.
 - **Miri, checked-release `.so`, valgrind** in the nightly: phase (e).

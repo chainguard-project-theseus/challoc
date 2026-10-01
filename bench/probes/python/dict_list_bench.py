@@ -1,4 +1,4 @@
-"""dict_list_bench.py: dict and list churn (bench/python-bench.sh).
+"""dict_list_bench.py: dict and list churn (the python rows of bench/rows.toml).
 
 Keeps a ring of LIVE containers and, ITERS times, replaces the oldest with
 a new dict (1..2000 string keys) or list (1..10000 ints, grown by append,

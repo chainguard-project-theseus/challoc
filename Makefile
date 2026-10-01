@@ -1,10 +1,9 @@
 # challoc build entry points. The library is Linux-only; every target except
 # `help` and the `clean-*` targets runs inside the Wolfi dev container built
 # from Dockerfile.dev. `make help` lists the targets from the
-# `##` comments below; the benchmark harness, its two tiers and every
-# harness's variables are described in bench/README.md and in each script's
-# header, the GCE side in bench/gce/README.md, the environment (target volumes)
-# in CONTRIBUTING.md.
+# `##` comments below; the benchmark harness (bench/cb, its targets in
+# bench/bench.mk) is described in bench/README.md, the environment (target
+# volumes) in CONTRIBUTING.md.
 #
 # `target/` inside the container is a named Docker volume, one per
 # architecture, so Linux artifacts never mix with host artifacts and builds do
@@ -15,13 +14,9 @@
 # worktree sets `TARGET_VOLUME=challoc-target-<name>-$(ARCH)` so two
 # worktrees never share a `target/`. `make clean-volumes` removes the
 # two volumes the variables name. The one exception is `target/results/`,
-# where the harnesses write their results files: it is the host's
-# `target/results` bind-mounted over the volume, so the files are readable
-# on the host (`make scorecard RENDER=1`, `challoc-bench fetch`).
-#
-# Variables named on the command line (`make quick OLD=HEAD~1`) reach the
-# harness scripts as environment variables: each harness target forwards the
-# list of variables its script reads (the *_VARS lists below, `env_flags`).
+# where the harnesses write their results: it is the host's
+# `target/results` bind-mounted over the volume, so a `cb run` in the
+# container is readable on the host.
 
 HOST_ARCH := $(shell uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')
 PLATFORM  ?= linux/$(HOST_ARCH)
@@ -44,8 +39,8 @@ FEATURES       = --no-default-features --features quantum$(QUANTUM)
 
 # In a git worktree `.git` is a file pointing at the main repository's
 # `.git/worktrees/<name>`; mount that common dir at the same path so `git
-# archive`/`rev-parse` work inside the container (bench/quick.sh, bench/ab.sh
-# build variants from git revs). A plain checkout needs no extra mount.
+# archive`/`rev-parse` work inside the container (`cb run` builds variants
+# from git revs). A plain checkout needs no extra mount.
 GIT_COMMON := $(shell git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
 ifneq ($(GIT_COMMON),)
 ifneq ($(GIT_COMMON),$(CURDIR)/.git)
@@ -58,10 +53,11 @@ endif
 # stock allocators ignore it, so `make <target> CHALLOC_CONF=zero_on_free:true`
 # puts challoc alone under a key in any suite.
 # CGROUP_PEAK=1: the container joins the host's
-# cgroup namespace and gets /sys/fs/cgroup mounted read-write, so the soak
-# harnesses can reset the cgroup's memory.peak at their phase boundaries
-# (bench/lib.sh cgroup_peak_*; 6.12+ accepts the write, older kernels
-# refuse it with EINVAL and the harness says so). Docker's default mounts
+# cgroup namespace and gets /sys/fs/cgroup mounted read-write, so a soak
+# driver run by hand (`make run CMD='sh bench/drivers/valkey-soak.sh'`) can
+# reset the cgroup's memory.peak at its phase boundaries
+# (bench/drivers/lib.sh cgroup_peak_*; 6.12+ accepts the write, older kernels
+# refuse it with EINVAL and the driver says so). Docker's default mounts
 # the tree read-only and the nsdelegate boundary refuses the write from
 # inside the namespace, hence both flags. Memory limits still apply.
 # EXTRA_DOCKER_FLAGS reaches every container, the memory-limited cgroup
@@ -88,27 +84,18 @@ cgroup_run = $(call cgroup_docker,$(1)) $(2)
 # the make command line or in the environment); the unset ones contribute
 # nothing.
 env_flags = $(foreach v,$(1),$(if $($(v)),-e $(v)="$($(v))"))
-# bench_target NAME,SCRIPT,VARS[,EXTRA]: a harness target. HOST_CPU (the
-# container only sees an implementer id), EXTRA and the set variables of
-# VARS are forwarded and `sh SCRIPT` runs in the container. Instantiated
-# with `$(eval $(call bench_target,...))`; the `##` comment on that line is
-# the target's `make help` text.
-define bench_target
-$(1): DOCKER_FLAGS = -e HOST_CPU="$$(HOST_CPU)" $(if $(4),$(4) )$$(call env_flags,$(3))
-$(1): image
-	$$(DOCKER_RUN) sh $(2)
-endef
-# The host CPU for the results files' headers, probed only where a target
-# reads it (a recursively expanded variable: `make build` runs no probe).
+# The host CPU for the cb host capture (the container only sees an
+# implementer id), probed only where a target reads it (a recursively
+# expanded variable: `make build` runs no probe).
 HOST_CPU = $(shell sysctl -n machdep.cpu.brand_string 2>/dev/null || grep -m1 'model name' /proc/cpuinfo 2>/dev/null | sed 's/.*: //' | grep . || lscpu 2>/dev/null | grep -m1 'Model name' | sed 's/.*: *//')
 
-.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare jemalloc-compat install install-jemalloc-compat fuzz bench-build quick ab baseline scorecard valkey valkey-soak soak-quick soak-baseline ruby ruby-bench ruby-soak python-bench node-bench check-needed clean-volumes jvm-bench postgres-bench jvm-soak help print-docker-run test-all
+.PHONY: image dev run build test test-cgroup-limit test-cgroup-churn test-cgroup-lazy test-cgroup-oscillate test-cgroup test-cgroup-compare jemalloc-compat install install-jemalloc-compat fuzz bench-build valkey ruby check-needed clean-volumes help print-docker-run test-all
 
 help: ## list the targets (this text; the `##` comments in the Makefile)
 	@awk -F' ## ' '/ ## / { n = $$1; if (n ~ /^\$$\(eval/) { sub(/^[^,]*,/, "", n); sub(/,.*/, "", n) } else { sub(/:.*/, "", n) } if (n !~ /^[a-zA-Z0-9_-]+$$/) next; printf "  %-22s %s\n", n, $$2 }' $(MAKEFILE_LIST)
 	@echo
 	@echo "PLATFORM=linux/amd64 on any target runs the emulated x86_64 container (correctness only)."
-	@echo "Harness variables: bench/README.md and the *_VARS lists in the Makefile."
+	@echo "Benchmarks: bench/README.md (cb; make quick is cb launch quick)."
 
 image: ## build the dev container image (Dockerfile.dev; IMAGE, IMAGE_TARGET, PLATFORM; IMAGE_BUILD= skips it)
 	$(if $(IMAGE_BUILD),,@true )docker build --platform $(PLATFORM) -f Dockerfile.dev $(if $(IMAGE_TARGET),--target $(IMAGE_TARGET)) -t $(IMAGE) .
@@ -123,7 +110,7 @@ run: image ## one shell command in the container: CMD='...' (escape $ as $$)
 build: image ## cargo build --release in the container (QUANTUM)
 	$(DOCKER_RUN) cargo build --release $(FEATURES)
 
-print-docker-run: ## print the docker run line the targets use (challoc-bench perf-stat takes one)
+print-docker-run: ## print the docker run line the targets use
 	@echo '$(DOCKER_RUN)'
 
 # The `api::` tests run in a second process: they initialise the real
@@ -240,99 +227,17 @@ fuzz: image ## fuzz/fuzz.c under LD_PRELOAD for FUZZ_OPS (10M) operations on FUZ
 	  && LD_PRELOAD=/src/target/release/libchalloc.so \
 	     ./target/fuzz $(FUZZ_OPS) $(FUZZ_THREADS) $(FUZZ_SEED) $(FUZZ_TABLE)'
 
-bench-build: image ## fetch and build the mimalloc-bench programs, redis, mimalloc and the bench/ helpers into the target volume
+bench-build: image ## build the bench programs (bench/build.sh) into the target volume; the bench image has them prebuilt
 	$(DOCKER_RUN) sh bench/build.sh
-
-# Two-tier harness (bench/README.md). quick: ~2 min go/no-go for a
-# change; ab: the protocol-tier A/B that results files are written from;
-# baseline: cache the stock allocators' protocol rows for BASELINES=cached.
-QUICK_VARS = OLD NEW OLD_CONF NEW_CONF QUICK_TOLERANCE QUICK_BENCHES CHURN_SECS CHURN_CLASS CHURN_MAX_FRACTION BASELINES BASELINE_TOLERANCE QUICK_SANITY PERF PERF_BENCHES QUICK_BUILD_ONLY VALKEY_MODEL_SECS VALKEY_MODEL_N PIN CHALLOC_THP_COUNTERS
-$(eval $(call bench_target,quick,bench/quick.sh,$$(QUICK_VARS))) ## fast tier (bench/quick.sh, ~2.5 min): the working tree vs OLD (HEAD), one round, exit 1 past QUICK_TOLERANCE (5)%; PERF=1 adds per-op counters where perf exists
-
-AB_VARS = VARIANTS ROUNDS BENCHES ADAPTIVE BASELINES BASELINE_TOLERANCE RESULT HOST_KIND TITLE VALKEY_MODEL_SECS VALKEY_MODEL_N PIN CHALLOC_THP_COUNTERS
-$(eval $(call bench_target,ab,bench/ab.sh,$$(AB_VARS))) ## protocol tier A/B (bench/ab.sh): VARIANTS='old=HEAD~1 new=HEAD jemalloc' ROUNDS=5 plus warm-up, interleaved; RESULT=path, ADAPTIVE=1, BASELINES=cached
-
-BASELINE_VARS = ROUNDS BENCHES ALLOCS HOST_KIND VALKEY_MODEL_SECS
-$(eval $(call bench_target,baseline,bench/baseline.sh,$$(BASELINE_VARS))) ## cache the stock allocators' protocol rows for this machine under target/baselines/ (bench/baseline.sh)
-
-# Scorecard (bench/scorecard.sh): the fixed row set under challoc (REV, default
-# the working tree) and jemalloc, 3 interleaved rounds through bench/ab.sh,
-# one line appended to target/results/scorecard-<arch>.md; `make scorecard
-# RENDER=1` prints the table sorted by date.
-SCORECARD_VARS = REV ROUNDS ROWS BASELINES BASELINE_TOLERANCE HOST_KIND VALKEY_MODEL_SECS VALKEY_MODEL_N PIN SCORECARD_FILE
-scorecard: DOCKER_FLAGS = -e HOST_CPU="$(HOST_CPU)" $(call env_flags,$(SCORECARD_VARS))
-scorecard: image ## the fixed row set vs jemalloc (REV=tree), one line appended to target/results/scorecard-<arch>.md; RENDER=1 prints the trend on the host
-	$(if $(RENDER),sh bench/scorecard.sh --render,$(DOCKER_RUN) sh bench/scorecard.sh)
 
 valkey: DOCKER_FLAGS = $(if $(STAGE),-e STAGE=$(STAGE)) $(if $(TEST_FLAGS),-e TEST_FLAGS="$(TEST_FLAGS)")
 valkey: image ## build challoc (quantum8) and Valkey at Wolfi's tag with contrib/valkey/000{1,2}-*.patch, then its tests (STAGE=build|memefficiency|full|all, TEST_FLAGS)
 	$(DOCKER_RUN) sh tests/consumers/valkey-build.sh
 
-# CHALLOC_CONF is not in the list: DOCKER_BASE forwards it into every container.
-SOAK_VARS = ALLOCS DURATION SETTLE INTERVAL CHUNK VB_REQS KEYS SIZE MT_SIZES DEL_RATIO KEY_PATTERN DEFRAG IO_THREADS RESULT_DIR OCCUPANCY MS_INTERVAL BASELINES SAVE_BASELINE PORT COMMIT CHALLOC_LIB
-$(eval $(call bench_target,valkey-soak,bench/valkey-soak.sh,$$(SOAK_VARS))) ## Valkey soak under challoc and its bundled jemalloc (bench/valkey-soak.sh; DURATION=1200, SETTLE, ALLOCS, DEFRAG, IO_THREADS, OCCUPANCY=1); needs `make valkey STAGE=build`
-
-# Quick soak: challoc only, 10 minutes of load, occupancy sampler on, compared
-# against the cached jemalloc soak from `make soak-baseline` (the full 1200 s
-# protocol under jemalloc, stored under target/baselines/). Results under
-# target/valkey/soak-quick, not target/results/. Acceptance stays `make valkey-soak`.
-soak-quick: ALLOCS = challoc
-soak-quick: DURATION ?= 600
-soak-quick: SETTLE ?= 60
-soak-quick: OCCUPANCY ?= 1
-soak-quick: BASELINES = cached
-soak-quick: RESULT_DIR ?= target/valkey/soak-quick
-soak-quick: valkey-soak ## challoc-only 600 s soak with OCCUPANCY=1 against the cached jemalloc soak; results under target/valkey/soak-quick, not an acceptance run
-
-soak-baseline: ALLOCS = jemalloc
-soak-baseline: DURATION ?= 1200
-soak-baseline: SETTLE ?= 60
-soak-baseline: SAVE_BASELINE = 1
-soak-baseline: RESULT_DIR ?= target/valkey/soak-baseline
-soak-baseline: valkey-soak ## the 1200 s jemalloc soak that soak-quick compares against, cached under target/baselines/
-
 RUBY_VARS = STAGE ALLOC TESTS TESTOPTS JOBS RUBY_TAG RUBY_COMMIT RUBY_CHERRY
 ruby: DOCKER_FLAGS = $(call env_flags,$(RUBY_VARS))
 ruby: image ## stage libjemalloc.so.2 (quantum16), build Ruby 3.4 --with-jemalloc against it and run test-all (tests/consumers/ruby-build.sh; STAGE=build|test|all, ALLOC=glibc for the baseline build, TESTS, JOBS)
 	$(DOCKER_RUN) sh tests/consumers/ruby-build.sh
-
-RUBY_BENCH_VARS = ALLOCS ROUNDS ROWS RESULT OUT HOST_KIND GC_ROUNDS GC_FORCED
-$(eval $(call bench_target,ruby-bench,bench/ruby-bench.sh,$$(RUBY_BENCH_VARS))) ## Ruby rows under challoc, jemalloc, glibc, mimalloc, tcmalloc (bench/ruby-bench.sh; ROUNDS=5); needs both `make ruby STAGE=build` builds
-
-RUBY_SOAK_VARS = ALLOCS DURATION INTERVAL GC_EVERY COMPACT_AT THREADS IDLE_THREADS SEED RESULT OUT HOST_KIND COMMIT CHALLOC_SRC VARIANTS TRIM
-$(eval $(call bench_target,ruby-soak,bench/ruby-soak.sh,$$(RUBY_SOAK_VARS))) ## Ruby soak, a Sidekiq-shaped process for DURATION (600) s per allocator (bench/ruby-soak.sh); needs `make ruby STAGE=build`
-
-# Python rows (bench/python-bench.sh): the stdlib workloads
-# under bench/probes/python/ on the image's python3, each with PYTHONMALLOC
-# unset and =malloc, under challoc (the working tree) and the stock allocators.
-PYTHON_BENCH_VARS = ALLOCS ROUNDS WORKLOADS MODES RESULT OUT HOST_KIND REV
-$(eval $(call bench_target,python-bench,bench/python-bench.sh,$$(PYTHON_BENCH_VARS))) ## Python 3.13 rows (bench/python-bench.sh): four stdlib workloads, PYTHONMALLOC unset and =malloc, five allocators
-
-# Node.js rows (bench/node-bench.sh): node -e 0 startup,
-# bench/node/json_churn.js and the bench/node/server.js http server under ab
-# (both endpoints, DURATION s per allocator), under challoc (the working
-# tree) and the stock allocators via LD_PRELOAD, the image's nodejs-22.
-NODE_BENCH_VARS = ALLOCS ROUNDS ROWS RESULT OUT HOST_KIND REV DURATION CONNS PORT JSON_ITERS SAMPLE WARM_N OLD_SPACE
-$(eval $(call bench_target,node-bench,bench/node-bench.sh,$$(NODE_BENCH_VARS))) ## Node.js 22 rows (bench/node-bench.sh): startup, JSON churn and an http server under ab for DURATION (300) s per allocator
-
-# JVM rows (bench/jvm-bench.sh): `java -version` startup
-# and the com.sun.net.httpserver server of bench/jvm/HttpBench.java under ab,
-# on the image's openjdk-21, under challoc (the working tree), glibc, glibc
-# with MALLOC_ARENA_MAX=2, glibc with the JVM's periodic trim and the stock
-# allocators. jvm-soak is the same script with ROWS=soak (the mixed-size
-# soak: a growing and shrinking pool, log-uniform direct-buffer sizes,
-# alternating load, 20 minutes per allocator), written to
-# target/results/<date>-<arch>-jvm-soak.md with the Rss series CSVs beside it.
-JVM_BENCH_VARS = ALLOCS ROUNDS ROWS DURATION WARMUP INTERVAL CONNECTIONS THREADS HEAP PORT RESULT OUT HOST_KIND REV CHALLOC_VARIANTS JAVA_OPTS IDLE_SECS NMT NMT_GAP TRIM_MS SOAK_DURATION SOAK_WINDOW SOAK_HIGH SOAK_LOW SOAK_CORE SOAK_MAX SOAK_KEEPALIVE SOAK_MIN SOAK_MAXB SOAK_TAIL
-JVM_SOAK_VARS = $(filter-out ROWS,$(JVM_BENCH_VARS))
-$(eval $(call bench_target,jvm-bench,bench/jvm-bench.sh,$$(JVM_BENCH_VARS))) ## JVM rows (bench/jvm-bench.sh): `java -version` startup and a 200-thread http server under ab for DURATION (300) s with NMT, seven variants
-$(eval $(call bench_target,jvm-soak,bench/jvm-bench.sh,$$(JVM_SOAK_VARS),-e ROWS=soak)) ## the JVM mixed-size soak (bench/jvm-bench.sh ROWS=soak): 16..400 threads, 256 B..1 MiB direct buffers, SOAK_DURATION (1200) s per allocator
-
-# PostgreSQL rows (bench/postgres-bench.sh): Wolfi's
-# postgresql-17 from the image, the server run as a non-root user the script
-# creates, the allocator in the postmaster's environment, pgbench rows.
-POSTGRES_BENCH_VARS = ALLOCS ROUNDS ROWS RESULT OUT HOST_KIND REV SCALE DURATION CONN_DURATION INTERVAL SAMPLING_RATE JOBS CLIENTS_A CLIENTS_B CONN_CLIENTS CONN_JOBS SHARED_BUFFERS MAX_CONNECTIONS REINIT REPORT_ONLY
-$(eval $(call bench_target,postgres-bench,bench/postgres-bench.sh,$$(POSTGRES_BENCH_VARS))) ## PostgreSQL 17 rows (bench/postgres-bench.sh): pgbench select-only at 100 and 500 clients, TPC-B, connection setup; RSS over every postgres process
 
 # DT_NEEDED must name the allocator library (design 13.6); Wolfi's --as-needed drops it from a consumer that
 # references no symbol of it.

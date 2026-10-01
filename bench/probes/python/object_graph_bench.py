@@ -1,4 +1,4 @@
-"""object_graph_bench.py: an object-graph builder (bench/python-bench.sh).
+"""object_graph_bench.py: an object-graph builder (the python rows of bench/rows.toml).
 
 ROUNDS times builds a tree of NODES class instances (each with a name, a
 payload list, a children list and a parent reference), adds random cross

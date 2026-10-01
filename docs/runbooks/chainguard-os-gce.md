@@ -9,7 +9,7 @@ features a hypervisor hides.
 
 ## Why challoc cares
 
-- The kernel matrix (`bench/gce/challoc-bench matrix`) runs Debian and Ubuntu kernels and tests challoc inside the
+- The kernel floor (`cb launch exp-floor`) runs Debian, Ubuntu, AlmaLinux and COS kernels and tests challoc inside the
   Wolfi dev container. Chainguard OS is the kernel and glibc the product
   ships; a Chainguard OS host is the first "floor as shipped" cell, and
   the only one without Docker's default seccomp hiding `mseal`.
@@ -43,10 +43,10 @@ features a hypervisor hides.
   Ubuntu 7.0: use them for the 7.2 items in `docs/research.md` (khugepaged
   anon mTHP collapse, cache-aware scheduling). A
   `cgos72-amd64` cell should be a copy of `cgos-amd64` with the family
-  swapped (`bench/gce/challoc-bench`, the cell table).
+  swapped (the internal cell overlay, `bench/cells/internal-*.toml`).
 
-What the first cells found (lane E, 2026-09-19; `bench/gce/challoc-bench`
-`matrix cgos`, `bench/results/2026-09-19-chainguard-os-cells.md`), where
+What the first cells found (2026-09-19,
+`bench/results/2026-09-19-chainguard-os-cells.md`), where
 it adds to or corrects the runbook below:
 
 - The 50 GB boot disk does not give you 50 GB: OS-3363 is live in the

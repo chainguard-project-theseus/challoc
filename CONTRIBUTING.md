@@ -52,8 +52,8 @@ one exception is `target/results/`, bind-mounted from the host.
 
 The dev container does not need a local Docker: any Linux host with
 Docker that you can reach over ssh works, and is the usual setup on a
-Mac. Sync the tree to the host, keeping it a git checkout (bench/quick.sh,
-bench/ab.sh and scripts/codegen-diff.sh read revisions with git), and run
+Mac. Sync the tree to the host, keeping it a git checkout (`cb run` and
+scripts/codegen-diff.sh read revisions with git), and run
 the same `make` targets there; a native x86_64 host replaces the emulated
 `PLATFORM=linux/amd64`. Give every tree on a shared host its own
 `TARGET_VOLUME`.
@@ -110,15 +110,16 @@ code on or near the hot paths is justified with evidence.
   that differ only in relocations (`reloc-only`) are fine. Put the
   verdict in the pull request.
 - **Fast-path changes** (`src/heap/`, `src/class/`, `src/slab.rs`,
-  `src/api/*.rs`) need two things in the pull request. First, a fast-tier
-  verdict (`make quick` on the reference machines, `docs/benchmarking.md`).
-  Second, a per-operation cycle attribution on the workload the change is
-  meant to help (`PERF=1`, the soak's perf sidecar, or the sampler). The
+  `src/api/*.rs`) need two things in the pull request. First, the go/no-go
+  verdict (`make quick`: `cb launch quick` on the gate cells,
+  `docs/benchmarking.md`). Second, a per-operation cycle attribution on the
+  workload the change is meant to help (the per-run counters in that
+  workload's cb report, the soak's perf sidecar, or the sampler). The
   change names the mechanism it attacks. larson counters do not stand in
   for Valkey or Ruby.
-- Cite the benchmark run id (or the results file) for every number in a
-  pull request. Reference numbers come only from the reference machines
-  described in `docs/benchmarking.md`. A laptop or emulated number is
+- Cite the cb run id (or the results file) for every number in a pull
+  request. Reference numbers come only from the reference cells described
+  in `docs/benchmarking.md`. A laptop or emulated number is
   never compared with a reference number.
 
 ## Tests

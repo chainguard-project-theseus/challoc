@@ -1,5 +1,4 @@
-"""Score parsers for the rows of bench/rows.toml, ported from bench/lib.sh
-(run_row's awk scorers, ops_of, run_churn).
+"""Score parsers for the rows of bench/rows.toml.
 
 Each parser takes the program's combined stdout/stderr and the rt record
 (bench/tools/rt.c, RT_JSON) and returns a Parsed: the score, the operation
@@ -35,7 +34,7 @@ def _num(s: str) -> float | None:
 def parse_larson(out: str, rt: dict[str, Any], row: Row) -> Parsed:
     # "Throughput =  44512345 operations per second, relative time: ..."
     # larson's relative time is 1e9/throughput, not the run time: the ops
-    # are throughput x the fixed duration (lib.sh ops_of).
+    # are throughput x the fixed duration.
     for line in out.splitlines():
         if "Throughput" in line:
             f = line.split()

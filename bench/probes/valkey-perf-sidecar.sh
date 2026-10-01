@@ -19,7 +19,7 @@
 # bench/results/2026-09-18-aarch64-gce-valkey-throughput.md.
 set -u
 L=${1:?usage: valkey-perf-sidecar.sh OUTDIR [D0] [S0]}; D0=${2:-400}; S0=${3:-605}
-# The servers the soak starts, in order (bench/valkey-soak.sh ALLOCS; a
+# The servers the soak starts, in order (bench/drivers/valkey-soak.sh ALLOCS; a
 # same-run comparison of two contrib patches passes "challoc-old challoc jemalloc").
 ALLOCS=${ALLOCS:-"challoc jemalloc"}
 EV=task-clock,cycles,instructions,L1-dcache-load-misses,dTLB-load-misses,branch-misses

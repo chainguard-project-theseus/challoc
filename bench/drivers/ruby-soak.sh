@@ -5,7 +5,7 @@
 # bursts of short-lived strings and arrays, a slowly growing long-lived set,
 # a full GC every 30 s, GC.compact once at minute 5) for DURATION seconds
 # per allocator, RSS and allocator stats sampled every INTERVAL seconds.
-# Every Ruby row of bench/ruby-bench.sh ends within seconds, before
+# The Ruby timed rows (bench/rows.toml) end within seconds, before
 # challoc's dirty_decay_ms (10 s) can fire, and the --with-jemalloc Ruby
 # never calls malloc_trim, so this is where long-lived residency under
 # each allocator is measured. Runs inside the dev container: `make
@@ -69,7 +69,7 @@
 set -eu
 cd "$(dirname "$0")/../.."
 ROOT=$(pwd)
-. "$ROOT/bench/lib.sh"
+. "$ROOT/bench/drivers/lib.sh"
 ALLOCS=${ALLOCS:-"challoc jemalloc challoc-bg"}
 DURATION=${DURATION:-600}
 INTERVAL=${INTERVAL:-5}

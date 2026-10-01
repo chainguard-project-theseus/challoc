@@ -19,7 +19,7 @@ import subprocess
 import time
 from typing import Any
 
-# The /proc/config.gz keys worth a line in host.json (bench/gce/matrix-cell.sh's list, trimmed).
+# The /proc/config.gz keys worth a line in host.json.
 CONFIG_KEYS = re.compile(
     r"^(CONFIG_(RSEQ|SCHED_MM_CID|PSI|MEMCG|PERF_EVENTS|HZ|HZ_[0-9]+|TRANSPARENT_HUGEPAGE|TRANSPARENT_HUGEPAGE_[A-Z]+|"
     r"ARM64_MTE|ARM64_PTR_AUTH|ARM64_BTI|ARM64_VA_BITS|ARM64_[0-9]+K_PAGES|X86_5LEVEL|ADDRESS_MASKING|USERFAULTFD|"
