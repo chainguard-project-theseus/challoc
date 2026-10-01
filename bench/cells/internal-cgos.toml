@@ -1,0 +1,145 @@
+# ============================================================================
+# INTERNAL. Chainguard OS cells: the product's own kernel and glibc as the
+# host. Not for publication: delete this file (and nothing else) before the
+# repository goes public. Every name that identifies the internal images is
+# in this file and only here; `cb cells --lint` fails when one of the
+# [lint] markers below appears in a public file (public cell files, bench/cb,
+# rows, suites).
+# ============================================================================
+#
+# Loaded like every bench/cells/*.toml (public.toml first; shapes and
+# [defaults] come from there). The images live in another project than the
+# VMs; `cb launch` resolves each family to the image it points at when the
+# launch starts (`gcloud compute images describe-from-family`) and boots
+# every VM of the launch from that image. A family that does not resolve
+# makes its cell PENDING (listed in the report, nothing created), not a
+# failure. The kernel that booted is checked against `expect.kernel` in
+# the VM (a mismatch is an infrastructure failure of that VM) and recorded
+# in host.json from `uname -r`.
+#
+# Host facts (docs/runbooks/chainguard-os-gce.md; re-checked 2026-10-01):
+# bootc/composefs, read-only root, /var writable but only 4.9 GiB of a
+# bigger partition (prep grow-var grows it online), no python3, no apt or
+# apk, no docker, no make/gcc/git/perf; root podman 6.1 (rootless fails),
+# no nft, so every container uses --network=host (runtime sudo-podman);
+# bash, curl, jq, tar, awk, sed, systemd-run present. Binaries built in the
+# Wolfi bench image run natively (same glibc 2.44).
+#
+# Spike, 2026-10-01 (cb-spike-* VMs, c4-standard-4 / c4a-standard-4,
+# us-east4-a, spot): do startup scripts run on these images? YES. On all
+# three families tried (the 6.18 server image on arm64, the production
+# server image on amd64, the 7.2 minimal server image on amd64) the guest
+# agent ran the `startup-script` metadata as root 8 to 15 s after boot,
+# with the metadata server, the VM's service-account token, GCS uploads,
+# `podman login` to Artifact Registry and a pull of the bench image (11 to
+# 14 s) all working. So these cells use bootstrap = "startup-script", the
+# same boot.sh as the Ubuntu cells, and need no ssh login at all (the
+# server images take no OS Login and create no user from ssh-keys
+# metadata). The ssh + `sudo systemd-run` fallback (bootstrap =
+# "ssh-systemd-run": boot.sh goes into the cb-boot metadata key and is
+# started as a transient system unit over ssh) stays in gce.py for an
+# image whose agent runs no scripts; a job started from a plain ssh session
+# dies with the session scope on these hosts.
+#
+# What the spike saw per image (uname -r; THP; debugfs):
+#   6.18 server, arm64     6.18.49-r2-gcp-6.18; THP always; no rseq/ in debugfs
+#   production, amd64      6.18.54-r1-gcp-6.18; THP always; host has resize2fs
+#   7.2 minimal, amd64     7.2.3-r0-server-7.2; THP madvise;
+#                          /sys/kernel/debug/rseq/{debug,slice_ext_nsec},
+#                          /sys/kernel/debug/sched/llc_balancing
+# perf_event_paranoid is 2 on all three (boot.sh sets 1).
+
+[lint]
+markers = ["wolfi-vm", "kirkland-", "chainguard-server-"]
+
+# ---- 6.18: the server hypervisor image -------------------------------------
+[cell.cgos618-arm64]
+shape = "axion-v2"
+host = { family = "kirkland-server-hypervisor-arm64", project = "wolfi-vm" }
+runtime = "sudo-podman"
+bootstrap = "startup-script"
+prep = ["grow-var"]
+boot_disk_gb = 50
+expect = { kernel = '^6\.18\.' }
+tags = ["product", "ceiling", "cgos", "exp-slice"]
+
+[cell.cgos618-amd64]
+shape = "emr16"
+host = { family = "kirkland-server-hypervisor-amd64", project = "wolfi-vm" }
+runtime = "sudo-podman"
+bootstrap = "startup-script"
+prep = ["grow-var"]
+boot_disk_gb = 50
+expect = { kernel = '^6\.18\.' }
+tags = ["product", "ceiling", "cgos"]
+
+# ---- production: the shipped server image ---------------------------------
+[cell.cgos-prod-amd64]
+shape = "emr16"
+host = { family = "chainguard-server-hypervisor-amd64", project = "wolfi-vm" }
+runtime = "sudo-podman"
+bootstrap = "startup-script"
+prep = ["grow-var"]
+boot_disk_gb = 50
+tags = ["product", "cgos"]
+
+[cell.cgos-prod-arm64]
+shape = "axion-v2"
+host = { family = "chainguard-server-hypervisor-arm64", project = "wolfi-vm" }
+runtime = "sudo-podman"
+bootstrap = "startup-script"
+prep = ["grow-var"]
+boot_disk_gb = 50
+tags = ["product", "cgos"]
+
+# ---- 7.2: the minimal server image (VM, x86_64) ---------------------------
+# Kernel 7.2: rseq time slice extension, cache-aware scheduling
+# (sched/llc_balancing), khugepaged mTHP collapse. No /proc/config.gz; the
+# option bits come from kallsyms and debugfs.
+[cell.cgos72-amd64]
+shape = "emr16"
+host = { family = "kirkland-server-7dot2-min-amd64", project = "wolfi-vm" }
+runtime = "sudo-podman"
+bootstrap = "startup-script"
+prep = ["grow-var"]
+boot_disk_gb = 50
+expect = { kernel = '^7\.2\.' }
+tags = ["product", "ceiling", "k-ladder", "cgos", "exp-slice"]
+
+# Multi-LLC (8-core CCDs) for llc_balancing (exp-llc).
+[cell.cgos72-turin64]
+shape = "turin64"
+host = "@cgos72-amd64"
+runtime = "sudo-podman"
+bootstrap = "startup-script"
+prep = ["grow-var"]
+boot_disk_gb = 50
+expect = { kernel = '^7\.2\.' }
+tags = ["experiment", "exp-llc"]
+
+# No 7.2 VM image for arm64 yet (only metal): PENDING until the family
+# exists, then a cell like any other.
+[cell.cgos72-arm64]
+shape = "axion-v2"
+host = { family = "kirkland-server-7dot2-min-arm64", project = "wolfi-vm" }
+runtime = "sudo-podman"
+bootstrap = "startup-script"
+prep = ["grow-var"]
+boot_disk_gb = 50
+expect = { kernel = '^7\.2\.' }
+tags = ["product", "ceiling", "cgos"]
+
+# 7.2 on arm64 metal (Neoverse N3, full PMU): weekly profile only; on
+# demand, us-central1-a, 60-minute cap; about $10/h.
+[cell.cgos72-metal-arm64]
+shape = { arch = "arm64", machine = "c4a-highmem-96-metal", pmu = "standard" }
+host = { family = "kirkland-server-7dot2-metal-arm64", project = "wolfi-vm" }
+zones = ["us-central1-a"]
+spot = "never"
+max_run = "60m"
+runtime = "sudo-podman"
+bootstrap = "startup-script"
+prep = ["grow-var"]
+boot_disk_gb = 200
+expect = { kernel = '^7\.2\.' }
+tags = ["weekly", "ceiling", "profile"]
