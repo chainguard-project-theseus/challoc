@@ -21,6 +21,19 @@ pub struct Variant {
     /// run on to the corruption that follows (a slot handed out twice, a
     /// push lost) so a test can show it by name.
     pub strict_cid: bool,
+    /// Per-CPU mode, challoc PR #4: a refill push-back onto a non-empty
+    /// stack clips the zero prefix at the old `len` (`rseq::push_batch`).
+    /// `false` replays the code before it, which left `zeroed` alone, so
+    /// a dirty batch landed inside a prefix that pops had left above
+    /// `len` and was reported zero.
+    pub batch_clip: bool,
+    /// Per-CPU mode, challoc PR #5: the pop reads `zeroed` for its zero
+    /// flag inside the section, before the commit store, as the aarch64
+    /// `pop_raw` always did. `false` replays the x86_64 code before it,
+    /// which compared after the commit, outside the section: another
+    /// thread on the cid could refill the emptied cache with a zero batch
+    /// in between and the pop reported its dirty slot zero.
+    pub pop_zero_in_section: bool,
 }
 
 /// The per-CPU pop and push (design 15, plan Phase 2.5 task 8).
@@ -45,6 +58,8 @@ pub const CURRENT: Variant = Variant {
     owner_check: true,
     section: Section::Rseq,
     strict_cid: true,
+    batch_clip: true,
+    pop_zero_in_section: true,
 };
 
 /// A scenario: the threads (arena and program) and the geometry.
@@ -61,6 +76,12 @@ pub struct Scenario {
     /// then follows the cid of its pop (the refill's arena); the
     /// `(arena, program)` arena is the one its `Purge` runs on.
     pub percpu: bool,
+    /// Per-CPU mode: slots a `Pop` claims when its cache is empty (the
+    /// real code's `cap / 2`), one handed out and the rest pushed back.
+    /// [`REFILL`] (2) pushes back one slot; 3 pushes back a zero batch of
+    /// two, the least that leaves `zeroed` above a non-empty `len` after
+    /// a pop, at a larger state space.
+    pub refill: u8,
 }
 
 /// The calloc race scenario (plan Phase 1.5 task 7, the campaign's
@@ -92,6 +113,7 @@ pub fn calloc_race() -> Scenario {
         lg_group: 1,
         group_handoff: false,
         percpu: false,
+        refill: REFILL,
     }
 }
 
@@ -125,6 +147,7 @@ pub fn churn() -> Scenario {
         lg_group: 1,
         group_handoff: false,
         percpu: false,
+        refill: REFILL,
     }
 }
 
@@ -143,6 +166,7 @@ pub fn three_way() -> Scenario {
         lg_group: 1,
         group_handoff: false,
         percpu: false,
+        refill: REFILL,
     }
 }
 
@@ -161,6 +185,7 @@ pub fn handoff() -> Scenario {
         lg_group: 0,
         group_handoff: true,
         percpu: false,
+        refill: REFILL,
     }
 }
 
@@ -184,6 +209,7 @@ pub fn percpu_share() -> Scenario {
         lg_group: 0,
         group_handoff: false,
         percpu: true,
+        refill: REFILL,
     }
 }
 
@@ -206,6 +232,7 @@ pub fn percpu_migrate() -> Scenario {
         lg_group: 0,
         group_handoff: false,
         percpu: true,
+        refill: REFILL,
     }
 }
 
@@ -226,5 +253,27 @@ pub fn percpu_purge() -> Scenario {
         lg_group: 0,
         group_handoff: false,
         percpu: true,
+        refill: REFILL,
+    }
+}
+
+/// Two refills racing on one cid (challoc PR #4): with batches of three,
+/// a refill pushes a zero batch of two onto an empty cache and a pop
+/// leaves `zeroed` above `len`; the other thread's refill, whose empty
+/// pop came first, claims a slot another refill dirtied and freed, and
+/// its push-back lands on that non-empty cache (the same cid, or
+/// migrated onto it). The push-back must clip the prefix at the old
+/// `len`, or the dirty entry sits inside it and a pop reports it zero.
+pub fn percpu_refill_race() -> Scenario {
+    Scenario {
+        name: "per-CPU: two refills racing on one cid",
+        threads: vec![
+            (0, vec![Op::Pop, Op::Pop, Op::Release, Op::Pop]),
+            (0, vec![Op::Pop, Op::Write(0), Op::Release]),
+        ],
+        lg_group: 0,
+        group_handoff: false,
+        percpu: true,
+        refill: 3,
     }
 }

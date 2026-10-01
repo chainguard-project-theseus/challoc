@@ -46,56 +46,75 @@
 //! the state byte, which is what the calloc race and the ownership
 //! check were about.
 //!
-//! Two knobs replay the protocol before its fixes ([`Variant`]):
+//! Four knobs replay the protocol before its fixes ([`Variant`]):
 //! `prefix_claim: false` is the pre-7 (c) order (the zero flag decided in
 //! `plan`, the bits claimed in `finish`), and the model finds the calloc
 //! race (a slot reported zero whose memory another thread dirtied in the
 //! window) and prints the interleaving; `owner_check: false` drops the
 //! owner test of `on_live_zero` and `reopen` (plan Phase 1.5 task 15),
 //! and with `group_handoff` on the model finds a slab of one arena in
-//! another arena's sets. With both on, every scenario passes.
+//! another arena's sets; `batch_clip: false` (per-CPU mode, below) lets
+//! a refill push-back onto a non-empty cache leave the zero prefix
+//! unclipped (the code before challoc PR #4), and the scenario
+//! `percpu_refill_race` finds a dirty slot inside the prefix;
+//! `pop_zero_in_section: false` reads a pop's zero flag after its commit,
+//! outside the section (the x86_64 `pop_raw` before challoc PR #5), and
+//! `percpu_share` finds a refill raising `zeroed` over the emptied cache
+//! in between. With all four on, every scenario passes.
 //!
 //! A change to the protocol in `class/` is a change to a step here.
 //!
-//! The per-CPU mode (design section 15, plan Phase 2.5 task 8; the
-//! scenarios `percpu_*`). With [`Scenario::percpu`] the caches are owned
-//! by a concurrency id, not a thread: [`NCACHES`] caches, cache `c` bound
-//! to arena `c`, each a small array plus `len` and the `zeroed` prefix of
-//! design 6.3. `Pop` and `Push(i)` are rseq critical sections as the
-//! kernel defines them: the thread reads `mm_cid` and picks the cache,
-//! reads `len` and the top entry (speculative locals), then one commit
-//! store. The scheduler is modelled by what the caches can observe of
-//! it: the `mm_cid` a thread reads at a section's entry is the
-//! exploration's choice (any cid: the kernel may have moved the thread
-//! anywhere since its last section), and since running threads of one
-//! process never share an `mm_cid`, a thread that still has an
-//! outstanding read of that cid was descheduled in between: under
-//! [`Section::Rseq`] the kernel sends it to the abort handler (the
-//! section's start: the locals discarded, `mm_cid` re-read, possibly a
-//! new cid), and a thread inside a section may also be preempted
-//! spontaneously (a signal, a migration; the one explicit scheduler step)
-//! with the same abort. So with more threads than cids the caches are
-//! shared over time, a thread that popped on cid 0 may push on cid 1,
-//! and a commit under `Rseq` is always by the thread that holds the cid
+//! The per-CPU mode (design section 15, plan Phase 2.5 task 8;
+//! the scenarios `percpu_*`). With [`Scenario::percpu`] the caches
+//! are owned by a concurrency id, not a thread: [`NCACHES`] caches,
+//! cache `c` bound to arena `c`, each a small array plus `len` and the
+//! `zeroed` prefix of design 6.3. `Pop` and `Push(i)` are rseq critical
+//! sections as the kernel defines them: the thread reads `mm_cid` and
+//! picks the cache, reads `len` and the top entry (speculative locals),
+//! then one commit store (a pop reads `zeroed` for its zero flag before
+//! the commit, inside the section); the pop and push sections store what
+//! `rseq.rs` stores, `zeroed` included (a pop never lowers it, a push
+//! clips it at `len`, a refill push-back sets it on an empty stack and
+//! clips it at the old `len` on a non-empty one), and a preemption may
+//! abort a section after its pre-commit stores (the `zeroed` stores an
+//! aborted push or push-back leaves behind). The flush is one section
+//! that takes half the cache and clears `zeroed`; the real flush is
+//! two sections, `take_all` and then `push_batch` of the kept entries,
+//! and the model does not interleave another thread between them. The
+//! scheduler is modelled by what the caches can observe of it: the
+//! `mm_cid` a thread reads at a section's entry is the exploration's
+//! choice (any cid: the kernel may have moved the thread anywhere since
+//! its last section), and since running threads of one process never
+//! share an `mm_cid`, a thread that still has an outstanding read
+//! of that cid was descheduled in between: under [`Section::Rseq`]
+//! the kernel sends it to the abort handler (the section's start:
+//! the locals discarded, `mm_cid` re-read, possibly a new cid),
+//! and a thread inside a section may also be preempted spontaneously
+//! (a signal, a migration; the one explicit scheduler step) with the
+//! same abort. So with more threads than cids the caches are shared
+//! over time, a thread that popped on cid 0 may push on cid 1, and
+//! a commit under `Rseq` is always by the thread that holds the cid
 //! that picked the cache. The kernel-owned fields are read-only in the
 //! model: the threads read `mm_cid`, nothing in the protocol writes it.
 //! [`Section::None`] is the buggy variant that does the same loads and
 //! stores with no section (a thread descheduled between its `mm_cid`
-//! read and its store goes on with the stale cid and stale locals), and
-//! [`Section::CidOutside`] reads `mm_cid` before the section (the abort
-//! handler restarts with the stale index): both hand a slot to two
-//! threads or lose a push, and the model prints the interleaving. An empty cache
-//! leaves the section and refills through the existing `Refill` steps
-//! (the class lock of the cid's arena), then pushes the batch back
-//! through a section on whatever cid the thread is on then; a full cache
-//! leaves the section, pops half through a section into the thread's
-//! staging and releases it through the existing `Release` steps, routed
-//! slab by slab to the owner arena (`Heap::release_routed`), then retries.
-//! The invariants gain: no slot in two caches or in a cache and owned by
-//! a thread, every set bit has exactly one holder (a cache, a thread's
-//! owned slot or its staging: a lost push is a bit with no holder), the
-//! `zeroed` prefix reads zero, and (`Variant::strict_cid`) a cache is
-//! only ever mutated by a section whose cid matched at commit.
+//! read and its store goes on with the stale cid and stale locals),
+//! and [`Section::CidOutside`] reads `mm_cid` before the section (the
+//! abort handler restarts with the stale index): both hand a slot to two
+//! threads or lose a push, and the model prints the interleaving. An
+//! empty cache leaves the section and refills through the existing
+//! `Refill` steps (the class lock of the cid's arena), then pushes the
+//! batch back through a section on whatever cid the thread is on then;
+//! a full cache leaves the section, pops half through a section into the
+//! thread's staging and releases it through the existing `Release` steps,
+//! routed slab by slab to the owner arena (`Heap::release_routed`),
+//! then retries.  The invariants gain: no slot in two caches or in a
+//! cache and owned by a thread, every set bit has exactly one holder (a
+//! cache, a thread's owned slot or its staging: a lost push is a bit with
+//! no holder), the entries below `min(len, zeroed)` read zero
+//! (`zeroed > len` is a normal state after pops), and
+//! (`Variant::strict_cid`) a cache is only ever mutated by a section
+//! whose cid matched at commit.
 //!
 //! Layout: `state` holds the modelled state (slabs, arenas, caches, the
 //! per-thread machine) and its small helpers; `steps` the step function
@@ -145,25 +164,29 @@ const MAX_STATES: usize = 5_000_000;
 /// NARENAS`.
 pub const NCACHES: usize = NARENAS;
 /// Entries per cache. Small: the refill's batch is the real code's
-/// `cap / 2`, here [`REFILL`] slots so that a refill has one slot to push
-/// back into the cache and one to hand out.
+/// `cap / 2`, here [`Scenario::refill`] slots, so that a refill hands one
+/// out and pushes the rest back into the cache.
 pub const CACHE_CAP: u8 = 2;
-/// Slots a `Pop` claims when its cache is empty.
+/// Slots a `Pop` claims when its cache is empty, unless the scenario says
+/// otherwise ([`Scenario::refill`]).
 const REFILL: u8 = 2;
 /// Slots the flush of a full cache pops out (`cap / 2`).
 const FLUSH_HALF: u8 = CACHE_CAP / 2;
 /// Slots a thread's program owns at once in the per-CPU mode.
 const MAX_OWNED: usize = 2;
 /// Sub-step bases of the composite per-CPU operations: `Pop` is the
-/// section (0..3), then `Refill`'s steps (10..), then the batch push
-/// section (20..23), then `Release` of the overflow (30..); `Push` is the
-/// section (0..3), then the flush section (10..13), then `Release` of
-/// the flushed slots (20..) and back to 0.
+/// section (0..2, then [`POP_LATE_ZERO`]), then `Refill`'s steps (10..),
+/// then the batch push section (20..23), then `Release` of the overflow
+/// (30..); `Push` is the section (0..3), then the flush section (10..13),
+/// then `Release` of the flushed slots (20..) and back to 0.
 const POP_REFILL: u8 = 10;
 const POP_PUSHBACK: u8 = 20;
 const POP_RELEASE: u8 = 30;
 const PUSH_FLUSH: u8 = 10;
 const PUSH_RELEASE: u8 = 20;
+/// The pre-fix x86_64 pop's read of `zeroed` after its commit, outside
+/// the section ([`Variant::pop_zero_in_section`] false).
+const POP_LATE_ZERO: u8 = 3;
 
 /// A step taken: thread, operation, sub-step, and what it did.
 #[derive(Clone, Debug)]
@@ -386,6 +409,7 @@ mod tests {
             lg_group: 1,
             group_handoff: false,
             percpu: false,
+            refill: REFILL,
         };
         let out = run(
             &sc,
@@ -504,6 +528,109 @@ mod tests {
     #[test]
     fn the_rseq_protocol_passes_the_per_cpu_purge_scenario() {
         percpu_passes(&percpu_purge());
+    }
+
+    #[test]
+    fn the_cache_sections_keep_zeroed_as_the_asm_does() {
+        let z = |slot| Held {
+            slab: 0,
+            slot,
+            zero: true,
+        };
+        let d = |slot| Held {
+            slab: 1,
+            slot,
+            zero: false,
+        };
+        // A zero batch of two onto an empty stack: the prefix is the batch.
+        let mut c = Cache::default();
+        assert_eq!(c.push_batch(0, &[z(2), z(1)], true, true), 2);
+        assert_eq!((c.len, c.zeroed), (2, 2));
+        // A pop commits `len` alone: `zeroed` stays above it.
+        c.set_len(1);
+        assert_eq!((c.len, c.zeroed), (1, 2));
+        // A dirty batch onto the non-empty stack: clipped at the old
+        // `len` with the fix, left above it before.
+        let mut old = c;
+        assert_eq!(old.push_batch(1, &[d(0), d(1)], false, false), 1);
+        assert_eq!((old.len, old.zeroed), (2, 2));
+        assert_eq!(c.push_batch(1, &[d(0), d(1)], false, true), 1);
+        assert_eq!((c.len, c.zeroed), (2, 1));
+        // A push clips at its `len` whatever it pushes.
+        let mut c = Cache::default();
+        c.push_batch(0, &[z(2), z(1)], true, true);
+        c.set_len(0);
+        c.push(0, z(3));
+        assert_eq!((c.len, c.zeroed), (1, 0));
+    }
+
+    #[test]
+    fn without_the_batch_clip_a_dirty_refill_lands_in_the_zero_prefix() {
+        let out = run(
+            &percpu_refill_race(),
+            Variant {
+                batch_clip: false,
+                ..CURRENT
+            },
+        );
+        let (msg, tr) = out
+            .violation
+            .expect("a push-back that leaves zeroed above the old len must show the race");
+        assert!(msg.contains("the calloc race"), "{msg}\n{}", tr.render());
+        // The mechanism: a pop leaves `zeroed` above `len`, and a dirty
+        // batch lands on the non-empty cache with the prefix unclipped.
+        assert!(
+            tr.0.iter().any(|s| s.3.contains("pop: commit len 2 -> 1")
+                && s.3.contains("(zeroed 2 stays)")),
+            "{}",
+            tr.render()
+        );
+        assert!(
+            tr.0.iter()
+                .any(|s| s.3.contains("dirty into cache")
+                    && s.3.contains("(len 1 -> 2, zeroed 2 -> 2)")),
+            "{}",
+            tr.render()
+        );
+    }
+
+    #[test]
+    fn with_the_pop_zero_read_after_the_commit_a_refill_raises_zeroed_under_it() {
+        let out = run(
+            &percpu_share(),
+            Variant {
+                pop_zero_in_section: false,
+                ..CURRENT
+            },
+        );
+        let (msg, tr) = out
+            .violation
+            .expect("a zero flag read after the pop's commit must show the race");
+        assert!(msg.contains("the calloc race"), "{msg}\n{}", tr.render());
+        // The mechanism: a pop empties a cache, a refill on that cid sets
+        // the prefix over the empty stack, and the pop's late read of
+        // `zeroed` then reports its slot zero.
+        let late =
+            tr.0.iter()
+                .position(|s| s.3.contains("after the commit") && s.3.contains("(reported zero)"))
+                .expect("the pop reads the raised zeroed");
+        let popper = tr.0[late].0;
+        let empty = tr.0[..late]
+            .iter()
+            .rposition(|s| s.0 == popper && s.3.contains("pop: commit len 1 -> 0"))
+            .expect("that pop emptied a cache");
+        assert!(
+            tr.0[empty..late].iter().any(|s| s.0 != popper
+                && s.3.contains("zero into cache")
+                && s.3.contains("(len 0 ->")),
+            "another thread's refill pushes a zero batch onto the emptied cache in between\n{}",
+            tr.render()
+        );
+    }
+
+    #[test]
+    fn the_rseq_protocol_passes_the_per_cpu_refill_race_scenario() {
+        percpu_passes(&percpu_refill_race());
     }
 
     #[test]

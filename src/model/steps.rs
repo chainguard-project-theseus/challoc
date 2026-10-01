@@ -29,7 +29,7 @@ impl Model<'_> {
         }
         let sh = &n.shared;
         let a = th.arena as usize;
-        match micro(self.program(t)[th.pc as usize], th.sub) {
+        match micro(self.program(t)[th.pc as usize], th.sub, self.sc.refill) {
             // Lock acquisitions: `self.inner.lock()` blocks while held.
             Micro::Refill(_, s) if Refill::at(s) == Refill::Lock => sh.lock[a].is_none(),
             Micro::Purge(s) if Purge::at(s) == Purge::Lock => sh.lock[self.purge_arena(th, t)].is_none(),
@@ -55,7 +55,7 @@ impl Model<'_> {
         if !self.sc.percpu {
             return 1;
         }
-        match micro(self.program(t)[th.pc as usize], th.sub) {
+        match micro(self.program(t)[th.pc as usize], th.sub, self.sc.refill) {
             Micro::Pop(0) | Micro::PushBack(0) | Micro::Push(_, 0) | Micro::Flush(0) => {
                 NCACHES as u8
             }
@@ -70,7 +70,7 @@ impl Model<'_> {
         let (sh, ths) = (&mut n.shared, &mut n.threads);
         let th = &mut ths[t];
         let tid = t as u8;
-        match micro(op, sub) {
+        match micro(op, sub, self.sc.refill) {
             Micro::Refill(want, sub) => self.step_refill(sh, th, tid, op, want, sub),
             Micro::Write(i) => {
                 // The program writes a slot it was given; a refill that
@@ -137,6 +137,24 @@ impl Model<'_> {
                     }
                 );
                 self.after_reads(sh, th, t, d, Self::pop_commit)
+            }
+            Micro::Pop(POP_LATE_ZERO) => {
+                // `Variant::pop_zero_in_section` false: the pre-fix x86_64
+                // `pop_raw` compares `len < zeroed` after label 3, outside
+                // the section, so another thread on the cid may have
+                // refilled the emptied cache and raised `zeroed` since the
+                // commit.
+                let c = &sh.caches[th.sec_cid as usize];
+                let zero = th.spec_len - 1 < c.zeroed;
+                th.owned[th.nowned as usize - 1].zero = zero;
+                let d = format!(
+                    "pop: after the commit, zeroed {} read on cache {}{}",
+                    c.zeroed,
+                    th.sec_cid,
+                    if zero { " (reported zero)" } else { "" }
+                );
+                th.done();
+                Ok(d)
             }
             Micro::Pop(_) => self.pop_commit(sh, th, t),
             Micro::PushBack(0) => {
@@ -905,8 +923,11 @@ impl Model<'_> {
             }
         }
         for (c, cache) in sh.caches.iter().enumerate() {
+            // `zeroed > len` is a normal state (a pop never lowers
+            // `zeroed`); what the protocol needs is that the entries
+            // below `min(len, zeroed)` read zero, checked per entry below.
             assert!(
-                cache.len <= CACHE_CAP && cache.zeroed <= cache.len,
+                cache.len <= CACHE_CAP && cache.zeroed <= CACHE_CAP,
                 "model: cache {c} len {} zeroed {}",
                 cache.len,
                 cache.zeroed
@@ -1083,8 +1104,29 @@ impl Model<'_> {
         Ok(())
     }
 
+    /// The memoisation key of `n`: the state itself, except that under
+    /// `Section::Rseq` with the pop's zero read inside its section an
+    /// empty cache's `zeroed` is dropped. Pops leave it above `len`, but
+    /// with `len == 0` nothing reads it: a pop finds the cache empty
+    /// before it looks, a push clips it to 0, a refill push-back
+    /// overwrites it, and the invariant reads it only below `len`. The
+    /// other variants keep it, because there it is read: a stale push
+    /// under `Section::None` or `CidOutside` commits at its old `len` over
+    /// an emptied cache and clips from it, and the pre-fix x86_64 pop
+    /// (`pop_zero_in_section` false) reads it after emptying the cache;
+    /// that read is the race the knob exists to show.
+    pub(super) fn key(&self, n: &Node) -> Node {
+        let mut k = n.clone();
+        if self.v.section == Section::Rseq && self.v.pop_zero_in_section {
+            for c in k.shared.caches.iter_mut().filter(|c| c.len == 0) {
+                c.zeroed = 0;
+            }
+        }
+        k
+    }
+
     pub(super) fn explore(&mut self, n: Node) -> Result<(), (String, Trace)> {
-        if !self.seen.insert(n.clone()) {
+        if !self.seen.insert(self.key(&n)) {
             return Ok(());
         }
         assert!(
@@ -1139,6 +1181,26 @@ impl Model<'_> {
                 let at = self.section_start(nt.sub);
                 let desc = format!(
                     "scheduler: T{t} preempted inside its section on cid {}: rseq abort, retry at [{at}]",
+                    nt.sec_cid
+                );
+                self.abort(nt, at);
+                self.trace.push((t as u8, Op::Sched, 0, desc));
+                let r = self.explore(next);
+                self.trace.pop();
+                r?;
+                // The same preemption just before the commit store, after
+                // the section's other stores (`pre_commit_stores`). An
+                // entry on the cid by another thread after such a
+                // preemption is this step followed by that entry.
+                let mut next = n.clone();
+                let Some(left) = self.pre_commit_stores(&mut next.shared, &next.threads[t], t)
+                else {
+                    continue;
+                };
+                let nt = &mut next.threads[t];
+                let at = self.section_start(nt.sub);
+                let desc = format!(
+                    "scheduler: T{t} preempted inside its section on cid {} before the commit: {left}; rseq abort, retry at [{at}]",
                     nt.sec_cid
                 );
                 self.abort(nt, at);

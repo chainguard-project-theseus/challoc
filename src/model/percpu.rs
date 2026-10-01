@@ -29,7 +29,7 @@ pub(super) enum Micro {
     Flush(u8),
 }
 
-pub(super) fn micro(op: Op, sub: u8) -> Micro {
+pub(super) fn micro(op: Op, sub: u8, refill: u8) -> Micro {
     match op {
         Op::Refill(want) => Micro::Refill(want, sub),
         Op::Write(i) => Micro::Write(i),
@@ -39,7 +39,7 @@ pub(super) fn micro(op: Op, sub: u8) -> Micro {
             if sub < POP_REFILL {
                 Micro::Pop(sub)
             } else if sub < POP_PUSHBACK {
-                Micro::Refill(REFILL, sub - POP_REFILL)
+                Micro::Refill(refill, sub - POP_REFILL)
             } else if sub < POP_RELEASE {
                 Micro::PushBack(sub - POP_PUSHBACK)
             } else {
@@ -67,29 +67,62 @@ pub(super) fn micro_base(sub: u8) -> u8 {
 impl Cache {
     /// The commit store of `len`. Entries above it are blanked (a stale
     /// `len` stored over a longer cache loses the entries above: the
-    /// lost push) and the zero prefix never exceeds `len`.
+    /// lost push; the real sections leave dead entries there, which no
+    /// section reads before it overwrites them). `zeroed` is not
+    /// touched: `rseq::pop` never lowers it, so `zeroed > len` is a
+    /// normal state, and only the prefix below `min(len, zeroed)` is a
+    /// claim about memory (the invariant in `check`).
     pub(super) fn set_len(&mut self, len: u8) {
         self.len = len;
         for k in len as usize..CACHE_CAP as usize {
             self.slots[k] = Held::default();
         }
-        if self.zeroed > len {
+    }
+
+    /// `rseq::push_raw`'s store before the commit: `if len < zeroed {
+    /// zeroed = len }`. An aborted push leaves it behind.
+    pub(super) fn clip_zeroed(&mut self, len: u8) {
+        if len < self.zeroed {
             self.zeroed = len;
         }
     }
 
-    /// A push at index `at` (the speculative `len`): the entry, then the
-    /// zero prefix rule of design 6.3 (a zero entry extends a prefix that
-    /// reaches it; a dirty entry below the prefix clips it: `heap/`,
-    /// `if len < zeroed { zeroed = len }`), then `len = at + 1`.
-    pub(super) fn push_at(&mut self, at: u8, h: Held) {
+    /// `rseq::push_raw` at the speculative `len` `at`: the entry into
+    /// the slot above `len`, the clip, then the commit `len = at + 1`.
+    pub(super) fn push(&mut self, at: u8, h: Held) {
         self.slots[at as usize] = Held { zero: false, ..h };
-        if h.zero && self.zeroed == at {
-            self.zeroed = at + 1;
-        } else if !h.zero && at < self.zeroed {
-            self.zeroed = at;
-        }
+        self.clip_zeroed(at);
         self.set_len(at + 1);
+    }
+
+    /// `rseq::push_batch`'s stores before the commit, for a batch of `k`
+    /// entries whose claim reported `zf` onto a stack of `len`: on an
+    /// empty stack the prefix becomes the batch (`zeroed = zf ? r : 0`,
+    /// `r` the entries that fit); on a non-empty one it is clipped at
+    /// the old `len` when `clip` (the fix of challoc PR #4) and left
+    /// alone otherwise (the code before it). An aborted push-back leaves
+    /// them behind. Returns `r`.
+    pub(super) fn batch_zeroed(&mut self, len: u8, k: u8, zf: bool, clip: bool) -> u8 {
+        let r = (CACHE_CAP - len).min(k);
+        if len == 0 {
+            self.zeroed = if zf { r } else { 0 };
+        } else if clip {
+            self.clip_zeroed(len);
+        }
+        r
+    }
+
+    /// `rseq::push_batch` at the speculative `len` `at`: `batch` in order
+    /// into the slots from `at` (`batch[r - 1]` on top), the prefix
+    /// stores, then the commit `len = at + r`. Returns `r`, the entries
+    /// that fit.
+    pub(super) fn push_batch(&mut self, at: u8, batch: &[Held], zf: bool, clip: bool) -> u8 {
+        let r = self.batch_zeroed(at, batch.len() as u8, zf, clip);
+        for (i, h) in batch[..r as usize].iter().enumerate() {
+            self.slots[at as usize + i] = Held { zero: false, ..*h };
+        }
+        self.set_len(at + r);
+        r
     }
 }
 
@@ -138,7 +171,10 @@ impl Model<'_> {
         if self.finished(th, t) {
             return None;
         }
-        match micro(self.program(t)[th.pc as usize], th.sub) {
+        match micro(self.program(t)[th.pc as usize], th.sub, self.sc.refill) {
+            // The pre-fix x86_64 pop's read of `zeroed` after the commit
+            // is outside the section: nothing aborts it.
+            Micro::Pop(POP_LATE_ZERO) => None,
             Micro::Pop(s) | Micro::PushBack(s) | Micro::Push(_, s) | Micro::Flush(s) if s >= 1 => {
                 Some(th.sec_cid)
             }
@@ -204,6 +240,42 @@ impl Model<'_> {
         self.aborts.set(self.aborts.get() + 1);
     }
 
+    /// The stores `th`'s section makes before its commit store, applied
+    /// to its cache: what a section the kernel aborts just before the
+    /// commit leaves behind (the entries it wrote above `len` are dead
+    /// and blank in the model). A push leaves the clip of `zeroed` at
+    /// `len`; a refill push-back leaves the prefix `push_batch` sets or
+    /// clips. A pop's pre-commit stores (`allocs`, `low_water`) and the
+    /// flush's are not modelled. `len` is the speculative one once the
+    /// reads ran (a buggy variant's separate commit step), else the
+    /// cache's, which nothing but this section could have changed since
+    /// the entry (another entry on the cid aborts this one first). `None`
+    /// when the stores change nothing.
+    pub(super) fn pre_commit_stores(
+        &self,
+        sh: &mut Shared,
+        th: &Thread,
+        t: usize,
+    ) -> Option<String> {
+        let c = &mut sh.caches[th.sec_cid as usize];
+        let len = if th.sub - micro_base(th.sub) == 1 { c.len } else { th.spec_len };
+        let before = c.zeroed;
+        match micro(self.program(t)[th.pc as usize], th.sub, self.sc.refill) {
+            Micro::Push(..) if len < CACHE_CAP => c.clip_zeroed(len),
+            Micro::PushBack(_) => {
+                let (_, rest, zf) = Self::refill_batch(th);
+                c.batch_zeroed(len, rest.len() as u8, zf, self.v.batch_clip);
+            }
+            _ => {}
+        }
+        (c.zeroed != before).then(|| {
+            format!(
+                "cache {} zeroed {before} -> {} stored before the commit",
+                th.sec_cid, c.zeroed
+            )
+        })
+    }
+
     /// Step 1 of a section: the speculative reads begin; under
     /// `CidOutside` this is where the section starts.
     pub(super) fn speculate(&self, th: &mut Thread) {
@@ -253,7 +325,9 @@ impl Model<'_> {
         }
     }
 
-    /// `p = slots[--len]`: the one commit store of a pop.
+    /// `p = slots[--len]`: the one commit store of a pop. `zeroed` stays:
+    /// `rseq::pop` never lowers it (the zero flag was read inside the
+    /// section, `len < zeroed` after the pop).
     pub(super) fn pop_commit(&self, sh: &mut Shared, th: &mut Thread, t: usize) -> Result<String, String> {
         let stale = Self::commit(sh, th, t as u8);
         let ent = th.spec_ent;
@@ -261,21 +335,45 @@ impl Model<'_> {
         let before = c.len;
         c.set_len(th.spec_len - 1);
         let d = format!(
-            "pop: commit len {before} -> {} on cache {}, slab {} slot {} owned{}{stale}",
+            "pop: commit len {before} -> {} on cache {} (zeroed {} stays), slab {} slot {} owned{}{stale}",
             c.len,
             th.sec_cid,
+            c.zeroed,
             ent.slab,
             ent.slot,
             if ent.zero { " (reported zero)" } else { "" }
         );
+        if !self.v.pop_zero_in_section {
+            // The pre-fix x86_64 order: the zero flag is read after the
+            // commit, a step of its own (`Micro::Pop(POP_LATE_ZERO)`).
+            th.own(Held { zero: false, ..ent });
+            th.sub = POP_LATE_ZERO;
+            return Ok(d);
+        }
         th.own(ent);
         th.done();
         Ok(d)
     }
 
-    /// The refill push-back's commit: `slots[len..len + k] = batch; len +=
-    /// k`. What the cache has no room for (the thread migrated onto a
-    /// fuller cache) stays staged and is released.
+    /// The refill's hand-out and batch (`Heap::percpu_alloc_slow`): the
+    /// staged claim `out[..n]` in claim order, whose one zero flag is
+    /// `Claim::zeroed` (every slot of the claim zero); `out[0]` is the
+    /// pop's result and `rest = out[1..n]`, reversed, is the batch
+    /// `push_batch` takes (lowest address on top).
+    pub(super) fn refill_batch(th: &Thread) -> (Held, Vec<Held>, bool) {
+        let out = &th.held[..th.nheld as usize];
+        let zf = out.iter().all(|h| h.zero);
+        let mut rest: Vec<Held> = out[1..].to_vec();
+        rest.reverse();
+        (Held { zero: zf, ..out[0] }, rest, zf)
+    }
+
+    /// The refill push-back's commit (`rseq::push_batch`): as much of the
+    /// batch as fits from the speculative `len`, the zero prefix set
+    /// (empty stack) or clipped at the old `len` (non-empty stack, with
+    /// [`Variant::batch_clip`]), then `len += r`. What the cache has no
+    /// room for (the thread migrated onto a fuller cache) stays staged
+    /// and is released (`release_routed(&rest[pushed..])`).
     pub(super) fn pushback_commit(
         &self,
         sh: &mut Shared,
@@ -283,25 +381,26 @@ impl Model<'_> {
         t: usize,
     ) -> Result<String, String> {
         let stale = Self::commit(sh, th, t as u8);
-        let batch = th.drain_held();
-        th.own(batch[0]);
+        let (first, rest, zf) = Self::refill_batch(th);
+        th.drain_held();
+        th.own(first);
         let c = &mut sh.caches[th.sec_cid as usize];
-        let before = c.len;
-        let room = CACHE_CAP - th.spec_len;
-        let mut at = th.spec_len;
-        let mut pushed = 0u8;
-        for h in &batch[1..] {
-            if pushed < room {
-                c.push_at(at, *h);
-                at += 1;
-                pushed += 1;
-            } else {
-                th.hold(*h);
-            }
+        let before = (c.len, c.zeroed);
+        let pushed = c.push_batch(th.spec_len, &rest, zf, self.v.batch_clip);
+        for h in &rest[pushed as usize..] {
+            th.hold(*h);
         }
         let mut desc = format!(
-            "refill push-back: commit slab {} slot {} owned, {pushed} into cache {} (len {before} -> {}, zeroed {}){stale}",
-            batch[0].slab, batch[0].slot, th.sec_cid, c.len, c.zeroed
+            "refill push-back: commit slab {} slot {} owned{}, {pushed} {} into cache {} (len {} -> {}, zeroed {} -> {}){stale}",
+            first.slab,
+            first.slot,
+            if first.zero { " (reported zero)" } else { "" },
+            if zf { "zero" } else { "dirty" },
+            th.sec_cid,
+            before.0,
+            c.len,
+            before.1,
+            c.zeroed
         );
         if th.nheld != 0 {
             th.sub = POP_RELEASE;
@@ -312,8 +411,9 @@ impl Model<'_> {
         Ok(desc)
     }
 
-    /// `slots[len++] = p`: the one commit store of a push. A pushed slot
-    /// is dirty as far as the prefix knows.
+    /// `rseq::push_raw`: `slots[len] = p`, the clip `if len < zeroed {
+    /// zeroed = len }`, then the one commit store `len += 1`. A pushed
+    /// slot is dirty as far as the prefix knows.
     pub(super) fn push_commit(&self, sh: &mut Shared, th: &mut Thread, t: usize) -> Result<String, String> {
         let Op::Push(i) = self.program(t)[th.pc as usize] else {
             unreachable!("model: push_commit outside a Push")
@@ -332,7 +432,7 @@ impl Model<'_> {
         };
         let c = &mut sh.caches[th.sec_cid as usize];
         let before = c.len;
-        c.push_at(th.spec_len, Held { zero: false, ..h });
+        c.push(th.spec_len, h);
         let d = format!(
             "push: commit slots[{}] = slab {} slot {} on cache {} (len {before} -> {}){cross}{stale}",
             th.spec_len, h.slab, h.slot, th.sec_cid, c.len
