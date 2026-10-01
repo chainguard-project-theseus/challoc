@@ -92,17 +92,19 @@ pub fn parse_decimal(bytes: &[u8]) -> Option<u64> {
     if digits == 0 {
         return None;
     }
-    bytes[..digits].iter().try_fold(0u64, |acc, &b| acc.checked_mul(10)?.checked_add(u64::from(b - b'0')))
+    bytes[..digits].iter().try_fold(0u64, |acc, &b| {
+        acc.checked_mul(10)?.checked_add(u64::from(b - b'0'))
+    })
 }
 
 mod linux {
     use super::errno::{Errno, decode};
-    use super::{nr, raw};
     use super::{
-        abort_fmt, AT_FDCWD, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, FUTEX_PRIVATE_FLAG, FUTEX_WAIT,
-        FUTEX_WAKE, O_CLOEXEC, PR_SET_VMA, PR_SET_VMA_ANON_NAME, SIGSET_WORDS_BYTES, SIG_BLOCK,
-        SIG_SETMASK,
+        AT_FDCWD, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, FUTEX_PRIVATE_FLAG, FUTEX_WAIT,
+        FUTEX_WAKE, O_CLOEXEC, PR_SET_VMA, PR_SET_VMA_ANON_NAME, SIG_BLOCK, SIG_SETMASK,
+        SIGSET_WORDS_BYTES, abort_fmt,
     };
+    use super::{nr, raw};
 
     // ---- structs ---------------------------------------------------------
 
@@ -117,7 +119,9 @@ mod linux {
     impl Timespec {
         /// Whole nanoseconds since the clock's epoch. Wraps after ~292 years.
         pub const fn as_nanos(self) -> u64 {
-            (self.sec as u64).wrapping_mul(1_000_000_000).wrapping_add(self.nsec as u64)
+            (self.sec as u64)
+                .wrapping_mul(1_000_000_000)
+                .wrapping_add(self.nsec as u64)
         }
     }
 
@@ -245,7 +249,12 @@ mod linux {
     pub fn getrandom(buf: &mut [u8], flags: u32) -> Result<usize, Errno> {
         // SAFETY: the pointer/length pair describes a live, writable slice.
         decode(unsafe {
-            raw::syscall3(nr::GETRANDOM, buf.as_mut_ptr() as usize, buf.len(), flags as usize)
+            raw::syscall3(
+                nr::GETRANDOM,
+                buf.as_mut_ptr() as usize,
+                buf.len(),
+                flags as usize,
+            )
         })
     }
 
@@ -304,8 +313,17 @@ mod linux {
     ) -> Result<(), Errno> {
         let ts = timeout.map_or(core::ptr::null(), |t| t as *const Timespec);
         // SAFETY: forwarded to the caller's contract.
-        unsafe { futex(uaddr, FUTEX_WAIT | FUTEX_PRIVATE_FLAG, val, ts, core::ptr::null(), 0) }
-            .map(|_| ())
+        unsafe {
+            futex(
+                uaddr,
+                FUTEX_WAIT | FUTEX_PRIVATE_FLAG,
+                val,
+                ts,
+                core::ptr::null(),
+                0,
+            )
+        }
+        .map(|_| ())
     }
 
     /// `futex(FUTEX_WAKE | FUTEX_PRIVATE_FLAG)`: wake up to `n` waiters.
@@ -334,7 +352,11 @@ mod linux {
         let mut ts = Timespec::default();
         // SAFETY: `ts` is a live, writable `Timespec` matching the kernel ABI.
         decode(unsafe {
-            raw::syscall2(nr::CLOCK_GETTIME, clock as isize as usize, &mut ts as *mut _ as usize)
+            raw::syscall2(
+                nr::CLOCK_GETTIME,
+                clock as isize as usize,
+                &mut ts as *mut _ as usize,
+            )
         })
         .map(|_| ts)
     }
@@ -375,7 +397,12 @@ mod linux {
     pub fn read(fd: i32, buf: &mut [u8]) -> Result<usize, Errno> {
         // SAFETY: the pointer/length pair describes a live, writable slice.
         decode(unsafe {
-            raw::syscall3(nr::READ, fd as isize as usize, buf.as_mut_ptr() as usize, buf.len())
+            raw::syscall3(
+                nr::READ,
+                fd as isize as usize,
+                buf.as_mut_ptr() as usize,
+                buf.len(),
+            )
         })
     }
 
@@ -410,7 +437,12 @@ mod linux {
     pub fn write(fd: i32, buf: &[u8]) -> Result<usize, Errno> {
         // SAFETY: the pointer/length pair describes a live slice.
         decode(unsafe {
-            raw::syscall3(nr::WRITE, fd as isize as usize, buf.as_ptr() as usize, buf.len())
+            raw::syscall3(
+                nr::WRITE,
+                fd as isize as usize,
+                buf.as_ptr() as usize,
+                buf.len(),
+            )
         })
     }
 
@@ -532,7 +564,6 @@ mod linux {
             core::arch::asm!("brk #0x1", options(noreturn, nostack));
         }
     }
-
 }
 
 #[cfg(test)]
@@ -577,7 +608,15 @@ mod tests {
     pub(super) fn map_anon(len: usize) -> usize {
         // SAFETY: fresh anonymous private mapping, no fixed address.
         unsafe {
-            mmap(0, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0).unwrap()
+            mmap(
+                0,
+                len,
+                PROT_READ | PROT_WRITE,
+                MAP_PRIVATE | MAP_ANONYMOUS,
+                -1,
+                0,
+            )
+            .unwrap()
         }
     }
 
@@ -613,7 +652,10 @@ mod tests {
         assert_eq!(r, Err(Errno::EBADF));
         // SAFETY: mprotect on an unmapped range changes nothing.
         let r = unsafe { mprotect(usize::MAX - 0xFFFF, PAGE, PROT_READ) };
-        assert!(matches!(r, Err(Errno::ENOMEM) | Err(Errno::EINVAL)), "{r:?}");
+        assert!(
+            matches!(r, Err(Errno::ENOMEM) | Err(Errno::EINVAL)),
+            "{r:?}"
+        );
     }
 
     #[test]
@@ -653,7 +695,10 @@ mod tests {
             Ok(()) => {
                 // SAFETY: the kernel refuses; nothing changes.
                 assert_eq!(unsafe { munmap(addr, PAGE) }, Err(Errno::EPERM));
-                assert_eq!(unsafe { mprotect(addr, PAGE, PROT_NONE) }, Err(Errno::EPERM));
+                assert_eq!(
+                    unsafe { mprotect(addr, PAGE, PROT_NONE) },
+                    Err(Errno::EPERM)
+                );
                 // MADV_DONTNEED on a sealed writable anonymous mapping is
                 // allowed; discarding is only refused for read-only ranges.
                 unsafe { madvise(addr, PAGE, MADV_DONTNEED).unwrap() };
@@ -725,13 +770,16 @@ mod tests {
         assert_eq!(buf[n - 1], b'\n');
         close(fd).unwrap();
         assert_eq!(close(fd), Err(Errno::EBADF));
-        assert_eq!(open(b"/nonexistent/challoc\0", O_RDONLY), Err(Errno::ENOENT));
+        assert_eq!(
+            open(b"/nonexistent/challoc\0", O_RDONLY),
+            Err(Errno::ENOENT)
+        );
         // O_CLOEXEC is forced on.
         let fd = open(b"/dev/null\0", O_RDONLY).unwrap();
         let info = std::fs::read_to_string(format!("/proc/self/fdinfo/{fd}")).unwrap();
         let flags_line = info.lines().find(|l| l.starts_with("flags:")).unwrap();
-        let oflags = usize::from_str_radix(flags_line.split_whitespace().nth(1).unwrap(), 8)
-            .unwrap();
+        let oflags =
+            usize::from_str_radix(flags_line.split_whitespace().nth(1).unwrap(), 8).unwrap();
         assert_ne!(oflags & (O_CLOEXEC as usize), 0, "{flags_line}");
         close(fd).unwrap();
     }
@@ -744,12 +792,19 @@ mod tests {
         let mut buf = [0u8; 64];
         let n = read_small_file(b"/proc/self/comm\0", &mut buf).unwrap();
         assert!(n > 0 && n < 64 && buf[n - 1] == b'\n', "{n}");
-        assert_eq!(&buf[..n], std::fs::read("/proc/self/comm").unwrap().as_slice());
+        assert_eq!(
+            &buf[..n],
+            std::fs::read("/proc/self/comm").unwrap().as_slice()
+        );
         let mut two = [0u8; 2];
         assert_eq!(read_small_file(b"/proc/self/comm\0", &mut two), Some(2));
         assert_eq!(two, buf[..2]);
         assert_eq!(read_small_file(b"/nonexistent/challoc\0", &mut buf), None);
-        assert_eq!(read_small_file(b"/proc\0", &mut buf), None, "a directory opens and fails to read");
+        assert_eq!(
+            read_small_file(b"/proc\0", &mut buf),
+            None,
+            "a directory opens and fails to read"
+        );
         assert_eq!(read_small_file(b"/dev/null\0", &mut buf), Some(0));
     }
 
@@ -771,7 +826,10 @@ mod tests {
         unsafe {
             assert_eq!(futex_wake(&word, 1), Ok(0));
             assert_eq!(futex_wait(&word, 2, None), Err(Errno::EAGAIN));
-            let ts = Timespec { sec: 0, nsec: 5_000_000 };
+            let ts = Timespec {
+                sec: 0,
+                nsec: 5_000_000,
+            };
             // A stray signal (seen under emulation) legitimately yields EINTR;
             // retry until the timeout path is exercised.
             loop {
@@ -833,12 +891,20 @@ mod tests {
         // The mask can only be narrower than the configured CPU count.
         // SAFETY: `sysconf` has no preconditions.
         let conf = unsafe { libc::sysconf(libc::_SC_NPROCESSORS_CONF) };
-        assert!(conf >= 1 && n as i64 <= conf, "ncpus {n}, _SC_NPROCESSORS_CONF {conf}");
+        assert!(
+            conf >= 1 && n as i64 <= conf,
+            "ncpus {n}, _SC_NPROCESSORS_CONF {conf}"
+        );
         // SAFETY: a zeroed `cpu_set_t` is a valid empty set; the call writes
         // at most `size_of::<cpu_set_t>()` bytes into it, and `CPU_COUNT`
         // only reads it.
         let mut set: libc::cpu_set_t = unsafe { core::mem::zeroed() };
-        assert_eq!(unsafe { libc::sched_getaffinity(0, core::mem::size_of::<libc::cpu_set_t>(), &mut set) }, 0);
+        assert_eq!(
+            unsafe {
+                libc::sched_getaffinity(0, core::mem::size_of::<libc::cpu_set_t>(), &mut set)
+            },
+            0
+        );
         assert_eq!(n as i32, unsafe { libc::CPU_COUNT(&set) });
     }
 
@@ -872,8 +938,10 @@ mod tests {
             seen.push(std::string::String::from(name));
         }
         for (name, _) in super::nr::TABLE {
-            assert!(seen.iter().any(|s| s == name), "{name} missing from sysnr.c");
+            assert!(
+                seen.iter().any(|s| s == name),
+                "{name} missing from sysnr.c"
+            );
         }
     }
-
 }

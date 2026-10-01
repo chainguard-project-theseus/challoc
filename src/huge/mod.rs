@@ -56,7 +56,9 @@ use crate::layout::Regions;
 use crate::lock::{Lock, RawLock};
 use crate::meta::Meta;
 use crate::purge::{self, Batch, Curve, Decayer};
-use crate::sys::{self, Errno, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE, PROT_NONE, PROT_READ, PROT_WRITE};
+use crate::sys::{
+    self, Errno, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE, PROT_NONE, PROT_READ, PROT_WRITE,
+};
 
 mod table;
 
@@ -170,7 +172,11 @@ pub struct Placed {
 
 impl Placed {
     /// Nothing placed.
-    pub const NONE: Placed = Placed { ptr: ptr::null_mut(), zeroed: false, pages: 0 };
+    pub const NONE: Placed = Placed {
+        ptr: ptr::null_mut(),
+        zeroed: false,
+        pages: 0,
+    };
 }
 
 /// A copy of a descriptor for callers outside the lock (tests, stats).
@@ -229,7 +235,10 @@ impl HugeStats {
         // A count going below zero means the extents and the counters
         // disagree; the release profile does not check overflow, so the
         // subtractions are explicit.
-        let sub = |x: usize, y: usize| x.checked_sub(y).unwrap_or_else(|| huge_count_underflow(state));
+        let sub = |x: usize, y: usize| {
+            x.checked_sub(y)
+                .unwrap_or_else(|| huge_count_underflow(state))
+        };
         match state {
             RunState::Active => {
                 self.runs = sub(self.runs, 1);
@@ -471,7 +480,10 @@ impl Huge {
     pub fn new(meta: &Meta, regions: &Regions, guard_install: bool) -> Option<Huge> {
         let page = regions.page_size();
         let npages = regions.huge_pages();
-        assert!(npages > 0 && npages <= u32::MAX as usize, "huge: region page count out of range");
+        assert!(
+            npages > 0 && npages <= u32::MAX as usize,
+            "huge: region page count out of range"
+        );
         let free = Set::new(meta, page, npages)?;
         let table = Table::new(meta, page)?;
         Some(Huge {
@@ -574,15 +586,24 @@ impl Huge {
     /// drifts from what the free subtracts); [`Placed::NONE`] when the
     /// region, the metadata region or the kernel refuses.
     pub fn alloc_run(&self, meta: &Meta, size: usize, align: usize, arena: u16) -> Placed {
-        assert!(align.is_power_of_two(), "huge: alignment not a power of two");
-        let Some(usable_pages) = self.usable_pages(size) else { return Placed::NONE };
-        let Some(need) = usable_pages.checked_add(GUARD_PAGES) else { return Placed::NONE };
+        assert!(
+            align.is_power_of_two(),
+            "huge: alignment not a power of two"
+        );
+        let Some(usable_pages) = self.usable_pages(size) else {
+            return Placed::NONE;
+        };
+        let Some(need) = usable_pages.checked_add(GUARD_PAGES) else {
+            return Placed::NONE;
+        };
         if need > self.npages || align > (self.npages << self.lg_page) {
             return Placed::NONE;
         }
         let page = self.page_size();
         let mut g = self.inner.lock();
-        let Some((s, ext)) = self.find(&g, need, align) else { return Placed::NONE };
+        let Some((s, ext)) = self.find(&g, need, align) else {
+            return Placed::NONE;
+        };
         let end = s + need;
 
         // Everything fallible happens before any state changes.
@@ -605,15 +626,34 @@ impl Huge {
         }
 
         // `check_zero` needs the extent's state before `take` may free it.
-        let prior = if purge::check_zero() { Some(self.prior_state(s, ext)) } else { None };
-        let zeroed = self.take(&mut g, meta, Placement { start: s, pages: need, ext }, run, spare, arena);
+        let prior = if purge::check_zero() {
+            Some(self.prior_state(s, ext))
+        } else {
+            None
+        };
+        let zeroed = self.take(
+            &mut g,
+            meta,
+            Placement {
+                start: s,
+                pages: need,
+                ext,
+            },
+            run,
+            spare,
+            arena,
+        );
         // SAFETY: `take` wrote the run's descriptor; the lock is still held.
         let pages = unsafe { (*run).pages() };
         self.sync_oldest(&g);
         if let (true, Some(prior)) = (zeroed, prior) {
             self.check_zero(s, usable_pages, prior, arena);
         }
-        Placed { ptr: self.addr(s) as *mut u8, zeroed, pages }
+        Placed {
+            ptr: self.addr(s) as *mut u8,
+            zeroed,
+            pages,
+        }
     }
 
     /// Where the pages of a run at `s` come from, for `check_zero`: the
@@ -665,7 +705,11 @@ impl Huge {
     /// thread sleeping without a deadline needs waking.
     fn sync_oldest(&self, g: &Inner) -> bool {
         // SAFETY: the head, if any, is a live `Empty` extent.
-        let new = if g.empty_head.is_null() { 0 } else { unsafe { (*g.empty_head).dirty_at } };
+        let new = if g.empty_head.is_null() {
+            0
+        } else {
+            unsafe { (*g.empty_head).dirty_at }
+        };
         self.gate.set_oldest_empty(new)
     }
 
@@ -684,12 +728,20 @@ impl Huge {
                 return Some((s, e));
             }
             if e_end == g.next_page {
-                return if s + need <= self.npages { Some((s, e)) } else { None };
+                return if s + need <= self.npages {
+                    Some((s, e))
+                } else {
+                    None
+                };
             }
             from = e_end;
         }
         let s = self.align_page(g.next_page, align);
-        if s + need <= self.npages { Some((s, ptr::null_mut())) } else { None }
+        if s + need <= self.npages {
+            Some((s, ptr::null_mut()))
+        } else {
+            None
+        }
     }
 
     /// Kernel side of an allocation of `usable` pages at `s`: commit and
@@ -733,8 +785,20 @@ impl Huge {
 
     /// Record the run `p` taken from its extent (or fresh pages), splitting
     /// the extent around it. Infallible. Returns the zero flag.
-    fn take(&self, g: &mut Inner, meta: &Meta, p: Placement, run: *mut HugeDesc, spare: *mut HugeDesc, arena: u16) -> bool {
-        let Placement { start: s, pages: need, ext } = p;
+    fn take(
+        &self,
+        g: &mut Inner,
+        meta: &Meta,
+        p: Placement,
+        run: *mut HugeDesc,
+        spare: *mut HugeDesc,
+        arena: u16,
+    ) -> bool {
+        let Placement {
+            start: s,
+            pages: need,
+            ext,
+        } = p;
         let end = p.end();
         let old_mark = g.next_page;
         let mut spare_used = false;
@@ -749,7 +813,14 @@ impl Huge {
             }
         } else {
             // SAFETY: `ext` is a live free extent found under this lock.
-            let (a, e_end, st, dirty_at) = unsafe { ((*ext).start(), (*ext).end(), (*ext).state(), (*ext).dirty_at) };
+            let (a, e_end, st, dirty_at) = unsafe {
+                (
+                    (*ext).start(),
+                    (*ext).end(),
+                    (*ext).state(),
+                    (*ext).dirty_at,
+                )
+            };
             // `Purged` pages are zero unless a lazy purge discarded them
             // with `MADV_FREE`; pages at or past the mark are untouched.
             zeroed = (st == RunState::Purged && purge::purged_is_zero()) || s >= e_end;
@@ -829,8 +900,15 @@ impl Huge {
             not_a_run(self.addr(page));
         }
         // SAFETY: table entries are live descriptors.
-        let (start, n, state, usable, arena) =
-            unsafe { ((*d).start(), (*d).pages(), (*d).state(), (*d).usable, (*d).arena()) };
+        let (start, n, state, usable, arena) = unsafe {
+            (
+                (*d).start(),
+                (*d).pages(),
+                (*d).state(),
+                (*d).usable,
+                (*d).arena(),
+            )
+        };
         if state != RunState::Active {
             already_free(self.addr(page));
         }
@@ -839,7 +917,10 @@ impl Huge {
         }
         let addr = self.addr(page);
         if self.guard_install {
-            if let Err(e) = guard_remove(addr + (n - GUARD_PAGES) * page_size, GUARD_PAGES * page_size) {
+            if let Err(e) = guard_remove(
+                addr + (n - GUARD_PAGES) * page_size,
+                GUARD_PAGES * page_size,
+            ) {
                 panic!("huge: madvise(MADV_GUARD_REMOVE) of {addr:#x} failed: {e}");
             }
         }
@@ -873,7 +954,8 @@ impl Huge {
                 continue;
             }
             // SAFETY: neighbours are live free extents.
-            let (ns, ne, nst, ndirty) = unsafe { ((*nb).start(), (*nb).end(), (*nb).state(), (*nb).dirty_at) };
+            let (ns, ne, nst, ndirty) =
+                unsafe { ((*nb).start(), (*nb).end(), (*nb).state(), (*nb).dirty_at) };
             g.drop_extent(nb);
             lo = lo.min(ns);
             hi = hi.max(ne);
@@ -911,7 +993,14 @@ impl Huge {
         if first {
             purge::note_empty();
         }
-        RunInfo { start, pages: n, usable, arena, state: RunState::Active, dirty_at: 0 }
+        RunInfo {
+            start,
+            pages: n,
+            usable,
+            arena,
+            state: RunState::Active,
+            dirty_at: 0,
+        }
     }
 
     /// Usable bytes of the live run starting at `page`. Aborts otherwise.
@@ -1077,7 +1166,10 @@ impl Huge {
 
     pub fn stats(&self) -> HugeStats {
         let g = self.inner.lock();
-        HugeStats { table_cap: g.table.cap(), ..g.stats }
+        HugeStats {
+            table_cap: g.table.cap(),
+            ..g.stats
+        }
     }
 
     /// Oldest `Empty` extent's `dirty_at`, read under the lock (the decay
@@ -1098,7 +1190,11 @@ impl Huge {
     fn audit(&self) {
         let g = self.inner.lock();
         let st = g.stats;
-        assert_eq!(st.run_pages + st.empty_pages + st.purged_pages, st.next_page, "{st:?}");
+        assert_eq!(
+            st.run_pages + st.empty_pages + st.purged_pages,
+            st.next_page,
+            "{st:?}"
+        );
         assert_eq!(st.next_page, g.next_page);
         let mut p = 0;
         let mut counts = HugeStats::default();
@@ -1114,7 +1210,10 @@ impl Huge {
             counts.add(state, pages);
             match state {
                 RunState::Active => {
-                    assert_eq!(unsafe { (*d).usable }, (pages - GUARD_PAGES) << self.lg_page);
+                    assert_eq!(
+                        unsafe { (*d).usable },
+                        (pages - GUARD_PAGES) << self.lg_page
+                    );
                     for q in p..p + pages {
                         assert!(!g.free.map.is_set(q), "page {q} of run {p} marked free");
                     }
@@ -1123,10 +1222,17 @@ impl Huge {
                 _ => {
                     assert!(!prev_free, "adjacent free extents at {p}");
                     for q in p..p + pages {
-                        assert!(g.free.map.is_set(q), "page {q} of free extent {p} not marked free");
+                        assert!(
+                            g.free.map.is_set(q),
+                            "page {q} of free extent {p} not marked free"
+                        );
                     }
                     if pages > 1 {
-                        assert_eq!(g.table.get(p + pages - 1), d, "last-page key of {p} missing");
+                        assert_eq!(
+                            g.table.get(p + pages - 1),
+                            d,
+                            "last-page key of {p} missing"
+                        );
                         keys += 1;
                     }
                     prev_free = true;
@@ -1136,8 +1242,14 @@ impl Huge {
         }
         assert_eq!(p, g.next_page);
         assert_eq!((counts.runs, counts.run_pages), (st.runs, st.run_pages));
-        assert_eq!((counts.empty, counts.empty_pages), (st.empty, st.empty_pages));
-        assert_eq!((counts.purged, counts.purged_pages), (st.purged, st.purged_pages));
+        assert_eq!(
+            (counts.empty, counts.empty_pages),
+            (st.empty, st.empty_pages)
+        );
+        assert_eq!(
+            (counts.purged, counts.purged_pages),
+            (st.purged, st.purged_pages)
+        );
         assert_eq!(keys, g.table.count, "table holds stale keys");
         assert_eq!(g.free.map.lowest_set_from(g.next_page), None);
         // The Empty list holds exactly the Empty extents, oldest first.
@@ -1202,7 +1314,15 @@ fn already_free(p: usize) -> ! {
 /// The `check_zero` abort: a huge run handed out as zero has a dirty word.
 #[cold]
 #[inline(never)]
-fn dirty_zero_run(run: usize, pages: usize, page: usize, prior: &str, arena: u16, at: usize, word: u64) -> ! {
+fn dirty_zero_run(
+    run: usize,
+    pages: usize,
+    page: usize,
+    prior: &str,
+    arena: u16,
+    at: usize,
+    word: u64,
+) -> ! {
     let advice = purge::advice_name();
     panic!(
         "check_zero: huge run {run:#x} ({pages} pages from page {page}, arena {arena}) was handed out as zero from {prior} pages but the word at {at:#x} reads {word:#x} (purge advice {advice})"

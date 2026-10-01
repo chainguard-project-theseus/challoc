@@ -52,7 +52,10 @@ impl Tcaches {
     /// when the table or the metadata region is full.
     pub fn create(&self, shared: &Shared, arena: u16) -> Option<u16> {
         let _g = self.lock.lock();
-        let slot = self.table.iter().position(|p| p.load(Ordering::Relaxed).is_null())?;
+        let slot = self
+            .table
+            .iter()
+            .position(|p| p.load(Ordering::Relaxed).is_null())?;
         let h = Heap::create_detached(shared, arena);
         if h.is_null() {
             return None;
@@ -77,7 +80,11 @@ impl Tcaches {
         let p = self.table[i].load(Ordering::Acquire);
         // SAFETY: published after `Heap::create_detached`; only `destroy`
         // frees it, and using a destroyed id is the caller's bug.
-        if p.is_null() { None } else { Some(unsafe { &mut *p }) }
+        if p.is_null() {
+            None
+        } else {
+            Some(unsafe { &mut *p })
+        }
     }
 
     /// `tcache.flush`: return every cached slot of `id` to its slabs.
@@ -112,7 +119,10 @@ impl Tcaches {
 
     /// Number of live explicit caches (for tests and stats).
     pub fn len(&self) -> usize {
-        self.table.iter().filter(|p| !p.load(Ordering::Relaxed).is_null()).count()
+        self.table
+            .iter()
+            .filter(|p| !p.load(Ordering::Relaxed).is_null())
+            .count()
     }
 
     #[cfg(test)]

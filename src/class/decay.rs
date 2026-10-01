@@ -83,7 +83,11 @@ impl ClassState {
             // together for both sets.
             g.empty.map.clear(s);
             g.purged.map.set(s);
-            g.stats.empty = g.stats.empty.checked_sub(1).unwrap_or_else(|| slab_count_underflow("empty"));
+            g.stats.empty = g
+                .stats
+                .empty
+                .checked_sub(1)
+                .unwrap_or_else(|| slab_count_underflow("empty"));
             g.stats.purged += 1;
             n += 1;
         }
@@ -181,7 +185,8 @@ impl ClassState {
                 return false;
             }
             let d = self.desc(s);
-            d.arena() == self.arena && matches!(d.state(), State::Fresh | State::Empty | State::Purged)
+            d.arena() == self.arena
+                && matches!(d.state(), State::Fresh | State::Empty | State::Purged)
         })
     }
 

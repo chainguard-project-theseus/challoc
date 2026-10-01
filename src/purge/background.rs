@@ -29,7 +29,12 @@ struct State {
     thread: Option<::libc::pthread_t>,
 }
 
-static STATE: Lock<State> = Lock::new(State { present: false, creating: false, stack: 0, thread: None });
+static STATE: Lock<State> = Lock::new(State {
+    present: false,
+    creating: false,
+    stack: 0,
+    thread: None,
+});
 /// Mirror of `STATE.present` for the lock-free check on every tick.
 static PRESENT: AtomicBool = AtomicBool::new(false);
 /// `background_thread:true` (or, later, `mallctl("background_thread")`).
@@ -111,7 +116,11 @@ pub fn start(shared: &Shared) -> bool {
 /// Create the thread on `stack` (reserving the stack first if there is
 /// none yet), after joining `previous`. Returns the stack (kept even
 /// when creation fails, for the next attempt) and the new thread.
-fn create(shared: &Shared, stack: usize, previous: Option<::libc::pthread_t>) -> (usize, Option<::libc::pthread_t>) {
+fn create(
+    shared: &Shared,
+    stack: usize,
+    previous: Option<::libc::pthread_t>,
+) -> (usize, Option<::libc::pthread_t>) {
     let page = shared.regions.page_size();
     // The TLS slot is parked on `TLS_CREATING` for the pthread calls:
     // `pthread_create` allocates the new thread's DTV with `calloc`
@@ -131,7 +140,10 @@ fn create(shared: &Shared, stack: usize, previous: Option<::libc::pthread_t>) ->
         // SAFETY: a joinable thread this module created and never joined.
         let rc = unsafe { ::libc::pthread_join(t, core::ptr::null_mut()) };
         if rc != 0 {
-            sys::abort_fmt(format_args!("pthread_join of the background thread failed: {}", sys::Errno(rc)));
+            sys::abort_fmt(format_args!(
+                "pthread_join of the background thread failed: {}",
+                sys::Errno(rc)
+            ));
         }
     }
     // Reserved once, then committed above the lowest page, which stays
@@ -141,7 +153,10 @@ fn create(shared: &Shared, stack: usize, previous: Option<::libc::pthread_t>) ->
     let stack = if stack != 0 {
         Some(stack)
     } else {
-        shared.meta.reserve(STACK_SIZE, page).filter(|&s| shared.meta.commit(s + page, STACK_SIZE - page).is_ok())
+        shared
+            .meta
+            .reserve(STACK_SIZE, page)
+            .filter(|&s| shared.meta.commit(s + page, STACK_SIZE - page).is_ok())
     };
     let thread = match stack {
         Some(stack) => spawn(shared, stack + page, STACK_SIZE - page),
@@ -168,7 +183,12 @@ fn spawn(shared: &Shared, base: usize, len: usize) -> Option<::libc::pthread_t> 
         if ::libc::pthread_attr_setstack(&mut attr, base as *mut c_void, len) == 0 {
             let mask = sys::block_all_signals();
             let mut tid: ::libc::pthread_t = 0;
-            let rc = ::libc::pthread_create(&mut tid, &attr, main, shared as *const Shared as *mut c_void);
+            let rc = ::libc::pthread_create(
+                &mut tid,
+                &attr,
+                main,
+                shared as *const Shared as *mut c_void,
+            );
             sys::set_signal_mask(mask);
             if rc == 0 {
                 thread = Some(tid);
@@ -236,7 +256,10 @@ extern "C" fn main(arg: *mut c_void) -> *mut c_void {
         let deadline = super::decay(shared, now);
         let timeout = deadline.map(|deadline| {
             let ns = deadline.saturating_sub(now).max(MIN_SLEEP_NS);
-            Timespec { sec: (ns / 1_000_000_000) as i64, nsec: (ns % 1_000_000_000) as i64 }
+            Timespec {
+                sec: (ns / 1_000_000_000) as i64,
+                nsec: (ns % 1_000_000_000) as i64,
+            }
         });
         // SAFETY: `SEQ` is a live, aligned `u32`; `timeout` outlives
         // the call. Every outcome (wake, EAGAIN, ETIMEDOUT, EINTR) just

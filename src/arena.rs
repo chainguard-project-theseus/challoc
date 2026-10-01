@@ -141,12 +141,14 @@ impl Arena {
     /// A huge run of `pages` (guard included) was allocated through this
     /// arena.
     pub fn note_huge_alloc(&self, pages: usize) {
-        self.large.fetch_add(Self::large_word(pages), Ordering::Relaxed);
+        self.large
+            .fetch_add(Self::large_word(pages), Ordering::Relaxed);
     }
 
     /// A huge run of `pages` (guard included) of this arena was freed.
     pub fn note_huge_free(&self, pages: usize) {
-        self.large.fetch_sub(Self::large_word(pages), Ordering::Relaxed);
+        self.large
+            .fetch_sub(Self::large_word(pages), Ordering::Relaxed);
     }
 
     /// Live huge runs of this arena and their pages, guards included, as
@@ -202,7 +204,8 @@ impl Arena {
     /// next periodic tick, or at once for a background thread, which is
     /// woken to recompute its deadline.
     pub fn set_decay_ms(&self, ms: i64) {
-        self.decay_ns.store(crate::purge::decay_ns_from_ms(ms), Ordering::Relaxed);
+        self.decay_ns
+            .store(crate::purge::decay_ns_from_ms(ms), Ordering::Relaxed);
         crate::purge::note_decay_changed();
     }
 
@@ -231,7 +234,11 @@ impl Arena {
     /// `Empty` bytes over every class (one lock hold per class that has
     /// any), for the cgroup policy's retention figure.
     pub fn empty_bytes(&self) -> usize {
-        self.classes.iter().filter(|cs| cs.oldest_empty() != 0).map(|cs| cs.empty_bytes()).sum()
+        self.classes
+            .iter()
+            .filter(|cs| cs.oldest_empty() != 0)
+            .map(|cs| cs.empty_bytes())
+            .sum()
     }
 
     /// The exit purge's gate (design 13.3): the last thread heap homed on
@@ -335,7 +342,10 @@ impl Arenas {
         // (bound heaps, not yet built): the smallest wins.
         let mut best_key = (u32::MAX, true);
         for i in 0..self.auto as usize {
-            let key = (self.bound[i].load(Ordering::Relaxed), self.table[i].load(Ordering::Relaxed).is_null());
+            let key = (
+                self.bound[i].load(Ordering::Relaxed),
+                self.table[i].load(Ordering::Relaxed).is_null(),
+            );
             if key < best_key {
                 best = i;
                 best_key = key;
@@ -357,7 +367,10 @@ impl Arenas {
     /// A thread heap homed on `index` is destroyed or moves away.
     pub fn unbind(&self, index: u16) {
         let prev = self.bound[index as usize].fetch_sub(1, Ordering::Relaxed);
-        assert!(prev != 0, "arena {index}: unbinding a heap that was never bound");
+        assert!(
+            prev != 0,
+            "arena {index}: unbinding a heap that was never bound"
+        );
     }
 
     /// Thread heaps currently homed on `index`.
@@ -391,7 +404,11 @@ impl Arenas {
         }
         let p = self.table[i].load(Ordering::Acquire);
         // SAFETY: as in `get`.
-        if p.is_null() { None } else { Some(unsafe { &*p }) }
+        if p.is_null() {
+            None
+        } else {
+            Some(unsafe { &*p })
+        }
     }
 
     #[cold]
@@ -415,11 +432,21 @@ impl Arenas {
         let layout = core::alloc::Layout::new::<Arena>();
         // Never freed, so a reservation (page aligned, which covers the
         // 128-byte class state alignment) rather than an object.
-        let p = shared.meta.reserve_committed(layout.size(), layout.align().max(shared.regions.page_size()))? as *mut Arena;
+        let p = shared.meta.reserve_committed(
+            layout.size(),
+            layout.align().max(shared.regions.page_size()),
+        )? as *mut Arena;
         // SAFETY: fresh, zeroed, exclusively owned storage of the right
         // size and alignment; the tables live in `Shared` for the process.
         let ok = unsafe {
-            Arena::init(p, &shared.meta, &shared.regions, shared.tables(), index, shared.default_decay_ns())
+            Arena::init(
+                p,
+                &shared.meta,
+                &shared.regions,
+                shared.tables(),
+                index,
+                shared.default_decay_ns(),
+            )
         };
         if !ok {
             // The reservation is lost; the metadata region is exhausted
@@ -458,7 +485,11 @@ impl Arenas {
         (0..n).filter_map(move |i| {
             let p = self.table[i].load(Ordering::Acquire);
             // SAFETY: as in `get`.
-            if p.is_null() { None } else { Some(unsafe { &*p }) }
+            if p.is_null() {
+                None
+            } else {
+                Some(unsafe { &*p })
+            }
         })
     }
 }

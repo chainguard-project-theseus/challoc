@@ -115,7 +115,13 @@ impl Heap {
     }
 
     /// Huge allocation on this thread in `arena` (which must exist).
-    pub fn alloc_huge_in(&mut self, shared: &Shared, size: usize, align: usize, arena: u16) -> (*mut u8, bool) {
+    pub fn alloc_huge_in(
+        &mut self,
+        shared: &Shared,
+        size: usize,
+        align: usize,
+        arena: u16,
+    ) -> (*mut u8, bool) {
         let (p, zero) = shared.alloc_huge(size, align, arena);
         if !p.is_null() {
             self.count_uncached_alloc(shared.huge.usable_for(size).unwrap_or(0));
@@ -193,9 +199,16 @@ impl Heap {
     }
 
     /// The slow allocation path for any arena.
-    pub(super) fn alloc_slow_in(&mut self, shared: &Shared, arena: u16, class: usize) -> (*mut u8, bool) {
+    pub(super) fn alloc_slow_in(
+        &mut self,
+        shared: &Shared,
+        arena: u16,
+        class: usize,
+    ) -> (*mut u8, bool) {
         self.tick(shared);
-        let Some(a) = shared.arena(arena) else { return (ptr::null_mut(), false) };
+        let Some(a) = shared.arena(arena) else {
+            return (ptr::null_mut(), false);
+        };
         let cache = self.ensure_cache(shared, arena, class);
         if cache.is_null() {
             let (p, zero) = shared.alloc_direct(a, class);
@@ -241,7 +254,11 @@ impl Heap {
         // `ensure_cache` reads its class state for the header (a heap
         // whose first allocation is huge, or whose home moved, may not
         // have built it).
-        let cache = if arena == FOREIGN || shared.arena(arena).is_some() { self.ensure_cache(shared, arena, class) } else { ptr::null_mut() };
+        let cache = if arena == FOREIGN || shared.arena(arena).is_some() {
+            self.ensure_cache(shared, arena, class)
+        } else {
+            ptr::null_mut()
+        };
         if cache.is_null() {
             self.tick(shared);
             // No cache for this class here: straight to the slab, through
@@ -260,7 +277,11 @@ impl Heap {
             // name, as the push did when the call was inline.
             if shared.double_free_scan() {
                 let slots = (*cache).slots();
-                let e = if shared.pac() { pac::sign(p as usize, slots as usize) as *mut u8 } else { p };
+                let e = if shared.pac() {
+                    pac::sign(p as usize, slots as usize) as *mut u8
+                } else {
+                    p
+                };
                 if Self::cached_recently(slots, (*cache).len, e) {
                     cached_twice(p);
                 }
@@ -269,7 +290,11 @@ impl Heap {
             if (*cache).len == (*cache).cap {
                 // A home cache keeps its lowest half (design 6.4); the
                 // FOREIGN cache, popped by nothing, releases everything.
-                let n = if arena == FOREIGN { (*cache).cap } else { ((*cache).cap / 2).max(1) };
+                let n = if arena == FOREIGN {
+                    (*cache).cap
+                } else {
+                    ((*cache).cap / 2).max(1)
+                };
                 self.flush(shared, arena, cache, class, n as usize);
             }
             // The scan ran above; a flush only removes entries.
@@ -302,7 +327,11 @@ pub fn free_fast(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> bool {
 #[inline(always)]
 pub fn free_fast_class(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> Option<usize> {
     let class = shared.checked_slot(p, h)?;
-    if h.push_fast(class, p, flags) { Some(class) } else { None }
+    if h.push_fast(class, p, flags) {
+        Some(class)
+    } else {
+        None
+    }
 }
 
 /// The sized free's fast path on an existing heap (`sdallocx`,
@@ -313,7 +342,13 @@ pub fn free_fast_class(shared: &Shared, h: &mut Heap, p: *mut u8, flags: u8) -> 
 /// full cache); the caller then goes through [`Shared::check_size_hint`]
 /// and the exact [`free`]. Contains no call.
 #[inline(always)]
-pub fn free_sized_fast(shared: &Shared, h: &mut Heap, p: *mut u8, hint: Option<usize>, flags: u8) -> bool {
+pub fn free_sized_fast(
+    shared: &Shared,
+    h: &mut Heap,
+    p: *mut u8,
+    hint: Option<usize>,
+    flags: u8,
+) -> bool {
     match shared.sized_slot(p, hint) {
         Some(class) => h.push_fast(class, p, flags),
         None => false,
@@ -422,7 +457,10 @@ pub(super) unsafe fn zero_slot(class: usize, p: *mut u8) {
 #[cold]
 #[inline(never)]
 pub(super) fn cached_twice(p: *mut u8) -> ! {
-    panic!("double free of {:#x}: the slot is already in the thread cache", p as usize)
+    panic!(
+        "double free of {:#x}: the slot is already in the thread cache",
+        p as usize
+    )
 }
 
 /// `CLASSES[class].size()` without the bounds check: every `class` on the
@@ -434,4 +472,3 @@ pub(super) fn class_size(class: usize) -> usize {
     // SAFETY: as above.
     unsafe { CLASSES.get_unchecked(class) }.size()
 }
-

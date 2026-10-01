@@ -45,21 +45,27 @@ mod tcaches;
 mod thread;
 
 #[cfg(test)]
-pub(crate) mod tests;
-#[cfg(test)]
 mod linux_tests;
+#[cfg(test)]
+pub(crate) mod tests;
 
 pub use cache::CacheHeader;
+#[cfg(test)]
+use compact::{
+    COMPACT_MASK, COMPACT_MAX_REFILL_SLABS, COMPACT_MIN_SLABS, COMPACT_SHIFT, MODE_COMPACT,
+    PROBE_MASK,
+};
 pub use compact::{MODE_OFF, MODE_PROBE};
 pub use others::ArenaCaches;
-pub use paths::{alloc, alloc_declined, alloc_zeroed, free, free_direct, free_fast, free_fast_class, free_sized_fast};
+pub use paths::{
+    alloc, alloc_declined, alloc_zeroed, free, free_direct, free_fast, free_fast_class,
+    free_sized_fast,
+};
 pub use shared::Shared;
-pub use thread::{existing_heap, heap_destructor, heap_for_thread};
-pub use thread::{TLS_CREATING, TLS_EXITED, fast_flags};
-#[cfg(test)]
-use compact::{COMPACT_MASK, COMPACT_MAX_REFILL_SLABS, COMPACT_MIN_SLABS, COMPACT_SHIFT, MODE_COMPACT, PROBE_MASK};
 #[cfg(test)]
 use shared::{GuardTest, guard_interval_for};
+pub use thread::{TLS_CREATING, TLS_EXITED, fast_flags};
+pub use thread::{existing_heap, heap_destructor, heap_for_thread};
 
 use core::alloc::Layout;
 use core::ptr;
@@ -273,7 +279,9 @@ impl Heap {
         for cache in caches.iter_mut() {
             if cache.cap != 0 {
                 assert_eq!(cache.len, 0, "heap: freeing a cache that was not flushed");
-                shared.meta.free(cache.slots as *mut u8, CacheHeader::slots_layout(cache.cap));
+                shared
+                    .meta
+                    .free(cache.slots as *mut u8, CacheHeader::slots_layout(cache.cap));
             }
             *cache = CacheHeader::EMPTY;
         }

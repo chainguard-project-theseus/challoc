@@ -53,7 +53,11 @@ struct Sink {
 
 impl Sink {
     fn new(target: Target) -> Sink {
-        Sink { target, buf: [0; 1024], len: 0 }
+        Sink {
+            target,
+            buf: [0; 1024],
+            len: 0,
+        }
     }
 
     fn flush(&mut self) {
@@ -80,7 +84,9 @@ impl Sink {
                 // buffer.
                 unsafe { libc::fwrite(self.buf.as_ptr() as *const c_void, 1, self.len, f) };
             }
-            Target::Stderr => crate::sys::write_all(crate::sys::STDERR_FILENO, &self.buf[..self.len]),
+            Target::Stderr => {
+                crate::sys::write_all(crate::sys::STDERR_FILENO, &self.buf[..self.len])
+            }
         }
         self.len = 0;
     }
@@ -152,7 +158,11 @@ fn word(s: &CStr) -> &str {
 }
 
 fn decay_ms(ns: u64) -> i64 {
-    if ns == purge::NEVER { -1 } else { (ns / 1_000_000) as i64 }
+    if ns == purge::NEVER {
+        -1
+    } else {
+        (ns / 1_000_000) as i64
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -195,8 +205,21 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
         writeln!(out, "  opt.{}: accepted, no effect", key)?;
     }
     writeln!(out, "Kernel and CPU features: {}", super::feature_line())?;
-    writeln!(out, "Sealed ranges: {} of {}", super::sealed_ranges(), shared.regions.never_committed().1)?;
-    writeln!(out, "Background thread: {}", if purge::background::present() { "present" } else { "absent" })?;
+    writeln!(
+        out,
+        "Sealed ranges: {} of {}",
+        super::sealed_ranges(),
+        shared.regions.never_committed().1
+    )?;
+    writeln!(
+        out,
+        "Background thread: {}",
+        if purge::background::present() {
+            "present"
+        } else {
+            "absent"
+        }
+    )?;
     writeln!(
         out,
         "Arenas: {} ({} automatic), explicit caches: {}",
@@ -210,7 +233,10 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
         // Design 3: on a kernel whose page is larger than a class's table
         // slab, the class's slab is the page.
         let base = |f: fn(usize, usize) -> usize| {
-            (lo..=hi).map(|c| crate::layout::BASE_CLASSES[c].slab_size()).reduce(f).unwrap_or(0)
+            (lo..=hi)
+                .map(|c| crate::layout::BASE_CLASSES[c].slab_size())
+                .reduce(f)
+                .unwrap_or(0)
         };
         writeln!(
             out,
@@ -239,7 +265,11 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
     // The huge tier's own decay period (`huge_dirty_decay_ms`, design 7),
     // named only when it differs from arena 0's, which it follows otherwise.
     if shared.huge_decay_ns() != shared.decay_ns() {
-        write!(out, ", dirty_decay_ms {} (huge_dirty_decay_ms)", decay_ms(shared.huge_decay_ns()))?;
+        write!(
+            out,
+            ", dirty_decay_ms {} (huge_dirty_decay_ms)",
+            decay_ms(shared.huge_decay_ns())
+        )?;
     }
     writeln!(out)?;
     let m = &snap.meta;
@@ -263,12 +293,22 @@ fn text_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot) -> fmt:
 fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
     let d = crate::thp::decision();
     let s = crate::thp::stats();
-    write!(out, "thp: {} -> {} ({})", word(crate::thp::key().name()), d.mode.name(), d.reason.text())?;
+    write!(
+        out,
+        "thp: {} -> {} ({})",
+        word(crate::thp::key().name()),
+        d.mode.name(),
+        d.reason.text()
+    )?;
     // Design 17 (`MADV_NOHUGEPAGE` under `never`): `never` covers the
     // class and metadata reservations; the huge region follows the host's
     // global mode (named at the end of the line).
     if crate::thp::is_never() {
-        write!(out, " nohuge {} (classes, metadata; huge follows host)", s.nohuge_ranges)?;
+        write!(
+            out,
+            " nohuge {} (classes, metadata; huge follows host)",
+            s.nohuge_ranges
+        )?;
     }
     if d.mode != crate::thp::Mode::Off {
         write!(out, " slab_min {}", 1usize << d.lg_slab_min)?;
@@ -285,7 +325,11 @@ fn thp_line<W: Write>(out: &mut W) -> fmt::Result {
         s.class_ranges, s.class_bytes, s.chunks, s.huge_ranges, s.meta_ranges, s.failures
     )?;
     // Design 17: the host's global mode.
-    writeln!(out, "; host {}", crate::thp::host_mode().map_or("none", crate::sys::thp_host::ThpSetting::name))
+    writeln!(
+        out,
+        "; host {}",
+        crate::thp::host_mode().map_or("none", crate::sys::thp_host::ThpSetting::name)
+    )
 }
 
 /// The `cgroup policy:` line (design 11): the band as last evaluated and
@@ -300,12 +344,24 @@ fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
     match p.band() {
         Band::Unlimited => write!(out, "defaults (no limit)")?,
         Band::Low => write!(out, "under 70% (defaults, retention capped)")?,
-        Band::Scaled(f) => write!(out, "70..90% (decay scaled, {}% into the band)", f as u64 * 100 / FRAC_ONE as u64)?,
+        Band::Scaled(f) => write!(
+            out,
+            "70..90% (decay scaled, {}% into the band)",
+            f as u64 * 100 / FRAC_ONE as u64
+        )?,
         Band::Immediate => write!(out, "over 90% (purge at once, cache GC every tick)")?,
     }
-    write!(out, " decay_ms {}", decay_ms(p.effective_decay_ns(shared.decay_ns())))?;
+    write!(
+        out,
+        " decay_ms {}",
+        decay_ms(p.effective_decay_ns(shared.decay_ns()))
+    )?;
     if shared.huge_decay_ns() != shared.decay_ns() {
-        write!(out, " huge_decay_ms {}", decay_ms(p.effective_decay_ns(shared.huge_decay_ns())))?;
+        write!(
+            out,
+            " huge_decay_ms {}",
+            decay_ms(p.effective_decay_ns(shared.huge_decay_ns()))
+        )?;
     }
     match p.cap() {
         crate::sys::cgroup::UNLIMITED => write!(out, " retention_cap max")?,
@@ -317,8 +373,16 @@ fn policy_line<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
         p.keep16() as u64 * 100 / FRAC_ONE as u64,
         crate::policy::empty_bytes(shared),
         p.full_purges(),
-        if p.full_purge_pending() { " (one pending)" } else { "" },
-        if p.thp_forced() { "forced never (limit under 1 GiB)" } else { "as configured" }
+        if p.full_purge_pending() {
+            " (one pending)"
+        } else {
+            ""
+        },
+        if p.thp_forced() {
+            "forced never (limit under 1 GiB)"
+        } else {
+            "as configured"
+        }
     )
 }
 
@@ -346,8 +410,15 @@ fn advice_line<W: Write>(out: &mut W) -> fmt::Result {
 fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) -> fmt::Result {
     writeln!(out, "arenas[{}]:", arena.index())?;
     writeln!(out, "  dirty_decay_ms: {}", decay_ms(arena.decay_ns()))?;
-    writeln!(out, "  pactive: {}, pdirty: {}, pmuzzy: {}", s.pactive, s.pdirty, s.pmuzzy)?;
-    writeln!(out, "                            allocated       active        dirty     retained")?;
+    writeln!(
+        out,
+        "  pactive: {}, pdirty: {}, pmuzzy: {}",
+        s.pactive, s.pdirty, s.pmuzzy
+    )?;
+    writeln!(
+        out,
+        "                            allocated       active        dirty     retained"
+    )?;
     writeln!(
         out,
         "  small:               {:>14} {:>12} {:>12} {:>12}",
@@ -362,7 +433,11 @@ fn text_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) 
         s.large_retained + s.huge_retained,
         s.large_runs
     )?;
-    writeln!(out, "  metadata: {}, resident: {}, mapped: {}, retained: {}", s.metadata, s.resident, s.mapped, s.retained)?;
+    writeln!(
+        out,
+        "  metadata: {}, resident: {}, mapped: {}, retained: {}",
+        s.metadata, s.resident, s.mapped, s.retained
+    )?;
     if !bins {
         return Ok(());
     }
@@ -450,7 +525,10 @@ fn slab_histogram<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats) -> fmt::
         }
         if !header {
             header = true;
-            writeln!(out, "  slab occupancy (non-empty slabs per eighth of nslots, last = full):")?;
+            writeln!(
+                out,
+                "  slab occupancy (non-empty slabs per eighth of nslots, last = full):"
+            )?;
         }
         writeln!(
             out,
@@ -486,12 +564,22 @@ fn text_report<W: Write>(out: &mut W, shared: &Shared, o: &Opts) -> fmt::Result 
 /// arena/bin geometry, the background thread, the `thp`, `cgroup` and
 /// `stats` objects. `arenas_follow` says whether a `stats.arenas` object
 /// follows (the `stats` line then ends with a comma).
-fn json_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot, arenas_follow: bool) -> fmt::Result {
-    writeln!(out, "\t\t\"config\": {{\"debug\": false, \"stats\": true, \"quantum\": {QUANTUM}}},")?;
+fn json_general<W: Write>(
+    out: &mut W,
+    shared: &Shared,
+    snap: &Snapshot,
+    arenas_follow: bool,
+) -> fmt::Result {
+    writeln!(
+        out,
+        "\t\t\"config\": {{\"debug\": false, \"stats\": true, \"quantum\": {QUANTUM}}},"
+    )?;
     writeln!(out, "\t\t\"opt\": {{")?;
     let mut first = true;
     for key in KEYS {
-        let Some(v) = shared.config.get(key.as_bytes()) else { continue };
+        let Some(v) = shared.config.get(key.as_bytes()) else {
+            continue;
+        };
         if !first {
             writeln!(out, ",")?;
         }
@@ -512,7 +600,11 @@ fn json_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot, arenas_
         snap.narenas,
         shared.regions.page_size()
     )?;
-    writeln!(out, "\t\t\"background_thread\": {{\"present\": {}}},", purge::background::present())?;
+    writeln!(
+        out,
+        "\t\t\"background_thread\": {{\"present\": {}}},",
+        purge::background::present()
+    )?;
     let td = crate::thp::decision();
     let ts = crate::thp::stats();
     writeln!(
@@ -570,8 +662,16 @@ fn json_general<W: Write>(out: &mut W, shared: &Shared, snap: &Snapshot, arenas_
 /// separating comma (the caller joins the arenas) or a trailing newline.
 fn json_arena<W: Write>(out: &mut W, arena: &Arena, s: &ArenaStats, bins: bool) -> fmt::Result {
     writeln!(out, "\t\t\t\"{}\": {{", arena.index())?;
-    writeln!(out, "\t\t\t\t\"dirty_decay_ms\": {},", decay_ms(arena.decay_ns()))?;
-    writeln!(out, "\t\t\t\t\"pactive\": {}, \"pdirty\": {}, \"pmuzzy\": {},", s.pactive, s.pdirty, s.pmuzzy)?;
+    writeln!(
+        out,
+        "\t\t\t\t\"dirty_decay_ms\": {},",
+        decay_ms(arena.decay_ns())
+    )?;
+    writeln!(
+        out,
+        "\t\t\t\t\"pactive\": {}, \"pdirty\": {}, \"pmuzzy\": {},",
+        s.pactive, s.pdirty, s.pmuzzy
+    )?;
     writeln!(
         out,
         "\t\t\t\t\"small\": {{\"allocated\": {}, \"active\": {}, \"dirty\": {}, \"retained\": {}}},",
@@ -657,7 +757,11 @@ pub fn malloc_stats_print(write_cb: WriteCb, cbopaque: *mut c_void, opts: *const
     let shared = super::shared();
     let o = Opts::parse(opts);
     let mut sink = Sink::new(Target::Callback(write_cb, cbopaque));
-    let _ = if o.json { json_report(&mut sink, shared, &o) } else { text_report(&mut sink, shared, &o) };
+    let _ = if o.json {
+        json_report(&mut sink, shared, &o)
+    } else {
+        text_report(&mut sink, shared, &o)
+    };
     sink.flush();
 }
 
@@ -674,11 +778,22 @@ fn xml_heap<W: Write>(out: &mut W, nr: usize, s: &ArenaStats) -> fmt::Result {
             continue;
         }
         count += b.curregs;
-        writeln!(out, "<size from=\"{}\" to=\"{}\" total=\"{}\" count=\"{}\"/>", b.size, b.size, b.curregs * b.size, b.curregs)?;
+        writeln!(
+            out,
+            "<size from=\"{}\" to=\"{}\" total=\"{}\" count=\"{}\"/>",
+            b.size,
+            b.size,
+            b.curregs * b.size,
+            b.curregs
+        )?;
     }
     writeln!(out, "</sizes>")?;
     writeln!(out, "<total type=\"fast\" count=\"0\" size=\"0\"/>")?;
-    writeln!(out, "<total type=\"rest\" count=\"{count}\" size=\"{}\"/>", s.small_allocated)?;
+    writeln!(
+        out,
+        "<total type=\"rest\" count=\"{count}\" size=\"{}\"/>",
+        s.small_allocated
+    )?;
     writeln!(out, "<system type=\"current\" size=\"{}\"/>", s.resident)?;
     writeln!(out, "<system type=\"max\" size=\"{}\"/>", s.mapped)?;
     writeln!(out, "<aspace type=\"total\" size=\"{}\"/>", s.mapped)?;
@@ -697,10 +812,19 @@ fn xml_report<W: Write>(out: &mut W, shared: &Shared) -> fmt::Result {
     r?;
     let all = stats::collect_all(shared);
     let count: usize = all.bins[..NBINS].iter().map(|b| b.curregs).sum();
-    let large_count: usize = all.large_runs + all.bins[NBINS..].iter().map(|b| b.curregs).sum::<usize>();
+    let large_count: usize =
+        all.large_runs + all.bins[NBINS..].iter().map(|b| b.curregs).sum::<usize>();
     writeln!(out, "<total type=\"fast\" count=\"0\" size=\"0\"/>")?;
-    writeln!(out, "<total type=\"rest\" count=\"{count}\" size=\"{}\"/>", all.small_allocated)?;
-    writeln!(out, "<total type=\"mmap\" count=\"{large_count}\" size=\"{}\"/>", all.large_allocated)?;
+    writeln!(
+        out,
+        "<total type=\"rest\" count=\"{count}\" size=\"{}\"/>",
+        all.small_allocated
+    )?;
+    writeln!(
+        out,
+        "<total type=\"mmap\" count=\"{large_count}\" size=\"{}\"/>",
+        all.large_allocated
+    )?;
     writeln!(out, "<system type=\"current\" size=\"{}\"/>", all.resident)?;
     writeln!(out, "<system type=\"max\" size=\"{}\"/>", all.mapped)?;
     writeln!(out, "<aspace type=\"total\" size=\"{}\"/>", all.mapped)?;
@@ -735,7 +859,11 @@ pub fn malloc_stats() {
             if r.is_ok() {
                 r = (|| {
                     writeln!(sink, "Arena {}:", a.index())?;
-                    writeln!(sink, "system bytes     = {:>10}", s.resident.saturating_sub(s.large_allocated))?;
+                    writeln!(
+                        sink,
+                        "system bytes     = {:>10}",
+                        s.resident.saturating_sub(s.large_allocated)
+                    )?;
                     writeln!(sink, "in use bytes     = {:>10}", s.small_allocated)
                 })();
             }
@@ -801,7 +929,15 @@ mod tests {
         let _serial = REPORT.lock().unwrap_or_else(|e| e.into_inner());
         CAPTURE.lock().unwrap().clear();
         let c = std::ffi::CString::new(opts).unwrap();
-        malloc_stats_print(Some(capture), 0xC0FFEE as *mut c_void, if opts.is_empty() { core::ptr::null() } else { c.as_ptr() });
+        malloc_stats_print(
+            Some(capture),
+            0xC0FFEE as *mut c_void,
+            if opts.is_empty() {
+                core::ptr::null()
+            } else {
+                c.as_ptr()
+            },
+        );
         String::from_utf8(CAPTURE.lock().unwrap().clone()).unwrap()
     }
 
@@ -812,25 +948,47 @@ mod tests {
     /// kernel the table is the compile-time one and the report is silent.
     #[test]
     fn slabs_are_never_smaller_than_the_page() {
-        use crate::layout::{BASE_CLASSES, CLASSES, LG_SMALL_SLAB, MIN_SLAB, NCLASSES, page_sized_classes};
+        use crate::layout::{
+            BASE_CLASSES, CLASSES, LG_SMALL_SLAB, MIN_SLAB, NCLASSES, page_sized_classes,
+        };
         let s = crate::api::shared();
         let page = s.regions.page_size();
         let floor = page.min(1 << LG_SMALL_SLAB);
         for c in 0..NCLASSES {
             let cls = &CLASSES[c];
-            assert!(cls.slab_size() >= floor, "class {c}: slab {} below the page {page}", cls.slab_size());
+            assert!(
+                cls.slab_size() >= floor,
+                "class {c}: slab {} below the page {page}",
+                cls.slab_size()
+            );
             assert_eq!(cls.nslots(), cls.slab_size() / cls.size(), "class {c}");
-            assert_eq!(cls.lg_slab as u32, (BASE_CLASSES[c].lg_slab as u32).max(page.trailing_zeros().min(LG_SMALL_SLAB)), "class {c}");
-            assert_eq!(s.tables()[c].slabs_per_page(), (page / cls.slab_size()).max(1), "class {c}");
+            assert_eq!(
+                cls.lg_slab as u32,
+                (BASE_CLASSES[c].lg_slab as u32).max(page.trailing_zeros().min(LG_SMALL_SLAB)),
+                "class {c}"
+            );
+            assert_eq!(
+                s.tables()[c].slabs_per_page(),
+                (page / cls.slab_size()).max(1),
+                "class {c}"
+            );
             if page <= 1 << LG_SMALL_SLAB {
-                assert_eq!(s.tables()[c].slabs_per_page(), 1, "class {c}: page groups are dormant");
+                assert_eq!(
+                    s.tables()[c].slabs_per_page(),
+                    1,
+                    "class {c}: page groups are dormant"
+                );
             }
         }
         let text = report("");
         if page > MIN_SLAB {
-            let (lo, hi) = page_sized_classes().expect("a large page raises the small-slab classes");
+            let (lo, hi) =
+                page_sized_classes().expect("a large page raises the small-slab classes");
             assert_eq!((CLASSES[lo].size(), CLASSES[hi].size()), (512, 1024));
-            let want = std::format!("Page-sized slabs: classes {lo}..{hi} (512..1024 bytes) at {} bytes (4096..16384 in the table)\n", floor);
+            let want = std::format!(
+                "Page-sized slabs: classes {lo}..{hi} (512..1024 bytes) at {} bytes (4096..16384 in the table)\n",
+                floor
+            );
             assert!(text.contains(&want), "{text}");
         } else {
             assert_eq!(page_sized_classes(), None);
@@ -843,8 +1001,14 @@ mod tests {
     fn text_report_has_every_section_and_live_figures() {
         let live: Vec<*mut u8> = (0..100).map(|_| malloc(700)).collect();
         let text = report("");
-        assert!(text.starts_with("___ Begin jemalloc statistics ___\n"), "{text}");
-        assert!(text.ends_with("--- End jemalloc statistics ---\n"), "{text}");
+        assert!(
+            text.starts_with("___ Begin jemalloc statistics ___\n"),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("--- End jemalloc statistics ---\n"),
+            "{text}"
+        );
         for needle in [
             "Version: \"5.3.0-0-gchalloc\"",
             "config.quantum:",
@@ -890,14 +1054,24 @@ mod tests {
         let rows: Vec<Vec<usize>> = text
             .lines()
             .filter(|l| l.trim_start().starts_with(&std::format!("{size} ")))
-            .filter_map(|l| l.split_whitespace().map(|w| w.parse::<usize>().ok()).collect::<Option<Vec<usize>>>())
+            .filter_map(|l| {
+                l.split_whitespace()
+                    .map(|w| w.parse::<usize>().ok())
+                    .collect::<Option<Vec<usize>>>()
+            })
             .collect();
         assert!(!rows.is_empty(), "bin row for the live class in:\n{text}");
         let curregs: usize = rows.iter().map(|cols| cols[4]).sum();
         assert!(curregs >= 100, "curregs in {rows:?}");
         // The Allocated figure is live, not the epoch snapshot.
         let line = text.lines().find(|l| l.starts_with("Allocated: ")).unwrap();
-        let allocated: usize = line.split(", ").next().unwrap().trim_start_matches("Allocated: ").parse().unwrap();
+        let allocated: usize = line
+            .split(", ")
+            .next()
+            .unwrap()
+            .trim_start_matches("Allocated: ")
+            .parse()
+            .unwrap();
         assert!(allocated >= 100 * size);
         for p in live {
             free(p);
@@ -922,9 +1096,19 @@ mod tests {
         assert!(text.contains("\"opt\": {"));
         assert!(text.contains("\"stats\": {\"allocated\": "));
         assert!(text.contains("\"cgroup\": {\"tracked\": "));
-        assert!(text.contains("\"thp\": {\"key\": \"never\", \"mode\": \"off\", "), "{text}");
-        assert!(text.contains("\"failures\": 0, \"nohuge_ranges\": ") && text.contains(", \"host\": \""), "{text}");
-        assert!(text.contains("\"purge_advice\": \"eager\", \"lazy_purges\": 0, \"eager_purges\": "), "{text}");
+        assert!(
+            text.contains("\"thp\": {\"key\": \"never\", \"mode\": \"off\", "),
+            "{text}"
+        );
+        assert!(
+            text.contains("\"failures\": 0, \"nohuge_ranges\": ")
+                && text.contains(", \"host\": \""),
+            "{text}"
+        );
+        assert!(
+            text.contains("\"purge_advice\": \"eager\", \"lazy_purges\": 0, \"eager_purges\": "),
+            "{text}"
+        );
         assert!(text.contains("\"stats.arenas\": {"));
         assert!(text.contains("\"0\": {"));
         assert!(text.contains("\"bins\": ["));
@@ -940,12 +1124,23 @@ mod tests {
         }
         assert_eq!(depth, 0, "unbalanced: {text}");
         let compact: String = text.split_whitespace().collect();
-        assert!(!compact.contains(",}") && !compact.contains(",]"), "trailing comma in:\n{text}");
+        assert!(
+            !compact.contains(",}") && !compact.contains(",]"),
+            "trailing comma in:\n{text}"
+        );
         // One bins array of NBINS entries per arena section in this very
         // text (other tests create arenas concurrently).
-        assert_eq!(text.matches("\"size\": ").count(), NBINS * text.matches("\"pactive\": ").count());
+        assert_eq!(
+            text.matches("\"size\": ").count(),
+            NBINS * text.matches("\"pactive\": ").count()
+        );
         let ga = report("Jga");
-        assert!(ga.contains("\"version\"") && !ga.contains("\"opt\"") && !ga.contains("\"stats.arenas\""), "{ga}");
+        assert!(
+            ga.contains("\"version\"")
+                && !ga.contains("\"opt\"")
+                && !ga.contains("\"stats.arenas\""),
+            "{ga}"
+        );
     }
 
     /// Every printable character of a report except the figures: digit runs
@@ -965,7 +1160,9 @@ mod tests {
             } else if let Some(r) = rest.strip_prefix("false") {
                 out.push('B');
                 rest = r;
-            } else if c.is_ascii_digit() || (c == '-' && rest[1..].starts_with(|d: char| d.is_ascii_digit())) {
+            } else if c.is_ascii_digit()
+                || (c == '-' && rest[1..].starts_with(|d: char| d.is_ascii_digit()))
+            {
                 out.push('N');
                 rest = rest[1..].trim_start_matches(|d: char| d.is_ascii_digit());
             } else {
@@ -1078,18 +1275,46 @@ mod tests {
             "  config.quantum:".into(),
             "Run-time option settings".into(),
         ];
-        want.extend(KEYS.iter().chain(INERT_KEYS).map(|key| std::format!("  opt.{key}:")));
         want.extend(
-            ["Kernel and CPU features:", "Sealed ranges:", "Background thread:", "Arenas:", "Quantum size:", "Page size:"]
-                .map(String::from),
+            KEYS.iter()
+                .chain(INERT_KEYS)
+                .map(|key| std::format!("  opt.{key}:")),
+        );
+        want.extend(
+            [
+                "Kernel and CPU features:",
+                "Sealed ranges:",
+                "Background thread:",
+                "Arenas:",
+                "Quantum size:",
+                "Page size:",
+            ]
+            .map(String::from),
         );
         if crate::layout::page_sized_classes().is_some() {
             want.push("Page-sized slabs:".into());
         }
-        want.extend(["Allocated:", "Huge:", "Metadata:", "cgroup:", "cgroup policy:", "purge advice:", "thp:"].map(String::from));
-        let general = heads.iter().position(|h| h == "arenas[N]:").unwrap_or_else(|| panic!("no arena block in:\n{text}"));
+        want.extend(
+            [
+                "Allocated:",
+                "Huge:",
+                "Metadata:",
+                "cgroup:",
+                "cgroup policy:",
+                "purge advice:",
+                "thp:",
+            ]
+            .map(String::from),
+        );
+        let general = heads
+            .iter()
+            .position(|h| h == "arenas[N]:")
+            .unwrap_or_else(|| panic!("no arena block in:\n{text}"));
         assert_eq!(heads[..general], want[..], "general section of:\n{text}");
-        assert_eq!(heads.last().map(String::as_str), Some("--- End jemalloc statistics ---"));
+        assert_eq!(
+            heads.last().map(String::as_str),
+            Some("--- End jemalloc statistics ---")
+        );
         let fixed = [
             "arenas[N]:",
             "  dirty_decay_ms:",
@@ -1100,23 +1325,38 @@ mod tests {
             "  metadata:",
             "  bins:",
         ];
-        let tables = ["", "  large classes (slab-allocated, not bins):", "  slab occupancy (non-empty slabs per eighth of nslots, last = full):"];
+        let tables = [
+            "",
+            "  large classes (slab-allocated, not bins):",
+            "  slab occupancy (non-empty slabs per eighth of nslots, last = full):",
+        ];
         let arenas = &heads[general..heads.len() - 1];
-        let starts: Vec<usize> = (0..arenas.len()).filter(|&i| arenas[i] == "arenas[N]:").collect();
+        let starts: Vec<usize> = (0..arenas.len())
+            .filter(|&i| arenas[i] == "arenas[N]:")
+            .collect();
         for (k, &start) in starts.iter().enumerate() {
             let block = &arenas[start..starts.get(k + 1).copied().unwrap_or(arenas.len())];
-            assert!(block.len() >= fixed.len() && block[..fixed.len()] == fixed, "arena block {block:?} in:\n{text}");
+            assert!(
+                block.len() >= fixed.len() && block[..fixed.len()] == fixed,
+                "arena block {block:?} in:\n{text}"
+            );
             let mut rest = &block[fixed.len()..];
             for table in tables {
                 if !table.is_empty() && rest.first().is_some_and(|h| h == table) {
                     rest = &rest[1..];
-                    assert!(rest.first().is_some_and(|h| h == "<row>"), "`{table}` without rows in {block:?}");
+                    assert!(
+                        rest.first().is_some_and(|h| h == "<row>"),
+                        "`{table}` without rows in {block:?}"
+                    );
                 }
                 if rest.first().is_some_and(|h| h == "<row>") {
                     rest = &rest[1..];
                 }
             }
-            assert!(rest.is_empty(), "unexpected lines {rest:?} in arena block {block:?} of:\n{text}");
+            assert!(
+                rest.is_empty(),
+                "unexpected lines {rest:?} in arena block {block:?} of:\n{text}"
+            );
         }
     }
 
@@ -1140,7 +1380,11 @@ mod tests {
         malloc_stats_print(Some(sink), core::ptr::null_mut(), core::ptr::null());
         let json = std::ffi::CString::new("J").unwrap();
         malloc_stats_print(Some(sink), core::ptr::null_mut(), json.as_ptr());
-        assert_eq!(counters(), before, "a report moved this thread's allocation counters");
+        assert_eq!(
+            counters(),
+            before,
+            "a report moved this thread's allocation counters"
+        );
     }
 
     #[test]
@@ -1149,13 +1393,19 @@ mod tests {
         static HOOKED: Mutex<Vec<u8>> = Mutex::new(Vec::new());
         unsafe extern "C" fn hook(opaque: *mut c_void, s: *const c_char) {
             assert!(opaque.is_null());
-            HOOKED.lock().unwrap().extend_from_slice(unsafe { core::ffi::CStr::from_ptr(s) }.to_bytes());
+            HOOKED
+                .lock()
+                .unwrap()
+                .extend_from_slice(unsafe { core::ffi::CStr::from_ptr(s) }.to_bytes());
         }
         set_message_hook_for_tests(Some(hook));
         malloc_stats_print(None, core::ptr::null_mut(), core::ptr::null());
         set_message_hook_for_tests(None);
         let got = String::from_utf8(HOOKED.lock().unwrap().clone()).unwrap();
-        assert!(got.starts_with("___ Begin jemalloc statistics ___\n"), "{got}");
+        assert!(
+            got.starts_with("___ Begin jemalloc statistics ___\n"),
+            "{got}"
+        );
         assert!(got.ends_with("--- End jemalloc statistics ---\n"));
     }
 
@@ -1175,9 +1425,17 @@ mod tests {
         assert!(xml.ends_with("</malloc>\n"), "{xml}");
         assert!(xml.contains("<heap nr=\"0\">"));
         let size = crate::layout::class_size_of(3000).unwrap();
-        assert!(xml.contains(&std::format!("<size from=\"{size}\" to=\"{size}\" total=\"")), "{xml}");
+        assert!(
+            xml.contains(&std::format!(
+                "<size from=\"{size}\" to=\"{size}\" total=\""
+            )),
+            "{xml}"
+        );
         assert!(xml.contains("<total type=\"mmap\" count=\""));
-        assert_eq!(xml.matches("<heap nr=").count(), xml.matches("</heap>").count());
+        assert_eq!(
+            xml.matches("<heap nr=").count(),
+            xml.matches("</heap>").count()
+        );
         assert_eq!(malloc_info(1, f), -1);
         assert_eq!(unsafe { *libc::__errno_location() }, 22);
         assert_eq!(malloc_info(0, core::ptr::null_mut()), -1);

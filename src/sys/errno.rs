@@ -129,11 +129,19 @@ mod tests {
     /// `name` arm fails here.
     #[test]
     fn every_named_code_has_a_name() {
-        let src = std::fs::read_to_string(std::concat!(env!("CARGO_MANIFEST_DIR"), "/src/sys/errno.rs")).unwrap();
+        let src = std::fs::read_to_string(std::concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/sys/errno.rs"
+        ))
+        .unwrap();
         let mut seen = 0;
         for line in src.lines() {
-            let Some(rest) = line.trim_start().strip_prefix("pub const E") else { continue };
-            let Some((name, value)) = rest.split_once(": Errno = Errno(") else { continue };
+            let Some(rest) = line.trim_start().strip_prefix("pub const E") else {
+                continue;
+            };
+            let Some((name, value)) = rest.split_once(": Errno = Errno(") else {
+                continue;
+            };
             let code: i32 = value.trim_end_matches([')', ';']).parse().unwrap();
             let name = std::format!("E{name}");
             assert_eq!(Errno(code).name(), name, "Errno({code})");

@@ -167,9 +167,17 @@ impl SlabTable {
     /// mask; callers must pass 0 when `MADV_GUARD_INSTALL` is unavailable,
     /// since a `PROT_NONE` slab would split the region into one VMA per
     /// guard (design section 5).
-    pub fn new(meta: &Meta, regions: &Regions, class: usize, guard_interval: u32) -> Option<SlabTable> {
+    pub fn new(
+        meta: &Meta,
+        regions: &Regions,
+        class: usize,
+        guard_interval: u32,
+    ) -> Option<SlabTable> {
         assert!(class < CLASSES.len(), "class: index out of range");
-        assert!(guard_interval != 1, "class: a guard interval of 1 leaves no slabs to allocate");
+        assert!(
+            guard_interval != 1,
+            "class: a guard interval of 1 leaves no slabs to allocate"
+        );
         assert!(
             guard_interval == 0 || guard_interval.is_power_of_two(),
             "class: guard interval {guard_interval} is not a power of two"
@@ -184,7 +192,11 @@ impl SlabTable {
         let group = cls.slabs_per_line().max(slabs_per_page);
         assert!(group.is_power_of_two() && group % slabs_per_page == 0);
         let descs = Lazy::reserve(meta, stagger + nslabs * desc_stride(class), align)?;
-        let bits = Lazy::reserve(meta, stagger + (nslabs * cls.slab_bits()).div_ceil(8), align)?;
+        let bits = Lazy::reserve(
+            meta,
+            stagger + (nslabs * cls.slab_bits()).div_ceil(8),
+            align,
+        )?;
         let owners = Lazy::reserve(meta, stagger + nslabs.div_ceil(group) * 2, align)?;
         Some(SlabTable {
             bits_base: bits.base + stagger,
@@ -203,7 +215,13 @@ impl SlabTable {
             base: regions.class_base[class],
             nslabs,
             desc_base: descs.base + stagger,
-            inner: Padded(Lock::new(TableInner { descs, bits, owners, next_slab: 0, guards: 0 })),
+            inner: Padded(Lock::new(TableInner {
+                descs,
+                bits,
+                owners,
+                next_slab: 0,
+                guards: 0,
+            })),
             _tail: [0; TABLE_TAIL],
         })
     }
@@ -283,10 +301,14 @@ impl SlabTable {
         let page = 1usize << self.lg_page;
         let stagger = desc_stagger(self.class as usize);
         let mut g = self.inner.lock();
-        g.owners.ensure(meta, page, stagger + group * 2 + 2).expect("owner page");
+        g.owners
+            .ensure(meta, page, stagger + group * 2 + 2)
+            .expect("owner page");
         drop(g);
         // SAFETY: the word's page was just committed.
-        unsafe { (*((self.owners_base + group * 2) as *const AtomicU16)).store(arena, Ordering::Relaxed) };
+        unsafe {
+            (*((self.owners_base + group * 2) as *const AtomicU16)).store(arena, Ordering::Relaxed)
+        };
     }
 
     /// Number of slabs (including guard slabs) handed to an arena: their
@@ -552,14 +574,27 @@ impl SlabTable {
         if s >= self.nslabs {
             return None;
         }
-        debug_assert_eq!(s & ((1 << self.lg_group) - 1), 0, "take_group: the watermark is group-aligned");
+        debug_assert_eq!(
+            s & ((1 << self.lg_group) - 1),
+            0,
+            "take_group: the watermark is group-aligned"
+        );
         let (_, end) = self.group_range(s >> self.lg_group);
         if purge::check_zero() && s != self.committed_slabs.load(Ordering::Relaxed) {
-            panic!("check_zero: class {class}: take_group at next_slab {s} but the watermark is {}", self.committed_slabs.load(Ordering::Relaxed));
+            panic!(
+                "check_zero: class {class}: take_group at next_slab {s} but the watermark is {}",
+                self.committed_slabs.load(Ordering::Relaxed)
+            );
         }
-        g.descs.ensure(meta, page, stagger + end * desc_stride(class)).ok()?;
-        g.bits.ensure(meta, page, stagger + (end * cls.slab_bits()).div_ceil(8)).ok()?;
-        g.owners.ensure(meta, page, stagger + ((end - 1) >> self.lg_group) * 2 + 2).ok()?;
+        g.descs
+            .ensure(meta, page, stagger + end * desc_stride(class))
+            .ok()?;
+        g.bits
+            .ensure(meta, page, stagger + (end * cls.slab_bits()).div_ceil(8))
+            .ok()?;
+        g.owners
+            .ensure(meta, page, stagger + ((end - 1) >> self.lg_group) * 2 + 2)
+            .ok()?;
         ensure_sets(end - 1).ok()?;
         // The owner word and the descriptors' arena field record the same
         // fact (design section 4) and are written together only here, so
@@ -567,7 +602,8 @@ impl SlabTable {
         // zero for never-touched memory. A disagreement is a wild write
         // into one of the two arrays and aborts before the group is used.
         // SAFETY: the owner page for the group was committed above.
-        let owner_word = unsafe { &*((self.owners_base + (s >> self.lg_group) * 2) as *const AtomicU16) };
+        let owner_word =
+            unsafe { &*((self.owners_base + (s >> self.lg_group) * 2) as *const AtomicU16) };
         let previous = owner_word.load(Ordering::Relaxed);
         for slab in s..end {
             if self.is_guard_slab(slab) {

@@ -44,11 +44,11 @@ use crate::sys;
 
 mod curve;
 #[cfg(test)]
-pub(crate) mod tests;
-#[cfg(test)]
 mod linux_tests;
+#[cfg(test)]
+pub(crate) mod tests;
 
-pub use curve::{decay_ns_from_ms, Curve, NEVER, STEPS};
+pub use curve::{Curve, NEVER, STEPS, decay_ns_from_ms};
 
 /// Ranges per batch (design section 8).
 pub const MAX_BATCH: usize = 64;
@@ -124,12 +124,18 @@ pub fn advice_reason() -> &'static str {
 
 /// `(lazy batches, eager batches)` flushed so far.
 pub fn batches() -> (u64, u64) {
-    (LAZY_BATCHES.load(Ordering::Relaxed), EAGER_BATCHES.load(Ordering::Relaxed))
+    (
+        LAZY_BATCHES.load(Ordering::Relaxed),
+        EAGER_BATCHES.load(Ordering::Relaxed),
+    )
 }
 
 /// `(lazy bytes, eager bytes)` discarded so far.
 pub fn discarded_bytes() -> (u64, u64) {
-    (LAZY_BYTES.load(Ordering::Relaxed), EAGER_BYTES.load(Ordering::Relaxed))
+    (
+        LAZY_BYTES.load(Ordering::Relaxed),
+        EAGER_BYTES.load(Ordering::Relaxed),
+    )
 }
 
 /// An explicit purge in progress: every flush until the guard drops is
@@ -203,7 +209,10 @@ pub struct Batch {
 
 impl Batch {
     pub const fn new() -> Batch {
-        Batch { ranges: [(0, 0); MAX_BATCH], n: 0 }
+        Batch {
+            ranges: [(0, 0); MAX_BATCH],
+            n: 0,
+        }
     }
 
     #[inline]
@@ -252,7 +261,10 @@ impl Batch {
     pub fn flush(&mut self) {
         if self.n != 0 {
             let advice = advice();
-            let bytes: u64 = self.ranges[..self.n].iter().map(|&(_, len)| len as u64).sum();
+            let bytes: u64 = self.ranges[..self.n]
+                .iter()
+                .map(|&(_, len)| len as u64)
+                .sum();
             match advice {
                 Advice::Lazy => {
                     LAZY_EVER.store(true, Ordering::Relaxed);
@@ -288,7 +300,10 @@ pub struct Decayer {
 
 impl Decayer {
     pub const fn new() -> Decayer {
-        Decayer { oldest_empty: AtomicU64::new(0), next_walk: AtomicU64::new(0) }
+        Decayer {
+            oldest_empty: AtomicU64::new(0),
+            next_walk: AtomicU64::new(0),
+        }
     }
 
     /// `dirty_at` of the oldest `Empty` member as the driver sees it (0
@@ -346,7 +361,11 @@ impl Decayer {
         walk(now, &curve);
         let next = now.saturating_add(step);
         self.next_walk.store(next, Ordering::Relaxed);
-        if self.oldest_empty() == 0 { None } else { Some(next) }
+        if self.oldest_empty() == 0 {
+            None
+        } else {
+            Some(next)
+        }
     }
 }
 

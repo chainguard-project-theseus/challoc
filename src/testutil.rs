@@ -37,9 +37,18 @@ fn regions_at(superblock: usize, meta: (usize, usize), huge_base: usize) -> Regi
         meta,
         page_size().trailing_zeros(),
         [
-            Mapping { addr: superblock, len: sb_len },
-            Mapping { addr: huge.0, len: huge.1 },
-            Mapping { addr: meta.0, len: meta.1 },
+            Mapping {
+                addr: superblock,
+                len: sb_len,
+            },
+            Mapping {
+                addr: huge.0,
+                len: huge.1,
+            },
+            Mapping {
+                addr: meta.0,
+                len: meta.1,
+            },
         ],
     )
 }
@@ -61,12 +70,20 @@ impl TestShared {
     /// path runs on a host with pointer authentication and the plain path
     /// elsewhere.
     pub(crate) fn new() -> TestShared {
-        TestShared::with(Config { narenas: 1, pac_pointers: true, ..Config::DEFAULT })
+        TestShared::with(Config {
+            narenas: 1,
+            pac_pointers: true,
+            ..Config::DEFAULT
+        })
     }
 
     /// `config` as given. No guard slabs, the PAC probe's real answer.
     pub(crate) fn with(config: Config) -> TestShared {
-        TestShared { config, guards: false, pac: pac::available() }
+        TestShared {
+            config,
+            guards: false,
+            pac: pac::available(),
+        }
     }
 
     /// Guard slabs at the configured interval (`guard_install` as on a
@@ -89,11 +106,22 @@ impl TestShared {
             use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
             let reserve = |len: usize| -> usize {
                 unsafe {
-                    crate::sys::mmap(0, len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0)
+                    crate::sys::mmap(
+                        0,
+                        len,
+                        PROT_NONE,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+                        -1,
+                        0,
+                    )
                 }
                 .expect("reserve")
             };
-            (reserve((NCLASSES << LG_STRIDE) + MAX_SLAB), reserve(META_LEN), reserve(HUGE_LEN))
+            (
+                reserve((NCLASSES << LG_STRIDE) + MAX_SLAB),
+                reserve(META_LEN),
+                reserve(HUGE_LEN),
+            )
         };
         let regions = regions_at(
             align_up(sb, MAX_SLAB),
@@ -101,7 +129,9 @@ impl TestShared {
             hb,
         );
         let b: &'static mut MaybeUninit<Shared> = Box::leak(Box::new(MaybeUninit::uninit()));
-        assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, self.config, self.guards, self.pac) });
+        assert!(unsafe {
+            Shared::init(b.as_mut_ptr(), regions, self.config, self.guards, self.pac)
+        });
         unsafe { b.assume_init_ref() }
     }
 }

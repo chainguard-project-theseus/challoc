@@ -47,9 +47,18 @@ fn regions_at(huge: (usize, usize), meta: (usize, usize)) -> Regions {
         meta,
         page_size().trailing_zeros(),
         [
-            Mapping { addr: superblock, len: sb_len },
-            Mapping { addr: huge.0, len: huge.1 },
-            Mapping { addr: meta.0, len: meta.1 },
+            Mapping {
+                addr: superblock,
+                len: sb_len,
+            },
+            Mapping {
+                addr: huge.0,
+                len: huge.1,
+            },
+            Mapping {
+                addr: meta.0,
+                len: meta.1,
+            },
         ],
     )
 }
@@ -63,7 +72,14 @@ impl Env {
         use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
         let reserve = |len: usize| -> usize {
             unsafe {
-                crate::sys::mmap(0, len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0)
+                crate::sys::mmap(
+                    0,
+                    len,
+                    PROT_NONE,
+                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+                    -1,
+                    0,
+                )
             }
             .expect("reserve")
         };
@@ -163,7 +179,14 @@ fn first_run_is_at_the_base_and_zero() {
     let info = h.lookup(0).unwrap();
     assert_eq!(
         info,
-        RunInfo { start: 0, pages: pages + GUARD_PAGES, usable: pages * page_size(), arena: 0, state: RunState::Active, dirty_at: 0 }
+        RunInfo {
+            start: 0,
+            pages: pages + GUARD_PAGES,
+            usable: pages * page_size(),
+            arena: 0,
+            state: RunState::Active,
+            dirty_at: 0
+        }
     );
     assert_eq!(h.usable_size(0), pages * page_size());
     assert_eq!(h.lookup(pages), None, "guard page is not keyed");
@@ -201,7 +224,10 @@ fn free_and_reuse_prefers_the_lowest_address() {
     assert_eq!(env.page_of(d), 5);
     assert!(!zero);
     let rest = h.lookup(8).unwrap();
-    assert_eq!((rest.start, rest.pages, rest.state), (8, 2, RunState::Empty));
+    assert_eq!(
+        (rest.start, rest.pages, rest.state),
+        (8, 2, RunState::Empty)
+    );
     // Too big for the remaining hole: goes to the mark.
     let (e, zero) = env.alloc(&h, 3 * page_size(), 1);
     assert_eq!(env.page_of(e), 15);
@@ -254,7 +280,10 @@ fn alignment_over_allocates_and_frees_head_and_tail() {
         assert!(zero);
         let page = env.page_of(p);
         let info = h.lookup(page).unwrap();
-        assert_eq!((info.pages, info.usable, info.state), (3 + GUARD_PAGES, 3 * page_size(), RunState::Active));
+        assert_eq!(
+            (info.pages, info.usable, info.state),
+            (3 + GUARD_PAGES, 3 * page_size(), RunState::Active)
+        );
         // The page before is either an unkeyed guard page or the last
         // page of a clean alignment hole.
         if let Some(before) = h.lookup(page - 1) {
@@ -341,7 +370,11 @@ fn purged_and_empty_merge_to_empty() {
     let (b, _) = env.alloc(&h, 3 * page_size(), 1);
     let (c, _) = env.alloc(&h, page_size(), 1);
     env.free(&h, b);
-    assert_eq!(h.lookup(2).unwrap().state, RunState::Purged, "above retain_max: purged at once");
+    assert_eq!(
+        h.lookup(2).unwrap().state,
+        RunState::Purged,
+        "above retain_max: purged at once"
+    );
     assert_eq!(h.oldest_dirty_at(), None);
     env.free(&h, a);
     let m = h.lookup(0).unwrap();
@@ -431,7 +464,10 @@ fn decay_purges_the_oldest_extents_along_the_curve() {
     assert_eq!(h.decay(t0 + W / 2, W), Some(t0 + W / 2 + 1000));
     assert_eq!((h.stats().empty, h.stats().purged), (1, 1));
     assert_eq!(h.stats().purged_pages, pages / 2);
-    assert_eq!(h.lookup(env.page_of(ps[0])).unwrap().state, RunState::Purged);
+    assert_eq!(
+        h.lookup(env.page_of(ps[0])).unwrap().state,
+        RunState::Purged
+    );
     assert_eq!(h.lookup(env.page_of(ps[2])).unwrap().state, RunState::Empty);
     assert_eq!(h.oldest_empty(), t0);
     // The survivor, alone, lasts until the last step of the window.
@@ -500,7 +536,18 @@ fn purge_respects_the_cutoff_in_fifo_order() {
     assert_eq!(h.oldest_dirty_at(), Some(times[2]));
     assert_eq!(h.stats().purged, 2);
     assert_eq!(h.purge_empty(u64::MAX), 1);
-    assert_eq!(h.stats(), HugeStats { runs: 3, run_pages: 6, purged: 3, purged_pages: 6, next_page: 12, table_cap: 1024, ..HugeStats::default() });
+    assert_eq!(
+        h.stats(),
+        HugeStats {
+            runs: 3,
+            run_pages: 6,
+            purged: 3,
+            purged_pages: 6,
+            next_page: 12,
+            table_cap: 1024,
+            ..HugeStats::default()
+        }
+    );
     for &p in ps.iter().skip(1).step_by(2) {
         env.free(&h, p);
     }
@@ -521,7 +568,10 @@ fn exhaustion_returns_null_and_recovers() {
     }
     // 1 MiB + guard runs (257 pages of 4 KiB, 17 of 64 KiB): the region
     // holds the whole quotient and the remainder cannot take another.
-    assert_eq!(held.len(), huge_pages() / ((1 << 20) / page_size() + GUARD_PAGES));
+    assert_eq!(
+        held.len(),
+        huge_pages() / ((1 << 20) / page_size() + GUARD_PAGES)
+    );
     let st = h.stats();
     assert!(st.next_page <= huge_pages());
     // Something small still fits in the leftover.
@@ -539,8 +589,14 @@ fn exhaustion_returns_null_and_recovers() {
     assert!(!zero);
     assert!(env.alloc(&h, 1, 1).0.is_null());
     env.free(&h, big);
-    assert!(env.alloc(&h, huge_len(), 1).0.is_null(), "no room for the guard");
-    assert!(env.alloc(&h, page_size(), 2 * huge_len()).0.is_null(), "alignment beyond the region");
+    assert!(
+        env.alloc(&h, huge_len(), 1).0.is_null(),
+        "no room for the guard"
+    );
+    assert!(
+        env.alloc(&h, page_size(), 2 * huge_len()).0.is_null(),
+        "alignment beyond the region"
+    );
 }
 
 /// `malloc(0)`-style requests that reach the huge allocator (a zero
@@ -556,7 +612,10 @@ fn a_zero_byte_request_gets_one_page() {
     assert!(!p.is_null() && zero);
     let page = env.page_of(p);
     let info = h.lookup(page).expect("run descriptor");
-    assert_eq!((info.pages, info.usable, info.state), (1 + GUARD_PAGES, page_size(), RunState::Active));
+    assert_eq!(
+        (info.pages, info.usable, info.state),
+        (1 + GUARD_PAGES, page_size(), RunState::Active)
+    );
     assert_eq!(h.usable_size(page), page_size());
     assert_eq!(env.free(&h, p), page_size());
     assert_eq!(h.stats().runs, 0);
@@ -580,7 +639,10 @@ fn table_grows_and_lookups_survive_backward_shift() {
     for (i, &page) in runs.iter().enumerate() {
         assert_eq!(page, 2 * i);
         let info = h.lookup(page).unwrap();
-        assert_eq!((info.pages, info.arena, info.state), (2, 7, RunState::Active));
+        assert_eq!(
+            (info.pages, info.arena, info.state),
+            (2, 7, RunState::Active)
+        );
     }
     // Free every third run: many removals with shifts, and every
     // remaining key must still resolve.
@@ -607,7 +669,10 @@ fn table_grows_and_lookups_survive_backward_shift() {
     h.audit();
     assert_eq!(h.stats().empty, 1);
     let ms = env.meta.stats();
-    assert!(ms.allocated < h.stats().table_cap * 16 + 4096, "descriptors leaked: {ms:?}");
+    assert!(
+        ms.allocated < h.stats().table_cap * 16 + 4096,
+        "descriptors leaked: {ms:?}"
+    );
 }
 
 #[test]
@@ -658,11 +723,19 @@ fn randomised_model_check() {
                     2 => (xorshift(&mut rng) as usize % (100 * page_size())) + 1,
                     _ => page_size() * ((xorshift(&mut rng) as usize % 8) + 1),
                 };
-                let align = if xorshift(&mut rng) % 3 == 0 { 1usize << (13 + xorshift(&mut rng) % 9) } else { 1 };
+                let align = if xorshift(&mut rng) % 3 == 0 {
+                    1usize << (13 + xorshift(&mut rng) % 9)
+                } else {
+                    1
+                };
                 let (p, zero) = env.alloc(&h, size, align);
                 if p.is_null() {
                     // Only acceptable when the region is really tight.
-                    assert!(h.stats().next_page + size / page_size() + 2 > huge_pages() || align > page_size(), "step {step}");
+                    assert!(
+                        h.stats().next_page + size / page_size() + 2 > huge_pages()
+                            || align > page_size(),
+                        "step {step}"
+                    );
                     continue;
                 }
                 assert_eq!(p as usize % align, 0);
@@ -670,7 +743,10 @@ fn randomised_model_check() {
                 let n = size.div_ceil(page_size());
                 assert_eq!(h.usable_size(page), n * page_size());
                 for &(q, m, _) in &live {
-                    assert!(page + n + GUARD_PAGES <= q || q + m + GUARD_PAGES <= page, "overlap at step {step}");
+                    assert!(
+                        page + n + GUARD_PAGES <= q || q + m + GUARD_PAGES <= page,
+                        "overlap at step {step}"
+                    );
                 }
                 if zero {
                     zero_flags += 1;
@@ -684,7 +760,11 @@ fn randomised_model_check() {
                 h.audit();
             }
             9 => {
-                let cutoff = if xorshift(&mut rng) % 2 == 0 { u64::MAX } else { now_ns().saturating_sub(5) };
+                let cutoff = if xorshift(&mut rng) % 2 == 0 {
+                    u64::MAX
+                } else {
+                    now_ns().saturating_sub(5)
+                };
                 h.purge_empty(cutoff);
                 h.audit();
             }
@@ -692,7 +772,10 @@ fn randomised_model_check() {
         }
         let st = h.stats();
         assert_eq!(st.runs, live.len());
-        assert_eq!(st.run_pages, live.iter().map(|&(_, n, _)| n + GUARD_PAGES).sum::<usize>());
+        assert_eq!(
+            st.run_pages,
+            live.iter().map(|&(_, n, _)| n + GUARD_PAGES).sum::<usize>()
+        );
     }
     assert!(zero_flags > 0);
     for (page, _, _) in live.drain(..) {
@@ -720,9 +803,16 @@ fn runs_have_one_key_and_free_extents_two() {
     let run = h.lookup(page).expect("run keyed by its start");
     assert_eq!((run.pages, run.state), (3 + GUARD_PAGES, RunState::Active));
     assert_eq!(h.lookup(page + 1), None);
-    assert_eq!(h.lookup(page + run.pages - 1), None, "a run has no last-page key");
+    assert_eq!(
+        h.lookup(page + run.pages - 1),
+        None,
+        "a run has no last-page key"
+    );
     let st = h.stats();
-    assert_eq!((st.runs, st.run_pages, st.empty + st.purged), (1, run.pages, 0));
+    assert_eq!(
+        (st.runs, st.run_pages, st.empty + st.purged),
+        (1, run.pages, 0)
+    );
     env.free(&h, p);
     let ext = h.lookup(page).expect("free extent keyed by its first page");
     assert_eq!(h.lookup(page + ext.pages - 1), Some(ext), "and by its last");
@@ -749,9 +839,16 @@ fn prior_state_names_the_source_of_the_pages() {
     let (q, _) = env.alloc(&h, page_size(), 1);
     env.free(&h, p);
     let ext = h.inner.lock().table.get(0);
-    assert_eq!(h.lookup(0).map(|i| (i.pages, i.state)), Some((1 + GUARD_PAGES, RunState::Empty)));
+    assert_eq!(
+        h.lookup(0).map(|i| (i.pages, i.state)),
+        Some((1 + GUARD_PAGES, RunState::Empty))
+    );
     assert_eq!(h.prior_state(0, ext), "Empty");
-    assert_eq!(h.prior_state(1 + GUARD_PAGES, ext), "fresh", "pages past the extent's end");
+    assert_eq!(
+        h.prior_state(1 + GUARD_PAGES, ext),
+        "fresh",
+        "pages past the extent's end"
+    );
     h.purge_empty(u64::MAX);
     assert_eq!(h.prior_state(0, ext), "Purged");
     env.free(&h, q);
@@ -878,7 +975,6 @@ fn run_state_round_trips_and_rejects_other_bytes() {
 fn a_run_state_byte_no_state_has_aborts() {
     let _ = RunState::from_u8(3);
 }
-
 
 #[test]
 #[should_panic(expected = "Empty extent count underflow")]

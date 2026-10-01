@@ -23,11 +23,11 @@ use core::fmt;
 
 use super::auxv::{AT_PAGESZ, getauxval};
 use super::thp_host::Thp;
-use crate::sys;
 use super::{
     MADV_GUARD_INSTALL, MADV_GUARD_REMOVE, MAP_ANONYMOUS, MAP_PRIVATE, PROT_NONE, PROT_READ,
     PROT_WRITE, yn,
 };
+use crate::sys;
 
 /// Bit sets of sizes as `64K,2M`, or `none`.
 struct SizeSet(u64);
@@ -92,7 +92,10 @@ impl fmt::Display for Value {
 
 /// `key=value` pairs separated by single spaces: the shape of the whole
 /// line and of each part that prints on its own (`Thp`).
-pub fn write_words(f: &mut fmt::Formatter<'_>, words: impl Iterator<Item = (&'static str, Value)>) -> fmt::Result {
+pub fn write_words(
+    f: &mut fmt::Formatter<'_>,
+    words: impl Iterator<Item = (&'static str, Value)>,
+) -> fmt::Result {
     for (i, (key, value)) in words.enumerate() {
         if i > 0 {
             f.write_str(" ")?;
@@ -174,7 +177,10 @@ impl FeatureLine {
     /// which the tests would notice; it cannot happen with the current keys.
     pub fn build(features: &Features) -> FeatureLine {
         use fmt::Write as _;
-        let mut line = FeatureLine { buf: [0; Self::CAP], len: 0 };
+        let mut line = FeatureLine {
+            buf: [0; Self::CAP],
+            len: 0,
+        };
         let _ = write!(line, "{features}");
         line.buf[line.len] = 0;
         line
@@ -203,7 +209,6 @@ impl fmt::Write for FeatureLine {
         Ok(())
     }
 }
-
 
 /// The system page size, `getauxval(AT_PAGESZ)`. Without it, abort:
 /// guessing a page size would corrupt every mapping we make.
@@ -304,7 +309,13 @@ mod tests {
     /// What `rseq::probe` reads on a host whose glibc registered `size`
     /// bytes at `offset` (registered when the size is not 0).
     fn rseq_probe(size: u32, offset: isize) -> Probe {
-        Probe { present: true, size, flags: 0, offset, registered: size != 0 }
+        Probe {
+            present: true,
+            size,
+            flags: 0,
+            offset,
+            registered: size != 0,
+        }
     }
 
     #[test]
@@ -315,7 +326,13 @@ mod tests {
             guard_install: false,
             mseal: true,
             anon_name: false,
-            thp: Thp { enabled: Some(ThpSetting::Madvise), lg_pmd: 21, listed: (1 << 16) | (1 << 21), always: 0, madvise: (1 << 16) | (1 << 21) },
+            thp: Thp {
+                enabled: Some(ThpSetting::Madvise),
+                lg_pmd: 21,
+                listed: (1 << 16) | (1 << 21),
+                always: 0,
+                madvise: (1 << 16) | (1 << 21),
+            },
             rseq: rseq_probe(33, 192),
             pac: true,
         };
@@ -326,14 +343,35 @@ mod tests {
              mthp=64K,2M rseq=yes rseq_size=33 pac=yes"
         );
         // A kernel that reports no feature size (6.10): registered at 20.
-        let f = Features { rseq: rseq_probe(20, 192), ..f };
+        let f = Features {
+            rseq: rseq_probe(20, 192),
+            ..f
+        };
         assert!(std::format!("{f}").contains(" mthp=64K,2M rseq=yes rseq_size=20 pac=yes"));
-        let f = Features { rseq: Probe::NONE, ..f };
+        let f = Features {
+            rseq: Probe::NONE,
+            ..f
+        };
         assert!(std::format!("{f}").contains(" rseq=no rseq_size=0 pac=yes"));
-        let f = Features { rseq: rseq_probe(33, -192), ..f };
-        let f = Features { thp: Thp::NONE, ..f };
+        let f = Features {
+            rseq: rseq_probe(33, -192),
+            ..f
+        };
+        let f = Features {
+            thp: Thp::NONE,
+            ..f
+        };
         assert!(std::format!("{f}").contains(" thp=none mthp=none rseq=yes "));
-        let f = Features { thp: Thp { enabled: Some(ThpSetting::Never), listed: 1 << 21, always: 0, madvise: 0, lg_pmd: 21 }, ..f };
+        let f = Features {
+            thp: Thp {
+                enabled: Some(ThpSetting::Never),
+                listed: 1 << 21,
+                always: 0,
+                madvise: 0,
+                lg_pmd: 21,
+            },
+            ..f
+        };
         assert!(std::format!("{f}").contains(" thp=never mthp=none rseq=yes "));
     }
 
@@ -353,7 +391,8 @@ mod tests {
         assert_eq!(line.as_str(), std::format!("{f}"));
         // SAFETY: `as_ptr` names the line's own buffer, which holds `len`
         // bytes of text and the NUL after them.
-        let bytes = unsafe { core::slice::from_raw_parts(line.as_ptr() as *const u8, line.len + 1) };
+        let bytes =
+            unsafe { core::slice::from_raw_parts(line.as_ptr() as *const u8, line.len + 1) };
         assert_eq!(bytes[line.len], 0);
         assert_eq!(&bytes[..line.len], line.as_str().as_bytes());
         assert!(!line.as_str().contains('\n'));
@@ -377,7 +416,13 @@ mod tests {
                 madvise: 0,
             },
             // The longest words.
-            rseq: Probe { present: true, size: u32::MAX, flags: u32::MAX, offset: isize::MIN, registered: true },
+            rseq: Probe {
+                present: true,
+                size: u32::MAX,
+                flags: u32::MAX,
+                offset: isize::MIN,
+                registered: true,
+            },
             pac: true,
         };
         let s = std::format!("{f}");
@@ -385,7 +430,11 @@ mod tests {
         assert_eq!(FeatureLine::build(&f).as_str(), s);
         // The table is what the line is made of: the same bytes, word
         // by word.
-        let by_words: usize = f.words().map(|(k, v)| k.len() + 1 + std::format!("{v}").len() + 1).sum::<usize>() - 1;
+        let by_words: usize = f
+            .words()
+            .map(|(k, v)| k.len() + 1 + std::format!("{v}").len() + 1)
+            .sum::<usize>()
+            - 1;
         assert_eq!(by_words, s.len());
     }
 
@@ -395,8 +444,15 @@ mod tests {
     #[test]
     fn words_are_the_key_table() {
         let kernel = [
-            "page_size", "guard_install", "mseal", "anon_name",
-            "thp", "mthp", "rseq", "rseq_size", "pac",
+            "page_size",
+            "guard_install",
+            "mseal",
+            "anon_name",
+            "thp",
+            "mthp",
+            "rseq",
+            "rseq_size",
+            "pac",
         ];
         for pac in [true, false] {
             let f = Features {
@@ -407,7 +463,7 @@ mod tests {
                 anon_name: true,
                 thp: Thp::NONE,
                 rseq: rseq_probe(33, 192),
-                    pac,
+                pac,
             };
             let keys: std::vec::Vec<&str> = f.words().map(|(k, _)| k).collect();
             assert_eq!(keys, kernel);
@@ -415,14 +471,20 @@ mod tests {
             for (k, v) in f.words() {
                 assert!(seen.insert(k), "{k} twice");
                 let v = std::format!("{v}");
-                assert!(!k.is_empty() && !v.is_empty() && !k.contains([' ', '=']) && !v.contains([' ', '=']), "{k}={v}");
+                assert!(
+                    !k.is_empty()
+                        && !v.is_empty()
+                        && !k.contains([' ', '='])
+                        && !v.contains([' ', '=']),
+                    "{k}={v}"
+                );
             }
-            let joined: std::vec::Vec<std::string::String> = f.words().map(|(k, v)| std::format!("{k}={v}")).collect();
+            let joined: std::vec::Vec<std::string::String> =
+                f.words().map(|(k, v)| std::format!("{k}={v}")).collect();
             assert_eq!(std::format!("{f}"), joined.join(" "));
             assert_eq!(std::format!("{}", f.thp), joined[4..6].join(" "));
         }
     }
-
 }
 
 /// Linux-only tests: run the real probe inside the dev container and check
@@ -490,7 +552,10 @@ mod linux_tests {
         if !at_least(kv, (6, 13)) {
             assert!(!f.guard_install, "MADV_GUARD_INSTALL predates 6.13: {line}");
         } else {
-            assert!(f.guard_install, "MADV_GUARD_INSTALL should work on 6.13+: {line}");
+            assert!(
+                f.guard_install,
+                "MADV_GUARD_INSTALL should work on 6.13+: {line}"
+            );
         }
         if f.guard_install {
             // Usable exactly as reported.
@@ -515,7 +580,11 @@ mod linux_tests {
             // Sealing works, so the probe's own sealed page must still be
             // mapped: a PROT_NONE page. Find it via /proc.
             let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
-            assert!(maps.lines().any(|l| l.split_whitespace().nth(1) == Some("---p")), "{maps}");
+            assert!(
+                maps.lines()
+                    .any(|l| l.split_whitespace().nth(1) == Some("---p")),
+                "{maps}"
+            );
         }
     }
 
@@ -531,15 +600,24 @@ mod linux_tests {
             // SAFETY: our page, static name.
             unsafe { sys::set_vma_anon_name(addr, page, b"challoc:probe2\0").unwrap() };
             let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
-            let l: Vec<&str> = maps.lines().filter(|l| l.starts_with(&format!("{addr:x}-"))).collect();
-            assert!(l.iter().any(|l| l.contains("[anon:challoc:probe2]")), "{l:?}");
+            let l: Vec<&str> = maps
+                .lines()
+                .filter(|l| l.starts_with(&format!("{addr:x}-")))
+                .collect();
+            assert!(
+                l.iter().any(|l| l.contains("[anon:challoc:probe2]")),
+                "{l:?}"
+            );
             // SAFETY: our page.
             unsafe { sys::munmap(addr, page).unwrap() };
         }
         // The probe must not have left its named scratch page behind: it
         // releases the page whether or not the prctl worked.
         let maps: String = std::fs::read_to_string("/proc/self/maps").unwrap();
-        assert!(!maps.contains("[anon:challoc:probe]"), "probe page leaked: {maps}");
+        assert!(
+            !maps.contains("[anon:challoc:probe]"),
+            "probe page leaked: {maps}"
+        );
     }
 
     /// The rseq words against glibc's own symbols through `dlsym` and the
@@ -551,24 +629,52 @@ mod linux_tests {
     #[test]
     fn rseq_words_match_glibc_symbols_and_the_feature_size() {
         let (_, f, line) = probed();
-        assert_eq!(f.rseq, crate::rseq::probe(), "the line's probe is rseq::probe's");
+        assert_eq!(
+            f.rseq,
+            crate::rseq::probe(),
+            "the line's probe is rseq::probe's"
+        );
         let sym = |name: &[u8]| -> *const u8 {
             // SAFETY: `dlsym` on a NUL-terminated name in the test.
             unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr().cast()) }.cast()
         };
-        let (ps, po, pf) = (sym(b"__rseq_size\0"), sym(b"__rseq_offset\0"), sym(b"__rseq_flags\0"));
+        let (ps, po, pf) = (
+            sym(b"__rseq_size\0"),
+            sym(b"__rseq_offset\0"),
+            sym(b"__rseq_flags\0"),
+        );
         if ps.is_null() {
-            assert_eq!(f.rseq, crate::rseq::Probe::NONE, "no __rseq_size symbol: {line}");
+            assert_eq!(
+                f.rseq,
+                crate::rseq::Probe::NONE,
+                "no __rseq_size symbol: {line}"
+            );
             assert!(line.contains(" rseq=no rseq_size=0 "), "{line}");
             return;
         }
         // SAFETY: glibc's exported objects of these types.
-        let (size, offset, flags) = unsafe { (ps.cast::<u32>().read(), po.cast::<isize>().read(), pf.cast::<u32>().read()) };
+        let (size, offset, flags) = unsafe {
+            (
+                ps.cast::<u32>().read(),
+                po.cast::<isize>().read(),
+                pf.cast::<u32>().read(),
+            )
+        };
         assert!(f.rseq.present, "{line}");
-        assert_eq!((f.rseq.size, f.rseq.offset, f.rseq.flags), (size, offset, flags), "{line}");
+        assert_eq!(
+            (f.rseq.size, f.rseq.offset, f.rseq.flags),
+            (size, offset, flags),
+            "{line}"
+        );
         let registered = size >= crate::rseq::BASE_SIZE && f.rseq.registered;
-        eprintln!("rseq: __rseq_size={size} __rseq_offset={offset} __rseq_flags={flags} registered={}", f.rseq.registered);
-        assert!(line.contains(&format!(" rseq={} rseq_size={size} ", sys::yn(registered))), "{line}");
+        eprintln!(
+            "rseq: __rseq_size={size} __rseq_offset={offset} __rseq_flags={flags} registered={}",
+            f.rseq.registered
+        );
+        assert!(
+            line.contains(&format!(" rseq={} rseq_size={size} ", sys::yn(registered))),
+            "{line}"
+        );
         if size >= crate::rseq::BASE_SIZE {
             // glibc registered: the kernel wrote a CPU number.
             assert!(f.rseq.registered, "{line}");
@@ -583,7 +689,10 @@ mod linux_tests {
         // AT_RSEQ_FEATURE_SIZE: the fields the kernel offers.
         let feat = sys::auxv::getauxval(sys::auxv::AT_RSEQ_FEATURE_SIZE) as u32;
         if feat > crate::rseq::BASE_SIZE && size >= crate::rseq::BASE_SIZE {
-            assert!(size >= feat, "kernel offers {feat} bytes, glibc registered {size}: {line}");
+            assert!(
+                size >= feat,
+                "kernel offers {feat} bytes, glibc registered {size}: {line}"
+            );
         }
     }
 
@@ -594,12 +703,19 @@ mod linux_tests {
         let dir = std::path::Path::new("/sys/kernel/mm/transparent_hugepage");
         match std::fs::read_to_string(dir.join("enabled")) {
             Ok(e) => {
-                assert_eq!(f.thp.enabled, crate::sys::thp_host::parse_thp_setting(e.as_bytes()), "{line}");
+                assert_eq!(
+                    f.thp.enabled,
+                    crate::sys::thp_host::parse_thp_setting(e.as_bytes()),
+                    "{line}"
+                );
                 let mut listed = 0u64;
                 for entry in std::fs::read_dir(dir).unwrap() {
                     let name = entry.unwrap().file_name();
                     let name = name.to_str().unwrap();
-                    if let Some(kb) = name.strip_prefix("hugepages-").and_then(|s| s.strip_suffix("kB")) {
+                    if let Some(kb) = name
+                        .strip_prefix("hugepages-")
+                        .and_then(|s| s.strip_suffix("kB"))
+                    {
                         if dir.join(name).join("enabled").exists() {
                             listed |= 1 << (kb.parse::<u64>().unwrap() * 1024).trailing_zeros();
                         }
@@ -608,7 +724,10 @@ mod linux_tests {
                 if listed == 0 {
                     listed = 1 << f.thp.lg_pmd;
                 } else {
-                    assert!(at_least(kv, (6, 8)), "per-size directories predate 6.8: {line}");
+                    assert!(
+                        at_least(kv, (6, 8)),
+                        "per-size directories predate 6.8: {line}"
+                    );
                 }
                 assert_eq!(f.thp.listed, listed, "{line}");
             }

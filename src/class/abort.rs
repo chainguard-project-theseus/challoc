@@ -23,7 +23,16 @@ pub(super) fn owner_mismatch(class: usize, group: usize, slab: usize, word: u16,
 /// bounds the set bits, so the bitmap or the descriptor is corrupt.
 #[cold]
 #[inline(never)]
-pub(super) fn zero_slab_had_bits_set(class: usize, slab: usize, arena: u16, state: State, live: usize, word: usize, got: u64, expect: u64) -> ! {
+pub(super) fn zero_slab_had_bits_set(
+    class: usize,
+    slab: usize,
+    arena: u16,
+    state: State,
+    live: usize,
+    word: usize,
+    got: u64,
+    expect: u64,
+) -> ! {
     panic!(
         "class {class} slab {slab} (arena {arena}) is {state:?} with live {live} but word {word} of its bitmap had bits set before the refill's claim: claimed {got:#x}, expected {expect:#x}"
     )
@@ -45,7 +54,9 @@ pub(super) fn guard_free(p: usize, class: usize, slab: usize) -> ! {
 #[cold]
 #[inline(never)]
 pub(super) fn release_into_fresh_slab(p: usize, class: usize, slab: usize) -> ! {
-    panic!("invalid free of {p:#x} (class {class} slab {slab}): the slab has never been allocated from")
+    panic!(
+        "invalid free of {p:#x} (class {class} slab {slab}): the slab has never been allocated from"
+    )
 }
 
 #[cold]
@@ -59,13 +70,25 @@ pub(super) fn invalid_free(p: usize, class: usize, slab: usize, slot: usize) -> 
 #[cold]
 #[inline(never)]
 pub(super) fn wrong_arena(p: usize, class: usize, owner: u16, arena: u16) -> ! {
-    panic!("slot {p:#x} (class {class}) belongs to arena {owner} but was released through arena {arena}")
+    panic!(
+        "slot {p:#x} (class {class}) belongs to arena {owner} but was released through arena {arena}"
+    )
 }
 
 #[cold]
 #[inline(never)]
-pub(super) fn reservation_unmet(class: usize, slab: usize, want: usize, got: usize, live: usize, set: usize, nslots: usize) -> ! {
-    panic!("class {class}: slab {slab} yielded {got} of a reservation of {want} slots after {MAX_EMPTY_PASSES} full scans (live {live}, allocated {set}, nslots {nslots}): live count is corrupt")
+pub(super) fn reservation_unmet(
+    class: usize,
+    slab: usize,
+    want: usize,
+    got: usize,
+    live: usize,
+    set: usize,
+    nslots: usize,
+) -> ! {
+    panic!(
+        "class {class}: slab {slab} yielded {got} of a reservation of {want} slots after {MAX_EMPTY_PASSES} full scans (live {live}, allocated {set}, nslots {nslots}): live count is corrupt"
+    )
 }
 
 #[cold]

@@ -21,12 +21,20 @@ impl ClassState {
         // per-allocation path stays as measured.
         if let Some(s) = g.empty.map.lowest_set() {
             g.empty.map.clear(s);
-            g.stats.empty = g.stats.empty.checked_sub(1).unwrap_or_else(|| slab_count_underflow("empty"));
+            g.stats.empty = g
+                .stats
+                .empty
+                .checked_sub(1)
+                .unwrap_or_else(|| slab_count_underflow("empty"));
             return Some(s);
         }
         if let Some(s) = g.purged.map.lowest_set() {
             g.purged.map.clear(s);
-            g.stats.purged = g.stats.purged.checked_sub(1).unwrap_or_else(|| slab_count_underflow("purged"));
+            g.stats.purged = g
+                .stats
+                .purged
+                .checked_sub(1)
+                .unwrap_or_else(|| slab_count_underflow("purged"));
             return Some(s);
         }
         self.next_fresh_slab(g, meta)

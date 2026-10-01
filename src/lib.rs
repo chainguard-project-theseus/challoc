@@ -59,7 +59,12 @@ pub(crate) mod thp;
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     match info.location() {
-        Some(loc) => sys::abort_fmt(format_args!("{} [{}:{}]", info.message(), loc.file(), loc.line())),
+        Some(loc) => sys::abort_fmt(format_args!(
+            "{} [{}:{}]",
+            info.message(),
+            loc.file(),
+            loc.line()
+        )),
         None => sys::abort_fmt(format_args!("{}", info.message())),
     }
 }

@@ -113,7 +113,10 @@ pub struct GuardTest {
 impl GuardTest {
     pub(super) fn of(table: &SlabTable) -> GuardTest {
         let lg_spp = table.slabs_per_page().trailing_zeros();
-        GuardTest { add: table.slabs_per_page() as u32, mask: table.guard_mask().wrapping_shl(lg_spp) }
+        GuardTest {
+            add: table.slabs_per_page() as u32,
+            mask: table.guard_mask().wrapping_shl(lg_spp),
+        }
     }
 
     /// Whether `slab` is a guard slab of the class this pair describes.
@@ -125,11 +128,13 @@ impl GuardTest {
 
 const _: () = assert!(
     core::mem::offset_of!(Shared, multi_arena) / 128
-        == (core::mem::offset_of!(Shared, regions) + core::mem::offset_of!(Regions, superblock)) / 128
+        == (core::mem::offset_of!(Shared, regions) + core::mem::offset_of!(Regions, superblock))
+            / 128
 );
 const _: () = assert!(
     core::mem::offset_of!(Shared, multi_arena) / 128
-        == (core::mem::offset_of!(Shared, regions) + core::mem::offset_of!(Regions, lg_stride)) / 128
+        == (core::mem::offset_of!(Shared, regions) + core::mem::offset_of!(Regions, lg_stride))
+            / 128
 );
 
 /// The `pthread_key` whose destructor tears down a thread's heap.
@@ -144,7 +149,10 @@ impl ThreadKey {
         // SAFETY: `key` is a valid out-pointer; the destructor is a plain
         // `extern "C"` function that only touches allocator state.
         let rc = unsafe { libc::pthread_key_create(&mut key, Some(heap_destructor)) };
-        ThreadKey { key, valid: rc == 0 }
+        ThreadKey {
+            key,
+            valid: rc == 0,
+        }
     }
 
     #[cfg(test)]
@@ -205,7 +213,11 @@ pub(super) fn seed() -> u64 {
 pub(crate) fn guard_interval_for(class: usize, page: usize, interval: u32) -> u32 {
     let unit = (1usize << crate::layout::LG_GUARD_UNIT).max(page);
     let group = CLASSES[class].slab_size().max(page);
-    if group >= unit { interval } else { interval.saturating_mul((unit / group) as u32) }
+    if group >= unit {
+        interval
+    } else {
+        interval.saturating_mul((unit / group) as u32)
+    }
 }
 
 impl Shared {
@@ -241,26 +253,45 @@ impl Shared {
     ) -> bool {
         let mut config = config;
         config.narenas = config.effective_narenas(ncpus());
-        let guard_interval = if guard_install { config.effective_guard_slab_interval() } else { 0 };
+        let guard_interval = if guard_install {
+            config.effective_guard_slab_interval()
+        } else {
+            0
+        };
         let guard_install = guard_install && config.guards;
         let decay_ns = crate::purge::decay_ns_from_ms(config.dirty_decay_ms);
         // SAFETY: the caller guarantees `this` is writable and unaliased.
         unsafe {
             let meta = &raw mut (*this).meta;
-            ptr::write(meta, Meta::new(regions.meta_base, regions.meta_len, regions.page_size()));
+            ptr::write(
+                meta,
+                Meta::new(regions.meta_base, regions.meta_len, regions.page_size()),
+            );
             ptr::write(&raw mut (*this).regions, regions);
             ptr::write(&raw mut (*this).multi_arena, AtomicBool::new(false));
             let meta = &*meta;
             ptr::write(
                 &raw mut (*this).push_flags,
-                (if config.double_free_scan { PUSH_SCAN } else { 0 })
-                    | (if config.zero_on_free { PUSH_ZERO } else { 0 })
-                    | (if pac && config.pac_pointers { PUSH_PAC } else { 0 }),
+                (if config.double_free_scan {
+                    PUSH_SCAN
+                } else {
+                    0
+                }) | (if config.zero_on_free { PUSH_ZERO } else { 0 })
+                    | (if pac && config.pac_pointers {
+                        PUSH_PAC
+                    } else {
+                        0
+                    }),
             );
             let regions = &*(&raw const (*this).regions);
             let tables = &raw mut (*this).tables;
             for c in 0..NCLASSES {
-                match SlabTable::new(meta, regions, c, guard_interval_for(c, regions.page_size(), guard_interval)) {
+                match SlabTable::new(
+                    meta,
+                    regions,
+                    c,
+                    guard_interval_for(c, regions.page_size(), guard_interval),
+                ) {
                     Some(t) => ptr::write(&raw mut (*tables)[c], t),
                     None => return false,
                 }
@@ -286,25 +317,40 @@ impl Shared {
             ptr::write(&raw mut (*this).gc_interval_ns, GC_INTERVAL_NS);
             Arenas::init(&raw mut (*this).arenas, arena0, config.narenas);
             Tcaches::init(&raw mut (*this).tcaches);
-            ptr::write(&raw mut (*this).cgroup, crate::sys::cgroup::Cgroup::discover(config.cgroup));
+            ptr::write(
+                &raw mut (*this).cgroup,
+                crate::sys::cgroup::Cgroup::discover(config.cgroup),
+            );
             // Design 11: under an effective limit below 1 GiB a configured
             // `thp:always` is forced to `never` in the stored configuration
             // (`auto` is left alone; the report says so); the policy's
             // `high` baseline is the count at init.
             let cgroup = &*(&raw const (*this).cgroup);
-            let thp_forced = crate::thp::forced_by_limit(config.thp, cgroup.limit().min(cgroup.high()));
+            let thp_forced =
+                crate::thp::forced_by_limit(config.thp, cgroup.limit().min(cgroup.high()));
             if thp_forced {
                 config.thp = crate::config::Thp::Never;
             }
-            ptr::write(&raw mut (*this).policy, crate::policy::Policy::new(cgroup.rises().0, thp_forced));
+            ptr::write(
+                &raw mut (*this).policy,
+                crate::policy::Policy::new(cgroup.rises().0, thp_forced),
+            );
             // Applied once on the discovery sample, so the band and the cap
             // are published before the first 10 ms window closes (nothing
             // is `Empty` yet: retention 0).
             let limit = cgroup.limit().min(cgroup.high());
-            (*this).policy.apply(crate::policy::band(limit, cgroup.current()), limit, 0, cgroup.rises().0);
+            (*this).policy.apply(
+                crate::policy::band(limit, cgroup.current()),
+                limit,
+                0,
+                cgroup.rises().0,
+            );
             ptr::write(&raw mut (*this).config, config);
             ptr::write(&raw mut (*this).key, ThreadKey::create());
-            ptr::write(&raw mut (*this).stats, Lock::new(crate::stats::Snapshot::EMPTY));
+            ptr::write(
+                &raw mut (*this).stats,
+                Lock::new(crate::stats::Snapshot::EMPTY),
+            );
         }
         true
     }
@@ -395,7 +441,11 @@ impl Shared {
     /// band (design 11).
     #[inline]
     pub fn gc_interval(&self) -> u64 {
-        if self.policy.immediate() { 0 } else { self.gc_interval_ns }
+        if self.policy.immediate() {
+            0
+        } else {
+            self.gc_interval_ns
+        }
     }
 
     /// The decay period new arenas start with (`dirty_decay_ms`).
@@ -452,7 +502,11 @@ impl Shared {
     pub fn alloc_direct(&self, arena: &Arena, class: usize) -> (*mut u8, bool) {
         let mut out = [ptr::null_mut()];
         let c = arena.class(class).claim(&self.meta, &mut out);
-        if c.n == 0 { (ptr::null_mut(), false) } else { (out[0], c.zeroed) }
+        if c.n == 0 {
+            (ptr::null_mut(), false)
+        } else {
+            (out[0], c.zeroed)
+        }
     }
 
     /// Release one slot straight to its slab bitmap through its owning
@@ -470,7 +524,9 @@ impl Shared {
         match self.regions.classify(p as usize) {
             Kind::Slab { class, slab, slot } => {
                 let class = class as usize;
-                let arena = self.table(class).check_located(slab as usize, slot as usize, p as usize);
+                let arena =
+                    self.table(class)
+                        .check_located(slab as usize, slot as usize, p as usize);
                 Ok((class, arena))
             }
             Kind::Huge { page } => Err(page),
@@ -657,7 +713,9 @@ impl Shared {
     /// is huge) is built here, an index that does not exist aborts. Null
     /// on exhaustion; the flag says the memory is known zero.
     pub fn alloc_huge(&self, size: usize, align: usize, arena: u16) -> (*mut u8, bool) {
-        let Some(a) = self.arena(arena) else { no_such_arena(arena) };
+        let Some(a) = self.arena(arena) else {
+            no_such_arena(arena)
+        };
         let r = self.huge.alloc_run(&self.meta, size, align, arena);
         if !r.ptr.is_null() {
             // The pages the run's descriptor records, which is what

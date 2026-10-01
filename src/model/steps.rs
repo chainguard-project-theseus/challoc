@@ -34,7 +34,9 @@ impl Model<'_> {
             // Lock acquisitions: `self.inner.lock()` blocks while held.
             Op::Refill(_) if Refill::at(s) == Refill::Lock => sh.lock[a].is_none(),
             Op::Purge if Purge::at(s) == Purge::Lock => sh.lock[a].is_none(),
-            Op::Release if matches!(Release::at(s), Release::LockLiveZero | Release::LockReopen) => {
+            Op::Release
+                if matches!(Release::at(s), Release::LockLiveZero | Release::LockReopen) =>
+            {
                 sh.lock[th.rel_arena as usize].is_none()
             }
             // `finish`'s bit loop: `claim_from` finds nothing while every
@@ -79,7 +81,13 @@ impl Model<'_> {
     }
 
     /// `ClassState::purge_empty`: the steps of `Purge`.
-    pub(super) fn step_purge(&self, sh: &mut Shared, th: &mut Thread, tid: u8, sub: u8) -> Result<String, String> {
+    pub(super) fn step_purge(
+        &self,
+        sh: &mut Shared,
+        th: &mut Thread,
+        tid: u8,
+        sub: u8,
+    ) -> Result<String, String> {
         match Purge::at(sub) {
             Purge::Lock => {
                 // purge_empty: `let mut g = self.inner.lock();`
@@ -318,7 +326,11 @@ impl Model<'_> {
                 s.live -= th.rel_count;
                 th.dec_pending = false;
                 th.rel_zero = prev == th.rel_count;
-                th.sub = if th.rel_zero { Release::LockLiveZero } else { Release::NextSlab } as u8;
+                th.sub = if th.rel_zero {
+                    Release::LockLiveZero
+                } else {
+                    Release::NextSlab
+                } as u8;
                 Ok(format!(
                     "release: sub_live({}) on slab {} ({prev} -> {}){}",
                     th.rel_count,
@@ -430,7 +442,12 @@ impl Model<'_> {
     }
 
     /// `plan` and `take`, one lock hold. Up to `MAX_PICKS` picks.
-    pub(super) fn plan_locked(&self, sh: &mut Shared, th: &mut Thread, want: u8) -> Result<String, String> {
+    pub(super) fn plan_locked(
+        &self,
+        sh: &mut Shared,
+        th: &mut Thread,
+        want: u8,
+    ) -> Result<String, String> {
         let a = th.arena as usize;
         let mut remaining = want;
         th.np = 0;
@@ -537,7 +554,11 @@ impl Model<'_> {
     /// `next_slab`: the lowest `Empty`, else the lowest `Purged`, else
     /// the next slab of the current group (committing it), else the next
     /// fresh group of the class. `None` when the class is out of slabs.
-    pub(super) fn next_slab(&self, sh: &mut Shared, th: &mut Thread) -> Result<Option<(u8, String)>, String> {
+    pub(super) fn next_slab(
+        &self,
+        sh: &mut Shared,
+        th: &mut Thread,
+    ) -> Result<Option<(u8, String)>, String> {
         let a = th.arena as usize;
         // `if let Some(s) = g.empty.map.lowest_set() { g.empty.map.clear(s); ... return Some(s); }`
         if let Some(s) = lowest_set(sh.empty[a]) {
@@ -575,7 +596,9 @@ impl Model<'_> {
             for s in start..end {
                 let slab = &mut sh.slabs[s as usize];
                 if slab.state != St::Fresh || slab.committed || slab.live != 0 || slab.bits != 0 {
-                    return Err(format!("take_group: slab {s} of a fresh group is not Fresh"));
+                    return Err(format!(
+                        "take_group: slab {s} of a fresh group is not Fresh"
+                    ));
                 }
                 slab.arena = th.arena;
             }

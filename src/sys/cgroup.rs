@@ -159,8 +159,12 @@ pub fn parse_events(contents: &[u8]) -> Events {
     let mut e = Events::default();
     for line in lines(contents) {
         let mut it = line.splitn(2, |&b| b == b' ');
-        let (Some(key), Some(val)) = (it.next(), it.next()) else { continue };
-        let Some(v) = parse_u64_prefix(trim(val)) else { continue };
+        let (Some(key), Some(val)) = (it.next(), it.next()) else {
+            continue;
+        };
+        let Some(v) = parse_u64_prefix(trim(val)) else {
+            continue;
+        };
         match key {
             b"low" => e.low = v,
             b"high" => e.high = v,
@@ -204,7 +208,11 @@ pub fn walk_min<F: FnMut(&[u8]) -> Option<u64>>(dir: &[u8], mount_len: usize, mu
 /// fit in `out` less [`FILE_ROOM`].
 pub fn join_dir(out: &mut [u8], mount: &[u8], path: &[u8]) -> Option<(usize, usize)> {
     let mount = mount.strip_suffix(b"/").unwrap_or(mount);
-    let path = if path == b"/" { &b""[..] } else { path.strip_suffix(b"/").unwrap_or(path) };
+    let path = if path == b"/" {
+        &b""[..]
+    } else {
+        path.strip_suffix(b"/").unwrap_or(path)
+    };
     let len = mount.len() + path.len();
     if len + FILE_ROOM > out.len() {
         return None;
@@ -409,7 +417,10 @@ impl Cgroup {
 
     /// Samples that saw `memory.events` `high` and `max` rise.
     pub fn rises(&self) -> (u64, u64) {
-        (self.high_rises.load(Ordering::Relaxed), self.max_rises.load(Ordering::Relaxed))
+        (
+            self.high_rises.load(Ordering::Relaxed),
+            self.max_rises.load(Ordering::Relaxed),
+        )
     }
 
     #[cfg(test)]
@@ -441,7 +452,11 @@ impl fmt::Display for Cgroup {
         impl fmt::Display for Bytes<'_> {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 for &b in self.0 {
-                    f.write_str(if b == b' ' || b.is_ascii_graphic() { unsafe_char(b) } else { "?" })?;
+                    f.write_str(if b == b' ' || b.is_ascii_graphic() {
+                        unsafe_char(b)
+                    } else {
+                        "?"
+                    })?;
                 }
                 Ok(())
             }
@@ -457,12 +472,19 @@ impl fmt::Display for Cgroup {
         struct Limit(u64);
         impl fmt::Display for Limit {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                if self.0 == UNLIMITED { f.write_str("max") } else { write!(f, "{}", self.0) }
+                if self.0 == UNLIMITED {
+                    f.write_str("max")
+                } else {
+                    write!(f, "{}", self.0)
+                }
             }
         }
         match self.state {
             State::Disabled => return f.write_str("cgroup: not tracked (cgroup:false)"),
-            State::NoUnifiedPath => return f.write_str("cgroup: not tracked (no unified hierarchy in /proc/self/cgroup)"),
+            State::NoUnifiedPath => {
+                return f
+                    .write_str("cgroup: not tracked (no unified hierarchy in /proc/self/cgroup)");
+            }
             State::NoMount => return f.write_str("cgroup: not tracked (no cgroup2 mount)"),
             State::PathTooLong => return f.write_str("cgroup: not tracked (path too long)"),
             State::Tracked => {}
@@ -522,8 +544,12 @@ mod linux {
             }
             let mut cg = Cgroup::untracked(State::NoUnifiedPath);
             let mut pathbuf = [0u8; FILE_BUF];
-            let Some(n) = read_small_file(b"/proc/self/cgroup\0", &mut pathbuf) else { return cg };
-            let Some(path) = cgroup_path(&pathbuf[..n]) else { return cg };
+            let Some(n) = read_small_file(b"/proc/self/cgroup\0", &mut pathbuf) else {
+                return cg;
+            };
+            let Some(path) = cgroup_path(&pathbuf[..n]) else {
+                return cg;
+            };
 
             let mut mount = [0u8; PATH_CAP];
             let mut mount_len = 0usize;
@@ -571,8 +597,14 @@ mod linux {
         fn walk_limits(&self, now: u64) {
             self.limits_at.store(now, Ordering::Relaxed);
             let (dir, mlen) = (self.dir(), self.mount_len as usize);
-            self.limit.store(walk_min(dir, mlen, |d| read_limit(d, b"memory.max")), Ordering::Relaxed);
-            self.high.store(walk_min(dir, mlen, |d| read_limit(d, b"memory.high")), Ordering::Relaxed);
+            self.limit.store(
+                walk_min(dir, mlen, |d| read_limit(d, b"memory.max")),
+                Ordering::Relaxed,
+            );
+            self.high.store(
+                walk_min(dir, mlen, |d| read_limit(d, b"memory.high")),
+                Ordering::Relaxed,
+            );
         }
 
         /// Read `memory.current` and `memory.events` now, unconditionally,
@@ -605,7 +637,11 @@ mod linux {
             if now.wrapping_sub(last) < SAMPLE_INTERVAL_NS {
                 return false;
             }
-            if self.sampled_at.compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed).is_err() {
+            if self
+                .sampled_at
+                .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+                .is_err()
+            {
                 return false;
             }
             self.sample_now(now);
@@ -646,22 +682,39 @@ mod tests {
         assert_eq!(cgroup_path(PROC_CGROUP_V1), None);
         assert_eq!(cgroup_path(b""), None);
         assert_eq!(cgroup_path(b"0::relative\n"), None, "a path starts with /");
-        assert_eq!(cgroup_path(b"10::/x\n"), None, "only hierarchy 0 is the unified one");
+        assert_eq!(
+            cgroup_path(b"10::/x\n"),
+            None,
+            "only hierarchy 0 is the unified one"
+        );
         assert_eq!(cgroup_path_from_line(b"0::/a/b"), Some(&b"/a/b"[..]));
     }
 
     #[test]
     fn mountinfo_lines() {
-        assert_eq!(cgroup2_mount(MOUNTINFO_DEFAULT), Some(&b"/sys/fs/cgroup"[..]));
-        assert_eq!(cgroup2_mount(MOUNTINFO_DOCKER), Some(&b"/sys/fs/cgroup"[..]));
-        assert_eq!(cgroup2_mount(MOUNTINFO_HYBRID), Some(&b"/sys/fs/cgroup/unified"[..]));
+        assert_eq!(
+            cgroup2_mount(MOUNTINFO_DEFAULT),
+            Some(&b"/sys/fs/cgroup"[..])
+        );
+        assert_eq!(
+            cgroup2_mount(MOUNTINFO_DOCKER),
+            Some(&b"/sys/fs/cgroup"[..])
+        );
+        assert_eq!(
+            cgroup2_mount(MOUNTINFO_HYBRID),
+            Some(&b"/sys/fs/cgroup/unified"[..])
+        );
         assert_eq!(cgroup2_mount(MOUNTINFO_V1), None);
         assert_eq!(cgroup2_mount(b""), None);
         // The optional-field count varies; the separator keeps field 5 honest.
-        let many = b"35 24 0:30 / /mnt/cg rw shared:9 master:3 propagate_from:1 - cgroup2 cgroup2 rw\n";
+        let many =
+            b"35 24 0:30 / /mnt/cg rw shared:9 master:3 propagate_from:1 - cgroup2 cgroup2 rw\n";
         assert_eq!(cgroup2_mount(many), Some(&b"/mnt/cg"[..]));
         // A line without the separator or with too few fields is skipped.
-        assert_eq!(cgroup2_mount(b"garbage cgroup2\n35 24 0:30 / - cgroup2 x y\n"), None);
+        assert_eq!(
+            cgroup2_mount(b"garbage cgroup2\n35 24 0:30 / - cgroup2 x y\n"),
+            None
+        );
     }
 
     #[test]
@@ -682,15 +735,48 @@ mod tests {
     #[test]
     fn events_files() {
         let e = parse_events(b"low 0\nhigh 3\nmax 1\noom 0\noom_kill 0\n");
-        assert_eq!(e, Events { low: 0, high: 3, max: 1, oom: 0, oom_kill: 0 });
+        assert_eq!(
+            e,
+            Events {
+                low: 0,
+                high: 3,
+                max: 1,
+                oom: 0,
+                oom_kill: 0
+            }
+        );
         // Newer kernels add lines; missing lines are 0; junk is ignored.
         let e = parse_events(b"low 7\nhigh 2\nmax 5\noom 1\noom_kill 1\noom_group_kill 0\n");
-        assert_eq!(e, Events { low: 7, high: 2, max: 5, oom: 1, oom_kill: 1 });
-        assert_eq!(parse_events(b"high 9\n"), Events { high: 9, ..Events::default() });
+        assert_eq!(
+            e,
+            Events {
+                low: 7,
+                high: 2,
+                max: 5,
+                oom: 1,
+                oom_kill: 1
+            }
+        );
+        assert_eq!(
+            parse_events(b"high 9\n"),
+            Events {
+                high: 9,
+                ..Events::default()
+            }
+        );
         assert_eq!(parse_events(b""), Events::default());
         assert_eq!(parse_events(b"high x\nmax\n"), Events::default());
         // A 4.5..4.12 file has no `oom_kill` line: it reads 0.
-        assert_eq!(parse_events(b"low 1\nhigh 2\nmax 3\noom 4\n"), Events { low: 1, high: 2, max: 3, oom: 4, oom_kill: 0 });
+        assert_eq!(
+            parse_events(b"low 1\nhigh 2\nmax 3\noom 4\n"),
+            Events {
+                low: 1,
+                high: 2,
+                max: 3,
+                oom: 4,
+                oom_kill: 0
+            }
+        );
     }
 
     /// The sampled counters are the file's, all five, and the rise counts
@@ -699,20 +785,66 @@ mod tests {
     #[test]
     fn sampled_events_carry_every_counter() {
         let cg = Cgroup::untracked(State::Tracked);
-        assert_eq!(cg.events(), Events::default(), "zero before the first sample");
+        assert_eq!(
+            cg.events(),
+            Events::default(),
+            "zero before the first sample"
+        );
         cg.note_events(parse_events(b"low 0\nhigh 3\nmax 1\noom 0\noom_kill 0\n"));
-        assert_eq!(cg.events(), Events { low: 0, high: 3, max: 1, oom: 0, oom_kill: 0 });
+        assert_eq!(
+            cg.events(),
+            Events {
+                low: 0,
+                high: 3,
+                max: 1,
+                oom: 0,
+                oom_kill: 0
+            }
+        );
         assert_eq!(cg.rises(), (1, 1), "the first sample rises from zero");
-        cg.note_events(parse_events(b"low 7\nhigh 5\nmax 1\noom 1\noom_kill 1\noom_group_kill 0\n"));
-        assert_eq!(cg.events(), Events { low: 7, high: 5, max: 1, oom: 1, oom_kill: 1 });
-        assert_eq!(cg.rises(), (2, 1), "high rose, max did not; low and oom are not rises");
+        cg.note_events(parse_events(
+            b"low 7\nhigh 5\nmax 1\noom 1\noom_kill 1\noom_group_kill 0\n",
+        ));
+        assert_eq!(
+            cg.events(),
+            Events {
+                low: 7,
+                high: 5,
+                max: 1,
+                oom: 1,
+                oom_kill: 1
+            }
+        );
+        assert_eq!(
+            cg.rises(),
+            (2, 1),
+            "high rose, max did not; low and oom are not rises"
+        );
         cg.note_events(parse_events(b"low 7\nhigh 5\nmax 2\noom 1\noom_kill 1\n"));
-        assert_eq!(cg.events(), Events { low: 7, high: 5, max: 2, oom: 1, oom_kill: 1 });
+        assert_eq!(
+            cg.events(),
+            Events {
+                low: 7,
+                high: 5,
+                max: 2,
+                oom: 1,
+                oom_kill: 1
+            }
+        );
         assert_eq!(cg.rises(), (2, 2));
         // A kernel without the `oom_kill` line: the field reads 0, the
         // others are kept.
         cg.note_events(parse_events(b"low 8\nhigh 5\nmax 2\noom 2\n"));
-        assert_eq!(cg.events(), Events { low: 8, high: 5, max: 2, oom: 2, oom_kill: 0 });
+        assert_eq!(
+            cg.events(),
+            Events {
+                low: 8,
+                high: 5,
+                max: 2,
+                oom: 2,
+                oom_kill: 0
+            }
+        );
         assert_eq!(cg.rises(), (2, 2));
         let s = std::format!("{cg}");
         assert!(s.ends_with(" events high 5 (+2) max 2 (+2)"), "{s}");
@@ -722,17 +854,26 @@ mod tests {
     fn tree(entries: &[(&str, &str, &str)]) -> BTreeMap<String, BTreeMap<String, String>> {
         let mut t: BTreeMap<String, BTreeMap<String, String>> = BTreeMap::new();
         for (d, f, c) in entries {
-            t.entry(String::from(*d)).or_default().insert(String::from(*f), String::from(*c));
+            t.entry(String::from(*d))
+                .or_default()
+                .insert(String::from(*f), String::from(*c));
         }
         t
     }
 
-    fn walk(t: &BTreeMap<String, BTreeMap<String, String>>, dir: &str, mount: &str, file: &str) -> (u64, Vec<String>) {
+    fn walk(
+        t: &BTreeMap<String, BTreeMap<String, String>>,
+        dir: &str,
+        mount: &str,
+        file: &str,
+    ) -> (u64, Vec<String>) {
         let mut visited = Vec::new();
         let v = walk_min(dir.as_bytes(), mount.len(), |d| {
             let d = std::str::from_utf8(d).unwrap();
             visited.push(String::from(d));
-            t.get(d).and_then(|files| files.get(file)).and_then(|c| parse_limit(c.as_bytes()))
+            t.get(d)
+                .and_then(|files| files.get(file))
+                .and_then(|c| parse_limit(c.as_bytes()))
         });
         (v, visited)
     }
@@ -750,11 +891,23 @@ mod tests {
         ]);
         let (limit, visited) = walk(&t, "/sys/fs/cgroup/a/b", m, "memory.max");
         assert_eq!(limit, 536_870_912);
-        assert_eq!(visited, ["/sys/fs/cgroup/a/b", "/sys/fs/cgroup/a", "/sys/fs/cgroup"]);
-        assert_eq!(walk(&t, "/sys/fs/cgroup/a/b", m, "memory.high").0, 1_073_741_824);
+        assert_eq!(
+            visited,
+            ["/sys/fs/cgroup/a/b", "/sys/fs/cgroup/a", "/sys/fs/cgroup"]
+        );
+        assert_eq!(
+            walk(&t, "/sys/fs/cgroup/a/b", m, "memory.high").0,
+            1_073_741_824
+        );
         // Leaf lower than the parent: the leaf wins.
-        let t = tree(&[("/sys/fs/cgroup/a/b", "memory.max", "268435456\n"), ("/sys/fs/cgroup/a", "memory.max", "536870912\n")]);
-        assert_eq!(walk(&t, "/sys/fs/cgroup/a/b", m, "memory.max").0, 268_435_456);
+        let t = tree(&[
+            ("/sys/fs/cgroup/a/b", "memory.max", "268435456\n"),
+            ("/sys/fs/cgroup/a", "memory.max", "536870912\n"),
+        ]);
+        assert_eq!(
+            walk(&t, "/sys/fs/cgroup/a/b", m, "memory.max").0,
+            268_435_456
+        );
         // Nothing anywhere (cgroup v1 memory controller, or a root cgroup).
         let t = tree(&[]);
         assert_eq!(walk(&t, "/sys/fs/cgroup/a/b", m, "memory.max").0, UNLIMITED);
@@ -764,7 +917,10 @@ mod tests {
         assert_eq!(limit, 536_870_912);
         assert_eq!(visited, ["/sys/fs/cgroup"]);
         // A malformed file at one level does not hide the others.
-        let t = tree(&[("/sys/fs/cgroup/a/b", "memory.max", "garbage\n"), ("/sys/fs/cgroup/a", "memory.max", "4096\n")]);
+        let t = tree(&[
+            ("/sys/fs/cgroup/a/b", "memory.max", "garbage\n"),
+            ("/sys/fs/cgroup/a", "memory.max", "4096\n"),
+        ]);
         assert_eq!(walk(&t, "/sys/fs/cgroup/a/b", m, "memory.max").0, 4096);
     }
 
@@ -787,7 +943,10 @@ mod tests {
         // Without it the mount level is read too.
         let (limit, visited) = walk(&t, "/sys/fs/cgroup/a/b", "/sys/fs/cgroup", "memory.max");
         assert_eq!(limit, 4096);
-        assert_eq!(visited, ["/sys/fs/cgroup/a/b", "/sys/fs/cgroup/a", "/sys/fs/cgroup"]);
+        assert_eq!(
+            visited,
+            ["/sys/fs/cgroup/a/b", "/sys/fs/cgroup/a", "/sys/fs/cgroup"]
+        );
         // A directory shorter than the mount length: one read of the
         // whole directory, then stop.
         let (limit, visited) = walk(&t, "/sys/fs/cgroup", "/sys/fs/cgroup/unified", "memory.max");
@@ -797,7 +956,10 @@ mod tests {
         assert_eq!(limit, UNLIMITED);
         assert_eq!(visited, ["/sys"]);
         // The mount at the root: every `/` of the path is a level.
-        let t = tree(&[("/a/b", "memory.max", "8192\n"), ("", "memory.max", "4096\n")]);
+        let t = tree(&[
+            ("/a/b", "memory.max", "8192\n"),
+            ("", "memory.max", "4096\n"),
+        ]);
         let (limit, visited) = walk(&t, "/a/b", "", "memory.max");
         assert_eq!(limit, 4096);
         assert_eq!(visited, ["/a/b", "/a", ""]);
@@ -817,7 +979,11 @@ mod tests {
         let long: Vec<u8> = core::iter::repeat_n(b'x', PATH_CAP).collect();
         assert_eq!(join_dir(&mut out, b"/sys/fs/cgroup", &long), None);
         let mut small = [0u8; 40];
-        assert_eq!(join_dir(&mut small, b"/sys/fs/cgroup", b"/a"), None, "must leave FILE_ROOM");
+        assert_eq!(
+            join_dir(&mut small, b"/sys/fs/cgroup", b"/a"),
+            None,
+            "must leave FILE_ROOM"
+        );
     }
 
     /// A cgroup2 mounted at `/` (a container whose root is the cgroup
@@ -831,7 +997,11 @@ mod tests {
         assert_eq!(&out[..n], b"/a/b");
         assert_eq!(m, 0);
         let (n, m) = join_dir(&mut out, b"/", b"/").unwrap();
-        assert_eq!((n, m), (0, 0), "the root cgroup at a root mount is the empty directory");
+        assert_eq!(
+            (n, m),
+            (0, 0),
+            "the root cgroup at a root mount is the empty directory"
+        );
     }
 
     /// Feed `contents` to `scan_lines` in chunks of `chunk` bytes through a
@@ -859,9 +1029,17 @@ mod tests {
 
     #[test]
     fn line_scanner_reassembles_across_chunks() {
-        let all: Vec<Vec<u8>> = MOUNTINFO_HYBRID.split(|&b| b == b'\n').filter(|l| !l.is_empty()).map(|l| l.to_vec()).collect();
+        let all: Vec<Vec<u8>> = MOUNTINFO_HYBRID
+            .split(|&b| b == b'\n')
+            .filter(|l| !l.is_empty())
+            .map(|l| l.to_vec())
+            .collect();
         for chunk in [1, 7, 64, 4096] {
-            assert_eq!(scanned(MOUNTINFO_HYBRID, chunk, 256, None), all, "chunk {chunk}");
+            assert_eq!(
+                scanned(MOUNTINFO_HYBRID, chunk, 256, None),
+                all,
+                "chunk {chunk}"
+            );
         }
         // Early stop.
         let first = scanned(MOUNTINFO_HYBRID, 13, 256, Some(&all[1]));
@@ -871,7 +1049,10 @@ mod tests {
         long.extend_from_slice(b"short\n");
         long.extend(core::iter::repeat_n(b'L', 300));
         long.extend_from_slice(b"\nafter\nlast");
-        assert_eq!(scanned(&long, 50, 128, None), [&b"short"[..], b"after", b"last"]);
+        assert_eq!(
+            scanned(&long, 50, 128, None),
+            [&b"short"[..], b"after", b"last"]
+        );
         // Stopping inside a chunk does not report later lines.
         assert_eq!(scanned(b"a\nb\nc\n", 4096, 64, Some(b"a")), [b"a"]);
         // The real cgroup2 line is found whatever the chunking.
@@ -892,7 +1073,11 @@ mod tests {
                     found.is_some()
                 },
             );
-            assert_eq!(found.as_deref(), Some(&b"/sys/fs/cgroup/unified"[..]), "chunk {chunk}");
+            assert_eq!(
+                found.as_deref(),
+                Some(&b"/sys/fs/cgroup/unified"[..]),
+                "chunk {chunk}"
+            );
         }
     }
 
@@ -900,7 +1085,10 @@ mod tests {
     fn untracked_states_display() {
         for (state, needle) in [
             (State::Disabled, "cgroup: not tracked (cgroup:false)"),
-            (State::NoUnifiedPath, "cgroup: not tracked (no unified hierarchy"),
+            (
+                State::NoUnifiedPath,
+                "cgroup: not tracked (no unified hierarchy",
+            ),
             (State::NoMount, "cgroup: not tracked (no cgroup2 mount)"),
             (State::PathTooLong, "cgroup: not tracked (path too long)"),
         ] {
@@ -961,29 +1149,48 @@ mod linux_tests {
         eprintln!("{line}");
         let proc_cgroup = std::fs::read_to_string("/proc/self/cgroup").unwrap();
         let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap();
-        let path = cgroup_path(proc_cgroup.as_bytes()).map(|p| String::from_utf8(p.to_vec()).unwrap());
-        let mount = cgroup2_mount(mountinfo.as_bytes()).map(|m| String::from_utf8(m.to_vec()).unwrap());
+        let path =
+            cgroup_path(proc_cgroup.as_bytes()).map(|p| String::from_utf8(p.to_vec()).unwrap());
+        let mount =
+            cgroup2_mount(mountinfo.as_bytes()).map(|m| String::from_utf8(m.to_vec()).unwrap());
         eprintln!("cgroup: /proc/self/cgroup path {path:?}, cgroup2 mount {mount:?}");
         match (&path, &mount) {
             (Some(path), Some(mount)) => {
                 assert!(cg.tracked(), "{line}");
                 assert_eq!(std::str::from_utf8(cg.mount()).unwrap(), mount);
                 assert_eq!(std::str::from_utf8(cg.path()).unwrap(), path);
-                let dir = if path == "/" { mount.clone() } else { format!("{mount}{path}") };
+                let dir = if path == "/" {
+                    mount.clone()
+                } else {
+                    format!("{mount}{path}")
+                };
                 assert_eq!(std::str::from_utf8(cg.dir()).unwrap(), dir);
                 // The limit is `max` or a number, and equal to what std reads.
                 let expect_limit = std_walk(&dir, mount, "memory.max");
                 let expect_high = std_walk(&dir, mount, "memory.high");
                 assert_eq!(cg.limit(), expect_limit, "{line}");
                 assert_eq!(cg.high(), expect_high, "{line}");
-                assert_eq!(cg.has_limit_files(), std::path::Path::new(&format!("{dir}/memory.max")).exists());
-                assert_eq!(cg.has_current(), std::path::Path::new(&format!("{dir}/memory.current")).exists());
-                assert_eq!(cg.has_events(), std::path::Path::new(&format!("{dir}/memory.events")).exists());
+                assert_eq!(
+                    cg.has_limit_files(),
+                    std::path::Path::new(&format!("{dir}/memory.max")).exists()
+                );
+                assert_eq!(
+                    cg.has_current(),
+                    std::path::Path::new(&format!("{dir}/memory.current")).exists()
+                );
+                assert_eq!(
+                    cg.has_events(),
+                    std::path::Path::new(&format!("{dir}/memory.events")).exists()
+                );
                 if cg.has_events() {
                     // Discovery sampled the file: every counter is the
                     // kernel's (they only grow, so at most a later rise
                     // separates the two reads).
-                    let now = parse_events(std::fs::read(format!("{dir}/memory.events")).unwrap().as_slice());
+                    let now = parse_events(
+                        std::fs::read(format!("{dir}/memory.events"))
+                            .unwrap()
+                            .as_slice(),
+                    );
                     let e = cg.events();
                     eprintln!("cgroup: memory.events {e:?} (file now {now:?})");
                     for (name, sampled, file) in [
@@ -998,9 +1205,15 @@ mod linux_tests {
                 }
                 eprintln!(
                     "cgroup: memory.max={} memory.high={} memory.current={}",
-                    read_opt(&format!("{dir}/memory.max")).unwrap_or_else(|| "(absent)".into()).trim(),
-                    read_opt(&format!("{dir}/memory.high")).unwrap_or_else(|| "(absent)".into()).trim(),
-                    read_opt(&format!("{dir}/memory.current")).unwrap_or_else(|| "(absent)".into()).trim(),
+                    read_opt(&format!("{dir}/memory.max"))
+                        .unwrap_or_else(|| "(absent)".into())
+                        .trim(),
+                    read_opt(&format!("{dir}/memory.high"))
+                        .unwrap_or_else(|| "(absent)".into())
+                        .trim(),
+                    read_opt(&format!("{dir}/memory.current"))
+                        .unwrap_or_else(|| "(absent)".into())
+                        .trim(),
                 );
                 if cg.has_current() {
                     // This process is charged to its own cgroup, so the
@@ -1011,7 +1224,10 @@ mod linux_tests {
                 if let Ok(want) = std::env::var("CHALLOC_EXPECT_CGROUP_LIMIT") {
                     let want: u64 = want.parse().unwrap();
                     assert_eq!(cg.limit(), want, "effective limit under --memory: {line}");
-                    eprintln!("cgroup: effective limit {} matches CHALLOC_EXPECT_CGROUP_LIMIT", cg.limit());
+                    eprintln!(
+                        "cgroup: effective limit {} matches CHALLOC_EXPECT_CGROUP_LIMIT",
+                        cg.limit()
+                    );
                 }
             }
             (None, _) => assert_eq!(cg.state(), State::NoUnifiedPath, "{line}"),
@@ -1023,7 +1239,10 @@ mod linux_tests {
     fn sampling_is_rate_limited_to_ten_milliseconds() {
         let cg = Cgroup::discover(true);
         if !cg.tracked() {
-            eprintln!("cgroup: untracked here ({}), skipping the rate-limit test", cg.state() as u8);
+            eprintln!(
+                "cgroup: untracked here ({}), skipping the rate-limit test",
+                cg.state() as u8
+            );
             return;
         }
         // Spin for 100 ms of the coarse clock calling `sample` as fast as
@@ -1073,7 +1292,10 @@ mod linux_tests {
         assert!(cg.sample(now));
         let after = cg.current();
         eprintln!("cgroup: memory.current {before} -> {after} after 64 MiB (kernel says {kernel})");
-        assert!(after.abs_diff(kernel) <= 32 << 20, "sample {after} vs file {kernel}");
+        assert!(
+            after.abs_diff(kernel) <= 32 << 20,
+            "sample {after} vs file {kernel}"
+        );
         drop(v);
     }
 }

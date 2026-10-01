@@ -92,12 +92,21 @@ mod tests {
     /// constant fails here until it is header-checked.
     #[test]
     fn table_covers_every_constant() {
-        let src = std::fs::read_to_string(std::concat!(env!("CARGO_MANIFEST_DIR"), "/src/sys/nr.rs")).unwrap();
+        let src =
+            std::fs::read_to_string(std::concat!(env!("CARGO_MANIFEST_DIR"), "/src/sys/nr.rs"))
+                .unwrap();
         let mut consts = std::vec::Vec::new();
         for line in src.lines() {
-            let Some(rest) = line.trim_start().strip_prefix("pub const ") else { continue };
-            let Some((name, _)) = rest.split_once(": usize") else { continue };
-            if name.chars().all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit()) {
+            let Some(rest) = line.trim_start().strip_prefix("pub const ") else {
+                continue;
+            };
+            let Some((name, _)) = rest.split_once(": usize") else {
+                continue;
+            };
+            if name
+                .chars()
+                .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
+            {
                 consts.push(name.to_ascii_lowercase());
             }
         }
@@ -105,10 +114,16 @@ mod tests {
         consts.dedup();
         assert!(consts.len() >= super::TABLE.len(), "{consts:?}");
         for name in &consts {
-            assert!(super::TABLE.iter().any(|(n, _)| n == name), "{name} declared in nr.rs but missing from TABLE");
+            assert!(
+                super::TABLE.iter().any(|(n, _)| n == name),
+                "{name} declared in nr.rs but missing from TABLE"
+            );
         }
         for (name, _) in super::TABLE {
-            assert!(consts.iter().any(|c| c == name), "TABLE row {name} names no constant");
+            assert!(
+                consts.iter().any(|c| c == name),
+                "TABLE row {name} names no constant"
+            );
         }
     }
 }

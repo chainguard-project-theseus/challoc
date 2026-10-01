@@ -132,7 +132,11 @@ fn oom(size: usize, align: usize, nothrow: bool) -> *mut u8 {
         // SAFETY: a `void (*)()` installed by the program through
         // `std::set_new_handler`; it may throw, which unwinds through here.
         unsafe { handler() };
-        let p = if align == 0 { libc::malloc(size) } else { libc::aligned_alloc(align, size) };
+        let p = if align == 0 {
+            libc::malloc(size)
+        } else {
+            libc::aligned_alloc(align, size)
+        };
         if !p.is_null() {
             return p;
         }
@@ -144,7 +148,11 @@ fn oom(size: usize, align: usize, nothrow: bool) -> *mut u8 {
 #[inline(never)]
 fn new_slow(size: usize, nothrow: bool) -> *mut u8 {
     let p = libc::malloc_slow(size);
-    if p.is_null() { oom(size, 0, nothrow) } else { p }
+    if p.is_null() {
+        oom(size, 0, nothrow)
+    } else {
+        p
+    }
 }
 
 /// `operator new(size)` and `operator new[](size)`: `malloc`'s fast path
@@ -169,7 +177,11 @@ pub fn new_nothrow(size: usize) -> *mut u8 {
 /// The `align_val_t` forms.
 pub fn new_aligned(size: usize, align: usize, nothrow: bool) -> *mut u8 {
     let p = libc::aligned_alloc(align, size);
-    if p.is_null() { oom(size, align, nothrow) } else { p }
+    if p.is_null() {
+        oom(size, align, nothrow)
+    } else {
+        p
+    }
 }
 
 /// The unsized `operator delete` forms: `free`, with any alignment ignored.
@@ -241,13 +253,21 @@ mod exports {
 
     /// `operator new(size_t, std::align_val_t, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZnwmSt11align_val_tRKSt9nothrow_t")]
-    pub extern "C" fn new_aligned_nothrow(size: usize, align: usize, _tag: *const c_void) -> *mut c_void {
+    pub extern "C" fn new_aligned_nothrow(
+        size: usize,
+        align: usize,
+        _tag: *const c_void,
+    ) -> *mut c_void {
         super::new_aligned(size, align, true) as *mut c_void
     }
 
     /// `operator new[](size_t, std::align_val_t, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZnamSt11align_val_tRKSt9nothrow_t")]
-    pub extern "C" fn new_array_aligned_nothrow(size: usize, align: usize, _tag: *const c_void) -> *mut c_void {
+    pub extern "C" fn new_array_aligned_nothrow(
+        size: usize,
+        align: usize,
+        _tag: *const c_void,
+    ) -> *mut c_void {
         super::new_aligned(size, align, true) as *mut c_void
     }
 
@@ -307,7 +327,11 @@ mod exports {
 
     /// `operator delete[](void*, std::align_val_t, const std::nothrow_t&)`
     #[unsafe(export_name = "_ZdaPvSt11align_val_tRKSt9nothrow_t")]
-    pub extern "C" fn delete_array_aligned_nothrow(p: *mut c_void, _align: usize, _tag: *const c_void) {
+    pub extern "C" fn delete_array_aligned_nothrow(
+        p: *mut c_void,
+        _align: usize,
+        _tag: *const c_void,
+    ) {
         super::delete(p as *mut u8)
     }
 

@@ -51,8 +51,8 @@ use core::ffi::{c_char, c_int, c_void};
 use core::ptr;
 
 use super::libc::{class_for, old_size_or_keep, usable_size};
-use crate::heap::mallocx::{self, Flags, Tcache};
 use crate::heap::Shared;
+use crate::heap::mallocx::{self, Flags, Tcache};
 use crate::layout::{CLASSES, Kind};
 
 /// `void (*malloc_message)(void *cbopaque, const char *s)`; null when the
@@ -83,7 +83,10 @@ pub static mut malloc_conf: *const c_char = ptr::null();
 pub fn message_hook() -> MallocMessage {
     // SAFETY: both statics are plain 8-byte slots that only ever hold null
     // or a function pointer stored by the program.
-    unsafe { ptr::read_volatile(&raw const malloc_message).or_else(|| ptr::read_volatile(&raw const je_malloc_message)) }
+    unsafe {
+        ptr::read_volatile(&raw const malloc_message)
+            .or_else(|| ptr::read_volatile(&raw const je_malloc_message))
+    }
 }
 
 /// Test stand-in for a program assigning `malloc_message`.
@@ -115,7 +118,10 @@ pub fn malloc_write(s: &[u8]) {
 #[cold]
 #[inline(never)]
 fn not_an_allocation(what: &str, p: *mut u8) -> ! {
-    crate::sys::abort_fmt(format_args!("{what} of {:#x}: not an allocation", p as usize))
+    crate::sys::abort_fmt(format_args!(
+        "{what} of {:#x}: not an allocation",
+        p as usize
+    ))
 }
 
 /// The usable size `mallocx(size, flags)` gives: the class size at the
@@ -170,8 +176,12 @@ pub fn rallocx(p: *mut u8, size: usize, flags: c_int) -> *mut u8 {
     if p.is_null() {
         return alloc_with(super::shared(), size, &f);
     }
-    let Some(shared) = super::shared_if_ready() else { not_an_allocation("rallocx", p) };
-    let Some(old) = old_size_or_keep(shared, "rallocx", p, size, f.align()) else { return p };
+    let Some(shared) = super::shared_if_ready() else {
+        not_an_allocation("rallocx", p)
+    };
+    let Some(old) = old_size_or_keep(shared, "rallocx", p, size, f.align()) else {
+        return p;
+    };
     let q = alloc_with(shared, size, &f);
     if q.is_null() {
         return q;
@@ -197,7 +207,9 @@ pub fn sallocx(p: *mut u8, _flags: c_int) -> usize {
     if p.is_null() {
         not_an_allocation("sallocx", p);
     }
-    let Some(shared) = super::shared_if_ready() else { not_an_allocation("sallocx", p) };
+    let Some(shared) = super::shared_if_ready() else {
+        not_an_allocation("sallocx", p)
+    };
     usable_size(shared, p)
 }
 
@@ -208,7 +220,9 @@ pub fn dallocx(p: *mut u8, flags: c_int) {
         return;
     }
     let f = Flags::decode(flags as u32);
-    let Some(shared) = super::shared_if_ready() else { not_an_allocation("dallocx", p) };
+    let Some(shared) = super::shared_if_ready() else {
+        not_an_allocation("dallocx", p)
+    };
     mallocx::free(shared, p, f.tcache);
 }
 
@@ -239,7 +253,9 @@ fn sdallocx_routed(p: *mut u8, size: usize, flags: c_int) {
         return;
     }
     let f = Flags::decode(flags as u32);
-    let Some(shared) = super::shared_if_ready() else { not_an_allocation("sdallocx", p) };
+    let Some(shared) = super::shared_if_ready() else {
+        not_an_allocation("sdallocx", p)
+    };
     let hint = class_for(size, f.align());
     if let Tcache::Explicit(t) = f.tcache {
         if let Some(h) = shared.tcaches.get(t) {
@@ -284,21 +300,29 @@ pub fn nallocx(size: usize, flags: c_int) -> usize {
 #[cold]
 #[inline(never)]
 pub fn get_defrag_hint(p: *const u8) -> c_int {
-    let Some(shared) = super::shared_if_ready() else { return 0 };
-    let Kind::Slab { class, slab, slot } = shared.regions.classify(p as usize) else { return 0 };
+    let Some(shared) = super::shared_if_ready() else {
+        return 0;
+    };
+    let Kind::Slab { class, slab, slot } = shared.regions.classify(p as usize) else {
+        return 0;
+    };
     let class = class as usize;
     let t = shared.table(class);
     let (slab, slot) = (slab as usize, slot as usize);
     if !t.is_allocated(slab, slot) {
         return 0;
     }
-    let Some(d) = t.desc_if_committed(slab) else { return 0 };
+    let Some(d) = t.desc_if_committed(slab) else {
+        return 0;
+    };
     let cls = t.class();
     let live = d.live();
     if live >= cls.nslots() {
         return 0;
     }
-    let Some(a) = shared.arenas.get_existing(d.arena()) else { return 0 };
+    let Some(a) = shared.arenas.get_existing(d.arena()) else {
+        return 0;
+    };
     let cs = a.class(class);
     let slabcur = cs.lowest_partial();
     if slabcur == Some(slab) {
@@ -353,12 +377,27 @@ mod exports {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::heap::mallocx::{MALLOCX_TCACHE_NONE, MALLOCX_ZERO, Tcache, mallocx_arena, mallocx_lg_align, mallocx_tcache};
+    use crate::heap::mallocx::{
+        MALLOCX_TCACHE_NONE, MALLOCX_ZERO, Tcache, mallocx_arena, mallocx_lg_align, mallocx_tcache,
+    };
     use crate::layout::{Kind, MEDIUM_MAX, class_size_of};
     use std::thread;
     use std::vec::Vec;
 
-    const SIZES: &[usize] = &[0, 1, 16, 17, 100, 1000, 4096, 65_536, MEDIUM_MAX, MEDIUM_MAX + 1, 1 << 20, 5 << 20];
+    const SIZES: &[usize] = &[
+        0,
+        1,
+        16,
+        17,
+        100,
+        1000,
+        4096,
+        65_536,
+        MEDIUM_MAX,
+        MEDIUM_MAX + 1,
+        1 << 20,
+        5 << 20,
+    ];
 
     fn shared() -> &'static Shared {
         super::super::shared()
@@ -371,10 +410,18 @@ mod tests {
                 let flags = mallocx_lg_align(la) as c_int;
                 let p = mallocx(size, flags);
                 assert!(!p.is_null(), "mallocx({size}, lg_align {la})");
-                assert_eq!(p as usize % (1usize << la), 0, "mallocx({size}, lg_align {la}) = {p:p}");
+                assert_eq!(
+                    p as usize % (1usize << la),
+                    0,
+                    "mallocx({size}, lg_align {la}) = {p:p}"
+                );
                 let usable = sallocx(p, flags);
                 assert!(usable >= size);
-                assert_eq!(usable, nallocx(size, flags), "nallocx disagrees for size {size} lg_align {la}");
+                assert_eq!(
+                    usable,
+                    nallocx(size, flags),
+                    "nallocx disagrees for size {size} lg_align {la}"
+                );
                 assert_eq!(usable, crate::api::libc::malloc_usable_size(p));
                 // Every class is a multiple of the quantum, so up to it the
                 // alignment leaves the class alone.
@@ -391,7 +438,11 @@ mod tests {
                 assert!(!z.is_null());
                 let n = sallocx(z, 0);
                 for i in 0..n {
-                    assert_eq!(unsafe { *z.add(i) }, 0, "mallocx ZERO size {size} lg_align {la} byte {i}");
+                    assert_eq!(
+                        unsafe { *z.add(i) },
+                        0,
+                        "mallocx ZERO size {size} lg_align {la} byte {i}"
+                    );
                 }
                 sdallocx(z, size, flags);
             }
@@ -399,7 +450,10 @@ mod tests {
         // Alignment above the medium tier is a huge run even for one byte.
         let p = mallocx(1, mallocx_lg_align(19) as c_int);
         assert!(shared().regions.classify(p as usize) != Kind::Invalid);
-        assert!(matches!(shared().regions.classify(p as usize), Kind::Huge { .. }));
+        assert!(matches!(
+            shared().regions.classify(p as usize),
+            Kind::Huge { .. }
+        ));
         assert_eq!(p as usize % (1 << 19), 0);
         dallocx(p, 0);
         assert_eq!(nallocx(usize::MAX, 0), 0);
@@ -429,10 +483,17 @@ mod tests {
         assert_eq!(unsafe { *r.add(9) }, 9);
         // Into and out of the huge tier.
         let h = rallocx(r, MEDIUM_MAX + 1, 0);
-        assert!(matches!(shared().regions.classify(h as usize), Kind::Huge { .. }));
+        assert!(matches!(
+            shared().regions.classify(h as usize),
+            Kind::Huge { .. }
+        ));
         assert_eq!(unsafe { *h.add(9) }, 9);
         let page = shared().regions.page_size();
-        assert_eq!(rallocx(h, MEDIUM_MAX + page, 0), h, "same page count keeps the run");
+        assert_eq!(
+            rallocx(h, MEDIUM_MAX + page, 0),
+            h,
+            "same page count keeps the run"
+        );
         let h2 = rallocx(h, MEDIUM_MAX + page + 1, MALLOCX_ZERO as c_int);
         assert_ne!(h2, h);
         assert_eq!(unsafe { *h2.add(9) }, 9);
@@ -450,7 +511,10 @@ mod tests {
         assert_eq!(xallocx(s, 1, 0, 0), class_size_of(24).unwrap());
         assert_eq!(xallocx(s, 1, 100, 0), class_size_of(24).unwrap());
         assert_eq!(xallocx(s, 24, 1 << 20, 0), class_size_of(24).unwrap());
-        assert_eq!(xallocx(s, 1 << 20, 1 << 20, MALLOCX_ZERO as c_int), class_size_of(24).unwrap());
+        assert_eq!(
+            xallocx(s, 1 << 20, 1 << 20, MALLOCX_ZERO as c_int),
+            class_size_of(24).unwrap()
+        );
         assert_eq!(unsafe { *s.add(9) }, 9, "xallocx touched nothing");
         // A failed rallocx leaves the block intact.
         assert!(rallocx(s, usize::MAX / 2, 0).is_null());
@@ -493,7 +557,9 @@ mod tests {
         assert!(s.tcaches.destroy(s, t));
         // Huge runs record the arena.
         let h = mallocx(2 << 20, mallocx_arena(lua) as c_int);
-        let Err(page) = s.classify_free(h) else { panic!("not huge") };
+        let Err(page) = s.classify_free(h) else {
+            panic!("not huge")
+        };
         assert_eq!(s.huge.lookup(page).unwrap().arena, lua);
         dallocx(h, 0);
         // Nonexistent arena or explicit cache: null, not an abort.
@@ -569,14 +635,24 @@ mod tests {
         assert_eq!(desc.live(), live - 1);
         assert_eq!(cached_in(h), cached);
         // A non-existent arena is null, not an abort.
-        assert!(mallocx::alloc(s, c, Some(4000), Tcache::Default).0.is_null());
+        assert!(
+            mallocx::alloc(s, c, Some(4000), Tcache::Default)
+                .0
+                .is_null()
+        );
         assert!(mallocx::alloc(s, c, Some(4000), Tcache::None).0.is_null());
-        assert!(mallocx::alloc_huge(s, 1 << 20, 1, Some(4000), Tcache::Default).0.is_null());
+        assert!(
+            mallocx::alloc_huge(s, 1 << 20, 1, Some(4000), Tcache::Default)
+                .0
+                .is_null()
+        );
 
         // Huge runs record the arena too.
         let (hp, _) = mallocx::alloc_huge(s, 3 << 20, 1, Some(lua), Tcache::Default);
         assert!(!hp.is_null());
-        let Err(page) = s.classify_free(hp) else { panic!("not huge") };
+        let Err(page) = s.classify_free(hp) else {
+            panic!("not huge")
+        };
         assert_eq!(s.huge.lookup(page).unwrap().arena, lua);
         api_libc::free(hp);
 
@@ -593,7 +669,10 @@ mod tests {
         // its FOREIGN cache, as any plain free of another arena's slot.
         mallocx::free(s, e, Tcache::Explicit(t));
         assert_eq!(th.cache_in(lua, c).unwrap().len(), before);
-        assert_eq!(th.cache_in(heap::FOREIGN, c).unwrap().len(), before_foreign + 1);
+        assert_eq!(
+            th.cache_in(heap::FOREIGN, c).unwrap().len(),
+            before_foreign + 1
+        );
         assert!(s.tcaches.flush(s, t));
         assert_eq!(th.cache_in(lua, c).unwrap().len(), 0);
         assert_eq!(th.cache_in(heap::FOREIGN, c).unwrap().len(), 0);
@@ -634,15 +713,32 @@ mod tests {
             }
             api_libc::free(p);
         }
-        assert_eq!(cached_in(h), 0, "plain frees never reach the thread's per-arena caches");
-        assert!(h.cache_in(other, c).is_none(), "a plain free creates no arena node");
-        assert!(h.cache(c).is_none_or(|cache| cache.len() == 0), "nothing landed in the home cache");
-        assert_eq!(cached_foreign(h), 64, "both arenas' slots on the one FOREIGN cache");
+        assert_eq!(
+            cached_in(h),
+            0,
+            "plain frees never reach the thread's per-arena caches"
+        );
+        assert!(
+            h.cache_in(other, c).is_none(),
+            "a plain free creates no arena node"
+        );
+        assert!(
+            h.cache(c).is_none_or(|cache| cache.len() == 0),
+            "nothing landed in the home cache"
+        );
+        assert_eq!(
+            cached_foreign(h),
+            64,
+            "both arenas' slots on the one FOREIGN cache"
+        );
         h.flush_all(s);
         // Per-arena purge covers the Lua arena's slabs only.
         let lua_arena = s.arena(lua).unwrap();
         let empty_before = lua_arena.classes[c].stats().empty;
-        assert!(empty_before >= 1, "the Lua arena's slab should be Empty after the flush");
+        assert!(
+            empty_before >= 1,
+            "the Lua arena's slab should be Empty after the flush"
+        );
         let purged = crate::purge::purge_arena(s, lua).unwrap();
         assert!(purged >= empty_before);
         assert_eq!(lua_arena.classes[c].stats().empty, 0);
@@ -662,7 +758,11 @@ mod tests {
         let text: Vec<u8> = (0..2000u32).map(|i| b'a' + (i % 26) as u8).collect();
         malloc_write(&text);
         set_message_hook_for_tests(None);
-        assert_eq!(*GOT.lock().unwrap(), text, "chunks must reassemble to the original");
+        assert_eq!(
+            *GOT.lock().unwrap(),
+            text,
+            "chunks must reassemble to the original"
+        );
         assert!(message_hook().is_none());
         // Without a hook it goes to stderr and must not crash.
         malloc_write(b"challoc: malloc_write test line\n");
@@ -686,7 +786,12 @@ mod tests {
         for p in ptrs[..n / 2].iter().step_by(2) {
             dallocx(*p, flags);
         }
-        let live: Vec<*mut u8> = ptrs.iter().enumerate().filter(|(i, _)| *i >= n / 2 || i % 2 == 1).map(|(_, p)| *p).collect();
+        let live: Vec<*mut u8> = ptrs
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i >= n / 2 || i % 2 == 1)
+            .map(|(_, p)| *p)
+            .collect();
         let t = s.table(c);
         let cs = s.arena(a).unwrap().class(c);
         let mut moved = 0;
@@ -703,8 +808,13 @@ mod tests {
                 curregs -= t.desc(sc).live();
                 curslabs -= 1;
             }
-            let want = u.nfree > 0 && slabcur != Some(slab) && (u.nregs - u.nfree) * curslabs <= curregs;
-            assert_eq!(hint, want as c_int, "ptr {p:p}: nfree {} of {}, bin {}/{}, slabcur {slabcur:?} slab {slab}", u.nfree, u.nregs, curregs, curslabs);
+            let want =
+                u.nfree > 0 && slabcur != Some(slab) && (u.nregs - u.nfree) * curslabs <= curregs;
+            assert_eq!(
+                hint, want as c_int,
+                "ptr {p:p}: nfree {} of {}, bin {}/{}, slabcur {slabcur:?} slab {slab}",
+                u.nfree, u.nregs, curregs, curslabs
+            );
             if hint == 1 {
                 assert!(u.nfree > 0, "a full slab is never worth moving out of");
                 moved += 1;
@@ -714,15 +824,26 @@ mod tests {
         }
         // The half-full slabs (all but the one a claim takes from next)
         // are below the average; the full ones are never hinted.
-        assert!(moved >= cls.nslots() / 2 * 8, "{moved} hints for {} half-full slots", n / 4);
-        assert!(live[n / 4..].iter().all(|p| get_defrag_hint(*p) == 0 || utilization(s, *p as *const c_void, false).nfree > 0));
+        assert!(
+            moved >= cls.nslots() / 2 * 8,
+            "{moved} hints for {} half-full slots",
+            n / 4
+        );
+        assert!(
+            live[n / 4..].iter().all(|p| get_defrag_hint(*p) == 0
+                || utilization(s, *p as *const c_void, false).nfree > 0)
+        );
         // Not a hint: a freed slot, a huge run, null, a stack address.
         assert_eq!(get_defrag_hint(ptrs[0]), 0, "freed");
         let h = mallocx(3 << 20, flags);
         assert_eq!(get_defrag_hint(h), 0, "huge");
         assert_eq!(get_defrag_hint(ptr::null()), 0, "null");
         let stack = 0u64;
-        assert_eq!(get_defrag_hint(&stack as *const u64 as *const u8), 0, "stack");
+        assert_eq!(
+            get_defrag_hint(&stack as *const u64 as *const u8),
+            0,
+            "stack"
+        );
         dallocx(h, flags);
         // A class above BIN_MAX answers like a bin (the utilization queries
         // report it as one region; the hint has no geometry contract): two
@@ -732,18 +853,32 @@ mod tests {
         let cm = crate::layout::class_of(16 << 10).unwrap();
         assert!(cm >= crate::layout::NBINS);
         let clm = &CLASSES[cm];
-        let big: Vec<*mut u8> = (0..2 * clm.nslots() + 1).map(|_| mallocx(16 << 10, flags)).collect();
+        let big: Vec<*mut u8> = (0..2 * clm.nslots() + 1)
+            .map(|_| mallocx(16 << 10, flags))
+            .collect();
         assert!(big.iter().all(|p| !p.is_null()));
         let um = utilization(s, big[0] as *const c_void, true);
-        assert_eq!((um.nregs, um.nfree), (1, 0), "the utilization query keeps jemalloc's large-extent shape");
+        assert_eq!(
+            (um.nregs, um.nfree),
+            (1, 0),
+            "the utilization query keeps jemalloc's large-extent shape"
+        );
         let tm = s.table(cm);
         let csm = s.arena(a).unwrap().class(cm);
         let (lone_slab, _) = tm.locate(*big.last().unwrap());
         assert_eq!(tm.desc(lone_slab).live(), 1);
         let lone_hint = get_defrag_hint(*big.last().unwrap());
-        assert_eq!(lone_hint, (csm.lowest_partial() != Some(lone_slab)) as c_int, "the lone block moves unless its slab is the current one");
+        assert_eq!(
+            lone_hint,
+            (csm.lowest_partial() != Some(lone_slab)) as c_int,
+            "the lone block moves unless its slab is the current one"
+        );
         for p in &big[..2 * clm.nslots()] {
-            assert_eq!(get_defrag_hint(*p), 0, "a full slab is never worth moving out of");
+            assert_eq!(
+                get_defrag_hint(*p),
+                0,
+                "a full slab is never worth moving out of"
+            );
         }
         for p in big {
             dallocx(p, flags);

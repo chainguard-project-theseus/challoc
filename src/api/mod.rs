@@ -286,7 +286,13 @@ fn init() {
     // SAFETY: the statics are written once here, before `READY` is
     // published, and `regions` are live reservations this process owns.
     unsafe {
-        let ok = Shared::init((*SHARED.0.get()).as_mut_ptr(), regions, config, features.guard_install, features.pac);
+        let ok = Shared::init(
+            (*SHARED.0.get()).as_mut_ptr(),
+            regions,
+            config,
+            features.guard_install,
+            features.pac,
+        );
         if !ok {
             sys::abort("metadata region too small for the allocator tables");
         }
@@ -300,7 +306,8 @@ fn init() {
     }
     // SAFETY: the three handlers are plain `extern "C"` functions that only
     // touch allocator locks.
-    let rc = unsafe { ::libc::pthread_atfork(Some(fork_prepare), Some(fork_parent), Some(fork_child)) };
+    let rc =
+        unsafe { ::libc::pthread_atfork(Some(fork_prepare), Some(fork_parent), Some(fork_child)) };
     if rc != 0 {
         sys::abort_fmt(format_args!("pthread_atfork failed: {}", sys::Errno(rc)));
     }
@@ -427,7 +434,9 @@ mod tests {
         assert!(s.ends_with(" pac=yes") || s.ends_with(" pac=no"), "{s}");
         assert!(!s.contains('\n'));
         for kv in s.split(' ') {
-            let (k, v) = kv.split_once('=').unwrap_or_else(|| panic!("`{kv}` in {s}"));
+            let (k, v) = kv
+                .split_once('=')
+                .unwrap_or_else(|| panic!("`{kv}` in {s}"));
             assert!(!k.is_empty() && !v.is_empty(), "`{kv}` in {s}");
         }
     }
@@ -445,11 +454,18 @@ mod tests {
         use std::string::ToString;
         /// Every `.rs` file under `dir` as (path relative to `src/`, text).
         fn sources(dir: &std::path::Path, rel: &str, out: &mut Vec<(String, String)>) {
-            let mut entries: Vec<_> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().path()).collect();
+            let mut entries: Vec<_> = std::fs::read_dir(dir)
+                .unwrap()
+                .map(|e| e.unwrap().path())
+                .collect();
             entries.sort();
             for path in entries {
                 let name = path.file_name().unwrap().to_str().unwrap().to_string();
-                let rel = if rel.is_empty() { name } else { std::format!("{rel}/{name}") };
+                let rel = if rel.is_empty() {
+                    name
+                } else {
+                    std::format!("{rel}/{name}")
+                };
                 if path.is_dir() {
                     sources(&path, &rel, out);
                 } else if rel.ends_with(".rs") {
@@ -469,15 +485,29 @@ mod tests {
             let mut cfg_test = false;
             for line in text.lines() {
                 let t = line.trim();
-                let decl = t.strip_prefix("pub(crate) ").or_else(|| t.strip_prefix("pub ")).unwrap_or(t);
-                if let (true, Some(name)) = (cfg_test, decl.strip_prefix("mod ").and_then(|m| m.strip_suffix(';'))) {
-                    out.push(if dir.is_empty() { name.to_string() } else { std::format!("{dir}/{name}") });
+                let decl = t
+                    .strip_prefix("pub(crate) ")
+                    .or_else(|| t.strip_prefix("pub "))
+                    .unwrap_or(t);
+                if let (true, Some(name)) = (
+                    cfg_test,
+                    decl.strip_prefix("mod ").and_then(|m| m.strip_suffix(';')),
+                ) {
+                    out.push(if dir.is_empty() {
+                        name.to_string()
+                    } else {
+                        std::format!("{dir}/{name}")
+                    });
                 }
                 cfg_test = t == "#[cfg(test)]";
             }
         }
         let mut files = Vec::new();
-        sources(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), "", &mut files);
+        sources(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            "",
+            &mut files,
+        );
         let mut test_only = Vec::new();
         for (rel, text) in &files {
             test_modules(rel, text, &mut test_only);
@@ -485,7 +515,11 @@ mod tests {
         let mut out = Vec::new();
         for (rel, text) in &files {
             let stem = rel.strip_suffix(".rs").unwrap();
-            if rel == "lock.rs" || test_only.iter().any(|m| stem == m || rel.starts_with(&std::format!("{m}/"))) {
+            if rel == "lock.rs"
+                || test_only
+                    .iter()
+                    .any(|m| stem == m || rel.starts_with(&std::format!("{m}/")))
+            {
                 continue;
             }
             let mut owner = String::new();
@@ -494,12 +528,23 @@ mod tests {
                 if t == "mod tests {" {
                     break;
                 }
-                if t.starts_with("//") || t.starts_with("use ") || t.contains(" fn ") || t.starts_with("fn ") {
+                if t.starts_with("//")
+                    || t.starts_with("use ")
+                    || t.contains(" fn ")
+                    || t.starts_with("fn ")
+                {
                     continue;
                 }
-                let decl = t.strip_prefix("pub(crate) ").or_else(|| t.strip_prefix("pub ")).unwrap_or(t);
+                let decl = t
+                    .strip_prefix("pub(crate) ")
+                    .or_else(|| t.strip_prefix("pub "))
+                    .unwrap_or(t);
                 if let Some(rest) = decl.strip_prefix("struct ") {
-                    owner = rest.split(['<', '{', '(', ' ', ';']).next().unwrap().to_string();
+                    owner = rest
+                        .split(['<', '{', '(', ' ', ';'])
+                        .next()
+                        .unwrap()
+                        .to_string();
                     continue;
                 }
                 let is_lock = |ty: &str| ty.contains("Lock<") || ty.contains("RawLock");
@@ -547,38 +592,59 @@ mod tests {
     /// (`!locked`), for the arenas in `arenas`.
     fn assert_locks(s: &Shared, arenas: &[u16], locked: bool) {
         let state = |held: bool, what: &str| {
-            assert_eq!(held, locked, "{what} {}", if locked { "not locked" } else { "still locked" });
+            assert_eq!(
+                held,
+                locked,
+                "{what} {}",
+                if locked { "not locked" } else { "still locked" }
+            );
         };
         for key in FORK_LOCKS {
             match *key {
                 "arena.rs:Arena.stats" => {
                     for &a in arenas {
-                        state(s.arena(a).unwrap().stats_raw_lock().is_locked(), &std::format!("arena {a} stats"));
+                        state(
+                            s.arena(a).unwrap().stats_raw_lock().is_locked(),
+                            &std::format!("arena {a} stats"),
+                        );
                     }
                 }
                 "arena.rs:Arenas.lock" => state(s.arenas.raw_lock().is_locked(), "arena registry"),
-                "heap/tcaches.rs:Tcaches.lock" => state(s.tcaches.raw_lock().is_locked(), "tcache table"),
+                "heap/tcaches.rs:Tcaches.lock" => {
+                    state(s.tcaches.raw_lock().is_locked(), "tcache table")
+                }
                 "class/mod.rs:ClassState.inner" => {
                     for &a in arenas {
                         for c in 0..NCLASSES {
-                            state(s.arena(a).unwrap().classes[c].raw_lock().is_locked(), &std::format!("arena {a} class {c}"));
+                            state(
+                                s.arena(a).unwrap().classes[c].raw_lock().is_locked(),
+                                &std::format!("arena {a} class {c}"),
+                            );
                         }
                     }
                 }
                 "class/sets.rs:SetTable.tables" => {
                     for &a in arenas {
-                        state(s.arena(a).unwrap().sets().raw_lock().is_locked(), &std::format!("arena {a} sets"));
+                        state(
+                            s.arena(a).unwrap().sets().raw_lock().is_locked(),
+                            &std::format!("arena {a} sets"),
+                        );
                     }
                 }
                 "class/table.rs:SlabTable.inner" => {
                     for c in 0..NCLASSES {
-                        state(s.tables()[c].raw_lock().is_locked(), &std::format!("table {c}"));
+                        state(
+                            s.tables()[c].raw_lock().is_locked(),
+                            &std::format!("table {c}"),
+                        );
                     }
                 }
                 "heap/shared.rs:Shared.stats" => state(s.stats.raw().is_locked(), "process stats"),
                 "huge/mod.rs:Huge.inner" => state(s.huge.raw_lock().is_locked(), "huge"),
                 "meta.rs:Meta.inner" => state(s.meta.raw_lock().is_locked(), "meta"),
-                "purge/background.rs:static.STATE" => state(purge::background::is_locked(), "background state"),
+                "purge/background.rs:static.STATE" => {
+                    state(purge::background::is_locked(), "background state")
+                }
                 other => panic!("no fork-handler assertion for lock {other}"),
             }
         }
@@ -589,7 +655,10 @@ mod tests {
     #[test]
     fn fork_lock_list_matches_the_source_tree() {
         let found = lock_inventory();
-        let mut want: Vec<String> = FORK_LOCKS.iter().map(|k| std::string::ToString::to_string(k)).collect();
+        let mut want: Vec<String> = FORK_LOCKS
+            .iter()
+            .map(|k| std::string::ToString::to_string(k))
+            .collect();
         want.sort();
         assert_eq!(
             found, want,
@@ -628,7 +697,12 @@ mod tests {
             let mut names = std::vec::Vec::new();
             for e in std::fs::read_dir("/proc/self/task").unwrap() {
                 let p = e.unwrap().path().join("comm");
-                names.push(std::fs::read_to_string(p).unwrap_or_default().trim().to_string());
+                names.push(
+                    std::fs::read_to_string(p)
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string(),
+                );
             }
             names
         }
@@ -636,7 +710,10 @@ mod tests {
         let s = shared();
         assert!(!tasks().iter().any(|n| n == "challoc-bg"));
         purge::background::request(true);
-        assert!(purge::background::start(s), "background thread did not start");
+        assert!(
+            purge::background::start(s),
+            "background thread did not start"
+        );
         assert!(purge::background::present());
         assert!(purge::background::start(s), "second start is idempotent");
         // The name is set by the thread itself; give it a moment.
@@ -670,7 +747,11 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        assert!(purged, "background thread did not purge the freed run: {:?}", s.huge.stats());
+        assert!(
+            purged,
+            "background thread did not purge the freed run: {:?}",
+            s.huge.stats()
+        );
         s.set_decay_ms((old_ns / 1_000_000) as i64);
 
         // A real fork: the child handler forgets the thread and the
@@ -687,18 +768,27 @@ mod tests {
                 purge::background::is_locked(),
                 purge::background::thread().is_some(),
             ];
-            let code = bad.iter().enumerate().fold(0, |m, (i, &b)| m | ((b as i32) << i));
+            let code = bad
+                .iter()
+                .enumerate()
+                .fold(0, |m, (i, &b)| m | ((b as i32) << i));
             unsafe { ::libc::_exit(code) };
         }
         let mut status = 0;
         assert_eq!(unsafe { ::libc::waitpid(pid, &mut status, 0) }, pid);
-        assert!(::libc::WIFEXITED(status), "fork child did not exit: status {status:#x}");
+        assert!(
+            ::libc::WIFEXITED(status),
+            "fork child did not exit: status {status:#x}"
+        );
         assert_eq!(
             ::libc::WEXITSTATUS(status),
             0,
             "fork child still sees (bit 0) present, (1) requested, (2) the state lock held, (3) a thread record"
         );
-        assert!(purge::background::present() && purge::background::requested(), "the fork stopped the parent's thread");
+        assert!(
+            purge::background::present() && purge::background::requested(),
+            "the fork stopped the parent's thread"
+        );
 
         // Withdraw the request: the kick wakes the thread and it exits
         // there; the exit is asynchronous, so wait for it, bounded, and
@@ -712,7 +802,11 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        assert!(stopped, "background thread did not stop at the kick: {:?}", tasks());
+        assert!(
+            stopped,
+            "background thread did not stop at the kick: {:?}",
+            tasks()
+        );
         assert!(purge::background::join_exited(), "no exited thread to join");
         assert!(purge::background::thread().is_none());
         // Joined, the task leaves /proc/self/task as the kernel reaps it.
@@ -724,7 +818,11 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        assert!(gone, "background thread still running after the join: {:?}", tasks());
+        assert!(
+            gone,
+            "background thread still running after the join: {:?}",
+            tasks()
+        );
     }
 
     /// One stack for the life of the process (design 8.1): a
@@ -746,7 +844,10 @@ mod tests {
         let s = shared();
         assert!(!purge::background::present());
         purge::background::request(true);
-        assert!(purge::background::start(s), "background thread did not start");
+        assert!(
+            purge::background::start(s),
+            "background thread did not start"
+        );
         let stack = purge::background::stack();
         assert_ne!(stack, 0);
         for cycle in 0..8 {
@@ -755,7 +856,11 @@ mod tests {
             purge::background::request(true);
             assert!(purge::background::start(s), "restart {cycle} failed");
             assert!(purge::background::present());
-            assert_eq!(purge::background::stack(), stack, "restart {cycle} took a new stack");
+            assert_eq!(
+                purge::background::stack(),
+                stack,
+                "restart {cycle} took a new stack"
+            );
         }
         purge::background::request(false);
         wait_absent();
@@ -769,7 +874,8 @@ mod tests {
     fn fork_handlers_block_signals_while_locked() {
         fn current_mask() -> u64 {
             let mut set: ::libc::sigset_t = unsafe { core::mem::zeroed() };
-            let rc = unsafe { ::libc::pthread_sigmask(::libc::SIG_BLOCK, core::ptr::null(), &mut set) };
+            let rc =
+                unsafe { ::libc::pthread_sigmask(::libc::SIG_BLOCK, core::ptr::null(), &mut set) };
             assert_eq!(rc, 0);
             // The kernel mask is the first 8 bytes of glibc's 128-byte set.
             unsafe { core::ptr::read_unaligned(&set as *const _ as *const u64) }
@@ -787,20 +893,38 @@ mod tests {
             ::libc::sigemptyset(&mut want);
             ::libc::sigaddset(&mut want, ::libc::SIGUSR2);
             ::libc::sigaddset(&mut want, ::libc::SIGWINCH);
-            assert_eq!(::libc::pthread_sigmask(::libc::SIG_SETMASK, &want, &mut before), 0);
+            assert_eq!(
+                ::libc::pthread_sigmask(::libc::SIG_SETMASK, &want, &mut before),
+                0
+            );
         }
         let start = current_mask();
-        assert_eq!(start, (1 << (::libc::SIGUSR2 - 1)) | (1 << (::libc::SIGWINCH - 1)));
+        assert_eq!(
+            start,
+            (1 << (::libc::SIGUSR2 - 1)) | (1 << (::libc::SIGWINCH - 1))
+        );
 
         fork_prepare();
-        assert_eq!(blockable(current_mask()), all, "prepare did not block every signal");
+        assert_eq!(
+            blockable(current_mask()),
+            all,
+            "prepare did not block every signal"
+        );
         fork_parent();
-        assert_eq!(current_mask(), start, "parent handler did not restore the mask");
+        assert_eq!(
+            current_mask(),
+            start,
+            "parent handler did not restore the mask"
+        );
 
         fork_prepare();
         assert_eq!(blockable(current_mask()), all);
         fork_child();
-        assert_eq!(current_mask(), start, "child handler did not restore the mask");
+        assert_eq!(
+            current_mask(),
+            start,
+            "child handler did not restore the mask"
+        );
 
         unsafe { ::libc::pthread_sigmask(::libc::SIG_SETMASK, &before, core::ptr::null_mut()) };
     }

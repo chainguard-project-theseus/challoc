@@ -50,7 +50,11 @@ const NODE_STAGGER_LINES: usize = 16;
 
 /// Layout of the block an `others` node is carved from.
 pub(super) fn node_block_layout() -> Layout {
-    Layout::from_size_align(core::mem::size_of::<ArenaCaches>() + 64 * (NODE_STAGGER_LINES - 1), 64).expect("node block layout")
+    Layout::from_size_align(
+        core::mem::size_of::<ArenaCaches>() + 64 * (NODE_STAGGER_LINES - 1),
+        64,
+    )
+    .expect("node block layout")
 }
 
 impl Heap {
@@ -72,7 +76,12 @@ impl Heap {
     /// (`Config::cap_for`) and serves the rest from the bitmaps.
     #[cold]
     #[inline(never)]
-    pub(super) fn alloc_other(&mut self, shared: &Shared, arena: u16, class: usize) -> (*mut u8, bool) {
+    pub(super) fn alloc_other(
+        &mut self,
+        shared: &Shared,
+        arena: u16,
+        class: usize,
+    ) -> (*mut u8, bool) {
         let node = self.other_caches(shared, arena, false);
         if !node.is_null() {
             // SAFETY: `node` is a live block owned by this heap.
@@ -102,7 +111,9 @@ impl Heap {
         if !node.is_null() {
             // SAFETY: `node` is a live block owned by this heap; the cache
             // is unused (`len == cap == 0`) or ours.
-            if unsafe { Self::push_cache_flags(Self::node_cache_ptr(node, class), p, shared.push_flags()) } {
+            if unsafe {
+                Self::push_cache_flags(Self::node_cache_ptr(node, class), p, shared.push_flags())
+            } {
                 return;
             }
         }
@@ -134,7 +145,12 @@ impl Heap {
     /// caches in two, which the creation branch aborts on (the lookup walk
     /// is xmalloc's per-free path and cannot find a node that was never
     /// created).
-    pub(super) fn other_caches(&mut self, shared: &Shared, arena: u16, create: bool) -> *mut ArenaCaches {
+    pub(super) fn other_caches(
+        &mut self,
+        shared: &Shared,
+        arena: u16,
+        create: bool,
+    ) -> *mut ArenaCaches {
         let mut o = self.others;
         let mut n = 0usize;
         while !o.is_null() {
@@ -151,7 +167,10 @@ impl Heap {
         if !create {
             return ptr::null_mut();
         }
-        assert_ne!(arena, self.arena, "heap: others node requested for the home arena");
+        assert_ne!(
+            arena, self.arena,
+            "heap: others node requested for the home arena"
+        );
         let block = shared.meta.alloc(node_block_layout());
         if block.is_null() {
             return ptr::null_mut();
@@ -177,7 +196,12 @@ impl Heap {
 
     /// The header for `(arena, class)`, creating the `others` node if
     /// needed. Null if no node could be allocated.
-    pub(super) fn cache_slot(&mut self, shared: &Shared, arena: u16, class: usize) -> *mut CacheHeader {
+    pub(super) fn cache_slot(
+        &mut self,
+        shared: &Shared,
+        arena: u16,
+        class: usize,
+    ) -> *mut CacheHeader {
         if arena == self.arena {
             return self.cache_ptr(class);
         }
@@ -194,8 +218,16 @@ impl Heap {
     /// # Safety
     /// `node` is null or a live node owned by this heap.
     #[inline]
-    pub(super) unsafe fn header_in(&mut self, node: *mut ArenaCaches, class: usize) -> *mut CacheHeader {
+    pub(super) unsafe fn header_in(
+        &mut self,
+        node: *mut ArenaCaches,
+        class: usize,
+    ) -> *mut CacheHeader {
         // SAFETY: guaranteed by the caller.
-        if node.is_null() { self.cache_ptr(class) } else { unsafe { Self::node_cache_ptr(node, class) } }
+        if node.is_null() {
+            self.cache_ptr(class)
+        } else {
+            unsafe { Self::node_cache_ptr(node, class) }
+        }
     }
 }

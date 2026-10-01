@@ -74,7 +74,13 @@ pub struct Thp {
 
 impl Thp {
     /// No THP at all: nothing listed, nothing enabled.
-    pub const NONE: Thp = Thp { enabled: None, lg_pmd: 21, listed: 0, always: 0, madvise: 0 };
+    pub const NONE: Thp = Thp {
+        enabled: None,
+        lg_pmd: 21,
+        listed: 0,
+        always: 0,
+        madvise: 0,
+    };
 
     /// Compute the table from the files' contents: `read(path, buf)` fills
     /// `buf` with the file at the NUL-terminated `path` and returns the
@@ -84,16 +90,29 @@ impl Thp {
         const DIR: &[u8] = b"/sys/kernel/mm/transparent_hugepage/";
         let mut buf = [0u8; 128];
         let n = read(b"/sys/kernel/mm/transparent_hugepage/enabled\0", &mut buf);
-        let enabled = if n == 0 { None } else { parse_thp_setting(&buf[..n]) };
+        let enabled = if n == 0 {
+            None
+        } else {
+            parse_thp_setting(&buf[..n])
+        };
         let lg_page = page.trailing_zeros() as u8;
         let mut lg_pmd = (2 * lg_page).saturating_sub(3);
-        let n = read(b"/sys/kernel/mm/transparent_hugepage/hpage_pmd_size\0", &mut buf);
+        let n = read(
+            b"/sys/kernel/mm/transparent_hugepage/hpage_pmd_size\0",
+            &mut buf,
+        );
         if let Some(v) = parse_decimal(&buf[..n]) {
             if v.is_power_of_two() && v.trailing_zeros() as u8 > lg_page {
                 lg_pmd = v.trailing_zeros() as u8;
             }
         }
-        let mut t = Thp { enabled, lg_pmd, listed: 0, always: 0, madvise: 0 };
+        let mut t = Thp {
+            enabled,
+            lg_pmd,
+            listed: 0,
+            always: 0,
+            madvise: 0,
+        };
         let Some(top) = enabled else { return Thp::NONE };
         // Every candidate size from two pages to the PMD: hugepages-<n>kB/enabled.
         let mut path = [0u8; 96];
@@ -112,7 +131,9 @@ impl Thp {
             if n == 0 {
                 continue;
             }
-            let Some(setting) = parse_thp_setting(&buf[..n]) else { continue };
+            let Some(setting) = parse_thp_setting(&buf[..n]) else {
+                continue;
+            };
             t.listed |= 1 << lg;
             match setting {
                 ThpSetting::Always => t.always |= 1 << lg,
@@ -173,7 +194,10 @@ impl Thp {
     /// The two THP keys: `thp=<setting|none> mthp=<sizes|none>`.
     pub fn words(&self) -> impl Iterator<Item = (&'static str, Value)> {
         [
-            ("thp", Value::Word(self.enabled.map_or("none", ThpSetting::name))),
+            (
+                "thp",
+                Value::Word(self.enabled.map_or("none", ThpSetting::name)),
+            ),
             ("mthp", Value::Sizes(self.enabled_sizes())),
         ]
         .into_iter()
@@ -207,7 +231,9 @@ fn write_decimal(out: &mut [u8], mut v: u64) -> usize {
 /// The THP table from `/sys/kernel/mm/transparent_hugepage` (about ten
 /// sysfs reads on a 4 KiB kernel).
 pub fn probe(page: usize) -> Thp {
-    Thp::from_reader(page, |path, buf| super::read_small_file(path, buf).unwrap_or(0))
+    Thp::from_reader(page, |path, buf| {
+        super::read_small_file(path, buf).unwrap_or(0)
+    })
 }
 
 #[cfg(test)]
@@ -219,7 +245,9 @@ mod tests {
         move |path: &[u8], buf: &mut [u8]| {
             let p = core::str::from_utf8(&path[..path.len() - 1]).unwrap();
             assert!(path.last() == Some(&0), "path not NUL-terminated");
-            let p = p.strip_prefix("/sys/kernel/mm/transparent_hugepage/").unwrap_or_else(|| panic!("{p}"));
+            let p = p
+                .strip_prefix("/sys/kernel/mm/transparent_hugepage/")
+                .unwrap_or_else(|| panic!("{p}"));
             match files.iter().find(|(f, _)| *f == p) {
                 Some((_, c)) => {
                     buf[..c.len()].copy_from_slice(c.as_bytes());
@@ -232,10 +260,22 @@ mod tests {
 
     #[test]
     fn thp_setting_parses_the_bracketed_word() {
-        assert_eq!(parse_thp_setting(b"always [madvise] never\n"), Some(ThpSetting::Madvise));
-        assert_eq!(parse_thp_setting(b"[always] madvise never\n"), Some(ThpSetting::Always));
-        assert_eq!(parse_thp_setting(b"always madvise [never]\n"), Some(ThpSetting::Never));
-        assert_eq!(parse_thp_setting(b"always [inherit] madvise never\n"), Some(ThpSetting::Inherit));
+        assert_eq!(
+            parse_thp_setting(b"always [madvise] never\n"),
+            Some(ThpSetting::Madvise)
+        );
+        assert_eq!(
+            parse_thp_setting(b"[always] madvise never\n"),
+            Some(ThpSetting::Always)
+        );
+        assert_eq!(
+            parse_thp_setting(b"always madvise [never]\n"),
+            Some(ThpSetting::Never)
+        );
+        assert_eq!(
+            parse_thp_setting(b"always [inherit] madvise never\n"),
+            Some(ThpSetting::Inherit)
+        );
         assert_eq!(parse_thp_setting(b"always madvise never\n"), None);
         assert_eq!(parse_thp_setting(b"[defer]\n"), None);
         assert_eq!(parse_thp_setting(b""), None);
@@ -256,11 +296,26 @@ mod tests {
         ("hugepages-16kB/enabled", "always inherit madvise [never]\n"),
         ("hugepages-32kB/enabled", "always inherit madvise [never]\n"),
         ("hugepages-64kB/enabled", "always inherit madvise [never]\n"),
-        ("hugepages-128kB/enabled", "always inherit madvise [never]\n"),
-        ("hugepages-256kB/enabled", "always inherit madvise [never]\n"),
-        ("hugepages-512kB/enabled", "always inherit madvise [never]\n"),
-        ("hugepages-1024kB/enabled", "always inherit madvise [never]\n"),
-        ("hugepages-2048kB/enabled", "always [inherit] madvise never\n"),
+        (
+            "hugepages-128kB/enabled",
+            "always inherit madvise [never]\n",
+        ),
+        (
+            "hugepages-256kB/enabled",
+            "always inherit madvise [never]\n",
+        ),
+        (
+            "hugepages-512kB/enabled",
+            "always inherit madvise [never]\n",
+        ),
+        (
+            "hugepages-1024kB/enabled",
+            "always inherit madvise [never]\n",
+        ),
+        (
+            "hugepages-2048kB/enabled",
+            "always [inherit] madvise never\n",
+        ),
     ];
 
     #[test]
@@ -268,7 +323,11 @@ mod tests {
         let t = Thp::from_reader(4096, sysfs(PER_SIZE_4K));
         assert_eq!(t.enabled, Some(ThpSetting::Madvise));
         assert_eq!(t.lg_pmd, 21);
-        assert_eq!(t.listed, ((1u64 << 22) - 1) & !((1u64 << 14) - 1), "16K..2M");
+        assert_eq!(
+            t.listed,
+            ((1u64 << 22) - 1) & !((1u64 << 14) - 1),
+            "16K..2M"
+        );
         assert_eq!(t.always, 0);
         assert_eq!(t.madvise, 1 << 21, "2M inherits madvise");
         assert_eq!(t.pmd_setting(), ThpSetting::Madvise);
@@ -279,9 +338,14 @@ mod tests {
     #[test]
     fn thp_table_with_64k_madvise_and_pmd_never() {
         let mut files = PER_SIZE_4K.to_vec();
-        files.retain(|(f, _)| !f.starts_with("hugepages-64kB") && !f.starts_with("hugepages-2048kB"));
+        files.retain(|(f, _)| {
+            !f.starts_with("hugepages-64kB") && !f.starts_with("hugepages-2048kB")
+        });
         files.push(("hugepages-64kB/enabled", "always inherit [madvise] never\n"));
-        files.push(("hugepages-2048kB/enabled", "always inherit madvise [never]\n"));
+        files.push((
+            "hugepages-2048kB/enabled",
+            "always inherit madvise [never]\n",
+        ));
         let t = Thp::from_reader(4096, sysfs(&files));
         assert_eq!(t.madvise, 1 << 16);
         assert_eq!(t.always, 0);
@@ -307,12 +371,21 @@ mod tests {
 
     #[test]
     fn thp_table_before_6_8_has_the_pmd_alone() {
-        let t = Thp::from_reader(4096, sysfs(&[("enabled", "always [madvise] never\n"), ("hpage_pmd_size", "2097152\n")]));
+        let t = Thp::from_reader(
+            4096,
+            sysfs(&[
+                ("enabled", "always [madvise] never\n"),
+                ("hpage_pmd_size", "2097152\n"),
+            ]),
+        );
         assert_eq!(t.listed, 1 << 21);
         assert_eq!(t.madvise, 1 << 21);
         assert_eq!(std::format!("{t}"), "thp=madvise mthp=2M");
         let t = Thp::from_reader(4096, sysfs(&[("enabled", "[always] madvise never\n")]));
-        assert_eq!(t.lg_pmd, 21, "computed from the page size when hpage_pmd_size is missing");
+        assert_eq!(
+            t.lg_pmd, 21,
+            "computed from the page size when hpage_pmd_size is missing"
+        );
         assert_eq!(t.always, 1 << 21);
         assert_eq!(std::format!("{t}"), "thp=always mthp=2M");
         let t = Thp::from_reader(4096, sysfs(&[("enabled", "always madvise [never]\n")]));

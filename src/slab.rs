@@ -137,7 +137,10 @@ const fn strides_match_every_page() -> bool {
     true
 }
 
-const _: () = assert!(strides_match_every_page(), "a page-sized slab geometry changes a descriptor stride");
+const _: () = assert!(
+    strides_match_every_page(),
+    "a page-sized slab geometry changes a descriptor stride"
+);
 
 /// Per-class descriptor stride in bytes: 64 for classes whose slabs are
 /// handed out singly, 32 for pairs, 16 (the header) from groups of four.
@@ -194,7 +197,10 @@ impl SlabDesc {
     /// The raw state byte and its shadow (`state + 1` when consistent).
     #[inline]
     pub fn state_bytes(&self) -> (u8, u8) {
-        (self.state.load(Ordering::Relaxed), self.shadow.load(Ordering::Relaxed))
+        (
+            self.state.load(Ordering::Relaxed),
+            self.shadow.load(Ordering::Relaxed),
+        )
     }
 
     #[inline]
@@ -295,11 +301,18 @@ mod tests {
     fn strides_keep_a_line_inside_one_group() {
         for (c, cls) in CLASSES.iter().enumerate() {
             let s = desc_stride(c);
-            assert!(s >= HEADER && s <= DESC_ALIGN && DESC_ALIGN % s == 0, "class {c}: stride {s}");
+            assert!(
+                s >= HEADER && s <= DESC_ALIGN && DESC_ALIGN % s == 0,
+                "class {c}: stride {s}"
+            );
             // The descriptors sharing a line are consecutive slabs of one
             // line-sized group.
             assert!(DESC_ALIGN / s <= cls.slabs_per_line(), "class {c}");
-            assert_eq!(s, (DESC_ALIGN / cls.slabs_per_line()).max(HEADER), "class {c}");
+            assert_eq!(
+                s,
+                (DESC_ALIGN / cls.slabs_per_line()).max(HEADER),
+                "class {c}"
+            );
         }
         // Singly handed-out slabs (the small classes) keep a line each.
         assert_eq!(desc_stride(0), DESC_ALIGN);
@@ -406,7 +419,6 @@ mod tests {
         desc.add_live(1);
         desc.sub_live(2);
     }
-
 
     #[test]
     fn state_bytes_no_state_has_decode_to_none() {

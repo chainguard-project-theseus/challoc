@@ -54,7 +54,13 @@ pub struct Probe {
 
 impl Probe {
     /// Nothing registered (the fallback when the symbols do not resolve).
-    pub const NONE: Probe = Probe { present: false, size: 0, flags: 0, offset: 0, registered: false };
+    pub const NONE: Probe = Probe {
+        present: false,
+        size: 0,
+        flags: 0,
+        offset: 0,
+        registered: false,
+    };
 
     /// The feature line's `rseq=` and `rseq_size=` words. `rseq=yes` when
     /// glibc registered an area (`__rseq_size` covers the original struct,
@@ -65,7 +71,11 @@ impl Probe {
     /// size).
     pub fn words(&self) -> impl Iterator<Item = (&'static str, Value)> {
         let registered = self.present && self.registered && self.size >= BASE_SIZE;
-        [("rseq", Value::YesNo(registered)), ("rseq_size", Value::Num(u64::from(self.size)))].into_iter()
+        [
+            ("rseq", Value::YesNo(registered)),
+            ("rseq_size", Value::Num(u64::from(self.size))),
+        ]
+        .into_iter()
     }
 }
 
@@ -79,13 +89,29 @@ pub fn probe() -> Probe {
     // (`ptrdiff_t`) and `__rseq_size` (`unsigned int`) globals, read
     // once; `__rseq_flags` likewise when present.
     let (offset, size) = unsafe { (so.read(), ss.read()) };
-    let flags = if sf.is_null() { 0 } else { unsafe { sf.read() } };
+    let flags = if sf.is_null() {
+        0
+    } else {
+        unsafe { sf.read() }
+    };
     let registered = size >= (CPU_ID_OFFSET as u32 + 4) && {
         // SAFETY: the area is `size` bytes at the thread pointer plus
         // the offset for every thread, and `cpu_id` is inside it.
-        unsafe { area(offset).add(CPU_ID_OFFSET).cast::<u32>().read_volatile() != CPU_ID_UNINITIALIZED }
+        unsafe {
+            area(offset)
+                .add(CPU_ID_OFFSET)
+                .cast::<u32>()
+                .read_volatile()
+                != CPU_ID_UNINITIALIZED
+        }
     };
-    Probe { present: true, size, flags, offset, registered }
+    Probe {
+        present: true,
+        size,
+        flags,
+        offset,
+        registered,
+    }
 }
 
 /// Addresses of the weak `__rseq_offset`, `__rseq_size` and `__rseq_flags`
@@ -170,7 +196,13 @@ mod tests {
     /// What `probe` reads on a host whose glibc registered `size` bytes at
     /// `offset` (registered when the size is not 0).
     fn registered(size: u32, offset: isize) -> Probe {
-        Probe { present: true, size, flags: 0, offset, registered: size != 0 }
+        Probe {
+            present: true,
+            size,
+            flags: 0,
+            offset,
+            registered: size != 0,
+        }
     }
 
     /// The rseq words: a kernel with extended fields (`__rseq_size=33`,
@@ -180,7 +212,8 @@ mod tests {
     #[test]
     fn rseq_words_follow_size_and_registration() {
         let line = |p: &Probe| -> std::string::String {
-            let v: std::vec::Vec<std::string::String> = p.words().map(|(k, v)| std::format!("{k}={v}")).collect();
+            let v: std::vec::Vec<std::string::String> =
+                p.words().map(|(k, v)| std::format!("{k}={v}")).collect();
             v.join(" ")
         };
         for off in [192isize, -192, -256] {
@@ -188,12 +221,22 @@ mod tests {
         }
         assert_eq!(line(&registered(20, 192)), "rseq=yes rseq_size=20");
         assert_eq!(line(&Probe::NONE), "rseq=no rseq_size=0");
-        assert_eq!(line(&registered(0, 0)), "rseq=no rseq_size=0", "symbols present, nothing registered");
+        assert_eq!(
+            line(&registered(0, 0)),
+            "rseq=no rseq_size=0",
+            "symbols present, nothing registered"
+        );
         // The kernel did not write the area: no registration, whatever the size says.
-        let p = Probe { registered: false, ..registered(33, -192) };
+        let p = Probe {
+            registered: false,
+            ..registered(33, -192)
+        };
         assert_eq!(line(&p), "rseq=no rseq_size=33");
         // Unknown flags do not change what the line says exists.
-        let p = Probe { flags: 1, ..registered(33, 192) };
+        let p = Probe {
+            flags: 1,
+            ..registered(33, 192)
+        };
         assert_eq!(line(&p), "rseq=yes rseq_size=33");
         // Below the original struct nothing is registered.
         assert_eq!(line(&registered(19, 192)), "rseq=no rseq_size=19");
@@ -233,13 +276,19 @@ mod tests {
         // SAFETY: a zeroed `cpu_set_t` is a valid empty set; the call
         // writes at most `size_of::<cpu_set_t>()` bytes into it.
         let mut set: ::libc::cpu_set_t = unsafe { core::mem::zeroed() };
-        let rc = unsafe { ::libc::sched_getaffinity(0, core::mem::size_of::<::libc::cpu_set_t>(), &mut set) };
+        let rc = unsafe {
+            ::libc::sched_getaffinity(0, core::mem::size_of::<::libc::cpu_set_t>(), &mut set)
+        };
         if rc != 0 {
             return None;
         }
         // SAFETY: `CPU_ISSET` reads one bit of the set for `c` below
         // `CPU_SETSIZE`.
-        Some((0..::libc::CPU_SETSIZE as usize).filter(|&c| unsafe { ::libc::CPU_ISSET(c, &set) }).collect())
+        Some(
+            (0..::libc::CPU_SETSIZE as usize)
+                .filter(|&c| unsafe { ::libc::CPU_ISSET(c, &set) })
+                .collect(),
+        )
     }
 
     /// Pin the calling thread to `cpu` alone; `false` when the kernel
@@ -250,7 +299,9 @@ mod tests {
         // `sched_setaffinity` only reads it.
         let mut set: ::libc::cpu_set_t = unsafe { core::mem::zeroed() };
         unsafe { ::libc::CPU_SET(cpu, &mut set) };
-        unsafe { ::libc::sched_setaffinity(0, core::mem::size_of::<::libc::cpu_set_t>(), &set) == 0 }
+        unsafe {
+            ::libc::sched_setaffinity(0, core::mem::size_of::<::libc::cpu_set_t>(), &set) == 0
+        }
     }
 
     /// Threads pinned to distinct allowed CPUs, at most this many.
@@ -269,7 +320,11 @@ mod tests {
             return;
         };
         if allowed.len() < 2 {
-            std::eprintln!("rseq: skip the pinned check: {} CPU allowed ({:?})", allowed.len(), allowed);
+            std::eprintln!(
+                "rseq: skip the pinned check: {} CPU allowed ({:?})",
+                allowed.len(),
+                allowed
+            );
             return;
         }
         let cpus: std::vec::Vec<usize> = allowed.iter().copied().take(MAX_PINNED).collect();
@@ -296,10 +351,14 @@ mod tests {
                 })
             })
             .collect();
-        let rs: std::vec::Vec<(usize, bool, u32, u32)> = hs.into_iter().map(|h| h.join().unwrap()).collect();
+        let rs: std::vec::Vec<(usize, bool, u32, u32)> =
+            hs.into_iter().map(|h| h.join().unwrap()).collect();
         std::eprintln!("rseq: {} threads pinned to CPUs {:?}", rs.len(), cpus);
         if let Some(r) = rs.iter().find(|r| !r.1) {
-            std::eprintln!("rseq: skip the pinned check: sched_setaffinity to CPU {} refused", r.0);
+            std::eprintln!(
+                "rseq: skip the pinned check: sched_setaffinity to CPU {} refused",
+                r.0
+            );
             return;
         }
         for &(cpu, _, strays, first) in &rs {

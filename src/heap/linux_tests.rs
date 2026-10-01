@@ -17,11 +17,17 @@ fn fill(p: *mut u8, n: usize, v: u8) {
 
 fn check(p: *mut u8, n: usize, v: u8) {
     let s = unsafe { core::slice::from_raw_parts(p, n) };
-    assert!(s.iter().all(|&b| b == v), "memory at {:#x} is not all {v:#x}", p as usize);
+    assert!(
+        s.iter().all(|&b| b == v),
+        "memory at {:#x} is not all {v:#x}",
+        p as usize
+    );
 }
 
 fn is_zero(p: *mut u8, n: usize) -> bool {
-    unsafe { core::slice::from_raw_parts(p, n) }.iter().all(|&b| b == 0)
+    unsafe { core::slice::from_raw_parts(p, n) }
+        .iter()
+        .all(|&b| b == 0)
 }
 
 #[test]
@@ -58,7 +64,10 @@ fn heap_is_created_on_first_use_through_tls() {
         check(p, CLASSES[c].size(), 0xa5);
         free(s, p);
         free(s, q);
-        assert_eq!(unsafe { &*hp }.stats().deallocated, 2 * CLASSES[c].size() as u64);
+        assert_eq!(
+            unsafe { &*hp }.stats().deallocated,
+            2 * CLASSES[c].size() as u64
+        );
     })
     .join()
     .unwrap();
@@ -88,13 +97,20 @@ fn calloc_flag_is_honest_about_memory() {
             let (r, zero) = alloc_zeroed(s, c);
             assert!(!r.is_null());
             if zero {
-                assert!(is_zero(r, size), "{:#x} flagged zero but is not", r as usize);
+                assert!(
+                    is_zero(r, size),
+                    "{:#x} flagged zero but is not",
+                    r as usize
+                );
                 zeros += 1;
             }
             fill(r, size, 0x11);
         }
         let refill = default_cap(c) as usize / 2;
-        assert!(zeros >= refill - 1 && zeros < 3000, "{zeros} zero-flagged of 3000");
+        assert!(
+            zeros >= refill - 1 && zeros < 3000,
+            "{zeros} zero-flagged of 3000"
+        );
     })
     .join()
     .unwrap();
@@ -135,7 +151,10 @@ fn thread_exit_flushes_and_frees_the_heap() {
     assert_eq!(live(s, c), leaked.load(Ordering::Relaxed));
     // Heaps and caches went back to the metadata allocator.
     assert_eq!(s.meta.stats().allocated, meta_before);
-    assert_eq!(s.arena0.classes[c].desc(0).state(), crate::slab::State::Active);
+    assert_eq!(
+        s.arena0.classes[c].desc(0).state(),
+        crate::slab::State::Active
+    );
 }
 
 #[test]
@@ -173,7 +192,10 @@ fn creating_and_exited_sentinels_are_served_directly() {
         // direct without creating another heap.
         let key = s.thread_key().expect("key");
         assert_eq!(unsafe { libc::pthread_getspecific(key) }, h);
-        assert_eq!(unsafe { libc::pthread_setspecific(key, core::ptr::null()) }, 0);
+        assert_eq!(
+            unsafe { libc::pthread_setspecific(key, core::ptr::null()) },
+            0
+        );
         unsafe { heap_destructor(h) };
         assert_eq!(tls::get() as usize, TLS_EXITED);
         assert_eq!(s.meta.stats().allocated, meta_before);
@@ -198,15 +220,28 @@ fn creating_and_exited_sentinels_are_served_directly() {
 #[test]
 fn pac_flag_follows_the_probe_and_the_key() {
     let s = shared();
-    assert_eq!(s.pac(), pac::available(), "pac_pointers:true is the probe's answer");
+    assert_eq!(
+        s.pac(),
+        pac::available(),
+        "pac_pointers:true is the probe's answer"
+    );
     assert_eq!(s.push_flags() & PUSH_PAC != 0, s.pac());
     assert!(!Config::DEFAULT.pac_pointers, "opt-in");
-    let off = TestShared::with(Config { narenas: 1, ..Config::DEFAULT }).build();
+    let off = TestShared::with(Config {
+        narenas: 1,
+        ..Config::DEFAULT
+    })
+    .build();
     assert!(!off.pac(), "the default configuration signs nothing");
     assert_eq!(off.push_flags(), 0);
     #[cfg(target_arch = "x86_64")]
     assert!(!s.pac());
-    std::eprintln!("pac: available={} on={} fpac={}", pac::available(), s.pac(), pac::fpac());
+    std::eprintln!(
+        "pac: available={} on={} fpac={}",
+        pac::available(),
+        s.pac(),
+        pac::fpac()
+    );
 }
 
 /// The fallback direction (a `Heap::flush` that ran `pac::mask`'s
@@ -223,7 +258,10 @@ fn pac_flag_follows_the_probe_and_the_key() {
 /// lacks it.
 #[test]
 fn heap_off_pac_executes_no_pac_instruction() {
-    for (forced_off, s) in [(true, TestShared::new().pac(false).build()), (false, shared())] {
+    for (forced_off, s) in [
+        (true, TestShared::new().pac(false).build()),
+        (false, shared()),
+    ] {
         assert_eq!(s.pac(), !forced_off && pac::available());
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0);
@@ -250,7 +288,10 @@ fn heap_off_pac_executes_no_pac_instruction() {
             let ops = pac::test_ops() - before;
             let expect_some = !forced_off && pac::available();
             if (ops == 0) != !expect_some {
-                std::eprintln!("pac: forced_off={forced_off} executed {ops} PAC instructions, expected {}", if expect_some { "some" } else { "none" });
+                std::eprintln!(
+                    "pac: forced_off={forced_off} executed {ops} PAC instructions, expected {}",
+                    if expect_some { "some" } else { "none" }
+                );
                 unsafe { libc::_exit(1) };
             }
             unsafe { libc::_exit(0) };
@@ -261,7 +302,11 @@ fn heap_off_pac_executes_no_pac_instruction() {
             libc::WIFEXITED(status) && libc::WEXITSTATUS(status) == 0,
             "forced_off={forced_off}: child status {status:#x} (a signal here is the Altra SIGILL)"
         );
-        std::eprintln!("pac: forced_off={forced_off} available={} on={}: no unexpected PAC instruction", pac::available(), s.pac());
+        std::eprintln!(
+            "pac: forced_off={forced_off} available={} on={}: no unexpected PAC instruction",
+            pac::available(),
+            s.pac()
+        );
     }
 }
 
@@ -288,14 +333,27 @@ fn cache_entries_and_the_tls_heap_pointer_are_signed() {
         let stored = k.cached();
         assert!(stored.len() >= 8);
         let plain: Vec<*mut u8> = stored.iter().map(|&e| k.plain(e, true)).collect();
-        assert_eq!(&plain[plain.len() - 8..], &ps[..], "the last eight pushes, bottom first");
+        assert_eq!(
+            &plain[plain.len() - 8..],
+            &ps[..],
+            "the last eight pushes, bottom first"
+        );
         for (&e, &p) in stored.iter().zip(&plain) {
-            assert_eq!(pac::strip(e as usize), p as usize, "entry strips to its slot");
+            assert_eq!(
+                pac::strip(e as usize),
+                p as usize,
+                "entry strips to its slot"
+            );
             assert!(p as usize >> 48 == 0, "plain pointers are canonical");
         }
         // Every entry carries a PAC; with a 7-bit PAC the chance that
         // all eight are zero is 2^-56.
-        assert!(stored[stored.len() - 8..].iter().zip(&plain[plain.len() - 8..]).any(|(&e, &p)| e != p));
+        assert!(
+            stored[stored.len() - 8..]
+                .iter()
+                .zip(&plain[plain.len() - 8..])
+                .any(|(&e, &p)| e != p)
+        );
         // The TLS slot: signed heap pointer, thread pointer as modifier.
         let (raw, tp) = tls::get_tp();
         assert_eq!(pac::strip(raw as usize), hp as usize);
@@ -344,7 +402,8 @@ fn corrupted_cache_entry_or_heap_pointer_faults() {
         let bit = (12..40)
             .map(|b| 1usize << b)
             .find(|&b| {
-                pac::sign((p as usize) ^ b, slots as usize) != top ^ b && pac::sign((hp as usize) ^ b, tp) != raw ^ b
+                pac::sign((p as usize) ^ b, slots as usize) != top ^ b
+                    && pac::sign((hp as usize) ^ b, tp) != raw ^ b
             })
             .expect("a bit that changes both PACs");
         for target in ["entry", "tls"] {
@@ -365,14 +424,24 @@ fn corrupted_cache_entry_or_heap_pointer_faults() {
             }
             let mut status = 0;
             assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
-            assert!(libc::WIFSIGNALED(status), "{target}: the child survived a corrupted pointer: status {status:#x}");
+            assert!(
+                libc::WIFSIGNALED(status),
+                "{target}: the child survived a corrupted pointer: status {status:#x}"
+            );
             let sig = libc::WTERMSIG(status);
             if pac::fpac() {
                 assert_eq!(sig, libc::SIGILL, "{target}: FEAT_FPAC faults at the autda");
             } else {
-                assert_eq!(sig, libc::SIGSEGV, "{target}: the non-canonical pointer faults on use");
+                assert_eq!(
+                    sig,
+                    libc::SIGSEGV,
+                    "{target}: the non-canonical pointer faults on use"
+                );
             }
-            std::eprintln!("pac: corrupted {target} -> signal {sig} (fpac={})", pac::fpac());
+            std::eprintln!(
+                "pac: corrupted {target} -> signal {sig} (fpac={})",
+                pac::fpac()
+            );
         }
         // The parent's cache is intact.
         assert_eq!(alloc(s, c), p);
@@ -413,7 +482,10 @@ fn producer_consumer_across_threads_with_patterns() {
 #[test]
 fn eight_threads_hammer_disjoint_pointers() {
     let s = shared();
-    let classes: Vec<usize> = [16usize, 64, 320, 2048].iter().map(|&n| class_of(n).unwrap()).collect();
+    let classes: Vec<usize> = [16usize, 64, 320, 2048]
+        .iter()
+        .map(|&n| class_of(n).unwrap())
+        .collect();
     let mut handles = Vec::new();
     for t in 0..8u64 {
         let classes = classes.clone();
@@ -490,19 +562,29 @@ fn changed_arena_child() {
     }
     extern "C" fn on_segv(_: i32, info: *mut libc::siginfo_t, _: *mut c_void) {
         let addr = unsafe { (*info).si_addr() } as usize;
-        let (lo, hi) = (FLIP_LO.load(Ordering::Relaxed), FLIP_HI.load(Ordering::Relaxed));
+        let (lo, hi) = (
+            FLIP_LO.load(Ordering::Relaxed),
+            FLIP_HI.load(Ordering::Relaxed),
+        );
         if FLIP_DONE.swap(1, Ordering::Relaxed) != 0 || addr < lo || addr >= hi {
             unsafe { libc::_exit(3) };
         }
         let s = unsafe { &*(FLIP_SHARED.load(Ordering::Relaxed) as *const Shared) };
         let class = FLIP_CLASS.load(Ordering::Relaxed);
-        s.table(class).corrupt_owner_word(&s.meta, FLIP_GROUP.load(Ordering::Relaxed), 1);
+        s.table(class)
+            .corrupt_owner_word(&s.meta, FLIP_GROUP.load(Ordering::Relaxed), 1);
         let (base, len) = page_span(lo, hi);
-        if unsafe { libc::mprotect(base as *mut c_void, len, libc::PROT_READ | libc::PROT_WRITE) } != 0 {
+        if unsafe { libc::mprotect(base as *mut c_void, len, libc::PROT_READ | libc::PROT_WRITE) }
+            != 0
+        {
             unsafe { libc::_exit(4) };
         }
     }
-    let s = TestShared::with(Config { narenas: 1, ..Config::DEFAULT }).build();
+    let s = TestShared::with(Config {
+        narenas: 1,
+        ..Config::DEFAULT
+    })
+    .build();
     assert_eq!(s.arenas.create(s), Some(1));
     let c = class_of(64).unwrap();
     let (a0, a1) = (s.arena(0).unwrap(), s.arena(1).unwrap());
@@ -532,7 +614,10 @@ fn changed_arena_child() {
         assert_eq!(libc::mprotect(base as *mut c_void, len, libc::PROT_READ), 0);
     }
     s.release_routed(1, c, &[p1, p0]);
-    std::eprintln!("release_routed returned (handler ran: {})", FLIP_DONE.load(Ordering::Relaxed));
+    std::eprintln!(
+        "release_routed returned (handler ran: {})",
+        FLIP_DONE.load(Ordering::Relaxed)
+    );
     unsafe { libc::_exit(5) };
 }
 
@@ -542,12 +627,23 @@ fn changed_arena_child() {
 #[test]
 fn changed_arena_during_a_flush_aborts() {
     let out = std::process::Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "heap::linux_tests::changed_arena_child", "--nocapture", "--test-threads=1"])
+        .args([
+            "--exact",
+            "heap::linux_tests::changed_arena_child",
+            "--nocapture",
+            "--test-threads=1",
+        ])
         .env(CHANGED_ARENA_ENV, "1")
         .output()
         .unwrap();
     let err = std::string::String::from_utf8_lossy(&out.stderr);
-    let msg = std::format!("heap: slab of class {} changed arena 1 during a flush", class_of(64).unwrap());
-    assert!(!out.status.success() && err.contains(&msg), "status {:?}, stderr: {err}", out.status);
+    let msg = std::format!(
+        "heap: slab of class {} changed arena 1 during a flush",
+        class_of(64).unwrap()
+    );
+    assert!(
+        !out.status.success() && err.contains(&msg),
+        "status {:?}, stderr: {err}",
+        out.status
+    );
 }
-

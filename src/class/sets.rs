@@ -20,14 +20,22 @@ pub(crate) struct Lazy {
 
 impl Lazy {
     /// A table of no bytes: `ensure` is a no-op on it.
-    pub(crate) const EMPTY: Lazy = Lazy { base: 0, len: 0, committed: 0 };
+    pub(crate) const EMPTY: Lazy = Lazy {
+        base: 0,
+        len: 0,
+        committed: 0,
+    };
 
     pub(crate) fn reserve(meta: &Meta, len: usize, align: usize) -> Option<Lazy> {
         // With metadata THP on (`thp.rs`) the table starts on a folio
         // boundary, so the rounded commits of `ensure` cover whole aligned
         // folios and the kernel can map them as such.
         let base = meta.reserve_table(len, align.max(crate::thp::meta_folio_size()))?;
-        Some(Lazy { base, len, committed: 0 })
+        Some(Lazy {
+            base,
+            len,
+            committed: 0,
+        })
     }
 
     /// Make the first `upto` bytes committed.
@@ -70,7 +78,11 @@ impl Set {
         table.ensure(meta, page, 8 * l1_words).ok()?;
         // SAFETY: the words come from a fresh, zero, never-freed reservation.
         let map = unsafe { TwoLevelBitmap::from_raw(nslabs, table.base as *mut u64) };
-        Some(Set { map, store: Store::Own(table), l1_words })
+        Some(Set {
+            map,
+            store: Store::Own(table),
+            l1_words,
+        })
     }
 
     /// Set `kind` (0..`SETS_PER_CLASS`) of `class` in `table`, over the
@@ -85,8 +97,18 @@ impl Set {
         // disjoint from every other slot's, zero, never freed; the rows a
         // slab's bit needs are committed by `ensure` before the class
         // touches it (`take_group`).
-        let map = unsafe { TwoLevelBitmap::from_raw_chunked(nslabs, (group.base + 8 * slot) as *mut u64, group.stride) };
-        Set { map, store: Store::Shared(table, g as u8), l1_words: TwoLevelBitmap::l1_words(nslabs) }
+        let map = unsafe {
+            TwoLevelBitmap::from_raw_chunked(
+                nslabs,
+                (group.base + 8 * slot) as *mut u64,
+                group.stride,
+            )
+        };
+        Set {
+            map,
+            store: Store::Shared(table, g as u8),
+            l1_words: TwoLevelBitmap::l1_words(nslabs),
+        }
     }
 
     /// Commit the level-0 words that hold every bit up to and including
@@ -152,7 +174,11 @@ impl SetTable {
     /// `ensure`). `None` if the metadata region cannot hold them.
     pub fn new(meta: &Meta, regions: &Regions) -> Option<SetTable> {
         let page = regions.page_size();
-        let mut groups = [Group { base: 0, stride: 0, count: 0 }; SET_GROUPS];
+        let mut groups = [Group {
+            base: 0,
+            stride: 0,
+            count: 0,
+        }; SET_GROUPS];
         let mut nslabs = [0usize; SET_GROUPS];
         let mut pos = [0u8; NCLASSES];
         for c in 0..NCLASSES {
@@ -171,7 +197,13 @@ impl SetTable {
             tables[g] = Lazy::reserve(meta, 8 * rows * groups[g].stride, page)?;
             groups[g].base = tables[g].base;
         }
-        Some(SetTable { groups, nslabs, pos, tables: Lock::new(tables), page })
+        Some(SetTable {
+            groups,
+            nslabs,
+            pos,
+            tables: Lock::new(tables),
+            page,
+        })
     }
 
     /// Commit the rows of group `g` up to the level-0 word of `slab` (and

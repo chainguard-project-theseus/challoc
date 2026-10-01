@@ -65,7 +65,11 @@ impl<'a> AtomicBitmap<'a> {
     /// [`init`]: AtomicBitmap::init
     #[inline]
     pub fn from_words(words: &'a [AtomicU64]) -> AtomicBitmap<'a> {
-        AtomicBitmap { words, shift: 0, mask: !0 }
+        AtomicBitmap {
+            words,
+            shift: 0,
+            mask: !0,
+        }
     }
 
     /// View bits `shift .. shift + nbits` of `word` as the bitmap of a slab
@@ -74,7 +78,11 @@ impl<'a> AtomicBitmap<'a> {
     #[inline]
     pub fn sub_word(word: &'a AtomicU64, shift: u32, nbits: usize) -> AtomicBitmap<'a> {
         debug_assert!(nbits > 0 && nbits < 64 && shift as usize + nbits <= 64);
-        AtomicBitmap { words: core::slice::from_ref(word), shift, mask: ((1u64 << nbits) - 1) << shift }
+        AtomicBitmap {
+            words: core::slice::from_ref(word),
+            shift,
+            mask: ((1u64 << nbits) - 1) << shift,
+        }
     }
 
     /// Number of words in the view (1 for a sub-word slab).
@@ -86,7 +94,11 @@ impl<'a> AtomicBitmap<'a> {
     /// Bits the slab owns, padding included.
     #[inline]
     pub fn nbits(&self) -> usize {
-        if self.mask == !0 { self.words.len() * 64 } else { self.mask.count_ones() as usize }
+        if self.mask == !0 {
+            self.words.len() * 64
+        } else {
+            self.mask.count_ones() as usize
+        }
     }
 
     /// Clear every bit for slots `0..nbits` and set the padding bits above
@@ -94,7 +106,10 @@ impl<'a> AtomicBitmap<'a> {
     /// `nbits` must be non-zero and fit the view. Atomic on a shared word,
     /// so a neighbouring slab that is already active is not disturbed.
     pub fn init(&self, nbits: usize) {
-        assert!(nbits > 0 && nbits <= self.nbits(), "bitmap: nbits does not match the view");
+        assert!(
+            nbits > 0 && nbits <= self.nbits(),
+            "bitmap: nbits does not match the view"
+        );
         if self.mask == !0 {
             for (i, w) in self.words.iter().enumerate() {
                 let lo = i * 64;
@@ -174,7 +189,10 @@ impl<'a> AtomicBitmap<'a> {
         let m = mask << self.shift;
         assert!(m & !self.mask == 0, "bitmap: release outside the slab");
         let prev = self.words[i].fetch_and(!m, Ordering::Release);
-        ((prev & self.mask) >> self.shift, prev & self.mask == self.mask)
+        (
+            (prev & self.mask) >> self.shift,
+            prev & self.mask == self.mask,
+        )
     }
 
     /// Whether slot `bit` is set. This is the `free` check: a clear bit
@@ -195,18 +213,25 @@ impl<'a> AtomicBitmap<'a> {
     /// Set slot bits, padding excluded: the slab's allocated (or cached)
     /// slots for a class with `nslots` real slots.
     pub fn allocated(&self, nslots: usize) -> usize {
-        let set: usize = (0..self.words.len()).map(|w| self.load(w).count_ones() as usize).sum();
+        let set: usize = (0..self.words.len())
+            .map(|w| self.load(w).count_ones() as usize)
+            .sum();
         let padding = self.nbits() - nslots;
         // Fewer set bits than padding bits means a padding bit was cleared:
         // a release outside the slab's real slots.
-        assert!(set >= padding, "bitmap: a padding bit of the slab was cleared");
+        assert!(
+            set >= padding,
+            "bitmap: a padding bit of the slab was cleared"
+        );
         set - padding
     }
 
     /// Whether every bit, padding included, is set. A full slab leaves the
     /// partial set (design section 5).
     pub fn is_full(&self) -> bool {
-        self.words.iter().all(|w| w.load(Ordering::Relaxed) & self.mask == self.mask)
+        self.words
+            .iter()
+            .all(|w| w.load(Ordering::Relaxed) & self.mask == self.mask)
     }
 }
 
@@ -258,7 +283,15 @@ impl TwoLevelBitmap {
     /// accessed by anything else while the set exists.
     pub const unsafe fn from_raw(nbits: usize, ptr: *mut u64) -> TwoLevelBitmap {
         let l0_words = nbits.div_ceil(64);
-        TwoLevelBitmap { nbits, l0_words, l1_words: l0_words.div_ceil(64), l1_used: 0, ptr, stride: 1, chunked: false }
+        TwoLevelBitmap {
+            nbits,
+            l0_words,
+            l1_words: l0_words.div_ceil(64),
+            l1_used: 0,
+            ptr,
+            stride: 1,
+            chunked: false,
+        }
     }
 
     /// Build a chunked view over `0..nbits` (struct doc): row `r` of the
@@ -272,10 +305,22 @@ impl TwoLevelBitmap {
     /// for as long as the set is used, zeroed, and not accessed by anything
     /// else while the set exists. Words between the view's own are
     /// somebody else's.
-    pub const unsafe fn from_raw_chunked(nbits: usize, ptr: *mut u64, stride: usize) -> TwoLevelBitmap {
+    pub const unsafe fn from_raw_chunked(
+        nbits: usize,
+        ptr: *mut u64,
+        stride: usize,
+    ) -> TwoLevelBitmap {
         let l0_words = nbits.div_ceil(64);
         debug_assert!(stride >= 1);
-        TwoLevelBitmap { nbits, l0_words, l1_words: l0_words.div_ceil(64), l1_used: 0, ptr, stride, chunked: true }
+        TwoLevelBitmap {
+            nbits,
+            l0_words,
+            l1_words: l0_words.div_ceil(64),
+            l1_used: 0,
+            ptr,
+            stride,
+            chunked: true,
+        }
     }
 
     /// Level-1 words a set over `0..nbits` has.
@@ -296,13 +341,21 @@ impl TwoLevelBitmap {
     /// Offset in words of level-1 word `j`.
     #[inline]
     fn l1_off(&self, j: usize) -> usize {
-        if self.chunked { 65 * j * self.stride } else { j }
+        if self.chunked {
+            65 * j * self.stride
+        } else {
+            j
+        }
     }
 
     /// Offset in words of level-0 word `w`.
     #[inline]
     fn l0_off(&self, w: usize) -> usize {
-        if self.chunked { Self::chunked_l0_row(w) * self.stride } else { self.l1_words + w }
+        if self.chunked {
+            Self::chunked_l0_row(w) * self.stride
+        } else {
+            self.l1_words + w
+        }
     }
 
     /// Tests: number of bits in the set's universe.
@@ -386,7 +439,11 @@ impl TwoLevelBitmap {
             let w = bit / 64;
             let lo = bit % 64;
             let hi = (end - w * 64).min(64);
-            let mask = if hi - lo == 64 { !0 } else { ((1u64 << (hi - lo)) - 1) << lo };
+            let mask = if hi - lo == 64 {
+                !0
+            } else {
+                ((1u64 << (hi - lo)) - 1) << lo
+            };
             *self.l0_mut(w) |= mask;
             *self.l1_mut(w / 64) |= 1u64 << (w % 64);
             if w / 64 >= self.l1_used {
@@ -406,7 +463,11 @@ impl TwoLevelBitmap {
             let w = bit / 64;
             let lo = bit % 64;
             let hi = (end - w * 64).min(64);
-            let mask = if hi - lo == 64 { !0 } else { ((1u64 << (hi - lo)) - 1) << lo };
+            let mask = if hi - lo == 64 {
+                !0
+            } else {
+                ((1u64 << (hi - lo)) - 1) << lo
+            };
             let word = self.l0_mut(w);
             *word &= !mask;
             if *word == 0 {
@@ -673,8 +734,9 @@ mod tests {
         for nbits in [4usize, 8, 16, 32] {
             let word = AtomicU64::new(0);
             let nslots = nbits - nbits / 4; // some padding in every slab
-            let views: Vec<AtomicBitmap> =
-                (0..64 / nbits).map(|k| AtomicBitmap::sub_word(&word, (k * nbits) as u32, nbits)).collect();
+            let views: Vec<AtomicBitmap> = (0..64 / nbits)
+                .map(|k| AtomicBitmap::sub_word(&word, (k * nbits) as u32, nbits))
+                .collect();
             for v in &views {
                 v.init(nslots);
                 assert_eq!(v.words(), 1);
@@ -710,7 +772,11 @@ mod tests {
             let (prev, was_full) = v.release(0, 0b10);
             assert!(!was_full);
             assert_eq!(prev & 0b10, 0b10);
-            assert_eq!(v.release(0, 0b10).0 & 0b10, 0, "double release must be detectable");
+            assert_eq!(
+                v.release(0, 0b10).0 & 0b10,
+                0,
+                "double release must be detectable"
+            );
             // Re-init of slab 1 leaves the others alone and clears it.
             views[0].claim(3);
             v.init(nslots);
@@ -718,7 +784,11 @@ mod tests {
             assert_eq!(views[0].allocated(nslots), 3);
             let whole = word.load(Ordering::Relaxed);
             for (k, o) in views.iter().enumerate() {
-                assert_eq!((whole >> (k * nbits)) & ((1u64 << nbits) - 1), o.load(0), "slab {k}");
+                assert_eq!(
+                    (whole >> (k * nbits)) & ((1u64 << nbits) - 1),
+                    o.load(0),
+                    "slab {k}"
+                );
             }
         }
     }
@@ -774,7 +844,11 @@ mod tests {
                 }
                 assert_eq!(bm.is_full(), model.iter().all(|b| *b));
                 assert_eq!(bm.allocated(nslots), model.iter().filter(|b| **b).count());
-                assert_eq!(word.load(Ordering::Relaxed) & !bm.mask, before, "neighbour bits changed");
+                assert_eq!(
+                    word.load(Ordering::Relaxed) & !bm.mask,
+                    before,
+                    "neighbour bits changed"
+                );
             }
         }
     }
@@ -804,7 +878,8 @@ mod tests {
                 thread::spawn(move || {
                     let id = t as u8 + 1;
                     let bm = AtomicBitmap::from_words(&words);
-                    let mut s = 0x1234_5678_9ABC_DEF0u64 ^ (t as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+                    let mut s = 0x1234_5678_9ABC_DEF0u64
+                        ^ (t as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
                     let mut owned: Vec<usize> = Vec::new();
                     let mut claimed = 0u64;
                     for _ in 0..ROUNDS {
@@ -868,7 +943,10 @@ mod tests {
         // SAFETY: the vector is zeroed, sized by `words_needed`, and lives
         // exactly as long as the bitmap in the same struct.
         let bm = unsafe { TwoLevelBitmap::from_raw(nbits, storage.as_mut_ptr()) };
-        Owned { _storage: storage, bm }
+        Owned {
+            _storage: storage,
+            bm,
+        }
     }
 
     #[test]
@@ -905,7 +983,10 @@ mod tests {
         bm.clear(4999);
         assert_eq!(bm.l1_used, 2);
         bm.clear(4100);
-        assert_eq!(bm.l1_used, 1, "used prefix shrinks when the top word empties");
+        assert_eq!(
+            bm.l1_used, 1,
+            "used prefix shrinks when the top word empties"
+        );
         bm.clear(4100); // no-op
         assert_eq!(bm.lowest_set(), Some(70));
         bm.clear(70);
@@ -980,13 +1061,25 @@ mod tests {
                 }
                 _ => {
                     let from = (xorshift(&mut s) as usize) % (nbits + 2);
-                    let expect = models[v].iter().skip(from).position(|b| *b).map(|p| p + from);
-                    assert_eq!(views[v].lowest_set_from(from), expect, "view {v} from={from}");
+                    let expect = models[v]
+                        .iter()
+                        .skip(from)
+                        .position(|b| *b)
+                        .map(|p| p + from);
+                    assert_eq!(
+                        views[v].lowest_set_from(from),
+                        expect,
+                        "view {v} from={from}"
+                    );
                     assert_eq!(dense[v].bm.lowest_set_from(from), expect);
                 }
             }
             assert_eq!(views[v].is_set(bit), models[v][bit]);
-            assert_eq!(views[v].lowest_set(), models[v].iter().position(|b| *b), "view {v}");
+            assert_eq!(
+                views[v].lowest_set(),
+                models[v].iter().position(|b| *b),
+                "view {v}"
+            );
             assert_eq!(views[v].l1_used, dense[v].bm.l1_used, "view {v}");
         }
         for (v, m) in models.iter().enumerate() {
@@ -1003,7 +1096,11 @@ mod tests {
         drop(views);
         for v in 0..stride {
             assert_ne!(storage[v] & 1, 0, "view {v} level-1 word 0 in row 0");
-            assert_ne!(storage[stride + v] & 1, 0, "view {v} level-0 word 0 in row 1");
+            assert_ne!(
+                storage[stride + v] & 1,
+                0,
+                "view {v} level-0 word 0 in row 1"
+            );
         }
     }
 
@@ -1035,11 +1132,19 @@ mod tests {
                     _ => {
                         let from = (xorshift(&mut s) as usize) % (nbits + 2);
                         let expect = model.iter().skip(from).position(|b| *b).map(|p| p + from);
-                        assert_eq!(o.bm.lowest_set_from(from), expect, "nbits={nbits} from={from}");
+                        assert_eq!(
+                            o.bm.lowest_set_from(from),
+                            expect,
+                            "nbits={nbits} from={from}"
+                        );
                     }
                 }
                 assert_eq!(o.bm.is_set(bit), model[bit]);
-                assert_eq!(o.bm.lowest_set(), model.iter().position(|b| *b), "nbits={nbits}");
+                assert_eq!(
+                    o.bm.lowest_set(),
+                    model.iter().position(|b| *b),
+                    "nbits={nbits}"
+                );
                 assert_eq!(o.bm.is_empty(), !model.iter().any(|b| *b));
                 // The used prefix bound is tight: nothing above it is set.
                 if let Some(hi) = model.iter().rposition(|b| *b) {
@@ -1075,7 +1180,11 @@ mod tests {
                         *b = false;
                     }
                 }
-                assert_eq!(o.bm.lowest_set(), model.iter().position(|b| *b), "nbits={nbits}");
+                assert_eq!(
+                    o.bm.lowest_set(),
+                    model.iter().position(|b| *b),
+                    "nbits={nbits}"
+                );
                 let from = (xorshift(&mut s) as usize) % (nbits + 1);
                 let expect = model.iter().skip(from).position(|b| *b).map(|p| p + from);
                 assert_eq!(o.bm.lowest_set_from(from), expect);
@@ -1091,7 +1200,6 @@ mod tests {
         }
     }
 
-
     #[test]
     #[should_panic(expected = "release outside the slab")]
     fn a_release_outside_the_sub_word_view_aborts() {
@@ -1101,7 +1209,6 @@ mod tests {
         // Slab coordinates: bit 8 of an 8-bit view is the next slab's.
         v.release(0, 1 << 8);
     }
-
 
     #[test]
     #[should_panic(expected = "padding bit of the slab was cleared")]

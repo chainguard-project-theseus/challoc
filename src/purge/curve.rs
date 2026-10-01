@@ -76,7 +76,11 @@ impl Curve {
         // `rust_eh_personality` into the `no_std` library. An age too large
         // to scale is under a period whose step is at least `u64::MAX /
         // STEPS`, so dividing by the step loses nothing that matters.
-        let s = if age > u64::MAX / STEPS as u64 { age / self.step_ns() } else { age * STEPS as u64 / self.decay_ns };
+        let s = if age > u64::MAX / STEPS as u64 {
+            age / self.step_ns()
+        } else {
+            age * STEPS as u64 / self.decay_ns
+        };
         (s as usize).min(STEPS - 1)
     }
 
@@ -120,7 +124,10 @@ mod tests {
         for s in 0..STEPS - 1 {
             let mirror = STEPS - 2 - s;
             let sum = WEIGHTS[s] as u64 + WEIGHTS[mirror] as u64;
-            assert!(sum.abs_diff(WEIGHT_ONE) <= 1, "steps {s} and {mirror}: {sum}");
+            assert!(
+                sum.abs_diff(WEIGHT_ONE) <= 1,
+                "steps {s} and {mirror}: {sum}"
+            );
         }
         // A quarter of the way in, 1 - smootherstep(0.25) = 0.896...
         let q = WEIGHTS[STEPS / 4 - 1] as f64 / WEIGHT_ONE as f64;
@@ -168,7 +175,10 @@ mod tests {
         assert_eq!(decay_ns_from_ms(-1000), NEVER);
         assert_eq!(decay_ns_from_ms(0), 0);
         assert_eq!(decay_ns_from_ms(10_000), 10_000_000_000);
-        assert_eq!(decay_ns_from_ms(crate::config::MAX_INTERVAL_MS), 1_000_000_000_000_000_000);
+        assert_eq!(
+            decay_ns_from_ms(crate::config::MAX_INTERVAL_MS),
+            1_000_000_000_000_000_000
+        );
         assert_ne!(decay_ns_from_ms(i64::MAX), NEVER);
     }
 }

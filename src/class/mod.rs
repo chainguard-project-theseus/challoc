@@ -82,12 +82,15 @@ mod table;
 mod tests;
 mod verify;
 
+use abort::{
+    double_free, guard_free, owner_mismatch, release_into_fresh_slab, reservation_unmet,
+    wrong_arena, zero_slab_had_bits_set,
+};
 #[cfg(test)]
 pub use sets::SET_GROUPS;
-pub use sets::SetTable;
 pub(crate) use sets::Set;
+pub use sets::SetTable;
 pub use table::SlabTable;
-use abort::{double_free, guard_free, owner_mismatch, release_into_fresh_slab, reservation_unmet, wrong_arena, zero_slab_had_bits_set};
 use verify::{fresh_with_live, release_into_fresh};
 
 /// Counters kept under the class lock. Slab counts only; `curregs` and
@@ -302,7 +305,12 @@ impl Pick {
     /// `claim_with` spells the same literal out: written as this const
     /// there, the array fill compiles to one instruction fewer
     /// (`scripts/codegen-diff.sh`), which is a code change, not a cleanup.
-    const EMPTY: Pick = Pick { slab: 0, n: 0, zero: false, state: State::Active };
+    const EMPTY: Pick = Pick {
+        slab: 0,
+        n: 0,
+        zero: false,
+        state: State::Active,
+    };
 }
 
 /// Slabs a release batch must put back in the partial set. Consecutive
@@ -409,7 +417,8 @@ pub struct ClassState {
 }
 
 const _: () = assert!(core::mem::offset_of!(ClassState, inner) == PAD_ALIGN);
-const _: () = assert!(core::mem::offset_of!(ClassState, gate) + core::mem::size_of::<Decayer>() <= PAD_ALIGN);
+const _: () =
+    assert!(core::mem::offset_of!(ClassState, gate) + core::mem::size_of::<Decayer>() <= PAD_ALIGN);
 const _: () = assert!(core::mem::offset_of!(ClassState, claimed) % PAD_ALIGN == 0);
 const _: () = assert!(core::mem::size_of::<ClassState>() % PAD_ALIGN == 0);
 const _: () = assert!(core::mem::size_of::<ClassState>() % 512 != 0);
@@ -449,7 +458,10 @@ impl Inner {
 
     /// `slab` into the empty set (it went `Empty`).
     fn empty_add(&mut self, slab: usize) {
-        debug_assert!(!self.empty.map.is_set(slab), "empty_add: slab {slab} already in the empty set");
+        debug_assert!(
+            !self.empty.map.is_set(slab),
+            "empty_add: slab {slab} already in the empty set"
+        );
         self.empty.map.set(slab);
         self.stats.empty += 1;
     }
@@ -458,16 +470,26 @@ impl Inner {
     /// spell the pair out (`next_slab`, `purge_group`).
     #[cfg(test)]
     fn empty_take(&mut self, slab: usize) {
-        debug_assert!(self.empty.map.is_set(slab), "empty_take: slab {slab} not in the empty set");
+        debug_assert!(
+            self.empty.map.is_set(slab),
+            "empty_take: slab {slab} not in the empty set"
+        );
         self.empty.map.clear(slab);
-        self.stats.empty = self.stats.empty.checked_sub(1).unwrap_or_else(|| abort::slab_count_underflow("empty"));
+        self.stats.empty = self
+            .stats
+            .empty
+            .checked_sub(1)
+            .unwrap_or_else(|| abort::slab_count_underflow("empty"));
     }
 
     /// `slab` into the purged set. Tests only: a purge spells the pair
     /// out (`purge_group`).
     #[cfg(test)]
     fn purged_add(&mut self, slab: usize) {
-        debug_assert!(!self.purged.map.is_set(slab), "purged_add: slab {slab} already in the purged set");
+        debug_assert!(
+            !self.purged.map.is_set(slab),
+            "purged_add: slab {slab} already in the purged set"
+        );
         self.purged.map.set(slab);
         self.stats.purged += 1;
     }
@@ -476,9 +498,16 @@ impl Inner {
     /// pair out (`next_slab`).
     #[cfg(test)]
     fn purged_take(&mut self, slab: usize) {
-        debug_assert!(self.purged.map.is_set(slab), "purged_take: slab {slab} not in the purged set");
+        debug_assert!(
+            self.purged.map.is_set(slab),
+            "purged_take: slab {slab} not in the purged set"
+        );
         self.purged.map.clear(slab);
-        self.stats.purged = self.stats.purged.checked_sub(1).unwrap_or_else(|| abort::slab_count_underflow("purged"));
+        self.stats.purged = self
+            .stats
+            .purged
+            .checked_sub(1)
+            .unwrap_or_else(|| abort::slab_count_underflow("purged"));
     }
 }
 
@@ -488,7 +517,13 @@ impl ClassState {
     /// pos[class]` of the class's set group, `Set::in_table`). `table` and
     /// `sets` must outlive the state. `meta` and `regions` are unused:
     /// the sets live in `sets`, the descriptors in `table`.
-    pub fn new(meta: &Meta, regions: &Regions, table: &SlabTable, arena: u16, sets: &SetTable) -> Option<ClassState> {
+    pub fn new(
+        meta: &Meta,
+        regions: &Regions,
+        table: &SlabTable,
+        arena: u16,
+        sets: &SetTable,
+    ) -> Option<ClassState> {
         let _ = (meta, regions);
         let class = table.class as usize;
         debug_assert_eq!(table.nslabs, sets.nslabs[SetTable::group_of(class)]);
@@ -615,15 +650,28 @@ impl ClassState {
     fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>) -> Claim {
         let mut got = 0;
         let mut zeroed = true;
-        let mut picks = [Pick { slab: 0, n: 0, zero: false, state: State::Active }; MAX_PICKS];
+        let mut picks = [Pick {
+            slab: 0,
+            n: 0,
+            zero: false,
+            state: State::Active,
+        }; MAX_PICKS];
         while got < out.len() {
             let np = self.plan(meta, out.len() - got, &mut picks);
             if np == 0 {
                 break;
             }
-            got += self.finish(&picks[..np], &mut out[got..], &mut zeroed, rng.as_deref_mut());
+            got += self.finish(
+                &picks[..np],
+                &mut out[got..],
+                &mut zeroed,
+                rng.as_deref_mut(),
+            );
         }
-        Claim { n: got, zeroed: got > 0 && zeroed }
+        Claim {
+            n: got,
+            zeroed: got > 0 && zeroed,
+        }
     }
 
     /// The unlocked half of a refill: write the slots of `picks` (one
@@ -642,7 +690,13 @@ impl ClassState {
     ///
     /// [`plan`]: ClassState::plan
     /// [`take`]: ClassState::take
-    fn finish(&self, picks: &[Pick], out: &mut [*mut u8], zeroed: &mut bool, mut rng: Option<&mut u64>) -> usize {
+    fn finish(
+        &self,
+        picks: &[Pick],
+        out: &mut [*mut u8],
+        zeroed: &mut bool,
+        mut rng: Option<&mut u64>,
+    ) -> usize {
         let cls = self.class();
         let check_zero = purge::check_zero();
         let mut got = 0;
@@ -679,7 +733,15 @@ impl ClassState {
                     empty_passes += 1;
                     if empty_passes == MAX_EMPTY_PASSES {
                         let d = self.desc(slab);
-                        reservation_unmet(self.class as usize, slab, want, k, d.live(), bm.allocated(cls.nslots()), cls.nslots());
+                        reservation_unmet(
+                            self.class as usize,
+                            slab,
+                            want,
+                            k,
+                            d.live(),
+                            bm.allocated(cls.nslots()),
+                            cls.nslots(),
+                        );
                     }
                     word = 0;
                     continue;
@@ -747,14 +809,33 @@ impl ClassState {
     /// lock, fix up its state and partial bit, and record the pick.
     /// Modelled at `model::Model::take`, inside the locked step
     /// `protocol::Refill::PlanLocked` of `model::Model::step_refill`.
-    fn take(&self, g: &mut Inner, slab: usize, remaining: &mut usize, picks: &mut [Pick; MAX_PICKS], np: &mut usize) {
+    fn take(
+        &self,
+        g: &mut Inner,
+        slab: usize,
+        remaining: &mut usize,
+        picks: &mut [Pick; MAX_PICKS],
+        np: &mut usize,
+    ) {
         let desc = self.desc(slab);
         let live = desc.live();
-        debug_assert_eq!(self.table().owner(slab), self.arena, "take: slab {slab} state {:?} live {live}", desc.state());
-        debug_assert_eq!(desc.arena(), self.arena, "take: slab {slab} descriptor arena");
+        debug_assert_eq!(
+            self.table().owner(slab),
+            self.arena,
+            "take: slab {slab} state {:?} live {live}",
+            desc.state()
+        );
+        debug_assert_eq!(
+            desc.arena(),
+            self.arena,
+            "take: slab {slab} descriptor arena"
+        );
         // `live > nslots` would reserve a wrapped count (the release
         // profile does not check overflow; the dev profile does).
-        assert!(live <= self.class().nslots(), "class: slab live count above its slot count");
+        assert!(
+            live <= self.class().nslots(),
+            "class: slab live count above its slot count"
+        );
         let avail = self.class().nslots() - live;
         let n = avail.min(*remaining);
         let state = desc.state();
@@ -762,7 +843,13 @@ impl ClassState {
             self.check_shadow(slab, "take");
             if state == State::Fresh {
                 if live != 0 {
-                    fresh_with_live(self.class as usize, slab, self.arena, desc, self.table().bits(slab).allocated(self.class().nslots()));
+                    fresh_with_live(
+                        self.class as usize,
+                        slab,
+                        self.arena,
+                        desc,
+                        self.table().bits(slab).allocated(self.class().nslots()),
+                    );
                 }
                 self.check_fresh_slab_is_zero(slab);
             }
@@ -773,7 +860,10 @@ impl ClassState {
         }
         desc.add_live(n);
         // Under the lock (`g`), so a plain load-add-store is exclusive.
-        self.claimed.store(self.claimed.load(Ordering::Relaxed).wrapping_add(n as u64), Ordering::Relaxed);
+        self.claimed.store(
+            self.claimed.load(Ordering::Relaxed).wrapping_add(n as u64),
+            Ordering::Relaxed,
+        );
         if live == 0 && n == avail {
             g.clear_partial(slab);
         } else {
@@ -785,7 +875,12 @@ impl ClassState {
         if zero {
             self.claim_prefix(slab, n, state, live);
         }
-        picks[*np] = Pick { slab: slab as u32, n: n as u32, zero, state };
+        picks[*np] = Pick {
+            slab: slab as u32,
+            n: n as u32,
+            zero,
+            state,
+        };
         *np += 1;
         *remaining -= n;
     }
@@ -810,7 +905,16 @@ impl ClassState {
             let expect = if want == 64 { !0 } else { (1u64 << want) - 1 };
             let got = bm.claim_word(w, want);
             if got != expect {
-                zero_slab_had_bits_set(self.class as usize, slab, self.arena, state, live, w, got, expect);
+                zero_slab_had_bits_set(
+                    self.class as usize,
+                    slab,
+                    self.arena,
+                    state,
+                    live,
+                    w,
+                    got,
+                    expect,
+                );
             }
             k += want;
             w += 1;
@@ -862,7 +966,12 @@ impl ClassState {
         if n != ptrs.len() {
             let p = ptrs[n];
             let (slab, _) = self.locate(p);
-            wrong_arena(p as usize, self.class as usize, self.table().owner(slab), self.arena);
+            wrong_arena(
+                p as usize,
+                self.class as usize,
+                self.table().owner(slab),
+                self.arena,
+            );
         }
     }
 
@@ -922,7 +1031,13 @@ impl ClassState {
                 }
                 let d = self.desc(slab);
                 if d.arena() != self.arena {
-                    owner_mismatch(self.class as usize, slab >> self.table().lg_group, slab, self.arena, d.arena());
+                    owner_mismatch(
+                        self.class as usize,
+                        slab >> self.table().lg_group,
+                        slab,
+                        self.arena,
+                        d.arena(),
+                    );
                 }
                 if d.state() == State::Fresh {
                     release_into_fresh_slab(p as usize, self.class as usize, slab);
@@ -955,7 +1070,15 @@ impl ClassState {
     /// Clear the bits `local[lo..=hi]` accumulated for `slab` (one atomic
     /// per non-zero word), zero them for the next slab, and take `count`
     /// off the slab's `live`.
-    fn release_slab(&self, slab: usize, local: &mut [u64; MAX_SLAB_WORDS], lo: usize, hi: usize, count: usize, reopen: &mut Reopen) {
+    fn release_slab(
+        &self,
+        slab: usize,
+        local: &mut [u64; MAX_SLAB_WORDS],
+        lo: usize,
+        hi: usize,
+        count: usize,
+        reopen: &mut Reopen,
+    ) {
         for w in lo..=hi {
             let mask = local[w];
             if mask != 0 {
@@ -973,7 +1096,12 @@ impl ClassState {
         if prev & mask != mask {
             let bad = (mask & !prev).trailing_zeros() as usize;
             let slot = word * 64 + bad;
-            double_free(self.slot_ptr(slab, slot) as usize, self.class as usize, slab, slot);
+            double_free(
+                self.slot_ptr(slab, slot) as usize,
+                self.class as usize,
+                slab,
+                slot,
+            );
         }
         if was_full && !reopen.push(slab) {
             self.reopen(reopen);
@@ -1093,7 +1221,12 @@ impl ClassState {
     /// Count a cache entering (`on`) or leaving compact mode.
     #[inline]
     pub fn note_compact_mode(&self, on: bool) {
-        if on { &self.compact_on } else { &self.compact_off }.fetch_add(1, Ordering::Relaxed);
+        if on {
+            &self.compact_on
+        } else {
+            &self.compact_off
+        }
+        .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Count a probe the refill-rate gate declined.
@@ -1133,7 +1266,11 @@ impl ClassState {
     #[cfg(test)]
     pub(crate) fn set_membership(&self, slab: usize) -> (bool, bool, bool) {
         let g = self.inner.lock();
-        (g.partial.map.is_set(slab), g.empty.map.is_set(slab), g.purged.map.is_set(slab))
+        (
+            g.partial.map.is_set(slab),
+            g.empty.map.is_set(slab),
+            g.purged.map.is_set(slab),
+        )
     }
 
     /// Whether `slab` is in the partial set (tests and the bins table,

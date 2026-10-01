@@ -242,7 +242,9 @@ mod tests {
                 std::eprintln!("pac: not available on this host, identity checked");
             }
             #[cfg(target_arch = "aarch64")]
-            std::eprintln!("pac: not available on this aarch64 host (no HWCAP_PACA/PACG), no PAC instruction executed");
+            std::eprintln!(
+                "pac: not available on this aarch64 host (no HWCAP_PACA/PACG), no PAC instruction executed"
+            );
             assert!(!fpac(), "fpac without the extension");
             return;
         }
@@ -260,7 +262,11 @@ mod tests {
         // The mask covers every bit any signature touched and no address
         // bit; on a 48-bit VA kernel it is bits 54:48.
         let m = mask();
-        assert_eq!(m & 0x0000_ffff_ffff_ffff, 0, "mask {m:#x} reaches into the address");
+        assert_eq!(
+            m & 0x0000_ffff_ffff_ffff,
+            0,
+            "mask {m:#x} reaches into the address"
+        );
         assert_eq!(m & (1 << 55), 0, "bit 55 is the TTBR select, never PAC");
         assert_eq!(m >> 56, 0, "the top byte is TBI, never PAC");
         assert_ne!(m, 0);
@@ -287,7 +293,9 @@ mod tests {
         // A different modifier: the PAC will not match with probability
         // 127/128 per try; try modifiers until one differs in the signed
         // form, which guarantees the mismatch.
-        let bad = (1..1000usize).find(|&m| sign(p, m) != s).expect("a modifier that changes the PAC");
+        let bad = (1..1000usize)
+            .find(|&m| sign(p, m) != s)
+            .expect("a modifier that changes the PAC");
         // SAFETY: the child only executes the lines below and exits or
         // dies; nothing of the parent's other threads is touched.
         let pid = unsafe { libc::fork() };
@@ -305,13 +313,23 @@ mod tests {
         let mut status = 0;
         // SAFETY: `status` is a live `int` for the call.
         assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
-        assert!(libc::WIFSIGNALED(status), "child survived a failed authentication: status {status:#x}");
+        assert!(
+            libc::WIFSIGNALED(status),
+            "child survived a failed authentication: status {status:#x}"
+        );
         let sig = libc::WTERMSIG(status);
-        assert!(sig == libc::SIGILL || sig == libc::SIGSEGV || sig == libc::SIGBUS, "signal {sig}");
+        assert!(
+            sig == libc::SIGILL || sig == libc::SIGSEGV || sig == libc::SIGBUS,
+            "signal {sig}"
+        );
         if fpac() {
             assert_eq!(sig, libc::SIGILL, "FEAT_FPAC faults at the autda");
         } else {
-            assert_eq!(sig, libc::SIGSEGV, "without FPAC the non-canonical pointer faults on use");
+            assert_eq!(
+                sig,
+                libc::SIGSEGV,
+                "without FPAC the non-canonical pointer faults on use"
+            );
         }
         std::eprintln!("pac: mismatched modifier -> signal {sig} (fpac={})", fpac());
     }
@@ -322,10 +340,19 @@ mod tests {
     #[test]
     fn available_matches_proc_cpuinfo() {
         let text = std::fs::read_to_string("/proc/cpuinfo").unwrap();
-        let key = if cfg!(target_arch = "aarch64") { "Features" } else { "flags" };
-        let line = text.lines().find(|l| l.starts_with(key) && l.contains(':')).expect("a flags line in /proc/cpuinfo");
-        let flags: std::vec::Vec<&str> = line.split_once(':').unwrap().1.split_whitespace().collect();
-        let want = cfg!(target_arch = "aarch64") && flags.contains(&"paca") && flags.contains(&"pacg");
+        let key = if cfg!(target_arch = "aarch64") {
+            "Features"
+        } else {
+            "flags"
+        };
+        let line = text
+            .lines()
+            .find(|l| l.starts_with(key) && l.contains(':'))
+            .expect("a flags line in /proc/cpuinfo");
+        let flags: std::vec::Vec<&str> =
+            line.split_once(':').unwrap().1.split_whitespace().collect();
+        let want =
+            cfg!(target_arch = "aarch64") && flags.contains(&"paca") && flags.contains(&"pacg");
         assert_eq!(available(), want, "{line}");
     }
 
@@ -338,7 +365,9 @@ mod tests {
             return;
         };
         let value = |name: &str| -> Option<u64> {
-            let l = text.lines().find(|l| l.starts_with("#define ") && l.split_whitespace().nth(1) == Some(name))?;
+            let l = text
+                .lines()
+                .find(|l| l.starts_with("#define ") && l.split_whitespace().nth(1) == Some(name))?;
             let inner = l.split_once('(')?.1.split_once(')')?.0;
             let shift: u32 = inner.split("<<").nth(1)?.trim().parse().ok()?;
             Some(1u64 << shift)

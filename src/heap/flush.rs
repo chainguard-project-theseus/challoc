@@ -19,7 +19,12 @@ impl Heap {
     /// design section 4). The key is read from the configuration here, on
     /// the slow path, so the fast paths carry nothing for it.
     #[inline]
-    pub(super) fn claim(&mut self, shared: &Shared, cs: &crate::class::ClassState, out: &mut [*mut u8]) -> crate::class::Claim {
+    pub(super) fn claim(
+        &mut self,
+        shared: &Shared,
+        cs: &crate::class::ClassState,
+        out: &mut [*mut u8],
+    ) -> crate::class::Claim {
         if shared.config.slot_randomize {
             let rng = self.rng();
             cs.claim_random(&shared.meta, out, rng)
@@ -61,7 +66,13 @@ impl Heap {
     /// from `ensure_cache` on a fresh header, or after re-reading `len`
     /// following a `tick`. The `assert_eq!` below is the abort on a heap
     /// inconsistency, not the contract.
-    pub(super) unsafe fn refill(&mut self, shared: &Shared, arena: &Arena, cache: *mut CacheHeader, class: usize) -> u32 {
+    pub(super) unsafe fn refill(
+        &mut self,
+        shared: &Shared,
+        arena: &Arena,
+        cache: *mut CacheHeader,
+        class: usize,
+    ) -> u32 {
         // SAFETY: the cache is empty and has `cap` slots of storage.
         unsafe {
             assert_eq!((*cache).len, 0, "heap: refill of a cache that is not empty");
@@ -140,7 +151,14 @@ impl Heap {
     ///
     /// # Safety
     /// `cache` is this heap's real cache for `(arena, class)` and `n <= len`.
-    pub(super) unsafe fn flush(&mut self, shared: &Shared, arena: u16, cache: *mut CacheHeader, class: usize, n: usize) {
+    pub(super) unsafe fn flush(
+        &mut self,
+        shared: &Shared,
+        arena: u16,
+        cache: *mut CacheHeader,
+        class: usize,
+        n: usize,
+    ) {
         if n == 0 {
             return;
         }
@@ -169,7 +187,12 @@ impl Heap {
             let all = (*cache).entries();
             let rest_len = all.len() - n;
             let kept_max;
-            let sorted = rest_len > 0 && if pac { all.is_sorted_by_key(key) } else { all.is_sorted() };
+            let sorted = rest_len > 0
+                && if pac {
+                    all.is_sorted_by_key(key)
+                } else {
+                    all.is_sorted()
+                };
             if sorted {
                 // Already in address order: the split is direct, the
                 // released half is sorted and so grouped, and the kept half
@@ -204,14 +227,26 @@ impl Heap {
                 // faults here (FEAT_FPAC) or in `release_owned`.
                 CacheHeader::auth_all(slots, high);
             }
-            let low = if sorted { *high.get_unchecked(0) } else { group_by_slab(shared, class, high) };
-            let kept_max_plain = if pac && rest_len > 0 { pac::auth(kept_max as usize, slots as usize) as *mut u8 } else { kept_max };
+            let low = if sorted {
+                *high.get_unchecked(0)
+            } else {
+                group_by_slab(shared, class, high)
+            };
+            let kept_max_plain = if pac && rest_len > 0 {
+                pac::auth(kept_max as usize, slots as usize) as *mut u8
+            } else {
+                kept_max
+            };
             if low == kept_max_plain {
                 straddling_double_free(low, class);
             }
             // The `FOREIGN` cache's batch starts wherever its first slab
             // belongs; `release_routed` follows the owner words from there.
-            let owner = if arena == FOREIGN { shared.arena_of_slot(class, *high.get_unchecked(0)) } else { arena };
+            let owner = if arena == FOREIGN {
+                shared.arena_of_slot(class, *high.get_unchecked(0))
+            } else {
+                arena
+            };
             shared.release_routed(owner, class, high);
             (*cache).len = rest_len as u32;
             (*cache).moved = (*cache).moved.wrapping_sub(n as u64);
@@ -305,5 +340,8 @@ pub(super) fn flag_sort(v: &mut [*mut u8], nb: usize, key: impl Fn(*mut u8) -> u
 #[cold]
 #[inline(never)]
 pub(super) fn straddling_double_free(p: *mut u8, class: usize) -> ! {
-    panic!("double free of {:#x} (class {class}): both copies cached, one at the flush boundary", p as usize)
+    panic!(
+        "double free of {:#x} (class {class}): both copies cached, one at the flush boundary",
+        p as usize
+    )
 }

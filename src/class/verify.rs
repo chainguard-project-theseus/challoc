@@ -54,8 +54,24 @@ impl ClassState {
                 if word != 0 {
                     let d = self.desc(pick.slab as usize);
                     let bm = self.table().bits(pick.slab as usize);
-                    let now = (d.state(), d.live(), d.arena(), bm.allocated(self.class().nslots()), self.class().nslots(), d as *const SlabDesc as usize);
-                    dirty_zero_slot(self.class as usize, size, pick, self.arena, p as usize, off, word, now);
+                    let now = (
+                        d.state(),
+                        d.live(),
+                        d.arena(),
+                        bm.allocated(self.class().nslots()),
+                        self.class().nslots(),
+                        d as *const SlabDesc as usize,
+                    );
+                    dirty_zero_slot(
+                        self.class as usize,
+                        size,
+                        pick,
+                        self.arena,
+                        p as usize,
+                        off,
+                        word,
+                        now,
+                    );
                 }
             }
         }
@@ -113,7 +129,13 @@ impl ClassState {
 /// `check_zero` invariant: a slab with live slots was `Fresh` at selection.
 #[cold]
 #[inline(never)]
-pub(super) fn fresh_with_live(class: usize, slab: usize, arena: u16, desc: &SlabDesc, set: usize) -> ! {
+pub(super) fn fresh_with_live(
+    class: usize,
+    slab: usize,
+    arena: u16,
+    desc: &SlabDesc,
+    set: usize,
+) -> ! {
     panic!(
         "check_zero: class {class} slab {slab} (arena {arena}) is Fresh with live {} ({set} bits set, owner {}, dirty_at {}), descriptor at {:#x}",
         desc.live(),
@@ -126,7 +148,13 @@ pub(super) fn fresh_with_live(class: usize, slab: usize, arena: u16, desc: &Slab
 /// `check_zero` invariant: a release reached a slab that reads `Fresh`.
 #[cold]
 #[inline(never)]
-pub(super) fn release_into_fresh(class: usize, slab: usize, arena: u16, desc: &SlabDesc, n: usize) -> ! {
+pub(super) fn release_into_fresh(
+    class: usize,
+    slab: usize,
+    arena: u16,
+    desc: &SlabDesc,
+    n: usize,
+) -> ! {
     panic!(
         "check_zero: release of {n} slot(s) into class {class} slab {slab} (arena {arena}) whose descriptor reads Fresh (live {}, owner {}, dirty_at {}), descriptor at {:#x}",
         desc.live(),

@@ -105,7 +105,9 @@ pub fn alloc(shared: &Shared, class: usize, arena: Option<u16>, tcache: Tcache) 
             None => alloc_direct(shared, class, arena.unwrap_or(0)),
         },
         Tcache::Explicit(t) => {
-            let Some(h) = shared.tcaches.get(t) else { invalid_tcache(t) };
+            let Some(h) = shared.tcaches.get(t) else {
+                invalid_tcache(t)
+            };
             // As for the default cache: only an explicit arena pins a
             // shared class to it (`Heap::alloc_in`).
             match arena {
@@ -114,7 +116,9 @@ pub fn alloc(shared: &Shared, class: usize, arena: Option<u16>, tcache: Tcache) 
             }
         }
         Tcache::None => {
-            let a = arena.or_else(|| crate::heap::existing_heap(shared).map(|h| h.arena())).unwrap_or(0);
+            let a = arena
+                .or_else(|| crate::heap::existing_heap(shared).map(|h| h.arena()))
+                .unwrap_or(0);
             let (p, zero) = alloc_direct(shared, class, a);
             if !p.is_null() {
                 if let Some(h) = crate::heap::existing_heap(shared) {
@@ -136,7 +140,13 @@ fn alloc_direct(shared: &Shared, class: usize, arena: u16) -> (*mut u8, bool) {
 
 /// Routing of a `MALLOCX` huge allocation on the calling thread (caches
 /// play no part; the arena is recorded in the run's descriptor).
-pub fn alloc_huge(shared: &Shared, size: usize, align: usize, arena: Option<u16>, tcache: Tcache) -> (*mut u8, bool) {
+pub fn alloc_huge(
+    shared: &Shared,
+    size: usize,
+    align: usize,
+    arena: Option<u16>,
+    tcache: Tcache,
+) -> (*mut u8, bool) {
     let a = match (arena, tcache) {
         (Some(a), _) => a,
         (None, Tcache::Explicit(t)) => match shared.tcaches.get(t) {
@@ -174,7 +184,15 @@ mod tests {
     #[test]
     fn flag_decoding_matches_jemalloc() {
         let f = Flags::decode(0);
-        assert_eq!(f, Flags { lg_align: 0, zero: false, tcache: Tcache::Default, arena: None });
+        assert_eq!(
+            f,
+            Flags {
+                lg_align: 0,
+                zero: false,
+                tcache: Tcache::Default,
+                arena: None
+            }
+        );
         assert_eq!(f.align(), 1);
         let f = Flags::decode(mallocx_lg_align(12) | MALLOCX_ZERO);
         assert_eq!(f.lg_align, 12);
@@ -190,8 +208,18 @@ mod tests {
         assert_eq!(mallocx_arena(3), 4 << 20);
         assert_eq!(Flags::decode(mallocx_arena(4094)).arena, Some(4094));
         // Every field at once, as Valkey's Lua arena code combines them.
-        let f = Flags::decode(mallocx_arena(1) | MALLOCX_TCACHE_NONE | mallocx_lg_align(4) | MALLOCX_ZERO);
-        assert_eq!(f, Flags { lg_align: 4, zero: true, tcache: Tcache::None, arena: Some(1) });
+        let f = Flags::decode(
+            mallocx_arena(1) | MALLOCX_TCACHE_NONE | mallocx_lg_align(4) | MALLOCX_ZERO,
+        );
+        assert_eq!(
+            f,
+            Flags {
+                lg_align: 4,
+                zero: true,
+                tcache: Tcache::None,
+                arena: Some(1)
+            }
+        );
         // Bit 7 is unused and ignored.
         assert_eq!(Flags::decode(0x80), Flags::decode(0));
     }

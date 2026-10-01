@@ -137,7 +137,10 @@ pub fn band(limit: u64, current: u64) -> Band {
     } else if ppm >= IMMEDIATE_FROM_PPM {
         Band::Immediate
     } else {
-        Band::Scaled(frac16(ppm - SCALED_FROM_PPM, IMMEDIATE_FROM_PPM - SCALED_FROM_PPM))
+        Band::Scaled(frac16(
+            ppm - SCALED_FROM_PPM,
+            IMMEDIATE_FROM_PPM - SCALED_FROM_PPM,
+        ))
     }
 }
 
@@ -218,7 +221,11 @@ pub fn effective_decay_ns(base: u64, band: Band) -> u64 {
 /// Bytes of `Empty` memory the process may retain under `limit`:
 /// [`UNLIMITED`] without a limit, else 5% of it.
 pub fn retention_cap(limit: u64) -> u64 {
-    if limit == UNLIMITED { UNLIMITED } else { limit / RETENTION_DIVISOR }
+    if limit == UNLIMITED {
+        UNLIMITED
+    } else {
+        limit / RETENTION_DIVISOR
+    }
 }
 
 /// The share of its `Empty` memory a walk may keep so that `retention`
@@ -378,13 +385,25 @@ impl Policy {
             Band::Immediate => (0, true),
         };
         let limited = band != Band::Unlimited;
-        let cap = if limited { retention_cap(limit) } else { UNLIMITED };
+        let cap = if limited {
+            retention_cap(limit)
+        } else {
+            UNLIMITED
+        };
         let mut changed = self.limited.swap(limited, Ordering::Relaxed) != limited;
         changed |= self.frac16.swap(frac, Ordering::Relaxed) != frac;
         changed |= self.immediate.swap(immediate, Ordering::Relaxed) != immediate;
         self.cap.store(cap, Ordering::Relaxed);
-        self.empty_bytes.store(if limited { retention } else { 0 }, Ordering::Relaxed);
-        self.keep16.store(if limited { keep_ratio(cap, retention) } else { KEEP_ALL }, Ordering::Relaxed);
+        self.empty_bytes
+            .store(if limited { retention } else { 0 }, Ordering::Relaxed);
+        self.keep16.store(
+            if limited {
+                keep_ratio(cap, retention)
+            } else {
+                KEEP_ALL
+            },
+            Ordering::Relaxed,
+        );
         // The excess over the cap is returned with the advice of the band
         // it was first seen in: eager from 70% up, and then eager until the
         // retention is back within the cap, whatever the first eager walks
@@ -499,7 +518,10 @@ mod tests {
         assert_eq!(band(L, L), Band::Immediate);
         assert_eq!(band(L, 2 * L), Band::Immediate);
         // `memory.high` below `memory.max`: the caller passes the minimum.
-        assert_eq!(band((256 << 20).min(L), 200 << 20), Band::Scaled(frac16(200 * 1_000_000 / 256 - 700_000, 200_000)));
+        assert_eq!(
+            band((256 << 20).min(L), 200 << 20),
+            Band::Scaled(frac16(200 * 1_000_000 / 256 - 700_000, 200_000))
+        );
     }
 
     #[test]
@@ -516,11 +538,22 @@ mod tests {
         // 90% and above: 0.
         assert_eq!(effective_decay_ns(BASE, Band::Immediate), 0);
         // A period at or under the floor is not scaled up or down.
-        assert_eq!(effective_decay_ns(FLOOR_NS, Band::Scaled(FRAC_ONE / 2)), FLOOR_NS);
-        assert_eq!(effective_decay_ns(200 * MS, Band::Scaled(FRAC_ONE)), 200 * MS);
+        assert_eq!(
+            effective_decay_ns(FLOOR_NS, Band::Scaled(FRAC_ONE / 2)),
+            FLOOR_NS
+        );
+        assert_eq!(
+            effective_decay_ns(200 * MS, Band::Scaled(FRAC_ONE)),
+            200 * MS
+        );
         assert_eq!(effective_decay_ns(200 * MS, Band::Immediate), 0);
         // Never stays never in every band.
-        for b in [Band::Unlimited, Band::Low, Band::Scaled(FRAC_ONE / 2), Band::Immediate] {
+        for b in [
+            Band::Unlimited,
+            Band::Low,
+            Band::Scaled(FRAC_ONE / 2),
+            Band::Immediate,
+        ] {
             assert_eq!(effective_decay_ns(NEVER, b), NEVER);
         }
         // Scaling is monotonic in usage.
@@ -548,7 +581,10 @@ mod tests {
         let e = 400 << 20;
         let k = keep_ratio(cap, e);
         let kept = mul16(e, k);
-        assert!(kept <= cap && kept + (e >> 16) + 1 >= cap, "kept {kept} of cap {cap}");
+        assert!(
+            kept <= cap && kept + (e >> 16) + 1 >= cap,
+            "kept {kept} of cap {cap}"
+        );
         // Shares sum to at most the cap however the retention is split.
         let parts = [64u64 << 20, 200 << 20, 136 << 20];
         let sum: u64 = parts.iter().map(|&p| mul16(p, k)).sum();
@@ -634,7 +670,12 @@ mod tests {
         // `memory.high` below `memory.max`: the minimum decides.
         assert_eq!(defaults(band((256 << 20).min(L), 100 << 20)), Lazy);
         assert_eq!(defaults(band((256 << 20).min(L), 200 << 20)), Eager);
-        for b in [Band::Unlimited, Band::Low, Band::Scaled(FRAC_ONE / 2), Band::Immediate] {
+        for b in [
+            Band::Unlimited,
+            Band::Low,
+            Band::Scaled(FRAC_ONE / 2),
+            Band::Immediate,
+        ] {
             // The band saving off: eager everywhere.
             assert_eq!(advice(b, false, false), Eager, "{b:?}");
             // An explicit purge is eager in every band.
@@ -702,8 +743,14 @@ mod tests {
         assert_eq!(Advice::Eager.name(), "eager");
         assert_eq!(Advice::Lazy.madv(), crate::sys::MADV_FREE);
         assert_eq!(Advice::Eager.madv(), crate::sys::MADV_DONTNEED);
-        assert_eq!((Advice::Lazy.madv_name(), Advice::Lazy.madv()), ("MADV_FREE", 8));
-        assert_eq!((Advice::Eager.madv_name(), Advice::Eager.madv()), ("MADV_DONTNEED", 4));
+        assert_eq!(
+            (Advice::Lazy.madv_name(), Advice::Lazy.madv()),
+            ("MADV_FREE", 8)
+        );
+        assert_eq!(
+            (Advice::Eager.madv_name(), Advice::Eager.madv()),
+            ("MADV_DONTNEED", 4)
+        );
     }
 
     /// The forced-`never` rule (`thp::forced_by_limit`): `always` under 1

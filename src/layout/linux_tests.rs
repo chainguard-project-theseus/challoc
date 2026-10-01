@@ -1,6 +1,7 @@
 use super::*;
 use crate::sys::{
-    self, Errno, MADV_DONTNEED, MAP_ANONYMOUS, MAP_FIXED, MAP_PRIVATE, PROT_NONE, PROT_READ, PROT_WRITE,
+    self, Errno, MADV_DONTNEED, MAP_ANONYMOUS, MAP_FIXED, MAP_PRIVATE, PROT_NONE, PROT_READ,
+    PROT_WRITE,
 };
 use std::sync::Mutex;
 use std::{eprintln, string::String};
@@ -22,12 +23,17 @@ fn maps() -> String {
 fn has_mapping(maps: &str, m: Mapping, perms: &str) -> bool {
     maps.lines().any(|l| {
         let mut fields = l.split(' ');
-        let Some(range) = fields.next() else { return false };
+        let Some(range) = fields.next() else {
+            return false;
+        };
         if fields.next() != Some(perms) {
             return false;
         }
-        let Some((lo, hi)) = range.split_once('-') else { return false };
-        let (Ok(lo), Ok(hi)) = (usize::from_str_radix(lo, 16), usize::from_str_radix(hi, 16)) else {
+        let Some((lo, hi)) = range.split_once('-') else {
+            return false;
+        };
+        let (Ok(lo), Ok(hi)) = (usize::from_str_radix(lo, 16), usize::from_str_radix(hi, 16))
+        else {
             return false;
         };
         lo <= m.addr && m.addr + m.len <= hi
@@ -54,15 +60,26 @@ fn reserve_lays_out_regions_and_commits_a_slab() {
 
     // Everything is inside its mapping, and the mappings are PROT_NONE.
     assert!(r.superblock >= r.superblock_map.addr);
-    assert!(r.superblock + (NCLASSES << r.lg_stride) <= r.superblock_map.addr + r.superblock_map.len);
-    assert!(r.huge_base >= r.huge_map.addr && r.huge_base + r.huge_len <= r.huge_map.addr + r.huge_map.len);
-    assert!(r.meta_base >= r.meta_map.addr && r.meta_base + r.meta_len <= r.meta_map.addr + r.meta_map.len);
+    assert!(
+        r.superblock + (NCLASSES << r.lg_stride) <= r.superblock_map.addr + r.superblock_map.len
+    );
+    assert!(
+        r.huge_base >= r.huge_map.addr
+            && r.huge_base + r.huge_len <= r.huge_map.addr + r.huge_map.len
+    );
+    assert!(
+        r.meta_base >= r.meta_map.addr
+            && r.meta_base + r.meta_len <= r.meta_map.addr + r.meta_map.len
+    );
     assert_eq!(r.superblock & (MAX_SLAB - 1), 0);
     assert_eq!(r.huge_base & (MAX_SLAB - 1), 0);
     assert_eq!(r.meta_base & (MAX_SLAB - 1), 0);
     let m = maps();
     for map in [r.superblock_map, r.huge_map, r.meta_map] {
-        assert!(has_mapping(&m, map, "---p"), "missing PROT_NONE mapping {map:x?} in:\n{m}");
+        assert!(
+            has_mapping(&m, map, "---p"),
+            "missing PROT_NONE mapping {map:x?} in:\n{m}"
+        );
     }
 
     // Classes are where the arithmetic says, and nowhere else.
@@ -71,7 +88,14 @@ fn reserve_lays_out_regions_and_commits_a_slab() {
         assert_eq!(base & (MAX_SLAB - 1), 0);
         let start = r.superblock + (c << r.lg_stride);
         assert!(base >= start && base + r.region_len() <= start + r.stride());
-        assert_eq!(r.classify(base), Kind::Slab { class: c as u32, slab: 0, slot: 0 });
+        assert_eq!(
+            r.classify(base),
+            Kind::Slab {
+                class: c as u32,
+                slab: 0,
+                slot: 0
+            }
+        );
         assert_eq!(r.classify(base + r.region_len()), Kind::Invalid);
     }
 
@@ -89,7 +113,14 @@ fn reserve_lays_out_regions_and_commits_a_slab() {
         p.write(0xDEAD_BEEF);
         assert_eq!(p.read(), 0xDEAD_BEEF);
     }
-    assert_eq!(r.classify(p as usize), Kind::Slab { class: c as u32, slab: 3, slot: 2 });
+    assert_eq!(
+        r.classify(p as usize),
+        Kind::Slab {
+            class: c as u32,
+            slab: 3,
+            slot: 2
+        }
+    );
     // The commit left the rest of the mapping PROT_NONE.
     let m = maps();
     assert!(
@@ -121,8 +152,13 @@ fn reserve_randomises_class_offsets_and_order() {
     let b_slides = (b.huge_base - b.huge_map.addr, b.meta_base - b.meta_map.addr);
     // SAFETY: nothing references the regions any more.
     unsafe { b.release() };
-    let differing = (0..NCLASSES).filter(|&c| a_offsets[c] != b_offsets[c]).count();
-    assert!(differing > NCLASSES / 2, "only {differing} class offsets differ");
+    let differing = (0..NCLASSES)
+        .filter(|&c| a_offsets[c] != b_offsets[c])
+        .count();
+    assert!(
+        differing > NCLASSES / 2,
+        "only {differing} class offsets differ"
+    );
     assert_ne!(a_slides, b_slides, "huge/meta slides repeated");
     for off in a_offsets.iter().chain(b_offsets.iter()) {
         assert_eq!(off & (MAX_SLAB - 1), 0);
@@ -157,7 +193,10 @@ fn seal_child(page: usize) -> i32 {
     );
     check(sealed == n, "not every never-committed range was sealed");
     // Each sealed range splits its VMA into at most two more pieces.
-    check(after - before <= 2 * n + 2, "VMA count grew by more than 2 per sealed range");
+    check(
+        after - before <= 2 * n + 2,
+        "VMA count grew by more than 2 per sealed range",
+    );
 
     // The criterion: munmap of a reserved range fails with EPERM.
     // Likewise mprotect (a commit landing in a gap) and MAP_FIXED over
@@ -165,14 +204,24 @@ fn seal_child(page: usize) -> i32 {
     for m in &ranges[..n] {
         // SAFETY: the kernel refuses every one of these; nothing changes.
         unsafe {
-            check(sys::munmap(m.addr, m.len) == Err(Errno::EPERM), "munmap of a sealed range did not fail with EPERM");
             check(
-                sys::mprotect(m.addr, page, PROT_READ | PROT_WRITE) == Err(Errno::EPERM),
-                "mprotect of a sealed range did not fail with EPERM"
+                sys::munmap(m.addr, m.len) == Err(Errno::EPERM),
+                "munmap of a sealed range did not fail with EPERM",
             );
             check(
-                sys::mmap(m.addr, page, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0) == Err(Errno::EPERM),
-                "MAP_FIXED over a sealed range did not fail with EPERM"
+                sys::mprotect(m.addr, page, PROT_READ | PROT_WRITE) == Err(Errno::EPERM),
+                "mprotect of a sealed range did not fail with EPERM",
+            );
+            check(
+                sys::mmap(
+                    m.addr,
+                    page,
+                    PROT_NONE,
+                    MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED,
+                    -1,
+                    0,
+                ) == Err(Errno::EPERM),
+                "MAP_FIXED over a sealed range did not fail with EPERM",
             );
         }
     }
@@ -193,7 +242,10 @@ fn seal_child(page: usize) -> i32 {
             flagged = l.split_whitespace().any(|f| f == "sl");
         }
     }
-    check(flagged, "the largest sealed gap has no `sl` in smaps VmFlags");
+    check(
+        flagged,
+        "the largest sealed gap has no `sl` in smaps VmFlags",
+    );
 
     // The regions themselves are untouched: a slab of the first and
     // last class, the first huge page and the first metadata page still
@@ -202,18 +254,30 @@ fn seal_child(page: usize) -> i32 {
     let last_slab = CLASSES[NCLASSES - 1].slab_size();
     for (addr, len) in [
         (r.slab_addr(0, 0), first_slab),
-        (r.slab_addr(NCLASSES - 1, r.nslabs(NCLASSES - 1) - 1), last_slab),
+        (
+            r.slab_addr(NCLASSES - 1, r.nslabs(NCLASSES - 1) - 1),
+            last_slab,
+        ),
         (r.huge_addr(0), page),
         (r.meta_base, page),
     ] {
         // SAFETY: inside our own unsealed reservation.
         unsafe {
-            check(sys::mprotect(addr, len, PROT_READ | PROT_WRITE).is_ok(), "commit inside a region failed");
+            check(
+                sys::mprotect(addr, len, PROT_READ | PROT_WRITE).is_ok(),
+                "commit inside a region failed",
+            );
             let p = addr as *mut u64;
             p.write_volatile(0x5EA1);
-            check(sys::madvise(addr, len, MADV_DONTNEED).is_ok(), "purge inside a region failed");
+            check(
+                sys::madvise(addr, len, MADV_DONTNEED).is_ok(),
+                "purge inside a region failed",
+            );
             check(p.read_volatile() == 0, "purged page did not read zero");
-            check(sys::mprotect(addr, len, PROT_NONE).is_ok(), "reprotect inside a region failed");
+            check(
+                sys::mprotect(addr, len, PROT_NONE).is_ok(),
+                "reprotect inside a region failed",
+            );
         }
     }
     fails
@@ -235,7 +299,10 @@ fn seal_locks_the_gaps_and_leaves_the_regions_usable() {
     }
     let mut status = 0;
     assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
-    assert!(libc::WIFEXITED(status), "seal child died: status {status:#x}");
+    assert!(
+        libc::WIFEXITED(status),
+        "seal child died: status {status:#x}"
+    );
     let code = libc::WEXITSTATUS(status);
     if code == SKIPPED {
         eprintln!("seal: mseal unavailable here (kernel < 6.10 or seccomp), skipped");

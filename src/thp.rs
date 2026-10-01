@@ -691,7 +691,10 @@ mod tests {
     #[test]
     fn always_refuses_chunks_on_a_pmd_over_2m() {
         const M512: u64 = 1 << 29;
-        let d = decide(Key::Always, &table_at(29, Some(ThpSetting::Madvise), 0, M512));
+        let d = decide(
+            Key::Always,
+            &table_at(29, Some(ThpSetting::Madvise), 0, M512),
+        );
         assert_eq!((d.mode, d.reason), (Mode::Off, Reason::PmdTooLarge));
         assert_eq!(d.lg_pmd, 29);
         assert_eq!(d.lg_slab_min, NO_SIZE);
@@ -699,23 +702,42 @@ mod tests {
         // With a size below the PMD enabled (2 MiB, 32 pages of 64 KiB):
         // the folio path from 2 MiB slabs up, huge runs of a PMD advised,
         // the metadata left alone (the folio does not fit the bump chunk).
-        let d = decide(Key::Always, &table_at(29, Some(ThpSetting::Madvise), 0, M512 | M2));
+        let d = decide(
+            Key::Always,
+            &table_at(29, Some(ThpSetting::Madvise), 0, M512 | M2),
+        );
         assert_eq!((d.mode, d.reason), (Mode::Folios, Reason::Active));
         assert_eq!(d.lg_slab_min, 21);
         assert_eq!(d.lg_meta, NO_SIZE);
         assert!(d.huge);
         // A 16 KiB page kernel: the PMD is 32 MiB, likewise no chunks.
-        let d = decide(Key::Always, &table_at(25, Some(ThpSetting::Always), 1 << 25, 0));
+        let d = decide(
+            Key::Always,
+            &table_at(25, Some(ThpSetting::Always), 1 << 25, 0),
+        );
         assert_eq!((d.mode, d.reason), (Mode::Off, Reason::PmdTooLarge));
         // `auto` at 64 KiB: the PMD is madvise-gated, refused as at 4 KiB.
-        let d = decide(Key::Auto, &table_at(29, Some(ThpSetting::Madvise), 0, M512 | M2));
+        let d = decide(
+            Key::Auto,
+            &table_at(29, Some(ThpSetting::Madvise), 0, M512 | M2),
+        );
         assert_eq!((d.mode, d.reason), (Mode::Off, Reason::PmdMadvise));
         let d = decide(Key::Auto, &table_at(29, Some(ThpSetting::Madvise), 0, M512));
         assert_eq!((d.mode, d.reason), (Mode::Off, Reason::NoSubPmd));
         // `never` is off there too, whatever the sizes.
-        assert_eq!(decide(Key::Never, &table_at(29, Some(ThpSetting::Always), M512 | M2, 0)).mode, Mode::Off);
+        assert_eq!(
+            decide(
+                Key::Never,
+                &table_at(29, Some(ThpSetting::Always), M512 | M2, 0)
+            )
+            .mode,
+            Mode::Off
+        );
         // The 2 MiB PMD keeps its chunks.
-        assert_eq!(decide(Key::Always, &table(Some(ThpSetting::Madvise), 0, M2)).mode, Mode::Chunks);
+        assert_eq!(
+            decide(Key::Always, &table(Some(ThpSetting::Madvise), 0, M2)).mode,
+            Mode::Chunks
+        );
     }
 
     #[test]
@@ -787,9 +809,11 @@ mod tests {
         let before = stats();
         assert!(!advise_reservation(Reservation::Huge, 1 << 40, 1 << 30));
         assert_eq!(stats(), before);
-        assert!(RESERVATIONS
-            .iter()
-            .all(|(a, l)| l.load(Ordering::Relaxed) == 0 || a.load(Ordering::Relaxed) != 1 << 40));
+        assert!(
+            RESERVATIONS.iter().all(
+                |(a, l)| l.load(Ordering::Relaxed) == 0 || a.load(Ordering::Relaxed) != 1 << 40
+            )
+        );
     }
 
     /// The host mode round trip (the statics are process-wide; leave
@@ -799,9 +823,18 @@ mod tests {
         let saved = HOST_MODE.load(Ordering::Relaxed);
         HOST_MODE.store(0, Ordering::Relaxed);
         assert_eq!(host_mode(), None);
-        for e in [ThpSetting::Always, ThpSetting::Inherit, ThpSetting::Madvise, ThpSetting::Never] {
+        for e in [
+            ThpSetting::Always,
+            ThpSetting::Inherit,
+            ThpSetting::Madvise,
+            ThpSetting::Never,
+        ] {
             HOST_MODE.store(host_code(e), Ordering::Relaxed);
-            assert_eq!(host_mode(), Some(e), "{e:?}: the VM printed `host never` on a madvise host once");
+            assert_eq!(
+                host_mode(),
+                Some(e),
+                "{e:?}: the VM printed `host never` on a madvise host once"
+            );
         }
         HOST_MODE.store(saved, Ordering::Relaxed);
     }
@@ -854,19 +887,32 @@ mod tests {
         assert!(is_never(), "the default key is `never`");
         // No THP on the kernel: recorded, not advised, not counted.
         assert!(!advise_reservation(Reservation::Classes, 0x10_0000, 0x4000));
-        assert!(!advise_reservation(Reservation::Metadata, 0x20_0000, 0x8000));
+        assert!(!advise_reservation(
+            Reservation::Metadata,
+            0x20_0000,
+            0x8000
+        ));
         assert_eq!(recorded(), [(0x10_0000, 0x4000), (0x20_0000, 0x8000)]);
         assert_eq!(stats(), before);
         // The huge reservation is not recorded (the test above), and
         // neither is a slot beyond the limit.
         assert!(!advise_reservation(Reservation::Huge, 0x30_0000, 0x1000));
         assert!(!advise_reservation(Reservation::Classes, 0x40_0000, 0x1000));
-        assert!(!advise_reservation(Reservation::Metadata, 0x50_0000, 0x1000));
+        assert!(!advise_reservation(
+            Reservation::Metadata,
+            0x50_0000,
+            0x1000
+        ));
         assert_eq!(recorded().len(), MAX_RESERVATIONS);
         assert!(!advise_reservation(Reservation::Classes, 0x60_0000, 0x1000));
         assert_eq!(
             recorded(),
-            [(0x10_0000, 0x4000), (0x20_0000, 0x8000), (0x40_0000, 0x1000), (0x50_0000, 0x1000)],
+            [
+                (0x10_0000, 0x4000),
+                (0x20_0000, 0x8000),
+                (0x40_0000, 0x1000),
+                (0x50_0000, 0x1000)
+            ],
             "the fifth reservation is dropped, the slots untouched"
         );
         assert_eq!(stats(), before);
@@ -877,15 +923,35 @@ mod tests {
         KERNEL_THP.store(1, Ordering::Relaxed);
         let (a, b) = (region(0x4000), region(0x8000));
         let ok = advise_reservation(Reservation::Classes, a, 0x4000);
-        assert_eq!(advise_reservation(Reservation::Metadata, b, 0x8000), ok, "the same kernel answer twice");
+        assert_eq!(
+            advise_reservation(Reservation::Metadata, b, 0x8000),
+            ok,
+            "the same kernel answer twice"
+        );
         assert!(!advise_reservation(Reservation::Huge, 0x30_0000, 0x1000));
         assert_eq!(recorded(), [(a, 0x4000), (b, 0x8000)]);
-        let counted = |s: Stats| (s.nohuge_ranges - before.nohuge_ranges, s.failures - before.failures);
+        let counted = |s: Stats| {
+            (
+                s.nohuge_ranges - before.nohuge_ranges,
+                s.failures - before.failures,
+            )
+        };
         assert_eq!(counted(stats()), if ok { (2, 0) } else { (0, 2) });
         force_never();
         assert_eq!(decision().reason, Reason::Forced);
-        assert_eq!(counted(stats()), if ok { (4, 0) } else { (0, 4) }, "both slots advised again");
-        std::println!("thp test: MADV_NOHUGEPAGE on a fresh mapping {}", if ok { "taken" } else { "refused (no THP on this kernel)" });
+        assert_eq!(
+            counted(stats()),
+            if ok { (4, 0) } else { (0, 4) },
+            "both slots advised again"
+        );
+        std::println!(
+            "thp test: MADV_NOHUGEPAGE on a fresh mapping {}",
+            if ok {
+                "taken"
+            } else {
+                "refused (no THP on this kernel)"
+            }
+        );
         // Restore the process-wide state for the other tests.
         store(&Decision::OFF);
         KERNEL_THP.store(kernel_thp, Ordering::Relaxed);

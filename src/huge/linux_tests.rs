@@ -138,7 +138,10 @@ fn guard_page_faults() {
         });
         assert!(merged, "guard page split the VMA in guard_install mode");
     }
-    for (what, addr) in [("guard", guard), ("first page past the mark", q as usize + 2 * page_size())] {
+    for (what, addr) in [
+        ("guard", guard),
+        ("first page past the mark", q as usize + 2 * page_size()),
+    ] {
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0);
         if pid == 0 {
@@ -149,7 +152,10 @@ fn guard_page_faults() {
         }
         let mut status = 0;
         assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
-        assert!(libc::WIFSIGNALED(status), "{what}: child did not fault: status {status:#x}");
+        assert!(
+            libc::WIFSIGNALED(status),
+            "{what}: child did not fault: status {status:#x}"
+        );
         assert_eq!(libc::WTERMSIG(status), libc::SIGSEGV, "{what}");
     }
     // Freeing removes the guard: the page is reusable as run memory.
@@ -203,8 +209,13 @@ fn alignment_holes_are_committed_and_writable() {
     let (b, _) = env.alloc(&h, page_size(), 1 << 20);
     fill(b, page_size(), 2);
     let b_page = env.page_of(b);
-    let hole = h.lookup(env.page_of(a) + 1 + GUARD_PAGES).expect("hole extent");
-    assert_eq!((hole.state, hole.start + hole.pages), (RunState::Purged, b_page));
+    let hole = h
+        .lookup(env.page_of(a) + 1 + GUARD_PAGES)
+        .expect("hole extent");
+    assert_eq!(
+        (hole.state, hole.start + hole.pages),
+        (RunState::Purged, b_page)
+    );
     let mut fillers = 0;
     loop {
         let (p, zero) = env.alloc(&h, page_size(), 1);
@@ -217,7 +228,10 @@ fn alignment_holes_are_committed_and_writable() {
         held.push(p);
         fillers += 1;
     }
-    assert!(fillers >= 2, "hole below the aligned run took {fillers} fillers");
+    assert!(
+        fillers >= 2,
+        "hole below the aligned run took {fillers} fillers"
+    );
     // Shape 2: an Empty extent touching the mark absorbs the hole.
     let (c, _) = env.alloc(&h, 3 * page_size(), 1);
     let c_page = env.page_of(c);
@@ -231,7 +245,11 @@ fn alignment_holes_are_committed_and_writable() {
     fill(d, page_size(), 4);
     let d_page = env.page_of(d);
     let head = h.lookup(c_page).expect("head extent");
-    assert_eq!((head.state, head.start + head.pages), (RunState::Empty, d_page), "head did not absorb the hole");
+    assert_eq!(
+        (head.state, head.start + head.pages),
+        (RunState::Empty, d_page),
+        "head did not absorb the hole"
+    );
     let mut fillers = 0;
     loop {
         let (p, _) = env.alloc(&h, page_size(), 1);
@@ -243,7 +261,10 @@ fn alignment_holes_are_committed_and_writable() {
         held.push(p);
         fillers += 1;
     }
-    assert!(fillers >= 2, "hole below the second aligned run took {fillers} fillers");
+    assert!(
+        fillers >= 2,
+        "hole below the second aligned run took {fillers} fillers"
+    );
     for &p in &held {
         let v = unsafe { *p };
         assert!(all(p, page_size(), v));

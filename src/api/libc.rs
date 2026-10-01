@@ -85,9 +85,13 @@ pub fn malloc(size: usize) -> *mut u8 {
     // The fast path is a cache pop with no calls in it; everything else
     // (init, heap creation, refill, huge, ENOMEM) is one tail call away so
     // the exported `malloc` needs no stack frame.
-    let Some(c) = class_of(size) else { return malloc_slow(size) };
+    let Some(c) = class_of(size) else {
+        return malloc_slow(size);
+    };
     let shared = super::shared_ptr();
-    let Some(h) = heap::existing_heap(shared) else { return malloc_slow(size) };
+    let Some(h) = heap::existing_heap(shared) else {
+        return malloc_slow(size);
+    };
     // SAFETY: this thread's heap exists, so this thread observed `READY`
     // (the byte was read once inside `existing_heap`; this is the same
     // load, merged by the compiler).
@@ -144,7 +148,9 @@ pub(super) fn malloc_slow(size: usize) -> *mut u8 {
 /// zero (fresh or purged memory).
 #[inline(always)]
 pub fn calloc(n: usize, m: usize) -> *mut u8 {
-    let Some(size) = n.checked_mul(m) else { return enomem() };
+    let Some(size) = n.checked_mul(m) else {
+        return enomem();
+    };
     let shared = super::shared();
     let (p, zeroed) = match class_of(size) {
         Some(c) => heap::alloc_zeroed(shared, c),
@@ -226,7 +232,11 @@ pub fn free_sized(p: *mut u8, size: usize) {
 /// `aligned_alloc`. An alignment that is not a power of two matches no
 /// class and aborts on a slab pointer.
 pub fn free_aligned_sized(p: *mut u8, align: usize, size: usize) {
-    let hint = if align.is_power_of_two() { class_for(size, align) } else { None };
+    let hint = if align.is_power_of_two() {
+        class_for(size, align)
+    } else {
+        None
+    };
     free_sized_hint(p, size, hint)
 }
 
@@ -262,7 +272,9 @@ pub fn usable_size(shared: &Shared, p: *mut u8) -> usize {
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
-            shared.table(class).check_live(slab as usize, slot as usize, p as usize);
+            shared
+                .table(class)
+                .check_live(slab as usize, slot as usize, p as usize);
             CLASSES[class].size()
         }
         Kind::Huge { page } => shared.huge.usable_size(page),
@@ -299,11 +311,19 @@ pub fn malloc_usable_size(p: *mut u8) -> usize {
 /// `Some(old)`, the usable bytes of `p`, the most a move has to copy.
 /// Aborts, naming `what`, unless `p` is a live slab slot or huge run
 /// start.
-pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: usize, align: usize) -> Option<usize> {
+pub(super) fn old_size_or_keep(
+    shared: &Shared,
+    what: &str,
+    p: *mut u8,
+    size: usize,
+    align: usize,
+) -> Option<usize> {
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
-            shared.table(class).check_live(slab as usize, slot as usize, p as usize);
+            shared
+                .table(class)
+                .check_live(slab as usize, slot as usize, p as usize);
             if class_for(size, align) == Some(class) {
                 return None;
             }
@@ -311,12 +331,18 @@ pub(super) fn old_size_or_keep(shared: &Shared, what: &str, p: *mut u8, size: us
         }
         Kind::Huge { page } => {
             let old = shared.huge.usable_size(page);
-            if class_for(size, align).is_none() && shared.huge.usable_for(size) == Some(old) && (p as usize) % align == 0 {
+            if class_for(size, align).is_none()
+                && shared.huge.usable_for(size) == Some(old)
+                && (p as usize) % align == 0
+            {
                 return None;
             }
             Some(old)
         }
-        Kind::Invalid => crate::sys::abort_fmt(format_args!("{what} of {:#x}: not an allocation", p as usize)),
+        Kind::Invalid => crate::sys::abort_fmt(format_args!(
+            "{what} of {:#x}: not an allocation",
+            p as usize
+        )),
     }
 }
 
@@ -332,8 +358,12 @@ pub fn realloc(p: *mut u8, size: usize) -> *mut u8 {
         free(p);
         return ptr::null_mut();
     }
-    let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
-    let Some(old) = old_size_or_keep(shared, "realloc", p, size, 1) else { return p };
+    let Some(shared) = super::shared_if_ready() else {
+        free_before_init(p)
+    };
+    let Some(old) = old_size_or_keep(shared, "realloc", p, size, 1) else {
+        return p;
+    };
     let q = malloc(size);
     if q.is_null() {
         return q;
@@ -395,9 +425,13 @@ fn class_size(class: usize) -> usize {
 /// pop used; everything else is one tail call away, as in `malloc`.
 #[inline(always)]
 pub fn malloc_usable(size: usize, usable: *mut usize) -> *mut u8 {
-    let Some(c) = class_of(size) else { return malloc_usable_huge(size, usable) };
+    let Some(c) = class_of(size) else {
+        return malloc_usable_huge(size, usable);
+    };
     let shared = super::shared_ptr();
-    let Some(h) = heap::existing_heap(shared) else { return malloc_usable_class(c, usable) };
+    let Some(h) = heap::existing_heap(shared) else {
+        return malloc_usable_class(c, usable);
+    };
     // SAFETY: as in `malloc`.
     let flags = unsafe { heap::fast_flags(shared) };
     match h.alloc_fast(c, flags) {
@@ -458,7 +492,15 @@ pub fn calloc_usable(n: usize, m: usize, usable: *mut usize) -> *mut u8 {
         }
         None => {
             let (p, zeroed) = alloc_huge(shared, size, 1);
-            (p, zeroed, if p.is_null() { 0 } else { usable_size(shared, p) })
+            (
+                p,
+                zeroed,
+                if p.is_null() {
+                    0
+                } else {
+                    usable_size(shared, p)
+                },
+            )
         }
     };
     if p.is_null() {
@@ -488,7 +530,9 @@ pub fn realloc_usable(p: *mut u8, size: usize, usable: *mut usize) -> *mut u8 {
         store_usable(usable, 0);
         return ptr::null_mut();
     }
-    let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
+    let Some(shared) = super::shared_if_ready() else {
+        free_before_init(p)
+    };
     let (keep, old) = realloc_old(shared, p, size);
     if keep {
         store_usable(usable, old);
@@ -514,14 +558,22 @@ fn realloc_old(shared: &Shared, p: *mut u8, size: usize) -> (bool, usize) {
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let class = class as usize;
-            shared.table(class).check_live(slab as usize, slot as usize, p as usize);
+            shared
+                .table(class)
+                .check_live(slab as usize, slot as usize, p as usize);
             (class_of(size) == Some(class), CLASSES[class].size())
         }
         Kind::Huge { page } => {
             let old = shared.huge.usable_size(page);
-            (class_of(size).is_none() && shared.huge.usable_for(size) == Some(old), old)
+            (
+                class_of(size).is_none() && shared.huge.usable_for(size) == Some(old),
+                old,
+            )
         }
-        Kind::Invalid => crate::sys::abort_fmt(format_args!("realloc of {:#x}: not an allocation", p as usize)),
+        Kind::Invalid => crate::sys::abort_fmt(format_args!(
+            "realloc of {:#x}: not an allocation",
+            p as usize
+        )),
     }
 }
 
@@ -555,7 +607,9 @@ pub fn free_usable(p: *mut u8) -> usize {
 #[cold]
 #[inline(never)]
 fn free_usable_slow(p: *mut u8) -> usize {
-    let Some(shared) = super::shared_if_ready() else { free_before_init(p) };
+    let Some(shared) = super::shared_if_ready() else {
+        free_before_init(p)
+    };
     let usable = match shared.classify_free(p) {
         Ok((class, _)) => CLASSES[class].size(),
         Err(page) => shared.huge.usable_size(page),
@@ -644,7 +698,9 @@ pub fn valloc(size: usize) -> *mut u8 {
 /// `pvalloc`: page-aligned, size rounded up to a whole page.
 pub fn pvalloc(size: usize) -> *mut u8 {
     let page = super::shared().regions.page_size();
-    let Some(rounded) = size.checked_add(page - 1) else { return enomem() };
+    let Some(rounded) = size.checked_add(page - 1) else {
+        return enomem();
+    };
     alloc_aligned(page, rounded & !(page - 1))
 }
 
@@ -653,7 +709,9 @@ pub fn pvalloc(size: usize) -> *mut u8 {
 /// section 8). Returns 1 if anything was purged, 0 otherwise or before
 /// init. `pad` is glibc's top-of-heap allowance and has no meaning here.
 pub fn malloc_trim(_pad: usize) -> c_int {
-    let Some(shared) = super::shared_if_ready() else { return 0 };
+    let Some(shared) = super::shared_if_ready() else {
+        return 0;
+    };
     if let Some(h) = heap::existing_heap(shared) {
         h.flush_all(shared);
     }
@@ -741,7 +799,11 @@ mod exports {
     }
 
     #[unsafe(no_mangle)]
-    pub extern "C" fn challoc_realloc_usable(p: *mut c_void, size: usize, usable: *mut usize) -> *mut c_void {
+    pub extern "C" fn challoc_realloc_usable(
+        p: *mut c_void,
+        size: usize,
+        usable: *mut usize,
+    ) -> *mut c_void {
         super::realloc_usable(p as *mut u8, size, usable) as *mut c_void
     }
 
@@ -777,8 +839,22 @@ mod tests {
 
     #[test]
     fn malloc_free_round_trip_every_tier() {
-        for &n in &[0usize, 1, 7, 16, 17, 100, 1024, 1025, 4096, 65536, MEDIUM_MAX, MEDIUM_MAX + 1, 1 << 20, 10 << 20]
-        {
+        for &n in &[
+            0usize,
+            1,
+            7,
+            16,
+            17,
+            100,
+            1024,
+            1025,
+            4096,
+            65536,
+            MEDIUM_MAX,
+            MEDIUM_MAX + 1,
+            1 << 20,
+            10 << 20,
+        ] {
             let p = malloc(n);
             assert!(!p.is_null(), "malloc({n})");
             assert_eq!(p as usize % QUANTUM, 0);
@@ -828,7 +904,18 @@ mod tests {
     #[test]
     fn realloc_moves_and_preserves_content() {
         // Grow through the tiers and back down, checking content each step.
-        let sizes = [10usize, 100, 1000, 10_000, 100_000, MEDIUM_MAX + 1, 2 << 20, 100_000, 1000, 10];
+        let sizes = [
+            10usize,
+            100,
+            1000,
+            10_000,
+            100_000,
+            MEDIUM_MAX + 1,
+            2 << 20,
+            100_000,
+            1000,
+            10,
+        ];
         let mut p = malloc(sizes[0]);
         fill(p, sizes[0], 1);
         let mut prev = sizes[0];
@@ -844,7 +931,10 @@ mod tests {
         assert_eq!(q, p);
         let q = realloc(p, prev + 1);
         assert_eq!(q, p, "10 -> 11 stays in the 16-byte class");
-        assert!(realloc(p, 0).is_null(), "realloc(p, 0) frees and returns null");
+        assert!(
+            realloc(p, 0).is_null(),
+            "realloc(p, 0) frees and returns null"
+        );
 
         // Huge: same number of pages keeps the pointer.
         let page = super::super::shared().regions.page_size();
@@ -865,10 +955,21 @@ mod tests {
     fn aligned_allocations_honour_every_power_of_two() {
         let mut align = QUANTUM;
         while align <= 4 << 20 {
-            for &size in &[1usize, align - 1, align, align + 1, 3 * align, MEDIUM_MAX + 1] {
+            for &size in &[
+                1usize,
+                align - 1,
+                align,
+                align + 1,
+                3 * align,
+                MEDIUM_MAX + 1,
+            ] {
                 let p = aligned_alloc(align, size);
                 assert!(!p.is_null(), "aligned_alloc({align}, {size})");
-                assert_eq!(p as usize % align, 0, "aligned_alloc({align}, {size}) = {p:p}");
+                assert_eq!(
+                    p as usize % align,
+                    0,
+                    "aligned_alloc({align}, {size}) = {p:p}"
+                );
                 assert!(malloc_usable_size(p) >= size);
                 fill(p, size, 9);
                 check(p, size, 9);
@@ -913,7 +1014,11 @@ mod tests {
         let mut out = ptr::null_mut::<u8>();
         set_errno(0);
         assert_eq!(posix_memalign(&mut out, 3, 16), EINVAL);
-        assert_eq!(posix_memalign(&mut out, 4, 16), EINVAL, "below sizeof(void *)");
+        assert_eq!(
+            posix_memalign(&mut out, 4, 16),
+            EINVAL,
+            "below sizeof(void *)"
+        );
         assert_eq!(errno(), 0, "posix_memalign leaves errno alone");
         assert!(out.is_null());
 
@@ -950,8 +1055,22 @@ mod tests {
     /// `malloc_usable_size` does, on every tier, and free what they made.
     #[test]
     fn usable_entry_points_agree_with_malloc_usable_size_on_every_tier() {
-        for &n in &[0usize, 1, 7, 16, 17, 100, 1024, 1025, 4096, 65536, MEDIUM_MAX, MEDIUM_MAX + 1, 1 << 20, 10 << 20]
-        {
+        for &n in &[
+            0usize,
+            1,
+            7,
+            16,
+            17,
+            100,
+            1024,
+            1025,
+            4096,
+            65536,
+            MEDIUM_MAX,
+            MEDIUM_MAX + 1,
+            1 << 20,
+            10 << 20,
+        ] {
             let mut u = usize::MAX;
             let p = malloc_usable(n, &mut u);
             assert!(!p.is_null(), "malloc_usable({n})");
@@ -976,7 +1095,11 @@ mod tests {
             assert!(!q.is_null(), "calloc_usable({n})");
             assert_eq!(u, malloc_usable_size(q));
             for i in 0..u {
-                assert_eq!(unsafe { *q.add(i) }, 0, "calloc_usable({n}) byte {i} of {u} not zero");
+                assert_eq!(
+                    unsafe { *q.add(i) },
+                    0,
+                    "calloc_usable({n}) byte {i} of {u} not zero"
+                );
             }
             fill(q, u, 4);
 
@@ -985,7 +1108,10 @@ mod tests {
             // 1, still class 0), a move across tiers keeps the content.
             let mut u2 = usize::MAX;
             let r = realloc_usable(q, n.max(1), &mut u2);
-            assert_eq!(r, q, "realloc_usable({n}) to the same size keeps the pointer");
+            assert_eq!(
+                r, q,
+                "realloc_usable({n}) to the same size keeps the pointer"
+            );
             assert_eq!(u2, u);
             let grown = 2 * n + 4097;
             let mut u3 = usize::MAX;
@@ -1028,7 +1154,10 @@ mod tests {
         assert_eq!(u2, 0);
         check(p, 300, 8);
         let mut u3 = usize::MAX;
-        assert!(realloc_usable(p, 0, &mut u3).is_null(), "realloc_usable(p, 0) frees and returns null");
+        assert!(
+            realloc_usable(p, 0, &mut u3).is_null(),
+            "realloc_usable(p, 0) frees and returns null"
+        );
         assert_eq!(u3, 0);
 
         set_errno(0);
@@ -1041,7 +1170,10 @@ mod tests {
         assert_eq!((errno(), u), (ENOMEM, 0));
         set_errno(0);
         let mut u = usize::MAX;
-        assert!(calloc_usable(1, usize::MAX / 2, &mut u).is_null(), "exhaustion");
+        assert!(
+            calloc_usable(1, usize::MAX / 2, &mut u).is_null(),
+            "exhaustion"
+        );
         assert_eq!((errno(), u), (ENOMEM, 0));
 
         // Aligned blocks report their class, not the request.
@@ -1102,7 +1234,9 @@ mod tests {
 
     #[test]
     fn cross_thread_free_and_thread_exit_with_full_cache() {
-        let blocks: Vec<usize> = (0..4096).map(|i| malloc(32 + (i % 8) * 16) as usize).collect();
+        let blocks: Vec<usize> = (0..4096)
+            .map(|i| malloc(32 + (i % 8) * 16) as usize)
+            .collect();
         let handles: Vec<_> = blocks
             .chunks(512)
             .map(|chunk| {
@@ -1127,7 +1261,10 @@ mod tests {
     #[test]
     fn shared_object_exports_every_libc_entry_point() {
         let so = crate::api::c_programs::release_so();
-        let out = Command::new("readelf").args(["--dyn-syms", "-W", &so]).output().expect("readelf");
+        let out = Command::new("readelf")
+            .args(["--dyn-syms", "-W", &so])
+            .output()
+            .expect("readelf");
         assert!(out.status.success());
         let syms = String::from_utf8(out.stdout).unwrap();
         for name in [
@@ -1146,7 +1283,9 @@ mod tests {
             "malloc_usable_size",
         ] {
             assert!(
-                syms.lines().any(|l| l.contains(" FUNC ") && l.contains(" GLOBAL ") && l.ends_with(&std::format!(" {name}"))),
+                syms.lines().any(|l| l.contains(" FUNC ")
+                    && l.contains(" GLOBAL ")
+                    && l.ends_with(&std::format!(" {name}"))),
                 "{name} not exported as a global function:\n{syms}"
             );
         }

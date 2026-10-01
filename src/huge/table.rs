@@ -46,7 +46,11 @@ impl Table {
         let layout = Table::layout(lg_cap);
         if layout.size() <= meta::MAX_BINNED {
             let p = meta.alloc_zeroed(layout);
-            if p.is_null() { None } else { Some((p as *mut Entry, true)) }
+            if p.is_null() {
+                None
+            } else {
+                Some((p as *mut Entry, true))
+            }
         } else {
             let p = meta.reserve_committed(layout.size(), page)?;
             Some((p as *mut Entry, false))
@@ -64,7 +68,12 @@ impl Table {
 
     pub(super) fn new(meta: &Meta, page: usize) -> Option<Table> {
         let (entries, binned) = Table::storage(meta, page, LG_INITIAL_TABLE)?;
-        Some(Table { entries, lg_cap: LG_INITIAL_TABLE, count: 0, binned })
+        Some(Table {
+            entries,
+            lg_cap: LG_INITIAL_TABLE,
+            count: 0,
+            binned,
+        })
     }
 
     #[inline]
@@ -146,14 +155,24 @@ impl Table {
                 break;
             }
             let ideal = self.hash(e.key);
-            let stays = if i <= j { i < ideal && ideal <= j } else { i < ideal || ideal <= j };
+            let stays = if i <= j {
+                i < ideal && ideal <= j
+            } else {
+                i < ideal || ideal <= j
+            };
             if !stays {
                 *self.slot(i) = e;
                 i = j;
             }
         }
-        *self.slot(i) = Entry { key: 0, desc: ptr::null_mut() };
-        self.count = self.count.checked_sub(1).unwrap_or_else(|| panic!("huge: descriptor table count underflow"));
+        *self.slot(i) = Entry {
+            key: 0,
+            desc: ptr::null_mut(),
+        };
+        self.count = self
+            .count
+            .checked_sub(1)
+            .unwrap_or_else(|| panic!("huge: descriptor table count underflow"));
     }
 
     /// Make room for `extra` more keys at a load of one half or less. On
@@ -167,8 +186,18 @@ impl Table {
             lg += 1;
         }
         let (entries, binned) = Table::storage(meta, page, lg).ok_or(())?;
-        let old = Table { entries: self.entries, lg_cap: self.lg_cap, count: self.count, binned: self.binned };
-        *self = Table { entries, lg_cap: lg, count: 0, binned };
+        let old = Table {
+            entries: self.entries,
+            lg_cap: self.lg_cap,
+            count: self.count,
+            binned: self.binned,
+        };
+        *self = Table {
+            entries,
+            lg_cap: lg,
+            count: 0,
+            binned,
+        };
         for i in 0..old.cap() {
             let e = *old.slot(i);
             if !e.desc.is_null() {
@@ -198,7 +227,8 @@ mod tests {
         let page = page_size();
         let mut t = Table::new(&env.meta, page).expect("table");
         let last = t.cap() - 1;
-        let key_with_hash = |t: &Table, h: usize, from: usize| (from..).find(|&k| t.hash(k) == h).unwrap();
+        let key_with_hash =
+            |t: &Table, h: usize, from: usize| (from..).find(|&k| t.hash(k) == h).unwrap();
         // Three keys hashing to the last slot, one hashing to slot 0 and
         // one hashing to slot 1.
         let a = key_with_hash(&t, last, 1);
@@ -213,11 +243,17 @@ mod tests {
         for k in [a, b, c, d] {
             t.insert(k, desc(k));
         }
-        assert_eq!([t.find(a), t.find(b), t.find(c), t.find(d)], [Some(last), Some(0), Some(1), Some(2)]);
+        assert_eq!(
+            [t.find(a), t.find(b), t.find(c), t.find(d)],
+            [Some(last), Some(0), Some(1), Some(2)]
+        );
         // Removing the head of the chain pulls b back across the wrap, c
         // into its ideal slot and d after it.
         t.remove(a);
-        assert_eq!([t.find(b), t.find(c), t.find(d)], [Some(last), Some(0), Some(1)]);
+        assert_eq!(
+            [t.find(b), t.find(c), t.find(d)],
+            [Some(last), Some(0), Some(1)]
+        );
         assert!(t.find(a).is_none() && t.get(a).is_null());
         assert_eq!(t.count, 3);
         for k in [b, c, d] {
@@ -231,7 +267,10 @@ mod tests {
         t.insert(e, desc(e));
         assert_eq!(t.find(e), Some(1));
         t.remove(d);
-        assert_eq!([t.find(b), t.find(e), t.find(d)], [Some(last), Some(1), None]);
+        assert_eq!(
+            [t.find(b), t.find(e), t.find(d)],
+            [Some(last), Some(1), None]
+        );
         t.remove(b);
         assert_eq!([t.find(b), t.find(e)], [None, Some(1)]);
         assert_eq!(t.count, 1);
@@ -271,7 +310,11 @@ mod tests {
         assert_eq!(grew, 1, "one doubling fits, the second does not");
         assert_eq!(t.cap(), 2 << LG_INITIAL_TABLE);
         assert_eq!(t.count, keys.len());
-        assert_eq!(keys.len() * 2, t.cap(), "ensure refused exactly at half load");
+        assert_eq!(
+            keys.len() * 2,
+            t.cap(),
+            "ensure refused exactly at half load"
+        );
         for &k in &keys {
             assert_eq!(t.get(k), desc(k), "key {k} lost in the failed growth");
         }

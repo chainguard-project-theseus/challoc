@@ -122,7 +122,12 @@ impl Heap {
     /// cache before popping.
     #[cold]
     #[inline(never)]
-    pub(super) unsafe fn pop_compact(&mut self, cache: *mut CacheHeader, class: usize, len: u32) -> (*mut u8, bool) {
+    pub(super) unsafe fn pop_compact(
+        &mut self,
+        cache: *mut CacheHeader,
+        class: usize,
+        len: u32,
+    ) -> (*mut u8, bool) {
         // SAFETY: guaranteed by the caller.
         unsafe {
             let pac = (*self.shared).pac();
@@ -138,16 +143,21 @@ impl Heap {
                     let mut len = (*cache).len;
                     if len == 0 {
                         // The GC emptied the cache.
-                        let Some(a) = shared.arena((*cache).arena) else { return (ptr::null_mut(), false) };
+                        let Some(a) = shared.arena((*cache).arena) else {
+                            return (ptr::null_mut(), false);
+                        };
                         len = self.refill(shared, a, cache, class);
                         if len == 0 {
                             return (ptr::null_mut(), false);
                         }
                     }
-                    let (refilled, verdict) = Self::probe_verdict(shared, (*cache).arena, class, (*cache).probe_refilled);
+                    let (refilled, verdict) =
+                        Self::probe_verdict(shared, (*cache).arena, class, (*cache).probe_refilled);
                     (*cache).probe_refilled = refilled;
                     match verdict {
-                        Verdict::Refilling | Verdict::Dense => return Self::pop_top(cache, len, pac),
+                        Verdict::Refilling | Verdict::Dense => {
+                            return Self::pop_top(cache, len, pac);
+                        }
                         Verdict::Fragmented => {}
                     }
                     (*cache).set_mode(MODE_COMPACT);
@@ -164,7 +174,12 @@ impl Heap {
     ///
     /// # Safety
     /// As for [`Heap::pop`].
-    pub(super) unsafe fn pop_compact_run(&mut self, cache: *mut CacheHeader, class: usize, len: u32) -> (*mut u8, bool) {
+    pub(super) unsafe fn pop_compact_run(
+        &mut self,
+        cache: *mut CacheHeader,
+        class: usize,
+        len: u32,
+    ) -> (*mut u8, bool) {
         // SAFETY: guaranteed by the caller.
         unsafe {
             let pac = (*self.shared).pac();
@@ -185,7 +200,9 @@ impl Heap {
                         // the claim came back empty). Refill as the probe
                         // branch does; popping here would wrap `len - 1`.
                         let shared: &Shared = &*self.shared;
-                        let Some(a) = shared.arena((*cache).arena) else { return (ptr::null_mut(), false) };
+                        let Some(a) = shared.arena((*cache).arena) else {
+                            return (ptr::null_mut(), false);
+                        };
                         len = self.refill(shared, a, cache, class);
                         if len == 0 {
                             return (ptr::null_mut(), false);
@@ -208,7 +225,11 @@ impl Heap {
             // Entries move within the stack signed (the modifier is the
             // stack's base, not the entry's position); only the one leaving
             // is authenticated.
-            let p = if pac { pac::auth(p as usize, slots as usize) as *mut u8 } else { p };
+            let p = if pac {
+                pac::auth(p as usize, slots as usize) as *mut u8
+            } else {
+                p
+            };
             *slots.add(at as usize) = *slots.add(top as usize);
             (*cache).len = top;
             (*cache).run_end = at;
@@ -227,7 +248,8 @@ impl Heap {
     pub(super) fn fragmented(shared: &Shared, arena: u16, class: usize) -> bool {
         let cs = shared.owner(arena).class(class);
         let (holes, capacity) = cs.holes();
-        holes >= COMPACT_MIN_SLABS * CLASSES[class].compact_slots() && holes * COMPACT_MIN_RATIO >= capacity
+        holes >= COMPACT_MIN_SLABS * CLASSES[class].compact_slots()
+            && holes * COMPACT_MIN_RATIO >= capacity
     }
 
     /// The compaction probe's gate (design 6.4) for the scheduled pops
@@ -235,7 +257,12 @@ impl Heap {
     /// header's `probe_refilled`) and the verdict, given the counter at
     /// the previous probe. Records the class's `note_gate_refill` and
     /// `note_compact_mode(true)` statistics as it decides.
-    pub(super) fn probe_verdict(shared: &Shared, arena: u16, class: usize, prev_refilled: u32) -> (u32, Verdict) {
+    pub(super) fn probe_verdict(
+        shared: &Shared,
+        arena: u16,
+        class: usize,
+        prev_refilled: u32,
+    ) -> (u32, Verdict) {
         let cs = shared.owner(arena).class(class);
         let refilled = cs.refilled() as u32;
         let delta = refilled.wrapping_sub(prev_refilled) as usize;

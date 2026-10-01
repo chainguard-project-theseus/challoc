@@ -2,8 +2,8 @@
 //! `SIGABRT` delivered the way glibc's `abort` delivers it. Nothing here
 //! allocates; the sink is a fixed buffer on the stack.
 
+use super::{SIG_UNBLOCK, SIGABRT, SIGSET_WORDS_BYTES, STDERR_FILENO};
 use super::{exit_group, getpid, gettid, nr, raw, write_all};
-use super::{SIGABRT, SIGSET_WORDS_BYTES, SIG_UNBLOCK, STDERR_FILENO};
 use core::fmt;
 
 /// The kernel's `struct sigaction` for `rt_sigaction`. Both x86_64 and
@@ -26,7 +26,10 @@ pub struct Stderr {
 
 impl Stderr {
     pub const fn new() -> Self {
-        Stderr { buf: [0; 512], len: 0 }
+        Stderr {
+            buf: [0; 512],
+            len: 0,
+        }
     }
 
     pub fn flush(&mut self) {
@@ -110,7 +113,12 @@ fn die() -> ! {
         );
         raw::syscall3(nr::TGKILL, pid, tid, SIGABRT as usize);
         // A handler returned. Reset to SIG_DFL and try once more.
-        let dfl = KernelSigaction { handler: 0, flags: 0, restorer: 0, mask: 0 };
+        let dfl = KernelSigaction {
+            handler: 0,
+            flags: 0,
+            restorer: 0,
+            mask: 0,
+        };
         raw::syscall4(
             nr::RT_SIGACTION,
             SIGABRT as usize,
@@ -180,7 +188,12 @@ mod tests {
     fn run_abort_child(mode: &str) -> (Option<i32>, std::string::String) {
         let exe = env::current_exe().unwrap();
         let output = Command::new(exe)
-            .args(["--exact", "sys::abort::tests::abort_child_hook", "--nocapture", "--test-threads=1"])
+            .args([
+                "--exact",
+                "sys::abort::tests::abort_child_hook",
+                "--nocapture",
+                "--test-threads=1",
+            ])
             .env(ABORT_ENV, mode)
             .output()
             .unwrap();
@@ -206,7 +219,10 @@ mod tests {
     fn abort_macro_formats() {
         let (sig, err) = run_abort_child("fmt");
         assert_eq!(sig, Some(SIGABRT), "stderr: {err}");
-        assert!(err.contains("challoc: bad free of 0xdeadbeef (unknown)\n"), "stderr: {err}");
+        assert!(
+            err.contains("challoc: bad free of 0xdeadbeef (unknown)\n"),
+            "stderr: {err}"
+        );
     }
 
     #[test]

@@ -68,7 +68,17 @@ fn decayer_walks_once_per_step_and_follows_a_shortened_period() {
 /// the flush really discards.
 fn scratch(pages: usize, page: usize) -> usize {
     use crate::sys::{self, MAP_ANONYMOUS, MAP_PRIVATE, PROT_READ, PROT_WRITE};
-    unsafe { sys::mmap(0, pages * page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) }.unwrap()
+    unsafe {
+        sys::mmap(
+            0,
+            pages * page,
+            PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS,
+            -1,
+            0,
+        )
+    }
+    .unwrap()
 }
 
 /// The page the batch tests work in: the kernel's (the flush really

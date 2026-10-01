@@ -116,7 +116,10 @@ enum Expect<'a> {
     /// started); for `SIGABRT` stderr must carry `challoc: ` lines and every
     /// string in `stderr_contains` must appear in one of them. The program
     /// must not have finished (no `survived`, no `ok <prog>`).
-    Abort { signal: i32, stderr_contains: &'a [&'a str] },
+    Abort {
+        signal: i32,
+        stderr_contains: &'a [&'a str],
+    },
 }
 
 /// The host feature a row needs; a closed gate is a skip.
@@ -215,7 +218,12 @@ macro_rules! glibc {
         CTest {
             dir: "tests/glibc/malloc",
             prog: $name,
-            cflags: &["-D_GNU_SOURCE", "-Wno-unused-parameter", "-Itests/glibc/include", concat!("-DTEST_NAME=\"", $name, "\"")],
+            cflags: &[
+                "-D_GNU_SOURCE",
+                "-Wno-unused-parameter",
+                "-Itests/glibc/include",
+                concat!("-DTEST_NAME=\"", $name, "\""),
+            ],
             ..BASE
         }
     };
@@ -262,8 +270,13 @@ fn compiled(row: &CTest<'_>) -> String {
         ldflags: row.ldflags.iter().map(|s| String::from(*s)).collect(),
     };
     let cell = {
-        let mut map = CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
-        map.entry(key.clone()).or_insert_with(|| Arc::new(OnceLock::new())).clone()
+        let mut map = CACHE
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap();
+        map.entry(key.clone())
+            .or_insert_with(|| Arc::new(OnceLock::new()))
+            .clone()
     };
     cell.get_or_init(|| compile_now(&key)).clone()
 }
@@ -275,7 +288,12 @@ fn compiled(row: &CTest<'_>) -> String {
 fn compile_now(key: &Key) -> String {
     use std::hash::{Hash, Hasher};
     let root = root();
-    let src = std::format!("{root}/{}/{}.{}", key.dir, key.prog, if key.cxx { "cpp" } else { "c" });
+    let src = std::format!(
+        "{root}/{}/{}.{}",
+        key.dir,
+        key.prog,
+        if key.cxx { "cpp" } else { "c" }
+    );
     let dir = std::format!("{}/ctests", target_dir());
     std::fs::create_dir_all(&dir).unwrap();
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -291,11 +309,17 @@ fn compile_now(key: &Key) -> String {
         })
         .collect();
     let mut cmd = Command::new("sh");
-    cmd.arg(std::format!("{root}/scripts/ctest-cc.sh")).env("CHALLOC_LIB", release_so());
+    cmd.arg(std::format!("{root}/scripts/ctest-cc.sh"))
+        .env("CHALLOC_LIB", release_so());
     if key.cxx {
         cmd.arg("--cxx");
     }
-    let status = cmd.args(&cflags).args([&src, "-o", &tmp]).args(&key.ldflags).status().unwrap();
+    let status = cmd
+        .args(&cflags)
+        .args([&src, "-o", &tmp])
+        .args(&key.ldflags)
+        .status()
+        .unwrap();
     assert!(status.success(), "compiling {src} failed");
     std::fs::rename(&tmp, &out).unwrap();
     out
@@ -319,14 +343,22 @@ fn run_row(test: &str, row: &CTest<'_>) {
             // (`Shared::init` zeroes the interval otherwise); the Rust test
             // `heap::tests::sized_slot_rejects_guard_slabs` forces them on.
             if !crate::sys::features::Features::probe().guard_install {
-                skip!(test, "guard_install=no on this kernel; {prog} {} not run", args.join(" "));
+                skip!(
+                    test,
+                    "guard_install=no on this kernel; {prog} {} not run",
+                    args.join(" ")
+                );
             }
         }
     }
     let so = release_so();
     let bin = compiled(row);
 
-    let bare = Command::new(&bin).args(args).env_remove("LD_PRELOAD").output().unwrap();
+    let bare = Command::new(&bin)
+        .args(args)
+        .env_remove("LD_PRELOAD")
+        .output()
+        .unwrap();
     assert!(
         !bare.status.success() && bare.status.signal().is_none(),
         "{test}: {prog} {args:?} without libchalloc preloaded: {:?}\nstdout: {}\nstderr: {}",
@@ -339,7 +371,9 @@ fn run_row(test: &str, row: &CTest<'_>) {
     // A suite run under `CHALLOC_CONF` would override the test's own
     // `MALLOC_CONF` (the environment key is
     // read after it and wins) and turn every both-ways test one way.
-    cmd.args(args).env_remove("CHALLOC_CONF").env("LD_PRELOAD", &so);
+    cmd.args(args)
+        .env_remove("CHALLOC_CONF")
+        .env("LD_PRELOAD", &so);
     if let Some(conf) = row.conf {
         cmd.env("MALLOC_CONF", conf);
     }
@@ -355,11 +389,25 @@ fn run_row(test: &str, row: &CTest<'_>) {
         Expect::Ok => {
             assert!(run.status.success(), "{what} failed {detail}");
             let ok = std::format!("ok {prog}");
-            assert!(stdout.lines().any(|l| l == ok), "{what} did not print `{ok}` {detail}");
+            assert!(
+                stdout.lines().any(|l| l == ok),
+                "{what} did not print `{ok}` {detail}"
+            );
         }
-        Expect::Abort { signal, stderr_contains } => {
-            run_c_negative(&what, prog, args, signal, stderr_contains, run.status, &stdout, &stderr, &detail)
-        }
+        Expect::Abort {
+            signal,
+            stderr_contains,
+        } => run_c_negative(
+            &what,
+            prog,
+            args,
+            signal,
+            stderr_contains,
+            run.status,
+            &stdout,
+            &stderr,
+            &detail,
+        ),
     }
     for s in row.stdout_has {
         assert!(stdout.contains(s), "{what}: stdout lacks `{s}` {detail}");
@@ -402,20 +450,42 @@ fn run_c_negative(
     // stdout is expected of it.
     if let Some(mode) = args.first() {
         let started = std::format!("{prog}: {mode}");
-        assert!(stdout.lines().any(|l| l == started), "{what} never started (no `{started}` line) {detail}");
+        assert!(
+            stdout.lines().any(|l| l == started),
+            "{what} never started (no `{started}` line) {detail}"
+        );
     }
     assert!(!stdout.contains("survived"), "{what} survived {detail}");
-    assert!(!stdout.contains(&std::format!("ok {prog}")), "{what} finished {detail}");
-    assert_eq!(status.signal(), Some(signal), "{what} wrong signal {detail}");
+    assert!(
+        !stdout.contains(&std::format!("ok {prog}")),
+        "{what} finished {detail}"
+    );
+    assert_eq!(
+        status.signal(),
+        Some(signal),
+        "{what} wrong signal {detail}"
+    );
     if signal == SIGABRT {
-        let lines: Vec<&str> = stderr.lines().filter(|l| l.starts_with("challoc: ")).collect();
-        assert!(!lines.is_empty(), "{what} printed no `challoc: ` line {detail}");
+        let lines: Vec<&str> = stderr
+            .lines()
+            .filter(|l| l.starts_with("challoc: "))
+            .collect();
+        assert!(
+            !lines.is_empty(),
+            "{what} printed no `challoc: ` line {detail}"
+        );
         for e in expect {
-            assert!(lines.iter().any(|l| l.contains(e)), "{what}: no `challoc: ` line has `{e}` {detail}");
+            assert!(
+                lines.iter().any(|l| l.contains(e)),
+                "{what}: no `challoc: ` line has `{e}` {detail}"
+            );
         }
         std::eprintln!("{what}: {}", lines.join(" | "));
     } else {
-        assert!(expect.is_empty(), "{what}: stderr strings are checked for SIGABRT only");
+        assert!(
+            expect.is_empty(),
+            "{what}: stderr strings are checked for SIGABRT only"
+        );
         std::eprintln!("{what}: signal {signal}");
     }
 }
@@ -823,7 +893,13 @@ fn run_conf(name: &str, conf: Option<&str>, env: &[(&str, &str)], expect_abort: 
 
 /// [`run_conf`] with extra compiler flags (`-DPLAIN` puts `conf` in the
 /// program's `malloc_conf` instead of `je_malloc_conf`).
-fn run_conf_flags(name: &str, conf: Option<&str>, extra: &[&str], env: &[(&str, &str)], expect_abort: Option<&str>) {
+fn run_conf_flags(
+    name: &str,
+    conf: Option<&str>,
+    extra: &[&str],
+    env: &[(&str, &str)],
+    expect_abort: Option<&str>,
+) {
     let define = conf.map(|c| std::format!("-DCONF=\"{c}\""));
     let mut cflags = std::vec!["-rdynamic"];
     cflags.extend_from_slice(extra);
@@ -832,14 +908,26 @@ fn run_conf_flags(name: &str, conf: Option<&str>, extra: &[&str], env: &[(&str, 
     }
     let test = std::format!("c_conf {name}");
     match expect_abort {
-        None => run_row(&test, &CTest { prog: "conf", cflags: &cflags, env, stderr_lacks: &["challoc:"], ..BASE }),
+        None => run_row(
+            &test,
+            &CTest {
+                prog: "conf",
+                cflags: &cflags,
+                env,
+                stderr_lacks: &["challoc:"],
+                ..BASE
+            },
+        ),
         Some(text) => run_row(
             &test,
             &CTest {
                 prog: "conf",
                 cflags: &cflags,
                 env,
-                expect: Expect::Abort { signal: SIGABRT, stderr_contains: &[text, "challoc: abort_conf:"] },
+                expect: Expect::Abort {
+                    signal: SIGABRT,
+                    stderr_contains: &[text, "challoc: abort_conf:"],
+                },
                 ..BASE
             },
         ),
@@ -858,7 +946,13 @@ fn c_conf_plain_symbol_interposes_the_library_definition() {
         &[],
         Some("challoc: malloc_conf: unknown conf key \"no_such_key\""),
     );
-    run_conf_flags("plain_ok", Some("tcache:false,abort_conf:true"), &["-DPLAIN"], &[], None);
+    run_conf_flags(
+        "plain_ok",
+        Some("tcache:false,abort_conf:true"),
+        &["-DPLAIN"],
+        &[],
+        None,
+    );
 }
 
 #[test]
@@ -878,15 +972,28 @@ fn c_conf_env() {
     run_conf(
         "env",
         None,
-        &[("MALLOC_CONF", "abort_conf:true,tcache_nslots_small_max:64,lg_tcache_nslots_mul:3")],
+        &[(
+            "MALLOC_CONF",
+            "abort_conf:true,tcache_nslots_small_max:64,lg_tcache_nslots_mul:3",
+        )],
         None,
     );
 }
 
 #[test]
 fn c_conf_no_tcache() {
-    run_conf("notcache", None, &[("MALLOC_CONF", "abort_conf:true,tcache:false")], None);
-    run_conf("check_zero", None, &[("MALLOC_CONF", "abort_conf:true,check_zero:true")], None);
+    run_conf(
+        "notcache",
+        None,
+        &[("MALLOC_CONF", "abort_conf:true,tcache:false")],
+        None,
+    );
+    run_conf(
+        "check_zero",
+        None,
+        &[("MALLOC_CONF", "abort_conf:true,check_zero:true")],
+        None,
+    );
 }
 
 #[test]
@@ -898,10 +1005,22 @@ fn c_conf_inert_key_aborts_under_abort_conf() {
         "inert",
         None,
         &[("MALLOC_CONF", "abort_conf:true,stats_print:true")],
-        Some("challoc: MALLOC_CONF: conf key stats_print is accepted but has no effect (not implemented)"),
+        Some(
+            "challoc: MALLOC_CONF: conf key stats_print is accepted but has no effect (not implemented)",
+        ),
     );
-    run_conf("huge_retain_max", None, &[("MALLOC_CONF", "abort_conf:true,huge_retain_max:1048576")], None);
-    run_conf("thp", None, &[("MALLOC_CONF", "abort_conf:true,thp:auto")], None);
+    run_conf(
+        "huge_retain_max",
+        None,
+        &[("MALLOC_CONF", "abort_conf:true,huge_retain_max:1048576")],
+        None,
+    );
+    run_conf(
+        "thp",
+        None,
+        &[("MALLOC_CONF", "abort_conf:true,thp:auto")],
+        None,
+    );
 }
 
 #[test]
@@ -957,33 +1076,87 @@ fn c_conf_env_overrides_the_symbol() {
 #[test]
 fn jemalloc_symbols_in_release_so() {
     let so = release_so();
-    let dynsym = Command::new("readelf").args(["--dyn-syms", "-W", &so]).output().unwrap();
+    let dynsym = Command::new("readelf")
+        .args(["--dyn-syms", "-W", &so])
+        .output()
+        .unwrap();
     assert!(dynsym.status.success(), "readelf --dyn-syms failed");
     let dynsym = String::from_utf8_lossy(&dynsym.stdout);
-    let line = |sym: &str| dynsym.lines().find(|l| l.ends_with(&std::format!(" {sym}")) && !l.contains(" UND "));
+    let line = |sym: &str| {
+        dynsym
+            .lines()
+            .find(|l| l.ends_with(&std::format!(" {sym}")) && !l.contains(" UND "))
+    };
     for sym in [
-        "mallocx", "rallocx", "xallocx", "sallocx", "dallocx", "sdallocx", "nallocx",
-        "mallctl", "mallctlnametomib", "mallctlbymib", "malloc_stats_print",
-        "malloc_info", "malloc_stats", "malloc_trim", "mallopt", "mallinfo", "mallinfo2",
-        "je_malloc", "je_free", "je_calloc", "je_realloc", "je_aligned_alloc", "je_memalign",
-        "je_posix_memalign", "je_valloc", "je_pvalloc", "je_malloc_usable_size", "challoc_version", "challoc_features",
-        "challoc_malloc_usable", "challoc_calloc_usable", "challoc_realloc_usable", "challoc_free_usable",
-        "je_mallocx", "je_rallocx", "je_xallocx", "je_sallocx", "je_dallocx", "je_sdallocx", "je_nallocx",
-        "je_mallctl", "je_mallctlnametomib", "je_mallctlbymib", "je_malloc_stats_print",
+        "mallocx",
+        "rallocx",
+        "xallocx",
+        "sallocx",
+        "dallocx",
+        "sdallocx",
+        "nallocx",
+        "mallctl",
+        "mallctlnametomib",
+        "mallctlbymib",
+        "malloc_stats_print",
+        "malloc_info",
+        "malloc_stats",
+        "malloc_trim",
+        "mallopt",
+        "mallinfo",
+        "mallinfo2",
+        "je_malloc",
+        "je_free",
+        "je_calloc",
+        "je_realloc",
+        "je_aligned_alloc",
+        "je_memalign",
+        "je_posix_memalign",
+        "je_valloc",
+        "je_pvalloc",
+        "je_malloc_usable_size",
+        "challoc_version",
+        "challoc_features",
+        "challoc_malloc_usable",
+        "challoc_calloc_usable",
+        "challoc_realloc_usable",
+        "challoc_free_usable",
+        "je_mallocx",
+        "je_rallocx",
+        "je_xallocx",
+        "je_sallocx",
+        "je_dallocx",
+        "je_sdallocx",
+        "je_nallocx",
+        "je_mallctl",
+        "je_mallctlnametomib",
+        "je_mallctlbymib",
+        "je_malloc_stats_print",
     ] {
         let l = line(sym).unwrap_or_else(|| panic!("{sym} is not defined in {so}:\n{dynsym}"));
-        assert!(l.contains(" FUNC ") && l.contains(" GLOBAL "), "{sym} must be a global function: {l}");
+        assert!(
+            l.contains(" FUNC ") && l.contains(" GLOBAL "),
+            "{sym} must be a global function: {l}"
+        );
     }
     for sym in ["malloc_message", "je_malloc_message", "malloc_conf"] {
         let l = line(sym).unwrap_or_else(|| panic!("{sym} is not defined in {so}:\n{dynsym}"));
-        assert!(l.contains(" OBJECT ") && l.contains(" GLOBAL "), "{sym} must be a global object: {l}");
+        assert!(
+            l.contains(" OBJECT ") && l.contains(" GLOBAL "),
+            "{sym} must be a global object: {l}"
+        );
     }
     // `je_malloc_conf` is read from the program, never defined here: a weak
     // undefined reference resolved through the GOT.
     for sym in ["je_malloc_conf"] {
-        let l = dynsym.lines().find(|l| l.ends_with(&std::format!(" {sym}")));
+        let l = dynsym
+            .lines()
+            .find(|l| l.ends_with(&std::format!(" {sym}")));
         let l = l.unwrap_or_else(|| panic!("{sym} not referenced by {so}:\n{dynsym}"));
-        assert!(l.contains(" WEAK ") && l.contains(" UND "), "{sym} must be a weak undefined reference: {l}");
+        assert!(
+            l.contains(" WEAK ") && l.contains(" UND "),
+            "{sym} must be a weak undefined reference: {l}"
+        );
     }
 }
 
@@ -994,42 +1167,89 @@ fn jemalloc_symbols_in_release_so() {
 #[test]
 fn cxx_symbols_in_release_so() {
     let so = release_so();
-    let dynsym = Command::new("readelf").args(["--dyn-syms", "-W", &so]).output().unwrap();
+    let dynsym = Command::new("readelf")
+        .args(["--dyn-syms", "-W", &so])
+        .output()
+        .unwrap();
     assert!(dynsym.status.success(), "readelf --dyn-syms failed");
     let dynsym = String::from_utf8_lossy(&dynsym.stdout);
     let defined = |sym: &str| {
-        dynsym.lines().any(|l| l.contains(" FUNC ") && l.contains(" GLOBAL ") && !l.contains(" UND ") && l.ends_with(&std::format!(" {sym}")))
+        dynsym.lines().any(|l| {
+            l.contains(" FUNC ")
+                && l.contains(" GLOBAL ")
+                && !l.contains(" UND ")
+                && l.ends_with(&std::format!(" {sym}"))
+        })
     };
     for sym in [
-        "_Znwm", "_Znam", "_ZnwmRKSt9nothrow_t", "_ZnamRKSt9nothrow_t",
-        "_ZnwmSt11align_val_t", "_ZnamSt11align_val_t",
-        "_ZnwmSt11align_val_tRKSt9nothrow_t", "_ZnamSt11align_val_tRKSt9nothrow_t",
-        "_ZdlPv", "_ZdaPv", "_ZdlPvRKSt9nothrow_t", "_ZdaPvRKSt9nothrow_t",
-        "_ZdlPvm", "_ZdaPvm", "_ZdlPvSt11align_val_t", "_ZdaPvSt11align_val_t",
-        "_ZdlPvSt11align_val_tRKSt9nothrow_t", "_ZdaPvSt11align_val_tRKSt9nothrow_t",
-        "_ZdlPvmSt11align_val_t", "_ZdaPvmSt11align_val_t",
+        "_Znwm",
+        "_Znam",
+        "_ZnwmRKSt9nothrow_t",
+        "_ZnamRKSt9nothrow_t",
+        "_ZnwmSt11align_val_t",
+        "_ZnamSt11align_val_t",
+        "_ZnwmSt11align_val_tRKSt9nothrow_t",
+        "_ZnamSt11align_val_tRKSt9nothrow_t",
+        "_ZdlPv",
+        "_ZdaPv",
+        "_ZdlPvRKSt9nothrow_t",
+        "_ZdaPvRKSt9nothrow_t",
+        "_ZdlPvm",
+        "_ZdaPvm",
+        "_ZdlPvSt11align_val_t",
+        "_ZdaPvSt11align_val_t",
+        "_ZdlPvSt11align_val_tRKSt9nothrow_t",
+        "_ZdaPvSt11align_val_tRKSt9nothrow_t",
+        "_ZdlPvmSt11align_val_t",
+        "_ZdaPvmSt11align_val_t",
     ] {
-        assert!(defined(sym), "{sym} is not a defined global function in {so}:\n{dynsym}");
+        assert!(
+            defined(sym),
+            "{sym} is not a defined global function in {so}:\n{dynsym}"
+        );
     }
     for sym in ["_ZSt15get_new_handlerv", "_ZSt17__throw_bad_allocv"] {
-        let line = dynsym.lines().find(|l| l.ends_with(&std::format!(" {sym}")));
+        let line = dynsym
+            .lines()
+            .find(|l| l.ends_with(&std::format!(" {sym}")));
         let line = line.unwrap_or_else(|| panic!("{sym} not referenced by {so}"));
-        assert!(line.contains(" WEAK ") && line.contains(" UND "), "{sym} must be a weak undefined reference: {line}");
+        assert!(
+            line.contains(" WEAK ") && line.contains(" UND "),
+            "{sym} must be a weak undefined reference: {line}"
+        );
     }
-    assert!(!dynsym.contains("libstdc++"), "no DT_NEEDED on libstdc++ expected");
+    assert!(
+        !dynsym.contains("libstdc++"),
+        "no DT_NEEDED on libstdc++ expected"
+    );
     let needed = Command::new("readelf").args(["-d", &so]).output().unwrap();
     let needed = String::from_utf8_lossy(&needed.stdout);
-    assert!(!needed.contains("libstdc++"), "libchalloc.so must not need libstdc++:\n{needed}");
+    assert!(
+        !needed.contains("libstdc++"),
+        "libchalloc.so must not need libstdc++:\n{needed}"
+    );
 
     // `.eh_frame` must cover `_Znwm` so the unwinder can pass through it.
-    let nm = Command::new("nm").args(["-D", "--defined-only", &so]).output().unwrap();
+    let nm = Command::new("nm")
+        .args(["-D", "--defined-only", &so])
+        .output()
+        .unwrap();
     let nm = String::from_utf8_lossy(&nm.stdout);
-    let addr = nm.lines().find(|l| l.ends_with(" _Znwm")).and_then(|l| l.split(' ').next()).expect("_Znwm in nm");
+    let addr = nm
+        .lines()
+        .find(|l| l.ends_with(" _Znwm"))
+        .and_then(|l| l.split(' ').next())
+        .expect("_Znwm in nm");
     let addr = usize::from_str_radix(addr, 16).unwrap();
-    let frames = Command::new("readelf").args(["--debug-dump=frames", &so]).output().unwrap();
+    let frames = Command::new("readelf")
+        .args(["--debug-dump=frames", &so])
+        .output()
+        .unwrap();
     let frames = String::from_utf8_lossy(&frames.stdout);
     let covered = frames.lines().filter(|l| l.contains("FDE")).any(|l| {
-        let Some(pc) = l.split("pc=").nth(1) else { return false };
+        let Some(pc) = l.split("pc=").nth(1) else {
+            return false;
+        };
         let mut r = pc.split("..");
         let lo = usize::from_str_radix(r.next().unwrap_or("").trim(), 16).unwrap_or(usize::MAX);
         let hi = usize::from_str_radix(r.next().unwrap_or("").trim(), 16).unwrap_or(0);
@@ -1063,7 +1283,10 @@ fn jemalloc_compat_stage() {
         String::from_utf8_lossy(&out.stdout).into_owned()
     };
     let compat_dyn = dynamic(&so2);
-    assert!(compat_dyn.contains("Library soname: [libjemalloc.so.2]"), "{so2} lacks the soname:\n{compat_dyn}");
+    assert!(
+        compat_dyn.contains("Library soname: [libjemalloc.so.2]"),
+        "{so2} lacks the soname:\n{compat_dyn}"
+    );
     let default_dyn = dynamic(&default_so);
     assert!(
         default_dyn.contains("Library soname: [libchalloc.so.0]"),
@@ -1072,7 +1295,10 @@ fn jemalloc_compat_stage() {
 
     // The feature changes the soname and nothing else that is visible.
     let exports = |path: &str| -> std::collections::BTreeSet<String> {
-        let out = Command::new("readelf").args(["--dyn-syms", "-W", path]).output().unwrap();
+        let out = Command::new("readelf")
+            .args(["--dyn-syms", "-W", path])
+            .output()
+            .unwrap();
         assert!(out.status.success(), "readelf --dyn-syms {path} failed");
         String::from_utf8_lossy(&out.stdout)
             .lines()
@@ -1087,16 +1313,29 @@ fn jemalloc_compat_stage() {
         compat.difference(&default).collect::<Vec<_>>(),
         default.difference(&compat).collect::<Vec<_>>()
     );
-    for sym in ["malloc", "free", "mallctl", "mallocx", "je_malloc", "je_mallctl"] {
+    for sym in [
+        "malloc",
+        "free",
+        "mallctl",
+        "mallocx",
+        "je_malloc",
+        "je_mallctl",
+    ] {
         assert!(compat.contains(sym), "{sym} not exported by {so2}");
     }
 
     // Link name and pkg-config file.
-    let link = std::fs::read_link(std::format!("{lib}/libjemalloc.so")).expect("libjemalloc.so symlink");
+    let link =
+        std::fs::read_link(std::format!("{lib}/libjemalloc.so")).expect("libjemalloc.so symlink");
     assert_eq!(link, std::path::Path::new("libjemalloc.so.2"));
     let pc_dir = std::format!("{lib}/pkgconfig");
     let pkg_config = |args: &[&str]| {
-        let out = Command::new("pkg-config").env("PKG_CONFIG_PATH", &pc_dir).args(args).arg("jemalloc").output().unwrap();
+        let out = Command::new("pkg-config")
+            .env("PKG_CONFIG_PATH", &pc_dir)
+            .args(args)
+            .arg("jemalloc")
+            .output()
+            .unwrap();
         assert!(
             out.status.success(),
             "pkg-config {args:?} jemalloc failed: {}{}",
@@ -1112,14 +1351,28 @@ fn jemalloc_compat_stage() {
     let cflags = pkg_config(&["--cflags"]);
     let libs: Vec<&str> = libs.split_whitespace().collect();
     let cflags: Vec<&str> = cflags.split_whitespace().collect();
-    assert!(libs.contains(&std::format!("-L{lib}").as_str()) && libs.contains(&"-ljemalloc"), "pkg-config --libs: {libs:?}");
+    assert!(
+        libs.contains(&std::format!("-L{lib}").as_str()) && libs.contains(&"-ljemalloc"),
+        "pkg-config --libs: {libs:?}"
+    );
 
     // A link-only consumer: DT_NEEDED names the soname, not the file it was
     // linked against; the loader needs the staging directory to find it.
-    let bin = compiled(&CTest { prog: "jemalloc_link", cflags: &cflags, ldflags: &libs, ..BASE });
+    let bin = compiled(&CTest {
+        prog: "jemalloc_link",
+        cflags: &cflags,
+        ldflags: &libs,
+        ..BASE
+    });
     let needed = dynamic(&bin);
-    assert!(needed.contains("Shared library: [libjemalloc.so.2]"), "jemalloc_link DT_NEEDED:\n{needed}");
-    assert!(!needed.contains("libchalloc"), "jemalloc_link must not need libchalloc:\n{needed}");
+    assert!(
+        needed.contains("Shared library: [libjemalloc.so.2]"),
+        "jemalloc_link DT_NEEDED:\n{needed}"
+    );
+    assert!(
+        !needed.contains("libchalloc"),
+        "jemalloc_link must not need libchalloc:\n{needed}"
+    );
 
     let bare = Command::new(&bin).arg(&lib).output().unwrap();
     assert!(
@@ -1127,11 +1380,22 @@ fn jemalloc_compat_stage() {
         "jemalloc_link passed without the staged library on the path:\n{}",
         String::from_utf8_lossy(&bare.stdout)
     );
-    let run = Command::new(&bin).arg(&lib).env("LD_LIBRARY_PATH", &lib).output().unwrap();
+    let run = Command::new(&bin)
+        .arg(&lib)
+        .env("LD_LIBRARY_PATH", &lib)
+        .output()
+        .unwrap();
     let stdout = String::from_utf8_lossy(&run.stdout);
     let stderr = String::from_utf8_lossy(&run.stderr);
-    assert!(run.status.success(), "jemalloc_link failed ({:?})\nstdout: {stdout}\nstderr: {stderr}", run.status);
-    assert!(stdout.lines().any(|l| l == "ok jemalloc_link"), "stdout: {stdout}\nstderr: {stderr}");
+    assert!(
+        run.status.success(),
+        "jemalloc_link failed ({:?})\nstdout: {stdout}\nstderr: {stderr}",
+        run.status
+    );
+    assert!(
+        stdout.lines().any(|l| l == "ok jemalloc_link"),
+        "stdout: {stdout}\nstderr: {stderr}"
+    );
     std::eprintln!("jemalloc_link: {}", stdout.trim_end());
 }
 
@@ -1146,7 +1410,11 @@ fn ordinary_programs_run_under_ld_preload() {
         std::vec!["readelf", "-h", so.as_str()],
         std::vec![cc.as_str(), "--version"],
     ] {
-        let run = std::process::Command::new(cmd[0]).args(&cmd[1..]).env("LD_PRELOAD", &so).output().unwrap();
+        let run = std::process::Command::new(cmd[0])
+            .args(&cmd[1..])
+            .env("LD_PRELOAD", &so)
+            .output()
+            .unwrap();
         assert!(
             run.status.success(),
             "{cmd:?} failed under LD_PRELOAD: {}",

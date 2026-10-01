@@ -192,15 +192,24 @@ impl Node {
 const NUMERIC: &str = "*";
 
 const fn op(name: &'static str, o: Op) -> Node {
-    Node { name, entry: Entry::Op(o) }
+    Node {
+        name,
+        entry: Entry::Op(o),
+    }
 }
 
 const fn stat(name: &'static str, read: Reader) -> Node {
-    Node { name, entry: Entry::Read(read) }
+    Node {
+        name,
+        entry: Entry::Read(read),
+    }
 }
 
 const fn dir(name: &'static str, children: &'static [Node]) -> Node {
-    Node { name, entry: Entry::Dir(children) }
+    Node {
+        name,
+        entry: Entry::Dir(children),
+    }
 }
 
 const fn num(children: &'static [Node]) -> Node {
@@ -225,7 +234,9 @@ static BIN_GEOMETRY: [Node; 3] = [
 ];
 static ARENAS_BIN: [Node; 1] = [num(&BIN_GEOMETRY)];
 static ARENAS: [Node; 8] = [
-    stat("narenas", |_| Ok(Unsigned(shared().arenas.count() as c_uint))),
+    stat("narenas", |_| {
+        Ok(Unsigned(shared().arenas.count() as c_uint))
+    }),
     stat("nbins", |_| Ok(Unsigned(NBINS as c_uint))),
     stat("nlextents", |_| Ok(Unsigned(0))),
     stat("page", |_| Ok(Size(shared().regions.page_size()))),
@@ -248,22 +259,38 @@ static STATS_BIN_FIELDS: [Node; 3] = [
 ];
 static STATS_BINS: [Node; 1] = [num(&STATS_BIN_FIELDS)];
 static STATS_SMALL: [Node; 2] = [
-    stat("allocated", |m| Ok(Size(arena_stats(shared(), at(m, 2))?.small_allocated))),
+    stat("allocated", |m| {
+        Ok(Size(arena_stats(shared(), at(m, 2))?.small_allocated))
+    }),
     stat("resident", |m| {
         let a = arena_stats(shared(), at(m, 2))?;
         Ok(Size(a.small_active + a.small_dirty))
     }),
 ];
-static STATS_LARGE: [Node; 1] = [stat("allocated", |m| Ok(Size(arena_stats(shared(), at(m, 2))?.large_allocated)))];
+static STATS_LARGE: [Node; 1] = [stat("allocated", |m| {
+    Ok(Size(arena_stats(shared(), at(m, 2))?.large_allocated))
+})];
 static STATS_ARENA_I: [Node; 9] = [
-    stat("pactive", |m| Ok(Size(arena_stats(shared(), at(m, 2))?.pactive))),
-    stat("pdirty", |m| Ok(Size(arena_stats(shared(), at(m, 2))?.pdirty))),
-    stat("pmuzzy", |m| Ok(Size(arena_stats(shared(), at(m, 2))?.pmuzzy))),
+    stat("pactive", |m| {
+        Ok(Size(arena_stats(shared(), at(m, 2))?.pactive))
+    }),
+    stat("pdirty", |m| {
+        Ok(Size(arena_stats(shared(), at(m, 2))?.pdirty))
+    }),
+    stat("pmuzzy", |m| {
+        Ok(Size(arena_stats(shared(), at(m, 2))?.pmuzzy))
+    }),
     dir("small", &STATS_SMALL),
     dir("large", &STATS_LARGE),
-    stat("resident", |m| Ok(Size(arena_stats(shared(), at(m, 2))?.resident))),
-    stat("mapped", |m| Ok(Size(arena_stats(shared(), at(m, 2))?.mapped))),
-    stat("retained", |m| Ok(Size(arena_stats(shared(), at(m, 2))?.retained))),
+    stat("resident", |m| {
+        Ok(Size(arena_stats(shared(), at(m, 2))?.resident))
+    }),
+    stat("mapped", |m| {
+        Ok(Size(arena_stats(shared(), at(m, 2))?.mapped))
+    }),
+    stat("retained", |m| {
+        Ok(Size(arena_stats(shared(), at(m, 2))?.retained))
+    }),
     dir("bins", &STATS_BINS),
 ];
 static STATS_ARENAS: [Node; 1] = [num(&STATS_ARENA_I)];
@@ -289,10 +316,12 @@ static STATS_CGROUP: [Node; 10] = [
     }),
     stat("decay_ms", |_| {
         tracked()?;
-        Ok(Size(match shared().policy.effective_decay_ns(shared().decay_ns()) {
-            purge::NEVER => usize::MAX,
-            ns => (ns / 1_000_000) as usize,
-        }))
+        Ok(Size(
+            match shared().policy.effective_decay_ns(shared().decay_ns()) {
+                purge::NEVER => usize::MAX,
+                ns => (ns / 1_000_000) as usize,
+            },
+        ))
     }),
     stat("retention_cap", |_| {
         tracked()?;
@@ -306,7 +335,9 @@ static STATS_CGROUP: [Node; 10] = [
         tracked()?;
         Ok(Size(shared().policy.full_purges() as usize))
     }),
-    stat("purge_advice", |_| Ok(Size((purge::advice() == purge::Advice::Lazy) as usize))),
+    stat("purge_advice", |_| {
+        Ok(Size((purge::advice() == purge::Advice::Lazy) as usize))
+    }),
     stat("lazy_purges", |_| Ok(Size(purge::batches().0 as usize))),
     stat("eager_purges", |_| Ok(Size(purge::batches().1 as usize))),
 ];
@@ -316,43 +347,90 @@ static STATS_CGROUP: [Node; 10] = [
 // metadata region; 0 under `auto` and `always`).
 static STATS_THP: [Node; 7] = [
     stat("mode", |_| Ok(Size(crate::thp::decision().mode as usize))),
-    stat("class_ranges", |_| Ok(Size(crate::thp::stats().class_ranges as usize))),
-    stat("class_bytes", |_| Ok(Size(crate::thp::stats().class_bytes as usize))),
-    stat("huge_ranges", |_| Ok(Size(crate::thp::stats().huge_ranges as usize))),
-    stat("meta_ranges", |_| Ok(Size(crate::thp::stats().meta_ranges as usize))),
-    stat("failures", |_| Ok(Size(crate::thp::stats().failures as usize))),
-    stat("nohuge_ranges", |_| Ok(Size(crate::thp::stats().nohuge_ranges as usize))),
+    stat("class_ranges", |_| {
+        Ok(Size(crate::thp::stats().class_ranges as usize))
+    }),
+    stat("class_bytes", |_| {
+        Ok(Size(crate::thp::stats().class_bytes as usize))
+    }),
+    stat("huge_ranges", |_| {
+        Ok(Size(crate::thp::stats().huge_ranges as usize))
+    }),
+    stat("meta_ranges", |_| {
+        Ok(Size(crate::thp::stats().meta_ranges as usize))
+    }),
+    stat("failures", |_| {
+        Ok(Size(crate::thp::stats().failures as usize))
+    }),
+    stat("nohuge_ranges", |_| {
+        Ok(Size(crate::thp::stats().nohuge_ranges as usize))
+    }),
 ];
 static STATS: [Node; 9] = [
-    stat("allocated", |_| Ok(Size(stats::snapshot(shared()).totals.allocated))),
-    stat("active", |_| Ok(Size(stats::snapshot(shared()).totals.active))),
-    stat("metadata", |_| Ok(Size(stats::snapshot(shared()).totals.metadata))),
-    stat("resident", |_| Ok(Size(stats::snapshot(shared()).totals.resident))),
-    stat("mapped", |_| Ok(Size(stats::snapshot(shared()).totals.mapped))),
-    stat("retained", |_| Ok(Size(stats::snapshot(shared()).totals.retained))),
+    stat("allocated", |_| {
+        Ok(Size(stats::snapshot(shared()).totals.allocated))
+    }),
+    stat("active", |_| {
+        Ok(Size(stats::snapshot(shared()).totals.active))
+    }),
+    stat("metadata", |_| {
+        Ok(Size(stats::snapshot(shared()).totals.metadata))
+    }),
+    stat("resident", |_| {
+        Ok(Size(stats::snapshot(shared()).totals.resident))
+    }),
+    stat("mapped", |_| {
+        Ok(Size(stats::snapshot(shared()).totals.mapped))
+    }),
+    stat("retained", |_| {
+        Ok(Size(stats::snapshot(shared()).totals.retained))
+    }),
     dir("arenas", &STATS_ARENAS),
     dir("cgroup", &STATS_CGROUP),
     dir("thp", &STATS_THP),
 ];
-static THREAD_TCACHE: [Node; 2] = [op("flush", ThreadTcacheFlush), op("enabled", ThreadTcacheEnabled)];
+static THREAD_TCACHE: [Node; 2] = [
+    op("flush", ThreadTcacheFlush),
+    op("enabled", ThreadTcacheEnabled),
+];
 static THREAD: [Node; 6] = [
     dir("tcache", &THREAD_TCACHE),
-    stat("allocated", |_| Ok(U64(thread_heap(shared())?.materialise_stats().allocated))),
-    stat("allocatedp", |_| Ok(U64Ptr(&thread_heap(shared())?.materialise_stats().allocated))),
-    stat("deallocated", |_| Ok(U64(thread_heap(shared())?.materialise_stats().deallocated))),
-    stat("deallocatedp", |_| Ok(U64Ptr(&thread_heap(shared())?.materialise_stats().deallocated))),
+    stat("allocated", |_| {
+        Ok(U64(thread_heap(shared())?.materialise_stats().allocated))
+    }),
+    stat("allocatedp", |_| {
+        Ok(U64Ptr(
+            &thread_heap(shared())?.materialise_stats().allocated,
+        ))
+    }),
+    stat("deallocated", |_| {
+        Ok(U64(thread_heap(shared())?.materialise_stats().deallocated))
+    }),
+    stat("deallocatedp", |_| {
+        Ok(U64Ptr(
+            &thread_heap(shared())?.materialise_stats().deallocated,
+        ))
+    }),
     op("arena", ThreadArena),
 ];
-static TCACHE: [Node; 3] = [op("create", TcacheCreate), op("flush", TcacheFlush), op("destroy", TcacheDestroy)];
+static TCACHE: [Node; 3] = [
+    op("create", TcacheCreate),
+    op("flush", TcacheFlush),
+    op("destroy", TcacheDestroy),
+];
 static UTILIZATION: [Node; 2] = [op("query", UtilQuery), op("batch_query", UtilBatchQuery)];
 static EXPERIMENTAL: [Node; 1] = [dir("utilization", &UTILIZATION)];
 static CONFIG: [Node; 3] = [
-    stat("malloc_conf", |_| Ok(Str(EMPTY_CSTR.as_ptr() as *const c_char))),
+    stat("malloc_conf", |_| {
+        Ok(Str(EMPTY_CSTR.as_ptr() as *const c_char))
+    }),
     stat("debug", |_| Ok(Bool(false))),
     stat("stats", |_| Ok(Bool(true))),
 ];
 static ROOT: [Node; 12] = [
-    stat("version", |_| Ok(Str(VERSION_CSTR.as_ptr() as *const c_char))),
+    stat("version", |_| {
+        Ok(Str(VERSION_CSTR.as_ptr() as *const c_char))
+    }),
     op("epoch", Epoch),
     op("background_thread", BackgroundThread),
     op("max_background_threads", MaxBackgroundThreads),
@@ -398,7 +476,10 @@ fn child(nodes: &'static [Node], comp: &[u8]) -> Option<(usize, &'static Node)> 
             return parse_index(comp).map(|i| (i, n));
         }
     }
-    nodes.iter().position(|n| n.name.as_bytes() == comp).map(|i| (i, &nodes[i]))
+    nodes
+        .iter()
+        .position(|n| n.name.as_bytes() == comp)
+        .map(|i| (i, &nodes[i]))
 }
 
 fn child_by_index(nodes: &'static [Node], i: usize) -> Option<&'static Node> {
@@ -426,7 +507,9 @@ fn name_to_mib(name: &[u8], mib: &mut [usize; MAX_MIB]) -> Result<(usize, &'stat
         match tail {
             None => return Ok((len, node)),
             Some(t) => {
-                let Entry::Dir(children) = node.entry else { return Err(ENOENT) };
+                let Entry::Dir(children) = node.entry else {
+                    return Err(ENOENT);
+                };
                 nodes = children;
                 rest = t;
             }
@@ -451,7 +534,11 @@ fn mib_to_node(mib: &[usize]) -> Result<&'static Node, c_int> {
 #[cfg(test)]
 fn mib_to_key(mib: &[usize]) -> Result<&'static str, c_int> {
     let n = mib_to_node(mib)?;
-    if let Entry::Dir(_) = n.entry { Err(ENOENT) } else { Ok(n.name) }
+    if let Entry::Dir(_) = n.entry {
+        Err(ENOENT)
+    } else {
+        Ok(n.name)
+    }
 }
 
 /// A C string as bytes, at most [`MAX_NAME`] long. `None` for null or a
@@ -505,7 +592,11 @@ impl Io {
         unsafe {
             let have = *self.oldlenp;
             if have != want {
-                ptr::copy_nonoverlapping(&v as *const T as *const u8, self.oldp as *mut u8, have.min(want));
+                ptr::copy_nonoverlapping(
+                    &v as *const T as *const u8,
+                    self.oldp as *mut u8,
+                    have.min(want),
+                );
                 return Err(EINVAL);
             }
             ptr::write_unaligned(self.oldp as *mut T, v);
@@ -531,11 +622,19 @@ impl Io {
     }
 
     fn read_only(&self) -> Result<(), c_int> {
-        if self.newp.is_null() && self.newlen == 0 { Ok(()) } else { Err(EPERM) }
+        if self.newp.is_null() && self.newlen == 0 {
+            Ok(())
+        } else {
+            Err(EPERM)
+        }
     }
 
     fn write_only(&self) -> Result<(), c_int> {
-        if self.oldp.is_null() && self.oldlenp.is_null() { Ok(()) } else { Err(EPERM) }
+        if self.oldp.is_null() && self.oldlenp.is_null() {
+            Ok(())
+        } else {
+            Err(EPERM)
+        }
     }
 
     fn void(&self) -> Result<(), c_int> {
@@ -562,8 +661,14 @@ pub struct Utilization {
 }
 
 impl Utilization {
-    const ZERO: Utilization =
-        Utilization { slabcur_addr: ptr::null_mut(), nfree: 0, nregs: 0, size: 0, bin_nfree: 0, bin_nregs: 0 };
+    const ZERO: Utilization = Utilization {
+        slabcur_addr: ptr::null_mut(),
+        nfree: 0,
+        nregs: 0,
+        size: 0,
+        bin_nfree: 0,
+        bin_nregs: 0,
+    };
 }
 
 /// The utilisation figures of `p` (see the module docs). `verbose` adds
@@ -578,7 +683,9 @@ pub fn utilization(shared: &Shared, p: *const c_void, verbose: bool) -> Utilizat
             if !t.is_allocated(slab as usize, slot as usize) {
                 return u;
             }
-            let Some(d) = t.desc_if_committed(slab as usize) else { return u };
+            let Some(d) = t.desc_if_committed(slab as usize) else {
+                return u;
+            };
             if class >= NBINS {
                 // Reported like a large extent (`layout::BIN_MAX`): one
                 // region of its own size, no bin figures.
@@ -625,11 +732,19 @@ pub fn owner_of(shared: &Shared, p: *const c_void) -> Option<u16> {
     match shared.regions.classify(p as usize) {
         Kind::Slab { class, slab, slot } => {
             let t = shared.table(class as usize);
-            if t.is_allocated(slab as usize, slot as usize) { Some(t.owner(slab as usize)) } else { None }
+            if t.is_allocated(slab as usize, slot as usize) {
+                Some(t.owner(slab as usize))
+            } else {
+                None
+            }
         }
         Kind::Huge { page } => {
             let r = shared.huge.lookup(page)?;
-            if r.start == page && r.state == RunState::Active { Some(r.arena) } else { None }
+            if r.start == page && r.state == RunState::Active {
+                Some(r.arena)
+            } else {
+                None
+            }
         }
         Kind::Invalid => None,
     }
@@ -667,7 +782,11 @@ fn batch_query(shared: &Shared, io: &Io) -> Result<(), c_int> {
 }
 
 fn arena_index(i: usize) -> Result<u16, c_int> {
-    if i < MAX_ARENAS { Ok(i as u16) } else { Err(ENOENT) }
+    if i < MAX_ARENAS {
+        Ok(i as u16)
+    } else {
+        Err(ENOENT)
+    }
 }
 
 /// `mib[i]`, or an index that matches nothing when the MIB is shorter.
@@ -695,14 +814,21 @@ fn bin_class(mib: &[usize]) -> Result<crate::layout::Class, c_int> {
 
 /// `stats.arenas.<i>.bins.<j>.*`: the stored bin figures.
 fn bin_stats(mib: &[usize]) -> Result<BinStats, c_int> {
-    arena_stats(shared(), at(mib, 2))?.bins[..NBINS].get(at(mib, 4)).copied().ok_or(ENOENT)
+    arena_stats(shared(), at(mib, 2))?.bins[..NBINS]
+        .get(at(mib, 4))
+        .copied()
+        .ok_or(ENOENT)
 }
 
 /// The tracked cgroup, or `ENOENT`: like jemalloc's keys behind a disabled
 /// build option, the name resolves and the read says the facility is off.
 fn tracked() -> Result<&'static crate::sys::cgroup::Cgroup, c_int> {
     let s = shared();
-    if s.cgroup.tracked() { Ok(&s.cgroup) } else { Err(ENOENT) }
+    if s.cgroup.tracked() {
+        Ok(&s.cgroup)
+    } else {
+        Err(ENOENT)
+    }
 }
 
 /// `arena.<i>.purge` and `arena.<i>.decay` address every arena when `i` is
@@ -715,7 +841,11 @@ fn all_arenas(shared: &Shared, i: usize) -> bool {
 
 /// `arena.<i>.dirty_decay_ms` value of a period in nanoseconds.
 fn ms_of(ns: u64) -> isize {
-    if ns == purge::NEVER { -1 } else { (ns / 1_000_000) as isize }
+    if ns == purge::NEVER {
+        -1
+    } else {
+        (ns / 1_000_000) as isize
+    }
 }
 
 /// The stored statistics of arena `i`, the `MALLCTL_ARENAS_ALL` merge, or
@@ -920,21 +1050,41 @@ fn result(r: Result<(), c_int>) -> c_int {
 }
 
 /// `mallctl(name, oldp, oldlenp, newp, newlen)`.
-pub fn mallctl(name: *const c_char, oldp: *mut c_void, oldlenp: *mut usize, newp: *const c_void, newlen: usize) -> c_int {
-    let Some(name) = cstr(name) else { return EINVAL };
+pub fn mallctl(
+    name: *const c_char,
+    oldp: *mut c_void,
+    oldlenp: *mut usize,
+    newp: *const c_void,
+    newlen: usize,
+) -> c_int {
+    let Some(name) = cstr(name) else {
+        return EINVAL;
+    };
     let mut mib = [0usize; MAX_MIB];
     let (len, node) = match name_to_mib(name, &mut mib) {
         Ok(x) => x,
         Err(e) => return e,
     };
     let shared = super::shared();
-    result(ctl(shared, node, &mib[..len], &Io { oldp, oldlenp, newp, newlen }))
+    result(ctl(
+        shared,
+        node,
+        &mib[..len],
+        &Io {
+            oldp,
+            oldlenp,
+            newp,
+            newlen,
+        },
+    ))
 }
 
 /// `mallctlnametomib(name, mibp, miblenp)`: `*miblenp` is the capacity in
 /// and the length out.
 pub fn mallctlnametomib(name: *const c_char, mibp: *mut usize, miblenp: *mut usize) -> c_int {
-    let Some(name) = cstr(name) else { return EINVAL };
+    let Some(name) = cstr(name) else {
+        return EINVAL;
+    };
     if mibp.is_null() || miblenp.is_null() {
         return EINVAL;
     }
@@ -975,7 +1125,17 @@ pub fn mallctlbymib(
         Err(e) => return e,
     };
     let shared = super::shared();
-    result(ctl(shared, node, &local[..miblen], &Io { oldp, oldlenp, newp, newlen }))
+    result(ctl(
+        shared,
+        node,
+        &local[..miblen],
+        &Io {
+            oldp,
+            oldlenp,
+            newp,
+            newlen,
+        },
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -1017,8 +1177,8 @@ mod tests {
     use super::*;
     use crate::api::jemalloc::{dallocx, mallocx};
     use crate::api::libc::{free, malloc};
-    use crate::heap::mallocx::{MALLOCX_TCACHE_NONE, mallocx_arena, mallocx_tcache};
     use crate::config::Config;
+    use crate::heap::mallocx::{MALLOCX_TCACHE_NONE, mallocx_arena, mallocx_tcache};
     use std::ffi::CString;
     use std::vec::Vec;
 
@@ -1050,7 +1210,13 @@ mod tests {
 
     fn call(name: &str) -> c_int {
         let cname = CString::new(name).unwrap();
-        mallctl(cname.as_ptr(), ptr::null_mut(), ptr::null_mut(), ptr::null(), 0)
+        mallctl(
+            cname.as_ptr(),
+            ptr::null_mut(),
+            ptr::null_mut(),
+            ptr::null(),
+            0,
+        )
     }
 
     fn mib_of(name: &str) -> Vec<usize> {
@@ -1073,9 +1239,20 @@ mod tests {
         let mut out = [0usize; 1];
         let mut outlen = size_of::<usize>();
         let n = usize::MAX / (3 * size_of::<usize>()) + 1;
-        assert_eq!(n.wrapping_mul(3 * size_of::<usize>()), outlen, "the product wraps to the out length");
+        assert_eq!(
+            n.wrapping_mul(3 * size_of::<usize>()),
+            outlen,
+            "the product wraps to the out length"
+        );
         let newlen = n * size_of::<*const c_void>();
-        let rc = mallctlbymib(mib.as_ptr(), mib.len(), out.as_mut_ptr() as *mut c_void, &mut outlen, ptrs.as_ptr() as *const c_void, newlen);
+        let rc = mallctlbymib(
+            mib.as_ptr(),
+            mib.len(),
+            out.as_mut_ptr() as *mut c_void,
+            &mut outlen,
+            ptrs.as_ptr() as *const c_void,
+            newlen,
+        );
         assert_eq!(rc, EINVAL);
         free(p);
     }
@@ -1083,7 +1260,14 @@ mod tests {
     fn get_mib<T: Copy + Default>(mib: &[usize]) -> T {
         let mut v = T::default();
         let mut len = size_of::<T>();
-        let rc = mallctlbymib(mib.as_ptr(), mib.len(), &mut v as *mut T as *mut c_void, &mut len, ptr::null(), 0);
+        let rc = mallctlbymib(
+            mib.as_ptr(),
+            mib.len(),
+            &mut v as *mut T as *mut c_void,
+            &mut len,
+            ptr::null(),
+            0,
+        );
         assert_eq!(rc, 0, "mallctlbymib({mib:?}) = {rc}");
         v
     }
@@ -1096,7 +1280,10 @@ mod tests {
     }
 
     fn cstring_at(p: *const c_char) -> std::string::String {
-        unsafe { core::ffi::CStr::from_ptr(p) }.to_str().unwrap().into()
+        unsafe { core::ffi::CStr::from_ptr(p) }
+            .to_str()
+            .unwrap()
+            .into()
     }
 
     /// Every name in the tree (numeric components as `0`), directories
@@ -1105,7 +1292,11 @@ mod tests {
         fn walk(nodes: &'static [Node], prefix: &str, out: &mut Vec<std::string::String>) {
             for n in nodes {
                 let name = if n.name == NUMERIC { "0" } else { n.name };
-                let full = if prefix.is_empty() { name.into() } else { std::format!("{prefix}.{name}") };
+                let full = if prefix.is_empty() {
+                    name.into()
+                } else {
+                    std::format!("{prefix}.{name}")
+                };
                 out.push(full.clone());
                 walk(n.children(), &full, out);
             }
@@ -1125,7 +1316,10 @@ mod tests {
             let mib = mib_of(name);
             let node = mib_to_node(&mib).unwrap();
             let last = name.rsplit('.').next().unwrap();
-            assert!(node.name == last || (node.name == NUMERIC && last == "0"), "{name}: {mib:?}");
+            assert!(
+                node.name == last || (node.name == NUMERIC && last == "0"),
+                "{name}: {mib:?}"
+            );
             match node.entry {
                 Entry::Dir(_) => assert_eq!(call(name), ENOENT, "{name}"),
                 _ => assert_eq!(mib_to_key(&mib), Ok(node.name), "{name}"),
@@ -1141,7 +1335,10 @@ mod tests {
         // Valkey overwrites.
         assert_eq!(mib_of("arenas.bin.7.size"), [5, 5, 7, 0]);
         assert_eq!(mib_of("arena.4096.purge"), [6, 4096, 0]);
-        assert_eq!(mib_of("stats.arenas.3.bins.51.nonfull_slabs"), [7, 6, 3, 8, 51, 2]);
+        assert_eq!(
+            mib_of("stats.arenas.3.bins.51.nonfull_slabs"),
+            [7, 6, 3, 8, 51, 2]
+        );
         assert_eq!(mib_of("stats.arenas.0.small.allocated"), [7, 6, 0, 3, 0]);
         assert_eq!(mib_of("experimental.utilization.batch_query"), [10, 0, 1]);
         for (i, key) in KEYS.iter().enumerate() {
@@ -1153,7 +1350,11 @@ mod tests {
         assert_eq!(call("arenas"), ENOENT);
         assert_eq!(mib_to_key(&[5, 5, 7, 0]), Ok("size"));
         assert_eq!(mib_to_key(&[7, 6, 3, 8, 51, 2]), Ok("nonfull_slabs"));
-        assert_eq!(mib_to_key(&[7, 6, 3, 4, 51, 2]), Err(ENOENT), "large has one child");
+        assert_eq!(
+            mib_to_key(&[7, 6, 3, 4, 51, 2]),
+            Err(ENOENT),
+            "large has one child"
+        );
         assert_eq!(mib_to_key(&[99]), Err(ENOENT));
         assert_eq!(mib_to_key(&[5, 5, 7, 9]), Err(ENOENT));
         assert_eq!(mib_to_key(&[]), Err(ENOENT));
@@ -1190,8 +1391,16 @@ mod tests {
             "stats.cgroup.empty_bytes",
             "stats.cgroup.full_purges",
         ] {
-            assert_eq!(call(key), if tracked { 0 } else { ENOENT }, "{key} tracked={tracked}");
-            assert_eq!(set(key, 1usize), if tracked { EPERM } else { ENOENT }, "{key}");
+            assert_eq!(
+                call(key),
+                if tracked { 0 } else { ENOENT },
+                "{key} tracked={tracked}"
+            );
+            assert_eq!(
+                set(key, 1usize),
+                if tracked { EPERM } else { ENOENT },
+                "{key}"
+            );
         }
         if tracked {
             let limit: usize = get("stats.cgroup.limit");
@@ -1207,7 +1416,9 @@ mod tests {
             let cap: usize = get("stats.cgroup.retention_cap");
             let empty: usize = get("stats.cgroup.empty_bytes");
             let full: usize = get("stats.cgroup.full_purges");
-            std::eprintln!("stats.cgroup: decay_ms {decay_ms} retention_cap {cap} empty_bytes {empty} full_purges {full}");
+            std::eprintln!(
+                "stats.cgroup: decay_ms {decay_ms} retention_cap {cap} empty_bytes {empty} full_purges {full}"
+            );
             let effective = limit.min(high);
             if effective == usize::MAX {
                 assert_eq!(decay_ms, (shared().decay_ns() / 1_000_000) as usize);
@@ -1215,28 +1426,76 @@ mod tests {
             } else {
                 // The sampler may not have run in this process yet: the cap
                 // is either unpublished or the limit's twentieth.
-                assert!(cap == usize::MAX || cap == effective / 20, "cap {cap} for limit {effective}");
+                assert!(
+                    cap == usize::MAX || cap == effective / 20,
+                    "cap {cap} for limit {effective}"
+                );
             }
             assert_eq!(full, 0);
         }
         // `stats.cgroup` itself is interior: it resolves, and is not a key.
         assert_eq!(mib_of("stats.cgroup"), [7, 7]);
         assert_eq!(call("stats.cgroup"), ENOENT);
-        for bad in ["nope", "arenas.bin.x.size", "arenas.bin..size", "prof.active", "prof.dump", "stats.cgroup.nope", "version.more", ""] {
+        for bad in [
+            "nope",
+            "arenas.bin.x.size",
+            "arenas.bin..size",
+            "prof.active",
+            "prof.dump",
+            "stats.cgroup.nope",
+            "version.more",
+            "",
+        ] {
             let c = CString::new(bad).unwrap();
             let mut mib = [0usize; MAX_MIB];
             let mut len = MAX_MIB;
-            assert_eq!(mallctlnametomib(c.as_ptr(), mib.as_mut_ptr(), &mut len), ENOENT, "{bad}");
+            assert_eq!(
+                mallctlnametomib(c.as_ptr(), mib.as_mut_ptr(), &mut len),
+                ENOENT,
+                "{bad}"
+            );
             assert_eq!(call(bad), ENOENT, "{bad}");
         }
-        assert_eq!(mallctl(ptr::null(), ptr::null_mut(), ptr::null_mut(), ptr::null(), 0), EINVAL);
+        assert_eq!(
+            mallctl(
+                ptr::null(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null(),
+                0
+            ),
+            EINVAL
+        );
         // Too small a MIB buffer.
         let c = CString::new("arenas.bin.7.size").unwrap();
         let mut mib = [0usize; 2];
         let mut len = 2;
-        assert_eq!(mallctlnametomib(c.as_ptr(), mib.as_mut_ptr(), &mut len), EINVAL);
-        assert_eq!(mallctlbymib(ptr::null(), 1, ptr::null_mut(), ptr::null_mut(), ptr::null(), 0), EINVAL);
-        assert_eq!(mallctlbymib(mib.as_ptr(), 0, ptr::null_mut(), ptr::null_mut(), ptr::null(), 0), EINVAL);
+        assert_eq!(
+            mallctlnametomib(c.as_ptr(), mib.as_mut_ptr(), &mut len),
+            EINVAL
+        );
+        assert_eq!(
+            mallctlbymib(
+                ptr::null(),
+                1,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null(),
+                0
+            ),
+            EINVAL
+        );
+        assert_eq!(
+            mallctlbymib(
+                mib.as_ptr(),
+                0,
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null(),
+                0
+            ),
+            EINVAL
+        );
     }
 
     #[test]
@@ -1245,9 +1504,19 @@ mod tests {
         let mut short: u32 = 0;
         let c = CString::new("arenas.page").unwrap();
         let mut len = 4usize;
-        let rc = mallctl(c.as_ptr(), &mut short as *mut u32 as *mut c_void, &mut len, ptr::null(), 0);
+        let rc = mallctl(
+            c.as_ptr(),
+            &mut short as *mut u32 as *mut c_void,
+            &mut len,
+            ptr::null(),
+            0,
+        );
         assert_eq!(rc, EINVAL);
-        assert_eq!(short as usize, shared().regions.page_size(), "the low half was still copied");
+        assert_eq!(
+            short as usize,
+            shared().regions.page_size(),
+            "the low half was still copied"
+        );
         // Writing a read-only key is EPERM; a wrong newlen on a writable key
         // is EINVAL; a write-only key refuses a read.
         assert_eq!(set("version", 1u64), EPERM);
@@ -1278,7 +1547,10 @@ mod tests {
         assert!(!get::<bool>("config.debug"));
         assert!(get::<bool>("config.stats"));
         assert_eq!(get::<c_uint>("arenas.nbins") as usize, NBINS);
-        assert_eq!(get::<usize>(&std::format!("arenas.bin.{}.size", NBINS - 1)), crate::layout::BIN_MAX);
+        assert_eq!(
+            get::<usize>(&std::format!("arenas.bin.{}.size", NBINS - 1)),
+            crate::layout::BIN_MAX
+        );
         assert_eq!(get::<c_uint>("arenas.nlextents"), 0);
         assert_eq!(get::<usize>("arenas.quantum"), QUANTUM);
         assert_eq!(get::<usize>("arenas.page"), shared().regions.page_size());
@@ -1287,9 +1559,18 @@ mod tests {
         assert_eq!(set("max_background_threads", 0usize), EINVAL);
         assert_eq!(set("max_background_threads", 4usize), 0);
         for j in 0..NBINS {
-            assert_eq!(get::<usize>(&std::format!("arenas.bin.{j}.size")), CLASSES[j].size());
-            assert_eq!(get::<u32>(&std::format!("arenas.bin.{j}.nregs")) as usize, CLASSES[j].nslots());
-            assert_eq!(get::<usize>(&std::format!("arenas.bin.{j}.slab_size")), CLASSES[j].slab_size());
+            assert_eq!(
+                get::<usize>(&std::format!("arenas.bin.{j}.size")),
+                CLASSES[j].size()
+            );
+            assert_eq!(
+                get::<u32>(&std::format!("arenas.bin.{j}.nregs")) as usize,
+                CLASSES[j].nslots()
+            );
+            assert_eq!(
+                get::<usize>(&std::format!("arenas.bin.{j}.slab_size")),
+                CLASSES[j].slab_size()
+            );
         }
         assert_eq!(call(&std::format!("arenas.bin.{NBINS}.size")), ENOENT);
         // Every opt key with its jemalloc type, against the live Config:
@@ -1303,29 +1584,69 @@ mod tests {
                 Value::Int(i) => assert_eq!(get::<isize>(&name), i as isize, "{name}"),
                 Value::Uint(u) => assert_eq!(get::<c_uint>(&name), u as c_uint, "{name}"),
                 Value::Size(n) => assert_eq!(get::<usize>(&name), n, "{name}"),
-                Value::Str(s) => assert_eq!(cstring_at(get::<*const c_char>(&name)), s.to_str().unwrap(), "{name}"),
+                Value::Str(s) => assert_eq!(
+                    cstring_at(get::<*const c_char>(&name)),
+                    s.to_str().unwrap(),
+                    "{name}"
+                ),
             }
             assert_eq!(set(&name, 0u8), EPERM, "{name} must be read-only");
         }
         for key in ["tcache_max", "huge_retain_max"] {
-            assert!(matches!(cfg.get(key.as_bytes()), Some(Value::Size(_))), "opt.{key} is a byte count of the table");
+            assert!(
+                matches!(cfg.get(key.as_bytes()), Some(Value::Size(_))),
+                "opt.{key} is a byte count of the table"
+            );
         }
-        assert_eq!(call("opt.junk"), ENOENT, "accepted-and-ignored conf keys are not readable");
-        assert_eq!(call("opt.stats_print"), ENOENT, "the inert key without a field is not readable");
+        assert_eq!(
+            call("opt.junk"),
+            ENOENT,
+            "accepted-and-ignored conf keys are not readable"
+        );
+        assert_eq!(
+            call("opt.stats_print"),
+            ENOENT,
+            "the inert key without a field is not readable"
+        );
         // The two byte-count options are `size_t`, as jemalloc's
         // `opt.tcache_max` is: an `unsigned` buffer is the wrong size and
         // gets the low half plus `EINVAL`, as for any size_t key.
         assert_eq!(get::<usize>("opt.tcache_max"), cfg.tcache_max);
         let mut half: c_uint = 0;
         assert_eq!(ctl_rw("opt.tcache_max", Some(&mut half), None), EINVAL);
-        assert_eq!(half as usize, cfg.tcache_max & u32::MAX as usize, "the low half was still copied");
-        assert_eq!(get::<c_uint>("opt.narenas"), cfg.narenas as c_uint, "a count stays unsigned");
-        assert_eq!(get::<isize>("opt.dirty_decay_ms"), cfg.dirty_decay_ms as isize, "a period stays ssize_t");
-        assert_eq!(get::<isize>("opt.huge_dirty_decay_ms"), cfg.huge_decay_ms() as isize, "unset: the slab period");
+        assert_eq!(
+            half as usize,
+            cfg.tcache_max & u32::MAX as usize,
+            "the low half was still copied"
+        );
+        assert_eq!(
+            get::<c_uint>("opt.narenas"),
+            cfg.narenas as c_uint,
+            "a count stays unsigned"
+        );
+        assert_eq!(
+            get::<isize>("opt.dirty_decay_ms"),
+            cfg.dirty_decay_ms as isize,
+            "a period stays ssize_t"
+        );
+        assert_eq!(
+            get::<isize>("opt.huge_dirty_decay_ms"),
+            cfg.huge_decay_ms() as isize,
+            "unset: the slab period"
+        );
         // `opt.huge_retain_max` reports the value the huge allocator uses.
-        assert_eq!(get::<usize>("opt.huge_retain_max"), shared().huge.retain_max());
-        assert_eq!(get::<usize>("opt.huge_retain_max"), crate::huge::DEFAULT_RETAIN_MAX);
-        assert_eq!(get::<isize>("arena.0.dirty_decay_ms"), cfg.dirty_decay_ms as isize);
+        assert_eq!(
+            get::<usize>("opt.huge_retain_max"),
+            shared().huge.retain_max()
+        );
+        assert_eq!(
+            get::<usize>("opt.huge_retain_max"),
+            crate::huge::DEFAULT_RETAIN_MAX
+        );
+        assert_eq!(
+            get::<isize>("arena.0.dirty_decay_ms"),
+            cfg.dirty_decay_ms as isize
+        );
         // A background thread is neither requested by default nor running.
         let _ = get::<bool>("background_thread");
         assert_eq!(set("background_thread", false), 0);
@@ -1384,7 +1705,10 @@ mod tests {
         assert_eq!(sum, resident);
         assert_eq!(get::<usize>("stats.arenas.4096.resident"), resident);
         assert_eq!(get::<usize>("stats.arenas.4096.mapped"), mapped);
-        assert_eq!(get::<usize>("stats.arenas.4096.pactive") * s.regions.page_size(), active);
+        assert_eq!(
+            get::<usize>("stats.arenas.4096.pactive") * s.regions.page_size(),
+            active
+        );
         assert_eq!(get::<usize>("stats.arenas.4096.pmuzzy"), 0);
         let small: usize = get("stats.arenas.4096.small.allocated");
         let large: usize = get("stats.arenas.4096.large.allocated");
@@ -1401,8 +1725,13 @@ mod tests {
         assert!(get_mib::<usize>(&m) >= 300);
         let curslabs: usize = get(&std::format!("stats.arenas.4096.bins.{c}.curslabs"));
         assert!(curslabs >= 1);
-        assert!(get::<usize>(&std::format!("stats.arenas.4096.bins.{c}.nonfull_slabs")) <= curslabs);
-        assert_eq!(call(&std::format!("stats.arenas.0.bins.{NBINS}.curregs")), ENOENT);
+        assert!(
+            get::<usize>(&std::format!("stats.arenas.4096.bins.{c}.nonfull_slabs")) <= curslabs
+        );
+        assert_eq!(
+            call(&std::format!("stats.arenas.0.bins.{NBINS}.curregs")),
+            ENOENT
+        );
         for p in live {
             free(p);
         }
@@ -1432,20 +1761,36 @@ mod tests {
             let name = std::format!("stats.arenas.4097.{key}");
             assert_eq!(get::<usize>(&name), 0, "{name}");
             assert_eq!(set(&name, 1usize), EPERM, "{name} is read-only");
-            assert_eq!(call(&std::format!("stats.arenas.4098.{key}")), ENOENT, "{key}: 4098 is nothing");
+            assert_eq!(
+                call(&std::format!("stats.arenas.4098.{key}")),
+                ENOENT,
+                "{key}: 4098 is nothing"
+            );
         }
         let c = crate::layout::class_of(200).unwrap();
         let mut m = mib_of("stats.arenas.0.bins.0.curregs");
         m[2] = ARENAS_DESTROYED;
         m[4] = c;
         assert_eq!(get_mib::<usize>(&m), 0);
-        assert_eq!(call(&std::format!("stats.arenas.4097.bins.{NBINS}.curregs")), ENOENT, "past arenas.nbins");
+        assert_eq!(
+            call(&std::format!("stats.arenas.4097.bins.{NBINS}.curregs")),
+            ENOENT,
+            "past arenas.nbins"
+        );
         for key in ["purge", "decay", "destroy", "dirty_decay_ms"] {
-            assert_eq!(call(&std::format!("arena.4097.{key}")), ENOENT, "arena.4097.{key}");
+            assert_eq!(
+                call(&std::format!("arena.4097.{key}")),
+                ENOENT,
+                "arena.4097.{key}"
+            );
         }
         assert_eq!(set("arena.4097.dirty_decay_ms", 5isize), ENOENT);
         assert_eq!(set("thread.arena", ARENAS_DESTROYED as c_uint), EFAULT);
-        assert_eq!(ARENAS_DESTROYED, ARENAS_ALL as usize + 1, "the headers' value");
+        assert_eq!(
+            ARENAS_DESTROYED,
+            ARENAS_ALL as usize + 1,
+            "the headers' value"
+        );
     }
 
     #[test]
@@ -1464,24 +1809,46 @@ mod tests {
             let cname = CString::new("arenas.lookup").unwrap();
             let mut len = size_of::<c_uint>();
             let qp: *const c_void = q as *const c_void;
-            let rc = mallctl(cname.as_ptr(), &mut out as *mut c_uint as *mut c_void, &mut len, &qp as *const *const c_void as *const c_void, size_of::<*const c_void>());
+            let rc = mallctl(
+                cname.as_ptr(),
+                &mut out as *mut c_uint as *mut c_void,
+                &mut len,
+                &qp as *const *const c_void as *const c_void,
+                size_of::<*const c_void>(),
+            );
             assert_eq!(rc, 0);
             assert_eq!(out, a);
         }
         let stack = 0u64;
         let sp: *const c_void = &stack as *const u64 as *const c_void;
         let mut out: c_uint = 0;
-        assert_eq!(ctl_rw::<c_uint>("arenas.lookup", Some(&mut out), None), EINVAL, "lookup needs a pointer");
+        assert_eq!(
+            ctl_rw::<c_uint>("arenas.lookup", Some(&mut out), None),
+            EINVAL,
+            "lookup needs a pointer"
+        );
         let cname = CString::new("arenas.lookup").unwrap();
         let mut len = size_of::<c_uint>();
-        assert_eq!(mallctl(cname.as_ptr(), &mut out as *mut c_uint as *mut c_void, &mut len, &sp as *const *const c_void as *const c_void, size_of::<*const c_void>()), EFAULT);
+        assert_eq!(
+            mallctl(
+                cname.as_ptr(),
+                &mut out as *mut c_uint as *mut c_void,
+                &mut len,
+                &sp as *const *const c_void as *const c_void,
+                size_of::<*const c_void>()
+            ),
+            EFAULT
+        );
         // Decay period per arena, and for all.
         assert_eq!(set(&std::format!("arena.{a}.dirty_decay_ms"), 250isize), 0);
         assert_eq!(get::<isize>(&std::format!("arena.{a}.dirty_decay_ms")), 250);
         assert_eq!(s.arena(a as u16).unwrap().decay_ns(), 250_000_000);
         assert_eq!(set(&std::format!("arena.{a}.dirty_decay_ms"), -1isize), 0);
         assert_eq!(get::<isize>(&std::format!("arena.{a}.dirty_decay_ms")), -1);
-        assert_eq!(set(&std::format!("arena.{a}.dirty_decay_ms"), -2isize), EFAULT);
+        assert_eq!(
+            set(&std::format!("arena.{a}.dirty_decay_ms"), -2isize),
+            EFAULT
+        );
         let default = get::<isize>("arena.0.dirty_decay_ms");
         assert_eq!(set("arena.4096.dirty_decay_ms", 777isize), 0);
         assert_eq!(get::<isize>("arena.0.dirty_decay_ms"), 777);
@@ -1500,8 +1867,13 @@ mod tests {
         assert_eq!(arena.classes[c].stats().empty, 0);
         // The first refill spanned `cap / 2` slots' worth of slabs (one
         // 128-slot slab at 512 bytes); all of them were flushed and purged.
-        let refill_slabs = (crate::heap::default_cap(c) as usize / 2).div_ceil(crate::layout::CLASSES[c].nslots());
-        assert_eq!(arena.classes[c].stats().purged, refill_slabs, "the flushed slabs were purged");
+        let refill_slabs =
+            (crate::heap::default_cap(c) as usize / 2).div_ceil(crate::layout::CLASSES[c].nslots());
+        assert_eq!(
+            arena.classes[c].stats().purged,
+            refill_slabs,
+            "the flushed slabs were purged"
+        );
         assert_eq!(call("arena.4096.purge"), 0);
         // jemalloc's legacy "all arenas" index, which Valkey's MEMORY PURGE uses.
         let narenas: c_uint = get("arenas.narenas");
@@ -1523,7 +1895,10 @@ mod tests {
                 break;
             }
         }
-        assert!(stable, "arenas.narenas moved across eight consecutive probes");
+        assert!(
+            stable,
+            "arenas.narenas moved across eight consecutive probes"
+        );
         assert_eq!(call("arena.4000.purge"), ENOENT);
         assert_eq!(call("arena.5000.purge"), ENOENT);
         assert_eq!(call("arena.0.decay"), 0);
@@ -1543,12 +1918,25 @@ mod tests {
         assert_eq!(call("arena.4000.destroy"), ENOENT);
         let narenas_before: c_uint = get("arenas.narenas");
         assert_eq!(call(&std::format!("arena.{a}.destroy")), 0);
-        assert!(s.arenas.get_existing(a as u16).is_some(), "destroy keeps the arena registered");
-        assert!(get::<c_uint>("arenas.narenas") >= narenas_before, "destroy retires no index");
+        assert!(
+            s.arenas.get_existing(a as u16).is_some(),
+            "destroy keeps the arena registered"
+        );
+        assert!(
+            get::<c_uint>("arenas.narenas") >= narenas_before,
+            "destroy retires no index"
+        );
         let again = mallocx(500, mallocx_arena(a as u16) as c_int);
-        assert!(!again.is_null(), "the destroyed arena still serves MALLOCX_ARENA allocations");
+        assert!(
+            !again.is_null(),
+            "the destroyed arena still serves MALLOCX_ARENA allocations"
+        );
         assert_eq!(s.classify_free(again).map(|x| x.1), Ok(a as u16));
-        assert_eq!(call(&std::format!("arena.{a}.destroy")), 0, "destroy is repeatable");
+        assert_eq!(
+            call(&std::format!("arena.{a}.destroy")),
+            0,
+            "destroy is repeatable"
+        );
         dallocx(again, 0);
     }
 
@@ -1637,7 +2025,9 @@ mod tests {
         let s = shared();
         let c = crate::layout::class_of(100).unwrap();
         let cls = &CLASSES[c];
-        let ptrs: Vec<*mut u8> = (0..500).map(|_| mallocx(100, MALLOCX_TCACHE_NONE as c_int)).collect();
+        let ptrs: Vec<*mut u8> = (0..500)
+            .map(|_| mallocx(100, MALLOCX_TCACHE_NONE as c_int))
+            .collect();
         // Direct allocations on a thread that has no heap yet come from
         // arena 0 (`heap::mallocx::alloc`, `Tcache::None`); once the thread has a
         // heap they come from its home arena. Either way one arena owns
@@ -1648,16 +2038,31 @@ mod tests {
         let mut u = Utilization::ZERO;
         let mut len = size_of::<Utilization>();
         let p0: *const c_void = ptrs[0] as *const c_void;
-        let rc = mallctl(cname.as_ptr(), &mut u as *mut Utilization as *mut c_void, &mut len, &p0 as *const *const c_void as *const c_void, size_of::<*const c_void>());
+        let rc = mallctl(
+            cname.as_ptr(),
+            &mut u as *mut Utilization as *mut c_void,
+            &mut len,
+            &p0 as *const *const c_void as *const c_void,
+            size_of::<*const c_void>(),
+        );
         assert_eq!(rc, 0);
         assert_eq!(u.nregs, cls.nslots());
-        assert_eq!(u.size, cls.nslots() * cls.size(), "region bytes, so size / nregs is the class size");
+        assert_eq!(
+            u.size,
+            cls.nslots() * cls.size(),
+            "region bytes, so size / nregs is the class size"
+        );
         assert!(u.nfree < u.nregs);
         assert!(u.bin_nregs >= u.nregs && u.bin_nregs % u.nregs == 0);
         assert!(u.bin_nfree <= u.bin_nregs);
-        assert!(u.bin_nregs - u.bin_nfree >= 500, "at least our 500 slots are out");
+        assert!(
+            u.bin_nregs - u.bin_nfree >= 500,
+            "at least our 500 slots are out"
+        );
         if !u.slabcur_addr.is_null() {
-            assert!(matches!(s.regions.classify(u.slabcur_addr as usize), Kind::Slab { class, slot: 0, .. } if class as usize == c));
+            assert!(
+                matches!(s.regions.classify(u.slabcur_addr as usize), Kind::Slab { class, slot: 0, .. } if class as usize == c)
+            );
         }
         assert_eq!(size_of::<Utilization>(), 6 * size_of::<usize>());
         // Batch query as Valkey does it: nametomib, then bymib with the
@@ -1665,7 +2070,14 @@ mod tests {
         let mib = mib_of("experimental.utilization.batch_query");
         let mut out = std::vec![0usize; 3 * ptrs.len()];
         let mut outlen = out.len() * size_of::<usize>();
-        let rc = mallctlbymib(mib.as_ptr(), mib.len(), out.as_mut_ptr() as *mut c_void, &mut outlen, ptrs.as_ptr() as *const c_void, ptrs.len() * size_of::<*mut u8>());
+        let rc = mallctlbymib(
+            mib.as_ptr(),
+            mib.len(),
+            out.as_mut_ptr() as *mut c_void,
+            &mut outlen,
+            ptrs.as_ptr() as *const c_void,
+            ptrs.len() * size_of::<*mut u8>(),
+        );
         assert_eq!(rc, 0);
         for (i, p) in ptrs.iter().enumerate() {
             let (nfree, nregs, size) = (out[3 * i], out[3 * i + 1], out[3 * i + 2]);
@@ -1676,8 +2088,28 @@ mod tests {
         }
         // Size mismatches are EINVAL; the pointer array is required.
         let mut short = outlen - size_of::<usize>();
-        assert_eq!(mallctlbymib(mib.as_ptr(), mib.len(), out.as_mut_ptr() as *mut c_void, &mut short, ptrs.as_ptr() as *const c_void, ptrs.len() * size_of::<*mut u8>()), EINVAL);
-        assert_eq!(mallctlbymib(mib.as_ptr(), mib.len(), out.as_mut_ptr() as *mut c_void, &mut outlen, ptr::null(), 0), EINVAL);
+        assert_eq!(
+            mallctlbymib(
+                mib.as_ptr(),
+                mib.len(),
+                out.as_mut_ptr() as *mut c_void,
+                &mut short,
+                ptrs.as_ptr() as *const c_void,
+                ptrs.len() * size_of::<*mut u8>()
+            ),
+            EINVAL
+        );
+        assert_eq!(
+            mallctlbymib(
+                mib.as_ptr(),
+                mib.len(),
+                out.as_mut_ptr() as *mut c_void,
+                &mut outlen,
+                ptr::null(),
+                0
+            ),
+            EINVAL
+        );
         // A huge run is one region of its own, and so is a slot of a class
         // above BIN_MAX (reported like jemalloc's large extents); a
         // non-allocation is zeros.
@@ -1686,16 +2118,34 @@ mod tests {
         let cm = crate::layout::class_of(100 << 10).unwrap();
         assert!(cm >= NBINS && cm < crate::layout::NCLASSES);
         let stack = 0u64;
-        let four = [h as *const c_void, &stack as *const u64 as *const c_void, ptrs[1] as *const c_void, m as *const c_void];
+        let four = [
+            h as *const c_void,
+            &stack as *const u64 as *const c_void,
+            ptrs[1] as *const c_void,
+            m as *const c_void,
+        ];
         let mut out4 = [0usize; 12];
         let mut len4 = out4.len() * size_of::<usize>();
-        assert_eq!(mallctlbymib(mib.as_ptr(), mib.len(), out4.as_mut_ptr() as *mut c_void, &mut len4, four.as_ptr() as *const c_void, four.len() * size_of::<*const c_void>()), 0);
+        assert_eq!(
+            mallctlbymib(
+                mib.as_ptr(),
+                mib.len(),
+                out4.as_mut_ptr() as *mut c_void,
+                &mut len4,
+                four.as_ptr() as *const c_void,
+                four.len() * size_of::<*const c_void>()
+            ),
+            0
+        );
         assert_eq!(&out4[..3], &[0, 1, s.huge.usable_for(3 << 20).unwrap()]);
         assert_eq!(&out4[3..6], &[0, 0, 0]);
         assert_eq!(out4[7], cls.nslots());
         assert_eq!(&out4[9..12], &[0, 1, CLASSES[cm].size()]);
         let um = utilization(s, m as *const c_void, true);
-        assert_eq!((um.nfree, um.nregs, um.size, um.bin_nfree, um.bin_nregs), (0, 1, CLASSES[cm].size(), 0, 0));
+        assert_eq!(
+            (um.nfree, um.nregs, um.size, um.bin_nfree, um.bin_nregs),
+            (0, 1, CLASSES[cm].size(), 0, 0)
+        );
         assert!(um.slabcur_addr.is_null());
         // A class above tcache_max comes from arena 0 on the default path
         // whatever the thread's arena (design 13.3); a cached class from

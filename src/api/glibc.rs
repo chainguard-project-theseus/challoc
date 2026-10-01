@@ -76,7 +76,11 @@ pub fn mallinfo2() -> MallInfo2 {
     let page = shared.regions.page_size();
     let arena = all.resident.saturating_sub(all.large_allocated);
     let uordblks = all.small_allocated;
-    let free_slots: usize = all.bins.iter().map(|b| (b.curslabs * b.nregs).saturating_sub(b.curregs)).sum();
+    let free_slots: usize = all
+        .bins
+        .iter()
+        .map(|b| (b.curslabs * b.nregs).saturating_sub(b.curregs))
+        .sum();
     MallInfo2 {
         arena,
         ordblks: free_slots,
@@ -150,8 +154,14 @@ mod tests {
 
     #[test]
     fn mallinfo_reflects_live_allocations_and_keeps_glibcs_identities() {
-        assert_eq!(core::mem::size_of::<MallInfo>(), 10 * core::mem::size_of::<c_int>());
-        assert_eq!(core::mem::size_of::<MallInfo2>(), 10 * core::mem::size_of::<usize>());
+        assert_eq!(
+            core::mem::size_of::<MallInfo>(),
+            10 * core::mem::size_of::<c_int>()
+        );
+        assert_eq!(
+            core::mem::size_of::<MallInfo2>(),
+            10 * core::mem::size_of::<usize>()
+        );
         // Other tests allocate concurrently, so only our own live blocks
         // give bounds; the identities must hold for any single collection.
         let small: Vec<*mut u8> = (0..200).map(|_| malloc(900)).collect();
@@ -166,7 +176,10 @@ mod tests {
         assert_eq!(m.smblks + m.usmblks + m.fsmblks, 0);
         assert_eq!(m.keepcost % super::super::shared().regions.page_size(), 0);
         let i = mallinfo();
-        assert!(i.hblks >= 3 && i.arena >= i.uordblks && i.fordblks == i.arena - i.uordblks, "{i:?}");
+        assert!(
+            i.hblks >= 3 && i.arena >= i.uordblks && i.fordblks == i.arena - i.uordblks,
+            "{i:?}"
+        );
         assert!(i.uordblks as usize >= 200 * size);
         for p in small.into_iter().chain(huge) {
             free(p);

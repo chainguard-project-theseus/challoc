@@ -44,7 +44,9 @@ impl Default for RawLock {
 
 impl RawLock {
     pub const fn new() -> RawLock {
-        RawLock { state: AtomicU32::new(UNLOCKED) }
+        RawLock {
+            state: AtomicU32::new(UNLOCKED),
+        }
     }
 
     /// The bare CAS from `UNLOCKED` to `LOCKED`.
@@ -157,7 +159,10 @@ unsafe impl<T: Send> Send for Lock<T> {}
 
 impl<T> Lock<T> {
     pub const fn new(value: T) -> Lock<T> {
-        Lock { raw: RawLock::new(), value: UnsafeCell::new(value) }
+        Lock {
+            raw: RawLock::new(),
+            value: UnsafeCell::new(value),
+        }
     }
 
     /// Acquire and return a guard that releases on drop.
@@ -171,7 +176,11 @@ impl<T> Lock<T> {
     #[inline]
     #[cfg(test)]
     pub fn try_lock(&self) -> Option<LockGuard<'_, T>> {
-        if self.raw.try_lock() { Some(LockGuard { lock: self }) } else { None }
+        if self.raw.try_lock() {
+            Some(LockGuard { lock: self })
+        } else {
+            None
+        }
     }
 
     /// The underlying word, for code that must hold several locks across a
@@ -366,9 +375,16 @@ mod tests {
         assert!(!through, "the waiter got through while the lock was held");
         // Released: the wake reaches the waiter. On failure the waiter
         // stays parked (a lost wake); the test fails rather than joins.
-        assert!(within_bound(|| waiter.is_finished()), "the waiter was not woken within {BOUND:?} of the release");
+        assert!(
+            within_bound(|| waiter.is_finished()),
+            "the waiter was not woken within {BOUND:?} of the release"
+        );
         let acquired_at = waiter.join().unwrap();
-        assert!(acquired_at >= released_at, "acquired {:?} before the release", released_at - acquired_at);
+        assert!(
+            acquired_at >= released_at,
+            "acquired {:?} before the release",
+            released_at - acquired_at
+        );
         assert_eq!(l.state.load(Ordering::Relaxed), UNLOCKED);
     }
 }

@@ -285,15 +285,26 @@ impl Config {
     ///
     /// [`shared_class`]: Config::shared_class
     pub fn cap_for(&self, home: u16, arena: u16, class: usize) -> u32 {
-        if !self.tcache || self.shared_class(class) || (arena != home && class >= crate::layout::NBINS) {
+        if !self.tcache
+            || self.shared_class(class)
+            || (arena != home && class >= crate::layout::NBINS)
+        {
             return 0;
         }
-        ladder(class, self.tcache_nslots_small_max, self.lg_tcache_nslots_mul)
+        ladder(
+            class,
+            self.tcache_nslots_small_max,
+            self.lg_tcache_nslots_mul,
+        )
     }
 
     /// The guard slab interval actually used: 0 when guards are off.
     pub fn effective_guard_slab_interval(&self) -> u32 {
-        if self.guards { self.guard_slab_interval } else { 0 }
+        if self.guards {
+            self.guard_slab_interval
+        } else {
+            0
+        }
     }
 
     /// The number of automatic arenas actually used: `narenas` when set,
@@ -362,19 +373,31 @@ fn num<'a>(
 ) -> Result<(), Issue<'a>> {
     let (v, clamped) = clamped(key, value, min, max)?;
     store(cfg, v);
-    if clamped { Err(Issue::OutOfRange { key, value }) } else { Ok(()) }
+    if clamped {
+        Err(Issue::OutOfRange { key, value })
+    } else {
+        Ok(())
+    }
 }
 
 /// A named-value key: `value` looked up in `names` (aliases are extra
 /// rows), anything else [`Issue::BadValue`].
 fn pick<'a, T: Copy>(names: &[(&str, T)], key: &'a [u8], value: &'a [u8]) -> Result<T, Issue<'a>> {
-    names.iter().find(|(n, _)| n.as_bytes() == value).map(|&(_, t)| t).ok_or(Issue::BadValue { key, value })
+    names
+        .iter()
+        .find(|(n, _)| n.as_bytes() == value)
+        .map(|&(_, t)| t)
+        .ok_or(Issue::BadValue { key, value })
 }
 
 /// A [`TABLE`] entry for a bool key stored in `field`.
 macro_rules! bool_key {
     ($name:literal, $field:ident) => {
-        Key { name: $name, parse: |c, k, v| bool_into(&mut c.$field, k, v), read: |c| Value::Bool(c.$field) }
+        Key {
+            name: $name,
+            parse: |c, k, v| bool_into(&mut c.$field, k, v),
+            read: |c| Value::Bool(c.$field),
+        }
     };
 }
 
@@ -418,18 +441,33 @@ pub const TABLE: &[Key] = &[
     bool_key!("tcache", tcache),
     Key {
         name: "tcache_max",
-        parse: |c, k, v| num(c, k, v, 0, crate::layout::MEDIUM_MAX as i64, |c, v| c.tcache_max = v as usize),
+        parse: |c, k, v| {
+            num(c, k, v, 0, crate::layout::MEDIUM_MAX as i64, |c, v| {
+                c.tcache_max = v as usize
+            })
+        },
         read: |c| Value::Size(c.tcache_max),
     },
     Key {
         name: "tcache_nslots_small_max",
-        parse: |c, k, v| num(c, k, v, MIN_CAP as i64, MAX_NSLOTS as i64, |c, v| c.tcache_nslots_small_max = v as u32),
+        parse: |c, k, v| {
+            num(c, k, v, MIN_CAP as i64, MAX_NSLOTS as i64, |c, v| {
+                c.tcache_nslots_small_max = v as u32
+            })
+        },
         read: |c| Value::Uint(c.tcache_nslots_small_max as u64),
     },
     Key {
         name: "lg_tcache_nslots_mul",
         parse: |c, k, v| {
-            num(c, k, v, LG_NSLOTS_MUL_MIN as i64, LG_NSLOTS_MUL_MAX as i64, |c, v| c.lg_tcache_nslots_mul = v as i32)
+            num(
+                c,
+                k,
+                v,
+                LG_NSLOTS_MUL_MIN as i64,
+                LG_NSLOTS_MUL_MAX as i64,
+                |c, v| c.lg_tcache_nslots_mul = v as i32,
+            )
         },
         read: |c| Value::Int(c.lg_tcache_nslots_mul as i64),
     },
@@ -438,7 +476,12 @@ pub const TABLE: &[Key] = &[
         name: "thp",
         parse: |c, k, v| {
             c.thp = pick(
-                &[("never", Thp::Never), ("default", Thp::Never), ("auto", Thp::Auto), ("always", Thp::Always)],
+                &[
+                    ("never", Thp::Never),
+                    ("default", Thp::Never),
+                    ("auto", Thp::Auto),
+                    ("always", Thp::Always),
+                ],
                 k,
                 v,
             )?;
@@ -460,14 +503,20 @@ pub const TABLE: &[Key] = &[
             // reported, so `abort_conf` refuses it and a plain run says
             // what it got. The maximum is a power of two, so a clamped
             // value needs no rounding.
-            let r = num(c, k, v, 0, MAX_GUARD_SLAB_INTERVAL as i64, |c, v| c.guard_slab_interval = v as u32);
+            let r = num(c, k, v, 0, MAX_GUARD_SLAB_INTERVAL as i64, |c, v| {
+                c.guard_slab_interval = v as u32
+            });
             if c.guard_slab_interval == 1 {
                 c.guard_slab_interval = 2;
                 return Err(Issue::OutOfRange { key: k, value: v });
             }
             if c.guard_slab_interval != 0 && !c.guard_slab_interval.is_power_of_two() {
                 c.guard_slab_interval = c.guard_slab_interval.next_power_of_two();
-                return Err(Issue::Rounded { key: k, value: v, to: c.guard_slab_interval as u64 });
+                return Err(Issue::Rounded {
+                    key: k,
+                    value: v,
+                    to: c.guard_slab_interval as u64,
+                });
             }
             r
         },
@@ -475,13 +524,21 @@ pub const TABLE: &[Key] = &[
     },
     Key {
         name: "huge_retain_max",
-        parse: |c, k, v| num(c, k, v, 0, MAX_HUGE_RETAIN_MAX as i64, |c, v| c.huge_retain_max = v as usize),
+        parse: |c, k, v| {
+            num(c, k, v, 0, MAX_HUGE_RETAIN_MAX as i64, |c, v| {
+                c.huge_retain_max = v as usize
+            })
+        },
         read: |c| Value::Size(c.huge_retain_max),
     },
     Key {
         // Unset it follows `dirty_decay_ms`, which is what it reads back.
         name: "huge_dirty_decay_ms",
-        parse: |c, k, v| num(c, k, v, -1, MAX_INTERVAL_MS, |c, v| c.huge_dirty_decay_ms = Some(v)),
+        parse: |c, k, v| {
+            num(c, k, v, -1, MAX_INTERVAL_MS, |c, v| {
+                c.huge_dirty_decay_ms = Some(v)
+            })
+        },
         read: |c| Value::Int(c.huge_decay_ms()),
     },
     bool_key!("zero_on_free", zero_on_free),
@@ -537,7 +594,11 @@ pub const fn ladder(class: usize, max: u32, lg_mul: i32) -> u32 {
     let size = crate::layout::BASE_CLASSES[class].size();
     // Doublings above 128 bytes: sizes in (128, 256] halve once, (256, 512]
     // twice, and so on.
-    let doublings = if size <= 128 { 0 } else { (size - 1).ilog2() as i32 + 1 - 7 };
+    let doublings = if size <= 128 {
+        0
+    } else {
+        (size - 1).ilog2() as i32 + 1 - 7
+    };
     let shift = doublings - (lg_mul - 1);
     let cap = if shift >= 32 {
         0
@@ -547,7 +608,11 @@ pub const fn ladder(class: usize, max: u32, lg_mul: i32) -> u32 {
         max >> shift
     } else {
         let grown = (max as u64).saturating_mul(1u64 << (-shift));
-        if grown > u32::MAX as u64 { u32::MAX } else { grown as u32 }
+        if grown > u32::MAX as u64 {
+            u32::MAX
+        } else {
+            grown as u32
+        }
     };
     let cap = if cap > max { max } else { cap };
     if cap < MIN_CAP { MIN_CAP } else { cap }
@@ -582,7 +647,11 @@ pub enum Issue<'a> {
     OutOfRange { key: &'a [u8], value: &'a [u8] },
     /// A number the key needs as a power of two; the value was rounded up
     /// to `to` (`guard_slab_interval`).
-    Rounded { key: &'a [u8], value: &'a [u8], to: u64 },
+    Rounded {
+        key: &'a [u8],
+        value: &'a [u8],
+        to: u64,
+    },
     /// One of [`INERT_KEYS`]: parsed, but no field stores it and nothing
     /// reads it.
     Inert(&'a [u8]),
@@ -594,16 +663,36 @@ impl fmt::Display for Issue<'_> {
             Issue::Malformed(pair) => write!(f, "malformed conf pair \"{}\"", Bytes(pair)),
             Issue::UnknownKey(key) => write!(f, "unknown conf key \"{}\"", Bytes(key)),
             Issue::BadValue { key, value } => {
-                write!(f, "invalid conf value \"{}\" for {}", Bytes(value), Bytes(key))
+                write!(
+                    f,
+                    "invalid conf value \"{}\" for {}",
+                    Bytes(value),
+                    Bytes(key)
+                )
             }
             Issue::OutOfRange { key, value } => {
-                write!(f, "out-of-range conf value \"{}\" for {} (clamped)", Bytes(value), Bytes(key))
+                write!(
+                    f,
+                    "out-of-range conf value \"{}\" for {} (clamped)",
+                    Bytes(value),
+                    Bytes(key)
+                )
             }
             Issue::Rounded { key, value, to } => {
-                write!(f, "conf value \"{}\" for {} is not a power of two (rounded up to {})", Bytes(value), Bytes(key), to)
+                write!(
+                    f,
+                    "conf value \"{}\" for {} is not a power of two (rounded up to {})",
+                    Bytes(value),
+                    Bytes(key),
+                    to
+                )
             }
             Issue::Inert(key) => {
-                write!(f, "conf key {} is accepted but has no effect (not implemented)", Bytes(key))
+                write!(
+                    f,
+                    "conf key {} is accepted but has no effect (not implemented)",
+                    Bytes(key)
+                )
             }
         }
     }
@@ -615,7 +704,11 @@ struct Bytes<'a>(&'a [u8]);
 impl fmt::Display for Bytes<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         for &b in self.0.iter().take(64) {
-            f.write_char(if (0x20..0x7f).contains(&b) { b as char } else { '?' })?;
+            f.write_char(if (0x20..0x7f).contains(&b) {
+                b as char
+            } else {
+                '?'
+            })?;
         }
         if self.0.len() > 64 {
             f.write_str("...")?;
@@ -652,7 +745,11 @@ impl<'a> Iterator for Pairs<'a> {
             i += 1;
         }
         let pair = &self.0[..i];
-        self.0 = if i < self.0.len() { &self.0[i + 1..] } else { &[] };
+        self.0 = if i < self.0.len() {
+            &self.0[i + 1..]
+        } else {
+            &[]
+        };
         Some(pair)
     }
 }
@@ -711,7 +808,12 @@ pub fn parse_int(value: &[u8]) -> Option<i64> {
 /// value in range, `Ok((clamped, true))` for one outside it (the caller
 /// assigns the clamped value and reports [`Issue::OutOfRange`], as
 /// jemalloc's `CONF_HANDLE_*` macros do), `Err` when it does not parse.
-fn clamped<'a>(key: &'a [u8], value: &'a [u8], min: i64, max: i64) -> Result<(i64, bool), Issue<'a>> {
+fn clamped<'a>(
+    key: &'a [u8],
+    value: &'a [u8],
+    min: i64,
+    max: i64,
+) -> Result<(i64, bool), Issue<'a>> {
     let v = parse_int(value).ok_or(Issue::BadValue { key, value })?;
     if v < min {
         Ok((min, true))
@@ -724,7 +826,7 @@ fn clamped<'a>(key: &'a [u8], value: &'a [u8], min: i64, max: i64) -> Result<(i6
 
 pub use linux::load;
 #[cfg(test)]
-use linux::{env_var, first_line_of, malloc_conf_symbol, MAX_TEXT};
+use linux::{MAX_TEXT, env_var, first_line_of, malloc_conf_symbol};
 
 mod linux {
     use core::ffi::{c_char, c_void};
@@ -758,7 +860,10 @@ mod linux {
             let _ = writeln!(out, "challoc: {source}: {issue}");
         };
 
-        for (name, text) in [("malloc_conf", malloc_conf_symbol(0)), ("je_malloc_conf", malloc_conf_symbol(1))] {
+        for (name, text) in [
+            ("malloc_conf", malloc_conf_symbol(0)),
+            ("je_malloc_conf", malloc_conf_symbol(1)),
+        ] {
             if let Some(text) = text {
                 issues += cfg.parse(text, |i| report(name, i));
             }
@@ -776,7 +881,9 @@ mod linux {
         }
         out.flush();
         if cfg.abort_conf && issues > 0 {
-            sys::abort_fmt(format_args!("abort_conf: {issues} configuration problem(s), see above"));
+            sys::abort_fmt(format_args!(
+                "abort_conf: {issues} configuration problem(s), see above"
+            ));
         }
         cfg
     }
@@ -888,7 +995,10 @@ mod linux {
                 return None;
             }
             if let Some(text) = cstr(entry) {
-                if text.len() > name.len() && &text[..name.len()] == name && text[name.len()] == b'=' {
+                if text.len() > name.len()
+                    && &text[..name.len()] == name
+                    && text[name.len()] == b'='
+                {
                     let value = &text[name.len() + 1..];
                     return if value.is_empty() { None } else { Some(value) };
                 }
@@ -943,7 +1053,11 @@ mod tests {
             let (cfg, issues) = parse(&text);
             assert_eq!(cfg, Config::DEFAULT, "{text} changed the config");
             assert_eq!(issues.len(), 1, "{text}: {issues:?}");
-            let expect = if bad.is_empty() { "malformed" } else { "invalid conf value \"" };
+            let expect = if bad.is_empty() {
+                "malformed"
+            } else {
+                "invalid conf value \""
+            };
             assert!(issues[0].contains(expect), "{text}: {}", issues[0]);
         }
     }
@@ -966,7 +1080,13 @@ mod tests {
         assert_eq!(d.guard_slab_interval, 8);
         assert_eq!(d.huge_retain_max, 64 << 20);
         assert_eq!(d.huge_retain_max, crate::huge::DEFAULT_RETAIN_MAX);
-        assert!(!d.zero_on_free && !d.slot_randomize && !d.double_free_scan && !d.abort_conf && !d.check_zero);
+        assert!(
+            !d.zero_on_free
+                && !d.slot_randomize
+                && !d.double_free_scan
+                && !d.abort_conf
+                && !d.check_zero
+        );
         assert!(!d.pac_pointers, "signed pointers are opt-in");
         assert!(d.cgroup);
         assert_eq!(d.effective_guard_slab_interval(), 8);
@@ -997,7 +1117,11 @@ mod tests {
         for key in keys {
             for v in [true, false] {
                 let text = std::format!("{key}:{v}");
-                assert_eq!(clean(&text).get(key.as_bytes()), Some(Value::Bool(v)), "{key}:{v}");
+                assert_eq!(
+                    clean(&text).get(key.as_bytes()),
+                    Some(Value::Bool(v)),
+                    "{key}:{v}"
+                );
             }
             rejects_bad_values(key, &["yes", "1", "TRUE", "", "truex"]);
         }
@@ -1009,7 +1133,11 @@ mod tests {
     fn narenas_default_resolves_from_the_cpu_count() {
         let d = Config::DEFAULT;
         assert_eq!(d.effective_narenas(1), 4);
-        assert_eq!(d.effective_narenas(0), 4, "a failed probe counts as one CPU");
+        assert_eq!(
+            d.effective_narenas(0),
+            4,
+            "a failed probe counts as one CPU"
+        );
         assert_eq!(d.effective_narenas(4), 16);
         assert_eq!(d.effective_narenas(16), 64);
         assert_eq!(d.effective_narenas(192), 64);
@@ -1023,32 +1151,91 @@ mod tests {
     fn every_numeric_key_parses_and_clamps() {
         // (key, in-range value, below-min input, clamped min, above-max input, clamped max)
         let cases: [(&str, i64, &str, i64, &str, i64); 9] = [
-            ("dirty_decay_ms", 5000, "-2", -1, "9999999999999999", MAX_INTERVAL_MS),
-            ("huge_dirty_decay_ms", 2000, "-2", -1, "9999999999999999", MAX_INTERVAL_MS),
-            ("muzzy_decay_ms", 0, "-5", -1, "9999999999999999", MAX_INTERVAL_MS),
+            (
+                "dirty_decay_ms",
+                5000,
+                "-2",
+                -1,
+                "9999999999999999",
+                MAX_INTERVAL_MS,
+            ),
+            (
+                "huge_dirty_decay_ms",
+                2000,
+                "-2",
+                -1,
+                "9999999999999999",
+                MAX_INTERVAL_MS,
+            ),
+            (
+                "muzzy_decay_ms",
+                0,
+                "-5",
+                -1,
+                "9999999999999999",
+                MAX_INTERVAL_MS,
+            ),
             ("narenas", 4, "-1", 0, "99999999999", u32::MAX as i64),
-            ("tcache_max", 4096, "-1", 0, "9999999", crate::layout::MEDIUM_MAX as i64),
-            ("tcache_nslots_small_max", 1000, "1", MIN_CAP as i64, "1000000", MAX_NSLOTS as i64),
+            (
+                "tcache_max",
+                4096,
+                "-1",
+                0,
+                "9999999",
+                crate::layout::MEDIUM_MAX as i64,
+            ),
+            (
+                "tcache_nslots_small_max",
+                1000,
+                "1",
+                MIN_CAP as i64,
+                "1000000",
+                MAX_NSLOTS as i64,
+            ),
             ("lg_tcache_nslots_mul", 3, "-17", -16, "17", 16),
-            ("guard_slab_interval", 2, "-1", 0, "5000000", MAX_GUARD_SLAB_INTERVAL as i64),
-            ("huge_retain_max", 1 << 20, "-1", 0, "9999999999999999", MAX_HUGE_RETAIN_MAX as i64),
+            (
+                "guard_slab_interval",
+                2,
+                "-1",
+                0,
+                "5000000",
+                MAX_GUARD_SLAB_INTERVAL as i64,
+            ),
+            (
+                "huge_retain_max",
+                1 << 20,
+                "-1",
+                0,
+                "9999999999999999",
+                MAX_HUGE_RETAIN_MAX as i64,
+            ),
         ];
         for (key, ok, low, min, high, max) in cases {
             let as_value = |v: i64| match key {
                 "tcache_max" | "huge_retain_max" => Value::Size(v as usize),
-                "narenas" | "tcache_nslots_small_max" | "guard_slab_interval" => Value::Uint(v as u64),
+                "narenas" | "tcache_nslots_small_max" | "guard_slab_interval" => {
+                    Value::Uint(v as u64)
+                }
                 _ => Value::Int(v),
             };
             let cfg = clean(&std::format!("{key}:{ok}"));
             assert_eq!(cfg.get(key.as_bytes()), Some(as_value(ok)), "{key}:{ok}");
 
             let (cfg, issues) = parse(&std::format!("{key}:{low}"));
-            assert_eq!(cfg.get(key.as_bytes()), Some(as_value(min)), "{key}:{low} clamps to min");
+            assert_eq!(
+                cfg.get(key.as_bytes()),
+                Some(as_value(min)),
+                "{key}:{low} clamps to min"
+            );
             assert_eq!(issues.len(), 1);
             assert!(issues[0].contains("out-of-range"), "{}", issues[0]);
 
             let (cfg, issues) = parse(&std::format!("{key}:{high}"));
-            assert_eq!(cfg.get(key.as_bytes()), Some(as_value(max)), "{key}:{high} clamps to max");
+            assert_eq!(
+                cfg.get(key.as_bytes()),
+                Some(as_value(max)),
+                "{key}:{high} clamps to max"
+            );
             assert_eq!(issues.len(), 1);
             assert!(issues[0].contains("out-of-range"), "{}", issues[0]);
 
@@ -1056,7 +1243,11 @@ mod tests {
                 let (cfg, issues) = parse(&std::format!("{key}:{bad}"));
                 assert_eq!(cfg, Config::DEFAULT, "{key}:{bad} changed the config");
                 assert_eq!(issues.len(), 1, "{key}:{bad}");
-                assert!(issues[0].contains("invalid conf value"), "{key}:{bad}: {}", issues[0]);
+                assert!(
+                    issues[0].contains("invalid conf value"),
+                    "{key}:{bad}: {}",
+                    issues[0]
+                );
             }
         }
     }
@@ -1080,7 +1271,10 @@ mod tests {
         assert_eq!(parse_int(b"0x"), None);
         assert_eq!(parse_int(b"08"), None);
         assert_eq!(parse_int(b"1_000"), None);
-        assert_eq!(clean("tcache_nslots_small_max:0x100").tcache_nslots_small_max, 256);
+        assert_eq!(
+            clean("tcache_nslots_small_max:0x100").tcache_nslots_small_max,
+            256
+        );
     }
 
     #[test]
@@ -1100,12 +1294,14 @@ mod tests {
         assert_eq!(clean("thp:auto,abort_conf:true").thp, Thp::Auto);
     }
 
-
     /// `percpu_arena`: jemalloc's three values, anything else reported and
     /// left at the default.
     #[test]
     fn percpu_arena_values() {
-        assert!(KEYS.contains(&"percpu_arena"), "a real key, readable through opt.percpu_arena");
+        assert!(
+            KEYS.contains(&"percpu_arena"),
+            "a real key, readable through opt.percpu_arena"
+        );
         for (value, want) in [
             ("disabled", PercpuArena::Disabled),
             ("percpu", PercpuArena::Percpu),
@@ -1113,14 +1309,29 @@ mod tests {
         ] {
             let cfg = clean(&std::format!("percpu_arena:{value},abort_conf:true"));
             assert_eq!(cfg.percpu_arena, want, "{value}");
-            assert_eq!(cfg.get(b"percpu_arena"), Some(Value::Str(want.name())), "{value}");
+            assert_eq!(
+                cfg.get(b"percpu_arena"),
+                Some(Value::Str(want.name())),
+                "{value}"
+            );
             assert_eq!(want.name().to_str(), Ok(value));
             assert!(cfg.abort_conf);
         }
-        rejects_bad_values("percpu_arena", &["true", "false", "1", "on", "auto", "off", "PERCPU", "", "percpux"]);
+        rejects_bad_values(
+            "percpu_arena",
+            &[
+                "true", "false", "1", "on", "auto", "off", "PERCPU", "", "percpux",
+            ],
+        );
         // The last pair wins, as for every key.
-        assert_eq!(clean("percpu_arena:percpu,percpu_arena:disabled").percpu_arena, PercpuArena::Disabled);
-        assert_eq!(clean("percpu_arena:\"percpu\"").percpu_arena, PercpuArena::Percpu);
+        assert_eq!(
+            clean("percpu_arena:percpu,percpu_arena:disabled").percpu_arena,
+            PercpuArena::Disabled
+        );
+        assert_eq!(
+            clean("percpu_arena:\"percpu\"").percpu_arena,
+            PercpuArena::Percpu
+        );
     }
 
     /// The one inert key: a bool by value, no field, unreadable, one
@@ -1145,7 +1356,11 @@ mod tests {
             let (cfg, issues) = parse(&std::format!("{key}:nonsense"));
             assert_eq!(cfg, Config::DEFAULT, "{key}:nonsense changed the config");
             assert_eq!(issues.len(), 1, "{key}:nonsense: {issues:?}");
-            assert!(issues[0].contains("invalid conf value"), "{key}:nonsense: {}", issues[0]);
+            assert!(
+                issues[0].contains("invalid conf value"),
+                "{key}:nonsense: {}",
+                issues[0]
+            );
         }
         // The two hardening keys are real, opt-in keys: no report, stored,
         // readable, and `abort_conf` accepts them.
@@ -1159,7 +1374,8 @@ mod tests {
         assert!(cfg.zero_on_free && cfg.slot_randomize);
         // Mixed with real keys the real ones still apply and the inert ones
         // are counted: what `load` aborts on under `abort_conf`.
-        let (cfg, issues) = parse("narenas:3,thp:always,cgroup:false,abort_conf:true,stats_print:true");
+        let (cfg, issues) =
+            parse("narenas:3,thp:always,cgroup:false,abort_conf:true,stats_print:true");
         assert_eq!(cfg.narenas, 3);
         assert!(cfg.abort_conf && !cfg.cgroup && cfg.thp == Thp::Always);
         assert_eq!(issues.len(), 1, "cgroup and thp are real keys: {issues:?}");
@@ -1176,37 +1392,71 @@ mod tests {
         assert_eq!(d.huge_decay_ms(), d.dirty_decay_ms);
         assert_eq!(d.get(b"huge_dirty_decay_ms"), Some(Value::Int(10_000)));
         let cfg = clean("dirty_decay_ms:3000");
-        assert_eq!(cfg.huge_dirty_decay_ms, None, "the slab key leaves it following");
+        assert_eq!(
+            cfg.huge_dirty_decay_ms, None,
+            "the slab key leaves it following"
+        );
         assert_eq!(cfg.huge_decay_ms(), 3000);
         assert_eq!(cfg.get(b"huge_dirty_decay_ms"), Some(Value::Int(3000)));
         let cfg = clean("huge_dirty_decay_ms:2000,dirty_decay_ms:3000");
         assert_eq!(cfg.huge_dirty_decay_ms, Some(2000));
         assert_eq!((cfg.huge_decay_ms(), cfg.dirty_decay_ms), (2000, 3000));
         assert_eq!(cfg.get(b"huge_dirty_decay_ms"), Some(Value::Int(2000)));
-        assert_eq!(cfg.get(b"dirty_decay_ms"), Some(Value::Int(3000)), "the huge key leaves the slab key alone");
+        assert_eq!(
+            cfg.get(b"dirty_decay_ms"),
+            Some(Value::Int(3000)),
+            "the huge key leaves the slab key alone"
+        );
         assert_eq!(clean("huge_dirty_decay_ms:0").huge_dirty_decay_ms, Some(0));
-        assert_eq!(clean("huge_dirty_decay_ms:-1").huge_dirty_decay_ms, Some(-1));
-        assert_eq!(clean("huge_dirty_decay_ms:-1").get(b"huge_dirty_decay_ms"), Some(Value::Int(-1)));
+        assert_eq!(
+            clean("huge_dirty_decay_ms:-1").huge_dirty_decay_ms,
+            Some(-1)
+        );
+        assert_eq!(
+            clean("huge_dirty_decay_ms:-1").get(b"huge_dirty_decay_ms"),
+            Some(Value::Int(-1))
+        );
         // Set to the slab period explicitly it stays pinned there when
         // the slab period later differs.
         let cfg = clean("huge_dirty_decay_ms:10000,dirty_decay_ms:500");
         assert_eq!((cfg.huge_decay_ms(), cfg.dirty_decay_ms), (10_000, 500));
         let (cfg, issues) = parse("huge_dirty_decay_ms:-2");
-        assert_eq!(cfg.huge_dirty_decay_ms, Some(-1), "clamped like dirty_decay_ms");
+        assert_eq!(
+            cfg.huge_dirty_decay_ms,
+            Some(-1),
+            "clamped like dirty_decay_ms"
+        );
         assert_eq!(issues.len(), 1);
-        assert!(issues[0].contains("out-of-range conf value \"-2\" for huge_dirty_decay_ms"), "{}", issues[0]);
+        assert!(
+            issues[0].contains("out-of-range conf value \"-2\" for huge_dirty_decay_ms"),
+            "{}",
+            issues[0]
+        );
     }
 
     #[test]
     fn huge_retain_max_is_a_byte_count() {
         assert_eq!(clean("huge_retain_max:0").huge_retain_max, 0);
         assert_eq!(clean("huge_retain_max:0x100000").huge_retain_max, 1 << 20);
-        assert_eq!(clean("huge_retain_max:1099511627776").huge_retain_max, MAX_HUGE_RETAIN_MAX);
-        assert_eq!(clean("huge_retain_max:1").get(b"huge_retain_max"), Some(Value::Size(1)));
+        assert_eq!(
+            clean("huge_retain_max:1099511627776").huge_retain_max,
+            MAX_HUGE_RETAIN_MAX
+        );
+        assert_eq!(
+            clean("huge_retain_max:1").get(b"huge_retain_max"),
+            Some(Value::Size(1))
+        );
         let (cfg, issues) = parse("huge_retain_max:1099511627777");
-        assert_eq!(cfg.huge_retain_max, MAX_HUGE_RETAIN_MAX, "clamped to the huge region");
+        assert_eq!(
+            cfg.huge_retain_max, MAX_HUGE_RETAIN_MAX,
+            "clamped to the huge region"
+        );
         assert_eq!(issues.len(), 1);
-        assert!(issues[0].contains("out-of-range conf value \"1099511627777\" for huge_retain_max"), "{}", issues[0]);
+        assert!(
+            issues[0].contains("out-of-range conf value \"1099511627777\" for huge_retain_max"),
+            "{}",
+            issues[0]
+        );
     }
 
     #[test]
@@ -1225,10 +1475,23 @@ mod tests {
         let (cfg, issues) = parse("bogus:1,tcache:false,another_bogus:true");
         assert!(!cfg.tcache);
         assert_eq!(issues.len(), 2);
-        assert!(issues[0].contains("unknown conf key \"bogus\""), "{}", issues[0]);
-        assert!(issues[1].contains("unknown conf key \"another_bogus\""), "{}", issues[1]);
+        assert!(
+            issues[0].contains("unknown conf key \"bogus\""),
+            "{}",
+            issues[0]
+        );
+        assert!(
+            issues[1].contains("unknown conf key \"another_bogus\""),
+            "{}",
+            issues[1]
+        );
         // Keys are case sensitive and not trimmed, as in jemalloc.
-        for text in ["Tcache:false", " tcache:false", "tcache :false", "tcache: false"] {
+        for text in [
+            "Tcache:false",
+            " tcache:false",
+            "tcache :false",
+            "tcache: false",
+        ] {
             let (cfg, issues) = parse(text);
             assert_eq!(cfg, Config::DEFAULT, "{text:?}");
             assert_eq!(issues.len(), 1, "{text:?}");
@@ -1241,16 +1504,36 @@ mod tests {
         assert!(!cfg.tcache);
         assert_eq!(cfg.narenas, 3);
         assert_eq!(issues.len(), 3);
-        assert!(issues[0].contains("malformed conf pair \"nocolon\""), "{}", issues[0]);
-        assert!(issues[1].contains("malformed conf pair \":novalue\""), "{}", issues[1]);
-        assert!(issues[2].contains("malformed conf pair \"nokey:\""), "{}", issues[2]);
+        assert!(
+            issues[0].contains("malformed conf pair \"nocolon\""),
+            "{}",
+            issues[0]
+        );
+        assert!(
+            issues[1].contains("malformed conf pair \":novalue\""),
+            "{}",
+            issues[1]
+        );
+        assert!(
+            issues[2].contains("malformed conf pair \"nokey:\""),
+            "{}",
+            issues[2]
+        );
         // A lone colon and a value with a second colon.
         let (_, issues) = parse(":");
         assert_eq!(issues.len(), 1);
         let (cfg, issues) = parse("narenas:1:2");
-        assert_eq!(cfg.narenas, Config::DEFAULT.narenas, "an invalid value leaves the default");
+        assert_eq!(
+            cfg.narenas,
+            Config::DEFAULT.narenas,
+            "an invalid value leaves the default"
+        );
         assert_eq!(issues.len(), 1);
-        assert!(issues[0].contains("invalid conf value \"1:2\""), "{}", issues[0]);
+        assert!(
+            issues[0].contains("invalid conf value \"1:2\""),
+            "{}",
+            issues[0]
+        );
     }
 
     #[test]
@@ -1275,14 +1558,19 @@ mod tests {
         let cfg = clean("lg_tcache_nslots_mul:3,tcache_nslots_small_max:1000");
         assert_eq!(cfg.lg_tcache_nslots_mul, 3);
         assert_eq!(cfg.tcache_nslots_small_max, 1000);
-        let cfg = clean("background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0,narenas:2,abort_conf:true");
+        let cfg = clean(
+            "background_thread:true,dirty_decay_ms:0,muzzy_decay_ms:0,narenas:2,abort_conf:true",
+        );
         assert!(cfg.background_thread && cfg.abort_conf);
         assert_eq!(cfg.dirty_decay_ms, 0);
         assert_eq!(cfg.narenas, 2);
         // jemalloc's own `percpu_arena` values parse clean under `abort_conf`.
         let cfg = clean("percpu_arena:disabled,abort_conf:true");
         assert_eq!(cfg.percpu_arena, PercpuArena::Disabled);
-        assert_eq!(clean("percpu_arena:phycpu,narenas:4").percpu_arena, PercpuArena::Phycpu);
+        assert_eq!(
+            clean("percpu_arena:phycpu,narenas:4").percpu_arena,
+            PercpuArena::Phycpu
+        );
     }
 
     #[test]
@@ -1303,9 +1591,24 @@ mod tests {
             if *key == "huge_dirty_decay_ms" {
                 // Its default is "follow `dirty_decay_ms`" (`None`), which
                 // reads back as that period; setting the reading pins it.
-                assert_eq!(parsed.get(key.as_bytes()), cfg.get(key.as_bytes()), "{text}");
-                assert_eq!(parsed.huge_dirty_decay_ms, Some(cfg.dirty_decay_ms), "{text}");
-                assert_eq!(Config { huge_dirty_decay_ms: None, ..parsed }, cfg, "{text} changed another field");
+                assert_eq!(
+                    parsed.get(key.as_bytes()),
+                    cfg.get(key.as_bytes()),
+                    "{text}"
+                );
+                assert_eq!(
+                    parsed.huge_dirty_decay_ms,
+                    Some(cfg.dirty_decay_ms),
+                    "{text}"
+                );
+                assert_eq!(
+                    Config {
+                        huge_dirty_decay_ms: None,
+                        ..parsed
+                    },
+                    cfg,
+                    "{text} changed another field"
+                );
             } else {
                 assert_eq!(parsed, cfg, "{key}:{value} round trip");
             }
@@ -1333,18 +1636,55 @@ mod tests {
             if IGNORED_KEYS.contains(key) {
                 assert_eq!(r, Ok(()), "{key} takes any value");
             } else if INERT_KEYS.contains(key) {
-                assert_eq!(r, Err(Issue::BadValue { key: key.as_bytes(), value: b"nonsense-value" }), "{key}");
-                assert_eq!(cfg.set(key.as_bytes(), b"true"), Err(Issue::Inert(key.as_bytes())), "{key}");
+                assert_eq!(
+                    r,
+                    Err(Issue::BadValue {
+                        key: key.as_bytes(),
+                        value: b"nonsense-value"
+                    }),
+                    "{key}"
+                );
+                assert_eq!(
+                    cfg.set(key.as_bytes(), b"true"),
+                    Err(Issue::Inert(key.as_bytes())),
+                    "{key}"
+                );
             } else {
-                assert_eq!(r, Err(Issue::BadValue { key: key.as_bytes(), value: b"nonsense-value" }), "{key}");
+                assert_eq!(
+                    r,
+                    Err(Issue::BadValue {
+                        key: key.as_bytes(),
+                        value: b"nonsense-value"
+                    }),
+                    "{key}"
+                );
                 assert!(cfg.get(key.as_bytes()).is_some(), "{key} is readable");
             }
-            let n = [KEYS.contains(key), IGNORED_KEYS.contains(key), INERT_KEYS.contains(key)];
-            assert_eq!(n.iter().filter(|&&b| b).count(), 1, "{key} is in exactly one table");
+            let n = [
+                KEYS.contains(key),
+                IGNORED_KEYS.contains(key),
+                INERT_KEYS.contains(key),
+            ];
+            assert_eq!(
+                n.iter().filter(|&&b| b).count(),
+                1,
+                "{key} is in exactly one table"
+            );
         }
-        for unknown in ["nonsense", "tcache_maxx", "Tcache", "stats_prin", "thp_proces", ""] {
+        for unknown in [
+            "nonsense",
+            "tcache_maxx",
+            "Tcache",
+            "stats_prin",
+            "thp_proces",
+            "",
+        ] {
             let mut cfg = Config::DEFAULT;
-            assert_eq!(cfg.set(unknown.as_bytes(), b"true"), Err(Issue::UnknownKey(unknown.as_bytes())), "{unknown:?}");
+            assert_eq!(
+                cfg.set(unknown.as_bytes(), b"true"),
+                Err(Issue::UnknownKey(unknown.as_bytes())),
+                "{unknown:?}"
+            );
             assert_eq!(cfg, Config::DEFAULT);
         }
     }
@@ -1360,8 +1700,17 @@ mod tests {
         assert_eq!(KEYS.len(), TABLE.len());
         for (i, key) in TABLE.iter().enumerate() {
             assert_eq!(KEYS[i], key.name);
-            assert_eq!(KEYS.iter().filter(|k| **k == key.name).count(), 1, "{} is named once", key.name);
-            assert!(!IGNORED_KEYS.contains(&key.name) && !INERT_KEYS.contains(&key.name), "{}", key.name);
+            assert_eq!(
+                KEYS.iter().filter(|k| **k == key.name).count(),
+                1,
+                "{} is named once",
+                key.name
+            );
+            assert!(
+                !IGNORED_KEYS.contains(&key.name) && !INERT_KEYS.contains(&key.name),
+                "{}",
+                key.name
+            );
             // A value of the key's type that differs from the default.
             let d = Config::DEFAULT;
             let other = match (key.read)(&d) {
@@ -1378,17 +1727,42 @@ mod tests {
                 },
             };
             let mut cfg = d;
-            assert_eq!(cfg.set(key.name.as_bytes(), other.as_bytes()), Ok(()), "{}:{other}", key.name);
-            assert_ne!((key.read)(&cfg), (key.read)(&d), "{}:{other} read back through its own entry", key.name);
-            assert_eq!(cfg.get(key.name.as_bytes()), Some((key.read)(&cfg)), "{}", key.name);
+            assert_eq!(
+                cfg.set(key.name.as_bytes(), other.as_bytes()),
+                Ok(()),
+                "{}:{other}",
+                key.name
+            );
+            assert_ne!(
+                (key.read)(&cfg),
+                (key.read)(&d),
+                "{}:{other} read back through its own entry",
+                key.name
+            );
+            assert_eq!(
+                cfg.get(key.name.as_bytes()),
+                Some((key.read)(&cfg)),
+                "{}",
+                key.name
+            );
             for o in TABLE.iter().filter(|o| o.name != key.name) {
                 if key.name == "dirty_decay_ms" && o.name == "huge_dirty_decay_ms" {
                     // Unset, the huge period reads as the slab period
                     // (design 7): the one reading that moves with another key.
-                    assert_eq!((o.read)(&cfg), (key.read)(&cfg), "huge_dirty_decay_ms follows dirty_decay_ms");
+                    assert_eq!(
+                        (o.read)(&cfg),
+                        (key.read)(&cfg),
+                        "huge_dirty_decay_ms follows dirty_decay_ms"
+                    );
                     continue;
                 }
-                assert_eq!((o.read)(&cfg), (o.read)(&d), "{}:{other} changed {}", key.name, o.name);
+                assert_eq!(
+                    (o.read)(&cfg),
+                    (o.read)(&d),
+                    "{}:{other} changed {}",
+                    key.name,
+                    o.name
+                );
             }
         }
         // The aliases of the named-value keys: one entry, several spellings.
@@ -1407,33 +1781,58 @@ mod tests {
             let max = cfg.tcache_max;
             (0..NCLASSES).filter(move |&c| CLASSES[c].size() > max)
         }
-        assert!(cached(&d).count() >= 36 && uncached(&d).count() >= 8, "{} cached, {} above", cached(&d).count(), uncached(&d).count());
+        assert!(
+            cached(&d).count() >= 36 && uncached(&d).count() >= 8,
+            "{} cached, {} above",
+            cached(&d).count(),
+            uncached(&d).count()
+        );
         for c in cached(&d) {
             assert_eq!(d.cap_for(0, 0, c), ladder(c, MAX_CAP, 1));
             assert_eq!(d.cap_for(0, 0, c), crate::heap::default_cap(c), "class {c}");
         }
         for c in uncached(&d) {
-            assert_eq!(d.cap_for(0, 0, c), 0, "class {c} ({} bytes) is above tcache_max", CLASSES[c].size());
-            assert!(crate::heap::default_cap(c) >= MIN_CAP, "the ladder itself never reaches zero");
+            assert_eq!(
+                d.cap_for(0, 0, c),
+                0,
+                "class {c} ({} bytes) is above tcache_max",
+                CLASSES[c].size()
+            );
+            assert!(
+                crate::heap::default_cap(c) >= MIN_CAP,
+                "the ladder itself never reaches zero"
+            );
         }
         // Redis: x4 ladder clamped at 1000, never below MIN_CAP.
         let redis = clean("lg_tcache_nslots_mul:3,tcache_nslots_small_max:1000");
         for c in cached(&redis) {
             let size = CLASSES[c].size();
             let cap = redis.cap_for(0, 0, c);
-            assert!(cap >= MIN_CAP && cap <= 1000, "class {c} ({size} bytes): {cap}");
+            assert!(
+                cap >= MIN_CAP && cap <= 1000,
+                "class {c} ({size} bytes): {cap}"
+            );
             if size <= 512 {
                 assert_eq!(cap, 1000, "class {c} ({size} bytes)");
             }
-            assert!(cap >= d.cap_for(0, 0, c).min(1000), "class {c} never shrinks below the default ladder");
+            assert!(
+                cap >= d.cap_for(0, 0, c).min(1000),
+                "class {c} never shrinks below the default ladder"
+            );
         }
         // A small max caps every class; lg_mul below 1 shrinks the ladder.
         let small = clean("tcache_nslots_small_max:16");
-        assert!(cached(&small).all(|c| small.cap_for(0, 0, c) <= 16 && small.cap_for(0, 0, c) >= MIN_CAP));
+        assert!(
+            cached(&small)
+                .all(|c| small.cap_for(0, 0, c) <= 16 && small.cap_for(0, 0, c) >= MIN_CAP)
+        );
         let shrunk = clean("lg_tcache_nslots_mul:0");
         assert_eq!(shrunk.cap_for(0, 0, 0), 512);
         assert_eq!(shrunk.cap_for(0, 0, NCLASSES - 1), 0);
-        assert_eq!(shrunk.cap_for(0, 0, cached(&shrunk).last().unwrap()), MIN_CAP);
+        assert_eq!(
+            shrunk.cap_for(0, 0, cached(&shrunk).last().unwrap()),
+            MIN_CAP
+        );
         let grown = clean("lg_tcache_nslots_mul:16,tcache_nslots_small_max:65536");
         assert!(cached(&grown).all(|c| grown.cap_for(0, 0, c) == 65536));
         // tcache_max moves the boundary: every slab class, or none.
@@ -1466,7 +1865,11 @@ mod tests {
             assert_eq!(d.cap_for(3, 3, c), d.cap_for(0, 0, c), "class {c}");
             assert_eq!(d.cap_for(3, 3, c) == 0, d.shared_class(c), "class {c}");
             let foreign = d.cap_for(3, 0, c);
-            assert_eq!(foreign, if c >= NBINS { 0 } else { d.cap_for(0, 0, c) }, "class {c}");
+            assert_eq!(
+                foreign,
+                if c >= NBINS { 0 } else { d.cap_for(0, 0, c) },
+                "class {c}"
+            );
             assert_eq!(d.cap_for(0, 3, c), foreign);
         }
         let none = clean("tcache:false");
@@ -1478,24 +1881,39 @@ mod tests {
     #[test]
     fn guards_off_zeroes_the_interval() {
         assert_eq!(clean("guards:false").effective_guard_slab_interval(), 0);
-        assert_eq!(clean("guard_slab_interval:0").effective_guard_slab_interval(), 0);
-        assert_eq!(clean("guard_slab_interval:2").effective_guard_slab_interval(), 2);
+        assert_eq!(
+            clean("guard_slab_interval:0").effective_guard_slab_interval(),
+            0
+        );
+        assert_eq!(
+            clean("guard_slab_interval:2").effective_guard_slab_interval(),
+            2
+        );
         // 1 would leave no slabs to allocate: out of range, clamped to 2.
         let (cfg, issues) = parse("guard_slab_interval:1");
         assert_eq!(cfg.effective_guard_slab_interval(), 2);
         assert_eq!(issues.len(), 1);
-        assert!(issues[0].contains("out-of-range conf value \"1\" for guard_slab_interval"), "{}", issues[0]);
+        assert!(
+            issues[0].contains("out-of-range conf value \"1\" for guard_slab_interval"),
+            "{}",
+            issues[0]
+        );
         // The interval is a power of two (the sized path's guard test is a
         // mask): anything else rounds up, is reported, and the rounded value
         // is what `opt.guard_slab_interval` returns; the maximum is one.
         for (text, want) in [("3", 4u32), ("5", 8), ("12", 16), ("4194303", 1 << 22)] {
             let (cfg, issues) = parse(&std::format!("guard_slab_interval:{text}"));
             assert_eq!(cfg.effective_guard_slab_interval(), want, "{text}");
-            assert_eq!(cfg.get(b"guard_slab_interval"), Some(Value::Uint(want as u64)));
+            assert_eq!(
+                cfg.get(b"guard_slab_interval"),
+                Some(Value::Uint(want as u64))
+            );
             assert_eq!(issues.len(), 1, "{text}");
             assert_eq!(
                 issues[0],
-                std::format!("conf value \"{text}\" for guard_slab_interval is not a power of two (rounded up to {want})")
+                std::format!(
+                    "conf value \"{text}\" for guard_slab_interval is not a power of two (rounded up to {want})"
+                )
             );
         }
         for text in ["0", "2", "4", "8", "64", "4194304"] {
@@ -1516,7 +1934,10 @@ mod tests {
         assert!(text.contains("..."));
         assert!(text.len() < 120, "{text}");
         assert!(!text.bytes().any(|b| b < 0x20 || b >= 0x7f), "{text:?}");
-        assert_eq!(std::format!("{}", Issue::Malformed(b"a\tb")), "malformed conf pair \"a?b\"");
+        assert_eq!(
+            std::format!("{}", Issue::Malformed(b"a\tb")),
+            "malformed conf pair \"a?b\""
+        );
     }
 }
 
@@ -1540,7 +1961,10 @@ mod linux_tests {
             std::env::set_var("CHALLOC_CONF_TEST", "narenas:3,tcache:false");
             std::env::set_var("CHALLOC_CONF_TEST_EMPTY", "");
         }
-        assert_eq!(env_var(b"CHALLOC_CONF_TEST"), Some(&b"narenas:3,tcache:false"[..]));
+        assert_eq!(
+            env_var(b"CHALLOC_CONF_TEST"),
+            Some(&b"narenas:3,tcache:false"[..])
+        );
         assert_eq!(env_var(b"CHALLOC_CONF_TEST_EMPTY"), None);
         assert_eq!(env_var(b"CHALLOC_CONF_TES"), None, "prefix must not match");
         assert_eq!(env_var(b"CHALLOC_CONF_TEST_MISSING"), None);
@@ -1559,9 +1983,15 @@ mod linux_tests {
         cpath.push(0);
 
         std::fs::write(&path, "tcache:false,narenas:2\r\nsecond line is ignored\n").unwrap();
-        assert_eq!(first_line_of(&cpath, &mut buf), Some(&b"tcache:false,narenas:2"[..]));
+        assert_eq!(
+            first_line_of(&cpath, &mut buf),
+            Some(&b"tcache:false,narenas:2"[..])
+        );
         std::fs::write(&path, "no newline at all").unwrap();
-        assert_eq!(first_line_of(&cpath, &mut buf), Some(&b"no newline at all"[..]));
+        assert_eq!(
+            first_line_of(&cpath, &mut buf),
+            Some(&b"no newline at all"[..])
+        );
         std::fs::write(&path, "\nsecond").unwrap();
         assert_eq!(first_line_of(&cpath, &mut buf), None, "empty first line");
         std::fs::write(&path, "").unwrap();
@@ -1580,8 +2010,16 @@ mod linux_tests {
     fn load_with_a_clean_environment_gives_the_defaults() {
         // No `MALLOC_CONF`/`CHALLOC_CONF` in the test environment, no
         // `/etc/challoc.conf` in the container, no weak symbol: defaults.
-        assert_eq!(env_var(b"MALLOC_CONF"), None, "MALLOC_CONF is set; the test assumes a clean environment");
-        assert_eq!(env_var(b"CHALLOC_CONF"), None, "CHALLOC_CONF is set; the test assumes a clean environment");
+        assert_eq!(
+            env_var(b"MALLOC_CONF"),
+            None,
+            "MALLOC_CONF is set; the test assumes a clean environment"
+        );
+        assert_eq!(
+            env_var(b"CHALLOC_CONF"),
+            None,
+            "CHALLOC_CONF is set; the test assumes a clean environment"
+        );
         let mut buf = [0u8; MAX_TEXT];
         if first_line_of(b"/etc/challoc.conf\0", &mut buf).is_none() {
             // The constants whatever the CPU: the L2-derived ladder of

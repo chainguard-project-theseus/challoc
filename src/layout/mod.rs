@@ -123,7 +123,10 @@ const fn count_bins() -> usize {
 const _: () = assert!(NBINS > 0 && NBINS < NCLASSES && class_size_at(NBINS - 1) == BIN_MAX);
 const _: () = assert!(BIN_MAX >= SMALL_MAX && lg_slab_for(BIN_MAX) >= LG_MIN_SLAB);
 
-const _: () = assert!(NCLASSES <= 64, "pointer classification assumes at most 64 classes");
+const _: () = assert!(
+    NCLASSES <= 64,
+    "pointer classification assumes at most 64 classes"
+);
 const _: () = assert!(MEDIUM_MAX * 16 == MAX_SLAB);
 
 /// Allocation tier of a class (design section 3 table); the tests check
@@ -187,7 +190,11 @@ impl Class {
 
     #[cfg(test)]
     pub const fn tier(&self) -> Tier {
-        if self.size as usize <= SMALL_MAX { Tier::Small } else { Tier::Medium }
+        if self.size as usize <= SMALL_MAX {
+            Tier::Small
+        } else {
+            Tier::Medium
+        }
     }
 
     /// Slots per [`LG_COMPACT_UNIT`] bytes of slabs (per slab when the slab
@@ -270,12 +277,19 @@ pub const fn lg_slab_for(size: usize) -> u32 {
     }
     let want = (16 * size).next_power_of_two();
     let lg = want.trailing_zeros();
-    if lg < LG_MEDIUM_MIN_SLAB { LG_MEDIUM_MIN_SLAB } else { lg }
+    if lg < LG_MEDIUM_MIN_SLAB {
+        LG_MEDIUM_MIN_SLAB
+    } else {
+        lg
+    }
 }
 
 const _: () = assert!(LG_SMALL_SLAB >= LG_MIN_SLAB && LG_SMALL_SLAB <= LG_MAX_SLAB);
 const _: () = assert!(LG_MEDIUM_MIN_SLAB >= LG_MIN_SLAB && LG_MEDIUM_MIN_SLAB <= LG_MAX_SLAB);
-const _: () = assert!(SMALL_SLAB_BELOW <= SMALL_MAX && MIN_SLAB >= 4 * SMALL_MAX, "a small-slab class has at least four slots");
+const _: () = assert!(
+    SMALL_SLAB_BELOW <= SMALL_MAX && MIN_SLAB >= 4 * SMALL_MAX,
+    "a small-slab class has at least four slots"
+);
 const _: () = assert!(LG_COMPACT_UNIT >= LG_MIN_SLAB && LG_COMPACT_UNIT <= LG_MAX_SLAB);
 
 const fn reciprocal(size: usize) -> u32 {
@@ -284,9 +298,17 @@ const fn reciprocal(size: usize) -> u32 {
 
 /// See [`Class::slab_bits`].
 const fn slab_bits_for(nslots: usize, lg_slab: u32) -> usize {
-    let raw = if nslots <= LINE_BITS { nslots.next_power_of_two() } else { (nslots + LINE_BITS - 1) & !(LINE_BITS - 1) };
+    let raw = if nslots <= LINE_BITS {
+        nslots.next_power_of_two()
+    } else {
+        (nslots + LINE_BITS - 1) & !(LINE_BITS - 1)
+    };
     let per_line = if raw >= LINE_BITS { 1 } else { LINE_BITS / raw };
-    let cap = if LG_GROUP_SPAN > lg_slab { 1usize << (LG_GROUP_SPAN - lg_slab) } else { 1 };
+    let cap = if LG_GROUP_SPAN > lg_slab {
+        1usize << (LG_GROUP_SPAN - lg_slab)
+    } else {
+        1
+    };
     if per_line > cap { LINE_BITS / cap } else { raw }
 }
 
@@ -299,14 +321,24 @@ const fn slab_bits_for(nslots: usize, lg_slab: u32) -> usize {
 /// table geometry and the page groups of `class/`).
 pub const fn lg_slab_at(size: usize, lg_page: u32) -> u32 {
     let lg = lg_slab_for(size);
-    let floor = if lg_page < LG_SMALL_SLAB { lg_page } else { LG_SMALL_SLAB };
+    let floor = if lg_page < LG_SMALL_SLAB {
+        lg_page
+    } else {
+        LG_SMALL_SLAB
+    };
     if lg < floor { floor } else { lg }
 }
 
 /// The class table for a kernel with `1 << lg_page` pages: sizes and
 /// reciprocals are fixed, the slab geometry follows [`lg_slab_at`].
 pub const fn classes_for_page(lg_page: u32) -> [Class; NCLASSES] {
-    let mut out = [Class { size: 0, lg_slab: 0, nslots: 0, recip: 0, slab_bits: 0 }; NCLASSES];
+    let mut out = [Class {
+        size: 0,
+        lg_slab: 0,
+        nslots: 0,
+        recip: 0,
+        slab_bits: 0,
+    }; NCLASSES];
     let mut i = 0;
     while i < NCLASSES {
         let size = class_size_at(i);
@@ -503,7 +535,9 @@ mod regions;
 
 pub use regions::{Kind, LG_HUGE_PREFERRED, Regions};
 #[cfg(test)]
-pub use regions::{LG_HUGE_MIN, LG_META_MIN, LG_REGION_MIN, LG_REGION_PREFERRED, MAX_SEALED, Mapping};
+pub use regions::{
+    LG_HUGE_MIN, LG_META_MIN, LG_REGION_MIN, LG_REGION_PREFERRED, MAX_SEALED, Mapping,
+};
 
 #[cfg(test)]
 mod tests;

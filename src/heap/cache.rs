@@ -179,7 +179,11 @@ impl CacheHeader {
     /// entries as stored.
     #[cfg(test)]
     pub fn plain(&self, e: *mut u8, pac: bool) -> *mut u8 {
-        if pac { pac::auth(e as usize, self.slots as usize) as *mut u8 } else { e }
+        if pac {
+            pac::auth(e as usize, self.slots as usize) as *mut u8
+        } else {
+            e
+        }
     }
 
     /// Cached pointers, bottom of the stack first (the top is popped next).
@@ -213,7 +217,13 @@ impl Heap {
     /// runs `tick`, whose GC may flush this cache, and reloads it. `pac`
     /// is `Shared::pac()`: whether the entry is stored signed.
     #[inline(always)]
-    pub(super) unsafe fn pop(&mut self, cache: *mut CacheHeader, class: usize, len: u32, pac: bool) -> (*mut u8, bool) {
+    pub(super) unsafe fn pop(
+        &mut self,
+        cache: *mut CacheHeader,
+        class: usize,
+        len: u32,
+        pac: bool,
+    ) -> (*mut u8, bool) {
         // SAFETY: guaranteed by the caller.
         unsafe {
             let allocs = (*cache).allocs.wrapping_add(1);
@@ -246,7 +256,11 @@ impl Heap {
             }
             let slots = (*cache).slots();
             let p = *slots.add(len as usize);
-            let p = if pac { pac::auth(p as usize, slots as usize) as *mut u8 } else { p };
+            let p = if pac {
+                pac::auth(p as usize, slots as usize) as *mut u8
+            } else {
+                p
+            };
             let zero = len < (*cache).zeroed;
             (p, zero)
         }
@@ -352,7 +366,12 @@ impl Heap {
     /// # Safety
     /// `cache` is a header owned by this heap, unused or with a stack.
     #[inline(always)]
-    pub(super) unsafe fn push_cache(cache: *mut CacheHeader, p: *mut u8, scan: bool, pac: bool) -> bool {
+    pub(super) unsafe fn push_cache(
+        cache: *mut CacheHeader,
+        p: *mut u8,
+        scan: bool,
+        pac: bool,
+    ) -> bool {
         // SAFETY: guaranteed by the caller.
         unsafe {
             let len = (*cache).len;
@@ -360,7 +379,11 @@ impl Heap {
                 return false;
             }
             let slots = (*cache).slots();
-            let e = if pac { pac::sign(p as usize, slots as usize) as *mut u8 } else { p };
+            let e = if pac {
+                pac::sign(p as usize, slots as usize) as *mut u8
+            } else {
+                p
+            };
             if scan && Self::cached_recently(slots, len, e) {
                 return false;
             }
@@ -376,7 +399,12 @@ impl Heap {
     /// The usable cache for `(arena, class)`, giving the header its
     /// capacity and stack on first use. Null if the metadata region is
     /// exhausted or caches are off (`tcache:false`).
-    pub(super) fn ensure_cache(&mut self, shared: &Shared, arena: u16, class: usize) -> *mut CacheHeader {
+    pub(super) fn ensure_cache(
+        &mut self,
+        shared: &Shared,
+        arena: u16,
+        class: usize,
+    ) -> *mut CacheHeader {
         // The capacity first: a class that is never cached for this arena
         // must not create an `others` node. This is the one place the
         // placement rule is consulted on the allocation and free paths.
@@ -389,11 +417,19 @@ impl Heap {
         // (`free_slow_in`), is the same batch as a home cache's half
         // flush for a residue that averages a quarter of the ladder
         // instead of three quarters (design 6.3 step 4).
-        let cap = if arena == FOREIGN { (cap / 2).max(MIN_CAP) } else { cap };
+        let cap = if arena == FOREIGN {
+            (cap / 2).max(MIN_CAP)
+        } else {
+            cap
+        };
         // The arena before the node: `arena` came from an owner word on
         // the free path, and a word naming an arena that was never built
         // aborts here (`Shared::owner`) before a node is created for it.
-        let refilled = if arena == FOREIGN { 0 } else { shared.owner(arena).class(class).refilled() as u32 };
+        let refilled = if arena == FOREIGN {
+            0
+        } else {
+            shared.owner(arena).class(class).refilled() as u32
+        };
         let cache = self.cache_slot(shared, arena, class);
         if cache.is_null() {
             return ptr::null_mut();
@@ -428,7 +464,11 @@ impl Heap {
                 },
             );
             // The `FOREIGN` cache is never popped, so it never probes.
-            let mode = if arena == FOREIGN { MODE_OFF } else { MODE_PROBE };
+            let mode = if arena == FOREIGN {
+                MODE_OFF
+            } else {
+                MODE_PROBE
+            };
             (*cache).set_mode(mode);
         }
         cache

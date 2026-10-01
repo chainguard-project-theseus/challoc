@@ -45,9 +45,18 @@ mod linux_tests {
         assert_eq!(AT_PAGESZ as u64, libc::AT_PAGESZ);
         assert_eq!(AT_HWCAP as u64, libc::AT_HWCAP);
         // SAFETY: `getauxval` has no preconditions.
-        assert_eq!(getauxval(AT_PAGESZ), unsafe { libc::getauxval(libc::AT_PAGESZ) } as usize);
-        assert_eq!(getauxval(AT_HWCAP), unsafe { libc::getauxval(libc::AT_HWCAP) } as usize);
-        assert_eq!(getauxval(AT_RSEQ_FEATURE_SIZE), unsafe { libc::getauxval(27) } as usize);
+        assert_eq!(
+            getauxval(AT_PAGESZ),
+            unsafe { libc::getauxval(libc::AT_PAGESZ) } as usize
+        );
+        assert_eq!(
+            getauxval(AT_HWCAP),
+            unsafe { libc::getauxval(libc::AT_HWCAP) } as usize
+        );
+        assert_eq!(
+            getauxval(AT_RSEQ_FEATURE_SIZE),
+            unsafe { libc::getauxval(27) } as usize
+        );
         let raw = std::fs::read("/proc/self/auxv").unwrap();
         const W: usize = core::mem::size_of::<usize>();
         let mut found = std::collections::BTreeMap::new();
@@ -64,7 +73,10 @@ mod linux_tests {
         // own (`HWCAP_X86_64`, the AVX-512 usability bits), so `getauxval`
         // and the kernel's vector agree only on aarch64; the crate reads
         // `AT_HWCAP` through `getauxval` on aarch64 alone (pac.rs).
-        assert!(found.contains_key(&AT_HWCAP), "AT_HWCAP is in every Linux vector");
+        assert!(
+            found.contains_key(&AT_HWCAP),
+            "AT_HWCAP is in every Linux vector"
+        );
         #[cfg(target_arch = "aarch64")]
         assert_eq!(found.get(&AT_HWCAP).copied(), Some(getauxval(AT_HWCAP)));
     }

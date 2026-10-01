@@ -13,9 +13,7 @@ pub struct Variant {
     pub prefix_claim: bool,
 }
 
-pub const CURRENT: Variant = Variant {
-    prefix_claim: true,
-};
+pub const CURRENT: Variant = Variant { prefix_claim: true };
 
 /// A scenario: the threads (arena and program) and the geometry.
 #[derive(Clone, Debug)]

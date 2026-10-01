@@ -246,7 +246,10 @@ mod tests {
     }
 
     fn readelf(args: &[&str]) -> String {
-        let out = Command::new("readelf").args(args).output().expect("readelf (binutils)");
+        let out = Command::new("readelf")
+            .args(args)
+            .output()
+            .expect("readelf (binutils)");
         assert!(out.status.success(), "readelf {args:?} failed");
         String::from_utf8(out.stdout).unwrap()
     }
@@ -256,7 +259,10 @@ mod tests {
     fn shared_object_uses_initial_exec_tls() {
         let so = release_so();
         let phdrs = readelf(&["-lW", &so]);
-        assert!(phdrs.lines().any(|l| l.trim_start().starts_with("TLS")), "no PT_TLS:\n{phdrs}");
+        assert!(
+            phdrs.lines().any(|l| l.trim_start().starts_with("TLS")),
+            "no PT_TLS:\n{phdrs}"
+        );
 
         let relocs = readelf(&["-rW", &so]);
         #[cfg(target_arch = "x86_64")]
@@ -264,20 +270,39 @@ mod tests {
         #[cfg(target_arch = "aarch64")]
         let want = "R_AARCH64_TLS_TPREL64";
         assert!(relocs.contains(want), "no {want} relocation:\n{relocs}");
-        for bad in ["TLSDESC", "DTPMOD", "DTPOFF", "TLSGD", "TLSLD", "TLS_DTPREL"] {
-            assert!(!relocs.contains(bad), "general-dynamic relocation {bad} present:\n{relocs}");
+        for bad in [
+            "TLSDESC",
+            "DTPMOD",
+            "DTPOFF",
+            "TLSGD",
+            "TLSLD",
+            "TLS_DTPREL",
+        ] {
+            assert!(
+                !relocs.contains(bad),
+                "general-dynamic relocation {bad} present:\n{relocs}"
+            );
         }
 
         let dynsyms = readelf(&["--dyn-syms", "-W", &so]);
-        assert!(!dynsyms.contains("__tls_get_addr"), "imports __tls_get_addr:\n{dynsyms}");
-        assert!(!dynsyms.contains("_dl_tlsdesc"), "imports TLS descriptor resolver:\n{dynsyms}");
+        assert!(
+            !dynsyms.contains("__tls_get_addr"),
+            "imports __tls_get_addr:\n{dynsyms}"
+        );
+        assert!(
+            !dynsyms.contains("_dl_tlsdesc"),
+            "imports TLS descriptor resolver:\n{dynsyms}"
+        );
         // Neither the slot nor an accessor is a dynamic symbol (no exported
         // write primitive to the heap pointer); the probe C tests use is
         // `challoc_version`.
         for sym in ["challoc_tls_get", "challoc_tls_set"] {
             assert!(!dynsyms.contains(sym), "{sym} exported:\n{dynsyms}");
         }
-        assert!(dynsyms.contains("challoc_version"), "challoc_version not exported:\n{dynsyms}");
+        assert!(
+            dynsyms.contains("challoc_version"),
+            "challoc_version not exported:\n{dynsyms}"
+        );
         assert!(
             !dynsyms.lines().any(|l| l.ends_with(" challoc_tls")),
             "challoc_tls slot leaked as a dynamic symbol:\n{dynsyms}"

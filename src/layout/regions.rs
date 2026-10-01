@@ -172,7 +172,10 @@ impl Regions {
         let mut n = 0;
         let mut push = |lo: usize, hi: usize| {
             if hi > lo {
-                out[n] = Mapping { addr: lo, len: hi - lo };
+                out[n] = Mapping {
+                    addr: lo,
+                    len: hi - lo,
+                };
                 n += 1;
             }
         };
@@ -262,14 +265,20 @@ impl Regions {
     #[inline]
     pub fn classify(&self, p: usize) -> Kind {
         if let Some((class, slab, slot)) = self.slab_slot(p) {
-            return Kind::Slab { class: class as u32, slab: slab as u32, slot: slot as u32 };
+            return Kind::Slab {
+                class: class as u32,
+                slab: slab as u32,
+                slot: slot as u32,
+            };
         }
         if self.in_superblock(p) {
             return Kind::Invalid;
         }
         let rel = p.wrapping_sub(self.huge_base);
         if rel < self.huge_len && rel & (self.page_size() - 1) == 0 {
-            return Kind::Huge { page: rel >> self.lg_page };
+            return Kind::Huge {
+                page: rel >> self.lg_page,
+            };
         }
         Kind::Invalid
     }
@@ -283,15 +292,24 @@ impl Regions {
 
 mod linux {
     use super::{
-        LG_HUGE_MIN, LG_HUGE_PREFERRED, LG_MAX_SLAB, LG_META_MIN, LG_META_PREFERRED,
-        LG_REGION_MIN, LG_REGION_PREFERRED, LG_SLIDE, MAX_SLAB, Mapping, NCLASSES, Regions,
+        LG_HUGE_MIN, LG_HUGE_PREFERRED, LG_MAX_SLAB, LG_META_MIN, LG_META_PREFERRED, LG_REGION_MIN,
+        LG_REGION_PREFERRED, LG_SLIDE, MAX_SLAB, Mapping, NCLASSES, Regions,
     };
     use crate::sys::{self, Errno, MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
 
     /// Reserve address space with `PROT_NONE`, `MAP_NORESERVE`.
     fn try_reserve(len: usize) -> Result<usize, Errno> {
         // SAFETY: fresh anonymous private mapping, no fixed address.
-        unsafe { sys::mmap(0, len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0) }
+        unsafe {
+            sys::mmap(
+                0,
+                len,
+                PROT_NONE,
+                MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE,
+                -1,
+                0,
+            )
+        }
     }
 
     /// Reserve `2^lg + extra` bytes, halving `lg` down to `lg_min` on any
@@ -379,8 +397,22 @@ mod linux {
             for role in order {
                 match role {
                     0 => sb = Some(reserve_superblock()),
-                    1 => huge = Some(reserve_shrinking("huge", LG_HUGE_PREFERRED, LG_HUGE_MIN, slide + MAX_SLAB)),
-                    _ => meta = Some(reserve_shrinking("metadata", LG_META_PREFERRED, LG_META_MIN, slide + MAX_SLAB)),
+                    1 => {
+                        huge = Some(reserve_shrinking(
+                            "huge",
+                            LG_HUGE_PREFERRED,
+                            LG_HUGE_MIN,
+                            slide + MAX_SLAB,
+                        ))
+                    }
+                    _ => {
+                        meta = Some(reserve_shrinking(
+                            "metadata",
+                            LG_META_PREFERRED,
+                            LG_META_MIN,
+                            slide + MAX_SLAB,
+                        ))
+                    }
                 }
             }
             let (sb_map, lg_region, lg_stride) = sb.unwrap();
@@ -396,8 +428,10 @@ mod linux {
             // `mmap` only promises page alignment, so each mapping carries
             // `MAX_SLAB` of slack and its base is aligned up before the slide.
             let align_base = |m: Mapping| (m.addr + MAX_SLAB - 1) & !(MAX_SLAB - 1);
-            let huge_base = align_base(huge_map) + ((word(NCLASSES) as usize % SLIDE_STEPS) << LG_MAX_SLAB);
-            let meta_base = align_base(meta_map) + ((word(NCLASSES + 1) as usize % SLIDE_STEPS) << LG_MAX_SLAB);
+            let huge_base =
+                align_base(huge_map) + ((word(NCLASSES) as usize % SLIDE_STEPS) << LG_MAX_SLAB);
+            let meta_base =
+                align_base(meta_map) + ((word(NCLASSES + 1) as usize % SLIDE_STEPS) << LG_MAX_SLAB);
 
             if anon_name {
                 name_mapping(sb_map, b"challoc:classes\0");
