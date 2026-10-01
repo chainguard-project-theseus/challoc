@@ -2,67 +2,39 @@
 //!
 //! Everything the allocator has to remember lives in the metadata region
 //! reserved by `layout::Regions`: slab descriptor arrays and slot bitmaps,
-//! the huge page bitmap and descriptor table, thread heaps and their class
-//! caches, the background thread's stack. None of it may come from
-//! `malloc`, so this is the one module that carves that region up.
-//!
-//! Two kinds of request come from the two ends of the region:
+//! the huge allocator's tables, thread heaps and their caches, the
+//! background thread's stack. None of it may come from `malloc`, so this is
+//! the one module that carves that region up, from both ends:
 //!
 //! - **Reservations** ([`Meta::reserve`], [`Meta::reserve_table`]) are
-//!   large, fixed-address, never freed arrays: a class's descriptor table
-//!   and slot bitmap, the huge allocator's free-page bitmap, the arenas,
-//!   the background thread's stack. They are carved
-//!   downward from the top of the region and handed back *uncommitted*; the
-//!   owner calls [`Meta::commit`] on the pages it starts to use, so a class
-//!   with three live slabs commits one page of descriptors, not the whole
-//!   table ([`Meta::reserve_committed`] commits the whole range at once).
-//! - **Objects** ([`Meta::alloc`] / [`Meta::free`]) are small: heaps,
-//!   cache slot stacks, node blocks, an arena's `SetTable`, huge
-//!   descriptors and the huge descriptor table while it is small. They
-//!   come from a bump pointer
-//!   growing upward from the base, with the region committed ahead of the
+//!   large, fixed-address arrays that are never freed. They are carved
+//!   downward from the top of the region and handed back uncommitted; the
+//!   owner calls [`Meta::commit`] on the pages it starts to use
+//!   ([`Meta::reserve_committed`] commits the whole range at once).
+//! - **Objects** ([`Meta::alloc`] / [`Meta::free`]) are small: heaps, cache
+//!   slot stacks, node blocks, set tables, huge descriptors. They come from
+//!   a bump pointer growing upward from the base, committed ahead of the
 //!   bump in [`COMMIT_CHUNK`] steps, and freed objects go on one of
-//!   [`NBINS`] size-classed free lists for reuse.
+//!   [`NBINS`] size-classed free lists.
 //!
 //! Committing is `mprotect(PROT_READ | PROT_WRITE)` on the `PROT_NONE`
-//! reservation. The kernel supplies zero pages on first touch, so committed
-//! but untouched metadata costs address space and overcommit charge, never
-//! RSS. Nothing is ever uncommitted or returned to the kernel.
+//! reservation, so committed but untouched metadata costs address space and
+//! overcommit charge, never RSS. Nothing is ever uncommitted.
 //!
-//! **Small tables share the object side's mapping.** Every committed range
-//! on the reservation side is its own VMA: a table's first page sits at
-//! its base and its uncommitted tail, up to the next table's base, keeps
-//! the kernel from merging it with anything (measured on a process that
-//! touched every class: 167 tables, 337 lines in `/proc/self/maps` for the
-//! metadata region alone, 168 `rw-p` and 169 `---p` with the object side
-//! and the region's free middle among them, one page each of RSS and of
-//! page table; `bench/probes/fork_maps.c`). A forked child
-//! inherits every one of them, and `fork`, its first-touch faults and its
-//! exit pay per VMA and per page-table page (design 2, the PostgreSQL row
-//! `connect20`). So a table of at most [`EAGER_MAX`] bytes is not put on
-//! the reservation side at all: [`Meta::reserve_table`] (and
-//! [`Meta::reserve_committed`]) carve it from the object side, page
-//! aligned, inside the chunked commit that already covers the objects,
-//! where it is writable from the start and merges with the heaps and
-//! caches into the one mapping that grows from the base. Its owner still
-//! calls [`Meta::commit`] on the pages it uses, which for such a table is
-//! accounting only. Larger tables (a small class's 256 MiB descriptor
-//! array or 2 GiB slot bitmap) stay on the reservation side, committed
-//! page by page as before: making them writable whole would put gigabytes
-//! of never-touched address space into every core dump (a private
-//! writable mapping with a page in it is dumped whole), into `mlockall`
-//! and `RLIMIT_DATA`, and under 2 MiB pages on a `thp=always` host.
-//! [`EAGER_MAX`] is the cap on that exposure, chosen from the measured
-//! table sizes (the constant's doc). Eager carving is off when the kernel
-//! would charge the writable bytes against its commit limit
-//! (`vm.overcommit_memory=2`, where `MAP_NORESERVE` is ignored and every
-//! backend would carry the tables' commit charge) or when the region can
-//! take PMD-sized pages (any `thp` key but `never`, whose
-//! `MADV_NOHUGEPAGE` on the reservation keeps a table's first touch to one
-//! page); both are probed on the first table, never assumed.
+//! A table of at most [`EAGER_MAX`] bytes is carved from the object side
+//! instead, page aligned and writable from the start, so it merges with the
+//! objects into the one mapping that grows from the base rather than adding
+//! VMAs of its own that every `fork`, its faults and its exit pay for
+//! (design 2). Its owner still calls [`Meta::commit`], which is then
+//! accounting only. Larger tables stay on the reservation side: making them
+//! writable whole would put never-touched address space into core dumps,
+//! `mlockall` and `RLIMIT_DATA`. Eager carving is off when the kernel
+//! charges writable bytes against its commit limit (`vm.overcommit_memory=2`)
+//! or when the region can take PMD-sized pages (any `thp` key but `never`);
+//! both are probed on the first table.
 //!
-//! All state sits behind one [`Lock`], the "metadata lock" of design
-//! section 9. None of this is on the `malloc`/`free` fast path.
+//! All state sits behind one [`Lock`], the metadata lock of design section
+//! 9. None of this is on the `malloc`/`free` fast path.
 
 use core::alloc::Layout;
 use core::ptr;
@@ -94,16 +66,13 @@ pub const NBINS: usize = 6 + 2 * (LG_MAX_BINNED as usize - 8);
 pub const COMMIT_CHUNK: usize = 64 * 1024;
 /// Largest table [`Meta::reserve_table`] carves from the object side,
 /// fully writable, instead of reserving it uncommitted at the top (the
-/// module doc). The tables at the preferred layout (2^38 per class,
-/// measured with `bench/probes/fork_maps.c`, 2026-09-20): the owner
-/// arrays of every class and every table of the medium classes are at
-/// most 8 MiB (56 of 167 tables, 82 MiB together); the set tables are
-/// 96 KiB to 49 MiB; the small classes' descriptor arrays are 64 MiB to
-/// 256 MiB and their slot bitmaps 128 MiB to 2 GiB. 8 MiB takes the
-/// first group and bounds the writable-but-untouched address space a
-/// process carries to under 100 MiB; 16 MiB would take 45 more tables for
-/// 450 MiB. The measured VMA and fork-cost curve against this cap is in
-/// `bench/results/2026-09-20-*-postgres-vmas.md`.
+/// module doc). At the preferred layout (2^38 per class) the owner arrays
+/// of every class and every table of the medium classes are at most
+/// 8 MiB (56 of 167 tables, 82 MiB together); the set tables are 96 KiB
+/// to 49 MiB; the small classes' descriptor arrays are 64 MiB to 256 MiB
+/// and their slot bitmaps 128 MiB to 2 GiB. 8 MiB takes the first group
+/// and bounds the writable-but-untouched address space a process carries
+/// to under 100 MiB; 16 MiB would take 45 more tables for 450 MiB.
 pub const EAGER_MAX: usize = 8 << 20;
 
 /// Bin sizes, ascending.

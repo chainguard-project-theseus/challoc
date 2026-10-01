@@ -332,13 +332,11 @@ mod tests {
     /// Every wait is bounded by `BOUND` and fails instead of hanging, and
     /// the waiter is a detached thread, not a scoped one: `thread::scope`
     /// joins its threads on the way out even when the body panicked, so
-    /// an assertion that failed while the lock was still held (the
-    /// announce asserted at a fixed 20 ms, missed once under host load,
-    /// 2026-09-20) left the waiter parked on a lock nobody would release
-    /// and the test thread parked in the join: two threads in
-    /// `futex_wait` for forty minutes, the panic message captured by the
-    /// harness until the test ends. The announce is now waited for, and
-    /// the lock is released before anything is asserted about it.
+    /// an assertion that failed while the lock was still held would leave
+    /// the waiter parked on a lock nobody releases and the test thread
+    /// parked in the join, with the panic message held by the harness.
+    /// The announce is waited for, and the lock is released before
+    /// anything is asserted about it.
     #[test]
     fn a_parked_waiter_is_released() {
         use std::sync::Arc;

@@ -1,73 +1,42 @@
 //! Decay and purge (design.md section 8) and the background thread (8.1).
 //!
-//! Three things live here; the curve and the background thread each have
-//! a file under `purge/`, the rest is this file:
-//!
-//! - [`Batch`], the discard primitive (this file, with the advice statics,
-//!   `os::discard`, the decay driver and [`Decayer`]). Callers collect up
-//!   to [`MAX_BATCH`] ranges and flush them with one `process_madvise`
-//!   (through `PIDFD_SELF` or a pidfd of this process, whichever the probe
-//!   in `sys::features` found) or, when neither works, a loop of `madvise`.
-//!   The advice is
-//!   decided at each flush ([`advice`], the two-advice purge of design 8
-//!   and 11): `MADV_FREE` under the cgroup policy's headroom band (under
-//!   70% of a known limit and no eager return of the excess over the cap
-//!   in progress, `policy::Policy::headroom`, mirrored here by
-//!   [`set_headroom`]), `MADV_DONTNEED` everywhere else, and always for
-//!   an explicit purge ([`purge_all`], [`purge_arena`]). A lazy batch goes
-//!   through `process_madvise` only where the init probe found the kernel
-//!   takes `MADV_FREE` there, else through the loop. A range that fails to
-//!   discard aborts: the heap's idea of what is resident would otherwise be
-//!   wrong.
-//! - The decay curve (`purge/curve.rs`) and driver (this file). [`Curve`]
-//!   is jemalloc's decay shape:
-//!   `dirty_decay_ms` is the window in which a page goes from dirty to
-//!   purged, divided into [`STEPS`] steps; the share of a cohort that may
-//!   still be dirty at step `s` of its age is [`WEIGHTS`]`[s]`, a
-//!   smootherstep from one to zero, so about half of what went `Empty` at
-//!   once is purged by mid-window and all of it by the end. Each
-//!   `(arena, class)` and the huge allocator purge their oldest `Empty`
-//!   slabs (extents) until what is left is within the curve's allowance,
-//!   at most once per step (the huge allocator on arena 0's period, or
-//!   its own under `huge_dirty_decay_ms`, design 7). [`decay`] visits every class of every arena
-//!   and the huge allocator and reports the earliest next deadline (the
-//!   end of the current step of whoever has something `Empty`). Each class
+//! - [`Batch`], the discard primitive. Callers collect up to [`MAX_BATCH`]
+//!   ranges and flush them with one `process_madvise` (through `PIDFD_SELF`
+//!   or a pidfd of this process, whichever the init probe found) or, when
+//!   neither works, a loop of `madvise`. The advice is decided at each flush
+//!   ([`advice`], design 8 and 11): `MADV_FREE` under the cgroup policy's
+//!   headroom band ([`set_headroom`]), `MADV_DONTNEED` everywhere else and
+//!   always for an explicit purge ([`purge_all`], [`purge_arena`]). A lazy
+//!   batch goes through `process_madvise` only where the probe found the
+//!   kernel takes `MADV_FREE` there. A range that fails to discard aborts:
+//!   the heap's idea of what is resident would otherwise be wrong.
+//! - The decay curve ([`Curve`], `purge/curve.rs`) and its driver
+//!   ([`decay`]): jemalloc's decay shape, a smootherstep from one to zero
+//!   over the `dirty_decay_ms` window. Each `(arena, class)` and the huge
+//!   allocator purge their oldest `Empty` slabs (extents) until what is left
+//!   is within the curve's allowance, at most once per step; [`decay`]
+//!   visits them all and reports the earliest next deadline. Each class
 //!   keeps the `dirty_at` of its oldest `Empty` slab and its next deadline
-//!   in atomics so the visit takes no lock unless a walk is due.
-//!   [`on_tick`] is the hook the slow path calls every `PERIODIC_EVERY`
-//!   slow paths (design 6.4); [`purge_all`] is `malloc_trim(0)` and
-//!   `arena.<i>.purge`.
-//! - The background thread ([`background`], `purge/background.rs`). Created on the
-//!   first periodic tick after it was requested (never from init), on a
-//!   stack carved from the metadata region
-//!   with a `PROT_NONE` guard page below it, with every signal blocked. It
-//!   loops over `decay` and sleeps on a futex until the next deadline; a
-//!   class whose first slab goes `Empty` bumps the futex word so a thread
-//!   sleeping with no deadline wakes up. While it exists the slow path does
-//!   no purging of its own. After `fork` the child marks it absent and does
-//!   not recreate it until asked again.
+//!   in atomics, so the visit takes no lock unless a walk is due.
+//!   [`on_tick`] is the slow path's hook (design 6.4).
+//! - The background thread ([`background`], `purge/background.rs`): created
+//!   on the first periodic tick after it was requested, never from init, on
+//!   a stack from the metadata region with a guard page below it and every
+//!   signal blocked. It loops over `decay` and sleeps on a futex until the
+//!   next deadline; a class whose first slab goes `Empty` wakes it. While it
+//!   exists the slow path does no purging of its own. `pthread_create`
+//!   allocates, so the creating thread parks its TLS slot on the
+//!   `TLS_CREATING` sentinel and that allocation is served straight from the
+//!   slabs (design 6.5).
 //!
-//! `pthread_create` allocates (glibc's `allocate_dtv` calls `calloc`), so
-//! the creating thread parks its TLS slot on the `TLS_CREATING` sentinel for
-//! the duration and that allocation is served straight from the slabs, the
-//! same path `pthread_setspecific` takes during heap creation (design 6.5).
+//! `MADV_FREE`d memory keeps its contents until the kernel reclaims it, so
+//! [`purged_is_zero`] is true until the first lazy batch of the process and
+//! false from then on: `calloc` clears `Purged` memory it reuses after that,
+//! and `Fresh` memory stays known zero.
 //!
-//! Memory discarded with `MADV_FREE` keeps its contents until the kernel
-//! reclaims it, so a `Purged` slab or extent that went out lazily is not
-//! known to be zero. `class/` and `huge/` read one process-wide answer,
-//! [`purged_is_zero`], under their locks when they hand a `Purged` member
-//! out, and it is sticky: true until the first lazy batch of the process,
-//! false from then on, so `calloc` clears `Purged` memory it reuses after
-//! that (a `memset` of the slot or run, on pages that are mostly still
-//! resident) and `Fresh` memory stays known zero. Tracking the advice per
-//! slab would need a state bit in the descriptors and a read of it in the
-//! claim paths; the sticky flag is the smallest form and its cost is
-//! bounded to `calloc` on `Purged` reuse.
-//!
-//! The curve's tests sit in `purge/curve.rs`; `purge/tests.rs` holds the
-//! rest of the pure tests and the `serial` lock the class tests share
-//! (`purge::tests::serial`), `purge/linux_tests.rs` the two that need a
-//! kernel.
+//! The curve's tests sit in `purge/curve.rs`, the other pure tests and the
+//! `serial` lock the class tests share in `purge/tests.rs`, and the two that
+//! need a kernel in `purge/linux_tests.rs`.
 
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
@@ -82,7 +51,7 @@ pub(crate) mod tests;
 #[cfg(test)]
 mod linux_tests;
 
-pub use curve::{decay_ns_from_ms, Curve, NEVER, STEPS, WEIGHTS, WEIGHT_ONE};
+pub use curve::{decay_ns_from_ms, Curve, NEVER, STEPS};
 
 /// Ranges per `process_madvise` (design section 8).
 pub const MAX_BATCH: usize = 64;

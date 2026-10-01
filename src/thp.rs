@@ -1,79 +1,46 @@
-//! Transparent huge pages for the regions (design 7, 10 and 17).
+//! Transparent huge pages for the regions (design.md sections 7, 10 and 17).
 //!
 //! The `thp` key (`config::Thp`) names what the program wants; the kernel's
 //! sysfs table (`sys::thp_host::Thp`, read at init) says what a
 //! `MADV_HUGEPAGE`d range can get; [`decide`] turns the two into the
 //! effective [`Mode`] and the thresholds the commit paths read:
 //!
-//! - `never` (the default): [`Mode::Off`]. No advice is issued anywhere and
-//!   the commit paths do exactly what they did before the key existed.
+//! - `never` (the default): [`Mode::Off`], nothing is advised
+//!   `MADV_HUGEPAGE`. On a kernel with THP the class superblock and the
+//!   metadata region are `MADV_NOHUGEPAGE`d at reservation
+//!   ([`advise_reservation`], from `layout::Regions::reserve`), so the slab
+//!   regions get no huge page even where the host's global mode is
+//!   `always`. The huge region ([`Reservation::Huge`]) follows the host's
+//!   policy, as jemalloc's large extents do: a huge run is a whole
+//!   allocation the program asked for. The advice is a VMA flag every later
+//!   split inherits, so one call per reservation is enough.
 //! - `auto`: [`Mode::Folios`], the multi-size THP path. `SlabTable::
-//!   take_group` advises each slab group's range of a class whose slab can
-//!   hold an enabled folio size below the PMD (64 KiB slabs with the 64 KiB
-//!   size enabled), and metadata commits are advised and rounded to that
-//!   folio, so the first touch of a slab or a descriptor page maps one
-//!   folio. Never a PMD-sized page: when the PMD size is `madvise`-gated
-//!   (`hugepages-2048kB/enabled` `madvise`, or `inherit` under a `madvise`
-//!   top level, Ubuntu's default) the advice would also make the region
-//!   eligible for 2 MiB pages, at the fault when a whole aligned range is
-//!   untouched and, slowly, through khugepaged (`max_ptes_none` 511 lets
-//!   it collapse any range with one present page), and the fork
-//!   copy-on-write cost that makes Redis and Valkey forbid huge pages
-//!   would be back; so `auto` refuses on such a host ([`Reason::PmdMadvise`])
-//!   and the host requirement is `hugepages-64kB/enabled=madvise` (or
-//!   `always`) with `hugepages-2048kB/enabled=never` (or `always`, the
-//!   host's own decision for every process).
-//! - `always`: every enabled size. With the PMD size enabled and no
-//!   larger than 2 MiB ([`LG_PMD_CHUNK_MAX`]), [`Mode::Chunks`]:
-//!   `SlabTable::commit_slab` commits and advises the PMD-sized chunk
-//!   around the slab (clipped to the region) so the first touch maps a
-//!   2 MiB page, as jemalloc's `thp:always` does for its 2 MiB extents;
-//!   huge runs of a PMD or more are advised (design 7); metadata takes the
-//!   sub-PMD folio if one is enabled (never a 2 MiB page: a descriptor
-//!   table's first page would cost 2 MiB of RSS). Without the PMD size it
-//!   is `auto` plus the huge runs. The PMD is 2 MiB only at 4 KiB pages: at
-//!   16 KiB it is 32 MiB and at 64 KiB 512 MiB (`page * page / 8`), and a
-//!   chunk of that size committed and advised per class would be the RSS
-//!   floor of the process (the 64 KiB matrix cell showed 1.3 GiB of
-//!   advised chunks for an 8 MiB test heap, and the kernel gave none of
-//!   them a folio), so there `always` takes the folio path over the
-//!   enabled sub-PMD sizes and is inert, with the reason
-//!   [`Reason::PmdTooLarge`], when none is enabled.
-//! - `never` on a host whose global THP mode is `always` (Chainguard OS
-//!   ships `always` with the 2 MiB size on `inherit`): the class
-//!   superblock and the metadata region are
-//!   `MADV_NOHUGEPAGE`d at reservation ([`advise_reservation`], from
-//!   `layout::Regions::reserve`), so the slab regions keep their RSS
-//!   discipline on every host (a 2 MiB page under a few touched slabs is
-//!   the RSS a small heap cannot afford, and the fork copy-on-write cost
-//!   Redis and Valkey forbid). The huge region is left alone
-//!   ([`Reservation::Huge`]; the decision recorded in
-//!   `bench/results/2026-09-20-aarch64-cgos-thp-ab.md`, option (d)): a
-//!   huge run is a whole multi-page allocation the program asked for, and
-//!   it follows the host's policy as jemalloc's large allocations do
-//!   (jemalloc's `never` advises its slab extents, and its large extents
-//!   take huge pages on an `always` host); the 32 MiB of tables the
-//!   Valkey model keeps in huge runs take 2 MiB pages under the host's
-//!   policy, and covering them with the advice cost 10 points of
-//!   `valkey1` on Chainguard OS. So `never` reads `AnonHugePages` 0 on
-//!   the class and metadata
-//!   regions on every host and the host's answer on the huge region; on a
-//!   `madvise` host (the reference kernels) nothing differs from a
-//!   `never` that advised everything.
-//!   The advice is a VMA flag that survives the `mprotect` splits of the
-//!   commit path and is inherited by every VMA the reservation is later
-//!   split into, so one call per reservation is enough. `auto` and
-//!   `always` issue no `MADV_NOHUGEPAGE` (on an `always` host their
-//!   unadvised regions stay eligible for the host's PMD pages).
+//!   take_group` advises the slab groups of each class whose slab can hold
+//!   an enabled folio size below the PMD, and metadata commits are rounded
+//!   to and advised with that folio. Never a PMD-sized page: where the PMD
+//!   size is `madvise`-gated the advice would also make the region eligible
+//!   for 2 MiB pages, at the fault and through khugepaged, and bring back
+//!   the fork copy-on-write cost that makes Redis and Valkey forbid huge
+//!   pages, so `auto` is inert there ([`Reason::PmdMadvise`]).
+//! - `always`: every enabled size. With the PMD size enabled and no larger
+//!   than [`LG_PMD_CHUNK_MAX`] (2 MiB, the PMD of 4 KiB pages),
+//!   [`Mode::Chunks`]: `SlabTable::commit_slab` commits and advises the
+//!   PMD-sized chunk around the slab (clipped to the region) so the first
+//!   touch maps a 2 MiB page, huge runs of a PMD or more are advised, and
+//!   metadata takes the sub-PMD folio if one is enabled. At 16 and 64 KiB
+//!   pages the PMD is 32 MiB and 512 MiB and a chunk per class would be the
+//!   process's RSS floor, so `always` takes the folio path over the enabled
+//!   sub-PMD sizes there, and is inert ([`Reason::PmdTooLarge`]) when none
+//!   is.
+//!
+//! `auto` and `always` issue no `MADV_NOHUGEPAGE`, so on an `always` host
+//! their unadvised regions stay eligible for the host's PMD pages.
 //!
 //! Design 11's rule ([`forced_by_limit`]: an effective cgroup limit under
 //! 1 GiB forces a configured `thp:always` to `never`) is applied by
-//! `Shared::init` to the stored key;
-//! [`force_never`] mirrors it here after init and advises the class and
-//! metadata reservations already made with `MADV_NOHUGEPAGE` (the huge
-//! reservation is not recorded, so a forced `never` leaves it to the host
-//! the way a configured one does). `auto` is not forced: a 64 KiB folio
-//! is the slab's own granularity.
+//! `Shared::init` to the stored key; [`force_never`] mirrors it here and
+//! advises the class and metadata reservations already made. `auto` is not
+//! forced: a 64 KiB folio is the slab's own granularity.
 //!
 //! Everything here is cold: a decision at init, one `madvise` per slab
 //! group, per PMD chunk, per huge run or per metadata commit. The fast

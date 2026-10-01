@@ -15,65 +15,44 @@
 //! | `memory.events` `high` rose | one full purge   |                    |                   |
 //!
 //! *Retention* is the `Empty` memory of every class of every arena and of
-//! the huge allocator: dirty pages that were freed and not yet purged, the
-//! only memory the allocator holds that costs RSS without serving anything
-//! (`Purged` memory is unmapped from RSS already). The cap is applied as a
-//! *keep ratio* inside the curve walks of design 8: a class (or the huge
-//! allocator) whose walk is due may keep the smaller of the curve's
-//! allowance and its share `total * cap / retention` of the cap, so the
-//! sum kept stays under the cap while the curve decides *which* slabs go
-//! and in what order. Scaling the period scales the curve's window; the
-//! curve's shape is untouched.
+//! the huge allocator: freed dirty pages not yet purged, the only memory
+//! the allocator holds that costs RSS without serving anything. The cap is
+//! applied as a *keep ratio* inside the curve walks of design 8: a class
+//! (or the huge allocator) whose walk is due may keep the smaller of the
+//! curve's allowance and its share `total * cap / retention` of the cap, so
+//! the sum kept stays under the cap while the curve decides which slabs go
+//! and in what order. Scaling the period scales the curve's window, never
+//! its shape. `dirty_decay_ms:-1` (never) is left alone in every band.
 //!
-//! The policy is evaluated where a sample was actually taken ([`evaluate`]
-//! from `purge::on_tick`, the background thread's loop, and a fired PSI
-//! trigger), so at most once per 10 ms process-wide, and never on a fast
-//! path. Without a limit it is two loads and a return: the process pays
-//! nothing beyond the sample. With a limit it also sums the `Empty` bytes
-//! of every class that has any (one lock hold per such class) for the
-//! keep ratio. The outcome is a handful of atomics on [`Policy`], which
-//! sits next to `Shared::gc_interval_ns` on a line the periodic tick
-//! already reads: `purge::decay` turns them into a per-arena effective
-//! period and the keep ratio for the walks, `Heap::tick` into a zero GC
-//! interval above 90%.
+//! The policy is evaluated where a sample was taken ([`evaluate`], from
+//! `purge::on_tick`, the background thread's loop and a fired PSI trigger),
+//! so at most once per 10 ms process-wide and never on a fast path. Without
+//! a limit it is two loads and a return; with one it also sums the `Empty`
+//! bytes of every class that has any (one lock hold per such class). The
+//! outcome is a handful of atomics on [`Policy`], on a line the periodic
+//! tick already reads: `purge::decay` turns them into a per-arena effective
+//! period and keep ratio, `Heap::tick` into a zero GC interval above 90%.
 //!
-//! `dirty_decay_ms:-1` (never) is left alone in every band: it is an
-//! explicit choice, as under jemalloc, and the report shows it.
-//!
-//! The advice ([`advice`]): a purge issues
-//! `MADV_FREE` (lazy: the pages stay mapped and charged until the kernel
-//! reclaims them, and a reuse before that refaults nothing) only where the
+//! The advice ([`advice`]): a purge issues `MADV_FREE` (lazy: the pages
+//! stay mapped and charged until the kernel reclaims them) only where the
 //! policy knows the headroom, under 70% of a known limit, and
-//! `MADV_DONTNEED` (eager) everywhere else: with no limit at all (the
-//! common case; lazily freed pages would stay in RSS and mislead a
-//! fragmentation ratio or an autoscaler that reads it, design 8), in the
-//! scaled and immediate bands (the kernel is about to want the memory), and
-//! for an explicit purge (`malloc_trim(0)`, `arena.<i>.purge`, the full
-//! purge a `memory.events` `high` rise owes: the caller asked for RSS to
-//! drop), and while an eager return of the excess over the retention cap
-//! is in progress ([`Policy::headroom`]; the floor fix of
-//! `bench/results/2026-09-19-lane-b-floor-fixes.md`): a
-//! retention over the cap first seen at 70% or above is returned eagerly
-//! until it is back within the cap, even though the first eager walks
-//! bring usage under 70% before the rest is purged. Without that rule the
-//! tail of the excess went out with `MADV_FREE` and stayed resident and
-//! charged (the cap met in the allocator's accounting, not in the
-//! cgroup's), with the split between the eager and the lazy part decided
-//! by which walks shared a periodic tick: the container churn test failed
-//! 7 of 16 runs on a 4-vCPU 6.1 host and 5 of 16 on a 2-vCPU 5.10 host.
-//! `lazy_band:false` turns the saving off, eager everywhere. The advice is read at each
-//! batch flush from `purge`'s mirror of the band, so it is at most one
-//! sample (10 ms) behind.
+//! `MADV_DONTNEED` (eager) everywhere else: with no limit (lazily freed
+//! pages would stay in RSS and mislead anything that reads it, design 8),
+//! in the scaled and immediate bands, for an explicit purge
+//! (`malloc_trim(0)`, `arena.<i>.purge`, the full purge a `memory.events`
+//! `high` rise owes), and while an eager return of the excess over the
+//! retention cap is in progress ([`Policy::headroom`]). That last rule
+//! keeps an excess first seen at 70% or above eager until it is back within
+//! the cap, even after the first walks bring usage under 70%: otherwise its
+//! tail would go out lazily and stay charged to the cgroup. `lazy_band:false`
+//! makes every purge eager. The advice is read at each batch flush from
+//! `purge`'s mirror of the band, at most one sample behind.
 //!
-//! THP: the `thp` key's mechanism is `thp.rs` (design 10 and 17: `auto`
-//! the sub-PMD folio path, `always` the PMD-sized chunks, `never` the
-//! `MADV_NOHUGEPAGE` on the slab regions of an `always` host). Design 11's
-//! "disabled under small limits" is applied once, at init (`Shared::init`):
-//! when the effective limit is under 1 GiB ([`THP_MIN_LIMIT`]) a configured
-//! `thp:always` is forced to `never` in the stored configuration, which
-//! `thp.rs` then reads as any `never`; the report says so
-//! ([`Policy::thp_forced`], `opt.thp` reads `never`). `thp:auto` is not
-//! forced: its folio is the slab's own granularity, not a 2 MiB page. The
+//! THP: the `thp` key's mechanism is `thp.rs`. Design 11's "disabled under
+//! small limits" is applied once, at init (`Shared::init`): under an
+//! effective limit below [`THP_MIN_LIMIT`] (1 GiB) a configured
+//! `thp:always` is forced to `never` in the stored configuration, and the
+//! report says so ([`Policy::thp_forced`], `opt.thp` reads `never`). The
 //! rule itself is `thp::forced_by_limit`.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
