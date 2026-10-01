@@ -4,77 +4,26 @@ use super::flush::{flag_sort, group_by_slab};
 use crate::arena::Arena;
 use crate::class::ClassStats;
 use crate::config::Config;
-use crate::layout::{Kind, LG_MAX_SLAB, MAX_SLAB, Mapping, Regions, class_of};
+use crate::layout::{Kind, class_of};
 use crate::slab::State;
 use crate::sys::pac;
+use crate::testutil::{TestShared, align_up, page_size, shared, xorshift};
 use std::boxed::Box;
 use std::collections::HashSet;
-use std::mem::MaybeUninit;
 use std::vec::Vec;
-
-/// The page size the synthetic layout is built with: the kernel's (the
-/// reservations are real).
-pub(crate) fn page_size() -> usize {
-    crate::sys::features::page_size()
-}
 
 /// Default capacity of a cache for a class up to 128 bytes, and the
 /// refill/flush batch that goes with it.
 const CAP: usize = MAX_CAP as usize;
 const HALF: usize = CAP / 2;
-const LG_REGION: u32 = LG_MAX_SLAB;
-const LG_STRIDE: u32 = LG_REGION + 2;
-const META_LEN: usize = 16 << 20;
-
-fn align_up(x: usize, a: usize) -> usize {
-    (x + a - 1) & !(a - 1)
-}
-
-/// 64 MiB huge region; `shared()` reserves it for real.
-const HUGE_LEN: usize = 64 << 20;
-
-fn regions_at(superblock: usize, meta: (usize, usize), huge_base: usize) -> Regions {
-    let sb_len = (NCLASSES << LG_STRIDE) + MAX_SLAB;
-    let huge = (huge_base, HUGE_LEN);
-    Regions::from_parts(
-        superblock,
-        LG_REGION,
-        LG_STRIDE,
-        &[0usize; NCLASSES],
-        huge,
-        meta,
-        page_size().trailing_zeros(),
-        [
-            Mapping { addr: superblock, len: sb_len },
-            Mapping { addr: huge.0, len: huge.1 },
-            Mapping { addr: meta.0, len: meta.1 },
-        ],
-    )
-}
-
-/// A `Shared` over a synthetic 4 MiB-per-class layout. Leaked on
-/// purpose: the test thread's own heap is torn down by the key
-/// destructor after the test body has returned. The regions are real
-/// `PROT_NONE` reservations so slot memory can be touched.
-/// One automatic arena, so every heap of a test shares arena 0 (the
-/// default would spread concurrently live heaps over `4 * ncpus`).
-/// `pac_pointers` on: the signed path runs in every heap test on a
-/// host with pointer authentication, and is the plain path elsewhere.
-pub(crate) fn shared() -> &'static Shared {
-    shared_with(Config { narenas: 1, pac_pointers: true, ..Config::DEFAULT })
-}
-
-pub(crate) fn shared_with(config: Config) -> &'static Shared {
-    shared_with_guards(config, false)
-}
 
 /// `huge_retain_max` from `malloc_conf` reaches the huge allocator.
 #[test]
 fn huge_retain_max_key_reaches_the_huge_allocator() {
     assert_eq!(shared().huge.retain_max(), crate::huge::DEFAULT_RETAIN_MAX);
-    let s = shared_with(Config { huge_retain_max: 3 << 20, ..Config::DEFAULT });
+    let s = TestShared::with(Config { huge_retain_max: 3 << 20, ..Config::DEFAULT }).build();
     assert_eq!(s.huge.retain_max(), 3 << 20);
-    let s = shared_with(Config { huge_retain_max: 0, ..Config::DEFAULT });
+    let s = TestShared::with(Config { huge_retain_max: 0, ..Config::DEFAULT }).build();
     assert_eq!(s.huge.retain_max(), 0);
 }
 
@@ -100,7 +49,7 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
     const S: u64 = 1_000_000_000;
 
     // Unset: arena 0's period, live.
-    let s = shared_with(Config { narenas: 1, ..Config::DEFAULT });
+    let s = TestShared::with(Config { narenas: 1, ..Config::DEFAULT }).build();
     assert_eq!(s.config.huge_dirty_decay_ms, None);
     assert_eq!(s.huge_decay_ns(), s.decay_ns());
     assert_eq!(s.huge_decay_ns(), 10 * S);
@@ -122,7 +71,7 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
 
     // Set to 2 s: the huge extent is gone at 2 s while arena 0 keeps
     // its 10 s (and moving arena 0 no longer moves the huge period).
-    let s = shared_with(Config { narenas: 1, huge_dirty_decay_ms: Some(2000), ..Config::DEFAULT });
+    let s = TestShared::with(Config { narenas: 1, huge_dirty_decay_ms: Some(2000), ..Config::DEFAULT }).build();
     assert_eq!(s.huge_decay_ns(), 2 * S);
     assert_eq!(s.decay_ns(), 10 * S);
     s.arena0.set_decay_ms(500);
@@ -139,7 +88,7 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
     assert_eq!(s.huge.lookup(page_of(s, p)).unwrap().state, RunState::Purged);
 
     // Set to 0: purged as it is freed, no `Empty` extent ever.
-    let s = shared_with(Config { narenas: 1, huge_dirty_decay_ms: Some(0), ..Config::DEFAULT });
+    let s = TestShared::with(Config { narenas: 1, huge_dirty_decay_ms: Some(0), ..Config::DEFAULT }).build();
     assert!(s.huge.purge_on_free());
     assert_eq!(s.huge_decay_ns(), 0);
     let p = s.alloc_huge(size, 16, 0).0;
@@ -150,7 +99,7 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
     assert_eq!(crate::purge::decay(s, u64::MAX / 2), None);
 
     // Set to -1: never, while arena 0 still decays.
-    let s = shared_with(Config { narenas: 1, huge_dirty_decay_ms: Some(-1), ..Config::DEFAULT });
+    let s = TestShared::with(Config { narenas: 1, huge_dirty_decay_ms: Some(-1), ..Config::DEFAULT }).build();
     assert!(!s.huge.purge_on_free());
     assert_eq!(s.huge_decay_ns(), crate::purge::NEVER);
     assert_eq!(s.decay_ns(), 10 * S);
@@ -160,42 +109,6 @@ fn huge_dirty_decay_ms_gives_the_huge_tier_its_own_period() {
     assert_eq!((s.huge.stats().empty, s.huge.stats().purged), (1, 0), "never purged by decay");
     assert_eq!(crate::purge::purge_all(s), 1, "malloc_trim still purges it");
     assert_eq!((s.huge.stats().empty, s.huge.stats().purged), (0, 1));
-}
-
-/// `shared()` with guard slabs at the default interval (`guard_install`
-/// as on a kernel with guard regions).
-pub(crate) fn shared_guarded() -> &'static Shared {
-    shared_with_guards(Config { narenas: 1, pac_pointers: true, ..Config::DEFAULT }, true)
-}
-
-/// [`shared_build`] with the PAC probe's real answer.
-pub(crate) fn shared_with_guards(config: Config, guard_install: bool) -> &'static Shared {
-    shared_build(config, guard_install, pac::available())
-}
-
-/// The builder every `Shared` of the heap tests goes through. `pac`
-/// stands in for the PAC probe: `false` on a host that has the
-/// extension builds the fallback (plain pointers) the Altra and every
-/// other Neoverse N1 take.
-pub(crate) fn shared_build(config: Config, guard_install: bool, pac: bool) -> &'static Shared {
-    let (sb, mb, hb) = {
-        use crate::sys::{MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
-        let reserve = |len: usize| -> usize {
-            unsafe {
-                crate::sys::mmap(0, len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0)
-            }
-            .expect("reserve")
-        };
-        (reserve((NCLASSES << LG_STRIDE) + MAX_SLAB), reserve(META_LEN), reserve(HUGE_LEN))
-    };
-    let regions = regions_at(
-        align_up(sb, MAX_SLAB),
-        (align_up(mb, page_size()), META_LEN),
-        hb,
-    );
-    let b: &'static mut MaybeUninit<Shared> = Box::leak(Box::new(MaybeUninit::uninit()));
-    assert!(unsafe { Shared::init(b.as_mut_ptr(), regions, config, guard_install, pac) });
-    unsafe { b.assume_init_ref() }
 }
 
 /// The message of a caught panic (`catch_unwind`'s payload is a
@@ -293,15 +206,6 @@ impl TestHeap {
 pub(crate) fn live(s: &Shared, c: usize) -> usize {
     let cs = &s.arena0.classes[c];
     (0..cs.committed_slabs()).filter(|&i| !cs.is_guard_slab(i)).map(|i| cs.desc(i).live()).sum()
-}
-
-pub(crate) fn xorshift(state: &mut u64) -> u64 {
-    let mut x = *state;
-    x ^= x << 13;
-    x ^= x >> 7;
-    x ^= x << 17;
-    *state = x;
-    x
 }
 
 #[test]
@@ -492,7 +396,7 @@ fn cached_pair_flush_message(lower_of: impl Fn(usize) -> usize) -> std::string::
 /// deeper than that it is left to the flush as before.
 #[test]
 fn double_free_scan_compares_the_top_four_entries() {
-    let s = shared_with(Config { narenas: 1, double_free_scan: true, ..Config::DEFAULT });
+    let s = TestShared::with(Config { narenas: 1, double_free_scan: true, ..Config::DEFAULT }).build();
     assert!(s.double_free_scan());
     let t = TestHeap::new(s);
     let c = class_with(64);
@@ -532,7 +436,7 @@ fn double_free_scan_compares_the_top_four_entries() {
 /// decline (`None`, `allocs` not counted) and `Heap::alloc` serves it.
 #[test]
 fn fast_paths_decline_the_scan_hit_and_the_scheduled_pop() {
-    let s = shared_with(Config { narenas: 1, double_free_scan: true, ..Config::DEFAULT });
+    let s = TestShared::with(Config { narenas: 1, double_free_scan: true, ..Config::DEFAULT }).build();
     let t = TestHeap::new(s);
     let c = class_with(64);
     let flags = s.push_flags();
@@ -650,7 +554,7 @@ fn a_whole_cache_flush_keeps_nothing_and_takes_the_unsorted_branch() {
 /// the region and around its end, with guards on and off.
 #[test]
 fn guard_test_agrees_with_the_tables() {
-    for s in [shared_guarded(), shared()] {
+    for s in [TestShared::new().guards().build(), shared()] {
         for c in 0..NCLASSES {
             let t = s.table(c);
             let g = s.guard_test[c];
@@ -704,7 +608,7 @@ fn guard_interval_for_places_one_guard_per_unit_of_address_space() {
 /// passes here and aborts at the flush (the next test).
 #[test]
 fn sized_slot_rejects_guard_slabs() {
-    let s = shared_guarded();
+    let s = TestShared::new().guards().build();
     let t = TestHeap::new(s);
     let c = class_with(64);
     let cs = s.arena0.class(c);
@@ -1683,7 +1587,7 @@ fn arena_registry_creates_and_looks_up() {
 /// `destroy` releases the binding, and arenas are built on first touch.
 #[test]
 fn automatic_arenas_are_assigned_least_loaded_and_built_lazily() {
-    let s = shared_with(Config { narenas: 3, ..Config::DEFAULT });
+    let s = TestShared::with(Config { narenas: 3, ..Config::DEFAULT }).build();
     assert_eq!(s.arenas.count(), 3);
     assert_eq!(s.arenas.auto(), 3);
     assert!(s.arenas.get_existing(1).is_none());
@@ -1736,7 +1640,7 @@ fn automatic_arenas_are_assigned_least_loaded_and_built_lazily() {
 /// alive at once get built; a built idle arena beats an unbuilt one.
 #[test]
 fn heap_churn_reuses_the_vacated_arena() {
-    let s = shared_with(Config { narenas: 8, ..Config::DEFAULT });
+    let s = TestShared::with(Config { narenas: 8, ..Config::DEFAULT }).build();
     let main = TestHeap::new(s);
     assert_eq!(main.heap().arena(), 0);
     let c = class_with(64);
@@ -1776,13 +1680,13 @@ fn heap_churn_reuses_the_vacated_arena() {
 /// and stored, so `opt.narenas` and `arenas.auto` agree on it.
 #[test]
 fn default_narenas_is_resolved_at_init() {
-    let s = shared_with(Config::DEFAULT);
+    let s = TestShared::with(Config::DEFAULT).build();
     let expect = Config::DEFAULT.effective_narenas(ncpus());
     assert!((4..=crate::config::MAX_AUTO_ARENAS).contains(&expect));
     assert_eq!(s.config.narenas, expect);
     assert_eq!(s.arenas.auto(), expect);
     assert_eq!(s.arenas.count(), expect);
-    let s1 = shared_with(Config { narenas: 1, ..Config::DEFAULT });
+    let s1 = TestShared::with(Config { narenas: 1, ..Config::DEFAULT }).build();
     assert_eq!((s1.config.narenas, s1.arenas.auto()), (1, 1));
 }
 
@@ -1880,7 +1784,7 @@ fn foreign_frees_share_one_flush_only_cache_per_class() {
 /// to the decay.
 #[test]
 fn destroying_the_last_heap_of_an_arena_purges_it() {
-    let s = shared_with(Config { narenas: 2, ..Config::DEFAULT });
+    let s = TestShared::with(Config { narenas: 2, ..Config::DEFAULT }).build();
     let a = TestHeap::new(s);
     let b = TestHeap::new(s);
     let b2 = TestHeap::new(s);
@@ -2064,16 +1968,16 @@ fn push_flags_encode_zero_on_free_and_double_free_scan() {
     let pac = if pac::available() { PUSH_PAC } else { 0 };
     assert_eq!(shared().push_flags(), pac, "the test builder asks for pac_pointers");
     assert!(!shared().zero_on_free());
-    let s = shared_with(Config { narenas: 1, zero_on_free: true, ..Config::DEFAULT });
+    let s = TestShared::with(Config { narenas: 1, zero_on_free: true, ..Config::DEFAULT }).build();
     assert_eq!(s.push_flags(), PUSH_ZERO, "pac_pointers is off by default");
     assert!(s.zero_on_free() && !s.double_free_scan());
-    let s = shared_with(Config { narenas: 1, zero_on_free: true, double_free_scan: true, pac_pointers: true, ..Config::DEFAULT });
+    let s = TestShared::with(Config { narenas: 1, zero_on_free: true, double_free_scan: true, pac_pointers: true, ..Config::DEFAULT }).build();
     assert_eq!(s.push_flags(), PUSH_ZERO | PUSH_SCAN | pac);
     assert!(s.zero_on_free() && s.double_free_scan());
     assert_eq!(core::mem::offset_of!(Shared, push_flags) / 128, core::mem::offset_of!(Shared, multi_arena) / 128);
 }
 
-/// Slot memory is real (`shared_with_guards`).
+/// Slot memory is real (`TestShared`).
 fn bytes_of(p: *mut u8, n: usize) -> Vec<u8> {
     (0..n).map(|i| unsafe { core::ptr::read_volatile(p.add(i)) }).collect()
 }
@@ -2102,7 +2006,7 @@ fn zero_on_free_clears_the_slot_on_the_plain_sized_and_direct_paths() {
     t.flush_all();
     t.destroy();
 
-    let s = shared_with(Config { narenas: 1, zero_on_free: true, ..Config::DEFAULT });
+    let s = TestShared::with(Config { narenas: 1, zero_on_free: true, ..Config::DEFAULT }).build();
     let t = TestHeap::new(s);
     // Plain free: cleared, then the same slot comes back zero without
     // `calloc`'s memset.
@@ -2143,7 +2047,7 @@ fn zero_on_free_clears_the_slot_on_the_plain_sized_and_direct_paths() {
 /// the memory is still there to read.
 #[test]
 fn zero_on_free_clears_a_huge_run() {
-    let s = shared_with(Config { narenas: 1, zero_on_free: true, ..Config::DEFAULT });
+    let s = TestShared::with(Config { narenas: 1, zero_on_free: true, ..Config::DEFAULT }).build();
     let t = TestHeap::new(s);
     let n = 1 << 20;
     for direct in [false, true] {
@@ -2180,7 +2084,7 @@ fn slot_randomize_seeds_the_heap_lazily() {
     t.free(p);
     t.flush_all();
     t.destroy();
-    let s = shared_with(Config { narenas: 1, slot_randomize: true, ..Config::DEFAULT });
+    let s = TestShared::with(Config { narenas: 1, slot_randomize: true, ..Config::DEFAULT }).build();
     let t = TestHeap::new(s);
     assert_eq!(t.heap().rng, 0, "heap creation seeded the rng");
     let p = t.alloc(c);
@@ -2225,7 +2129,7 @@ fn slot_randomize_shuffles_the_batch_and_keeps_the_slot_set() {
     t.flush_all();
     t.destroy();
 
-    let s = shared_with(Config { narenas: 1, slot_randomize: true, ..Config::DEFAULT });
+    let s = TestShared::with(Config { narenas: 1, slot_randomize: true, ..Config::DEFAULT }).build();
     let t = TestHeap::new(s);
     let cs = &s.arena0.classes[c];
     let (first_z, zeroed): (Vec<*mut u8>, Vec<bool>) = (0..batch).map(|_| t.heap().alloc_zeroed(s, c)).unzip();
@@ -2258,7 +2162,7 @@ fn slot_randomize_shuffles_the_batch_and_keeps_the_slot_set() {
 /// distinct slot of the class and the live accounting holds.
 #[test]
 fn slot_randomize_keeps_the_compacting_run_valid() {
-    let s = shared_with(Config { narenas: 1, slot_randomize: true, ..Config::DEFAULT });
+    let s = TestShared::with(Config { narenas: 1, slot_randomize: true, ..Config::DEFAULT }).build();
     let t = TestHeap::new(s);
     let c = class_with(1024);
     let cs = &s.arena0.classes[c];
@@ -2497,7 +2401,7 @@ fn huge_run_pages_are_counted_from_the_descriptor() {
 #[test]
 #[should_panic(expected = "arena 5 does not exist")]
 fn a_free_routed_to_an_unbuilt_arena_aborts() {
-    let s = shared_with(Config { narenas: 8, pac_pointers: true, ..Config::DEFAULT });
+    let s = TestShared::with(Config { narenas: 8, pac_pointers: true, ..Config::DEFAULT }).build();
     let t = TestHeap::new(s);
     let h = t.heap();
     assert_eq!(h.arena(), 0);
@@ -2518,7 +2422,7 @@ fn a_free_routed_to_an_unbuilt_arena_aborts() {
 /// the owner.
 #[test]
 fn a_huge_first_allocation_builds_the_home_arena() {
-    let s = shared_with(Config { narenas: 4, pac_pointers: true, ..Config::DEFAULT });
+    let s = TestShared::with(Config { narenas: 4, pac_pointers: true, ..Config::DEFAULT }).build();
     let hp = Heap::create_detached(s, 2);
     assert!(!hp.is_null());
     let h = unsafe { &mut *hp };

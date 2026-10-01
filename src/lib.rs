@@ -46,6 +46,8 @@ pub mod slab;
 pub mod slice;
 pub mod stats;
 pub mod sys;
+#[cfg(test)]
+mod testutil;
 pub mod thp;
 pub mod tls;
 
