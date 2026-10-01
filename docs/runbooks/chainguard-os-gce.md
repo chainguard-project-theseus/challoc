@@ -33,7 +33,8 @@ features a hypervisor hides.
   `c4-standard-288-metal`, `c4-highmem-288-metal` (and `-lssd-` variants);
   `c4a-highmem-96-metal` is in `us-central1-a/b/c`, `us-east4-c`,
   `us-east5-b`, `us-west4-a/c`, not `us-east4-a`.
-- Stop or delete every VM you start when you are done; metal is about $10/h, so delete it within the hour.
+- Stop or delete every VM you start when you are done; metal is about
+  $10/h, so delete it within the hour.
 - Kernel 7.2 images (verified with `gcloud compute images
   describe-from-family`): `kirkland-workstation-7dot2-amd64` for
   VMs (guest features UEFI/GVNIC/IDPF, no `BARE_METAL_LINUX_COMPATIBLE`)

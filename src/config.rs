@@ -45,9 +45,8 @@ use crate::heap::{MAX_CAP, MIN_CAP};
 /// up to 1 MiB; 65536 slots is 512 KiB plus the header, well inside that.
 pub const MAX_NSLOTS: u32 = 65_536;
 /// Default `tcache_max`: jemalloc's. Slots of classes above it are never
-/// cached; at 16 arenas,
-/// 8 cached 40 KiB slots per (thread, arena) pair holding 70 MiB of
-/// xmalloc-test's RSS and most of mstress's excess.
+/// cached; at 16 arenas, 8 cached 40 KiB slots per (thread, arena) pair
+/// held 70 MiB of xmalloc-test's RSS and most of mstress's excess.
 pub const DEFAULT_TCACHE_MAX: usize = 32 * 1024;
 /// Range of `lg_tcache_nslots_mul`, as in jemalloc.
 pub const LG_NSLOTS_MUL_MIN: i32 = -16;

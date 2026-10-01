@@ -336,7 +336,8 @@ fn run_row(test: &str, row: &CTest<'_>) {
     );
 
     let mut cmd = Command::new(&bin);
-    // A suite run under `CHALLOC_CONF` would override the test's own `MALLOC_CONF` (the environment key is
+    // A suite run under `CHALLOC_CONF` would override the test's own
+    // `MALLOC_CONF` (the environment key is
     // read after it and wins) and turn every both-ways test one way.
     cmd.args(args).env_remove("CHALLOC_CONF").env("LD_PRELOAD", &so);
     if let Some(conf) = row.conf {
@@ -649,7 +650,7 @@ ctests! {
     glibc_tst_posix_memalign => [ glibc!("tst-posix_memalign") ];
     glibc_tst_realloc => [ glibc!("tst-realloc") ];
     mimalloc_test_stress => [ MIMALLOC_STRESS ];
-    /// The same stress test with `check_zero` on 
+    /// The same stress test with `check_zero` on:
     /// every `Fresh` or `Purged` slot and page behind its `calloc`s is read by
     /// the allocator before it is handed out, so a dirty "zero" allocation
     /// aborts inside the allocator with the slab's prior state and the
@@ -788,7 +789,8 @@ ctests! {
     c_pagemap_guard_off => [ CTest { prog: "pagemap_guard", args: &["off"], conf: Some("abort_conf:true,guards:false"), ..BASE } ];
     /// `tests/c/huge_hole.c`: the alignment holes the huge allocator leaves
     /// below an aligned run are committed memory. Once in the probed guard mode
-    /// (guard-install on kernels with `MADV_GUARD_INSTALL`) and once forced onto the `PROT_NONE` fallback.
+    /// (guard-install on kernels with `MADV_GUARD_INSTALL`) and once forced
+    /// onto the `PROT_NONE` fallback.
     c_huge_hole => [ CTest { prog: "huge_hole", ..BASE } ];
     c_huge_hole_no_guards => [ CTest { prog: "huge_hole", conf: Some("abort_conf:true,guards:false"), ..BASE } ];
     /// The fuzz driver at a fraction of `make fuzz` (10M ops,
