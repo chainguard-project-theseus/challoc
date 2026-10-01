@@ -3,7 +3,7 @@
  * 13.7): challoc_malloc_usable,
  * challoc_calloc_usable, challoc_realloc_usable and challoc_free_usable,
  * declared in <challoc/challoc.h> (include/, on the include
- * path through -I). Run under LD_PRELOAD=libchalloc.so by src/api/ctests.rs
+ * path through -I). Run under LD_PRELOAD=libchalloc.so by src/api/c_programs.rs
  * (the driver runs it under the default configuration and the hardening
  * keys, so every push and pop variant answers the same).
  *

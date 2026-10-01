@@ -11,7 +11,7 @@
  * distinct from each other and from its own, so the TLS slot resolved to
  * a different heap in every thread. A barrier keeps every heap alive
  * until all have been observed (an exited thread's heap may be reused).
- * Prints `ok 64 threads ...` and `ok tls_threads` (what src/api/ctests.rs
+ * Prints `ok 64 threads ...` and `ok tls_threads` (what src/api/c_programs.rs
  * greps), and exits 0 iff every check held.
  *
  * The "running under challoc" probe is `challoc_version`, not

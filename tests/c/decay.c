@@ -1,6 +1,6 @@
 /*
  * Decay, purge and the background thread end to end under
- * LD_PRELOAD. The driver in src/api/ctests.rs runs one mode per process
+ * LD_PRELOAD. The driver in src/api/c_programs.rs runs one mode per process
  * with MALLOC_CONF set for it:
  *
  *   trim        (defaults)                 free a lot, malloc_trim(0) drops

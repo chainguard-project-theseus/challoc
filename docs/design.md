@@ -1974,14 +1974,10 @@ Not implemented; see the archive tag `archive/prototype-2026-09-30`.
   (slabs per eighth of `nslots`), so a soak's `MEMORY MALLOC-STATS` shows
   where the live data sits and whether the schedule is running.
 - The heads of the text report's lines (`Kernel and CPU features: `,
-  `Background thread: `, `cgroup policy: `, ...) and the fixed words a line can
-  continue with are spelled once, in `src/api/print.rs` (`head!`, listed
-  in `LINES`); the writers build their format strings from them. The test
-  `print::tests::quoted_needles_match_the_report` reads `tests/c/*.c`,
-  `docs/tuning.md` and sections 1..16 of this document, takes every
-  quoted string that starts like one of those lines and checks it, with
-  the figures masked, against a report, so a renamed or dropped line
-  fails the suite at the stale quote.
+  `Background thread: `, `cgroup policy: `, ...) are pinned by the test
+  `print::tests::text_report_line_set_is_pinned` (and the JSON form's
+  shape by `json_report_shape_is_pinned`), so a renamed, added or dropped
+  line fails the suite.
 - Mappings named `challoc:classes` (the one class superblock), `challoc:huge`
   and `challoc:meta` (`PR_SET_VMA_ANON_NAME`, when the kernel has it).
 - `stats_print:true` is accepted and inert: nothing prints at exit and there
@@ -2510,7 +2506,7 @@ src/heap/shared.rs    Shared: process-wide state, init, the free checks and rout
 src/heap/thread.rs    thread lifecycle (6.5): TLS sentinels, heap_for_thread/existing_heap, the exit destructor
 src/heap/flush.rs     the flush's grouping pass (group_by_slab, flag_sort) and the straddling double-free abort
 src/heap/mallocx.rs   MALLOCX_* flag decoding, explicit tcache ids, the mallocx/dallocx routing (re-exported by arena.rs)
-src/heap/tests.rs, src/heap/linux_tests.rs   heap tests; tests.rs holds the Shared/TestHeap builders stats.rs and api/ctests.rs reuse
+src/heap/tests.rs, src/heap/linux_tests.rs   heap tests; tests.rs holds the Shared/TestHeap builders stats.rs and api/c_programs.rs reuse
 src/huge/mod.rs       huge allocator: extents (add_extent/drop_extent/retire), guards, first fit, decay, the audit
 src/huge/table.rs     the open-addressing descriptor table (page number to HugeDesc); never fills its last slot
 src/huge/tests.rs, src/huge/linux_tests.rs  huge tests: the allocator's, and the ones that need the process's own regions
@@ -2532,7 +2528,7 @@ src/api/jemalloc.rs   *allocx, mallctl entry points, malloc_conf/malloc_message 
 src/api/cxx.rs        operator new / delete
 src/api/mallctl.rs    control namespace: the name tree carries each read-only key's reader; ctl() keeps the keys that do something
 src/api/print.rs      malloc_stats_print, malloc_stats, malloc_info
-src/api/ctests.rs     the C-test table and its driver: tests/c, fuzz/, tests/glibc, tests/mimalloc (test builds only)
+src/api/c_programs.rs the C-test table and its driver: tests/c, fuzz/, tests/glibc, tests/mimalloc (test builds only)
 tests/c/              C programs run under LD_PRELOAD against the cdylib (common.h is the shared harness; scripts/ctest-cc.sh the one compiler line)
 tests/glibc/, tests/mimalloc/  vendored suites
 bench/                benchmark drivers, GCE scripts, results, probes

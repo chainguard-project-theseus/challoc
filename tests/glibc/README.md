@@ -19,7 +19,7 @@ tree the tests reach for:
   `include/support/test-pointer.h`: the few macros and one inline function
   the tests use from glibc's internal headers.
 
-`src/api/ctests.rs` (the `glibc!` rows) compiles each program through
+`src/api/c_programs.rs` (the `glibc!` rows) compiles each program through
 `scripts/ctest-cc.sh` (the shared flag line, `-DQUANTUM=<n>` read from the
 built library) plus `-D_GNU_SOURCE -Wno-unused-parameter
 -DTEST_NAME="<name>" -Itests/glibc/include`, and runs it bare (must fail)

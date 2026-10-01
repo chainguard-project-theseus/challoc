@@ -1,6 +1,6 @@
 /*
  * The malloc_conf sources end to end under LD_PRELOAD. The
- * driver in src/api/ctests.rs builds this program once per case:
+ * driver in src/api/c_programs.rs builds this program once per case:
  *
  *   -DCONF='"..."'  defines `je_malloc_conf` with that string, statically
  *                   initialised as Redis does it; with -DPLAIN it defines

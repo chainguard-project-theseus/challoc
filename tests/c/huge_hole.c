@@ -8,7 +8,7 @@
  * PROT_NONE, and the first block placed in that hole faulted on its first
  * write. The PROT_NONE-guard fallback mode commits every block's own pages
  * on allocation and never had the problem, which is why Docker's 6.10
- * kernel on the Mac never saw it. The driver in src/api/ctests.rs runs this
+ * kernel on the Mac never saw it. The driver in src/api/c_programs.rs runs this
  * program in the probed guard mode and again with MALLOC_CONF=guards:false.
  *
  * Two hole shapes, in this order so the second finds the mark it needs:

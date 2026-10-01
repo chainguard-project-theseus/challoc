@@ -1,6 +1,6 @@
 /* rseq time slice extension (docs/design.md section 17), both ways. Run as LD_PRELOAD=target/release/libchalloc.so
  * ./slice_ext MODE with MALLOC_CONF=slice_ext:MODE (on or off; the driver
- * in src/api/ctests.rs sets it). The program reads the kernel's own view
+ * in src/api/c_programs.rs sets it). The program reads the kernel's own view
  * through prctl(PR_RSEQ_SLICE_EXTENSION, GET), which says whether the
  * calling thread is enabled (1), not (0), or the kernel has no such
  * option (ENOTSUPP/EINVAL), and asserts what the allocator must have done

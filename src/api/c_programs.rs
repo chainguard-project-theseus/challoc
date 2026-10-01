@@ -34,9 +34,7 @@ use std::env;
 use std::os::unix::process::ExitStatusExt;
 use std::process::{Command, ExitStatus};
 use std::string::String;
-// `OnceLock` under another name: `api::tests::lock_inventory` reads every
-// `Lock<` declaration under src/ as a fork-handler lock to account for.
-use std::sync::{Arc, Mutex, OnceLock as Once};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::vec::Vec;
 
 /// Linux signal numbers (same on x86_64 and aarch64) for the negative tests.
@@ -254,9 +252,9 @@ struct Key {
 
 /// The binary for `row`, compiled once per process for each distinct
 /// [`Key`] (tests run concurrently: the map lock is held only to find the
-/// cell, the cell's `Once` serialises the one compile).
+/// cell, the cell's `OnceLock` serialises the one compile).
 fn compiled(row: &CTest<'_>) -> String {
-    static CACHE: Once<Mutex<HashMap<Key, Arc<Once<String>>>>> = Once::new();
+    static CACHE: OnceLock<Mutex<HashMap<Key, Arc<OnceLock<String>>>>> = OnceLock::new();
     let key = Key {
         dir: row.dir.into(),
         prog: row.prog.into(),
@@ -266,7 +264,7 @@ fn compiled(row: &CTest<'_>) -> String {
     };
     let cell = {
         let mut map = CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
-        map.entry(key.clone()).or_insert_with(|| Arc::new(Once::new())).clone()
+        map.entry(key.clone()).or_insert_with(|| Arc::new(OnceLock::new())).clone()
     };
     cell.get_or_init(|| compile_now(&key)).clone()
 }

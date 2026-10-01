@@ -35,6 +35,7 @@
 //! program cannot believe it turned something on, and
 //! `malloc_stats_print` lists it as "accepted, no effect".
 
+use core::ffi::CStr;
 use core::fmt::{self, Write as _};
 
 use crate::heap::{MAX_CAP, MIN_CAP};
@@ -83,11 +84,11 @@ pub enum Thp {
 }
 
 impl Thp {
-    pub const fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static CStr {
         match self {
-            Thp::Never => "never",
-            Thp::Auto => "auto",
-            Thp::Always => "always",
+            Thp::Never => c"never",
+            Thp::Auto => c"auto",
+            Thp::Always => c"always",
         }
     }
 }
@@ -106,11 +107,11 @@ pub enum PercpuArena {
 }
 
 impl PercpuArena {
-    pub const fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static CStr {
         match self {
-            PercpuArena::Disabled => "disabled",
-            PercpuArena::Percpu => "percpu",
-            PercpuArena::Phycpu => "phycpu",
+            PercpuArena::Disabled => c"disabled",
+            PercpuArena::Percpu => c"percpu",
+            PercpuArena::Phycpu => c"phycpu",
         }
     }
 }
@@ -138,11 +139,11 @@ pub enum SliceExt {
 }
 
 impl SliceExt {
-    pub const fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static CStr {
         match self {
-            SliceExt::Auto => "auto",
-            SliceExt::On => "on",
-            SliceExt::Off => "off",
+            SliceExt::Auto => c"auto",
+            SliceExt::On => c"on",
+            SliceExt::Off => c"off",
         }
     }
 
@@ -159,107 +160,57 @@ impl SliceExt {
     }
 }
 
-/// Every tunable of design section 12 with its compiled default.
+/// Every tunable of design section 12; [`Config::DEFAULT`] holds the
+/// compiled defaults. `docs/tuning.md` section 2 documents each key: its
+/// values, what it does, when to change it and what that costs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Config {
+    /// Run decay on a background thread (`purge::background`).
     pub background_thread: bool,
-    /// `-1` means never purge.
+    /// The decay window of the slabs and huge extents; `-1` never purges.
     pub dirty_decay_ms: i64,
-    /// Accepted for compatibility; nothing reads it.
+    /// jemalloc's key, stored and readable; nothing acts on it.
     pub muzzy_decay_ms: i64,
-    /// Automatic arenas. 0, the default, means `min(4 * ncpus, 64)`,
-    /// resolved by [`Config::effective_narenas`] at init; heaps are bound
-    /// to the least-loaded automatic arena (`arena.rs`), so a program with
-    /// `t` live threads ever touches `min(t, narenas)` of them.
+    /// Automatic arenas; 0 is [`Config::effective_narenas`]'s default.
     pub narenas: u32,
-    /// jemalloc's `percpu_arena` ([`PercpuArena`]): accepted for
-    /// compatibility; caches are per thread whatever the value.
+    /// jemalloc's key ([`PercpuArena`]); caches are per thread whatever it says.
     pub percpu_arena: PercpuArena,
+    /// Thread caches on the fast paths.
     pub tcache: bool,
-    /// Largest class size whose slots go through thread caches; larger
-    /// slab classes are served straight from the bitmaps (jemalloc's
-    /// `tcache_max`).
+    /// Largest cached class size; larger classes are shared ([`Config::shared_class`]).
     pub tcache_max: usize,
+    /// Cache capacity of the classes up to 128 bytes, the top of [`ladder`].
     pub tcache_nslots_small_max: u32,
+    /// Shifts [`ladder`] by `lg_tcache_nslots_mul - 1` doublings.
     pub lg_tcache_nslots_mul: i32,
-    /// Transparent huge pages for the regions (`thp.rs`, design 7, 10, 17).
+    /// Transparent huge pages for the regions ([`Thp`], `thp.rs`).
     pub thp: Thp,
-    /// The rseq time slice extension for lock holders (design 17,
-    /// `slice.rs`, [`SliceExt`]): `auto` follows the runtime probe, `on`
-    /// forces the request (nothing, plus a report note, when the probe
-    /// fails), `off` never requests. Applied at the end of `load`
-    /// (`Config::apply_slice_ext`) on the init thread.
+    /// The rseq time slice extension for lock holders ([`SliceExt`], `slice.rs`).
     pub slice_ext: SliceExt,
-    /// `MADV_FREE` for purges under 70% of a known cgroup limit (design 8
-    /// and 11); off makes every purge `MADV_DONTNEED`.
+    /// `MADV_FREE` for purges under 70% of a known cgroup limit (`purge`).
     pub lazy_band: bool,
+    /// Guard slabs and guards after huge runs.
     pub guards: bool,
-    /// One guard per N slabs of 64 KiB (per N * 64 KiB of slabs for the
-    /// classes with smaller slabs, see `heap::guard_interval_for`); 0 means
-    /// none. A power of two, so the sized free's guard test is a mask
-    /// (`SlabTable::is_guard_slab`): a configured
-    /// value that is not one rounds up to the next power of two, reported
-    /// as [`Issue::Rounded`] (an abort under `abort_conf`) and readable
-    /// through `opt.guard_slab_interval`; 1 is out of range (clamps to 2).
+    /// One guard per N x 64 KiB of slabs; 0 is none; a power of two (the sized free's test is a mask).
     pub guard_slab_interval: u32,
-    /// Freed huge runs with more usable bytes than this are purged the
-    /// moment they are freed instead of waiting for decay
-    /// (`Huge::set_retain_max`, design 7).
+    /// Freed huge runs larger than this are purged at once (`Huge::set_retain_max`).
     pub huge_retain_max: usize,
-    /// The huge tier's own decay period (design 7): the window over which
-    /// a freed huge run at or under `huge_retain_max` goes from `Empty` to
-    /// purged. `None`, the default, follows arena 0's period
-    /// (`dirty_decay_ms`, and `arena.0.dirty_decay_ms` at run time), so
-    /// the huge extents decay with the slabs; `Some(ms)` is the huge
-    /// tier's own window (`Shared::huge_decay_ns`, read by the decay
-    /// driver), `Some(0)` purges a freed run at once (`Huge::free_run`,
-    /// as `huge_retain_max:0`) and `Some(-1)` never purges one.
-    /// `opt.huge_dirty_decay_ms` reads the period in force at init:
-    /// `dirty_decay_ms` when unset.
+    /// The huge tier's own decay window; `None` follows arena 0's ([`Config::huge_decay_ms`]).
     pub huge_dirty_decay_ms: Option<i64>,
-    /// Clear a freed block before it is cached or released (a slot's
-    /// class-size bytes on the plain and sized free paths, a huge run's
-    /// usable bytes): `Shared::push_flags`, `heap::zero_slot`,
-    /// `Shared::zero_huge`. Off by default: a `memset` per free is more
-    /// than the 3% budget on Valkey's 1 KiB values (priced in
-    /// `bench/results/2026-09-18-*-gce-tunables.md`).
+    /// Clear a freed block before it is cached or released (`Shared::push_flags`).
     pub zero_on_free: bool,
-    /// Sign the thread caches' slot pointers and the heap pointer in TLS
-    /// with `pacda` where the CPU and kernel expose pointer authentication
-    /// (`HWCAP_PACA`/`PACG`; `sys::pac`, design 6.1, 6.2 and 17).
-    /// `Shared::push_flags` bit `PUSH_PAC`. Opt-in:
-    /// an entry's two PAC instructions (sign in, authenticate out) are 11%
-    /// of xmalloc-test's cross-thread frees and 1..2% of larson on Axion,
-    /// over the 1% budget for a default-on hardening
-    /// (`bench/results/2026-09-19-lane-a-pac-pointers.md`); inert where
-    /// the extension is absent (x86_64, Altra).
+    /// Sign cached slot pointers and the TLS heap pointer with PAC (`sys::pac`).
     pub pac_pointers: bool,
-    /// Cache refills and run rebuilds claim from a random bitmap word and
-    /// shuffle the batch with a per-heap xorshift seeded from `getrandom`
-    /// on first use (`ClassState::claim_random`, `Heap::claim`), so slots
-    /// are handed out in a random order instead of by ascending address.
-    /// Off by default: it fights the compaction of design 6.4 (the
-    /// scheduled pop then serves a random slot of the low slab, not its
-    /// lowest). Slow paths only.
+    /// Random claim order on cache refills (`ClassState::claim_random`).
     pub slot_randomize: bool,
+    /// Compare each free against the recently cached slots.
     pub double_free_scan: bool,
+    /// Abort after parsing when any source reported a problem ([`load`]).
     pub abort_conf: bool,
-    /// Read the memory cgroup (design 11, `sys::cgroup`): the effective
-    /// limits, `memory.current`, `memory.events` and the PSI trigger, for
-    /// `stats.cgroup.*`, the reports and the policy of `policy.rs` that
-    /// acts on the figures. `false` reads nothing.
+    /// Read and act on the memory cgroup (`sys::cgroup`, `policy.rs`).
     pub cgroup: bool,
-    /// Debug mode: every slot or page handed out as "known zero" (`Fresh`
-    /// or `Purged` memory behind `calloc`) is read at its first and last
-    /// word under the class or huge lock and a non-zero word aborts with
-    /// the slab's prior state and the discard backend. Slow paths only.
+    /// Check every known-zero slot or page handed out (slow paths only).
     pub check_zero: bool,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config::DEFAULT
-    }
 }
 
 impl Config {
@@ -331,7 +282,7 @@ impl Config {
         if let Some(k) = Key::find(key) {
             return (k.parse)(self, key, value);
         }
-        if is_inert(key) {
+        if INERT_KEYS.iter().any(|k| k.as_bytes() == key) {
             // jemalloc's `stats_print` (report at exit): no field, since
             // there is nothing to print at exit; validated as a bool and
             // reported as inert so `abort_conf` does not let a program
@@ -387,13 +338,6 @@ impl Config {
             return 0;
         }
         ladder(class, self.tcache_nslots_small_max, self.lg_tcache_nslots_mul)
-    }
-
-    /// [`cap_for`] for a heap's own arena.
-    ///
-    /// [`cap_for`]: Config::cap_for
-    pub fn cache_cap(&self, class: usize) -> u32 {
-        self.cap_for(0, 0, class)
     }
 
     /// Install the configuration's time slice extension choice (design
@@ -651,11 +595,6 @@ pub const IGNORED_KEYS: &[&str] = &[
 /// `malloc_stats_print` lists them as "accepted, no effect".
 pub const INERT_KEYS: &[&str] = &["stats_print"];
 
-/// Whether `key` is one of [`INERT_KEYS`].
-fn is_inert(key: &[u8]) -> bool {
-    INERT_KEYS.iter().any(|k| k.as_bytes() == key)
-}
-
 /// Cache capacity ladder: `max` slots for classes up to 128 bytes, halved
 /// per doubling of the class size, shifted by `lg_mul - 1` doublings and
 /// clamped to `[MIN_CAP, max]`. With `max = MAX_CAP` and `lg_mul = 1` this
@@ -687,14 +626,15 @@ pub const fn ladder(class: usize, max: u32, lg_mul: i32) -> u32 {
 /// jemalloc's for the keys jemalloc has: `Int` is `ssize_t` (the decay
 /// times and the other signed keys), `Uint` is `unsigned` (a count:
 /// `narenas`, `tcache_nslots_small_max`, `guard_slab_interval`), `Size`
-/// is `size_t` (a byte count: `tcache_max`, `huge_retain_max`).
+/// is `size_t` (a byte count: `tcache_max`, `huge_retain_max`), `Str`
+/// is `const char *` (a static name, handed out as is).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Value {
     Bool(bool),
     Int(i64),
     Uint(u64),
     Size(usize),
-    Str(&'static str),
+    Str(&'static CStr),
 }
 
 /// One problem found while parsing; the offending bytes borrow the input.
@@ -1100,7 +1040,6 @@ mod tests {
         assert!(!d.zero_on_free && !d.slot_randomize && !d.double_free_scan && !d.abort_conf && !d.check_zero);
         assert!(!d.pac_pointers, "signed pointers are opt-in (priced in bench/results/2026-09-19-lane-a-pac-pointers.md)");
         assert!(d.cgroup);
-        assert_eq!(Config::default(), d);
         assert_eq!(d.effective_guard_slab_interval(), 8);
     }
 
@@ -1221,8 +1160,8 @@ mod tests {
         assert_eq!(clean("thp:auto").thp, Thp::Auto);
         assert_eq!(clean("thp:never").thp, Thp::Never);
         assert_eq!(clean("thp:default").thp, Thp::Never);
-        assert_eq!(clean("thp:always").get(b"thp"), Some(Value::Str("always")));
-        assert_eq!(clean("thp:auto").get(b"thp"), Some(Value::Str("auto")));
+        assert_eq!(clean("thp:always").get(b"thp"), Some(Value::Str(c"always")));
+        assert_eq!(clean("thp:auto").get(b"thp"), Some(Value::Str(c"auto")));
         assert_eq!(Config::DEFAULT.thp, Thp::Never);
         let (cfg, issues) = parse("thp:madvise");
         assert_eq!(cfg.thp, Thp::Never);
@@ -1246,7 +1185,7 @@ mod tests {
             let cfg = clean(&std::format!("percpu_arena:{value},abort_conf:true"));
             assert_eq!(cfg.percpu_arena, want, "{value}");
             assert_eq!(cfg.get(b"percpu_arena"), Some(Value::Str(want.name())), "{value}");
-            assert_eq!(want.name(), value);
+            assert_eq!(want.name().to_str(), Ok(value));
             assert!(cfg.abort_conf);
         }
         rejects_bad_values("percpu_arena", &["true", "false", "1", "on", "auto", "off", "PERCPU", "", "percpux"]);
@@ -1265,7 +1204,7 @@ mod tests {
             let cfg = clean(&std::format!("slice_ext:{value},abort_conf:true"));
             assert_eq!(cfg.slice_ext, want, "{value}");
             assert_eq!(cfg.get(b"slice_ext"), Some(Value::Str(want.name())), "{value}");
-            assert_eq!(want.name(), value);
+            assert_eq!(want.name().to_str(), Ok(value));
             assert!(cfg.abort_conf);
         }
         rejects_bad_values("slice_ext", &["true", "false", "1", "yes", "Auto", "ON", "", "onn", "percpu"]);
@@ -1278,13 +1217,13 @@ mod tests {
     }
 
     /// The one inert key: a bool by value, no field, unreadable, one
-    /// `Issue::Inert` per pair (what `abort_conf` aborts on), and the
-    /// report's `is_inert` agrees with the table.
+    /// `Issue::Inert` per pair (what `abort_conf` aborts on), and in no
+    /// other table.
     #[test]
     fn inert_keys_are_reported_and_rejected_under_abort_conf() {
         assert_eq!(INERT_KEYS, &["stats_print"]);
         for key in INERT_KEYS {
-            assert!(is_inert(key.as_bytes()), "{key}");
+            assert!(!KEYS.contains(key) && !IGNORED_KEYS.contains(key), "{key}");
             let value = "true";
             let text = std::format!("{key}:{value}");
             let (cfg, issues) = parse(&text);
@@ -1300,9 +1239,6 @@ mod tests {
             assert_eq!(cfg, Config::DEFAULT, "{key}:nonsense changed the config");
             assert_eq!(issues.len(), 1, "{key}:nonsense: {issues:?}");
             assert!(issues[0].contains("invalid conf value"), "{key}:nonsense: {}", issues[0]);
-        }
-        for key in KEYS {
-            assert!(!is_inert(key.as_bytes()), "{key}");
         }
         // The two hardening keys are real, opt-in keys: no report, stored,
         // readable, and `abort_conf` accepts them.
@@ -1453,7 +1389,7 @@ mod tests {
                 Value::Int(i) => std::format!("{i}"),
                 Value::Uint(u) => std::format!("{u}"),
                 Value::Size(n) => std::format!("{n}"),
-                Value::Str(s) => s.into(),
+                Value::Str(s) => s.to_str().unwrap().into(),
             };
             let text = std::format!("{key}:{value}");
             let parsed = clean(&text);
@@ -1532,7 +1468,7 @@ mod tests {
                     "percpu_arena" => "percpu".into(),
                     "slice_ext" => "off".into(),
                     "thp" => "always".into(),
-                    _ => panic!("{}: a string key with no test value ({s})", key.name),
+                    _ => panic!("{}: a string key with no test value ({s:?})", key.name),
                 },
             };
             let mut cfg = d;
@@ -1567,46 +1503,46 @@ mod tests {
         }
         assert!(cached(&d).count() >= 36 && uncached(&d).count() >= 8, "{} cached, {} above", cached(&d).count(), uncached(&d).count());
         for c in cached(&d) {
-            assert_eq!(d.cache_cap(c), ladder(c, MAX_CAP, 1));
-            assert_eq!(d.cache_cap(c), crate::heap::default_cap(c), "class {c}");
+            assert_eq!(d.cap_for(0, 0, c), ladder(c, MAX_CAP, 1));
+            assert_eq!(d.cap_for(0, 0, c), crate::heap::default_cap(c), "class {c}");
         }
         for c in uncached(&d) {
-            assert_eq!(d.cache_cap(c), 0, "class {c} ({} bytes) is above tcache_max", CLASSES[c].size());
+            assert_eq!(d.cap_for(0, 0, c), 0, "class {c} ({} bytes) is above tcache_max", CLASSES[c].size());
             assert!(crate::heap::default_cap(c) >= MIN_CAP, "the ladder itself never reaches zero");
         }
         // Redis: x4 ladder clamped at 1000, never below MIN_CAP.
         let redis = clean("lg_tcache_nslots_mul:3,tcache_nslots_small_max:1000");
         for c in cached(&redis) {
             let size = CLASSES[c].size();
-            let cap = redis.cache_cap(c);
+            let cap = redis.cap_for(0, 0, c);
             assert!(cap >= MIN_CAP && cap <= 1000, "class {c} ({size} bytes): {cap}");
             if size <= 512 {
                 assert_eq!(cap, 1000, "class {c} ({size} bytes)");
             }
-            assert!(cap >= d.cache_cap(c).min(1000), "class {c} never shrinks below the default ladder");
+            assert!(cap >= d.cap_for(0, 0, c).min(1000), "class {c} never shrinks below the default ladder");
         }
         // A small max caps every class; lg_mul below 1 shrinks the ladder.
         let small = clean("tcache_nslots_small_max:16");
-        assert!(cached(&small).all(|c| small.cache_cap(c) <= 16 && small.cache_cap(c) >= MIN_CAP));
+        assert!(cached(&small).all(|c| small.cap_for(0, 0, c) <= 16 && small.cap_for(0, 0, c) >= MIN_CAP));
         let shrunk = clean("lg_tcache_nslots_mul:0");
-        assert_eq!(shrunk.cache_cap(0), 512);
-        assert_eq!(shrunk.cache_cap(NCLASSES - 1), 0);
-        assert_eq!(shrunk.cache_cap(cached(&shrunk).last().unwrap()), MIN_CAP);
+        assert_eq!(shrunk.cap_for(0, 0, 0), 512);
+        assert_eq!(shrunk.cap_for(0, 0, NCLASSES - 1), 0);
+        assert_eq!(shrunk.cap_for(0, 0, cached(&shrunk).last().unwrap()), MIN_CAP);
         let grown = clean("lg_tcache_nslots_mul:16,tcache_nslots_small_max:65536");
-        assert!(cached(&grown).all(|c| grown.cache_cap(c) == 65536));
+        assert!(cached(&grown).all(|c| grown.cap_for(0, 0, c) == 65536));
         // tcache_max moves the boundary: every slab class, or none.
         let all = clean("tcache_max:262144");
-        assert!((0..NCLASSES).all(|c| all.cache_cap(c) >= MIN_CAP));
-        assert_eq!(all.cache_cap(NCLASSES - 1), MIN_CAP);
+        assert!((0..NCLASSES).all(|c| all.cap_for(0, 0, c) >= MIN_CAP));
+        assert_eq!(all.cap_for(0, 0, NCLASSES - 1), MIN_CAP);
         let none = clean("tcache_max:0");
-        assert!((0..NCLASSES).all(|c| none.cache_cap(c) == 0));
+        assert!((0..NCLASSES).all(|c| none.cap_for(0, 0, c) == 0));
         let k4 = clean("tcache_max:4096");
-        assert!((0..NCLASSES).all(|c| (k4.cache_cap(c) == 0) == (CLASSES[c].size() > 4096)));
+        assert!((0..NCLASSES).all(|c| (k4.cap_for(0, 0, c) == 0) == (CLASSES[c].size() > 4096)));
         // Out of range clamps and reports, like every numeric key.
         assert_eq!(clean("tcache_max:32768").tcache_max, 32768);
         // tcache:false turns caching off entirely.
         let off = clean("tcache:false");
-        assert!((0..NCLASSES).all(|c| off.cache_cap(c) == 0));
+        assert!((0..NCLASSES).all(|c| off.cap_for(0, 0, c) == 0));
         // Extreme shifts do not overflow.
         assert_eq!(ladder(0, MAX_NSLOTS, -16), MIN_CAP);
         assert_eq!(ladder(NCLASSES - 1, MAX_NSLOTS, 16), MAX_NSLOTS);
@@ -1621,10 +1557,10 @@ mod tests {
         for c in 0..NCLASSES {
             let size = CLASSES[c].size();
             assert_eq!(d.shared_class(c), size > d.tcache_max, "class {c}");
-            assert_eq!(d.cap_for(3, 3, c), d.cache_cap(c), "class {c}");
+            assert_eq!(d.cap_for(3, 3, c), d.cap_for(0, 0, c), "class {c}");
             assert_eq!(d.cap_for(3, 3, c) == 0, d.shared_class(c), "class {c}");
             let foreign = d.cap_for(3, 0, c);
-            assert_eq!(foreign, if c >= NBINS { 0 } else { d.cache_cap(c) }, "class {c}");
+            assert_eq!(foreign, if c >= NBINS { 0 } else { d.cap_for(0, 0, c) }, "class {c}");
             assert_eq!(d.cap_for(0, 3, c), foreign);
         }
         let none = clean("tcache:false");

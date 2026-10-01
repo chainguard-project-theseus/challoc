@@ -12,7 +12,7 @@
  *   - an installed std::new_handler is called until it gives up, then
  *     bad_alloc is thrown (or nullptr returned).
  *
- * Compiled by src/api/ctests.rs with the container's C++ compiler.
+ * Compiled by src/api/c_programs.rs with the container's C++ compiler.
  */
 #include <dlfcn.h>
 #include <malloc.h>
