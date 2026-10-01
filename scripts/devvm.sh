@@ -325,7 +325,7 @@ cmd_run() {
   excl="$(mktemp "$CACHE/exclude.XXXXXX")"
   { echo /.git; echo /target/
     git -C "$src" ls-files -z --others --ignored --exclude-standard --directory \
-      | tr '\0' '\n' | grep -v '^\.tmp-[^/]*\.sh$' | sed 's|^|/|'
+      | tr '\0' '\n' | { grep -v '^\.tmp-[^/]*\.sh$' || true; } | sed 's|^|/|'
   } > "$excl"
   rsync -az --checksum --delete --exclude-from="$excl" \
     -e "$(ssh_flat "$a")" "$src/" "$DEST:w/$name/" || src_rc=$?
