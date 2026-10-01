@@ -53,6 +53,8 @@ impl Heap {
     ) -> (r: (crate::class::Claim, Tracked<Map<int, Zeroed>>))
         ensures
             final(self).perms == old(self).perms,
+            final(self).list == old(self).list,
+            final(self).others == old(self).others,
             r.0.n <= old(out)@.len(),
             final(out)@.len() == old(out)@.len(),
             slots_in(final(out)@, cs.spec_class() as int, 0, r.0.n as int),

@@ -1062,15 +1062,16 @@ impl Shared {
     /// `purge::NEVER`), else arena 0's live period ([`Shared::decay_ns`],
     /// which `arena.0.dirty_decay_ms` moves). The cgroup policy scales
     /// whichever it is (`purge::decay`).
-    ///
-    /// Trusted: it reads a field of `Config`, which is outside `verus!`;
-    /// claims only that it returns.
-    #[verifier::external_body]
     pub fn huge_decay_ns(&self) -> u64 {
         match self.config.huge_dirty_decay_ms {
             Some(ms) => crate::purge::decay_ns_from_ms(ms),
             None => self.decay_ns(),
         }
+    }
+
+    /// The decay period new arenas start with (`dirty_decay_ms`).
+    pub fn default_decay_ns(&self) -> u64 {
+        crate::purge::decay_ns_from_ms(self.config.dirty_decay_ms)
     }
 
     /// Claim one slot of `class` in `arena` straight from the slab bitmaps,
@@ -1307,22 +1308,18 @@ impl Shared {
     /// the size hint names (`sdallocx`'s contract is `nallocx(size, flags)
     /// == sallocx(p)`). Huge runs and pointers that are not allocations pass
     /// here and are judged by the exact free that follows.
-    ///
-    /// Trusted: the abort formats its message; claims nothing (it may
-    /// abort).
     #[cold]
     #[inline(never)]
-    #[verifier::external_body]
-    pub fn check_size_hint(&self, p: *mut u8, size: usize, hint: Option<usize>) {
+    pub fn check_size_hint(&self, p: *mut u8, size: usize, hint: Option<usize>)
+        requires
+            self.wf(),
+    {
+        proof {
+            self.lemma_wf();
+        }
         if let Kind::Slab { class, .. } = self.regions.classify(p as usize) {
             if hint != Some(class as usize) {
-                panic!(
-                    "sized free of {:#x}: size hint {} does not match the allocation (class {}, {} bytes)",
-                    p as usize,
-                    size,
-                    class,
-                    CLASSES[class as usize].size()
-                );
+                hint_mismatch(p, size, class);
             }
         }
     }
@@ -1492,6 +1489,21 @@ verus! {
 #[verifier::external_body]
 fn no_such_arena(index: u16) -> ! {
     panic!("arena {index} does not exist")
+}
+
+/// [`Shared::check_size_hint`]'s abort: the size hint names a class other
+/// than slot `p`'s `class`. Trusted: aborts.
+#[cold]
+#[inline(never)]
+#[verifier::external_body]
+fn hint_mismatch(p: *mut u8, size: usize, class: u32) -> ! {
+    panic!(
+        "sized free of {:#x}: size hint {} does not match the allocation (class {}, {} bytes)",
+        p as usize,
+        size,
+        class,
+        CLASSES[class as usize].size()
+    );
 }
 
 } // verus!

@@ -327,17 +327,8 @@ impl Heap {
     /// Refill the home cache and pop, allocating the cache first if this
     /// is the class's first use. Serves directly from the slab when there
     /// is no cache to be had.
-    ///
-    /// Trusted: the header is read and written through the raw pointer, and
-    /// the `debug_assert!` on the schedule is not provable here. The
-    /// result's slot fact is that of the verified paths it takes
-    /// ([`Heap::alloc_slow_in`], [`Heap::pop_compact`]), and the counted pop keeps
-    /// the header's stack as [`Heap::lemma_set`] does.
-    /// Its zero result's token in [`CachePerms::handed`] is likewise that of
-    /// those paths (`pop_compact`, `alloc_slow_in`), assumed here.
     #[cold]
     #[inline(never)]
-    #[verifier::external_body]
     pub(super) fn alloc_slow(&mut self, shared: &Shared, class: usize) -> (r: (*mut u8, bool))
         requires
             shared.wf(),
@@ -359,15 +350,32 @@ impl Heap {
         // pop (design 6.4) rather than found the cache empty: count the
         // pop it declined and serve it here, out of the fast path's body.
         let cache = self.cache_ptr(class);
-        // SAFETY: this thread's own header, unused or with `len` entries.
-        unsafe {
-            let len = (*cache).len;
-            if len != 0 {
-                let allocs = (*cache).allocs.wrapping_add(1);
-                debug_assert!(((allocs as u32) & (*cache).compact_mask) == 0);
-                (*cache).allocs = allocs;
-                return self.pop_compact(cache, class, len);
+        let ghost old_perms = self.perms@;
+        proof {
+            assert(cell_ok(cache, old_perms.hdrs[cache], old_perms.slots));
+        }
+        // This thread's own header, unused or with `len` entries.
+        let h = ptr_mut_ref(cache, Tracked(self.perms.borrow_mut().hdrs.tracked_borrow_mut(cache)));
+        let len = h.len;
+        if len != 0 {
+            let allocs = h.allocs.wrapping_add(1);
+            debug_scheduled(allocs, h.compact_mask);
+            h.allocs = allocs;
+            proof {
+                CachePerms::lemma_update(old_perms, self.perms@, cache);
+                CachePerms::lemma_tracks_hdr(old_perms, self.perms@, cache);
+                CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
+                CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
             }
+            // SAFETY: `cache` is this heap's home cache for `class`, with
+            // `len` entries.
+            return unsafe { self.pop_compact(cache, class, len) };
+        }
+        proof {
+            CachePerms::lemma_update(old_perms, self.perms@, cache);
+            CachePerms::lemma_tracks_hdr(old_perms, self.perms@, cache);
+            CachePerms::lemma_tokened_hdr(old_perms, self.perms@, cache);
+            CachePerms::lemma_zero_hdr(old_perms, self.perms@, cache);
         }
         self.alloc_slow_in(shared, self.arena, class)
     }
@@ -752,6 +760,20 @@ pub(super) unsafe fn zero_slot(class: usize, p: *mut u8)
 #[verifier::external_body]
 pub(super) fn cached_twice(p: *mut u8) -> ! {
     panic!("double free of {:#x}: the slot is already in the thread cache", p as usize)
+}
+
+/// [`Heap::alloc_slow`]'s `debug_assert!` that a non-empty home cache
+/// reached it through a scheduled pop the fast pop declined (design 6.4):
+/// `allocs`, the pop's count, has no bit of `mask` set. Compiled out of
+/// release builds.
+///
+/// Trusted: the check is a protocol between the fast pop and the entry
+/// points that call the slow path after it, which no contract here states;
+/// nothing is claimed.
+#[inline(always)]
+#[verifier::external_body]
+fn debug_scheduled(allocs: u64, mask: u32) {
+    debug_assert!(((allocs as u32) & mask) == 0);
 }
 
 /// The `Shared` a heap was created on, with a lifetime free of the heap's

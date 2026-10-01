@@ -19,7 +19,7 @@ use crate::layout::process_regions;
 use vstd::map::Map;
 #[cfg(verus_only)]
 use vstd::prelude::*;
-use vstd::prelude::{Tracked, int, verus};
+use vstd::prelude::{Ghost, Tracked, int, verus};
 use vstd::resource::set::GhostSingleton;
 
 verus! {
@@ -98,6 +98,68 @@ impl Heap {
         debug_assert!(class < NCLASSES);
         // SAFETY: guaranteed by the caller; `class < NCLASSES`.
         unsafe { (&raw mut (*node).caches).cast::<CacheHeader>().add(class) }
+    }
+
+    /// `(*o).next` for node `o`, the `r`-th from the end of the `others`
+    /// list: the node after it, null after the last.
+    ///
+    /// Trusted: a read through the raw node pointer. The claim is that the
+    /// nodes' `next` fields chain the list as [`Heap::list`] has it
+    /// ([`Heap::list_ok`]): `other_caches` links a node in at the head,
+    /// and `destroy`, the one writer that unlinks nodes, frees the heap.
+    ///
+    /// # Safety
+    /// `o` is a live node owned by this heap (the requires).
+    #[inline(always)]
+    #[verifier::external_body]
+    pub(super) unsafe fn node_next(&self, o: *mut ArenaCaches, Ghost(r): Ghost<int>) -> (n: *mut ArenaCaches)
+        requires
+            self.wf(),
+            1 <= r <= self.list_len(),
+            o == self.node_from_end(r),
+        ensures
+            r > 1 ==> n == self.node_from_end(r - 1),
+            r == 1 ==> n@.addr == 0,
+    {
+        // SAFETY: guaranteed by the caller.
+        unsafe { (*o).next }
+    }
+
+    /// `(*o).arena` for node `o`, the `r`-th from the end of the `others`
+    /// list. Trusted: a read through the raw node pointer; nothing is
+    /// claimed about the value.
+    ///
+    /// # Safety
+    /// As for [`Heap::node_next`].
+    #[inline(always)]
+    #[verifier::external_body]
+    pub(super) unsafe fn node_arena(&self, o: *mut ArenaCaches, Ghost(r): Ghost<int>) -> u16
+        requires
+            self.wf(),
+            1 <= r <= self.list_len(),
+            o == self.node_from_end(r),
+    {
+        // SAFETY: guaranteed by the caller.
+        unsafe { (*o).arena }
+    }
+
+    /// `&(*o).caches` for node `o`, the `r`-th from the end of the
+    /// `others` list, as plain headers (for [`Heap::stats`]). Trusted: a
+    /// reference through the raw node pointer; nothing is claimed about
+    /// the headers.
+    ///
+    /// # Safety
+    /// As for [`Heap::node_next`].
+    #[inline(always)]
+    #[verifier::external_body]
+    pub(super) unsafe fn node_caches(&self, o: *mut ArenaCaches, Ghost(r): Ghost<int>) -> &[CacheHeader; NCLASSES]
+        requires
+            self.wf(),
+            1 <= r <= self.list_len(),
+            o == self.node_from_end(r),
+    {
+        // SAFETY: guaranteed by the caller.
+        unsafe { &(*o).caches }
     }
 
     /// Allocation of `class` from another arena than the home one: through

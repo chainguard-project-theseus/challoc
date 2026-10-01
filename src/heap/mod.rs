@@ -94,7 +94,7 @@ use vstd::modes::tracked_swap;
 use vstd::prelude::int;
 #[cfg(verus_only)]
 use vstd::prelude::*;
-use vstd::prelude::{Tracked, verus};
+use vstd::prelude::{Ghost, Tracked, verus};
 use vstd::raw_ptr::{PointsTo, ptr_mut_ref, ptr_ref};
 use vstd::resource::set::GhostSingleton;
 #[cfg(verus_only)]
@@ -549,6 +549,13 @@ pub proof fn lemma_plain_stored(e: *mut u8, p: *mut u8, c: int, base: *mut *mut 
 
 /// The header for `class` in `others` node `node` ([`Heap::node_cache_ptr`]).
 pub uninterp spec fn node_hdr(node: *mut ArenaCaches, class: int) -> *mut CacheHeader;
+
+/// The `others` list `new` is `old` with nodes added at the head: each
+/// node keeps its place counted from the end.
+pub open spec fn list_grows(new: Seq<*mut ArenaCaches>, old: Seq<*mut ArenaCaches>) -> bool {
+    &&& old.len() <= new.len()
+    &&& forall|r: int| 1 <= r <= old.len() ==> new[new.len() - r] == #[trigger] old[old.len() - r]
+}
 
 /// Entry `i` of the stack at `base` (`base.add(i)`).
 spec fn slot_ptr(base: *mut *mut u8, i: int) -> *mut *mut u8 {
@@ -2352,6 +2359,10 @@ pub struct Heap {
     /// `others` nodes' headers and their stacks ([`Heap::wf`]).
     #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
     perms: Tracked<CachePerms>,
+    /// Ghost (no bytes): the `others` list, head first, as the nodes'
+    /// `next` fields chain it ([`Heap::list_ok`]).
+    #[cfg_attr(not(verus_keep_ghost), allow(dead_code))]
+    list: Ghost<vstd::seq::Seq<*mut ArenaCaches>>,
 }
 
 } // verus!
@@ -2372,11 +2383,12 @@ impl Heap {
     /// every heap a verified path is handed (TLS, `tcache.create`): the
     /// unverified writers of cache memory
     /// (`create_detached`, `set_arena`'s swap, `set_tcache_enabled`,
-    /// `destroy`, `free_caches`, `other_caches`, `alloc_slow` and
+    /// `destroy`, `free_caches`, `other_caches` and
     /// [`stack_mut`], the slice the refill, flush and rebuild borrow)
     /// are taken to keep it (they move whole caches between headers of
     /// one class, drop entries, or add `EMPTY` headers), and
-    /// each verified one proves it keeps it. A heap exists only once the
+    /// each verified one proves it keeps it. The `others` list is
+    /// [`Heap::list`] ([`Heap::list_ok`]). A heap exists only once the
     /// process's `Shared` is published, so its regions come with it
     /// ([`regions_ok`]). The home headers are also the
     /// plain field `caches`, which the permissions do not track: verified
@@ -2389,16 +2401,43 @@ impl Heap {
         &&& self.perms@.zero_ok()
         &&& self.perms@.tokened()
         &&& regions_ok()
+        &&& self.list_ok()
     }
 
     /// `self` is well formed, owns every header `old` owned, and every
-    /// header that had a stack still has the same one.
+    /// header that had a stack still has the same one; its `others` list
+    /// is `old`'s with nodes added at the head, if any.
     pub closed spec fn keeps(&self, old: Heap) -> bool {
         &&& self.perms@.keeps(old.perms@)
         &&& self.perms@.follows(old.perms@)
         &&& self.perms@.zero_ok()
         &&& self.perms@.tokened()
         &&& regions_ok()
+        &&& self.list_ok()
+        &&& list_grows(self.list@, old.list@)
+    }
+
+    /// The `others` list as [`Heap::list`] has it: `others` heads it (null
+    /// when it is empty), and its nodes are distinct, non-null and owned
+    /// ([`Heap::owns_node`]). That each node's `next` is the one after it
+    /// (null after the last) is what [`Heap::node_next`] assumes.
+    pub closed spec fn list_ok(&self) -> bool {
+        let l = self.list@;
+        &&& l.len() == 0 ==> self.others@.addr == 0
+        &&& l.len() > 0 ==> self.others == l[0]
+        &&& forall|i: int| 0 <= i < l.len() ==> (#[trigger] l[i])@.addr != 0 && self.owns_node(l[i])
+        &&& forall|i: int, j: int| 0 <= i < j < l.len() ==> l[i] != l[j]
+    }
+
+    /// The length of the `others` list ([`Heap::list`]).
+    pub closed spec fn list_len(&self) -> int {
+        self.list@.len() as int
+    }
+
+    /// The node `r` places from the end of the `others` list (`r` counts
+    /// from 1), which nodes added at the head do not move.
+    pub closed spec fn node_from_end(&self, r: int) -> *mut ArenaCaches {
+        self.list@[self.list@.len() - r]
     }
 
     /// What a well-formed heap tells its callers outside this module: the
@@ -2497,6 +2536,36 @@ impl Heap {
         }
     }
 
+    /// What [`Heap::list_ok`] gives a walk of the `others` list: `others`
+    /// is the node farthest from the end (null for an empty list), and
+    /// every node is non-null and owned.
+    proof fn lemma_list(&self, r: int)
+        requires
+            self.wf(),
+        ensures
+            self.list_len() >= 0,
+            self.list_len() == 0 ==> self.others@.addr == 0,
+            self.list_len() > 0 ==> self.others == self.node_from_end(self.list_len()),
+            1 <= r <= self.list_len() ==> self.node_from_end(r)@.addr != 0 && self.owns_node(self.node_from_end(r)),
+    {
+        if 1 <= r <= self.list_len() {
+            assert(self.list@[self.list@.len() - r] == self.node_from_end(r));
+        }
+    }
+
+    /// [`Heap::keeps`] keeps every node of the `others` list in its place
+    /// counted from the end.
+    proof fn lemma_keeps_list(a: Heap, b: Heap, r: int)
+        requires
+            b.keeps(a),
+            1 <= r <= a.list_len(),
+        ensures
+            a.list_len() <= b.list_len(),
+            b.node_from_end(r) == a.node_from_end(r),
+    {
+        assert(b.list@[b.list@.len() - r] == a.list@[a.list@.len() - r]);
+    }
+
     /// [`Heap::keeps`] is transitive.
     pub proof fn lemma_keeps_trans(a: Heap, b: Heap, c: Heap)
         requires
@@ -2505,6 +2574,9 @@ impl Heap {
         ensures
             c.keeps(a),
     {
+        assert forall|r: int| 1 <= r <= a.list@.len() implies c.list@[c.list@.len() - r] == #[trigger] a.list@[a.list@.len() - r] by {
+            assert(b.list@[b.list@.len() - r] == a.list@[a.list@.len() - r]);
+        }
     }
 
     /// A well-formed heap [`Heap::keeps`] itself.
@@ -2527,6 +2599,8 @@ impl Heap {
             b.perms@.owner == a.perms@.owner,
             b.perms@.toks == a.perms@.toks,
             b.perms@.zero == a.perms@.zero,
+            b.list == a.list,
+            b.others == a.others,
         ensures
             b.keeps(a),
     {
@@ -2624,16 +2698,38 @@ impl Heap {
 
     /// Byte counters for this thread: the uncached part plus what every
     /// cache of every arena stands for ([`Heap::fold_counters`]).
-    /// Trusted: the `others` walk ([`Heap::nodes`], an iterator over raw
-    /// node pointers).
-    #[verifier::external_body]
-    pub fn stats(&self) -> ThreadStats {
+    pub fn stats(&self) -> ThreadStats
+        requires
+            self.wf(),
+    {
         let mut s = self.uncached;
         Self::fold_counters(&mut s, &self.caches);
-        for o in Self::nodes(self.others) {
+        // `for o in Self::nodes(self.others)`, spelled out: Verus has no
+        // `from_fn`. `r` counts the nodes left, this one included.
+        let mut o = self.others;
+        let ghost mut r = self.list_len();
+        proof {
+            self.lemma_list(r);
+        }
+        while !o.is_null()
+            invariant
+                self.wf(),
+                0 <= r <= self.list_len(),
+                r > 0 ==> o == self.node_from_end(r),
+                r == 0 ==> o@.addr == 0,
+            decreases r,
+        {
+            proof {
+                self.lemma_list(r);
+            }
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap.
-            unsafe { Self::fold_counters(&mut s, &(*o).caches) };
+            let next = unsafe { self.node_next(o, Ghost(r)) };
+            unsafe { Self::fold_counters(&mut s, self.node_caches(o, Ghost(r))) };
+            proof {
+                r = r - 1;
+            }
+            o = next;
         }
         s
     }
@@ -2643,7 +2739,10 @@ impl Heap {
     /// on every read, so the pointers those keys hand out refer to this
     /// copy, which is refreshed by every read of any of the four
     /// `thread.*allocated*` keys and stale in between.
-    pub fn materialise_stats(&mut self) -> &ThreadStats {
+    pub fn materialise_stats(&mut self) -> &ThreadStats
+        requires
+            old(self).wf(),
+    {
         self.snapshot = self.stats();
         &self.snapshot
     }
@@ -2691,9 +2790,7 @@ impl Heap {
     }
 
     /// Return every cached slot of this heap to its slab. Caches stay
-    /// allocated. Trusted: the `others` walk ([`Heap::nodes`], an iterator
-    /// over raw node pointers).
-    #[verifier::external_body]
+    /// allocated.
     pub fn flush_all(&mut self, shared: &Shared)
         requires
             shared.wf(),
@@ -2703,19 +2800,46 @@ impl Heap {
     {
         let home = self.arena;
         self.flush_arena(shared, home, ptr::null_mut());
-        for o in Self::nodes(self.others) {
+        // `for o in Self::nodes(self.others)`, spelled out: Verus has no
+        // `from_fn`. As the iterator does, the node's `next` is read before
+        // its turn. `r` counts the nodes left, this one included.
+        let mut o = self.others;
+        let ghost mut r = self.list_len();
+        proof {
+            self.lemma_list(r);
+        }
+        while !o.is_null()
+            invariant
+                shared.wf(),
+                self.keeps(*old(self)),
+                0 <= r <= self.list_len(),
+                r > 0 ==> o == self.node_from_end(r),
+                r == 0 ==> o@.addr == 0,
+            decreases r,
+        {
+            let ghost h0 = *self;
+            proof {
+                self.lemma_list(r);
+            }
             // SAFETY: `others` is a list of live metadata blocks owned by
             // this heap.
-            let arena = unsafe { (*o).arena };
+            let next = unsafe { self.node_next(o, Ghost(r)) };
+            let arena = unsafe { self.node_arena(o, Ghost(r)) };
             self.flush_arena(shared, arena, o);
+            proof {
+                Heap::lemma_keeps_trans(*old(self), h0, *self);
+                if r > 1 {
+                    Heap::lemma_keeps_list(h0, *self, r - 1);
+                }
+                r = r - 1;
+            }
+            o = next;
         }
     }
 
     /// Cache GC (design 6.4): for every cache, release three quarters of
     /// the entries that went unused since the last GC, then restart the
-    /// low-water tracking from the current length. Trusted: as
-    /// [`Heap::flush_all`].
-    #[verifier::external_body]
+    /// low-water tracking from the current length.
     pub fn gc(&mut self, shared: &Shared)
         requires
             shared.wf(),
@@ -2725,10 +2849,37 @@ impl Heap {
     {
         let home = self.arena;
         self.gc_arena(shared, home, ptr::null_mut());
-        for o in Self::nodes(self.others) {
+        // The walk of `flush_all`.
+        let mut o = self.others;
+        let ghost mut r = self.list_len();
+        proof {
+            self.lemma_list(r);
+        }
+        while !o.is_null()
+            invariant
+                shared.wf(),
+                self.keeps(*old(self)),
+                0 <= r <= self.list_len(),
+                r > 0 ==> o == self.node_from_end(r),
+                r == 0 ==> o@.addr == 0,
+            decreases r,
+        {
+            let ghost h0 = *self;
+            proof {
+                self.lemma_list(r);
+            }
             // SAFETY: as in `flush_all`.
-            let arena = unsafe { (*o).arena };
+            let next = unsafe { self.node_next(o, Ghost(r)) };
+            let arena = unsafe { self.node_arena(o, Ghost(r)) };
             self.gc_arena(shared, arena, o);
+            proof {
+                Heap::lemma_keeps_trans(*old(self), h0, *self);
+                if r > 1 {
+                    Heap::lemma_keeps_list(h0, *self, r - 1);
+                }
+                r = r - 1;
+            }
+            o = next;
         }
     }
 
@@ -2877,6 +3028,8 @@ impl Heap {
         &&& self.perms@.hdrs[cache].ptr() == cache
         &&& self.perms@.hdrs[cache].is_init()
         &&& self.perms@.hdrs[cache].value() == v
+        &&& self.list == old.list
+        &&& self.others == old.others
     }
 
     /// Stores into a header that keep [`CacheHeader::inv`], its stack and
