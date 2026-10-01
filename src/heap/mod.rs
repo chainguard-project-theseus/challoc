@@ -521,6 +521,8 @@ impl Heap {
                     continue;
                 }
                 let lw = (*cache).low_water as usize;
+                capstat::bump(&capstat::VISIT, 1);
+                capstat::bump(&capstat::VISIT_LOW, ((*cache).cap < (*cache).ceil) as u64);
                 if arena == FOREIGN {
                     // Never popped: everything it holds went unused.
                     let len = (*cache).len as usize;

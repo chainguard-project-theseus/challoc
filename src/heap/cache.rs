@@ -464,6 +464,8 @@ impl Heap {
         // The stack is sized for the ceiling, so a capacity change never
         // reallocates it; the `FOREIGN` cache's capacity is fixed.
         let cap = if arena == FOREIGN { ceil } else { start_cap(ceil, shared.config.cap_floor(class, ceil)) };
+        super::capstat::bump(&super::capstat::CREATE, 1);
+        super::capstat::bump(&super::capstat::CREATE_LOW, (cap < ceil) as u64);
         // SAFETY: `cache` is this heap's own header (still `EMPTY`) and
         // `slots` has room for `ceil` pointers, exclusively ours.
         unsafe {
