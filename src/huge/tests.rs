@@ -834,7 +834,14 @@ fn runs_have_one_key_and_free_extents_two() {
 fn prior_state_names_the_source_of_the_pages() {
     let env = Env::new();
     let h = env.huge();
-    assert_eq!(h.prior_state(0, core::ptr::null_mut()), "fresh");
+    assert_eq!(
+        h.prior_state(
+            0,
+            core::ptr::null_mut(),
+            vstd::prelude::Tracked::assume_new()
+        ),
+        "fresh"
+    );
     let (p, _) = env.alloc(&h, page_size(), 1);
     let (q, _) = env.alloc(&h, page_size(), 1);
     env.free(&h, p);
@@ -843,14 +850,20 @@ fn prior_state_names_the_source_of_the_pages() {
         h.lookup(0).map(|i| (i.pages, i.state)),
         Some((1 + GUARD_PAGES, RunState::Empty))
     );
-    assert_eq!(h.prior_state(0, ext), "Empty");
     assert_eq!(
-        h.prior_state(1 + GUARD_PAGES, ext),
+        h.prior_state(0, ext, vstd::prelude::Tracked::assume_new()),
+        "Empty"
+    );
+    assert_eq!(
+        h.prior_state(1 + GUARD_PAGES, ext, vstd::prelude::Tracked::assume_new()),
         "fresh",
         "pages past the extent's end"
     );
     h.purge_empty(u64::MAX);
-    assert_eq!(h.prior_state(0, ext), "Purged");
+    assert_eq!(
+        h.prior_state(0, ext, vstd::prelude::Tracked::assume_new()),
+        "Purged"
+    );
     env.free(&h, q);
     h.audit();
 }

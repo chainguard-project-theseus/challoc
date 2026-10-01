@@ -145,11 +145,16 @@ verus! {
 ///
 /// Premise, the caller's: the `len` bytes at `addr` lie in one of this
 /// process's reservations (`Regions::reserve`) and nothing has written
-/// them since it was mapped, or written anything but zero. Call site:
+/// them since it was mapped, or written anything but zero. Call sites:
 /// `huge::zero_run`, from `Huge::take`, for pages at or past the huge
 /// region's high-water mark, which only `take` raises and which no run
-/// has covered. The same fact, for a `Fresh` slab `ClassState::take`
-/// claims from (no slot of it was ever claimed; the prefault pass's
+/// has covered. `Meta::alloc_zeroed`, for an object at or above the
+/// bump pointer before the call (the bump pointer only rises, and nothing
+/// writes above it), and `Meta::reserve_committed_raw`, for a table carved
+/// above the bump pointer or committed from the reservation side (never
+/// handed out before: nothing gives a table back, and a failed commit
+/// returns its uncommitted range unwritten). The same fact, for a
+/// `Fresh` slab `ClassState::take` claims from (no slot of it was ever claimed; the prefault pass's
 /// populate, which writes zeros at most, publishes it `Purged` instead),
 /// backs the trusted token ensures of `ClassState::claim_with`, which
 /// does not call this axiom.

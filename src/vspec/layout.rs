@@ -52,3 +52,14 @@ pub assume_specification[ Layout::from_size_align ](size: usize, align: usize) -
 ;
 
 } // verus!
+
+verus! {
+
+/// `Layout::new::<T>()`: the size and alignment of `T`.
+pub assume_specification<T>[ Layout::new::<T> ]() -> (r: Layout)
+    ensures
+        layout_size(r) == vstd::layout::size_of::<T>(),
+        layout_align(r) == vstd::layout::align_of::<T>(),
+;
+
+} // verus!

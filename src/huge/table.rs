@@ -19,8 +19,14 @@ use core::ptr;
 
 use crate::meta::{self, Meta};
 #[cfg(verus_only)]
+use crate::vspec::layout::{layout_align, layout_size};
+#[cfg(verus_only)]
+use crate::vspec::zero::Zeroed;
+#[cfg(verus_only)]
 use vstd::layout::size_of;
 use vstd::prelude::*;
+#[cfg(verus_only)]
+use vstd::raw_ptr::PointsToRaw;
 use vstd::raw_ptr::{PointsTo, ptr_mut_write, ptr_ref};
 
 use super::HugeDesc;
@@ -38,8 +44,9 @@ struct Entry {
     desc: *mut HugeDesc,
 }
 
-// Verus checks the size `Table::layout` assumes.
-global size_of Entry == 16;
+// Verus checks the size `Table::layout` assumes, and the alignment
+// `entry_slots` types the storage at.
+global layout Entry is size == 16, align == 8;
 
 /// Open-addressing hash table with linear probing and backward-shift
 /// deletion. Load is kept at or below one half by [`Table::ensure`].
@@ -157,6 +164,124 @@ spec fn slot_at(p: *mut Entry, slots: Map<int, PointsTo<Entry>>, i: int) -> bool
     &&& slots[i].ptr() == crate::vspec::ptr::ptr_add(p, i as usize)
     &&& crate::vspec::ptr::in_alloc(p, i * vstd::layout::size_of::<Entry>())
     &&& slots[i].is_init()
+}
+
+/// An all-zero entry is empty, given the permission to its uninitialised
+/// bytes and the token that they read as zero. Trusted: Verus does not
+/// model the bytes behind a `PointsTo`; an `Entry` is a `usize` and a raw
+/// pointer, whose all-zero bit patterns are `0` and the null pointer.
+#[verifier::external_body]
+proof fn axiom_zero_entry(tracked perm: PointsTo<Entry>, tracked z: Zeroed) -> (tracked r: PointsTo<Entry>)
+    requires
+        perm.is_uninit(),
+        z.addr() == perm.ptr()@.addr,
+        z.len() == 16,
+    ensures
+        r.ptr() == perm.ptr(),
+        r.is_init(),
+        !occupied(r.value()),
+{
+    unimplemented!()
+}
+
+/// Entry `i` from `p` has its permission in `slots` ([`slot_at`]) and is
+/// empty.
+spec fn empty_slot_at(p: *mut Entry, slots: Map<int, PointsTo<Entry>>, i: int) -> bool {
+    slot_at(p, slots, i) && !occupied(slots[i].value())
+}
+
+/// The permissions of the first `n` entries from `p`, each empty, from
+/// `raw`, the permission to their bytes, and `z`, the token that they read
+/// as zero.
+proof fn entry_slots(tracked raw: PointsToRaw, tracked z: Zeroed, p: *mut Entry, n: int) -> (tracked slots: Map<
+    int,
+    PointsTo<Entry>,
+>)
+    requires
+        0 <= n,
+        raw.is_range(p@.addr as int, n * 16),
+        raw.provenance() == p@.provenance,
+        z.addr() == p@.addr,
+        z.len() == n * 16,
+        p@.addr % 16 == 0,
+        p@.addr != 0,
+        p@.addr + n * 16 <= usize::MAX,
+    ensures
+        forall|i: int| 0 <= i < n ==> #[trigger] empty_slot_at(p, slots, i),
+    decreases n,
+{
+    broadcast use vstd::raw_ptr::axiom_ptr_mut_from_data;
+
+    if n == 0 {
+        Map::tracked_empty()
+    } else {
+        let m = n - 1;
+        let lo = p@.addr as int;
+        assert(m * 16 + 16 == n * 16 && 0 <= m * 16) by (nonlinear_arith)
+            requires
+                m == n - 1,
+                0 < n,
+        ;
+        // The storage's bytes are inside its allocation, so entry `m`'s
+        // pointer is `m` entries past `p`.
+        crate::vspec::ptr::axiom_raw_valid(&raw, p as *mut u8, n * 16);
+        crate::vspec::ptr::axiom_ptr_add_addr(p, m as usize);
+        let q = crate::vspec::ptr::ptr_add(p, m as usize);
+        let tracked (front, last) = raw.split(Set::range(lo, lo + m * 16));
+        assert(front.dom() =~= Set::range(lo, lo + m * 16));
+        assert(last.dom() =~= Set::range(lo + m * 16, lo + n * 16));
+        let tracked (zf, zl) = z.split(m * 16);
+        let tracked mut slots = entry_slots(front, zf, p, m);
+        let ghost before = slots;
+        let tracked e = last.into_typed::<Entry>(q@.addr);
+        assert(e.ptr()@ == q@);
+        let tracked e = axiom_zero_entry(e, zl);
+        slots.tracked_insert(m, e);
+        assert forall|i: int| 0 <= i < n implies #[trigger] empty_slot_at(p, slots, i) by {
+            if i < m {
+                assert(empty_slot_at(p, before, i));
+            }
+        }
+        slots
+    }
+}
+
+/// [`entry_slots`]' result for a table of `2^lg` entries is what
+/// [`Table::storage`] hands out: every slot covered, none occupied.
+proof fn lemma_empty_covers(p: *mut Entry, lg: u32, slots: Map<int, PointsTo<Entry>>)
+    requires
+        forall|i: int| 0 <= i < cap_of(lg) ==> #[trigger] empty_slot_at(p, slots, i),
+    ensures
+        covers(p, lg, slots),
+        forall|i: int| 0 <= i < cap_of(lg) ==> !occupied(#[trigger] slots[i].value()),
+{
+    assert forall|i: int| 0 <= i < cap_of(lg) implies #[trigger] slot_at(p, slots, i) by {
+        assert(empty_slot_at(p, slots, i));
+    }
+    assert forall|i: int| 0 <= i < cap_of(lg) implies !occupied(#[trigger] slots[i].value()) by {
+        assert(empty_slot_at(p, slots, i));
+    }
+}
+
+/// An address aligned to a power-of-two page of at least 16 bytes is
+/// aligned to 16.
+proof fn lemma_page_aligned_16(a: usize, page: usize)
+    requires
+        meta::is_pow2(page),
+        16 <= page,
+        a % page == 0,
+    ensures
+        a % 16 == 0,
+{
+    let k = choose|k: nat| k < 64 && page as nat == #[trigger] vstd::arithmetic::power2::pow2(k);
+    vstd::arithmetic::power2::lemma2_to64();
+    if k < 4 {
+        assert(k == 0 || k == 1 || k == 2 || k == 3);
+        assert(false);
+    }
+    vstd::arithmetic::power2::lemma_pow2_adds(4, (k - 4) as nat);
+    vstd::arithmetic::div_mod::lemma_mod_multiples_basic(vstd::arithmetic::power2::pow2((k - 4) as nat) as int, 16);
+    meta::lemma_mod_trans(a as int, page as int, 16);
 }
 
 proof fn lemma_occupancy_update(v: Seq<Entry>, i: int, e: Entry)
@@ -295,9 +420,12 @@ proof fn lemma_next(i: usize, lg: u32)
 impl Table {
     /// Storage layout of a table of `1 << lg_cap` entries: the one source
     /// for `storage` and `release`.
-    const fn layout(lg_cap: u32) -> Layout
+    const fn layout(lg_cap: u32) -> (r: Layout)
         requires
             lg_cap <= 58,
+        ensures
+            layout_size(r) == 16usize << lg_cap,
+            layout_align(r) == 16,
     {
         proof {
             let l = lg_cap as usize;
@@ -312,40 +440,65 @@ impl Table {
     }
 
     /// Zeroed storage for `1 << lg_cap` entries, all empty, with the
-    /// permission for each: memory from the metadata allocator is this
-    /// table's alone until `release`. Trusted: this is where every slot's
-    /// permission comes from; `Meta` hands out the block's address but no
-    /// permission, and Verus has no cast from its bytes. The storage is
-    /// `meta`'s: `Meta::alloc_zeroed` and `Meta::reserve_committed` ensure
-    /// `Meta::holds` of their results for the layout's size, `16 <<
-    /// lg_cap` (`Table::layout`); so metadata when `meta` is the process's.
-    #[verifier::external_body]
+    /// permission for each: the block's permission from `Meta`
+    /// (`alloc_zeroed` or `reserve_committed_raw`), cut into entries,
+    /// each read as empty from the block's zero token ([`entry_slots`]).
+    /// The storage is `meta`'s (`Meta::holds` for the layout's size, `16
+    /// << lg_cap`); so metadata when `meta` is the process's.
     // The tracked permission map is part of the result.
     #[allow(clippy::type_complexity)]
     fn storage(meta: &Meta, page: usize, lg_cap: u32) -> (r: Option<(*mut Entry, bool, Tracked<Map<int, PointsTo<Entry>>>)>)
         requires
             lg_cap <= 58,
             meta::is_pow2(page),
+            16 <= page,
         ensures
             r matches Some((p, _, slots)) ==> covers(p, lg_cap, slots@) && forall|i: int|
                 0 <= i < cap_of(lg_cap) ==> !occupied(#[trigger] slots@[i].value()),
             r matches Some((p, _, _)) ==> meta.holds(p@.addr as int, cap_of(lg_cap) * 16),
             r matches Some((p, _, _)) ==> (meta.is_process() ==> entries_in_meta(p, lg_cap)),
     {
+        proof {
+            let l = lg_cap as usize;
+            assert(l <= 58 ==> (16usize << l) == 16 * (1usize << l) && (16usize << l) <= 0x7FFF_FFFF_FFFF_FFF0usize)
+                by (bit_vector);
+            crate::meta::lemma_consts();
+        }
         let layout = Table::layout(lg_cap);
         if layout.size() <= meta::MAX_BINNED {
-            let p = meta.alloc_zeroed(layout);
-            if p.is_null() { None } else { Some((p as *mut Entry, true, Tracked::assume_new())) }
+            let (p, Tracked(raw), Tracked(z)) = meta.alloc_zeroed(layout);
+            if p.is_null() {
+                None
+            } else {
+                let e = p as *mut Entry;
+                let tracked slots = entry_slots(raw, z, e, cap_of(lg_cap));
+                proof {
+                    lemma_empty_covers(e, lg_cap, slots);
+                }
+                Some((e, true, Tracked(slots)))
+            }
         } else {
-            let p = meta.reserve_committed(layout.size(), page)?;
-            Some((p as *mut Entry, false, Tracked::assume_new()))
+            let (s, Tracked(raw), Tracked(z)) = meta.reserve_committed_raw(layout.size(), page);
+            let p = s?;
+            let e = crate::vspec::addr::addr_to_ptr(p) as *mut Entry;
+            let tracked mine = raw.split(Set::range(p as int, p + layout_size(layout))).0;
+            proof {
+                assert(mine.is_range(p as int, cap_of(lg_cap) * 16));
+                lemma_page_aligned_16(p, page);
+            }
+            let tracked slots = entry_slots(mine, z, e, cap_of(lg_cap));
+            proof {
+                lemma_empty_covers(e, lg_cap, slots);
+            }
+            Some((e, false, Tracked(slots)))
         }
     }
 
     /// Give the storage back if it was binned. A reserved table cannot be
     /// given back; it is leaked (at most the size of the final table in
-    /// total).
-    #[verifier::external_body]
+    /// total). The caller drops the table afterwards: `Meta::free`'s
+    /// trusted contract is that the block is no longer used, so the slot
+    /// permissions this value still holds are never used again.
     fn release(&self, meta: &Meta)
         requires
             self.storage_ok(),
@@ -424,6 +577,7 @@ impl Table {
         requires
             meta.is_process(),
             meta::is_pow2(page),
+            16 <= page,
         ensures
             r matches Some(t) ==> t.wf() && t.spec_count() == 0 && forall|k: usize| t.lookup(k) is None,
     {
@@ -919,6 +1073,7 @@ impl Table {
             old(self).wf(),
             meta.is_process(),
             meta::is_pow2(page),
+            16 <= page,
             old(self).spec_count() + extra <= 0x0100_0000_0000_0000,
         ensures
             final(self).wf(),

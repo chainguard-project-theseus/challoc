@@ -54,8 +54,9 @@ pub open spec fn valid_reads<T>(p: *const T, len: int) -> bool {
 /// reaches), and the address does not wrap (the caller shows it: no
 /// allocation does, but `alloc_len` is not tied to the address space).
 /// Trusted: the `core` documentation of `add` (an offset of
-/// `count * size_of::<T>()` bytes), which Verus does not model for raw
-/// pointers. Not a broadcast: the proofs that place memory call it.
+/// `count * size_of::<T>()` bytes, keeping `p`'s provenance and
+/// metadata), which Verus does not model for raw pointers. Not a
+/// broadcast: the proofs that place memory call it.
 #[verifier::external_body]
 pub proof fn axiom_ptr_add_addr<T>(p: *mut T, count: usize)
     requires
@@ -63,6 +64,8 @@ pub proof fn axiom_ptr_add_addr<T>(p: *mut T, count: usize)
         p@.addr + count as int * vstd::layout::size_of::<T>() <= usize::MAX,
     ensures
         ptr_add(p, count)@.addr == p@.addr + count as int * vstd::layout::size_of::<T>(),
+        ptr_add(p, count)@.provenance == p@.provenance,
+        ptr_add(p, count)@.metadata == p@.metadata,
 {
 }
 
@@ -77,5 +80,69 @@ pub assume_specification<T>[ <*mut T>::add ](p: *mut T, count: usize) -> (r: *mu
     ensures
         r == ptr_add(p, count),
 ;
+
+} // verus!
+
+verus! {
+
+/// A permission to the `len` bytes from `p`, of `p`'s provenance, makes
+/// them valid for reads and writes through `p` and puts them inside the
+/// allocation `p` is derived from ([`in_alloc`]). Trusted: what a
+/// `PointsToRaw` stands for. The permissions verified code holds start
+/// as committed memory (`vspec::unbacked::Unbacked::commit`) and are split
+/// and joined from there, all inside one mapping (the metadata
+/// region, the only `Unbacked` token's source), so one permission's range
+/// never spans two allocations; `Meta::free`'s trusted caller contract mints
+/// the ones it is given back.
+#[verifier::external_body]
+pub proof fn axiom_raw_valid(tracked raw: &vstd::raw_ptr::PointsToRaw, p: *mut u8, len: int)
+    requires
+        raw.contains_range(p@.addr as int, len),
+        raw.provenance() == p@.provenance,
+        0 <= len,
+    ensures
+        valid_writes(p, len),
+        valid_reads(p as *const u8, len),
+        in_alloc(p, len),
+{
+}
+
+} // verus!
+
+verus! {
+
+/// Two permissions own no byte in common: a byte in both would give two
+/// `PointsTo<u8>` for one address, which `PointsTo::is_disjoint` rules
+/// out. Takes and returns both, unchanged in domain and provenance.
+pub proof fn lemma_raw_disjoint(
+    tracked a: vstd::raw_ptr::PointsToRaw,
+    tracked b: vstd::raw_ptr::PointsToRaw,
+) -> (tracked r: (vstd::raw_ptr::PointsToRaw, vstd::raw_ptr::PointsToRaw))
+    requires
+        forall|x: int| #[trigger] a.dom().contains(x) ==> 0 <= x <= usize::MAX,
+    ensures
+        a.dom().disjoint(b.dom()),
+        r.0.dom() == a.dom(),
+        r.0.provenance() == a.provenance(),
+        r.1.dom() == b.dom(),
+        r.1.provenance() == b.provenance(),
+{
+    if exists|x: int| a.dom().contains(x) && b.dom().contains(x) {
+        let x = choose|x: int| a.dom().contains(x) && b.dom().contains(x);
+        let tracked (ax, _arest) = a.split(set![x]);
+        let tracked (bx, _brest) = b.split(set![x]);
+        broadcast use {vstd::layout::align_of_u8, vstd::raw_ptr::axiom_ptr_mut_from_data};
+        assert(ax.dom() =~= Set::range(x, x + 1));
+        assert(bx.dom() =~= Set::range(x, x + 1));
+        let tracked mut pa = ax.into_typed::<u8>(x as usize);
+        let tracked pb = bx.into_typed::<u8>(x as usize);
+        pa.is_disjoint(&pb);
+        assert(false);
+        (pa.into_raw(), pb.into_raw())
+    } else {
+        assert(a.dom().disjoint(b.dom()));
+        (a, b)
+    }
+}
 
 } // verus!

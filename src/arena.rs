@@ -111,10 +111,16 @@ impl Arena {
     }
 
     /// Storage for the slab set table from `meta`, null when it is full.
-    #[verifier::external_body]
+    /// The table fits an object (the check is on constants, so the build
+    /// folds it away).
     #[inline(always)]
     fn alloc_sets(meta: &Meta) -> *mut SetTable {
-        meta.alloc(core::alloc::Layout::new::<SetTable>()) as *mut SetTable
+        let layout = core::alloc::Layout::new::<SetTable>();
+        crate::vspec::check::check(
+            layout.size() <= crate::meta::MAX_BINNED && layout.align() <= crate::meta::MAX_ALIGN,
+            "arena: slab set table larger than an object",
+        );
+        meta.alloc(layout) as *mut SetTable
     }
 
     /// `sets` into the storage [`Arena::alloc_sets`] returned (non-null),

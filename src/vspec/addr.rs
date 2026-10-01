@@ -10,17 +10,24 @@ verus! {
 /// address, so a claim about the memory at `addr` can name it.
 pub uninterp spec fn addr_ptr(addr: usize) -> *mut u8;
 
+/// The provenance every integer-to-pointer cast picks up: an address cast
+/// to a pointer names no allocation of its own, so all of them share one
+/// (Rust's exposed provenance). The permissions minted for `mmap`'d
+/// memory carry it (`vspec::unbacked::Unbacked::commit`).
+pub uninterp spec fn cast_provenance() -> vstd::raw_ptr::Provenance;
+
 /// `addr as *mut u8`: a pointer to `addr` (Verus supports only the other
-/// direction of the cast), [`addr_ptr`]. Nothing about the pointer's
-/// provenance is claimed; verified code compares and returns it, and
-/// passes it to the functions below only under an axiom about the memory
-/// at `addr`.
+/// direction of the cast), [`addr_ptr`], with [`cast_provenance`]. Verified
+/// code compares and returns it, and passes it to the functions below
+/// only under an axiom about the memory at `addr` or with a permission
+/// of the same provenance.
 #[verifier::external_body]
 #[inline(always)]
 pub fn addr_to_ptr(addr: usize) -> (p: *mut u8)
     ensures
         p as usize == addr,
         p == addr_ptr(addr),
+        p@.provenance == cast_provenance(),
 {
     addr as *mut u8
 }

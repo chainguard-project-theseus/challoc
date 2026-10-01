@@ -67,6 +67,8 @@ use crate::vspec::zero::Zeroed;
 #[cfg(verus_only)]
 use vstd::arithmetic::power2::pow2;
 use vstd::prelude::*;
+#[cfg(verus_only)]
+use vstd::raw_ptr::PointsToRaw;
 use vstd::raw_ptr::{PointsTo, ptr_mut_ref, ptr_mut_write, ptr_ref};
 
 mod table;
@@ -170,9 +172,10 @@ pub struct HugeDesc {
     next: *mut HugeDesc,
 }
 
-// Checked by the compiler; `PointsTo::is_disjoint` needs the size.
+// Checked by the compiler; `PointsTo::is_disjoint` needs the size, and
+// `PointsToRaw::into_typed` (`desc_perm`) the alignment.
 #[cfg_attr(not(verus_keep_ghost), allow(unused_braces))]
-global size_of HugeDesc == 48;
+global layout HugeDesc is size == 48, align == 8;
 
 impl HugeDesc {
     pub closed spec fn spec_start(&self) -> int {
@@ -238,6 +241,7 @@ impl HugeDesc {
 } // verus!
 
 impl HugeDesc {
+    #[cfg(test)]
     const LAYOUT: Layout = Layout::new::<HugeDesc>();
 }
 
@@ -1354,6 +1358,7 @@ impl Huge {
     #[verifier::type_invariant]
     spec fn inv(&self) -> bool {
         &&& self.lg_page < 64
+        &&& 4 <= self.lg_page
         &&& 0 < self.npages <= u32::MAX
         &&& self.base + self.npages * pow2(self.lg_page as nat) <= crate::meta::va_limit()
         &&& lock_init(self.inner).spec_np() == self.npages
@@ -1411,37 +1416,55 @@ const _: () = assert!(
 
 verus! {
 
-/// A block for a descriptor from `meta`, with the permission to it; null
-/// when the metadata region is exhausted. Trusted: this is where every
-/// descriptor's permission comes from. `Meta::alloc` hands the caller a
-/// block of `HugeDesc`'s layout that overlaps no live object (as long as
-/// every caller of `Meta::free` keeps the contract its doc states), but it
-/// hands out no permission, and Verus has no cast from its bytes. The
-/// block is `meta`'s: `Meta::alloc` ensures `Meta::holds` of its result
-/// for the layout's size, `size_of::<HugeDesc>()`; so metadata when
-/// `meta` is the process's.
-#[verifier::external_body]
+/// A block for a descriptor from `meta`, with the permission to it
+/// (`Meta::alloc_raw`'s, typed); null, with none, when the metadata region
+/// is exhausted. The block is `meta`'s, so metadata when `meta` is the
+/// process's.
 #[inline(always)]
-fn alloc_desc(meta: &Meta) -> (r: (*mut HugeDesc, Tracked<PointsTo<HugeDesc>>))
+fn alloc_desc(meta: &Meta) -> (r: (*mut HugeDesc, Tracked<Option<PointsTo<HugeDesc>>>))
     ensures
-        r.0@.addr != 0 ==> r.1@.ptr() == r.0 && r.1@.is_uninit(),
+        r.0@.addr != 0 ==> r.1@ is Some && r.1@->0.ptr() == r.0 && r.1@->0.is_uninit(),
         r.0@.addr != 0 ==> meta.holds(r.0@.addr as int, vstd::layout::size_of::<HugeDesc>() as int),
         r.0@.addr != 0 && meta.is_process() ==> desc_in_meta(r.0),
 {
-    (meta.alloc(HugeDesc::LAYOUT) as *mut HugeDesc, Tracked::assume_new())
+    proof {
+        crate::meta::lemma_consts();
+    }
+    let (p, Tracked(raw)) = meta.alloc_raw(Layout::new::<HugeDesc>());
+    let d = p as *mut HugeDesc;
+    let tracked perm = desc_perm(raw, d);
+    (d, Tracked(perm))
+}
+
+/// The descriptor permission of a block of `raw` at `d`, when there is a
+/// block.
+proof fn desc_perm(tracked raw: PointsToRaw, d: *mut HugeDesc) -> (tracked r: Option<PointsTo<HugeDesc>>)
+    ensures
+        d@.addr != 0 && raw.is_range(d@.addr as int, vstd::layout::size_of::<HugeDesc>() as int)
+            && raw.provenance() == d@.provenance && d@.addr as int % vstd::layout::align_of::<HugeDesc>() as int == 0
+            ==> r is Some && r->0.ptr() == d && r->0.is_uninit(),
+{
+    if d@.addr != 0 && raw.is_range(d@.addr as int, vstd::layout::size_of::<HugeDesc>() as int)
+        && raw.provenance() == d@.provenance && d@.addr as int % vstd::layout::align_of::<HugeDesc>() as int == 0 {
+        let tracked perm = raw.into_typed::<HugeDesc>(d@.addr);
+        assert(perm.ptr()@ == d@);
+        Some(perm)
+    } else {
+        None
+    }
 }
 
 /// Give the block `d` from [`alloc_desc`] back to `meta`, with its
-/// permission. Trusted: `Meta::free` takes the block without one, and its
-/// caller contract is trusted there.
-#[verifier::external_body]
+/// permission, which is dropped: `Meta::free` takes the block without
+/// one, and its caller contract (the block is no longer used) is trusted
+/// there.
 #[inline(always)]
 fn free_desc(meta: &Meta, d: *mut HugeDesc, _perm: Tracked<PointsTo<HugeDesc>>)
     requires
         d@.addr != 0,
         _perm@.ptr() == d,
 {
-    meta.free(d as *mut u8, HugeDesc::LAYOUT);
+    meta.free(d as *mut u8, Layout::new::<HugeDesc>());
 }
 
 /// Where a run may be taken ([`Huge::find`]'s answer): fresh pages at or
@@ -2232,6 +2255,7 @@ impl Huge {
             regions.wf(),
             0 < regions.huge_len >> regions.lg_page <= u32::MAX,
             regions.huge_base + regions.huge_len <= crate::meta::va_limit(),
+            (1usize << regions.lg_page) >= crate::meta::MIN_ALIGN,
             meta.is_process(),
         ensures
             r matches Some(h) ==> h.spec_npages() == (regions.huge_len >> regions.lg_page) as int
@@ -2247,6 +2271,8 @@ impl Huge {
             let lg = regions.lg_page as usize;
             assert((1usize << lg) <= 0x8000_0000_0000_0000usize) by (bit_vector)
                 requires lg < 64;
+            assert(4 <= lg) by (bit_vector)
+                requires lg < 64, (1usize << lg) >= 16;
             vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
             vstd::bits::lemma_usize_shl_is_mul(1, lg);
             assert(page as nat == pow2(lg as nat));
@@ -2315,9 +2341,14 @@ impl Huge {
             0 < self.npages <= u32::MAX,
             0 < pow2(self.lg_page as nat) <= self.npages * pow2(self.lg_page as nat),
             self.base + self.npages * pow2(self.lg_page as nat) <= crate::meta::va_limit(),
+            16 <= pow2(self.lg_page as nat),
             (1usize << self.lg_page) == pow2(self.lg_page as nat),
     {
         let p = pow2(self.lg_page as nat);
+        vstd::arithmetic::power2::lemma2_to64();
+        if self.lg_page > 4 {
+            vstd::arithmetic::power2::lemma_pow2_strictly_increases(4, self.lg_page as nat);
+        }
         vstd::arithmetic::power2::lemma_pow2_pos(self.lg_page as nat);
         assert(p <= self.npages * p) by (nonlinear_arith)
             requires
@@ -3705,15 +3736,17 @@ impl Huge {
         let end = s + need;
 
         // Everything fallible happens before any state changes.
-        let (run, run_perm) = alloc_desc(meta);
+        let (run, _run_opt) = alloc_desc(meta);
         if run.is_null() {
             return (Placed::NONE, Tracked(Zeroed::empty(0)));
         }
-        let (spare, spare_perm) = alloc_desc(meta);
+        let run_perm = Tracked(_run_opt.get().tracked_unwrap());
+        let (spare, _spare_opt) = alloc_desc(meta);
         if spare.is_null() {
             free_desc(meta, run, run_perm);
             return (Placed::NONE, Tracked(Zeroed::empty(0)));
         }
+        let spare_perm = Tracked(_spare_opt.get().tracked_unwrap());
         proof {
             // The table holds at most two keys per extent, a page or more
             // each, so its count is far below `Table::ensure`'s bound.
@@ -3737,7 +3770,8 @@ impl Huge {
         }
 
         // `check_zero` needs the extent's state before `take` may free it.
-        let prior = if purge::check_zero() { Some(self.prior_state(s, ext)) } else { None };
+        let _gi: &Inner = &g;
+        let prior = if purge::check_zero() { Some(self.prior_state(s, ext, Tracked(_gi.descs.borrow()))) } else { None };
         let (zeroed, z) = self.take(&mut g, meta, Placement { start: s, pages: need, ext }, run, spare, arena, run_perm, spare_perm);
         // `take` wrote the run's descriptor; the lock is still held.
         let pages = g.desc(run).pages();
@@ -3755,17 +3789,24 @@ impl Huge {
     /// free extent's state, or "fresh" for never-touched pages at or past
     /// the mark (which is also what an aligned start beyond `ext` gets).
     ///
-    /// Trusted: reads the extent through its raw pointer (the permission
-    /// is in the caller's guard), and `unreachable!`.
+    /// `descs` is the caller's guard's descriptor permissions, and `ext`,
+    /// when not null, the free extent `find` returned.
     #[cold]
-    #[verifier::external_body]
-    fn prior_state(&self, s: usize, ext: *mut HugeDesc) -> &'static str {
+    fn prior_state(&self, s: usize, ext: *mut HugeDesc, Tracked(descs): Tracked<&Map<*mut HugeDesc, PointsTo<HugeDesc>>>) -> &'static str
+        requires
+            ext@.addr != 0 ==> {
+                &&& descs.contains_key(ext)
+                &&& descs[ext].ptr() == ext
+                &&& descs[ext].is_init()
+                &&& descs[ext].value().state != RunState::Active as u8
+                &&& descs[ext].value().start + descs[ext].value().pages <= usize::MAX
+            },
+    {
         if ext.is_null() {
             return "fresh";
         }
-        // SAFETY: `ext` is a live free extent found under the lock the
-        // caller holds.
-        let (st, e_end) = unsafe { ((*ext).state(), (*ext).end()) };
+        let e = ptr_ref(ext, Tracked(descs.tracked_borrow(ext)));
+        let (st, e_end) = (e.state(), e.end());
         if s >= e_end {
             return "fresh";
         }

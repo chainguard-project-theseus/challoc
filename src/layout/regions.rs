@@ -154,6 +154,27 @@ impl Regions {
         &&& disjoint(self.huge_base as int, self.huge_len as int, self.meta_base as int, self.meta_len as int)
     }
 
+    /// What `Shared::init` needs of its regions beyond [`wf`] and
+    /// [`separated`]: a metadata region `Meta::owning` accepts (page
+    /// multiples, non-empty, at a non-zero address below the metadata
+    /// limit, a page of at least `MIN_ALIGN`) and a huge region `Huge::new`
+    /// accepts (1 to `u32::MAX` pages, below the limit).
+    /// [`Regions::reserve`] proves it.
+    ///
+    /// [`wf`]: Regions::wf
+    /// [`separated`]: Regions::separated
+    pub open spec fn ready(self) -> bool {
+        let page = 1usize << self.lg_page;
+        &&& page >= crate::meta::MIN_ALIGN
+        &&& self.meta_base > 0
+        &&& self.meta_base % page == 0
+        &&& self.meta_len % page == 0
+        &&& self.meta_len > 0
+        &&& self.meta_base + self.meta_len <= crate::meta::va_limit()
+        &&& 0 < self.huge_len >> self.lg_page <= u32::MAX
+        &&& self.huge_base + self.huge_len <= crate::meta::va_limit()
+    }
+
     /// Slabs in class `c`'s region ([`Regions::nslabs`]).
     pub open spec fn spec_nslabs(self, c: int) -> int {
         ((1usize << self.lg_region) >> class_table()[c].lg_slab) as int
@@ -256,6 +277,9 @@ impl Regions {
             r.wf(),
             r.separated(),
             r.lg_region == lg_region && r.lg_stride == lg_stride && r.superblock == superblock,
+            r.huge_base == huge.0 && r.huge_len == huge.1,
+            r.meta_base == meta.0 && r.meta_len == meta.1,
+            r.lg_page == lg_page,
             forall|c: int| 0 <= c < NCLASSES ==>
                 #[trigger] r.class_base[c] == superblock + ((c as usize) << lg_stride) + offsets[c],
     {
@@ -1037,6 +1061,7 @@ mod linux {
     #[cfg(verus_only)]
     use crate::sys::pac::user_va_limit;
     use crate::sys::{self, Errno, MAP_ANONYMOUS, MAP_NORESERVE, MAP_PRIVATE, PROT_NONE};
+    use crate::vspec::unbacked::Unbacked;
     #[cfg(verus_only)]
     use vstd::arithmetic::power2::pow2;
     use vstd::prelude::*;
@@ -1070,6 +1095,22 @@ mod linux {
         {
             unimplemented!()
         }
+
+        /// The reservation as uncommitted address space this process owns,
+        /// for the one owner that commits it piece by piece (`Meta`, for the
+        /// metadata region). Trusted (the kernel's `mmap` contract): the range
+        /// is this process's alone. The token is consumed, so the range is
+        /// handed out once. Verified code has no other source of an
+        /// `Unbacked` token (`vspec::unbacked` keeps its fields private;
+        /// the unverified `Meta::new` assumes one).
+        #[verifier::external_body]
+        pub proof fn into_unbacked(tracked self) -> (tracked u: Unbacked)
+            ensures
+                u.addr() == self.addr(),
+                u.len() == self.len(),
+        {
+            unimplemented!()
+        }
     }
 
     /// Reserve address space with `PROT_NONE`, `MAP_NORESERVE`: on
@@ -1079,11 +1120,13 @@ mod linux {
     /// mapping without `MAP_FIXED` is a new mapping of `len` bytes (the
     /// token, apart from every other live one) that ends in user space,
     /// below `sys::pac::user_va_limit` (the kernel's default map window,
-    /// at most `2^48`).
+    /// at most `2^48`), and never at address 0: the kernel places a
+    /// mapping without `MAP_FIXED` at or above `max(PAGE_SIZE,
+    /// mmap_min_addr)`.
     #[verifier::external_body]
     fn try_reserve(len: usize) -> (r: Result<(usize, Tracked<Reserved>), Errno>)
         ensures
-            r matches Ok((a, t)) ==> t@.addr() == a && t@.len() == len && a + len <= user_va_limit(),
+            r matches Ok((a, t)) ==> t@.addr() == a && t@.len() == len && 0 < a && a + len <= user_va_limit(),
     {
         // SAFETY: fresh anonymous private mapping, no fixed address.
         match unsafe { sys::mmap(0, len, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0) } {
@@ -1097,6 +1140,7 @@ mod linux {
     pub open spec fn reserved(m: Mapping, t: Reserved) -> bool {
         &&& t.addr() == m.addr
         &&& t.len() == m.len
+        &&& m.addr > 0
         &&& m.addr + m.len <= user_va_limit()
     }
 
@@ -1288,22 +1332,16 @@ mod linux {
     /// the class and metadata reservations are `MADV_NOHUGEPAGE`d before
     /// anything in them is committed; the huge region follows the host's
     /// policy (`thp::Reservation`), so `thp.rs` skips it by kind.
-    /// Trusted: `thp.rs` is outside what Verus checks; nothing is claimed.
-    #[verifier::external_body]
     #[inline(always)]
     fn advise_reservations(sb_map: Mapping, huge_map: Mapping, meta_map: Mapping) {
-        use crate::thp::Reservation;
-        for (kind, m) in [
-            (Reservation::Classes, sb_map),
-            (Reservation::Huge, huge_map),
-            (Reservation::Metadata, meta_map),
-        ] {
-            crate::thp::advise_reservation(kind, m.addr, m.len);
-        }
+        use crate::thp::{Reservation, advise_reservation};
+        advise_reservation(Reservation::Classes, sb_map.addr, sb_map.len);
+        advise_reservation(Reservation::Huge, huge_map.addr, huge_map.len);
+        advise_reservation(Reservation::Metadata, meta_map.addr, meta_map.len);
     }
 
     /// The abort of [`Regions::reserve`] for a page size that is not a
-    /// power of two at most `MAX_SLAB`, standing for the `assert!` the
+    /// power of two from 4 KiB to `MAX_SLAB`, standing for the `assert!` the
     /// build keeps.
     /// Trusted: aborts.
     #[cfg(verus_only)]
@@ -1344,24 +1382,39 @@ mod linux {
         /// `anon_name` should be the probed `PR_SET_VMA_ANON_NAME` support.
         /// The result is well formed and separated ([`Regions::wf`],
         /// [`Regions::separated`]), from the kernel's `mmap` contract
-        /// ([`try_reserve`]) and the page size, which must be the kernel's:
-        /// at least 4 KiB on every Linux target (the unverified caller,
-        /// `init`, passes `sys::page_size()`).
-        // The index carries a Verus invariant.
-        #[allow(clippy::needless_range_loop)]
+        /// ([`try_reserve`]), and ready for `Shared::init` ([`Regions::ready`]).
+        /// The page size must be the kernel's (`init` passes the probed one):
+        /// a power of two from 4 KiB, the smallest page of any Linux target,
+        /// to `MAX_SLAB`; anything else aborts.
+        #[inline(always)]
         pub fn reserve(page_size: usize, anon_name: bool) -> (r: Regions)
-            requires
-                0x1000 <= page_size,
             ensures
                 r.wf(),
                 r.separated(),
+                r.ready(),
+        {
+            Regions::reserve_owning(page_size, anon_name).0
+        }
+
+        /// [`Regions::reserve`], with the metadata region's uncommitted
+        /// address space, for `Meta::owning`, which commits it as it hands
+        /// it out.
+        // The index carries a Verus invariant.
+        #[allow(clippy::needless_range_loop)]
+        pub fn reserve_owning(page_size: usize, anon_name: bool) -> (res: (Regions, Tracked<Unbacked>))
+            ensures
+                res.0.wf(),
+                res.0.separated(),
+                res.0.ready(),
+                res.1@.addr() == res.0.meta_base,
+                res.1@.len() == res.0.meta_len,
         {
             #[cfg(verus_only)]
-            if !(page_size.is_power_of_two() && page_size <= MAX_SLAB) {
+            if !(page_size.is_power_of_two() && (0x1000..=MAX_SLAB).contains(&page_size)) {
                 bad_page_size(page_size);
             }
             #[cfg(not(verus_only))]
-            assert!(page_size.is_power_of_two() && page_size <= MAX_SLAB);
+            assert!(page_size.is_power_of_two() && (0x1000..=MAX_SLAB).contains(&page_size));
             let lg_page = page_size.trailing_zeros();
             proof {
                 crate::sys::pac::axiom_user_va_limit();
@@ -1459,10 +1512,9 @@ mod linux {
                     requires SLIDE_STEPS == (1usize << 30u32) >> 22u32;
                 let tracked mut a = _sb_tok.get();
                 let tracked mut b = _huge_tok.get();
-                let tracked c = _meta_tok.get();
                 a.is_disjoint(&b);
-                a.is_disjoint(&c);
-                b.is_disjoint(&c);
+                a.is_disjoint(_meta_tok.borrow());
+                b.is_disjoint(_meta_tok.borrow());
             }
 
             let superblock = align_base(sb_map.addr);
@@ -1520,8 +1572,16 @@ mod linux {
                 name_mapping(meta_map, &META_NAME);
             }
             advise_reservations(sb_map, huge_map, meta_map);
+            proof {
+                // `Regions::ready`: the page, the metadata base and the huge
+                // region's page count.
+                let (mb, lp, lm, lh) = (meta_base, lg_page, lg_meta, lg_huge);
+                assert(mb % (1usize << lp) == 0 && (1usize << lm) % (1usize << lp) == 0 && (1usize << lm) > 0 && (1usize << lp) >= 16
+                    && ((1usize << lh) >> lp) > 0 && ((1usize << lh) >> lp) <= 0xffff_ffff) by (bit_vector)
+                    requires mb & 0x3f_ffff == 0, 12 <= lp <= 22, 30 <= lm <= 40, 34 <= lh <= 40;
+            }
 
-            Regions::from_parts(
+            let r = Regions::from_parts(
                 superblock,
                 lg_region,
                 lg_stride,
@@ -1530,7 +1590,11 @@ mod linux {
                 (meta_base, 1usize << lg_meta),
                 lg_page,
                 [sb_map, huge_map, meta_map],
-            )
+            );
+            // The metadata region's address space, for `Meta`, which commits
+            // it as it hands it out.
+            let tracked meta_space = _meta_tok.get().into_unbacked().split(meta_base - meta_map.addr).1.split((1usize << lg_meta) as int).0;
+            (r, Tracked(meta_space))
         }
     }
 
