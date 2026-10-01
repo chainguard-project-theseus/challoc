@@ -22,7 +22,7 @@ fn batch_discards_through_the_probed_backend_and_the_loop() {
     let _serial = BACKEND_TEST.lock().unwrap();
     let _advice = super::tests::serial();
     let page = crate::sys::features::page_size();
-    let mut f = Features::probe();
+    let f = Features::probe();
     let backends = [f.process_madvise, ProcessMadvise::Unavailable];
     for (i, backend) in backends.iter().enumerate() {
         configure(*backend);
@@ -46,7 +46,9 @@ fn batch_discards_through_the_probed_backend_and_the_loop() {
         unsafe { sys::munmap(addr, len) }.unwrap();
     }
     configure(ProcessMadvise::Unavailable);
-    f.release();
+    if let ProcessMadvise::Pidfd(fd) = f.process_madvise {
+        let _ = sys::close(fd);
+    }
 }
 
 /// The fork child drops an inherited pidfd and keeps `PIDFD_SELF`.
