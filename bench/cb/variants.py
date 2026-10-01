@@ -50,10 +50,22 @@ class Variant:
     commit: str = ""
     tree: str = ""
     cached: bool = False
+    # Builds with other cargo features (a row's `features`): features ->
+    # (lib, sha256).
+    extra: dict[str, tuple[str, str]] = dataclasses.field(default_factory=dict)
 
     @property
     def label(self) -> str:
         return self.spec.label
+
+    def lib_for(self, features: str) -> tuple[str, str]:
+        """(lib, sha256) of the build a row with these features needs; a
+        stock allocator has one library whatever the row asks."""
+        if not features or self.spec.kind != "challoc":
+            return self.lib, self.sha256
+        if features not in self.extra:
+            raise BuildError(f"{self.label}: no build with features {features!r}")
+        return self.extra[features]
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -67,6 +79,8 @@ class Variant:
             "commit": self.commit,
             "tree": self.tree,
             "cached": self.cached,
+            "knobs": self.spec.knobs,
+            "extra_builds": {f: {"lib": lib, "lib_sha256": sha} for f, (lib, sha) in self.extra.items()},
         }
 
 
@@ -94,13 +108,22 @@ def sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
+def cargo_feature_args(features: str) -> list[str]:
+    """Cargo flags for a feature string: a quantum feature replaces the
+    default quantum16 (--no-default-features), anything else is added."""
+    fs = [f for f in features.replace(" ", ",").split(",") if f]
+    if not fs:
+        return []
+    if any(f.startswith("quantum") for f in fs):
+        return ["--no-default-features", "--features", ",".join(fs)]
+    return ["--features", ",".join(fs)]
+
+
 def _cargo_build(srcdir: str, tdir: str, log: str, features: str = "") -> None:
     env = dict(os.environ)
     env["CARGO_TARGET_DIR"] = tdir
     env["RUSTFLAGS"] = (env.get("RUSTFLAGS", "") + f" --remap-path-prefix={srcdir}=/challoc").strip()
-    cmd = ["cargo", "build", "--release"]
-    if features:
-        cmd += ["--features", features]
+    cmd = ["cargo", "build", "--release", *cargo_feature_args(features)]
     with open(log, "wb") as f:
         r = subprocess.run(cmd, cwd=srcdir, env=env, stdout=f, stderr=subprocess.STDOUT)
     text = open(log, encoding="utf-8", errors="replace").read()
@@ -112,24 +135,28 @@ def _cargo_build(srcdir: str, tdir: str, log: str, features: str = "") -> None:
         raise BuildError(f"cargo reused a previous build in {tdir} instead of compiling (stale mtimes?); see {log}")
 
 
-def build_challoc(root: str, spec: VariantSpec, work: str, log=print) -> Variant:
+def _fslug(features: str) -> str:
+    return ("-" + features.replace(",", "+")) if features else ""
+
+
+def build_challoc(root: str, spec: VariantSpec, work: str, log=print, features: str = "") -> Variant:
     os.makedirs(work, exist_ok=True)
     if spec.source == "tree":
-        tdir = os.path.join(work, "build", "tree")
+        tdir = os.path.join(work, "build", "tree" + _fslug(features))
         os.makedirs(tdir, exist_ok=True)
         # Touch the crate root: rsynced or restored files may carry old mtimes.
         os.utime(os.path.join(root, "src", "lib.rs"))
-        _cargo_build(root, tdir, os.path.join(tdir, "build.log"))
+        _cargo_build(root, tdir, os.path.join(tdir, "build.log"), features)
         so = os.path.join(tdir, "release", "libchalloc.so")
         commit = git(root, "rev-parse", "HEAD")
         return Variant(spec, so, sha256_file(so), commit=commit + "+tree", tree="tree")
     commit, tree = resolve_rev(root, spec.source)
     key = tree[:16]
-    tdir = os.path.join(work, "build", key)
+    tdir = os.path.join(work, "build", key + _fslug(features))
     so = os.path.join(tdir, "release", "libchalloc.so")
     stamp = os.path.join(tdir, "cb-built")
     if os.path.exists(so) and os.path.exists(stamp) and open(stamp).read().strip() == tree:
-        log(f"   {spec.label}: {spec.source} = {commit[:12]} (tree {key}), cached")
+        log(f"   {spec.label}: {spec.source} = {commit[:12]} (tree {key}{', features ' + features if features else ''}), cached")
         return Variant(spec, so, sha256_file(so), commit=commit, tree=tree, cached=True)
     srcdir = os.path.join(work, "src", key)
     shutil.rmtree(srcdir, ignore_errors=True)
@@ -152,8 +179,8 @@ def build_challoc(root: str, spec: VariantSpec, work: str, log=print) -> Variant
     os.makedirs(tdir, exist_ok=True)
     if os.path.exists(stamp):
         os.unlink(stamp)
-    log(f"   {spec.label}: building {spec.source} = {commit[:12]} (tree {key})")
-    _cargo_build(srcdir, tdir, os.path.join(tdir, "build.log"))
+    log(f"   {spec.label}: building {spec.source} = {commit[:12]} (tree {key}{', features ' + features if features else ''})")
+    _cargo_build(srcdir, tdir, os.path.join(tdir, "build.log"), features)
     if not os.path.exists(so):
         raise BuildError(f"build of {spec.source} produced no {so}")
     with open(stamp, "w") as f:
@@ -171,10 +198,27 @@ def stock_variant(spec: VariantSpec, values: dict[str, str]) -> Variant:
     return Variant(spec, "", "")
 
 
-def prepare(root: str, specs: list[VariantSpec], work: str, values: dict[str, str], log=print) -> list[Variant]:
-    """Every variant's library. Distinct challoc trees build in parallel
-    (the release profile is fat LTO with one codegen unit, so one build
-    leaves most CPUs idle); labels of one tree share the first build."""
+def prepare(root: str, specs: list[VariantSpec], work: str, values: dict[str, str], log=print, features: list[str] | None = None) -> list[Variant]:
+    """Every variant's library, plus a build per extra feature set the rows
+    need (`features`, e.g. ["quantum8"] for the Valkey soak). Distinct
+    challoc trees build in parallel (the release profile is fat LTO with one
+    codegen unit, so one build leaves most CPUs idle); labels of one tree
+    share the first build."""
+    out = _prepare(root, specs, work, values, log)
+    for fs in sorted({f for f in features or [] if f}):
+        done: dict[str, tuple[str, str]] = {}
+        for v in out:
+            if v.spec.kind != "challoc":
+                continue
+            key = v.tree or v.spec.source
+            if key not in done:
+                b = build_challoc(root, v.spec, work, log, features=fs)
+                done[key] = (b.lib, b.sha256)
+            v.extra[fs] = done[key]
+    return out
+
+
+def _prepare(root: str, specs: list[VariantSpec], work: str, values: dict[str, str], log=print) -> list[Variant]:
     for s in specs:
         if s.kind not in ("stock", "challoc"):
             raise SpecError(f"variant {s.label}: unknown kind {s.kind}")

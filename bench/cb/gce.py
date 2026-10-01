@@ -47,8 +47,8 @@ import time
 from typing import Any
 
 from . import report
-from .plan import derive_seed, pack_shards, parse_variant
-from .spec import BENCH_DIR, ROOT_DIR, Cell, SpecError, load_cells, load_rows, load_suite, select_cells
+from .plan import derive_seed, pack_shards, parse_variant, row_vm_seconds
+from .spec import BENCH_DIR, ROOT_DIR, Cell, SpecError, load_cells, load_rows, load_suite, parse_container, select_cells
 from .variants import BuildError, git, resolve_rev
 
 BOOT_SH = os.path.join(BENCH_DIR, "cb", "boot.sh")
@@ -60,6 +60,7 @@ PRICES = {
     "c4a-standard-16": (0.79, 0.29),
     "c4-standard-16": (0.85, 0.33),
     "c4a-standard-4": (0.20, 0.07),
+    "c4-standard-4": (0.21, 0.08),
 }
 PER_VCPU = (0.05, 0.02)
 # Seconds a VM spends before its first run (boot, Docker, pull, build) and
@@ -209,6 +210,31 @@ def read_image_lock(path: str = IMAGE_LOCK) -> dict[str, str]:
     return out
 
 
+def resolve_family(family: str, project: str) -> dict[str, Any] | None:
+    """The image a family points at now (name, creation time), or None
+    when the family does not exist or cannot be read: such a cell is
+    PENDING, not failed (image families get renamed and removed)."""
+    r = gcloud("compute", "images", "describe-from-family", family, f"--project={project}", "--format=json(name,creationTimestamp,status,architecture)", check=False, timeout=120)
+    if r.returncode != 0:
+        return None
+    try:
+        d = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        return None
+    return d if d.get("status", "READY") == "READY" else None
+
+
+def parse_container_arg(s: str) -> dict[str, Any]:
+    """`default`, `privileged,cpus=4`, `default,cpuset=0-3,memory=8g`."""
+    parts = [p.strip() for p in s.split(",") if p.strip()]
+    d: dict[str, Any] = {"profile": parts[0] if parts and "=" not in parts[0] else "default"}
+    for p in parts:
+        if "=" in p:
+            k, v = p.split("=", 1)
+            d[k] = v
+    return parse_container(d, "--container")
+
+
 # ---- bundles -------------------------------------------------------------------
 
 
@@ -286,7 +312,7 @@ class Launch:
         specs = [parse_variant(v, refs) for v in vitems] + [parse_variant(c, refs, role="control") for c in citems]
         self.variants = []
         for v in specs:
-            e = {"label": v.label, "kind": v.kind, "source": v.source, "conf": v.conf, "role": v.role}
+            e = {"label": v.label, "kind": v.kind, "source": v.source, "conf": v.conf, "role": v.role, "knobs": v.knobs}
             if v.kind == "challoc":
                 if v.source == "tree":
                     raise SpecError("variant source `tree` is local-only; commit it (or name the rev) for cb launch")
@@ -304,7 +330,12 @@ class Launch:
         self.seed = a.seed if a.seed is not None else random.randrange(1 << 31)
         self.shard_seconds = a.shard_seconds or s.shard_seconds
         nvar = len(self.variants)
-        self.shards = pack_shards(self.rows, self.row_names, nvar, self.blocks, self.warmup, self.shard_seconds)
+        # Paired rows are packed into shards (every VM runs every variant);
+        # one-variant-per-vm rows (soaks) get a VM per (row, variant,
+        # replicate) of their own.
+        self.paired_rows = [r for r in self.row_names if self.rows.rows[r].placement == "paired"]
+        self.solo_rows = [r for r in self.row_names if self.rows.rows[r].placement != "paired"]
+        self.shards = pack_shards(self.rows, self.paired_rows, nvar, self.blocks, self.warmup, self.shard_seconds) if self.paired_rows else []
         head = next((v for v in self.variants if v.get("rev") == a.head), None) or next((v for v in self.variants if v["kind"] == "challoc"), {"source": "none"})
         rid = "".join(random.choice("abcdefghijkmnpqrstuvwxyz23456789") for _ in range(5))
         ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dt%H%Mz")
@@ -312,34 +343,80 @@ class Launch:
         self.run = (a.run_id or f"{ts}-{head['source'][:7]}-{s.name}-{rid}").lower()
         self.refs = refs
         self.cell_info = {}
+        self.pending_cells: dict[str, str] = {}
+        override = parse_container_arg(a.container) if getattr(a, "container", None) else s.container
+        knobbed = [v["label"] for v in self.variants if v.get("knobs")]
         for n in self.cell_names:
             c = self.cells[n]
             host = c.get("host") or {}
             if not isinstance(host, dict) or "family" not in host:
                 raise SpecError(f"cell {n}: no host image family")
+            container = override or parse_container(c.get("container", "default"), f"cell {n}")
+            if knobbed and container["profile"] != "privileged":
+                raise SpecError(f"variants {', '.join(knobbed)} set host knobs: they need the privileged container profile (suite `container`, or --container privileged); cell {n} runs {container['profile']}")
             self.cell_info[n] = {
                 "arch": c.get("arch"),
                 "machine": c.get("machine"),
                 "family": host["family"],
                 "image_project": host.get("project"),
                 "zones": list(c.get("zones") or []),
-                "container": c.get("container", "default"),
+                "container": container,
+                "runtime": c.get("runtime", "docker"),
+                "bootstrap": c.get("bootstrap", "startup-script"),
+                "prep": list(c.get("prep") or []) + list(s.prep),
+                "expect": dict(c.get("expect") or {}),
                 "pmu": c.get("pmu"),
                 "spot": c.get("spot", "prefer"),
                 "max_run": c.get("max_run", "45m"),
                 "disk": c.get("disk", "hyperdisk-balanced"),
+                "boot_disk_gb": int(c.get("boot_disk_gb", 30)),
                 "quiet": c.get("quiet"),
+                "internal": os.path.basename(c.source).startswith("internal"),
             }
+        self.resolve_images()
         for n in self.cell_names:
+            if n in self.pending_cells:
+                continue
             for r in range(self.replicas):
+                spot = self.cell_info[n]["spot"] != "never"
                 for k, rows in enumerate(self.shards):
-                    self._add_vm(n, k, r, rows, look=1)
+                    self._add_vm(n, k, r, rows, look=1, spot=spot)
+                for j, row in enumerate(self.solo_rows):
+                    for v in self.variants:
+                        if not self._can_run(v, row):
+                            continue
+                        self._add_vm(n, len(self.shards) + j, r, [row], look=1, variant=v["label"], spot=spot)
+
+    def _can_run(self, v: dict[str, Any], row: str) -> bool:
+        from .plan import VariantSpec
+
+        spec = VariantSpec(v["label"], v["kind"], v["source"], v.get("conf", ""), v.get("role", "variant"))
+        r = self.rows.rows[row]
+        return spec.can_run(r.requires, r.allocs)
+
+    def resolve_images(self) -> None:
+        """Every cell's image family to the image it points at now; the
+        VMs of a launch all boot that image, whatever the family does
+        meanwhile. A missing family makes the cell PENDING."""
+        seen: dict[tuple[str, str], dict[str, Any] | None] = {}
+        for n, ci in self.cell_info.items():
+            key = (ci["family"], ci["image_project"])
+            if key not in seen:
+                seen[key] = resolve_family(*key) if not self.args.dry_run else {"name": f"{key[0]} (not resolved: dry run)"}
+            img = seen[key]
+            if img is None:
+                self.pending_cells[n] = f"image family {ci['family']} ({ci['image_project']}) not found"
+                log(f"   {n}: PENDING, {self.pending_cells[n]}")
+                continue
+            ci["image"] = img["name"]
+            ci["image_created"] = img.get("creationTimestamp")
 
     def _cellslug(self, cell: str) -> str:
         return cell.replace("_", "-")[:20]
 
-    def _add_vm(self, cell: str, k: int, r: int, rows: list[str], look: int, attempt: int = 0, spot: bool = True) -> str:
-        base = f"cb-{self.rid}-{self._cellslug(cell)}-s{k:02d}-r{r:02d}" + (f"-l{look}" if look > 1 else "")
+    def _add_vm(self, cell: str, k: int, r: int, rows: list[str], look: int, attempt: int = 0, spot: bool = True, variant: str | None = None) -> str:
+        vslug = f"-v{[v['label'] for v in self.variants].index(variant)}" if variant else ""
+        base = f"cb-{self.rid}-{self._cellslug(cell)}-s{k:02d}{vslug}-r{r:02d}" + (f"-l{look}" if look > 1 else "")
         name = base + (f"-a{attempt}" if attempt else "")
         self.vms[name] = {
             "cell": cell,
@@ -350,7 +427,11 @@ class Launch:
             "attempt": attempt,
             "look": look,
         }
-        self.state[name] = {"base": base, "spot": spot, "status": "pending", "k": k}
+        if variant:
+            # One variant on this VM: one block, no warm-up (a soak is its
+            # own warm-up); compared unpaired across VMs (report.py).
+            self.vms[name].update(variants=[variant], blocks=1, warmup_blocks=0)
+        self.state[name] = {"base": base, "spot": spot, "status": "pending", "k": k, "variant": variant}
         self.pending.append(name)
         return name
 
@@ -359,11 +440,23 @@ class Launch:
         mins = cost = 0.0
         for name, v in self.vms.items():
             ci = self.cell_info[v["cell"]]
-            run_s = sum(self.rows.rows[r].est_s * len(self.variants) * 2 * (self.blocks + self.warmup) for r in v["rows"])
-            m = (VM_OVERHEAD_S + run_s) / 60
+            m = (VM_OVERHEAD_S + self.vm_run_s(name)) / 60
             mins += m
             cost += m / 60 * price(ci["machine"], True)
         return mins, cost
+
+    def vm_run_s(self, name: str) -> float:
+        v = self.vms[name]
+        if v.get("variants"):
+            return sum(self.rows.rows[r].est_s * len(v["variants"]) * int(v.get("blocks", 1)) for r in v["rows"])
+        return sum(row_vm_seconds(self.rows, r, len(self.variants), self.blocks, self.warmup) for r in v["rows"])
+
+    def vm_max_run(self, name: str) -> str:
+        """The VM's max-run-duration: the cell's, or 2 x the estimate plus
+        10 minutes when that is longer (soaks)."""
+        ci = self.cell_info[self.vms[name]["cell"]]
+        need = 2 * (VM_OVERHEAD_S + self.vm_run_s(name)) + 600
+        return f"{int(max(_dur_s(ci['max_run']), need) // 60)}m"
 
     # -- bundles -------------------------------------------------------------
 
@@ -403,8 +496,10 @@ class Launch:
             "alpha": self.suite.alpha,
             "image": self.image,
             "cells": self.cell_info,
+            "pending_cells": self.pending_cells,
             "vms": self.vms,
             "cb_commit": self.cb_commit,
+            "vars": dict(kv.split("=", 1) for kv in (self.args.var or [])),
         }
 
     def upload_launch(self) -> None:
@@ -414,12 +509,39 @@ class Launch:
 
     # -- VMs -------------------------------------------------------------------
 
-    def _create_group(self, cell: str, names: list[str], spot: bool) -> list[str]:
+    def metadata(self, cell: str) -> str:
+        """The VM's instance metadata (gcloud's ^|^ delimiter form, values
+        may hold commas): boot.sh reads its work from here, so the host
+        needs no JSON parser (a Chainguard OS host has no python3)."""
+        ci = self.cell_info[cell]
+        c = ci["container"]
+        md = {
+            "cb-bucket": self.bucket,
+            "cb-run": self.run,
+            "cb-harness": f"src/{self.harness}.tar.gz",
+            "cb-sources": " ".join(x["object"] for x in self.sources.values()),
+            "cb-image": self.image.get(ci["arch"], ""),
+            "cb-runtime": ci["runtime"],
+            "cb-container": c["profile"],
+            "cb-cpus": c.get("cpus", ""),
+            "cb-memory": c.get("memory", ""),
+            "cb-cpuset": c.get("cpuset", ""),
+            "cb-prep": " ".join(ci["prep"]),
+        }
+        return "^|^" + "|".join(f"{k}={v}" for k, v in md.items())
+
+    def _create_group(self, cell: str, names: list[str], spot: bool, max_run: str) -> list[str]:
         """Bulk-create names in the cell's zones, first zone first; returns
         the names that could not be created anywhere."""
         ci = self.cell_info[cell]
         left = list(names)
         errors = []
+        # bootstrap: startup-script (boot.sh as the startup script; the
+        # guest agent runs it as root at boot: Ubuntu, Debian and the
+        # Chainguard OS images alike) or ssh-systemd-run (boot.sh in the
+        # cb-boot metadata key, started over ssh as a transient system unit
+        # once ssh answers, for images whose agent runs no scripts).
+        boot_key = "startup-script" if ci["bootstrap"] == "startup-script" else "cb-boot"
         for zone in ci["zones"]:
             if not left:
                 break
@@ -429,20 +551,22 @@ class Launch:
                 "--min-count=1",
                 f"--zone={zone}",
                 f"--machine-type={ci['machine']}",
-                f"--image-family={ci['family']}",
+                f"--image={ci['image']}",
                 f"--image-project={ci['image_project']}",
-                "--boot-disk-size=30GB",
+                f"--boot-disk-size={ci['boot_disk_gb']}GB",
                 f"--boot-disk-type={ci['disk']}",
-                f"--max-run-duration={ci['max_run']}",
+                f"--max-run-duration={max_run}",
                 "--instance-termination-action=DELETE",
                 f"--service-account={self.sa}",
                 "--scopes=cloud-platform",
-                f"--metadata=cb-bucket={self.bucket},cb-run={self.run}",
-                f"--metadata-from-file=startup-script={BOOT_SH}",
+                f"--metadata={self.metadata(cell)}",
+                f"--metadata-from-file={boot_key}={BOOT_SH}",
                 f"--labels={LABEL},cb-run={self.run},cb-cell={cell}",
             ]
             if spot:
                 flags.append("--provisioning-model=SPOT")
+            elif "-metal" in ci["machine"]:
+                flags.append("--maintenance-policy=TERMINATE")
             if ci.get("pmu") and not self.args.no_pmu:
                 flags.append(f"--performance-monitoring-unit={ci['pmu']}")
             t = time.time()
@@ -456,8 +580,31 @@ class Launch:
                 errors.append(f"{zone}: {r.stderr.strip().splitlines()[-1] if r.stderr.strip() else r.returncode}")
                 log(f"   create in {zone}: {len(created)} created, {len(left)} not: {errors[-1][:300]}")
             else:
-                log(f"   created {len(created)} {ci['machine']} {'spot' if spot else 'on-demand'} VMs in {zone} ({now - t:.0f} s)")
+                log(f"   created {len(created)} {ci['machine']} {'spot' if spot else 'on-demand'} VMs in {zone} ({now - t:.0f} s, image {ci['image']})")
+            if created and ci["bootstrap"] == "ssh-systemd-run":
+                for n in created:
+                    threading.Thread(target=self._ssh_start, args=(n, zone), daemon=True).start()
         return left
+
+    def _ssh_start(self, name: str, zone: str) -> None:
+        """The ssh-systemd-run bootstrap: once ssh answers, fetch boot.sh
+        from the cb-boot metadata key and start it as a transient system
+        unit (a job started from an ssh session dies with the session's
+        scope on a Chainguard OS host; a system unit outlives it)."""
+        cmd = (
+            "curl -sf -H Metadata-Flavor:Google http://metadata.google.internal/computeMetadata/v1/instance/attributes/cb-boot -o /tmp/cb-boot.sh"
+            " && sudo systemd-run --collect --quiet --unit=cb-boot bash /tmp/cb-boot.sh && echo cb-boot-started"
+        )
+        deadline = time.time() + 600
+        while time.time() < deadline:
+            r = gcloud("compute", "ssh", name, f"--zone={zone}", f"--command={cmd}", "--ssh-flag=-oConnectTimeout=10", "--ssh-flag=-oStrictHostKeyChecking=no", project=self.project, check=False, timeout=120)
+            if "cb-boot-started" in (r.stdout or ""):
+                log(f"   {name}: boot.sh started over ssh")
+                return
+            if self.state.get(name, {}).get("status") != "created":
+                return
+            time.sleep(15)
+        log(f"   {name}: ssh never answered; the VM will time out")
 
     def _existing(self, names: set[str]) -> set[str]:
         try:
@@ -475,11 +622,11 @@ class Launch:
                 self.state[n]["status"] = "creating"
         if not take:
             return
-        groups: dict[tuple[str, bool], list[str]] = collections.defaultdict(list)
+        groups: dict[tuple[str, bool, str], list[str]] = collections.defaultdict(list)
         for n in take:
-            groups[(self.vms[n]["cell"], self.state[n]["spot"])].append(n)
+            groups[(self.vms[n]["cell"], self.state[n]["spot"], self.vm_max_run(n))].append(n)
         with concurrent.futures.ThreadPoolExecutor(len(groups)) as ex:
-            futs = {ex.submit(self._create_group, c, ns, spot): (c, ns) for (c, spot), ns in groups.items()}
+            futs = {ex.submit(self._create_group, c, ns, spot, mr): (c, ns) for (c, spot, mr), ns in groups.items()}
             for f in futs:
                 left = f.result()
                 for n in left:
@@ -497,7 +644,7 @@ class Launch:
             log(f"   {name}: giving up on {v['cell']} {v['shard']} r{v['replicate']}")
             return
         att = v["attempt"] + 1
-        n2 = self._add_vm(v["cell"], st["k"], v["replicate"], v["rows"], v["look"], attempt=att, spot=att < 2 and st["spot"])
+        n2 = self._add_vm(v["cell"], st["k"], v["replicate"], v["rows"], v["look"], attempt=att, spot=att < 2 and st["spot"], variant=st.get("variant"))
         self.state[n2]["rescheduled_from"] = name
         log(f"   rescheduled as {n2} ({'spot' if self.state[n2]['spot'] else 'on demand'})")
         self.upload_launch()
@@ -606,7 +753,7 @@ class Launch:
                 key_cell[h["comparability"]] = h.get("cell")
         todo: dict[str, list[str]] = collections.defaultdict(list)
         for r in summary["results"]:
-            if r["kind"] == "gate" and r["verdict"] == "inconclusive":
+            if r["kind"] == "gate" and r["verdict"] == "inconclusive" and r["row"] in self.paired_rows:
                 c = key_cell.get(r["comparability"])
                 if c in self.cell_info and r["row"] not in todo[c]:
                     todo[c].append(r["row"])
@@ -618,7 +765,7 @@ class Launch:
             log(f"== look 2 on {c}: {', '.join(rows)} inconclusive; {n_ext} x {len(shards)} more VMs")
             for r in range(n_ext):
                 for k, srows in enumerate(shards):
-                    self._add_vm(c, k, self.replicas + r, srows, look=2)
+                    self._add_vm(c, k, self.replicas + r, srows, look=2, spot=self.cell_info[c]["spot"] != "never")
         self.upload_launch()
         return True
 
@@ -653,9 +800,15 @@ def launch(args: Any) -> int:
     mins, usd = L.est()
     nvm = len(L.vms)
     log(f"== cb launch {L.suite.name}: run {L.run}")
-    log(f"   cells {', '.join(L.cell_names)}; {len(L.shards)} shards x {L.replicas} replicas = {nvm} VMs (at most {L.max_vms} at once)")
+    log(f"   cells {', '.join(L.cell_names)}; {len(L.shards)} shards x {L.replicas} replicas{f' + {len(L.solo_rows)} one-variant-per-vm rows' if L.solo_rows else ''} = {nvm} VMs (at most {L.max_vms} at once)")
     for k, s in enumerate(L.shards):
         log(f"   s{k:02d}: {', '.join(s)}")
+    for r in L.solo_rows:
+        log(f"   {r}: one VM per variant and replicate (unpaired)")
+    for n, ci in L.cell_info.items():
+        if n not in L.pending_cells:
+            c = ci["container"]
+            log(f"   {n}: {ci['machine']} {ci.get('image')} ({ci['image_project']}), {ci['runtime']}, bootstrap {ci['bootstrap']}, container {c['profile']}{', cpus ' + c['cpus'] if c.get('cpus') else ''}{', cpuset ' + c['cpuset'] if c.get('cpuset') else ''}{', memory ' + c['memory'] if c.get('memory') else ''}{', prep ' + ' '.join(ci['prep']) if ci['prep'] else ''}")
     for v in L.variants:
         log(f"   {v['label']:<8} {v.get('rev', v['source'])} {v['source'][:12] if v['kind'] == 'challoc' else ''}")
     log(f"   estimate {mins:.0f} VM-minutes, ${usd:.2f} spot (budget ${L.suite.budget_usd:.0f})")
@@ -663,17 +816,21 @@ def launch(args: Any) -> int:
         print(f"cb launch: estimated ${usd:.2f} is over the suite budget ${L.suite.budget_usd:.2f}; --allow-cost to run anyway", file=sys.stderr)
         return 3
     if args.dry_run:
-        print(json.dumps(L.launch_doc() if hasattr(L, "harness") else {"vms": L.vms, "shards": L.shards}, indent=1, default=str))
+        print(json.dumps(L.launch_doc() if hasattr(L, "harness") else {"vms": L.vms, "shards": L.shards, "cells": L.cell_info, "pending_cells": L.pending_cells}, indent=1, default=str))
         return 0
     out = args.out or os.path.join(ROOT_DIR, "target", "results", "cb", L.run)
     os.makedirs(out, exist_ok=True)
+    if not L.vms:
+        log(f"cb launch: every cell is PENDING ({'; '.join(f'{k}: {v}' for k, v in L.pending_cells.items())}); nothing to run")
+        _write(os.path.join(out, "launch-summary.json"), {"run": L.run, "headline": "PENDING", "pending_cells": L.pending_cells})
+        return 2
     try:
         log("== bundle")
         L.bundle()
         L.times["bundled"] = time.time() - L.t0
         log(f"   harness {L.harness[:12]}, {len(L.sources)} variant trees, image {', '.join(f'{k}={v[-12:]}' for k, v in L.image.items()) or 'none (VMs build it)'} ({L.times['bundled']:.0f} s)")
         log("== create")
-        max_run_s = max(_dur_s(ci["max_run"]) for ci in L.cell_info.values())
+        max_run_s = max([_dur_s(L.vm_max_run(n)) for n in L.vms] or [0])
         deadline = time.time() + max_run_s + 120
         L.create_pending()
         L.times["created"] = time.time() - L.t0
@@ -717,13 +874,15 @@ def launch(args: Any) -> int:
         "wall_s": {k: round(v, 1) for k, v in L.times.items()},
         "vm_times_median_s": vm_timings(dirs),
         "cost": L.cost(),
+        "pending_cells": L.pending_cells,
+        "images": {n: {k: ci.get(k) for k in ("family", "image", "image_project", "image_created")} for n, ci in L.cell_info.items()},
         "headline": summary["headline"] if summary else "INFRA",
     }
     _write(os.path.join(out, "launch-summary.json"), ls)
     if not summary:
         log("cb launch: no samples came back")
         return 3
-    summary["launch"] = {k: ls[k] for k in ("wall_s", "vm_times_median_s", "cost", "looks", "shards_lost")}
+    summary["launch"] = {k: ls[k] for k in ("wall_s", "vm_times_median_s", "cost", "looks", "shards_lost", "pending_cells", "images")}
     _write(os.path.join(out, "summary.json"), summary)
     text = report.render(summary)
     text += (
@@ -731,6 +890,7 @@ def launch(args: Any) -> int:
         f"first VM done {L.times.get('first_done', 0):.0f} s); VM medians {ls['vm_times_median_s']}; "
         f"{ls['cost']['vms_created']} VMs, {ls['cost']['vm_minutes']} VM-minutes, about ${ls['cost']['usd_estimate']}"
         + (f"; lost shards {', '.join(lost)}" if lost else "") + "\n"
+        + "".join(f"\nPENDING {k}: {v}\n" for k, v in L.pending_cells.items())
     )
     with open(os.path.join(out, "report.md"), "w") as f:
         f.write(text)
@@ -812,6 +972,8 @@ def add_launch_args(p: Any) -> None:
     p.add_argument("--rows")
     p.add_argument("--cells", help="cell selector (default the suite's, e.g. tag:gate); ref-amd64 for one arch")
     p.add_argument("--cells-path", action="append")
+    p.add_argument("--container", help="container profile on every cell, overriding the suite and cells: default, privileged, perfmon, plus ,cpus=N,memory=SIZE")
+    p.add_argument("--var", action="append", help="NAME=VALUE for a {NAME} in rows.toml, passed to every VM (e.g. valkey_soak_secs=300)")
     p.add_argument("--replicas", type=int, help="VMs per (cell, shard) (default the suite's)")
     p.add_argument("--blocks", type=int)
     p.add_argument("--warmup", type=int)

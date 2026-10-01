@@ -138,7 +138,20 @@ def compare_row(
             if all(x for x in pc + pr):
                 g[vm].append(statistics.fmean(math.log(x) for x in pc) - statistics.fmean(math.log(x) for x in pr))
     level = 1.0 - alpha
-    cmp_ = stats.Comparison(dict(groups), level=level, seed=seed)
+    if not groups and not broken:
+        # No (vm, block) ran both variants: a one-variant-per-vm row. Each
+        # VM's mean oriented log score per variant, compared unpaired.
+        per_vm: dict[str, dict[str, list[float]]] = collections.defaultdict(lambda: collections.defaultdict(list))
+        for (vm, _blk), by in cells.items():
+            for lab, ss in by.items():
+                per_vm[lab][vm] += [stats.orient(x["score"], higher) for x in ss]
+        cmp_: Any = stats.Unpaired(
+            [statistics.fmean(v) for v in per_vm[cand].values()],
+            [statistics.fmean(v) for v in per_vm[ref].values()],
+            level=level,
+        )
+    else:
+        cmp_ = stats.Comparison(dict(groups), level=level, seed=seed)
     m, calibrated = stats.margin(delta_pct, aa_history or [])
     lo, hi = cmp_.ci_pct
     v = stats.verdict(cmp_.est_pct, lo, hi, m, broken=bool(broken))
@@ -197,8 +210,30 @@ def compare_row(
     }
 
 
+def expand_metrics(samples: list[dict[str, Any]], rows: Rows) -> list[dict[str, Any]]:
+    """Every sample of a driver row with `metrics` also becomes one sample
+    per metric (row `<row>.<metric>`, the metric's value as the score), so
+    RSS after settle or p99 get a verdict of their own."""
+    out = list(samples)
+    for s in samples:
+        r = rows.rows.get(s["row"])
+        if r is None or not r.metrics:
+            continue
+        for m in r.metrics:
+            d = rows.rows[f"{r.name}.{m['name']}"]
+            v = (s.get("extra") or {}).get(m["name"])
+            parent_ok = s.get("score") is not None and not s.get("error")
+            ok = parent_ok and isinstance(v, (int, float)) and v > 0
+            if parent_ok and not ok:
+                # The driver ran but did not report this figure (a phase
+                # too short to happen): no sample, not a broken run.
+                continue
+            out.append({**s, "row": d.name, "score": float(v) if ok else None, "unit": d.unit, "better": d.better, "error": "" if ok else (s.get("error") or "broken"), "pmc": None})
+    return out
+
+
 def analyze(runs: list[dict[str, Any]], rows: Rows, *, cand: str | None = None, ref: str | None = None, aa_history: list[float] | None = None) -> dict[str, Any]:
-    samples = [s for r in runs for s in r["samples"]]
+    samples = expand_metrics([s for r in runs for s in r["samples"]], rows)
     blocks = [b for r in runs for b in r["blocks"]]
     keys = sorted({s["comparability"] for s in samples})
     manifest = runs[0]["manifest"] if runs else {}
@@ -224,6 +259,15 @@ def analyze(runs: list[dict[str, Any]], rows: Rows, *, cand: str | None = None, 
             if name not in row_order:
                 row_order.append(name)
     row_order += sorted({s["row"] for s in samples} - set(row_order))
+    # A driver row's metric rows right after it.
+    metric_of = {n: rows.rows[n].parent for n in row_order if n in rows.rows and rows.rows[n].kind == "metric"}
+    ordered: list[str] = []
+    for name in row_order:
+        if name in metric_of and metric_of[name] in row_order:
+            continue
+        ordered.append(name)
+        ordered += sorted((m for m in row_order if metric_of.get(m) == name), key=list(rows.rows).index)
+    row_order = ordered
     results = []
     for key in keys:
         ks = [s for s in samples if s["comparability"] == key]
@@ -266,6 +310,22 @@ def analyze(runs: list[dict[str, Any]], rows: Rows, *, cand: str | None = None, 
         for i, r in enumerate(info):
             r["q"] = q[str(i)]
     pmc_notes = sorted({s.get("pmc_note", "") for s in samples if not s.get("pmc") or "cycles" not in (s.get("pmc") or {})} - {""})
+    # What each comparability key booted: the kernel uname -r reported, the
+    # image family asked for, the features line, the container profile.
+    key_hosts: dict[str, dict[str, Any]] = {}
+    for r in runs:
+        h = r["host"]
+        k = h.get("comparability")
+        if k and k not in key_hosts:
+            key_hosts[k] = {
+                "cell": h.get("cell"),
+                "kernel": h.get("kernel"),
+                "cpu": (h.get("cpu") or {}).get("model"),
+                "requested": h.get("requested"),
+                "features": h.get("features"),
+                "container": h.get("container_profile"),
+                "thp": (h.get("thp") or {}).get("enabled"),
+            }
     return {
         "schema": "challoc.bench.summary/v1",
         "runs": list(dict.fromkeys(r["manifest"].get("run") for r in runs)),
@@ -278,6 +338,7 @@ def analyze(runs: list[dict[str, Any]], rows: Rows, *, cand: str | None = None, 
         "variants": variants,
         "notes": manifest.get("notes", []),
         "host": runs[0]["host"] if runs else {},
+        "key_hosts": key_hosts,
         "excluded_vms": excluded,
         "flagged_blocks": len(flagged),
         "results": results,
@@ -315,12 +376,22 @@ def render(summary: dict[str, Any]) -> str:
     out.append("")
     ind = " (indicative: one local host, never pooled with GCE cells, never a verdict of record)" if summary.get("indicative") else ""
     out.append(f"- cell: {', '.join(summary['cells'])}{ind}")
+    kh = summary.get("key_hosts") or {}
     for k in summary["comparability"]:
         out.append(f"- comparability: `{k}`")
+        x = kh.get(k)
+        if x and len(summary["comparability"]) > 1:
+            req = x.get("requested") or {}
+            asked = f", image {req.get('image')} (family {req.get('family')})" if req.get("family") else ""
+            out.append(f"  - {x.get('cell')}: kernel {x.get('kernel')}{asked}, {x.get('cpu')}, THP {x.get('thp')}, container {(x.get('container') or {}).get('profile', '-')}")
+            if x.get("features"):
+                out.append(f"  - {x['features']}")
     if h:
         out.append(f"- host: {h.get('arch')} {h.get('cpu', {}).get('model')}, {h.get('nproc')} CPUs, kernel {h.get('kernel')}, THP {h.get('thp', {}).get('enabled')}, governor {h.get('governor')}, {h.get('glibc')}, load at start {h.get('quiet_gate', {}).get('load1', '-')}")
         if h.get("features"):
             out.append(f"- {h['features']}")
+        if h.get("requested", {}).get("family") and len(summary["comparability"]) <= 1:
+            out.append(f"- image: {h['requested'].get('image')} (family {h['requested'].get('family')}), container {(h.get('container_profile') or {}).get('profile', '-')}")
     for v in summary["variants"]:
         src = f"{v['source']} = {v['commit'][:12]}" if v.get("kind") == "challoc" else v.get("source")
         conf = f", MALLOC_CONF={v['conf']}" if v.get("conf") else ""

@@ -100,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("selector", nargs="?")
     p.add_argument("--cells-path", action="append")
     p.add_argument("--lint", action="store_true", help="fail when a public file names an internal image or project")
+    p.add_argument("--resolve", action="store_true", help="resolve every GCE cell's image family now (exit 2 when one is PENDING)")
 
     p = sub.add_parser("build", help="build challoc variants from revs (in the dev container)")
     p.add_argument("revs", nargs="+")
@@ -189,7 +190,8 @@ def _dispatch(a: argparse.Namespace) -> int:
     if a.cmd == "rows":
         rows = load_rows()
         for r in rows.rows.values():
-            print(f"{r.name:<22} {r.klass:<3} {r.better:<6} {r.unit:<12} {' '.join(r.cmd)}")
+            what = f"{r.driver} (score {r.metric}; {r.placement})" if r.is_driver else (f"metric of {r.parent}" if r.kind == "metric" else " ".join(r.cmd))
+            print(f"{r.name:<28} {r.klass:<6} {r.better:<6} {r.unit:<12} {what}")
         return 0
     if a.cmd == "suites":
         rows = load_rows()
@@ -205,6 +207,22 @@ def _dispatch(a: argparse.Namespace) -> int:
             return 1 if probs else 0
         cells = load_cells(a.cells_path or [])
         names = select_cells(a.selector, cells) if a.selector else list(cells)
+        if a.resolve:
+            from .gce import resolve_family
+
+            pending = 0
+            seen: dict = {}
+            for n in names:
+                host = cells[n].get("host")
+                if cells[n].provider != "gce" or not isinstance(host, dict):
+                    continue
+                key = (host.get("family"), host.get("project"))
+                if key not in seen:
+                    seen[key] = resolve_family(*key)
+                img = seen[key]
+                pending += img is None
+                print(f"{n:<20} {key[1]}/{key[0]}: {img['name'] + ' (' + img.get('creationTimestamp', '')[:10] + ')' if img else 'PENDING (family not found)'}")
+            return 2 if pending else 0
         for n in names:
             c = cells[n]
             host = c.get("host")

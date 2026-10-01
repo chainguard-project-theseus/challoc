@@ -33,5 +33,17 @@ RUN cd /src && sh bench/build.sh \
 COPY Cargo.toml Cargo.lock /tmp/cb-fetch/
 RUN cd /tmp/cb-fetch && mkdir src && : > src/lib.rs && cargo fetch && cd / && rm -rf /tmp/cb-fetch
 
+# The driver rows (bench/drivers/, bench/rows.toml): Valkey's build and
+# load generators (openssl-dev for BUILD_TLS, memtier), Ruby's build
+# dependencies (tests/consumers/ruby-build.sh) and the JDK with `ab` for the
+# JVM rows. Last, so the layers above stay cached when this list changes.
+RUN apk add --no-cache tcl openssl-dev memtier-benchmark \
+      autoconf ruby-3.4 jemalloc-dev yaml-dev zlib-dev libffi-dev tzdata \
+      openjdk-21 apache2-utils \
+ && test -x /usr/lib/jvm/java-21-openjdk/bin/javac && command -v memtier_benchmark ab >/dev/null
+# The fixed runpath the Valkey driver links against (one Valkey build;
+# each challoc variant is swapped in by a symlink).
+RUN mkdir -p /opt/challoc/lib
+
 ENV CB_BENCH_BIN=/opt/cb/bench-bin
 WORKDIR /src

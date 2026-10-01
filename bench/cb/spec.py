@@ -38,7 +38,13 @@ PUBLIC_IMAGE_PROJECTS = (
     "opensuse-cloud",
 )
 
-PARSERS = ("larson", "xmalloc", "valkey_model.write", "churn.occ", "wall")
+PARSERS = ("larson", "xmalloc", "valkey_model.write", "churn.occ", "wall", "driver")
+# Row kinds: `timed` (one program per run, scored by a parser), `soak` and
+# `driver` (a script under bench/drivers/ that writes its metrics to
+# RESULT_JSONL, scored by one of them), `metric` (a derived row: one extra
+# metric of a driver row, compared on its own; never run).
+ROW_KINDS = ("timed", "soak", "driver", "metric")
+PLACEMENTS = ("paired", "one-variant-per-vm")
 CLASSES_DEFAULT = {
     "st": {"delta_pct": 1.0},
     "mt": {"delta_pct": 2.0},
@@ -71,10 +77,33 @@ class Row:
     est_s: float = 10.0
     needs: list[str] = dataclasses.field(default_factory=list)
     kind: str = "timed"
+    # Driver rows (kind soak or driver): the script (relative to bench/),
+    # the metric that is the score, and the extra metrics compared as rows
+    # of their own (`<row>.<metric>`, kind metric, parent = this row).
+    driver: str = ""
+    metric: str = ""
+    metrics: list[dict[str, Any]] = dataclasses.field(default_factory=list)
+    parent: str = ""
+    # Cargo features the variant library needs for this row ("quantum8":
+    # Valkey's allocator_defrag.c asserts an 8-byte quantum; "jemalloc-soname"
+    # for the --with-jemalloc Ruby); empty: the default build.
+    features: str = ""
+    # paired: every VM runs every variant in ABBA blocks; one-variant-per-vm:
+    # a VM runs one variant (soaks: replicas per variant in parallel,
+    # compared unpaired).
+    placement: str = "paired"
+    # The variant sources the row can run (challoc = any challoc build,
+    # or a stock allocator name); empty: all.
+    allocs: list[str] = dataclasses.field(default_factory=list)
+    timeout_s: float | None = None
 
     @property
     def higher_is_better(self) -> bool:
         return self.better == "higher"
+
+    @property
+    def is_driver(self) -> bool:
+        return self.kind in ("soak", "driver")
 
 
 @dataclasses.dataclass
@@ -105,6 +134,8 @@ class Suite:
     budget_usd: float
     local: dict[str, Any]
     raw: dict[str, Any]
+    container: dict[str, Any] | None = None
+    prep: list[str] = dataclasses.field(default_factory=list)
 
     @property
     def alpha(self) -> float:
@@ -148,6 +179,18 @@ def parse_rows(doc: dict[str, Any], source: str = "rows.toml") -> Rows:
         if parser is None and isinstance(r.get("score"), dict):
             parser = r["score"].get("parser")
         kind = r.get("kind", "timed")
+        if kind not in ROW_KINDS or kind == "metric":
+            raise SpecError(f"{where}: kind must be timed, soak or driver")
+        if kind in ("soak", "driver"):
+            if not r.get("driver"):
+                raise SpecError(f"{where}: a {kind} row needs driver = \"drivers/<script>\"")
+            if not os.path.exists(os.path.join(BENCH_DIR, r["driver"])):
+                raise SpecError(f"{where}: driver {r['driver']} does not exist under bench/")
+            if not r.get("metric"):
+                raise SpecError(f"{where}: a {kind} row needs metric = \"<the score metric>\"")
+            parser = "driver"
+        if r.get("placement", "paired") not in PLACEMENTS:
+            raise SpecError(f"{where}: placement must be one of {', '.join(PLACEMENTS)}")
         if kind == "timed":
             if not isinstance(r.get("cmd"), list) or not r["cmd"]:
                 raise SpecError(f"{where}: cmd must be a non-empty list")
@@ -181,7 +224,33 @@ def parse_rows(doc: dict[str, Any], source: str = "rows.toml") -> Rows:
             est_s=float(r.get("est_s", 10)),
             needs=list(r.get("needs", [])),
             kind=kind,
+            driver=str(r.get("driver", "")),
+            metric=str(r.get("metric", "")),
+            metrics=[dict(m) for m in r.get("metrics", [])],
+            features=str(r.get("features", "")),
+            placement=str(r.get("placement", "paired")),
+            allocs=[str(a) for a in r.get("allocs", [])],
+            timeout_s=float(r["timeout_s"]) if "timeout_s" in r else None,
         )
+        for m in r.get("metrics", []):
+            if "name" not in m:
+                raise SpecError(f"{where}: every metrics entry needs a name")
+            mk = m.get("class", klass)
+            if mk not in classes:
+                raise SpecError(f"{where}: metric {m['name']}: class {mk!r} has no [class] entry")
+            dn = f"{name}.{m['name']}"
+            rows[dn] = Row(
+                name=dn,
+                cmd=[],
+                parser="",
+                unit=str(m.get("unit", "")),
+                better=str(m.get("better", "lower")),
+                klass=mk,
+                kind="metric",
+                parent=name,
+                placement=rows[name].placement,
+                est_s=0,
+            )
     return Rows(rows=rows, vars=vars_, classes=classes)
 
 
@@ -222,6 +291,15 @@ SUITE_DEFAULTS: dict[str, Any] = {
     "shard_seconds": 150,
     "budget_usd": 0.0,
     "local": {},
+    # The container profile on the cells: "default" (the runtime's default
+    # seccomp), "privileged", "perfmon" (CAP_PERFMON only), or a table
+    # {profile, cpus, memory, cpuset}; overrides the cells' `container`.
+    "container": None,
+    # Host preparation added to every cell's own (bench/cb/boot.sh): e.g.
+    # ["thp:64kB=madvise"].
+    "prep": [],
+    # Metrics the suite wants recorded beside the score (informational).
+    "record": [],
 }
 
 
@@ -257,6 +335,8 @@ def parse_suite(name: str, doc: dict[str, Any], rows: Rows | None = None) -> Sui
         for r in row_names:
             if r not in rows.rows:
                 raise SpecError(f"suite {name}: unknown row {r!r}")
+            if rows.rows[r].kind == "metric":
+                raise SpecError(f"suite {name}: {r} is a metric of row {rows.rows[r].parent}, not a row to run")
     if d["kind"] not in ("compare", "smoke"):
         raise SpecError(f"suite {name}: kind must be compare or smoke")
     if d["kind"] == "compare" and len(d["variants"]) < 2:
@@ -278,7 +358,50 @@ def parse_suite(name: str, doc: dict[str, Any], rows: Rows | None = None) -> Sui
         budget_usd=float(d["budget_usd"]),
         local=dict(d["local"]),
         raw=doc,
+        container=parse_container(d["container"], f"suite {name}") if d["container"] is not None else None,
+        prep=[str(p) for p in d["prep"]],
     )
+
+
+CONTAINER_PROFILES = ("default", "privileged", "perfmon")
+
+
+def parse_container(c: Any, where: str = "container") -> dict[str, Any]:
+    """A container profile: a name, or {profile, cpus, memory, cpuset}:
+    cpus is a CFS quota (--cpus: the threads run on every CPU and are
+    throttled), cpuset pins the container to CPUs (--cpuset-cpus "0-3":
+    more threads than CPUs, preempted by each other). Returns the table
+    form."""
+    if isinstance(c, str):
+        c = {"profile": c}
+    if not isinstance(c, dict):
+        raise SpecError(f"{where}: container must be a profile name or a table")
+    out = {"profile": str(c.get("profile", "default"))}
+    if out["profile"] not in CONTAINER_PROFILES:
+        raise SpecError(f"{where}: container profile {out['profile']!r} is not one of {', '.join(CONTAINER_PROFILES)}")
+    if c.get("cpus") is not None:
+        out["cpus"] = str(c["cpus"])
+    if c.get("memory") is not None:
+        out["memory"] = str(c["memory"])
+    if c.get("cpuset") is not None:
+        out["cpuset"] = str(c["cpuset"])
+    unknown = set(c) - {"profile", "cpus", "memory", "cpuset"}
+    if unknown:
+        raise SpecError(f"{where}: unknown container keys {', '.join(sorted(unknown))}")
+    return out
+
+
+def container_key(c: dict[str, Any] | str | None) -> str:
+    """The container part of the comparability key: profile plus limits."""
+    c = parse_container(c or "default")
+    s = c["profile"]
+    if c.get("cpus"):
+        s += f",cpus={c['cpus']}"
+    if c.get("memory"):
+        s += f",mem={c['memory']}"
+    if c.get("cpuset"):
+        s += f",cpuset={c['cpuset']}"
+    return s
 
 
 def load_suite(name: str, rows: Rows | None = None, suites_dir: str | None = None) -> Suite:
@@ -298,7 +421,7 @@ def select_rows(selector: str, rows: Rows) -> list[str]:
     """`all`, `all:class!=soak`, `all:class=st`, or a comma list."""
     if not selector.startswith("all"):
         return [s.strip() for s in selector.split(",") if s.strip()]
-    names = list(rows.rows)
+    names = [n for n, r in rows.rows.items() if r.kind != "metric"]
     if ":" in selector:
         cond = selector.split(":", 1)[1]
         m = re.fullmatch(r"(\w+)(!=|=)(\w+)", cond)

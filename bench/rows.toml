@@ -30,12 +30,38 @@
 #              the quick rows are the median wall time on the C4/C4A cells
 #              (cb launch, 2026-09-30) plus process start
 #   needs      files that must exist ({...} expanded) or the row is skipped
+#
+# Driver rows (kind = "soak" or "driver"): a script under bench/drivers/
+# runs once per run with the variant in its environment (CB_ALLOC
+# challoc|jemalloc|glibc|..., CB_LIB the library, CB_CONF its MALLOC_CONF,
+# CB_OUT a scratch directory) plus the row's env, and writes its figures as
+# JSON lines {"metrics": {name: number}} to RESULT_JSONL (bench/README.md,
+# "Drivers"). Fields:
+#   driver     the script, relative to bench/
+#   metric     the figure that is the row's score (unit, better as above)
+#   metrics    more figures, each compared as a row of its own named
+#              <row>.<name>: [{ name, unit, better, class }]
+#   features   cargo features of the challoc build the row needs (quantum8,
+#              jemalloc-soname); every challoc variant is built with them
+#   allocs     the variant sources the driver supports (challoc, jemalloc,
+#              glibc, ...); other variants skip the row
+#   placement  paired (default: ABBA on every VM) or one-variant-per-vm
+#              (cb launch gives each (variant, replicate) a VM of its own,
+#              one block, compared unpaired with Welch's t on the log scale)
+#   timeout_s  per run (default 2 x est_s + 300)
 
 [vars]
 valkey_n = "850000"
 valkey_secs = "5"
 churn_class = "1024"
 churn_secs = "8"
+# Driver rows: the soak lengths (the acceptance protocol's; a smoke run
+# passes --var valkey_soak_secs=60 and so on).
+valkey_soak_secs = "1200"
+valkey_soak_settle = "60"
+ruby_soak_secs = "600"
+jvm_soak_secs = "1200"
+jvm_server_secs = "300"
 
 # Practical thresholds delta (owner decision O9), in percent.
 [class]
@@ -43,6 +69,9 @@ st = { delta_pct = 1.0 }
 mt = { delta_pct = 2.0 }
 server = { delta_pct = 3.0 }
 soak = { delta_pct = 3.0, rss_delta_pct = 2.0, rss_delta_mib = 1.0 }
+# Resident-memory figures of the soaks (peak, after settle): nearly
+# deterministic, so a tighter margin.
+soak-rss = { delta_pct = 2.0 }
 
 # ---- mimalloc-bench programs (bench/build.sh) ----------------------------
 
@@ -283,3 +312,83 @@ class = "st"
 fixed_work = true
 est_s = 5
 needs = ["{root}/bench/probes/python/json_bench.py"]
+
+# ---- drivers (bench/drivers/*.sh) -----------------------------------------
+# The soaks run one variant per VM (cb launch): each (variant, replicate)
+# gets a VM of its own for the whole soak, so a 20-minute soak of two
+# variants takes 20 minutes, not 40.
+
+# Valkey under valkey-benchmark and memtier: write phase, delete phase,
+# settle (bench/drivers/valkey-soak.sh). challoc swaps in under the fixed
+# runpath /opt/challoc/lib (one Valkey build, quantum8); jemalloc is the
+# same tag with its bundled jemalloc 5.3.0.
+[row.valkey-soak]
+kind = "soak"
+driver = "drivers/valkey-soak.sh"
+metric = "write_mt_rps"
+unit = "req/s"
+better = "higher"
+class = "soak"
+features = "quantum8"
+allocs = ["challoc", "jemalloc"]
+placement = "one-variant-per-vm"
+env = { DURATION = "{valkey_soak_secs}", SETTLE = "{valkey_soak_settle}", KEY_PATTERN = "stock" }
+metrics = [
+  { name = "delete_mt_rps", unit = "req/s", better = "higher", class = "soak" },
+  { name = "write_mt_p99_ms", unit = "ms", better = "lower", class = "soak" },
+  { name = "vmhwm_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+  { name = "rss_settle_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+]
+est_s = 1500
+
+# The Sidekiq-shaped Ruby process (bench/drivers/ruby-soak.sh): the
+# --with-jemalloc Ruby, challoc preloaded under libjemalloc.so.2.
+[row.ruby-soak]
+kind = "soak"
+driver = "drivers/ruby-soak.sh"
+metric = "hwm_mib"
+unit = "MiB"
+better = "lower"
+class = "soak-rss"
+features = "jemalloc-soname"
+allocs = ["challoc", "jemalloc"]
+placement = "one-variant-per-vm"
+env = { DURATION = "{ruby_soak_secs}" }
+metrics = [
+  { name = "rss_final_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+  { name = "rss_min_after_gc_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+  { name = "cpu_s", unit = "s", better = "lower", class = "soak" },
+]
+est_s = 1300
+
+# The JVM mixed-size soak (bench/drivers/jvm-bench.sh ROWS=soak).
+[row.jvm-soak]
+kind = "soak"
+driver = "drivers/jvm-bench.sh"
+metric = "soak_tail_mib"
+unit = "MiB"
+better = "lower"
+class = "soak-rss"
+placement = "one-variant-per-vm"
+env = { ROWS = "soak", SOAK_DURATION = "{jvm_soak_secs}" }
+metrics = [
+  { name = "soak_peak_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+  { name = "soak_json_rps_high", unit = "req/s", better = "higher", class = "soak" },
+  { name = "soak_cpu_us_req_high", unit = "us/req", better = "lower", class = "soak" },
+]
+est_s = 1350
+
+# The JVM http server row (ROWS=server): paired, minutes per run.
+[row.jvm-server]
+kind = "driver"
+driver = "drivers/jvm-bench.sh"
+metric = "json_rps"
+unit = "req/s"
+better = "higher"
+class = "server"
+env = { ROWS = "server", DURATION = "{jvm_server_secs}" }
+metrics = [
+  { name = "blob_rps", unit = "req/s", better = "higher", class = "server" },
+  { name = "server_peak_mib", unit = "MiB", better = "lower", class = "soak-rss" },
+]
+est_s = 360

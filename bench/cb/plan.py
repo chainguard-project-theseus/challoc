@@ -41,16 +41,23 @@ class VariantSpec:
     source: str  # a git rev, "tree", or the stock allocator's name
     conf: str = ""
     role: str = "variant"  # "variant" | "control"
+    # Host knobs (bench/cb/knobs.py) set before each of this variant's runs
+    # and restored after it, so they get the same ABBA pairing as a library.
+    knobs: dict[str, str] = dataclasses.field(default_factory=dict)
 
     @property
     def mallctl(self) -> bool:
         return self.kind == "challoc" or bool(STOCK.get(self.source, {}).get("mallctl"))
 
-    def can_run(self, requires: list[str]) -> bool:
+    def can_run(self, requires: list[str], allocs: list[str] | None = None) -> bool:
         for r in requires:
             if r == "mallctl" and not self.mallctl:
                 return False
             if r == "challoc" and self.kind != "challoc":
+                return False
+        if allocs:
+            name = "challoc" if self.kind == "challoc" else self.source
+            if name not in allocs:
                 return False
         return True
 
@@ -58,28 +65,43 @@ class VariantSpec:
 def parse_variant(item: Any, refs: dict[str, str], role: str = "variant") -> VariantSpec:
     """`base`, `head` (their revs from refs), `label=base`, `label=git:REV`,
     `label=tree`, `jemalloc`/`glibc`/`tcmalloc`/`mimalloc`, or a table
-    {name, src, conf}. A trailing `@CONF` sets MALLOC_CONF."""
+    {name, src, conf, knobs}. A trailing `@CONF` sets MALLOC_CONF; each
+    `+knob:NAME=VALUE` after it a host knob (bench/cb/knobs.py), e.g.
+    `chl-llc=head+knob:sched.llc_balancing=1`."""
+    knobs: dict[str, str] = {}
     if isinstance(item, dict):
         label = item.get("name") or item.get("label")
         src = item.get("src", label)
         conf = item.get("conf", "")
+        knobs = {str(k): str(v) for k, v in (item.get("knobs") or {}).items()}
         if not label:
             raise SpecError(f"variant {item!r}: needs a name")
     else:
         s = str(item)
         conf = ""
+        parts = s.split("+knob:")
+        s = parts[0]
+        for kv in parts[1:]:
+            k, eq, v = kv.partition("=")
+            if not eq or not k:
+                raise SpecError(f"variant {item!r}: a knob is +knob:NAME=VALUE")
+            knobs[k] = v
         if "@" in s:
             s, conf = s.split("@", 1)
         label, _, src = s.partition("=")
         src = src or label
+    if knobs:
+        from .knobs import check_names
+
+        check_names(knobs, f"variant {item!r}")
     if src in STOCK:
-        return VariantSpec(label, "stock", src, conf, role)
+        return VariantSpec(label, "stock", src, conf, role, knobs)
     if src.startswith("git:"):
-        return VariantSpec(label, "challoc", src[4:], conf, role)
+        return VariantSpec(label, "challoc", src[4:], conf, role, knobs)
     if src == "tree":
-        return VariantSpec(label, "challoc", "tree", conf, role)
+        return VariantSpec(label, "challoc", "tree", conf, role, knobs)
     if src in refs:
-        return VariantSpec(label, "challoc", refs[src], conf, role)
+        return VariantSpec(label, "challoc", refs[src], conf, role, knobs)
     raise SpecError(f"variant {item!r}: source {src!r} is not base, head, git:REV, tree or a stock allocator")
 
 
@@ -152,7 +174,7 @@ class Plan:
             kind=d["kind"],
             cell=d["cell"],
             rows=d["rows"],
-            variants=[VariantSpec(**v) for v in d["variants"]],
+            variants=[VariantSpec(**{k: x for k, x in v.items() if k in VariantSpec.__dataclass_fields__}) for v in d["variants"]],
             blocks=[Block(**b) for b in d["blocks"]],
             seed=d["seed"],
             alpha=d["alpha"],
@@ -209,7 +231,7 @@ def make_plan(
         order: dict[str, list[str]] = {}
         for ri, r in enumerate(order_rows):
             req = rows.rows[r].requires
-            able = [v.label for v in variants if v.can_run(req)]
+            able = [v.label for v in variants if v.can_run(req, rows.rows[r].allocs)]
             if not able:
                 continue
             # Rotate by the row's position in the suite (not the shuffled

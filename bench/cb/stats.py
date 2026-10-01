@@ -305,6 +305,47 @@ class Comparison:
         return (to_pct(self.lo) if self.lo > -math.inf else -100.0, to_pct(self.hi) if self.hi < math.inf else math.inf)
 
 
+class Unpaired:
+    """The unpaired comparison of one row (one-variant-per-vm soaks): each
+    VM contributes the mean oriented log score of the one variant it ran;
+    Welch's t interval on the log scale across VMs. Same interface as
+    Comparison."""
+
+    def __init__(self, cand: list[float], ref: list[float], *, level: float):
+        self.n_hosts = len(cand) + len(ref)
+        self.n_blocks = self.n_hosts
+        self.level = level
+        self.flags = ["unpaired (one variant per VM)"]
+        self.outliers: list[str] = []
+        self.q = self.q_p = self.i2 = float("nan")
+        if not cand or not ref:
+            self.est, self.lo, self.hi, self.p = float("nan"), -math.inf, math.inf, 1.0
+            return
+        self.est = statistics.fmean(cand) - statistics.fmean(ref)
+        if len(cand) < 2 or len(ref) < 2:
+            self.flags.append("fewer than 2 VMs per variant")
+            self.lo, self.hi, self.p = -math.inf, math.inf, 1.0
+            return
+        vc, vr = statistics.variance(cand) / len(cand), statistics.variance(ref) / len(ref)
+        se = math.sqrt(vc + vr)
+        if se == 0:
+            self.lo = self.hi = self.est
+            self.p = 0.0 if self.est else 1.0
+            return
+        df = (vc + vr) ** 2 / ((vc**2 / (len(cand) - 1) if len(cand) > 1 else 0) + (vr**2 / (len(ref) - 1) if len(ref) > 1 else 0))
+        t = t_ppf(1.0 - (1.0 - level) / 2.0, df)
+        self.lo, self.hi = self.est - t * se, self.est + t * se
+        self.p = min(1.0, 2.0 * t_sf(abs(self.est) / se, df))
+
+    @property
+    def est_pct(self) -> float:
+        return to_pct(self.est)
+
+    @property
+    def ci_pct(self) -> tuple[float, float]:
+        return (to_pct(self.lo) if self.lo > -math.inf else -100.0, to_pct(self.hi) if self.hi < math.inf else math.inf)
+
+
 # ---- margins and verdicts ----------------------------------------------------------
 
 MIN_CALIBRATION = 14
