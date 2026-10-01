@@ -277,6 +277,12 @@ impl Shared {
                     // `huge_dirty_decay_ms:0`: a freed run is purged at
                     // once rather than at the next decay pass (design 7).
                     h.set_purge_on_free(config.huge_dirty_decay_ms == Some(0));
+                    // The demand window (`purge::demand`); off for a tier
+                    // that never decays (`-1`), where a run it kept would
+                    // never be purged.
+                    if config.huge_decay_ms() >= 0 {
+                        h.set_demand_window(config.hpa_peak_demand_window_ms as u64);
+                    }
                     ptr::write(&raw mut (*this).huge, h)
                 }
                 None => return false,

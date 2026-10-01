@@ -27,6 +27,23 @@ fn huge_retain_max_key_reaches_the_huge_allocator() {
     assert_eq!(s.huge.retain_max(), 0);
 }
 
+/// `hpa_peak_demand_window_ms` reaches the huge allocator, off by
+/// default and off for a huge tier that never decays.
+#[test]
+fn the_demand_window_key_reaches_the_huge_allocator() {
+    use crate::purge::Window;
+    assert_eq!(shared().huge.demand_window(), None);
+    let s = TestShared::with(Config { hpa_peak_demand_window_ms: 120_000, ..Config::DEFAULT }).build();
+    assert_eq!(s.huge.demand_window(), Window::from_ms(120_000));
+    let s = TestShared::with(Config {
+        hpa_peak_demand_window_ms: 120_000,
+        huge_dirty_decay_ms: Some(-1),
+        ..Config::DEFAULT
+    })
+    .build();
+    assert_eq!(s.huge.demand_window(), None);
+}
+
 /// `huge_dirty_decay_ms` (design 7): unset, the huge tier decays on
 /// arena 0's live period (the default, and `arena.0.dirty_decay_ms`
 /// moves both); set, `purge::decay` walks the huge extents on the huge

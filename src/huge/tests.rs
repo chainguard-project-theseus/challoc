@@ -899,3 +899,114 @@ fn huge_stats_abort_on_a_run_count_going_below_zero() {
     assert_eq!(s, HugeStats::default());
     s.sub(RunState::Active, 1);
 }
+
+/// Allocate and free one run of `size` and return the state its pages
+/// were left in.
+fn cycle(env: &Env, h: &Huge, size: usize) -> RunState {
+    let (p, _) = env.alloc(h, size, 1);
+    assert!(!p.is_null());
+    let page = env.page_of(p);
+    env.free(h, p);
+    h.lookup(page).expect("the freed extent").state
+}
+
+/// The demand window (`purge::demand`, design 7): a run above
+/// `huge_retain_max` freed and allocated again every cycle (a tensor
+/// buffer) is purged at its first free and kept from its second on; a
+/// larger one-off run is still purged at once; with the window off every
+/// cycle is purged, as before the window existed.
+#[test]
+fn a_recurring_run_above_retain_max_is_kept_from_its_second_cycle() {
+    let size = 64 * page_size();
+    for window_ms in [0u64, 60_000] {
+        let env = Env::new();
+        let h = env.huge();
+        h.set_retain_max(8 * page_size());
+        h.set_demand_window(window_ms);
+        for c in 0..3 {
+            let want = if window_ms == 0 || c == 0 { RunState::Purged } else { RunState::Empty };
+            assert_eq!(cycle(&env, &h, size), want, "window {window_ms} ms, cycle {c}");
+        }
+        if window_ms != 0 {
+            assert_eq!(h.demand_level(now_ns()), 64 + GUARD_PAGES, "the run's pages recur");
+        } else {
+            assert_eq!(h.demand_level(now_ns()), 0);
+        }
+        // A one-off three times the size: purged at once either way.
+        assert_eq!(cycle(&env, &h, 3 * size), RunState::Purged, "window {window_ms} ms, one-off");
+        assert_eq!(h.stats().empty_pages, 0);
+        // Under the threshold nothing changes: kept for decay.
+        assert_eq!(cycle(&env, &h, 4 * page_size()), RunState::Empty);
+    }
+}
+
+/// `huge_dirty_decay_ms:0` purges every run at free, recurring or not.
+#[test]
+fn purge_on_free_wins_over_the_demand_window() {
+    let env = Env::new();
+    let h = env.huge();
+    h.set_retain_max(8 * page_size());
+    h.set_purge_on_free(true);
+    h.set_demand_window(60_000);
+    for c in 0..3 {
+        assert_eq!(cycle(&env, &h, 64 * page_size()), RunState::Purged, "cycle {c}");
+        assert_eq!(cycle(&env, &h, 4 * page_size()), RunState::Purged, "small, cycle {c}");
+    }
+}
+
+/// The policy's verdict (`Policy::demand_ok`) false: the recurrence
+/// test is off, as with the window off.
+#[test]
+fn no_demand_retention_when_the_policy_says_no() {
+    let env = Env::new();
+    let h = env.huge();
+    h.set_retain_max(8 * page_size());
+    h.set_demand_window(60_000);
+    h.set_demand_ok(false);
+    for c in 0..3 {
+        assert_eq!(cycle(&env, &h, 64 * page_size()), RunState::Purged, "cycle {c}");
+    }
+}
+
+/// The decay walk keeps a recurring level past the curve's window,
+/// returns a hold while the floor covers everything, is capped by the
+/// retention cap, and lets the level go once the demand window has
+/// passed over the last peak.
+#[test]
+fn the_huge_walk_keeps_a_recurring_level_until_the_window_passes() {
+    use crate::policy::KEEP_ALL;
+    const WINDOW_MS: u64 = 60_000;
+    // A 1 ms curve: past its window the curve keeps nothing.
+    const D: u64 = 1_000_000;
+    let size = 64 * page_size();
+    let setup = || {
+        let env = Env::new();
+        let h = env.huge();
+        h.set_retain_max(8 * page_size());
+        h.set_demand_window(WINDOW_MS);
+        for _ in 0..3 {
+            cycle(&env, &h, size);
+        }
+        assert_eq!(h.lookup(0).unwrap().state, RunState::Empty);
+        (env, h)
+    };
+    let (_env, h) = setup();
+    let t = h.oldest_dirty_at().unwrap();
+    // The floor keeps the run and the gate holds (a second on at most).
+    let at = t + 2 * D;
+    let next = h.decay_with(at, D, KEEP_ALL).expect("still Empty");
+    assert_eq!(h.lookup(0).unwrap().state, RunState::Empty, "kept by the floor");
+    assert!(next >= at + D / 200 && next <= at + crate::purge::demand::HOLD_NS, "a hold: {next} at {at}");
+    // Within the hold: no walk.
+    assert_eq!(h.decay_with(at + 1000, D, KEEP_ALL), Some(next));
+    // After the window the level is gone and the walk purges.
+    let late = t + WINDOW_MS * 1_000_000 + 1;
+    assert_eq!(h.demand_level(late), 0);
+    assert_eq!(h.decay_with(late, D, KEEP_ALL), None);
+    assert_eq!(h.lookup(0).unwrap().state, RunState::Purged);
+    // Under a retention cap the floor is capped like anything else.
+    let (_env2, h2) = setup();
+    let t2 = h2.oldest_dirty_at().unwrap();
+    assert_eq!(h2.decay_with(t2 + 2 * D, D, KEEP_ALL / 4), None);
+    assert_eq!(h2.lookup(0).unwrap().state, RunState::Purged, "the cap wins");
+}

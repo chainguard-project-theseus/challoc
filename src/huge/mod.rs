@@ -34,7 +34,11 @@
 //! before the aligned start and any left after the run as free extents.
 //! Runs whose usable size exceeds `retain_max` (default 64 MiB) are
 //! `MADV_DONTNEED`ed the moment they are freed (every run under
-//! `huge_dirty_decay_ms:0`, [`Huge::set_purge_on_free`]); smaller ones
+//! `huge_dirty_decay_ms:0`, [`Huge::set_purge_on_free`]), unless the
+//! demand window (`hpa_peak_demand_window_ms`, `purge::demand`) shows the
+//! tier's demand has reached this height before, in which case they are
+//! kept like a smaller run and the decay walk keeps them while the level
+//! recurs; smaller ones
 //! become `Empty` and wait for the decay walk ([`Huge::decay`], on arena
 //! 0's period or the huge tier's own `huge_dirty_decay_ms`, design 7) or a
 //! full purge ([`Huge::purge_empty`]). `Empty` extents sit in a FIFO list ordered by
@@ -49,13 +53,13 @@
 
 use core::alloc::Layout;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use crate::class::Set;
 use crate::layout::Regions;
 use crate::lock::{Lock, RawLock};
 use crate::meta::Meta;
-use crate::purge::{self, Batch, Curve, Decayer};
+use crate::purge::{self, Batch, Curve, Decayer, Demand, Window};
 use crate::sys::{self, Errno, MADV_GUARD_INSTALL, MADV_GUARD_REMOVE, PROT_NONE, PROT_READ, PROT_WRITE};
 
 mod table;
@@ -65,7 +69,8 @@ use table::Table;
 /// Guard pages after every run.
 pub const GUARD_PAGES: usize = 1;
 /// Runs with more usable bytes than this are purged as soon as they are
-/// freed (`huge_retain_max`).
+/// freed (`huge_retain_max`), unless the demand window shows the level
+/// recurs.
 pub const DEFAULT_RETAIN_MAX: usize = 64 << 20;
 
 /// State of an extent.
@@ -269,6 +274,9 @@ struct Inner {
     empty_head: *mut HugeDesc,
     empty_tail: *mut HugeDesc,
     stats: HugeStats,
+    /// The tier's demand record in pages (`purge::demand`): sampled at
+    /// every alloc and free while the window is on.
+    demand: Demand,
 }
 
 // SAFETY: the raw pointers address the metadata region, which is process
@@ -288,6 +296,12 @@ pub struct Huge {
     /// freed, whatever its size, instead of waiting in the `Empty` list
     /// for a decay pass; set once at init (`Shared::init`).
     purge_on_free: AtomicBool,
+    /// The demand window's epoch length in ns (`purge::Window`), 0 when
+    /// off (`hpa_peak_demand_window_ms:0`): set once at init.
+    demand_epoch_ns: AtomicU64,
+    /// The cgroup policy lets the demand floor retain memory
+    /// (`Policy::demand_ok`, mirrored by the decay driver).
+    demand_ok: AtomicBool,
     /// The decay step gate (`purge::Decayer`): `dirty_at` of the head of
     /// the `Empty` list (its oldest member), kept in step with the list
     /// under the lock by `sync_oldest` and read without it by the decay
@@ -481,6 +495,8 @@ impl Huge {
             guard_install,
             retain_max: AtomicUsize::new(DEFAULT_RETAIN_MAX),
             purge_on_free: AtomicBool::new(false),
+            demand_epoch_ns: AtomicU64::new(0),
+            demand_ok: AtomicBool::new(true),
             gate: Decayer::new(),
             inner: Lock::new(Inner {
                 free,
@@ -489,6 +505,7 @@ impl Huge {
                 empty_head: ptr::null_mut(),
                 empty_tail: ptr::null_mut(),
                 stats: HugeStats::default(),
+                demand: Demand::new(),
             }),
         })
     }
@@ -527,6 +544,36 @@ impl Huge {
 
     pub fn set_purge_on_free(&self, on: bool) {
         self.purge_on_free.store(on, Ordering::Relaxed);
+    }
+
+    /// The demand window (`hpa_peak_demand_window_ms`; 0 is off). Set
+    /// at init, before any huge allocation.
+    pub fn set_demand_window(&self, ms: u64) {
+        let ns = Window::from_ms(ms).map_or(0, Window::epoch_ns);
+        self.demand_epoch_ns.store(ns, Ordering::Relaxed);
+    }
+
+    /// The demand window, `None` when off.
+    #[inline]
+    pub fn demand_window(&self) -> Option<Window> {
+        Window::from_epoch_ns(self.demand_epoch_ns.load(Ordering::Relaxed))
+    }
+
+    /// The cgroup policy's verdict on demand retention
+    /// (`Policy::demand_ok`), from the decay driver.
+    pub fn set_demand_ok(&self, ok: bool) {
+        if self.demand_ok.load(Ordering::Relaxed) != ok {
+            self.demand_ok.store(ok, Ordering::Relaxed);
+        }
+    }
+
+    /// The tier's recurring demand level in pages at `now` (0 with the
+    /// window off), for the report and the tests.
+    pub fn demand_level(&self, now: u64) -> usize {
+        match self.demand_window() {
+            Some(w) => self.inner.lock().demand.level(w.epoch(now)),
+            None => 0,
+        }
     }
 
     #[inline]
@@ -609,6 +656,9 @@ impl Huge {
         let zeroed = self.take(&mut g, meta, Placement { start: s, pages: need, ext }, run, spare, arena);
         // SAFETY: `take` wrote the run's descriptor; the lock is still held.
         let pages = unsafe { (*run).pages() };
+        if let Some(w) = self.demand_window() {
+            g.demand.sample(w.epoch(now_ns()), g.stats.run_pages);
+        }
         self.sync_oldest(&g);
         if let (true, Some(prior)) = (zeroed, prior) {
             self.check_zero(s, usable_pages, prior, arena);
@@ -844,9 +894,24 @@ impl Huge {
             }
         }
         let now = now_ns().max(1);
-        // Purged at once: above `huge_retain_max`, or under a zero huge
-        // decay period (`huge_dirty_decay_ms:0`).
-        let st = if usable > self.retain_max() || self.purge_on_free() {
+        // With the demand window on, demand is sampled with the run still
+        // counted, and a run above `huge_retain_max` is kept when the
+        // tier's demand has reached this height before (within an
+        // eighth: the recurring level of `purge::demand`).
+        let window = self.demand_window();
+        let mut recurring = false;
+        if let Some(w) = window {
+            let before = g.stats.run_pages;
+            g.demand.sample(w.epoch(now), before);
+            if usable > self.retain_max() && self.demand_ok.load(Ordering::Relaxed) {
+                let level = g.demand.level(w.epoch(now));
+                recurring = level + (level >> 3) >= before;
+            }
+        }
+        // Purged at once: under a zero huge decay period
+        // (`huge_dirty_decay_ms:0`), or above `huge_retain_max` unless
+        // the demand recurs.
+        let st = if self.purge_on_free() || (usable > self.retain_max() && !recurring) {
             let mut batch = Batch::new();
             batch.push(addr, n * page_size);
             batch.flush();
@@ -906,6 +971,10 @@ impl Huge {
         }
         g.free.map.set_range(page, n);
         g.add_extent(survivor);
+        // The fall the free made, which is what commits a peak.
+        if let Some(w) = window {
+            g.demand.sample(w.epoch(now), g.stats.run_pages);
+        }
         let first = self.sync_oldest(&g);
         drop(g);
         if first {
@@ -1001,8 +1070,12 @@ impl Huge {
     /// only and never below the allowance (an extent larger than the
     /// remaining excess is skipped for younger ones that fit), so a lone
     /// extent lasts until its weight is zero, the end of the window, as
-    /// before. Returns the number of extents purged.
-    fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32) -> usize {
+    /// before. With the demand window on, the allowance is at least the
+    /// tier's recurring level less its live pages (`purge::allowance`;
+    /// the cap still wins). Returns the number of extents purged and,
+    /// when the floor alone keeps every `Empty` page, the hold deadline
+    /// for the gate.
+    fn purge_curve(&self, now: u64, curve: &Curve, keep16: u32) -> (usize, Option<u64>) {
         let mut g = self.inner.lock();
         let mut total = 0usize;
         let mut weighted = 0u64;
@@ -1014,12 +1087,22 @@ impl Huge {
             weighted += pages as u64 * Curve::weight(curve.step(now, dirty_at));
             d = next;
         }
-        // The cgroup policy's retention cap (design 11), as in the class
-        // walk: keep at most this walk's share of the cap.
-        let mut allow = Curve::allowance(weighted);
-        if keep16 < crate::policy::KEEP_ALL {
-            allow = allow.min(crate::policy::mul16(total as u64, keep16) as usize);
+        // The demand floor, then the cgroup policy's retention cap (design
+        // 11), as in the class walk: keep at most this walk's share of the
+        // cap.
+        let mut keep_demand = 0;
+        let mut hold = None;
+        if let Some(w) = self.demand_window() {
+            let active = g.stats.run_pages;
+            g.demand.sample(w.epoch(now), active);
+            if self.demand_ok.load(Ordering::Relaxed) {
+                keep_demand = g.demand.level(w.epoch(now)).saturating_sub(active);
+            }
+            if total > 0 && keep_demand >= total {
+                hold = Some(w.hold(now));
+            }
         }
+        let allow = purge::allowance(Curve::allowance(weighted), keep_demand, total, keep16);
         let mut excess = total.saturating_sub(allow);
         // Under the cap an extent larger than the excess goes whole: free
         // neighbours coalesce, so what a program frees in pieces is often
@@ -1043,7 +1126,7 @@ impl Huge {
             batch.flush();
         }
         self.sync_oldest(&g);
-        n
+        (n, hold)
     }
 
     /// `dirty_at` of the oldest `Empty` extent as the decay driver sees it
@@ -1063,10 +1146,7 @@ impl Huge {
     /// [`decay`](Huge::decay) with the cgroup policy's keep ratio (design
     /// 11), as `ClassState::decay_with`.
     pub fn decay_with(&self, now: u64, decay_ns: u64, keep16: u32) -> Option<u64> {
-        self.gate.decay(now, decay_ns, keep16, |now, curve| {
-            self.purge_curve(now, curve, keep16);
-            None
-        })
+        self.gate.decay(now, decay_ns, keep16, |now, curve| self.purge_curve(now, curve, keep16).1)
     }
 
     /// Bytes in `Empty` extents (one lock hold), for the cgroup policy's
