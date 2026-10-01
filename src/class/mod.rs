@@ -66,12 +66,37 @@
 //! lock), so a concurrent release either is visible to that check or sets
 //! the bit afterwards.
 
+#[cfg(verus_only)]
+use crate::bitmap::subset;
+#[cfg(verus_only)]
+use crate::bitmap::{
+    Slots, addrs, has_bit, lemma_addrs_difference, lemma_addrs_union, lemma_bit_ops, mask_bits,
+};
 use crate::layout::{CLASSES, Class, MAX_SLAB_WORDS, Regions};
+#[cfg(verus_only)]
+use crate::layout::{NCLASSES, bit_slots_in, class_table, process_regions, slots_in};
 use crate::lock::{Lock, PAD_ALIGN, Padded, RawLock};
 use crate::meta::Meta;
 use crate::purge::{self, Decayer};
 use crate::slab::{SlabDesc, State};
+use crate::sys::Errno;
+#[cfg(verus_only)]
+use crate::vspec::core_int::popcount;
+#[cfg(verus_only)]
+use crate::vspec::lock::{lock_frame, lock_init, lock_inv};
+use crate::vspec::zero::Zeroed;
 use core::sync::atomic::{AtomicU64, Ordering};
+#[cfg(verus_only)]
+use table::{bits_ghost, bits_shape, desc_at, lemma_bit_in_slab, slab_mask_of, words_of};
+use vstd::prelude::*;
+use vstd::resource::set::GhostSingleton;
+use vstd::resource::set::GhostSubset;
+#[cfg(verus_only)]
+use vstd::set::Set as VSet;
+#[cfg(verus_only)]
+use vstd::std_specs::bits::{axiom_u64_trailing_zeros, u64_trailing_zeros};
+#[cfg(verus_only)]
+use vstd::std_specs::iter::IteratorSpec;
 
 mod abort;
 mod decay;
@@ -83,15 +108,19 @@ mod tests;
 mod verify;
 
 use abort::{
-    double_free, guard_free, owner_mismatch, release_into_fresh_slab, reservation_unmet,
-    wrong_arena, zero_slab_had_bits_set,
+    double_free, guard_free, live_above_slots, owner_mismatch, release_into_fresh_slab,
+    reservation_unmet, wrong_arena, zero_slab_had_bits_set,
 };
 #[cfg(test)]
 pub use sets::SET_GROUPS;
 pub(crate) use sets::Set;
 pub use sets::SetTable;
 pub use table::SlabTable;
+#[cfg(verus_only)]
+pub use table::slot_loc;
 use verify::{fresh_with_live, release_into_fresh};
+
+verus! {
 
 /// Counters kept under the class lock. Slab counts only; `curregs` and
 /// the byte totals are derived from them in `stats.rs`.
@@ -114,7 +143,12 @@ impl ClassStats {
     /// jemalloc's `curslabs`, and the slab count behind `active` and the
     /// compaction gate's capacity.
     #[inline]
-    pub fn curslabs(&self) -> usize {
+    pub fn curslabs(&self) -> (r: usize)
+        requires
+            self.empty + self.purged <= self.committed,
+        ensures
+            r == self.committed - self.empty - self.purged,
+    {
         self.committed - self.empty - self.purged
     }
 }
@@ -134,11 +168,89 @@ pub(crate) fn xorshift(state: &mut u64) -> u64 {
 }
 
 /// Fisher-Yates shuffle of `out` with [`xorshift`].
-pub(crate) fn shuffle(out: &mut [*mut u8], rng: &mut u64) {
-    for i in (1..out.len()).rev() {
-        let j = (xorshift(rng) % (i as u64 + 1)) as usize;
-        out.swap(i, j);
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn shuffle(out: &mut [*mut u8], rng: &mut u64)
+    ensures
+        final(out)@.len() == old(out)@.len(),
+        forall|i: int| 0 <= i < old(out)@.len() ==> #[trigger] from_seq(final(out)@, old(out)@, i),
+{
+    let tracked mut z = Map::tracked_empty();
+    shuffle_zero(out, rng, Ghost(false), Ghost(0), Tracked(&mut z));
+}
+
+/// `z[i]` is a zero token covering `size` bytes of `s[i]`, for every entry.
+pub open spec fn tokens_cover(z: Map<int, Zeroed>, s: Seq<*mut u8>, size: int) -> bool {
+    forall|i: int| 0 <= i < s.len() ==> #[trigger] z.contains_key(i) && z[i].covers(s[i], size)
+}
+
+/// [`shuffle`], moving the zero token of each entry (`z[i]` for `out[i]`,
+/// when `zeroed`) along with it.
+pub(crate) fn shuffle_zero(out: &mut [*mut u8], rng: &mut u64, Ghost(zeroed): Ghost<bool>, Ghost(size): Ghost<int>, Tracked(z): Tracked<&mut Map<int, Zeroed>>)
+    requires
+        zeroed ==> tokens_cover(*old(z), old(out)@, size),
+    ensures
+        final(out)@.len() == old(out)@.len(),
+        forall|i: int| 0 <= i < old(out)@.len() ==> #[trigger] from_seq(final(out)@, old(out)@, i),
+        zeroed ==> tokens_cover(*final(z), final(out)@, size),
+{
+    proof {
+        lemma_from_seq_refl(out@);
     }
+    for i in (1..out.len()).rev()
+        invariant
+            out@.len() == old(out)@.len(),
+            forall|k: int| 0 <= k < old(out)@.len() ==> #[trigger] from_seq(out@, old(out)@, k),
+            zeroed ==> tokens_cover(*z, out@, size),
+    {
+        let j = (xorshift(rng) % (i as u64 + 1)) as usize;
+        let ghost cur = out@;
+        out.swap(i, j);
+        proof {
+            assert forall|k: int| 0 <= k < old(out)@.len() implies #[trigger] from_seq(out@, old(out)@, k) by {
+                let src = if k == i as int { j as int } else if k == j as int { i as int } else { k };
+                assert(from_seq(cur, old(out)@, src));
+                let w = choose|w: int| 0 <= w < old(out)@.len() && cur[src] == old(out)@[w];
+                assert(out@[k] == old(out)@[w]);
+            }
+            let z0 = *z;
+            if zeroed && i != j {
+                let tracked a = z.tracked_remove(i as int);
+                let tracked b = z.tracked_remove(j as int);
+                z.tracked_insert(i as int, b);
+                z.tracked_insert(j as int, a);
+            }
+            if zeroed {
+                assert forall|k: int| 0 <= k < out@.len() implies #[trigger] z.contains_key(k) && z[k].covers(out@[k], size) by {
+                    assert(z0.contains_key(k) && z0.contains_key(i as int) && z0.contains_key(j as int));
+                    if k == i as int {
+                        assert(out@[k] == cur[j as int]);
+                    } else if k == j as int {
+                        assert(out@[k] == cur[i as int]);
+                    } else {
+                        assert(out@[k] == cur[k]);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Every entry of `s` is an entry of `s`.
+proof fn lemma_from_seq_refl(s: Seq<*mut u8>)
+    ensures
+        forall|k: int| 0 <= k < s.len() ==> #[trigger] from_seq(s, s, k),
+{
+    assert forall|k: int| 0 <= k < s.len() implies #[trigger] from_seq(s, s, k) by {
+        // A named copy: `s[k] == s[k]` alone simplifies away before the
+        // witness `k` can be matched.
+        let x = s[k];
+        assert(x == s[k]);
+    }
+}
+
+/// Entry `i` of `s` is an entry of `o`: what a permutation keeps.
+pub(crate) open spec fn from_seq(s: Seq<*mut u8>, o: Seq<*mut u8>, i: int) -> bool {
+    exists|j: int| 0 <= j < o.len() && s[i] == #[trigger] o[j]
 }
 
 /// Result of one [`ClassState::claim`].
@@ -154,6 +266,13 @@ pub struct Claim {
     pub zeroed: bool,
 }
 
+/// The zero tokens `z` of claim `c` of `class`, whose slots are `out[..n]`:
+/// when the claim is zeroed, one per slot, covering the slot's class size.
+pub open spec fn claim_zero_ok(c: Claim, out: Seq<*mut u8>, z: Map<int, Zeroed>, class: int) -> bool {
+    c.zeroed ==> forall|i: int|
+        0 <= i < c.n ==> #[trigger] z.contains_key(i) && z[i].covers(out[i], class_table()[class].size as int)
+}
+
 /// Slabs one lock hold of a refill may reserve from (see
 /// [`ClassState::plan`]), and slabs one lock hold of a release batch may
 /// reopen ([`Reopen`]). Sized so that the common refill and flush of every
@@ -161,6 +280,8 @@ pub struct Claim {
 /// classes (`layout::LG_MIN_SLAB`) a 128-slot refill of the 512 class and a
 /// 64-slot one of the 1024 class each span 16 slabs.
 pub(crate) const MAX_PICKS: usize = 16;
+
+} // verus!
 
 /// The atomic steps of the protocol, named in the order the code takes
 /// them, for the model (`model::steps`): each enum is one operation of
@@ -279,6 +400,8 @@ pub(crate) mod protocol {
     }
 }
 
+verus! {
+
 /// Full bitmap scans of one slab that find nothing before a claim gives up
 /// on its reservation and aborts. A scan comes up empty only while other
 /// threads keep moving free bits between words, so this many in a row
@@ -299,6 +422,38 @@ struct Pick {
     state: State,
 }
 
+/// Slots reserved by the first `k` picks.
+spec fn picks_sum(p: Seq<Pick>, k: int) -> int
+    decreases k,
+{
+    if k <= 0 { 0 } else { picks_sum(p, k - 1) + p[k - 1].n }
+}
+
+/// The first `np` picks name slabs below `nslabs` and reserve at most a
+/// slab's `nslots` each.
+spec fn picks_ok(p: Seq<Pick>, np: int, nslabs: usize, nslots: nat) -> bool {
+    &&& 0 <= np <= p.len()
+    &&& forall|i: int| 0 <= i < np ==> (#[trigger] p[i].slab as usize) < nslabs && p[i].n <= nslots
+}
+
+/// `picks_sum` of a prefix depends only on that prefix, and is not negative.
+proof fn lemma_picks_sum(a: Seq<Pick>, b: Seq<Pick>, k: int)
+    requires
+        0 <= k <= a.len(),
+        k <= b.len(),
+        forall|i: int| 0 <= i < k ==> a[i] == b[i],
+    ensures
+        picks_sum(a, k) == picks_sum(b, k),
+        picks_sum(a, k) >= 0,
+    decreases k,
+{
+    if k > 0 {
+        lemma_picks_sum(a, b, k - 1);
+    }
+}
+
+} // verus!
+
 #[cfg(test)]
 impl Pick {
     /// Tests: an unused entry of a plan's pick array (no slab, no slots).
@@ -313,18 +468,40 @@ impl Pick {
     };
 }
 
+verus! {
+
 /// Slabs a release batch must put back in the partial set. Consecutive
 /// duplicates are dropped; a full list is flushed under the lock.
-#[derive(Default)]
 struct Reopen {
     slabs: [u32; MAX_PICKS],
     len: usize,
 }
 
 impl Reopen {
+    #[inline(always)]
+    fn new() -> (r: Reopen)
+        ensures
+            r.len == 0,
+    {
+        Reopen { slabs: [0; MAX_PICKS], len: 0 }
+    }
+
+    /// Every recorded slab is below `n`.
+    spec fn below(&self, n: usize) -> bool {
+        forall|i: int| 0 <= i < self.len ==> (#[trigger] self.slabs[i]) < n
+    }
+
     /// Record `slab`; `false` if the list is full (and `slab` is not the
     /// last entry), in which case the caller must flush first.
-    fn push(&mut self, slab: usize) -> bool {
+    fn push(&mut self, slab: usize) -> (r: bool)
+        requires
+            old(self).len <= MAX_PICKS,
+        ensures
+            final(self).len <= MAX_PICKS,
+            r ==> final(self).len > 0 && final(self).slabs[final(self).len - 1] == slab as u32,
+            !r ==> final(self).len == MAX_PICKS && *final(self) == *old(self),
+            forall|n: usize| old(self).below(n) && slab < n ==> #[trigger] final(self).below(n),
+    {
         if self.len > 0 && self.slabs[self.len - 1] == slab as u32 {
             return true;
         }
@@ -346,11 +523,38 @@ struct Inner {
     /// to it and not yet committed (see [`ClassState::next_fresh_slab`]).
     group_next: usize,
     group_end: usize,
+    /// Ghost: the slabs this arena owns (their group's owner word names
+    /// this arena, guard slabs included), each with the state its
+    /// descriptor holds while this lock is held. The bridges
+    /// [`ClassState::owner_locked`], [`ClassState::state_locked`] and
+    /// [`ClassState::set_state_locked`] tie it to the owner words and the
+    /// descriptors.
+    #[allow(dead_code)]
+    states: Ghost<Map<nat, State>>,
+    /// Ghost: this arena's committed slabs (guards excluded), the slabs
+    /// `stats.committed` counts.
+    #[allow(dead_code)]
+    committed: Ghost<vstd::set::Set<nat>>,
+    /// Ghost: the `dirty_at` stamp each owned slab's descriptor holds
+    /// while this lock is held ([`ClassState::dirty_locked`]).
+    #[allow(dead_code)]
+    dirty: Ghost<Map<nat, u64>>,
+    /// Ghost: the arena and the class table this lock value belongs to
+    /// (set by `new`, never changed), so a bridge can require the value of
+    /// the right lock.
+    #[allow(dead_code)]
+    arena: Ghost<u16>,
+    #[allow(dead_code)]
+    table: Ghost<SlabTable>,
 }
+
+} // verus!
 
 // SAFETY: `TwoLevelBitmap` holds a raw pointer into the metadata region,
 // which is process-global and only ever accessed through this lock.
 unsafe impl Send for Inner {}
+
+verus! {
 
 /// State of one `(arena, class)` pair: the three slab sets and their
 /// statistics behind the class lock, plus a pointer to the class's shared
@@ -416,6 +620,8 @@ pub struct ClassState {
     _tail: [u8; PAD_ALIGN - 64],
 }
 
+} // verus!
+
 const _: () = assert!(core::mem::offset_of!(ClassState, inner) == PAD_ALIGN);
 const _: () =
     assert!(core::mem::offset_of!(ClassState, gate) + core::mem::size_of::<Decayer>() <= PAD_ALIGN);
@@ -432,6 +638,44 @@ const _: () = assert!(core::mem::size_of::<ClassState>() % 512 != 0);
 unsafe impl Sync for ClassState {}
 unsafe impl Send for ClassState {}
 
+verus! {
+
+/// A set of the class state: a well-formed bitmap over `n` slabs whose
+/// members are slab numbers below `n`.
+spec fn set_wf(s: Set, n: nat) -> bool {
+    &&& s.map.wf()
+    &&& s.map.spec_nbits() == n
+    &&& forall|b: nat| #[trigger] s.map@.contains(b) ==> b < n
+}
+
+/// A set of the class state holds at most `n` slabs.
+proof fn lemma_set_len_le(s: Set, n: nat)
+    requires
+        set_wf(s, n),
+    ensures
+        s.map@.len() <= n,
+{
+    broadcast use vstd::set_lib::range_set_properties;
+    let r = vstd::set::Set::<nat>::range(0, n);
+    assert(s.map@.subset_of(r));
+    vstd::set_lib::lemma_len_subset(s.map@, r);
+}
+
+/// A set of the class state that lacks slab `x` holds fewer than `n` slabs.
+proof fn lemma_set_len(s: Set, n: nat, x: nat)
+    requires
+        set_wf(s, n),
+        x < n,
+        !s.map@.contains(x),
+    ensures
+        s.map@.len() < n,
+{
+    broadcast use vstd::set_lib::range_set_properties;
+    let r = vstd::set::Set::<nat>::range(0, n).remove(x);
+    assert(s.map@.subset_of(r));
+    vstd::set_lib::lemma_len_subset(s.map@, r);
+}
+
 /// The set/count seam: each of the three sets is one bitmap plus one
 /// `ClassStats` count, and the two are written together, here or at the
 /// two sites that spell the pair out and say why (`next_slab`,
@@ -442,129 +686,715 @@ unsafe impl Send for ClassState {}
 /// refill takes it or a purge moves it, so a count that would go below
 /// zero is a heap inconsistency and aborts (`slab_count_underflow`).
 impl Inner {
-    fn set_partial(&mut self, slab: usize) {
-        if !self.partial.map.is_set(slab) {
-            self.partial.map.set(slab);
-            self.stats.nonfull += 1;
+    /// Slabs of the class (the sets' size).
+    spec fn nbits(&self) -> nat {
+        self.partial.map.spec_nbits()
+    }
+
+    /// Slab `s` belongs to this arena (ghost).
+    spec fn owns(&self, s: nat) -> bool {
+        self.states@.contains_key(s)
+    }
+
+    /// The state of owned slab `s` (ghost).
+    spec fn st(&self, s: nat) -> State {
+        self.states@[s]
+    }
+
+    /// The seam's counts and shapes: three well-formed sets over the
+    /// class's slabs, each count the population of its set, the committed
+    /// count the size of the committed set, the owned and committed slabs
+    /// among the class's, and the current group's cursor inside the class
+    /// and, while slabs are left in it, inside one hand-out group, whose
+    /// end is the current group's end.
+    spec fn base(&self) -> bool {
+        &&& set_wf(self.partial, self.nbits())
+        &&& set_wf(self.empty, self.nbits())
+        &&& set_wf(self.purged, self.nbits())
+        &&& self.stats.nonfull == self.partial.map@.len()
+        &&& self.stats.empty == self.empty.map@.len()
+        &&& self.stats.purged == self.purged.map@.len()
+        &&& self.stats.committed == self.committed@.len()
+        &&& self.group_next <= self.group_end <= self.nbits()
+        &&& self.group_next < self.group_end
+            ==> self.group_end == self.table@.spec_group_range(self.group_next >> self.table@.lg_group).1
+        &&& self.nbits() <= usize::MAX >> 12
+        &&& forall|s: nat| #[trigger] self.committed@.contains(s) ==> s < self.nbits()
+        &&& forall|s: nat| #[trigger] self.states@.contains_key(s) ==> s < self.nbits()
+    }
+
+    /// The ghost link at slab `s`, apart from the current group: a
+    /// committed slab is owned and an owned one that left `Fresh` is
+    /// committed; a partial slab is `Active`; the `empty` and `purged`
+    /// sets are exactly the owned slabs in those states; an `Empty`
+    /// slab's `dirty_at` stamp is not 0; and a guard slab is uncommitted
+    /// and, when owned, `Fresh` (its descriptor stays zero).
+    spec fn slab_core(&self, s: nat) -> bool {
+        &&& self.committed@.contains(s) ==> self.owns(s)
+        &&& self.owns(s) && self.st(s) != State::Fresh ==> self.committed@.contains(s)
+        &&& self.partial.map@.contains(s) ==> self.owns(s) && self.st(s) == State::Active
+        &&& self.empty.map@.contains(s) == (self.owns(s) && self.st(s) == State::Empty)
+        &&& self.purged.map@.contains(s) == (self.owns(s) && self.st(s) == State::Purged)
+        &&& self.owns(s) && self.st(s) == State::Empty ==> self.dirty@[s] != 0
+        &&& self.table@.spec_is_guard(s as usize) ==> !self.committed@.contains(s)
+            && (self.owns(s) ==> self.st(s) == State::Fresh)
+    }
+
+    /// The ghost link's current-group part at slab `s`: the current
+    /// group's slabs from the cursor on are owned, `Fresh` and not
+    /// committed.
+    spec fn group_ok(&self, s: nat) -> bool {
+        self.group_next <= s < self.group_end ==> self.owns(s) && self.st(s) == State::Fresh
+            && !self.committed@.contains(s)
+    }
+
+    /// The ghost link at slab `s`.
+    spec fn slab_ok(&self, s: nat) -> bool {
+        &&& self.slab_core(s)
+        &&& self.group_ok(s)
+    }
+
+    /// The seam's invariant, with the ghost link at every slab.
+    spec fn inv(&self) -> bool {
+        &&& self.base()
+        &&& forall|s: nat| #[trigger] self.slab_ok(s)
+    }
+
+    /// The invariant with slab `x` exempt from the ghost link: the state
+    /// between two writes of one transition (a slab's state and its set,
+    /// or a slab taken out of a set and not yet made `Active`).
+    spec fn inv_but(&self, x: int) -> bool {
+        &&& self.base()
+        &&& forall|s: nat| s != x ==> #[trigger] self.slab_ok(s)
+    }
+
+    /// Slab `s` is ready for [`ClassState::take`]: owned, committed (so
+    /// not a guard slab), in
+    /// neither idle set nor the current group's uncommitted rest, and the
+    /// invariant holds elsewhere (a slab `next_slab` just took out of an
+    /// idle set or committed fresh, or a partial slab).
+    spec fn ready(&self, s: nat) -> bool {
+        &&& self.inv_but(s as int)
+        &&& s < self.nbits()
+        &&& self.owns(s)
+        &&& self.committed@.contains(s)
+        &&& !self.table@.spec_is_guard(s as usize)
+        &&& !self.empty.map@.contains(s)
+        &&& !self.purged.map@.contains(s)
+        &&& !(self.group_next <= s < self.group_end)
+    }
+
+    /// `self` and `o` agree on everything but the sets' stores (which
+    /// [`Set::ensure`] commits), so on the invariant too
+    /// ([`Inner::lemma_same_sets`]).
+    spec fn same_sets(&self, o: Inner) -> bool {
+        &&& self.partial.map == o.partial.map
+        &&& self.empty.map == o.empty.map
+        &&& self.purged.map == o.purged.map
+        &&& self.stats == o.stats
+        &&& self.group_next == o.group_next
+        &&& self.group_end == o.group_end
+        &&& self.states == o.states
+        &&& self.committed == o.committed
+        &&& self.dirty == o.dirty
+        &&& self.arena == o.arena
+        &&& self.table == o.table
+    }
+
+    /// Values that differ only in the sets' stores agree on the invariant.
+    proof fn lemma_same_sets(&self, o: Inner)
+        requires
+            self.same_sets(o),
+        ensures
+            self.nbits() == o.nbits(),
+            self.base() == o.base(),
+            forall|s: nat| #[trigger] self.slab_ok(s) == o.slab_ok(s),
+            self.inv() == o.inv(),
+    {
+        assert forall|s: nat| #[trigger] self.slab_ok(s) == o.slab_ok(s) by {}
+        if o.inv() {
+            assert forall|s: nat| #[trigger] self.slab_ok(s) by {
+                assert(o.slab_ok(s));
+            }
+        }
+        if self.inv() {
+            assert forall|s: nat| #[trigger] o.slab_ok(s) by {
+                assert(self.slab_ok(s));
+            }
         }
     }
 
-    fn clear_partial(&mut self, slab: usize) {
+    /// Commit the set words that hold every bit up to and including
+    /// `slab` in the three sets ([`Set::ensure`]), for a group the arena
+    /// is about to receive (`take_group`, under the commit lock). Only the
+    /// stores change.
+    #[inline(always)]
+    fn ensure_sets(&mut self, meta: &Meta, page: usize, slab: usize) -> (r: Result<(), Errno>)
+        ensures
+            final(self).same_sets(*old(self)),
+    {
+        self.partial.ensure(meta, page, slab)?;
+        self.empty.ensure(meta, page, slab)?;
+        self.purged.ensure(meta, page, slab)
+    }
+
+    /// `old` and `new` agree on everything but the sets and counts.
+    spec fn same_rest(&self, o: &Inner) -> bool {
+        &&& self.stats.committed == o.stats.committed
+        &&& self.stats.guards == o.stats.guards
+        &&& self.group_next == o.group_next
+        &&& self.group_end == o.group_end
+        &&& self.nbits() == o.nbits()
+        &&& self.states == o.states
+        &&& self.committed == o.committed
+        &&& self.dirty == o.dirty
+        &&& self.arena == o.arena
+        &&& self.table == o.table
+    }
+
+    /// The exempt slab back in the link closes the invariant.
+    proof fn lemma_close(&self, x: nat)
+        requires
+            self.inv_but(x as int),
+            self.slab_ok(x),
+        ensures
+            self.inv(),
+    {
+        assert forall|s: nat| #[trigger] self.slab_ok(s) by {
+            if s != x {
+                assert(self.slab_ok(s));
+            }
+        }
+    }
+
+    /// The idle slabs are among the committed ones, which are among the
+    /// class's.
+    proof fn lemma_counts(&self)
+        requires
+            self.inv(),
+        ensures
+            self.stats.empty + self.stats.purged <= self.stats.committed <= self.nbits(),
+    {
+        broadcast use vstd::set_lib::range_set_properties;
+        let e = self.empty.map@;
+        let p = self.purged.map@;
+        let c = self.committed@;
+        assert(e.disjoint(p)) by {
+            assert forall|s: nat| !(e.contains(s) && p.contains(s)) by {
+                assert(self.slab_ok(s));
+            }
+        }
+        assert((e + p).subset_of(c)) by {
+            assert forall|s: nat| #[trigger] (e + p).contains(s) implies c.contains(s) by {
+                assert(self.slab_ok(s));
+            }
+        }
+        vstd::set_lib::lemma_set_disjoint_lens(e, p);
+        vstd::set_lib::lemma_len_subset(e + p, c);
+        let r = vstd::set::Set::<nat>::range(0, self.nbits());
+        assert(c.subset_of(r));
+        vstd::set_lib::lemma_len_subset(c, r);
+    }
+
+    fn set_partial(&mut self, slab: usize)
+        requires
+            old(self).inv(),
+            slab < old(self).nbits(),
+            old(self).owns(slab as nat),
+            old(self).st(slab as nat) == State::Active,
+        ensures
+            final(self).inv(),
+            final(self).same_rest(old(self)),
+            final(self).partial.map@ == old(self).partial.map@.insert(slab as nat),
+            final(self).empty == old(self).empty,
+            final(self).purged == old(self).purged,
+    {
+        if !self.partial.map.is_set(slab) {
+            proof {
+                lemma_set_len(self.partial, self.nbits(), slab as nat);
+            }
+            self.partial.map.set(slab);
+            self.stats.nonfull += 1;
+        } else {
+            proof {
+                assert(self.partial.map@.insert(slab as nat) =~= self.partial.map@);
+            }
+        }
+        proof {
+            assert forall|s: nat| #[trigger] self.slab_ok(s) by {
+                assert(old(self).slab_ok(s));
+            }
+        }
+    }
+
+    fn clear_partial(&mut self, slab: usize)
+        requires
+            old(self).base(),
+            slab < old(self).nbits(),
+        ensures
+            final(self).base(),
+            final(self).same_rest(old(self)),
+            final(self).partial.map@ == old(self).partial.map@.remove(slab as nat),
+            final(self).empty == old(self).empty,
+            final(self).purged == old(self).purged,
+            old(self).inv() ==> final(self).inv(),
+            forall|x: int| #[trigger] old(self).inv_but(x) ==> final(self).inv_but(x),
+    {
         if self.partial.map.is_set(slab) {
             self.partial.map.clear(slab);
             self.stats.nonfull -= 1;
+        } else {
+            proof {
+                assert(self.partial.map@.remove(slab as nat) =~= self.partial.map@);
+            }
+        }
+        proof {
+            assert forall|s: nat| old(self).slab_ok(s) implies #[trigger] self.slab_ok(s) by {}
         }
     }
 
-    /// `slab` into the empty set (it went `Empty`).
-    fn empty_add(&mut self, slab: usize) {
-        debug_assert!(
-            !self.empty.map.is_set(slab),
-            "empty_add: slab {slab} already in the empty set"
-        );
+    /// `slab` into the empty set (it went `Empty`). The caller closes the
+    /// link at `slab`.
+    fn empty_add(&mut self, slab: usize)
+        requires
+            old(self).base(),
+            slab < old(self).nbits(),
+            !old(self).empty.map@.contains(slab as nat),
+        ensures
+            final(self).base(),
+            final(self).same_rest(old(self)),
+            final(self).empty.map@ == old(self).empty.map@.insert(slab as nat),
+            final(self).partial == old(self).partial,
+            final(self).purged == old(self).purged,
+            old(self).inv_but(slab as int) ==> final(self).inv_but(slab as int),
+    {
+        proof {
+            lemma_set_len(self.empty, self.nbits(), slab as nat);
+        }
+        debug_assert!(!self.empty.map.is_set(slab), "empty_add: slab {slab} already in the empty set");
         self.empty.map.set(slab);
         self.stats.empty += 1;
+        proof {
+            assert forall|s: nat| s != slab && old(self).slab_ok(s) implies #[trigger] self.slab_ok(s) by {}
+        }
     }
 
     /// `slab` out of the empty set. Tests only: a refill and a purge
-    /// spell the pair out (`next_slab`, `purge_group`).
+    /// spell the pair out (`next_slab`, `purge_group`). The caller closes
+    /// the link at `slab`.
     #[cfg(test)]
-    fn empty_take(&mut self, slab: usize) {
-        debug_assert!(
-            self.empty.map.is_set(slab),
-            "empty_take: slab {slab} not in the empty set"
-        );
+    fn empty_take(&mut self, slab: usize)
+        requires
+            old(self).base(),
+            slab < old(self).nbits(),
+            old(self).empty.map@.contains(slab as nat),
+        ensures
+            final(self).base(),
+            final(self).same_rest(old(self)),
+            final(self).empty.map@ == old(self).empty.map@.remove(slab as nat),
+            final(self).partial == old(self).partial,
+            final(self).purged == old(self).purged,
+            old(self).inv_but(slab as int) ==> final(self).inv_but(slab as int),
+    {
+        debug_assert!(self.empty.map.is_set(slab), "empty_take: slab {slab} not in the empty set");
         self.empty.map.clear(slab);
-        self.stats.empty = self
-            .stats
-            .empty
-            .checked_sub(1)
-            .unwrap_or_else(|| abort::slab_count_underflow("empty"));
+        self.stats.empty = self.stats.empty.checked_sub(1).unwrap_or_else(|| abort::slab_count_underflow("empty"));
+        proof {
+            assert forall|s: nat| s != slab && old(self).slab_ok(s) implies #[trigger] self.slab_ok(s) by {}
+        }
     }
 
     /// `slab` into the purged set. Tests only: a purge spells the pair
-    /// out (`purge_group`).
+    /// out (`purge_group`). The caller closes the link at `slab`.
     #[cfg(test)]
-    fn purged_add(&mut self, slab: usize) {
-        debug_assert!(
-            !self.purged.map.is_set(slab),
-            "purged_add: slab {slab} already in the purged set"
-        );
+    fn purged_add(&mut self, slab: usize)
+        requires
+            old(self).base(),
+            slab < old(self).nbits(),
+            !old(self).purged.map@.contains(slab as nat),
+        ensures
+            final(self).base(),
+            final(self).same_rest(old(self)),
+            final(self).purged.map@ == old(self).purged.map@.insert(slab as nat),
+            final(self).partial == old(self).partial,
+            final(self).empty == old(self).empty,
+            old(self).inv_but(slab as int) ==> final(self).inv_but(slab as int),
+    {
+        proof {
+            lemma_set_len(self.purged, self.nbits(), slab as nat);
+        }
+        debug_assert!(!self.purged.map.is_set(slab), "purged_add: slab {slab} already in the purged set");
         self.purged.map.set(slab);
         self.stats.purged += 1;
+        proof {
+            assert forall|s: nat| s != slab && old(self).slab_ok(s) implies #[trigger] self.slab_ok(s) by {}
+        }
     }
 
     /// `slab` out of the purged set. Tests only: a refill spells the
-    /// pair out (`next_slab`).
+    /// pair out (`next_slab`). The caller closes the link at `slab`.
     #[cfg(test)]
-    fn purged_take(&mut self, slab: usize) {
-        debug_assert!(
-            self.purged.map.is_set(slab),
-            "purged_take: slab {slab} not in the purged set"
-        );
+    fn purged_take(&mut self, slab: usize)
+        requires
+            old(self).base(),
+            slab < old(self).nbits(),
+            old(self).purged.map@.contains(slab as nat),
+        ensures
+            final(self).base(),
+            final(self).same_rest(old(self)),
+            final(self).purged.map@ == old(self).purged.map@.remove(slab as nat),
+            final(self).partial == old(self).partial,
+            final(self).empty == old(self).empty,
+            old(self).inv_but(slab as int) ==> final(self).inv_but(slab as int),
+    {
+        debug_assert!(self.purged.map.is_set(slab), "purged_take: slab {slab} not in the purged set");
         self.purged.map.clear(slab);
-        self.stats.purged = self
-            .stats
-            .purged
-            .checked_sub(1)
-            .unwrap_or_else(|| abort::slab_count_underflow("purged"));
+        self.stats.purged = self.stats.purged.checked_sub(1).unwrap_or_else(|| abort::slab_count_underflow("purged"));
+        proof {
+            assert forall|s: nat| s != slab && old(self).slab_ok(s) implies #[trigger] self.slab_ok(s) by {}
+        }
     }
 }
 
+} // verus!
+
+verus! {
+
+broadcast use {table::lemma_spec_nslabs, table::lemma_spec_class};
+
+/// The table a `ClassState`'s `table` pointer points at.
+pub uninterp spec fn table_at(p: *const SlabTable) -> SlabTable;
+
 impl ClassState {
-    /// Create the state for `arena` over `table`'s class, with its three
-    /// slab sets as views of the arena's `sets` table (slot `kind * count +
-    /// pos[class]` of the class's set group, `Set::in_table`). `table` and
-    /// `sets` must outlive the state. `meta` and `regions` are unused:
-    /// the sets live in `sets`, the descriptors in `table`.
-    pub fn new(
-        meta: &Meta,
-        regions: &Regions,
-        table: &SlabTable,
-        arena: u16,
-        sets: &SetTable,
-    ) -> Option<ClassState> {
-        let _ = (meta, regions);
-        let class = table.class as usize;
-        debug_assert_eq!(table.nslabs, sets.nslabs[SetTable::group_of(class)]);
-        let partial = Set::in_table(sets, class, 0);
-        let empty = Set::in_table(sets, class, 1);
-        let purged = Set::in_table(sets, class, 2);
-        Some(ClassState {
-            class: table.class,
-            arena,
-            table,
-            gate: Decayer::new(),
-            inner: Padded(Lock::new(Inner {
-                partial,
-                empty,
-                purged,
-                stats: ClassStats::default(),
-                group_next: 0,
-                group_end: 0,
-            })),
-            claimed: AtomicU64::new(0),
-            refilled: AtomicU64::new(0),
-            released: AtomicU64::new(0),
-            compacted: AtomicU64::new(0),
-            compact_on: AtomicU64::new(0),
-            compact_off: AtomicU64::new(0),
-            gate_refill: AtomicU64::new(0),
-            clamped: AtomicU64::new(0),
-            _tail: [0; PAD_ALIGN - 64],
-        })
+    /// `class` is a class number, `table` points at that class's table,
+    /// and the sets behind the lock are over its slabs. `new` proves it: it
+    /// takes `class` from the table and builds the sets over the set
+    /// table's count for the class's slab size, which equals `table.nslabs`
+    /// because both are the process's regions' count for the class
+    /// (`SetTable::over`, `SlabTable::inv`). The lock value's ghost names
+    /// this arena and table. Trusted: `table_ptr`, the one
+    /// reference-to-pointer cast, whose result [`table_at`] maps back to
+    /// the table.
+    #[verifier::type_invariant]
+
+    spec fn inv(self) -> bool {
+        &&& self.class < NCLASSES
+        &&& table_at(self.table).inv()
+        &&& table_at(self.table).spec_class() == self.class as usize
+        &&& lock_init(self.inner.0).nbits() == table_at(self.table).spec_nslabs()
+        &&& lock_init(self.inner.0).arena@ == self.arena
+        &&& lock_init(self.inner.0).table@ == table_at(self.table)
     }
 
     /// The class's shared table.
+    pub closed spec fn spec_table(&self) -> SlabTable {
+        table_at(self.table)
+    }
+
+    /// Slabs of the class region.
+    pub closed spec fn spec_nslabs(&self) -> usize {
+        table_at(self.table).spec_nslabs()
+    }
+
+    /// The class number.
+    pub closed spec fn spec_class(&self) -> usize {
+        self.class as usize
+    }
+
+    /// The class table's slot tokens are of the class's authority
+    /// (`table::slot_loc`). No code: a proof step for callers that hold
+    /// the state by reference.
+    // The heap's proofs call it (verus/TODO.md, "To restore").
+    #[allow(dead_code)]
     #[inline(always)]
-    pub fn table(&self) -> &SlabTable {
+    pub fn slot_tokens_are_the_class_s(&self)
+        ensures
+            self.spec_table().spec_slots().loc == slot_loc(self.spec_class() as int),
+    {
+        proof {
+            use_type_invariant(self);
+            self.spec_table().lemma_slots_wf();
+        }
+    }
+
+    /// A class region has at most `2^45` slabs: it ends below `2^57` and
+    /// its slabs are 4 KiB or more. No code: a proof step for callers
+    /// that hold the state by reference.
+    #[inline(always)]
+    pub fn nslabs_fit(&self)
+        ensures
+            self.spec_nslabs() <= 0x2000_0000_0000,
+    {
+        proof {
+            use_type_invariant(self);
+            let t = table_at(self.table);
+            let (n, b, lg) = (t.nslabs, t.base, class_table()[t.class as int].lg_slab);
+            assert(n <= ((1usize << 57) - b) as usize >> lg && 12 <= lg <= 22 && b < 1usize << 57 ==> n <= 0x2000_0000_0000)
+                by (bit_vector);
+        }
+    }
+}
+
+/// A class region's slots all have numbers in a `usize`: `nslabs` slabs of
+/// at most `1 << lg_slab / size` slots each.
+proof fn lemma_slots_fit(t: SlabTable)
+    requires
+        t.inv(),
+    ensures
+        (t.spec_nslabs() as int) * (class_table()[t.spec_class() as int].nslots as int) <= usize::MAX,
+        (t.spec_nslabs() as int) * ((1usize << class_table()[t.spec_class() as int].lg_slab) as int) <= usize::MAX,
+        (t.spec_nslabs() as int) * ((1usize << class_table()[t.spec_class() as int].lg_slab) as int) <= 0x200_0000_0000_0000,
+        (t.spec_nslabs() as int) * (class_table()[t.spec_class() as int].nslots as int) <= 0x200_0000_0000_0000,
+{
+    broadcast use {table::lemma_spec_nslabs, table::lemma_spec_class};
+    let c = class_table()[t.spec_class() as int];
+    let lg = c.lg_slab as usize;
+    let n = t.spec_nslabs();
+    let m = (usize::MAX - t.base) as usize;
+    vstd::bits::lemma_usize_pow2_no_overflow(lg as nat);
+    vstd::bits::lemma_usize_shl_is_mul(1, lg);
+    vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(n, lg, m);
+    let m57 = ((1usize << 57usize) - t.base) as usize;
+    assert((1usize << 57usize) == 0x200_0000_0000_0000usize) by (bit_vector);
+    vstd::bits::lemma_usize_mul_pow2_le_max_iff_max_shr(n, lg, m57);
+    let l8 = c.lg_slab;
+    assert((1usize << l8) == (1usize << lg)) by (bit_vector)
+        requires lg == l8 as usize;
+    let p = (1usize << lg) as int;
+    assert(n as int * p <= usize::MAX);
+    assert((c.nslots as int) <= p) by (nonlinear_arith)
+        requires (c.nslots as int) * (c.size as int) <= p, c.size >= 1;
+    assert((n as int) * (c.nslots as int) <= (n as int) * p) by (nonlinear_arith)
+        requires (c.nslots as int) <= p, n >= 0;
+}
+
+/// [`Inner::lemma_counts`] wherever the invariant is known: the idle
+/// counts are at most the committed count, which is at most the class's
+/// slab count.
+broadcast proof fn lemma_inv_counts(v: Inner)
+    ensures
+        #[trigger] v.inv() ==> v.stats.empty + v.stats.purged <= v.stats.committed <= v.nbits(),
+{
+    if v.inv() {
+        v.lemma_counts();
+    }
+}
+
+/// Values that differ only in the sets' stores agree on the invariant
+/// ([`Inner::lemma_same_sets`]), wherever [`Inner::same_sets`] is known.
+broadcast proof fn lemma_same_sets_inv(a: Inner, b: Inner)
+    ensures
+        #[trigger] a.same_sets(b) ==> a.inv() == b.inv() && a.nbits() == b.nbits(),
+{
+    if a.same_sets(b) {
+        a.lemma_same_sets(b);
+    }
+}
+
+/// Assumption (`lock.rs`): the class lock's value keeps the set/count
+/// seam's invariant, ghost link included, while the lock is free.
+/// Verified holders show it through the postconditions of the `Inner`
+/// methods, the bridges and the `next_slab`/`take` contracts
+/// (`plan`, `take`, `next_slab`, `next_fresh_slab`, `reopen`,
+/// `on_live_zero`, `lowest_partial`, `is_partial`, `purge_group`,
+/// `walk_empty` and its visitors, `purge_empty`, `purge_curve`,
+/// `bin_stats`, `empty_bytes`); `ClassState::new` proves it of the value
+/// it creates the lock with. The only unverified holders are the tests.
+/// The fork handlers take the raw lock without touching the value.
+broadcast axiom fn axiom_class_lock_inv(v: Inner)
+    ensures
+        #[trigger] lock_inv(v) == v.inv(),
+;
+
+/// Assumption (`lock.rs`): the sets behind a class lock stay over
+/// the slab count they were created with. Every `Inner` method keeps
+/// `nbits` (`same_rest`), and nothing replaces the sets.
+broadcast axiom fn axiom_class_lock(init: Inner, v: Inner)
+    ensures
+        #[trigger] lock_frame(init, v) == (v.nbits() == init.nbits() && v.arena == init.arena && v.table == init.table),
+;
+
+// The derived `PartialEq` of `slab::State` compares variants (trusted, as
+// for the enums in `vspec/misc.rs`; ghost only: ordinary builds have no
+// `std_specs`).
+#[cfg(verus_only)]
+impl vstd::std_specs::cmp::PartialEqSpecImpl for State {
+    open spec fn obeys_eq_spec() -> bool {
+        true
+    }
+
+    open spec fn eq_spec(&self, other: &Self) -> bool {
+        *self == *other
+    }
+}
+
+/// The bridges between the ghost link (`Inner::states`) and the owner
+/// words and descriptors it stands for. Each is trusted and compiles to
+/// the one call in its body. `g` must be the value behind a class lock
+/// over this state's table (its ghost `table`, required) that the caller
+/// holds. `owner_locked` also requires this arena's (its ghost `arena`).
+impl ClassState {
+    /// Bridge (trusted): under this arena's class lock, a slab's group's
+    /// owner word names this arena exactly when the slab is one of its
+    /// owned slabs. Assumes the owner words move only with the ghost
+    /// ownership, a whole group at a time: `take_group` writes a new
+    /// group's word, once, under the taking arena's lock and the commit
+    /// lock, where no arena's ghost holds the group (ownership exists only
+    /// below the watermark, `SlabTable::next_slab_locked`'s assumption),
+    /// and `next_fresh_slab` then adds its slabs (verified).
+    #[allow(unused_variables)]
+    #[inline(always)]
+    #[verifier::external_body]
+    fn owner_locked(&self, g: &Inner, slab: usize) -> (r: u16)
+        requires
+            g.arena@ == self.arena,
+            g.table@ == self.spec_table(),
+        ensures
+            (r == self.arena) == g.owns(slab as nat),
+    {
+        self.table().owner(slab)
+    }
+
+    /// Bridge (trusted): under an arena's class lock, the descriptor of a
+    /// slab the arena owns holds the state its ghost records. Assumes every
+    /// write of a slab's state byte is made under its owner's class lock
+    /// together with the ghost update to the same state: through
+    /// [`set_state_locked`] in verified code (`on_live_zero`, `take`,
+    /// `purge_group`), and `SlabDesc::init` in
+    /// `take_group`, under the commit lock and the taking arena's class
+    /// lock, which makes a never-handed-out slab `Fresh` (a guard slab's
+    /// descriptor stays zero, which reads `Fresh`) before `next_fresh_slab`
+    /// adds it `Fresh` to the ghost (verified). `set_state` is documented
+    /// "only ever called with the class lock held". The `check_zero` debug
+    /// mode compares the state byte with its shadow where a lock holder
+    /// reads it (`check_shadow` in `take`, `on_live_zero`, the release
+    /// path), which catches a write that bypassed
+    /// `SlabDesc`, though not a `set_state` made under the wrong lock.
+    ///
+    /// [`set_state_locked`]: ClassState::set_state_locked
+    #[allow(unused_variables)]
+    #[inline(always)]
+    #[verifier::external_body]
+    fn state_locked(&self, g: &Inner, d: &SlabDesc, Ghost(slab): Ghost<usize>) -> (r: State)
+        requires
+            g.table@ == self.spec_table(),
+            *d == desc_at(self.spec_table(), slab),
+        ensures
+            g.owns(slab as nat) ==> r == g.st(slab as nat),
+    {
+        d.state()
+    }
+
+    /// Bridge (trusted): `SlabDesc::set_state` on an owned slab's
+    /// descriptor, with the ghost state updated to match (the write side
+    /// of [`state_locked`]'s assumption). Nothing else changes.
+    ///
+    /// [`state_locked`]: ClassState::state_locked
+    #[allow(unused_variables)]
+    #[inline(always)]
+    #[verifier::external_body]
+    fn set_state_locked(&self, g: &mut Inner, d: &SlabDesc, Ghost(slab): Ghost<usize>, s: State)
+        requires
+            old(g).table@ == self.spec_table(),
+            *d == desc_at(self.spec_table(), slab),
+            old(g).owns(slab as nat),
+        ensures
+            final(g).states@ == old(g).states@.insert(slab as nat, s),
+            final(g).partial == old(g).partial,
+            final(g).empty == old(g).empty,
+            final(g).purged == old(g).purged,
+            final(g).stats == old(g).stats,
+            final(g).group_next == old(g).group_next,
+            final(g).group_end == old(g).group_end,
+            final(g).committed == old(g).committed,
+            final(g).dirty == old(g).dirty,
+            final(g).arena == old(g).arena,
+            final(g).table == old(g).table,
+    {
+        d.set_state(s)
+    }
+
+    /// Bridge (trusted): under an arena's class lock, the descriptor of a
+    /// slab the arena owns holds the `dirty_at` stamp its ghost records.
+    /// Assumes, as [`state_locked`] does for the state, that every write of
+    /// a stamp is made under the owner's class lock with the ghost update:
+    /// through [`set_dirty_locked`] in verified code, and in
+    /// `SlabDesc::init` (0; a guard slab's descriptor stays zero) for a
+    /// slab `next_fresh_slab` then adds with the ghost stamp 0 (verified).
+    ///
+    /// [`state_locked`]: ClassState::state_locked
+    /// [`set_dirty_locked`]: ClassState::set_dirty_locked
+    #[allow(unused_variables)]
+    #[inline(always)]
+    #[verifier::external_body]
+    fn dirty_locked(&self, g: &Inner, d: &SlabDesc, Ghost(slab): Ghost<usize>) -> (r: u64)
+        requires
+            g.table@ == self.spec_table(),
+            *d == desc_at(self.spec_table(), slab),
+        ensures
+            g.owns(slab as nat) ==> r == g.dirty@[slab as nat],
+    {
+        d.dirty_at()
+    }
+
+    /// Bridge (trusted): `SlabDesc::set_dirty_at` on an owned slab's
+    /// descriptor, with the ghost stamp updated to match (the write side
+    /// of [`dirty_locked`]'s assumption). Nothing else changes.
+    ///
+    /// [`dirty_locked`]: ClassState::dirty_locked
+    #[allow(unused_variables)]
+    #[inline(always)]
+    #[verifier::external_body]
+    fn set_dirty_locked(&self, g: &mut Inner, d: &SlabDesc, Ghost(slab): Ghost<usize>, ns: u64)
+        requires
+            old(g).table@ == self.spec_table(),
+            *d == desc_at(self.spec_table(), slab),
+            old(g).owns(slab as nat),
+        ensures
+            final(g).dirty@ == old(g).dirty@.insert(slab as nat, ns),
+            final(g).states == old(g).states,
+            final(g).partial == old(g).partial,
+            final(g).empty == old(g).empty,
+            final(g).purged == old(g).purged,
+            final(g).stats == old(g).stats,
+            final(g).group_next == old(g).group_next,
+            final(g).group_end == old(g).group_end,
+            final(g).committed == old(g).committed,
+            final(g).arena == old(g).arena,
+            final(g).table == old(g).table,
+    {
+        d.set_dirty_at(ns)
+    }
+}
+
+} // verus!
+
+verus! {
+
+impl ClassState {
+    /// The class's shared table.
+    #[inline(always)]
+    #[verifier::external_body]
+    pub fn table(&self) -> (r: &SlabTable)
+        ensures
+            *r == self.spec_table(),
+            r.spec_class() == self.spec_class(),
+            r.spec_nslabs() == self.spec_nslabs(),
+    {
         // SAFETY: the table outlives the state (see the field).
         unsafe { &*self.table }
     }
 
     #[inline]
-    pub fn class(&self) -> &'static Class {
-        &CLASSES[self.class as usize]
+    pub fn class(&self) -> (r: &'static Class)
+        ensures
+            *r == class_table()[self.spec_class() as int],
+            r.wf(),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        &CLASSES.table()[self.class as usize]
     }
 
     #[inline]
@@ -575,7 +1405,10 @@ impl ClassState {
 
     #[inline]
     #[cfg(test)]
-    pub fn nslabs(&self) -> usize {
+    pub fn nslabs(&self) -> (r: usize)
+        ensures
+            r == self.spec_nslabs(),
+    {
         self.table().nslabs
     }
 
@@ -599,290 +1432,54 @@ impl ClassState {
 
     /// [`SlabTable::desc`].
     #[inline]
-    pub fn desc(&self, slab: usize) -> &SlabDesc {
+    pub fn desc(&self, slab: usize) -> (r: &SlabDesc)
+        ensures
+            *r == desc_at(self.spec_table(), slab),
+    {
         self.table().desc(slab)
     }
 
     #[inline]
-    fn slab_addr(&self, slab: usize) -> usize {
+    fn slab_addr(&self, slab: usize) -> (r: usize)
+        requires
+            slab < self.spec_nslabs(),
+        ensures
+            r + (1usize << class_table()[self.spec_class() as int].lg_slab) <= usize::MAX,
+            r as int == self.spec_table().base as int + (slab as int) * ((1usize << class_table()[self.spec_class() as int].lg_slab) as int),
+    {
+        proof {
+            use_type_invariant(self);
+        }
         self.table().slab_addr(slab)
     }
 
     #[inline]
-    fn slot_ptr(&self, slab: usize, slot: usize) -> *mut u8 {
+    fn slot_ptr(&self, slab: usize, slot: usize) -> (r: *mut u8)
+        requires
+            slab < self.spec_nslabs(),
+            slot < class_table()[self.spec_class() as int].slab_bits,
+        ensures
+            r@.addr == process_regions().slot_at(self.spec_class() as int, slab as int, slot as int),
+            process_regions().is_bit_slot(self.spec_class() as int, r@.addr),
+    {
+        proof {
+            use_type_invariant(self);
+        }
         self.table().slot_ptr(slab, slot)
     }
 
     /// [`SlabTable::locate`].
     #[inline]
-    pub fn locate(&self, p: *mut u8) -> (usize, usize) {
+    pub fn locate(&self, p: *mut u8) -> (r: (usize, usize))
+        ensures
+            r.0 < self.spec_nslabs(),
+            r.1 < class_table()[self.spec_class() as int].nslots,
+            process_regions().slot_at(self.spec_class() as int, r.0 as int, r.1 as int) == p@.addr,
+    {
+        proof {
+            use_type_invariant(self);
+        }
         self.table().locate(p)
-    }
-
-    /// Claim up to `out.len()` slots, lowest address first, writing slot
-    /// pointers to `out[..n]`. Each lock hold reserves from up to
-    /// [`MAX_PICKS`] slabs (see [`plan`]); the loop repeats only when a
-    /// plan ran out of picks before the request was met.
-    ///
-    /// [`plan`]: ClassState::plan
-    pub fn claim(&self, meta: &Meta, out: &mut [*mut u8]) -> Claim {
-        self.claim_with(meta, out, None)
-    }
-
-    /// [`claim`] for `slot_randomize` (design section 4): the same slabs
-    /// and the same reservations (`plan` is untouched,
-    /// so the slabs are still the lowest partial ones and a `Fresh` or
-    /// `Purged` slab's prefix is still claimed under the lock), but the
-    /// bit scan of every other pick starts at a word drawn from `rng`
-    /// instead of word 0, and the batch is shuffled with `rng` before it
-    /// is returned, so the cache hands out its slots in a random order
-    /// instead of by ascending address. Shuffling changes the order of
-    /// `out[..n]`, not the set of slots, so [`Claim::zeroed`] means what it
-    /// always means: every slot came from a slab nothing else could touch.
-    ///
-    /// [`claim`]: ClassState::claim
-    pub fn claim_random(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64) -> Claim {
-        let c = self.claim_with(meta, out, Some(rng));
-        shuffle(&mut out[..c.n], rng);
-        c
-    }
-
-    fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>) -> Claim {
-        let mut got = 0;
-        let mut zeroed = true;
-        let mut picks = [Pick {
-            slab: 0,
-            n: 0,
-            zero: false,
-            state: State::Active,
-        }; MAX_PICKS];
-        while got < out.len() {
-            let np = self.plan(meta, out.len() - got, &mut picks);
-            if np == 0 {
-                break;
-            }
-            got += self.finish(
-                &picks[..np],
-                &mut out[got..],
-                &mut zeroed,
-                rng.as_deref_mut(),
-            );
-        }
-        Claim {
-            n: got,
-            zeroed: got > 0 && zeroed,
-        }
-    }
-
-    /// The unlocked half of a refill: write the slots of `picks` (one
-    /// lock hold of [`plan`]) to `out`, lowest address first, and return
-    /// how many. A pick flagged zero had its slots decided under the lock
-    /// in [`take`] (the lowest `n` of a slab nothing else could touch), so
-    /// only the other picks run the bit loop here; `zeroed` is cleared
-    /// when any of them is not zero.
-    ///
-    /// With `rng` (`slot_randomize`) the bit loop of a pick starts at a
-    /// random word rather than word 0; a rescan after a full pass still
-    /// starts at 0. Without it the code is the address-ordered claim.
-    ///
-    /// Modelled at `model::Model::step_refill`, `protocol::Refill::Finish`
-    /// (one pick at a time).
-    ///
-    /// [`plan`]: ClassState::plan
-    /// [`take`]: ClassState::take
-    fn finish(
-        &self,
-        picks: &[Pick],
-        out: &mut [*mut u8],
-        zeroed: &mut bool,
-        mut rng: Option<&mut u64>,
-    ) -> usize {
-        let cls = self.class();
-        let check_zero = purge::check_zero();
-        let mut got = 0;
-        for pick in picks {
-            let slab = pick.slab as usize;
-            let want = pick.n as usize;
-            if pick.zero {
-                // Bits `0..want` were claimed under the lock (`claim_prefix`).
-                for k in 0..want {
-                    out[got + k] = self.slot_ptr(slab, k);
-                }
-                if check_zero {
-                    self.check_zero(&out[got..got + want], pick);
-                }
-                got += want;
-                continue;
-            }
-            *zeroed = false;
-            let bm = self.table().bits(slab);
-            let words = bm.words();
-            let mut k = 0;
-            let mut word = match rng.as_deref_mut() {
-                Some(r) => (xorshift(r) as usize) % words,
-                None => 0,
-            };
-            let mut empty_passes = 0u32;
-            while k < want {
-                let Some((w, bits)) = bm.claim_from(word, want - k) else {
-                    // Every word was full when inspected. `plan` reserved
-                    // no more than `nslots - live` and set bits never
-                    // exceed `live`, so the slots exist: a concurrent
-                    // claimer took the bits we looked at and left ours
-                    // in a word we had already passed. Scan again.
-                    empty_passes += 1;
-                    if empty_passes == MAX_EMPTY_PASSES {
-                        let d = self.desc(slab);
-                        reservation_unmet(
-                            self.class as usize,
-                            slab,
-                            want,
-                            k,
-                            d.live(),
-                            bm.allocated(cls.nslots()),
-                            cls.nslots(),
-                        );
-                    }
-                    word = 0;
-                    continue;
-                };
-                let mut m = bits;
-                while m != 0 {
-                    let b = m.trailing_zeros() as usize;
-                    m &= m - 1;
-                    out[got + k] = self.slot_ptr(slab, w * 64 + b);
-                    k += 1;
-                }
-                word = if w + 1 == words { 0 } else { w + 1 };
-            }
-            got += want;
-        }
-        got
-    }
-
-    /// One lock hold of a refill: reserve up to `want` slots across up to
-    /// [`MAX_PICKS`] slabs, lowest address first, and return the number of
-    /// picks written. Zero picks means nothing more can be committed.
-    ///
-    /// `nslots - live` is a lower bound on a slab's claimable slots: every
-    /// claimer reserves in `live` under this lock before it sets bits, and
-    /// every releaser clears bits before it subtracts. So a reservation of
-    /// at most that many is always met (the claimer may have to rescan when
-    /// a concurrent claimer wins the bits it looked at), and a partial slab
-    /// whose bound is zero is either full (its bit is cleared here, the
-    /// only place a partial bit is cleared while the slab stays `Active`)
-    /// or has an in-flight claimer and is skipped. A slab with `live == 0` whose
-    /// every slot is reserved here leaves the partial set at once: nothing
-    /// in it can be released before this claim hands slots out, so no
-    /// release can race the clear.
-    fn plan(&self, meta: &Meta, want: usize, picks: &mut [Pick; MAX_PICKS]) -> usize {
-        let cls = self.class();
-        let mut g = self.inner.lock();
-        let mut np = 0;
-        let mut remaining = want;
-        let mut next = g.partial.map.lowest_set();
-        while let Some(s) = next {
-            if remaining == 0 || np == MAX_PICKS {
-                return np;
-            }
-            let desc = self.desc(s);
-            if desc.live() >= cls.nslots() {
-                if desc.state() == State::Active && self.table().bits(s).is_full() {
-                    g.clear_partial(s);
-                }
-            } else {
-                self.take(&mut g, s, &mut remaining, picks, &mut np);
-            }
-            next = g.partial.map.lowest_set_from(s + 1);
-        }
-        while remaining > 0 && np < MAX_PICKS {
-            let s = match self.next_slab(&mut g, meta) {
-                Some(s) => s,
-                None => break,
-            };
-            self.take(&mut g, s, &mut remaining, picks, &mut np);
-        }
-        np
-    }
-
-    /// Reserve `min(nslots - live, *remaining)` slots of `slab` under the
-    /// lock, fix up its state and partial bit, and record the pick.
-    /// Modelled at `model::Model::take`, inside the locked step
-    /// `protocol::Refill::PlanLocked` of `model::Model::step_refill`.
-    fn take(
-        &self,
-        g: &mut Inner,
-        slab: usize,
-        remaining: &mut usize,
-        picks: &mut [Pick; MAX_PICKS],
-        np: &mut usize,
-    ) {
-        let desc = self.desc(slab);
-        let live = desc.live();
-        debug_assert_eq!(
-            self.table().owner(slab),
-            self.arena,
-            "take: slab {slab} state {:?} live {live}",
-            desc.state()
-        );
-        debug_assert_eq!(
-            desc.arena(),
-            self.arena,
-            "take: slab {slab} descriptor arena"
-        );
-        // `live > nslots` would reserve a wrapped count (the release
-        // profile does not check overflow; the dev profile does).
-        assert!(
-            live <= self.class().nslots(),
-            "class: slab live count above its slot count"
-        );
-        let avail = self.class().nslots() - live;
-        let n = avail.min(*remaining);
-        let state = desc.state();
-        if purge::check_zero() {
-            self.check_shadow(slab, "take");
-            if state == State::Fresh {
-                if live != 0 {
-                    fresh_with_live(
-                        self.class as usize,
-                        slab,
-                        self.arena,
-                        desc,
-                        self.table().bits(slab).allocated(self.class().nslots()),
-                    );
-                }
-                self.check_fresh_slab_is_zero(slab);
-            }
-        }
-        if state != State::Active {
-            desc.set_state(State::Active);
-            desc.set_dirty_at(0);
-        }
-        desc.add_live(n);
-        // Under the lock (`g`), so a plain load-add-store is exclusive.
-        self.claimed.store(
-            self.claimed.load(Ordering::Relaxed).wrapping_add(n as u64),
-            Ordering::Relaxed,
-        );
-        if live == 0 && n == avail {
-            g.clear_partial(slab);
-        } else {
-            g.set_partial(slab);
-        }
-        // `Purged` memory is zero only while every discard so far was
-        // `MADV_DONTNEED` (`purge::purged_is_zero`).
-        let zero = state.is_zero() && (state != State::Purged || purge::purged_is_zero());
-        if zero {
-            self.claim_prefix(slab, n, state, live);
-        }
-        picks[*np] = Pick {
-            slab: slab as u32,
-            n: n as u32,
-            zero,
-            state,
-        };
-        *np += 1;
-        *remaining -= n;
     }
 
     /// The slots of a zero pick, decided under the class lock. A `Fresh`
@@ -896,212 +1493,149 @@ impl ClassState {
     /// bits `0..n` means `live` no longer bounds the set bits: abort.
     ///
     /// [`finish`]: ClassState::finish
-    fn claim_prefix(&self, slab: usize, n: usize, state: State, live: usize) {
+    fn claim_prefix(&self, slab: usize, n: usize, state: State, live: usize, Tracked(toks): Tracked<&mut GhostSubset<int>>)
+        requires
+            n <= class_table()[self.spec_class() as int].nslots,
+            slab < self.spec_nslabs(),
+            old(toks).id() == self.spec_table().spec_slots().loc,
+        ensures
+            final(toks).id() == old(toks).id(),
+            final(toks)@ == old(toks)@.union(prefix_addrs(self.spec_table(), slab as int, n as int)),
+            old(toks)@.disjoint(prefix_addrs(self.spec_table(), slab as int, n as int)),
+    {
         let bm = self.table().bits(slab);
+        let ghost sb = class_table()[self.spec_class() as int].slab_bits as usize;
+        let ghost s = self.spec_table().spec_slots();
+        let ghost f = slab * s.sb;
+        proof {
+            use_type_invariant(self);
+            broadcast use crate::vspec::class::axiom_class_table_wf;
+            assert(class_table()[self.spec_class() as int].wf());
+            self.spec_table().lemma_slots_wf();
+            broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, VSet::lemma_map_contains};
+            assert(prefix_addrs(self.spec_table(), slab as int, 0) =~= VSet::<int>::empty());
+            assert(old(toks)@.union(VSet::<int>::empty()) =~= old(toks)@);
+        }
         let mut k = 0;
         let mut w = 0;
-        while k < n {
+        while k < n
+            invariant
+                bits_shape(bm, sb),
+                bits_ghost(bm, self.spec_table(), slab),
+                self.spec_table().inv(),
+                self.spec_table().spec_class() == self.spec_class(),
+                self.spec_table().spec_nslabs() == self.spec_nslabs(),
+                n <= sb,
+                n <= s.nslots,
+                k <= n,
+                k < n ==> k == w * 64,
+                slab < self.spec_nslabs(),
+                s == self.spec_table().spec_slots(),
+                s.wf(),
+                sb == s.sb,
+                f == slab * s.sb,
+                toks.id() == old(toks).id(),
+                old(toks).id() == s.loc,
+                toks@ == old(toks)@.union(prefix_addrs(self.spec_table(), slab as int, k as int)),
+                old(toks)@.disjoint(prefix_addrs(self.spec_table(), slab as int, k as int)),
+            decreases n - k,
+        {
+            proof {
+                assert(w as int * 64 < sb as int);
+                assert(w < bm.spec_words()) by (nonlinear_arith)
+                    requires
+                        w as int * 64 < sb as int,
+                        sb >= 64 ==> sb % 64 == 0 && bm.spec_words() == sb / 64,
+                        sb < 64 ==> bm.spec_words() == 1;
+            }
             let want = (n - k).min(64);
+            proof {
+                assert(want < 64 ==> (1u64 << want) >= 1u64) by (bit_vector);
+            }
             let expect = if want == 64 { !0 } else { (1u64 << want) - 1 };
-            let got = bm.claim_word(w, want);
+            let got = bm.claim_word(w, want, Tracked(&mut *toks));
             if got != expect {
-                zero_slab_had_bits_set(
-                    self.class as usize,
-                    slab,
-                    self.arena,
-                    state,
-                    live,
-                    w,
-                    got,
-                    expect,
-                );
+                zero_slab_had_bits_set(self.class as usize, slab, self.arena, state, live, w, got, expect);
+            }
+            proof {
+                broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+                let wu = want as u64;
+                assert forall|kk: u64| kk < 64 implies #[trigger] has_bit(expect, kk) == (kk < wu) by {
+                    assert(has_bit(!0u64, kk)) by (bit_vector) requires kk < 64;
+                    if wu < 64 {
+                        assert(has_bit(sub(1u64 << wu, 1), kk) == (kk < wu)) by (bit_vector)
+                            requires wu < 64, kk < 64;
+                    }
+                }
+                self.spec_table().lemma_slots_wf();
+                // The claimed word is slots `k..k + want` of the slab.
+                let a = prefix_addrs(self.spec_table(), slab as int, k as int);
+                let won = bm.tokens(w as int, got);
+                let lo = VSet::<int>::range(f, f + k);
+                let hi = VSet::<int>::range(f + k, f + k + want);
+                assert forall|b: int| #[trigger] won.contains(b) == hi.contains(b) by {
+                    if f + k <= b < f + k + want {
+                        let t = b - f;
+                        assert(0 <= t < s.nslots);
+                        self.spec_table().lemma_slot_bit(slab as int, t);
+                    }
+                }
+                assert(won =~= hi);
+                assert(VSet::<int>::range(f, f + k + want) =~= lo.union(hi));
+                lemma_addrs_union(s, lo, hi);
             }
             k += want;
             w += 1;
         }
     }
 
-    /// `live` reached zero: make the slab `Empty` unless a refill has
-    /// already reserved it again. Modelled at `model::Model::step_release`,
-    /// `protocol::Release::LockLiveZero` (the lock) and `OnLiveZero` (the
-    /// owner test and the transition).
-    fn on_live_zero(&self, slab: usize) {
-        let mut first = false;
-        {
-            let mut g = self.inner.lock();
-            if purge::check_zero() {
-                self.check_shadow(slab, "on_live_zero");
-            }
-            // A slab of another arena is no business of this arena's sets.
-            if self.table().owner(slab) != self.arena {
-                return;
-            }
-            let desc = self.desc(slab);
-            if desc.live() == 0 && desc.state() == State::Active {
-                let now = crate::sys::now_coarse_ns().max(1);
-                desc.set_state(State::Empty);
-                desc.set_dirty_at(now);
-                g.clear_partial(slab);
-                g.empty_add(slab);
-                if self.gate.note_first_empty(now) {
-                    first = true;
-                }
-            }
+    /// Release the slots of `mask` in `word` of `slab`, whose tokens are
+    /// `tok`. The `live` update is separate so a batch can do one per slab.
+    /// The double-free abort cannot fire: the tokens say every bit is set
+    /// (`AtomicBitmap::release`).
+    fn release_word(&self, slab: usize, word: usize, mask: u64, reopen: &mut Reopen, Tracked(tok): Tracked<GhostSubset<int>>)
+        requires
+            slab < self.spec_nslabs(),
+            word < words_of(class_table()[self.spec_class() as int].slab_bits as usize),
+            subset(mask, slab_mask_of(class_table()[self.spec_class() as int].slab_bits as usize)),
+            mask_slots(word as int, mask, class_table()[self.spec_class() as int].nslots as int),
+            tok.id() == self.spec_table().spec_slots().loc,
+            tok@ == word_addrs(self.spec_table(), slab as int, word as int, mask),
+            old(reopen).len <= MAX_PICKS,
+            old(reopen).below(self.spec_nslabs()),
+        ensures
+            final(reopen).len <= MAX_PICKS,
+            final(reopen).below(self.spec_nslabs()),
+    {
+        let ghost sb = class_table()[self.spec_class() as int].slab_bits as usize;
+        proof {
+            use_type_invariant(self);
+            broadcast use crate::vspec::class::axiom_class_table_wf;
+            assert(class_table()[self.spec_class() as int].wf());
         }
-        if first {
-            purge::note_empty();
-        }
-    }
-
-    /// Release a batch of slot pointers. Consecutive pointers in the same
-    /// bitmap word share one `fetch_and`, so a batch sorted by address costs
-    /// about one atomic per 64 slots. Slabs whose words went from full to
-    /// not full are collected and put back in the partial set under one
-    /// lock hold at the end (or when the list overflows), rather than one
-    /// per word. Aborts on a pointer that is not an allocated slot of this
-    /// class, or one whose slab belongs to another arena (the caller routes
-    /// by the descriptor's arena; a miss here means a cache was mis-keyed).
-    pub fn release(&self, ptrs: &[*mut u8]) {
-        let n = self.release_owned(ptrs);
-        if n != ptrs.len() {
-            let p = ptrs[n];
-            let (slab, _) = self.locate(p);
-            wrong_arena(
-                p as usize,
-                self.class as usize,
-                self.table().owner(slab),
-                self.arena,
-            );
-        }
-    }
-
-    /// [`release`] of the longest prefix of `ptrs` whose slabs this arena
-    /// owns, returning its length (`ptrs.len()` when every slab is ours).
-    /// The batch is grouped by slab (`Heap::flush`'s bucket pass; a sorted
-    /// batch is one such grouping), so a slab's pointers are contiguous and
-    /// the prefix ends exactly at the first pointer of a slab of another
-    /// arena; the caller routes the rest there (`Heap::flush`: a home cache
-    /// takes sized frees of any arena, design 6.3). Within a slab the order
-    /// is free: the slab's bits are accumulated in a scratch bitmap
-    /// (`MAX_SLAB_WORDS` words on the stack) and released at the slab
-    /// switch, one atomic per touched word, so an unsorted slab costs the
-    /// same atomics as a sorted one. Every bit cleared is checked (an
-    /// already-clear bit is a double or invalid free and aborts), which is
-    /// where the sized path's deferred check lands; a duplicate inside one
-    /// slab's group is caught earlier, on the scratch bit. The owner is read
-    /// from the table's dense owner array, once per slab switch, and checked
-    /// against the slab descriptor's `arena` (a line `dec_live` reads
-    /// anyway): the word routed the batch here, so a descriptor that
-    /// disagrees means one of them is corrupt, and the batch aborts before
-    /// a bit is cleared (`owner_mismatch`).
-    /// Modelled at `model::Model::step_release`, `protocol::Release::FetchAnd`
-    /// (the `fetch_and` and the double-free check) and `SubLive`.
-    ///
-    /// [`release`]: ClassState::release
-    pub fn release_owned(&self, ptrs: &[*mut u8]) -> usize {
-        let mut local = [0u64; MAX_SLAB_WORDS];
-        let mut cur_slab = usize::MAX;
-        let (mut lo_w, mut hi_w) = (usize::MAX, 0usize);
-        let mut count = 0usize;
-        let mut reopen = Reopen::default();
-        let mut end = ptrs.len();
-        for (i, &p) in ptrs.iter().enumerate() {
-            let (slab, slot) = self.locate(p);
-            if slab != cur_slab {
-                if count != 0 {
-                    self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen);
-                    count = 0;
-                    lo_w = usize::MAX;
-                    hi_w = 0;
-                }
-                if self.table().owner(slab) != self.arena {
-                    end = i;
-                    break;
-                }
-                // The sized path defers its checks to here (design
-                // 6.3). A guard slab or a slab nothing was ever
-                // allocated from (`Fresh`: handed to an arena but not
-                // committed, or committed and never claimed) has no
-                // slot to release; its bits are clear, so the bit
-                // test below would abort too, but this names the
-                // cause. The descriptor line is read by `dec_live`
-                // anyway.
-                if self.table().is_guard_slab(slab) {
-                    guard_free(p as usize, self.class as usize, slab);
-                }
-                let d = self.desc(slab);
-                if d.arena() != self.arena {
-                    owner_mismatch(
-                        self.class as usize,
-                        slab >> self.table().lg_group,
-                        slab,
-                        self.arena,
-                        d.arena(),
-                    );
-                }
-                if d.state() == State::Fresh {
-                    release_into_fresh_slab(p as usize, self.class as usize, slab);
-                }
-                cur_slab = slab;
-            }
-            let word = slot / 64;
-            let bit = 1u64 << (slot % 64);
-            // `slot < nslots <= slab_bits <= 64 * MAX_SLAB_WORDS`
-            // (`locate` checked the slot), so `word` is in range.
-            let w = &mut local[word];
-            if *w & bit != 0 {
-                double_free(p as usize, self.class as usize, slab, slot);
-            }
-            *w |= bit;
-            count += 1;
-            lo_w = lo_w.min(word);
-            hi_w = hi_w.max(word);
-        }
-        if count != 0 {
-            self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen);
-        }
-        self.reopen(&mut reopen);
-        if end != 0 {
-            self.released.fetch_add(end as u64, Ordering::Relaxed);
-        }
-        end
-    }
-
-    /// Clear the bits `local[lo..=hi]` accumulated for `slab` (one atomic
-    /// per non-zero word), zero them for the next slab, and take `count`
-    /// off the slab's `live`.
-    fn release_slab(
-        &self,
-        slab: usize,
-        local: &mut [u64; MAX_SLAB_WORDS],
-        lo: usize,
-        hi: usize,
-        count: usize,
-        reopen: &mut Reopen,
-    ) {
-        for w in lo..=hi {
-            let mask = local[w];
-            if mask != 0 {
-                local[w] = 0;
-                self.release_word(slab, w, mask, reopen);
+        let t = self.table();
+        let bm = t.bits(slab);
+        proof {
+            use_type_invariant(t);
+            assert forall|b: u64| b < 64 && #[trigger] has_bit(mask, b)
+                implies bm.spec_slots().real(bm.spec_first() + 64 * word + b) by {
+                assert(subset(mask, mask)) by (bit_vector);
+                lemma_bit_in_slab(mask, mask, b, sb, word);
+                t.lemma_slot_bit(slab as int, 64 * word + b);
             }
         }
-        self.dec_live(slab, count);
-    }
-
-    /// Release the slots of `mask` in `word` of `slab`. The `live` update
-    /// is separate so a batch can do one per slab.
-    fn release_word(&self, slab: usize, word: usize, mask: u64, reopen: &mut Reopen) {
-        let (prev, was_full) = self.table().bits(slab).release(word, mask);
+        let (prev, was_full) = bm.release(word, mask, Tracked(tok));
         if prev & mask != mask {
+            proof {
+                let x = mask & !prev;
+                assert(x != 0u64 && subset(x, mask)) by (bit_vector)
+                    requires prev & mask != mask, x == mask & !prev;
+                axiom_u64_trailing_zeros(x);
+                lemma_bit_in_slab(x, mask, u64_trailing_zeros(x) as u64, sb, word);
+            }
             let bad = (mask & !prev).trailing_zeros() as usize;
             let slot = word * 64 + bad;
-            double_free(
-                self.slot_ptr(slab, slot) as usize,
-                self.class as usize,
-                slab,
-                slot,
-            );
+            double_free(self.slot_ptr(slab, slot) as usize, self.class as usize, slab, slot);
         }
         if was_full && !reopen.push(slab) {
             self.reopen(reopen);
@@ -1115,24 +1649,54 @@ impl ClassState {
     /// taking it from there sets its partial bit itself. Modelled at
     /// `model::Model::step_release`, `protocol::Release::LockReopen` (the
     /// lock) and `Reopen` (the state and owner test per slab).
-    fn reopen(&self, reopen: &mut Reopen) {
+    // Verus needs the explicit reborrow.
+    #[allow(clippy::explicit_auto_deref)]
+    fn reopen(&self, reopen: &mut Reopen)
+        requires
+            old(reopen).len <= MAX_PICKS,
+            old(reopen).below(self.spec_nslabs()),
+        ensures
+            final(reopen).len == 0,
+    {
+        broadcast use {axiom_class_lock, axiom_class_lock_inv};
+        proof {
+            use_type_invariant(self);
+        }
         if reopen.len == 0 {
             return;
         }
         let mut g = self.inner.lock();
-        for &s in &reopen.slabs[..reopen.len] {
+        for &s in it: &reopen.slabs[..reopen.len]
+            invariant
+                g@.inv(),
+                g@.nbits() == self.spec_nslabs(),
+                g@.arena@ == self.arena,
+                g@.table@ == self.spec_table(),
+
+                it.seq().len() == reopen.len,
+                forall|i: int| 0 <= i < reopen.len ==> *#[trigger] it.seq()[i] == reopen.slabs[i],
+                reopen.len <= MAX_PICKS,
+                reopen.below(self.spec_nslabs()),
+        {
+            proof {
+                assert(s == reopen.slabs[it.index() as int]);
+                assert(s < self.spec_nslabs());
+            }
             let slab = s as usize;
             // Between the word's clear and this lock hold the slab may have
             // gone `Empty` (in `dec_live`); only an `Active` slab of this
             // arena goes back into the partial set.
-            if self.desc(slab).state() == State::Active && self.table().owner(slab) == self.arena {
+            if self.state_locked(&*g, self.desc(slab), Ghost(slab)) == State::Active && self.owner_locked(&*g, slab) == self.arena {
                 g.set_partial(slab);
             }
         }
         reopen.len = 0;
     }
 
-    fn dec_live(&self, slab: usize, n: usize) {
+    fn dec_live(&self, slab: usize, n: usize)
+        requires
+            slab < self.spec_nslabs(),
+    {
         if purge::check_zero() {
             self.check_shadow(slab, "release");
             if self.desc(slab).state() == State::Fresh {
@@ -1144,52 +1708,10 @@ impl ClassState {
         }
     }
 
-    /// This arena's slab counts; `guards` is the class-wide count from the
-    /// table, since guard slabs belong to no arena.
-    #[cfg(test)]
-    pub fn stats(&self) -> ClassStats {
-        self.bin_stats().0
-    }
-
-    /// The slab counts and `curregs` (slots out of this arena's bitmaps:
-    /// in caches or in use, jemalloc's `curregs`) from one lock hold.
-    ///
-    /// `released` is read before the lock and `claimed` under it, so the
-    /// difference is never negative: a slot is claimed before it is
-    /// released. It can exceed the true sum of `live` by the slots
-    /// released in between, so it is clamped to the capacity of the slabs
-    /// that can hold live slots (those neither `Empty` nor `Purged`),
-    /// which keeps `active >= allocated` exact for `stats.rs`. Every clamp
-    /// is counted (`clamped`); the count cannot tell the legitimate
-    /// transient from a bookkeeping bug, the reader of the bins table can.
-    pub fn bin_stats(&self) -> (ClassStats, usize) {
-        let released = self.released.load(Ordering::Relaxed);
-        let g = self.inner.lock();
-        let mut s = g.stats;
-        let claimed = self.claimed.load(Ordering::Relaxed);
-        drop(g);
-        s.guards = self.table().guards();
-        let cap = s.curslabs() * self.class().nslots();
-        let out = claimed.wrapping_sub(released) as usize;
-        let curregs = if out > cap {
-            self.clamped.fetch_add(1, Ordering::Relaxed);
-            cap
-        } else {
-            out
-        };
-        (s, curregs)
-    }
-
     /// Times `bin_stats` clamped `curregs` (see the field).
     #[inline]
     pub fn clamped(&self) -> u64 {
         self.clamped.load(Ordering::Relaxed)
-    }
-
-    /// Slots out of this arena's bitmaps (see [`ClassState::bin_stats`]).
-    #[cfg(test)]
-    pub fn curregs(&self) -> usize {
-        self.bin_stats().1
     }
 
     /// Slots ever claimed from this arena's slabs of the class (wrapping).
@@ -1221,12 +1743,7 @@ impl ClassState {
     /// Count a cache entering (`on`) or leaving compact mode.
     #[inline]
     pub fn note_compact_mode(&self, on: bool) {
-        if on {
-            &self.compact_on
-        } else {
-            &self.compact_off
-        }
-        .fetch_add(1, Ordering::Relaxed);
+        if on { &self.compact_on } else { &self.compact_off }.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Count a probe the refill-rate gate declined.
@@ -1246,21 +1763,1820 @@ impl ClassState {
         )
     }
 
+    /// Lowest slab in the partial set, if any (for tests and stats).
+    pub fn lowest_partial(&self) -> (r: Option<usize>)
+        ensures
+            r matches Some(s) ==> s < self.spec_nslabs(),
+    {
+        broadcast use {axiom_class_lock, axiom_class_lock_inv};
+        proof {
+            use_type_invariant(self);
+        }
+        self.inner.lock().partial.map.lowest_set()
+    }
+
+    /// Whether `slab` is in the partial set (tests and the bins table,
+    /// `api::print`).
+    pub fn is_partial(&self, slab: usize) -> bool
+        requires
+            slab < self.spec_nslabs(),
+    {
+        broadcast use {axiom_class_lock, axiom_class_lock_inv};
+        proof {
+            use_type_invariant(self);
+        }
+        self.inner.lock().partial.map.is_set(slab)
+    }
+
+    /// `live` reached zero: make the slab `Empty` unless a refill has
+    /// already reserved it again. Modelled at `model::Model::step_release`,
+    /// `protocol::Release::LockLiveZero` (the lock) and `OnLiveZero` (the
+    /// owner test and the transition).
+    // Verus needs the explicit reborrow.
+    #[allow(clippy::explicit_auto_deref)]
+    fn on_live_zero(&self, slab: usize)
+        requires
+            slab < self.spec_nslabs(),
+    {
+        broadcast use {axiom_class_lock, axiom_class_lock_inv};
+        proof {
+            use_type_invariant(self);
+        }
+        let mut first = false;
+        {
+            let mut g = self.inner.lock();
+            if purge::check_zero() {
+                self.check_shadow(slab, "on_live_zero");
+            }
+            // A slab of another arena is no business of this arena's sets.
+            if self.owner_locked(&*g, slab) != self.arena {
+                return;
+            }
+            let desc = self.desc(slab);
+            if desc.live() == 0 && self.state_locked(&*g, desc, Ghost(slab)) == State::Active {
+                let now = crate::sys::now_coarse_ns().max(1);
+                let ghost g0 = g@;
+                proof {
+                    assert(g0.slab_ok(slab as nat));
+                }
+                self.set_state_locked(&mut *g, desc, Ghost(slab), State::Empty);
+                self.set_dirty_locked(&mut *g, desc, Ghost(slab), now);
+                proof {
+                    assert forall|s: nat| s != slab implies #[trigger] g@.slab_ok(s) by {
+                        assert(g0.slab_ok(s));
+                    }
+                    assert(g@.inv_but(slab as int));
+                }
+                g.clear_partial(slab);
+                g.empty_add(slab);
+                proof {
+                    assert(g@.slab_ok(slab as nat));
+                    g@.lemma_close(slab as nat);
+                }
+                if self.gate.note_first_empty(now) {
+                    first = true;
+                }
+            }
+        }
+        if first {
+            purge::note_empty();
+        }
+    }
+
+    /// One lock hold of a refill: reserve up to `want` slots across up to
+    /// [`MAX_PICKS`] slabs, lowest address first, and return the number of
+    /// picks written. Zero picks means nothing more can be committed.
+    ///
+    /// `nslots - live` is a lower bound on a slab's claimable slots: every
+    /// claimer reserves in `live` under this lock before it sets bits, and
+    /// every releaser clears bits before it subtracts. So a reservation of
+    /// at most that many is always met (the claimer may have to rescan when
+    /// a concurrent claimer wins the bits it looked at), and a partial slab
+    /// whose bound is zero is either full (its bit is cleared here, the
+    /// only place a partial bit is cleared while the slab stays `Active`)
+    /// or has an in-flight claimer and is skipped. A slab with `live == 0` whose
+    /// every slot is reserved here leaves the partial set at once: nothing
+    /// in it can be released before this claim hands slots out, so no
+    /// release can race the clear.
+    fn plan(&self, meta: &Meta, want: usize, picks: &mut [Pick; MAX_PICKS], Tracked(ptoks): Tracked<&mut Map<int, GhostSubset<int>>>) -> (np: usize)
+        ensures
+            picks_toks(self.spec_table(), final(picks)@, 0, np as int, *final(ptoks)),
+            np <= MAX_PICKS,
+            picks_ok(final(picks)@, np as int, self.spec_nslabs(), class_table()[self.spec_class() as int].nslots as nat),
+            picks_sum(final(picks)@, np as int) <= want,
+    {
+        let cls = self.class();
+        broadcast use {axiom_class_lock, axiom_class_lock_inv};
+        proof {
+            use_type_invariant(self);
+        }
+        let mut g = self.inner.lock();
+        let mut np = 0;
+        let mut remaining = want;
+        let mut next = g.partial.map.lowest_set();
+        while let Some(s) = next
+            invariant
+                g@.inv(),
+                g@.nbits() == self.spec_nslabs(),
+                g@.arena@ == self.arena,
+                g@.table@ == self.spec_table(),
+                *cls == class_table()[self.spec_class() as int],
+                np <= MAX_PICKS,
+                picks_ok(picks@, np as int, self.spec_nslabs(), cls.nslots as nat),
+                picks_sum(picks@, np as int) + remaining == want,
+                picks_toks(self.spec_table(), picks@, 0, np as int, *ptoks),
+                next matches Some(x) ==> x < self.spec_nslabs() && g@.partial.map@.contains(x as nat),
+            decreases
+                match next {
+                    Some(x) => self.spec_nslabs() - x,
+                    None => 0,
+                },
+        {
+            if remaining == 0 || np == MAX_PICKS {
+                return np;
+            }
+            let desc = self.desc(s);
+            if desc.live() >= cls.nslots() {
+                if desc.state() == State::Active && self.table().bits(s).is_full() {
+                    g.clear_partial(s);
+                }
+            } else {
+                let ghost before = picks@;
+                let ghost k = np;
+                proof {
+                    assert(g@.slab_ok(s as nat));
+                }
+                let ghost t0 = *ptoks;
+                self.take(&mut g, s, &mut remaining, picks, &mut np, Tracked(&mut *ptoks));
+                proof {
+                    lemma_picks_sum(before, picks@, k as int);
+                    lemma_picks_toks_step(self.spec_table(), before, picks@, k as int, t0, *ptoks);
+                }
+            }
+            next = g.partial.map.lowest_set_from(s + 1);
+        }
+        while remaining > 0 && np < MAX_PICKS
+            invariant
+                g@.inv(),
+                g@.nbits() == self.spec_nslabs(),
+                g@.arena@ == self.arena,
+                g@.table@ == self.spec_table(),
+                *cls == class_table()[self.spec_class() as int],
+                np <= MAX_PICKS,
+                picks_ok(picks@, np as int, self.spec_nslabs(), cls.nslots as nat),
+                picks_sum(picks@, np as int) + remaining == want,
+                picks_toks(self.spec_table(), picks@, 0, np as int, *ptoks),
+            decreases MAX_PICKS - np,
+        {
+            let s = match self.next_slab(&mut g, meta) {
+                Some(s) => s,
+                None => break,
+            };
+            let ghost before = picks@;
+            let ghost k = np;
+            let ghost t0 = *ptoks;
+            self.take(&mut g, s, &mut remaining, picks, &mut np, Tracked(&mut *ptoks));
+            proof {
+                lemma_picks_sum(before, picks@, k as int);
+                lemma_picks_toks_step(self.spec_table(), before, picks@, k as int, t0, *ptoks);
+            }
+        }
+        proof {
+            lemma_picks_sum(picks@, picks@, np as int);
+        }
+        np
+    }
+
+    /// Reserve `min(nslots - live, *remaining)` slots of `slab` under the
+    /// lock, fix up its state and partial bit, and record the pick.
+    /// Modelled at `model::Model::take`, inside the locked step
+    /// `protocol::Refill::PlanLocked` of `model::Model::step_refill`.
+    ///
+    /// `live` is not modelled (releasers subtract from it without the
+    /// lock), so `live <= nslots` stays a runtime check that aborts
+    /// ([`live_above_slots`]; the release profile would wrap without it).
+    /// The state and stamp writes go through the bridges, and `ready` is
+    /// what makes the invariant true afterwards.
+    // The negated test is the form the proof states.
+    #[allow(clippy::nonminimal_bool)]
+    fn take(
+        &self,
+        g: &mut Inner,
+        slab: usize,
+        remaining: &mut usize,
+        picks: &mut [Pick; MAX_PICKS],
+        np: &mut usize,
+        Tracked(ptoks): Tracked<&mut Map<int, GhostSubset<int>>>,
+    )
+        requires
+            old(g).ready(slab as nat),
+            old(g).nbits() == self.spec_nslabs(),
+            old(g).arena@ == self.arena,
+            old(g).table@ == self.spec_table(),
+            slab < self.spec_nslabs(),
+            *old(np) < MAX_PICKS,
+        ensures
+            final(g).inv(),
+            final(g).nbits() == old(g).nbits(),
+            final(g).states@ == old(g).states@.insert(slab as nat, State::Active),
+            final(g).committed == old(g).committed,
+            final(g).dirty@ == (if old(g).st(slab as nat) == State::Active { old(g).dirty@ } else { old(g).dirty@.insert(slab as nat, 0) }),
+            final(g).group_next == old(g).group_next,
+            final(g).group_end == old(g).group_end,
+            final(g).arena == old(g).arena,
+            final(g).table == old(g).table,
+            *final(np) == *old(np) + 1,
+            final(picks)[*old(np) as int].n as int + *final(remaining) == *old(remaining),
+            (final(picks)[*old(np) as int].slab as usize) < self.spec_nslabs(),
+            final(picks)[*old(np) as int].n <= class_table()[self.spec_class() as int].nslots,
+            forall|i: int| 0 <= i < MAX_PICKS && i != *old(np) ==> final(picks)[i] == old(picks)[i],
+            *final(ptoks) == old(ptoks).insert(*old(np) as int, final(ptoks)[*old(np) as int]),
+            final(ptoks)[*old(np) as int].id() == self.spec_table().spec_slots().loc,
+            final(ptoks)[*old(np) as int]@ == pick_addrs(self.spec_table(), final(picks)[*old(np) as int]),
+    {
+        proof {
+            use_type_invariant(self);
+            broadcast use crate::vspec::class::axiom_class_table_wf;
+            assert(class_table()[self.spec_class() as int].wf());
+        }
+        let desc = self.desc(slab);
+        let live = desc.live();
+        self.take_checks(&*g, desc, slab, live);
+        // `live > nslots` would reserve a wrapped count (the release
+        // profile does not check overflow; the dev profile does).
+        if !(live <= self.class().nslots()) {
+            live_above_slots();
+        }
+        let avail = self.class().nslots() - live;
+        let n = avail.min(*remaining);
+        let state = self.state_locked(&*g, desc, Ghost(slab));
+        if purge::check_zero() {
+            self.check_shadow(slab, "take");
+            if state == State::Fresh {
+                if live != 0 {
+                    fresh_with_live(self.class as usize, slab, self.arena, desc, self.table().bits(slab).allocated(self.class().nslots()));
+                }
+                self.check_fresh_slab_is_zero(slab);
+            }
+        }
+        let ghost g0 = *g;
+        if state != State::Active {
+            self.set_state_locked(g, desc, Ghost(slab), State::Active);
+            self.set_dirty_locked(g, desc, Ghost(slab), 0);
+        } else {
+            proof {
+                assert(g.states@.insert(slab as nat, State::Active) =~= g.states@);
+            }
+        }
+        proof {
+            assert(g.slab_ok(slab as nat));
+            assert forall|x: nat| x != slab implies #[trigger] g.slab_ok(x) by {
+                assert(g0.slab_ok(x));
+            }
+            assert(g.inv_but(slab as int));
+            g.lemma_close(slab as nat);
+        }
+        desc.add_live(n);
+        // Under the lock (`g`), so a plain load-add-store is exclusive.
+        self.claimed.store(self.claimed.load(Ordering::Relaxed).wrapping_add(n as u64), Ordering::Relaxed);
+        if live == 0 && n == avail {
+            g.clear_partial(slab);
+        } else {
+            g.set_partial(slab);
+        }
+        // `Purged` memory is zero only while every discard so far was
+        // `MADV_DONTNEED` (`purge::purged_is_zero`).
+        let zero = state.is_zero() && (state != State::Purged || purge::purged_is_zero());
+        let _t = self.table();
+        let tracked mut pt = _t.empty_tokens();
+        if zero {
+            self.claim_prefix(slab, n, state, live, Tracked(&mut pt));
+        }
+        proof {
+            assert(self.spec_nslabs() <= 0x400_0000) by {
+                broadcast use {table::lemma_spec_nslabs};
+            }
+        }
+        picks[*np] = Pick { slab: slab as u32, n: n as u32, zero, state };
+        proof {
+            assert(VSet::<int>::empty().union(prefix_addrs(self.spec_table(), slab as int, n as int))
+                =~= prefix_addrs(self.spec_table(), slab as int, n as int));
+            ptoks.tracked_insert(*np as int, pt);
+        }
+        *np += 1;
+        *remaining -= n;
+    }
+
+    /// `take`'s debug checks: the slab's owner word and its descriptor's
+    /// arena name this arena. Inlined and `track_caller`, as
+    /// `table::watermark_aligned`. Trusted: Verus does not support
+    /// `debug_assert_eq!`. The first holds by [`owner_locked`]'s
+    /// assumption (the slab is owned, `ready`); the second because the
+    /// descriptor's arena is written with the owner word (`take_group`).
+    ///
+    /// [`owner_locked`]: ClassState::owner_locked
+    #[allow(unused_variables)]
+    #[inline(always)]
+    #[track_caller]
+    #[verifier::external_body]
+    fn take_checks(&self, g: &Inner, desc: &SlabDesc, slab: usize, live: usize)
+        requires
+            g.owns(slab as nat),
+            g.arena@ == self.arena,
+            g.table@ == self.spec_table(),
+            *desc == desc_at(self.spec_table(), slab),
+    {
+        debug_assert_eq!(self.table().owner(slab), self.arena, "take: slab {slab} state {:?} live {live}", desc.state());
+        debug_assert_eq!(desc.arena(), self.arena, "take: slab {slab} descriptor arena");
+    }
+
+    /// This arena's slab counts; `guards` is the class-wide count from the
+    /// table, since guard slabs belong to no arena.
+    #[cfg(test)]
+    pub fn stats(&self) -> (r: ClassStats)
+        ensures
+            r.empty + r.purged <= r.committed,
+            (r.committed as int) * (class_table()[self.spec_class() as int].nslots as int) <= usize::MAX,
+    {
+        self.bin_stats().0
+    }
+
+    /// The slab counts and `curregs` (slots out of this arena's bitmaps:
+    /// in caches or in use, jemalloc's `curregs`) from one lock hold.
+    ///
+    /// `released` is read before the lock and `claimed` under it, so the
+    /// difference is never negative: a slot is claimed before it is
+    /// released. It can exceed the true sum of `live` by the slots
+    /// released in between, so it is clamped to the capacity of the slabs
+    /// that can hold live slots (those neither `Empty` nor `Purged`),
+    /// which keeps `active >= allocated` exact for `stats.rs`. Every clamp
+    /// is counted (`clamped`); the count cannot tell the legitimate
+    /// transient from a bookkeeping bug, the reader of the bins table can.
+    pub fn bin_stats(&self) -> (r: (ClassStats, usize))
+        ensures
+            r.0.empty + r.0.purged <= r.0.committed <= self.spec_nslabs(),
+            (r.0.committed as int) * (class_table()[self.spec_class() as int].nslots as int) <= usize::MAX,
+    {
+        broadcast use {axiom_class_lock, axiom_class_lock_inv, lemma_inv_counts};
+        proof {
+            use_type_invariant(self);
+            lemma_slots_fit(table_at(self.table));
+        }
+        let released = self.released.load(Ordering::Relaxed);
+        let g = self.inner.lock();
+        let mut s = g.stats;
+        let claimed = self.claimed.load(Ordering::Relaxed);
+        drop(g);
+        s.guards = self.table().guards();
+        proof {
+            let k = class_table()[self.spec_class() as int].nslots as int;
+            assert((s.committed as int) * k <= (self.spec_nslabs() as int) * k) by (nonlinear_arith)
+                requires s.committed <= self.spec_nslabs(), k >= 0;
+            assert(((s.committed - s.empty - s.purged) as int) * k <= (s.committed as int) * k) by (nonlinear_arith)
+                requires s.empty + s.purged <= s.committed, k >= 0;
+        }
+        let cap = s.curslabs() * self.class().nslots();
+        let out = claimed.wrapping_sub(released) as usize;
+        let curregs = if out > cap {
+            self.clamped.fetch_add(1, Ordering::Relaxed);
+            cap
+        } else {
+            out
+        };
+        (s, curregs)
+    }
+
+    /// Slots out of this arena's bitmaps (see [`ClassState::bin_stats`]).
+    #[cfg(test)]
+    pub fn curregs(&self) -> usize {
+        self.bin_stats().1
+    }
+
     /// `(holes, capacity)`: the free slots of the slabs that can hold live
     /// slots (neither `Empty` nor `Purged`), i.e. slots that are in no
     /// cache and no program, and those slabs' total slot count. The
     /// compaction gate in `heap/` reads this; one lock hold.
-    pub fn holes(&self) -> (usize, usize) {
+    pub fn holes(&self) -> (r: (usize, usize))
+        ensures
+            r.0 <= r.1,
+            (r.1 as int) <= (self.spec_nslabs() as int) * (class_table()[self.spec_class() as int].nslots as int),
+            r.1 <= usize::MAX / 32,
+    {
+        proof {
+            use_type_invariant(self);
+            lemma_slots_fit(table_at(self.table));
+        }
         let (s, curregs) = self.bin_stats();
+        proof {
+            let k = class_table()[self.spec_class() as int].nslots as int;
+            assert(((s.committed - s.empty - s.purged) as int) * k <= (s.committed as int) * k) by (nonlinear_arith)
+                requires s.empty + s.purged <= s.committed, k >= 0;
+            assert((s.committed as int) * k <= (self.spec_nslabs() as int) * k) by (nonlinear_arith)
+                requires s.committed <= self.spec_nslabs(), k >= 0;
+        }
         let capacity = s.curslabs() * self.class().nslots();
         (capacity.saturating_sub(curregs), capacity)
     }
+    /// Clear the bits `local[lo..=hi]` accumulated for `slab` (one atomic
+    /// per non-zero word), zero them for the next slab, and take `count`
+    /// off the slab's `live`. The words are inside the slab's view of the
+    /// class bitmap and hold only bits of it; `toks` holds the tokens of
+    /// exactly their slots, and each word's go back with its release.
+    // The extra arguments are ghost and tracked state.
+    #[allow(clippy::too_many_arguments)]
+    fn release_slab(
+        &self,
+        slab: usize,
+        local: &mut [u64; MAX_SLAB_WORDS],
+        lo: usize,
+        hi: usize,
+        count: usize,
+        reopen: &mut Reopen,
+        Tracked(toks): Tracked<GhostSubset<int>>,
+    )
+        requires
+            slab < self.spec_nslabs(),
+            lo <= hi,
+            hi < old(local)@.len(),
+            hi < words_of(class_table()[self.spec_class() as int].slab_bits as usize),
+            forall|v: int| lo <= v <= hi ==> subset(#[trigger] old(local)@[v], slab_mask_of(class_table()[self.spec_class() as int].slab_bits as usize)),
+            forall|v: int| lo <= v <= hi ==> mask_slots(v, #[trigger] old(local)@[v], class_table()[self.spec_class() as int].nslots as int),
+            toks.id() == self.spec_table().spec_slots().loc,
+            toks@ == addrs(self.spec_table().spec_slots(), scratch_bits(self.spec_table().spec_slots(),
+                slab * self.spec_table().spec_slots().sb, old(local)@, lo as int, hi as int)),
+            old(reopen).len <= MAX_PICKS,
+            old(reopen).below(self.spec_nslabs()),
+        ensures
+            final(reopen).len <= MAX_PICKS,
+            final(reopen).below(self.spec_nslabs()),
+            forall|v: int| lo <= v <= hi ==> #[trigger] final(local)@[v] == 0,
+            forall|v: int| 0 <= v < old(local)@.len() && !(lo <= v <= hi) ==> #[trigger] final(local)@[v] == old(local)@[v],
+    {
+        let ghost s = self.spec_table().spec_slots();
+        let ghost f = slab * s.sb;
+        let tracked mut toks = toks;
+        proof {
+            use_type_invariant(self);
+            self.spec_table().lemma_slots_wf();
+        }
+        for w in it: lo..=hi
+            invariant
+                slab < self.spec_nslabs(),
+                hi < old(local)@.len(),
+                hi < words_of(class_table()[self.spec_class() as int].slab_bits as usize),
+                forall|v: int| lo <= v <= hi ==> subset(#[trigger] old(local)@[v], slab_mask_of(class_table()[self.spec_class() as int].slab_bits as usize)),
+                forall|v: int| lo <= v <= hi ==> mask_slots(v, #[trigger] old(local)@[v], class_table()[self.spec_class() as int].nslots as int),
+                forall|v: int| 0 <= v < old(local)@.len() && !(lo <= v < lo + it.index()) ==> #[trigger] local@[v] == old(local)@[v],
+                forall|v: int| lo <= v < lo + it.index() ==> #[trigger] local@[v] == 0,
+                lo + it.index() <= hi + 1,
+                reopen.len <= MAX_PICKS,
+                reopen.below(self.spec_nslabs()),
+                s == self.spec_table().spec_slots(),
+                s.wf(),
+                f == slab * s.sb,
+                toks.id() == s.loc,
+                toks@ == addrs(s, scratch_bits(s, f, old(local)@, lo + it.index(), hi as int)),
+        {
+            let ghost i = lo + it.index();
+            proof {
+                lemma_scratch_split(s, f, old(local)@, i, hi as int);
+                let a = mask_bits(s, f, i, old(local)@[i]);
+                let r = scratch_bits(s, f, old(local)@, i + 1, hi as int);
+                lemma_addrs_union(s, a, r);
+                broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+                lemma_addrs_difference(s, a.union(r), a);
+                assert(a.union(r).difference(a) =~= r);
+            }
+            let mask = local[w];
+            let tracked tok = toks.split(word_addrs(self.spec_table(), slab as int, w as int, mask));
+            if mask != 0 {
+                local[w] = 0;
+                self.release_word(slab, w, mask, reopen, Tracked(tok));
+            }
+        }
+        self.dec_live(slab, count);
+    }
+}
 
-    /// Lowest slab in the partial set, if any (for tests and stats).
-    pub fn lowest_partial(&self) -> Option<usize> {
-        self.inner.lock().partial.map.lowest_set()
+} // verus!
+
+verus! {
+
+/// `table` as the pointer a [`ClassState`] keeps, which [`table_at`] maps
+/// back to the table. Trusted: Verus has no reference-to-pointer cast.
+#[verifier::external_body]
+#[inline(always)]
+fn table_ptr(table: &SlabTable) -> (p: *const SlabTable)
+    ensures
+        table_at(p) == *table,
+{
+    table
+}
+
+impl ClassState {
+    /// Create the state for `arena` over `table`'s class, with its three
+    /// slab sets as views of the arena's `sets` table (slot `kind * count +
+    /// pos[class]` of the class's set group, `Set::in_table`), all empty,
+    /// and nothing owned or committed. `table` and `sets` must outlive the
+    /// state. `meta` and `regions` are unused: the sets live in `sets`, the
+    /// descriptors in `table`.
+    pub(crate) fn new(meta: &Meta, regions: &Regions, table: &SlabTable, arena: u16, sets: &SetTable) -> (r: Option<ClassState>)
+        requires
+            sets.over(process_regions()),
+        ensures
+            r matches Some(s) ==> s.spec_class() == table.spec_class() && s.spec_table() == *table,
+    {
+        broadcast use axiom_class_lock_inv;
+        proof {
+            use_type_invariant(table);
+        }
+        let _ = (meta, regions);
+        let class = table.class as usize;
+        proof {
+            assert(sets.class_ok(process_regions(), class as int));
+        }
+        debug_assert!(table.nslabs == sets.nslabs[SetTable::group_of(class)]);
+        let partial = Set::in_table(sets, class, 0);
+        let empty = Set::in_table(sets, class, 1);
+        let purged = Set::in_table(sets, class, 2);
+        let inner = Inner {
+            partial,
+            empty,
+            purged,
+            stats: ClassStats { committed: 0, guards: 0, empty: 0, purged: 0, nonfull: 0 },
+            group_next: 0,
+            group_end: 0,
+            // No slab owned or committed yet.
+            states: Ghost(Map::empty()),
+            committed: Ghost(vstd::set::Set::empty()),
+            dirty: Ghost(Map::empty()),
+            arena: Ghost(arena),
+            table: Ghost(*table),
+        };
+        proof {
+            let n = inner.nbits();
+            assert(set_wf(inner.partial, n) && set_wf(inner.empty, n) && set_wf(inner.purged, n));
+            assert(inner.partial.map@.len() == 0 && inner.committed@.len() == 0);
+            assert(usize::MAX >> 12 == 0xF_FFFF_FFFF_FFFFusize) by (bit_vector);
+            assert(n <= usize::MAX >> 12);
+            assert(inner.base());
+            assert forall|s: nat| #[trigger] inner.slab_ok(s) by {}
+        }
+        Some(ClassState {
+            class: table.class,
+            arena,
+            table: table_ptr(table),
+            gate: Decayer::new(),
+            inner: Padded(Lock::new(inner)),
+            claimed: AtomicU64::new(0),
+            refilled: AtomicU64::new(0),
+            released: AtomicU64::new(0),
+            compacted: AtomicU64::new(0),
+            compact_on: AtomicU64::new(0),
+            compact_off: AtomicU64::new(0),
+            gate_refill: AtomicU64::new(0),
+            clamped: AtomicU64::new(0),
+            _tail: [0; PAD_ALIGN - 64],
+        })
+    }
+}
+
+} // verus!
+
+verus! {
+
+impl ClassState {
+    /// Claim up to `out.len()` slots, lowest address first, writing slot
+    /// pointers to `out[..n]`. Each lock hold reserves from up to
+    /// [`MAX_PICKS`] slabs (see [`plan`]); the loop repeats only when a
+    /// plan ran out of picks before the request was met.
+    ///
+    /// [`plan`]: ClassState::plan
+    pub fn claim(&self, meta: &Meta, out: &mut [*mut u8]) -> (r: Claim)
+        ensures
+            r.n <= old(out)@.len(),
+            final(out)@.len() == old(out)@.len(),
+            slots_in(final(out)@, self.spec_class() as int, 0, r.n as int),
+    {
+        let tracked mut toks = SlotToks::empty();
+        self.claim_with(meta, out, None, Tracked(&mut toks)).0
     }
 
+    /// [`claim`] with the zero tokens of the slots it wrote: one per slot
+    /// when the claim is zeroed ([`claim_zero_ok`]).
+    ///
+    /// [`claim`]: ClassState::claim
+    // The heap's proofs call it (verus/TODO.md, "To restore").
+    #[allow(dead_code)]
+    pub fn claim_zero(&self, meta: &Meta, out: &mut [*mut u8]) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
+        ensures
+            r.0.n <= old(out)@.len(),
+            final(out)@.len() == old(out)@.len(),
+            slots_in(final(out)@, self.spec_class() as int, 0, r.0.n as int),
+            claim_zero_ok(r.0, final(out)@, r.1@, self.spec_class() as int),
+    {
+        let tracked mut toks = SlotToks::empty();
+        self.claim_with(meta, out, None, Tracked(&mut toks))
+    }
+
+    /// [`claim`], with the claimed slots' tokens: `toks` gets the token of
+    /// `out[i]` under key `i`, for every `i < n`, and keeps its other keys;
+    /// and the zero tokens of the slots it wrote, one per slot when the
+    /// claim is zeroed ([`claim_zero_ok`]).
+    ///
+    /// [`claim`]: ClassState::claim
+    // The heap's proofs call it (verus/TODO.md, "To restore").
+    #[allow(dead_code)]
+    pub fn claim_tokens(&self, meta: &Meta, out: &mut [*mut u8], Tracked(toks): Tracked<&mut SlotToks>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
+        ensures
+            r.0.n <= old(out)@.len(),
+            final(out)@.len() == old(out)@.len(),
+            slots_in(final(out)@, self.spec_class() as int, 0, r.0.n as int),
+            final(toks).owns(self.spec_table(), final(out)@, 0, 0, r.0.n as int),
+            final(toks).frame(*old(toks), 0, r.0.n as int),
+            claim_zero_ok(r.0, final(out)@, r.1@, self.spec_class() as int),
+    {
+        self.claim_with(meta, out, None, Tracked(toks))
+    }
+
+    /// [`claim`] for `slot_randomize` (design section 4): the same slabs
+    /// and the same reservations (`plan` is untouched,
+    /// so the slabs are still the lowest partial ones and a `Fresh` or
+    /// `Purged` slab's prefix is still claimed under the lock), but the
+    /// bit scan of every other pick starts at a word drawn from `rng`
+    /// instead of word 0, and the batch is shuffled with `rng` before it
+    /// is returned, so the cache hands out its slots in a random order
+    /// instead of by ascending address. Shuffling changes the order of
+    /// `out[..n]`, not the set of slots, so [`Claim::zeroed`] means what it
+    /// always means: every slot came from a slab nothing else could touch.
+    /// The tokens are not carried through the shuffle (its contract keeps
+    /// the elements, not their count).
+    ///
+    /// [`claim`]: ClassState::claim
+    pub fn claim_random(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64) -> (r: Claim)
+        ensures
+            r.n <= old(out)@.len(),
+            final(out)@.len() == old(out)@.len(),
+            slots_in(final(out)@, self.spec_class() as int, 0, r.n as int),
+    {
+        self.claim_random_zero(meta, out, rng).0
+    }
+
+    /// [`claim_random`] with the zero tokens of the slots it wrote
+    /// ([`claim_zero_ok`]), shuffled along with them (the slot tokens are
+    /// not, as for [`claim_random`]).
+    ///
+    /// [`claim_random`]: ClassState::claim_random
+    pub fn claim_random_zero(&self, meta: &Meta, out: &mut [*mut u8], rng: &mut u64) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
+        ensures
+            r.0.n <= old(out)@.len(),
+            final(out)@.len() == old(out)@.len(),
+            slots_in(final(out)@, self.spec_class() as int, 0, r.0.n as int),
+            claim_zero_ok(r.0, final(out)@, r.1@, self.spec_class() as int),
+    {
+        let tracked mut toks = SlotToks::empty();
+        let (c, Tracked(z)) = self.claim_with(meta, out, Some(rng), Tracked(&mut toks));
+        let tracked mut z = z;
+        let ghost mid = out@;
+        let ghost size = class_table()[self.spec_class() as int].size as int;
+        proof {
+            if c.zeroed {
+                assert forall|i: int| 0 <= i < c.n implies #[trigger] z.contains_key(i) && z[i].covers(mid.subrange(0, c.n as int)[i], size) by {
+                    assert(mid.subrange(0, c.n as int)[i] == mid[i]);
+                    assert(claim_zero_ok(c, mid, z, self.spec_class() as int));
+                }
+            }
+        }
+        shuffle_zero(&mut out[..c.n], rng, Ghost(c.zeroed), Ghost(size), Tracked(&mut z));
+        proof {
+            assert forall|i: int| 0 <= i < c.n implies process_regions().is_slot(self.spec_class() as int, (#[trigger] out@[i])@.addr) by {
+                assert(from_seq(out@.subrange(0, c.n as int), mid.subrange(0, c.n as int), i));
+                let w = choose|w: int| 0 <= w < c.n && out@.subrange(0, c.n as int)[i] == mid.subrange(0, c.n as int)[w];
+                assert(mid[w] == mid.subrange(0, c.n as int)[w]);
+            }
+            if c.zeroed {
+                assert forall|i: int| 0 <= i < c.n implies #[trigger] z.contains_key(i) && z[i].covers(out@[i], size) by {
+                    assert(out@.subrange(0, c.n as int)[i] == out@[i]);
+                }
+            }
+        }
+        (c, Tracked(z))
+    }
+
+    /// The loop of [`claim`] and [`claim_random`].
+    ///
+    /// Trusted: the loop ends because every plan that returns picks
+    /// reserves at least one slot (a partial slab is picked only with
+    /// `live < nslots`, and `next_slab` hands out idle slabs), which
+    /// `plan`'s contract does not state; the bound on `n` is the loop
+    /// condition and `finish`'s count.
+    ///
+    /// The slots: each `finish` writes the bit addresses of the bits it won
+    /// (`Regions::is_bit_slot`, proved), and those are slot starts
+    /// (`Regions::is_slot`) because a claim never wins a padding bit, one
+    /// of the bits from `nslots` up to `slab_bits`: `AtomicBitmap::init`
+    /// sets them and nothing clears them (every release checks its slot
+    /// against `nslots` first, `SlabTable::locate` and
+    /// `Regions::slab_slot`). The bitmap word invariants (`WordPred`) do
+    /// not track padding bits, so this is assumed here.
+    ///
+    /// The tokens: `plan` returns each zero pick's tokens and `finish`
+    /// hands `toks` the token of every slot it writes whose bit is a slot
+    /// (`SlotToks::holds`, proved); with no padding bit won, that is every
+    /// slot written. The threading between rounds is trusted with the
+    /// body: each round's plan tokens reaching its `finish`, and the keys
+    /// offset by `got`.
+    ///
+    /// The zero tokens ([`claim_zero_ok`]): a claim is zeroed only when
+    /// every pick of every plan was a zero pick (`finish` clears the flag
+    /// for any other), and a zero pick's slots are bits `0..n` of a slab
+    /// that `take` found `Fresh`, or `Purged` while
+    /// `purge::purged_is_zero` read true, and claimed in the lock hold
+    /// that made it `Active` (`claim_prefix`), so no other thread could
+    /// have had them since the slab was fresh from the kernel or discarded
+    /// with `MADV_DONTNEED` (`vspec::sys::axiom_fresh_anon_zero`,
+    /// `vspec::sys::axiom_discarded_zero`). No ghost token is carried
+    /// from `take` through `plan` and `finish`, so this is assumed here.
+    ///
+    /// [`claim`]: ClassState::claim
+    /// [`claim_random`]: ClassState::claim_random
+    #[verifier::external_body]
+    fn claim_with(&self, meta: &Meta, out: &mut [*mut u8], mut rng: Option<&mut u64>, Tracked(toks): Tracked<&mut SlotToks>) -> (r: (Claim, Tracked<Map<int, Zeroed>>))
+        ensures
+            r.0.n <= old(out)@.len(),
+            final(out)@.len() == old(out)@.len(),
+            slots_in(final(out)@, self.spec_class() as int, 0, r.0.n as int),
+            final(toks).owns(self.spec_table(), final(out)@, 0, 0, r.0.n as int),
+            final(toks).frame(*old(toks), 0, r.0.n as int),
+            claim_zero_ok(r.0, final(out)@, r.1@, self.spec_class() as int),
+    {
+        let mut got = 0;
+        let mut zeroed = true;
+        let mut picks = [Pick { slab: 0, n: 0, zero: false, state: State::Active }; MAX_PICKS];
+        while got < out.len() {
+            let np = self.plan(meta, out.len() - got, &mut picks, Tracked::assume_new());
+            if np == 0 {
+                break;
+            }
+            got += self.finish(&picks[..np], &mut out[got..], &mut zeroed, rng.as_deref_mut(), Tracked::assume_new(), Tracked::assume_new(), Ghost::assume_new());
+        }
+        (Claim { n: got, zeroed: got > 0 && zeroed }, Tracked::assume_new())
+    }
+
+}
+
+} // verus!
+
+verus! {
+
+/// `picks_sum` only grows along the picks.
+proof fn lemma_picks_sum_mono(p: Seq<Pick>, i: int, j: int)
+    requires
+        0 <= i <= j,
+    ensures
+        picks_sum(p, i) <= picks_sum(p, j),
+    decreases j,
+{
+    if j > i {
+        lemma_picks_sum_mono(p, i, j - 1);
+    }
+}
+
+/// Clearing the lowest set bit of a non-zero word takes one off its count.
+proof fn lemma_popcount_clear_lowest(m: u64)
+    requires
+        m != 0,
+    ensures
+        popcount(m & sub(m, 1)) + 1 == popcount(m),
+    decreases m,
+{
+    let x = m & sub(m, 1);
+    let h = m / 2;
+    if m % 2 == 1 {
+        assert(x == sub(m, 1) && x % 2 == 0 && x / 2 == h) by (bit_vector)
+            requires m % 2 == 1, x == m & sub(m, 1), h == m / 2;
+    } else {
+        assert(h != 0 && x % 2 == 0 && x / 2 == h & sub(h, 1)) by (bit_vector)
+            requires m % 2 == 0, m != 0, x == m & sub(m, 1), h == m / 2;
+        lemma_popcount_clear_lowest(h);
+    }
+}
+
+impl ClassState {
+    /// The unlocked half of a refill: write the slots of `picks` (one
+    /// lock hold of [`plan`]) to `out`, lowest address first, and return
+    /// how many. A pick flagged zero had its slots decided under the lock
+    /// in [`take`] (the lowest `n` of a slab nothing else could touch), so
+    /// only the other picks run the bit loop here; `zeroed` is cleared
+    /// when any of them is not zero.
+    ///
+    /// With `rng` (`slot_randomize`) the bit loop of a pick starts at a
+    /// random word rather than word 0; a rescan after a full pass still
+    /// starts at 0. Without it the code is the address-ordered claim.
+    ///
+    /// Modelled at `model::Model::step_refill`, `protocol::Refill::Finish`
+    /// (one pick at a time).
+    ///
+    /// [`plan`]: ClassState::plan
+    /// [`take`]: ClassState::take
+    // The extra arguments are ghost and tracked state.
+    #[allow(clippy::too_many_arguments)]
+    fn finish(
+        &self,
+        picks: &[Pick],
+        out: &mut [*mut u8],
+        zeroed: &mut bool,
+        mut rng: Option<&mut u64>,
+        Tracked(ptoks): Tracked<Map<int, GhostSubset<int>>>,
+        Tracked(otoks): Tracked<&mut SlotToks>,
+        Ghost(base): Ghost<int>,
+    ) -> (r: usize)
+        requires
+            picks_ok(picks@, picks@.len() as int, self.spec_nslabs(), class_table()[self.spec_class() as int].nslots as nat),
+            picks_sum(picks@, picks@.len() as int) <= old(out)@.len(),
+            picks_toks(self.spec_table(), picks@, 0, picks@.len() as int, ptoks),
+        ensures
+            r == picks_sum(picks@, picks@.len() as int),
+            final(out)@.len() == old(out)@.len(),
+            bit_slots_in(final(out)@, self.spec_class() as int, 0, r as int),
+            final(otoks).holds(self.spec_table(), final(out)@, base, 0, r as int),
+            final(otoks).frame(*old(otoks), base, base + r),
+    {
+        let cls = self.class();
+        let ghost sb = class_table()[self.spec_class() as int].slab_bits as usize;
+        let ghost nslots = class_table()[self.spec_class() as int].nslots as usize;
+        let _t0 = self.table();
+        let ghost s = _t0.spec_slots();
+        let tracked mut ptoks = ptoks;
+        proof {
+            use_type_invariant(self);
+            broadcast use crate::vspec::class::axiom_class_table_wf;
+            assert(class_table()[self.spec_class() as int].wf());
+            broadcast use vstd::slice::axiom_spec_len;
+            assert(out@.len() == out.len());
+            _t0.lemma_slots_wf();
+        }
+        let check_zero = purge::check_zero();
+        let mut got: usize = 0;
+        // `for pick in picks`, spelled out: Verus rejects `continue` in a
+        // `for` loop, and the `continue` below keeps the aarch64 codegen of
+        // the plain loop (an `if`/`else` in its place does not).
+        let mut iter = picks.iter();
+        let ghost mut i: int = 0;
+        loop
+            invariant
+                0 <= i <= picks@.len(),
+                iter.remaining() == picks@.skip(i).as_ref(),
+                picks_ok(picks@, picks@.len() as int, self.spec_nslabs(), nslots as nat),
+                out@.len() <= usize::MAX,
+                picks_sum(picks@, picks@.len() as int) <= out@.len(),
+                got == picks_sum(picks@, i),
+                out@.len() == old(out)@.len(),
+                *cls == class_table()[self.spec_class() as int],
+                cls.wf(),
+                sb == cls.slab_bits,
+                nslots == cls.nslots,
+                self.spec_class() < NCLASSES,
+                bit_slots_in(out@, self.spec_class() as int, 0, got as int),
+                *_t0 == self.spec_table(),
+                _t0.inv(),
+                _t0.spec_class() == self.spec_class(),
+                _t0.spec_nslabs() == self.spec_nslabs(),
+                s == _t0.spec_slots(),
+                s.wf(),
+                s.sb == sb,
+                s.nslots == nslots,
+                picks_toks(*_t0, picks@, i, picks@.len() as int, ptoks),
+                otoks.holds(*_t0, out@, base, 0, got as int),
+                otoks.frame(*old(otoks), base, base + got),
+            ensures
+                got == picks_sum(picks@, picks@.len() as int),
+                out@.len() == old(out)@.len(),
+                bit_slots_in(out@, self.spec_class() as int, 0, got as int),
+                otoks.holds(*_t0, out@, base, 0, got as int),
+                otoks.frame(*old(otoks), base, base + got),
+            decreases picks@.len() - i,
+        {
+            let pick = match iter.next() {
+                Some(pick) => pick,
+                None => {
+                    proof {
+                        assert(picks@.skip(i).len() == 0);
+                    }
+                    break;
+                },
+            };
+            let ghost pi = i;
+            proof {
+                assert(picks@.skip(i).as_ref()[0] == pick);
+                assert(*pick == picks@[i]);
+                lemma_picks_sum_mono(picks@, i + 1, picks@.len() as int);
+                assert(picks_sum(picks@, i + 1) == got + pick.n);
+                assert(MAX_EMPTY_PASSES == 0x40_0000) by (bit_vector);
+                i = i + 1;
+            }
+            // The pick's tokens: a zero pick's prefix, claimed in `take`.
+            proof {
+                assert(ptoks.contains_key(pi));
+                assert(ptoks[pi].id() == s.loc);
+            }
+            let ghost pt0 = ptoks;
+            let tracked mut cur = ptoks.tracked_remove(pi);
+            proof {
+                lemma_picks_toks_rest(*_t0, picks@, pi, picks@.len() as int, pt0, ptoks);
+                assert(cur.id() == s.loc);
+                assert(cur@ == pick_addrs(*_t0, picks@[pi]));
+            }
+            let slab = pick.slab as usize;
+            let want = pick.n as usize;
+            let ghost f = slab * s.sb;
+            if pick.zero {
+                // Bits `0..want` were claimed under the lock (`claim_prefix`).
+                for k in 0..want
+                    invariant
+                        got + want <= out@.len(),
+                        out@.len() <= usize::MAX,
+                        out@.len() == old(out)@.len(),
+                        slab < self.spec_nslabs(),
+                        want <= nslots,
+                        nslots <= sb,
+                        self.spec_class() < NCLASSES,
+                        sb == class_table()[self.spec_class() as int].slab_bits,
+                        bit_slots_in(out@, self.spec_class() as int, 0, (got + k) as int),
+                        *_t0 == self.spec_table(),
+                        _t0.inv(),
+                        _t0.spec_class() == self.spec_class(),
+                        _t0.spec_nslabs() == self.spec_nslabs(),
+                        s == _t0.spec_slots(),
+                        s.wf(),
+                        s.sb == sb,
+                        s.nslots == nslots,
+                        f == slab * s.sb,
+                        cur.id() == s.loc,
+                        cur@ == addrs(s, VSet::<int>::range(f + k, f + want)),
+                        otoks.holds(*_t0, out@, base, 0, (got + k) as int),
+                        otoks.frame(*old(otoks), base, base + got + k),
+                {
+                    let ghost o1 = out@;
+                    out[got + k] = self.slot_ptr(slab, k);
+                    proof {
+                        broadcast use {vstd::set_lib::range_set_properties, VSet::lemma_map_contains};
+                        _t0.lemma_slot_bit(slab as int, k as int);
+                        _t0.lemma_slots_wf();
+                        let b = f + k;
+                        let rest = VSet::<int>::range(f + k + 1, f + want);
+                        assert(VSet::<int>::range(f + k, f + want) =~= rest.insert(b));
+                        lemma_addrs_insert(s, rest, b);
+                        assert forall|x: int| #[trigger] rest.contains(x) implies s.real(x) by {
+                            assert(f + k + 1 <= x < f + want);
+                            _t0.lemma_slot_bit(slab as int, x - f);
+                            assert(slab * s.sb + (x - f) == x);
+                        }
+                        assert(!rest.contains(b));
+                        lemma_addrs_remove(s, rest, b);
+                        let tracked one = cur.split_singleton(s.addr(b));
+                        let old_t = *otoks;
+                        otoks.put(base + got + k, b, one);
+                        SlotToks::lemma_extend(old_t, *otoks, *old(otoks), *_t0, o1, out@, base, (got + k) as int, b);
+                    }
+                }
+                if check_zero {
+                    self.check_zero(&out[got..got + want], pick);
+                }
+                got += want;
+                proof {
+                    assert(picks_toks(*_t0, picks@, i, picks@.len() as int, ptoks));
+                }
+                continue;
+            }
+            *zeroed = false;
+            let t = self.table();
+            let bm = t.bits(slab);
+            let words = bm.words();
+            let mut k: usize = 0;
+            let mut word = match rng.as_deref_mut() {
+                Some(r) => (xorshift(r) as usize) % words,
+                None => 0,
+            };
+            let mut empty_passes = 0u32;
+            while k < want
+                invariant
+                    k <= want,
+                    word < words,
+                    words == bm.spec_words(),
+                    bits_shape(bm, sb),
+                    bits_ghost(bm, *_t0, slab),
+                    empty_passes < MAX_EMPTY_PASSES,
+                    out@.len() <= usize::MAX,
+                    bm.spec_nbits() == sb,
+                    got + want <= out@.len(),
+                    out@.len() == old(out)@.len(),
+                    slab < self.spec_nslabs(),
+                    want <= nslots,
+                    nslots <= sb,
+                    sb == class_table()[self.spec_class() as int].slab_bits,
+                    self.spec_class() < NCLASSES,
+                    MAX_EMPTY_PASSES == 0x40_0000,
+                    *cls == class_table()[self.spec_class() as int],
+                    nslots == cls.nslots,
+                    bit_slots_in(out@, self.spec_class() as int, 0, (got + k) as int),
+                    *t == *_t0,
+                    *_t0 == self.spec_table(),
+                    _t0.inv(),
+                    _t0.spec_class() == self.spec_class(),
+                    _t0.spec_nslabs() == self.spec_nslabs(),
+                    s == _t0.spec_slots(),
+                    s.wf(),
+                    s.sb == sb,
+                    s.nslots == nslots,
+                    f == slab * s.sb,
+                    otoks.holds(*_t0, out@, base, 0, (got + k) as int),
+                    otoks.frame(*old(otoks), base, base + got + k),
+                decreases want - k, MAX_EMPTY_PASSES - empty_passes,
+            {
+                let tracked mut wt = t.empty_tokens();
+                let Some((w, bits)) = bm.claim_from(word, want - k, Tracked(&mut wt)) else {
+                    // Every word was full when inspected. `plan` reserved
+                    // no more than `nslots - live` and set bits never
+                    // exceed `live`, so the slots exist: a concurrent
+                    // claimer took the bits we looked at and left ours
+                    // in a word we had already passed. Scan again.
+                    empty_passes += 1;
+                    if empty_passes == MAX_EMPTY_PASSES {
+                        let d = self.desc(slab);
+                        reservation_unmet(self.class as usize, slab, want, k, d.live(), bm.allocated(cls.nslots()), cls.nslots());
+                    }
+                    word = 0;
+                    continue;
+                };
+                let mut m = bits;
+                let ghost k0 = k;
+                proof {
+                    lemma_popcount_clear_lowest(m);
+                    assert(VSet::<int>::empty().union(bm.slot_addrs(w as int, bits)) =~= bm.slot_addrs(w as int, bits));
+                }
+                while m != 0
+                    invariant
+                        k + popcount(m) == k0 + popcount(bits),
+                        k0 + popcount(bits) <= want,
+                        subset(m, slab_mask_of(sb)),
+                        w < words_of(sb),
+                        bits_shape(bm, sb),
+                        bits_ghost(bm, *_t0, slab),
+                        out@.len() <= usize::MAX,
+                        got + want <= out@.len(),
+                        out@.len() == old(out)@.len(),
+                        slab < self.spec_nslabs(),
+                        self.spec_class() < NCLASSES,
+                        sb == class_table()[self.spec_class() as int].slab_bits,
+                        bit_slots_in(out@, self.spec_class() as int, 0, (got + k) as int),
+                        *_t0 == self.spec_table(),
+                        _t0.inv(),
+                        _t0.spec_class() == self.spec_class(),
+                        _t0.spec_nslabs() == self.spec_nslabs(),
+                        s == _t0.spec_slots(),
+                        s.wf(),
+                        s.sb == sb,
+                        f == slab * s.sb,
+                        wt.id() == s.loc,
+                        wt@ == word_addrs(*_t0, slab as int, w as int, m),
+                        otoks.holds(*_t0, out@, base, 0, (got + k) as int),
+                        otoks.frame(*old(otoks), base, base + got + k),
+                    decreases m,
+                {
+                    proof {
+                        lemma_popcount_clear_lowest(m);
+                        axiom_u64_trailing_zeros(m);
+                        let tz = u64_trailing_zeros(m) as u64;
+                        assert(subset(m, m)) by (bit_vector);
+                        lemma_bit_in_slab(m, m, tz, sb, w);
+                        let sm = slab_mask_of(sb);
+                        let x = m & sub(m, 1);
+                        assert(subset(x, sm) && x < m) by (bit_vector)
+                            requires m != 0, x == m & sub(m, 1), m & !sm == 0u64;
+                    }
+                    let ghost m0 = m;
+                    let b = m.trailing_zeros() as usize;
+                    m &= m - 1;
+                    let ghost o1 = out@;
+                    out[got + k] = self.slot_ptr(slab, w * 64 + b);
+                    proof {
+                        broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+                        let bit = f + 64 * w + b;
+                        _t0.lemma_slot_bit(slab as int, (w * 64 + b) as int);
+                        assert(slab * s.sb + (w * 64 + b) == bit);
+                        lemma_word_pop(s, f, w as int, m0, b as u64);
+                        let rest = mask_bits(s, f, w as int, m);
+                        let old_t = *otoks;
+                        if s.real(bit) {
+                            lemma_addrs_insert(s, rest, bit);
+                            lemma_addrs_remove(s, rest, bit);
+                            assert(wt@.contains(s.addr(bit)));
+                            let tracked one = wt.split_singleton(s.addr(bit));
+                            otoks.put(base + got + k, bit, one);
+                        } else {
+                            otoks.put_bit(base + got + k, bit);
+                        }
+                        SlotToks::lemma_extend(old_t, *otoks, *old(otoks), *_t0, o1, out@, base, (got + k) as int, bit);
+                    }
+                    k += 1;
+                }
+                word = if w + 1 == words { 0 } else { w + 1 };
+            }
+            got += want;
+        }
+        got
+    }
+}
+
+} // verus!
+
+verus! {
+
+/// The addresses of the slots of mask `x` of word `word` of `slab` (slab
+/// coordinates), in table `t`'s slot tokens.
+pub open spec fn word_addrs(t: SlabTable, slab: int, word: int, x: u64) -> VSet<int> {
+    addrs(t.spec_slots(), mask_bits(t.spec_slots(), slab * t.spec_slots().sb, word, x))
+}
+
+/// The addresses of slots `0..n` of `slab`.
+pub open spec fn prefix_addrs(t: SlabTable, slab: int, n: int) -> VSet<int> {
+    addrs(t.spec_slots(), VSet::<int>::range(slab * t.spec_slots().sb, slab * t.spec_slots().sb + n))
+}
+
+/// Every set bit of `x` in word `word` of a slab is a slot (below
+/// `nslots`).
+pub open spec fn mask_slots(word: int, x: u64, nslots: int) -> bool {
+    forall|k: u64| k < 64 && #[trigger] has_bit(x, k) ==> word * 64 + k < nslots
+}
+
+/// The slots set in the scratch words `local[lo..=hi]` of the slab whose
+/// slot 0 is bit `f`.
+pub open spec fn scratch_bits(s: Slots, f: int, local: Seq<u64>, lo: int, hi: int) -> VSet<int> {
+    VSet::<int>::range(f + 64 * lo, f + 64 * hi + 64).filter(
+        |b: int| has_bit(local[(b - f) / 64], ((b - f) % 64) as u64) && s.real(b))
+}
+
+/// The scratch words `lo..=hi` are word `lo` and the words after it.
+proof fn lemma_scratch_split(s: Slots, f: int, local: Seq<u64>, lo: int, hi: int)
+    requires
+        0 <= lo <= hi,
+    ensures
+        scratch_bits(s, f, local, lo, hi) == mask_bits(s, f, lo, local[lo]).union(scratch_bits(s, f, local, lo + 1, hi)),
+        mask_bits(s, f, lo, local[lo]).disjoint(scratch_bits(s, f, local, lo + 1, hi)),
+{
+    broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+    let a = mask_bits(s, f, lo, local[lo]);
+    let r = scratch_bits(s, f, local, lo + 1, hi);
+    assert forall|b: int| #[trigger] scratch_bits(s, f, local, lo, hi).contains(b) == a.union(r).contains(b) by {
+        if f + 64 * lo <= b < f + 64 * lo + 64 {
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(b - f, 64, lo, b - f - 64 * lo);
+        }
+    }
+    assert(scratch_bits(s, f, local, lo, hi) =~= a.union(r));
+}
+
+/// Scratch words that agree on `lo..=hi` set the same slots there.
+proof fn lemma_scratch_frame(s: Slots, f: int, l1: Seq<u64>, l2: Seq<u64>, lo: int, hi: int)
+    requires
+        0 <= lo,
+        forall|v: int| lo <= v <= hi ==> l1[v] == l2[v],
+    ensures
+        scratch_bits(s, f, l1, lo, hi) == scratch_bits(s, f, l2, lo, hi),
+{
+    broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+    assert forall|b: int| #[trigger] scratch_bits(s, f, l1, lo, hi).contains(b) == scratch_bits(s, f, l2, lo, hi).contains(b) by {
+        if f + 64 * lo <= b < f + 64 * hi + 64 {
+            let v = (b - f) / 64;
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(b - f, 64);
+            assert(lo <= v <= hi);
+        }
+    }
+    assert(scratch_bits(s, f, l1, lo, hi) =~= scratch_bits(s, f, l2, lo, hi));
+}
+
+
+/// Setting bit `k` of scratch word `word` adds that one slot, and the range
+/// grows to hold the word; words outside the old range were zero.
+proof fn lemma_scratch_insert(
+    s: Slots,
+    f: int,
+    l_old: Seq<u64>,
+    l_new: Seq<u64>,
+    lo: int,
+    hi: int,
+    lo2: int,
+    hi2: int,
+    word: int,
+    k: u64,
+    empty: bool,
+)
+    requires
+        0 <= lo2 <= word <= hi2 < l_old.len(),
+        l_new.len() == l_old.len(),
+        k < 64,
+        s.real(f + 64 * word + k),
+        forall|v: int| 0 <= v < l_old.len() && v != word ==> #[trigger] l_new[v] == l_old[v],
+        forall|k2: u64| k2 < 64 ==> #[trigger] has_bit(l_new[word], k2) == (has_bit(l_old[word], k2) || k2 == k),
+        forall|v: int| 0 <= v < l_old.len() && !(lo <= v <= hi) ==> #[trigger] l_old[v] == 0,
+        empty ==> forall|v: int| 0 <= v < l_old.len() ==> #[trigger] l_old[v] == 0,
+        !empty ==> lo <= hi && lo2 <= lo && hi <= hi2,
+    ensures
+        scratch_bits(s, f, l_new, lo2, hi2) == (if empty { VSet::<int>::empty() } else { scratch_bits(s, f, l_old, lo, hi) }).insert(f + 64 * word + k),
+{
+    broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+    let old_set = if empty { VSet::<int>::empty() } else { scratch_bits(s, f, l_old, lo, hi) };
+    let nb = f + 64 * word + k;
+    assert forall|kk: u64| kk < 64 implies !#[trigger] has_bit(0u64, kk) by {
+        assert((0u64 >> kk) & 1u64 != 1u64) by (bit_vector);
+    }
+    assert forall|b: int| #[trigger] scratch_bits(s, f, l_new, lo2, hi2).contains(b) == old_set.insert(nb).contains(b) by {
+        if f + 64 * lo2 <= b < f + 64 * hi2 + 64 {
+            let v = (b - f) / 64;
+            let kk = ((b - f) % 64) as u64;
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod(b - f, 64);
+            assert(lo2 <= v <= hi2);
+            if b == nb {
+                vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(b - f, 64, word, k as int);
+            }
+            if v == word {
+                assert(has_bit(l_new[v], kk) == (has_bit(l_old[v], kk) || kk == k));
+                if kk == k {
+                    assert(b == nb);
+                }
+            }
+        } else {
+            if !empty && f + 64 * lo <= b < f + 64 * hi + 64 {
+                assert(false);
+            }
+            if b == nb {
+                assert(false);
+            }
+        }
+    }
+    assert(scratch_bits(s, f, l_new, lo2, hi2) =~= old_set.insert(nb));
+}
+
+/// The addresses of a set with one more slot.
+pub proof fn lemma_addrs_insert(s: Slots, a: VSet<int>, b: int)
+    ensures
+        addrs(s, a.insert(b)) == addrs(s, a).insert(s.addr(b)),
+{
+    broadcast use VSet::lemma_map_contains;
+    assert forall|y: int| #[trigger] addrs(s, a.insert(b)).contains(y) == addrs(s, a).insert(s.addr(b)).contains(y) by {
+        if addrs(s, a.insert(b)).contains(y) {
+            let x = choose|x: int| a.insert(b).contains(x) && y == s.addr(x);
+            if x != b {
+                assert(a.contains(x));
+            }
+        }
+        if y == s.addr(b) {
+            assert(a.insert(b).contains(b));
+        }
+        if addrs(s, a).contains(y) {
+            let x = choose|x: int| a.contains(x) && y == s.addr(x);
+            assert(a.insert(b).contains(x));
+        }
+    }
+    assert(addrs(s, a.insert(b)) =~= addrs(s, a).insert(s.addr(b)));
+}
+
+/// Ghost: the slot tokens of a batch of claimed slot pointers, by key
+/// (the pointer's index, from a base): the class bitmap bit behind each
+/// pointer (`bits`), and the token of each pointer whose bit is a slot
+/// (`toks`, one address each).
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub tracked struct SlotToks {
+    pub ghost bits: Map<int, int>,
+    pub tracked toks: Map<int, GhostSingleton<int>>,
+}
+
+impl SlotToks {
+    /// Entries `lo..hi` of `out` are claimed bits of table `t` (keys
+    /// `base + i`), each at its bit's address, with the bit's token when
+    /// the bit is a slot.
+    pub open spec fn holds(self, t: SlabTable, out: Seq<*mut u8>, base: int, lo: int, hi: int) -> bool {
+        forall|i: int| lo <= i < hi ==> self.entry(t, #[trigger] out[i], base + i)
+    }
+
+    /// Key `key` holds the bit behind `p` (in the region, at `p`), and
+    /// `p`'s token if the bit is a slot.
+    pub open spec fn entry(self, t: SlabTable, p: *mut u8, key: int) -> bool {
+        let s = t.spec_slots();
+        &&& self.bits.contains_key(key)
+        &&& 0 <= self.bits[key] < s.nbits
+        &&& p@.addr as int == s.addr(self.bits[key])
+        &&& s.real(self.bits[key]) ==> {
+            &&& self.toks.contains_key(key)
+            &&& self.toks[key].id() == s.loc
+            &&& self.toks[key]@ == p@.addr as int
+        }
+    }
+
+    /// `toks` holds the token of each of `out[lo..hi]` (keys `base + i`).
+    /// Opaque, so the callers that do not move tokens do not pay for it.
+    #[verifier::opaque]
+    pub open spec fn owns(self, t: SlabTable, out: Seq<*mut u8>, base: int, lo: int, hi: int) -> bool {
+        forall|i: int| lo <= i < hi ==> {
+            &&& self.toks.contains_key(base + i)
+            &&& self.toks[base + i].id() == t.spec_slots().loc
+            &&& self.toks[base + i]@ == (#[trigger] out[i])@.addr as int
+        }
+    }
+
+    /// No slots.
+    pub proof fn empty() -> (tracked r: SlotToks)
+        ensures
+            r.bits == Map::<int, int>::empty(),
+            r.toks == Map::<int, GhostSingleton<int>>::empty(),
+    {
+        SlotToks { bits: Map::empty(), toks: Map::tracked_empty() }
+    }
+
+    /// Keys outside `lo..hi` are as in `old`.
+    pub open spec fn frame(self, old: SlotToks, lo: int, hi: int) -> bool {
+        &&& forall|j: int| !(lo <= j < hi) ==> (#[trigger] self.bits.contains_key(j)) == old.bits.contains_key(j)
+        &&& forall|j: int| !(lo <= j < hi) && old.bits.contains_key(j) ==> #[trigger] self.bits[j] == old.bits[j]
+        &&& forall|j: int| !(lo <= j < hi) ==> (#[trigger] self.toks.contains_key(j)) == old.toks.contains_key(j)
+        &&& forall|j: int| !(lo <= j < hi) && old.toks.contains_key(j) ==> #[trigger] self.toks[j] == old.toks[j]
+    }
+
+    /// One more entry, `o2[n]` (key `base + n`), recorded after `o1[..n]`,
+    /// which `o2` keeps.
+    pub proof fn lemma_extend(
+        old: SlotToks,
+        new: SlotToks,
+        orig: SlotToks,
+        t: SlabTable,
+        o1: Seq<*mut u8>,
+        o2: Seq<*mut u8>,
+        base: int,
+        n: int,
+        bit: int,
+    )
+        requires
+            old.holds(t, o1, base, 0, n),
+            old.frame(orig, base, base + n),
+            0 <= n < o2.len(),
+            o1.len() == o2.len(),
+            forall|i: int| 0 <= i < n ==> o2[i] == o1[i],
+            new.bits == old.bits.insert(base + n, bit),
+            forall|j: int| j != base + n ==> (#[trigger] new.toks.contains_key(j)) == old.toks.contains_key(j),
+            forall|j: int| j != base + n && old.toks.contains_key(j) ==> #[trigger] new.toks[j] == old.toks[j],
+            0 <= bit < t.spec_slots().nbits,
+            o2[n]@.addr as int == t.spec_slots().addr(bit),
+            t.spec_slots().real(bit) ==> {
+                &&& new.toks.contains_key(base + n)
+                &&& new.toks[base + n].id() == t.spec_slots().loc
+                &&& new.toks[base + n]@ == o2[n]@.addr as int
+            },
+        ensures
+            new.holds(t, o2, base, 0, n + 1),
+            new.frame(orig, base, base + n + 1),
+    {
+        assert forall|i: int| 0 <= i < n + 1 implies new.entry(t, #[trigger] o2[i], base + i) by {
+            if i < n {
+                assert(o2[i] == o1[i]);
+                assert(old.entry(t, o1[i], base + i));
+            }
+        }
+    }
+
+    /// Record `bit` and its token under `key`.
+    pub proof fn put(tracked &mut self, key: int, bit: int, tracked tok: GhostSingleton<int>)
+        ensures
+            final(self).bits == old(self).bits.insert(key, bit),
+            final(self).toks == old(self).toks.insert(key, tok),
+    {
+        self.bits = self.bits.insert(key, bit);
+        self.toks.tracked_insert(key, tok);
+    }
+
+    /// Record `bit`, which has no token (a padding bit), under `key`.
+    pub proof fn put_bit(tracked &mut self, key: int, bit: int)
+        ensures
+            final(self).bits == old(self).bits.insert(key, bit),
+            final(self).toks == old(self).toks,
+    {
+        self.bits = self.bits.insert(key, bit);
+    }
+}
+
+/// The tokens a pick holds: the prefix a zero pick claimed under the lock.
+spec fn pick_addrs(t: SlabTable, p: Pick) -> VSet<int> {
+    if p.zero { prefix_addrs(t, p.slab as int, p.n as int) } else { VSet::<int>::empty() }
+}
+
+/// Taking pick `lo`'s tokens out leaves those of picks `lo + 1..hi`.
+proof fn lemma_picks_toks_rest(
+    t: SlabTable,
+    p: Seq<Pick>,
+    lo: int,
+    hi: int,
+    t0: Map<int, GhostSubset<int>>,
+    t1: Map<int, GhostSubset<int>>,
+)
+    requires
+        picks_toks(t, p, lo, hi, t0),
+        t1 == t0.remove(lo),
+    ensures
+        picks_toks(t, p, lo + 1, hi, t1),
+{
+    assert forall|j: int| lo + 1 <= j < hi implies {
+        &&& #[trigger] t1.contains_key(j)
+        &&& t1[j].id() == t.spec_slots().loc
+        &&& t1[j]@ == pick_addrs(t, p[j])
+    } by {
+        assert(t0.contains_key(j));
+    }
+}
+
+/// One more pick, `k`, with its tokens under key `k`, after picks `0..k`
+/// that keep theirs.
+proof fn lemma_picks_toks_step(
+    t: SlabTable,
+    p0: Seq<Pick>,
+    p1: Seq<Pick>,
+    k: int,
+    t0: Map<int, GhostSubset<int>>,
+    t1: Map<int, GhostSubset<int>>,
+)
+    requires
+        0 <= k,
+        picks_toks(t, p0, 0, k, t0),
+        forall|i: int| 0 <= i < k ==> p1[i] == p0[i],
+        t1 == t0.insert(k, t1[k]),
+        t1[k].id() == t.spec_slots().loc,
+        t1[k]@ == pick_addrs(t, p1[k]),
+    ensures
+        picks_toks(t, p1, 0, k + 1, t1),
+{
+    assert forall|j: int| 0 <= j < k + 1 implies {
+        &&& #[trigger] t1.contains_key(j)
+        &&& t1[j].id() == t.spec_slots().loc
+        &&& t1[j]@ == pick_addrs(t, p1[j])
+    } by {
+        if j < k {
+            assert(t0.contains_key(j));
+            assert(p1[j] == p0[j]);
+        }
+    }
+}
+
+/// `toks` holds the tokens of picks `lo..hi`, by pick index.
+spec fn picks_toks(t: SlabTable, p: Seq<Pick>, lo: int, hi: int, toks: Map<int, GhostSubset<int>>) -> bool {
+    forall|j: int| lo <= j < hi ==> {
+        &&& #[trigger] toks.contains_key(j)
+        &&& toks[j].id() == t.spec_slots().loc
+        &&& toks[j]@ == pick_addrs(t, p[j])
+    }
+}
+
+/// Taking slot `b` back out of a set of slots leaves the others' addresses.
+pub proof fn lemma_addrs_remove(s: Slots, rest: VSet<int>, b: int)
+    requires
+        s.wf(),
+        forall|x: int| #[trigger] rest.contains(x) ==> s.real(x),
+        s.real(b),
+        !rest.contains(b),
+    ensures
+        !addrs(s, rest).contains(s.addr(b)),
+        addrs(s, rest.insert(b)).remove(s.addr(b)) == addrs(s, rest),
+{
+    broadcast use VSet::lemma_map_contains;
+    if addrs(s, rest).contains(s.addr(b)) {
+        let x = choose|x: int| rest.contains(x) && s.addr(b) == s.addr(x);
+        crate::bitmap::lemma_addr_inj(s, x, b);
+    }
+    lemma_addrs_insert(s, rest, b);
+    assert(addrs(s, rest).insert(s.addr(b)).remove(s.addr(b)) =~= addrs(s, rest));
+}
+
+/// Taking the lowest bit `b` off mask `m0` takes its slot (if it is one)
+/// off the mask's slots.
+proof fn lemma_word_pop(s: Slots, f: int, w: int, m0: u64, b: u64)
+    requires
+        m0 != 0,
+        b == u64_trailing_zeros(m0),
+    ensures
+        !mask_bits(s, f, w, m0 & ((m0 - 1) as u64)).contains(f + 64 * w + b),
+        mask_bits(s, f, w, m0) == if s.real(f + 64 * w + b) {
+            mask_bits(s, f, w, m0 & ((m0 - 1) as u64)).insert(f + 64 * w + b)
+        } else {
+            mask_bits(s, f, w, m0 & ((m0 - 1) as u64))
+        },
+{
+    broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+    crate::bitmap::lemma_clear_lowest(m0);
+    crate::bitmap::lemma_tz(m0);
+    let m = m0 & ((m0 - 1) as u64);
+    let nb = f + 64 * w + b;
+    let rhs = if s.real(nb) { mask_bits(s, f, w, m).insert(nb) } else { mask_bits(s, f, w, m) };
+    assert forall|x: int| #[trigger] mask_bits(s, f, w, m0).contains(x) == rhs.contains(x) by {
+        if f + 64 * w <= x < f + 64 * w + 64 {
+            let k = (x - f - 64 * w) as u64;
+            assert(has_bit(m, k) == (has_bit(m0, k) && k != b));
+        }
+    }
+    assert(mask_bits(s, f, w, m0) =~= rhs);
+}
+
+/// Trusted: the `free` contract, where the release paths meet it. Its four
+/// call sites are `ClassState::release_owned` and `heap::free_fast`,
+/// `free_fast_class` and `free_sized_fast`; each call stands for one free
+/// of one slot. Whoever frees a slot owns it (a block `malloc` returned and
+/// not freed since), so it holds the slot's token; for C callers this is
+/// the documented contract of `free`. The axiom is only as sound as that
+/// contract: two calls for one slot while its token exists elsewhere give
+/// two tokens of one slot, from which a proof can derive `false`. Under the
+/// contract the double-free aborts of the release paths are unreachable.
+///
+/// In `release_owned` it also stands in for the tokens of the slots a
+/// flush returns from a cache. The flush does not hand them over, so their
+/// copies stay in `heap::CachePerms::toks`, keyed by stack entry, until a
+/// push or refill of the entry overwrites them; after a flush
+/// `CachePerms::tokened` is no longer known to hold, and no verified
+/// function combines those copies with the contract's (`verus/TODO.md`, "Uniqueness: slot tokens").
+pub axiom fn axiom_free_token(c: int, p: *mut u8) -> (tracked r: GhostSingleton<int>)
+    requires
+        process_regions().is_slot(c, p@.addr),
+    ensures
+        r.id() == slot_loc(c),
+        r@ == p@.addr as int;
+
+/// Slot `slot` of a slab of `slab_bits <= 64 * MAX_SLAB_WORDS` bits sits in
+/// scratch word `slot / 64`, inside the slab's view of the bitmap, at a bit
+/// the slab owns.
+proof fn lemma_slot_bit(slot: usize, slab_bits: usize)
+    requires
+        slot < slab_bits,
+        slab_bits <= 64 * MAX_SLAB_WORDS,
+        slab_bits >= 64 ==> slab_bits % 64 == 0,
+    ensures
+        slot / 64 < MAX_SLAB_WORDS,
+        slot / 64 < words_of(slab_bits),
+        subset(1u64 << ((slot % 64) as u64), slab_mask_of(slab_bits)),
+{
+    if slab_bits >= 64 {
+        assert(slot / 64 < slab_bits / 64) by (nonlinear_arith)
+            requires slot < slab_bits, slab_bits % 64 == 0;
+        assert(subset(1u64 << ((slot % 64) as u64), !0u64)) by (bit_vector);
+    } else {
+        let s = slot as u64;
+        let b = slab_bits as u64;
+        assert(subset(1u64 << (s % 64), sub(1u64 << b, 1u64))) by (bit_vector)
+            requires s < b, b < 64;
+    }
+}
+
+impl ClassState {
+    /// Release a batch of slot pointers. Consecutive pointers in the same
+    /// bitmap word share one `fetch_and`, so a batch sorted by address costs
+    /// about one atomic per 64 slots. Slabs whose words went from full to
+    /// not full are collected and put back in the partial set under one
+    /// lock hold at the end (or when the list overflows), rather than one
+    /// per word. Aborts on a pointer that is not an allocated slot of this
+    /// class, or one whose slab belongs to another arena (the caller routes
+    /// by the descriptor's arena; a miss here means a cache was mis-keyed).
+    pub fn release(&self, ptrs: &[*mut u8]) {
+        let n = self.release_owned(ptrs);
+        if n != ptrs.len() {
+            let p = ptrs[n];
+            let (slab, _) = self.locate(p);
+            wrong_arena(p as usize, self.class as usize, self.table().owner(slab), self.arena);
+        }
+    }
+
+    /// [`release`] of the longest prefix of `ptrs` whose slabs this arena
+    /// owns, returning its length (`ptrs.len()` when every slab is ours).
+    /// The batch is grouped by slab (`Heap::flush`'s bucket pass; a sorted
+    /// batch is one such grouping), so a slab's pointers are contiguous and
+    /// the prefix ends exactly at the first pointer of a slab of another
+    /// arena; the caller routes the rest there (`Heap::flush`: a home cache
+    /// takes sized frees of any arena, design 6.3). Within a slab the order
+    /// is free: the slab's bits are accumulated in a scratch bitmap
+    /// (`MAX_SLAB_WORDS` words on the stack) and released at the slab
+    /// switch, one atomic per touched word, so an unsorted slab costs the
+    /// same atomics as a sorted one. Every bit cleared is checked (an
+    /// already-clear bit is a double or invalid free and aborts), which is
+    /// where the sized path's deferred check lands; a duplicate inside one
+    /// slab's group is caught earlier, on the scratch bit. The owner is read
+    /// from the table's dense owner array, once per slab switch, and checked
+    /// against the slab descriptor's `arena` (a line `dec_live` reads
+    /// anyway): the word routed the batch here, so a descriptor that
+    /// disagrees means one of them is corrupt, and the batch aborts before
+    /// a bit is cleared (`owner_mismatch`).
+    /// Modelled at `model::Model::step_release`, `protocol::Release::FetchAnd`
+    /// (the `fetch_and` and the double-free check) and `SubLive`.
+    ///
+    /// [`release`]: ClassState::release
+    // The counter carries a Verus invariant.
+    #[allow(clippy::explicit_counter_loop)]
+    pub fn release_owned(&self, ptrs: &[*mut u8]) -> (r: usize)
+        ensures
+            r <= ptrs@.len(),
+    {
+        let mut local = [0u64; MAX_SLAB_WORDS];
+        let mut cur_slab = usize::MAX;
+        let (mut lo_w, mut hi_w) = (usize::MAX, 0usize);
+        let mut count = 0usize;
+        let mut reopen = Reopen::new();
+        let mut end = ptrs.len();
+        let ghost sb = class_table()[self.spec_class() as int].slab_bits as usize;
+        let ghost nslots = class_table()[self.spec_class() as int].nslots as int;
+        let _t = self.table();
+        let ghost s = _t.spec_slots();
+        // The tokens of the slots accumulated in `local` for `cur_slab`.
+        let tracked mut ltoks = _t.empty_tokens();
+        proof {
+            use_type_invariant(self);
+            broadcast use crate::vspec::class::axiom_class_table_wf;
+            assert(class_table()[self.spec_class() as int].wf());
+            _t.lemma_slots_wf();
+            assert(local@.len() == MAX_SLAB_WORDS);
+            assert forall|v: int| 0 <= v < MAX_SLAB_WORDS implies subset(#[trigger] local@[v], slab_mask_of(sb)) by {
+                let m = slab_mask_of(sb);
+                assert(local@[v] == 0);
+                assert(subset(0u64, m)) by (bit_vector);
+            }
+            assert forall|v: int| 0 <= v < MAX_SLAB_WORDS implies mask_slots(v, #[trigger] local@[v], nslots) by {
+                assert forall|k: u64| k < 64 implies !#[trigger] has_bit(local@[v], k) by {
+                    assert((0u64 >> k) & 1u64 != 1u64) by (bit_vector);
+                }
+            }
+        }
+        let mut i = 0usize;
+        for &p in it: ptrs.iter()
+            invariant_except_break
+                i == it.index(),
+                end == ptrs@.len(),
+            invariant
+                i <= ptrs@.len(),
+                end <= ptrs@.len(),
+                it.seq().len() == ptrs@.len(),
+                class_table()[self.spec_class() as int].wf(),
+                sb == class_table()[self.spec_class() as int].slab_bits,
+                nslots == class_table()[self.spec_class() as int].nslots,
+                local@.len() == MAX_SLAB_WORDS,
+                forall|v: int| 0 <= v < MAX_SLAB_WORDS ==> subset(#[trigger] local@[v], slab_mask_of(sb)),
+                forall|v: int| 0 <= v < MAX_SLAB_WORDS ==> mask_slots(v, #[trigger] local@[v], nslots),
+                forall|v: int| 0 <= v < MAX_SLAB_WORDS && !(lo_w <= v <= hi_w) ==> #[trigger] local@[v] == 0,
+                count <= i,
+                count != 0 ==> cur_slab < self.spec_nslabs() && lo_w <= hi_w && hi_w < words_of(sb),
+                count == 0 ==> lo_w == usize::MAX && hi_w == 0,
+                reopen.len <= MAX_PICKS,
+                reopen.below(self.spec_nslabs()),
+                *_t == self.spec_table(),
+                self.spec_table().inv(),
+                _t.spec_class() == self.spec_class(),
+                _t.spec_nslabs() == self.spec_nslabs(),
+                s == _t.spec_slots(),
+                s.wf(),
+                ltoks.id() == s.loc,
+                count == 0 ==> ltoks@ == VSet::<int>::empty(),
+                count != 0 ==> ltoks@ == addrs(s, scratch_bits(s, cur_slab * s.sb, local@, lo_w as int, hi_w as int)),
+        {
+            let (slab, slot) = self.locate(p);
+            if slab != cur_slab {
+                if count != 0 {
+                    let ghost pre = local@;
+                    self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen, Tracked(ltoks.take()));
+                    proof {
+                        assert forall|v: int| 0 <= v < MAX_SLAB_WORDS implies subset(#[trigger] local@[v], slab_mask_of(sb)) by {
+                            let m = slab_mask_of(sb);
+                            if lo_w <= v <= hi_w {
+                                assert(local@[v] == 0);
+                                assert(subset(0u64, m)) by (bit_vector);
+                            } else {
+                                assert(local@[v] == pre[v]);
+                            }
+                        }
+                        assert forall|v: int| 0 <= v < MAX_SLAB_WORDS implies #[trigger] local@[v] == 0 by {
+                            if !(lo_w <= v <= hi_w) {
+                                assert(local@[v] == pre[v]);
+                            }
+                        }
+                        assert forall|v: int| 0 <= v < MAX_SLAB_WORDS implies mask_slots(v, #[trigger] local@[v], nslots) by {
+                            assert forall|k: u64| k < 64 implies !#[trigger] has_bit(local@[v], k) by {
+                                assert((0u64 >> k) & 1u64 != 1u64) by (bit_vector);
+                            }
+                        }
+                    }
+                    count = 0;
+                    lo_w = usize::MAX;
+                    hi_w = 0;
+                }
+                if self.table().owner(slab) != self.arena {
+                    end = i;
+                    break;
+                }
+                let _t = self.table();
+                proof {
+                    use_type_invariant(_t);
+                }
+                // The sized path defers its checks to here (design
+                // 6.3). A guard slab or a slab nothing was ever
+                // allocated from (`Fresh`: handed to an arena but not
+                // committed, or committed and never claimed) has no
+                // slot to release; its bits are clear, so the bit
+                // test below would abort too, but this names the
+                // cause. The descriptor line is read by `dec_live`
+                // anyway.
+                if self.table().is_guard_slab(slab) {
+                    guard_free(p as usize, self.class as usize, slab);
+                }
+                let d = self.desc(slab);
+                if d.arena() != self.arena {
+                    owner_mismatch(self.class as usize, slab >> self.table().lg_group, slab, self.arena, d.arena());
+                }
+                if d.state() == State::Fresh {
+                    release_into_fresh_slab(p as usize, self.class as usize, slab);
+                }
+                cur_slab = slab;
+            }
+            let word = slot / 64;
+            let bit = 1u64 << (slot % 64);
+            // `slot < nslots <= slab_bits <= 64 * MAX_SLAB_WORDS`
+            // (`locate` checked the slot), so `word` is in range.
+            proof {
+                lemma_slot_bit(slot, sb);
+                let s = slot as u64;
+                assert(bit == 1u64 << (s % 64)) by (bit_vector)
+                    requires bit == 1u64 << (slot % 64), s == slot;
+            }
+            let ghost before = local@;
+            let ghost (lo0, hi0) = (lo_w, hi_w);
+            proof {
+                _t.lemma_slot_bit(slab as int, slot as int);
+                _t.lemma_slots_wf();
+                assert(process_regions().slot_at(self.spec_class() as int, slab as int, slot as int) == p@.addr);
+                assert(process_regions().is_slot(self.spec_class() as int, p@.addr));
+            }
+            // The slot's token: the `free` contract.
+            let tracked tok = axiom_free_token(self.spec_class() as int, p);
+            let w = &mut local[word];
+            if *w & bit != 0 {
+                double_free(p as usize, self.class as usize, slab, slot);
+            }
+            proof {
+                let x = *w;
+                assert(x == before[word as int]);
+                let m = slab_mask_of(sb);
+                assert(subset(x | bit, m)) by (bit_vector)
+                    requires x & !m == 0u64, bit & !m == 0u64;
+            }
+            *w |= bit;
+            count += 1;
+            lo_w = lo_w.min(word);
+            hi_w = hi_w.max(word);
+            proof {
+                let f = slab * s.sb;
+                let k = (slot % 64) as u64;
+                let b = f + slot;
+                assert(b == f + 64 * word + k);
+                assert forall|k2: u64| k2 < 64 implies #[trigger] has_bit(bit, k2) == (k2 == k) by {
+                    assert(has_bit(1u64 << k, k2) == (k2 == k)) by (bit_vector)
+                        requires k < 64, k2 < 64;
+                }
+                assert forall|k2: u64| k2 < 64 implies #[trigger] has_bit(local@[word as int], k2)
+                    == (has_bit(before[word as int], k2) || k2 == k) by {
+                    lemma_bit_ops(before[word as int], bit, k2);
+                }
+                assert(local@ == before.update(word as int, before[word as int] | bit));
+                assert forall|v: int| 0 <= v < MAX_SLAB_WORDS implies mask_slots(v, #[trigger] local@[v], nslots) by {
+                    if v == word {
+                        assert forall|k2: u64| k2 < 64 && #[trigger] has_bit(local@[v], k2) implies v * 64 + k2 < nslots by {
+                            if k2 != k {
+                                assert(has_bit(before[v], k2));
+                            }
+                        }
+                    }
+                }
+                let old_set = if count == 1 { VSet::<int>::empty() } else { scratch_bits(s, f, before, lo0 as int, hi0 as int) };
+                lemma_scratch_insert(s, f, before, local@, lo0 as int, hi0 as int, lo_w as int, hi_w as int, word as int, k, count == 1);
+                _t.lemma_slot_bit(slab as int, slot as int);
+                assert(tok@ == s.addr(b));
+                ltoks.combine_singleton(tok);
+                lemma_addrs_insert(s, old_set, b);
+            }
+            i += 1;
+        }
+        if count != 0 {
+            self.release_slab(cur_slab, &mut local, lo_w, hi_w, count, &mut reopen, Tracked(ltoks.take()));
+        }
+        self.reopen(&mut reopen);
+        if end != 0 {
+            self.released.fetch_add(end as u64, Ordering::Relaxed);
+        }
+        end
+    }
+
+}
+
+} // verus!
+
+impl ClassState {
     /// Tests: whether `slab` is in this arena's partial, empty and purged
     /// sets.
     #[cfg(test)]
@@ -1271,11 +3587,5 @@ impl ClassState {
             g.empty.map.is_set(slab),
             g.purged.map.is_set(slab),
         )
-    }
-
-    /// Whether `slab` is in the partial set (tests and the bins table,
-    /// `api::print`).
-    pub fn is_partial(&self, slab: usize) -> bool {
-        self.inner.lock().partial.map.is_set(slab)
     }
 }

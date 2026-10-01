@@ -60,6 +60,16 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use crate::heap::Shared;
 use crate::purge::NEVER;
 use crate::sys::cgroup::UNLIMITED;
+#[cfg(verus_only)]
+use vstd::arithmetic::div_mod::{
+    lemma_div_is_ordered, lemma_fundamental_div_mod, lemma_fundamental_div_mod_converse_div,
+    lemma_multiply_divide_lt,
+};
+#[cfg(verus_only)]
+use vstd::arithmetic::mul::lemma_mul_inequality;
+use vstd::prelude::*;
+
+verus! {
 
 /// Fixed-point one for the band position and the keep ratio.
 pub const FRAC_ONE: u32 = 1 << 16;
@@ -77,6 +87,15 @@ pub const RETENTION_DIVISOR: u64 = 20;
 /// (`thp::forced_by_limit`).
 pub const THP_MIN_LIMIT: u64 = 1 << 30;
 
+/// [`FRAC_ONE`] and [`KEEP_ALL`] as numbers.
+pub proof fn frac_one_value()
+    ensures
+        FRAC_ONE == 0x1_0000,
+        KEEP_ALL == 0x1_0000,
+{
+    assert((1u32 << 16u32) == 0x1_0000) by (bit_vector);
+}
+
 /// The row of the table usage falls in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Band {
@@ -91,43 +110,156 @@ pub enum Band {
     Immediate,
 }
 
+impl Band {
+    /// A position in the scaled band is at most [`FRAC_ONE`].
+    pub open spec fn wf(self) -> bool {
+        match self {
+            Band::Scaled(f) => f <= 0x1_0000,
+            _ => true,
+        }
+    }
+}
+
 /// `num / den` in [`FRAC_ONE`] units for `num <= den`, `den > 0`; `u64`
 /// arithmetic only (a 128-bit division would pull the unwinding helpers
 /// into the `no_std` library, see `purge::Curve::step`).
-pub fn frac16(mut num: u64, mut den: u64) -> u32 {
+pub fn frac16(mut num: u64, mut den: u64) -> (f: u32)
+    requires
+        den > 0,
+        num <= den,
+    ensures
+        f <= 0x1_0000,
+        den <= 0x8000_0000_0000 ==> f == num * 0x1_0000 / den as int,
+{
     debug_assert!(den > 0 && num <= den);
-    while den > 1 << 47 {
+    let ghost den0 = den;
+    let ghost num0 = num;
+    assert((1u64 << 47u64) == 0x8000_0000_0000) by (bit_vector);
+    while den > 1 << 47
+        invariant
+            0 < den,
+            num <= den,
+            den0 <= 0x8000_0000_0000 ==> den == den0 && num == num0,
+            (1u64 << 47u64) == 0x8000_0000_0000,
+        decreases den,
+    {
+        assert(num >> 1u64 <= den >> 1u64 && den >> 1u64 > 0 && den >> 1u64 < den) by (bit_vector)
+            requires
+                num <= den,
+                den > 0x8000_0000_0000u64,
+        ;
         num >>= 1;
         den >>= 1;
+    }
+    assert(num << 16u64 == num * 0x1_0000) by (bit_vector)
+        requires
+            num <= 0x8000_0000_0000u64,
+    ;
+    proof {
+        frac_one_value();
+        lemma_div_is_ordered(num * 0x1_0000, den * 0x1_0000, den as int);
+        lemma_fundamental_div_mod_converse_div(den * 0x1_0000, den as int, 0x1_0000, 0);
+        lemma_mul_inequality(num as int, den as int, 0x1_0000);
     }
     ((num << 16) / den).min(FRAC_ONE as u64) as u32
 }
 
 /// `x * f / FRAC_ONE` without overflow for any `x`.
-pub fn mul16(x: u64, f: u32) -> u64 {
+pub fn mul16(x: u64, f: u32) -> (r: u64)
+    requires
+        f <= 0x1_0000,
+    ensures
+        r == x * f / 0x1_0000,
+        r <= x,
+{
     let f = f as u64;
+    let ghost q: int = x as int / 0x1_0000;
+    let ghost m: int = x as int % 0x1_0000;
+    assert(x >> 16u64 == x / 0x1_0000 && x & 0xffffu64 == x % 0x1_0000) by (bit_vector);
+    proof {
+        lemma_fundamental_div_mod(x as int, 0x1_0000);
+        lemma_mul_inequality(q, 0xffff_ffff_ffff, f as int);
+        lemma_mul_inequality(m, 0xffff, f as int);
+        let mf = m * f;
+        lemma_fundamental_div_mod(mf, 0x1_0000);
+        assert(x * f == (q * f + mf / 0x1_0000) * 0x1_0000 + mf % 0x1_0000) by (nonlinear_arith)
+            requires
+                x == 0x1_0000 * q + m,
+                mf == m * f,
+                mf == 0x1_0000 * (mf / 0x1_0000) + mf % 0x1_0000,
+        ;
+        lemma_fundamental_div_mod_converse_div(x * f, 0x1_0000, q * f + mf / 0x1_0000, mf % 0x1_0000);
+        lemma_mul_inequality(f as int, 0x1_0000, x as int);
+        lemma_div_is_ordered(x * f, x * 0x1_0000, 0x1_0000);
+        lemma_fundamental_div_mod_converse_div(x * 0x1_0000, 0x1_0000, x as int, 0);
+        assert(q * f <= 0xffff_ffff_ffff * 0x1_0000);
+        assert(mf / 0x1_0000 <= 0xffff) by {
+            lemma_div_is_ordered(mf, 0xffff * 0x1_0000int, 0x1_0000);
+        }
+        shr16((m * f) as u64);
+    }
     (x >> 16) * f + ((x & 0xffff) * f >> 16)
+}
+
+/// `y >> 16` is `y / 2^16`.
+proof fn shr16(y: u64)
+    ensures
+        y >> 16u64 == y / 0x1_0000,
+{
+    assert(y >> 16u64 == y / 0x1_0000) by (bit_vector);
 }
 
 /// Usage as parts per million of the limit; saturates at 1e6 when
 /// `current >= limit`. `limit > 0` and not [`UNLIMITED`].
-pub fn usage_ppm(limit: u64, current: u64) -> u64 {
+pub fn usage_ppm(limit: u64, current: u64) -> (ppm: u64)
+    ensures
+        ppm <= 1_000_000,
+        current >= limit ==> ppm == 1_000_000,
+        current < limit <= 0x800_0000_0000 ==> ppm == current * 1_000_000 / limit as int,
+        current == 0 < limit ==> ppm == 0,
+{
     if current >= limit {
         return 1_000_000;
     }
     let (mut c, mut l) = (current, limit);
-    while l > 1 << 43 {
+    assert((1u64 << 43u64) == 0x800_0000_0000) by (bit_vector);
+    while l > 1 << 43
+        invariant
+            c <= l,
+            0 < l,
+            limit <= 0x800_0000_0000 ==> c == current && l == limit,
+            current == 0 ==> c == 0,
+            (1u64 << 43u64) == 0x800_0000_0000,
+        decreases l,
+    {
+        assert(c >> 1u64 <= l >> 1u64 && l >> 1u64 > 0 && l >> 1u64 < l && (c == 0 ==> c >> 1u64 == 0)) by (bit_vector)
+            requires
+                c <= l,
+                l > 0x800_0000_0000u64,
+        ;
         c >>= 1;
         l >>= 1;
     }
     if l == 0 {
         return 1_000_000;
     }
+    proof {
+        lemma_mul_inequality(c as int, l as int, 1_000_000);
+        lemma_mul_inequality(l as int, 0x800_0000_0000, 1_000_000);
+        lemma_div_is_ordered(c * 1_000_000, l * 1_000_000, l as int);
+        lemma_fundamental_div_mod_converse_div(l * 1_000_000, l as int, 1_000_000, 0);
+    }
     c * 1_000_000 / l
 }
 
 /// The row for `limit` (the effective `min(high, max)`) and `current`.
-pub fn band(limit: u64, current: u64) -> Band {
+pub fn band(limit: u64, current: u64) -> (b: Band)
+    ensures
+        b.wf(),
+        b == Band::Unlimited <==> limit == UNLIMITED || limit == 0,
+        limit != UNLIMITED && limit != 0 && current >= limit ==> b == Band::Immediate,
+        limit != UNLIMITED && current == 0 ==> b == Band::Unlimited || b == Band::Low,
+{
     if limit == UNLIMITED || limit == 0 {
         return Band::Unlimited;
     }
@@ -166,7 +298,13 @@ impl Advice {
     }
 
     /// The `madvise` advice a batch is issued with.
-    pub const fn madv(self) -> i32 {
+    pub const fn madv(self) -> (a: i32)
+        ensures
+            a == match self {
+                Advice::Eager => crate::sys::MADV_DONTNEED,
+                Advice::Lazy => crate::sys::MADV_FREE,
+            },
+    {
         match self {
             Advice::Eager => crate::sys::MADV_DONTNEED,
             Advice::Lazy => crate::sys::MADV_FREE,
@@ -187,7 +325,10 @@ impl Advice {
 /// `Low` band, under 70% of a known limit, with no eager return of the
 /// excess in progress: [`Policy::headroom`]) is lazy when `lazy_band`
 /// allows it, and everything else, no limit included, is eager.
-pub fn advice(headroom: bool, lazy_band: bool, explicit: bool) -> Advice {
+pub fn advice(headroom: bool, lazy_band: bool, explicit: bool) -> (a: Advice)
+    ensures
+        a == Advice::Lazy <==> (!explicit && lazy_band && headroom),
+{
     if explicit {
         Advice::Eager
     } else if lazy_band && headroom {
@@ -201,7 +342,21 @@ pub fn advice(headroom: bool, lazy_band: bool, explicit: bool) -> Advice {
 /// [`NEVER`] for never). `NEVER` stays `NEVER`; in the scaled band a
 /// period above [`FLOOR_NS`] shrinks linearly to the floor at 90%, a
 /// shorter one is kept; the immediate band gives 0.
-pub fn effective_decay_ns(base: u64, band: Band) -> u64 {
+pub fn effective_decay_ns(base: u64, band: Band) -> (ns: u64)
+    requires
+        band.wf(),
+    ensures
+        base == NEVER ==> ns == NEVER,
+        base != NEVER ==> match band {
+            Band::Unlimited | Band::Low => ns == base,
+            Band::Scaled(f) => if base <= FLOOR_NS {
+                ns == base
+            } else {
+                FLOOR_NS <= ns <= base && ns == base - (base - FLOOR_NS) * f / 0x1_0000
+            },
+            Band::Immediate => ns == 0,
+        },
+{
     if base == NEVER {
         return NEVER;
     }
@@ -220,24 +375,40 @@ pub fn effective_decay_ns(base: u64, band: Band) -> u64 {
 
 /// Bytes of `Empty` memory the process may retain under `limit`:
 /// [`UNLIMITED`] without a limit, else 5% of it.
-pub fn retention_cap(limit: u64) -> u64 {
-    if limit == UNLIMITED {
-        UNLIMITED
-    } else {
-        limit / RETENTION_DIVISOR
-    }
+pub fn retention_cap(limit: u64) -> (cap: u64)
+    ensures
+        cap == if limit == UNLIMITED { UNLIMITED } else { limit / RETENTION_DIVISOR },
+{
+    if limit == UNLIMITED { UNLIMITED } else { limit / RETENTION_DIVISOR }
 }
 
 /// The share of its `Empty` memory a walk may keep so that `retention`
 /// (the process-wide `Empty` bytes) comes down to `cap`: [`KEEP_ALL`] when
 /// within the cap or uncapped, else `cap / retention`.
-pub fn keep_ratio(cap: u64, retention: u64) -> u32 {
+pub fn keep_ratio(cap: u64, retention: u64) -> (keep: u32)
+    ensures
+        keep <= KEEP_ALL,
+        cap == UNLIMITED || retention <= cap ==> keep == KEEP_ALL,
+        cap != UNLIMITED && retention > cap && retention <= 0x8000_0000_0000 ==> keep < KEEP_ALL
+            && keep == cap * 0x1_0000 / retention as int,
+{
+    proof {
+        frac_one_value();
+    }
     if cap == UNLIMITED || retention <= cap {
         KEEP_ALL
     } else if cap == 0 {
         0
     } else {
-        frac16(cap, retention)
+        let k = frac16(cap, retention);
+        proof {
+            if retention <= 0x8000_0000_0000 {
+                lemma_mul_inequality(cap as int, retention - 1, 0x1_0000);
+                lemma_div_is_ordered(cap * 0x1_0000, (retention - 1) * 0x1_0000, retention as int);
+                lemma_multiply_divide_lt((retention - 1) * 0x1_0000, retention as int, 0x1_0000);
+            }
+        }
+        k
     }
 }
 
@@ -296,14 +467,32 @@ impl Policy {
         }
     }
 
+    /// The stored position in the scaled band. Trusted to be at most
+    /// [`FRAC_ONE`]: `new` stores 0 and the only other store is `apply`'s,
+    /// of the position of a band that satisfies `Band::wf` (its
+    /// precondition, unchecked since its callers are unverified;
+    /// `evaluate` and `Shared::init` pass the result of [`band`], which
+    /// ensures it). Verus has no view of the value in an `AtomicU32`.
+    #[verifier::external_body]
+    #[inline(always)]
+    fn position(&self) -> (f: u32)
+        ensures
+            f <= 0x1_0000,
+    {
+        self.frac16.load(Ordering::Relaxed)
+    }
+
     /// The band as last evaluated (`Unlimited` when no limit was seen).
-    pub fn band(&self) -> Band {
+    pub fn band(&self) -> (b: Band)
+        ensures
+            b.wf(),
+    {
         if self.immediate.load(Ordering::Relaxed) {
             Band::Immediate
         } else if !self.limited.load(Ordering::Relaxed) {
             Band::Unlimited
         } else {
-            match self.frac16.load(Ordering::Relaxed) {
+            match self.position() {
                 0 => Band::Low,
                 f => Band::Scaled(f),
             }
@@ -378,7 +567,10 @@ impl Policy {
     /// process-wide `Empty` bytes) and the cgroup's `high_rises` count.
     /// Returns `true` when the decay driver should look again now (the
     /// band changed or a full purge is owed).
-    pub fn apply(&self, band: Band, limit: u64, retention: u64, high_rises: u64) -> bool {
+    pub fn apply(&self, band: Band, limit: u64, retention: u64, high_rises: u64) -> bool
+        requires
+            band.wf(),
+    {
         let (frac, immediate) = match band {
             Band::Unlimited | Band::Low => (0, false),
             Band::Scaled(f) => (f, false),
@@ -391,8 +583,8 @@ impl Policy {
             UNLIMITED
         };
         let mut changed = self.limited.swap(limited, Ordering::Relaxed) != limited;
-        changed |= self.frac16.swap(frac, Ordering::Relaxed) != frac;
-        changed |= self.immediate.swap(immediate, Ordering::Relaxed) != immediate;
+        changed = (self.frac16.swap(frac, Ordering::Relaxed) != frac) || changed;
+        changed = (self.immediate.swap(immediate, Ordering::Relaxed) != immediate) || changed;
         self.cap.store(cap, Ordering::Relaxed);
         self.empty_bytes
             .store(if limited { retention } else { 0 }, Ordering::Relaxed);
@@ -427,10 +619,19 @@ impl Policy {
 /// lock-free `oldest_empty` says which), one for the huge allocator.
 pub fn empty_bytes(shared: &Shared) -> u64 {
     let mut total = 0u64;
-    for arena in shared.arenas.iter() {
-        total += arena.empty_bytes() as u64;
+    let count = (shared.arenas.count() as usize).min(crate::arena::MAX_ARENAS);
+    for i in 0..count
+        invariant
+            count <= crate::arena::MAX_ARENAS,
+    {
+        if let Some(arena) = shared.arenas.get_existing(i as u16) {
+            // Arenas hold disjoint slabs of the same class regions, so
+            // the sum stays below the address space; the verifier sees
+            // each arena's bound only.
+            total = total.saturating_add(arena.empty_bytes() as u64);
+        }
     }
-    total + shared.huge.empty_bytes() as u64
+    total.saturating_add(shared.huge.empty_bytes() as u64)
 }
 
 /// Evaluate the table against the cgroup record after a sample. Without a
@@ -461,6 +662,8 @@ pub fn evaluate(shared: &Shared) {
         crate::purge::note_decay_changed();
     }
 }
+
+} // verus!
 
 #[cfg(test)]
 mod tests {

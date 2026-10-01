@@ -36,10 +36,17 @@ use core::sync::atomic::{AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 use crate::class::{ClassState, SetTable, SlabTable};
 use crate::heap::Shared;
+#[cfg(verus_only)]
+use crate::layout::process_regions;
 use crate::layout::{NCLASSES, Regions};
 use crate::lock::Lock;
 use crate::meta::Meta;
 use crate::stats::ArenaStats;
+#[cfg(verus_only)]
+use crate::vspec::arena::axiom_arena_stats_lock_inv;
+use vstd::prelude::*;
+
+verus! {
 
 /// Arena indices are the 12-bit `MALLOCX_ARENA` field; 4096 itself is
 /// `MALLCTL_ARENAS_ALL`.
@@ -76,6 +83,8 @@ pub struct Arena {
     last_exit_purge: AtomicU64,
 }
 
+} // verus!
+
 // SAFETY: `sets` points at a never-freed metadata object whose only
 // mutable state is behind its own lock (`SetTable::tables`); everything
 // else in `Arena` is atomics, locks and `ClassState`s, which are `Sync`
@@ -84,10 +93,80 @@ pub struct Arena {
 unsafe impl Sync for Arena {}
 unsafe impl Send for Arena {}
 
+verus! {
+
+/// The in-place writes of [`Arena::init`], each trusted: Verus has no
+/// raw-pointer field projection. Each writes the fields it names and
+/// nothing else; `this` must be the storage `init` was handed.
 impl Arena {
+    /// `index` and `decay_ns`.
+    #[verifier::external_body]
+    #[inline(always)]
+    unsafe fn put_head(this: *mut Arena, index: u16, decay_ns: u64) {
+        // SAFETY: `init`'s caller guarantees `this` is writable and unaliased.
+        unsafe {
+            ptr::write(&raw mut (*this).index, index);
+            ptr::write(&raw mut (*this).decay_ns, AtomicU64::new(decay_ns));
+        }
+    }
+
+    /// Storage for the slab set table from `meta`, null when it is full.
+    #[verifier::external_body]
+    #[inline(always)]
+    fn alloc_sets(meta: &Meta) -> *mut SetTable {
+        meta.alloc(core::alloc::Layout::new::<SetTable>()) as *mut SetTable
+    }
+
+    /// `sets` into the storage [`Arena::alloc_sets`] returned (non-null),
+    /// and `sets_ptr` into the field; the table, where it now lives.
+    #[verifier::external_body]
+    #[inline(always)]
+    unsafe fn put_sets<'a>(this: *mut Arena, sets_ptr: *mut SetTable, sets: SetTable) -> (r: &'a SetTable)
+        ensures
+            *r == sets,
+    {
+        // SAFETY: `sets_ptr` is a fresh metadata object of the right
+        // layout; `this` as in `put_head`.
+        unsafe {
+            ptr::write(sets_ptr, sets);
+            ptr::write(&raw mut (*this).sets, sets_ptr as *const SetTable);
+            &*sets_ptr
+        }
+    }
+
+    /// `cs` into `classes[c]`. The precondition is the type invariant's
+    /// conjunct for `c`: [`Arena::init`] proves it for every state it
+    /// writes, and writes every class before it returns `true`.
+    #[verifier::external_body]
+    #[inline(always)]
+    unsafe fn put_class(this: *mut Arena, c: usize, cs: ClassState)
+        requires
+            c < NCLASSES,
+            cs.spec_class() == c,
+    {
+        // SAFETY: as in `put_head`.
+        unsafe {
+            ptr::write(&raw mut (*this).classes[c], cs);
+        }
+    }
+
+    /// `large`, `stats` and `last_exit_purge`.
+    #[verifier::external_body]
+    #[inline(always)]
+    unsafe fn put_tail(this: *mut Arena, index: u16) {
+        // SAFETY: as in `put_head`.
+        unsafe {
+            ptr::write(&raw mut (*this).large, AtomicU64::new(0));
+            ptr::write(&raw mut (*this).stats, Lock::new(ArenaStats::empty(index)));
+            ptr::write(&raw mut (*this).last_exit_purge, AtomicU64::new(0));
+        }
+    }
+
     /// Initialise `this` in place as arena `index` over `tables`. Returns
     /// `false` if the metadata region cannot hold the slab sets, leaving
-    /// `this` unusable.
+    /// `this` unusable. Verified apart from the writes above: every
+    /// `classes[c]` is written, with a state of class `c` (the type
+    /// invariant), before `true` is returned.
     ///
     /// # Safety
     /// `this` must point to writable storage for an `Arena` that nothing
@@ -99,61 +178,157 @@ impl Arena {
         tables: &[SlabTable; NCLASSES],
         index: u16,
         decay_ns: u64,
-    ) -> bool {
+    ) -> bool
+        requires
+            regions.wf(),
+            *regions == process_regions(),
+            forall|c: int| 0 <= c < NCLASSES ==> #[trigger] tables[c].spec_class() == c,
+    {
         // SAFETY: the caller guarantees `this` is writable and unaliased.
         unsafe {
-            ptr::write(&raw mut (*this).index, index);
-            ptr::write(&raw mut (*this).decay_ns, AtomicU64::new(decay_ns));
-            let sets_ptr = meta.alloc(core::alloc::Layout::new::<SetTable>()) as *mut SetTable;
+            Arena::put_head(this, index, decay_ns);
+            let sets_ptr = Arena::alloc_sets(meta);
             if sets_ptr.is_null() {
                 return false;
             }
-            match SetTable::new(meta, regions) {
-                Some(sets) => ptr::write(sets_ptr, sets),
+            let sets = match SetTable::new(meta, regions) {
+                Some(sets) => Arena::put_sets(this, sets_ptr, sets),
                 None => return false,
-            }
-            ptr::write(&raw mut (*this).sets, sets_ptr as *const SetTable);
-            let sets: &SetTable = &*sets_ptr;
-            for c in 0..NCLASSES {
+            };
+            for c in 0..NCLASSES
+                invariant
+                    sets.over(process_regions()),
+                    forall|c: int| 0 <= c < NCLASSES ==> #[trigger] tables[c].spec_class() == c,
+            {
                 match ClassState::new(meta, regions, &tables[c], index, sets) {
-                    Some(cs) => ptr::write(&raw mut (*this).classes[c], cs),
+                    Some(cs) => Arena::put_class(this, c, cs),
                     None => return false,
                 }
             }
-            ptr::write(&raw mut (*this).large, AtomicU64::new(0));
-            ptr::write(&raw mut (*this).stats, Lock::new(ArenaStats::empty(index)));
-            ptr::write(&raw mut (*this).last_exit_purge, AtomicU64::new(0));
+            Arena::put_tail(this, index);
         }
         true
     }
+}
 
+} // verus!
+
+impl Arena {
+    /// The arena's slab set table (fork handlers, tests).
+    #[inline]
+    pub fn sets(&self) -> &SetTable {
+        // SAFETY: written by `init` to a live, never-freed metadata object.
+        unsafe { &*self.sets }
+    }
+}
+
+verus! {
+
+impl Arena {
+    /// `classes[c]` is the state of class `c`. `init` builds the value in
+    /// place, so no struct expression checks this: `init` proves that it
+    /// writes every `classes[c]` with a state of class `c` (the
+    /// precondition of `Arena::put_class`, from `ClassState::new`'s
+    /// postcondition over `tables[c]`, whose class is `c` by `init`'s
+    /// precondition) before it returns `true`. Trusted: the in-place writers
+    /// write what they are handed and nothing else, and `Arenas::build`
+    /// (unverified) meets `init`'s preconditions from its `Shared`.
+    #[verifier::type_invariant]
+    spec fn inv(self) -> bool {
+        forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.classes[c].spec_class() == c
+    }
+
+    /// `Empty` bytes over every class (one lock hold per class that has
+    /// any), for the cgroup policy's retention figure.
+    pub fn empty_bytes(&self) -> (r: usize)
+        ensures
+            r <= NCLASSES * 0x200_0000_0000_0000,
+    {
+        let mut sum = 0usize;
+        let mut c = 0;
+        while c < NCLASSES
+            invariant
+                c <= NCLASSES,
+                sum <= c * 0x200_0000_0000_0000,
+            decreases NCLASSES - c,
+        {
+            let cs = &self.classes[c];
+            if cs.oldest_empty() != 0 {
+                sum += cs.empty_bytes();
+            }
+            c += 1;
+        }
+        sum
+    }
+
+    /// Purge every `Empty` slab of every class whatever its age. Returns
+    /// how many were purged.
+    pub fn purge_all(&self) -> (r: usize)
+        ensures
+            r <= NCLASSES * 0x2000_0000_0000,
+    {
+        let mut sum = 0usize;
+        let mut c = 0;
+        while c < NCLASSES
+            invariant
+                c <= NCLASSES,
+                sum <= c * 0x2000_0000_0000,
+            decreases NCLASSES - c,
+        {
+            let cs = &self.classes[c];
+            cs.nslabs_fit();
+            sum += cs.purge_empty(u64::MAX);
+            c += 1;
+        }
+        sum
+    }
+}
+
+} // verus!
+
+verus! {
+
+impl Arena {
     /// One run in the `large` word; the low 32 bits count pages (a run's
     /// `pages` is a `u32` in its descriptor, and the region holds fewer
     /// than 2^32 pages in all).
     const LARGE_RUN: u64 = 1 << 32;
 
     /// The `large` word for one run of `pages` (guard included).
-    fn large_word(pages: usize) -> u64 {
+    fn large_word(pages: usize) -> u64
+        requires
+            pages < 0x1_0000_0000,
+    {
+        proof {
+            assert((1usize << 32usize) == 0x1_0000_0000usize) by (bit_vector);
+        }
         assert!(pages < (1 << 32), "arena: huge run of {pages} pages");
         Self::LARGE_RUN | pages as u64
     }
 
     /// A huge run of `pages` (guard included) was allocated through this
     /// arena.
-    pub fn note_huge_alloc(&self, pages: usize) {
-        self.large
-            .fetch_add(Self::large_word(pages), Ordering::Relaxed);
+    pub fn note_huge_alloc(&self, pages: usize)
+        requires
+            pages < 0x1_0000_0000,
+    {
+        self.large.fetch_add(Self::large_word(pages), Ordering::Relaxed);
     }
 
     /// A huge run of `pages` (guard included) of this arena was freed.
-    pub fn note_huge_free(&self, pages: usize) {
-        self.large
-            .fetch_sub(Self::large_word(pages), Ordering::Relaxed);
+    pub fn note_huge_free(&self, pages: usize)
+        requires
+            pages < 0x1_0000_0000,
+    {
+        self.large.fetch_sub(Self::large_word(pages), Ordering::Relaxed);
     }
 
     /// Live huge runs of this arena and their pages, guards included, as
     /// one snapshot (see the field).
     pub fn large(&self) -> (usize, usize) {
+        proof {
+            assert(Self::LARGE_RUN == 0x1_0000_0000) by (compute_only);
+        }
         let w = self.large.load(Ordering::Relaxed);
         ((w >> 32) as usize, (w & (Self::LARGE_RUN - 1)) as usize)
     }
@@ -165,6 +340,8 @@ impl Arena {
 
     /// Store the statistics of an `epoch`.
     pub fn store_stats(&self, s: &ArenaStats) {
+        broadcast use axiom_arena_stats_lock_inv;
+
         *self.stats.lock() = *s;
     }
 
@@ -174,13 +351,6 @@ impl Arena {
         self.stats.raw()
     }
 
-    #[inline]
-    /// The arena's slab set table (fork handlers, tests).
-    pub fn sets(&self) -> &SetTable {
-        // SAFETY: written by `init` to a live, never-freed metadata object.
-        unsafe { &*self.sets }
-    }
-
     pub fn index(&self) -> u16 {
         self.index
     }
@@ -188,7 +358,15 @@ impl Arena {
     /// Class state for `class`, without the bounds check the fast paths do
     /// not need (`class` comes from `class_of`).
     #[inline(always)]
-    pub fn class(&self, class: usize) -> &ClassState {
+    pub fn class(&self, class: usize) -> (r: &ClassState)
+        requires
+            class < NCLASSES,
+        ensures
+            r.spec_class() == class,
+    {
+        proof {
+            use_type_invariant(self);
+        }
         debug_assert!(class < NCLASSES);
         // SAFETY: `class_of` only yields indices below `NCLASSES`.
         unsafe { self.classes.get_unchecked(class) }
@@ -231,16 +409,6 @@ impl Arena {
         next
     }
 
-    /// `Empty` bytes over every class (one lock hold per class that has
-    /// any), for the cgroup policy's retention figure.
-    pub fn empty_bytes(&self) -> usize {
-        self.classes
-            .iter()
-            .filter(|cs| cs.oldest_empty() != 0)
-            .map(|cs| cs.empty_bytes())
-            .sum()
-    }
-
     /// The exit purge's gate (design 13.3): the last thread heap homed on
     /// this arena is leaving at `now`; `true` when its `Empty` slabs
     /// should be purged now, which is at most once per decay period of
@@ -262,13 +430,11 @@ impl Arena {
         self.last_exit_purge.store(now.max(1), Ordering::Relaxed);
         true
     }
-
-    /// Purge every `Empty` slab of every class whatever its age. Returns
-    /// how many were purged.
-    pub fn purge_all(&self) -> usize {
-        self.classes.iter().map(|cs| cs.purge_empty(u64::MAX)).sum()
-    }
 }
+
+} // verus!
+
+verus! {
 
 /// The arena registry. Index 0 is `Shared::arena0`; the rest live in the
 /// metadata region. `count` is the number of indices in use: the automatic
@@ -286,6 +452,8 @@ pub struct Arenas {
     bound: [AtomicU32; MAX_ARENAS],
     table: [AtomicPtr<Arena>; MAX_ARENAS],
 }
+
+} // verus!
 
 impl Arenas {
     /// Initialise `this` in place with `arena0` at index 0 and `narenas`
@@ -311,71 +479,56 @@ impl Arenas {
         }
     }
 
-    /// Number of arena indices in use (`arenas.narenas`).
-    #[inline]
-    pub fn count(&self) -> u32 {
-        self.count.load(Ordering::Acquire)
-    }
-
-    /// Number of automatic arenas (`opt.narenas` as applied).
-    #[inline]
-    pub fn auto(&self) -> u32 {
-        self.auto
-    }
-
-    /// Pick the home arena for a new thread heap and bind the heap to it:
-    /// the automatic arena with the fewest bound heaps, ties going to one
-    /// that is already built, then to the lowest index. Under the creation
-    /// lock so two threads created at once do not both take the same idle
-    /// arena. Does not materialise the arena; the heap's first refill does,
-    /// which is why a single-threaded program (main thread on arena 0,
-    /// nothing else ever bound) never builds a second arena and never
-    /// pays the `multi_arena` routing on `free`. The caller undoes the
-    /// binding with [`Arenas::unbind`] when the heap is destroyed.
-    pub fn assign(&self) -> u16 {
-        if self.auto == 1 {
-            self.bound[0].fetch_add(1, Ordering::Relaxed);
-            return 0;
-        }
-        let _g = self.lock.lock();
-        let mut best = 0usize;
-        // (bound heaps, not yet built): the smallest wins.
-        let mut best_key = (u32::MAX, true);
-        for i in 0..self.auto as usize {
-            let key = (
-                self.bound[i].load(Ordering::Relaxed),
-                self.table[i].load(Ordering::Relaxed).is_null(),
-            );
-            if key < best_key {
-                best = i;
-                best_key = key;
-                if key == (0, false) {
-                    break;
-                }
+    /// Every arena that exists, in index order (for decay, purge, stats
+    /// and the fork handlers).
+    pub fn iter<'a>(&'a self) -> impl Iterator<Item = &'a Arena> + 'a {
+        let n = self.count() as usize;
+        (0..n).filter_map(move |i| {
+            let p = self.table[i].load(Ordering::Acquire);
+            // SAFETY: as in `get`.
+            if p.is_null() {
+                None
+            } else {
+                Some(unsafe { &*p })
             }
-        }
-        self.bound[best].fetch_add(1, Ordering::Relaxed);
-        best as u16
+        })
     }
+}
 
-    /// Count a thread heap as homed on `index` (`thread.arena` moving a
-    /// heap to an arena `assign` did not pick).
-    pub fn bind(&self, index: u16) {
-        self.bound[index as usize].fetch_add(1, Ordering::Relaxed);
-    }
+verus! {
 
+/// The arena a non-null registry entry points at. Trusted: Verus has no
+/// raw-pointer dereference. Entries are published by `build` with a
+/// release store after `Arena::init`, and arenas are never freed.
+///
+/// # Safety
+/// `p` is a non-null entry loaded from `Arenas::table`.
+#[verifier::external_body]
+#[inline(always)]
+unsafe fn arena_at<'a>(p: *mut Arena) -> &'a Arena {
+    // SAFETY: guaranteed by the caller.
+    unsafe { &*p }
+}
+
+/// An arena's bound count went below zero: a heap was unbound twice, or
+/// never bound. Trusted: `panic!` formats its message.
+#[cold]
+#[inline(never)]
+#[verifier::external_body]
+fn unbind_unbound(index: u16) -> ! {
+    panic!("arena {index}: unbinding a heap that was never bound")
+}
+
+impl Arenas {
     /// A thread heap homed on `index` is destroyed or moves away.
-    pub fn unbind(&self, index: u16) {
+    pub fn unbind(&self, index: u16)
+        requires
+            (index as usize) < MAX_ARENAS,
+    {
         let prev = self.bound[index as usize].fetch_sub(1, Ordering::Relaxed);
-        assert!(
-            prev != 0,
-            "arena {index}: unbinding a heap that was never bound"
-        );
-    }
-
-    /// Thread heaps currently homed on `index`.
-    pub fn bound(&self, index: u16) -> u32 {
-        self.bound[index as usize].load(Ordering::Relaxed)
+        if prev == 0 {
+            unbind_unbound(index);
+        }
     }
 
     /// Arena `index` if it exists. An automatic index whose arena has not
@@ -391,29 +544,17 @@ impl Arenas {
         if !p.is_null() {
             // SAFETY: arenas are never freed; the pointer was published
             // after `Arena::init` with a release store.
-            return Some(unsafe { &*p });
+            return Some(unsafe { arena_at(p) });
         }
         self.materialise(shared, index)
     }
 
-    /// Arena `index` if it has been built, without building it.
-    pub fn get_existing(&self, index: u16) -> Option<&Arena> {
-        let i = index as usize;
-        if i >= MAX_ARENAS {
-            return None;
-        }
-        let p = self.table[i].load(Ordering::Acquire);
-        // SAFETY: as in `get`.
-        if p.is_null() {
-            None
-        } else {
-            Some(unsafe { &*p })
-        }
-    }
-
     #[cold]
     #[inline(never)]
-    fn materialise<'a>(&'a self, shared: &'a Shared, index: u16) -> Option<&'a Arena> {
+    fn materialise<'a>(&'a self, shared: &'a Shared, index: u16) -> Option<&'a Arena>
+        requires
+            (index as usize) < MAX_ARENAS,
+    {
         if index as u32 >= self.auto {
             return None;
         }
@@ -421,14 +562,23 @@ impl Arenas {
         let p = self.table[index as usize].load(Ordering::Acquire);
         if !p.is_null() {
             // SAFETY: as in `get`.
-            return Some(unsafe { &*p });
+            return Some(unsafe { arena_at(p) });
         }
         self.build(shared, index)
     }
 
     /// Build arena `index` in the metadata region and publish it. Called
     /// with the creation lock held and the slot known to be empty.
-    fn build<'a>(&'a self, shared: &'a Shared, index: u16) -> Option<&'a Arena> {
+    ///
+    /// Trusted: the storage is a cast of `Meta::reserve_committed`'s
+    /// address, and `shared` is the published `Shared`, whose `wf` gives
+    /// `Arena::init`'s preconditions (the process's well-formed regions and
+    /// the tables in class order); `build` does not state that it needs it.
+    #[verifier::external_body]
+    fn build<'a>(&'a self, shared: &'a Shared, index: u16) -> Option<&'a Arena>
+        requires
+            (index as usize) < MAX_ARENAS,
+    {
         let layout = core::alloc::Layout::new::<Arena>();
         // Never freed, so a reservation (page aligned, which covers the
         // 128-byte class state alignment) rather than an object.
@@ -473,23 +623,96 @@ impl Arenas {
         Some(index as u16)
     }
 
+    /// Arena `index` if it has been built, without building it.
+    pub fn get_existing(&self, index: u16) -> Option<&Arena> {
+        let i = index as usize;
+        if i >= MAX_ARENAS {
+            return None;
+        }
+        let p = self.table[i].load(Ordering::Acquire);
+        // SAFETY: a non-null entry of the table.
+        if p.is_null() { None } else { Some(unsafe { arena_at(p) }) }
+    }
+
+    /// Automatic arenas, as `init` clamped them.
+    pub closed spec fn spec_auto(&self) -> int {
+        self.auto as int
+    }
+
+    /// Pick the home arena for a new thread heap and bind the heap to it:
+    /// the automatic arena with the fewest bound heaps, ties going to one
+    /// that is already built, then to the lowest index. Under the creation
+    /// lock so two threads created at once do not both take the same idle
+    /// arena. Does not materialise the arena; the heap's first refill does,
+    /// which is why a single-threaded program (main thread on arena 0,
+    /// nothing else ever bound) never builds a second arena and never
+    /// pays the `multi_arena` routing on `free`. The caller undoes the
+    /// binding with [`Arenas::unbind`] when the heap is destroyed.
+    pub fn assign(&self) -> (r: u16)
+        requires
+            self.spec_auto() <= MAX_ARENAS,
+        ensures
+            r < MAX_ARENAS,
+    {
+        if self.auto == 1 {
+            self.bound[0].fetch_add(1, Ordering::Relaxed);
+            return 0;
+        }
+        let _g = self.lock.lock();
+        let mut best = 0usize;
+        // (bound heaps, not yet built): the smallest wins.
+        let mut best_key = (u32::MAX, true);
+        for i in 0..self.auto as usize
+            invariant
+                self.auto <= MAX_ARENAS,
+                best < MAX_ARENAS,
+        {
+            let key = (self.bound[i].load(Ordering::Relaxed), self.table[i].load(Ordering::Relaxed).is_null());
+            if key < best_key {
+                best = i;
+                best_key = key;
+                if key == (0, false) {
+                    break;
+                }
+            }
+        }
+        self.bound[best].fetch_add(1, Ordering::Relaxed);
+        best as u16
+    }
+
+    /// Number of arena indices in use (`arenas.narenas`).
+    #[inline]
+    pub fn count(&self) -> u32 {
+        self.count.load(Ordering::Acquire)
+    }
+
+    /// Number of automatic arenas (`opt.narenas` as applied).
+    #[inline]
+    pub fn auto(&self) -> u32 {
+        self.auto
+    }
+
+    /// Count a thread heap as homed on `index` (`thread.arena` moving a
+    /// heap to an arena `assign` did not pick).
+    pub fn bind(&self, index: u16)
+        requires
+            index < MAX_ARENAS,
+    {
+        self.bound[index as usize].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Thread heaps currently homed on `index`.
+    pub fn bound(&self, index: u16) -> u32
+        requires
+            index < MAX_ARENAS,
+    {
+        self.bound[index as usize].load(Ordering::Relaxed)
+    }
+
     /// The creation lock, for fork handlers (taken before every class lock).
     pub fn raw_lock(&self) -> &crate::lock::RawLock {
         self.lock.raw()
     }
-
-    /// Every arena that exists, in index order (for decay, purge, stats
-    /// and the fork handlers).
-    pub fn iter<'a>(&'a self) -> impl Iterator<Item = &'a Arena> + 'a {
-        let n = self.count() as usize;
-        (0..n).filter_map(move |i| {
-            let p = self.table[i].load(Ordering::Acquire);
-            // SAFETY: as in `get`.
-            if p.is_null() {
-                None
-            } else {
-                Some(unsafe { &*p })
-            }
-        })
-    }
 }
+
+} // verus!

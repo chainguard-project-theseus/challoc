@@ -19,7 +19,10 @@
 
 use core::sync::atomic::{AtomicU8, AtomicU16, AtomicU32, AtomicU64, Ordering};
 
-use crate::layout::{BASE_CLASSES, Class, NCLASSES, classes_for_page};
+use crate::layout::{Class, NCLASSES, build_classes, classes_for_page};
+use vstd::prelude::*;
+
+verus! {
 
 /// Size of the descriptor in bytes.
 pub const HEADER: usize = 16;
@@ -29,6 +32,7 @@ pub const DESC_ALIGN: usize = 64;
 
 #[cold]
 #[inline(never)]
+#[verifier::external_body]
 fn bad_state_byte(v: u8) -> ! {
     panic!("slab: state byte {v:#x} is not a slab state")
 }
@@ -93,12 +97,18 @@ pub struct SlabDesc {
     dirty_at: AtomicU64,
 }
 
-const _: () = assert!(core::mem::size_of::<SlabDesc>() == HEADER);
-
-const fn strides_of(classes: &[Class; NCLASSES]) -> [u32; NCLASSES] {
+const fn strides_of(classes: &[Class; NCLASSES]) -> (out: [u32; NCLASSES])
+    requires forall|i: int| 0 <= i < NCLASSES ==> #[trigger] classes[i].wf(),
+{
     let mut out = [0u32; NCLASSES];
     let mut c = 0;
-    while c < NCLASSES {
+    while c < NCLASSES
+        invariant 0 <= c <= NCLASSES, forall|i: int| 0 <= i < NCLASSES ==> #[trigger] classes[i].wf(),
+        decreases NCLASSES - c,
+    {
+        proof {
+            assert(classes[c as int].wf());
+        }
         // Slabs go to arenas in groups of `slabs_per_line` (class/), so
         // a stride of at least `DESC_ALIGN / slabs_per_line` keeps every
         // descriptor line inside one group: refills and flushes of two
@@ -112,7 +122,7 @@ const fn strides_of(classes: &[Class; NCLASSES]) -> [u32; NCLASSES] {
 }
 
 const fn build_strides() -> [u32; NCLASSES] {
-    strides_of(&BASE_CLASSES)
+    strides_of(&build_classes())
 }
 
 /// The stride is compile-time although the slab geometry of the 512..1024
@@ -123,10 +133,16 @@ const fn build_strides() -> [u32; NCLASSES] {
 const fn strides_match_every_page() -> bool {
     let base = build_strides();
     let mut lg_page = crate::layout::LG_MIN_SLAB;
-    while lg_page <= crate::layout::LG_SMALL_SLAB {
+    while lg_page <= crate::layout::LG_SMALL_SLAB
+        invariant lg_page <= crate::layout::LG_SMALL_SLAB + 1,
+        decreases crate::layout::LG_SMALL_SLAB + 1 - lg_page,
+    {
         let s = strides_of(&classes_for_page(lg_page));
         let mut c = 0;
-        while c < NCLASSES {
+        while c < NCLASSES
+            invariant 0 <= c <= NCLASSES,
+            decreases NCLASSES - c,
+        {
             if s[c] != base[c] {
                 return false;
             }
@@ -137,18 +153,16 @@ const fn strides_match_every_page() -> bool {
     true
 }
 
-const _: () = assert!(
-    strides_match_every_page(),
-    "a page-sized slab geometry changes a descriptor stride"
-);
-
 /// Per-class descriptor stride in bytes: 64 for classes whose slabs are
 /// handed out singly, 32 for pairs, 16 (the header) from groups of four.
-pub static DESC_STRIDE: [u32; NCLASSES] = build_strides();
+pub exec static DESC_STRIDE: [u32; NCLASSES] = build_strides();
 
 /// Descriptor stride for `class` in bytes.
 #[inline]
-pub fn desc_stride(class: usize) -> usize {
+pub fn desc_stride(class: usize) -> (r: usize)
+    requires class < NCLASSES,
+    ensures r <= u32::MAX,
+{
     DESC_STRIDE[class] as usize
 }
 
@@ -160,6 +174,7 @@ impl SlabDesc {
     /// `base` must be the start of a descriptor array for `class` with at
     /// least `slab + 1` committed entries.
     #[inline]
+    #[verifier::external_body]
     pub unsafe fn at<'a>(base: usize, class: usize, slab: usize) -> &'a SlabDesc {
         debug_assert!(base % DESC_ALIGN == 0);
         // SAFETY: the caller guarantees the entry is inside a committed array;
@@ -231,6 +246,7 @@ impl SlabDesc {
     /// Subtract `n` from `live`, returning the previous value. Aborts if
     /// that would go negative: more slots released than were ever claimed.
     #[inline]
+    #[verifier::external_body]
     pub fn sub_live(&self, n: usize) -> usize {
         let prev = self.live.fetch_sub(n as u32, Ordering::AcqRel) as usize;
         assert!(prev >= n, "slab: live count underflow ({prev} - {n})");
@@ -255,9 +271,18 @@ impl SlabDesc {
     }
 }
 
+} // verus!
+
+const _: () = assert!(core::mem::size_of::<SlabDesc>() == HEADER);
+const _: () = assert!(
+    strides_match_every_page(),
+    "a page-sized slab geometry changes a descriptor stride"
+);
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::layout::BASE_CLASSES;
     use crate::layout::CLASSES;
     use std::vec;
     use std::vec::Vec;

@@ -1,9 +1,46 @@
-//! Specifications of `Option::map_or`, `str::as_ptr`, `compiler_fence` and
-//! `Option::as_deref_mut`.
+//! Specifications of the derived `PartialEq` of three enums verified code
+//! compares (`config::Thp`, `sys::thp_host::ThpSetting`,
+//! `huge::RunState`), and of `Option::map_or` and `compiler_fence`.
 
 use vstd::prelude::*;
 
 verus! {
+
+// The derived `PartialEq` of these enums compares variants (ghost only:
+// ordinary builds have no `std_specs`).
+
+#[cfg(verus_only)]
+impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::config::Thp {
+    open spec fn obeys_eq_spec() -> bool {
+        true
+    }
+
+    open spec fn eq_spec(&self, other: &Self) -> bool {
+        *self == *other
+    }
+}
+
+#[cfg(verus_only)]
+impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::sys::thp_host::ThpSetting {
+    open spec fn obeys_eq_spec() -> bool {
+        true
+    }
+
+    open spec fn eq_spec(&self, other: &Self) -> bool {
+        *self == *other
+    }
+}
+
+#[cfg(verus_only)]
+impl vstd::std_specs::cmp::PartialEqSpecImpl for crate::huge::RunState {
+    open spec fn obeys_eq_spec() -> bool {
+        true
+    }
+
+    open spec fn eq_spec(&self, other: &Self) -> bool {
+        *self == *other
+    }
+}
 
 // `core` functions vstd does not specify.
 
@@ -40,5 +77,15 @@ verus! {
 /// about the result; the one caller (`ClassState::finish`) only passes the
 /// reference on to `xorshift`.
 pub assume_specification<T: core::ops::DerefMut>[ Option::<T>::as_deref_mut ](o: &mut Option<T>) -> Option<&mut <T as core::ops::Deref>::Target>;
+
+} // verus!
+
+verus! {
+
+/// glibc's rseq registration (`rseq.rs`, outside `verus!`), a field of
+/// `sys::features::Features` that verified code never reads.
+#[verifier::external_type_specification]
+#[verifier::external_body]
+pub struct ExProbe(crate::rseq::Probe);
 
 } // verus!

@@ -14,6 +14,7 @@ ordinary `cargo build`s, so the shipped library is unchanged.
 # Verus 0.2026.09.20.aef82ed matches vstd =0.0.0-2026-09-20-0158 in Cargo.toml.
 cargo verus verify                       # quantum16
 cargo verus verify --no-default-features --features quantum8
+cargo verus verify --target aarch64-unknown-linux-gnu
 ```
 
 Ordinary builds and tests are unchanged:
@@ -29,16 +30,18 @@ A function counts when it sits inside `verus!`, is not
 `#[verifier::external_body]` or `#[verifier::external]`, and its body has no
 `assume(...)` or `admit()`. Everything a verified function relies on without
 proof is listed in `src/vspec/` (specifications of `core` functions vstd does
-not cover, and trusted stand-ins for modules not yet verified) and in the `external_body` functions, which are the trusted base.
+not cover, and trusted stand-ins for modules not yet verified) and in the
+`external_body` functions, which are the trusted base.
 
 ## Conventions
 
 - Keep the executable code as it is. A rewrite needed only to get through
   Verus (an iterator chain turned into a `while` loop, say) must be
-  behaviour-preserving, and must leave the release library's machine code for the hot set (`malloc`,
-  `free`, `calloc`, `realloc`, `sdallocx`, `free_sized` and everything
-  inlined into them) unchanged: `scripts/codegen-diff.sh` must report
-  `changed 0` there (`CONTRIBUTING.md`, "Performance rules").
+  behaviour-preserving, and must leave the release library's machine code
+  for the hot set (`malloc`, `free`, `calloc`, `realloc`, `sdallocx`,
+  `free_sized` and everything inlined into them) unchanged:
+  `scripts/codegen-diff.sh` must report `changed 0` there
+  (`CONTRIBUTING.md`, "Performance rules").
 - `const` items computed by `const fn`s inside `verus!` are `exec const`;
   `static`s are `exec static`.
 - Every loop needs `invariant` and `decreases`.

@@ -39,8 +39,32 @@
 use core::alloc::Layout;
 use core::ptr;
 
+#[cfg(verus_only)]
+use crate::lock::lock_init;
 use crate::lock::{Lock, RawLock};
 use crate::sys::Errno;
+use crate::vspec::addr::addr_to_ptr;
+#[cfg(verus_only)]
+use crate::vspec::layout::{layout_align, layout_ok, layout_size};
+#[cfg(verus_only)]
+use crate::vspec::meta::{axiom_meta_lock_frame, axiom_meta_lock_inv};
+#[cfg(verus_only)]
+use vstd::arithmetic::div_mod::{lemma_add_mod_noop, lemma_sub_mod_noop};
+#[cfg(verus_only)]
+use vstd::arithmetic::power2::pow2;
+#[cfg(verus_only)]
+use vstd::bits::lemma_usize_shl_is_mul;
+use vstd::prelude::*;
+use vstd::raw_ptr::{PointsTo, ptr_mut_write, ptr_ref};
+#[cfg(verus_only)]
+use vstd::resource::Loc;
+use vstd::resource::map::{GhostMapAuth, GhostPointsTo, GhostSubmap};
+#[cfg(verus_only)]
+use vstd::set_lib::{lemma_int_range, set_int_range};
+#[cfg(verus_only)]
+use vstd::std_specs::bits::{axiom_u64_leading_zeros, u64_leading_zeros};
+
+verus! {
 
 /// Alignment of every object; the smallest bin is one quantum of 16.
 pub const MIN_ALIGN: usize = 16;
@@ -49,7 +73,13 @@ pub const MIN_ALIGN: usize = 16;
 /// silicon has 128-byte lines and Intel's adjacent-line prefetcher pairs
 /// 64-byte lines (the same unit as `lock::PAD_ALIGN`).
 pub const CACHE_LINE: usize = 128;
+
+} // verus!
+
 const _: () = assert!(CACHE_LINE == crate::lock::PAD_ALIGN);
+
+verus! {
+
 /// Largest alignment [`Meta::alloc`] accepts. Anything needing more (a
 /// thread stack) is a reservation.
 pub const MAX_ALIGN: usize = CACHE_LINE;
@@ -75,10 +105,187 @@ pub const COMMIT_CHUNK: usize = 64 * 1024;
 /// to under 100 MiB; 16 MiB would take 45 more tables for 450 MiB.
 pub const EAGER_MAX: usize = 8 << 20;
 
-/// Bin sizes, ascending.
-pub static BINS: [u32; NBINS] = build_bins();
+/// Size of bin `b` (the doc of [`NBINS`]): 16, 32, 48, 64, 128, 256, then
+/// `3 << (7 + j)` and `1 << (9 + j)` for `j` in `0..=11`.
+pub open spec fn bin_size(b: int) -> int {
+    if b < 4 {
+        16 * (b + 1)
+    } else if b < 6 {
+        128 * (b - 3)
+    } else if (b - 6) % 2 == 0 {
+        (3usize << ((7 + (b - 6) / 2) as usize)) as int
+    } else {
+        (1usize << ((9 + (b - 6) / 2) as usize)) as int
+    }
+}
 
-const fn build_bins() -> [u32; NBINS] {
+/// [`bin_align`].
+pub open spec fn bin_align_spec(b: int) -> int {
+    if b < 4 { 16 } else { 128 }
+}
+
+/// A bin's size is a multiple of its alignment, between 16 and
+/// `MAX_BINNED`, and above the previous bin's.
+pub open spec fn bin_facts(b: int) -> bool {
+    &&& 16 <= bin_size(b) <= 0x10_0000
+    &&& bin_size(b) % bin_align_spec(b) == 0
+    &&& b > 0 ==> bin_size(b - 1) < bin_size(b)
+}
+
+spec fn bins_ok(n: nat) -> bool
+    decreases n,
+{
+    n == 0 || (bins_ok((n - 1) as nat) && bin_facts(n - 1))
+}
+
+proof fn lemma_bins_ok(n: nat, b: int)
+    requires
+        bins_ok(n),
+        0 <= b < n,
+    ensures
+        bin_facts(b),
+    decreases n,
+{
+    if b < n - 1 {
+        lemma_bins_ok((n - 1) as nat, b);
+    }
+}
+
+pub proof fn lemma_bin(b: int)
+    requires
+        0 <= b < NBINS,
+    ensures
+        bin_facts(b),
+{
+    assert(bins_ok(30)) by (compute_only);
+    lemma_bins_ok(30, b);
+}
+
+/// Bins are strictly increasing.
+pub proof fn lemma_bin_mono(a: int, b: int)
+    requires
+        0 <= a <= b < NBINS,
+    ensures
+        bin_size(a) <= bin_size(b),
+    decreases b - a,
+{
+    if a < b {
+        lemma_bin(b);
+        lemma_bin_mono(a, b - 1);
+    }
+}
+
+/// `b` is the smallest bin whose size is at least `size` ([`bin_of`]).
+pub open spec fn is_bin_of(size: int, b: int) -> bool {
+    &&& 0 <= b < NBINS
+    &&& size <= bin_size(b)
+    &&& b == 0 || bin_size(b - 1) < size
+}
+
+/// [`bin_of`] as a function (of a size it serves).
+pub open spec fn bin_of_spec(size: int) -> int {
+    choose|b: int| is_bin_of(size, b)
+}
+
+/// [`bin_for`] as a function (of a layout it serves).
+pub open spec fn bin_for_spec(layout: Layout) -> int {
+    let b = bin_of_spec(layout_size(layout) as int);
+    if layout_align(layout) > MIN_ALIGN && b < 4 { 4 } else { b }
+}
+
+/// A size has one smallest bin.
+proof fn lemma_bin_of_unique(size: int, b: int)
+    requires
+        is_bin_of(size, b),
+    ensures
+        bin_of_spec(size) == b,
+{
+    let c = bin_of_spec(size);
+    assert(is_bin_of(size, c));
+    lemma_bin(b);
+    lemma_bin(c);
+    if c < b {
+        lemma_bin_mono(c, b - 1);
+    } else if b < c {
+        lemma_bin_mono(b, c - 1);
+    }
+}
+
+/// `x` is a power of two (the `is_power_of_two` of `vspec::core_int`).
+pub open spec fn is_pow2(x: usize) -> bool {
+    exists|k: nat| k < 64 && x as nat == #[trigger] pow2(k)
+}
+
+/// `1 << k` is a power of two.
+pub proof fn lemma_is_pow2_shl(k: usize)
+    requires
+        k < 64,
+    ensures
+        is_pow2(1usize << k),
+{
+    vstd::bits::lemma_usize_pow2_no_overflow(k as nat);
+    lemma_usize_shl_is_mul(1, k);
+    assert((1usize << k) as nat == pow2(k as nat));
+}
+
+/// `1` is a power of two (`2^0`).
+pub proof fn lemma_is_pow2_one()
+    ensures
+        is_pow2(1),
+{
+    vstd::arithmetic::power2::lemma2_to64();
+    assert(1usize as nat == pow2(0));
+}
+
+/// A power of two has one bit set.
+pub proof fn lemma_pow2_bits(x: usize)
+    requires
+        is_pow2(x),
+    ensures
+        x > 0,
+        x & sub(x, 1) == 0,
+        x <= 0x8000_0000_0000_0000,
+{
+    let k = choose|k: nat| k < 64 && x as nat == #[trigger] pow2(k);
+    vstd::arithmetic::power2::lemma2_to64();
+    vstd::arithmetic::power2::lemma2_to64_rest();
+    if k < 63 {
+        vstd::arithmetic::power2::lemma_pow2_strictly_increases(k, 63);
+    }
+    vstd::bits::lemma_usize_pow2_no_overflow(k);
+    lemma_usize_shl_is_mul(1, k as usize);
+    let kk = k as usize;
+    assert((1usize << kk) > 0 && (1usize << kk) & sub(1usize << kk, 1) == 0) by (bit_vector)
+        requires
+            kk < 64,
+    ;
+}
+
+/// End of the user address space on every target: x86_64 with 5-level
+/// paging and aarch64 with 52-bit addresses both stay below 2^57. The
+/// metadata region lies below it, which keeps its address arithmetic far
+/// from overflow.
+pub open spec fn va_limit() -> int {
+    0x200_0000_0000_0000
+}
+
+/// [`align_up`] as a function.
+pub open spec fn align_up_spec(x: usize, a: usize) -> usize {
+    ((x + a - 1) as usize) & !((a - 1) as usize)
+}
+
+/// Bin sizes, ascending.
+pub exec static BINS: [u32; NBINS]
+    ensures
+        forall|i: int| 0 <= i < NBINS ==> BINS[i] as int == #[trigger] bin_size(i),
+{
+    build_bins()
+}
+
+const fn build_bins() -> (r: [u32; NBINS])
+    ensures
+        forall|i: int| 0 <= i < NBINS ==> r[i] as int == #[trigger] bin_size(i),
+{
     let mut b = [0u32; NBINS];
     b[0] = 16;
     b[1] = 32;
@@ -88,7 +295,26 @@ const fn build_bins() -> [u32; NBINS] {
     b[5] = 256;
     let mut i = 6;
     let mut lg = 9;
-    while lg <= LG_MAX_BINNED {
+    while lg <= LG_MAX_BINNED
+        invariant
+            9 <= lg <= LG_MAX_BINNED + 1,
+            i == 6 + 2 * (lg - 9),
+            forall|j: int| 0 <= j < i ==> b[j] as int == #[trigger] bin_size(j),
+        decreases LG_MAX_BINNED + 1 - lg,
+    {
+        proof {
+            let s = (lg - 2) as u32;
+            assert((3u32 << s) as usize == 3usize << (s as usize)) by (bit_vector)
+                requires
+                    s <= 18,
+            ;
+            assert((1u32 << lg) as usize == 1usize << (lg as usize)) by (bit_vector)
+                requires
+                    lg <= 20,
+            ;
+            assert((i as int - 6) / 2 == lg as int - 9);
+            assert((i as int + 1 - 6) / 2 == lg as int - 9);
+        }
         b[i] = 3 << (lg - 2);
         b[i + 1] = 1 << lg;
         i += 2;
@@ -100,7 +326,14 @@ const fn build_bins() -> [u32; NBINS] {
 
 /// Smallest bin whose size is at least `size`; `None` above `MAX_BINNED`.
 #[inline]
-pub const fn bin_of(size: usize) -> Option<usize> {
+pub const fn bin_of(size: usize) -> (r: Option<usize>)
+    ensures
+        r is None <==> size > MAX_BINNED,
+        r matches Some(b) ==> b < NBINS && size <= bin_size(b as int) && (b == 0 || bin_size(b - 1) < size),
+{
+    proof {
+        lemma_consts();
+    }
     if size <= 48 {
         return Some(if size == 0 { 0 } else { (size - 1) / 16 });
     }
@@ -118,27 +351,73 @@ pub const fn bin_of(size: usize) -> Option<usize> {
     }
     // `size` is in `(2^lg, 2^(lg+1)]` with `lg >= 8`; bin `6 + 2 * (lg - 8)`
     // holds `1.5 * 2^lg` and the next holds `2^(lg+1)`.
+    let ghost m = (size - 1) as usize;
+    proof {
+        let mu = m as u64;
+        axiom_u64_leading_zeros(mu);
+        let lz = u64_leading_zeros(mu) as u64;
+        assert(44 <= lz <= 55 && (1u64 << sub(63u64, lz)) <= mu && mu < (1u64 << sub(64u64, lz))) by (bit_vector)
+            requires
+                256 <= mu < 0x10_0000,
+                lz <= 64,
+                lz < 64 ==> (mu >> sub(63u64, lz)) & 1u64 != 0u64,
+                mu >> sub(64u64, lz) == 0,
+        ;
+        let l = sub(63u64, lz) as usize;
+        assert((1usize << l) <= m && m < (1usize << add(l, 1))) by (bit_vector)
+            requires
+                l <= 19,
+                mu == m as u64,
+                l as u64 == sub(63u64, lz),
+                (1u64 << sub(63u64, lz)) <= mu,
+                mu < (1u64 << sub(64u64, lz)),
+                lz <= 55,
+        ;
+    }
     let lg = (usize::BITS - 1 - (size - 1).leading_zeros()) as usize;
     let base = 6 + 2 * (lg - 8);
-    if size <= (3 << (lg - 1)) {
-        Some(base)
-    } else {
-        Some(base + 1)
+    proof {
+        assert((base - 6) / 2 == lg - 8);
+        assert((base + 1 - 6) / 2 == lg - 8);
+        if lg > 8 {
+            assert((base - 1 - 6) / 2 == lg - 9);
+        } else {
+            assert(128 * 2 == 1usize << 8usize) by (compute_only);
+        }
     }
+    if size <= (3 << (lg - 1)) { Some(base) } else { Some(base + 1) }
 }
 
 /// Alignment every object of bin `bin` has: 16 up to the 64-byte bin, a
 /// full line from 128 up.
 #[inline]
-pub const fn bin_align(bin: usize) -> usize {
+pub const fn bin_align(bin: usize) -> (r: usize)
+    ensures
+        r == bin_align_spec(bin as int),
+{
     if bin < 4 { MIN_ALIGN } else { CACHE_LINE }
 }
 
 /// Bin serving a `Layout`: the size's bin, promoted to a cache-line bin when
 /// the alignment asks for more than 16. `None` if the size is too big.
 #[inline]
-pub const fn bin_for(layout: Layout) -> Option<usize> {
-    match bin_of(layout.size()) {
+pub const fn bin_for(layout: Layout) -> (r: Option<usize>)
+    ensures
+        r is None <==> layout_size(layout) > MAX_BINNED,
+        r matches Some(b) ==> {
+            &&& b < NBINS
+            &&& layout_size(layout) <= bin_size(b as int)
+            &&& layout_align(layout) > MIN_ALIGN ==> b >= 4
+        },
+        r matches Some(b) ==> b as int == bin_for_spec(layout),
+{
+    let r0 = bin_of(layout.size());
+    proof {
+        if let Some(b) = r0 {
+            lemma_bin_of_unique(layout_size(layout) as int, b as int);
+        }
+    }
+    match r0 {
         Some(b) if layout.align() > MIN_ALIGN && b < 4 => Some(4),
         other => other,
     }
@@ -176,9 +455,23 @@ pub struct MetaStats {
     pub eager: usize,
 }
 
-struct FreeNode {
+impl MetaStats {
+    /// The identities of the type's doc.
+    pub open spec fn identities(&self) -> bool {
+        &&& self.allocated + self.eager <= self.bumped
+        &&& self.bumped <= self.writable
+        &&& self.writable <= self.len
+        &&& self.committed <= self.writable
+        &&& self.bumped + self.reserved <= self.len
+    }
+}
+
+pub(crate) struct FreeNode {
     next: *mut FreeNode,
 }
+
+#[cfg_attr(not(verus_keep_ghost), allow(unused_braces))]
+global size_of FreeNode == 8;
 
 /// Whether small tables may be carved from the object side (the module
 /// doc): decided on the first table from the kernel's overcommit mode and
@@ -190,7 +483,7 @@ const EAGER_UNPROBED: u8 = 0;
 const EAGER_ON: u8 = 1;
 const EAGER_OFF: u8 = 2;
 
-struct Inner {
+pub(crate) struct Inner {
     base: usize,
     len: usize,
     page: usize,
@@ -211,11 +504,254 @@ struct Inner {
     top_committed: usize,
     /// One of `EAGER_UNPROBED`, `EAGER_ON`, `EAGER_OFF`.
     eager: u8,
+    /// Ghost: the blocks on each bin's free list, head first.
+    #[allow(dead_code)]
+    lists: Ghost<Seq<Seq<*mut FreeNode>>>,
+    /// Ghost: the permission to each free block's link word.
+    #[allow(dead_code)]
+    perms: Tracked<Map<*mut FreeNode, PointsTo<FreeNode>>>,
+    /// Ghost: the live objects, address to bin. [`Meta::alloc`] records
+    /// each object it hands out; the claim to one, a `GhostPointsTo` of
+    /// this map, is what [`Meta::free`] gives back.
+    #[allow(dead_code)]
+    live: Tracked<GhostMapAuth<*mut FreeNode, nat>>,
+    /// Ghost: the reserved bytes no commit has claimed yet, `true` on the
+    /// reservation side, `false` in an eager table. [`reserve`] and
+    /// [`reserve_eager`] record each reservation they hand out; the claim
+    /// to its bytes, a `GhostSubmap` of this map, is what [`commit`] takes.
+    ///
+    /// [`reserve`]: Inner::reserve
+    /// [`reserve_eager`]: Inner::reserve_eager
+    /// [`commit`]: Inner::commit
+    #[allow(dead_code)]
+    pages: Tracked<GhostMapAuth<int, bool>>,
 }
 
-// SAFETY: the raw pointers are addresses inside the region, meaningful in
-// any thread; the `Lock` serialises every access.
-unsafe impl Send for Inner {}
+/// Bytes on the free lists of bins `0..n`.
+spec fn free_bytes(lists: Seq<Seq<*mut FreeNode>>, n: nat) -> int
+    decreases n,
+{
+    if n == 0 {
+        0
+    } else {
+        free_bytes(lists, (n - 1) as nat) + lists[n - 1].len() * bin_size(n - 1)
+    }
+}
+
+proof fn lemma_free_bytes_nonneg(lists: Seq<Seq<*mut FreeNode>>, n: nat)
+    requires
+        n <= NBINS,
+    ensures
+        free_bytes(lists, n) >= 0,
+    decreases n,
+{
+    if n > 0 {
+        lemma_free_bytes_nonneg(lists, (n - 1) as nat);
+        lemma_bin(n - 1);
+        assert(lists[n - 1].len() * bin_size(n - 1) >= 0) by (nonlinear_arith)
+            requires
+                bin_size(n - 1) >= 0,
+        ;
+    }
+}
+
+proof fn lemma_free_bytes_update(lists: Seq<Seq<*mut FreeNode>>, b: int, l: Seq<*mut FreeNode>, n: nat)
+    requires
+        0 <= b < lists.len(),
+        n <= lists.len(),
+    ensures
+        free_bytes(lists.update(b, l), n) == free_bytes(lists, n) + (if b < n {
+            (l.len() - lists[b].len()) * bin_size(b)
+        } else {
+            0
+        }),
+    decreases n,
+{
+    if n > 0 {
+        lemma_free_bytes_update(lists, b, l, (n - 1) as nat);
+        if b == n - 1 {
+            assert(l.len() * bin_size(b) - lists[b].len() * bin_size(b) == (l.len() - lists[b].len()) * bin_size(b))
+                by (nonlinear_arith);
+        }
+    }
+}
+
+/// The unclaimed reserved bytes of `m` on one side: the reservation
+/// side (`true`) or the eager tables of the object side (`false`).
+spec fn side_set(m: Map<int, bool>, s: bool) -> Set<int> {
+    m.dom().filter(|a: int| m[a] == s)
+}
+
+/// The claim a reservation of `[lo, hi)` on side `s` hands out.
+spec fn claim_map(lo: int, hi: int, s: bool) -> Map<int, bool> {
+    Map::new(set_int_range(lo, hi), |a: int| s)
+}
+
+/// Recording the bytes `[lo, hi)`, none recorded yet, on side `s` adds
+/// `hi - lo` to that side and leaves the other alone.
+proof fn lemma_side_mint(m: Map<int, bool>, lo: int, hi: int, s: bool)
+    requires
+        lo <= hi,
+        m.dom().disjoint(set_int_range(lo, hi)),
+    ensures
+        side_set(m.union_prefer_right(claim_map(lo, hi, s)), s).len() == side_set(m, s).len() + (hi - lo),
+        side_set(m.union_prefer_right(claim_map(lo, hi, s)), !s) == side_set(m, !s),
+{
+    let r = set_int_range(lo, hi);
+    let m2 = m.union_prefer_right(claim_map(lo, hi, s));
+    lemma_int_range(lo, hi);
+    assert(side_set(m2, s) =~= side_set(m, s) + r);
+    assert(side_set(m2, !s) =~= side_set(m, !s));
+    assert(side_set(m, s).disjoint(r));
+    vstd::set_lib::lemma_set_disjoint_lens(side_set(m, s), r);
+}
+
+/// A byte of a claim is recorded, with the claim's side.
+proof fn lemma_claim_at(c: Map<int, bool>, m: Map<int, bool>, a: int)
+    requires
+        c <= m,
+        c.dom().contains(a),
+    ensures
+        m.contains_key(a),
+        m[a] == c[a],
+{
+    assert(c.dom().contains(a) ==> m.dom().contains(a) && c[a] == m[a]);
+}
+
+/// Giving back `c`, a claim of bytes on side `s`, takes its size off that
+/// side and leaves the other alone.
+proof fn lemma_side_consume(m: Map<int, bool>, c: Map<int, bool>, s: bool)
+    requires
+        c <= m,
+        forall|a: int| #[trigger] c.dom().contains(a) ==> c[a] == s,
+    ensures
+        c.dom().subset_of(side_set(m, s)),
+        side_set(m.remove_keys(c.dom()), s).len() == side_set(m, s).len() - c.dom().len(),
+        side_set(m.remove_keys(c.dom()), !s) == side_set(m, !s),
+{
+    let m2 = m.remove_keys(c.dom());
+    let t = side_set(m, s);
+    assert forall|a: int| c.dom().contains(a) implies t.contains(a) by {
+        lemma_claim_at(c, m, a);
+    }
+    assert(side_set(m2, s) =~= t.difference(c.dom()));
+    assert(side_set(m2, !s) =~= side_set(m, !s));
+    assert(t.intersect(c.dom()) =~= c.dom());
+    vstd::set_lib::lemma_set_difference_len(t, c.dom());
+}
+
+/// The live objects of bin `b` in `m`, a map from address to bin.
+spec fn live_set(m: Map<*mut FreeNode, nat>, b: int) -> Set<*mut FreeNode> {
+    m.dom().filter(|k: *mut FreeNode| m[k] == b)
+}
+
+/// Bytes of the live objects of bins `0..n` in `m`.
+spec fn live_bytes(m: Map<*mut FreeNode, nat>, n: nat) -> int
+    decreases n,
+{
+    if n == 0 {
+        0
+    } else {
+        live_bytes(m, (n - 1) as nat) + live_set(m, n - 1).len() * bin_size(n - 1)
+    }
+}
+
+proof fn lemma_live_bytes_nonneg(m: Map<*mut FreeNode, nat>, n: nat)
+    requires
+        n <= NBINS,
+    ensures
+        live_bytes(m, n) >= 0,
+    decreases n,
+{
+    if n > 0 {
+        lemma_live_bytes_nonneg(m, (n - 1) as nat);
+        lemma_bin(n - 1);
+        assert(live_set(m, n - 1).len() * bin_size(n - 1) >= 0) by (nonlinear_arith)
+            requires
+                bin_size(n - 1) >= 0,
+        ;
+    }
+}
+
+/// A change of `d` objects in bin `b` alone changes the bytes by `d` of
+/// the bin's size.
+proof fn lemma_live_bytes_update(m: Map<*mut FreeNode, nat>, m2: Map<*mut FreeNode, nat>, b: int, d: int, n: nat)
+    requires
+        forall|c: int| c != b ==> #[trigger] live_set(m2, c).len() == live_set(m, c).len(),
+        live_set(m2, b).len() == live_set(m, b).len() + d,
+    ensures
+        live_bytes(m2, n) == live_bytes(m, n) + (if 0 <= b < n {
+            d * bin_size(b)
+        } else {
+            0
+        }),
+    decreases n,
+{
+    if n > 0 {
+        lemma_live_bytes_update(m, m2, b, d, (n - 1) as nat);
+        if b == n - 1 {
+            let (x2, x, s) = (live_set(m2, b).len() as int, live_set(m, b).len() as int, bin_size(b));
+            assert(x2 * s == x * s + d * s) by (nonlinear_arith)
+                requires
+                    x2 == x + d,
+            ;
+        } else {
+            assert(live_set(m2, n - 1).len() == live_set(m, n - 1).len());
+        }
+    }
+}
+
+/// No live objects, no bytes.
+proof fn lemma_live_bytes_empty(n: nat)
+    ensures
+        live_bytes(Map::empty(), n) == 0,
+    decreases n,
+{
+    if n > 0 {
+        lemma_live_bytes_empty((n - 1) as nat);
+        let e = Map::<*mut FreeNode, nat>::empty();
+        assert(live_set(e, n - 1) =~= Set::empty());
+        assert(live_set(e, n - 1).len() == 0);
+        assert(live_set(e, n - 1).len() * bin_size(n - 1) == 0);
+    }
+}
+
+/// Recording a fresh object of bin `b` adds its size.
+proof fn lemma_live_insert(m: Map<*mut FreeNode, nat>, k: *mut FreeNode, b: nat)
+    requires
+        !m.contains_key(k),
+        b < NBINS,
+    ensures
+        live_bytes(m.insert(k, b), NBINS as nat) == live_bytes(m, NBINS as nat) + bin_size(b as int),
+{
+    let m2 = m.insert(k, b);
+    assert forall|c: int| c != b implies #[trigger] live_set(m2, c).len() == live_set(m, c).len() by {
+        assert(live_set(m2, c) =~= live_set(m, c));
+    }
+    assert(live_set(m2, b as int) =~= live_set(m, b as int).insert(k));
+    assert(!live_set(m, b as int).contains(k));
+    lemma_live_bytes_update(m, m2, b as int, 1, NBINS as nat);
+}
+
+/// Forgetting the object at `k` subtracts its size, which the bytes hold.
+proof fn lemma_live_remove(m: Map<*mut FreeNode, nat>, k: *mut FreeNode)
+    requires
+        m.contains_key(k),
+        m[k] < NBINS,
+    ensures
+        live_bytes(m.remove(k), NBINS as nat) == live_bytes(m, NBINS as nat) - bin_size(m[k] as int),
+        live_bytes(m, NBINS as nat) >= bin_size(m[k] as int),
+{
+    let m2 = m.remove(k);
+    let b = m[k] as int;
+    assert forall|c: int| c != b implies #[trigger] live_set(m2, c).len() == live_set(m, c).len() by {
+        assert(live_set(m2, c) =~= live_set(m, c));
+    }
+    assert(live_set(m2, b) =~= live_set(m, b).remove(k));
+    assert(live_set(m, b).contains(k));
+    lemma_live_bytes_update(m, m2, b, -1, NBINS as nat);
+    lemma_live_bytes_nonneg(m2, NBINS as nat);
+}
 
 /// The metadata allocator for one region. One per process: `heap/`
 /// writes it in place with [`Meta::new`] when the regions are reserved.
@@ -224,29 +760,537 @@ pub struct Meta {
 }
 
 #[inline]
-const fn align_up(x: usize, a: usize) -> usize {
+const fn align_up(x: usize, a: usize) -> (r: usize)
+    requires
+        a > 0,
+        a & sub(a, 1) == 0,
+        x + a <= usize::MAX,
+    ensures
+        r == align_up_spec(x, a),
+        x <= r,
+        r - x < a,
+        r % a == 0,
+        x % a == 0 ==> r == x,
+{
+    proof {
+        lemma_align_bits(x, a, (x + a - 1) as usize);
+    }
     (x + a - 1) & !(a - 1)
 }
 
+/// Rounding `y = x + a - 1` down to a multiple of `a` rounds `x` up.
+proof fn lemma_align_bits(x: usize, a: usize, y: usize)
+    requires
+        a > 0,
+        a & sub(a, 1) == 0,
+        y == x + (a - 1),
+    ensures
+        y & !sub(a, 1) <= y,
+        y - (y & !sub(a, 1)) <= a - 1,
+        (y & !sub(a, 1)) % a == 0,
+        x % a == 0 ==> y & !sub(a, 1) == x,
+{
+    assert(y & !sub(a, 1) <= y) by (bit_vector);
+    assert(sub(y, y & !sub(a, 1)) == y & sub(a, 1)) by (bit_vector);
+    assert(y & sub(a, 1) <= sub(a, 1)) by (bit_vector);
+    let r = y & !sub(a, 1);
+    assert(r & sub(a, 1) == 0) by (bit_vector)
+        requires
+            r == y & !sub(a, 1),
+    ;
+    lemma_mod_mask(r, a);
+    if x % a == 0 {
+        lemma_mod_mask(x, a);
+        assert(y & !sub(a, 1) == x) by (bit_vector)
+            requires
+                x & sub(a, 1) == 0,
+                y == add(x, sub(a, 1)),
+                y >= x,
+        ;
+    }
+}
+
+/// [`align_up`]'s postcondition, of the spec function.
+pub(crate) proof fn lemma_align_up(x: usize, a: usize)
+    requires
+        a > 0,
+        a & sub(a, 1) == 0,
+        x + a <= usize::MAX,
+    ensures
+        x <= align_up_spec(x, a),
+        align_up_spec(x, a) - x < a,
+        align_up_spec(x, a) % a == 0,
+        x % a == 0 ==> align_up_spec(x, a) == x,
+{
+    lemma_align_bits(x, a, (x + a - 1) as usize);
+}
+
+/// The commit step, `COMMIT_CHUNK` rounded up to a page, is a power of two
+/// and a multiple of the page, and no more than one of them plus a page.
+proof fn lemma_step(page: usize, step: usize)
+    requires
+        page >= MIN_ALIGN,
+        page & sub(page, 1) == 0,
+        page <= va_limit(),
+        step == align_up_spec(COMMIT_CHUNK, page),
+    ensures
+        step > 0,
+        step & sub(step, 1) == 0,
+        step % page == 0,
+        step <= COMMIT_CHUNK + page,
+{
+    lemma_align_up(COMMIT_CHUNK, page);
+    if page <= COMMIT_CHUNK {
+        assert(COMMIT_CHUNK & sub(COMMIT_CHUNK, 1) == 0) by (compute_only);
+        lemma_pow2_divides(COMMIT_CHUNK, page);
+        assert(step == COMMIT_CHUNK);
+    } else {
+        vstd::arithmetic::div_mod::lemma_fundamental_div_mod(step as int, page as int);
+        let k = step as int / page as int;
+        assert(k == 1) by (nonlinear_arith)
+            requires
+                step as int == page * k,
+                COMMIT_CHUNK <= step,
+                step < COMMIT_CHUNK + page,
+                COMMIT_CHUNK < page,
+        ;
+    }
+}
+
+/// For a power of two `a`, `x % a` is the low bits of `x`.
+proof fn lemma_mod_mask(x: usize, a: usize)
+    requires
+        a > 0,
+        a & sub(a, 1) == 0,
+    ensures
+        x % a == x & sub(a, 1),
+{
+    assert(x % a == x & sub(a, 1)) by (bit_vector)
+        requires
+            a > 0,
+            a & sub(a, 1) == 0,
+    ;
+}
+
+/// Of two powers of two, the larger is a multiple of the smaller.
+proof fn lemma_pow2_divides(a: usize, p: usize)
+    requires
+        a & sub(a, 1) == 0,
+        p > 0,
+        p & sub(p, 1) == 0,
+        a >= p,
+    ensures
+        a % p == 0,
+{
+    assert(a & sub(p, 1) == 0) by (bit_vector)
+        requires
+            a & sub(a, 1) == 0,
+            p > 0,
+            p & sub(p, 1) == 0,
+            a >= p,
+    ;
+    lemma_mod_mask(a, p);
+}
+
+/// Divisibility is transitive.
+proof fn lemma_mod_trans(r: int, s: int, p: int)
+    requires
+        r >= 0,
+        s > 0,
+        p > 0,
+        r % s == 0,
+        s % p == 0,
+    ensures
+        r % p == 0,
+{
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(r, s);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(s, p);
+    let q = r / s;
+    let t = s / p;
+    assert(r == (t * q) * p) by (nonlinear_arith)
+        requires
+            r == s * q,
+            s == p * t,
+    ;
+    vstd::arithmetic::div_mod::lemma_mod_multiples_basic(t * q, p);
+}
+
+/// The constants' values.
+proof fn lemma_consts()
+    ensures
+        MAX_BINNED == 0x10_0000,
+        NBINS == 30,
+        EAGER_MAX == 0x80_0000,
+{
+    assert(MAX_BINNED == 0x10_0000) by (compute_only);
+    assert(EAGER_MAX == 0x80_0000) by (compute_only);
+}
+
+/// `PROT_READ | PROT_WRITE`.
+const PROT_RW: i32 = 3;
+
+} // verus!
+
+const _: () = assert!(PROT_RW == crate::sys::PROT_READ | crate::sys::PROT_WRITE);
+
+verus! {
+
 fn commit_range(addr: usize, len: usize) -> Result<(), Errno> {
-    use crate::sys::{PROT_READ, PROT_WRITE};
     // SAFETY: the range is inside our own PROT_NONE reservation and nothing
     // is mapped over it; adding permissions cannot invalidate anything.
-    unsafe { crate::sys::mprotect(addr, len, PROT_READ | PROT_WRITE) }
+    unsafe { crate::sys::mprotect(addr, len, PROT_RW) }
+}
+
+/// Entry `i` of bin `b`'s free list: a block of the bin's size and
+/// alignment in `[base, bump)` whose link word `perms` holds, pointing at
+/// the next entry.
+spec fn node_ok(
+    lists: Seq<Seq<*mut FreeNode>>,
+    perms: Map<*mut FreeNode, PointsTo<FreeNode>>,
+    base: usize,
+    bump: usize,
+    b: int,
+    i: int,
+) -> bool {
+    let l = lists[b];
+    let p = l[i];
+    &&& perms.contains_key(p)
+    &&& perms[p].ptr() == p
+    &&& perms[p].is_init()
+    &&& perms[p].value().next == (if i + 1 < l.len() {
+        l[i + 1]
+    } else {
+        ptr::null_mut::<FreeNode>()
+    })
+    &&& p as usize != 0
+    &&& base <= p as usize
+    &&& p as usize + bin_size(b) <= bump
+    &&& (p as usize) as int % bin_align_spec(b) == 0
+}
+
+/// Bin `b`'s free list starts at `free[b]` (null when empty) and every
+/// entry is well formed.
+spec fn list_ok(
+    free: Seq<*mut FreeNode>,
+    lists: Seq<Seq<*mut FreeNode>>,
+    perms: Map<*mut FreeNode, PointsTo<FreeNode>>,
+    base: usize,
+    bump: usize,
+    b: int,
+) -> bool {
+    let l = lists[b];
+    &&& (l.len() == 0) == (free[b] == ptr::null_mut::<FreeNode>())
+    &&& l.len() > 0 ==> free[b] == l[0]
+    &&& forall|i: int| 0 <= i < l.len() ==> #[trigger] node_ok(lists, perms, base, bump, b, i)
+}
+
+/// No block is on two lists, or twice on one.
+spec fn distinct(lists: Seq<Seq<*mut FreeNode>>) -> bool {
+    forall|b1: int, i1: int, b2: int, i2: int|
+        0 <= b1 < NBINS && 0 <= b2 < NBINS && 0 <= i1 < lists[b1].len() && 0 <= i2 < lists[b2].len() && (b1 != b2
+            || i1 != i2) ==> #[trigger] lists[b1][i1] != #[trigger] lists[b2][i2]
+}
+
+/// Popping bin `bin`'s head keeps every list well formed.
+proof fn lemma_pop(
+    free: Seq<*mut FreeNode>,
+    lists: Seq<Seq<*mut FreeNode>>,
+    perms: Map<*mut FreeNode, PointsTo<FreeNode>>,
+    base: usize,
+    bump: usize,
+    bin: int,
+)
+    requires
+        0 <= bin < NBINS,
+        free.len() == NBINS,
+        lists.len() == NBINS,
+        forall|b: int| 0 <= b < NBINS ==> #[trigger] list_ok(free, lists, perms, base, bump, b),
+        distinct(lists),
+        lists[bin].len() > 0,
+    ensures
+        ({
+            let l = lists[bin];
+            let nlists = lists.update(bin, l.drop_first());
+            let nperms = perms.remove(l[0]);
+            let nfree = free.update(bin, perms[l[0]].value().next);
+            &&& forall|b: int| 0 <= b < NBINS ==> #[trigger] list_ok(nfree, nlists, nperms, base, bump, b)
+            &&& distinct(nlists)
+        }),
+{
+    let l = lists[bin];
+    let nlists = lists.update(bin, l.drop_first());
+    let nperms = perms.remove(l[0]);
+    let nfree = free.update(bin, perms[l[0]].value().next);
+    assert(list_ok(free, lists, perms, base, bump, bin));
+    assert(node_ok(lists, perms, base, bump, bin, 0));
+    assert forall|b: int| 0 <= b < NBINS implies #[trigger] list_ok(nfree, nlists, nperms, base, bump, b) by {
+        assert(list_ok(free, lists, perms, base, bump, b));
+        if b == bin {
+            assert forall|i: int| 0 <= i < nlists[b].len() implies #[trigger] node_ok(nlists, nperms, base, bump, b, i) by {
+                assert(node_ok(lists, perms, base, bump, b, i + 1));
+                assert(lists[b][i + 1] != lists[bin][0]);
+            }
+            if nlists[b].len() > 0 {
+                assert(node_ok(lists, perms, base, bump, b, 1));
+            }
+        } else {
+            assert forall|i: int| 0 <= i < nlists[b].len() implies #[trigger] node_ok(nlists, nperms, base, bump, b, i) by {
+                assert(node_ok(lists, perms, base, bump, b, i));
+                assert(lists[b][i] != lists[bin][0]);
+            }
+        }
+    }
+    assert forall|b1: int, i1: int, b2: int, i2: int|
+        0 <= b1 < NBINS && 0 <= b2 < NBINS && 0 <= i1 < nlists[b1].len() && 0 <= i2 < nlists[b2].len() && (b1 != b2
+            || i1 != i2) implies #[trigger] nlists[b1][i1] != #[trigger] nlists[b2][i2] by {
+        let j1 = if b1 == bin { i1 + 1 } else { i1 };
+        let j2 = if b2 == bin { i2 + 1 } else { i2 };
+        assert(nlists[b1][i1] == lists[b1][j1]);
+        assert(nlists[b2][i2] == lists[b2][j2]);
+    }
+}
+
+/// Pushing `node`, whose link word `perm` now points at the old head,
+/// onto bin `bin`'s list keeps every list well formed.
+proof fn lemma_push(
+    free: Seq<*mut FreeNode>,
+    lists: Seq<Seq<*mut FreeNode>>,
+    perms: Map<*mut FreeNode, PointsTo<FreeNode>>,
+    base: usize,
+    bump: usize,
+    bin: int,
+    node: *mut FreeNode,
+    perm: PointsTo<FreeNode>,
+)
+    requires
+        0 <= bin < NBINS,
+        free.len() == NBINS,
+        lists.len() == NBINS,
+        forall|b: int| 0 <= b < NBINS ==> #[trigger] list_ok(free, lists, perms, base, bump, b),
+        distinct(lists),
+        !perms.contains_key(node),
+        perm.ptr() == node,
+        perm.is_init(),
+        perm.value().next == free[bin],
+        node as usize != 0,
+        base <= node as usize,
+        node as usize + bin_size(bin) <= bump,
+        node as usize as int % bin_align_spec(bin) == 0,
+    ensures
+        ({
+            let nlists = lists.update(bin, seq![node].add(lists[bin]));
+            let nperms = perms.insert(node, perm);
+            let nfree = free.update(bin, node);
+            &&& forall|b: int| 0 <= b < NBINS ==> #[trigger] list_ok(nfree, nlists, nperms, base, bump, b)
+            &&& distinct(nlists)
+        }),
+{
+    let l = lists[bin];
+    let nl = seq![node].add(l);
+    let nlists = lists.update(bin, nl);
+    let nperms = perms.insert(node, perm);
+    let nfree = free.update(bin, node);
+    assert(list_ok(free, lists, perms, base, bump, bin));
+    assert forall|b: int, i: int| 0 <= b < NBINS && 0 <= i < lists[b].len() implies lists[b][i] != node by {
+        assert(list_ok(free, lists, perms, base, bump, b));
+        assert(node_ok(lists, perms, base, bump, b, i));
+    }
+    assert forall|b: int| 0 <= b < NBINS implies #[trigger] list_ok(nfree, nlists, nperms, base, bump, b) by {
+        assert(list_ok(free, lists, perms, base, bump, b));
+        if b == bin {
+            assert forall|i: int| 0 <= i < nlists[b].len() implies #[trigger] node_ok(nlists, nperms, base, bump, b, i) by {
+                if i > 0 {
+                    assert(node_ok(lists, perms, base, bump, b, i - 1));
+                    assert(nl[i] == l[i - 1]);
+                } else if l.len() > 0 {
+                    assert(nl[1] == l[0]);
+                }
+            }
+        } else {
+            assert forall|i: int| 0 <= i < nlists[b].len() implies #[trigger] node_ok(nlists, nperms, base, bump, b, i) by {
+                assert(node_ok(lists, perms, base, bump, b, i));
+            }
+        }
+    }
+    assert forall|b1: int, i1: int, b2: int, i2: int|
+        0 <= b1 < NBINS && 0 <= b2 < NBINS && 0 <= i1 < nlists[b1].len() && 0 <= i2 < nlists[b2].len() && (b1 != b2
+            || i1 != i2) implies #[trigger] nlists[b1][i1] != #[trigger] nlists[b2][i2] by {
+        if b1 == bin && i1 > 0 {
+            assert(nlists[b1][i1] == lists[b1][i1 - 1]);
+        }
+        if b2 == bin && i2 > 0 {
+            assert(nlists[b2][i2] == lists[b2][i2 - 1]);
+        }
+    }
+}
+
+/// Raising the bump pointer keeps every list well formed.
+proof fn lemma_bump(
+    free: Seq<*mut FreeNode>,
+    lists: Seq<Seq<*mut FreeNode>>,
+    perms: Map<*mut FreeNode, PointsTo<FreeNode>>,
+    base: usize,
+    bump: usize,
+    bump2: usize,
+)
+    requires
+        bump <= bump2,
+        forall|b: int| 0 <= b < NBINS ==> #[trigger] list_ok(free, lists, perms, base, bump, b),
+    ensures
+        forall|b: int| 0 <= b < NBINS ==> #[trigger] list_ok(free, lists, perms, base, bump2, b),
+{
+    assert forall|b: int| 0 <= b < NBINS implies #[trigger] list_ok(free, lists, perms, base, bump2, b) by {
+        assert(list_ok(free, lists, perms, base, bump, b));
+        assert forall|i: int| 0 <= i < lists[b].len() implies #[trigger] node_ok(lists, perms, base, bump2, b, i) by {
+            assert(node_ok(lists, perms, base, bump, b, i));
+        }
+    }
 }
 
 impl Inner {
-    const fn new(base: usize, len: usize, page: usize) -> Inner {
-        assert!(
-            page.is_power_of_two() && page >= MIN_ALIGN,
-            "meta: bad page size"
-        );
-        assert!(
-            base % page == 0 && len % page == 0 && len > 0,
-            "meta: region not page aligned"
-        );
+    /// The region's layout: page-aligned bounds in order, below
+    /// [`va_limit`].
+    spec fn region_wf(&self) -> bool {
+        &&& MIN_ALIGN <= self.page
+        &&& self.page & sub(self.page, 1) == 0
+        &&& self.base > 0
+        &&& self.base % self.page == 0
+        &&& self.len % self.page == 0
+        &&& self.len > 0
+        &&& self.page <= self.len
+        &&& self.base + self.len <= va_limit()
+        &&& self.base <= self.bump <= self.committed <= self.top <= self.base + self.len
+        &&& self.committed % self.page == 0
+        &&& self.top % self.page == 0
+    }
+
+    /// The counters agree with the bounds, and every byte the bump pointer
+    /// passed is a live object, a free block, an eager table or padding.
+    spec fn stats_wf(&self) -> bool {
+        &&& self.stats.len == self.len
+        &&& self.stats.bumped == self.bump - self.base
+        &&& self.stats.reserved == self.base + self.len - self.top
+        &&& self.top_committed <= self.base + self.len - self.top
+        &&& self.stats.committed <= (self.committed - self.base) + self.top_committed
+        &&& self.stats.committed + self.stats.eager >= (self.committed - self.base) + self.top_committed
+        &&& self.stats.allocated + free_bytes(self.lists@, NBINS as nat) + self.stats.eager <= self.stats.bumped
+    }
+
+    spec fn lists_wf(&self) -> bool {
+        &&& self.lists@.len() == NBINS
+        &&& forall|b: int| 0 <= b < NBINS ==> #[trigger] list_ok(self.free@, self.lists@, self.perms@, self.base, self.bump, b)
+        &&& distinct(self.lists@)
+        &&& forall|k: *mut FreeNode| #[trigger] self.perms@.contains_key(k) ==> {
+            &&& self.perms@[k].ptr() == k
+            &&& self.base <= k as usize
+            &&& k as usize + 8 <= self.bump
+        }
+    }
+
+    /// Every live object is a block of its bin inside the bump area,
+    /// on no free list, and `allocated` is their bytes.
+    spec fn live_wf(&self) -> bool {
+        let m = self.live@@;
+        &&& self.stats.allocated == live_bytes(m, NBINS as nat)
+        &&& forall|k: *mut FreeNode| #[trigger] m.contains_key(k) ==> {
+            &&& m[k] < NBINS
+            &&& self.base <= k as usize
+            &&& k as usize + bin_size(m[k] as int) <= self.bump
+            &&& (k as usize) as int % bin_align_spec(m[k] as int) == 0
+        }
+        &&& forall|b: int, i: int|
+            0 <= b < NBINS && 0 <= i < self.lists@[b].len() ==> !m.contains_key(#[trigger] self.lists@[b][i])
+    }
+
+    /// Every unclaimed byte lies in its side: at or above `top` on the
+    /// reservation side, below the bump pointer in an eager table; and
+    /// each side's commit counter has room for all of its unclaimed bytes.
+    spec fn pages_wf(&self) -> bool {
+        let m = self.pages@@;
+        &&& forall|a: int| #[trigger] m.contains_key(a) ==> if m[a] {
+            self.top <= a < self.base + self.len
+        } else {
+            self.base <= a < self.bump
+        }
+        &&& self.top_committed + side_set(m, true).len() <= self.base + self.len - self.top
+        &&& self.stats.committed + side_set(m, false).len() <= (self.committed - self.base) + self.top_committed
+    }
+
+    /// The ghost identity of the unclaimed-byte map, which
+    /// [`Meta::commit`]'s claims name.
+    pub(crate) closed spec fn pages_id(&self) -> Loc {
+        self.pages@.id()
+    }
+
+    /// The page size.
+    pub(crate) closed spec fn spec_page(&self) -> usize {
+        self.page
+    }
+
+    /// The ghost identity of the live-object map, which [`Meta::free`]'s
+    /// claims name.
+    pub(crate) closed spec fn live_id(&self) -> Loc {
+        self.live@.id()
+    }
+
+    /// The region's first byte.
+    pub(crate) closed spec fn spec_base(&self) -> usize {
+        self.base
+    }
+
+    /// The region's length in bytes.
+    pub(crate) closed spec fn spec_len(&self) -> usize {
+        self.len
+    }
+
+    /// The link word of every free block, the only memory [`Inner`] writes
+    /// through a permission ([`Inner::free`]), lies in the region
+    /// (`lists_wf`).
+    proof fn lemma_links_in_region(&self)
+        requires
+            self.wf(),
+        ensures
+            forall|k: *mut FreeNode| #[trigger] self.perms@.contains_key(k) ==> {
+                &&& self.perms@[k].ptr() == k
+                &&& self.base <= k as usize
+                &&& k as usize + 8 <= self.base + self.len
+            },
+    {
+    }
+
+    /// The invariant of the metadata lock.
+    pub(crate) closed spec fn wf(&self) -> bool {
+        &&& self.region_wf()
+        &&& self.stats_wf()
+        &&& self.lists_wf()
+        &&& self.live_wf()
+        &&& self.pages_wf()
+    }
+
+    const fn new(base: usize, len: usize, page: usize) -> (r: Inner)
+        requires
+            is_pow2(page),
+            page >= MIN_ALIGN,
+            base > 0,
+            base % page == 0,
+            len % page == 0,
+            len > 0,
+            base + len <= va_limit(),
+        ensures
+            r.wf(),
+            r.base == base,
+            r.len == len,
+    {
+        proof {
+            lemma_pow2_bits(page);
+        }
+        assert!(page.is_power_of_two() && page >= MIN_ALIGN, "meta: bad page size");
+        assert!(base % page == 0 && len % page == 0 && len > 0, "meta: region not page aligned");
         assert!(base.checked_add(len).is_some(), "meta: region wraps");
-        Inner {
+        let tracked perms = Map::tracked_empty();
+        let tracked (live, _) = GhostMapAuth::<*mut FreeNode, nat>::new(Map::empty());
+        let tracked (pages, _) = GhostMapAuth::<int, bool>::new(Map::empty());
+        let r = Inner {
             base,
             len,
             page,
@@ -254,18 +1298,30 @@ impl Inner {
             committed: base,
             top: base + len,
             free: [ptr::null_mut(); NBINS],
-            stats: MetaStats {
-                len,
-                committed: 0,
-                allocated: 0,
-                bumped: 0,
-                reserved: 0,
-                writable: 0,
-                eager: 0,
-            },
+            stats: MetaStats { len, committed: 0, allocated: 0, bumped: 0, reserved: 0, writable: 0, eager: 0 },
             top_committed: 0,
             eager: EAGER_UNPROBED,
+            lists: Ghost(Seq::new(NBINS as nat, |b: int| Seq::empty())),
+            perms: Tracked(perms),
+            live: Tracked(live),
+            pages: Tracked(pages),
+        };
+        proof {
+            assert(free_bytes(r.lists@, NBINS as nat) == 0) by {
+                lemma_free_bytes_zero(r.lists@, NBINS as nat);
+            }
+            lemma_live_bytes_empty(NBINS as nat);
+            assert(side_set(Map::<int, bool>::empty(), true) =~= Set::empty());
+            assert(side_set(Map::<int, bool>::empty(), false) =~= Set::empty());
+            assert((base + len) % (page as int) == 0) by {
+                lemma_add_mod_noop(base as int, len as int, page as int);
+                vstd::arithmetic::div_mod::lemma_small_mod(0, page as nat);
+            }
+            if len < page {
+                vstd::arithmetic::div_mod::lemma_small_mod(len as nat, page as nat);
+            }
         }
+        r
     }
 
     /// Make the bump area writable through `end`, in `COMMIT_CHUNK` steps,
@@ -273,12 +1329,34 @@ impl Inner {
     /// decides how much of that counts as `committed` (an object's chunk
     /// does whole, an eagerly carved table's own bytes do not: its owner's
     /// `commit` calls count that table's pages as it uses them).
-    fn commit_bump_to(&mut self, end: usize) -> Result<usize, Errno> {
+    fn commit_bump_to(&mut self, end: usize) -> (r: Result<usize, Errno>)
+        requires
+            old(self).region_wf(),
+            old(self).base <= end <= old(self).top,
+        ensures
+            final(self).region_wf(),
+            r is Err ==> *final(self) == *old(self),
+            r matches Ok(delta) ==> {
+                &&& final(self).committed == old(self).committed + delta
+                &&& end <= final(self).committed
+                &&& *final(self) == (Inner { committed: final(self).committed, ..*old(self) })
+            },
+    {
         debug_assert!(end <= self.top);
         // Chunks are measured from the base: the region is only page
         // aligned, so rounding the absolute address would make the first
         // chunk short and every later one misaligned against the counter.
         let step = align_up(COMMIT_CHUNK, self.page);
+        proof {
+            let page = self.page;
+            let e = (end - self.base) as usize;
+            lemma_step(page, step);
+            lemma_align_up(e, step);
+            let r = align_up_spec(e, step);
+            lemma_mod_trans(r as int, step as int, page as int);
+            lemma_add_mod_noop(self.base as int, r as int, page as int);
+            vstd::arithmetic::div_mod::lemma_small_mod(0, page as nat);
+        }
         let want = (self.base + align_up(end - self.base, step)).min(self.top);
         if want > self.committed {
             commit_range(self.committed, want - self.committed)?;
@@ -298,7 +1376,11 @@ impl Inner {
     /// Whether a table of `len` bytes goes on the object side (the module
     /// doc): small enough, and the kernel neither charges writable bytes
     /// against a commit limit nor may back the region with PMD pages.
-    fn eager_ok(&mut self, len: usize) -> bool {
+    fn eager_ok(&mut self, len: usize) -> (r: bool)
+        ensures
+            r ==> len <= EAGER_MAX,
+            *final(self) == (Inner { eager: final(self).eager, ..*old(self) }),
+    {
         if len > EAGER_MAX {
             return false;
         }
@@ -312,19 +1394,64 @@ impl Inner {
     /// bytes aligned to `align` from the object side. `None` when it would
     /// reach the reservation side or the kernel refuses the commit (the
     /// caller then falls back to a reservation).
-    fn reserve_eager(&mut self, len: usize, align: usize) -> Option<usize> {
+    fn reserve_eager(
+        &mut self,
+        len: usize,
+        align: usize,
+        Tracked(claim): Tracked<&mut GhostSubmap<int, bool>>,
+    ) -> (r: Option<usize>)
+        requires
+            old(self).wf(),
+            len <= EAGER_MAX,
+            is_pow2(align),
+        ensures
+            final(self).wf(),
+            final(self).live_id() == old(self).live_id(),
+            final(self).pages_id() == old(self).pages_id(),
+            r is None ==> *final(self) == *old(self),
+            r matches Some(s) ==> {
+                let tlen = align_up_spec(if len == 0 { 1 } else { len }, old(self).page);
+                &&& final(claim).id() == final(self).pages_id()
+                &&& final(claim)@ == claim_map(s as int, s + tlen, false)
+                &&& old(self).bump <= s
+                &&& s % align == 0
+                &&& s % old(self).page == 0
+                &&& len <= tlen
+                &&& s + tlen == final(self).bump
+                &&& final(self).bump <= final(self).committed
+                &&& final(self).top == old(self).top
+                &&& final(self).stats.committed + tlen <= (final(self).committed - final(self).base)
+                    + final(self).top_committed
+                &&& final(self).stats.eager == old(self).stats.eager + tlen
+                &&& final(self).base == old(self).base
+                &&& final(self).page == old(self).page
+                &&& final(self).len == old(self).len
+                &&& final(self).top_committed == old(self).top_committed
+            },
+    {
+        let ghost align0 = align;
+        proof {
+            lemma_pow2_bits(align);
+            lemma_consts();
+        }
         let align = align.max(self.page);
         let len = align_up(len.max(1), self.page);
         let start = align_up(self.bump, align);
+        proof {
+            lemma_pow2_divides(align, self.page);
+            lemma_mod_trans(start as int, align as int, self.page as int);
+            lemma_pow2_divides(align, align0);
+            lemma_mod_trans(start as int, align as int, align0 as int);
+        }
         let end = start.checked_add(len)?;
         if end > self.top {
             return None;
         }
-        let delta = if end > self.committed {
-            self.commit_bump_to(end).ok()?
-        } else {
-            0
-        };
+        let delta = if end > self.committed { self.commit_bump_to(end).ok()? } else { 0 };
+        proof {
+            lemma_free_bytes_nonneg(self.lists@, NBINS as nat);
+            lemma_bump(self.free@, self.lists@, self.perms@, self.base, self.bump, end);
+        }
         // The object side counts as committed everything below its frontier
         // except the tables carved from it (their owners' `commit` calls
         // count their pages as they use them): the chunk's slack around a
@@ -337,23 +1464,94 @@ impl Inner {
         self.bump = end;
         self.stats.bumped = end - self.base;
         self.stats.eager += len;
+        proof {
+            let ghost m0 = self.pages@@;
+            lemma_int_range(start as int, end as int);
+            assert forall|a: int| m0.contains_key(a) implies !set_int_range(start as int, end as int).contains(a) by {
+                assert(old(self).pages@@.contains_key(a));
+            }
+            assert(m0.dom().disjoint(set_int_range(start as int, end as int)));
+            lemma_side_mint(m0, start as int, end as int, false);
+            *claim = self.pages.borrow_mut().insert_map(claim_map(start as int, end as int, false));
+            assert(self.pages_wf());
+        }
         Some(start)
     }
 
-    fn alloc(&mut self, bin: usize) -> *mut u8 {
+    fn alloc(&mut self, bin: usize) -> (p: *mut u8)
+        requires
+            old(self).wf(),
+            bin < NBINS,
+        ensures
+            final(self).wf(),
+            final(self).live_id() == old(self).live_id(),
+            final(self).base == old(self).base,
+            final(self).len == old(self).len,
+            final(self).top == old(self).top,
+            p as usize == 0 ==> *final(self) == *old(self),
+            p as usize != 0 ==> {
+                &&& p as usize as int % bin_align_spec(bin as int) == 0
+                &&& final(self).base <= p as usize
+                &&& p as usize + bin_size(bin as int) <= final(self).bump
+                &&& final(self).stats.allocated == old(self).stats.allocated + bin_size(bin as int)
+                &&& (p as usize == old(self).free[bin as int] as usize && final(self).bump == old(self).bump) || (
+                old(self).bump <= p as usize && final(self).bump == p as usize + bin_size(bin as int))
+            },
+    {
+        proof {
+            lemma_bin(bin as int);
+            lemma_free_bytes_nonneg(self.lists@, NBINS as nat);
+            assert(list_ok(self.free@, self.lists@, self.perms@, self.base, self.bump, bin as int));
+        }
         let size = BINS[bin] as usize;
         let head = self.free[bin];
         if !head.is_null() {
+            let ghost l = self.lists@[bin as int];
+            proof {
+                assert(node_ok(self.lists@, self.perms@, self.base, self.bump, bin as int, 0));
+                lemma_pop(self.free@, self.lists@, self.perms@, self.base, self.bump, bin as int);
+            }
+            let tracked perm = self.perms.borrow_mut().tracked_remove(head);
             // SAFETY: `head` came from `free`, so it is a live block of at
             // least `size` bytes inside the bump area holding a `FreeNode`.
-            self.free[bin] = unsafe { (*head).next };
+            self.free[bin] = ptr_ref(head, Tracked(&perm)).next;
+            proof {
+                let ghost lists0 = self.lists@;
+                lemma_free_bytes_update(lists0, bin as int, l.drop_first(), NBINS as nat);
+                assert((l.drop_first().len() - l.len()) * bin_size(bin as int) == -bin_size(bin as int)) by (nonlinear_arith)
+                    requires
+                        l.drop_first().len() == l.len() - 1,
+                ;
+                self.lists@ = lists0.update(bin as int, l.drop_first());
+                assert(self.region_wf());
+                assert(self.lists_wf());
+                let ghost m0 = self.live@@;
+                assert(!m0.contains_key(head)) by {
+                    assert(lists0[bin as int][0] == head);
+                }
+                lemma_live_insert(m0, head, bin as nat);
+                let tracked _claim = self.live.borrow_mut().insert(head, bin as nat);
+                assert forall|b: int, i: int|
+                    0 <= b < NBINS && 0 <= i < self.lists@[b].len() implies !self.live@@.contains_key(#[trigger] self.lists@[b][i]) by {
+                    let j = if b == bin as int { i + 1 } else { i };
+                    assert(self.lists@[b][i] == lists0[b][j]);
+                    assert(lists0[b][j] != lists0[bin as int][0]);
+                }
+            }
             self.stats.allocated += size;
+            proof {
+                assert(size == bin_size(bin as int));
+                assert(free_bytes(self.lists@, NBINS as nat) == free_bytes(old(self).lists@, NBINS as nat) - size);
+                assert(self.stats_wf());
+                assert(self.live_wf());
+            }
             return head as *mut u8;
         }
+        proof {
+            assert(16usize & sub(16usize, 1) == 0 && 128usize & sub(128usize, 1) == 0) by (bit_vector);
+        }
         let start = align_up(self.bump, bin_align(bin));
-        let Some(end) = start.checked_add(size) else {
-            return ptr::null_mut();
-        };
+        let Some(end) = start.checked_add(size) else { return ptr::null_mut() };
         if end > self.top {
             return ptr::null_mut();
         }
@@ -363,54 +1561,244 @@ impl Inner {
                 Err(_) => return ptr::null_mut(),
             }
         }
+        proof {
+            lemma_bump(self.free@, self.lists@, self.perms@, self.base, self.bump, end);
+        }
         self.bump = end;
         self.stats.bumped = end - self.base;
         self.stats.allocated += size;
-        start as *mut u8
+        let p = addr_to_ptr(start);
+        proof {
+            let k = p as *mut FreeNode;
+            let ghost m0 = self.live@@;
+            assert(k as usize == start);
+            assert forall|b: int, i: int|
+                0 <= b < NBINS && 0 <= i < self.lists@[b].len() implies self.lists@[b][i] != k by {
+                let o = old(self);
+                assert(list_ok(o.free@, o.lists@, o.perms@, o.base, o.bump, b));
+                assert(node_ok(o.lists@, o.perms@, o.base, o.bump, b, i));
+                lemma_bin(b);
+            }
+            assert(!m0.contains_key(k)) by {
+                if m0.contains_key(k) {
+                    lemma_bin(m0[k] as int);
+                }
+            }
+            lemma_live_insert(m0, k, bin as nat);
+            let tracked _claim = self.live.borrow_mut().insert(k, bin as nat);
+            assert(self.live_wf());
+        }
+        p
     }
 
-    fn free(&mut self, p: *mut u8, bin: usize) {
+    /// Put `p`, an object of bin `bin`, on the bin's free list. `perm` is
+    /// the permission to its first word and `claim` the record
+    /// [`alloc`](Inner::alloc) made of it, which the caller gives up with
+    /// the object.
+    fn free(
+        &mut self,
+        p: *mut u8,
+        bin: usize,
+        Tracked(perm): Tracked<PointsTo<FreeNode>>,
+        Tracked(claim): Tracked<GhostPointsTo<*mut FreeNode, nat>>,
+    )
+        requires
+            old(self).wf(),
+            bin < NBINS,
+            perm.ptr() == p as *mut FreeNode,
+            claim.id() == old(self).live_id(),
+            claim.key() == p as *mut FreeNode,
+            claim.value() == bin as nat,
+        ensures
+            final(self).wf(),
+            final(self).live_id() == old(self).live_id(),
+    {
+        let tracked mut perm = perm;
         let addr = p as usize;
+        let node = p as *mut FreeNode;
+        let ghost m0 = self.live@@;
+        proof {
+            claim.agree(self.live.borrow());
+            assert(m0.contains_key(node));
+            lemma_live_remove(m0, node);
+            lemma_bin(bin as int);
+            perm.is_nonnull();
+            if self.perms@.contains_key(node) {
+                perm.is_disjoint(self.perms.borrow().tracked_borrow(node));
+                assert(false);
+            }
+            assert(node@.addr != 0);
+            assert(list_ok(self.free@, self.lists@, self.perms@, self.base, self.bump, bin as int));
+            if self.lists@[bin as int].len() > 0 {
+                assert(node_ok(self.lists@, self.perms@, self.base, self.bump, bin as int, 0));
+                perm.is_disjoint(self.perms.borrow().tracked_borrow(self.free@[bin as int]));
+                assert(self.free@[bin as int]@.addr != node@.addr);
+            } else {
+                assert(self.free@[bin as int] == ptr::null_mut::<FreeNode>());
+                assert(self.free@[bin as int]@.addr != node@.addr);
+            }
+        }
         let size = BINS[bin] as usize;
         assert!(
             addr >= self.base && addr + size <= self.bump && addr % bin_align(bin) == 0,
             "meta: free of a pointer that was never allocated here"
         );
-        let node = p as *mut FreeNode;
         // The one double free that costs nothing to see: the block is the
         // list's head. A block deeper in the list is not looked for (that
         // would walk the list on every free).
-        assert!(
-            self.free[bin] != node,
-            "meta: double free of the free list head"
-        );
+        assert!(self.free[bin] != node, "meta: double free of the free list head");
         // SAFETY: the block is `size >= 16` bytes of committed memory that
         // the caller has given up, aligned to at least 16.
-        unsafe { (*node).next = self.free[bin] };
+        ptr_mut_write(node, Tracked(&mut perm), FreeNode { next: self.free[bin] });
+        proof {
+            lemma_push(self.free@, self.lists@, self.perms@, self.base, self.bump, bin as int, node, perm);
+        }
         self.free[bin] = node;
+        proof {
+            let ghost l = self.lists@[bin as int];
+            let ghost lists0 = self.lists@;
+            let ghost nl = seq![node].add(l);
+            lemma_free_bytes_update(lists0, bin as int, nl, NBINS as nat);
+            assert((nl.len() - l.len()) * bin_size(bin as int) == bin_size(bin as int)) by (nonlinear_arith)
+                requires
+                    nl.len() == l.len() + 1,
+            ;
+            self.perms.borrow_mut().tracked_insert(node, perm);
+            self.lists@ = lists0.update(bin as int, nl);
+            self.live.borrow_mut().delete_points_to(claim);
+            assert forall|b: int, i: int|
+                0 <= b < NBINS && 0 <= i < self.lists@[b].len() implies !self.live@@.contains_key(#[trigger] self.lists@[b][i]) by {
+                if b == bin as int && i > 0 {
+                    assert(self.lists@[b][i] == lists0[b][i - 1]);
+                } else if b != bin as int {
+                    assert(self.lists@[b][i] == lists0[b][i]);
+                }
+            }
+        }
         self.stats.allocated -= size;
+        proof {
+            assert(self.live_wf());
+        }
     }
 
-    fn reserve(&mut self, len: usize, align: usize) -> Option<usize> {
-        assert!(
-            align.is_power_of_two(),
-            "meta: reserve alignment not a power of two"
-        );
+    fn reserve(
+        &mut self,
+        len: usize,
+        align: usize,
+        Tracked(claim): Tracked<&mut GhostSubmap<int, bool>>,
+    ) -> (r: Option<usize>)
+        requires
+            old(self).wf(),
+            is_pow2(align),
+        ensures
+            final(self).wf(),
+            final(self).live_id() == old(self).live_id(),
+            final(self).pages_id() == old(self).pages_id(),
+            r is None ==> *final(self) == *old(self),
+            r matches Some(s) ==> {
+                &&& final(claim).id() == final(self).pages_id()
+                &&& final(claim)@ == claim_map(s as int, old(self).top as int, true)
+                &&& final(self).pages@@ == old(self).pages@@.union_prefer_right(final(claim)@)
+                &&& s == final(self).top
+                &&& old(self).committed <= s
+                &&& s + len <= old(self).top
+                &&& s < old(self).top
+                &&& s % align == 0
+                &&& s % old(self).page == 0
+                &&& *final(self) == (Inner {
+                    top: s,
+                    stats: MetaStats { reserved: final(self).stats.reserved, ..old(self).stats },
+                    pages: final(self).pages,
+                    ..*old(self)
+                })
+            },
+    {
+        let ghost align0 = align;
+        proof {
+            lemma_pow2_bits(align);
+        }
+        assert!(align.is_power_of_two(), "meta: reserve alignment not a power of two");
         if len > self.top - self.committed {
             return None;
         }
         let align = align.max(self.page);
         let len = align_up(len.max(1), self.page);
         let start = self.top.checked_sub(len)? & !(align - 1);
+        proof {
+            let t = (self.top - len) as usize;
+            let a = align;
+            assert(start <= t) by (bit_vector)
+                requires
+                    start == t & !sub(a, 1),
+            ;
+            assert(start & sub(a, 1) == 0) by (bit_vector)
+                requires
+                    start == t & !sub(a, 1),
+            ;
+            lemma_mod_mask(start, a);
+            lemma_pow2_divides(align, self.page);
+            lemma_mod_trans(start as int, align as int, self.page as int);
+            lemma_pow2_divides(align, align0);
+            lemma_mod_trans(start as int, align as int, align0 as int);
+        }
         if start < self.committed {
             return None;
         }
+        let ghost old_top = self.top;
         self.stats.reserved += self.top - start;
         self.top = start;
+        proof {
+            let ghost m0 = self.pages@@;
+            lemma_int_range(start as int, old_top as int);
+            assert forall|a: int| m0.contains_key(a) implies !set_int_range(start as int, old_top as int).contains(a) by {
+                assert(old(self).pages@@.contains_key(a));
+            }
+            assert(m0.dom().disjoint(set_int_range(start as int, old_top as int)));
+            lemma_side_mint(m0, start as int, old_top as int, true);
+            *claim = self.pages.borrow_mut().insert_map(claim_map(start as int, old_top as int, true));
+            assert(self.pages_wf());
+        }
         Some(start)
     }
 
-    fn commit(&mut self, addr: usize, len: usize) -> Result<(), Errno> {
+    /// Commit `[addr, addr + len)`, given `claim`, the claim to those
+    /// bytes that [`reserve`](Inner::reserve) or
+    /// [`reserve_eager`](Inner::reserve_eager) recorded (on the side
+    /// `top_side` names). Taken only on success.
+    fn commit(
+        &mut self,
+        addr: usize,
+        len: usize,
+        Ghost(top_side): Ghost<bool>,
+        Tracked(claim): Tracked<&mut GhostSubmap<int, bool>>,
+    ) -> (r: Result<(), Errno>)
+        requires
+            old(self).wf(),
+            addr % old(self).page == 0,
+            len % old(self).page == 0,
+            len > 0,
+            old(claim).id() == old(self).pages_id(),
+            old(claim)@.dom() == set_int_range(addr as int, addr + len),
+            forall|a: int| #[trigger] old(claim)@.dom().contains(a) ==> old(claim)@[a] == top_side,
+        ensures
+            final(self).wf(),
+            final(self).live_id() == old(self).live_id(),
+            final(self).pages_id() == old(self).pages_id(),
+            final(self).base == old(self).base,
+            final(self).len == old(self).len,
+            r is Err ==> *final(self) == *old(self) && *final(claim) == *old(claim),
+    {
+        let ghost m = self.pages@@;
+        proof {
+            claim.agree(self.pages.borrow());
+            lemma_int_range(addr as int, addr + len);
+            assert(claim@.dom().contains(addr as int));
+            assert(claim@.dom().contains(addr + len - 1));
+            lemma_claim_at(claim@, m, addr as int);
+            lemma_claim_at(claim@, m, addr + len - 1);
+            lemma_side_consume(m, claim@, top_side);
+            vstd::set_lib::lemma_len_subset(claim@.dom(), side_set(m, top_side));
+        }
         assert!(
             addr % self.page == 0 && len % self.page == 0 && len > 0,
             "meta: commit range not page aligned"
@@ -426,12 +1814,14 @@ impl Inner {
                 "meta: commit outside the reserved area"
             );
             self.stats.committed += len;
+            proof {
+                let tracked c = claim.take();
+                self.pages.borrow_mut().delete(c);
+                assert(self.pages_wf());
+            }
             return Ok(());
         }
-        assert!(
-            end <= self.base + self.len,
-            "meta: commit outside the reserved area"
-        );
+        assert!(end <= self.base + self.len, "meta: commit outside the reserved area");
         commit_range(addr, len)?;
         // Metadata THP (`thp.rs`): `Lazy::ensure` rounded the range to the
         // folio; the advice makes the kernel map it as one.
@@ -440,14 +1830,98 @@ impl Inner {
         }
         self.top_committed += len;
         self.stats.committed += len;
+        proof {
+            let tracked c = claim.take();
+            self.pages.borrow_mut().delete(c);
+            assert(self.pages_wf());
+        }
         Ok(())
     }
 
-    fn stats(&self) -> MetaStats {
-        MetaStats {
-            writable: (self.committed - self.base) + self.top_committed,
-            ..self.stats
+    /// [`Meta::reserve_committed`] under the lock.
+    fn reserve_committed(&mut self, len: usize, align: usize) -> (r: Option<usize>)
+        requires
+            old(self).wf(),
+            is_pow2(align),
+        ensures
+            final(self).wf(),
+            final(self).live_id() == old(self).live_id(),
+            final(self).pages_id() == old(self).pages_id(),
+            final(self).base == old(self).base,
+            final(self).len == old(self).len,
+            r matches Some(s) ==> s % align == 0 && s + len <= va_limit(),
+            r matches Some(s) ==> old(self).base <= s && s + len <= old(self).base + old(self).len,
+    {
+        let tracked mut claim = GhostSubmap::<int, bool>::dummy();
+        if self.eager_ok(len) {
+            if let Some(p) = self.reserve_eager(len, align, Tracked(&mut claim)) {
+                let ghost m = self.pages@@;
+                let ghost tlen = align_up_spec(if len == 0 { 1 } else { len }, self.page);
+                proof {
+                    claim.agree(self.pages.borrow());
+                    lemma_int_range(p as int, p + tlen);
+                    lemma_side_consume(m, claim@, false);
+                    vstd::set_lib::lemma_len_subset(claim@.dom(), side_set(m, false));
+                }
+                self.stats.committed += align_up(len.max(1), self.page);
+                proof {
+                    let tracked c = claim.take();
+                    self.pages.borrow_mut().delete(c);
+                    assert(self.pages_wf());
+                }
+                return Some(p);
+            }
         }
+        let ghost pre = *self;
+        let old_top = self.top;
+        let old_reserved = self.stats.reserved;
+        let start = self.reserve(len, align, Tracked(&mut claim))?;
+        proof {
+            lemma_sub_mod_noop(old_top as int, start as int, self.page as int);
+            vstd::arithmetic::div_mod::lemma_small_mod(0, self.page as nat);
+        }
+        if self.commit(start, old_top - start, Ghost(true), Tracked(&mut claim)).is_err() {
+            self.top = old_top;
+            self.stats.reserved = old_reserved;
+            proof {
+                let ghost m0 = pre.pages@@;
+                lemma_int_range(start as int, old_top as int);
+                let tracked c = claim.take();
+                self.pages.borrow_mut().delete(c);
+                assert forall|a: int| m0.contains_key(a) implies !set_int_range(start as int, old_top as int).contains(a) by {
+                    assert(pre.pages@@.contains_key(a));
+                }
+                assert(self.pages@@ =~= m0);
+                assert(self.pages_wf());
+            }
+            return None;
+        }
+        Some(start)
+    }
+
+    fn stats(&self) -> (r: MetaStats)
+        requires
+            self.wf(),
+        ensures
+            r.identities(),
+    {
+        proof {
+            lemma_free_bytes_nonneg(self.lists@, NBINS as nat);
+        }
+        MetaStats { writable: (self.committed - self.base) + self.top_committed, ..self.stats }
+    }
+}
+
+proof fn lemma_free_bytes_zero(lists: Seq<Seq<*mut FreeNode>>, n: nat)
+    requires
+        n <= lists.len(),
+        forall|b: int| 0 <= b < n ==> #[trigger] lists[b].len() == 0,
+    ensures
+        free_bytes(lists, n) == 0,
+    decreases n,
+{
+    if n > 0 {
+        lemma_free_bytes_zero(lists, (n - 1) as nat);
     }
 }
 
@@ -461,8 +1935,12 @@ fn eager_policy() -> bool {
     if !crate::thp::is_never() {
         return false;
     }
+    // Spelled as bytes so the verifier sees the NUL `sys::open` requires.
+    const OVERCOMMIT: [u8; 31] = [
+        b'/', b'p', b'r', b'o', b'c', b'/', b's', b'y', b's', b'/', b'v', b'm', b'/', b'o', b'v', b'e', b'r', b'c', b'o', b'm', b'm', b'i', b't', b'_', b'm', b'e', b'm', b'o', b'r', b'y', 0,
+    ];
     let mut buf = [0u8; 8];
-    match crate::sys::read_small_file(b"/proc/sys/vm/overcommit_memory\0", &mut buf) {
+    match crate::sys::read_small_file(&OVERCOMMIT, &mut buf) {
         Some(n) if n > 0 => buf[0] != b'2',
         // Unreadable (a sandbox without /proc): the mode cannot be known,
         // so take the safe side.
@@ -472,10 +1950,22 @@ fn eager_policy() -> bool {
 
 impl Meta {
     /// An allocator over `[base, base + len)`, both page multiples.
-    pub const fn new(base: usize, len: usize, page: usize) -> Meta {
-        Meta {
-            inner: Lock::new(Inner::new(base, len, page)),
-        }
+    pub const fn new(base: usize, len: usize, page: usize) -> (r: Meta)
+        requires
+            is_pow2(page),
+            page >= MIN_ALIGN,
+            base > 0,
+            base % page == 0,
+            len % page == 0,
+            len > 0,
+            base + len <= va_limit(),
+        ensures
+            r.spec_base() == base,
+            r.spec_len() == len,
+    {
+        broadcast use axiom_meta_lock_inv;
+
+        Meta { inner: Lock::new(Inner::new(base, len, page)) }
     }
 
     /// The lock, for the fork handlers.
@@ -491,45 +1981,57 @@ impl Meta {
     /// Aborts for a layout this allocator does not serve (`size >
     /// MAX_BINNED` or `align > MAX_ALIGN`): that is a bug, not a resource
     /// failure.
-    pub fn alloc(&self, layout: Layout) -> *mut u8 {
-        assert!(
-            layout.align() <= MAX_ALIGN,
-            "meta: alignment too large for an object"
-        );
-        let Some(bin) = bin_for(layout) else {
-            panic!("meta: object too large")
-        };
-        self.inner.lock().alloc(bin)
+    pub fn alloc(&self, layout: Layout) -> (p: *mut u8)
+        requires
+            layout_align(layout) <= MAX_ALIGN,
+            layout_size(layout) <= MAX_BINNED,
+        ensures
+            p as usize != 0 ==> (p as usize) % layout_align(layout) == 0,
+            p as usize != 0 ==> self.holds(p as int, layout_size(layout) as int),
+    {
+        broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
+
+        assert!(layout.align() <= MAX_ALIGN, "meta: alignment too large for an object");
+        let Some(bin) = bin_for(layout) else { panic!("meta: object too large") };
+        let p = self.inner.lock().alloc(bin);
+        proof {
+            lemma_align_in_bin(p as usize, layout, bin);
+        }
+        p
     }
 
     /// [`alloc`](Meta::alloc), then zero the object if it was reused.
-    pub fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        assert!(
-            layout.align() <= MAX_ALIGN,
-            "meta: alignment too large for an object"
-        );
-        let Some(bin) = bin_for(layout) else {
-            panic!("meta: object too large")
-        };
+    pub fn alloc_zeroed(&self, layout: Layout) -> (p: *mut u8)
+        requires
+            layout_align(layout) <= MAX_ALIGN,
+            layout_size(layout) <= MAX_BINNED,
+        ensures
+            p as usize != 0 ==> (p as usize) % layout_align(layout) == 0,
+            p as usize != 0 ==> self.holds(p as int, layout_size(layout) as int),
+    {
+        broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
+
+        assert!(layout.align() <= MAX_ALIGN, "meta: alignment too large for an object");
+        let Some(bin) = bin_for(layout) else { panic!("meta: object too large") };
         let mut g = self.inner.lock();
         let before = g.bump;
         let p = g.alloc(bin);
         if !p.is_null() && (p as usize) < before {
             // Reused: below the old bump pointer. Fresh memory is above it
             // and has never been written.
+            proof {
+                broadcast use vstd::layout::align_of_u8;
+                lemma_bin(bin as int);
+                axiom_committed_writable(g@, p, bin_size(bin as int) as usize);
+            }
             // SAFETY: `p` is a live block of `BINS[bin]` bytes we just took.
             unsafe { ptr::write_bytes(p, 0, BINS[bin] as usize) };
         }
+        proof {
+            lemma_align_in_bin(p as usize, layout, bin);
+            assert(g@.wf());
+        }
         p
-    }
-
-    /// Return an object allocated with the same `layout`.
-    pub fn free(&self, p: *mut u8, layout: Layout) {
-        assert!(!p.is_null(), "meta: free of null");
-        let Some(bin) = bin_for(layout) else {
-            panic!("meta: free with an impossible layout")
-        };
-        self.inner.lock().free(p, bin);
     }
 
     /// Carve `len` bytes (rounded up to pages) aligned to `align` (at least a
@@ -539,8 +2041,40 @@ impl Meta {
     /// used from its base up, [`reserve_table`](Meta::reserve_table); this
     /// is for a reservation that needs a `PROT_NONE` part (the background
     /// thread's stack guard).
-    pub fn reserve(&self, len: usize, align: usize) -> Option<usize> {
-        self.inner.lock().reserve(len, align)
+    pub fn reserve(&self, len: usize, align: usize) -> (r: Option<usize>)
+        requires
+            is_pow2(align),
+        ensures
+            r matches Some(s) ==> s % align == 0 && s + len <= va_limit(),
+            r matches Some(s) ==> self.holds(s as int, len as int),
+    {
+        broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
+
+        let tracked mut claim = GhostSubmap::<int, bool>::dummy();
+        self.inner.lock().reserve(len, align, Tracked(&mut claim))
+    }
+
+    /// [`reserve_table`](Meta::reserve_table) and commit the whole range.
+    /// Zero on return. `None` on either failure, leaving nothing reserved.
+    pub fn reserve_committed(&self, len: usize, align: usize) -> (r: Option<usize>)
+        requires
+            is_pow2(align),
+        ensures
+            r matches Some(s) ==> s % align == 0 && s + len <= va_limit(),
+            r matches Some(s) ==> self.holds(s as int, len as int) && s > 0,
+    {
+        broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
+
+        self.inner.lock().reserve_committed(len, align)
+    }
+
+    pub fn stats(&self) -> (r: MetaStats)
+        ensures
+            r.identities(),
+    {
+        broadcast use axiom_meta_lock_inv;
+
+        self.inner.lock().stats()
     }
 
     /// A never-freed table of `len` bytes aligned to `align` whose owner
@@ -550,49 +2084,221 @@ impl Meta {
     /// when the object side cannot hold it, it is a
     /// [`reserve`](Meta::reserve). Either way the owner calls
     /// [`commit`](Meta::commit) on the pages it uses before touching them.
-    pub fn reserve_table(&self, len: usize, align: usize) -> Option<usize> {
+    pub fn reserve_table(&self, len: usize, align: usize) -> (r: Option<usize>)
+        requires
+            is_pow2(align),
+        ensures
+            r matches Some(s) ==> s % align == 0 && s + len <= va_limit(),
+            r matches Some(s) ==> self.holds(s as int, len as int),
+    {
+        broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
+
+        let tracked mut claim = GhostSubmap::<int, bool>::dummy();
         let mut g = self.inner.lock();
         if g.eager_ok(len) {
-            if let Some(p) = g.reserve_eager(len, align) {
+            if let Some(p) = g.reserve_eager(len, align, Tracked(&mut claim)) {
                 return Some(p);
             }
         }
-        g.reserve(len, align)
+        g.reserve(len, align, Tracked(&mut claim))
+    }
+
+    /// The ghost identity of the live-object records ([`Inner::live_id`];
+    /// the same in every value the lock holds, `vspec/meta.rs`).
+    pub closed spec fn live_id(&self) -> Loc {
+        lock_init(self.inner).live_id()
+    }
+
+    /// The ghost identity of the unclaimed reserved bytes
+    /// ([`Inner::pages_id`]; the same in every value the lock holds).
+    pub closed spec fn pages_id(&self) -> Loc {
+        lock_init(self.inner).pages_id()
+    }
+
+    /// The page size (the same in every value the lock holds).
+    pub closed spec fn page(&self) -> usize {
+        lock_init(self.inner).spec_page()
+    }
+
+    /// The region's first byte (the same in every value the lock holds).
+    pub closed spec fn spec_base(&self) -> usize {
+        lock_init(self.inner).spec_base()
+    }
+
+    /// The region's length (the same in every value the lock holds).
+    pub closed spec fn spec_len(&self) -> usize {
+        lock_init(self.inner).spec_len()
+    }
+
+    /// `[a, a + len)` lies in the region: where every object and table
+    /// [`alloc`](Meta::alloc), [`alloc_zeroed`](Meta::alloc_zeroed),
+    /// [`reserve`](Meta::reserve),
+    /// [`reserve_committed`](Meta::reserve_committed) and
+    /// [`reserve_table`](Meta::reserve_table) hand out lies, and the only
+    /// memory the allocator itself writes (the link words of free objects,
+    /// [`Inner::lemma_links_in_region`], and the zeroing of a reused
+    /// object in `alloc_zeroed`).
+    pub open spec fn holds(&self, a: int, len: int) -> bool {
+        &&& self.spec_base() <= a
+        &&& a + len <= self.spec_base() + self.spec_len()
+    }
+
+    /// This allocator's region is the process's metadata region
+    /// (`Shared::wf` says so of the `Shared`'s `meta`), so what it
+    /// [`holds`](Meta::holds) is metadata
+    /// ([`Regions::in_meta`](crate::layout::Regions::in_meta)).
+    pub open spec fn is_process(&self) -> bool {
+        &&& self.spec_base() == crate::layout::process_regions().meta_base
+        &&& self.spec_len() == crate::layout::process_regions().meta_len
     }
 
     /// Make `[addr, addr + len)`, page aligned and inside a reservation or
     /// an eagerly carved table, readable and writable (accounting only for
-    /// the latter). Each page should be committed once; the
-    /// committed-bytes counter trusts the caller on that.
+    /// the latter): [`commit_claimed`] with the caller's claim to the
+    /// range. Trusted: the claim is the caller contract, which no caller
+    /// can show, since callers keep their tables' commit watermarks
+    /// without ghost state: the range is page aligned, lies inside one
+    /// reservation or eager table this allocator handed out, and no page
+    /// of it has been committed before. The callers trusted at each call:
+    /// the tables' `Lazy::ensure` (from their commit watermark up) and
+    /// the background thread's stack (once, after its reservation).
+    ///
+    /// [`commit_claimed`]: Meta::commit_claimed
+    #[verifier::external_body]
     pub fn commit(&self, addr: usize, len: usize) -> Result<(), Errno> {
-        self.inner.lock().commit(addr, len)
+        self.commit_claimed(addr, len, Ghost::assume_new(), Tracked::assume_new())
     }
 
-    /// [`reserve_table`](Meta::reserve_table) and commit the whole range.
-    /// Zero on return. `None` on either failure, leaving nothing reserved.
-    pub fn reserve_committed(&self, len: usize, align: usize) -> Option<usize> {
-        let mut g = self.inner.lock();
-        if g.eager_ok(len) {
-            if let Some(p) = g.reserve_eager(len, align) {
-                g.stats.committed += align_up(len.max(1), g.page);
-                return Some(p);
-            }
+    /// [`commit`](Meta::commit), given `claim`, the claim to the range's
+    /// bytes that [`reserve`](Meta::reserve) or
+    /// [`reserve_table`](Meta::reserve_table) recorded on the side
+    /// `top_side` names (`true` for a reservation, `false` for an eager
+    /// table).
+    fn commit_claimed(
+        &self,
+        addr: usize,
+        len: usize,
+        Ghost(top_side): Ghost<bool>,
+        Tracked(claim): Tracked<GhostSubmap<int, bool>>,
+    ) -> Result<(), Errno>
+        requires
+            addr % self.page() == 0,
+            len % self.page() == 0,
+            len > 0,
+            claim.id() == self.pages_id(),
+            claim@.dom() == set_int_range(addr as int, addr + len),
+            forall|a: int| #[trigger] claim@.dom().contains(a) ==> claim@[a] == top_side,
+    {
+        broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
+
+        let tracked mut claim = claim;
+        self.inner.lock().commit(addr, len, Ghost(top_side), Tracked(&mut claim))
+    }
+
+    /// Return an object allocated with the same `layout`: [`free_claimed`]
+    /// with the caller's claims to it. Trusted: the claims are the caller
+    /// contract, which no caller can show, since callers keep their
+    /// objects behind raw pointers: `p` came from [`alloc`](Meta::alloc)
+    /// or [`alloc_zeroed`](Meta::alloc_zeroed) of this allocator with a
+    /// layout of the same bin, is no longer in use and has not been freed
+    /// since. The allocator's invariant follows from the claims; the
+    /// run-time checks of the bounds, the alignment and a double free of
+    /// the list head stay, for callers that break the contract. The
+    /// callers trusted at each call: heap destruction and
+    /// `free_caches` (heaps, node blocks and cache stacks they own) and
+    /// the huge allocator (`free_desc`, `Table::release`).
+    ///
+    /// [`free_claimed`]: Meta::free_claimed
+    #[verifier::external_body]
+    pub fn free(&self, p: *mut u8, layout: Layout) {
+        self.free_claimed(p, layout, Tracked::assume_new(), Tracked::assume_new())
+    }
+
+    /// [`free`](Meta::free), given `perm`, the permission to the object's
+    /// first word, and `claim`, the record [`alloc`](Meta::alloc) made of
+    /// it.
+    fn free_claimed(
+        &self,
+        p: *mut u8,
+        layout: Layout,
+        Tracked(perm): Tracked<PointsTo<FreeNode>>,
+        Tracked(claim): Tracked<GhostPointsTo<*mut FreeNode, nat>>,
+    )
+        requires
+            layout_size(layout) <= MAX_BINNED,
+            perm.ptr() == p as *mut FreeNode,
+            claim.id() == self.live_id(),
+            claim.key() == p as *mut FreeNode,
+            claim.value() == bin_for_spec(layout),
+    {
+        broadcast use {axiom_meta_lock_inv, axiom_meta_lock_frame};
+
+        proof {
+            perm.is_nonnull();
         }
-        let old_top = g.top;
-        let old_reserved = g.stats.reserved;
-        let start = g.reserve(len, align)?;
-        if g.commit(start, old_top - start).is_err() {
-            g.top = old_top;
-            g.stats.reserved = old_reserved;
-            return None;
+        assert!(!p.is_null(), "meta: free of null");
+        let Some(bin) = bin_for(layout) else { panic!("meta: free with an impossible layout") };
+        self.inner.lock().free(p, bin, Tracked(perm), Tracked(claim));
+    }
+}
+
+/// The object area below `committed` is committed: `Inner::commit_bump_to`
+/// raises `committed` only after `mprotect` made the pages readable and
+/// writable, and nothing makes them `PROT_NONE` again. So an object
+/// [`Inner::alloc`] handed out below it is valid for writes. Trusted:
+/// `Inner` tracks addresses, not permissions for the region's bytes.
+#[verifier::external_body]
+proof fn axiom_committed_writable(inner: Inner, p: *mut u8, len: usize)
+    requires
+        inner.wf(),
+        inner.base <= p as usize,
+        p as usize + len <= inner.committed,
+    ensures
+        crate::vspec::ptr::valid_writes(p, len as int),
+{
+}
+
+/// An object of `layout` placed at `p`, aligned for bin `bin` (the one
+/// `bin_for` chose), is aligned for the layout.
+proof fn lemma_align_in_bin(p: usize, layout: Layout, bin: usize)
+    requires
+        layout_ok(layout),
+        layout_align(layout) <= MAX_ALIGN,
+        layout_align(layout) > MIN_ALIGN ==> bin >= 4,
+        p != 0 ==> p as int % bin_align_spec(bin as int) == 0,
+    ensures
+        p != 0 ==> p % layout_align(layout) == 0,
+{
+    let a = layout_align(layout);
+    lemma_pow2_bits(a);
+    if p != 0 {
+        if bin < 4 {
+            assert(p % a == 0) by (bit_vector)
+                requires
+                    p % 16 == 0,
+                    a & sub(a, 1) == 0,
+                    a > 0,
+                    a <= 16,
+            ;
+        } else {
+            assert(p % a == 0) by (bit_vector)
+                requires
+                    p % 128 == 0,
+                    a & sub(a, 1) == 0,
+                    a > 0,
+                    a <= 128,
+            ;
         }
-        Some(start)
     }
+}
 
-    pub fn stats(&self) -> MetaStats {
-        self.inner.lock().stats()
-    }
+} // verus!
 
+// SAFETY: the raw pointers are addresses inside the region, meaningful in
+// any thread; the `Lock` serialises every access.
+unsafe impl Send for Inner {}
+
+impl Meta {
     /// Tests: force tables onto the object side (`true`) or the
     /// reservation side (`false`), whatever the host's policy says.
     #[cfg(test)]

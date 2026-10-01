@@ -51,6 +51,9 @@ use core::sync::atomic::{AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use crate::config::Thp as Key;
 use crate::sys::features::Features;
 use crate::sys::thp_host::{Thp as Table, ThpSetting};
+use vstd::prelude::*;
+
+verus! {
 
 /// The effective mode.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -176,26 +179,91 @@ impl Decision {
         huge: false,
     };
 
-    fn off(reason: Reason, lg_pmd: u8) -> Decision {
+    fn off(reason: Reason, lg_pmd: u8) -> (d: Decision)
+        ensures
+            d.mode == Mode::Off,
+            d.reason == reason,
+            d.lg_slab_min == NO_SIZE,
+            d.lg_pmd == lg_pmd,
+            d.lg_meta == NO_SIZE,
+            !d.huge,
+    {
         Decision {
             reason,
             lg_pmd,
             ..Decision::OFF
         }
     }
+
+    /// Every threshold is a valid shift amount (below 64), or `NO_SIZE`
+    /// where the readers test for it first.
+    pub open spec fn wf(self) -> bool {
+        lg_ok(self.lg_slab_min) && self.lg_pmd < 64 && lg_ok(self.lg_meta)
+    }
+}
+
+/// A `log2` threshold a reader can shift by once it has ruled out
+/// `NO_SIZE`.
+pub open spec fn lg_ok(lg: u8) -> bool {
+    lg < 64 || lg == NO_SIZE
+}
+
+/// The PMD size is `madvise`-gated: advising a range would make it
+/// eligible for PMD pages.
+pub open spec fn pmd_madvise_gated(t: Table) -> bool {
+    t.always & (1u64 << t.lg_pmd) == 0 && t.madvise & (1u64 << t.lg_pmd) != 0
+}
+
+/// A size in `sub_pmd_sizes` (bits below `lg_pmd`) is below the PMD.
+proof fn lemma_sub_pmd_below(set: u64, lg: u8, lg_pmd: u8)
+    requires
+        lg < 64,
+        lg_pmd < 64,
+        (set & sub(1u64 << lg_pmd, 1u64)) & (1u64 << lg) != 0,
+    ensures
+        lg < lg_pmd,
+{
+    let (s, l, p) = (set, lg as u64, lg_pmd as u64);
+    assert((s & sub(1u64 << p, 1u64)) & (1u64 << l) != 0 && l < 64 && p < 64 ==> l < p) by (bit_vector);
 }
 
 /// The folio metadata commits take: the smallest enabled size below the
 /// PMD when it fits the bump chunk, else none.
-fn meta_folio(t: &Table) -> u8 {
+fn meta_folio(t: &Table) -> (lg: u8)
+    requires
+        t.lg_pmd < 64,
+    ensures
+        lg == NO_SIZE || lg <= LG_META_MAX && lg < t.lg_pmd,
+{
     match Table::smallest(t.sub_pmd_sizes()) {
-        Some(lg) if lg <= LG_META_MAX => lg,
+        Some(lg) if lg <= LG_META_MAX => {
+            proof {
+                lemma_sub_pmd_below(t.always | t.madvise, lg, t.lg_pmd);
+            }
+            lg
+        },
         _ => NO_SIZE,
     }
 }
 
 /// The effective mode for `key` on a kernel described by `t`. Pure.
-pub fn decide(key: Key, t: &Table) -> Decision {
+pub fn decide(key: Key, t: &Table) -> (d: Decision)
+    requires
+        t.lg_pmd < 64,
+    ensures
+        d.wf(),
+        d.lg_pmd == t.lg_pmd,
+        (d.mode == Mode::Off) == (d.reason != Reason::Active),
+        d.mode == Mode::Off ==> d.lg_slab_min == NO_SIZE && d.lg_meta == NO_SIZE && !d.huge,
+        key == Key::Never ==> d.mode == Mode::Off && d.reason == Reason::Never,
+        // Folios are sizes below the PMD, never the PMD itself.
+        d.mode == Mode::Folios ==> d.lg_slab_min < d.lg_pmd,
+        d.lg_meta == NO_SIZE || d.lg_meta <= 16 && d.lg_meta < d.lg_pmd,
+        d.mode == Mode::Chunks ==> key == Key::Always && d.lg_pmd <= LG_PMD_CHUNK_MAX,
+        d.huge ==> key == Key::Always,
+        // `auto` refuses a host whose PMD size is `madvise`-gated.
+        key == Key::Auto && d.mode != Mode::Off ==> !pmd_madvise_gated(*t),
+{
     let lg_pmd = t.lg_pmd;
     match key {
         Key::Never => Decision::off(Reason::Never, lg_pmd),
@@ -206,6 +274,9 @@ pub fn decide(key: Key, t: &Table) -> Decision {
             let Some(lg_min) = Table::smallest(t.sub_pmd_sizes()) else {
                 return Decision::off(Reason::NoSubPmd, lg_pmd);
             };
+            proof {
+                lemma_sub_pmd_below(t.always | t.madvise, lg_min, lg_pmd);
+            }
             if t.pmd_setting() == ThpSetting::Madvise {
                 return Decision::off(Reason::PmdMadvise, lg_pmd);
             }
@@ -240,13 +311,18 @@ pub fn decide(key: Key, t: &Table) -> Decision {
             // The PMD size is `never`, or too large to commit in chunks
             // (the module doc): the folio path over the sizes below it.
             match Table::smallest(t.sub_pmd_sizes()) {
-                Some(lg_min) => Decision {
-                    mode: Mode::Folios,
-                    reason: Reason::Active,
-                    lg_slab_min: lg_min,
-                    lg_pmd,
-                    lg_meta: meta_folio(t),
-                    huge: true,
+                Some(lg_min) => {
+                    proof {
+                        lemma_sub_pmd_below(t.always | t.madvise, lg_min, lg_pmd);
+                    }
+                    Decision {
+                        mode: Mode::Folios,
+                        reason: Reason::Active,
+                        lg_slab_min: lg_min,
+                        lg_pmd,
+                        lg_meta: meta_folio(t),
+                        huge: true,
+                    }
                 },
                 None => Decision::off(Reason::PmdTooLarge, lg_pmd),
             }
@@ -254,44 +330,78 @@ pub fn decide(key: Key, t: &Table) -> Decision {
     }
 }
 
-static MODE: AtomicU8 = AtomicU8::new(Mode::Off as u8);
-static REASON: AtomicU8 = AtomicU8::new(Reason::Never as u8);
-static LG_SLAB_MIN: AtomicU8 = AtomicU8::new(NO_SIZE);
-static LG_PMD: AtomicU8 = AtomicU8::new(21);
-static LG_META: AtomicU8 = AtomicU8::new(NO_SIZE);
-static HUGE: AtomicU8 = AtomicU8::new(0);
+exec static MODE: AtomicU8 = AtomicU8::new(Mode::Off as u8);
+exec static REASON: AtomicU8 = AtomicU8::new(Reason::Never as u8);
+exec static LG_SLAB_MIN: AtomicU8 = AtomicU8::new(NO_SIZE);
+exec static LG_PMD: AtomicU8 = AtomicU8::new(21);
+exec static LG_META: AtomicU8 = AtomicU8::new(NO_SIZE);
+exec static HUGE: AtomicU8 = AtomicU8::new(0);
 /// The key as configured, for the report.
-static KEY: AtomicU8 = AtomicU8::new(0);
+exec static KEY: AtomicU8 = AtomicU8::new(0);
 
 /// Ranges advised (and bytes) per region kind, and `madvise` failures.
-static CLASS_RANGES: AtomicU64 = AtomicU64::new(0);
-static CLASS_BYTES: AtomicU64 = AtomicU64::new(0);
-static HUGE_RANGES: AtomicU64 = AtomicU64::new(0);
-static META_RANGES: AtomicU64 = AtomicU64::new(0);
-static FAILURES: AtomicU64 = AtomicU64::new(0);
+exec static CLASS_RANGES: AtomicU64 = AtomicU64::new(0);
+exec static CLASS_BYTES: AtomicU64 = AtomicU64::new(0);
+exec static HUGE_RANGES: AtomicU64 = AtomicU64::new(0);
+exec static META_RANGES: AtomicU64 = AtomicU64::new(0);
+exec static FAILURES: AtomicU64 = AtomicU64::new(0);
 /// Chunk commits (ranges whose first slab was the one committing).
-static CHUNKS: AtomicU64 = AtomicU64::new(0);
+exec static CHUNKS: AtomicU64 = AtomicU64::new(0);
 /// Reservations `MADV_NOHUGEPAGE`d under `never` (the module doc): the
 /// class superblock and the metadata region, so 2 on a kernel with THP.
-static NOHUGE_RANGES: AtomicU64 = AtomicU64::new(0);
+exec static NOHUGE_RANGES: AtomicU64 = AtomicU64::new(0);
 /// The kernel has transparent huge pages at all (the sysfs `enabled` file
 /// exists): `MADV_NOHUGEPAGE` is `EINVAL` without them, so `never` then
 /// has nothing to advise.
-static KERNEL_THP: AtomicU8 = AtomicU8::new(0);
+exec static KERNEL_THP: AtomicU8 = AtomicU8::new(0);
 /// The reservations `never` covers, as made so far (`advise_reservation`):
 /// the class superblock and the metadata mapping of
 /// `layout::Regions::reserve` (never the huge one, which follows the host),
 /// so [`force_never`] can advise them after the fact. `(addr, len)`, `len`
 /// 0 when unused.
 const MAX_RESERVATIONS: usize = 4;
-static RESERVATIONS: [(AtomicUsize, AtomicUsize); MAX_RESERVATIONS] = [
+exec static RESERVATIONS: [(AtomicUsize, AtomicUsize); MAX_RESERVATIONS] = [
     (AtomicUsize::new(0), AtomicUsize::new(0)),
     (AtomicUsize::new(0), AtomicUsize::new(0)),
     (AtomicUsize::new(0), AtomicUsize::new(0)),
     (AtomicUsize::new(0), AtomicUsize::new(0)),
 ];
 
-fn store(d: &Decision) {
+/// `LG_SLAB_MIN`, `LG_PMD` and `LG_META` hold [`Decision::wf`] values:
+/// they start so and only [`store`] writes them, from a decision that
+/// satisfies it. Verus cannot see an invariant of a `core` atomic, so these
+/// three loads state it without proof.
+#[verifier::external_body]
+#[inline(always)]
+fn load_lg_slab_min() -> (lg: u8)
+    ensures
+        lg_ok(lg),
+{
+    LG_SLAB_MIN.load(Ordering::Relaxed)
+}
+
+#[verifier::external_body]
+#[inline(always)]
+fn load_lg_pmd() -> (lg: u8)
+    ensures
+        lg < 64,
+{
+    LG_PMD.load(Ordering::Relaxed)
+}
+
+#[verifier::external_body]
+#[inline(always)]
+fn load_lg_meta() -> (lg: u8)
+    ensures
+        lg_ok(lg),
+{
+    LG_META.load(Ordering::Relaxed)
+}
+
+fn store(d: &Decision)
+    requires
+        d.wf(),
+{
     LG_SLAB_MIN.store(d.lg_slab_min, Ordering::Relaxed);
     LG_PMD.store(d.lg_pmd, Ordering::Relaxed);
     LG_META.store(d.lg_meta, Ordering::Relaxed);
@@ -303,7 +413,12 @@ fn store(d: &Decision) {
 
 /// Apply `key` on the probed kernel. Called once from init, before any
 /// region is committed.
-pub fn configure(key: Key, features: &Features) -> Decision {
+pub fn configure(key: Key, features: &Features) -> (d: Decision)
+    requires
+        features.thp.lg_pmd < 64,
+    ensures
+        d.wf(),
+{
     KEY.store(
         match key {
             Key::Never => 0,
@@ -325,7 +440,10 @@ pub fn configure(key: Key, features: &Features) -> Decision {
 /// rewrites the stored key and calls [`force_never`]; the report says
 /// so). `auto` and `never` are never forced, and no limit
 /// (`sys::cgroup::UNLIMITED`) forces nothing.
-pub fn forced_by_limit(key: Key, limit: u64) -> bool {
+pub fn forced_by_limit(key: Key, limit: u64) -> (r: bool)
+    ensures
+        r == (key == Key::Always && limit < crate::policy::THP_MIN_LIMIT),
+{
     key == Key::Always && limit < crate::policy::THP_MIN_LIMIT
 }
 
@@ -335,7 +453,7 @@ pub fn forced_by_limit(key: Key, limit: u64) -> bool {
 /// `never` advice (the module doc; the huge reservation was never recorded
 /// and stays with the host's policy, as under a configured `never`).
 pub fn force_never() {
-    let d = Decision::off(Reason::Forced, LG_PMD.load(Ordering::Relaxed));
+    let d = Decision::off(Reason::Forced, load_lg_pmd());
     store(&d);
     for (addr, len) in RESERVATIONS.iter() {
         let len = len.load(Ordering::Relaxed);
@@ -426,7 +544,7 @@ fn reset_reservations_for_test() {
 
 /// The host's global THP mode as read at init (0 for a kernel without
 /// THP, else [`host_code`]), for the report.
-static HOST_MODE: AtomicU8 = AtomicU8::new(0);
+exec static HOST_MODE: AtomicU8 = AtomicU8::new(0);
 
 /// `ThpSetting` to the byte `HOST_MODE` holds (never 0).
 const fn host_code(e: ThpSetting) -> u8 {
@@ -479,7 +597,7 @@ pub fn class_mode(slab_size: usize) -> Mode {
     if mode == Mode::Off {
         return Mode::Off;
     }
-    let lg_min = LG_SLAB_MIN.load(Ordering::Relaxed);
+    let lg_min = load_lg_slab_min();
     if lg_min != NO_SIZE && slab_size >= 1usize << lg_min {
         mode
     } else {
@@ -489,15 +607,27 @@ pub fn class_mode(slab_size: usize) -> Mode {
 
 /// The PMD size in bytes.
 #[inline]
-pub fn pmd_size() -> usize {
-    1usize << LG_PMD.load(Ordering::Relaxed)
+pub fn pmd_size() -> (pmd: usize)
+    ensures
+        pmd > 0,
+        pmd & sub(pmd, 1) == 0,
+{
+    let lg = load_lg_pmd();
+    proof {
+        let l = lg as usize;
+        assert(l < 64 ==> (1usize << l) > 0 && (1usize << l) & sub(1usize << l, 1) == 0) by (bit_vector);
+    }
+    1usize << lg
 }
 
 /// The folio metadata commits are rounded to and advised with; 0 when
 /// metadata is left alone.
 #[inline]
-pub fn meta_folio_size() -> usize {
-    match LG_META.load(Ordering::Relaxed) {
+pub fn meta_folio_size() -> (r: usize)
+    ensures
+        r == 0 || exists|k: u64| k < 64 && r == #[trigger] (1usize << k),
+{
+    match load_lg_meta() {
         NO_SIZE => 0,
         lg if MODE.load(Ordering::Acquire) != Mode::Off as u8 => 1usize << lg,
         _ => 0,
@@ -516,18 +646,56 @@ pub fn huge_min() -> usize {
 
 /// The PMD-aligned chunk around `[addr, addr + len)`, clipped to
 /// `[lo, hi)`. Pure.
-pub fn chunk(addr: usize, len: usize, lo: usize, hi: usize, pmd: usize) -> (usize, usize) {
+pub fn chunk(addr: usize, len: usize, lo: usize, hi: usize, pmd: usize) -> (r: (usize, usize))
+    requires
+        pmd > 0,
+        pmd & sub(pmd, 1) == 0,
+        addr + len <= usize::MAX,
+    ensures
+        lo <= r.0,
+        r.1 <= hi,
+        r.0 == lo || r.0 & sub(pmd, 1) == 0,
+        r.1 == hi || r.1 & sub(pmd, 1) == 0,
+        // The chunk covers the range, where the range lies in `[lo, hi)`
+        // and rounding its end up does not overflow.
+        lo <= addr ==> r.0 <= addr,
+        addr + len <= hi && addr + len + (pmd - 1) <= usize::MAX ==> addr + len <= r.1,
+        // A non-empty chunk, where the range starts in `[lo, hi]` and `lo`
+        // is a PMD below the top of the address space.
+        lo <= addr <= hi && lo + pmd <= usize::MAX ==> r.0 <= r.1,
+{
+    proof {
+        let (a, x, m) = (addr, (addr + len) as usize, sub(pmd, 1));
+        assert((a & !m) <= a && (a & !m) & m == 0) by (bit_vector);
+        assert(forall|y: usize| #[trigger] (y & !m) & m == 0) by (bit_vector);
+        assert(pmd > 0 && pmd & m == 0 && m == pmd - 1 && x + m <= usize::MAX ==> x <= ((x + m) as usize & !m))
+            by (bit_vector);
+    }
     let start = (addr & !(pmd - 1)).max(lo);
     let end = (addr + len).saturating_add(pmd - 1) & !(pmd - 1);
+    proof {
+        if lo <= addr <= hi && lo + pmd <= usize::MAX {
+            let (x, m) = ((addr + len) as usize, sub(pmd, 1));
+            let s = x.saturating_add(m);
+            let a = addr;
+            assert(s == usize::MAX || s == x + m);
+            assert(x <= s);
+            assert((s == usize::MAX ==> end == usize::MAX - m) && (s != usize::MAX ==> x <= end) && (a & !m) <= end)
+                by (bit_vector)
+                requires pmd > 0, pmd & m == 0, m == pmd - 1, end == s & !m, s == usize::MAX || s == x + m, a <= x, x <= s;
+        }
+    }
     (start, end.min(hi))
 }
 
+#[verifier::external_body]
 fn madvise_hugepage(addr: usize, len: usize) -> bool {
     // SAFETY: the callers pass ranges inside the allocator's own
     // reservations; `MADV_HUGEPAGE` changes a VMA flag, never contents.
     unsafe { crate::sys::madvise(addr, len, crate::sys::MADV_HUGEPAGE) }.is_ok()
 }
 
+#[verifier::external_body]
 fn madvise_nohugepage(addr: usize, len: usize) -> bool {
     // SAFETY: a reservation this process owns; `MADV_NOHUGEPAGE` sets a
     // VMA flag, never contents.
@@ -598,6 +766,8 @@ pub fn stats() -> Stats {
         nohuge_ranges: NOHUGE_RANGES.load(Ordering::Relaxed),
     }
 }
+
+} // verus!
 
 #[cfg(test)]
 mod tests {

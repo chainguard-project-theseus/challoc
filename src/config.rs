@@ -39,6 +39,9 @@ use core::ffi::CStr;
 use core::fmt::{self, Write as _};
 
 use crate::heap::{MAX_CAP, MIN_CAP};
+use vstd::prelude::verus;
+#[cfg(verus_only)]
+use vstd::prelude::*;
 
 /// Largest accepted `tcache_nslots_small_max`. A cache array is allocated
 /// from the metadata region as one object, and `Meta::alloc` serves layouts
@@ -62,6 +65,8 @@ pub const MAX_INTERVAL_MS: i64 = 1_000_000_000_000;
 /// `layout::LG_HUGE_PREFERRED`); no run can be larger, so anything above
 /// means "retain every freed run for decay".
 pub const MAX_HUGE_RETAIN_MAX: usize = 1 << crate::layout::LG_HUGE_PREFERRED;
+verus! {
+
 /// `thp` values (`default` is accepted as `never`; design 7, 10 and 17,
 /// `thp.rs`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -81,6 +86,8 @@ pub enum Thp {
     /// metadata commits are advised.
     Always,
 }
+
+} // verus!
 
 impl Thp {
     pub const fn name(self) -> &'static CStr {

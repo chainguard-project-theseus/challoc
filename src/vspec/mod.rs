@@ -9,11 +9,18 @@
 
 use vstd::prelude::*;
 
+pub(crate) mod addr;
+pub(crate) mod arena;
 pub(crate) mod check;
+pub(crate) mod class;
 mod config;
 pub(crate) mod core_int;
 mod fmt;
+mod heap;
+pub(crate) mod huge;
+pub(crate) mod layout;
 pub(crate) mod lock;
+pub(crate) mod meta;
 mod misc;
 mod misc_extra;
 mod policy;

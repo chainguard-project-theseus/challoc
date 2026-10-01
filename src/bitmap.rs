@@ -19,20 +19,703 @@
 //! non-zero, so a heap with a few thousand slabs scans one word.
 
 use core::sync::atomic::{AtomicU64, Ordering};
+use vstd::prelude::*;
+
+#[cfg(verus_only)]
+use crate::vspec::core_int::popcount;
+#[cfg(verus_only)]
+use crate::vspec::ptr::ptr_add;
+use crate::vspec::word::WordPerm;
+#[cfg(verus_only)]
+use crate::vspec::word::word_addr;
+use vstd::invariant::{AtomicInvariant, InvariantPredicate};
+use vstd::raw_ptr::{PointsTo, ptr_mut_ref, ptr_ref};
+use vstd::resource::Loc;
+use vstd::resource::set::GhostSubset;
+#[cfg(verus_only)]
+use vstd::std_specs::bits::{
+    axiom_u64_leading_zeros, axiom_u64_trailing_zeros, u64_leading_zeros, u64_trailing_zeros,
+};
+
+verus! {
+
+/// Set bits of `x` among bits `0..k`.
+pub open spec fn count_below(x: u64, k: nat) -> nat
+    decreases k,
+{
+    if k == 0 {
+        0
+    } else {
+        count_below(x, (k - 1) as nat) + if has_bit(x, (k - 1) as u64) { 1nat } else { 0nat }
+    }
+}
+
+/// Set bits of `x`, counted bit by bit.
+pub open spec fn ones(x: u64) -> nat {
+    count_below(x, 64)
+}
+
+/// `popcount` (`vspec::core_int`, the spec of `count_ones`) counted bit by
+/// bit.
+proof fn lemma_popcount(x: u64)
+    ensures
+        popcount(x) == ones(x),
+    decreases x,
+{
+    if x == 0 {
+        assert forall|b: u64| b < 64 implies !#[trigger] has_bit(0u64, b) by {
+            assert((0u64 >> b) & 1u64 != 1u64) by (bit_vector);
+        }
+        lemma_count_zero(0u64, 64);
+    } else {
+        lemma_popcount(x / 2);
+        assert(x / 2 == x >> 1u64 && (x % 2 == 1 <==> has_bit(x, 0u64))) by (bit_vector);
+        lemma_count_shr_prefix(x, 1, 63);
+        assert(!has_bit(x >> 1u64, 63u64)) by (bit_vector);
+        assert(count_below(x, 0) == 0);
+        assert(count_below(x, 1) == if has_bit(x, 0u64) { 1nat } else { 0nat });
+        assert(count_below(x >> 1u64, 64) == count_below(x >> 1u64, 63));
+    }
+}
+
+/// Whether bit `b` of `x` is set.
+pub open spec fn has_bit(x: u64, b: u64) -> bool {
+    (x >> b) & 1u64 == 1u64
+}
+
+/// Every bit of `x` is a bit of `y`.
+pub open spec fn subset(x: u64, y: u64) -> bool {
+    x & !y == 0u64
+}
+
+pub proof fn lemma_bit_ops(x: u64, y: u64, b: u64)
+    requires
+        b < 64,
+    ensures
+        has_bit(x | y, b) == (has_bit(x, b) || has_bit(y, b)),
+        has_bit(x & y, b) == (has_bit(x, b) && has_bit(y, b)),
+        has_bit(!x, b) == !has_bit(x, b),
+        has_bit(x & !y, b) == (has_bit(x, b) && !has_bit(y, b)),
+{
+    assert(((x | y) >> b) & 1u64 == 1u64 <==> ((x >> b) & 1u64 == 1u64 || (y >> b) & 1u64 == 1u64)) by (bit_vector)
+        requires b < 64;
+    assert(((x & y) >> b) & 1u64 == 1u64 <==> ((x >> b) & 1u64 == 1u64 && (y >> b) & 1u64 == 1u64)) by (bit_vector)
+        requires b < 64;
+    assert(((!x) >> b) & 1u64 == 1u64 <==> !((x >> b) & 1u64 == 1u64)) by (bit_vector)
+        requires b < 64;
+    assert(((x & !y) >> b) & 1u64 == 1u64 <==> ((x >> b) & 1u64 == 1u64 && !((y >> b) & 1u64 == 1u64)))
+        by (bit_vector)
+        requires b < 64;
+}
+
+/// `subset` bit by bit.
+proof fn lemma_subset_bits(x: u64, y: u64)
+    ensures
+        subset(x, y) <==> forall|b: u64| b < 64 ==> #[trigger] has_bit(x, b) ==> has_bit(y, b),
+{
+    if subset(x, y) {
+        assert forall|b: u64| b < 64 && #[trigger] has_bit(x, b) implies has_bit(y, b) by {
+            lemma_bit_ops(x, y, b);
+            assert((0u64 >> b) & 1u64 != 1u64) by (bit_vector);
+        }
+    }
+    if forall|b: u64| b < 64 ==> #[trigger] has_bit(x, b) ==> has_bit(y, b) {
+        assert forall|b: u64| b < 64 implies !#[trigger] has_bit(x & !y, b) by {
+            lemma_bit_ops(x, y, b);
+        }
+        lemma_zero_of_no_bits(x & !y);
+    }
+}
+
+/// A word with no set bit is zero.
+proof fn lemma_zero_of_no_bits(x: u64)
+    requires
+        forall|b: u64| b < 64 ==> !#[trigger] has_bit(x, b),
+    ensures
+        x == 0u64,
+{
+    assert forall|b: u64| b < 64 implies (x >> b) & 1u64 == 0u64 by {
+        assert(!has_bit(x, b));
+        assert((x >> b) & 1u64 != 1u64 ==> (x >> b) & 1u64 == 0u64) by (bit_vector);
+    }
+    lemma_zero_of_low_bits_zero(x, 64);
+}
+
+/// Bits `0..k` of `x` clear and none above means `x` is zero.
+proof fn lemma_zero_of_low_bits_zero(x: u64, k: u64)
+    requires
+        k <= 64,
+        forall|b: u64| b < k ==> (x >> b) & 1u64 == 0u64,
+        k < 64 ==> x >> k == 0u64,
+    ensures
+        x == 0u64,
+    decreases k,
+{
+    if k > 0 {
+        let j = (k - 1) as u64;
+        assert((x >> j) & 1u64 == 0u64);
+        assert((x >> j) & 1u64 == 0u64 && (j + 1 < 64 ==> x >> ((j + 1) as u64) == 0u64) ==> x >> j == 0u64)
+            by (bit_vector)
+            requires j < 64;
+        if j == 63 {
+            assert((x >> j) & 1u64 == 0u64 ==> j == 63 ==> x >> j == 0u64) by (bit_vector);
+        }
+        lemma_zero_of_low_bits_zero(x, j);
+    } else {
+        assert(x >> 0u64 == x) by (bit_vector);
+    }
+}
+
+/// Bits of `x` below `k` that are set, counted, match `count_below`
+/// for any two words with the same bits below `k`, and grow with `subset`.
+proof fn lemma_count_subset(x: u64, y: u64, k: nat)
+    requires
+        k <= 64,
+        forall|b: u64| b < k ==> #[trigger] has_bit(x, b) ==> has_bit(y, b),
+    ensures
+        count_below(x, k) <= count_below(y, k),
+    decreases k,
+{
+    if k > 0 {
+        let j = (k - 1) as u64;
+        assert(has_bit(x, j) ==> has_bit(y, j));
+        lemma_count_subset(x, y, (k - 1) as nat);
+    }
+}
+
+/// Clearing bit `h` of `x` removes it from the count of every prefix above.
+proof fn lemma_count_clear(x: u64, h: u64, k: nat)
+    requires
+        k <= 64,
+        h < 64,
+        has_bit(x, h),
+    ensures
+        count_below(x & !(1u64 << h), k) + (if k > h { 1nat } else { 0nat })
+            == count_below(x, k),
+    decreases k,
+{
+    if k > 0 {
+        let j = (k - 1) as u64;
+        assert(has_bit(x & !(1u64 << h), j) == (has_bit(x, j) && j != h)) by (bit_vector)
+            requires j < 64, h < 64;
+        lemma_count_clear(x, h, (k - 1) as nat);
+    }
+}
+
+/// No set bit among `0..k` means a zero count, and a zero word has none.
+proof fn lemma_count_zero(x: u64, k: nat)
+    requires
+        k <= 64,
+    ensures
+        (forall|b: u64| b < k ==> !#[trigger] has_bit(x, b)) ==> count_below(x, k) == 0,
+        count_below(x, k) == 0 ==> forall|b: u64| b < k ==> !#[trigger] has_bit(x, b),
+    decreases k,
+{
+    if k > 0 {
+        let j = (k - 1) as u64;
+        lemma_count_zero(x, (k - 1) as nat);
+        if forall|b: u64| b < k ==> !#[trigger] has_bit(x, b) {
+            assert(!has_bit(x, j));
+        }
+    }
+}
+
+proof fn lemma_count_bound(x: u64, k: nat)
+    ensures
+        count_below(x, k) <= k,
+    decreases k,
+{
+    if k > 0 {
+        lemma_count_bound(x, (k - 1) as nat);
+    }
+}
 
 /// Keep only the lowest `n` set bits of `m`.
 #[inline]
-pub const fn lowest_n_bits(mut m: u64, n: usize) -> u64 {
+pub const fn lowest_n_bits(m: u64, n: usize) -> (r: u64)
+    ensures
+        subset(r, m),
+        popcount(r) == if popcount(m) <= n { popcount(m) } else { n as nat },
+        // No set bit of `m` below a bit of `r` is left out.
+        forall|b1: u64, b2: u64| b1 < b2 < 64 && #[trigger] has_bit(r, b2) && #[trigger] has_bit(m, b1) ==> has_bit(r, b1),
+{
+    let ghost m0 = m;
+    let mut m = m;
+    proof {
+        assert(m & !m == 0u64) by (bit_vector);
+        lemma_popcount(m);
+    }
     if n >= 64 {
+        proof {
+            lemma_count_bound(m, 64);
+        }
         return m;
     }
     let mut have = m.count_ones() as usize;
-    while have > n {
+    while have > n
+        invariant
+            have as nat == ones(m),
+            subset(m, m0),
+            m == m0 || (have >= n && ones(m0) > n),
+            forall|b1: u64, b2: u64| b1 < b2 < 64 && #[trigger] has_bit(m, b2) && #[trigger] has_bit(m0, b1) ==> has_bit(m, b1),
+        decreases have,
+    {
+        proof {
+            lemma_count_zero(m, 64);
+            if m == 0 {
+                assert forall|b: u64| b < 64 implies !#[trigger] has_bit(m, b) by {
+                    assert((0u64 >> b) & 1u64 != 1u64) by (bit_vector);
+                }
+            }
+            axiom_u64_leading_zeros(m);
+        }
+        let ghost prev = m;
+        let ghost h = (63 - u64_leading_zeros(m)) as u64;
         // `have > n >= 0` so `m` is non-zero and has a highest set bit.
         m &= !(1u64 << (63 - m.leading_zeros()));
         have -= 1;
+        proof {
+            assert((prev >> h) & 1u64 != 0u64);
+            assert((prev >> h) & 1u64 != 0u64 ==> (prev >> h) & 1u64 == 1u64) by (bit_vector);
+            assert(has_bit(prev, h));
+            lemma_count_clear(prev, h, 64);
+            lemma_subset_bits(prev, m0);
+            assert forall|b: u64| b < 64 implies #[trigger] has_bit(m, b) == (has_bit(prev, b) && b != h) by {
+                assert(has_bit(prev & !(1u64 << h), b) == (has_bit(prev, b) && b != h)) by (bit_vector)
+                    requires b < 64, h < 64;
+            }
+            lemma_subset_bits(m, m0);
+            assert forall|b1: u64, b2: u64| b1 < b2 < 64 && #[trigger] has_bit(m, b2) && #[trigger] has_bit(m0, b1)
+                implies has_bit(m, b1) by {
+                // Bits of `prev` above `h` are clear, so `b2 < h`.
+                assert(b2 <= h);
+            }
+        }
+    }
+    proof {
+        lemma_popcount(m);
+        lemma_popcount(m0);
     }
     m
+}
+
+/// Bits `s .. s + k` of a word.
+pub open spec fn range_mask(k: u64, s: u64) -> u64 {
+    (((1u64 << k) - 1) as u64) << s
+}
+
+/// `(1 << n) - 1` cannot underflow, and is `range_mask` at 0.
+proof fn lemma_one_shl(n: usize)
+    requires
+        n < 64,
+    ensures
+        1u64 << n >= 1,
+        forall|s: u32| s < 64 ==> #[trigger] ((((1u64 << n) - 1) as u64) << s) == range_mask(n as u64, s as u64),
+{
+    assert(1u64 << n >= 1) by (bit_vector)
+        requires n < 64;
+    assert forall|s: u32| s < 64 implies #[trigger] ((((1u64 << n) - 1) as u64) << s) == range_mask(n as u64, s as u64) by {
+        assert(((((1u64 << n) - 1) as u64) << s) == ((((1u64 << (n as u64)) - 1) as u64) << (s as u64)))
+            by (bit_vector)
+            requires n < 64, s < 64;
+    }
+}
+
+/// Count of a prefix that holds no set bit past `a`.
+proof fn lemma_count_flat(x: u64, a: nat, k: nat)
+    requires
+        a <= k <= 64,
+        forall|b: u64| a <= b < k ==> !#[trigger] has_bit(x, b),
+    ensures
+        count_below(x, k) == count_below(x, a),
+    decreases k,
+{
+    if k > a {
+        assert(!has_bit(x, (k - 1) as u64));
+        lemma_count_flat(x, a, (k - 1) as nat);
+    }
+}
+
+/// `range_mask(k, s)` has `k` bits and sits in `s .. s + k`.
+proof fn lemma_range_mask(k: u64, s: u64)
+    requires
+        0 < k < 64,
+        s + k <= 64,
+    ensures
+        ones(range_mask(k, s)) == k,
+        range_mask(k, s) != !0u64,
+        (range_mask(k, s) >> s) << s == range_mask(k, s),
+        range_mask(k, s) >> s == ((1u64 << k) - 1) as u64,
+        forall|b: u64| b < 64 ==> #[trigger] has_bit(range_mask(k, s), b) == (s <= b < s + k),
+{
+    let m = range_mask(k, s);
+    assert forall|b: u64| b < 64 implies #[trigger] has_bit(m, b) == (s <= b < s + k) by {
+        assert(((((((1u64 << k) - 1) as u64) << s) >> b) & 1u64 == 1u64) == (s <= b && b < s + k))
+            by (bit_vector)
+            requires 0 < k < 64, s + k <= 64, b < 64;
+    }
+    lemma_count_range(m, k, s, 64);
+    assert(((((1u64 << k) - 1) as u64) << s) != !0u64) by (bit_vector)
+        requires 0 < k < 64, s + k <= 64;
+    assert((((((1u64 << k) - 1) as u64) << s) >> s) << s == ((((1u64 << k) - 1) as u64) << s))
+        by (bit_vector)
+        requires 0 < k < 64, s + k <= 64;
+    assert((((((1u64 << k) - 1) as u64) << s) >> s) == (((1u64 << k) - 1) as u64))
+        by (bit_vector)
+        requires 0 < k < 64, s + k <= 64;
+}
+
+proof fn lemma_count_range(m: u64, k: u64, s: u64, j: nat)
+    requires
+        j <= 64,
+        s + k <= 64,
+        forall|b: u64| b < 64 ==> #[trigger] has_bit(m, b) == (s <= b < s + k),
+    ensures
+        count_below(m, j) == if j <= s { 0 } else if j >= s + k { k as int } else { j - s },
+    decreases j,
+{
+    if j > 0 {
+        assert(has_bit(m, (j - 1) as u64) == (s <= j - 1 < s + k));
+        lemma_count_range(m, k, s, (j - 1) as nat);
+    }
+}
+
+/// Shifting right by `s` drops the count of the low `s` bits.
+proof fn lemma_count_shr(x: u64, s: u64)
+    requires
+        s < 64,
+    ensures
+        ones(x >> s) + count_below(x, s as nat) == ones(x),
+{
+    lemma_count_shr_prefix(x, s, (64 - s) as nat);
+    assert forall|b: u64| 64 - s <= b < 64 implies !#[trigger] has_bit(x >> s, b) by {
+        assert(((x >> s) >> b) & 1u64 != 1u64) by (bit_vector)
+            requires s < 64, 64 - s <= b, b < 64;
+    }
+    lemma_count_flat(x >> s, (64 - s) as nat, 64);
+}
+
+proof fn lemma_count_shr_prefix(x: u64, s: u64, j: nat)
+    requires
+        s < 64,
+        j + s <= 64,
+    ensures
+        count_below(x >> s, j) + count_below(x, s as nat) == count_below(x, (j + s) as nat),
+    decreases j,
+{
+    if j > 0 {
+        let b = (j - 1) as u64;
+        assert(((x >> s) >> b) & 1u64 == (x >> ((b + s) as u64)) & 1u64) by (bit_vector)
+            requires s < 64, b + s < 64;
+        lemma_count_shr_prefix(x, s, (j - 1) as nat);
+    }
+}
+
+/// A subset has no more bits.
+proof fn lemma_count_le(x: u64, y: u64)
+    requires
+        subset(x, y),
+    ensures
+        ones(x) <= ones(y),
+{
+    lemma_subset_bits(x, y);
+    lemma_count_subset(x, y, 64);
+}
+
+// Slot tokens (`verus/TODO.md`, uniqueness).
+//
+// Each class bitmap has a ghost authority (`SlabTable::new` makes it) whose
+// elements are slot addresses; a token is a `GhostSubset<int>` of that
+// authority, and two tokens are disjoint, so no address is in two of them.
+// The authority holds one element per slot ([`Slots::real`]: padding bits
+// have none). The token of a slot sits in exactly one place: in the
+// invariant of its bitmap word while its bit is clear ([`WordPred`]), or
+// with whoever set the bit (a refill, then a thread cache, then the
+// program). A claim moves the tokens of the bits its `fetch_or` won out of
+// the word invariant; a release moves them back, and because it must hand
+// them over, its `fetch_and` provably finds every bit it clears set.
+//
+// The word-level proofs work on bit numbers `slab * slab_bits + slot` of
+// the class bitmap; [`Slots::addr`] maps them to addresses, one to one on
+// slots ([`lemma_addr_inj`]).
+
+/// Namespace of the bitmap word invariants.
+pub open spec fn word_ns() -> int {
+    0x6269_746d
+}
+
+/// What one class bitmap's slot tokens are about: the authority, the
+/// bits per slab (`Class::slab_bits`), the slots per slab, the bits of the
+/// whole region (`nslabs * slab_bits`), and the slot geometry (the class
+/// region's base, the slab size and the slot size).
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub ghost struct Slots {
+    pub loc: Loc,
+    pub sb: int,
+    pub nslots: int,
+    pub nbits: int,
+    pub base: int,
+    pub slab_size: int,
+    pub size: int,
+}
+
+impl Slots {
+    /// Bit `b` of the class bitmap is a slot: slot `b % sb` of slab
+    /// `b / sb` is below `nslots`, and the slab is in the region.
+    pub open spec fn real(self, b: int) -> bool {
+        0 <= b < self.nbits && b % self.sb < self.nslots
+    }
+
+    /// The address of bit `b`'s slot (`Regions::slot_at`).
+    pub open spec fn addr(self, b: int) -> int {
+        self.base + (b / self.sb) * self.slab_size + (b % self.sb) * self.size
+    }
+
+    /// The geometry of a class (`Class::wf`): slots fit in a slab.
+    pub open spec fn wf(self) -> bool {
+        &&& 0 < self.nslots <= self.sb
+        &&& 0 < self.size
+        &&& self.nslots * self.size <= self.slab_size
+    }
+}
+
+/// The addresses of the slots of bits `bits`.
+pub open spec fn addrs(s: Slots, bits: Set<int>) -> Set<int> {
+    bits.map(|b: int| s.addr(b))
+}
+
+/// Two slots at one address are one slot.
+pub proof fn lemma_addr_inj(s: Slots, b1: int, b2: int)
+    requires
+        s.wf(),
+        s.real(b1),
+        s.real(b2),
+        s.addr(b1) == s.addr(b2),
+    ensures
+        b1 == b2,
+{
+    let (q1, r1, q2, r2) = (b1 / s.sb, b1 % s.sb, b2 / s.sb, b2 % s.sb);
+    assert(0 <= r1 * s.size < s.slab_size) by (nonlinear_arith)
+        requires 0 <= r1 < s.nslots, 0 < s.size, s.nslots * s.size <= s.slab_size;
+    assert(0 <= r2 * s.size < s.slab_size) by (nonlinear_arith)
+        requires 0 <= r2 < s.nslots, 0 < s.size, s.nslots * s.size <= s.slab_size;
+    let x = q1 * s.slab_size + r1 * s.size;
+    assert(x == q2 * s.slab_size + r2 * s.size);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(x, s.slab_size, q1, r1 * s.size);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(x, s.slab_size, q2, r2 * s.size);
+    assert(r1 == r2) by (nonlinear_arith)
+        requires r1 * s.size == r2 * s.size, 0 < s.size;
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(b1, s.sb);
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod(b2, s.sb);
+}
+
+/// The addresses of a difference of slot sets are the difference of their
+/// addresses.
+pub proof fn lemma_addrs_difference(s: Slots, a: Set<int>, b: Set<int>)
+    requires
+        s.wf(),
+        forall|x: int| a.contains(x) ==> s.real(x),
+        forall|x: int| b.contains(x) ==> s.real(x),
+    ensures
+        addrs(s, a.difference(b)) == addrs(s, a).difference(addrs(s, b)),
+{
+    broadcast use Set::lemma_map_contains;
+    let f = |x: int| s.addr(x);
+    assert forall|y: int| #[trigger] addrs(s, a.difference(b)).contains(y) == addrs(s, a).difference(addrs(s, b)).contains(y) by {
+        if addrs(s, a.difference(b)).contains(y) {
+            let x = choose|x: int| a.difference(b).contains(x) && y == f(x);
+            if addrs(s, b).contains(y) {
+                let x2 = choose|x2: int| b.contains(x2) && y == f(x2);
+                lemma_addr_inj(s, x, x2);
+            }
+        }
+        if addrs(s, a).difference(addrs(s, b)).contains(y) {
+            let x = choose|x: int| a.contains(x) && y == f(x);
+            assert(!b.contains(x));
+            assert(a.difference(b).contains(x));
+        }
+    }
+    assert(addrs(s, a.difference(b)) =~= addrs(s, a).difference(addrs(s, b)));
+}
+
+/// The addresses of a union are the union of the addresses.
+pub proof fn lemma_addrs_union(s: Slots, a: Set<int>, b: Set<int>)
+    ensures
+        addrs(s, a.union(b)) == addrs(s, a).union(addrs(s, b)),
+{
+    a.lemma_map_union_commute(b, |x: int| s.addr(x));
+}
+
+/// The slots of mask `x` of word `i` of a slab whose slot 0 is bit
+/// `first`: bits `first + 64 * i + k` for the set bits `k` of `x`.
+pub open spec fn mask_bits(s: Slots, first: int, i: int, x: u64) -> Set<int> {
+    Set::<int>::range(first + 64 * i, first + 64 * i + 64).filter(
+        |b: int| has_bit(x, (b - first - 64 * i) as u64) && s.real(b))
+}
+
+/// Slot `t` of slab `slab` is bit `slab * sb + t`, at the slot's address,
+/// and a slot exactly when `t < nslots` (for a slab in the region).
+pub proof fn lemma_slab_bit(s: Slots, slab: int, t: int)
+    requires
+        s.wf(),
+        0 <= slab,
+        0 <= t < s.sb,
+        slab * s.sb + s.sb <= s.nbits,
+    ensures
+        (slab * s.sb + t) / s.sb == slab,
+        (slab * s.sb + t) % s.sb == t,
+        s.addr(slab * s.sb + t) == s.base + slab * s.slab_size + t * s.size,
+        s.real(slab * s.sb + t) == (t < s.nslots),
+{
+    vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(slab * s.sb + t, s.sb, slab, t);
+    assert(0 <= slab * s.sb) by (nonlinear_arith)
+        requires 0 <= slab, 0 < s.sb;
+}
+
+/// The fixed part of word `j`'s invariant: its bitmap, its index in the
+/// class bitmap and its address.
+// Ghost: ordinary builds keep the type but erase the code that reads it.
+#[allow(dead_code)]
+pub ghost struct WordKey {
+    pub slots: Slots,
+    pub j: int,
+    pub addr: usize,
+}
+
+/// The slots of word `j` whose bits are clear in `x`.
+pub open spec fn free_bits(s: Slots, j: int, x: u64) -> Set<int> {
+    Set::<int>::range(64 * j, 64 * j + 64).filter(|b: int| !has_bit(x, (b - 64 * j) as u64) && s.real(b))
+}
+
+/// The slots of word `j` whose bits are set in `x`.
+pub open spec fn set_bits(s: Slots, j: int, x: u64) -> Set<int> {
+    Set::<int>::range(64 * j, 64 * j + 64).filter(|b: int| has_bit(x, (b - 64 * j) as u64) && s.real(b))
+}
+
+/// A bitmap word's invariant: the word's permission, and the tokens of
+/// exactly the slots whose bits are clear.
+pub struct WordPred;
+
+impl InvariantPredicate<WordKey, (WordPerm, GhostSubset<int>)> for WordPred {
+    open spec fn inv(k: WordKey, v: (WordPerm, GhostSubset<int>)) -> bool {
+        &&& v.0.addr() == k.addr
+        &&& v.1.id() == k.slots.loc
+        &&& v.1@ == addrs(k.slots, free_bits(k.slots, k.j, v.0.value()))
+    }
+}
+
+/// The invariant of one bitmap word.
+pub type WordInv = AtomicInvariant<WordKey, (WordPerm, GhostSubset<int>), WordPred>;
+
+/// `invs` holds the invariant of each of the `nwords` words of the class
+/// bitmap `s` at `base`.
+pub open spec fn words_wf(invs: Map<int, WordInv>, s: Slots, base: usize, nwords: int) -> bool {
+    forall|j: int| 0 <= j < nwords ==> {
+        &&& #[trigger] invs.contains_key(j)
+        &&& invs[j].constant() == (WordKey { slots: s, j, addr: (base + 8 * j) as usize })
+        &&& invs[j].namespace() == word_ns()
+    }
+}
+
+/// The slots of a class bitmap: what its authority is made with.
+pub open spec fn slot_set(s: Slots) -> Set<int> {
+    addrs(s, Set::<int>::range(0, s.nbits).filter(|b: int| s.real(b)))
+}
+
+/// The word invariants of a fresh class bitmap of `n` words at `base`:
+/// every word zero, so each holds the tokens of all its slots, split off
+/// `toks`, which holds at least those.
+pub proof fn fresh_word_invs(
+    tracked perms: Map<int, WordPerm>,
+    tracked toks: GhostSubset<int>,
+    s: Slots,
+    base: usize,
+    n: nat,
+) -> (tracked r: Map<int, WordInv>)
+    requires
+        forall|j: int| 0 <= j < n ==> #[trigger] perms.contains_key(j) && perms[j].addr() == base + 8 * j && perms[j].value() == 0,
+        s.wf(),
+        toks.id() == s.loc,
+        forall|b: int| 0 <= b < 64 * n && s.real(b) ==> toks@.contains(#[trigger] s.addr(b)),
+    ensures
+        words_wf(r, s, base, n as int),
+    decreases n,
+{
+    broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, Set::lemma_map_contains};
+    if n == 0 {
+        Map::tracked_empty()
+    } else {
+        let j = n - 1;
+        let tracked mut perms = perms;
+        let tracked mut toks = toks;
+        let tracked p = perms.tracked_remove(j);
+        assert forall|k: u64| k < 64 implies !#[trigger] has_bit(0u64, k) by {
+            assert((0u64 >> k) & 1u64 != 1u64) by (bit_vector);
+        }
+        let fa = addrs(s, free_bits(s, j, 0));
+        assert forall|y: int| fa.contains(y) implies toks@.contains(y) by {
+            let b = choose|b: int| free_bits(s, j, 0).contains(b) && y == s.addr(b);
+        }
+        let tracked t = toks.split(fa);
+        assert forall|b: int| 0 <= b < 64 * j && s.real(b) implies toks@.contains(#[trigger] s.addr(b)) by {
+            if fa.contains(s.addr(b)) {
+                let b2 = choose|b2: int| free_bits(s, j, 0).contains(b2) && s.addr(b) == s.addr(b2);
+                lemma_addr_inj(s, b, b2);
+            }
+        }
+        let k = WordKey { slots: s, j, addr: (base + 8 * j) as usize };
+        assert(p.addr() == k.addr);
+        assert(t.id() == s.loc);
+        assert(t@ == addrs(s, free_bits(s, j, p.value())));
+        let tracked inv = AtomicInvariant::<WordKey, (WordPerm, GhostSubset<int>), WordPred>::new(k, (p, t), word_ns());
+        let tracked mut r = fresh_word_invs(perms, toks, s, base, (n - 1) as nat);
+        r.tracked_insert(j, inv);
+        r
+    }
+}
+
+/// Bit `t` of `x >> s` is bit `t + s` of `x`.
+proof fn lemma_shr_bit(x: u64, s: u64, t: u64)
+    requires
+        s < 64,
+        t < 64,
+    ensures
+        has_bit(x >> s, t) == (t + s < 64 && has_bit(x, (t + s) as u64)),
+{
+    if t + s < 64 {
+        let u = (t + s) as u64;
+        assert(((x >> s) >> t) & 1u64 == (x >> u) & 1u64) by (bit_vector)
+            requires s < 64, t < 64, u == t + s, u < 64;
+    } else {
+        assert(((x >> s) >> t) & 1u64 == 0u64) by (bit_vector)
+            requires s < 64, t < 64, t + s >= 64;
+    }
+}
+
+/// Bit `k` of `x << s` is bit `k - s` of `x`.
+proof fn lemma_shl_bit(x: u64, s: u64, k: u64)
+    requires
+        s < 64,
+        k < 64,
+    ensures
+        has_bit(x << s, k) == (k >= s && has_bit(x, (k - s) as u64)),
+{
+    if k >= s {
+        let u = (k - s) as u64;
+        assert(((x << s) >> k) & 1u64 == (x >> u) & 1u64) by (bit_vector)
+            requires s < 64, k < 64, u == k - s, k >= s;
+    } else {
+        assert(((x << s) >> k) & 1u64 == 0u64) by (bit_vector)
+            requires s < 64, k < 64, k < s;
+    }
+}
+
+/// `w` is word `j` of class bitmap `s`: `invs` holds its invariant.
+pub open spec fn word_ok(w: AtomicU64, j: int, s: Slots, invs: Map<int, WordInv>) -> bool {
+    &&& invs.contains_key(j)
+    &&& invs[j].constant() == (WordKey { slots: s, j, addr: word_addr(&w) })
+    &&& invs[j].namespace() == word_ns()
 }
 
 /// One slab's slots in the class bitmap (design section 4).
@@ -52,64 +735,224 @@ pub const fn lowest_n_bits(mut m: u64, n: usize) -> u64 {
 /// are kept permanently set so they can never be claimed and a full slab is
 /// one whose masked words are all ones. Bits outside `mask` belong to the
 /// neighbouring slabs of the same arena's group and are never touched.
+///
+/// Ghost (no bytes): the class bitmap bit of slot 0 (`first`, the slab
+/// times `slab_bits`), the bitmap's slot tokens (`slots`) and the class's
+/// word invariants (`invs`, [`WordInv`]), which hold the permissions of the
+/// view's words.
 pub struct AtomicBitmap<'a> {
     words: &'a [AtomicU64],
     shift: u32,
     mask: u64,
+    #[allow(dead_code)]
+    first: Ghost<int>,
+    #[allow(dead_code)]
+    slots: Ghost<Slots>,
+    #[allow(dead_code)]
+    invs: Tracked<&'a Map<int, WordInv>>,
 }
 
 impl<'a> AtomicBitmap<'a> {
+    /// A whole-word view (`shift == 0`, `mask` all ones) or one word with a
+    /// `range_mask` of fewer than 64 bits; word `i` is word `first / 64 + i`
+    /// of the class bitmap, whose invariant `invs` holds.
+    #[verifier::type_invariant]
+    spec fn inv(self) -> bool {
+        &&& self.words@.len() * 64 <= usize::MAX
+        &&& self.shift < 64
+        &&& (self.mask == !0u64 && self.shift == 0) || (self.words@.len() == 1 && exists|k: u64|
+            0 < k < 64 && self.shift + k <= 64 && self.mask == #[trigger] range_mask(k, self.shift as u64))
+        &&& self.first@ >= 0
+        &&& self.first@ % 64 == self.shift as int
+        &&& self.slots@.wf()
+        &&& forall|i: int| 0 <= i < self.words@.len() ==> #[trigger] word_ok(self.words@[i], self.first@ / 64 + i, self.slots@, *self.invs@)
+    }
+
+    /// The class bitmap bit of slot 0 of the view.
+    pub closed spec fn spec_first(&self) -> int {
+        self.first@
+    }
+
+    /// The class bitmap the view is part of.
+    pub closed spec fn spec_slots(&self) -> Slots {
+        self.slots@
+    }
+
+    /// The class's word invariants.
+    pub closed spec fn spec_invs(&self) -> Map<int, WordInv> {
+        *self.invs@
+    }
+
+    /// The slots of mask `x` of word `i` (slab coordinates): class bitmap
+    /// bits `first + 64 * i + b` for the set bits `b` of `x`.
+    pub open spec fn tokens(&self, i: int, x: u64) -> Set<int> {
+        mask_bits(self.spec_slots(), self.spec_first(), i, x)
+    }
+
+    /// The addresses of [`tokens`](AtomicBitmap::tokens).
+    pub open spec fn slot_addrs(&self, i: int, x: u64) -> Set<int> {
+        addrs(self.spec_slots(), self.tokens(i, x))
+    }
+
+    /// Every set bit of mask `x` of word `i` is a slot.
+    pub open spec fn all_real(&self, i: int, x: u64) -> bool {
+        forall|b: u64| b < 64 && #[trigger] has_bit(x, b) ==> self.spec_slots().real(self.spec_first() + 64 * i + b)
+    }
+
+    /// Number of words in the view.
+    pub closed spec fn spec_words(&self) -> nat {
+        self.words@.len()
+    }
+
+    /// Bits the slab owns, padding included.
+    pub closed spec fn spec_nbits(&self) -> nat {
+        if self.mask == !0u64 { self.words@.len() * 64 } else { popcount(self.mask) }
+    }
+
+    /// The slab's bits of a word in slab coordinates: every mask the view
+    /// returns is a subset of it.
+    pub closed spec fn slab_mask(&self) -> u64 {
+        self.mask >> self.shift
+    }
+
+    /// The width of a sub-word view, or 64: facts the methods share.
+    proof fn lemma_shape(&self) -> (width: u64)
+        requires
+            self.inv(),
+        ensures
+            self.words@.len() * 64 <= usize::MAX,
+            self.shift < 64,
+            0 < width <= 64,
+            self.shift + width <= 64,
+            self.mask == !0u64 ==> self.shift == 0 && width == 64,
+            self.mask != !0u64 ==> self.words@.len() == 1 && width < 64 && self.spec_nbits() == width
+                && self.mask == range_mask(width, self.shift as u64),
+            (self.mask >> self.shift) << self.shift == self.mask,
+    {
+        if self.mask == !0u64 {
+            if self.shift != 0 {
+                let k = choose|k: u64| 0 < k < 64 && self.shift + k <= 64 && self.mask == #[trigger] range_mask(k, self.shift as u64);
+                lemma_range_mask(k, self.shift as u64);
+            }
+            assert(((!0u64) >> 0u32) << 0u32 == !0u64) by (bit_vector);
+            64
+        } else {
+            let k = choose|k: u64| 0 < k < 64 && self.shift + k <= 64 && self.mask == #[trigger] range_mask(k, self.shift as u64);
+            lemma_range_mask(k, self.shift as u64);
+            lemma_popcount(self.mask);
+            k
+        }
+    }
+
     /// View `words` as the bitmap of a slab that owns them whole. Nothing is
     /// initialised; call [`init`] before the first claim on a fresh slab.
     ///
     /// [`init`]: AtomicBitmap::init
     #[inline]
-    pub fn from_words(words: &'a [AtomicU64]) -> AtomicBitmap<'a> {
-        AtomicBitmap {
-            words,
-            shift: 0,
-            mask: !0,
+    pub fn from_words(
+        words: &'a [AtomicU64],
+        first: Ghost<int>,
+        slots: Ghost<Slots>,
+        invs: Tracked<&'a Map<int, WordInv>>,
+    ) -> (r: AtomicBitmap<'a>)
+        requires
+            words@.len() * 64 <= usize::MAX,
+            first@ >= 0,
+            first@ % 64 == 0,
+            slots@.wf(),
+            forall|i: int| 0 <= i < words@.len() ==> #[trigger] word_ok(words@[i], first@ / 64 + i, slots@, *invs@),
+        ensures
+            r.spec_words() == words@.len(),
+            r.spec_nbits() == words@.len() * 64,
+            r.slab_mask() == !0u64,
+            r.spec_first() == first@,
+            r.spec_slots() == slots@,
+            r.spec_invs() == *invs@,
+    {
+        proof {
+            assert((!0u64) >> 0u32 == !0u64) by (bit_vector);
         }
+        AtomicBitmap { words, shift: 0, mask: !0, first, slots, invs }
     }
 
     /// View bits `shift .. shift + nbits` of `word` as the bitmap of a slab
     /// whose bits share that word with other slabs. `nbits` is the slab's
     /// padded bit count (`Class::slab_bits`), below 64.
     #[inline]
-    pub fn sub_word(word: &'a AtomicU64, shift: u32, nbits: usize) -> AtomicBitmap<'a> {
+    pub fn sub_word(
+        word: &'a AtomicU64,
+        shift: u32,
+        nbits: usize,
+        first: Ghost<int>,
+        slots: Ghost<Slots>,
+        invs: Tracked<&'a Map<int, WordInv>>,
+    ) -> (r: AtomicBitmap<'a>)
+        requires
+            nbits > 0 && nbits < 64 && shift as usize + nbits <= 64,
+            first@ >= 0,
+            first@ % 64 == shift as int,
+            slots@.wf(),
+            word_ok(*word, first@ / 64, slots@, *invs@),
+        ensures
+            r.spec_words() == 1,
+            r.spec_nbits() == nbits,
+            r.slab_mask() == ((1u64 << nbits) - 1) as u64,
+            r.spec_first() == first@,
+            r.spec_slots() == slots@,
+            r.spec_invs() == *invs@,
+    {
         debug_assert!(nbits > 0 && nbits < 64 && shift as usize + nbits <= 64);
-        AtomicBitmap {
-            words: core::slice::from_ref(word),
-            shift,
-            mask: ((1u64 << nbits) - 1) << shift,
+        proof {
+            lemma_range_mask(nbits as u64, shift as u64);
+            lemma_one_shl(nbits);
+            lemma_popcount(range_mask(nbits as u64, shift as u64));
         }
+        AtomicBitmap { words: core::slice::from_ref(word), shift, mask: ((1u64 << nbits) - 1) << shift, first, slots, invs }
     }
 
     /// Number of words in the view (1 for a sub-word slab).
     #[inline]
-    pub fn words(&self) -> usize {
+    pub fn words(&self) -> (r: usize)
+        ensures
+            r == self.spec_words(),
+    {
         self.words.len()
     }
 
     /// Bits the slab owns, padding included.
     #[inline]
-    pub fn nbits(&self) -> usize {
-        if self.mask == !0 {
-            self.words.len() * 64
-        } else {
-            self.mask.count_ones() as usize
+    pub fn nbits(&self) -> (r: usize)
+        ensures
+            r == self.spec_nbits(),
+    {
+        proof {
+            use_type_invariant(self);
+            self.lemma_shape();
         }
+        if self.mask == !0 { self.words.len() * 64 } else { self.mask.count_ones() as usize }
     }
 
     /// Clear every bit for slots `0..nbits` and set the padding bits above
     /// `nbits` (up to the view's `slab_bits`) so they can never be claimed.
     /// `nbits` must be non-zero and fit the view. Atomic on a shared word,
     /// so a neighbouring slab that is already active is not disturbed.
-    pub fn init(&self, nbits: usize) {
-        assert!(
-            nbits > 0 && nbits <= self.nbits(),
-            "bitmap: nbits does not match the view"
-        );
+    ///
+    /// Trusted, and the one writer of bitmap words outside the
+    /// [`WordInv`] wrappers (`vspec::word`): it keeps every word invariant
+    /// because it runs once per slab, when `SlabTable::take_group` hands the
+    /// slab's group out for the first time (`SlabTable::next_slab_locked`),
+    /// and a slab's bits are all clear until then (the table is fresh
+    /// memory, `table::axiom_fresh_words`). So it clears no set slot
+    /// bit, and the padding bits it sets have no tokens. Its writes do
+    /// not go through the words' permissions, which then disagree with
+    /// the words on the padding bits; the word invariants read slot bits
+    /// only (`vspec::word`).
+    #[verifier::external_body]
+    pub fn init(&self, nbits: usize)
+        requires
+            nbits > 0 && nbits <= self.spec_nbits(),
+    {
+        assert!(nbits > 0 && nbits <= self.nbits(), "bitmap: nbits does not match the view");
         if self.mask == !0 {
             for (i, w) in self.words.iter().enumerate() {
                 let lo = i * 64;
@@ -131,29 +974,150 @@ impl<'a> AtomicBitmap<'a> {
         }
     }
 
+    /// The tokens of a mask of word `i` in slab coordinates are the slots of
+    /// its bits in the word (`x`, word coordinates, inside the view).
+    proof fn lemma_tokens(&self, i: int, x: u64)
+        requires
+            self.inv(),
+            0 <= i < self.spec_words(),
+            subset(x, self.mask),
+        ensures
+            self.tokens(i, x >> self.shift) == set_bits(self.slots@, self.first@ / 64 + i, x),
+    {
+        broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+        let width = self.lemma_shape();
+        let f = self.first@;
+        let s = self.shift as u64;
+        let j = f / 64 + i;
+        lemma_subset_bits(x, self.mask);
+        if self.mask != !0u64 {
+            lemma_range_mask(width, s);
+        }
+        assert(64 * j == f - s + 64 * i);
+        assert forall|b: int| #[trigger] self.tokens(i, x >> s).contains(b) == set_bits(self.slots@, j, x).contains(b) by {
+            let t = b - f - 64 * i;
+            if 0 <= t < 64 {
+                lemma_shr_bit(x, s, t as u64);
+                assert(b - 64 * j == t + s);
+            } else if t < 0 && 64 * j <= b {
+                let k = (b - 64 * j) as u64;
+                assert(k < s);
+                assert(!has_bit(self.mask, k));
+            }
+        }
+        assert(self.tokens(i, x >> s) =~= set_bits(self.slots@, j, x));
+    }
+
+    /// No bit of zero is set, so a zero mask has no tokens.
+    proof fn lemma_tokens_zero(&self, i: int)
+        ensures
+            self.slot_addrs(i, 0) == Set::<int>::empty(),
+    {
+        broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, Set::lemma_map_contains};
+        assert forall|b: u64| b < 64 implies !#[trigger] has_bit(0u64, b) by {
+            assert((0u64 >> b) & 1u64 != 1u64) by (bit_vector);
+        }
+        assert(self.tokens(i, 0) =~= Set::<int>::empty());
+        assert(self.slot_addrs(i, 0) =~= Set::<int>::empty());
+    }
+
     /// Claim up to `n` clear bits from word `i`. Returns the mask of slots
     /// this call actually claimed (slab coordinates), which may be zero if
     /// the word was full or a concurrent claimer won every bit we wanted.
+    /// The tokens of the slots it claimed join `toks`: no other claim can
+    /// have them.
     #[inline]
-    pub fn claim_word(&self, i: usize, n: usize) -> u64 {
+    pub fn claim_word(&self, i: usize, n: usize, Tracked(toks): Tracked<&mut GhostSubset<int>>) -> (r: u64)
+        requires
+            i < self.spec_words(),
+            old(toks).id() == self.spec_slots().loc,
+        ensures
+            subset(r, self.slab_mask()),
+            popcount(r) <= n,
+            final(toks).id() == old(toks).id(),
+            final(toks)@ == old(toks)@.union(self.slot_addrs(i as int, r)),
+            old(toks)@.disjoint(self.slot_addrs(i as int, r)),
+    {
+        proof {
+            use_type_invariant(self);
+        }
         let w = &self.words[i];
         let cur = w.load(Ordering::Relaxed);
         let want = lowest_n_bits(!cur & self.mask, n);
+        proof {
+            let s = self.shift;
+            let mask = self.mask;
+            assert(subset(0u64, mask >> s)) by (bit_vector);
+            assert(subset(!cur & mask, mask)) by (bit_vector);
+            lemma_subset_bits(want, !cur & mask);
+            lemma_subset_bits(!cur & mask, mask);
+            lemma_subset_bits(want, mask);
+            assert(subset(0u64 >> s, mask >> s)) by (bit_vector);
+            lemma_count_zero(0u64 >> s, 64);
+            lemma_popcount(0u64 >> s);
+            assert forall|b: u64| b < 64 implies !#[trigger] has_bit(0u64 >> s, b) by {
+                assert(((0u64 >> s) >> b) & 1u64 != 1u64) by (bit_vector);
+            }
+            self.lemma_tokens_zero(i as int);
+            assert(old(toks)@.union(Set::<int>::empty()) =~= old(toks)@);
+        }
         if want == 0 {
             return 0;
         }
+        let ghost j = self.first@ / 64 + i;
+        assert(word_ok(self.words@[i as int], j, self.slots@, *self.invs@));
+        let tracked inv = self.invs.borrow().tracked_borrow(j);
+        let prev;
         // Acquire pairs with the Release in `release`: the new owner's
         // accesses to the slot happen after the previous owner's.
-        let prev = w.fetch_or(want, Ordering::Acquire);
+        vstd::open_atomic_invariant!(inv => pair => {
+            let tracked (mut perm, mut g) = pair;
+            prev = crate::vspec::word::fetch_or(w, want, Ordering::Acquire, Tracked(&mut perm));
+            proof {
+                broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, Set::lemma_map_contains};
+                let slots = self.slots@;
+                let won = want & !prev;
+                let won_bits = set_bits(slots, j, won);
+                let before = free_bits(slots, j, prev);
+                assert forall|b: int| won_bits.contains(b) implies #[trigger] before.contains(b) by {
+                    lemma_bit_ops(want, prev, (b - 64 * j) as u64);
+                }
+                assert forall|b: int| #[trigger] free_bits(slots, j, prev | want).contains(b)
+                    == before.difference(won_bits).contains(b) by {
+                    if 64 * j <= b < 64 * j + 64 {
+                        let k = (b - 64 * j) as u64;
+                        lemma_bit_ops(prev, want, k);
+                        lemma_bit_ops(want, prev, k);
+                    }
+                }
+                assert(free_bits(slots, j, prev | want) =~= before.difference(won_bits));
+                lemma_addrs_difference(slots, before, won_bits);
+                assert forall|y: int| addrs(slots, won_bits).contains(y) implies g@.contains(y) by {
+                    let b = choose|b: int| won_bits.contains(b) && y == slots.addr(b);
+                    assert(before.contains(b));
+                }
+                let tracked got = g.split(addrs(slots, won_bits));
+                toks.combine(got);
+                pair = (perm, g);
+            }
+        });
+        proof {
+            let s = self.shift;
+            let mask = self.mask;
+            let won = want & !prev;
+            assert(subset(won, want)) by (bit_vector)
+                requires won == want & !prev;
+            lemma_count_le(won, want);
+            assert(subset(won >> s, mask >> s)) by (bit_vector)
+                requires won == want & !prev, want & !mask == 0u64;
+            lemma_count_shr(won, s as u64);
+            lemma_popcount(want);
+            lemma_popcount(won >> s);
+            assert(subset(won, mask)) by (bit_vector)
+                requires won == want & !prev, want & !mask == 0u64;
+            self.lemma_tokens(i as int, won);
+        }
         (want & !prev) >> self.shift
-    }
-
-    /// Tests: [`claim_from`] word 0.
-    ///
-    /// [`claim_from`]: AtomicBitmap::claim_from
-    #[cfg(test)]
-    pub fn claim(&self, n: usize) -> Option<(usize, u64)> {
-        self.claim_from(0, n)
     }
 
     /// Claim up to `n` bits from the lowest word at or after `start`
@@ -161,15 +1125,38 @@ impl<'a> AtomicBitmap<'a> {
     /// address-ordered claim at 0) that has a clear bit. Returns the word
     /// index and the claimed mask, or `None` if every word was full at the
     /// time it was inspected. A single call never spans words; callers loop
-    /// until they have enough or get `None`.
-    pub fn claim_from(&self, start: usize, n: usize) -> Option<(usize, u64)> {
+    /// until they have enough or get `None`. The claimed slots' tokens join
+    /// `toks`.
+    pub fn claim_from(&self, start: usize, n: usize, Tracked(toks): Tracked<&mut GhostSubset<int>>) -> (r: Option<(usize, u64)>)
+        requires
+            start < self.spec_words(),
+            old(toks).id() == self.spec_slots().loc,
+        ensures
+            r matches Some((i, m)) ==> i < self.spec_words() && m != 0 && subset(m, self.slab_mask())
+                && popcount(m) <= n,
+            final(toks).id() == old(toks).id(),
+            r matches Some((i, m)) ==> final(toks)@ == old(toks)@.union(self.slot_addrs(i as int, m))
+                && old(toks)@.disjoint(self.slot_addrs(i as int, m)),
+            r is None ==> final(toks)@ == old(toks)@,
+    {
         let len = self.words.len();
         assert!(start < len, "bitmap: start word out of range");
         let mut i = start;
-        for _ in 0..len {
-            let got = self.claim_word(i, n);
+        for _ in 0..len
+            invariant
+                len == self.spec_words(),
+                i < len,
+                toks.id() == old(toks).id(),
+                toks@ == old(toks)@,
+                old(toks).id() == self.spec_slots().loc,
+        {
+            let got = self.claim_word(i, n, Tracked(&mut *toks));
             if got != 0 {
                 return Some((i, got));
+            }
+            proof {
+                self.lemma_tokens_zero(i as int);
+                assert(old(toks)@.union(Set::<int>::empty()) =~= old(toks)@);
             }
             i += 1;
             if i == len {
@@ -179,20 +1166,95 @@ impl<'a> AtomicBitmap<'a> {
         None
     }
 
-    /// Release the slots in `mask` (slab coordinates) of word `i`. Returns
-    /// the slab's previous bits in that word and whether they were all set
-    /// (the slab's part of the word was full). The caller must abort if
-    /// `prev & mask != mask`: a bit that was already clear means a slot was
-    /// released twice.
+    /// Release the slots in `mask` (slab coordinates) of word `i`, handing
+    /// their tokens back to the word. Returns the slab's previous bits in
+    /// that word and whether they were all set (the slab's part of the word
+    /// was full). The caller must abort if `prev & mask != mask`: a bit
+    /// that was already clear means a slot was released twice. With the
+    /// tokens it cannot happen: a clear bit's token is in the word, and
+    /// tokens are unique.
     #[inline]
-    pub fn release(&self, i: usize, mask: u64) -> (u64, bool) {
+    pub fn release(&self, i: usize, mask: u64, Tracked(toks): Tracked<GhostSubset<int>>) -> (r: (u64, bool))
+        requires
+            i < self.spec_words(),
+            subset(mask, self.slab_mask()),
+            toks.id() == self.spec_slots().loc,
+            toks@ == self.slot_addrs(i as int, mask),
+            self.all_real(i as int, mask),
+        ensures
+            subset(r.0, self.slab_mask()),
+            r.1 == (r.0 == self.slab_mask()),
+            subset(mask, r.0),
+    {
+        proof {
+            use_type_invariant(self);
+            self.lemma_shape();
+            let s = self.shift;
+            let sm = self.mask;
+            assert(subset(mask << s, sm)) by (bit_vector)
+                requires mask & !(sm >> s) == 0u64, (sm >> s) << s == sm, s < 64;
+            assert((mask << s) >> s == mask) by (bit_vector)
+                requires mask & !(sm >> s) == 0u64, (sm >> s) << s == sm, s < 64;
+            self.lemma_tokens(i as int, mask << s);
+        }
         let m = mask << self.shift;
         assert!(m & !self.mask == 0, "bitmap: release outside the slab");
-        let prev = self.words[i].fetch_and(!m, Ordering::Release);
-        (
-            (prev & self.mask) >> self.shift,
-            prev & self.mask == self.mask,
-        )
+        let ghost j = self.first@ / 64 + i;
+        assert(word_ok(self.words@[i as int], j, self.slots@, *self.invs@));
+        let tracked inv = self.invs.borrow().tracked_borrow(j);
+        let w = &self.words[i];
+        let prev;
+        let tracked mut toks = toks;
+        vstd::open_atomic_invariant!(inv => pair => {
+            let tracked (mut perm, mut g) = pair;
+            prev = crate::vspec::word::fetch_and(w, !m, Ordering::Release, Tracked(&mut perm));
+            proof {
+                broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter, Set::lemma_map_contains};
+                let slots = self.slots@;
+                let s = self.shift as u64;
+                let before = free_bits(slots, j, prev);
+                let rel = set_bits(slots, j, m);
+                // The released slots' bits were set: their tokens are not
+                // in the word.
+                toks.disjoint(&g);
+                assert forall|k: u64| k < 64 && #[trigger] has_bit(m, k) implies has_bit(prev, k) by {
+                    lemma_shl_bit(mask, s, k);
+                    let t = (k - s) as u64;
+                    assert(has_bit(mask, t));
+                    assert(slots.real(self.first@ + 64 * i + t));
+                    let b = 64 * j + k;
+                    assert(b == self.first@ + 64 * i + t);
+                    assert(rel.contains(b));
+                    assert(toks@.contains(slots.addr(b)));
+                    assert(!before.contains(b));
+                }
+                assert forall|b: int| #[trigger] free_bits(slots, j, prev & !m).contains(b)
+                    == before.union(rel).contains(b) by {
+                    if 64 * j <= b < 64 * j + 64 {
+                        let k = (b - 64 * j) as u64;
+                        lemma_bit_ops(prev, m, k);
+                        if has_bit(m, k) {
+                            assert(has_bit(prev, k));
+                        }
+                    }
+                }
+                assert(free_bits(slots, j, prev & !m) =~= before.union(rel));
+                lemma_addrs_union(slots, before, rel);
+                g.combine(toks);
+                pair = (perm, g);
+            }
+        });
+        proof {
+            let s = self.shift;
+            let sm = self.mask;
+            assert(subset((prev & sm) >> s, sm >> s)) by (bit_vector);
+            assert(((prev & sm) >> s == sm >> s) == (prev & sm == sm)) by (bit_vector)
+                requires (sm >> s) << s == sm, s < 64;
+            lemma_subset_bits(m, prev);
+            assert(subset(mask, (prev & sm) >> s)) by (bit_vector)
+                requires m & !prev == 0u64, m == mask << s, mask & !(sm >> s) == 0u64, (sm >> s) << s == sm, s < 64;
+        }
+        ((prev & self.mask) >> self.shift, prev & self.mask == self.mask)
     }
 
     /// Whether slot `bit` is set. This is the `free` check: a clear bit
@@ -206,16 +1268,32 @@ impl<'a> AtomicBitmap<'a> {
 
     /// The slab's bits in word `i` (slab coordinates, padding included).
     #[inline]
-    pub fn load(&self, i: usize) -> u64 {
-        (self.words[i].load(Ordering::Relaxed) & self.mask) >> self.shift
+    pub fn load(&self, i: usize) -> (r: u64)
+        requires
+            i < self.spec_words(),
+        ensures
+            subset(r, self.slab_mask()),
+    {
+        proof {
+            use_type_invariant(self);
+        }
+        let v = self.words[i].load(Ordering::Relaxed);
+        proof {
+            let s = self.shift;
+            let sm = self.mask;
+            assert(subset((v & sm) >> s, sm >> s)) by (bit_vector);
+        }
+        (v & self.mask) >> self.shift
     }
 
     /// Set slot bits, padding excluded: the slab's allocated (or cached)
     /// slots for a class with `nslots` real slots.
-    pub fn allocated(&self, nslots: usize) -> usize {
-        let set: usize = (0..self.words.len())
-            .map(|w| self.load(w).count_ones() as usize)
-            .sum();
+    #[verifier::external_body]
+    pub fn allocated(&self, nslots: usize) -> usize
+        requires
+            nslots <= self.spec_nbits(),
+    {
+        let set: usize = (0..self.words.len()).map(|w| self.load(w).count_ones() as usize).sum();
         let padding = self.nbits() - nslots;
         // Fewer set bits than padding bits means a padding bit was cleared:
         // a release outside the slab's real slots.
@@ -232,6 +1310,123 @@ impl<'a> AtomicBitmap<'a> {
         self.words
             .iter()
             .all(|w| w.load(Ordering::Relaxed) & self.mask == self.mask)
+    }
+}
+
+/// Row of level-1 word `j` in a chunked view.
+pub open spec fn l1_row(j: int) -> int {
+    65 * j
+}
+
+/// Row of level-0 word `w` in a chunked view.
+pub open spec fn l0_row(w: int) -> int {
+    65 * (w / 64) + 1 + w % 64
+}
+
+proof fn lemma_mul_cancel(a: int, b: int, s: int)
+    requires
+        a != b,
+        s >= 1,
+    ensures
+        a * s != b * s,
+{
+    assert(a * s != b * s) by (nonlinear_arith)
+        requires a != b, s >= 1;
+}
+
+/// The mask `set_range` and `clear_range` build: bits `lo..hi`.
+proof fn lemma_word_mask(mask: u64, lo: u64, hi: u64)
+    requires
+        lo < hi <= 64,
+        mask == if hi - lo == 64 { !0u64 } else { ((((1u64 << (hi - lo) as u64) - 1) as u64) << lo) },
+    ensures
+        forall|b: u64| b < 64 ==> #[trigger] has_bit(mask, b) == (lo <= b < hi),
+{
+    if hi - lo == 64 {
+        assert forall|b: u64| b < 64 implies #[trigger] has_bit(mask, b) == (lo <= b < hi) by {
+            assert(((!0u64) >> b) & 1u64 == 1u64) by (bit_vector) requires b < 64;
+        }
+    } else {
+        lemma_range_mask((hi - lo) as u64, lo);
+    }
+}
+
+/// Facts about `trailing_zeros` in terms of `has_bit`.
+pub proof fn lemma_tz(m: u64)
+    ensures
+        u64_trailing_zeros(m) <= 64,
+        m == 0u64 <==> u64_trailing_zeros(m) == 64,
+        m != 0u64 ==> has_bit(m, u64_trailing_zeros(m) as u64),
+        forall|k: u64| k < u64_trailing_zeros(m) ==> !#[trigger] has_bit(m, k),
+{
+    axiom_u64_trailing_zeros(m);
+    assert forall|k: u64| k < u64_trailing_zeros(m) implies !#[trigger] has_bit(m, k) by {
+        assert((m >> k) & 1u64 == 0u64);
+    }
+}
+
+/// `!0 << s` holds bits `s..64`.
+proof fn lemma_shl_ones(s: u64)
+    requires
+        s < 64,
+    ensures
+        forall|k: u64| k < 64 ==> #[trigger] has_bit(!0u64 << s, k) == (k >= s),
+{
+    assert forall|k: u64| k < 64 implies #[trigger] has_bit(!0u64 << s, k) == (k >= s) by {
+        assert((((!0u64 << s) >> k) & 1u64 == 1u64) == (k >= s)) by (bit_vector)
+            requires s < 64, k < 64;
+    }
+}
+
+/// `m & (m - 1)` is `m` without its lowest bit.
+pub proof fn lemma_clear_lowest(m: u64)
+    requires
+        m != 0u64,
+    ensures
+        forall|k: u64| k < 64 ==> #[trigger] has_bit(m & ((m - 1) as u64), k) == (has_bit(m, k) && k != u64_trailing_zeros(m)),
+{
+    lemma_tz(m);
+    let t = u64_trailing_zeros(m) as u64;
+    // The bits below `t` are clear: `m & ((1 << t) - 1) == 0`.
+    assert forall|k: u64| k < 64 implies !#[trigger] has_bit(m & (((1u64 << t) - 1) as u64), k) by {
+        lemma_bit_ops(m, ((1u64 << t) - 1) as u64, k);
+        assert((((((1u64 << t) - 1) as u64) >> k) & 1u64 == 1u64) == (k < t)) by (bit_vector)
+            requires t < 64, k < 64;
+    }
+    lemma_zero_of_no_bits(m & (((1u64 << t) - 1) as u64));
+    assert forall|k: u64| k < 64 implies #[trigger] has_bit(m & ((m - 1) as u64), k) == (has_bit(m, k) && k != t) by {
+        assert((((m & ((m - 1) as u64)) >> k) & 1u64 == 1u64) == (((m >> k) & 1u64 == 1u64) && k != t)) by (bit_vector)
+            requires t < 64, k < 64, (m >> t) & 1u64 == 1u64, m & (((1u64 << t) - 1) as u64) == 0u64;
+    }
+}
+
+/// `x / 4096`, as two divisions by 64, grows with `x`.
+proof fn lemma_div_div_mono(a: int, b: int)
+    requires
+        0 <= a <= b,
+    ensures
+        a / 64 / 64 <= b / 64 / 64,
+{
+    assert(a / 64 <= b / 64) by (nonlinear_arith)
+        requires 0 <= a <= b;
+    assert(a / 64 / 64 <= b / 64 / 64) by (nonlinear_arith)
+        requires 0 <= a / 64 <= b / 64;
+}
+
+/// `1 << b` has only bit `b`; `x` with a set bit is non-zero.
+proof fn lemma_one_bit(b: u64)
+    requires
+        b < 64,
+    ensures
+        forall|k: u64| k < 64 ==> #[trigger] has_bit(1u64 << b, k) == (k == b),
+        forall|x: u64, k: u64| k < 64 && #[trigger] has_bit(x, k) ==> x != 0u64,
+{
+    assert forall|k: u64| k < 64 implies #[trigger] has_bit(1u64 << b, k) == (k == b) by {
+        assert((((1u64 << b) >> k) & 1u64 == 1u64) == (k == b)) by (bit_vector)
+            requires b < 64, k < 64;
+    }
+    assert forall|x: u64, k: u64| k < 64 && #[trigger] has_bit(x, k) implies x != 0u64 by {
+        assert((0u64 >> k) & 1u64 != 1u64) by (bit_vector);
     }
 }
 
@@ -264,11 +1459,556 @@ pub struct TwoLevelBitmap {
     ptr: *mut u64,
     stride: usize,
     chunked: bool,
+    /// Ghost permission for each word of the view, by offset from `ptr`
+    /// (read only by ghost code, which ordinary builds erase).
+    #[allow(dead_code)]
+    perms: Tracked<Map<int, PointsTo<u64>>>,
 }
 
 impl TwoLevelBitmap {
+    /// Offset in words of level-1 word `j`.
+    spec fn l1o(&self, j: int) -> int {
+        if self.chunked { l1_row(j) * self.stride } else { j }
+    }
+
+    /// Offset in words of level-0 word `w`.
+    spec fn l0o(&self, w: int) -> int {
+        if self.chunked { l0_row(w) * self.stride } else { self.l1_words + w }
+    }
+
+    /// The view holds an initialised word at offset `k`, which lies inside
+    /// the allocation `ptr` points into (so `ptr.add(k)` is in bounds; the
+    /// constructors take both from their caller's safety contract).
+    spec fn ok(&self, k: int) -> bool {
+        &&& self.perms@.contains_key(k)
+        &&& crate::vspec::ptr::in_alloc(self.ptr, k * vstd::layout::size_of::<u64>())
+        &&& self.perms@[k].ptr() == ptr_add(self.ptr, k as usize)
+        &&& self.perms@[k].is_init()
+    }
+
+    spec fn l1v(&self, j: int) -> u64 {
+        self.perms@[self.l1o(j)].value()
+    }
+
+    spec fn l0v(&self, w: int) -> u64 {
+        self.perms@[self.l0o(w)].value()
+    }
+
+    /// Everything but the words is the same.
+    spec fn frame(&self, o: &Self) -> bool {
+        &&& self.nbits == o.nbits
+        &&& self.l0_words == o.l0_words
+        &&& self.l1_words == o.l1_words
+        &&& self.ptr == o.ptr
+        &&& self.stride == o.stride
+        &&& self.chunked == o.chunked
+    }
+
+    spec fn shape(&self) -> bool {
+        &&& self.l0_words == (self.nbits + 63) / 64
+        &&& self.l1_words == (self.l0_words + 63) / 64
+        &&& self.l1_used <= self.l1_words
+        &&& self.stride >= 1
+        &&& self.chunked ==> 65 * self.l1_words * self.stride * 8 <= isize::MAX
+        &&& !self.chunked ==> self.stride == 1 && (self.l1_words + self.l0_words) * 8 <= isize::MAX
+    }
+
+    /// The fields agree and every word of the view is held.
+    spec fn valid(&self) -> bool {
+        &&& self.shape()
+        &&& forall|j: int| 0 <= j < self.l1_words ==> #[trigger] self.ok(self.l1o(j))
+        &&& forall|w: int| 0 <= w < self.l0_words ==> #[trigger] self.ok(self.l0o(w))
+    }
+
+    /// Bit `k` of level-1 word `j` is set exactly when level-0 word
+    /// `64 * j + k` is non-zero.
+    spec fn summary(&self) -> bool {
+        forall|j: int, k: u64| 0 <= j < self.l1_words && k < 64 ==>
+            #[trigger] has_bit(self.l1v(j), k) == (j * 64 + k < self.l0_words && self.l0v(j * 64 + k) != 0u64)
+    }
+
+    /// No bit at or above `nbits` is set.
+    spec fn padding(&self) -> bool {
+        forall|w: int, b: u64| 0 <= w < self.l0_words && b < 64 && w * 64 + b >= self.nbits ==>
+            !#[trigger] has_bit(self.l0v(w), b)
+    }
+
+    /// Level-1 words at or above `l1_used` are zero.
+    spec fn tail(&self) -> bool {
+        forall|j: int| self.l1_used <= j < self.l1_words ==> #[trigger] self.l1v(j) == 0u64
+    }
+
+    /// The level-1 word below `l1_used` is non-zero.
+    spec fn tight(&self) -> bool {
+        self.l1_used > 0 ==> self.l1v(self.l1_used - 1) != 0u64
+    }
+
+    spec fn inner(&self) -> bool {
+        self.valid() && self.summary() && self.padding()
+    }
+
+    /// Whether `b` is in the set.
+    pub closed spec fn has(&self, b: int) -> bool {
+        0 <= b < self.nbits && has_bit(self.l0v(b / 64), (b % 64) as u64)
+    }
+
+    /// The set.
+    pub closed spec fn view(&self) -> Set<nat> {
+        Set::<nat>::range(0, self.nbits as nat).filter(|b: nat| self.has(b as int))
+    }
+
+    /// The universe is `0..spec_nbits()`.
+    pub closed spec fn spec_nbits(&self) -> nat {
+        self.nbits as nat
+    }
+
+    /// The invariant every operation keeps.
+    pub closed spec fn wf(&self) -> bool {
+        self.inner() && self.tail() && self.tight()
+    }
+
+    /// Words from `ptr` that the view spans: every word offset it holds
+    /// is below this.
+    spec fn span(&self) -> int {
+        if self.chunked { 65 * self.l1_words * self.stride } else { self.l1_words + self.l0_words }
+    }
+
+    /// Where the view lies: the address of its first word and the bytes
+    /// it spans. Every operation keeps it; the constructors set it.
+    pub closed spec fn place(&self) -> (int, int) {
+        (self.ptr@.addr as int, 8 * self.span())
+    }
+
+    /// The view's words lie in the metadata region
+    /// ([`Regions::in_meta`](crate::layout::Regions::in_meta)).
+    pub open spec fn in_meta(&self) -> bool {
+        crate::layout::process_regions().in_meta(self.place().0, self.place().1)
+    }
+
+    /// The address of level-1 word `j` (its permission's).
+    pub closed spec fn l1_addr(&self, j: int) -> int {
+        self.perms@[self.l1o(j)].ptr()@.addr as int
+    }
+
+    /// The address of level-0 word `w` (its permission's).
+    pub closed spec fn l0_addr(&self, w: int) -> int {
+        self.perms@[self.l0o(w)].ptr()@.addr as int
+    }
+
+    /// Level-1 words.
+    pub closed spec fn spec_l1_words(&self) -> int {
+        self.l1_words as int
+    }
+
+    /// Level-0 words.
+    pub closed spec fn spec_l0_words(&self) -> int {
+        self.l0_words as int
+    }
+
+    /// Every word the view reads and writes (through its permission) is
+    /// eight bytes inside its [`place`](TwoLevelBitmap::place).
+    pub proof fn lemma_words_placed(&self, j: int, w: int)
+        requires
+            self.wf(),
+            self.place().0 + self.place().1 <= usize::MAX,
+        ensures
+            0 <= j < self.spec_l1_words() ==> self.place().0 <= self.l1_addr(j) && self.l1_addr(j) + 8 <= self.place().0 + self.place().1,
+            0 <= w < self.spec_l0_words() ==> self.place().0 <= self.l0_addr(w) && self.l0_addr(w) + 8 <= self.place().0 + self.place().1,
+    {
+        self.lemma_offsets();
+        let s = self.stride as int;
+        let n1 = self.l1_words as int;
+        if 0 <= j < self.l1_words {
+            let k = self.l1o(j);
+            assert(self.ok(k));
+            if self.chunked {
+                assert(l1_row(j) * s + 1 <= 65 * n1 * s) by (nonlinear_arith)
+                    requires 0 <= j < n1, s >= 1;
+            }
+            assert(k + 1 <= self.span() && (k as usize) as int == k);
+            crate::vspec::ptr::axiom_ptr_add_addr(self.ptr, k as usize);
+        }
+        if 0 <= w < self.l0_words {
+            let k = self.l0o(w);
+            assert(self.ok(k));
+            if self.chunked {
+                assert(w / 64 < n1);
+                assert(l0_row(w) * s + 1 <= 65 * n1 * s) by (nonlinear_arith)
+                    requires 0 <= l0_row(w) < 65 * n1, s >= 1;
+            }
+            assert(k + 1 <= self.span() && (k as usize) as int == k);
+            crate::vspec::ptr::axiom_ptr_add_addr(self.ptr, k as usize);
+        }
+    }
+
+    /// A view as built by `from_raw*`: every word held and zero.
+    pub closed spec fn fresh(&self, nbits: usize) -> bool {
+        &&& self.valid()
+        &&& self.nbits == nbits
+        &&& self.l1_used == 0
+        &&& forall|j: int| 0 <= j < self.l1_words ==> #[trigger] self.l1v(j) == 0u64
+        &&& forall|w: int| 0 <= w < self.l0_words ==> #[trigger] self.l0v(w) == 0u64
+    }
+
+    /// A fresh view is a well-formed empty set.
+    pub proof fn lemma_fresh(&self, nbits: usize)
+        requires
+            self.fresh(nbits),
+        ensures
+            self.wf(),
+            self.view() == Set::<nat>::empty(),
+            self.spec_nbits() == nbits,
+    {
+        assert forall|b: u64| b < 64 implies !#[trigger] has_bit(0u64, b) by {
+            assert((0u64 >> b) & 1u64 != 1u64) by (bit_vector);
+        }
+        assert forall|j: int, k: u64| 0 <= j < self.l1_words && k < 64 implies
+            #[trigger] has_bit(self.l1v(j), k) == (j * 64 + k < self.l0_words && self.l0v(j * 64 + k) != 0u64) by {
+            assert(self.l1v(j) == 0u64);
+            if j * 64 + k < self.l0_words {
+                assert(self.l0v(j * 64 + k) == 0u64);
+            }
+        }
+        assert forall|w: int, b: u64| 0 <= w < self.l0_words && b < 64 && w * 64 + b >= self.nbits implies
+            !#[trigger] has_bit(self.l0v(w), b) by {
+            assert(self.l0v(w) == 0u64);
+        }
+        assert forall|b: int| !#[trigger] self.has(b) by {
+            if 0 <= b < self.nbits {
+                assert(b / 64 < self.l0_words);
+                assert(self.l0v(b / 64) == 0u64);
+            }
+        }
+        assert(self.view() =~= Set::<nat>::empty());
+    }
+
+    /// Offsets are distinct and small enough for `ptr.add`.
+    proof fn lemma_offsets(&self)
+        requires
+            self.shape(),
+        ensures
+            forall|j: int| 0 <= j < self.l1_words ==> 0 <= #[trigger] self.l1o(j) && self.l1o(j) * 8 <= isize::MAX,
+            forall|w: int| 0 <= w < self.l0_words ==> 0 <= #[trigger] self.l0o(w) && self.l0o(w) * 8 <= isize::MAX,
+            forall|j1: int, j2: int| 0 <= j1 < self.l1_words && 0 <= j2 < self.l1_words && j1 != j2 ==>
+                #[trigger] self.l1o(j1) != #[trigger] self.l1o(j2),
+            forall|w1: int, w2: int| 0 <= w1 < self.l0_words && 0 <= w2 < self.l0_words && w1 != w2 ==>
+                #[trigger] self.l0o(w1) != #[trigger] self.l0o(w2),
+            forall|j: int, w: int| 0 <= j < self.l1_words && 0 <= w < self.l0_words ==>
+                #[trigger] self.l1o(j) != #[trigger] self.l0o(w),
+    {
+        let s = self.stride as int;
+        let n1 = self.l1_words as int;
+        if self.chunked {
+            assert forall|j: int| 0 <= j < self.l1_words implies 0 <= #[trigger] self.l1o(j) && self.l1o(j) * 8 <= isize::MAX by {
+                assert(0 <= l1_row(j) * s <= 65 * n1 * s) by (nonlinear_arith)
+                    requires 0 <= j < n1, s >= 1;
+            }
+            assert forall|w: int| 0 <= w < self.l0_words implies 0 <= #[trigger] self.l0o(w) && self.l0o(w) * 8 <= isize::MAX by {
+                assert(w / 64 < n1);
+                assert(0 <= l0_row(w) < 65 * n1);
+                assert(0 <= l0_row(w) * s <= 65 * n1 * s) by (nonlinear_arith)
+                    requires 0 <= l0_row(w) < 65 * n1, s >= 1;
+            }
+            assert forall|j1: int, j2: int| 0 <= j1 < self.l1_words && 0 <= j2 < self.l1_words && j1 != j2 implies
+                #[trigger] self.l1o(j1) != #[trigger] self.l1o(j2) by {
+                lemma_mul_cancel(l1_row(j1), l1_row(j2), s);
+            }
+            assert forall|w1: int, w2: int| 0 <= w1 < self.l0_words && 0 <= w2 < self.l0_words && w1 != w2 implies
+                #[trigger] self.l0o(w1) != #[trigger] self.l0o(w2) by {
+                lemma_mul_cancel(l0_row(w1), l0_row(w2), s);
+            }
+            assert forall|j: int, w: int| 0 <= j < self.l1_words && 0 <= w < self.l0_words implies
+                #[trigger] self.l1o(j) != #[trigger] self.l0o(w) by {
+                lemma_mul_cancel(l1_row(j), l0_row(w), s);
+            }
+        }
+    }
+
+    /// A word written through `l0_mut` or `l1_mut`: the view is still
+    /// valid, and only the word at offset `k` changed, to `v`.
+    proof fn lemma_write(o: &Self, n: &Self, k: int, v: u64)
+        requires
+            o.valid(),
+            n.frame(o),
+            n.l1_used == o.l1_used,
+            o.ok(k),
+            n.perms@ == o.perms@.insert(k, n.perms@[k]),
+            n.perms@[k].ptr() == o.perms@[k].ptr(),
+            n.perms@[k].is_init(),
+            n.perms@[k].value() == v,
+        ensures
+            n.valid(),
+            forall|j: int| 0 <= j < o.l1_words ==> #[trigger] n.l1v(j) == if o.l1o(j) == k { v } else { o.l1v(j) },
+            forall|w: int| 0 <= w < o.l0_words ==> #[trigger] n.l0v(w) == if o.l0o(w) == k { v } else { o.l0v(w) },
+    {
+        assert forall|j: int| 0 <= j < n.l1_words implies #[trigger] n.ok(n.l1o(j)) by {
+            assert(o.ok(o.l1o(j)));
+        }
+        assert forall|w: int| 0 <= w < n.l0_words implies #[trigger] n.ok(n.l0o(w)) by {
+            assert(o.ok(o.l0o(w)));
+        }
+    }
+
+    /// Level-0 word `w` became `a2` and its summary bit follows it; every
+    /// other word is unchanged. The summary and padding invariants hold,
+    /// and the set changed only in word `w`.
+    proof fn lemma_word(o: &Self, n: &Self, w: int, a2: u64)
+        requires
+            o.inner(),
+            n.valid(),
+            n.frame(o),
+            0 <= w < o.l0_words,
+            forall|b: u64| b < 64 && w * 64 + b >= o.nbits ==> !#[trigger] has_bit(a2, b),
+            n.l0v(w) == a2,
+            forall|w2: int| 0 <= w2 < o.l0_words && w2 != w ==> #[trigger] n.l0v(w2) == o.l0v(w2),
+            forall|j: int| 0 <= j < o.l1_words && j != w / 64 ==> #[trigger] n.l1v(j) == o.l1v(j),
+            forall|k: u64| k < 64 && k != (w % 64) as u64 ==> #[trigger] has_bit(n.l1v(w / 64), k) == has_bit(o.l1v(w / 64), k),
+            has_bit(n.l1v(w / 64), (w % 64) as u64) == (a2 != 0u64),
+        ensures
+            n.inner(),
+            forall|b: int| #[trigger] n.has(b) == if b / 64 == w { 0 <= b < n.nbits && has_bit(a2, (b % 64) as u64) } else { o.has(b) },
+    {
+        assert forall|j: int, k: u64| 0 <= j < n.l1_words && k < 64 implies
+            #[trigger] has_bit(n.l1v(j), k) == (j * 64 + k < n.l0_words && n.l0v(j * 64 + k) != 0u64) by {
+            assert(has_bit(o.l1v(j), k) == (j * 64 + k < o.l0_words && o.l0v(j * 64 + k) != 0u64));
+            if j * 64 + k == w {
+                assert(j == w / 64 && k == (w % 64) as u64);
+            } else if j == w / 64 {
+                assert(k != (w % 64) as u64);
+            }
+        }
+        assert forall|w2: int, b: u64| 0 <= w2 < n.l0_words && b < 64 && w2 * 64 + b >= n.nbits implies
+            !#[trigger] has_bit(n.l0v(w2), b) by {
+            if w2 != w {
+                assert(!has_bit(o.l0v(w2), b));
+            }
+        }
+        assert forall|b: int| #[trigger] n.has(b) == if b / 64 == w { 0 <= b < n.nbits && has_bit(a2, (b % 64) as u64) } else { o.has(b) } by {
+            if 0 <= b < n.nbits && b / 64 != w {
+                assert(b / 64 < o.l0_words);
+                assert(n.l0v(b / 64) == o.l0v(b / 64));
+            }
+        }
+    }
+
+    /// `clear`'s level-0 write, before the summary follows it: the new word
+    /// is the old one less `b`'s bit, and the set lost `b` once the summary
+    /// is right. With a non-zero word the summary already is.
+    proof fn lemma_clear_word(o: &Self, n: &Self, b: int)
+        requires
+            o.wf(),
+            0 <= b < o.nbits,
+            n.frame(o),
+            n.l1_used == o.l1_used,
+            o.ok(o.l0o(b / 64)),
+            n.perms@ == o.perms@.insert(o.l0o(b / 64), n.perms@[o.l0o(b / 64)]),
+            n.perms@[o.l0o(b / 64)].ptr() == o.perms@[o.l0o(b / 64)].ptr(),
+            n.perms@[o.l0o(b / 64)].is_init(),
+            n.perms@[o.l0o(b / 64)].value() == o.l0v(b / 64) & !(1u64 << ((b % 64) as u64)),
+        ensures
+            n.valid(),
+            forall|w: int| 0 <= w < o.l0_words && w != b / 64 ==> #[trigger] n.l0v(w) == o.l0v(w),
+            forall|j: int| 0 <= j < o.l1_words ==> #[trigger] n.l1v(j) == o.l1v(j),
+            forall|k: u64| k < 64 ==> #[trigger] has_bit(n.l0v(b / 64), k) == (has_bit(o.l0v(b / 64), k) && k != (b % 64) as u64),
+            forall|x: int| 0 <= x < o.nbits && x / 64 == b / 64 ==> #[trigger] has_bit(n.l0v(b / 64), (x % 64) as u64) == (o.has(x) && x != b),
+            forall|k: u64| k < 64 && b / 64 * 64 + k >= o.nbits ==> !#[trigger] has_bit(n.l0v(b / 64), k),
+            n.l0v(b / 64) != 0u64 ==> n.inner() && forall|x: int| #[trigger] n.has(x) == (o.has(x) && x != b),
+    {
+        let w = b / 64;
+        o.lemma_offsets();
+        Self::lemma_write(o, n, o.l0o(w), n.perms@[o.l0o(w)].value());
+        lemma_one_bit((b % 64) as u64);
+        assert forall|k: u64| k < 64 implies #[trigger] has_bit(n.l0v(w), k) == (has_bit(o.l0v(w), k) && k != (b % 64) as u64) by {
+            lemma_bit_ops(o.l0v(w), 1u64 << ((b % 64) as u64), k);
+        }
+        assert forall|k: u64| k < 64 && w * 64 + k >= o.nbits implies !#[trigger] has_bit(n.l0v(w), k) by {
+            assert(!has_bit(o.l0v(w), k));
+        }
+        assert forall|x: int| 0 <= x < o.nbits && x / 64 == w implies #[trigger] has_bit(n.l0v(w), (x % 64) as u64) == (o.has(x) && x != b) by {
+            assert(has_bit(n.l0v(w), (x % 64) as u64) == (has_bit(o.l0v(w), (x % 64) as u64) && (x % 64) as u64 != (b % 64) as u64));
+        }
+        if n.l0v(w) != 0u64 {
+            let a2 = n.l0v(w);
+            // A non-zero word was non-zero before: its summary bit is set.
+            if o.l0v(w) == 0u64 {
+                assert forall|k: u64| k < 64 implies !#[trigger] has_bit(a2, k) by {
+                    assert((0u64 >> k) & 1u64 != 1u64) by (bit_vector);
+                }
+                lemma_zero_of_no_bits(a2);
+            }
+            assert(w / 64 * 64 + w % 64 == w);
+            assert(has_bit(o.l1v(w / 64), (w % 64) as u64));
+            Self::lemma_word(o, n, w, a2);
+            assert forall|x: int| #[trigger] n.has(x) == (o.has(x) && x != b) by {
+                if 0 <= x < o.nbits && x / 64 == w {
+                    assert(has_bit(n.l0v(w), (x % 64) as u64) == (o.has(x) && x != b));
+                }
+            }
+        }
+    }
+
+    /// A level-0 word lost the bits of `m`, before the summary follows it.
+    /// With a non-zero word the summary already is right.
+    proof fn lemma_and_not_word(o: &Self, n: &Self, w: int, m: u64)
+        requires
+            o.inner(),
+            0 <= w < o.l0_words,
+            n.frame(o),
+            n.l1_used == o.l1_used,
+            o.ok(o.l0o(w)),
+            n.perms@ == o.perms@.insert(o.l0o(w), n.perms@[o.l0o(w)]),
+            n.perms@[o.l0o(w)].ptr() == o.perms@[o.l0o(w)].ptr(),
+            n.perms@[o.l0o(w)].is_init(),
+            n.perms@[o.l0o(w)].value() == o.l0v(w) & !m,
+        ensures
+            n.valid(),
+            forall|w2: int| 0 <= w2 < o.l0_words && w2 != w ==> #[trigger] n.l0v(w2) == o.l0v(w2),
+            forall|j: int| 0 <= j < o.l1_words ==> #[trigger] n.l1v(j) == o.l1v(j),
+            forall|x: int| 0 <= x < o.nbits && x / 64 == w ==> #[trigger] has_bit(n.l0v(w), (x % 64) as u64) == (o.has(x) && !has_bit(m, (x % 64) as u64)),
+            forall|k: u64| k < 64 && w * 64 + k >= o.nbits ==> !#[trigger] has_bit(n.l0v(w), k),
+            n.l0v(w) != 0u64 ==> n.inner() && forall|x: int| #[trigger] n.has(x) == (o.has(x) && !(x / 64 == w && has_bit(m, (x % 64) as u64))),
+    {
+        o.lemma_offsets();
+        Self::lemma_write(o, n, o.l0o(w), n.perms@[o.l0o(w)].value());
+        assert forall|k: u64| k < 64 implies #[trigger] has_bit(n.l0v(w), k) == (has_bit(o.l0v(w), k) && !has_bit(m, k)) by {
+            lemma_bit_ops(o.l0v(w), m, k);
+        }
+        assert forall|k: u64| k < 64 && w * 64 + k >= o.nbits implies !#[trigger] has_bit(n.l0v(w), k) by {
+            assert(!has_bit(o.l0v(w), k));
+        }
+        assert forall|x: int| 0 <= x < o.nbits && x / 64 == w implies #[trigger] has_bit(n.l0v(w), (x % 64) as u64) == (o.has(x) && !has_bit(m, (x % 64) as u64)) by {
+            assert(has_bit(n.l0v(w), (x % 64) as u64) == (has_bit(o.l0v(w), (x % 64) as u64) && !has_bit(m, (x % 64) as u64)));
+        }
+        if n.l0v(w) != 0u64 {
+            let a2 = n.l0v(w);
+            if o.l0v(w) == 0u64 {
+                assert forall|k: u64| k < 64 implies !#[trigger] has_bit(a2, k) by {
+                    assert((0u64 >> k) & 1u64 != 1u64) by (bit_vector);
+                }
+                lemma_zero_of_no_bits(a2);
+            }
+            assert(w / 64 * 64 + w % 64 == w);
+            assert(has_bit(o.l1v(w / 64), (w % 64) as u64));
+            Self::lemma_word(o, n, w, a2);
+            assert forall|x: int| #[trigger] n.has(x) == (o.has(x) && !(x / 64 == w && has_bit(m, (x % 64) as u64))) by {
+                if 0 <= x < o.nbits && x / 64 == w {
+                    assert(has_bit(n.l0v(w), (x % 64) as u64) == (o.has(x) && !has_bit(m, (x % 64) as u64)));
+                }
+            }
+        }
+    }
+
+    /// A member's word is non-zero, its summary bit is set, and its
+    /// level-1 word is below `l1_used`.
+    proof fn lemma_member(&self, x: int)
+        requires
+            self.wf(),
+            self.has(x),
+        ensures
+            0 <= x < self.nbits,
+            x / 64 < self.l0_words,
+            x / 64 / 64 < self.l1_used,
+            self.l0v(x / 64) != 0u64,
+            has_bit(self.l1v(x / 64 / 64), (x / 64 % 64) as u64),
+    {
+        lemma_one_bit((x % 64) as u64);
+        let w = x / 64;
+        assert(w / 64 * 64 + w % 64 == w);
+        assert(has_bit(self.l1v(w / 64), (w % 64) as u64));
+        lemma_one_bit((w % 64) as u64);
+        if w / 64 >= self.l1_used {
+            assert(self.l1v(w / 64) == 0u64);
+        }
+    }
+
+    /// Summary bit `t` of level-1 word `i` names a non-zero word, and that
+    /// word's lowest bit is a member.
+    proof fn lemma_found(&self, i: int, t: u64)
+        requires
+            self.wf(),
+            0 <= i < self.l1_words,
+            t < 64,
+            has_bit(self.l1v(i), t),
+        ensures
+            i * 64 + t < self.l0_words,
+            self.l0v(i * 64 + t) != 0u64,
+            u64_trailing_zeros(self.l0v(i * 64 + t)) < 64,
+            self.has((i * 64 + t) * 64 + u64_trailing_zeros(self.l0v(i * 64 + t))),
+            forall|k: u64| k < u64_trailing_zeros(self.l0v(i * 64 + t)) ==> !#[trigger] has_bit(self.l0v(i * 64 + t), k),
+    {
+        let w = i * 64 + t;
+        lemma_tz(self.l0v(w));
+        let t0 = u64_trailing_zeros(self.l0v(w)) as int;
+        let b = w * 64 + t0;
+        assert(b / 64 == w && b % 64 == t0);
+        if b >= self.nbits {
+            assert(!has_bit(self.l0v(w), t0 as u64));
+        }
+    }
+
+    /// Only `l1_used` changed.
+    proof fn lemma_used(o: &Self, n: &Self)
+        requires
+            o.inner(),
+            n.frame(o),
+            n.perms == o.perms,
+            n.l1_used <= n.l1_words,
+        ensures
+            n.inner(),
+            forall|j: int| #[trigger] n.l1v(j) == o.l1v(j),
+            forall|w: int| #[trigger] n.l0v(w) == o.l0v(w),
+            forall|b: int| #[trigger] n.has(b) == o.has(b),
+    {
+        assert forall|j: int| 0 <= j < n.l1_words implies #[trigger] n.ok(n.l1o(j)) by {
+            assert(o.ok(o.l1o(j)));
+        }
+        assert forall|w: int| 0 <= w < n.l0_words implies #[trigger] n.ok(n.l0o(w)) by {
+            assert(o.ok(o.l0o(w)));
+        }
+        assert forall|j: int, k: u64| 0 <= j < n.l1_words && k < 64 implies
+            #[trigger] has_bit(n.l1v(j), k) == (j * 64 + k < n.l0_words && n.l0v(j * 64 + k) != 0u64) by {
+            assert(has_bit(o.l1v(j), k) == (j * 64 + k < o.l0_words && o.l0v(j * 64 + k) != 0u64));
+        }
+        assert forall|w: int, b: u64| 0 <= w < n.l0_words && b < 64 && w * 64 + b >= n.nbits implies
+            !#[trigger] has_bit(n.l0v(w), b) by {
+            assert(!has_bit(o.l0v(w), b));
+        }
+    }
+
+    /// Membership changed by adding `b`: the set is the old set plus `b`.
+    proof fn lemma_view_insert(o: &Self, n: &Self, b: int)
+        requires
+            n.nbits == o.nbits,
+            0 <= b < o.nbits,
+            forall|x: int| #[trigger] n.has(x) == (o.has(x) || x == b),
+        ensures
+            n.view() == o.view().insert(b as nat),
+    {
+        broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+        assert(n.view() =~= o.view().insert(b as nat));
+    }
+
+    /// Membership changed by removing `b`: the set is the old set less `b`.
+    proof fn lemma_view_remove(o: &Self, n: &Self, b: int)
+        requires
+            n.nbits == o.nbits,
+            0 <= b,
+            forall|x: int| #[trigger] n.has(x) == (o.has(x) && x != b),
+        ensures
+            n.view() == o.view().remove(b as nat),
+    {
+        broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+        assert forall|x: nat| #[trigger] n.view().contains(x) == o.view().remove(b as nat).contains(x) by {
+            assert(n.has(x as int) == (o.has(x as int) && x as int != b));
+        }
+        assert(n.view() =~= o.view().remove(b as nat));
+    }
+
     /// Words of storage needed for a set over `0..nbits`.
-    pub const fn words_needed(nbits: usize) -> usize {
+    pub const fn words_needed(nbits: usize) -> (r: usize)
+        ensures
+            r == (nbits + 63) / 64 + ((nbits + 63) / 64 + 63) / 64,
+    {
         let l0 = nbits.div_ceil(64);
         l0 + l0.div_ceil(64)
     }
@@ -281,7 +2021,14 @@ impl TwoLevelBitmap {
     /// `ptr` must be valid for reads and writes of `words_needed(nbits)`
     /// `u64`s for as long as the set is used, must be zeroed, and must not be
     /// accessed by anything else while the set exists.
-    pub const unsafe fn from_raw(nbits: usize, ptr: *mut u64) -> TwoLevelBitmap {
+    #[verifier::external_body]
+    pub const unsafe fn from_raw(nbits: usize, ptr: *mut u64) -> (r: TwoLevelBitmap)
+        requires
+            ((((nbits as int) + 63) / 64 + 63) / 64 + ((nbits as int) + 63) / 64) * 8 <= isize::MAX,
+        ensures
+            r.fresh(nbits),
+            r.place() == (ptr@.addr as int, 8 * ((((nbits as int) + 63) / 64 + 63) / 64 + ((nbits as int) + 63) / 64)),
+    {
         let l0_words = nbits.div_ceil(64);
         TwoLevelBitmap {
             nbits,
@@ -291,6 +2038,7 @@ impl TwoLevelBitmap {
             ptr,
             stride: 1,
             chunked: false,
+            perms: Tracked::assume_new(),
         }
     }
 
@@ -305,11 +2053,15 @@ impl TwoLevelBitmap {
     /// for as long as the set is used, zeroed, and not accessed by anything
     /// else while the set exists. Words between the view's own are
     /// somebody else's.
-    pub const unsafe fn from_raw_chunked(
-        nbits: usize,
-        ptr: *mut u64,
-        stride: usize,
-    ) -> TwoLevelBitmap {
+    #[verifier::external_body]
+    pub const unsafe fn from_raw_chunked(nbits: usize, ptr: *mut u64, stride: usize) -> (r: TwoLevelBitmap)
+        requires
+            stride >= 1,
+            65 * ((((nbits as int) + 63) / 64 + 63) / 64) * (stride as int) * 8 <= isize::MAX,
+        ensures
+            r.fresh(nbits),
+            r.place() == (ptr@.addr as int, 8 * (65 * ((((nbits as int) + 63) / 64 + 63) / 64) * (stride as int))),
+    {
         let l0_words = nbits.div_ceil(64);
         debug_assert!(stride >= 1);
         TwoLevelBitmap {
@@ -320,42 +2072,74 @@ impl TwoLevelBitmap {
             ptr,
             stride,
             chunked: true,
+            perms: Tracked::assume_new(),
         }
     }
 
     /// Level-1 words a set over `0..nbits` has.
-    pub const fn l1_words(nbits: usize) -> usize {
+    pub const fn l1_words(nbits: usize) -> (r: usize)
+        ensures
+            r == ((nbits + 63) / 64 + 63) / 64,
+    {
         nbits.div_ceil(64).div_ceil(64)
     }
 
     /// Rows a chunked view over `0..nbits` spans (65 per level-1 word).
-    pub const fn chunked_rows(nbits: usize) -> usize {
+    pub const fn chunked_rows(nbits: usize) -> (r: usize)
+        ensures
+            r == 65 * (((nbits + 63) / 64 + 63) / 64),
+    {
         65 * Self::l1_words(nbits)
     }
 
     /// Row of level-0 word `w` in a chunked view.
-    pub const fn chunked_l0_row(w: usize) -> usize {
+    pub const fn chunked_l0_row(w: usize) -> (r: usize)
+        requires
+            65 * (w / 64) + 64 <= usize::MAX,
+        ensures
+            r == l0_row(w as int),
+    {
         65 * (w / 64) + 1 + w % 64
     }
 
     /// Offset in words of level-1 word `j`.
     #[inline]
-    fn l1_off(&self, j: usize) -> usize {
-        if self.chunked {
-            65 * j * self.stride
-        } else {
-            j
+    fn l1_off(&self, j: usize) -> (r: usize)
+        requires
+            self.shape(),
+            j < self.l1_words,
+        ensures
+            r == self.l1o(j as int),
+    {
+        proof {
+            self.lemma_offsets();
+            assert(self.l1o(j as int) >= 0);
+            assert(65 * j <= 65 * self.l1_words);
+            assert(65 * j * self.stride <= 65 * self.l1_words * self.stride) by (nonlinear_arith)
+                requires j < self.l1_words, self.stride >= 1;
         }
+        if self.chunked { 65 * j * self.stride } else { j }
     }
 
     /// Offset in words of level-0 word `w`.
     #[inline]
-    fn l0_off(&self, w: usize) -> usize {
-        if self.chunked {
-            Self::chunked_l0_row(w) * self.stride
-        } else {
-            self.l1_words + w
+    fn l0_off(&self, w: usize) -> (r: usize)
+        requires
+            self.shape(),
+            w < self.l0_words,
+        ensures
+            r == self.l0o(w as int),
+    {
+        proof {
+            self.lemma_offsets();
+            assert(self.l0o(w as int) >= 0);
+            if self.chunked {
+                assert(w / 64 < self.l1_words);
+                assert(0 <= l0_row(w as int) * self.stride <= 65 * self.l1_words * self.stride) by (nonlinear_arith)
+                    requires 0 <= l0_row(w as int) < 65 * self.l1_words, self.stride >= 1;
+            }
         }
+        if self.chunked { Self::chunked_l0_row(w) * self.stride } else { self.l1_words + w }
     }
 
     /// Tests: number of bits in the set's universe.
@@ -371,119 +2155,496 @@ impl TwoLevelBitmap {
     }
 
     #[inline]
-    fn l1(&self, i: usize) -> u64 {
+    fn l1(&self, i: usize) -> (r: u64)
+        requires
+            self.valid(),
+            i < self.l1_words,
+        ensures
+            r == self.l1v(i as int),
+    {
         debug_assert!(i < self.l1_words);
+        proof {
+            self.lemma_offsets();
+            assert(self.ok(self.l1o(i as int)));
+        }
         // SAFETY: `i < l1_words`, a word of this view (`from_raw*`).
-        unsafe { *self.ptr.add(self.l1_off(i)) }
+        unsafe { *ptr_ref(self.ptr.add(self.l1_off(i)), Tracked(self.perms.borrow().tracked_borrow(self.l1o(i as int)))) }
     }
 
     #[inline]
-    fn l0(&self, i: usize) -> u64 {
+    fn l0(&self, i: usize) -> (r: u64)
+        requires
+            self.valid(),
+            i < self.l0_words,
+        ensures
+            r == self.l0v(i as int),
+    {
         debug_assert!(i < self.l0_words);
+        proof {
+            self.lemma_offsets();
+            assert(self.ok(self.l0o(i as int)));
+        }
         // SAFETY: level-0 word `i` of this view (`from_raw*`).
-        unsafe { *self.ptr.add(self.l0_off(i)) }
+        unsafe { *ptr_ref(self.ptr.add(self.l0_off(i)), Tracked(self.perms.borrow().tracked_borrow(self.l0o(i as int)))) }
     }
 
     #[inline]
-    fn l1_mut(&mut self, i: usize) -> &mut u64 {
+    fn l1_mut(&mut self, i: usize) -> (r: &mut u64)
+        requires
+            old(self).valid(),
+            i < old(self).l1_words,
+        ensures
+            *r == old(self).l1v(i as int),
+            final(self).frame(old(self)),
+            final(self).l1_used == old(self).l1_used,
+            final(self).perms@ == old(self).perms@.insert(old(self).l1o(i as int), final(self).perms@[old(self).l1o(i as int)]),
+            final(self).perms@[old(self).l1o(i as int)].ptr() == old(self).perms@[old(self).l1o(i as int)].ptr(),
+            final(self).perms@[old(self).l1o(i as int)].is_init(),
+            final(self).perms@[old(self).l1o(i as int)].value() == *final(r),
+            old(self).ok(old(self).l1o(i as int)),
+    {
         debug_assert!(i < self.l1_words);
+        proof {
+            self.lemma_offsets();
+            assert(self.ok(self.l1o(i as int)));
+        }
+        let ghost key = self.l1o(i as int);
         // SAFETY: as in `l1`; `&mut self` gives exclusive access.
-        unsafe { &mut *self.ptr.add(self.l1_off(i)) }
+        unsafe { ptr_mut_ref(self.ptr.add(self.l1_off(i)), Tracked(self.perms.borrow_mut().tracked_borrow_mut(key))) }
     }
 
     #[inline]
-    fn l0_mut(&mut self, i: usize) -> &mut u64 {
+    fn l0_mut(&mut self, i: usize) -> (r: &mut u64)
+        requires
+            old(self).valid(),
+            i < old(self).l0_words,
+        ensures
+            *r == old(self).l0v(i as int),
+            final(self).frame(old(self)),
+            final(self).l1_used == old(self).l1_used,
+            final(self).perms@ == old(self).perms@.insert(old(self).l0o(i as int), final(self).perms@[old(self).l0o(i as int)]),
+            final(self).perms@[old(self).l0o(i as int)].ptr() == old(self).perms@[old(self).l0o(i as int)].ptr(),
+            final(self).perms@[old(self).l0o(i as int)].is_init(),
+            final(self).perms@[old(self).l0o(i as int)].value() == *final(r),
+            old(self).ok(old(self).l0o(i as int)),
+    {
         debug_assert!(i < self.l0_words);
+        proof {
+            self.lemma_offsets();
+            assert(self.ok(self.l0o(i as int)));
+        }
+        let ghost key = self.l0o(i as int);
         // SAFETY: as in `l0`; `&mut self` gives exclusive access.
-        unsafe { &mut *self.ptr.add(self.l0_off(i)) }
+        unsafe { ptr_mut_ref(self.ptr.add(self.l0_off(i)), Tracked(self.perms.borrow_mut().tracked_borrow_mut(key))) }
     }
 
     /// Whether `bit` is in the set.
     #[inline]
-    pub fn is_set(&self, bit: usize) -> bool {
+    pub fn is_set(&self, bit: usize) -> (r: bool)
+        requires
+            self.wf(),
+            bit < self.spec_nbits(),
+        ensures
+            r == self.view().contains(bit as nat),
+    {
         assert!(bit < self.nbits, "bitmap: bit out of range");
+        proof {
+            broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+        }
         (self.l0(bit / 64) >> (bit % 64)) & 1 == 1
     }
 
     /// Insert `bit`.
-    pub fn set(&mut self, bit: usize) {
+    pub fn set(&mut self, bit: usize)
+        requires
+            old(self).wf(),
+            bit < old(self).spec_nbits(),
+        ensures
+            final(self).place() == old(self).place(),
+            final(self).wf(),
+            final(self).spec_nbits() == old(self).spec_nbits(),
+            final(self).view() == old(self).view().insert(bit as nat),
+    {
         assert!(bit < self.nbits, "bitmap: bit out of range");
         let w = bit / 64;
+        let ghost o = *self;
+        proof {
+            lemma_one_bit((bit % 64) as u64);
+            lemma_one_bit((w % 64) as u64);
+            assert(w < self.l0_words);
+            assert(w / 64 < self.l1_words);
+        }
         *self.l0_mut(w) |= 1u64 << (bit % 64);
+        let ghost s1 = *self;
+        proof {
+            o.lemma_offsets();
+            Self::lemma_write(&o, &s1, o.l0o(w as int), s1.l0v(w as int));
+        }
         *self.l1_mut(w / 64) |= 1u64 << (w % 64);
+        let ghost s2 = *self;
+        proof {
+            s1.lemma_offsets();
+            Self::lemma_write(&s1, &s2, s1.l1o(w as int / 64), s2.l1v(w as int / 64));
+            let a2 = s2.l0v(w as int);
+            assert forall|b: u64| b < 64 implies #[trigger] has_bit(a2, b) == (has_bit(o.l0v(w as int), b) || b == (bit % 64) as u64) by {
+                lemma_bit_ops(o.l0v(w as int), 1u64 << ((bit % 64) as u64), b);
+            }
+            assert forall|k: u64| k < 64 implies #[trigger] has_bit(s2.l1v(w as int / 64), k) == (has_bit(o.l1v(w as int / 64), k) || k == (w % 64) as u64) by {
+                lemma_bit_ops(o.l1v(w as int / 64), 1u64 << ((w % 64) as u64), k);
+            }
+            assert forall|b: u64| b < 64 && w * 64 + b >= o.nbits implies !#[trigger] has_bit(a2, b) by {
+                assert(!has_bit(o.l0v(w as int), b));
+            }
+            assert(has_bit(a2, (bit % 64) as u64));
+            assert(has_bit(s2.l1v(w as int / 64), (w % 64) as u64));
+            Self::lemma_word(&o, &s2, w as int, a2);
+        }
         if w / 64 >= self.l1_used {
             self.l1_used = w / 64 + 1;
+        }
+        proof {
+            let n = *self;
+            Self::lemma_used(&s2, &n);
+            assert(has_bit(n.l1v(w as int / 64), (w % 64) as u64));
+            assert forall|j: int| n.l1_used <= j < n.l1_words implies #[trigger] n.l1v(j) == 0u64 by {
+                assert(o.l1v(j) == 0u64);
+            }
+            assert(n.l1v(w as int / 64) != 0u64);
+            if n.l1_used > 0 && n.l1_used - 1 != w / 64 {
+                assert(n.l1v(n.l1_used - 1) == o.l1v(o.l1_used - 1));
+            }
+            Self::lemma_view_insert(&o, &n, bit as int);
         }
     }
 
     /// Remove `bit`. Removing a bit that is not present is a no-op.
-    pub fn clear(&mut self, bit: usize) {
+    pub fn clear(&mut self, bit: usize)
+        requires
+            old(self).wf(),
+            bit < old(self).spec_nbits(),
+        ensures
+            final(self).place() == old(self).place(),
+            final(self).wf(),
+            final(self).spec_nbits() == old(self).spec_nbits(),
+            final(self).view() == old(self).view().remove(bit as nat),
+    {
         assert!(bit < self.nbits, "bitmap: bit out of range");
         let w = bit / 64;
+        let ghost o = *self;
+        proof {
+            lemma_one_bit((bit % 64) as u64);
+            lemma_one_bit((w % 64) as u64);
+            assert(w < self.l0_words);
+            assert(w / 64 < self.l1_words);
+            o.lemma_offsets();
+        }
         let word = self.l0_mut(w);
         *word &= !(1u64 << (bit % 64));
         if *word == 0 {
+            let ghost s1 = *self;
+            proof {
+                Self::lemma_clear_word(&o, &s1, bit as int);
+            }
             *self.l1_mut(w / 64) &= !(1u64 << (w % 64));
-            while self.l1_used > 0 && self.l1(self.l1_used - 1) == 0 {
+            let ghost s2 = *self;
+            proof {
+                s1.lemma_offsets();
+                Self::lemma_write(&s1, &s2, s1.l1o(w as int / 64), s2.l1v(w as int / 64));
+                assert forall|k: u64| k < 64 implies #[trigger] has_bit(s2.l1v(w as int / 64), k) == (has_bit(o.l1v(w as int / 64), k) && k != (w % 64) as u64) by {
+                    lemma_bit_ops(o.l1v(w as int / 64), 1u64 << ((w % 64) as u64), k);
+                }
+                assert forall|b: u64| b < 64 implies !#[trigger] has_bit(0u64, b) by {
+                    assert((0u64 >> b) & 1u64 != 1u64) by (bit_vector);
+                }
+                Self::lemma_word(&o, &s2, w as int, 0u64);
+                // The summary word only lost a bit, so a zero word stays zero.
+                if o.l1v(w as int / 64) == 0u64 {
+                    assert forall|k: u64| k < 64 implies !#[trigger] has_bit(s2.l1v(w as int / 64), k) by {
+                        assert(!has_bit(0u64, k));
+                    }
+                    lemma_zero_of_no_bits(s2.l1v(w as int / 64));
+                }
+                assert forall|j: int| s2.l1_used <= j < s2.l1_words implies #[trigger] s2.l1v(j) == 0u64 by {
+                    assert(o.l1v(j) == 0u64);
+                }
+            }
+            while self.l1_used > 0 && self.l1(self.l1_used - 1) == 0
+                invariant
+                    self.inner(),
+                    self.perms == s2.perms,
+                    self.frame(&s2),
+                    self.tail(),
+                    forall|b: int| #[trigger] self.has(b) == s2.has(b),
+                decreases self.l1_used,
+            {
+                let ghost p = *self;
                 self.l1_used -= 1;
+                proof {
+                    Self::lemma_used(&p, self);
+                    assert forall|j: int| self.l1_used <= j < self.l1_words implies #[trigger] self.l1v(j) == 0u64 by {
+                        if j > self.l1_used {
+                            assert(p.l1v(j) == 0u64);
+                        }
+                    }
+                }
+            }
+            proof {
+                Self::lemma_view_remove(&o, self, bit as int);
+            }
+        } else {
+            proof {
+                let s1 = *self;
+                Self::lemma_clear_word(&o, &s1, bit as int);
+                assert forall|j: int| s1.l1_used <= j < s1.l1_words implies #[trigger] s1.l1v(j) == 0u64 by {
+                    assert(o.l1v(j) == 0u64);
+                }
+                if s1.l1_used > 0 {
+                    assert(s1.l1v(s1.l1_used - 1) == o.l1v(o.l1_used - 1));
+                }
+                Self::lemma_view_remove(&o, &s1, bit as int);
             }
         }
     }
 
     /// Insert every bit in `start..start + len`, one word at a time.
-    pub fn set_range(&mut self, start: usize, len: usize) {
+    pub fn set_range(&mut self, start: usize, len: usize)
+        requires
+            old(self).wf(),
+            start + len <= old(self).spec_nbits(),
+        ensures
+            final(self).place() == old(self).place(),
+            final(self).wf(),
+            final(self).spec_nbits() == old(self).spec_nbits(),
+            final(self).view() == old(self).view().union(Set::<nat>::range(start as nat, (start + len) as nat)),
+    {
         let end = start.checked_add(len).expect("bitmap: range wraps");
         assert!(end <= self.nbits, "bitmap: range out of range");
         let mut bit = start;
-        while bit < end {
+        let ghost o = *self;
+        while bit < end
+            invariant
+                self.wf(),
+                self.frame(&o),
+                start <= bit <= end,
+                end == start + len,
+                end <= self.nbits,
+                forall|x: int| #[trigger] self.has(x) == (o.has(x) || start <= x < bit),
+            decreases end - bit,
+        {
             let w = bit / 64;
             let lo = bit % 64;
             let hi = (end - w * 64).min(64);
-            let mask = if hi - lo == 64 {
-                !0
-            } else {
-                ((1u64 << (hi - lo)) - 1) << lo
-            };
+            let ghost p = *self;
+            proof {
+                assert(w < self.l0_words);
+                assert(w / 64 < self.l1_words);
+                assert(lo < hi <= 64);
+                lemma_one_bit((w % 64) as u64);
+                p.lemma_offsets();
+                if hi - lo < 64 {
+                    lemma_one_shl((hi - lo) as usize);
+                }
+            }
+            let mask = if hi - lo == 64 { !0 } else { ((1u64 << (hi - lo)) - 1) << lo };
+            proof {
+                lemma_word_mask(mask, lo as u64, hi as u64);
+            }
             *self.l0_mut(w) |= mask;
+            let ghost s1 = *self;
+            proof {
+                Self::lemma_write(&p, &s1, p.l0o(w as int), s1.l0v(w as int));
+            }
             *self.l1_mut(w / 64) |= 1u64 << (w % 64);
+            let ghost s2 = *self;
+            proof {
+                s1.lemma_offsets();
+                Self::lemma_write(&s1, &s2, s1.l1o(w as int / 64), s2.l1v(w as int / 64));
+                let a2 = s2.l0v(w as int);
+                assert forall|b: u64| b < 64 implies #[trigger] has_bit(a2, b) == (has_bit(p.l0v(w as int), b) || (lo <= b < hi)) by {
+                    lemma_bit_ops(p.l0v(w as int), mask, b);
+                }
+                assert forall|k: u64| k < 64 implies #[trigger] has_bit(s2.l1v(w as int / 64), k) == (has_bit(p.l1v(w as int / 64), k) || k == (w % 64) as u64) by {
+                    lemma_bit_ops(p.l1v(w as int / 64), 1u64 << ((w % 64) as u64), k);
+                }
+                assert forall|b: u64| b < 64 && w * 64 + b >= p.nbits implies !#[trigger] has_bit(a2, b) by {
+                    assert(!has_bit(p.l0v(w as int), b));
+                }
+                assert(has_bit(a2, lo as u64));
+                assert(has_bit(s2.l1v(w as int / 64), (w % 64) as u64));
+                Self::lemma_word(&p, &s2, w as int, a2);
+            }
             if w / 64 >= self.l1_used {
                 self.l1_used = w / 64 + 1;
             }
             bit = w * 64 + hi;
+            proof {
+                let n = *self;
+                Self::lemma_used(&s2, &n);
+                assert(has_bit(n.l1v(w as int / 64), (w % 64) as u64));
+                assert forall|j: int| n.l1_used <= j < n.l1_words implies #[trigger] n.l1v(j) == 0u64 by {
+                    assert(p.l1v(j) == 0u64);
+                }
+                assert(n.l1v(w as int / 64) != 0u64);
+                if n.l1_used > 0 && n.l1_used - 1 != w / 64 {
+                    assert(n.l1v(n.l1_used - 1) == p.l1v(p.l1_used - 1));
+                }
+                assert forall|x: int| #[trigger] n.has(x) == (o.has(x) || start <= x < bit) by {
+                    if x / 64 == w && 0 <= x < n.nbits {
+                        assert(has_bit(s2.l0v(w as int), (x % 64) as u64) == (has_bit(p.l0v(w as int), (x % 64) as u64) || (lo <= (x % 64) as u64 && (x % 64) < hi)));
+                        assert(p.has(x) == has_bit(p.l0v(w as int), (x % 64) as u64));
+                    }
+                }
+            }
+        }
+        proof {
+            broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+            assert(self.view() =~= o.view().union(Set::<nat>::range(start as nat, (start + len) as nat)));
         }
     }
 
     /// Remove every bit in `start..start + len`, one word at a time. Bits
     /// that were not present are ignored.
-    pub fn clear_range(&mut self, start: usize, len: usize) {
+    pub fn clear_range(&mut self, start: usize, len: usize)
+        requires
+            old(self).wf(),
+            start + len <= old(self).spec_nbits(),
+        ensures
+            final(self).place() == old(self).place(),
+            final(self).wf(),
+            final(self).spec_nbits() == old(self).spec_nbits(),
+            final(self).view() == old(self).view().difference(Set::<nat>::range(start as nat, (start + len) as nat)),
+    {
         let end = start.checked_add(len).expect("bitmap: range wraps");
         assert!(end <= self.nbits, "bitmap: range out of range");
         let mut bit = start;
-        while bit < end {
+        let ghost o = *self;
+        while bit < end
+            invariant
+                self.inner(),
+                self.tail(),
+                self.frame(&o),
+                start <= bit <= end,
+                end == start + len,
+                end <= self.nbits,
+                forall|x: int| #[trigger] self.has(x) == (o.has(x) && !(start <= x < bit)),
+            decreases end - bit,
+        {
             let w = bit / 64;
             let lo = bit % 64;
             let hi = (end - w * 64).min(64);
-            let mask = if hi - lo == 64 {
-                !0
-            } else {
-                ((1u64 << (hi - lo)) - 1) << lo
-            };
+            let ghost p = *self;
+            proof {
+                assert(w < self.l0_words);
+                assert(w / 64 < self.l1_words);
+                assert(lo < hi <= 64);
+                lemma_one_bit((w % 64) as u64);
+                p.lemma_offsets();
+                if hi - lo < 64 {
+                    lemma_one_shl((hi - lo) as usize);
+                }
+            }
+            let mask = if hi - lo == 64 { !0 } else { ((1u64 << (hi - lo)) - 1) << lo };
+            proof {
+                lemma_word_mask(mask, lo as u64, hi as u64);
+            }
             let word = self.l0_mut(w);
             *word &= !mask;
             if *word == 0 {
+                let ghost s1 = *self;
+                proof {
+                    Self::lemma_and_not_word(&p, &s1, w as int, mask);
+                }
                 *self.l1_mut(w / 64) &= !(1u64 << (w % 64));
+                let ghost s2 = *self;
+                proof {
+                    s1.lemma_offsets();
+                    Self::lemma_write(&s1, &s2, s1.l1o(w as int / 64), s2.l1v(w as int / 64));
+                    assert forall|k: u64| k < 64 implies #[trigger] has_bit(s2.l1v(w as int / 64), k) == (has_bit(p.l1v(w as int / 64), k) && k != (w % 64) as u64) by {
+                        lemma_bit_ops(p.l1v(w as int / 64), 1u64 << ((w % 64) as u64), k);
+                    }
+                    assert forall|b: u64| b < 64 implies !#[trigger] has_bit(0u64, b) by {
+                        assert((0u64 >> b) & 1u64 != 1u64) by (bit_vector);
+                    }
+                    Self::lemma_word(&p, &s2, w as int, 0u64);
+                    if p.l1v(w as int / 64) == 0u64 {
+                        assert forall|k: u64| k < 64 implies !#[trigger] has_bit(s2.l1v(w as int / 64), k) by {
+                            assert(!has_bit(0u64, k));
+                        }
+                        lemma_zero_of_no_bits(s2.l1v(w as int / 64));
+                    }
+                    assert forall|j: int| s2.l1_used <= j < s2.l1_words implies #[trigger] s2.l1v(j) == 0u64 by {
+                        assert(p.l1v(j) == 0u64);
+                    }
+                    assert forall|x: int| #[trigger] s2.has(x) == (p.has(x) && !(x / 64 == w && has_bit(mask, (x % 64) as u64))) by {
+                        if 0 <= x < p.nbits && x / 64 == w {
+                            assert(has_bit(s1.l0v(w as int), (x % 64) as u64) == (p.has(x) && !has_bit(mask, (x % 64) as u64)));
+                        }
+                    }
+                }
+            } else {
+                proof {
+                    let s1 = *self;
+                    Self::lemma_and_not_word(&p, &s1, w as int, mask);
+                    assert forall|j: int| s1.l1_used <= j < s1.l1_words implies #[trigger] s1.l1v(j) == 0u64 by {
+                        assert(p.l1v(j) == 0u64);
+                    }
+                }
             }
             bit = w * 64 + hi;
+            proof {
+                let n = *self;
+                assert forall|x: int| #[trigger] n.has(x) == (o.has(x) && !(start <= x < bit)) by {
+                    if x / 64 == w && 0 <= x {
+                        assert(has_bit(mask, (x % 64) as u64) == (lo <= (x % 64) as u64 && (x % 64) < hi));
+                    }
+                }
+            }
         }
-        while self.l1_used > 0 && self.l1(self.l1_used - 1) == 0 {
+        let ghost s3 = *self;
+        while self.l1_used > 0 && self.l1(self.l1_used - 1) == 0
+            invariant
+                self.inner(),
+                self.perms == s3.perms,
+                self.frame(&s3),
+                self.tail(),
+                forall|b: int| #[trigger] self.has(b) == s3.has(b),
+            decreases self.l1_used,
+        {
+            let ghost p = *self;
             self.l1_used -= 1;
+            proof {
+                Self::lemma_used(&p, self);
+                assert forall|j: int| self.l1_used <= j < self.l1_words implies #[trigger] self.l1v(j) == 0u64 by {
+                    if j > self.l1_used {
+                        assert(p.l1v(j) == 0u64);
+                    }
+                }
+            }
+        }
+        proof {
+            broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+            assert(self.view() =~= o.view().difference(Set::<nat>::range(start as nat, (start + len) as nat)));
         }
     }
 
     /// Lowest bit in the set.
     #[inline]
-    pub fn lowest_set(&self) -> Option<usize> {
-        self.scan_l1(0)
+    pub fn lowest_set(&self) -> (r: Option<usize>)
+        requires
+            self.wf(),
+        ensures
+            r is None ==> self.view() == Set::<nat>::empty(),
+            r matches Some(b) ==> self.view().contains(b as nat)
+                && forall|x: nat| #[trigger] self.view().contains(x) ==> b <= x,
+    {
+        let r = self.scan_l1(0);
+        proof {
+            broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+            if r is None {
+                assert(self.view() =~= Set::<nat>::empty());
+            }
+        }
+        r
     }
 
     /// Lowest bit in the set that is `>= from`.
@@ -492,41 +2653,295 @@ impl TwoLevelBitmap {
     /// level-1 bit means the word is non-zero, so it has been written; the
     /// lazily committed tables in `class/` and `huge/` rely on this to
     /// keep scans away from words whose page is still `PROT_NONE`.
-    pub fn lowest_set_from(&self, from: usize) -> Option<usize> {
+    pub fn lowest_set_from(&self, from: usize) -> (r: Option<usize>)
+        requires
+            self.wf(),
+        ensures
+            r is None ==> forall|x: nat| #[trigger] self.view().contains(x) ==> x < from,
+            r matches Some(b) ==> self.view().contains(b as nat) && from <= b
+                && forall|x: nat| #[trigger] self.view().contains(x) && from <= x ==> b <= x,
+    {
+        proof {
+            broadcast use {vstd::set_lib::range_set_properties, vstd::set::lemma_set_filter};
+        }
         if from >= self.nbits {
             return None;
         }
         let w = from / 64;
         let j = w / 64;
         if j >= self.l1_used {
+            proof {
+                assert forall|x: int| #[trigger] self.has(x) implies x < from by {
+                    self.lemma_member(x);
+                    if x >= from {
+                        lemma_div_div_mono(from as int, x);
+                    }
+                }
+            }
             return None;
+        }
+        proof {
+            assert(w < self.l0_words);
+            assert(j < self.l1_words);
+            lemma_shl_ones((w % 64) as u64);
         }
         // Non-zero level-0 words at or above `w` in the group covering `w`.
         let mut m1 = self.l1(j) & (!0u64 << (w % 64));
+        let ghost m1_0 = m1;
+        let ghost mut taken = false;
+        proof {
+            assert forall|k: u64| k < 64 implies #[trigger] has_bit(m1, k) == (has_bit(self.l1v(j as int), k) && k >= w % 64) by {
+                lemma_bit_ops(self.l1v(j as int), !0u64 << ((w % 64) as u64), k);
+            }
+            lemma_tz(m1);
+        }
         if m1 != 0 && j * 64 + m1.trailing_zeros() as usize == w {
             let m = self.l0(w) & (!0u64 << (from % 64));
+            proof {
+                lemma_shl_ones((from % 64) as u64);
+                assert forall|k: u64| k < 64 implies #[trigger] has_bit(m, k) == (has_bit(self.l0v(w as int), k) && k >= from % 64) by {
+                    lemma_bit_ops(self.l0v(w as int), !0u64 << ((from % 64) as u64), k);
+                }
+                lemma_tz(m);
+            }
             if m != 0 {
+                proof {
+                    let t = u64_trailing_zeros(m) as int;
+                    let b = w * 64 + t;
+                    assert(has_bit(self.l0v(w as int), t as u64));
+                    assert(b / 64 == w && b % 64 == t);
+                    assert(b < self.nbits) by {
+                        if b >= self.nbits {
+                            assert(!has_bit(self.l0v(w as int), t as u64));
+                        }
+                    }
+                    assert(self.has(b));
+                    assert forall|x: int| #[trigger] self.has(x) && from <= x implies b <= x by {
+                        if x / 64 == w {
+                            assert(has_bit(m, (x % 64) as u64));
+                        }
+                    }
+                }
                 return Some(w * 64 + m.trailing_zeros() as usize);
+            }
+            proof {
+                lemma_clear_lowest(m1);
+                // Word `w` has no member at or above `from`.
+                assert forall|x: int| #[trigger] self.has(x) && x / 64 == w implies x < from by {
+                    if x >= from {
+                        assert(has_bit(m, (x % 64) as u64));
+                    }
+                }
+                taken = true;
             }
             m1 &= m1 - 1;
         }
+        proof {
+            let t0 = u64_trailing_zeros(m1_0) as int;
+            assert(w == j * 64 + w % 64);
+            // `m1` holds the level-1 bits of group `j` above `w % 64`, and
+            // word `w` has no member at or above `from`.
+            if !taken && m1_0 != 0u64 {
+                assert(t0 >= w % 64) by {
+                    if t0 < w % 64 {
+                        assert(has_bit(m1_0, t0 as u64));
+                    }
+                }
+            }
+            assert forall|k: u64| k < 64 implies #[trigger] has_bit(m1, k) == (k > w % 64 && has_bit(self.l1v(j as int), k)) by {
+                if !taken && m1_0 != 0u64 && k == w % 64 {
+                    assert(!has_bit(m1_0, k)) by {
+                        if has_bit(m1_0, k) {
+                            assert(t0 <= k) by {
+                                if t0 > k {
+                                    assert(!has_bit(m1_0, k));
+                                }
+                            }
+                        }
+                    }
+                }
+                if !taken && m1_0 == 0u64 {
+                    assert(!has_bit(0u64, k)) by {
+                        assert((0u64 >> k) & 1u64 != 1u64) by (bit_vector);
+                    }
+                }
+            }
+            assert forall|x: int| #[trigger] self.has(x) && x / 64 == w implies x < from by {
+                if !taken && x >= from {
+                    self.lemma_member(x);
+                    assert(has_bit(m1_0, (w % 64) as u64));
+                    assert(t0 <= w % 64) by {
+                        if t0 > w % 64 {
+                            assert(!has_bit(m1_0, (w % 64) as u64));
+                        }
+                    }
+                }
+            }
+            // Every member at or above `from` in group `j` is in a word
+            // above `w` whose bit is in `m1`.
+            assert forall|x: int| #[trigger] self.has(x) && from <= x && x / 64 / 64 <= j implies
+                x / 64 / 64 == j && has_bit(m1, (x / 64 % 64) as u64) by {
+                self.lemma_member(x);
+                lemma_div_div_mono(from as int, x);
+                assert(x / 64 >= w);
+                assert(x / 64 != w);
+            }
+            lemma_tz(m1);
+        }
         if m1 != 0 {
             let w2 = j * 64 + m1.trailing_zeros() as usize;
-            return Some(w2 * 64 + self.l0(w2).trailing_zeros() as usize);
+            proof {
+                let t = u64_trailing_zeros(m1) as u64;
+                assert(has_bit(m1, t));
+                self.lemma_found(j as int, t);
+            }
+            let r = w2 * 64 + self.l0(w2).trailing_zeros() as usize;
+            proof {
+                let t = u64_trailing_zeros(m1) as int;
+                let t2 = u64_trailing_zeros(self.l0v(w2 as int)) as int;
+                assert(self.has(r as int));
+                assert forall|x: nat| #[trigger] self.view().contains(x) && from <= x implies r <= x by {
+                    let xi = x as int;
+                    assert(self.has(xi));
+                    if xi / 64 / 64 <= j {
+                        assert(has_bit(m1, (xi / 64 % 64) as u64));
+                        assert(xi / 64 % 64 >= t) by {
+                            if xi / 64 % 64 < t {
+                                assert(!has_bit(m1, (xi / 64 % 64) as u64));
+                            }
+                        }
+                        if xi / 64 == w2 {
+                            assert(xi % 64 >= t2) by {
+                                if xi % 64 < t2 {
+                                    assert(!has_bit(self.l0v(w2 as int), (xi % 64) as u64));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return Some(r);
         }
-        self.scan_l1(j + 1)
+        let r = self.scan_l1(j + 1);
+        proof {
+            assert forall|x: int| #[trigger] self.has(x) && from <= x implies x / 64 / 64 >= j + 1 by {
+                if x / 64 / 64 <= j {
+                    assert(has_bit(m1, (x / 64 % 64) as u64));
+                    assert(!has_bit(0u64, (x / 64 % 64) as u64)) by {
+                        let k = (x / 64 % 64) as u64;
+                        assert((0u64 >> k) & 1u64 != 1u64) by (bit_vector);
+                    }
+                }
+            }
+            if r is None {
+                assert forall|x: nat| #[trigger] self.view().contains(x) implies x < from by {
+                    assert(self.has(x as int));
+                }
+            }
+            if let Some(b) = r {
+                assert(from <= b) by {
+                    if b < from {
+                        lemma_div_div_mono(b as int, from as int);
+                    }
+                }
+            }
+        }
+        r
     }
 
     /// Lowest set bit whose level-1 word index is `>= j`.
-    fn scan_l1(&self, j: usize) -> Option<usize> {
-        for i in j..self.l1_used {
+    fn scan_l1(&self, j: usize) -> (r: Option<usize>)
+        requires
+            self.wf(),
+            j <= self.l1_used,
+        ensures
+            r matches Some(b) ==> self.has(b as int) && b as int / 64 / 64 >= j
+                && forall|x: int| #[trigger] self.has(x) && x / 64 / 64 >= j ==> b <= x,
+            r is None ==> forall|x: int| #[trigger] self.has(x) ==> x / 64 / 64 < j,
+    {
+        for i in j..self.l1_used
+            invariant
+                self.wf(),
+                forall|x: int| #[trigger] self.has(x) && x / 64 / 64 >= j ==> x / 64 / 64 >= i,
+        {
             let m1 = self.l1(i);
+            proof {
+                lemma_tz(m1);
+                if m1 == 0 {
+                    assert forall|x: int| #[trigger] self.has(x) && x / 64 / 64 >= j implies x / 64 / 64 >= i + 1 by {
+                        self.lemma_member(x);
+                    }
+                }
+            }
             if m1 != 0 {
                 let w = i * 64 + m1.trailing_zeros() as usize;
-                return Some(w * 64 + self.l0(w).trailing_zeros() as usize);
+                proof {
+                    self.lemma_found(i as int, u64_trailing_zeros(m1) as u64);
+                }
+                let r = w * 64 + self.l0(w).trailing_zeros() as usize;
+                proof {
+                    let t = u64_trailing_zeros(m1) as int;
+                    let t0 = u64_trailing_zeros(self.l0v(w as int)) as int;
+                    assert forall|x: int| #[trigger] self.has(x) && x / 64 / 64 >= j implies r <= x by {
+                        self.lemma_member(x);
+                        if x / 64 / 64 == i {
+                            let k = x / 64 % 64;
+                            assert(has_bit(m1, k as u64));
+                            assert(k >= t);
+                            if x / 64 == w {
+                                assert(x % 64 >= t0);
+                            }
+                        }
+                    }
+                }
+                return Some(r);
+            }
+        }
+        proof {
+            assert forall|x: int| #[trigger] self.has(x) implies x / 64 / 64 < j by {
+                self.lemma_member(x);
             }
         }
         None
+    }
+}
+
+} // verus!
+
+/// Tests: the views and operations with no ghost state (the tests hold no
+/// slot tokens).
+#[cfg(test)]
+impl<'a> AtomicBitmap<'a> {
+    pub fn from_words_t(words: &'a [AtomicU64]) -> AtomicBitmap<'a> {
+        AtomicBitmap::from_words(
+            words,
+            Ghost::assume_new(),
+            Ghost::assume_new(),
+            Tracked::assume_new(),
+        )
+    }
+
+    pub fn sub_word_t(word: &'a AtomicU64, shift: u32, nbits: usize) -> AtomicBitmap<'a> {
+        AtomicBitmap::sub_word(
+            word,
+            shift,
+            nbits,
+            Ghost::assume_new(),
+            Ghost::assume_new(),
+            Tracked::assume_new(),
+        )
+    }
+
+    pub fn claim(&self, n: usize) -> Option<(usize, u64)> {
+        self.claim_from_t(0, n)
+    }
+
+    pub fn claim_from_t(&self, start: usize, n: usize) -> Option<(usize, u64)> {
+        self.claim_from(start, n, Tracked::assume_new())
+    }
+
+    pub fn release_t(&self, i: usize, mask: u64) -> (u64, bool) {
+        self.release(i, mask, Tracked::assume_new())
     }
 }
 
@@ -579,7 +2994,7 @@ mod tests {
     fn init_sets_padding_only() {
         for nbits in [1usize, 5, 63, 64, 65, 127, 128, 129, 4096, 4097] {
             let words = atomic_words(nbits.div_ceil(64));
-            let bm = AtomicBitmap::from_words(&words);
+            let bm = AtomicBitmap::from_words_t(&words);
             bm.init(nbits);
             for b in 0..nbits {
                 assert!(!bm.is_set(b), "nbits={nbits} bit {b} should be clear");
@@ -595,21 +3010,21 @@ mod tests {
     #[should_panic(expected = "nbits does not match the view")]
     fn init_with_more_bits_than_the_view_aborts() {
         let words = atomic_words(1);
-        AtomicBitmap::from_words(&words).init(65);
+        AtomicBitmap::from_words_t(&words).init(65);
     }
 
     #[test]
     #[should_panic(expected = "nbits does not match the view")]
     fn init_of_a_sub_word_view_past_its_share_aborts() {
         let word = AtomicU64::new(0);
-        AtomicBitmap::sub_word(&word, 8, 4).init(5);
+        AtomicBitmap::sub_word_t(&word, 8, 4).init(5);
     }
 
     #[test]
     fn claim_takes_lowest_bits_first_and_never_padding() {
         let nbits = 130;
         let words = atomic_words(3);
-        let bm = AtomicBitmap::from_words(&words);
+        let bm = AtomicBitmap::from_words_t(&words);
         bm.init(nbits);
         let (w, m) = bm.claim(10).unwrap();
         assert_eq!((w, m), (0, (1 << 10) - 1));
@@ -621,11 +3036,11 @@ mod tests {
         assert_eq!((w, m), (2, 0b11));
         assert!(bm.claim(1).is_none());
         assert!(bm.is_full());
-        let (prev, was_full) = bm.release(2, 0b10);
+        let (prev, was_full) = bm.release_t(2, 0b10);
         assert_eq!(prev & 0b10, 0b10);
         assert!(was_full);
         assert!(!bm.is_full());
-        assert!(!bm.release(2, 0b01).1);
+        assert!(!bm.release_t(2, 0b01).1);
         assert_eq!(bm.claim(1), Some((2, 0b01)));
         assert_eq!(bm.claim(5), Some((2, 0b10)));
     }
@@ -633,25 +3048,25 @@ mod tests {
     #[test]
     fn claim_from_wraps() {
         let words = atomic_words(4);
-        let bm = AtomicBitmap::from_words(&words);
+        let bm = AtomicBitmap::from_words_t(&words);
         bm.init(256);
-        assert_eq!(bm.claim_from(2, 1), Some((2, 1)));
-        assert_eq!(bm.claim_from(3, 64), Some((3, !0)));
-        assert_eq!(bm.claim_from(3, 64), Some((0, !0)));
-        assert_eq!(bm.claim_from(3, 64), Some((1, !0)));
-        assert_eq!(bm.claim_from(3, 64), Some((2, !0 << 1)));
-        assert_eq!(bm.claim_from(3, 64), None);
+        assert_eq!(bm.claim_from_t(2, 1), Some((2, 1)));
+        assert_eq!(bm.claim_from_t(3, 64), Some((3, !0)));
+        assert_eq!(bm.claim_from_t(3, 64), Some((0, !0)));
+        assert_eq!(bm.claim_from_t(3, 64), Some((1, !0)));
+        assert_eq!(bm.claim_from_t(3, 64), Some((2, !0 << 1)));
+        assert_eq!(bm.claim_from_t(3, 64), None);
     }
 
     #[test]
     fn release_reports_double_release() {
         let words = atomic_words(1);
-        let bm = AtomicBitmap::from_words(&words);
+        let bm = AtomicBitmap::from_words_t(&words);
         bm.init(64);
         bm.claim(3);
-        let (prev, _) = bm.release(0, 0b101);
+        let (prev, _) = bm.release_t(0, 0b101);
         assert_eq!(prev & 0b101, 0b101);
-        let (prev, _) = bm.release(0, 0b100);
+        let (prev, _) = bm.release_t(0, 0b100);
         assert_ne!(prev & 0b100, 0b100, "second release must be detectable");
         assert!(!bm.is_set(2));
         assert!(bm.is_set(1));
@@ -663,7 +3078,7 @@ mod tests {
         let mut s = 0xDEAD_BEEF_CAFE_F00Du64;
         for &nbits in &[1usize, 64, 65, 100, 1000, 4096, 4099] {
             let words = atomic_words(nbits.div_ceil(64));
-            let bm = AtomicBitmap::from_words(&words);
+            let bm = AtomicBitmap::from_words_t(&words);
             bm.init(nbits);
             let mut model = vec![false; nbits];
             let mut owned: Vec<usize> = Vec::new();
@@ -673,7 +3088,7 @@ mod tests {
                         let n = (xorshift(&mut s) % 70) as usize;
                         let start = (xorshift(&mut s) as usize) % words.len();
                         let free_before = model.iter().filter(|b| !**b).count();
-                        match bm.claim_from(start, n) {
+                        match bm.claim_from_t(start, n) {
                             Some((w, m)) => {
                                 assert!(n > 0);
                                 assert!(m != 0);
@@ -714,7 +3129,7 @@ mod tests {
                             }
                         }
                         for (w, m) in masks {
-                            let (prev, _) = bm.release(w, m);
+                            let (prev, _) = bm.release_t(w, m);
                             assert_eq!(prev & m, m);
                         }
                     }
@@ -735,7 +3150,7 @@ mod tests {
             let word = AtomicU64::new(0);
             let nslots = nbits - nbits / 4; // some padding in every slab
             let views: Vec<AtomicBitmap> = (0..64 / nbits)
-                .map(|k| AtomicBitmap::sub_word(&word, (k * nbits) as u32, nbits))
+                .map(|k| AtomicBitmap::sub_word_t(&word, (k * nbits) as u32, nbits))
                 .collect();
             for v in &views {
                 v.init(nslots);
@@ -765,15 +3180,15 @@ mod tests {
                 }
             }
             // Release one slot: the slab's part of the word was full.
-            let (prev, was_full) = v.release(0, 0b1);
+            let (prev, was_full) = v.release_t(0, 0b1);
             assert_eq!(prev, (1u64 << nbits) - 1);
             assert!(was_full);
             assert!(!v.is_set(0) && v.is_set(1));
-            let (prev, was_full) = v.release(0, 0b10);
+            let (prev, was_full) = v.release_t(0, 0b10);
             assert!(!was_full);
             assert_eq!(prev & 0b10, 0b10);
             assert_eq!(
-                v.release(0, 0b10).0 & 0b10,
+                v.release_t(0, 0b10).0 & 0b10,
                 0,
                 "double release must be detectable"
             );
@@ -801,12 +3216,12 @@ mod tests {
         for nbits in [4usize, 8, 16, 32] {
             let word = AtomicU64::new(0);
             let shift = (xorshift(&mut s) as u32 % (64 / nbits as u32)) * nbits as u32;
-            let bm = AtomicBitmap::sub_word(&word, shift, nbits);
+            let bm = AtomicBitmap::sub_word_t(&word, shift, nbits);
             let nslots = nbits - 1;
             bm.init(nslots);
             // A neighbour claims some bits of the same word.
             let other_shift = (shift + nbits as u32) % 64;
-            let other = AtomicBitmap::sub_word(&word, other_shift, nbits);
+            let other = AtomicBitmap::sub_word_t(&word, other_shift, nbits);
             other.init(nslots);
             other.claim(2);
             let before = word.load(Ordering::Relaxed) & !bm.mask;
@@ -834,7 +3249,7 @@ mod tests {
                         continue;
                     }
                     let b = set[xorshift(&mut s) as usize % set.len()];
-                    let (prev, was_full) = bm.release(0, 1 << b);
+                    let (prev, was_full) = bm.release_t(0, 1 << b);
                     assert_eq!(prev & (1 << b), 1 << b);
                     assert_eq!(was_full, set.len() == nslots);
                     model[b] = false;
@@ -866,7 +3281,7 @@ mod tests {
         const THREADS: usize = 8;
         const ROUNDS: usize = 4000;
         let words: Arc<Vec<AtomicU64>> = Arc::new(atomic_words(NBITS.div_ceil(64)));
-        AtomicBitmap::from_words(&words).init(NBITS);
+        AtomicBitmap::from_words_t(&words).init(NBITS);
         let stamps: Arc<Vec<AtomicU8>> = Arc::new((0..NBITS).map(|_| AtomicU8::new(0)).collect());
         let total = Arc::new(AtomicU64::new(0));
 
@@ -877,7 +3292,7 @@ mod tests {
                 let total = Arc::clone(&total);
                 thread::spawn(move || {
                     let id = t as u8 + 1;
-                    let bm = AtomicBitmap::from_words(&words);
+                    let bm = AtomicBitmap::from_words_t(&words);
                     let mut s = 0x1234_5678_9ABC_DEF0u64
                         ^ (t as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15);
                     let mut owned: Vec<usize> = Vec::new();
@@ -886,7 +3301,7 @@ mod tests {
                         if xorshift(&mut s) % 2 == 0 || owned.is_empty() {
                             let n = 1 + (xorshift(&mut s) % 40) as usize;
                             let start = (xorshift(&mut s) as usize) % words.len();
-                            if let Some((w, mut m)) = bm.claim_from(start, n) {
+                            if let Some((w, mut m)) = bm.claim_from_t(start, n) {
                                 while m != 0 {
                                     let bit = w * 64 + m.trailing_zeros() as usize;
                                     m &= m - 1;
@@ -905,14 +3320,14 @@ mod tests {
                                 assert!(bm.is_set(bit));
                                 let prev = stamps[bit].swap(0, Ordering::AcqRel);
                                 assert_eq!(prev, id, "slot {bit} stamp changed under us");
-                                let (prev, _) = bm.release(bit / 64, 1 << (bit % 64));
+                                let (prev, _) = bm.release_t(bit / 64, 1 << (bit % 64));
                                 assert_ne!(prev & (1 << (bit % 64)), 0);
                             }
                         }
                     }
                     for bit in owned {
                         assert_eq!(stamps[bit].swap(0, Ordering::AcqRel), id);
-                        bm.release(bit / 64, 1 << (bit % 64));
+                        bm.release_t(bit / 64, 1 << (bit % 64));
                     }
                     total.fetch_add(claimed, Ordering::Relaxed);
                 })
@@ -921,7 +3336,7 @@ mod tests {
         for h in handles {
             h.join().unwrap();
         }
-        let bm = AtomicBitmap::from_words(&words);
+        let bm = AtomicBitmap::from_words_t(&words);
         for b in 0..NBITS {
             assert!(!bm.is_set(b), "bit {b} leaked");
             assert_eq!(stamps[b].load(Ordering::Relaxed), 0);
@@ -1204,22 +3619,22 @@ mod tests {
     #[should_panic(expected = "release outside the slab")]
     fn a_release_outside_the_sub_word_view_aborts() {
         let word = AtomicU64::new(0);
-        let v = AtomicBitmap::sub_word(&word, 8, 8);
+        let v = AtomicBitmap::sub_word_t(&word, 8, 8);
         v.init(6);
         // Slab coordinates: bit 8 of an 8-bit view is the next slab's.
-        v.release(0, 1 << 8);
+        v.release_t(0, 1 << 8);
     }
 
     #[test]
     #[should_panic(expected = "padding bit of the slab was cleared")]
     fn a_cleared_padding_bit_aborts_the_allocated_count() {
         let word = AtomicU64::new(0);
-        let v = AtomicBitmap::sub_word(&word, 0, 8);
+        let v = AtomicBitmap::sub_word_t(&word, 0, 8);
         v.init(6);
         assert_eq!(v.allocated(6), 0);
         // Bits 6 and 7 are padding and set by `init`; clearing one is a
         // release outside the real slots.
-        v.release(0, 1 << 6);
+        v.release_t(0, 1 << 6);
         v.allocated(6);
     }
 }

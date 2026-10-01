@@ -3083,7 +3083,7 @@ fn huge_run_pages_are_counted_from_the_descriptor() {
     assert_eq!(qinfo.pages, info.pages);
     assert_eq!(s.arena0.large(), (2, 2 * info.pages));
     // `alloc_run` reports the descriptor's pages, and the free the same.
-    let r = s.huge.alloc_run(&s.meta, 5 * page_size() + 1, 1, 0);
+    let (r, _) = s.huge.alloc_run(&s.meta, 5 * page_size() + 1, 1, 0);
     assert!(!r.ptr.is_null());
     assert_eq!(r.pages, 6 + GUARD_PAGES);
     assert_eq!(r.pages, s.huge.lookup(page_of(r.ptr)).unwrap().pages);
@@ -3093,7 +3093,7 @@ fn huge_run_pages_are_counted_from_the_descriptor() {
     t.free(q);
     assert_eq!(s.arena0.large(), (0, 0));
     assert_eq!(
-        s.huge.alloc_run(&s.meta, usize::MAX, 1, 0),
+        s.huge.alloc_run(&s.meta, usize::MAX, 1, 0).0,
         crate::huge::Placed::NONE
     );
     t.destroy();

@@ -4,8 +4,11 @@
 #[cfg(test)]
 use super::abort::wrong_arena;
 use super::{ClassState, Pick, SlabTable};
+#[cfg(verus_only)]
+use crate::layout::class_table;
 use crate::purge;
 use crate::slab::{SlabDesc, State};
+use vstd::prelude::*;
 
 impl SlabTable {
     /// Tests: [`check_located`] for a pointer not yet located (`p` must be
@@ -35,7 +38,13 @@ impl ClassState {
             wrong_arena(p as usize, self.class as usize, arena, self.arena);
         }
     }
+}
 
+verus! {
+
+// The `check_zero` debug checks. The walks are verified; the reads of
+// slot memory and the formatted aborts are trusted helpers below.
+impl ClassState {
     /// The `check_zero` debug mode: the first and
     /// last word of every slot of a pick reported zero must read zero.
     /// Aborts with everything the C-level assertion cannot say: the class,
@@ -46,32 +55,19 @@ impl ClassState {
     #[inline(never)]
     pub(super) fn check_zero(&self, slots: &[*mut u8], pick: &Pick) {
         let size = self.class().size();
-        for &p in slots {
-            for off in [0, size - 8] {
+        for &p in slots
+            invariant
+                size >= 8,
+        {
+            for &off in &[0, size - 8]
+                invariant
+                    size >= 8,
+            {
                 // SAFETY: `p` is a slot this claim just reserved in a
                 // committed slab; slots are at least 16 bytes and 8-aligned.
-                let word = unsafe { core::ptr::read_volatile(p.add(off) as *const u64) };
+                let word = unsafe { read_word(p, off) };
                 if word != 0 {
-                    let d = self.desc(pick.slab as usize);
-                    let bm = self.table().bits(pick.slab as usize);
-                    let now = (
-                        d.state(),
-                        d.live(),
-                        d.arena(),
-                        bm.allocated(self.class().nslots()),
-                        self.class().nslots(),
-                        d as *const SlabDesc as usize,
-                    );
-                    dirty_zero_slot(
-                        self.class as usize,
-                        size,
-                        pick,
-                        self.arena,
-                        p as usize,
-                        off,
-                        word,
-                        now,
-                    );
+                    self.dirty_word(pick, size, p, off, word);
                 }
             }
         }
@@ -82,24 +78,23 @@ impl ClassState {
     /// written before this table ever handed the slab out.
     #[cold]
     #[inline(never)]
-    pub(super) fn check_fresh_slab_is_zero(&self, slab: usize) {
+    pub(super) fn check_fresh_slab_is_zero(&self, slab: usize)
+        requires
+            slab < self.spec_nslabs(),
+    {
         let cls = self.class();
         let bm = self.table().bits(slab);
-        for slot in 0..cls.nslots() {
+        for slot in 0..cls.nslots()
+            invariant
+                slab < self.spec_nslabs(),
+                *cls == class_table()[self.spec_class() as int],
+                cls.wf(),
+        {
             let p = self.slot_ptr(slab, slot);
             // SAFETY: a slot of a committed slab; the class lock is held.
-            let word = unsafe { core::ptr::read_volatile(p as *const u64) };
+            let word = unsafe { read_word(p, 0) };
             if word != 0 {
-                panic!(
-                    "check_zero: class {} slab {slab} (arena {}) is Fresh before its first claim but slot {slot} at {:#x} reads {word:#x} ({} of {} bits set, watermark {}, descriptor at {:#x})",
-                    self.class,
-                    self.arena,
-                    p as usize,
-                    bm.allocated(cls.nslots()),
-                    cls.nslots(),
-                    self.table().committed_slabs(),
-                    self.desc(slab) as *const SlabDesc as usize
-                );
+                self.fresh_slab_dirty(slab, slot, p, word, &bm);
             }
         }
     }
@@ -112,30 +107,73 @@ impl ClassState {
         let d = self.desc(slab);
         let (state, shadow) = d.state_bytes();
         if shadow != state.wrapping_add(1) {
-            panic!(
-                "check_zero: class {} slab {slab} (arena {}) descriptor at {:#x} was written outside the API, seen at {at}: state byte {state:#x}, shadow {shadow:#x} (says {:?}), live {}, arena field {}, dirty_at {}",
-                self.class,
-                self.arena,
-                d as *const SlabDesc as usize,
-                State::try_from_u8(shadow.wrapping_sub(1)),
-                d.live(),
-                d.arena(),
-                d.dirty_at()
-            )
+            self.shadow_written(slab, at, d, state, shadow)
         }
     }
+
+    /// [`check_zero`](ClassState::check_zero)'s abort, inlined into it:
+    /// gathers the slab's state for [`dirty_zero_slot`].
+    #[inline(always)]
+    #[verifier::external_body]
+    fn dirty_word(&self, pick: &Pick, size: usize, p: *mut u8, off: usize, word: u64) -> ! {
+        let d = self.desc(pick.slab as usize);
+        let bm = self.table().bits(pick.slab as usize);
+        let now = (d.state(), d.live(), d.arena(), bm.allocated(self.class().nslots()), self.class().nslots(), d as *const SlabDesc as usize);
+        dirty_zero_slot(self.class as usize, size, pick, self.arena, p as usize, off, word, now)
+    }
+
+    /// [`check_fresh_slab_is_zero`](ClassState::check_fresh_slab_is_zero)'s
+    /// abort, inlined into it.
+    #[inline(always)]
+    #[verifier::external_body]
+    fn fresh_slab_dirty(&self, slab: usize, slot: usize, p: *mut u8, word: u64, bm: &crate::bitmap::AtomicBitmap<'_>) -> ! {
+        let cls = self.class();
+        panic!(
+            "check_zero: class {} slab {slab} (arena {}) is Fresh before its first claim but slot {slot} at {:#x} reads {word:#x} ({} of {} bits set, watermark {}, descriptor at {:#x})",
+            self.class,
+            self.arena,
+            p as usize,
+            bm.allocated(cls.nslots()),
+            cls.nslots(),
+            self.table().committed_slabs(),
+            self.desc(slab) as *const SlabDesc as usize
+        );
+    }
+
+    /// [`check_shadow`](ClassState::check_shadow)'s abort, inlined into it.
+    #[inline(always)]
+    #[verifier::external_body]
+    fn shadow_written(&self, slab: usize, at: &str, d: &SlabDesc, state: u8, shadow: u8) -> ! {
+        panic!(
+            "check_zero: class {} slab {slab} (arena {}) descriptor at {:#x} was written outside the API, seen at {at}: state byte {state:#x}, shadow {shadow:#x} (says {:?}), live {}, arena field {}, dirty_at {}",
+            self.class,
+            self.arena,
+            d as *const SlabDesc as usize,
+            State::try_from_u8(shadow.wrapping_sub(1)),
+            d.live(),
+            d.arena(),
+            d.dirty_at()
+        )
+    }
+}
+
+/// The word at `p + off`, read once (trusted: nothing is claimed about the
+/// value).
+///
+/// # Safety
+/// `p + off` is an aligned word of committed slot memory.
+#[inline(always)]
+#[verifier::external_body]
+unsafe fn read_word(p: *mut u8, off: usize) -> u64 {
+    // SAFETY: guaranteed by the caller.
+    unsafe { core::ptr::read_volatile(p.add(off) as *const u64) }
 }
 
 /// `check_zero` invariant: a slab with live slots was `Fresh` at selection.
 #[cold]
 #[inline(never)]
-pub(super) fn fresh_with_live(
-    class: usize,
-    slab: usize,
-    arena: u16,
-    desc: &SlabDesc,
-    set: usize,
-) -> ! {
+#[verifier::external_body]
+pub(super) fn fresh_with_live(class: usize, slab: usize, arena: u16, desc: &SlabDesc, set: usize) -> ! {
     panic!(
         "check_zero: class {class} slab {slab} (arena {arena}) is Fresh with live {} ({set} bits set, owner {}, dirty_at {}), descriptor at {:#x}",
         desc.live(),
@@ -148,13 +186,8 @@ pub(super) fn fresh_with_live(
 /// `check_zero` invariant: a release reached a slab that reads `Fresh`.
 #[cold]
 #[inline(never)]
-pub(super) fn release_into_fresh(
-    class: usize,
-    slab: usize,
-    arena: u16,
-    desc: &SlabDesc,
-    n: usize,
-) -> ! {
+#[verifier::external_body]
+pub(super) fn release_into_fresh(class: usize, slab: usize, arena: u16, desc: &SlabDesc, n: usize) -> ! {
     panic!(
         "check_zero: release of {n} slot(s) into class {class} slab {slab} (arena {arena}) whose descriptor reads Fresh (live {}, owner {}, dirty_at {}), descriptor at {:#x}",
         desc.live(),
@@ -167,6 +200,7 @@ pub(super) fn release_into_fresh(
 /// The `check_zero` abort: a slot handed out as zero has a dirty word.
 #[cold]
 #[inline(never)]
+#[verifier::external_body]
 #[allow(clippy::too_many_arguments)]
 fn dirty_zero_slot(
     class: usize,
@@ -185,3 +219,5 @@ fn dirty_zero_slot(
         pick.slab, pick.state, now.5, pick.n
     )
 }
+
+} // verus!

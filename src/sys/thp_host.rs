@@ -7,6 +7,9 @@ use core::fmt;
 
 use super::features::{Value, write_words};
 use super::parse_decimal;
+use vstd::prelude::*;
+
+verus! {
 
 /// One transparent-huge-page sysfs setting, the bracketed word of
 /// `/sys/kernel/mm/transparent_hugepage/enabled` (`always [madvise] never`)
@@ -32,6 +35,8 @@ impl ThpSetting {
     }
 }
 
+} // verus!
+
 /// The bracketed word of a THP `enabled` file. `None` for anything that is
 /// not one of the four words in brackets (an empty or foreign file).
 pub fn parse_thp_setting(bytes: &[u8]) -> Option<ThpSetting> {
@@ -46,6 +51,8 @@ pub fn parse_thp_setting(bytes: &[u8]) -> Option<ThpSetting> {
         _ => None,
     }
 }
+
+verus! {
 
 /// The kernel's transparent-huge-page configuration as read at init from
 /// `/sys/kernel/mm/transparent_hugepage` with raw syscalls (design 10 step
@@ -71,6 +78,8 @@ pub struct Thp {
     /// Sizes whose effective setting is `madvise`.
     pub madvise: u64,
 }
+
+} // verus!
 
 impl Thp {
     /// No THP at all: nothing listed, nothing enabled.
@@ -157,23 +166,51 @@ impl Thp {
         }
         t
     }
+}
 
+verus! {
+
+impl Thp {
     /// Sizes a `MADV_HUGEPAGE`d range can be backed with: effective
     /// `always` or `madvise`.
     #[inline]
-    pub fn enabled_sizes(&self) -> u64 {
+    pub fn enabled_sizes(&self) -> (r: u64)
+        ensures
+            r == self.always | self.madvise,
+    {
         self.always | self.madvise
     }
 
-    /// The enabled sizes below the PMD (the multi-size THP path).
+    /// The enabled sizes below the PMD (the multi-size THP path). Shifts
+    /// `1u64` by `lg_pmd`, so needs it below 64.
     #[inline]
-    pub fn sub_pmd_sizes(&self) -> u64 {
+    pub fn sub_pmd_sizes(&self) -> (r: u64)
+        requires
+            self.lg_pmd < 64,
+        ensures
+            r == (self.always | self.madvise) & sub(1u64 << self.lg_pmd, 1u64),
+    {
+        let ghost lg = self.lg_pmd;
+        proof {
+            assert(lg < 64 ==> 1u64 << lg >= 1) by (bit_vector);
+        }
         self.enabled_sizes() & ((1u64 << self.lg_pmd) - 1)
     }
 
     /// The effective setting of the PMD size: what `MADV_HUGEPAGE` would
     /// change for 2 MiB pages. `Never` when nothing is listed.
-    pub fn pmd_setting(&self) -> ThpSetting {
+    pub fn pmd_setting(&self) -> (r: ThpSetting)
+        requires
+            self.lg_pmd < 64,
+        ensures
+            r == (if self.always & (1u64 << self.lg_pmd) != 0 {
+                ThpSetting::Always
+            } else if self.madvise & (1u64 << self.lg_pmd) != 0 {
+                ThpSetting::Madvise
+            } else {
+                ThpSetting::Never
+            }),
+    {
         let bit = 1u64 << self.lg_pmd;
         if self.always & bit != 0 {
             ThpSetting::Always
@@ -184,11 +221,29 @@ impl Thp {
         }
     }
 
-    /// `log2` of the smallest size in `set`, if any.
-    pub fn smallest(set: u64) -> Option<u8> {
-        (set != 0).then(|| set.trailing_zeros() as u8)
+    /// `log2` of the smallest size in `set`, if any: the index of the
+    /// lowest set bit, with every bit below it clear.
+    pub fn smallest(set: u64) -> (r: Option<u8>)
+        ensures
+            set == 0 <==> r is None,
+            r matches Some(lg) ==> lg < 64 && set & (1u64 << lg) != 0 && set & sub(1u64 << lg, 1u64) == 0,
+    {
+        proof {
+            vstd::std_specs::bits::axiom_u64_trailing_zeros(set);
+            let tz = vstd::std_specs::bits::u64_trailing_zeros(set) as u64;
+            if set != 0 {
+                assert(tz < 64 && (set >> tz) & 1u64 == 1u64 ==> set & (1u64 << tz) != 0) by (bit_vector);
+                assert(tz < 64 && set << sub(64, tz) == 0 ==> set & sub(1u64 << tz, 1u64) == 0) by (bit_vector);
+            }
+        }
+        (set != 0).then(|| -> (r: u8)
+            ensures
+                r as u32 == vstd::std_specs::bits::u64_trailing_zeros(set),
+            { set.trailing_zeros() as u8 })
     }
 }
+
+} // verus!
 
 impl Thp {
     /// The two THP keys: `thp=<setting|none> mthp=<sizes|none>`.

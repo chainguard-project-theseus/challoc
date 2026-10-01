@@ -49,32 +49,35 @@ mod linux_tests;
 pub(crate) mod tests;
 
 pub use curve::{Curve, NEVER, STEPS, decay_ns_from_ms};
+use vstd::prelude::*;
+
+verus! {
 
 /// Ranges per batch (design section 8).
 pub const MAX_BATCH: usize = 64;
 
 /// `lazy_band` (default true): `MADV_FREE` under the headroom band.
-static LAZY_BAND: AtomicBool = AtomicBool::new(true);
+exec static LAZY_BAND: AtomicBool = AtomicBool::new(true);
 /// The policy's last evaluation put usage under 70% of a known limit with
 /// no eager return of the excess over the cap in progress
 /// (`policy::evaluate` mirrors `Policy::headroom` here).
-static HEADROOM: AtomicBool = AtomicBool::new(false);
+exec static HEADROOM: AtomicBool = AtomicBool::new(false);
 /// The policy's last evaluation found an eager return of the excess over
 /// the cap in progress (`Policy::eager_excess`; the reason line only).
-static EAGER_EXCESS: AtomicBool = AtomicBool::new(false);
+exec static EAGER_EXCESS: AtomicBool = AtomicBool::new(false);
 /// Explicit purges in flight ([`purge_all`], [`purge_arena`]): eager.
-static EXPLICIT: AtomicU32 = AtomicU32::new(0);
+exec static EXPLICIT: AtomicU32 = AtomicU32::new(0);
 /// A lazy batch has been issued in this process: `Purged` memory is no
 /// longer known to be zero (the module doc). Sticky.
-static LAZY_EVER: AtomicBool = AtomicBool::new(false);
+exec static LAZY_EVER: AtomicBool = AtomicBool::new(false);
 /// Batches and bytes issued with each advice (the report, `stats.cgroup.*`).
-static LAZY_BATCHES: AtomicU64 = AtomicU64::new(0);
-static EAGER_BATCHES: AtomicU64 = AtomicU64::new(0);
-static LAZY_BYTES: AtomicU64 = AtomicU64::new(0);
-static EAGER_BYTES: AtomicU64 = AtomicU64::new(0);
+exec static LAZY_BATCHES: AtomicU64 = AtomicU64::new(0);
+exec static EAGER_BATCHES: AtomicU64 = AtomicU64::new(0);
+exec static LAZY_BYTES: AtomicU64 = AtomicU64::new(0);
+exec static EAGER_BYTES: AtomicU64 = AtomicU64::new(0);
 /// `check_zero`: the debug mode that reads every slot or page handed out
 /// as "known zero" and aborts on a dirty word.
-static CHECK_ZERO: AtomicBool = AtomicBool::new(false);
+exec static CHECK_ZERO: AtomicBool = AtomicBool::new(false);
 
 /// The `lazy_band` key of the two-advice purge. Called once at init,
 /// before anything can be purged, and by the tests.
@@ -149,11 +152,21 @@ impl Explicit {
     }
 }
 
+// Trusted: Verus wants a destructor that opens no invariant and cannot
+// unwind; the body is one atomic subtract.
 impl Drop for Explicit {
-    fn drop(&mut self) {
+    #[verifier::external_body]
+    fn drop(&mut self)
+        opens_invariants none
+        no_unwind
+    {
         EXPLICIT.fetch_sub(1, Ordering::Relaxed);
     }
 }
+
+} // verus!
+
+verus! {
 
 /// Turn the `check_zero` debug mode on or off (init, from the config key;
 /// the tests, directly).
@@ -207,48 +220,129 @@ pub struct Batch {
     n: usize,
 }
 
+/// Total length of the first `k` of `ranges`.
+pub open spec fn lens(ranges: Seq<(usize, usize)>, k: int) -> int
+    decreases k,
+{
+    if k <= 0 { 0 } else { lens(ranges, k - 1) + ranges[k - 1].1 }
+}
+
+/// `lens` of a prefix depends only on that prefix, and never falls as
+/// the prefix grows.
+proof fn lemma_lens(a: Seq<(usize, usize)>, b: Seq<(usize, usize)>, k: int)
+    requires
+        0 <= k <= a.len(),
+        k <= b.len(),
+        forall|i: int| 0 <= i < k ==> a[i] == b[i],
+    ensures
+        lens(a, k) == lens(b, k),
+        0 <= lens(a, k),
+        forall|j: int| 0 <= j <= k ==> lens(a, j) <= lens(a, k),
+    decreases k,
+{
+    if k > 0 {
+        lemma_lens(a, b, k - 1);
+    }
+}
+
 impl Batch {
-    pub const fn new() -> Batch {
-        Batch {
-            ranges: [(0, 0); MAX_BATCH],
-            n: 0,
-        }
+    /// At most [`MAX_BATCH`] ranges, none of which ends past the address
+    /// space, whose lengths sum to at most `usize::MAX`.
+    pub closed spec fn wf(&self) -> bool {
+        &&& self.n <= MAX_BATCH
+        &&& forall|i: int| #![auto] 0 <= i < self.n ==> self.ranges[i].0 + self.ranges[i].1 <= usize::MAX
+        &&& self.total() <= usize::MAX
+    }
+
+    /// Total length of the ranges held.
+    pub closed spec fn total(&self) -> int {
+        lens(self.ranges@, self.n as int)
+    }
+
+    /// Ranges held.
+    pub closed spec fn count(&self) -> nat {
+        self.n as nat
+    }
+
+    pub const fn new() -> (b: Batch)
+        ensures
+            b.wf(),
+            b.total() == 0,
+    {
+        Batch { ranges: [(0, 0); MAX_BATCH], n: 0 }
     }
 
     #[inline]
     #[cfg(test)]
-    pub fn len(&self) -> usize {
+    pub fn len(&self) -> (n: usize)
+        ensures
+            n == self.count(),
+    {
         self.n
     }
 
     #[inline]
     #[cfg(test)]
-    pub fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> (e: bool)
+        ensures
+            e == (self.count() == 0),
+    {
         self.n == 0
     }
 
     #[inline]
-    pub fn is_full(&self) -> bool {
+    pub fn is_full(&self) -> (f: bool)
+        ensures
+            f == (self.count() == MAX_BATCH),
+    {
         self.n == MAX_BATCH
     }
 
     /// Add `[addr, addr + len)` (free, per the type's invariant), flushing
     /// first if the batch is full.
-    pub fn push(&mut self, addr: usize, len: usize) {
+    pub fn push(&mut self, addr: usize, len: usize)
+        requires
+            old(self).wf(),
+            addr + len <= usize::MAX,
+            old(self).total() + len <= usize::MAX,
+        ensures
+            final(self).wf(),
+            final(self).total() <= old(self).total() + len,
+    {
+        proof {
+            lemma_lens(self.ranges@, self.ranges@, self.n as int);
+        }
         // Adjacent ranges pushed in address order (a run of empty 4 KiB
         // slabs) go out as one.
         if self.n != 0 {
             let (last, last_len) = self.ranges[self.n - 1];
             if last + last_len == addr {
+                let ghost before = self.ranges@;
+                proof {
+                    lemma_lens(before, before, self.n as int);
+                    lemma_lens(before, before, self.n - 1);
+                }
                 self.ranges[self.n - 1].1 = last_len + len;
+                proof {
+                    lemma_lens(before, self.ranges@, self.n - 1);
+                }
                 return;
             }
         }
         if self.is_full() {
             self.flush();
         }
+        let ghost before = self.ranges@;
+        let ghost t0 = self.total();
         self.ranges[self.n] = (addr, len);
+        proof {
+            lemma_lens(before, self.ranges@, self.n as int);
+        }
         self.n += 1;
+        proof {
+            assert(lens(self.ranges@, self.n as int) == lens(self.ranges@, self.n - 1) + len);
+            assert(t0 <= old(self).total());
+        }
     }
 
     /// Discard every range with `madvise`, then empty the batch. The advice is
@@ -258,13 +352,21 @@ impl Batch {
     /// of one of these ranges after the caller's lock drops sees it. Aborts
     /// if a range cannot be discarded. The ranges are free (the type's
     /// invariant), which is what makes the discard sound.
-    pub fn flush(&mut self) {
+    pub fn flush(&mut self)
+        requires
+            old(self).wf(),
+        ensures
+            final(self).wf(),
+            final(self).count() == 0,
+            final(self).total() == 0,
+    {
         if self.n != 0 {
             let advice = advice();
-            let bytes: u64 = self.ranges[..self.n]
-                .iter()
-                .map(|&(_, len)| len as u64)
-                .sum();
+            let ranges = &self.ranges[..self.n];
+            proof {
+                lemma_lens(ranges@, self.ranges@, self.n as int);
+            }
+            let bytes = total_bytes(ranges);
             match advice {
                 Advice::Lazy => {
                     LAZY_EVER.store(true, Ordering::Relaxed);
@@ -280,6 +382,18 @@ impl Batch {
             self.n = 0;
         }
     }
+}
+
+/// The sum of the lengths of `ranges`. Trusted: `Iterator::sum`, which vstd
+/// does not specify; kept as the iterator chain so the free path of a huge
+/// run that purges at once compiles as it always has.
+#[verifier::external_body]
+#[inline(always)]
+fn total_bytes(ranges: &[(usize, usize)]) -> (bytes: u64)
+    requires
+        lens(ranges@, ranges.len() as int) <= u64::MAX,
+{
+    ranges.iter().map(|&(_, len)| len as u64).sum()
 }
 
 /// The step gate of design section 8, one per `ClassState` and one in
@@ -341,7 +455,12 @@ impl Decayer {
     /// the owner's next deadline (the end of the oldest member's first
     /// step, or of the current step), `None` when nothing is `Empty`.
     /// Lock-free unless a walk is due.
-    pub fn decay(&self, now: u64, decay_ns: u64, walk: impl FnOnce(u64, &Curve)) -> Option<u64> {
+    pub fn decay(&self, now: u64, decay_ns: u64, walk: impl FnOnce(u64, &Curve)) -> (r: Option<u64>)
+        requires
+            forall|t: u64, c: &Curve| walk.requires((t, c)),
+        ensures
+            r matches Some(t) ==> t >= now,
+    {
         let oldest = self.oldest_empty();
         if oldest == 0 {
             return None;
@@ -369,6 +488,54 @@ impl Decayer {
     }
 }
 
+/// Arena indices to visit: [`crate::arena::Arenas::count`], which never
+/// exceeds the table (`create` stops at [`MAX_ARENAS`]); the clamp states
+/// that for the verifier.
+///
+/// [`MAX_ARENAS`]: crate::arena::MAX_ARENAS
+#[inline]
+fn arena_count(shared: &Shared) -> (n: usize)
+    ensures
+        n <= crate::arena::MAX_ARENAS,
+{
+    (shared.arenas.count() as usize).min(crate::arena::MAX_ARENAS)
+}
+
+/// Purge every `Empty` slab of every arena and every huge extent
+/// regardless of age, eagerly (`malloc_trim(0)`, the `high`-rise full
+/// purge: the memory is wanted back now). Returns how many were purged.
+pub fn purge_all(shared: &Shared) -> usize {
+    let _explicit = Explicit::enter();
+    let mut n: usize = 0;
+    let count = arena_count(shared);
+    for i in 0..count
+        invariant
+            count <= crate::arena::MAX_ARENAS,
+            n <= i * 0x8_0000_0000_0000,
+    {
+        if let Some(arena) = shared.arenas.get_existing(i as u16) {
+            // At most `NCLASSES * 2^45` slabs an arena.
+            n += arena.purge_all();
+        }
+    }
+    n + shared.huge.purge_empty(u64::MAX)
+}
+
+/// A class or the huge allocator went from no `Empty` slab to one: wake a
+/// background thread that may be sleeping without a deadline.
+#[inline]
+pub fn note_empty() {
+    background::wake();
+}
+
+/// A decay period changed (`arena.<i>.dirty_decay_ms`, `malloc_conf` at
+/// run time): wake a background thread whose deadline was computed with
+/// the old period, so a shorter period takes effect now rather than at
+/// the next wake-up.
+pub fn note_decay_changed() {
+    background::wake();
+}
+
 /// Run every decay walk that is due at `now` (coarse monotonic
 /// nanoseconds) and return the earliest future deadline, `None` when
 /// nothing is `Empty` or decay is off. Lock-free for a class with nothing
@@ -382,34 +549,33 @@ pub fn decay(shared: &Shared, now: u64) -> Option<u64> {
     }
     let keep16 = policy.keep16();
     let mut next: Option<u64> = None;
-    let mut fold = |d: Option<u64>| {
-        if let Some(d) = d {
-            next = Some(next.map_or(d, |n| n.min(d)));
+    let count = arena_count(shared);
+    for i in 0..count
+        invariant
+            count <= crate::arena::MAX_ARENAS,
+    {
+        if let Some(arena) = shared.arenas.get_existing(i as u16) {
+            // Each arena's own period, scaled by the policy's band.
+            next = earliest(next, arena.decay_with(now, policy.effective_decay_ns(arena.decay_ns()), keep16));
         }
-    };
-    for arena in shared.arenas.iter() {
-        // Each arena's own period, scaled by the policy's band.
-        fold(arena.decay_with(now, policy.effective_decay_ns(arena.decay_ns()), keep16));
     }
     // The huge allocator is shared by every arena: its own period when
     // `huge_dirty_decay_ms` is set, else arena 0's (design 7).
     let decay_ns = policy.effective_decay_ns(shared.huge_decay_ns());
     if decay_ns != NEVER {
-        fold(shared.huge.decay_with(now, decay_ns, keep16));
+        next = earliest(next, shared.huge.decay_with(now, decay_ns, keep16));
     }
     next
 }
 
-/// Purge every `Empty` slab of every arena and every huge extent
-/// regardless of age, eagerly (`malloc_trim(0)`, the `high`-rise full
-/// purge: the memory is wanted back now). Returns how many were purged.
-pub fn purge_all(shared: &Shared) -> usize {
-    let _explicit = Explicit::enter();
-    let mut n = 0;
-    for arena in shared.arenas.iter() {
-        n += arena.purge_all();
+/// The earlier of two optional deadlines; either one when the other is
+/// `None`.
+#[inline(always)]
+fn earliest(next: Option<u64>, d: Option<u64>) -> Option<u64> {
+    match d {
+        Some(d) => Some(next.map_or(d, |n| n.min(d))),
+        None => next,
     }
-    n + shared.huge.purge_empty(u64::MAX)
 }
 
 /// `arena.<i>.purge`: purge every `Empty` slab of one arena regardless of
@@ -428,7 +594,10 @@ pub fn purge_arena(shared: &Shared, index: u16) -> Option<usize> {
 /// Periodic-work hook (design 6.4): start the background thread if one was
 /// requested and does not exist, otherwise run decay here unless the
 /// thread is doing it.
-pub fn on_tick(shared: &Shared, now: u64) {
+pub fn on_tick(shared: &Shared, now: u64)
+    requires
+        shared.wf(),
+{
     sample(shared, now);
     if background::present() {
         return;
@@ -449,25 +618,19 @@ fn sample(shared: &Shared, now: u64) {
     }
 }
 
-/// A class or the huge allocator went from no `Empty` slab to one: wake a
-/// background thread that may be sleeping without a deadline.
-#[inline]
-pub fn note_empty() {
-    background::wake();
-}
+} // verus!
 
-/// A decay period changed (`arena.<i>.dirty_decay_ms`, `malloc_conf` at
-/// run time): wake a background thread whose deadline was computed with
-/// the old period, so a shorter period takes effect now rather than at
-/// the next wake-up.
-pub fn note_decay_changed() {
-    background::wake();
-}
+verus! {
 
 /// Issue `advice` on `ranges`, which are free (the [`Batch`]
 /// invariant; this is the one place the batch's ranges reach the
-/// kernel).
-fn discard(ranges: &[(usize, usize)], advice: Advice) {
+/// kernel). Trusted: raw `madvise` syscalls and the abort on a failed
+/// range. Needs at most [`MAX_BATCH`] ranges.
+#[verifier::external_body]
+fn discard(ranges: &[(usize, usize)], advice: Advice)
+    requires
+        ranges.len() <= MAX_BATCH,
+{
     let advice = advice.madv();
     for &(addr, len) in ranges {
         // SAFETY: the ranges are page-aligned parts of our own mappings
@@ -477,6 +640,8 @@ fn discard(ranges: &[(usize, usize)], advice: Advice) {
         }
     }
 }
+
+} // verus!
 
 /// The background thread (design 8.1).
 pub mod background;

@@ -1843,7 +1843,7 @@ fn a_zero_pick_never_receives_a_slot_another_claim_used_in_between() {
         };
         // Thread A: one lock hold, one pick of one slot of slab 0.
         let mut picks = [Pick::EMPTY; MAX_PICKS];
-        let np = cs.plan(&env.meta, 1, &mut picks);
+        let np = cs.plan(&env.meta, 1, &mut picks, Tracked::assume_new());
         assert_eq!(np, 1);
         assert_eq!((picks[0].slab, picks[0].n, picks[0].state), (0, 1, prior));
         assert!(
@@ -1879,7 +1879,18 @@ fn a_zero_pick_never_receives_a_slot_another_claim_used_in_between() {
         // Thread A finishes its refill.
         let mut out = [ptr::null_mut(); 1];
         let mut zeroed = true;
-        assert_eq!(cs.finish(&picks[..np], &mut out, &mut zeroed, None), 1);
+        assert_eq!(
+            cs.finish(
+                &picks[..np],
+                &mut out,
+                &mut zeroed,
+                None,
+                Tracked::assume_new(),
+                Tracked::assume_new(),
+                Ghost::assume_new()
+            ),
+            1
+        );
         assert!(zeroed);
         assert_ne!(
             out[0], b[0],
@@ -1996,7 +2007,7 @@ fn a_plan_over_a_slab_with_live_above_nslots_aborts() {
     let nslots = cs.class().nslots();
     cs.desc(slab).add_live(nslots + 1);
     let mut picks = [Pick::EMPTY; MAX_PICKS];
-    cs.plan(&env.meta, 1, &mut picks);
+    cs.plan(&env.meta, 1, &mut picks, Tracked::assume_new());
 }
 
 #[test]
@@ -2011,7 +2022,7 @@ fn a_plan_that_takes_an_empty_slab_the_counts_do_not_know_aborts() {
     // Corrupt the count: the set still holds the slab.
     cs.inner.lock().stats.empty = 0;
     let mut picks = [Pick::EMPTY; MAX_PICKS];
-    cs.plan(&env.meta, 1, &mut picks);
+    cs.plan(&env.meta, 1, &mut picks, Tracked::assume_new());
 }
 
 #[test]
@@ -2045,7 +2056,7 @@ fn a_fresh_slab_with_a_bit_set_before_its_first_take_aborts() {
     assert_eq!(p.len(), n);
     assert_eq!(cs.desc(1).state(), State::Fresh);
     assert_eq!(
-        cs.table().bits(1).claim_word(0, 1),
+        cs.table().bits(1).claim_word(0, 1, Tracked::assume_new()),
         0b1,
         "bit 0 of slab 1 set behind the protocol's back"
     );
@@ -2192,7 +2203,7 @@ fn a_plan_that_takes_a_purged_slab_the_counts_do_not_know_aborts() {
     // Corrupt the count: the set still holds the slab.
     cs.inner.lock().stats.purged = 0;
     let mut picks = [Pick::EMPTY; MAX_PICKS];
-    cs.plan(&env.meta, 1, &mut picks);
+    cs.plan(&env.meta, 1, &mut picks, Tracked::assume_new());
 }
 
 /// `walk_empty`, the one walk behind `purge_empty` and both passes of
@@ -2209,27 +2220,39 @@ fn walk_empty_visits_the_set_in_address_order_and_skips_what_the_visitor_takes()
     for s in 0..3 {
         assert_eq!(cs.desc(s).state(), State::Empty, "slab {s}");
     }
+    /// Records each visit.
+    struct Seen(Vec<(usize, u64)>);
+    impl decay::EmptyVisitor for Seen {
+        fn visit(&mut self, _: &ClassState, _: &mut Inner, slab: usize, dirty_at: u64) {
+            self.0.push((slab, dirty_at));
+        }
+    }
+    /// Takes slab 1 out of the set on the visit to slab 0.
+    struct TakesOne(Vec<usize>);
+    impl decay::EmptyVisitor for TakesOne {
+        fn visit(&mut self, _: &ClassState, g: &mut Inner, slab: usize, _: u64) {
+            if slab == 0 {
+                g.empty_take(1);
+            }
+            self.0.push(slab);
+        }
+    }
     let mut g = cs.inner.lock();
-    let mut seen = Vec::new();
-    cs.walk_empty(&mut g, |_, slab, dirty_at| seen.push((slab, dirty_at)));
+    let mut seen = Seen(Vec::new());
+    cs.walk_empty(&mut g, &mut seen);
     assert_eq!(
-        seen,
+        seen.0,
         (0..3)
             .map(|s| (s, cs.desc(s).dirty_at()))
             .collect::<Vec<_>>()
     );
     assert!(
-        seen.iter().all(|&(_, t)| t != 0),
+        seen.0.iter().all(|&(_, t)| t != 0),
         "an Empty slab's stamp is never 0"
     );
-    let mut seen = Vec::new();
-    cs.walk_empty(&mut g, |g: &mut Inner, slab, _| {
-        if slab == 0 {
-            g.empty_take(1);
-        }
-        seen.push(slab);
-    });
-    assert_eq!(seen, vec![0, 2]);
+    let mut seen = TakesOne(Vec::new());
+    cs.walk_empty(&mut g, &mut seen);
+    assert_eq!(seen.0, vec![0, 2]);
     g.empty_add(1);
     drop(g);
     assert_eq!(cs.stats().empty, 3);

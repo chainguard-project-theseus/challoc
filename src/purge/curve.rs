@@ -6,11 +6,21 @@
 //! owners (`ClassState::purge_curve`, `Huge::purge_curve`), the step gate
 //! that runs them is `purge::Decayer`.
 
+#[cfg(verus_only)]
+use vstd::arithmetic::div_mod::lemma_div_is_ordered;
+use vstd::prelude::*;
+
+verus! {
+
 /// `decay_ns` value meaning "never purge" (`dirty_decay_ms:-1`).
 pub const NEVER: u64 = u64::MAX;
 
 /// `dirty_decay_ms` to a nanosecond period; negative means [`NEVER`].
-pub const fn decay_ns_from_ms(ms: i64) -> u64 {
+pub const fn decay_ns_from_ms(ms: i64) -> (ns: u64)
+    ensures
+        ms < 0 ==> ns == NEVER,
+        ms >= 0 ==> ns == if ms * 1_000_000 >= NEVER { (NEVER - 1) as int } else { ms * 1_000_000 },
+{
     if ms < 0 {
         NEVER
     } else {
@@ -30,21 +40,253 @@ pub const WEIGHT_ONE: u64 = 1 << 24;
 /// `WEIGHT_ONE * (1 - smootherstep((s + 1) / STEPS))` (jemalloc's
 /// `h_steps`, variant "smoother": `6x^5 - 15x^4 + 10x^3`). Non-increasing,
 /// from just under one to zero at `STEPS - 1`, positive before that.
-pub static WEIGHTS: [u32; STEPS] = build_weights();
+pub exec static WEIGHTS: [u32; STEPS] = build_weights();
 
-const fn build_weights() -> [u32; STEPS] {
+const fn build_weights() -> (w: [u32; STEPS])
+    ensures
+        forall|s: int| 0 <= s < STEPS ==> w[s] <= WEIGHT_ONE,
+        forall|s: int| 0 <= s < STEPS - 1 ==> w[s] > 0,
+        w[STEPS - 1] == 0,
+        forall|s: int| 1 <= s < STEPS ==> #[trigger] w[s] <= w[s - 1],
+{
     let mut w = [0u32; STEPS];
     let n = STEPS as i128;
     let n5 = n * n * n * n * n;
     let mut s = 0;
-    while s < STEPS {
+    while s < STEPS
+        invariant
+            n == 200,
+            n5 == 320_000_000_000,
+            s <= STEPS,
+            forall|j: int| 0 <= j < s ==> w[j] <= WEIGHT_ONE,
+            forall|j: int| 0 <= j < s && j < STEPS - 1 ==> w[j] > 0,
+            s == STEPS ==> w[STEPS - 1] == 0,
+            forall|j: int| 0 <= j < s ==> w[j] == weight_at(j + 1),
+            forall|j: int| 1 <= j < s ==> #[trigger] w[j] <= w[j - 1],
+        decreases STEPS - s,
+    {
         let t = (s + 1) as i128;
+        proof {
+            smootherstep_bounds(t as int);
+            weight_one_value();
+        }
         // smootherstep(t / n), scaled by n^5.
         let num = 6 * t * t * t * t * t - 15 * t * t * t * t * n + 10 * t * t * t * n * n;
+        proof {
+            weight_bounds(t as int, num as int);
+            if s > 0 {
+                weight_non_increasing(s as int);
+            }
+        }
         w[s] = (((n5 - num) * WEIGHT_ONE as i128 + n5 / 2) / n5) as u32;
         s += 1;
     }
     w
+}
+
+/// The smootherstep numerator at `t / 200`, scaled by `200^5`, as the
+/// exec arithmetic of [`build_weights`] spells it.
+spec fn smoother(t: int) -> int {
+    6 * t * t * t * t * t - 15 * t * t * t * t * 200 + 10 * t * t * t * 200 * 200
+}
+
+/// The weight [`build_weights`] computes for `t = s + 1`.
+spec fn weight_at(t: int) -> int {
+    ((320_000_000_000 - smoother(t)) * 0x100_0000 + 160_000_000_000) / 320_000_000_000
+}
+
+/// The numerator rises from `t` to the last step.
+spec fn rises_from(t: int) -> bool
+    decreases 200 - t,
+{
+    if t >= 200 { true } else { smoother(t) <= smoother(t + 1) && rises_from(t + 1) }
+}
+
+proof fn lemma_rises_from(k: int, t: int)
+    requires
+        1 <= k <= t < 200,
+        rises_from(k),
+    ensures
+        smoother(t) <= smoother(t + 1),
+    decreases t - k,
+{
+    if k < t {
+        lemma_rises_from(k + 1, t);
+    }
+}
+
+/// The weights never rise (the numerator's derivative is
+/// `30 t^2 (t - n)^2`); checked by evaluation over the 199 steps.
+proof fn weight_non_increasing(t: int)
+    requires
+        1 <= t < 200,
+    ensures
+        weight_at(t + 1) <= weight_at(t),
+{
+    assert(rises_from(1)) by (compute_only);
+    lemma_rises_from(1, t);
+    lemma_div_is_ordered(
+        (320_000_000_000 - smoother(t + 1)) * 0x100_0000 + 160_000_000_000,
+        (320_000_000_000 - smoother(t)) * 0x100_0000 + 160_000_000_000,
+        320_000_000_000,
+    );
+}
+
+/// For `1 <= t <= 200` the partial products of the smootherstep
+/// numerator's terms fit well within `i128`.
+proof fn smootherstep_bounds(t: int)
+    requires
+        1 <= t <= 200,
+    ensures
+        0 <= 6 * t <= 1_200,
+        0 <= 6 * t * t <= 240_000,
+        0 <= 6 * t * t * t <= 48_000_000,
+        0 <= 6 * t * t * t * t <= 9_600_000_000,
+        0 <= 6 * t * t * t * t * t <= 1_920_000_000_000,
+        0 <= 15 * t <= 3_000,
+        0 <= 15 * t * t <= 600_000,
+        0 <= 15 * t * t * t <= 120_000_000,
+        0 <= 15 * t * t * t * t <= 24_000_000_000,
+        0 <= 15 * t * t * t * t * 200 <= 4_800_000_000_000,
+        0 <= 10 * t <= 2_000,
+        0 <= 10 * t * t <= 400_000,
+        0 <= 10 * t * t * t <= 80_000_000,
+        0 <= 10 * t * t * t * 200 <= 16_000_000_000,
+        0 <= 10 * t * t * t * 200 * 200 <= 3_200_000_000_000,
+{
+    scaled_powers(6, t);
+    scaled_powers(15, t);
+    scaled_powers(10, t);
+    assert(0 <= 6 * t * t * t * t <= 9_600_000_000);
+    assert(0 <= 15 * t * t * t * t <= 24_000_000_000);
+    assert(0 <= 10 * t * t * t <= 80_000_000);
+    assert(0 <= 15 * t * t * t * t * 200 <= 4_800_000_000_000) by (nonlinear_arith)
+        requires 0 <= 15 * t * t * t * t <= 24_000_000_000;
+    assert(0 <= 10 * t * t * t * 200 <= 16_000_000_000) by (nonlinear_arith)
+        requires 0 <= 10 * t * t * t <= 80_000_000;
+    assert(0 <= 10 * t * t * t * 200 * 200 <= 3_200_000_000_000) by (nonlinear_arith)
+        requires 0 <= 10 * t * t * t * 200 <= 16_000_000_000;
+}
+
+/// `k * t^i <= k * 200^i` for `i` up to 5, spelled as the left-nested
+/// products the exec arithmetic forms.
+proof fn scaled_powers(k: int, t: int)
+    requires
+        0 <= k <= 15,
+        1 <= t <= 200,
+    ensures
+        0 <= k * t <= k * 200,
+        0 <= k * t * t <= k * 40_000,
+        0 <= k * t * t * t <= k * 8_000_000,
+        0 <= k * t * t * t * t <= k * 1_600_000_000,
+        0 <= k * t * t * t * t * t <= k * 320_000_000_000,
+{
+    assert(0 <= t * t <= 40_000) by (nonlinear_arith)
+        requires 1 <= t <= 200;
+    assert(0 <= t * t * t <= 8_000_000) by (nonlinear_arith)
+        requires 1 <= t <= 200, 0 <= t * t <= 40_000;
+    assert(0 <= t * t * t * t <= 1_600_000_000) by (nonlinear_arith)
+        requires 1 <= t <= 200, 0 <= t * t * t <= 8_000_000;
+    assert(0 <= t * t * t * t * t <= 320_000_000_000) by (nonlinear_arith)
+        requires 1 <= t <= 200, 0 <= t * t * t * t <= 1_600_000_000;
+    assert(0 <= k * t <= k * 200) by (nonlinear_arith)
+        requires 0 <= k <= 15, 1 <= t <= 200;
+    assert(k * t * t == k * (t * t) && k * t * t * t == k * (t * t * t) && k * t * t * t * t == k * (t * t * t * t)
+        && k * t * t * t * t * t == k * (t * t * t * t * t)) by (nonlinear_arith);
+    assert(0 <= k * (t * t) <= k * 40_000) by (nonlinear_arith)
+        requires 0 <= k, 0 <= t * t <= 40_000;
+    assert(0 <= k * (t * t * t) <= k * 8_000_000) by (nonlinear_arith)
+        requires 0 <= k, 0 <= t * t * t <= 8_000_000;
+    assert(0 <= k * (t * t * t * t) <= k * 1_600_000_000) by (nonlinear_arith)
+        requires 0 <= k, 0 <= t * t * t * t <= 1_600_000_000;
+    assert(0 <= k * (t * t * t * t * t) <= k * 320_000_000_000) by (nonlinear_arith)
+        requires 0 <= k, 0 <= t * t * t * t * t <= 320_000_000_000;
+}
+
+/// [`WEIGHT_ONE`] as a number.
+proof fn weight_one_value()
+    ensures
+        WEIGHT_ONE == 0x100_0000,
+{
+    assert((1u64 << 24u64) == 0x100_0000) by (bit_vector);
+}
+/// The weight of step `t - 1` is in `[0, WEIGHT_ONE]`, zero at `t = 200`
+/// and positive before it.
+proof fn weight_bounds(t: int, num: int)
+    requires
+        1 <= t <= 200,
+        num == 6 * t * t * t * t * t - 15 * t * t * t * t * 200 + 10 * t * t * t * 200 * 200,
+    ensures
+        ({
+            let v = ((320_000_000_000 - num) * 0x100_0000 + 160_000_000_000) / 320_000_000_000;
+            &&& 0 <= v <= 0x100_0000
+            &&& t < 200 ==> v > 0
+            &&& t == 200 ==> v == 0
+        }),
+{
+    let n = 200int;
+    let m = n - t;
+    // 1 - smootherstep(x) = smootherstep(1 - x): the complement is the
+    // same polynomial in `m = n - t`, and both cubic factors are positive.
+    assert(320_000_000_000 - num == m * m * m * (6 * m * m - 15 * m * n + 10 * n * n)) by (nonlinear_arith)
+        requires m == n - t, n == 200, num == 6 * t * t * t * t * t - 15 * t * t * t * t * 200 + 10 * t * t * t * 200 * 200;
+    assert(num == t * t * t * (6 * t * t - 15 * t * n + 10 * n * n)) by (nonlinear_arith)
+        requires n == 200, num == 6 * t * t * t * t * t - 15 * t * t * t * t * 200 + 10 * t * t * t * 200 * 200;
+    assert(16 * (6 * m * m - 15 * m * n + 10 * n * n) == 6 * (4 * m - 5 * n) * (4 * m - 5 * n) + 10 * n * n) by (nonlinear_arith);
+    assert(16 * (6 * t * t - 15 * t * n + 10 * n * n) == 6 * (4 * t - 5 * n) * (4 * t - 5 * n) + 10 * n * n) by (nonlinear_arith);
+    assert(0 <= (4 * m - 5 * n) * (4 * m - 5 * n)) by (nonlinear_arith);
+    assert(0 <= (4 * t - 5 * n) * (4 * t - 5 * n)) by (nonlinear_arith);
+    assert(0 <= m * m * m) by (nonlinear_arith)
+        requires 0 <= m;
+    assert(0 < t * t * t) by (nonlinear_arith)
+        requires 1 <= t;
+    let cm = 6 * m * m - 15 * m * n + 10 * n * n;
+    let ct = 6 * t * t - 15 * t * n + 10 * n * n;
+    assert(cm >= 25_000) by (nonlinear_arith)
+        requires
+            n == 200,
+            cm == 6 * m * m - 15 * m * n + 10 * n * n,
+            16 * (6 * m * m - 15 * m * n + 10 * n * n) == 6 * (4 * m - 5 * n) * (4 * m - 5 * n) + 10 * n * n,
+            0 <= (4 * m - 5 * n) * (4 * m - 5 * n);
+    assert(ct >= 25_000) by (nonlinear_arith)
+        requires
+            n == 200,
+            ct == 6 * t * t - 15 * t * n + 10 * n * n,
+            16 * (6 * t * t - 15 * t * n + 10 * n * n) == 6 * (4 * t - 5 * n) * (4 * t - 5 * n) + 10 * n * n,
+            0 <= (4 * t - 5 * n) * (4 * t - 5 * n);
+    assert(0 <= num) by (nonlinear_arith)
+        requires num == t * t * t * ct, 0 < t * t * t, ct >= 25_000;
+    assert(0 <= 320_000_000_000 - num) by (nonlinear_arith)
+        requires 320_000_000_000 - num == m * m * m * cm, 0 <= m * m * m, cm >= 25_000;
+    let x = (320_000_000_000 - num) * 0x100_0000 + 160_000_000_000;
+    if t < 200 {
+        assert(1 <= m * m * m) by (nonlinear_arith)
+            requires 1 <= m;
+        assert(25_000 <= 320_000_000_000 - num) by (nonlinear_arith)
+            requires 320_000_000_000 - num == m * m * m * cm, 1 <= m * m * m, cm >= 25_000;
+    }
+    assert(x <= 320_000_000_000 * 0x100_0000 + 160_000_000_000) by (nonlinear_arith)
+        requires x == (320_000_000_000 - num) * 0x100_0000 + 160_000_000_000, 0 <= num;
+    assert(0 <= x);
+}
+
+/// The two ways [`Curve::step`] scales an age under its period: an age
+/// past `u64::MAX / STEPS` is under a period of at least `STEPS`, so the
+/// step is non-zero; any other age times `STEPS` fits in `u64`.
+proof fn step_scaling(age: u64, decay_ns: u64)
+    requires
+        age < decay_ns,
+    ensures
+        age > u64::MAX / 200 ==> decay_ns / 200 > 0,
+        age <= u64::MAX / 200 ==> age * 200 <= u64::MAX,
+        decay_ns > 0,
+{
+    assert(u64::MAX / 200 == 92_233_720_368_547_758);
+    if age <= u64::MAX / 200 {
+        assert(age * 200 <= 92_233_720_368_547_758 * 200) by (nonlinear_arith)
+            requires
+                age <= 92_233_720_368_547_758int;
+    }
 }
 
 /// The decay curve of one period (design section 8).
@@ -54,20 +296,34 @@ pub struct Curve {
 }
 
 impl Curve {
-    pub const fn new(decay_ns: u64) -> Curve {
+    pub closed spec fn period(&self) -> u64 {
+        self.decay_ns
+    }
+
+    pub const fn new(decay_ns: u64) -> (c: Curve)
+        ensures
+            c.period() == decay_ns,
+    {
         Curve { decay_ns }
     }
 
     /// Length of one step; 0 for a zero period, where everything is past
     /// the window at once.
     #[inline]
-    pub const fn step_ns(&self) -> u64 {
+    pub const fn step_ns(&self) -> (ns: u64)
+        ensures
+            ns == self.period() / STEPS as u64,
+    {
         self.decay_ns / STEPS as u64
     }
 
     /// The step something dirty since `dirty_at` is in at `now`:
     /// `STEPS - 1` (weight zero) for anything in or past the last step.
-    pub fn step(&self, now: u64, dirty_at: u64) -> usize {
+    pub fn step(&self, now: u64, dirty_at: u64) -> (s: usize)
+        ensures
+            s < STEPS,
+            now - dirty_at >= self.period() ==> s == STEPS - 1,
+    {
         let age = now.saturating_sub(dirty_at);
         if age >= self.decay_ns {
             return STEPS - 1;
@@ -76,17 +332,21 @@ impl Curve {
         // `rust_eh_personality` into the `no_std` library. An age too large
         // to scale is under a period whose step is at least `u64::MAX /
         // STEPS`, so dividing by the step loses nothing that matters.
-        let s = if age > u64::MAX / STEPS as u64 {
-            age / self.step_ns()
-        } else {
-            age * STEPS as u64 / self.decay_ns
-        };
+        proof {
+            step_scaling(age, self.decay_ns);
+        }
+        let s = if age > u64::MAX / STEPS as u64 { age / self.step_ns() } else { age * STEPS as u64 / self.decay_ns };
         (s as usize).min(STEPS - 1)
     }
 
     /// Weight of `step`, in units of [`WEIGHT_ONE`].
     #[inline]
-    pub fn weight(step: usize) -> u64 {
+    pub fn weight(step: usize) -> (w: u64)
+        requires
+            step < STEPS,
+        ensures
+            w <= u32::MAX,
+    {
         WEIGHTS[step] as u64
     }
 
@@ -97,10 +357,18 @@ impl Curve {
     /// a slab of 16 pages, and a purge-and-refault of it for one unit of
     /// rounding is not worth it).
     #[inline]
-    pub fn allowance(weighted: u64) -> usize {
+    pub fn allowance(weighted: u64) -> (units: usize)
+        ensures
+            units == (weighted + WEIGHT_ONE - 1) / WEIGHT_ONE as int,
+    {
+        proof {
+            weight_one_value();
+        }
         weighted.div_ceil(WEIGHT_ONE) as usize
     }
 }
+
+} // verus!
 
 #[cfg(test)]
 mod tests {

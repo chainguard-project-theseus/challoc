@@ -28,6 +28,9 @@ use super::{
     PROT_WRITE, yn,
 };
 use crate::sys;
+use vstd::prelude::verus;
+#[cfg(verus_only)]
+use vstd::prelude::*;
 
 /// Bit sets of sizes as `64K,2M`, or `none`.
 struct SizeSet(u64);
@@ -105,6 +108,8 @@ pub fn write_words(
     Ok(())
 }
 
+verus! {
+
 /// Result of probing the running kernel. Plain data; safe to copy into a
 /// global once init is done.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -131,6 +136,8 @@ pub struct Features {
     /// `HWCAP_PACG`): what `pac_pointers` can turn on.
     pub pac: bool,
 }
+
+} // verus!
 
 impl Features {
     /// Every key of the line in order: the kernel probes, then `pac`.

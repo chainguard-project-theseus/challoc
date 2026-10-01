@@ -18,9 +18,14 @@ use crate::meta::Meta;
 use super::heap_destructor;
 use super::tcaches::Tcaches;
 use super::{Heap, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, invalid_free};
+use vstd::prelude::verus;
+#[cfg(verus_only)]
+use vstd::prelude::*;
 
 /// The cache GC period (design 6.4): 10 s.
 pub const GC_INTERVAL_NS: u64 = 10_000_000_000;
+
+verus! {
 
 /// Process-wide allocator state that every heap works against: the regions,
 /// one [`SlabTable`] per class, arena 0, the metadata allocator, the huge
@@ -47,7 +52,7 @@ pub struct Shared {
     /// low `class_base` entries): after `Regions` it would sit on its own
     /// line, and larson's working set turns every extra line into an L2
     /// hit.
-    pub(super) multi_arena: AtomicBool,
+    pub(crate) multi_arena: AtomicBool,
     /// The opt-in hardening a push applies, as [`PUSH_SCAN`]
     /// (`double_free_scan`, design 6.3 step 3: every push compares the
     /// slot against the top four cache entries and aborts on a match) and
@@ -59,14 +64,14 @@ pub struct Shared {
     /// and zero in the default configuration on every host (all three
     /// options default to off), so the fast path tests one byte and takes
     /// one predicted branch.
-    pub(super) push_flags: u8,
+    pub(crate) push_flags: u8,
     pub regions: Regions,
     /// The sized fast path's guard test per class: a dense array (8 bytes
     /// per class, seven lines for all 52) so `sized_slot` never touches
     /// the 384-byte class table line (it reads neither the watermark nor
     /// the descriptor; both checks are the flush's).
-    pub(super) guard_test: [GuardTest; NCLASSES],
-    tables: [SlabTable; NCLASSES],
+    pub(crate) guard_test: [GuardTest; NCLASSES],
+    pub(crate) tables: [SlabTable; NCLASSES],
     pub arena0: Arena,
     pub meta: Meta,
     pub huge: Huge,
@@ -82,7 +87,7 @@ pub struct Shared {
     /// under a small cgroup limit). Read back by `opt.*` and the report,
     /// and on the slow paths for the cache ladder (`cache_cap`).
     pub config: Config,
-    pub(super) key: ThreadKey,
+    pub(crate) key: ThreadKey,
     pub arenas: Arenas,
     pub tcaches: Tcaches,
     /// Process-wide statistics as of the last `epoch` (`stats.rs`).
@@ -110,6 +115,8 @@ pub struct GuardTest {
     add: u32,
     mask: u32,
 }
+
+} // verus!
 
 impl GuardTest {
     pub(super) fn of(table: &SlabTable) -> GuardTest {
@@ -139,7 +146,7 @@ const _: () = assert!(
 );
 
 /// The `pthread_key` whose destructor tears down a thread's heap.
-pub(super) struct ThreadKey {
+pub(crate) struct ThreadKey {
     key: libc::pthread_key_t,
     valid: bool,
 }
@@ -716,7 +723,7 @@ impl Shared {
         let Some(a) = self.arena(arena) else {
             no_such_arena(arena)
         };
-        let r = self.huge.alloc_run(&self.meta, size, align, arena);
+        let (r, _) = self.huge.alloc_run(&self.meta, size, align, arena);
         if !r.ptr.is_null() {
             // The pages the run's descriptor records, which is what
             // `free_huge` will subtract.
@@ -752,3 +759,80 @@ impl Shared {
 fn no_such_arena(index: u16) -> ! {
     panic!("arena {index} does not exist")
 }
+
+verus! {
+
+// Phase A of the Verus port (verus/TODO.md): `Shared`'s methods and
+// construction are outside `verus!`; the verified modules that take a
+// `&Shared` see its fields and this invariant, which nothing proves yet.
+
+// A Verus specification, never constructed.
+#[allow(dead_code)]
+#[verifier::external_type_specification]
+#[verifier::external_body]
+pub struct ExThreadKey(ThreadKey);
+
+impl Shared {
+    /// What `Shared::init` establishes of the value it builds, and nothing
+    /// changes afterwards (every field is written once, before the
+    /// `Shared` is published): the address-space layout is well formed and
+    /// separated and is the process's ([`crate::layout::process_regions`]);
+    /// `tables[c]` is class `c`'s table; `huge` covers exactly the huge
+    /// region's pages, starting at the huge base with the regions' page;
+    /// `meta` allocates from the metadata region, which holds every class
+    /// table's descriptors, bitmap and owner words. Trusted: assumed by
+    /// every verified function that takes a `&Shared`.
+    pub closed spec fn wf(&self) -> bool {
+        &&& self.regions.wf()
+        &&& self.regions == crate::layout::process_regions()
+        &&& self.regions.separated()
+        &&& self.huge.spec_base() == self.regions.huge_base
+        &&& self.huge.spec_page() == (1usize << self.regions.lg_page) as int
+        &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].spec_class() == c
+        &&& self.huge.spec_npages() == self.huge_pages()
+        &&& self.meta.spec_base() == self.regions.meta_base
+        &&& self.meta.spec_len() == self.regions.meta_len
+        &&& forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].meta_ok()
+    }
+
+    /// Pages in the huge region.
+    pub closed spec fn huge_pages(&self) -> usize {
+        self.regions.huge_len >> self.regions.lg_page
+    }
+
+    /// [`Shared::wf`] unfolded, for the rest of the crate.
+    pub(crate) proof fn lemma_wf(&self)
+        requires
+            self.wf(),
+        ensures
+            self.regions.wf(),
+            self.regions == crate::layout::process_regions(),
+            self.regions.separated(),
+            self.huge.spec_base() == self.regions.huge_base,
+            self.huge.spec_page() == (1usize << self.regions.lg_page) as int,
+            forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].spec_class() == c,
+            self.huge.spec_npages() == self.huge_pages(),
+            self.huge_pages() == self.regions.huge_len >> self.regions.lg_page,
+            self.meta.is_process(),
+            forall|c: int| 0 <= c < NCLASSES ==> #[trigger] self.tables[c].meta_ok(),
+    {
+    }
+}
+
+} // verus!
+
+verus! {
+
+// A Verus specification, never constructed.
+#[allow(dead_code)]
+#[verifier::external_type_specification]
+#[verifier::external_body]
+pub struct ExTcaches(Tcaches);
+
+// A Verus specification, never constructed.
+#[allow(dead_code)]
+#[verifier::external_type_specification]
+#[verifier::external_body]
+pub struct ExHeap(Heap);
+
+} // verus!
