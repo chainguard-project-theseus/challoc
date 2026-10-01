@@ -25,6 +25,9 @@ from .spec import Rows, SpecError, Suite
 
 STOCK = {
     "jemalloc": {"lib": "/usr/lib/libjemalloc.so.2", "mallctl": True},
+    # The release tarballs, upstream's default configuration (bench/build.sh).
+    "jemalloc53": {"lib": "{bin}/jemalloc-5.3.0/libjemalloc.so.2", "mallctl": True},
+    "jemalloc54": {"lib": "{bin}/jemalloc-5.4.0/libjemalloc.so.2", "mallctl": True},
     "tcmalloc": {"lib": "/usr/lib/libtcmalloc_minimal.so.4", "mallctl": False},
     "mimalloc": {"lib": "{bin}/libmimalloc.so", "mallctl": False},
     "glibc": {"lib": "", "mallctl": False},

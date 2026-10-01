@@ -38,7 +38,7 @@ PUBLIC_IMAGE_PROJECTS = (
     "opensuse-cloud",
 )
 
-PARSERS = ("larson", "xmalloc", "valkey_model.write", "churn.occ", "wall", "driver")
+PARSERS = ("larson", "xmalloc", "valkey_model.write", "churn.occ", "wall", "regex", "driver")
 # Row kinds: `timed` (one program per run, scored by a parser), `soak` and
 # `driver` (a script under bench/drivers/ that writes its metrics to
 # RESULT_JSONL, scored by one of them), `metric` (a derived row: one extra
@@ -96,6 +96,9 @@ class Row:
     # or a stock allocator name); empty: all.
     allocs: list[str] = dataclasses.field(default_factory=list)
     timeout_s: float | None = None
+    # parser "regex": a regular expression with one group, searched in the
+    # program's output; the last match is the score.
+    pattern: str = ""
 
     @property
     def higher_is_better(self) -> bool:
@@ -196,6 +199,13 @@ def parse_rows(doc: dict[str, Any], source: str = "rows.toml") -> Rows:
                 raise SpecError(f"{where}: cmd must be a non-empty list")
             if parser not in PARSERS:
                 raise SpecError(f"{where}: parser {parser!r} is not one of {', '.join(PARSERS)}")
+            if parser == "regex":
+                try:
+                    groups = re.compile(str(r.get("pattern", ""))).groups
+                except re.error as e:
+                    raise SpecError(f"{where}: pattern: {e}") from None
+                if groups != 1:
+                    raise SpecError(f"{where}: parser regex needs a pattern with exactly one group")
             better = r.get("better", "higher")
             if better not in ("higher", "lower"):
                 raise SpecError(f"{where}: better must be higher or lower")
@@ -231,6 +241,7 @@ def parse_rows(doc: dict[str, Any], source: str = "rows.toml") -> Rows:
             placement=str(r.get("placement", "paired")),
             allocs=[str(a) for a in r.get("allocs", [])],
             timeout_s=float(r["timeout_s"]) if "timeout_s" in r else None,
+            pattern=str(r.get("pattern", "")),
         )
         for m in r.get("metrics", []):
             if "name" not in m:
