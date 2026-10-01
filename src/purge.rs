@@ -42,7 +42,7 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, Ordering};
 
 use crate::heap::Shared;
 pub use crate::policy::Advice;
-use crate::sys::PIDFD_SELF;
+use crate::sys::{self, IoVec, PIDFD_SELF};
 use crate::sys::features::ProcessMadvise;
 
 mod curve;
@@ -305,7 +305,7 @@ impl Batch {
                     EAGER_BYTES.fetch_add(bytes, Ordering::Relaxed);
                 }
             }
-            os::discard(&self.ranges[..self.n], advice);
+            discard(&self.ranges[..self.n], advice);
             self.n = 0;
         }
     }
@@ -486,45 +486,37 @@ pub fn note_decay_changed() {
     background::wake();
 }
 
-mod os {
-    use super::{Advice, BACKEND, BACKEND_LAZY, LOOP, MAX_BATCH};
-    use crate::sys::{self, IoVec};
-    use core::sync::atomic::Ordering;
-
-    /// Issue `advice` on `ranges`, which are free (the [`Batch`]
-    /// invariant; this is the one place the batch's ranges reach the
-    /// kernel).
-    ///
-    /// [`Batch`]: super::Batch
-    pub fn discard(ranges: &[(usize, usize)], advice: Advice) {
-        let lazy = advice == Advice::Lazy;
-        let advice = advice.madv();
-        let backend = BACKEND.load(Ordering::Relaxed);
-        // A lazy batch takes the batched path only where the probe found
-        // the kernel accepts `MADV_FREE` through `process_madvise`.
-        if backend != LOOP && (!lazy || BACKEND_LAZY.load(Ordering::Relaxed)) {
-            let mut iov = [IoVec { base: core::ptr::null(), len: 0 }; MAX_BATCH];
-            let mut total = 0usize;
-            for (i, &(addr, len)) in ranges.iter().enumerate() {
-                iov[i] = IoVec { base: addr as *const u8, len };
-                total += len;
-            }
-            // SAFETY: the ranges are page-aligned parts of our own mappings
-            // that the caller holds free (the `Batch` invariant); `iov`
-            // outlives the call.
-            let done = unsafe { sys::process_madvise(backend, iov.as_ptr(), ranges.len(), advice, 0) };
-            if done == Ok(total) {
-                return;
-            }
-            // A short or failed batch (a range the kernel refused, a pidfd
-            // that went stale) falls back to the loop: both advices are
-            // idempotent, so redoing the whole batch is harmless.
+/// Issue `advice` on `ranges`, which are free (the [`Batch`]
+/// invariant; this is the one place the batch's ranges reach the
+/// kernel).
+fn discard(ranges: &[(usize, usize)], advice: Advice) {
+    let lazy = advice == Advice::Lazy;
+    let advice = advice.madv();
+    let backend = BACKEND.load(Ordering::Relaxed);
+    // A lazy batch takes the batched path only where the probe found
+    // the kernel accepts `MADV_FREE` through `process_madvise`.
+    if backend != LOOP && (!lazy || BACKEND_LAZY.load(Ordering::Relaxed)) {
+        let mut iov = [IoVec { base: core::ptr::null(), len: 0 }; MAX_BATCH];
+        let mut total = 0usize;
+        for (i, &(addr, len)) in ranges.iter().enumerate() {
+            iov[i] = IoVec { base: addr as *const u8, len };
+            total += len;
         }
-        for &(addr, len) in ranges {
-            // SAFETY: as above.
-            if let Err(e) = unsafe { sys::madvise(addr, len, advice) } {
-                panic!("purge: madvise({advice}) of {addr:#x}+{len:#x} failed: {e}");
-            }
+        // SAFETY: the ranges are page-aligned parts of our own mappings
+        // that the caller holds free (the `Batch` invariant); `iov`
+        // outlives the call.
+        let done = unsafe { sys::process_madvise(backend, iov.as_ptr(), ranges.len(), advice, 0) };
+        if done == Ok(total) {
+            return;
+        }
+        // A short or failed batch (a range the kernel refused, a pidfd
+        // that went stale) falls back to the loop: both advices are
+        // idempotent, so redoing the whole batch is harmless.
+    }
+    for &(addr, len) in ranges {
+        // SAFETY: as above.
+        if let Err(e) = unsafe { sys::madvise(addr, len, advice) } {
+            panic!("purge: madvise({advice}) of {addr:#x}+{len:#x} failed: {e}");
         }
     }
 }
