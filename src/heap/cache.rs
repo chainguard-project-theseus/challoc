@@ -8,7 +8,7 @@ use core::ptr;
 use crate::layout::NCLASSES;
 use crate::sys::pac;
 
-use super::{FOREIGN, Heap, MIN_CAP, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, Shared};
+use super::{FOREIGN, GROW_MISSES, Heap, MIN_CAP, PUSH_PAC, PUSH_SCAN, PUSH_ZERO, Shared};
 use super::{MODE_OFF, MODE_PROBE};
 
 /// One thread's cache header for one size class: exactly one cache line,
@@ -67,8 +67,8 @@ pub struct CacheHeader {
     /// order (wrapping); zeroed by a flush that found it sorted. Drives the
     /// kept half's sort in [`Heap::flush`].
     pub(super) unsorted_flushes: u8,
-    /// Refills and flushes of a full cache since the last GC, saturating;
-    /// unused by the `FOREIGN` cache.
+    /// Refills and flushes of a full cache since the last GC, saturating
+    /// ([`CacheHeader::note_miss`]); unused by the `FOREIGN` cache.
     pub(super) misses: u8,
     /// Size of the stack in slots, fixed when the cache is created (the
     /// ladder value, `ensure_cache`); the stack is freed with this layout.
@@ -136,6 +136,21 @@ impl CacheHeader {
             self.len <= self.cap && self.cap <= self.ceil && self.cap >= 1,
             "heap: cache capacity invariant violated"
         );
+    }
+
+    /// Count a miss: a refill of this (empty) cache, or a free that found
+    /// it full. From the [`GROW_MISSES`]th miss since the last GC on, each
+    /// miss doubles `cap`, up to `ceil`; returns whether it grew. The
+    /// counter saturates, so a busy cache never wraps to look quiet.
+    #[inline]
+    pub(super) fn note_miss(&mut self) -> bool {
+        self.misses = self.misses.saturating_add(1);
+        if self.misses < GROW_MISSES || self.cap >= self.ceil {
+            return false;
+        }
+        self.cap = (self.cap * 2).min(self.ceil);
+        self.check_cap();
+        true
     }
 
     #[inline]
@@ -473,6 +488,6 @@ impl Heap {
 
 /// The capacity a new cache whose stack holds `ceil` slots starts at.
 #[inline]
-fn start_cap(ceil: u32) -> u32 {
+pub(super) fn start_cap(ceil: u32) -> u32 {
     ceil
 }

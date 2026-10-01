@@ -206,6 +206,9 @@ impl Heap {
         }
         // SAFETY: `cache` is this heap's real cache for `(arena, class)`.
         unsafe {
+            // A miss: past the second in this interval the refill claims
+            // half of a doubled capacity.
+            (*cache).note_miss();
             let len = self.refill(shared, a, cache, class);
             if len == 0 {
                 return (ptr::null_mut(), false);
@@ -267,12 +270,17 @@ impl Heap {
             }
             self.tick(shared);
             if (*cache).len == (*cache).cap {
-                // A home cache keeps its lowest half (design 6.4); the
+                // A home cache keeps its lowest half (design 6.4), unless
+                // the miss grew it, which leaves room for the push; the
                 // FOREIGN cache, popped by nothing, releases everything.
-                let n = if arena == FOREIGN { (*cache).cap } else { ((*cache).cap / 2).max(1) };
-                self.flush(shared, arena, cache, class, n as usize);
+                if arena == FOREIGN {
+                    self.flush(shared, arena, cache, class, (*cache).cap as usize);
+                } else if !(*cache).note_miss() {
+                    self.flush(shared, arena, cache, class, ((*cache).cap / 2).max(1) as usize);
+                }
             }
-            // The scan ran above; a flush only removes entries.
+            // The scan ran above; a flush only removes entries, a grow
+            // only adds room.
             if !Self::push_cache(cache, p, false, shared.pac()) {
                 unreachable!("heap: cache still full after a flush");
             }

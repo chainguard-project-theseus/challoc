@@ -2619,3 +2619,89 @@ fn capacity_past_the_ceiling_aborts() {
     unsafe { (*k).cap = (*k).ceil };
     t.destroy();
 }
+
+/// Drain `c`'s home cache with pops, then pop once more (a refill).
+fn drain_and_refill(t: &TestHeap, c: usize, out: &mut Vec<*mut u8>) {
+    while t.len(c) > 0 {
+        out.push(t.alloc(c));
+    }
+    out.push(t.alloc(c));
+}
+
+/// A new cache starts at its start capacity; from the second miss of an
+/// interval on (the first refill is one), every refill doubles the
+/// capacity and claims half of the doubled value, never past `ceil`; the
+/// GC restarts the count.
+#[test]
+fn cap_starts_at_start_and_doubles_after_two_misses() {
+    let s = shared();
+    let t = TestHeap::new(s);
+    let c = class_with(64);
+    let mut ps = std::vec![t.alloc(c)];
+    assert_eq!(t.cache(c).cap(), cache::start_cap(CAP as u32) as usize);
+    assert_eq!(t.cache(c).misses, 1, "the first refill is a miss");
+    force_cap(&t, c, 64);
+    drain_and_refill(&t, c, &mut ps);
+    assert_eq!(t.cache(c).misses, 2);
+    assert_eq!(t.cache(c).cap(), 128, "doubled at the second miss");
+    assert_eq!(t.len(c), 64 - 1, "the refill claimed half the new capacity");
+    let mut cap = 128;
+    while cap < CAP {
+        drain_and_refill(&t, c, &mut ps);
+        cap *= 2;
+        assert_eq!(t.cache(c).cap(), cap);
+        assert_eq!(t.len(c), cap / 2 - 1);
+    }
+    drain_and_refill(&t, c, &mut ps);
+    assert_eq!(t.cache(c).cap(), CAP, "never past the ceiling");
+    // The GC restarts the count: one miss in the next interval does not
+    // grow, the second does.
+    force_cap(&t, c, 64);
+    t.gc();
+    assert_eq!(t.cache(c).misses, 0);
+    drain_and_refill(&t, c, &mut ps);
+    assert_eq!(t.cache(c).cap(), 64);
+    drain_and_refill(&t, c, &mut ps);
+    assert_eq!(t.cache(c).cap(), 128);
+    for p in ps {
+        t.free(p);
+    }
+    t.destroy();
+    assert_eq!(live(s, c), 0);
+}
+
+/// A free that finds the cache full counts a miss; the miss that grows
+/// the capacity makes room, and the free pushes without a flush (the
+/// slots stay cached, the class's `live` count does not move).
+#[test]
+fn full_cache_grows_instead_of_flushing() {
+    let s = shared();
+    let t = TestHeap::new(s);
+    let c = class_with(64);
+    let ps: Vec<*mut u8> = (0..400).map(|_| t.alloc(c)).collect();
+    force_cap(&t, c, 64);
+    t.heap().caches[c].misses = 0;
+    let mut it = ps.iter();
+    // The first full free: one miss, no grow, a flush of half.
+    while t.len(c) < 64 {
+        t.free(*it.next().unwrap());
+    }
+    t.free(*it.next().unwrap());
+    assert_eq!((t.cache(c).cap(), t.len(c), t.cache(c).misses), (64, 33, 1));
+    // The second: the capacity doubles and the slot is pushed.
+    while t.len(c) < 64 {
+        t.free(*it.next().unwrap());
+    }
+    let live_before = live(s, c);
+    t.free(*it.next().unwrap());
+    assert_eq!((t.cache(c).cap(), t.len(c), t.cache(c).misses), (128, 65, 2));
+    assert_eq!(live(s, c), live_before, "no flush");
+    // Every later full free doubles again, up to the ceiling.
+    for p in it {
+        t.free(*p);
+        assert!(t.len(c) <= t.cache(c).cap());
+    }
+    assert_eq!(t.cache(c).cap(), 512);
+    t.destroy();
+    assert_eq!(live(s, c), 0);
+}

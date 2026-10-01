@@ -84,6 +84,11 @@ pub const MAX_CAP: u32 = 1024;
 pub const MIN_CAP: u32 = 8;
 /// Slow-path entries between two periodic-work checks (design 6.4).
 pub const PERIODIC_EVERY: u32 = 64;
+/// Misses (refills, and flushes of a full cache) in one GC interval after
+/// which a cache doubles its capacity at every further miss, up to its
+/// ceiling (design 6.4). A class that one refill or one flush per interval
+/// serves keeps its capacity.
+pub const GROW_MISSES: u8 = 2;
 
 /// Default cache capacity for a class: [`MAX_CAP`] (1024) slots for classes
 /// up to 128 bytes, halved for every doubling of the class size, never
@@ -462,7 +467,8 @@ impl Heap {
 
     /// Cache GC (design 6.4): for every cache, release three quarters of
     /// the entries that went unused since the last GC, then restart the
-    /// low-water tracking from the current length.
+    /// low-water tracking from the current length and the miss count from
+    /// zero.
     pub fn gc(&mut self, shared: &Shared) {
         let home = self.arena;
         self.gc_arena(shared, home, ptr::null_mut());
@@ -492,6 +498,7 @@ impl Heap {
                 } else if lw > 0 {
                     self.flush(shared, arena, cache, class, lw - lw / 4);
                 }
+                (*cache).misses = 0;
                 (*cache).low_water = (*cache).len;
             }
         }
