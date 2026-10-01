@@ -43,7 +43,6 @@ pub mod policy;
 pub mod purge;
 pub mod rseq;
 pub mod slab;
-pub mod slice;
 pub mod stats;
 pub mod sys;
 #[cfg(test)]

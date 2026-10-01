@@ -121,81 +121,6 @@ pub fn write_words(f: &mut fmt::Formatter<'_>, words: impl Iterator<Item = (&'st
     Ok(())
 }
 
-/// The `slice_ext=` key: the kernel's answer for the rseq time slice
-/// extension (design 17), from `slice::probe`. `Features::probe` records
-/// what the kernel offers; `Features::note_slice_ext` folds in
-/// `slice::configure`'s verdict once `config::load` has run, so the word
-/// says what is in force.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum SliceExt {
-    /// The extension is requested by every lock holder of this process
-    /// (`slice::on()`): the kernel has it and the key allowed it.
-    On,
-    /// The kernel offers it (bit 4 set) and the process does not use it
-    /// (`slice_ext:off`, or the report is built before `configure` ran).
-    Available,
-    /// The kernel offers it, the `prctl` enable failed on the init thread.
-    PrctlFailed,
-    /// `__rseq_size >= 32` but bit 4 clear: the kernel has the option
-    /// compiled out or disabled (`rseq_slice_ext=0`).
-    KernelDisabled,
-    /// `__rseq_size < 32`: the kernel does not write `slice_ctrl` (6.18
-    /// and earlier).
-    NoSliceCtrl,
-    /// No rseq registration at all.
-    NoRseq,
-}
-
-impl SliceExt {
-    /// The word in the line; the same vocabulary as the `Slice extension:`
-    /// report line's verdict words, plus `on` and `available`.
-    pub const fn name(self) -> &'static str {
-        match self {
-            SliceExt::On => "on",
-            SliceExt::Available => "available",
-            SliceExt::PrctlFailed => "prctl-failed",
-            SliceExt::KernelDisabled => "kernel-disabled",
-            SliceExt::NoSliceCtrl => "no-slice_ctrl",
-            SliceExt::NoRseq => "no-rseq",
-        }
-    }
-
-    /// What the kernel offers, from the probe's verdict alone (`Enabled`
-    /// there means "available": the probe does not enable).
-    pub const fn from_probe(v: crate::slice::Verdict) -> SliceExt {
-        use crate::slice::Verdict;
-        match v {
-            Verdict::NoRseq => SliceExt::NoRseq,
-            Verdict::NoSliceCtrl => SliceExt::NoSliceCtrl,
-            Verdict::KernelDisabled => SliceExt::KernelDisabled,
-            Verdict::PrctlFailed => SliceExt::PrctlFailed,
-            Verdict::Enabled => SliceExt::Available,
-            // `Unprobed`, `Key`, `NoSyscall` are not kernel answers; a
-            // probe never returns them.
-            Verdict::Unprobed | Verdict::Key | Verdict::NoSyscall => SliceExt::NoRseq,
-        }
-    }
-
-    /// Fold the configured outcome into the kernel's answer: `Enabled`
-    /// makes it `on`, a failed `prctl` says so, a key that turned it off
-    /// (or a kernel answer that never reached the `prctl`) leaves the
-    /// kernel's word. Pure.
-    pub const fn with_configured(self, v: crate::slice::Verdict) -> SliceExt {
-        use crate::slice::Verdict;
-        match v {
-            Verdict::Enabled => SliceExt::On,
-            Verdict::PrctlFailed => SliceExt::PrctlFailed,
-            _ => self,
-        }
-    }
-}
-
-impl fmt::Display for SliceExt {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "slice_ext={}", self.name())
-    }
-}
-
 /// Result of probing the running kernel. Plain data; safe to copy into a
 /// global once init is done.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -225,9 +150,6 @@ pub struct Features {
     /// glibc's rseq registration as `rseq::probe` read it at init: the
     /// `rseq` and `rseq_size` keys (`rseq::Probe::words`).
     pub rseq: crate::rseq::Probe,
-    /// The rseq time slice extension: what the kernel offers and whether
-    /// the process uses it.
-    pub slice_ext: SliceExt,
     /// Pointer authentication (`sys::pac::available`, `HWCAP_PACA` and
     /// `HWCAP_PACG`): what `pac_pointers` can turn on.
     pub pac: bool,
@@ -238,7 +160,7 @@ impl Features {
     /// Values are `yes`/`no` except `page_size`, `process_madvise` (`no`,
     /// `pidfd_self`, or `pidfd:<fd>`), the THP keys
     /// (`thp=never|madvise|always|none`, `mthp=64K,2M|none`), `rseq_size`
-    /// (a byte count) and `slice_ext` ([`SliceExt::name`]).
+    /// (a byte count).
     /// `tests/c/features.c` lists the same keys.
     pub fn words(&self) -> impl Iterator<Item = (&'static str, Value)> + '_ {
         [
@@ -252,7 +174,6 @@ impl Features {
         .into_iter()
         .chain(self.thp.words())
         .chain(self.rseq.words())
-        .chain([("slice_ext", Value::Word(self.slice_ext.name()))])
         .chain([("pac", Value::YesNo(self.pac))])
     }
 }
@@ -276,8 +197,7 @@ pub struct FeatureLine {
 
 impl FeatureLine {
     /// Room for the line and its NUL; the longest possible line (every
-    /// probe `yes`, `pidfd:2147483647`, every THP size listed, the longest
-    /// `slice_ext` word) is under `CAP - 64` bytes (`feature_line_fits`).
+    /// probe `yes`, `pidfd:2147483647`, every THP size listed) is under `CAP - 64` bytes (`feature_line_fits`).
     pub const CAP: usize = 640;
 
     /// Format `features` into a fresh line. A line that did not fit is cut,
@@ -464,17 +384,8 @@ impl Features {
             anon_name: probe_anon_name(page_size),
             thp: crate::sys::thp_host::probe(page_size),
             rseq: crate::rseq::probe(),
-            // The kernel's answer alone: `config::load` has not run
-            // yet, so nothing is enabled; `note_slice_ext` follows.
-            slice_ext: SliceExt::from_probe(crate::slice::probe().verdict()),
             pac: crate::sys::pac::available(),
         }
-    }
-
-    /// Fold `slice::configure`'s verdict into the `slice_ext=` word. Init
-    /// calls it after `config::load` and before the line is built.
-    pub fn note_slice_ext(&mut self) {
-        self.slice_ext = self.slice_ext.with_configured(crate::slice::verdict());
     }
 }
 
@@ -503,27 +414,20 @@ mod tests {
             anon_name: false,
             thp: Thp { enabled: Some(ThpSetting::Madvise), lg_pmd: 21, listed: (1 << 16) | (1 << 21), always: 0, madvise: (1 << 16) | (1 << 21) },
             rseq: rseq_probe(33, 192),
-            slice_ext: SliceExt::KernelDisabled,
             pac: true,
         };
         let s = std::format!("{f}");
         assert_eq!(
             s,
             "page_size=4096 guard_install=no mseal=yes process_madvise=pidfd:7 process_madvise_free=yes anon_name=no thp=madvise \
-             mthp=64K,2M rseq=yes rseq_size=33 slice_ext=kernel-disabled pac=yes"
+             mthp=64K,2M rseq=yes rseq_size=33 pac=yes"
         );
-        // A kernel that reports no feature size (6.10): registered, no
-        // `slice_ctrl`.
-        let f = Features { rseq: rseq_probe(20, 192), slice_ext: SliceExt::NoSliceCtrl, ..f };
-        assert!(std::format!("{f}").contains(" mthp=64K,2M rseq=yes rseq_size=20 slice_ext=no-slice_ctrl pac=yes"));
-        let f = Features { rseq: Probe::NONE, slice_ext: SliceExt::NoRseq, ..f };
-        assert!(std::format!("{f}").contains(" rseq=no rseq_size=0 slice_ext=no-rseq "));
-        // A kernel built with the option: on under the default key,
-        // available under `slice_ext:off`.
-        let f = Features { rseq: rseq_probe(33, -192), slice_ext: SliceExt::On, ..f };
-        assert!(std::format!("{f}").contains(" rseq_size=33 slice_ext=on "));
-        let f = Features { slice_ext: SliceExt::Available, ..f };
-        assert!(std::format!("{f}").contains(" rseq_size=33 slice_ext=available "));
+        // A kernel that reports no feature size (6.10): registered at 20.
+        let f = Features { rseq: rseq_probe(20, 192), ..f };
+        assert!(std::format!("{f}").contains(" mthp=64K,2M rseq=yes rseq_size=20 pac=yes"));
+        let f = Features { rseq: Probe::NONE, ..f };
+        assert!(std::format!("{f}").contains(" rseq=no rseq_size=0 pac=yes"));
+        let f = Features { rseq: rseq_probe(33, -192), ..f };
         let f = Features { thp: Thp::NONE, ..f };
         assert!(std::format!("{f}").contains(" thp=none mthp=none rseq=yes "));
         let f = Features { thp: Thp { enabled: Some(ThpSetting::Never), listed: 1 << 21, always: 0, madvise: 0, lg_pmd: 21 }, ..f };
@@ -546,7 +450,6 @@ mod tests {
             anon_name: true,
             thp: Thp::NONE,
             rseq: Probe::NONE,
-            slice_ext: SliceExt::NoRseq,
             pac: true,
         };
         let line = FeatureLine::build(&f);
@@ -580,7 +483,6 @@ mod tests {
             },
             // The longest words.
             rseq: Probe { present: true, size: u32::MAX, flags: u32::MAX, offset: isize::MIN, registered: true },
-            slice_ext: SliceExt::KernelDisabled,
             pac: true,
         };
         let s = std::format!("{f}");
@@ -599,7 +501,7 @@ mod tests {
     fn words_are_the_key_table() {
         let kernel = [
             "page_size", "guard_install", "mseal", "process_madvise", "process_madvise_free", "anon_name",
-            "thp", "mthp", "rseq", "rseq_size", "slice_ext", "pac",
+            "thp", "mthp", "rseq", "rseq_size", "pac",
         ];
         for pac in [true, false] {
             let f = Features {
@@ -612,8 +514,7 @@ mod tests {
                 anon_name: true,
                 thp: Thp::NONE,
                 rseq: rseq_probe(33, 192),
-                slice_ext: SliceExt::Available,
-                pac,
+                    pac,
             };
             let keys: std::vec::Vec<&str> = f.words().map(|(k, _)| k).collect();
             assert_eq!(keys, kernel);
@@ -629,53 +530,6 @@ mod tests {
         }
     }
 
-    /// The `slice_ext=` word from the probe's verdict and the configured
-    /// one: a kernel with the option disabled (`33` bytes, bit 4 clear)
-    /// reads `kernel-disabled` whatever the key; a kernel without
-    /// `slice_ctrl` `no-slice_ctrl`; no registration `no-rseq`; a kernel
-    /// with the option reads `on` once `configure` enabled the init thread,
-    /// `available` under `slice_ext:off` (or before `configure`), and
-    /// `prctl-failed` when the enable was refused. Every word is a single
-    /// token without spaces or `=`.
-    #[test]
-    fn slice_ext_words_follow_the_verdicts() {
-        use crate::slice::Verdict;
-        let disabled = SliceExt::from_probe(Verdict::KernelDisabled);
-        assert_eq!(disabled, SliceExt::KernelDisabled);
-        for v in [Verdict::Unprobed, Verdict::Key, Verdict::KernelDisabled, Verdict::NoRseq] {
-            assert_eq!(disabled.with_configured(v), SliceExt::KernelDisabled, "{v:?}");
-        }
-        assert_eq!(SliceExt::from_probe(Verdict::NoSliceCtrl), SliceExt::NoSliceCtrl);
-        assert_eq!(SliceExt::from_probe(Verdict::NoSliceCtrl).with_configured(Verdict::Key), SliceExt::NoSliceCtrl);
-        assert_eq!(SliceExt::from_probe(Verdict::NoRseq), SliceExt::NoRseq);
-        let has = SliceExt::from_probe(Verdict::Enabled);
-        assert_eq!(has, SliceExt::Available);
-        assert_eq!(has.with_configured(Verdict::Enabled), SliceExt::On);
-        assert_eq!(has.with_configured(Verdict::Key), SliceExt::Available);
-        assert_eq!(has.with_configured(Verdict::Unprobed), SliceExt::Available);
-        assert_eq!(has.with_configured(Verdict::PrctlFailed), SliceExt::PrctlFailed);
-        // `Probe::verdict` never yields these; they map to the weakest word.
-        for v in [Verdict::Unprobed, Verdict::Key, Verdict::NoSyscall] {
-            assert_eq!(SliceExt::from_probe(v), SliceExt::NoRseq, "{v:?}");
-        }
-        for w in [
-            SliceExt::On,
-            SliceExt::Available,
-            SliceExt::PrctlFailed,
-            SliceExt::KernelDisabled,
-            SliceExt::NoSliceCtrl,
-            SliceExt::NoRseq,
-        ] {
-            let name = w.name();
-            assert!(!name.is_empty() && !name.contains(' ') && !name.contains('='), "{name}");
-            assert_eq!(std::format!("{w}"), std::format!("slice_ext={name}"));
-        }
-        // The report line's words are the same vocabulary.
-        assert_eq!(SliceExt::KernelDisabled.name(), Verdict::KernelDisabled.name());
-        assert_eq!(SliceExt::NoSliceCtrl.name(), Verdict::NoSliceCtrl.name());
-        assert_eq!(SliceExt::NoRseq.name(), Verdict::NoRseq.name());
-        assert_eq!(SliceExt::PrctlFailed.name(), Verdict::PrctlFailed.name());
-    }
 }
 
 /// Linux-only tests: run the real probe inside the dev container and check
@@ -843,7 +697,7 @@ mod linux_tests {
     #[test]
     fn rseq_words_match_glibc_symbols_and_the_feature_size() {
         let (_, f, line) = probed();
-        assert_eq!(f.rseq, crate::rseq::probe(), "the line's probe is the slice extension's");
+        assert_eq!(f.rseq, crate::rseq::probe(), "the line's probe is rseq::probe's");
         let sym = |name: &[u8]| -> *const u8 {
             // SAFETY: `dlsym` on a NUL-terminated name in the test.
             unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr().cast()) }.cast()
@@ -877,36 +731,6 @@ mod linux_tests {
         if feat > crate::rseq::BASE_SIZE && size >= crate::rseq::BASE_SIZE {
             assert!(size >= feat, "kernel offers {feat} bytes, glibc registered {size}: {line}");
         }
-    }
-
-    /// The `slice_ext=` word against `slice::probe`: the probe, not
-    /// enabled by `Features::probe` (`configure` has not run for this
-    /// value), must read what the module's own probe says. Both ways: a
-    /// kernel with the option reads `available` here (the
-    /// line of the shipped library says `on`).
-    #[test]
-    fn probe_slice_ext_matches_the_slice_module() {
-        let (kv, f, line) = probed();
-        let p = crate::slice::probe();
-        assert_eq!(f.slice_ext, SliceExt::from_probe(p.verdict()), "{line}: {p:?}");
-        let word = std::format!(" slice_ext={} ", f.slice_ext.name());
-        assert!(line.contains(&word), "{line}");
-        if p.size != 0 && p.size < crate::slice::SLICE_CTRL_END {
-            assert_eq!(f.slice_ext, SliceExt::NoSliceCtrl, "{line}");
-        }
-        if p.size >= crate::slice::SLICE_CTRL_END && !p.available {
-            assert_eq!(f.slice_ext, SliceExt::KernelDisabled, "{line}");
-        }
-        if p.available {
-            assert!(at_least(kv, (7, 0)), "slice extension predates 7.0: {line}");
-            assert_eq!(f.slice_ext, SliceExt::Available, "{line}");
-            let mut g = f;
-            // The configured outcome folds in as `on` only when the
-            // module is on in this process.
-            g.note_slice_ext();
-            assert_eq!(g.slice_ext == SliceExt::On, crate::slice::on(), "{line}");
-        }
-        eprintln!("slice_ext: {} (probe {:?})", f.slice_ext.name(), p);
     }
 
     /// The THP table against the same files read through std.

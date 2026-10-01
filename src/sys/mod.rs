@@ -541,26 +541,6 @@ mod linux {
         unsafe { raw::syscall0(nr::GETTID) as i32 }
     }
 
-    /// `sched_yield(2)`: give the CPU up; any syscall ends an rseq time
-    /// slice grant (`slice.rs`), this is the cheapest that also means
-    /// "yield". Always `Ok(0)`.
-    #[inline]
-    pub fn sched_yield() -> Result<usize, Errno> {
-        // SAFETY: no arguments, no memory effect of ours.
-        decode(unsafe { raw::syscall0(nr::SCHED_YIELD) })
-    }
-
-    /// `rseq_slice_yield(2)` (kernel 7.0, `CONFIG_RSEQ_SLICE_EXTENSION`):
-    /// end a granted time slice extension now. `Ok(1)` when the kernel
-    /// had marked the calling thread as yielded, `Ok(0)` otherwise,
-    /// `Err(ENOSYS)` on a kernel without it or behind a seccomp filter
-    /// that predates the number (Docker's default profile).
-    #[inline]
-    pub fn rseq_slice_yield() -> Result<usize, Errno> {
-        // SAFETY: no arguments, no memory effect of ours.
-        decode(unsafe { raw::syscall0(nr::RSEQ_SLICE_YIELD) })
-    }
-
     /// CPUs the calling thread may run on: the bits set in the affinity
     /// mask `sched_getaffinity(0)` returns, so `taskset` and cgroup
     /// cpusets count, not the machine (jemalloc's `malloc_ncpus`). The
@@ -903,17 +883,6 @@ mod tests {
         assert_eq!(read_small_file(b"/nonexistent/challoc\0", &mut buf), None);
         assert_eq!(read_small_file(b"/proc\0", &mut buf), None, "a directory opens and fails to read");
         assert_eq!(read_small_file(b"/dev/null\0", &mut buf), Some(0));
-    }
-
-    /// Both yields reach the kernel: `sched_yield` always answers 0;
-    /// `rseq_slice_yield` answers 0 (no grant outstanding) or `ENOSYS`,
-    /// never anything else, and never `EINVAL` for the number.
-    #[test]
-    fn yields_answer_zero_or_enosys() {
-        assert_eq!(sched_yield(), Ok(0));
-        let r = rseq_slice_yield();
-        assert!(matches!(r, Ok(0) | Err(Errno::ENOSYS)), "{r:?}");
-        std::eprintln!("rseq_slice_yield: {r:?}");
     }
 
     #[test]

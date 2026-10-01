@@ -1,6 +1,5 @@
-//! glibc's restartable-sequences registration, read for the rseq time
-//! slice extension (`slice.rs`, design 17) and the feature line's `rseq`
-//! and `rseq_size` keys.
+//! glibc's restartable-sequences registration, read for the feature
+//! line's `rseq` and `rseq_size` keys.
 //!
 //! glibc (2.44, the supported floor) registers one `struct rseq` per
 //! thread with the kernel and exports three symbols from the dynamic
@@ -19,9 +18,8 @@
 //!
 //! The area (`struct rseq`, kernel `include/uapi/linux/rseq.h`), offsets in
 //! bytes: `cpu_id_start` 0, `cpu_id` 4, `rseq_cs` 8 (u64), `flags` 16,
-//! `node_id` 20, `mm_cid` 24 (u32), `slice_ctrl` 28. Every field but
-//! `rseq_cs` and `slice_ctrl.request` is the kernel's, and this module
-//! stores to none of them: writing `cpu_id`, `mm_cid` or `flags` is what
+//! `node_id` 20, `mm_cid` 24 (u32), `slice_ctrl` 28. This module stores
+//! to none of them: writing `cpu_id`, `mm_cid` or `flags` is what
 //! broke tcmalloc on Linux 6.19.
 
 use core::arch::asm;
@@ -30,8 +28,6 @@ use crate::sys::features::Value;
 
 /// Byte offset of `cpu_id` (kernel-owned; `-1` before registration).
 pub const CPU_ID_OFFSET: usize = 4;
-/// Byte offset of `mm_cid` (kernel-owned, u32); `slice_ctrl` follows it.
-pub const MM_CID_OFFSET: usize = 24;
 /// The size of the original `struct rseq` (through `flags`), the least a
 /// successful registration reports; `__rseq_size` is 0 or at least this.
 pub const BASE_SIZE: u32 = 20;

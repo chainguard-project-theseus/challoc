@@ -682,18 +682,6 @@ ctests! {
         CTest { prog: "tunables", args: &["random"], conf: Some("abort_conf:true,slot_randomize:true"), ..BASE },
         CTest { prog: "tunables", args: &["ordered"], conf: Some("abort_conf:true"), ..BASE },
     ];
-    /// Plan Phase 2.5 task 15, both ways: `tests/c/slice_ext.c` under
-    /// `slice_ext:on` (the rseq time slice extension on where the kernel has
-    /// `CONFIG_RSEQ_SLICE_EXTENSION`, refused with a report note and a `SKIP`
-    /// line elsewhere: the program reads the kernel's view through `prctl`
-    /// and asserts the right branch) and under `slice_ext:off` (never
-    /// enabled). 32 threads of tagged random allocation, the per-task enable
-    /// on a thread's first hold, the fork child's inherited enable,
-    /// `opt.slice_ext`.
-    c_slice_ext_both_ways => [
-        CTest { prog: "slice_ext", args: &["on"], conf: Some("abort_conf:true,slice_ext:on"), ..BASE },
-        CTest { prog: "slice_ext", args: &["off"], conf: Some("abort_conf:true,slice_ext:off"), ..BASE },
-    ];
     /// The fuzz driver (`c_fuzz_short`) once under each key, and both.
     c_fuzz_short_under_zero_on_free => [
         CTest { dir: "fuzz", prog: "fuzz", args: &["400000", "4"], conf: Some("abort_conf:true,zero_on_free:true"), ..BASE },

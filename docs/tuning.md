@@ -53,8 +53,7 @@ effect (not implemented)`) and the offending pair is skipped
 every source has been read, so it covers keys that came before it in the
 same or an earlier source, and it refuses: unknown keys, bad values,
 out-of-range and rounded numbers, and inert keys (below). It does not
-refuse a runtime probe that fails for a valid key: `slice_ext:on` on a kernel without the extension,
-`thp:auto` on a host with no sub-PMD folio size, `thp:always` under
+refuse a runtime probe that fails for a valid key: `thp:auto` on a host with no sub-PMD folio size, `thp:always` under
 a cgroup limit below 1 GiB. Those are the documented fallbacks, and the
 `malloc_stats_print` report says which one applies (section 6). Use
 `abort_conf:true` in a package test: `MALLOC_CONF=abort_conf:true,no_such_key:1
@@ -107,7 +106,6 @@ One row per key, in `KEYS` order. "Values" is the grammar
 | `tcache_nslots_small_max` | `8`..`65536` | `1024` | Cache capacity for classes up to 128 bytes; the capacity halves per doubling of the class size above that (the ladder), down to a floor of 8. | To trade cache RSS for refill frequency: `512` halves every cache. | More refills and flushes (slow paths) per operation. |
 | `lg_tcache_nslots_mul` | `-16`..`16` | `1` | Shifts the whole ladder by `lg_tcache_nslots_mul - 1` doublings (jemalloc's key; Redis's `je_malloc_conf` sets `3`). | As `tcache_nslots_small_max`. | As above; the result is clamped to `[8, tcache_nslots_small_max]`. |
 | `thp` | `never` (`default` is `never`), `auto`, `always` | `never` | Transparent huge pages for challoc's regions. `never`: `MADV_NOHUGEPAGE` on the class superblock and the metadata region; the huge region (allocations above the largest class) follows the host's policy. `auto`: `MADV_HUGEPAGE` for sub-PMD folios (64 KiB) on slab groups and metadata, never a 2 MiB page; inert where no such size is enabled or the 2 MiB size is `madvise`-gated. `always`: 2 MiB chunks over the class regions, huge runs and metadata (jemalloc's `thp:always`); forced to `never` under a cgroup limit below 1 GiB. Section 5. | `always` on a THP=`always` host when throughput matters more than RSS and the process does not fork. `auto` on an aarch64 host with `hugepages-64kB` enabled. | `always`: valkey1 at parity with jemalloc for +9.5% peak RSS on a 585 MiB heap and +39.9% on larson16's (`bench/results/2026-09-20-aarch64-cgos-thp-decision.md`); `auto`: larson1 +1.7% and 15.9 -> 18.1 MiB RSS (`2026-09-19-lane-b-mthp.md`). |
-| `slice_ext` | `auto`, `on`, `off` | `auto` | A lock holder asks the kernel, through the rseq `slice_ctrl` bytes, to defer a preemption until the release (kernel 7.0 with `CONFIG_RSEQ_SLICE_EXTENSION`, x86_64 only so far, probed). `auto` and `on` follow the probe; `on` additionally makes the report note a refusal; `off` never requests. | Never; `off` to rule it out when comparing kernels. | One relaxed load per hold when off. The reference GCE kernels compile the option out (`slice_ext=kernel-disabled`). |
 | `lazy_band` | `true`, `false` | `true` | `MADV_FREE` for purges made under 70% of a known cgroup limit (the headroom band); `false` makes every purge `MADV_DONTNEED`. | `false` when the container's RSS figure must track live memory exactly even with headroom (an autoscaler, a fragmentation ratio). | Refaults on reuse: allocating 200 MiB again after a lazy purge took 5 ms against 44 ms after an eager one on the C4A (`bench/results/2026-09-19-lane-b-two-advice-purge.md`). |
 | `guards` | `true`, `false` | `true` | Guard slabs between slabs (kernel 6.13+, `MADV_GUARD_INSTALL`) and a guard after every huge run (a `PROT_NONE` page on older kernels). | Never. | `false` removes an overflow barrier and makes the sized-free guard test a no-op. |
 | `guard_slab_interval` | `0`, or `2`..`4194304`, a power of two | `8` | One guard slab per N x 64 KiB of slabs (every Nth slab for the 64 KiB-slab classes; the same span in bytes for the classes with smaller slabs). `0` is none; `1` is out of range and clamps to `2`; a non-power of two rounds up and is reported. | To trade address space and slab count for guard density. | A denser interval costs slabs; it never costs a fast-path instruction (the test is a mask). No guard slabs exist before kernel 6.13 whatever the value. |
@@ -591,10 +589,9 @@ The lines an operator reads first, in the order they appear:
 | line | what to look for |
 |---|---|
 | `Run-time option settings` / `opt.<key>` | the configuration in force after every source; `(accepted, no effect)` marks an inert key; `thp` carries the forced-never note when a small cgroup limit applied |
-| `Kernel and CPU features: page_size=4096 guard_install=yes mseal=yes process_madvise=pidfd_self process_madvise_free=yes anon_name=no thp=always mthp=2M rseq=yes rseq_size=28 slice_ext=... pac=yes` | `guard_install=no` means a kernel before 6.13: no guard slabs. `process_madvise=no` means purges loop over `madvise` (Docker's default seccomp hides the syscall). `anon_name=no` means `/proc/<pid>/smaps` has no `challoc:*` names (the Chainguard OS server image, `bench/results/2026-09-20-chainguard-os-cells.md`). `thp=` is the host's global mode. The keys are never renamed |
+| `Kernel and CPU features: page_size=4096 guard_install=yes mseal=yes process_madvise=pidfd_self process_madvise_free=yes anon_name=no thp=always mthp=2M rseq=yes rseq_size=28 pac=yes` | `guard_install=no` means a kernel before 6.13: no guard slabs. `process_madvise=no` means purges loop over `madvise` (Docker's default seccomp hides the syscall). `anon_name=no` means `/proc/<pid>/smaps` has no `challoc:*` names (the Chainguard OS server image, `bench/results/2026-09-20-chainguard-os-cells.md`). `thp=` is the host's global mode. The keys are never renamed |
 | `Sealed ranges: N of M` | `0 of M` under Docker's default seccomp (mseal filtered) or before 6.10 |
 | `Background thread: present` / `absent` | whether decay runs while idle; Valkey shows `present` |
-| `Slice extension: off (kernel-disabled)` / `on (N threads enabled, N grants yielded via ...)` | the kernel's answer for the time slice extension |
 | `Arenas: N (M automatic), explicit caches: K` | `N` is the arenas built so far (one per live thread up to the cap): 17 on the 16-thread Ruby soak, 64 on the 200-thread JVM server. This is the figure `narenas` moves |
 | `Quantum size: 8` / `16` | `8` is Valkey's private build, `16` the system library |
 | `Page size`, `Page-sized slabs:` | on a 16 or 64 KiB kernel the 512..1024-byte classes take the page as their slab |
@@ -640,8 +637,6 @@ fixes their values by measurement:
 - `zero_on_free`, `slot_randomize`, `pac_pointers`, `double_free_scan`:
   hardening opt-ins whose prices are in section 2's table. Turn one on
   for a requirement, not for a hunch, and re-run the consumer's row.
-- `slice_ext`: `auto` follows the kernel; there is nothing to gain by
-  forcing it.
 - `cgroup:false`: only as a control.
 - `check_zero`: a debug mode.
 - `narenas` for Valkey: the server is one main thread plus io-threads;
