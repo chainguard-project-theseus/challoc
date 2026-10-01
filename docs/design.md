@@ -953,7 +953,10 @@ page granularity.
   above, and `huge_dirty_decay_ms:0` still purges every run at free. The
   tier samples its live pages under the huge lock in `alloc_run` and
   `free_run`, next to the table lookup and the syscalls. The window is off
-  for a tier that never decays (`-1`), where a kept run would stay.
+  for a tier that never decays (`-1`), where a kept run would stay, and
+  for one that purges at free (`0`), as for an arena at period 0. The
+  verdict the free reads (`Policy::demand_ok`) is the policy's first
+  evaluation at init and follows every evaluation after it.
 - The huge tier's decay period is arena 0's (`dirty_decay_ms`, and
   `arena.0.dirty_decay_ms` at run time) unless `huge_dirty_decay_ms` gives
   it one of its own (a `malloc_conf` key, `-1`..`1000000000000` like
@@ -1004,7 +1007,8 @@ plus a demand floor:
   never below the allowance, so a lone extent lasts the whole window. A
   lone slab is likewise never purged before its weight reaches zero (the
   allowance rounds up). A walk runs at most once per step (window / 200),
-  and not during a demand hold unless the retention cap is active: the
+  and not during a demand hold unless the retention cap is active or the
+  cgroup policy has turned the floor off since the hold was set: the
   gate is one `purge::Decayer` (oldest `dirty_at`, next deadline, last
   walk, hold) per class state and one in the huge allocator; the walks
   differ, the gate does not. `-1` is never. The huge allocator's window is
@@ -1039,9 +1043,14 @@ plus a demand floor:
   that arena on today's decay and is counted. Arenas whose period is 0 or
   `-1` get none. The cgroup policy decides whether the floor keeps
   anything (`Policy::demand_ok`, section 11); the trackers sample either
-  way. Explicit and pressure-driven purges (`malloc_trim(0)`,
-  `arena.<i>.purge`, the exit purge, the full purge on a `high` rise)
-  ignore it. Nothing runs on malloc, free, the refill, the flush or the
+  way, and a verdict of no voids a hold, so the next walk purges down to
+  the curve at step cadence (a band change or an eager return of the
+  excess acts at once). `arena.<i>.decay` is one pass of the driver over
+  arena `i` on its own period with no cap: its walks keep the same floor,
+  under the same verdict and hold (`purge::decay_arena`);
+  `arena.4096.decay` is the driver's pass itself. Explicit and
+  pressure-driven purges (`malloc_trim(0)`, `arena.<i>.purge`, the exit
+  purge, the full purge on a `high` rise) ignore it. Nothing runs on malloc, free, the refill, the flush or the
   tcache paths. Why the second-largest peak and not the windowed maximum
   of tcmalloc's skip-subrelease and jemalloc's HPA: challoc has no
   background releaser by default and its curve already keeps a burst for
@@ -1464,7 +1473,7 @@ jemalloc names where they exist:
 | `guard_slab_interval`     | 8       | one guard per N x 64 KiB of slabs, N a power of two (else rounded up, reported); 0 off, 1 out of range (clamps to 2) |
 | `huge_retain_max`         | 67108864 | challoc only; bytes; freed huge runs above it are purged at once (7), unless the demand window is on and the tier's demand recurs at that height; `opt.huge_retain_max` reads as `size_t` |
 | `huge_dirty_decay_ms`     | follows `dirty_decay_ms` | challoc only; the huge tier's own decay window in ms, `-1`..`1000000000000` (7): unset it follows arena 0's period (`dirty_decay_ms`, `arena.0.dirty_decay_ms`), and `opt.huge_dirty_decay_ms` reads that; `0` purges a freed huge run at the free; `-1` never by decay. Measured on the JVM soak at 2000, 500 and 0 (`bench/results/2026-09-20-{aarch64,x86_64}-jvm-huge-decay.md`); the default is the human's call with those numbers |
-| `hpa_peak_demand_window_ms` | 0     | jemalloc 5.4's spelling (there for HPA shards only; here every slab pool and the huge tier); `0`..`86400000` ms, clamped with a conf issue; the demand floor of section 8: walks keep the recurring level of demand in the window less what is in use, and a recurring run above `huge_retain_max` is kept (7). `0` is today's decay exactly. Lands off; the cb experiment of issue #25 decides whether a later commit sets a default (30000 or 120000) |
+| `hpa_peak_demand_window_ms` | 0     | jemalloc 5.4's spelling (there for HPA shards only; here every slab pool and the huge tier); `0`..`86400000` ms, clamped with a conf issue; the demand floor of section 8: walks keep the recurring level of demand in the window less what is in use, and a run above `huge_retain_max` freed while the huge tier's demand recurs at that height is kept (7). `0` is today's decay exactly. Lands off; the cb experiment of issue #25 decides whether a later commit sets a default (30000 or 120000) |
 | `zero_on_free`            | false   | opt-in: clear a block on free (6.3 step 3); priced in `bench/results/2026-09-18-*-gce-tunables.md` |
 | `pac_pointers`            | false   | challoc only; opt-in: sign cache entries and the TLS heap pointer with `pacda` where the kernel exposes `HWCAP_PACA`/`PACG` (6.1, 6.2, 17); inert elsewhere; priced in `bench/results/2026-09-19-lane-a-pac-pointers.md` |
 | `slot_randomize`          | false   | opt-in: refills claim from a random word and shuffle the batch (4); fights 6.4's compaction |
