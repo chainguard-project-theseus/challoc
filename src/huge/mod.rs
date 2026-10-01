@@ -1048,6 +1048,7 @@ impl Huge {
 
     /// `dirty_at` of the oldest `Empty` extent as the decay driver sees it
     /// (0 when none).
+    #[cfg(test)]
     pub fn oldest_empty(&self) -> u64 {
         self.gate.oldest_empty()
     }

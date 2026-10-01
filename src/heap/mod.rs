@@ -49,16 +49,17 @@ pub(crate) mod tests;
 #[cfg(test)]
 mod linux_tests;
 
-pub use cache::{CACHE_HEADER, CacheHeader};
-pub use compact::{COMPACT_MASK, COMPACT_MAX_REFILL_SLABS, COMPACT_MIN_RATIO, COMPACT_MIN_SLABS, COMPACT_SHIFT};
-pub use compact::{MODE_COMPACT, MODE_OFF, MODE_PROBE, PROBE_MASK};
+pub use cache::CacheHeader;
+pub use compact::{MODE_OFF, MODE_PROBE};
 pub use others::ArenaCaches;
 pub use paths::{alloc, alloc_declined, alloc_zeroed, free, free_direct, free_fast, free_fast_class, free_sized_fast};
-pub use shared::{GuardTest, Shared};
+pub use shared::Shared;
+pub use thread::{existing_heap, heap_destructor, heap_for_thread};
+pub use thread::{TLS_CREATING, TLS_EXITED, fast_flags};
 #[cfg(test)]
-use shared::guard_interval_for;
-pub use thread::{existing_heap, heap_destructor, heap_for_thread, tls_heap_slot};
-pub use thread::{TLS_CREATING, TLS_EXITED, fast_flags, heap_from_slot};
+use compact::{COMPACT_MASK, COMPACT_MAX_REFILL_SLABS, COMPACT_MIN_SLABS, COMPACT_SHIFT, MODE_COMPACT, PROBE_MASK};
+#[cfg(test)]
+use shared::{GuardTest, guard_interval_for};
 
 use core::alloc::Layout;
 use core::ptr;
@@ -88,6 +89,7 @@ pub const PERIODIC_EVERY: u32 = 64;
 /// Default cache capacity for a class: [`MAX_CAP`] (1024) slots for classes
 /// up to 128 bytes, halved for every doubling of the class size, never
 /// below [`MIN_CAP`].
+#[cfg(test)]
 pub const fn default_cap(class: usize) -> u32 {
     crate::config::ladder(class, MAX_CAP, 1)
 }
@@ -410,6 +412,7 @@ impl Heap {
 
     /// The home arena's cache for `class`, or `None` while it has never
     /// been used.
+    #[cfg(test)]
     pub fn cache(&self, class: usize) -> Option<&CacheHeader> {
         let c = &self.caches[class];
         if c.cap == 0 { None } else { Some(c) }
@@ -417,6 +420,7 @@ impl Heap {
 
     /// The cache for `class` in `arena`, home or not, or `None` while it
     /// has never been used (or the arena was never touched).
+    #[cfg(test)]
     pub fn cache_in(&self, arena: u16, class: usize) -> Option<&CacheHeader> {
         if arena == self.arena {
             return self.cache(class);

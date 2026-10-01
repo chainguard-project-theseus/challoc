@@ -207,11 +207,13 @@ impl Batch {
     }
 
     #[inline]
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.n
     }
 
     #[inline]
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.n == 0
     }

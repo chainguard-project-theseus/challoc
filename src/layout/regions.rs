@@ -143,6 +143,7 @@ impl Regions {
     }
 
     #[inline]
+    #[cfg(test)]
     pub fn slot_addr(&self, class: usize, slab: usize, slot: usize) -> usize {
         self.slab_addr(class, slab) + slot * CLASSES[class].size as usize
     }
@@ -464,6 +465,7 @@ mod linux {
         ///
         /// # Safety
         /// Nothing may reference the regions afterwards.
+        #[cfg(test)]
         pub unsafe fn release(&self) {
             for m in [self.superblock_map, self.huge_map, self.meta_map] {
                 // SAFETY: forwarded from the caller.

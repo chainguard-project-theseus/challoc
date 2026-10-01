@@ -147,10 +147,12 @@ impl ThreadKey {
         ThreadKey { key, valid: rc == 0 }
     }
 
+    #[cfg(test)]
     pub fn valid(&self) -> bool {
         self.valid
     }
 
+    #[cfg(test)]
     pub fn key(&self) -> Option<libc::pthread_key_t> {
         if self.valid { Some(self.key) } else { None }
     }
@@ -433,11 +435,13 @@ impl Shared {
 
     /// Whether the thread-exit key exists (heaps of exiting threads are
     /// reclaimed). False only if `pthread_key_create` failed at init.
+    #[cfg(test)]
     pub fn has_thread_key(&self) -> bool {
         self.key.valid()
     }
 
     /// The thread-exit key, for diagnostics and tests.
+    #[cfg(test)]
     pub fn thread_key(&self) -> Option<libc::pthread_key_t> {
         self.key.key()
     }

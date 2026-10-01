@@ -216,6 +216,7 @@ impl SlabTable {
     }
 
     #[inline]
+    #[cfg(test)]
     pub fn nslabs(&self) -> usize {
         self.nslabs
     }

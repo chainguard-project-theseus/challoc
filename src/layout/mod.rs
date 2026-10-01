@@ -497,16 +497,16 @@ pub fn class_of(n: usize) -> Option<usize> {
 
 /// Slot size for a request, i.e. `nallocx(n, 0)` for non-huge `n`.
 #[inline]
+#[cfg(test)]
 pub fn class_size_of(n: usize) -> Option<usize> {
     class_of(n).map(|c| CLASSES[c].size())
 }
 
 mod regions;
 
-pub use regions::{
-    Kind, LG_HUGE_MIN, LG_HUGE_PREFERRED, LG_META_MIN, LG_META_PREFERRED, LG_REGION_MIN, LG_REGION_PREFERRED,
-    LG_SLIDE, MAX_SEALED, Mapping, Regions,
-};
+pub use regions::{Kind, LG_HUGE_PREFERRED, Regions};
+#[cfg(test)]
+pub use regions::{LG_HUGE_MIN, LG_META_MIN, LG_REGION_MIN, LG_REGION_PREFERRED, MAX_SEALED, Mapping};
 
 #[cfg(test)]
 mod tests;

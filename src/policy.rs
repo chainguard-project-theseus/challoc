@@ -340,6 +340,7 @@ impl Policy {
         self.cap.load(Ordering::Relaxed)
     }
 
+    #[cfg(test)]
     pub fn empty_bytes(&self) -> u64 {
         self.empty_bytes.load(Ordering::Relaxed)
     }

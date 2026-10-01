@@ -115,6 +115,7 @@ impl Tcaches {
         self.table.iter().filter(|p| !p.load(Ordering::Relaxed).is_null()).count()
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

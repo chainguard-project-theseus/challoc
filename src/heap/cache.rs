@@ -96,22 +96,26 @@ impl CacheHeader {
     }
 
     #[inline]
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.len as usize
     }
 
     #[inline]
+    #[cfg(test)]
     pub fn cap(&self) -> usize {
         self.cap as usize
     }
 
     #[inline]
+    #[cfg(test)]
     pub fn low_water(&self) -> usize {
         self.low_water as usize
     }
 
     /// Number of entries at the bottom of the stack known to be zero.
     #[inline]
+    #[cfg(test)]
     pub fn zeroed(&self) -> usize {
         self.zeroed as usize
     }

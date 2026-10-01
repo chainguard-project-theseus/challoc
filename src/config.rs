@@ -724,7 +724,9 @@ fn clamped<'a>(key: &'a [u8], value: &'a [u8], min: i64, max: i64) -> Result<(i6
     }
 }
 
-pub use linux::{env_var, first_line_of, load, malloc_conf_symbol, MAX_TEXT};
+pub use linux::load;
+#[cfg(test)]
+use linux::{env_var, first_line_of, malloc_conf_symbol, MAX_TEXT};
 
 mod linux {
     use core::ffi::{c_char, c_void};
