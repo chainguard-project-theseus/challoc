@@ -15,6 +15,7 @@ pub mod errno;
 pub mod features;
 pub mod pac;
 pub mod thp_host;
+pub mod tls;
 pub use errno::{Errno, decode};
 
 mod abort;

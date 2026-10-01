@@ -49,7 +49,6 @@ pub mod sys;
 #[cfg(test)]
 mod testutil;
 pub mod thp;
-pub mod tls;
 
 /// Panic handler for the `no_std` library. The crate is built with
 /// `panic = "abort"`, so this is only reached by an explicit `panic!` or a

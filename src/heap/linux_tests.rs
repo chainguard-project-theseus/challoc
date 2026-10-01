@@ -2,7 +2,7 @@ use super::*;
 use crate::config::Config;
 use crate::layout::class_of;
 use crate::sys::pac;
-use crate::tls;
+use crate::sys::tls;
 use core::ffi::c_void;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

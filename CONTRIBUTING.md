@@ -75,7 +75,7 @@ for baselines, `fetch` copies results back, `down` stops the VMs.
   such as Valkey and Ruby. It is `no_std` with `panic = "abort"`, and it
   never allocates through anything but its own machinery.
 - Stable Rust only. Thread-local state goes through the asm accessor in
-  `src/tls.rs`, never `thread_local!`.
+  `src/sys/tls.rs`, never `thread_local!`.
 - Every exported function is a top-level `pub extern "C"` function with
   `#[unsafe(no_mangle)]` or `#[unsafe(export_name = "...")]`.
 - Every kernel and CPU feature is probed at run time and has a fallback.

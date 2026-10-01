@@ -2485,9 +2485,10 @@ src/sys/raw.rs        the asm syscall instructions (x86_64, aarch64)
 src/sys/nr.rs         syscall numbers, header-checked (tests/c/sysnr.c)
 src/sys/errno.rs      kernel error decoding
 src/sys/features.rs   kernel feature probing; the feature line as a key table (words) that Display and the tests iterate
+src/sys/thp_host.rs   the THP sysfs table (enabled, hpage_pmd_size, hugepages-<n>kB) and its thp=/mthp= words
 src/sys/cgroup.rs     cgroup2 discovery, limit walk, sampling (memory.current, every memory.events counter), PSI trigger arming
 src/sys/pac.rs        pointer authentication of the TLS heap pointer (arm64 FEAT_PAuth)
-src/tls.rs            initial-exec TLS accessor
+src/sys/tls.rs        initial-exec TLS accessor
 src/rseq.rs           glibc's rseq registration: the probe (__rseq_offset/size/flags, the area's cpu_id) the slice extension and the feature line's rseq= words read
 src/slice.rs          the rseq time-slice extension for lock holders (`slice_ext`)
 src/lock.rs           futex lock, padded lock
