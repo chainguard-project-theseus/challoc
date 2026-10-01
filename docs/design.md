@@ -482,14 +482,17 @@ entry points in `api/` are built from them.
    multiply, rotate, compare against `nslots`); load the class bitmap
    word; verify the bit is set. Otherwise abort.
 3. The opt-in hardening: one byte (`Shared::push_flags`, on a line step 2
-   already loaded), zero by default, tested once. `PUSH_SCAN`
+   already loaded), zero by default on every host (`pac_pointers` defaults
+   to false, so a CPU with pointer authentication is no exception), tested
+   once. `PUSH_SCAN`
    (`double_free_scan`): compare `p` against the top four cache entries
    and abort on a match, a double free whose first copy is still cached
    (the sized push does the same). `PUSH_ZERO` (`zero_on_free`): `memset`
    the slot's class-size bytes (a huge free clears the run's usable
-   bytes). `PUSH_PAC`: sign the entry (6.2); arm64 compares the byte
-   against `PUSH_PAC` alone first, and off arm64 that compare is compiled
-   out, so the dispatch is the one test against zero. `double_free_scan` costs
+   bytes). `PUSH_PAC` (`pac_pointers:true` on an arm64 host with PAC):
+   sign the entry (6.2); arm64 compares the byte against `PUSH_PAC` alone
+   first, and off arm64 that compare is compiled out, so the dispatch is
+   the one test against zero. `double_free_scan` costs
    about 3..4% on `larson1` and up to 14% on the Valkey model;
    `zero_on_free`'s `memset` per free is far over a 3% budget on Valkey's
    1 KiB values.

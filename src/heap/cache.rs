@@ -294,9 +294,13 @@ impl Heap {
     }
 
     /// [`Heap::push_cache`] behind the opt-in hardening: with `flags` zero
-    /// (the default) it is the plain push after one byte test; off
-    /// aarch64 `PUSH_PAC` is never set, so that test is the whole dispatch
-    /// (on aarch64 the signed-only push of a PAC host comes first). With
+    /// (the default on every host: `pac_pointers` defaults to false, so
+    /// even a PAC host's byte is 0) it is the plain push after one byte
+    /// test. On aarch64 the signed-only push (`pac_pointers:true` on a
+    /// host with PAC, `flags == PUSH_PAC`) is tested first, one compare
+    /// ahead of the default's; off aarch64 `PUSH_PAC` is never set and
+    /// that compare is compiled out, so the zero test is the whole
+    /// dispatch. With
     /// `zero_on_free` it declines (`false`), so the caller takes the cold
     /// slow path it already has for a full cache, and that path
     /// ([`Heap::free_slow_in`]) clears the slot and pushes it: the clear
@@ -310,10 +314,10 @@ impl Heap {
     /// As for [`Heap::push_cache`].
     #[inline(always)]
     pub(super) unsafe fn push_cache_flags(cache: *mut CacheHeader, p: *mut u8, flags: u8) -> bool {
-        // The default configurations first, one byte compare each: signed
-        // pointers alone (an arm64 host with PAC; never set elsewhere, so
-        // the compare is compiled out) and no hardening (x86_64, a CPU
-        // without PAC).
+        // One byte compare each for the two common configurations: signed
+        // pointers alone (opt-in `pac_pointers:true` on an arm64 host with
+        // PAC; never set elsewhere, so the compare is compiled out) and no
+        // hardening (the default on every host, PAC or not).
         if cfg!(target_arch = "aarch64") && flags == PUSH_PAC {
             // SAFETY: guaranteed by the caller.
             return unsafe { Self::push_cache(cache, p, false, true) };
