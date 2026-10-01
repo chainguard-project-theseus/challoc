@@ -62,6 +62,9 @@ commit_short() { $GIT -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unkn
 # read that failure as "dirty" and tagged a clean 3c6602b scorecard `+`).
 # A git that cannot answer stops the run: the label would be a guess.
 tree_dirty() {
+  # A source archive (cb launch ships `git archive` trees) has no history:
+  # nothing to compare against, so not dirty.
+  [ -e "$ROOT/.git" ] || return 1
   td_err=$($GIT -C "$ROOT" diff --quiet HEAD -- src Cargo.toml Cargo.lock build.rs 2>&1); td_rc=$?
   case $td_rc in
     0) return 1;;
