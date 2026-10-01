@@ -1,5 +1,5 @@
 # bench/ruby/soak.rb: a Sidekiq-shaped Ruby process for the Ruby soak
-# (docs/plan.md Phase 3 prerequisite (c); bench/ruby-soak.sh runs it).
+# (docs/plan.md Phase 3 prerequisite (c); bench/drivers/ruby-soak.sh runs it).
 #
 # THREADS worker threads (the GVL serialises them, which is the point: many
 # mostly idle threads, each with its own allocation history in the C
