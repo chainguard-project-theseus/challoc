@@ -17,7 +17,7 @@ exact windows the defaults leave open. The design view is
 | Zero on free                             | Opt-in       | Opt-in: `zero_on_free` clears a block on free (2) |
 | Slot order randomisation                 | No           | Opt-in: `slot_randomize` (2) |
 | Signed allocator pointers (arm64 PAC)    | No           | Opt-in where the CPU has it: `pac_pointers`, cache entries and the TLS heap pointer `pacda`-signed, authenticated on every `malloc` (3) |
-| Tagged pointers                          | No           | Planned, hardware-gated: `tag_pointers` (4) |
+| Tagged pointers                          | No           | Planned (4)     |
 | Implementation language                  | C            | Rust            |
 
 ## (1) Invalid and double frees
@@ -34,8 +34,7 @@ before then, the duplicate is not detected and the slot is live twice,
 unless the `double_free_scan` tunable is set: then every free (plain and
 sized) compares the slot against the four most recently cached entries
 and aborts on a match at the call. It is off by default because it costs
-about 3..4% on larson and up to 14% on the Valkey model on x86_64
-(`bench/results/2026-09-18-*-gce-detection-gaps.md`).
+about 3..4% on larson and up to 14% on the Valkey model on x86_64.
 
 Through the sized path, `sdallocx(p, size, flags)`, C23 `free_sized` and
 `free_aligned_sized` (what Valkey frees with): the size is checked against
@@ -47,9 +46,9 @@ its slab: at most a cache's worth of frees later (at once when the cache is
 full or with `MALLOCX_TCACHE_NONE`). Between the call and that flush the
 slot can be handed out twice, which is jemalloc's behaviour for every free;
 if a `malloc` takes one copy before the flush the duplicate is not
-detected. This trade is made for jemalloc parity: the exact check costs
-one slab-descriptor cache miss per free, 200 of the 273 cycles per SET that
-separated challoc from jemalloc on Valkey's write path.
+detected. This trade is made for jemalloc parity: on Valkey's write path
+the exact check's bitmap load is a cache miss per free, most of what once
+separated challoc from jemalloc there.
 
 ## (2) Zero on free and slot randomisation
 
@@ -63,8 +62,7 @@ which is more than the 3% hardening budget on Valkey's 1 KiB values.
 and shuffle its batch, so the order in which one class hands out
 neighbouring slots is not predictable from the previous allocations; it
 works against the compaction that keeps the heap dense (design 6.4), which
-is why it is not the default. The price of each on `larson`, `redis` and
-the Valkey model is in `bench/results/2026-09-18-*-gce-tunables.md`.
+is why it is not the default.
 
 ## (3) Pointer authentication
 
@@ -82,21 +80,21 @@ anyway, the same binary everywhere; `MALLOC_CONF=pac_pointers:true` turns
 it on. It is off by default because the two PAC instructions an entry
 costs (one signing it, one authenticating it) are 11% of xmalloc-test's
 cross-thread frees and 1..2% of larson on Axion, over the 1% budget for a
-default-on hardening (`bench/results/2026-09-19-lane-a-pac-pointers.md`;
-design 6.1, 6.2, 17). Of the reference hosts, the C4A Axion VM exposes
-PAC.
+default-on hardening (design 6.1, 6.2, 17). Of the reference hosts, the
+C4A Axion VM exposes PAC.
 
 ## (4) Tagged pointers
 
-Designed, not implemented (`docs/design.md` section 18):
-`tag_pointers:mte` gives every block a random 4-bit MTE tag retagged on
-free, so a read through a freed pointer faults in hardware;
-`tag_pointers:lam` carries a six-bit class-and-generation tag in the
-ignored top bits (LAM on x86_64, TBI on aarch64) that `free`, `realloc`,
-`malloc_usable_size` and the sized path verify, so a stale, forged or
-cross-class pointer aborts. Default `off`. No GCE CPU exposes MTE, LAM or
-UAI to a guest (`bench/results/2026-09-19-cpu-matrix.md`), so the
-implementation waits for a host that does.
+Designed, not implemented (`docs/design.md` section 18, #50): on MTE
+hosts every block gets a random 4-bit hardware tag, retagged on free, so a
+read through a freed pointer faults; elsewhere a 4-bit software tag (a
+per-slot generation keyed per class) in the ignored top bits (TBI on
+aarch64, LAM on x86_64 should Linux enable it again) is verified by
+`free`, `realloc`, `malloc_usable_size` and the sized path, so a stale,
+forged or cross-class pointer aborts (15 times in 16). Four bits is the
+width everywhere, since the LAM kernel series cuts the user tag to 4 bits
+and MTE has 4. AMD UAI has no Linux enable path and is not a target. The
+MTE half waits for a host that exposes MTE (AmpereOne, #51).
 
 ## Stricter than jemalloc
 
