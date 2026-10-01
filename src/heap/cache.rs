@@ -31,7 +31,10 @@ pub struct CacheHeader {
     pub(super) cap: u32,
     /// Smallest `len` since the last GC (design 6.4).
     pub(super) low_water: u32,
-    /// `slots[..zeroed]` are known to read as zero.
+    /// `slots[..zeroed]` are known to read as zero. `zeroed <= low_water`:
+    /// a pop that takes `len` below `low_water` lowers `zeroed` with it
+    /// ([`Heap::pop_top`]), so a push, which stores at `len >= zeroed`,
+    /// never touches it.
     pub(super) zeroed: u32,
     /// The stack: a metadata object of `cap` slot pointers
     /// ([`CacheHeader::slots_layout`]; null while `cap == 0`).
@@ -239,6 +242,9 @@ impl Heap {
     /// `pac` the entry is authenticated against the stack's base address
     /// (`autda`; [`CacheHeader::plain`]): a corrupted entry faults here on
     /// FEAT_FPAC, or comes out non-canonical and faults on its first use.
+    /// The entry is known zero only if it is below `zeroed`, which is at
+    /// most `low_water`, so the zero test and the prefix's shrink live in
+    /// the branch that lowers `low_water`.
     ///
     /// # Safety
     /// As for [`Heap::pop`].
@@ -248,20 +254,20 @@ impl Heap {
         unsafe {
             let len = len - 1;
             (*cache).len = len;
+            let mut zero = false;
             if len < (*cache).low_water {
                 (*cache).low_water = len;
                 if len < (*cache).run_end {
                     (*cache).run_end = len;
                 }
+                if len < (*cache).zeroed {
+                    (*cache).zeroed = len;
+                    zero = true;
+                }
             }
             let slots = (*cache).slots();
             let p = *slots.add(len as usize);
-            let p = if pac {
-                pac::auth(p as usize, slots as usize) as *mut u8
-            } else {
-                p
-            };
-            let zero = len < (*cache).zeroed;
+            let p = if pac { pac::auth(p as usize, slots as usize) as *mut u8 } else { p };
             (p, zero)
         }
     }
@@ -276,10 +282,9 @@ impl Heap {
 
     /// The cache push alone: `false` when the cache is full (or still the
     /// sentinel) and the caller must take a slow path. No counter moves:
-    /// the push count is implied by `len`, `allocs` and `moved`. `zeroed`
-    /// is written only when the pushed slot lands inside the zero prefix,
-    /// which is rare (the prefix is usually already zero). `flags` is
-    /// `Shared::push_flags`.
+    /// the push count is implied by `len`, `allocs` and `moved`, and
+    /// `zeroed` is never above the pushed position (see
+    /// [`CacheHeader::zeroed`]). `flags` is `Shared::push_flags`.
     #[inline(always)]
     pub fn push_fast(&mut self, class: usize, p: *mut u8, flags: u8) -> bool {
         let cache = self.cache_ptr(class);
@@ -289,7 +294,9 @@ impl Heap {
     }
 
     /// [`Heap::push_cache`] behind the opt-in hardening: with `flags` zero
-    /// (the default) it is the plain push after one byte test. With
+    /// (the default) it is the plain push after one byte test; off
+    /// aarch64 `PUSH_PAC` is never set, so that test is the whole dispatch
+    /// (on aarch64 the signed-only push of a PAC host comes first). With
     /// `zero_on_free` it declines (`false`), so the caller takes the cold
     /// slow path it already has for a full cache, and that path
     /// ([`Heap::free_slow_in`]) clears the slot and pushes it: the clear
@@ -303,16 +310,17 @@ impl Heap {
     /// As for [`Heap::push_cache`].
     #[inline(always)]
     pub(super) unsafe fn push_cache_flags(cache: *mut CacheHeader, p: *mut u8, flags: u8) -> bool {
-        // The two default configurations first, one byte compare each: no
-        // hardening (x86_64, a CPU without PAC) and signed pointers alone
-        // (an arm64 host with PAC).
+        // The default configurations first, one byte compare each: signed
+        // pointers alone (an arm64 host with PAC; never set elsewhere, so
+        // the compare is compiled out) and no hardening (x86_64, a CPU
+        // without PAC).
+        if cfg!(target_arch = "aarch64") && flags == PUSH_PAC {
+            // SAFETY: guaranteed by the caller.
+            return unsafe { Self::push_cache(cache, p, false, true) };
+        }
         if flags == 0 {
             // SAFETY: guaranteed by the caller.
             return unsafe { Self::push_cache(cache, p, false, false) };
-        }
-        if flags == PUSH_PAC {
-            // SAFETY: guaranteed by the caller.
-            return unsafe { Self::push_cache(cache, p, false, true) };
         }
         if flags & PUSH_ZERO != 0 {
             return false;
@@ -389,9 +397,6 @@ impl Heap {
             }
             *slots.add(len as usize) = e;
             (*cache).len = len + 1;
-            if len < (*cache).zeroed {
-                (*cache).zeroed = len;
-            }
         }
         true
     }

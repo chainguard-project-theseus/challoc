@@ -487,7 +487,9 @@ entry points in `api/` are built from them.
    and abort on a match, a double free whose first copy is still cached
    (the sized push does the same). `PUSH_ZERO` (`zero_on_free`): `memset`
    the slot's class-size bytes (a huge free clears the run's usable
-   bytes). `PUSH_PAC`: sign the entry (6.2). `double_free_scan` costs
+   bytes). `PUSH_PAC`: sign the entry (6.2); arm64 compares the byte
+   against `PUSH_PAC` alone first, and off arm64 that compare is compiled
+   out, so the dispatch is the one test against zero. `double_free_scan` costs
    about 3..4% on `larson1` and up to 14% on the Valkey model;
    `zero_on_free`'s `memset` per free is far over a 3% budget on Valkey's
    1 KiB values.
@@ -550,8 +552,12 @@ cache pops whatever the cache holds, as jemalloc's does;
 `calloc` clears with `memset` unless the slots came fresh from the
 kernel, which is tracked as a per-cache zero prefix: `slots[..zeroed]`
 are known zero, set by a refill whose batch came from a `Fresh` or
-`Purged` slab (while `purge::purged_is_zero` holds, section 8), clipped
-by a push that lands below it and dropped by a flush. `calloc` zeroes the
+`Purged` slab (while `purge::purged_is_zero` holds, section 8), lowered
+with `len` by a pop that takes a zero entry and dropped by a flush.
+`zeroed <= low_water` holds throughout, so only a pop that lowers
+`low_water` can take a zero entry: the zero test and the shrink sit in
+that pop's cold branch, and the push, which stores at `len >= zeroed`,
+never touches `zeroed`. `calloc` zeroes the
 requested bytes, not the whole usable size (#54).
 
 `malloc_usable_size(p)` (and `sallocx`, and the size read of `realloc`
